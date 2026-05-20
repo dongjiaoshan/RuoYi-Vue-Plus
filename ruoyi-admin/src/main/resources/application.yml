@@ -261,3 +261,18 @@ warm-flow:
   node-tooltip: true
   # 默认Authorization，如果有多个token，用逗号分隔
   token-name: ${sa-token.token-name},clientid
+
+--- # 东角山业务配置（V1 多农场 disabled / OSS STS / 业务编码生成器）
+djs:
+  multi-farm:
+    # V1 disabled，V2 启用拦截器后多农场生效（SYS-INFRA-007）
+    enabled: false
+  oss-sts:
+    # 阿里云 OSS STS Token 服务（SYS-INFRA-002）
+    enabled: true
+    region: cn-hangzhou
+  encoder:
+    # 业务编码生成器（SYS-INFRA-004）
+    ear-no:
+      # 耳号生成器预留天数：超过此天数未使用的预占耳号回收
+      reserve-days: 90
