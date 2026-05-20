@@ -31,8 +31,7 @@ import java.util.Set;
  *       </pre>
  *       所有 djs 业务表 INSERT 自动写 tenant_id='1001'，SELECT 自动加 WHERE tenant_id='1001'；</li>
  *   <li>由于 V1 全部数据 tenant_id='1001'，与"无多农场"行为等价；</li>
- *   <li>V1 启用 ruoyi 默认拦截器是无副作用的（参 doc/05 §4.3.1 关键设计 + _open-issues #4
- *       "sys_user.tenant_id 默认 '000000' vs djs 业务表默认 '1001'"已落地方案 a）。</li>
+ *   <li>V1 启用 ruoyi 默认拦截器是无副作用的（参 doc/05 §4.3.1 关键设计）。</li>
  * </ul>
  *
  * <h3>V2（enabled=true）启用步骤</h3>

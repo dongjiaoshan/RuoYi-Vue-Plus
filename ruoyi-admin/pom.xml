@@ -147,6 +147,13 @@
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
                 <version>${spring-boot.version}</version>
+                <configuration>
+                    <!-- 开发期跳过本机代理：开发者本地装了 HTTP 代理（科学上网等）时，
+                         mvn spring-boot:run 启动的 JVM 不会把 127.0.0.1 / localhost 上的本地服务
+                         （minio / mysql / redis）请求转给代理，避免 aws-sdk 等组件超时挂起。
+                         仅对 mvn spring-boot:run 生效；java -jar 生产部署不受影响。 -->
+                    <jvmArguments>-Dhttp.nonProxyHosts=localhost|127.0.0.1</jvmArguments>
+                </configuration>
                 <executions>
                     <execution>
                         <goals>

@@ -13,7 +13,7 @@
 
 -- -----------------------------------------------------------------------------
 -- 1. minio 配置：dev 用桶名 djs-dev（与本机 docker dev-minio 容器联调）
---    注意：sys_oss_config.tenant_id = '000000'（ruoyi 系统数据），不是业务 1001
+--    sys_oss_config 由 V202605201500 cleanup 统一搬到 tenant_id='1001'
 -- -----------------------------------------------------------------------------
 -- dev-minio 容器实际 root user/password 是 ruoyi / ruoyi123（见 docker inspect dev-minio）
 UPDATE sys_oss_config

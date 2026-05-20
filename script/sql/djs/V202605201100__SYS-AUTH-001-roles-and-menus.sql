@@ -4,7 +4,7 @@
 --   1. 13 个角色种子数据（ruoyi 自带 superadmin role_id=1 + 12 个新增 djs 角色 role_id=101-112）
 --   2. 业务一级目录菜单 + 二级通用主数据菜单 seed（menu_id 段 5000-5099 / 7000 / 8000 / 9000 / 10000）
 --   3. 角色 → 菜单 / 角色 → 用户 关联种子（仅 boss / manager 全菜单；其他业务角色由各业务 ticket 自己 INSERT sys_role_menu）
---   4. admin 用户 tenant_id 更新为 '1001'（落地 _open-issues #4 方案 a，跟业务表 default '1001' 一致）
+--   4. admin (user_id=1) 关联 superadmin 角色（IGNORE 防重）；租户清理由 V202605201500 处理
 --
 -- 角色清单（按 doc/05 §4.4.4 表 + doc/06 SYS-AUTH-001 §5 + doc/02 v1.2 §SYS-AUTH-001）：
 --   role_id=1   superadmin       超级管理员   （ruoyi 自带，不变）
@@ -31,18 +31,18 @@ INSERT INTO sys_role
   (role_id, tenant_id, role_name, role_key, role_sort, data_scope, menu_check_strictly, dept_check_strictly,
    status, del_flag, create_by, create_time, remark)
 VALUES
-  (101, '000000', '系统管理员',     'system_admin',     2,  '1', 1, 1, '0', '0', 1, NOW(), 'SYS-AUTH-001 用户/角色/字典维护'),
-  (102, '000000', '老板',           'boss',             3,  '1', 1, 1, '0', '0', 1, NOW(), 'SYS-AUTH-001 v1.2 DSH驾驶舱可见 + 跨域数据浏览'),
-  (103, '000000', '管理人员',       'manager',          4,  '1', 1, 1, '0', '0', 1, NOW(), 'SYS-AUTH-001 v1.2 DSH驾驶舱可见 + 业务管理'),
-  (104, '000000', '养殖管理员',     'breed_admin',      5,  '1', 1, 1, '0', '0', 1, NOW(), 'SYS-AUTH-001 养殖 admin 模块'),
-  (105, '000000', '种植管理员',     'plant_admin',      6,  '1', 1, 1, '0', '0', 1, NOW(), 'SYS-AUTH-001 种植 admin 模块'),
-  (106, '000000', '仓库管理员',     'warehouse_admin',  7,  '1', 1, 1, '0', '0', 1, NOW(), 'SYS-AUTH-001 仓库 admin 模块'),
-  (107, '000000', '门店管理员',     'store_admin',      8,  '1', 1, 1, '0', '0', 1, NOW(), 'SYS-AUTH-001 门店 admin 模块'),
-  (108, '000000', '养殖工人',       'breed_worker',     9,  '4', 1, 1, '0', '0', 1, NOW(), 'SYS-AUTH-001 养殖小程序'),
-  (109, '000000', '兽医',           'vet',              10, '4', 1, 1, '0', '0', 1, NOW(), 'SYS-AUTH-001 养殖小程序（含药品）'),
-  (110, '000000', '仓库工人',       'warehouse_worker', 11, '4', 1, 1, '0', '0', 1, NOW(), 'SYS-AUTH-001 仓库小程序（含分割师/库管员）'),
-  (111, '000000', '种植工人',       'plant_worker',     12, '4', 1, 1, '0', '0', 1, NOW(), 'SYS-AUTH-001 种植小程序'),
-  (112, '000000', '门店店员',       'store_clerk',      13, '4', 1, 1, '0', '0', 1, NOW(), 'SYS-AUTH-001 门店小程序');
+  (101, '1001', '系统管理员',     'system_admin',     2,  '1', 1, 1, '0', '0', 1, NOW(), 'SYS-AUTH-001 用户/角色/字典维护'),
+  (102, '1001', '老板',           'boss',             3,  '1', 1, 1, '0', '0', 1, NOW(), 'SYS-AUTH-001 v1.2 DSH驾驶舱可见 + 跨域数据浏览'),
+  (103, '1001', '管理人员',       'manager',          4,  '1', 1, 1, '0', '0', 1, NOW(), 'SYS-AUTH-001 v1.2 DSH驾驶舱可见 + 业务管理'),
+  (104, '1001', '养殖管理员',     'breed_admin',      5,  '1', 1, 1, '0', '0', 1, NOW(), 'SYS-AUTH-001 养殖 admin 模块'),
+  (105, '1001', '种植管理员',     'plant_admin',      6,  '1', 1, 1, '0', '0', 1, NOW(), 'SYS-AUTH-001 种植 admin 模块'),
+  (106, '1001', '仓库管理员',     'warehouse_admin',  7,  '1', 1, 1, '0', '0', 1, NOW(), 'SYS-AUTH-001 仓库 admin 模块'),
+  (107, '1001', '门店管理员',     'store_admin',      8,  '1', 1, 1, '0', '0', 1, NOW(), 'SYS-AUTH-001 门店 admin 模块'),
+  (108, '1001', '养殖工人',       'breed_worker',     9,  '4', 1, 1, '0', '0', 1, NOW(), 'SYS-AUTH-001 养殖小程序'),
+  (109, '1001', '兽医',           'vet',              10, '4', 1, 1, '0', '0', 1, NOW(), 'SYS-AUTH-001 养殖小程序（含药品）'),
+  (110, '1001', '仓库工人',       'warehouse_worker', 11, '4', 1, 1, '0', '0', 1, NOW(), 'SYS-AUTH-001 仓库小程序（含分割师/库管员）'),
+  (111, '1001', '种植工人',       'plant_worker',     12, '4', 1, 1, '0', '0', 1, NOW(), 'SYS-AUTH-001 种植小程序'),
+  (112, '1001', '门店店员',       'store_clerk',      13, '4', 1, 1, '0', '0', 1, NOW(), 'SYS-AUTH-001 门店小程序');
 
 -- -----------------------------------------------------------------------------
 -- 2. 业务一级 / 二级目录菜单 seed
@@ -109,13 +109,9 @@ INSERT INTO sys_role_menu (role_id, menu_id) VALUES
   (112, 5050); -- store_clerk
 
 -- -----------------------------------------------------------------------------
--- 5. admin 用户 tenant_id 调整为 '1001'（落地 _open-issues #4 方案 a）
---    ruoyi 自带 admin (user_id=1) tenant_id='000000'，与 djs 业务表 default '1001' 不一致
---    更新后，MetaObjectHandler.insertFill 写入业务表时 tenant_id='1001'，跟业务设计对齐
+-- 5. 给 admin 用户分配 superadmin 角色（ruoyi 自带，sys_user_role 应已存在，IGNORE 防重）
+--    （admin tenant_id 与 sys_tenant 重命名由 V202605201500__SYS-CLEANUP-single-tenant 统一处理）
 -- -----------------------------------------------------------------------------
-UPDATE sys_user SET tenant_id = '1001' WHERE user_id = 1;
-
--- 给 admin 用户分配 superadmin 角色（ruoyi 自带，sys_user_role 应已存在，IGNORE 防重）
 INSERT IGNORE INTO sys_user_role (user_id, role_id) VALUES (1, 1);
 
 -- =============================================================================
