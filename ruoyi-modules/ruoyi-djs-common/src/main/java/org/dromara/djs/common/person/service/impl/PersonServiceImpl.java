@@ -1,15 +1,14 @@
 package org.dromara.djs.common.person.service.impl;
 
-import cn.hutool.core.collection.CollUtil;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.core.utils.MapstructUtils;
 import org.dromara.common.core.utils.StringUtils;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
+import org.dromara.djs.common.base.DjsBaseServiceImpl;
 import org.dromara.djs.common.encoder.BizCodeType;
 import org.dromara.djs.common.encoder.IBizCodeGenerator;
 import org.dromara.djs.common.person.domain.Person;
@@ -32,10 +31,9 @@ import java.util.Objects;
  * {@link BizCodeType#MEMBER_NO} 规则生成（pattern {@code M{seq4}}，例 {@code M0001}），
  * 编辑端点不允许覆盖。</p>
  *
- * <p>软删：循环 {@code updateById}，显式 set {@code delFlag='1'} + {@code delUnique=id}。
- * 不能用 {@code baseMapper.deleteByIds}—— MyBatis-Plus LogicDeleteInterceptor 注入的 UPDATE
- * 在调 updateFill 时合成实体 id=null，{@link org.dromara.djs.common.handler.DjsMetaObjectHandler}
- * 拿不到 id 就跳过 del_unique 同步。业务表 UNIQUE(tenant_id, person_code, del_unique)
+ * <p>软删通过基类 {@link DjsBaseServiceImpl#softDelete(Collection, java.util.function.Supplier)}
+ * 显式循环 {@code updateById}（避免 MP LogicDelete 路径绕过 {@code DjsMetaObjectHandler#updateFill}
+ * 导致 del_unique 不同步，参基类注释）。业务表 UNIQUE(tenant_id, person_code, del_unique)
  * 保证软删后重启用同编码不冲突。</p>
  *
  * @author djs
@@ -43,11 +41,14 @@ import java.util.Objects;
  */
 @Slf4j
 @Service
-@RequiredArgsConstructor
-public class PersonServiceImpl implements IPersonService {
+public class PersonServiceImpl extends DjsBaseServiceImpl<PersonMapper, Person> implements IPersonService {
 
-    private final PersonMapper baseMapper;
     private final IBizCodeGenerator bizCodeGenerator;
+
+    public PersonServiceImpl(PersonMapper baseMapper, IBizCodeGenerator bizCodeGenerator) {
+        super(baseMapper);
+        this.bizCodeGenerator = bizCodeGenerator;
+    }
 
     @Override
     public TableDataInfo<PersonVo> queryPageList(PersonQuery query, PageQuery pageQuery) {
@@ -109,20 +110,9 @@ public class PersonServiceImpl implements IPersonService {
 
     @Override
     public int deleteWithValidByIds(Collection<Long> ids) {
-        if (CollUtil.isEmpty(ids)) {
-            return 0;
-        }
         // TODO SYS-MD-001 → D3+：业务表 wire 后，删除前需校验"是否被 t_farm_event_* / t_md_user_farm 等引用"，
-        // 引用存在则提示业务方先解绑。当前主数据 ticket 尚无下游引用，直接软删。
-        int count = 0;
-        for (Long id : ids) {
-            Person p = new Person();
-            p.setId(id);
-            p.setDelFlag("1");
-            p.setDelUnique(id);
-            count += baseMapper.updateById(p);
-        }
-        return count;
+        // 引用存在则提示业务方先解绑。D05 BRD-EVENT-001 抽 BizReferenceChecker 后统一改声明式注册。
+        return softDelete(ids, Person::new);
     }
 
     /**

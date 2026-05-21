@@ -6,6 +6,7 @@ import com.baomidou.mybatisplus.annotation.TableName;
 import lombok.Data;
 import lombok.EqualsAndHashCode;
 import org.dromara.common.tenant.core.TenantEntity;
+import org.dromara.djs.common.base.DjsBaseServiceImpl;
 
 import java.io.Serial;
 import java.time.LocalDate;
@@ -29,7 +30,7 @@ import java.time.LocalDate;
 @Data
 @EqualsAndHashCode(callSuper = true)
 @TableName("t_md_person")
-public class Person extends TenantEntity {
+public class Person extends TenantEntity implements DjsBaseServiceImpl.SoftDeletable {
 
     @Serial
     private static final long serialVersionUID = 1L;

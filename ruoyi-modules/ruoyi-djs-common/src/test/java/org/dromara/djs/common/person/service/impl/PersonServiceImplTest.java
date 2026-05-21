@@ -1,6 +1,7 @@
 package org.dromara.djs.common.person.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
+import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.mybatis.core.page.PageQuery;
@@ -230,20 +231,27 @@ class PersonServiceImplTest {
     }
 
     @Test
-    @DisplayName("deleteWithValidByIds: happy path → 每个 id 走一次 updateById，delFlag='1' + delUnique=id")
+    @DisplayName("deleteWithValidByIds: happy path → 每个 id 一次 update(entity, wrapper)，wrapper.setSql del_flag='1' 绕过 @TableLogic")
     void testDeleteWithValidByIds_HappyPath() {
-        when(personMapper.updateById(any(Person.class))).thenReturn(1);
+        when(personMapper.update(any(Person.class), any(UpdateWrapper.class))).thenReturn(1);
 
         int rows = service.deleteWithValidByIds(List.of(10001L, 10002L));
 
         assertThat(rows).isEqualTo(2);
-        ArgumentCaptor<Person> captor = ArgumentCaptor.forClass(Person.class);
-        verify(personMapper, times(2)).updateById(captor.capture());
-        List<Person> captured = captor.getAllValues();
-        assertThat(captured).hasSize(2);
-        assertThat(captured).allSatisfy(p -> assertThat(p.getDelFlag()).isEqualTo("1"));
-        assertThat(captured).extracting(Person::getId).containsExactly(10001L, 10002L);
-        assertThat(captured).extracting(Person::getDelUnique).containsExactly(10001L, 10002L);
+        ArgumentCaptor<Person> entityCaptor = ArgumentCaptor.forClass(Person.class);
+        ArgumentCaptor<UpdateWrapper<Person>> wrapperCaptor = ArgumentCaptor.forClass(UpdateWrapper.class);
+        verify(personMapper, times(2)).update(entityCaptor.capture(), wrapperCaptor.capture());
+
+        List<Person> capturedEntities = entityCaptor.getAllValues();
+        assertThat(capturedEntities).extracting(Person::getId).containsExactly(10001L, 10002L);
+        assertThat(capturedEntities).extracting(Person::getDelUnique).containsExactly(10001L, 10002L);
+        assertThat(capturedEntities).allSatisfy(p -> assertThat(p.getDelFlag()).isNull());
+
+        List<UpdateWrapper<Person>> capturedWrappers = wrapperCaptor.getAllValues();
+        assertThat(capturedWrappers).allSatisfy(w -> {
+            assertThat(w.getSqlSet()).contains("del_flag = '1'");
+            assertThat(w.getExpression().getNormal().getSqlSegment()).contains("id");
+        });
     }
 
     @Test
@@ -251,6 +259,6 @@ class PersonServiceImplTest {
     void testDeleteWithValidByIds_EmptyShortCircuit() {
         int rows = service.deleteWithValidByIds(Collections.emptyList());
         assertThat(rows).isZero();
-        verify(personMapper, times(0)).updateById(any(Person.class));
+        verify(personMapper, times(0)).update(any(Person.class), any(UpdateWrapper.class));
     }
 }
