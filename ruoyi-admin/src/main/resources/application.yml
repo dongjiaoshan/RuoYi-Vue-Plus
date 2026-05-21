@@ -262,7 +262,7 @@ warm-flow:
   # 默认Authorization，如果有多个token，用逗号分隔
   token-name: ${sa-token.token-name},clientid
 
---- # 东角山业务配置（V1 多农场 disabled / OSS STS / 业务编码生成器）
+--- # 东角山业务配置（V1 多农场 disabled / OSS STS / 业务编码生成器 / 微信集成）
 djs:
   multi-farm:
     # V1 disabled，V2 启用拦截器后多农场生效（SYS-INFRA-007）
@@ -276,3 +276,22 @@ djs:
     ear-no:
       # 耳号生成器预留天数：超过此天数未使用的预占耳号回收
       reserve-days: 90
+  wechat:
+    # 微信小程序集成（SYS-AUTH-001 登录 + SYS-INFRA-006 订阅消息推送）
+    miniapp:
+      # AppID："mock" 表示 dev 阶段不调微信真实 API（登录走 mock openid，推送走 mock 日志）
+      app-id: ${WX_MA_APPID:mock}
+      secret: ${WX_MA_SECRET:}
+      # 显式 mock 开关；app-id=mock 时强制为 mock（取或运算）
+      mock: ${WX_MA_MOCK:true}
+      # 4 类订阅消息模板 ID（V1 占位空字符串，运维填入真实模板 ID 后生效）
+      templates:
+        slaughter_notice: ""
+        stock_alert: ""
+        sales_summary: ""
+        internal_feedback: ""
+      # 推送失败重试策略（指数退避，含首次共尝试 max-attempts 次）
+      retry:
+        max-attempts: 3
+        initial-backoff-ms: 500
+        backoff-multiplier: 2.0

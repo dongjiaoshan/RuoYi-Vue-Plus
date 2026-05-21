@@ -146,15 +146,16 @@ VALUES
 INSERT IGNORE INTO sys_dict_data
   (dict_code, tenant_id, dict_sort, dict_label, dict_value, dict_type, css_class, list_class, is_default, create_by, create_time)
 VALUES
-  (1001030, '1001', 0, '配种',    'BREEDING',            'djs_pig_lifecycle', '', 'primary', 'N', NULL, NOW()),
-  (1001031, '1001', 1, '妊娠',    'PREGNANT',            'djs_pig_lifecycle', '', 'primary', 'N', NULL, NOW()),
-  (1001032, '1001', 2, '哺乳',    'NURSING',             'djs_pig_lifecycle', '', 'success', 'N', NULL, NOW()),
-  (1001033, '1001', 3, '断奶',    'WEANED',              'djs_pig_lifecycle', '', 'success', 'N', NULL, NOW()),
-  (1001034, '1001', 4, '育肥',    'FATTENING',           'djs_pig_lifecycle', '', 'warning', 'N', NULL, NOW()),
-  (1001035, '1001', 5, '候宰',    'READY_TO_SLAUGHTER',  'djs_pig_lifecycle', '', 'warning', 'N', NULL, NOW()),
-  (1001036, '1001', 6, '已出栏',  'SLAUGHTERED',         'djs_pig_lifecycle', '', 'info',    'N', NULL, NOW()),
-  (1001037, '1001', 7, '死亡',    'DEAD',                'djs_pig_lifecycle', '', 'danger',  'N', NULL, NOW()),
-  (1001038, '1001', 8, '淘汰',    'ELIMINATED',          'djs_pig_lifecycle', '', 'danger',  'N', NULL, NOW());
+  (1001030, '1001', 0, '后备',    'HB',                  'djs_pig_lifecycle', '', 'info',    'Y', NULL, NOW()),
+  (1001031, '1001', 1, '配种',    'PZ',                  'djs_pig_lifecycle', '', 'primary', 'N', NULL, NOW()),
+  (1001032, '1001', 2, '配怀',    'PH',                  'djs_pig_lifecycle', '', 'primary', 'N', NULL, NOW()),
+  (1001033, '1001', 3, '分娩',    'FM',                  'djs_pig_lifecycle', '', 'success', 'N', NULL, NOW()),
+  (1001034, '1001', 4, '断奶',    'DN',                  'djs_pig_lifecycle', '', 'success', 'N', NULL, NOW()),
+  (1001035, '1001', 5, '流产',    'LC',                  'djs_pig_lifecycle', '', 'warning', 'N', NULL, NOW()),
+  (1001036, '1001', 6, '空怀',    'KH',                  'djs_pig_lifecycle', '', 'warning', 'N', NULL, NOW()),
+  (1001037, '1001', 7, '返情',    'FQ',                  'djs_pig_lifecycle', '', 'warning', 'N', NULL, NOW()),
+  (1001038, '1001', 8, '终止',    'END',                 'djs_pig_lifecycle', '', 'danger',  'N', NULL, NOW()),
+  (1001039, '1001', 9, '公猪在产', 'BOAR_ACTIVE',        'djs_pig_lifecycle', '', 'info',    'N', NULL, NOW());
 
 -- B4 djs_pig_status_event 猪只状态机事件（11 个，BRD-CORE-001 严格对齐）
 INSERT IGNORE INTO sys_dict_type
@@ -479,8 +480,8 @@ VALUES
   (1003040, '1001', 0, '草稿',     'DRAFT',      'djs_demand_status', '', 'info',    'N', NULL, NOW()),
   (1003041, '1001', 1, '已提交',   'SUBMITTED',  'djs_demand_status', '', 'primary', 'N', NULL, NOW()),
   (1003042, '1001', 2, '已确认',   'CONFIRMED',  'djs_demand_status', '', 'primary', 'N', NULL, NOW()),
-  (1003043, '1001', 3, '排产中',   'SCHEDULING', 'djs_demand_status', '', 'warning', 'N', NULL, NOW()),
-  (1003044, '1001', 4, '部分发货', 'PARTIAL',    'djs_demand_status', '', 'warning', 'N', NULL, NOW()),
+  (1003043, '1001', 3, '排产中',   'IN_PRODUCTION',   'djs_demand_status', '', 'warning', 'N', NULL, NOW()),
+  (1003044, '1001', 4, '部分发货', 'PARTIAL_SHIPPED', 'djs_demand_status', '', 'warning', 'N', NULL, NOW()),
   (1003045, '1001', 5, '已完成',   'COMPLETED',  'djs_demand_status', '', 'success', 'N', NULL, NOW()),
   (1003046, '1001', 6, '已取消',   'CANCELLED',  'djs_demand_status', '', 'danger',  'N', NULL, NOW());
 
@@ -588,8 +589,20 @@ VALUES
   (1005022, '1001', 2, '销售汇总',     'sales_summary',     'djs_subscribe_message_type', '', 'success', 'N', NULL, NOW()),
   (1005023, '1001', 3, '内测反馈',     'internal_feedback', 'djs_subscribe_message_type', '', 'info',    'N', NULL, NOW());
 
+-- H1 djs_check_status 盘点状态（跨域复用：仓库 + 门店 check_record）
+INSERT IGNORE INTO sys_dict_type
+  (dict_id, tenant_id, dict_name, dict_type, create_by, create_time, remark)
+VALUES
+  (100601, '1001', '盘点状态', 'djs_check_status', NULL, NOW(), '跨域：t_warehouse_check_record / t_store_check_record.check_status');
+INSERT IGNORE INTO sys_dict_data
+  (dict_code, tenant_id, dict_sort, dict_label, dict_value, dict_type, css_class, list_class, is_default, create_by, create_time)
+VALUES
+  (1006010, '1001', 0, '草稿',     'draft',       'djs_check_status', '', 'info',    'Y', NULL, NOW()),
+  (1006011, '1001', 1, '进行中',   'in_progress', 'djs_check_status', '', 'warning', 'N', NULL, NOW()),
+  (1006012, '1001', 2, '已完成',   'completed',   'djs_check_status', '', 'success', 'N', NULL, NOW());
+
 -- ============================================================
--- 验收: 期望 dict_type=38, dict_data≈224
--- SELECT COUNT(*) FROM sys_dict_type  WHERE dict_type LIKE 'djs_%';   -- 38
--- SELECT COUNT(*) FROM sys_dict_data  WHERE dict_type LIKE 'djs_%';   -- 224
+-- 验收: 期望 dict_type=39, dict_data≈228
+-- SELECT COUNT(*) FROM sys_dict_type  WHERE dict_type LIKE 'djs_%';   -- 39
+-- SELECT COUNT(*) FROM sys_dict_data  WHERE dict_type LIKE 'djs_%';   -- 228
 -- ============================================================

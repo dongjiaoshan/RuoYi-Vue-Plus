@@ -63,6 +63,14 @@ public final class DjsRedisKey {
      */
     public static final String MEMBER_NO_SEQ = DJS_PREFIX + "str:member_no_seq:%s";
 
+    /**
+     * 业务编码生成器分布式锁（SYS-INFRA-004 通用编码生成器，所有编码类型共用一把锁桶）。
+     * <p>锁的最细粒度由 {@code (tenantId, codeType, seqDate)} 组成，已包含农场维度。
+     * 锁名结构：{@code djs:bizcode:lock:<tenantId>:<codeType>:<seqDate>}。</p>
+     * <p>format args: 单个完整 lockKey 后缀（由调用方拼接 tenantId/codeType/seqDate）</p>
+     */
+    public static final String BIZ_CODE_LOCK = DJS_PREFIX + "bizcode:lock:%s";
+
     // ---------------- 字典 / 主数据缓存（SYS-INFRA-005） ----------------
 
     /**
@@ -71,4 +79,13 @@ public final class DjsRedisKey {
      * <p>format args: farmId</p>
      */
     public static final String DICT_VERSION = DJS_PREFIX + "dict:version:%s";
+
+    /**
+     * 字典全量结果缓存（小程序同步用，SHA-256 hash 命中前的全量负载）。
+     * <p>value = JSON {version, data: {dictType: [...DictItem]}}，TTL 1h。</p>
+     * <p>admin 改字典 → ruoyi 自带 {@code CacheNames.SYS_DICT} 失效 → 本 key 由调用方在
+     * version 不命中时按需重算 + 重写，不需要单独的 evict 钩子。</p>
+     * <p>format args: farmId</p>
+     */
+    public static final String DICT_FULL = DJS_PREFIX + "dict:full:%s";
 }

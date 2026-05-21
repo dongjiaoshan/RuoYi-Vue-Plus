@@ -100,4 +100,18 @@ public interface DjsUserExtMapper {
      */
     @Select("SELECT tenant_id FROM sys_user WHERE user_id = #{userId}")
     String selectTenantId(@Param("userId") Long userId);
+
+    /**
+     * 读取用户的 wx_openid（SYS-INFRA-006 推送订阅消息时定位接收方 openid）。
+     *
+     * @return wx_openid；未绑定或用户不存在返 null
+     */
+    @Select("""
+        SELECT wx_openid
+        FROM sys_user
+        WHERE user_id = #{userId}
+          AND del_flag = '0'
+          AND status = '0'
+        """)
+    String selectWxOpenid(@Param("userId") Long userId);
 }
