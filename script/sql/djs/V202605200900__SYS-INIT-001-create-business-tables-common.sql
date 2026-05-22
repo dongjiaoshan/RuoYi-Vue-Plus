@@ -19,7 +19,7 @@ CREATE TABLE sys_farm (
   id              BIGINT       NOT NULL AUTO_INCREMENT COMMENT '农场 ID',
   farm_code       VARCHAR(32)  NOT NULL COMMENT '农场编码（如 DJS-MAIN）',
   farm_name       VARCHAR(64)  NOT NULL COMMENT '农场名称',
-  farm_status     TINYINT      NOT NULL DEFAULT 1 COMMENT '农场状态 1=启用 0=停用',
+  farm_status     TINYINT      NOT NULL DEFAULT 0 COMMENT '农场状态（字典 djs_farm_status：0=启用 1=停用）',
   contact_name    VARCHAR(32)  NULL COMMENT '联系人',
   contact_phone   VARCHAR(20)  NULL COMMENT '联系电话',
   address         VARCHAR(255) NULL COMMENT '地址',
@@ -38,7 +38,7 @@ CREATE TABLE sys_farm (
 
 -- 种子数据：V1 主场（建表后立即可用）
 INSERT INTO sys_farm (id, farm_code, farm_name, farm_status, create_by, create_time)
-VALUES (1001, 'DJS-MAIN', '东角山主场', 1, 1, NOW())
+VALUES (1001, 'DJS-MAIN', '东角山主场', 0, 1, NOW())
 ON DUPLICATE KEY UPDATE farm_name = VALUES(farm_name);
 
 -- ------------------------------------------------------------

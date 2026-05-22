@@ -24,6 +24,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 
+import java.math.BigDecimal;
 import java.util.Collections;
 import java.util.List;
 
@@ -37,13 +38,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * {@link SupplierServiceImpl} 单元测试（SYS-MD-003）。
- *
- * <p>覆盖 happy path：insert → list → query by id → update → soft-delete；
- * 同时校验 supplier_code 由后端生成、edit 不允许覆盖 supplier_code、update/delete 非法入参分支。</p>
- *
- * <p>不启 Spring；用 Mockito mock {@link SupplierMapper}，通过子类覆盖 {@code toEntity} 钩子
- * 绕开 {@code MapstructUtils.convert}（其依赖 Spring 单例 Converter）。</p>
+ * {@link SupplierServiceImpl} 单元测试（SYS-MD-003 + SYS-MD-FIX-002）。
  *
  * @author djs
  * @since SYS-MD-003
@@ -63,10 +58,6 @@ class SupplierServiceImplTest {
 
     private TestableSupplierServiceImpl service;
 
-    /**
-     * 子类覆盖 {@code toEntity} 钩子，避开 SpringUtils.getBean(Converter.class)。
-     * 直接把 BO 的字段手动拷到 Entity，模拟 MapStruct 生成的 mapper。
-     */
     static class TestableSupplierServiceImpl extends SupplierServiceImpl {
         TestableSupplierServiceImpl(SupplierMapper supplierMapper, IBizCodeGenerator bizCodeGenerator) {
             super(supplierMapper, bizCodeGenerator);
@@ -80,9 +71,13 @@ class SupplierServiceImplTest {
             Supplier s = new Supplier();
             s.setId(bo.getId());
             s.setSupplierName(bo.getSupplierName());
+            s.setLicenseNo(bo.getLicenseNo());
+            s.setLicenseImageOssId(bo.getLicenseImageOssId());
+            s.setBusinessLicenseNo(bo.getBusinessLicenseNo());
+            s.setCooperationStartDate(bo.getCooperationStartDate());
             s.setSupplierType(bo.getSupplierType());
-            s.setContactName(bo.getContactName());
-            s.setContactPhone(bo.getContactPhone());
+            s.setLiaisonName(bo.getLiaisonName());
+            s.setLiaisonPhone(bo.getLiaisonPhone());
             s.setAddress(bo.getAddress());
             s.setBusinessStatus(bo.getBusinessStatus());
             s.setSettleType(bo.getSettleType());
@@ -101,19 +96,19 @@ class SupplierServiceImplTest {
 
     private SupplierBo sampleBo() {
         SupplierBo bo = new SupplierBo();
-        bo.setSupplierName("华农饲料有限公司");
+        bo.setSupplierName("华农饲料原材料有限公司");
         bo.setSupplierType("feed");
-        bo.setContactName("王经理");
-        bo.setContactPhone("13800138001");
+        bo.setLiaisonName("王经理");
+        bo.setLiaisonPhone("13800138001");
         bo.setAddress("上海市浦东新区");
-        bo.setBusinessStatus(1);
-        bo.setSettleType("月结");
-        bo.setRemark("D03 单测样本");
+        bo.setBusinessStatus("0");
+        bo.setSettleType("monthly");
+        bo.setRemark("SYS-MD-FIX-002 单测样本");
         return bo;
     }
 
     @Test
-    @DisplayName("insertByBo: happy path → supplier_code 由后端生成 / businessStatus 默认 1 / mapper.insert 调一次")
+    @DisplayName("insertByBo: happy path → supplier_code 由后端生成 / dealCount=0 / purchaseQty=0 / mapper.insert 调一次")
     void testInsertByBo_HappyPath() {
         SupplierBo bo = sampleBo();
         when(supplierMapper.insert(any(Supplier.class))).thenAnswer(inv -> {
@@ -128,25 +123,31 @@ class SupplierServiceImplTest {
         ArgumentCaptor<Supplier> captor = ArgumentCaptor.forClass(Supplier.class);
         verify(supplierMapper, times(1)).insert(captor.capture());
         Supplier saved = captor.getValue();
-        assertThat(saved.getSupplierName()).isEqualTo("华农饲料有限公司");
+        assertThat(saved.getSupplierName()).isEqualTo("华农饲料原材料有限公司");
         assertThat(saved.getSupplierType()).isEqualTo("feed");
-        assertThat(saved.getBusinessStatus()).isEqualTo(1);
-        // supplier_code 由 IBizCodeGenerator 按 BizCodeType.SUPPLIER_CODE 生成（pattern G{seq4}）
+        assertThat(saved.getBusinessStatus()).isEqualTo("0");
+        assertThat(saved.getSettleType()).isEqualTo("monthly");
         assertThat(saved.getSupplierCode()).isEqualTo("G0001");
+        // FIX-002 聚合冗余字段：始终 0
+        assertThat(saved.getDealCount()).isEqualTo(0);
+        assertThat(saved.getPurchaseQty()).isEqualTo(BigDecimal.ZERO);
     }
 
     @Test
-    @DisplayName("insertByBo: businessStatus=0（停用）→ 保留不覆盖")
-    void testInsertByBo_KeepProvidedStatus() {
+    @DisplayName("insertByBo: 未传 businessStatus → 默认 '0'（合作中）/ 未传 settleType → 默认 cash")
+    void testInsertByBo_DefaultsApplied() {
         SupplierBo bo = sampleBo();
-        bo.setBusinessStatus(0);
+        bo.setBusinessStatus(null);
+        bo.setSettleType(null);
         when(supplierMapper.insert(any(Supplier.class))).thenReturn(1);
 
         service.insertByBo(bo);
 
         ArgumentCaptor<Supplier> captor = ArgumentCaptor.forClass(Supplier.class);
         verify(supplierMapper).insert(captor.capture());
-        assertThat(captor.getValue().getBusinessStatus()).isEqualTo(0);
+        Supplier saved = captor.getValue();
+        assertThat(saved.getBusinessStatus()).isEqualTo("0");
+        assertThat(saved.getSettleType()).isEqualTo("cash");
     }
 
     @Test
@@ -158,7 +159,7 @@ class SupplierServiceImplTest {
 
         SupplierVo vo = new SupplierVo();
         vo.setId(20001L);
-        vo.setSupplierName("华农饲料有限公司");
+        vo.setSupplierName("华农饲料原材料有限公司");
         Page<SupplierVo> mockPage = new Page<>(1, 10);
         mockPage.setRecords(List.of(vo));
         mockPage.setTotal(1);
@@ -168,7 +169,7 @@ class SupplierServiceImplTest {
 
         assertThat(result.getTotal()).isEqualTo(1);
         assertThat(result.getRows()).hasSize(1);
-        assertThat(result.getRows().get(0).getSupplierName()).isEqualTo("华农饲料有限公司");
+        assertThat(result.getRows().get(0).getSupplierName()).isEqualTo("华农饲料原材料有限公司");
     }
 
     @Test
@@ -176,27 +177,29 @@ class SupplierServiceImplTest {
     void testQueryById() {
         SupplierVo vo = new SupplierVo();
         vo.setId(20001L);
-        vo.setSupplierName("华农饲料有限公司");
+        vo.setSupplierName("华农饲料原材料有限公司");
         when(supplierMapper.selectVoById(20001L)).thenReturn(vo);
 
         SupplierVo got = service.queryById(20001L);
         assertThat(got).isNotNull();
-        assertThat(got.getSupplierName()).isEqualTo("华农饲料有限公司");
+        assertThat(got.getSupplierName()).isEqualTo("华农饲料原材料有限公司");
     }
 
     @Test
-    @DisplayName("updateByBo: happy path → 编辑不允许覆盖 supplier_code（保留 DB 原值）")
-    void testUpdateByBo_PreservesSupplierCode() {
+    @DisplayName("updateByBo: happy path → 编辑不允许覆盖 supplier_code / dealCount / purchaseQty（保留 DB 原值）")
+    void testUpdateByBo_PreservesSupplierCodeAndAggregates() {
         Supplier existing = new Supplier();
         existing.setId(20001L);
         existing.setSupplierCode("G0007");
-        existing.setSupplierName("华农饲料有限公司");
+        existing.setSupplierName("华农饲料原材料有限公司");
+        existing.setDealCount(3);
+        existing.setPurchaseQty(new BigDecimal("123.456"));
         when(supplierMapper.selectById(20001L)).thenReturn(existing);
         when(supplierMapper.updateById(any(Supplier.class))).thenReturn(1);
 
         SupplierBo bo = sampleBo();
         bo.setId(20001L);
-        bo.setSupplierName("华农饲料股份公司");
+        bo.setSupplierName("华农饲料原材料股份公司");
 
         int rows = service.updateByBo(bo);
 
@@ -204,8 +207,11 @@ class SupplierServiceImplTest {
         ArgumentCaptor<Supplier> captor = ArgumentCaptor.forClass(Supplier.class);
         verify(supplierMapper).updateById(captor.capture());
         Supplier saved = captor.getValue();
-        assertThat(saved.getSupplierName()).isEqualTo("华农饲料股份公司");
+        assertThat(saved.getSupplierName()).isEqualTo("华农饲料原材料股份公司");
         assertThat(saved.getSupplierCode()).isEqualTo("G0007");
+        // FIX-002 聚合冗余字段保留 DB 原值
+        assertThat(saved.getDealCount()).isEqualTo(3);
+        assertThat(saved.getPurchaseQty()).isEqualTo(new BigDecimal("123.456"));
     }
 
     @Test

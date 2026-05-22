@@ -9,17 +9,17 @@ import org.dromara.common.tenant.core.TenantEntity;
 import org.dromara.djs.common.base.DjsBaseServiceImpl;
 
 import java.io.Serial;
+import java.time.LocalDate;
 
 /**
- * 门店主数据实体（SYS-MD-002）。
+ * 门店主数据实体（SYS-MD-002 + SYS-MD-FIX-002）。
  *
  * <p>对应表 {@code t_md_store}，门店域 {@code t_store_*} 业务表通过 {@code store_id} 关联本表。
  * 主要消费方：STR-OP-001 销售流水 / STR-MEMBER-001 会员档案 / STR-STOCK-001 盘点 / TRC-* 追溯。</p>
  *
  * <p>软删走 {@code del_flag} + {@code del_unique}。服务层走
  * {@link DjsBaseServiceImpl#softDelete}（纯 wrapper update 写 {@code del_flag='1'} + {@code del_unique=id}），
- * 不要直接调 {@code deleteByIds}（参 {@link DjsBaseServiceImpl} 类注释）。UNIQUE(tenant_id, store_code, del_unique)
- * 保证软删后重启用同编码不冲突。</p>
+ * 不要直接调 {@code deleteByIds}。UNIQUE(tenant_id, store_code, del_unique) 保证软删后重启用同编码不冲突。</p>
  *
  * @author djs
  * @since SYS-MD-002
@@ -49,18 +49,24 @@ public class Store extends TenantEntity {
     private String storeName;
 
     /**
-     * 门店类型（V1 自由文本：{@code direct}=直营 / {@code franchise}=加盟；
-     * V2 视客户实际需求决定是否上字典 {@code djs_store_type}）。
+     * 门店简称。
+     */
+    private String shortName;
+
+    /**
+     * 开业日期。
+     */
+    private LocalDate openDate;
+
+    /**
+     * 门店类型（字典 djs_store_type：direct=直营 / franchise=加盟）。
      */
     private String storeType;
 
     /**
-     * 经营状态（{@code 1}=合作中 / {@code 0}=已终止）。
-     *
-     * <p>注：表字段为 TINYINT 1/0，UI 用 el-switch 渲染；不挂字典 {@code djs_store_status}
-     * （后者 0/1/2 三态语义与本字段 1/0 二态不匹配，已 raise 到 D03 _open-issues 由 closing 决策）。</p>
+     * 合作状态（字典 djs_store_status：0=合作中 / 1=已终止 / 2=装修中）。
      */
-    private Integer businessStatus;
+    private String businessStatus;
 
     /**
      * 门店地址。
@@ -68,14 +74,29 @@ public class Store extends TenantEntity {
     private String address;
 
     /**
-     * 联系人。
+     * 店长姓名（文本，编辑表单可改；与 manager_user_id 解耦）。
      */
-    private String contactName;
+    private String managerName;
 
     /**
-     * 联系电话。
+     * 店长电话（文本）。
      */
-    private String contactPhone;
+    private String managerPhone;
+
+    /**
+     * 店长 sys_user.user_id（NULL=未设置；不允许通过编辑端点修改，必须走 PUT /djs/common/store/{id}/manager）。
+     */
+    private Long managerUserId;
+
+    /**
+     * 收银系统 ID。
+     */
+    private String posSystemId;
+
+    /**
+     * 门店图片（引用 sys_oss.oss_id，不直接存 URL）。
+     */
+    private Long imageOssId;
 
     /**
      * 备注。

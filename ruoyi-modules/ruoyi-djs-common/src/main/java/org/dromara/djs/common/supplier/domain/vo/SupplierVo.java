@@ -10,10 +10,12 @@ import org.dromara.djs.common.supplier.domain.Supplier;
 
 import java.io.Serial;
 import java.io.Serializable;
+import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.util.Date;
 
 /**
- * 供应商主数据视图对象（SYS-MD-003）。
+ * 供应商主数据视图对象（SYS-MD-003 + SYS-MD-FIX-002）。
  *
  * @author djs
  * @since SYS-MD-003
@@ -45,23 +47,46 @@ public class SupplierVo implements Serializable {
     private String supplierName;
 
     /**
-     * 供应商类型。
+     * 营业执照编号。
+     */
+    @ExcelProperty(value = "营业执照编号")
+    private String licenseNo;
+
+    /**
+     * 营业执照图片（OSS oss_id；前端 image-preview 用）。
+     */
+    private Long licenseImageOssId;
+
+    /**
+     * 经营许可证编号。
+     */
+    @ExcelProperty(value = "经营许可证编号")
+    private String businessLicenseNo;
+
+    /**
+     * 合作开始日期。
+     */
+    @ExcelProperty(value = "合作开始日期")
+    private LocalDate cooperationStartDate;
+
+    /**
+     * 供应商类型（字典 djs_supplier_type）。
      */
     @ExcelProperty(value = "类型", converter = ExcelDictConvert.class)
     @ExcelDictFormat(dictType = "djs_supplier_type")
     private String supplierType;
 
     /**
-     * 联系人姓名。
+     * 联系负责人姓名。
      */
-    @ExcelProperty(value = "联系人")
-    private String contactName;
+    @ExcelProperty(value = "联系负责人")
+    private String liaisonName;
 
     /**
-     * 联系电话。
+     * 负责人电话。
      */
-    @ExcelProperty(value = "联系电话")
-    private String contactPhone;
+    @ExcelProperty(value = "负责人电话")
+    private String liaisonPhone;
 
     /**
      * 地址。
@@ -70,16 +95,17 @@ public class SupplierVo implements Serializable {
     private String address;
 
     /**
-     * 业务状态（1 启用 / 0 停用）。
+     * 合作状态（字典 djs_supplier_status）。
      */
-    @ExcelProperty(value = "状态", converter = ExcelDictConvert.class)
-    @ExcelDictFormat(dictType = "sys_normal_disable")
-    private Integer businessStatus;
+    @ExcelProperty(value = "合作状态", converter = ExcelDictConvert.class)
+    @ExcelDictFormat(dictType = "djs_supplier_status")
+    private String businessStatus;
 
     /**
-     * 结算方式。
+     * 结算方式（字典 djs_settle_type）。
      */
-    @ExcelProperty(value = "结算方式")
+    @ExcelProperty(value = "结算方式", converter = ExcelDictConvert.class)
+    @ExcelDictFormat(dictType = "djs_settle_type")
     private String settleType;
 
     /**
@@ -95,6 +121,18 @@ public class SupplierVo implements Serializable {
     private String bankName;
 
     /**
+     * 交易次数（V1 stub=0，下游 BRD-MED / WMS-PURCHASE 落地后回填）。
+     */
+    @ExcelProperty(value = "交易次数")
+    private Integer dealCount;
+
+    /**
+     * 累计购入商品数（V1 stub=0）。
+     */
+    @ExcelProperty(value = "购入数量")
+    private BigDecimal purchaseQty;
+
+    /**
      * 备注。
      */
     @ExcelProperty(value = "备注")
@@ -105,5 +143,10 @@ public class SupplierVo implements Serializable {
      */
     @ExcelProperty(value = "创建时间")
     private Date createTime;
+
+    /**
+     * 更新时间。
+     */
+    private Date updateTime;
 
 }

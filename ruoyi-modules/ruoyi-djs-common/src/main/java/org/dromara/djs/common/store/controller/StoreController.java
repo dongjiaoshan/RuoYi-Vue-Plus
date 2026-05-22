@@ -23,6 +23,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.Arrays;
@@ -110,6 +111,22 @@ public class StoreController extends BaseController {
     @DeleteMapping("/remove/{ids}")
     public R<Void> remove(@PathVariable Long[] ids) {
         return toAjax(storeService.deleteWithValidByIds(Arrays.asList(ids)));
+    }
+
+    /**
+     * 设置店长（SYS-MD-FIX-002）。
+     *
+     * <p>编辑表单不允许直接改 {@code manager_user_id}（防越权）；必须走本端点。
+     * 传 {@code userId=0} 或不传表示清空店长。</p>
+     */
+    @SaCheckPermission("djs:common:store:setManager")
+    @Log(title = "门店管理", businessType = BusinessType.UPDATE)
+    @RepeatSubmit
+    @PutMapping("/{storeId}/manager")
+    public R<Void> setManager(@PathVariable Long storeId, @RequestParam(required = false) Long userId) {
+        // userId == 0 → 视为清空
+        Long realUserId = (userId == null || userId == 0L) ? null : userId;
+        return toAjax(storeService.setManager(storeId, realUserId));
     }
 
 }

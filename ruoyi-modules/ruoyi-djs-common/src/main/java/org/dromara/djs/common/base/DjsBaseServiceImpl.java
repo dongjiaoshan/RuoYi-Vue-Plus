@@ -99,8 +99,11 @@ public abstract class DjsBaseServiceImpl<M extends BaseMapperPlus<T, ?>, T exten
     /**
      * 安全获取当前用户 ID：admin 业务路径下走 Sa-Token；系统初始化 / 后台 job 等
      * 无登录上下文场景下捕获异常返 0（与 ruoyi 自带 {@code MetaObjectHandler} 兜底一致）。
+     *
+     * <p>子类调用：wrapper-only update（不走 MetaObjectHandler.updateFill 自动审计）时显式
+     * {@code .set("update_by", currentUserIdSafe()).set("update_time", new Date())}。</p>
      */
-    private Long currentUserIdSafe() {
+    protected Long currentUserIdSafe() {
         try {
             Long id = LoginHelper.getUserId();
             return id != null ? id : 0L;

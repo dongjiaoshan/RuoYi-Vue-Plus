@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import org.dromara.common.core.exception.ServiceException;
+import org.dromara.common.core.service.UserService;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.common.encoder.BizCodeType;
@@ -37,14 +38,11 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * {@link StoreServiceImpl} 单元测试（SYS-MD-002）。
+ * {@link StoreServiceImpl} 单元测试（SYS-MD-002 + SYS-MD-FIX-002）。
  *
- * <p>覆盖 happy path：insert → list → query by id → update → soft-delete；
- * 同时校验 store_code 由后端生成、edit 不允许覆盖 store_code、默认 storeType / businessStatus、
- * 软删走基类 {@code softDelete} → 每个 id 走一次 updateById 显式 set delFlag/delUnique。</p>
- *
- * <p>不启 Spring；用 Mockito mock {@link StoreMapper}，通过子类覆盖 {@code toEntity} 钩子
- * 绕开 {@code MapstructUtils.convert}（其依赖 Spring 单例 Converter）。</p>
+ * <p>覆盖 happy path：insert → list → query by id → update → soft-delete → setManager；
+ * 同时校验 store_code 由后端生成、edit 不允许覆盖 store_code / managerUserId、
+ * 默认 storeType / businessStatus、软删走基类 wrapper-only update 显式 set del_flag/del_unique。</p>
  *
  * @author djs
  * @since SYS-MD-002
@@ -62,6 +60,9 @@ class StoreServiceImplTest {
     @Mock
     private IBizCodeGenerator bizCodeGenerator;
 
+    @Mock
+    private UserService userService;
+
     private TestableStoreServiceImpl service;
 
     /**
@@ -69,8 +70,8 @@ class StoreServiceImplTest {
      * 直接把 BO 的字段手动拷到 Entity，模拟 MapStruct 生成的 mapper。
      */
     static class TestableStoreServiceImpl extends StoreServiceImpl {
-        TestableStoreServiceImpl(StoreMapper storeMapper, IBizCodeGenerator bizCodeGenerator) {
-            super(storeMapper, bizCodeGenerator);
+        TestableStoreServiceImpl(StoreMapper storeMapper, IBizCodeGenerator bizCodeGenerator, UserService userService) {
+            super(storeMapper, bizCodeGenerator, userService);
         }
 
         @Override
@@ -81,11 +82,15 @@ class StoreServiceImplTest {
             Store s = new Store();
             s.setId(bo.getId());
             s.setStoreName(bo.getStoreName());
+            s.setShortName(bo.getShortName());
+            s.setOpenDate(bo.getOpenDate());
             s.setStoreType(bo.getStoreType());
             s.setBusinessStatus(bo.getBusinessStatus());
             s.setAddress(bo.getAddress());
-            s.setContactName(bo.getContactName());
-            s.setContactPhone(bo.getContactPhone());
+            s.setManagerName(bo.getManagerName());
+            s.setManagerPhone(bo.getManagerPhone());
+            s.setPosSystemId(bo.getPosSystemId());
+            s.setImageOssId(bo.getImageOssId());
             s.setRemark(bo.getRemark());
             return s;
         }
@@ -93,7 +98,7 @@ class StoreServiceImplTest {
 
     @BeforeEach
     void setup() {
-        service = new TestableStoreServiceImpl(storeMapper, bizCodeGenerator);
+        service = new TestableStoreServiceImpl(storeMapper, bizCodeGenerator, userService);
         when(bizCodeGenerator.generate(eq(BizCodeType.STORE_CODE), any())).thenReturn("ST0001");
     }
 
@@ -101,16 +106,16 @@ class StoreServiceImplTest {
         StoreBo bo = new StoreBo();
         bo.setStoreName("东角山旗舰店");
         bo.setStoreType("direct");
-        bo.setBusinessStatus(1);
+        bo.setBusinessStatus("0");
         bo.setAddress("上海市浦东新区张江高科园区A栋101");
-        bo.setContactName("王经理");
-        bo.setContactPhone("13800138001");
-        bo.setRemark("D03 SYS-MD-002 单测样本");
+        bo.setManagerName("王经理");
+        bo.setManagerPhone("13800138001");
+        bo.setRemark("SYS-MD-FIX-002 单测样本");
         return bo;
     }
 
     @Test
-    @DisplayName("insertByBo: happy path → storeCode 由后端生成 / mapper.insert 调一次")
+    @DisplayName("insertByBo: happy path → storeCode 由后端生成 / mapper.insert 调一次 / managerUserId 强制 null")
     void testInsertByBo_HappyPath() {
         StoreBo bo = sampleBo();
         when(storeMapper.insert(any(Store.class))).thenAnswer(inv -> {
@@ -127,13 +132,15 @@ class StoreServiceImplTest {
         Store saved = captor.getValue();
         assertThat(saved.getStoreName()).isEqualTo("东角山旗舰店");
         assertThat(saved.getStoreType()).isEqualTo("direct");
-        assertThat(saved.getBusinessStatus()).isEqualTo(1);
+        assertThat(saved.getBusinessStatus()).isEqualTo("0");
         // store_code 由 IBizCodeGenerator 按 BizCodeType.STORE_CODE 生成（pattern ST{seq4}）
         assertThat(saved.getStoreCode()).isEqualTo("ST0001");
+        // managerUserId 强制 null（防越权；FIX-002）
+        assertThat(saved.getManagerUserId()).isNull();
     }
 
     @Test
-    @DisplayName("insertByBo: 未传 businessStatus → 默认 1（合作中）/ 未传 storeType → 默认 direct")
+    @DisplayName("insertByBo: 未传 businessStatus → 默认 '0'（合作中）/ 未传 storeType → 默认 direct")
     void testInsertByBo_DefaultsApplied() {
         StoreBo bo = sampleBo();
         bo.setBusinessStatus(null);
@@ -145,7 +152,7 @@ class StoreServiceImplTest {
         ArgumentCaptor<Store> captor = ArgumentCaptor.forClass(Store.class);
         verify(storeMapper).insert(captor.capture());
         Store saved = captor.getValue();
-        assertThat(saved.getBusinessStatus()).isEqualTo(1);
+        assertThat(saved.getBusinessStatus()).isEqualTo("0");
         assertThat(saved.getStoreType()).isEqualTo("direct");
     }
 
@@ -185,12 +192,13 @@ class StoreServiceImplTest {
     }
 
     @Test
-    @DisplayName("updateByBo: happy path → 编辑不允许覆盖 storeCode（保留 DB 原值）")
-    void testUpdateByBo_PreservesStoreCode() {
+    @DisplayName("updateByBo: happy path → 编辑不允许覆盖 storeCode / managerUserId（保留 DB 原值）")
+    void testUpdateByBo_PreservesStoreCodeAndManager() {
         Store existing = new Store();
         existing.setId(20001L);
         existing.setStoreCode("ST0007");
         existing.setStoreName("东角山旗舰店");
+        existing.setManagerUserId(101L); // DB 原值
         when(storeMapper.selectById(20001L)).thenReturn(existing);
         when(storeMapper.updateById(any(Store.class))).thenReturn(1);
 
@@ -206,6 +214,8 @@ class StoreServiceImplTest {
         Store saved = captor.getValue();
         assertThat(saved.getStoreName()).isEqualTo("东角山旗舰店（改）");
         assertThat(saved.getStoreCode()).isEqualTo("ST0007");
+        // managerUserId 保留 DB 原值
+        assertThat(saved.getManagerUserId()).isEqualTo(101L);
     }
 
     @Test
@@ -229,6 +239,69 @@ class StoreServiceImplTest {
         assertThatThrownBy(() -> service.updateByBo(bo))
             .isInstanceOf(ServiceException.class)
             .hasMessageContaining("门店不存在");
+    }
+
+    @Test
+    @DisplayName("setManager: happy path → 校验 user 存在 / 仅 update manager_user_id 列")
+    void testSetManager_HappyPath() {
+        Store existing = new Store();
+        existing.setId(20001L);
+        existing.setStoreCode("ST0001");
+        when(storeMapper.selectById(20001L)).thenReturn(existing);
+        when(userService.selectUserNameById(101L)).thenReturn("manager_zhang");
+        when(storeMapper.update(isNull(), any(UpdateWrapper.class))).thenReturn(1);
+
+        int rows = service.setManager(20001L, 101L);
+
+        assertThat(rows).isEqualTo(1);
+        ArgumentCaptor<UpdateWrapper<Store>> wrapperCaptor = ArgumentCaptor.forClass(UpdateWrapper.class);
+        verify(storeMapper).update(isNull(), wrapperCaptor.capture());
+        UpdateWrapper<Store> w = wrapperCaptor.getValue();
+        assertThat(w.getSqlSet()).contains("manager_user_id");
+    }
+
+    @Test
+    @DisplayName("setManager: storeId=null → 抛 ServiceException")
+    void testSetManager_NullStoreId() {
+        assertThatThrownBy(() -> service.setManager(null, 101L))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("门店 ID 不能为空");
+    }
+
+    @Test
+    @DisplayName("setManager: 门店不存在 → 抛 ServiceException")
+    void testSetManager_StoreNotExist() {
+        when(storeMapper.selectById(99999L)).thenReturn(null);
+        assertThatThrownBy(() -> service.setManager(99999L, 101L))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("门店不存在");
+    }
+
+    @Test
+    @DisplayName("setManager: user 不存在 → 抛 ServiceException")
+    void testSetManager_UserNotExist() {
+        Store existing = new Store();
+        existing.setId(20001L);
+        when(storeMapper.selectById(20001L)).thenReturn(existing);
+        when(userService.selectUserNameById(999L)).thenReturn(null);
+
+        assertThatThrownBy(() -> service.setManager(20001L, 999L))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("店长用户不存在");
+    }
+
+    @Test
+    @DisplayName("setManager: userId=null 视为清空，跳过 user 校验，直接 update")
+    void testSetManager_ClearManager() {
+        Store existing = new Store();
+        existing.setId(20001L);
+        when(storeMapper.selectById(20001L)).thenReturn(existing);
+        when(storeMapper.update(isNull(), any(UpdateWrapper.class))).thenReturn(1);
+
+        int rows = service.setManager(20001L, null);
+
+        assertThat(rows).isEqualTo(1);
+        verify(userService, times(0)).selectUserNameById(any());
     }
 
     @Test

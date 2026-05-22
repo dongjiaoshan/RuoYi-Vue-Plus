@@ -2,7 +2,6 @@ package org.dromara.djs.common.supplier.domain.bo;
 
 import io.github.linpeilie.annotations.AutoMapper;
 import jakarta.validation.constraints.NotBlank;
-import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 import lombok.Data;
@@ -10,10 +9,13 @@ import lombok.EqualsAndHashCode;
 import org.dromara.common.mybatis.core.domain.BaseEntity;
 import org.dromara.djs.common.supplier.domain.Supplier;
 
+import java.time.LocalDate;
+
 /**
- * 供应商主数据入参 BO（SYS-MD-003）。
+ * 供应商主数据入参 BO（SYS-MD-003 + SYS-MD-FIX-002）。
  *
- * <p>{@code supplierCode} 不接受外部传入 —— 新增由后端编码生成器产出；编辑时也不允许改编码。</p>
+ * <p>{@code supplierCode} 不接受外部传入 —— 新增由后端编码生成器产出；编辑时也不允许改编码。
+ * {@code dealCount} / {@code purchaseQty} 也不接受外部传入（聚合冗余字段，由下游业务事件回填）。</p>
  *
  * @author djs
  * @since SYS-MD-003
@@ -36,6 +38,28 @@ public class SupplierBo extends BaseEntity {
     private String supplierName;
 
     /**
+     * 营业执照编号。
+     */
+    @Size(max = 64, message = "营业执照编号长度不能超过 {max} 个字符")
+    private String licenseNo;
+
+    /**
+     * 营业执照图片（OSS oss_id）。
+     */
+    private Long licenseImageOssId;
+
+    /**
+     * 经营许可证编号。
+     */
+    @Size(max = 64, message = "经营许可证编号长度不能超过 {max} 个字符")
+    private String businessLicenseNo;
+
+    /**
+     * 合作开始日期。
+     */
+    private LocalDate cooperationStartDate;
+
+    /**
      * 供应商类型（字典 djs_supplier_type）。
      */
     @NotBlank(message = "供应商类型不能为空")
@@ -43,17 +67,17 @@ public class SupplierBo extends BaseEntity {
     private String supplierType;
 
     /**
-     * 联系人。
+     * 联系负责人姓名。
      */
-    @Size(max = 32, message = "联系人长度不能超过 {max} 个字符")
-    private String contactName;
+    @Size(max = 32, message = "负责人姓名长度不能超过 {max} 个字符")
+    private String liaisonName;
 
     /**
-     * 联系电话（座机 / 手机均允许，仅做长度限制）。
+     * 负责人电话（座机 / 手机均允许，仅做长度限制）。
      */
-    @Size(max = 20, message = "联系电话长度不能超过 {max} 个字符")
-    @Pattern(regexp = "^$|^[0-9+\\-\\s]{6,20}$", message = "请输入合法的联系电话")
-    private String contactPhone;
+    @Size(max = 20, message = "负责人电话长度不能超过 {max} 个字符")
+    @Pattern(regexp = "^$|^[0-9+\\-\\s]{6,20}$", message = "请输入合法的电话号码")
+    private String liaisonPhone;
 
     /**
      * 地址。
@@ -62,13 +86,14 @@ public class SupplierBo extends BaseEntity {
     private String address;
 
     /**
-     * 业务状态（1 启用 / 0 停用）。
+     * 合作状态（字典 djs_supplier_status：0=合作中 / 1=已终止）。
      */
-    @NotNull(message = "业务状态不能为空")
-    private Integer businessStatus;
+    @NotBlank(message = "合作状态不能为空")
+    @Size(max = 16, message = "合作状态长度不能超过 {max} 个字符")
+    private String businessStatus;
 
     /**
-     * 结算方式。
+     * 结算方式（字典 djs_settle_type：cash / monthly / quarterly）。
      */
     @Size(max = 16, message = "结算方式长度不能超过 {max} 个字符")
     private String settleType;

@@ -5,7 +5,7 @@ import lombok.EqualsAndHashCode;
 import org.dromara.common.mybatis.core.domain.BaseEntity;
 
 /**
- * 供应商主数据列表查询入参（SYS-MD-003）。
+ * 供应商主数据列表查询入参（SYS-MD-003 + SYS-MD-FIX-002）。
  *
  * <p>分页参数由 Controller 单独接收 {@link org.dromara.common.mybatis.core.page.PageQuery}。</p>
  *
@@ -32,13 +32,23 @@ public class SupplierQuery extends BaseEntity {
     private String supplierType;
 
     /**
-     * 联系电话（模糊匹配）。
+     * 联系负责人姓名（模糊匹配）。
      */
-    private String contactPhone;
+    private String liaisonName;
 
     /**
-     * 业务状态（1 启用 / 0 停用）。
+     * 负责人电话（模糊匹配）。
      */
-    private Integer businessStatus;
+    private String liaisonPhone;
+
+    /**
+     * 合作状态（字典 djs_supplier_status 精确匹配）。
+     */
+    private String businessStatus;
+
+    /**
+     * 结算方式（字典 djs_settle_type 精确匹配）。
+     */
+    private String settleType;
 
 }

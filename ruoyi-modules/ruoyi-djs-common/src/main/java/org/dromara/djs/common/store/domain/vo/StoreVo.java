@@ -4,14 +4,20 @@ import cn.idev.excel.annotation.ExcelIgnoreUnannotated;
 import cn.idev.excel.annotation.ExcelProperty;
 import io.github.linpeilie.annotations.AutoMapper;
 import lombok.Data;
+import org.dromara.common.excel.annotation.ExcelDictFormat;
+import org.dromara.common.excel.convert.ExcelDictConvert;
 import org.dromara.djs.common.store.domain.Store;
 
 import java.io.Serial;
 import java.io.Serializable;
+import java.time.LocalDate;
 import java.util.Date;
 
 /**
- * 门店主数据视图对象（SYS-MD-002）。
+ * 门店主数据视图对象（SYS-MD-002 + SYS-MD-FIX-002）。
+ *
+ * <p>列表查询额外联表查 {@code sys_user.nick_name AS managerNickName}（store_mapper.xml 中 selectVoPage 走 wrapper SQL）；
+ * 同时聚合 dept 员工数到 {@code staffCount}（V1 stub=null，下游 wire 后回填）。</p>
  *
  * @author djs
  * @since SYS-MD-002
@@ -43,16 +49,30 @@ public class StoreVo implements Serializable {
     private String storeName;
 
     /**
-     * 门店类型（{@code direct} / {@code franchise}）。
+     * 门店简称。
      */
-    @ExcelProperty(value = "门店类型")
+    @ExcelProperty(value = "门店简称")
+    private String shortName;
+
+    /**
+     * 开业日期。
+     */
+    @ExcelProperty(value = "开业日期")
+    private LocalDate openDate;
+
+    /**
+     * 门店类型（字典 djs_store_type）。
+     */
+    @ExcelProperty(value = "门店类型", converter = ExcelDictConvert.class)
+    @ExcelDictFormat(dictType = "djs_store_type")
     private String storeType;
 
     /**
-     * 经营状态（1=合作中 / 0=已终止）。
+     * 合作状态（字典 djs_store_status）。
      */
-    @ExcelProperty(value = "经营状态")
-    private Integer businessStatus;
+    @ExcelProperty(value = "合作状态", converter = ExcelDictConvert.class)
+    @ExcelDictFormat(dictType = "djs_store_status")
+    private String businessStatus;
 
     /**
      * 门店地址。
@@ -61,16 +81,32 @@ public class StoreVo implements Serializable {
     private String address;
 
     /**
-     * 联系人。
+     * 店长姓名（文本）。
      */
-    @ExcelProperty(value = "联系人")
-    private String contactName;
+    @ExcelProperty(value = "店长姓名")
+    private String managerName;
 
     /**
-     * 联系电话。
+     * 店长电话。
      */
-    @ExcelProperty(value = "联系电话")
-    private String contactPhone;
+    @ExcelProperty(value = "店长电话")
+    private String managerPhone;
+
+    /**
+     * 店长 sys_user.user_id（V1 stub：list 不展开成 user 全信息；详情页另查）。
+     */
+    private Long managerUserId;
+
+    /**
+     * 收银系统 ID。
+     */
+    @ExcelProperty(value = "收银系统 ID")
+    private String posSystemId;
+
+    /**
+     * 门店图片（OSS oss_id；前端 image-preview 用）。
+     */
+    private Long imageOssId;
 
     /**
      * 备注。
@@ -83,5 +119,10 @@ public class StoreVo implements Serializable {
      */
     @ExcelProperty(value = "创建时间")
     private Date createTime;
+
+    /**
+     * 更新时间。
+     */
+    private Date updateTime;
 
 }

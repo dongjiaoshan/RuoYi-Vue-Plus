@@ -8,15 +8,17 @@ import lombok.EqualsAndHashCode;
 import org.dromara.common.tenant.core.TenantEntity;
 
 import java.io.Serial;
+import java.math.BigDecimal;
+import java.time.LocalDate;
 
 /**
- * 供应商主数据实体（SYS-MD-003）。
+ * 供应商主数据实体（SYS-MD-003 + SYS-MD-FIX-002）。
  *
  * <p>对应表 {@code t_md_supplier}，跨业务域复用：</p>
  * <ul>
- *   <li>养殖：种猪 / 兽药供应商（关联 {@code t_breed_*.supplier_id}）</li>
- *   <li>种植：蔬菜种子供应商</li>
- *   <li>仓库：饲料 / 包材 / 物资供应商（关联 {@code t_warehouse_supplier_record.supplier_id}）</li>
+ *   <li>养殖：种猪 / 药品供应商（关联 {@code t_breed_*.supplier_id}）</li>
+ *   <li>种植：种子供应商</li>
+ *   <li>仓库：饲料原材料 / 物资供应商（关联 {@code t_warehouse_supplier_record.supplier_id}）</li>
  * </ul>
  *
  * <p>软删走 {@code del_flag} + {@code del_unique}（{@link org.dromara.djs.common.handler.DjsMetaObjectHandler}
@@ -40,7 +42,7 @@ public class Supplier extends TenantEntity {
     private Long id;
 
     /**
-     * 供应商编码（{@link org.dromara.djs.common.encoder.BizCodeType#SUPPLIER_CODE} 生成，pattern {@code G{seq4}}，例 G0001）。
+     * 供应商编码（{@link org.dromara.djs.common.encoder.BizCodeType#SUPPLIER_CODE} 生成，pattern {@code G{seq4}}）。
      */
     private String supplierCode;
 
@@ -50,19 +52,39 @@ public class Supplier extends TenantEntity {
     private String supplierName;
 
     /**
-     * 供应商类型（字典 djs_supplier_type：feed / breed / med / seed / pack / other）。
+     * 营业执照编号。
+     */
+    private String licenseNo;
+
+    /**
+     * 营业执照图片（OSS oss_id）。
+     */
+    private Long licenseImageOssId;
+
+    /**
+     * 经营许可证编号。
+     */
+    private String businessLicenseNo;
+
+    /**
+     * 合作开始日期。
+     */
+    private LocalDate cooperationStartDate;
+
+    /**
+     * 供应商类型（字典 djs_supplier_type：feed=饲料原材料 / breed=种猪 / med=药品 / seed=种子 / other=其他）。
      */
     private String supplierType;
 
     /**
-     * 联系人姓名。
+     * 联系负责人姓名。
      */
-    private String contactName;
+    private String liaisonName;
 
     /**
-     * 联系电话。
+     * 负责人电话。
      */
-    private String contactPhone;
+    private String liaisonPhone;
 
     /**
      * 地址（自由文本）。
@@ -70,26 +92,34 @@ public class Supplier extends TenantEntity {
     private String address;
 
     /**
-     * 业务状态（启用 1 / 停用 0；对齐 sys_normal_disable 0/1 字典正常停用语义）。
-     *
-     * <p>实表 {@code business_status TINYINT NOT NULL DEFAULT 1}，故用 Integer 而非 String。</p>
+     * 合作状态（字典 djs_supplier_status：0=合作中 / 1=已终止）。
      */
-    private Integer businessStatus;
+    private String businessStatus;
 
     /**
-     * 结算方式（自由文本占位，V2 决定是否字典化）。
+     * 结算方式（字典 djs_settle_type：cash=现款现货 / monthly=月结 / quarterly=季结）。
      */
     private String settleType;
 
     /**
-     * 银行账户（财务核算用，D02 _open-issues #1 保留决策）。
+     * 银行账户（财务核算用）。
      */
     private String bankAccount;
 
     /**
-     * 开户行名称（财务核算用，D02 _open-issues #1 保留决策）。
+     * 开户行名称（财务核算用）。
      */
     private String bankName;
+
+    /**
+     * 交易次数（聚合冗余字段，V1 stub=0；下游 BRD-MED / WMS-PURCHASE 落地后回填）。
+     */
+    private Integer dealCount;
+
+    /**
+     * 累计购入商品数（V1 stub=0）。
+     */
+    private BigDecimal purchaseQty;
 
     /**
      * 备注。
@@ -103,8 +133,7 @@ public class Supplier extends TenantEntity {
     private String delFlag;
 
     /**
-     * 软删唯一性辅助列：未删时 0；软删时由 {@link org.dromara.djs.common.handler.DjsMetaObjectHandler}
-     * 写入 id，保证 UNIQUE 约束不阻塞重新启用同编码。
+     * 软删唯一性辅助列。
      */
     private Long delUnique;
 
