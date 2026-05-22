@@ -13,6 +13,7 @@ import org.dromara.djs.common.supplier.domain.bo.SupplierBo;
 import org.dromara.djs.common.supplier.domain.query.SupplierQuery;
 import org.dromara.djs.common.supplier.domain.vo.SupplierVo;
 import org.dromara.djs.common.supplier.mapper.SupplierMapper;
+import org.dromara.djs.common.validate.BizReferenceChecker;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
@@ -56,11 +57,16 @@ class SupplierServiceImplTest {
     @Mock
     private IBizCodeGenerator bizCodeGenerator;
 
+    @Mock
+    private BizReferenceChecker bizReferenceChecker;
+
     private TestableSupplierServiceImpl service;
 
     static class TestableSupplierServiceImpl extends SupplierServiceImpl {
-        TestableSupplierServiceImpl(SupplierMapper supplierMapper, IBizCodeGenerator bizCodeGenerator) {
-            super(supplierMapper, bizCodeGenerator);
+        TestableSupplierServiceImpl(SupplierMapper supplierMapper,
+                                    IBizCodeGenerator bizCodeGenerator,
+                                    BizReferenceChecker bizReferenceChecker) {
+            super(supplierMapper, bizCodeGenerator, bizReferenceChecker);
         }
 
         @Override
@@ -90,7 +96,7 @@ class SupplierServiceImplTest {
 
     @BeforeEach
     void setup() {
-        service = new TestableSupplierServiceImpl(supplierMapper, bizCodeGenerator);
+        service = new TestableSupplierServiceImpl(supplierMapper, bizCodeGenerator, bizReferenceChecker);
         when(bizCodeGenerator.generate(eq(BizCodeType.SUPPLIER_CODE), any())).thenReturn("G0001");
     }
 
@@ -267,6 +273,19 @@ class SupplierServiceImplTest {
     void testDeleteWithValidByIds_EmptyShortCircuit() {
         int rows = service.deleteWithValidByIds(Collections.emptyList());
         assertThat(rows).isZero();
+        verify(supplierMapper, times(0)).update(isNull(), any(UpdateWrapper.class));
+    }
+
+    @Test
+    @DisplayName("deleteWithValidByIds: 被业务事件引用 → 抛 ServiceException 阻止软删（BRD-EVENT-001 回填）")
+    void testDeleteWithValidByIds_ReferencedThrows() {
+        when(bizReferenceChecker.isReferenced(eq("t_md_supplier"), eq(20001L))).thenReturn(true);
+
+        assertThatThrownBy(() -> service.deleteWithValidByIds(List.of(20001L)))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("供应商被业务记录引用");
+
+        // 命中即抛，未调用 mapper.update
         verify(supplierMapper, times(0)).update(isNull(), any(UpdateWrapper.class));
     }
 }

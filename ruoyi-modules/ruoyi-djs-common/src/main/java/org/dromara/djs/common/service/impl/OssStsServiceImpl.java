@@ -50,6 +50,7 @@ public class OssStsServiceImpl implements IOssStsService {
     /** 业务类型白名单。后端再做一道防御：前端只能上传到这些目录前缀。 */
     private static final Set<String> ALLOWED_BIZ_TYPES = Set.of(
         "pig_photo",        // 猪只照片
+        "pig_intro_proof",  // 引种凭证（外部引种检疫 / 发票 / 协议照片，BRD-EVENT-001）
         "dead_photo",       // 死亡 / 淘汰多角度照片
         "grow_photo",       // 生长记录照片
         "med_proof",        // 用药 / 疫苗凭证

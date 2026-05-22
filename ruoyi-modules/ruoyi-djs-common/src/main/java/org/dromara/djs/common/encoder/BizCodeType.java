@@ -68,5 +68,11 @@ public enum BizCodeType {
      * 供应商编码（终生递增），格式 {@code G{seq4}}。例：{@code G0001}。
      * 对齐 {@code t_md_supplier.supplier_code} 注释「G0001 风格」。
      */
-    SUPPLIER_CODE
+    SUPPLIER_CODE,
+
+    /**
+     * 引种单号（每日重置），格式 {@code INT{yyyyMMdd}{seq4}}。
+     * 例：{@code INT260526001}（4 位序号当日重置）。
+     */
+    INTRO_NO
 }

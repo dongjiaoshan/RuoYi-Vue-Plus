@@ -17,6 +17,7 @@ import org.dromara.djs.common.supplier.domain.query.SupplierQuery;
 import org.dromara.djs.common.supplier.domain.vo.SupplierVo;
 import org.dromara.djs.common.supplier.mapper.SupplierMapper;
 import org.dromara.djs.common.supplier.service.ISupplierService;
+import org.dromara.djs.common.validate.BizReferenceChecker;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
@@ -43,10 +44,14 @@ import java.util.Map;
 public class SupplierServiceImpl extends DjsBaseServiceImpl<SupplierMapper, Supplier> implements ISupplierService {
 
     private final IBizCodeGenerator bizCodeGenerator;
+    private final BizReferenceChecker bizReferenceChecker;
 
-    public SupplierServiceImpl(SupplierMapper baseMapper, IBizCodeGenerator bizCodeGenerator) {
+    public SupplierServiceImpl(SupplierMapper baseMapper,
+                               IBizCodeGenerator bizCodeGenerator,
+                               BizReferenceChecker bizReferenceChecker) {
         super(baseMapper);
         this.bizCodeGenerator = bizCodeGenerator;
+        this.bizReferenceChecker = bizReferenceChecker;
     }
 
     @Override
@@ -115,8 +120,14 @@ public class SupplierServiceImpl extends DjsBaseServiceImpl<SupplierMapper, Supp
 
     @Override
     public int deleteWithValidByIds(Collection<Long> ids) {
-        // TODO SYS-MD-003 → D5 BRD-EVENT-001 触发：抽 BizReferenceChecker 后回填校验
-        // （t_breed_*.supplier_id / t_warehouse_supplier_record.supplier_id 等引用反查）
+        if (ids == null || ids.isEmpty()) {
+            return 0;
+        }
+        for (Long id : ids) {
+            if (bizReferenceChecker.isReferenced("t_md_supplier", id)) {
+                throw new ServiceException("供应商被业务记录引用，无法删除：id=" + id);
+            }
+        }
         return softDelete(ids);
     }
 
