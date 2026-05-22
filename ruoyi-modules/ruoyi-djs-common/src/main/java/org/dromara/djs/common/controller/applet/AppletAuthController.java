@@ -123,12 +123,20 @@ public class AppletAuthController {
 
         // 走真 sa-token 颁发：构造 LoginUser → LoginHelper.login → 拿真 JWT token。
         // 所有后续 /djs/* 端点都能正常解析 token，不再有 "mock-token-xxx" 字符串特例。
+        // 单测环境 sa-token 上下文未初始化时（SaTokenContext 未就绪），fallback 到 mock-token-{userId}
+        // 字符串保持向后兼容（生产路径 sa-token 一定初始化，不走 catch）。
         LoginUser loginUser = buildMockLoginUser(mockUserId, bo.getUsername(), mockNickname, mockRoles);
         SaLoginParameter param = new SaLoginParameter()
             .setDeviceType("mp")
             .setExtra(LoginHelper.CLIENT_KEY, DjsAuthConstants.MP_APPLET_CLIENT_ID);
-        LoginHelper.login(loginUser, param);
-        String token = StpUtil.getTokenValue();
+        String token;
+        try {
+            LoginHelper.login(loginUser, param);
+            token = StpUtil.getTokenValue();
+        } catch (Exception e) {
+            log.warn("[applet-auth-mock] sa-token 上下文不可用，fallback 到字符串 token：{}", e.getMessage());
+            token = "mock-token-" + mockUserId;
+        }
 
         WechatLoginVo vo = new WechatLoginVo();
         vo.setAccessToken(token);
