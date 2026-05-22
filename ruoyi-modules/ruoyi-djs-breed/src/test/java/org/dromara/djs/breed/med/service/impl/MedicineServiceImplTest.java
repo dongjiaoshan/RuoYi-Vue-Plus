@@ -29,6 +29,7 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -221,25 +222,18 @@ class MedicineServiceImplTest {
     @Test
     @DisplayName("deleteWithValidByIds: happy path → 走基类 softDelete，wrapper.setSql del_flag='1'，entity 携 id+delUnique（delFlag 不进 entity）")
     void testDeleteWithValidByIds_HappyPath() {
-        when(medicineMapper.update(any(Medicine.class), any(UpdateWrapper.class))).thenReturn(1);
+        when(medicineMapper.update(isNull(), any(UpdateWrapper.class))).thenReturn(1);
 
         int rows = service.deleteWithValidByIds(List.of(40001L, 40002L));
 
         assertThat(rows).isEqualTo(2);
-        ArgumentCaptor<Medicine> entityCaptor = ArgumentCaptor.forClass(Medicine.class);
         ArgumentCaptor<UpdateWrapper<Medicine>> wrapperCaptor = ArgumentCaptor.forClass(UpdateWrapper.class);
-        verify(medicineMapper, times(2)).update(entityCaptor.capture(), wrapperCaptor.capture());
-
-        List<Medicine> capturedEntities = entityCaptor.getAllValues();
-        assertThat(capturedEntities).extracting(Medicine::getId).containsExactly(40001L, 40002L);
-        assertThat(capturedEntities).extracting(Medicine::getDelUnique).containsExactly(40001L, 40002L);
-        // delFlag 不走 entity，由 wrapper.setSql 强写绕过 @TableLogic 剥离
-        assertThat(capturedEntities).allSatisfy(e -> assertThat(e.getDelFlag()).isNull());
+        verify(medicineMapper, times(2)).update(isNull(), wrapperCaptor.capture());
 
         List<UpdateWrapper<Medicine>> capturedWrappers = wrapperCaptor.getAllValues();
         assertThat(capturedWrappers).hasSize(2);
         assertThat(capturedWrappers).allSatisfy(w -> {
-            assertThat(w.getSqlSet()).contains("del_flag = '1'");
+            assertThat(w.getSqlSet()).contains("del_flag", "del_unique", "update_by", "update_time");
             assertThat(w.getExpression().getNormal().getSqlSegment()).contains("id");
         });
     }

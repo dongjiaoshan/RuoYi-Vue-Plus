@@ -98,7 +98,7 @@ public class BreedInfoServiceImpl extends DjsBaseServiceImpl<BreedInfoMapper, Br
         // (1) 是否被 t_farm_pig_info.{pig_breed_code, pig_strain_code} 引用 → 有则抛 BizException
         // (2) 是否被 t_farm_breed_config.{mother_code, father_code, cub_code} 引用 → 有则抛 BizException
         // D05 BRD-EVENT-001 抽 BizReferenceChecker 后，本处统一改为声明式注册。
-        return softDelete(ids, BreedInfo::new);
+        return softDelete(ids);
     }
 
     /**

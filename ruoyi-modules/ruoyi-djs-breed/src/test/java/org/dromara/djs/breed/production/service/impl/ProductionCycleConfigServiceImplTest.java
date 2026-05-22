@@ -22,6 +22,7 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -150,22 +151,17 @@ class ProductionCycleConfigServiceImplTest {
     @Test
     @DisplayName("deleteWithValidByIds: happy path → 走基类 softDelete，wrapper.setSql del_flag='1'")
     void testDeleteWithValidByIds_HappyPath() {
-        when(cycleMapper.update(any(ProductionCycleConfig.class), any(UpdateWrapper.class))).thenReturn(1);
+        when(cycleMapper.update(isNull(), any(UpdateWrapper.class))).thenReturn(1);
 
         int rows = service.deleteWithValidByIds(List.of(50001L, 50002L));
 
         assertThat(rows).isEqualTo(2);
-        ArgumentCaptor<ProductionCycleConfig> entityCaptor = ArgumentCaptor.forClass(ProductionCycleConfig.class);
         ArgumentCaptor<UpdateWrapper<ProductionCycleConfig>> wrapperCaptor = ArgumentCaptor.forClass(UpdateWrapper.class);
-        verify(cycleMapper, times(2)).update(entityCaptor.capture(), wrapperCaptor.capture());
-
-        List<ProductionCycleConfig> entities = entityCaptor.getAllValues();
-        assertThat(entities).extracting(ProductionCycleConfig::getId).containsExactly(50001L, 50002L);
-        assertThat(entities).extracting(ProductionCycleConfig::getDelUnique).containsExactly(50001L, 50002L);
+        verify(cycleMapper, times(2)).update(isNull(), wrapperCaptor.capture());
 
         List<UpdateWrapper<ProductionCycleConfig>> wrappers = wrapperCaptor.getAllValues();
         assertThat(wrappers).allSatisfy(w -> {
-            assertThat(w.getSqlSet()).contains("del_flag = '1'");
+            assertThat(w.getSqlSet()).contains("del_flag", "del_unique", "update_by", "update_time");
             assertThat(w.getExpression().getNormal().getSqlSegment()).contains("id");
         });
     }

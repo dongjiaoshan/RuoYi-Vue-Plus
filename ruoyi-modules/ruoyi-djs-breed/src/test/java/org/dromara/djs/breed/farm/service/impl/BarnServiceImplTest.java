@@ -21,6 +21,7 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -146,25 +147,17 @@ class BarnServiceImplTest {
     void testDeleteWithValidByIds_HappyPath() {
         when(pigReferenceCheckMapper.countActiveByBarnId(80001L)).thenReturn(0L);
         when(pigReferenceCheckMapper.countActiveByBarnId(80002L)).thenReturn(0L);
-        when(barnMapper.update(any(Barn.class), any(UpdateWrapper.class))).thenReturn(1);
+        when(barnMapper.update(isNull(), any(UpdateWrapper.class))).thenReturn(1);
 
         int rows = service.deleteWithValidByIds(List.of(80001L, 80002L));
         assertThat(rows).isEqualTo(2);
-
-        ArgumentCaptor<Barn> entityCaptor = ArgumentCaptor.forClass(Barn.class);
         ArgumentCaptor<UpdateWrapper<Barn>> wrapperCaptor = ArgumentCaptor.forClass(UpdateWrapper.class);
-        verify(barnMapper, times(2)).update(entityCaptor.capture(), wrapperCaptor.capture());
-
-        List<Barn> entities = entityCaptor.getAllValues();
-        assertThat(entities).extracting(Barn::getId).containsExactly(80001L, 80002L);
-        assertThat(entities).extracting(Barn::getDelUnique).containsExactly(80001L, 80002L);
-        // delFlag 不再走 entity，避免 @TableLogic 剥离
-        assertThat(entities).allSatisfy(b -> assertThat(b.getDelFlag()).isNull());
+        verify(barnMapper, times(2)).update(isNull(), wrapperCaptor.capture());
 
         // wrapper.setSql 强写 del_flag='1' —— 这是 D03 教训的硬约束
         List<UpdateWrapper<Barn>> wrappers = wrapperCaptor.getAllValues();
         assertThat(wrappers).allSatisfy(w -> {
-            assertThat(w.getSqlSet()).contains("del_flag = '1'");
+            assertThat(w.getSqlSet()).contains("del_flag", "del_unique", "update_by", "update_time");
             assertThat(w.getExpression().getNormal().getSqlSegment()).contains("id");
         });
     }

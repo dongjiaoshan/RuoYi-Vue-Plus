@@ -83,7 +83,7 @@ public class MedScheduleConfigServiceImpl
 
     @Override
     public int deleteWithValidByIds(Collection<Long> ids) {
-        return softDelete(ids, MedScheduleConfig::new);
+        return softDelete(ids);
     }
 
     /**

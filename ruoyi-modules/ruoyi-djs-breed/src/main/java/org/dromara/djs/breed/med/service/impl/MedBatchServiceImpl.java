@@ -91,7 +91,7 @@ public class MedBatchServiceImpl extends DjsBaseServiceImpl<MedBatchMapper, MedB
     @Override
     public int deleteWithValidByIds(Collection<Long> ids) {
         // V2 BRD-MED-002 领用扣减批次时，按 FIFO 锁批次；本表 softDelete 仅用于"录错纠正"。
-        return softDelete(ids, MedBatch::new);
+        return softDelete(ids);
     }
 
     /**

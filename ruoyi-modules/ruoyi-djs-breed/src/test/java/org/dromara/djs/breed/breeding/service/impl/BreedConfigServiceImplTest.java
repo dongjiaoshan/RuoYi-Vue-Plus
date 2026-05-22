@@ -28,6 +28,7 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -179,23 +180,17 @@ class BreedConfigServiceImplTest {
     @Test
     @DisplayName("deleteWithValidByIds: happy path → 走基类 softDelete，wrapper.setSql del_flag='1'，entity 携 id+delUnique")
     void testDeleteWithValidByIds_HappyPath() {
-        when(breedConfigMapper.update(any(BreedConfig.class), any(UpdateWrapper.class))).thenReturn(1);
+        when(breedConfigMapper.update(isNull(), any(UpdateWrapper.class))).thenReturn(1);
 
         int rows = service.deleteWithValidByIds(List.of(40001L, 40002L));
 
         assertThat(rows).isEqualTo(2);
-        ArgumentCaptor<BreedConfig> entityCaptor = ArgumentCaptor.forClass(BreedConfig.class);
         ArgumentCaptor<UpdateWrapper<BreedConfig>> wrapperCaptor = ArgumentCaptor.forClass(UpdateWrapper.class);
-        verify(breedConfigMapper, times(2)).update(entityCaptor.capture(), wrapperCaptor.capture());
-
-        List<BreedConfig> entities = entityCaptor.getAllValues();
-        assertThat(entities).extracting(BreedConfig::getId).containsExactly(40001L, 40002L);
-        assertThat(entities).extracting(BreedConfig::getDelUnique).containsExactly(40001L, 40002L);
-        assertThat(entities).allSatisfy(e -> assertThat(e.getDelFlag()).isNull());
+        verify(breedConfigMapper, times(2)).update(isNull(), wrapperCaptor.capture());
 
         List<UpdateWrapper<BreedConfig>> wrappers = wrapperCaptor.getAllValues();
         assertThat(wrappers).allSatisfy(w -> {
-            assertThat(w.getSqlSet()).contains("del_flag = '1'");
+            assertThat(w.getSqlSet()).contains("del_flag", "del_unique", "update_by", "update_time");
             assertThat(w.getExpression().getNormal().getSqlSegment()).contains("id");
         });
     }

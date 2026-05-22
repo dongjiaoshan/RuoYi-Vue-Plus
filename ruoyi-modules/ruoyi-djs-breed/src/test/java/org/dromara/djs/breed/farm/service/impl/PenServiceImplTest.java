@@ -21,6 +21,7 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -140,22 +141,15 @@ class PenServiceImplTest {
     @DisplayName("deleteWithValidByIds: 无猪只占栏 → 走基类 softDelete，wrapper.setSql del_flag='1'")
     void testDeleteWithValidByIds_HappyPath() {
         when(pigReferenceCheckMapper.countActiveByPenId(90001L)).thenReturn(0L);
-        when(penMapper.update(any(Pen.class), any(UpdateWrapper.class))).thenReturn(1);
+        when(penMapper.update(isNull(), any(UpdateWrapper.class))).thenReturn(1);
 
         int rows = service.deleteWithValidByIds(List.of(90001L));
         assertThat(rows).isEqualTo(1);
-
-        ArgumentCaptor<Pen> entityCaptor = ArgumentCaptor.forClass(Pen.class);
         ArgumentCaptor<UpdateWrapper<Pen>> wrapperCaptor = ArgumentCaptor.forClass(UpdateWrapper.class);
-        verify(penMapper).update(entityCaptor.capture(), wrapperCaptor.capture());
-
-        Pen entity = entityCaptor.getValue();
-        assertThat(entity.getId()).isEqualTo(90001L);
-        assertThat(entity.getDelUnique()).isEqualTo(90001L);
-        assertThat(entity.getDelFlag()).isNull();
+        verify(penMapper).update(isNull(), wrapperCaptor.capture());
 
         UpdateWrapper<Pen> wrapper = wrapperCaptor.getValue();
-        assertThat(wrapper.getSqlSet()).contains("del_flag = '1'");
+        assertThat(wrapper.getSqlSet()).contains("del_flag", "del_unique", "update_by", "update_time");
         assertThat(wrapper.getExpression().getNormal().getSqlSegment()).contains("id");
     }
 

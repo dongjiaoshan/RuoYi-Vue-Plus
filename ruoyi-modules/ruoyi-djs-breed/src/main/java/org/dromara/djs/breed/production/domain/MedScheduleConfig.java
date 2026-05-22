@@ -24,7 +24,7 @@ import java.io.Serial;
 @Data
 @EqualsAndHashCode(callSuper = true)
 @TableName("t_farm_med_schedule_config")
-public class MedScheduleConfig extends TenantEntity implements DjsBaseServiceImpl.SoftDeletable {
+public class MedScheduleConfig extends TenantEntity {
 
     @Serial
     private static final long serialVersionUID = 1L;

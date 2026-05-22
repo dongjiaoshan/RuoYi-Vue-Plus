@@ -119,7 +119,7 @@ public class BarnServiceImpl extends DjsBaseServiceImpl<BarnMapper, Barn> implem
                     "栋舍「" + name + "」下仍有 " + pigCount + " 头存栏猪只，请先转栏或处理后再删除");
             }
         }
-        return softDelete(ids, Barn::new);
+        return softDelete(ids);
     }
 
     /**

@@ -88,7 +88,7 @@ public class ProductionCycleConfigServiceImpl
     public int deleteWithValidByIds(Collection<Long> ids) {
         // v1 暂无外部下游引用记录（getValue 直接按 key 查，不持 id），可直接软删。
         // 若后续状态机改为按 id 缓存，需在此校验是否被引用。
-        return softDelete(ids, ProductionCycleConfig::new);
+        return softDelete(ids);
     }
 
     @Override

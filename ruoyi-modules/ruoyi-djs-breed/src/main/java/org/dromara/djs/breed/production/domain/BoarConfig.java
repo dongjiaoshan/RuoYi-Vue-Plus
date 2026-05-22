@@ -25,7 +25,7 @@ import java.math.BigDecimal;
 @Data
 @EqualsAndHashCode(callSuper = true)
 @TableName("t_farm_boar_config")
-public class BoarConfig extends TenantEntity implements DjsBaseServiceImpl.SoftDeletable {
+public class BoarConfig extends TenantEntity {
 
     @Serial
     private static final long serialVersionUID = 1L;

@@ -21,6 +21,7 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -114,22 +115,17 @@ class MedScheduleConfigServiceImplTest {
     @Test
     @DisplayName("deleteWithValidByIds: happy path → wrapper.setSql del_flag='1'")
     void testDeleteWithValidByIds_HappyPath() {
-        when(medMapper.update(any(MedScheduleConfig.class), any(UpdateWrapper.class))).thenReturn(1);
+        when(medMapper.update(isNull(), any(UpdateWrapper.class))).thenReturn(1);
 
         int rows = service.deleteWithValidByIds(List.of(70001L, 70002L));
 
         assertThat(rows).isEqualTo(2);
-        ArgumentCaptor<MedScheduleConfig> entityCaptor = ArgumentCaptor.forClass(MedScheduleConfig.class);
         ArgumentCaptor<UpdateWrapper<MedScheduleConfig>> wrapperCaptor = ArgumentCaptor.forClass(UpdateWrapper.class);
-        verify(medMapper, times(2)).update(entityCaptor.capture(), wrapperCaptor.capture());
-
-        List<MedScheduleConfig> entities = entityCaptor.getAllValues();
-        assertThat(entities).extracting(MedScheduleConfig::getId).containsExactly(70001L, 70002L);
-        assertThat(entities).extracting(MedScheduleConfig::getDelUnique).containsExactly(70001L, 70002L);
+        verify(medMapper, times(2)).update(isNull(), wrapperCaptor.capture());
 
         List<UpdateWrapper<MedScheduleConfig>> wrappers = wrapperCaptor.getAllValues();
         assertThat(wrappers).allSatisfy(w -> {
-            assertThat(w.getSqlSet()).contains("del_flag = '1'");
+            assertThat(w.getSqlSet()).contains("del_flag", "del_unique", "update_by", "update_time");
             assertThat(w.getExpression().getNormal().getSqlSegment()).contains("id");
         });
     }

@@ -83,7 +83,7 @@ public class BoarConfigServiceImpl
 
     @Override
     public int deleteWithValidByIds(Collection<Long> ids) {
-        return softDelete(ids, BoarConfig::new);
+        return softDelete(ids);
     }
 
     /**

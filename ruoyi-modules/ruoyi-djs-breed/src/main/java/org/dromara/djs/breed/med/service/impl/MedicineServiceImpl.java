@@ -106,7 +106,7 @@ public class MedicineServiceImpl extends DjsBaseServiceImpl<MedicineMapper, Medi
         // (2) 是否被 t_farm_medicine_record.medicine_id 引用 → 有则抛 BizException
         // (3) 是否被 t_breed_medicine_batch.medicine_id 引用 → 有则提示先删批次
         // D05 BRD-EVENT-001 抽 BizReferenceChecker 后，本处统一改为声明式注册（D02 _open-issues #12 决策）。
-        return softDelete(ids, Medicine::new);
+        return softDelete(ids);
     }
 
     /**

@@ -37,7 +37,7 @@ import java.time.LocalDate;
 @Data
 @EqualsAndHashCode(callSuper = true)
 @TableName("t_breed_medicine_info")
-public class Medicine extends TenantEntity implements DjsBaseServiceImpl.SoftDeletable {
+public class Medicine extends TenantEntity {
 
     @Serial
     private static final long serialVersionUID = 1L;

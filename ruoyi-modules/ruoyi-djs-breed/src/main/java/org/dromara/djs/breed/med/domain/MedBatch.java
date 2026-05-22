@@ -29,7 +29,7 @@ import java.time.LocalDate;
 @Data
 @EqualsAndHashCode(callSuper = true)
 @TableName("t_breed_medicine_batch")
-public class MedBatch extends TenantEntity implements DjsBaseServiceImpl.SoftDeletable {
+public class MedBatch extends TenantEntity {
 
     @Serial
     private static final long serialVersionUID = 1L;

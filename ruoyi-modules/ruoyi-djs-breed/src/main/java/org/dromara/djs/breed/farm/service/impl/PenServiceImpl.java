@@ -116,7 +116,7 @@ public class PenServiceImpl extends DjsBaseServiceImpl<PenMapper, Pen> implement
                     "栏位「" + name + "」下仍有 " + pigCount + " 头存栏猪只，请先转栏或处理后再删除");
             }
         }
-        return softDelete(ids, Pen::new);
+        return softDelete(ids);
     }
 
     /**

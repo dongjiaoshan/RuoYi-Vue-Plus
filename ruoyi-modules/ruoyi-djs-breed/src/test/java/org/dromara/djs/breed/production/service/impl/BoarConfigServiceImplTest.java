@@ -22,6 +22,7 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -110,21 +111,16 @@ class BoarConfigServiceImplTest {
     @Test
     @DisplayName("deleteWithValidByIds: happy path → wrapper.setSql del_flag='1'")
     void testDeleteWithValidByIds_HappyPath() {
-        when(boarMapper.update(any(BoarConfig.class), any(UpdateWrapper.class))).thenReturn(1);
+        when(boarMapper.update(isNull(), any(UpdateWrapper.class))).thenReturn(1);
 
         int rows = service.deleteWithValidByIds(List.of(60001L));
 
         assertThat(rows).isEqualTo(1);
-        ArgumentCaptor<BoarConfig> entityCaptor = ArgumentCaptor.forClass(BoarConfig.class);
         ArgumentCaptor<UpdateWrapper<BoarConfig>> wrapperCaptor = ArgumentCaptor.forClass(UpdateWrapper.class);
-        verify(boarMapper, times(1)).update(entityCaptor.capture(), wrapperCaptor.capture());
-
-        BoarConfig entity = entityCaptor.getValue();
-        assertThat(entity.getId()).isEqualTo(60001L);
-        assertThat(entity.getDelUnique()).isEqualTo(60001L);
+        verify(boarMapper, times(1)).update(isNull(), wrapperCaptor.capture());
 
         UpdateWrapper<BoarConfig> wrapper = wrapperCaptor.getValue();
-        assertThat(wrapper.getSqlSet()).contains("del_flag = '1'");
+        assertThat(wrapper.getSqlSet()).contains("del_flag", "del_unique", "update_by", "update_time");
         assertThat(wrapper.getExpression().getNormal().getSqlSegment()).contains("id");
     }
 

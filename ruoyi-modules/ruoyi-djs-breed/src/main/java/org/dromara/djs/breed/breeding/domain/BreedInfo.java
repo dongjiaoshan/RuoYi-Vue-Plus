@@ -26,7 +26,7 @@ import java.io.Serial;
 @Data
 @EqualsAndHashCode(callSuper = true)
 @TableName("t_farm_breed_info")
-public class BreedInfo extends TenantEntity implements DjsBaseServiceImpl.SoftDeletable {
+public class BreedInfo extends TenantEntity {
 
     @Serial
     private static final long serialVersionUID = 1L;

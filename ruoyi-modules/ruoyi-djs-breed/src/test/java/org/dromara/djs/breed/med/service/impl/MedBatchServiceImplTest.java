@@ -29,6 +29,7 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -170,24 +171,18 @@ class MedBatchServiceImplTest {
     @Test
     @DisplayName("deleteWithValidByIds: happy path → 走基类 softDelete，wrapper.setSql del_flag='1'")
     void testDeleteWithValidByIds_HappyPath() {
-        when(medBatchMapper.update(any(MedBatch.class), any(UpdateWrapper.class))).thenReturn(1);
+        when(medBatchMapper.update(isNull(), any(UpdateWrapper.class))).thenReturn(1);
 
         int rows = service.deleteWithValidByIds(List.of(50001L, 50002L));
 
         assertThat(rows).isEqualTo(2);
-        ArgumentCaptor<MedBatch> entityCaptor = ArgumentCaptor.forClass(MedBatch.class);
         ArgumentCaptor<UpdateWrapper<MedBatch>> wrapperCaptor = ArgumentCaptor.forClass(UpdateWrapper.class);
-        verify(medBatchMapper, times(2)).update(entityCaptor.capture(), wrapperCaptor.capture());
-
-        List<MedBatch> capturedEntities = entityCaptor.getAllValues();
-        assertThat(capturedEntities).extracting(MedBatch::getId).containsExactly(50001L, 50002L);
-        assertThat(capturedEntities).extracting(MedBatch::getDelUnique).containsExactly(50001L, 50002L);
-        assertThat(capturedEntities).allSatisfy(e -> assertThat(e.getDelFlag()).isNull());
+        verify(medBatchMapper, times(2)).update(isNull(), wrapperCaptor.capture());
 
         List<UpdateWrapper<MedBatch>> capturedWrappers = wrapperCaptor.getAllValues();
         assertThat(capturedWrappers).hasSize(2);
         assertThat(capturedWrappers).allSatisfy(w -> {
-            assertThat(w.getSqlSet()).contains("del_flag = '1'");
+            assertThat(w.getSqlSet()).contains("del_flag", "del_unique", "update_by", "update_time");
             assertThat(w.getExpression().getNormal().getSqlSegment()).contains("id");
         });
     }

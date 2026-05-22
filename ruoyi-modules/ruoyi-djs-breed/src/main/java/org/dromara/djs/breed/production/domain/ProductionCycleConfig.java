@@ -38,7 +38,7 @@ import java.io.Serial;
 @Data
 @EqualsAndHashCode(callSuper = true)
 @TableName("t_farm_production_cycle_config")
-public class ProductionCycleConfig extends TenantEntity implements DjsBaseServiceImpl.SoftDeletable {
+public class ProductionCycleConfig extends TenantEntity {
 
     @Serial
     private static final long serialVersionUID = 1L;

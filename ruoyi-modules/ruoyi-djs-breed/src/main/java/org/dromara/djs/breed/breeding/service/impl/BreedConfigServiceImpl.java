@@ -98,7 +98,7 @@ public class BreedConfigServiceImpl extends DjsBaseServiceImpl<BreedConfigMapper
     public int deleteWithValidByIds(Collection<Long> ids) {
         // 当前 v1 配种关系无下游事件流水引用（事件表存 ear_no 直接指猪只），可直接软删。
         // 后续若 BRD-EVENT-002 配种事件引用本表 id，需在此校验。
-        return softDelete(ids, BreedConfig::new);
+        return softDelete(ids);
     }
 
     /**
