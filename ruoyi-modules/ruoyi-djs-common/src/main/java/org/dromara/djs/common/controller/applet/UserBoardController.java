@@ -20,7 +20,7 @@ import java.util.Set;
 /**
  * 小程序板块（养殖 / 种植 / 仓库 / 门店）路由 Controller。
  *
- * <p>小程序首屏"板块选择页"调 {@code GET /api/user/role-tabs} 拿当前用户可见的板块清单，
+ * <p>小程序首屏"板块选择页"调 {@code GET /djs/applet/user/role-tabs} 拿当前用户可见的板块清单，
  * 按 sys_role.role_key 取并集（多角色用户合并各自能进的板块）。</p>
  *
  * <h2>角色 → 板块映射规则</h2>
@@ -41,7 +41,7 @@ import java.util.Set;
  */
 @Slf4j
 @RestController
-@RequestMapping("/api/user")
+@RequestMapping("/djs/applet/user")
 @RequiredArgsConstructor
 public class UserBoardController {
 
