@@ -16,9 +16,10 @@ import java.io.Serial;
  * <p>对应表 {@code t_md_store}，门店域 {@code t_store_*} 业务表通过 {@code store_id} 关联本表。
  * 主要消费方：STR-OP-001 销售流水 / STR-MEMBER-001 会员档案 / STR-STOCK-001 盘点 / TRC-* 追溯。</p>
  *
- * <p>软删走 {@code del_flag} + {@code del_unique}（{@link org.dromara.djs.common.handler.DjsMetaObjectHandler}
- * 在 delFlag='1' 时把 id 写入 delUnique，保证 UNIQUE(tenant_id, store_code, del_unique) 不阻塞同编码复用）。
- * 服务层走 {@link DjsBaseServiceImpl#softDelete} 显式循环 updateById，不要直接调 {@code deleteByIds}。</p>
+ * <p>软删走 {@code del_flag} + {@code del_unique}。服务层走
+ * {@link DjsBaseServiceImpl#softDelete}（纯 wrapper update 写 {@code del_flag='1'} + {@code del_unique=id}），
+ * 不要直接调 {@code deleteByIds}（参 {@link DjsBaseServiceImpl} 类注释）。UNIQUE(tenant_id, store_code, del_unique)
+ * 保证软删后重启用同编码不冲突。</p>
  *
  * @author djs
  * @since SYS-MD-002
@@ -26,7 +27,7 @@ import java.io.Serial;
 @Data
 @EqualsAndHashCode(callSuper = true)
 @TableName("t_md_store")
-public class Store extends TenantEntity implements DjsBaseServiceImpl.SoftDeletable {
+public class Store extends TenantEntity {
 
     @Serial
     private static final long serialVersionUID = 1L;

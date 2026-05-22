@@ -111,7 +111,7 @@ public class SupplierServiceImpl extends DjsBaseServiceImpl<SupplierMapper, Supp
         // TODO SYS-MD-003 → D5 BRD-EVENT-001 触发：抽 BizReferenceChecker 后回填校验
         // （t_breed_*.supplier_id / t_warehouse_supplier_record.supplier_id 等引用反查）。
         // 详 D02 _open-issues #12。
-        return softDelete(ids, Supplier::new);
+        return softDelete(ids);
     }
 
     /**

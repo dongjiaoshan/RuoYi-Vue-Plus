@@ -31,10 +31,9 @@ import java.util.Objects;
  * {@link BizCodeType#MEMBER_NO} 规则生成（pattern {@code M{seq4}}，例 {@code M0001}），
  * 编辑端点不允许覆盖。</p>
  *
- * <p>软删通过基类 {@link DjsBaseServiceImpl#softDelete(Collection, java.util.function.Supplier)}
- * 显式循环 {@code updateById}（避免 MP LogicDelete 路径绕过 {@code DjsMetaObjectHandler#updateFill}
- * 导致 del_unique 不同步，参基类注释）。业务表 UNIQUE(tenant_id, person_code, del_unique)
- * 保证软删后重启用同编码不冲突。</p>
+ * <p>软删通过基类 {@link DjsBaseServiceImpl#softDelete(Collection)} 走纯 wrapper update，
+ * 显式 set {@code del_flag='1'} + {@code del_unique=id}（参基类注释）。业务表
+ * UNIQUE(tenant_id, person_code, del_unique) 保证软删后重启用同编码不冲突。</p>
  *
  * @author djs
  * @since SYS-MD-001
@@ -112,7 +111,7 @@ public class PersonServiceImpl extends DjsBaseServiceImpl<PersonMapper, Person> 
     public int deleteWithValidByIds(Collection<Long> ids) {
         // TODO SYS-MD-001 → D3+：业务表 wire 后，删除前需校验"是否被 t_farm_event_* / t_md_user_farm 等引用"，
         // 引用存在则提示业务方先解绑。D05 BRD-EVENT-001 抽 BizReferenceChecker 后统一改声明式注册。
-        return softDelete(ids, Person::new);
+        return softDelete(ids);
     }
 
     /**
