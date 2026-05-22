@@ -1,6 +1,6 @@
 package org.dromara.djs.common.dict;
 
-import cn.dev33.satoken.annotation.SaCheckPermission;
+import cn.dev33.satoken.annotation.SaIgnore;
 import lombok.RequiredArgsConstructor;
 import org.dromara.common.core.domain.R;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -19,7 +19,8 @@ import org.springframework.web.bind.annotation.RestController;
  * <p>admin 端字典管理仍走 ruoyi 自带 {@code /system/dict/type} 和 {@code /system/dict/data}，
  * 本 controller 不重新实现 CRUD。</p>
  *
- * <p>权限串 {@code djs:dict:query}：小程序登录用户的默认 applet 角色绑定。</p>
+ * <p>授权：{@link SaIgnore} 免登录。dict 是公开元数据（小程序 App.vue onLaunch 在用户登录前就需要同步），
+ * 与 {@code WechatLoginController} / {@code AppletAuthController#wxLogin} 同属"启动期 / 登录前"端点。</p>
  *
  * @author djs
  * @since SYS-INFRA-005
@@ -40,7 +41,7 @@ public class DjsDictController {
      *   <li>不等 → 调 {@code /full} 拉全量并更新本地缓存</li>
      * </ul>
      */
-    @SaCheckPermission("djs:dict:query")
+    @SaIgnore
     @GetMapping("/version")
     public R<String> version() {
         return R.ok(djsDictService.currentVersion());
@@ -51,7 +52,7 @@ public class DjsDictController {
      *
      * <p>小程序首次安装 / version 不命中时拉一次，写入本地 storage。</p>
      */
-    @SaCheckPermission("djs:dict:query")
+    @SaIgnore
     @GetMapping("/full")
     public R<DjsDictFullVo> full() {
         return R.ok(djsDictService.queryFull());

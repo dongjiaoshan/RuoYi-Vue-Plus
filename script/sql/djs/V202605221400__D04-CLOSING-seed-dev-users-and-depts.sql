@@ -8,7 +8,8 @@
 --   - 全部 tenant_id=1001 + farm_id=1001 + current_farm_id=1001（V1 单农场）
 --   - 密码统一 admin123（BCrypt 同 admin user）
 --
--- 注意：user_id 9100-9107（避开 mock LoginUser 9001 + admin 1；用 9100+ 段给 dev 联调留余地）
+-- 注意：user_id 9100-9107 业务角色用户；mock LoginUser 9001 (user_name=dev) 由后续 patch
+-- V202605222100__D04-TH06-seed-mock-dev-user.sql 单独 seed，对齐 AppletAuthController#mockUserId
 
 -- ----------------------------------------------------------------------
 -- 1) 部门 seed

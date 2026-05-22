@@ -49,14 +49,16 @@ public class OssStsServiceImpl implements IOssStsService {
 
     /** 业务类型白名单。后端再做一道防御：前端只能上传到这些目录前缀。 */
     private static final Set<String> ALLOWED_BIZ_TYPES = Set.of(
-        "pig_photo",   // 猪只照片
-        "dead_photo",  // 死亡 / 淘汰多角度照片
-        "grow_photo",  // 生长记录照片
-        "med_proof",   // 用药 / 疫苗凭证
-        "harvest",     // 收获 / 加工照片
-        "trace",       // 追溯码 / 证书图
-        "avatar",      // 用户头像 / 通用
-        "doc"          // 通用文档
+        "pig_photo",        // 猪只照片
+        "dead_photo",       // 死亡 / 淘汰多角度照片
+        "grow_photo",       // 生长记录照片
+        "med_proof",        // 用药 / 疫苗凭证
+        "harvest",          // 收获 / 加工照片
+        "trace",            // 追溯码 / 证书图
+        "store_photo",      // 门店门头 / 招牌图
+        "supplier_license", // 供应商营业执照
+        "avatar",           // 用户头像 / 通用
+        "doc"               // 通用文档
     );
 
     @Value("${djs.oss-sts.region:cn-hangzhou}")
