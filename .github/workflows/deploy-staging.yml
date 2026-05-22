@@ -1,0 +1,92 @@
+name: Deploy Staging (Backend)
+
+on:
+  push:
+    branches: [staging]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-staging-backend
+  cancel-in-progress: false
+
+env:
+  REMOTE_DIR: /opt/dongjiaoshan-staging
+  JAR_NAME: ruoyi-admin.jar
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+
+      - name: Build jar
+        run: mvn -B -DskipTests -pl ruoyi-admin -am clean package
+
+      - name: Locate jar
+        id: jar
+        run: |
+          JAR=$(ls ruoyi-admin/target/ruoyi-admin.jar 2>/dev/null || ls ruoyi-admin/target/*.jar | head -1)
+          if [ -z "$JAR" ]; then echo "no jar found" >&2; exit 1; fi
+          echo "jar=$JAR" >> "$GITHUB_OUTPUT"
+          ls -lh "$JAR"
+
+      - name: Stage deploy bundle
+        run: |
+          mkdir -p deploy-bundle/docker
+          cp "${{ steps.jar.outputs.jar }}" deploy-bundle/${{ env.JAR_NAME }}
+          cp Dockerfile deploy-bundle/Dockerfile
+          cp docker/docker-compose.staging.yml deploy-bundle/docker/docker-compose.staging.yml
+          ls -lh deploy-bundle
+
+      - name: Upload bundle to server
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          source: "deploy-bundle/*"
+          target: ${{ env.REMOTE_DIR }}
+          strip_components: 1
+          overwrite: true
+
+      - name: Restart container
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          script: |
+            set -euo pipefail
+            cd ${{ env.REMOTE_DIR }}
+            if [ ! -f .env ]; then
+              echo "ERROR: ${{ env.REMOTE_DIR }}/.env not found on server. See deploy doc." >&2
+              exit 1
+            fi
+            docker compose -f docker/docker-compose.staging.yml up -d --build
+            docker compose -f docker/docker-compose.staging.yml ps
+            echo "Waiting for healthcheck..."
+            for i in $(seq 1 30); do
+              status=$(docker inspect -f '{{.State.Health.Status}}' djs-ruoyi-admin-staging 2>/dev/null || echo "starting")
+              echo "[$i] health=$status"
+              if [ "$status" = "healthy" ]; then exit 0; fi
+              if [ "$status" = "unhealthy" ]; then
+                docker compose -f docker/docker-compose.staging.yml logs --tail=200 ruoyi-admin
+                exit 1
+              fi
+              sleep 5
+            done
+            echo "Timed out waiting for healthy status"
+            docker compose -f docker/docker-compose.staging.yml logs --tail=200 ruoyi-admin
+            exit 1

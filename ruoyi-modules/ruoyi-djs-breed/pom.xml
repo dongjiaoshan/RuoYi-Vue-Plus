@@ -21,6 +21,13 @@
             <artifactId>ruoyi-djs-common</artifactId>
             <version>${revision}</version>
         </dependency>
+
+        <!-- BRD-MD-001：单测依赖（JUnit5 + Mockito，spring-boot-starter-test 已含两者） -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
 </project>
