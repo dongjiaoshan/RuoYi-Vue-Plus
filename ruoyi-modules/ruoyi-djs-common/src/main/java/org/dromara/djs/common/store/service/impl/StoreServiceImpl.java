@@ -31,9 +31,9 @@ import java.util.Objects;
  * {@link BizCodeType#STORE_CODE} 规则生成（pattern {@code ST{seq4}}，例 {@code ST0001}），
  * 编辑端点不允许覆盖。</p>
  *
- * <p>软删通过基类 {@link DjsBaseServiceImpl#softDelete(Collection, java.util.function.Supplier)}
- * 显式循环 {@code updateById}（参基类注释）。下游业务表 wire 后需在 {@link #deleteWithValidByIds(Collection)}
- * 前置校验"是否被 {@code t_store_product_relation} / {@code t_store_sale_record} 等引用"。</p>
+ * <p>软删通过基类 {@link DjsBaseServiceImpl#softDelete(Collection)} 走纯 wrapper update
+ * （参基类注释）。下游业务表 wire 后需在 {@link #deleteWithValidByIds(Collection)} 前置
+ * 校验"是否被 {@code t_store_product_relation} / {@code t_store_sale_record} 等引用"。</p>
  *
  * @author djs
  * @since SYS-MD-002
@@ -115,7 +115,7 @@ public class StoreServiceImpl extends DjsBaseServiceImpl<StoreMapper, Store> imp
         // TODO SYS-MD-002 → D03+：业务表 wire 后，删除前需校验"是否被 t_store_product_relation /
         // t_store_sale_record / t_store_member 等引用"，引用存在则提示先解绑。
         // D05 BRD-EVENT-001 抽 BizReferenceChecker 后，本处统一改为声明式注册。
-        return softDelete(ids, Store::new);
+        return softDelete(ids);
     }
 
     /**

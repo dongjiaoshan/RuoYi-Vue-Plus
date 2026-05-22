@@ -28,7 +28,7 @@ import java.io.Serial;
 @Data
 @EqualsAndHashCode(callSuper = true)
 @TableName("t_md_supplier")
-public class Supplier extends TenantEntity implements org.dromara.djs.common.base.DjsBaseServiceImpl.SoftDeletable {
+public class Supplier extends TenantEntity {
 
     @Serial
     private static final long serialVersionUID = 1L;

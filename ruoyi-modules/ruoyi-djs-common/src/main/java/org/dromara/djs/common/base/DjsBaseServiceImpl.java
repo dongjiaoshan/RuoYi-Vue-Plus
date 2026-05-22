@@ -4,38 +4,37 @@ import cn.hutool.core.collection.CollUtil;
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import org.dromara.common.mybatis.core.mapper.BaseMapperPlus;
+import org.dromara.common.satoken.utils.LoginHelper;
 import org.dromara.common.tenant.core.TenantEntity;
 
 import java.util.Collection;
-import java.util.function.Supplier;
+import java.util.Date;
 
 /**
  * djs 业务服务通用基类。
  *
- * <p>本基类的存在动机：MyBatis-Plus 的 {@code LogicDeleteInterceptor} 在执行
- * {@code baseMapper.deleteByIds} / {@code baseMapper.deleteById} 时，把 SQL 改写为
- * {@code UPDATE ... SET del_flag='1' WHERE id IN (...)}。这条 UPDATE 由 MP 内部合成的
- * "空实体 + 仅 delFlag" MetaObject 触发 {@code updateFill}，
- * {@link org.dromara.djs.common.handler.DjsMetaObjectHandler#updateFill(org.apache.ibatis.reflection.MetaObject)}
- * 检测到 id=null 后会跳过 {@code del_unique} 同步——导致软删行 {@code del_unique=0} 未变，
- * UNIQUE(tenant_id, biz_col, del_unique) 约束在"软删后重新启用同编码"场景下被错误阻塞。</p>
+ * <p>提供 djs 业务表统一软删实现。</p>
  *
- * <p>另一道坑：实体上 {@code delFlag} 标了 {@code @TableLogic}，MyBatis-Plus 在
- * <strong>entity-based update</strong>（{@code updateById(entity)} / {@code update(entity, wrapper)}）路径下
- * 会把 entity 里 {@code setDelFlag} 自动从 SET 子句剥离——只在 {@code deleteById} 路径下由
- * {@code LogicDeleteInterceptor} 把 SQL 改写为 {@code UPDATE SET del_flag='1'}。
- * 直接 {@code entity.setDelFlag("1")} 在 UPDATE SQL 里看不到，DB 仍 {@code del_flag=0}。</p>
- *
- * <p>解决：本基类 {@link #softDelete(Collection, Supplier)} 用 {@code update(entity, wrapper)}：
+ * <p><b>为什么不直接走 MP 默认 deleteByIds / updateById</b>：</p>
  * <ul>
- *   <li>entity 设 {@code id} + {@code delUnique}，触发 {@link org.dromara.djs.common.handler.DjsMetaObjectHandler}
- *       的 {@code updateFill}（写入 {@code update_by} / {@code update_time}）；</li>
- *   <li>{@link UpdateWrapper} 用 {@code setSql("del_flag = '1'")} 强写 SET 子句，
- *       绕过 {@code @TableLogic} 剥离；</li>
- *   <li>{@code eq("id", id)} 提供 WHERE 主键，避免触发 MP 全表更新保护。</li>
- * </ul></p>
+ *   <li>{@code baseMapper.deleteByIds(ids)} 走 {@code LogicSqlInjector}：SQL 改写为
+ *       {@code UPDATE SET del_flag='1' WHERE id IN(...)}。这条 UPDATE 由 MP 内部合成的
+ *       "空实体 + 仅 delFlag" {@code MetaObject} 触发 {@code updateFill}，
+ *       {@link org.dromara.djs.common.handler.DjsMetaObjectHandler#updateFill} 检测到 id=null 后
+ *       会跳过 {@code del_unique} 同步 → 软删行 {@code del_unique=0} 不变，
+ *       UNIQUE(tenant_id, biz_col, del_unique) 在"软删后重启用同编码"场景下被错误阻塞。</li>
+ *   <li>{@code updateById(entity)} + entity.setDelFlag("1")：entity-based update 路径下 MP 会把
+ *       {@code @TableLogic} 字段自动从 SET 子句剥离，{@code del_flag} 写不进 SQL。</li>
+ *   <li>{@code update(entity, wrapper).setSql("del_flag='1'")}：setSql 注入的 SQL fragment 也会
+ *       被 MP JSQLParser 字段名匹配剥离（{@code @TableLogic} 字段无差别过滤）。</li>
+ * </ul>
  *
- * <p>使用范式（参考 {@code PersonServiceImpl} / {@code StoreServiceImpl}）：</p>
+ * <p><b>本基类的解决方案</b>：纯 wrapper update（{@code entity=null}），通过
+ * {@link UpdateWrapper#set(String, Object)} 显式写入 {@code del_flag} / {@code del_unique} /
+ * {@code update_by} / {@code update_time}。MP 的多租户拦截器在 final SQL 阶段仍会注入
+ * {@code WHERE tenant_id=?}，租户隔离保留。</p>
+ *
+ * <p>使用范式（参考 {@code PersonServiceImpl} / {@code StoreServiceImpl} / {@code SupplierServiceImpl}）：</p>
  *
  * <pre>{@code
  * public class StoreServiceImpl extends DjsBaseServiceImpl<StoreMapper, Store>
@@ -43,8 +42,8 @@ import java.util.function.Supplier;
  *
  *     @Override
  *     public int deleteWithValidByIds(Collection<Long> ids) {
- *         // ... 这里做业务关联校验（被下游引用则禁止删）
- *         return softDelete(ids, Store::new);
+ *         // 这里做业务关联校验（被下游引用则禁止删）
+ *         return softDelete(ids);
  *     }
  * }
  * }</pre>
@@ -52,11 +51,11 @@ import java.util.function.Supplier;
  * <p>子类实体必须同时声明 {@code Long delUnique} + {@code String delFlag}（标 {@code @TableLogic}）。</p>
  *
  * @param <M> Mapper 类型（必须 {@code extends BaseMapperPlus<T, ?>}）
- * @param <T> 实体类型（必须 {@code extends TenantEntity}，且实现 {@link SoftDeletable}）
+ * @param <T> 实体类型（必须 {@code extends TenantEntity}）
  * @author djs
- * @since D03 SYS-MD-002（D02 _open-issues #18 决策 b 触发抽取）
+ * @since D03 SYS-FIX-001（D03 testing-human #1 触发重写，原 D02 _open-issues #18 实现废弃）
  */
-public abstract class DjsBaseServiceImpl<M extends BaseMapperPlus<T, ?>, T extends TenantEntity & DjsBaseServiceImpl.SoftDeletable> {
+public abstract class DjsBaseServiceImpl<M extends BaseMapperPlus<T, ?>, T extends TenantEntity> {
 
     /**
      * 子类注入的 Mapper（与 ruoyi {@code ServiceImpl#baseMapper} 同名同语义）。
@@ -68,47 +67,45 @@ public abstract class DjsBaseServiceImpl<M extends BaseMapperPlus<T, ?>, T exten
     }
 
     /**
-     * 软删：循环 {@code update(entity, wrapper)}，entity 写 {@code id} + {@code delUnique=id}，
-     * wrapper 用 {@code setSql("del_flag = '1'")} 强写 SET 子句绕过 {@code @TableLogic}。
+     * 软删：循环 wrapper-only update，逐个 id 显式 set
+     * {@code del_flag='1'} / {@code del_unique=id} / {@code update_by} / {@code update_time}。
      *
-     * <p>请勿改成 {@code baseMapper.deleteByIds(ids)} 或 {@code updateById(entity)}——原因见类注释。</p>
+     * <p>WHERE 子句额外 {@code eq("del_flag", "0")} 防止重复软删（同时也是 MP 多租户拦截器附加
+     * {@code tenant_id} 过滤的载体表达式）。</p>
      *
-     * @param ids             待软删的主键集合（空 / null 直接返 0）
-     * @param entityFactory   实体构造器，例：{@code Store::new}（子类直接传方法引用即可）
-     * @return 实际受影响行数（DB 不存在的 id 不计入）
+     * @param ids 待软删的主键集合（空 / null 直接返 0）
+     * @return 实际受影响行数（DB 不存在或已软删的 id 不计入）
      */
-    protected int softDelete(Collection<Long> ids, Supplier<T> entityFactory) {
+    protected int softDelete(Collection<Long> ids) {
         if (CollUtil.isEmpty(ids)) {
             return 0;
         }
+        Long updateBy = currentUserIdSafe();
+        Date now = new Date();
         int count = 0;
         for (Long id : ids) {
-            T entity = entityFactory.get();
-            entity.setId(id);
-            entity.setDelUnique(id);
             UpdateWrapper<T> wrapper = Wrappers.<T>update()
                 .eq("id", id)
-                .setSql("del_flag = '1'");
-            count += baseMapper.update(entity, wrapper);
+                .eq("del_flag", "0")
+                .set("del_flag", "1")
+                .set("del_unique", id)
+                .set("update_by", updateBy)
+                .set("update_time", now);
+            count += baseMapper.update(null, wrapper);
         }
         return count;
     }
 
     /**
-     * djs 业务实体的"软删除"契约。
-     *
-     * <p>子类实体（如 {@code Store} / {@code Person}）需实现本接口（用 {@code @Data} 自动生成的
-     * setter 即满足）。基类 {@link #softDelete(Collection, Supplier)} 通过本接口写入
-     * {@code id} / {@code delFlag} / {@code delUnique} 三个字段。</p>
-     *
-     * <p>{@link TenantEntity} 已提供 {@code id}，{@code delFlag} / {@code delUnique} 由本接口约束。</p>
+     * 安全获取当前用户 ID：admin 业务路径下走 Sa-Token；系统初始化 / 后台 job 等
+     * 无登录上下文场景下捕获异常返 0（与 ruoyi 自带 {@code MetaObjectHandler} 兜底一致）。
      */
-    public interface SoftDeletable {
-
-        void setId(Long id);
-
-        void setDelFlag(String delFlag);
-
-        void setDelUnique(Long delUnique);
+    private Long currentUserIdSafe() {
+        try {
+            Long id = LoginHelper.getUserId();
+            return id != null ? id : 0L;
+        } catch (Exception e) {
+            return 0L;
+        }
     }
 }

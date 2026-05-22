@@ -32,6 +32,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -231,27 +232,30 @@ class PersonServiceImplTest {
     }
 
     @Test
-    @DisplayName("deleteWithValidByIds: happy path → 每个 id 一次 update(entity, wrapper)，wrapper.setSql del_flag='1' 绕过 @TableLogic")
+    @DisplayName("deleteWithValidByIds: happy path → 每个 id 一次 wrapper-only update，sqlSet 显式写 del_flag/del_unique/update_by/update_time")
     void testDeleteWithValidByIds_HappyPath() {
-        when(personMapper.update(any(Person.class), any(UpdateWrapper.class))).thenReturn(1);
+        when(personMapper.update(isNull(), any(UpdateWrapper.class))).thenReturn(1);
 
         int rows = service.deleteWithValidByIds(List.of(10001L, 10002L));
 
         assertThat(rows).isEqualTo(2);
-        ArgumentCaptor<Person> entityCaptor = ArgumentCaptor.forClass(Person.class);
         ArgumentCaptor<UpdateWrapper<Person>> wrapperCaptor = ArgumentCaptor.forClass(UpdateWrapper.class);
-        verify(personMapper, times(2)).update(entityCaptor.capture(), wrapperCaptor.capture());
-
-        List<Person> capturedEntities = entityCaptor.getAllValues();
-        assertThat(capturedEntities).extracting(Person::getId).containsExactly(10001L, 10002L);
-        assertThat(capturedEntities).extracting(Person::getDelUnique).containsExactly(10001L, 10002L);
-        assertThat(capturedEntities).allSatisfy(p -> assertThat(p.getDelFlag()).isNull());
+        verify(personMapper, times(2)).update(isNull(), wrapperCaptor.capture());
 
         List<UpdateWrapper<Person>> capturedWrappers = wrapperCaptor.getAllValues();
+        assertThat(capturedWrappers).hasSize(2);
         assertThat(capturedWrappers).allSatisfy(w -> {
-            assertThat(w.getSqlSet()).contains("del_flag = '1'");
+            assertThat(w.getSqlSet()).contains("del_flag", "del_unique", "update_by", "update_time");
             assertThat(w.getExpression().getNormal().getSqlSegment()).contains("id");
         });
+        // del_unique 写入 id（MP paramNameValuePairs 中以 String 形式存储）
+        assertThat(capturedWrappers.get(0).getParamNameValuePairs().values())
+            .extracting(Object::toString).contains("10001");
+        assertThat(capturedWrappers.get(1).getParamNameValuePairs().values())
+            .extracting(Object::toString).contains("10002");
+        // del_flag 写 '1'
+        assertThat(capturedWrappers).allSatisfy(w ->
+            assertThat(w.getParamNameValuePairs().values()).extracting(Object::toString).contains("1"));
     }
 
     @Test
@@ -259,6 +263,6 @@ class PersonServiceImplTest {
     void testDeleteWithValidByIds_EmptyShortCircuit() {
         int rows = service.deleteWithValidByIds(Collections.emptyList());
         assertThat(rows).isZero();
-        verify(personMapper, times(0)).update(any(Person.class), any(UpdateWrapper.class));
+        verify(personMapper, times(0)).update(isNull(), any(UpdateWrapper.class));
     }
 }

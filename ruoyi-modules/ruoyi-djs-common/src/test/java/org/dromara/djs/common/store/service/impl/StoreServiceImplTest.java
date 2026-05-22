@@ -31,6 +31,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -231,29 +232,28 @@ class StoreServiceImplTest {
     }
 
     @Test
-    @DisplayName("deleteWithValidByIds: happy path → 走基类 softDelete，每个 id 一次 update(entity, wrapper)，entity 携 id+delUnique，wrapper.setSql del_flag='1'")
+    @DisplayName("deleteWithValidByIds: happy path → 走基类 softDelete，每个 id 一次 wrapper-only update，sqlSet 显式写 del_flag/del_unique/update_by/update_time")
     void testDeleteWithValidByIds_HappyPath() {
-        when(storeMapper.update(any(Store.class), any(UpdateWrapper.class))).thenReturn(1);
+        when(storeMapper.update(isNull(), any(UpdateWrapper.class))).thenReturn(1);
 
         int rows = service.deleteWithValidByIds(List.of(20001L, 20002L));
 
         assertThat(rows).isEqualTo(2);
-        ArgumentCaptor<Store> entityCaptor = ArgumentCaptor.forClass(Store.class);
         ArgumentCaptor<UpdateWrapper<Store>> wrapperCaptor = ArgumentCaptor.forClass(UpdateWrapper.class);
-        verify(storeMapper, times(2)).update(entityCaptor.capture(), wrapperCaptor.capture());
-
-        List<Store> capturedEntities = entityCaptor.getAllValues();
-        assertThat(capturedEntities).extracting(Store::getId).containsExactly(20001L, 20002L);
-        assertThat(capturedEntities).extracting(Store::getDelUnique).containsExactly(20001L, 20002L);
-        // delFlag 不再走 entity，由 wrapper.setSql 强写，绕过 @TableLogic 剥离
-        assertThat(capturedEntities).allSatisfy(s -> assertThat(s.getDelFlag()).isNull());
+        verify(storeMapper, times(2)).update(isNull(), wrapperCaptor.capture());
 
         List<UpdateWrapper<Store>> capturedWrappers = wrapperCaptor.getAllValues();
         assertThat(capturedWrappers).hasSize(2);
         assertThat(capturedWrappers).allSatisfy(w -> {
-            assertThat(w.getSqlSet()).contains("del_flag = '1'");
+            assertThat(w.getSqlSet()).contains("del_flag", "del_unique", "update_by", "update_time");
             assertThat(w.getExpression().getNormal().getSqlSegment()).contains("id");
         });
+        assertThat(capturedWrappers.get(0).getParamNameValuePairs().values())
+            .extracting(Object::toString).contains("20001");
+        assertThat(capturedWrappers.get(1).getParamNameValuePairs().values())
+            .extracting(Object::toString).contains("20002");
+        assertThat(capturedWrappers).allSatisfy(w ->
+            assertThat(w.getParamNameValuePairs().values()).extracting(Object::toString).contains("1"));
     }
 
     @Test
@@ -261,6 +261,6 @@ class StoreServiceImplTest {
     void testDeleteWithValidByIds_EmptyShortCircuit() {
         int rows = service.deleteWithValidByIds(Collections.emptyList());
         assertThat(rows).isZero();
-        verify(storeMapper, times(0)).update(any(Store.class), any(UpdateWrapper.class));
+        verify(storeMapper, times(0)).update(isNull(), any(UpdateWrapper.class));
     }
 }
