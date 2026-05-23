@@ -1,16 +1,16 @@
-name: Deploy Staging (Backend)
+name: Deploy Prod (Backend)
 
 on:
   push:
-    branches: [staging]
+    branches: [main]
   workflow_dispatch:
 
 concurrency:
-  group: deploy-backend-staging
+  group: deploy-backend-prod
   cancel-in-progress: false
 
 env:
-  REMOTE_DIR: /www/wwwroot/api.dongjiaoshan.com
+  REMOTE_DIR: /opt/dongjiaoshan-prod
 
 jobs:
   deploy:
@@ -39,9 +39,9 @@ jobs:
       - name: Upload bundle to server
         uses: appleboy/scp-action@v0.1.7
         with:
-          host: ${{ secrets.SSH_HOST_STAGING }}
+          host: ${{ secrets.SSH_HOST_PROD }}
           username: root
-          key: ${{ secrets.SSH_PRIVATE_KEY_STAGING }}
+          key: ${{ secrets.SSH_PRIVATE_KEY_PROD }}
           source: "deploy/*"
           target: ${{ env.REMOTE_DIR }}
           strip_components: 1
@@ -49,17 +49,17 @@ jobs:
       - name: Restart container
         uses: appleboy/ssh-action@v1
         with:
-          host: ${{ secrets.SSH_HOST_STAGING }}
+          host: ${{ secrets.SSH_HOST_PROD }}
           username: root
-          key: ${{ secrets.SSH_PRIVATE_KEY_STAGING }}
+          key: ${{ secrets.SSH_PRIVATE_KEY_PROD }}
           script: |
             set -e
-            cd /www/wwwroot/api.dongjiaoshan.com
+            cd /opt/dongjiaoshan-prod
             [ -f .env ] || { echo "ERROR: .env missing" >&2; exit 1; }
-            DEPLOY_ENV=staging docker compose up -d --build
+            DEPLOY_ENV=prod docker compose up -d --build
             echo "Waiting for healthcheck..."
             for i in $(seq 1 30); do
-              status=$(docker inspect -f '{{.State.Health.Status}}' djs-ruoyi-admin-staging 2>/dev/null || echo starting)
+              status=$(docker inspect -f '{{.State.Health.Status}}' djs-ruoyi-admin-prod 2>/dev/null || echo starting)
               echo "[$i] health=$status"
               [ "$status" = "healthy" ] && exit 0
               [ "$status" = "unhealthy" ] && { docker compose logs --tail=200 ruoyi-admin; exit 1; }
