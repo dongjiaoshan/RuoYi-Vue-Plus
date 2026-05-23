@@ -37,7 +37,7 @@ VALUES
 
 -- ------------------------------------------------------------
 -- 角色 → 菜单映射
---   boss / manager / pig_keeper / butcher 全部赋猪只主表 list + query
+--   boss / manager / breed_admin / breed_worker 全部赋猪只主表 list + query
 --   djs:breed:pig:event 仅赋 boss（系统级 / 调试），manager / 业务角色不下放
 --   djs:breed:pig:export 赋 boss + manager
 -- ------------------------------------------------------------
@@ -46,7 +46,7 @@ INSERT IGNORE INTO sys_role_menu (role_id, menu_id)
 SELECT r.role_id, m.menu_id
 FROM sys_role r
 CROSS JOIN (SELECT 7200 AS menu_id UNION SELECT 7201 UNION SELECT 7202) m
-WHERE r.role_key IN ('boss', 'manager', 'pig_keeper', 'butcher');
+WHERE r.role_key IN ('boss', 'manager', 'breed_admin', 'breed_worker');
 
 -- event (7203)：仅 boss（系统级）
 INSERT IGNORE INTO sys_role_menu (role_id, menu_id)

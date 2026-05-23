@@ -37,9 +37,4 @@ public class PersonQuery extends BaseEntity {
      */
     private String status;
 
-    /**
-     * 岗位 ID。
-     */
-    private Long postId;
-
 }

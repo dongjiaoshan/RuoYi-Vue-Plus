@@ -71,12 +71,6 @@ public class PersonVo implements Serializable {
     private String position;
 
     /**
-     * sys_post 外键。
-     */
-    @ExcelProperty(value = "岗位 ID")
-    private Long postId;
-
-    /**
      * 入职日期。
      */
     @ExcelProperty(value = "入职日期")

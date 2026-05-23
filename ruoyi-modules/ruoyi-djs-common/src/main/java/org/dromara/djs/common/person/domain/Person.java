@@ -66,14 +66,9 @@ public class Person extends TenantEntity {
     private String idCard;
 
     /**
-     * 岗位（自由文本，便于业务侧描述；与 sys_post 关联走 {@link #postId}）。
+     * 岗位（自由文本）。
      */
     private String position;
-
-    /**
-     * sys_post 外键（区分 admin 角色 vs 微信端角色）。
-     */
-    private Long postId;
 
     /**
      * 入职日期。

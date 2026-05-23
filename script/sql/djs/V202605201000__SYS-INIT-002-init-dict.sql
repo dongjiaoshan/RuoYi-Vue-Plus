@@ -108,7 +108,7 @@ VALUES
   (1000071, '1001', 1, '否', '0', 'djs_yes_no', '', 'info',    'Y', NULL, NOW());
 
 -- ============================================================
--- B. 养殖域（8 类）
+-- B. 养殖域（10 类）
 -- ============================================================
 
 -- B1 djs_pig_gender 猪只性别
@@ -119,8 +119,8 @@ VALUES
 INSERT IGNORE INTO sys_dict_data
   (dict_code, tenant_id, dict_sort, dict_label, dict_value, dict_type, css_class, list_class, is_default, create_by, create_time)
 VALUES
-  (1001010, '1001', 0, '公', 'male',   'djs_pig_gender', '', 'primary', 'N', NULL, NOW()),
-  (1001011, '1001', 1, '母', 'female', 'djs_pig_gender', '', 'success', 'N', NULL, NOW());
+  (1001010, '1001', 0, '公', 'M', 'djs_pig_gender', '', 'primary', 'N', NULL, NOW()),
+  (1001011, '1001', 1, '母', 'F', 'djs_pig_gender', '', 'success', 'N', NULL, NOW());
 
 -- B2 djs_pig_breed 品种
 INSERT IGNORE INTO sys_dict_type
@@ -138,11 +138,11 @@ VALUES
   (1001025, '1001', 5, '三元',   'ternary',   'djs_pig_breed', '', 'info',    'N', NULL, NOW()),
   (1001026, '1001', 6, '其他',   'other',     'djs_pig_breed', '', '',        'N', NULL, NOW());
 
--- B3 djs_pig_lifecycle 猪只生命周期阶段（状态机 9 状态 — 与 BRD-CORE-001 enum 必须严格一致）
+-- B3 djs_pig_lifecycle 猪只生命周期阶段（状态机 10 状态 — 与 BRD-CORE-001 enum 必须严格一致）
 INSERT IGNORE INTO sys_dict_type
   (dict_id, tenant_id, dict_name, dict_type, create_by, create_time, remark)
 VALUES
-  (100103, '1001', '猪只生命周期', 'djs_pig_lifecycle', NULL, NOW(), '养殖：状态机 9 状态，BRD-CORE-001 enum 严格对齐');
+  (100103, '1001', '猪只生命周期', 'djs_pig_lifecycle', NULL, NOW(), '养殖：状态机 10 状态，BRD-CORE-001 enum 严格对齐');
 INSERT IGNORE INTO sys_dict_data
   (dict_code, tenant_id, dict_sort, dict_label, dict_value, dict_type, css_class, list_class, is_default, create_by, create_time)
 VALUES
@@ -231,6 +231,31 @@ VALUES
   (1001091, '1001', 1, '疾病', 'disease',     'djs_elimination_reason', '', 'danger',  'N', NULL, NOW()),
   (1001092, '1001', 2, '性能', 'performance', 'djs_elimination_reason', '', 'warning', 'N', NULL, NOW()),
   (1001093, '1001', 3, '其他', 'other',       'djs_elimination_reason', '', '',        'N', NULL, NOW());
+
+-- B9 djs_pig_type 猪只类型
+INSERT IGNORE INTO sys_dict_type
+  (dict_id, tenant_id, dict_name, dict_type, create_by, create_time, remark)
+VALUES
+  (100109, '1001', '猪只类型', 'djs_pig_type', NULL, NOW(), '养殖：t_farm_pig_info.pig_type');
+INSERT IGNORE INTO sys_dict_data
+  (dict_code, tenant_id, dict_sort, dict_label, dict_value, dict_type, css_class, list_class, is_default, create_by, create_time)
+VALUES
+  (1001100, '1001', 0, '母猪',   'sow',       'djs_pig_type', '', 'success', 'Y', NULL, NOW()),
+  (1001101, '1001', 1, '公猪',   'boar',      'djs_pig_type', '', 'primary', 'N', NULL, NOW()),
+  (1001102, '1001', 2, '仔猪',   'piglet',    'djs_pig_type', '', 'info',    'N', NULL, NOW()),
+  (1001103, '1001', 3, '育肥猪', 'fattening', 'djs_pig_type', '', 'warning', 'N', NULL, NOW());
+
+-- B10 djs_pig_end_reason 猪只终止原因
+INSERT IGNORE INTO sys_dict_type
+  (dict_id, tenant_id, dict_name, dict_type, create_by, create_time, remark)
+VALUES
+  (100110, '1001', '终止原因', 'djs_pig_end_reason', NULL, NOW(), '养殖：t_farm_pig_info.end_reason（DIE→DEAD / ELIMINATE→CULL / SLAUGHTER→MARKET）');
+INSERT IGNORE INTO sys_dict_data
+  (dict_code, tenant_id, dict_sort, dict_label, dict_value, dict_type, css_class, list_class, is_default, create_by, create_time)
+VALUES
+  (1001110, '1001', 0, '死亡', 'DEAD',   'djs_pig_end_reason', '', 'danger',  'N', NULL, NOW()),
+  (1001111, '1001', 1, '淘汰', 'CULL',   'djs_pig_end_reason', '', 'warning', 'N', NULL, NOW()),
+  (1001112, '1001', 2, '出栏', 'MARKET', 'djs_pig_end_reason', '', 'info',    'N', NULL, NOW());
 
 -- ============================================================
 -- C. 种植域（5 类 — 已有清晰值）
