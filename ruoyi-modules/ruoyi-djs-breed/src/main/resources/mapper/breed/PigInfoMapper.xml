@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="org.dromara.djs.breed.pig.mapper.PigInfoMapper">
+
+    <resultMap type="org.dromara.djs.breed.pig.domain.vo.PigInfoVo" id="PigInfoVoResult">
+        <id property="id" column="id"/>
+        <result property="earTag" column="ear_tag"/>
+        <result property="earNo" column="ear_no"/>
+        <result property="pigSex" column="pig_sex"/>
+        <result property="pigType" column="pig_type"/>
+        <result property="pigBreedCode" column="pig_breed_code"/>
+        <result property="pigBreedName" column="pig_breed_name"/>
+        <result property="pigStrainCode" column="pig_strain_code"/>
+        <result property="pigStrainName" column="pig_strain_name"/>
+        <result property="currentStatus" column="current_status"/>
+        <result property="birthDate" column="birth_date"/>
+        <result property="introduceDate" column="introduce_date"/>
+        <result property="barnId" column="barn_id"/>
+        <result property="penId" column="pen_id"/>
+        <result property="statusStartedAt" column="status_started_at"/>
+        <result property="parity" column="parity"/>
+        <result property="recyclable" column="recyclable"/>
+        <result property="pigAge" column="pig_age"/>
+    </resultMap>
+
+    <select id="selectVoByEarTag" resultMap="PigInfoVoResult">
+        SELECT pi.id,
+               pi.ear_tag,
+               pi.ear_no,
+               pi.pig_sex,
+               pi.pig_type,
+               pi.pig_breed_code,
+               pi.pig_strain_code,
+               pi.current_status,
+               pi.birth_date,
+               pi.introduce_date,
+               pi.barn_id,
+               pi.pen_id,
+               pi.status_started_at,
+               pi.parity,
+               pi.recyclable,
+               TIMESTAMPDIFF(DAY, pi.birth_date, CURDATE()) AS pig_age,
+               b1.breed_strain_name AS pig_breed_name,
+               b2.breed_strain_name AS pig_strain_name
+        FROM t_farm_pig_info pi
+        LEFT JOIN t_farm_breed_info b1 ON b1.breed_strain_code = pi.pig_breed_code
+                                       AND b1.breed_strain = '1' AND b1.del_flag = '0'
+        LEFT JOIN t_farm_breed_info b2 ON b2.breed_strain_code = pi.pig_strain_code
+                                       AND b2.breed_strain = '2' AND b2.del_flag = '0'
+        WHERE pi.ear_tag = #{earTag} AND pi.del_flag = '0'
+    </select>
+
+</mapper>

@@ -1,0 +1,116 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="org.dromara.djs.breed.death.mapper.PigDeathMapper">
+
+    <resultMap type="org.dromara.djs.breed.death.domain.vo.PigDeathVo" id="PigDeathVoResult">
+        <id property="id" column="id"/>
+        <result property="pigId" column="pig_id"/>
+        <result property="earNo" column="ear_no"/>
+        <result property="deathDate" column="death_date"/>
+        <result property="deathPigType" column="death_pig_type"/>
+        <result property="deathKind" column="death_kind"/>
+        <result property="deathReason" column="death_reason"/>
+        <result property="deathDest" column="death_dest"/>
+        <result property="deathWeight" column="death_weight"/>
+        <result property="ossIdsStr" column="oss_ids"/>
+        <result property="operatorId" column="operator_id"/>
+        <result property="barnName" column="barn_name"/>
+        <result property="penName" column="pen_name"/>
+        <result property="createBy" column="create_by"/>
+        <result property="remark" column="remark"/>
+        <!-- 关联猪只信息 -->
+        <result property="pigType" column="pig_type"/>
+        <result property="pigSex" column="pig_sex"/>
+        <result property="pigBreedCode" column="pig_breed_code"/>
+        <result property="pigBreedName" column="pig_breed_name"/>
+        <result property="pigStrainCode" column="pig_strain_code"/>
+        <result property="pigStrainName" column="pig_strain_name"/>
+        <result property="pigAge" column="pig_age"/>
+    </resultMap>
+
+    <select id="selectVoPage" resultMap="PigDeathVoResult">
+        SELECT pd.id,
+               pd.pig_id,
+               pd.ear_no,
+               pd.death_date,
+               pd.death_pig_type,
+               pd.death_kind,
+               pd.death_reason,
+               pd.death_dest,
+               pd.death_weight,
+               pd.oss_ids,
+               pd.operator_id,
+               pd.barn_name,
+               pd.pen_name,
+               pd.create_by,
+               pd.remark,
+               pi.pig_type,
+               pi.pig_sex,
+               pi.pig_breed_code,
+               pi.pig_strain_code,
+               TIMESTAMPDIFF(DAY, pi.birth_date, CURDATE()) AS pig_age,
+               b1.breed_strain_name AS pig_breed_name,
+               b2.breed_strain_name AS pig_strain_name
+        FROM t_farm_pig_death pd
+        LEFT JOIN t_farm_pig_info pi ON pi.id = pd.pig_id AND pi.del_flag = '0'
+        LEFT JOIN t_farm_breed_info b1 ON b1.breed_strain_code = pi.pig_breed_code
+                                       AND b1.breed_strain = '1' AND b1.del_flag = '0'
+        LEFT JOIN t_farm_breed_info b2 ON b2.breed_strain_code = pi.pig_strain_code
+                                       AND b2.breed_strain = '2' AND b2.del_flag = '0'
+        WHERE pd.del_flag = '0'
+        <if test="query.earNo != null and query.earNo != ''">
+            AND pd.ear_no LIKE CONCAT('%', #{query.earNo}, '%')
+        </if>
+        <if test="query.startDate != null">
+            AND pd.death_date >= #{query.startDate}
+        </if>
+        <if test="query.endDate != null">
+            AND pd.death_date &lt;= #{query.endDate}
+        </if>
+        <if test="query.deathPigType != null and query.deathPigType != ''">
+            AND pd.death_pig_type = #{query.deathPigType}
+        </if>
+        <if test="query.deathKind != null and query.deathKind != ''">
+            AND pd.death_kind = #{query.deathKind}
+        </if>
+        <if test="query.deathReason != null and query.deathReason != ''">
+            AND pd.death_reason = #{query.deathReason}
+        </if>
+        ORDER BY pd.death_date DESC, pd.id DESC
+    </select>
+
+    <select id="selectVoById" resultMap="PigDeathVoResult">
+        SELECT pd.id,
+               pd.pig_id,
+               pd.ear_no,
+               pd.death_date,
+               pd.death_pig_type,
+               pd.death_kind,
+               pd.death_reason,
+               pd.death_dest,
+               pd.death_weight,
+               pd.oss_ids,
+               pd.operator_id,
+               pd.barn_name,
+               pd.pen_name,
+               pd.create_by,
+               pd.remark,
+               pi.pig_type,
+               pi.pig_sex,
+               pi.pig_breed_code,
+               pi.pig_strain_code,
+               TIMESTAMPDIFF(DAY, pi.birth_date, CURDATE()) AS pig_age,
+               b1.breed_strain_name AS pig_breed_name,
+               b2.breed_strain_name AS pig_strain_name
+        FROM t_farm_pig_death pd
+        LEFT JOIN t_farm_pig_info pi ON pi.id = pd.pig_id AND pi.del_flag = '0'
+        LEFT JOIN t_farm_breed_info b1 ON b1.breed_strain_code = pi.pig_breed_code
+                                       AND b1.breed_strain = '1' AND b1.del_flag = '0'
+        LEFT JOIN t_farm_breed_info b2 ON b2.breed_strain_code = pi.pig_strain_code
+                                       AND b2.breed_strain = '2' AND b2.del_flag = '0'
+        WHERE pd.id = #{id} AND pd.del_flag = '0'
+    </select>
+
+</mapper>
