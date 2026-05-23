@@ -22,7 +22,6 @@ import org.springframework.stereotype.Service;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 
 /**
  * 人员主数据 Service 实现（SYS-MD-001）。
@@ -115,7 +114,7 @@ public class PersonServiceImpl extends DjsBaseServiceImpl<PersonMapper, Person> 
     }
 
     /**
-     * 构造查询条件：name like / phone like / status eq / post_id eq / person_code eq。
+     * 构造查询条件：name like / phone like / status eq / person_code eq。
      */
     private LambdaQueryWrapper<Person> buildQueryWrapper(PersonQuery query) {
         LambdaQueryWrapper<Person> wrapper = new LambdaQueryWrapper<>();
@@ -126,7 +125,6 @@ public class PersonServiceImpl extends DjsBaseServiceImpl<PersonMapper, Person> 
             .like(StringUtils.isNotBlank(query.getPhone()), Person::getPhone, query.getPhone())
             .eq(StringUtils.isNotBlank(query.getPersonCode()), Person::getPersonCode, query.getPersonCode())
             .eq(StringUtils.isNotBlank(query.getStatus()), Person::getStatus, query.getStatus())
-            .eq(Objects.nonNull(query.getPostId()), Person::getPostId, query.getPostId())
             .orderByDesc(Person::getId);
         return wrapper;
     }

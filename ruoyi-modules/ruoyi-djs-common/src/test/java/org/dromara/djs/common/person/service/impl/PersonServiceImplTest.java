@@ -85,7 +85,6 @@ class PersonServiceImplTest {
             p.setPhone(bo.getPhone());
             p.setIdCard(bo.getIdCard());
             p.setPosition(bo.getPosition());
-            p.setPostId(bo.getPostId());
             p.setHireDate(bo.getHireDate());
             p.setStatus(bo.getStatus());
             p.setAvatarUrl(bo.getAvatarUrl());
@@ -132,7 +131,6 @@ class PersonServiceImplTest {
         assertThat(saved.getStatus()).isEqualTo("0");
         // person_code 由 IBizCodeGenerator 按 BizCodeType.MEMBER_NO 生成（pattern M{seq4}）
         assertThat(saved.getPersonCode()).isEqualTo("M0001");
-        assertThat(saved.getPostId()).isNull();
     }
 
     @Test

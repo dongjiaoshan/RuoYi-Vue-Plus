@@ -4,6 +4,7 @@ import io.github.linpeilie.annotations.AutoMapper;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
+import org.dromara.djs.common.validation.ValidIdCard;
 import lombok.Data;
 import lombok.EqualsAndHashCode;
 import org.dromara.common.mybatis.core.domain.BaseEntity;
@@ -49,9 +50,9 @@ public class PersonBo extends BaseEntity {
     private String phone;
 
     /**
-     * 身份证号（18 位标准格式 / 兼容 15 位老式 / 末位 X）。
+     * 身份证号（18 位居民身份证含末位 X / 15 位旧式；ISO 7064 Mod 11-2 校验码验证）。
      */
-    @Pattern(regexp = "^$|(^\\d{15}$)|(^\\d{17}([0-9Xx])$)", message = "请输入合法的身份证号")
+    @ValidIdCard
     private String idCard;
 
     /**
@@ -59,11 +60,6 @@ public class PersonBo extends BaseEntity {
      */
     @Size(max = 64, message = "岗位长度不能超过 {max} 个字符")
     private String position;
-
-    /**
-     * sys_post 外键。
-     */
-    private Long postId;
 
     /**
      * 入职日期。

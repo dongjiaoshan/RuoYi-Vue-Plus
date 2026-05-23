@@ -26,7 +26,7 @@ VALUES
    'djs:breed:event:intro:list',   '#', 1, NOW(), 'BRD-EVENT-001'),
   (7102, '引种详情', 7100, 2, '', '', '', 1, 0, 'F', '0', '0',
    'djs:breed:event:intro:query',  '#', 1, NOW(), 'BRD-EVENT-001'),
-  (7103, '引种登记', 7100, 3, '', '', '', 1, 0, 'F', '0', '0',
+  (7103, '引种新增', 7100, 3, '', '', '', 1, 0, 'F', '0', '0',
    'djs:breed:event:intro',        '#', 1, NOW(), 'BRD-EVENT-001'),
   (7104, '引种导出', 7100, 4, '', '', '', 1, 0, 'F', '0', '0',
    'djs:breed:event:intro:export', '#', 1, NOW(), 'BRD-EVENT-001');
