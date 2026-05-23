@@ -10,18 +10,18 @@ import lombok.Getter;
  */
 @Getter
 public enum DeathKindEnum {
-    
-    NORMAL("normal", "正常死亡"),
-    ABNORMAL("abnormal", "异常死亡");
-    
+
+    NORMAL("1", "正常死亡"),
+    ABNORMAL("2", "非正常死亡");
+
     private final String code;
     private final String desc;
-    
+
     DeathKindEnum(String code, String desc) {
         this.code = code;
         this.desc = desc;
     }
-    
+
     public static DeathKindEnum fromCode(String code) {
         if (code == null || code.isBlank()) {
             return null;
@@ -33,7 +33,7 @@ public enum DeathKindEnum {
         }
         return null;
     }
-    
+
     public static boolean isValid(String code) {
         return fromCode(code) != null;
     }

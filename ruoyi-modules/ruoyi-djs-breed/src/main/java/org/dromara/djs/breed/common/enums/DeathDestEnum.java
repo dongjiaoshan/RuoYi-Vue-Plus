@@ -12,8 +12,7 @@ import lombok.Getter;
 public enum DeathDestEnum {
     
     SELL("sell", "出售"),
-    HARMLESS("harmless", "无害化处理"),
-    DISPOSAL("disposal", "其他处理");
+    HARMLESS("harmless", "无害化处理");
     
     private final String code;
     private final String desc;
