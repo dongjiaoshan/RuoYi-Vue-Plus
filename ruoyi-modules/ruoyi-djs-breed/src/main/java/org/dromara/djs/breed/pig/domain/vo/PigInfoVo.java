@@ -85,6 +85,11 @@ public class PigInfoVo {
     private Long barnId;
 
     /**
+     * 栋舍名称。
+     */
+    private String barnName;
+
+    /**
      * 栏位ID。
      */
     private Long penId;

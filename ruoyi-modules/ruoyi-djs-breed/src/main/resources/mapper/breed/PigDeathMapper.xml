@@ -81,36 +81,4 @@
         ORDER BY pd.death_date DESC, pd.id DESC
     </select>
 
-    <select id="selectVoById" resultMap="PigDeathVoResult">
-        SELECT pd.id,
-               pd.pig_id,
-               pd.ear_no,
-               pd.death_date,
-               pd.death_pig_type,
-               pd.death_kind,
-               pd.death_reason,
-               pd.death_dest,
-               pd.death_weight,
-               pd.oss_ids,
-               pd.operator_id,
-               pd.barn_name,
-               pd.pen_name,
-               pd.create_by,
-               pd.remark,
-               pi.pig_type,
-               pi.pig_sex,
-               pi.pig_breed_code,
-               pi.pig_strain_code,
-               TIMESTAMPDIFF(DAY, pi.birth_date, CURDATE()) AS pig_age,
-               b1.breed_strain_name AS pig_breed_name,
-               b2.breed_strain_name AS pig_strain_name
-        FROM t_farm_pig_death pd
-        LEFT JOIN t_farm_pig_info pi ON pi.id = pd.pig_id AND pi.del_flag = '0'
-        LEFT JOIN t_farm_breed_info b1 ON b1.breed_strain_code = pi.pig_breed_code
-                                       AND b1.breed_strain = '1' AND b1.del_flag = '0'
-        LEFT JOIN t_farm_breed_info b2 ON b2.breed_strain_code = pi.pig_strain_code
-                                       AND b2.breed_strain = '2' AND b2.del_flag = '0'
-        WHERE pd.id = #{id} AND pd.del_flag = '0'
-    </select>
-
-</mapper>
+    </mapper>

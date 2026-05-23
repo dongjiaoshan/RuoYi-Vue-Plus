@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableLogic;
 import com.baomidou.mybatisplus.annotation.TableName;
+import com.baomidou.mybatisplus.annotation.Version;
 import lombok.Data;
 import lombok.EqualsAndHashCode;
 import org.dromara.common.tenant.core.TenantEntity;
@@ -75,7 +76,7 @@ public class PigInfo extends TenantEntity {
     private String pigStrainCode;
 
     /**
-     * 当前状态（HB/PZ/PH/FM/DN/LC/KH/FQ/END）。
+     * 当前状态（G:后备/M:配种/N:空怀/W:断奶/F:育肥/L:分娩/C:淘汰/D:死亡/S:出栏/R:返情/A:流产/B:公猪）。
      */
     private String currentStatus;
 
@@ -135,6 +136,18 @@ public class PigInfo extends TenantEntity {
     private Long penId;
 
     /**
+     * 栋舍名称（关联查询用，非数据库字段）。
+     */
+    @TableField(exist = false)
+    private String barnName;
+
+    /**
+     * 栏位名称（关联查询用，非数据库字段）。
+     */
+    @TableField(exist = false)
+    private String penName;
+
+    /**
      * 最近一次配种记录 ID。
      */
     private Long matingId;
@@ -152,6 +165,7 @@ public class PigInfo extends TenantEntity {
     /**
      * 乐观锁版本。
      */
+    @Version
     private Integer version;
 
     /**

@@ -19,20 +19,23 @@ public interface IPigInfoService {
      */
     PigInfoVo queryByEarTag(String earTag);
 
+
     /**
-     * 根据耳号查询猪只实体。
+     * 根据猪只ID查询猪只实体。
      *
-     * @param earTag 耳号
+     * @param pigId 猪只ID
      * @return 猪只实体
      */
-    PigInfo getByEarTag(String earTag);
+    PigInfo getById(Long pigId);
 
     /**
      * 更新猪只状态为死亡。
+     * <p>使用 MyBatis-Plus 乐观锁自动处理并发控制。</p>
+     * <p>直接传入 pigInfo 对象，避免重复查询数据库。</p>
      *
-     * @param pigId 猪只ID
+     * @param pigInfo 猪只信息对象
      * @return 更新结果
      */
-    int updateStatusToDeath(Long pigId);
+    int updateStatusToDeath(PigInfo pigInfo);
 
 }

@@ -7,7 +7,7 @@ import org.dromara.djs.breed.death.domain.bo.PigDeathBo;
 import org.dromara.djs.breed.death.domain.query.PigDeathQuery;
 import org.dromara.djs.breed.death.domain.vo.PigDeathVo;
 
-import java.util.Collection;
+
 
 /**
  * 猪只死亡记录Service接口。
@@ -27,35 +27,11 @@ public interface IPigDeathService {
     TableDataInfo<PigDeathVo> queryPageList(PigDeathQuery query, PageQuery pageQuery);
 
     /**
-     * 查询死亡记录详情。
-     *
-     * @param id 主键ID
-     * @return 死亡记录详情
-     */
-    PigDeathVo queryById(Long id);
-
-    /**
      * 提交死亡信息。
      *
      * @param bo 死亡信息BO
      * @return 提交结果
      */
     int submitDeathInfo(PigDeathBo bo);
-
-    /**
-     * 删除死亡记录（软删）。
-     *
-     * @param ids 主键ID集合
-     * @return 删除结果
-     */
-    int deleteWithValidByIds(Collection<Long> ids);
-
-    /**
-     * 根据猪只ID查询死亡记录。
-     *
-     * @param pigId 猪只ID
-     * @return 死亡记录
-     */
-    PigDeath getByPigId(Long pigId);
 
 }

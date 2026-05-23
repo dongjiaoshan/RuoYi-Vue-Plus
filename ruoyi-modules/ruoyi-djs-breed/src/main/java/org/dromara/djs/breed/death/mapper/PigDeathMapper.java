@@ -25,14 +25,6 @@ public interface PigDeathMapper extends BaseMapperPlus<PigDeath, PigDeathVo> {
     IPage<PigDeathVo> selectVoPage(IPage<PigDeathVo> page, PigDeathQuery query);
 
     /**
-     * 查询死亡记录详情（关联查询）。
-     *
-     * @param id 主键ID
-     * @return 死亡记录详情
-     */
-    PigDeathVo selectVoById(Long id);
-
-    /**
      * 根据猪只ID查询死亡记录。
      *
      * @param pigId 猪只ID

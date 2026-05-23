@@ -13,15 +13,10 @@ import org.dromara.djs.breed.death.domain.query.PigDeathQuery;
 import org.dromara.djs.breed.death.domain.vo.PigDeathVo;
 import org.dromara.djs.breed.death.service.IPigDeathService;
 import org.springframework.validation.annotation.Validated;
-import org.springframework.web.bind.annotation.DeleteMapping;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
-
-import java.util.Arrays;
 
 /**
  * 猪只死亡模块Controller（小程序入口）（BRD-MD-003）。
@@ -50,7 +45,7 @@ public class AppletPigDeathController extends BaseController {
     @SaCheckLogin
     @PostMapping("/submit")
     public R<Void> submitDeathInfo(@Validated @RequestBody PigDeathBo bo) {
-        log.info("[applet-death] 提交死亡信息 pigId={} earNo={}", bo.getPigId(), bo.getEarNo());
+        log.info("[applet-death] 提交死亡信息 pigId={}", bo.getPigId());
         try {
             int result = pigDeathService.submitDeathInfo(bo);
             if (result > 0) {
@@ -72,26 +67,9 @@ public class AppletPigDeathController extends BaseController {
     @SaCheckLogin
     @PostMapping("/list")
     public TableDataInfo<PigDeathVo> list(@RequestBody PigDeathQuery query, PageQuery pageQuery) {
+        log.info("[applet-death] 查询死亡记录列表 page={}, size={}", 
+                 pageQuery.getPageNum(), pageQuery.getPageSize());
         return pigDeathService.queryPageList(query, pageQuery);
-    }
-
-    /**
-     * 查询死亡记录详情。
-     */
-    @SaCheckLogin
-    @GetMapping("/getInfo/{id}")
-    public R<PigDeathVo> getInfo(@PathVariable Long id) {
-        return R.ok(pigDeathService.queryById(id));
-    }
-
-    /**
-     * 删除死亡记录（软删）。
-     */
-    @SaCheckLogin
-    @DeleteMapping("/remove/{ids}")
-    public R<Void> remove(@PathVariable Long[] ids) {
-        log.info("[applet-death] 删除死亡记录 ids={}", Arrays.toString(ids));
-        return toAjax(pigDeathService.deleteWithValidByIds(Arrays.asList(ids)));
     }
 
 }

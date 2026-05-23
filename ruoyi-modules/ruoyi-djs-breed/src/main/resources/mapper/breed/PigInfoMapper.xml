@@ -18,6 +18,7 @@
         <result property="birthDate" column="birth_date"/>
         <result property="introduceDate" column="introduce_date"/>
         <result property="barnId" column="barn_id"/>
+        <result property="barnName" column="barn_name"/>
         <result property="penId" column="pen_id"/>
         <result property="statusStartedAt" column="status_started_at"/>
         <result property="parity" column="parity"/>
@@ -37,6 +38,7 @@
                pi.birth_date,
                pi.introduce_date,
                pi.barn_id,
+               bi.barn_name,
                pi.pen_id,
                pi.status_started_at,
                pi.parity,
@@ -49,7 +51,18 @@
                                        AND b1.breed_strain = '1' AND b1.del_flag = '0'
         LEFT JOIN t_farm_breed_info b2 ON b2.breed_strain_code = pi.pig_strain_code
                                        AND b2.breed_strain = '2' AND b2.del_flag = '0'
+        LEFT JOIN t_farm_barn_info bi ON bi.id = pi.barn_id AND bi.del_flag = '0'
         WHERE pi.ear_tag = #{earTag} AND pi.del_flag = '0'
+    </select>
+
+    <select id="selectByIdWithBarn" resultType="org.dromara.djs.breed.pig.domain.PigInfo">
+        SELECT pi.*,
+               bi.barn_name,
+               pe.pen_name
+        FROM t_farm_pig_info pi
+        LEFT JOIN t_farm_barn_info bi ON bi.id = pi.barn_id AND bi.del_flag = '0'
+        LEFT JOIN t_farm_barn_pen pe ON pe.id = pi.pen_id AND pe.del_flag = '0'
+        WHERE pi.id = #{id} AND pi.del_flag = '0'
     </select>
 
 </mapper>

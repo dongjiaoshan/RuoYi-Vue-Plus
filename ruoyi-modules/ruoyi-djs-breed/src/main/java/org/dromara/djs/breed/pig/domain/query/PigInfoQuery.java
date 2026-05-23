@@ -15,10 +15,4 @@ public class PigInfoQuery {
      * 耳号（精确匹配）。
      */
     private String earTag;
-
-    /**
-     * 猪只类型（字典 djs_pig_type）。
-     */
-    private String pigType;
-
 }

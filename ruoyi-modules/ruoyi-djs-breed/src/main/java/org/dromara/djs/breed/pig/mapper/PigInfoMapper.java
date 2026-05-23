@@ -21,17 +21,13 @@ public interface PigInfoMapper extends BaseMapperPlus<PigInfo, PigInfoVo> {
      */
     PigInfoVo selectVoByEarTag(String earTag);
 
+
     /**
-     * 根据耳号查询猪只实体（用于校验）。
+     * 根据ID查询猪只实体（关联栋舍表）。
      *
-     * @param earTag 耳号
-     * @return 猪只实体
+     * @param id 猪只ID
+     * @return 猪只实体（含栋舍名称）
      */
-    default PigInfo selectByEarTag(String earTag) {
-        LambdaQueryWrapper<PigInfo> wrapper = new LambdaQueryWrapper<>();
-        wrapper.eq(PigInfo::getEarTag, earTag)
-                .eq(PigInfo::getDelFlag, "0");
-        return selectOne(wrapper);
-    }
+    PigInfo selectByIdWithBarn(Long id);
 
 }

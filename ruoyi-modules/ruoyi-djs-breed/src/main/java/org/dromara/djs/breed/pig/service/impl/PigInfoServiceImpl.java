@@ -1,8 +1,8 @@
 package org.dromara.djs.breed.pig.service.impl;
 
-import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.common.core.exception.ServiceException;
+import org.dromara.djs.breed.common.enums.PigStatusEnum;
 import org.dromara.djs.breed.pig.domain.PigInfo;
 import org.dromara.djs.breed.pig.domain.vo.PigInfoVo;
 import org.dromara.djs.breed.pig.mapper.PigInfoMapper;
@@ -42,28 +42,36 @@ public class PigInfoServiceImpl implements IPigInfoService {
     }
 
     @Override
-    public PigInfo getByEarTag(String earTag) {
-        if (earTag == null || earTag.isBlank()) {
-            log.warn("[pig-info-service] 耳号为空");
-            throw new ServiceException("耳号不能为空");
-        }
-        return pigInfoMapper.selectByEarTag(earTag);
-    }
-
-    @Override
-    public int updateStatusToDeath(Long pigId) {
+    public PigInfo getById(Long pigId) {
         if (pigId == null) {
             log.warn("[pig-info-service] 猪只ID为空");
             throw new ServiceException("猪只ID不能为空");
         }
-        LambdaUpdateWrapper<PigInfo> wrapper = new LambdaUpdateWrapper<>();
-        wrapper.eq(PigInfo::getId, pigId)
-                .eq(PigInfo::getDelFlag, "0");
-        PigInfo updateEntity = new PigInfo();
-        updateEntity.setCurrentStatus("END");
-        updateEntity.setEndReason("DEAD");
-        updateEntity.setStatusStartedAt(LocalDateTime.now());
-        int result = pigInfoMapper.update(updateEntity, wrapper);
+        return pigInfoMapper.selectByIdWithBarn(pigId);
+    }
+
+    @Override
+    public int updateStatusToDeath(PigInfo pigInfo) {
+        if (pigInfo == null) {
+            log.warn("[pig-info-service] 猪只信息为空");
+            throw new ServiceException("猪只信息不能为空");
+        }
+
+        Long pigId = pigInfo.getId();
+
+        // 设置更新字段（使用枚举类）
+        pigInfo.setCurrentStatus(PigStatusEnum.D.getCode());
+        pigInfo.setEndReason(PigStatusEnum.D.getCode());
+        pigInfo.setStatusStartedAt(LocalDateTime.now());
+
+        // MyBatis-Plus 乐观锁插件自动处理 version
+        int result = pigInfoMapper.updateById(pigInfo);
+
+        if (result == 0) {
+            log.warn("[pig-info-service] 乐观锁更新失败，可能存在并发修改 pigId={}", pigId);
+            throw new ServiceException("数据更新失败，请刷新后重试");
+        }
+
         log.info("[pig-info-service] 更新猪只状态为死亡 pigId={} result={}", pigId, result);
         return result;
     }
