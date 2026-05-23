@@ -1,18 +1,18 @@
 package org.dromara.djs.common.constant;
 
 /**
- * djs 业务字典类型常量（39 类）。
+ * djs 业务字典类型常量（43 类）。
  *
  * <p>所有业务代码使用本常量引用 {@code sys_dict_type.dict_type} 字符串，
  * 避免 30+ 个下游 ticket 硬编码 "djs_pig_breed" 之类字符串散落。</p>
  *
  * <p>数据源：{@code script/sql/djs/V202605201000__SYS-INIT-002-init-dict.sql}。
- * 若该 SQL 增删 dict_type，本文件必须同步更新；二者数量须严格一致（39）。</p>
+ * 若该 SQL 增删 dict_type，本文件必须同步更新；二者数量须严格一致（43）。</p>
  *
  * <p>分组与 SQL 章节对应：</p>
  * <ul>
  *   <li>A. 系统通用（6 类）</li>
- *   <li>B. 养殖域（8 类）</li>
+ *   <li>B. 养殖域（12 类）</li>
  *   <li>C. 种植域（10 类）</li>
  *   <li>D. 仓库域（4 类）</li>
  *   <li>E. 门店域（4 类）</li>
@@ -52,7 +52,7 @@ public final class DictTypeConstants {
     /** 通用是否：1 是 / 0 否。 */
     public static final String YES_NO = "djs_yes_no";
 
-    // ---------------- B. 养殖域（8 类） ----------------
+    // ---------------- B. 养殖域（12 类） ----------------
 
     /** 猪只性别：male / female。 */
     public static final String PIG_GENDER = "djs_pig_gender";
@@ -77,6 +77,18 @@ public final class DictTypeConstants {
 
     /** 兽药类型。 */
     public static final String MED_TYPE = "djs_med_type";
+
+    /** 猪只类型。 */
+    public static final String PIG_TYPE = "djs_pig_type";
+
+    /** 死亡原因。 */
+    public static final String DEATH_REASON = "djs_death_reason";
+
+    /** 死亡去向。 */
+    public static final String DEATH_DEST = "djs_death_dest";
+
+    /** 死亡类型。 */
+    public static final String DEATH_TYPE = "djs_death_type";
 
     // ---------------- C. 种植域（10 类） ----------------
 
