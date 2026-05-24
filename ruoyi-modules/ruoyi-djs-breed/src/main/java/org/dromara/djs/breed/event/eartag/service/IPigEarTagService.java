@@ -1,8 +1,12 @@
 package org.dromara.djs.breed.event.eartag.service;
 
+import org.dromara.common.mybatis.core.page.PageQuery;
+import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.breed.event.eartag.domain.bo.PigletBatchEarTagBo;
+import org.dromara.djs.breed.event.eartag.domain.query.PigletEarTagQuery;
 import org.dromara.djs.breed.event.eartag.domain.vo.FarrowEarTagStatVo;
 import org.dromara.djs.breed.event.eartag.domain.vo.PigletEarTagVo;
+import org.dromara.djs.breed.event.eartag.domain.vo.PigletnoVo;
 
 import java.util.List;
 
@@ -39,4 +43,9 @@ public interface IPigEarTagService {
      * @return 生成的 N 个 VO（耳号、pig_id、出生重等）
      */
     List<PigletEarTagVo> batchTag(PigletBatchEarTagBo bo);
+
+    /**
+     * 分页查询仔猪耳标历史（admin 只读列表）。
+     */
+    TableDataInfo<PigletnoVo> queryPage(PigletEarTagQuery query, PageQuery pageQuery);
 }

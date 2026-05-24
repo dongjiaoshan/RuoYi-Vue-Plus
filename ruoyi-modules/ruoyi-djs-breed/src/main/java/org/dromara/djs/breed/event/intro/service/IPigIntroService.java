@@ -1,8 +1,12 @@
 package org.dromara.djs.breed.event.intro.service;
 
+import org.dromara.common.mybatis.core.page.PageQuery;
+import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.breed.event.intro.domain.bo.PigIntroBatchBo;
 import org.dromara.djs.breed.event.intro.domain.bo.PigIntroBo;
+import org.dromara.djs.breed.event.intro.domain.query.PigIntroQuery;
 import org.dromara.djs.breed.event.intro.domain.vo.PigIntroResultVo;
+import org.dromara.djs.breed.event.intro.domain.vo.PigIntroduceVo;
 
 /**
  * 引种业务 Service（BRD-EVENT-001）。
@@ -41,4 +45,13 @@ public interface IPigIntroService {
      * @return 引种业务行 + 创建的猪只摘要（pigs.size==count）
      */
     PigIntroResultVo introduceBatch(PigIntroBatchBo bo);
+
+    /**
+     * 分页查询引种历史（admin 只读列表）。
+     *
+     * @param query     过滤条件（按 introduceNo / type / supplier / date 范围）
+     * @param pageQuery 分页 + 排序
+     * @return 分页结果
+     */
+    TableDataInfo<PigIntroduceVo> queryPage(PigIntroQuery query, PageQuery pageQuery);
 }

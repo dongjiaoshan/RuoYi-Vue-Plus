@@ -6,10 +6,14 @@ import org.dromara.common.core.domain.R;
 import org.dromara.common.idempotent.annotation.RepeatSubmit;
 import org.dromara.common.log.annotation.Log;
 import org.dromara.common.log.enums.BusinessType;
+import org.dromara.common.mybatis.core.page.PageQuery;
+import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.web.core.BaseController;
 import org.dromara.djs.breed.event.eartag.domain.bo.PigletBatchEarTagBo;
+import org.dromara.djs.breed.event.eartag.domain.query.PigletEarTagQuery;
 import org.dromara.djs.breed.event.eartag.domain.vo.FarrowEarTagStatVo;
 import org.dromara.djs.breed.event.eartag.domain.vo.PigletEarTagVo;
+import org.dromara.djs.breed.event.eartag.domain.vo.PigletnoVo;
 import org.dromara.djs.breed.event.eartag.service.IPigEarTagService;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -46,6 +50,13 @@ import java.util.List;
 public class PigEarTagController extends BaseController {
 
     private final IPigEarTagService eartagService;
+
+    /** admin 只读列表 — 历史仔猪耳标分页查询（mp 不调用）。 */
+    @SaCheckPermission("djs:breed:event:eartag:list")
+    @GetMapping("/list")
+    public TableDataInfo<PigletnoVo> list(PigletEarTagQuery query, PageQuery pageQuery) {
+        return eartagService.queryPage(query, pageQuery);
+    }
 
     /** 统计某次分娩耳标进度。 */
     @SaCheckPermission("djs:breed:event:eartag:query")

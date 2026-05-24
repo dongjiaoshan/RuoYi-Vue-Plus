@@ -1,10 +1,14 @@
 package org.dromara.djs.breed.event.intro.service.impl;
 
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.core.utils.StringUtils;
+import org.dromara.common.mybatis.core.page.PageQuery;
+import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.breed.core.domain.Pig;
 import org.dromara.djs.breed.core.domain.bo.PigCreateBo;
 import org.dromara.djs.breed.core.service.I18nMessages;
@@ -12,6 +16,7 @@ import org.dromara.djs.breed.core.service.IPigCoreService;
 import org.dromara.djs.breed.event.intro.domain.PigIntroduce;
 import org.dromara.djs.breed.event.intro.domain.bo.PigIntroBatchBo;
 import org.dromara.djs.breed.event.intro.domain.bo.PigIntroBo;
+import org.dromara.djs.breed.event.intro.domain.query.PigIntroQuery;
 import org.dromara.djs.breed.event.intro.domain.vo.PigIntroResultVo;
 import org.dromara.djs.breed.event.intro.domain.vo.PigIntroduceVo;
 import org.dromara.djs.breed.event.intro.mapper.PigIntroduceMapper;
@@ -106,6 +111,20 @@ public class PigIntroServiceImpl implements IPigIntroService {
         incrementPenCount(bo.getPenId(), 1);
 
         return buildResult(intro, List.of(pig));
+    }
+
+    @Override
+    public TableDataInfo<PigIntroduceVo> queryPage(PigIntroQuery query, PageQuery pageQuery) {
+        LambdaQueryWrapper<PigIntroduce> wrapper = Wrappers.<PigIntroduce>lambdaQuery()
+            .likeRight(StringUtils.isNotBlank(query.getIntroduceNo()), PigIntroduce::getIntroduceNo, query.getIntroduceNo())
+            .eq(StringUtils.isNotBlank(query.getIntroduceType()), PigIntroduce::getIntroduceType, query.getIntroduceType())
+            .eq(query.getSupplierId() != null, PigIntroduce::getSupplierId, query.getSupplierId())
+            .eq(StringUtils.isNotBlank(query.getPigSex()), PigIntroduce::getPigSex, query.getPigSex())
+            .ge(query.getBeginDate() != null, PigIntroduce::getIntroduceDate, query.getBeginDate())
+            .le(query.getEndDate() != null, PigIntroduce::getIntroduceDate, query.getEndDate())
+            .orderByDesc(PigIntroduce::getId);
+        Page<PigIntroduceVo> page = introduceMapper.selectVoPage(pageQuery.build(), wrapper);
+        return TableDataInfo.build(page);
     }
 
     @Override

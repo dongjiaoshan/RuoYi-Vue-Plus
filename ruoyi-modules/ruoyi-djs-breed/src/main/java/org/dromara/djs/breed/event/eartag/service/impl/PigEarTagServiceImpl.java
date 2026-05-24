@@ -2,9 +2,13 @@ package org.dromara.djs.breed.event.eartag.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.common.core.exception.ServiceException;
+import org.dromara.common.core.utils.StringUtils;
+import org.dromara.common.mybatis.core.page.PageQuery;
+import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.breed.core.domain.Pig;
 import org.dromara.djs.breed.core.enums.PigLifecycle;
 import org.dromara.djs.breed.core.mapper.PigMapper;
@@ -13,8 +17,10 @@ import org.dromara.djs.breed.event.eartag.domain.FarrowRef;
 import org.dromara.djs.breed.event.eartag.domain.PigPigletno;
 import org.dromara.djs.breed.event.eartag.domain.bo.PigletBatchEarTagBo;
 import org.dromara.djs.breed.event.eartag.domain.bo.PigletEarTagItem;
+import org.dromara.djs.breed.event.eartag.domain.query.PigletEarTagQuery;
 import org.dromara.djs.breed.event.eartag.domain.vo.FarrowEarTagStatVo;
 import org.dromara.djs.breed.event.eartag.domain.vo.PigletEarTagVo;
+import org.dromara.djs.breed.event.eartag.domain.vo.PigletnoVo;
 import org.dromara.djs.breed.event.eartag.mapper.FarrowRefMapper;
 import org.dromara.djs.breed.event.eartag.mapper.PigPigletnoMapper;
 import org.dromara.djs.breed.event.eartag.service.IPigEarTagService;
@@ -243,5 +249,19 @@ public class PigEarTagServiceImpl implements IPigEarTagService {
             m.put(p.getId(), p);
         }
         return m;
+    }
+
+    @Override
+    public TableDataInfo<PigletnoVo> queryPage(PigletEarTagQuery query, PageQuery pageQuery) {
+        LambdaQueryWrapper<PigPigletno> wrapper = Wrappers.<PigPigletno>lambdaQuery()
+            .eq(StringUtils.isNotBlank(query.getPigletEarNo()), PigPigletno::getPigletEarNo, query.getPigletEarNo())
+            .eq(StringUtils.isNotBlank(query.getMotherEarNo()), PigPigletno::getMotherEarNo, query.getMotherEarNo())
+            .eq(query.getFarrowId() != null, PigPigletno::getFarrowId, query.getFarrowId())
+            .eq(StringUtils.isNotBlank(query.getPigletSex()), PigPigletno::getPigletSex, query.getPigletSex())
+            .ge(query.getBeginDate() != null, PigPigletno::getTagDate, query.getBeginDate())
+            .le(query.getEndDate() != null, PigPigletno::getTagDate, query.getEndDate())
+            .orderByDesc(PigPigletno::getId);
+        Page<PigletnoVo> page = pigletnoMapper.selectVoPage(pageQuery.build(), wrapper);
+        return TableDataInfo.build(page);
     }
 }

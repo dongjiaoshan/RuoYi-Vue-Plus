@@ -6,12 +6,17 @@ import org.dromara.common.core.domain.R;
 import org.dromara.common.idempotent.annotation.RepeatSubmit;
 import org.dromara.common.log.annotation.Log;
 import org.dromara.common.log.enums.BusinessType;
+import org.dromara.common.mybatis.core.page.PageQuery;
+import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.web.core.BaseController;
 import org.dromara.djs.breed.event.intro.domain.bo.PigIntroBatchBo;
 import org.dromara.djs.breed.event.intro.domain.bo.PigIntroBo;
+import org.dromara.djs.breed.event.intro.domain.query.PigIntroQuery;
 import org.dromara.djs.breed.event.intro.domain.vo.PigIntroResultVo;
+import org.dromara.djs.breed.event.intro.domain.vo.PigIntroduceVo;
 import org.dromara.djs.breed.event.intro.service.IPigIntroService;
 import org.springframework.validation.annotation.Validated;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -40,6 +45,13 @@ import org.springframework.web.bind.annotation.RestController;
 public class PigIntroController extends BaseController {
 
     private final IPigIntroService introService;
+
+    /** admin 只读列表 — 历史引种记录分页查询（mp 不调用）。 */
+    @SaCheckPermission("djs:breed:event:intro:list")
+    @GetMapping("/intro/list")
+    public TableDataInfo<PigIntroduceVo> list(PigIntroQuery query, PageQuery pageQuery) {
+        return introService.queryPage(query, pageQuery);
+    }
 
     /** 单头引种。 */
     @SaCheckPermission("djs:breed:event:intro")
