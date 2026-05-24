@@ -38,8 +38,18 @@ public class PigIntroBo implements Serializable {
     @NotNull(message = "intro.date.required")
     private LocalDate introduceDate;
 
-    /** 供应商 ID（外部引种必填；内部引种可空）。 */
+    /**
+     * 供应商 ID（外部引种必填；内部引种可空）。与 {@link #supplierCode} 二选一。
+     * <p>admin 端（接 BRD-LIST-001 下拉后）传 id；mp 端 V1 用户手输 supplier_code，service 解析。</p>
+     */
     private Long supplierId;
+
+    /**
+     * 供应商编码（mp 端用户可见的短码，如 "G0004"；service 层按 (tenant_id, supplier_code) 查 id）。
+     * 与 {@link #supplierId} 二选一。
+     */
+    @Size(max = 32, message = "intro.supplier_code.size")
+    private String supplierCode;
 
     /**
      * 凭证图 OSS ID 逗号分隔（外部引种必填）。

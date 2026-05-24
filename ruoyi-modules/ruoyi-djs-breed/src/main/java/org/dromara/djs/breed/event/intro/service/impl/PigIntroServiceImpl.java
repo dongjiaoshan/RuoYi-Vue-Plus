@@ -132,11 +132,19 @@ public class PigIntroServiceImpl implements IPigIntroService {
     }
 
     /**
-     * mp 端用户输的是栋舍编码 / 栏位编码（admin 可见短码），转成主键 id 再走原逻辑。
-     * <p>id 已传则跳过；id / code 都没传则抛错（JSR-303 不再强制 id 必填）。</p>
+     * mp 端用户输的是栋舍编码 / 栏位编码 / 供应商编码（admin 可见短码），转成主键 id 再走原逻辑。
+     * <p>id 已传则跳过；id 不传且 code 不传，由 validate 阶段统一报错（supplier 内部引种 null OK）。</p>
      * <p>pen_code 在所属 barn 下 unique，必须先 resolve barn 后再查 pen。</p>
      */
     private void resolveBarnPenCodes(PigIntroBo bo) {
+        if (bo.getSupplierId() == null && StringUtils.isNotBlank(bo.getSupplierCode())) {
+            Supplier sup = supplierMapper.selectOne(
+                Wrappers.<Supplier>lambdaQuery().eq(Supplier::getSupplierCode, bo.getSupplierCode()).last("LIMIT 1"));
+            if (sup == null) {
+                throw new ServiceException(I18nMessages.t("intro.supplier_not_found", bo.getSupplierCode()));
+            }
+            bo.setSupplierId(sup.getId());
+        }
         if (bo.getBarnId() == null) {
             if (StringUtils.isBlank(bo.getBarnCode())) {
                 throw new ServiceException(I18nMessages.t("intro.barn.required"));
