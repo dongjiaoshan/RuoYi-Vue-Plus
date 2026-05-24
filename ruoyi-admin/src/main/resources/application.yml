@@ -68,6 +68,25 @@ spring:
     basename: i18n/messages
   profiles:
     active: @profiles.active@
+  # Flyway DB migration —— 只管业务 SQL（classpath:db/migration/V*__*.sql）
+  # ruoyi 自带 ry_vue_5.X.sql / ry_job.sql / ry_workflow.sql 仍按 quickstart 手工导入。
+  # 已部署环境（dev/staging）：首次启动时 baseline-on-migrate 会创建 flyway_schema_history 表
+  # 并把 baseline-version 之前的 SQL 全部标记为已应用，避免重跑。
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    table: flyway_schema_history
+    baseline-on-migrate: true
+    # baseline-version = 当前已部署的最大 V<version>（D04 HOTFIX V202605281100）。
+    # 后续新增 SQL 时间戳必须 > 该值（建议直接用当天 yyyyMMddHHmm），否则会被视为
+    # baseline 之前已应用而跳过。每次升 baseline 都需要所有部署环境同步升级。
+    baseline-version: 202605281100
+    baseline-description: dongjiaoshan v1 baseline (D04 closing snapshot)
+    validate-on-migrate: true
+    # 严格顺序 —— 不允许跳号或乱序补挂
+    out-of-order: false
+    # SQL 注释里的 ${...} 别被 flyway 当占位符替换（业务 SQL 没用占位符）
+    placeholder-replacement: false
   # 文件上传
   servlet:
     multipart:
