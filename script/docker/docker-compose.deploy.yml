@@ -1,7 +1,9 @@
 services:
   ruoyi-admin:
     build:
-      context: .
+      # context 指向仓库根目录（compose 文件在 script/docker/ 下）
+      # Maven multi-stage build 需要根 pom.xml + 所有模块源码
+      context: ../..
       dockerfile: Dockerfile
     image: dongjiaoshan/ruoyi-admin:${DEPLOY_ENV:?DEPLOY_ENV is required}
     container_name: djs-ruoyi-admin-${DEPLOY_ENV:?}
@@ -10,12 +12,12 @@ services:
     # 应用 8080 直接占用宿主 8080，因此不需要 ports 映射。
     network_mode: host
     env_file:
-      - ./.env
+      - ../../.env
     environment:
       SPRING_PROFILES_ACTIVE: prod
       TZ: Asia/Shanghai
     volumes:
-      - ./logs:/app/logs
+      - ../../logs:/app/logs
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:8080/actuator/health || exit 1"]
       interval: 30s

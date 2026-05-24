@@ -4,10 +4,12 @@ import lombok.Data;
 import lombok.EqualsAndHashCode;
 import org.dromara.common.mybatis.core.domain.BaseEntity;
 
+import java.util.Date;
+
 /**
  * 育种信息（品种/品系）列表查询入参（BRD-MD-001）。
  *
- * <p>{@code breedStrain} 必传（admin 前端 4 tab 切换时按此过滤：tab1=1 / tab3=2）。</p>
+ * <p>{@code breedStrain} 必传（admin 前端按品种 tab=1 / 品系 tab=2 过滤）。</p>
  *
  * @author djs
  * @since BRD-MD-001
@@ -35,5 +37,15 @@ public class BreedInfoQuery extends BaseEntity {
      * 父级编码（精确匹配）。
      */
     private String parentCode;
+
+    /**
+     * 创建时间范围 - 开始（含）。
+     */
+    private Date createTimeBegin;
+
+    /**
+     * 创建时间范围 - 结束（含）。
+     */
+    private Date createTimeEnd;
 
 }

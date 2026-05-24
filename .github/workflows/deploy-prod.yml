@@ -9,61 +9,49 @@ concurrency:
   group: deploy-backend-prod
   cancel-in-progress: false
 
-env:
-  REMOTE_DIR: /opt/dongjiaoshan-prod
-
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 30
 
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "21"
-          cache: maven
-
-      - name: Build jar
-        run: mvn -B -DskipTests -pl ruoyi-admin -am clean package
-
-      - name: Stage deploy bundle
-        run: |
-          mkdir deploy
-          cp ruoyi-admin/target/ruoyi-admin.jar deploy/
-          cp Dockerfile deploy/
-          cp script/docker/docker-compose.deploy.yml deploy/docker-compose.yml
-
-      - name: Upload bundle to server
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{ secrets.SSH_HOST_PROD }}
-          username: root
-          key: ${{ secrets.SSH_PRIVATE_KEY_PROD }}
-          source: "deploy/*"
-          target: ${{ env.REMOTE_DIR }}
-          strip_components: 1
-
-      - name: Restart container
+      - name: Trigger deploy on server
         uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.SSH_HOST_PROD }}
           username: root
           key: ${{ secrets.SSH_PRIVATE_KEY_PROD }}
+          command_timeout: 30m
           script: |
             set -e
-            cd /opt/dongjiaoshan-prod
+            REPO_DIR=/opt/dongjiaoshan-prod
+            COMPOSE="docker compose -f script/docker/docker-compose.deploy.yml"
+
+            cd "$REPO_DIR"
             [ -f .env ] || { echo "ERROR: .env missing" >&2; exit 1; }
-            DEPLOY_ENV=prod docker compose up -d --build
-            echo "Waiting for healthcheck..."
-            for i in $(seq 1 30); do
+
+            echo "==> Pulling latest main branch"
+            git fetch origin main
+            git reset --hard origin/main
+
+            echo "==> Stopping old container to free memory for Maven build"
+            DEPLOY_ENV=prod $COMPOSE stop ruoyi-admin || true
+
+            echo "==> Building new image (multi-stage Maven build)"
+            export DOCKER_BUILDKIT=1
+            export COMPOSE_DOCKER_CLI_BUILD=1
+            DEPLOY_ENV=prod $COMPOSE build ruoyi-admin
+
+            echo "==> Starting new container"
+            DEPLOY_ENV=prod $COMPOSE up -d ruoyi-admin
+
+            echo "==> Waiting for healthcheck..."
+            for i in $(seq 1 36); do
               status=$(docker inspect -f '{{.State.Health.Status}}' djs-ruoyi-admin-prod 2>/dev/null || echo starting)
               echo "[$i] health=$status"
               [ "$status" = "healthy" ] && exit 0
-              [ "$status" = "unhealthy" ] && { docker compose logs --tail=200 ruoyi-admin; exit 1; }
+              [ "$status" = "unhealthy" ] && { DEPLOY_ENV=prod $COMPOSE logs --tail=200 ruoyi-admin; exit 1; }
               sleep 5
             done
-            docker compose logs --tail=200 ruoyi-admin
+            DEPLOY_ENV=prod $COMPOSE logs --tail=200 ruoyi-admin
             exit 1

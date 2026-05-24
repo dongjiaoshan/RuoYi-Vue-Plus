@@ -4,6 +4,8 @@ import lombok.Data;
 import lombok.EqualsAndHashCode;
 import org.dromara.common.mybatis.core.domain.BaseEntity;
 
+import java.util.Date;
+
 /**
  * 供应商主数据列表查询入参（SYS-MD-003 + SYS-MD-FIX-002）。
  *
@@ -50,5 +52,20 @@ public class SupplierQuery extends BaseEntity {
      * 结算方式（字典 djs_settle_type 精确匹配）。
      */
     private String settleType;
+
+    /**
+     * 更新时间范围 - 开始（含）。
+     */
+    private Date updateTimeBegin;
+
+    /**
+     * 更新时间范围 - 结束（含）。
+     */
+    private Date updateTimeEnd;
+
+    /**
+     * 更新人（sys_user.user_id 精确匹配）。
+     */
+    private Long updateBy;
 
 }

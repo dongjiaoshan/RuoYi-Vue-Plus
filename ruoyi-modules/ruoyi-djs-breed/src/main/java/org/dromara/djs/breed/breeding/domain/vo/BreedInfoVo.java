@@ -72,4 +72,10 @@ public class BreedInfoVo implements Serializable {
     @ExcelProperty(value = "创建时间")
     private Date createTime;
 
+    /**
+     * 创建人（sys_user.user_id）。
+     */
+    @ExcelProperty(value = "创建人")
+    private Long createBy;
+
 }

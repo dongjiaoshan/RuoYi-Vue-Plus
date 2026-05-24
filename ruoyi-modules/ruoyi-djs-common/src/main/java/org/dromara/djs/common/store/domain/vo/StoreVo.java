@@ -123,6 +123,21 @@ public class StoreVo implements Serializable {
     /**
      * 更新时间。
      */
+    @ExcelProperty(value = "更新时间")
     private Date updateTime;
+
+    /**
+     * 更新人（sys_user.user_id）。
+     */
+    @ExcelProperty(value = "更新人")
+    private Long updateBy;
+
+    /**
+     * 员工数量（V1 stub：当前 t_md_store 与 sys_user 仅通过 manager_user_id 关联单店长，
+     * 无法直接统计员工数；service 层 fillEmployeeCount 默认填 0，待 Kevin 定义关联规则
+     * （是否引入 store_user_relation / 或复用 sys_dept）后回填真实值）。
+     */
+    @ExcelProperty(value = "员工数量")
+    private Integer employeeCount;
 
 }

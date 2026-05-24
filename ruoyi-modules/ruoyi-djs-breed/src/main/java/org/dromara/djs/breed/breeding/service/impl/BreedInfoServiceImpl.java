@@ -113,6 +113,8 @@ public class BreedInfoServiceImpl extends DjsBaseServiceImpl<BreedInfoMapper, Br
             .eq(StringUtils.isNotBlank(query.getBreedStrainCode()), BreedInfo::getBreedStrainCode, query.getBreedStrainCode())
             .like(StringUtils.isNotBlank(query.getBreedStrainName()), BreedInfo::getBreedStrainName, query.getBreedStrainName())
             .eq(StringUtils.isNotBlank(query.getParentCode()), BreedInfo::getParentCode, query.getParentCode())
+            .ge(Objects.nonNull(query.getCreateTimeBegin()), BreedInfo::getCreateTime, query.getCreateTimeBegin())
+            .le(Objects.nonNull(query.getCreateTimeEnd()), BreedInfo::getCreateTime, query.getCreateTimeEnd())
             .orderByDesc(BreedInfo::getId);
         return wrapper;
     }

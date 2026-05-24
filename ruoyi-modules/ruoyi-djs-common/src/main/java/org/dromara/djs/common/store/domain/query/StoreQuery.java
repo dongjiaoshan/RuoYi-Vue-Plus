@@ -4,6 +4,8 @@ import lombok.Data;
 import lombok.EqualsAndHashCode;
 import org.dromara.common.mybatis.core.domain.BaseEntity;
 
+import java.util.Date;
+
 /**
  * 门店主数据列表查询入参（SYS-MD-002 + SYS-MD-FIX-002）。
  *
@@ -41,5 +43,20 @@ public class StoreQuery extends BaseEntity {
      * 合作状态（字典 djs_store_status 精确匹配）。
      */
     private String businessStatus;
+
+    /**
+     * 更新时间范围 - 开始（含）。
+     */
+    private Date updateTimeBegin;
+
+    /**
+     * 更新时间范围 - 结束（含）。
+     */
+    private Date updateTimeEnd;
+
+    /**
+     * 更新人（sys_user.user_id 精确匹配）。
+     */
+    private Long updateBy;
 
 }

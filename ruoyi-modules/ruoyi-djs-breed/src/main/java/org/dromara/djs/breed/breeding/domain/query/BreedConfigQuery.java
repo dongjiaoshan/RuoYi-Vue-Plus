@@ -4,6 +4,8 @@ import lombok.Data;
 import lombok.EqualsAndHashCode;
 import org.dromara.common.mybatis.core.domain.BaseEntity;
 
+import java.util.Date;
+
 /**
  * 育种配置（配种关系）列表查询入参（BRD-MD-001）。
  *
@@ -33,5 +35,15 @@ public class BreedConfigQuery extends BaseEntity {
      * 仔代编码（精确匹配）。
      */
     private String cubCode;
+
+    /**
+     * 创建时间范围 - 开始（含）。
+     */
+    private Date createTimeBegin;
+
+    /**
+     * 创建时间范围 - 结束（含）。
+     */
+    private Date createTimeEnd;
 
 }

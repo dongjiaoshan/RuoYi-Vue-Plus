@@ -133,6 +133,8 @@ tenant:
     - sys_client
     - sys_oss_config
     - flow_spel
+    - sys_farm
+    - mp_subscribe_record
 
 # MyBatisPlus配置
 # https://baomidou.com/config/

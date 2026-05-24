@@ -139,6 +139,8 @@ public class BreedConfigServiceImpl extends DjsBaseServiceImpl<BreedConfigMapper
             .eq(StringUtils.isNotBlank(query.getMotherCode()), BreedConfig::getMotherCode, query.getMotherCode())
             .eq(StringUtils.isNotBlank(query.getFatherCode()), BreedConfig::getFatherCode, query.getFatherCode())
             .eq(StringUtils.isNotBlank(query.getCubCode()), BreedConfig::getCubCode, query.getCubCode())
+            .ge(Objects.nonNull(query.getCreateTimeBegin()), BreedConfig::getCreateTime, query.getCreateTimeBegin())
+            .le(Objects.nonNull(query.getCreateTimeEnd()), BreedConfig::getCreateTime, query.getCreateTimeEnd())
             .orderByDesc(BreedConfig::getId);
         return wrapper;
     }

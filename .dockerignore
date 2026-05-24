@@ -1,0 +1,35 @@
+# 排除 build context 上传到 Docker daemon 时的无关文件，加速 build
+.git
+.gitignore
+.gitattributes
+.github
+.idea
+.vscode
+*.iml
+*.iws
+
+# Maven 构建产物（容器内会重新 build）
+**/target
+**/.flattened-pom.xml
+
+# 日志和运行时数据
+logs
+**/*.log
+.env
+.env.*
+
+# 文档和脚本（不参与构建）
+README*.md
+LICENSE
+doc/
+script/
+
+# OS 杂项
+.DS_Store
+Thumbs.db
+
+# Node（前端在另一个仓库，理论上没有）
+node_modules
+
+# 部署临时目录
+deploy

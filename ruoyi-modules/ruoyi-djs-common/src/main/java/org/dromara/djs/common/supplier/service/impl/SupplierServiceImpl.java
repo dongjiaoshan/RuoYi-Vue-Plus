@@ -24,6 +24,7 @@ import java.math.BigDecimal;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 /**
  * 供应商主数据 Service 实现（SYS-MD-003 + SYS-MD-FIX-002）。
@@ -147,6 +148,9 @@ public class SupplierServiceImpl extends DjsBaseServiceImpl<SupplierMapper, Supp
             .like(StringUtils.isNotBlank(query.getLiaisonPhone()), Supplier::getLiaisonPhone, query.getLiaisonPhone())
             .eq(StringUtils.isNotBlank(query.getBusinessStatus()), Supplier::getBusinessStatus, query.getBusinessStatus())
             .eq(StringUtils.isNotBlank(query.getSettleType()), Supplier::getSettleType, query.getSettleType())
+            .ge(Objects.nonNull(query.getUpdateTimeBegin()), Supplier::getUpdateTime, query.getUpdateTimeBegin())
+            .le(Objects.nonNull(query.getUpdateTimeEnd()), Supplier::getUpdateTime, query.getUpdateTimeEnd())
+            .eq(Objects.nonNull(query.getUpdateBy()), Supplier::getUpdateBy, query.getUpdateBy())
             .orderByDesc(Supplier::getId);
         return wrapper;
     }

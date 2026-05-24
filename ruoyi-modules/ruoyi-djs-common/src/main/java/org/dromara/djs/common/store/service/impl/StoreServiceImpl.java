@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import java.util.Date;
+import java.util.Objects;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.core.service.UserService;
@@ -58,17 +59,32 @@ public class StoreServiceImpl extends DjsBaseServiceImpl<StoreMapper, Store> imp
     public TableDataInfo<StoreVo> queryPageList(StoreQuery query, PageQuery pageQuery) {
         LambdaQueryWrapper<Store> wrapper = buildQueryWrapper(query);
         Page<StoreVo> page = baseMapper.selectVoPage(pageQuery.build(), wrapper);
+        page.getRecords().forEach(this::fillEmployeeCount);
         return TableDataInfo.build(page);
     }
 
     @Override
     public List<StoreVo> queryList(StoreQuery query) {
-        return baseMapper.selectVoList(buildQueryWrapper(query));
+        List<StoreVo> list = baseMapper.selectVoList(buildQueryWrapper(query));
+        list.forEach(this::fillEmployeeCount);
+        return list;
     }
 
     @Override
     public StoreVo queryById(Long id) {
-        return baseMapper.selectVoById(id);
+        StoreVo vo = baseMapper.selectVoById(id);
+        if (vo != null) {
+            fillEmployeeCount(vo);
+        }
+        return vo;
+    }
+
+    /**
+     * 员工数量回填。当前 t_md_store 与 sys_user 关联模型仅有 manager_user_id（单店长），
+     * 无法直接统计员工数；hotfix 先置 0，待 Kevin 定义关联规则（store_user_relation / sys_dept 复用）后改实统计。
+     */
+    private void fillEmployeeCount(StoreVo vo) {
+        vo.setEmployeeCount(0);
     }
 
     @Override
@@ -162,6 +178,9 @@ public class StoreServiceImpl extends DjsBaseServiceImpl<StoreMapper, Store> imp
             .eq(StringUtils.isNotBlank(query.getStoreType()), Store::getStoreType, query.getStoreType())
             .like(StringUtils.isNotBlank(query.getManagerName()), Store::getManagerName, query.getManagerName())
             .eq(StringUtils.isNotBlank(query.getBusinessStatus()), Store::getBusinessStatus, query.getBusinessStatus())
+            .ge(Objects.nonNull(query.getUpdateTimeBegin()), Store::getUpdateTime, query.getUpdateTimeBegin())
+            .le(Objects.nonNull(query.getUpdateTimeEnd()), Store::getUpdateTime, query.getUpdateTimeEnd())
+            .eq(Objects.nonNull(query.getUpdateBy()), Store::getUpdateBy, query.getUpdateBy())
             .orderByDesc(Store::getId);
         return wrapper;
     }
