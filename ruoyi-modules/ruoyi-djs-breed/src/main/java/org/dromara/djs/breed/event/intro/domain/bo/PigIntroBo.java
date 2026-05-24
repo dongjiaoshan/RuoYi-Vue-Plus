@@ -62,13 +62,30 @@ public class PigIntroBo implements Serializable {
     /** 出生日期。 */
     private LocalDate birthDate;
 
-    /** 目标栋舍 ID。 */
-    @NotNull(message = "intro.barn.required")
+    /**
+     * 目标栋舍 ID。与 {@link #barnCode} 二选一必填（service 层先解析 code → id）。
+     * <p>admin 端（接 BRD-LIST-001 下拉后）传 id；mp 端 V1 用户手输栋舍编码，service 解析。</p>
+     */
     private Long barnId;
 
-    /** 目标栏位 ID。 */
-    @NotNull(message = "intro.pen.required")
+    /**
+     * 目标栋舍编码（mp 端用户可见的短码，如 "1"；service 层按 (tenant_id, barn_code) 查 id）。
+     * 与 {@link #barnId} 二选一必填。
+     */
+    @Size(max = 32, message = "intro.barn_code.size")
+    private String barnCode;
+
+    /**
+     * 目标栏位 ID。与 {@link #penCode} 二选一必填。
+     */
     private Long penId;
+
+    /**
+     * 目标栏位编码（在所属栋舍下 unique；需配合 barnId / barnCode 一起解析）。
+     * 与 {@link #penId} 二选一必填。
+     */
+    @Size(max = 32, message = "intro.pen_code.size")
+    private String penCode;
 
     /** 备注。 */
     @Size(max = 500, message = "intro.remark.size")

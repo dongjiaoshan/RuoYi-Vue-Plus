@@ -287,6 +287,52 @@ class PigIntroServiceImplTest {
     }
 
     @Test
+    @DisplayName("code 路径：barnCode + penCode 二选一 → service 解析成 id 后走原逻辑")
+    void resolve_barn_pen_by_code() {
+        // 准备 lambdaQuery selectOne 的 stub —— 用 any() 匹配 Wrapper，按调用顺序返回
+        Barn barn = new Barn();
+        barn.setId(BARN_ID);
+        barn.setBarnCode("1");
+        when(barnMapper.selectOne(any())).thenReturn(barn);
+        Pen pen = new Pen();
+        pen.setId(PEN_ID);
+        pen.setBarnId(BARN_ID);
+        pen.setPenCode("11");
+        pen.setCapacity(50);
+        pen.setCurrentCount(10);
+        when(penMapper.selectOne(any())).thenReturn(pen);
+
+        PigIntroBo bo = mkSingleBo("external", "F");
+        bo.setBarnId(null);
+        bo.setPenId(null);
+        bo.setBarnCode("1");
+        bo.setPenCode("11");
+
+        PigIntroResultVo result = service.introduce(bo);
+        assertThat(result.getPigs()).hasSize(1);
+        // resolve 后 bo 上的 id 已被回填，下游 createPig 收到正确 barn/pen id
+        ArgumentCaptor<PigCreateBo> captor = ArgumentCaptor.forClass(PigCreateBo.class);
+        verify(pigCoreService).createPig(captor.capture());
+        assertThat(captor.getValue().getBarnId()).isEqualTo(BARN_ID);
+        assertThat(captor.getValue().getPenId()).isEqualTo(PEN_ID);
+    }
+
+    @Test
+    @DisplayName("barnCode 找不到 → 抛 intro.barn_not_found")
+    void barn_code_not_found() {
+        when(barnMapper.selectOne(any())).thenReturn(null);
+
+        PigIntroBo bo = mkSingleBo("external", "F");
+        bo.setBarnId(null);
+        bo.setBarnCode("nonexistent");
+
+        assertThatThrownBy(() -> service.introduce(bo))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("intro.barn_not_found");
+        verify(introduceMapper, never()).insert(any(PigIntroduce.class));
+    }
+
+    @Test
     @DisplayName("PostConstruct：注册 supplier 引用关系给 BizReferenceChecker")
     void registers_supplier_references() {
         service.registerReferences();

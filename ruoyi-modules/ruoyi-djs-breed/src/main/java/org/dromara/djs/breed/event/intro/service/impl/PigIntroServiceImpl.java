@@ -94,6 +94,7 @@ public class PigIntroServiceImpl implements IPigIntroService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public PigIntroResultVo introduce(PigIntroBo bo) {
+        resolveBarnPenCodes(bo);
         validate(bo, 1);
 
         PigIntroduce intro = persistIntroduce(bo, 1, null, bo.getPigSex());
@@ -110,6 +111,7 @@ public class PigIntroServiceImpl implements IPigIntroService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public PigIntroResultVo introduceBatch(PigIntroBatchBo bo) {
+        resolveBarnPenCodes(bo);
         int count = bo.getPigCount();
         validate(bo, count);
 
@@ -127,6 +129,39 @@ public class PigIntroServiceImpl implements IPigIntroService {
         incrementPenCount(bo.getPenId(), count);
 
         return buildResult(intro, pigs);
+    }
+
+    /**
+     * mp 端用户输的是栋舍编码 / 栏位编码（admin 可见短码），转成主键 id 再走原逻辑。
+     * <p>id 已传则跳过；id / code 都没传则抛错（JSR-303 不再强制 id 必填）。</p>
+     * <p>pen_code 在所属 barn 下 unique，必须先 resolve barn 后再查 pen。</p>
+     */
+    private void resolveBarnPenCodes(PigIntroBo bo) {
+        if (bo.getBarnId() == null) {
+            if (StringUtils.isBlank(bo.getBarnCode())) {
+                throw new ServiceException(I18nMessages.t("intro.barn.required"));
+            }
+            Barn barn = barnMapper.selectOne(
+                Wrappers.<Barn>lambdaQuery().eq(Barn::getBarnCode, bo.getBarnCode()).last("LIMIT 1"));
+            if (barn == null) {
+                throw new ServiceException(I18nMessages.t("intro.barn_not_found", bo.getBarnCode()));
+            }
+            bo.setBarnId(barn.getId());
+        }
+        if (bo.getPenId() == null) {
+            if (StringUtils.isBlank(bo.getPenCode())) {
+                throw new ServiceException(I18nMessages.t("intro.pen.required"));
+            }
+            Pen pen = penMapper.selectOne(
+                Wrappers.<Pen>lambdaQuery()
+                    .eq(Pen::getBarnId, bo.getBarnId())
+                    .eq(Pen::getPenCode, bo.getPenCode())
+                    .last("LIMIT 1"));
+            if (pen == null) {
+                throw new ServiceException(I18nMessages.t("intro.pen_not_found", bo.getPenCode()));
+            }
+            bo.setPenId(pen.getId());
+        }
     }
 
     /**
