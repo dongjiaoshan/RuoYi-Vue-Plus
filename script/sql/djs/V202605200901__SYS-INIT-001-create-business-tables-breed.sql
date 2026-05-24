@@ -222,6 +222,8 @@ CREATE TABLE t_farm_status_record (
   create_dept       BIGINT       NULL COMMENT '创建部门',
   create_by       BIGINT       NULL COMMENT '操作人',
   create_time     DATETIME     NULL COMMENT '记录创建时间',
+  update_by       BIGINT       NULL COMMENT '更新人（MP insertFill 占位，状态记录实际不 update）',
+  update_time     DATETIME     NULL COMMENT '更新时间（MP insertFill 占位）',
   PRIMARY KEY (id),
   KEY idx_tenant_create (tenant_id, create_time),
   KEY idx_ear_change (ear_no, change_time),
