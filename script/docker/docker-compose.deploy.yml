@@ -1,4 +1,26 @@
 services:
+  redis:
+    image: redis:7-alpine
+    container_name: djs-redis-${DEPLOY_ENV:?DEPLOY_ENV is required}
+    restart: unless-stopped
+    env_file:
+      - ../../.env
+    # 用 $$ 转义，让密码在容器内 shell 展开（而不是 compose 解析时）
+    command: ["sh", "-c", "redis-server --requirepass \"$$REDIS_PASSWORD\" --appendonly yes"]
+    volumes:
+      - ../../redis-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" ping | grep -q PONG"]
+      interval: 30s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+
   ruoyi-admin:
     build:
       # context 指向仓库根目录（compose 文件在 script/docker/ 下）
@@ -8,14 +30,20 @@ services:
     image: dongjiaoshan/ruoyi-admin:${DEPLOY_ENV:?DEPLOY_ENV is required}
     container_name: djs-ruoyi-admin-${DEPLOY_ENV:?}
     restart: unless-stopped
-    # 共享宿主网络栈：容器内 127.0.0.1:6379 直连宿主上的 Redis；
-    # 应用 8080 直接占用宿主 8080，因此不需要 ports 映射。
-    network_mode: host
+    depends_on:
+      redis:
+        condition: service_healthy
+    # 暴露 8080 给宿主机（宝塔 nginx 反代 127.0.0.1:8080）
+    ports:
+      - "8080:8080"
     env_file:
       - ../../.env
     environment:
       SPRING_PROFILES_ACTIVE: prod
       TZ: Asia/Shanghai
+      # Redis 用 docker 服务名解析（覆盖 .env 里的 REDIS_HOST / REDIS_PORT）
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
     volumes:
       - ../../logs:/app/logs
     healthcheck:
