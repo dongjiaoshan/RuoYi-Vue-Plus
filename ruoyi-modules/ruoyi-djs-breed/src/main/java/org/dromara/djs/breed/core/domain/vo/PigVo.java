@@ -74,8 +74,16 @@ public class PigVo implements Serializable {
     @ExcelProperty(value = "栋舍ID")
     private Long barnId;
 
+    /** 栋舍编码（由 PigCoreServiceImpl.queryPage 末尾 batch enrich 填入，DB 不存此列）。 */
+    @ExcelProperty(value = "栋舍编码")
+    private String barnCode;
+
     @ExcelProperty(value = "栏位ID")
     private Long penId;
+
+    /** 栏位编码（同 barnCode，service 层 enrich）。 */
+    @ExcelProperty(value = "栏位编码")
+    private String penCode;
 
     @ExcelProperty(value = "最近配种ID")
     private Long matingId;

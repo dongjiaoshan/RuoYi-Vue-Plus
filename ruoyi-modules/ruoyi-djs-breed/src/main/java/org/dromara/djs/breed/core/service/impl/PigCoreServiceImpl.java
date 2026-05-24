@@ -24,16 +24,24 @@ import org.dromara.djs.breed.core.mapper.PigStatusRecordMapper;
 import org.dromara.djs.breed.core.service.I18nMessages;
 import org.dromara.djs.breed.core.service.IPigCoreService;
 import org.dromara.djs.breed.core.service.PigStateMachine;
+import org.dromara.djs.breed.farm.domain.Barn;
+import org.dromara.djs.breed.farm.domain.Pen;
+import org.dromara.djs.breed.farm.mapper.BarnMapper;
+import org.dromara.djs.breed.farm.mapper.PenMapper;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Duration;
 import java.time.LocalDateTime;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 import static org.dromara.djs.breed.core.enums.PigStatusEvent.BREED;
 import static org.dromara.djs.breed.core.enums.PigStatusEvent.DIE;
@@ -66,15 +74,21 @@ public class PigCoreServiceImpl implements IPigCoreService {
     private final PigStatusRecordMapper statusRecordMapper;
     private final PigStateMachine stateMachine;
     private final ApplicationEventPublisher eventPublisher;
+    private final BarnMapper barnMapper;
+    private final PenMapper penMapper;
 
     public PigCoreServiceImpl(PigMapper pigMapper,
                               PigStatusRecordMapper statusRecordMapper,
                               PigStateMachine stateMachine,
-                              ApplicationEventPublisher eventPublisher) {
+                              ApplicationEventPublisher eventPublisher,
+                              BarnMapper barnMapper,
+                              PenMapper penMapper) {
         this.pigMapper = pigMapper;
         this.statusRecordMapper = statusRecordMapper;
         this.stateMachine = stateMachine;
         this.eventPublisher = eventPublisher;
+        this.barnMapper = barnMapper;
+        this.penMapper = penMapper;
     }
 
     @Override
@@ -197,6 +211,7 @@ public class PigCoreServiceImpl implements IPigCoreService {
         if (vo == null) {
             throw new ServiceException(I18nMessages.t("pig.not_found", pigId));
         }
+        enrichBarnPenCodes(List.of(vo));
         PigDetailVo detail = toDetailVo(vo);
         LambdaQueryWrapper<PigStatusRecord> w = new LambdaQueryWrapper<PigStatusRecord>()
             .eq(PigStatusRecord::getPigId, pigId)
@@ -210,7 +225,34 @@ public class PigCoreServiceImpl implements IPigCoreService {
     public TableDataInfo<PigVo> queryPage(PigQuery query, PageQuery pageQuery) {
         LambdaQueryWrapper<Pig> wrapper = buildWrapper(query);
         Page<PigVo> page = pigMapper.selectVoPage(pageQuery.build(), wrapper);
+        enrichBarnPenCodes(page.getRecords());
         return TableDataInfo.build(page);
+    }
+
+    /**
+     * 批量回填 barnCode / penCode（Pig 与 Barn/Pen 不同聚合，VO 出参用 code 而非
+     * snowflake id 给用户看；列表场景用 selectBatchIds 一次性查，避免 N+1）。
+     */
+    private void enrichBarnPenCodes(List<PigVo> rows) {
+        if (rows == null || rows.isEmpty()) {
+            return;
+        }
+        Set<Long> barnIds = rows.stream().map(PigVo::getBarnId).filter(Objects::nonNull).collect(Collectors.toSet());
+        Set<Long> penIds = rows.stream().map(PigVo::getPenId).filter(Objects::nonNull).collect(Collectors.toSet());
+        Map<Long, String> barnCodeMap = barnIds.isEmpty() ? Map.of()
+            : barnMapper.selectBatchIds(barnIds).stream()
+                .collect(Collectors.toMap(Barn::getId, Barn::getBarnCode, (a, b) -> a));
+        Map<Long, String> penCodeMap = penIds.isEmpty() ? Map.of()
+            : penMapper.selectBatchIds(penIds).stream()
+                .collect(Collectors.toMap(Pen::getId, Pen::getPenCode, (a, b) -> a));
+        for (PigVo vo : rows) {
+            if (vo.getBarnId() != null) {
+                vo.setBarnCode(barnCodeMap.get(vo.getBarnId()));
+            }
+            if (vo.getPenId() != null) {
+                vo.setPenCode(penCodeMap.get(vo.getPenId()));
+            }
+        }
     }
 
     @Override
@@ -354,7 +396,9 @@ public class PigCoreServiceImpl implements IPigCoreService {
         d.setIntroduceDate(src.getIntroduceDate());
         d.setParity(src.getParity());
         d.setBarnId(src.getBarnId());
+        d.setBarnCode(src.getBarnCode());
         d.setPenId(src.getPenId());
+        d.setPenCode(src.getPenCode());
         d.setMatingId(src.getMatingId());
         d.setRemark(src.getRemark());
         d.setCreateTime(src.getCreateTime());

@@ -64,13 +64,17 @@ class PigCoreServiceImplTest {
     private PigStatusRecordMapper statusRecordMapper;
     @Mock
     private ApplicationEventPublisher eventPublisher;
+    @Mock
+    private org.dromara.djs.breed.farm.mapper.BarnMapper barnMapper;
+    @Mock
+    private org.dromara.djs.breed.farm.mapper.PenMapper penMapper;
 
     private PigCoreServiceImpl service;
 
     @BeforeEach
     void setup() {
         PigStateMachine sm = new PigStateMachine();
-        service = new PigCoreServiceImpl(pigMapper, statusRecordMapper, sm, eventPublisher);
+        service = new PigCoreServiceImpl(pigMapper, statusRecordMapper, sm, eventPublisher, barnMapper, penMapper);
     }
 
     private Pig mkSow(Long id, PigLifecycle status) {
