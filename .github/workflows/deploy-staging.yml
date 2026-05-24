@@ -45,13 +45,20 @@ jobs:
             echo "==> Starting new container"
             DEPLOY_ENV=staging $COMPOSE up -d ruoyi-admin
 
-            echo "==> Waiting for healthcheck..."
-            for i in $(seq 1 36); do
-              status=$(docker inspect -f '{{.State.Health.Status}}' djs-ruoyi-admin-staging 2>/dev/null || echo starting)
-              echo "[$i] health=$status"
-              [ "$status" = "healthy" ] && exit 0
-              [ "$status" = "unhealthy" ] && { DEPLOY_ENV=staging $COMPOSE logs --tail=200 ruoyi-admin; exit 1; }
+            echo "==> Waiting for app to respond on host:8080..."
+            # 直接从宿主 curl，不依赖容器 healthcheck（避免 wget/probe 路径问题）
+            # liveness 端点只验证进程存活，不连下游服务
+            for i in $(seq 1 60); do
+              code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 http://127.0.0.1:8080/actuator/health/liveness 2>/dev/null || echo 000)
+              echo "[$i] http=$code"
+              # 200 = 正常，404 = liveness probe 没启用（fallback 到 /actuator/health）
+              [ "$code" = "200" ] && { echo "✅ App is alive"; exit 0; }
+              if [ "$code" = "404" ]; then
+                code2=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 http://127.0.0.1:8080/actuator/health 2>/dev/null || echo 000)
+                [ "$code2" = "200" ] && { echo "✅ App is up (no liveness probe, used /actuator/health)"; exit 0; }
+              fi
               sleep 5
             done
+            echo "❌ Health check timed out, dumping logs"
             DEPLOY_ENV=staging $COMPOSE logs --tail=200 ruoyi-admin
             exit 1

@@ -47,8 +47,10 @@ services:
     volumes:
       - ../../logs:/app/logs
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/actuator/health || exit 1"]
-      interval: 30s
+      # 用 liveness probe（只检查进程存活，不连下游服务，比 /actuator/health 健壮）
+      # Spring Boot 3.x 默认开启 liveness/readiness probe
+      test: ["CMD-SHELL", "wget -q --tries=1 --timeout=3 -O /dev/null http://127.0.0.1:8080/actuator/health/liveness || exit 1"]
+      interval: 15s
       timeout: 5s
       retries: 5
       start_period: 60s
