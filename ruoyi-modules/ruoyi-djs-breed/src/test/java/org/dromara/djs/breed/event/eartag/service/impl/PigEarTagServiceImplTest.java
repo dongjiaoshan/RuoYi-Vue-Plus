@@ -4,14 +4,14 @@ import org.dromara.common.core.exception.ServiceException;
 import org.dromara.djs.breed.core.domain.Pig;
 import org.dromara.djs.breed.core.enums.PigLifecycle;
 import org.dromara.djs.breed.core.mapper.PigMapper;
-import org.dromara.djs.breed.event.eartag.domain.FarrowRef;
 import org.dromara.djs.breed.event.eartag.domain.PigPigletno;
 import org.dromara.djs.breed.event.eartag.domain.bo.PigletBatchEarTagBo;
 import org.dromara.djs.breed.event.eartag.domain.bo.PigletEarTagItem;
 import org.dromara.djs.breed.event.eartag.domain.vo.FarrowEarTagStatVo;
 import org.dromara.djs.breed.event.eartag.domain.vo.PigletEarTagVo;
-import org.dromara.djs.breed.event.eartag.mapper.FarrowRefMapper;
 import org.dromara.djs.breed.event.eartag.mapper.PigPigletnoMapper;
+import org.dromara.djs.breed.event.farrow.domain.PigFarrow;
+import org.dromara.djs.breed.event.farrow.mapper.PigFarrowMapper;
 import org.dromara.djs.breed.farm.domain.Barn;
 import org.dromara.djs.breed.farm.mapper.BarnMapper;
 import org.dromara.djs.common.encoder.BizCodeType;
@@ -70,7 +70,7 @@ class PigEarTagServiceImplTest {
     @Mock
     private PigPigletnoMapper pigletnoMapper;
     @Mock
-    private FarrowRefMapper farrowMapper;
+    private PigFarrowMapper farrowMapper;
     @Mock
     private BarnMapper barnMapper;
     @Mock
@@ -97,8 +97,8 @@ class PigEarTagServiceImplTest {
         return p;
     }
 
-    private FarrowRef mkFarrow(long id, int liveBorn, Long breedingId) {
-        FarrowRef f = new FarrowRef();
+    private PigFarrow mkFarrow(long id, int liveBorn, Long breedingId) {
+        PigFarrow f = new PigFarrow();
         f.setId(id);
         f.setPigId(101L);
         f.setEarNo("01A12605001");
@@ -126,7 +126,7 @@ class PigEarTagServiceImplTest {
     @Test
     @DisplayName("batchTag 3 头 → INSERT 3 pig + 3 pigletno + 0 status_record + 父猪耳号反查")
     void batchTag_happyPath() {
-        FarrowRef farrow = mkFarrow(900L, 10, 800L);
+        PigFarrow farrow = mkFarrow(900L, 10, 800L);
         when(farrowMapper.selectById(900L)).thenReturn(farrow);
         when(pigMapper.selectById(101L)).thenReturn(mkSow());
         when(pigletnoMapper.selectCount(any())).thenReturn(0L);
@@ -173,7 +173,7 @@ class PigEarTagServiceImplTest {
     @Test
     @DisplayName("batchTag context.barnCode 取自母猪所在栋舍 barnCode 前 2 位")
     void batchTag_contextBarnCode() {
-        FarrowRef farrow = mkFarrow(901L, 5, null);
+        PigFarrow farrow = mkFarrow(901L, 5, null);
         when(farrowMapper.selectById(901L)).thenReturn(farrow);
         when(pigMapper.selectById(101L)).thenReturn(mkSow());
         when(pigletnoMapper.selectCount(any())).thenReturn(0L);
@@ -197,7 +197,7 @@ class PigEarTagServiceImplTest {
     @Test
     @DisplayName("batchTag breedingId 为 null（人工授精无公猪） → fatherEar 为 null")
     void batchTag_nullBreedingId_fatherEarNull() {
-        FarrowRef farrow = mkFarrow(902L, 5, null);
+        PigFarrow farrow = mkFarrow(902L, 5, null);
         when(farrowMapper.selectById(902L)).thenReturn(farrow);
         when(pigMapper.selectById(101L)).thenReturn(mkSow());
         when(pigletnoMapper.selectCount(any())).thenReturn(0L);
@@ -221,7 +221,7 @@ class PigEarTagServiceImplTest {
     @Test
     @DisplayName("batchTag 超量校验：tagged 5 + new 6 > liveBorn 10 → 抛 exceeds_live_born")
     void batchTag_exceedsLiveBorn() {
-        FarrowRef farrow = mkFarrow(903L, 10, 800L);
+        PigFarrow farrow = mkFarrow(903L, 10, 800L);
         when(farrowMapper.selectById(903L)).thenReturn(farrow);
         when(pigMapper.selectById(101L)).thenReturn(mkSow());
         when(pigletnoMapper.selectCount(any())).thenReturn(5L);
@@ -259,7 +259,7 @@ class PigEarTagServiceImplTest {
     @Test
     @DisplayName("batchTag 母猪不存在 → 抛 mother.not_found")
     void batchTag_motherNotFound() {
-        FarrowRef farrow = mkFarrow(904L, 5, null);
+        PigFarrow farrow = mkFarrow(904L, 5, null);
         when(farrowMapper.selectById(904L)).thenReturn(farrow);
         when(pigMapper.selectById(101L)).thenReturn(null);
 
@@ -275,7 +275,7 @@ class PigEarTagServiceImplTest {
     @Test
     @DisplayName("statByFarrow 已贴 3 / liveBorn 10 → remaining 7 + 清单 size=3")
     void statByFarrow_happyPath() {
-        FarrowRef farrow = mkFarrow(905L, 10, 800L);
+        PigFarrow farrow = mkFarrow(905L, 10, 800L);
         when(farrowMapper.selectById(905L)).thenReturn(farrow);
         when(pigMapper.selectById(101L)).thenReturn(mkSow());
 
@@ -329,7 +329,7 @@ class PigEarTagServiceImplTest {
     @Test
     @DisplayName("statByFarrow 0 已贴 → tagged=0 / remaining=liveBorn / 清单空")
     void statByFarrow_zeroTagged() {
-        FarrowRef farrow = mkFarrow(906L, 8, null);
+        PigFarrow farrow = mkFarrow(906L, 8, null);
         when(farrowMapper.selectById(906L)).thenReturn(farrow);
         when(pigMapper.selectById(101L)).thenReturn(mkSow());
         when(pigletnoMapper.selectList(any())).thenReturn(List.of());

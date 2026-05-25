@@ -13,6 +13,8 @@ import org.dromara.djs.common.person.domain.bo.PersonBo;
 import org.dromara.djs.common.person.domain.query.PersonQuery;
 import org.dromara.djs.common.person.domain.vo.PersonVo;
 import org.dromara.djs.common.person.mapper.PersonMapper;
+import org.dromara.system.domain.SysPost;
+import org.dromara.system.mapper.SysPostMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
@@ -25,6 +27,7 @@ import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 
 import java.time.LocalDate;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 
@@ -62,6 +65,9 @@ class PersonServiceImplTest {
     @Mock
     private IBizCodeGenerator bizCodeGenerator;
 
+    @Mock
+    private SysPostMapper sysPostMapper;
+
     private TestablePersonServiceImpl service;
 
     /**
@@ -69,8 +75,10 @@ class PersonServiceImplTest {
      * 直接把 BO 的字段手动拷到 Entity，模拟 MapStruct 生成的 mapper。
      */
     static class TestablePersonServiceImpl extends PersonServiceImpl {
-        TestablePersonServiceImpl(PersonMapper personMapper, IBizCodeGenerator bizCodeGenerator) {
-            super(personMapper, bizCodeGenerator);
+        TestablePersonServiceImpl(PersonMapper personMapper,
+                                  IBizCodeGenerator bizCodeGenerator,
+                                  SysPostMapper sysPostMapper) {
+            super(personMapper, bizCodeGenerator, sysPostMapper);
         }
 
         @Override
@@ -84,7 +92,7 @@ class PersonServiceImplTest {
             p.setGender(bo.getGender());
             p.setPhone(bo.getPhone());
             p.setIdCard(bo.getIdCard());
-            p.setPosition(bo.getPosition());
+            p.setPostId(bo.getPostId());
             p.setHireDate(bo.getHireDate());
             p.setStatus(bo.getStatus());
             p.setAvatarUrl(bo.getAvatarUrl());
@@ -95,7 +103,7 @@ class PersonServiceImplTest {
 
     @BeforeEach
     void setup() {
-        service = new TestablePersonServiceImpl(personMapper, bizCodeGenerator);
+        service = new TestablePersonServiceImpl(personMapper, bizCodeGenerator, sysPostMapper);
         when(bizCodeGenerator.generate(eq(BizCodeType.MEMBER_NO), any())).thenReturn("M0001");
     }
 
@@ -105,7 +113,7 @@ class PersonServiceImplTest {
         bo.setGender("0");
         bo.setPhone("13800138000");
         bo.setIdCard("310101199001010011");
-        bo.setPosition("饲养员");
+        bo.setPostId(2L);
         bo.setHireDate(LocalDate.of(2026, 5, 1));
         bo.setRemark("D02 单测样本");
         return bo;
@@ -167,6 +175,63 @@ class PersonServiceImplTest {
         assertThat(result.getTotal()).isEqualTo(1);
         assertThat(result.getRows()).hasSize(1);
         assertThat(result.getRows().get(0).getName()).isEqualTo("张三");
+    }
+
+    @Test
+    @DisplayName("queryPageList: postId 非空 → batch enrich postName 自 sys_post")
+    void testQueryPageList_EnrichPostName() {
+        PersonQuery query = new PersonQuery();
+        PageQuery pageQuery = new PageQuery(1, 10);
+
+        PersonVo a = new PersonVo();
+        a.setId(10001L);
+        a.setName("张三");
+        a.setPostId(2L);
+        PersonVo b = new PersonVo();
+        b.setId(10002L);
+        b.setName("李四");
+        b.setPostId(3L);
+        PersonVo c = new PersonVo();
+        c.setId(10003L);
+        c.setName("王五");
+        // c.postId == null → 跳过 enrich
+
+        Page<PersonVo> mockPage = new Page<>(1, 10);
+        mockPage.setRecords(List.of(a, b, c));
+        mockPage.setTotal(3);
+        when(personMapper.selectVoPage(any(Page.class), any(Wrapper.class))).thenReturn(mockPage);
+
+        SysPost p2 = new SysPost();
+        p2.setPostId(2L);
+        p2.setPostName("项目经理");
+        SysPost p3 = new SysPost();
+        p3.setPostId(3L);
+        p3.setPostName("人力资源");
+        when(sysPostMapper.selectBatchIds(any(Collection.class))).thenReturn(List.of(p2, p3));
+
+        TableDataInfo<PersonVo> result = service.queryPageList(query, pageQuery);
+
+        assertThat(result.getRows()).extracting(PersonVo::getPostName)
+            .containsExactly("项目经理", "人力资源", null);
+        verify(sysPostMapper, times(1)).selectBatchIds(any(Collection.class));
+    }
+
+    @Test
+    @DisplayName("queryById: postId 非空 → enrich postName 单条")
+    void testQueryById_EnrichPostName() {
+        PersonVo vo = new PersonVo();
+        vo.setId(10001L);
+        vo.setName("张三");
+        vo.setPostId(1L);
+        when(personMapper.selectVoById(10001L)).thenReturn(vo);
+
+        SysPost p1 = new SysPost();
+        p1.setPostId(1L);
+        p1.setPostName("董事长");
+        when(sysPostMapper.selectBatchIds(any(Collection.class))).thenReturn(List.of(p1));
+
+        PersonVo got = service.queryById(10001L);
+        assertThat(got.getPostName()).isEqualTo("董事长");
     }
 
     @Test

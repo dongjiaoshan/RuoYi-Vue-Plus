@@ -51,6 +51,8 @@ public class OssStsServiceImpl implements IOssStsService {
     private static final Set<String> ALLOWED_BIZ_TYPES = Set.of(
         "pig_photo",        // 猪只照片
         "pig_intro_proof",  // 引种凭证（外部引种检疫 / 发票 / 协议照片，BRD-EVENT-001）
+        "breed_mate_proof", // 配种凭证（BRD-EVENT-002 配种现场照 / 精液发票，可选）
+        "farrow_proof",     // 分娩凭证（BRD-EVENT-002 分娩现场 / 仔猪状态照，可选）
         "dead_photo",       // 死亡 / 淘汰多角度照片
         "grow_photo",       // 生长记录照片
         "med_proof",        // 用药 / 疫苗凭证

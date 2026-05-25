@@ -66,9 +66,9 @@ public class Person extends TenantEntity {
     private String idCard;
 
     /**
-     * 岗位（自由文本）。
+     * 岗位 ID（关联 {@code sys_post.post_id}，由 ruoyi-system 维护；选填）。
      */
-    private String position;
+    private Long postId;
 
     /**
      * 入职日期。

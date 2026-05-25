@@ -13,7 +13,6 @@ import org.dromara.djs.breed.core.domain.Pig;
 import org.dromara.djs.breed.core.enums.PigLifecycle;
 import org.dromara.djs.breed.core.mapper.PigMapper;
 import org.dromara.djs.breed.core.service.I18nMessages;
-import org.dromara.djs.breed.event.eartag.domain.FarrowRef;
 import org.dromara.djs.breed.event.eartag.domain.PigPigletno;
 import org.dromara.djs.breed.event.eartag.domain.bo.PigletBatchEarTagBo;
 import org.dromara.djs.breed.event.eartag.domain.bo.PigletEarTagItem;
@@ -21,9 +20,10 @@ import org.dromara.djs.breed.event.eartag.domain.query.PigletEarTagQuery;
 import org.dromara.djs.breed.event.eartag.domain.vo.FarrowEarTagStatVo;
 import org.dromara.djs.breed.event.eartag.domain.vo.PigletEarTagVo;
 import org.dromara.djs.breed.event.eartag.domain.vo.PigletnoVo;
-import org.dromara.djs.breed.event.eartag.mapper.FarrowRefMapper;
 import org.dromara.djs.breed.event.eartag.mapper.PigPigletnoMapper;
 import org.dromara.djs.breed.event.eartag.service.IPigEarTagService;
+import org.dromara.djs.breed.event.farrow.domain.PigFarrow;
+import org.dromara.djs.breed.event.farrow.mapper.PigFarrowMapper;
 import org.dromara.djs.breed.farm.domain.Barn;
 import org.dromara.djs.breed.farm.mapper.BarnMapper;
 import org.dromara.djs.common.encoder.BizCodeType;
@@ -64,7 +64,7 @@ public class PigEarTagServiceImpl implements IPigEarTagService {
 
     private final PigMapper pigMapper;
     private final PigPigletnoMapper pigletnoMapper;
-    private final FarrowRefMapper farrowMapper;
+    private final PigFarrowMapper farrowMapper;
     private final BarnMapper barnMapper;
     private final IBizCodeGenerator bizCodeGenerator;
 
@@ -73,7 +73,7 @@ public class PigEarTagServiceImpl implements IPigEarTagService {
         if (farrowId == null) {
             throw new ServiceException(I18nMessages.t("pigletno.farrow_id.required"));
         }
-        FarrowRef farrow = farrowMapper.selectById(farrowId);
+        PigFarrow farrow = farrowMapper.selectById(farrowId);
         if (farrow == null) {
             throw new ServiceException(I18nMessages.t("pigletno.farrow.not_found", farrowId));
         }
@@ -123,7 +123,7 @@ public class PigEarTagServiceImpl implements IPigEarTagService {
         }
 
         // 1. 校验 farrow 存在 + 母猪存在 + 已贴 + 本批 ≤ live_born
-        FarrowRef farrow = farrowMapper.selectById(bo.getFarrowId());
+        PigFarrow farrow = farrowMapper.selectById(bo.getFarrowId());
         if (farrow == null) {
             throw new ServiceException(I18nMessages.t("pigletno.farrow.not_found", bo.getFarrowId()));
         }

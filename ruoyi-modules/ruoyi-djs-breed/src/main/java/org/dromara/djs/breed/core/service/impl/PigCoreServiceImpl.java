@@ -1,6 +1,7 @@
 package org.dromara.djs.breed.core.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.common.core.exception.ServiceException;
@@ -33,6 +34,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Duration;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.HashSet;
 import java.util.List;
@@ -131,6 +133,13 @@ public class PigCoreServiceImpl implements IPigCoreService {
         if (affected == 0) {
             // MP @Version 版本号不匹配会返 0；抛 ServiceException 让上游业务决定重试 / 降级
             throw new ServiceException(I18nMessages.t("pig.update.optimistic_lock_conflict", pig.getId()));
+        }
+
+        // 2b. BREED 事件后置 wrapper-only update：累计配种次数 +1 + 最近配种日期
+        //     拆为两步是为避免与 @Version 主 update 冲突：mating_count 走 setSql 原子加法，
+        //     即使并发 BREED 也能正确递增（不依赖 read-modify-write）。
+        if (bo.getEventType() == BREED) {
+            applyBreedingCounters(pig.getId(), bo);
         }
 
         // 3. 发布 Spring event（下游 dashboard / 推送 / 燎毛各自订阅）
@@ -285,11 +294,17 @@ public class PigCoreServiceImpl implements IPigCoreService {
             if (payload != null) {
                 Object newBarn = payload.get("newBarnId");
                 Object newPen = payload.get("newPenId");
+                Object newPigType = payload.get("newPigType");
                 if (newBarn != null) {
                     pig.setBarnId(parseLong(newBarn, "newBarnId"));
                 }
                 if (newPen != null) {
                     pig.setPenId(parseLong(newPen, "newPenId"));
+                }
+                // D5 audit a-2：piglet 转育肥舍时 service 端将 payload.newPigType='fattening' 写入 pig.pig_type，
+                // 否则 BRD-DASH-001 育肥猪存栏统计漏算。
+                if (newPigType instanceof CharSequence cs && cs.length() > 0) {
+                    pig.setPigType(cs.toString());
                 }
             }
         }
@@ -306,6 +321,53 @@ public class PigCoreServiceImpl implements IPigCoreService {
             // 无额外副作用，保留 import / static check 兼容
             log.debug("[BRD-CORE-001] terminal event {} pigId={} end_reason={}", ev, pig.getId(), pig.getEndReason());
         }
+    }
+
+    /**
+     * BREED 后置 wrapper-only update：mating_count += 1, last_mating_date = payload.breedingDate（缺时 = today）。
+     *
+     * <p>独立于主 {@code updateById(pig)} 的原因：</p>
+     * <ul>
+     *   <li>主 update 走 {@code @Version} 乐观锁，{@code mating_count += 1} 用 setSql 原子加法，避免 race；</li>
+     *   <li>{@code last_mating_date} 为业务衍生值，与状态机推进解耦；</li>
+     *   <li>本方法在 fireEvent 事务内执行，与状态记录 + pig 主更新同生共死。</li>
+     * </ul>
+     */
+    private void applyBreedingCounters(Long pigId, PigEventBo bo) {
+        LocalDate breedingDate = extractBreedingDate(bo);
+        pigMapper.update(null,
+            Wrappers.<Pig>update()
+                .eq("id", pigId)
+                .setSql("mating_count = COALESCE(mating_count, 0) + 1")
+                .set("last_mating_date", breedingDate));
+    }
+
+    /**
+     * 从 payload 取 breedingDate；优先 payload."breedingDate"（LocalDate / LocalDateTime / String "yyyy-MM-dd"），
+     * 其次 bo.eventAt.toLocalDate()，最后 LocalDate.now()。
+     */
+    private LocalDate extractBreedingDate(PigEventBo bo) {
+        Map<String, Object> payload = bo.getPayload();
+        if (payload != null) {
+            Object raw = payload.get("breedingDate");
+            if (raw instanceof LocalDate ld) {
+                return ld;
+            }
+            if (raw instanceof LocalDateTime ldt) {
+                return ldt.toLocalDate();
+            }
+            if (raw instanceof CharSequence cs && cs.length() > 0) {
+                try {
+                    return LocalDate.parse(cs.toString());
+                } catch (RuntimeException ignore) {
+                    // fall through to eventAt
+                }
+            }
+        }
+        if (bo.getEventAt() != null) {
+            return bo.getEventAt().toLocalDate();
+        }
+        return LocalDate.now();
     }
 
     private LambdaQueryWrapper<Pig> buildWrapper(PigQuery query) {

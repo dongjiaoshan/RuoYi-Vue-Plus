@@ -99,6 +99,18 @@ public class Pig extends TenantEntity {
     /** 胎次（母猪 FARROW 时自动 +1）。 */
     private Integer parity;
 
+    /**
+     * 累计配种次数（每次 BREED 事件 +1，由 {@code applyEventSideEffects} wrapper-only update 维护防 race）。
+     * 用于异常母猪识别（如"配种 ≥ 3 次仍未孕"）。
+     */
+    private Integer matingCount;
+
+    /**
+     * 最近一次配种日期（BREED 事件时由 service 写入 payload.breedingDate.toLocalDate()）。
+     * 用于计算妊娠天数 vs production_cycle_config.pregnancy_days。
+     */
+    private LocalDate lastMatingDate;
+
     /** 当前栋舍 ID。 */
     private Long barnId;
 

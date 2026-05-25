@@ -17,11 +17,16 @@ import org.dromara.djs.common.person.domain.query.PersonQuery;
 import org.dromara.djs.common.person.domain.vo.PersonVo;
 import org.dromara.djs.common.person.mapper.PersonMapper;
 import org.dromara.djs.common.person.service.IPersonService;
+import org.dromara.system.domain.SysPost;
+import org.dromara.system.mapper.SysPostMapper;
 import org.springframework.stereotype.Service;
 
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * 人员主数据 Service 实现（SYS-MD-001）。
@@ -42,27 +47,38 @@ import java.util.Map;
 public class PersonServiceImpl extends DjsBaseServiceImpl<PersonMapper, Person> implements IPersonService {
 
     private final IBizCodeGenerator bizCodeGenerator;
+    private final SysPostMapper sysPostMapper;
 
-    public PersonServiceImpl(PersonMapper baseMapper, IBizCodeGenerator bizCodeGenerator) {
+    public PersonServiceImpl(PersonMapper baseMapper,
+                             IBizCodeGenerator bizCodeGenerator,
+                             SysPostMapper sysPostMapper) {
         super(baseMapper);
         this.bizCodeGenerator = bizCodeGenerator;
+        this.sysPostMapper = sysPostMapper;
     }
 
     @Override
     public TableDataInfo<PersonVo> queryPageList(PersonQuery query, PageQuery pageQuery) {
         LambdaQueryWrapper<Person> wrapper = buildQueryWrapper(query);
         Page<PersonVo> page = baseMapper.selectVoPage(pageQuery.build(), wrapper);
+        enrichPostNames(page.getRecords());
         return TableDataInfo.build(page);
     }
 
     @Override
     public List<PersonVo> queryList(PersonQuery query) {
-        return baseMapper.selectVoList(buildQueryWrapper(query));
+        List<PersonVo> rows = baseMapper.selectVoList(buildQueryWrapper(query));
+        enrichPostNames(rows);
+        return rows;
     }
 
     @Override
     public PersonVo queryById(Long id) {
-        return baseMapper.selectVoById(id);
+        PersonVo vo = baseMapper.selectVoById(id);
+        if (vo != null) {
+            enrichPostNames(List.of(vo));
+        }
+        return vo;
     }
 
     @Override
@@ -114,7 +130,7 @@ public class PersonServiceImpl extends DjsBaseServiceImpl<PersonMapper, Person> 
     }
 
     /**
-     * 构造查询条件：name like / phone like / status eq / person_code eq。
+     * 构造查询条件：name like / phone like / status eq / person_code eq / post_id eq。
      */
     private LambdaQueryWrapper<Person> buildQueryWrapper(PersonQuery query) {
         LambdaQueryWrapper<Person> wrapper = new LambdaQueryWrapper<>();
@@ -125,6 +141,7 @@ public class PersonServiceImpl extends DjsBaseServiceImpl<PersonMapper, Person> 
             .like(StringUtils.isNotBlank(query.getPhone()), Person::getPhone, query.getPhone())
             .eq(StringUtils.isNotBlank(query.getPersonCode()), Person::getPersonCode, query.getPersonCode())
             .eq(StringUtils.isNotBlank(query.getStatus()), Person::getStatus, query.getStatus())
+            .eq(query.getPostId() != null, Person::getPostId, query.getPostId())
             .orderByDesc(Person::getId);
         return wrapper;
     }
@@ -134,6 +151,30 @@ public class PersonServiceImpl extends DjsBaseServiceImpl<PersonMapper, Person> 
      */
     private String generatePersonCode() {
         return bizCodeGenerator.generate(BizCodeType.MEMBER_NO, Map.of());
+    }
+
+    /**
+     * 批量回填 {@code postName}（人员 ↔ sys_post 跨聚合，VO 出参用名字给用户看；
+     * 列表场景一次性 selectBatchIds 避免 N+1，模式同 PigCoreServiceImpl#enrichBarnPenCodes）。
+     */
+    private void enrichPostNames(List<PersonVo> rows) {
+        if (rows == null || rows.isEmpty()) {
+            return;
+        }
+        Set<Long> postIds = rows.stream()
+            .map(PersonVo::getPostId)
+            .filter(Objects::nonNull)
+            .collect(Collectors.toSet());
+        if (postIds.isEmpty()) {
+            return;
+        }
+        Map<Long, String> nameMap = sysPostMapper.selectBatchIds(postIds).stream()
+            .collect(Collectors.toMap(SysPost::getPostId, SysPost::getPostName, (a, b) -> a));
+        for (PersonVo vo : rows) {
+            if (vo.getPostId() != null) {
+                vo.setPostName(nameMap.get(vo.getPostId()));
+            }
+        }
     }
 
 }

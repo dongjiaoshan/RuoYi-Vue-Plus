@@ -56,10 +56,9 @@ public class PersonBo extends BaseEntity {
     private String idCard;
 
     /**
-     * 岗位（自由文本）。
+     * 岗位 ID（关联 sys_post.post_id；选填）。
      */
-    @Size(max = 64, message = "岗位长度不能超过 {max} 个字符")
-    private String position;
+    private Long postId;
 
     /**
      * 入职日期。

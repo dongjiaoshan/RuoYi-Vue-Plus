@@ -65,10 +65,15 @@ public class PersonVo implements Serializable {
     private String idCard;
 
     /**
-     * 岗位。
+     * 岗位 ID（关联 sys_post.post_id）。
+     */
+    private Long postId;
+
+    /**
+     * 岗位名称（service 层 batch enrich 自 sys_post.post_name；非数据库字段）。
      */
     @ExcelProperty(value = "岗位")
-    private String position;
+    private String postName;
 
     /**
      * 入职日期。
