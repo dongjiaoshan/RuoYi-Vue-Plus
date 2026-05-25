@@ -27,8 +27,11 @@ public class GrowthBo implements Serializable {
     private static final long serialVersionUID = 1L;
 
     /** 猪只 ID。 */
-    @NotNull(message = "growth.pig_id.required")
+    /** 母猪 ID（与 earNo 二选一；admin 端可直传 id，mp 端建议传 earNo）。 */
     private Long pigId;
+
+    /** 猪只耳号简版（mp 端工人输入；与 pigId 二选一，service 入口按 earNo 查 pig.id）。 */
+    private String earNo;
 
     /** 测量日期（默认今日）。 */
     @NotNull(message = "growth.measure_date.required")

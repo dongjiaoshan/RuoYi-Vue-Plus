@@ -11,6 +11,7 @@ import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.web.core.BaseController;
 import org.dromara.djs.breed.core.domain.bo.PigEventBo;
 import org.dromara.djs.breed.core.domain.query.PigQuery;
+import org.dromara.djs.breed.core.domain.query.PigStatusRecordQuery;
 import org.dromara.djs.breed.core.domain.vo.PigDetailVo;
 import org.dromara.djs.breed.core.domain.vo.PigStatusRecordVo;
 import org.dromara.djs.breed.core.domain.vo.PigVo;
@@ -70,6 +71,13 @@ public class PigController extends BaseController {
     @GetMapping("/{id}/history")
     public R<List<PigStatusRecordVo>> history(@PathVariable Long id) {
         return R.ok(pigCoreService.listHistory(id));
+    }
+
+    /** 全局状态流水分页（admin"事件台账"页用）。 */
+    @SaCheckPermission("djs:breed:pig:query")
+    @GetMapping("/status-record/list")
+    public TableDataInfo<PigStatusRecordVo> statusRecordList(PigStatusRecordQuery query, PageQuery pageQuery) {
+        return pigCoreService.queryStatusRecordPage(query, pageQuery);
     }
 
     /**

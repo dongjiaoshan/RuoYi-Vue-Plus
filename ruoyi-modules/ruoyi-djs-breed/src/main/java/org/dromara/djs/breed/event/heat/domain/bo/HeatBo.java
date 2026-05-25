@@ -22,8 +22,11 @@ public class HeatBo implements Serializable {
     @Serial
     private static final long serialVersionUID = 1L;
 
-    @NotNull(message = "heat.pig_id.required")
+    /** 母猪 ID（与 earNo 二选一；admin 端可直传 id，mp 端建议传 earNo）。 */
     private Long pigId;
+
+    /** 猪只耳号简版（mp 端工人输入；与 pigId 二选一，service 入口按 earNo 查 pig.id）。 */
+    private String earNo;
 
     @NotNull(message = "heat.date.required")
     private LocalDateTime heatDate;

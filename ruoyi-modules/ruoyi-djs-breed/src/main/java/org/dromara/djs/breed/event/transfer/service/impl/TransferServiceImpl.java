@@ -59,18 +59,53 @@ public class TransferServiceImpl implements ITransferService {
     public PigTransferVo recordTransfer(TransferBo bo) {
         Objects.requireNonNull(bo, "TransferBo must not be null");
 
+        // 二选一支持：mp 端传 earNo；admin 端传 pigId（与 D5 BRD-EVENT-001 supplierCode 模式一致）
+        if (bo.getPigId() == null) {
+            if (bo.getEarNo() == null || bo.getEarNo().isBlank()) {
+                throw new ServiceException(I18nMessages.t("pig.id_or_ear_required"), 400);
+            }
+            Long resolved = pigMapper.selectIdByEarNo(bo.getEarNo());
+            if (resolved == null) {
+                throw new ServiceException(I18nMessages.t("pig.not_found_by_ear", bo.getEarNo()), 400);
+            }
+            bo.setPigId(resolved);
+        }
         Pig pig = pigMapper.selectById(bo.getPigId());
         if (pig == null) {
             throw new ServiceException(I18nMessages.t("pig.not_found", bo.getPigId()));
         }
 
+        // 二选一：admin 传 newBarnId / mp 传 newBarnCode
+        if (bo.getNewBarnId() == null) {
+            if (bo.getNewBarnCode() == null || bo.getNewBarnCode().isBlank()) {
+                throw new ServiceException(I18nMessages.t("transfer.new_barn.required"), 400);
+            }
+            Barn b = barnMapper.selectOne(
+                com.baomidou.mybatisplus.core.toolkit.Wrappers.<Barn>lambdaQuery()
+                    .eq(Barn::getBarnCode, bo.getNewBarnCode()).last("LIMIT 1"));
+            if (b == null) {
+                throw new ServiceException(I18nMessages.t("transfer.new_barn.not_found", bo.getNewBarnCode()), 400);
+            }
+            bo.setNewBarnId(b.getId());
+        }
         Barn newBarn = barnMapper.selectById(bo.getNewBarnId());
         if (newBarn == null) {
-            throw new ServiceException(I18nMessages.t("transfer.new_barn.not_found", bo.getNewBarnId()));
+            throw new ServiceException(I18nMessages.t("transfer.new_barn.not_found", bo.getNewBarnId()), 400);
+        }
+        // 二选一：admin 传 newPenId / mp 传 newPenCode（pen 限定在新栋舍内查找）
+        if (bo.getNewPenId() == null && bo.getNewPenCode() != null && !bo.getNewPenCode().isBlank()) {
+            Pen p = penMapper.selectOne(
+                com.baomidou.mybatisplus.core.toolkit.Wrappers.<Pen>lambdaQuery()
+                    .eq(Pen::getBarnId, newBarn.getId())
+                    .eq(Pen::getPenCode, bo.getNewPenCode()).last("LIMIT 1"));
+            if (p == null) {
+                throw new ServiceException(I18nMessages.t("transfer.new_pen.not_found", bo.getNewPenCode()), 400);
+            }
+            bo.setNewPenId(p.getId());
         }
         Pen newPen = bo.getNewPenId() == null ? null : penMapper.selectById(bo.getNewPenId());
         if (bo.getNewPenId() != null && newPen == null) {
-            throw new ServiceException(I18nMessages.t("transfer.new_pen.not_found", bo.getNewPenId()));
+            throw new ServiceException(I18nMessages.t("transfer.new_pen.not_found", bo.getNewPenId()), 400);
         }
 
         // 1. 记录转移历史

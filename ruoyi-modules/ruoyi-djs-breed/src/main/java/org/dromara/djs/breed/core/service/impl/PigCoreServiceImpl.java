@@ -13,6 +13,7 @@ import org.dromara.djs.breed.core.domain.PigStatusRecord;
 import org.dromara.djs.breed.core.domain.bo.PigCreateBo;
 import org.dromara.djs.breed.core.domain.bo.PigEventBo;
 import org.dromara.djs.breed.core.domain.query.PigQuery;
+import org.dromara.djs.breed.core.domain.query.PigStatusRecordQuery;
 import org.dromara.djs.breed.core.domain.vo.PigDetailVo;
 import org.dromara.djs.breed.core.domain.vo.PigStatusRecordVo;
 import org.dromara.djs.breed.core.domain.vo.PigVo;
@@ -274,6 +275,20 @@ public class PigCoreServiceImpl implements IPigCoreService {
             .orderByDesc(PigStatusRecord::getChangeTime, PigStatusRecord::getId)
             .last("LIMIT " + LIST_HISTORY_LIMIT);
         return statusRecordMapper.selectVoList(w);
+    }
+
+    @Override
+    public TableDataInfo<PigStatusRecordVo> queryStatusRecordPage(PigStatusRecordQuery query, PageQuery pageQuery) {
+        LambdaQueryWrapper<PigStatusRecord> w = new LambdaQueryWrapper<PigStatusRecord>()
+            .eq(query.getPigId() != null, PigStatusRecord::getPigId, query.getPigId())
+            .eq(StringUtils.isNotBlank(query.getEarNo()), PigStatusRecord::getEarNo, query.getEarNo())
+            .eq(StringUtils.isNotBlank(query.getEventType()), PigStatusRecord::getEventType, query.getEventType())
+            .eq(StringUtils.isNotBlank(query.getNewStatus()), PigStatusRecord::getNewStatus, query.getNewStatus())
+            .ge(query.getChangeTimeStart() != null, PigStatusRecord::getChangeTime, query.getChangeTimeStart())
+            .le(query.getChangeTimeEnd() != null, PigStatusRecord::getChangeTime, query.getChangeTimeEnd())
+            .orderByDesc(PigStatusRecord::getChangeTime, PigStatusRecord::getId);
+        Page<PigStatusRecordVo> page = statusRecordMapper.selectVoPage(pageQuery.build(), w);
+        return TableDataInfo.build(page);
     }
 
     /**

@@ -6,6 +6,7 @@ import org.dromara.djs.breed.core.domain.Pig;
 import org.dromara.djs.breed.core.domain.bo.PigCreateBo;
 import org.dromara.djs.breed.core.domain.bo.PigEventBo;
 import org.dromara.djs.breed.core.domain.query.PigQuery;
+import org.dromara.djs.breed.core.domain.query.PigStatusRecordQuery;
 import org.dromara.djs.breed.core.domain.vo.PigDetailVo;
 import org.dromara.djs.breed.core.domain.vo.PigStatusRecordVo;
 import org.dromara.djs.breed.core.domain.vo.PigVo;
@@ -53,4 +54,7 @@ public interface IPigCoreService {
 
     /** 全量状态变更历史（DESC by change_time，最多返 200 条防爆）。 */
     List<PigStatusRecordVo> listHistory(Long pigId);
+
+    /** 全局状态流水分页查询（admin"事件台账"页）。 */
+    TableDataInfo<PigStatusRecordVo> queryStatusRecordPage(PigStatusRecordQuery query, PageQuery pageQuery);
 }

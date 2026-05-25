@@ -88,12 +88,12 @@ public class PigStateMachine {
 
         // 1. INTRO 不走 fireEvent，由 createPig 路径直接创建初始状态
         if (event == INTRO) {
-            throw new ServiceException(I18nMessages.t("pig.event.intro_use_create"));
+            throw new ServiceException(I18nMessages.t("pig.event.intro_use_create"), 400);
         }
 
         // 2. 终态拒绝继续推进
         if (from.isTerminal()) {
-            throw new ServiceException(I18nMessages.t("pig.state.terminal", from.name()));
+            throw new ServiceException(I18nMessages.t("pig.state.terminal", from.getLabel()), 400);
         }
 
         // 3. 性别校验
@@ -118,17 +118,17 @@ public class PigStateMachine {
         // 7. 简单 transition
         PigLifecycle to = SIMPLE.get(new TransitionKey(from, event));
         if (to == null) {
-            throw new ServiceException(I18nMessages.t("pig.event.invalid_transition", from.name(), event.name()));
+            throw new ServiceException(I18nMessages.t("pig.event.invalid_transition", from.getLabel(), event.getLabel()), 400);
         }
         return to;
     }
 
     private void validateGender(PigStatusEvent event, String sex) {
         if (FEMALE_ONLY.contains(event) && !"F".equals(sex)) {
-            throw new ServiceException(I18nMessages.t("pig.event.female_only", event.name()));
+            throw new ServiceException(I18nMessages.t("pig.event.female_only", event.getLabel()), 400);
         }
         if (event == CASTRATE && !"M".equals(sex)) {
-            throw new ServiceException(I18nMessages.t("pig.event.male_only", event.name()));
+            throw new ServiceException(I18nMessages.t("pig.event.male_only", event.getLabel()), 400);
         }
     }
 
@@ -153,7 +153,7 @@ public class PigStateMachine {
         // OESTRUS（查情）：仅 PZ；payload.isPregnantConfirmed=true → PH，否则保持 PZ（仅记录状态）
         m.put(OESTRUS, (from, payload) -> {
             if (from != PZ) {
-                throw new ServiceException(I18nMessages.t("pig.event.invalid_transition", from.name(), OESTRUS.name()));
+                throw new ServiceException(I18nMessages.t("pig.event.invalid_transition", from.getLabel(), OESTRUS.getLabel()), 400);
             }
             return Boolean.TRUE.equals(payload.get("isPregnantConfirmed")) ? PH : PZ;
         });
@@ -161,18 +161,18 @@ public class PigStateMachine {
         // NULL_RETURN（返空）：PZ/PH；按 abnormalType 分流
         m.put(NULL_RETURN, (from, payload) -> {
             if (from != PZ && from != PH) {
-                throw new ServiceException(I18nMessages.t("pig.event.invalid_transition", from.name(), NULL_RETURN.name()));
+                throw new ServiceException(I18nMessages.t("pig.event.invalid_transition", from.getLabel(), NULL_RETURN.getLabel()), 400);
             }
             Object t = payload.get("abnormalType");
             String type = t == null ? null : t.toString();
             if (type == null) {
-                throw new ServiceException(I18nMessages.t("pig.event.invalid_abnormal_type", "null"));
+                throw new ServiceException(I18nMessages.t("pig.event.invalid_abnormal_type", "null"), 400);
             }
             return switch (type) {
                 case "abort" -> LC;
                 case "return" -> FQ;
                 case "idle" -> KH;
-                default -> throw new ServiceException(I18nMessages.t("pig.event.invalid_abnormal_type", type));
+                default -> throw new ServiceException(I18nMessages.t("pig.event.invalid_abnormal_type", type), 400);
             };
         });
 

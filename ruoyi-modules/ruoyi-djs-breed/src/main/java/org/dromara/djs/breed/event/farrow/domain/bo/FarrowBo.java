@@ -26,8 +26,11 @@ public class FarrowBo implements Serializable {
     private static final long serialVersionUID = 1L;
 
     /** 母猪 ID（必填，pig_info.id）。 */
-    @NotNull(message = "farrow.pig_id.required")
+    /** 母猪 ID（与 earNo 二选一；admin 端可直传 id，mp 端建议传 earNo）。 */
     private Long pigId;
+
+    /** 猪只耳号简版（mp 端工人输入；与 pigId 二选一，service 入口按 earNo 查 pig.id）。 */
+    private String earNo;
 
     /** 分娩日期（含时间，工人 mp 端默认 now）。 */
     @NotNull(message = "farrow.date.required")

@@ -23,18 +23,26 @@ public class TransferBo implements Serializable {
     @Serial
     private static final long serialVersionUID = 1L;
 
-    @NotNull(message = "transfer.pig_id.required")
+    /** 母猪 ID（与 earNo 二选一；admin 端可直传 id，mp 端建议传 earNo）。 */
     private Long pigId;
+
+    /** 猪只耳号简版（mp 端工人输入；与 pigId 二选一，service 入口按 earNo 查 pig.id）。 */
+    private String earNo;
 
     @NotNull(message = "transfer.date.required")
     private LocalDateTime transferDate;
 
-    /** 新栋舍 ID。 */
-    @NotNull(message = "transfer.new_barn.required")
+    /** 新栋舍 ID（与 newBarnCode 二选一；admin 端可直传 id，mp 端建议传 newBarnCode）。 */
     private Long newBarnId;
 
-    /** 新栏位 ID（可空，未细分到栏位时仅切栋舍）。 */
+    /** 新栋舍编码（mp 端工人输入；service 入口按 (tenant_id, barn_code) 查 barn.id）。 */
+    private String newBarnCode;
+
+    /** 新栏位 ID（可空，未细分到栏位时仅切栋舍；与 newPenCode 二选一）。 */
     private Long newPenId;
+
+    /** 新栏位编码（mp 端工人输入；service 入口按 (tenant_id, barn_id, pen_code) 查 pen.id）。 */
+    private String newPenCode;
 
     /** 转移原因（可选）。 */
     @Size(max = 64, message = "transfer.reason.size")

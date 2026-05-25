@@ -67,6 +67,17 @@ public class PigGrowthServiceImpl implements IPigGrowthService {
     public PigGrowthVo addGrowthRecord(GrowthBo bo) {
         Objects.requireNonNull(bo, "GrowthBo must not be null");
 
+        // 二选一支持：mp 端传 earNo；admin 端传 pigId（与 D5 BRD-EVENT-001 supplierCode 模式一致）
+        if (bo.getPigId() == null) {
+            if (bo.getEarNo() == null || bo.getEarNo().isBlank()) {
+                throw new ServiceException(I18nMessages.t("pig.id_or_ear_required"), 400);
+            }
+            Long resolved = pigMapper.selectIdByEarNo(bo.getEarNo());
+            if (resolved == null) {
+                throw new ServiceException(I18nMessages.t("pig.not_found_by_ear", bo.getEarNo()), 400);
+            }
+            bo.setPigId(resolved);
+        }
         Pig pig = pigMapper.selectById(bo.getPigId());
         if (pig == null) {
             throw new ServiceException(I18nMessages.t("pig.not_found", bo.getPigId()));
