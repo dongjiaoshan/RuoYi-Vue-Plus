@@ -1,6 +1,7 @@
 package org.dromara.djs.breed.event.breeding.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import org.dromara.common.satoken.utils.LoginHelper;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import lombok.RequiredArgsConstructor;
@@ -94,7 +95,9 @@ public class BreedingServiceImpl implements IBreedingService {
         entity.setParity(Optional.ofNullable(pig.getParity()).orElse(0));
         entity.setBarnName(resolveBarnName(pig.getBarnId()));
         entity.setPenName(resolvePenName(pig.getPenId()));
+        entity.setProofOssIds(bo.getProofOssIds());
         entity.setRemark(bo.getRemark());
+        entity.setOperatorId(LoginHelper.getUserId());
         entity.setDelFlag("0");
         breedingMapper.insert(entity);
 

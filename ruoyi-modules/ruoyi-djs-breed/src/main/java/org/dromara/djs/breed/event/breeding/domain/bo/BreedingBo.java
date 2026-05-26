@@ -56,6 +56,10 @@ public class BreedingBo implements Serializable {
     @Size(max = 32, message = "breeding.batch.size")
     private String semenBatchNo;
 
+    /** 凭证图片 OSS IDs 逗号分隔（mp 端配种现场照片，与 PigIntroBo 对齐）。 */
+    @Size(max = 1024, message = "breeding.proof.size")
+    private String proofOssIds;
+
     /** 备注。 */
     @Size(max = 500, message = "breeding.remark.size")
     private String remark;

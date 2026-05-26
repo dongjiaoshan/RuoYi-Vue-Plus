@@ -1,6 +1,7 @@
 package org.dromara.djs.breed.event.heat.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import org.dromara.common.satoken.utils.LoginHelper;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import lombok.RequiredArgsConstructor;
@@ -78,6 +79,7 @@ public class HeatServiceImpl implements IHeatService {
         entity.setHeatResult(bo.getHeatResult());
         entity.setIsPregnantConfirmed(confirmed ? 1 : 0);
         entity.setRemark(bo.getRemark());
+        entity.setOperatorId(LoginHelper.getUserId());
         entity.setDelFlag("0");
         heatMapper.insert(entity);
 

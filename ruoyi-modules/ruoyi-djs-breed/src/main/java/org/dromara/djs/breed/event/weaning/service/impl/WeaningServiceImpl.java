@@ -1,6 +1,7 @@
 package org.dromara.djs.breed.event.weaning.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import org.dromara.common.satoken.utils.LoginHelper;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import lombok.RequiredArgsConstructor;
@@ -100,6 +101,7 @@ public class WeaningServiceImpl implements IWeaningService {
         entity.setWeanedWeight(bo.getWeanedWeight());
         entity.setAvgWeanedWeight(resolveAvg(bo));
         entity.setRemark(bo.getRemark());
+        entity.setOperatorId(LoginHelper.getUserId());
         entity.setDelFlag("0");
         weaningMapper.insert(entity);
 

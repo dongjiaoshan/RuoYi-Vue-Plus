@@ -1,6 +1,7 @@
 package org.dromara.djs.breed.event.nullreturn.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import org.dromara.common.satoken.utils.LoginHelper;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import lombok.RequiredArgsConstructor;
@@ -92,6 +93,7 @@ public class NullReturnServiceImpl implements INullReturnService {
         entity.setRelatedBreedingId(pig.getMatingId());
         entity.setAbnormalReason(bo.getAbnormalReason());
         entity.setRemark(bo.getRemark());
+        entity.setOperatorId(LoginHelper.getUserId());
         entity.setDelFlag("0");
         abnormalMapper.insert(entity);
 

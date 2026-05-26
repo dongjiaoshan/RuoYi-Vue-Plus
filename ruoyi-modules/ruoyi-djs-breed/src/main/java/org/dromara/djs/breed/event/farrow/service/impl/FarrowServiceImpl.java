@@ -1,6 +1,7 @@
 package org.dromara.djs.breed.event.farrow.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import org.dromara.common.satoken.utils.LoginHelper;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import lombok.RequiredArgsConstructor;
@@ -115,7 +116,9 @@ public class FarrowServiceImpl implements IFarrowService {
         farrow.setParity(Optional.ofNullable(pig.getParity()).orElse(0) + 1);
         farrow.setBarnName(resolveBarnName(pig.getBarnId()));
         farrow.setPenName(resolvePenName(pig.getPenId()));
+        farrow.setProofOssIds(bo.getProofOssIds());
         farrow.setRemark(bo.getRemark());
+        farrow.setOperatorId(LoginHelper.getUserId());
         farrow.setDelFlag("0");
         farrowMapper.insert(farrow);
 

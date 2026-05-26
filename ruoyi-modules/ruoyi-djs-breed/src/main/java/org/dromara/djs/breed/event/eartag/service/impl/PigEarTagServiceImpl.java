@@ -1,6 +1,7 @@
 package org.dromara.djs.breed.event.eartag.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import org.dromara.common.satoken.utils.LoginHelper;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import lombok.RequiredArgsConstructor;
@@ -192,6 +193,7 @@ public class PigEarTagServiceImpl implements IPigEarTagService {
             log.setBirthWeight(item.getBirthWeight());
             log.setPigId(piglet.getId());
             log.setRemark(item.getRemark());
+            log.setOperatorId(LoginHelper.getUserId());
             log.setDelFlag("0");
             log.setDelUnique(0L);
             pigletnoMapper.insert(log);

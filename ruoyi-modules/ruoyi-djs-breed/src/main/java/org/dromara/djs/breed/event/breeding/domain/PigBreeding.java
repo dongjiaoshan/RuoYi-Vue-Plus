@@ -64,6 +64,9 @@ public class PigBreeding extends TenantEntity {
     /** 栏位名称（冗余）。 */
     private String penName;
 
+    /** 凭证图片 OSS IDs 逗号分隔（配种现场照片，与 PigIntroduce.proofOssIds 对齐）。 */
+    private String proofOssIds;
+
     /** 软删标记。 */
     @TableLogic
     private String delFlag;

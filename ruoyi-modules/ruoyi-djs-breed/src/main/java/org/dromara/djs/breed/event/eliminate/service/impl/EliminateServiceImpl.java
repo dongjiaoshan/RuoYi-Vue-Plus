@@ -1,6 +1,7 @@
 package org.dromara.djs.breed.event.eliminate.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import org.dromara.common.satoken.utils.LoginHelper;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import lombok.RequiredArgsConstructor;
@@ -75,6 +76,7 @@ public class EliminateServiceImpl implements IEliminateService {
         entity.setCullingWeight(bo.getCullingWeight());
         entity.setOssIds(bo.getOssIds());
         entity.setRemark(bo.getRemark());
+        entity.setOperatorId(LoginHelper.getUserId());
         entity.setDelFlag("0");
         cullingMapper.insert(entity);
 

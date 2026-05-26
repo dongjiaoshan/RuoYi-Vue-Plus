@@ -1,6 +1,7 @@
 package org.dromara.djs.breed.event.castrate.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import org.dromara.common.satoken.utils.LoginHelper;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import lombok.RequiredArgsConstructor;
@@ -74,6 +75,7 @@ public class CastrateServiceImpl implements ICastrateService {
         entity.setEarNo(pig.getEarNo());
         entity.setCastrateDate(bo.getCastrateDate());
         entity.setRemark(bo.getRemark());
+        entity.setOperatorId(LoginHelper.getUserId());
         entity.setDelFlag("0");
         castrateMapper.insert(entity);
 

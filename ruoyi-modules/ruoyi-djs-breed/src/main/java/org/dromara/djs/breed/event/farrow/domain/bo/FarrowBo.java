@@ -78,6 +78,10 @@ public class FarrowBo implements Serializable {
     /** 平均出生重 kg。 */
     private BigDecimal avgWeight;
 
+    /** 凭证图片 OSS IDs 逗号分隔（mp 端分娩现场照片，与 PigIntroBo 对齐）。 */
+    @Size(max = 1024, message = "farrow.proof.size")
+    private String proofOssIds;
+
     /** 备注。 */
     @Size(max = 500, message = "farrow.remark.size")
     private String remark;
