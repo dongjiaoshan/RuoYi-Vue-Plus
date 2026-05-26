@@ -4,6 +4,8 @@ import cn.idev.excel.annotation.ExcelIgnoreUnannotated;
 import cn.idev.excel.annotation.ExcelProperty;
 import io.github.linpeilie.annotations.AutoMapper;
 import lombok.Data;
+import org.dromara.common.translation.annotation.Translation;
+import org.dromara.common.translation.constant.TransConstant;
 import org.dromara.djs.breed.core.domain.Pig;
 
 import java.io.Serial;
@@ -88,11 +90,33 @@ public class PigVo implements Serializable {
     @ExcelProperty(value = "最近配种ID")
     private Long matingId;
 
+    @ExcelProperty(value = "母猪耳号")
+    private String motherEar;
+
+    @ExcelProperty(value = "公猪耳号")
+    private String fatherEar;
+
+    @ExcelProperty(value = "配种次数")
+    private Integer matingCount;
+
+    @ExcelProperty(value = "上次配种日")
+    private LocalDate lastMatingDate;
+
     @ExcelProperty(value = "备注")
     private String remark;
 
     @ExcelProperty(value = "创建时间")
     private Date createTime;
+
+    @ExcelProperty(value = "创建者ID")
+    private Long createBy;
+
+    /**
+     * 创建人姓名（ADR-0007 + 跨层契约 §4.5；用 USER_ID_TO_NAME，无 NICKNAME impl）。
+     */
+    @Translation(type = TransConstant.USER_ID_TO_NAME, mapper = "createBy")
+    @ExcelProperty(value = "创建人")
+    private String createName;
 
     private Integer version;
 }
