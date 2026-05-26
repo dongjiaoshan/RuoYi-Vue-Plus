@@ -8,6 +8,7 @@ import org.dromara.djs.breed.core.domain.bo.PigEventBo;
 import org.dromara.djs.breed.core.domain.query.PigQuery;
 import org.dromara.djs.breed.core.domain.query.PigStatusRecordQuery;
 import org.dromara.djs.breed.core.domain.vo.PigDetailVo;
+import org.dromara.djs.breed.core.domain.vo.PigSearchVo;
 import org.dromara.djs.breed.core.domain.vo.PigStatusRecordVo;
 import org.dromara.djs.breed.core.domain.vo.PigVo;
 
@@ -57,4 +58,27 @@ public interface IPigCoreService {
 
     /** 全局状态流水分页查询（admin"事件台账"页）。 */
     TableDataInfo<PigStatusRecordVo> queryStatusRecordPage(PigStatusRecordQuery query, PageQuery pageQuery);
+
+    /**
+     * mp 端 PigPicker 用——耳号关键字 + 状态/性别/类型过滤的轻量搜索（BRD-LIST-001 D6 carryover）。
+     *
+     * <p>语义：{@code WHERE ear_no LIKE '%earNoKeyword%' AND current_status IN (statusFilter)
+     * AND pig_sex = sexFilter AND pig_type = pigTypeFilter} ORDER BY id DESC LIMIT N。</p>
+     *
+     * <p>所有过滤器都是可选的；都不传时返最近 {@code limit} 条非 END 猪只。
+     * {@code statusFilter} CSV 形式，例 {@code "HB,PZ,PH"}；空串/null = 不过滤状态但默认排除 END。
+     * 终态（{@code END}）猪只**永不返回**——picker 是给事件录入用的，END 猪只不能再触发事件。</p>
+     *
+     * @param earNoKeyword 耳号关键字（LIKE 中部匹配；为空时返最近 N 条）
+     * @param statusFilter 状态白名单 CSV（如 {@code "HB,DN,LC,KH,FQ"} 给配种 picker 用）
+     * @param sexFilter    性别过滤（{@code "M"} / {@code "F"} / null）
+     * @param pigTypeFilter 类型过滤（{@code "sow"/"boar"/"piglet"/"fattening"} / null）
+     * @param limit         最多返回行数（1-100，默认 20）
+     * @return 轻量 PigSearchVo 列表
+     */
+    List<PigSearchVo> searchByEarKeyword(String earNoKeyword,
+                                         String statusFilter,
+                                         String sexFilter,
+                                         String pigTypeFilter,
+                                         Integer limit);
 }

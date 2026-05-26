@@ -15,6 +15,7 @@ import org.dromara.djs.breed.core.domain.bo.PigEventBo;
 import org.dromara.djs.breed.core.domain.query.PigQuery;
 import org.dromara.djs.breed.core.domain.query.PigStatusRecordQuery;
 import org.dromara.djs.breed.core.domain.vo.PigDetailVo;
+import org.dromara.djs.breed.core.domain.vo.PigSearchVo;
 import org.dromara.djs.breed.core.domain.vo.PigStatusRecordVo;
 import org.dromara.djs.breed.core.domain.vo.PigVo;
 import org.dromara.djs.breed.core.enums.PigEndReason;
@@ -37,6 +38,9 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.Duration;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -278,6 +282,88 @@ public class PigCoreServiceImpl implements IPigCoreService {
     }
 
     @Override
+    public List<PigSearchVo> searchByEarKeyword(String earNoKeyword,
+                                                String statusFilter,
+                                                String sexFilter,
+                                                String pigTypeFilter,
+                                                Integer limit) {
+        int effectiveLimit = clampLimit(limit);
+        LambdaQueryWrapper<Pig> w = new LambdaQueryWrapper<Pig>()
+            // 永不返回 END 猪只——picker 是给事件录入用的，END 不能再触发事件
+            .ne(Pig::getCurrentStatus, PigLifecycle.END.name())
+            .like(StringUtils.isNotBlank(earNoKeyword), Pig::getEarNo, earNoKeyword)
+            .eq(StringUtils.isNotBlank(sexFilter), Pig::getPigSex, sexFilter)
+            .eq(StringUtils.isNotBlank(pigTypeFilter), Pig::getPigType, pigTypeFilter)
+            .orderByDesc(Pig::getId)
+            .last("LIMIT " + effectiveLimit);
+
+        // statusFilter CSV："HB,PZ" → IN ('HB','PZ')
+        List<String> statuses = parseStatusFilter(statusFilter);
+        if (!statuses.isEmpty()) {
+            w.in(Pig::getCurrentStatus, statuses);
+        }
+
+        List<Pig> pigs = pigMapper.selectList(w);
+        if (pigs.isEmpty()) {
+            return Collections.emptyList();
+        }
+
+        // 批量 enrich barnCode/penCode（与 queryPage 一致，避免 N+1）
+        Set<Long> barnIds = pigs.stream().map(Pig::getBarnId).filter(Objects::nonNull).collect(Collectors.toSet());
+        Set<Long> penIds = pigs.stream().map(Pig::getPenId).filter(Objects::nonNull).collect(Collectors.toSet());
+        Map<Long, String> barnCodeMap = barnIds.isEmpty() ? Map.of()
+            : barnMapper.selectBatchIds(barnIds).stream()
+                .collect(Collectors.toMap(Barn::getId, Barn::getBarnCode, (a, b) -> a));
+        Map<Long, String> penCodeMap = penIds.isEmpty() ? Map.of()
+            : penMapper.selectBatchIds(penIds).stream()
+                .collect(Collectors.toMap(Pen::getId, Pen::getPenCode, (a, b) -> a));
+
+        List<PigSearchVo> result = new ArrayList<>(pigs.size());
+        for (Pig p : pigs) {
+            PigSearchVo vo = new PigSearchVo();
+            vo.setId(p.getId());
+            vo.setEarNo(p.getEarNo());
+            vo.setPigSex(p.getPigSex());
+            vo.setPigType(p.getPigType());
+            vo.setCurrentStatus(p.getCurrentStatus());
+            if (p.getBarnId() != null) {
+                vo.setBarnCode(barnCodeMap.get(p.getBarnId()));
+            }
+            if (p.getPenId() != null) {
+                vo.setPenCode(penCodeMap.get(p.getPenId()));
+            }
+            result.add(vo);
+        }
+        return result;
+    }
+
+    private int clampLimit(Integer raw) {
+        if (raw == null || raw <= 0) {
+            return 20;
+        }
+        return Math.min(raw, 100);
+    }
+
+    private List<String> parseStatusFilter(String csv) {
+        if (StringUtils.isBlank(csv)) {
+            return Collections.emptyList();
+        }
+        return Arrays.stream(csv.split(","))
+            .map(String::trim)
+            .filter(StringUtils::isNotBlank)
+            // 防御性：未知 lifecycle code 静默丢弃（避免 SQL 注入风险及拼写错误返空但报 500）
+            .filter(s -> {
+                try {
+                    PigLifecycle.valueOf(s);
+                    return true;
+                } catch (IllegalArgumentException ignore) {
+                    return false;
+                }
+            })
+            .collect(Collectors.toList());
+    }
+
+    @Override
     public TableDataInfo<PigStatusRecordVo> queryStatusRecordPage(PigStatusRecordQuery query, PageQuery pageQuery) {
         LambdaQueryWrapper<PigStatusRecord> w = new LambdaQueryWrapper<PigStatusRecord>()
             .eq(query.getPigId() != null, PigStatusRecord::getPigId, query.getPigId())
@@ -477,8 +563,14 @@ public class PigCoreServiceImpl implements IPigCoreService {
         d.setPenId(src.getPenId());
         d.setPenCode(src.getPenCode());
         d.setMatingId(src.getMatingId());
+        d.setMotherEar(src.getMotherEar());
+        d.setFatherEar(src.getFatherEar());
+        d.setMatingCount(src.getMatingCount());
+        d.setLastMatingDate(src.getLastMatingDate());
         d.setRemark(src.getRemark());
         d.setCreateTime(src.getCreateTime());
+        d.setCreateBy(src.getCreateBy());
+        d.setCreateName(src.getCreateName());
         d.setVersion(src.getVersion());
         return d;
     }

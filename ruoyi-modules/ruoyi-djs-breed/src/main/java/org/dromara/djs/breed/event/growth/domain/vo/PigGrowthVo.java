@@ -4,6 +4,8 @@ import cn.idev.excel.annotation.ExcelIgnoreUnannotated;
 import com.fasterxml.jackson.annotation.JsonFormat;
 import io.github.linpeilie.annotations.AutoMapper;
 import lombok.Data;
+import org.dromara.common.translation.annotation.Translation;
+import org.dromara.common.translation.constant.TransConstant;
 import org.dromara.djs.breed.event.growth.domain.PigGrowth;
 
 import java.io.Serial;
@@ -38,6 +40,14 @@ public class PigGrowthVo implements Serializable {
     private BigDecimal backHeight;
     private String photoOssIds;
     private Long operatorId;
+
+    /**
+     * 操作人姓名（来自 {@code sys_user.user_name}，ADR-0007 ＋ 跨层契约 §4.5）。
+     * <p>注意 ruoyi-common-translation 5.5.x 只实现了 {@code USER_ID_TO_NAME}（无 NICKNAME impl）。</p>
+     */
+    @Translation(type = TransConstant.USER_ID_TO_NAME, mapper = "operatorId")
+    private String operatorName;
+
     private String barnName;
     private String penName;
     private String remark;
