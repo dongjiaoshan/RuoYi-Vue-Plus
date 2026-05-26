@@ -34,7 +34,7 @@ import java.util.Date;
  * {@code update_by} / {@code update_time}。MP 的多租户拦截器在 final SQL 阶段仍会注入
  * {@code WHERE tenant_id=?}，租户隔离保留。</p>
  *
- * <p>使用范式（参考 {@code PersonServiceImpl} / {@code StoreServiceImpl} / {@code SupplierServiceImpl}）：</p>
+ * <p>使用范式（参考 {@code StoreServiceImpl} / {@code SupplierServiceImpl}）：</p>
  *
  * <pre>{@code
  * public class StoreServiceImpl extends DjsBaseServiceImpl<StoreMapper, Store>
