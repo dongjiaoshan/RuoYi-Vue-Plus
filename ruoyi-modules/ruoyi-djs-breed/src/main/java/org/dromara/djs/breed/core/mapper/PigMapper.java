@@ -17,4 +17,12 @@ public interface PigMapper extends BaseMapperPlus<Pig, PigVo> {
      */
     @Select("SELECT id FROM t_farm_pig_info WHERE ear_no = #{earNo} AND del_flag = '0' LIMIT 1")
     Long selectIdByEarNo(@Param("earNo") String earNo);
+
+    /**
+     * 按耳号查 current_status（跨模块只读：暴露给 {@code IPigQueryService} 用，
+     * 不要在养殖域外直接 inject 本 mapper）。
+     * <p>返回 null 表示耳号不存在或已软删。</p>
+     */
+    @Select("SELECT current_status FROM t_farm_pig_info WHERE ear_no = #{earNo} AND del_flag = '0' LIMIT 1")
+    String selectCurrentStatusByEarNo(@Param("earNo") String earNo);
 }

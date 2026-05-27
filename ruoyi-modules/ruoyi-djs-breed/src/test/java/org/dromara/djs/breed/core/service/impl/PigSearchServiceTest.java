@@ -141,12 +141,26 @@ class PigSearchServiceTest {
     }
 
     @Test
-    @DisplayName("终态 END 猪只永不返回——wrapper 已加 .ne(END)，即使 mapper 误返也由 caller 防御忽略")
-    void end_pigs_never_returned() {
-        // mapper 收到的 wrapper 已 .ne(currentStatus, 'END')；mock 模拟 mapper 正确遵守
+    @DisplayName("终态 END 猪只默认不返——statusFilter 未声明含 END 时 wrapper 加 .ne(END)")
+    void end_pigs_excluded_by_default() {
         when(pigMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(Collections.emptyList());
         List<PigSearchVo> result = service.searchByEarKeyword(null, null, null, null, 20);
         assertThat(result).isEmpty();
+    }
+
+    @Test
+    @DisplayName("statusFilter='END'→ 放行 END 猪只（WMS-PIG-001 燎毛 picker 选已出栏猪用）")
+    void end_pigs_allowed_when_statusFilter_explicit() {
+        Pig endPig = new Pig();
+        endPig.setId(99L);
+        endPig.setEarNo("010126050007");
+        endPig.setCurrentStatus(PigLifecycle.END.name());
+        when(pigMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(List.of(endPig));
+
+        List<PigSearchVo> result = service.searchByEarKeyword(null, "END", null, null, 20);
+
+        assertThat(result).hasSize(1);
+        assertThat(result.get(0).getCurrentStatus()).isEqualTo(PigLifecycle.END.name());
     }
 
     @Test
