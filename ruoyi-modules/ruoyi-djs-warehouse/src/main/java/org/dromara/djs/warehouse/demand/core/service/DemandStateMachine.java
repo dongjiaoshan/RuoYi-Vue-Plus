@@ -1,6 +1,7 @@
 package org.dromara.djs.warehouse.demand.core.service;
 
 import org.dromara.common.core.exception.ServiceException;
+import org.dromara.djs.common.util.I18nMessages;
 import org.dromara.djs.warehouse.demand.core.enums.DemandEvent;
 import org.dromara.djs.warehouse.demand.core.enums.DemandStatus;
 import org.springframework.stereotype.Component;

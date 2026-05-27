@@ -9,6 +9,7 @@ import org.dromara.common.core.utils.StringUtils;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.satoken.utils.LoginHelper;
+import org.dromara.djs.breed.core.service.IPigQueryService;
 import org.dromara.djs.common.base.DjsBaseServiceImpl;
 import org.dromara.djs.common.encoder.BizCodeType;
 import org.dromara.djs.common.encoder.IBizCodeGenerator;
@@ -17,12 +18,13 @@ import org.dromara.djs.warehouse.burn.domain.bo.PigBurnRecordBo;
 import org.dromara.djs.warehouse.burn.domain.query.PigBurnRecordQuery;
 import org.dromara.djs.warehouse.burn.domain.vo.PigBurnRecordVo;
 import org.dromara.djs.warehouse.burn.mapper.PigBurnRecordMapper;
-import org.dromara.djs.warehouse.burn.mapper.PigInfoReadMapper;
 import org.dromara.djs.warehouse.burn.service.IPigBurnRecordService;
 import org.dromara.djs.warehouse.flow.domain.StockFlow;
 import org.dromara.djs.warehouse.flow.mapper.StockFlowMapper;
 import org.dromara.djs.warehouse.location.domain.LocationInfo;
 import org.dromara.djs.warehouse.location.mapper.LocationInfoMapper;
+import org.dromara.djs.warehouse.product.domain.ProductInfo;
+import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
 import org.dromara.djs.warehouse.stock.mapper.LocationStockMapper;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -86,23 +88,32 @@ public class PigBurnRecordServiceImpl
      */
     private static final String PIG_STATUS_END = "END";
 
+    /**
+     * 白条产品业务码（D08-CLOSING 白条主数据 seed）；屠宰燎毛出库写 stock_flow 必引用此 product_id。
+     * 字面量与 {@code V202606061060__D08-CLOSING-seed-white-bar-product.sql} 一致。
+     */
+    private static final String WHITE_BAR_PRODUCT_BIZ_CODE = "PROD-WHITE-BAR-01";
+
     private final LocationStockMapper locationStockMapper;
     private final StockFlowMapper stockFlowMapper;
-    private final PigInfoReadMapper pigInfoReadMapper;
+    private final IPigQueryService pigQueryService;
     private final LocationInfoMapper locationInfoMapper;
+    private final ProductInfoMapper productInfoMapper;
     private final IBizCodeGenerator bizCodeGenerator;
 
     public PigBurnRecordServiceImpl(PigBurnRecordMapper baseMapper,
                                     LocationStockMapper locationStockMapper,
                                     StockFlowMapper stockFlowMapper,
-                                    PigInfoReadMapper pigInfoReadMapper,
+                                    IPigQueryService pigQueryService,
                                     LocationInfoMapper locationInfoMapper,
+                                    ProductInfoMapper productInfoMapper,
                                     IBizCodeGenerator bizCodeGenerator) {
         super(baseMapper);
         this.locationStockMapper = locationStockMapper;
         this.stockFlowMapper = stockFlowMapper;
-        this.pigInfoReadMapper = pigInfoReadMapper;
+        this.pigQueryService = pigQueryService;
         this.locationInfoMapper = locationInfoMapper;
+        this.productInfoMapper = productInfoMapper;
         this.bizCodeGenerator = bizCodeGenerator;
     }
 
@@ -110,7 +121,7 @@ public class PigBurnRecordServiceImpl
     @Transactional(rollbackFor = Exception.class)
     public Long submitBurnRecord(PigBurnRecordBo bo) {
         // ---------- Step 1：校验 earNo 出栏 ----------
-        String pigStatus = pigInfoReadMapper.selectCurrentStatusByEarNo(bo.getEarNo());
+        String pigStatus = pigQueryService.selectCurrentStatusByEarNo(bo.getEarNo());
         if (pigStatus == null) {
             throw new ServiceException("耳号未找到或猪只已删除：" + bo.getEarNo());
         }
@@ -152,9 +163,8 @@ public class PigBurnRecordServiceImpl
         flowCtx.put("ioCode", "OT");
         flow.setFlowNo(bizCodeGenerator.generate(BizCodeType.STOCK_FLOW_NO, flowCtx));
         flow.setFlowDate(bo.getBurnTime());
-        // product_id 在 WMS-MD-002 D8 才建；本 ticket 白条出库无 product 主数据 → 写 0 占位（DDL NOT NULL），
-        // D9 WMS-MAT-001 落地后补回填或改 nullable（已 raise 跨 ticket follow-up）
-        flow.setProductId(0L);
+        // 白条产品主数据 seed（V202606061060 PROD-WHITE-BAR-01）；屠宰燎毛出库的 product 维度固定指向"白条·猪肉"。
+        flow.setProductId(resolveWhiteBarProductId());
         flow.setWarehouseId(bo.getLocationId());
         flow.setInoutType(INOUT_OUT);
         flow.setFlowType(FLOW_TYPE_SLAUGHTER_BURN);
@@ -219,6 +229,26 @@ public class PigBurnRecordServiceImpl
             }
         }
         return String.format("BURN%s%04d", yyMMdd, nextSeq);
+    }
+
+    /**
+     * 解析白条产品主数据 id（业务码 {@link #WHITE_BAR_PRODUCT_BIZ_CODE}）。
+     *
+     * <p>protected 方便单测 stub 固定返回值（避开真实 mapper 查询）。
+     * seed 由 {@code V202606061060__D08-CLOSING-seed-white-bar-product.sql} 保证；
+     * 查不到表示 DB 未灌 seed → 抛 {@link ServiceException} 直接打回。</p>
+     */
+    protected Long resolveWhiteBarProductId() {
+        ProductInfo whiteBar = productInfoMapper.selectOne(
+            new LambdaQueryWrapper<ProductInfo>()
+                .eq(ProductInfo::getProductId, WHITE_BAR_PRODUCT_BIZ_CODE)
+                .last("LIMIT 1"));
+        if (whiteBar == null || whiteBar.getId() == null) {
+            throw new ServiceException(
+                "白条产品主数据缺失（product_id=" + WHITE_BAR_PRODUCT_BIZ_CODE
+                    + "），请确认 V202606061060 seed 已执行");
+        }
+        return whiteBar.getId();
     }
 
     /**

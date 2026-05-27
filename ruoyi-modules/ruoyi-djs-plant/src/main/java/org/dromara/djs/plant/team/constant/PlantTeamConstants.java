@@ -12,10 +12,10 @@ public final class PlantTeamConstants {
     }
 
     /**
-     * 种植部门 dept_id（D04-CLOSING seed 固定 201）。
+     * 种植部门 dept_id。
      *
-     * <p>V1 单农场场景硬编码；V2 多农场启用时改读 {@code sys_config}（如 {@code djs.plant.dept_id}）
-     * 或按 farm context 动态识别。详 {@code doc/_open-issues.md} 跨 ticket follow-up。</p>
+     * <p>V1 单农场硬编码（D04-CLOSING seed 固定 201）；V2 多农场启用时改 {@code sys_config} key
+     * {@code djs.plant.dept_id} 默认 201。</p>
      */
     public static final Long PLANT_DEPT_ID = 201L;
 

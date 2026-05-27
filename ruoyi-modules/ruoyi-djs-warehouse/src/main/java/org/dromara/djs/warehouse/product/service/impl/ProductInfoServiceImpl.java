@@ -7,12 +7,12 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.core.utils.MapstructUtils;
-import org.dromara.common.core.utils.MessageUtils;
 import org.dromara.common.core.utils.StringUtils;
 
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.common.base.DjsBaseServiceImpl;
+import org.dromara.djs.common.util.I18nMessages;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.domain.bo.GiftBoxBo;
 import org.dromara.djs.warehouse.product.domain.bo.ProductInfoBo;
@@ -115,7 +115,7 @@ public class ProductInfoServiceImpl extends DjsBaseServiceImpl<ProductInfoMapper
         try {
             rows = baseMapper.insert(entity);
         } catch (DuplicateKeyException e) {
-            throw new ServiceException(i18n("product.code_duplicate", bo.getProductId()));
+            throw new ServiceException(I18nMessages.t("product.code_duplicate", bo.getProductId()));
         }
 
         // 礼盒组件落库
@@ -171,12 +171,12 @@ public class ProductInfoServiceImpl extends DjsBaseServiceImpl<ProductInfoMapper
             long activeStock = baseMapper.countActiveStockByProduct(id);
             if (activeStock > 0) {
                 String name = lookupProductName(id);
-                throw new ServiceException(i18n("product.has_stock", name));
+                throw new ServiceException(I18nMessages.t("product.has_stock", name));
             }
             long referenced = baseMapper.countReferencedAsMaterial(id);
             if (referenced > 0) {
                 String name = lookupProductName(id);
-                throw new ServiceException(i18n("product.referenced_as_material", name));
+                throw new ServiceException(I18nMessages.t("product.referenced_as_material", name));
             }
         }
         int rows = softDelete(ids);
@@ -202,22 +202,22 @@ public class ProductInfoServiceImpl extends DjsBaseServiceImpl<ProductInfoMapper
     private void validateBoBeforeWrite(ProductInfoBo bo) {
         Integer type = bo.getProductType();
         if (type == null) {
-            throw new ServiceException(i18n("product.type.required"));
+            throw new ServiceException(I18nMessages.t("product.type.required"));
         }
         switch (type) {
             case PRODUCT_TYPE_SELF -> {
                 if (StrUtil.isBlank(bo.getBelongType())) {
-                    throw new ServiceException(i18n("product.belong_type.required"));
+                    throw new ServiceException(I18nMessages.t("product.belong_type.required"));
                 }
             }
             case PRODUCT_TYPE_PURCHASE -> {
                 if (bo.getSupplierId() == null) {
-                    throw new ServiceException(i18n("product.supplier.required"));
+                    throw new ServiceException(I18nMessages.t("product.supplier.required"));
                 }
             }
             case PRODUCT_TYPE_GIFT_BOX -> {
                 if (CollUtil.isEmpty(bo.getGiftComponents())) {
-                    throw new ServiceException(i18n("product.gift_components.required"));
+                    throw new ServiceException(I18nMessages.t("product.gift_components.required"));
                 }
             }
             default -> throw new ServiceException("不支持的产品类型：" + type);
@@ -242,7 +242,7 @@ public class ProductInfoServiceImpl extends DjsBaseServiceImpl<ProductInfoMapper
         List<ProductInfo> products = baseMapper.selectBatchIds(ids);
         for (ProductInfo p : products) {
             if (p.getProductType() != null && p.getProductType() == PRODUCT_TYPE_GIFT_BOX) {
-                throw new ServiceException(i18n("product.gift_component.nested", p.getProductName()));
+                throw new ServiceException(I18nMessages.t("product.gift_component.nested", p.getProductName()));
             }
         }
     }
@@ -268,34 +268,6 @@ public class ProductInfoServiceImpl extends DjsBaseServiceImpl<ProductInfoMapper
     private String lookupProductName(Long id) {
         ProductInfo p = baseMapper.selectById(id);
         return p != null && p.getProductName() != null ? p.getProductName() : String.valueOf(id);
-    }
-
-    /**
-     * i18n 桥接：{@link MessageUtils#message} static 字段依赖 Spring 上下文，单测无 Spring 时
-     * 整个 {@code MessageUtils} 类初始化抛 {@code ExceptionInInitializerError}。
-     *
-     * <p>本方法做 try/catch 兜底：拿不到 MessageSource 时回退为 {@code "<key>: arg1, arg2..."} 串，
-     * 业务异常依然能落到 {@link ServiceException#getMessage}。生产路径与
-     * {@link MessageUtils#message} 行为一致。</p>
-     *
-     * <p>D08 _open-issues：是否 promote 到 djs-common 复用（参 djs-breed I18nMessages 范式）。</p>
-     */
-    private static String i18n(String key, Object... args) {
-        try {
-            return MessageUtils.message(key, args);
-        } catch (Throwable e) {
-            if (args == null || args.length == 0) {
-                return key;
-            }
-            StringBuilder sb = new StringBuilder(key).append(": ");
-            for (int i = 0; i < args.length; i++) {
-                if (i > 0) {
-                    sb.append(", ");
-                }
-                sb.append(args[i]);
-            }
-            return sb.toString();
-        }
     }
 
     private LambdaQueryWrapper<ProductInfo> buildQueryWrapper(ProductInfoQuery query) {

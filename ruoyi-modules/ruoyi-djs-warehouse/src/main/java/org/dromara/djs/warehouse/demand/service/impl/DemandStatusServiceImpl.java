@@ -10,7 +10,7 @@ import org.dromara.common.satoken.utils.LoginHelper;
 import org.dromara.djs.warehouse.demand.core.enums.DemandEvent;
 import org.dromara.djs.warehouse.demand.core.enums.DemandStatus;
 import org.dromara.djs.warehouse.demand.core.service.DemandStateMachine;
-import org.dromara.djs.warehouse.demand.core.service.I18nMessages;
+import org.dromara.djs.common.util.I18nMessages;
 import org.dromara.djs.warehouse.demand.domain.DemandManage;
 import org.dromara.djs.warehouse.demand.domain.DemandPig;
 import org.dromara.djs.warehouse.demand.mapper.DemandManageMapper;

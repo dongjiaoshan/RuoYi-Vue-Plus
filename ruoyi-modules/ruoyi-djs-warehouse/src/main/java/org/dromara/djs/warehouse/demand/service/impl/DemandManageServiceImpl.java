@@ -17,7 +17,7 @@ import org.dromara.djs.common.base.DjsBaseServiceImpl;
 import org.dromara.djs.common.encoder.BizCodeType;
 import org.dromara.djs.common.encoder.IBizCodeGenerator;
 import org.dromara.djs.warehouse.demand.core.enums.DemandStatus;
-import org.dromara.djs.warehouse.demand.core.service.I18nMessages;
+import org.dromara.djs.common.util.I18nMessages;
 import org.dromara.djs.warehouse.demand.domain.DemandManage;
 import org.dromara.djs.warehouse.demand.domain.DemandPig;
 import org.dromara.djs.warehouse.demand.domain.bo.AssignPigBo;

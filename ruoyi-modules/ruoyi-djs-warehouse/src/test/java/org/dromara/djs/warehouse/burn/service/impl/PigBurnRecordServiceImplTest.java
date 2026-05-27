@@ -2,15 +2,16 @@ package org.dromara.djs.warehouse.burn.service.impl;
 
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.satoken.utils.LoginHelper;
+import org.dromara.djs.breed.core.service.IPigQueryService;
 import org.dromara.djs.common.encoder.BizCodeType;
 import org.dromara.djs.common.encoder.IBizCodeGenerator;
 import org.dromara.djs.warehouse.burn.domain.PigBurnRecord;
 import org.dromara.djs.warehouse.burn.domain.bo.PigBurnRecordBo;
 import org.dromara.djs.warehouse.burn.mapper.PigBurnRecordMapper;
-import org.dromara.djs.warehouse.burn.mapper.PigInfoReadMapper;
 import org.dromara.djs.warehouse.flow.domain.StockFlow;
 import org.dromara.djs.warehouse.flow.mapper.StockFlowMapper;
 import org.dromara.djs.warehouse.location.mapper.LocationInfoMapper;
+import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
 import org.dromara.djs.warehouse.stock.mapper.LocationStockMapper;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -70,9 +71,11 @@ class PigBurnRecordServiceImplTest {
     @Mock
     private StockFlowMapper flowMapper;
     @Mock
-    private PigInfoReadMapper pigInfoReadMapper;
+    private IPigQueryService pigQueryService;
     @Mock
     private LocationInfoMapper locationInfoMapper;
+    @Mock
+    private ProductInfoMapper productInfoMapper;
     @Mock
     private IBizCodeGenerator bizCodeGenerator;
 
@@ -81,12 +84,13 @@ class PigBurnRecordServiceImplTest {
     private MockedStatic<LoginHelper> loginHelperMock;
 
     /**
-     * 子类化避开 MapStruct convert（无 Spring 上下文）+ stub generateBurnId 固定值。
+     * 子类化避开 MapStruct convert（无 Spring 上下文）+ stub generateBurnId / resolveWhiteBarProductId 固定值。
      */
     static class TestablePigBurnRecordServiceImpl extends PigBurnRecordServiceImpl {
         TestablePigBurnRecordServiceImpl(PigBurnRecordMapper b, LocationStockMapper s, StockFlowMapper f,
-                                         PigInfoReadMapper p, LocationInfoMapper l, IBizCodeGenerator g) {
-            super(b, s, f, p, l, g);
+                                         IPigQueryService q, LocationInfoMapper l, ProductInfoMapper pm,
+                                         IBizCodeGenerator g) {
+            super(b, s, f, q, l, pm, g);
         }
 
         @Override
@@ -107,12 +111,17 @@ class PigBurnRecordServiceImplTest {
         protected String generateBurnId() {
             return "BURN2606040001";
         }
+
+        @Override
+        protected Long resolveWhiteBarProductId() {
+            return 100000000000000001L;
+        }
     }
 
     @BeforeEach
     void setup() {
         service = new TestablePigBurnRecordServiceImpl(
-            burnMapper, stockMapper, flowMapper, pigInfoReadMapper, locationInfoMapper, bizCodeGenerator);
+            burnMapper, stockMapper, flowMapper, pigQueryService, locationInfoMapper, productInfoMapper, bizCodeGenerator);
         loginHelperMock = Mockito.mockStatic(LoginHelper.class);
         loginHelperMock.when(LoginHelper::getUserId).thenReturn(9001L);
     }
@@ -137,7 +146,7 @@ class PigBurnRecordServiceImplTest {
     @Test
     @DisplayName("submitBurnRecord: happy → 3 mapper 全调用 + lossWeight 计算正确 + burnStatus=done")
     void testSubmit_Happy() {
-        when(pigInfoReadMapper.selectCurrentStatusByEarNo("TEST-EAR-001")).thenReturn("END");
+        when(pigQueryService.selectCurrentStatusByEarNo("TEST-EAR-001")).thenReturn("END");
         when(burnMapper.insert(any(PigBurnRecord.class))).thenAnswer(inv -> {
             PigBurnRecord e = inv.getArgument(0);
             e.setId(60001L);
@@ -175,7 +184,7 @@ class PigBurnRecordServiceImplTest {
     @Test
     @DisplayName("submitBurnRecord: 库存不足 → affectedRows=0 抛 ServiceException + flow.insert 不调用")
     void testSubmit_StockInsufficient() {
-        when(pigInfoReadMapper.selectCurrentStatusByEarNo("TEST-EAR-001")).thenReturn("END");
+        when(pigQueryService.selectCurrentStatusByEarNo("TEST-EAR-001")).thenReturn("END");
         when(burnMapper.insert(any(PigBurnRecord.class))).thenAnswer(inv -> {
             PigBurnRecord e = inv.getArgument(0);
             e.setId(60002L);
@@ -195,7 +204,7 @@ class PigBurnRecordServiceImplTest {
     @Test
     @DisplayName("submitBurnRecord: 耳号未出栏 → current_status='HB' 抛 ServiceException + 任何 mapper 不调")
     void testSubmit_PigNotEnd() {
-        when(pigInfoReadMapper.selectCurrentStatusByEarNo("TEST-EAR-001")).thenReturn("HB");
+        when(pigQueryService.selectCurrentStatusByEarNo("TEST-EAR-001")).thenReturn("HB");
 
         assertThatThrownBy(() -> service.submitBurnRecord(sampleBo()))
             .isInstanceOf(ServiceException.class)
@@ -209,7 +218,7 @@ class PigBurnRecordServiceImplTest {
     @Test
     @DisplayName("submitBurnRecord: 耳号不存在 → mapper 返 null 抛 ServiceException")
     void testSubmit_PigNotFound() {
-        when(pigInfoReadMapper.selectCurrentStatusByEarNo("TEST-EAR-001")).thenReturn(null);
+        when(pigQueryService.selectCurrentStatusByEarNo("TEST-EAR-001")).thenReturn(null);
 
         assertThatThrownBy(() -> service.submitBurnRecord(sampleBo()))
             .isInstanceOf(ServiceException.class)
@@ -224,7 +233,7 @@ class PigBurnRecordServiceImplTest {
         PigBurnRecordBo bo = sampleBo();
         bo.setArriveWeight(new BigDecimal("70.000"));
         bo.setBurnWeight(new BigDecimal("75.300"));
-        when(pigInfoReadMapper.selectCurrentStatusByEarNo("TEST-EAR-001")).thenReturn("END");
+        when(pigQueryService.selectCurrentStatusByEarNo("TEST-EAR-001")).thenReturn("END");
 
         assertThatThrownBy(() -> service.submitBurnRecord(bo))
             .isInstanceOf(ServiceException.class)
