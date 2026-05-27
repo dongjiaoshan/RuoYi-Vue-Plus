@@ -45,10 +45,12 @@ public class PigAppletController {
     /**
      * 耳号关键字搜索（picker 用）。
      *
-     * <p>语义：永不返回 END 猪只；其他过滤都是可选的，都不传时返最近 N 条非 END。</p>
+     * <p>语义：默认排除 END 猪只（给事件录入 picker 用，END 不能再触发配种/转栏等事件）；
+     *   但当 {@code statusFilter} 显式包含 {@code "END"}（如 WMS-PIG-001 燎毛工序选已出栏猪）时放行。
+     *   其他过滤都是可选的，都不传时返最近 N 条非 END。</p>
      *
      * @param earNoKeyword  耳号 LIKE 中部匹配；空 → 不过滤
-     * @param statusFilter  状态 CSV（如 {@code "HB,DN,LC,KH,FQ"} 给配种 picker 用）
+     * @param statusFilter  状态 CSV（如 {@code "HB,DN,LC,KH,FQ"} 给配种 picker / {@code "END"} 给燎毛 picker）
      * @param sexFilter     {@code "M"} / {@code "F"}；castrate 表单调用时强制 {@code "M"}
      * @param pigTypeFilter {@code "sow"/"boar"/"piglet"/"fattening"}
      * @param limit         1-100，默认 20

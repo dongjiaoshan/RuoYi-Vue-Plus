@@ -288,17 +288,20 @@ public class PigCoreServiceImpl implements IPigCoreService {
                                                 String pigTypeFilter,
                                                 Integer limit) {
         int effectiveLimit = clampLimit(limit);
+        // statusFilter CSV："HB,PZ" → IN ('HB','PZ')；如果显式含 END（如燎毛工序选已出栏猪），跳过下方 .ne(END) 默认排除
+        List<String> statuses = parseStatusFilter(statusFilter);
+        boolean callerWantsEnd = statuses.contains(PigLifecycle.END.name());
+
         LambdaQueryWrapper<Pig> w = new LambdaQueryWrapper<Pig>()
-            // 永不返回 END 猪只——picker 是给事件录入用的，END 不能再触发事件
-            .ne(Pig::getCurrentStatus, PigLifecycle.END.name())
+            // 默认排除 END 猪只——给事件录入 picker 用（配种 / 转栏等 END 不能再触发的事件）；
+            // 但 statusFilter 显式声明要 END（如 WMS-PIG-001 燎毛工序）时放行
+            .ne(!callerWantsEnd, Pig::getCurrentStatus, PigLifecycle.END.name())
             .like(StringUtils.isNotBlank(earNoKeyword), Pig::getEarNo, earNoKeyword)
             .eq(StringUtils.isNotBlank(sexFilter), Pig::getPigSex, sexFilter)
             .eq(StringUtils.isNotBlank(pigTypeFilter), Pig::getPigType, pigTypeFilter)
             .orderByDesc(Pig::getId)
             .last("LIMIT " + effectiveLimit);
 
-        // statusFilter CSV："HB,PZ" → IN ('HB','PZ')
-        List<String> statuses = parseStatusFilter(statusFilter);
         if (!statuses.isEmpty()) {
             w.in(Pig::getCurrentStatus, statuses);
         }
