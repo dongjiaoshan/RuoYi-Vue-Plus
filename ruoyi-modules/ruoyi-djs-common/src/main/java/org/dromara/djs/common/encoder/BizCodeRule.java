@@ -39,12 +39,20 @@ public class BizCodeRule extends TenantEntity {
     private String codeType;
 
     /**
-     * 编码格式串，支持占位符 {@code {farmCode2}{barnCode2}{yyMM}{yyyyMMdd}{dailySeq4}{seq4}{seq6}{ioCode2}{bizCode2}{productCode2}}。
+     * 编码格式串，支持占位符
+     * {@code {farmCode2}{barnCode2}{yyMM}{yyMMdd}{yyyy}{yyyyMMdd}{dailySeq4}{seq3}{seq4}{seq6}{ioCode2}{bizCode2}{productCode2}}。
+     * <p>{@code {yyyy}} / {@code {yyMMdd}} / {@code {seq3}} 由 D9 closing Group B 加入。</p>
      */
     private String pattern;
 
     /**
-     * 是否每日重置序号：1=每日重置（seq_date = yyyyMMdd），0=终生递增（seq_date = ""）。
+     * 序号重置策略：
+     * <ul>
+     *   <li>{@code 1} = 每日重置（seq_date = {@code yyyyMMdd}）</li>
+     *   <li>{@code 2} = 按年重置（seq_date = {@code yyyy}，D9 closing Group B 加入，PLAN_NO 使用）</li>
+     *   <li>{@code 0} / {@code null} = 终生递增（seq_date = {@code ""}）</li>
+     * </ul>
+     * 字段名沿用 {@code daily_reset}（向后兼容已落地 seed），语义已超出"是否每日"。
      */
     private Integer dailyReset;
 

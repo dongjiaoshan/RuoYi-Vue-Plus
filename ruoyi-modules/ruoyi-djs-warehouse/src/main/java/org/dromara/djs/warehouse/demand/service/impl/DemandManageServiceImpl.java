@@ -26,13 +26,19 @@ import org.dromara.djs.warehouse.demand.domain.query.DemandManageQuery;
 import org.dromara.djs.warehouse.demand.domain.vo.AuditHistoryEntryVo;
 import org.dromara.djs.warehouse.demand.domain.vo.DemandManageVo;
 import org.dromara.djs.warehouse.demand.domain.vo.DemandPigVo;
+import org.dromara.djs.warehouse.demand.domain.vo.DemandSummaryVo;
 import org.dromara.djs.warehouse.demand.mapper.DemandManageMapper;
 import org.dromara.djs.warehouse.demand.mapper.DemandPigMapper;
 import org.dromara.djs.warehouse.demand.service.IDemandManageService;
+import org.dromara.djs.warehouse.stock.mapper.LocationStockMapper;
+import org.dromara.djs.breed.core.service.IPigQueryService;
+import org.dromara.djs.plant.plan.domain.vo.PlantPlanSummaryVo;
+import org.dromara.djs.plant.plan.service.IPlantPlanService;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -84,12 +90,27 @@ public class DemandManageServiceImpl extends DjsBaseServiceImpl<DemandManageMapp
 
     private final IBizCodeGenerator bizCodeGenerator;
 
+    /** SummaryBar 用：跨域薄壳查可出栏猪只头数（DJS-FIX-ADMIN-W22-003）。 */
+    private final IPigQueryService pigQueryService;
+
+    /** SummaryBar 用：跨域薄壳查"进行中"种植计划聚合（DJS-FIX-ADMIN-W22-003）。 */
+    private final IPlantPlanService plantPlanService;
+
+    /** SummaryBar 用：按 belong_type / product_attr 聚合 location_stock（DJS-FIX-ADMIN-W22-003）。 */
+    private final LocationStockMapper locationStockMapper;
+
     public DemandManageServiceImpl(DemandManageMapper baseMapper,
                                    DemandPigMapper demandPigMapper,
-                                   IBizCodeGenerator bizCodeGenerator) {
+                                   IBizCodeGenerator bizCodeGenerator,
+                                   IPigQueryService pigQueryService,
+                                   IPlantPlanService plantPlanService,
+                                   LocationStockMapper locationStockMapper) {
         super(baseMapper);
         this.demandPigMapper = demandPigMapper;
         this.bizCodeGenerator = bizCodeGenerator;
+        this.pigQueryService = pigQueryService;
+        this.plantPlanService = plantPlanService;
+        this.locationStockMapper = locationStockMapper;
     }
 
     @Override
@@ -286,6 +307,37 @@ public class DemandManageServiceImpl extends DjsBaseServiceImpl<DemandManageMapp
             log.warn("[WMS-DEMAND-001] audit_history parse failed demandId={} raw={}", demandId, raw, e);
             return new ArrayList<>();
         }
+    }
+
+    @Override
+    public DemandSummaryVo getSummary(String productType) {
+        validateProductType(productType);
+        DemandSummaryVo vo = new DemandSummaryVo();
+        vo.setProductType(productType);
+        switch (productType) {
+            case "white_bar" -> vo.setAvailablePigs(pigQueryService.countAvailableForOutbound());
+            case "vegetable" -> {
+                PlantPlanSummaryVo agg = plantPlanService.aggregateForDemandSummary();
+                vo.setPlotCount(agg.getPlotCount());
+                vo.setExpectedYieldKg(agg.getExpectedYieldKg());
+                vo.setEarliestPickDate(agg.getEarliestPickDate());
+                // 当前蔬菜成品库存：product_info.belong_type='vegetable' 关联 location_stock SUM
+                BigDecimal stock = locationStockMapper.sumStockByBelongType("vegetable");
+                vo.setCurrentStockKg(stock != null ? stock : BigDecimal.ZERO);
+            }
+            case "gift_box" -> {
+                // V1 兜底：D11 product_inhouse 未建，用 product_info.belong_type='gift_box' 关联 location_stock SUM
+                BigDecimal stock = locationStockMapper.sumStockByBelongType("gift_box");
+                vo.setGiftBoxStock(stock != null ? stock : BigDecimal.ZERO);
+            }
+            case "other" -> {
+                // 原料/干货合计：product_attr=2（原材料）的所有 location_stock 之和
+                BigDecimal stock = locationStockMapper.sumRawMaterialStock();
+                vo.setRawMaterialStockKg(stock != null ? stock : BigDecimal.ZERO);
+            }
+            default -> throw new ServiceException(I18nMessages.t("demand.field.productType.invalid", productType));
+        }
+        return vo;
     }
 
     // ---------- 内部辅助 ----------

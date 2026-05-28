@@ -1,0 +1,69 @@
+package org.dromara.djs.plant.organic.job;
+
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.dromara.common.core.service.ConfigService;
+import org.dromara.djs.plant.organic.mapper.CropOrganicMapper;
+import org.dromara.djs.plant.organic.mapper.PlotOrganicMapper;
+import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.stereotype.Component;
+
+/**
+ * 有机证书到期预警定时任务（PLT-MD-003）。
+ *
+ * <p>V1：Spring {@code @Scheduled(cron = "0 0 0 * * ?")} 每天 0 点扫描。
+ *    V2：迁移到 SnailJob 控制台（保留本类，加 SnailJob 注解即可，无业务逻辑改动）。</p>
+ *
+ * <p>阈值天数读 {@code sys_config.plant.organic.warning_days}（默认 60，DDL seed）。
+ *    阈值若读不到（key 不存在），降级到代码常量 60。</p>
+ *
+ * @author djs
+ * @since PLT-MD-003
+ */
+@Slf4j
+@Component
+@RequiredArgsConstructor
+public class OrganicWarningJob {
+
+    /** sys_config 阈值键。 */
+    public static final String CONFIG_KEY_WARNING_DAYS = "plant.organic.warning_days";
+
+    /** 降级默认值（sys_config 缺失时使用）。 */
+    private static final int FALLBACK_DAYS = 60;
+
+    private final PlotOrganicMapper plotOrganicMapper;
+    private final CropOrganicMapper cropOrganicMapper;
+    private final ConfigService configService;
+
+    /**
+     * 扫描入口：每天 0 点 0 分 0 秒触发。
+     *
+     * <p>幂等：扫描条件 {@code is_warning=2 AND DATEDIFF(valid, CURRENT_DATE) <= days}，
+     *    已置 1 的不重复更新；同一日多次跑也只首次写入。</p>
+     */
+    @Scheduled(cron = "0 0 0 * * ?")
+    public void scanWarning() {
+        int days = resolveWarningDays();
+        log.info("[OrganicWarningJob] 扫描有机证书到期预警，阈值 {} 天", days);
+
+        int plotUpdated = plotOrganicMapper.markWarning(days);
+        int cropUpdated = cropOrganicMapper.markWarning(days);
+
+        log.info("[OrganicWarningJob] 扫描完成：土地证书 {} 条 / 作物证书 {} 条 置预警", plotUpdated, cropUpdated);
+    }
+
+    /**
+     * 读取阈值天数；任何异常（key 不存在 / value 非数字）降级到 {@link #FALLBACK_DAYS}。
+     */
+    private int resolveWarningDays() {
+        try {
+            Integer days = configService.getConfigInt(CONFIG_KEY_WARNING_DAYS);
+            if (days != null && days > 0) {
+                return days;
+            }
+        } catch (Exception e) {
+            log.warn("[OrganicWarningJob] 读取 sys_config {} 失败，降级 {} 天", CONFIG_KEY_WARNING_DAYS, FALLBACK_DAYS, e);
+        }
+        return FALLBACK_DAYS;
+    }
+}

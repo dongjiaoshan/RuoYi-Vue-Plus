@@ -21,6 +21,7 @@ import org.dromara.djs.breed.event.eartag.mapper.PigPigletnoMapper;
 import org.dromara.djs.breed.event.farrow.domain.PigFarrow;
 import org.dromara.djs.breed.event.farrow.domain.bo.FarrowBo;
 import org.dromara.djs.breed.event.farrow.domain.query.FarrowQuery;
+import org.dromara.djs.breed.event.farrow.domain.vo.FarrowPickerVo;
 import org.dromara.djs.breed.event.farrow.domain.vo.PigFarrowVo;
 import org.dromara.djs.breed.event.farrow.event.PigFarrowEvent;
 import org.dromara.djs.breed.event.farrow.mapper.PigFarrowMapper;
@@ -163,6 +164,56 @@ public class FarrowServiceImpl implements IFarrowService {
         List<PigFarrowVo> rows = farrowMapper.selectVoList(w);
         enrichTaggedCounts(rows);
         return rows;
+    }
+
+    /**
+     * D9 FarrowPicker 反查：按母猪 earNo 查最近 N 次仍有 remain 的分娩。
+     *
+     * <p>实现：</p>
+     * <ul>
+     *   <li>1. earNo 直接 ear_no eq（PigFarrow 实体冗余了 earNo，无需 join pig_info）</li>
+     *   <li>2. LIMIT (limit * 2) 防止"刚好 N 条全贴满"时返空——多拉一些后内存过滤 remain</li>
+     *   <li>3. enrich tagged → 过滤 remainEartag > 0 → 截取 limit 条</li>
+     * </ul>
+     */
+    @Override
+    public List<FarrowPickerVo> queryRecentByMotherEarNo(String motherEarNo, int limit) {
+        if (StringUtils.isBlank(motherEarNo)) {
+            return List.of();
+        }
+        int effective = Math.min(limit <= 0 ? 5 : limit, 20);
+        int rawFetch = effective * 2;
+        LambdaQueryWrapper<PigFarrow> w = Wrappers.<PigFarrow>lambdaQuery()
+            .eq(PigFarrow::getEarNo, motherEarNo)
+            .orderByDesc(PigFarrow::getFarrowDate, PigFarrow::getId)
+            .last("LIMIT " + rawFetch);
+        List<PigFarrowVo> rows = farrowMapper.selectVoList(w);
+        if (rows.isEmpty()) {
+            return List.of();
+        }
+        enrichTaggedCounts(rows);
+        List<FarrowPickerVo> picker = new ArrayList<>();
+        for (PigFarrowVo r : rows) {
+            int tagged = Optional.ofNullable(r.getTagged()).orElse(0);
+            int remain = Optional.ofNullable(r.getRemaining()).orElse(0);
+            // 已贴满的分娩 picker 不显示（工人不会再选）
+            if (remain <= 0) {
+                continue;
+            }
+            FarrowPickerVo vo = new FarrowPickerVo();
+            vo.setId(r.getId());
+            vo.setMotherEarNo(r.getEarNo());
+            vo.setFarrowDate(r.getFarrowDate());
+            vo.setPigletNum(r.getLiveBorn());
+            vo.setTaggedEartag(tagged);
+            vo.setRemainEartag(remain);
+            vo.setParity(r.getParity());
+            picker.add(vo);
+            if (picker.size() >= effective) {
+                break;
+            }
+        }
+        return picker;
     }
 
     /**

@@ -74,5 +74,23 @@ public enum BizCodeType {
      * 引种单号（每日重置），格式 {@code INT{yyyyMMdd}{seq4}}。
      * 例：{@code INT260526001}（4 位序号当日重置）。
      */
-    INTRO_NO
+    INTRO_NO,
+
+    /**
+     * 燎毛工序业务码（每日重置），格式 {@code BURN{yyMMdd}{seq4}}。
+     * 例：{@code BURN2606080001}（D9 closing Group B 集中治理，原 PigBurnRecordServiceImpl inline 实现迁入）。
+     */
+    BURN_NO,
+
+    /**
+     * 分割工序业务码（每日重置），格式 {@code CUT{yyMMdd}{seq4}}。
+     * 例：{@code CUT2606080001}（D9 closing Group B 集中治理，原 PigCutRecordServiceImpl inline 实现迁入）。
+     */
+    CUT_NO,
+
+    /**
+     * 种植计划业务码（按年重置），格式 {@code PLAN-{yyyy}-{seq3}}。
+     * 例：{@code PLAN-2026-001}（D9 closing Group B 集中治理，原 PlantPlanServiceImpl inline 实现迁入）。
+     */
+    PLAN_NO
 }

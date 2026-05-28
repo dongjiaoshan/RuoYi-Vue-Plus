@@ -30,8 +30,6 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
-import java.time.LocalDate;
-import java.time.format.DateTimeFormatter;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
@@ -214,21 +212,14 @@ public class PigBurnRecordServiceImpl
     /**
      * 生成 burn_id：{@code BURN+yyMMdd+4 位}。
      *
+     * <p>D9 closing Group B 迁入 {@link IBizCodeGenerator}（BizCodeType.BURN_NO，
+     * seed 在 V202606071600）—— Redisson 分布式锁 + 序号表 UNIQUE 双保护，
+     * 取代原 SELECT MAX inline 实现。</p>
+     *
      * <p>protected 方便单测 stub 固定返回值。</p>
      */
     protected String generateBurnId() {
-        String yyMMdd = LocalDate.now().format(DateTimeFormatter.ofPattern("yyMMdd"));
-        String maxBurnId = baseMapper.selectMaxBurnIdByDate(yyMMdd);
-        int nextSeq = 1;
-        if (StringUtils.isNotBlank(maxBurnId) && maxBurnId.length() >= 14) {
-            // 'BURN' (4) + yyMMdd (6) + seq (4) = 14
-            try {
-                nextSeq = Integer.parseInt(maxBurnId.substring(10)) + 1;
-            } catch (NumberFormatException e) {
-                log.warn("burn_id 序号段解析失败，回退到 1：{}", maxBurnId);
-            }
-        }
-        return String.format("BURN%s%04d", yyMMdd, nextSeq);
+        return bizCodeGenerator.generate(BizCodeType.BURN_NO, Map.of());
     }
 
     /**

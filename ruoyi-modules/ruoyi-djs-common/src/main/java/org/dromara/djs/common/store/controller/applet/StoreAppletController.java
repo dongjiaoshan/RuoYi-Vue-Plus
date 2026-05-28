@@ -1,0 +1,91 @@
+package org.dromara.djs.common.store.controller.applet;
+
+import cn.dev33.satoken.annotation.SaCheckLogin;
+import cn.dev33.satoken.annotation.SaCheckPermission;
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import lombok.RequiredArgsConstructor;
+import org.dromara.common.core.domain.R;
+import org.dromara.common.core.utils.StringUtils;
+import org.dromara.djs.common.store.domain.Store;
+import org.dromara.djs.common.store.domain.vo.StorePickerVo;
+import org.dromara.djs.common.store.mapper.StoreMapper;
+import org.springframework.validation.annotation.Validated;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
+
+import java.util.List;
+import java.util.stream.Collectors;
+
+/**
+ * 小程序门店 picker Controller（MP-UX-002）。
+ *
+ * <p>专给 mp 端 {@code StorePicker} 组件远程拉门店候选用。复用
+ * {@link StoreMapper#selectList} 直接查 entity，转 {@link StorePickerVo}
+ * 只保留 id + storeName + storeCode，不动 admin 端的 {@code IStoreService}。</p>
+ *
+ * <h2>端点</h2>
+ * <ul>
+ *   <li>{@code GET /djs/applet/common/store/list?keyword=&storeType=}
+ *       返合作中（businessStatus='0'）门店列表；按 keyword LIKE 匹配 storeName/storeCode。</li>
+ * </ul>
+ *
+ * <h2>鉴权</h2>
+ * <p>{@code @SaCheckLogin} + {@code @SaCheckPermission("djs:applet:common:store:list")}—
+ * mp_role 默认含；菜单 seed 见 {@code V202606061100__MP-UX-002-applet-permission-menus.sql}。</p>
+ *
+ * @author djs
+ * @since MP-UX-002
+ */
+@Validated
+@RequiredArgsConstructor
+@RestController
+@RequestMapping("/djs/applet/common/store")
+public class StoreAppletController {
+
+    private final StoreMapper storeMapper;
+
+    /**
+     * 门店 picker 列表。
+     *
+     * <p>过滤口径：</p>
+     * <ul>
+     *   <li>{@code business_status='0'} 仅返合作中</li>
+     *   <li>{@code del_flag='0'} 由 MP 全局拦截器兜底</li>
+     *   <li>{@code keyword} 同时 LIKE storeName 与 storeCode</li>
+     *   <li>{@code storeType} 精确匹配（如指定屠宰加工点）</li>
+     *   <li>结果按 ID 倒序，最多 200 条（picker 不分页）</li>
+     * </ul>
+     *
+     * @param keyword   关键字（同时模糊匹配 storeName / storeCode）
+     * @param storeType 字典 {@code djs_store_type} 精确匹配
+     */
+    @SaCheckLogin
+    @SaCheckPermission("djs:applet:common:store:list")
+    @GetMapping("/list")
+    public R<List<StorePickerVo>> list(
+        @RequestParam(required = false) String keyword,
+        @RequestParam(required = false) String storeType
+    ) {
+        LambdaQueryWrapper<Store> wrapper = new LambdaQueryWrapper<Store>()
+            .eq(Store::getBusinessStatus, "0")
+            .eq(StringUtils.isNotBlank(storeType), Store::getStoreType, storeType)
+            .and(StringUtils.isNotBlank(keyword), w -> w
+                .like(Store::getStoreName, keyword)
+                .or()
+                .like(Store::getStoreCode, keyword))
+            .orderByDesc(Store::getId)
+            .last("LIMIT 200");
+        List<Store> rows = storeMapper.selectList(wrapper);
+        List<StorePickerVo> vos = rows.stream().map(s -> {
+            StorePickerVo vo = new StorePickerVo();
+            vo.setId(s.getId());
+            vo.setStoreName(s.getStoreName());
+            vo.setStoreCode(s.getStoreCode());
+            return vo;
+        }).collect(Collectors.toList());
+        return R.ok(vos);
+    }
+
+}

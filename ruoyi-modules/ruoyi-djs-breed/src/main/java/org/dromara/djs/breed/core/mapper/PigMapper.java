@@ -1,9 +1,11 @@
 package org.dromara.djs.breed.core.mapper;
 
+import com.baomidou.mybatisplus.core.metadata.IPage;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 import org.dromara.common.mybatis.core.mapper.BaseMapperPlus;
 import org.dromara.djs.breed.core.domain.Pig;
+import org.dromara.djs.breed.core.domain.vo.PigAvailableVo;
 import org.dromara.djs.breed.core.domain.vo.PigVo;
 
 /**
@@ -25,4 +27,109 @@ public interface PigMapper extends BaseMapperPlus<Pig, PigVo> {
      */
     @Select("SELECT current_status FROM t_farm_pig_info WHERE ear_no = #{earNo} AND del_flag = '0' LIMIT 1")
     String selectCurrentStatusByEarNo(@Param("earNo") String earNo);
+
+    /**
+     * 分页查「可出栏」育肥猪列表（DJS-FIX-ADMIN-W22-001）。
+     *
+     * <p>过滤条件：</p>
+     * <ul>
+     *   <li>{@code pig_type='fattening'}（育肥猪类型）</li>
+     *   <li>{@code current_status != 'END'}（尚未终止）</li>
+     *   <li>{@code del_flag='0'}</li>
+     *   <li>NOT EXISTS 关联到非取消态需求（防止跨需求重复指定）</li>
+     * </ul>
+     *
+     * <p>展示字段：</p>
+     * <ul>
+     *   <li>{@code earNo}：耳号简版（业务键，下游 {@code assignPigs(earNos)} 直接用）</li>
+     *   <li>{@code pigSex}：性别（字典 djs_pig_sex）</li>
+     *   <li>{@code pigBreedLabel}：品种/品系 label，{@code CONCAT_WS('/', breed_name, strain_name)}；
+     *       双 LEFT JOIN {@code t_farm_breed_info} 取 name；缺失时兜底用编码</li>
+     *   <li>{@code ageDays}：{@code DATEDIFF(CURDATE(), birth_date)}</li>
+     *   <li>{@code lastBackfat}：相关子查询取 measure_date DESC 第一条的 backfat_thickness</li>
+     * </ul>
+     *
+     * <p>排序按 {@code ageDays DESC}（出栏首选老龄）。</p>
+     *
+     * <p>租户隔离：未启用全局拦截器，本 SQL 显式 WHERE {@code p.tenant_id = '1001'}（V1 单租户）。</p>
+     */
+    @Select("""
+        SELECT
+            p.ear_no AS earNo,
+            p.pig_sex AS pigSex,
+            CASE
+                WHEN bi.breed_strain_name IS NOT NULL AND si.breed_strain_name IS NOT NULL
+                    THEN CONCAT(bi.breed_strain_name, '/', si.breed_strain_name)
+                WHEN bi.breed_strain_name IS NOT NULL
+                    THEN bi.breed_strain_name
+                WHEN p.pig_strain_code IS NOT NULL AND p.pig_breed_code IS NOT NULL
+                    THEN CONCAT(p.pig_breed_code, '/', p.pig_strain_code)
+                ELSE COALESCE(p.pig_breed_code, p.pig_strain_code)
+            END AS pigBreedLabel,
+            CASE WHEN p.birth_date IS NULL THEN NULL ELSE DATEDIFF(CURDATE(), p.birth_date) END AS ageDays,
+            (SELECT g.backfat_thickness
+               FROM t_farm_pig_growth g
+              WHERE g.pig_id = p.id
+                AND g.del_flag = '0'
+                AND g.backfat_thickness IS NOT NULL
+              ORDER BY g.measure_date DESC, g.id DESC
+              LIMIT 1) AS lastBackfat
+        FROM t_farm_pig_info p
+        LEFT JOIN t_farm_breed_info bi
+               ON bi.breed_strain_code = p.pig_breed_code
+              AND bi.breed_strain = 1
+              AND bi.del_flag = '0'
+              AND bi.tenant_id = p.tenant_id
+        LEFT JOIN t_farm_breed_info si
+               ON si.breed_strain_code = p.pig_strain_code
+              AND si.breed_strain = 2
+              AND si.del_flag = '0'
+              AND si.tenant_id = p.tenant_id
+        WHERE p.pig_type = 'fattening'
+          AND p.current_status <> 'END'
+          AND p.del_flag = '0'
+          AND p.tenant_id = '1001'
+          AND NOT EXISTS (
+                SELECT 1
+                  FROM t_warehouse_demand_pig dp
+                  JOIN t_warehouse_demand_manage dm ON dm.id = dp.demand_id
+                 WHERE dp.ear_no = p.ear_no
+                   AND dp.del_flag = '0'
+                   AND dm.del_flag = '0'
+                   AND dm.demand_status <> 'CANCELLED'
+                   AND dm.tenant_id = p.tenant_id
+          )
+        ORDER BY ageDays DESC, p.ear_no ASC
+        """)
+    IPage<PigAvailableVo> selectAvailableForOutboundPage(IPage<PigAvailableVo> page);
+
+    /**
+     * 「可出栏」育肥猪头数 COUNT（DJS-FIX-ADMIN-W22-003 SummaryBar）。
+     *
+     * <p>过滤条件与 {@link #selectAvailableForOutboundPage} 完全一致：</p>
+     * <ul>
+     *   <li>{@code pig_type='fattening'} + {@code current_status != 'END'} + {@code del_flag='0'}</li>
+     *   <li>NOT EXISTS 关联到非取消态需求</li>
+     *   <li>显式 {@code tenant_id='1001'}（V1 单租户，与 page 方法对齐）</li>
+     * </ul>
+     */
+    @Select("""
+        SELECT COUNT(1)
+          FROM t_farm_pig_info p
+         WHERE p.pig_type = 'fattening'
+           AND p.current_status <> 'END'
+           AND p.del_flag = '0'
+           AND p.tenant_id = '1001'
+           AND NOT EXISTS (
+                 SELECT 1
+                   FROM t_warehouse_demand_pig dp
+                   JOIN t_warehouse_demand_manage dm ON dm.id = dp.demand_id
+                  WHERE dp.ear_no = p.ear_no
+                    AND dp.del_flag = '0'
+                    AND dm.del_flag = '0'
+                    AND dm.demand_status <> 'CANCELLED'
+                    AND dm.tenant_id = p.tenant_id
+           )
+        """)
+    int countAvailableForOutbound();
 }

@@ -43,4 +43,12 @@ public class PigSearchVo implements Serializable {
 
     /** 栏位编码（service enrich）。 */
     private String penCode;
+
+    /**
+     * 终止原因（{@code djs_pig_end_reason} 字典：{@code DEAD/CULL/MARKET}）。
+     *
+     * <p>仅在 {@code currentStatus=END} 时非空（MP-UX-002 给 mp PigPicker 列表
+     * 显示 "终止 · 死亡 / 终止 · 上市" 用——非 END 猪只该字段为 null）。</p>
+     */
+    private String endReason;
 }

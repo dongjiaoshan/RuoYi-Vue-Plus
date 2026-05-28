@@ -1,7 +1,7 @@
 package org.dromara.djs.common.constant;
 
 /**
- * djs 业务字典类型常量（39 类）。
+ * djs 业务字典类型常量（46 类）。
  *
  * <p>所有业务代码使用本常量引用 {@code sys_dict_type.dict_type} 字符串，
  * 避免 30+ 个下游 ticket 硬编码 "djs_pig_breed" 之类字符串散落。</p>
@@ -12,9 +12,9 @@ package org.dromara.djs.common.constant;
  * <p>分组与 SQL 章节对应：</p>
  * <ul>
  *   <li>A. 系统通用（6 类）</li>
- *   <li>B. 养殖域（8 类）</li>
+ *   <li>B. 养殖域（14 类，含 D9 closing+1 hotfix 加入的 6 个事件字典）</li>
  *   <li>C. 种植域（10 类）</li>
- *   <li>D. 仓库域（4 类）</li>
+ *   <li>D. 仓库域（5 类，含 D9 hotfix 加入的 STOCK_OUT_DEST）</li>
  *   <li>E. 门店域（4 类）</li>
  *   <li>F. 追溯域（1 类）</li>
  *   <li>G. 调度域（1 类）</li>
@@ -78,6 +78,24 @@ public final class DictTypeConstants {
     /** 兽药类型。 */
     public static final String MED_TYPE = "djs_med_type";
 
+    /** 配种方式（BRD-EVENT-002 BREED breedingType；1=本场公猪 / 2=精液产品 / AI / LQ / RJ）。 */
+    public static final String BREEDING_TYPE = "djs_breeding_type";
+
+    /** 死亡原因（BRD-EVENT-004 DIE deathReason）。 */
+    public static final String DEATH_REASON = "djs_death_reason";
+
+    /** 死亡去向（BRD-EVENT-004 DIE deathDest）。 */
+    public static final String DEATH_DEST = "djs_death_dest";
+
+    /** 淘汰原因（BRD-EVENT-004 ELIMINATE cullingReason；与 ELIMINATION_REASON 同义异名，最终命名待 MP-IA-S0-09 决策）。 */
+    public static final String ELIMINATE_REASON = "djs_eliminate_reason";
+
+    /** 淘汰去向（BRD-EVENT-004 ELIMINATE cullingDest）。 */
+    public static final String ELIMINATE_DEST = "djs_eliminate_dest";
+
+    /** 出栏去向（BRD-EVENT-004 SLAUGHTER outDest）。 */
+    public static final String OUT_HOUSE_DEST = "djs_out_house_dest";
+
     // ---------------- C. 种植域（10 类） ----------------
 
     /** 作物科属。 */
@@ -110,7 +128,7 @@ public final class DictTypeConstants {
     /** 耕作方式。 */
     public static final String TILLAGE_WAY = "djs_tillage_way";
 
-    // ---------------- D. 仓库域（4 类） ----------------
+    // ---------------- D. 仓库域（5 类） ----------------
 
     /** 仓库类型。 */
     public static final String WAREHOUSE_TYPE = "djs_warehouse_type";
@@ -123,6 +141,9 @@ public final class DictTypeConstants {
 
     /** 包装类型。 */
     public static final String PACK_TYPE = "djs_pack_type";
+
+    /** 出库去向（doc/11 §0.3 R33 — kitchen/mine/daye_store/personal）；WMS-MAT-001 领用、WMS-PIG-002 分割等出库流水用。 */
+    public static final String STOCK_OUT_DEST = "djs_stock_out_dest";
 
     // ---------------- E. 门店域（4 类） ----------------
 
