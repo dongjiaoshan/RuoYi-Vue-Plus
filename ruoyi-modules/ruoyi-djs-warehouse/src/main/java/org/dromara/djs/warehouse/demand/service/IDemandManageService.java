@@ -8,6 +8,7 @@ import org.dromara.djs.warehouse.demand.domain.query.DemandManageQuery;
 import org.dromara.djs.warehouse.demand.domain.vo.AuditHistoryEntryVo;
 import org.dromara.djs.warehouse.demand.domain.vo.DemandManageVo;
 import org.dromara.djs.warehouse.demand.domain.vo.DemandPigVo;
+import org.dromara.djs.warehouse.demand.domain.vo.DemandSummaryVo;
 
 import java.util.Collection;
 import java.util.List;
@@ -56,4 +57,15 @@ public interface IDemandManageService {
 
     /** 解析 audit_history JSON 列为 timeline。 */
     List<AuditHistoryEntryVo> getAuditHistory(Long demandId);
+
+    /**
+     * 业态 SummaryBar 摘要（DJS-FIX-ADMIN-W22-003）。
+     *
+     * <p>4 业态 union DTO；只读聚合，不变更状态。</p>
+     *
+     * @param productType {@code white_bar} / {@code vegetable} / {@code gift_box} / {@code other}
+     * @return 按业态填字段的摘要 VO
+     * @throws org.dromara.common.core.exception.ServiceException 业态非法时
+     */
+    DemandSummaryVo getSummary(String productType);
 }

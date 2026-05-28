@@ -138,12 +138,23 @@ public class BizCodeGeneratorImpl implements IBizCodeGenerator {
     }
 
     /**
-     * 计算序号周期串：daily_reset=1 → yyyyMMdd；否则 ""（终生递增）。
+     * 计算序号周期串：
+     * <ul>
+     *   <li>{@code daily_reset = 1} → {@code yyyyMMdd}（每日重置）</li>
+     *   <li>{@code daily_reset = 2} → {@code yyyy}（按年重置，D9 closing Group B 加入，PLAN_NO 使用）</li>
+     *   <li>其他（含 0 / null）→ {@code ""}（终生递增）</li>
+     * </ul>
      */
     private String resolveSeqDate(BizCodeRule rule) {
         Integer dailyReset = rule.getDailyReset();
-        if (dailyReset != null && dailyReset == 1) {
+        if (dailyReset == null) {
+            return "";
+        }
+        if (dailyReset == 1) {
             return LocalDate.now().format(DateTimeFormatter.BASIC_ISO_DATE);
+        }
+        if (dailyReset == 2) {
+            return LocalDate.now().format(DateTimeFormatter.ofPattern("yyyy"));
         }
         return "";
     }
@@ -199,13 +210,23 @@ public class BizCodeGeneratorImpl implements IBizCodeGenerator {
         if (result.contains("{yyMM}")) {
             result = result.replace("{yyMM}", today.format(DateTimeFormatter.ofPattern("yyMM")));
         }
+        if (result.contains("{yyMMdd}")) {
+            result = result.replace("{yyMMdd}", today.format(DateTimeFormatter.ofPattern("yyMMdd")));
+        }
         if (result.contains("{yyyyMMdd}")) {
             result = result.replace("{yyyyMMdd}", today.format(DateTimeFormatter.BASIC_ISO_DATE));
+        }
+        // {yyyy} D9 closing Group B 加入，PLAN_NO 使用
+        if (result.contains("{yyyy}")) {
+            result = result.replace("{yyyy}", today.format(DateTimeFormatter.ofPattern("yyyy")));
         }
 
         // 序号占位符（按位数补零）
         if (result.contains("{dailySeq4}")) {
             result = result.replace("{dailySeq4}", pad(seq, 4));
+        }
+        if (result.contains("{seq3}")) {
+            result = result.replace("{seq3}", pad(seq, 3));
         }
         if (result.contains("{seq4}")) {
             result = result.replace("{seq4}", pad(seq, 4));

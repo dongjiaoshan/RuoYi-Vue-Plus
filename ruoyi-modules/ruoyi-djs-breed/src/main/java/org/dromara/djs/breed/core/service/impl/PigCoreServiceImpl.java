@@ -329,6 +329,10 @@ public class PigCoreServiceImpl implements IPigCoreService {
             vo.setPigSex(p.getPigSex());
             vo.setPigType(p.getPigType());
             vo.setCurrentStatus(p.getCurrentStatus());
+            // MP-UX-002：END 状态时携带 endReason，给 mp PigPicker 显示 "终止 · 死亡 / 上市" 用
+            if (PigLifecycle.END.name().equals(p.getCurrentStatus())) {
+                vo.setEndReason(p.getEndReason());
+            }
             if (p.getBarnId() != null) {
                 vo.setBarnCode(barnCodeMap.get(p.getBarnId()));
             }

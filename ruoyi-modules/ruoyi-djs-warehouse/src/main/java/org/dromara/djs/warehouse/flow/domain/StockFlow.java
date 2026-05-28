@@ -12,17 +12,24 @@ import java.math.BigDecimal;
 import java.util.Date;
 
 /**
- * 出入库流水实体（WMS-MAT-001 / WMS-PIG-001 minimal 占位）。
+ * 出入库流水实体（{@code t_warehouse_stock_flow}）。
  *
- * <p>对应表 {@code t_warehouse_stock_flow}（D7 V202605290910 WMS-MD-001 已建）。本 ticket
- * 在 WMS-PIG-001 燎毛工序提交时 INSERT 一条出库流水（{@code flow_type=slaughter_burn / inout_type=OT}），
- * 字段对齐 DDL；D9 WMS-MAT-001 落地后会补全 controller/service/mapper 完整 CRUD，
- * 本 ticket 不动 DDL、不开 admin 写入入口。</p>
+ * <p>DDL 建表来源：D7 V202605290910 WMS-MD-001；本 ticket（D9 WMS-MAT-001）扩字段 {@code proofOssIds}
+ * （凭证图 OSS IDs CSV）+ 全字段开放给 mp 物资领用 / 退回 / 损耗与 admin 流水查询。</p>
  *
- * <p>{@code inoutType} DDL 是 {@code CHAR(3)} 取值 IN / OT。</p>
+ * <p>三种写入入口：</p>
+ * <ol>
+ *   <li>{@link org.dromara.djs.warehouse.burn.service.impl.PigBurnRecordServiceImpl#submitBurnRecord} ——
+ *       燎毛出库（{@code flow_type=slaughter_burn / inout_type=OT}，D8）</li>
+ *   <li>{@code MatFlowServiceImpl#pick/returnBack/loss} —— 物资领用 / 退回 / 损耗
+ *       （{@code flow_type=pick_out|return_in|loss}，本 ticket）</li>
+ *   <li>D9 WMS-PIG-002 / WMS-VEG-001 / D11 WMS-FLOW-001 / D11 WMS-STOCK-001 续接其他业务事件</li>
+ * </ol>
+ *
+ * <p>{@code inoutType} DDL 是 {@code CHAR(3)} 取值 {@code IN}/{@code OT}（不是 1/2）。</p>
  *
  * @author djs
- * @since WMS-PIG-001
+ * @since WMS-PIG-001（D9 WMS-MAT-001 扩 proofOssIds）
  */
 @Data
 @EqualsAndHashCode(callSuper = true)
@@ -52,9 +59,16 @@ public class StockFlow extends TenantEntity {
     private Long productId;
 
     /**
-     * 库位 ID（白条所在位置）。
+     * 库位 ID（实为 location FK → {@code t_warehouse_location_info.id}；DDL 字段名 {@code warehouse_id} 是 D7 命名遗留，
+     * 详 doc/11 §2.3 + D9 _open-issues #2 决策 b，物理列保留、含义以注释为准）。
      */
     private Long warehouseId;
+
+    /**
+     * 关联需求单 ID（仅 {@code flow_type=ship_out} 流水写入；
+     * D10 WMS-SHIP-001 service 写入，D14 CROSS-FLOW-003 listener 按本字段聚合 {@code shipped_count}）。
+     */
+    private Long demandId;
 
     /**
      * 出入库方向：IN=入库 / OT=出库（CHAR(3)）。
@@ -115,6 +129,11 @@ public class StockFlow extends TenantEntity {
      * 备注。
      */
     private String remark;
+
+    /**
+     * 凭证图 OSS IDs CSV（{@code bizType=warehouse_mat_pick}；可选，仅 mp 物资 / 燎毛流水使用）。
+     */
+    private String proofOssIds;
 
     /**
      * 软删标记。

@@ -29,6 +29,13 @@
             <version>${revision}</version>
         </dependency>
 
+        <!-- DJS-FIX-ADMIN-W22-003：需求确认蔬菜业态 SummaryBar 调 IPlantPlanService.aggregateForDemandSummary 做跨域只读 -->
+        <dependency>
+            <groupId>org.dromara</groupId>
+            <artifactId>ruoyi-djs-plant</artifactId>
+            <version>${revision}</version>
+        </dependency>
+
         <!-- WMS-MD-001：单测依赖（JUnit5 + Mockito，spring-boot-starter-test 已含两者） -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

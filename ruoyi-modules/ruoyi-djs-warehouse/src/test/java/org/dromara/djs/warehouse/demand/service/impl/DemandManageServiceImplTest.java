@@ -69,6 +69,7 @@ class DemandManageServiceImplTest {
 
     @BeforeEach
     void setup() {
+        // DJS-FIX-ADMIN-W22-003：SummaryBar 的 3 个新依赖在本套用例里不直接覆盖，传 null 让构造器存字段即可
         service = new TestableDemandManageServiceImpl(demandMapper, demandPigMapper, bizCodeGenerator);
         when(bizCodeGenerator.generate(eq(BizCodeType.DEMAND_NO), any())).thenReturn("D260601WB0001");
     }
@@ -78,7 +79,7 @@ class DemandManageServiceImplTest {
      */
     static class TestableDemandManageServiceImpl extends DemandManageServiceImpl {
         TestableDemandManageServiceImpl(DemandManageMapper m, DemandPigMapper dpm, IBizCodeGenerator g) {
-            super(m, dpm, g);
+            super(m, dpm, g, null, null, null);
         }
 
         @Override

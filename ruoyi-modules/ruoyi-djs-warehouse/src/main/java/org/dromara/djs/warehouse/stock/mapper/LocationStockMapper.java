@@ -1,6 +1,7 @@
 package org.dromara.djs.warehouse.stock.mapper;
 
 import org.apache.ibatis.annotations.Param;
+import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 import org.dromara.common.mybatis.core.mapper.BaseMapperPlus;
 import org.dromara.djs.warehouse.stock.domain.LocationStock;
@@ -59,5 +60,89 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
                       @Param("earNo") String earNo,
                       @Param("deductQty") BigDecimal deductQty,
                       @Param("userId") Long userId);
+
+    /**
+     * 按 {@code product_id} + {@code location_id} 原子扣减库存（WMS-MAT-001 物资领用 / 损耗）。
+     *
+     * <p>SQL 在 {@code WHERE} 加 {@code product_stock >= deductQty} —— MySQL 行锁 + 数量校验同步发生，
+     * 并发提交（两个工人同时领同一 product+location）只有一次 affectedRows > 0。</p>
+     *
+     * @return affectedRows（0 = 库存不足 / product/location 不匹配 / 已软删）
+     */
+    @Update("UPDATE t_warehouse_location_stock "
+        + "   SET product_stock = product_stock - #{deductQty},"
+        + "       update_by = #{userId},"
+        + "       update_time = NOW() "
+        + " WHERE location_id = #{locationId} "
+        + "   AND product_id  = #{productId} "
+        + "   AND product_stock >= #{deductQty} "
+        + "   AND del_flag = '0'")
+    int deductByProductLocation(@Param("locationId") Long locationId,
+                                @Param("productId") Long productId,
+                                @Param("deductQty") BigDecimal deductQty,
+                                @Param("userId") Long userId);
+
+    /**
+     * 按 {@code product_id} + {@code location_id} 增加库存（WMS-MAT-001 物资退回）。
+     *
+     * <p>退回是"加回库存"，无需校验上限；但需要保证库存记录存在（不存在不允许凭空创建库存，service 层
+     * 走 update 失败兜底）。{@code update_time / update_by} 同步刷新。</p>
+     *
+     * @return affectedRows（0 = location_id / product_id 不匹配，service 兜底）
+     */
+    @Update("UPDATE t_warehouse_location_stock "
+        + "   SET product_stock = product_stock + #{addQty},"
+        + "       update_by = #{userId},"
+        + "       update_time = NOW() "
+        + " WHERE location_id = #{locationId} "
+        + "   AND product_id  = #{productId} "
+        + "   AND del_flag = '0'")
+    int addByProductLocation(@Param("locationId") Long locationId,
+                             @Param("productId") Long productId,
+                             @Param("addQty") BigDecimal addQty,
+                             @Param("userId") Long userId);
+
+    /**
+     * 按 {@code product_info.belong_type} 聚合活跃库存总量（DJS-FIX-ADMIN-W22-003 SummaryBar）。
+     *
+     * <p>JOIN {@code t_warehouse_product_info} 取 belong_type；只统计 {@code product_stock > 0} 且未软删的行。
+     * 返 NULL 时调用方兜 0。租户隔离：未启全局 MP 拦截器，显式 {@code tenant_id='1001'}（V1 单租户）。</p>
+     *
+     * @param belongType 字典 {@code djs_belong_type}（pork / vegetable / white_bar / dry_good / egg / gift_box）
+     * @return SUM(product_stock)；可能为 null
+     */
+    @Select("""
+        SELECT COALESCE(SUM(s.product_stock), 0)
+          FROM t_warehouse_location_stock s
+          JOIN t_warehouse_product_info p
+            ON p.id = s.product_id
+           AND p.del_flag = '0'
+           AND p.tenant_id = s.tenant_id
+         WHERE s.del_flag = '0'
+           AND s.product_stock > 0
+           AND s.tenant_id = '1001'
+           AND p.belong_type = #{belongType}
+        """)
+    BigDecimal sumStockByBelongType(@Param("belongType") String belongType);
+
+    /**
+     * 按 {@code product_info.product_attr=2}（原材料）聚合库存总量。
+     *
+     * <p>口径：{@code product_attr=2}（原材料）属性的产品下所有 location_stock 求和；
+     * 用于"其他"业态需求确认 SummaryBar 的"当前原料库存"显示。</p>
+     */
+    @Select("""
+        SELECT COALESCE(SUM(s.product_stock), 0)
+          FROM t_warehouse_location_stock s
+          JOIN t_warehouse_product_info p
+            ON p.id = s.product_id
+           AND p.del_flag = '0'
+           AND p.tenant_id = s.tenant_id
+         WHERE s.del_flag = '0'
+           AND s.product_stock > 0
+           AND s.tenant_id = '1001'
+           AND p.product_attr = 2
+        """)
+    BigDecimal sumRawMaterialStock();
 
 }

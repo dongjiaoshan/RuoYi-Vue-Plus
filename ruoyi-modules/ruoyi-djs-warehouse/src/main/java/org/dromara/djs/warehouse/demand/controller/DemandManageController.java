@@ -13,6 +13,8 @@ import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.satoken.utils.LoginHelper;
 import org.dromara.common.web.core.BaseController;
+import org.dromara.djs.breed.core.domain.vo.PigAvailableVo;
+import org.dromara.djs.breed.core.service.IPigQueryService;
 import org.dromara.djs.warehouse.demand.core.enums.DemandEvent;
 import org.dromara.djs.warehouse.demand.domain.bo.AssignPigBo;
 import org.dromara.djs.warehouse.demand.domain.bo.DemandManageBo;
@@ -20,6 +22,7 @@ import org.dromara.djs.warehouse.demand.domain.query.DemandManageQuery;
 import org.dromara.djs.warehouse.demand.domain.vo.AuditHistoryEntryVo;
 import org.dromara.djs.warehouse.demand.domain.vo.DemandManageVo;
 import org.dromara.djs.warehouse.demand.domain.vo.DemandPigVo;
+import org.dromara.djs.warehouse.demand.domain.vo.DemandSummaryVo;
 import org.dromara.djs.warehouse.demand.service.IDemandManageService;
 import org.dromara.djs.warehouse.demand.service.IDemandStatusService;
 import org.springframework.validation.annotation.Validated;
@@ -56,6 +59,8 @@ public class DemandManageController extends BaseController {
     private final IDemandManageService demandService;
 
     private final IDemandStatusService statusService;
+
+    private final IPigQueryService pigQueryService;
 
     // =============== CRUD ===============
 
@@ -172,6 +177,20 @@ public class DemandManageController extends BaseController {
         return R.ok(demandService.listAssignedPigs(id));
     }
 
+    /**
+     * 「可出栏」育肥猪分页列表（DJS-FIX-ADMIN-W22-001）。
+     *
+     * <p>用于「指定猪只」对话框：列出 {@code pig_type='fattening'} AND {@code current_status != 'END'}
+     * AND 未被其它非取消态需求占用的活体猪。VO 含耳号 / 性别 / 品种品系 label / 日龄 / 最新背膘。</p>
+     *
+     * <p>权限：复用 {@code djs:warehouse:demand:list}（同入口同角色）。</p>
+     */
+    @SaCheckPermission("djs:warehouse:demand:list")
+    @GetMapping("/pigs/available")
+    public TableDataInfo<PigAvailableVo> listAvailablePigs(PageQuery pageQuery) {
+        return pigQueryService.listAvailableForOutbound(pageQuery);
+    }
+
     // =============== 状态历史 ===============
 
     /** 解析 audit_history JSON 为 timeline 条目。 */
@@ -179,5 +198,21 @@ public class DemandManageController extends BaseController {
     @GetMapping("/{id}/history")
     public R<List<AuditHistoryEntryVo>> getHistory(@PathVariable Long id) {
         return R.ok(demandService.getAuditHistory(id));
+    }
+
+    // =============== 业态摘要（DJS-FIX-ADMIN-W22-003）===============
+
+    /**
+     * 需求确认页 SummaryBar 摘要（4 业态 union DTO）。
+     *
+     * <p>白条：可出栏育肥猪头数；蔬菜：进行中计划地块/产量/最早采摘/库存；
+     * 礼盒：成品库存；其他：原料库存。详见 {@link DemandSummaryVo}。</p>
+     *
+     * <p>权限：复用 {@code djs:warehouse:demand:list}（同入口同角色）。</p>
+     */
+    @SaCheckPermission("djs:warehouse:demand:list")
+    @GetMapping("/summary")
+    public R<DemandSummaryVo> getSummary(@RequestParam String productType) {
+        return R.ok(demandService.getSummary(productType));
     }
 }

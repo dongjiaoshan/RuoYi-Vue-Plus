@@ -48,8 +48,9 @@ import java.util.Set;
  * 后端通过开关 {@code djs.applet.auth-mock-enabled=true} 启用 mock 路径：</p>
  *
  * <ul>
- *   <li>账号密码 login：固定接受 {@code dev / dev123} 或 {@code admin / admin123}，
- *       命中即颁发 sa-token，token 绑定 client_id={@code mp-applet-dongjiaoshan}</li>
+ *   <li>账号密码 login：接受 {@link #MOCK_ACCOUNTS} 白名单内任一账号（dev / admin / dev_boss /
+ *       dev_breed_worker / dev_warehouse_worker / dev_store_clerk / dev_vet / dev_breed_mgr /
+ *       dev_warehouse_mgr），命中即颁发 sa-token，token 绑定 client_id={@code mp-applet-dongjiaoshan}</li>
  *   <li>wxLogin：完全代理到 SYS-AUTH-001 的 {@link IWechatLoginService}，复用其内置
  *       mock 模式（{@code djs.wechat.miniapp.app-id=mock}）</li>
  * </ul>
@@ -81,6 +82,41 @@ public class AppletAuthController {
     private boolean authMockEnabled;
 
     /**
+     * V1 mock 账号白名单（username → {userId, password, nickname, roles}）。
+     *
+     * <p>新加调试账号在此处加一行即可，无需改 login 方法。userId 对齐 sys_user D04 dev seed
+     * （[`V202605211700__D04-dev-seed-users.sql`] 9100-9107 段）；`dev_warehouse_worker`
+     * sys_user 暂未 seed，用占位 9108 — mock 路径 userId 不依赖 sys_user 真行（走 sa-token
+     * 内存 LoginUser），故无影响。</p>
+     *
+     * <p>角色 key 与 {@code UserBoardController.mapRolesToBoards} 一致：boss/manager → 全板块
+     * 含 manage；breed_worker/breed_admin → breed；warehouse_* → warehouse；store_* V1 无板块。</p>
+     */
+    private static final Map<String, MockAccount> MOCK_ACCOUNTS = Map.of(
+        "dev",                  new MockAccount(9001L, "dev123",   "dev 员工",
+            Set.of("breed_admin", "plant_admin", "warehouse_admin", "store_admin")),
+        "admin",                new MockAccount(1L,    "admin123", "超级管理员",
+            Set.of("system_admin")),
+        "dev_boss",             new MockAccount(9107L, "dev123",   "老板（dev 测试）",
+            Set.of("boss")),
+        "dev_breed_worker",     new MockAccount(9101L, "dev123",   "张三（养殖工人）",
+            Set.of("breed_worker")),
+        "dev_warehouse_worker", new MockAccount(9108L, "dev123",   "孙仓库（仓库工人）",
+            Set.of("warehouse_worker")),
+        "dev_store_clerk",      new MockAccount(9106L, "dev123",   "孙小妹（门店店员）",
+            Set.of("store_clerk")),
+        "dev_vet",              new MockAccount(9102L, "dev123",   "王兽医",
+            Set.of("vet")),
+        "dev_breed_mgr",        new MockAccount(9100L, "dev123",   "李养殖（养殖管理员）",
+            Set.of("breed_admin")),
+        "dev_warehouse_mgr",    new MockAccount(9104L, "dev123",   "赵仓库（仓库管理员）",
+            Set.of("warehouse_admin"))
+    );
+
+    /** mock 账号条目（不导出包外）。 */
+    private record MockAccount(Long userId, String password, String nickname, Set<String> roles) {}
+
+    /**
      * 账号密码登录（V1 mock 模式）。
      *
      * <p>请求体：</p>
@@ -104,22 +140,15 @@ public class AppletAuthController {
             return R.fail(40004, "Mock 登录已关闭，请使用微信登录或联系管理员");
         }
 
-        // V1 mock 凭证：dev/dev123（普通员工） / admin/admin123（管理员）
-        Long mockUserId;
-        String mockNickname;
-        Set<String> mockRoles;
-        if ("dev".equals(bo.getUsername()) && "dev123".equals(bo.getPassword())) {
-            mockUserId = 9001L;
-            mockNickname = "dev 员工";
-            // 跨多板块的角色集，便于联调时看到所有 4 个板块
-            mockRoles = Set.of("breed_admin", "plant_admin", "warehouse_admin", "store_admin");
-        } else if ("admin".equals(bo.getUsername()) && "admin123".equals(bo.getPassword())) {
-            mockUserId = 1L;
-            mockNickname = "超级管理员";
-            mockRoles = Set.of("system_admin");
-        } else {
-            return R.fail(40003, "账号或密码错误（V1 mock 仅支持 dev/dev123 或 admin/admin123）");
+        // V1 mock：白名单查找（MOCK_ACCOUNTS），命中后做密码常量时间比较
+        MockAccount acc = MOCK_ACCOUNTS.get(bo.getUsername());
+        if (acc == null || !acc.password().equals(bo.getPassword())) {
+            return R.fail(40003,
+                "账号或密码错误（V1 mock 仅接受 dev / admin / dev_boss / dev_breed_worker / dev_warehouse_worker / dev_store_clerk 等 dev seed 账号，密码 dev123 / admin123）");
         }
+        Long mockUserId = acc.userId();
+        String mockNickname = acc.nickname();
+        Set<String> mockRoles = acc.roles();
 
         // 走真 sa-token 颁发：构造 LoginUser → LoginHelper.login → 拿真 JWT token。
         // 所有后续 /djs/* 端点都能正常解析 token，不再有 "mock-token-xxx" 字符串特例。
