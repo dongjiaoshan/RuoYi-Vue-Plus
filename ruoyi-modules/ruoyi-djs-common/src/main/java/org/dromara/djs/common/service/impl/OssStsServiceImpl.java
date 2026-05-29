@@ -64,10 +64,14 @@ public class OssStsServiceImpl implements IOssStsService {
         "warehouse_pig_cut",  // 仓库 分割工序凭证图（WMS-PIG-002）
         "warehouse_mat_pick", // 仓库 物资领用 / 退回 / 损耗 凭证图（WMS-MAT-001）
         "warehouse_veg_handle", // 仓库 毛菜处理工序凭证图（WMS-VEG-001）
+        "warehouse_pack_proof", // 仓库 打包工序凭证图（WMS-PACK-001）
+        "warehouse_shipment_proof", // 仓库 发货月台清点凭证图（WMS-SHIP-001）
+        "warehouse_return_proof", // 仓库 退货凭证图（WMS-SHIP-001）
         "product_image",    // 产品 / 商品 / 礼盒图片（WMS-MD-002）
         "plant_plot",       // 地块照片（PLT-MD-001）
         "plant_crop",       // 作物照片（PLT-MD-001）
         "plant_organic",    // 有机认证证书图（PLT-MD-003 土地 + 作物共用）
+        "plant_farm_proof", // 农事记录凭证图（PLT-WORK-001 mp 5 类提交共用）
         "avatar",           // 用户头像 / 通用
         "doc"               // 通用文档
     );

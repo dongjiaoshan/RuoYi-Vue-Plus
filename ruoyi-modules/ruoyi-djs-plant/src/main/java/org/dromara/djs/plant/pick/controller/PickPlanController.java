@@ -1,0 +1,65 @@
+package org.dromara.djs.plant.pick.controller;
+
+import cn.dev33.satoken.annotation.SaCheckPermission;
+import lombok.RequiredArgsConstructor;
+import org.dromara.common.core.domain.R;
+import org.dromara.common.idempotent.annotation.RepeatSubmit;
+import org.dromara.common.log.annotation.Log;
+import org.dromara.common.log.enums.BusinessType;
+import org.dromara.common.web.core.BaseController;
+import org.dromara.djs.plant.pick.domain.bo.PickAdjustBatchBo;
+import org.dromara.djs.plant.pick.domain.query.PickPlanQuery;
+import org.dromara.djs.plant.pick.domain.vo.PickPlanGroupVo;
+import org.dromara.djs.plant.pick.service.IPickPlanService;
+import org.dromara.djs.plant.plan.domain.vo.PlantDetailsVo;
+import org.springframework.validation.annotation.Validated;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PutMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+import java.util.List;
+
+/**
+ * 采摘计划 Controller（admin，PLT-PLAN-002）。
+ *
+ * <h2>3 端点</h2>
+ * <ul>
+ *   <li>{@code GET /list}：按作物聚合采摘计划列表（doc/10 §F-PLT-05 入口 1）</li>
+ *   <li>{@code GET /{planId}/{cropId}/details}：调整页拉行</li>
+ *   <li>{@code PUT /adjust}：批量调整 plant_details 的 4 时间字段 + is_pick + harvest_by</li>
+ * </ul>
+ *
+ * @author djs
+ * @since PLT-PLAN-002
+ */
+@Validated
+@RequiredArgsConstructor
+@RestController
+@RequestMapping("/djs/plant/pick/plan")
+public class PickPlanController extends BaseController {
+
+    private final IPickPlanService pickPlanService;
+
+    @SaCheckPermission("djs:plant:pick:list")
+    @GetMapping("/list")
+    public R<List<PickPlanGroupVo>> list(PickPlanQuery query) {
+        return R.ok(pickPlanService.listByCrop(query));
+    }
+
+    @SaCheckPermission("djs:plant:pick:list")
+    @GetMapping("/{planId}/{cropId}/details")
+    public R<List<PlantDetailsVo>> details(@PathVariable Long planId, @PathVariable Long cropId) {
+        return R.ok(pickPlanService.listDetailsByPlanCrop(planId, cropId));
+    }
+
+    @SaCheckPermission("djs:plant:pick:adjust")
+    @Log(title = "种植-采摘计划-调整", businessType = BusinessType.UPDATE)
+    @RepeatSubmit
+    @PutMapping("/adjust")
+    public R<Integer> adjust(@Validated @RequestBody PickAdjustBatchBo bo) {
+        return R.ok(pickPlanService.adjustDetails(bo));
+    }
+}
