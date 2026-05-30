@@ -13,8 +13,8 @@ import java.time.LocalDateTime;
 /**
  * 分娩事件录入入参（BRD-EVENT-002 FARROW）。
  *
- * <p>触发状态机 transition PH → FM；同时发布 {@code PigFarrowEvent}，
- * 由 {@code PigEarTagServiceImpl}（BRD-EVENT-003）异步监听做仔猪批量耳标提示。</p>
+ * <p>触发状态机 transition PH → FM；分娩只记窝产仔数，仔猪个体由 BRD-EVENT-003
+ * 耳标流程创建（by-design 无 farrow→eartag 事件联动）。</p>
  *
  * @author djs
  * @since BRD-EVENT-002

@@ -92,25 +92,29 @@ public class AppletAuthController {
      * <p>角色 key 与 {@code UserBoardController.mapRolesToBoards} 一致：boss/manager → 全板块
      * 含 manage；breed_worker/breed_admin → breed；warehouse_* → warehouse；store_* V1 无板块。</p>
      */
-    private static final Map<String, MockAccount> MOCK_ACCOUNTS = Map.of(
-        "dev",                  new MockAccount(9001L, "dev123",   "dev 员工",
-            Set.of("breed_admin", "plant_admin", "warehouse_admin", "store_admin")),
-        "admin",                new MockAccount(1L,    "admin123", "超级管理员",
-            Set.of("system_admin")),
-        "dev_boss",             new MockAccount(9107L, "dev123",   "老板（dev 测试）",
-            Set.of("boss")),
-        "dev_breed_worker",     new MockAccount(9101L, "dev123",   "张三（养殖工人）",
-            Set.of("breed_worker")),
-        "dev_warehouse_worker", new MockAccount(9108L, "dev123",   "孙仓库（仓库工人）",
-            Set.of("warehouse_worker")),
-        "dev_store_clerk",      new MockAccount(9106L, "dev123",   "孙小妹（门店店员）",
-            Set.of("store_clerk")),
-        "dev_vet",              new MockAccount(9102L, "dev123",   "王兽医",
-            Set.of("vet")),
-        "dev_breed_mgr",        new MockAccount(9100L, "dev123",   "李养殖（养殖管理员）",
-            Set.of("breed_admin")),
-        "dev_warehouse_mgr",    new MockAccount(9104L, "dev123",   "赵仓库（仓库管理员）",
-            Set.of("warehouse_admin"))
+    private static final Map<String, MockAccount> MOCK_ACCOUNTS = Map.ofEntries(
+        Map.entry("dev",                  new MockAccount(9001L, "dev123",   "dev 员工",
+            Set.of("breed_admin", "plant_admin", "warehouse_admin", "store_admin"))),
+        Map.entry("admin",                new MockAccount(1L,    "admin123", "超级管理员",
+            Set.of("system_admin"))),
+        Map.entry("dev_boss",             new MockAccount(9107L, "dev123",   "老板（dev 测试）",
+            Set.of("boss"))),
+        Map.entry("dev_breed_worker",     new MockAccount(9101L, "dev123",   "张三（养殖工人）",
+            Set.of("breed_worker"))),
+        Map.entry("dev_warehouse_worker", new MockAccount(9108L, "dev123",   "孙仓库（仓库工人）",
+            Set.of("warehouse_worker"))),
+        Map.entry("dev_store_clerk",      new MockAccount(9106L, "dev123",   "孙小妹（门店店员）",
+            Set.of("store_clerk"))),
+        Map.entry("dev_vet",              new MockAccount(9102L, "dev123",   "王兽医",
+            Set.of("vet"))),
+        Map.entry("dev_breed_mgr",        new MockAccount(9100L, "dev123",   "李养殖（养殖管理员）",
+            Set.of("breed_admin"))),
+        Map.entry("dev_warehouse_mgr",    new MockAccount(9104L, "dev123",   "赵仓库（仓库管理员）",
+            Set.of("warehouse_admin"))),
+        Map.entry("dev_plant_mgr",        new MockAccount(9103L, "dev123",   "陈种植（种植管理员）",
+            Set.of("plant_admin"))),
+        Map.entry("dev_plant_worker",     new MockAccount(9109L, "dev123",   "种植工人（dev 测试）",
+            Set.of("plant_worker")))
     );
 
     /** mock 账号条目（不导出包外）。 */

@@ -40,7 +40,10 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * 仔猪批量耳标 Service 实现（BRD-EVENT-003）。
@@ -264,6 +267,28 @@ public class PigEarTagServiceImpl implements IPigEarTagService {
             .le(query.getEndDate() != null, PigPigletno::getTagDate, query.getEndDate())
             .orderByDesc(PigPigletno::getId);
         Page<PigletnoVo> page = pigletnoMapper.selectVoPage(pageQuery.build(), wrapper);
+        enrichFarrowDate(page.getRecords());
         return TableDataInfo.build(page);
+    }
+
+    /**
+     * 列表 enrich：分娩日期替代裸 farrowId（母猪耳号 motherEarNo 已平铺在 pigletno 表）。
+     * 收集去重 farrowId 一次性批查，避免 N+1。
+     */
+    private void enrichFarrowDate(List<PigletnoVo> rows) {
+        if (rows == null || rows.isEmpty()) {
+            return;
+        }
+        Set<Long> farrowIds = rows.stream().map(PigletnoVo::getFarrowId)
+            .filter(Objects::nonNull).collect(Collectors.toSet());
+        if (farrowIds.isEmpty()) {
+            return;
+        }
+        Map<Long, LocalDateTime> farrowDates = farrowMapper.selectByIds(farrowIds).stream()
+            .filter(f -> f.getId() != null && f.getFarrowDate() != null)
+            .collect(Collectors.toMap(PigFarrow::getId, PigFarrow::getFarrowDate, (a, b) -> a));
+        for (PigletnoVo vo : rows) {
+            vo.setFarrowDate(farrowDates.get(vo.getFarrowId()));
+        }
     }
 }

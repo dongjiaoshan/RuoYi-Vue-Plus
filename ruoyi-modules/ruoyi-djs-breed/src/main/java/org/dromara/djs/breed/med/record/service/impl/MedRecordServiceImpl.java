@@ -36,8 +36,10 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * 用药治疗流水 Service 实现（BRD-MED-003）。
@@ -208,17 +210,24 @@ public class MedRecordServiceImpl extends DjsBaseServiceImpl<MedRecordMapper, Me
     @Override
     public TableDataInfo<MedRecordVo> queryPage(MedRecordQuery query, PageQuery pageQuery) {
         Page<MedRecordVo> page = baseMapper.selectVoPage(pageQuery.build(), buildWrapper(query));
+        enrichBatchNo(page.getRecords());
         return TableDataInfo.build(page);
     }
 
     @Override
     public List<MedRecordVo> queryList(MedRecordQuery query) {
-        return baseMapper.selectVoList(buildWrapper(query));
+        List<MedRecordVo> list = baseMapper.selectVoList(buildWrapper(query));
+        enrichBatchNo(list);
+        return list;
     }
 
     @Override
     public MedRecordVo queryById(Long id) {
-        return baseMapper.selectVoById(id);
+        MedRecordVo vo = baseMapper.selectVoById(id);
+        if (vo != null) {
+            enrichBatchNo(List.of(vo));
+        }
+        return vo;
     }
 
     @Override
@@ -226,7 +235,30 @@ public class MedRecordServiceImpl extends DjsBaseServiceImpl<MedRecordMapper, Me
         LambdaQueryWrapper<MedRecord> w = new LambdaQueryWrapper<MedRecord>()
             .eq(MedRecord::getMasterId, masterId)
             .orderByAsc(MedRecord::getId);
-        return baseMapper.selectVoList(w);
+        List<MedRecordVo> list = baseMapper.selectVoList(w);
+        enrichBatchNo(list);
+        return list;
+    }
+
+    /**
+     * 列表 enrich：批次号替代裸 batchId（earNo/medicineName/operatorName 已在写入时落库）。
+     * 收集去重 batchId 一次性批查，避免 N+1。
+     */
+    private void enrichBatchNo(List<MedRecordVo> rows) {
+        if (rows == null || rows.isEmpty()) {
+            return;
+        }
+        Set<Long> batchIds = rows.stream().map(MedRecordVo::getBatchId)
+            .filter(Objects::nonNull).collect(Collectors.toSet());
+        if (batchIds.isEmpty()) {
+            return;
+        }
+        Map<Long, String> batchNos = medBatchMapper.selectByIds(batchIds).stream()
+            .filter(b -> b.getId() != null && b.getBatchNo() != null)
+            .collect(Collectors.toMap(MedBatch::getId, MedBatch::getBatchNo, (a, b) -> a));
+        for (MedRecordVo vo : rows) {
+            vo.setBatchNo(batchNos.get(vo.getBatchId()));
+        }
     }
 
     @Override

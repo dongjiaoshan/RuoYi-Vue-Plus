@@ -11,11 +11,12 @@ import java.io.Serial;
 /**
  * 猪只状态变更 Spring 事件（BRD-CORE-001）。
  *
- * <p>每次状态机推进成功后由 {@code PigCoreServiceImpl#fireEvent} 同步发布；
- * 下游订阅方（dashboard / 推送 / CROSS-FLOW-001 燎毛触发）通过
- * {@code @EventListener}（搭配 {@code @TransactionalEventListener(phase=AFTER_COMMIT)}）订阅。</p>
+ * <p>每次状态机推进成功后由 {@code PigCoreServiceImpl#fireEvent} 同步发布。</p>
  *
- * <p>本 ticket 不实现任何 listener，listener 由各业务 ticket（dashboard / 推送）各自挂。</p>
+ * <p><b>V1 by-design：无任何 listener 消费（发布即预留）。</b>dashboard 走实时
+ * COUNT/GROUP BY 聚合（{@code AggregateQueryMapper} 直查 pig_info/status_record），
+ * 不依赖事件驱动。本事件保留作 V2 推送 / 审计 listener 的接入 seam，
+ * 届时通过 {@code @TransactionalEventListener(phase=AFTER_COMMIT)} 订阅，无需改发布方。</p>
  *
  * @author djs
  * @since BRD-CORE-001

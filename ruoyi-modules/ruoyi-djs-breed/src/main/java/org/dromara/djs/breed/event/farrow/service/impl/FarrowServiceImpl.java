@@ -23,14 +23,12 @@ import org.dromara.djs.breed.event.farrow.domain.bo.FarrowBo;
 import org.dromara.djs.breed.event.farrow.domain.query.FarrowQuery;
 import org.dromara.djs.breed.event.farrow.domain.vo.FarrowPickerVo;
 import org.dromara.djs.breed.event.farrow.domain.vo.PigFarrowVo;
-import org.dromara.djs.breed.event.farrow.event.PigFarrowEvent;
 import org.dromara.djs.breed.event.farrow.mapper.PigFarrowMapper;
 import org.dromara.djs.breed.event.farrow.service.IFarrowService;
 import org.dromara.djs.breed.farm.domain.Barn;
 import org.dromara.djs.breed.farm.domain.Pen;
 import org.dromara.djs.breed.farm.mapper.BarnMapper;
 import org.dromara.djs.breed.farm.mapper.PenMapper;
-import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -73,7 +71,6 @@ public class FarrowServiceImpl implements IFarrowService {
     private final PenMapper penMapper;
     private final PigPigletnoMapper pigletnoMapper;
     private final IPigCoreService pigCoreService;
-    private final ApplicationEventPublisher eventPublisher;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -131,9 +128,8 @@ public class FarrowServiceImpl implements IFarrowService {
         eventBo.setEventAt(bo.getFarrowDate());
         pigCoreService.fireEvent(eventBo);
 
-        // 3. 发布 Spring event（耳标域 listener 异步消费，AFTER_COMMIT）
-        eventPublisher.publishEvent(new PigFarrowEvent(this, farrow));
-
+        // 仔猪个体由 BRD-EVENT-003 耳标流程创建（用户 mp 端录数量+性别后 batchTag），
+        // 分娩只记窝产仔数；by-design 无 farrow→eartag 事件联动，故不发布 Spring event。
         log.info("[BRD-EVENT-002] recordFarrow pigId={} earNo={} farrowId={} liveBorn={} parity={}",
             pig.getId(), pig.getEarNo(), farrow.getId(), farrow.getLiveBorn(), farrow.getParity());
 

@@ -1,9 +1,11 @@
 package org.dromara.djs.warehouse.shipment.returnpkg.domain.bo;
 
+import io.github.linpeilie.annotations.AutoMapper;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Positive;
 import jakarta.validation.constraints.Size;
 import lombok.Data;
+import org.dromara.djs.warehouse.shipment.returnpkg.domain.ReturnProduct;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
@@ -15,6 +17,7 @@ import java.time.LocalDateTime;
  * @since WMS-SHIP-001
  */
 @Data
+@AutoMapper(target = ReturnProduct.class)
 public class ReturnProductBo {
 
     /** 主键（编辑时必填）。 */

@@ -32,8 +32,16 @@ public class MedUsageVo implements Serializable {
     @ExcelProperty(value = "批次ID")
     private Long batchId;
 
+    /** enrich：批次编码（替代裸 batchId 给用户看）。 */
+    @ExcelProperty(value = "批次编码")
+    private String batchNo;
+
     @ExcelProperty(value = "药品ID")
     private Long medicineId;
+
+    /** enrich：药品名称（替代裸 medicineId）。 */
+    @ExcelProperty(value = "药品名称")
+    private String medicineName;
 
     @ExcelProperty(value = "类型")
     private String usageType;
@@ -47,8 +55,16 @@ public class MedUsageVo implements Serializable {
     @ExcelProperty(value = "关联栏位")
     private Long relatedPenId;
 
+    /** enrich：栏位编码（替代裸 relatedPenId）。 */
+    @ExcelProperty(value = "栏位编码")
+    private String penCode;
+
     @ExcelProperty(value = "关联猪只")
     private Long pigId;
+
+    /** enrich：猪只耳号（替代裸 pigId）。 */
+    @ExcelProperty(value = "耳号")
+    private String earNo;
 
     @ExcelProperty(value = "用药计划")
     private Long scheduleId;

@@ -25,6 +25,8 @@ public class PigletnoVo implements Serializable {
     private String motherEarNo;
     private String fatherEarNo;
     private Long farrowId;
+    /** enrich：分娩日期（替代裸 farrowId 给用户看）。 */
+    private LocalDateTime farrowDate;
     private LocalDateTime tagDate;
     private String pigletSex;
     private BigDecimal birthWeight;

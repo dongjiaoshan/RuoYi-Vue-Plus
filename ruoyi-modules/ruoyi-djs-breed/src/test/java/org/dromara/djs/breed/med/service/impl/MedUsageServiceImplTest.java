@@ -56,8 +56,9 @@ class MedUsageServiceImplTest {
     private TestableMedUsageServiceImpl service;
 
     static class TestableMedUsageServiceImpl extends MedUsageServiceImpl {
+        // enrich 用的 medicine/pig/pen mapper 本单测不触发列表 enrich 路径，传 null 即可
         TestableMedUsageServiceImpl(MedUsageMapper m, MedBatchMapper b) {
-            super(m, b);
+            super(m, b, null, null, null);
         }
 
         @Override

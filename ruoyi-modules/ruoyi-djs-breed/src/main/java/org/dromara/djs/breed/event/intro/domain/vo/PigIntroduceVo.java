@@ -29,6 +29,12 @@ public class PigIntroduceVo implements Serializable {
 
     private Long supplierId;
 
+    /** enrich：供应商编码（替代裸 supplierId 给用户看）。 */
+    private String supplierCode;
+
+    /** enrich：供应商名称（替代裸 supplierId）。 */
+    private String supplierName;
+
     private Integer pigCount;
 
     private String startEarNo;
