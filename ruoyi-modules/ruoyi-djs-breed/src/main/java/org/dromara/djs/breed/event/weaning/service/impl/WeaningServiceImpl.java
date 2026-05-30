@@ -19,9 +19,13 @@ import org.dromara.djs.breed.core.service.IPigCoreService;
 import org.dromara.djs.breed.event.farrow.domain.PigFarrow;
 import org.dromara.djs.breed.event.farrow.mapper.PigFarrowMapper;
 import org.dromara.djs.breed.event.weaning.domain.PigWeaning;
+import org.dromara.djs.breed.event.weaning.domain.PigWeaningDetail;
 import org.dromara.djs.breed.event.weaning.domain.bo.WeaningBo;
+import org.dromara.djs.breed.event.weaning.domain.bo.WeaningDetailBo;
 import org.dromara.djs.breed.event.weaning.domain.query.WeaningQuery;
+import org.dromara.djs.breed.event.weaning.domain.vo.PigWeaningDetailVo;
 import org.dromara.djs.breed.event.weaning.domain.vo.PigWeaningVo;
+import org.dromara.djs.breed.event.weaning.mapper.PigWeaningDetailMapper;
 import org.dromara.djs.breed.event.weaning.mapper.PigWeaningMapper;
 import org.dromara.djs.breed.event.weaning.service.IWeaningService;
 import org.springframework.stereotype.Service;
@@ -29,6 +33,8 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 
@@ -51,6 +57,7 @@ import java.util.Optional;
 public class WeaningServiceImpl implements IWeaningService {
 
     private final PigWeaningMapper weaningMapper;
+    private final PigWeaningDetailMapper weaningDetailMapper;
     private final PigMapper pigMapper;
     private final PigFarrowMapper farrowMapper;
     private final IPigCoreService pigCoreService;
@@ -105,7 +112,10 @@ public class WeaningServiceImpl implements IWeaningService {
         entity.setDelFlag("0");
         weaningMapper.insert(entity);
 
-        // 2. 触发状态机 FM → DN
+        // 2. 逐头录重明细（BRD-FIX-MP-EVENT-BREED-IA-001）：同事务批量 INSERT；details 空 → 退化仅汇总
+        List<PigWeaningDetail> savedDetails = insertDetails(entity.getId(), bo.getDetails());
+
+        // 3. 触发状态机 FM → DN
         PigEventBo eventBo = new PigEventBo();
         eventBo.setPigId(pig.getId());
         eventBo.setEventType(PigStatusEvent.WEAN);
@@ -113,10 +123,34 @@ public class WeaningServiceImpl implements IWeaningService {
         eventBo.setEventAt(bo.getWeaningDate());
         pigCoreService.fireEvent(eventBo);
 
-        log.info("[BRD-EVENT-002] recordWeaning pigId={} earNo={} weaningId={} count={}",
-            pig.getId(), pig.getEarNo(), entity.getId(), bo.getWeanedCount());
+        log.info("[BRD-EVENT-002] recordWeaning pigId={} earNo={} weaningId={} count={} detailRows={}",
+            pig.getId(), pig.getEarNo(), entity.getId(), bo.getWeanedCount(), savedDetails.size());
 
-        return toVo(entity);
+        return toVo(entity, savedDetails);
+    }
+
+    /**
+     * 逐头明细批量 INSERT（与主记录同事务）。details 为空时直接返空列表（向后兼容汇总录入）。
+     * piglet_seq 缺省时按下发顺序从 1 补；tenant_id / 公共字段由 MP 自动填充。
+     */
+    private List<PigWeaningDetail> insertDetails(Long weaningId, List<WeaningDetailBo> details) {
+        if (details == null || details.isEmpty()) {
+            return List.of();
+        }
+        List<PigWeaningDetail> rows = new ArrayList<>(details.size());
+        int seq = 1;
+        for (WeaningDetailBo d : details) {
+            PigWeaningDetail row = new PigWeaningDetail();
+            row.setWeaningId(weaningId);
+            row.setPigletSeq(d.getPigletSeq() != null ? d.getPigletSeq() : seq);
+            row.setEarNo(d.getEarNo());
+            row.setWeight(d.getWeight());
+            row.setDelFlag("0");
+            rows.add(row);
+            seq++;
+        }
+        weaningDetailMapper.insertBatch(rows);
+        return rows;
     }
 
     @Override
@@ -144,7 +178,7 @@ public class WeaningServiceImpl implements IWeaningService {
         return bo.getWeanedWeight().divide(BigDecimal.valueOf(n), 3, RoundingMode.HALF_UP);
     }
 
-    private PigWeaningVo toVo(PigWeaning e) {
+    private PigWeaningVo toVo(PigWeaning e, List<PigWeaningDetail> details) {
         PigWeaningVo v = new PigWeaningVo();
         v.setId(e.getId());
         v.setPigId(e.getPigId());
@@ -157,6 +191,25 @@ public class WeaningServiceImpl implements IWeaningService {
         v.setAvgWeanedWeight(e.getAvgWeanedWeight());
         v.setOperatorId(e.getOperatorId());
         v.setRemark(e.getRemark());
+        v.setDetails(toDetailVos(details));
         return v;
+    }
+
+    private List<PigWeaningDetailVo> toDetailVos(List<PigWeaningDetail> details) {
+        if (details == null || details.isEmpty()) {
+            return List.of();
+        }
+        List<PigWeaningDetailVo> vos = new ArrayList<>(details.size());
+        for (PigWeaningDetail d : details) {
+            PigWeaningDetailVo vo = new PigWeaningDetailVo();
+            vo.setId(d.getId());
+            vo.setWeaningId(d.getWeaningId());
+            vo.setPigletSeq(d.getPigletSeq());
+            vo.setEarNo(d.getEarNo());
+            vo.setWeight(d.getWeight());
+            vo.setRemark(d.getRemark());
+            vos.add(vo);
+        }
+        return vos;
     }
 }

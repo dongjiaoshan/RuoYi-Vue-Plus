@@ -45,7 +45,8 @@ public class DieBo implements Serializable {
     @Size(max = 32, message = "die.reason.size")
     private String deathReason;
 
-    /** 死亡去向（字典 death_dest）。 */
+    /** 死亡去向（字典 death_dest）。V1 必填（Kevin 2026-05-29 拍板：追溯/账目须知去向）。 */
+    @NotBlank(message = "die.dest.required")
     @Size(max = 32, message = "die.dest.size")
     private String deathDest;
 

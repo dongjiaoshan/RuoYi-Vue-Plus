@@ -40,8 +40,11 @@ public class CastrateRecord extends TenantEntity {
     /** 阉割日期。 */
     private LocalDateTime castrateDate;
 
-    /** 操作人。 */
+    /** 操作人（系统登录态账号 ID）。 */
     private Long operatorId;
+
+    /** 阉割人员（原型 87 字段，现场实际执刀人员名/编码；与 operatorId 并存）。 */
+    private String castrater;
 
     /** 软删标记。 */
     @TableLogic

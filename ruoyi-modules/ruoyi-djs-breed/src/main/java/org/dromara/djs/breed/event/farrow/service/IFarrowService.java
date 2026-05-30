@@ -4,6 +4,8 @@ import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.breed.event.farrow.domain.bo.FarrowBo;
 import org.dromara.djs.breed.event.farrow.domain.query.FarrowQuery;
+import org.dromara.djs.breed.event.farrow.domain.vo.FarrowBarnCountVo;
+import org.dromara.djs.breed.event.farrow.domain.vo.FarrowLitterVo;
 import org.dromara.djs.breed.event.farrow.domain.vo.FarrowPickerVo;
 import org.dromara.djs.breed.event.farrow.domain.vo.PigFarrowVo;
 
@@ -47,4 +49,29 @@ public interface IFarrowService {
      * @return picker list；earNo 不存在 / 无符合条件分娩时返空 list（非 throw）
      */
     List<FarrowPickerVo> queryRecentByMotherEarNo(String motherEarNo, int limit);
+
+    /**
+     * mp 端"仔猪耳号"页选窝网格用：待打标分娩窝列表（原型 96 母猪卡网格）。
+     *
+     * <p>过滤逻辑：</p>
+     * <ul>
+     *   <li>仅返 {@code remainEartag > 0}（已贴满的窝不显示）</li>
+     *   <li>可选 {@code motherEarNo}（母猪耳号下拉筛选）/ {@code barnName}（分娩栋舍 chip 筛选）</li>
+     *   <li>按 farrow_date 倒序，上限 60 条</li>
+     *   <li>enrich 公母数 / 日龄（NOW - farrowDate）/ 分娩舍栋栏</li>
+     * </ul>
+     *
+     * @param motherEarNo 母猪耳号过滤（可空）
+     * @param barnName    分娩栋舍名过滤（chip 点击后传，可空）
+     * @return 待打标窝 list；无符合条件时返空 list（非 throw）
+     */
+    List<FarrowLitterVo> queryPendingLitters(String motherEarNo, String barnName);
+
+    /**
+     * mp 端"仔猪耳号"页分娩栋舍 chip：按分娩舍聚合待打标窝数（原型 96 顶部 chip"分娩1栋(12)"）。
+     *
+     * <p>口径与 {@link #queryPendingLitters} 一致（仅算 remainEartag &gt; 0 的窝）；
+     * barn_name 为空的窝归"未分配"不计入；count 0 不返；按 barnName 升序。</p>
+     */
+    List<FarrowBarnCountVo> countPendingLittersByBarn();
 }

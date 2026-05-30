@@ -51,4 +51,28 @@ public class PigSearchVo implements Serializable {
      * 显示 "终止 · 死亡 / 终止 · 上市" 用——非 END 猪只该字段为 null）。</p>
      */
     private String endReason;
+
+    /**
+     * 日龄（天）—— {@code NOW - birthDate}；birthDate 为空时 fallback {@code NOW - introduceDate}；
+     * 两者均空时为 null。
+     *
+     * <p>BRD-FIX-MP-PIGSELECT-001：mp 端 PigSelectPanel 卡片「248日龄」格子用；
+     * service 层 {@code searchByEarKeyword} 计算填充，缺位时 mp 卡片该格不渲染。</p>
+     */
+    private Integer ageDays;
+
+    /**
+     * 胎次（{@code t_farm_pig_info.parity}）—— 母猪 FARROW 时自动 +1，公猪/仔猪为 0 或 null。
+     *
+     * <p>BRD-FIX-MP-PIGSELECT-001：mp 端 PigSelectPanel 卡片「1胎」格子用。</p>
+     */
+    private Integer parity;
+
+    /**
+     * 距上次事件天数（天）—— {@code NOW - statusStartedAt}（进入当前 lifecycle 的天数）。
+     *
+     * <p>原型「13天」=自上次状态变更（事件）以来的停留天数。{@code statusStartedAt}
+     * 为空时为 null。BRD-FIX-MP-PIGSELECT-001 卡片右上「13天」格子用。</p>
+     */
+    private Integer lastEventDays;
 }

@@ -32,6 +32,10 @@ public class CastrateRecordVo implements Serializable {
     private LocalDateTime castrateDate;
 
     private Long operatorId;
+
+    /** 阉割人员（原型 87 字段；现场实际执刀人员名/编码）。 */
+    private String castrater;
+
     private String remark;
 
     @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")

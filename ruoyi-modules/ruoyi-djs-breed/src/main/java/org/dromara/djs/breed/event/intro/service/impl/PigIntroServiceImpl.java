@@ -6,17 +6,21 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.common.core.exception.ServiceException;
+import org.dromara.common.core.service.DictService;
 import org.dromara.common.core.utils.StringUtils;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.breed.core.domain.Pig;
 import org.dromara.djs.breed.core.domain.bo.PigCreateBo;
+import org.dromara.djs.breed.core.mapper.PigMapper;
 import org.dromara.djs.breed.core.service.I18nMessages;
 import org.dromara.djs.breed.core.service.IPigCoreService;
 import org.dromara.djs.breed.event.intro.domain.PigIntroduce;
 import org.dromara.djs.breed.event.intro.domain.bo.PigIntroBatchBo;
 import org.dromara.djs.breed.event.intro.domain.bo.PigIntroBo;
+import org.dromara.djs.breed.event.intro.domain.bo.PigIntroInternalBo;
 import org.dromara.djs.breed.event.intro.domain.query.PigIntroQuery;
+import org.dromara.djs.breed.event.intro.domain.vo.IntroRecordVo;
 import org.dromara.djs.breed.event.intro.domain.vo.PigIntroResultVo;
 import org.dromara.djs.breed.event.intro.domain.vo.PigIntroduceVo;
 import org.dromara.djs.breed.event.intro.mapper.PigIntroduceMapper;
@@ -77,6 +81,8 @@ public class PigIntroServiceImpl implements IPigIntroService {
     private final BarnMapper barnMapper;
     private final PenMapper penMapper;
     private final BizReferenceChecker bizReferenceChecker;
+    private final PigMapper pigMapper;
+    private final DictService dictService;
 
     public PigIntroServiceImpl(PigIntroduceMapper introduceMapper,
                                IPigCoreService pigCoreService,
@@ -84,7 +90,9 @@ public class PigIntroServiceImpl implements IPigIntroService {
                                SupplierMapper supplierMapper,
                                BarnMapper barnMapper,
                                PenMapper penMapper,
-                               BizReferenceChecker bizReferenceChecker) {
+                               BizReferenceChecker bizReferenceChecker,
+                               PigMapper pigMapper,
+                               DictService dictService) {
         this.introduceMapper = introduceMapper;
         this.pigCoreService = pigCoreService;
         this.bizCodeGenerator = bizCodeGenerator;
@@ -92,6 +100,8 @@ public class PigIntroServiceImpl implements IPigIntroService {
         this.barnMapper = barnMapper;
         this.penMapper = penMapper;
         this.bizReferenceChecker = bizReferenceChecker;
+        this.pigMapper = pigMapper;
+        this.dictService = dictService;
     }
 
     @PostConstruct
@@ -178,6 +188,80 @@ public class PigIntroServiceImpl implements IPigIntroService {
         incrementPenCount(bo.getPenId(), count);
 
         return buildResult(intro, pigs);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public PigIntroResultVo introduceInternal(PigIntroInternalBo bo) {
+        // 内部引种：登记一头已存在的猪进引种台账，不新建猪 / 不动 pen.current_count / 不触发状态机
+        Pig pig = pigMapper.selectById(bo.getPigId());
+        if (pig == null) {
+            throw new ServiceException(I18nMessages.t("pig.not_found", bo.getPigId()));
+        }
+
+        String introNo = bizCodeGenerator.generate(BizCodeType.INTRO_NO, Map.of());
+        PigIntroduce intro = new PigIntroduce();
+        intro.setIntroduceNo(introNo);
+        intro.setIntroduceType("internal");
+        intro.setIntroduceDate(Optional.ofNullable(bo.getIntroduceDate()).orElseGet(LocalDate::now));
+        intro.setPigCount(1);
+        intro.setStartEarNo(pig.getEarNo());
+        intro.setPigBreedCode(pig.getPigBreedCode());
+        intro.setPigStrainCode(pig.getPigStrainCode());
+        intro.setPigSex(pig.getPigSex());
+        intro.setBarnId(pig.getBarnId());
+        intro.setPenId(pig.getPenId());
+        intro.setPigId(pig.getId());
+        intro.setOperator(bo.getOperator());
+        intro.setIntroduceWeight(bo.getIntroduceWeight());
+        intro.setRemark(null);
+        intro.setDelFlag("0");
+        intro.setDelUnique(0L);
+        introduceMapper.insert(intro);
+
+        // 复用 buildResult 装配（关联的已存在猪当作 pigs[0]，currentStatus 不变）
+        return buildResult(intro, List.of(pig));
+    }
+
+    @Override
+    public TableDataInfo<IntroRecordVo> queryAppletRecords(PigIntroQuery query, PageQuery pageQuery) {
+        LambdaQueryWrapper<PigIntroduce> wrapper = Wrappers.<PigIntroduce>lambdaQuery()
+            .likeRight(StringUtils.isNotBlank(query.getIntroduceNo()), PigIntroduce::getIntroduceNo, query.getIntroduceNo())
+            .eq(StringUtils.isNotBlank(query.getIntroduceType()), PigIntroduce::getIntroduceType, query.getIntroduceType())
+            .ge(query.getBeginDate() != null, PigIntroduce::getIntroduceDate, query.getBeginDate())
+            .le(query.getEndDate() != null, PigIntroduce::getIntroduceDate, query.getEndDate())
+            .orderByDesc(PigIntroduce::getIntroduceDate)
+            .orderByDesc(PigIntroduce::getId);
+        Page<PigIntroduce> page = introduceMapper.selectPage(pageQuery.build(), wrapper);
+
+        List<IntroRecordVo> rows = new ArrayList<>(page.getRecords().size());
+        for (PigIntroduce e : page.getRecords()) {
+            IntroRecordVo vo = new IntroRecordVo();
+            vo.setIntroduceNo(e.getIntroduceNo());
+            vo.setIntroduceType(e.getIntroduceType());
+            vo.setIntroduceTypeLabel("internal".equals(e.getIntroduceType()) ? "内部"
+                : "external".equals(e.getIntroduceType()) ? "外部" : e.getIntroduceType());
+            vo.setEarNo(e.getStartEarNo());
+            vo.setPigCount(e.getPigCount());
+            vo.setPigBreedLabel(translateBreed(e.getPigBreedCode()));
+            vo.setIntroduceDate(e.getIntroduceDate());
+            vo.setOperator(e.getOperator());
+            vo.setProofOssIds(e.getProofOssIds());
+            rows.add(vo);
+        }
+
+        Page<IntroRecordVo> voPage = new Page<>(page.getCurrent(), page.getSize(), page.getTotal());
+        voPage.setRecords(rows);
+        return TableDataInfo.build(voPage);
+    }
+
+    /** 品种字典翻译；翻不到回落 code。 */
+    private String translateBreed(String code) {
+        if (StringUtils.isBlank(code)) {
+            return null;
+        }
+        String label = dictService.getDictLabel("djs_pig_breed", code);
+        return StringUtils.isNotBlank(label) ? label : code;
     }
 
     /**

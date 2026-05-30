@@ -60,17 +60,41 @@ public class FarrowBo implements Serializable {
     @Min(value = 0, message = "farrow.mummy_born.invalid")
     private Integer mummyBorn;
 
-    /** 弱仔数。 */
+    /** 弱仔数（汇总，原型多分类前的旧字段；下游耳标依赖 live_born，保留不破坏）。 */
     @Min(value = 0, message = "farrow.weak_born.invalid")
     private Integer weakBorn;
 
-    /** 仔猪公数。 */
+    /** 仔猪公数（汇总）。 */
     @Min(value = 0, message = "farrow.male_count.invalid")
     private Integer maleCount;
 
-    /** 仔猪母数。 */
+    /** 仔猪母数（汇总）。 */
     @Min(value = 0, message = "farrow.female_count.invalid")
     private Integer femaleCount;
+
+    /** 健仔公猪数（原型 93 健仔数·公猪数）。 */
+    @Min(value = 0, message = "farrow.healthy_male.invalid")
+    private Integer healthyMale;
+
+    /** 健仔母猪数（原型 93 健仔数·母猪数）。 */
+    @Min(value = 0, message = "farrow.healthy_female.invalid")
+    private Integer healthyFemale;
+
+    /** 弱仔留养公猪数（原型 93 弱仔数(饲养)·公猪数）。 */
+    @Min(value = 0, message = "farrow.weak_raised_male.invalid")
+    private Integer weakRaisedMale;
+
+    /** 弱仔留养母猪数（原型 93 弱仔数(饲养)·母猪数）。 */
+    @Min(value = 0, message = "farrow.weak_raised_female.invalid")
+    private Integer weakRaisedFemale;
+
+    /** 弱仔处死数（原型 93 弱仔数(处死)）。 */
+    @Min(value = 0, message = "farrow.weak_culled.invalid")
+    private Integer weakCulled;
+
+    /** 畸形数（原型 93 畸形数）。 */
+    @Min(value = 0, message = "farrow.deformed_born.invalid")
+    private Integer deformedBorn;
 
     /** 出生总重 kg。 */
     private BigDecimal totalWeight;

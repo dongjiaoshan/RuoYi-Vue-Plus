@@ -17,6 +17,7 @@ import org.dromara.djs.breed.core.mapper.PigMapper;
 import org.dromara.djs.breed.core.service.I18nMessages;
 import org.dromara.djs.breed.core.service.IPigCoreService;
 import org.dromara.djs.breed.event.transfer.domain.PigTransfer;
+import org.dromara.djs.breed.event.transfer.domain.bo.TransferBatchBo;
 import org.dromara.djs.breed.event.transfer.domain.bo.TransferBo;
 import org.dromara.djs.breed.event.transfer.domain.query.TransferQuery;
 import org.dromara.djs.breed.event.transfer.domain.vo.PigTransferVo;
@@ -29,7 +30,9 @@ import org.dromara.djs.breed.farm.mapper.PenMapper;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
@@ -151,6 +154,39 @@ public class TransferServiceImpl implements ITransferService {
             pig.getBarnId(), bo.getNewBarnId(), payload.get("newPigType"));
 
         return toVo(entity);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public List<PigTransferVo> recordTransferBatch(TransferBatchBo batchBo) {
+        Objects.requireNonNull(batchBo, "TransferBatchBo must not be null");
+        if (batchBo.getEarNos() == null || batchBo.getEarNos().isEmpty()) {
+            throw new ServiceException(I18nMessages.t("transfer.batch.empty"), 400);
+        }
+        // 逐头复用单只 recordTransfer：每只都触发完整 side effect（barn/pen 切换 +
+        // piglet→fattening 的 pig_type 切换）；整批同一事务，任一失败全回滚。
+        List<PigTransferVo> results = new ArrayList<>(batchBo.getEarNos().size());
+        for (String earNo : batchBo.getEarNos()) {
+            if (earNo == null || earNo.isBlank()) {
+                continue;
+            }
+            TransferBo single = new TransferBo();
+            single.setEarNo(earNo.trim());
+            single.setTransferDate(batchBo.getTransferDate());
+            single.setNewBarnId(batchBo.getNewBarnId());
+            single.setNewBarnCode(batchBo.getNewBarnCode());
+            single.setNewPenId(batchBo.getNewPenId());
+            single.setNewPenCode(batchBo.getNewPenCode());
+            single.setTransferReason(batchBo.getTransferReason());
+            single.setRemark(batchBo.getRemark());
+            results.add(recordTransfer(single));
+        }
+        if (results.isEmpty()) {
+            throw new ServiceException(I18nMessages.t("transfer.batch.empty"), 400);
+        }
+        log.info("[BRD-FIX-MP-EVENT-LEAVE-IA-001] recordTransferBatch count={} newBarn={}",
+            results.size(), batchBo.getNewBarnCode() != null ? batchBo.getNewBarnCode() : batchBo.getNewBarnId());
+        return results;
     }
 
     @Override

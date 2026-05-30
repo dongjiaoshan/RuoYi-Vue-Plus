@@ -9,6 +9,7 @@ import org.dromara.djs.breed.core.mapper.PigMapper;
 import org.dromara.djs.breed.core.service.IPigCoreService;
 import org.dromara.djs.breed.event.castrate.domain.CastrateRecord;
 import org.dromara.djs.breed.event.castrate.domain.bo.CastrateBo;
+import org.dromara.djs.breed.event.castrate.domain.vo.CastrateRecordVo;
 import org.dromara.djs.breed.event.castrate.mapper.CastrateRecordMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -102,6 +103,41 @@ class CastrateServiceImplTest {
         ArgumentCaptor<PigEventBo> ev = ArgumentCaptor.forClass(PigEventBo.class);
         verify(pigCoreService, times(1)).fireEvent(ev.capture());
         assertThat(ev.getValue().getEventType()).isEqualTo(PigStatusEvent.CASTRATE);
+    }
+
+    @Test
+    @DisplayName("castrater: 阉割人员落库（BRD-FIX-MP-EVENT-LEAVE-IA-001 原型 87 字段）")
+    void castrater_persisted() {
+        Pig pig = mkBoar(302L);
+        when(pigMapper.selectById(302L)).thenReturn(pig);
+
+        CastrateBo bo = mkBo(302L);
+        bo.setCastrater("  张师傅  ");
+
+        CastrateRecordVo vo = service.recordCastrate(bo);
+
+        ArgumentCaptor<CastrateRecord> c = ArgumentCaptor.forClass(CastrateRecord.class);
+        verify(castrateMapper, times(1)).insert(c.capture());
+        // trim 后落库
+        assertThat(c.getValue().getCastrater()).isEqualTo("张师傅");
+        // VO 回显
+        assertThat(vo.getCastrater()).isEqualTo("张师傅");
+    }
+
+    @Test
+    @DisplayName("castrater: 空白阉割人员 → 落库 null（不存空串）")
+    void castrater_blank_to_null() {
+        Pig pig = mkBoar(303L);
+        when(pigMapper.selectById(303L)).thenReturn(pig);
+
+        CastrateBo bo = mkBo(303L);
+        bo.setCastrater("   ");
+
+        service.recordCastrate(bo);
+
+        ArgumentCaptor<CastrateRecord> c = ArgumentCaptor.forClass(CastrateRecord.class);
+        verify(castrateMapper, times(1)).insert(c.capture());
+        assertThat(c.getValue().getCastrater()).isNull();
     }
 
     @Test

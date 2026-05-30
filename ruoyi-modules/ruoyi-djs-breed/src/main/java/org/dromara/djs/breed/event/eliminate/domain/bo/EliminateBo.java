@@ -36,7 +36,8 @@ public class EliminateBo implements Serializable {
     @Size(max = 32, message = "eliminate.reason.size")
     private String cullingReason;
 
-    /** 淘汰去向（字典 eliminate_dest）。 */
+    /** 淘汰去向（字典 eliminate_dest）。V1 必填（Kevin 2026-05-29 拍板：追溯/账目须知去向）。 */
+    @NotBlank(message = "eliminate.dest.required")
     @Size(max = 32, message = "eliminate.dest.size")
     private String cullingDest;
 

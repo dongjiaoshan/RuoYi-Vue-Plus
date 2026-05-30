@@ -5,6 +5,7 @@ import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.common.core.exception.ServiceException;
+import org.dromara.common.core.service.DictService;
 import org.dromara.common.core.utils.StringUtils;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
@@ -14,7 +15,9 @@ import org.dromara.djs.breed.core.domain.bo.PigCreateBo;
 import org.dromara.djs.breed.core.domain.bo.PigEventBo;
 import org.dromara.djs.breed.core.domain.query.PigQuery;
 import org.dromara.djs.breed.core.domain.query.PigStatusRecordQuery;
+import org.dromara.djs.breed.core.domain.vo.PigBarnCountVo;
 import org.dromara.djs.breed.core.domain.vo.PigDetailVo;
+import org.dromara.djs.breed.core.domain.vo.PigIntroDetailVo;
 import org.dromara.djs.breed.core.domain.vo.PigSearchVo;
 import org.dromara.djs.breed.core.domain.vo.PigStatusRecordVo;
 import org.dromara.djs.breed.core.domain.vo.PigVo;
@@ -41,6 +44,7 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -83,19 +87,22 @@ public class PigCoreServiceImpl implements IPigCoreService {
     private final ApplicationEventPublisher eventPublisher;
     private final BarnMapper barnMapper;
     private final PenMapper penMapper;
+    private final DictService dictService;
 
     public PigCoreServiceImpl(PigMapper pigMapper,
                               PigStatusRecordMapper statusRecordMapper,
                               PigStateMachine stateMachine,
                               ApplicationEventPublisher eventPublisher,
                               BarnMapper barnMapper,
-                              PenMapper penMapper) {
+                              PenMapper penMapper,
+                              DictService dictService) {
         this.pigMapper = pigMapper;
         this.statusRecordMapper = statusRecordMapper;
         this.stateMachine = stateMachine;
         this.eventPublisher = eventPublisher;
         this.barnMapper = barnMapper;
         this.penMapper = penMapper;
+        this.dictService = dictService;
     }
 
     @Override
@@ -236,6 +243,50 @@ public class PigCoreServiceImpl implements IPigCoreService {
     }
 
     @Override
+    public PigIntroDetailVo queryIntroDetail(Long pigId) {
+        if (pigId == null) {
+            throw new ServiceException(I18nMessages.t("pig.id.required"));
+        }
+        Pig pig = pigMapper.selectById(pigId);
+        if (pig == null) {
+            throw new ServiceException(I18nMessages.t("pig.not_found", pigId));
+        }
+        PigIntroDetailVo vo = new PigIntroDetailVo();
+        vo.setPigId(pig.getId());
+        vo.setEarNo(pig.getEarNo());
+        vo.setPigSex(pig.getPigSex());
+        // 性别 label 硬映射（F→母猪 / M→公猪），pig_sex 是 F/M 与 sys_user_sex(0/1/2) 字典不通用
+        vo.setPigSexLabel("F".equals(pig.getPigSex()) ? "母猪" : "M".equals(pig.getPigSex()) ? "公猪" : null);
+        vo.setPigBreedCode(pig.getPigBreedCode());
+        vo.setPigBreedLabel(translateDictOrCode("djs_pig_breed", pig.getPigBreedCode()));
+        vo.setPigStrainCode(pig.getPigStrainCode());
+        // djs_pig_strain 字典 V1 缺 seed → 翻不到回落 code（BRD-FIX-MP-INTRO-001 raise）
+        vo.setPigStrainLabel(translateDictOrCode("djs_pig_strain", pig.getPigStrainCode()));
+        vo.setAgeDays(calcAgeDays(pig, LocalDate.now()));
+        // 当前位置：栋舍名 + 栏位名拼接（缺任一则降级，全缺为 null）
+        String barnName = pig.getBarnId() != null
+            ? Optional.ofNullable(barnMapper.selectById(pig.getBarnId())).map(Barn::getBarnName).orElse(null) : null;
+        String penName = pig.getPenId() != null
+            ? Optional.ofNullable(penMapper.selectById(pig.getPenId())).map(Pen::getPenName).orElse(null) : null;
+        vo.setBarnName(barnName);
+        vo.setPenName(penName);
+        if (StringUtils.isNotBlank(barnName) || StringUtils.isNotBlank(penName)) {
+            vo.setCurrentLocation((StringUtils.isNotBlank(barnName) ? barnName : "")
+                + (StringUtils.isNotBlank(penName) ? penName : ""));
+        }
+        return vo;
+    }
+
+    /** 字典翻译；翻不到（字典缺 seed 或 code 空）回落原始 code，避免 mp 端展示空白。 */
+    private String translateDictOrCode(String dictType, String code) {
+        if (StringUtils.isBlank(code)) {
+            return null;
+        }
+        String label = dictService.getDictLabel(dictType, code);
+        return StringUtils.isNotBlank(label) ? label : code;
+    }
+
+    @Override
     public TableDataInfo<PigVo> queryPage(PigQuery query, PageQuery pageQuery) {
         LambdaQueryWrapper<Pig> wrapper = buildWrapper(query);
         Page<PigVo> page = pigMapper.selectVoPage(pageQuery.build(), wrapper);
@@ -286,11 +337,22 @@ public class PigCoreServiceImpl implements IPigCoreService {
                                                 String statusFilter,
                                                 String sexFilter,
                                                 String pigTypeFilter,
+                                                String barnCode,
                                                 Integer limit) {
         int effectiveLimit = clampLimit(limit);
         // statusFilter CSV："HB,PZ" → IN ('HB','PZ')；如果显式含 END（如燎毛工序选已出栏猪），跳过下方 .ne(END) 默认排除
         List<String> statuses = parseStatusFilter(statusFilter);
         boolean callerWantsEnd = statuses.contains(PigLifecycle.END.name());
+
+        // 栋舍 chip 过滤（PigSelectPanel）：barnCode 是业务码，先 resolve 成 barnId 再过滤；
+        // 解析不到（无此栋舍）→ 返空，避免误返全量
+        Long barnIdFilter = null;
+        if (StringUtils.isNotBlank(barnCode)) {
+            barnIdFilter = resolveBarnIdByCode(barnCode);
+            if (barnIdFilter == null) {
+                return Collections.emptyList();
+            }
+        }
 
         LambdaQueryWrapper<Pig> w = new LambdaQueryWrapper<Pig>()
             // 默认排除 END 猪只——给事件录入 picker 用（配种 / 转栏等 END 不能再触发的事件）；
@@ -299,6 +361,7 @@ public class PigCoreServiceImpl implements IPigCoreService {
             .like(StringUtils.isNotBlank(earNoKeyword), Pig::getEarNo, earNoKeyword)
             .eq(StringUtils.isNotBlank(sexFilter), Pig::getPigSex, sexFilter)
             .eq(StringUtils.isNotBlank(pigTypeFilter), Pig::getPigType, pigTypeFilter)
+            .eq(barnIdFilter != null, Pig::getBarnId, barnIdFilter)
             .orderByDesc(Pig::getId)
             .last("LIMIT " + effectiveLimit);
 
@@ -321,6 +384,8 @@ public class PigCoreServiceImpl implements IPigCoreService {
             : penMapper.selectBatchIds(penIds).stream()
                 .collect(Collectors.toMap(Pen::getId, Pen::getPenCode, (a, b) -> a));
 
+        LocalDate today = LocalDate.now();
+        LocalDateTime now = LocalDateTime.now();
         List<PigSearchVo> result = new ArrayList<>(pigs.size());
         for (Pig p : pigs) {
             PigSearchVo vo = new PigSearchVo();
@@ -333,6 +398,10 @@ public class PigCoreServiceImpl implements IPigCoreService {
             if (PigLifecycle.END.name().equals(p.getCurrentStatus())) {
                 vo.setEndReason(p.getEndReason());
             }
+            // BRD-FIX-MP-PIGSELECT-001：卡片量化字段。缺基准日期 → 该字段 null，mp 卡片该格不渲染
+            vo.setAgeDays(calcAgeDays(p, today));
+            vo.setParity(p.getParity());
+            vo.setLastEventDays(calcDaysSince(p.getStatusStartedAt(), now));
             if (p.getBarnId() != null) {
                 vo.setBarnCode(barnCodeMap.get(p.getBarnId()));
             }
@@ -342,6 +411,81 @@ public class PigCoreServiceImpl implements IPigCoreService {
             result.add(vo);
         }
         return result;
+    }
+
+    @Override
+    public List<PigBarnCountVo> countByBarn(String statusFilter, String sexFilter, String pigTypeFilter) {
+        List<String> statuses = parseStatusFilter(statusFilter);
+        boolean callerWantsEnd = statuses.contains(PigLifecycle.END.name());
+
+        LambdaQueryWrapper<Pig> w = new LambdaQueryWrapper<Pig>()
+            .ne(!callerWantsEnd, Pig::getCurrentStatus, PigLifecycle.END.name())
+            .eq(StringUtils.isNotBlank(sexFilter), Pig::getPigSex, sexFilter)
+            .eq(StringUtils.isNotBlank(pigTypeFilter), Pig::getPigType, pigTypeFilter)
+            // 无栋舍归属的猪只不计入任何 chip
+            .isNotNull(Pig::getBarnId);
+        if (!statuses.isEmpty()) {
+            w.in(Pig::getCurrentStatus, statuses);
+        }
+
+        List<Pig> pigs = pigMapper.selectList(w);
+        if (pigs.isEmpty()) {
+            return Collections.emptyList();
+        }
+
+        // barnId → count
+        Map<Long, Long> countByBarnId = pigs.stream()
+            .collect(Collectors.groupingBy(Pig::getBarnId, Collectors.counting()));
+
+        // enrich barnCode/barnName（一次 batch 查）
+        Map<Long, Barn> barnMap = barnMapper.selectBatchIds(countByBarnId.keySet()).stream()
+            .collect(Collectors.toMap(Barn::getId, Function.identity(), (a, b) -> a));
+
+        return countByBarnId.entrySet().stream()
+            .map(e -> {
+                Barn barn = barnMap.get(e.getKey());
+                if (barn == null) {
+                    return null;
+                }
+                PigBarnCountVo vo = new PigBarnCountVo();
+                vo.setBarnCode(barn.getBarnCode());
+                vo.setBarnName(barn.getBarnName());
+                vo.setCount(e.getValue().intValue());
+                return vo;
+            })
+            .filter(Objects::nonNull)
+            .sorted(Comparator.comparing(PigBarnCountVo::getBarnCode, Comparator.nullsLast(Comparator.naturalOrder())))
+            .collect(Collectors.toList());
+    }
+
+    /** barnCode 业务码 → barnId；查不到返 null。 */
+    private Long resolveBarnIdByCode(String barnCode) {
+        Barn barn = barnMapper.selectOne(
+            new LambdaQueryWrapper<Barn>()
+                .eq(Barn::getBarnCode, barnCode)
+                .last("LIMIT 1"));
+        return barn == null ? null : barn.getId();
+    }
+
+    /**
+     * 日龄 = NOW - birthDate（缺 birthDate 时 fallback NOW - introduceDate）；两者均空 → null。
+     */
+    private Integer calcAgeDays(Pig p, LocalDate today) {
+        LocalDate base = p.getBirthDate() != null ? p.getBirthDate() : p.getIntroduceDate();
+        if (base == null) {
+            return null;
+        }
+        long days = java.time.temporal.ChronoUnit.DAYS.between(base, today);
+        return (int) Math.max(days, 0L);
+    }
+
+    /** 距某时刻天数 = NOW - since；since 为 null → null。 */
+    private Integer calcDaysSince(LocalDateTime since, LocalDateTime now) {
+        if (since == null) {
+            return null;
+        }
+        long days = Duration.between(since, now).toDays();
+        return (int) Math.max(days, 0L);
     }
 
     private int clampLimit(Integer raw) {

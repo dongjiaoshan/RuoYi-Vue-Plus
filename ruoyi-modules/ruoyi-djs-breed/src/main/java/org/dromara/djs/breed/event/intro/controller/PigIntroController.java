@@ -9,9 +9,12 @@ import org.dromara.common.log.enums.BusinessType;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.web.core.BaseController;
+import cn.dev33.satoken.annotation.SaCheckLogin;
 import org.dromara.djs.breed.event.intro.domain.bo.PigIntroBatchBo;
 import org.dromara.djs.breed.event.intro.domain.bo.PigIntroBo;
+import org.dromara.djs.breed.event.intro.domain.bo.PigIntroInternalBo;
 import org.dromara.djs.breed.event.intro.domain.query.PigIntroQuery;
+import org.dromara.djs.breed.event.intro.domain.vo.IntroRecordVo;
 import org.dromara.djs.breed.event.intro.domain.vo.PigIntroResultVo;
 import org.dromara.djs.breed.event.intro.domain.vo.PigIntroduceVo;
 import org.dromara.djs.breed.event.intro.service.IPigIntroService;
@@ -69,5 +72,31 @@ public class PigIntroController extends BaseController {
     @PostMapping("/intro/batch")
     public R<PigIntroResultVo> introduceBatch(@Validated @RequestBody PigIntroBatchBo bo) {
         return R.ok(introService.introduceBatch(bo));
+    }
+
+    /**
+     * 内部引种（BRD-FIX-MP-INTRO-001）：登记一头已存在的猪进引种台账，不新建猪。
+     *
+     * <p>mp 端「内部引种」segment 提交用——查耳号 auto-fill 后填引种日期/体重/人员提交。</p>
+     */
+    @SaCheckPermission("djs:breed:event:intro")
+    @Log(title = "内部引种登记", businessType = BusinessType.INSERT)
+    @RepeatSubmit
+    @PostMapping("/intro/internal")
+    public R<PigIntroResultVo> introduceInternal(@Validated @RequestBody PigIntroInternalBo bo) {
+        return R.ok(introService.introduceInternal(bo));
+    }
+
+    /**
+     * mp 端「引种记录」列表（BRD-FIX-MP-INTRO-001，原型 86 第 3 段）。
+     *
+     * <p>按 introduceDate DESC 返轻量 {@link IntroRecordVo}（含引种方式 label + 耳号 + 品种 label）。
+     * 权限走 mp 通用只读串 {@code djs:applet:pig:search}（mp role 默认含，复用免新增菜单 seed）。</p>
+     */
+    @SaCheckLogin
+    @SaCheckPermission("djs:applet:pig:search")
+    @GetMapping("/intro/applet-records")
+    public TableDataInfo<IntroRecordVo> appletRecords(PigIntroQuery query, PageQuery pageQuery) {
+        return introService.queryAppletRecords(query, pageQuery);
     }
 }

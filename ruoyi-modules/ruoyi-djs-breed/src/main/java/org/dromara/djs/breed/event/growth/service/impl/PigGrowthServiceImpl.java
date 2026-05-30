@@ -114,7 +114,39 @@ public class PigGrowthServiceImpl implements IPigGrowthService {
             .le(query.getEndDate() != null, PigGrowth::getMeasureDate, query.getEndDate())
             .orderByDesc(PigGrowth::getMeasureDate, PigGrowth::getId);
         Page<PigGrowthVo> page = growthMapper.selectVoPage(pageQuery.build(), w);
+        enrichAgeDays(page.getRecords());
         return TableDataInfo.build(page);
+    }
+
+    /**
+     * 列表 enrich 测量时日龄（mp timeline「42 日龄」用）。
+     *
+     * <p>日龄 = measureDate - pig.birthDate（缺时 fallback introduceDate）；批查去重 pigId 避免 N+1。
+     * 基准日期均空 → ageDays 留 null（mp 端该格不渲染）。</p>
+     */
+    private void enrichAgeDays(java.util.List<PigGrowthVo> rows) {
+        if (rows == null || rows.isEmpty()) {
+            return;
+        }
+        java.util.List<Long> pigIds = rows.stream()
+            .map(PigGrowthVo::getPigId).filter(Objects::nonNull).distinct().toList();
+        if (pigIds.isEmpty()) {
+            return;
+        }
+        java.util.Map<Long, Pig> pigById = new java.util.HashMap<>();
+        for (Pig p : pigMapper.selectByIds(pigIds)) {
+            pigById.put(p.getId(), p);
+        }
+        for (PigGrowthVo vo : rows) {
+            Pig p = vo.getPigId() == null ? null : pigById.get(vo.getPigId());
+            if (p == null || vo.getMeasureDate() == null) {
+                continue;
+            }
+            LocalDate base = p.getBirthDate() != null ? p.getBirthDate() : p.getIntroduceDate();
+            if (base != null) {
+                vo.setAgeDays((int) ChronoUnit.DAYS.between(base, vo.getMeasureDate()));
+            }
+        }
     }
 
     @Override

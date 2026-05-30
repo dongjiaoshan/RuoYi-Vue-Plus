@@ -52,6 +52,13 @@ public class PigGrowthVo implements Serializable {
     private String penName;
     private String remark;
 
+    /**
+     * 测量时日龄（天）= measureDate - pig.birthDate（缺时 fallback introduceDate）；均空 → null。
+     * <p>BRD-FIX-MP-EVENT-MISC-IA-001：mp 端"记录列表"timeline「42 日龄」（原型 15）；null → 该格不渲染。
+     * 仅 queryPage enrich（admin 列表 / mp 历史用），新增 / 详情接口不填。</p>
+     */
+    private Integer ageDays;
+
     @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")
     private LocalDateTime createTime;
 }
