@@ -95,7 +95,9 @@ class PigIntroServiceImplTest {
     void setup() {
         service = new PigIntroServiceImpl(
             introduceMapper, pigCoreService, bizCodeGenerator,
-            supplierMapper, barnMapper, penMapper, bizReferenceChecker);
+            supplierMapper, barnMapper, penMapper, bizReferenceChecker,
+            org.mockito.Mockito.mock(org.dromara.djs.breed.core.mapper.PigMapper.class),
+            org.mockito.Mockito.mock(org.dromara.common.core.service.DictService.class));
         // 通用 stubs
         when(bizCodeGenerator.generate(eq(BizCodeType.INTRO_NO), anyMap()))
             .thenReturn("INT202605260001");
