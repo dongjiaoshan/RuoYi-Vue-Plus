@@ -10,6 +10,7 @@ import java.io.Serial;
 import java.io.Serializable;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.util.List;
 
 /**
  * 断奶记录视图（BRD-EVENT-002 WEAN）。
@@ -39,4 +40,7 @@ public class PigWeaningVo implements Serializable {
 
     @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")
     private LocalDateTime createTime;
+
+    /** 逐头录重明细（BRD-FIX-MP-EVENT-BREED-IA-001；录入回显 / 记录回看用）。 */
+    private List<PigWeaningDetailVo> details;
 }

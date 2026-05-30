@@ -4,7 +4,9 @@ import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.breed.event.intro.domain.bo.PigIntroBatchBo;
 import org.dromara.djs.breed.event.intro.domain.bo.PigIntroBo;
+import org.dromara.djs.breed.event.intro.domain.bo.PigIntroInternalBo;
 import org.dromara.djs.breed.event.intro.domain.query.PigIntroQuery;
+import org.dromara.djs.breed.event.intro.domain.vo.IntroRecordVo;
 import org.dromara.djs.breed.event.intro.domain.vo.PigIntroResultVo;
 import org.dromara.djs.breed.event.intro.domain.vo.PigIntroduceVo;
 
@@ -45,6 +47,28 @@ public interface IPigIntroService {
      * @return 引种业务行 + 创建的猪只摘要（pigs.size==count）
      */
     PigIntroResultVo introduceBatch(PigIntroBatchBo bo);
+
+    /**
+     * 内部引种（BRD-FIX-MP-INTRO-001）：登记一头**已存在**的猪进引种台账，**不新建猪**。
+     *
+     * <p>只写一行 {@code t_farm_pig_introduce}（introduce_type=internal + pig_id 关联），
+     * 不调 {@code createPig}、不触发状态机、不改 pen.current_count（猪已在库里）。</p>
+     *
+     * @param bo 内部引种入参（pigId + introduceDate + introduceWeight + operator）
+     * @return 引种业务行 + 关联猪只摘要（pigs.size==1）
+     */
+    PigIntroResultVo introduceInternal(PigIntroInternalBo bo);
+
+    /**
+     * mp 端「引种记录」列表（BRD-FIX-MP-INTRO-001，原型 86 第 3 段）。
+     *
+     * <p>按 introduceDate DESC，返轻量 {@link IntroRecordVo}（含引种方式 label + 耳号 + 品种 label）。</p>
+     *
+     * @param query     过滤条件（与 admin list 共用）
+     * @param pageQuery 分页
+     * @return 分页结果
+     */
+    TableDataInfo<IntroRecordVo> queryAppletRecords(PigIntroQuery query, PageQuery pageQuery);
 
     /**
      * 分页查询引种历史（admin 只读列表）。

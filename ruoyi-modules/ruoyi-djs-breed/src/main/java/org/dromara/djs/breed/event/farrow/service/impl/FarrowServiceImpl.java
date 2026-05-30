@@ -21,6 +21,8 @@ import org.dromara.djs.breed.event.eartag.mapper.PigPigletnoMapper;
 import org.dromara.djs.breed.event.farrow.domain.PigFarrow;
 import org.dromara.djs.breed.event.farrow.domain.bo.FarrowBo;
 import org.dromara.djs.breed.event.farrow.domain.query.FarrowQuery;
+import org.dromara.djs.breed.event.farrow.domain.vo.FarrowBarnCountVo;
+import org.dromara.djs.breed.event.farrow.domain.vo.FarrowLitterVo;
 import org.dromara.djs.breed.event.farrow.domain.vo.FarrowPickerVo;
 import org.dromara.djs.breed.event.farrow.domain.vo.PigFarrowVo;
 import org.dromara.djs.breed.event.farrow.mapper.PigFarrowMapper;
@@ -32,13 +34,16 @@ import org.dromara.djs.breed.farm.mapper.PenMapper;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.TreeMap;
 
 /**
  * 分娩事件 Service 实现（BRD-EVENT-002 FARROW）。
@@ -108,6 +113,13 @@ public class FarrowServiceImpl implements IFarrowService {
         farrow.setWeakBorn(Optional.ofNullable(bo.getWeakBorn()).orElse(0));
         farrow.setMaleCount(bo.getMaleCount());
         farrow.setFemaleCount(bo.getFemaleCount());
+        // 原型 93 多分类仔猪字段（BRD-FIX-MP-EVENT-BREED-IA-001）：透传入库，缺省 0
+        farrow.setHealthyMale(Optional.ofNullable(bo.getHealthyMale()).orElse(0));
+        farrow.setHealthyFemale(Optional.ofNullable(bo.getHealthyFemale()).orElse(0));
+        farrow.setWeakRaisedMale(Optional.ofNullable(bo.getWeakRaisedMale()).orElse(0));
+        farrow.setWeakRaisedFemale(Optional.ofNullable(bo.getWeakRaisedFemale()).orElse(0));
+        farrow.setWeakCulled(Optional.ofNullable(bo.getWeakCulled()).orElse(0));
+        farrow.setDeformedBorn(Optional.ofNullable(bo.getDeformedBorn()).orElse(0));
         farrow.setTotalWeight(bo.getTotalWeight());
         farrow.setAvgWeight(bo.getAvgWeight());
         // 胎次：用母猪当前 parity + 1（状态机 applyEventSideEffects 也会同步 +1，两端一致）
@@ -237,6 +249,74 @@ public class FarrowServiceImpl implements IFarrowService {
         }
     }
 
+    @Override
+    public List<FarrowLitterVo> queryPendingLitters(String motherEarNo, String barnName) {
+        // 拉候选窝（可选母猪 / 栋舍过滤）；多拉一些后内存按 remain > 0 过滤
+        LambdaQueryWrapper<PigFarrow> w = Wrappers.<PigFarrow>lambdaQuery()
+            .eq(StringUtils.isNotBlank(motherEarNo), PigFarrow::getEarNo, motherEarNo)
+            .eq(StringUtils.isNotBlank(barnName), PigFarrow::getBarnName, barnName)
+            .orderByDesc(PigFarrow::getFarrowDate, PigFarrow::getId)
+            .last("LIMIT 200");
+        List<PigFarrowVo> rows = farrowMapper.selectVoList(w);
+        if (rows.isEmpty()) {
+            return List.of();
+        }
+        enrichTaggedCounts(rows);
+        LocalDate today = LocalDate.now();
+        List<FarrowLitterVo> result = new ArrayList<>();
+        for (PigFarrowVo r : rows) {
+            int remain = Optional.ofNullable(r.getRemaining()).orElse(0);
+            if (remain <= 0) {
+                continue;
+            }
+            FarrowLitterVo vo = new FarrowLitterVo();
+            vo.setId(r.getId());
+            vo.setMotherPigId(r.getPigId());
+            vo.setMotherEarNo(r.getEarNo());
+            vo.setFarrowDate(r.getFarrowDate());
+            vo.setParity(r.getParity());
+            vo.setLiveBorn(r.getLiveBorn());
+            vo.setTaggedEartag(Optional.ofNullable(r.getTagged()).orElse(0));
+            vo.setRemainEartag(remain);
+            vo.setMaleCount(r.getMaleCount());
+            vo.setFemaleCount(r.getFemaleCount());
+            vo.setBarnName(r.getBarnName());
+            vo.setPenName(r.getPenName());
+            // 日龄 = NOW - farrowDate（仔猪日龄）；farrowDate 缺时 null（mp 端该格不渲染）
+            if (r.getFarrowDate() != null) {
+                vo.setAgeDays((int) ChronoUnit.DAYS.between(r.getFarrowDate().toLocalDate(), today));
+            }
+            result.add(vo);
+            if (result.size() >= 60) {
+                break;
+            }
+        }
+        return result;
+    }
+
+    @Override
+    public List<FarrowBarnCountVo> countPendingLittersByBarn() {
+        // 全量待打标窝（不带栋舍过滤），按 barn_name 内存聚合
+        List<FarrowLitterVo> litters = queryPendingLitters(null, null);
+        Map<String, Integer> byBarn = new TreeMap<>();
+        for (FarrowLitterVo l : litters) {
+            String barn = l.getBarnName();
+            if (StringUtils.isBlank(barn)) {
+                // barn_name 为空的窝归"未分配"，不进 chip
+                continue;
+            }
+            byBarn.merge(barn, 1, Integer::sum);
+        }
+        List<FarrowBarnCountVo> chips = new ArrayList<>(byBarn.size());
+        for (Map.Entry<String, Integer> e : byBarn.entrySet()) {
+            FarrowBarnCountVo c = new FarrowBarnCountVo();
+            c.setBarnName(e.getKey());
+            c.setCount(e.getValue());
+            chips.add(c);
+        }
+        return chips;
+    }
+
     /** 业务一致性校验（结构校验已走 JSR-303）。 */
     private void validate(FarrowBo bo) {
         int total = Optional.ofNullable(bo.getTotalBorn()).orElse(0);
@@ -276,6 +356,12 @@ public class FarrowServiceImpl implements IFarrowService {
         v.setWeakBorn(e.getWeakBorn());
         v.setMaleCount(e.getMaleCount());
         v.setFemaleCount(e.getFemaleCount());
+        v.setHealthyMale(e.getHealthyMale());
+        v.setHealthyFemale(e.getHealthyFemale());
+        v.setWeakRaisedMale(e.getWeakRaisedMale());
+        v.setWeakRaisedFemale(e.getWeakRaisedFemale());
+        v.setWeakCulled(e.getWeakCulled());
+        v.setDeformedBorn(e.getDeformedBorn());
         v.setTotalWeight(e.getTotalWeight());
         v.setAvgWeight(e.getAvgWeight());
         v.setParity(e.getParity());

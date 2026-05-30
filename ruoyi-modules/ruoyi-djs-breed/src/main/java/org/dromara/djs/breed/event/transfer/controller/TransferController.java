@@ -9,6 +9,7 @@ import org.dromara.common.log.enums.BusinessType;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.web.core.BaseController;
+import org.dromara.djs.breed.event.transfer.domain.bo.TransferBatchBo;
 import org.dromara.djs.breed.event.transfer.domain.bo.TransferBo;
 import org.dromara.djs.breed.event.transfer.domain.query.TransferQuery;
 import org.dromara.djs.breed.event.transfer.domain.vo.PigTransferVo;
@@ -19,6 +20,8 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+
+import java.util.List;
 
 /**
  * 转移事件 Controller（BRD-EVENT-004 TRANSFER）。
@@ -40,6 +43,18 @@ public class TransferController extends BaseController {
     @PostMapping
     public R<PigTransferVo> record(@Validated @RequestBody TransferBo bo) {
         return R.ok(transferService.recordTransfer(bo));
+    }
+
+    /**
+     * 批量转移（BRD-FIX-MP-EVENT-LEAVE-IA-001）。原型 98 多选批量：N 头猪 → 同一目标位置。
+     * 逐头复用单只 recordTransfer，每只都触发完整 side effect，整批同一事务原子提交。
+     */
+    @SaCheckPermission("djs:breed:event:transfer")
+    @Log(title = "批量转移录入", businessType = BusinessType.INSERT)
+    @RepeatSubmit
+    @PostMapping("/batch")
+    public R<List<PigTransferVo>> recordBatch(@Validated @RequestBody TransferBatchBo bo) {
+        return R.ok(transferService.recordTransferBatch(bo));
     }
 
     @SaCheckPermission("djs:breed:event:transfer:list")

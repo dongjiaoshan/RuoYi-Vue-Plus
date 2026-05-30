@@ -109,7 +109,7 @@ class PigSearchServiceTest {
         pen2.setPenCode("P02");
         when(penMapper.selectBatchIds(anyCollection())).thenReturn(List.of(pen1, pen2));
 
-        List<PigSearchVo> result = service.searchByEarKeyword("001", "HB,PZ", null, null, 20);
+        List<PigSearchVo> result = service.searchByEarKeyword("001", "HB,PZ", null, null, null, 20);
         assertThat(result).hasSize(2);
         assertThat(result.get(0).getEarNo()).isEqualTo("260520-001");
         assertThat(result.get(0).getBarnCode()).isEqualTo("B01");
@@ -122,7 +122,7 @@ class PigSearchServiceTest {
     void statusFilter_silently_drops_invalid_codes() {
         // 我们只验证 service 不抛异常 + mapper 被调一次；语义解析在 parseStatusFilter 内部 + wrapper 由 mybatis-plus 构建
         when(pigMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(Collections.emptyList());
-        List<PigSearchVo> result = service.searchByEarKeyword(null, "XX,HB,YY", null, null, 20);
+        List<PigSearchVo> result = service.searchByEarKeyword(null, "XX,HB,YY", null, null, null, 20);
         assertThat(result).isEmpty();
     }
 
@@ -132,7 +132,7 @@ class PigSearchServiceTest {
         Pig boar = mkPig(10L, "B-001", "BOAR_ACTIVE", "M", "boar", null, null);
         when(pigMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(List.of(boar));
 
-        List<PigSearchVo> result = service.searchByEarKeyword(null, null, "M", "boar", 20);
+        List<PigSearchVo> result = service.searchByEarKeyword(null, null, "M", "boar", null, 20);
         assertThat(result).hasSize(1);
         assertThat(result.get(0).getPigSex()).isEqualTo("M");
         assertThat(result.get(0).getPigType()).isEqualTo("boar");
@@ -144,7 +144,7 @@ class PigSearchServiceTest {
     @DisplayName("终态 END 猪只默认不返——statusFilter 未声明含 END 时 wrapper 加 .ne(END)")
     void end_pigs_excluded_by_default() {
         when(pigMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(Collections.emptyList());
-        List<PigSearchVo> result = service.searchByEarKeyword(null, null, null, null, 20);
+        List<PigSearchVo> result = service.searchByEarKeyword(null, null, null, null, null, 20);
         assertThat(result).isEmpty();
     }
 
@@ -157,7 +157,7 @@ class PigSearchServiceTest {
         endPig.setCurrentStatus(PigLifecycle.END.name());
         when(pigMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(List.of(endPig));
 
-        List<PigSearchVo> result = service.searchByEarKeyword(null, "END", null, null, 20);
+        List<PigSearchVo> result = service.searchByEarKeyword(null, "END", null, null, null, 20);
 
         assertThat(result).hasSize(1);
         assertThat(result.get(0).getCurrentStatus()).isEqualTo(PigLifecycle.END.name());
@@ -169,10 +169,10 @@ class PigSearchServiceTest {
         when(pigMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(Collections.emptyList());
 
         // 调 4 次不同 limit，捕获 mapper 收到的 wrapper
-        service.searchByEarKeyword(null, null, null, null, null);
-        service.searchByEarKeyword(null, null, null, null, -5);
-        service.searchByEarKeyword(null, null, null, null, 999);
-        service.searchByEarKeyword(null, null, null, null, 30);
+        service.searchByEarKeyword(null, null, null, null, null, null);
+        service.searchByEarKeyword(null, null, null, null, null, -5);
+        service.searchByEarKeyword(null, null, null, null, null, 999);
+        service.searchByEarKeyword(null, null, null, null, null, 30);
 
         ArgumentCaptor<LambdaQueryWrapper<Pig>> w = ArgumentCaptor.forClass(LambdaQueryWrapper.class);
         org.mockito.Mockito.verify(pigMapper, org.mockito.Mockito.times(4)).selectList(w.capture());
@@ -208,10 +208,126 @@ class PigSearchServiceTest {
     void empty_skips_enrich() {
         when(pigMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(Collections.emptyList());
 
-        List<PigSearchVo> result = service.searchByEarKeyword("nomatch", null, null, null, 20);
+        List<PigSearchVo> result = service.searchByEarKeyword("nomatch", null, null, null, null, 20);
         assertThat(result).isEmpty();
         // 不应触发 barn / pen 查询
         org.mockito.Mockito.verify(barnMapper, org.mockito.Mockito.never()).selectBatchIds(anyCollection());
         org.mockito.Mockito.verify(penMapper, org.mockito.Mockito.never()).selectBatchIds(anyCollection());
+    }
+
+    // ===== BRD-FIX-MP-PIGSELECT-001：卡片量化字段 + barnCode filter + barn-count 聚合 =====
+
+    @Test
+    @DisplayName("量化字段：birthDate → ageDays；parity 透传；statusStartedAt → lastEventDays")
+    void quantitative_fields_populated() {
+        Pig p = mkPig(1L, "260101-001", "FM", "F", "sow", null, null);
+        p.setBirthDate(java.time.LocalDate.now().minusDays(248));
+        p.setParity(3);
+        p.setStatusStartedAt(java.time.LocalDateTime.now().minusDays(13).minusHours(2));
+        when(pigMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(List.of(p));
+
+        PigSearchVo vo = service.searchByEarKeyword(null, null, null, null, null, 20).get(0);
+        assertThat(vo.getAgeDays()).isEqualTo(248);
+        assertThat(vo.getParity()).isEqualTo(3);
+        assertThat(vo.getLastEventDays()).isEqualTo(13);
+    }
+
+    @Test
+    @DisplayName("量化字段：birthDate 缺位 → fallback introduceDate 算 ageDays")
+    void ageDays_fallback_introduceDate() {
+        Pig p = mkPig(1L, "260101-002", "HB", "F", "sow", null, null);
+        p.setBirthDate(null);
+        p.setIntroduceDate(java.time.LocalDate.now().minusDays(100));
+        when(pigMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(List.of(p));
+
+        PigSearchVo vo = service.searchByEarKeyword(null, null, null, null, null, 20).get(0);
+        assertThat(vo.getAgeDays()).isEqualTo(100);
+    }
+
+    @Test
+    @DisplayName("量化字段：birthDate + introduceDate 均空 → ageDays/lastEventDays 为 null（mp 卡片该格不渲染）")
+    void quantitative_fields_null_when_no_base() {
+        Pig p = mkPig(1L, "260101-003", "HB", "F", "sow", null, null);
+        p.setBirthDate(null);
+        p.setIntroduceDate(null);
+        p.setStatusStartedAt(null);
+        p.setParity(null);
+        when(pigMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(List.of(p));
+
+        PigSearchVo vo = service.searchByEarKeyword(null, null, null, null, null, 20).get(0);
+        assertThat(vo.getAgeDays()).isNull();
+        assertThat(vo.getLastEventDays()).isNull();
+        assertThat(vo.getParity()).isNull();
+    }
+
+    @Test
+    @DisplayName("barnCode filter：resolve 到 barnId → 用 barnId 过滤；查询正常返结果")
+    void barnCode_filter_resolves_barnId() {
+        Barn barn = new Barn();
+        barn.setId(11L);
+        barn.setBarnCode("B01");
+        // resolveBarnIdByCode 走 selectOne
+        when(barnMapper.selectOne(any(LambdaQueryWrapper.class))).thenReturn(barn);
+
+        Pig p = mkPig(1L, "260101-004", "PZ", "F", "sow", 11L, null);
+        when(pigMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(List.of(p));
+        when(barnMapper.selectBatchIds(anyCollection())).thenReturn(List.of(barn));
+
+        List<PigSearchVo> result = service.searchByEarKeyword(null, null, null, null, "B01", 20);
+        assertThat(result).hasSize(1);
+        assertThat(result.get(0).getBarnCode()).isEqualTo("B01");
+    }
+
+    @Test
+    @DisplayName("barnCode filter：barnCode 不存在 → 直接返 emptyList，不查 pig")
+    void barnCode_filter_unknown_returns_empty() {
+        when(barnMapper.selectOne(any(LambdaQueryWrapper.class))).thenReturn(null);
+
+        List<PigSearchVo> result = service.searchByEarKeyword(null, null, null, null, "NOPE", 20);
+        assertThat(result).isEmpty();
+        org.mockito.Mockito.verify(pigMapper, org.mockito.Mockito.never()).selectList(any(LambdaQueryWrapper.class));
+    }
+
+    @Test
+    @DisplayName("countByBarn：按 barnId 分组 count + enrich barnName/barnCode + 按 barnCode 升序")
+    void countByBarn_groups_and_enriches() {
+        // 5 头：barn11 × 3, barn12 × 2
+        Pig a = mkPig(1L, "a", "PZ", "F", "sow", 11L, null);
+        Pig b = mkPig(2L, "b", "PZ", "F", "sow", 11L, null);
+        Pig c = mkPig(3L, "c", "PZ", "F", "sow", 11L, null);
+        Pig d = mkPig(4L, "d", "FM", "F", "sow", 12L, null);
+        Pig e = mkPig(5L, "e", "FM", "F", "sow", 12L, null);
+        when(pigMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(Arrays.asList(a, b, c, d, e));
+
+        Barn b11 = new Barn();
+        b11.setId(11L);
+        b11.setBarnCode("B01");
+        b11.setBarnName("配怀1栋");
+        Barn b12 = new Barn();
+        b12.setId(12L);
+        b12.setBarnCode("B02");
+        b12.setBarnName("配怀2栋");
+        when(barnMapper.selectBatchIds(anyCollection())).thenReturn(Arrays.asList(b11, b12));
+
+        List<org.dromara.djs.breed.core.domain.vo.PigBarnCountVo> result =
+            service.countByBarn(null, "F", "sow");
+        assertThat(result).hasSize(2);
+        // 升序：B01 在前
+        assertThat(result.get(0).getBarnCode()).isEqualTo("B01");
+        assertThat(result.get(0).getBarnName()).isEqualTo("配怀1栋");
+        assertThat(result.get(0).getCount()).isEqualTo(3);
+        assertThat(result.get(1).getBarnCode()).isEqualTo("B02");
+        assertThat(result.get(1).getCount()).isEqualTo(2);
+    }
+
+    @Test
+    @DisplayName("countByBarn：mapper 返空 → emptyList，不查 barn")
+    void countByBarn_empty() {
+        when(pigMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(Collections.emptyList());
+
+        List<org.dromara.djs.breed.core.domain.vo.PigBarnCountVo> result =
+            service.countByBarn(null, null, null);
+        assertThat(result).isEmpty();
+        org.mockito.Mockito.verify(barnMapper, org.mockito.Mockito.never()).selectBatchIds(anyCollection());
     }
 }

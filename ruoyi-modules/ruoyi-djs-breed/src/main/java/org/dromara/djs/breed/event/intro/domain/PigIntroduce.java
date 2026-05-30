@@ -70,6 +70,15 @@ public class PigIntroduce extends TenantEntity {
     /** 目标栏位 ID。 */
     private Long penId;
 
+    /** 内部引种关联的已存在猪只 ID（外部引种为 NULL，BRD-FIX-MP-INTRO-001）。 */
+    private Long pigId;
+
+    /** 引种人员（原型 86，V1 自由文本，BRD-FIX-MP-INTRO-001）。 */
+    private String operator;
+
+    /** 引种体重 kg（内部引种登记，原型 86，BRD-FIX-MP-INTRO-001）。 */
+    private java.math.BigDecimal introduceWeight;
+
     /** 备注。 */
     private String remark;
 

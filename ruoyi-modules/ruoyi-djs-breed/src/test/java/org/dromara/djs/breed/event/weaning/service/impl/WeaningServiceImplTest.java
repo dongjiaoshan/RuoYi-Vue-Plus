@@ -10,7 +10,10 @@ import org.dromara.djs.breed.core.service.IPigCoreService;
 import org.dromara.djs.breed.event.farrow.domain.PigFarrow;
 import org.dromara.djs.breed.event.farrow.mapper.PigFarrowMapper;
 import org.dromara.djs.breed.event.weaning.domain.PigWeaning;
+import org.dromara.djs.breed.event.weaning.domain.PigWeaningDetail;
 import org.dromara.djs.breed.event.weaning.domain.bo.WeaningBo;
+import org.dromara.djs.breed.event.weaning.domain.bo.WeaningDetailBo;
+import org.dromara.djs.breed.event.weaning.mapper.PigWeaningDetailMapper;
 import org.dromara.djs.breed.event.weaning.mapper.PigWeaningMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -25,10 +28,12 @@ import org.mockito.quality.Strictness;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -60,6 +65,8 @@ class WeaningServiceImplTest {
     @Mock
     private PigWeaningMapper weaningMapper;
     @Mock
+    private PigWeaningDetailMapper weaningDetailMapper;
+    @Mock
     private PigMapper pigMapper;
     @Mock
     private PigFarrowMapper farrowMapper;
@@ -70,7 +77,7 @@ class WeaningServiceImplTest {
 
     @BeforeEach
     void setup() {
-        service = new WeaningServiceImpl(weaningMapper, pigMapper, farrowMapper, pigCoreService);
+        service = new WeaningServiceImpl(weaningMapper, weaningDetailMapper, pigMapper, farrowMapper, pigCoreService);
     }
 
     private Pig mkSow(Long id, PigLifecycle status) {
@@ -101,6 +108,14 @@ class WeaningServiceImplTest {
         return bo;
     }
 
+    private WeaningDetailBo mkDetail(Integer seq, String earNo, String weight) {
+        WeaningDetailBo d = new WeaningDetailBo();
+        d.setPigletSeq(seq);
+        d.setEarNo(earNo);
+        d.setWeight(new BigDecimal(weight));
+        return d;
+    }
+
     @Test
     @DisplayName("happy: FM WEAN → INSERT + fireEvent(WEAN) + 自动算 avg")
     void happyPath_autoAvg() {
@@ -124,6 +139,53 @@ class WeaningServiceImplTest {
         ArgumentCaptor<PigEventBo> ev = ArgumentCaptor.forClass(PigEventBo.class);
         verify(pigCoreService, times(1)).fireEvent(ev.capture());
         assertThat(ev.getValue().getEventType()).isEqualTo(PigStatusEvent.WEAN);
+    }
+
+    @Test
+    @DisplayName("per-piglet: 逐头录重明细同事务批量 INSERT，piglet_seq 缺省按顺序补 1..N")
+    void perPiglet_details_batchInserted() {
+        Pig pig = mkSow(310L, PigLifecycle.FM);
+        when(pigMapper.selectById(310L)).thenReturn(pig);
+        PigFarrow farrow = mkFarrow(510L, 310L, 10, 7777L);
+        when(farrowMapper.selectById(510L)).thenReturn(farrow);
+
+        WeaningBo bo = mkBo(310L, 510L, 3, new BigDecimal("24.000"));
+        bo.setDetails(List.of(
+            mkDetail(null, "P-001", "8.000"),
+            mkDetail(null, "P-002", "8.000"),
+            mkDetail(null, null, "8.000")
+        ));
+        var vo = service.recordWeaning(bo);
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<PigWeaningDetail>> cap = ArgumentCaptor.forClass(List.class);
+        verify(weaningDetailMapper, times(1)).insertBatch(cap.capture());
+        List<PigWeaningDetail> rows = cap.getValue();
+        assertThat(rows).hasSize(3);
+        // piglet_seq 缺省 → 按下发顺序补 1/2/3
+        assertThat(rows).extracting(PigWeaningDetail::getPigletSeq).containsExactly(1, 2, 3);
+        assertThat(rows).extracting(PigWeaningDetail::getWeight)
+            .allMatch(w -> w.compareTo(new BigDecimal("8.000")) == 0);
+        // 第 3 头无耳号允许
+        assertThat(rows.get(2).getEarNo()).isNull();
+        // VO 回带明细
+        assertThat(vo.getDetails()).hasSize(3);
+    }
+
+    @Test
+    @DisplayName("per-piglet: details 缺省（汇总录入）→ 不调 detailMapper（向后兼容）")
+    void perPiglet_emptyDetails_skipsDetailMapper() {
+        Pig pig = mkSow(311L, PigLifecycle.FM);
+        when(pigMapper.selectById(311L)).thenReturn(pig);
+        PigFarrow farrow = mkFarrow(511L, 311L, 10, null);
+        when(farrowMapper.selectById(511L)).thenReturn(farrow);
+
+        WeaningBo bo = mkBo(311L, 511L, 5, new BigDecimal("40.000")); // 无 details
+        var vo = service.recordWeaning(bo);
+
+        verify(weaningMapper, times(1)).insert(any(PigWeaning.class));
+        verify(weaningDetailMapper, never()).insertBatch(anyList());
+        assertThat(vo.getDetails()).isEmpty();
     }
 
     @Test

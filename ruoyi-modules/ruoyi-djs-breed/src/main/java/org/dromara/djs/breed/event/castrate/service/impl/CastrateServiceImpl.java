@@ -74,6 +74,7 @@ public class CastrateServiceImpl implements ICastrateService {
         entity.setPigId(pig.getId());
         entity.setEarNo(pig.getEarNo());
         entity.setCastrateDate(bo.getCastrateDate());
+        entity.setCastrater(StringUtils.isNotBlank(bo.getCastrater()) ? bo.getCastrater().trim() : null);
         entity.setRemark(bo.getRemark());
         entity.setOperatorId(LoginHelper.getUserId());
         entity.setDelFlag("0");
@@ -111,6 +112,7 @@ public class CastrateServiceImpl implements ICastrateService {
         v.setEarNo(e.getEarNo());
         v.setCastrateDate(e.getCastrateDate());
         v.setOperatorId(e.getOperatorId());
+        v.setCastrater(e.getCastrater());
         v.setRemark(e.getRemark());
         return v;
     }

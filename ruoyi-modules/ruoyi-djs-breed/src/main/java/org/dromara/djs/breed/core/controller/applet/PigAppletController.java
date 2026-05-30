@@ -4,6 +4,8 @@ import cn.dev33.satoken.annotation.SaCheckLogin;
 import cn.dev33.satoken.annotation.SaCheckPermission;
 import lombok.RequiredArgsConstructor;
 import org.dromara.common.core.domain.R;
+import org.dromara.djs.breed.core.domain.vo.PigBarnCountVo;
+import org.dromara.djs.breed.core.domain.vo.PigIntroDetailVo;
 import org.dromara.djs.breed.core.domain.vo.PigSearchVo;
 import org.dromara.djs.breed.core.service.IPigCoreService;
 import org.springframework.validation.annotation.Validated;
@@ -23,8 +25,10 @@ import java.util.List;
  *
  * <h2>端点</h2>
  * <ul>
- *   <li>{@code GET /applet/pig/search} — 耳号关键字 + 状态/性别/类型过滤的轻量搜索，给 mp 端 PigPicker
- *       组件用（让 D6 12 个事件表单从"手输 earNo 兜底"升级到 picker 选猪）。</li>
+ *   <li>{@code GET /applet/pig/search} — 耳号关键字 + 状态/性别/类型/栋舍过滤的轻量搜索，给 mp 端
+ *       PigPicker / PigSelectPanel 组件用（让事件表单从"手输 earNo 兜底"升级到 picker 选猪）。</li>
+ *   <li>{@code GET /applet/pig/barn-count} — 栋舍 × 头数聚合，给 PigSelectPanel 顶部「栋舍 chip」
+ *       快筛行用（BRD-FIX-MP-PIGSELECT-001）。</li>
  * </ul>
  *
  * <h2>鉴权</h2>
@@ -53,6 +57,7 @@ public class PigAppletController {
      * @param statusFilter  状态 CSV（如 {@code "HB,DN,LC,KH,FQ"} 给配种 picker / {@code "END"} 给燎毛 picker）
      * @param sexFilter     {@code "M"} / {@code "F"}；castrate 表单调用时强制 {@code "M"}
      * @param pigTypeFilter {@code "sow"/"boar"/"piglet"/"fattening"}
+     * @param barnCode      栋舍编码精确过滤（PigSelectPanel 栋舍 chip 点击后传；空 → 不限栋舍）
      * @param limit         1-100，默认 20
      */
     @SaCheckLogin
@@ -63,8 +68,47 @@ public class PigAppletController {
         @RequestParam(required = false) String statusFilter,
         @RequestParam(required = false) String sexFilter,
         @RequestParam(required = false) String pigTypeFilter,
+        @RequestParam(required = false) String barnCode,
         @RequestParam(required = false, defaultValue = "20") Integer limit
     ) {
-        return R.ok(pigCoreService.searchByEarKeyword(earNoKeyword, statusFilter, sexFilter, pigTypeFilter, limit));
+        return R.ok(pigCoreService.searchByEarKeyword(earNoKeyword, statusFilter, sexFilter, pigTypeFilter, barnCode, limit));
+    }
+
+    /**
+     * 栋舍 × 头数聚合（PigSelectPanel 顶部栋舍 chip 快筛用，BRD-FIX-MP-PIGSELECT-001）。
+     *
+     * <p>语义：在 statusFilter（默认排除 END） + sexFilter + pigTypeFilter 过滤维度下，
+     * 按 barn_id 分组 count，enrich barnCode/barnName 返回。无栋舍归属（barn_id 为 null）的
+     * 猪只不计入；count 为 0 的栋舍不返回；按 barnCode 升序。</p>
+     *
+     * @param statusFilter  状态 CSV（与 search 同语义；含 END 放行终态）
+     * @param sexFilter     {@code "M"} / {@code "F"}
+     * @param pigTypeFilter {@code "sow"/"boar"/"piglet"/"fattening"}
+     */
+    @SaCheckLogin
+    @SaCheckPermission("djs:applet:pig:search")
+    @GetMapping("/barn-count")
+    public R<List<PigBarnCountVo>> barnCount(
+        @RequestParam(required = false) String statusFilter,
+        @RequestParam(required = false) String sexFilter,
+        @RequestParam(required = false) String pigTypeFilter
+    ) {
+        return R.ok(pigCoreService.countByBarn(statusFilter, sexFilter, pigTypeFilter));
+    }
+
+    /**
+     * 内部引种 auto-fill 单头查猪明细（BRD-FIX-MP-INTRO-001）。
+     *
+     * <p>mp 端「内部引种」segment 查耳号选中后，用拿到的 pigId 调本端点带出只读「猪只信息」卡：
+     * 性别 label / 品种 label / 品系 label / 日龄 / 当前位置（栋舍名+栏位名）。所有 label 已在
+     * service 层翻好，mp 端直接展示，不显原始 code。</p>
+     *
+     * @param pigId 猪只 ID（mp 端 picker 选中后回填，snowflake string，后端反序列化为 Long）
+     */
+    @SaCheckLogin
+    @SaCheckPermission("djs:applet:pig:search")
+    @GetMapping("/intro-detail")
+    public R<PigIntroDetailVo> introDetail(@RequestParam Long pigId) {
+        return R.ok(pigCoreService.queryIntroDetail(pigId));
     }
 }

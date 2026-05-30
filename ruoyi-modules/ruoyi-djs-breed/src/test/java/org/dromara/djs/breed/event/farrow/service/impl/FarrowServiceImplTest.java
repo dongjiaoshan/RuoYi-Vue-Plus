@@ -125,6 +125,50 @@ class FarrowServiceImplTest {
     }
 
     @Test
+    @DisplayName("multiclass: 原型 93 多分类字段（健仔公母/弱仔留养公母/弱仔处死/畸形）透传落库")
+    void multiclass_fields_persisted() {
+        Pig pig = mkSow(210L, PigLifecycle.PH, 7777L);
+        when(pigMapper.selectById(210L)).thenReturn(pig);
+
+        FarrowBo bo = mkBo(210L, 7777L, 21, 20);
+        bo.setHealthyMale(10);
+        bo.setHealthyFemale(9);
+        bo.setWeakRaisedMale(0);
+        bo.setWeakRaisedFemale(1);
+        bo.setWeakCulled(0);
+        bo.setDeformedBorn(0);
+        service.recordFarrow(bo);
+
+        ArgumentCaptor<PigFarrow> cap = ArgumentCaptor.forClass(PigFarrow.class);
+        verify(farrowMapper, times(1)).insert(cap.capture());
+        assertThat(cap.getValue().getHealthyMale()).isEqualTo(10);
+        assertThat(cap.getValue().getHealthyFemale()).isEqualTo(9);
+        assertThat(cap.getValue().getWeakRaisedMale()).isEqualTo(0);
+        assertThat(cap.getValue().getWeakRaisedFemale()).isEqualTo(1);
+        assertThat(cap.getValue().getWeakCulled()).isEqualTo(0);
+        assertThat(cap.getValue().getDeformedBorn()).isEqualTo(0);
+    }
+
+    @Test
+    @DisplayName("multiclass: 多分类字段缺省 → 落库回落 0（不 NPE）")
+    void multiclass_fields_default_zero() {
+        Pig pig = mkSow(211L, PigLifecycle.PH, null);
+        when(pigMapper.selectById(211L)).thenReturn(pig);
+
+        FarrowBo bo = mkBo(211L, null, 8, 8); // 不设任何多分类字段
+        service.recordFarrow(bo);
+
+        ArgumentCaptor<PigFarrow> cap = ArgumentCaptor.forClass(PigFarrow.class);
+        verify(farrowMapper).insert(cap.capture());
+        assertThat(cap.getValue().getHealthyMale()).isEqualTo(0);
+        assertThat(cap.getValue().getHealthyFemale()).isEqualTo(0);
+        assertThat(cap.getValue().getWeakRaisedMale()).isEqualTo(0);
+        assertThat(cap.getValue().getWeakRaisedFemale()).isEqualTo(0);
+        assertThat(cap.getValue().getWeakCulled()).isEqualTo(0);
+        assertThat(cap.getValue().getDeformedBorn()).isEqualTo(0);
+    }
+
+    @Test
     @DisplayName("breedingId 缺 → 回落 pig.matingId")
     void breedingId_fallback_to_matingId() {
         Pig pig = mkSow(201L, PigLifecycle.PH, 8888L);

@@ -4,6 +4,8 @@ import cn.dev33.satoken.annotation.SaCheckLogin;
 import cn.dev33.satoken.annotation.SaCheckPermission;
 import lombok.RequiredArgsConstructor;
 import org.dromara.common.core.domain.R;
+import org.dromara.djs.breed.event.farrow.domain.vo.FarrowBarnCountVo;
+import org.dromara.djs.breed.event.farrow.domain.vo.FarrowLitterVo;
 import org.dromara.djs.breed.event.farrow.domain.vo.FarrowPickerVo;
 import org.dromara.djs.breed.event.farrow.service.IFarrowService;
 import org.springframework.validation.annotation.Validated;
@@ -63,5 +65,36 @@ public class FarrowAppletController {
         @RequestParam(required = false, defaultValue = "5") Integer limit
     ) {
         return R.ok(farrowService.queryRecentByMotherEarNo(earNo, limit));
+    }
+
+    /**
+     * 待打标分娩窝列表（BRD-FIX-MP-EVENT-MISC-IA-001 — 仔猪耳号"选窝"网格，原型 96）。
+     *
+     * <p>仅返仍有未贴满标的窝；可选 {@code motherEarNo}（母猪耳号下拉）/ {@code barnName}（分娩栋舍 chip）过滤。
+     * 卡片含公母数 / 分娩日期；选中后 mp 端用同条数据渲染「分娩概况」auto-fill 卡。</p>
+     *
+     * @param motherEarNo 母猪耳号过滤（可空）
+     * @param barnName    分娩栋舍名过滤（chip 点击后传，可空）
+     */
+    @SaCheckLogin
+    @SaCheckPermission("djs:applet:breed:farrow:list")
+    @GetMapping("/pending-litters")
+    public R<List<FarrowLitterVo>> pendingLitters(
+        @RequestParam(required = false) String motherEarNo,
+        @RequestParam(required = false) String barnName
+    ) {
+        return R.ok(farrowService.queryPendingLitters(motherEarNo, barnName));
+    }
+
+    /**
+     * 待打标分娩栋舍 chip（BRD-FIX-MP-EVENT-MISC-IA-001 — 原型 96 顶部"分娩1栋(12)"）。
+     *
+     * <p>按 farrow.barn_name 聚合待打标窝数；barn_name 为空的窝不进 chip；count 0 不返；barnName 升序。</p>
+     */
+    @SaCheckLogin
+    @SaCheckPermission("djs:applet:breed:farrow:list")
+    @GetMapping("/pending-barn-count")
+    public R<List<FarrowBarnCountVo>> pendingBarnCount() {
+        return R.ok(farrowService.countPendingLittersByBarn());
     }
 }
