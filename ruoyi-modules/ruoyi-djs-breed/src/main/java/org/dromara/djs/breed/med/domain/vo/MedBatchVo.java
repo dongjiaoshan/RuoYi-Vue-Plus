@@ -39,6 +39,12 @@ public class MedBatchVo implements Serializable {
     private Long medicineId;
 
     /**
+     * enrich：药品名称（替代裸 medicineId）。
+     */
+    @ExcelProperty(value = "药品名称")
+    private String medicineName;
+
+    /**
      * 批次编码。
      */
     @ExcelProperty(value = "批次编码")

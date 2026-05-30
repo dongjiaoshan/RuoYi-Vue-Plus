@@ -44,7 +44,7 @@ import java.util.Optional;
  *
  * <h3>校验</h3>
  * <p>本场公猪配种（breedingType=1）必填 boar_ear_no；精液产品（breedingType=2）必填 supplier + batch_no。
- * 其他类型 V1 不校验（字典 djs_breeding_type 由 SYS-INIT-002 维护）。</p>
+ * 其他类型 V1 不校验（字典 djs_mating_method 由 SYS-INIT-002 维护）。</p>
  *
  * @author djs
  * @since BRD-EVENT-002

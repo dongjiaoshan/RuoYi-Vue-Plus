@@ -9,17 +9,22 @@ import org.dromara.common.core.utils.StringUtils;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.breed.med.domain.MedBatch;
+import org.dromara.djs.breed.med.domain.Medicine;
 import org.dromara.djs.breed.med.domain.bo.MedBatchBo;
 import org.dromara.djs.breed.med.domain.query.MedBatchQuery;
 import org.dromara.djs.breed.med.domain.vo.MedBatchVo;
 import org.dromara.djs.breed.med.mapper.MedBatchMapper;
+import org.dromara.djs.breed.med.mapper.MedicineMapper;
 import org.dromara.djs.breed.med.service.IMedBatchService;
 import org.dromara.djs.common.base.DjsBaseServiceImpl;
 import org.springframework.stereotype.Service;
 
 import java.util.Collection;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * 药品批次 Service 实现（BRD-MED-001）。
@@ -33,25 +38,55 @@ import java.util.Objects;
 @Service
 public class MedBatchServiceImpl extends DjsBaseServiceImpl<MedBatchMapper, MedBatch> implements IMedBatchService {
 
-    public MedBatchServiceImpl(MedBatchMapper baseMapper) {
+    private final MedicineMapper medicineMapper;
+
+    public MedBatchServiceImpl(MedBatchMapper baseMapper, MedicineMapper medicineMapper) {
         super(baseMapper);
+        this.medicineMapper = medicineMapper;
     }
 
     @Override
     public TableDataInfo<MedBatchVo> queryPageList(MedBatchQuery query, PageQuery pageQuery) {
         LambdaQueryWrapper<MedBatch> wrapper = buildQueryWrapper(query);
         Page<MedBatchVo> page = baseMapper.selectVoPage(pageQuery.build(), wrapper);
+        enrichMedicineName(page.getRecords());
         return TableDataInfo.build(page);
     }
 
     @Override
     public List<MedBatchVo> queryList(MedBatchQuery query) {
-        return baseMapper.selectVoList(buildQueryWrapper(query));
+        List<MedBatchVo> list = baseMapper.selectVoList(buildQueryWrapper(query));
+        enrichMedicineName(list);
+        return list;
     }
 
     @Override
     public MedBatchVo queryById(Long id) {
-        return baseMapper.selectVoById(id);
+        MedBatchVo vo = baseMapper.selectVoById(id);
+        if (vo != null) {
+            enrichMedicineName(List.of(vo));
+        }
+        return vo;
+    }
+
+    /**
+     * 列表 enrich：药品名称替代裸 medicineId。收集去重 medicineId 一次性批查，避免 N+1。
+     */
+    private void enrichMedicineName(List<MedBatchVo> rows) {
+        if (rows == null || rows.isEmpty()) {
+            return;
+        }
+        Set<Long> medicineIds = rows.stream().map(MedBatchVo::getMedicineId)
+            .filter(Objects::nonNull).collect(Collectors.toSet());
+        if (medicineIds.isEmpty()) {
+            return;
+        }
+        Map<Long, String> names = medicineMapper.selectByIds(medicineIds).stream()
+            .filter(m -> m.getId() != null && m.getMedicineName() != null)
+            .collect(Collectors.toMap(Medicine::getId, Medicine::getMedicineName, (a, b) -> a));
+        for (MedBatchVo vo : rows) {
+            vo.setMedicineName(names.get(vo.getMedicineId()));
+        }
     }
 
     @Override

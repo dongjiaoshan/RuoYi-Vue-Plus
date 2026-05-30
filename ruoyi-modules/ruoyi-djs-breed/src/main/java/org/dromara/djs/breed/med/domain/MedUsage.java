@@ -56,7 +56,7 @@ public class MedUsage extends TenantEntity {
     private Long medicineId;
 
     /**
-     * 类型：use=领用 / return=退回 / loss=损耗（字典 djs_medicine_usage_type）。
+     * 类型：use=领用 / return=退回 / loss=损耗（字典 djs_med_pick_action）。
      */
     private String usageType;
 

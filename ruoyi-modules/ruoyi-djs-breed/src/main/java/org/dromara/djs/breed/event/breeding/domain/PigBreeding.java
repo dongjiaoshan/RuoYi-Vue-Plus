@@ -40,7 +40,7 @@ public class PigBreeding extends TenantEntity {
     /** 配种日期。 */
     private LocalDateTime breedingDate;
 
-    /** 配种方式（字典 djs_breeding_type；1=本场公猪 2=精液产品；本工程使用 varchar(16) 允许扩展）。 */
+    /** 配种方式（字典 djs_mating_method；1=本场公猪 2=精液产品；本工程使用 varchar(16) 允许扩展）。 */
     private String breedingType;
 
     /** 公猪耳号（breedingType=1 时必填；2 时可空）。 */

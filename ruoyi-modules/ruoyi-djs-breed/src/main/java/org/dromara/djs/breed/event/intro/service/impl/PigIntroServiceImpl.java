@@ -38,7 +38,11 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 /**
  * 引种业务 Service 实现（BRD-EVENT-001）。
@@ -124,7 +128,33 @@ public class PigIntroServiceImpl implements IPigIntroService {
             .le(query.getEndDate() != null, PigIntroduce::getIntroduceDate, query.getEndDate())
             .orderByDesc(PigIntroduce::getId);
         Page<PigIntroduceVo> page = introduceMapper.selectVoPage(pageQuery.build(), wrapper);
+        enrichSupplier(page.getRecords());
         return TableDataInfo.build(page);
+    }
+
+    /**
+     * 列表 enrich：供应商编码 + 名称替代裸 supplierId（内部引种 supplierId 为空时不装配）。
+     * 收集去重 supplierId 一次性批查，避免 N+1。
+     */
+    private void enrichSupplier(List<PigIntroduceVo> rows) {
+        if (rows == null || rows.isEmpty()) {
+            return;
+        }
+        Set<Long> supplierIds = rows.stream().map(PigIntroduceVo::getSupplierId)
+            .filter(Objects::nonNull).collect(Collectors.toSet());
+        if (supplierIds.isEmpty()) {
+            return;
+        }
+        Map<Long, Supplier> suppliers = supplierMapper.selectByIds(supplierIds).stream()
+            .filter(s -> s.getId() != null)
+            .collect(Collectors.toMap(Supplier::getId, Function.identity(), (a, b) -> a));
+        for (PigIntroduceVo vo : rows) {
+            Supplier s = suppliers.get(vo.getSupplierId());
+            if (s != null) {
+                vo.setSupplierCode(s.getSupplierCode());
+                vo.setSupplierName(s.getSupplierName());
+            }
+        }
     }
 
     @Override

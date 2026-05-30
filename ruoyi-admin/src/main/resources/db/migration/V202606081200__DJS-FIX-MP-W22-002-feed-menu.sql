@@ -5,8 +5,9 @@
 -- pages/breed/feed/index.vue + 后端 AppletFeedController（2 个只读端点），
 -- 需配套 djs:applet:breed:feed:list 权限菜单。
 --
--- menu_id 段 7361-7362（CLAUDE.md §6 #6 养殖域 7000-7999；7360 mp 猪只 picker
--- 已用，本 ticket 占 7361-7362 子段，给饲料 mp 入口）。
+-- menu_id 段 7361（CLAUDE.md §6 #6 养殖域 7000-7999；7360 mp 猪只 picker
+-- 已用，本 ticket 占 7361 子段，给饲料 mp 入口列表权限；7362-7364 给 D10
+-- WMS-MAT-001-FEED-EXT 落 pick/return/loss 写权限；7365-7369 预留扩展）。
 --
 -- 端点：
 --   GET /djs/applet/breed/feed/stock      聚合饲料类产品全场库存

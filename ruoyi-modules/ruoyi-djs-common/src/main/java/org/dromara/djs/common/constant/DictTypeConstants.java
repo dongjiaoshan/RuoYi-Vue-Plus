@@ -6,8 +6,8 @@ package org.dromara.djs.common.constant;
  * <p>所有业务代码使用本常量引用 {@code sys_dict_type.dict_type} 字符串，
  * 避免 30+ 个下游 ticket 硬编码 "djs_pig_breed" 之类字符串散落。</p>
  *
- * <p>数据源：{@code script/sql/djs/V202605201000__SYS-INIT-002-init-dict.sql}。
- * 若该 SQL 增删 dict_type，本文件必须同步更新；二者数量须严格一致（39）。</p>
+ * <p>数据源：{@code script/sql/djs/V202605201000__SYS-INIT-002-init-dict.sql} + 各域 ticket seed。
+ * 若 seed SQL 增删 dict_type，本文件必须同步更新（当前 46 类）。</p>
  *
  * <p>分组与 SQL 章节对应：</p>
  * <ul>
@@ -54,8 +54,8 @@ public final class DictTypeConstants {
 
     // ---------------- B. 养殖域（8 类） ----------------
 
-    /** 猪只性别：male / female。 */
-    public static final String PIG_GENDER = "djs_pig_gender";
+    /** 猪只性别（DB 列值 M/F，对齐 doc/11 R8）。 */
+    public static final String PIG_SEX = "djs_pig_sex";
 
     /** 猪只品种：duroc / landrace / yorkshire / pic / binary / ternary / other。 */
     public static final String PIG_BREED = "djs_pig_breed";
@@ -66,9 +66,6 @@ public final class DictTypeConstants {
     /** 猪只状态事件（驱动状态机的事件 code）。 */
     public static final String PIG_STATUS_EVENT = "djs_pig_status_event";
 
-    /** 淘汰原因。 */
-    public static final String ELIMINATION_REASON = "djs_elimination_reason";
-
     /** 猪舍类型。 */
     public static final String BARN_TYPE = "djs_barn_type";
 
@@ -78,8 +75,8 @@ public final class DictTypeConstants {
     /** 兽药类型。 */
     public static final String MED_TYPE = "djs_med_type";
 
-    /** 配种方式（BRD-EVENT-002 BREED breedingType；1=本场公猪 / 2=精液产品 / AI / LQ / RJ）。 */
-    public static final String BREEDING_TYPE = "djs_breeding_type";
+    /** 配种方式（BRD-EVENT-002 BREED breedingType；1=本场公猪 / 2=精液产品 / AI / LQ / RJ；对齐 doc/11）。 */
+    public static final String MATING_METHOD = "djs_mating_method";
 
     /** 死亡原因（BRD-EVENT-004 DIE deathReason）。 */
     public static final String DEATH_REASON = "djs_death_reason";
@@ -87,14 +84,17 @@ public final class DictTypeConstants {
     /** 死亡去向（BRD-EVENT-004 DIE deathDest）。 */
     public static final String DEATH_DEST = "djs_death_dest";
 
-    /** 淘汰原因（BRD-EVENT-004 ELIMINATE cullingReason；与 ELIMINATION_REASON 同义异名，最终命名待 MP-IA-S0-09 决策）。 */
-    public static final String ELIMINATE_REASON = "djs_eliminate_reason";
+    /** 淘汰原因（BRD-EVENT-004 ELIMINATE cullingReason；对齐 doc/11 R11）。 */
+    public static final String CULLING_REASON = "djs_culling_reason";
 
-    /** 淘汰去向（BRD-EVENT-004 ELIMINATE cullingDest）。 */
-    public static final String ELIMINATE_DEST = "djs_eliminate_dest";
+    /** 淘汰去向（BRD-EVENT-004 ELIMINATE cullingDest；对齐 doc/11 R12）。 */
+    public static final String CULLING_DEST = "djs_culling_dest";
 
-    /** 出栏去向（BRD-EVENT-004 SLAUGHTER outDest）。 */
-    public static final String OUT_HOUSE_DEST = "djs_out_house_dest";
+    /** 出栏去向（BRD-EVENT-004 SLAUGHTER marketDest；对齐 doc/11 R13）。 */
+    public static final String MARKET_DEST = "djs_market_dest";
+
+    /** 药品领用动作（BRD-MED-002：use=领用 / return=退回 / loss=损耗；与用药类型 MEDICINE_USE_TYPE 语义分离）。 */
+    public static final String MED_PICK_ACTION = "djs_med_pick_action";
 
     // ---------------- C. 种植域（10 类） ----------------
 

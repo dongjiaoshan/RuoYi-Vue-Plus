@@ -10,7 +10,6 @@ import org.dromara.djs.breed.core.service.IPigCoreService;
 import org.dromara.djs.breed.event.eartag.mapper.PigPigletnoMapper;
 import org.dromara.djs.breed.event.farrow.domain.PigFarrow;
 import org.dromara.djs.breed.event.farrow.domain.bo.FarrowBo;
-import org.dromara.djs.breed.event.farrow.event.PigFarrowEvent;
 import org.dromara.djs.breed.event.farrow.mapper.PigFarrowMapper;
 import org.dromara.djs.breed.farm.mapper.BarnMapper;
 import org.dromara.djs.breed.farm.mapper.PenMapper;
@@ -24,7 +23,6 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
-import org.springframework.context.ApplicationEventPublisher;
 
 import java.time.LocalDateTime;
 
@@ -41,7 +39,7 @@ import static org.mockito.Mockito.when;
  *
  * <p>覆盖：</p>
  * <ul>
- *   <li>happy path：PH 母猪 FARROW → INSERT farrow + fireEvent(FARROW) + publish PigFarrowEvent；</li>
+ *   <li>happy path：PH 母猪 FARROW → INSERT farrow + fireEvent(FARROW)；</li>
  *   <li>breedingId 缺时回落 pig.matingId；</li>
  *   <li>校验 liveBorn > totalBorn → 拒绝；</li>
  *   <li>非法 transition（非 PH）→ fireEvent 抛传播；</li>
@@ -70,15 +68,13 @@ class FarrowServiceImplTest {
     private PigPigletnoMapper pigletnoMapper;
     @Mock
     private IPigCoreService pigCoreService;
-    @Mock
-    private ApplicationEventPublisher eventPublisher;
 
     private FarrowServiceImpl service;
 
     @BeforeEach
     void setup() {
         service = new FarrowServiceImpl(farrowMapper, pigMapper, barnMapper, penMapper,
-            pigletnoMapper, pigCoreService, eventPublisher);
+            pigletnoMapper, pigCoreService);
     }
 
     private Pig mkSow(Long id, PigLifecycle status, Long matingId) {
@@ -107,7 +103,7 @@ class FarrowServiceImplTest {
     }
 
     @Test
-    @DisplayName("happy: PH FARROW → INSERT farrow + fireEvent(FARROW) + publish PigFarrowEvent + parity=pig.parity+1")
+    @DisplayName("happy: PH FARROW → INSERT farrow + fireEvent(FARROW) + parity=pig.parity+1")
     void happyPath() {
         Pig pig = mkSow(200L, PigLifecycle.PH, 7777L);
         when(pigMapper.selectById(200L)).thenReturn(pig);
@@ -126,8 +122,6 @@ class FarrowServiceImplTest {
         ArgumentCaptor<PigEventBo> ev = ArgumentCaptor.forClass(PigEventBo.class);
         verify(pigCoreService, times(1)).fireEvent(ev.capture());
         assertThat(ev.getValue().getEventType()).isEqualTo(PigStatusEvent.FARROW);
-
-        verify(eventPublisher, times(1)).publishEvent(any(PigFarrowEvent.class));
     }
 
     @Test

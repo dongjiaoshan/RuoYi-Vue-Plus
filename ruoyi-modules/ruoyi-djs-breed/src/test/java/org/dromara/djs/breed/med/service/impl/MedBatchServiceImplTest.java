@@ -56,8 +56,9 @@ class MedBatchServiceImplTest {
     private TestableMedBatchServiceImpl service;
 
     static class TestableMedBatchServiceImpl extends MedBatchServiceImpl {
+        // enrich 用的 medicineMapper 本单测 mock VO 不带 medicineId（enrich 早返回），传 null 即可
         TestableMedBatchServiceImpl(MedBatchMapper mapper) {
-            super(mapper);
+            super(mapper, null);
         }
 
         @Override

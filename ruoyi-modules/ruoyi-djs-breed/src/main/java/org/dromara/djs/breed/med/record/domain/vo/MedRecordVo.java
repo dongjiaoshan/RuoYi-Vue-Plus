@@ -64,6 +64,10 @@ public class MedRecordVo implements Serializable {
     @ExcelProperty(value = "批次ID")
     private Long batchId;
 
+    /** enrich：批次编码（替代裸 batchId）。 */
+    @ExcelProperty(value = "批次编码")
+    private String batchNo;
+
     private Long usageId;
 
     private Long scheduleId;

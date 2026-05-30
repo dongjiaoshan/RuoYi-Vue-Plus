@@ -92,5 +92,12 @@ public enum BizCodeType {
      * 种植计划业务码（按年重置），格式 {@code PLAN-{yyyy}-{seq3}}。
      * 例：{@code PLAN-2026-001}（D9 closing Group B 集中治理，原 PlantPlanServiceImpl inline 实现迁入）。
      */
-    PLAN_NO
+    PLAN_NO,
+
+    /**
+     * 白条业务码（每日重置），格式 {@code BAR{yyMMdd}{seq4}}。
+     * 例：{@code BAR2606040001}（CROSS-FLOW-001 D10 listener 创建白条时使用）。
+     * 与 BURN_NO / CUT_NO 范式一致，统一走 BizCodeService Redisson 锁 + 序号表 UNIQUE 双保护。
+     */
+    BAR_NO
 }

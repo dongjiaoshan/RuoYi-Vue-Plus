@@ -1,7 +1,11 @@
 package org.dromara.djs.breed.med.service.impl;
 
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import org.dromara.common.core.exception.ServiceException;
+import org.dromara.common.mybatis.core.page.PageQuery;
+import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.breed.med.domain.MedBatch;
+import org.dromara.djs.breed.med.domain.query.MedUsageQuery;
 import org.dromara.djs.breed.med.domain.MedUsage;
 import org.dromara.djs.breed.med.domain.bo.MedUsageBo;
 import org.dromara.djs.breed.med.domain.vo.MedUsageVo;
@@ -56,8 +60,9 @@ class MedUsageServiceImplTest {
     private TestableMedUsageServiceImpl service;
 
     static class TestableMedUsageServiceImpl extends MedUsageServiceImpl {
+        // enrich 用的 medicine/pig/pen mapper 本单测不触发列表 enrich 路径，传 null 即可
         TestableMedUsageServiceImpl(MedUsageMapper m, MedBatchMapper b) {
-            super(m, b);
+            super(m, b, null, null, null);
         }
 
         @Override
@@ -236,5 +241,28 @@ class MedUsageServiceImplTest {
         assertThat(rows).isEqualTo(1);
         // 关键断言：软删不触发归还
         verify(medBatchMapper, never()).incrementQuantity(any(), any());
+    }
+
+    @Test
+    @DisplayName("queryPageList[enrich]: 领用行 pig_id/pen_id 全空 → enrich 不抛 NPE（回归 Map.of().get(null)）")
+    void testQueryPageList_NullEnrichIds_NoNpe() {
+        // 回归 IDENRICH NPE：领用不关联猪/栏位时 pigId/relatedPenId 为 null，整页全空时
+        // batchLookup 返回空 Map → 下游 .get(null)。空 Map 用 Map.of() 会抛 NPE（不可变 Map 拒 null key），
+        // 修复后用 Collections.emptyMap() 返 null 不抛。本例 4 个 enrich FK 全 null，4 个 lookup 都走空 Map 分支。
+        MedUsageVo vo = new MedUsageVo();
+        vo.setId(70001L);
+        // medicineId / batchId / pigId / relatedPenId 全 null
+        Page<MedUsageVo> page = new Page<>(1, 10);
+        page.setRecords(List.of(vo));
+        when(medUsageMapper.selectVoPage(any(), any())).thenReturn(page);
+
+        TableDataInfo<MedUsageVo> result = service.queryPageList(new MedUsageQuery(), new PageQuery(10, 1));
+
+        assertThat(result.getRows()).hasSize(1);
+        MedUsageVo enriched = result.getRows().get(0);
+        assertThat(enriched.getEarNo()).isNull();
+        assertThat(enriched.getPenCode()).isNull();
+        assertThat(enriched.getMedicineName()).isNull();
+        assertThat(enriched.getBatchNo()).isNull();
     }
 }

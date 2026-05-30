@@ -37,7 +37,7 @@ public class BreedingBo implements Serializable {
     private LocalDateTime breedingDate;
 
     /**
-     * 配种方式（字典 djs_breeding_type）。
+     * 配种方式（字典 djs_mating_method）。
      * 当前字典值：1 / 2 等单字符或 AI / LQ / RJ 等短字母码均允许（≤ 16）。
      */
     @NotBlank(message = "breeding.type.required")
