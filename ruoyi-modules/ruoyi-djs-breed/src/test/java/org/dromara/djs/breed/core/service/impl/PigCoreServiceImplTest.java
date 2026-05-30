@@ -74,7 +74,8 @@ class PigCoreServiceImplTest {
     @BeforeEach
     void setup() {
         PigStateMachine sm = new PigStateMachine();
-        service = new PigCoreServiceImpl(pigMapper, statusRecordMapper, sm, eventPublisher, barnMapper, penMapper);
+        service = new PigCoreServiceImpl(pigMapper, statusRecordMapper, sm, eventPublisher, barnMapper, penMapper,
+            org.mockito.Mockito.mock(org.dromara.common.core.service.DictService.class));
     }
 
     private Pig mkSow(Long id, PigLifecycle status) {
