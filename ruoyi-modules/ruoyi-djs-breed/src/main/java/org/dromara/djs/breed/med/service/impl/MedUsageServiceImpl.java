@@ -29,6 +29,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -134,7 +135,9 @@ public class MedUsageServiceImpl extends DjsBaseServiceImpl<MedUsageMapper, MedU
                                               Function<E, String> entityValue) {
         Set<Long> ids = rows.stream().map(idGetter).filter(Objects::nonNull).collect(Collectors.toSet());
         if (ids.isEmpty()) {
-            return Map.of();
+            // 必须用 emptyMap（get(null) 返 null），不能用 Map.of()（不可变 Map 对 null key 的 get 抛 NPE）：
+            // 领用行 pig_id / related_pen_id 可为空，整页全空时 ids 为空走这里，下游按 vo.getPigId()(可能 null) 取值
+            return Collections.emptyMap();
         }
         return loader.apply(ids).stream()
             .filter(e -> entityId.apply(e) != null && entityValue.apply(e) != null)
