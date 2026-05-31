@@ -3,6 +3,7 @@ package org.dromara.djs.breed.dashboard.service;
 import org.dromara.djs.breed.dashboard.domain.vo.Activity7dVo;
 import org.dromara.djs.breed.dashboard.domain.vo.AnnualIndicatorVo;
 import org.dromara.djs.breed.dashboard.domain.vo.InventoryVo;
+import org.dromara.djs.breed.dashboard.domain.vo.MonthActivityVo;
 import org.dromara.djs.breed.dashboard.domain.vo.MonthlyComparisonVo;
 
 import java.time.YearMonth;
@@ -35,6 +36,14 @@ public interface IDashboardService {
      * 近 7 天活动统计（从 t_farm_sow_record，按 stat_date 升序）。
      */
     Activity7dVo getActivity7d();
+
+    /**
+     * 按月聚合种猪场活动统计（原型 21，11 指标 × 当月每日 + 累计列）。
+     * 直查各 event 表 GROUP BY 日期，无快照表依赖；累计列后端算。
+     *
+     * @param month yyyyMM；null/非法 → 当月
+     */
+    MonthActivityVo getActivityByMonth(String month);
 
     /**
      * 年度指标（从 t_farm_annual_indicator）。

@@ -6,6 +6,7 @@ import org.dromara.common.core.domain.R;
 import org.dromara.djs.breed.dashboard.domain.vo.Activity7dVo;
 import org.dromara.djs.breed.dashboard.domain.vo.AnnualIndicatorVo;
 import org.dromara.djs.breed.dashboard.domain.vo.InventoryVo;
+import org.dromara.djs.breed.dashboard.domain.vo.MonthActivityVo;
 import org.dromara.djs.breed.dashboard.domain.vo.MonthlyComparisonVo;
 import org.dromara.djs.breed.dashboard.service.IDashboardService;
 import org.springframework.format.annotation.DateTimeFormat;
@@ -61,6 +62,17 @@ public class DashboardController {
     @GetMapping("/activity-7d")
     public R<Activity7dVo> getActivity7d() {
         return R.ok(dashboardService.getActivity7d());
+    }
+
+    /**
+     * 种猪场活动统计（按月聚合，原型 21）。
+     *
+     * @param month yyyyMM，缺省为当月
+     */
+    @SaCheckPermission("djs:breed:dashboard:activity")
+    @GetMapping("/activity/by-month")
+    public R<MonthActivityVo> getActivityByMonth(@RequestParam(value = "month", required = false) String month) {
+        return R.ok(dashboardService.getActivityByMonth(month));
     }
 
     @SaCheckPermission("djs:breed:dashboard:annual")

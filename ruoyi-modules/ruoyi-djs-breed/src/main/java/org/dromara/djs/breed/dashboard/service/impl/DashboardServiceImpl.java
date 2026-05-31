@@ -12,6 +12,7 @@ import org.dromara.djs.breed.dashboard.domain.SowRecord;
 import org.dromara.djs.breed.dashboard.domain.vo.Activity7dVo;
 import org.dromara.djs.breed.dashboard.domain.vo.AnnualIndicatorVo;
 import org.dromara.djs.breed.dashboard.domain.vo.InventoryVo;
+import org.dromara.djs.breed.dashboard.domain.vo.MonthActivityVo;
 import org.dromara.djs.breed.dashboard.domain.vo.MonthlyComparisonVo;
 import org.dromara.djs.breed.dashboard.mapper.AggregateQueryMapper;
 import org.dromara.djs.breed.dashboard.mapper.AnnualIndicatorMapper;
@@ -189,6 +190,95 @@ public class DashboardServiceImpl implements IDashboardService {
         vo.setPsy(Optional.ofNullable(ai.getPsy()).orElse(BigDecimal.ZERO));
         vo.setMortalityRate(Optional.ofNullable(ai.getMortalityRate()).orElse(BigDecimal.ZERO));
         return vo;
+    }
+
+    @Override
+    public MonthActivityVo getActivityByMonth(String month) {
+        YearMonth ym;
+        if (month == null || month.isBlank()) {
+            ym = YearMonth.now();
+        } else {
+            try {
+                ym = YearMonth.parse(month, java.time.format.DateTimeFormatter.ofPattern("yyyyMM"));
+            } catch (Exception e) {
+                ym = YearMonth.now(); // 入参非法退化为当月，不打断查询
+            }
+        }
+        String tenantId = currentTenant();
+        LocalDate first = ym.atDay(1);
+        LocalDate last = ym.atEndOfMonth();
+        LocalDate toExclusive = last.plusDays(1); // 右开区间
+        LocalDateTime dtFrom = first.atStartOfDay();
+        LocalDateTime dtTo = toExclusive.atStartOfDay();
+
+        java.time.format.DateTimeFormatter md = java.time.format.DateTimeFormatter.ofPattern("MM-dd");
+        List<String> days = new ArrayList<>();
+        for (LocalDate d = first; !d.isAfter(last); d = d.plusDays(1)) {
+            days.add(d.format(md));
+        }
+
+        MonthActivityVo vo = new MonthActivityVo();
+        vo.setDays(days);
+        List<MonthActivityVo.MonthRow> rows = new ArrayList<>();
+        // 按原型 21 行序。数据源缺失的指标返 0（不抛异常）。
+        // 真实表名/列名见 SYS-INIT-001 DDL；返空流母猪数无独立数据源 → 退化 0。
+        rows.add(buildRow("分娩母猪数", days, byDayCount("t_farm_pig_farrow", "farrow_date", tenantId, first, toExclusive)));
+        rows.add(buildRow("配种母猪数", days, byDayCount("t_farm_pig_breeding", "breeding_date", tenantId, first, toExclusive)));
+        rows.add(buildRow("断奶母猪数", days, byDayCount("t_farm_pig_weaning", "weaning_date", tenantId, first, toExclusive)));
+        rows.add(buildRow("返空流母猪数", days, emptyDay()));
+        rows.add(buildRow("死亡母猪数", days, byDayStatus(tenantId, "DIE", dtFrom, dtTo)));
+        rows.add(buildRow("淘汰母猪数", days, byDayStatus(tenantId, "ELIMINATE", dtFrom, dtTo)));
+        rows.add(buildRow("后备入场数", days, byDaySum("t_farm_pig_introduce", "introduce_date", "pig_count", tenantId, first, toExclusive)));
+        rows.add(buildRow("查情母猪数", days, byDayCount("t_farm_pig_heat", "heat_date", tenantId, first, toExclusive)));
+        rows.add(buildRow("产仔数", days, byDaySum("t_farm_pig_farrow", "farrow_date", "total_born", tenantId, first, toExclusive)));
+        rows.add(buildRow("活仔数", days, byDaySum("t_farm_pig_farrow", "farrow_date", "live_born", tenantId, first, toExclusive)));
+        rows.add(buildRow("仔猪打标数", days, byDayCount("t_farm_pig_pigletno", "tag_date", tenantId, first, toExclusive)));
+        vo.setRows(rows);
+        return vo;
+    }
+
+    private Map<String, Integer> emptyDay() {
+        return new LinkedHashMap<>();
+    }
+
+    private Map<String, Integer> byDayCount(String table, String dateColumn, String tenantId, LocalDate from, LocalDate to) {
+        return toDayMap(aggregateQueryMapper.countEventByDay(table, dateColumn, tenantId, from, to));
+    }
+
+    private Map<String, Integer> byDaySum(String table, String dateColumn, String valueColumn, String tenantId, LocalDate from, LocalDate to) {
+        return toDayMap(aggregateQueryMapper.sumEventByDay(table, dateColumn, valueColumn, tenantId, from, to));
+    }
+
+    private Map<String, Integer> byDayStatus(String tenantId, String eventType, LocalDateTime from, LocalDateTime to) {
+        return toDayMap(aggregateQueryMapper.countStatusEventByDay(tenantId, eventType, from, to));
+    }
+
+    private Map<String, Integer> toDayMap(List<Map<String, Object>> raw) {
+        Map<String, Integer> m = new LinkedHashMap<>();
+        for (Map<String, Object> r : raw) {
+            Object d = r.get("d");
+            Object v = r.get("v");
+            if (d == null) {
+                continue;
+            }
+            m.put(Objects.toString(d, ""), v instanceof Number n ? n.intValue() : 0);
+        }
+        return m;
+    }
+
+    private MonthActivityVo.MonthRow buildRow(String metric, List<String> days, Map<String, Integer> byDay) {
+        List<Integer> daily = new ArrayList<>(days.size());
+        int total = 0;
+        for (String day : days) {
+            int v = byDay.getOrDefault(day, 0);
+            daily.add(v);
+            total += v;
+        }
+        MonthActivityVo.MonthRow row = new MonthActivityVo.MonthRow();
+        row.setMetric(metric);
+        row.setDaily(daily);
+        row.setTotal(total);
+        return row;
     }
 
     // ============================================================

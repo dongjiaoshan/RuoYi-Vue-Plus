@@ -140,4 +140,57 @@ public interface AggregateQueryMapper {
         + "   AND pig_type = 'sow' "
         + "   AND current_status <> 'END'")
     int countAliveSows(@Param("tenantId") String tenantId);
+
+    // ============================================================
+    //  月度活动统计 by-month（BRD-DASH-ACTIVITY-001，原型 21）
+    //  各 event 表按 DATE_FORMAT(dateColumn,'%m-%d') 分组聚合，区间 [from, to) 右开。
+    //  返回形如 [{d:'05-01', v:3}, ...]；service 按 days 列表对齐补 0。
+    //  table / dateColumn / valueColumn 全部白名单内部传入（非用户输入），无注入风险。
+    // ============================================================
+
+    /** 业务事件表按日 COUNT(*)（如配种 / 查情 / 分娩 / 断奶头数）。 */
+    @Select("<script>"
+        + "SELECT DATE_FORMAT(${dateColumn}, '%m-%d') AS d, COUNT(*) AS v "
+        + " FROM ${table} "
+        + " WHERE tenant_id = #{tenantId} "
+        + "   AND del_flag = '0' "
+        + "   AND ${dateColumn} &gt;= #{from} "
+        + "   AND ${dateColumn} &lt;  #{to} "
+        + " GROUP BY d"
+        + "</script>")
+    List<Map<String, Object>> countEventByDay(@Param("table") String table,
+                                              @Param("dateColumn") String dateColumn,
+                                              @Param("tenantId") String tenantId,
+                                              @Param("from") LocalDate from,
+                                              @Param("to") LocalDate to);
+
+    /** 业务事件表按日 SUM(valueColumn)（如引种头数 / 产仔数 / 活仔数 / 打标数）。 */
+    @Select("<script>"
+        + "SELECT DATE_FORMAT(${dateColumn}, '%m-%d') AS d, COALESCE(SUM(${valueColumn}),0) AS v "
+        + " FROM ${table} "
+        + " WHERE tenant_id = #{tenantId} "
+        + "   AND del_flag = '0' "
+        + "   AND ${dateColumn} &gt;= #{from} "
+        + "   AND ${dateColumn} &lt;  #{to} "
+        + " GROUP BY d"
+        + "</script>")
+    List<Map<String, Object>> sumEventByDay(@Param("table") String table,
+                                            @Param("dateColumn") String dateColumn,
+                                            @Param("valueColumn") String valueColumn,
+                                            @Param("tenantId") String tenantId,
+                                            @Param("from") LocalDate from,
+                                            @Param("to") LocalDate to);
+
+    /** status_record 按日 COUNT（指定 event_type，如 DIE / ELIMINATE）。change_time 区间右开。 */
+    @Select("SELECT DATE_FORMAT(change_time, '%m-%d') AS d, COUNT(*) AS v "
+        + " FROM t_farm_status_record "
+        + " WHERE tenant_id = #{tenantId} "
+        + "   AND event_type = #{eventType} "
+        + "   AND change_time >= #{from} "
+        + "   AND change_time <  #{to} "
+        + " GROUP BY d")
+    List<Map<String, Object>> countStatusEventByDay(@Param("tenantId") String tenantId,
+                                                    @Param("eventType") String eventType,
+                                                    @Param("from") java.time.LocalDateTime from,
+                                                    @Param("to") java.time.LocalDateTime to);
 }
