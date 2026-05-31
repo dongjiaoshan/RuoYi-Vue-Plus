@@ -190,12 +190,29 @@ public class MatFlowServiceImpl implements IMatFlowService {
 
     @Override
     public MatTodaySummaryVo todaySummary(String matType) {
+        return todaySummary(matType, null);
+    }
+
+    @Override
+    public MatTodaySummaryVo todaySummary(String matType, String productId) {
         Long userId = LoginHelper.getUserId();
         if (userId == null) {
             return MatTodaySummaryVo.empty();
         }
         MatTodaySummaryVo vo = new MatTodaySummaryVo();
-        if (matType == null || matType.isBlank()) {
+        // 单产品维度优先（BRD-FIX-MP-FEED-IA-001 MPV-FEED-09）：精确到选中产品
+        if (productId != null && !productId.isBlank()) {
+            Long pid;
+            try {
+                pid = Long.valueOf(productId.trim());
+            }
+            catch (NumberFormatException e) {
+                throw new ServiceException("产品 ID 非法：" + productId);
+            }
+            vo.setPickedQuantity(safe(stockFlowMapper.sumTodayByUserProductType(userId, pid, FLOW_PICK_OUT)));
+            vo.setReturnedQuantity(safe(stockFlowMapper.sumTodayByUserProductType(userId, pid, FLOW_RETURN_IN)));
+            vo.setLossQuantity(safe(stockFlowMapper.sumTodayByUserProductType(userId, pid, FLOW_LOSS)));
+        } else if (matType == null || matType.isBlank()) {
             vo.setPickedQuantity(safe(stockFlowMapper.sumTodayByUserType(userId, FLOW_PICK_OUT)));
             vo.setReturnedQuantity(safe(stockFlowMapper.sumTodayByUserType(userId, FLOW_RETURN_IN)));
             vo.setLossQuantity(safe(stockFlowMapper.sumTodayByUserType(userId, FLOW_LOSS)));

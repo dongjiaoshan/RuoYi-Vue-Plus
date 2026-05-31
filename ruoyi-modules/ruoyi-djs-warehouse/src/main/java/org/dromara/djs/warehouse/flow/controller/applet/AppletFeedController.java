@@ -11,7 +11,9 @@ import org.dromara.common.satoken.utils.LoginHelper;
 import org.dromara.common.web.core.BaseController;
 import org.dromara.djs.warehouse.flow.domain.query.StockFlowQuery;
 import org.dromara.djs.warehouse.flow.domain.vo.FeedStockVo;
+import org.dromara.djs.warehouse.flow.domain.vo.MatTodaySummaryVo;
 import org.dromara.djs.warehouse.flow.domain.vo.StockFlowVo;
+import org.dromara.djs.warehouse.flow.service.IMatFlowService;
 import org.dromara.djs.warehouse.flow.service.IStockFlowService;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
@@ -20,6 +22,7 @@ import org.dromara.djs.warehouse.stock.mapper.LocationStockMapper;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.math.BigDecimal;
@@ -63,14 +66,10 @@ public class AppletFeedController extends BaseController {
      */
     private static final String MAT_TYPE_FEED = "feed";
 
-    /**
-     * 领用流水类型（同 MatFlowServiceImpl#pick 写入 {@code flow_type='pick_out'}）。
-     */
-    private static final String FLOW_TYPE_PICK_OUT = "pick_out";
-
     private final ProductInfoMapper productInfoMapper;
     private final LocationStockMapper locationStockMapper;
     private final IStockFlowService stockFlowService;
+    private final IMatFlowService matFlowService;
 
     /**
      * 饲料原料库存聚合列表。
@@ -130,12 +129,12 @@ public class AppletFeedController extends BaseController {
     }
 
     /**
-     * 当前登录人的饲料领用流水（分页）。
+     * 当前登录人的饲料领用 / 退回 / 损耗流水（分页，全类型）。
      *
-     * <p>强制 3 个过滤：</p>
+     * <p>强制 2 个过滤（不再写死 flowType，返回全类型流水，供「采食领用记录」tab 以
+     * 操作类型 tag 区分领用 / 退回 / 损耗 —— BRD-FIX-MP-FEED-IA-001 MPV-FEED-04）：</p>
      * <ul>
-     *   <li>{@code matType='feed'}（StockFlowServiceImpl 内部 JOIN product.belong_type 二次过滤）</li>
-     *   <li>{@code flowType='pick_out'}（仅"领用出库"，不混退回 / 损耗）</li>
+     *   <li>{@code matType='feed'}（StockFlowServiceImpl 内部按 product.belong_type 二次过滤）</li>
      *   <li>{@code operatorId=LoginHelper.getUserId()}（仅"我的"流水）</li>
      * </ul>
      */
@@ -147,9 +146,24 @@ public class AppletFeedController extends BaseController {
             query = new StockFlowQuery();
         }
         query.setMatType(MAT_TYPE_FEED);
-        query.setFlowType(FLOW_TYPE_PICK_OUT);
         query.setOperatorId(LoginHelper.getUserId());
         return stockFlowService.queryPageList(query, pageQuery);
+    }
+
+    /**
+     * 当前登录人 + 当日 + 指定单产品的「今日已领 / 退回 / 损耗」汇总
+     * （BRD-FIX-MP-FEED-IA-001 MPV-FEED-09）。
+     *
+     * <p>饲料领用子页顶卡上下文用，单产品维度（区别于
+     * {@code /applet/warehouse/mat/myToday} 的全产品汇总）。</p>
+     *
+     * @param productId 产品 ID（snowflake String，前端 query 传字符串防截断；service 内转 Long）
+     */
+    @SaCheckLogin
+    @SaCheckPermission("djs:applet:breed:feed:list")
+    @GetMapping("/today-summary")
+    public R<MatTodaySummaryVo> todaySummary(@RequestParam String productId) {
+        return R.ok(matFlowService.todaySummary(MAT_TYPE_FEED, productId));
     }
 
 }

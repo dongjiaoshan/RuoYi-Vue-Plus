@@ -46,4 +46,17 @@ public interface IMatFlowService {
      */
     MatTodaySummaryVo todaySummary(String matType);
 
+    /**
+     * 当前登录人今日已领 / 已退 / 已损汇总（单产品维度）。
+     *
+     * <p>BRD-FIX-MP-FEED-IA-001：饲料领用子页顶卡需「当前选中单产品」的今日已领 / 退回，
+     * 而非全产品汇总。productId 入参 String（snowflake 防截断），内部转 Long 查询；
+     * 为空 / 空白时退化为 {@link #todaySummary(String)} 全产品（或 matType 维度）。</p>
+     *
+     * @param matType   可选物资类型；productId 非空时本参不参与过滤
+     * @param productId 产品 ID（snowflake String），可空 → 退化为 matType 维度
+     * @return 三项 SUM
+     */
+    MatTodaySummaryVo todaySummary(String matType, String productId);
+
 }
