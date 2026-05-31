@@ -119,4 +119,11 @@ public class PigVo implements Serializable {
     private String createName;
 
     private Integer version;
+
+    /**
+     * 近一次用药（药品名 + 日期，如「头孢噻呋 04-13」）。
+     * V1.x 补 list 查询聚合（关联 t_breed_medicine_record 取最近 1 条）；当前未填充，前端该格不渲染。
+     */
+    @ExcelProperty(value = "近一次用药")
+    private String lastMedication;
 }

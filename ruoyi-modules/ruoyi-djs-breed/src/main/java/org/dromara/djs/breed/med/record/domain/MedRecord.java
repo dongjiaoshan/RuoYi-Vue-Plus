@@ -76,6 +76,11 @@ public class MedRecord extends TenantEntity {
     private String medicineType;
 
     /**
+     * 疫苗类型（djs_vaccine_type，仅免疫类用药时填写，可空）。
+     */
+    private String vaccineType;
+
+    /**
      * 用药原因（djs_medicine_reason，可选）。
      */
     private String medicineReason;

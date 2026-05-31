@@ -162,6 +162,7 @@ public class MedRecordServiceImpl extends DjsBaseServiceImpl<MedRecordMapper, Me
         master.setUseDate(bo.getUseDate());
         master.setDrugType(2);
         master.setMedicineType(bo.getMedicineType());
+        master.setVaccineType(bo.getVaccineType());
         master.setMedicineReason(bo.getMedicineReason());
         master.setMedicineWay(bo.getMedicineWay());
         master.setMedicineId(bo.getMedicineId());
@@ -184,6 +185,7 @@ public class MedRecordServiceImpl extends DjsBaseServiceImpl<MedRecordMapper, Me
             d.setMasterId(master.getId());
             d.setDrugType(3);
             d.setMedicineType(bo.getMedicineType());
+            d.setVaccineType(bo.getVaccineType());
             d.setMedicineReason(bo.getMedicineReason());
             d.setMedicineWay(bo.getMedicineWay());
             d.setMedicineId(bo.getMedicineId());

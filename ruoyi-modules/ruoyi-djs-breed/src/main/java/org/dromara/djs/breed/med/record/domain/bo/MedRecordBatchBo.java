@@ -44,6 +44,12 @@ public class MedRecordBatchBo {
     private String medicineType;
 
     /**
+     * 疫苗类型（djs_vaccine_type，仅免疫类用药时填写，可空，共享）。
+     */
+    @Size(max = 32, message = "疫苗类型长度不能超过 32")
+    private String vaccineType;
+
+    /**
      * 用药原因（可选，共享）。
      */
     @Size(max = 32)
