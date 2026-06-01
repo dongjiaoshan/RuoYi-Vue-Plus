@@ -11,10 +11,13 @@ import org.dromara.common.log.enums.BusinessType;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.web.core.BaseController;
+import org.dromara.djs.common.supplier.api.SupplierDealProvider;
+import org.dromara.djs.common.supplier.api.SupplierDealVo;
 import org.dromara.djs.common.supplier.domain.bo.SupplierBo;
 import org.dromara.djs.common.supplier.domain.query.SupplierQuery;
 import org.dromara.djs.common.supplier.domain.vo.SupplierVo;
 import org.dromara.djs.common.supplier.service.ISupplierService;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -25,7 +28,9 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Comparator;
 import java.util.List;
 
 /**
@@ -44,6 +49,16 @@ import java.util.List;
 public class SupplierController extends BaseController {
 
     private final ISupplierService supplierService;
+
+    /**
+     * 供应商交易明细数据提供方集合（跨模块 facade，DJS-FIX-ADMIN-W22-005）。
+     *
+     * <p>breed（{@code MedicineSupplierDealProvider}）+ warehouse
+     * （{@code StockFlowSupplierDealProvider}）各注册一个实现；common 不直接依赖上游模块，
+     * 用 {@link ObjectProvider} 在运行时收集所有 {@link SupplierDealProvider} bean，零循环依赖。
+     * 上游模块未上线时集合为空，端点返空分页（不报错）。</p>
+     */
+    private final ObjectProvider<SupplierDealProvider> dealProviders;
 
     /**
      * 分页查询供应商列表。
@@ -72,6 +87,31 @@ public class SupplierController extends BaseController {
     @GetMapping("/getInfo/{id}")
     public R<SupplierVo> getInfo(@PathVariable Long id) {
         return R.ok(supplierService.queryById(id));
+    }
+
+    /**
+     * 供应商交易明细（DJS-FIX-ADMIN-W22-005）。
+     *
+     * <p>跨模块聚合 breed 药品入库批次 + warehouse 物资入库流水（{@code inout_type='IN'}），
+     * 内存 UNION 后按交易日期倒序 + 手动分页。只读，无新表。</p>
+     *
+     * <p>各 {@link SupplierDealProvider} 实现已各自做单租户 + 软删过滤；上游模块无数据
+     * （如物资入库尚未回填 supplier_id）时该来源贡献 0 行，端点正常返其它来源行。</p>
+     *
+     * @param id        供应商 ID
+     * @param pageQuery 分页参数（pageNum/pageSize）
+     * @return 分页后的交易明细
+     */
+    @SaCheckPermission("djs:common:supplier:list")
+    @GetMapping("/{id}/deals")
+    public TableDataInfo<SupplierDealVo> listDeals(@PathVariable Long id, PageQuery pageQuery) {
+        List<SupplierDealVo> all = new ArrayList<>();
+        dealProviders.forEach(provider -> all.addAll(provider.aggregateBySupplier(id)));
+        // 按交易日期倒序；空日期排末尾（理论上不会出现空，防御）
+        all.sort(Comparator.comparing(SupplierDealVo::getDealDate,
+            Comparator.nullsLast(Comparator.reverseOrder())));
+        // 框架假分页：内部按 pageNum/pageSize slice + total=全量 size，越界返空页
+        return TableDataInfo.build(all, pageQuery.build());
     }
 
     /**

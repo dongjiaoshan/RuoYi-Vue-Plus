@@ -6,6 +6,7 @@ import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.satoken.utils.LoginHelper;
 import org.dromara.djs.common.encoder.BizCodeType;
 import org.dromara.djs.common.encoder.IBizCodeGenerator;
+import org.dromara.djs.warehouse.check.service.IStockCheckService;
 import org.dromara.djs.warehouse.flow.domain.StockFlow;
 import org.dromara.djs.warehouse.flow.domain.bo.MatLossBo;
 import org.dromara.djs.warehouse.flow.domain.bo.MatPickBo;
@@ -64,21 +65,26 @@ public class MatFlowServiceImpl implements IMatFlowService {
     private final LocationStockMapper locationStockMapper;
     private final ProductInfoMapper productInfoMapper;
     private final IBizCodeGenerator bizCodeGenerator;
+    private final IStockCheckService stockCheckService;
 
     public MatFlowServiceImpl(StockFlowMapper stockFlowMapper,
                               LocationStockMapper locationStockMapper,
                               ProductInfoMapper productInfoMapper,
-                              IBizCodeGenerator bizCodeGenerator) {
+                              IBizCodeGenerator bizCodeGenerator,
+                              IStockCheckService stockCheckService) {
         this.stockFlowMapper = stockFlowMapper;
         this.locationStockMapper = locationStockMapper;
         this.productInfoMapper = productInfoMapper;
         this.bizCodeGenerator = bizCodeGenerator;
+        this.stockCheckService = stockCheckService;
     }
 
     @Override
     @Transactional(rollbackFor = Exception.class)
     public Long pick(MatPickBo bo) {
         ProductInfo product = requireProduct(bo.getProductId());
+        // 库位级业务锁（WMS-STOCK-001）：盘点进行中的库位禁出入库（后端双保险）
+        stockCheckService.assertLocationUnlocked(bo.getLocationId());
         Long userId = LoginHelper.getUserId();
 
         // 1. INSERT stock_flow（pick_out 出库）
@@ -115,6 +121,8 @@ public class MatFlowServiceImpl implements IMatFlowService {
     @Transactional(rollbackFor = Exception.class)
     public Long returnBack(MatReturnBo bo) {
         ProductInfo product = requireProduct(bo.getProductId());
+        // 库位级业务锁（WMS-STOCK-001）：盘点进行中的库位禁出入库（后端双保险）
+        stockCheckService.assertLocationUnlocked(bo.getLocationId());
         Long userId = LoginHelper.getUserId();
 
         // 1. 校验今日额度：已领 ≥ 已退 + 已损 + 当次退回量
@@ -153,6 +161,8 @@ public class MatFlowServiceImpl implements IMatFlowService {
     @Transactional(rollbackFor = Exception.class)
     public Long loss(MatLossBo bo) {
         ProductInfo product = requireProduct(bo.getProductId());
+        // 库位级业务锁（WMS-STOCK-001）：盘点进行中的库位禁出入库（后端双保险）
+        stockCheckService.assertLocationUnlocked(bo.getLocationId());
         Long userId = LoginHelper.getUserId();
 
         // 1. 校验今日额度（同退回）

@@ -99,5 +99,12 @@ public enum BizCodeType {
      * 例：{@code BAR2606040001}（CROSS-FLOW-001 D10 listener 创建白条时使用）。
      * 与 BURN_NO / CUT_NO 范式一致，统一走 BizCodeService Redisson 锁 + 序号表 UNIQUE 双保护。
      */
-    BAR_NO
+    BAR_NO,
+
+    /**
+     * 盘点单业务码（每日重置），格式 {@code C{yyyyMMdd}{seq5}}。
+     * 例：{@code C2026061300001}（WMS-STOCK-001 admin 新建盘点单时使用）。
+     * 与 BURN_NO / CUT_NO / BAR_NO 范式一致，统一走 BizCodeService Redisson 锁 + 序号表 UNIQUE 双保护。
+     */
+    CHECK_NO
 }

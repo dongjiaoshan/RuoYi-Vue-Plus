@@ -8,6 +8,7 @@ import org.dromara.djs.common.encoder.IBizCodeGenerator;
 import org.dromara.djs.warehouse.burn.domain.PigBurnRecord;
 import org.dromara.djs.warehouse.burn.domain.bo.PigBurnRecordBo;
 import org.dromara.djs.warehouse.burn.mapper.PigBurnRecordMapper;
+import org.dromara.djs.warehouse.check.service.IStockCheckService;
 import org.dromara.djs.warehouse.flow.domain.StockFlow;
 import org.dromara.djs.warehouse.flow.mapper.StockFlowMapper;
 import org.dromara.djs.warehouse.location.mapper.LocationInfoMapper;
@@ -78,6 +79,8 @@ class PigBurnRecordServiceImplTest {
     private ProductInfoMapper productInfoMapper;
     @Mock
     private IBizCodeGenerator bizCodeGenerator;
+    @Mock
+    private IStockCheckService stockCheckService;
 
     private TestablePigBurnRecordServiceImpl service;
 
@@ -89,8 +92,8 @@ class PigBurnRecordServiceImplTest {
     static class TestablePigBurnRecordServiceImpl extends PigBurnRecordServiceImpl {
         TestablePigBurnRecordServiceImpl(PigBurnRecordMapper b, LocationStockMapper s, StockFlowMapper f,
                                          IPigQueryService q, LocationInfoMapper l, ProductInfoMapper pm,
-                                         IBizCodeGenerator g) {
-            super(b, s, f, q, l, pm, g);
+                                         IBizCodeGenerator g, IStockCheckService cs) {
+            super(b, s, f, q, l, pm, g, cs);
         }
 
         @Override
@@ -121,7 +124,7 @@ class PigBurnRecordServiceImplTest {
     @BeforeEach
     void setup() {
         service = new TestablePigBurnRecordServiceImpl(
-            burnMapper, stockMapper, flowMapper, pigQueryService, locationInfoMapper, productInfoMapper, bizCodeGenerator);
+            burnMapper, stockMapper, flowMapper, pigQueryService, locationInfoMapper, productInfoMapper, bizCodeGenerator, stockCheckService);
         loginHelperMock = Mockito.mockStatic(LoginHelper.class);
         loginHelperMock.when(LoginHelper::getUserId).thenReturn(9001L);
     }

@@ -231,6 +231,9 @@ public class BizCodeGeneratorImpl implements IBizCodeGenerator {
         if (result.contains("{seq4}")) {
             result = result.replace("{seq4}", pad(seq, 4));
         }
+        if (result.contains("{seq5}")) {
+            result = result.replace("{seq5}", pad(seq, 5));
+        }
         if (result.contains("{seq6}")) {
             result = result.replace("{seq6}", pad(seq, 6));
         }

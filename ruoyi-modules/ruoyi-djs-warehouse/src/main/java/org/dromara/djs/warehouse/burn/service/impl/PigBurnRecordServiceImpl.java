@@ -13,6 +13,7 @@ import org.dromara.djs.breed.core.service.IPigQueryService;
 import org.dromara.djs.common.base.DjsBaseServiceImpl;
 import org.dromara.djs.common.encoder.BizCodeType;
 import org.dromara.djs.common.encoder.IBizCodeGenerator;
+import org.dromara.djs.warehouse.check.service.IStockCheckService;
 import org.dromara.djs.warehouse.burn.domain.PigBurnRecord;
 import org.dromara.djs.warehouse.burn.domain.bo.PigBurnRecordBo;
 import org.dromara.djs.warehouse.burn.domain.query.PigBurnRecordQuery;
@@ -98,6 +99,7 @@ public class PigBurnRecordServiceImpl
     private final LocationInfoMapper locationInfoMapper;
     private final ProductInfoMapper productInfoMapper;
     private final IBizCodeGenerator bizCodeGenerator;
+    private final IStockCheckService stockCheckService;
 
     public PigBurnRecordServiceImpl(PigBurnRecordMapper baseMapper,
                                     LocationStockMapper locationStockMapper,
@@ -105,7 +107,8 @@ public class PigBurnRecordServiceImpl
                                     IPigQueryService pigQueryService,
                                     LocationInfoMapper locationInfoMapper,
                                     ProductInfoMapper productInfoMapper,
-                                    IBizCodeGenerator bizCodeGenerator) {
+                                    IBizCodeGenerator bizCodeGenerator,
+                                    IStockCheckService stockCheckService) {
         super(baseMapper);
         this.locationStockMapper = locationStockMapper;
         this.stockFlowMapper = stockFlowMapper;
@@ -113,6 +116,7 @@ public class PigBurnRecordServiceImpl
         this.locationInfoMapper = locationInfoMapper;
         this.productInfoMapper = productInfoMapper;
         this.bizCodeGenerator = bizCodeGenerator;
+        this.stockCheckService = stockCheckService;
     }
 
     @Override
@@ -146,6 +150,8 @@ public class PigBurnRecordServiceImpl
         baseMapper.insert(record);
 
         // ---------- Step 3：扣减白条库存（行锁 + 数量校验） ----------
+        // 库位级业务锁（WMS-STOCK-001）：盘点进行中的库位禁出入库（后端双保险）
+        stockCheckService.assertLocationUnlocked(bo.getLocationId());
         Long operatorId = LoginHelper.getUserId();
         int affected = locationStockMapper.deductByEarNo(
             bo.getLocationId(), bo.getEarNo(), burnWeight, operatorId);

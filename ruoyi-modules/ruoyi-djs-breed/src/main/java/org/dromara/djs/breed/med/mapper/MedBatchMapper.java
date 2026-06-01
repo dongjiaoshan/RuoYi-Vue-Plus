@@ -1,12 +1,15 @@
 package org.dromara.djs.breed.med.mapper;
 
 import org.apache.ibatis.annotations.Param;
+import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 import org.dromara.common.mybatis.core.mapper.BaseMapperPlus;
 import org.dromara.djs.breed.med.domain.MedBatch;
 import org.dromara.djs.breed.med.domain.vo.MedBatchVo;
+import org.dromara.djs.common.supplier.api.SupplierDealVo;
 
 import java.math.BigDecimal;
+import java.util.List;
 
 /**
  * 药品批次 Mapper（BRD-MED-001）。
@@ -49,5 +52,28 @@ public interface MedBatchMapper extends BaseMapperPlus<MedBatch, MedBatchVo> {
     @Update("UPDATE t_breed_medicine_batch SET quantity = quantity + #{qty} "
         + "WHERE id = #{batchId} AND del_flag = '0'")
     int incrementQuantity(@Param("batchId") Long batchId, @Param("qty") BigDecimal qty);
+
+    /**
+     * 按供应商聚合药品入库批次明细（DJS-FIX-ADMIN-W22-005 供应商交易明细 facade，read-only）。
+     *
+     * <p>{@code t_breed_medicine_batch} 无 {@code supplier_id / medicine_name / unit}，
+     * 必须经 {@code medicine_id} JOIN {@code t_breed_medicine_info} 取供应商关联 + 药品名 + 单位。
+     * 仅返本租户 {@code '1001'} 未软删行，按生产日期倒序。</p>
+     *
+     * @param supplierId 供应商 ID（{@code t_md_supplier.id}）
+     * @return 交易明细行（{@code sourceType='medicine'}）；无数据返空 list
+     */
+    @Select("SELECT b.production_date AS dealDate, "
+        + "       i.medicine_name AS dealProduct, "
+        + "       b.quantity AS dealQuantity, "
+        + "       i.unit AS dealUnit, "
+        + "       'medicine' AS sourceType "
+        + "  FROM t_breed_medicine_batch b "
+        + "  JOIN t_breed_medicine_info i ON i.id = b.medicine_id AND i.del_flag = '0' "
+        + " WHERE i.supplier_id = #{supplierId} "
+        + "   AND b.del_flag = '0' "
+        + "   AND b.tenant_id = '1001' "
+        + " ORDER BY b.production_date DESC")
+    List<SupplierDealVo> selectSupplierDeals(@Param("supplierId") Long supplierId);
 
 }

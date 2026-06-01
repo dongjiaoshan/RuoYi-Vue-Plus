@@ -58,4 +58,44 @@ public class StockFlowController extends BaseController {
         ExcelUtil.exportExcel(list, "出入库流水", StockFlowVo.class, response);
     }
 
+    // ============ D11 WMS-FLOW-001：admin 入库 / 出库记录两页（强制 inout_type）============
+
+    /**
+     * 入库记录分页（强制 {@code inout_type=IN}）。
+     */
+    @SaCheckPermission("djs:warehouse:flowIn:list")
+    @GetMapping("/in/list")
+    public TableDataInfo<StockFlowVo> inList(StockFlowQuery query, PageQuery pageQuery) {
+        return service.queryInList(query, pageQuery);
+    }
+
+    /**
+     * 出库记录分页（强制 {@code inout_type=OT}）。
+     */
+    @SaCheckPermission("djs:warehouse:flowOut:list")
+    @GetMapping("/out/list")
+    public TableDataInfo<StockFlowVo> outList(StockFlowQuery query, PageQuery pageQuery) {
+        return service.queryOutList(query, pageQuery);
+    }
+
+    /**
+     * 入库记录导出（强制 {@code inout_type=IN}）。
+     */
+    @SaCheckPermission("djs:warehouse:flowIn:export")
+    @PostMapping("/in/export")
+    public void inExport(StockFlowQuery query, HttpServletResponse response) {
+        List<StockFlowVo> list = service.queryInExport(query);
+        ExcelUtil.exportExcel(list, "入库记录", StockFlowVo.class, response);
+    }
+
+    /**
+     * 出库记录导出（强制 {@code inout_type=OT}）。
+     */
+    @SaCheckPermission("djs:warehouse:flowOut:export")
+    @PostMapping("/out/export")
+    public void outExport(StockFlowQuery query, HttpServletResponse response) {
+        List<StockFlowVo> list = service.queryOutExport(query);
+        ExcelUtil.exportExcel(list, "出库记录", StockFlowVo.class, response);
+    }
+
 }

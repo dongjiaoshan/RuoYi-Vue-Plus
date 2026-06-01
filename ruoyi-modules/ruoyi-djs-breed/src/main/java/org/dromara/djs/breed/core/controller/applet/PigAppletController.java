@@ -4,10 +4,14 @@ import cn.dev33.satoken.annotation.SaCheckLogin;
 import cn.dev33.satoken.annotation.SaCheckPermission;
 import lombok.RequiredArgsConstructor;
 import org.dromara.common.core.domain.R;
+import org.dromara.common.mybatis.core.page.PageQuery;
+import org.dromara.common.mybatis.core.page.TableDataInfo;
+import org.dromara.djs.breed.core.domain.vo.PigAvailableVo;
 import org.dromara.djs.breed.core.domain.vo.PigBarnCountVo;
 import org.dromara.djs.breed.core.domain.vo.PigIntroDetailVo;
 import org.dromara.djs.breed.core.domain.vo.PigSearchVo;
 import org.dromara.djs.breed.core.service.IPigCoreService;
+import org.dromara.djs.breed.core.service.IPigQueryService;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -45,6 +49,8 @@ import java.util.List;
 public class PigAppletController {
 
     private final IPigCoreService pigCoreService;
+
+    private final IPigQueryService pigQueryService;
 
     /**
      * 耳号关键字搜索（picker 用）。
@@ -110,5 +116,33 @@ public class PigAppletController {
     @GetMapping("/intro-detail")
     public R<PigIntroDetailVo> introDetail(@RequestParam Long pigId) {
         return R.ok(pigCoreService.queryIntroDetail(pigId));
+    }
+
+    /**
+     * 出栏可用猪只列表（WMS-DEMAND-002 mp 调度白条选猪 PigPicker 用）。
+     *
+     * <p>复用 admin 端「指定猪只」对话框同款 {@link IPigQueryService#listAvailableForOutbound}
+     * ——「出栏可用」语义 {@code pig_type='fattening' AND current_status != 'END' AND 未被非取消态需求占用}。
+     * mp 调度员为白条需求挑猪时多选，选中后调 {@code /djs/applet/warehouse/demand/{id}/assign-pig} 提交耳号清单。</p>
+     *
+     * <p>返回字段含 {@code lastBackfat}（最新背膘 mm，来自 {@code t_farm_pig_growth}）——支持业务备注
+     * "背膘不要太厚" 的人工判断；mp 端按背膘/性别筛选在前端做（数据已全量返回该页）。</p>
+     *
+     * <p>{@code storeId} / {@code productType} 入参 V1 仅作占位接收——白条可出栏猪不绑定门店/业态
+     * （仓库统一调度池），实际过滤在 mp 前端按背膘/性别。V1.x 如需按门店预约切池再下沉到 SQL。</p>
+     *
+     * @param storeId     预约门店 ID（V1 占位，不参与过滤）
+     * @param productType 业态（V1 占位，不参与过滤）
+     * @param pageQuery   分页（pageNum/pageSize；mp 端默认 pageSize=50）
+     */
+    @SaCheckLogin
+    @SaCheckPermission("djs:applet:pig:search")
+    @GetMapping("/available")
+    public TableDataInfo<PigAvailableVo> available(
+        @RequestParam(required = false) Long storeId,
+        @RequestParam(required = false) String productType,
+        PageQuery pageQuery
+    ) {
+        return pigQueryService.listAvailableForOutbound(pageQuery);
     }
 }
