@@ -49,8 +49,10 @@ public class BizCodeController extends BaseController {
      *   <li>TRACE_CODE → {@code productCode=PG}</li>
      *   <li>DEMAND_NO → {@code bizCode=ST}</li>
      *   <li>STOCK_FLOW_NO → {@code ioCode=IN}</li>
-     *   <li>SHIP_NO / PACK_NO → 无需 context</li>
+     *   <li>PRODUCE_NO → {@code prefix=Z}（业态前缀 Z/G/B/H/D/L）</li>
+     *   <li>SHIP_NO / RETURN_NO → 无需 context</li>
      * </ul>
+     * <p>{@code PACK_NO} 已废弃（{@link BizCodeType#PACK_NO}），产品生产编号改走 PRODUCE_NO。</p>
      *
      * @param type    {@link BizCodeType} 枚举名
      * @param context 额外占位符上下文（form 参数自动收集到 Map）

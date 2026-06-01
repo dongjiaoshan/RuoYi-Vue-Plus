@@ -25,7 +25,7 @@ public class StockCheckQuery {
     private Long locationId;
 
     /**
-     * 盘点单状态字典 {@code djs_check_status}（draft / in_progress / done）。
+     * 盘点单状态字典 {@code djs_check_status}（draft / in_progress / completed）。
      */
     private String checkStatus;
 

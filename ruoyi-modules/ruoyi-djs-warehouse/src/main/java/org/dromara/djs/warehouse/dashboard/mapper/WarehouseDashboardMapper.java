@@ -24,7 +24,7 @@ import java.util.List;
  *   <li>盘点表 {@code t_warehouse_check_record} 无 result_type 列；正常 / 异常 / 计损由
  *       {@code diff_stock} 推导：=0 正常 / !=0 异常 / &lt;0 计损（盘亏）。</li>
  *   <li>库位主表 {@code t_warehouse_location_info}（非 t_warehouse_location）；库存表
- *       {@code t_warehouse_location_stock.warehouse_id} FK 指向库位 id，库存列是 {@code product_stock}。</li>
+ *       {@code t_warehouse_location_stock.location_id}（盘点表 t_warehouse_check_record 同用 location_id；inout_type 取值大写 IN/OT）FK 指向库位 id，库存列是 {@code product_stock}。</li>
  * </ul>
  *
  * <p>dashboard 聚合不走 BaseMapperPlus，故所有 SQL 显式 {@code WHERE tenant_id = #{tenantId}}
@@ -59,7 +59,7 @@ public interface WarehouseDashboardMapper {
     @Select("SELECT COUNT(*) "
         + "  FROM t_warehouse_stock_flow "
         + " WHERE tenant_id = #{tenantId} "
-        + "   AND inout_type = 'in' "
+        + "   AND inout_type = 'IN' "
         + "   AND DATE(flow_date) = CURDATE() "
         + "   AND del_flag = '0'")
     Integer countTodayProduction(@Param("tenantId") String tenantId);
@@ -113,17 +113,17 @@ public interface WarehouseDashboardMapper {
     Integer countLatestCheckLoss(@Param("tenantId") String tenantId);
 
     /**
-     * 当月异常库位数（COUNT DISTINCT warehouse_id WHERE diff_stock!=0 AND 当月）。
+     * 当月异常库位数（COUNT DISTINCT location_id WHERE diff_stock!=0 AND 当月）。
      *
      * @param tenantId 租户
      * @return 当月有盘点差异的不重复库位数
      */
-    @Select("SELECT COUNT(DISTINCT warehouse_id) "
+    @Select("SELECT COUNT(DISTINCT location_id) "
         + "  FROM t_warehouse_check_record "
         + " WHERE tenant_id = #{tenantId} "
         + "   AND del_flag = '0' "
         + "   AND diff_stock <> 0 "
-        + "   AND warehouse_id IS NOT NULL "
+        + "   AND location_id IS NOT NULL "
         + "   AND check_date >= DATE_FORMAT(NOW(), '%Y-%m-01')")
     Integer countMonthAbnormalLocation(@Param("tenantId") String tenantId);
 
@@ -144,13 +144,13 @@ public interface WarehouseDashboardMapper {
         + "             OR EXISTS (SELECT 1 FROM t_warehouse_check_record c "
         + "                         WHERE c.tenant_id = l.tenant_id "
         + "                           AND c.del_flag = '0' "
-        + "                           AND c.warehouse_id = l.id "
+        + "                           AND c.location_id = l.id "
         + "                           AND c.diff_stock <> 0 "
         + "                           AND c.check_date >= DATE_FORMAT(NOW(), '%Y-%m-01')) "
         + "            THEN 'abnormal' ELSE 'normal' END AS status "
         + "  FROM t_warehouse_location_info l "
         + "  LEFT JOIN t_warehouse_location_stock s "
-        + "         ON s.warehouse_id = l.id AND s.del_flag = '0' "
+        + "         ON s.location_id = l.id AND s.del_flag = '0' "
         + " WHERE l.tenant_id = #{tenantId} "
         + "   AND l.del_flag = '0' "
         + " GROUP BY l.id, l.location_name, l.location_type, l.location_status, l.tenant_id "

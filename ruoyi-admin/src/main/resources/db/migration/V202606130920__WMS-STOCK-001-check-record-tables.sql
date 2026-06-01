@@ -4,7 +4,7 @@
 -- 1. t_warehouse_check_record DROP + CREATE 重建
 --    （baseline V202605200903 占位 16 字段 AUTO_INCREMENT；对照 doc/11 §2.4 权威重建为
 --     雪花主键 + 22 字段；baseline 表 0 业务数据，无迁移负担，参 WMS-MD-002 D8 范式）
--- 2. 字典 seed：djs_check_status 3 态（draft / in_progress / done）盘点单状态机
+-- 2. 字典复用：djs_check_status 复用 D1 V202605201000 已 seed（draft / in_progress / completed），本 ticket 不再 seed
 --    （djs_check_result 1/2/3 已由 WMS-MD-001 V202605290910 seed，本 ticket 复用不重灌；
 --      flow_type check_in / check_out 已由 WMS-MAT-001 V202606071300 seed，复用）
 -- 3. 业务码规则 seed：CHECK_NO（格式 C{yyyyMMdd}{seq5}，每日重置）
@@ -30,7 +30,7 @@ CREATE TABLE t_warehouse_check_record (
   diff_reason        VARCHAR(255)  NULL COMMENT '差异原因',
   check_by           BIGINT        NULL COMMENT 'FK sys_user.user_id（实盘录入人；header 行可空）',
   check_date         DATETIME      NOT NULL COMMENT '盘点日期',
-  check_status       VARCHAR(16)   NOT NULL DEFAULT 'draft' COMMENT '字典 djs_check_status：draft / in_progress / done',
+  check_status       VARCHAR(16)   NOT NULL DEFAULT 'draft' COMMENT '字典 djs_check_status：draft / in_progress / completed',
   is_header          TINYINT       NOT NULL DEFAULT 0 COMMENT '1=盘点单头（承载 status / 库位锁）/ 0=盘点明细 line',
   create_dept        BIGINT        NULL COMMENT '创建部门',
   create_by          BIGINT        NULL COMMENT '创建者',
@@ -47,18 +47,7 @@ CREATE TABLE t_warehouse_check_record (
   KEY idx_check_id (check_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='盘点记录表（WMS-STOCK-001）';
 
--- ============== 2. 字典 seed：djs_check_status 3 态 ==============
-INSERT IGNORE INTO sys_dict_type
-    (dict_id, tenant_id, dict_name, dict_type, create_by, create_time, remark)
-VALUES
-    (920530, '1001', '盘点单状态', 'djs_check_status', 1, NOW(), 'WMS-STOCK-001 盘点单状态机');
-
-INSERT IGNORE INTO sys_dict_data
-    (dict_code, tenant_id, dict_sort, dict_label, dict_value, dict_type, css_class, list_class, is_default, create_by, create_time, remark)
-VALUES
-    (102453000, '1001', 0, '草稿',   'draft',       'djs_check_status', '', 'info',    'Y', 1, NOW(), 'WMS-STOCK-001'),
-    (102453001, '1001', 1, '进行中', 'in_progress', 'djs_check_status', '', 'warning', 'N', 1, NOW(), 'WMS-STOCK-001 锁库位'),
-    (102453002, '1001', 2, '已完成', 'done',        'djs_check_status', '', 'success', 'N', 1, NOW(), 'WMS-STOCK-001 解锁 + 已回写库存');
+-- ============== 2. 字典复用：djs_check_status 复用 D1 V202605201000 已 seed（draft / in_progress / completed），本 ticket 不再 seed ==============
 
 -- ============== 3. 业务码规则 seed：CHECK_NO ==============
 -- 格式：C{yyyyMMdd}{seq5}（每日重置，例 C2026061300001）

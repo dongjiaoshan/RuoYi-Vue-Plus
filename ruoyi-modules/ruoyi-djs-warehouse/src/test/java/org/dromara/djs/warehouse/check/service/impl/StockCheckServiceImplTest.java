@@ -54,7 +54,7 @@ import static org.mockito.Mockito.when;
  *   <li>createCheck 锁库位 happy：库位存在 + 无进行中盘点 → INSERT header(status=in_progress)</li>
  *   <li>createCheck 互斥：库位已有进行中盘点 → 抛 ServiceException + 不 INSERT</li>
  *   <li>submitLine line：自动算 sysStock + diffStock + checkResultType；INSERT line</li>
- *   <li>completeCheck：diff&gt;0 写 check_in/IN，diff&lt;0 写 check_out/OT；回写 location_stock + header done</li>
+ *   <li>completeCheck：diff&gt;0 写 check_in/IN，diff&lt;0 写 check_out/OT；回写 location_stock + header completed</li>
  *   <li>assertLocationUnlocked：被锁 → 抛 ServiceException（业务锁后端双保险）</li>
  * </ol>
  *
@@ -224,7 +224,7 @@ class StockCheckServiceImplTest {
     }
 
     @Test
-    @DisplayName("completeCheck：line diff=+3 盘盈 → 写 check_in/IN；回写 location_stock；header done")
+    @DisplayName("completeCheck：line diff=+3 盘盈 → 写 check_in/IN；回写 location_stock；header completed")
     void testCompleteCheck_Surplus() {
         StockCheckRecord header = new StockCheckRecord();
         header.setId(1L);
@@ -262,9 +262,9 @@ class StockCheckServiceImplTest {
         verify(locationStockMapper, times(1))
             .setStockAfterCheck(eq(LOCATION_ID), eq(PRODUCT_ID), eq(new BigDecimal("13")), eq(2), eq(USER_ID));
 
-        // 3. header done（updateById 被调）
+        // 3. header completed（updateById 被调）
         verify(baseMapper, times(1)).updateById(any(StockCheckRecord.class));
-        assertThat(header.getCheckStatus()).isEqualTo("done");
+        assertThat(header.getCheckStatus()).isEqualTo("completed");
     }
 
     @Test

@@ -3,7 +3,9 @@ package org.dromara.djs.warehouse.check.domain.vo;
 import cn.idev.excel.annotation.ExcelIgnoreUnannotated;
 import cn.idev.excel.annotation.ExcelProperty;
 import com.fasterxml.jackson.annotation.JsonFormat;
+import io.github.linpeilie.annotations.AutoMapper;
 import lombok.Data;
+import org.dromara.djs.warehouse.check.domain.StockCheckRecord;
 import org.dromara.common.translation.annotation.Translation;
 import org.dromara.common.translation.constant.TransConstant;
 
@@ -24,6 +26,7 @@ import java.util.Date;
  */
 @Data
 @ExcelIgnoreUnannotated
+@AutoMapper(target = StockCheckRecord.class)
 public class StockCheckRecordVo implements Serializable {
 
     @Serial

@@ -36,7 +36,6 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
-import java.time.format.DateTimeFormatter;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
@@ -65,8 +64,8 @@ import java.util.stream.Collectors;
  *
  * <h3>produce_no 业务码生成</h3>
  * <p>{@code yyMMdd + 前缀 + 4 位序号}，前缀 Z=猪肉 / G=果蔬 / B=白条 / H=干货 / D=鸡蛋 / L=礼盒。
- * inline mapper.selectMaxProduceNoByPrefix + 应用层自增（参 D7 / D9 burn/cut 范式）；
- * BizCodeType 治理推到后续 ticket（已在 D10 _open-issues 记录）。</p>
+ * 走 {@link IBizCodeGenerator} 的 {@link BizCodeType#PRODUCE_NO} 规则（按业态前缀分桶递增 +
+ * Redisson 锁 + 序号表 UNIQUE 双保护）。</p>
  *
  * @author djs
  * @since WMS-PACK-001
@@ -524,25 +523,17 @@ public class ProductProductionServiceImpl
     }
 
     /**
-     * 生成 produce_no：{@code yyMMdd + prefix + 4位序号}。
+     * 生成 produce_no：{@code yyMMdd + 业态前缀 + 4 位序号}（doc/11 §2.6 R7）。
      *
-     * <p>prefix 按 product_info.belong_type 映射；缺省走默认 G。</p>
+     * <p>业态前缀按 product_info.belong_type 映射（缺省走默认 G），交给
+     * {@link IBizCodeGenerator} 的 {@link BizCodeType#PRODUCE_NO} 规则生成：
+     * 序号按 {@code yyMMdd + prefix} 复合键独立递增（每业态当日各自从 0001 起算），
+     * Redisson 锁 + 序号表 UNIQUE 双保护。</p>
      */
     protected String generateProduceNo(String belongType) {
         String prefix = BELONG_TYPE_TO_PRODUCE_PREFIX.getOrDefault(
             belongType, DEFAULT_PRODUCE_PREFIX);
-        String yyMMdd = LocalDate.now().format(DateTimeFormatter.ofPattern("yyMMdd"));
-        String produceNoPrefix = yyMMdd + prefix;
-        String maxNo = baseMapper.selectMaxProduceNoByPrefix(produceNoPrefix);
-        int seq = 1;
-        if (StringUtils.isNotBlank(maxNo) && maxNo.length() >= produceNoPrefix.length() + 4) {
-            try {
-                seq = Integer.parseInt(maxNo.substring(produceNoPrefix.length())) + 1;
-            } catch (NumberFormatException e) {
-                log.warn("[WMS-PACK-001] produce_no 解析失败 maxNo={}", maxNo);
-            }
-        }
-        return produceNoPrefix + String.format("%04d", seq);
+        return bizCodeGenerator.generate(BizCodeType.PRODUCE_NO, Map.of("prefix", prefix));
     }
 
     /**

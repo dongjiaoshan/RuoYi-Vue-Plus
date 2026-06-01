@@ -34,14 +34,14 @@ public interface IStockCheckService {
 
     /**
      * 完成盘点（admin）：按各 line {@code diffStock} 正负写流水（盘盈 check_in / 盘亏 check_out）
-     * + 把 location_stock 回写至实盘量 + 刷新 latest_check_time + header status='done' → 解锁库位。
+     * + 把 location_stock 回写至实盘量 + 刷新 latest_check_time + header status='completed' → 解锁库位。
      *
      * @param id header 行主键
      */
     void completeCheck(Long id);
 
     /**
-     * 取消盘点（admin）：header status='done' 但<b>不回写</b>库存、<b>不写流水</b>，仅解锁库位。
+     * 取消盘点（admin）：header status='completed' 但<b>不回写</b>库存、<b>不写流水</b>，仅解锁库位。
      *
      * @param id header 行主键
      */
@@ -63,7 +63,7 @@ public interface IStockCheckService {
      * 提交 / 修改实盘明细 line（mp）：按 {@code checkId + locationId + productId} upsert，
      * 自动算 {@code sysStock}（查 location_stock 现量）+ {@code diffStock}。
      *
-     * <p>header 不是 in_progress（如已 done）→ 抛 ServiceException 拒绝录入。</p>
+     * <p>header 不是 in_progress（如已 completed）→ 抛 ServiceException 拒绝录入。</p>
      *
      * @return line 行主键
      */

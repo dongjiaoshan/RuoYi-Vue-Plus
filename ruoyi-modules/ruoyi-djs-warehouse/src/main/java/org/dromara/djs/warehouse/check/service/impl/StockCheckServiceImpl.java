@@ -48,12 +48,12 @@ import java.util.stream.Collectors;
  * <p>{@link #createCheck} 把 header 置 {@code in_progress} 即锁住 {@code locationId}；
  * stock_flow 写入入口（{@code MatFlowServiceImpl} / {@code PigBurnRecordServiceImpl}）调
  * {@link #assertLocationUnlocked} 后端双保险拒绝出入库。{@link #completeCheck} / {@link #cancelCheck}
- * 置 {@code done} 解锁。</p>
+ * 置 {@code completed} 解锁。</p>
  *
  * <h3>完成盘点跨表事务（completeCheck 核心风险）</h3>
  * <p>单 {@code @Transactional} 跨 N 步：对每条 line 按 {@code diffStock} 正负写流水
  * （盘盈 {@code check_in/IN} / 盘亏 {@code check_out/OT}）+ 回写 location_stock 至实盘量
- * + 刷新 latest_check_time；最后 header status='done' 解锁。任一异常整体回滚。</p>
+ * + 刷新 latest_check_time；最后 header status='completed' 解锁。任一异常整体回滚。</p>
  *
  * @author djs
  * @since WMS-STOCK-001
@@ -69,7 +69,7 @@ public class StockCheckServiceImpl
      */
     private static final String STATUS_DRAFT = "draft";
     private static final String STATUS_IN_PROGRESS = "in_progress";
-    private static final String STATUS_DONE = "done";
+    private static final String STATUS_DONE = "completed";
 
     /**
      * 出入库方向（DDL CHAR(3)）。
@@ -173,7 +173,7 @@ public class StockCheckServiceImpl
             }
         }
 
-        // 3. header status='done' 解锁
+        // 3. header status='completed' 解锁
         header.setCheckStatus(STATUS_DONE);
         baseMapper.updateById(header);
     }
@@ -185,7 +185,7 @@ public class StockCheckServiceImpl
         if (STATUS_DONE.equals(header.getCheckStatus())) {
             throw new ServiceException("盘点单已完成，无法取消");
         }
-        // 取消 = 解锁不回写：header 直接置 done（解除库位锁），line 留痕不写流水
+        // 取消 = 解锁不回写：header 直接置 completed（解除库位锁），line 留痕不写流水
         header.setCheckStatus(STATUS_DONE);
         baseMapper.updateById(header);
     }

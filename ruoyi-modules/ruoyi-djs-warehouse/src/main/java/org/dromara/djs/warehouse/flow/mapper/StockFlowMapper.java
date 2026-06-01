@@ -109,7 +109,7 @@ public interface StockFlowMapper extends BaseMapperPlus<StockFlow, StockFlowVo> 
      * <p>只取入库方向（{@code inout_type='IN'}）且带供应商的流水（外购入库才写 {@code supplier_id}；
      * 当前 V1 写入路径暂未回填 supplier_id，本查询设计上就绪，待 WMS-PURCHASE 落地后自动出数据）。
      * {@code t_warehouse_stock_flow} 无产品名 / 单位，经 {@code product_id} LEFT JOIN
-     * {@code t_warehouse_product_info} 取 {@code product_name / unit}。仅本租户 {@code '1001'}
+     * {@code t_warehouse_product_info} 取 {@code product_name / product_unit}。仅本租户 {@code '1001'}
      * 未软删行，按业务日期倒序。</p>
      *
      * @param supplierId 供应商 ID（{@code t_md_supplier.id}）
@@ -118,7 +118,7 @@ public interface StockFlowMapper extends BaseMapperPlus<StockFlow, StockFlowVo> 
     @Select("SELECT DATE(f.flow_date) AS dealDate, "
         + "       p.product_name AS dealProduct, "
         + "       f.change_quantity AS dealQuantity, "
-        + "       p.unit AS dealUnit, "
+        + "       p.product_unit AS dealUnit, "
         + "       'material' AS sourceType "
         + "  FROM t_warehouse_stock_flow f "
         + "  LEFT JOIN t_warehouse_product_info p ON p.id = f.product_id AND p.del_flag = '0' "

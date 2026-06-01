@@ -17,7 +17,7 @@ import java.util.Date;
  * <p>对应表 {@code t_warehouse_check_record}（V202606130920 重建）。同一盘点单的
  * header 行 + 各 line 行共用同一 {@code checkId} 业务码，用 {@code isHeader} 区分：</p>
  * <ul>
- *   <li>{@code isHeader=1} 盘点单头：承载 {@code checkStatus}（draft / in_progress / done）与库位锁；
+ *   <li>{@code isHeader=1} 盘点单头：承载 {@code checkStatus}（draft / in_progress / completed）与库位锁；
  *       {@code productId=0} 占位、{@code sysStock / checkStock / diffStock=0}</li>
  *   <li>{@code isHeader=0} 盘点明细 line：每个 (location_id, product_id) 一行实盘记录，
  *       {@code sysStock}（盘点时系统量）/ {@code checkStock}（实盘量）/ {@code diffStock = check - sys}</li>
@@ -25,7 +25,7 @@ import java.util.Date;
  *
  * <p>库位级业务锁：盘点单 header {@code checkStatus='in_progress'} 时，对应 {@code locationId} 被锁，
  * stock_flow 写入入口（{@code MatFlowServiceImpl} / {@code PigBurnRecordServiceImpl}）抛 ServiceException 拒绝。
- * admin 完成（done）/ 取消（done 不回写）后解锁。</p>
+ * admin 完成（completed）/ 取消（completed 不回写）后解锁。</p>
  *
  * <p>软删走 {@code delFlag} + {@code delUnique}（{@link org.dromara.djs.common.base.DjsBaseServiceImpl#softDelete}）。</p>
  *
@@ -107,7 +107,7 @@ public class StockCheckRecord extends TenantEntity {
     private Date checkDate;
 
     /**
-     * 盘点单状态（字典 {@code djs_check_status}：draft / in_progress / done）；仅 header 行有意义。
+     * 盘点单状态（字典 {@code djs_check_status}：draft / in_progress / completed）；仅 header 行有意义。
      */
     private String checkStatus;
 
