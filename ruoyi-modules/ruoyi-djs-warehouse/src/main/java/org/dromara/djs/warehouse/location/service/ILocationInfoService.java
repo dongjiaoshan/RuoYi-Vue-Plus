@@ -4,6 +4,7 @@ import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.warehouse.location.domain.bo.LocationInfoBo;
 import org.dromara.djs.warehouse.location.domain.query.LocationInfoQuery;
+import org.dromara.djs.warehouse.location.domain.vo.LocationCardSummaryVo;
 import org.dromara.djs.warehouse.location.domain.vo.LocationInfoVo;
 
 import java.util.Collection;
@@ -56,5 +57,16 @@ public interface ILocationInfoService {
      * @return 受影响行数
      */
     int deleteWithValidByIds(Collection<Long> ids);
+
+    /**
+     * 库位类型卡片汇总（库位一览页顶部 2×4 网格）。
+     *
+     * <p>以 {@code djs_location_type} 8 类字典 value 作为 base，按类聚合库位数 /
+     * 在库产品数 / 当前库存 / 今日入出库量 / 最近盘点；某类无数据也返 1 行（量为 0），
+     * 保证返回固定 8 行供前端固定布局。</p>
+     *
+     * @return 8 行卡片汇总（顺序按字典 dict_sort）
+     */
+    List<LocationCardSummaryVo> getCardSummary();
 
 }
