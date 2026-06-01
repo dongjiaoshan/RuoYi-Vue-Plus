@@ -13,6 +13,7 @@ import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.breed.core.domain.Pig;
 import org.dromara.djs.breed.core.enums.PigLifecycle;
 import org.dromara.djs.breed.core.mapper.PigMapper;
+import org.dromara.djs.breed.core.service.EarNoAllocator;
 import org.dromara.djs.breed.core.service.I18nMessages;
 import org.dromara.djs.breed.event.eartag.domain.PigPigletno;
 import org.dromara.djs.breed.event.eartag.domain.bo.PigletBatchEarTagBo;
@@ -27,8 +28,6 @@ import org.dromara.djs.breed.event.farrow.domain.PigFarrow;
 import org.dromara.djs.breed.event.farrow.mapper.PigFarrowMapper;
 import org.dromara.djs.breed.farm.domain.Barn;
 import org.dromara.djs.breed.farm.mapper.BarnMapper;
-import org.dromara.djs.common.encoder.BizCodeType;
-import org.dromara.djs.common.encoder.IBizCodeGenerator;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -50,13 +49,13 @@ import java.util.stream.Collectors;
  *
  * <h3>事务边界</h3>
  * <p>{@link #batchTag} 标 {@code @Transactional} — N 头仔猪 pig_info INSERT + N 条 pigletno INSERT
- * 同生共死，任一失败回滚（含编码生成器内部异常，已由 redisson lease 兜底）。</p>
+ * 同生共死，任一失败回滚（含耳号分配器内部异常，已由 redisson lease 兜底）。</p>
  *
  * <h3>耳号生成</h3>
- * <p>EAR_NO 规则 {@code {farmCode2}{barnCode2}{yyMM}{dailySeq4}}。本 service 用一次
- * {@code generateBatch(EAR_NO, ctx, N)} 拿连续 N 号，避免 N 次单生成的 lock 抖动。
+ * <p>EAR_NO 规则 {@code {farmCode2}{barnCode2}{yyMM}{seq4}}。本 service 走 {@link EarNoAllocator}
+ * 一次性拿连续 N 号（序号源 = DB max 同前缀同月 + 1，月内连续耳标不撞 UNIQUE）。
  * {@code barnCode2} 取自母猪 barn_id 关联的 Barn.barnCode 前 2 位；{@code farmCode2}
- * 走 BizCodeGenerator 默认 "01"（V1 单农场，详见 ADR-0001）。</p>
+ * 固定 "01"（V1 单农场，详见 ADR-0001）。</p>
  *
  * @author djs
  * @since BRD-EVENT-003
@@ -70,7 +69,7 @@ public class PigEarTagServiceImpl implements IPigEarTagService {
     private final PigPigletnoMapper pigletnoMapper;
     private final PigFarrowMapper farrowMapper;
     private final BarnMapper barnMapper;
-    private final IBizCodeGenerator bizCodeGenerator;
+    private final EarNoAllocator earNoAllocator;
 
     @Override
     public FarrowEarTagStatVo statByFarrow(Long farrowId) {
@@ -151,9 +150,8 @@ public class PigEarTagServiceImpl implements IPigEarTagService {
             ? null
             : farrowMapper.selectBoarEarByBreedingId(farrow.getBreedingId());
 
-        // 3. 一次性批量生成 N 个连续耳号
-        Map<String, Object> ctx = buildEarNoContext(mother);
-        List<String> earNos = bizCodeGenerator.generateBatch(BizCodeType.EAR_NO, ctx, newCount);
+        // 3. 一次性批量生成 N 个连续耳号（序号源 = DB max 同前缀同月，避免日级计数器月内撞 UNIQUE）
+        List<String> earNos = earNoAllocator.allocate("01", motherBarnCode(mother), newCount);
 
         // 4. 同事务循环 INSERT pig + pigletno
         LocalDateTime tagAt = LocalDateTime.now();
@@ -214,33 +212,19 @@ public class PigEarTagServiceImpl implements IPigEarTagService {
     }
 
     /**
-     * 构造 EAR_NO 编码上下文。
+     * 取母猪所在栋舍编码（EAR_NO 前缀 barnCode2 段）。
      *
-     * <p>取母猪所在栋舍编码前 2 位填 {@code barnCode2}；母猪未关联 barn / barn 缺 code 时
-     * 回落到 "00"，避免编码生成器抛 warn 中断业务（V1 单农场场景 farmCode 走默认 "01"）。</p>
+     * <p>母猪未关联 barn / barn 缺 code 时返 null，由 {@link EarNoAllocator} 回落 "00"
+     * （V1 单农场场景 farmCode 固定 "01"）。</p>
      */
-    private Map<String, Object> buildEarNoContext(Pig mother) {
-        Map<String, Object> ctx = new HashMap<>();
-        String barnCode = null;
+    private String motherBarnCode(Pig mother) {
         if (mother != null && mother.getBarnId() != null) {
             Barn barn = barnMapper.selectById(mother.getBarnId());
             if (barn != null) {
-                barnCode = barn.getBarnCode();
+                return barn.getBarnCode();
             }
         }
-        ctx.put("barnCode", normalizeCtx2(barnCode));
-        return ctx;
-    }
-
-    /** 把 barnCode 归一化为 2 位（截断 / 左侧补 0），缺时回落 "00"。 */
-    private String normalizeCtx2(String raw) {
-        if (raw == null || raw.isEmpty()) {
-            return "00";
-        }
-        if (raw.length() >= 2) {
-            return raw.substring(0, 2);
-        }
-        return String.format("%2s", raw).replace(' ', '0');
+        return null;
     }
 
     private Map<Long, Pig> loadPigsByIds(List<Long> ids) {

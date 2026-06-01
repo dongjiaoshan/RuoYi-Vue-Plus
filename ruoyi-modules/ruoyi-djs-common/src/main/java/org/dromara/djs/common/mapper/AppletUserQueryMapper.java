@@ -98,4 +98,52 @@ public interface AppletUserQueryMapper {
         """)
     List<Map<String, Object>> selectContactsRaw(@Param("currentUserId") Long currentUserId,
                                                 @Param("keyword") String keyword);
+
+    /**
+     * 员工选择器原始查询（{@code /djs/applet/common/employee/list}）：列出所有启用、未删除员工的
+     * 最小字段集（userId / userName / nickName / deptName），供 mp EmployeePicker 选人写进业务
+     * 人员字段。
+     *
+     * <p>与 {@link #selectContactsRaw} 的区别：</p>
+     * <ul>
+     *   <li>不排除当前登录用户（录入人和被记录的"实际执行人"常常是同一人，工人要能选自己）</li>
+     *   <li>不查角色 / 手机 / 邮箱（选员工只需 id + 名字 + 部门），SQL 更轻无 GROUP_CONCAT</li>
+     *   <li>{@code role} 不为空时按 {@code sys_role.role_key} 过滤（如只要养殖工人）；为空则全员可选</li>
+     * </ul>
+     *
+     * <p>{@code userId} 出口仍是 {@code Long}（DB 原值），service 层转 {@code String} 装配进
+     * EmployeeVo（snowflake 全链路 string）。返回 {@code List<Map>} 与 contacts 同风格，service
+     * 层手工拷贝，显式可读。</p>
+     *
+     * @param keyword 可选关键字（按 nick_name / user_name 模糊；null 或空串不过滤）
+     * @param role    可选 role_key（按角色过滤；null 或空串不过滤）
+     * @return 员工原始行（已按 dept_id, user_id 升序，硬上限 500 条）
+     */
+    @Select("""
+        <script>
+        SELECT u.user_id   AS userId,
+               u.user_name AS userName,
+               u.nick_name AS nickName,
+               u.dept_id   AS deptId,
+               d.dept_name AS deptName
+        FROM sys_user u
+        LEFT JOIN sys_dept d ON u.dept_id = d.dept_id AND d.del_flag = '0'
+        <if test="role != null and role != ''">
+          INNER JOIN sys_user_role ur ON u.user_id = ur.user_id
+          INNER JOIN sys_role r ON ur.role_id = r.role_id AND r.del_flag = '0' AND r.status = '0'
+                                 AND r.role_key = #{role}
+        </if>
+        WHERE u.del_flag = '0'
+          AND u.status = '0'
+        <if test="keyword != null and keyword != ''">
+          AND (u.nick_name LIKE CONCAT('%', #{keyword}, '%')
+            OR u.user_name LIKE CONCAT('%', #{keyword}, '%'))
+        </if>
+        GROUP BY u.user_id, u.user_name, u.nick_name, u.dept_id, d.dept_name
+        ORDER BY u.dept_id ASC, u.user_id ASC
+        LIMIT 500
+        </script>
+        """)
+    List<Map<String, Object>> selectEmployeesRaw(@Param("keyword") String keyword,
+                                                 @Param("role") String role);
 }

@@ -88,6 +88,8 @@ class PigIntroServiceImplTest {
     private PenMapper penMapper;
     @Mock
     private BizReferenceChecker bizReferenceChecker;
+    @Mock
+    private org.dromara.djs.breed.core.service.EarNoAllocator earNoAllocator;
 
     private PigIntroServiceImpl service;
 
@@ -97,11 +99,13 @@ class PigIntroServiceImplTest {
             introduceMapper, pigCoreService, bizCodeGenerator,
             supplierMapper, barnMapper, penMapper, bizReferenceChecker,
             org.mockito.Mockito.mock(org.dromara.djs.breed.core.mapper.PigMapper.class),
-            org.mockito.Mockito.mock(org.dromara.common.core.service.DictService.class));
+            org.mockito.Mockito.mock(org.dromara.common.core.service.DictService.class),
+            earNoAllocator);
         // 通用 stubs
         when(bizCodeGenerator.generate(eq(BizCodeType.INTRO_NO), anyMap()))
             .thenReturn("INT202605260001");
-        when(bizCodeGenerator.generate(eq(BizCodeType.EAR_NO), anyMap()))
+        // 单头耳号走 EarNoAllocator（序号源 DB max，BRD-FIX-EARNO-001）
+        when(earNoAllocator.allocateOne(eq("01"), org.mockito.ArgumentMatchers.any()))
             .thenReturn("01011260520001");
         Supplier breedSupplier = new Supplier();
         breedSupplier.setId(SUPPLIER_ID);
@@ -255,9 +259,9 @@ class PigIntroServiceImplTest {
     }
 
     @Test
-    @DisplayName("批量引种 5 头母猪：generateBatch + 5 次 createPig + pen 加 5")
+    @DisplayName("批量引种 5 头母猪：EarNoAllocator 连号 + 5 次 createPig + pen 加 5")
     void happy_batch_5_sows() {
-        when(bizCodeGenerator.generateBatch(eq(BizCodeType.EAR_NO), anyMap(), eq(5)))
+        when(earNoAllocator.allocate(eq("01"), org.mockito.ArgumentMatchers.any(), eq(5)))
             .thenReturn(List.of(
                 "0101260520001", "0101260520002", "0101260520003",
                 "0101260520004", "0101260520005"));
@@ -274,7 +278,7 @@ class PigIntroServiceImplTest {
         assertThat(result.getPigs()).hasSize(5);
         assertThat(result.getPigs()).allMatch(s -> "HB".equals(s.getCurrentStatus()));
 
-        verify(bizCodeGenerator).generateBatch(eq(BizCodeType.EAR_NO), anyMap(), eq(5));
+        verify(earNoAllocator).allocate(eq("01"), org.mockito.ArgumentMatchers.any(), eq(5));
         verify(pigCoreService, times(5)).createPig(any(PigCreateBo.class));
         // pen.current_count += 5 via setSql wrapper
         verify(penMapper, times(1)).update(eq(null), any());
@@ -317,6 +321,47 @@ class PigIntroServiceImplTest {
         verify(pigCoreService).createPig(captor.capture());
         assertThat(captor.getValue().getBarnId()).isEqualTo(BARN_ID);
         assertThat(captor.getValue().getPenId()).isEqualTo(PEN_ID);
+    }
+
+    @Test
+    @DisplayName("mp supplierCode 路径误填 feed 类供应商 → 解析处即抛 intro.supplier_code_type_invalid（友好报错非 500）")
+    void resolve_supplier_code_not_breed() {
+        // mp 工人手输 supplierCode（无 breed 过滤 picker），解析到 feed 类供应商
+        Supplier feed = new Supplier();
+        feed.setId(SUPPLIER_ID);
+        feed.setSupplierType("feed");
+        when(supplierMapper.selectOne(any())).thenReturn(feed);
+
+        PigIntroBo bo = mkSingleBo("external", "F");
+        bo.setSupplierId(null);
+        bo.setSupplierCode("FEED0001");
+
+        assertThatThrownBy(() -> service.introduce(bo))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("intro.supplier_code_type_invalid");
+        // 解析处即拦截，绝不进 INSERT / createPig
+        verify(introduceMapper, never()).insert(any(PigIntroduce.class));
+        verify(pigCoreService, never()).createPig(any());
+    }
+
+    @Test
+    @DisplayName("mp supplierCode 路径填 breed 类供应商 → 解析通过走原引种逻辑")
+    void resolve_supplier_code_breed_ok() {
+        Supplier breed = new Supplier();
+        breed.setId(SUPPLIER_ID);
+        breed.setSupplierType("breed");
+        when(supplierMapper.selectOne(any())).thenReturn(breed);
+
+        PigIntroBo bo = mkSingleBo("external", "F");
+        bo.setSupplierId(null);
+        bo.setSupplierCode("BREED001");
+
+        PigIntroResultVo result = service.introduce(bo);
+        assertThat(result.getPigs()).hasSize(1);
+        // 解析后 supplierId 回填，下游 createPig 收到正确 supplierId
+        ArgumentCaptor<PigCreateBo> captor = ArgumentCaptor.forClass(PigCreateBo.class);
+        verify(pigCoreService).createPig(captor.capture());
+        assertThat(captor.getValue().getSupplierId()).isEqualTo(SUPPLIER_ID);
     }
 
     @Test

@@ -1,6 +1,8 @@
 package org.dromara.djs.breed.core.mapper;
 
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
+import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 import org.dromara.common.mybatis.core.mapper.BaseMapperPlus;
@@ -12,6 +14,36 @@ import org.dromara.djs.breed.core.domain.vo.PigVo;
  * 猪只信息 Mapper（BRD-CORE-001）。
  */
 public interface PigMapper extends BaseMapperPlus<Pig, PigVo> {
+
+    /**
+     * 取同前缀（{@code farmCode2+barnCode2+yyMM}）现存耳号的最大值（BRD-FIX-EARNO-001 序号源 DB max）。
+     *
+     * <p>{@code likeRight(ear_no, prefix)} + {@code orderByDesc(ear_no)} + {@code LIMIT 1}。
+     * 耳号同前缀同位数 → 字符串降序首条即数值最大。空前缀（无人引过）返回 null，调用方从 seq=1 起。</p>
+     *
+     * @param prefix 耳号前缀（farmCode2 + barnCode2 + yyMM）
+     * @return 该前缀下最大耳号；无则 null
+     */
+    default String selectMaxEarNoByPrefix(String prefix) {
+        LambdaQueryWrapper<Pig> wrapper = Wrappers.<Pig>lambdaQuery()
+            .likeRight(Pig::getEarNo, prefix)
+            .orderByDesc(Pig::getEarNo)
+            .last("LIMIT 1");
+        Pig pig = selectOne(wrapper);
+        return pig == null ? null : pig.getEarNo();
+    }
+
+    /**
+     * 探测耳号是否已被占用（BRD-FIX-EARNO-001 UNIQUE 兜底，含已软删行 —— 软删行仍占 UNIQUE 中的 ear_no 列）。
+     *
+     * <p>不加 {@code del_flag='0'} 过滤：UNIQUE 约束 {@code (tenant_id, ear_no, lifecycle_id, del_unique)}
+     * 里软删行 del_unique=id ≠ 0，理论上不撞，但耳号语义上仍应避开历史耳号 → 探测全部行。</p>
+     *
+     * @param earNo 候选耳号
+     * @return 命中的 id；未占用返回 null
+     */
+    @Select("SELECT id FROM t_farm_pig_info WHERE ear_no = #{earNo} LIMIT 1")
+    Long existsEarNo(@Param("earNo") String earNo);
 
     /**
      * 按耳号简版查 pigId（mp 端二选一支持 — 工人不输 19 位 snowflake，直接输耳号）。

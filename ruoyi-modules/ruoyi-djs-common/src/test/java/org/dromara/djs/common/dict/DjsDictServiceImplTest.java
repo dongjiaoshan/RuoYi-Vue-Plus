@@ -34,12 +34,12 @@ import static org.mockito.Mockito.when;
  *
  * <p>覆盖：</p>
  * <ul>
- *   <li>queryAllDjsTypes：遍历 46 个 dict_type 全部调 ruoyi 一次</li>
+ *   <li>queryAllDjsTypes：遍历 49 个 dict_type 全部调 ruoyi 一次</li>
  *   <li>currentVersion：redis 命中走缓存 / 未命中触发 queryFull 重算 + 回写</li>
  *   <li>queryFull：未命中 redis → 计算 SHA-256 → 双写 DICT_VERSION + DICT_FULL（TTL 1h）</li>
  *   <li>queryFull：命中 redis 整体缓存直接返，不调 ruoyi service</li>
  *   <li>SHA-256 输出：64 字符小写 hex（不是 MD5 32 字符）</li>
- *   <li>常量加载：DictTypeConstants 反射出来正好 46 项</li>
+ *   <li>常量加载：DictTypeConstants 反射出来正好 49 项</li>
  * </ul>
  *
  * <p>{@link org.dromara.common.redis.utils.RedisUtils} 的静态初始化依赖 Spring context，
@@ -129,23 +129,25 @@ class DjsDictServiceImplTest {
     }
 
     @Test
-    @DisplayName("DictTypeConstants 反射出来正好 46 项")
+    @DisplayName("DictTypeConstants 反射出来正好 49 项")
     void allDjsDictTypesCount() {
         assertThat(DjsDictServiceImpl.allDjsDictTypesForTest())
-            .hasSize(46)
+            .hasSize(49)
             .allSatisfy(s -> assertThat(s).startsWith(DictTypeConstants.DJS_PREFIX));
     }
 
     @Test
-    @DisplayName("queryAllDjsTypes：遍历 46 个 dict_type 全部调 ruoyi 一次")
+    @DisplayName("queryAllDjsTypes：遍历 49 个 dict_type 全部调 ruoyi 一次")
     void queryAllDjsTypes_callsRuoyiOncePerType() {
         Map<String, List<SysDictDataVo>> all = service.queryAllDjsTypes();
 
-        assertThat(all).hasSize(46);
+        assertThat(all).hasSize(49);
         assertThat(all.keySet()).contains(
             DictTypeConstants.PIG_SEX, DictTypeConstants.PIG_BREED,
-            DictTypeConstants.USER_STATUS, DictTypeConstants.WAREHOUSE_TYPE);
-        verify(sysDictTypeService, times(46)).selectDictDataByType(anyString());
+            DictTypeConstants.USER_STATUS, DictTypeConstants.WAREHOUSE_TYPE,
+            DictTypeConstants.INTRODUCE_TYPE, DictTypeConstants.PIG_STRAIN,
+            DictTypeConstants.HANDLE_TARGET);
+        verify(sysDictTypeService, times(49)).selectDictDataByType(anyString());
     }
 
     @Test
@@ -155,7 +157,7 @@ class DjsDictServiceImplTest {
 
         assertThat(vo.getVersion()).hasSize(64);                      // SHA-256 hex
         assertThat(vo.getVersion()).matches("[0-9a-f]{64}");          // 小写 hex
-        assertThat(vo.getData()).hasSize(46);
+        assertThat(vo.getData()).hasSize(49);
 
         String fullKey = DjsRedisKey.DICT_FULL.formatted("1001");
         String versionKey = DjsRedisKey.DICT_VERSION.formatted("1001");
@@ -195,7 +197,7 @@ class DjsDictServiceImplTest {
         String v = service.currentVersion();
 
         assertThat(v).hasSize(64).matches("[0-9a-f]{64}");
-        verify(sysDictTypeService, times(46)).selectDictDataByType(anyString());
+        verify(sysDictTypeService, times(49)).selectDictDataByType(anyString());
         // 重算后两个 key 都被写入
         assertThat(redisStore).containsKeys(
             DjsRedisKey.DICT_VERSION.formatted("1001"),

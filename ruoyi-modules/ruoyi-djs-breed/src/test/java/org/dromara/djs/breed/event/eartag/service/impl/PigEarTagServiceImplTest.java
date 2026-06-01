@@ -12,10 +12,9 @@ import org.dromara.djs.breed.event.eartag.domain.vo.PigletEarTagVo;
 import org.dromara.djs.breed.event.eartag.mapper.PigPigletnoMapper;
 import org.dromara.djs.breed.event.farrow.domain.PigFarrow;
 import org.dromara.djs.breed.event.farrow.mapper.PigFarrowMapper;
+import org.dromara.djs.breed.core.service.EarNoAllocator;
 import org.dromara.djs.breed.farm.domain.Barn;
 import org.dromara.djs.breed.farm.mapper.BarnMapper;
-import org.dromara.djs.common.encoder.BizCodeType;
-import org.dromara.djs.common.encoder.IBizCodeGenerator;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
@@ -30,7 +29,6 @@ import org.mockito.quality.Strictness;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
-import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -74,13 +72,13 @@ class PigEarTagServiceImplTest {
     @Mock
     private BarnMapper barnMapper;
     @Mock
-    private IBizCodeGenerator bizCodeGenerator;
+    private EarNoAllocator earNoAllocator;
 
     private PigEarTagServiceImpl service;
 
     @BeforeEach
     void setup() {
-        service = new PigEarTagServiceImpl(pigMapper, pigletnoMapper, farrowMapper, barnMapper, bizCodeGenerator);
+        service = new PigEarTagServiceImpl(pigMapper, pigletnoMapper, farrowMapper, barnMapper, earNoAllocator);
     }
 
     private Pig mkSow() {
@@ -132,7 +130,7 @@ class PigEarTagServiceImplTest {
         when(pigletnoMapper.selectCount(any())).thenReturn(0L);
         when(farrowMapper.selectBoarEarByBreedingId(800L)).thenReturn("01B12605900");
         when(barnMapper.selectById(5L)).thenReturn(mkBarn("A1"));
-        when(bizCodeGenerator.generateBatch(eq(BizCodeType.EAR_NO), any(), eq(3)))
+        when(earNoAllocator.allocate(eq("01"), eq("A1"), eq(3)))
             .thenReturn(List.of("01A126050001", "01A126050002", "01A126050003"));
 
         PigletBatchEarTagBo bo = new PigletBatchEarTagBo();
@@ -166,19 +164,19 @@ class PigEarTagServiceImplTest {
         verify(pigletnoMapper, times(3)).insert(any(PigPigletno.class));
         // 父猪耳号反查走了一次
         verify(farrowMapper, times(1)).selectBoarEarByBreedingId(800L);
-        // 编码生成器一次性批量 3 个
-        verify(bizCodeGenerator, times(1)).generateBatch(eq(BizCodeType.EAR_NO), any(), eq(3));
+        // 耳号分配器一次性批量 3 个（farmCode 固定 01 / barnCode 取母猪栋舍）
+        verify(earNoAllocator, times(1)).allocate(eq("01"), eq("A1"), eq(3));
     }
 
     @Test
-    @DisplayName("batchTag context.barnCode 取自母猪所在栋舍 barnCode 前 2 位")
-    void batchTag_contextBarnCode() {
+    @DisplayName("batchTag barnCode 取自母猪所在栋舍，透传给耳号分配器（前缀归一化由分配器内部做）")
+    void batchTag_barnCodeFromMother() {
         PigFarrow farrow = mkFarrow(901L, 5, null);
         when(farrowMapper.selectById(901L)).thenReturn(farrow);
         when(pigMapper.selectById(101L)).thenReturn(mkSow());
         when(pigletnoMapper.selectCount(any())).thenReturn(0L);
         when(barnMapper.selectById(5L)).thenReturn(mkBarn("B7-PROD"));
-        when(bizCodeGenerator.generateBatch(eq(BizCodeType.EAR_NO), any(), eq(1)))
+        when(earNoAllocator.allocate(eq("01"), eq("B7-PROD"), eq(1)))
             .thenReturn(List.of("01B726050001"));
 
         PigletBatchEarTagBo bo = new PigletBatchEarTagBo();
@@ -187,11 +185,7 @@ class PigEarTagServiceImplTest {
 
         service.batchTag(bo);
 
-        @SuppressWarnings("unchecked")
-        ArgumentCaptor<Map<String, Object>> ctxCaptor =
-            ArgumentCaptor.forClass(Map.class);
-        verify(bizCodeGenerator).generateBatch(eq(BizCodeType.EAR_NO), ctxCaptor.capture(), eq(1));
-        assertThat(ctxCaptor.getValue().get("barnCode")).isEqualTo("B7");
+        verify(earNoAllocator).allocate(eq("01"), eq("B7-PROD"), eq(1));
     }
 
     @Test
@@ -202,7 +196,7 @@ class PigEarTagServiceImplTest {
         when(pigMapper.selectById(101L)).thenReturn(mkSow());
         when(pigletnoMapper.selectCount(any())).thenReturn(0L);
         when(barnMapper.selectById(5L)).thenReturn(mkBarn("A1"));
-        when(bizCodeGenerator.generateBatch(eq(BizCodeType.EAR_NO), any(), eq(1)))
+        when(earNoAllocator.allocate(eq("01"), eq("A1"), eq(1)))
             .thenReturn(List.of("01A126050099"));
 
         PigletBatchEarTagBo bo = new PigletBatchEarTagBo();
@@ -236,8 +230,8 @@ class PigEarTagServiceImplTest {
         assertThatThrownBy(() -> service.batchTag(bo))
             .isInstanceOf(ServiceException.class)
             .hasMessageContaining("pigletno.exceeds_live_born");
-        // 越界时不应该再去取编码 / 插数据
-        verify(bizCodeGenerator, times(0)).generateBatch(any(), any(), anyInt());
+        // 越界时不应该再去分配耳号 / 插数据
+        verify(earNoAllocator, times(0)).allocate(any(), any(), anyInt());
         verify(pigMapper, times(0)).insert(any(Pig.class));
         verify(pigletnoMapper, times(0)).insert(any(PigPigletno.class));
     }

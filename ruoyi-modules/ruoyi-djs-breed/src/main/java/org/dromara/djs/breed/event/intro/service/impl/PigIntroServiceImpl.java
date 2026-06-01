@@ -13,6 +13,7 @@ import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.breed.core.domain.Pig;
 import org.dromara.djs.breed.core.domain.bo.PigCreateBo;
 import org.dromara.djs.breed.core.mapper.PigMapper;
+import org.dromara.djs.breed.core.service.EarNoAllocator;
 import org.dromara.djs.breed.core.service.I18nMessages;
 import org.dromara.djs.breed.core.service.IPigCoreService;
 import org.dromara.djs.breed.event.intro.domain.PigIntroduce;
@@ -39,7 +40,6 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDate;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -83,6 +83,7 @@ public class PigIntroServiceImpl implements IPigIntroService {
     private final BizReferenceChecker bizReferenceChecker;
     private final PigMapper pigMapper;
     private final DictService dictService;
+    private final EarNoAllocator earNoAllocator;
 
     public PigIntroServiceImpl(PigIntroduceMapper introduceMapper,
                                IPigCoreService pigCoreService,
@@ -92,7 +93,8 @@ public class PigIntroServiceImpl implements IPigIntroService {
                                PenMapper penMapper,
                                BizReferenceChecker bizReferenceChecker,
                                PigMapper pigMapper,
-                               DictService dictService) {
+                               DictService dictService,
+                               EarNoAllocator earNoAllocator) {
         this.introduceMapper = introduceMapper;
         this.pigCoreService = pigCoreService;
         this.bizCodeGenerator = bizCodeGenerator;
@@ -102,6 +104,7 @@ public class PigIntroServiceImpl implements IPigIntroService {
         this.bizReferenceChecker = bizReferenceChecker;
         this.pigMapper = pigMapper;
         this.dictService = dictService;
+        this.earNoAllocator = earNoAllocator;
     }
 
     @PostConstruct
@@ -178,8 +181,8 @@ public class PigIntroServiceImpl implements IPigIntroService {
         PigIntroduce intro = persistIntroduce(bo, count, bo.getStartEarNo(), bo.getPigSex());
         Barn barn = loadBarn(bo.getBarnId());
 
-        // 批量一次性分配 N 个连续耳号
-        List<String> earNos = bizCodeGenerator.generateBatch(BizCodeType.EAR_NO, buildEarCtx(barn), count);
+        // 批量一次性分配 N 个连续耳号（序号源 = DB max 同前缀同月，月内连续引种不撞 UNIQUE）
+        List<String> earNos = earNoAllocator.allocate("01", barnCode2(barn), count);
 
         List<Pig> pigs = new ArrayList<>(count);
         for (String earNo : earNos) {
@@ -275,6 +278,11 @@ public class PigIntroServiceImpl implements IPigIntroService {
                 Wrappers.<Supplier>lambdaQuery().eq(Supplier::getSupplierCode, bo.getSupplierCode()).last("LIMIT 1"));
             if (sup == null) {
                 throw new ServiceException(I18nMessages.t("intro.supplier_not_found", bo.getSupplierCode()));
+            }
+            // mp 端工人手输 supplierCode（无 breed 过滤 picker），在解析处即兜底校验类型，
+            // 误填非 breed 供应商立即返工人可读的友好报错（携带其输入的编码），不是裸 500。
+            if (!"breed".equals(sup.getSupplierType())) {
+                throw new ServiceException(I18nMessages.t("intro.supplier_code_type_invalid", bo.getSupplierCode()));
             }
             bo.setSupplierId(sup.getId());
         }
@@ -401,23 +409,17 @@ public class PigIntroServiceImpl implements IPigIntroService {
     }
 
     /**
-     * 单头耳号生成（批量走 generateBatch，但单头也走 EAR_NO 编码生成器保持一致）。
+     * 单头耳号生成（序号源 = DB max 同前缀同月，与批量同范式 —— 避免日级计数器月内撞 UNIQUE）。
      */
     private String generateEarNo(Barn barn) {
-        return bizCodeGenerator.generate(BizCodeType.EAR_NO, buildEarCtx(barn));
+        return earNoAllocator.allocateOne("01", barnCode2(barn));
     }
 
     /**
-     * EAR_NO 占位符上下文：{@code farmCode} 默认 "01"（V1 单农场）/ {@code barnCode} 取 barn.barn_code 前 2 位。
-     * BizCodeGeneratorImpl#resolveCtx2 会自动截断 / 补零到 2 位。
+     * 取栋舍编码（V1 单农场 farmCode 固定 "01"）；barn 缺 code 时返 null，由分配器回落 "00"。
      */
-    private Map<String, Object> buildEarCtx(Barn barn) {
-        Map<String, Object> ctx = new HashMap<>(4);
-        ctx.put("farmCode", "01");
-        if (barn != null && StringUtils.isNotBlank(barn.getBarnCode())) {
-            ctx.put("barnCode", barn.getBarnCode());
-        }
-        return ctx;
+    private String barnCode2(Barn barn) {
+        return barn != null ? barn.getBarnCode() : null;
     }
 
     private Barn loadBarn(Long barnId) {
