@@ -7,6 +7,10 @@ import lombok.extern.slf4j.Slf4j;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.djs.plant.crop.domain.CropInfo;
 import org.dromara.djs.plant.crop.mapper.CropInfoMapper;
+import org.dromara.djs.plant.farm.domain.bo.GrowRecordBo;
+import org.dromara.djs.plant.farm.service.IFarmRecordsService;
+import org.dromara.djs.plant.pick.domain.bo.PickSubmitBo;
+import org.dromara.djs.plant.pick.domain.vo.PickSummaryVo;
 import org.dromara.djs.plant.pick.domain.vo.PickTaskVo;
 import org.dromara.djs.plant.pick.service.IAppletPickService;
 import org.dromara.djs.plant.plan.domain.PlantDetails;
@@ -18,7 +22,11 @@ import org.dromara.djs.plant.plot.mapper.PlotInfoMapper;
 import org.dromara.djs.plant.team.domain.PlantWorkTeam;
 import org.dromara.djs.plant.team.mapper.PlantWorkTeamMapper;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
+import java.math.RoundingMode;
+import java.time.LocalDate;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashSet;
@@ -44,6 +52,12 @@ public class AppletPickServiceImpl implements IAppletPickService {
     private final PlotInfoMapper plotMapper;
     private final CropInfoMapper cropMapper;
     private final PlantWorkTeamMapper teamMapper;
+    private final IFarmRecordsService farmRecordsService;
+
+    /** is_pick=2 表示非游客采摘（普通采收）；mp 工人端只统计 / 展示这些。 */
+    private static final int IS_PICK_NORMAL = 2;
+    /** harvest_activity：农事记录采收类型（与 t_plant_farm_records.farm_type 字典 djs_farm_work_type 对齐）。 */
+    private static final String HARVEST_FARM_TYPE = "harvest_activity";
 
     @Override
     public List<PickTaskVo> listMyTasks(String status) {
@@ -51,11 +65,101 @@ public class AppletPickServiceImpl implements IAppletPickService {
 
         List<PlantDetails> entities = detailsMapper.selectList(
             new LambdaQueryWrapper<PlantDetails>()
+                .eq(PlantDetails::getIsPick, IS_PICK_NORMAL)   // PLT-PICK-001 决策①：隐藏游客采摘活动
                 .in(PlantDetails::getHarvestStatus, statusList)
                 .orderByAsc(PlantDetails::getEarliestHarvestdate)
                 .orderByAsc(PlantDetails::getId));
 
         return enrichToVoList(entities);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void submitPick(PickSubmitBo bo) {
+        PlantDetails detail = detailsMapper.selectById(bo.getDetailId());
+        if (detail == null) {
+            throw new ServiceException("采摘明细不存在或已删除：" + bo.getDetailId());
+        }
+        if (bo.getWeight() == null || bo.getWeight().compareTo(BigDecimal.ZERO) <= 0) {
+            throw new ServiceException("采收重量必须大于 0");
+        }
+        boolean finish = Boolean.TRUE.equals(bo.getFinish());
+
+        // 1. 累加 actual_yield
+        BigDecimal newYield = (detail.getActualYield() == null ? BigDecimal.ZERO : detail.getActualYield())
+            .add(bo.getWeight());
+        detail.setActualYield(newYield);
+
+        // 2. 首次采收回填 begin_harvestdate
+        if (detail.getBeginHarvestdate() == null) {
+            detail.setBeginHarvestdate(bo.getHarvestDate());
+        }
+
+        // 3. harvest_status 流转：pending → picking；finish 时 → completed
+        if (finish) {
+            detail.setHarvestStatus("completed");
+            detail.setEndActualdate(LocalDate.now());
+            detail.setEndHarvestdate(bo.getHarvestDate());
+            // 4. average_yield = actual_yield / plot_area（plot_area 为 0/NULL 时跳过，不抛）
+            BigDecimal area = detail.getPlotArea();
+            if (area != null && area.compareTo(BigDecimal.ZERO) > 0) {
+                detail.setAverageYield(newYield.divide(area, 3, RoundingMode.HALF_UP));
+            }
+        } else if (!"completed".equals(detail.getHarvestStatus())) {
+            detail.setHarvestStatus("picking");
+        }
+        // 决策①：绝不动 is_pick
+        detailsMapper.updateById(detail);
+
+        // 5. INSERT 一行 t_plant_farm_records（farm_type='harvest_activity'，可追溯）
+        //    复用 IFarmRecordsService.submitGrow（内含 record_no 生成 + plot_type/crop_name 冗余）。
+        //    farm_by NOT NULL：取采摘明细指派班组 harvest_by；未指派则硬拦（采收需归属班组才能追溯）。
+        if (detail.getHarvestBy() == null) {
+            throw new ServiceException("该采摘任务未指派采摘班组，无法录入采收（请在 admin 采摘计划指派班组）");
+        }
+        GrowRecordBo grow = new GrowRecordBo();
+        grow.setFarmType(HARVEST_FARM_TYPE);
+        grow.setPlantId(detail.getPlantId());
+        grow.setPlotId(detail.getPlotId());
+        grow.setCropId(detail.getCropId());
+        grow.setFarmBy(detail.getHarvestBy());
+        grow.setFarmDate(bo.getHarvestDate());
+        grow.setProofOssIds(joinOssIds(bo.getProofOssIds()));
+        grow.setRemark(bo.getRemark());
+        farmRecordsService.submitGrow(grow);
+
+        // 6. PlantPickedEvent 应发布点 —— D14 CROSS-FLOW-002 补 event + WMS listener（本 ticket 不提前造跨域 event）
+    }
+
+    @Override
+    public PickSummaryVo todaySummary() {
+        LocalDate today = LocalDate.now();
+        // 全部非游客采摘任务（is_pick=2），应用层聚合（V1 数据量小，不写裸 SQL）
+        List<PlantDetails> all = detailsMapper.selectList(
+            new LambdaQueryWrapper<PlantDetails>()
+                .eq(PlantDetails::getIsPick, IS_PICK_NORMAL)
+                .select(PlantDetails::getHarvestStatus, PlantDetails::getCropId,
+                    PlantDetails::getActualYield, PlantDetails::getBeginHarvestdate));
+
+        long total = all.size();
+        long completed = all.stream().filter(d -> "completed".equals(d.getHarvestStatus())).count();
+        int rate = total == 0 ? 0 : (int) Math.round(completed * 100.0 / total);
+
+        // 今日采摘明细 = begin_harvestdate=今日（首次采收落在今日的明细）
+        List<PlantDetails> todayPicked = all.stream()
+            .filter(d -> today.equals(d.getBeginHarvestdate()))
+            .toList();
+        int cropKindCount = (int) todayPicked.stream()
+            .map(PlantDetails::getCropId).filter(Objects::nonNull).distinct().count();
+        BigDecimal todayWeight = todayPicked.stream()
+            .map(d -> d.getActualYield() == null ? BigDecimal.ZERO : d.getActualYield())
+            .reduce(BigDecimal.ZERO, BigDecimal::add);
+
+        PickSummaryVo vo = new PickSummaryVo();
+        vo.setTaskCompletionRate(rate);
+        vo.setTodayCropKindCount(cropKindCount);
+        vo.setTodayWeight(todayWeight);
+        return vo;
     }
 
     @Override
@@ -74,6 +178,14 @@ public class AppletPickServiceImpl implements IAppletPickService {
     // ============================================================
     // 内部
     // ============================================================
+    /** 凭证图 OSS id 列表拼成逗号分隔 string（与 t_plant_farm_records.proof_oss_ids 存法一致）。 */
+    private String joinOssIds(List<Long> ids) {
+        if (CollUtil.isEmpty(ids)) {
+            return null;
+        }
+        return ids.stream().filter(Objects::nonNull).map(String::valueOf).collect(Collectors.joining(","));
+    }
+
     private List<String> parseStatus(String status) {
         if (status == null || status.isBlank()) {
             return Arrays.asList("pending", "picking");
