@@ -18,11 +18,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *
  * <p>覆盖 D9X DJS-FIX-MP-W22-001 后的新行为：</p>
  * <ul>
- *   <li>admin 类角色 → 4 个 board（manage / breed / plant / warehouse）</li>
+ *   <li>admin 类角色 → 5 个 board（manage / breed / plant / warehouse / store）</li>
  *   <li>breed_worker → 单 board（breed）</li>
  *   <li>warehouse_worker → 单 board（warehouse）</li>
  *   <li>多角色合集 → 多 board 并集</li>
- *   <li>store_admin（V1 推 V2）→ 空 board 集</li>
+ *   <li>store_admin → 单 board（store，STR-DEMAND-001 起开通门店板块）</li>
  * </ul>
  */
 @Tag("local")
@@ -41,16 +41,16 @@ class UserBoardControllerTest {
     }
 
     @Test
-    @DisplayName("admin / boss / manager → 4 board 含 manage")
-    void adminGetsFourBoardsIncludingManage() throws Exception {
+    @DisplayName("admin / boss / manager → 5 board 含 manage + store")
+    void adminGetsFiveBoardsIncludingManageAndStore() throws Exception {
         for (String adminRole : List.of("system_admin", "boss", "manager", "admin")) {
             Set<String> boards = mapBoards(Set.of(adminRole));
-            assertEquals(4, boards.size(), "admin role " + adminRole + " 应得 4 板块");
+            assertEquals(5, boards.size(), "admin role " + adminRole + " 应得 5 板块");
             assertTrue(boards.contains("manage"), adminRole + " 应有 manage");
             assertTrue(boards.contains("breed"), adminRole + " 应有 breed");
             assertTrue(boards.contains("plant"), adminRole + " 应有 plant");
             assertTrue(boards.contains("warehouse"), adminRole + " 应有 warehouse");
-            assertTrue(!boards.contains("store"), adminRole + " 不应有 store（V2 推后）");
+            assertTrue(boards.contains("store"), adminRole + " 应有 store（STR-DEMAND-001 起开通门店板块）");
         }
     }
 
@@ -76,10 +76,10 @@ class UserBoardControllerTest {
     }
 
     @Test
-    @DisplayName("store_admin → V1 空板块（store 推 V2）")
-    void storeAdminEmpty() throws Exception {
-        Set<String> boards = mapBoards(Set.of("store_admin"));
-        assertTrue(boards.isEmpty(), "store_admin V1 不分配任何板块");
+    @DisplayName("store_admin / store_clerk → 单板块 store（STR-DEMAND-001 起开通）")
+    void storeRoleGetsStore() throws Exception {
+        assertEquals(Set.of("store"), mapBoards(Set.of("store_admin")), "store_admin 应得 store 板块");
+        assertEquals(Set.of("store"), mapBoards(Set.of("store_clerk")), "store_clerk 应得 store 板块");
     }
 
     @Test

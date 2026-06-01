@@ -21,6 +21,19 @@
             <artifactId>ruoyi-djs-common</artifactId>
             <version>${revision}</version>
         </dependency>
+        <!-- 门店端复用 WMS 需求表 + IDemandManageService / IDemandStatusService（warehouse 依赖链 common+breed+plant，不依赖 store，无循环） -->
+        <dependency>
+            <groupId>org.dromara</groupId>
+            <artifactId>ruoyi-djs-warehouse</artifactId>
+            <version>${revision}</version>
+        </dependency>
+
+        <!-- STR-DEMAND-001：单测依赖（JUnit5 + Mockito，spring-boot-starter-test 已含两者） -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
 </project>
