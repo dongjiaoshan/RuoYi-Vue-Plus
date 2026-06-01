@@ -2,7 +2,6 @@ package org.dromara.djs.common.dict;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.dromara.djs.common.constant.DictTypeConstants;
-import org.dromara.djs.common.constant.DjsRedisKey;
 import org.dromara.system.domain.vo.SysDictDataVo;
 import org.dromara.system.service.ISysDictTypeService;
 import org.junit.jupiter.api.BeforeEach;
@@ -15,13 +14,9 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 
-import java.time.Duration;
 import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -35,16 +30,15 @@ import static org.mockito.Mockito.when;
  * <p>覆盖：</p>
  * <ul>
  *   <li>queryAllDjsTypes：遍历 49 个 dict_type 全部调 ruoyi 一次</li>
- *   <li>currentVersion：redis 命中走缓存 / 未命中触发 queryFull 重算 + 回写</li>
- *   <li>queryFull：未命中 redis → 计算 SHA-256 → 双写 DICT_VERSION + DICT_FULL（TTL 1h）</li>
- *   <li>queryFull：命中 redis 整体缓存直接返，不调 ruoyi service</li>
+ *   <li>currentVersion / queryFull：每次实时聚合计算 SHA-256（不读写 redis）</li>
  *   <li>SHA-256 输出：64 字符小写 hex（不是 MD5 32 字符）</li>
+ *   <li>hash 稳定性：相同字典两次算一致</li>
+ *   <li><b>回归（甲方反馈）</b>：底层字典数据变化 → version 立即变化，不残留旧值</li>
  *   <li>常量加载：DictTypeConstants 反射出来正好 49 项</li>
  * </ul>
  *
- * <p>{@link org.dromara.common.redis.utils.RedisUtils} 的静态初始化依赖 Spring context，
- * 故不能用 {@code mockStatic}；改为继承 {@link DjsDictServiceImpl} 覆盖 4 个 protected
- * 钩子（{@code redisGet / redisSet / redisDel}），用 {@link HashMap} 模拟 redis 状态。</p>
+ * <p>服务实时聚合底层 ruoyi {@code selectDictDataByType}（命中 {@code CacheNames.SYS_DICT}），
+ * 自身不碰 redis，故无需模拟 redis 状态，直接 {@code new DjsDictServiceImpl} 即可测。</p>
  *
  * @author djs
  * @since SYS-INFRA-005
@@ -61,71 +55,25 @@ class DjsDictServiceImplTest {
 
     private final ObjectMapper objectMapper = new ObjectMapper();
 
-    /** 模拟 redis 的内存 map（key→value）。 */
-    private Map<String, Object> redisStore;
-
-    /** 记录 setCacheObject 的 TTL，便于断言 TTL=1h。 */
-    private Map<String, Duration> redisTtlStore;
-
-    /** 记录 deleteObject 的 key 集合。 */
-    private Set<String> redisDeleted;
-
-    private TestableService service;
-
-    /**
-     * 用内存 map 模拟 redis 的可测试子类。
-     */
-    static class TestableService extends DjsDictServiceImpl {
-        final Map<String, Object> store;
-        final Map<String, Duration> ttlStore;
-        final Set<String> deleted;
-
-        TestableService(ISysDictTypeService sysDictTypeService, ObjectMapper objectMapper,
-                        Map<String, Object> store, Map<String, Duration> ttlStore, Set<String> deleted) {
-            super(sysDictTypeService, objectMapper);
-            this.store = store;
-            this.ttlStore = ttlStore;
-            this.deleted = deleted;
-        }
-
-        @Override
-        @SuppressWarnings("unchecked")
-        protected <T> T redisGet(String key) {
-            return (T) store.get(key);
-        }
-
-        @Override
-        protected <T> void redisSet(String key, T value, Duration ttl) {
-            store.put(key, value);
-            ttlStore.put(key, ttl);
-        }
-
-        @Override
-        protected void redisDel(String key) {
-            store.remove(key);
-            deleted.add(key);
-        }
-    }
+    private DjsDictServiceImpl service;
 
     @BeforeEach
     void setup() {
-        redisStore = new HashMap<>();
-        redisTtlStore = new HashMap<>();
-        redisDeleted = new HashSet<>();
-        service = new TestableService(sysDictTypeService, objectMapper, redisStore, redisTtlStore, redisDeleted);
+        service = new DjsDictServiceImpl(sysDictTypeService, objectMapper);
+        // 默认 ruoyi 按 dict_type 返单元素列表，便于不同 dict_type 产生不同 hash
+        when(sysDictTypeService.selectDictDataByType(anyString())).thenAnswer(inv ->
+            singleItem(inv.getArgument(0), "v"));
+    }
 
-        // 默认 ruoyi 返单元素列表（按 dict_type 区分 value，便于产生不同 hash）
-        when(sysDictTypeService.selectDictDataByType(anyString())).thenAnswer(inv -> {
-            String dt = inv.getArgument(0);
-            SysDictDataVo v = new SysDictDataVo();
-            v.setDictType(dt);
-            v.setDictLabel("label-" + dt);
-            v.setDictValue("v");
-            v.setDictSort(0);
-            List<SysDictDataVo> list = new ArrayList<>(1);
-            list.add(v);
-            return list;
-        });
+    private static List<SysDictDataVo> singleItem(String dictType, String value) {
+        SysDictDataVo v = new SysDictDataVo();
+        v.setDictType(dictType);
+        v.setDictLabel("label-" + value);
+        v.setDictValue(value);
+        v.setDictSort(0);
+        List<SysDictDataVo> list = new ArrayList<>(1);
+        list.add(v);
+        return list;
     }
 
     @Test
@@ -151,84 +99,45 @@ class DjsDictServiceImplTest {
     }
 
     @Test
-    @DisplayName("queryFull：未命中 redis → 计算 SHA-256 → 双写 DICT_VERSION + DICT_FULL（TTL 1h）")
-    void queryFull_cacheMiss_writesBothKeys() {
+    @DisplayName("queryFull：实时聚合算 SHA-256（64 hex），返全量 49 项")
+    void queryFull_computesRealtime() {
         DjsDictFullVo vo = service.queryFull();
 
-        assertThat(vo.getVersion()).hasSize(64);                      // SHA-256 hex
-        assertThat(vo.getVersion()).matches("[0-9a-f]{64}");          // 小写 hex
+        assertThat(vo.getVersion()).hasSize(64).matches("[0-9a-f]{64}");
         assertThat(vo.getData()).hasSize(49);
-
-        String fullKey = DjsRedisKey.DICT_FULL.formatted("1001");
-        String versionKey = DjsRedisKey.DICT_VERSION.formatted("1001");
-        assertThat(redisStore).containsKeys(fullKey, versionKey);
-        assertThat(redisStore.get(versionKey)).isEqualTo(vo.getVersion());
-        assertThat(redisTtlStore.get(fullKey)).isEqualTo(Duration.ofHours(1));
-        assertThat(redisTtlStore.get(versionKey)).isEqualTo(Duration.ofHours(1));
-    }
-
-    @Test
-    @DisplayName("queryFull：命中 redis 整体缓存直接返，不调 ruoyi service")
-    void queryFull_cacheHit_skipsRuoyi() {
-        DjsDictFullVo cached = new DjsDictFullVo("deadbeef".repeat(8), new HashMap<>());
-        redisStore.put(DjsRedisKey.DICT_FULL.formatted("1001"), cached);
-
-        DjsDictFullVo vo = service.queryFull();
-
-        assertThat(vo).isSameAs(cached);
-        verify(sysDictTypeService, times(0)).selectDictDataByType(anyString());
-    }
-
-    @Test
-    @DisplayName("currentVersion：redis 命中走缓存，不触发全量计算")
-    void currentVersion_cacheHit() {
-        String hex = "a".repeat(64);
-        redisStore.put(DjsRedisKey.DICT_VERSION.formatted("1001"), hex);
-
-        String v = service.currentVersion();
-
-        assertThat(v).isEqualTo(hex);
-        verify(sysDictTypeService, times(0)).selectDictDataByType(anyString());
-    }
-
-    @Test
-    @DisplayName("currentVersion：redis 未命中 → 触发 queryFull 重算 + 返新 hash")
-    void currentVersion_cacheMiss_triggersQueryFull() {
-        String v = service.currentVersion();
-
-        assertThat(v).hasSize(64).matches("[0-9a-f]{64}");
         verify(sysDictTypeService, times(49)).selectDictDataByType(anyString());
-        // 重算后两个 key 都被写入
-        assertThat(redisStore).containsKeys(
-            DjsRedisKey.DICT_VERSION.formatted("1001"),
-            DjsRedisKey.DICT_FULL.formatted("1001"));
     }
 
     @Test
-    @DisplayName("evictCache：删除 DICT_VERSION + DICT_FULL 两个 redis key")
-    void evictCache_deletesBothKeys() {
-        redisStore.put(DjsRedisKey.DICT_VERSION.formatted("1001"), "x");
-        redisStore.put(DjsRedisKey.DICT_FULL.formatted("1001"), new DjsDictFullVo());
+    @DisplayName("currentVersion：实时聚合，与 queryFull().version 一致")
+    void currentVersion_matchesQueryFull() {
+        String version = service.currentVersion();
 
-        service.evictCache();
-
-        assertThat(redisDeleted).contains(
-            DjsRedisKey.DICT_VERSION.formatted("1001"),
-            DjsRedisKey.DICT_FULL.formatted("1001"));
-        assertThat(redisStore).doesNotContainKeys(
-            DjsRedisKey.DICT_VERSION.formatted("1001"),
-            DjsRedisKey.DICT_FULL.formatted("1001"));
+        assertThat(version).hasSize(64).matches("[0-9a-f]{64}");
+        assertThat(version).isEqualTo(service.queryFull().getVersion());
     }
 
     @Test
-    @DisplayName("hash 稳定性：相同输入两次重算 version 一致")
+    @DisplayName("hash 稳定性：相同字典两次算 version 一致")
     void hash_stableBetweenRuns() {
-        DjsDictFullVo first = service.queryFull();
-        // 清空 redis 模拟下次重启重算
-        redisStore.clear();
-        redisTtlStore.clear();
-        DjsDictFullVo second = service.queryFull();
+        String first = service.queryFull().getVersion();
+        String second = service.queryFull().getVersion();
 
-        assertThat(second.getVersion()).isEqualTo(first.getVersion());
+        assertThat(second).isEqualTo(first);
+    }
+
+    @Test
+    @DisplayName("回归：底层某字典数据改了 → version 立即变（不残留旧值）")
+    void version_reflectsDictDataChange() {
+        String before = service.currentVersion();
+
+        // 模拟 admin 改了 PIG_BREED 字典：ruoyi SYS_DICT cache 即时更新 →
+        // 本服务下次实时聚合拿到新值（旧实现下 version 被缓存 1h，这里会失败）
+        when(sysDictTypeService.selectDictDataByType(DictTypeConstants.PIG_BREED))
+            .thenReturn(singleItem(DictTypeConstants.PIG_BREED, "CHANGED"));
+
+        String after = service.currentVersion();
+
+        assertThat(after).isNotEqualTo(before);
     }
 }

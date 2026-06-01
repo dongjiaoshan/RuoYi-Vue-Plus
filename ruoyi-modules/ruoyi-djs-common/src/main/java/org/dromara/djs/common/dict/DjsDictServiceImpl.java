@@ -3,12 +3,8 @@ package org.dromara.djs.common.dict;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
 import org.dromara.common.core.exception.ServiceException;
-import org.dromara.common.redis.utils.RedisUtils;
 import org.dromara.djs.common.constant.DictTypeConstants;
-import org.dromara.djs.common.constant.DjsAuthConstants;
-import org.dromara.djs.common.constant.DjsRedisKey;
 import org.dromara.system.domain.vo.SysDictDataVo;
 import org.dromara.system.service.ISysDictTypeService;
 import org.springframework.stereotype.Service;
@@ -17,7 +13,6 @@ import java.lang.reflect.Field;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
-import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -32,30 +27,25 @@ import java.util.Map;
  * <p>实现策略：</p>
  * <ul>
  *   <li>单个 dict_type 拉取走 ruoyi {@link ISysDictTypeService#selectDictDataByType(String)}，
- *       命中 {@code CacheNames.SYS_DICT} cache，不再读库</li>
- *   <li>{@link #queryAllDjsTypes()} 聚合 38 个 {@link DictTypeConstants} 常量，
- *       Map key 用 {@link LinkedHashMap} 保持 dict_type 字典序，方便 hash 稳定</li>
- *   <li>{@link #currentVersion()} 用 Jackson 序列化 → SHA-256 → hex；先读 redis key
- *       {@link DjsRedisKey#DICT_VERSION}，命中直返，未命中重算后写回（TTL 1h）</li>
- *   <li>{@link #queryFull()} 类似：先读 {@link DjsRedisKey#DICT_FULL}，未命中重算 + 写回</li>
- *   <li>SHA-256 用 JDK {@link MessageDigest}，不引外部依赖</li>
+ *       命中 {@code CacheNames.SYS_DICT} cache，不再读库。该 cache 在 admin 改字典
+ *       （insert / update / delete）时由 ruoyi 即时维护（{@code @CachePut} / {@code @CacheEvict}），
+ *       因此本服务实时聚合即拿到最新数据。</li>
+ *   <li>{@link #queryAllDjsTypes()} 聚合 {@link DictTypeConstants} 全部 djs_ 前缀常量，
+ *       Map key 用 {@link LinkedHashMap} 保持 dict_type 字典序，保证 hash 稳定。</li>
+ *   <li>{@link #currentVersion()} / {@link #queryFull()} 每次实时聚合 → Jackson 序列化
+ *       → SHA-256 → hex，<b>不做 djs 层缓存</b>。底层 ruoyi cache 已随字典改动即时失效，
+ *       若再叠一层带 TTL 的版本 / 全量缓存，会出现"后台改完字典、小程序仍显示旧值"
+ *       （version 被缓存 → 小程序比对永远相等 → 不拉全量）。序列化 + hash 只作用于
+ *       已命中内存 cache 的全量字典，开销可忽略。</li>
+ *   <li>SHA-256 用 JDK {@link MessageDigest}，不引外部依赖。</li>
  * </ul>
- *
- * <p>V1 多农场 disabled，所有 redis key 的 farmId 段固定为 {@link DjsAuthConstants#DEFAULT_FARM_ID}，
- * V2 启用时可在 {@link #resolveFarmId()} 内接入 {@code LoginHelper.getCurrentFarmId()}。</p>
  *
  * @author djs
  * @since SYS-INFRA-005
  */
-@Slf4j
 @Service
 @RequiredArgsConstructor
 public class DjsDictServiceImpl implements IDjsDictService {
-
-    /**
-     * 字典版本号 / 全量缓存 TTL。
-     */
-    private static final Duration CACHE_TTL = Duration.ofHours(1);
 
     private final ISysDictTypeService sysDictTypeService;
     private final ObjectMapper objectMapper;
@@ -98,67 +88,14 @@ public class DjsDictServiceImpl implements IDjsDictService {
 
     @Override
     public String currentVersion() {
-        String key = DjsRedisKey.DICT_VERSION.formatted(resolveFarmId());
-        String cached = redisGet(key);
-        if (cached != null && !cached.isEmpty()) {
-            return cached;
-        }
-        // 未命中：触发 queryFull() 内部重算（顺便填充 DICT_FULL 缓存，避免双重计算）
         return queryFull().getVersion();
     }
 
     @Override
     public DjsDictFullVo queryFull() {
-        String farmId = resolveFarmId();
-        String fullKey = DjsRedisKey.DICT_FULL.formatted(farmId);
-
-        DjsDictFullVo cached = redisGet(fullKey);
-        if (cached != null && cached.getVersion() != null) {
-            return cached;
-        }
-
         Map<String, List<SysDictDataVo>> all = queryAllDjsTypes();
         String version = sha256Hex(serialize(all));
-        DjsDictFullVo vo = new DjsDictFullVo(version, all);
-
-        redisSet(fullKey, vo, CACHE_TTL);
-        redisSet(DjsRedisKey.DICT_VERSION.formatted(farmId), version, CACHE_TTL);
-
-        return vo;
-    }
-
-    @Override
-    public void evictCache() {
-        String farmId = resolveFarmId();
-        redisDel(DjsRedisKey.DICT_VERSION.formatted(farmId));
-        redisDel(DjsRedisKey.DICT_FULL.formatted(farmId));
-        log.info("djs dict cache evicted, farmId={}", farmId);
-    }
-
-    /**
-     * 当前农场 ID（V1 固定主农场；V2 接入 {@code LoginHelper.getCurrentFarmId()} 即可）。
-     */
-    protected String resolveFarmId() {
-        return DjsAuthConstants.DEFAULT_FARM_ID;
-    }
-
-    /**
-     * Redis 读操作的薄包装，便于单测覆盖。
-     *
-     * <p>{@link RedisUtils#getCacheObject(String)} 的静态初始化依赖 Spring context，无法在
-     * 纯 Mockito（不启 Spring）单测中直接 {@code mockStatic}；故抽出 protected 钩子，
-     * 单测继承本类后覆盖即可，生产代码零成本。</p>
-     */
-    protected <T> T redisGet(String key) {
-        return RedisUtils.getCacheObject(key);
-    }
-
-    protected <T> void redisSet(String key, T value, Duration ttl) {
-        RedisUtils.setCacheObject(key, value, ttl);
-    }
-
-    protected void redisDel(String key) {
-        RedisUtils.deleteObject(key);
+        return new DjsDictFullVo(version, all);
     }
 
     /**
@@ -188,7 +125,7 @@ public class DjsDictServiceImpl implements IDjsDictService {
     }
 
     /**
-     * 仅供单测：暴露 38 个常量的快照。
+     * 仅供单测：暴露 djs_ 字典常量快照。
      */
     static List<String> allDjsDictTypesForTest() {
         return Arrays.asList(ALL_DJS_DICT_TYPES.toArray(new String[0]));

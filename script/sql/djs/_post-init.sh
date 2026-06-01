@@ -10,12 +10,11 @@
 #      会把"查空"的结果按 NullValue 写到 redis（hash key 形如 `1001:sys_dict`），
 #      TTL 1h。即使 SQL 把数据重新灌回去，缓存仍返 NullValue 直到自然过期，
 #      表现为 admin 表单字典下拉空（典型：性别 / 启用停用 / 显示隐藏）。
-#   2) djs 业务字典聚合缓存（*djs:dict*）
-#      DjsDictServiceImpl#queryFull / currentVersion 把"反射 DictTypeConstants +
-#      DB 查询"的全量结果写到 djs:dict:full:1001 / djs:dict:version:1001 + tenant
-#      前缀变体 1001:djs:dict:*（共 4 key），TTL 1h。新增 dict_type seed 后即使
-#      admin restart、即使 DictTypeConstants 加了常量，只要这 4 个缓存 key 没清，
-#      /djs/dict/full 仍返旧快照 → mp useDict 拿空 / radio-group 空。
+#   2) djs 业务字典聚合缓存历史残留（*djs:dict*）
+#      早期 DjsDictServiceImpl 把 /djs/dict/full|version 的全量结果缓存到
+#      djs:dict:full:1001 / djs:dict:version:1001（+ tenant 前缀变体），TTL 1h，
+#      会出现"改完字典、小程序仍返旧快照"。现已改为实时聚合、不再写这些 key；
+#      此步仅清理旧版本遗留的快照，避免初始化 / 升级后撞到历史残留。
 #
 # 解决：把上述 2 类缓存 key 全清，让下次访问重读 DB / 重反射。
 #
@@ -38,7 +37,7 @@ docker exec "$REDIS_CONTAINER" redis-cli -a "$REDIS_PASSWORD" --no-auth-warning 
   | xargs -I {} docker exec "$REDIS_CONTAINER" redis-cli -a "$REDIS_PASSWORD" --no-auth-warning DEL {} \
   || true
 
-echo "[djs-post-init] 2/2 清 djs 业务字典聚合缓存（*djs:dict*，含 full / version 两层 + tenant prefix 变体）..."
+echo "[djs-post-init] 2/2 清 djs 字典聚合缓存历史残留（*djs:dict*，实时算重构前的旧快照）..."
 docker exec "$REDIS_CONTAINER" redis-cli -a "$REDIS_PASSWORD" --no-auth-warning \
   --scan --pattern '*djs:dict*' \
   | xargs -I {} docker exec "$REDIS_CONTAINER" redis-cli -a "$REDIS_PASSWORD" --no-auth-warning DEL {} \

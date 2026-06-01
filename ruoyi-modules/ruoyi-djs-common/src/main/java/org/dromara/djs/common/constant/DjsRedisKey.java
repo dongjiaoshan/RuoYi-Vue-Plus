@@ -70,22 +70,4 @@ public final class DjsRedisKey {
      * <p>format args: 单个完整 lockKey 后缀（由调用方拼接 tenantId/codeType/seqDate）</p>
      */
     public static final String BIZ_CODE_LOCK = DJS_PREFIX + "bizcode:lock:%s";
-
-    // ---------------- 字典 / 主数据缓存（SYS-INFRA-005） ----------------
-
-    /**
-     * 字典版本号（按农场可隔离，sys_dict 是全局共享字典本身不带 farmId，
-     * 但业务模块可能需要按农场本地化覆盖，预留占位）。
-     * <p>format args: farmId</p>
-     */
-    public static final String DICT_VERSION = DJS_PREFIX + "dict:version:%s";
-
-    /**
-     * 字典全量结果缓存（小程序同步用，SHA-256 hash 命中前的全量负载）。
-     * <p>value = JSON {version, data: {dictType: [...DictItem]}}，TTL 1h。</p>
-     * <p>admin 改字典 → ruoyi 自带 {@code CacheNames.SYS_DICT} 失效 → 本 key 由调用方在
-     * version 不命中时按需重算 + 重写，不需要单独的 evict 钩子。</p>
-     * <p>format args: farmId</p>
-     */
-    public static final String DICT_FULL = DJS_PREFIX + "dict:full:%s";
 }

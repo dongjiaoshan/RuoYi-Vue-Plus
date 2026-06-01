@@ -47,12 +47,6 @@ class DjsRedisKeyTest {
     }
 
     @Test
-    @DisplayName("字典版本 key 含 farmId 段")
-    void dictVersionKey() {
-        assertThat(DjsRedisKey.DICT_VERSION.formatted("1001")).isEqualTo("djs:dict:version:1001");
-    }
-
-    @Test
     @DisplayName("所有 key 模板都以 djs: 全局前缀开头")
     void allKeysHaveDjsPrefix() {
         assertThat(DjsRedisKey.EAR_TAG_SEQ).startsWith("djs:");
@@ -60,7 +54,6 @@ class DjsRedisKeyTest {
         assertThat(DjsRedisKey.PRODUCE_NO_SEQ).startsWith("djs:");
         assertThat(DjsRedisKey.SUPPLIER_NO_SEQ).startsWith("djs:");
         assertThat(DjsRedisKey.MEMBER_NO_SEQ).startsWith("djs:");
-        assertThat(DjsRedisKey.DICT_VERSION).startsWith("djs:");
     }
 
     @Test
@@ -71,6 +64,5 @@ class DjsRedisKeyTest {
         assertThat(DjsRedisKey.PRODUCE_NO_SEQ).contains("%s");
         assertThat(DjsRedisKey.SUPPLIER_NO_SEQ).contains("%s");
         assertThat(DjsRedisKey.MEMBER_NO_SEQ).contains("%s");
-        assertThat(DjsRedisKey.DICT_VERSION).contains("%s");
     }
 }
