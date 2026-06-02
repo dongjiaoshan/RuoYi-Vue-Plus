@@ -12,6 +12,8 @@ import org.dromara.djs.plant.farm.service.IFarmRecordsService;
 import org.dromara.djs.plant.pick.domain.bo.PickSubmitBo;
 import org.dromara.djs.plant.pick.domain.vo.PickSummaryVo;
 import org.dromara.djs.plant.pick.domain.vo.PickTaskVo;
+import org.dromara.djs.plant.pick.event.PlantPickedEvent;
+import org.dromara.djs.plant.pick.event.PlantPickedPayload;
 import org.dromara.djs.plant.pick.service.IAppletPickService;
 import org.dromara.djs.plant.plan.domain.PlantDetails;
 import org.dromara.djs.plant.plan.domain.PlantPlan;
@@ -21,6 +23,7 @@ import org.dromara.djs.plant.plot.domain.PlotInfo;
 import org.dromara.djs.plant.plot.mapper.PlotInfoMapper;
 import org.dromara.djs.plant.team.domain.PlantWorkTeam;
 import org.dromara.djs.plant.team.mapper.PlantWorkTeamMapper;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -53,6 +56,7 @@ public class AppletPickServiceImpl implements IAppletPickService {
     private final CropInfoMapper cropMapper;
     private final PlantWorkTeamMapper teamMapper;
     private final IFarmRecordsService farmRecordsService;
+    private final ApplicationEventPublisher eventPublisher;
 
     /** is_pick=2 表示非游客采摘（普通采收）；mp 工人端只统计 / 展示这些。 */
     private static final int IS_PICK_NORMAL = 2;
@@ -84,6 +88,8 @@ public class AppletPickServiceImpl implements IAppletPickService {
             throw new ServiceException("采收重量必须大于 0");
         }
         boolean finish = Boolean.TRUE.equals(bo.getFinish());
+        // 捕获更新前的旧态：仅"非 completed → completed"首次流转才发跨域事件（幂等，防重复点完成产生多行待办）
+        boolean alreadyCompleted = "completed".equals(detail.getHarvestStatus());
 
         // 1. 累加 actual_yield
         BigDecimal newYield = (detail.getActualYield() == null ? BigDecimal.ZERO : detail.getActualYield())
@@ -128,7 +134,22 @@ public class AppletPickServiceImpl implements IAppletPickService {
         grow.setRemark(bo.getRemark());
         farmRecordsService.submitGrow(grow);
 
-        // 6. PlantPickedEvent 应发布点 —— D14 CROSS-FLOW-002 补 event + WMS listener（本 ticket 不提前造跨域 event）
+        // 6. CROSS-FLOW-002：仅"非 completed → completed"首次流转时发 PlantPickedEvent，
+        //    warehouse 域 listener 在 AFTER_COMMIT 写 1 行 t_warehouse_planting_record(handle_status='pending') 待办。
+        //    逐次采收(finish=false)与重复点完成均不发，避免同 plot+crop 产生多行重复待办。
+        if (finish && !alreadyCompleted) {
+            PlantPickedPayload payload = new PlantPickedPayload();
+            payload.setPlotId(detail.getPlotId());
+            payload.setCropId(detail.getCropId());
+            payload.setPlotName(resolvePlotName(detail.getPlotId()));
+            payload.setCropName(resolveCropName(detail.getCropId()));
+            payload.setPlantDate(detail.getBeginActualdate());
+            payload.setHarvestDate(detail.getEndHarvestdate());
+            payload.setHarvestWeight(detail.getActualYield());   // 累计采摘权威值
+            payload.setTeamId(detail.getHarvestBy());
+            payload.setTeamName(resolveTeamName(detail.getHarvestBy()));
+            eventPublisher.publishEvent(new PlantPickedEvent(this, payload));
+        }
     }
 
     @Override
@@ -184,6 +205,33 @@ public class AppletPickServiceImpl implements IAppletPickService {
             return null;
         }
         return ids.stream().filter(Objects::nonNull).map(String::valueOf).collect(Collectors.joining(","));
+    }
+
+    /** 反查地块名（null 安全：id 为空或查无返 null，不抛）。CROSS-FLOW-002 组装事件载荷用。 */
+    private String resolvePlotName(Long plotId) {
+        if (plotId == null) {
+            return null;
+        }
+        PlotInfo plot = plotMapper.selectById(plotId);
+        return plot == null ? null : plot.getPlotName();
+    }
+
+    /** 反查作物名（null 安全）。 */
+    private String resolveCropName(Long cropId) {
+        if (cropId == null) {
+            return null;
+        }
+        CropInfo crop = cropMapper.selectById(cropId);
+        return crop == null ? null : crop.getCropName();
+    }
+
+    /** 反查班组名（null 安全）。 */
+    private String resolveTeamName(Long teamId) {
+        if (teamId == null) {
+            return null;
+        }
+        PlantWorkTeam team = teamMapper.selectById(teamId);
+        return team == null ? null : team.getTeamName();
     }
 
     private List<String> parseStatus(String status) {

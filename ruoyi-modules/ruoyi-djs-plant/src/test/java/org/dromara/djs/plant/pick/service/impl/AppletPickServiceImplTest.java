@@ -8,6 +8,7 @@ import org.dromara.djs.plant.crop.mapper.CropInfoMapper;
 import org.dromara.djs.plant.farm.domain.bo.GrowRecordBo;
 import org.dromara.djs.plant.farm.service.IFarmRecordsService;
 import org.dromara.djs.plant.pick.domain.bo.PickSubmitBo;
+import org.dromara.djs.plant.pick.event.PlantPickedEvent;
 import org.dromara.djs.plant.plan.domain.PlantDetails;
 import org.dromara.djs.plant.plan.mapper.PlantDetailsMapper;
 import org.dromara.djs.plant.plan.mapper.PlantPlanMapper;
@@ -24,6 +25,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
+import org.springframework.context.ApplicationEventPublisher;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
@@ -68,6 +70,8 @@ class AppletPickServiceImplTest {
     private PlantWorkTeamMapper teamMapper;
     @Mock
     private IFarmRecordsService farmRecordsService;
+    @Mock
+    private ApplicationEventPublisher eventPublisher;
 
     private AppletPickServiceImpl service;
 
@@ -81,7 +85,7 @@ class AppletPickServiceImplTest {
 
     @BeforeEach
     void setUp() {
-        service = new AppletPickServiceImpl(detailsMapper, planMapper, plotMapper, cropMapper, teamMapper, farmRecordsService);
+        service = new AppletPickServiceImpl(detailsMapper, planMapper, plotMapper, cropMapper, teamMapper, farmRecordsService, eventPublisher);
     }
 
     private PlantDetails detailFixture() {
@@ -204,5 +208,62 @@ class AppletPickServiceImplTest {
             .isInstanceOf(ServiceException.class)
             .hasMessageContaining("未指派采摘班组");
         verify(farmRecordsService, never()).submitGrow(any());
+    }
+
+    // ============================================================
+    // CROSS-FLOW-002 跨域事件发布点
+    // ============================================================
+
+    @Test
+    @DisplayName("CROSS-FLOW-002 finish=true 且旧态非 completed → 发布 PlantPickedEvent 1 次")
+    void submitPick_finish_publishesEvent() {
+        PlantDetails d = detailFixture();   // harvestStatus=pending
+        when(detailsMapper.selectById(100L)).thenReturn(d);
+
+        PickSubmitBo bo = new PickSubmitBo();
+        bo.setDetailId(100L);
+        bo.setWeight(new BigDecimal("100"));
+        bo.setHarvestDate(LocalDate.of(2026, 6, 1));
+        bo.setFinish(true);
+
+        service.submitPick(bo);
+
+        verify(eventPublisher).publishEvent(any(PlantPickedEvent.class));
+    }
+
+    @Test
+    @DisplayName("CROSS-FLOW-002 finish=false → 不发布事件（逐次采收不产生待办）")
+    void submitPick_continue_doesNotPublishEvent() {
+        PlantDetails d = detailFixture();
+        when(detailsMapper.selectById(100L)).thenReturn(d);
+
+        PickSubmitBo bo = new PickSubmitBo();
+        bo.setDetailId(100L);
+        bo.setWeight(new BigDecimal("50"));
+        bo.setHarvestDate(LocalDate.of(2026, 6, 1));
+        bo.setFinish(false);
+
+        service.submitPick(bo);
+
+        verify(eventPublisher, never()).publishEvent(any());
+    }
+
+    @Test
+    @DisplayName("CROSS-FLOW-002 finish=true 但旧态已 completed（重复点完成）→ 不发布事件（幂等）")
+    void submitPick_alreadyCompleted_doesNotPublishEvent() {
+        PlantDetails d = detailFixture();
+        d.setHarvestStatus("completed");   // 重复点完成，旧态已 completed
+        d.setActualYield(new BigDecimal("80"));
+        when(detailsMapper.selectById(100L)).thenReturn(d);
+
+        PickSubmitBo bo = new PickSubmitBo();
+        bo.setDetailId(100L);
+        bo.setWeight(new BigDecimal("20"));
+        bo.setHarvestDate(LocalDate.of(2026, 6, 1));
+        bo.setFinish(true);
+
+        service.submitPick(bo);
+
+        verify(eventPublisher, never()).publishEvent(any());
     }
 }
