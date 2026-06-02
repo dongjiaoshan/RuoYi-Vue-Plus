@@ -1,0 +1,232 @@
+package org.dromara.djs.warehouse.trace.service.impl;
+
+import com.baomidou.mybatisplus.core.MybatisConfiguration;
+import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
+import org.apache.ibatis.builder.MapperBuilderAssistant;
+import org.dromara.djs.common.encoder.BizCodeType;
+import org.dromara.djs.common.encoder.IBizCodeGenerator;
+import org.dromara.djs.warehouse.product.domain.ProductInfo;
+import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
+import org.dromara.djs.warehouse.trace.domain.TraceCode;
+import org.dromara.djs.warehouse.trace.domain.TraceCodeTypeConst;
+import org.dromara.djs.warehouse.trace.domain.TraceContentConst;
+import org.dromara.djs.warehouse.trace.domain.TraceEvent;
+import org.dromara.djs.warehouse.trace.mapper.TraceCodeMapper;
+import org.dromara.djs.warehouse.trace.mapper.TraceEventMapper;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
+import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
+import org.mockito.junit.jupiter.MockitoSettings;
+import org.mockito.quality.Strictness;
+
+import java.util.Map;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyMap;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doNothing;
+import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.spy;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
+/**
+ * {@link TraceServiceImpl} 单测（TRC-CORE-001）。
+ *
+ * <h3>覆盖场景</h3>
+ * <ul>
+ *   <li>genCode 三业态：pork（belong_type=pork）→ code_type=pork + 填 pigEarNo；
+ *       veg（belong_type=vegetable）→ code_type=veg + 填 plotId；
+ *       gift（belong_type=gift_box）→ code_type=gift + gift_components NULL</li>
+ *   <li>genCode 业务码占位符 productCode 传 PG/VG/GF</li>
+ *   <li>recordEvent happy：写一条 immutable 流水 + trace_content 正确</li>
+ *   <li>recordEvent 容错：produceCode 空 → 不 insert、不抛；insert 抛异常 → 不抛</li>
+ *   <li>recordEventByEarNo 反查不到 → 不 recordEvent、不抛（猪肉链无生成入口的 V1 预期）</li>
+ * </ul>
+ *
+ * <p>MP entity cache 预热（skill coder-mp-entity-cache-test）：{@code findProduceCodeByEarNo} 内部
+ * LambdaQueryWrapper method-ref 会触发 TableInfoHelper 解析列名，必须先注册 TraceCode / TraceEvent /
+ * ProductInfo entity。genCode 路径用 spy stub protected insertTraceCode / insertTraceEvent 避开真实
+ * baseMapper insert。</p>
+ *
+ * @author djs
+ * @since TRC-CORE-001
+ */
+@Tag("local")
+@ExtendWith(MockitoExtension.class)
+@MockitoSettings(strictness = Strictness.LENIENT)
+@DisplayName("TraceServiceImpl 单元测试")
+class TraceServiceImplTest {
+
+    @Mock
+    private TraceCodeMapper traceCodeMapper;
+
+    @Mock
+    private TraceEventMapper traceEventMapper;
+
+    @Mock
+    private ProductInfoMapper productInfoMapper;
+
+    @Mock
+    private IBizCodeGenerator bizCodeGenerator;
+
+    private TraceServiceImpl service;
+
+    @BeforeAll
+    static void initMpEntityCache() {
+        MybatisConfiguration cfg = new MybatisConfiguration();
+        MapperBuilderAssistant assistant = new MapperBuilderAssistant(cfg, "");
+        assistant.setCurrentNamespace("test");
+        TableInfoHelper.initTableInfo(assistant, TraceCode.class);
+        TableInfoHelper.initTableInfo(assistant, TraceEvent.class);
+        TableInfoHelper.initTableInfo(assistant, ProductInfo.class);
+    }
+
+    @BeforeEach
+    void setUp() {
+        // spy 以便 stub protected insertTraceCode / insertTraceEvent（避开真实 baseMapper.insert）
+        service = spy(new TraceServiceImpl(
+            traceCodeMapper, traceEventMapper, productInfoMapper, bizCodeGenerator));
+    }
+
+    private ProductInfo product(Long id, String belongType) {
+        ProductInfo p = new ProductInfo();
+        p.setId(id);
+        p.setBelongType(belongType);
+        p.setProductName("测试产品");
+        return p;
+    }
+
+    @Test
+    @DisplayName("genCode pork：belong_type=pork → code_type=pork + 填 pigEarNo，业务码占位 PG")
+    void genCode_pork_setsCodeTypePorkAndEarNo() {
+        when(productInfoMapper.selectById(1001L)).thenReturn(product(1001L, "pork"));
+        when(bizCodeGenerator.generate(eq(BizCodeType.TRACE_CODE), anyMap())).thenReturn("T20260615PG000001");
+        doNothing().when(service).insertTraceCode(any(TraceCode.class));
+
+        String code = service.genCode(1001L, "01A12605001", null);
+
+        assertThat(code).isEqualTo("T20260615PG000001");
+        ArgumentCaptor<TraceCode> captor = ArgumentCaptor.forClass(TraceCode.class);
+        verify(service, times(1)).insertTraceCode(captor.capture());
+        TraceCode tc = captor.getValue();
+        assertThat(tc.getCodeType()).isEqualTo(TraceCodeTypeConst.PORK);
+        assertThat(tc.getProductId()).isEqualTo(1001L);
+        assertThat(tc.getPigEarNo()).isEqualTo("01A12605001");
+        assertThat(tc.getPlotId()).isNull();
+        assertThat(tc.getGiftComponents()).isNull();
+        assertThat(tc.getQrOssId()).isNull();
+
+        ArgumentCaptor<Map<String, Object>> ctxCaptor = ArgumentCaptor.forClass(Map.class);
+        verify(bizCodeGenerator).generate(eq(BizCodeType.TRACE_CODE), ctxCaptor.capture());
+        assertThat(ctxCaptor.getValue()).containsEntry("productCode", TraceCodeTypeConst.PRODUCT_CODE_PORK);
+    }
+
+    @Test
+    @DisplayName("genCode veg：belong_type=vegetable → code_type=veg + 填 plotId，业务码占位 VG")
+    void genCode_veg_setsCodeTypeVegAndPlotId() {
+        when(productInfoMapper.selectById(1002L)).thenReturn(product(1002L, "vegetable"));
+        when(bizCodeGenerator.generate(eq(BizCodeType.TRACE_CODE), anyMap())).thenReturn("T20260615VG000001");
+        doNothing().when(service).insertTraceCode(any(TraceCode.class));
+
+        String code = service.genCode(1002L, null, 5050L);
+
+        assertThat(code).isEqualTo("T20260615VG000001");
+        ArgumentCaptor<TraceCode> captor = ArgumentCaptor.forClass(TraceCode.class);
+        verify(service, times(1)).insertTraceCode(captor.capture());
+        TraceCode tc = captor.getValue();
+        assertThat(tc.getCodeType()).isEqualTo(TraceCodeTypeConst.VEG);
+        assertThat(tc.getPlotId()).isEqualTo(5050L);
+        assertThat(tc.getPigEarNo()).isNull();
+    }
+
+    @Test
+    @DisplayName("genCode gift：belong_type=gift_box → code_type=gift + gift_components NULL，业务码占位 GF")
+    void genCode_gift_setsCodeTypeGift() {
+        when(productInfoMapper.selectById(1003L)).thenReturn(product(1003L, "gift_box"));
+        when(bizCodeGenerator.generate(eq(BizCodeType.TRACE_CODE), anyMap())).thenReturn("T20260615GF000001");
+        doNothing().when(service).insertTraceCode(any(TraceCode.class));
+
+        String code = service.genCode(1003L, null, null);
+
+        assertThat(code).isEqualTo("T20260615GF000001");
+        ArgumentCaptor<TraceCode> captor = ArgumentCaptor.forClass(TraceCode.class);
+        verify(service, times(1)).insertTraceCode(captor.capture());
+        TraceCode tc = captor.getValue();
+        assertThat(tc.getCodeType()).isEqualTo(TraceCodeTypeConst.GIFT);
+        assertThat(tc.getGiftComponents()).isNull();
+        assertThat(tc.getPigEarNo()).isNull();
+        assertThat(tc.getPlotId()).isNull();
+
+        ArgumentCaptor<Map<String, Object>> ctxCaptor = ArgumentCaptor.forClass(Map.class);
+        verify(bizCodeGenerator).generate(eq(BizCodeType.TRACE_CODE), ctxCaptor.capture());
+        assertThat(ctxCaptor.getValue()).containsEntry("productCode", TraceCodeTypeConst.PRODUCT_CODE_GIFT);
+    }
+
+    @Test
+    @DisplayName("recordEvent happy：写一条 immutable 流水，trace_content + trace_time 正确")
+    void recordEvent_happy_insertsOneEvent() {
+        doNothing().when(service).insertTraceEvent(any(TraceEvent.class));
+
+        service.recordEvent("T20260615VG000001", TraceContentConst.IN_STOCK);
+
+        ArgumentCaptor<TraceEvent> captor = ArgumentCaptor.forClass(TraceEvent.class);
+        verify(service, times(1)).insertTraceEvent(captor.capture());
+        TraceEvent ev = captor.getValue();
+        assertThat(ev.getProduceCode()).isEqualTo("T20260615VG000001");
+        assertThat(ev.getTraceContent()).isEqualTo(TraceContentConst.IN_STOCK);
+        assertThat(ev.getTraceTime()).isNotNull();
+    }
+
+    @Test
+    @DisplayName("recordEvent 容错：produceCode 空 → 不 insert、不抛")
+    void recordEvent_blankProduceCode_skipsSilently() {
+        assertThatCode(() -> service.recordEvent("  ", TraceContentConst.SHIP)).doesNotThrowAnyException();
+        verify(service, never()).insertTraceEvent(any(TraceEvent.class));
+    }
+
+    @Test
+    @DisplayName("recordEvent 容错：insert 抛异常 → swallow，不拖垮主业务")
+    void recordEvent_insertThrows_swallowsException() {
+        org.mockito.Mockito.doThrow(new RuntimeException("db down"))
+            .when(service).insertTraceEvent(any(TraceEvent.class));
+
+        assertThatCode(() -> service.recordEvent("T20260615VG000001", TraceContentConst.SHIP))
+            .doesNotThrowAnyException();
+        verify(service, times(1)).insertTraceEvent(any(TraceEvent.class));
+    }
+
+    @Test
+    @DisplayName("recordEventByEarNo 反查不到：不 recordEvent、不抛（猪肉链无生成入口的 V1 预期）")
+    void recordEventByEarNo_notFound_skipsSilently() {
+        doReturn(null).when(service).findProduceCodeByEarNo("01A12605001");
+
+        assertThatCode(() -> service.recordEventByEarNo("01A12605001", TraceContentConst.MARKETING))
+            .doesNotThrowAnyException();
+        verify(service, never()).insertTraceEvent(any(TraceEvent.class));
+    }
+
+    @Test
+    @DisplayName("recordEventByEarNo 反查到：转调 recordEvent 写流水")
+    void recordEventByEarNo_found_recordsEvent() {
+        doReturn("T20260615PG000001").when(service).findProduceCodeByEarNo("01A12605001");
+        doNothing().when(service).insertTraceEvent(any(TraceEvent.class));
+
+        service.recordEventByEarNo("01A12605001", TraceContentConst.SINGE);
+
+        ArgumentCaptor<TraceEvent> captor = ArgumentCaptor.forClass(TraceEvent.class);
+        verify(service, times(1)).insertTraceEvent(captor.capture());
+        assertThat(captor.getValue().getProduceCode()).isEqualTo("T20260615PG000001");
+        assertThat(captor.getValue().getTraceContent()).isEqualTo(TraceContentConst.SINGE);
+    }
+}

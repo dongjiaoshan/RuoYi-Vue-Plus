@@ -31,6 +31,8 @@ import org.dromara.djs.warehouse.product.mapper.GiftBoxMapper;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
 import org.dromara.djs.warehouse.product.mapper.ProductInhouseMapper;
 import org.dromara.djs.warehouse.stock.mapper.LocationStockMapper;
+import org.dromara.djs.warehouse.trace.domain.TraceContentConst;
+import org.dromara.djs.warehouse.trace.service.ITraceService;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -50,11 +52,11 @@ import java.util.stream.Collectors;
  * <p>每业态 service 方法 @Transactional 跨 4 表（参 D9 WMS-PIG-002 范式）：</p>
  * <ol>
  *   <li>校验来源 {@code product_inhouse} 存在 + 未消耗（V1 软删模型）</li>
- *   <li>INSERT {@code product_production}（status='packed' / produceNo 业务码 / 凭证图 / hook trace_code=NULL）</li>
+ *   <li>INSERT {@code product_production}（status='packed' / produceNo 业务码 / 凭证图）</li>
  *   <li>INSERT {@code stock_flow}（flow_type='pack_in', inout_type='IN', 入冻品 / 鲜品 / 礼盒库等待发货）</li>
  *   <li>UPDATE {@code location_stock} += quantity（addByProductLocation 兜底）</li>
  *   <li>软删 inhouse row（V1 简化：一次打包消费整 row；分次打包需 mp 端多次提交）</li>
- *   <li>hook 预留：D11 TRC-CORE-001 调 {@code traceService.genCode} 回填 trace_code</li>
+ *   <li>{@code traceService.genCode} 生成追溯码回填 {@code trace_code} + recordEvent(in_stock)（TRC-CORE-001）</li>
  * </ol>
  *
  * <h3>礼盒打包特殊事务（Kevin override 决策 b）</h3>
@@ -121,6 +123,7 @@ public class ProductProductionServiceImpl
     private final LocationStockMapper locationStockMapper;
     private final StockFlowMapper stockFlowMapper;
     private final IBizCodeGenerator bizCodeGenerator;
+    private final ITraceService traceService;
 
     public ProductProductionServiceImpl(ProductProductionMapper baseMapper,
                                         ProductInhouseMapper productInhouseMapper,
@@ -129,7 +132,8 @@ public class ProductProductionServiceImpl
                                         LocationInfoMapper locationInfoMapper,
                                         LocationStockMapper locationStockMapper,
                                         StockFlowMapper stockFlowMapper,
-                                        IBizCodeGenerator bizCodeGenerator) {
+                                        IBizCodeGenerator bizCodeGenerator,
+                                        ITraceService traceService) {
         super(baseMapper);
         this.productInhouseMapper = productInhouseMapper;
         this.productInfoMapper = productInfoMapper;
@@ -138,6 +142,7 @@ public class ProductProductionServiceImpl
         this.locationStockMapper = locationStockMapper;
         this.stockFlowMapper = stockFlowMapper;
         this.bizCodeGenerator = bizCodeGenerator;
+        this.traceService = traceService;
     }
 
     /**
@@ -193,10 +198,11 @@ public class ProductProductionServiceImpl
         // Step 7：软删来源 inhouse（V1 整 row 消耗）
         consumeInhouse(src);
 
-        // hook：trace_code 字段已预留 NULL，D11 TRC-CORE-001 实施时调
-        //   traceService.genCode(p.getId(), src.getEarNo(), src.getPlotId()) 回填
-        log.info("[WMS-PACK-001] veg pack done id={} produceNo={} weight={}",
-            p.getId(), p.getProduceNo(), bo.getProductWeight());
+        // Step 8：生成追溯码回填 + 写 in_stock 事件（TRC-CORE-001）
+        fillTraceCode(p, src.getEarNo(), src.getPlotId());
+
+        log.info("[WMS-PACK-001] veg pack done id={} produceNo={} weight={} traceCode={}",
+            p.getId(), p.getProduceNo(), bo.getProductWeight(), p.getTraceCode());
         return p.getId();
     }
 
@@ -274,8 +280,11 @@ public class ProductProductionServiceImpl
         locationStockMapper.addByProductLocation(
             bo.getLocationId(), giftBoxProduct.getId(), giftWeight, userId);
 
-        log.info("[WMS-PACK-001] gift pack done id={} produceNo={} packBoxCount={} components={}",
-            p.getId(), p.getProduceNo(), bo.getPackBoxCount(), components.size());
+        // 生成追溯码回填 + 写 in_stock 事件（TRC-CORE-001）；礼盒无 earNo / plotId
+        fillTraceCode(p, null, null);
+
+        log.info("[WMS-PACK-001] gift pack done id={} produceNo={} packBoxCount={} components={} traceCode={}",
+            p.getId(), p.getProduceNo(), bo.getPackBoxCount(), components.size(), p.getTraceCode());
         return p.getId();
     }
 
@@ -321,8 +330,11 @@ public class ProductProductionServiceImpl
             bo.getLocationId(), product.getId(), bo.getProductWeight(), userId);
         consumeInhouse(src);
 
-        log.info("[WMS-PACK-001] dry pack done id={} produceNo={} weight={} unit={}",
-            p.getId(), p.getProduceNo(), bo.getProductWeight(), bo.getProductUnit());
+        // 生成追溯码回填 + 写 in_stock 事件（TRC-CORE-001）
+        fillTraceCode(p, src.getEarNo(), src.getPlotId());
+
+        log.info("[WMS-PACK-001] dry pack done id={} produceNo={} weight={} unit={} traceCode={}",
+            p.getId(), p.getProduceNo(), bo.getProductWeight(), bo.getProductUnit(), p.getTraceCode());
         return p.getId();
     }
 
@@ -368,8 +380,11 @@ public class ProductProductionServiceImpl
             bo.getLocationId(), product.getId(), bo.getProductWeight(), userId);
         consumeInhouse(src);
 
-        log.info("[WMS-PACK-001] celery pack done id={} produceNo={} weight={}",
-            p.getId(), p.getProduceNo(), bo.getProductWeight());
+        // 生成追溯码回填 + 写 in_stock 事件（TRC-CORE-001）；芹菜无 earNo
+        fillTraceCode(p, null, src.getPlotId());
+
+        log.info("[WMS-PACK-001] celery pack done id={} produceNo={} weight={} traceCode={}",
+            p.getId(), p.getProduceNo(), bo.getProductWeight(), p.getTraceCode());
         return p.getId();
     }
 
@@ -427,6 +442,24 @@ public class ProductProductionServiceImpl
     // ============================================================
     // helpers
     // ============================================================
+
+    /**
+     * 生成追溯码并回填 {@code ProductProduction.traceCode}（同事务 UPDATE）+ 写 in_stock 事件流水（TRC-CORE-001）。
+     *
+     * <p>4 个打包入口（veg/gift/dry/celery）INSERT {@code product_production} 后统一调用。追溯写在主事务内，
+     * 但 {@link ITraceService#recordEvent} 内部自带 try-catch 容错（追溯写失败不抛、不拖垮打包）。
+     * protected 方便单测 stub。</p>
+     *
+     * @param p      已 INSERT 的生产记录（含 id / productId）
+     * @param earNo  来源耳号（猪肉链；果蔬 / 礼盒传 null）
+     * @param plotId 来源地块（果蔬链；猪肉 / 礼盒传 null）
+     */
+    protected void fillTraceCode(ProductProduction p, String earNo, Long plotId) {
+        String produceCode = traceService.genCode(p.getProductId(), earNo, plotId);
+        p.setTraceCode(produceCode);
+        baseMapper.updateById(p);
+        traceService.recordEvent(produceCode, TraceContentConst.IN_STOCK);
+    }
 
     /**
      * 校验来源 inhouse 存在 + 未被消耗（V1 软删模型：del_flag='1' 视为已消耗）。

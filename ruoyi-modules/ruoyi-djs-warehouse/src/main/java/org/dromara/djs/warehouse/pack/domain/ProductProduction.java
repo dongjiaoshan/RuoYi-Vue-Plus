@@ -194,7 +194,7 @@ public class ProductProduction extends TenantEntity {
     private String proofOssIds;
 
     /**
-     * 追溯码（D11 TRC-CORE-001 回填，hook 字段）。
+     * 追溯码（{@code TraceService.genCode} 打包入库时回填，TRC-CORE-001）。
      */
     private String traceCode;
 

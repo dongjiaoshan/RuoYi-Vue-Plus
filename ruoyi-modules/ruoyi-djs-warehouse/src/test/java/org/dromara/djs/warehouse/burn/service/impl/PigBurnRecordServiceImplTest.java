@@ -81,6 +81,8 @@ class PigBurnRecordServiceImplTest {
     private IBizCodeGenerator bizCodeGenerator;
     @Mock
     private IStockCheckService stockCheckService;
+    @Mock
+    private org.dromara.djs.warehouse.trace.service.ITraceService traceService;
 
     private TestablePigBurnRecordServiceImpl service;
 
@@ -92,8 +94,9 @@ class PigBurnRecordServiceImplTest {
     static class TestablePigBurnRecordServiceImpl extends PigBurnRecordServiceImpl {
         TestablePigBurnRecordServiceImpl(PigBurnRecordMapper b, LocationStockMapper s, StockFlowMapper f,
                                          IPigQueryService q, LocationInfoMapper l, ProductInfoMapper pm,
-                                         IBizCodeGenerator g, IStockCheckService cs) {
-            super(b, s, f, q, l, pm, g, cs);
+                                         IBizCodeGenerator g, IStockCheckService cs,
+                                         org.dromara.djs.warehouse.trace.service.ITraceService ts) {
+            super(b, s, f, q, l, pm, g, cs, ts);
         }
 
         @Override
@@ -124,7 +127,7 @@ class PigBurnRecordServiceImplTest {
     @BeforeEach
     void setup() {
         service = new TestablePigBurnRecordServiceImpl(
-            burnMapper, stockMapper, flowMapper, pigQueryService, locationInfoMapper, productInfoMapper, bizCodeGenerator, stockCheckService);
+            burnMapper, stockMapper, flowMapper, pigQueryService, locationInfoMapper, productInfoMapper, bizCodeGenerator, stockCheckService, traceService);
         loginHelperMock = Mockito.mockStatic(LoginHelper.class);
         loginHelperMock.when(LoginHelper::getUserId).thenReturn(9001L);
     }

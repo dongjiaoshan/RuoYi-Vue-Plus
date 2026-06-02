@@ -27,6 +27,8 @@ import org.dromara.djs.warehouse.location.mapper.LocationInfoMapper;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
 import org.dromara.djs.warehouse.stock.mapper.LocationStockMapper;
+import org.dromara.djs.warehouse.trace.domain.TraceContentConst;
+import org.dromara.djs.warehouse.trace.service.ITraceService;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -100,6 +102,7 @@ public class PigBurnRecordServiceImpl
     private final ProductInfoMapper productInfoMapper;
     private final IBizCodeGenerator bizCodeGenerator;
     private final IStockCheckService stockCheckService;
+    private final ITraceService traceService;
 
     public PigBurnRecordServiceImpl(PigBurnRecordMapper baseMapper,
                                     LocationStockMapper locationStockMapper,
@@ -108,7 +111,8 @@ public class PigBurnRecordServiceImpl
                                     LocationInfoMapper locationInfoMapper,
                                     ProductInfoMapper productInfoMapper,
                                     IBizCodeGenerator bizCodeGenerator,
-                                    IStockCheckService stockCheckService) {
+                                    IStockCheckService stockCheckService,
+                                    ITraceService traceService) {
         super(baseMapper);
         this.locationStockMapper = locationStockMapper;
         this.stockFlowMapper = stockFlowMapper;
@@ -117,6 +121,7 @@ public class PigBurnRecordServiceImpl
         this.productInfoMapper = productInfoMapper;
         this.bizCodeGenerator = bizCodeGenerator;
         this.stockCheckService = stockCheckService;
+        this.traceService = traceService;
     }
 
     @Override
@@ -178,6 +183,9 @@ public class PigBurnRecordServiceImpl
         flow.setOperatorId(operatorId);
         flow.setRemark("燎毛工序 burn_id=" + record.getBurnId());
         stockFlowMapper.insert(flow);
+
+        // TRC-CORE-001：燎毛追溯事件（按耳号反查 trace_code；猪肉链当前无生成入口 → warn 跳过，不拖垮燎毛事务）
+        traceService.recordEventByEarNo(bo.getEarNo(), TraceContentConst.SINGE);
 
         return record.getId();
     }
