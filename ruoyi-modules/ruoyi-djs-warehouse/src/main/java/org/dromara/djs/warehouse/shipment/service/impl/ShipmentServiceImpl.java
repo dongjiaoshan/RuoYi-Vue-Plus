@@ -207,8 +207,10 @@ public class ShipmentServiceImpl
         }
 
         // 6. publishEvent — D14 CROSS-FLOW-003 listener 消费触发 demand.shipped_count 累加 + transition
+        //    带 userId（=checkerId 发货确认人）：AFTER_COMMIT 阶段 listener 无 sa-token 上下文，
+        //    需显式传 operator 给 demand transition 做审计，否则 resolveOperator(null) 抛 demand.operator.required
         eventPublisher.publishEvent(new ShipmentConfirmedEvent(
-            this, shipment.getId(), demand.getId(), bo.getTotalQuantity()));
+            this, shipment.getId(), demand.getId(), bo.getTotalQuantity(), userId));
 
         log.info("[WMS-SHIP-001] confirmCheck shipmentId={} demandId={} productionCount={} qty={}",
             shipment.getId(), demand.getId(), productions.size(), bo.getTotalQuantity());
