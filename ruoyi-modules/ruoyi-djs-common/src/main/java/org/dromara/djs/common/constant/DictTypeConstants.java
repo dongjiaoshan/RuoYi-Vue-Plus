@@ -181,7 +181,7 @@ public final class DictTypeConstants {
     /** 派工优先级。 */
     public static final String DISPATCH_PRIORITY = "djs_dispatch_priority";
 
-    // ---------------- H. 通用扩展（4 类） ----------------
+    // ---------------- H. 通用扩展（5 类，含跨域盘点状态） ----------------
 
     /** 需求业务来源。 */
     public static final String DEMAND_BUSINESS = "djs_demand_business";
