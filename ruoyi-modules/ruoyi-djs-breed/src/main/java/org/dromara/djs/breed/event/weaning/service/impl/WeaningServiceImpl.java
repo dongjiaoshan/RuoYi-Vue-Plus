@@ -108,7 +108,7 @@ public class WeaningServiceImpl implements IWeaningService {
         entity.setWeanedWeight(bo.getWeanedWeight());
         entity.setAvgWeanedWeight(resolveAvg(bo));
         entity.setRemark(bo.getRemark());
-        entity.setOperatorId(LoginHelper.getUserId());
+        entity.setOperatorId(bo.getOperatorId() != null ? bo.getOperatorId() : LoginHelper.getUserId());
         entity.setDelFlag("0");
         weaningMapper.insert(entity);
 

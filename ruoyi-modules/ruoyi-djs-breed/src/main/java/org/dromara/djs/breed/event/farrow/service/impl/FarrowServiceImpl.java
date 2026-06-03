@@ -54,7 +54,7 @@ import java.util.TreeMap;
  * 异步消费，避免分娩 commit 失败时耳标 listener 已执行。</p>
  *
  * <h3>状态推进</h3>
- * <p>{@code fireEvent(PigStatusEvent.FARROW)} 推动状态机 PH → FM；非 PH 母猪 / 公猪 / 终态由
+ * <p>{@code fireEvent(PigStatusEvent.FARROW)} 推动状态机 PZ → FM；非 PZ 母猪 / 公猪 / 终态由
  * {@code PigStateMachine} 直接抛 ServiceException，无需本 service 重复校验。</p>
  *
  * @author djs
@@ -128,11 +128,11 @@ public class FarrowServiceImpl implements IFarrowService {
         farrow.setPenName(resolvePenName(pig.getPenId()));
         farrow.setProofOssIds(bo.getProofOssIds());
         farrow.setRemark(bo.getRemark());
-        farrow.setOperatorId(LoginHelper.getUserId());
+        farrow.setOperatorId(bo.getOperatorId() != null ? bo.getOperatorId() : LoginHelper.getUserId());
         farrow.setDelFlag("0");
         farrowMapper.insert(farrow);
 
-        // 2. 触发状态机（PH → FM），同事务；非法 transition 由状态机抛
+        // 2. 触发状态机（PZ → FM），同事务；非法 transition 由状态机抛
         PigEventBo eventBo = new PigEventBo();
         eventBo.setPigId(pig.getId());
         eventBo.setEventType(PigStatusEvent.FARROW);

@@ -57,6 +57,9 @@ public class PigMarketing extends TenantEntity {
 
     private Long operatorId;
 
+    /** 出栏操作员 userId（EmployeePicker 所选；与 operator_id 登录态审计列并存）。 */
+    private String operator;
+
     @TableLogic
     private String delFlag;
 

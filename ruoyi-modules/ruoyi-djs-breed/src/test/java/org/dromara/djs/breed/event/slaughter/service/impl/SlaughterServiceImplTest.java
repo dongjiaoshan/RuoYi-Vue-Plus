@@ -92,6 +92,7 @@ class SlaughterServiceImplTest {
         when(pigMapper.selectById(500L)).thenReturn(pig);
 
         SlaughterBo bo = mkBo(500L, "5001,5002", new BigDecimal("125.50"));
+        bo.setOperator("2061591133665759233");   // EmployeePicker 所选 userId（19 位雪花 string）
         service.recordSlaughter(bo);
 
         ArgumentCaptor<PigMarketing> m = ArgumentCaptor.forClass(PigMarketing.class);
@@ -99,6 +100,8 @@ class SlaughterServiceImplTest {
         assertThat(m.getValue().getOutWeight()).isEqualByComparingTo("125.50");
         assertThat(m.getValue().getOutDest()).isEqualTo("外销");
         assertThat(m.getValue().getOssIds()).isEqualTo("5001,5002");
+        // D1=a：EmployeePicker 所选 operator userId 原样写入（snowflake string，不截断）
+        assertThat(m.getValue().getOperator()).isEqualTo("2061591133665759233");
 
         ArgumentCaptor<PigEventBo> ev = ArgumentCaptor.forClass(PigEventBo.class);
         verify(pigCoreService, times(1)).fireEvent(ev.capture());

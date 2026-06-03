@@ -234,4 +234,65 @@ class MatFlowServiceImplTest {
         verify(locationStockMapper, never()).deductByProductLocation(any(), any(), any(), any());
     }
 
+    @Test
+    @DisplayName("pick locationId 为空（饲料子页）：按 productId 解析默认库位 → 用解析后 locId 扣减成功（D12X-MP-FEED-SUBPAGE-001）")
+    void testPick_NullLocation_ResolveDefault() {
+        Long defaultLoc = 7099L; // 与 bo 不传的 LOCATION_ID 区分，验证确实走解析
+        when(locationStockMapper.selectDefaultLocationByProduct(PRODUCT_ID)).thenReturn(defaultLoc);
+        when(locationStockMapper.deductByProductLocation(eq(defaultLoc), eq(PRODUCT_ID), any(BigDecimal.class), eq(USER_ID)))
+            .thenReturn(1);
+
+        MatPickBo bo = pickBo(new BigDecimal("5"));
+        bo.setLocationId(null); // 饲料子页不传库位
+
+        service.pick(bo);
+
+        // 默认库位被解析并用于扣减 + 写入 stock_flow.warehouse_id
+        verify(locationStockMapper, times(1)).selectDefaultLocationByProduct(PRODUCT_ID);
+        verify(locationStockMapper, times(1))
+            .deductByProductLocation(eq(defaultLoc), eq(PRODUCT_ID), any(BigDecimal.class), eq(USER_ID));
+        verify(stockCheckService, times(1)).assertLocationUnlocked(defaultLoc);
+        ArgumentCaptor<StockFlow> cap = ArgumentCaptor.forClass(StockFlow.class);
+        verify(stockFlowMapper, times(1)).insert(cap.capture());
+        assertThat(cap.getValue().getWarehouseId()).isEqualTo(defaultLoc);
+    }
+
+    @Test
+    @DisplayName("pick locationId 为空且产品无库位行：selectDefaultLocationByProduct 返 null → 抛'该产品暂无库位' + 无 INSERT")
+    void testPick_NullLocation_NoStockRow() {
+        when(locationStockMapper.selectDefaultLocationByProduct(PRODUCT_ID)).thenReturn(null);
+
+        MatPickBo bo = pickBo(new BigDecimal("5"));
+        bo.setLocationId(null);
+
+        assertThatThrownBy(() -> service.pick(bo))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("该产品暂无库位");
+
+        verify(stockFlowMapper, never()).insert(any(StockFlow.class));
+        verify(locationStockMapper, never()).deductByProductLocation(any(), any(), any(), any());
+    }
+
+    @Test
+    @DisplayName("return locationId 为空（饲料子页）：解析默认库位 → 用解析后 locId 加库存（D12X-MP-FEED-SUBPAGE-001）")
+    void testReturn_NullLocation_ResolveDefault() {
+        Long defaultLoc = 7099L;
+        when(locationStockMapper.selectDefaultLocationByProduct(PRODUCT_ID)).thenReturn(defaultLoc);
+        when(stockFlowMapper.sumTodayByUserProductType(USER_ID, PRODUCT_ID, "pick_out")).thenReturn(new BigDecimal("20"));
+        when(stockFlowMapper.sumTodayByUserProductType(USER_ID, PRODUCT_ID, "return_in")).thenReturn(BigDecimal.ZERO);
+        when(stockFlowMapper.sumTodayByUserProductType(USER_ID, PRODUCT_ID, "loss")).thenReturn(BigDecimal.ZERO);
+        when(locationStockMapper.addByProductLocation(eq(defaultLoc), eq(PRODUCT_ID), any(), eq(USER_ID))).thenReturn(1);
+
+        MatReturnBo bo = returnBo(new BigDecimal("3"));
+        bo.setLocationId(null);
+
+        service.returnBack(bo);
+
+        verify(locationStockMapper, times(1)).selectDefaultLocationByProduct(PRODUCT_ID);
+        verify(locationStockMapper, times(1)).addByProductLocation(eq(defaultLoc), eq(PRODUCT_ID), any(), eq(USER_ID));
+        ArgumentCaptor<StockFlow> cap = ArgumentCaptor.forClass(StockFlow.class);
+        verify(stockFlowMapper, times(1)).insert(cap.capture());
+        assertThat(cap.getValue().getWarehouseId()).isEqualTo(defaultLoc);
+    }
+
 }

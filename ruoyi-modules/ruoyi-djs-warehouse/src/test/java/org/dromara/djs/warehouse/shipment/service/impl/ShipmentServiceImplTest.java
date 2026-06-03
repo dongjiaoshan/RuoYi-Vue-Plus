@@ -1,9 +1,14 @@
 package org.dromara.djs.warehouse.shipment.service.impl;
 
+import com.baomidou.mybatisplus.core.MybatisConfiguration;
+import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
+import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.satoken.utils.LoginHelper;
 import org.dromara.djs.common.encoder.BizCodeType;
 import org.dromara.djs.common.encoder.IBizCodeGenerator;
+import org.dromara.djs.common.store.domain.Store;
+import org.dromara.djs.common.store.mapper.StoreMapper;
 import org.dromara.djs.warehouse.demand.core.enums.DemandStatus;
 import org.dromara.djs.warehouse.demand.domain.DemandManage;
 import org.dromara.djs.warehouse.demand.mapper.DemandManageMapper;
@@ -12,12 +17,17 @@ import org.dromara.djs.warehouse.flow.mapper.StockFlowMapper;
 import org.dromara.djs.warehouse.location.mapper.LocationInfoMapper;
 import org.dromara.djs.warehouse.pack.domain.ProductProduction;
 import org.dromara.djs.warehouse.pack.mapper.ProductProductionMapper;
+import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
 import org.dromara.djs.warehouse.shipment.domain.Shipment;
 import org.dromara.djs.warehouse.shipment.domain.bo.ShipmentCheckBo;
+import org.dromara.djs.warehouse.shipment.domain.vo.AvailableProductionVo;
+import org.dromara.djs.warehouse.shipment.domain.vo.ShipDemandVo;
+import org.dromara.djs.warehouse.shipment.domain.vo.ShipStoreVo;
 import org.dromara.djs.warehouse.shipment.event.ShipmentConfirmedEvent;
 import org.dromara.djs.warehouse.shipment.mapper.ShipmentMapper;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
@@ -33,6 +43,7 @@ import org.mockito.quality.Strictness;
 import org.springframework.context.ApplicationEventPublisher;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -79,6 +90,8 @@ class ShipmentServiceImplTest {
     @Mock
     private LocationInfoMapper locationInfoMapper;
     @Mock
+    private StoreMapper storeMapper;
+    @Mock
     private IBizCodeGenerator bizCodeGenerator;
     @Mock
     private ApplicationEventPublisher eventPublisher;
@@ -87,13 +100,28 @@ class ShipmentServiceImplTest {
 
     private MockedStatic<LoginHelper> loginHelperMock;
 
+    @BeforeAll
+    static void initMpEntityCache() {
+        // mock 路径下 service 内部的 LambdaQueryWrapper 仍会触发 TableInfoHelper 解析列名，
+        // 纯单测无 Spring/MyBatis 上下文 → 预热 entity 的 lambda cache，否则报 "can not find lambda cache"。
+        MybatisConfiguration cfg = new MybatisConfiguration();
+        MapperBuilderAssistant assistant = new MapperBuilderAssistant(cfg, "");
+        assistant.setCurrentNamespace("test");
+        TableInfoHelper.initTableInfo(assistant, ProductProduction.class);
+        TableInfoHelper.initTableInfo(assistant, ProductInfo.class);
+        TableInfoHelper.initTableInfo(assistant, Shipment.class);
+        TableInfoHelper.initTableInfo(assistant, StockFlow.class);
+        TableInfoHelper.initTableInfo(assistant, DemandManage.class);
+        TableInfoHelper.initTableInfo(assistant, Store.class);
+    }
+
     @BeforeEach
     void setup() {
         loginHelperMock = Mockito.mockStatic(LoginHelper.class);
         loginHelperMock.when(LoginHelper::getUserId).thenReturn(1L);
 
         service = new ShipmentServiceImpl(shipmentMapper, productProductionMapper, stockFlowMapper,
-            demandMapper, productInfoMapper, locationInfoMapper, bizCodeGenerator, eventPublisher);
+            demandMapper, productInfoMapper, locationInfoMapper, storeMapper, bizCodeGenerator, eventPublisher);
 
         // 业务码 stub
         when(bizCodeGenerator.generate(eq(BizCodeType.SHIP_NO), anyMap())).thenReturn("S260610TEST0001");
@@ -124,7 +152,7 @@ class ShipmentServiceImplTest {
             newProduction(12L, demandId, "PROD-002", new BigDecimal("4.500"))
         );
         when(productProductionMapper.selectList(any())).thenReturn(productions);
-        when(productProductionMapper.markDeliveryChecked(any(), any())).thenReturn(2);
+        when(productProductionMapper.markDeliveryChecked(any(), any(), any())).thenReturn(2);
 
         ShipmentCheckBo bo = new ShipmentCheckBo();
         bo.setDemandId(demandId);
@@ -135,8 +163,8 @@ class ShipmentServiceImplTest {
 
         Long shipmentId = service.confirmCheck(bo);
 
-        // 1. UPDATE markDeliveryChecked 调过 1 次（批量）
-        verify(productProductionMapper, times(1)).markDeliveryChecked(eq(productionIds), any());
+        // 1. UPDATE markDeliveryChecked 调过 1 次（批量），且回写本次 demandId
+        verify(productProductionMapper, times(1)).markDeliveryChecked(eq(productionIds), any(), eq(demandId));
         // 2. INSERT shipment 1 次
         ArgumentCaptor<Shipment> shipmentCap = ArgumentCaptor.forClass(Shipment.class);
         verify(shipmentMapper, times(1)).insert(shipmentCap.capture());
@@ -174,7 +202,7 @@ class ShipmentServiceImplTest {
             .isInstanceOf(ServiceException.class)
             .hasMessageContaining("DRAFT");
 
-        verify(productProductionMapper, never()).markDeliveryChecked(anyList(), any());
+        verify(productProductionMapper, never()).markDeliveryChecked(anyList(), any(), any());
         verify(shipmentMapper, never()).insert(any(Shipment.class));
         verify(stockFlowMapper, never()).insert(any(StockFlow.class));
         verify(eventPublisher, never()).publishEvent(any(ShipmentConfirmedEvent.class));
@@ -195,7 +223,7 @@ class ShipmentServiceImplTest {
             newProduction(12L, demandId, "PROD-002", new BigDecimal("4.0"))
         ));
         // 模拟并发：只有 1 行被乐观锁更新成功
-        when(productProductionMapper.markDeliveryChecked(any(), any())).thenReturn(1);
+        when(productProductionMapper.markDeliveryChecked(any(), any(), any())).thenReturn(1);
 
         ShipmentCheckBo bo = new ShipmentCheckBo();
         bo.setDemandId(demandId);
@@ -213,6 +241,172 @@ class ShipmentServiceImplTest {
         verify(eventPublisher, never()).publishEvent(any(ShipmentConfirmedEvent.class));
     }
 
+    // ============== SHIP-DEMANDID-001：可用库存匹配 + 确认回写 ==============
+
+    @Test
+    @DisplayName("happy: listAvailableProductions 按业态(vegetable→belong_type) + demand_id IS NULL 返非空")
+    void listAvailableProductions_byBelongType_returnsUnassignedStock() {
+        Long demandId = 100L;
+        Long storeId = 9L;
+        DemandManage demand = newDemand(demandId, storeId, DemandStatus.CONFIRMED);
+        demand.setProductType("vegetable");
+        when(demandMapper.selectById(demandId)).thenReturn(demand);
+
+        // belong_type=vegetable 的产品 → id 集（product_name 业务必填，loadProductNameMap toMap 不容 null）
+        ProductInfo veg = new ProductInfo();
+        veg.setId(501L);
+        veg.setBelongType("vegetable");
+        veg.setProductName("有机青菜");
+        when(productInfoMapper.selectList(any())).thenReturn(List.of(veg));
+
+        // 可用库存：demand_id=NULL（未分配）、未清点、属于上面的产品
+        ProductProduction avail = newProduction(11L, null, "260610V0001", new BigDecimal("3.000"));
+        avail.setProductId(501L);
+        avail.setStoreId(storeId);
+        when(productProductionMapper.selectList(any())).thenReturn(List.of(avail));
+
+        List<AvailableProductionVo> result = service.listAvailableProductions(demandId);
+
+        assertThat(result).hasSize(1);
+        assertThat(result.get(0).getProduceNo()).isEqualTo("260610V0001");
+        assertThat(result.get(0).getDemandId()).isNull();
+    }
+
+    @Test
+    @DisplayName("happy: confirmCheck 对 demand_id=NULL 的可用库存放行（不抛 mismatch）+ 回写 demandId")
+    void confirmCheck_unassignedStock_bindsDemandId() {
+        Long demandId = 100L;
+        DemandManage demand = newDemand(demandId, 9L, DemandStatus.CONFIRMED);
+        when(demandMapper.selectById(demandId)).thenReturn(demand);
+
+        List<Long> productionIds = List.of(11L);
+        // demand_id=NULL 的可用库存（关键：旧逻辑会判 NULL≠demandId 抛 mismatch）
+        ProductProduction avail = newProduction(11L, null, "260610V0001", new BigDecimal("3.0"));
+        when(productProductionMapper.selectList(any())).thenReturn(List.of(avail));
+        when(productProductionMapper.markDeliveryChecked(any(), any(), any())).thenReturn(1);
+
+        ShipmentCheckBo bo = new ShipmentCheckBo();
+        bo.setDemandId(demandId);
+        bo.setProductionIds(productionIds);
+        bo.setTotalQuantity(new BigDecimal("3.0"));
+        bo.setShipUnit("kg");
+        bo.setDeliverType(1);
+
+        service.confirmCheck(bo);
+
+        // 回写：markDeliveryChecked 以本次 demandId 调用
+        verify(productProductionMapper, times(1)).markDeliveryChecked(eq(productionIds), any(), eq(demandId));
+        verify(shipmentMapper, times(1)).insert(any(Shipment.class));
+    }
+
+    @Test
+    @DisplayName("edge: production 已绑别的 demand → confirmCheck 仍抛 demand_mismatch")
+    void confirmCheck_boundToOtherDemand_throwsMismatch() {
+        Long demandId = 100L;
+        DemandManage demand = newDemand(demandId, 9L, DemandStatus.CONFIRMED);
+        when(demandMapper.selectById(demandId)).thenReturn(demand);
+
+        // 该 production 已绑 demand 200（≠ 本次 100）→ mismatch
+        ProductProduction bound = newProduction(11L, 200L, "260610V0001", new BigDecimal("3.0"));
+        when(productProductionMapper.selectList(any())).thenReturn(List.of(bound));
+
+        ShipmentCheckBo bo = new ShipmentCheckBo();
+        bo.setDemandId(demandId);
+        bo.setProductionIds(List.of(11L));
+        bo.setTotalQuantity(new BigDecimal("3.0"));
+        bo.setShipUnit("kg");
+        bo.setDeliverType(1);
+
+        assertThatThrownBy(() -> service.confirmCheck(bo))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("demand_mismatch");
+
+        verify(productProductionMapper, never()).markDeliveryChecked(anyList(), any(), any());
+        verify(shipmentMapper, never()).insert(any(Shipment.class));
+    }
+
+    // ============== D12X-MP-SHIPDOCK-IA-001：门店维度两级 IA 端点 ==============
+
+    @Test
+    @DisplayName("happy: listPendingStores 按 SHIPPABLE demand group store → 门店项含种类数 + 门店名")
+    void listPendingStores_groupByStore_returnsAggregated() {
+        // 2 门店：store 9 有 2 个 demand（productId 501/502 两种）、store 8 有 1 个 demand（productId 501）
+        DemandManage d1 = newDemand(100L, 9L, DemandStatus.CONFIRMED);
+        d1.setProductId(501L);
+        d1.setDemandQuantity(new BigDecimal("10"));
+        DemandManage d2 = newDemand(101L, 9L, DemandStatus.IN_PRODUCTION);
+        d2.setProductId(502L);
+        d2.setDemandQuantity(new BigDecimal("5"));
+        DemandManage d3 = newDemand(102L, 8L, DemandStatus.CONFIRMED);
+        d3.setProductId(501L);
+        d3.setDemandQuantity(new BigDecimal("3"));
+        when(demandMapper.selectList(any())).thenReturn(List.of(d1, d2, d3));
+
+        Store s9 = newStore(9L, "城东店");
+        Store s8 = newStore(8L, "城西店");
+        when(storeMapper.selectList(any())).thenReturn(List.of(s9, s8));
+
+        List<ShipStoreVo> result = service.listPendingStores();
+
+        assertThat(result).hasSize(2);
+        // store 9 待发 2 单在前（按 pendingDemandCount desc 排序）
+        ShipStoreVo first = result.get(0);
+        assertThat(first.getStoreId()).isEqualTo(9L);
+        assertThat(first.getStoreName()).isEqualTo("城东店");
+        assertThat(first.getPendingDemandCount()).isEqualTo(2);
+        assertThat(first.getProductKindCount()).isEqualTo(2);   // distinct 501/502
+        assertThat(first.getPendingQuantity()).isEqualByComparingTo("15");
+        assertThat(first.getShipStatus()).isEqualTo("待发货");
+        // store 8 一单
+        ShipStoreVo second = result.get(1);
+        assertThat(second.getStoreId()).isEqualTo(8L);
+        assertThat(second.getPendingDemandCount()).isEqualTo(1);
+        assertThat(second.getProductKindCount()).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("happy: listStorePendingDemands 返该门店 demand 列表 + 各自内嵌可发产品清单")
+    void listStorePendingDemands_returnsDemandsWithAvailableProductions() {
+        Long storeId = 9L;
+        DemandManage d1 = newDemand(100L, storeId, DemandStatus.CONFIRMED);
+        d1.setProductType("vegetable");
+        d1.setDemandNo("XQ260610001");
+        d1.setDemandDate(LocalDate.of(2026, 6, 10));
+        d1.setDemandQuantity(new BigDecimal("10"));
+        when(demandMapper.selectList(any())).thenReturn(List.of(d1));
+
+        // 业态 vegetable → belong_type=vegetable 产品
+        ProductInfo veg = new ProductInfo();
+        veg.setId(501L);
+        veg.setBelongType("vegetable");
+        veg.setProductName("有机青菜");
+        when(productInfoMapper.selectList(any())).thenReturn(List.of(veg));
+
+        // 可发库存：demand_id=NULL、未清点
+        ProductProduction avail = newProduction(11L, null, "260610V0001", new BigDecimal("3.000"));
+        avail.setProductId(501L);
+        avail.setStoreId(storeId);
+        when(productProductionMapper.selectList(any())).thenReturn(List.of(avail));
+
+        List<ShipDemandVo> result = service.listStorePendingDemands(storeId);
+
+        assertThat(result).hasSize(1);
+        ShipDemandVo dv = result.get(0);
+        assertThat(dv.getDemandId()).isEqualTo(100L);
+        assertThat(dv.getDemandNo()).isEqualTo("XQ260610001");
+        assertThat(dv.getProductType()).isEqualTo("vegetable");
+        assertThat(dv.getAvailableProductions()).hasSize(1);
+        assertThat(dv.getAvailableProductions().get(0).getProduceNo()).isEqualTo("260610V0001");
+    }
+
+    @Test
+    @DisplayName("error: listStorePendingDemands storeId 为 null → 抛 store.id_required")
+    void listStorePendingDemands_nullStoreId_throws() {
+        assertThatThrownBy(() -> service.listStorePendingDemands(null))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("store.id_required");
+    }
+
     // ---------- helpers ----------
 
     private DemandManage newDemand(Long id, Long storeId, DemandStatus status) {
@@ -222,6 +416,13 @@ class ShipmentServiceImplTest {
         d.setProductType("white_bar");
         d.setDemandStatus(status.name());
         return d;
+    }
+
+    private Store newStore(Long id, String name) {
+        Store s = new Store();
+        s.setId(id);
+        s.setStoreName(name);
+        return s;
     }
 
     private ProductProduction newProduction(Long id, Long demandId, String produceNo, BigDecimal qty) {

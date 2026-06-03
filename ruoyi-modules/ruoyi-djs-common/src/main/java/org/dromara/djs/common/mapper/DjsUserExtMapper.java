@@ -6,6 +6,10 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 import org.dromara.djs.common.domain.vo.WechatLoginVo;
 
+import java.util.Collection;
+import java.util.List;
+import java.util.Map;
+
 /**
  * sys_user 的 djs 扩字段读写 mapper。
  *
@@ -114,4 +118,24 @@ public interface DjsUserExtMapper {
           AND status = '0'
         """)
     String selectWxOpenid(@Param("userId") Long userId);
+
+    /**
+     * 批量查 user_id → nick_name（导出回填用，只查启用未删用户）。
+     *
+     * <p>FastExcel 导出不经 Jackson，{@code @Translation} 不触发，需 service 层显式回填人名。
+     * 每行 Map 含 {@code userId}(Long) + {@code nickName}(String)；查不到的 id 不在结果集。</p>
+     *
+     * @param ids 去重后的非空 user_id 集合（调用方保证非空，空集时 mapper 不调用）
+     * @return 命中行的 {userId, nickName} 列表
+     */
+    @Select("""
+        <script>
+        SELECT user_id AS userId, nick_name AS nickName
+        FROM sys_user
+        WHERE del_flag = '0' AND status = '0'
+          AND user_id IN
+          <foreach collection="ids" item="id" open="(" separator="," close=")">#{id}</foreach>
+        </script>
+        """)
+    List<Map<String, Object>> selectNickNamesByIds(@Param("ids") Collection<Long> ids);
 }

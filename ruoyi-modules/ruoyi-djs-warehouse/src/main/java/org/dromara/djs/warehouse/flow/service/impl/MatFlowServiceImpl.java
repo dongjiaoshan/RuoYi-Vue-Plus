@@ -83,8 +83,10 @@ public class MatFlowServiceImpl implements IMatFlowService {
     @Transactional(rollbackFor = Exception.class)
     public Long pick(MatPickBo bo) {
         ProductInfo product = requireProduct(bo.getProductId());
+        // 库位可空（饲料子页不让工人选库位）：为空时按 productId 解析默认库位
+        Long locId = resolveLocationId(bo.getLocationId(), bo.getProductId(), "领用");
         // 库位级业务锁（WMS-STOCK-001）：盘点进行中的库位禁出入库（后端双保险）
-        stockCheckService.assertLocationUnlocked(bo.getLocationId());
+        stockCheckService.assertLocationUnlocked(locId);
         Long userId = LoginHelper.getUserId();
 
         // 1. INSERT stock_flow（pick_out 出库）
@@ -92,7 +94,7 @@ public class MatFlowServiceImpl implements IMatFlowService {
         flow.setFlowNo(generateFlowNo(INOUT_OUT));
         flow.setFlowDate(new Date());
         flow.setProductId(bo.getProductId());
-        flow.setWarehouseId(bo.getLocationId());
+        flow.setWarehouseId(locId);
         flow.setInoutType(INOUT_OUT);
         flow.setFlowType(FLOW_PICK_OUT);
         flow.setStockOutDest(bo.getStockOutDest());
@@ -105,12 +107,12 @@ public class MatFlowServiceImpl implements IMatFlowService {
 
         // 2. UPDATE location_stock 行锁扣减 + 数量校验
         int affected = locationStockMapper.deductByProductLocation(
-            bo.getLocationId(), bo.getProductId(), bo.getQuantity(), userId);
+            locId, bo.getProductId(), bo.getQuantity(), userId);
         if (affected == 0) {
             // 抛异常 → @Transactional 回滚 step 1
             throw new ServiceException(
                 "库存不足或库位/产品不匹配（product=" + product.getProductName()
-                    + " / location=" + bo.getLocationId() + " / 申请=" + bo.getQuantity()
+                    + " / location=" + locId + " / 申请=" + bo.getQuantity()
                     + product.getProductUnit() + "）");
         }
 
@@ -121,8 +123,10 @@ public class MatFlowServiceImpl implements IMatFlowService {
     @Transactional(rollbackFor = Exception.class)
     public Long returnBack(MatReturnBo bo) {
         ProductInfo product = requireProduct(bo.getProductId());
+        // 库位可空（饲料子页不让工人选库位）：为空时按 productId 解析默认库位
+        Long locId = resolveLocationId(bo.getLocationId(), bo.getProductId(), "退回");
         // 库位级业务锁（WMS-STOCK-001）：盘点进行中的库位禁出入库（后端双保险）
-        stockCheckService.assertLocationUnlocked(bo.getLocationId());
+        stockCheckService.assertLocationUnlocked(locId);
         Long userId = LoginHelper.getUserId();
 
         // 1. 校验今日额度：已领 ≥ 已退 + 已损 + 当次退回量
@@ -133,7 +137,7 @@ public class MatFlowServiceImpl implements IMatFlowService {
         flow.setFlowNo(generateFlowNo(INOUT_IN));
         flow.setFlowDate(new Date());
         flow.setProductId(bo.getProductId());
-        flow.setWarehouseId(bo.getLocationId());
+        flow.setWarehouseId(locId);
         flow.setInoutType(INOUT_IN);
         flow.setFlowType(FLOW_RETURN_IN);
         flow.setChangeNum(bo.getQuantity());
@@ -145,13 +149,13 @@ public class MatFlowServiceImpl implements IMatFlowService {
 
         // 3. UPDATE location_stock 加回库存
         int affected = locationStockMapper.addByProductLocation(
-            bo.getLocationId(), bo.getProductId(), bo.getQuantity(), userId);
+            locId, bo.getProductId(), bo.getQuantity(), userId);
         if (affected == 0) {
             // 退回的库位 / 产品记录不存在（领用走的是同 location_id+product_id，正常不会发生；
             // 防御性兜底：库位 / 产品已被删 → 回滚）
             throw new ServiceException(
                 "库存记录不存在，无法退回（product=" + product.getProductName()
-                    + " / location=" + bo.getLocationId() + "）");
+                    + " / location=" + locId + "）");
         }
 
         return flow.getId();
@@ -250,6 +254,30 @@ public class MatFlowServiceImpl implements IMatFlowService {
             throw new ServiceException("产品不存在或已删除：" + productId);
         }
         return p;
+    }
+
+    /**
+     * 解析库位 ID：bo 传了用 bo 的；为空（饲料子页不选库位）则按 productId 取默认库位（库存最多）。
+     *
+     * <p>投喂语义本无库位，工人不选 —— 兜底取该产品库存最多的库位。解析后仍为空（产品无任何
+     * location_stock 行）→ 抛 ServiceException。不修改 bo，调用方用返回的局部变量（不污染入参）。</p>
+     *
+     * <p>protected 方便单测 stub。</p>
+     *
+     * @param locationId bo 传入的库位 ID（可空）
+     * @param productId  产品 ID
+     * @param action     操作名（"领用" / "退回"），用于异常文案
+     * @return 解析后的库位 ID（非空）
+     */
+    protected Long resolveLocationId(Long locationId, Long productId, String action) {
+        if (locationId != null) {
+            return locationId;
+        }
+        Long resolved = locationStockMapper.selectDefaultLocationByProduct(productId);
+        if (resolved == null) {
+            throw new ServiceException("该产品暂无库位，无法" + action);
+        }
+        return resolved;
     }
 
     /**

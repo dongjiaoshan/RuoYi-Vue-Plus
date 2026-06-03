@@ -36,13 +36,13 @@ import java.util.Objects;
  * <h3>映射</h3>
  * <p>BO {@code abnormalType} ↔ DB {@code abnormal_type}（CR-20260524-07）：</p>
  * <pre>
- *   abort  → A (流产)  → 状态机 PH → LC
- *   return → R (返情)  → 状态机 PH → FQ
- *   idle   → N (空怀)  → 状态机 PH → KH
+ *   abort  → A (流产)  → 状态机 PZ → LC
+ *   return → R (返情)  → 状态机 PZ → FQ
+ *   idle   → N (空怀)  → 状态机 PZ → KH
  * </pre>
  *
  * <h3>校验</h3>
- * <p>service 提前校验源态必须 PH（per prompt constraint #7），不让无效请求进状态机噪声日志。</p>
+ * <p>service 提前校验源态必须 PZ（见 ADR-0010），不让无效请求进状态机噪声日志。</p>
  *
  * @author djs
  * @since BRD-EVENT-002
@@ -76,8 +76,8 @@ public class NullReturnServiceImpl implements INullReturnService {
         if (pig == null) {
             throw new ServiceException(I18nMessages.t("pig.not_found", bo.getPigId()));
         }
-        // 源态必须 PH（per prompt 强制约束 #7）；非 PH 直接拒绝，不进状态机
-        if (!PigLifecycle.PH.name().equals(pig.getCurrentStatus())) {
+        // 源态必须 PZ（见 ADR-0010）；非 PZ 直接拒绝，不进状态机
+        if (!PigLifecycle.PZ.name().equals(pig.getCurrentStatus())) {
             throw new ServiceException(I18nMessages.t("null_return.source_state.invalid",
                 pig.getCurrentStatus()));
         }

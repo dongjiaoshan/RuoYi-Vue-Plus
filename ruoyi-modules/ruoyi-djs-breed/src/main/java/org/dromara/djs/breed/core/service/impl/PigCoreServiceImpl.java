@@ -30,10 +30,12 @@ import org.dromara.djs.breed.core.mapper.PigStatusRecordMapper;
 import org.dromara.djs.breed.core.service.I18nMessages;
 import org.dromara.djs.breed.core.service.IPigCoreService;
 import org.dromara.djs.breed.core.service.PigStateMachine;
+import org.dromara.djs.breed.core.domain.vo.PigLastFarrowVo;
 import org.dromara.djs.breed.farm.domain.Barn;
 import org.dromara.djs.breed.farm.domain.Pen;
 import org.dromara.djs.breed.farm.mapper.BarnMapper;
 import org.dromara.djs.breed.farm.mapper.PenMapper;
+import org.dromara.djs.breed.production.service.IProductionCycleConfigService;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -88,6 +90,7 @@ public class PigCoreServiceImpl implements IPigCoreService {
     private final BarnMapper barnMapper;
     private final PenMapper penMapper;
     private final DictService dictService;
+    private final IProductionCycleConfigService productionCycleConfigService;
 
     public PigCoreServiceImpl(PigMapper pigMapper,
                               PigStatusRecordMapper statusRecordMapper,
@@ -95,7 +98,8 @@ public class PigCoreServiceImpl implements IPigCoreService {
                               ApplicationEventPublisher eventPublisher,
                               BarnMapper barnMapper,
                               PenMapper penMapper,
-                              DictService dictService) {
+                              DictService dictService,
+                              IProductionCycleConfigService productionCycleConfigService) {
         this.pigMapper = pigMapper;
         this.statusRecordMapper = statusRecordMapper;
         this.stateMachine = stateMachine;
@@ -103,6 +107,7 @@ public class PigCoreServiceImpl implements IPigCoreService {
         this.barnMapper = barnMapper;
         this.penMapper = penMapper;
         this.dictService = dictService;
+        this.productionCycleConfigService = productionCycleConfigService;
     }
 
     @Override
@@ -338,7 +343,8 @@ public class PigCoreServiceImpl implements IPigCoreService {
                                                 String sexFilter,
                                                 String pigTypeFilter,
                                                 String barnCode,
-                                                Integer limit) {
+                                                Integer limit,
+                                                String dueType) {
         int effectiveLimit = clampLimit(limit);
         // statusFilter CSV："HB,PZ" → IN ('HB','PZ')；如果显式含 END（如燎毛工序选已出栏猪），跳过下方 .ne(END) 默认排除
         List<String> statuses = parseStatusFilter(statusFilter);
@@ -370,6 +376,14 @@ public class PigCoreServiceImpl implements IPigCoreService {
         }
 
         List<Pig> pigs = pigMapper.selectList(w);
+        if (pigs.isEmpty()) {
+            return Collections.emptyList();
+        }
+
+        // D12X-MP-FARROW-WEANING-001：到期窗口过滤（分娩 / 断奶选猪）。
+        // 在状态白名单之上叠加「基准日期 + 生产周期配置天数 ≤ today」，只留真正到产期 / 断奶期的母猪。
+        // dueType 为空 → 原样返回（向后兼容所有现有调用方）。
+        pigs = filterByDueType(pigs, dueType);
         if (pigs.isEmpty()) {
             return Collections.emptyList();
         }
@@ -411,6 +425,68 @@ public class PigCoreServiceImpl implements IPigCoreService {
             result.add(vo);
         }
         return result;
+    }
+
+    /**
+     * 到期窗口过滤（D12X-MP-FARROW-WEANING-001）：在状态白名单结果之上叠加日期维度。
+     *
+     * <p>两个 dueType 共用「基准日期 + 生产周期配置天数 ≤ today」一套判定：</p>
+     * <ul>
+     *   <li>{@code FARROW}（到产期）：基准 = {@code Pig.lastMatingDate}（最近配种日，BREED 事件写入），
+     *       天数 = {@code gestation_days}（妊娠期）；{@code lastMatingDate} 为 null（无配种记录）→ 剔除。</li>
+     *   <li>{@code WEANING}（到断奶期）：基准 = 该母猪最近一条分娩日（批量一次查避免 N+1），
+     *       天数 = {@code lactation_days}（哺乳期）；无分娩记录 → 剔除。</li>
+     * </ul>
+     *
+     * <p>天数从 {@code productionCycleConfigService.getValue} 读（配置驱动，禁硬编码）；配置缺失返 null
+     * 时防御性记 warn 并退化为不过滤（返回全部，不吞数据）——正常路径该配置由 BRD-MD-003 seed 保证存在。</p>
+     *
+     * @param pigs    状态白名单过滤后的候选母猪
+     * @param dueType {@code FARROW} / {@code WEANING}；其他值或空 → 原样返回
+     * @return 满足到期窗口的母猪子集（保持原顺序）
+     */
+    private List<Pig> filterByDueType(List<Pig> pigs, String dueType) {
+        if (StringUtils.isBlank(dueType) || pigs.isEmpty()) {
+            return pigs;
+        }
+        LocalDate today = LocalDate.now();
+
+        if ("FARROW".equalsIgnoreCase(dueType)) {
+            Integer gestationDays = productionCycleConfigService.getValue("gestation_days");
+            if (gestationDays == null) {
+                log.warn("[PigSearch] 生产周期配置 gestation_days 缺失，dueType=FARROW 退化为不做到期过滤");
+                return pigs;
+            }
+            return pigs.stream()
+                .filter(p -> p.getLastMatingDate() != null
+                    && !p.getLastMatingDate().plusDays(gestationDays).isAfter(today))
+                .collect(Collectors.toList());
+        }
+
+        if ("WEANING".equalsIgnoreCase(dueType)) {
+            Integer lactationDays = productionCycleConfigService.getValue("lactation_days");
+            if (lactationDays == null) {
+                log.warn("[PigSearch] 生产周期配置 lactation_days 缺失，dueType=WEANING 退化为不做到期过滤");
+                return pigs;
+            }
+            Set<Long> pigIds = pigs.stream().map(Pig::getId).filter(Objects::nonNull).collect(Collectors.toSet());
+            if (pigIds.isEmpty()) {
+                return Collections.emptyList();
+            }
+            // 批量一次查每头母猪最近分娩日（避免逐头 N+1）
+            Map<Long, LocalDate> lastFarrowMap = pigMapper.selectLastFarrowDateByPigIds(pigIds).stream()
+                .filter(v -> v.getPigId() != null && v.getLastFarrowDate() != null)
+                .collect(Collectors.toMap(PigLastFarrowVo::getPigId, PigLastFarrowVo::getLastFarrowDate, (a, b) -> a));
+            return pigs.stream()
+                .filter(p -> {
+                    LocalDate lastFarrow = lastFarrowMap.get(p.getId());
+                    return lastFarrow != null && !lastFarrow.plusDays(lactationDays).isAfter(today);
+                })
+                .collect(Collectors.toList());
+        }
+
+        // 未知 dueType：不过滤（防御，避免误吞数据）
+        return pigs;
     }
 
     @Override

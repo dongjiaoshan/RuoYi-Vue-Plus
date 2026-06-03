@@ -11,6 +11,7 @@ import org.dromara.common.tenant.helper.TenantHelper;
 import org.dromara.djs.common.base.DjsBaseServiceImpl;
 import org.dromara.djs.common.encoder.BizCodeType;
 import org.dromara.djs.common.encoder.IBizCodeGenerator;
+import org.dromara.djs.common.mapper.DjsUserExtMapper;
 import org.dromara.djs.common.store.domain.Store;
 import org.dromara.djs.common.store.mapper.StoreMapper;
 import org.dromara.djs.store.check.domain.StoreCheckRecord;
@@ -78,15 +79,18 @@ public class StoreCheckServiceImpl
     private final StoreMapper storeMapper;
     private final ProductInfoMapper productInfoMapper;
     private final IBizCodeGenerator bizCodeGenerator;
+    private final DjsUserExtMapper djsUserExtMapper;
 
     public StoreCheckServiceImpl(StoreCheckRecordMapper baseMapper,
                                  StoreMapper storeMapper,
                                  ProductInfoMapper productInfoMapper,
-                                 IBizCodeGenerator bizCodeGenerator) {
+                                 IBizCodeGenerator bizCodeGenerator,
+                                 DjsUserExtMapper djsUserExtMapper) {
         super(baseMapper);
         this.storeMapper = storeMapper;
         this.productInfoMapper = productInfoMapper;
         this.bizCodeGenerator = bizCodeGenerator;
+        this.djsUserExtMapper = djsUserExtMapper;
     }
 
     // ============================ admin 盘点单管理 ============================
@@ -184,6 +188,7 @@ public class StoreCheckServiceImpl
         w.orderByDesc(StoreCheckRecord::getId);
         List<StoreCheckRecordVo> list = baseMapper.selectVoList(w);
         fillLineStoreNames(list);
+        fillLineCheckByNames(list);
         return list;
     }
 
@@ -195,6 +200,7 @@ public class StoreCheckServiceImpl
                 .eq(StoreCheckRecord::getIsHeader, 0)
                 .orderByDesc(StoreCheckRecord::getId));
         fillLineStoreNames(list);
+        fillLineCheckByNames(list);
         return list;
     }
 
@@ -390,6 +396,35 @@ public class StoreCheckServiceImpl
         for (StoreCheckRecordVo l : lines) {
             if (l.getStoreId() != null) {
                 l.setStoreName(nameMap.get(l.getStoreId()));
+            }
+        }
+    }
+
+    /**
+     * 回填盘点人姓名（{@code checkBy} → {@code checkByName}）。
+     *
+     * <p>VO 上的 {@code @Translation} 仅在 Jackson 序列化期生效（admin 列表 / lines JSON 接口靠它）；
+     * Excel 导出走 FastExcel 不经 Jackson，{@code checkByName} 恒 null。故 service 层批量查
+     * {@code sys_user} 的 nick_name 显式回填，导出路径才能显示人名。守卫 {@code getCheckByName() == null}
+     * 不覆盖已被 @Translation 填好的值。</p>
+     */
+    private void fillLineCheckByNames(List<StoreCheckRecordVo> lines) {
+        if (lines == null || lines.isEmpty()) {
+            return;
+        }
+        List<Long> ids = lines.stream()
+            .map(StoreCheckRecordVo::getCheckBy).filter(Objects::nonNull).distinct().toList();
+        if (ids.isEmpty()) {
+            return;
+        }
+        Map<Long, String> nameMap = djsUserExtMapper.selectNickNamesByIds(ids).stream()
+            .collect(Collectors.toMap(
+                r -> ((Number) r.get("userId")).longValue(),
+                r -> String.valueOf(r.get("nickName")),
+                (a, b) -> a));
+        for (StoreCheckRecordVo l : lines) {
+            if (l.getCheckBy() != null && l.getCheckByName() == null) {
+                l.setCheckByName(nameMap.get(l.getCheckBy()));
             }
         }
     }

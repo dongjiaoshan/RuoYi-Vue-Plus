@@ -1,0 +1,107 @@
+-- ============================================================
+-- D12X-ADMIN-MENU-REBIND-001 admin 主数据/配置菜单白名单重绑
+--
+-- 触发：D10 _open-issues「djs admin 主数据/配置菜单未绑业务角色（系统性）」
+--   原始 seed（BRD-MD-001 / WMS-MD-002 / WMS-DEMAND-001 / PLT-MD-* 等）仅绑
+--   superadmin(1)（或只靠 perms 通配），业务角色登 admin 看不到主数据/配置页 →
+--   无法维护。W22-004（V202606091000）只修养殖事件菜单 7100-7299；
+--   D11-001（V202606130800）只修 mp picker/物资菜单 10 个。本 DDL 收口剩余
+--   admin C/M 配置段（养殖配置 / 种植配置 / 仓库配置）。
+--
+-- 范式：INSERT IGNORE 白名单增量补绑（不 DELETE — 漏绑菜单无脏数据可清，
+--   区别于 W22-004/D11-001 的「先清错范式脏绑定」）。文件可重放（IGNORE
+--   静默跳过已存在的 (role_id, menu_id) 主键）。
+--   目录/查询/写 类 → 全 11 业务角色（role_id NOT IN 1,101）
+--   export 类 → 高敏分级（boss/manager + 本域 admin）
+--
+-- 范围（严格）：养殖配置 7010-7099 / 种植配置 8010-8089 / 仓库配置 9010-9120。
+--   不碰：养殖事件 7100-7299 / mp 饲料 7360+ / mp 物资 9106-9108 /
+--   各域 dashboard / 门店 10000+。
+--
+-- 实测基线（应用前 biz_bind）：养殖 7050-7055/7080-7084/7090-7094=3 半绑、
+--   其余=0；种植 8010-8080=0、8081-8089=11（采摘 D12 已绑）；
+--   仓库 9060-9063/9106-9108=11（采购/物资已绑）、其余=0。IGNORE 重绑无害。
+-- ============================================================
+
+SET NAMES utf8mb4;
+
+-- ============== 1. 目录 + 查询/写 类：全 11 业务角色 ==============
+-- C/M 目录 + 非 export 的 F（list/query/add/edit/remove/confirm/start_production/
+-- cancel/assign_pig/history/member/wizard/detail/ganttView + mp applet 写类等）
+INSERT IGNORE INTO sys_role_menu (role_id, menu_id)
+SELECT r.role_id, m.menu_id
+FROM sys_role r
+CROSS JOIN (
+    -- 养殖配置 7010-7099（剔除 export: 7015/7055/7065/7075/7084/7089/7094）
+    SELECT 7010 AS menu_id UNION SELECT 7011 UNION SELECT 7012 UNION SELECT 7013 UNION SELECT 7014
+    UNION SELECT 7020 UNION SELECT 7021 UNION SELECT 7022
+    UNION SELECT 7030 UNION SELECT 7031 UNION SELECT 7032 UNION SELECT 7033
+    UNION SELECT 7040 UNION SELECT 7041 UNION SELECT 7042 UNION SELECT 7043
+    UNION SELECT 7050 UNION SELECT 7051 UNION SELECT 7052 UNION SELECT 7053 UNION SELECT 7054
+    UNION SELECT 7060 UNION SELECT 7061 UNION SELECT 7062 UNION SELECT 7063 UNION SELECT 7064
+    UNION SELECT 7070 UNION SELECT 7071 UNION SELECT 7072 UNION SELECT 7073 UNION SELECT 7074
+    UNION SELECT 7076 UNION SELECT 7077 UNION SELECT 7078 UNION SELECT 7079
+    UNION SELECT 7080 UNION SELECT 7081 UNION SELECT 7082 UNION SELECT 7083
+    UNION SELECT 7085 UNION SELECT 7086 UNION SELECT 7087 UNION SELECT 7088
+    UNION SELECT 7090 UNION SELECT 7091 UNION SELECT 7092 UNION SELECT 7093
+    -- 种植配置 8010-8089（剔除 export: 8017/8024/8055/8065/8077；8081-8089 已绑 IGNORE）
+    UNION SELECT 8010 UNION SELECT 8011 UNION SELECT 8012 UNION SELECT 8013
+    UNION SELECT 8014 UNION SELECT 8015 UNION SELECT 8016
+    UNION SELECT 8020 UNION SELECT 8021 UNION SELECT 8022 UNION SELECT 8023
+    UNION SELECT 8030 UNION SELECT 8031 UNION SELECT 8032 UNION SELECT 8033 UNION SELECT 8034
+    UNION SELECT 8050 UNION SELECT 8051 UNION SELECT 8052 UNION SELECT 8053 UNION SELECT 8054
+    UNION SELECT 8060 UNION SELECT 8061 UNION SELECT 8062 UNION SELECT 8063 UNION SELECT 8064
+    UNION SELECT 8070 UNION SELECT 8071 UNION SELECT 8072 UNION SELECT 8073 UNION SELECT 8074
+    UNION SELECT 8075 UNION SELECT 8076 UNION SELECT 8078 UNION SELECT 8079 UNION SELECT 8080
+    -- 仓库配置 9010-9120（剔除 export: 9015/9025/9035/9053/9075/9081/9095/9105/9114）
+    UNION SELECT 9010 UNION SELECT 9011 UNION SELECT 9012 UNION SELECT 9013 UNION SELECT 9014
+    UNION SELECT 9020 UNION SELECT 9021
+    UNION SELECT 9030 UNION SELECT 9031 UNION SELECT 9032 UNION SELECT 9033 UNION SELECT 9034
+    UNION SELECT 9040 UNION SELECT 9041 UNION SELECT 9042 UNION SELECT 9043 UNION SELECT 9044
+    UNION SELECT 9045 UNION SELECT 9046 UNION SELECT 9047 UNION SELECT 9048 UNION SELECT 9049
+    UNION SELECT 9050 UNION SELECT 9051 UNION SELECT 9052 UNION SELECT 9054
+    UNION SELECT 9070 UNION SELECT 9071 UNION SELECT 9076 UNION SELECT 9077
+    UNION SELECT 9082 UNION SELECT 9083 UNION SELECT 9084
+    UNION SELECT 9090 UNION SELECT 9091 UNION SELECT 9096 UNION SELECT 9097 UNION SELECT 9098
+    UNION SELECT 9100 UNION SELECT 9101
+    UNION SELECT 9110 UNION SELECT 9111 UNION SELECT 9112
+) m
+WHERE r.role_id NOT IN (1, 101) AND r.del_flag = '0';
+
+-- ============== 2. export 类：高敏分级（boss/manager + 本域 admin）==============
+-- 养殖 export → boss/manager/breed_admin
+INSERT IGNORE INTO sys_role_menu (role_id, menu_id)
+SELECT r.role_id, m.menu_id
+FROM sys_role r
+CROSS JOIN (
+    SELECT 7015 AS menu_id UNION SELECT 7055 UNION SELECT 7065
+    UNION SELECT 7075 UNION SELECT 7084 UNION SELECT 7089 UNION SELECT 7094
+) m
+WHERE r.role_key IN ('boss', 'manager', 'breed_admin') AND r.del_flag = '0';
+
+-- 种植 export → boss/manager/plant_admin
+INSERT IGNORE INTO sys_role_menu (role_id, menu_id)
+SELECT r.role_id, m.menu_id
+FROM sys_role r
+CROSS JOIN (
+    SELECT 8017 AS menu_id UNION SELECT 8024 UNION SELECT 8055
+    UNION SELECT 8065 UNION SELECT 8077
+) m
+WHERE r.role_key IN ('boss', 'manager', 'plant_admin') AND r.del_flag = '0';
+
+-- 仓库 export → boss/manager/warehouse_admin（9063 采购导出已 11 绑，不在此段；
+--   本段 9 个 export menu 当前 biz_bind=0）
+INSERT IGNORE INTO sys_role_menu (role_id, menu_id)
+SELECT r.role_id, m.menu_id
+FROM sys_role r
+CROSS JOIN (
+    SELECT 9015 AS menu_id UNION SELECT 9025 UNION SELECT 9035 UNION SELECT 9053
+    UNION SELECT 9075 UNION SELECT 9081 UNION SELECT 9095 UNION SELECT 9105 UNION SELECT 9114
+) m
+WHERE r.role_key IN ('boss', 'manager', 'warehouse_admin') AND r.del_flag = '0';
+
+-- ============== 3. 自检（reports 单独跑确认）==============
+-- 目录/查询/写类期望 biz_bind=11；export 类期望 biz_bind=3
+-- SELECT m.menu_id, m.menu_name, m.perms,
+--   (SELECT COUNT(*) FROM sys_role_menu rm WHERE rm.menu_id=m.menu_id AND rm.role_id NOT IN (1,101)) AS biz_bind
+-- FROM sys_menu m WHERE m.menu_id IN (7010,7060,8010,8030,9010,9030,9040, 7015,8017,9035) ORDER BY m.menu_id;

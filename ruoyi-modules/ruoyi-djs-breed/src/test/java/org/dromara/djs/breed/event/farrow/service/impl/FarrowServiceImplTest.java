@@ -39,10 +39,10 @@ import static org.mockito.Mockito.when;
  *
  * <p>覆盖：</p>
  * <ul>
- *   <li>happy path：PH 母猪 FARROW → INSERT farrow + fireEvent(FARROW)；</li>
+ *   <li>happy path：PZ 母猪 FARROW → INSERT farrow + fireEvent(FARROW)；</li>
  *   <li>breedingId 缺时回落 pig.matingId；</li>
  *   <li>校验 liveBorn > totalBorn → 拒绝；</li>
- *   <li>非法 transition（非 PH）→ fireEvent 抛传播；</li>
+ *   <li>非法 transition（非 PZ）→ fireEvent 抛传播；</li>
  *   <li>pig 不存在 → 拒绝。</li>
  * </ul>
  *
@@ -103,9 +103,9 @@ class FarrowServiceImplTest {
     }
 
     @Test
-    @DisplayName("happy: PH FARROW → INSERT farrow + fireEvent(FARROW) + parity=pig.parity+1")
+    @DisplayName("happy: PZ FARROW → INSERT farrow + fireEvent(FARROW) + parity=pig.parity+1")
     void happyPath() {
-        Pig pig = mkSow(200L, PigLifecycle.PH, 7777L);
+        Pig pig = mkSow(200L, PigLifecycle.PZ, 7777L);
         when(pigMapper.selectById(200L)).thenReturn(pig);
 
         FarrowBo bo = mkBo(200L, 7777L, 12, 10);
@@ -127,7 +127,7 @@ class FarrowServiceImplTest {
     @Test
     @DisplayName("multiclass: 原型 93 多分类字段（健仔公母/弱仔留养公母/弱仔处死/畸形）透传落库")
     void multiclass_fields_persisted() {
-        Pig pig = mkSow(210L, PigLifecycle.PH, 7777L);
+        Pig pig = mkSow(210L, PigLifecycle.PZ, 7777L);
         when(pigMapper.selectById(210L)).thenReturn(pig);
 
         FarrowBo bo = mkBo(210L, 7777L, 21, 20);
@@ -152,7 +152,7 @@ class FarrowServiceImplTest {
     @Test
     @DisplayName("multiclass: 多分类字段缺省 → 落库回落 0（不 NPE）")
     void multiclass_fields_default_zero() {
-        Pig pig = mkSow(211L, PigLifecycle.PH, null);
+        Pig pig = mkSow(211L, PigLifecycle.PZ, null);
         when(pigMapper.selectById(211L)).thenReturn(pig);
 
         FarrowBo bo = mkBo(211L, null, 8, 8); // 不设任何多分类字段
@@ -171,7 +171,7 @@ class FarrowServiceImplTest {
     @Test
     @DisplayName("breedingId 缺 → 回落 pig.matingId")
     void breedingId_fallback_to_matingId() {
-        Pig pig = mkSow(201L, PigLifecycle.PH, 8888L);
+        Pig pig = mkSow(201L, PigLifecycle.PZ, 8888L);
         when(pigMapper.selectById(201L)).thenReturn(pig);
 
         FarrowBo bo = mkBo(201L, null, 8, 8);
@@ -185,7 +185,7 @@ class FarrowServiceImplTest {
     @Test
     @DisplayName("校验: liveBorn > totalBorn → ServiceException")
     void validate_liveExceedsTotal() {
-        Pig pig = mkSow(202L, PigLifecycle.PH, null);
+        Pig pig = mkSow(202L, PigLifecycle.PZ, null);
         when(pigMapper.selectById(202L)).thenReturn(pig);
 
         FarrowBo bo = mkBo(202L, null, 5, 10);
@@ -197,7 +197,7 @@ class FarrowServiceImplTest {
     }
 
     @Test
-    @DisplayName("非法 transition: pig 状态非 PH → fireEvent 抛 ServiceException 透传")
+    @DisplayName("非法 transition: pig 状态非 PZ → fireEvent 抛 ServiceException 透传")
     void invalidTransition() {
         Pig pig = mkSow(203L, PigLifecycle.HB, null);
         when(pigMapper.selectById(203L)).thenReturn(pig);

@@ -86,6 +86,23 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
                                 @Param("userId") Long userId);
 
     /**
+     * 按产品取默认库位（投喂等无库位语义场景）：该产品库存最多的库位；无任何库存行返 null。
+     *
+     * <p>mp 饲料领退子页不让工人选库位（投喂本无库位语义），service 在 {@code locationId} 为空时
+     * 用本方法兜底解析；取 {@code product_stock} 最大的库位作默认（V1 单库位常态唯一，多库位时取
+     * 最大可领的那个）。返 null（产品无任何 location_stock 行）→ service 抛 ServiceException。</p>
+     *
+     * <p>租户隔离：未启全局 MP 拦截器，显式 {@code tenant_id='1001'}（V1 单租户）。</p>
+     *
+     * @param productId 产品 ID
+     * @return 默认 location_id，或 null（产品无 location_stock 行）
+     */
+    @Select("SELECT location_id FROM t_warehouse_location_stock "
+        + " WHERE product_id = #{productId} AND del_flag = '0' AND tenant_id = '1001' "
+        + " ORDER BY product_stock DESC, location_id ASC LIMIT 1")
+    Long selectDefaultLocationByProduct(@Param("productId") Long productId);
+
+    /**
      * 按 {@code product_id} + {@code location_id} 增加库存（WMS-MAT-001 物资退回）。
      *
      * <p>退回是"加回库存"，无需校验上限；但需要保证库存记录存在（不存在不允许凭空创建库存，service 层

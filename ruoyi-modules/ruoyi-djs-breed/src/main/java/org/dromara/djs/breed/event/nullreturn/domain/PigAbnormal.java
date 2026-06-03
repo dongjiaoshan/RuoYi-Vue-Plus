@@ -13,7 +13,7 @@ import java.time.LocalDateTime;
 /**
  * 母猪返空流记录实体（BRD-EVENT-002 NULL_RETURN）。
  *
- * <p>对应表 {@code t_farm_pig_abnormal}（SYS-INIT-001 DDL）。状态机源态 PH，按 abnormal_type 分流：</p>
+ * <p>对应表 {@code t_farm_pig_abnormal}（SYS-INIT-001 DDL）。状态机源态 PZ，按 abnormal_type 分流：</p>
  * <ul>
  *   <li>{@code R} (返情) → FQ；</li>
  *   <li>{@code A} (流产) → LC；</li>

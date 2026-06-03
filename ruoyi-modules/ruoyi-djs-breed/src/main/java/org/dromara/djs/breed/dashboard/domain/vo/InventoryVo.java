@@ -17,7 +17,7 @@ import java.util.Map;
  * <pre>
  * {
  *   "inventoryByType": { "sow": 23, "boar": 5, "piglet": 43, "fattening": 454, "reserve": 5 },
- *   "sowByLifecycle":  { "PZ": 5, "PH": 8, "FM": 6, "DN": 2, "KH": 2 }
+ *   "sowByLifecycle":  { "PZ": 13, "FM": 6, "DN": 2, "KH": 2 }
  * }
  * </pre>
  *
@@ -33,6 +33,6 @@ public class InventoryVo implements Serializable {
     /** key = pig_type (sow/boar/piglet/fattening/reserve) → count；缺失 type 不写入。 */
     private Map<String, Integer> inventoryByType = new LinkedHashMap<>();
 
-    /** key = lifecycle (PZ/PH/FM/DN/KH/...) → count；仅活母猪。 */
+    /** key = lifecycle (PZ/FM/DN/KH/...) → count；仅活母猪。 */
     private Map<String, Integer> sowByLifecycle = new LinkedHashMap<>();
 }

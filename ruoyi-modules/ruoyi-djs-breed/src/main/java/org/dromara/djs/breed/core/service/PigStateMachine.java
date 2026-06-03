@@ -18,7 +18,6 @@ import static org.dromara.djs.breed.core.enums.PigLifecycle.FQ;
 import static org.dromara.djs.breed.core.enums.PigLifecycle.HB;
 import static org.dromara.djs.breed.core.enums.PigLifecycle.KH;
 import static org.dromara.djs.breed.core.enums.PigLifecycle.LC;
-import static org.dromara.djs.breed.core.enums.PigLifecycle.PH;
 import static org.dromara.djs.breed.core.enums.PigLifecycle.PZ;
 import static org.dromara.djs.breed.core.enums.PigStatusEvent.BREED;
 import static org.dromara.djs.breed.core.enums.PigStatusEvent.CASTRATE;
@@ -36,7 +35,7 @@ import static org.dromara.djs.breed.core.enums.PigStatusEvent.WEAN;
  * 猪只状态机（BRD-CORE-001 ★ 业务心脏）。
  *
  * <p>手写 FSM，不引 spring-statemachine / Flowable。{@link #nextStatus} 为纯函数，
- * 不访问 DB，方便单测覆盖 11×10 transition 矩阵。</p>
+ * 不访问 DB，方便单测覆盖 11×9 transition 矩阵（9 状态，见 ADR-0010）。</p>
  *
  * <p><b>三类 transition</b>：</p>
  * <ul>
@@ -140,8 +139,8 @@ public class PigStateMachine {
         m.put(new TransitionKey(LC, BREED), PZ);
         m.put(new TransitionKey(KH, BREED), PZ);
         m.put(new TransitionKey(FQ, BREED), PZ);
-        // FARROW: PH → FM
-        m.put(new TransitionKey(PH, FARROW), FM);
+        // FARROW: PZ → FM（配种态直接分娩，见 ADR-0010）
+        m.put(new TransitionKey(PZ, FARROW), FM);
         // WEAN: FM → DN
         m.put(new TransitionKey(FM, WEAN), DN);
         return Map.copyOf(m);
@@ -150,17 +149,17 @@ public class PigStateMachine {
     private static Map<PigStatusEvent, BiFunction<PigLifecycle, Map<String, Object>, PigLifecycle>> buildComplexMap() {
         Map<PigStatusEvent, BiFunction<PigLifecycle, Map<String, Object>, PigLifecycle>> m = new HashMap<>();
 
-        // OESTRUS（查情）：仅 PZ；payload.isPregnantConfirmed=true → PH，否则保持 PZ（仅记录状态）
+        // OESTRUS（查情）：仅 PZ；确认妊娠不切状态，保持 PZ（confirmed 仅写 heat 记录，见 ADR-0010）
         m.put(OESTRUS, (from, payload) -> {
             if (from != PZ) {
                 throw new ServiceException(I18nMessages.t("pig.event.invalid_transition", from.getLabel(), OESTRUS.getLabel()), 400);
             }
-            return Boolean.TRUE.equals(payload.get("isPregnantConfirmed")) ? PH : PZ;
+            return PZ;
         });
 
-        // NULL_RETURN（返空）：PZ/PH；按 abnormalType 分流
+        // NULL_RETURN（返空）：仅 PZ；按 abnormalType 分流
         m.put(NULL_RETURN, (from, payload) -> {
-            if (from != PZ && from != PH) {
+            if (from != PZ) {
                 throw new ServiceException(I18nMessages.t("pig.event.invalid_transition", from.getLabel(), NULL_RETURN.getLabel()), 400);
             }
             Object t = payload.get("abnormalType");

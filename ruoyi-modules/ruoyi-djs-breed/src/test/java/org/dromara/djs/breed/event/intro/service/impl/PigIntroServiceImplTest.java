@@ -5,8 +5,13 @@ import org.dromara.djs.breed.core.domain.Pig;
 import org.dromara.djs.breed.core.domain.bo.PigCreateBo;
 import org.dromara.djs.breed.core.service.IPigCoreService;
 import org.dromara.djs.breed.event.intro.domain.PigIntroduce;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import org.dromara.common.mybatis.core.page.PageQuery;
+import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.breed.event.intro.domain.bo.PigIntroBatchBo;
 import org.dromara.djs.breed.event.intro.domain.bo.PigIntroBo;
+import org.dromara.djs.breed.event.intro.domain.query.PigIntroQuery;
+import org.dromara.djs.breed.event.intro.domain.vo.IntroRecordVo;
 import org.dromara.djs.breed.event.intro.domain.vo.PigIntroResultVo;
 import org.dromara.djs.breed.event.intro.mapper.PigIntroduceMapper;
 import org.dromara.djs.breed.farm.domain.Barn;
@@ -29,6 +34,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 
+import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
@@ -92,21 +98,29 @@ class PigIntroServiceImplTest {
     private org.dromara.djs.breed.core.service.EarNoAllocator earNoAllocator;
 
     private PigIntroServiceImpl service;
+    private org.dromara.djs.breed.core.mapper.PigMapper innerPigMapper;
+    private org.dromara.common.core.service.DictService dictService;
 
     @BeforeEach
     void setup() {
+        innerPigMapper = org.mockito.Mockito.mock(org.dromara.djs.breed.core.mapper.PigMapper.class);
+        dictService = org.mockito.Mockito.mock(org.dromara.common.core.service.DictService.class);
         service = new PigIntroServiceImpl(
             introduceMapper, pigCoreService, bizCodeGenerator,
             supplierMapper, barnMapper, penMapper, bizReferenceChecker,
-            org.mockito.Mockito.mock(org.dromara.djs.breed.core.mapper.PigMapper.class),
-            org.mockito.Mockito.mock(org.dromara.common.core.service.DictService.class),
+            innerPigMapper,
+            dictService,
             earNoAllocator);
+        // 用户填首号路径默认无撞号（existsEarNo 返 null 放行）
+        when(innerPigMapper.existsEarNo(org.mockito.ArgumentMatchers.anyString())).thenReturn(null);
         // 通用 stubs
         when(bizCodeGenerator.generate(eq(BizCodeType.INTRO_NO), anyMap()))
             .thenReturn("INT202605260001");
-        // 单头耳号走 EarNoAllocator（序号源 DB max，BRD-FIX-EARNO-001）
-        when(earNoAllocator.allocateOne(eq("01"), org.mockito.ArgumentMatchers.any()))
-            .thenReturn("01011260520001");
+        // 单头耳号走 EarNoAllocator（ADR-0011：品系+品种+公母+出生日 → 14 位）
+        when(earNoAllocator.allocateOne(
+                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any()))
+            .thenReturn("40421251200001");
         Supplier breedSupplier = new Supplier();
         breedSupplier.setId(SUPPLIER_ID);
         breedSupplier.setSupplierType("breed");
@@ -156,7 +170,7 @@ class PigIntroServiceImplTest {
 
         ArgumentCaptor<PigCreateBo> captor = ArgumentCaptor.forClass(PigCreateBo.class);
         verify(pigCoreService).createPig(captor.capture());
-        assertThat(captor.getValue().getEarNo()).isEqualTo("01011260520001");
+        assertThat(captor.getValue().getEarNo()).isEqualTo("40421251200001");
         assertThat(captor.getValue().getPigSex()).isEqualTo("F");
         assertThat(captor.getValue().getSupplierId()).isEqualTo(SUPPLIER_ID);
 
@@ -259,28 +273,69 @@ class PigIntroServiceImplTest {
     }
 
     @Test
-    @DisplayName("批量引种 5 头母猪：EarNoAllocator 连号 + 5 次 createPig + pen 加 5")
+    @DisplayName("批量引种 5 头母猪后端生成（startEarNo 空）：EarNoAllocator 连号 + 5 次 createPig + pen 加 5")
     void happy_batch_5_sows() {
-        when(earNoAllocator.allocate(eq("01"), org.mockito.ArgumentMatchers.any(), eq(5)))
+        when(earNoAllocator.allocate(
+                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(), eq(5)))
             .thenReturn(List.of(
-                "0101260520001", "0101260520002", "0101260520003",
-                "0101260520004", "0101260520005"));
+                "40421251200001", "40421251200002", "40421251200003",
+                "40421251200004", "40421251200005"));
 
         PigIntroBatchBo bo = new PigIntroBatchBo();
         copyFromSingle(mkSingleBo("external", "F"), bo);
         bo.setPigCount(5);
-        bo.setStartEarNo("BATCH-A001");
+        // startEarNo 空 → 走后端 allocator 生成
 
         PigIntroResultVo result = service.introduceBatch(bo);
 
         assertThat(result.getIntroduce().getPigCount()).isEqualTo(5);
-        assertThat(result.getIntroduce().getStartEarNo()).isEqualTo("BATCH-A001");
         assertThat(result.getPigs()).hasSize(5);
         assertThat(result.getPigs()).allMatch(s -> "HB".equals(s.getCurrentStatus()));
 
-        verify(earNoAllocator).allocate(eq("01"), org.mockito.ArgumentMatchers.any(), eq(5));
+        verify(earNoAllocator).allocate(
+            org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(),
+            org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(), eq(5));
         verify(pigCoreService, times(5)).createPig(any(PigCreateBo.class));
         // pen.current_count += 5 via setSql wrapper
+        verify(penMapper, times(1)).update(eq(null), any());
+    }
+
+    @Test
+    @DisplayName("批量引种用户填合法 14 位 startEarNo → 以用户首号为起点连号（601-5 用户可改），不调 allocator")
+    void batch_userStartEarNo_overrides() {
+        PigIntroBatchBo bo = new PigIntroBatchBo();
+        copyFromSingle(mkSingleBo("external", "F"), bo);
+        bo.setPigCount(3);
+        bo.setStartEarNo("40421251200010");  // 用户改首号 → 后续 0011 / 0012
+
+        PigIntroResultVo result = service.introduceBatch(bo);
+
+        assertThat(result.getPigs()).hasSize(3);
+        assertThat(result.getPigs().get(0).getEarNo()).isEqualTo("40421251200010");
+        assertThat(result.getPigs().get(1).getEarNo()).isEqualTo("40421251200011");
+        assertThat(result.getPigs().get(2).getEarNo()).isEqualTo("40421251200012");
+        // 走用户首号路径，不调 allocator.allocate
+        verify(earNoAllocator, times(0)).allocate(any(), any(), any(), any(), org.mockito.ArgumentMatchers.anyInt());
+    }
+
+    @Test
+    @DisplayName("D12X-INTRO-EARNO 外部引种单头走批量端点 pigCount=1 + 用户改 14 位 startEarNo → 落库 earNo = 用户填的（@Min 放开到 1）")
+    void batch_count1_userStartEarNo() {
+        PigIntroBatchBo bo = new PigIntroBatchBo();
+        copyFromSingle(mkSingleBo("external", "F"), bo);
+        bo.setPigCount(1);                       // 单头走批量端点以消费 startEarNo
+        bo.setStartEarNo("40421251200888");      // 用户填的合法 14 位首号
+
+        PigIntroResultVo result = service.introduceBatch(bo);
+
+        assertThat(result.getIntroduce().getPigCount()).isEqualTo(1);
+        assertThat(result.getIntroduce().getStartEarNo()).isEqualTo("40421251200888");
+        assertThat(result.getPigs()).hasSize(1);
+        // 落库 earNo = 用户填的首号（不调后端 allocator）
+        assertThat(result.getPigs().get(0).getEarNo()).isEqualTo("40421251200888");
+        verify(earNoAllocator, times(0)).allocate(any(), any(), any(), any(), anyInt());
+        // pen.current_count += 1
         verify(penMapper, times(1)).update(eq(null), any());
     }
 
@@ -387,6 +442,76 @@ class PigIntroServiceImplTest {
         verify(bizReferenceChecker).register("t_md_supplier", "t_farm_pig_info", "supplier_id");
     }
 
+    @Test
+    @DisplayName("D12X-INTRO 外部引种 persist 落 operator + introduceWeight（601-3 人员 / D2 体重）")
+    void external_persists_operator_and_weight() {
+        PigIntroBo bo = mkSingleBo("external", "F");
+        bo.setOperator("1900000001");
+        bo.setIntroduceWeight(new BigDecimal("85.50"));
+
+        service.introduce(bo);
+
+        ArgumentCaptor<PigIntroduce> captor = ArgumentCaptor.forClass(PigIntroduce.class);
+        verify(introduceMapper).insert(captor.capture());
+        assertThat(captor.getValue().getOperator()).isEqualTo("1900000001");
+        assertThat(captor.getValue().getIntroduceWeight()).isEqualByComparingTo("85.50");
+    }
+
+    @Test
+    @DisplayName("D12X-INTRO 引种记录：内部翻品系 label + join Pig 算日龄，外部 ageDays=null（601-6）")
+    void records_strain_label_and_age_days() {
+        // 内部引种一行：pigId 关联猪只 birth_date → 算日龄；外部引种一行：pigId=null → ageDays null
+        PigIntroduce internal = new PigIntroduce();
+        internal.setIntroduceNo("INT-INTERNAL");
+        internal.setIntroduceType("internal");
+        internal.setStartEarNo("40421251200001");
+        internal.setPigCount(1);
+        internal.setPigBreedCode("04");
+        internal.setPigStrainCode("4");
+        internal.setIntroduceDate(LocalDate.of(2026, 6, 1));
+        internal.setPigId(5001L);
+        internal.setOperator("1900000001");
+
+        PigIntroduce external = new PigIntroduce();
+        external.setIntroduceNo("INT-EXTERNAL");
+        external.setIntroduceType("external");
+        external.setStartEarNo("40421251200099");
+        external.setPigCount(1);
+        external.setPigBreedCode("04");
+        external.setPigStrainCode("4");
+        external.setIntroduceDate(LocalDate.of(2026, 6, 1));
+        external.setPigId(null);
+
+        Page<PigIntroduce> page = new Page<>(1, 10, 2);
+        page.setRecords(List.of(internal, external));
+        when(introduceMapper.selectPage(any(), any())).thenReturn(page);
+
+        // pigId=5001 的猪 birth_date 在 50 天前
+        LocalDate birth = LocalDate.now().minusDays(50);
+        Pig pig = new Pig();
+        pig.setId(5001L);
+        pig.setBirthDate(birth);
+        when(innerPigMapper.selectBatchIds(any())).thenReturn(List.of(pig));
+
+        // 品系字典翻译命中
+        when(dictService.getDictLabel(eq("djs_pig_strain"), eq("4"))).thenReturn("杜洛克");
+        when(dictService.getDictLabel(eq("djs_pig_breed"), eq("04"))).thenReturn("杜洛克");
+
+        TableDataInfo<IntroRecordVo> result = service.queryAppletRecords(new PigIntroQuery(), new PageQuery(1, 10));
+        List<IntroRecordVo> rows = result.getRows();
+        assertThat(rows).hasSize(2);
+
+        IntroRecordVo internalVo = rows.stream().filter(r -> "INT-INTERNAL".equals(r.getIntroduceNo())).findFirst().orElseThrow();
+        assertThat(internalVo.getPigStrainLabel()).isEqualTo("杜洛克");
+        assertThat(internalVo.getAgeDays()).isEqualTo(50);
+        // VO 仍保留 pigCount（前端不渲染，但 payload 在）
+        assertThat(internalVo.getPigCount()).isEqualTo(1);
+
+        IntroRecordVo externalVo = rows.stream().filter(r -> "INT-EXTERNAL".equals(r.getIntroduceNo())).findFirst().orElseThrow();
+        assertThat(externalVo.getPigStrainLabel()).isEqualTo("杜洛克");
+        assertThat(externalVo.getAgeDays()).isNull();
+    }
+
     // ---------- 测试夹具 ----------
 
     private PigIntroBo mkSingleBo(String type, String sex) {
@@ -396,8 +521,9 @@ class PigIntroServiceImplTest {
         bo.setSupplierId(SUPPLIER_ID);
         bo.setProofOssIds("100,101");
         bo.setPigSex(sex);
-        bo.setPigBreedCode("DUR");
-        bo.setPigStrainCode("DUR-A");
+        // ADR-0011 位码：品系=4 杜洛克 / 品种=04 杜洛克
+        bo.setPigBreedCode("04");
+        bo.setPigStrainCode("4");
         bo.setBirthDate(LocalDate.of(2025, 12, 1));
         bo.setBarnId(BARN_ID);
         bo.setPenId(PEN_ID);

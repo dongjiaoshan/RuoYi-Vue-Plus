@@ -85,7 +85,8 @@ public class SlaughterServiceImpl implements ISlaughterService {
         entity.setIsRoom(0);
         entity.setOssIds(bo.getOssIds());
         entity.setRemark(bo.getRemark());
-        entity.setOperatorId(LoginHelper.getUserId());
+        entity.setOperator(bo.getOperator());            // EmployeePicker 所选 userId（可空）
+        entity.setOperatorId(LoginHelper.getUserId());   // 登录态审计（不动）
         entity.setDelFlag("0");
         marketingMapper.insert(entity);
 
@@ -131,6 +132,7 @@ public class SlaughterServiceImpl implements ISlaughterService {
         v.setIsRoom(e.getIsRoom());
         v.setOssIds(e.getOssIds());
         v.setOperatorId(e.getOperatorId());
+        v.setOperator(e.getOperator());
         v.setRemark(e.getRemark());
         return v;
     }

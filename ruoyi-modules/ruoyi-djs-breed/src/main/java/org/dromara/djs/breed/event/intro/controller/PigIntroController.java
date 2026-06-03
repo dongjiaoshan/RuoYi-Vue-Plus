@@ -19,11 +19,15 @@ import org.dromara.djs.breed.event.intro.domain.vo.PigIntroResultVo;
 import org.dromara.djs.breed.event.intro.domain.vo.PigIntroduceVo;
 import org.dromara.djs.breed.event.intro.service.IPigIntroService;
 import org.springframework.validation.annotation.Validated;
+import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+
+import java.time.LocalDate;
 
 /**
  * 引种 Controller（BRD-EVENT-001）。
@@ -98,5 +102,22 @@ public class PigIntroController extends BaseController {
     @GetMapping("/intro/applet-records")
     public TableDataInfo<IntroRecordVo> appletRecords(PigIntroQuery query, PageQuery pageQuery) {
         return introService.queryAppletRecords(query, pageQuery);
+    }
+
+    /**
+     * 预生成"下一个可用首耳号"（外部引种可改耳号预填用，601-5 / ADR-0011 §2.6）。
+     *
+     * <p>按品系 + 品种 + 公母 + 出生日组装 14 位前缀，取当天级 max+1 拼出首号返给前端预填，不落库。
+     * 权限走 mp 通用只读串 {@code djs:applet:pig:search}（复用免新增菜单 seed）。</p>
+     */
+    @SaCheckLogin
+    @SaCheckPermission("djs:applet:pig:search")
+    @GetMapping("/intro/preview-earno")
+    public R<String> previewEarNo(@RequestParam String strainCode,
+                                  @RequestParam String breedCode,
+                                  @RequestParam String pigSex,
+                                  @RequestParam(required = false)
+                                  @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate birthDate) {
+        return R.ok(introService.previewNextEarNo(strainCode, breedCode, pigSex, birthDate));
     }
 }

@@ -26,7 +26,12 @@ public class MatReturnBo {
     @NotNull(message = "{mat.product_id.required}")
     private Long productId;
 
-    @NotNull(message = "{mat.location_id.required}")
+    /**
+     * 库位 ID（可空）。
+     *
+     * <p>为空时 service 按 {@code productId} 解析默认库位（投喂等无库位语义场景，工人不选库位）；
+     * 其他调用方传了 locationId 仍按传入值走，不受影响。</p>
+     */
     private Long locationId;
 
     /**

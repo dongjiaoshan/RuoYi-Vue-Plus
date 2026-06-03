@@ -92,8 +92,7 @@ class DashboardServiceImplTest {
             mapOf("pigType", "reserve", "cnt", 5)
         ));
         when(aggregateQueryMapper.countByLifecycle(anyString(), eq("sow"))).thenReturn(List.of(
-            mapOf("lifecycle", "PZ", "cnt", 5),
-            mapOf("lifecycle", "PH", "cnt", 8),
+            mapOf("lifecycle", "PZ", "cnt", 13),
             mapOf("lifecycle", "FM", "cnt", 6),
             mapOf("lifecycle", "KH", "cnt", 4)
         ));
@@ -107,8 +106,7 @@ class DashboardServiceImplTest {
             .containsEntry("fattening", 454)
             .containsEntry("reserve", 5);
         assertThat(vo.getSowByLifecycle())
-            .containsEntry("PZ", 5)
-            .containsEntry("PH", 8)
+            .containsEntry("PZ", 13)
             .containsEntry("FM", 6)
             .containsEntry("KH", 4);
     }

@@ -26,14 +26,13 @@ import org.dromara.djs.breed.event.eartag.mapper.PigPigletnoMapper;
 import org.dromara.djs.breed.event.eartag.service.IPigEarTagService;
 import org.dromara.djs.breed.event.farrow.domain.PigFarrow;
 import org.dromara.djs.breed.event.farrow.mapper.PigFarrowMapper;
-import org.dromara.djs.breed.farm.domain.Barn;
-import org.dromara.djs.breed.farm.mapper.BarnMapper;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -68,7 +67,6 @@ public class PigEarTagServiceImpl implements IPigEarTagService {
     private final PigMapper pigMapper;
     private final PigPigletnoMapper pigletnoMapper;
     private final PigFarrowMapper farrowMapper;
-    private final BarnMapper barnMapper;
     private final EarNoAllocator earNoAllocator;
 
     @Override
@@ -150,12 +148,12 @@ public class PigEarTagServiceImpl implements IPigEarTagService {
             ? null
             : farrowMapper.selectBoarEarByBreedingId(farrow.getBreedingId());
 
-        // 3. 一次性批量生成 N 个连续耳号（序号源 = DB max 同前缀同月，避免日级计数器月内撞 UNIQUE）
-        List<String> earNos = earNoAllocator.allocate("01", motherBarnCode(mother), newCount);
+        // 3. 生成 N 个耳号（ADR-0011：品系/品种继承母猪 + 出生日 = 分娩日；公母位前缀不同 → 按性别分组分配后按原序回填）
+        LocalDateTime tagAt = LocalDateTime.now();
+        LocalDate birthDate = farrow.getFarrowDate() == null ? tagAt.toLocalDate() : farrow.getFarrowDate().toLocalDate();
+        List<String> earNos = allocatePigletEarNos(mother, bo.getPiglets(), birthDate);
 
         // 4. 同事务循环 INSERT pig + pigletno
-        LocalDateTime tagAt = LocalDateTime.now();
-        LocalDate birthDate = farrow.getFarrowDate() == null ? null : farrow.getFarrowDate().toLocalDate();
         List<PigletEarTagVo> result = new ArrayList<>(newCount);
         for (int i = 0; i < newCount; i++) {
             PigletEarTagItem item = bo.getPiglets().get(i);
@@ -212,19 +210,32 @@ public class PigEarTagServiceImpl implements IPigEarTagService {
     }
 
     /**
-     * 取母猪所在栋舍编码（EAR_NO 前缀 barnCode2 段）。
+     * 为一批仔猪分配耳号（ADR-0011 §2.5）：品系/品种继承母猪，性别取仔猪自身。
      *
-     * <p>母猪未关联 barn / barn 缺 code 时返 null，由 {@link EarNoAllocator} 回落 "00"
-     * （V1 单农场场景 farmCode 固定 "01"）。</p>
+     * <p>新格式前缀含公母位 → 同批公母混合时前缀不同，不能一次 {@code allocate(count)} 同前缀连号。
+     * 故按性别分组（公组 / 母组各调一次 allocator），再按 piglet 原始索引顺序回填，保证返回列表与
+     * {@code piglets} 索引严格对齐。</p>
      */
-    private String motherBarnCode(Pig mother) {
-        if (mother != null && mother.getBarnId() != null) {
-            Barn barn = barnMapper.selectById(mother.getBarnId());
-            if (barn != null) {
-                return barn.getBarnCode();
+    private List<String> allocatePigletEarNos(Pig mother, List<PigletEarTagItem> piglets, LocalDate birthDate) {
+        String strainCode = mother.getPigStrainCode();
+        String breedCode = mother.getPigBreedCode();
+
+        // 按性别收集原始索引，分组各调一次 allocator
+        Map<String, List<Integer>> indexBySex = new HashMap<>();
+        for (int i = 0; i < piglets.size(); i++) {
+            String sex = piglets.get(i).getPigletSex();
+            indexBySex.computeIfAbsent(sex, k -> new ArrayList<>()).add(i);
+        }
+
+        String[] earNos = new String[piglets.size()];
+        for (Map.Entry<String, List<Integer>> e : indexBySex.entrySet()) {
+            List<Integer> indexes = e.getValue();
+            List<String> groupEarNos = earNoAllocator.allocate(strainCode, breedCode, e.getKey(), birthDate, indexes.size());
+            for (int g = 0; g < indexes.size(); g++) {
+                earNos[indexes.get(g)] = groupEarNos.get(g);
             }
         }
-        return null;
+        return new ArrayList<>(Arrays.asList(earNos));
     }
 
     private Map<Long, Pig> loadPigsByIds(List<Long> ids) {

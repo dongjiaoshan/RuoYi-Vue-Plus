@@ -9,7 +9,6 @@ import org.dromara.common.core.utils.StringUtils;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.satoken.utils.LoginHelper;
-import org.dromara.djs.breed.core.service.IPigQueryService;
 import org.dromara.djs.common.base.DjsBaseServiceImpl;
 import org.dromara.djs.common.encoder.BizCodeType;
 import org.dromara.djs.common.encoder.IBizCodeGenerator;
@@ -17,22 +16,29 @@ import org.dromara.djs.warehouse.check.service.IStockCheckService;
 import org.dromara.djs.warehouse.burn.domain.PigBurnRecord;
 import org.dromara.djs.warehouse.burn.domain.bo.PigBurnRecordBo;
 import org.dromara.djs.warehouse.burn.domain.query.PigBurnRecordQuery;
+import org.dromara.djs.warehouse.burn.domain.vo.BarPendingVo;
+import org.dromara.djs.warehouse.burn.domain.vo.BurnProductTypeVo;
 import org.dromara.djs.warehouse.burn.domain.vo.PigBurnRecordVo;
 import org.dromara.djs.warehouse.burn.mapper.PigBurnRecordMapper;
 import org.dromara.djs.warehouse.burn.service.IPigBurnRecordService;
+import org.dromara.djs.warehouse.cross.domain.BarInfo;
+import org.dromara.djs.warehouse.cross.mapper.BarInfoMapper;
 import org.dromara.djs.warehouse.flow.domain.StockFlow;
 import org.dromara.djs.warehouse.flow.mapper.StockFlowMapper;
 import org.dromara.djs.warehouse.location.domain.LocationInfo;
 import org.dromara.djs.warehouse.location.mapper.LocationInfoMapper;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
+import org.dromara.djs.warehouse.product.domain.ProductInhouse;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
-import org.dromara.djs.warehouse.stock.mapper.LocationStockMapper;
+import org.dromara.djs.warehouse.product.mapper.ProductInhouseMapper;
 import org.dromara.djs.warehouse.trace.domain.TraceContentConst;
 import org.dromara.djs.warehouse.trace.service.ITraceService;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
+import java.util.ArrayList;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
@@ -41,27 +47,27 @@ import java.util.Objects;
 import java.util.stream.Collectors;
 
 /**
- * 燎毛工序记录 Service 实现（WMS-PIG-001）。
+ * 燎毛入库 Service 实现（D12X-MP-BURN-IA-001：燎毛间 IA 重做）。
  *
- * <h3>跨表事务一致性（本 ticket 核心风险）</h3>
+ * <h3>IA 重做要点</h3>
+ * <p>原实现是单表单（PigPicker 选猪 + 录总重 + 走 location_stock 扣减出库）。本 ticket 重做为
+ * list→detail：mp 列表页展示「已出栏待燎毛入库白条」（bar_info status IN
+ * ('pending_singe','singing')）→ 点猪进入库子页 → 白条按产品类型（整只 / 半只 / 猪头 / 猪蹄）
+ * 分别入库。语义由「扣减出库」纠正为「入库」。</p>
+ *
+ * <h3>跨表事务一致性（核心风险）</h3>
  * <ul>
- *   <li>{@link #submitBurnRecord} 单 {@code @Transactional} 跨 4 步：
- *       校验 → INSERT burn_record → UPDATE location_stock（行锁扣减）→ INSERT stock_flow。
+ *   <li>{@link #submitBurnRecord} 单 {@code @Transactional}：
+ *       校验 bar 待燎毛 → INSERT burn_record → for each 类型 INSERT product_inhouse + IN 流水
+ *       → UPDATE bar_info status→in_stock（乐观锁回填 in_weight/in_time/in_method=1）。
  *       任一 RuntimeException / ServiceException 触发整体回滚。</li>
- *   <li>幂等键：{@code burn_id} UNIQUE (tenant_id, burn_id, del_unique)。
- *       并发抢同一序号的极小概率场景 → SQLIntegrityConstraintViolationException → 事务回滚 → mp 端重试。</li>
- *   <li>库存扣减用 {@code UPDATE ... WHERE product_stock >= deductQty}（行锁 + 数量校验）；
- *       并发提交（同 ear_no 两次燎毛）只有一次 affectedRows > 0，另一次抛"库存不足"回滚。</li>
+ *   <li>幂等键：{@code burn_id} UNIQUE (tenant_id, burn_id, del_unique)，BizCodeGenerator Redisson 锁兜底。</li>
+ *   <li>bar 推进用乐观锁 {@code WHERE status IN ('pending_singe','singing')}；并发提交（同 bar
+ *       两次燎毛）只有一次 affectedRows>0，另一次抛"白条状态不符"回滚。</li>
  * </ul>
  *
- * <h3>burn_id 生成（inline）</h3>
- * <p>格式 {@code BURN+yyMMdd+4 位序号}（日内重置）。SYS-INFRA-004 BizCodeType 没有 BURN 类型，
- * 暂 inline {@link #generateBurnId} 用 {@code SELECT MAX(burn_id) LIKE 'BURN{yyMMdd}%'} 推断下一序号。
- * 单 ticket 写入量小 + 事务串行 + UNIQUE 兜底足够；如后续需要更高并发，再走 BizCodeGenerator
- * 增加 {@code BURN_NO} 类型（标记 D9 follow-up）。</p>
- *
  * @author djs
- * @since WMS-PIG-001
+ * @since D12X-MP-BURN-IA-001
  */
 @Slf4j
 @Service
@@ -70,34 +76,37 @@ public class PigBurnRecordServiceImpl
     implements IPigBurnRecordService {
 
     /**
-     * 字典 djs_burn_status 值：已完成（已扣库存）。
+     * 字典 djs_burn_status 值：已完成（已入库）。
      */
     private static final String STATUS_DONE = "done";
 
     /**
-     * 出库子类型：屠宰燎毛（{@code t_warehouse_stock_flow.flow_type}）。
+     * 入库子类型：屠宰燎毛（{@code t_warehouse_stock_flow.flow_type}）。
      */
     private static final String FLOW_TYPE_SLAUGHTER_BURN = "slaughter_burn";
 
     /**
-     * 出入库方向：出库（{@code t_warehouse_stock_flow.inout_type} CHAR(3)）。
+     * 出入库方向：入库（{@code t_warehouse_stock_flow.inout_type} CHAR(3)）。
      */
-    private static final String INOUT_OUT = "OT";
+    private static final String INOUT_IN = "IN";
 
     /**
-     * 已出栏状态码（{@code t_farm_pig_info.current_status}）。
+     * 白条标准产品类型业务码前缀（{@code t_warehouse_product_info.product_id}）。
+     * 入库产品类型 list = 该前缀 + belong_type='white_bar'，排除测试数据。
      */
-    private static final String PIG_STATUS_END = "END";
+    private static final String WHITE_BAR_BELONG_TYPE = "white_bar";
+    private static final String WHITE_BAR_CODE_PREFIX = "PROD-WHITE-BAR-";
 
     /**
-     * 白条产品业务码（D08-CLOSING 白条主数据 seed）；屠宰燎毛出库写 stock_flow 必引用此 product_id。
-     * 字面量与 {@code V202606061060__D08-CLOSING-seed-white-bar-product.sql} 一致。
+     * 白条状态码（{@code t_warehouse_bar_info.status}）。
      */
-    private static final String WHITE_BAR_PRODUCT_BIZ_CODE = "PROD-WHITE-BAR-01";
+    private static final String BAR_STATUS_PENDING_SINGE = "pending_singe";
+    private static final String BAR_STATUS_SINGING = "singing";
+    private static final String BAR_STATUS_IN_STOCK = "in_stock";
 
-    private final LocationStockMapper locationStockMapper;
     private final StockFlowMapper stockFlowMapper;
-    private final IPigQueryService pigQueryService;
+    private final BarInfoMapper barInfoMapper;
+    private final ProductInhouseMapper productInhouseMapper;
     private final LocationInfoMapper locationInfoMapper;
     private final ProductInfoMapper productInfoMapper;
     private final IBizCodeGenerator bizCodeGenerator;
@@ -105,18 +114,18 @@ public class PigBurnRecordServiceImpl
     private final ITraceService traceService;
 
     public PigBurnRecordServiceImpl(PigBurnRecordMapper baseMapper,
-                                    LocationStockMapper locationStockMapper,
                                     StockFlowMapper stockFlowMapper,
-                                    IPigQueryService pigQueryService,
+                                    BarInfoMapper barInfoMapper,
+                                    ProductInhouseMapper productInhouseMapper,
                                     LocationInfoMapper locationInfoMapper,
                                     ProductInfoMapper productInfoMapper,
                                     IBizCodeGenerator bizCodeGenerator,
                                     IStockCheckService stockCheckService,
                                     ITraceService traceService) {
         super(baseMapper);
-        this.locationStockMapper = locationStockMapper;
         this.stockFlowMapper = stockFlowMapper;
-        this.pigQueryService = pigQueryService;
+        this.barInfoMapper = barInfoMapper;
+        this.productInhouseMapper = productInhouseMapper;
         this.locationInfoMapper = locationInfoMapper;
         this.productInfoMapper = productInfoMapper;
         this.bizCodeGenerator = bizCodeGenerator;
@@ -127,67 +136,152 @@ public class PigBurnRecordServiceImpl
     @Override
     @Transactional(rollbackFor = Exception.class)
     public Long submitBurnRecord(PigBurnRecordBo bo) {
-        // ---------- Step 1：校验 earNo 出栏 ----------
-        String pigStatus = pigQueryService.selectCurrentStatusByEarNo(bo.getEarNo());
-        if (pigStatus == null) {
-            throw new ServiceException("耳号未找到或猪只已删除：" + bo.getEarNo());
+        // ---------- Step 1：校验待燎毛白条 ----------
+        BarInfo bar = barInfoMapper.selectById(bo.getBarInfoId());
+        if (bar == null) {
+            throw new ServiceException("白条不存在：" + bo.getBarInfoId());
         }
-        if (!PIG_STATUS_END.equals(pigStatus)) {
-            throw new ServiceException("猪只未出栏（current_status=" + pigStatus + "），无法燎毛");
+        if (!BAR_STATUS_PENDING_SINGE.equals(bar.getStatus())
+            && !BAR_STATUS_SINGING.equals(bar.getStatus())) {
+            throw new ServiceException("白条状态不符（当前：" + bar.getStatus() + "，需待燎毛/燎毛中）");
+        }
+        String earNo = bar.getEarNo();
+
+        // 库位级业务锁（WMS-STOCK-001）：盘点进行中的库位禁出入库（后端双保险）
+        stockCheckService.assertLocationUnlocked(bo.getLocationId());
+
+        // 校验入库库位存在 + 各产品类型为标准白条类型，并计算入库重量合计
+        LocationInfo location = locationInfoMapper.selectById(bo.getLocationId());
+        if (location == null) {
+            throw new ServiceException("入冻品库位不存在：" + bo.getLocationId());
+        }
+        Map<Long, ProductInfo> typeMap = loadWhiteBarTypeMap();
+        BigDecimal inWeightTotal = BigDecimal.ZERO;
+        for (PigBurnRecordBo.ProductTypeItem item : bo.getProductTypeItems()) {
+            if (!typeMap.containsKey(item.getProductId())) {
+                throw new ServiceException("无效的白条产品类型：" + item.getProductId());
+            }
+            inWeightTotal = inWeightTotal.add(item.getWeight());
         }
 
         // ---------- Step 2：生成 burn_id + 计算 loss + INSERT 燎毛记录 ----------
         BigDecimal arriveWeight = bo.getArriveWeight();
-        BigDecimal burnWeight = bo.getBurnWeight();
-        BigDecimal lossWeight = arriveWeight.subtract(burnWeight);
-        if (lossWeight.compareTo(BigDecimal.ZERO) < 0) {
-            throw new ServiceException("燎毛后重量不能大于到场重量");
+        BigDecimal lossWeight = null;
+        if (arriveWeight != null) {
+            lossWeight = arriveWeight.subtract(inWeightTotal);
+            if (lossWeight.compareTo(BigDecimal.ZERO) < 0) {
+                throw new ServiceException("入库重量合计不能大于到场重量");
+            }
         }
 
         PigBurnRecord record = toEntity(bo);
         if (record == null) {
             throw new ServiceException("燎毛记录入参转换失败");
         }
+        record.setEarNo(earNo);
         record.setBurnId(generateBurnId());
+        record.setBurnWeight(inWeightTotal);
         record.setLossWeight(lossWeight);
         record.setBurnStatus(STATUS_DONE);
-        record.setOperatorId(LoginHelper.getUserId());
+        // 入库人由 EmployeePicker 指定（可与登录态不同），非 LoginHelper
+        record.setOperatorId(bo.getOperatorId());
         baseMapper.insert(record);
 
-        // ---------- Step 3：扣减白条库存（行锁 + 数量校验） ----------
-        // 库位级业务锁（WMS-STOCK-001）：盘点进行中的库位禁出入库（后端双保险）
-        stockCheckService.assertLocationUnlocked(bo.getLocationId());
-        Long operatorId = LoginHelper.getUserId();
-        int affected = locationStockMapper.deductByEarNo(
-            bo.getLocationId(), bo.getEarNo(), burnWeight, operatorId);
-        if (affected == 0) {
-            // 关键：affectedRows==0 表示 (1) 库存不足 / (2) ear_no/location_id 不匹配 / (3) 已软删
-            // 三种情况合并抛出，由 mp 端提示用户检查"是否已建白条记录 / 数量是否够"
-            throw new ServiceException("白条库存不足或耳号/库位不匹配（确认 CROSS-FLOW-001 已建白条入库记录）");
+        // ---------- Step 3：for each 产品类型 → INSERT product_inhouse + INSERT 入库流水 ----------
+        Date burnTime = bo.getBurnTime();
+        LocalDate today = LocalDate.now();
+        for (PigBurnRecordBo.ProductTypeItem item : bo.getProductTypeItems()) {
+            ProductInfo type = typeMap.get(item.getProductId());
+
+            ProductInhouse inhouse = new ProductInhouse();
+            inhouse.setProduceDate(java.sql.Date.valueOf(today));
+            inhouse.setProductId(type.getId());
+            inhouse.setProductName(type.getProductName());
+            inhouse.setProductType(type.getProductType() == null ? 1 : type.getProductType());
+            inhouse.setProductUnit(StringUtils.isNotBlank(type.getProductUnit()) ? type.getProductUnit() : "kg");
+            inhouse.setEarNo(earNo);
+            inhouse.setProductWeight(item.getWeight());
+            inhouse.setProduceTime(burnTime);
+            inhouse.setWhiteBarId(bar.getId());
+            inhouse.setLocationId(bo.getLocationId());
+            productInhouseMapper.insert(inhouse);
+
+            StockFlow flowIn = new StockFlow();
+            Map<String, Object> flowCtx = new HashMap<>(2);
+            flowCtx.put("ioCode", INOUT_IN);
+            flowIn.setFlowNo(bizCodeGenerator.generate(BizCodeType.STOCK_FLOW_NO, flowCtx));
+            flowIn.setFlowDate(burnTime);
+            flowIn.setProductId(type.getId());
+            flowIn.setWarehouseId(bo.getLocationId());
+            flowIn.setInoutType(INOUT_IN);
+            flowIn.setFlowType(FLOW_TYPE_SLAUGHTER_BURN);
+            flowIn.setChangeNum(item.getWeight());
+            flowIn.setChangeQuantity(item.getWeight());
+            flowIn.setEarNo(earNo);
+            flowIn.setOperatorId(bo.getOperatorId());
+            flowIn.setRemark("燎毛入库 burn_id=" + record.getBurnId() + " type=" + type.getProductId());
+            stockFlowMapper.insert(flowIn);
         }
 
-        // ---------- Step 4：写出库流水 ----------
-        StockFlow flow = new StockFlow();
-        Map<String, Object> flowCtx = new HashMap<>(2);
-        flowCtx.put("ioCode", "OT");
-        flow.setFlowNo(bizCodeGenerator.generate(BizCodeType.STOCK_FLOW_NO, flowCtx));
-        flow.setFlowDate(bo.getBurnTime());
-        // 白条产品主数据 seed（V202606061060 PROD-WHITE-BAR-01）；屠宰燎毛出库的 product 维度固定指向"白条·猪肉"。
-        flow.setProductId(resolveWhiteBarProductId());
-        flow.setWarehouseId(bo.getLocationId());
-        flow.setInoutType(INOUT_OUT);
-        flow.setFlowType(FLOW_TYPE_SLAUGHTER_BURN);
-        flow.setChangeNum(burnWeight);
-        flow.setChangeQuantity(burnWeight);
-        flow.setEarNo(bo.getEarNo());
-        flow.setOperatorId(operatorId);
-        flow.setRemark("燎毛工序 burn_id=" + record.getBurnId());
-        stockFlowMapper.insert(flow);
+        // ---------- Step 4：UPDATE bar_info status → in_stock（乐观锁） ----------
+        int affected = barInfoMapper.updateStatusToInStock(
+            bar.getId(), inWeightTotal, burnTime, bo.getOperatorId());
+        if (affected == 0) {
+            throw new ServiceException("白条状态不符（已入库或不在待燎毛态），请刷新列表");
+        }
 
         // TRC-CORE-001：燎毛追溯事件（按耳号反查 trace_code；猪肉链当前无生成入口 → warn 跳过，不拖垮燎毛事务）
-        traceService.recordEventByEarNo(bo.getEarNo(), TraceContentConst.SINGE);
+        traceService.recordEventByEarNo(earNo, TraceContentConst.SINGE);
 
         return record.getId();
+    }
+
+    @Override
+    public List<BarPendingVo> queryPendingBars() {
+        List<BarInfo> bars = barInfoMapper.selectList(
+            new LambdaQueryWrapper<BarInfo>()
+                .in(BarInfo::getStatus, List.of(BAR_STATUS_PENDING_SINGE, BAR_STATUS_SINGING))
+                .orderByDesc(BarInfo::getMarketingTime)
+                .last("LIMIT 200"));
+        List<BarPendingVo> list = new ArrayList<>(bars.size());
+        for (BarInfo bar : bars) {
+            BarPendingVo vo = new BarPendingVo();
+            vo.setId(bar.getId());
+            vo.setBarId(bar.getBarId());
+            vo.setEarNo(bar.getEarNo());
+            vo.setMarketingTime(bar.getMarketingTime());
+            vo.setMarketingWeight(bar.getMarketingWeight());
+            vo.setStatus(bar.getStatus());
+            list.add(vo);
+        }
+        return list;
+    }
+
+    @Override
+    public List<BurnProductTypeVo> queryProductTypes() {
+        return loadWhiteBarTypes().stream().map(p -> {
+            BurnProductTypeVo vo = new BurnProductTypeVo();
+            vo.setProductId(p.getId());
+            vo.setProductCode(p.getProductId());
+            vo.setProductName(p.getProductName());
+            return vo;
+        }).toList();
+    }
+
+    /**
+     * 标准白条产品类型列表（belong_type='white_bar' + product_id 前缀 PROD-WHITE-BAR-，排除测试数据）。
+     */
+    private List<ProductInfo> loadWhiteBarTypes() {
+        return productInfoMapper.selectList(
+            new LambdaQueryWrapper<ProductInfo>()
+                .eq(ProductInfo::getBelongType, WHITE_BAR_BELONG_TYPE)
+                .likeRight(ProductInfo::getProductId, WHITE_BAR_CODE_PREFIX)
+                .orderByAsc(ProductInfo::getProductId));
+    }
+
+    private Map<Long, ProductInfo> loadWhiteBarTypeMap() {
+        return loadWhiteBarTypes().stream()
+            .collect(Collectors.toMap(ProductInfo::getId, p -> p, (a, b) -> a));
     }
 
     @Override
@@ -234,26 +328,6 @@ public class PigBurnRecordServiceImpl
      */
     protected String generateBurnId() {
         return bizCodeGenerator.generate(BizCodeType.BURN_NO, Map.of());
-    }
-
-    /**
-     * 解析白条产品主数据 id（业务码 {@link #WHITE_BAR_PRODUCT_BIZ_CODE}）。
-     *
-     * <p>protected 方便单测 stub 固定返回值（避开真实 mapper 查询）。
-     * seed 由 {@code V202606061060__D08-CLOSING-seed-white-bar-product.sql} 保证；
-     * 查不到表示 DB 未灌 seed → 抛 {@link ServiceException} 直接打回。</p>
-     */
-    protected Long resolveWhiteBarProductId() {
-        ProductInfo whiteBar = productInfoMapper.selectOne(
-            new LambdaQueryWrapper<ProductInfo>()
-                .eq(ProductInfo::getProductId, WHITE_BAR_PRODUCT_BIZ_CODE)
-                .last("LIMIT 1"));
-        if (whiteBar == null || whiteBar.getId() == null) {
-            throw new ServiceException(
-                "白条产品主数据缺失（product_id=" + WHITE_BAR_PRODUCT_BIZ_CODE
-                    + "），请确认 V202606061060 seed 已执行");
-        }
-        return whiteBar.getId();
     }
 
     /**

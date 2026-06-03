@@ -7,11 +7,14 @@ import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.satoken.utils.LoginHelper;
 import org.dromara.common.tenant.helper.TenantHelper;
 import org.dromara.djs.common.encoder.IBizCodeGenerator;
+import org.dromara.djs.common.mapper.DjsUserExtMapper;
 import org.dromara.djs.common.store.domain.Store;
 import org.dromara.djs.common.store.mapper.StoreMapper;
 import org.dromara.djs.store.check.domain.StoreCheckRecord;
 import org.dromara.djs.store.check.domain.bo.StoreCheckCreateBo;
 import org.dromara.djs.store.check.domain.bo.StoreCheckLineBo;
+import org.dromara.djs.store.check.domain.query.StoreCheckQuery;
+import org.dromara.djs.store.check.domain.vo.StoreCheckRecordVo;
 import org.dromara.djs.store.check.mapper.StoreCheckRecordMapper;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
@@ -32,6 +35,8 @@ import org.mockito.quality.Strictness;
 
 import java.math.BigDecimal;
 import java.util.Date;
+import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -70,6 +75,7 @@ class StoreCheckServiceImplTest {
     @Mock private StoreMapper storeMapper;
     @Mock private ProductInfoMapper productInfoMapper;
     @Mock private IBizCodeGenerator bizCodeGenerator;
+    @Mock private DjsUserExtMapper djsUserExtMapper;
 
     private TestableStoreCheckServiceImpl service;
     private MockedStatic<LoginHelper> loginHelperMock;
@@ -102,8 +108,9 @@ class StoreCheckServiceImplTest {
         BigDecimal stubSysStock = BigDecimal.ZERO;
 
         TestableStoreCheckServiceImpl(StoreCheckRecordMapper b, StoreMapper sm,
-                                      ProductInfoMapper pm, IBizCodeGenerator g) {
-            super(b, sm, pm, g);
+                                      ProductInfoMapper pm, IBizCodeGenerator g,
+                                      DjsUserExtMapper um) {
+            super(b, sm, pm, g, um);
         }
 
         @Override
@@ -119,7 +126,7 @@ class StoreCheckServiceImplTest {
 
     @BeforeEach
     void setup() {
-        service = new TestableStoreCheckServiceImpl(baseMapper, storeMapper, productInfoMapper, bizCodeGenerator);
+        service = new TestableStoreCheckServiceImpl(baseMapper, storeMapper, productInfoMapper, bizCodeGenerator, djsUserExtMapper);
         loginHelperMock = Mockito.mockStatic(LoginHelper.class);
         loginHelperMock.when(LoginHelper::getUserId).thenReturn(USER_ID);
         tenantHelperMock = Mockito.mockStatic(TenantHelper.class);
@@ -294,6 +301,27 @@ class StoreCheckServiceImplTest {
         when(baseMapper.countActive(eq(STORE_ID), eq(PRODUCT_ID), eq(TENANT))).thenReturn(0L);
         service.assertProductUnlocked(STORE_ID, PRODUCT_ID); // 无异常即通过
         assertThat(service.isProductLocked(STORE_ID, PRODUCT_ID)).isFalse();
+    }
+
+    @Test
+    @DisplayName("queryLineList：导出回填盘点人姓名（@Translation 对 Excel 无效，service 层显式回填 checkByName）")
+    void testQueryLineList_FillCheckByName() {
+        StoreCheckRecordVo line = new StoreCheckRecordVo();
+        line.setId(60001L);
+        line.setCheckId(CHECK_ID);
+        line.setCheckBy(USER_ID); // 9001
+        // storeId 留 null：跳过 fillLineStoreNames 的 store 查询，聚焦盘点人回填
+        when(baseMapper.selectVoList(any())).thenReturn(List.of(line));
+        when(djsUserExtMapper.selectNickNamesByIds(any()))
+            .thenReturn(List.of(Map.of("userId", USER_ID, "nickName", "张三")));
+
+        StoreCheckQuery query = new StoreCheckQuery();
+        query.setCheckId(CHECK_ID);
+        List<StoreCheckRecordVo> result = service.queryLineList(query);
+
+        assertThat(result).hasSize(1);
+        assertThat(result.get(0).getCheckByName()).isEqualTo("张三");
+        verify(djsUserExtMapper, times(1)).selectNickNamesByIds(any());
     }
 
 }

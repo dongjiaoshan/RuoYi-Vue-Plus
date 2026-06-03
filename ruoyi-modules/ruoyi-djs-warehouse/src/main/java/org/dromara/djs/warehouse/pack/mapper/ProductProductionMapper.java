@@ -38,7 +38,12 @@ public interface ProductProductionMapper extends BaseMapperPlus<ProductProductio
 
     /**
      * 批量将一组 product_production 行从 {@code is_delivery_check=0} 推进到 1，
-     * 并写入 {@code delivery_check_time}（WMS-SHIP-001 ShipmentService 调用）。
+     * 同时写入 {@code delivery_check_time} 与 {@code demand_id}（WMS-SHIP-001 ShipmentService 调用）。
+     *
+     * <p>发货采用"按可用库存匹配 + 确认时绑定 demand"语义（SHIP-DEMANDID-001）：可用库存
+     * {@code demand_id} 原本为 NULL（pack 链不分配），工人发货确认时由本次 demand 绑定，
+     * 一次原子 UPDATE 完成"标清点 + 绑 demand"，让 {@code ShipTraceEventListener} 之后能按
+     * {@code demand_id} 查到本次发货的 production。</p>
      *
      * <p>WHERE 子句额外加 {@code is_delivery_check=0} 实现乐观锁：</p>
      * <ul>
@@ -48,19 +53,23 @@ public interface ProductProductionMapper extends BaseMapperPlus<ProductProductio
      *
      * @param ids       发货产品 id 集合
      * @param checkTime 清点时间
+     * @param demandId  本次发货归属的需求 ID（回写绑定）
      * @return 实际更新行数
      */
     @Update({
         "<script>",
         "UPDATE t_warehouse_product_production",
         "   SET is_delivery_check = 1,",
-        "       delivery_check_time = #{checkTime}",
+        "       delivery_check_time = #{checkTime},",
+        "       demand_id = #{demandId}",
         " WHERE id IN",
         "   <foreach collection='ids' item='id' separator=',' open='(' close=')'>#{id}</foreach>",
         "   AND is_delivery_check = 0",
         "   AND del_flag = '0'",
         "</script>"
     })
-    int markDeliveryChecked(@Param("ids") List<Long> ids, @Param("checkTime") Date checkTime);
+    int markDeliveryChecked(@Param("ids") List<Long> ids,
+                            @Param("checkTime") Date checkTime,
+                            @Param("demandId") Long demandId);
 
 }

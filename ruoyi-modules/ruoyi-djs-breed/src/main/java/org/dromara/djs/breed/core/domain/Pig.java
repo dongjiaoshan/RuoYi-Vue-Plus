@@ -67,7 +67,7 @@ public class Pig extends TenantEntity {
     private String pigStrainCode;
 
     /**
-     * 当前状态（字典 {@code djs_pig_lifecycle}：HB/PZ/PH/FM/DN/LC/KH/FQ/END/BOAR_ACTIVE）。
+     * 当前状态（字典 {@code djs_pig_lifecycle}：HB/PZ/FM/DN/LC/KH/FQ/END/BOAR_ACTIVE）。
      * 由状态机维护，业务代码请通过 {@code fireEvent} 推进而非直接写。
      */
     private String currentStatus;

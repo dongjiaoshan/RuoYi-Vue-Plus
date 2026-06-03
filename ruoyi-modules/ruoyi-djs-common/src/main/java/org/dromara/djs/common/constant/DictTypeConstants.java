@@ -1,18 +1,18 @@
 package org.dromara.djs.common.constant;
 
 /**
- * djs 业务字典类型常量（49 类）。
+ * djs 业务字典类型常量（50 类）。
  *
  * <p>所有业务代码使用本常量引用 {@code sys_dict_type.dict_type} 字符串，
  * 避免 30+ 个下游 ticket 硬编码 "djs_pig_breed" 之类字符串散落。</p>
  *
  * <p>数据源：{@code script/sql/djs/V202605201000__SYS-INIT-002-init-dict.sql} + 各域 ticket seed。
- * 若 seed SQL 增删 dict_type，本文件必须同步更新（当前 49 类）。</p>
+ * 若 seed SQL 增删 dict_type，本文件必须同步更新（当前 50 类）。</p>
  *
  * <p>分组与 SQL 章节对应：</p>
  * <ul>
  *   <li>A. 系统通用（6 类）</li>
- *   <li>B. 养殖域（16 类，含 D9 事件字典 + DICT-SEED 引种类型/品系）</li>
+ *   <li>B. 养殖域（17 类，含 D9 事件字典 + DICT-SEED 引种类型/品系 + 返空流异常类型）</li>
  *   <li>C. 种植域（10 类）</li>
  *   <li>D. 仓库域（6 类，含 STOCK_OUT_DEST + DICT-SEED 处理去向）</li>
  *   <li>E. 门店域（4 类）</li>
@@ -52,7 +52,7 @@ public final class DictTypeConstants {
     /** 通用是否：1 是 / 0 否。 */
     public static final String YES_NO = "djs_yes_no";
 
-    // ---------------- B. 养殖域（16 类） ----------------
+    // ---------------- B. 养殖域（17 类） ----------------
 
     /** 猪只性别（DB 列值 M/F，对齐 doc/11 R8）。 */
     public static final String PIG_SEX = "djs_pig_sex";
@@ -101,6 +101,9 @@ public final class DictTypeConstants {
 
     /** 猪只品系（与 djs_pig_breed 同源；引种页 pigStrainCode 下拉源）。 */
     public static final String PIG_STRAIN = "djs_pig_strain";
+
+    /** 返空流异常类型（BRD-EVENT-002 NULL_RETURN，DB 存 R 返情 / A 流产 / N 空怀，映射状态机 FQ/LC/KH）。 */
+    public static final String ABNORMAL = "djs_abnormal";
 
     // ---------------- C. 种植域（10 类） ----------------
 

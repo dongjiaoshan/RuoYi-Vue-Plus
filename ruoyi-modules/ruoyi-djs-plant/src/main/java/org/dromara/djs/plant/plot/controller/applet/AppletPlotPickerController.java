@@ -25,8 +25,9 @@ import java.util.stream.Collectors;
  *
  * <h2>端点</h2>
  * <ul>
- *   <li>{@code GET /djs/applet/plant/plot/listAll?keyword=}
- *       返回全部地块，按 keyword LIKE plotName/plotCode 过滤，按 plotCode 升序最多 200 条。</li>
+ *   <li>{@code GET /djs/applet/plant/plot/listAll?keyword=&zoneId=}
+ *       返回全部地块，按 keyword LIKE plotName/plotCode 过滤、zoneId 非空时按片区过滤，
+ *       按 plotCode 升序最多 200 条。</li>
  * </ul>
  *
  * <h2>鉴权</h2>
@@ -47,11 +48,14 @@ public class AppletPlotPickerController {
      * 地块 picker 列表。
      *
      * @param keyword 关键字（同时 LIKE plotName / plotCode），可空
+     * @param zoneId  片区 ID（非空时按片区过滤地块），可空
      */
     @SaCheckLogin
     @GetMapping("/listAll")
-    public R<List<PlotPickerVo>> listAll(@RequestParam(required = false) String keyword) {
+    public R<List<PlotPickerVo>> listAll(@RequestParam(required = false) String keyword,
+                                         @RequestParam(required = false) Long zoneId) {
         LambdaQueryWrapper<PlotInfo> wrapper = new LambdaQueryWrapper<PlotInfo>()
+            .eq(zoneId != null, PlotInfo::getZoneId, zoneId)
             .and(StringUtils.isNotBlank(keyword), w -> w
                 .like(PlotInfo::getPlotName, keyword)
                 .or()

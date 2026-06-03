@@ -5,6 +5,7 @@ import cn.idev.excel.annotation.ExcelProperty;
 import com.fasterxml.jackson.annotation.JsonFormat;
 import io.github.linpeilie.annotations.AutoMapper;
 import lombok.Data;
+import org.dromara.common.excel.annotation.ExcelDictFormat;
 import org.dromara.common.translation.annotation.Translation;
 import org.dromara.common.translation.constant.TransConstant;
 import org.dromara.djs.store.check.domain.StoreCheckRecord;
@@ -64,6 +65,7 @@ public class StoreCheckRecordVo implements Serializable {
     private BigDecimal diffStock;
 
     @ExcelProperty(value = "结果类型")
+    @ExcelDictFormat(dictType = "djs_check_result")
     private Integer checkResultType;
 
     @ExcelProperty(value = "差异原因")
@@ -83,6 +85,7 @@ public class StoreCheckRecordVo implements Serializable {
     private Date checkDate;
 
     @ExcelProperty(value = "状态")
+    @ExcelDictFormat(dictType = "djs_check_status")
     private String checkStatus;
 
     private Integer isHeader;

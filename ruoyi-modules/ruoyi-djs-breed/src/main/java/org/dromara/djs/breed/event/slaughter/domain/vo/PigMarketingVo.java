@@ -38,6 +38,10 @@ public class PigMarketingVo implements Serializable {
     private Integer isRoom;
     private String ossIds;
     private Long operatorId;
+
+    /** 出栏操作员 userId（EmployeePicker 所选；snowflake string，出栏记录 tab 回显）。 */
+    private String operator;
+
     private String remark;
 
     @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")
