@@ -58,11 +58,14 @@ class PigMarketingEventListenerTest {
     @Mock
     private IBizCodeGenerator bizCodeGenerator;
 
+    @Mock
+    private org.dromara.djs.warehouse.trace.service.ITraceService traceService;
+
     private PigMarketingEventListener listener;
 
     @BeforeEach
     void setUp() {
-        listener = new PigMarketingEventListener(barInfoMapper, bizCodeGenerator);
+        listener = new PigMarketingEventListener(barInfoMapper, bizCodeGenerator, traceService);
     }
 
     /**

@@ -79,11 +79,20 @@ public class HeatServiceImpl implements IHeatService {
         entity.setHeatResult(bo.getHeatResult());
         entity.setIsPregnantConfirmed(confirmed ? 1 : 0);
         entity.setRemark(bo.getRemark());
-        entity.setOperatorId(LoginHelper.getUserId());
+        // 录入人：mp EmployeePicker 传 operator(userId string) 优先；空/非法回落登录态（602-5，仿 SLAUGHTER 范式）
+        Long operatorId = LoginHelper.getUserId();
+        if (StringUtils.isNotBlank(bo.getOperator())) {
+            try {
+                operatorId = Long.parseLong(bo.getOperator().trim());
+            } catch (NumberFormatException ex) {
+                log.warn("[BRD-EVENT-002] recordHeat 非法 operator={} 回落登录态", bo.getOperator());
+            }
+        }
+        entity.setOperatorId(operatorId);
         entity.setDelFlag("0");
         heatMapper.insert(entity);
 
-        // 2. confirmed=true → 触发状态机 PZ → PH；false → 不调（仅写记录）
+        // 2. confirmed=true → 触发 OESTRUS（状态保持 PZ，仅落审计，见 ADR-0010）；false → 不调（仅写记录）
         if (confirmed) {
             Map<String, Object> payload = new HashMap<>(2);
             payload.put("isPregnantConfirmed", Boolean.TRUE);

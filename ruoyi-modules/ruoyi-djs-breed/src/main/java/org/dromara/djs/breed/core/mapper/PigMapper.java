@@ -8,7 +8,11 @@ import org.apache.ibatis.annotations.Select;
 import org.dromara.common.mybatis.core.mapper.BaseMapperPlus;
 import org.dromara.djs.breed.core.domain.Pig;
 import org.dromara.djs.breed.core.domain.vo.PigAvailableVo;
+import org.dromara.djs.breed.core.domain.vo.PigLastFarrowVo;
 import org.dromara.djs.breed.core.domain.vo.PigVo;
+
+import java.util.Collection;
+import java.util.List;
 
 /**
  * 猪只信息 Mapper（BRD-CORE-001）。
@@ -134,6 +138,32 @@ public interface PigMapper extends BaseMapperPlus<Pig, PigVo> {
         ORDER BY ageDays DESC, p.ear_no ASC
         """)
     IPage<PigAvailableVo> selectAvailableForOutboundPage(IPage<PigAvailableVo> page);
+
+    /**
+     * 批量查给定母猪集合各自的「最近一条分娩日期」（D12X-MP-FARROW-WEANING-001 断奶选猪到期窗口）。
+     *
+     * <p>跨表读 {@code t_farm_pig_farrow}（本 mapper 是 core 自有 mapper，仅在 SQL 字符串里引表名，
+     * 不 import event 包 → 不制造 core→event 反向依赖，与 {@link #selectAvailableForOutboundPage}
+     * 跨读 growth/demand 表同范式）。</p>
+     *
+     * <p>{@code GROUP BY pig_id} 取 {@code MAX(farrow_date)}；只算未软删行；显式 {@code tenant_id='1001'}
+     * （V1 单租户，与本 mapper 其他原生 SQL 一致）。空集合由调用方短路，不入 SQL。</p>
+     *
+     * @param pigIds 候选母猪 id 集合（非空）
+     * @return 每头母猪一行 {@code (pigId, lastFarrowDate)}；无分娩记录的母猪不在结果里
+     */
+    @Select("""
+        <script>
+        SELECT pig_id AS pigId, DATE(MAX(farrow_date)) AS lastFarrowDate
+          FROM t_farm_pig_farrow
+         WHERE del_flag = '0'
+           AND tenant_id = '1001'
+           AND pig_id IN
+           <foreach collection="pigIds" item="id" open="(" separator="," close=")">#{id}</foreach>
+         GROUP BY pig_id
+        </script>
+        """)
+    List<PigLastFarrowVo> selectLastFarrowDateByPigIds(@Param("pigIds") Collection<Long> pigIds);
 
     /**
      * 「可出栏」育肥猪头数 COUNT（DJS-FIX-ADMIN-W22-003 SummaryBar）。

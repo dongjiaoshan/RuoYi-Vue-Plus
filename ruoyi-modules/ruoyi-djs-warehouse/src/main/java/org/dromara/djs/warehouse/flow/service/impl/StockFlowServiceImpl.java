@@ -9,6 +9,8 @@ import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.common.base.DjsBaseServiceImpl;
 import org.dromara.djs.warehouse.flow.domain.StockFlow;
 import org.dromara.djs.warehouse.flow.domain.query.StockFlowQuery;
+import org.dromara.djs.warehouse.flow.domain.vo.PackingHomeVo;
+import org.dromara.djs.warehouse.flow.domain.vo.PackingItemVo;
 import org.dromara.djs.warehouse.flow.domain.vo.StockFlowVo;
 import org.dromara.djs.warehouse.flow.mapper.StockFlowMapper;
 import org.dromara.djs.warehouse.flow.service.IStockFlowService;
@@ -16,8 +18,10 @@ import org.dromara.djs.warehouse.location.domain.LocationInfo;
 import org.dromara.djs.warehouse.location.mapper.LocationInfoMapper;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
+import org.dromara.djs.warehouse.stock.mapper.LocationStockMapper;
 import org.springframework.stereotype.Service;
 
+import java.math.BigDecimal;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -38,15 +42,29 @@ public class StockFlowServiceImpl
     extends DjsBaseServiceImpl<StockFlowMapper, StockFlow>
     implements IStockFlowService {
 
+    /**
+     * 出入库方向：IN=入库 / OT=出库（DDL CHAR(3)）。
+     */
+    private static final String INOUT_IN = "IN";
+    private static final String INOUT_OUT = "OT";
+
+    /**
+     * 包材归属（djs_belong_type，D9 WMS-MAT-001 已 seed，本 ticket 复用）。
+     */
+    private static final String BELONG_TYPE_PACKAGE = "package";
+
     private final LocationInfoMapper locationInfoMapper;
     private final ProductInfoMapper productInfoMapper;
+    private final LocationStockMapper locationStockMapper;
 
     public StockFlowServiceImpl(StockFlowMapper baseMapper,
                                 LocationInfoMapper locationInfoMapper,
-                                ProductInfoMapper productInfoMapper) {
+                                ProductInfoMapper productInfoMapper,
+                                LocationStockMapper locationStockMapper) {
         super(baseMapper);
         this.locationInfoMapper = locationInfoMapper;
         this.productInfoMapper = productInfoMapper;
+        this.locationStockMapper = locationStockMapper;
     }
 
     @Override
@@ -71,6 +89,65 @@ public class StockFlowServiceImpl
             fillJoinNames(List.of(vo));
         }
         return vo;
+    }
+
+    @Override
+    public TableDataInfo<StockFlowVo> queryInList(StockFlowQuery query, PageQuery pageQuery) {
+        return queryPageList(lockInout(query, INOUT_IN), pageQuery);
+    }
+
+    @Override
+    public TableDataInfo<StockFlowVo> queryOutList(StockFlowQuery query, PageQuery pageQuery) {
+        return queryPageList(lockInout(query, INOUT_OUT), pageQuery);
+    }
+
+    @Override
+    public List<StockFlowVo> queryInExport(StockFlowQuery query) {
+        return queryList(lockInout(query, INOUT_IN));
+    }
+
+    @Override
+    public List<StockFlowVo> queryOutExport(StockFlowQuery query) {
+        return queryList(lockInout(query, INOUT_OUT));
+    }
+
+    @Override
+    public PackingHomeVo queryPackingHome() {
+        PackingHomeVo vo = new PackingHomeVo();
+        vo.setTodayInQuantity(safe(baseMapper.sumTodayByInoutBelongType(INOUT_IN, BELONG_TYPE_PACKAGE)));
+        vo.setTodayOutQuantity(safe(baseMapper.sumTodayByInoutBelongType(INOUT_OUT, BELONG_TYPE_PACKAGE)));
+        Long typeCount = locationStockMapper.countProductsByBelongType(BELONG_TYPE_PACKAGE);
+        vo.setPackTypeCount(typeCount == null ? 0L : typeCount);
+        vo.setLatestCheckTime(locationStockMapper.selectLatestCheckTimeByBelongType(BELONG_TYPE_PACKAGE));
+        return vo;
+    }
+
+    @Override
+    public List<PackingItemVo> queryPackingList(String sortBy) {
+        // belong_type='package' 在 mapper 层强制 eq（契约 14：不在前端 filter）
+        return locationStockMapper.selectPackingItems(BELONG_TYPE_PACKAGE, sortBy);
+    }
+
+    @Override
+    public TableDataInfo<StockFlowVo> queryPackingDetail(Long productId, PageQuery pageQuery) {
+        StockFlowQuery query = new StockFlowQuery();
+        query.setProductId(productId);
+        return queryPageList(query, pageQuery);
+    }
+
+    /**
+     * 锁定出入方向（admin 入库 / 出库两页强制 inout_type，防越界查到反方向流水）。
+     *
+     * <p>不可变副作用最小化：直接 set 到入参 query（admin 端 query 即用即弃）。</p>
+     */
+    private StockFlowQuery lockInout(StockFlowQuery query, String inoutType) {
+        StockFlowQuery q = query == null ? new StockFlowQuery() : query;
+        q.setInoutType(inoutType);
+        return q;
+    }
+
+    private static BigDecimal safe(BigDecimal v) {
+        return v == null ? BigDecimal.ZERO : v;
     }
 
     /**

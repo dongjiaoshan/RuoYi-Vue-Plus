@@ -31,9 +31,8 @@ import java.util.Set;
  *   <tr><td>plant     </td> <td>system_admin / boss / manager / plant_admin / plant_worker</td>     <td>/pages/plant/index</td></tr>
  *   <tr><td>warehouse </td> <td>system_admin / boss / manager / warehouse_admin / warehouse_worker</td><td>/pages/warehouse/index</td></tr>
  *   <tr><td>manage    </td> <td>system_admin / boss / manager（管理板块，BI dashboard 聚合）</td>    <td>/pages/breed/dashboard/index</td></tr>
+ *   <tr><td>store     </td> <td>system_admin / boss / manager / store_admin / store_clerk</td>       <td>/pages/store/index</td></tr>
  * </table>
- *
- * <p>门店板块 V1 已推 V2，本期不返。store_admin / store_clerk 仅作为占位角色（无可进板块时返空）。</p>
  *
  * <p>角色源数据：SYS-INIT-002 已 seed 的 12 个业务角色 + ruoyi 自带 superadmin（role_id=1）。
  * 多角色用户取并集（举例：分割师 + 包装工 → breed + warehouse）。superadmin / boss / manager
@@ -87,7 +86,7 @@ public class UserBoardController {
         if (boards.contains("plant"))     result.add(new BoardVo("plant",     "种植", "i-carbon-tree",       "/pages/plant/index"));
         // 仓库板块 4 tab（燎毛间/蔬菜处理/分拣发货/我的），「燎毛间」tab 承担聚合首页角色（屠宰工序 / 蔬菜工序 / 物资 分组卡片）
         if (boards.contains("warehouse")) result.add(new BoardVo("warehouse", "仓库", "i-carbon-warehouse",  "/pages/warehouse/index"));
-        // 门店板块 V2 启用，V1 不返
+        if (boards.contains("store"))     result.add(new BoardVo("store",     "门店", "i-carbon-store",      "/pages/store/index"));
         return R.ok(result);
     }
 
@@ -128,18 +127,18 @@ public class UserBoardController {
     /**
      * 将 role_key 集合映射为 board code 集合（多角色取并集）。
      *
-     * <p>admin 角色（system_admin / boss / manager / admin）→ 返 4 个板块（含 manage）；
-     * 业务角色按其域映射；store_admin / store_clerk V1 无板块（store 推 V2）。</p>
+     * <p>admin 角色（system_admin / boss / manager / admin）→ 返全部业务板块（含 manage + store，监管全域）；
+     * 业务角色按其域映射；store_admin / store_clerk → store 板块。</p>
      */
     private Set<String> mapRolesToBoards(Set<String> roleKeys) {
         Set<String> boards = new HashSet<>();
         if (roleKeys.stream().anyMatch(ADMIN_ROLES::contains)) {
-            return Set.of("manage", "breed", "plant", "warehouse");
+            return Set.of("manage", "breed", "plant", "warehouse", "store");
         }
         if (roleKeys.stream().anyMatch(BREED_ROLES::contains))     boards.add("breed");
         if (roleKeys.stream().anyMatch(PLANT_ROLES::contains))     boards.add("plant");
         if (roleKeys.stream().anyMatch(WAREHOUSE_ROLES::contains)) boards.add("warehouse");
-        // STORE_ROLES 暂保留常量定义，V1 不映射到任何板块（store 推 V2）
+        if (roleKeys.stream().anyMatch(STORE_ROLES::contains))     boards.add("store");
         return boards;
     }
 

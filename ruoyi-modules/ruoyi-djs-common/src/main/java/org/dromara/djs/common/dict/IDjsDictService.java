@@ -31,9 +31,9 @@ public interface IDjsDictService {
     /**
      * 当前 djs_ 字典全集的 SHA-256 hash（64 字符小写 hex）。
      *
-     * <p>缓存到 Redis key {@code djs:dict:version:{farmId}} TTL 1h；admin 改字典时由
-     * {@code resetDictCache()} 钩子或调用方主动 evict（V1 单农场可允许 1h 延迟，
-     * V2 多农场 + 字典改动需主动 evict）。</p>
+     * <p>每次实时聚合计算，<b>不做 djs 层缓存</b>：底层 ruoyi {@code CacheNames.SYS_DICT}
+     * 已随 admin 改字典即时失效，故 hash 始终反映最新字典；小程序据此比对本地版本，
+     * 改完字典即可在下次同步时拉到最新。</p>
      *
      * @return SHA-256 hex
      */
@@ -42,13 +42,7 @@ public interface IDjsDictService {
     /**
      * 直接返完整 {@link DjsDictFullVo}（{@link #queryAllDjsTypes()} + {@link #currentVersion()} 的合体）。
      *
-     * <p>命中 {@code djs:dict:full:{farmId}} 整体缓存（TTL 1h）直接返；未命中则重算 + 写缓存 + 返。</p>
+     * <p>每次实时聚合，不做 djs 层缓存（理由同 {@link #currentVersion()}）。</p>
      */
     DjsDictFullVo queryFull();
-
-    /**
-     * 主动失效字典版本与全量缓存（admin 改字典后调用，V1 暂不强制；
-     * 也供集成测试清理 redis 状态用）。
-     */
-    void evictCache();
 }

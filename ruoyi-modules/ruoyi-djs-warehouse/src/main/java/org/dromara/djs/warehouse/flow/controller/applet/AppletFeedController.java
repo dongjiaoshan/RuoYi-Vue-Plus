@@ -114,7 +114,9 @@ public class AppletFeedController extends BaseController {
             sumByProduct.merge(s.getProductId(), stockNum, BigDecimal::add);
         }
 
-        // 4. 拼 VO（无库存的产品 totalStock=0）
+        // 4. 拼 VO（无库存的产品 totalStock=0），并 enrich 当前登录人今日已领 / 已退
+        //    （MPV-FEED 列表卡每行显示 "今日已领 N / 今日已退 M"，复用 todaySummary 单产品维度，
+        //     无流水时返回 0；V1 饲料 SKU ≤ 20，N 次轻查可接受，N+1 优化留 followup）。
         List<FeedStockVo> vos = products.stream().map(p -> {
             FeedStockVo vo = new FeedStockVo();
             vo.setProductId(p.getId());
@@ -122,10 +124,20 @@ public class AppletFeedController extends BaseController {
             vo.setProductName(p.getProductName());
             vo.setProductUnit(p.getProductUnit());
             vo.setTotalStock(sumByProduct.getOrDefault(p.getId(), BigDecimal.ZERO));
+            MatTodaySummaryVo today = matFlowService.todaySummary(MAT_TYPE_FEED, String.valueOf(p.getId()));
+            vo.setTodayPicked(zeroIfNull(today.getPickedQuantity()));
+            vo.setTodayReturned(zeroIfNull(today.getReturnedQuantity()));
             return vo;
         }).sorted(Comparator.comparing(FeedStockVo::getProductCode, Comparator.nullsLast(String::compareTo))).toList();
 
         return R.ok(vos);
+    }
+
+    /**
+     * null 兜底为 0（todaySummary 无流水时数量字段已为 0，此处防御性兜底确保 VO 字段非 null）。
+     */
+    private static BigDecimal zeroIfNull(BigDecimal v) {
+        return v == null ? BigDecimal.ZERO : v;
     }
 
     /**

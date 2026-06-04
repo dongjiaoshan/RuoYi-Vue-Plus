@@ -29,6 +29,8 @@ import org.dromara.djs.warehouse.location.domain.LocationInfo;
 import org.dromara.djs.warehouse.location.mapper.LocationInfoMapper;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
+import org.dromara.djs.warehouse.trace.domain.TraceContentConst;
+import org.dromara.djs.warehouse.trace.service.ITraceService;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -121,6 +123,7 @@ public class PigCutRecordServiceImpl
     private final ProductInfoMapper productInfoMapper;
     private final LocationInfoMapper locationInfoMapper;
     private final IBizCodeGenerator bizCodeGenerator;
+    private final ITraceService traceService;
 
     public PigCutRecordServiceImpl(PigCutRecordMapper baseMapper,
                                    BarInfoMapper barInfoMapper,
@@ -128,7 +131,8 @@ public class PigCutRecordServiceImpl
                                    StockFlowMapper stockFlowMapper,
                                    ProductInfoMapper productInfoMapper,
                                    LocationInfoMapper locationInfoMapper,
-                                   IBizCodeGenerator bizCodeGenerator) {
+                                   IBizCodeGenerator bizCodeGenerator,
+                                   ITraceService traceService) {
         super(baseMapper);
         this.barInfoMapper = barInfoMapper;
         this.productInhouseMapper = productInhouseMapper;
@@ -136,6 +140,7 @@ public class PigCutRecordServiceImpl
         this.productInfoMapper = productInfoMapper;
         this.locationInfoMapper = locationInfoMapper;
         this.bizCodeGenerator = bizCodeGenerator;
+        this.traceService = traceService;
     }
 
     /**
@@ -327,6 +332,11 @@ public class PigCutRecordServiceImpl
         if (barAffected == 0) {
             throw new ServiceException("白条状态不符或已被并发更新，请刷新重试");
         }
+
+        // TRC-CORE-001：屠宰分割 + 排酸追溯事件（分割完成同时记两条；按耳号反查 trace_code，
+        // 猪肉链当前无生成入口 → warn 跳过，不拖垮分割事务）
+        traceService.recordEventByEarNo(record.getEarNo(), TraceContentConst.SLAUGHTER);
+        traceService.recordEventByEarNo(record.getEarNo(), TraceContentConst.ACID);
     }
 
     @Override

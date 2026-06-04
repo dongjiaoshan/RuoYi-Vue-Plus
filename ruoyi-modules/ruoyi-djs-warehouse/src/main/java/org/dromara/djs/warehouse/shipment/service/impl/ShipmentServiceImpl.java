@@ -11,6 +11,8 @@ import org.dromara.common.satoken.utils.LoginHelper;
 import org.dromara.djs.common.base.DjsBaseServiceImpl;
 import org.dromara.djs.common.encoder.BizCodeType;
 import org.dromara.djs.common.encoder.IBizCodeGenerator;
+import org.dromara.djs.common.store.domain.Store;
+import org.dromara.djs.common.store.mapper.StoreMapper;
 import org.dromara.djs.common.util.I18nMessages;
 import org.dromara.djs.warehouse.demand.core.enums.DemandStatus;
 import org.dromara.djs.warehouse.demand.domain.DemandManage;
@@ -27,6 +29,8 @@ import org.dromara.djs.warehouse.shipment.domain.Shipment;
 import org.dromara.djs.warehouse.shipment.domain.bo.ShipmentCheckBo;
 import org.dromara.djs.warehouse.shipment.domain.query.ShipmentQuery;
 import org.dromara.djs.warehouse.shipment.domain.vo.AvailableProductionVo;
+import org.dromara.djs.warehouse.shipment.domain.vo.ShipDemandVo;
+import org.dromara.djs.warehouse.shipment.domain.vo.ShipStoreVo;
 import org.dromara.djs.warehouse.shipment.domain.vo.ShipmentVo;
 import org.dromara.djs.warehouse.shipment.event.ShipmentConfirmedEvent;
 import org.dromara.djs.warehouse.shipment.mapper.ShipmentMapper;
@@ -36,8 +40,11 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.Date;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -97,11 +104,28 @@ public class ShipmentServiceImpl
         DemandStatus.PARTIAL_SHIPPED
     );
 
+    /**
+     * demand.product_type（dict {@code djs_demand_product_type}：white_bar/vegetable/gift_box/other）
+     * → production 关联 {@code ProductInfo.belong_type}（dict {@code djs_belong_type}）集合的映射。
+     *
+     * <p>SHIP-DEMANDID-001：发货"按业态匹配可用库存"。production 的真业态取自所属产品的
+     * {@code belong_type}（pack 生成 produce_no 前缀即据此），<b>不是</b> production.product_type
+     * 的 numeric 码（1 自产/2 外购/3 礼盒，语义不同，不能直接比较）。</p>
+     *
+     * <p>{@code other} 业态不入表 → 走兜底放宽（不按业态收窄，仅 store_id + demand_id IS NULL）。</p>
+     */
+    private static final Map<String, Set<String>> DEMAND_TYPE_TO_BELONG_TYPES = Map.of(
+        "white_bar", Set.of("white_bar", "pork"),
+        "vegetable", Set.of("vegetable"),
+        "gift_box", Set.of("gift_box")
+    );
+
     private final ProductProductionMapper productProductionMapper;
     private final StockFlowMapper stockFlowMapper;
     private final DemandManageMapper demandMapper;
     private final ProductInfoMapper productInfoMapper;
     private final LocationInfoMapper locationInfoMapper;
+    private final StoreMapper storeMapper;
     private final IBizCodeGenerator bizCodeGenerator;
     private final ApplicationEventPublisher eventPublisher;
 
@@ -111,6 +135,7 @@ public class ShipmentServiceImpl
                                DemandManageMapper demandMapper,
                                ProductInfoMapper productInfoMapper,
                                LocationInfoMapper locationInfoMapper,
+                               StoreMapper storeMapper,
                                IBizCodeGenerator bizCodeGenerator,
                                ApplicationEventPublisher eventPublisher) {
         super(baseMapper);
@@ -119,6 +144,7 @@ public class ShipmentServiceImpl
         this.demandMapper = demandMapper;
         this.productInfoMapper = productInfoMapper;
         this.locationInfoMapper = locationInfoMapper;
+        this.storeMapper = storeMapper;
         this.bizCodeGenerator = bizCodeGenerator;
         this.eventPublisher = eventPublisher;
     }
@@ -151,15 +177,18 @@ public class ShipmentServiceImpl
                 throw new ServiceException(
                     I18nMessages.t("shipment.production.already_checked", p.getProduceNo()), 400);
             }
-            if (!Objects.equals(p.getDemandId(), bo.getDemandId())) {
+            // 可用库存 demand_id 为 NULL（未分配，待本次绑定 — SHIP-DEMANDID-001）→ 放行；
+            // 已绑同一 demand 视为幂等重复确认 → 放行；绑了别的 demand 才 mismatch。
+            if (p.getDemandId() != null && !Objects.equals(p.getDemandId(), bo.getDemandId())) {
                 throw new ServiceException(
                     I18nMessages.t("shipment.production.demand_mismatch", p.getProduceNo()), 400);
             }
         }
 
-        // 3. UPDATE product_production SET is_delivery_check=1（乐观锁）
+        // 3. UPDATE product_production：标清点 + 回写 demand_id（一次原子 UPDATE，乐观锁）
         Date now = new Date();
-        int affected = productProductionMapper.markDeliveryChecked(bo.getProductionIds(), now);
+        int affected = productProductionMapper.markDeliveryChecked(
+            bo.getProductionIds(), now, bo.getDemandId());
         if (affected != bo.getProductionIds().size()) {
             throw new ServiceException(I18nMessages.t("shipment.production.concurrent_conflict"), 409);
         }
@@ -207,8 +236,10 @@ public class ShipmentServiceImpl
         }
 
         // 6. publishEvent — D14 CROSS-FLOW-003 listener 消费触发 demand.shipped_count 累加 + transition
+        //    带 userId（=checkerId 发货确认人）：AFTER_COMMIT 阶段 listener 无 sa-token 上下文，
+        //    需显式传 operator 给 demand transition 做审计，否则 resolveOperator(null) 抛 demand.operator.required
         eventPublisher.publishEvent(new ShipmentConfirmedEvent(
-            this, shipment.getId(), demand.getId(), bo.getTotalQuantity()));
+            this, shipment.getId(), demand.getId(), bo.getTotalQuantity(), userId));
 
         log.info("[WMS-SHIP-001] confirmCheck shipmentId={} demandId={} productionCount={} qty={}",
             shipment.getId(), demand.getId(), productions.size(), bo.getTotalQuantity());
@@ -245,15 +276,116 @@ public class ShipmentServiceImpl
         if (demandId == null) {
             throw new ServiceException(I18nMessages.t("shipment.demand.id_required"), 400);
         }
-        List<ProductProduction> productions = productProductionMapper.selectList(
-            new LambdaQueryWrapper<ProductProduction>()
-                .eq(ProductProduction::getDemandId, demandId)
-                .eq(ProductProduction::getIsDeliveryCheck, 0)
-                .orderByDesc(ProductProduction::getProduceDate));
+        DemandManage demand = demandMapper.selectById(demandId);
+        if (demand == null) {
+            throw new ServiceException(I18nMessages.t("shipment.demand.not_found", demandId), 404);
+        }
+        return toAvailableProductionVos(findAvailableProductionsForDemand(demand));
+    }
+
+    @Override
+    public List<ShipStoreVo> listPendingStores() {
+        // 1. 扫所有 SHIPPABLE 状态的 demand（门店列表的数据驱动单位是需求单，非 production）。
+        List<DemandManage> demands = loadShippableDemands(null);
+        if (demands.isEmpty()) {
+            return List.of();
+        }
+        // 2. group by store_id（过滤无门店的 demand —— 无 store 不进门店列表）。
+        Map<Long, List<DemandManage>> byStore = demands.stream()
+            .filter(d -> d.getStoreId() != null)
+            .collect(Collectors.groupingBy(DemandManage::getStoreId));
+        if (byStore.isEmpty()) {
+            return List.of();
+        }
+        // 3. 批量填门店名（无 N+1）。
+        Map<Long, String> storeNameMap = loadStoreNameMap(byStore.keySet());
+        // 4. 每门店算待发需求数 + 待发产品种类数 + 总量。
+        List<ShipStoreVo> list = new ArrayList<>(byStore.size());
+        byStore.forEach((storeId, storeDemands) -> {
+            ShipStoreVo vo = new ShipStoreVo();
+            vo.setStoreId(storeId);
+            vo.setStoreName(storeNameMap.get(storeId));
+            vo.setPendingDemandCount(storeDemands.size());
+            vo.setProductKindCount((int) storeDemands.stream()
+                .map(DemandManage::getProductId).filter(Objects::nonNull).distinct().count());
+            vo.setPendingQuantity(storeDemands.stream()
+                .map(DemandManage::getDemandQuantity).filter(Objects::nonNull)
+                .reduce(BigDecimal.ZERO, BigDecimal::add));
+            vo.setShipStatus("待发货");
+            list.add(vo);
+        });
+        // 5. 稳定排序：待发需求多的门店在前，其次按门店名。
+        list.sort(Comparator.comparingInt(ShipStoreVo::getPendingDemandCount).reversed()
+            .thenComparing(v -> v.getStoreName() == null ? "" : v.getStoreName()));
+        return list;
+    }
+
+    @Override
+    public List<ShipDemandVo> listStorePendingDemands(Long storeId) {
+        if (storeId == null) {
+            throw new ServiceException(I18nMessages.t("shipment.store.id_required"), 400);
+        }
+        // 该门店所有 SHIPPABLE demand，每个 demand 内嵌按业态 + store_id 匹配出的可发产品清单。
+        List<DemandManage> demands = loadShippableDemands(storeId);
+        if (demands.isEmpty()) {
+            return List.of();
+        }
+        return demands.stream().map(d -> {
+            ShipDemandVo vo = new ShipDemandVo();
+            vo.setDemandId(d.getId());
+            vo.setDemandNo(d.getDemandNo());
+            vo.setDemandDate(d.getDemandDate());
+            vo.setProductType(d.getProductType());
+            vo.setDemandStatus(d.getDemandStatus());
+            vo.setDemandQuantity(d.getDemandQuantity());
+            vo.setShippedCount(d.getShippedCount());
+            vo.setAvailableProductions(toAvailableProductionVos(findAvailableProductionsForDemand(d)));
+            return vo;
+        }).toList();
+    }
+
+    // ---------- private helpers ----------
+
+    /**
+     * SHIP-DEMANDID-001 核心匹配：按 demand 的业态(belong_type) + store_id 筛出"可发的未分配库存"
+     * （{@code demand_id IS NULL AND is_delivery_check=0}）。listAvailableProductions /
+     * listStorePendingDemands 共用，避免逻辑复制。
+     */
+    private List<ProductProduction> findAvailableProductionsForDemand(DemandManage demand) {
+        LambdaQueryWrapper<ProductProduction> wrapper = new LambdaQueryWrapper<ProductProduction>()
+            .isNull(ProductProduction::getDemandId)
+            .eq(ProductProduction::getIsDeliveryCheck, 0);
+
+        // store_id 收窄：仅取归属同门店的库存，避免跨门店串货（pack 已写 production.store_id）
+        if (demand.getStoreId() != null) {
+            wrapper.eq(ProductProduction::getStoreId, demand.getStoreId());
+        }
+
+        // 业态收窄：命中映射 → 仅取所属产品 belong_type ∈ 集合 的 production；
+        // 未命中（other/空）→ 兜底放宽，不按业态过滤（仅 store_id + demand_id IS NULL）。
+        Set<String> belongTypes = DEMAND_TYPE_TO_BELONG_TYPES.get(demand.getProductType());
+        if (belongTypes != null) {
+            List<Long> productIds = productInfoMapper.selectList(
+                    new LambdaQueryWrapper<ProductInfo>()
+                        .select(ProductInfo::getId)
+                        .in(ProductInfo::getBelongType, belongTypes))
+                .stream().map(ProductInfo::getId).toList();
+            if (productIds.isEmpty()) {
+                return List.of();
+            }
+            wrapper.in(ProductProduction::getProductId, productIds);
+        }
+
+        return productProductionMapper.selectList(wrapper.orderByDesc(ProductProduction::getProduceDate));
+    }
+
+    /**
+     * production 实体 → 轻量 VO（填 product_name + location_name，避免 mp 只看到 snowflake ID）。
+     */
+    private List<AvailableProductionVo> toAvailableProductionVos(List<ProductProduction> productions) {
         if (productions.isEmpty()) {
             return List.of();
         }
-        // 填 product_name + location_name（避免 mp 列表只看到 snowflake ID）
         Map<Long, String> productNameMap = loadProductNameMap(productions);
         Map<Long, String> locationNameMap = loadLocationNameMap(productions);
         return productions.stream().map(p -> {
@@ -274,7 +406,31 @@ public class ShipmentServiceImpl
         }).toList();
     }
 
-    // ---------- private helpers ----------
+    /**
+     * 查 SHIPPABLE 状态的 demand。{@code storeId} 非空时收窄到单门店；为空时全门店（门店列表用）。
+     */
+    private List<DemandManage> loadShippableDemands(Long storeId) {
+        List<String> shippableCodes = SHIPPABLE_DEMAND_STATUSES.stream()
+            .map(DemandStatus::name).toList();
+        return demandMapper.selectList(new LambdaQueryWrapper<DemandManage>()
+            .in(DemandManage::getDemandStatus, shippableCodes)
+            .eq(storeId != null, DemandManage::getStoreId, storeId)
+            .orderByDesc(DemandManage::getDemandDate));
+    }
+
+    /**
+     * 批量取门店名（StoreMapper 跨域 in 查，无 N+1；参 TraceCodeAdminServiceImpl 范式）。
+     */
+    private Map<Long, String> loadStoreNameMap(Set<Long> storeIds) {
+        if (storeIds.isEmpty()) {
+            return Map.of();
+        }
+        return storeMapper.selectList(new LambdaQueryWrapper<Store>()
+                .select(Store::getId, Store::getStoreName)
+                .in(Store::getId, storeIds))
+            .stream().collect(Collectors.toMap(Store::getId, Store::getStoreName, (a, b) -> a,
+                LinkedHashMap::new));
+    }
 
     private LambdaQueryWrapper<Shipment> buildQueryWrapper(ShipmentQuery query) {
         LambdaQueryWrapper<Shipment> w = new LambdaQueryWrapper<>();

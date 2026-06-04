@@ -10,6 +10,8 @@ import org.dromara.common.satoken.utils.LoginHelper;
 import org.dromara.common.web.core.BaseController;
 import org.dromara.djs.warehouse.burn.domain.bo.PigBurnRecordBo;
 import org.dromara.djs.warehouse.burn.domain.query.PigBurnRecordQuery;
+import org.dromara.djs.warehouse.burn.domain.vo.BarPendingVo;
+import org.dromara.djs.warehouse.burn.domain.vo.BurnProductTypeVo;
 import org.dromara.djs.warehouse.burn.domain.vo.PigBurnRecordVo;
 import org.dromara.djs.warehouse.burn.service.IPigBurnRecordService;
 import org.springframework.validation.annotation.Validated;
@@ -19,19 +21,23 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.util.List;
+
 /**
- * 燎毛工序记录 mp 端 Controller（WMS-PIG-001）。
+ * 燎毛入库 mp 端 Controller（D12X-MP-BURN-IA-001：燎毛间 IA 重做）。
  *
- * <p>mp 端只暴露 2 个端点：</p>
+ * <p>mp 端暴露端点（IA = list→detail + 按产品类型分类入库）：</p>
  * <ul>
- *   <li>{@code POST /applet/warehouse/pigBurn/submit} 提交燎毛记录（同事务 4 步联动）</li>
+ *   <li>{@code GET  /applet/warehouse/pigBurn/pendingList} 已出栏待燎毛入库白条列表（进页）</li>
+ *   <li>{@code GET  /applet/warehouse/pigBurn/productTypes} 入库产品类型列表（整只/半只/猪头/猪蹄）</li>
+ *   <li>{@code POST /applet/warehouse/pigBurn/submit} 提交燎毛入库（同事务按类型分别入库）</li>
  *   <li>{@code GET  /applet/warehouse/pigBurn/myList} 我的燎毛记录（按 operator_id 过滤）</li>
  * </ul>
  *
  * <p>{@code @SaCheckLogin} 走 sa-token 真路（mp V1 mock 登录已发真 token，参 ADR-0003）。</p>
  *
  * @author djs
- * @since WMS-PIG-001
+ * @since D12X-MP-BURN-IA-001
  */
 @Validated
 @RestController
@@ -42,7 +48,25 @@ public class AppletPigBurnRecordController extends BaseController {
     private final IPigBurnRecordService service;
 
     /**
-     * mp 提交燎毛工序（同事务联动扣减白条库存 + 写出库流水）。
+     * mp 已出栏待燎毛入库白条列表（bar_info status IN pending_singe,singing，按出栏时间倒序）。
+     */
+    @SaCheckLogin
+    @GetMapping("/pendingList")
+    public R<List<BarPendingVo>> pendingList() {
+        return R.ok(service.queryPendingBars());
+    }
+
+    /**
+     * mp 入库产品类型列表（白条标准 4 类型：整只 / 半只 / 猪头 / 猪蹄）。
+     */
+    @SaCheckLogin
+    @GetMapping("/productTypes")
+    public R<List<BurnProductTypeVo>> productTypes() {
+        return R.ok(service.queryProductTypes());
+    }
+
+    /**
+     * mp 提交燎毛入库（同事务按产品类型分别入库 + 推进 bar 到 in_stock + 写入库流水）。
      */
     @SaCheckLogin
     @PostMapping("/submit")

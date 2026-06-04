@@ -27,6 +27,7 @@ import org.dromara.djs.warehouse.demand.domain.vo.AuditHistoryEntryVo;
 import org.dromara.djs.warehouse.demand.domain.vo.DemandManageVo;
 import org.dromara.djs.warehouse.demand.domain.vo.DemandPigVo;
 import org.dromara.djs.warehouse.demand.domain.vo.DemandSummaryVo;
+import org.dromara.djs.warehouse.demand.domain.vo.DemandTodayKpiVo;
 import org.dromara.djs.warehouse.demand.mapper.DemandManageMapper;
 import org.dromara.djs.warehouse.demand.mapper.DemandPigMapper;
 import org.dromara.djs.warehouse.demand.service.IDemandManageService;
@@ -39,7 +40,9 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
@@ -85,6 +88,12 @@ public class DemandManageServiceImpl extends DjsBaseServiceImpl<DemandManageMapp
     private static final Set<String> FULLY_EDITABLE_STATUSES = Set.of(
         DemandStatus.DRAFT.name(), DemandStatus.SUBMITTED.name()
     );
+
+    /**
+     * 今日日期算法时区（DJS-FIX-ADMIN-W22-007 KPI 横条）：不依赖 DB CURDATE() 时区，
+     * 避免后续部署到非 UTC+8 实例时"今日"偏移埋雷。
+     */
+    private static final ZoneId TODAY_ZONE = ZoneId.of("Asia/Shanghai");
 
     private final DemandPigMapper demandPigMapper;
 
@@ -285,6 +294,23 @@ public class DemandManageServiceImpl extends DjsBaseServiceImpl<DemandManageMapp
     }
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
+    public int updateExplain(Long demandId, String explain) {
+        DemandManage exists = baseMapper.selectById(demandId);
+        if (exists == null) {
+            throw new ServiceException(I18nMessages.t("demand.not_found", demandId), 404);
+        }
+        if (explain != null && explain.length() > 500) {
+            throw new ServiceException(I18nMessages.t("demand.explain.too_long"));
+        }
+        // 仅 patch demand_explain，不触碰状态/业务字段/audit_history
+        DemandManage patch = new DemandManage();
+        patch.setId(demandId);
+        patch.setDemandExplain(explain);
+        return baseMapper.updateById(patch);
+    }
+
+    @Override
     public List<AuditHistoryEntryVo> getAuditHistory(Long demandId) {
         DemandManage demand = baseMapper.selectById(demandId);
         if (demand == null) {
@@ -340,7 +366,42 @@ public class DemandManageServiceImpl extends DjsBaseServiceImpl<DemandManageMapp
         return vo;
     }
 
+    @Override
+    public DemandTodayKpiVo getTodayKpi() {
+        LocalDate today = LocalDate.now(TODAY_ZONE);
+        DemandTodayKpiVo vo = new DemandTodayKpiVo();
+
+        // 主表 1 query：白条需求头数 + 果蔬需求/已调配品种数 + 其他需求/已调配条数
+        //（「已调配」= demand_status IN CONFIRMED/IN_PRODUCTION/PARTIAL_SHIPPED/COMPLETED，写死在 mapper SQL）
+        Map<String, Object> agg = baseMapper.selectTodayKpiMainAgg(today);
+        vo.setTodayPigDemand(intFromAgg(agg, "todayPigDemand"));
+        vo.setTodayVegSpeciesDemand(intFromAgg(agg, "todayVegSpeciesDemand"));
+        vo.setTodayVegSpeciesAssigned(intFromAgg(agg, "todayVegSpeciesAssigned"));
+        vo.setTodayOtherDemand(intFromAgg(agg, "todayOtherDemand"));
+        vo.setTodayOtherAssigned(intFromAgg(agg, "todayOtherAssigned"));
+
+        // 子表 1 query：白条已调配头数（去重耳号）
+        Integer pigAssigned = baseMapper.selectTodayPigAssigned(today);
+        vo.setTodayPigAssigned(pigAssigned == null ? 0 : pigAssigned);
+
+        return vo;
+    }
+
     // ---------- 内部辅助 ----------
+
+    /**
+     * 从聚合 Map 取 int；null（无行/无值）兜底为 0。
+     *
+     * <p>MySQL 聚合列在 jdbc 层可能映射为 {@code Long / BigDecimal / BigInteger}，统一走
+     * {@link Number#intValue()}；非 Number（理论不会发生）兜底 0。</p>
+     */
+    private int intFromAgg(Map<String, Object> agg, String key) {
+        if (agg == null) {
+            return 0;
+        }
+        Object v = agg.get(key);
+        return v instanceof Number num ? num.intValue() : 0;
+    }
 
     /**
      * BO → Entity 转换钩子；走 MapStruct-Plus，{@code protected} 便于单测覆盖以避开

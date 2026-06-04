@@ -8,6 +8,8 @@ import org.dromara.djs.common.encoder.BizCodeType;
 import org.dromara.djs.common.encoder.IBizCodeGenerator;
 import org.dromara.djs.warehouse.cross.domain.BarInfo;
 import org.dromara.djs.warehouse.cross.mapper.BarInfoMapper;
+import org.dromara.djs.warehouse.trace.domain.TraceContentConst;
+import org.dromara.djs.warehouse.trace.service.ITraceService;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.event.TransactionPhase;
 import org.springframework.transaction.event.TransactionalEventListener;
@@ -71,6 +73,8 @@ public class PigMarketingEventListener {
 
     private final IBizCodeGenerator bizCodeGenerator;
 
+    private final ITraceService traceService;
+
     /**
      * 监听出栏事件 → INSERT bar_info（status='pending_singe'）。
      *
@@ -92,6 +96,8 @@ public class PigMarketingEventListener {
             barInfoMapper.insert(bar);
             log.info("[CROSS-FLOW-001] bar_info 创建成功 barId={} earNo={} marketingId={}",
                 bar.getBarId(), earNo, marketing.getId());
+            // TRC-CORE-001：出栏上市追溯事件（按耳号反查 trace_code；猪肉链当前无生成入口 → warn 跳过）
+            traceService.recordEventByEarNo(earNo, TraceContentConst.MARKETING);
         } catch (Exception e) {
             // AFTER_COMMIT 抛异常不会回滚养殖事务（已提交），但会让上游误以为出栏失败 → 全 swallow + log
             log.error("[CROSS-FLOW-001] 自动创建 bar_info 失败 earNo={} marketingId={}: {}",

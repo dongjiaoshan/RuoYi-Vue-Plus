@@ -2,10 +2,8 @@ package org.dromara.djs.breed.event.intro.domain.bo;
 
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
-import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Pattern;
-import jakarta.validation.constraints.Size;
 import lombok.Data;
 import lombok.EqualsAndHashCode;
 
@@ -29,17 +27,26 @@ public class PigIntroBatchBo extends PigIntroBo {
     private static final long serialVersionUID = 1L;
 
     /**
-     * 批量引种头数（≥ 2；为 1 则应用 {@code POST /intro} 单头端点）。
+     * 批量引种头数（≥ 1）。下限放开到 1：mp 外部引种单头也走本端点，以消费"用户可改首耳号"
+     * （{@code startEarNo} 仅本 BO 有，单头 {@code POST /intro} 端点纯后端生成耳号）。
+     * service 层 count=1 是 count=N 的退化形态（连号分配 1 个 / 容量校验 remaining≥1 / pen 原子加 1），无副作用。
      * 上限 200 是为了避免单事务过大触发 MySQL row lock / undo log 压力。
      */
     @NotNull(message = "intro.count.required")
-    @Min(value = 2, message = "intro.count.batch_min")
+    @Min(value = 1, message = "intro.count.batch_min")
     @Max(value = 200, message = "intro.count.batch_max")
     private Integer pigCount;
 
-    /** 起始耳号（业务参考；编码生成器实际给每头分配，本字段仅写到引种业务表）。 */
-    @NotBlank(message = "intro.start_ear_no.required")
-    @Pattern(regexp = "^[A-Za-z0-9\\-]+$", message = "intro.start_ear_no.pattern")
-    @Size(max = 32, message = "intro.start_ear_no.size")
+    /**
+     * 起始耳号（外部引种"用户可改"，601-5 / ADR-0011 §2.6）。
+     *
+     * <p>空 → 后端按 14 位格式（品系1+品种2+公母1+出生yyMMdd6+序号4）当天级 max+1 生成，整批连号；
+     * 非空 → 校 14 位纯数字格式 + 提交时逐头 {@code existsEarNo} 探测 UNIQUE，以用户首号为起点连号。</p>
+     *
+     * <p>regex 用 {@code ^(\d{14})?$} —— **允许留空**（留空走上面"后端生成"分支，对齐 601-5 设计 + allocateEarNos
+     * isBlank 分支）；非空才校 14 位纯数字。早先 {@code ^\d{14}$} 会把空串也判违规，导致"留空提交/预填未回填"时
+     * 直接 422，与设计矛盾。</p>
+     */
+    @Pattern(regexp = "^(\\d{14})?$", message = "intro.start_ear_no.pattern")
     private String startEarNo;
 }

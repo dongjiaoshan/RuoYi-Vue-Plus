@@ -40,6 +40,16 @@ public class IntroRecordVo implements Serializable {
     /** 品种 label（djs_pig_breed 翻译；翻不到回落 code）。 */
     private String pigBreedLabel;
 
+    /** 品系 label（djs_pig_strain 翻译；翻不到回落 code）（601-6）。 */
+    private String pigStrainLabel;
+
+    /**
+     * 日龄（天，601-6）。
+     * <p>内部引种：关联猪只 {@code t_farm_pig.birth_date} 算 NOW - birthDate；
+     * 外部引种 / 无 birthDate：null（mp 端 {@code '-'} 兜底）。</p>
+     */
+    private Integer ageDays;
+
     /** 引种日期。 */
     private LocalDate introduceDate;
 

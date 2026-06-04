@@ -1,13 +1,16 @@
 package org.dromara.djs.plant.pick.service;
 
+import org.dromara.djs.plant.pick.domain.bo.PickSubmitBo;
+import org.dromara.djs.plant.pick.domain.vo.PickSummaryVo;
 import org.dromara.djs.plant.pick.domain.vo.PickTaskVo;
 
 import java.util.List;
 
 /**
- * mp 端采摘任务 Service（PLT-PLAN-002）。
+ * mp 端采摘任务 Service（PLT-PLAN-002 只读 + PLT-PICK-001 录入闭环）。
  *
- * <p>mp 工人浏览待采摘 / 进行中的地块任务，**不录入**（录入在 D12 PLT-PICK-001）。</p>
+ * <p>mp 工人浏览待采摘 / 进行中的地块任务并录采收。游客采摘活动（{@code is_pick=1}）全程排除，
+ * 工人只录普通采收为销售。</p>
  *
  * @author djs
  * @since PLT-PLAN-002
@@ -33,4 +36,25 @@ public interface IAppletPickService {
      * @param id plant_details.id
      */
     PickTaskVo getTaskDetail(Long id);
+
+    /**
+     * 工人采收录入（PLT-PICK-001）。
+     *
+     * <p>单事务：SELECT FOR UPDATE plant_details → 累加 {@code actual_yield} / 首次回填
+     * {@code begin_harvestdate} / 流转 {@code harvest_status}（pending→picking）；
+     * {@code finish=true} 时置 {@code harvest_status='completed'} + {@code end_actualdate=NOW}
+     * + {@code end_harvestdate} + 计算 {@code average_yield}；INSERT 一行 {@code t_plant_farm_records}
+     * （{@code farm_type='harvest_activity'}）。<b>不动 {@code is_pick}</b>（游客采摘 flag 由 admin 维护）。
+     * 超期 / 提前采仅前端 warning，后端不拦。</p>
+     *
+     * @param bo 采收录入入参
+     */
+    void submitPick(PickSubmitBo bo);
+
+    /**
+     * mp 采收概览 KPI（PLT-PICK-001，按作物聚合，排除游客采摘）。
+     *
+     * @return 完成率 / 今日采摘品种数 / 今日采摘重量
+     */
+    PickSummaryVo todaySummary();
 }

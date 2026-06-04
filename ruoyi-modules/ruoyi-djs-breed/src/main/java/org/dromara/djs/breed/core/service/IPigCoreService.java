@@ -80,7 +80,7 @@ public interface IPigCoreService {
      * AND pig_sex = sexFilter AND pig_type = pigTypeFilter} ORDER BY id DESC LIMIT N。</p>
      *
      * <p>所有过滤器都是可选的；都不传时返最近 {@code limit} 条非 END 猪只。
-     * {@code statusFilter} CSV 形式，例 {@code "HB,PZ,PH"}；空串/null = 不过滤状态但默认排除 END。
+     * {@code statusFilter} CSV 形式，例 {@code "HB,PZ,FM"}；空串/null = 不过滤状态但默认排除 END。
      * 终态（{@code END}）猪只**永不返回**——picker 是给事件录入用的，END 猪只不能再触发事件。</p>
      *
      * <p>BRD-FIX-MP-PIGSELECT-001：出参 PigSearchVo 已扩 {@code ageDays/parity/lastEventDays}
@@ -91,8 +91,17 @@ public interface IPigCoreService {
      * @param statusFilter 状态白名单 CSV（如 {@code "HB,DN,LC,KH,FQ"} 给配种 picker 用）
      * @param sexFilter    性别过滤（{@code "M"} / {@code "F"} / null）
      * @param pigTypeFilter 类型过滤（{@code "sow"/"boar"/"piglet"/"fattening"} / null）
+     * <p>D12X-MP-FARROW-WEANING-001：新增可选 {@code dueType} 到期窗口过滤（分娩 / 断奶选猪用）。
+     * 在状态白名单（如 {@code statusFilter=PZ}）之上叠加一层「基准日期 + 生产周期配置天数 ≤ today」
+     * 的 AND 过滤，只返回真正到了产期 / 断奶期的母猪。不传 → 行为不变（向后兼容所有现有调用方）。</p>
+     *
+     * @param earNoKeyword 耳号关键字（LIKE 中部匹配；为空时返最近 N 条）
+     * @param statusFilter 状态白名单 CSV（如 {@code "HB,DN,LC,KH,FQ"} 给配种 picker 用）
+     * @param sexFilter    性别过滤（{@code "M"} / {@code "F"} / null）
+     * @param pigTypeFilter 类型过滤（{@code "sow"/"boar"/"piglet"/"fattening"} / null）
      * @param barnCode     栋舍编码精确过滤（{@code null}/空 = 不限栋舍；PigSelectPanel chip 点击后传）
      * @param limit         最多返回行数（1-100，默认 20）
+     * @param dueType       到期窗口过滤（{@code "FARROW"}=已到产期 / {@code "WEANING"}=已到断奶期 / null=不过滤）
      * @return 轻量 PigSearchVo 列表（含 ageDays/parity/lastEventDays）
      */
     List<PigSearchVo> searchByEarKeyword(String earNoKeyword,
@@ -100,7 +109,8 @@ public interface IPigCoreService {
                                          String sexFilter,
                                          String pigTypeFilter,
                                          String barnCode,
-                                         Integer limit);
+                                         Integer limit,
+                                         String dueType);
 
     /**
      * 栋舍 × 头数聚合（BRD-FIX-MP-PIGSELECT-001）——mp 端 PigSelectPanel 顶部「栋舍 chip」数据源。

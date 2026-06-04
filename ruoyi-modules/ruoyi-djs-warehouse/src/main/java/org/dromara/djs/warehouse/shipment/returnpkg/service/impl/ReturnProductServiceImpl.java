@@ -26,7 +26,6 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
 import java.util.Collection;
 import java.util.Date;
 import java.util.HashMap;
@@ -54,8 +53,6 @@ public class ReturnProductServiceImpl
     private static final String STATUS_PENDING = "pending";
 
     private static final String STATUS_CONFIRMED = "confirmed";
-
-    private static final DateTimeFormatter DATE_KEY_FMT = DateTimeFormatter.ofPattern("yyyyMMdd");
 
     private final StockFlowMapper stockFlowMapper;
 
@@ -204,14 +201,11 @@ public class ReturnProductServiceImpl
     }
 
     /**
-     * 生成 return_no：{@code RET+yyyyMMdd+seq4}（inline 实现，BizCodeType 暂未 seed RETURN_NO）。
-     *
-     * <p>UNIQUE(tenant_id, return_no, del_unique) 兜底；同毫秒并发可能撞 → service 层捕获重试，
-     * 但 V1 admin 录入并发低，依靠重试机制（D11+ 治理移入 BizCodeService）。</p>
+     * 生成 return_no：{@code RET{yyyyMMdd}{seq4}}，走 {@link IBizCodeGenerator} 的
+     * {@link BizCodeType#RETURN_NO} 规则（每日重置 + Redisson 锁 + 序号表 UNIQUE 双保护，
+     * 与 BURN_NO / CUT_NO / BAR_NO 范式一致）。
      */
     private String generateReturnNo() {
-        String datePart = LocalDateTime.now().format(DATE_KEY_FMT);
-        int maxSeq = baseMapper.selectMaxReturnSeqByDate(datePart);
-        return String.format("RET%s%04d", datePart, maxSeq + 1);
+        return bizCodeGenerator.generate(BizCodeType.RETURN_NO, Map.of());
     }
 }

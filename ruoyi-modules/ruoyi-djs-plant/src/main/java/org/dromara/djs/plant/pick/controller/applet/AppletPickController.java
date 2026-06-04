@@ -2,14 +2,19 @@ package org.dromara.djs.plant.pick.controller.applet;
 
 import cn.dev33.satoken.annotation.SaCheckLogin;
 import cn.dev33.satoken.annotation.SaCheckPermission;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.dromara.common.core.domain.R;
 import org.dromara.common.web.core.BaseController;
+import org.dromara.djs.plant.pick.domain.bo.PickSubmitBo;
+import org.dromara.djs.plant.pick.domain.vo.PickSummaryVo;
 import org.dromara.djs.plant.pick.domain.vo.PickTaskVo;
 import org.dromara.djs.plant.pick.service.IAppletPickService;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -19,12 +24,14 @@ import java.util.List;
 /**
  * mp 端采摘任务 Controller（PLT-PLAN-002）。
  *
- * <p>仅浏览，不录入。录入闭环在 D12 PLT-PICK-001。</p>
+ * <p>浏览（PLT-PLAN-002）+ 采收录入闭环（PLT-PICK-001）。</p>
  *
- * <h2>2 端点</h2>
+ * <h2>4 端点</h2>
  * <ul>
- *   <li>{@code GET /djs/applet/plant/pick/myTasks?status=pending,picking}：待采摘 / 采摘中任务列表</li>
- *   <li>{@code GET /djs/applet/plant/pick/detail/{id}}：任务详情</li>
+ *   <li>{@code GET  /djs/applet/plant/pick/myTasks?status=pending,picking}：待采摘 / 采摘中任务列表</li>
+ *   <li>{@code GET  /djs/applet/plant/pick/detail/{id}}：任务详情</li>
+ *   <li>{@code POST /djs/applet/plant/pick/submit}：采收录入（累加 actual_yield + 流转 harvest_status）</li>
+ *   <li>{@code GET  /djs/applet/plant/pick/todaySummary}：采收概览 KPI（按作物聚合）</li>
  * </ul>
  *
  * @author djs
@@ -49,5 +56,24 @@ public class AppletPickController extends BaseController {
     @GetMapping("/detail/{id}")
     public R<PickTaskVo> detail(@PathVariable Long id) {
         return R.ok(appletPickService.getTaskDetail(id));
+    }
+
+    /**
+     * 采收录入（PLT-PICK-001）：累加 actual_yield + 流转 harvest_status + INSERT 农事记录。
+     */
+    @SaCheckPermission("djs:applet:plant:pick:submit")
+    @PostMapping("/submit")
+    public R<Void> submit(@Valid @RequestBody PickSubmitBo bo) {
+        appletPickService.submitPick(bo);
+        return R.ok();
+    }
+
+    /**
+     * 采收概览 KPI（PLT-PICK-001，按作物聚合）：完成率 / 今日采摘品种数 / 今日采摘重量。
+     */
+    @SaCheckPermission("djs:applet:plant:pick:summary")
+    @GetMapping("/todaySummary")
+    public R<PickSummaryVo> todaySummary() {
+        return R.ok(appletPickService.todaySummary());
     }
 }

@@ -75,7 +75,8 @@ class PigCoreServiceImplTest {
     void setup() {
         PigStateMachine sm = new PigStateMachine();
         service = new PigCoreServiceImpl(pigMapper, statusRecordMapper, sm, eventPublisher, barnMapper, penMapper,
-            org.mockito.Mockito.mock(org.dromara.common.core.service.DictService.class));
+            org.mockito.Mockito.mock(org.dromara.common.core.service.DictService.class),
+            org.mockito.Mockito.mock(org.dromara.djs.breed.production.service.IProductionCycleConfigService.class));
     }
 
     private Pig mkSow(Long id, PigLifecycle status) {
@@ -173,7 +174,7 @@ class PigCoreServiceImplTest {
     @Test
     @DisplayName("fireEvent FARROW: parity +1")
     void fireEvent_farrow_increments_parity() {
-        Pig pig = mkSow(103L, PigLifecycle.PH);
+        Pig pig = mkSow(103L, PigLifecycle.PZ);
         pig.setParity(3);
         when(pigMapper.selectById(103L)).thenReturn(pig);
         when(pigMapper.updateById(any(Pig.class))).thenReturn(1);

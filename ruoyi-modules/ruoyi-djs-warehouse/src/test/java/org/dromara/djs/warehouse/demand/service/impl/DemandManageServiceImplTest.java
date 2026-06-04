@@ -7,6 +7,7 @@ import org.dromara.djs.common.encoder.IBizCodeGenerator;
 import org.dromara.djs.warehouse.demand.domain.DemandManage;
 import org.dromara.djs.warehouse.demand.domain.bo.AssignPigBo;
 import org.dromara.djs.warehouse.demand.domain.bo.DemandManageBo;
+import org.dromara.djs.warehouse.demand.domain.vo.DemandTodayKpiVo;
 import org.dromara.djs.warehouse.demand.mapper.DemandManageMapper;
 import org.dromara.djs.warehouse.demand.mapper.DemandPigMapper;
 import org.junit.jupiter.api.BeforeEach;
@@ -22,6 +23,7 @@ import org.mockito.quality.Strictness;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -276,6 +278,48 @@ class DemandManageServiceImplTest {
     void queryByIdNotFound() {
         when(demandMapper.selectVoById(999L)).thenReturn(null);
         assertThat(service.queryById(999L)).isNull();
+    }
+
+    @Test
+    @DisplayName("getTodayKpi happy → 6 字段装配正确（聚合列 Long/BigDecimal 统一转 int）")
+    void getTodayKpiHappy() {
+        // 模拟 jdbc 聚合列类型：SUM → BigDecimal，COUNT → Long
+        Map<String, Object> agg = new HashMap<>();
+        agg.put("todayPigDemand", new BigDecimal("12"));
+        agg.put("todayVegSpeciesDemand", 5L);
+        agg.put("todayVegSpeciesAssigned", 4L);
+        agg.put("todayOtherDemand", 5L);
+        agg.put("todayOtherAssigned", 4L);
+        when(demandMapper.selectTodayKpiMainAgg(any(LocalDate.class))).thenReturn(agg);
+        when(demandMapper.selectTodayPigAssigned(any(LocalDate.class))).thenReturn(12);
+
+        DemandTodayKpiVo vo = service.getTodayKpi();
+        assertThat(vo.getTodayPigDemand()).isEqualTo(12);
+        assertThat(vo.getTodayPigAssigned()).isEqualTo(12);
+        assertThat(vo.getTodayVegSpeciesDemand()).isEqualTo(5);
+        assertThat(vo.getTodayVegSpeciesAssigned()).isEqualTo(4);
+        assertThat(vo.getTodayOtherDemand()).isEqualTo(5);
+        assertThat(vo.getTodayOtherAssigned()).isEqualTo(4);
+        // 今日日期按 Asia/Shanghai 算（不依赖 DB CURDATE）
+        verify(demandMapper).selectTodayKpiMainAgg(any(LocalDate.class));
+        verify(demandMapper).selectTodayPigAssigned(any(LocalDate.class));
+    }
+
+    @Test
+    @DisplayName("getTodayKpi 无数据 → 6 数全 0（agg 缺键 + 子表 null 兜底）")
+    void getTodayKpiEmpty() {
+        // 主表无今日 demand：SUM/COUNT 仍返单行但值为 0（这里模拟缺键 → intFromAgg 兜底 0）
+        when(demandMapper.selectTodayKpiMainAgg(any(LocalDate.class))).thenReturn(new HashMap<>());
+        // 子表无白条已派：COUNT 返 0；极端 null 也兜底
+        when(demandMapper.selectTodayPigAssigned(any(LocalDate.class))).thenReturn(null);
+
+        DemandTodayKpiVo vo = service.getTodayKpi();
+        assertThat(vo.getTodayPigDemand()).isZero();
+        assertThat(vo.getTodayPigAssigned()).isZero();
+        assertThat(vo.getTodayVegSpeciesDemand()).isZero();
+        assertThat(vo.getTodayVegSpeciesAssigned()).isZero();
+        assertThat(vo.getTodayOtherDemand()).isZero();
+        assertThat(vo.getTodayOtherAssigned()).isZero();
     }
 
     private DemandManageBo baseBo(String productType) {

@@ -50,6 +50,10 @@ public class SlaughterBo implements Serializable {
     @Size(max = 1024, message = "slaughter.photo.size")
     private String ossIds;
 
+    /** 出栏操作员 userId（EmployeePicker 所选；可空，mp 端工人选员工，与 operator_id 登录态审计列并存）。 */
+    @Size(max = 64, message = "slaughter.operator.size")
+    private String operator;
+
     @Size(max = 500, message = "slaughter.remark.size")
     private String remark;
 }

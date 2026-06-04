@@ -120,10 +120,10 @@ public class PigIntroServiceImpl implements IPigIntroService {
         validate(bo, 1);
 
         PigIntroduce intro = persistIntroduce(bo, 1, null, bo.getPigSex());
-        Barn barn = loadBarn(bo.getBarnId());
+        loadBarn(bo.getBarnId());
 
-        // 单头分配 1 个 EAR_NO
-        String earNo = generateEarNo(barn);
+        // 单头分配 1 个 EAR_NO（ADR-0011：品系+品种+公母+出生日 当天级 max+1；单头 BO 无 startEarNo 字段，纯后端生成）
+        String earNo = earNoAllocator.allocateOne(bo.getPigStrainCode(), bo.getPigBreedCode(), bo.getPigSex(), bo.getBirthDate());
         Pig pig = createOnePig(bo, earNo, intro.getId());
         incrementPenCount(bo.getPenId(), 1);
 
@@ -179,10 +179,10 @@ public class PigIntroServiceImpl implements IPigIntroService {
 
         log.info("[BRD-EVENT-001] {} batch={}", I18nMessages.t("intro.batch_started", count), count);
         PigIntroduce intro = persistIntroduce(bo, count, bo.getStartEarNo(), bo.getPigSex());
-        Barn barn = loadBarn(bo.getBarnId());
+        loadBarn(bo.getBarnId());
 
-        // 批量一次性分配 N 个连续耳号（序号源 = DB max 同前缀同月，月内连续引种不撞 UNIQUE）
-        List<String> earNos = earNoAllocator.allocate("01", barnCode2(barn), count);
+        // 批量一次性分配 N 个连续耳号（ADR-0011：品系+品种+公母+出生日 当天级 max+1 连号）
+        List<String> earNos = allocateEarNos(bo, count);
 
         List<Pig> pigs = new ArrayList<>(count);
         for (String earNo : earNos) {
@@ -237,6 +237,18 @@ public class PigIntroServiceImpl implements IPigIntroService {
             .orderByDesc(PigIntroduce::getId);
         Page<PigIntroduce> page = introduceMapper.selectPage(pageQuery.build(), wrapper);
 
+        // 内部引种记录的日龄取关联猪只 t_farm_pig.birth_date 算（601-6）：批量查避免 N+1。
+        // 外部引种无单头 pigId（批量新建多猪），日龄置 null（前端 '-' 兜底）。
+        Set<Long> pigIds = page.getRecords().stream()
+            .map(PigIntroduce::getPigId)
+            .filter(Objects::nonNull)
+            .collect(Collectors.toSet());
+        Map<Long, LocalDate> birthDateById = pigIds.isEmpty()
+            ? Map.of()
+            : pigMapper.selectBatchIds(pigIds).stream()
+                .filter(p -> p.getBirthDate() != null)
+                .collect(Collectors.toMap(Pig::getId, Pig::getBirthDate, (a, b) -> a));
+
         List<IntroRecordVo> rows = new ArrayList<>(page.getRecords().size());
         for (PigIntroduce e : page.getRecords()) {
             IntroRecordVo vo = new IntroRecordVo();
@@ -247,6 +259,8 @@ public class PigIntroServiceImpl implements IPigIntroService {
             vo.setEarNo(e.getStartEarNo());
             vo.setPigCount(e.getPigCount());
             vo.setPigBreedLabel(translateBreed(e.getPigBreedCode()));
+            vo.setPigStrainLabel(translateStrain(e.getPigStrainCode()));
+            vo.setAgeDays(calcAgeDays(e.getPigId() != null ? birthDateById.get(e.getPigId()) : null));
             vo.setIntroduceDate(e.getIntroduceDate());
             vo.setOperator(e.getOperator());
             vo.setProofOssIds(e.getProofOssIds());
@@ -265,6 +279,23 @@ public class PigIntroServiceImpl implements IPigIntroService {
         }
         String label = dictService.getDictLabel("djs_pig_breed", code);
         return StringUtils.isNotBlank(label) ? label : code;
+    }
+
+    /** 品系字典翻译（djs_pig_strain）；翻不到回落 code（601-6）。 */
+    private String translateStrain(String code) {
+        if (StringUtils.isBlank(code)) {
+            return null;
+        }
+        String label = dictService.getDictLabel("djs_pig_strain", code);
+        return StringUtils.isNotBlank(label) ? label : code;
+    }
+
+    /** 日龄（天）= NOW - birthDate；birthDate 为 null（外部引种 / 无出生日期）返 null（601-6）。 */
+    private Integer calcAgeDays(LocalDate birthDate) {
+        if (birthDate == null) {
+            return null;
+        }
+        return (int) java.time.temporal.ChronoUnit.DAYS.between(birthDate, LocalDate.now());
     }
 
     /**
@@ -380,6 +411,8 @@ public class PigIntroServiceImpl implements IPigIntroService {
         intro.setProofOssIds(bo.getProofOssIds());
         intro.setBarnId(bo.getBarnId());
         intro.setPenId(bo.getPenId());
+        intro.setOperator(bo.getOperator());
+        intro.setIntroduceWeight(bo.getIntroduceWeight());
         intro.setRemark(bo.getRemark());
         intro.setDelFlag("0");
         intro.setDelUnique(0L);
@@ -409,17 +442,50 @@ public class PigIntroServiceImpl implements IPigIntroService {
     }
 
     /**
-     * 单头耳号生成（序号源 = DB max 同前缀同月，与批量同范式 —— 避免日级计数器月内撞 UNIQUE）。
+     * 批量/单头分配 N 个耳号（ADR-0011）。
+     *
+     * <p>外部引种"用户可改首号"（601-5）：{@code bo} 为 {@link PigIntroBatchBo} 且用户填了合法 {@code startEarNo} 时，
+     * 以用户首号为起点连号（首号 = startEarNo，后续 +1）；首号校 14 位格式 + UNIQUE 探测，撞了报友好错。
+     * 未填则走 allocator 当天级 max+1 后端生成。</p>
      */
-    private String generateEarNo(Barn barn) {
-        return earNoAllocator.allocateOne("01", barnCode2(barn));
+    private List<String> allocateEarNos(PigIntroBo bo, int count) {
+        String userStart = bo instanceof PigIntroBatchBo b ? b.getStartEarNo() : null;
+        if (StringUtils.isNotBlank(userStart)) {
+            return allocateFromUserStart(userStart, count);
+        }
+        return earNoAllocator.allocate(bo.getPigStrainCode(), bo.getPigBreedCode(), bo.getPigSex(), bo.getBirthDate(), count);
     }
 
     /**
-     * 取栋舍编码（V1 单农场 farmCode 固定 "01"）；barn 缺 code 时返 null，由分配器回落 "00"。
+     * 以用户给定首号为起点连号（首号校 14 位格式 + UNIQUE；后续 N-1 头序号 +1，逐头探测 UNIQUE 撞则报错）。
      */
-    private String barnCode2(Barn barn) {
-        return barn != null ? barn.getBarnCode() : null;
+    private List<String> allocateFromUserStart(String startEarNo, int count) {
+        if (!startEarNo.matches("^\\d{14}$")) {
+            throw new ServiceException(I18nMessages.t("intro.start_ear_no.pattern"));
+        }
+        String prefix = startEarNo.substring(0, 10);
+        long startSeq;
+        try {
+            startSeq = Long.parseLong(startEarNo.substring(10));
+        } catch (NumberFormatException e) {
+            throw new ServiceException(I18nMessages.t("intro.start_ear_no.pattern"));
+        }
+        List<String> earNos = new ArrayList<>(count);
+        for (int i = 0; i < count; i++) {
+            String earNo = prefix + String.format("%04d", startSeq + i);
+            if (pigMapper.existsEarNo(earNo) != null) {
+                throw new ServiceException(I18nMessages.t("intro.start_ear_no.duplicate", earNo));
+            }
+            earNos.add(earNo);
+        }
+        return earNos;
+    }
+
+    @Override
+    public String previewNextEarNo(String strainCode, String breedCode, String pigSex, LocalDate birthDate) {
+        // 预生成"下一个可用首耳号"返给前端预填，不落库；并发下提交时再由 allocator 锁 + UNIQUE 兜底重算
+        LocalDate birth = Optional.ofNullable(birthDate).orElseGet(LocalDate::now);
+        return earNoAllocator.allocateOne(strainCode, breedCode, pigSex, birth);
     }
 
     private Barn loadBarn(Long barnId) {

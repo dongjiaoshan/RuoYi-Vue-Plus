@@ -1,0 +1,35 @@
+package org.dromara.djs.store.dashboard.service;
+
+import org.dromara.djs.store.dashboard.domain.vo.StoreDashboardDailyVo;
+import org.dromara.djs.store.dashboard.domain.vo.StoreDashboardSummaryVo;
+
+/**
+ * 门店看板 Service（STR-DASH-001，纯只读聚合）。
+ *
+ * <p>admin PC 门店首页（getSummary）+ mp 门店每日情况一览（getDaily）双端复用。
+ * 无数据时返回全 0 / 空列表，不抛错。</p>
+ *
+ * @author djs
+ * @since STR-DASH-001
+ */
+public interface IStoreDashboardService {
+
+    /**
+     * 门店看板汇总：6 KPI + 当日产品结构 + 当月 TOP10 + 近 10 日趋势。
+     *
+     * @param storeId 门店 ID（可空，null 时按数据权限范围聚合）
+     * @return 看板汇总 VO（无数据时计数全 0、列表全空）
+     */
+    StoreDashboardSummaryVo getSummary(Long storeId);
+
+    /**
+     * 门店每日情况一览：猪肉 / 果蔬当日速览 + 需求统计 + 发货统计。
+     *
+     * <p>退回率 / 损耗率上游 V1 无数据源 → 为 null（前端显示"—"）。</p>
+     *
+     * @param storeId 门店 ID（可空，null 时按数据权限范围聚合）
+     * @return 每日一览 VO（无数据时速览全 0、统计列表空）
+     */
+    StoreDashboardDailyVo getDaily(Long storeId);
+
+}

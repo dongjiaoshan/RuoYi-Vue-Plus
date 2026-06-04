@@ -1,19 +1,23 @@
 package org.dromara.djs.warehouse.burn.service.impl;
 
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import org.dromara.common.core.exception.ServiceException;
-import org.dromara.common.satoken.utils.LoginHelper;
-import org.dromara.djs.breed.core.service.IPigQueryService;
 import org.dromara.djs.common.encoder.BizCodeType;
 import org.dromara.djs.common.encoder.IBizCodeGenerator;
 import org.dromara.djs.warehouse.burn.domain.PigBurnRecord;
 import org.dromara.djs.warehouse.burn.domain.bo.PigBurnRecordBo;
 import org.dromara.djs.warehouse.burn.mapper.PigBurnRecordMapper;
+import org.dromara.djs.warehouse.check.service.IStockCheckService;
+import org.dromara.djs.warehouse.cross.domain.BarInfo;
+import org.dromara.djs.warehouse.cross.mapper.BarInfoMapper;
 import org.dromara.djs.warehouse.flow.domain.StockFlow;
 import org.dromara.djs.warehouse.flow.mapper.StockFlowMapper;
+import org.dromara.djs.warehouse.location.domain.LocationInfo;
 import org.dromara.djs.warehouse.location.mapper.LocationInfoMapper;
+import org.dromara.djs.warehouse.product.domain.ProductInfo;
+import org.dromara.djs.warehouse.product.domain.ProductInhouse;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
-import org.dromara.djs.warehouse.stock.mapper.LocationStockMapper;
-import org.junit.jupiter.api.AfterEach;
+import org.dromara.djs.warehouse.product.mapper.ProductInhouseMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
@@ -21,14 +25,14 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
-import org.mockito.MockedStatic;
-import org.mockito.Mockito;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 
 import java.math.BigDecimal;
+import java.util.ArrayList;
 import java.util.Date;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -41,21 +45,22 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * {@link PigBurnRecordServiceImpl} 单测（WMS-PIG-001）。
+ * {@link PigBurnRecordServiceImpl} 单测（D12X-MP-BURN-IA-001 燎毛入库重做）。
  *
- * <p>覆盖跨表事务一致性的 3 类核心场景：</p>
+ * <p>覆盖入库语义的核心场景：</p>
  * <ol>
- *   <li>happy path：ear_no 已出栏 + 库存充足 → 燎毛记录 INSERT + 库存扣减 + 流水 INSERT 全发生</li>
- *   <li>库存不足：affectedRows=0 → 抛 "白条库存不足..." + 流水 INSERT 不发生（Spring @Transactional
- *       回滚由集成测试覆盖；单测验证"抛异常前流水未触发"）</li>
- *   <li>耳号未出栏：current_status != 'END' → 抛 "猪只未出栏..." + 任何 mapper 都不调</li>
+ *   <li>happy path：bar pending_singe + 2 类型 → 燎毛记录 INSERT + 2 行 product_inhouse + 2 行 IN 流水
+ *       + bar 推进 in_stock（乐观锁回填 in_weight）</li>
+ *   <li>白条状态不符：bar status=in_stock → 抛 "白条状态不符" + 任何写入不发生</li>
+ *   <li>白条不存在：selectById 返 null → 抛 "白条不存在"</li>
+ *   <li>无效产品类型：productId 不在标准白条类型集 → 抛 "无效的白条产品类型"</li>
+ *   <li>到场重量小于入库合计 → 抛 "入库重量合计不能大于到场重量"</li>
  * </ol>
  *
- * <p>Mock 全链路：用 {@link Mockito#mockStatic(Class)} stub {@link LoginHelper}，避开 Sa-Token 上下文。
- * 这样测试可以在不启 Spring 的情况下覆盖跨 mapper 调用次序 / 异常路径。</p>
+ * <p>子类化避开 MapStruct convert（无 Spring 上下文）+ stub generateBurnId 固定值。</p>
  *
  * @author djs
- * @since WMS-PIG-001
+ * @since D12X-MP-BURN-IA-001
  */
 @Tag("local")
 @Tag("dev")
@@ -67,42 +72,47 @@ class PigBurnRecordServiceImplTest {
     @Mock
     private PigBurnRecordMapper burnMapper;
     @Mock
-    private LocationStockMapper stockMapper;
-    @Mock
     private StockFlowMapper flowMapper;
     @Mock
-    private IPigQueryService pigQueryService;
+    private BarInfoMapper barInfoMapper;
+    @Mock
+    private ProductInhouseMapper productInhouseMapper;
     @Mock
     private LocationInfoMapper locationInfoMapper;
     @Mock
     private ProductInfoMapper productInfoMapper;
     @Mock
     private IBizCodeGenerator bizCodeGenerator;
+    @Mock
+    private IStockCheckService stockCheckService;
+    @Mock
+    private org.dromara.djs.warehouse.trace.service.ITraceService traceService;
 
     private TestablePigBurnRecordServiceImpl service;
 
-    private MockedStatic<LoginHelper> loginHelperMock;
+    private static final Long BAR_ID = 5001L;
+    private static final Long LOCATION_ID = 90001L;
+    private static final Long OPERATOR_ID = 9001L;
+    private static final Long TYPE_WHOLE = 100000000000000001L;
+    private static final Long TYPE_HEAD = 2059526196453937154L;
 
-    /**
-     * 子类化避开 MapStruct convert（无 Spring 上下文）+ stub generateBurnId / resolveWhiteBarProductId 固定值。
-     */
     static class TestablePigBurnRecordServiceImpl extends PigBurnRecordServiceImpl {
-        TestablePigBurnRecordServiceImpl(PigBurnRecordMapper b, LocationStockMapper s, StockFlowMapper f,
-                                         IPigQueryService q, LocationInfoMapper l, ProductInfoMapper pm,
-                                         IBizCodeGenerator g) {
-            super(b, s, f, q, l, pm, g);
+        TestablePigBurnRecordServiceImpl(PigBurnRecordMapper b, StockFlowMapper f, BarInfoMapper bi,
+                                         ProductInhouseMapper ih, LocationInfoMapper l, ProductInfoMapper pm,
+                                         IBizCodeGenerator g, IStockCheckService cs,
+                                         org.dromara.djs.warehouse.trace.service.ITraceService ts) {
+            super(b, f, bi, ih, l, pm, g, cs, ts);
         }
 
         @Override
         protected PigBurnRecord toEntity(PigBurnRecordBo bo) {
-            if (bo == null) return null;
+            if (bo == null) {
+                return null;
+            }
             PigBurnRecord e = new PigBurnRecord();
-            e.setEarNo(bo.getEarNo());
             e.setBurnTime(bo.getBurnTime());
             e.setArriveWeight(bo.getArriveWeight());
-            e.setBurnWeight(bo.getBurnWeight());
             e.setLocationId(bo.getLocationId());
-            e.setProofOssIds(bo.getProofOssIds());
             e.setRemark(bo.getRemark());
             return e;
         }
@@ -111,136 +121,176 @@ class PigBurnRecordServiceImplTest {
         protected String generateBurnId() {
             return "BURN2606040001";
         }
-
-        @Override
-        protected Long resolveWhiteBarProductId() {
-            return 100000000000000001L;
-        }
     }
 
     @BeforeEach
     void setup() {
         service = new TestablePigBurnRecordServiceImpl(
-            burnMapper, stockMapper, flowMapper, pigQueryService, locationInfoMapper, productInfoMapper, bizCodeGenerator);
-        loginHelperMock = Mockito.mockStatic(LoginHelper.class);
-        loginHelperMock.when(LoginHelper::getUserId).thenReturn(9001L);
+            burnMapper, flowMapper, barInfoMapper, productInhouseMapper,
+            locationInfoMapper, productInfoMapper, bizCodeGenerator, stockCheckService, traceService);
     }
 
-    @AfterEach
-    void tearDown() {
-        loginHelperMock.close();
+    private BarInfo sampleBar(String status) {
+        BarInfo bar = new BarInfo();
+        bar.setId(BAR_ID);
+        bar.setBarId("BAR2606030001");
+        bar.setEarNo("010126050101");
+        bar.setStatus(status);
+        return bar;
+    }
+
+    private List<ProductInfo> sampleTypes() {
+        List<ProductInfo> list = new ArrayList<>();
+        ProductInfo whole = new ProductInfo();
+        whole.setId(TYPE_WHOLE);
+        whole.setProductId("PROD-WHITE-BAR-01");
+        whole.setProductName("白条·整只");
+        whole.setProductType(1);
+        whole.setProductUnit("kg");
+        whole.setBelongType("white_bar");
+        list.add(whole);
+        ProductInfo head = new ProductInfo();
+        head.setId(TYPE_HEAD);
+        head.setProductId("PROD-WHITE-BAR-02");
+        head.setProductName("白条·猪头");
+        head.setProductType(1);
+        head.setProductUnit("kg");
+        head.setBelongType("white_bar");
+        list.add(head);
+        return list;
     }
 
     private PigBurnRecordBo sampleBo() {
         PigBurnRecordBo bo = new PigBurnRecordBo();
-        bo.setEarNo("TEST-EAR-001");
+        bo.setBarInfoId(BAR_ID);
         bo.setBurnTime(new Date());
-        bo.setArriveWeight(new BigDecimal("80.500"));
-        bo.setBurnWeight(new BigDecimal("75.300"));
-        bo.setLocationId(90001L);
-        bo.setProofOssIds("100,101");
-        bo.setRemark("e2e");
+        bo.setArriveWeight(new BigDecimal("110.500"));
+        bo.setLocationId(LOCATION_ID);
+        bo.setOperatorId(OPERATOR_ID);
+        PigBurnRecordBo.ProductTypeItem i1 = new PigBurnRecordBo.ProductTypeItem();
+        i1.setProductId(TYPE_WHOLE);
+        i1.setWeight(new BigDecimal("80.300"));
+        PigBurnRecordBo.ProductTypeItem i2 = new PigBurnRecordBo.ProductTypeItem();
+        i2.setProductId(TYPE_HEAD);
+        i2.setWeight(new BigDecimal("5.200"));
+        bo.setProductTypeItems(List.of(i1, i2));
         return bo;
     }
 
+    @SuppressWarnings("unchecked")
+    private void stubTypes() {
+        when(productInfoMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(sampleTypes());
+    }
+
     @Test
-    @DisplayName("submitBurnRecord: happy → 3 mapper 全调用 + lossWeight 计算正确 + burnStatus=done")
+    @DisplayName("submitBurnRecord: happy → 2 product_inhouse + 2 IN 流水 + bar 推进 in_stock(乐观锁 in_weight 合计)")
     void testSubmit_Happy() {
-        when(pigQueryService.selectCurrentStatusByEarNo("TEST-EAR-001")).thenReturn("END");
+        when(barInfoMapper.selectById(BAR_ID)).thenReturn(sampleBar("pending_singe"));
+        when(locationInfoMapper.selectById(LOCATION_ID)).thenReturn(new LocationInfo());
+        stubTypes();
         when(burnMapper.insert(any(PigBurnRecord.class))).thenAnswer(inv -> {
             PigBurnRecord e = inv.getArgument(0);
             e.setId(60001L);
             return 1;
         });
-        when(stockMapper.deductByEarNo(eq(90001L), eq("TEST-EAR-001"), any(BigDecimal.class), eq(9001L)))
-            .thenReturn(1);
-        when(bizCodeGenerator.generate(eq(BizCodeType.STOCK_FLOW_NO), anyMap())).thenReturn("F2606040OT0001");
+        when(bizCodeGenerator.generate(eq(BizCodeType.STOCK_FLOW_NO), anyMap())).thenReturn("F2606040IN0001");
+        when(productInhouseMapper.insert(any(ProductInhouse.class))).thenReturn(1);
         when(flowMapper.insert(any(StockFlow.class))).thenReturn(1);
+        when(barInfoMapper.updateStatusToInStock(eq(BAR_ID), any(BigDecimal.class), any(Date.class), eq(OPERATOR_ID)))
+            .thenReturn(1);
 
         Long id = service.submitBurnRecord(sampleBo());
 
         assertThat(id).isEqualTo(60001L);
 
+        // 燎毛记录：burnWeight = 入库合计 85.5；earNo 从 bar 反查；operatorId = 入库人
         ArgumentCaptor<PigBurnRecord> burnCaptor = ArgumentCaptor.forClass(PigBurnRecord.class);
         verify(burnMapper, times(1)).insert(burnCaptor.capture());
         PigBurnRecord saved = burnCaptor.getValue();
         assertThat(saved.getBurnId()).isEqualTo("BURN2606040001");
         assertThat(saved.getBurnStatus()).isEqualTo("done");
-        assertThat(saved.getOperatorId()).isEqualTo(9001L);
-        assertThat(saved.getLossWeight()).isEqualByComparingTo("5.200");
+        assertThat(saved.getEarNo()).isEqualTo("010126050101");
+        assertThat(saved.getOperatorId()).isEqualTo(OPERATOR_ID);
+        assertThat(saved.getBurnWeight()).isEqualByComparingTo("85.500");
+        assertThat(saved.getLossWeight()).isEqualByComparingTo("25.000");
 
+        // 2 行 product_inhouse + 2 行 IN 流水
+        verify(productInhouseMapper, times(2)).insert(any(ProductInhouse.class));
         ArgumentCaptor<StockFlow> flowCaptor = ArgumentCaptor.forClass(StockFlow.class);
-        verify(flowMapper, times(1)).insert(flowCaptor.capture());
-        StockFlow flow = flowCaptor.getValue();
-        assertThat(flow.getFlowNo()).isEqualTo("F2606040OT0001");
-        assertThat(flow.getFlowType()).isEqualTo("slaughter_burn");
-        assertThat(flow.getInoutType()).isEqualTo("OT");
-        assertThat(flow.getEarNo()).isEqualTo("TEST-EAR-001");
-        assertThat(flow.getChangeNum()).isEqualByComparingTo("75.300");
-        assertThat(flow.getChangeQuantity()).isEqualByComparingTo("75.300");
-        assertThat(flow.getOperatorId()).isEqualTo(9001L);
+        verify(flowMapper, times(2)).insert(flowCaptor.capture());
+        for (StockFlow flow : flowCaptor.getAllValues()) {
+            assertThat(flow.getInoutType()).isEqualTo("IN");
+            assertThat(flow.getFlowType()).isEqualTo("slaughter_burn");
+            assertThat(flow.getEarNo()).isEqualTo("010126050101");
+            assertThat(flow.getOperatorId()).isEqualTo(OPERATOR_ID);
+        }
+
+        // bar 推进 in_stock（乐观锁回填 in_weight 合计）
+        verify(barInfoMapper, times(1))
+            .updateStatusToInStock(eq(BAR_ID), eq(new BigDecimal("85.500")), any(Date.class), eq(OPERATOR_ID));
     }
 
     @Test
-    @DisplayName("submitBurnRecord: 库存不足 → affectedRows=0 抛 ServiceException + flow.insert 不调用")
-    void testSubmit_StockInsufficient() {
-        when(pigQueryService.selectCurrentStatusByEarNo("TEST-EAR-001")).thenReturn("END");
-        when(burnMapper.insert(any(PigBurnRecord.class))).thenAnswer(inv -> {
-            PigBurnRecord e = inv.getArgument(0);
-            e.setId(60002L);
-            return 1;
-        });
-        when(stockMapper.deductByEarNo(any(), any(), any(), any())).thenReturn(0);
+    @DisplayName("submitBurnRecord: bar 状态不符(in_stock) → 抛 + 不写入")
+    void testSubmit_BarStatusInvalid() {
+        when(barInfoMapper.selectById(BAR_ID)).thenReturn(sampleBar("in_stock"));
 
         assertThatThrownBy(() -> service.submitBurnRecord(sampleBo()))
             .isInstanceOf(ServiceException.class)
-            .hasMessageContaining("白条库存不足");
-
-        verify(flowMapper, never()).insert(any(StockFlow.class));
-        // 注意：burnMapper.insert 已被调用（事务回滚由 Spring 在集成测试覆盖）；单测只验证"流水未触发"
-        verify(burnMapper, times(1)).insert(any(PigBurnRecord.class));
-    }
-
-    @Test
-    @DisplayName("submitBurnRecord: 耳号未出栏 → current_status='HB' 抛 ServiceException + 任何 mapper 不调")
-    void testSubmit_PigNotEnd() {
-        when(pigQueryService.selectCurrentStatusByEarNo("TEST-EAR-001")).thenReturn("HB");
-
-        assertThatThrownBy(() -> service.submitBurnRecord(sampleBo()))
-            .isInstanceOf(ServiceException.class)
-            .hasMessageContaining("猪只未出栏");
+            .hasMessageContaining("白条状态不符");
 
         verify(burnMapper, never()).insert(any(PigBurnRecord.class));
-        verify(stockMapper, never()).deductByEarNo(any(), any(), any(), any());
+        verify(productInhouseMapper, never()).insert(any(ProductInhouse.class));
         verify(flowMapper, never()).insert(any(StockFlow.class));
     }
 
     @Test
-    @DisplayName("submitBurnRecord: 耳号不存在 → mapper 返 null 抛 ServiceException")
-    void testSubmit_PigNotFound() {
-        when(pigQueryService.selectCurrentStatusByEarNo("TEST-EAR-001")).thenReturn(null);
+    @DisplayName("submitBurnRecord: bar 不存在 → 抛 白条不存在")
+    void testSubmit_BarNotFound() {
+        when(barInfoMapper.selectById(BAR_ID)).thenReturn(null);
 
         assertThatThrownBy(() -> service.submitBurnRecord(sampleBo()))
             .isInstanceOf(ServiceException.class)
-            .hasMessageContaining("耳号未找到");
+            .hasMessageContaining("白条不存在");
 
         verify(burnMapper, never()).insert(any(PigBurnRecord.class));
     }
 
     @Test
-    @DisplayName("submitBurnRecord: 燎毛后重量 > 到场重量 → 抛 不能大于到场重量")
-    void testSubmit_BurnHeavierThanArrive() {
+    @DisplayName("submitBurnRecord: 无效产品类型 → 抛 + 燎毛记录不写")
+    void testSubmit_InvalidProductType() {
+        when(barInfoMapper.selectById(BAR_ID)).thenReturn(sampleBar("pending_singe"));
+        when(locationInfoMapper.selectById(LOCATION_ID)).thenReturn(new LocationInfo());
+        stubTypes();
+
         PigBurnRecordBo bo = sampleBo();
-        bo.setArriveWeight(new BigDecimal("70.000"));
-        bo.setBurnWeight(new BigDecimal("75.300"));
-        when(pigQueryService.selectCurrentStatusByEarNo("TEST-EAR-001")).thenReturn("END");
+        PigBurnRecordBo.ProductTypeItem bad = new PigBurnRecordBo.ProductTypeItem();
+        bad.setProductId(999999L);
+        bad.setWeight(new BigDecimal("1.0"));
+        bo.setProductTypeItems(List.of(bad));
+
+        assertThatThrownBy(() -> service.submitBurnRecord(bo))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("无效的白条产品类型");
+
+        verify(burnMapper, never()).insert(any(PigBurnRecord.class));
+    }
+
+    @Test
+    @DisplayName("submitBurnRecord: 到场重量 < 入库合计 → 抛 不能大于到场重量")
+    void testSubmit_ArriveLessThanInbound() {
+        when(barInfoMapper.selectById(BAR_ID)).thenReturn(sampleBar("pending_singe"));
+        when(locationInfoMapper.selectById(LOCATION_ID)).thenReturn(new LocationInfo());
+        stubTypes();
+
+        PigBurnRecordBo bo = sampleBo();
+        bo.setArriveWeight(new BigDecimal("50.000")); // < 85.5 合计
 
         assertThatThrownBy(() -> service.submitBurnRecord(bo))
             .isInstanceOf(ServiceException.class)
             .hasMessageContaining("不能大于到场重量");
 
         verify(burnMapper, never()).insert(any(PigBurnRecord.class));
-        verify(stockMapper, never()).deductByEarNo(any(), any(), any(), any());
     }
 
 }

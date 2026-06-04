@@ -91,7 +91,7 @@ public class BizCodeGeneratorImpl implements IBizCodeGenerator {
     private List<String> doGenerate(BizCodeType type, Map<String, Object> context, int count, long lockWaitSeconds) {
         BizCodeRule rule = loadRule(type);
         Map<String, Object> safeContext = context == null ? Map.of() : context;
-        String seqDate = resolveSeqDate(rule);
+        String seqDate = resolveSeqDate(rule, safeContext);
 
         String lockKey = String.format(DjsRedisKey.BIZ_CODE_LOCK,
             rule.getTenantId() + ":" + rule.getCodeType() + ":" + seqDate);
@@ -141,11 +141,13 @@ public class BizCodeGeneratorImpl implements IBizCodeGenerator {
      * 计算序号周期串：
      * <ul>
      *   <li>{@code daily_reset = 1} → {@code yyyyMMdd}（每日重置）</li>
-     *   <li>{@code daily_reset = 2} → {@code yyyy}（按年重置，D9 closing Group B 加入，PLAN_NO 使用）</li>
+     *   <li>{@code daily_reset = 2} → {@code yyyy}（按年重置，PLAN_NO 使用）</li>
+     *   <li>{@code daily_reset = 3} → {@code yyMMdd + context.prefix}（每日重置 + 按业态前缀分桶，
+     *       PRODUCE_NO 使用：每业态前缀当日各自独立从 0001 起算）</li>
      *   <li>其他（含 0 / null）→ {@code ""}（终生递增）</li>
      * </ul>
      */
-    private String resolveSeqDate(BizCodeRule rule) {
+    private String resolveSeqDate(BizCodeRule rule, Map<String, Object> context) {
         Integer dailyReset = rule.getDailyReset();
         if (dailyReset == null) {
             return "";
@@ -155,6 +157,15 @@ public class BizCodeGeneratorImpl implements IBizCodeGenerator {
         }
         if (dailyReset == 2) {
             return LocalDate.now().format(DateTimeFormatter.ofPattern("yyyy"));
+        }
+        if (dailyReset == 3) {
+            String yyMMdd = LocalDate.now().format(DateTimeFormatter.ofPattern("yyMMdd"));
+            Object prefix = context.get("prefix");
+            if (prefix == null) {
+                throw new ServiceException(
+                    "业务编码规则 " + rule.getCodeType() + " 需要 context.prefix（daily_reset=3 按前缀分桶）");
+            }
+            return yyMMdd + prefix;
         }
         return "";
     }
@@ -221,6 +232,17 @@ public class BizCodeGeneratorImpl implements IBizCodeGenerator {
             result = result.replace("{yyyy}", today.format(DateTimeFormatter.ofPattern("yyyy")));
         }
 
+        // {prefix} 业态前缀（PRODUCE_NO 使用），从 context.prefix 取原样字符串；缺则保留占位符并 warn
+        if (result.contains("{prefix}")) {
+            Object prefix = context.get("prefix");
+            if (prefix == null) {
+                log.warn("[djs-bizcode] 编码生成 context 缺字段 prefix，pattern={} rule={}",
+                    rule.getPattern(), rule.getCodeType());
+            } else {
+                result = result.replace("{prefix}", prefix.toString());
+            }
+        }
+
         // 序号占位符（按位数补零）
         if (result.contains("{dailySeq4}")) {
             result = result.replace("{dailySeq4}", pad(seq, 4));
@@ -230,6 +252,9 @@ public class BizCodeGeneratorImpl implements IBizCodeGenerator {
         }
         if (result.contains("{seq4}")) {
             result = result.replace("{seq4}", pad(seq, 4));
+        }
+        if (result.contains("{seq5}")) {
+            result = result.replace("{seq5}", pad(seq, 5));
         }
         if (result.contains("{seq6}")) {
             result = result.replace("{seq6}", pad(seq, 6));

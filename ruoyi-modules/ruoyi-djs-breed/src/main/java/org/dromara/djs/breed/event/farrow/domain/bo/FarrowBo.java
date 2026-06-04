@@ -13,7 +13,7 @@ import java.time.LocalDateTime;
 /**
  * 分娩事件录入入参（BRD-EVENT-002 FARROW）。
  *
- * <p>触发状态机 transition PH → FM；分娩只记窝产仔数，仔猪个体由 BRD-EVENT-003
+ * <p>触发状态机 transition PZ → FM；分娩只记窝产仔数，仔猪个体由 BRD-EVENT-003
  * 耳标流程创建（by-design 无 farrow→eartag 事件联动）。</p>
  *
  * @author djs
@@ -109,4 +109,7 @@ public class FarrowBo implements Serializable {
     /** 备注。 */
     @Size(max = 500, message = "farrow.remark.size")
     private String remark;
+
+    /** 录入人员 userId（mp EmployeePicker 选，支持替别人代录；admin / 老调用方缺省时 service fallback 登录态）。 */
+    private Long operatorId;
 }

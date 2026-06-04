@@ -394,11 +394,17 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
         if (query == null) {
             return w.orderByDesc(FarmRecords::getFarmDate).orderByDesc(FarmRecords::getId);
         }
+        // PLT-WORK-002 admin 5 Tab：farmWorkTypes 多选优先（IN）；为空时退回 farmType 单值（mp / 旧调用方）
+        boolean hasWorkTypes = CollUtil.isNotEmpty(query.getFarmWorkTypes());
         w.like(StringUtils.isNotBlank(query.getRecordNo()), FarmRecords::getRecordNo, query.getRecordNo())
-            .eq(StringUtils.isNotBlank(query.getFarmType()), FarmRecords::getFarmType, query.getFarmType())
+            .in(hasWorkTypes, FarmRecords::getFarmType, query.getFarmWorkTypes())
+            .eq(!hasWorkTypes && StringUtils.isNotBlank(query.getFarmType()), FarmRecords::getFarmType, query.getFarmType())
             .eq(query.getPlotId() != null, FarmRecords::getPlotId, query.getPlotId())
             .eq(query.getCropId() != null, FarmRecords::getCropId, query.getCropId())
             .eq(query.getFarmBy() != null, FarmRecords::getFarmBy, query.getFarmBy())
+            // PLT-WORK-003 灾害子页：disaster_type / is_warning 筛选
+            .eq(StringUtils.isNotBlank(query.getDisasterType()), FarmRecords::getDisasterType, query.getDisasterType())
+            .eq(query.getIsWarning() != null, FarmRecords::getIsWarning, query.getIsWarning())
             .ge(query.getFarmDateBegin() != null, FarmRecords::getFarmDate, query.getFarmDateBegin())
             .le(query.getFarmDateEnd() != null, FarmRecords::getFarmDate, query.getFarmDateEnd())
             .orderByDesc(FarmRecords::getFarmDate)

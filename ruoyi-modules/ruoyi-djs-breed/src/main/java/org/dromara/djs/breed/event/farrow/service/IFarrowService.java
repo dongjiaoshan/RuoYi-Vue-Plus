@@ -14,7 +14,7 @@ import java.util.List;
 /**
  * 母猪分娩事件 Service（BRD-EVENT-002 FARROW）。
  *
- * <p>主入口 {@link #recordFarrow}：INSERT t_farm_pig_farrow → fireEvent(FARROW)（PH → FM, parity +1）。
+ * <p>主入口 {@link #recordFarrow}：INSERT t_farm_pig_farrow → fireEvent(FARROW)（PZ → FM, parity +1）。
  * 分娩只记窝产仔数；仔猪个体由 BRD-EVENT-003 耳标流程创建（by-design 无 farrow→eartag 事件联动）。</p>
  *
  * @author djs

@@ -6,7 +6,7 @@ import lombok.Getter;
 /**
  * 猪只生命周期状态枚举（BRD-CORE-001）。
  *
- * <p>与字典 {@code djs_pig_lifecycle} 严格对齐（10 枚举）。{@link #END} 为终态，
+ * <p>与字典 {@code djs_pig_lifecycle} 严格对齐（9 枚举，见 ADR-0010）。{@link #END} 为终态，
  * 进入后任何 {@code fireEvent} 调用都会被拒绝，由 {@code pig.end_reason} 字段
  * 区分 DEAD / CULL / MARKET 三种结局。</p>
  *
@@ -21,15 +21,13 @@ public enum PigLifecycle {
 
     /** 后备：母猪未配种或公猪未启用；piglet/fattening 也默认此态。 */
     HB("后备"),
-    /** 配种：母猪已配种，等待妊娠确认。 */
+    /** 配种：母猪已配种，等待分娩（查情确认妊娠仅落记录不切态）。 */
     PZ("配种"),
-    /** 配怀：妊娠已确认。 */
-    PH("配怀"),
     /** 分娩：已分娩，正在哺乳。 */
     FM("分娩"),
     /** 断奶：已断奶，等待再次配种。 */
     DN("断奶"),
-    /** 流产：配怀期流产。 */
+    /** 流产：妊娠期流产。 */
     LC("流产"),
     /** 空怀：配种失败（无妊娠）。 */
     KH("空怀"),

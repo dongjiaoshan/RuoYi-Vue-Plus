@@ -14,6 +14,7 @@ import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.web.core.BaseController;
 import org.dromara.djs.warehouse.location.domain.bo.LocationInfoBo;
 import org.dromara.djs.warehouse.location.domain.query.LocationInfoQuery;
+import org.dromara.djs.warehouse.location.domain.vo.LocationCardSummaryVo;
 import org.dromara.djs.warehouse.location.domain.vo.LocationInfoVo;
 import org.dromara.djs.warehouse.location.service.ILocationInfoService;
 import org.springframework.validation.annotation.Validated;
@@ -54,6 +55,17 @@ public class LocationInfoController extends BaseController {
     @GetMapping("/list")
     public TableDataInfo<LocationInfoVo> list(LocationInfoQuery query, PageQuery pageQuery) {
         return locationInfoService.queryPageList(query, pageQuery);
+    }
+
+    /**
+     * 库位类型卡片汇总（按 djs_location_type 8 类聚合，库位一览页顶部 2×4 网格）。
+     *
+     * <p>固定返 8 行（某类无数据也返量 0）；复用 {@code location:list} 权限，无新增 menu。</p>
+     */
+    @SaCheckPermission("djs:warehouse:location:list")
+    @GetMapping("/summary")
+    public R<List<LocationCardSummaryVo>> getCardSummary() {
+        return R.ok(locationInfoService.getCardSummary());
     }
 
     /**

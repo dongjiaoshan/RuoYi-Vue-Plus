@@ -50,4 +50,14 @@ public class FeedStockVo implements Serializable {
      */
     private BigDecimal totalStock;
 
+    /**
+     * 当前登录人今日已领（当日 + 本产品 SUM(change_quantity) WHERE flow_type='pick_out'，无流水时 0）。
+     */
+    private BigDecimal todayPicked;
+
+    /**
+     * 当前登录人今日已退（当日 + 本产品 SUM(change_quantity) WHERE flow_type='return_in'，无流水时 0）。
+     */
+    private BigDecimal todayReturned;
+
 }

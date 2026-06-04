@@ -35,7 +35,7 @@ public class SowRecord extends TenantEntity {
 
     /** 母猪总数（当日 23:59 时点：current_status NOT IN ('END') 且 pig_type='sow'）。 */
     private Integer sowTotal;
-    /** 妊娠中（current_status='PZ'/'PH'）。 */
+    /** 妊娠中（current_status='PZ'）。 */
     private Integer sowPregnant;
     /** 哺乳中（current_status='FM'）。 */
     private Integer sowFarrow;

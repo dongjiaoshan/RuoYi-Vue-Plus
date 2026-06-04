@@ -44,6 +44,8 @@ import static org.mockito.Mockito.when;
  *   <li>100 并发 — 全 100 个耳号唯一（用本地 ReentrantLock 模拟 Redisson 分布式锁 + AtomicLong 模拟序号表）</li>
  *   <li>批量 — 连续序号且数量正确</li>
  *   <li>跨日重置 — daily_reset=1 时，seqDate 变化触发新序号行</li>
+ *   <li>PRODUCE_NO — daily_reset=3 按业态前缀（Z/G/B/H/D/L）分桶，6 前缀互不串号</li>
+ *   <li>RETURN_NO — daily_reset=1，RET{yyyyMMdd}{seq4} 连续递增</li>
  * </ol>
  *
  * <p>不启 Spring；用 Mockito mock {@code BizCodeRuleMapper / BizCodeSequenceMapper / RedissonClient}，
@@ -261,6 +263,59 @@ class BizCodeGeneratorImplTest {
 
         // 再断言：fakeYesterday 桶完全没被本次生成动到（验证 daily_reset 用了今天的 seqDate）
         assertThat(seqStore.get("SHIP_NO:" + fakeYesterday).get()).isEqualTo(999L);
+    }
+
+    // ============================================================
+    // 5. PRODUCE_NO — 6 业态前缀分桶（daily_reset=3）
+    // ============================================================
+
+    @Test
+    @DisplayName("PRODUCE_NO: 6 业态前缀各自生成 yyMMdd+prefix+0001，互不串号")
+    void produce_no_six_prefixes_independent_buckets() {
+        stubRule("PRODUCE_NO", "{yyMMdd}{prefix}{seq4}", 3);
+        String yyMMdd = LocalDate.now().format(DateTimeFormatter.ofPattern("yyMMdd"));
+
+        // 6 业态前缀：Z 猪肉 / G 果蔬 / B 白条 / H 干货 / D 鸡蛋 / L 礼盒
+        for (String prefix : List.of("Z", "G", "B", "H", "D", "L")) {
+            String code = generator.generate(BizCodeType.PRODUCE_NO, Map.of("prefix", prefix));
+            // 每个前缀当日首个都从 0001 起算（独立 seqDate 分桶）
+            assertThat(code).isEqualTo(yyMMdd + prefix + "0001");
+        }
+
+        // 同前缀再取一次 → 0002（验证同桶递增）；其他前缀不受影响
+        String z2 = generator.generate(BizCodeType.PRODUCE_NO, Map.of("prefix", "Z"));
+        assertThat(z2).isEqualTo(yyMMdd + "Z0002");
+        String g2 = generator.generate(BizCodeType.PRODUCE_NO, Map.of("prefix", "G"));
+        assertThat(g2).isEqualTo(yyMMdd + "G0002");
+    }
+
+    @Test
+    @DisplayName("PRODUCE_NO: 同前缀连续 3 个序号连续递增")
+    void produce_no_same_prefix_sequential() {
+        stubRule("PRODUCE_NO", "{yyMMdd}{prefix}{seq4}", 3);
+        String yyMMdd = LocalDate.now().format(DateTimeFormatter.ofPattern("yyMMdd"));
+
+        for (int i = 1; i <= 3; i++) {
+            String code = generator.generate(BizCodeType.PRODUCE_NO, Map.of("prefix", "H"));
+            assertThat(code).isEqualTo(yyMMdd + "H" + String.format("%04d", i));
+        }
+    }
+
+    // ============================================================
+    // 6. RETURN_NO — 每日重置 RET{yyyyMMdd}{seq4}
+    // ============================================================
+
+    @Test
+    @DisplayName("RETURN_NO: 生成 RET+yyyyMMdd+0001，连续递增")
+    void return_no_daily_reset_format() {
+        stubRule("RETURN_NO", "RET{yyyyMMdd}{seq4}", 1);
+        String yyyyMMdd = LocalDate.now().format(DateTimeFormatter.BASIC_ISO_DATE);
+
+        String first = generator.generate(BizCodeType.RETURN_NO, Map.of());
+        assertThat(first).isEqualTo("RET" + yyyyMMdd + "0001");
+
+        String second = generator.generate(BizCodeType.RETURN_NO, Map.of());
+        assertThat(second).isEqualTo("RET" + yyyyMMdd + "0002");
     }
 
     // ============================================================

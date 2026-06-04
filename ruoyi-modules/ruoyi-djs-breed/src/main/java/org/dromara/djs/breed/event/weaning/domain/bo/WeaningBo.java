@@ -62,4 +62,7 @@ public class WeaningBo implements Serializable {
 
     @Size(max = 500, message = "weaning.remark.size")
     private String remark;
+
+    /** 录入人员 userId（mp EmployeePicker 选，支持替别人代录；admin / 老调用方缺省时 service fallback 登录态）。 */
+    private Long operatorId;
 }

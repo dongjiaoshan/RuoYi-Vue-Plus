@@ -8,6 +8,7 @@ import lombok.Data;
 
 import java.io.Serial;
 import java.io.Serializable;
+import java.math.BigDecimal;
 import java.time.LocalDate;
 
 /**
@@ -96,6 +97,16 @@ public class PigIntroBo implements Serializable {
      */
     @Size(max = 32, message = "intro.pen_code.size")
     private String penCode;
+
+    /**
+     * 引种人员（存 sys_user.user_id，与内部引种 {@link PigIntroInternalBo#getOperator()} 语义一致）。
+     * <p>mp 端 SupplierPicker 同款 EmployeePicker 选人后回填 userId String；admin 端可空。</p>
+     */
+    @Size(max = 64, message = "intro.operator.size")
+    private String operator;
+
+    /** 引种体重 kg（外部引种登记，原型 86；mp 端 EntryForm input 录入，可空）。 */
+    private BigDecimal introduceWeight;
 
     /** 备注。 */
     @Size(max = 500, message = "intro.remark.size")

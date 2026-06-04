@@ -13,9 +13,9 @@ import java.time.LocalDateTime;
 /**
  * 母猪查情记录实体（BRD-EVENT-002 OESTRUS）。
  *
- * <p>对应表 {@code t_farm_pig_heat}（SYS-INIT-001 DDL）。状态机分流：</p>
+ * <p>对应表 {@code t_farm_pig_heat}（SYS-INIT-001 DDL）。状态机处理（见 ADR-0010）：</p>
  * <ul>
- *   <li>{@code isPregnantConfirmed=1} → fireEvent(OESTRUS) → PZ → PH；</li>
+ *   <li>{@code isPregnantConfirmed=1} → fireEvent(OESTRUS)，状态保持 PZ（仅落审计记录，不切态）；</li>
  *   <li>{@code isPregnantConfirmed=0} → 仅写记录，不调状态机，pig 状态保持 PZ。</li>
  * </ul>
  *
@@ -40,7 +40,7 @@ public class PigHeat extends TenantEntity {
     /** 查情结果（字典 djs_heat_result：例 1=有发情迹象 2=无 3=确认妊娠）。 */
     private String heatResult;
 
-    /** 是否兽医确认妊娠（0/1）；true 时触发状态机 PZ → PH。 */
+    /** 是否兽医确认妊娠（0/1）；true 时触发 OESTRUS 事件（状态仍保持 PZ，仅落审计）。 */
     private Integer isPregnantConfirmed;
 
     private Long operatorId;

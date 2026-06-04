@@ -318,7 +318,6 @@ public class DashboardServiceImpl implements IDashboardService {
             sowTotal += cnt;
             switch (lc) {
                 case "PZ":
-                case "PH":
                     sowPregnant += cnt;
                     break;
                 case "FM":

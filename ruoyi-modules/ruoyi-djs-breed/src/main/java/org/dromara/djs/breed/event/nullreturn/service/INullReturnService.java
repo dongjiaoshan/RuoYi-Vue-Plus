@@ -9,7 +9,7 @@ import org.dromara.djs.breed.event.nullreturn.domain.vo.PigAbnormalVo;
 /**
  * 返空事件 Service（BRD-EVENT-002 NULL_RETURN）。
  *
- * <p>状态机源态必须 PH（service 提前校验 + 状态机兜底）；按 abnormalType 分流到 LC/KH/FQ。</p>
+ * <p>状态机源态必须 PZ（service 提前校验 + 状态机兜底）；按 abnormalType 分流到 LC/KH/FQ。</p>
  *
  * @author djs
  * @since BRD-EVENT-002

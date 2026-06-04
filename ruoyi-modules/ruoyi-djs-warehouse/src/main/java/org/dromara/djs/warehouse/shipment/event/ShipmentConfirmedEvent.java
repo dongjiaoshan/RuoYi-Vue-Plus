@@ -38,10 +38,22 @@ public class ShipmentConfirmedEvent extends ApplicationEvent {
     /** 本次发货数量（CROSS-FLOW-003 用于累加 demand.shipped_count）。 */
     private final BigDecimal shippedQuantity;
 
-    public ShipmentConfirmedEvent(Object source, Long shipmentId, Long demandId, BigDecimal shippedQuantity) {
+    /**
+     * 发货确认人 user_id（CROSS-FLOW-003 用于状态推进的审计 operator）。
+     *
+     * <p>AFTER_COMMIT 监听线程无 sa-token 上下文，{@code IDemandStatusService.transition} 的
+     * {@code resolveOperator(null)} 会取不到 {@code LoginHelper.getUserId()} 抛
+     * {@code demand.operator.required}。故由发布点（{@code ShipmentServiceImpl#confirmCheck}）
+     * 显式带上 checkerId，listener 透传给 transition 做审计 operator。</p>
+     */
+    private final Long operatorId;
+
+    public ShipmentConfirmedEvent(Object source, Long shipmentId, Long demandId,
+                                  BigDecimal shippedQuantity, Long operatorId) {
         super(source);
         this.shipmentId = shipmentId;
         this.demandId = demandId;
         this.shippedQuantity = shippedQuantity;
+        this.operatorId = operatorId;
     }
 }

@@ -44,8 +44,36 @@ public enum BizCodeType {
     /**
      * 加工包装单号（每日重置），格式 {@code P{yyyyMMdd}{seq4}}。
      * 例：{@code P2605200001}。
+     *
+     * @deprecated 格式 {@code P{yyyyMMdd}{seq4}} 不匹配 doc/11 §2.6 R7 产品生产编号规则
+     * （{@code YYMMDD + 业态前缀(Z/G/B/H/D/L) + 4 位}）。产品生产编号统一改走 {@link #PRODUCE_NO}。
+     * 枚举值保留不删（避免历史数据 / 已落地 seed 行引用炸），但不再用于新生成。
      */
+    @Deprecated
     PACK_NO,
+
+    /**
+     * 产品生产编号（每日重置 + 按业态前缀分桶），格式 {@code {yyMMdd}{prefix}{seq4}}。
+     * 例：{@code 260613Z0001}（猪肉）/ {@code 260613G0001}（果蔬）。
+     *
+     * <p>业态前缀由 {@code context.prefix} 传入：Z=猪肉 / G=果蔬 / B=白条 / H=干货 / D=鸡蛋 / L=礼盒。
+     * 底层 1 条规则配 {@code daily_reset=3}（每日重置 + 复合分桶），序号按
+     * {@code seqDate = yyMMdd + prefix} 复合键独立递增，使每业态当日各自从 0001 起算。</p>
+     *
+     * <p>D11 closing 统一治理：替代原 WMS-PACK-001 inline {@code selectMaxProduceNoByPrefix + 应用层自增}，
+     * 走 {@link IBizCodeGenerator} 的 Redisson 锁 + 序号表 UNIQUE 双保护。</p>
+     */
+    PRODUCE_NO,
+
+    /**
+     * 门店退货单号（每日重置），格式 {@code RET{yyyyMMdd}{seq4}}。
+     * 例：{@code RET202606130001}。
+     *
+     * <p>D11 closing 统一治理：替代原 WMS-SHIP-001 ReturnProductServiceImpl inline
+     * {@code selectMaxReturnSeqByDate + 应用层自增}，走 {@link IBizCodeGenerator}
+     * 的 Redisson 锁 + 序号表 UNIQUE 双保护，与 BURN_NO / CUT_NO / BAR_NO 范式一致。</p>
+     */
+    RETURN_NO,
 
     /**
      * 出入库流水号（每日重置），格式 {@code F{yyyyMMdd}{ioCode2}{seq4}}。
@@ -99,5 +127,19 @@ public enum BizCodeType {
      * 例：{@code BAR2606040001}（CROSS-FLOW-001 D10 listener 创建白条时使用）。
      * 与 BURN_NO / CUT_NO 范式一致，统一走 BizCodeService Redisson 锁 + 序号表 UNIQUE 双保护。
      */
-    BAR_NO
+    BAR_NO,
+
+    /**
+     * 盘点单业务码（每日重置），格式 {@code C{yyyyMMdd}{seq5}}。
+     * 例：{@code C2026061300001}（WMS-STOCK-001 admin 新建盘点单时使用）。
+     * 与 BURN_NO / CUT_NO / BAR_NO 范式一致，统一走 BizCodeService Redisson 锁 + 序号表 UNIQUE 双保护。
+     */
+    CHECK_NO,
+
+    /**
+     * 门店盘点单业务码（每日重置），格式 {@code SC{yyyyMMdd}{seq5}}。
+     * 例：{@code SC2026061400001}（STR-STOCK-001 admin 新建门店盘点单时使用）。
+     * 与仓库盘点 {@link #CHECK_NO}（{@code C...}）分号避免冲突；走 BizCodeService Redisson 锁 + 序号表 UNIQUE 双保护。
+     */
+    STORE_CHECK_NO
 }

@@ -17,6 +17,22 @@ import java.util.Date;
 public interface BarInfoMapper extends BaseMapperPlus<BarInfo, BarInfo> {
 
     /**
+     * 燎毛入库阶段乐观锁：bar_info.status pending_singe/singing → in_stock（D12X-MP-BURN-IA-001）。
+     *
+     * <p>WHERE status IN ('pending_singe','singing') 保证并发燎毛工只有一个成功推进白条到入库态。
+     * affectedRows==0 → 调用方抛"白条状态不符（已入库或不在待燎毛态）"。
+     * 同步回填 in_weight（各类型入库重量合计）/ in_time / in_method=1（1=燎毛间）。</p>
+     */
+    @Update("UPDATE t_warehouse_bar_info "
+        + "   SET status='in_stock', in_weight=#{inWeight}, in_time=#{inTime}, in_method=1,"
+        + "       update_by=#{userId}, update_time=NOW() "
+        + " WHERE id = #{id} AND status IN ('pending_singe','singing') AND del_flag = '0'")
+    int updateStatusToInStock(@Param("id") Long id,
+                              @Param("inWeight") BigDecimal inWeight,
+                              @Param("inTime") Date inTime,
+                              @Param("userId") Long userId);
+
+    /**
      * pickup 阶段乐观锁：bar_info.status in_stock → pending_cut。
      *
      * <p>WHERE status='in_stock' 保证并发分割师同时领用同一条白条只有一个成功。

@@ -7,6 +7,8 @@ import org.dromara.common.core.domain.R;
 import org.dromara.common.web.core.BaseController;
 import org.dromara.djs.warehouse.shipment.domain.bo.ShipmentCheckBo;
 import org.dromara.djs.warehouse.shipment.domain.vo.AvailableProductionVo;
+import org.dromara.djs.warehouse.shipment.domain.vo.ShipDemandVo;
+import org.dromara.djs.warehouse.shipment.domain.vo.ShipStoreVo;
 import org.dromara.djs.warehouse.shipment.service.IShipmentService;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -23,8 +25,10 @@ import java.util.List;
  *
  * <p>端点（{@code djs:applet:warehouse:ship:*}）：</p>
  * <ul>
- *   <li>{@code POST /applet/warehouse/ship/check}        清点确认（核心）</li>
- *   <li>{@code GET  /applet/warehouse/ship/productions}  按 demand_id 拉待清点产品</li>
+ *   <li>{@code POST /applet/warehouse/ship/check}         清点确认（核心）</li>
+ *   <li>{@code GET  /applet/warehouse/ship/productions}   按 demand_id 拉待清点产品</li>
+ *   <li>{@code GET  /applet/warehouse/ship/store-list}    门店维度待发货聚合（发货月台 IA 进页）</li>
+ *   <li>{@code GET  /applet/warehouse/ship/store-demands} 某门店待发需求单 + 各自可发清单（发货子页）</li>
  * </ul>
  *
  * @author djs
@@ -50,5 +54,19 @@ public class AppletShipmentController extends BaseController {
     @GetMapping("/productions")
     public R<List<AvailableProductionVo>> listAvailableProductions(@RequestParam Long demandId) {
         return R.ok(service.listAvailableProductions(demandId));
+    }
+
+    /** 门店维度待发货聚合（发货月台 IA 进页 = 门店列表：门店名 + 待发需求数 + 待发产品种类数 + 状态）。 */
+    @SaCheckPermission("djs:applet:warehouse:ship:check")
+    @GetMapping("/store-list")
+    public R<List<ShipStoreVo>> listPendingStores() {
+        return R.ok(service.listPendingStores());
+    }
+
+    /** 某门店待发需求单 + 各需求可发产品清单（发货子页，按需求单分组 + 各自出车发货）。 */
+    @SaCheckPermission("djs:applet:warehouse:ship:check")
+    @GetMapping("/store-demands")
+    public R<List<ShipDemandVo>> listStorePendingDemands(@RequestParam Long storeId) {
+        return R.ok(service.listStorePendingDemands(storeId));
     }
 }

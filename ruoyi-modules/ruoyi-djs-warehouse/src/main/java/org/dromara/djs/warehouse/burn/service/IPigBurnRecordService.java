@@ -4,33 +4,49 @@ import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.warehouse.burn.domain.bo.PigBurnRecordBo;
 import org.dromara.djs.warehouse.burn.domain.query.PigBurnRecordQuery;
+import org.dromara.djs.warehouse.burn.domain.vo.BarPendingVo;
+import org.dromara.djs.warehouse.burn.domain.vo.BurnProductTypeVo;
 import org.dromara.djs.warehouse.burn.domain.vo.PigBurnRecordVo;
 
 import java.util.List;
 
 /**
- * 燎毛工序记录 Service（WMS-PIG-001）。
+ * 燎毛入库 Service（D12X-MP-BURN-IA-001：燎毛间 IA 重做 = list→detail + 白条按产品类型分类入库）。
  *
- * <p>核心方法 {@link #submitBurnRecord} 在同一事务内 4 步：</p>
+ * <p>核心方法 {@link #submitBurnRecord} 在同一事务内（入库语义）：</p>
  * <ol>
- *   <li>校验 ear_no 存在且 current_status='END'</li>
- *   <li>生成 burn_id + 计算 lossWeight + INSERT 燎毛记录</li>
- *   <li>UPDATE location_stock 扣减白条库存（行锁 + 数量校验）</li>
- *   <li>INSERT stock_flow 出库流水</li>
+ *   <li>SELECT bar_info 校验 status IN ('pending_singe','singing')</li>
+ *   <li>生成 burn_id + INSERT 燎毛记录（operatorId=入库人）</li>
+ *   <li>for each productTypeItem：INSERT product_inhouse + INSERT stock_flow（IN，slaughter_burn）</li>
+ *   <li>UPDATE bar_info status → in_stock（乐观锁）+ 回填 in_weight / in_time / in_method=1</li>
  * </ol>
  *
  * @author djs
- * @since WMS-PIG-001
+ * @since D12X-MP-BURN-IA-001
  */
 public interface IPigBurnRecordService {
 
     /**
-     * mp 端提交燎毛工序记录（核心方法）。
+     * mp 端提交燎毛入库记录（核心方法，按产品类型分别入库）。
      *
      * @param bo 入参
      * @return 燎毛记录主键 id
      */
     Long submitBurnRecord(PigBurnRecordBo bo);
+
+    /**
+     * 已出栏待燎毛入库白条列表（bar_info status IN ('pending_singe','singing')，按出栏时间倒序）。
+     *
+     * <p>mp 燎毛入库列表页进页调用。</p>
+     */
+    List<BarPendingVo> queryPendingBars();
+
+    /**
+     * 入库产品类型列表（标准白条 4 类型：整只 / 半只 / 猪头 / 猪蹄）。
+     *
+     * <p>mp 入库子页拉取，每类型分别录入库重量。</p>
+     */
+    List<BurnProductTypeVo> queryProductTypes();
 
     /**
      * 分页查询。

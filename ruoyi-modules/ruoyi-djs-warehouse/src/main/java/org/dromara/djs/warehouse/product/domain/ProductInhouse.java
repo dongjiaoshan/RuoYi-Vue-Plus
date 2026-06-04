@@ -110,6 +110,14 @@ public class ProductInhouse extends TenantEntity {
     private String cutPart;
 
     /**
+     * 来源 {@code source}：warehouse=仓库分割（WMS-PIG-002 / WMS-VEG-001 产出）/ store=门店再分（STR-SPLIT-001）。
+     *
+     * <p>DB 列 DEFAULT 'warehouse'；仓库分割写入路径不显式 set，靠 DB DEFAULT 兜底；
+     * 门店再分写入路径（{@code StoreSplitServiceImpl#addSplit}）显式 {@code setSource("store")}。</p>
+     */
+    private String source;
+
+    /**
      * 原材料 ID。
      */
     private Long materialId;

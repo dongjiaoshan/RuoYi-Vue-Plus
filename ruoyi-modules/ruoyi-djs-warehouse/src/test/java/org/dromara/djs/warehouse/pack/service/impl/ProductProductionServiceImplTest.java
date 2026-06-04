@@ -37,6 +37,7 @@ import org.mockito.quality.Strictness;
 
 import java.math.BigDecimal;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -62,7 +63,7 @@ import static org.mockito.Mockito.when;
  *   <li>giftPack 组件库存不足 → 抛 + 事务回滚</li>
  *   <li>dryPack happy：写 produce_no H 前缀 + 自定义单位</li>
  *   <li>celeryPack happy：自动写 productSpec='按重量'</li>
- *   <li>produceNo inline 生成：max 解析 + 4 位自增（CUT/burn 同范式）</li>
+ *   <li>produceNo 委托 IBizCodeGenerator PRODUCE_NO（按 belong_type 传业态前缀）</li>
  * </ol>
  *
  * @author djs
@@ -83,6 +84,7 @@ class ProductProductionServiceImplTest {
     @Mock private LocationStockMapper locationStockMapper;
     @Mock private StockFlowMapper stockFlowMapper;
     @Mock private IBizCodeGenerator bizCodeGenerator;
+    @Mock private org.dromara.djs.warehouse.trace.service.ITraceService traceService;
 
     private ProductProductionServiceImpl service;
     private MockedStatic<LoginHelper> loginHelperMock;
@@ -91,7 +93,7 @@ class ProductProductionServiceImplTest {
     void setup() {
         service = new ProductProductionServiceImpl(
             productionMapper, inhouseMapper, productInfoMapper, giftBoxMapper,
-            locationInfoMapper, locationStockMapper, stockFlowMapper, bizCodeGenerator);
+            locationInfoMapper, locationStockMapper, stockFlowMapper, bizCodeGenerator, traceService);
 
         loginHelperMock = Mockito.mockStatic(LoginHelper.class);
         loginHelperMock.when(LoginHelper::getUserId).thenReturn(9001L);
@@ -99,6 +101,14 @@ class ProductProductionServiceImplTest {
         // BizCodeType.STOCK_FLOW_NO 默认 stub
         when(bizCodeGenerator.generate(eq(BizCodeType.STOCK_FLOW_NO), anyMap()))
             .thenReturn("F2606280001");
+
+        // BizCodeType.PRODUCE_NO 默认 stub：回显 context.prefix，模拟 {yyMMdd}{prefix}0001
+        when(bizCodeGenerator.generate(eq(BizCodeType.PRODUCE_NO), anyMap())).thenAnswer(inv -> {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> ctx = inv.getArgument(1);
+            Object prefix = ctx.get("prefix");
+            return "260628" + prefix + "0001";
+        });
     }
 
     @AfterEach
@@ -159,7 +169,6 @@ class ProductProductionServiceImplTest {
         when(inhouseMapper.selectById(70001L)).thenReturn(sampleVegSource());
         when(productInfoMapper.selectById(60010L)).thenReturn(sampleVegProduct());
         when(locationInfoMapper.selectById(90001L)).thenReturn(sampleLocation());
-        when(productionMapper.selectMaxProduceNoByPrefix(any())).thenReturn(null);
         when(productionMapper.insert(any(ProductProduction.class))).thenAnswer(inv -> {
             ProductProduction p = inv.getArgument(0);
             p.setId(80001L);
@@ -264,7 +273,6 @@ class ProductProductionServiceImplTest {
         ));
         when(locationStockMapper.deductByProductLocation(eq(90100L), eq(60001L), any(), eq(9001L))).thenReturn(1);
         when(locationStockMapper.deductByProductLocation(eq(90100L), eq(60002L), any(), eq(9001L))).thenReturn(1);
-        when(productionMapper.selectMaxProduceNoByPrefix(any())).thenReturn(null);
         when(productionMapper.insert(any(ProductProduction.class))).thenAnswer(inv -> {
             ProductProduction p = inv.getArgument(0);
             p.setId(80100L);
@@ -347,7 +355,6 @@ class ProductProductionServiceImplTest {
         p.setProductName("干货·腊肉");
         when(productInfoMapper.selectById(60010L)).thenReturn(p);
         when(locationInfoMapper.selectById(90001L)).thenReturn(sampleLocation());
-        when(productionMapper.selectMaxProduceNoByPrefix(any())).thenReturn(null);
         when(productionMapper.insert(any(ProductProduction.class))).thenAnswer(inv -> {
             ProductProduction pp = inv.getArgument(0);
             pp.setId(80200L);
@@ -383,7 +390,6 @@ class ProductProductionServiceImplTest {
         when(inhouseMapper.selectById(70001L)).thenReturn(sampleVegSource());
         when(productInfoMapper.selectById(60010L)).thenReturn(sampleVegProduct());
         when(locationInfoMapper.selectById(90001L)).thenReturn(sampleLocation());
-        when(productionMapper.selectMaxProduceNoByPrefix(any())).thenReturn(null);
         when(productionMapper.insert(any(ProductProduction.class))).thenAnswer(inv -> {
             ProductProduction p = inv.getArgument(0);
             p.setId(80300L);
@@ -409,20 +415,15 @@ class ProductProductionServiceImplTest {
     }
 
     // ============================================================
-    // produceNo inline 生成
+    // produceNo 生成委托 IBizCodeGenerator（PRODUCE_NO + 业态前缀）
     // ============================================================
 
     @Test
-    @DisplayName("produceNo inline 生成：max 解析 + 4 位自增")
-    void testProduceNo_IncrementFromMax() {
+    @DisplayName("produceNo: 委托 IBizCodeGenerator PRODUCE_NO，按 belong_type 传业态前缀")
+    void testProduceNo_DelegatesToBizCodeGenerator() {
         when(inhouseMapper.selectById(70001L)).thenReturn(sampleVegSource());
         when(productInfoMapper.selectById(60010L)).thenReturn(sampleVegProduct());
         when(locationInfoMapper.selectById(90001L)).thenReturn(sampleLocation());
-        // 假设当天 G 前缀已有 17 行
-        when(productionMapper.selectMaxProduceNoByPrefix(any())).thenAnswer(inv -> {
-            String prefix = inv.getArgument(0);
-            return prefix + "0017";
-        });
         when(productionMapper.insert(any(ProductProduction.class))).thenAnswer(inv -> {
             ProductProduction p = inv.getArgument(0);
             p.setId(80999L);
@@ -436,8 +437,12 @@ class ProductProductionServiceImplTest {
         assertThat(id).isEqualTo(80999L);
         ArgumentCaptor<ProductProduction> cap = ArgumentCaptor.forClass(ProductProduction.class);
         verify(productionMapper).insert(cap.capture());
-        // produceNo 末 4 位应是 0018
-        assertThat(cap.getValue().getProduceNo()).endsWith("0018");
+        // produceNo 由 generator 生成（mock 回显 vegetable→G 前缀）
+        assertThat(cap.getValue().getProduceNo()).contains("G").endsWith("0001");
+        // 校验确实走 PRODUCE_NO 规则且传了正确业态前缀
+        ArgumentCaptor<Map<String, Object>> ctxCap = ArgumentCaptor.forClass(Map.class);
+        verify(bizCodeGenerator).generate(eq(BizCodeType.PRODUCE_NO), ctxCap.capture());
+        assertThat(ctxCap.getValue()).containsEntry("prefix", "G");
     }
 
 }

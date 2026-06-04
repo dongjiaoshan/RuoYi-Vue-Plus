@@ -66,9 +66,17 @@ class PigStateMachineTest {
     }
 
     @Test
-    @DisplayName("FARROW: PH → FM")
-    void farrow_PH_to_FM() {
-        assertThat(sm.nextStatus(PigLifecycle.PH, PigStatusEvent.FARROW, "F", null)).isEqualTo(PigLifecycle.FM);
+    @DisplayName("FARROW: PZ → FM")
+    void farrow_PZ_to_FM() {
+        assertThat(sm.nextStatus(PigLifecycle.PZ, PigStatusEvent.FARROW, "F", null)).isEqualTo(PigLifecycle.FM);
+    }
+
+    @Test
+    @DisplayName("FARROW: 非 PZ from 抛 invalid_transition")
+    void farrow_non_PZ_throws() {
+        assertThatThrownBy(() -> sm.nextStatus(PigLifecycle.HB, PigStatusEvent.FARROW, "F", null))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("pig.event.invalid_transition");
     }
 
     @Test
@@ -80,11 +88,11 @@ class PigStateMachineTest {
     // ─────────────────────── 复杂 transition：OESTRUS ───────────────────────
 
     @Test
-    @DisplayName("OESTRUS: PZ + isPregnantConfirmed=true → PH")
-    void oestrus_PZ_confirmed_to_PH() {
+    @DisplayName("OESTRUS: PZ + isPregnantConfirmed=true → 保持 PZ（ADR-0010 确认妊娠不切态）")
+    void oestrus_PZ_confirmed_stays_PZ() {
         Map<String, Object> payload = new HashMap<>();
         payload.put("isPregnantConfirmed", true);
-        assertThat(sm.nextStatus(PigLifecycle.PZ, PigStatusEvent.OESTRUS, "F", payload)).isEqualTo(PigLifecycle.PH);
+        assertThat(sm.nextStatus(PigLifecycle.PZ, PigStatusEvent.OESTRUS, "F", payload)).isEqualTo(PigLifecycle.PZ);
     }
 
     @Test
@@ -111,10 +119,10 @@ class PigStateMachineTest {
     }
 
     @Test
-    @DisplayName("NULL_RETURN: PH + abnormalType=idle → KH")
+    @DisplayName("NULL_RETURN: PZ + abnormalType=idle → KH")
     void null_return_idle_to_KH() {
         Map<String, Object> payload = Map.of("abnormalType", "idle");
-        assertThat(sm.nextStatus(PigLifecycle.PH, PigStatusEvent.NULL_RETURN, "F", payload)).isEqualTo(PigLifecycle.KH);
+        assertThat(sm.nextStatus(PigLifecycle.PZ, PigStatusEvent.NULL_RETURN, "F", payload)).isEqualTo(PigLifecycle.KH);
     }
 
     @Test
@@ -134,7 +142,7 @@ class PigStateMachineTest {
     }
 
     @Test
-    @DisplayName("NULL_RETURN: 非 PZ/PH from 抛 invalid_transition")
+    @DisplayName("NULL_RETURN: 非 PZ from 抛 invalid_transition")
     void null_return_invalid_from_throws() {
         Map<String, Object> payload = Map.of("abnormalType", "abort");
         assertThatThrownBy(() -> sm.nextStatus(PigLifecycle.HB, PigStatusEvent.NULL_RETURN, "F", payload))
