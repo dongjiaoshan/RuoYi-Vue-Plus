@@ -1,6 +1,7 @@
 package org.dromara.djs.store.member.domain.bo;
 
 import com.fasterxml.jackson.annotation.JsonFormat;
+import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.NotNull;
 import lombok.Data;
 
@@ -53,8 +54,10 @@ public class StoreMemberConsumptionBo implements Serializable {
     private BigDecimal quantity;
 
     /**
-     * 手填金额（元，不强校验）。
+     * 手填金额（元）。STORE-MISC-FIX-001 §7.5：补必填 + 非负校验（原 V1 不强校验，测试反馈要求校验金额非空）。
      */
+    @NotNull(message = "消费金额不能为空")
+    @DecimalMin(value = "0", message = "消费金额不能为负")
     private BigDecimal amountManual;
 
     /**

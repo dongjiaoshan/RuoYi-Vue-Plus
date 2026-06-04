@@ -6,6 +6,7 @@ import org.dromara.djs.warehouse.pack.domain.bo.CeleryPackBo;
 import org.dromara.djs.warehouse.pack.domain.bo.DryPackBo;
 import org.dromara.djs.warehouse.pack.domain.bo.GiftPackBo;
 import org.dromara.djs.warehouse.pack.domain.bo.VegPackBo;
+import org.dromara.djs.warehouse.pack.domain.bo.WhiteBarOutBo;
 import org.dromara.djs.warehouse.pack.domain.query.ProductProductionQuery;
 import org.dromara.djs.warehouse.pack.domain.vo.ProductProductionVo;
 import org.dromara.djs.warehouse.product.domain.ProductInhouse;
@@ -45,6 +46,12 @@ public interface IProductProductionService {
     Long submitCeleryPack(CeleryPackBo bo);
 
     /**
+     * 白条/猪肉出库(发货领用)：inhouse → product_production（前缀 B/Z、绑门店），
+     * 解锁白条/猪肉发货链（WMS-WHITEBAR-SHIP-001）。返新建 production.id。
+     */
+    Long submitWhiteBarOut(WhiteBarOutBo bo);
+
+    /**
      * admin 分页查询（按 produce_no / product_id / product_type / pack_status / 时间区间）。
      */
     TableDataInfo<ProductProductionVo> queryPageList(ProductProductionQuery query, PageQuery pageQuery);
@@ -73,5 +80,10 @@ public interface IProductProductionService {
      * mp 端 - 芹菜可打包来源（蔬菜类 inhouse）。
      */
     List<ProductInhouse> listSourceForCelery();
+
+    /**
+     * 白条/猪肉出库可选来源 inhouse（belong_type ∈ {white_bar, pork} 的活动过程产品）。
+     */
+    List<ProductInhouse> listSourceForWhiteBar();
 
 }

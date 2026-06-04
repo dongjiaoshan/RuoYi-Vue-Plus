@@ -20,6 +20,7 @@ import org.dromara.djs.warehouse.pack.domain.bo.CeleryPackBo;
 import org.dromara.djs.warehouse.pack.domain.bo.DryPackBo;
 import org.dromara.djs.warehouse.pack.domain.bo.GiftPackBo;
 import org.dromara.djs.warehouse.pack.domain.bo.VegPackBo;
+import org.dromara.djs.warehouse.pack.domain.bo.WhiteBarOutBo;
 import org.dromara.djs.warehouse.pack.domain.query.ProductProductionQuery;
 import org.dromara.djs.warehouse.pack.domain.vo.ProductProductionVo;
 import org.dromara.djs.warehouse.pack.mapper.ProductProductionMapper;
@@ -30,6 +31,7 @@ import org.dromara.djs.warehouse.product.domain.ProductInhouse;
 import org.dromara.djs.warehouse.product.mapper.GiftBoxMapper;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
 import org.dromara.djs.warehouse.product.mapper.ProductInhouseMapper;
+import org.dromara.djs.warehouse.stock.domain.LocationStock;
 import org.dromara.djs.warehouse.stock.mapper.LocationStockMapper;
 import org.dromara.djs.warehouse.trace.domain.TraceContentConst;
 import org.dromara.djs.warehouse.trace.service.ITraceService;
@@ -116,6 +118,10 @@ public class ProductProductionServiceImpl
     /** 业务码默认前缀（belong_type 缺失时兜底）。 */
     private static final String DEFAULT_PRODUCE_PREFIX = "G";
 
+    /** 白条/猪肉业态（WMS-WHITEBAR-SHIP-001 出库发货来源校验）。 */
+    private static final String BELONG_TYPE_WHITE_BAR = "white_bar";
+    private static final String BELONG_TYPE_PORK = "pork";
+
     private final ProductInhouseMapper productInhouseMapper;
     private final ProductInfoMapper productInfoMapper;
     private final GiftBoxMapper giftBoxMapper;
@@ -191,9 +197,8 @@ public class ProductProductionServiceImpl
         insertPackInFlow(product.getId(), bo.getLocationId(), bo.getProductWeight(),
             src.getEarNo(), src.getPlotId(), p.getProduceNo(), userId, now);
 
-        // Step 6：UPDATE location_stock += weight（不存在则 V1 不凭空创建，跟 D9 同语义）
-        locationStockMapper.addByProductLocation(
-            bo.getLocationId(), product.getId(), bo.getProductWeight(), userId);
+        // Step 6：UPSERT location_stock += weight（不存在则建新行，WMS-PACK-UPSERT-001）
+        upsertLocationStock(bo.getLocationId(), p, bo.getProductWeight(), userId);
 
         // Step 7：软删来源 inhouse（V1 整 row 消耗）
         consumeInhouse(src);
@@ -274,11 +279,10 @@ public class ProductProductionServiceImpl
         p.setRemark(bo.getRemark());
         baseMapper.insert(p);
 
-        // Step 5：INSERT stock_flow 礼盒入库 + UPDATE location_stock += packBoxCount
+        // Step 5：INSERT stock_flow 礼盒入库 + UPSERT location_stock += packBoxCount（WMS-PACK-UPSERT-001）
         insertPackInFlow(giftBoxProduct.getId(), bo.getLocationId(), giftWeight,
             null, null, p.getProduceNo(), userId, now);
-        locationStockMapper.addByProductLocation(
-            bo.getLocationId(), giftBoxProduct.getId(), giftWeight, userId);
+        upsertLocationStock(bo.getLocationId(), p, giftWeight, userId);
 
         // 生成追溯码回填 + 写 in_stock 事件（TRC-CORE-001）；礼盒无 earNo / plotId
         fillTraceCode(p, null, null);
@@ -326,8 +330,7 @@ public class ProductProductionServiceImpl
 
         insertPackInFlow(product.getId(), bo.getLocationId(), bo.getProductWeight(),
             src.getEarNo(), src.getPlotId(), p.getProduceNo(), userId, now);
-        locationStockMapper.addByProductLocation(
-            bo.getLocationId(), product.getId(), bo.getProductWeight(), userId);
+        upsertLocationStock(bo.getLocationId(), p, bo.getProductWeight(), userId);
         consumeInhouse(src);
 
         // 生成追溯码回填 + 写 in_stock 事件（TRC-CORE-001）
@@ -376,8 +379,7 @@ public class ProductProductionServiceImpl
 
         insertPackInFlow(product.getId(), bo.getLocationId(), bo.getProductWeight(),
             null, src.getPlotId(), p.getProduceNo(), userId, now);
-        locationStockMapper.addByProductLocation(
-            bo.getLocationId(), product.getId(), bo.getProductWeight(), userId);
+        upsertLocationStock(bo.getLocationId(), p, bo.getProductWeight(), userId);
         consumeInhouse(src);
 
         // 生成追溯码回填 + 写 in_stock 事件（TRC-CORE-001）；芹菜无 earNo
@@ -385,6 +387,68 @@ public class ProductProductionServiceImpl
 
         log.info("[WMS-PACK-001] celery pack done id={} produceNo={} weight={} traceCode={}",
             p.getId(), p.getProduceNo(), bo.getProductWeight(), p.getTraceCode());
+        return p.getId();
+    }
+
+    /**
+     * 白条/猪肉出库(发货领用)（WMS-WHITEBAR-SHIP-001）。
+     *
+     * <p>把白条整只(燎毛产)/猪肉部位(分割产)的 inhouse 出库为 product_production（前缀 B=白条/Z=猪肉）。
+     * 区别于 4 个打包口：<b>不选目标发货 SKU</b> —— 直接用来源 inhouse 自身 product_id（白条整只/半只
+     * SKU is_delivery=0 是燎毛过程态，出库即发货，shipment 靠 product_info.belong_type 匹配非 is_delivery，
+     * 故不走 requireDeliveryProduct）。store_id 工人指定（猪只指定门店），可空（清点时绑定）。
+     * 复用 submitDryPack 收尾范式：insertPackInFlow + upsertLocationStock + consumeInhouse + fillTraceCode。</p>
+     */
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public Long submitWhiteBarOut(WhiteBarOutBo bo) {
+        Long userId = currentUserIdSafe();
+        Date now = new Date();
+
+        ProductInhouse src = requireActiveInhouse(bo.getSourceInhouseId());
+        ProductInfo product = productInfoMapper.selectById(src.getProductId());
+        if (product == null) {
+            throw new ServiceException("来源产品主数据不存在：" + src.getProductId());
+        }
+        String belongType = product.getBelongType();
+        if (!BELONG_TYPE_WHITE_BAR.equals(belongType) && !BELONG_TYPE_PORK.equals(belongType)) {
+            throw new ServiceException("出库发货仅限白条/猪肉，当前来源业态=" + belongType);
+        }
+
+        ProductProduction p = new ProductProduction();
+        p.setProduceDate(java.sql.Date.valueOf(LocalDate.now()));
+        p.setProduceNo(generateProduceNo(belongType));
+        p.setProductId(product.getId());
+        p.setProductName(product.getProductName());
+        p.setProductType(product.getProductType() != null ? product.getProductType() : 1);
+        p.setProductUnit(StringUtils.isNotBlank(product.getProductUnit()) ? product.getProductUnit() : "kg");
+        p.setProductSpec(product.getProductSpec());
+        p.setEarNo(src.getEarNo());
+        p.setProductSort(1);
+        p.setProductWeight(bo.getProductWeight());
+        p.setProduceQuantity(bo.getProductWeight()); // D10 hotfix: SHIP 流水 changeNum 用
+        p.setStoreId(bo.getStoreId());
+        p.setProduceTime(now);
+        p.setIsDeliveryCheck(YN_NO);
+        p.setIsArrivalConfirm(YN_NO);
+        p.setProduceLocation(PRODUCE_LOCATION_WAREHOUSE);
+        p.setPackStatus(PACK_STATUS_PACKED);
+        p.setProofOssIds(bo.getProofOssIds());
+        p.setRemark(bo.getRemark());
+        baseMapper.insert(p);
+
+        Long locationId = src.getLocationId();
+        if (locationId != null) {
+            insertPackInFlow(product.getId(), locationId, bo.getProductWeight(),
+                src.getEarNo(), src.getPlotId(), p.getProduceNo(), userId, now);
+            upsertLocationStock(locationId, p, bo.getProductWeight(), userId);
+        }
+        consumeInhouse(src);
+        // 生成追溯码回填 + 写 in_stock 事件（TRC-CORE-001 pork 链首个 genCode 入口）
+        fillTraceCode(p, src.getEarNo(), null);
+
+        log.info("[WMS-WHITEBAR-SHIP-001] white_bar/pork out done id={} produceNo={} belongType={} weight={} store={} traceCode={}",
+            p.getId(), p.getProduceNo(), belongType, bo.getProductWeight(), bo.getStoreId(), p.getTraceCode());
         return p.getId();
     }
 
@@ -435,6 +499,26 @@ public class ProductProductionServiceImpl
         return productInhouseMapper.selectList(
             new LambdaQueryWrapper<ProductInhouse>()
                 .isNotNull(ProductInhouse::getPlotId)
+                .orderByDesc(ProductInhouse::getId)
+                .last("LIMIT 50"));
+    }
+
+    @Override
+    public List<ProductInhouse> listSourceForWhiteBar() {
+        // 来源 = belong_type ∈ {white_bar, pork} 的活动 inhouse
+        // （白条整只=燎毛产 cutPart 空+whiteBarId 非空；猪肉部位=分割产 cutPart 非空）。
+        List<Long> productIds = productInfoMapper.selectList(
+                new LambdaQueryWrapper<ProductInfo>()
+                    .select(ProductInfo::getId)
+                    .in(ProductInfo::getBelongType, List.of(BELONG_TYPE_WHITE_BAR, BELONG_TYPE_PORK)))
+            .stream().map(ProductInfo::getId).toList();
+        if (productIds.isEmpty()) {
+            return List.of();
+        }
+        return productInhouseMapper.selectList(
+            new LambdaQueryWrapper<ProductInhouse>()
+                .in(ProductInhouse::getProductId, productIds)
+                .gt(ProductInhouse::getProductWeight, BigDecimal.ZERO)
                 .orderByDesc(ProductInhouse::getId)
                 .last("LIMIT 50"));
     }
@@ -553,6 +637,26 @@ public class ProductProductionServiceImpl
         // del_unique 同步走 DjsBaseServiceImpl 模型——本场景简化，直接 deleteById 让 MP
         // 写 del_flag='1'，del_unique 保留 0（inhouse 表无 UNIQUE 约束依赖 del_unique，可安全）。
         productInhouseMapper.deleteById(src.getId());
+    }
+
+    /**
+     * UPSERT location_stock += qty（打包入库）：先 UPDATE 增量，affected=0（该 product+location
+     * 无既有行）→ INSERT 新行。复刻 WarehousePurchaseInServiceImpl 的 upsert 范式，修复"打包入库
+     * 静默不建库存行 → 礼盒组件扣减找不到行报『组件库存不足』"（WMS-PACK-UPSERT-001）。
+     */
+    protected void upsertLocationStock(Long locationId, ProductProduction p, BigDecimal qty, Long userId) {
+        int updated = locationStockMapper.addByProductLocation(locationId, p.getProductId(), qty, userId);
+        if (updated == 0) {
+            LocationStock fresh = new LocationStock();
+            fresh.setLocationId(locationId);
+            fresh.setProductId(p.getProductId());
+            fresh.setProductName(p.getProductName());
+            fresh.setProductUnit(p.getProductUnit());
+            fresh.setProductStock(qty);
+            fresh.setIsEnd(0);
+            fresh.setOperatorId(userId);
+            locationStockMapper.insert(fresh);
+        }
     }
 
     /**

@@ -51,6 +51,9 @@ public class StoreReturn extends TenantEntity {
     /** 产品 FK → {@code t_warehouse_product_info.id}。 */
     private Long productId;
 
+    /** 退回入库库位 FK → {@code t_warehouse_location_info.id}（STR-RETURN-REBUILD-001 K4：退回联动外购入库的目标库位）。 */
+    private Long locationId;
+
     /** 退回数量。 */
     private BigDecimal returnQuantity;
 

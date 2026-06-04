@@ -11,8 +11,10 @@ import org.dromara.djs.common.store.mapper.StoreMapper;
 import org.dromara.djs.store.returns.domain.StoreReturn;
 import org.dromara.djs.store.returns.domain.bo.StoreReturnBo;
 import org.dromara.djs.store.returns.mapper.StoreReturnMapper;
+import org.dromara.djs.warehouse.location.mapper.LocationInfoMapper;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
+import org.dromara.djs.warehouse.purchase.service.IWarehousePurchaseInService;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -35,26 +37,27 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * {@link StoreReturnServiceImpl} 单测（STR-RETURN-001）。
+ * {@link StoreReturnServiceImpl} 单测（STR-RETURN-REBUILD-001，K4 简化重做 + 联动外购入库）。
  *
  * <p>覆盖核心场景：</p>
  * <ol>
- *   <li>insertByBo happy（customer_to_store）：returnNo=RET 开头 + operatorId 注入 + returnDate 缺省 now + member/trace 存值</li>
- *   <li>insertByBo 三方向各 1：customer_to_store / store_to_warehouse / warehouse_to_supplier 方向透传</li>
- *   <li>insertByBo 产品不存在 → 抛 ServiceException + 不 INSERT</li>
- *   <li>insertByBo 门店非空但不存在 → 抛 ServiceException</li>
- *   <li>updateByBo 不改 returnNo / operatorId（entity 两字段为 null）</li>
- *   <li>deleteByIds → softDelete（baseMapper.update wrapper-only 被调）</li>
+ *   <li>insertByBo happy：returnNo=RET 开头 + operatorId 注入 + returnDate 缺省 now + locationId 存值</li>
+ *   <li>insertByBo 联动外购入库：调 {@code purchaseInService.inbound(productId, locationId, qty, "return_in", "门店退回入库:...")}</li>
+ *   <li>insertByBo 产品/门店不存在 → 抛 ServiceException + 不 INSERT + <b>不联动入库</b></li>
+ *   <li>updateByBo 元数据 only：不回写 returnNo / operatorId / productId / locationId / returnQuantity + 不联动入库</li>
+ *   <li>deleteByIds → softDelete（不冲销库存，V1）</li>
  * </ol>
  *
  * @author djs
- * @since STR-RETURN-001
+ * @since STR-RETURN-REBUILD-001
  */
 @Tag("local")
 @Tag("dev")
@@ -66,7 +69,9 @@ class StoreReturnServiceImplTest {
     @Mock private StoreReturnMapper baseMapper;
     @Mock private StoreMapper storeMapper;
     @Mock private ProductInfoMapper productInfoMapper;
+    @Mock private LocationInfoMapper locationInfoMapper;
     @Mock private IBizCodeGenerator bizCodeGenerator;
+    @Mock private IWarehousePurchaseInService purchaseInService;
 
     private TestableStoreReturnServiceImpl service;
     private MockedStatic<LoginHelper> loginHelperMock;
@@ -74,8 +79,10 @@ class StoreReturnServiceImplTest {
     private static final Long USER_ID = 9001L;
     private static final Long STORE_ID = 5001L;
     private static final Long PRODUCT_ID = 8001L;
+    private static final Long LOCATION_ID = 3001L;
     private static final Long MEMBER_ID = 7001L;
     private static final String RETURN_NO = "RET2026060200001";
+    private static final String FLOW_RETURN_IN = "return_in";
 
     /**
      * MyBatis-Plus 单测 entity cache 预热（skill coder-mp-entity-cache-test）：
@@ -96,8 +103,9 @@ class StoreReturnServiceImplTest {
      */
     static class TestableStoreReturnServiceImpl extends StoreReturnServiceImpl {
         TestableStoreReturnServiceImpl(StoreReturnMapper b, StoreMapper sm,
-                                       ProductInfoMapper pm, IBizCodeGenerator g) {
-            super(b, sm, pm, g);
+                                       ProductInfoMapper pm, LocationInfoMapper lm,
+                                       IBizCodeGenerator g, IWarehousePurchaseInService pis) {
+            super(b, sm, pm, lm, g, pis);
         }
 
         @Override
@@ -108,7 +116,8 @@ class StoreReturnServiceImplTest {
 
     @BeforeEach
     void setup() {
-        service = new TestableStoreReturnServiceImpl(baseMapper, storeMapper, productInfoMapper, bizCodeGenerator);
+        service = new TestableStoreReturnServiceImpl(baseMapper, storeMapper, productInfoMapper,
+            locationInfoMapper, bizCodeGenerator, purchaseInService);
         loginHelperMock = Mockito.mockStatic(LoginHelper.class);
         loginHelperMock.when(LoginHelper::getUserId).thenReturn(USER_ID);
         when(baseMapper.insert(any(StoreReturn.class))).thenAnswer(inv -> {
@@ -116,6 +125,7 @@ class StoreReturnServiceImplTest {
             r.setId(60000L + (long) (Math.random() * 1000));
             return 1;
         });
+        when(purchaseInService.inbound(any(), any(), any(), anyString(), any())).thenReturn(77777L);
         // product / store 默认存在
         ProductInfo product = new ProductInfo();
         product.setId(PRODUCT_ID);
@@ -137,6 +147,7 @@ class StoreReturnServiceImplTest {
         bo.setReturnDirection(direction);
         bo.setStoreId(storeId);
         bo.setProductId(PRODUCT_ID);
+        bo.setLocationId(LOCATION_ID);
         bo.setReturnQuantity(new BigDecimal("3.5"));
         bo.setReturnReason("客户改主意");
         bo.setTraceCode("TRC20260602ABCD");
@@ -145,7 +156,7 @@ class StoreReturnServiceImplTest {
     }
 
     @Test
-    @DisplayName("insertByBo happy(customer_to_store)：returnNo=RET 开头 + operatorId 注入 + returnDate 缺省 now + member/trace 存值")
+    @DisplayName("insertByBo happy：returnNo=RET 开头 + operatorId 注入 + returnDate 缺省 now + locationId 存值")
     void testInsert_Happy() {
         Long id = service.insertByBo(bo("customer_to_store", STORE_ID));
         assertThat(id).isNotNull();
@@ -153,11 +164,11 @@ class StoreReturnServiceImplTest {
         ArgumentCaptor<StoreReturn> cap = ArgumentCaptor.forClass(StoreReturn.class);
         verify(baseMapper, times(1)).insert(cap.capture());
         StoreReturn e = cap.getValue();
-        assertThat(e.getReturnNo()).startsWith("RET");
         assertThat(e.getReturnNo()).isEqualTo(RETURN_NO);
         assertThat(e.getReturnDirection()).isEqualTo("customer_to_store");
         assertThat(e.getStoreId()).isEqualTo(STORE_ID);
         assertThat(e.getProductId()).isEqualTo(PRODUCT_ID);
+        assertThat(e.getLocationId()).isEqualTo(LOCATION_ID);
         assertThat(e.getReturnQuantity()).isEqualByComparingTo("3.5");
         assertThat(e.getOperatorId()).isEqualTo(USER_ID);
         assertThat(e.getReturnDate()).isNotNull(); // 缺省 now
@@ -166,53 +177,51 @@ class StoreReturnServiceImplTest {
     }
 
     @Test
-    @DisplayName("insertByBo 三方向各 1：方向值透传 INSERT")
-    void testInsert_ThreeDirections() {
+    @DisplayName("insertByBo 联动外购入库：inbound(productId, locationId, qty, return_in, 门店退回入库:RET...)")
+    void testInsert_InboundLinkage() {
         service.insertByBo(bo("customer_to_store", STORE_ID));
-        service.insertByBo(bo("store_to_warehouse", STORE_ID));
-        service.insertByBo(bo("warehouse_to_supplier", null)); // 供应商方向门店可空
 
-        ArgumentCaptor<StoreReturn> cap = ArgumentCaptor.forClass(StoreReturn.class);
-        verify(baseMapper, times(3)).insert(cap.capture());
-        List<StoreReturn> all = cap.getAllValues();
-        assertThat(all).extracting(StoreReturn::getReturnDirection)
-            .containsExactly("customer_to_store", "store_to_warehouse", "warehouse_to_supplier");
-        // 供应商方向 storeId 可空，不校验门店存在
-        assertThat(all.get(2).getStoreId()).isNull();
+        ArgumentCaptor<String> remarkCap = ArgumentCaptor.forClass(String.class);
+        verify(purchaseInService, times(1)).inbound(
+            eq(PRODUCT_ID), eq(LOCATION_ID), eq(new BigDecimal("3.5")), eq(FLOW_RETURN_IN), remarkCap.capture());
+        assertThat(remarkCap.getValue()).startsWith("门店退回入库").contains(RETURN_NO);
     }
 
     @Test
-    @DisplayName("insertByBo 方向留空 → 默认 customer_to_store（门店主场景）")
+    @DisplayName("insertByBo 方向留空 → 默认 customer_to_store（门店主场景）+ 仍联动入库")
     void testInsert_DefaultDirection() {
         service.insertByBo(bo(null, STORE_ID));
         ArgumentCaptor<StoreReturn> cap = ArgumentCaptor.forClass(StoreReturn.class);
         verify(baseMapper, times(1)).insert(cap.capture());
         assertThat(cap.getValue().getReturnDirection()).isEqualTo("customer_to_store");
+        verify(purchaseInService, times(1)).inbound(any(), any(), any(), eq(FLOW_RETURN_IN), any());
     }
 
     @Test
-    @DisplayName("insertByBo 产品不存在 → 抛 ServiceException + 不 INSERT")
+    @DisplayName("insertByBo 产品不存在 → 抛 ServiceException + 不 INSERT + 不联动入库")
     void testInsert_ProductNotFound() {
         when(productInfoMapper.selectById(PRODUCT_ID)).thenReturn(null);
         assertThatThrownBy(() -> service.insertByBo(bo("customer_to_store", STORE_ID)))
             .isInstanceOf(ServiceException.class)
             .hasMessageContaining("产品不存在");
         verify(baseMapper, never()).insert(any(StoreReturn.class));
+        verify(purchaseInService, never()).inbound(any(), any(), any(), anyString(), any());
     }
 
     @Test
-    @DisplayName("insertByBo 门店非空但不存在 → 抛 ServiceException + 不 INSERT")
+    @DisplayName("insertByBo 门店非空但不存在 → 抛 ServiceException + 不 INSERT + 不联动入库")
     void testInsert_StoreNotFound() {
         when(storeMapper.selectById(STORE_ID)).thenReturn(null);
         assertThatThrownBy(() -> service.insertByBo(bo("customer_to_store", STORE_ID)))
             .isInstanceOf(ServiceException.class)
             .hasMessageContaining("门店不存在");
         verify(baseMapper, never()).insert(any(StoreReturn.class));
+        verify(purchaseInService, never()).inbound(any(), any(), any(), anyString(), any());
     }
 
     @Test
-    @DisplayName("updateByBo：不改 returnNo / operatorId（entity 两字段为 null，只更新可编辑字段）")
-    void testUpdate_NoReturnNoChange() {
+    @DisplayName("updateByBo 元数据 only：不回写 returnNo/operatorId/productId/locationId/returnQuantity + 不联动入库")
+    void testUpdate_MetadataOnly() {
         StoreReturn existing = new StoreReturn();
         existing.setId(60001L);
         existing.setReturnNo(RETURN_NO);
@@ -220,9 +229,10 @@ class StoreReturnServiceImplTest {
         when(baseMapper.selectById(60001L)).thenReturn(existing);
         when(baseMapper.updateById(any(StoreReturn.class))).thenReturn(1);
 
-        StoreReturnBo upd = bo("store_to_warehouse", STORE_ID);
+        StoreReturnBo upd = bo("customer_to_store", STORE_ID);
         upd.setId(60001L);
-        upd.setReturnQuantity(new BigDecimal("9.9"));
+        upd.setReturnQuantity(new BigDecimal("9.9")); // 尝试改数量
+        upd.setReturnReason("修正原因");
 
         int n = service.updateByBo(upd);
         assertThat(n).isEqualTo(1);
@@ -230,10 +240,14 @@ class StoreReturnServiceImplTest {
         ArgumentCaptor<StoreReturn> cap = ArgumentCaptor.forClass(StoreReturn.class);
         verify(baseMapper, times(1)).updateById(cap.capture());
         StoreReturn e = cap.getValue();
-        assertThat(e.getReturnNo()).isNull();       // 不改单号
-        assertThat(e.getOperatorId()).isNull();     // 不改经手人
-        assertThat(e.getReturnQuantity()).isEqualByComparingTo("9.9");
-        assertThat(e.getReturnDirection()).isEqualTo("store_to_warehouse");
+        assertThat(e.getReturnNo()).isNull();         // 不改单号
+        assertThat(e.getOperatorId()).isNull();       // 不改经手人
+        assertThat(e.getProductId()).isNull();        // 入库驱动字段锁死
+        assertThat(e.getLocationId()).isNull();       // 入库驱动字段锁死
+        assertThat(e.getReturnQuantity()).isNull();   // 入库驱动字段锁死（即便 bo 传了 9.9）
+        assertThat(e.getReturnReason()).isEqualTo("修正原因"); // 元数据可改
+        // 编辑不再次联动入库
+        verify(purchaseInService, never()).inbound(any(), any(), any(), anyString(), any());
     }
 
     @Test
@@ -248,13 +262,13 @@ class StoreReturnServiceImplTest {
     }
 
     @Test
-    @DisplayName("deleteByIds → softDelete（DjsBaseServiceImpl wrapper-only update 被调）")
+    @DisplayName("deleteByIds → softDelete（不冲销库存，V1）")
     void testDelete_SoftDelete() {
         when(baseMapper.update(any(), any())).thenReturn(1);
         int n = service.deleteByIds(List.of(60001L, 60002L));
-        // softDelete 逐 id 调 baseMapper.update(null, wrapper)
         assertThat(n).isEqualTo(2);
         verify(baseMapper, times(2)).update(any(), any());
+        verify(purchaseInService, never()).inbound(any(), any(), any(), anyString(), any());
     }
 
     @Test

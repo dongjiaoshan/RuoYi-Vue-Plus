@@ -13,6 +13,7 @@ import org.dromara.djs.warehouse.pack.domain.bo.CeleryPackBo;
 import org.dromara.djs.warehouse.pack.domain.bo.DryPackBo;
 import org.dromara.djs.warehouse.pack.domain.bo.GiftPackBo;
 import org.dromara.djs.warehouse.pack.domain.bo.VegPackBo;
+import org.dromara.djs.warehouse.pack.domain.bo.WhiteBarOutBo;
 import org.dromara.djs.warehouse.pack.mapper.ProductProductionMapper;
 import org.dromara.djs.warehouse.product.domain.GiftBox;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
@@ -20,6 +21,7 @@ import org.dromara.djs.warehouse.product.domain.ProductInhouse;
 import org.dromara.djs.warehouse.product.mapper.GiftBoxMapper;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
 import org.dromara.djs.warehouse.product.mapper.ProductInhouseMapper;
+import org.dromara.djs.warehouse.stock.domain.LocationStock;
 import org.dromara.djs.warehouse.stock.mapper.LocationStockMapper;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -227,6 +229,54 @@ class ProductProductionServiceImplTest {
             .hasMessageContaining("不是发货品");
 
         verify(productionMapper, never()).insert(any(ProductProduction.class));
+    }
+
+    @Test
+    @DisplayName("submitVegPack: location_stock 无既有行（add 返 0）→ upsert 兜底 INSERT 新行（WMS-PACK-UPSERT-001）")
+    void testVegPack_UpsertInsertsWhenNoStockRow() {
+        when(inhouseMapper.selectById(70001L)).thenReturn(sampleVegSource());
+        when(productInfoMapper.selectById(60010L)).thenReturn(sampleVegProduct());
+        when(locationInfoMapper.selectById(90001L)).thenReturn(sampleLocation());
+        when(productionMapper.insert(any(ProductProduction.class))).thenAnswer(inv -> {
+            ProductProduction p = inv.getArgument(0);
+            p.setId(80001L);
+            return 1;
+        });
+        // 关键：该 product+location 无既有库存行 → UPDATE affected=0
+        when(locationStockMapper.addByProductLocation(eq(90001L), eq(60010L), any(), eq(9001L))).thenReturn(0);
+        when(inhouseMapper.deleteById(eq(70001L))).thenReturn(1);
+
+        service.submitVegPack(sampleVegBo());
+
+        // upsert 兜底 INSERT 新 LocationStock（字段取自 production）
+        ArgumentCaptor<LocationStock> cap = ArgumentCaptor.forClass(LocationStock.class);
+        verify(locationStockMapper, times(1)).insert(cap.capture());
+        LocationStock fresh = cap.getValue();
+        assertThat(fresh.getLocationId()).isEqualTo(90001L);
+        assertThat(fresh.getProductId()).isEqualTo(60010L);
+        assertThat(fresh.getProductName()).isEqualTo("番茄·小盒装");
+        assertThat(fresh.getProductStock()).isEqualByComparingTo("30.500");
+        assertThat(fresh.getIsEnd()).isEqualTo(0);
+        assertThat(fresh.getOperatorId()).isEqualTo(9001L);
+    }
+
+    @Test
+    @DisplayName("submitVegPack: location_stock 有既有行（add 返 1）→ 仅 UPDATE 增量，不 INSERT")
+    void testVegPack_UpsertSkipsInsertWhenRowExists() {
+        when(inhouseMapper.selectById(70001L)).thenReturn(sampleVegSource());
+        when(productInfoMapper.selectById(60010L)).thenReturn(sampleVegProduct());
+        when(locationInfoMapper.selectById(90001L)).thenReturn(sampleLocation());
+        when(productionMapper.insert(any(ProductProduction.class))).thenAnswer(inv -> {
+            ProductProduction p = inv.getArgument(0);
+            p.setId(80002L);
+            return 1;
+        });
+        when(locationStockMapper.addByProductLocation(eq(90001L), eq(60010L), any(), eq(9001L))).thenReturn(1);
+        when(inhouseMapper.deleteById(eq(70001L))).thenReturn(1);
+
+        service.submitVegPack(sampleVegBo());
+
+        verify(locationStockMapper, never()).insert(any(LocationStock.class));
     }
 
     // ============================================================
@@ -443,6 +493,69 @@ class ProductProductionServiceImplTest {
         ArgumentCaptor<Map<String, Object>> ctxCap = ArgumentCaptor.forClass(Map.class);
         verify(bizCodeGenerator).generate(eq(BizCodeType.PRODUCE_NO), ctxCap.capture());
         assertThat(ctxCap.getValue()).containsEntry("prefix", "G");
+    }
+
+    // ============================================================
+    // white_bar / pork out (WMS-WHITEBAR-SHIP-001)
+    // ============================================================
+
+    @Test
+    @DisplayName("submitWhiteBarOut: happy 白条 inhouse → production B 前缀 + 不校验 is_delivery（白条 SKU is_delivery=0 仍出库）+ consumeInhouse")
+    void testWhiteBarOut_Happy() {
+        ProductInhouse src = sampleVegSource(); // id=70001, productId=60001
+        src.setEarNo("010126050101");
+        src.setLocationId(90001L);
+        when(inhouseMapper.selectById(70001L)).thenReturn(src);
+        ProductInfo wb = sampleVegProduct();
+        wb.setId(60001L);
+        wb.setBelongType("white_bar");
+        wb.setProductName("白条·整只");
+        wb.setIsDelivery(0); // 关键：白条整只 SKU is_delivery=0，出库发货不校验
+        when(productInfoMapper.selectById(60001L)).thenReturn(wb);
+        when(productionMapper.insert(any(ProductProduction.class))).thenAnswer(inv -> {
+            ((ProductProduction) inv.getArgument(0)).setId(80500L);
+            return 1;
+        });
+        when(locationStockMapper.addByProductLocation(any(), any(), any(), any())).thenReturn(1);
+        when(inhouseMapper.deleteById(any())).thenReturn(1);
+
+        WhiteBarOutBo bo = new WhiteBarOutBo();
+        bo.setSourceInhouseId(70001L);
+        bo.setProductWeight(new BigDecimal("12.000"));
+        bo.setStoreId(9L);
+
+        Long id = service.submitWhiteBarOut(bo);
+
+        assertThat(id).isEqualTo(80500L);
+        ArgumentCaptor<ProductProduction> cap = ArgumentCaptor.forClass(ProductProduction.class);
+        verify(productionMapper).insert(cap.capture());
+        ProductProduction saved = cap.getValue();
+        assertThat(saved.getProduceNo()).contains("B"); // 白条前缀 B（非 requireDeliveryProduct）
+        assertThat(saved.getProductId()).isEqualTo(60001L); // 直接用来源 inhouse 的 product_id
+        assertThat(saved.getStoreId()).isEqualTo(9L);
+        assertThat(saved.getEarNo()).isEqualTo("010126050101");
+        assertThat(saved.getProductWeight()).isEqualByComparingTo("12.000");
+        verify(inhouseMapper, times(1)).deleteById(70001L); // consumeInhouse
+    }
+
+    @Test
+    @DisplayName("submitWhiteBarOut: 来源业态非 white_bar/pork → 抛 + production 不 INSERT")
+    void testWhiteBarOut_NotWhiteBarOrPork() {
+        ProductInhouse src = sampleVegSource();
+        when(inhouseMapper.selectById(70001L)).thenReturn(src);
+        ProductInfo veg = sampleVegProduct();
+        veg.setId(60001L);
+        veg.setBelongType("vegetable"); // 非白条/猪肉
+        when(productInfoMapper.selectById(60001L)).thenReturn(veg);
+
+        WhiteBarOutBo bo = new WhiteBarOutBo();
+        bo.setSourceInhouseId(70001L);
+        bo.setProductWeight(new BigDecimal("12.000"));
+
+        assertThatThrownBy(() -> service.submitWhiteBarOut(bo))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("出库发货仅限白条/猪肉");
+        verify(productionMapper, never()).insert(any(ProductProduction.class));
     }
 
 }

@@ -29,11 +29,16 @@ public class StoreReturnBo {
     @Size(max = 32, message = "退回方向长度不能超过 32")
     private String returnDirection;
 
-    /** 退回门店（customer_to_store 必填；其余可空）。 */
+    /** 退回门店。STR-RETURN-REBUILD-001 §8.2：简化后只 customer_to_store 一态，门店必填。 */
+    @NotNull(message = "退回门店不能为空")
     private Long storeId;
 
     @NotNull(message = "产品不能为空")
     private Long productId;
+
+    /** 退回入库库位（STR-RETURN-REBUILD-001 K4：退回联动外购入库必填，新增时校验；编辑不可改）。 */
+    @NotNull(message = "退回入库库位不能为空")
+    private Long locationId;
 
     @NotNull(message = "退回数量不能为空")
     @Positive(message = "退回数量必须大于 0")
