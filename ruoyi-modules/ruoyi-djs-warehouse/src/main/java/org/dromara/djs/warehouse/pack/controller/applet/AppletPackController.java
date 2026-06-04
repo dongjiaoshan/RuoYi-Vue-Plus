@@ -10,6 +10,7 @@ import org.dromara.djs.warehouse.pack.domain.bo.CeleryPackBo;
 import org.dromara.djs.warehouse.pack.domain.bo.DryPackBo;
 import org.dromara.djs.warehouse.pack.domain.bo.GiftPackBo;
 import org.dromara.djs.warehouse.pack.domain.bo.VegPackBo;
+import org.dromara.djs.warehouse.pack.domain.bo.WhiteBarOutBo;
 import org.dromara.djs.warehouse.pack.service.IProductProductionService;
 import org.dromara.djs.warehouse.product.domain.ProductInhouse;
 import org.springframework.validation.annotation.Validated;
@@ -117,6 +118,26 @@ public class AppletPackController extends BaseController {
     @GetMapping("/sourceCelery")
     public R<List<ProductInhouse>> sourceCelery() {
         return R.ok(service.listSourceForCelery());
+    }
+
+    /**
+     * 白条/猪肉出库(发货领用)提交：inhouse → product_production（前缀 B/Z，绑门店）。
+     */
+    @SaCheckLogin
+    @SaCheckPermission("djs:applet:warehouse:pack:whiteBarOut")
+    @PostMapping("/whiteBarOut")
+    public R<Long> packWhiteBarOut(@Valid @RequestBody WhiteBarOutBo bo) {
+        return R.ok(service.submitWhiteBarOut(bo));
+    }
+
+    /**
+     * 白条/猪肉出库可选来源列表（最近 50 条 belong_type ∈ white_bar/pork 的活动 inhouse）。
+     */
+    @SaCheckLogin
+    @SaCheckPermission("djs:applet:warehouse:pack:whiteBarOut")
+    @GetMapping("/sourceWhiteBar")
+    public R<List<ProductInhouse>> sourceWhiteBar() {
+        return R.ok(service.listSourceForWhiteBar());
     }
 
 }

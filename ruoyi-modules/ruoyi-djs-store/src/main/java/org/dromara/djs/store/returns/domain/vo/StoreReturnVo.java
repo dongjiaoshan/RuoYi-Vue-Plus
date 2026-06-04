@@ -52,6 +52,12 @@ public class StoreReturnVo implements Serializable {
     @ExcelProperty(value = "产品名称")
     private String productName;
 
+    private Long locationId;
+
+    /** 入库库位名称（service 内存聚合填，STR-RETURN-REBUILD-001 K4 联动外购入库目标库位）。 */
+    @ExcelProperty(value = "入库库位")
+    private String locationName;
+
     @ExcelProperty(value = "退回数量")
     private BigDecimal returnQuantity;
 

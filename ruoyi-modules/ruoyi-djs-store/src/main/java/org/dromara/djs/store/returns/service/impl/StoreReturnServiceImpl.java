@@ -19,8 +19,11 @@ import org.dromara.djs.store.returns.domain.query.StoreReturnQuery;
 import org.dromara.djs.store.returns.domain.vo.StoreReturnVo;
 import org.dromara.djs.store.returns.mapper.StoreReturnMapper;
 import org.dromara.djs.store.returns.service.IStoreReturnService;
+import org.dromara.djs.warehouse.location.domain.LocationInfo;
+import org.dromara.djs.warehouse.location.mapper.LocationInfoMapper;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
+import org.dromara.djs.warehouse.purchase.service.IWarehousePurchaseInService;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -32,21 +35,24 @@ import java.util.Objects;
 import java.util.stream.Collectors;
 
 /**
- * 门店退回管理 Service 实现（STR-RETURN-001，门店域薄实现）。
+ * 门店退回管理 Service 实现（STR-RETURN-REBUILD-001，K4 简化重做）。
  *
- * <h3>范围（Kevin 决策 a）</h3>
- * <p>三方向退回登记（主场景 {@code customer_to_store}）+ 会员/追溯码字段，仅录入查询导出。
- * <b>不做库存联动 / 不做状态机</b>：仓库侧退货由 WMS-SHIP-001（{@code t_warehouse_return_product}）
- * 负责库存回写，门店退回只录入避免双写库存。</p>
+ * <h3>范围（K4：顾客退回门店一态 + 联动外购入库）</h3>
+ * <p>只做主场景 {@code customer_to_store}（绕开 P0#8 退回方向死结）。新增退回登记时<b>同事务联动外购入库</b>：
+ * 调用 {@link IWarehousePurchaseInService#inbound} 把退回产品按指定库位加回 {@code location_stock}
+ * 并写 {@code stock_flow(flow_type='return_in', IN)}。门店退回走外购入库通道，<b>不写
+ * {@code t_warehouse_return_product}</b>（仓库侧退货由 WMS-SHIP-001 负责，避免双写库存）。</p>
  *
- * <h3>差异化价值</h3>
+ * <h3>编辑/删除与库存的边界（V1）</h3>
  * <ul>
- *   <li>{@code memberId} 顾客退回会员（warehouse 退货无此列）</li>
- *   <li>{@code traceCode} 追溯码字符串（V1 仅存值，t_trace_code D14 才建）</li>
+ *   <li>新增 = 一次性外购入库事件，库存随之 +。</li>
+ *   <li>编辑只改元数据（门店/原因/日期/备注）；<b>产品/库位/数量为入库驱动字段，建后不可改</b>
+ *       （{@link #updateByBo} 不回写这三列），避免记录与库存流水不一致。</li>
+ *   <li>删除仅软删登记记录，<b>不冲销库存</b>（V1 限制，需冲销时另录一笔反向流水）。</li>
  * </ul>
  *
  * @author djs
- * @since STR-RETURN-001
+ * @since STR-RETURN-REBUILD-001
  */
 @Slf4j
 @Service
@@ -54,21 +60,30 @@ public class StoreReturnServiceImpl
     extends DjsBaseServiceImpl<StoreReturnMapper, StoreReturn>
     implements IStoreReturnService {
 
-    /** 门店主场景默认方向。 */
+    /** 门店主场景默认方向（K4 简化后只此一态）。 */
     private static final String DIRECTION_CUSTOMER_TO_STORE = "customer_to_store";
+
+    /** 退回入库流水类型 djs_flow_type（与材料退回 / 仓库退货一致，不污染采购入库列表）。 */
+    private static final String FLOW_TYPE_RETURN_IN = "return_in";
 
     private final StoreMapper storeMapper;
     private final ProductInfoMapper productInfoMapper;
+    private final LocationInfoMapper locationInfoMapper;
     private final IBizCodeGenerator bizCodeGenerator;
+    private final IWarehousePurchaseInService purchaseInService;
 
     public StoreReturnServiceImpl(StoreReturnMapper baseMapper,
                                   StoreMapper storeMapper,
                                   ProductInfoMapper productInfoMapper,
-                                  IBizCodeGenerator bizCodeGenerator) {
+                                  LocationInfoMapper locationInfoMapper,
+                                  IBizCodeGenerator bizCodeGenerator,
+                                  IWarehousePurchaseInService purchaseInService) {
         super(baseMapper);
         this.storeMapper = storeMapper;
         this.productInfoMapper = productInfoMapper;
+        this.locationInfoMapper = locationInfoMapper;
         this.bizCodeGenerator = bizCodeGenerator;
+        this.purchaseInService = purchaseInService;
     }
 
     @Override
@@ -113,6 +128,7 @@ public class StoreReturnServiceImpl
             ? DIRECTION_CUSTOMER_TO_STORE : bo.getReturnDirection());
         entity.setStoreId(bo.getStoreId());
         entity.setProductId(bo.getProductId());
+        entity.setLocationId(bo.getLocationId());
         entity.setReturnQuantity(bo.getReturnQuantity());
         entity.setReturnReason(bo.getReturnReason());
         // member_id / trace_code 仅存值，无 FK 校验（t_store_member 同日并行、t_trace_code D14 才建）
@@ -122,6 +138,14 @@ public class StoreReturnServiceImpl
         entity.setOperatorId(LoginHelper.getUserId());
         entity.setRemark(bo.getRemark());
         baseMapper.insert(entity);
+
+        // K4 联动外购入库：同事务 UPSERT location_stock + stock_flow(return_in)。
+        // inbound 内部校验库位存在 / 数量 > 0，失败抛 → 整体回滚（退回记录一并撤销，不留半态）。
+        purchaseInService.inbound(bo.getProductId(), bo.getLocationId(), bo.getReturnQuantity(),
+            FLOW_TYPE_RETURN_IN, "门店退回入库：" + entity.getReturnNo());
+
+        log.info("[STR-RETURN-REBUILD-001] return id={} no={} product={} location={} qty={} → return_in 联动入库",
+            entity.getId(), entity.getReturnNo(), bo.getProductId(), bo.getLocationId(), bo.getReturnQuantity());
         return entity.getId();
     }
 
@@ -135,24 +159,18 @@ public class StoreReturnServiceImpl
         if (existing == null) {
             throw new ServiceException("退回记录不存在：" + bo.getId(), 404);
         }
-        // 产品校验（编辑时仍校验目标产品存在）
-        ProductInfo product = productInfoMapper.selectById(bo.getProductId());
-        if (product == null) {
-            throw new ServiceException("产品不存在或已删除：" + bo.getProductId(), 404);
-        }
         if (bo.getStoreId() != null && storeMapper.selectById(bo.getStoreId()) == null) {
             throw new ServiceException("门店不存在或已删除：" + bo.getStoreId(), 404);
         }
 
-        // 不允许通过 update 改 returnNo / operatorId（保留原值，只更新可编辑字段）
+        // 只更新元数据：returnNo / operatorId / productId / locationId / returnQuantity 均不回写
+        // （后三者是外购入库驱动字段，建后改会与已写 location_stock / stock_flow 不一致 → 锁死，见类注释）
         StoreReturn entity = new StoreReturn();
         entity.setId(bo.getId());
         if (StringUtils.isNotBlank(bo.getReturnDirection())) {
             entity.setReturnDirection(bo.getReturnDirection());
         }
         entity.setStoreId(bo.getStoreId());
-        entity.setProductId(bo.getProductId());
-        entity.setReturnQuantity(bo.getReturnQuantity());
         entity.setReturnReason(bo.getReturnReason());
         entity.setTraceCode(bo.getTraceCode());
         entity.setMemberId(bo.getMemberId());
@@ -210,12 +228,17 @@ public class StoreReturnServiceImpl
             .map(StoreReturnVo::getStoreId).filter(Objects::nonNull).distinct().toList());
         Map<Long, String> productNames = productNameMap(list.stream()
             .map(StoreReturnVo::getProductId).filter(Objects::nonNull).distinct().toList());
+        Map<Long, String> locationNames = locationNameMap(list.stream()
+            .map(StoreReturnVo::getLocationId).filter(Objects::nonNull).distinct().toList());
         for (StoreReturnVo vo : list) {
             if (vo.getStoreId() != null) {
                 vo.setStoreName(storeNames.get(vo.getStoreId()));
             }
             if (vo.getProductId() != null) {
                 vo.setProductName(productNames.get(vo.getProductId()));
+            }
+            if (vo.getLocationId() != null) {
+                vo.setLocationName(locationNames.get(vo.getLocationId()));
             }
         }
     }
@@ -238,5 +261,15 @@ public class StoreReturnServiceImpl
                 new LambdaQueryWrapper<ProductInfo>().in(ProductInfo::getId, productIds))
             .stream()
             .collect(Collectors.toMap(ProductInfo::getId, ProductInfo::getProductName, (a, b) -> a));
+    }
+
+    private Map<Long, String> locationNameMap(List<Long> locationIds) {
+        if (locationIds.isEmpty()) {
+            return Map.of();
+        }
+        return locationInfoMapper.selectList(
+                new LambdaQueryWrapper<LocationInfo>().in(LocationInfo::getId, locationIds))
+            .stream()
+            .collect(Collectors.toMap(LocationInfo::getId, LocationInfo::getLocationName, (a, b) -> a));
     }
 }

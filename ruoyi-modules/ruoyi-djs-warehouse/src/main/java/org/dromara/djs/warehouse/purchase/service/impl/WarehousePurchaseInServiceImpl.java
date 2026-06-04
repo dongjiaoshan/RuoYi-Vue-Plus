@@ -83,21 +83,29 @@ public class WarehousePurchaseInServiceImpl implements IWarehousePurchaseInServi
     @Override
     @Transactional(rollbackFor = Exception.class)
     public Long submit(PurchaseInBo bo) {
-        ProductInfo product = requireProduct(bo.getProductId());
-        requireLocation(bo.getLocationId());
+        return inbound(bo.getProductId(), bo.getLocationId(), bo.getQuantity(), FLOW_PURCHASE_IN, bo.getRemark());
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public Long inbound(Long productId, Long locationId, BigDecimal quantity, String flowType, String remark) {
+        ProductInfo product = requireProduct(productId);
+        requireLocation(locationId);
+        if (quantity == null || quantity.compareTo(BigDecimal.ZERO) <= 0) {
+            throw new ServiceException("入库数量必须大于 0");
+        }
         Long userId = LoginHelper.getUserId();
 
         // 1. UPSERT location_stock
-        int updated = locationStockMapper.addByProductLocation(
-            bo.getLocationId(), bo.getProductId(), bo.getQuantity(), userId);
+        int updated = locationStockMapper.addByProductLocation(locationId, productId, quantity, userId);
         if (updated == 0) {
             // 不存在 → INSERT 新库存行（同事务，failure → 整体回滚）
             LocationStock fresh = new LocationStock();
-            fresh.setLocationId(bo.getLocationId());
-            fresh.setProductId(bo.getProductId());
+            fresh.setLocationId(locationId);
+            fresh.setProductId(productId);
             fresh.setProductName(product.getProductName());
             fresh.setProductUnit(product.getProductUnit());
-            fresh.setProductStock(bo.getQuantity());
+            fresh.setProductStock(quantity);
             fresh.setIsEnd(0);
             fresh.setOperatorId(userId);
             // tenant_id / create_by / create_time / create_dept / update_by / update_time / del_flag
@@ -109,14 +117,14 @@ public class WarehousePurchaseInServiceImpl implements IWarehousePurchaseInServi
         StockFlow flow = new StockFlow();
         flow.setFlowNo(generateFlowNo(INOUT_IN));
         flow.setFlowDate(new Date());
-        flow.setProductId(bo.getProductId());
-        flow.setWarehouseId(bo.getLocationId());
+        flow.setProductId(productId);
+        flow.setWarehouseId(locationId);
         flow.setInoutType(INOUT_IN);
-        flow.setFlowType(FLOW_PURCHASE_IN);
-        flow.setChangeNum(bo.getQuantity());
-        flow.setChangeQuantity(bo.getQuantity());
+        flow.setFlowType(flowType);
+        flow.setChangeNum(quantity);
+        flow.setChangeQuantity(quantity);
         flow.setOperatorId(userId);
-        flow.setRemark(bo.getRemark());
+        flow.setRemark(remark);
         stockFlowMapper.insert(flow);
 
         return flow.getId();

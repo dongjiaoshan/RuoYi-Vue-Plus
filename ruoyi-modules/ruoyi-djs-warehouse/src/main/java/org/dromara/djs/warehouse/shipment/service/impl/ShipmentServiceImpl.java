@@ -356,9 +356,12 @@ public class ShipmentServiceImpl
             .isNull(ProductProduction::getDemandId)
             .eq(ProductProduction::getIsDeliveryCheck, 0);
 
-        // store_id 收窄：仅取归属同门店的库存，避免跨门店串货（pack 已写 production.store_id）
+        // store_id 收窄：取同门店 + 未绑门店(store_id IS NULL)的库存（WMS-SHIP-STOREID-001）。
+        // 打包时 store_id 可选，production.store_id 为 NULL 的库存不应被门店 demand 漏掉（§3.2「无待清点产品」根因之一）
+        // → 放行待本次清点时绑定（confirmCheck 回写 demand_id + shipment.store_id 取 demand.store_id）。
         if (demand.getStoreId() != null) {
-            wrapper.eq(ProductProduction::getStoreId, demand.getStoreId());
+            wrapper.and(w -> w.eq(ProductProduction::getStoreId, demand.getStoreId())
+                              .or().isNull(ProductProduction::getStoreId));
         }
 
         // 业态收窄：命中映射 → 仅取所属产品 belong_type ∈ 集合 的 production；
