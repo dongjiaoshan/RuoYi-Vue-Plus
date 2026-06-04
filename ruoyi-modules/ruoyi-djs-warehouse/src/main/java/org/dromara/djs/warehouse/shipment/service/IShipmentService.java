@@ -62,6 +62,15 @@ public interface IShipmentService {
     List<AvailableProductionVo> listAvailableProductions(Long demandId);
 
     /**
+     * 某需求当前"可清点"（待分配）产品数（不建 VO 仅计数，listForDispatch picker 用）。
+     * 口径同 {@link #listAvailableProductions} 匹配逻辑。
+     *
+     * @param demandId 需求 ID（null / 需求不存在 → 0）
+     * @return 可清点产品条数
+     */
+    int countAvailableProductionsForDemand(Long demandId);
+
+    /**
      * 门店维度待发货聚合（发货月台 IA 进页 = 门店列表，D12X-MP-SHIPDOCK-IA-001）。
      *
      * <p>扫所有 SHIPPABLE 状态的 demand（CONFIRMED / IN_PRODUCTION / PARTIAL_SHIPPED）

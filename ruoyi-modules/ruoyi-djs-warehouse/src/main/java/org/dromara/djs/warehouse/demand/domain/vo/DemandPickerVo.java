@@ -49,4 +49,11 @@ public class DemandPickerVo implements Serializable {
      */
     private String status;
 
+    /**
+     * 当前可清点（待分配）产品数 —— mp 选需求时显示，方便工人挑有货的需求。
+     * 口径同发货匹配（ShipmentService.findAvailableProductionsForDemand）：
+     * demand_id IS NULL + is_delivery_check=0 + store/业态 匹配。
+     */
+    private Integer availableProductionCount;
+
 }

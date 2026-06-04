@@ -284,6 +284,15 @@ public class ShipmentServiceImpl
     }
 
     @Override
+    public int countAvailableProductionsForDemand(Long demandId) {
+        if (demandId == null) {
+            return 0;
+        }
+        DemandManage demand = demandMapper.selectById(demandId);
+        return demand == null ? 0 : findAvailableProductionsForDemand(demand).size();
+    }
+
+    @Override
     public List<ShipStoreVo> listPendingStores() {
         // 1. 扫所有 SHIPPABLE 状态的 demand（门店列表的数据驱动单位是需求单，非 production）。
         List<DemandManage> demands = loadShippableDemands(null);

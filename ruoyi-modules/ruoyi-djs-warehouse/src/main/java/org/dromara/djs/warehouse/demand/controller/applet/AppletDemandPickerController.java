@@ -9,6 +9,7 @@ import org.dromara.djs.common.store.mapper.StoreMapper;
 import org.dromara.djs.warehouse.demand.domain.DemandManage;
 import org.dromara.djs.warehouse.demand.domain.vo.DemandPickerVo;
 import org.dromara.djs.warehouse.demand.mapper.DemandManageMapper;
+import org.dromara.djs.warehouse.shipment.service.IShipmentService;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -52,6 +53,8 @@ public class AppletDemandPickerController {
 
     private final StoreMapper storeMapper;
 
+    private final IShipmentService shipmentService;
+
     /**
      * 调度发货可选需求单（picker 用，轻量 VO）。
      *
@@ -87,6 +90,7 @@ public class AppletDemandPickerController {
             vo.setCustomerName(d.getStoreId() == null ? null : storeNameMap.get(d.getStoreId()));
             vo.setProductName(d.getProductName());
             vo.setStatus(d.getDemandStatus());
+            vo.setAvailableProductionCount(shipmentService.countAvailableProductionsForDemand(d.getId()));
             return vo;
         }).collect(Collectors.toList());
         return R.ok(vos);
