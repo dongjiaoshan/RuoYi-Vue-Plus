@@ -59,6 +59,17 @@ jobs:
               sleep 5
             done
 
+            # ruoyi 的 sys_dict 缓存无 TTL，只在 admin 改字典时主动 evict；Flyway 直接改 sys_dict_data
+            # 绕过缓存失效 → 重启后 Redis 仍返旧字典快照（典型：品种/品系码表更新后小程序仍拿到旧值，
+            # 导致耳号拼错）。部署后强制刷一次 *:sys_dict + *djs:dict* 缓存，让下次访问重读 DB。
+            echo "==> Flushing dict cache (ruoyi sys_dict no-TTL; Flyway dict seeds bypass cache evict)"
+            REDIS_PW="$(docker exec djs-redis-staging printenv REDIS_PASSWORD 2>/dev/null || true)"
+            if [ -n "$REDIS_PW" ]; then
+              REDIS_CONTAINER="djs-redis-staging" REDIS_PASSWORD="$REDIS_PW" bash script/sql/djs/_post-init.sh || true
+            else
+              echo "WARN: 读不到 djs-redis-staging 的 REDIS_PASSWORD，跳过字典缓存刷新" >&2
+            fi
+
             echo "==> Container status:"
             DEPLOY_ENV=staging $COMPOSE ps
             echo "==> Last 80 lines of app log:"
