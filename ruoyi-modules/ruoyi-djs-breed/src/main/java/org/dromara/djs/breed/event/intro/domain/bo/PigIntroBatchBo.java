@@ -42,7 +42,11 @@ public class PigIntroBatchBo extends PigIntroBo {
      *
      * <p>空 → 后端按 14 位格式（品系1+品种2+公母1+出生yyMMdd6+序号4）当天级 max+1 生成，整批连号；
      * 非空 → 校 14 位纯数字格式 + 提交时逐头 {@code existsEarNo} 探测 UNIQUE，以用户首号为起点连号。</p>
+     *
+     * <p>regex 用 {@code ^(\d{14})?$} —— **允许留空**（留空走上面"后端生成"分支，对齐 601-5 设计 + allocateEarNos
+     * isBlank 分支）；非空才校 14 位纯数字。早先 {@code ^\d{14}$} 会把空串也判违规，导致"留空提交/预填未回填"时
+     * 直接 422，与设计矛盾。</p>
      */
-    @Pattern(regexp = "^\\d{14}$", message = "intro.start_ear_no.pattern")
+    @Pattern(regexp = "^(\\d{14})?$", message = "intro.start_ear_no.pattern")
     private String startEarNo;
 }

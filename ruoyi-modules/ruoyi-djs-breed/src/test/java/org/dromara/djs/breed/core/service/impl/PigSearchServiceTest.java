@@ -293,18 +293,18 @@ class PigSearchServiceTest {
     }
 
     @Test
-    @DisplayName("dueType=FARROW：配种满妊娠期母猪命中 / 刚配种母猪剔除（D12X-MP-FARROW-WEANING-001）")
-    void dueType_farrow_filters_by_gestation_window() {
+    @DisplayName("dueType=FARROW：软提示——全部返回 + 临产排前 + due/dueDate 标记（D12X-MP-FARROW-WEANING-001 改软提示）")
+    void dueType_farrow_annotates_and_sorts_keeps_all() {
         // gestation_days = 114
         when(productionCycleConfigService.getValue("gestation_days")).thenReturn(114);
 
-        // 已到产期：115 天前配种（114 天妊娠窗口 ≤ today），命中
+        // 已到产期：115 天前配种（预产期 = 配种+114 = 昨天 ≤ today），due=true
         Pig due = mkPig(1L, "260520-001", "PZ", "F", "sow", 11L, null);
         due.setLastMatingDate(LocalDate.now().minusDays(115));
-        // 刚配种 10 天，未到产期，剔除
+        // 刚配种 10 天，未到产期（预产期在未来），due=false，但仍返回（早产可录 / 可浏览）
         Pig notDue = mkPig(2L, "260520-002", "PZ", "F", "sow", 11L, null);
         notDue.setLastMatingDate(LocalDate.now().minusDays(10));
-        // 无配种记录（lastMatingDate null），剔除
+        // 无配种记录（lastMatingDate null）：dueDate=null、due=null，仍返回、排最后
         Pig noMating = mkPig(3L, "260520-003", "PZ", "F", "sow", 11L, null);
         when(pigMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(Arrays.asList(due, notDue, noMating));
 
@@ -314,8 +314,18 @@ class PigSearchServiceTest {
         when(barnMapper.selectBatchIds(anyCollection())).thenReturn(List.of(barn));
 
         List<PigSearchVo> result = service.searchByEarKeyword(null, "PZ", "F", "sow", null, 60, "FARROW");
-        assertThat(result).hasSize(1);
+        // 不再剔除——三头全返回
+        assertThat(result).hasSize(3);
+        // 临产排前：due(001) → 未到期(002) → 无基准日期(003)
         assertThat(result.get(0).getEarNo()).isEqualTo("260520-001");
+        assertThat(result.get(0).getDue()).isTrue();
+        assertThat(result.get(0).getDueDate()).isEqualTo(LocalDate.now().minusDays(115).plusDays(114));
+        assertThat(result.get(1).getEarNo()).isEqualTo("260520-002");
+        assertThat(result.get(1).getDue()).isFalse();
+        assertThat(result.get(1).getDueDate()).isEqualTo(LocalDate.now().minusDays(10).plusDays(114));
+        assertThat(result.get(2).getEarNo()).isEqualTo("260520-003");
+        assertThat(result.get(2).getDueDate()).isNull();
+        assertThat(result.get(2).getDue()).isNull();
     }
 
     @Test

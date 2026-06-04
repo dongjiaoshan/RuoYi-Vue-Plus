@@ -1,9 +1,11 @@
 package org.dromara.djs.breed.core.domain.vo;
 
+import com.fasterxml.jackson.annotation.JsonFormat;
 import lombok.Data;
 
 import java.io.Serial;
 import java.io.Serializable;
+import java.time.LocalDate;
 
 /**
  * 猪只 picker 轻量出参（BRD-LIST-001 sub-step 1）。
@@ -75,4 +77,23 @@ public class PigSearchVo implements Serializable {
      * 为空时为 null。BRD-FIX-MP-PIGSELECT-001 卡片右上「13天」格子用。</p>
      */
     private Integer lastEventDays;
+
+    /**
+     * 预产期 / 到断奶期（D12X-MP-FARROW-WEANING-001 软提示）。
+     *
+     * <p>仅当 {@code searchByEarKeyword} 带 {@code dueType}（FARROW/WEANING）时计算填充：
+     * FARROW = {@code lastMatingDate + gestation_days}；WEANING = 最近分娩日 + {@code lactation_days}。
+     * 无基准日期（未配种 / 未分娩）→ null，mp 卡片该格不渲染。**不再作为硬过滤门槛**，
+     * 仅供 mp 排序（临产排前）+「临产 / 预产期」badge 展示。</p>
+     */
+    @JsonFormat(pattern = "yyyy-MM-dd")
+    private LocalDate dueDate;
+
+    /**
+     * 是否已到期（{@code dueDate != null && dueDate <= today}）。
+     *
+     * <p>true → mp 卡片打「临产」/「到断奶期」高亮 badge；早产 / 浏览场景下未到期母猪
+     * （false / null）仍正常返回可选。</p>
+     */
+    private Boolean due;
 }

@@ -118,6 +118,8 @@ public class PigIntroController extends BaseController {
                                   @RequestParam String pigSex,
                                   @RequestParam(required = false)
                                   @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate birthDate) {
-        return R.ok(introService.previewNextEarNo(strainCode, breedCode, pigSex, birthDate));
+        // ⚠️ R.ok(String) 会命中 R.ok(String msg) 重载 → 值进 msg、data=null（前端读 data 拿空）。
+        // 显式走 R.ok(msg, data) 把耳号放进 data，前端才能拿到预填值。
+        return R.ok("操作成功", introService.previewNextEarNo(strainCode, breedCode, pigSex, birthDate));
     }
 }
