@@ -167,13 +167,25 @@ INSERT INTO t_warehouse_demand_manage
 (100000000000933004,'1001','DEMO-D-WB03',CURDATE(),100000000000910002,100000000000931001,'演示·白条整只','white_bar',60.000,'kg',0.000,0.000,'IN_PRODUCTION',1,NOW(),1,NOW(),'0',0,0,202);
 
 -- ============================================================
--- H. 生产记录（生产记录/发货有数据；白条 B 前缀 + 蔬菜，绑 demo 门店）
+-- H. 生产记录（=发货页"待清点产品"来源）
+--    ⚠️ 关键：发货匹配条件（ShipmentServiceImpl.findAvailableProductionsForDemand）=
+--      demand_id IS NULL（未分配，清点确认时才回写）+ is_delivery_check=0
+--      + (store_id=需求门店 OR store_id IS NULL) + 产品 belong_type ∈ 需求业态映射
+--      映射：white_bar 需求→{white_bar,pork}；vegetable→{vegetable}；gift_box→{gift_box}
+--    故 demo production 必须 demand_id=NULL + store_id=NULL（任意门店需求都能清点到），
+--    否则发货页"该需求下暂无待清点产品"。
 -- ============================================================
 INSERT INTO t_warehouse_product_production
   (id,tenant_id,produce_date,produce_no,product_id,product_name,product_type,product_unit,product_weight,produce_quantity,
    store_id,demand_id,produce_time,is_delivery_check,is_arrival_confirm,pack_status,create_dept,create_by,create_time,update_by,update_time,del_flag,del_unique) VALUES
-(100000000000934001,'1001',CURDATE(),'DEMO-B260001',100000000000931001,'演示·白条整只','1','kg',78.500,1.000,100000000000910002,100000000000933004,NOW(),0,0,'packed',202,1,NOW(),1,NOW(),'0',0),
-(100000000000934002,'1001',CURDATE(),'DEMO-V260001',100000000000931004,'演示·上海青','1','kg',30.000,1.000,100000000000910002,100000000000933003,NOW(),0,0,'packed',202,1,NOW(),1,NOW(),'0',0);
+-- 白条整只 ×2（white_bar）→ 匹配 white_bar 需求
+(100000000000934001,'1001',CURDATE(),'DEMO-B260001',100000000000931001,'演示·白条整只','1','kg',78.500,1.000,NULL,NULL,NOW(),0,0,'packed',202,1,NOW(),1,NOW(),'0',0),
+(100000000000934002,'1001',CURDATE(),'DEMO-B260002',100000000000931001,'演示·白条整只','1','kg',82.300,1.000,NULL,NULL,NOW(),0,0,'packed',202,1,NOW(),1,NOW(),'0',0),
+-- 猪肉精瘦 ×1（pork）→ 也匹配 white_bar 需求
+(100000000000934003,'1001',CURDATE(),'DEMO-Z260001',100000000000931002,'演示·猪肉精瘦肉','1','kg',25.000,1.000,NULL,NULL,NOW(),0,0,'packed',202,1,NOW(),1,NOW(),'0',0),
+-- 上海青 ×2（vegetable）→ 匹配 vegetable 需求
+(100000000000934004,'1001',CURDATE(),'DEMO-V260001',100000000000931004,'演示·上海青','1','kg',30.000,1.000,NULL,NULL,NOW(),0,0,'packed',202,1,NOW(),1,NOW(),'0',0),
+(100000000000934005,'1001',CURDATE(),'DEMO-V260002',100000000000931004,'演示·上海青','1','kg',18.500,1.000,NULL,NULL,NOW(),0,0,'packed',202,1,NOW(),1,NOW(),'0',0);
 
 -- ============================================================
 -- I. 出入库流水（采购入库流水，与库存对应）
