@@ -57,6 +57,15 @@ public interface IProductInfoService {
     int updateByBo(ProductInfoBo bo);
 
     /**
+     * 行内切换产品状态（仅更新 {@code product_status} 单字段，不碰其它字段）。
+     *
+     * @param id     产品 ID
+     * @param status 目标状态（字典 {@code sys_normal_disable}：0=正常 / 1=停用）
+     * @return 受影响行数（成功 1）
+     */
+    int updateStatus(Long id, Integer status);
+
+    /**
      * 软删产品（支持批量）。
      *
      * <p>删除前校验：</p>

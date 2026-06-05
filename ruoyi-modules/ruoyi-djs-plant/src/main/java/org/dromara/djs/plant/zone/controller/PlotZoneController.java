@@ -85,6 +85,15 @@ public class PlotZoneController extends BaseController {
         return toAjax(plotZoneService.updateByBo(bo));
     }
 
+    /** 行内切换片区状态（仅改 {@code zoneStatus}；复用 {@code zone:edit} 权限）。 */
+    @SaCheckPermission("djs:plant:zone:edit")
+    @Log(title = "种植-片区", businessType = BusinessType.UPDATE)
+    @RepeatSubmit
+    @PutMapping("/changeStatus")
+    public R<Void> changeStatus(@RequestBody PlotZoneBo bo) {
+        return toAjax(plotZoneService.updateStatus(bo.getId(), bo.getZoneStatus()));
+    }
+
     /** 删除（支持批量；删除前若有关联地块抛 plant.zone.has_plot）。 */
     @SaCheckPermission("djs:plant:zone:remove")
     @Log(title = "种植-片区", businessType = BusinessType.DELETE)

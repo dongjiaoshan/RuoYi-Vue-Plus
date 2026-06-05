@@ -35,6 +35,15 @@ public interface IPlotZoneService {
     int updateByBo(PlotZoneBo bo);
 
     /**
+     * 行内切换片区状态（仅更新 {@code zone_status} 单字段，不碰其它字段）。
+     *
+     * @param id     片区 ID
+     * @param status 目标状态（字典 {@code sys_normal_disable}：0=正常 / 1=停用）
+     * @return 受影响行数（成功 1）
+     */
+    int updateStatus(Long id, Integer status);
+
+    /**
      * 软删除（支持批量）。
      *
      * <p>删除前校验：若片区下仍有未删除地块，抛 {@code plant.zone.has_plot}。</p>

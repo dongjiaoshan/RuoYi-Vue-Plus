@@ -111,6 +111,17 @@ public class LocationInfoController extends BaseController {
     }
 
     /**
+     * 行内切换库位状态（仅改 {@code locationStatus}；复用 {@code location:edit} 权限）。
+     */
+    @SaCheckPermission("djs:warehouse:location:edit")
+    @Log(title = "库位管理", businessType = BusinessType.UPDATE)
+    @RepeatSubmit
+    @PutMapping("/changeStatus")
+    public R<Void> changeStatus(@RequestBody LocationInfoBo bo) {
+        return toAjax(locationInfoService.updateStatus(bo.getId(), bo.getLocationStatus()));
+    }
+
+    /**
      * 删除库位（支持批量；删除前若有 product_stock {@code > 0} 的库存，service 抛 location.has_stock）。
      */
     @SaCheckPermission("djs:warehouse:location:remove")

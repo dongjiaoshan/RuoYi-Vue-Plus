@@ -161,6 +161,21 @@ public class ProductInfoServiceImpl extends DjsBaseServiceImpl<ProductInfoMapper
     }
 
     @Override
+    public int updateStatus(Long id, Integer status) {
+        if (id == null) {
+            throw new ServiceException("产品 ID 不能为空");
+        }
+        if (status == null) {
+            throw new ServiceException("产品状态不能为空");
+        }
+        // 仅更新 product_status 单字段（updateById 默认非 null 才更新，updateBy/updateTime 由 MetaObjectHandler 自动填）
+        ProductInfo entity = new ProductInfo();
+        entity.setId(id);
+        entity.setProductStatus(status);
+        return baseMapper.updateById(entity);
+    }
+
+    @Override
     @Transactional(rollbackFor = Exception.class)
     public int deleteWithValidByIds(Collection<Long> ids) {
         if (CollUtil.isEmpty(ids)) {

@@ -104,6 +104,21 @@ public class LocationInfoServiceImpl extends DjsBaseServiceImpl<LocationInfoMapp
     }
 
     @Override
+    public int updateStatus(Long id, Integer status) {
+        if (id == null) {
+            throw new ServiceException("库位 ID 不能为空");
+        }
+        if (status == null) {
+            throw new ServiceException("库位状态不能为空");
+        }
+        // 仅更新 location_status 单字段（updateById 默认非 null 才更新，updateBy/updateTime 由 MetaObjectHandler 自动填）
+        LocationInfo entity = new LocationInfo();
+        entity.setId(id);
+        entity.setLocationStatus(status);
+        return baseMapper.updateById(entity);
+    }
+
+    @Override
     public int deleteWithValidByIds(Collection<Long> ids) {
         if (ids == null || ids.isEmpty()) {
             return 0;

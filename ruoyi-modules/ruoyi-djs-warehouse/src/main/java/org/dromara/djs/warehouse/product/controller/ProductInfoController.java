@@ -99,6 +99,17 @@ public class ProductInfoController extends BaseController {
     }
 
     /**
+     * 行内切换产品状态（仅改 {@code productStatus}；复用 {@code product:edit} 权限）。
+     */
+    @SaCheckPermission("djs:warehouse:product:edit")
+    @Log(title = "商品管理", businessType = BusinessType.UPDATE)
+    @RepeatSubmit
+    @PutMapping("/changeStatus")
+    public R<Void> changeStatus(@RequestBody ProductInfoBo bo) {
+        return toAjax(productInfoService.updateStatus(bo.getId(), bo.getProductStatus()));
+    }
+
+    /**
      * 删除产品（支持批量；若仍有库存或被原材料引用，service 抛业务异常）。
      */
     @SaCheckPermission("djs:warehouse:product:remove")

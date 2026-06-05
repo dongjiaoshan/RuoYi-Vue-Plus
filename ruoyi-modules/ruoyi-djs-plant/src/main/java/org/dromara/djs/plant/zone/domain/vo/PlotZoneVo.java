@@ -6,6 +6,8 @@ import io.github.linpeilie.annotations.AutoMapper;
 import lombok.Data;
 import org.dromara.common.excel.annotation.ExcelDictFormat;
 import org.dromara.common.excel.convert.ExcelDictConvert;
+import org.dromara.common.translation.annotation.Translation;
+import org.dromara.common.translation.constant.TransConstant;
 import org.dromara.djs.plant.zone.domain.PlotZone;
 
 import java.io.Serial;
@@ -68,4 +70,22 @@ public class PlotZoneVo implements Serializable {
      */
     @ExcelProperty(value = "创建时间")
     private Date createTime;
+
+    /**
+     * 更新时间。
+     */
+    @ExcelProperty(value = "更新时间")
+    private Date updateTime;
+
+    /**
+     * 更新人 ID（{@code sys_user.user_id}），供 {@link Translation} 反射取数翻译成 updateByName。
+     */
+    private Long updateBy;
+
+    /**
+     * 更新人姓名（注解翻译，VO 序列化时填）。
+     */
+    @ExcelProperty(value = "更新人")
+    @Translation(type = TransConstant.USER_ID_TO_NAME, mapper = "updateBy")
+    private String updateByName;
 }

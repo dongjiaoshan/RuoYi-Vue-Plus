@@ -197,6 +197,33 @@ class LocationInfoServiceImplTest {
     }
 
     @Test
+    @DisplayName("updateStatus: happy path → 仅 set id + locationStatus 单字段调 updateById（ADMIN-LIST-FIX-001）")
+    void testUpdateStatus_HappyPath() {
+        when(locationInfoMapper.updateById(any(LocationInfo.class))).thenReturn(1);
+
+        int rows = service.updateStatus(90001L, 2);
+
+        assertThat(rows).isEqualTo(1);
+        ArgumentCaptor<LocationInfo> captor = ArgumentCaptor.forClass(LocationInfo.class);
+        verify(locationInfoMapper, times(1)).updateById(captor.capture());
+        LocationInfo saved = captor.getValue();
+        assertThat(saved.getId()).isEqualTo(90001L);
+        assertThat(saved.getLocationStatus()).as("目标状态应为 2=停用").isEqualTo(2);
+        // 仅切状态：其它业务字段保持 null（updateById 非 null 才更新，不污染 locationCode/locationName 等）
+        assertThat(saved.getLocationCode()).isNull();
+        assertThat(saved.getLocationName()).isNull();
+    }
+
+    @Test
+    @DisplayName("updateStatus: id 缺失 → 抛 ServiceException，不打 DB")
+    void testUpdateStatus_NullId() {
+        assertThatThrownBy(() -> service.updateStatus(null, 2))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("ID 不能为空");
+        verify(locationInfoMapper, never()).updateById(any(LocationInfo.class));
+    }
+
+    @Test
     @DisplayName("deleteWithValidByIds: 无库存 happy → 走基类 softDelete，wrapper.setSql del_flag='1'")
     void testDeleteWithValidByIds_HappyPath_NoStock() {
         when(stockMapper.countActiveStockByLocation(90001L)).thenReturn(0L);

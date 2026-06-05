@@ -48,6 +48,15 @@ public interface ILocationInfoService {
     int updateByBo(LocationInfoBo bo);
 
     /**
+     * 行内切换库位状态（仅更新 {@code location_status} 单字段，不碰其它字段）。
+     *
+     * @param id     库位 ID
+     * @param status 目标状态（字典 {@code djs_location_status}：1=启用 / 2=停用）
+     * @return 受影响行数（成功 1）
+     */
+    int updateStatus(Long id, Integer status);
+
+    /**
      * 软删除库位（支持批量）。
      *
      * <p>删除前校验：若库位下仍有 {@code product_stock > 0} 的库存明细，抛
