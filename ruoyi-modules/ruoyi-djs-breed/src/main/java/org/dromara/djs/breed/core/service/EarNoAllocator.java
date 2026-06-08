@@ -174,6 +174,18 @@ public class EarNoAllocator {
     }
 
     /**
+     * 同前缀（10 位）下一可用序号 = {@code MAX(ear_no)} 末位 seq + 1；无现存号则 1。
+     * <p>供 service 端"用户首号下限校验"复用（甲方：用户填的数量编号不得小于后台返回的最小可用号），
+     * 不重写 SQL。仅读不锁——真正分配仍走 {@link #allocate} 的 Redisson 锁 + UNIQUE 兜底。</p>
+     *
+     * @param prefix 耳号前缀（品系1 + 品种2 + 公母1 + yyMMdd6，定长 10 位）
+     * @return 下一可用 4 位序号的数值（1-based）
+     */
+    public long nextSeqForPrefix(String prefix) {
+        return resolveNextSeq(prefix);
+    }
+
+    /**
      * 解析同前缀现存耳号的下一可用序号：{@code MAX(ear_no)} 末位 seq + 1；无则从 1 起。
      */
     private long resolveNextSeq(String prefix) {

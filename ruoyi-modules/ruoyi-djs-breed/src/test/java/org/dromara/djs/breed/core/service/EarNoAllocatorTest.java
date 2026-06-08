@@ -233,4 +233,14 @@ class EarNoAllocatorTest {
 
         assertThat(earNo).isEqualTo(sowPrefix + "0001").hasSize(14);
     }
+
+    @Test
+    @DisplayName("nextSeqForPrefix：现存 max=...0008 → 返 9；空前缀 → 返 1（供 service 端首号下限校验复用）")
+    void nextSeqForPrefix_resolvesNextSeq() {
+        when(pigMapper.selectMaxEarNoByPrefix(boarPrefix)).thenReturn(boarPrefix + "0008");
+        assertThat(allocator.nextSeqForPrefix(boarPrefix)).isEqualTo(9L);
+
+        when(pigMapper.selectMaxEarNoByPrefix(sowPrefix)).thenReturn(null);
+        assertThat(allocator.nextSeqForPrefix(sowPrefix)).isEqualTo(1L);
+    }
 }

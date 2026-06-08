@@ -340,6 +340,39 @@ class PigIntroServiceImplTest {
     }
 
     @Test
+    @DisplayName("FIX-CC-EARNO 用户首号 seq < 后台最小可用号 → 抛 intro.start_ear_no.too_small（不 createPig）")
+    void batch_userStartEarNo_belowMin_throws() {
+        when(earNoAllocator.nextSeqForPrefix(org.mockito.ArgumentMatchers.anyString())).thenReturn(11L);
+
+        PigIntroBatchBo bo = new PigIntroBatchBo();
+        copyFromSingle(mkSingleBo("external", "F"), bo);
+        bo.setPigCount(1);
+        bo.setStartEarNo("40421251200010");  // seq=10 < 后台 min 11
+
+        assertThatThrownBy(() -> service.introduceBatch(bo))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("intro.start_ear_no.too_small");
+        verify(pigCoreService, never()).createPig(any());
+    }
+
+    @Test
+    @DisplayName("FIX-CC-EARNO 用户首号 seq == 后台最小可用号 → 放行，以用户首号连号")
+    void batch_userStartEarNo_atMin_ok() {
+        when(earNoAllocator.nextSeqForPrefix(org.mockito.ArgumentMatchers.anyString())).thenReturn(10L);
+
+        PigIntroBatchBo bo = new PigIntroBatchBo();
+        copyFromSingle(mkSingleBo("external", "F"), bo);
+        bo.setPigCount(2);
+        bo.setStartEarNo("40421251200010");  // seq=10 == min 10 → OK
+
+        PigIntroResultVo result = service.introduceBatch(bo);
+
+        assertThat(result.getPigs()).hasSize(2);
+        assertThat(result.getPigs().get(0).getEarNo()).isEqualTo("40421251200010");
+        assertThat(result.getPigs().get(1).getEarNo()).isEqualTo("40421251200011");
+    }
+
+    @Test
     @DisplayName("INTRO_NO 编码生成器被调用一次（每次 introduce 一行业务表）")
     void intro_no_generated_once() {
         PigIntroBo bo = mkSingleBo("external", "F");

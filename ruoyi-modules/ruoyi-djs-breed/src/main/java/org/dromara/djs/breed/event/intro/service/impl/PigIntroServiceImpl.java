@@ -470,6 +470,12 @@ public class PigIntroServiceImpl implements IPigIntroService {
         } catch (NumberFormatException e) {
             throw new ServiceException(I18nMessages.t("intro.start_ear_no.pattern"));
         }
+        // 甲方：用户填的数量编号不得小于后台当前最小可用号（防 FE 绕过 / 重号）。
+        // 复用 allocator 取该前缀 DB max+1，不重写 SQL。
+        long minSeq = earNoAllocator.nextSeqForPrefix(prefix);
+        if (startSeq < minSeq) {
+            throw new ServiceException(I18nMessages.t("intro.start_ear_no.too_small", minSeq));
+        }
         List<String> earNos = new ArrayList<>(count);
         for (int i = 0; i < count; i++) {
             String earNo = prefix + String.format("%04d", startSeq + i);

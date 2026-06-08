@@ -1,6 +1,8 @@
 package org.dromara.djs.breed.event.intro.domain.vo;
 
 import lombok.Data;
+import org.dromara.common.translation.annotation.Translation;
+import org.dromara.common.translation.constant.TransConstant;
 
 import java.io.Serial;
 import java.io.Serializable;
@@ -53,8 +55,12 @@ public class IntroRecordVo implements Serializable {
     /** 引种日期。 */
     private LocalDate introduceDate;
 
-    /** 引种人员（V1 自由文本）。 */
+    /** 引种人员 userId（EmployeePicker 所选；legacy 可能自由文本）。 */
     private String operator;
+
+    /** 引种人员姓名（FIX-CC-PERSON-001 #16：operator userId → USER_ID_TO_NAME 翻译；mp 记录列表显名不显 ID，非数字 operator 翻不到回落 null）。 */
+    @Translation(type = TransConstant.USER_ID_TO_NAME, mapper = "operator")
+    private String operatorName;
 
     /** 凭证图 OSS IDs 逗号分隔（外部引种有；mp 端渲染缩略图）。 */
     private String proofOssIds;
