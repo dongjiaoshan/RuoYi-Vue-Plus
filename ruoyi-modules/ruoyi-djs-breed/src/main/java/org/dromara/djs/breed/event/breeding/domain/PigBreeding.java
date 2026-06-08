@@ -43,14 +43,11 @@ public class PigBreeding extends TenantEntity {
     /** 配种方式（字典 djs_mating_method；1=本场公猪 2=精液产品；本工程使用 varchar(16) 允许扩展）。 */
     private String breedingType;
 
-    /** 公猪耳号（breedingType=1 时必填；2 时可空）。 */
+    /** 公猪耳号（breedingType=1 时必填；精液类型时可空）。 */
     private String boarEarNo;
 
-    /** 精液供应商（breedingType=2 时填）。 */
-    private String semenSupplier;
-
-    /** 精液批号（breedingType=2 时填）。 */
-    private String semenBatchNo;
+    /** 配种精液字典 code（djs_semen；breedingType=精液时填。FIX-BREEDING-001 #21 纯字典、不扣库存）。 */
+    private String semenCode;
 
     /** 母猪本次配种时胎次（与 pig.parity 一致，service 端填）。 */
     private Integer parity;

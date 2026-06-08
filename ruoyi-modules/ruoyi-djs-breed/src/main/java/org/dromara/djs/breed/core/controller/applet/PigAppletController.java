@@ -67,6 +67,9 @@ public class PigAppletController {
      * @param limit         1-100，默认 20
      * @param dueType       到期窗口过滤（{@code FARROW}=已到产期 / {@code WEANING}=已到断奶期；
      *                      空 → 不做日期过滤。分娩 / 断奶 mp 选猪传，按生产周期配置天数 + 基准日期判定）
+     * @param excludeNullBarn 是否排除无栋舍归属（{@code barn_id} 为 null）的猪只（FIX-BREEDING-001 #23a）。
+     *                        {@code true} → 列表口径与 {@code /barn-count} chip 一致；配种选猪传 true，
+     *                        其余调用方不传（默认 false）行为不变。
      */
     @SaCheckLogin
     @SaCheckPermission("djs:applet:pig:search")
@@ -78,9 +81,10 @@ public class PigAppletController {
         @RequestParam(required = false) String pigTypeFilter,
         @RequestParam(required = false) String barnCode,
         @RequestParam(required = false, defaultValue = "20") Integer limit,
-        @RequestParam(required = false) String dueType
+        @RequestParam(required = false) String dueType,
+        @RequestParam(required = false) Boolean excludeNullBarn
     ) {
-        return R.ok(pigCoreService.searchByEarKeyword(earNoKeyword, statusFilter, sexFilter, pigTypeFilter, barnCode, limit, dueType));
+        return R.ok(pigCoreService.searchByEarKeyword(earNoKeyword, statusFilter, sexFilter, pigTypeFilter, barnCode, limit, dueType, excludeNullBarn));
     }
 
     /**

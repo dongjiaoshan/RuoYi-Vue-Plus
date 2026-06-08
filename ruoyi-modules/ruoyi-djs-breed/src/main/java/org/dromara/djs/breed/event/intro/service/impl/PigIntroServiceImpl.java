@@ -196,7 +196,9 @@ public class PigIntroServiceImpl implements IPigIntroService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public PigIntroResultVo introduceInternal(PigIntroInternalBo bo) {
-        // 内部引种：登记一头已存在的猪进引种台账，不新建猪 / 不动 pen.current_count / 不触发状态机
+        // 内部引种：登记一头已存在的猪进引种台账，不新建猪 / 不动 pen.current_count。
+        // FIX-INTRO-001 #1：来源为 fattening 的肥猪登记后触发状态转移到「后备 HB」（同事务）；
+        // 非 fattening / 已 HB / END 终态由 internalIntroToReserve 内部幂等跳过。
         Pig pig = pigMapper.selectById(bo.getPigId());
         if (pig == null) {
             throw new ServiceException(I18nMessages.t("pig.not_found", bo.getPigId()));
@@ -222,8 +224,12 @@ public class PigIntroServiceImpl implements IPigIntroService {
         intro.setDelUnique(0L);
         introduceMapper.insert(intro);
 
-        // 复用 buildResult 装配（关联的已存在猪当作 pigs[0]，currentStatus 不变）
-        return buildResult(intro, List.of(pig));
+        // FIX-INTRO-001 #1：fattening 来源猪触发 → HB（写 status_record + update current_status，同事务）
+        pigCoreService.internalIntroToReserve(pig.getId());
+
+        // 重读取得最新 current_status（若已转 HB），让 buildResult 返回的 pigs[0] 状态正确
+        Pig refreshed = pigMapper.selectById(pig.getId());
+        return buildResult(intro, List.of(refreshed != null ? refreshed : pig));
     }
 
     @Override

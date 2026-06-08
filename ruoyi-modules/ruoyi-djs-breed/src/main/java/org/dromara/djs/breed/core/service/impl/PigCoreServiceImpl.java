@@ -230,6 +230,47 @@ public class PigCoreServiceImpl implements IPigCoreService {
     }
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void internalIntroToReserve(Long pigId) {
+        // 挂调用方（introduceInternal）事务：REQUIRED 默认行为，与 intro insert 同生共死。
+        Pig pig = pigMapper.selectById(pigId);
+        if (pig == null) {
+            throw new ServiceException(I18nMessages.t("pig.not_found", pigId));
+        }
+        // 仅对 fattening 来源猪转 HB；非 fattening（sow/boar/piglet）或已 HB 或 END 终态 → 不转（幂等）
+        if (!"fattening".equals(pig.getPigType())) {
+            return;
+        }
+        PigLifecycle from = parseLifecycle(pig.getCurrentStatus(), pig.getId());
+        if (from == PigLifecycle.HB || from.isTerminal()) {
+            return;
+        }
+
+        LocalDateTime now = LocalDateTime.now();
+        PigStatusRecord record = new PigStatusRecord();
+        record.setPigId(pig.getId());
+        record.setEarNo(pig.getEarNo());
+        record.setOldStatus(from.name());
+        record.setNewStatus(PigLifecycle.HB.name());
+        record.setEventType(PigStatusEvent.INTRO.name());
+        record.setChangeTime(now);
+        record.setDurationDays(calcDurationDays(pig.getStatusStartedAt(), now));
+        statusRecordMapper.insert(record);
+
+        pig.setCurrentStatus(PigLifecycle.HB.name());
+        pig.setStatusStartedAt(now);
+        int affected = pigMapper.updateById(pig);
+        if (affected == 0) {
+            throw new ServiceException(I18nMessages.t("pig.update.optimistic_lock_conflict", pig.getId()));
+        }
+
+        eventPublisher.publishEvent(new PigStateChangedEvent(this, record, pig, from, PigLifecycle.HB));
+
+        log.info("[FIX-INTRO-001] internalIntroToReserve pigId={} earNo={} {} -> HB",
+            pig.getId(), pig.getEarNo(), from);
+    }
+
+    @Override
     public PigDetailVo queryDetail(Long pigId) {
         if (pigId == null) {
             throw new ServiceException(I18nMessages.t("pig.id.required"));
@@ -345,8 +386,12 @@ public class PigCoreServiceImpl implements IPigCoreService {
                                                 String pigTypeFilter,
                                                 String barnCode,
                                                 Integer limit,
-                                                String dueType) {
+                                                String dueType,
+                                                Boolean excludeNullBarn) {
         int effectiveLimit = clampLimit(limit);
+        // FIX-BREEDING-001 #23a：配种选猪场景传 excludeNullBarn=true，排除无栋舍归属猪只，
+        // 与 countByBarn（barn-count chip）口径对齐（列表数 = 各栋舍 chip 之和）。默认 false 不变。
+        boolean dropNullBarn = Boolean.TRUE.equals(excludeNullBarn);
         // statusFilter CSV："HB,PZ" → IN ('HB','PZ')；如果显式含 END（如燎毛工序选已出栏猪），跳过下方 .ne(END) 默认排除
         List<String> statuses = parseStatusFilter(statusFilter);
         boolean callerWantsEnd = statuses.contains(PigLifecycle.END.name());
@@ -369,6 +414,8 @@ public class PigCoreServiceImpl implements IPigCoreService {
             .eq(StringUtils.isNotBlank(sexFilter), Pig::getPigSex, sexFilter)
             .eq(StringUtils.isNotBlank(pigTypeFilter), Pig::getPigType, pigTypeFilter)
             .eq(barnIdFilter != null, Pig::getBarnId, barnIdFilter)
+            // #23a：opt-in 排除无栋舍归属猪只，与 countByBarn 的 .isNotNull(barn_id) 口径一致
+            .isNotNull(dropNullBarn, Pig::getBarnId)
             .orderByDesc(Pig::getId)
             .last("LIMIT " + effectiveLimit);
 
@@ -387,15 +434,16 @@ public class PigCoreServiceImpl implements IPigCoreService {
         // dueType 为空 → dueDateMap 为空，所有 VO dueDate/due 为 null（向后兼容所有现有调用方）。
         Map<Long, LocalDate> dueDateMap = computeDueDateMap(pigs, dueType);
 
-        // 批量 enrich barnCode/penCode（与 queryPage 一致，避免 N+1）
+        // 批量 enrich barnCode/penCode + barnName/penName（与 queryPage 一致，避免 N+1）
+        // FIX-INTRO-001 P1：同批查出 Barn/Pen 全对象，供 mp 选猪卡「位置」格显「栋舍名+栏位名」
         Set<Long> barnIds = pigs.stream().map(Pig::getBarnId).filter(Objects::nonNull).collect(Collectors.toSet());
         Set<Long> penIds = pigs.stream().map(Pig::getPenId).filter(Objects::nonNull).collect(Collectors.toSet());
-        Map<Long, String> barnCodeMap = barnIds.isEmpty() ? Map.of()
+        Map<Long, Barn> barnMap = barnIds.isEmpty() ? Map.of()
             : barnMapper.selectBatchIds(barnIds).stream()
-                .collect(Collectors.toMap(Barn::getId, Barn::getBarnCode, (a, b) -> a));
-        Map<Long, String> penCodeMap = penIds.isEmpty() ? Map.of()
+                .collect(Collectors.toMap(Barn::getId, Function.identity(), (a, b) -> a));
+        Map<Long, Pen> penMap = penIds.isEmpty() ? Map.of()
             : penMapper.selectBatchIds(penIds).stream()
-                .collect(Collectors.toMap(Pen::getId, Pen::getPenCode, (a, b) -> a));
+                .collect(Collectors.toMap(Pen::getId, Function.identity(), (a, b) -> a));
 
         LocalDate today = LocalDate.now();
         LocalDateTime now = LocalDateTime.now();
@@ -416,10 +464,18 @@ public class PigCoreServiceImpl implements IPigCoreService {
             vo.setParity(p.getParity());
             vo.setLastEventDays(calcDaysSince(p.getStatusStartedAt(), now));
             if (p.getBarnId() != null) {
-                vo.setBarnCode(barnCodeMap.get(p.getBarnId()));
+                Barn barn = barnMap.get(p.getBarnId());
+                if (barn != null) {
+                    vo.setBarnCode(barn.getBarnCode());
+                    vo.setBarnName(barn.getBarnName());
+                }
             }
             if (p.getPenId() != null) {
-                vo.setPenCode(penCodeMap.get(p.getPenId()));
+                Pen pen = penMap.get(p.getPenId());
+                if (pen != null) {
+                    vo.setPenCode(pen.getPenCode());
+                    vo.setPenName(pen.getPenName());
+                }
             }
             // 到期软提示：dueDate（预产期/到断奶期）+ due 标记；无基准日期 → 留 null（mp 该格不渲染）
             LocalDate dd = dueDateMap.get(p.getId());

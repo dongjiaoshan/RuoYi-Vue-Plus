@@ -90,8 +90,7 @@ public class BreedingServiceImpl implements IBreedingService {
         entity.setBreedingDate(bo.getBreedingDate());
         entity.setBreedingType(bo.getBreedingType());
         entity.setBoarEarNo(bo.getBoarEarNo());
-        entity.setSemenSupplier(bo.getSemenSupplier());
-        entity.setSemenBatchNo(bo.getSemenBatchNo());
+        entity.setSemenCode(bo.getSemenCode());
         entity.setParity(Optional.ofNullable(pig.getParity()).orElse(0));
         entity.setBarnName(resolveBarnName(pig.getBarnId()));
         entity.setPenName(resolvePenName(pig.getPenId()));
@@ -134,14 +133,16 @@ public class BreedingServiceImpl implements IBreedingService {
         return TableDataInfo.build(page);
     }
 
-    /** breedingType=1 本场公猪 → 必填 boarEarNo；breedingType=2 精液产品 → 必填 supplier + batch。 */
+    /**
+     * breedingType=1 本场公猪 → 必填 boarEarNo；非 1（精液类）→ 必填 semenCode（djs_semen 字典 code）。
+     * FIX-BREEDING-001 #21：精液改纯字典下拉，去供应商/批号；精液类型口径 = breedingType != '1'。
+     */
     private void validate(BreedingBo bo) {
         if ("1".equals(bo.getBreedingType()) && StringUtils.isBlank(bo.getBoarEarNo())) {
             throw new ServiceException(I18nMessages.t("breeding.boar_ear.required"));
         }
-        if ("2".equals(bo.getBreedingType())
-            && (StringUtils.isBlank(bo.getSemenSupplier()) || StringUtils.isBlank(bo.getSemenBatchNo()))) {
-            throw new ServiceException(I18nMessages.t("breeding.semen_info.required"));
+        if (!"1".equals(bo.getBreedingType()) && StringUtils.isBlank(bo.getSemenCode())) {
+            throw new ServiceException(I18nMessages.t("breeding.semen_code.required"));
         }
     }
 
@@ -169,8 +170,7 @@ public class BreedingServiceImpl implements IBreedingService {
         v.setBreedingDate(e.getBreedingDate());
         v.setBreedingType(e.getBreedingType());
         v.setBoarEarNo(e.getBoarEarNo());
-        v.setSemenSupplier(e.getSemenSupplier());
-        v.setSemenBatchNo(e.getSemenBatchNo());
+        v.setSemenCode(e.getSemenCode());
         v.setParity(e.getParity());
         v.setOperatorId(e.getOperatorId());
         v.setBarnName(e.getBarnName());

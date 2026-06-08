@@ -44,17 +44,16 @@ public class BreedingBo implements Serializable {
     @Pattern(regexp = "^[A-Za-z0-9]{1,16}$", message = "breeding.type.invalid")
     private String breedingType;
 
-    /** 公猪耳号（breedingType=1 本场公猪时必填；2 精液产品时可空）。 */
+    /** 公猪耳号（breedingType=1 本场公猪时必填；精液类型时可空）。 */
     @Size(max = 32, message = "breeding.boar_ear.size")
     private String boarEarNo;
 
-    /** 精液供应商（breedingType=2 时填）。 */
-    @Size(max = 64, message = "breeding.supplier.size")
-    private String semenSupplier;
-
-    /** 精液批号（breedingType=2 时填）。 */
-    @Size(max = 32, message = "breeding.batch.size")
-    private String semenBatchNo;
+    /**
+     * 配种精液字典 code（djs_semen；breedingType=精液（!=1）时必填）。
+     * FIX-BREEDING-001 #21：精液改纯字典下拉，去掉供应商/批号手输项，不扣库存。
+     */
+    @Size(max = 64, message = "breeding.semen_code.size")
+    private String semenCode;
 
     /** 凭证图片 OSS IDs 逗号分隔（mp 端配种现场照片，与 PigIntroBo 对齐）。 */
     @Size(max = 1024, message = "breeding.proof.size")

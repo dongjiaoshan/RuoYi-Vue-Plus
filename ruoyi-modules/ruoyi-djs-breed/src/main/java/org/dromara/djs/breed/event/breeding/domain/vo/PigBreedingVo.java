@@ -33,8 +33,8 @@ public class PigBreedingVo implements Serializable {
 
     private String breedingType;
     private String boarEarNo;
-    private String semenSupplier;
-    private String semenBatchNo;
+    /** 配种精液字典 code（djs_semen；FIX-BREEDING-001 #21）。 */
+    private String semenCode;
     private Integer parity;
     private Long operatorId;
     private String barnName;

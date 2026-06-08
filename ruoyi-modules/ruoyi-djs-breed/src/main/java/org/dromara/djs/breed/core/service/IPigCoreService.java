@@ -49,6 +49,23 @@ public interface IPigCoreService {
      */
     Pig createPig(PigCreateBo bo);
 
+    /**
+     * 内部引种触发状态转移到「后备 HB」（FIX-INTRO-001 #1）。
+     *
+     * <p>语义：内部引种把一头**已存在**的肥猪（{@code pig_type='fattening'}）登记进引种台账后，
+     * 该猪从原态转为「后备 HB」。本方法写 {@code t_farm_pig_status_record}（old=原态 / new=HB /
+     * event=INTRO）+ update {@code t_farm_pig.current_status}，与调用方（{@code PigIntroServiceImpl
+     * .introduceInternal}）同一 {@code @Transactional}（无独立事务注解，挂到调用方事务上）。</p>
+     *
+     * <p><b>仅对 fattening 来源猪转</b>：已是 HB 或母猪态（sow / boar 等非 fattening）的猪不重复转、
+     * 直接返回（幂等）。END 终态猪也不转。不走 {@link #fireEvent}——INTRO 不是状态机合法事件
+     * （{@code PigStateMachine} 对 INTRO 直接抛错），故手工写 record + update，与 createPig 初始
+     * record 范式一致。</p>
+     *
+     * @param pigId 已存在猪只 ID
+     */
+    void internalIntroToReserve(Long pigId);
+
     /** 详情：基础字段 + 最近 20 条状态变更。 */
     PigDetailVo queryDetail(Long pigId);
 
@@ -102,6 +119,9 @@ public interface IPigCoreService {
      * @param barnCode     栋舍编码精确过滤（{@code null}/空 = 不限栋舍；PigSelectPanel chip 点击后传）
      * @param limit         最多返回行数（1-100，默认 20）
      * @param dueType       到期窗口过滤（{@code "FARROW"}=已到产期 / {@code "WEANING"}=已到断奶期 / null=不过滤）
+     * @param excludeNullBarn 是否排除无栋舍归属（{@code barn_id} 为 null）的猪只（FIX-BREEDING-001 #23a）。
+     *                        {@code true} 时与 {@link #countByBarn} 口径一致（列表数 = 各栋舍 chip 之和）；
+     *                        配种选猪场景传 true，其余调用方传 {@code null}/false 不变（向后兼容）。
      * @return 轻量 PigSearchVo 列表（含 ageDays/parity/lastEventDays）
      */
     List<PigSearchVo> searchByEarKeyword(String earNoKeyword,
@@ -110,7 +130,8 @@ public interface IPigCoreService {
                                          String pigTypeFilter,
                                          String barnCode,
                                          Integer limit,
-                                         String dueType);
+                                         String dueType,
+                                         Boolean excludeNullBarn);
 
     /**
      * 栋舍 × 头数聚合（BRD-FIX-MP-PIGSELECT-001）——mp 端 PigSelectPanel 顶部「栋舍 chip」数据源。

@@ -136,16 +136,16 @@ class BreedingServiceImplTest {
     }
 
     @Test
-    @DisplayName("校验: breedingType=2 缺 supplier/batch → ServiceException")
-    void validate_type2_requires_supplier_batch() {
+    @DisplayName("校验: breedingType=2 精液缺 semenCode → ServiceException")
+    void validate_type2_requires_semen_code() {
         Pig pig = mkSow(102L, PigLifecycle.DN);
         when(pigMapper.selectById(102L)).thenReturn(pig);
 
         BreedingBo bo = mkBo(102L, "2", null);
-        // 不传 semenSupplier / semenBatchNo
+        // FIX-BREEDING-001 #21：精液（!=1）改纯字典下拉，不传 semenCode → 报 breeding.semen_code.required
         assertThatThrownBy(() -> service.recordBreeding(bo))
             .isInstanceOf(ServiceException.class)
-            .hasMessageContaining("breeding.semen_info");
+            .hasMessageContaining("breeding.semen_code");
     }
 
     @Test

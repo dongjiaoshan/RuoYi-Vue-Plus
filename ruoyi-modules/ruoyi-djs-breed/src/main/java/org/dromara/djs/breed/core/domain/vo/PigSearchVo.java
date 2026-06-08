@@ -47,6 +47,17 @@ public class PigSearchVo implements Serializable {
     private String penCode;
 
     /**
+     * 栋舍名称（service enrich，与 barnCode 同批查）。
+     *
+     * <p>FIX-INTRO-001 #13 / P1：mp 端 PigPicker / 选猪卡「位置」格子显「栋舍名+栏位名」用，
+     * 缺位时该格显「—」。FARROW #24 / WEAN #30 / DIEELIM 复用同字段。</p>
+     */
+    private String barnName;
+
+    /** 栏位名称（service enrich，与 penCode 同批查；用途同 barnName）。 */
+    private String penName;
+
+    /**
      * 终止原因（{@code djs_pig_end_reason} 字典：{@code DEAD/CULL/MARKET}）。
      *
      * <p>仅在 {@code currentStatus=END} 时非空（MP-UX-002 给 mp PigPicker 列表

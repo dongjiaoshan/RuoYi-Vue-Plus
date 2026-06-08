@@ -16,8 +16,12 @@ import org.dromara.djs.breed.core.enums.PigStatusEvent;
 import org.dromara.djs.breed.core.mapper.PigMapper;
 import org.dromara.djs.breed.core.service.I18nMessages;
 import org.dromara.djs.breed.core.service.IPigCoreService;
+import org.dromara.djs.breed.event.eartag.domain.PigPigletno;
+import org.dromara.djs.breed.event.eartag.mapper.PigPigletnoMapper;
 import org.dromara.djs.breed.event.farrow.domain.PigFarrow;
 import org.dromara.djs.breed.event.farrow.mapper.PigFarrowMapper;
+import org.dromara.djs.breed.event.transfer.domain.bo.TransferBo;
+import org.dromara.djs.breed.event.transfer.service.ITransferService;
 import org.dromara.djs.breed.event.weaning.domain.PigWeaning;
 import org.dromara.djs.breed.event.weaning.domain.PigWeaningDetail;
 import org.dromara.djs.breed.event.weaning.domain.bo.WeaningBo;
@@ -25,6 +29,7 @@ import org.dromara.djs.breed.event.weaning.domain.bo.WeaningDetailBo;
 import org.dromara.djs.breed.event.weaning.domain.query.WeaningQuery;
 import org.dromara.djs.breed.event.weaning.domain.vo.PigWeaningDetailVo;
 import org.dromara.djs.breed.event.weaning.domain.vo.PigWeaningVo;
+import org.dromara.djs.breed.event.weaning.domain.vo.WeaningPigletVo;
 import org.dromara.djs.breed.event.weaning.mapper.PigWeaningDetailMapper;
 import org.dromara.djs.breed.event.weaning.mapper.PigWeaningMapper;
 import org.dromara.djs.breed.event.weaning.service.IWeaningService;
@@ -60,7 +65,9 @@ public class WeaningServiceImpl implements IWeaningService {
     private final PigWeaningDetailMapper weaningDetailMapper;
     private final PigMapper pigMapper;
     private final PigFarrowMapper farrowMapper;
+    private final PigPigletnoMapper pigletnoMapper;
     private final IPigCoreService pigCoreService;
+    private final ITransferService transferService;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -123,10 +130,38 @@ public class WeaningServiceImpl implements IWeaningService {
         eventBo.setEventAt(bo.getWeaningDate());
         pigCoreService.fireEvent(eventBo);
 
+        // 4. 断奶后转移（FIX-WEAN-001 #32a 决策 a：断奶时内联填转移，一步到位）
+        //    给了目标栋舍 → 同事务复用 ITransferService 把母猪转到目标 barn/pen（写转移历史 + 更新 pig 位置）。
+        //    复用转移事件而非加断奶表列：转移历史 + pig 位置更新原子落地，无需 DDL。
+        maybeTransferAfterWean(pig.getId(), bo);
+
         log.info("[BRD-EVENT-002] recordWeaning pigId={} earNo={} weaningId={} count={} detailRows={}",
             pig.getId(), pig.getEarNo(), entity.getId(), bo.getWeanedCount(), savedDetails.size());
 
         return toVo(entity, savedDetails);
+    }
+
+    /**
+     * 断奶后内联转移母猪（FIX-WEAN-001 #32a）。给了目标栋舍才触发；与断奶主记录同事务，
+     * 任一失败整体回滚。转移目标二选一：{@code transferBarnCode}（mp）/ {@code transferBarnId}（admin）。
+     */
+    private void maybeTransferAfterWean(Long pigId, WeaningBo bo) {
+        boolean hasTarget = bo.getTransferBarnId() != null
+            || (bo.getTransferBarnCode() != null && !bo.getTransferBarnCode().isBlank());
+        if (!hasTarget) {
+            return;
+        }
+        TransferBo transfer = new TransferBo();
+        transfer.setPigId(pigId);
+        transfer.setTransferDate(bo.getWeaningDate());
+        transfer.setNewBarnId(bo.getTransferBarnId());
+        transfer.setNewBarnCode(bo.getTransferBarnCode());
+        transfer.setNewPenId(bo.getTransferPenId());
+        transfer.setNewPenCode(bo.getTransferPenCode());
+        transfer.setTransferReason("weaning");
+        transferService.recordTransfer(transfer);
+        log.info("[FIX-WEAN-001] inline transfer after wean pigId={} → barnCode={} barnId={} penCode={} penId={}",
+            pigId, bo.getTransferBarnCode(), bo.getTransferBarnId(), bo.getTransferPenCode(), bo.getTransferPenId());
     }
 
     /**
@@ -164,6 +199,27 @@ public class WeaningServiceImpl implements IWeaningService {
             .orderByDesc(PigWeaning::getWeaningDate, PigWeaning::getId);
         Page<PigWeaningVo> page = weaningMapper.selectVoPage(pageQuery.build(), w);
         return TableDataInfo.build(page);
+    }
+
+    @Override
+    public List<WeaningPigletVo> listPigletsByFarrow(Long farrowId) {
+        if (farrowId == null) {
+            return List.of();
+        }
+        List<PigPigletno> rows = pigletnoMapper.selectList(
+            Wrappers.<PigPigletno>lambdaQuery()
+                .eq(PigPigletno::getFarrowId, farrowId)
+                .orderByAsc(PigPigletno::getPigletEarNo));
+        List<WeaningPigletVo> vos = new ArrayList<>(rows.size());
+        int seq = 1;
+        for (PigPigletno r : rows) {
+            WeaningPigletVo vo = new WeaningPigletVo();
+            vo.setPigletSeq(seq++);
+            vo.setEarNo(r.getPigletEarNo());
+            vo.setPigletSex(r.getPigletSex());
+            vos.add(vo);
+        }
+        return vos;
     }
 
     /** avg 优先取 BO 给的；若 weanedWeight + weanedCount 都有则算（保留 3 位小数）。 */

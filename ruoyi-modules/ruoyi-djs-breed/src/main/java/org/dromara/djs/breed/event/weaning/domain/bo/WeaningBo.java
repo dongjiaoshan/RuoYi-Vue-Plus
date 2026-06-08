@@ -65,4 +65,20 @@ public class WeaningBo implements Serializable {
 
     /** 录入人员 userId（mp EmployeePicker 选，支持替别人代录；admin / 老调用方缺省时 service fallback 登录态）。 */
     private Long operatorId;
+
+    /**
+     * 断奶后转移目标栋舍编码（mp 端工人选；与 {@link #transferBarnId} 二选一）。
+     * <p>非空 → service 在断奶事务内联触发母猪转移（_open-issues #32a 决策 a：断奶时一步到位填转移）；
+     * 空 → 不转移，仅断奶。</p>
+     */
+    private String transferBarnCode;
+
+    /** 断奶后转移目标栋舍 ID（admin 端可直传；与 {@link #transferBarnCode} 二选一）。 */
+    private Long transferBarnId;
+
+    /** 断奶后转移目标栏位编码（可空，未细分到栏位时仅切栋舍；与 {@link #transferPenId} 二选一）。 */
+    private String transferPenCode;
+
+    /** 断奶后转移目标栏位 ID（admin 端可直传；与 {@link #transferPenCode} 二选一）。 */
+    private Long transferPenId;
 }

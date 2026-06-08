@@ -7,8 +7,11 @@ import org.dromara.djs.breed.core.enums.PigLifecycle;
 import org.dromara.djs.breed.core.enums.PigStatusEvent;
 import org.dromara.djs.breed.core.mapper.PigMapper;
 import org.dromara.djs.breed.core.service.IPigCoreService;
+import org.dromara.djs.breed.event.eartag.mapper.PigPigletnoMapper;
 import org.dromara.djs.breed.event.farrow.domain.PigFarrow;
 import org.dromara.djs.breed.event.farrow.mapper.PigFarrowMapper;
+import org.dromara.djs.breed.event.transfer.domain.bo.TransferBo;
+import org.dromara.djs.breed.event.transfer.service.ITransferService;
 import org.dromara.djs.breed.event.weaning.domain.PigWeaning;
 import org.dromara.djs.breed.event.weaning.domain.PigWeaningDetail;
 import org.dromara.djs.breed.event.weaning.domain.bo.WeaningBo;
@@ -71,13 +74,18 @@ class WeaningServiceImplTest {
     @Mock
     private PigFarrowMapper farrowMapper;
     @Mock
+    private PigPigletnoMapper pigletnoMapper;
+    @Mock
     private IPigCoreService pigCoreService;
+    @Mock
+    private ITransferService transferService;
 
     private WeaningServiceImpl service;
 
     @BeforeEach
     void setup() {
-        service = new WeaningServiceImpl(weaningMapper, weaningDetailMapper, pigMapper, farrowMapper, pigCoreService);
+        service = new WeaningServiceImpl(weaningMapper, weaningDetailMapper, pigMapper, farrowMapper,
+            pigletnoMapper, pigCoreService, transferService);
     }
 
     private Pig mkSow(Long id, PigLifecycle status) {
@@ -139,6 +147,42 @@ class WeaningServiceImplTest {
         ArgumentCaptor<PigEventBo> ev = ArgumentCaptor.forClass(PigEventBo.class);
         verify(pigCoreService, times(1)).fireEvent(ev.capture());
         assertThat(ev.getValue().getEventType()).isEqualTo(PigStatusEvent.WEAN);
+    }
+
+    @Test
+    @DisplayName("#32a inline transfer: 给了转移目标栋舍 → 断奶事务内联调 transferService.recordTransfer")
+    void inlineTransfer_whenTargetGiven() {
+        Pig pig = mkSow(320L, PigLifecycle.FM);
+        when(pigMapper.selectById(320L)).thenReturn(pig);
+        PigFarrow farrow = mkFarrow(520L, 320L, 10, 7777L);
+        when(farrowMapper.selectById(520L)).thenReturn(farrow);
+
+        WeaningBo bo = mkBo(320L, 520L, 8, new BigDecimal("60.000"));
+        bo.setTransferBarnCode("B02");
+        bo.setTransferPenCode("P03");
+        service.recordWeaning(bo);
+
+        ArgumentCaptor<TransferBo> cap = ArgumentCaptor.forClass(TransferBo.class);
+        verify(transferService, times(1)).recordTransfer(cap.capture());
+        assertThat(cap.getValue().getPigId()).isEqualTo(320L);
+        assertThat(cap.getValue().getNewBarnCode()).isEqualTo("B02");
+        assertThat(cap.getValue().getNewPenCode()).isEqualTo("P03");
+        // 转移日期 = 断奶日期
+        assertThat(cap.getValue().getTransferDate()).isEqualTo(bo.getWeaningDate());
+    }
+
+    @Test
+    @DisplayName("#32a inline transfer: 无转移目标 → 不调 transferService（仅断奶）")
+    void noInlineTransfer_whenTargetAbsent() {
+        Pig pig = mkSow(321L, PigLifecycle.FM);
+        when(pigMapper.selectById(321L)).thenReturn(pig);
+        PigFarrow farrow = mkFarrow(521L, 321L, 10, 7777L);
+        when(farrowMapper.selectById(521L)).thenReturn(farrow);
+
+        WeaningBo bo = mkBo(321L, 521L, 8, new BigDecimal("60.000")); // 无转移目标
+        service.recordWeaning(bo);
+
+        verify(transferService, never()).recordTransfer(any(TransferBo.class));
     }
 
     @Test

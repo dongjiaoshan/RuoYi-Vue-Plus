@@ -11,6 +11,7 @@ import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.breed.breeding.domain.BreedInfo;
 import org.dromara.djs.breed.breeding.domain.bo.BreedInfoBo;
 import org.dromara.djs.breed.breeding.domain.query.BreedInfoQuery;
+import org.dromara.djs.breed.breeding.domain.vo.BreedInfoOptionVo;
 import org.dromara.djs.breed.breeding.domain.vo.BreedInfoVo;
 import org.dromara.djs.breed.breeding.mapper.BreedInfoMapper;
 import org.dromara.djs.breed.breeding.service.IBreedInfoService;
@@ -20,6 +21,7 @@ import org.springframework.stereotype.Service;
 import java.util.Collection;
 import java.util.List;
 import java.util.Objects;
+import java.util.stream.Collectors;
 
 /**
  * 育种信息 Service 实现（BRD-MD-001 / CR-20260519-06）。
@@ -56,6 +58,21 @@ public class BreedInfoServiceImpl extends DjsBaseServiceImpl<BreedInfoMapper, Br
     @Override
     public BreedInfoVo queryById(Long id) {
         return baseMapper.selectVoById(id);
+    }
+
+    @Override
+    public List<BreedInfoOptionVo> listOptionsByStrain(Integer breedStrain) {
+        LambdaQueryWrapper<BreedInfo> wrapper = new LambdaQueryWrapper<BreedInfo>()
+            .eq(Objects.nonNull(breedStrain), BreedInfo::getBreedStrain, breedStrain)
+            .orderByAsc(BreedInfo::getBreedStrainCode);
+        return baseMapper.selectList(wrapper).stream()
+            .map(e -> {
+                BreedInfoOptionVo vo = new BreedInfoOptionVo();
+                vo.setCode(e.getBreedStrainCode());
+                vo.setName(e.getBreedStrainName());
+                return vo;
+            })
+            .collect(Collectors.toList());
     }
 
     @Override
