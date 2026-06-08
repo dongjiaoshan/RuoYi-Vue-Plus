@@ -8,16 +8,15 @@ import java.math.BigDecimal;
 import java.util.List;
 
 /**
- * 仓库看板汇总 VO（DJS-FIX-ADMIN-W22-006 占位版）。
+ * 仓库看板汇总 VO（3 KPI 卡 + 库位概览，admin + mp 双端复用）。
  *
- * <p>3 KPI 卡 + 库位概览，不含趋势折线 / 饼图（完整版推 V1.x WMS-DASH-001）。
- * 各字段聚合范式见 {@link org.dromara.djs.warehouse.dashboard.mapper.WarehouseDashboardMapper}。</p>
+ * <p>各字段聚合范式见 {@link org.dromara.djs.warehouse.dashboard.mapper.WarehouseDashboardMapper}。
+ * 6 图 series + 双横条见 {@link WarehouseDashboardChartsVo}。</p>
  *
  * <p>当日 / 当月无数据时所有计数字段返 0（service 用 {@code COALESCE} + null-safe 兜底），
  * 不抛错。</p>
  *
  * @author djs
- * @since DJS-FIX-ADMIN-W22-006
  */
 @Data
 public class WarehouseDashboardSummaryVo implements Serializable {

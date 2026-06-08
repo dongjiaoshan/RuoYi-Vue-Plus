@@ -25,7 +25,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.when;
 
 /**
- * {@link WarehouseDashboardServiceImpl} 单测（DJS-FIX-ADMIN-W22-006）。
+ * {@link WarehouseDashboardServiceImpl} 单测。
  *
  * <p>覆盖 3 个核心场景：</p>
  * <ol>
@@ -38,7 +38,6 @@ import static org.mockito.Mockito.when;
  * {@code MockedStatic(TenantHelper)} stub 当前租户。</p>
  *
  * @author djs
- * @since DJS-FIX-ADMIN-W22-006
  */
 @Tag("local")
 @Tag("dev")
