@@ -4,18 +4,18 @@ import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
 import lombok.Data;
 
-import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.List;
 
 /**
- * mp 工人采收录入入参 BO（PLT-PICK-001）。
+ * mp 工人采收录入入参 BO（PLT-PICK-001 / FIX-PLT-MP-PICK-001 #3=a）。
  *
- * <p>工人从待采列表 / 详情进入，{@code detailId} 由路由 query 带入（不手输 ID）。提交后
- * 累加 {@code t_plant_plant_details.actual_yield} + 回填 {@code begin_harvestdate} + 流转
- * {@code harvest_status}；{@code finish=true} 时额外置 {@code end_actualdate=NOW} +
- * {@code harvest_status='completed'}，并 INSERT 一行 {@code t_plant_farm_records}
- * （{@code farm_type='harvest_activity'}）。</p>
+ * <p>工人从待采列表 / 详情进入，{@code detailId} 由路由 query 带入（不手输 ID）。
+ * 按原型采收 tab 只走"开始/完成采摘"流程（采摘人员 + 日期），<b>不录重量</b>；首次回填
+ * {@code begin_harvestdate} + 流转 {@code harvest_status}；{@code finish=true} 时额外置
+ * {@code end_actualdate=NOW} + {@code harvest_status='completed'}，并 INSERT 一行
+ * {@code t_plant_farm_records}（{@code farm_type='harvest_activity'}）。采摘重量由农事「采摘活动管理」
+ * {@code submitHarvestWeight} 累加 {@code actual_yield}。</p>
  *
  * @author djs
  * @since PLT-PICK-001
@@ -26,14 +26,6 @@ public class PickSubmitBo {
     /** 采摘明细 id（{@code t_plant_plant_details.id}）。 */
     @NotNull(message = "采摘明细 id 必填")
     private Long detailId;
-
-    /**
-     * 本次采收重量 kg（累加进 actual_yield）。
-     *
-     * <p>FIX-PLT-MP-PICK-001 放宽：{@code finish=true}（完成采摘）时必填且 > 0，service 层校验；
-     * {@code finish=false}（开始/继续采，begin 态）可空，空时仅流转状态、不累加。</p>
-     */
-    private BigDecimal weight;
 
     /** 采收日期（必填）。 */
     @NotNull(message = "采收日期必填")

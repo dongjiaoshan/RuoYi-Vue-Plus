@@ -15,10 +15,12 @@ import org.dromara.djs.common.base.DjsBaseServiceImpl;
 import org.dromara.djs.plant.crop.domain.CropInfo;
 import org.dromara.djs.plant.crop.mapper.CropInfoMapper;
 import org.dromara.djs.plant.farm.domain.FarmRecords;
+import org.dromara.djs.plant.farm.domain.bo.DisasterBatchBo;
 import org.dromara.djs.plant.farm.domain.bo.DisasterRecordBo;
 import org.dromara.djs.plant.farm.domain.bo.EmptyRecordBo;
 import org.dromara.djs.plant.farm.domain.bo.GrowBatchBo;
 import org.dromara.djs.plant.farm.domain.bo.GrowRecordBo;
+import org.dromara.djs.plant.farm.domain.bo.HarvestWeightBo;
 import org.dromara.djs.plant.farm.domain.bo.PlotPickStatusBo;
 import org.dromara.djs.plant.farm.domain.bo.RotationRecordBo;
 import org.dromara.djs.plant.farm.domain.bo.TransplantRecordBo;
@@ -226,6 +228,41 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
         return count;
     }
 
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public int submitDisasterBatch(DisasterBatchBo bo) {
+        int warning = bo.getLossRate() != null && bo.getLossRate().compareTo(WARNING_LOSS_RATE) >= 0 ? 1 : 2;
+        int count = 0;
+        for (DisasterBatchBo.PlotTarget t : bo.getTargets()) {
+            FarmRecords r = new FarmRecords();
+            buildBase(r, "disaster", t.getPlotId(), t.getCropId(), t.getPlantId(), bo.getFarmBy(),
+                bo.getFarmDate(), bo.getProofOssIds(), bo.getRemark());
+            r.setDisasterType(bo.getDisasterType());
+            r.setLossRate(bo.getLossRate());
+            r.setLossYield(t.getLossYield());
+            r.setIsWarning(warning);
+            baseMapper.insert(r);
+            count++;
+            // 副作用：各地块累加对应 plant_details.loss_yield
+            accumulateLossYield(t.getPlantId(), t.getPlotId(), t.getCropId(), t.getLossYield());
+        }
+        return count;
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public Long submitHarvestWeight(HarvestWeightBo bo) {
+        // 1. INSERT 一行 harvest_activity 记录，携带本次 harvest_weight（供记录 tab 展示 作物+重量kg）
+        FarmRecords r = new FarmRecords();
+        buildBase(r, "harvest_activity", bo.getPlotId(), bo.getCropId(), bo.getPlantId(), bo.getFarmBy(),
+            bo.getFarmDate(), bo.getProofOssIds(), bo.getRemark());
+        r.setHarvestWeight(bo.getHarvestWeight());
+        baseMapper.insert(r);
+        // 2. 副作用：累加对应 plant_details.actual_yield（#3=a 采摘重量唯一录入口，采收 tab 已去重量）
+        accumulateActualYield(bo.getPlantId(), bo.getPlotId(), bo.getCropId(), bo.getHarvestWeight());
+        return r.getId();
+    }
+
     /**
      * 退茬副作用（与 {@link #submitRotation} 单条一致，抽出供批量复用）：
      * plot_info.plot_status=1（空闲）+ 同 plant+plot 未结束 details → completed + end_actualdate=今日。
@@ -286,6 +323,18 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
             : plotInfoMapper.selectByIds(plotIds).stream()
             .collect(Collectors.toMap(PlotInfo::getId, p -> p, (a, b) -> a));
 
+        // 移栽进度层：返各地块累计已移% + 上次时间（FIX-PLT-MP-WORK-BATCH-001 移栽单块录入用）
+        Map<Long, Integer> transplantedMap = new HashMap<>();
+        if ("transplant".equals(farmType)) {
+            for (Map<String, Object> row : baseMapper.selectTransplantedPercentByCrop(cropId)) {
+                Object pid = row.get("plotId");
+                Object pct = row.get("transplantedPercent");
+                if (pid != null) {
+                    transplantedMap.put(((Number) pid).longValue(), pct instanceof Number n ? n.intValue() : 0);
+                }
+            }
+        }
+
         LocalDate today = LocalDate.now();
         List<FarmCropPlotVo> result = new ArrayList<>(details.size());
         for (PlantDetails d : details) {
@@ -304,6 +353,9 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
             if (last != null) {
                 vo.setLastFarmDate(last);
                 vo.setIntervalDays((int) ChronoUnit.DAYS.between(last, today));
+            }
+            if ("transplant".equals(farmType)) {
+                vo.setTransplantedPercent(transplantedMap.getOrDefault(d.getPlotId(), 0));
             }
             result.add(vo);
         }
@@ -527,6 +579,46 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
                 .eq(PlantDetails::getId, target.getId())
                 .set(PlantDetails::getLossYield, updated)
                 .set(PlantDetails::getUpdateBy, currentUser));
+    }
+
+    /**
+     * 采摘活动管理副作用：累加 plant_details.actual_yield（FIX-PLT-MP-HARVEST-001 #3=a）。
+     *
+     * <p>定位策略同 {@link #accumulateLossYield}：取 (plantId, plotId, cropId) + end_actualdate IS NULL
+     * 的最新一行 details；无未结束行则取最新一行。</p>
+     */
+    private void accumulateActualYield(Long plantId, Long plotId, Long cropId, BigDecimal weight) {
+        if (weight == null || weight.compareTo(BigDecimal.ZERO) <= 0) {
+            return;
+        }
+        PlantDetails target = plantDetailsMapper.selectOne(
+            new LambdaQueryWrapper<PlantDetails>()
+                .eq(PlantDetails::getPlantId, plantId)
+                .eq(PlantDetails::getPlotId, plotId)
+                .eq(PlantDetails::getCropId, cropId)
+                .isNull(PlantDetails::getEndActualdate)
+                .orderByDesc(PlantDetails::getId)
+                .last("LIMIT 1"));
+        if (target == null) {
+            target = plantDetailsMapper.selectOne(
+                new LambdaQueryWrapper<PlantDetails>()
+                    .eq(PlantDetails::getPlantId, plantId)
+                    .eq(PlantDetails::getPlotId, plotId)
+                    .eq(PlantDetails::getCropId, cropId)
+                    .orderByDesc(PlantDetails::getId)
+                    .last("LIMIT 1"));
+        }
+        if (target == null) {
+            log.warn("submitHarvestWeight: no plant_details for plantId={} plotId={} cropId={}, skip actual_yield accumulate",
+                plantId, plotId, cropId);
+            return;
+        }
+        BigDecimal current = target.getActualYield() == null ? BigDecimal.ZERO : target.getActualYield();
+        plantDetailsMapper.update(null,
+            new LambdaUpdateWrapper<PlantDetails>()
+                .eq(PlantDetails::getId, target.getId())
+                .set(PlantDetails::getActualYield, current.add(weight))
+                .set(PlantDetails::getUpdateBy, currentUserSafe()));
     }
 
     private Long currentUserSafe() {

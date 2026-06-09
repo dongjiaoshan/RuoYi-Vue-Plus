@@ -9,10 +9,12 @@ import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.satoken.utils.LoginHelper;
 import org.dromara.common.web.core.BaseController;
+import org.dromara.djs.plant.farm.domain.bo.DisasterBatchBo;
 import org.dromara.djs.plant.farm.domain.bo.DisasterRecordBo;
 import org.dromara.djs.plant.farm.domain.bo.EmptyRecordBo;
 import org.dromara.djs.plant.farm.domain.bo.GrowBatchBo;
 import org.dromara.djs.plant.farm.domain.bo.GrowRecordBo;
+import org.dromara.djs.plant.farm.domain.bo.HarvestWeightBo;
 import org.dromara.djs.plant.farm.domain.bo.PlotPickStatusBo;
 import org.dromara.djs.plant.farm.domain.bo.RotationRecordBo;
 import org.dromara.djs.plant.farm.domain.bo.TransplantRecordBo;
@@ -103,6 +105,32 @@ public class AppletFarmRecordsController extends BaseController {
     @PostMapping("/submit/growBatch")
     public R<Integer> submitGrowBatch(@Valid @RequestBody GrowBatchBo bo) {
         return R.ok(farmRecordsService.submitGrowBatch(bo));
+    }
+
+    /**
+     * 灾害「作物 → 多地块」批量录入（FIX-PLT-MP-WORK-BATCH-001 灾害批量，#2）：
+     * 一次对所选 N 个地块下同一灾害（统一类型/损失率 + 各自损失产量），每地块累加 plant_details.loss_yield。
+     *
+     * @return 成功 INSERT 的灾害记录行数
+     */
+    @SaCheckLogin
+    @SaCheckPermission("djs:applet:plant:work:disaster")
+    @PostMapping("/submit/disasterBatch")
+    public R<Integer> submitDisasterBatch(@Valid @RequestBody DisasterBatchBo bo) {
+        return R.ok(farmRecordsService.submitDisasterBatch(bo));
+    }
+
+    /**
+     * 采摘活动管理「采摘重量录入」（FIX-PLT-MP-HARVEST-001 #3=a）：累加 plant_details.actual_yield +
+     * 写一行 harvest_activity 记录携带 harvest_weight。采收 tab 已去重量，本端点为采摘重量唯一录入口。
+     *
+     * @return 新增农事记录 id
+     */
+    @SaCheckLogin
+    @SaCheckPermission("djs:applet:plant:work:grow")
+    @PostMapping("/submitHarvestWeight")
+    public R<Long> submitHarvestWeight(@Valid @RequestBody HarvestWeightBo bo) {
+        return R.ok(farmRecordsService.submitHarvestWeight(bo));
     }
 
     /**

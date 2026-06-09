@@ -8,9 +8,11 @@ import org.dromara.common.core.exception.ServiceException;
 import org.dromara.djs.plant.crop.domain.CropInfo;
 import org.dromara.djs.plant.crop.mapper.CropInfoMapper;
 import org.dromara.djs.plant.farm.domain.FarmRecords;
+import org.dromara.djs.plant.farm.domain.bo.DisasterBatchBo;
 import org.dromara.djs.plant.farm.domain.bo.DisasterRecordBo;
 import org.dromara.djs.plant.farm.domain.bo.EmptyRecordBo;
 import org.dromara.djs.plant.farm.domain.bo.GrowBatchBo;
+import org.dromara.djs.plant.farm.domain.bo.HarvestWeightBo;
 import org.dromara.djs.plant.farm.domain.bo.RotationRecordBo;
 import org.dromara.djs.plant.farm.domain.bo.TransplantRecordBo;
 import org.dromara.djs.plant.farm.domain.vo.DispatchSummaryVo;
@@ -331,5 +333,81 @@ class FarmRecordsServiceImplTest {
             .containsExactly("tillage_break", "tillage_prepare", "fertilize",
                 "transplant", "water_fertilize", "irrigation", "weed", "pest_control", "pruning", "rotation",
                 "disaster", "harvest_activity");
+    }
+
+    @Test
+    @DisplayName("submitDisasterBatch happy: 2 地块 → INSERT 2 行 disaster + 各累加 loss_yield + lossRate≥30 置预警")
+    void submitDisasterBatch_happy() {
+        DisasterBatchBo bo = new DisasterBatchBo();
+        bo.setFarmBy(10L);
+        bo.setFarmDate(LocalDate.now());
+        bo.setDisasterType("flood");
+        bo.setLossRate(new BigDecimal("45.0"));
+        DisasterBatchBo.PlotTarget t1 = new DisasterBatchBo.PlotTarget();
+        t1.setPlantId(7L);
+        t1.setPlotId(1L);
+        t1.setCropId(2L);
+        t1.setLossYield(new BigDecimal("23.12"));
+        DisasterBatchBo.PlotTarget t2 = new DisasterBatchBo.PlotTarget();
+        t2.setPlantId(7L);
+        t2.setPlotId(1L);
+        t2.setCropId(2L);
+        t2.setLossYield(new BigDecimal("15.21"));
+        bo.setTargets(List.of(t1, t2));
+
+        when(baseMapper.insert(any(FarmRecords.class))).thenAnswer(inv -> {
+            ((FarmRecords) inv.getArgument(0)).setId(400L);
+            return 1;
+        });
+        PlantDetails d = new PlantDetails();
+        d.setId(55L);
+        when(plantDetailsMapper.selectOne(any())).thenReturn(d);
+        when(plantDetailsMapper.update(isNull(), any(Wrapper.class))).thenReturn(1);
+
+        int count = service.submitDisasterBatch(bo);
+        assertThat(count).isEqualTo(2);
+
+        ArgumentCaptor<FarmRecords> cap = ArgumentCaptor.forClass(FarmRecords.class);
+        verify(baseMapper, times(2)).insert(cap.capture());
+        assertThat(cap.getAllValues()).allSatisfy(r -> {
+            assertThat(r.getFarmType()).isEqualTo("disaster");
+            assertThat(r.getDisasterType()).isEqualTo("flood");
+            assertThat(r.getIsWarning()).isEqualTo(1);   // 45 ≥ 30
+        });
+        // 各地块累加 loss_yield
+        verify(plantDetailsMapper, times(2)).update(isNull(), any(Wrapper.class));
+    }
+
+    @Test
+    @DisplayName("submitHarvestWeight happy: INSERT harvest_activity 携带 harvest_weight + 累加 actual_yield")
+    void submitHarvestWeight_happy() {
+        HarvestWeightBo bo = new HarvestWeightBo();
+        bo.setPlantId(7L);
+        bo.setPlotId(1L);
+        bo.setCropId(2L);
+        bo.setFarmBy(10L);
+        bo.setFarmDate(LocalDate.now());
+        bo.setHarvestWeight(new BigDecimal("52.21"));
+
+        when(baseMapper.insert(any(FarmRecords.class))).thenAnswer(inv -> {
+            ((FarmRecords) inv.getArgument(0)).setId(500L);
+            return 1;
+        });
+        PlantDetails d = new PlantDetails();
+        d.setId(66L);
+        d.setActualYield(new BigDecimal("10.00"));
+        when(plantDetailsMapper.selectOne(any())).thenReturn(d);
+        when(plantDetailsMapper.update(isNull(), any(Wrapper.class))).thenReturn(1);
+
+        Long id = service.submitHarvestWeight(bo);
+        assertThat(id).isEqualTo(500L);
+
+        ArgumentCaptor<FarmRecords> cap = ArgumentCaptor.forClass(FarmRecords.class);
+        verify(baseMapper).insert(cap.capture());
+        FarmRecords saved = cap.getValue();
+        assertThat(saved.getFarmType()).isEqualTo("harvest_activity");
+        assertThat(saved.getHarvestWeight()).isEqualByComparingTo("52.21");
+        // 累加 actual_yield
+        verify(plantDetailsMapper).update(isNull(), any(Wrapper.class));
     }
 }

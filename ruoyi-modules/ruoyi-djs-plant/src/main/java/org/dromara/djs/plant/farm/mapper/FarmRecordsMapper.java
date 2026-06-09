@@ -49,4 +49,24 @@ public interface FarmRecordsMapper extends BaseMapperPlus<FarmRecords, FarmRecor
          GROUP BY plot_id
         """)
     List<Map<String, Object>> selectLastFarmDateByCropType(@Param("cropId") Long cropId, @Param("farmType") String farmType);
+
+    /**
+     * 按作物聚合每个地块的「累计移栽百分比」（FIX-PLT-MP-WORK-BATCH-001 移栽进度层）。
+     *
+     * <p>= SUM(transplant_percent) WHERE farm_type='transplant'。返回 (plotId, transplantedPercent)。
+     * service 组装进 {@link org.dromara.djs.plant.farm.domain.vo.FarmCropPlotVo#getTransplantedPercent()}。</p>
+     *
+     * @param cropId 作物 id
+     * @return 每行 {@code {plotId, transplantedPercent}}（无移栽记录的地块不在结果中，service 兜底 0）
+     */
+    @Select("""
+        SELECT plot_id AS plotId, COALESCE(SUM(transplant_percent), 0) AS transplantedPercent
+          FROM t_plant_farm_records
+         WHERE del_flag = '0'
+           AND tenant_id = '1001'
+           AND crop_id = #{cropId}
+           AND farm_type = 'transplant'
+         GROUP BY plot_id
+        """)
+    List<Map<String, Object>> selectTransplantedPercentByCrop(@Param("cropId") Long cropId);
 }

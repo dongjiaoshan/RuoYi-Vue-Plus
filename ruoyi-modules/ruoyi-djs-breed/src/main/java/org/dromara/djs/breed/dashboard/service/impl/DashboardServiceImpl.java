@@ -225,26 +225,23 @@ public class DashboardServiceImpl implements IDashboardService {
         MonthActivityVo vo = new MonthActivityVo();
         vo.setDays(days);
         List<MonthActivityVo.MonthRow> rows = new ArrayList<>();
-        // 按原型 21 行序（13 指标）。数据源缺失的指标返 0（不抛异常）。
-        // 真实表名/列名见 SYS-INIT-001 DDL。
+        // 15 行，顺序 / 文案与日情况概览 15 格严格一致（原型 4f113e00）。数据源缺失返 0（不抛）。
+        // 真实表名 / 列名见 SYS-INIT-001 DDL。死亡 / 淘汰按原型作"猪只数"。
         rows.add(buildRow("分娩母猪数", days, byDayCount("t_farm_pig_farrow", "farrow_date", tenantId, first, toExclusive)));
         rows.add(buildRow("配种母猪数", days, byDayCount("t_farm_pig_breeding", "breeding_date", tenantId, first, toExclusive)));
         rows.add(buildRow("断奶母猪数", days, byDayCount("t_farm_pig_weaning", "weaning_date", tenantId, first, toExclusive)));
-        // 返空流：t_farm_pig_abnormal（abort/return/idle），按 abnormal_date 落日（替原退化 0）。
         rows.add(buildRow("返空流母猪数", days, byDayCount("t_farm_pig_abnormal", "abnormal_date", tenantId, first, toExclusive)));
-        rows.add(buildRow("死亡母猪数", days, byDayStatus(tenantId, "DIE", dtFrom, dtTo)));
-        rows.add(buildRow("淘汰母猪数", days, byDayStatus(tenantId, "ELIMINATE", dtFrom, dtTo)));
-        // 引种母猪数（原"后备入场数"，#7 文案对齐原型）。
         rows.add(buildRow("引种母猪数", days, byDaySum("t_farm_pig_introduce", "introduce_date", "pig_count", tenantId, first, toExclusive)));
-        // 查情不配种数（原"查情母猪数"，#7 文案对齐原型）。
         rows.add(buildRow("查情不配种数", days, byDayCount("t_farm_pig_heat", "heat_date", tenantId, first, toExclusive)));
+        rows.add(buildRow("死亡猪只数", days, byDayStatus(tenantId, "DIE", dtFrom, dtTo)));
+        rows.add(buildRow("淘汰猪只数", days, byDayStatus(tenantId, "ELIMINATE", dtFrom, dtTo)));
         rows.add(buildRow("产仔数", days, byDaySum("t_farm_pig_farrow", "farrow_date", "total_born", tenantId, first, toExclusive)));
         rows.add(buildRow("活仔数", days, byDaySum("t_farm_pig_farrow", "farrow_date", "live_born", tenantId, first, toExclusive)));
         rows.add(buildRow("仔猪打标数", days, byDayCount("t_farm_pig_pigletno", "tag_date", tenantId, first, toExclusive)));
-        // 新增第 12 行：生长记录数（t_farm_pig_growth，按 measure_date）。
+        rows.add(buildRow("断奶仔猪数", days, byDaySum("t_farm_pig_weaning", "weaning_date", "weaned_count", tenantId, first, toExclusive)));
         rows.add(buildRow("生长记录数", days, byDayCount("t_farm_pig_growth", "measure_date", tenantId, first, toExclusive)));
-        // 新增第 13 行：阉割猪只数（status_record event_type=CASTRATE，复用 byDayStatus）。
         rows.add(buildRow("阉割猪只数", days, byDayStatus(tenantId, "CASTRATE", dtFrom, dtTo)));
+        rows.add(buildRow("用药猪只数", days, byDayMedicated(tenantId, dtFrom, dtTo)));
         vo.setRows(rows);
         return vo;
     }
@@ -259,6 +256,10 @@ public class DashboardServiceImpl implements IDashboardService {
 
     private Map<String, Integer> byDayStatus(String tenantId, String eventType, LocalDateTime from, LocalDateTime to) {
         return toDayMap(aggregateQueryMapper.countStatusEventByDay(tenantId, eventType, from, to));
+    }
+
+    private Map<String, Integer> byDayMedicated(String tenantId, LocalDateTime from, LocalDateTime to) {
+        return toDayMap(aggregateQueryMapper.countMedicatedPigByDay(tenantId, from, to));
     }
 
     private Map<String, Integer> toDayMap(List<Map<String, Object>> raw) {
@@ -304,25 +305,22 @@ public class DashboardServiceImpl implements IDashboardService {
 
         DailyOverviewVo vo = new DailyOverviewVo(date);
         List<DailyOverviewVo.OverviewCell> cells = vo.getCells();
-        // 1-13：与 by-month 13 项当日快照对齐（顺序一致，文案一致）。
+        // 15 格，顺序 / 文案严格对齐原型（4f113e00 养殖场日情况概览，4+4+4+3 末行=生长记录/阉割/用药）。
+        // 与 by-month 15 行同序同文案。死亡 / 淘汰按原型作"猪只数"（非母猪数）。无出栏格。
         cells.add(cell("分娩母猪数", aggregateQueryMapper.countEventInDay("t_farm_pig_farrow", "farrow_date", tenantId, from, to)));
         cells.add(cell("配种母猪数", aggregateQueryMapper.countEventInDay("t_farm_pig_breeding", "breeding_date", tenantId, from, to)));
         cells.add(cell("断奶母猪数", aggregateQueryMapper.countEventInDay("t_farm_pig_weaning", "weaning_date", tenantId, from, to)));
         cells.add(cell("返空流母猪数", aggregateQueryMapper.countAbnormalInRange(tenantId, from, to)));
-        cells.add(cell("死亡母猪数", aggregateQueryMapper.countStatusEventInDay(tenantId, "DIE", from, to)));
-        cells.add(cell("淘汰母猪数", aggregateQueryMapper.countStatusEventInDay(tenantId, "ELIMINATE", from, to)));
         cells.add(cell("引种母猪数", aggregateQueryMapper.sumEventInDay("t_farm_pig_introduce", "introduce_date", "pig_count", tenantId, from, to)));
         cells.add(cell("查情不配种数", aggregateQueryMapper.countEventInDay("t_farm_pig_heat", "heat_date", tenantId, from, to)));
+        cells.add(cell("死亡猪只数", aggregateQueryMapper.countStatusEventInDay(tenantId, "DIE", from, to)));
+        cells.add(cell("淘汰猪只数", aggregateQueryMapper.countStatusEventInDay(tenantId, "ELIMINATE", from, to)));
         cells.add(cell("产仔数", aggregateQueryMapper.sumEventInDay("t_farm_pig_farrow", "farrow_date", "total_born", tenantId, from, to)));
         cells.add(cell("活仔数", aggregateQueryMapper.sumEventInDay("t_farm_pig_farrow", "farrow_date", "live_born", tenantId, from, to)));
         cells.add(cell("仔猪打标数", aggregateQueryMapper.countEventInDay("t_farm_pig_pigletno", "tag_date", tenantId, from, to)));
+        cells.add(cell("断奶仔猪数", aggregateQueryMapper.sumEventInDay("t_farm_pig_weaning", "weaning_date", "weaned_count", tenantId, from, to)));
         cells.add(cell("生长记录数", aggregateQueryMapper.countEventInDay("t_farm_pig_growth", "measure_date", tenantId, from, to)));
         cells.add(cell("阉割猪只数", aggregateQueryMapper.countStatusEventInDay(tenantId, "CASTRATE", from, to)));
-        // 14：断奶仔猪数（当日 SUM weaned_count）。
-        cells.add(cell("断奶仔猪数", aggregateQueryMapper.sumEventInDay("t_farm_pig_weaning", "weaning_date", "weaned_count", tenantId, from, to)));
-        // 15：出栏猪只数（补足 16 格，当日 COUNT marketing；by-month 无此项但概览 16 格需要）。
-        cells.add(cell("出栏猪只数", aggregateQueryMapper.countEventInDay("t_farm_pig_marketing", "marketing_date", tenantId, from, to)));
-        // 16：用药猪只数（#7.7，当日 COUNT DISTINCT pig_id）。
         cells.add(cell("用药猪只数", aggregateQueryMapper.countMedicatedPigInDay(tenantId, from, to)));
         return vo;
     }

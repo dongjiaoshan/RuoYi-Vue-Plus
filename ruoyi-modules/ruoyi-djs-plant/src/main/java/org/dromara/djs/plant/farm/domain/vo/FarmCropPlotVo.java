@@ -47,4 +47,12 @@ public class FarmCropPlotVo implements Serializable {
 
     /** 种植状态（字典 {@code djs_plant_plan_status}：pending/ongoing/completed）。 */
     private String plantStatus;
+
+    /**
+     * 累计移栽百分比 0-100（仅 farmType=transplant 返回，FIX-PLT-MP-WORK-BATCH-001 移栽进度层）。
+     *
+     * <p>= 该地块下 farm_type=transplant 历史 transplant_percent 之和（已移 60%/80%/0%）。
+     * 移栽单块录入弹窗按此校验"最多可移 100 − transplantedPercent"。</p>
+     */
+    private Integer transplantedPercent;
 }

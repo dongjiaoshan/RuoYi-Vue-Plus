@@ -103,6 +103,10 @@ public class FarmRecordsVo implements Serializable {
     @ExcelProperty(value = "损失产量")
     private BigDecimal lossYield;
 
+    /** 采摘重量 kg（farm_type=harvest_activity 采摘活动管理录入，FIX-PLT-MP-HARVEST-001 #3=a）。 */
+    @ExcelProperty(value = "采摘重量(kg)")
+    private BigDecimal harvestWeight;
+
     @ExcelProperty(value = "预警", converter = ExcelDictConvert.class)
     @ExcelDictFormat(dictType = "djs_yes_no")
     private Integer isWarning;

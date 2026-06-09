@@ -254,6 +254,21 @@ public interface AggregateQueryMapper {
                                @Param("from") java.time.LocalDateTime from,
                                @Param("to") java.time.LocalDateTime to);
 
+    /**
+     * 用药猪只数按日 COUNT(DISTINCT pig_id)（活动统计表第 15 行）。use_date 区间右开，排除 pig_id NULL。
+     */
+    @Select("SELECT DATE_FORMAT(use_date, '%m-%d') AS d, COUNT(DISTINCT pig_id) AS v "
+        + " FROM t_breed_medicine_record "
+        + " WHERE tenant_id = #{tenantId} "
+        + "   AND del_flag = '0' "
+        + "   AND pig_id IS NOT NULL "
+        + "   AND use_date >= #{from} "
+        + "   AND use_date <  #{to} "
+        + " GROUP BY d")
+    List<Map<String, Object>> countMedicatedPigByDay(@Param("tenantId") String tenantId,
+                                                     @Param("from") java.time.LocalDateTime from,
+                                                     @Param("to") java.time.LocalDateTime to);
+
     // ============================================================
     //  年度繁殖与配种 + 产房仔猪质量（FIX-MGMT-MP-BRD-001，#7.1-7.5）
     //  [from, to) 右开区间内底表实时聚合。

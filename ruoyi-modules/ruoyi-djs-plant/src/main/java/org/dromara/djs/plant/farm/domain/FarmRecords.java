@@ -95,6 +95,9 @@ public class FarmRecords extends TenantEntity {
     /** 损失产量；仅 farm_type=disaster。触发 plant_details.loss_yield 累加。 */
     private BigDecimal lossYield;
 
+    /** 采摘重量 kg；仅 farm_type=harvest_activity 采摘活动管理录入（FIX-PLT-MP-HARVEST-001 #3=a）。 */
+    private BigDecimal harvestWeight;
+
     /** 预警标记（字典 {@code djs_yes_no}：1=是 / 2=否；loss_rate≥30 时置 1）。 */
     private Integer isWarning;
 

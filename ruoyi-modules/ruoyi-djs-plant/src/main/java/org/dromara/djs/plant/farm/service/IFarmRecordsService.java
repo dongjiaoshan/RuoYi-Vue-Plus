@@ -2,9 +2,11 @@ package org.dromara.djs.plant.farm.service;
 
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
+import org.dromara.djs.plant.farm.domain.bo.DisasterBatchBo;
 import org.dromara.djs.plant.farm.domain.bo.DisasterRecordBo;
 import org.dromara.djs.plant.farm.domain.bo.EmptyRecordBo;
 import org.dromara.djs.plant.farm.domain.bo.GrowBatchBo;
+import org.dromara.djs.plant.farm.domain.bo.HarvestWeightBo;
 import org.dromara.djs.plant.farm.domain.bo.GrowRecordBo;
 import org.dromara.djs.plant.farm.domain.bo.PlotPickStatusBo;
 import org.dromara.djs.plant.farm.domain.bo.RotationRecordBo;
@@ -54,6 +56,29 @@ public interface IFarmRecordsService {
      * @return 成功 INSERT 的农事记录行数
      */
     int submitGrowBatch(GrowBatchBo bo);
+
+    /**
+     * 灾害「作物 → 多地块」批量提交（FIX-PLT-MP-WORK-BATCH-001 灾害批量，#2）。
+     *
+     * <p>单事务循环复用单条灾害插入逻辑：每地块 INSERT 一行 disaster 记录（统一 disasterType/lossRate +
+     * 各自 lossYield）+ 累加对应 {@code plant_details.loss_yield}。lossRate≥30 时该行置预警。</p>
+     *
+     * @param bo 批量入参（N 个地块三元组 + 统一灾害类型/损失率/日期/班组）
+     * @return 成功 INSERT 的灾害记录行数
+     */
+    int submitDisasterBatch(DisasterBatchBo bo);
+
+    /**
+     * 采摘活动管理「采摘重量录入」（FIX-PLT-MP-HARVEST-001 #3=a）。
+     *
+     * <p>累加对应 {@code plant_details.actual_yield}（按 plantId+plotId+cropId 定位未结束明细，
+     * 无则取最新一条），并 INSERT 一行 {@code t_plant_farm_records}（farm_type=harvest_activity，
+     * 携带 harvest_weight）。采收 tab 已去重量，本端点为采摘重量唯一录入口。</p>
+     *
+     * @param bo 采摘重量录入入参
+     * @return 新增农事记录 id
+     */
+    Long submitHarvestWeight(HarvestWeightBo bo);
 
     /**
      * 农事多选页候选地块（FIX-PLT-MP-WORK-BATCH-001 #2）。

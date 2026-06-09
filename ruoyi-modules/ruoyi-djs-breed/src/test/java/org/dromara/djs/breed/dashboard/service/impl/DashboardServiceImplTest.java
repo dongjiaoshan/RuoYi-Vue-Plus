@@ -306,9 +306,9 @@ class DashboardServiceImplTest {
     // ============================================================
 
     @Test
-    @DisplayName("getDailyOverview: 16 格 metric 中文 + 当日值映射（含用药猪只数第 16 格）")
+    @DisplayName("getDailyOverview: 15 格 metric 中文 + 当日值映射（末格=用药猪只数，对齐原型 4f113e00）")
     void testGetDailyOverview() {
-        // count 类（farrow/breeding/weaning/heat/pigletno/growth/marketing）默认 0，挑几个非 0 验证映射
+        // count 类（farrow/breeding/weaning/heat/pigletno/growth）默认 0，挑几个非 0 验证映射
         when(aggregateQueryMapper.countEventInDay(eq("t_farm_pig_farrow"), eq("farrow_date"), anyString(), any(), any())).thenReturn(2);
         when(aggregateQueryMapper.countEventInDay(eq("t_farm_pig_breeding"), eq("breeding_date"), anyString(), any(), any())).thenReturn(3);
         when(aggregateQueryMapper.countEventInDay(eq("t_farm_pig_growth"), eq("measure_date"), anyString(), any(), any())).thenReturn(7);
@@ -319,22 +319,25 @@ class DashboardServiceImplTest {
         DailyOverviewVo vo = service.getDailyOverview(LocalDate.of(2026, 6, 9));
 
         assertThat(vo.getDate()).isEqualTo("2026-06-09");
-        assertThat(vo.getCells()).hasSize(16);
+        assertThat(vo.getCells()).hasSize(15);
         // 第 1/2 格分娩/配种
         assertThat(vo.getCells().get(0).getMetric()).isEqualTo("分娩母猪数");
         assertThat(vo.getCells().get(0).getValue()).isEqualTo(2);
+        assertThat(vo.getCells().get(1).getMetric()).isEqualTo("配种母猪数");
         assertThat(vo.getCells().get(1).getValue()).isEqualTo(3);
-        // 生长记录数 / 阉割猪只数（第 12/13 格）
-        assertThat(vo.getCells().get(11).getMetric()).isEqualTo("生长记录数");
-        assertThat(vo.getCells().get(11).getValue()).isEqualTo(7);
-        assertThat(vo.getCells().get(12).getMetric()).isEqualTo("阉割猪只数");
-        assertThat(vo.getCells().get(12).getValue()).isEqualTo(4);
-        // 断奶仔猪数（第 14 格）
-        assertThat(vo.getCells().get(13).getMetric()).isEqualTo("断奶仔猪数");
-        assertThat(vo.getCells().get(13).getValue()).isEqualTo(11);
-        // 第 16 格 = 用药猪只数（#7.7）
-        assertThat(vo.getCells().get(15).getMetric()).isEqualTo("用药猪只数");
-        assertThat(vo.getCells().get(15).getValue()).isEqualTo(9);
+        // 死亡 / 淘汰按原型作"猪只数"（第 7/8 格）
+        assertThat(vo.getCells().get(6).getMetric()).isEqualTo("死亡猪只数");
+        assertThat(vo.getCells().get(7).getMetric()).isEqualTo("淘汰猪只数");
+        // 断奶仔猪数（第 12 格，weaned_count SUM）
+        assertThat(vo.getCells().get(11).getMetric()).isEqualTo("断奶仔猪数");
+        assertThat(vo.getCells().get(11).getValue()).isEqualTo(11);
+        // 末行 3 格 = 生长记录数 / 阉割猪只数 / 用药猪只数（13/14/15）
+        assertThat(vo.getCells().get(12).getMetric()).isEqualTo("生长记录数");
+        assertThat(vo.getCells().get(12).getValue()).isEqualTo(7);
+        assertThat(vo.getCells().get(13).getMetric()).isEqualTo("阉割猪只数");
+        assertThat(vo.getCells().get(13).getValue()).isEqualTo(4);
+        assertThat(vo.getCells().get(14).getMetric()).isEqualTo("用药猪只数");
+        assertThat(vo.getCells().get(14).getValue()).isEqualTo(9);
     }
 
     @Test

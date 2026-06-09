@@ -89,38 +89,26 @@ public class AppletPickServiceImpl implements IAppletPickService {
             throw new ServiceException("采摘明细不存在或已删除：" + bo.getDetailId());
         }
         boolean finish = Boolean.TRUE.equals(bo.getFinish());
-        // FIX-PLT-MP-PICK-001：weight 放宽 —— finish 必填且 > 0；begin 态(finish=false)可空（仅流转状态，不累加）
-        boolean hasWeight = bo.getWeight() != null && bo.getWeight().compareTo(BigDecimal.ZERO) > 0;
-        if (finish && !hasWeight) {
-            throw new ServiceException("完成采摘时采收重量必填且必须大于 0");
-        }
-        if (bo.getWeight() != null && bo.getWeight().compareTo(BigDecimal.ZERO) < 0) {
-            throw new ServiceException("采收重量不能为负");
-        }
+        // FIX-PLT-MP-PICK-001（#3=a 按原型）：采收 tab 只走"开始/完成采摘"流程（采摘人员 + 日期），
+        // 不录重量。采摘重量改由农事「采摘活动管理」submitHarvestWeight 累加 actual_yield。
         // 捕获更新前的旧态：仅"非 completed → completed"首次流转才发跨域事件（幂等，防重复点完成产生多行待办）
         boolean alreadyCompleted = "completed".equals(detail.getHarvestStatus());
 
-        // 1. 累加 actual_yield（无重量时不累加）
-        BigDecimal newYield = detail.getActualYield() == null ? BigDecimal.ZERO : detail.getActualYield();
-        if (hasWeight) {
-            newYield = newYield.add(bo.getWeight());
-            detail.setActualYield(newYield);
-        }
-
-        // 2. 首次采收回填 begin_harvestdate
+        // 1. 首次采收回填 begin_harvestdate
         if (detail.getBeginHarvestdate() == null) {
             detail.setBeginHarvestdate(bo.getHarvestDate());
         }
 
-        // 3. harvest_status 流转：pending → picking；finish 时 → completed
+        // 2. harvest_status 流转：pending → picking；finish 时 → completed
         if (finish) {
             detail.setHarvestStatus("completed");
             detail.setEndActualdate(LocalDate.now());
             detail.setEndHarvestdate(bo.getHarvestDate());
-            // 4. average_yield = actual_yield / plot_area（plot_area 为 0/NULL 时跳过，不抛）
+            // 3. average_yield = actual_yield / plot_area（actual_yield 由采摘活动管理累加；为空 / area 为 0 时跳过，不抛）
+            BigDecimal yield = detail.getActualYield();
             BigDecimal area = detail.getPlotArea();
-            if (area != null && area.compareTo(BigDecimal.ZERO) > 0) {
-                detail.setAverageYield(newYield.divide(area, 3, RoundingMode.HALF_UP));
+            if (yield != null && area != null && area.compareTo(BigDecimal.ZERO) > 0) {
+                detail.setAverageYield(yield.divide(area, 3, RoundingMode.HALF_UP));
             }
         } else if (!"completed".equals(detail.getHarvestStatus())) {
             detail.setHarvestStatus("picking");

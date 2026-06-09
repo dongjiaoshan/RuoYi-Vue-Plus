@@ -102,14 +102,13 @@ class AppletPickServiceImplTest {
     }
 
     @Test
-    @DisplayName("采收提交 happy(finish=false)：actual_yield 累加 + begin 回填 + pending→picking + 不动 is_pick + INSERT 农事")
+    @DisplayName("采收提交 happy(finish=false)：begin 回填 + pending→picking + 不动 is_pick + 无重量 + INSERT 农事")
     void submitPick_continue_happy() {
         PlantDetails d = detailFixture();
         when(detailsMapper.selectById(100L)).thenReturn(d);
 
         PickSubmitBo bo = new PickSubmitBo();
         bo.setDetailId(100L);
-        bo.setWeight(new BigDecimal("50"));
         bo.setHarvestDate(LocalDate.of(2026, 6, 1));
         bo.setFinish(false);
 
@@ -118,7 +117,8 @@ class AppletPickServiceImplTest {
         ArgumentCaptor<PlantDetails> cap = ArgumentCaptor.forClass(PlantDetails.class);
         verify(detailsMapper).updateById(cap.capture());
         PlantDetails saved = cap.getValue();
-        assertThat(saved.getActualYield()).isEqualByComparingTo("50");
+        // #3=a：采收 tab 不录重量，actual_yield 不被采收流程改动
+        assertThat(saved.getActualYield()).isNull();
         assertThat(saved.getBeginHarvestdate()).isEqualTo(LocalDate.of(2026, 6, 1));
         assertThat(saved.getHarvestStatus()).isEqualTo("picking");
         assertThat(saved.getEndActualdate()).isNull();
@@ -131,8 +131,8 @@ class AppletPickServiceImplTest {
     }
 
     @Test
-    @DisplayName("二次采收累加：原 30 + 本次 20 = 50")
-    void submitPick_accumulate() {
+    @DisplayName("二次采收：begin 已存在不覆盖，采收流程不动 actual_yield")
+    void submitPick_continue_keeps_begin() {
         PlantDetails d = detailFixture();
         d.setActualYield(new BigDecimal("30"));
         d.setHarvestStatus("picking");
@@ -141,27 +141,27 @@ class AppletPickServiceImplTest {
 
         PickSubmitBo bo = new PickSubmitBo();
         bo.setDetailId(100L);
-        bo.setWeight(new BigDecimal("20"));
         bo.setHarvestDate(LocalDate.of(2026, 6, 1));
 
         service.submitPick(bo);
 
         ArgumentCaptor<PlantDetails> cap = ArgumentCaptor.forClass(PlantDetails.class);
         verify(detailsMapper).updateById(cap.capture());
-        assertThat(cap.getValue().getActualYield()).isEqualByComparingTo("50");
+        // 采收流程不改 actual_yield（仍为采摘活动管理累加的 30）
+        assertThat(cap.getValue().getActualYield()).isEqualByComparingTo("30");
         // begin 已存在不覆盖
         assertThat(cap.getValue().getBeginHarvestdate()).isEqualTo(LocalDate.of(2026, 5, 30));
     }
 
     @Test
-    @DisplayName("完成采收(finish=true)：completed + end_actualdate=今日 + average_yield=actual/plot_area")
+    @DisplayName("完成采收(finish=true)：completed + end_actualdate=今日 + average_yield=actual/plot_area（actual 由采摘活动管理累加）")
     void submitPick_finish() {
         PlantDetails d = detailFixture();
+        d.setActualYield(new BigDecimal("100"));   // 已由采摘活动管理累加
         when(detailsMapper.selectById(100L)).thenReturn(d);
 
         PickSubmitBo bo = new PickSubmitBo();
         bo.setDetailId(100L);
-        bo.setWeight(new BigDecimal("100"));
         bo.setHarvestDate(LocalDate.of(2026, 6, 1));
         bo.setFinish(true);
 
@@ -183,7 +183,6 @@ class AppletPickServiceImplTest {
         when(detailsMapper.selectById(999L)).thenReturn(null);
         PickSubmitBo bo = new PickSubmitBo();
         bo.setDetailId(999L);
-        bo.setWeight(new BigDecimal("10"));
         bo.setHarvestDate(LocalDate.now());
 
         assertThatThrownBy(() -> service.submitPick(bo))
@@ -201,7 +200,6 @@ class AppletPickServiceImplTest {
 
         PickSubmitBo bo = new PickSubmitBo();
         bo.setDetailId(100L);
-        bo.setWeight(new BigDecimal("50"));
         bo.setHarvestDate(LocalDate.now());
 
         assertThatThrownBy(() -> service.submitPick(bo))
@@ -222,7 +220,6 @@ class AppletPickServiceImplTest {
 
         PickSubmitBo bo = new PickSubmitBo();
         bo.setDetailId(100L);
-        bo.setWeight(new BigDecimal("100"));
         bo.setHarvestDate(LocalDate.of(2026, 6, 1));
         bo.setFinish(true);
 
@@ -239,7 +236,6 @@ class AppletPickServiceImplTest {
 
         PickSubmitBo bo = new PickSubmitBo();
         bo.setDetailId(100L);
-        bo.setWeight(new BigDecimal("50"));
         bo.setHarvestDate(LocalDate.of(2026, 6, 1));
         bo.setFinish(false);
 
@@ -258,7 +254,6 @@ class AppletPickServiceImplTest {
 
         PickSubmitBo bo = new PickSubmitBo();
         bo.setDetailId(100L);
-        bo.setWeight(new BigDecimal("20"));
         bo.setHarvestDate(LocalDate.of(2026, 6, 1));
         bo.setFinish(true);
 
