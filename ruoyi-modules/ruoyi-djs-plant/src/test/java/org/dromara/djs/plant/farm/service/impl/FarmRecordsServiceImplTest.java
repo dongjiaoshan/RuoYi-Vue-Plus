@@ -21,6 +21,7 @@ import org.dromara.djs.plant.plan.domain.PlantDetails;
 import org.dromara.djs.plant.plan.mapper.PlantDetailsMapper;
 import org.dromara.djs.plant.plot.domain.PlotInfo;
 import org.dromara.djs.plant.plot.mapper.PlotInfoMapper;
+import org.dromara.djs.plant.team.mapper.PlantWorkPeopleMapper;
 import org.dromara.djs.plant.team.mapper.PlantWorkTeamMapper;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -82,6 +83,8 @@ class FarmRecordsServiceImplTest {
     private PlantDetailsMapper plantDetailsMapper;
     @Mock
     private PlantWorkTeamMapper teamMapper;
+    @Mock
+    private PlantWorkPeopleMapper peopleMapper;
 
     private FarmRecordsServiceImpl service;
 
@@ -101,7 +104,7 @@ class FarmRecordsServiceImplTest {
 
     @BeforeEach
     void setUp() {
-        service = new FarmRecordsServiceImpl(baseMapper, plotInfoMapper, cropInfoMapper, plantDetailsMapper, teamMapper);
+        service = new FarmRecordsServiceImpl(baseMapper, plotInfoMapper, cropInfoMapper, plantDetailsMapper, teamMapper, peopleMapper);
         // mocking selectMaxRecordNoByPrefix 返 null（当日尚无序号）→ next=1
         when(baseMapper.selectMaxRecordNoByPrefix(any(), any())).thenReturn(null);
         // mocking plot / crop 落库快照（plot_type / crop_name 冗余）

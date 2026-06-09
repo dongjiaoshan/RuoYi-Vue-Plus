@@ -13,6 +13,7 @@ import org.dromara.djs.plant.plan.mapper.PlantDetailsMapper;
 import org.dromara.djs.plant.plot.domain.PlotInfo;
 import org.dromara.djs.plant.plot.mapper.PlotInfoMapper;
 import org.dromara.djs.plant.team.domain.PlantWorkTeam;
+import org.dromara.djs.plant.team.mapper.PlantWorkPeopleMapper;
 import org.dromara.djs.plant.team.mapper.PlantWorkTeamMapper;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -65,6 +66,8 @@ class FarmRecordsDisasterQueryTest {
     private PlantDetailsMapper plantDetailsMapper;
     @Mock
     private PlantWorkTeamMapper teamMapper;
+    @Mock
+    private PlantWorkPeopleMapper peopleMapper;
 
     private FarmRecordsServiceImpl service;
 
@@ -80,7 +83,7 @@ class FarmRecordsDisasterQueryTest {
 
     @BeforeEach
     void setUp() {
-        service = new FarmRecordsServiceImpl(baseMapper, plotInfoMapper, cropInfoMapper, plantDetailsMapper, teamMapper);
+        service = new FarmRecordsServiceImpl(baseMapper, plotInfoMapper, cropInfoMapper, plantDetailsMapper, teamMapper, peopleMapper);
     }
 
     private FarmRecordsVo buildDisasterVo() {
