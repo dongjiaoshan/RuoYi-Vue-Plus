@@ -6,6 +6,7 @@ import org.dromara.djs.warehouse.shipment.returnpkg.domain.bo.ReturnConfirmBo;
 import org.dromara.djs.warehouse.shipment.returnpkg.domain.bo.ReturnProductBo;
 import org.dromara.djs.warehouse.shipment.returnpkg.domain.query.ReturnProductQuery;
 import org.dromara.djs.warehouse.shipment.returnpkg.domain.vo.ReturnProductVo;
+import org.dromara.djs.warehouse.shipment.returnpkg.domain.vo.ReturnStoreGroupVo;
 
 import java.util.Collection;
 import java.util.List;
@@ -53,4 +54,23 @@ public interface IReturnProductService {
      * </ol>
      */
     void confirmReturn(Long id, ReturnConfirmBo bo);
+
+    /**
+     * mp 退货管理（原型图 57）：按 {@code store_id + return_status} 分组的待确认 / 已确认列表。
+     *
+     * <p>仅取 {@code store_to_warehouse} 方向（mp 退货管理只管门店→仓库这条链；
+     * 其他 2 方向是 admin 端占位录入，不进 mp 分组卡）。</p>
+     *
+     * @return 门店分组卡列表（门店名 + 状态 + 品种数 + 退货时间），按状态（待确认在前）+ 时间倒序
+     */
+    List<ReturnStoreGroupVo> listPendingGroups();
+
+    /**
+     * mp 退货确认详情（原型图 58）：拉某门店某状态下的全部退货行（逐产品）。
+     *
+     * @param storeId      门店 ID
+     * @param returnStatus 退货状态 {@code pending} / {@code confirmed}
+     * @return 该门店该状态下的退货行（含 product_name / return_weight / confirm_weight），按 apply_time 倒序
+     */
+    List<ReturnProductVo> listByStoreAndStatus(Long storeId, String returnStatus);
 }

@@ -12,6 +12,8 @@ import org.dromara.common.satoken.utils.LoginHelper;
 import org.dromara.djs.common.base.DjsBaseServiceImpl;
 import org.dromara.djs.common.encoder.BizCodeType;
 import org.dromara.djs.common.encoder.IBizCodeGenerator;
+import org.dromara.djs.common.store.domain.Store;
+import org.dromara.djs.common.store.mapper.StoreMapper;
 import org.dromara.djs.common.util.I18nMessages;
 import org.dromara.djs.warehouse.flow.domain.StockFlow;
 import org.dromara.djs.warehouse.flow.mapper.StockFlowMapper;
@@ -20,17 +22,24 @@ import org.dromara.djs.warehouse.shipment.returnpkg.domain.bo.ReturnConfirmBo;
 import org.dromara.djs.warehouse.shipment.returnpkg.domain.bo.ReturnProductBo;
 import org.dromara.djs.warehouse.shipment.returnpkg.domain.query.ReturnProductQuery;
 import org.dromara.djs.warehouse.shipment.returnpkg.domain.vo.ReturnProductVo;
+import org.dromara.djs.warehouse.shipment.returnpkg.domain.vo.ReturnStoreGroupVo;
 import org.dromara.djs.warehouse.shipment.returnpkg.mapper.ReturnProductMapper;
 import org.dromara.djs.warehouse.shipment.returnpkg.service.IReturnProductService;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Comparator;
 import java.util.Date;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * 退货管理 Service 实现（WMS-SHIP-001）。
@@ -58,12 +67,16 @@ public class ReturnProductServiceImpl
 
     private final IBizCodeGenerator bizCodeGenerator;
 
+    private final StoreMapper storeMapper;
+
     public ReturnProductServiceImpl(ReturnProductMapper baseMapper,
                                     StockFlowMapper stockFlowMapper,
-                                    IBizCodeGenerator bizCodeGenerator) {
+                                    IBizCodeGenerator bizCodeGenerator,
+                                    StoreMapper storeMapper) {
         super(baseMapper);
         this.stockFlowMapper = stockFlowMapper;
         this.bizCodeGenerator = bizCodeGenerator;
+        this.storeMapper = storeMapper;
     }
 
     @Override
@@ -177,7 +190,77 @@ public class ReturnProductServiceImpl
         }
     }
 
+    @Override
+    public List<ReturnStoreGroupVo> listPendingGroups() {
+        // 1. 只取 mp 退货管理这条链：store_to_warehouse 方向 + 有门店 + 状态 pending/confirmed。
+        //    （其他 2 方向是 admin 端占位录入，不进 mp 分组卡）
+        List<ReturnProduct> rows = baseMapper.selectList(new LambdaQueryWrapper<ReturnProduct>()
+            .eq(ReturnProduct::getReturnDirection, DIRECTION_STORE_TO_WAREHOUSE)
+            .isNotNull(ReturnProduct::getStoreId)
+            .in(ReturnProduct::getReturnStatus, List.of(STATUS_PENDING, STATUS_CONFIRMED)));
+        if (rows.isEmpty()) {
+            return List.of();
+        }
+        // 2. group by store_id + return_status（与原型一张卡 = 一门店一状态一致）。
+        Map<String, List<ReturnProduct>> byGroup = rows.stream()
+            .collect(Collectors.groupingBy(r -> r.getStoreId() + "|" + r.getReturnStatus()));
+        // 3. 批量填门店名（无 N+1）。
+        Set<Long> storeIds = rows.stream().map(ReturnProduct::getStoreId)
+            .filter(Objects::nonNull).collect(Collectors.toSet());
+        Map<Long, String> storeNameMap = loadStoreNameMap(storeIds);
+        // 4. 每组算品种数 + 最近退货时间。
+        List<ReturnStoreGroupVo> list = new ArrayList<>(byGroup.size());
+        byGroup.values().forEach(group -> {
+            ReturnProduct first = group.get(0);
+            ReturnStoreGroupVo vo = new ReturnStoreGroupVo();
+            vo.setStoreId(first.getStoreId());
+            vo.setStoreName(storeNameMap.get(first.getStoreId()));
+            vo.setReturnStatus(first.getReturnStatus());
+            vo.setProductKindCount((int) group.stream()
+                .map(ReturnProduct::getProductId).filter(Objects::nonNull).distinct().count());
+            vo.setReturnTime(group.stream()
+                .map(ReturnProduct::getApplyTime).filter(Objects::nonNull)
+                .max(Comparator.naturalOrder()).orElse(null));
+            list.add(vo);
+        });
+        // 5. 稳定排序：待确认在前，再按退货时间倒序。
+        list.sort(Comparator
+            .comparing((ReturnStoreGroupVo v) -> STATUS_PENDING.equals(v.getReturnStatus()) ? 0 : 1)
+            .thenComparing(v -> v.getReturnTime() == null ? LocalDateTime.MIN : v.getReturnTime(),
+                Comparator.reverseOrder()));
+        return list;
+    }
+
+    @Override
+    public List<ReturnProductVo> listByStoreAndStatus(Long storeId, String returnStatus) {
+        if (storeId == null) {
+            throw new ServiceException(I18nMessages.t("return.store.id_required"), 400);
+        }
+        if (StringUtils.isBlank(returnStatus)) {
+            throw new ServiceException(I18nMessages.t("return.status.required"), 400);
+        }
+        return baseMapper.selectVoList(new LambdaQueryWrapper<ReturnProduct>()
+            .eq(ReturnProduct::getReturnDirection, DIRECTION_STORE_TO_WAREHOUSE)
+            .eq(ReturnProduct::getStoreId, storeId)
+            .eq(ReturnProduct::getReturnStatus, returnStatus)
+            .orderByDesc(ReturnProduct::getApplyTime));
+    }
+
     // ---------- private helpers ----------
+
+    /**
+     * 批量取门店名（StoreMapper 跨域 in 查，无 N+1；参 ShipmentServiceImpl#loadStoreNameMap 范式）。
+     */
+    private Map<Long, String> loadStoreNameMap(Set<Long> storeIds) {
+        if (storeIds.isEmpty()) {
+            return Map.of();
+        }
+        return storeMapper.selectList(new LambdaQueryWrapper<Store>()
+                .select(Store::getId, Store::getStoreName)
+                .in(Store::getId, storeIds))
+            .stream().collect(Collectors.toMap(Store::getId, Store::getStoreName, (a, b) -> a,
+                LinkedHashMap::new));
+    }
 
     private LambdaQueryWrapper<ReturnProduct> buildQueryWrapper(ReturnProductQuery q) {
         LambdaQueryWrapper<ReturnProduct> w = new LambdaQueryWrapper<>();

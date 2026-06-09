@@ -4,9 +4,11 @@ import cn.dev33.satoken.annotation.SaCheckLogin;
 import lombok.RequiredArgsConstructor;
 import org.dromara.common.core.domain.R;
 import org.dromara.djs.warehouse.dashboard.domain.vo.WarehouseDashboardSummaryVo;
+import org.dromara.djs.warehouse.dashboard.domain.vo.WarehouseProductionStatVo;
 import org.dromara.djs.warehouse.dashboard.service.IWarehouseDashboardService;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
@@ -37,6 +39,19 @@ public class WarehouseDashboardAppletController {
     @GetMapping("/summary")
     public R<WarehouseDashboardSummaryVo> summary() {
         return R.ok(dashboardService.getSummary());
+    }
+
+    /**
+     * mp 生产管理统计（原型图 26，3 tab）：该 tab 的年度指标分组 + 月度效能趋势。
+     *
+     * @param tab 业态 tab：pig=猪肉 / veg=果蔬 / ship=发货（缺省 / 非法回退 pig）
+     * @return 生产管理统计 VO
+     */
+    @SaCheckLogin
+    @GetMapping("/production")
+    public R<WarehouseProductionStatVo> production(
+        @RequestParam(value = "tab", required = false, defaultValue = "pig") String tab) {
+        return R.ok(dashboardService.getProduction(tab));
     }
 
 }
