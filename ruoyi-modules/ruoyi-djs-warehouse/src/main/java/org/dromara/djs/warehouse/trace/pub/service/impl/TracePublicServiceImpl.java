@@ -277,18 +277,20 @@ public class TracePublicServiceImpl
         // 出栏日期：Pig 无列，用 timeline 的 marketing 节点时间兜底（推断字段）
         pigBlock.setMarketDate(findEventTime(timeline, TraceContentConst.MARKETING));
 
+        LocalDate birthDate = null;
         if (StringUtils.isNotBlank(earNo)) {
             Pig pig = pigMapper.selectOne(
                 new LambdaQueryWrapper<Pig>().eq(Pig::getEarNo, earNo).last("limit 1"));
             if (pig != null) {
+                birthDate = pig.getBirthDate();
                 pigBlock.setBreed(pig.getPigBreedCode());
-                pigBlock.setBirthDate(pig.getBirthDate());
+                pigBlock.setBirthDate(birthDate);
                 // 生长记录 + 栋舍名（barnName 用生长记录冗余兜底）
                 List<PigGrowth> growths = pigGrowthMapper.selectList(
                     new LambdaQueryWrapper<PigGrowth>()
                         .eq(PigGrowth::getPigId, pig.getId())
                         .orderByAsc(PigGrowth::getMeasureDate));
-                vo.setGrowthRecords(toGrowthRows(growths));
+                vo.setGrowthRecords(toGrowthRows(growths, birthDate));
                 growths.stream()
                     .map(PigGrowth::getBarnName).filter(StringUtils::isNotBlank)
                     .findFirst().ifPresent(pigBlock::setBarnName);
@@ -298,41 +300,46 @@ public class TracePublicServiceImpl
                 vo.setGrowthRecords(new ArrayList<>());
             }
             // 用药 / 疫苗保健（按耳号，MedRecord drug_type=1/3 是按猪只）
-            vo.setMedications(toMedicationRows(earNo));
+            vo.setMedications(toMedicationRows(earNo, birthDate));
         } else {
             vo.setGrowthRecords(new ArrayList<>());
             vo.setMedications(new ArrayList<>());
         }
+        // 日龄：出栏日（marketing 事件）− 出生日；任一缺 → null
+        LocalDateTime marketDt = pigBlock.getMarketDate();
+        pigBlock.setAgeDays(calcAgeDays(birthDate, marketDt == null ? null : marketDt.toLocalDate()));
         vo.setPig(pigBlock);
 
         // 检疫信息：V1 数据源缺口（无检疫表/字段），返 null（见 _open-issues）
         vo.setQuarantine(null);
 
-        // 门店
-        if (code.getStoreId() != null) {
-            Store s = storeMapper.selectById(code.getStoreId());
-            if (s != null) {
-                PublicTraceVo.StoreBlock storeBlock = new PublicTraceVo.StoreBlock();
-                storeBlock.setName(s.getStoreName());
-                storeBlock.setAddress(s.getAddress());
-                vo.setStore(storeBlock);
-            }
-        }
+        // 门店（pork/veg 共用 fillStore）
+        fillStore(vo, code);
     }
 
-    private List<PublicTraceVo.GrowthRow> toGrowthRows(List<PigGrowth> growths) {
+    private List<PublicTraceVo.GrowthRow> toGrowthRows(List<PigGrowth> growths, LocalDate birthDate) {
+        if (growths.isEmpty()) {
+            return new ArrayList<>();
+        }
+        // 操作人 id → 姓名（批量，复用 timeline 同款直查；@SaIgnore 不走翻译注解）
+        Map<Long, String> nameMap = resolveOperatorNames(
+            growths.stream().map(PigGrowth::getOperatorId).filter(Objects::nonNull).distinct().toList());
         List<PublicTraceVo.GrowthRow> rows = new ArrayList<>(growths.size());
         for (PigGrowth g : growths) {
             PublicTraceVo.GrowthRow row = new PublicTraceVo.GrowthRow();
             row.setDate(g.getMeasureDate());
+            row.setAgeDays(calcAgeDays(birthDate, g.getMeasureDate()));
             row.setWeight(toStr(g.getWeight()));
             row.setBackfat(toStr(g.getBackfatThickness()));
+            row.setOperatorName(g.getOperatorId() == null ? null : nameMap.get(g.getOperatorId()));
+            // 照片 ossId → 可访问 URL（首图；C 端无登录无法自行反查 oss）
+            row.setPhotoUrl(resolveOssUrl(g.getPhotoOssIds()));
             rows.add(row);
         }
         return rows;
     }
 
-    private List<PublicTraceVo.MedicationRow> toMedicationRows(String earNo) {
+    private List<PublicTraceVo.MedicationRow> toMedicationRows(String earNo, LocalDate birthDate) {
         List<MedRecord> records = medRecordMapper.selectList(
             new LambdaQueryWrapper<MedRecord>()
                 .eq(MedRecord::getEarNo, earNo)
@@ -347,16 +354,26 @@ public class TracePublicServiceImpl
         Map<Long, String> medNames = needIds.isEmpty() ? Collections.emptyMap()
             : medicineMapper.selectByIds(needIds).stream()
                 .collect(Collectors.toMap(Medicine::getId, Medicine::getMedicineName, (a, b) -> a));
+        // 操作人姓名优先用 MedRecord 冗余列，缺失才按 operatorId 直查
+        List<Long> opIds = records.stream()
+            .filter(r -> StringUtils.isBlank(r.getOperatorName()) && r.getOperatorId() != null)
+            .map(MedRecord::getOperatorId).distinct().toList();
+        Map<Long, String> opNames = opIds.isEmpty() ? Collections.emptyMap()
+            : resolveOperatorNames(opIds);
         List<PublicTraceVo.MedicationRow> rows = new ArrayList<>(records.size());
         for (MedRecord r : records) {
             PublicTraceVo.MedicationRow row = new PublicTraceVo.MedicationRow();
             row.setDate(r.getUseDate());
+            row.setAgeDays(calcAgeDays(birthDate, r.getUseDate() == null ? null : r.getUseDate().toLocalDate()));
             String name = StringUtils.isNotBlank(r.getMedicineName())
                 ? r.getMedicineName()
                 : (r.getMedicineId() == null ? null : medNames.get(r.getMedicineId()));
             row.setName(name);
             row.setType(r.getMedicineType());
             row.setReason(r.getMedicineReason());
+            row.setOperatorName(StringUtils.isNotBlank(r.getOperatorName())
+                ? r.getOperatorName()
+                : (r.getOperatorId() == null ? null : opNames.get(r.getOperatorId())));
             rows.add(row);
         }
         return rows;
@@ -423,6 +440,23 @@ public class TracePublicServiceImpl
 
         // 有机证书（作物认证 + 地块认证，图 ossId 解析 url）
         vo.setOrganicCerts(buildOrganicCerts(code));
+
+        // 销售门店（veg 也挂 store_id；与 pork 共用 fillStore，原型果蔬主页含「销售信息」块）
+        fillStore(vo, code);
+    }
+
+    /** 门店信息块（pork/veg 共用）：trace_code.store_id → Store name/address；无 store_id → 不 set（前端隐藏）。 */
+    private void fillStore(PublicTraceVo vo, TraceCode code) {
+        if (code.getStoreId() == null) {
+            return;
+        }
+        Store s = storeMapper.selectById(code.getStoreId());
+        if (s != null) {
+            PublicTraceVo.StoreBlock storeBlock = new PublicTraceVo.StoreBlock();
+            storeBlock.setName(s.getStoreName());
+            storeBlock.setAddress(s.getAddress());
+            vo.setStore(storeBlock);
+        }
     }
 
     private List<PublicTraceVo.PlotRecordRow> toPlotRecordRows(List<FarmRecords> records) {
@@ -485,12 +519,18 @@ public class TracePublicServiceImpl
         return days >= 0 ? (int) days : null;
     }
 
+    /** 日龄 = 目标日 − 出生日（天）；任一缺或负 → null（与生长天数同款日差逻辑）。 */
+    private Integer calcAgeDays(LocalDate birthDate, LocalDate targetDate) {
+        return calcGrowthDays(birthDate, targetDate);
+    }
+
     private List<PublicTraceVo.OrganicCertRow> buildOrganicCerts(TraceCode code) {
         List<PublicTraceVo.OrganicCertRow> certs = new ArrayList<>();
         if (code.getCropCertId() != null) {
             CropOrganic c = cropOrganicMapper.selectById(code.getCropCertId());
             if (c != null) {
                 PublicTraceVo.OrganicCertRow row = new PublicTraceVo.OrganicCertRow();
+                row.setCertType("crop");
                 row.setImageUrl(resolveOssUrl(c.getCropImagePreview()));
                 row.setIssuer(c.getCropCertCompany());
                 row.setCertNo(c.getCropCertNo());
@@ -502,6 +542,7 @@ public class TracePublicServiceImpl
             PlotOrganic p = plotOrganicMapper.selectById(code.getPlotCertId());
             if (p != null) {
                 PublicTraceVo.OrganicCertRow row = new PublicTraceVo.OrganicCertRow();
+                row.setCertType("plot");
                 row.setImageUrl(resolveOssUrl(p.getOrganicImagePreview()));
                 row.setIssuer(p.getOrganicCompany());
                 row.setCertNo(p.getOrganicNo());

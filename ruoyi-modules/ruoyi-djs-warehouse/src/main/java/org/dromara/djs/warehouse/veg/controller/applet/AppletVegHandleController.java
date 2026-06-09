@@ -9,8 +9,12 @@ import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.web.core.BaseController;
 import org.dromara.djs.warehouse.veg.domain.bo.HandleRecordSubmitBo;
+import org.dromara.djs.warehouse.veg.domain.bo.HarvestSubmitBo;
+import org.dromara.djs.warehouse.veg.domain.bo.ProcessSubmitBo;
 import org.dromara.djs.warehouse.veg.domain.vo.HandleRecordVo;
 import org.dromara.djs.warehouse.veg.domain.vo.PendingPlantingRecordVo;
+import org.dromara.djs.warehouse.veg.domain.vo.VegCropVo;
+import org.dromara.djs.warehouse.veg.domain.vo.VegPlotDetailVo;
 import org.dromara.djs.warehouse.veg.service.IVegetableHandleService;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -25,12 +29,16 @@ import java.util.List;
 /**
  * 毛菜处理 mp 端 Controller（WMS-VEG-001）。
  *
- * <p>4 个端点：</p>
+ * <p>端点：</p>
  * <ul>
  *   <li>{@code GET  /applet/warehouse/vegHandle/pending}   待处理 planting_record 列表</li>
  *   <li>{@code POST /applet/warehouse/vegHandle/submit}    提交一条 handle_record（采收 / 处理）</li>
  *   <li>{@code GET  /applet/warehouse/vegHandle/myRecords} "我的"处理流水（按 handle_user）</li>
  *   <li>{@code GET  /applet/warehouse/vegHandle/{id}/records} 汇总下钻流水（mp 详情用）</li>
+ *   <li>{@code GET  /applet/warehouse/vegHandle/crops}     菜品列表（按 crop 聚合 4 重量）</li>
+ *   <li>{@code GET  /applet/warehouse/vegHandle/crops/{cropId}/plots} 某菜品地块明细列表</li>
+ *   <li>{@code POST /applet/warehouse/vegHandle/harvest}   采摘重量录入（地块维度）</li>
+ *   <li>{@code POST /applet/warehouse/vegHandle/process}   果蔬处理录入（地块维度 + 去向）</li>
  * </ul>
  *
  * <p>{@code @SaCheckLogin} 走 sa-token 真路径（ADR-0003 mock 登录已发真 token）。</p>
@@ -68,6 +76,44 @@ public class AppletVegHandleController extends BaseController {
     @GetMapping("/{id}/records")
     public R<List<HandleRecordVo>> records(@NotNull @PathVariable Long id) {
         return R.ok(service.listRecords(id));
+    }
+
+    /**
+     * 毛菜处理菜品列表（按 crop 聚合 4 重量）。
+     */
+    @SaCheckLogin
+    @GetMapping("/crops")
+    public R<List<VegCropVo>> crops() {
+        return R.ok(service.listCrops());
+    }
+
+    /**
+     * 某菜品下地块明细列表。
+     *
+     * @param cropId 作物 ID
+     */
+    @SaCheckLogin
+    @GetMapping("/crops/{cropId}/plots")
+    public R<List<VegPlotDetailVo>> cropPlots(@NotNull @PathVariable Long cropId) {
+        return R.ok(service.listPlotsByCrop(cropId));
+    }
+
+    /**
+     * 采摘重量录入（地块维度）。
+     */
+    @SaCheckLogin
+    @PostMapping("/harvest")
+    public R<Long> harvest(@Valid @RequestBody HarvestSubmitBo bo) {
+        return R.ok(service.submitHarvest(bo));
+    }
+
+    /**
+     * 果蔬处理录入（地块维度 + 去向）。
+     */
+    @SaCheckLogin
+    @PostMapping("/process")
+    public R<Long> process(@Valid @RequestBody ProcessSubmitBo bo) {
+        return R.ok(service.submitProcess(bo));
     }
 
 }

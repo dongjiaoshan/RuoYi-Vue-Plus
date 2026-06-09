@@ -140,6 +140,8 @@ public class PublicTraceVo implements Serializable {
         private String breed;
         /** 出生日期。 */
         private LocalDate birthDate;
+        /** 日龄（出栏日 − 出生日，天；任一缺 → null）。 */
+        private Integer ageDays;
         /** 出栏日期（Pig 无列，用 marketing 事件时间兜底，可能为 null）。 */
         private LocalDateTime marketDate;
         /** 所属农场名。 */
@@ -155,10 +157,16 @@ public class PublicTraceVo implements Serializable {
         private static final long serialVersionUID = 1L;
         /** 测量日期。 */
         private LocalDate date;
+        /** 日龄（测量日 − 出生日，天；出生日缺 → null）。 */
+        private Integer ageDays;
         /** 体重（kg）。 */
         private String weight;
         /** 背膘厚（mm）。 */
         private String backfat;
+        /** 操作人姓名（operatorId 翻译；缺 → null）。 */
+        private String operatorName;
+        /** 猪只照片可访问 URL（photo_oss_ids 首图后端解析；无图为 null）。 */
+        private String photoUrl;
     }
 
     /** 用药 / 疫苗保健记录行（pork）。 */
@@ -168,12 +176,16 @@ public class PublicTraceVo implements Serializable {
         private static final long serialVersionUID = 1L;
         /** 用药日期。 */
         private LocalDateTime date;
+        /** 日龄（用药日 − 出生日，天；出生日缺 → null）。 */
+        private Integer ageDays;
         /** 药品名称。 */
         private String name;
         /** 用药类型原码值（health/treatment/vaccine，前端映射中文）。 */
         private String type;
         /** 用药原因（可能为 null）。 */
         private String reason;
+        /** 操作人姓名（MedRecord.operator_name 冗余列优先，缺则 operatorId 翻译）。 */
+        private String operatorName;
     }
 
     /**
@@ -282,6 +294,8 @@ public class PublicTraceVo implements Serializable {
     public static class OrganicCertRow implements Serializable {
         @Serial
         private static final long serialVersionUID = 1L;
+        /** 证书类型：{@code crop}（果蔬/作物有机证）| {@code plot}（地块有机证）（前端分组/分屏依据）。 */
+        private String certType;
         /** 证书图可访问 URL（ossId 后端解析；无图为 null）。 */
         private String imageUrl;
         /** 颁发机构。 */

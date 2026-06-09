@@ -6,6 +6,7 @@ import org.apache.ibatis.annotations.Update;
 import org.dromara.common.mybatis.core.mapper.BaseMapperPlus;
 import org.dromara.djs.warehouse.veg.domain.PlantingRecord;
 import org.dromara.djs.warehouse.veg.domain.vo.PendingPlantingRecordVo;
+import org.dromara.djs.warehouse.veg.domain.vo.VegPlotDetailVo;
 
 import java.util.List;
 
@@ -47,5 +48,24 @@ public interface PlantingRecordMapper extends BaseMapperPlus<PlantingRecord, Pla
                             @Param("fromStatus") String fromStatus,
                             @Param("toStatus") String toStatus,
                             @Param("userId") Long userId);
+
+    /**
+     * mp 某菜品下地块明细：种植记录左联 vegetable_handle（取累计入/出库 + 称重/处理状态）+ 地块（取编号/面积）。
+     *
+     * <p>weighStatus / processStatus 由汇总行 is_weighed / is_finish 派生（=1 → done，否则 pending）。
+     * 纯 SQL 跨表 JOIN t_plant_plot_info，不引 plant 模块依赖。按 data_date DESC 排序。</p>
+     */
+    @Select("SELECT p.id AS plantingRecordId, p.plot_id AS plotId, pl.plot_code AS plotCode, pl.plot_area AS plotArea,"
+        + "       COALESCE(h.stock_in_weight,0) AS stockInWeight,"
+        + "       COALESCE(h.send_platform_weight,0) AS stockOutWeight,"
+        + "       CASE WHEN h.is_weighed=1 THEN 'done' ELSE 'pending' END AS weighStatus,"
+        + "       CASE WHEN h.is_finish=1 THEN 'done' ELSE 'pending' END AS processStatus,"
+        + "       h.id AS handleId"
+        + "  FROM t_warehouse_planting_record p"
+        + "  LEFT JOIN t_warehouse_vegetable_handle h ON h.planting_record_id=p.id AND h.del_flag='0'"
+        + "  LEFT JOIN t_plant_plot_info pl ON pl.id=p.plot_id AND pl.del_flag='0'"
+        + " WHERE p.tenant_id='1001' AND p.del_flag='0' AND p.crop_id=#{cropId}"
+        + " ORDER BY p.data_date DESC, p.id DESC")
+    List<VegPlotDetailVo> selectPlotDetailByCrop(@Param("cropId") Long cropId);
 
 }

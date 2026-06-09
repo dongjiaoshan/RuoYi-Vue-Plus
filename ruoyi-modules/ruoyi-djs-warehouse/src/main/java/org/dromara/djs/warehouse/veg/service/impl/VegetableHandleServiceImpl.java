@@ -18,9 +18,13 @@ import org.dromara.djs.warehouse.veg.domain.HandleRecord;
 import org.dromara.djs.warehouse.veg.domain.PlantingRecord;
 import org.dromara.djs.warehouse.veg.domain.VegetableHandle;
 import org.dromara.djs.warehouse.veg.domain.bo.HandleRecordSubmitBo;
+import org.dromara.djs.warehouse.veg.domain.bo.HarvestSubmitBo;
+import org.dromara.djs.warehouse.veg.domain.bo.ProcessSubmitBo;
 import org.dromara.djs.warehouse.veg.domain.query.VegHandleQuery;
 import org.dromara.djs.warehouse.veg.domain.vo.HandleRecordVo;
 import org.dromara.djs.warehouse.veg.domain.vo.PendingPlantingRecordVo;
+import org.dromara.djs.warehouse.veg.domain.vo.VegCropVo;
+import org.dromara.djs.warehouse.veg.domain.vo.VegPlotDetailVo;
 import org.dromara.djs.warehouse.veg.domain.vo.VegetableHandleVo;
 import org.dromara.djs.warehouse.veg.mapper.HandleRecordMapper;
 import org.dromara.djs.warehouse.veg.mapper.PlantingRecordMapper;
@@ -162,26 +166,11 @@ public class VegetableHandleServiceImpl
 
         // Step 3：找到 / 创建 vegetable_handle 汇总
         VegetableHandle handle = baseMapper.selectByPlantingRecordId(planting.getId());
-        boolean isNew = (handle == null);
-        if (isNew) {
+        if (handle == null) {
             if (recordType != RECORD_TYPE_PICK) {
                 throw new ServiceException("首次录入必须是采收记录（record_type=1）");
             }
-            handle = new VegetableHandle();
-            handle.setPlantingRecordId(planting.getId());
-            handle.setPlotId(planting.getPlotId());
-            handle.setCropId(planting.getCropId());
-            handle.setPickStartTime(now);
-            handle.setPickedWeight(BigDecimal.ZERO);
-            handle.setHandledWeight(BigDecimal.ZERO);
-            handle.setFeedWeight(BigDecimal.ZERO);
-            handle.setSendPlatformWeight(BigDecimal.ZERO);
-            handle.setStockInWeight(BigDecimal.ZERO);
-            handle.setLossWeight(BigDecimal.ZERO);
-            handle.setIsWeighed(2);
-            handle.setIsFinish(2);
-            handle.setHandleStatus(STATUS_PROCESSING);
-            baseMapper.insert(handle);
+            handle = createHandleRow(planting, now);
         }
 
         // Step 4：校验 location（如有 target=1）
@@ -232,13 +221,7 @@ public class VegetableHandleServiceImpl
             }
         }
 
-        BigDecimal loss = picked.subtract(handled).subtract(feed);
-        if (loss.signum() < 0) {
-            log.warn("loss_weight 负值（picked={} handled={} feed={}），归零处理 handleId={}",
-                picked, handled, feed, handle.getId());
-            loss = BigDecimal.ZERO;
-        }
-        loss = loss.setScale(3, RoundingMode.HALF_UP);
+        BigDecimal loss = recomputeLoss(picked, handled, feed, handle.getId());
 
         delta.setId(handle.getId());
         delta.setPickedWeight(picked);
@@ -311,9 +294,223 @@ public class VegetableHandleServiceImpl
         return v == null ? BigDecimal.ZERO : v;
     }
 
+    /**
+     * 首次录入时建 vegetable_handle 汇总行（picked/handled/feed/sendPlatform/stockIn/loss 全 0，
+     * is_weighed=2 / is_finish=2 / handle_status=processing）。tenant_id 走 MP 自动 fill。
+     */
+    private VegetableHandle createHandleRow(PlantingRecord planting, Date now) {
+        VegetableHandle handle = new VegetableHandle();
+        handle.setPlantingRecordId(planting.getId());
+        handle.setPlotId(planting.getPlotId());
+        handle.setCropId(planting.getCropId());
+        handle.setProductId(planting.getProductId());
+        handle.setPickStartTime(now);
+        handle.setPickedWeight(BigDecimal.ZERO);
+        handle.setHandledWeight(BigDecimal.ZERO);
+        handle.setFeedWeight(BigDecimal.ZERO);
+        handle.setSendPlatformWeight(BigDecimal.ZERO);
+        handle.setStockInWeight(BigDecimal.ZERO);
+        handle.setLossWeight(BigDecimal.ZERO);
+        handle.setIsWeighed(2);
+        handle.setIsFinish(2);
+        handle.setHandleStatus(STATUS_PROCESSING);
+        baseMapper.insert(handle);
+        return handle;
+    }
+
+    /**
+     * 重算损耗 {@code loss = picked - handled - feed}（doc/11 §2.12 R15）。负值归零并 WARN，结果保留 3 位。
+     */
+    private BigDecimal recomputeLoss(BigDecimal picked, BigDecimal handled, BigDecimal feed, Long handleId) {
+        BigDecimal loss = picked.subtract(handled).subtract(feed);
+        if (loss.signum() < 0) {
+            log.warn("loss_weight 负值（picked={} handled={} feed={}），归零处理 handleId={}",
+                picked, handled, feed, handleId);
+            loss = BigDecimal.ZERO;
+        }
+        return loss.setScale(3, RoundingMode.HALF_UP);
+    }
+
     @Override
     public List<PendingPlantingRecordVo> listPending() {
         return plantingRecordMapper.selectPendingList();
+    }
+
+    @Override
+    public List<VegCropVo> listCrops() {
+        return baseMapper.selectCropAggList();
+    }
+
+    @Override
+    public List<VegPlotDetailVo> listPlotsByCrop(Long cropId) {
+        if (cropId == null) {
+            throw new ServiceException("缺少作物 ID");
+        }
+        return plantingRecordMapper.selectPlotDetailByCrop(cropId);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public Long submitHarvest(HarvestSubmitBo bo) {
+        Date now = new Date();
+        Long userId = bo.getWeighUserId();
+
+        // Step 1：校验 planting_record 存在 + 未完成
+        PlantingRecord planting = plantingRecordMapper.selectById(bo.getPlantingRecordId());
+        if (planting == null) {
+            throw new ServiceException("种植记录不存在：" + bo.getPlantingRecordId());
+        }
+        if (STATUS_DONE.equals(planting.getHandleStatus())) {
+            throw new ServiceException("该种植记录已处理完成，不能再录入");
+        }
+
+        BigDecimal weight = bo.getHarvestWeight();
+        boolean weighDone = bo.getWeighFinish() != null && bo.getWeighFinish() == 1;
+
+        // Step 2：找到 / 创建 vegetable_handle 汇总
+        VegetableHandle handle = baseMapper.selectByPlantingRecordId(planting.getId());
+        if (handle == null) {
+            handle = createHandleRow(planting, now);
+        }
+
+        // Step 3：INSERT handle_record（采收）
+        HandleRecord record = new HandleRecord();
+        record.setHandleId(handle.getId());
+        record.setPlotId(planting.getPlotId());
+        record.setCropId(planting.getCropId());
+        record.setRecordType(RECORD_TYPE_PICK);
+        record.setRecordWeight(weight);
+        record.setIsWeighed(weighDone ? 1 : 2);
+        record.setIsFinish(2);
+        record.setHandleTarget(null);
+        record.setLocationId(null);
+        record.setHandleUser(userId);
+        record.setHandleTime(now);
+        handleRecordMapper.insert(record);
+
+        // Step 4：聚合 UPDATE vegetable_handle（picked_weight += weight；重算 loss）
+        BigDecimal picked = nullSafe(handle.getPickedWeight()).add(weight);
+        BigDecimal handled = nullSafe(handle.getHandledWeight());
+        BigDecimal feed = nullSafe(handle.getFeedWeight());
+        BigDecimal loss = recomputeLoss(picked, handled, feed, handle.getId());
+
+        VegetableHandle delta = new VegetableHandle();
+        delta.setId(handle.getId());
+        delta.setPickedWeight(picked);
+        delta.setLossWeight(loss);
+        if (STATUS_PENDING.equals(handle.getHandleStatus())) {
+            delta.setHandleStatus(STATUS_PROCESSING);
+        }
+        // 采摘录入只动 is_weighed，不动 is_finish，不推 done
+        if (weighDone) {
+            delta.setIsWeighed(1);
+        }
+        baseMapper.updateById(delta);
+
+        // Step 5：同步 planting_record.handle_status pending → processing
+        if (STATUS_PENDING.equals(planting.getHandleStatus())) {
+            plantingRecordMapper.advanceHandleStatus(
+                planting.getId(), STATUS_PENDING, STATUS_PROCESSING, userId);
+        }
+
+        return handle.getId();
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public Long submitProcess(ProcessSubmitBo bo) {
+        Date now = new Date();
+        Long userId = bo.getProcessUserId();
+
+        // Step 1：校验 planting_record 存在 + 未完成
+        PlantingRecord planting = plantingRecordMapper.selectById(bo.getPlantingRecordId());
+        if (planting == null) {
+            throw new ServiceException("种植记录不存在：" + bo.getPlantingRecordId());
+        }
+        if (STATUS_DONE.equals(planting.getHandleStatus())) {
+            throw new ServiceException("该种植记录已处理完成，不能再录入");
+        }
+
+        // Step 2：校验去向
+        Integer handleTarget = bo.getHandleTarget();
+        if (handleTarget == null
+            || (handleTarget != HANDLE_TARGET_STOCK_IN
+            && handleTarget != HANDLE_TARGET_PLATFORM
+            && handleTarget != HANDLE_TARGET_FEED)) {
+            throw new ServiceException("处理目标非法（必须 1=入库 / 2=月台 / 3=饲料）：" + handleTarget);
+        }
+
+        BigDecimal weight = bo.getProcessWeight();
+        boolean processDone = bo.getProcessFinish() != null && bo.getProcessFinish() == 1;
+
+        // Step 3：找汇总行（必须先有采摘）
+        VegetableHandle handle = baseMapper.selectByPlantingRecordId(planting.getId());
+        if (handle == null) {
+            throw new ServiceException("请先录入采摘重量");
+        }
+
+        // Step 4：INSERT handle_record（处理）
+        HandleRecord record = new HandleRecord();
+        record.setHandleId(handle.getId());
+        record.setPlotId(planting.getPlotId());
+        record.setCropId(planting.getCropId());
+        record.setRecordType(RECORD_TYPE_HANDLE);
+        record.setRecordWeight(weight);
+        record.setHandleTarget(handleTarget);
+        record.setLocationId(null);
+        record.setIsFinish(processDone ? 1 : 2);
+        record.setHandleUser(userId);
+        record.setHandleTime(now);
+        handleRecordMapper.insert(record);
+
+        // Step 5：聚合 UPDATE vegetable_handle（按 target 分流；重算 loss）
+        BigDecimal picked = nullSafe(handle.getPickedWeight());
+        BigDecimal handled = nullSafe(handle.getHandledWeight());
+        BigDecimal feed = nullSafe(handle.getFeedWeight());
+        BigDecimal sendPlatform = nullSafe(handle.getSendPlatformWeight());
+        BigDecimal stockIn = nullSafe(handle.getStockInWeight());
+
+        if (handleTarget == HANDLE_TARGET_STOCK_IN) {
+            stockIn = stockIn.add(weight);
+            handled = handled.add(weight);
+        } else if (handleTarget == HANDLE_TARGET_PLATFORM) {
+            sendPlatform = sendPlatform.add(weight);
+            handled = handled.add(weight);
+        } else {
+            // FEED：只累加 feed，不计入 handled
+            feed = feed.add(weight);
+        }
+
+        BigDecimal loss = recomputeLoss(picked, handled, feed, handle.getId());
+
+        VegetableHandle delta = new VegetableHandle();
+        delta.setId(handle.getId());
+        delta.setHandledWeight(handled);
+        delta.setFeedWeight(feed);
+        delta.setSendPlatformWeight(sendPlatform);
+        delta.setStockInWeight(stockIn);
+        delta.setLossWeight(loss);
+        delta.setHandleStatus(STATUS_PROCESSING);
+        if (processDone) {
+            delta.setIsFinish(1);
+            delta.setHandleStatus(STATUS_DONE);
+            delta.setPickEndTime(now);
+        }
+        baseMapper.updateById(delta);
+
+        // Step 6：target=1 入库不写 stock_flow（本期决策：库位流水留给果蔬月台入库线）
+
+        // Step 7：同步 planting_record.handle_status
+        if (STATUS_PENDING.equals(planting.getHandleStatus())) {
+            plantingRecordMapper.advanceHandleStatus(
+                planting.getId(), STATUS_PENDING, STATUS_PROCESSING, userId);
+        }
+        if (processDone) {
+            plantingRecordMapper.advanceHandleStatus(
+                planting.getId(), STATUS_PROCESSING, STATUS_DONE, userId);
+        }
+
+        return handle.getId();
     }
 
     @Override

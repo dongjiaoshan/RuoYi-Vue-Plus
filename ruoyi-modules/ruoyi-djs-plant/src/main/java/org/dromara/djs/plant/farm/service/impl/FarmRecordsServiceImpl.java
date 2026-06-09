@@ -34,7 +34,9 @@ import org.dromara.djs.plant.plan.domain.PlantDetails;
 import org.dromara.djs.plant.plan.mapper.PlantDetailsMapper;
 import org.dromara.djs.plant.plot.domain.PlotInfo;
 import org.dromara.djs.plant.plot.mapper.PlotInfoMapper;
+import org.dromara.djs.plant.team.domain.PlantWorkPeople;
 import org.dromara.djs.plant.team.domain.PlantWorkTeam;
+import org.dromara.djs.plant.team.mapper.PlantWorkPeopleMapper;
 import org.dromara.djs.plant.team.mapper.PlantWorkTeamMapper;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -91,17 +93,20 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
     private final CropInfoMapper cropInfoMapper;
     private final PlantDetailsMapper plantDetailsMapper;
     private final PlantWorkTeamMapper teamMapper;
+    private final PlantWorkPeopleMapper peopleMapper;
 
     public FarmRecordsServiceImpl(FarmRecordsMapper baseMapper,
                                   PlotInfoMapper plotInfoMapper,
                                   CropInfoMapper cropInfoMapper,
                                   PlantDetailsMapper plantDetailsMapper,
-                                  PlantWorkTeamMapper teamMapper) {
+                                  PlantWorkTeamMapper teamMapper,
+                                  PlantWorkPeopleMapper peopleMapper) {
         super(baseMapper);
         this.plotInfoMapper = plotInfoMapper;
         this.cropInfoMapper = cropInfoMapper;
         this.plantDetailsMapper = plantDetailsMapper;
         this.teamMapper = teamMapper;
+        this.peopleMapper = peopleMapper;
     }
 
     // ============================================================
@@ -424,13 +429,15 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
 
     @Override
     public TableDataInfo<FarmRecordsVo> myRecords(FarmRecordsQuery query, PageQuery pageQuery) {
-        // mp 我的记录：按 operatorId（=登录用户）反查所属班组，再过滤 farmBy
+        // mp 我的记录：按 operatorId（=登录用户）经 work_people 成员表反查所属班组，再过滤 farmBy。
+        // 成员关系唯一权威源是 t_plant_work_people（user_id↔team_id，含队长/组员），
+        // 不是 t_plant_work_team.leader_id（该列 V1 未启用，全 NULL）。
         if (query.getOperatorId() != null) {
-            List<Long> teamIds = teamMapper.selectList(
-                new LambdaQueryWrapper<PlantWorkTeam>()
-                    .eq(PlantWorkTeam::getLeaderId, query.getOperatorId())
-                    .select(PlantWorkTeam::getId))
-                .stream().map(PlantWorkTeam::getId).collect(Collectors.toList());
+            List<Long> teamIds = peopleMapper.selectList(
+                new LambdaQueryWrapper<PlantWorkPeople>()
+                    .eq(PlantWorkPeople::getUserId, query.getOperatorId())
+                    .select(PlantWorkPeople::getTeamId))
+                .stream().map(PlantWorkPeople::getTeamId).filter(Objects::nonNull).distinct().collect(Collectors.toList());
             if (CollUtil.isEmpty(teamIds)) {
                 return TableDataInfo.build(new Page<>());
             }
