@@ -4,6 +4,7 @@ import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.plant.plan.domain.bo.PlantPlanCreateBo;
 import org.dromara.djs.plant.plan.domain.bo.PlantPlanUpdateBo;
+import org.dromara.djs.plant.plan.domain.bo.PlantStartBo;
 import org.dromara.djs.plant.plan.domain.query.PlantPlanQuery;
 import org.dromara.djs.plant.plan.domain.vo.PlantPlanDetailVo;
 import org.dromara.djs.plant.plan.domain.vo.PlantPlanGanttVo;
@@ -60,6 +61,18 @@ public interface IPlantPlanService {
      * 向导 step3 用：按片区分组返回所有地块。
      */
     List<PlotByZoneVo> listAvailablePlots();
+
+    /**
+     * mp 播种「开始种植」开工（FIX-PLT-MP-SEED-001 #5）。
+     *
+     * <p>单事务：仅 {@code begin_actualdate IS NULL}（尚未开工）的明细可开工，批量回写
+     * {@code begin_actualdate=入参日期} + {@code plant_by=入参班组} + {@code plant_status='ongoing'}；
+     * 并同步关联地块 {@code t_plant_plot_info.plot_status=2}（种植中）。所有 detailIds 必须属当前租户。</p>
+     *
+     * @param bo 开工入参（detailIds + 开始日期 + 班组）
+     * @return 实际开工的明细行数（已开工的明细被跳过，不计入）
+     */
+    int startPlant(PlantStartBo bo);
 
     /**
      * 跨模块薄壳：聚合"进行中（pending/ongoing）"种植计划摘要给需求确认 SummaryBar 用

@@ -17,11 +17,14 @@ import org.dromara.djs.plant.crop.mapper.CropInfoMapper;
 import org.dromara.djs.plant.farm.domain.FarmRecords;
 import org.dromara.djs.plant.farm.domain.bo.DisasterRecordBo;
 import org.dromara.djs.plant.farm.domain.bo.EmptyRecordBo;
+import org.dromara.djs.plant.farm.domain.bo.GrowBatchBo;
 import org.dromara.djs.plant.farm.domain.bo.GrowRecordBo;
+import org.dromara.djs.plant.farm.domain.bo.PlotPickStatusBo;
 import org.dromara.djs.plant.farm.domain.bo.RotationRecordBo;
 import org.dromara.djs.plant.farm.domain.bo.TransplantRecordBo;
 import org.dromara.djs.plant.farm.domain.query.FarmRecordsQuery;
 import org.dromara.djs.plant.farm.domain.vo.DispatchSummaryVo;
+import org.dromara.djs.plant.farm.domain.vo.FarmCropPlotVo;
 import org.dromara.djs.plant.farm.domain.vo.FarmRecordsVo;
 import org.dromara.djs.plant.farm.mapper.FarmRecordsMapper;
 import org.dromara.djs.plant.farm.service.IFarmRecordsService;
@@ -37,6 +40,8 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
+import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -134,6 +139,7 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
         FarmRecords r = new FarmRecords();
         buildBase(r, bo.getFarmType(), bo.getPlotId(), bo.getCropId(), bo.getPlantId(), bo.getFarmBy(),
             bo.getFarmDate(), bo.getProofOssIds(), bo.getRemark());
+        r.setOperatorUserId(bo.getOperatorUserId());
         baseMapper.insert(r);
         return r.getId();
     }
@@ -195,6 +201,149 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
             .set(PlantDetails::getEndActualdate, LocalDate.now());
         plantDetailsMapper.update(null, uw);
         return r.getId();
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public int submitGrowBatch(GrowBatchBo bo) {
+        String type = bo.getFarmType();
+        boolean isRotation = "rotation".equals(type);
+        if (!isRotation && !isPlainGrowFarmType(type)) {
+            throw new ServiceException("不支持的批量农事类型: " + type);
+        }
+        int count = 0;
+        for (GrowBatchBo.PlotTarget target : bo.getTargets()) {
+            FarmRecords r = new FarmRecords();
+            buildBase(r, type, target.getPlotId(), target.getCropId(), target.getPlantId(),
+                bo.getFarmBy(), bo.getFarmDate(), bo.getProofOssIds(), bo.getRemark());
+            baseMapper.insert(r);
+            count++;
+            // 退茬副作用：每条 plot_status=1（空闲）+ 同 plant+plot 未结束 details 完结
+            if (isRotation) {
+                applyRotationSideEffect(target.getPlantId(), target.getPlotId());
+            }
+        }
+        return count;
+    }
+
+    /**
+     * 退茬副作用（与 {@link #submitRotation} 单条一致，抽出供批量复用）：
+     * plot_info.plot_status=1（空闲）+ 同 plant+plot 未结束 details → completed + end_actualdate=今日。
+     */
+    private void applyRotationSideEffect(Long plantId, Long plotId) {
+        PlotInfo plot = plotInfoMapper.selectById(plotId);
+        if (plot == null) {
+            throw new ServiceException("地块不存在: " + plotId);
+        }
+        plot.setPlotStatus(1);
+        plotInfoMapper.updateById(plot);
+
+        LambdaUpdateWrapper<PlantDetails> uw = new LambdaUpdateWrapper<PlantDetails>()
+            .eq(PlantDetails::getPlantId, plantId)
+            .eq(PlantDetails::getPlotId, plotId)
+            .isNull(PlantDetails::getEndActualdate)
+            .set(PlantDetails::getPlantStatus, "completed")
+            .set(PlantDetails::getEndActualdate, LocalDate.now());
+        plantDetailsMapper.update(null, uw);
+    }
+
+    @Override
+    public List<FarmCropPlotVo> listCropPlots(Long cropId, String farmType) {
+        if (cropId == null) {
+            return List.of();
+        }
+        // 退茬只列采摘完成的地块；其余生长活动列进行中（ongoing）地块
+        boolean isRotation = "rotation".equals(farmType);
+        String targetPlantStatus = isRotation ? "completed" : "ongoing";
+        List<PlantDetails> details = plantDetailsMapper.selectList(
+            new LambdaQueryWrapper<PlantDetails>()
+                .eq(PlantDetails::getCropId, cropId)
+                .eq(PlantDetails::getPlantStatus, targetPlantStatus)
+                .orderByAsc(PlantDetails::getPlotId)
+                .orderByAsc(PlantDetails::getId));
+        if (CollUtil.isEmpty(details)) {
+            return List.of();
+        }
+
+        // 上次同类农事日期（plotId → lastFarmDate），farmType 为空时不算间隔
+        Map<Long, LocalDate> lastDateMap = new HashMap<>();
+        if (StringUtils.isNotBlank(farmType)) {
+            List<Map<String, Object>> rows = baseMapper.selectLastFarmDateByCropType(cropId, farmType);
+            for (Map<String, Object> row : rows) {
+                Object pid = row.get("plotId");
+                Object last = row.get("lastFarmDate");
+                if (pid != null && last instanceof java.sql.Date sqlDate) {
+                    lastDateMap.put(((Number) pid).longValue(), sqlDate.toLocalDate());
+                } else if (pid != null && last instanceof LocalDate ld) {
+                    lastDateMap.put(((Number) pid).longValue(), ld);
+                }
+            }
+        }
+
+        // enrich plotCode/plotName
+        Set<Long> plotIds = details.stream().map(PlantDetails::getPlotId).filter(Objects::nonNull).collect(Collectors.toSet());
+        Map<Long, PlotInfo> plotMap = plotIds.isEmpty() ? Map.of()
+            : plotInfoMapper.selectByIds(plotIds).stream()
+            .collect(Collectors.toMap(PlotInfo::getId, p -> p, (a, b) -> a));
+
+        LocalDate today = LocalDate.now();
+        List<FarmCropPlotVo> result = new ArrayList<>(details.size());
+        for (PlantDetails d : details) {
+            FarmCropPlotVo vo = new FarmCropPlotVo();
+            vo.setDetailId(d.getId());
+            vo.setPlantId(d.getPlantId());
+            vo.setPlotId(d.getPlotId());
+            vo.setCropId(d.getCropId());
+            vo.setPlantStatus(d.getPlantStatus());
+            PlotInfo plot = plotMap.get(d.getPlotId());
+            if (plot != null) {
+                vo.setPlotCode(plot.getPlotCode());
+                vo.setPlotName(plot.getPlotName());
+            }
+            LocalDate last = lastDateMap.get(d.getPlotId());
+            if (last != null) {
+                vo.setLastFarmDate(last);
+                vo.setIntervalDays((int) ChronoUnit.DAYS.between(last, today));
+            }
+            result.add(vo);
+        }
+        return result;
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public int adjustPlotPickStatus(PlotPickStatusBo bo) {
+        if (!"picking".equals(bo.getPickStatus()) && !"completed".equals(bo.getPickStatus())) {
+            throw new ServiceException("非法采摘状态（仅支持 picking 采摘中 / completed 采摘完成）：" + bo.getPickStatus());
+        }
+        // 定位该地块 + 作物下未结束采摘的明细（harvest_status != completed）
+        List<PlantDetails> details = plantDetailsMapper.selectList(
+            new LambdaQueryWrapper<PlantDetails>()
+                .eq(PlantDetails::getPlotId, bo.getPlotId())
+                .eq(PlantDetails::getCropId, bo.getCropId()));
+        if (CollUtil.isEmpty(details)) {
+            throw new ServiceException("该地块下无对应作物的种植明细，无法调整采摘状态");
+        }
+        Long updateBy = currentUserSafe();
+        boolean toCompleted = "completed".equals(bo.getPickStatus());
+        LambdaUpdateWrapper<PlantDetails> uw = new LambdaUpdateWrapper<PlantDetails>()
+            .eq(PlantDetails::getPlotId, bo.getPlotId())
+            .eq(PlantDetails::getCropId, bo.getCropId())
+            .set(PlantDetails::getHarvestStatus, bo.getPickStatus())
+            .set(PlantDetails::getUpdateBy, updateBy);
+        if (toCompleted) {
+            uw.set(PlantDetails::getEndHarvestdate, bo.getAdjustDate());
+        }
+        int affected = plantDetailsMapper.update(null, uw);
+
+        // 写一条 harvest_activity 农事记录留痕（不录重量）
+        Long cropPlantId = details.get(0).getPlantId();
+        FarmRecords trace = new FarmRecords();
+        buildBase(trace, "harvest_activity", bo.getPlotId(), bo.getCropId(), cropPlantId,
+            bo.getTeamId(), bo.getAdjustDate(), null,
+            "采摘状态调整为" + (toCompleted ? "采摘完成" : "采摘中"));
+        baseMapper.insert(trace);
+        return affected;
     }
 
     // ============================================================

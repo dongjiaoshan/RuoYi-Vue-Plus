@@ -11,6 +11,8 @@ import org.dromara.djs.warehouse.flow.domain.StockFlow;
 import org.dromara.djs.warehouse.flow.domain.bo.MatLossBo;
 import org.dromara.djs.warehouse.flow.domain.bo.MatPickBo;
 import org.dromara.djs.warehouse.flow.domain.bo.MatReturnBo;
+import org.dromara.djs.warehouse.flow.domain.vo.MatIssueItemVo;
+import org.dromara.djs.warehouse.flow.domain.vo.MatIssueLocationVo;
 import org.dromara.djs.warehouse.flow.domain.vo.MatTodaySummaryVo;
 import org.dromara.djs.warehouse.flow.mapper.StockFlowMapper;
 import org.dromara.djs.warehouse.flow.service.IMatFlowService;
@@ -21,8 +23,10 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.util.Arrays;
 import java.util.Date;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -237,6 +241,57 @@ public class MatFlowServiceImpl implements IMatFlowService {
             vo.setLossQuantity(safe(stockFlowMapper.sumTodayByUserMatType(userId, FLOW_LOSS, matType)));
         }
         return vo;
+    }
+
+    @Override
+    public List<MatIssueLocationVo> issueLocations(String belongType) {
+        return locationStockMapper.selectMatIssueLocations(parseBelongTypes(belongType));
+    }
+
+    @Override
+    public List<MatIssueItemVo> issueItems(String belongType, String locationId) {
+        List<String> belongTypes = parseBelongTypes(belongType);
+        Long locId = parseLocationId(locationId);
+        Long userId = LoginHelper.getUserId();
+        return locationStockMapper.selectMatIssueItems(belongTypes, locId, userId);
+    }
+
+    /**
+     * 业态参数解析：逗号分隔字符串 → 去空白 / 去空项的 List。
+     *
+     * <p>mp 物资领用列表 / chip 必须带业态（5 tab 各锁一或多种），不允许空（空会扫全表产品，无意义）。
+     * 「猪肉产品」tab 传 {@code "pork,white_bar"}（项目猪肉链口径，参 {@code TraceServiceImpl.PORK_BELONG_TYPES}），
+     * 其余 tab 单值。解析后为空 → 抛 ServiceException。</p>
+     */
+    private static List<String> parseBelongTypes(String belongType) {
+        if (belongType == null || belongType.isBlank()) {
+            throw new ServiceException("业态类型不能为空");
+        }
+        List<String> list = Arrays.stream(belongType.split(","))
+            .map(String::trim)
+            .filter(s -> !s.isEmpty())
+            .toList();
+        if (list.isEmpty()) {
+            throw new ServiceException("业态类型不能为空");
+        }
+        return list;
+    }
+
+    /**
+     * 库位 ID 字符串 → Long（snowflake 防截断：前端按 string 传，后端只在此显式 parse）。
+     *
+     * <p>为空 / 空白 → 返 null（chip 未选中态，列表跨库位聚合）。非法字符串 → 抛 ServiceException。</p>
+     */
+    private static Long parseLocationId(String locationId) {
+        if (locationId == null || locationId.isBlank()) {
+            return null;
+        }
+        try {
+            return Long.valueOf(locationId.trim());
+        }
+        catch (NumberFormatException e) {
+            throw new ServiceException("库位 ID 非法：" + locationId);
+        }
     }
 
     /**

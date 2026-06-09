@@ -1,6 +1,7 @@
 package org.dromara.djs.plant.pick.service;
 
 import org.dromara.djs.plant.pick.domain.bo.PickSubmitBo;
+import org.dromara.djs.plant.pick.domain.vo.PickCropTaskVo;
 import org.dromara.djs.plant.pick.domain.vo.PickSummaryVo;
 import org.dromara.djs.plant.pick.domain.vo.PickTaskVo;
 
@@ -57,4 +58,26 @@ public interface IAppletPickService {
      * @return 完成率 / 今日采摘品种数 / 今日采摘重量
      */
     PickSummaryVo todaySummary();
+
+    /**
+     * 采收列表「作物维度」任务卡（FIX-PLT-MP-PICK-001 #3）。
+     *
+     * <p>按片区分组（{@code zoneId} 可空 = 全部片区）→ 作物维度聚合，排除游客采摘活动（is_pick=1）。
+     * 每卡含完成率 / 开始-最晚日期 / 预计-已采产量 / 地块数。</p>
+     *
+     * @param zoneId 片区 id（可空，空则不按片区过滤）
+     * @return 作物维度卡列表（无数据返空列表）
+     */
+    List<PickCropTaskVo> listCropTasks(Long zoneId);
+
+    /**
+     * 采收作物详情下「N 张地块卡」（FIX-PLT-MP-PICK-001 #3）。
+     *
+     * <p>该作物（+ 计划）下逐地块卡，复用 {@link PickTaskVo}（含实际开始/结束时间）。排除游客采摘。</p>
+     *
+     * @param planId 计划 id（可空，空则该作物全部计划的地块）
+     * @param cropId 作物 id（必填）
+     * @return 地块卡列表（无数据返空列表）
+     */
+    List<PickTaskVo> listCropPlots(Long planId, Long cropId);
 }

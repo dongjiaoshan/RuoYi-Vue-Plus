@@ -4,6 +4,7 @@ import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 
+import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
@@ -191,6 +192,239 @@ public interface AggregateQueryMapper {
         + " GROUP BY d")
     List<Map<String, Object>> countStatusEventByDay(@Param("tenantId") String tenantId,
                                                     @Param("eventType") String eventType,
+                                                    @Param("from") java.time.LocalDateTime from,
+                                                    @Param("to") java.time.LocalDateTime to);
+
+    // ============================================================
+    //  日情况概览 16 格 / 当日快照（FIX-MGMT-MP-BRD-001）
+    //  各项取某自然日 [from, to) 右开区间内的单日值。复用上面 byDay 系列不便（单日只需标量）。
+    // ============================================================
+
+    /** 业务事件表当日 COUNT(*)（如分娩/配种/断奶/查情/打标头数）。日期列区间右开。 */
+    @Select("<script>"
+        + "SELECT COUNT(*) FROM ${table} "
+        + " WHERE tenant_id = #{tenantId} "
+        + "   AND del_flag = '0' "
+        + "   AND ${dateColumn} &gt;= #{from} "
+        + "   AND ${dateColumn} &lt;  #{to} "
+        + "</script>")
+    int countEventInDay(@Param("table") String table,
+                        @Param("dateColumn") String dateColumn,
+                        @Param("tenantId") String tenantId,
+                        @Param("from") java.time.LocalDateTime from,
+                        @Param("to") java.time.LocalDateTime to);
+
+    /** 业务事件表当日 SUM(valueColumn)（如产仔数/活仔数/引种头数/断奶头数）。日期列区间右开。 */
+    @Select("<script>"
+        + "SELECT COALESCE(SUM(${valueColumn}),0) FROM ${table} "
+        + " WHERE tenant_id = #{tenantId} "
+        + "   AND del_flag = '0' "
+        + "   AND ${dateColumn} &gt;= #{from} "
+        + "   AND ${dateColumn} &lt;  #{to} "
+        + "</script>")
+    int sumEventInDay(@Param("table") String table,
+                      @Param("dateColumn") String dateColumn,
+                      @Param("valueColumn") String valueColumn,
+                      @Param("tenantId") String tenantId,
+                      @Param("from") java.time.LocalDateTime from,
+                      @Param("to") java.time.LocalDateTime to);
+
+    /** status_record 当日指定 event_type COUNT（DIE/ELIMINATE/CASTRATE）。change_time 区间右开。 */
+    @Select("SELECT COUNT(*) FROM t_farm_status_record "
+        + " WHERE tenant_id = #{tenantId} "
+        + "   AND event_type = #{eventType} "
+        + "   AND change_time >= #{from} "
+        + "   AND change_time <  #{to}")
+    int countStatusEventInDay(@Param("tenantId") String tenantId,
+                              @Param("eventType") String eventType,
+                              @Param("from") java.time.LocalDateTime from,
+                              @Param("to") java.time.LocalDateTime to);
+
+    /**
+     * 用药猪只数（当日）= COUNT(DISTINCT pig_id)（#7.7 第 16 格）。
+     * 底表 t_breed_medicine_record（BRD-MED-003）；按 use_date 区间右开，排除 pig_id NULL（批量 master 行）。
+     */
+    @Select("SELECT COUNT(DISTINCT pig_id) FROM t_breed_medicine_record "
+        + " WHERE tenant_id = #{tenantId} "
+        + "   AND del_flag = '0' "
+        + "   AND pig_id IS NOT NULL "
+        + "   AND use_date >= #{from} "
+        + "   AND use_date <  #{to}")
+    int countMedicatedPigInDay(@Param("tenantId") String tenantId,
+                               @Param("from") java.time.LocalDateTime from,
+                               @Param("to") java.time.LocalDateTime to);
+
+    // ============================================================
+    //  年度繁殖与配种 + 产房仔猪质量（FIX-MGMT-MP-BRD-001，#7.1-7.5）
+    //  [from, to) 右开区间内底表实时聚合。
+    // ============================================================
+
+    /** 区间内配种次数 COUNT（t_farm_pig_breeding）。 */
+    @Select("SELECT COUNT(*) FROM t_farm_pig_breeding "
+        + " WHERE tenant_id = #{tenantId} "
+        + "   AND del_flag = '0' "
+        + "   AND breeding_date >= #{from} "
+        + "   AND breeding_date <  #{to}")
+    int countBreedingInRange(@Param("tenantId") String tenantId,
+                             @Param("from") java.time.LocalDateTime from,
+                             @Param("to") java.time.LocalDateTime to);
+
+    /** 区间内分娩窝数 COUNT（t_farm_pig_farrow，一行一窝）。 */
+    @Select("SELECT COUNT(*) FROM t_farm_pig_farrow "
+        + " WHERE tenant_id = #{tenantId} "
+        + "   AND del_flag = '0' "
+        + "   AND farrow_date >= #{from} "
+        + "   AND farrow_date <  #{to}")
+    int countFarrowLitterInRange(@Param("tenantId") String tenantId,
+                                 @Param("from") java.time.LocalDateTime from,
+                                 @Param("to") java.time.LocalDateTime to);
+
+    /** 区间内总产仔数 SUM(total_born)（t_farm_pig_farrow）。 */
+    @Select("SELECT COALESCE(SUM(total_born),0) FROM t_farm_pig_farrow "
+        + " WHERE tenant_id = #{tenantId} "
+        + "   AND del_flag = '0' "
+        + "   AND farrow_date >= #{from} "
+        + "   AND farrow_date <  #{to}")
+    int sumTotalBornInRange(@Param("tenantId") String tenantId,
+                            @Param("from") java.time.LocalDateTime from,
+                            @Param("to") java.time.LocalDateTime to);
+
+    /** 区间内分娩活仔总数 SUM(live_born)（t_farm_pig_farrow，DATETIME 版区间右开）。 */
+    @Select("SELECT COALESCE(SUM(live_born),0) FROM t_farm_pig_farrow "
+        + " WHERE tenant_id = #{tenantId} "
+        + "   AND del_flag = '0' "
+        + "   AND farrow_date >= #{from} "
+        + "   AND farrow_date <  #{to}")
+    int sumLiveBornInDateTimeRange(@Param("tenantId") String tenantId,
+                                   @Param("from") java.time.LocalDateTime from,
+                                   @Param("to") java.time.LocalDateTime to);
+
+    /** 区间内断奶窝数 COUNT（t_farm_pig_weaning，一行一窝）。 */
+    @Select("SELECT COUNT(*) FROM t_farm_pig_weaning "
+        + " WHERE tenant_id = #{tenantId} "
+        + "   AND del_flag = '0' "
+        + "   AND weaning_date >= #{from} "
+        + "   AND weaning_date <  #{to}")
+    int countWeaningLitterInRange(@Param("tenantId") String tenantId,
+                                  @Param("from") java.time.LocalDateTime from,
+                                  @Param("to") java.time.LocalDateTime to);
+
+    /** 区间内断奶头数 SUM(weaned_count)（t_farm_pig_weaning，DATETIME 版）。 */
+    @Select("SELECT COALESCE(SUM(weaned_count),0) FROM t_farm_pig_weaning "
+        + " WHERE tenant_id = #{tenantId} "
+        + "   AND del_flag = '0' "
+        + "   AND weaning_date >= #{from} "
+        + "   AND weaning_date <  #{to}")
+    int sumWeanedInDateTimeRange(@Param("tenantId") String tenantId,
+                                 @Param("from") java.time.LocalDateTime from,
+                                 @Param("to") java.time.LocalDateTime to);
+
+    /** 区间内返空流头数 COUNT（t_farm_pig_abnormal，abnormal_date 区间右开）。 */
+    @Select("SELECT COUNT(*) FROM t_farm_pig_abnormal "
+        + " WHERE tenant_id = #{tenantId} "
+        + "   AND del_flag = '0' "
+        + "   AND abnormal_date >= #{from} "
+        + "   AND abnormal_date <  #{to}")
+    int countAbnormalInRange(@Param("tenantId") String tenantId,
+                             @Param("from") java.time.LocalDateTime from,
+                             @Param("to") java.time.LocalDateTime to);
+
+    /**
+     * 断配间隔 AVG（天）：对区间内每头母猪，取其"配种日 − 该母猪上一次断奶日"的天数差，再平均。
+     *
+     * <p>近似实现（V1，数据量小）：以 breeding 为锚，关联同 pig_id 在配种前最近一次 weaning，
+     * AVG(DATEDIFF(breeding_date, last_weaning_date))。无前序断奶的配种行（首胎/后备）不计入。</p>
+     */
+    @Select("SELECT AVG(DATEDIFF(b.breeding_date, w.weaning_date)) "
+        + " FROM t_farm_pig_breeding b "
+        + " JOIN ( "
+        + "   SELECT w1.pig_id, w1.weaning_date "
+        + "     FROM t_farm_pig_weaning w1 "
+        + "    WHERE w1.tenant_id = #{tenantId} AND w1.del_flag = '0' "
+        + " ) w ON w.pig_id = b.pig_id AND w.weaning_date <= b.breeding_date "
+        + " WHERE b.tenant_id = #{tenantId} "
+        + "   AND b.del_flag = '0' "
+        + "   AND b.breeding_date >= #{from} "
+        + "   AND b.breeding_date <  #{to} "
+        + "   AND w.weaning_date = ( "
+        + "     SELECT MAX(w2.weaning_date) FROM t_farm_pig_weaning w2 "
+        + "      WHERE w2.tenant_id = #{tenantId} AND w2.del_flag = '0' "
+        + "        AND w2.pig_id = b.pig_id AND w2.weaning_date <= b.breeding_date )")
+    BigDecimal avgWeanMateIntervalDays(@Param("tenantId") String tenantId,
+                                       @Param("from") java.time.LocalDateTime from,
+                                       @Param("to") java.time.LocalDateTime to);
+
+    // ============================================================
+    //  育肥猪日龄分布 / 实时库存（FIX-MGMT-MP-BRD-001，#7.6）
+    //  按 DATEDIFF(CURDATE(), birth_date) 落桶；END 状态排除。
+    // ============================================================
+
+    /**
+     * 育肥猪日龄分布：返回 [{age:123}, ...] 每头一行的当前日龄（service 端落 6 桶，避免 SQL 写死边界）。
+     * 仅 pig_type='fattening' 且未终止（current_status &lt;&gt; 'END'）且 birth_date 非空。
+     */
+    @Select("SELECT DATEDIFF(CURDATE(), birth_date) AS age "
+        + " FROM t_farm_pig_info "
+        + " WHERE tenant_id = #{tenantId} "
+        + "   AND del_flag = '0' "
+        + "   AND pig_type = 'fattening' "
+        + "   AND current_status <> 'END' "
+        + "   AND birth_date IS NOT NULL")
+    List<Map<String, Object>> selectFatteningAges(@Param("tenantId") String tenantId);
+
+    /** 育肥存栏头数（pig_type='fattening' 且未终止）。 */
+    @Select("SELECT COUNT(*) FROM t_farm_pig_info "
+        + " WHERE tenant_id = #{tenantId} "
+        + "   AND del_flag = '0' "
+        + "   AND pig_type = 'fattening' "
+        + "   AND current_status <> 'END'")
+    int countFatteningOnHand(@Param("tenantId") String tenantId);
+
+    /**
+     * 育肥猪按日龄阈值过滤 COUNT（lower 含 / upper 不含；任一为负表示无界）。
+     * 用于"保育存栏(<43)"、"可出栏(>=211)"等切片。
+     */
+    @Select("<script>"
+        + "SELECT COUNT(*) FROM t_farm_pig_info "
+        + " WHERE tenant_id = #{tenantId} "
+        + "   AND del_flag = '0' "
+        + "   AND pig_type = 'fattening' "
+        + "   AND current_status &lt;&gt; 'END' "
+        + "   AND birth_date IS NOT NULL "
+        + "   <if test='lower >= 0'> AND DATEDIFF(CURDATE(), birth_date) &gt;= #{lower} </if> "
+        + "   <if test='upper >= 0'> AND DATEDIFF(CURDATE(), birth_date) &lt;  #{upper} </if> "
+        + "</script>")
+    int countFatteningByAge(@Param("tenantId") String tenantId,
+                            @Param("lower") int lower,
+                            @Param("upper") int upper);
+
+    // ============================================================
+    //  育肥指标趋势（FIX-MGMT-MP-BRD-001）
+    //  出栏按周/月分组聚合 t_farm_pig_marketing。
+    // ============================================================
+
+    /** 出栏头数按周分组（label = 周一日期 yyyy-MM-dd）。区间右开。 */
+    @Select("SELECT DATE_FORMAT(DATE_SUB(marketing_date, INTERVAL WEEKDAY(marketing_date) DAY), '%Y-%m-%d') AS d, "
+        + "       COUNT(*) AS v "
+        + " FROM t_farm_pig_marketing "
+        + " WHERE tenant_id = #{tenantId} "
+        + "   AND del_flag = '0' "
+        + "   AND marketing_date >= #{from} "
+        + "   AND marketing_date <  #{to} "
+        + " GROUP BY d ORDER BY d")
+    List<Map<String, Object>> countMarketingByWeek(@Param("tenantId") String tenantId,
+                                                   @Param("from") java.time.LocalDateTime from,
+                                                   @Param("to") java.time.LocalDateTime to);
+
+    /** 出栏头数按月分组（label = yyyy-MM）。区间右开。 */
+    @Select("SELECT DATE_FORMAT(marketing_date, '%Y-%m') AS d, COUNT(*) AS v "
+        + " FROM t_farm_pig_marketing "
+        + " WHERE tenant_id = #{tenantId} "
+        + "   AND del_flag = '0' "
+        + "   AND marketing_date >= #{from} "
+        + "   AND marketing_date <  #{to} "
+        + " GROUP BY d ORDER BY d")
+    List<Map<String, Object>> countMarketingByMonth(@Param("tenantId") String tenantId,
                                                     @Param("from") java.time.LocalDateTime from,
                                                     @Param("to") java.time.LocalDateTime to);
 }

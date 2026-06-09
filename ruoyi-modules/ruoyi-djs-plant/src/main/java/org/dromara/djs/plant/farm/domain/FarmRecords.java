@@ -71,6 +71,9 @@ public class FarmRecords extends TenantEntity {
     /** 处理班组 FK → {@code t_plant_work_team.id}。 */
     private Long farmBy;
 
+    /** 操作人（采摘人员）FK → {@code sys_user.user_id}（FIX-PLT-MP-PICK-001；采收 / 采摘状态调整时落班组成员）。 */
+    private Long operatorUserId;
+
     /** 整地类型（字典 {@code djs_tillage_type}；仅 farm_type=tillage_prepare）。 */
     private String tillageType;
 

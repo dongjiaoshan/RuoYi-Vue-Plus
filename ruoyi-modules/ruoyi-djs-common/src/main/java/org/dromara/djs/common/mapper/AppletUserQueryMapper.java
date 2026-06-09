@@ -26,8 +26,14 @@ import java.util.Map;
 public interface AppletUserQueryMapper {
 
     /**
-     * 查询当前用户 + 部门信息（{@code current_farm_id} 在 token 里已有 / 角色集合由 sa-token
+     * 查询当前用户 + 部门 + 岗位信息（{@code current_farm_id} 在 token 里已有 / 角色集合由 sa-token
      * LoginUser 给，故本 SQL 不查角色）。
+     *
+     * <p>{@code postName} 经 {@code sys_user_post} → {@code sys_post} 关联，用
+     * {@code GROUP_CONCAT(DISTINCT post_name ORDER BY post_sort SEPARATOR '、')} 拼接（多岗位时
+     * 如「场长、兽医」，无岗位返 null）。岗位仅做展示标签，权限走 role（ADR-0007）。因引入岗位
+     * 一对多 JOIN 会让单用户出多行，故加 {@code GROUP BY} 折叠回单行（去掉原 LIMIT 1，靠
+     * {@code user_id} 主键唯一性保证单行）。</p>
      *
      * @return UserMeVo 摘要；未命中返 null（用户已删 / 禁用时会被 mapper 视作 null 返回）
      */
@@ -41,13 +47,17 @@ public interface AppletUserQueryMapper {
                u.sex              AS sex,
                u.dept_id          AS deptId,
                d.dept_name        AS deptName,
-               u.current_farm_id  AS currentFarmId
+               u.current_farm_id  AS currentFarmId,
+               GROUP_CONCAT(DISTINCT p.post_name ORDER BY p.post_sort SEPARATOR '、') AS postName
         FROM sys_user u
         LEFT JOIN sys_dept d ON u.dept_id = d.dept_id AND d.del_flag = '0'
+        LEFT JOIN sys_user_post up ON u.user_id = up.user_id
+        LEFT JOIN sys_post p ON up.post_id = p.post_id AND p.status = '0'
         WHERE u.user_id = #{userId}
           AND u.del_flag = '0'
           AND u.status = '0'
-        LIMIT 1
+        GROUP BY u.user_id, u.user_name, u.nick_name, u.phonenumber, u.email,
+                 u.avatar, u.sex, u.dept_id, d.dept_name, u.current_farm_id
         """)
     UserMeVo selectMeByUserId(@Param("userId") Long userId);
 

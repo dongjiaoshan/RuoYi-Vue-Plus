@@ -8,6 +8,8 @@ import org.dromara.djs.warehouse.flow.domain.StockFlow;
 import org.dromara.djs.warehouse.flow.domain.bo.MatLossBo;
 import org.dromara.djs.warehouse.flow.domain.bo.MatPickBo;
 import org.dromara.djs.warehouse.flow.domain.bo.MatReturnBo;
+import org.dromara.djs.warehouse.flow.domain.vo.MatIssueItemVo;
+import org.dromara.djs.warehouse.flow.domain.vo.MatIssueLocationVo;
 import org.dromara.djs.warehouse.flow.mapper.StockFlowMapper;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
@@ -27,6 +29,8 @@ import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 
 import java.math.BigDecimal;
+import java.util.Collections;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -293,6 +297,85 @@ class MatFlowServiceImplTest {
         ArgumentCaptor<StockFlow> cap = ArgumentCaptor.forClass(StockFlow.class);
         verify(stockFlowMapper, times(1)).insert(cap.capture());
         assertThat(cap.getValue().getWarehouseId()).isEqualTo(defaultLoc);
+    }
+
+    // ===== FIX-WMS-MATISSUE-001：物资领用扩 5 业态 查询端点 =====
+
+    @Test
+    @DisplayName("issueLocations happy：业态非空 → 透传 mapper 返 chip 列表")
+    void testIssueLocations_Happy() {
+        MatIssueLocationVo loc = new MatIssueLocationVo();
+        loc.setLocationId(LOCATION_ID);
+        loc.setLocationCode("LOC-WB-01");
+        loc.setLocationName("白条库");
+        when(locationStockMapper.selectMatIssueLocations(List.of("pork"))).thenReturn(List.of(loc));
+
+        List<MatIssueLocationVo> result = service.issueLocations("pork");
+
+        assertThat(result).hasSize(1);
+        assertThat(result.get(0).getLocationName()).isEqualTo("白条库");
+        verify(locationStockMapper, times(1)).selectMatIssueLocations(List.of("pork"));
+    }
+
+    @Test
+    @DisplayName("issueLocations 猪肉业态多值：'pork,white_bar' → split 成 [pork, white_bar] 传 mapper")
+    void testIssueLocations_MultiBelongType() {
+        when(locationStockMapper.selectMatIssueLocations(List.of("pork", "white_bar")))
+            .thenReturn(Collections.emptyList());
+
+        service.issueLocations("pork,white_bar");
+
+        verify(locationStockMapper, times(1)).selectMatIssueLocations(List.of("pork", "white_bar"));
+    }
+
+    @Test
+    @DisplayName("issueLocations 业态为空 → 抛 ServiceException + 不调 mapper")
+    void testIssueLocations_BlankBelongType() {
+        assertThatThrownBy(() -> service.issueLocations(" "))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("业态类型不能为空");
+
+        verify(locationStockMapper, never()).selectMatIssueLocations(any());
+    }
+
+    @Test
+    @DisplayName("issueItems happy：locationId 为空 → 透传 null locId + 当前 userId 查列表")
+    void testIssueItems_NullLocation() {
+        MatIssueItemVo item = new MatIssueItemVo();
+        item.setProductId(PRODUCT_ID);
+        item.setProductName("番茄");
+        item.setCurrentStock(new BigDecimal("221.23"));
+        item.setTodayPicked(new BigDecimal("25.22"));
+        when(locationStockMapper.selectMatIssueItems(List.of("vegetable"), null, USER_ID)).thenReturn(List.of(item));
+
+        List<MatIssueItemVo> result = service.issueItems("vegetable", null);
+
+        assertThat(result).hasSize(1);
+        assertThat(result.get(0).getProductName()).isEqualTo("番茄");
+        verify(locationStockMapper, times(1)).selectMatIssueItems(List.of("vegetable"), null, USER_ID);
+    }
+
+    @Test
+    @DisplayName("issueItems：locationId 字符串（snowflake string）→ parse 成 Long 传 mapper（chip 选中态）")
+    void testIssueItems_WithLocation() {
+        String locStr = "2058525064717926401"; // 19 位 snowflake，验证 parse 不截断
+        when(locationStockMapper.selectMatIssueItems(eq(List.of("pork", "white_bar")), eq(Long.valueOf(locStr)), eq(USER_ID)))
+            .thenReturn(Collections.emptyList());
+
+        service.issueItems("pork,white_bar", locStr);
+
+        verify(locationStockMapper, times(1))
+            .selectMatIssueItems(List.of("pork", "white_bar"), Long.valueOf(locStr), USER_ID);
+    }
+
+    @Test
+    @DisplayName("issueItems：locationId 非法字符串 → 抛 ServiceException 库位 ID 非法")
+    void testIssueItems_IllegalLocation() {
+        assertThatThrownBy(() -> service.issueItems("pork", "abc"))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("库位 ID 非法");
+
+        verify(locationStockMapper, never()).selectMatIssueItems(any(), any(), any());
     }
 
 }

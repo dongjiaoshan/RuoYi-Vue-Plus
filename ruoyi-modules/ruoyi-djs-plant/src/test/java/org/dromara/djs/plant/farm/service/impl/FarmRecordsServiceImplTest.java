@@ -10,6 +10,7 @@ import org.dromara.djs.plant.crop.mapper.CropInfoMapper;
 import org.dromara.djs.plant.farm.domain.FarmRecords;
 import org.dromara.djs.plant.farm.domain.bo.DisasterRecordBo;
 import org.dromara.djs.plant.farm.domain.bo.EmptyRecordBo;
+import org.dromara.djs.plant.farm.domain.bo.GrowBatchBo;
 import org.dromara.djs.plant.farm.domain.bo.RotationRecordBo;
 import org.dromara.djs.plant.farm.domain.bo.TransplantRecordBo;
 import org.dromara.djs.plant.farm.domain.vo.DispatchSummaryVo;
@@ -255,6 +256,57 @@ class FarmRecordsServiceImplTest {
         assertThatThrownBy(() -> service.submitTransplant(bo))
             .isInstanceOf(ServiceException.class)
             .hasMessageContaining("60%");
+        verify(baseMapper, never()).insert(any(FarmRecords.class));
+    }
+
+    @Test
+    @DisplayName("submitGrowBatch happy: water_fertilize 2 地块 → INSERT 2 行，返回 2，无退茬副作用")
+    void submitGrowBatch_happy() {
+        GrowBatchBo bo = new GrowBatchBo();
+        bo.setFarmType("water_fertilize");
+        bo.setFarmBy(10L);
+        bo.setFarmDate(LocalDate.now());
+        bo.setRemark("批量水肥");
+        GrowBatchBo.PlotTarget t1 = new GrowBatchBo.PlotTarget();
+        t1.setPlantId(7L);
+        t1.setPlotId(1L);
+        t1.setCropId(2L);
+        GrowBatchBo.PlotTarget t2 = new GrowBatchBo.PlotTarget();
+        t2.setPlantId(7L);
+        t2.setPlotId(1L);
+        t2.setCropId(2L);
+        bo.setTargets(List.of(t1, t2));
+
+        when(baseMapper.insert(any(FarmRecords.class))).thenAnswer(inv -> {
+            ((FarmRecords) inv.getArgument(0)).setId(300L);
+            return 1;
+        });
+
+        int count = service.submitGrowBatch(bo);
+        assertThat(count).isEqualTo(2);
+
+        verify(baseMapper, times(2)).insert(any(FarmRecords.class));
+        // 非退茬：不触发地块状态回归 / 明细完结
+        verify(plotInfoMapper, never()).updateById(any(PlotInfo.class));
+        verify(plantDetailsMapper, never()).update(isNull(), any(Wrapper.class));
+    }
+
+    @Test
+    @DisplayName("submitGrowBatch: 非法 farmType 抛 ServiceException，不 INSERT")
+    void submitGrowBatch_invalid_type() {
+        GrowBatchBo bo = new GrowBatchBo();
+        bo.setFarmType("tillage_break");   // 空地类型不属于批量生长路径
+        bo.setFarmBy(10L);
+        bo.setFarmDate(LocalDate.now());
+        GrowBatchBo.PlotTarget t1 = new GrowBatchBo.PlotTarget();
+        t1.setPlantId(7L);
+        t1.setPlotId(1L);
+        t1.setCropId(2L);
+        bo.setTargets(List.of(t1));
+
+        assertThatThrownBy(() -> service.submitGrowBatch(bo))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("批量农事类型");
         verify(baseMapper, never()).insert(any(FarmRecords.class));
     }
 

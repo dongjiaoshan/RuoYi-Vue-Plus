@@ -50,6 +50,14 @@ public class UserMeVo {
     private String currentFarmName;
 
     /**
+     * 工作岗位中文名（来源 {@code sys_post.post_name}，经 {@code sys_user_post} 关联）。
+     * <p>多岗位时按 {@code post_sort} 升序用「、」拼接（如「场长、兽医」）；无岗位返 null，
+     * 前端展示「未设置岗位」。这是展示用快照，不参与权限（权限走 {@code roles}）。</p>
+     * <p>对应 ADR-0007 sys_post 5 农场岗位：场长 / 饲养员 / 兽医 / 仓库管理员 / 技术员。</p>
+     */
+    private String postName;
+
+    /**
      * 当前用户的 role_key 集合（来自 sa-token LoginUser.rolePermission）。
      * <p>用于前端按角色显示不同入口，如 admin / boss / breed_admin 等。</p>
      */

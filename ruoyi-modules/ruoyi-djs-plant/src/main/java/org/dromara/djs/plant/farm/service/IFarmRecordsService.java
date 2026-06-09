@@ -4,11 +4,14 @@ import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.plant.farm.domain.bo.DisasterRecordBo;
 import org.dromara.djs.plant.farm.domain.bo.EmptyRecordBo;
+import org.dromara.djs.plant.farm.domain.bo.GrowBatchBo;
 import org.dromara.djs.plant.farm.domain.bo.GrowRecordBo;
+import org.dromara.djs.plant.farm.domain.bo.PlotPickStatusBo;
 import org.dromara.djs.plant.farm.domain.bo.RotationRecordBo;
 import org.dromara.djs.plant.farm.domain.bo.TransplantRecordBo;
 import org.dromara.djs.plant.farm.domain.query.FarmRecordsQuery;
 import org.dromara.djs.plant.farm.domain.vo.DispatchSummaryVo;
+import org.dromara.djs.plant.farm.domain.vo.FarmCropPlotVo;
 import org.dromara.djs.plant.farm.domain.vo.FarmRecordsVo;
 
 import java.util.List;
@@ -39,6 +42,42 @@ public interface IFarmRecordsService {
 
     /** 退茬提交 — 生长阶段；触发 plot_info.plot_status=1 + plant_details 完结。 */
     Long submitRotation(RotationRecordBo bo);
+
+    /**
+     * 生长类农事「作物 → 多地块」批量提交（FIX-PLT-MP-WORK-BATCH-001 #2）。
+     *
+     * <p>单事务循环复用现有单条插入逻辑，覆盖 6 类生长活动
+     * （{@code water_fertilize/irrigation/weed/pest_control/pruning}）+ 退茬（{@code rotation}）。
+     * farmType=rotation 时每条按退茬副作用处理（plot_status=1 + plant_details completed）。</p>
+     *
+     * @param bo 批量入参（farmType + N 个地块三元组 + 统一日期/班组/凭证/备注）
+     * @return 成功 INSERT 的农事记录行数
+     */
+    int submitGrowBatch(GrowBatchBo bo);
+
+    /**
+     * 农事多选页候选地块（FIX-PLT-MP-WORK-BATCH-001 #2）。
+     *
+     * <p>按作物列出可批量录入的种植地块（每行 plotCode + lastFarmDate + intervalDays + plantStatus）。
+     * farmType=rotation（退茬）只列 {@code plant_status='completed'} 的地块；其余列 ongoing 地块。</p>
+     *
+     * @param cropId   作物 id
+     * @param farmType 农事类型（决定过滤口径 + 计算间隔的"上次同类农事"）
+     * @return 候选地块卡列表（无数据返空列表）
+     */
+    List<FarmCropPlotVo> listCropPlots(Long cropId, String farmType);
+
+    /**
+     * 土地采摘状态调整（FIX-PLT-MP-HARVEST-001 #3，HARVEST 富页）。
+     *
+     * <p>手动切换地块采摘状态（采摘中 ↔ 采摘完成），仅状态调整不录重量（重量录入权威源为采收 tab）。
+     * 更新 {@code plant_details.harvest_status} + 写一条 {@code t_plant_farm_records}（farm_type=harvest_activity）留痕。
+     * 切到"采摘完成"时回填 {@code end_harvestdate}。</p>
+     *
+     * @param bo 状态调整入参（plotId/cropId/pickStatus/adjustDate/teamId）
+     * @return 受影响的明细行数
+     */
+    int adjustPlotPickStatus(PlotPickStatusBo bo);
 
     /** mp 中央分发台聚合：今日 12 类各自记录条数。 */
     DispatchSummaryVo dispatchSummary();

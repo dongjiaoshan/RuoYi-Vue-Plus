@@ -1,7 +1,10 @@
 package org.dromara.djs.plant.plan.service.impl;
 
+import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
+import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
+import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.djs.common.encoder.BizCodeType;
 import org.dromara.djs.common.encoder.IBizCodeGenerator;
@@ -12,12 +15,14 @@ import org.dromara.djs.plant.plan.domain.PlantPlan;
 import org.dromara.djs.plant.plan.domain.bo.PlantDetailInputBo;
 import org.dromara.djs.plant.plan.domain.bo.PlantPlanCreateBo;
 import org.dromara.djs.plant.plan.domain.bo.PlantPlanUpdateBo;
+import org.dromara.djs.plant.plan.domain.bo.PlantStartBo;
 import org.dromara.djs.plant.plan.mapper.PlantDetailsMapper;
 import org.dromara.djs.plant.plan.mapper.PlantPlanMapper;
 import org.dromara.djs.plant.plot.domain.PlotInfo;
 import org.dromara.djs.plant.plot.mapper.PlotInfoMapper;
 import org.dromara.djs.plant.team.mapper.PlantWorkTeamMapper;
 import org.dromara.djs.plant.zone.mapper.PlotZoneMapper;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
@@ -84,6 +89,20 @@ class PlantPlanServiceImplTest {
     private IBizCodeGenerator bizCodeGenerator;
 
     private PlantPlanServiceImpl service;
+
+    /**
+     * MyBatis-Plus 单测 entity cache 预热：startPlant 走 LambdaQueryWrapper / LambdaUpdateWrapper
+     * （PlantDetails / PlotInfo），mock 路径下也会触发 TableInfoHelper.getTableInfo() 解析 lambda 列名。
+     */
+    @BeforeAll
+    static void initMpEntityCache() {
+        MybatisConfiguration cfg = new MybatisConfiguration();
+        MapperBuilderAssistant assistant = new MapperBuilderAssistant(cfg, "");
+        assistant.setCurrentNamespace("test");
+        TableInfoHelper.initTableInfo(assistant, PlantPlan.class);
+        TableInfoHelper.initTableInfo(assistant, PlantDetails.class);
+        TableInfoHelper.initTableInfo(assistant, PlotInfo.class);
+    }
 
     @BeforeEach
     void setUp() {
@@ -201,6 +220,52 @@ class PlantPlanServiceImplTest {
     void nextPlanNoFirst() {
         when(bizCodeGenerator.generate(eq(BizCodeType.PLAN_NO), any())).thenReturn("PLAN-2027-001");
         assertThat(service.nextPlanNo()).isEqualTo("PLAN-2027-001");
+    }
+
+    @Test
+    @DisplayName("startPlant happy: 仅未开工明细被回写 ongoing + plot_status=2，返回开工行数")
+    void startPlantHappy() {
+        PlantDetails d1 = new PlantDetails();
+        d1.setId(11L);
+        d1.setPlotId(101L);
+        d1.setBeginActualdate(null);   // 未开工
+        PlantDetails d2 = new PlantDetails();
+        d2.setId(12L);
+        d2.setPlotId(102L);
+        d2.setBeginActualdate(LocalDate.of(2026, 5, 1));   // 已开工，应被跳过
+        when(detailsMapper.selectList(any())).thenReturn(List.of(d1, d2));
+        when(detailsMapper.update(isNull(), any(Wrapper.class))).thenReturn(1);
+        when(plotMapper.update(isNull(), any(Wrapper.class))).thenReturn(1);
+
+        PlantStartBo bo = new PlantStartBo();
+        bo.setDetailIds(List.of(11L, 12L));
+        bo.setBeginActualdate(LocalDate.of(2026, 6, 9));
+        bo.setPlantBy(7L);
+
+        int affected = service.startPlant(bo);
+
+        assertThat(affected).isEqualTo(1);   // 仅 d1 开工
+        verify(detailsMapper).update(isNull(), any(Wrapper.class));   // 批量回写明细
+        verify(plotMapper).update(isNull(), any(Wrapper.class));      // 同步地块 plot_status=2
+    }
+
+    @Test
+    @DisplayName("startPlant: 传入 detailIds 部分不存在（跨租户/已删）抛 ServiceException")
+    void startPlantMissingDetailRejected() {
+        PlantDetails d1 = new PlantDetails();
+        d1.setId(11L);
+        d1.setPlotId(101L);
+        when(detailsMapper.selectList(any())).thenReturn(List.of(d1));   // 只查到 1 条
+
+        PlantStartBo bo = new PlantStartBo();
+        bo.setDetailIds(List.of(11L, 99L));   // 99 不存在
+        bo.setBeginActualdate(LocalDate.of(2026, 6, 9));
+        bo.setPlantBy(7L);
+
+        assertThatThrownBy(() -> service.startPlant(bo))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("不存在");
+        verify(detailsMapper, never()).update(isNull(), any(Wrapper.class));
     }
 
     // ============================================================

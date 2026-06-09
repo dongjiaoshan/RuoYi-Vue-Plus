@@ -8,10 +8,13 @@ import org.dromara.common.satoken.utils.LoginHelper;
 import org.dromara.djs.common.base.DjsBaseServiceImpl;
 import org.dromara.djs.common.encoder.BizCodeType;
 import org.dromara.djs.common.encoder.IBizCodeGenerator;
+import org.dromara.djs.warehouse.cross.domain.BarInfo;
+import org.dromara.djs.warehouse.cross.mapper.BarInfoMapper;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
 import org.dromara.djs.warehouse.trace.domain.TraceCode;
 import org.dromara.djs.warehouse.trace.domain.TraceCodeTypeConst;
+import org.dromara.djs.warehouse.trace.domain.TraceContentConst;
 import org.dromara.djs.warehouse.trace.domain.TraceEvent;
 import org.dromara.djs.warehouse.trace.mapper.TraceCodeMapper;
 import org.dromara.djs.warehouse.trace.mapper.TraceEventMapper;
@@ -19,6 +22,11 @@ import org.dromara.djs.warehouse.trace.service.ITraceService;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.util.ArrayList;
+import java.util.Date;
+import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -34,10 +42,14 @@ import java.util.Set;
  * <p>只 INSERT trace_event，**绝不 UPDATE / DELETE**。追溯写失败全程 try-catch 仅 warn 日志，
  * 不抛异常（追溯链允许部分缺失，绝不拖垮核心业务工序）。</p>
  *
- * <h3>猪肉链 genCode 缺口（V1 已知）</h3>
- * <p>WMS-PACK-001 的 4 个打包入口都是果蔬 / 礼盒业态，**无 pork pack 入口**，故 pork code_type 的
- * trace_code 当前**无调用方生成**；出栏 / 燎毛 / 分割工序只 recordEventByEarNo，反查 trace_code 必落空走
- * warn 跳过。genCode 仍实现 pork 分支（供未来调用），pork 链生成点待 Kevin / product 定（reports raise）。</p>
+ * <h3>猪肉链耳号事件回填（genCode 时序补偿）</h3>
+ * <p>pork trace_code 在打包出库（{@code submitWhiteBarOut} → IN_STOCK 时刻）才生成，而出栏 / 燎毛 /
+ * 屠宰 / 排酸 4 个上游耳号事件早于此发生——它们的实时 {@link #recordEventByEarNo} 调用因 code 尚未出生而
+ * 反查落空跳过。为补齐链路，{@link #genCode} 在 pork code 出生后立即调 {@link #backfillEarNoEvents}：按耳号
+ * 查 {@code t_warehouse_bar_info}（一头猪一行，沉淀全生命周期时间戳）重建这 4 个事件，**用各阶段真实时刻**
+ * （marketing_time / in_time / out_time）而非当前时间写入 trace_event。幂等：同一 code 已存在这些事件则不重复写。
+ * 至此一个 pork 码可串起 marketing → singe → slaughter → acid → in_stock → ship（6 事件）；arrival（到店）
+ * 当前系统无触发动作，单独待产品拍板。</p>
  *
  * @author djs
  * @since TRC-CORE-001
@@ -63,17 +75,27 @@ public class TraceServiceImpl
      */
     private static final String GIFT_BELONG_TYPE = "gift_box";
 
+    /**
+     * 回填的 4 个上游耳号事件（按真实业务先后顺序）。{@link #backfillEarNoEvents} 据此查 bar_info 时间戳重建。
+     */
+    private static final Set<String> EAR_NO_BACKFILL_CONTENTS = Set.of(
+        TraceContentConst.MARKETING, TraceContentConst.SINGE,
+        TraceContentConst.SLAUGHTER, TraceContentConst.ACID);
+
     private final TraceEventMapper traceEventMapper;
     private final ProductInfoMapper productInfoMapper;
+    private final BarInfoMapper barInfoMapper;
     private final IBizCodeGenerator bizCodeGenerator;
 
     public TraceServiceImpl(TraceCodeMapper baseMapper,
                             TraceEventMapper traceEventMapper,
                             ProductInfoMapper productInfoMapper,
+                            BarInfoMapper barInfoMapper,
                             IBizCodeGenerator bizCodeGenerator) {
         super(baseMapper);
         this.traceEventMapper = traceEventMapper;
         this.productInfoMapper = productInfoMapper;
+        this.barInfoMapper = barInfoMapper;
         this.bizCodeGenerator = bizCodeGenerator;
     }
 
@@ -112,6 +134,12 @@ public class TraceServiceImpl
         // gift：gift_components / qr_oss_id 写 NULL（V1 预留，V3 启用）
         // e. INSERT（不显式赋 tenant_id，走 InjectionMetaObjectHandler.insertFill）
         insertTraceCode(traceCode);
+
+        // f. 猪肉链：code 出生晚于 4 个上游耳号事件（marketing/singe/slaughter/acid），
+        //    实时 recordEventByEarNo 那时反查落空跳过 → 此处按耳号回填（真实时间戳）补齐链路。
+        if (TraceCodeTypeConst.PORK.equals(codeType) && StringUtils.isNotBlank(pigEarNo)) {
+            backfillEarNoEvents(produceCode, pigEarNo);
+        }
 
         log.info("[TRC-CORE-001] genCode produceCode={} codeType={} productId={} belongType={}",
             produceCode, codeType, productId, belongType);
@@ -153,6 +181,96 @@ public class TraceServiceImpl
             return;
         }
         recordEvent(produceCode, traceContent);
+    }
+
+    /**
+     * 猪肉链耳号事件回填：pork trace_code 出生时，按耳号查 {@code t_warehouse_bar_info}（一头猪一行，
+     * 沉淀出栏/燎毛/分割全生命周期时间戳）重建 4 个上游事件（marketing/singe/slaughter/acid），用各阶段
+     * 真实时刻而非当前时间写入 trace_event，补齐 code 出生前丢失的链路。
+     *
+     * <h3>时间戳来源（bar_info 列）</h3>
+     * <ul>
+     *   <li>marketing → {@code marketing_time}（出栏时刻）</li>
+     *   <li>singe → {@code in_time}（燎毛入库时刻，cutDone 前置）</li>
+     *   <li>slaughter / acid → {@code out_time}（分割出库即排酸完成时刻，二者同 cutDone 触发，
+     *       slaughter 先于 acid 以 id 递增稳定排序）</li>
+     * </ul>
+     *
+     * <p>容错：bar_info 查不到（外购无耳号 / 数据缺失）或某阶段时间戳为 NULL（工序尚未走到）→ 该事件跳过，
+     * 不补造假数据。幂等：同一 produceCode 已存在某事件则不重复写（防 genCode 重入）。整体 try-catch swallow，
+     * 回填失败绝不拖垮打包主事务（与 {@link #recordEvent} 容错策略一致）。protected 方便单测 stub。</p>
+     *
+     * @param produceCode 已生成的 pork 追溯码
+     * @param earNo       猪只耳号
+     */
+    protected void backfillEarNoEvents(String produceCode, String earNo) {
+        try {
+            BarInfo bar = findBarByEarNo(earNo);
+            if (bar == null) {
+                log.warn("[TRC-CORE-001] backfill skipped: no bar_info for earNo={} produceCode={}",
+                    earNo, produceCode);
+                return;
+            }
+            Set<String> existing = findExistingContents(produceCode, EAR_NO_BACKFILL_CONTENTS);
+            int written = 0;
+            written += backfillOne(produceCode, TraceContentConst.MARKETING, bar.getMarketingTime(), existing);
+            written += backfillOne(produceCode, TraceContentConst.SINGE, bar.getInTime(), existing);
+            written += backfillOne(produceCode, TraceContentConst.SLAUGHTER, bar.getOutTime(), existing);
+            written += backfillOne(produceCode, TraceContentConst.ACID, bar.getOutTime(), existing);
+            log.info("[TRC-CORE-001] backfill ear-no events produceCode={} earNo={} written={}",
+                produceCode, earNo, written);
+        } catch (Exception e) {
+            // 回填失败绝不拖垮打包主事务 → 仅 warn，不抛
+            log.warn("[TRC-CORE-001] backfill ear-no events failed (skipped) produceCode={} earNo={}: {}",
+                produceCode, earNo, e.getMessage());
+        }
+    }
+
+    /**
+     * 回填单个事件：时间戳非空且该事件尚未存在 → INSERT trace_event（真实时刻）。返回写入条数（0/1）。
+     * 回填事件无登录上下文阶段性操作人（4 阶段操作人分散在 3 张源表，bar_info 不逐阶段存），operator_id 留 NULL。
+     */
+    private int backfillOne(String produceCode, String traceContent, Date eventTime, Set<String> existing) {
+        if (eventTime == null || existing.contains(traceContent)) {
+            return 0;
+        }
+        TraceEvent event = new TraceEvent();
+        event.setProduceCode(produceCode);
+        event.setTraceContent(traceContent);
+        event.setTraceTime(toLocalDateTime(eventTime));
+        insertTraceEvent(event);
+        return 1;
+    }
+
+    /**
+     * 按耳号查 bar_info（一头猪一行；多行取最新）。protected 方便单测 stub。
+     */
+    protected BarInfo findBarByEarNo(String earNo) {
+        return barInfoMapper.selectOne(
+            new LambdaQueryWrapper<BarInfo>()
+                .eq(BarInfo::getEarNo, earNo)
+                .orderByDesc(BarInfo::getId)
+                .last("LIMIT 1"));
+    }
+
+    /**
+     * 查某追溯码已存在的事件类型（限定在 candidates 内），用于回填幂等。protected 方便单测 stub。
+     */
+    protected Set<String> findExistingContents(String produceCode, Set<String> candidates) {
+        List<TraceEvent> rows = traceEventMapper.selectList(
+            new LambdaQueryWrapper<TraceEvent>()
+                .select(TraceEvent::getTraceContent)
+                .eq(TraceEvent::getProduceCode, produceCode)
+                .in(TraceEvent::getTraceContent, new ArrayList<>(candidates)));
+        Set<String> set = new HashSet<>();
+        for (TraceEvent r : rows) {
+            set.add(r.getTraceContent());
+        }
+        return set;
+    }
+
+    private LocalDateTime toLocalDateTime(Date date) {
+        return date.toInstant().atZone(ZoneId.systemDefault()).toLocalDateTime();
     }
 
     /**

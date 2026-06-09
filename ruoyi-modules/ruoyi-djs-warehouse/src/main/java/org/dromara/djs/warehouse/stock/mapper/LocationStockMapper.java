@@ -4,6 +4,8 @@ import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 import org.dromara.common.mybatis.core.mapper.BaseMapperPlus;
+import org.dromara.djs.warehouse.flow.domain.vo.MatIssueItemVo;
+import org.dromara.djs.warehouse.flow.domain.vo.MatIssueLocationVo;
 import org.dromara.djs.warehouse.flow.domain.vo.PackingItemVo;
 import org.dromara.djs.warehouse.stock.domain.LocationStock;
 import org.dromara.djs.warehouse.stock.domain.vo.LocationStockVo;
@@ -268,5 +270,119 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
                            @Param("checkStock") BigDecimal checkStock,
                            @Param("checkResult") Integer checkResult,
                            @Param("userId") Long userId);
+
+    /**
+     * mp 物资领用「二级库」chip（FIX-WMS-MATISSUE-001）：某业态（{@code belong_type} 一或多值）下的产品
+     * 实际分布在哪些库位 —— DISTINCT location。
+     *
+     * <p>口径：{@code location_stock JOIN product_info WHERE p.belong_type IN (...)}，
+     * 取这些业态产品出现过的全部库位（含库存为 0 的，工人仍可能去退回 / 看该库历史）。
+     * 一个库位可能存多个该业态产品 → DISTINCT 去重。租户单租户显式 {@code tenant_id='1001'}。</p>
+     *
+     * <p>原型：猪肉产品 tab → 白条库 / 冻品库 / 鲜品库 / 红白脏库；蔬菜 → 蔬菜保鲜库 / 重口蔬菜保鲜室。
+     * 「猪肉产品」tab 含 {@code pork + white_bar} 两业态（项目猪肉链口径，参 {@code TraceServiceImpl.PORK_BELONG_TYPES}）。
+     * 包材业态产品常无库位关联（location_stock 无行）→ 返空 list，前端不渲染 chip 段。</p>
+     *
+     * @param belongTypes 字典 {@code djs_belong_type} 值列表（如 [pork, white_bar] / [vegetable] / [egg]）
+     * @return 该业态分布的库位列表（按库位名排序）；无则空 list
+     */
+    @Select("""
+        <script>
+        SELECT DISTINCT l.id          AS locationId,
+               l.location_code        AS locationCode,
+               l.location_name        AS locationName
+          FROM t_warehouse_location_stock s
+          JOIN t_warehouse_product_info p
+            ON p.id = s.product_id
+           AND p.del_flag = '0'
+           AND p.tenant_id = s.tenant_id
+          JOIN t_warehouse_location_info l
+            ON l.id = s.location_id
+           AND l.del_flag = '0'
+           AND l.tenant_id = s.tenant_id
+         WHERE s.del_flag    = '0'
+           AND s.tenant_id   = '1001'
+           AND p.belong_type IN
+           <foreach collection="belongTypes" item="bt" open="(" separator="," close=")">#{bt}</foreach>
+         ORDER BY l.location_name ASC
+        </script>
+        """)
+    List<MatIssueLocationVo> selectMatIssueLocations(@Param("belongTypes") List<String> belongTypes);
+
+    /**
+     * mp 物资领用「待领产品卡」列表（FIX-WMS-MATISSUE-001）：以某业态（{@code belong_type} 一或多值）产品为粒度，
+     * LEFT JOIN location_stock 聚合当前库存 + 默认库位，并子查询当前登录人今日已领 / 已退 / 已损。
+     *
+     * <p>口径：</p>
+     * <ul>
+     *   <li>{@code belong_type IN (...)} 在后端强制过滤（不在前端 filter，跨层契约一致性）；
+     *       「猪肉产品」tab 含 {@code pork + white_bar}（项目猪肉链口径）。</li>
+     *   <li>{@code locationId} 可空：传了则只统计该库位库存（chip 选中态过滤），且只返该库位有库存行的产品；
+     *       为空则跨库位 SUM 全业态产品（tab 默认态）。</li>
+     *   <li>{@code currentStock} = 跨库位（或指定库位）SUM(product_stock)；产品无 location_stock 行 → 0。</li>
+     *   <li>{@code defaultLocationId} = 该产品库存最多的库位（点卡进表单时作默认 locationId）。</li>
+     *   <li>今日三量 = 子查询 {@code stock_flow WHERE operator_id=#{userId} AND product_id=p.id
+     *       AND flow_type=? AND DATE(flow_date)=CURDATE()}，与 {@code MatFlowServiceImpl.ensureTodayCapacity}
+     *       同源（保证卡上「最大可领 / 退 / 损」与提交时后端额度校验一致）。</li>
+     * </ul>
+     *
+     * <p>仅返启用产品（{@code product_status=0}）。排序：库存升序（缺货优先）再按产品名。
+     * 租户单租户显式 {@code tenant_id='1001'}。{@code userId} 为空（理论不会，端点已 SaCheckLogin）时三量子查询返 0。</p>
+     *
+     * @param belongTypes 字典 {@code djs_belong_type} 值列表（如 [pork, white_bar] / [vegetable]）
+     * @param locationId  库位 ID（可空，chip 选中态）
+     * @param userId      当前登录人 user_id（今日三量按人统计）
+     * @return 待领产品卡列表；无则空 list
+     */
+    @Select("""
+        <script>
+        SELECT p.id                              AS productId,
+               p.product_id                      AS productCode,
+               p.product_name                    AS productName,
+               p.product_unit                    AS productUnit,
+               p.product_thumb                   AS productThumb,
+               COALESCE(SUM(s.product_stock), 0) AS currentStock,
+               (SELECT s2.location_id
+                  FROM t_warehouse_location_stock s2
+                 WHERE s2.product_id = p.id
+                   AND s2.del_flag = '0'
+                   AND s2.tenant_id = '1001'
+                 ORDER BY s2.product_stock DESC, s2.location_id ASC
+                 LIMIT 1)                         AS defaultLocationId,
+               COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
+                          WHERE f.operator_id = #{userId} AND f.product_id = p.id
+                            AND f.flow_type = 'pick_out' AND DATE(f.flow_date) = CURDATE()
+                            AND f.del_flag = '0'), 0) AS todayPicked,
+               COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
+                          WHERE f.operator_id = #{userId} AND f.product_id = p.id
+                            AND f.flow_type = 'return_in' AND DATE(f.flow_date) = CURDATE()
+                            AND f.del_flag = '0'), 0) AS todayReturned,
+               COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
+                          WHERE f.operator_id = #{userId} AND f.product_id = p.id
+                            AND f.flow_type = 'loss' AND DATE(f.flow_date) = CURDATE()
+                            AND f.del_flag = '0'), 0) AS todayLoss
+          FROM t_warehouse_product_info p
+          LEFT JOIN t_warehouse_location_stock s
+            ON s.product_id = p.id
+           AND s.del_flag   = '0'
+           AND s.tenant_id  = p.tenant_id
+           <if test="locationId != null"> AND s.location_id = #{locationId} </if>
+         WHERE p.del_flag      = '0'
+           AND p.tenant_id     = '1001'
+           AND p.product_status = 0
+           AND p.belong_type IN
+           <foreach collection="belongTypes" item="bt" open="(" separator="," close=")">#{bt}</foreach>
+           <if test="locationId != null">
+             AND EXISTS (SELECT 1 FROM t_warehouse_location_stock s3
+                          WHERE s3.product_id = p.id AND s3.location_id = #{locationId}
+                            AND s3.del_flag = '0' AND s3.tenant_id = '1001')
+           </if>
+         GROUP BY p.id, p.product_id, p.product_name, p.product_unit, p.product_thumb
+         ORDER BY currentStock ASC, p.product_name ASC
+        </script>
+        """)
+    List<MatIssueItemVo> selectMatIssueItems(@Param("belongTypes") List<String> belongTypes,
+                                             @Param("locationId") Long locationId,
+                                             @Param("userId") Long userId);
 
 }

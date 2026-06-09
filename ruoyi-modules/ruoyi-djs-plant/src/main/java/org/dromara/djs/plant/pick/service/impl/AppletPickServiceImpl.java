@@ -10,6 +10,7 @@ import org.dromara.djs.plant.crop.mapper.CropInfoMapper;
 import org.dromara.djs.plant.farm.domain.bo.GrowRecordBo;
 import org.dromara.djs.plant.farm.service.IFarmRecordsService;
 import org.dromara.djs.plant.pick.domain.bo.PickSubmitBo;
+import org.dromara.djs.plant.pick.domain.vo.PickCropTaskVo;
 import org.dromara.djs.plant.pick.domain.vo.PickSummaryVo;
 import org.dromara.djs.plant.pick.domain.vo.PickTaskVo;
 import org.dromara.djs.plant.pick.event.PlantPickedEvent;
@@ -30,9 +31,12 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDate;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -84,17 +88,24 @@ public class AppletPickServiceImpl implements IAppletPickService {
         if (detail == null) {
             throw new ServiceException("采摘明细不存在或已删除：" + bo.getDetailId());
         }
-        if (bo.getWeight() == null || bo.getWeight().compareTo(BigDecimal.ZERO) <= 0) {
-            throw new ServiceException("采收重量必须大于 0");
-        }
         boolean finish = Boolean.TRUE.equals(bo.getFinish());
+        // FIX-PLT-MP-PICK-001：weight 放宽 —— finish 必填且 > 0；begin 态(finish=false)可空（仅流转状态，不累加）
+        boolean hasWeight = bo.getWeight() != null && bo.getWeight().compareTo(BigDecimal.ZERO) > 0;
+        if (finish && !hasWeight) {
+            throw new ServiceException("完成采摘时采收重量必填且必须大于 0");
+        }
+        if (bo.getWeight() != null && bo.getWeight().compareTo(BigDecimal.ZERO) < 0) {
+            throw new ServiceException("采收重量不能为负");
+        }
         // 捕获更新前的旧态：仅"非 completed → completed"首次流转才发跨域事件（幂等，防重复点完成产生多行待办）
         boolean alreadyCompleted = "completed".equals(detail.getHarvestStatus());
 
-        // 1. 累加 actual_yield
-        BigDecimal newYield = (detail.getActualYield() == null ? BigDecimal.ZERO : detail.getActualYield())
-            .add(bo.getWeight());
-        detail.setActualYield(newYield);
+        // 1. 累加 actual_yield（无重量时不累加）
+        BigDecimal newYield = detail.getActualYield() == null ? BigDecimal.ZERO : detail.getActualYield();
+        if (hasWeight) {
+            newYield = newYield.add(bo.getWeight());
+            detail.setActualYield(newYield);
+        }
 
         // 2. 首次采收回填 begin_harvestdate
         if (detail.getBeginHarvestdate() == null) {
@@ -129,6 +140,7 @@ public class AppletPickServiceImpl implements IAppletPickService {
         grow.setPlotId(detail.getPlotId());
         grow.setCropId(detail.getCropId());
         grow.setFarmBy(detail.getHarvestBy());
+        grow.setOperatorUserId(bo.getPickerUserId());   // FIX-PLT-MP-PICK-001：采摘人员落 operator_user_id
         grow.setFarmDate(bo.getHarvestDate());
         grow.setProofOssIds(joinOssIds(bo.getProofOssIds()));
         grow.setRemark(bo.getRemark());
@@ -181,6 +193,89 @@ public class AppletPickServiceImpl implements IAppletPickService {
         vo.setTodayCropKindCount(cropKindCount);
         vo.setTodayWeight(todayWeight);
         return vo;
+    }
+
+    @Override
+    public List<PickCropTaskVo> listCropTasks(Long zoneId) {
+        // 全部非游客采摘明细（is_pick=2），应用层按片区过滤 + 作物聚合（V1 数据量小）
+        List<PlantDetails> all = detailsMapper.selectList(
+            new LambdaQueryWrapper<PlantDetails>()
+                .eq(PlantDetails::getIsPick, IS_PICK_NORMAL));
+        if (CollUtil.isEmpty(all)) {
+            return Collections.emptyList();
+        }
+
+        // 取地块 → 片区映射（用于 zone 过滤）
+        Set<Long> plotIds = all.stream().map(PlantDetails::getPlotId).filter(Objects::nonNull).collect(Collectors.toSet());
+        Map<Long, PlotInfo> plotMap = plotIds.isEmpty() ? Map.of()
+            : plotMapper.selectByIds(plotIds).stream()
+                .collect(Collectors.toMap(PlotInfo::getId, p -> p, (a, b) -> a));
+
+        List<PlantDetails> filtered = all.stream()
+            .filter(d -> {
+                if (zoneId == null) {
+                    return true;
+                }
+                PlotInfo plot = plotMap.get(d.getPlotId());
+                return plot != null && zoneId.equals(plot.getZoneId());
+            })
+            .toList();
+        if (filtered.isEmpty()) {
+            return Collections.emptyList();
+        }
+
+        // 按 crop 聚合
+        Map<Long, List<PlantDetails>> byCrop = filtered.stream()
+            .filter(d -> d.getCropId() != null)
+            .collect(Collectors.groupingBy(PlantDetails::getCropId, LinkedHashMap::new, Collectors.toList()));
+
+        Set<Long> cropIds = byCrop.keySet();
+        Map<Long, CropInfo> cropMap = cropIds.isEmpty() ? Map.of()
+            : cropMapper.selectByIds(cropIds).stream()
+                .collect(Collectors.toMap(CropInfo::getId, c -> c, (a, b) -> a));
+
+        List<PickCropTaskVo> result = new ArrayList<>(byCrop.size());
+        for (Map.Entry<Long, List<PlantDetails>> e : byCrop.entrySet()) {
+            List<PlantDetails> rows = e.getValue();
+            PickCropTaskVo vo = new PickCropTaskVo();
+            vo.setCropId(e.getKey());
+            CropInfo crop = cropMap.get(e.getKey());
+            if (crop != null) {
+                vo.setCropName(crop.getCropName());
+                vo.setCropImg(crop.getCropImagePreview());
+            }
+            int plotCount = rows.size();
+            long completed = rows.stream().filter(d -> "completed".equals(d.getHarvestStatus())).count();
+            vo.setPlotCount(plotCount);
+            vo.setCompletionRate(plotCount == 0 ? 0 : (int) Math.round(completed * 100.0 / plotCount));
+            vo.setStartDate(rows.stream().map(PlantDetails::getEarliestHarvestdate)
+                .filter(Objects::nonNull).min(Comparator.naturalOrder()).orElse(null));
+            vo.setLastDate(rows.stream().map(PlantDetails::getLastHarvestdate)
+                .filter(Objects::nonNull).max(Comparator.naturalOrder()).orElse(null));
+            vo.setExpectedYield(rows.stream()
+                .map(d -> d.getExpectedYield() == null ? BigDecimal.ZERO : d.getExpectedYield())
+                .reduce(BigDecimal.ZERO, BigDecimal::add));
+            vo.setActualYield(rows.stream()
+                .map(d -> d.getActualYield() == null ? BigDecimal.ZERO : d.getActualYield())
+                .reduce(BigDecimal.ZERO, BigDecimal::add));
+            result.add(vo);
+        }
+        return result;
+    }
+
+    @Override
+    public List<PickTaskVo> listCropPlots(Long planId, Long cropId) {
+        if (cropId == null) {
+            throw new ServiceException("作物 id 必填");
+        }
+        List<PlantDetails> entities = detailsMapper.selectList(
+            new LambdaQueryWrapper<PlantDetails>()
+                .eq(PlantDetails::getIsPick, IS_PICK_NORMAL)
+                .eq(PlantDetails::getCropId, cropId)
+                .eq(planId != null, PlantDetails::getPlantId, planId)
+                .orderByAsc(PlantDetails::getEarliestHarvestdate)
+                .orderByAsc(PlantDetails::getId));
+        return enrichToVoList(entities);
     }
 
     @Override

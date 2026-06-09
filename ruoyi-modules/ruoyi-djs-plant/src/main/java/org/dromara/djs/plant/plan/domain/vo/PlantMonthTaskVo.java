@@ -5,6 +5,7 @@ import lombok.Data;
 import java.io.Serial;
 import java.io.Serializable;
 import java.math.BigDecimal;
+import java.time.LocalDate;
 
 /**
  * 当月播种任务卡 VO（FIX-PLANT-SEED-001，mp 播种首页「种植任务」tab）。
@@ -63,6 +64,9 @@ public class PlantMonthTaskVo implements Serializable {
 
     /** 计划月份 1-12。 */
     private Integer plantMonth;
+
+    /** 实际开始种植日期（FIX-PLT-MP-SEED-001：详情页计划地块 list 显示「实际开始时间」；未开工为 null）。 */
+    private LocalDate beginActualdate;
 
     /**
      * 计划阶段 CHAR(2)（字典 {@code djs_plant_period}：05=上旬 / 15=中旬 / 25=下旬）。

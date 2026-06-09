@@ -3,6 +3,7 @@ package org.dromara.djs.breed.med.api;
 import org.dromara.djs.breed.med.mapper.MedBatchMapper;
 import org.dromara.djs.common.supplier.api.SupplierDealVo;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
@@ -31,6 +32,8 @@ import static org.mockito.Mockito.when;
  * @author djs
  * @since DJS-FIX-ADMIN-W22-005
  */
+@Tag("local")
+@Tag("dev")
 @ExtendWith(MockitoExtension.class)
 class MedicineSupplierDealProviderTest {
 

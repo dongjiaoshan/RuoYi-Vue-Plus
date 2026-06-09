@@ -71,6 +71,41 @@ public class StoreDashboardSummaryVo implements Serializable {
     private List<StoreTrendPointVo> trend10Days;
 
     /**
+     * 4 业态当日销售分布（猪肉 / 蔬菜 / 礼盒 / 其他，固定 4 行；各含销售额 + 订单数 + 当月累计）。
+     */
+    private List<StoreSaleCategoryVo> saleByCategory;
+
+    /**
+     * 今日客单价（{@code todaySaleAmount / todayOrderCount}，订单数 0 时为 0）。
+     */
+    private BigDecimal avgPriceToday;
+
+    /**
+     * 今日销售额同比 %（vs 上月同期，上期为 0 时返 null）。
+     */
+    private BigDecimal todaySaleAmountYoy;
+
+    /**
+     * 今日订单数同比 %（vs 上月同期，上期为 0 时返 null）。
+     */
+    private BigDecimal todayOrderCountYoy;
+
+    /**
+     * 今日客单价同比 %（vs 上月同期客单价，上期为 0 时返 null）。
+     */
+    private BigDecimal avgPriceYoy;
+
+    /**
+     * 今日充值额（V1 无充值数据源 → 始终 null，前端显示"—"；V2 接充值流水）。
+     */
+    private BigDecimal todayRechargeAmount;
+
+    /**
+     * 今日充值额同比 %（V1 无数据源 → 始终 null）。
+     */
+    private BigDecimal todayRechargeAmountYoy;
+
+    /**
      * 全空兜底实例（无任何数据时返回，避免前端空指针）。
      *
      * @return 计数字段全 0、列表全空的 VO
@@ -86,6 +121,13 @@ public class StoreDashboardSummaryVo implements Serializable {
         vo.setProductStructure(List.of());
         vo.setTop10Products(List.of());
         vo.setTrend10Days(List.of());
+        vo.setSaleByCategory(List.of());
+        vo.setAvgPriceToday(BigDecimal.ZERO);
+        vo.setTodaySaleAmountYoy(null);
+        vo.setTodayOrderCountYoy(null);
+        vo.setAvgPriceYoy(null);
+        vo.setTodayRechargeAmount(null);
+        vo.setTodayRechargeAmountYoy(null);
         return vo;
     }
 

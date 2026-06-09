@@ -18,6 +18,7 @@ import org.dromara.djs.plant.plan.domain.PlantPlan;
 import org.dromara.djs.plant.plan.domain.bo.PlantDetailInputBo;
 import org.dromara.djs.plant.plan.domain.bo.PlantPlanCreateBo;
 import org.dromara.djs.plant.plan.domain.bo.PlantPlanUpdateBo;
+import org.dromara.djs.plant.plan.domain.bo.PlantStartBo;
 import org.dromara.djs.plant.plan.domain.query.PlantPlanQuery;
 import org.dromara.djs.plant.plan.domain.vo.PlantDetailsVo;
 import org.dromara.djs.plant.plan.domain.vo.PlantPlanDetailVo;
@@ -563,6 +564,57 @@ public class PlantPlanServiceImpl extends DjsBaseServiceImpl<PlantPlanMapper, Pl
         Map<String, Object> m = new HashMap<>();
         m.put("planId", planId);
         return m;
+    }
+
+    // ============================================================
+    // mp 开始种植开工（FIX-PLT-MP-SEED-001 #5）
+    // ============================================================
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public int startPlant(PlantStartBo bo) {
+        if (bo == null || CollUtil.isEmpty(bo.getDetailIds())) {
+            return 0;
+        }
+        // 查目标明细（基类查询自动带 del_flag + V1 单租户）；仅保留尚未开工(begin_actualdate IS NULL)的明细
+        List<PlantDetails> details = detailsMapper.selectList(
+            new LambdaQueryWrapper<PlantDetails>()
+                .in(PlantDetails::getId, bo.getDetailIds()));
+        // 校验：传入的 detailIds 必须全部存在（属当前租户）；缺失即跨租户 / 已删除 / 非法 id
+        if (details.size() != new java.util.HashSet<>(bo.getDetailIds()).size()) {
+            throw new ServiceException("部分计划地块不存在或无权操作，请刷新后重试");
+        }
+        List<Long> startableDetailIds = details.stream()
+            .filter(d -> d.getBeginActualdate() == null)
+            .map(PlantDetails::getId)
+            .toList();
+        if (startableDetailIds.isEmpty()) {
+            // 所选明细均已开工：幂等返 0（非错误，前端按 0 行提示"已开工"）
+            return 0;
+        }
+
+        // 批量回写明细：begin_actualdate + plant_by + plant_status='ongoing'
+        Long updateBy = currentUserIdSafe();
+        detailsMapper.update(null,
+            new com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<PlantDetails>()
+                .in(PlantDetails::getId, startableDetailIds)
+                .set(PlantDetails::getBeginActualdate, bo.getBeginActualdate())
+                .set(PlantDetails::getPlantBy, bo.getPlantBy())
+                .set(PlantDetails::getPlantStatus, "ongoing")
+                .set(PlantDetails::getUpdateBy, updateBy));
+
+        // 同步关联地块 plot_status=2（种植中）
+        Set<Long> plotIds = details.stream()
+            .filter(d -> startableDetailIds.contains(d.getId()))
+            .map(PlantDetails::getPlotId).filter(Objects::nonNull).collect(Collectors.toSet());
+        if (!plotIds.isEmpty()) {
+            plotMapper.update(null,
+                new com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<PlotInfo>()
+                    .in(PlotInfo::getId, plotIds)
+                    .set(PlotInfo::getPlotStatus, 2)
+                    .set(PlotInfo::getUpdateBy, updateBy));
+        }
+        return startableDetailIds.size();
     }
 
     @Override

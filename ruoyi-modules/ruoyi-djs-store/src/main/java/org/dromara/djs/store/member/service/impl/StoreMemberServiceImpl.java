@@ -34,7 +34,7 @@ import java.util.stream.Collectors;
  *
  * <h3>新增 / 编辑（{@link #add} / {@link #update}）</h3>
  * <p>手机号查重（{@code uk_phone} 业务前置友好报错，不直接撞 {@code DuplicateKeyException}）；新增时
- * {@code memberNo} 走 {@code generate(MEMBER_NO, Map.of())}（10001 段，终生递增）。门店可空，传了则校验存在。</p>
+ * {@code memberNo} 走 {@code generate(MEMBER_NO, Map.of())}（格式 {@code 1{seq4}}，例 10001，终生递增）。门店可空，传了则校验存在。</p>
  *
  * <h3>软删（{@link #deleteByIds}）</h3>
  * <p>走基类 {@link DjsBaseServiceImpl#softDelete}（{@code del_flag='1' + del_unique=id}）——

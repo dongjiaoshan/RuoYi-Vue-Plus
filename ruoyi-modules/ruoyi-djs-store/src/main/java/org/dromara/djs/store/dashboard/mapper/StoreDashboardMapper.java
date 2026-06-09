@@ -4,7 +4,9 @@ import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 import org.dromara.djs.store.dashboard.domain.vo.StoreGroupCountVo;
+import org.dromara.djs.store.dashboard.domain.vo.StoreMemberGrowthPointVo;
 import org.dromara.djs.store.dashboard.domain.vo.StoreProductRankItemVo;
+import org.dromara.djs.store.dashboard.domain.vo.StoreSaleCategoryVo;
 import org.dromara.djs.store.dashboard.domain.vo.StoreTrendPointVo;
 
 import java.math.BigDecimal;
@@ -234,6 +236,165 @@ public interface StoreDashboardMapper {
         + "   AND (#{storeId} IS NULL OR store_id = #{storeId}) "
         + " GROUP BY demand_status")
     List<StoreGroupCountVo> countShipByStatus(@Param("tenantId") String tenantId, @Param("storeId") Long storeId);
+
+    /**
+     * 当日销售额同比对照：上月同期（同一历史日 sale_date）销售额。
+     *
+     * <p>同比基准 = 上一自然月的同一天（{@code CURDATE() - INTERVAL 1 MONTH}）。月末日期
+     * （如 31 号）若上月无对应天，MySQL {@code DATE_SUB} 自动回退到上月最后一天，故无空指针风险。</p>
+     *
+     * @param tenantId 租户
+     * @param storeId  门店 ID（可空）
+     * @return 上月同期销售额，无记录返 0
+     */
+    @Select("SELECT COALESCE(SUM(sale_amount), 0) "
+        + "  FROM t_store_sale_record "
+        + " WHERE tenant_id = #{tenantId} "
+        + "   AND del_flag = '0' "
+        + "   AND sale_date = DATE_SUB(CURDATE(), INTERVAL 1 MONTH) "
+        + "   AND (#{storeId} IS NULL OR store_id = #{storeId})")
+    BigDecimal sumLastMonthSameDaySaleAmount(@Param("tenantId") String tenantId, @Param("storeId") Long storeId);
+
+    /**
+     * 当日订单数同比对照：上月同期（同一历史日 sale_date）订单数。
+     *
+     * @param tenantId 租户
+     * @param storeId  门店 ID（可空）
+     * @return 上月同期订单数，无记录返 0
+     */
+    @Select("SELECT COUNT(*) "
+        + "  FROM t_store_sale_record "
+        + " WHERE tenant_id = #{tenantId} "
+        + "   AND del_flag = '0' "
+        + "   AND sale_date = DATE_SUB(CURDATE(), INTERVAL 1 MONTH) "
+        + "   AND (#{storeId} IS NULL OR store_id = #{storeId})")
+    Integer countLastMonthSameDayOrders(@Param("tenantId") String tenantId, @Param("storeId") Long storeId);
+
+    /**
+     * 4 业态当日销售分布：JOIN {@code t_warehouse_product_info} 按 belong_type 聚合。
+     *
+     * <p>产品 6 belong_type（pork/vegetable/white_bar/dry_good/egg/gift_box）+ null 由 service
+     * 归并为 4 业态（猪肉=pork+white_bar / 蔬菜=vegetable / 礼盒=gift_box / 其他=dry_good+egg+null）。
+     * 本 SQL 出原始 belong_type 行（含 null 行），service 做归并 + 补齐 4 桶。</p>
+     *
+     * <p>当日（{@code sale_date=CURDATE()}）销售额 + 订单数；当月累计（{@code monthAccum}）
+     * 用相关子查询同 belong_type 当月 SUM，避免再开一个聚合方法。</p>
+     *
+     * @param tenantId 租户
+     * @param storeId  门店 ID（可空）
+     * @return 按 belong_type 分组的当日销售额 / 订单数 / 当月累计行（含 null belong_type 行）
+     */
+    @Select("SELECT p.belong_type AS belongType, "
+        + "       COALESCE(SUM(r.sale_amount), 0) AS saleAmount, "
+        + "       CAST(COUNT(*) AS SIGNED) AS orderCount, "
+        + "       COALESCE(( "
+        + "         SELECT SUM(r2.sale_amount) "
+        + "           FROM t_store_sale_record r2 "
+        + "           JOIN t_warehouse_product_info p2 ON r2.product_id = p2.id "
+        + "          WHERE r2.tenant_id = #{tenantId} "
+        + "            AND r2.del_flag = '0' "
+        + "            AND p2.del_flag = '0' "
+        + "            AND r2.sale_date >= DATE_FORMAT(NOW(), '%Y-%m-01') "
+        + "            AND (#{storeId} IS NULL OR r2.store_id = #{storeId}) "
+        + "            AND ((p2.belong_type = p.belong_type) "
+        + "                 OR (p2.belong_type IS NULL AND p.belong_type IS NULL)) "
+        + "       ), 0) AS monthAccum "
+        + "  FROM t_store_sale_record r "
+        + "  JOIN t_warehouse_product_info p ON r.product_id = p.id "
+        + " WHERE r.tenant_id = #{tenantId} "
+        + "   AND r.del_flag = '0' "
+        + "   AND p.del_flag = '0' "
+        + "   AND r.sale_date = CURDATE() "
+        + "   AND (#{storeId} IS NULL OR r.store_id = #{storeId}) "
+        + " GROUP BY p.belong_type")
+    List<StoreSaleCategoryVo> selectSaleByBelongType(@Param("tenantId") String tenantId, @Param("storeId") Long storeId);
+
+    /**
+     * 4 业态当月累计销售分布（当日无销售但当月有销售的业态也要出累计）。
+     *
+     * <p>{@link #selectSaleByBelongType} 仅出"当日有销售"的业态行；某业态当日无单但当月有
+     * 累计时，需本方法补出其当月累计。service 合并两份后补齐 4 桶。</p>
+     *
+     * @param tenantId 租户
+     * @param storeId  门店 ID（可空）
+     * @return 按 belong_type 分组的当月累计销售额行（含 null belong_type 行）
+     */
+    @Select("SELECT p.belong_type AS belongType, "
+        + "       COALESCE(SUM(r.sale_amount), 0) AS monthAccum "
+        + "  FROM t_store_sale_record r "
+        + "  JOIN t_warehouse_product_info p ON r.product_id = p.id "
+        + " WHERE r.tenant_id = #{tenantId} "
+        + "   AND r.del_flag = '0' "
+        + "   AND p.del_flag = '0' "
+        + "   AND r.sale_date >= DATE_FORMAT(NOW(), '%Y-%m-01') "
+        + "   AND (#{storeId} IS NULL OR r.store_id = #{storeId}) "
+        + " GROUP BY p.belong_type")
+    List<StoreSaleCategoryVo> selectMonthAccumByBelongType(@Param("tenantId") String tenantId, @Param("storeId") Long storeId);
+
+    /**
+     * 近 10 日会员增长：{@code t_store_member} 按 {@code create_time} 日期分组 COUNT。
+     *
+     * <p>仅出"当日有新增"的日期行（GROUP BY DATE 自然跳过 0 增长日）；前端按 10 日窗口补 0。
+     * 门店过滤走 member.store_id（可空）。</p>
+     *
+     * @param tenantId 租户
+     * @param storeId  门店 ID（可空）
+     * @return 近 10 日每日新增会员数（按日期升序），无记录返空
+     */
+    @Select("SELECT DATE(create_time) AS `date`, CAST(COUNT(*) AS SIGNED) AS `count` "
+        + "  FROM t_store_member "
+        + " WHERE tenant_id = #{tenantId} "
+        + "   AND del_flag = '0' "
+        + "   AND create_time >= DATE_SUB(CURDATE(), INTERVAL 9 DAY) "
+        + "   AND (#{storeId} IS NULL OR store_id = #{storeId}) "
+        + " GROUP BY DATE(create_time) "
+        + " ORDER BY DATE(create_time)")
+    List<StoreMemberGrowthPointVo> selectMemberGrowth10Days(@Param("tenantId") String tenantId, @Param("storeId") Long storeId);
+
+    /**
+     * 会员总数（软删不计，按门店可选过滤）。
+     *
+     * @param tenantId 租户
+     * @param storeId  门店 ID（可空）
+     * @return 会员总数，无记录返 0
+     */
+    @Select("SELECT COUNT(*) "
+        + "  FROM t_store_member "
+        + " WHERE tenant_id = #{tenantId} "
+        + "   AND del_flag = '0' "
+        + "   AND (#{storeId} IS NULL OR store_id = #{storeId})")
+    Long countTotalMembers(@Param("tenantId") String tenantId, @Param("storeId") Long storeId);
+
+    /**
+     * 今日新增会员数（{@code create_time} 落在今天，软删不计，按门店可选过滤）。
+     *
+     * @param tenantId 租户
+     * @param storeId  门店 ID（可空）
+     * @return 今日新增会员数，无记录返 0
+     */
+    @Select("SELECT COUNT(*) "
+        + "  FROM t_store_member "
+        + " WHERE tenant_id = #{tenantId} "
+        + "   AND del_flag = '0' "
+        + "   AND DATE(create_time) = CURDATE() "
+        + "   AND (#{storeId} IS NULL OR store_id = #{storeId})")
+    Long countTodayNewMembers(@Param("tenantId") String tenantId, @Param("storeId") Long storeId);
+
+    /**
+     * 当月新增会员数（{@code create_time} 落在当月，软删不计，按门店可选过滤）。
+     *
+     * @param tenantId 租户
+     * @param storeId  门店 ID（可空）
+     * @return 当月新增会员数，无记录返 0
+     */
+    @Select("SELECT COUNT(*) "
+        + "  FROM t_store_member "
+        + " WHERE tenant_id = #{tenantId} "
+        + "   AND del_flag = '0' "
+        + "   AND create_time >= DATE_FORMAT(NOW(), '%Y-%m-01') "
+        + "   AND create_time < DATE_FORMAT(DATE_ADD(NOW(), INTERVAL 1 MONTH), '%Y-%m-01') "
+        + "   AND (#{storeId} IS NULL OR store_id = #{storeId})")
+    Long countMonthNewMembers(@Param("tenantId") String tenantId, @Param("storeId") Long storeId);
 
     /**
      * mp 单业态当日速览原始行（销售额 + 订单数；客单价 service 计算）。

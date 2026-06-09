@@ -6,6 +6,9 @@ import org.dromara.common.mybatis.core.mapper.BaseMapperPlus;
 import org.dromara.djs.plant.farm.domain.FarmRecords;
 import org.dromara.djs.plant.farm.domain.vo.FarmRecordsVo;
 
+import java.util.List;
+import java.util.Map;
+
 /**
  * 农事记录 Mapper（PLT-WORK-001）。
  *
@@ -25,4 +28,25 @@ public interface FarmRecordsMapper extends BaseMapperPlus<FarmRecords, FarmRecor
      */
     @Select("SELECT MAX(record_no) FROM t_plant_farm_records WHERE tenant_id = #{tenantId} AND record_no LIKE CONCAT(#{prefix}, '%')")
     String selectMaxRecordNoByPrefix(@Param("tenantId") String tenantId, @Param("prefix") String prefix);
+
+    /**
+     * 按作物 + 农事类型聚合每个地块的「上次同类农事日期」（FIX-PLT-MP-WORK-BATCH-001 #2 多选页用）。
+     *
+     * <p>只读聚合，显式 {@code tenant_id='1001'} + {@code del_flag='0'}。返回 (plotId, lastFarmDate)
+     * 行，service 端组装进 {@code FarmCropPlotVo.lastFarmDate / intervalDays}。</p>
+     *
+     * @param cropId   作物 id
+     * @param farmType 农事类型
+     * @return 每行 {@code {plotId, lastFarmDate}}（无记录的地块不在结果中，service 兜底 null）
+     */
+    @Select("""
+        SELECT plot_id AS plotId, MAX(farm_date) AS lastFarmDate
+          FROM t_plant_farm_records
+         WHERE del_flag = '0'
+           AND tenant_id = '1001'
+           AND crop_id = #{cropId}
+           AND farm_type = #{farmType}
+         GROUP BY plot_id
+        """)
+    List<Map<String, Object>> selectLastFarmDateByCropType(@Param("cropId") Long cropId, @Param("farmType") String farmType);
 }

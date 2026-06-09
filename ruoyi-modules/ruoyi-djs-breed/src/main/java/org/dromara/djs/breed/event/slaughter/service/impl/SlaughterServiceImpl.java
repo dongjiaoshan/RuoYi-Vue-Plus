@@ -34,8 +34,10 @@ import java.util.Objects;
  *
  * <h3>事务边界</h3>
  * <p>{@link #recordSlaughter} 标 {@code @Transactional}：INSERT marketing + fireEvent(SLAUGHTER)
- * + publishEvent(PigMarketingEvent) 同生共死。下游 CROSS-FLOW-001 消费者按
- * {@code @TransactionalEventListener(AFTER_COMMIT)} 在事务提交后异步处理（V1 未实现）。</p>
+ * + publishEvent(PigMarketingEvent) 同生共死。下游 CROSS-FLOW-001 消费者
+ * {@code PigMarketingEventListener} 按 {@code @TransactionalEventListener(AFTER_COMMIT)} 在事务提交后
+ * 自动 INSERT 白条（{@code t_warehouse_bar_info}，status=pending_singe，回填 ear_no/marketing_time/marketing_weight），
+ * 这是猪肉追溯链 marketing 事件时间戳的来源。</p>
  *
  * @author djs
  * @since BRD-EVENT-004

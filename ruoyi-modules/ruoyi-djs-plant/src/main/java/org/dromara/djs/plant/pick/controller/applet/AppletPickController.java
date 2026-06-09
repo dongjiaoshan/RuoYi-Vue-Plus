@@ -7,6 +7,7 @@ import lombok.RequiredArgsConstructor;
 import org.dromara.common.core.domain.R;
 import org.dromara.common.web.core.BaseController;
 import org.dromara.djs.plant.pick.domain.bo.PickSubmitBo;
+import org.dromara.djs.plant.pick.domain.vo.PickCropTaskVo;
 import org.dromara.djs.plant.pick.domain.vo.PickSummaryVo;
 import org.dromara.djs.plant.pick.domain.vo.PickTaskVo;
 import org.dromara.djs.plant.pick.service.IAppletPickService;
@@ -75,5 +76,26 @@ public class AppletPickController extends BaseController {
     @GetMapping("/todaySummary")
     public R<PickSummaryVo> todaySummary() {
         return R.ok(appletPickService.todaySummary());
+    }
+
+    /**
+     * 采收列表「作物维度」任务卡（FIX-PLT-MP-PICK-001 #3）：按片区分组 → 作物聚合。
+     *
+     * @param zoneId 片区 id（可空 = 全部片区）
+     */
+    @GetMapping("/cropTasks")
+    public R<List<PickCropTaskVo>> cropTasks(@RequestParam(required = false) Long zoneId) {
+        return R.ok(appletPickService.listCropTasks(zoneId));
+    }
+
+    /**
+     * 采收作物详情下「N 张地块卡」（FIX-PLT-MP-PICK-001 #3）：该作物（+ 计划）下逐地块卡。
+     *
+     * @param planId 计划 id（可空）
+     * @param cropId 作物 id（必填）
+     */
+    @GetMapping("/cropPlots")
+    public R<List<PickTaskVo>> cropPlots(@RequestParam(required = false) Long planId, @RequestParam Long cropId) {
+        return R.ok(appletPickService.listCropPlots(planId, cropId));
     }
 }

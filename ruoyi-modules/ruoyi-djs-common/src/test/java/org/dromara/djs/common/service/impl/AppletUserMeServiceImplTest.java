@@ -84,6 +84,41 @@ class AppletUserMeServiceImplTest {
     }
 
     @Test
+    @DisplayName("queryMe — mapper 返回的中文岗位名 postName 原样透传到 VO（FIX-MGMT-MP-ME-001）")
+    void queryMe_postNamePassThrough() {
+        UserMeVo raw = new UserMeVo();
+        raw.setUserId(9002L);
+        raw.setUsername("vet01");
+        raw.setNickname("张兽医");
+        raw.setCurrentFarmId("1001");
+        // mapper 已用 GROUP_CONCAT(post_name ... SEPARATOR '、') 拼好多岗位中文
+        raw.setPostName("场长、兽医");
+        when(appletUserQueryMapper.selectMeByUserId(eq(9002L))).thenReturn(raw);
+
+        UserMeVo me = service.queryMe(9002L);
+
+        assertNotNull(me);
+        assertEquals("场长、兽医", me.getPostName(),
+            "service 不应改写 mapper 给的中文岗位名（postName）");
+    }
+
+    @Test
+    @DisplayName("queryMe — 无岗位用户 postName 为 null 时 service 不报错、保持 null")
+    void queryMe_postNameNullSafe() {
+        UserMeVo raw = new UserMeVo();
+        raw.setUserId(9003L);
+        raw.setUsername("noPost");
+        raw.setCurrentFarmId("1001");
+        raw.setPostName(null); // GROUP_CONCAT 无匹配行返 null
+        when(appletUserQueryMapper.selectMeByUserId(eq(9003L))).thenReturn(raw);
+
+        UserMeVo me = service.queryMe(9003L);
+
+        assertNotNull(me);
+        assertNull(me.getPostName(), "无岗位用户 postName 应保持 null，由前端展示「未设置岗位」");
+    }
+
+    @Test
     @DisplayName("queryMe — mapper 返 null → service 返 null（controller 转 404）")
     void queryMe_userNotFound() {
         when(appletUserQueryMapper.selectMeByUserId(any())).thenReturn(null);

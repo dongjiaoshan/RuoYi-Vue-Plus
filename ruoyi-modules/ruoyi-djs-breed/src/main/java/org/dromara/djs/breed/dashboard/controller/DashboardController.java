@@ -4,10 +4,15 @@ import cn.dev33.satoken.annotation.SaCheckPermission;
 import lombok.RequiredArgsConstructor;
 import org.dromara.common.core.domain.R;
 import org.dromara.djs.breed.dashboard.domain.vo.Activity7dVo;
+import org.dromara.djs.breed.dashboard.domain.vo.AgeBucketVo;
 import org.dromara.djs.breed.dashboard.domain.vo.AnnualIndicatorVo;
+import org.dromara.djs.breed.dashboard.domain.vo.BreedingAnnualVo;
+import org.dromara.djs.breed.dashboard.domain.vo.DailyOverviewVo;
+import org.dromara.djs.breed.dashboard.domain.vo.FatteningTrendVo;
 import org.dromara.djs.breed.dashboard.domain.vo.InventoryVo;
 import org.dromara.djs.breed.dashboard.domain.vo.MonthActivityVo;
 import org.dromara.djs.breed.dashboard.domain.vo.MonthlyComparisonVo;
+import org.dromara.djs.breed.dashboard.domain.vo.MonthlyProductionStatVo;
 import org.dromara.djs.breed.dashboard.service.IDashboardService;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -19,6 +24,7 @@ import org.springframework.web.bind.annotation.RestController;
 import java.time.LocalDate;
 import java.time.YearMonth;
 import java.time.format.DateTimeFormatter;
+import java.util.List;
 
 /**
  * 养殖看板 Controller（BRD-DASH-001）。
@@ -79,6 +85,68 @@ public class DashboardController {
     @GetMapping("/annual")
     public R<AnnualIndicatorVo> getAnnual(@RequestParam(value = "year", required = false) Integer year) {
         return R.ok(dashboardService.getAnnualIndicator(year));
+    }
+
+    /**
+     * 养殖场日情况概览 16 格（FIX-MGMT-MP-BRD-001，原型种猪 tab）。
+     *
+     * @param date yyyy-MM-dd，缺省今日
+     */
+    @SaCheckPermission("djs:breed:dashboard:activity")
+    @GetMapping("/daily-overview")
+    public R<DailyOverviewVo> getDailyOverview(
+        @RequestParam(value = "date", required = false)
+        @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date) {
+        return R.ok(dashboardService.getDailyOverview(date));
+    }
+
+    /**
+     * 年度繁殖与配种 + 产房仔猪质量指标（FIX-MGMT-MP-BRD-001，#7.1-7.5 实时算）。
+     *
+     * @param year 缺省当前年
+     */
+    @SaCheckPermission("djs:breed:dashboard:annual")
+    @GetMapping("/breeding-annual")
+    public R<BreedingAnnualVo> getBreedingAnnual(@RequestParam(value = "year", required = false) Integer year) {
+        return R.ok(dashboardService.getBreedingAnnual(year));
+    }
+
+    /**
+     * 育肥猪日龄分布（6 桶饼图，FIX-MGMT-MP-BRD-001，#7.6）。
+     */
+    @SaCheckPermission("djs:breed:dashboard:inventory")
+    @GetMapping("/fattening-age-distribution")
+    public R<List<AgeBucketVo>> getFatteningAgeDistribution() {
+        return R.ok(dashboardService.getFatteningAgeDistribution());
+    }
+
+    /**
+     * 育肥指标趋势折线 + 实时库存 3 格（FIX-MGMT-MP-BRD-001）。
+     *
+     * @param period week / month，缺省 week
+     * @param metric market / target / onhand，缺省 market
+     */
+    @SaCheckPermission("djs:breed:dashboard:inventory")
+    @GetMapping("/fattening-trend")
+    public R<FatteningTrendVo> getFatteningTrend(
+        @RequestParam(value = "period", required = false) String period,
+        @RequestParam(value = "metric", required = false) String metric) {
+        return R.ok(dashboardService.getFatteningTrend(period, metric));
+    }
+
+    /**
+     * 当月生产统计表（率/窝均 10 行，当月 vs 上月，FIX-MGMT-MP-BRD-001，#7.8 实时算）。
+     *
+     * @param yearMonth yyyy-MM，缺省当月
+     */
+    @SaCheckPermission("djs:breed:dashboard:monthly")
+    @GetMapping("/monthly-production-stats")
+    public R<MonthlyProductionStatVo> getMonthlyProductionStats(
+        @RequestParam(value = "yearMonth", required = false) String yearMonth) {
+        YearMonth ym = yearMonth == null || yearMonth.isBlank()
+            ? null
+            : YearMonth.parse(yearMonth, DateTimeFormatter.ofPattern("yyyy-MM"));
+        return R.ok(dashboardService.getMonthlyProductionStats(ym));
     }
 
     /**

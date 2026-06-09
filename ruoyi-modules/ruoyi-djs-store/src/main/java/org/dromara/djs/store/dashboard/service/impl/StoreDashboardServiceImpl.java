@@ -4,9 +4,12 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.common.tenant.helper.TenantHelper;
 import org.dromara.djs.store.dashboard.domain.vo.StoreDashboardDailyVo;
+import org.dromara.djs.store.dashboard.domain.vo.StoreDashboardMemberStatVo;
 import org.dromara.djs.store.dashboard.domain.vo.StoreDashboardSummaryVo;
 import org.dromara.djs.store.dashboard.domain.vo.StoreGroupCountVo;
+import org.dromara.djs.store.dashboard.domain.vo.StoreMemberGrowthPointVo;
 import org.dromara.djs.store.dashboard.domain.vo.StoreProductRankItemVo;
+import org.dromara.djs.store.dashboard.domain.vo.StoreSaleCategoryVo;
 import org.dromara.djs.store.dashboard.domain.vo.StoreTrendPointVo;
 import org.dromara.djs.store.dashboard.mapper.StoreDashboardMapper;
 import org.dromara.djs.store.dashboard.mapper.StoreDashboardMapper.DailyCategoryRow;
@@ -15,7 +18,10 @@ import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 门店看板聚合实现（STR-DASH-001，纯只读聚合，不 extends DjsBaseServiceImpl）。
@@ -43,6 +49,27 @@ public class StoreDashboardServiceImpl implements IStoreDashboardService {
      */
     private static final List<String> VEG_TYPES = List.of("vegetable");
 
+    /**
+     * 4 业态 key（对齐 {@code djs_demand_product_type} 字典：white_bar=猪肉 / vegetable=蔬菜
+     * / gift_box=礼盒 / other=其他）。固定顺序，前端固定 4 行。
+     */
+    private static final String CAT_PORK = "white_bar";
+    private static final String CAT_VEG = "vegetable";
+    private static final String CAT_GIFT = "gift_box";
+    private static final String CAT_OTHER = "other";
+
+    /**
+     * 4 业态 key → 中文名（mp 硬编码中文，后端给文案）。LinkedHashMap 保固定顺序：猪肉/蔬菜/礼盒/其他。
+     */
+    private static final Map<String, String> CATEGORY_NAMES = new LinkedHashMap<>();
+
+    static {
+        CATEGORY_NAMES.put(CAT_PORK, "猪肉");
+        CATEGORY_NAMES.put(CAT_VEG, "蔬菜");
+        CATEGORY_NAMES.put(CAT_GIFT, "礼盒");
+        CATEGORY_NAMES.put(CAT_OTHER, "其他");
+    }
+
     private final StoreDashboardMapper dashboardMapper;
 
     @Override
@@ -64,6 +91,35 @@ public class StoreDashboardServiceImpl implements IStoreDashboardService {
         trend.forEach(p -> p.setAvgPrice(avg(p.getSaleAmount(), p.getOrderCount())));
         vo.setTrend10Days(trend);
 
+        // 4 业态当日销售分布（猪肉 / 蔬菜 / 礼盒 / 其他，固定 4 行）
+        vo.setSaleByCategory(buildSaleByCategory(tenantId, storeId));
+
+        // 当日 4 KPI 同比（vs 上月同期）+ 今日客单价
+        fillTodayYoy(vo, tenantId, storeId);
+
+        // 充值额无数据源 → null 占位（前端显示"—"，V2 接充值流水）
+        vo.setTodayRechargeAmount(null);
+        vo.setTodayRechargeAmountYoy(null);
+
+        return vo;
+    }
+
+    @Override
+    public List<StoreMemberGrowthPointVo> getMemberGrowth10Days(Long storeId) {
+        String tenantId = currentTenant();
+        return nzList(dashboardMapper.selectMemberGrowth10Days(tenantId, storeId));
+    }
+
+    @Override
+    public StoreDashboardMemberStatVo getMemberStat(Long storeId) {
+        String tenantId = currentTenant();
+        StoreDashboardMemberStatVo vo = new StoreDashboardMemberStatVo();
+        long todayNew = nzLong(dashboardMapper.countTodayNewMembers(tenantId, storeId));
+        vo.setTotalCount(nzLong(dashboardMapper.countTotalMembers(tenantId, storeId)));
+        vo.setTodayNew(todayNew);
+        // V1 无渠道 / 推荐人字段 → 今日发展口径等同今日新增（见 assumptions）
+        vo.setTodayDeveloped(todayNew);
+        vo.setMonthNew(nzLong(dashboardMapper.countMonthNewMembers(tenantId, storeId)));
         return vo;
     }
 
@@ -102,6 +158,109 @@ public class StoreDashboardServiceImpl implements IStoreDashboardService {
     }
 
     /**
+     * 组装 4 业态当日销售分布：mapper 出原始 belong_type 行 → 归并 4 业态 → 固定补齐 4 桶。
+     *
+     * <p>当日行（{@code selectSaleByBelongType}）出销售额 + 订单数 + 该业态当月累计；当日无单
+     * 但当月有累计的业态由 {@code selectMonthAccumByBelongType} 补累计。两份按 4 业态 key 归并，
+     * 最终固定返 4 行（无数据业态全 0）。</p>
+     *
+     * @param tenantId 租户
+     * @param storeId  门店 ID（可空）
+     * @return 固定 4 行业态分布
+     */
+    private List<StoreSaleCategoryVo> buildSaleByCategory(String tenantId, Long storeId) {
+        // 4 业态聚合桶（LinkedHashMap 固定顺序：猪肉/蔬菜/礼盒/其他）
+        Map<String, StoreSaleCategoryVo> buckets = new LinkedHashMap<>();
+        for (Map.Entry<String, String> e : CATEGORY_NAMES.entrySet()) {
+            StoreSaleCategoryVo vo = new StoreSaleCategoryVo();
+            vo.setBelongType(e.getKey());
+            vo.setCategoryName(e.getValue());
+            vo.setSaleAmount(BigDecimal.ZERO);
+            vo.setOrderCount(0);
+            vo.setMonthAccum(BigDecimal.ZERO);
+            buckets.put(e.getKey(), vo);
+        }
+
+        // 当日行：累加销售额 + 订单数（当月累计先以当日行带的为主，下方再以月累计专查覆盖）
+        for (StoreSaleCategoryVo row : nzList(dashboardMapper.selectSaleByBelongType(tenantId, storeId))) {
+            StoreSaleCategoryVo b = buckets.get(mapToCategory(row.getBelongType()));
+            b.setSaleAmount(b.getSaleAmount().add(nzBd(row.getSaleAmount())));
+            b.setOrderCount(b.getOrderCount() + nz(row.getOrderCount()));
+        }
+
+        // 当月累计：以专查为权威覆盖（当日无单但当月有累计的业态也覆盖到）
+        for (StoreSaleCategoryVo row : nzList(dashboardMapper.selectMonthAccumByBelongType(tenantId, storeId))) {
+            StoreSaleCategoryVo b = buckets.get(mapToCategory(row.getBelongType()));
+            b.setMonthAccum(b.getMonthAccum().add(nzBd(row.getMonthAccum())));
+        }
+
+        return new ArrayList<>(buckets.values());
+    }
+
+    /**
+     * 产品 belong_type → 4 业态 key 归并（对齐 {@code djs_demand_product_type}）。
+     *
+     * <p>{@code pork}/{@code white_bar} → 猪肉(white_bar)；{@code vegetable} → 蔬菜；
+     * {@code gift_box} → 礼盒；{@code dry_good}/{@code egg}/null/其他 → 其他(other)。</p>
+     *
+     * @param belongType 产品 belong_type（可空）
+     * @return 4 业态 key
+     */
+    private String mapToCategory(String belongType) {
+        if (belongType == null) {
+            return CAT_OTHER;
+        }
+        return switch (belongType) {
+            case "pork", "white_bar" -> CAT_PORK;
+            case "vegetable" -> CAT_VEG;
+            case "gift_box" -> CAT_GIFT;
+            default -> CAT_OTHER;
+        };
+    }
+
+    /**
+     * 填充当日 4 KPI 同比（营业额 / 订单数 / 客单价）+ 今日客单价。
+     *
+     * <p>同比基准 = 上月同期；上期为 0 时同比 null（前端显示"—"，避免除零误导）。
+     * 客单价 = 销售额 / 订单数（service 计算）。</p>
+     *
+     * @param vo       汇总 VO（todaySaleAmount / todayOrderCount 须已填）
+     * @param tenantId 租户
+     * @param storeId  门店 ID（可空）
+     */
+    private void fillTodayYoy(StoreDashboardSummaryVo vo, String tenantId, Long storeId) {
+        BigDecimal todayAmount = nzBd(vo.getTodaySaleAmount());
+        int todayOrders = nz(vo.getTodayOrderCount());
+        BigDecimal todayAvg = avg(todayAmount, todayOrders);
+        vo.setAvgPriceToday(todayAvg);
+
+        BigDecimal lastAmount = nzBd(dashboardMapper.sumLastMonthSameDaySaleAmount(tenantId, storeId));
+        int lastOrders = nz(dashboardMapper.countLastMonthSameDayOrders(tenantId, storeId));
+        BigDecimal lastAvg = avg(lastAmount, lastOrders);
+
+        vo.setTodaySaleAmountYoy(yoyPercent(todayAmount, lastAmount));
+        vo.setTodayOrderCountYoy(yoyPercent(BigDecimal.valueOf(todayOrders), BigDecimal.valueOf(lastOrders)));
+        vo.setAvgPriceYoy(yoyPercent(todayAvg, lastAvg));
+    }
+
+    /**
+     * 同比百分比 = (本期 − 上期) / 上期 × 100，保留 2 位；上期 ≤ 0 时返 null（前端显示"—"）。
+     *
+     * @param current 本期值（可空，按 0 处理）
+     * @param base    上期值（可空，按 0 处理）
+     * @return 同比百分比（如 12.50 表示 +12.5%；负数表示下降），上期 0 时 null
+     */
+    private BigDecimal yoyPercent(BigDecimal current, BigDecimal base) {
+        BigDecimal b = nzBd(base);
+        if (b.signum() <= 0) {
+            return null;
+        }
+        return nzBd(current).subtract(b)
+            .multiply(BigDecimal.valueOf(100))
+            .divide(b, 2, RoundingMode.HALF_UP);
+    }
+
+    /**
      * 客单价 = 销售额 / 订单数（订单数 0 时返 0，避免除零），保留 2 位小数。
      *
      * @param amount 销售额（可空）
@@ -124,6 +283,16 @@ public class StoreDashboardServiceImpl implements IStoreDashboardService {
      */
     private int nz(Integer v) {
         return v == null ? 0 : v;
+    }
+
+    /**
+     * null → 0L。
+     *
+     * @param v 可空 Long
+     * @return 非空 long（null 视作 0）
+     */
+    private long nzLong(Long v) {
+        return v == null ? 0L : v;
     }
 
     /**

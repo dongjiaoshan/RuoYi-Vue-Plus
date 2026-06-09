@@ -12,6 +12,8 @@ import org.dromara.djs.warehouse.flow.domain.bo.MatLossBo;
 import org.dromara.djs.warehouse.flow.domain.bo.MatPickBo;
 import org.dromara.djs.warehouse.flow.domain.bo.MatReturnBo;
 import org.dromara.djs.warehouse.flow.domain.query.StockFlowQuery;
+import org.dromara.djs.warehouse.flow.domain.vo.MatIssueItemVo;
+import org.dromara.djs.warehouse.flow.domain.vo.MatIssueLocationVo;
 import org.dromara.djs.warehouse.flow.domain.vo.MatTodaySummaryVo;
 import org.dromara.djs.warehouse.flow.domain.vo.StockFlowVo;
 import org.dromara.djs.warehouse.flow.service.IMatFlowService;
@@ -24,11 +26,15 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.util.List;
+
 /**
  * 物资领用 / 退回 / 损耗 mp 端 Controller（WMS-MAT-001）。
  *
- * <p>5 端点：</p>
+ * <p>7 端点：</p>
  * <ul>
+ *   <li>{@code GET  /applet/warehouse/mat/issueLocations} 业态「二级库」chip 列表（FIX-WMS-MATISSUE-001）</li>
+ *   <li>{@code GET  /applet/warehouse/mat/issueItems} 业态待领产品卡列表（库存 + 今日已领/退/损）</li>
  *   <li>{@code POST /applet/warehouse/mat/pick}   领用（同事务扣库存 + 写流水）</li>
  *   <li>{@code POST /applet/warehouse/mat/return} 退回（同事务加库存 + 写流水 + 校验今日额度）</li>
  *   <li>{@code POST /applet/warehouse/mat/loss}   损耗（同事务扣库存 + 写流水 + 校验今日额度）</li>
@@ -49,6 +55,35 @@ public class AppletMatFlowController extends BaseController {
 
     private final IMatFlowService matFlowService;
     private final IStockFlowService stockFlowService;
+
+    /**
+     * 业态「二级库」chip 列表（FIX-WMS-MATISSUE-001）。
+     *
+     * <p>原型「物资领用」页每个业态 tab 下橙底库位 chip（白条库 / 冻品库 / 蔬菜保鲜库 ...）。
+     * 由「该业态产品实际分布的库位」数据驱动；包材业态常无库位 → 返空 list（前端不渲染 chip 段）。</p>
+     *
+     * @param belongType 字典 {@code djs_belong_type}（pork / vegetable / egg / dry_good ...）
+     */
+    @SaCheckLogin
+    @GetMapping("/issueLocations")
+    public R<List<MatIssueLocationVo>> issueLocations(@RequestParam String belongType) {
+        return R.ok(matFlowService.issueLocations(belongType));
+    }
+
+    /**
+     * 业态待领产品卡列表（FIX-WMS-MATISSUE-001）。
+     *
+     * <p>某业态产品 + 当前库存 + 当前登录人今日已领 / 退 / 损（驱动卡片字段与点入表单上限）。</p>
+     *
+     * @param belongType 字典 {@code djs_belong_type}
+     * @param locationId 库位 ID（可空，chip 选中态过滤；snowflake string 防截断，service 内 parse）
+     */
+    @SaCheckLogin
+    @GetMapping("/issueItems")
+    public R<List<MatIssueItemVo>> issueItems(@RequestParam String belongType,
+                                              @RequestParam(required = false) String locationId) {
+        return R.ok(matFlowService.issueItems(belongType, locationId));
+    }
 
     @SaCheckLogin
     @PostMapping("/pick")

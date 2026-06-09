@@ -2,9 +2,12 @@ package org.dromara.djs.store.dashboard.service.impl;
 
 import org.dromara.common.tenant.helper.TenantHelper;
 import org.dromara.djs.store.dashboard.domain.vo.StoreDashboardDailyVo;
+import org.dromara.djs.store.dashboard.domain.vo.StoreDashboardMemberStatVo;
 import org.dromara.djs.store.dashboard.domain.vo.StoreDashboardSummaryVo;
 import org.dromara.djs.store.dashboard.domain.vo.StoreGroupCountVo;
+import org.dromara.djs.store.dashboard.domain.vo.StoreMemberGrowthPointVo;
 import org.dromara.djs.store.dashboard.domain.vo.StoreProductRankItemVo;
+import org.dromara.djs.store.dashboard.domain.vo.StoreSaleCategoryVo;
 import org.dromara.djs.store.dashboard.domain.vo.StoreTrendPointVo;
 import org.dromara.djs.store.dashboard.mapper.StoreDashboardMapper;
 import org.dromara.djs.store.dashboard.mapper.StoreDashboardMapper.DailyCategoryRow;
@@ -234,6 +237,167 @@ class StoreDashboardServiceImplTest {
 
         assertThat(vo.getTodaySaleAmount()).isEqualByComparingTo("99.00");
         assertThat(vo.getTodayOrderCount()).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("summary 4 业态分布 happy：6 belong_type 归并 4 桶 + 同比计算（FIX-MGMT-MP-STORE-001）")
+    void getSummary_saleByCategoryAndYoy_happy() {
+        // 基础 6 KPI（今日销售额 1200 / 今日订单 8，供同比与客单价计算）
+        when(dashboardMapper.sumTodaySaleAmount(eq("1001"), eq(null))).thenReturn(new BigDecimal("1200.00"));
+        when(dashboardMapper.sumMonthSaleAmount(eq("1001"), eq(null))).thenReturn(new BigDecimal("35000.00"));
+        when(dashboardMapper.countTodayOrders(eq("1001"), eq(null))).thenReturn(8);
+        when(dashboardMapper.countMonthOrders(eq("1001"), eq(null))).thenReturn(210);
+        when(dashboardMapper.countPendingShip(eq("1001"), eq(null))).thenReturn(0);
+        when(dashboardMapper.countPendingPurchase(eq("1001"), eq(null))).thenReturn(0);
+
+        // 当日按 belong_type 行：pork + white_bar 应归并到「猪肉」；vegetable → 蔬菜；dry_good → 其他
+        when(dashboardMapper.selectSaleByBelongType(eq("1001"), eq(null)))
+            .thenReturn(List.of(
+                cat("pork", "600.00", 3, "0"),
+                cat("white_bar", "200.00", 2, "0"),
+                cat("vegetable", "300.00", 2, "0"),
+                cat("dry_good", "100.00", 1, "0")));
+        // 当月累计专查（权威覆盖 monthAccum）：猪肉 5000 / 蔬菜 2000 / 礼盒 800（当日无单但当月有累计）
+        when(dashboardMapper.selectMonthAccumByBelongType(eq("1001"), eq(null)))
+            .thenReturn(List.of(
+                monthCat("pork", "4000.00"),
+                monthCat("white_bar", "1000.00"),
+                monthCat("vegetable", "2000.00"),
+                monthCat("gift_box", "800.00")));
+
+        // 同比基准：上月同期销售额 1000 / 订单 5
+        when(dashboardMapper.sumLastMonthSameDaySaleAmount(eq("1001"), eq(null))).thenReturn(new BigDecimal("1000.00"));
+        when(dashboardMapper.countLastMonthSameDayOrders(eq("1001"), eq(null))).thenReturn(5);
+
+        StoreDashboardSummaryVo vo = service.getSummary(null);
+
+        // 固定 4 行业态：猪肉 / 蔬菜 / 礼盒 / 其他
+        List<StoreSaleCategoryVo> cats = vo.getSaleByCategory();
+        assertThat(cats).hasSize(4);
+        assertThat(cats).extracting(StoreSaleCategoryVo::getBelongType)
+            .containsExactly("white_bar", "vegetable", "gift_box", "other");
+        assertThat(cats).extracting(StoreSaleCategoryVo::getCategoryName)
+            .containsExactly("猪肉", "蔬菜", "礼盒", "其他");
+
+        // 猪肉 = pork(600/3) + white_bar(200/2) = 800 / 5 单；当月累计 = 4000 + 1000 = 5000
+        StoreSaleCategoryVo pork = cats.get(0);
+        assertThat(pork.getSaleAmount()).isEqualByComparingTo("800.00");
+        assertThat(pork.getOrderCount()).isEqualTo(5);
+        assertThat(pork.getMonthAccum()).isEqualByComparingTo("5000.00");
+        // 蔬菜 300 / 2 单 / 累计 2000
+        assertThat(cats.get(1).getSaleAmount()).isEqualByComparingTo("300.00");
+        assertThat(cats.get(1).getMonthAccum()).isEqualByComparingTo("2000.00");
+        // 礼盒：当日无单（0/0）但当月累计 800
+        assertThat(cats.get(2).getSaleAmount()).isEqualByComparingTo("0");
+        assertThat(cats.get(2).getOrderCount()).isZero();
+        assertThat(cats.get(2).getMonthAccum()).isEqualByComparingTo("800.00");
+        // 其他：dry_good 100 / 1 单 / 累计 0
+        assertThat(cats.get(3).getSaleAmount()).isEqualByComparingTo("100.00");
+        assertThat(cats.get(3).getOrderCount()).isEqualTo(1);
+
+        // 今日客单价 = 1200 / 8 = 150.00
+        assertThat(vo.getAvgPriceToday()).isEqualByComparingTo("150.00");
+        // 销售额同比 = (1200 - 1000) / 1000 * 100 = 20.00
+        assertThat(vo.getTodaySaleAmountYoy()).isEqualByComparingTo("20.00");
+        // 订单数同比 = (8 - 5) / 5 * 100 = 60.00
+        assertThat(vo.getTodayOrderCountYoy()).isEqualByComparingTo("60.00");
+        // 客单价同比 = (150 - 200) / 200 * 100 = -25.00（上期客单价 1000/5=200）
+        assertThat(vo.getAvgPriceYoy()).isEqualByComparingTo("-25.00");
+        // 充值额 V1 无数据源 → null
+        assertThat(vo.getTodayRechargeAmount()).isNull();
+        assertThat(vo.getTodayRechargeAmountYoy()).isNull();
+    }
+
+    @Test
+    @DisplayName("summary 同比上期为 0 → yoy null（不除零误导）")
+    void getSummary_yoyZeroBase_null() {
+        when(dashboardMapper.sumTodaySaleAmount(eq("1001"), eq(null))).thenReturn(new BigDecimal("500.00"));
+        when(dashboardMapper.sumMonthSaleAmount(eq("1001"), eq(null))).thenReturn(BigDecimal.ZERO);
+        when(dashboardMapper.countTodayOrders(eq("1001"), eq(null))).thenReturn(4);
+        when(dashboardMapper.countMonthOrders(eq("1001"), eq(null))).thenReturn(4);
+        when(dashboardMapper.countPendingShip(eq("1001"), eq(null))).thenReturn(0);
+        when(dashboardMapper.countPendingPurchase(eq("1001"), eq(null))).thenReturn(0);
+        // 上期全无销售 → base = 0
+        when(dashboardMapper.sumLastMonthSameDaySaleAmount(eq("1001"), eq(null))).thenReturn(BigDecimal.ZERO);
+        when(dashboardMapper.countLastMonthSameDayOrders(eq("1001"), eq(null))).thenReturn(0);
+
+        StoreDashboardSummaryVo vo = service.getSummary(null);
+
+        assertThat(vo.getTodaySaleAmountYoy()).isNull();
+        assertThat(vo.getTodayOrderCountYoy()).isNull();
+        assertThat(vo.getAvgPriceYoy()).isNull();
+        // 业态分布仍固定 4 行（无销售全 0）
+        assertThat(vo.getSaleByCategory()).hasSize(4);
+        assertThat(vo.getSaleByCategory().get(0).getSaleAmount()).isEqualByComparingTo("0");
+        // 今日客单价 = 500 / 4 = 125.00（仍正常算）
+        assertThat(vo.getAvgPriceToday()).isEqualByComparingTo("125.00");
+    }
+
+    @Test
+    @DisplayName("会员 4 格统计 happy：总数 / 今日新增 / 今日发展(=今日新增) / 当月新增")
+    void getMemberStat_happy() {
+        when(dashboardMapper.countTotalMembers(eq("1001"), eq(null))).thenReturn(120L);
+        when(dashboardMapper.countTodayNewMembers(eq("1001"), eq(null))).thenReturn(3L);
+        when(dashboardMapper.countMonthNewMembers(eq("1001"), eq(null))).thenReturn(18L);
+
+        StoreDashboardMemberStatVo vo = service.getMemberStat(null);
+
+        assertThat(vo.getTotalCount()).isEqualTo(120L);
+        assertThat(vo.getTodayNew()).isEqualTo(3L);
+        // V1 无渠道字段：今日发展 = 今日新增
+        assertThat(vo.getTodayDeveloped()).isEqualTo(3L);
+        assertThat(vo.getMonthNew()).isEqualTo(18L);
+    }
+
+    @Test
+    @DisplayName("会员 4 格统计 全空兜底：mapper 返 null → 4 格全 0，不抛 NPE")
+    void getMemberStat_allNull_fallbackZero() {
+        when(dashboardMapper.countTotalMembers(eq("1001"), eq(null))).thenReturn(null);
+        when(dashboardMapper.countTodayNewMembers(eq("1001"), eq(null))).thenReturn(null);
+        when(dashboardMapper.countMonthNewMembers(eq("1001"), eq(null))).thenReturn(null);
+
+        StoreDashboardMemberStatVo vo = service.getMemberStat(null);
+
+        assertThat(vo.getTotalCount()).isZero();
+        assertThat(vo.getTodayNew()).isZero();
+        assertThat(vo.getTodayDeveloped()).isZero();
+        assertThat(vo.getMonthNew()).isZero();
+    }
+
+    @Test
+    @DisplayName("近 10 日会员增长 happy：透传 mapper 行；null → 空列表")
+    void getMemberGrowth_happyAndNull() {
+        StoreMemberGrowthPointVo p1 = new StoreMemberGrowthPointVo();
+        p1.setDate("2026-06-05");
+        p1.setCount(2);
+        when(dashboardMapper.selectMemberGrowth10Days(eq("1001"), eq(null))).thenReturn(List.of(p1));
+        assertThat(service.getMemberGrowth10Days(null)).hasSize(1);
+        assertThat(service.getMemberGrowth10Days(null).get(0).getCount()).isEqualTo(2);
+
+        when(dashboardMapper.selectMemberGrowth10Days(eq("1001"), eq(null))).thenReturn(null);
+        assertThat(service.getMemberGrowth10Days(null)).isEmpty();
+    }
+
+    /**
+     * 构造当日业态行（belong_type / 当日销售额 / 当日订单数 / 该行带的当月累计）。
+     */
+    private static StoreSaleCategoryVo cat(String belongType, String amount, int orders, String monthAccum) {
+        StoreSaleCategoryVo vo = new StoreSaleCategoryVo();
+        vo.setBelongType(belongType);
+        vo.setSaleAmount(new BigDecimal(amount));
+        vo.setOrderCount(orders);
+        vo.setMonthAccum(new BigDecimal(monthAccum));
+        return vo;
+    }
+
+    /**
+     * 构造当月累计专查行（belong_type / 当月累计销售额）。
+     */
+    private static StoreSaleCategoryVo monthCat(String belongType, String monthAccum) {
+        StoreSaleCategoryVo vo = new StoreSaleCategoryVo();
+        vo.setBelongType(belongType);
+        vo.setMonthAccum(new BigDecimal(monthAccum));
+        return vo;
     }
 
     @Test

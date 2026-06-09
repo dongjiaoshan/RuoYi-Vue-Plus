@@ -4,7 +4,10 @@ import org.dromara.djs.breed.dashboard.domain.AnnualIndicator;
 import org.dromara.djs.breed.dashboard.domain.MonthlyProduction;
 import org.dromara.djs.breed.dashboard.domain.SowRecord;
 import org.dromara.djs.breed.dashboard.domain.vo.Activity7dVo;
+import org.dromara.djs.breed.dashboard.domain.vo.AgeBucketVo;
 import org.dromara.djs.breed.dashboard.domain.vo.AnnualIndicatorVo;
+import org.dromara.djs.breed.dashboard.domain.vo.BreedingAnnualVo;
+import org.dromara.djs.breed.dashboard.domain.vo.DailyOverviewVo;
 import org.dromara.djs.breed.dashboard.domain.vo.InventoryVo;
 import org.dromara.djs.breed.dashboard.domain.vo.MonthlyComparisonVo;
 import org.dromara.djs.breed.dashboard.mapper.AggregateQueryMapper;
@@ -299,8 +302,128 @@ class DashboardServiceImplTest {
     }
 
     // ============================================================
+    //  FIX-MGMT-MP-BRD-001 新增端点
+    // ============================================================
+
+    @Test
+    @DisplayName("getDailyOverview: 16 格 metric 中文 + 当日值映射（含用药猪只数第 16 格）")
+    void testGetDailyOverview() {
+        // count 类（farrow/breeding/weaning/heat/pigletno/growth/marketing）默认 0，挑几个非 0 验证映射
+        when(aggregateQueryMapper.countEventInDay(eq("t_farm_pig_farrow"), eq("farrow_date"), anyString(), any(), any())).thenReturn(2);
+        when(aggregateQueryMapper.countEventInDay(eq("t_farm_pig_breeding"), eq("breeding_date"), anyString(), any(), any())).thenReturn(3);
+        when(aggregateQueryMapper.countEventInDay(eq("t_farm_pig_growth"), eq("measure_date"), anyString(), any(), any())).thenReturn(7);
+        when(aggregateQueryMapper.sumEventInDay(eq("t_farm_pig_weaning"), eq("weaning_date"), eq("weaned_count"), anyString(), any(), any())).thenReturn(11);
+        when(aggregateQueryMapper.countStatusEventInDay(anyString(), eq("CASTRATE"), any(), any())).thenReturn(4);
+        when(aggregateQueryMapper.countMedicatedPigInDay(anyString(), any(), any())).thenReturn(9);
+
+        DailyOverviewVo vo = service.getDailyOverview(LocalDate.of(2026, 6, 9));
+
+        assertThat(vo.getDate()).isEqualTo("2026-06-09");
+        assertThat(vo.getCells()).hasSize(16);
+        // 第 1/2 格分娩/配种
+        assertThat(vo.getCells().get(0).getMetric()).isEqualTo("分娩母猪数");
+        assertThat(vo.getCells().get(0).getValue()).isEqualTo(2);
+        assertThat(vo.getCells().get(1).getValue()).isEqualTo(3);
+        // 生长记录数 / 阉割猪只数（第 12/13 格）
+        assertThat(vo.getCells().get(11).getMetric()).isEqualTo("生长记录数");
+        assertThat(vo.getCells().get(11).getValue()).isEqualTo(7);
+        assertThat(vo.getCells().get(12).getMetric()).isEqualTo("阉割猪只数");
+        assertThat(vo.getCells().get(12).getValue()).isEqualTo(4);
+        // 断奶仔猪数（第 14 格）
+        assertThat(vo.getCells().get(13).getMetric()).isEqualTo("断奶仔猪数");
+        assertThat(vo.getCells().get(13).getValue()).isEqualTo(11);
+        // 第 16 格 = 用药猪只数（#7.7）
+        assertThat(vo.getCells().get(15).getMetric()).isEqualTo("用药猪只数");
+        assertThat(vo.getCells().get(15).getValue()).isEqualTo(9);
+    }
+
+    @Test
+    @DisplayName("getBreedingAnnual: 配种率/分娩率/产房损失率/窝均 公式（#7.1-7.5）")
+    void testGetBreedingAnnual() {
+        // 配种 50 次 / 分娩 40 窝 / 活仔 480 / 断奶 35 窝 / 断奶 420
+        when(aggregateQueryMapper.countBreedingInRange(anyString(), any(), any())).thenReturn(50);
+        when(aggregateQueryMapper.countFarrowLitterInRange(anyString(), any(), any())).thenReturn(40);
+        when(aggregateQueryMapper.sumLiveBornInDateTimeRange(anyString(), any(), any())).thenReturn(480);
+        when(aggregateQueryMapper.countWeaningLitterInRange(anyString(), any(), any())).thenReturn(35);
+        when(aggregateQueryMapper.sumWeanedInDateTimeRange(anyString(), any(), any())).thenReturn(420);
+        when(aggregateQueryMapper.avgWeanMateIntervalDays(anyString(), any(), any())).thenReturn(new BigDecimal("6.3"));
+        when(aggregateQueryMapper.countAliveSows(anyString())).thenReturn(60);
+
+        BreedingAnnualVo vo = service.getBreedingAnnual(2026);
+
+        assertThat(vo.getYear()).isEqualTo(2026);
+        // 配种率 = 40/50 = 0.8000
+        assertThat(vo.getMateRate()).isEqualByComparingTo(new BigDecimal("0.8000"));
+        assertThat(vo.getFarrowRate()).isEqualByComparingTo(new BigDecimal("0.8000"));
+        // 断配间隔 6.3 天
+        assertThat(vo.getWeanMateInterval()).isEqualByComparingTo(new BigDecimal("6.3"));
+        // 活仔总数 480
+        assertThat(vo.getTotalLiveBorn()).isEqualByComparingTo(new BigDecimal("480"));
+        // 窝均活仔 = 480/40 = 12.00
+        assertThat(vo.getAvgLiveBornPerLitter()).isEqualByComparingTo(new BigDecimal("12.00"));
+        // 窝均断奶 = 420/35 = 12.00
+        assertThat(vo.getAvgWeanedPerLitter()).isEqualByComparingTo(new BigDecimal("12.00"));
+        // 产房损失率 = (480-420)/480 = 0.1250
+        assertThat(vo.getFarrowingLossRate()).isEqualByComparingTo(new BigDecimal("0.1250"));
+        // NPD 非负
+        assertThat(vo.getAvgNonProductiveDays()).isGreaterThanOrEqualTo(BigDecimal.ZERO);
+    }
+
+    @Test
+    @DisplayName("getBreedingAnnual: 配种次数 0 → 比率全 0（除零兜底）")
+    void testGetBreedingAnnualZeroBreeding() {
+        when(aggregateQueryMapper.countBreedingInRange(anyString(), any(), any())).thenReturn(0);
+        when(aggregateQueryMapper.countFarrowLitterInRange(anyString(), any(), any())).thenReturn(0);
+        when(aggregateQueryMapper.sumLiveBornInDateTimeRange(anyString(), any(), any())).thenReturn(0);
+        when(aggregateQueryMapper.countWeaningLitterInRange(anyString(), any(), any())).thenReturn(0);
+        when(aggregateQueryMapper.sumWeanedInDateTimeRange(anyString(), any(), any())).thenReturn(0);
+        when(aggregateQueryMapper.avgWeanMateIntervalDays(anyString(), any(), any())).thenReturn(null);
+        when(aggregateQueryMapper.countAliveSows(anyString())).thenReturn(0);
+
+        BreedingAnnualVo vo = service.getBreedingAnnual(2026);
+
+        assertThat(vo.getMateRate()).isEqualByComparingTo(BigDecimal.ZERO);
+        assertThat(vo.getFarrowRate()).isEqualByComparingTo(BigDecimal.ZERO);
+        assertThat(vo.getWeanMateInterval()).isEqualByComparingTo(BigDecimal.ZERO);
+        assertThat(vo.getFarrowingLossRate()).isEqualByComparingTo(BigDecimal.ZERO);
+        assertThat(vo.getAvgNonProductiveDays()).isEqualByComparingTo(BigDecimal.ZERO);
+    }
+
+    @Test
+    @DisplayName("getFatteningAgeDistribution: 6 桶按 #7.6 边界正确归桶")
+    void testGetFatteningAgeDistribution() {
+        when(aggregateQueryMapper.selectFatteningAges(anyString())).thenReturn(List.of(
+            ageRow(10),   // 保育期 <43
+            ageRow(42),   // 保育期 <43
+            ageRow(43),   // 43-70
+            ageRow(70),   // 43-70
+            ageRow(135),  // 71-135
+            ageRow(210),  // 136-210
+            ageRow(245),  // 211-245
+            ageRow(400)   // 245+
+        ));
+
+        List<AgeBucketVo> list = service.getFatteningAgeDistribution();
+
+        assertThat(list).hasSize(6);
+        assertThat(list.get(0).getLabel()).isEqualTo("保育期(<43天)");
+        assertThat(list.get(0).getCount()).isEqualTo(2);  // 10,42
+        assertThat(list.get(1).getCount()).isEqualTo(2);  // 43,70
+        assertThat(list.get(2).getCount()).isEqualTo(1);  // 135
+        assertThat(list.get(3).getCount()).isEqualTo(1);  // 210
+        assertThat(list.get(4).getCount()).isEqualTo(1);  // 245
+        assertThat(list.get(5).getCount()).isEqualTo(1);  // 400
+    }
+
+    // ============================================================
     //  test helpers
     // ============================================================
+
+    private static Map<String, Object> ageRow(int age) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("age", age);
+        return m;
+    }
 
     private static Map<String, Object> mapOf(String k1, Object v1, String k2, Object v2) {
         Map<String, Object> m = new LinkedHashMap<>();

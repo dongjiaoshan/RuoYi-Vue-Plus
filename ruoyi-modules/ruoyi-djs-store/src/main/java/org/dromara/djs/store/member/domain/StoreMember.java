@@ -42,7 +42,7 @@ public class StoreMember extends TenantEntity {
     private Long id;
 
     /**
-     * 会员编号（{@link org.dromara.djs.common.encoder.BizCodeType#MEMBER_NO} 生成，10001 段）。
+     * 会员编号（{@link org.dromara.djs.common.encoder.BizCodeType#MEMBER_NO} 生成，格式 {@code 1{seq4}}，例 10001）。
      */
     private String memberNo;
 

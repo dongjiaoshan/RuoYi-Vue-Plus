@@ -6,6 +6,7 @@ import org.dromara.common.mybatis.core.mapper.BaseMapperPlus;
 import org.dromara.djs.plant.plan.domain.PlantDetails;
 import org.dromara.djs.plant.plan.domain.vo.PlantDetailsVo;
 import org.dromara.djs.plant.plan.domain.vo.PlantMonthTaskVo;
+import org.dromara.djs.plant.plan.domain.vo.SeedSummaryVo;
 
 import java.util.List;
 
@@ -45,6 +46,7 @@ public interface PlantDetailsMapper extends BaseMapperPlus<PlantDetails, PlantDe
             c.crop_image_preview AS cropImg,
             d.plot_area     AS area,
             d.plant_month   AS plantMonth,
+            d.begin_actualdate AS beginActualdate,
             d.plant_period  AS plantPeriod,
             p.plant_date    AS planDate,
             d.expected_yield AS expectedYield,
@@ -70,4 +72,35 @@ public interface PlantDetailsMapper extends BaseMapperPlus<PlantDetails, PlantDe
          ORDER BY z.zone_name ASC, pl.plot_code ASC, d.id ASC
         """)
     List<PlantMonthTaskVo> selectMonthTasks(@Param("month") Integer month);
+
+    /**
+     * mp 播种首页 3 KPI 聚合（FIX-PLT-MP-SEED-001 #6.5）：当月完成率 / 当日种植品种数 / 当日种植地块数。
+     *
+     * <p>口径：</p>
+     * <ul>
+     *   <li>{@code monthCompletionRate} = ROUND(当月已开工明细数 / 当月明细总数 × 100)，
+     *       当月无明细时 COALESCE 兜底返 0（不除零）；"当月" = {@code plant_month=#{month}}。</li>
+     *   <li>{@code todayCropKindCount} = {@code begin_actualdate=#{today}} 明细 distinct crop_id 数。</li>
+     *   <li>{@code todayPlotCount} = {@code begin_actualdate=#{today}} 明细 distinct plot_id 数。</li>
+     * </ul>
+     *
+     * <p>只读聚合，显式 {@code tenant_id='1001'} + {@code del_flag='0'}（对齐 {@link #selectMonthTasks}）。</p>
+     *
+     * @param month 当月 1-12
+     * @param today 今日（yyyy-MM-dd）
+     * @return 聚合 VO（永不返 null 行，各字段 COALESCE 兜底 0）
+     */
+    @Select("""
+        SELECT
+            COALESCE(ROUND(
+                SUM(CASE WHEN plant_month = #{month} AND begin_actualdate IS NOT NULL THEN 1 ELSE 0 END)
+                / NULLIF(SUM(CASE WHEN plant_month = #{month} THEN 1 ELSE 0 END), 0) * 100
+            ), 0) AS monthCompletionRate,
+            COALESCE(COUNT(DISTINCT CASE WHEN begin_actualdate = #{today} THEN crop_id END), 0) AS todayCropKindCount,
+            COALESCE(COUNT(DISTINCT CASE WHEN begin_actualdate = #{today} THEN plot_id END), 0) AS todayPlotCount
+          FROM t_plant_plant_details
+         WHERE del_flag = '0'
+           AND tenant_id = '1001'
+        """)
+    SeedSummaryVo selectSeedSummary(@Param("month") Integer month, @Param("today") java.time.LocalDate today);
 }

@@ -66,6 +66,7 @@ public class AppletUserMeController {
      *   "deptName": "东角山农场",
      *   "currentFarmId": "1001",
      *   "currentFarmName": "东角山主农场",
+     *   "postName": "场长、兽医",
      *   "roles": ["breed_admin", "store_clerk"]
      * }
      * </pre>

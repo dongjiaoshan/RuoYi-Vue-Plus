@@ -3,7 +3,11 @@ package org.dromara.djs.warehouse.flow.service;
 import org.dromara.djs.warehouse.flow.domain.bo.MatLossBo;
 import org.dromara.djs.warehouse.flow.domain.bo.MatPickBo;
 import org.dromara.djs.warehouse.flow.domain.bo.MatReturnBo;
+import org.dromara.djs.warehouse.flow.domain.vo.MatIssueItemVo;
+import org.dromara.djs.warehouse.flow.domain.vo.MatIssueLocationVo;
 import org.dromara.djs.warehouse.flow.domain.vo.MatTodaySummaryVo;
+
+import java.util.List;
 
 /**
  * 物资领用 / 退回 / 损耗 Service（WMS-MAT-001）。
@@ -58,5 +62,27 @@ public interface IMatFlowService {
      * @return 三项 SUM
      */
     MatTodaySummaryVo todaySummary(String matType, String productId);
+
+    /**
+     * mp 物资领用「二级库」chip 列表（FIX-WMS-MATISSUE-001）。
+     *
+     * <p>某业态（belongType）下产品实际分布的库位 —— 原型每个业态 tab 下橙底库位 chip。
+     * 包材业态常无库位关联 → 返空 list，前端不渲染 chip 段。</p>
+     *
+     * @param belongType 字典 {@code djs_belong_type}（pork / vegetable / egg / dry_good ...）
+     * @return 库位 chip 列表（按库位名排序）
+     */
+    List<MatIssueLocationVo> issueLocations(String belongType);
+
+    /**
+     * mp 物资领用「待领产品卡」列表（FIX-WMS-MATISSUE-001）。
+     *
+     * <p>某业态产品 + 当前库存 + 当前登录人今日已领 / 退 / 损（驱动卡片与点入表单上限）。</p>
+     *
+     * @param belongType 字典 {@code djs_belong_type}
+     * @param locationId 库位 ID（可空，chip 选中态过滤）
+     * @return 待领产品卡列表（库存升序）
+     */
+    List<MatIssueItemVo> issueItems(String belongType, String locationId);
 
 }

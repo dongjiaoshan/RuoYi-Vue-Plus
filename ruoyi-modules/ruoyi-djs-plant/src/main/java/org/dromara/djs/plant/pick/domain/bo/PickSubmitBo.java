@@ -1,6 +1,5 @@
 package org.dromara.djs.plant.pick.domain.bo;
 
-import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
 import lombok.Data;
@@ -28,9 +27,12 @@ public class PickSubmitBo {
     @NotNull(message = "采摘明细 id 必填")
     private Long detailId;
 
-    /** 本次采收重量 kg（必填 > 0，累加进 actual_yield）。 */
-    @NotNull(message = "采收重量必填")
-    @DecimalMin(value = "0.001", message = "采收重量必须大于 0")
+    /**
+     * 本次采收重量 kg（累加进 actual_yield）。
+     *
+     * <p>FIX-PLT-MP-PICK-001 放宽：{@code finish=true}（完成采摘）时必填且 > 0，service 层校验；
+     * {@code finish=false}（开始/继续采，begin 态）可空，空时仅流转状态、不累加。</p>
+     */
     private BigDecimal weight;
 
     /** 采收日期（必填）。 */
@@ -39,6 +41,9 @@ public class PickSubmitBo {
 
     /** 是否完成采收（true 置 completed + end_actualdate；默认 false 继续采）。 */
     private Boolean finish = false;
+
+    /** 采摘人员 sys_user.user_id（可空；落 t_plant_farm_records.operator_user_id）。 */
+    private Long pickerUserId;
 
     /** 凭证图 OSS id（可选；bizType=plant_farm_proof）。 */
     private List<Long> proofOssIds;

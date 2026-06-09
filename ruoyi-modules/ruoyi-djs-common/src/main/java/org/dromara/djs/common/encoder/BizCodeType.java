@@ -82,8 +82,8 @@ public enum BizCodeType {
     STOCK_FLOW_NO,
 
     /**
-     * 人员编号（终生递增），格式 {@code M{seq4}}。例：{@code M0001}。
-     * 农场员工流动有限，4 位序号上限 9999 足够 V1。
+     * 会员编号（终生递增），格式 {@code 1{seq4}}。例：{@code 10001}。
+     * 门店会员规模有限，4 位序号（10001-19999 段）足够 V1。
      */
     MEMBER_NO,
 

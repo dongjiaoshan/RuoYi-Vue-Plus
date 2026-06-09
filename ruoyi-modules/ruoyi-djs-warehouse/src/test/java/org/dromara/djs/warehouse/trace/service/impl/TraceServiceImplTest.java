@@ -5,6 +5,8 @@ import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.dromara.djs.common.encoder.BizCodeType;
 import org.dromara.djs.common.encoder.IBizCodeGenerator;
+import org.dromara.djs.warehouse.cross.domain.BarInfo;
+import org.dromara.djs.warehouse.cross.mapper.BarInfoMapper;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
 import org.dromara.djs.warehouse.trace.domain.TraceCode;
@@ -25,6 +27,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 
+import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -78,6 +81,9 @@ class TraceServiceImplTest {
     private ProductInfoMapper productInfoMapper;
 
     @Mock
+    private BarInfoMapper barInfoMapper;
+
+    @Mock
     private IBizCodeGenerator bizCodeGenerator;
 
     private TraceServiceImpl service;
@@ -90,13 +96,14 @@ class TraceServiceImplTest {
         TableInfoHelper.initTableInfo(assistant, TraceCode.class);
         TableInfoHelper.initTableInfo(assistant, TraceEvent.class);
         TableInfoHelper.initTableInfo(assistant, ProductInfo.class);
+        TableInfoHelper.initTableInfo(assistant, BarInfo.class);
     }
 
     @BeforeEach
     void setUp() {
-        // spy 以便 stub protected insertTraceCode / insertTraceEvent（避开真实 baseMapper.insert）
+        // spy 以便 stub protected insertTraceCode / insertTraceEvent / findBarByEarNo（避开真实 baseMapper.insert）
         service = spy(new TraceServiceImpl(
-            traceCodeMapper, traceEventMapper, productInfoMapper, bizCodeGenerator));
+            traceCodeMapper, traceEventMapper, productInfoMapper, barInfoMapper, bizCodeGenerator));
     }
 
     private ProductInfo product(Long id, String belongType) {
@@ -113,6 +120,8 @@ class TraceServiceImplTest {
         when(productInfoMapper.selectById(1001L)).thenReturn(product(1001L, "pork"));
         when(bizCodeGenerator.generate(eq(BizCodeType.TRACE_CODE), anyMap())).thenReturn("T20260615PG000001");
         doNothing().when(service).insertTraceCode(any(TraceCode.class));
+        // 本测专注 trace_code 装配；耳号事件回填另有专测 → 此处 stub bar 反查为空，跳过回填
+        doReturn(null).when(service).findBarByEarNo("01A12605001");
 
         String code = service.genCode(1001L, "01A12605001", null);
 
@@ -228,5 +237,110 @@ class TraceServiceImplTest {
         verify(service, times(1)).insertTraceEvent(captor.capture());
         assertThat(captor.getValue().getProduceCode()).isEqualTo("T20260615PG000001");
         assertThat(captor.getValue().getTraceContent()).isEqualTo(TraceContentConst.SINGE);
+    }
+
+    // ============================ 耳号事件回填（核心 bug 修复） ============================
+
+    private BarInfo barWithLifecycle(String earNo) {
+        BarInfo bar = new BarInfo();
+        bar.setId(9001L);
+        bar.setEarNo(earNo);
+        bar.setMarketingTime(date(2026, 6, 1, 8, 0));   // 出栏
+        bar.setInTime(date(2026, 6, 2, 9, 0));          // 燎毛入库
+        bar.setOutTime(date(2026, 6, 3, 10, 0));        // 分割出库 = 排酸完成
+        return bar;
+    }
+
+    private static java.util.Date date(int y, int mo, int d, int h, int mi) {
+        return java.util.Date.from(java.time.LocalDateTime.of(y, mo, d, h, mi)
+            .atZone(java.time.ZoneId.systemDefault()).toInstant());
+    }
+
+    @Test
+    @DisplayName("genCode pork：出生时按耳号回填 4 上游事件（marketing/singe/slaughter/acid，真实时间戳）")
+    void genCode_pork_backfillsFourEarNoEvents() {
+        when(productInfoMapper.selectById(1001L)).thenReturn(product(1001L, "pork"));
+        when(bizCodeGenerator.generate(eq(BizCodeType.TRACE_CODE), anyMap())).thenReturn("T20260615PG000001");
+        doNothing().when(service).insertTraceCode(any(TraceCode.class));
+        doNothing().when(service).insertTraceEvent(any(TraceEvent.class));
+        // bar_info 沉淀全生命周期时间戳；尚无任何事件 → 4 个全回填
+        doReturn(barWithLifecycle("01A12605001")).when(service).findBarByEarNo("01A12605001");
+        doReturn(java.util.Collections.<String>emptySet())
+            .when(service).findExistingContents(eq("T20260615PG000001"), any());
+
+        service.genCode(1001L, "01A12605001", null);
+
+        ArgumentCaptor<TraceEvent> captor = ArgumentCaptor.forClass(TraceEvent.class);
+        verify(service, times(4)).insertTraceEvent(captor.capture());
+        List<TraceEvent> events = captor.getAllValues();
+        // 4 事件 trace_content 齐全
+        assertThat(events).extracting(TraceEvent::getTraceContent)
+            .containsExactly(TraceContentConst.MARKETING, TraceContentConst.SINGE,
+                TraceContentConst.SLAUGHTER, TraceContentConst.ACID);
+        // 全部挂在新生成的 pork 码上
+        assertThat(events).allMatch(e -> "T20260615PG000001".equals(e.getProduceCode()));
+        // 用 bar_info 真实时间戳（非 now）：marketing=6/1，singe=6/2，slaughter/acid=6/3
+        assertThat(events.get(0).getTraceTime()).isEqualTo(java.time.LocalDateTime.of(2026, 6, 1, 8, 0));
+        assertThat(events.get(1).getTraceTime()).isEqualTo(java.time.LocalDateTime.of(2026, 6, 2, 9, 0));
+        assertThat(events.get(2).getTraceTime()).isEqualTo(java.time.LocalDateTime.of(2026, 6, 3, 10, 0));
+        assertThat(events.get(3).getTraceTime()).isEqualTo(java.time.LocalDateTime.of(2026, 6, 3, 10, 0));
+    }
+
+    @Test
+    @DisplayName("回填幂等：已存在的事件不重复写（仅补缺失的）")
+    void backfill_idempotent_skipsExisting() {
+        doNothing().when(service).insertTraceEvent(any(TraceEvent.class));
+        doReturn(barWithLifecycle("01A12605001")).when(service).findBarByEarNo("01A12605001");
+        // marketing + singe 已存在 → 只补 slaughter + acid
+        doReturn(java.util.Set.of(TraceContentConst.MARKETING, TraceContentConst.SINGE))
+            .when(service).findExistingContents(eq("T20260615PG000001"), any());
+
+        service.backfillEarNoEvents("T20260615PG000001", "01A12605001");
+
+        ArgumentCaptor<TraceEvent> captor = ArgumentCaptor.forClass(TraceEvent.class);
+        verify(service, times(2)).insertTraceEvent(captor.capture());
+        assertThat(captor.getAllValues()).extracting(TraceEvent::getTraceContent)
+            .containsExactly(TraceContentConst.SLAUGHTER, TraceContentConst.ACID);
+    }
+
+    @Test
+    @DisplayName("回填容错：某阶段时间戳为 NULL（工序未走到）→ 该事件跳过，不造假数据")
+    void backfill_nullTimestamp_skipsThatEvent() {
+        doNothing().when(service).insertTraceEvent(any(TraceEvent.class));
+        BarInfo bar = barWithLifecycle("01A12605001");
+        bar.setOutTime(null); // 尚未分割 → slaughter/acid 无时间戳
+        doReturn(bar).when(service).findBarByEarNo("01A12605001");
+        doReturn(java.util.Collections.<String>emptySet())
+            .when(service).findExistingContents(eq("T20260615PG000001"), any());
+
+        service.backfillEarNoEvents("T20260615PG000001", "01A12605001");
+
+        ArgumentCaptor<TraceEvent> captor = ArgumentCaptor.forClass(TraceEvent.class);
+        verify(service, times(2)).insertTraceEvent(captor.capture());
+        assertThat(captor.getAllValues()).extracting(TraceEvent::getTraceContent)
+            .containsExactly(TraceContentConst.MARKETING, TraceContentConst.SINGE);
+    }
+
+    @Test
+    @DisplayName("回填容错：bar_info 查不到（外购无耳号）→ 不写、不抛")
+    void backfill_noBar_skipsSilently() {
+        doReturn(null).when(service).findBarByEarNo("NOSUCH");
+
+        assertThatCode(() -> service.backfillEarNoEvents("T20260615PG000001", "NOSUCH"))
+            .doesNotThrowAnyException();
+        verify(service, never()).insertTraceEvent(any(TraceEvent.class));
+    }
+
+    @Test
+    @DisplayName("回填容错：insertTraceEvent 抛异常 → swallow，不拖垮打包主事务")
+    void backfill_insertThrows_swallowsException() {
+        doReturn(barWithLifecycle("01A12605001")).when(service).findBarByEarNo("01A12605001");
+        doReturn(java.util.Collections.<String>emptySet())
+            .when(service).findExistingContents(eq("T20260615PG000001"), any());
+        org.mockito.Mockito.doThrow(new RuntimeException("db down"))
+            .when(service).insertTraceEvent(any(TraceEvent.class));
+
+        assertThatCode(() -> service.backfillEarNoEvents("T20260615PG000001", "01A12605001"))
+            .doesNotThrowAnyException();
     }
 }
