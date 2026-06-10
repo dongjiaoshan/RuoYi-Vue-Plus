@@ -40,13 +40,13 @@ public class PigIntroBatchBo extends PigIntroBo {
     /**
      * 起始耳号（外部引种"用户可改"，601-5 / ADR-0011 §2.6）。
      *
-     * <p>空 → 后端按 14 位格式（品系1+品种2+公母1+出生yyMMdd6+序号4）当天级 max+1 生成，整批连号；
-     * 非空 → 校 14 位纯数字格式 + 提交时逐头 {@code existsEarNo} 探测 UNIQUE，以用户首号为起点连号。</p>
+     * <p>空 → 后端按带分隔符格式（品系1-品种2-公母1-出生yyMMdd6-序号4）当天级 max+1 生成，整批连号；
+     * 非空 → 校带分隔符格式 + 提交时逐头 {@code existsEarNo} 探测 UNIQUE，以用户首号为起点连号。</p>
      *
-     * <p>regex 用 {@code ^(\d{14})?$} —— **允许留空**（留空走上面"后端生成"分支，对齐 601-5 设计 + allocateEarNos
-     * isBlank 分支）；非空才校 14 位纯数字。早先 {@code ^\d{14}$} 会把空串也判违规，导致"留空提交/预填未回填"时
-     * 直接 422，与设计矛盾。</p>
+     * <p>regex 用 {@code ^(\d-\d{2}-\d-\d{6}-\d{4})?$} —— **允许留空**（留空走上面"后端生成"分支，对齐 601-5
+     * 设计 + allocateEarNos isBlank 分支）；非空才校 {@code 1-01-1-260609-0001} 格式。注意 @Pattern 在入参绑定阶段
+     * 先触发，与 service 端 {@code allocateFromUserStart} 的 matches 校验必须同口径，否则带 {@code -} 值先在此被拦 422。</p>
      */
-    @Pattern(regexp = "^(\\d{14})?$", message = "intro.start_ear_no.pattern")
+    @Pattern(regexp = "^(\\d-\\d{2}-\\d-\\d{6}-\\d{4})?$", message = "intro.start_ear_no.pattern")
     private String startEarNo;
 }

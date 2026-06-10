@@ -66,7 +66,7 @@ public class PigCutRecordVo implements Serializable {
     private Long operatorId;
 
     @ExcelProperty(value = "操作人")
-    @Translation(type = TransConstant.USER_ID_TO_NAME, mapper = "operatorId")
+    @Translation(type = TransConstant.USER_ID_TO_NICKNAME, mapper = "operatorId")
     private String operatorName;
 
     private Long locationId;

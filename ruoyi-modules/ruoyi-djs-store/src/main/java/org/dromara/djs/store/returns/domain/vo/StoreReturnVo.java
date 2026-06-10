@@ -19,7 +19,7 @@ import java.time.LocalDateTime;
  * 门店退回管理 VO（admin 列表 / 详情 / 导出共用，STR-RETURN-001）。
  *
  * <p>{@code storeName} / {@code productName} 由 service 内存聚合批量填（避免 N+1）；
- * {@code operatorName} 走 {@code USER_ID_TO_NAME}（契约 4.5）。</p>
+ * {@code operatorName} 走 {@code USER_ID_TO_NICKNAME}（契约 4.5）。</p>
  *
  * @author djs
  * @since STR-RETURN-001
@@ -77,9 +77,9 @@ public class StoreReturnVo implements Serializable {
 
     private Long operatorId;
 
-    /** 经手人姓名（USER_ID_TO_NAME，契约 4.5）。 */
+    /** 经手人姓名（USER_ID_TO_NICKNAME，契约 4.5）。 */
     @ExcelProperty(value = "经手人")
-    @Translation(type = TransConstant.USER_ID_TO_NAME, mapper = "operatorId")
+    @Translation(type = TransConstant.USER_ID_TO_NICKNAME, mapper = "operatorId")
     private String operatorName;
 
     private String remark;

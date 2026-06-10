@@ -13,6 +13,7 @@ import org.dromara.djs.plant.plan.domain.PlantDetails;
 import org.dromara.djs.plant.plan.mapper.PlantDetailsMapper;
 import org.dromara.djs.plant.plan.mapper.PlantPlanMapper;
 import org.dromara.djs.plant.plot.mapper.PlotInfoMapper;
+import org.dromara.djs.plant.team.mapper.PlantWorkPeopleMapper;
 import org.dromara.djs.plant.team.mapper.PlantWorkTeamMapper;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -69,6 +70,8 @@ class AppletPickServiceImplTest {
     @Mock
     private PlantWorkTeamMapper teamMapper;
     @Mock
+    private PlantWorkPeopleMapper peopleMapper;
+    @Mock
     private IFarmRecordsService farmRecordsService;
     @Mock
     private ApplicationEventPublisher eventPublisher;
@@ -85,7 +88,7 @@ class AppletPickServiceImplTest {
 
     @BeforeEach
     void setUp() {
-        service = new AppletPickServiceImpl(detailsMapper, planMapper, plotMapper, cropMapper, teamMapper, farmRecordsService, eventPublisher);
+        service = new AppletPickServiceImpl(detailsMapper, planMapper, plotMapper, cropMapper, teamMapper, peopleMapper, farmRecordsService, eventPublisher);
     }
 
     private PlantDetails detailFixture() {

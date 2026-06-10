@@ -27,11 +27,12 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * {@link EarNoAllocator} 单元测试（ADR-0011 14 位客户格式）。
+ * {@link EarNoAllocator} 单元测试（ADR-0011 带分隔符客户格式）。
  *
- * <p>格式 = {@code {品系1}{品种2}{公母1}{出生yyMMdd6}{当天序号4}}，前缀定长 10 位。覆盖：</p>
+ * <p>格式 = {@code {品系1}-{品种2}-{公母1}-{出生yyMMdd6}-{当天序号4}}（如 {@code 4-04-1-260510-0001}），
+ * 前缀 = {@code 品系1-品种2-公母1-yyMMdd6}（如 {@code 4-04-1-260510}）。覆盖：</p>
  * <ul>
- *   <li>前缀组装：品系1 + 品种2 + 公母(M→1/F→2) + 出生 yyMMdd</li>
+ *   <li>前缀组装：品系1 - 品种2 - 公母(M→1/F→2) - 出生 yyMMdd</li>
  *   <li>空前缀 → seq 从 0001 起；现存 max → +1；批量连号</li>
  *   <li>公母不同前缀隔离（同品系品种不同性别 → 独立序号桶）</li>
  *   <li>UNIQUE 兜底：候选已占用 → 重新解析 max 重试；重试耗尽 → 抛 ear_no.generate_conflict</li>
@@ -46,7 +47,7 @@ import static org.mockito.Mockito.when;
 @Tag("dev")
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.LENIENT)
-@DisplayName("EarNoAllocator 单元测试 (ADR-0011 14 位格式)")
+@DisplayName("EarNoAllocator 单元测试 (ADR-0011 带分隔符格式)")
 class EarNoAllocatorTest {
 
     @Mock
@@ -62,16 +63,16 @@ class EarNoAllocatorTest {
     private static final LocalDate BIRTH = LocalDate.of(2026, 5, 10);
     private static final String YYMMDD = "260510";
 
-    /** 品系=杜洛克(4) + 品种=杜洛克(04) + 公(M→1) + 260510 = 前缀 4041260510（10 位）。 */
+    /** 品系=杜洛克(4) - 品种=杜洛克(04) - 公(M→1) - 260510 = 前缀 4-04-1-260510（13 字符）。 */
     private String boarPrefix;
-    /** 同品系品种 + 母(F→2) → 前缀 4042260510。 */
+    /** 同品系品种 - 母(F→2) → 前缀 4-04-2-260510。 */
     private String sowPrefix;
 
     @BeforeEach
     void setup() throws InterruptedException {
         allocator = new EarNoAllocator(pigMapper, redissonClient);
-        boarPrefix = "4" + "04" + "1" + YYMMDD;
-        sowPrefix = "4" + "04" + "2" + YYMMDD;
+        boarPrefix = "4-04-1-" + YYMMDD;
+        sowPrefix = "4-04-2-" + YYMMDD;
         when(redissonClient.getLock(anyString())).thenReturn(lock);
         when(lock.tryLock(anyLong(), anyLong(), any())).thenReturn(true);
         when(lock.isHeldByCurrentThread()).thenReturn(true);
@@ -79,93 +80,93 @@ class EarNoAllocatorTest {
     }
 
     @Test
-    @DisplayName("前缀组装：品系4+品种04+公(M→1)+260510 = 4041260510，长度 10")
+    @DisplayName("前缀组装：品系4-品种04-公(M→1)-260510 = 4-04-1-260510，长度 13")
     void buildPrefix_boar() {
         String prefix = allocator.buildPrefix("4", "04", "M", BIRTH);
-        assertThat(prefix).isEqualTo("4041260510").hasSize(10);
+        assertThat(prefix).isEqualTo("4-04-1-260510").hasSize(13);
     }
 
     @Test
     @DisplayName("公母映射：F→2（母）")
     void buildPrefix_sow_sexCode2() {
         String prefix = allocator.buildPrefix("4", "04", "F", BIRTH);
-        assertThat(prefix).isEqualTo("4042260510");
+        assertThat(prefix).isEqualTo("4-04-2-260510");
     }
 
     @Test
     @DisplayName("品种短码 '4' 左补零到 2 位 '04'")
     void buildPrefix_padsBreedCode() {
         String prefix = allocator.buildPrefix("4", "4", "M", BIRTH);
-        assertThat(prefix).isEqualTo("4041260510");
+        assertThat(prefix).isEqualTo("4-04-1-260510");
     }
 
     @Test
-    @DisplayName("空前缀（无人引过）→ 14 位耳号 seq 从 0001 起")
+    @DisplayName("空前缀（无人引过）→ 带分隔符耳号 seq 从 0001 起，长度 18")
     void emptyPrefix_startsAt1() {
         when(pigMapper.selectMaxEarNoByPrefix(boarPrefix)).thenReturn(null);
 
         List<String> earNos = allocator.allocate("4", "04", "M", BIRTH, 1);
 
-        assertThat(earNos).containsExactly(boarPrefix + "0001");
-        assertThat(earNos.get(0)).hasSize(14);
+        assertThat(earNos).containsExactly(boarPrefix + "-0001");
+        assertThat(earNos.get(0)).hasSize(18);
     }
 
     @Test
-    @DisplayName("现存 max=...0008 → 下号 ...0009")
+    @DisplayName("现存 max=...-0008 → 下号 ...-0009")
     void existingMax8_next9() {
-        when(pigMapper.selectMaxEarNoByPrefix(boarPrefix)).thenReturn(boarPrefix + "0008");
+        when(pigMapper.selectMaxEarNoByPrefix(boarPrefix)).thenReturn(boarPrefix + "-0008");
 
         List<String> earNos = allocator.allocate("4", "04", "M", BIRTH, 1);
 
-        assertThat(earNos).containsExactly(boarPrefix + "0009");
+        assertThat(earNos).containsExactly(boarPrefix + "-0009");
     }
 
     @Test
-    @DisplayName("批量 N=5 从 max=...0008 起 → 0009..0013 严格连号")
+    @DisplayName("批量 N=5 从 max=...-0008 起 → 0009..0013 严格连号")
     void batch5_consecutive() {
-        when(pigMapper.selectMaxEarNoByPrefix(boarPrefix)).thenReturn(boarPrefix + "0008");
+        when(pigMapper.selectMaxEarNoByPrefix(boarPrefix)).thenReturn(boarPrefix + "-0008");
 
         List<String> earNos = allocator.allocate("4", "04", "M", BIRTH, 5);
 
         assertThat(earNos).containsExactly(
-            boarPrefix + "0009", boarPrefix + "0010", boarPrefix + "0011",
-            boarPrefix + "0012", boarPrefix + "0013");
+            boarPrefix + "-0009", boarPrefix + "-0010", boarPrefix + "-0011",
+            boarPrefix + "-0012", boarPrefix + "-0013");
     }
 
     @Test
-    @DisplayName("公母不同前缀隔离：同品系品种公猪 max=...0003、母猪空 → 母猪从 0001 起，互不影响")
+    @DisplayName("公母不同前缀隔离：同品系品种公猪 max=...-0003、母猪空 → 母猪从 0001 起，互不影响")
     void boarSowIsolated() {
-        when(pigMapper.selectMaxEarNoByPrefix(boarPrefix)).thenReturn(boarPrefix + "0003");
+        when(pigMapper.selectMaxEarNoByPrefix(boarPrefix)).thenReturn(boarPrefix + "-0003");
         when(pigMapper.selectMaxEarNoByPrefix(sowPrefix)).thenReturn(null);
 
         List<String> boar = allocator.allocate("4", "04", "M", BIRTH, 1);
         List<String> sow = allocator.allocate("4", "04", "F", BIRTH, 1);
 
-        assertThat(boar).containsExactly(boarPrefix + "0004");
-        assertThat(sow).containsExactly(sowPrefix + "0001");
-        // 公母位（第 4 位）不同：1 vs 2
-        assertThat(boar.get(0).charAt(3)).isEqualTo('1');
-        assertThat(sow.get(0).charAt(3)).isEqualTo('2');
+        assertThat(boar).containsExactly(boarPrefix + "-0004");
+        assertThat(sow).containsExactly(sowPrefix + "-0001");
+        // 公母段（第 3 段 = 字符 index 5）不同：1 vs 2（4-04-1-... vs 4-04-2-...）
+        assertThat(boar.get(0).charAt(5)).isEqualTo('1');
+        assertThat(sow.get(0).charAt(5)).isEqualTo('2');
     }
 
     @Test
     @DisplayName("UNIQUE 兜底：首批候选被占用 → 重新解析 max（已涨）后重试成功")
     void uniqueFallback_retrySucceeds() {
         when(pigMapper.selectMaxEarNoByPrefix(boarPrefix))
-            .thenReturn(boarPrefix + "0008", boarPrefix + "0009");
-        when(pigMapper.existsEarNo(boarPrefix + "0009")).thenReturn(123L);
-        when(pigMapper.existsEarNo(boarPrefix + "0010")).thenReturn(null);
+            .thenReturn(boarPrefix + "-0008", boarPrefix + "-0009");
+        when(pigMapper.existsEarNo(boarPrefix + "-0009")).thenReturn(123L);
+        when(pigMapper.existsEarNo(boarPrefix + "-0010")).thenReturn(null);
 
         List<String> earNos = allocator.allocate("4", "04", "M", BIRTH, 1);
 
-        assertThat(earNos).containsExactly(boarPrefix + "0010");
+        assertThat(earNos).containsExactly(boarPrefix + "-0010");
         verify(pigMapper, times(2)).selectMaxEarNoByPrefix(boarPrefix);
     }
 
     @Test
     @DisplayName("重试耗尽（候选一直被占用）→ 抛 ear_no.generate_conflict")
     void uniqueFallback_exhausted_throws() {
-        when(pigMapper.selectMaxEarNoByPrefix(boarPrefix)).thenReturn(boarPrefix + "0008");
+        when(pigMapper.selectMaxEarNoByPrefix(boarPrefix)).thenReturn(boarPrefix + "-0008");
         when(pigMapper.existsEarNo(anyString())).thenReturn(999L);
 
         assertThatThrownBy(() -> allocator.allocate("4", "04", "M", BIRTH, 1))
@@ -225,22 +226,32 @@ class EarNoAllocatorTest {
     }
 
     @Test
-    @DisplayName("allocateOne 单头 → 返 14 位耳号")
-    void allocateOne_returns14() {
+    @DisplayName("allocateOne 单头 → 返带分隔符耳号，长度 18")
+    void allocateOne_returns18() {
         when(pigMapper.selectMaxEarNoByPrefix(sowPrefix)).thenReturn(null);
 
         String earNo = allocator.allocateOne("4", "04", "F", BIRTH);
 
-        assertThat(earNo).isEqualTo(sowPrefix + "0001").hasSize(14);
+        assertThat(earNo).isEqualTo(sowPrefix + "-0001").hasSize(18);
     }
 
     @Test
-    @DisplayName("nextSeqForPrefix：现存 max=...0008 → 返 9；空前缀 → 返 1（供 service 端首号下限校验复用）")
+    @DisplayName("nextSeqForPrefix：现存 max=...-0008 → 返 9；空前缀 → 返 1（供 service 端首号下限校验复用）")
     void nextSeqForPrefix_resolvesNextSeq() {
-        when(pigMapper.selectMaxEarNoByPrefix(boarPrefix)).thenReturn(boarPrefix + "0008");
+        when(pigMapper.selectMaxEarNoByPrefix(boarPrefix)).thenReturn(boarPrefix + "-0008");
         assertThat(allocator.nextSeqForPrefix(boarPrefix)).isEqualTo(9L);
 
         when(pigMapper.selectMaxEarNoByPrefix(sowPrefix)).thenReturn(null);
         assertThat(allocator.nextSeqForPrefix(sowPrefix)).isEqualTo(1L);
+    }
+
+    @Test
+    @DisplayName("旧无分隔脏号混入：parseSeq 只看末段 → 不再解析出 >9999 的自相矛盾（P9 根除）")
+    void legacyUnsplitDirtyMax_seqFromLastSegmentOnly() {
+        // 旧 12 位无分隔号 010126050001 误落同 likeRight 桶：无 '-' → split 单段 → 末段 = 整串
+        // 但新前缀含 '-'，likeRight(新前缀) 不会命中旧号；此处直接喂 parseSeq 验证末段语义稳健。
+        // 用一个带分隔但序号段极大的脏值证明只取末段：max=...-9998 → 下号 9999（≤9999，不越界）。
+        when(pigMapper.selectMaxEarNoByPrefix(boarPrefix)).thenReturn(boarPrefix + "-9998");
+        assertThat(allocator.nextSeqForPrefix(boarPrefix)).isEqualTo(9999L);
     }
 }

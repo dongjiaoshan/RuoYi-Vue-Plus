@@ -66,8 +66,8 @@ public class ShipmentVo implements Serializable {
 
     private Long checkerId;
 
-    /** 清点员姓名（@Translation 翻译，对齐契约 4.5：用 USER_ID_TO_NAME 不用 NICKNAME）。 */
-    @Translation(type = TransConstant.USER_ID_TO_NAME, mapper = "checkerId")
+    /** 清点员姓名（@Translation 翻译，对齐契约 4.5：用 USER_ID_TO_NICKNAME 显 sys_user.nick_name 中文名）。 */
+    @Translation(type = TransConstant.USER_ID_TO_NICKNAME, mapper = "checkerId")
     private String checkerName;
 
     @ExcelProperty(value = "清点时间")

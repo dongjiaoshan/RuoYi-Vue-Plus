@@ -54,8 +54,8 @@ public class ReturnProductVo implements Serializable {
 
     private Long confirmUser;
 
-    /** 确认人姓名（USER_ID_TO_NAME，契约 4.5）。 */
-    @Translation(type = TransConstant.USER_ID_TO_NAME, mapper = "confirmUser")
+    /** 确认人姓名（USER_ID_TO_NICKNAME，契约 4.5）。 */
+    @Translation(type = TransConstant.USER_ID_TO_NICKNAME, mapper = "confirmUser")
     private String confirmUserName;
 
     @ExcelProperty(value = "确认时间")

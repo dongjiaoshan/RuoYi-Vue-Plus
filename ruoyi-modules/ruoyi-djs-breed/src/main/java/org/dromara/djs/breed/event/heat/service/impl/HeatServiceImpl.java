@@ -25,6 +25,7 @@ import org.dromara.djs.breed.event.heat.service.IHeatService;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDateTime;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
@@ -114,13 +115,15 @@ public class HeatServiceImpl implements IHeatService {
 
     @Override
     public TableDataInfo<PigHeatVo> queryPage(HeatQuery query, PageQuery pageQuery) {
+        LocalDateTime beginAt = query.getBeginDate() != null ? query.getBeginDate().atStartOfDay() : null;
+        LocalDateTime endBefore = query.getEndDate() != null ? query.getEndDate().plusDays(1).atStartOfDay() : null;
         LambdaQueryWrapper<PigHeat> w = Wrappers.<PigHeat>lambdaQuery()
             .eq(query.getPigId() != null, PigHeat::getPigId, query.getPigId())
             .eq(StringUtils.isNotBlank(query.getEarNo()), PigHeat::getEarNo, query.getEarNo())
             .eq(query.getIsPregnantConfirmed() != null,
                 PigHeat::getIsPregnantConfirmed, query.getIsPregnantConfirmed())
-            .ge(query.getBeginDate() != null, PigHeat::getHeatDate, query.getBeginDate())
-            .le(query.getEndDate() != null, PigHeat::getHeatDate, query.getEndDate())
+            .ge(beginAt != null, PigHeat::getHeatDate, beginAt)
+            .lt(endBefore != null, PigHeat::getHeatDate, endBefore)
             .orderByDesc(PigHeat::getHeatDate, PigHeat::getId);
         Page<PigHeatVo> page = heatMapper.selectVoPage(pageQuery.build(), w);
         return TableDataInfo.build(page);

@@ -17,8 +17,8 @@ import java.util.Date;
  * 会员档案 VO（STR-MEMBER-001）。
  *
  * <p>{@code storeName} 由 service 层 JOIN {@code t_md_store} 回填；
- * {@code createName} 走 ruoyi {@code USER_ID_TO_NAME} 翻译（建档人；不要写 {@code USER_ID_TO_NICKNAME}，
- * 5.5.x 无 impl）。{@code memberLevel} 用字典 {@code djs_member_level}，前端 dict-tag 渲染。</p>
+ * {@code createName} 走 ruoyi {@code USER_ID_TO_NICKNAME} 翻译（建档人，NicknameTranslationImpl 取 sys_user.nick_name 中文名）。
+ * {@code memberLevel} 用字典 {@code djs_member_level}，前端 dict-tag 渲染。</p>
  *
  * @author djs
  * @since STR-MEMBER-001
@@ -76,7 +76,7 @@ public class StoreMemberVo implements Serializable {
      * 建档人姓名（注解翻译，VO 序列化时填）。
      */
     @ExcelProperty(value = "建档人")
-    @Translation(type = TransConstant.USER_ID_TO_NAME, mapper = "createBy")
+    @Translation(type = TransConstant.USER_ID_TO_NICKNAME, mapper = "createBy")
     private String createName;
 
     @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")

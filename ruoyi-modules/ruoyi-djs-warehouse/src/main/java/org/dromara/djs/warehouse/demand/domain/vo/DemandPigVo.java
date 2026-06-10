@@ -33,6 +33,6 @@ public class DemandPigVo implements Serializable {
 
     private Long assignedBy;
 
-    @Translation(type = TransConstant.USER_ID_TO_NAME, mapper = "assignedBy")
+    @Translation(type = TransConstant.USER_ID_TO_NICKNAME, mapper = "assignedBy")
     private String assignedByName;
 }

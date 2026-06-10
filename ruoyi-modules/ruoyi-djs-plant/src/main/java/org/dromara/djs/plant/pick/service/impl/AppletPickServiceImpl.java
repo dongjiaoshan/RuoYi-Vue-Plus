@@ -22,7 +22,9 @@ import org.dromara.djs.plant.plan.mapper.PlantDetailsMapper;
 import org.dromara.djs.plant.plan.mapper.PlantPlanMapper;
 import org.dromara.djs.plant.plot.domain.PlotInfo;
 import org.dromara.djs.plant.plot.mapper.PlotInfoMapper;
+import org.dromara.djs.plant.team.domain.PlantWorkPeople;
 import org.dromara.djs.plant.team.domain.PlantWorkTeam;
+import org.dromara.djs.plant.team.mapper.PlantWorkPeopleMapper;
 import org.dromara.djs.plant.team.mapper.PlantWorkTeamMapper;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
@@ -59,6 +61,7 @@ public class AppletPickServiceImpl implements IAppletPickService {
     private final PlotInfoMapper plotMapper;
     private final CropInfoMapper cropMapper;
     private final PlantWorkTeamMapper teamMapper;
+    private final PlantWorkPeopleMapper peopleMapper;
     private final IFarmRecordsService farmRecordsService;
     private final ApplicationEventPublisher eventPublisher;
 
@@ -120,7 +123,7 @@ public class AppletPickServiceImpl implements IAppletPickService {
         //    复用 IFarmRecordsService.submitGrow（内含 record_no 生成 + plot_type/crop_name 冗余）。
         //    farm_by NOT NULL：取采摘明细指派班组 harvest_by；未指派则硬拦（采收需归属班组才能追溯）。
         if (detail.getHarvestBy() == null) {
-            throw new ServiceException("该采摘任务未指派采摘班组，无法录入采收（请在 admin 采摘计划指派班组）");
+            throw new ServiceException("该地块未指派采摘班组，无法录入采收（请在采摘计划中指派）");
         }
         GrowRecordBo grow = new GrowRecordBo();
         grow.setFarmType(HARVEST_FARM_TYPE);
@@ -348,6 +351,16 @@ public class AppletPickServiceImpl implements IAppletPickService {
         Map<Long, String> teamMap = teamIds.isEmpty() ? Map.of()
             : teamMapper.selectByIds(teamIds).stream()
                 .collect(Collectors.toMap(PlantWorkTeam::getId, PlantWorkTeam::getTeamName, (a, b) -> a));
+        // 班组成员数：t_plant_work_people 按 team_id 计数（V1 数据量小，应用层聚合；
+        // 供 mp 区分「未指派班组」vs「指派了但班组无成员」两种空 picker）。
+        Map<Long, Long> teamMemberCountMap = teamIds.isEmpty() ? Map.of()
+            : peopleMapper.selectList(
+                    new LambdaQueryWrapper<PlantWorkPeople>()
+                        .select(PlantWorkPeople::getTeamId)
+                        .in(PlantWorkPeople::getTeamId, teamIds))
+                .stream()
+                .filter(p -> p.getTeamId() != null)
+                .collect(Collectors.groupingBy(PlantWorkPeople::getTeamId, Collectors.counting()));
 
         return entities.stream().map(d -> {
             PickTaskVo vo = new PickTaskVo();
@@ -362,6 +375,8 @@ public class AppletPickServiceImpl implements IAppletPickService {
             }
             vo.setCropId(d.getCropId());
             vo.setCropName(cropMap.get(d.getCropId()));
+            vo.setPlantMonth(d.getPlantMonth());
+            vo.setPlantPeriod(d.getPlantPeriod());
             vo.setEarliestHarvestdate(d.getEarliestHarvestdate());
             vo.setLastHarvestdate(d.getLastHarvestdate());
             vo.setBeginHarvestdate(d.getBeginHarvestdate());
@@ -372,6 +387,8 @@ public class AppletPickServiceImpl implements IAppletPickService {
             vo.setIsPick(d.getIsPick());
             vo.setHarvestBy(d.getHarvestBy());
             vo.setHarvestTeamName(teamMap.get(d.getHarvestBy()));
+            vo.setMemberCount(d.getHarvestBy() == null ? null
+                : Math.toIntExact(teamMemberCountMap.getOrDefault(d.getHarvestBy(), 0L)));
             return vo;
         }).collect(Collectors.toList());
     }

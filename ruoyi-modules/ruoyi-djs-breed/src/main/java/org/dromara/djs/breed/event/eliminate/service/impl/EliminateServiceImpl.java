@@ -25,6 +25,7 @@ import org.dromara.djs.breed.event.eliminate.service.IEliminateService;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDateTime;
 import java.util.Objects;
 
 /**
@@ -95,12 +96,14 @@ public class EliminateServiceImpl implements IEliminateService {
 
     @Override
     public TableDataInfo<PigCullingVo> queryPage(EliminateQuery query, PageQuery pageQuery) {
+        LocalDateTime beginAt = query.getBeginDate() != null ? query.getBeginDate().atStartOfDay() : null;
+        LocalDateTime endBefore = query.getEndDate() != null ? query.getEndDate().plusDays(1).atStartOfDay() : null;
         LambdaQueryWrapper<PigCulling> w = Wrappers.<PigCulling>lambdaQuery()
             .eq(query.getPigId() != null, PigCulling::getPigId, query.getPigId())
             .eq(StringUtils.isNotBlank(query.getEarNo()), PigCulling::getEarNo, query.getEarNo())
             .eq(StringUtils.isNotBlank(query.getCullingReason()), PigCulling::getCullingReason, query.getCullingReason())
-            .ge(query.getBeginDate() != null, PigCulling::getCullingDate, query.getBeginDate())
-            .le(query.getEndDate() != null, PigCulling::getCullingDate, query.getEndDate())
+            .ge(beginAt != null, PigCulling::getCullingDate, beginAt)
+            .lt(endBefore != null, PigCulling::getCullingDate, endBefore)
             .orderByDesc(PigCulling::getCullingDate, PigCulling::getId);
         Page<PigCullingVo> page = cullingMapper.selectVoPage(pageQuery.build(), w);
         return TableDataInfo.build(page);

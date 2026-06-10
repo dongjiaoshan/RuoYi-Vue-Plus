@@ -38,6 +38,7 @@ import org.mockito.quality.Strictness;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -316,26 +317,29 @@ class FarmRecordsServiceImplTest {
     }
 
     @Test
-    @DisplayName("中央分发台 dispatchSummary 返 12 类 key 全在 + count 正确")
-    void dispatchSummary_12_keys_present() {
-        FarmRecords r1 = new FarmRecords();
-        r1.setFarmType("tillage_break");
-        FarmRecords r2 = new FarmRecords();
-        r2.setFarmType("disaster");
-        FarmRecords r3 = new FarmRecords();
-        r3.setFarmType("disaster");
-
-        when(baseMapper.selectList(any())).thenReturn(List.of(r1, r2, r3));
+    @DisplayName("中央分发台 dispatchSummary：已处理=当日去重地块数 + 待处理=空地池，12 类 key 全在")
+    void dispatchSummary_processed_and_pending() {
+        // 已处理：tillage_break 去重 1 块、disaster 去重 2 块（同地块多次仍记 1，由 SQL COUNT DISTINCT 保证）
+        when(baseMapper.selectTodayProcessedPlotCount(any())).thenReturn(List.of(
+            Map.of("farmType", "tillage_break", "plotCount", 1),
+            Map.of("farmType", "disaster", "plotCount", 2)));
+        // 待处理：空地池 plot_status=1 共 5 块（12 工种共享）
+        when(plotInfoMapper.selectCount(any())).thenReturn(5L);
 
         DispatchSummaryVo vo = service.dispatchSummary();
-        assertThat(vo.getCounts()).hasSize(12);
-        assertThat(vo.getCounts().get("tillage_break")).isEqualTo(1);
-        assertThat(vo.getCounts().get("disaster")).isEqualTo(2);
-        assertThat(vo.getCounts().get("fertilize")).isEqualTo(0);
-        assertThat(vo.getCounts().keySet())
+
+        assertThat(vo.getProcessedCount()).hasSize(12);
+        assertThat(vo.getProcessedCount().get("tillage_break")).isEqualTo(1);
+        assertThat(vo.getProcessedCount().get("disaster")).isEqualTo(2);
+        assertThat(vo.getProcessedCount().get("fertilize")).isEqualTo(0);
+        assertThat(vo.getProcessedCount().keySet())
             .containsExactly("tillage_break", "tillage_prepare", "fertilize",
                 "transplant", "water_fertilize", "irrigation", "weed", "pest_control", "pruning", "rotation",
                 "disaster", "harvest_activity");
+
+        assertThat(vo.getPendingCount()).hasSize(12);
+        assertThat(vo.getPendingCount().get("tillage_break")).isEqualTo(5);
+        assertThat(vo.getPendingCount().get("harvest_activity")).isEqualTo(5);
     }
 
     @Test

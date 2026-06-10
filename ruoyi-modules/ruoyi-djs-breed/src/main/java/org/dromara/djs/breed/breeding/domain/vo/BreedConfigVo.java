@@ -4,6 +4,8 @@ import cn.idev.excel.annotation.ExcelIgnoreUnannotated;
 import cn.idev.excel.annotation.ExcelProperty;
 import io.github.linpeilie.annotations.AutoMapper;
 import lombok.Data;
+import org.dromara.common.translation.annotation.Translation;
+import org.dromara.common.translation.constant.TransConstant;
 import org.dromara.djs.breed.breeding.domain.BreedConfig;
 
 import java.io.Serial;
@@ -71,5 +73,12 @@ public class BreedConfigVo implements Serializable {
      */
     @ExcelProperty(value = "创建人")
     private Long createBy;
+
+    /**
+     * 创建人姓名（USER_ID_TO_NICKNAME 翻译 sys_user.nick_name 显中文名）。
+     */
+    @ExcelProperty(value = "创建人姓名")
+    @Translation(type = TransConstant.USER_ID_TO_NICKNAME, mapper = "createBy")
+    private String createByName;
 
 }

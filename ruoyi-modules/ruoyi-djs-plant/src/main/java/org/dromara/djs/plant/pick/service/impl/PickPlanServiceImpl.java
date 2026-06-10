@@ -98,15 +98,17 @@ public class PickPlanServiceImpl implements IPickPlanService {
         if (ids.isEmpty()) {
             return 0;
         }
-        // 安全校验：所有 row.id 必须属于 (plantId, cropId)
-        Long ownedCount = detailsMapper.selectCount(
+        // 安全校验：所有 row.id 必须属于 (plantId, cropId)，并一次性取出现有行用于「发布必填」校验
+        List<PlantDetails> owned = detailsMapper.selectList(
             new LambdaQueryWrapper<PlantDetails>()
                 .in(PlantDetails::getId, ids)
                 .eq(PlantDetails::getPlantId, bo.getPlantId())
                 .eq(PlantDetails::getCropId, bo.getCropId()));
-        if (ownedCount == null || ownedCount != ids.size()) {
+        if (owned.size() != ids.size()) {
             throw new ServiceException("调整行不全属于指定计划/作物，已拒绝（防越权）");
         }
+        Map<Long, PlantDetails> ownedMap = owned.stream()
+            .collect(Collectors.toMap(PlantDetails::getId, d -> d, (a, b) -> a));
 
         Long updateBy = currentUserIdSafe();
         Date now = new Date();
@@ -118,6 +120,17 @@ public class PickPlanServiceImpl implements IPickPlanService {
             }
             if (row.getIsPick() != null && row.getIsPick() != 1 && row.getIsPick() != 2) {
                 throw new ServiceException("is_pick 仅允许 1 或 2（明细 id=" + row.getId() + "）");
+            }
+            // D3：采摘班组发布必填（源头杜绝 mp 空 picker）。
+            // 普通采收明细（effective is_pick=2）调整后必须有 harvest_by；游客采摘活动（is_pick=1）不强制。
+            PlantDetails existing = ownedMap.get(row.getId());
+            Integer effectiveIsPick = row.getIsPick() != null ? row.getIsPick()
+                : (existing != null ? existing.getIsPick() : null);
+            Long effectiveHarvestBy = row.getHarvestBy() != null ? row.getHarvestBy()
+                : (existing != null ? existing.getHarvestBy() : null);
+            boolean isGuestPick = effectiveIsPick != null && effectiveIsPick == 1;
+            if (!isGuestPick && effectiveHarvestBy == null) {
+                throw new ServiceException("请指派采摘班组后再发布（明细 id=" + row.getId() + "）");
             }
             updated += detailsMapper.update(null,
                 Wrappers.<PlantDetails>update()

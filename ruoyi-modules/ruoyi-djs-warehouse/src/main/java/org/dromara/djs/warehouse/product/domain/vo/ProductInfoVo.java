@@ -124,7 +124,7 @@ public class ProductInfoVo implements Serializable {
      * 更新人姓名（注解翻译，VO 序列化时填）。
      */
     @ExcelProperty(value = "更新人")
-    @Translation(type = TransConstant.USER_ID_TO_NAME, mapper = "updateBy")
+    @Translation(type = TransConstant.USER_ID_TO_NICKNAME, mapper = "updateBy")
     private String updateByName;
 
     /**

@@ -4,7 +4,7 @@ import lombok.Data;
 
 import java.io.Serial;
 import java.io.Serializable;
-import java.time.LocalDateTime;
+import java.time.LocalDate;
 
 /**
  * 死亡记录查询入参。
@@ -22,6 +22,6 @@ public class DieQuery implements Serializable {
     private String earNo;
     private String deathKind;
     private String deathReason;
-    private LocalDateTime beginDate;
-    private LocalDateTime endDate;
+    private LocalDate beginDate;
+    private LocalDate endDate;
 }

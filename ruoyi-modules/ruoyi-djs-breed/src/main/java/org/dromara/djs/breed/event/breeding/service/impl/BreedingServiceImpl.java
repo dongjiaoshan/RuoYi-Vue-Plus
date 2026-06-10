@@ -29,6 +29,7 @@ import org.dromara.djs.breed.farm.mapper.PenMapper;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDateTime;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
@@ -121,13 +122,15 @@ public class BreedingServiceImpl implements IBreedingService {
 
     @Override
     public TableDataInfo<PigBreedingVo> queryPage(BreedingQuery query, PageQuery pageQuery) {
+        LocalDateTime beginAt = query.getBeginDate() != null ? query.getBeginDate().atStartOfDay() : null;
+        LocalDateTime endBefore = query.getEndDate() != null ? query.getEndDate().plusDays(1).atStartOfDay() : null;
         LambdaQueryWrapper<PigBreeding> w = Wrappers.<PigBreeding>lambdaQuery()
             .eq(query.getPigId() != null, PigBreeding::getPigId, query.getPigId())
             .eq(StringUtils.isNotBlank(query.getEarNo()), PigBreeding::getEarNo, query.getEarNo())
             .eq(StringUtils.isNotBlank(query.getBreedingType()), PigBreeding::getBreedingType, query.getBreedingType())
             .eq(StringUtils.isNotBlank(query.getBoarEarNo()), PigBreeding::getBoarEarNo, query.getBoarEarNo())
-            .ge(query.getBeginDate() != null, PigBreeding::getBreedingDate, query.getBeginDate())
-            .le(query.getEndDate() != null, PigBreeding::getBreedingDate, query.getEndDate())
+            .ge(beginAt != null, PigBreeding::getBreedingDate, beginAt)
+            .lt(endBefore != null, PigBreeding::getBreedingDate, endBefore)
             .orderByDesc(PigBreeding::getBreedingDate, PigBreeding::getId);
         Page<PigBreedingVo> page = breedingMapper.selectVoPage(pageQuery.build(), w);
         return TableDataInfo.build(page);

@@ -104,7 +104,7 @@ public interface IFarmRecordsService {
      */
     int adjustPlotPickStatus(PlotPickStatusBo bo);
 
-    /** mp 中央分发台聚合：今日 12 类各自记录条数。 */
+    /** mp 中央分发台聚合：今日 12 类「已处理（当日去重地块数）+ 待处理（空地池）」两套数。 */
     DispatchSummaryVo dispatchSummary();
 
     /** mp 我的记录（按 operatorId 注入查询，时间倒序）。 */

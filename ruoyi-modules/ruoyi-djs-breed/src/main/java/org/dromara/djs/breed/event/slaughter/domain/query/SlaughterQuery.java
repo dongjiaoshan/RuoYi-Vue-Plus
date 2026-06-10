@@ -4,7 +4,7 @@ import lombok.Data;
 
 import java.io.Serial;
 import java.io.Serializable;
-import java.time.LocalDateTime;
+import java.time.LocalDate;
 
 /**
  * 出栏记录查询入参。
@@ -21,6 +21,6 @@ public class SlaughterQuery implements Serializable {
     private Long pigId;
     private String earNo;
     private String outDest;
-    private LocalDateTime beginDate;
-    private LocalDateTime endDate;
+    private LocalDate beginDate;
+    private LocalDate endDate;
 }

@@ -16,8 +16,8 @@ import java.util.Date;
  * 门店白条分割明细 VO（STR-SPLIT-001 admin 列表 + 导出行）。
  *
  * <p>映射 {@code t_warehouse_product_inhouse} 中 {@code source='store'} 的门店再分行。
- * {@code cutPart} 部位字典 fe 翻译；{@code createByName} 走 ruoyi {@code USER_ID_TO_NAME}
- * 翻译（5.5.x 实现的是 {@code UserNameTranslationImpl}，不写 {@code USER_ID_TO_NICKNAME}）。</p>
+ * {@code cutPart} 部位字典 fe 翻译；{@code createByName} 走 ruoyi {@code USER_ID_TO_NICKNAME}
+ * 翻译（NicknameTranslationImpl 取 sys_user.nick_name 中文名）。</p>
  *
  * @author djs
  * @since STR-SPLIT-001
@@ -89,7 +89,7 @@ public class StoreSplitVo implements Serializable {
      * 录入人姓名（注解翻译，VO 序列化时填）。
      */
     @ExcelProperty(value = "录入人")
-    @Translation(type = TransConstant.USER_ID_TO_NAME, mapper = "createBy")
+    @Translation(type = TransConstant.USER_ID_TO_NICKNAME, mapper = "createBy")
     private String createByName;
 
     @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")

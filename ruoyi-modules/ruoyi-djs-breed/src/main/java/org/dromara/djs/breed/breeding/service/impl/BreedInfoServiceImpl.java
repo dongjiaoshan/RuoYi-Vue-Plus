@@ -77,6 +77,7 @@ public class BreedInfoServiceImpl extends DjsBaseServiceImpl<BreedInfoMapper, Br
 
     @Override
     public int insertByBo(BreedInfoBo bo) {
+        validateCode(bo);
         BreedInfo entity = toEntity(bo);
         if (entity == null) {
             throw new ServiceException("育种信息入参转换失败");
@@ -93,11 +94,32 @@ public class BreedInfoServiceImpl extends DjsBaseServiceImpl<BreedInfoMapper, Br
         if (exists == null) {
             throw new ServiceException("育种信息不存在或已删除：" + bo.getId());
         }
+        validateCode(bo);
         BreedInfo entity = toEntity(bo);
         if (entity == null) {
             throw new ServiceException("育种信息入参转换失败");
         }
         return baseMapper.updateById(entity);
+    }
+
+    /**
+     * 编码兜底校验：编码 = 耳号位码（ADR-0011 §2.1），必须纯数字且长度精确。
+     *
+     * <p>品种（breedStrain=1）恰好 2 位、品系（breedStrain=2）恰好 1 位。差异化校验
+     * 无法用字段级 {@code @Pattern}/{@code @Size} 表达，下沉到此防前端绕过污染耳号源。</p>
+     */
+    private void validateCode(BreedInfoBo bo) {
+        String code = bo.getBreedStrainCode();
+        if (StringUtils.isBlank(code)) {
+            throw new ServiceException("品种/品系编码不能为空");
+        }
+        if (Objects.equals(bo.getBreedStrain(), 2)) {
+            if (!code.matches("^\\d$")) {
+                throw new ServiceException("品系编码必须为 1 位数字");
+            }
+        } else if (!code.matches("^\\d{2}$")) {
+            throw new ServiceException("品种编码必须为 2 位数字");
+        }
     }
 
     /**

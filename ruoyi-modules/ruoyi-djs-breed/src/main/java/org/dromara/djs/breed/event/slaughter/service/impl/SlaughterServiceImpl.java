@@ -27,6 +27,7 @@ import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDateTime;
 import java.util.Objects;
 
 /**
@@ -111,12 +112,14 @@ public class SlaughterServiceImpl implements ISlaughterService {
 
     @Override
     public TableDataInfo<PigMarketingVo> queryPage(SlaughterQuery query, PageQuery pageQuery) {
+        LocalDateTime beginAt = query.getBeginDate() != null ? query.getBeginDate().atStartOfDay() : null;
+        LocalDateTime endBefore = query.getEndDate() != null ? query.getEndDate().plusDays(1).atStartOfDay() : null;
         LambdaQueryWrapper<PigMarketing> w = Wrappers.<PigMarketing>lambdaQuery()
             .eq(query.getPigId() != null, PigMarketing::getPigId, query.getPigId())
             .eq(StringUtils.isNotBlank(query.getEarNo()), PigMarketing::getEarNo, query.getEarNo())
             .eq(StringUtils.isNotBlank(query.getOutDest()), PigMarketing::getOutDest, query.getOutDest())
-            .ge(query.getBeginDate() != null, PigMarketing::getMarketingDate, query.getBeginDate())
-            .le(query.getEndDate() != null, PigMarketing::getMarketingDate, query.getEndDate())
+            .ge(beginAt != null, PigMarketing::getMarketingDate, beginAt)
+            .lt(endBefore != null, PigMarketing::getMarketingDate, endBefore)
             .orderByDesc(PigMarketing::getMarketingDate, PigMarketing::getId);
         Page<PigMarketingVo> page = marketingMapper.selectVoPage(pageQuery.build(), w);
         return TableDataInfo.build(page);

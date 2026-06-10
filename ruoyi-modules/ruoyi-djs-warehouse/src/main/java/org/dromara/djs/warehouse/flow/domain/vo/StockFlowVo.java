@@ -19,7 +19,7 @@ import java.util.Date;
  *
  * <p>覆盖 admin 流水查询页 + mp 流水回显两端用：</p>
  * <ul>
- *   <li>{@code operatorName} 走 ruoyi {@code USER_ID_TO_NAME} 翻译</li>
+ *   <li>{@code operatorName} 走 ruoyi {@code USER_ID_TO_NICKNAME} 翻译</li>
  *   <li>{@code productName} / {@code locationName} service 层 JOIN 回填（避免 N+1，参 LocationStockServiceImpl.fillLocationNames 模式）</li>
  * </ul>
  *
@@ -118,7 +118,7 @@ public class StockFlowVo implements Serializable {
      * 操作人姓名（注解翻译）。
      */
     @ExcelProperty(value = "操作人")
-    @Translation(type = TransConstant.USER_ID_TO_NAME, mapper = "operatorId")
+    @Translation(type = TransConstant.USER_ID_TO_NICKNAME, mapper = "operatorId")
     private String operatorName;
 
     @ExcelProperty(value = "备注")

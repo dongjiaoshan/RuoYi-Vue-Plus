@@ -18,7 +18,7 @@ import java.util.Date;
  * 追溯码主表 VO（TRC-CORE-001），供下游 TRC-ADMIN-001（D14）追溯码管理列表 / 详情消费。
  *
  * <p>{@code codeType} admin 端用字典 {@code djs_trace_code_type} 渲染 dict-tag；
- * {@code creatorName} 走 {@code USER_ID_TO_NAME} 翻译；产品名 / 门店名由 admin 端 JOIN 取
+ * {@code creatorName} 走 {@code USER_ID_TO_NICKNAME} 翻译；产品名 / 门店名由 admin 端 JOIN 取
  * （本表不冗余存名）。</p>
  *
  * @author djs
@@ -82,7 +82,7 @@ public class TraceCodeVo implements Serializable {
      * 创建人姓名（注解翻译，VO 序列化时填）。
      */
     @ExcelProperty(value = "生成人")
-    @Translation(type = TransConstant.USER_ID_TO_NAME, mapper = "createBy")
+    @Translation(type = TransConstant.USER_ID_TO_NICKNAME, mapper = "createBy")
     private String creatorName;
 
     @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")

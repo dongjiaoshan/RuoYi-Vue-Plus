@@ -122,9 +122,9 @@ class PigEarTagServiceImplTest {
         when(farrowMapper.selectBoarEarByBreedingId(800L)).thenReturn("01B12605900");
         // ADR-0011：公母混批按性别分组分配 → 公组(idx0,2) 2 头 + 母组(idx1) 1 头，allocate 调 2 次
         when(earNoAllocator.allocate(eq("4"), eq("04"), eq("M"), any(LocalDate.class), eq(2)))
-            .thenReturn(List.of("4041260508" + "0001", "4041260508" + "0002"));
+            .thenReturn(List.of("4-04-1-260508-0001", "4-04-1-260508-0002"));
         when(earNoAllocator.allocate(eq("4"), eq("04"), eq("F"), any(LocalDate.class), eq(1)))
-            .thenReturn(List.of("4042260508" + "0001"));
+            .thenReturn(List.of("4-04-2-260508-0001"));
 
         PigletBatchEarTagBo bo = new PigletBatchEarTagBo();
         bo.setFarrowId(900L);
@@ -153,10 +153,10 @@ class PigEarTagServiceImplTest {
             assertThat(p.getLifecycleId()).isEqualTo(1);
             assertThat(p.getParity()).isZero();
         }
-        // 公仔猪耳号公母位=1，母仔猪=2（按原索引回填）
-        assertThat(pigCaptor.getAllValues().get(0).getEarNo().charAt(3)).isEqualTo('1');
-        assertThat(pigCaptor.getAllValues().get(1).getEarNo().charAt(3)).isEqualTo('2');
-        assertThat(pigCaptor.getAllValues().get(2).getEarNo().charAt(3)).isEqualTo('1');
+        // 公仔猪耳号公母段=1，母仔猪=2（按原索引回填；带分隔符格式 4-04-1-... → 公母字符在 index 5）
+        assertThat(pigCaptor.getAllValues().get(0).getEarNo().charAt(5)).isEqualTo('1');
+        assertThat(pigCaptor.getAllValues().get(1).getEarNo().charAt(5)).isEqualTo('2');
+        assertThat(pigCaptor.getAllValues().get(2).getEarNo().charAt(5)).isEqualTo('1');
         // pigletno.insert 3 次
         verify(pigletnoMapper, times(3)).insert(any(PigPigletno.class));
         // 父猪耳号反查走了一次
@@ -174,7 +174,7 @@ class PigEarTagServiceImplTest {
         when(pigMapper.selectById(101L)).thenReturn(mkSow());
         when(pigletnoMapper.selectCount(any())).thenReturn(0L);
         when(earNoAllocator.allocate(eq("4"), eq("04"), eq("F"), any(LocalDate.class), eq(1)))
-            .thenReturn(List.of("4042260508" + "0001"));
+            .thenReturn(List.of("4-04-2-260508-0001"));
 
         PigletBatchEarTagBo bo = new PigletBatchEarTagBo();
         bo.setFarrowId(901L);
@@ -193,7 +193,7 @@ class PigEarTagServiceImplTest {
         when(pigMapper.selectById(101L)).thenReturn(mkSow());
         when(pigletnoMapper.selectCount(any())).thenReturn(0L);
         when(earNoAllocator.allocate(eq("4"), eq("04"), eq("M"), any(LocalDate.class), eq(1)))
-            .thenReturn(List.of("4041260508" + "0099"));
+            .thenReturn(List.of("4-04-1-260508-0099"));
 
         PigletBatchEarTagBo bo = new PigletBatchEarTagBo();
         bo.setFarrowId(902L);

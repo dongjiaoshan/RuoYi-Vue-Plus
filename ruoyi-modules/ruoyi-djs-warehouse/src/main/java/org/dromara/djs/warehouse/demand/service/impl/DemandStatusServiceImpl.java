@@ -149,7 +149,7 @@ public class DemandStatusServiceImpl implements IDemandStatusService {
         entry.put("to", to.name());
         entry.put("event", event.name());
         entry.put("operator", operator);
-        // operatorName 由 admin 端解析 audit_history 时通过 @Translation USER_ID_TO_NAME 反查，
+        // operatorName 由 admin 端解析 audit_history 时通过 @Translation USER_ID_TO_NICKNAME 反查，
         // 后端不写死姓名，避免改名后历史记录漂移 + 跨模块依赖 ruoyi-system Mapper。
         entry.put("ts", LocalDateTime.now().toString());
         entry.put("remark", Optional.ofNullable(remark).orElse(""));

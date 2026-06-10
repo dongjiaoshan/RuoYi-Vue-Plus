@@ -4,7 +4,7 @@ import lombok.Data;
 
 import java.io.Serial;
 import java.io.Serializable;
-import java.time.LocalDateTime;
+import java.time.LocalDate;
 
 /**
  * 分娩查询入参（admin 列表分页 / mp 端 picker 共用基础结构）。
@@ -20,6 +20,6 @@ public class FarrowQuery implements Serializable {
 
     private Long pigId;
     private String earNo;
-    private LocalDateTime beginDate;
-    private LocalDateTime endDate;
+    private LocalDate beginDate;
+    private LocalDate endDate;
 }

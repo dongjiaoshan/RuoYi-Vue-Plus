@@ -115,10 +115,9 @@ public class LocationStockVo implements Serializable {
     private Long operatorId;
 
     /**
-     * 最后操作人姓名（ruoyi {@link Translation} {@code SysUser.userName} 翻译；
-     * USER_ID_TO_NICKNAME 在 ruoyi-common-translation 内未提供 impl，统一用 USER_ID_TO_NAME）。
+     * 最后操作人姓名（ruoyi {@link Translation} USER_ID_TO_NICKNAME 翻译 sys_user.nick_name 中文名）。
      */
-    @Translation(type = TransConstant.USER_ID_TO_NAME, mapper = "operatorId")
+    @Translation(type = TransConstant.USER_ID_TO_NICKNAME, mapper = "operatorId")
     @ExcelProperty(value = "操作人")
     private String operatorName;
 

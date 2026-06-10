@@ -107,7 +107,7 @@ public class PigIntroController extends BaseController {
     /**
      * 预生成"下一个可用首耳号"（外部引种可改耳号预填用，601-5 / ADR-0011 §2.6）。
      *
-     * <p>按品系 + 品种 + 公母 + 出生日组装 14 位前缀，取当天级 max+1 拼出首号返给前端预填，不落库。
+     * <p>按品系 + 品种 + 公母 + 出生日组装带分隔符前缀（品系1-品种2-公母1-yyMMdd6，如 1-01-1-260609），取当天级 max+1 拼出首号（如 1-01-1-260609-0001）返给前端预填，不落库。
      * 权限走 mp 通用只读串 {@code djs:applet:pig:search}（复用免新增菜单 seed）。</p>
      */
     @SaCheckLogin

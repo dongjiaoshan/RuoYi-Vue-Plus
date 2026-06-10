@@ -84,14 +84,14 @@ public interface IPigIntroService {
     /**
      * 预生成"下一个可用首耳号"（外部引种可改耳号预填用，601-5 / ADR-0011 §2.6）。
      *
-     * <p>按品系 + 品种 + 公母 + 出生日组装 14 位前缀，取当天级 max+1 拼出首号返给前端预填，<b>不落库</b>；
+     * <p>按品系 + 品种 + 公母 + 出生日组装带分隔符前缀（品系1-品种2-公母1-yyMMdd6，如 1-01-1-260609），取当天级 max+1 拼出首号返给前端预填，<b>不落库</b>；
      * 用户改后提交时再由 {@code introduceBatch} 校 UNIQUE，并发由 {@code EarNoAllocator} 锁 + 兜底重算。</p>
      *
      * @param strainCode 品系码（{@code djs_pig_strain} dict_value，1 位）
      * @param breedCode  品种码（{@code djs_pig_breed} dict_value，2 位）
      * @param pigSex     性别（M 公 / F 母）
      * @param birthDate  出生日期（空则用当天）
-     * @return 预生成的 14 位首耳号字符串
+     * @return 预生成的带分隔符首耳号字符串（如 1-01-1-260609-0001）
      */
     String previewNextEarNo(String strainCode, String breedCode, String pigSex, LocalDate birthDate);
 }

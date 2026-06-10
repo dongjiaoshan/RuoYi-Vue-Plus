@@ -18,8 +18,7 @@ import java.util.Date;
  * 门店销售流水 VO（STR-OP-001）。
  *
  * <p>{@code storeName} 由 service 层 JOIN {@code t_md_store} 回填；{@code operatorName} 走 ruoyi
- * {@code USER_ID_TO_NAME} 翻译（5.5.x 实现的是 {@code UserNameTranslationImpl}，不要写
- * {@code USER_ID_TO_NICKNAME}）。</p>
+ * {@code USER_ID_TO_NICKNAME} 翻译（NicknameTranslationImpl 取 sys_user.nick_name 中文名）。</p>
  *
  * @author djs
  * @since STR-OP-001
@@ -67,7 +66,7 @@ public class StoreSaleRecordVo implements Serializable {
      * 录入人姓名（注解翻译，VO 序列化时填）。
      */
     @ExcelProperty(value = "录入人")
-    @Translation(type = TransConstant.USER_ID_TO_NAME, mapper = "operatorId")
+    @Translation(type = TransConstant.USER_ID_TO_NICKNAME, mapper = "operatorId")
     private String operatorName;
 
     /**

@@ -16,7 +16,7 @@ import java.math.BigDecimal;
  *
  * <ul>
  *   <li>{@code inoutTypeLabel} 走字典 {@code djs_flow_type} 把 flow_type 转中文（注解翻译）。</li>
- *   <li>{@code operatorName} 走 {@code USER_ID_TO_NAME} 注解翻译。</li>
+ *   <li>{@code operatorName} 走 {@code USER_ID_TO_NICKNAME} 注解翻译。</li>
  *   <li>{@code supplierName} LEFT JOIN {@code t_md_supplier} 回填。</li>
  * </ul>
  *
@@ -78,7 +78,7 @@ public class InoutFlowVo implements Serializable {
     /**
      * 记录人姓名（注解翻译）。
      */
-    @Translation(type = TransConstant.USER_ID_TO_NAME, mapper = "operatorId")
+    @Translation(type = TransConstant.USER_ID_TO_NICKNAME, mapper = "operatorId")
     private String operatorName;
 
     /**

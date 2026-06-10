@@ -4,7 +4,7 @@ import lombok.Data;
 
 import java.io.Serial;
 import java.io.Serializable;
-import java.time.LocalDateTime;
+import java.time.LocalDate;
 
 @Data
 public class HeatQuery implements Serializable {
@@ -15,6 +15,6 @@ public class HeatQuery implements Serializable {
     private Long pigId;
     private String earNo;
     private Integer isPregnantConfirmed;
-    private LocalDateTime beginDate;
-    private LocalDateTime endDate;
+    private LocalDate beginDate;
+    private LocalDate endDate;
 }

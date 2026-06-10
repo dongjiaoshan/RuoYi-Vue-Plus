@@ -5,6 +5,7 @@ import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.dromara.common.core.domain.R;
 import org.dromara.djs.plant.plan.domain.bo.PlantStartBo;
+import org.dromara.djs.plant.plan.domain.vo.PlantCropTaskVo;
 import org.dromara.djs.plant.plan.domain.vo.PlantMonthTaskVo;
 import org.dromara.djs.plant.plan.domain.vo.SeedSummaryVo;
 import org.dromara.djs.plant.plan.mapper.PlantDetailsMapper;
@@ -27,8 +28,9 @@ import java.util.List;
  *
  * <h2>端点</h2>
  * <ul>
- *   <li>{@code GET  /djs/applet/plant/plan/monthTasks?month=}  当月播种任务卡列表（含 beginActualdate）</li>
- *   <li>{@code GET  /djs/applet/plant/plan/seedSummary}        播种首页 3 KPI（种植口径）</li>
+ *   <li>{@code GET  /djs/applet/plant/plan/cropTasks?month=}   当月播种作物聚合卡（喂首页卡 + 「全部(N)」=作物数 + 完成率，D2 拆接口聚合侧）</li>
+ *   <li>{@code GET  /djs/applet/plant/plan/monthTasks?month=}  当月播种任务明细行（含明细 id + beginActualdate，喂详情页逐块开工，D2 拆接口明细侧）</li>
+ *   <li>{@code GET  /djs/applet/plant/plan/seedSummary}        播种首页 3 KPI（种植口径，完成率 = 当月已开工明细/当月明细总数）</li>
  *   <li>{@code POST /djs/applet/plant/plan/startPlant}         开始种植开工（批量标记计划地块实际开工）</li>
  * </ul>
  *
@@ -45,7 +47,21 @@ public class AppletPlantTaskController {
     private final IPlantPlanService plantPlanService;
 
     /**
-     * 当月播种任务列表（按片区分组前的扁平行，mp 端本地按 zoneName 分组）。
+     * 当月播种作物聚合卡列表（D2 拆接口聚合侧）：喂首页作物卡 + 「全部(N)」计数（= 作物数 = 行数）
+     * + 完成率（D1 开工进度 = startedPlotCount/plotCount）。片区 chips 仍由 mp 端按明细维度自算。
+     *
+     * @param month 月份 1-12，不传默认当前系统月
+     */
+    @SaCheckLogin
+    @GetMapping("/cropTasks")
+    public R<List<PlantCropTaskVo>> cropTasks(@RequestParam(required = false) Integer month) {
+        int m = (month == null || month < 1 || month > 12) ? LocalDate.now().getMonthValue() : month;
+        return R.ok(plantDetailsMapper.selectCropTasks(m));
+    }
+
+    /**
+     * 当月播种任务明细行列表（D2 拆接口明细侧）：含明细 id + beginActualdate，喂作物种植详情页
+     * 逐块开工。mp 端详情页按 cropId 本地过滤拿该作物的计划地块明细。
      *
      * @param month 月份 1-12，不传默认当前系统月
      */

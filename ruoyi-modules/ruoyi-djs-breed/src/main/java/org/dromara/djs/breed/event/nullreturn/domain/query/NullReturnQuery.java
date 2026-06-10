@@ -4,7 +4,7 @@ import lombok.Data;
 
 import java.io.Serial;
 import java.io.Serializable;
-import java.time.LocalDateTime;
+import java.time.LocalDate;
 
 @Data
 public class NullReturnQuery implements Serializable {
@@ -16,6 +16,6 @@ public class NullReturnQuery implements Serializable {
     private String earNo;
     /** DB 单字符码 R/A/N（查询时传 DB 字段值，与 BO 不同）。 */
     private String abnormalType;
-    private LocalDateTime beginDate;
-    private LocalDateTime endDate;
+    private LocalDate beginDate;
+    private LocalDate endDate;
 }

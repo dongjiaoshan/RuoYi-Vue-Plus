@@ -18,7 +18,7 @@ import java.util.Date;
  * <p>主表 {@code t_warehouse_trace_code} 字段 + service 内存 JOIN 出的展示名
  * （{@code productName / storeName / farmName / plotName}，主表只存 FK，名字非冗余列）。
  * {@code codeType} 前端用字典 {@code djs_trace_code_type} 渲染 dict-tag（值 pork/veg/gift）；
- * {@code creatorName} 走 {@code USER_ID_TO_NAME} 翻译。</p>
+ * {@code creatorName} 走 {@code USER_ID_TO_NICKNAME} 翻译。</p>
  *
  * <p>不复用 TRC-CORE 的 {@code TraceCodeVo}（那是纯主表 VO 无 JOIN 展示名），admin 列表另立本 VO。</p>
  *
@@ -109,7 +109,7 @@ public class TraceCodeListVo implements Serializable {
      * 生成人姓名（注解翻译，VO 序列化时填）。
      */
     @ExcelProperty(value = "生成人")
-    @Translation(type = TransConstant.USER_ID_TO_NAME, mapper = "createBy")
+    @Translation(type = TransConstant.USER_ID_TO_NICKNAME, mapper = "createBy")
     private String creatorName;
 
     @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")

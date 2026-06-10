@@ -4,7 +4,7 @@ import lombok.Data;
 
 import java.io.Serial;
 import java.io.Serializable;
-import java.time.LocalDateTime;
+import java.time.LocalDate;
 
 @Data
 public class WeaningQuery implements Serializable {
@@ -15,6 +15,6 @@ public class WeaningQuery implements Serializable {
     private Long pigId;
     private String earNo;
     private Long farrowId;
-    private LocalDateTime beginDate;
-    private LocalDateTime endDate;
+    private LocalDate beginDate;
+    private LocalDate endDate;
 }

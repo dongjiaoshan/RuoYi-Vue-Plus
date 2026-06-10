@@ -17,7 +17,7 @@ import java.util.Date;
 /**
  * 会员手录消费记录 VO（STR-MEMBER-001）。
  *
- * <p>{@code operatorName} 走 {@code USER_ID_TO_NAME} 翻译，mapper 指向 {@code createBy}——本表无独立
+ * <p>{@code operatorName} 走 {@code USER_ID_TO_NICKNAME} 翻译，mapper 指向 {@code createBy}——本表无独立
  * operator_id 列，录入人即建档审计的 {@code create_by}（ADR-0007）。</p>
  *
  * @author djs
@@ -60,7 +60,7 @@ public class StoreMemberConsumptionVo implements Serializable {
      * 录入人姓名（注解翻译，本表无 operator_id 列，录入人即 create_by）。
      */
     @ExcelProperty(value = "录入人")
-    @Translation(type = TransConstant.USER_ID_TO_NAME, mapper = "createBy")
+    @Translation(type = TransConstant.USER_ID_TO_NICKNAME, mapper = "createBy")
     private String operatorName;
 
     @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")

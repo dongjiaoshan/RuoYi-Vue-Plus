@@ -150,11 +150,13 @@ public class FarrowServiceImpl implements IFarrowService {
 
     @Override
     public TableDataInfo<PigFarrowVo> queryPage(FarrowQuery query, PageQuery pageQuery) {
+        LocalDateTime beginAt = query.getBeginDate() != null ? query.getBeginDate().atStartOfDay() : null;
+        LocalDateTime endBefore = query.getEndDate() != null ? query.getEndDate().plusDays(1).atStartOfDay() : null;
         LambdaQueryWrapper<PigFarrow> w = Wrappers.<PigFarrow>lambdaQuery()
             .eq(query.getPigId() != null, PigFarrow::getPigId, query.getPigId())
             .eq(StringUtils.isNotBlank(query.getEarNo()), PigFarrow::getEarNo, query.getEarNo())
-            .ge(query.getBeginDate() != null, PigFarrow::getFarrowDate, query.getBeginDate())
-            .le(query.getEndDate() != null, PigFarrow::getFarrowDate, query.getEndDate())
+            .ge(beginAt != null, PigFarrow::getFarrowDate, beginAt)
+            .lt(endBefore != null, PigFarrow::getFarrowDate, endBefore)
             .orderByDesc(PigFarrow::getFarrowDate, PigFarrow::getId);
         Page<PigFarrowVo> page = farrowMapper.selectVoPage(pageQuery.build(), w);
         enrichTaggedCounts(page.getRecords());

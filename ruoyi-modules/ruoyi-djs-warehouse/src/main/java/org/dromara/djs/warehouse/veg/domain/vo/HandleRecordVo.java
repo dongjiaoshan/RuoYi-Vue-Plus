@@ -58,9 +58,9 @@ public class HandleRecordVo implements Serializable {
     private Long handleUser;
 
     /**
-     * 操作人名称（USER_ID_TO_NAME，对齐 skill cross-layer §契约 4.5）。
+     * 操作人名称（USER_ID_TO_NICKNAME，对齐 skill cross-layer §契约 4.5）。
      */
-    @Translation(type = TransConstant.USER_ID_TO_NAME, mapper = "handleUser")
+    @Translation(type = TransConstant.USER_ID_TO_NICKNAME, mapper = "handleUser")
     @ExcelProperty(value = "处理人")
     private String handleUserName;
 

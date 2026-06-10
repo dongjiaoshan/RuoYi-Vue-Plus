@@ -44,8 +44,8 @@ public class PigMarketingVo implements Serializable {
     /** 出栏操作员 userId（EmployeePicker 所选；snowflake string，出栏记录 tab 回显）。 */
     private String operator;
 
-    /** 出栏操作员姓名（FIX-CC-PERSON-001 #48c：operator userId → USER_ID_TO_NAME 翻译；记录列表显名不显 ID）。 */
-    @Translation(type = TransConstant.USER_ID_TO_NAME, mapper = "operator")
+    /** 出栏操作员姓名（FIX-CC-PERSON-001 #48c：operator userId → USER_ID_TO_NICKNAME 翻译；记录列表显名不显 ID）。 */
+    @Translation(type = TransConstant.USER_ID_TO_NICKNAME, mapper = "operator")
     private String operatorName;
 
     private String remark;

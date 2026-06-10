@@ -18,7 +18,7 @@ import java.math.BigDecimal;
  *   <li>{@code checkResult} 由 flow_type + change_num 推：{@code check_out} → loss；
  *       {@code check_in && change_num=0} → normal；{@code check_in && change_num≠0} → abnormal。</li>
  *   <li>{@code stock} = change_quantity（实盘量）；{@code diffQuantity} = ABS(change_num)。</li>
- *   <li>{@code operatorName} 走 ruoyi {@code USER_ID_TO_NAME} 注解翻译。</li>
+ *   <li>{@code operatorName} 走 ruoyi {@code USER_ID_TO_NICKNAME} 注解翻译。</li>
  * </ul>
  *
  * @author djs
@@ -88,7 +88,7 @@ public class CheckRecordVo implements Serializable {
     /**
      * 记录人姓名（注解翻译）。
      */
-    @Translation(type = TransConstant.USER_ID_TO_NAME, mapper = "operatorId")
+    @Translation(type = TransConstant.USER_ID_TO_NICKNAME, mapper = "operatorId")
     private String operatorName;
 
 }

@@ -26,6 +26,7 @@ import org.dromara.djs.breed.event.nullreturn.service.INullReturnService;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDateTime;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
@@ -117,13 +118,15 @@ public class NullReturnServiceImpl implements INullReturnService {
 
     @Override
     public TableDataInfo<PigAbnormalVo> queryPage(NullReturnQuery query, PageQuery pageQuery) {
+        LocalDateTime beginAt = query.getBeginDate() != null ? query.getBeginDate().atStartOfDay() : null;
+        LocalDateTime endBefore = query.getEndDate() != null ? query.getEndDate().plusDays(1).atStartOfDay() : null;
         LambdaQueryWrapper<PigAbnormal> w = Wrappers.<PigAbnormal>lambdaQuery()
             .eq(query.getPigId() != null, PigAbnormal::getPigId, query.getPigId())
             .eq(StringUtils.isNotBlank(query.getEarNo()), PigAbnormal::getEarNo, query.getEarNo())
             .eq(StringUtils.isNotBlank(query.getAbnormalType()),
                 PigAbnormal::getAbnormalType, query.getAbnormalType())
-            .ge(query.getBeginDate() != null, PigAbnormal::getAbnormalDate, query.getBeginDate())
-            .le(query.getEndDate() != null, PigAbnormal::getAbnormalDate, query.getEndDate())
+            .ge(beginAt != null, PigAbnormal::getAbnormalDate, beginAt)
+            .lt(endBefore != null, PigAbnormal::getAbnormalDate, endBefore)
             .orderByDesc(PigAbnormal::getAbnormalDate, PigAbnormal::getId);
         Page<PigAbnormalVo> page = abnormalMapper.selectVoPage(pageQuery.build(), w);
         return TableDataInfo.build(page);

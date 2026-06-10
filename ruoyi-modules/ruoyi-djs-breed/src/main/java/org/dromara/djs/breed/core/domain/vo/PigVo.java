@@ -112,9 +112,9 @@ public class PigVo implements Serializable {
     private Long createBy;
 
     /**
-     * 创建人姓名（ADR-0007 + 跨层契约 §4.5；用 USER_ID_TO_NAME，无 NICKNAME impl）。
+     * 创建人姓名（ADR-0007 + 跨层契约 §4.5；用 USER_ID_TO_NICKNAME 取 sys_user.nick_name 中文名）。
      */
-    @Translation(type = TransConstant.USER_ID_TO_NAME, mapper = "createBy")
+    @Translation(type = TransConstant.USER_ID_TO_NICKNAME, mapper = "createBy")
     @ExcelProperty(value = "创建人")
     private String createName;
 

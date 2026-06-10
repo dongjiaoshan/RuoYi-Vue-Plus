@@ -25,6 +25,7 @@ import org.dromara.djs.breed.event.castrate.service.ICastrateService;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDateTime;
 import java.util.Objects;
 
 /**
@@ -95,11 +96,13 @@ public class CastrateServiceImpl implements ICastrateService {
 
     @Override
     public TableDataInfo<CastrateRecordVo> queryPage(CastrateQuery query, PageQuery pageQuery) {
+        LocalDateTime beginAt = query.getBeginDate() != null ? query.getBeginDate().atStartOfDay() : null;
+        LocalDateTime endBefore = query.getEndDate() != null ? query.getEndDate().plusDays(1).atStartOfDay() : null;
         LambdaQueryWrapper<CastrateRecord> w = Wrappers.<CastrateRecord>lambdaQuery()
             .eq(query.getPigId() != null, CastrateRecord::getPigId, query.getPigId())
             .eq(StringUtils.isNotBlank(query.getEarNo()), CastrateRecord::getEarNo, query.getEarNo())
-            .ge(query.getBeginDate() != null, CastrateRecord::getCastrateDate, query.getBeginDate())
-            .le(query.getEndDate() != null, CastrateRecord::getCastrateDate, query.getEndDate())
+            .ge(beginAt != null, CastrateRecord::getCastrateDate, beginAt)
+            .lt(endBefore != null, CastrateRecord::getCastrateDate, endBefore)
             .orderByDesc(CastrateRecord::getCastrateDate, CastrateRecord::getId);
         Page<CastrateRecordVo> page = castrateMapper.selectVoPage(pageQuery.build(), w);
         return TableDataInfo.build(page);

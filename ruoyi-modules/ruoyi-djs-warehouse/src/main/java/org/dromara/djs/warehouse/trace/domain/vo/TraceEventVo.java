@@ -17,7 +17,7 @@ import java.time.LocalDateTime;
  * 追溯事件流水 VO（TRC-CORE-001），供下游 TRC-ADMIN-001（D14）事件链查询消费。
  *
  * <p>{@code traceContent} admin 端用字典 {@code djs_trace_content} 渲染 dict-tag；
- * {@code operatorName} 走 {@code USER_ID_TO_NAME} 翻译。immutable 流水无更新人 / 备注。</p>
+ * {@code operatorName} 走 {@code USER_ID_TO_NICKNAME} 翻译。immutable 流水无更新人 / 备注。</p>
  *
  * @author djs
  * @since TRC-CORE-001
@@ -54,7 +54,7 @@ public class TraceEventVo implements Serializable {
      * 操作人姓名（注解翻译，VO 序列化时填）。
      */
     @ExcelProperty(value = "操作人")
-    @Translation(type = TransConstant.USER_ID_TO_NAME, mapper = "operatorId")
+    @Translation(type = TransConstant.USER_ID_TO_NICKNAME, mapper = "operatorId")
     private String operatorName;
 
     @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")

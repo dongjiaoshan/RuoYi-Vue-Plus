@@ -451,7 +451,7 @@ public class PigIntroServiceImpl implements IPigIntroService {
      * 批量/单头分配 N 个耳号（ADR-0011）。
      *
      * <p>外部引种"用户可改首号"（601-5）：{@code bo} 为 {@link PigIntroBatchBo} 且用户填了合法 {@code startEarNo} 时，
-     * 以用户首号为起点连号（首号 = startEarNo，后续 +1）；首号校 14 位格式 + UNIQUE 探测，撞了报友好错。
+     * 以用户首号为起点连号（首号 = startEarNo，后续 +1）；首号校带分隔符格式 + UNIQUE 探测，撞了报友好错。
      * 未填则走 allocator 当天级 max+1 后端生成。</p>
      */
     private List<String> allocateEarNos(PigIntroBo bo, int count) {
@@ -463,16 +463,19 @@ public class PigIntroServiceImpl implements IPigIntroService {
     }
 
     /**
-     * 以用户给定首号为起点连号（首号校 14 位格式 + UNIQUE；后续 N-1 头序号 +1，逐头探测 UNIQUE 撞则报错）。
+     * 以用户给定首号为起点连号（首号校带分隔符格式 + UNIQUE；后续 N-1 头序号 +1，逐头探测 UNIQUE 撞则报错）。
+     * <p>前缀 = 末段 {@code -} 之前（品系1-品种2-公母1-yyMMdd6），序号 = 末段；与 allocator 同口径只看末段，
+     * 不按定长截位（根除旧位长不一致导致解析出 &gt;9999 的 P9 自相矛盾）。</p>
      */
     private List<String> allocateFromUserStart(String startEarNo, int count) {
-        if (!startEarNo.matches("^\\d{14}$")) {
+        if (!startEarNo.matches("^\\d-\\d{2}-\\d-\\d{6}-\\d{4}$")) {
             throw new ServiceException(I18nMessages.t("intro.start_ear_no.pattern"));
         }
-        String prefix = startEarNo.substring(0, 10);
+        int sepIdx = startEarNo.lastIndexOf('-');
+        String prefix = startEarNo.substring(0, sepIdx);
         long startSeq;
         try {
-            startSeq = Long.parseLong(startEarNo.substring(10));
+            startSeq = Long.parseLong(startEarNo.substring(sepIdx + 1));
         } catch (NumberFormatException e) {
             throw new ServiceException(I18nMessages.t("intro.start_ear_no.pattern"));
         }
@@ -484,7 +487,7 @@ public class PigIntroServiceImpl implements IPigIntroService {
         }
         List<String> earNos = new ArrayList<>(count);
         for (int i = 0; i < count; i++) {
-            String earNo = prefix + String.format("%04d", startSeq + i);
+            String earNo = prefix + "-" + String.format("%04d", startSeq + i);
             if (pigMapper.existsEarNo(earNo) != null) {
                 throw new ServiceException(I18nMessages.t("intro.start_ear_no.duplicate", earNo));
             }

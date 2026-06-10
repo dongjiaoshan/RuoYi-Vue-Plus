@@ -69,4 +69,23 @@ public interface FarmRecordsMapper extends BaseMapperPlus<FarmRecords, FarmRecor
          GROUP BY plot_id
         """)
     List<Map<String, Object>> selectTransplantedPercentByCrop(@Param("cropId") Long cropId);
+
+    /**
+     * 按 farm_type 聚合「当日已处理地块去重数」（FIX-PLT-MP-TILL-001 P7 dispatchSummary）。
+     *
+     * <p>{@code COUNT(DISTINCT plot_id) WHERE farm_date=今日 GROUP BY farm_type}——同地块当日多次记录
+     * 仍算 1 块（邓博真机定义）。12 工种统一去重，不特判 tillage。缺的工种 service 端补 0。</p>
+     *
+     * @param farmDate 今日（service 传入）
+     * @return 每行 {@code {farmType, plotCount}}（当日 0 记录的工种不在结果中，service 补 0）
+     */
+    @Select("""
+        SELECT farm_type AS farmType, COUNT(DISTINCT plot_id) AS plotCount
+          FROM t_plant_farm_records
+         WHERE del_flag = '0'
+           AND tenant_id = '1001'
+           AND farm_date = #{farmDate}
+         GROUP BY farm_type
+        """)
+    List<Map<String, Object>> selectTodayProcessedPlotCount(@Param("farmDate") java.time.LocalDate farmDate);
 }

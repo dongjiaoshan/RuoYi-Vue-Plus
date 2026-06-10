@@ -119,7 +119,7 @@ public class ProductProductionVo implements Serializable {
     private Long createBy;
 
     @ExcelProperty(value = "录入人")
-    @Translation(type = TransConstant.USER_ID_TO_NAME, mapper = "createBy")
+    @Translation(type = TransConstant.USER_ID_TO_NICKNAME, mapper = "createBy")
     private String createByName;
 
     @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")

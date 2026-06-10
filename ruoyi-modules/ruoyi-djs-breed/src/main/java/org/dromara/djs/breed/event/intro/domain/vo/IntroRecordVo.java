@@ -58,8 +58,8 @@ public class IntroRecordVo implements Serializable {
     /** 引种人员 userId（EmployeePicker 所选；legacy 可能自由文本）。 */
     private String operator;
 
-    /** 引种人员姓名（FIX-CC-PERSON-001 #16：operator userId → USER_ID_TO_NAME 翻译；mp 记录列表显名不显 ID，非数字 operator 翻不到回落 null）。 */
-    @Translation(type = TransConstant.USER_ID_TO_NAME, mapper = "operator")
+    /** 引种人员姓名（FIX-CC-PERSON-001 #16：operator userId → USER_ID_TO_NICKNAME 翻译；mp 记录列表显名不显 ID，非数字 operator 翻不到回落 null）。 */
+    @Translation(type = TransConstant.USER_ID_TO_NICKNAME, mapper = "operator")
     private String operatorName;
 
     /** 凭证图 OSS IDs 逗号分隔（外部引种有；mp 端渲染缩略图）。 */

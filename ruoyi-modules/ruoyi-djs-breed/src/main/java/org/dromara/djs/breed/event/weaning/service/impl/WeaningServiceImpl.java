@@ -38,6 +38,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
@@ -190,12 +191,14 @@ public class WeaningServiceImpl implements IWeaningService {
 
     @Override
     public TableDataInfo<PigWeaningVo> queryPage(WeaningQuery query, PageQuery pageQuery) {
+        LocalDateTime beginAt = query.getBeginDate() != null ? query.getBeginDate().atStartOfDay() : null;
+        LocalDateTime endBefore = query.getEndDate() != null ? query.getEndDate().plusDays(1).atStartOfDay() : null;
         LambdaQueryWrapper<PigWeaning> w = Wrappers.<PigWeaning>lambdaQuery()
             .eq(query.getPigId() != null, PigWeaning::getPigId, query.getPigId())
             .eq(StringUtils.isNotBlank(query.getEarNo()), PigWeaning::getEarNo, query.getEarNo())
             .eq(query.getFarrowId() != null, PigWeaning::getFarrowId, query.getFarrowId())
-            .ge(query.getBeginDate() != null, PigWeaning::getWeaningDate, query.getBeginDate())
-            .le(query.getEndDate() != null, PigWeaning::getWeaningDate, query.getEndDate())
+            .ge(beginAt != null, PigWeaning::getWeaningDate, beginAt)
+            .lt(endBefore != null, PigWeaning::getWeaningDate, endBefore)
             .orderByDesc(PigWeaning::getWeaningDate, PigWeaning::getId);
         Page<PigWeaningVo> page = weaningMapper.selectVoPage(pageQuery.build(), w);
         return TableDataInfo.build(page);

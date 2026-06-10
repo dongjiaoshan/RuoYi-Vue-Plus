@@ -30,6 +30,7 @@ import org.dromara.djs.breed.farm.mapper.PenMapper;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -191,13 +192,15 @@ public class TransferServiceImpl implements ITransferService {
 
     @Override
     public TableDataInfo<PigTransferVo> queryPage(TransferQuery query, PageQuery pageQuery) {
+        LocalDateTime beginAt = query.getBeginDate() != null ? query.getBeginDate().atStartOfDay() : null;
+        LocalDateTime endBefore = query.getEndDate() != null ? query.getEndDate().plusDays(1).atStartOfDay() : null;
         LambdaQueryWrapper<PigTransfer> w = Wrappers.<PigTransfer>lambdaQuery()
             .eq(query.getPigId() != null, PigTransfer::getPigId, query.getPigId())
             .eq(StringUtils.isNotBlank(query.getEarNo()), PigTransfer::getEarNo, query.getEarNo())
             .eq(query.getOldBarnId() != null, PigTransfer::getOldBarnId, query.getOldBarnId())
             .eq(query.getNewBarnId() != null, PigTransfer::getNewBarnId, query.getNewBarnId())
-            .ge(query.getBeginDate() != null, PigTransfer::getTransferDate, query.getBeginDate())
-            .le(query.getEndDate() != null, PigTransfer::getTransferDate, query.getEndDate())
+            .ge(beginAt != null, PigTransfer::getTransferDate, beginAt)
+            .lt(endBefore != null, PigTransfer::getTransferDate, endBefore)
             .orderByDesc(PigTransfer::getTransferDate, PigTransfer::getId);
         Page<PigTransferVo> page = transferMapper.selectVoPage(pageQuery.build(), w);
         return TableDataInfo.build(page);

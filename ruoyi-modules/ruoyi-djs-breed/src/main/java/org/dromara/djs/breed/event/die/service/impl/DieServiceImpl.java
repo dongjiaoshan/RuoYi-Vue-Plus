@@ -29,6 +29,7 @@ import org.dromara.djs.breed.farm.mapper.PenMapper;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDateTime;
 import java.util.Objects;
 
 /**
@@ -114,13 +115,15 @@ public class DieServiceImpl implements IDieService {
 
     @Override
     public TableDataInfo<PigDeathVo> queryPage(DieQuery query, PageQuery pageQuery) {
+        LocalDateTime beginAt = query.getBeginDate() != null ? query.getBeginDate().atStartOfDay() : null;
+        LocalDateTime endBefore = query.getEndDate() != null ? query.getEndDate().plusDays(1).atStartOfDay() : null;
         LambdaQueryWrapper<PigDeath> w = Wrappers.<PigDeath>lambdaQuery()
             .eq(query.getPigId() != null, PigDeath::getPigId, query.getPigId())
             .eq(StringUtils.isNotBlank(query.getEarNo()), PigDeath::getEarNo, query.getEarNo())
             .eq(StringUtils.isNotBlank(query.getDeathKind()), PigDeath::getDeathKind, query.getDeathKind())
             .eq(StringUtils.isNotBlank(query.getDeathReason()), PigDeath::getDeathReason, query.getDeathReason())
-            .ge(query.getBeginDate() != null, PigDeath::getDeathDate, query.getBeginDate())
-            .le(query.getEndDate() != null, PigDeath::getDeathDate, query.getEndDate())
+            .ge(beginAt != null, PigDeath::getDeathDate, beginAt)
+            .lt(endBefore != null, PigDeath::getDeathDate, endBefore)
             .orderByDesc(PigDeath::getDeathDate, PigDeath::getId);
         Page<PigDeathVo> page = deathMapper.selectVoPage(pageQuery.build(), w);
         return TableDataInfo.build(page);

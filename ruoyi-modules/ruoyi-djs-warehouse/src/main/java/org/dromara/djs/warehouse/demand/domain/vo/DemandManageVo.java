@@ -21,7 +21,7 @@ import java.util.Date;
  * 需求管理 VO（WMS-DEMAND-001）。
  *
  * <p>字典翻译走 admin 端 {@code <dict-tag>} 自渲染（ADR-0004 §2.3 范式）；
- * 操作人翻译走 {@code TransConstant.USER_ID_TO_NAME}（不是 USER_ID_TO_NICKNAME，参
+ * 操作人翻译走 {@code TransConstant.USER_ID_TO_NICKNAME}（显 sys_user.nick_name 中文名，参
  * .claude/skills/coder-djs-cross-layer-contract.md §契约 4.5）。</p>
  *
  * @author djs
@@ -86,7 +86,7 @@ public class DemandManageVo implements Serializable {
     private Long demandConfirmer;
 
     /** 确认人姓名（{@code sys_user.user_name} 翻译）。 */
-    @Translation(type = TransConstant.USER_ID_TO_NAME, mapper = "demandConfirmer")
+    @Translation(type = TransConstant.USER_ID_TO_NICKNAME, mapper = "demandConfirmer")
     private String demandConfirmerName;
 
     @ExcelProperty(value = "确认时间")
@@ -111,7 +111,7 @@ public class DemandManageVo implements Serializable {
     private Long createBy;
 
     /** 创建人姓名。 */
-    @Translation(type = TransConstant.USER_ID_TO_NAME, mapper = "createBy")
+    @Translation(type = TransConstant.USER_ID_TO_NICKNAME, mapper = "createBy")
     private String createByName;
 
     private String remark;

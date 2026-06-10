@@ -88,7 +88,7 @@ class BreedInfoServiceImplTest {
     private BreedInfoBo sampleBreedBo() {
         BreedInfoBo bo = new BreedInfoBo();
         bo.setBreedStrain(1);
-        bo.setBreedStrainCode("duroc");
+        bo.setBreedStrainCode("04");
         bo.setBreedStrainName("杜洛克");
         bo.setDescription("产肉性能优");
         return bo;
@@ -111,7 +111,7 @@ class BreedInfoServiceImplTest {
         verify(breedInfoMapper, times(1)).insert(captor.capture());
         BreedInfo saved = captor.getValue();
         assertThat(saved.getBreedStrain()).isEqualTo(1);
-        assertThat(saved.getBreedStrainCode()).isEqualTo("duroc");
+        assertThat(saved.getBreedStrainCode()).isEqualTo("04");
         assertThat(saved.getBreedStrainName()).isEqualTo("杜洛克");
     }
 
@@ -124,7 +124,7 @@ class BreedInfoServiceImplTest {
 
         BreedInfoVo vo = new BreedInfoVo();
         vo.setId(30001L);
-        vo.setBreedStrainCode("duroc");
+        vo.setBreedStrainCode("04");
         Page<BreedInfoVo> mockPage = new Page<>(1, 10);
         mockPage.setRecords(List.of(vo));
         mockPage.setTotal(1);
@@ -134,7 +134,7 @@ class BreedInfoServiceImplTest {
 
         assertThat(result.getTotal()).isEqualTo(1);
         assertThat(result.getRows()).hasSize(1);
-        assertThat(result.getRows().get(0).getBreedStrainCode()).isEqualTo("duroc");
+        assertThat(result.getRows().get(0).getBreedStrainCode()).isEqualTo("04");
     }
 
     @Test
@@ -142,12 +142,12 @@ class BreedInfoServiceImplTest {
     void testQueryById() {
         BreedInfoVo vo = new BreedInfoVo();
         vo.setId(30001L);
-        vo.setBreedStrainCode("duroc");
+        vo.setBreedStrainCode("04");
         when(breedInfoMapper.selectVoById(30001L)).thenReturn(vo);
 
         BreedInfoVo got = service.queryById(30001L);
         assertThat(got).isNotNull();
-        assertThat(got.getBreedStrainCode()).isEqualTo("duroc");
+        assertThat(got.getBreedStrainCode()).isEqualTo("04");
     }
 
     @Test
@@ -155,7 +155,7 @@ class BreedInfoServiceImplTest {
     void testUpdateByBo_HappyPath() {
         BreedInfo existing = new BreedInfo();
         existing.setId(30001L);
-        existing.setBreedStrainCode("duroc");
+        existing.setBreedStrainCode("04");
         when(breedInfoMapper.selectById(30001L)).thenReturn(existing);
         when(breedInfoMapper.updateById(any(BreedInfo.class))).thenReturn(1);
 

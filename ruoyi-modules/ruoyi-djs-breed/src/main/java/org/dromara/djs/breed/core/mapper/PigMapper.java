@@ -20,12 +20,12 @@ import java.util.List;
 public interface PigMapper extends BaseMapperPlus<Pig, PigVo> {
 
     /**
-     * 取同前缀（{@code farmCode2+barnCode2+yyMM}）现存耳号的最大值（BRD-FIX-EARNO-001 序号源 DB max）。
+     * 取同前缀（{@code 品系1-品种2-公母1-yyMMdd6}，如 {@code 4-04-1-260508}）现存耳号的最大值（ADR-0011 序号源 DB max）。
      *
      * <p>{@code likeRight(ear_no, prefix)} + {@code orderByDesc(ear_no)} + {@code LIMIT 1}。
-     * 耳号同前缀同位数 → 字符串降序首条即数值最大。空前缀（无人引过）返回 null，调用方从 seq=1 起。</p>
+     * 同前缀耳号末段序号定宽 4 位 → 字符串降序首条即序号最大。空前缀（无人引过）返回 null，调用方从 seq=1 起。</p>
      *
-     * @param prefix 耳号前缀（farmCode2 + barnCode2 + yyMM）
+     * @param prefix 耳号前缀（品系1-品种2-公母1-yyMMdd6）
      * @return 该前缀下最大耳号；无则 null
      */
     default String selectMaxEarNoByPrefix(String prefix) {

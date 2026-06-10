@@ -410,20 +410,28 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
     @Override
     public DispatchSummaryVo dispatchSummary() {
         LocalDate today = LocalDate.now();
-        // 一次 selectList 拿今日所有 farm_type，service 内 group by（V1 数据量小，不写 COUNT GROUP BY SQL）
-        List<FarmRecords> todayList = baseMapper.selectList(
-            new LambdaQueryWrapper<FarmRecords>()
-                .eq(FarmRecords::getFarmDate, today)
-                .select(FarmRecords::getId, FarmRecords::getFarmType));
-        Map<String, Integer> counts = new LinkedHashMap<>();
+        // 已处理：当日已处理地块去重数（COUNT(DISTINCT plot_id) GROUP BY farm_type），12 工种统一去重不特判
+        Map<String, Integer> processedCount = new LinkedHashMap<>();
         for (String type : FARM_TYPES_12) {
-            counts.put(type, 0);
+            processedCount.put(type, 0);
         }
-        for (FarmRecords r : todayList) {
-            counts.merge(r.getFarmType(), 1, Integer::sum);
+        for (Map<String, Object> row : baseMapper.selectTodayProcessedPlotCount(today)) {
+            Object type = row.get("farmType");
+            Object cnt = row.get("plotCount");
+            if (type != null && processedCount.containsKey(type.toString())) {
+                processedCount.put(type.toString(), cnt == null ? 0 : ((Number) cnt).intValue());
+            }
+        }
+        // 待处理：plot_status=1 空地池（12 工种共享同一空地池）
+        int idleTotal = Math.toIntExact(plotInfoMapper.selectCount(
+            new LambdaQueryWrapper<PlotInfo>().eq(PlotInfo::getPlotStatus, 1)));
+        Map<String, Integer> pendingCount = new LinkedHashMap<>();
+        for (String type : FARM_TYPES_12) {
+            pendingCount.put(type, idleTotal);
         }
         DispatchSummaryVo vo = new DispatchSummaryVo();
-        vo.setCounts(counts);
+        vo.setProcessedCount(processedCount);
+        vo.setPendingCount(pendingCount);
         return vo;
     }
 

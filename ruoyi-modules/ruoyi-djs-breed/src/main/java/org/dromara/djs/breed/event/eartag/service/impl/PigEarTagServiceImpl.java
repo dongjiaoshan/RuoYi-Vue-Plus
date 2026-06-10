@@ -51,10 +51,9 @@ import java.util.stream.Collectors;
  * 同生共死，任一失败回滚（含耳号分配器内部异常，已由 redisson lease 兜底）。</p>
  *
  * <h3>耳号生成</h3>
- * <p>EAR_NO 规则 {@code {farmCode2}{barnCode2}{yyMM}{seq4}}。本 service 走 {@link EarNoAllocator}
- * 一次性拿连续 N 号（序号源 = DB max 同前缀同月 + 1，月内连续耳标不撞 UNIQUE）。
- * {@code barnCode2} 取自母猪 barn_id 关联的 Barn.barnCode 前 2 位；{@code farmCode2}
- * 固定 "01"（V1 单农场，详见 ADR-0001）。</p>
+ * <p>EAR_NO 规则 {@code {品系1}-{品种2}-{公母1}-{出生yyMMdd6}-{当天序号4}}（如 {@code 4-04-1-260508-0001}，
+ * ADR-0011）。本 service 走 {@link EarNoAllocator} 按仔猪性别分组，每组一次性拿连续 N 号（序号源 = DB max
+ * 同前缀 + 1，当天同前缀连续耳标不撞 UNIQUE）。品系/品种继承母猪、公母取仔猪自身、出生日取分娩日。</p>
  *
  * @author djs
  * @since BRD-EVENT-003
@@ -253,13 +252,15 @@ public class PigEarTagServiceImpl implements IPigEarTagService {
 
     @Override
     public TableDataInfo<PigletnoVo> queryPage(PigletEarTagQuery query, PageQuery pageQuery) {
+        LocalDateTime tagBeginAt = query.getBeginDate() != null ? query.getBeginDate().atStartOfDay() : null;
+        LocalDateTime tagEndBefore = query.getEndDate() != null ? query.getEndDate().plusDays(1).atStartOfDay() : null;
         LambdaQueryWrapper<PigPigletno> wrapper = Wrappers.<PigPigletno>lambdaQuery()
             .eq(StringUtils.isNotBlank(query.getPigletEarNo()), PigPigletno::getPigletEarNo, query.getPigletEarNo())
             .eq(StringUtils.isNotBlank(query.getMotherEarNo()), PigPigletno::getMotherEarNo, query.getMotherEarNo())
             .eq(query.getFarrowId() != null, PigPigletno::getFarrowId, query.getFarrowId())
             .eq(StringUtils.isNotBlank(query.getPigletSex()), PigPigletno::getPigletSex, query.getPigletSex())
-            .ge(query.getBeginDate() != null, PigPigletno::getTagDate, query.getBeginDate())
-            .le(query.getEndDate() != null, PigPigletno::getTagDate, query.getEndDate())
+            .ge(tagBeginAt != null, PigPigletno::getTagDate, tagBeginAt)
+            .lt(tagEndBefore != null, PigPigletno::getTagDate, tagEndBefore)
             .orderByDesc(PigPigletno::getId);
         Page<PigletnoVo> page = pigletnoMapper.selectVoPage(pageQuery.build(), wrapper);
         enrichFarrowDate(page.getRecords());

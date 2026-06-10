@@ -4,7 +4,7 @@ import lombok.Data;
 
 import java.io.Serial;
 import java.io.Serializable;
-import java.time.LocalDateTime;
+import java.time.LocalDate;
 
 /**
  * 配种记录查询入参。
@@ -22,6 +22,6 @@ public class BreedingQuery implements Serializable {
     private String earNo;
     private String breedingType;
     private String boarEarNo;
-    private LocalDateTime beginDate;
-    private LocalDateTime endDate;
+    private LocalDate beginDate;
+    private LocalDate endDate;
 }
