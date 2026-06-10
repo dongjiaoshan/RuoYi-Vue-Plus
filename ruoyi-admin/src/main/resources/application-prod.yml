@@ -265,7 +265,7 @@ justauth:
       client-secret: 1f7d08**********5b7**********29e
       redirect-uri: ${justauth.address}/social-callback?source=gitea
 
---- # 东角山生产配置：微信真登录（mock 全关；appId/secret 走环境变量，不入 git）
+--- # 东角山生产/类生产配置：微信真登录；appId/secret 走环境变量，不入 git
 djs:
   wechat:
     miniapp:
@@ -273,7 +273,11 @@ djs:
       # 无默认值 —— 缺失时启动即报错，防生产误回退 mock。
       app-id: ${WX_MA_APPID}
       secret: ${WX_MA_SECRET}
-      mock: false
+      # 真微信登录默认开（mock 关）；如需临时回退 mock jscode2session 设 WX_MA_MOCK=true
+      mock: ${WX_MA_MOCK:false}
   applet:
-    # 生产禁用 mock 账号登录端点（dev/dev123 → 40004），仅留真微信登录。
-    auth-mock-enabled: false
+    # dev 多角色快速登录端点（9 角色按钮 → /applet/auth/login）开关：
+    #   - 真生产：默认 false（dev/dev123 → 40004），仅真微信登录。
+    #   - staging / UAT 体验环境：设环境变量 DJS_APPLET_AUTH_MOCK=true 保留快速登录测多角色。
+    # 与上面 wechat.mock 相互独立：可同时「真微信登录 + dev 快速登录」并存。
+    auth-mock-enabled: ${DJS_APPLET_AUTH_MOCK:false}
