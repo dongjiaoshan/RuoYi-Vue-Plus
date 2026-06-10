@@ -25,9 +25,14 @@ public class WechatBindPhoneBo implements Serializable {
     private static final long serialVersionUID = 1L;
 
     /**
-     * wechatLogin 接口返回的临时 openid（前端透传回来，用于二次匹配）
+     * 微信 wx.login() 新 code（真实绑定首选）：后端 jscode2session 换 openid，客户端不经手 openid。
+     * 与 {@code openid} 二选一，{@code code} 优先。
      */
-    @NotBlank(message = "openid 不能为空")
+    private String code;
+
+    /**
+     * wechatLogin 返回的临时 openid（dev / mock 模式透传回来；真实流程用 {@code code} 派生，可空）
+     */
     private String openid;
 
     /**

@@ -120,6 +120,38 @@ public interface DjsUserExtMapper {
     String selectWxOpenid(@Param("userId") Long userId);
 
     /**
+     * 批量查 user_id → wx_openid（admin 微信绑定状态列用）。
+     *
+     * <p>每行 Map 含 {@code userId}(Long) + {@code wxOpenid}(String，未绑定为 null)；
+     * 不带 status/del_flag 过滤（admin 列表已含停用 / 已删用户，绑定状态需如实反映）。</p>
+     *
+     * @param ids 去重后的非空 user_id 集合（调用方保证非空）
+     * @return 命中行的 {userId, wxOpenid} 列表
+     */
+    @Select("""
+        <script>
+        SELECT user_id AS userId, wx_openid AS wxOpenid
+        FROM sys_user
+        WHERE user_id IN
+          <foreach collection="ids" item="id" open="(" separator="," close=")">#{id}</foreach>
+        </script>
+        """)
+    List<Map<String, Object>> selectWxOpenidByIds(@Param("ids") Collection<Long> ids);
+
+    /**
+     * 解绑指定用户的微信（清空 wx_openid，admin 换人 / 误绑时用）。
+     *
+     * @return 影响行数
+     */
+    @Update("""
+        UPDATE sys_user
+        SET wx_openid = NULL,
+            update_time = NOW()
+        WHERE user_id = #{userId}
+        """)
+    int clearWxOpenid(@Param("userId") Long userId);
+
+    /**
      * 批量查 user_id → nick_name（导出回填用，只查启用未删用户）。
      *
      * <p>FastExcel 导出不经 Jackson，{@code @Translation} 不触发，需 service 层显式回填人名。

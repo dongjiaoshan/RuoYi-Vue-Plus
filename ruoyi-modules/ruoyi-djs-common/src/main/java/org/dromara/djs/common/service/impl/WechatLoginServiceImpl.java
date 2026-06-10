@@ -1,13 +1,18 @@
 package org.dromara.djs.common.service.impl;
 
+import cn.binarywang.wx.miniapp.api.WxMaService;
+import cn.binarywang.wx.miniapp.bean.WxMaJscode2SessionResult;
+import cn.binarywang.wx.miniapp.bean.WxMaPhoneNumberInfo;
 import cn.dev33.satoken.stp.StpUtil;
 import cn.dev33.satoken.stp.parameter.SaLoginParameter;
 import cn.hutool.core.util.StrUtil;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import me.chanjar.weixin.common.error.WxErrorException;
 import org.dromara.common.core.domain.model.LoginUser;
 import org.dromara.common.core.enums.UserType;
 import org.dromara.common.core.exception.ServiceException;
+import org.dromara.common.core.service.PermissionService;
 import org.dromara.common.satoken.utils.LoginHelper;
 import org.dromara.djs.common.constant.DjsAuthConstants;
 import org.dromara.djs.common.domain.bo.WechatBindPhoneBo;
@@ -21,13 +26,13 @@ import org.springframework.stereotype.Service;
 /**
  * 微信小程序登录服务实现。
  *
- * <p>本类实现 jscode2session 调用（V1 mock，V2 切 WxJava）+ openid/phone 匹配 sys_user +
+ * <p>本类实现 jscode2session 调用（mock 模式短路 / 真模式走 WxJava）+ openid/phone 匹配 sys_user +
  * 通过 {@link LoginHelper#login(LoginUser, SaLoginParameter)} 颁发 Sa-Token。</p>
  *
- * <p>关于 LoginUser.menuPermission / rolePermission 字段：本实现**不预填**这两个 Set，留 null。
- * 运行时 {@code SaPermissionImpl}（ruoyi-common-satoken）会发现 session 里没有，自动回退到
- * 调 SpringUtils.getBean(PermissionService.class).getMenuPermission(userId) 实时加载（懒加载策略）。
- * 这避免了 djs-common 反向依赖 ruoyi-system，同时保留 @SaCheckPermission 正常工作。</p>
+ * <p>权限装配：{@link #issueToken} 颁 token 前用 {@link PermissionService} 把 menuPermission +
+ * rolePermission 实填到 LoginUser（与 ruoyi 自带 {@code SysLoginService} 一致）。两个字段都要填——
+ * {@code SaPermissionImpl} 对"当前 session 自身"的权限校验直接读 LoginUser 里的值，不会回退 DB；
+ * 留空会导致 @SaCheckPermission 全拒、role-tabs / getInfo 取不到角色（员工进不去板块）。</p>
  *
  * @author djs
  */
@@ -37,6 +42,8 @@ import org.springframework.stereotype.Service;
 public class WechatLoginServiceImpl implements IWechatLoginService {
 
     private final DjsUserExtMapper djsUserExtMapper;
+    private final WxMaService wxMaService;
+    private final PermissionService permissionService;
 
     /**
      * 微信小程序 AppID（生产环境从 application.yml 读 djs.wechat.miniapp.app-id）。
@@ -65,13 +72,20 @@ public class WechatLoginServiceImpl implements IWechatLoginService {
 
     @Override
     public WechatLoginVo bindPhone(WechatBindPhoneBo bo) {
-        // 1. 拿到真实手机号（V1：直接读 bo.phone；V2：调微信"手机号快速验证"接口换 phoneCode → phone）
+        // 1. 解析 openid：真实流程传 code（jscode2session 换 openid，客户端不经手 openid）；
+        //    dev / mock 模式可直接透传 openid。code 优先。
+        String openid = StrUtil.isNotBlank(bo.getCode()) ? jscode2openid(bo.getCode()) : bo.getOpenid();
+        if (StrUtil.isBlank(openid)) {
+            throw new ServiceException("缺少 code / openid，无法绑定");
+        }
+
+        // 2. 拿到真实手机号（dev：直接读 bo.phone；真实：调微信"手机号快速验证"接口换 phoneCode → phone）
         String phone = StrUtil.isNotBlank(bo.getPhone()) ? bo.getPhone() : resolvePhoneByCode(bo.getPhoneCode());
         if (StrUtil.isBlank(phone)) {
             throw new ServiceException("手机号不能为空", DjsAuthConstants.BIZ_CODE_PHONE_NOT_REGISTERED);
         }
 
-        // 2. 查 sys_user.phonenumber
+        // 3. 查 sys_user.phonenumber
         Long userId = djsUserExtMapper.selectUserIdByPhone(phone);
         if (userId == null) {
             log.info("绑定手机号 {} 未注册，提示联系管理员", phone);
@@ -80,14 +94,14 @@ public class WechatLoginServiceImpl implements IWechatLoginService {
                 DjsAuthConstants.BIZ_CODE_PHONE_NOT_REGISTERED);
         }
 
-        // 3. UPDATE sys_user.wx_openid
-        int rows = djsUserExtMapper.updateWxOpenid(userId, bo.getOpenid());
+        // 4. UPDATE sys_user.wx_openid
+        int rows = djsUserExtMapper.updateWxOpenid(userId, openid);
         if (rows == 0) {
             throw new ServiceException("绑定 openid 失败");
         }
 
-        // 4. 颁发 token
-        return issueToken(userId, bo.getOpenid(), bo.getClientId());
+        // 5. 颁发 token
+        return issueToken(userId, openid, bo.getClientId());
     }
 
     // ---------------------- 内部辅助 ----------------------
@@ -95,8 +109,8 @@ public class WechatLoginServiceImpl implements IWechatLoginService {
     /**
      * jscode2session 调用。
      *
-     * <p>V1 mock 实现：当 djs.wechat.miniapp.app-id = "mock" 时，把入参 code 直接当 openid 返回，
-     * 方便本地调试。生产环境需把 wxAppId 配真实 AppID 后切到 WxJava / JustAuth。</p>
+     * <p>mock 模式（djs.wechat.miniapp.app-id = "mock"）：把入参 code 直接当 openid 返回，方便本地调试。
+     * 真模式：调 WxJava {@code getUserService().getSessionInfo(code)} 换取真实 openid。</p>
      *
      * @param code wx.login() 返回的临时 code
      * @return openid
@@ -110,22 +124,40 @@ public class WechatLoginServiceImpl implements IWechatLoginService {
             log.info("[mock] jscode2openid code={} → openid 直接复用 code", code);
             return code;
         }
-        // TODO V2：引入 me.zhyd.justauth.AuthWechatMiniProgramRequest 或 weixin-java-miniapp
-        //  调真实 jscode2session，参考 ruoyi-admin XcxAuthStrategy 的实现样例
-        throw new ServiceException("生产环境 jscode2session 待 SYS-INFRA-006 联调微信后启用，请先用 mock 模式");
+        try {
+            WxMaJscode2SessionResult session = wxMaService.getUserService().getSessionInfo(code);
+            String openid = session.getOpenid();
+            if (StrUtil.isBlank(openid)) {
+                throw new ServiceException("微信 jscode2session 返回空 openid");
+            }
+            return openid;
+        } catch (WxErrorException e) {
+            log.error("微信 jscode2session 失败 code={}", code, e);
+            throw new ServiceException("微信登录失败：" + e.getError().getErrorMsg());
+        }
     }
 
     /**
      * 手机号快速验证 phoneCode → phone。
      *
-     * <p>V1 mock：始终抛"未配置"；生产用 weixin-java-miniapp WxMaPhoneNumberInfo.</p>
+     * <p>mock 模式：返 null（dev 走 bo.phone 字段直传）。真模式：调 WxJava
+     * {@code getUserService().getPhoneNoInfo(phoneCode)} 解析微信授权手机号（新版 code 直换，无需 sessionKey）。</p>
      */
     private String resolvePhoneByCode(String phoneCode) {
         if (StrUtil.isBlank(phoneCode)) {
             return null;
         }
-        log.warn("[mock] resolvePhoneByCode phoneCode={} 未实现，直接返 null（dev 模式请传 phone 字段）", phoneCode);
-        return null;
+        if ("mock".equalsIgnoreCase(wxAppId)) {
+            log.warn("[mock] resolvePhoneByCode phoneCode={} 返 null（dev 模式请传 phone 字段）", phoneCode);
+            return null;
+        }
+        try {
+            WxMaPhoneNumberInfo info = wxMaService.getUserService().getPhoneNoInfo(phoneCode);
+            return info.getPhoneNumber();
+        } catch (WxErrorException e) {
+            log.error("微信手机号快速验证失败 phoneCode={}", phoneCode, e);
+            throw new ServiceException("获取微信手机号失败：" + e.getError().getErrorMsg());
+        }
     }
 
     /**
@@ -147,7 +179,11 @@ public class WechatLoginServiceImpl implements IWechatLoginService {
         loginUser.setUserType(UserType.SYS_USER.getUserType());
         loginUser.setClientKey(DjsAuthConstants.MP_APPLET_CLIENT_KEY);
         loginUser.setDeviceType("mp");
-        // menuPermission / rolePermission 不预填，SaPermissionImpl 会按需调 PermissionService 实时加载
+        // 实填 menuPermission + rolePermission（与 ruoyi SysLoginService 一致）：
+        // SaPermissionImpl 对当前 session 自身的权限校验直接读这两个 Set，留空会让 @SaCheckPermission 全拒、
+        // role-tabs / getInfo 取不到 role_key（员工进不去板块）。rolePermission 即 sys_role.role_key 集合。
+        loginUser.setMenuPermission(permissionService.getMenuPermission(userId));
+        loginUser.setRolePermission(permissionService.getRolePermission(userId));
 
         SaLoginParameter model = new SaLoginParameter();
         model.setDeviceType("mp");

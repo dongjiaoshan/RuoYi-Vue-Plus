@@ -288,6 +288,11 @@ djs:
   multi-farm:
     # V1 disabled，V2 启用拦截器后多农场生效（SYS-INFRA-007）
     enabled: false
+  applet:
+    # 小程序 mock 账号密码登录开关（dev 多角色快速登录 9 角色按钮依赖它）。
+    # dev 默认 true；上生产前置 false（或设环境变量 DJS_APPLET_AUTH_MOCK=false），
+    # mock 账号登录端点返 40004，仅留真微信登录。详见 doc/_adr/0003-mp-mock-auth.md。
+    auth-mock-enabled: ${DJS_APPLET_AUTH_MOCK:true}
   oss-sts:
     # 阿里云 OSS STS Token 服务（SYS-INFRA-002）
     enabled: true

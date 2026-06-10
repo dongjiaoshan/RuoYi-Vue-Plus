@@ -83,6 +83,14 @@
             <artifactId>ruoyi-system</artifactId>
         </dependency>
 
+        <!-- SYS-AUTH-001 真微信登录：WxJava 小程序 SDK（jscode2session + 手机号快速验证）。
+             mock 模式（djs.wechat.miniapp.app-id=mock）下不调用，仅真模式 jscode2openid/getPhoneNoInfo 走它。 -->
+        <dependency>
+            <groupId>com.github.binarywang</groupId>
+            <artifactId>weixin-java-miniapp</artifactId>
+            <version>4.7.0</version>
+        </dependency>
+
         <!-- SYS-AUTH-001：单测依赖（JUnit5 + Mockito，spring-boot-starter-test 已含两者） -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

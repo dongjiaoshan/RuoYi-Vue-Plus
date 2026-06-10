@@ -264,3 +264,16 @@ justauth:
       client-id: 10**********6
       client-secret: 1f7d08**********5b7**********29e
       redirect-uri: ${justauth.address}/social-callback?source=gitea
+
+--- # 东角山生产配置：微信真登录（mock 全关；appId/secret 走环境变量，不入 git）
+djs:
+  wechat:
+    miniapp:
+      # 必填：真实小程序 AppID / AppSecret，由部署环境变量注入。
+      # 无默认值 —— 缺失时启动即报错，防生产误回退 mock。
+      app-id: ${WX_MA_APPID}
+      secret: ${WX_MA_SECRET}
+      mock: false
+  applet:
+    # 生产禁用 mock 账号登录端点（dev/dev123 → 40004），仅留真微信登录。
+    auth-mock-enabled: false
