@@ -1,5 +1,6 @@
 package org.dromara.djs.plant.farm.mapper;
 
+import com.baomidou.mybatisplus.annotation.InterceptorIgnore;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 import org.dromara.common.mybatis.core.mapper.BaseMapperPlus;
@@ -187,4 +188,76 @@ public interface FarmRecordsMapper extends BaseMapperPlus<FarmRecords, FarmRecor
     List<Map<String, Object>> selectCropTargetCardsForRotation(@Param("farmType") String farmType,
                                                                @Param("zoneId") Long zoneId,
                                                                @Param("plotCode") String plotCode);
+
+    /**
+     * 生长工种「片区胶囊」聚合（FIX-PLT-MP-CROPSEL-001 P12/P15·补片区筛选）。
+     *
+     * <p>按片区统计该工种可操作地块去重数（已种植 {@code plant_status='ongoing'}），含 0 地块的活跃片区
+     * （{@code LEFT JOIN} 从片区表起，胶囊全量显示）。与 {@link #selectCropTargetCardsForGrow} 同口径，
+     * 胶囊计数 = 该片区下作物卡 plotCount 之和。手写多表 LEFT JOIN，{@code @InterceptorIgnore} 关租户行注入。</p>
+     *
+     * @param farmType 农事类型（生长类）
+     * @return 每行 {@code {zoneId, zoneName, plotCount}}，按 zone_name 升序
+     */
+    @InterceptorIgnore(tenantLine = "true")
+    @Select("""
+        SELECT z.id AS zoneId, z.zone_name AS zoneName, COUNT(DISTINCT d.plot_id) AS plotCount
+          FROM t_plant_plot_zone z
+          LEFT JOIN t_plant_plot_info p
+            ON p.zone_id = z.id AND p.del_flag = '0' AND p.tenant_id = '1001'
+          LEFT JOIN t_plant_plant_details d
+            ON d.plot_id = p.id AND d.del_flag = '0' AND d.tenant_id = '1001'
+           AND d.plant_status = 'ongoing'
+         WHERE z.del_flag = '0' AND z.tenant_id = '1001' AND z.zone_status = 1
+         GROUP BY z.id, z.zone_name
+         ORDER BY z.zone_name ASC
+        """)
+    List<Map<String, Object>> selectCropZoneCountsForGrow();
+
+    /**
+     * 移栽工种「片区胶囊」聚合（FIX-PLT-MP-CROPSEL-001 P12 移栽·补片区筛选）。
+     *
+     * <p>同 {@link #selectCropZoneCountsForGrow}，但只统计保育类型地块（{@code p.plot_type='nursery'}）——
+     * 与 {@link #selectCropTargetCardsForTransplant} 同口径。</p>
+     *
+     * @return 每行 {@code {zoneId, zoneName, plotCount}}
+     */
+    @InterceptorIgnore(tenantLine = "true")
+    @Select("""
+        SELECT z.id AS zoneId, z.zone_name AS zoneName, COUNT(DISTINCT d.plot_id) AS plotCount
+          FROM t_plant_plot_zone z
+          LEFT JOIN t_plant_plot_info p
+            ON p.zone_id = z.id AND p.del_flag = '0' AND p.tenant_id = '1001'
+           AND p.plot_type = 'nursery'
+          LEFT JOIN t_plant_plant_details d
+            ON d.plot_id = p.id AND d.del_flag = '0' AND d.tenant_id = '1001'
+           AND d.plant_status = 'ongoing'
+         WHERE z.del_flag = '0' AND z.tenant_id = '1001' AND z.zone_status = 1
+         GROUP BY z.id, z.zone_name
+         ORDER BY z.zone_name ASC
+        """)
+    List<Map<String, Object>> selectCropZoneCountsForTransplant();
+
+    /**
+     * 退茬工种「片区胶囊」聚合（FIX-PLT-MP-CROPSEL-001 P22 退茬·补片区筛选）。
+     *
+     * <p>同 {@link #selectCropZoneCountsForGrow}，但状态口径用采摘完成（{@code d.harvest_status='completed'}）——
+     * 与 {@link #selectCropTargetCardsForRotation} 同口径。</p>
+     *
+     * @return 每行 {@code {zoneId, zoneName, plotCount}}
+     */
+    @InterceptorIgnore(tenantLine = "true")
+    @Select("""
+        SELECT z.id AS zoneId, z.zone_name AS zoneName, COUNT(DISTINCT d.plot_id) AS plotCount
+          FROM t_plant_plot_zone z
+          LEFT JOIN t_plant_plot_info p
+            ON p.zone_id = z.id AND p.del_flag = '0' AND p.tenant_id = '1001'
+          LEFT JOIN t_plant_plant_details d
+            ON d.plot_id = p.id AND d.del_flag = '0' AND d.tenant_id = '1001'
+           AND d.harvest_status = 'completed'
+         WHERE z.del_flag = '0' AND z.tenant_id = '1001' AND z.zone_status = 1
+         GROUP BY z.id, z.zone_name
+         ORDER BY z.zone_name ASC
+        """)
+    List<Map<String, Object>> selectCropZoneCountsForRotation();
 }

@@ -116,7 +116,7 @@ public class SlaughterServiceImpl implements ISlaughterService {
         LocalDateTime endBefore = query.getEndDate() != null ? query.getEndDate().plusDays(1).atStartOfDay() : null;
         LambdaQueryWrapper<PigMarketing> w = Wrappers.<PigMarketing>lambdaQuery()
             .eq(query.getPigId() != null, PigMarketing::getPigId, query.getPigId())
-            .eq(StringUtils.isNotBlank(query.getEarNo()), PigMarketing::getEarNo, query.getEarNo())
+            .like(StringUtils.isNotBlank(query.getEarNo()), PigMarketing::getEarNo, query.getEarNo())
             .eq(StringUtils.isNotBlank(query.getOutDest()), PigMarketing::getOutDest, query.getOutDest())
             .ge(beginAt != null, PigMarketing::getMarketingDate, beginAt)
             .lt(endBefore != null, PigMarketing::getMarketingDate, endBefore)

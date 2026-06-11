@@ -28,6 +28,7 @@ import org.dromara.djs.plant.farm.domain.bo.TransplantRecordBo;
 import org.dromara.djs.plant.farm.domain.query.FarmRecordsQuery;
 import org.dromara.djs.plant.farm.domain.vo.DispatchSummaryVo;
 import org.dromara.djs.plant.farm.domain.vo.FarmCropPlotVo;
+import org.dromara.djs.plant.farm.domain.vo.CropZoneCountVo;
 import org.dromara.djs.plant.farm.domain.vo.FarmCropTargetCardVo;
 import org.dromara.djs.plant.farm.domain.vo.FarmRecordsVo;
 import org.dromara.djs.plant.farm.mapper.FarmRecordsMapper;
@@ -422,6 +423,38 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
 
         // 批量回填作物图（IMG-LIB-001 resolver，禁 N+1）
         fillCropImg(result, cropIds);
+        return result;
+    }
+
+    @Override
+    public List<CropZoneCountVo> listCropZoneCounts(String farmType) {
+        if (StringUtils.isBlank(farmType)) {
+            return List.of();
+        }
+        // 工种 → 片区胶囊聚合 @Select 分支（与 listCropTargetCards 同口径）
+        List<Map<String, Object>> rows;
+        if ("rotation".equals(farmType)) {
+            rows = baseMapper.selectCropZoneCountsForRotation();
+        } else if ("transplant".equals(farmType)) {
+            rows = baseMapper.selectCropZoneCountsForTransplant();
+        } else {
+            rows = baseMapper.selectCropZoneCountsForGrow();
+        }
+        if (CollUtil.isEmpty(rows)) {
+            return List.of();
+        }
+        List<CropZoneCountVo> result = new ArrayList<>(rows.size());
+        for (Map<String, Object> row : rows) {
+            CropZoneCountVo vo = new CropZoneCountVo();
+            Object zoneId = row.get("zoneId");
+            if (zoneId != null) {
+                vo.setZoneId(((Number) zoneId).longValue());
+            }
+            vo.setZoneName(row.get("zoneName") == null ? null : row.get("zoneName").toString());
+            Object cnt = row.get("plotCount");
+            vo.setPlotCount(cnt == null ? 0 : ((Number) cnt).intValue());
+            result.add(vo);
+        }
         return result;
     }
 

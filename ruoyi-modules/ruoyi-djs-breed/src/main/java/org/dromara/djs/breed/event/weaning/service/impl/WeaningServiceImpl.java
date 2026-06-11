@@ -195,7 +195,7 @@ public class WeaningServiceImpl implements IWeaningService {
         LocalDateTime endBefore = query.getEndDate() != null ? query.getEndDate().plusDays(1).atStartOfDay() : null;
         LambdaQueryWrapper<PigWeaning> w = Wrappers.<PigWeaning>lambdaQuery()
             .eq(query.getPigId() != null, PigWeaning::getPigId, query.getPigId())
-            .eq(StringUtils.isNotBlank(query.getEarNo()), PigWeaning::getEarNo, query.getEarNo())
+            .like(StringUtils.isNotBlank(query.getEarNo()), PigWeaning::getEarNo, query.getEarNo())
             .eq(query.getFarrowId() != null, PigWeaning::getFarrowId, query.getFarrowId())
             .ge(beginAt != null, PigWeaning::getWeaningDate, beginAt)
             .lt(endBefore != null, PigWeaning::getWeaningDate, endBefore)

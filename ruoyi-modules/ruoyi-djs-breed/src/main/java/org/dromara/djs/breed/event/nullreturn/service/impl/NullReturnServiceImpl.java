@@ -122,7 +122,7 @@ public class NullReturnServiceImpl implements INullReturnService {
         LocalDateTime endBefore = query.getEndDate() != null ? query.getEndDate().plusDays(1).atStartOfDay() : null;
         LambdaQueryWrapper<PigAbnormal> w = Wrappers.<PigAbnormal>lambdaQuery()
             .eq(query.getPigId() != null, PigAbnormal::getPigId, query.getPigId())
-            .eq(StringUtils.isNotBlank(query.getEarNo()), PigAbnormal::getEarNo, query.getEarNo())
+            .like(StringUtils.isNotBlank(query.getEarNo()), PigAbnormal::getEarNo, query.getEarNo())
             .eq(StringUtils.isNotBlank(query.getAbnormalType()),
                 PigAbnormal::getAbnormalType, query.getAbnormalType())
             .ge(beginAt != null, PigAbnormal::getAbnormalDate, beginAt)

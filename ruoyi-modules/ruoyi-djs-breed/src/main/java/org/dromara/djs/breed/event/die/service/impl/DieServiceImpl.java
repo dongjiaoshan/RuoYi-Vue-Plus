@@ -119,7 +119,7 @@ public class DieServiceImpl implements IDieService {
         LocalDateTime endBefore = query.getEndDate() != null ? query.getEndDate().plusDays(1).atStartOfDay() : null;
         LambdaQueryWrapper<PigDeath> w = Wrappers.<PigDeath>lambdaQuery()
             .eq(query.getPigId() != null, PigDeath::getPigId, query.getPigId())
-            .eq(StringUtils.isNotBlank(query.getEarNo()), PigDeath::getEarNo, query.getEarNo())
+            .like(StringUtils.isNotBlank(query.getEarNo()), PigDeath::getEarNo, query.getEarNo())
             .eq(StringUtils.isNotBlank(query.getDeathKind()), PigDeath::getDeathKind, query.getDeathKind())
             .eq(StringUtils.isNotBlank(query.getDeathReason()), PigDeath::getDeathReason, query.getDeathReason())
             .ge(beginAt != null, PigDeath::getDeathDate, beginAt)

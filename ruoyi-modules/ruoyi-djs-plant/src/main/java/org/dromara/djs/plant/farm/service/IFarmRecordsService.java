@@ -14,6 +14,7 @@ import org.dromara.djs.plant.farm.domain.bo.TransplantRecordBo;
 import org.dromara.djs.plant.farm.domain.query.FarmRecordsQuery;
 import org.dromara.djs.plant.farm.domain.vo.DispatchSummaryVo;
 import org.dromara.djs.plant.farm.domain.vo.FarmCropPlotVo;
+import org.dromara.djs.plant.farm.domain.vo.CropZoneCountVo;
 import org.dromara.djs.plant.farm.domain.vo.FarmCropTargetCardVo;
 import org.dromara.djs.plant.farm.domain.vo.FarmRecordsVo;
 
@@ -108,6 +109,17 @@ public interface IFarmRecordsService {
      * @return 作物目标卡列表（无数据返空列表）
      */
     List<FarmCropTargetCardVo> listCropTargetCards(String farmType, Long zoneId, String plotCode);
+
+    /**
+     * 种植类工种作业 tab「片区胶囊」计数（FIX-PLT-MP-CROPSEL-001 P12/P15·补片区筛选）。
+     *
+     * <p>按片区统计该工种可操作地块去重数（= 该片区下作物卡 plotCount 之和），含 0 地块的活跃片区
+     * （胶囊全量显示）。工种状态规则与 {@link #listCropTargetCards} 同口径。</p>
+     *
+     * @param farmType 农事类型（决定状态规则）
+     * @return 片区胶囊计数列表（按片区名升序，无片区返空列表）
+     */
+    List<CropZoneCountVo> listCropZoneCounts(String farmType);
 
     /**
      * 土地采摘状态调整（FIX-PLT-MP-HARVEST-001 #3，HARVEST 富页）。

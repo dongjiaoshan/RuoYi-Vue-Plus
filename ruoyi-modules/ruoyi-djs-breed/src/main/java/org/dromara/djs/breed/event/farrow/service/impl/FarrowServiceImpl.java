@@ -154,7 +154,7 @@ public class FarrowServiceImpl implements IFarrowService {
         LocalDateTime endBefore = query.getEndDate() != null ? query.getEndDate().plusDays(1).atStartOfDay() : null;
         LambdaQueryWrapper<PigFarrow> w = Wrappers.<PigFarrow>lambdaQuery()
             .eq(query.getPigId() != null, PigFarrow::getPigId, query.getPigId())
-            .eq(StringUtils.isNotBlank(query.getEarNo()), PigFarrow::getEarNo, query.getEarNo())
+            .like(StringUtils.isNotBlank(query.getEarNo()), PigFarrow::getEarNo, query.getEarNo())
             .ge(beginAt != null, PigFarrow::getFarrowDate, beginAt)
             .lt(endBefore != null, PigFarrow::getFarrowDate, endBefore)
             .orderByDesc(PigFarrow::getFarrowDate, PigFarrow::getId);

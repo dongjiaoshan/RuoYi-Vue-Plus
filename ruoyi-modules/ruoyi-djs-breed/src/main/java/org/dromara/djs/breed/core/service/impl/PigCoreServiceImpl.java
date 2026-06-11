@@ -658,7 +658,7 @@ public class PigCoreServiceImpl implements IPigCoreService {
     public TableDataInfo<PigStatusRecordVo> queryStatusRecordPage(PigStatusRecordQuery query, PageQuery pageQuery) {
         LambdaQueryWrapper<PigStatusRecord> w = new LambdaQueryWrapper<PigStatusRecord>()
             .eq(query.getPigId() != null, PigStatusRecord::getPigId, query.getPigId())
-            .eq(StringUtils.isNotBlank(query.getEarNo()), PigStatusRecord::getEarNo, query.getEarNo())
+            .like(StringUtils.isNotBlank(query.getEarNo()), PigStatusRecord::getEarNo, query.getEarNo())
             .eq(StringUtils.isNotBlank(query.getEventType()), PigStatusRecord::getEventType, query.getEventType())
             .eq(StringUtils.isNotBlank(query.getNewStatus()), PigStatusRecord::getNewStatus, query.getNewStatus())
             .ge(query.getChangeTimeStart() != null, PigStatusRecord::getChangeTime, query.getChangeTimeStart())
@@ -767,7 +767,7 @@ public class PigCoreServiceImpl implements IPigCoreService {
         if (query == null) {
             return w.orderByDesc(Pig::getId);
         }
-        w.eq(StringUtils.isNotBlank(query.getEarNo()), Pig::getEarNo, query.getEarNo())
+        w.like(StringUtils.isNotBlank(query.getEarNo()), Pig::getEarNo, query.getEarNo())
             .eq(StringUtils.isNotBlank(query.getPigSex()), Pig::getPigSex, query.getPigSex())
             .eq(StringUtils.isNotBlank(query.getPigType()), Pig::getPigType, query.getPigType())
             .eq(StringUtils.isNotBlank(query.getCurrentStatus()), Pig::getCurrentStatus, query.getCurrentStatus())

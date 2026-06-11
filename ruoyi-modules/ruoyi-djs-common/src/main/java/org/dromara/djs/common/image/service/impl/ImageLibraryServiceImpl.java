@@ -11,14 +11,19 @@ import org.dromara.common.core.utils.StringUtils;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.common.base.DjsBaseServiceImpl;
+import org.dromara.djs.common.image.api.ImageRematchProvider;
 import org.dromara.djs.common.image.domain.ImageLibrary;
+import org.dromara.djs.common.image.domain.bo.ImageBatchItemBo;
 import org.dromara.djs.common.image.domain.bo.ImageLibraryBo;
 import org.dromara.djs.common.image.domain.query.ImageLibraryQuery;
+import org.dromara.djs.common.image.domain.vo.ImageBatchImportVo;
 import org.dromara.djs.common.image.domain.vo.ImageLibraryVo;
 import org.dromara.djs.common.image.mapper.ImageLibraryMapper;
 import org.dromara.djs.common.image.service.IImageLibraryService;
 import org.dromara.djs.common.image.service.ImageUrlResolver;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -49,13 +54,22 @@ public class ImageLibraryServiceImpl
     private final ImageUrlResolver imageUrlResolver;
 
     /**
+     * 主数据图片重新匹配 provider 集合（plant / warehouse 各注册一个，零循环依赖）。
+     * 上游模块未上线时集合为空。
+     */
+    private final ObjectProvider<ImageRematchProvider> rematchProviders;
+
+    /**
      * name（主名 + 别名，全部 trim）→ ossId 匹配缓存。
      */
     private final Map<String, String> nameToOssId = new ConcurrentHashMap<>();
 
-    public ImageLibraryServiceImpl(ImageLibraryMapper baseMapper, ImageUrlResolver imageUrlResolver) {
+    public ImageLibraryServiceImpl(ImageLibraryMapper baseMapper,
+                                   ImageUrlResolver imageUrlResolver,
+                                   ObjectProvider<ImageRematchProvider> rematchProviders) {
         super(baseMapper);
         this.imageUrlResolver = imageUrlResolver;
+        this.rematchProviders = rematchProviders;
     }
 
     @PostConstruct
@@ -171,6 +185,50 @@ public class ImageLibraryServiceImpl
         int rows = softDelete(ids);
         reload();
         return rows;
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public ImageBatchImportVo batchImport(List<ImageBatchItemBo> items) {
+        ImageBatchImportVo result = new ImageBatchImportVo();
+        if (items == null || items.isEmpty()) {
+            return result;
+        }
+        int imported = 0;
+        int updated = 0;
+        for (ImageBatchItemBo item : items) {
+            if (item == null || StrUtil.isBlank(item.getImageName()) || StrUtil.isBlank(item.getOssId())) {
+                continue;
+            }
+            String name = item.getImageName().trim();
+            String ossId = item.getOssId().trim();
+            // 按 image_name upsert（软删行被 @TableLogic 自动过滤；UNIQUE 含 tenant_id 由拦截器保证）
+            ImageLibrary exists = baseMapper.selectOne(
+                new LambdaQueryWrapper<ImageLibrary>().eq(ImageLibrary::getImageName, name).last("limit 1"));
+            if (exists != null) {
+                // 重传即替换：只更新 ossId，不动已有 aliases / sort / status / remark
+                ImageLibrary patch = new ImageLibrary();
+                patch.setId(exists.getId());
+                patch.setOssId(ossId);
+                baseMapper.updateById(patch);
+                updated++;
+            } else {
+                ImageLibrary entity = new ImageLibrary();
+                entity.setImageName(name);
+                entity.setOssId(ossId);
+                entity.setSortOrder(0);
+                entity.setStatus(STATUS_NORMAL);
+                // aliases 留空；tenant_id 走 InjectionMetaObjectHandler 自动填充，不显式赋
+                baseMapper.insert(entity);
+                imported++;
+            }
+        }
+        result.setImported(imported);
+        result.setUpdated(updated);
+        // 刷匹配缓存 → 触发各域重新匹配回填存量主数据
+        reload();
+        rematchProviders.forEach(p -> result.getRematched().put(p.domainName(), p.rematchAll()));
+        return result;
     }
 
     /**

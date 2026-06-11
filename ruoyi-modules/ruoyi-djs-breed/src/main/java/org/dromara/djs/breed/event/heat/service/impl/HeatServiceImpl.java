@@ -119,7 +119,7 @@ public class HeatServiceImpl implements IHeatService {
         LocalDateTime endBefore = query.getEndDate() != null ? query.getEndDate().plusDays(1).atStartOfDay() : null;
         LambdaQueryWrapper<PigHeat> w = Wrappers.<PigHeat>lambdaQuery()
             .eq(query.getPigId() != null, PigHeat::getPigId, query.getPigId())
-            .eq(StringUtils.isNotBlank(query.getEarNo()), PigHeat::getEarNo, query.getEarNo())
+            .like(StringUtils.isNotBlank(query.getEarNo()), PigHeat::getEarNo, query.getEarNo())
             .eq(query.getIsPregnantConfirmed() != null,
                 PigHeat::getIsPregnantConfirmed, query.getIsPregnantConfirmed())
             .ge(beginAt != null, PigHeat::getHeatDate, beginAt)

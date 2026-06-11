@@ -100,7 +100,7 @@ public class EliminateServiceImpl implements IEliminateService {
         LocalDateTime endBefore = query.getEndDate() != null ? query.getEndDate().plusDays(1).atStartOfDay() : null;
         LambdaQueryWrapper<PigCulling> w = Wrappers.<PigCulling>lambdaQuery()
             .eq(query.getPigId() != null, PigCulling::getPigId, query.getPigId())
-            .eq(StringUtils.isNotBlank(query.getEarNo()), PigCulling::getEarNo, query.getEarNo())
+            .like(StringUtils.isNotBlank(query.getEarNo()), PigCulling::getEarNo, query.getEarNo())
             .eq(StringUtils.isNotBlank(query.getCullingReason()), PigCulling::getCullingReason, query.getCullingReason())
             .ge(beginAt != null, PigCulling::getCullingDate, beginAt)
             .lt(endBefore != null, PigCulling::getCullingDate, endBefore)

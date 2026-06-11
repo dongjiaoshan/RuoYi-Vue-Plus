@@ -21,6 +21,7 @@ import org.dromara.djs.plant.farm.domain.bo.TransplantRecordBo;
 import org.dromara.djs.plant.farm.domain.query.FarmRecordsQuery;
 import org.dromara.djs.plant.farm.domain.vo.DispatchSummaryVo;
 import org.dromara.djs.plant.farm.domain.vo.FarmCropPlotVo;
+import org.dromara.djs.plant.farm.domain.vo.CropZoneCountVo;
 import org.dromara.djs.plant.farm.domain.vo.FarmCropTargetCardVo;
 import org.dromara.djs.plant.farm.domain.vo.FarmRecordsVo;
 import org.dromara.djs.plant.farm.service.IFarmRecordsService;
@@ -157,6 +158,17 @@ public class AppletFarmRecordsController extends BaseController {
                                                          @RequestParam(required = false) Long zoneId,
                                                          @RequestParam(required = false) String plotCode) {
         return R.ok(farmRecordsService.listCropTargetCards(farmType, zoneId, plotCode));
+    }
+
+    /**
+     * 种植类工种作业 tab「片区胶囊」计数（FIX-PLT-MP-CROPSEL-001 P12/P15·补片区筛选）：
+     * 原型作物 selector 顶部 {@code A区(N)} 胶囊，按工种规则统计每个活跃片区可操作地块去重数（含 0）。
+     */
+    @SaCheckLogin
+    @SaCheckPermission("djs:applet:plant:work:grow")
+    @GetMapping("/cropZoneCounts")
+    public R<List<CropZoneCountVo>> cropZoneCounts(@RequestParam String farmType) {
+        return R.ok(farmRecordsService.listCropZoneCounts(farmType));
     }
 
     /**

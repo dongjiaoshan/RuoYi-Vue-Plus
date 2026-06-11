@@ -109,7 +109,7 @@ public class PigGrowthServiceImpl implements IPigGrowthService {
     public TableDataInfo<PigGrowthVo> queryPage(GrowthQuery query, PageQuery pageQuery) {
         LambdaQueryWrapper<PigGrowth> w = Wrappers.<PigGrowth>lambdaQuery()
             .eq(query.getPigId() != null, PigGrowth::getPigId, query.getPigId())
-            .eq(StringUtils.isNotBlank(query.getEarNo()), PigGrowth::getEarNo, query.getEarNo())
+            .like(StringUtils.isNotBlank(query.getEarNo()), PigGrowth::getEarNo, query.getEarNo())
             .ge(query.getBeginDate() != null, PigGrowth::getMeasureDate, query.getBeginDate())
             .le(query.getEndDate() != null, PigGrowth::getMeasureDate, query.getEndDate())
             .orderByDesc(PigGrowth::getMeasureDate, PigGrowth::getId);

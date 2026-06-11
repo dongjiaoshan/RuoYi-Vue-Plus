@@ -100,7 +100,7 @@ public class CastrateServiceImpl implements ICastrateService {
         LocalDateTime endBefore = query.getEndDate() != null ? query.getEndDate().plusDays(1).atStartOfDay() : null;
         LambdaQueryWrapper<CastrateRecord> w = Wrappers.<CastrateRecord>lambdaQuery()
             .eq(query.getPigId() != null, CastrateRecord::getPigId, query.getPigId())
-            .eq(StringUtils.isNotBlank(query.getEarNo()), CastrateRecord::getEarNo, query.getEarNo())
+            .like(StringUtils.isNotBlank(query.getEarNo()), CastrateRecord::getEarNo, query.getEarNo())
             .ge(beginAt != null, CastrateRecord::getCastrateDate, beginAt)
             .lt(endBefore != null, CastrateRecord::getCastrateDate, endBefore)
             .orderByDesc(CastrateRecord::getCastrateDate, CastrateRecord::getId);

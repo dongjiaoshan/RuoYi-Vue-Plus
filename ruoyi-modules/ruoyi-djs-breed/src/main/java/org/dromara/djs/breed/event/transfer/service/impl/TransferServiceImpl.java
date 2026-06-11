@@ -196,7 +196,7 @@ public class TransferServiceImpl implements ITransferService {
         LocalDateTime endBefore = query.getEndDate() != null ? query.getEndDate().plusDays(1).atStartOfDay() : null;
         LambdaQueryWrapper<PigTransfer> w = Wrappers.<PigTransfer>lambdaQuery()
             .eq(query.getPigId() != null, PigTransfer::getPigId, query.getPigId())
-            .eq(StringUtils.isNotBlank(query.getEarNo()), PigTransfer::getEarNo, query.getEarNo())
+            .like(StringUtils.isNotBlank(query.getEarNo()), PigTransfer::getEarNo, query.getEarNo())
             .eq(query.getOldBarnId() != null, PigTransfer::getOldBarnId, query.getOldBarnId())
             .eq(query.getNewBarnId() != null, PigTransfer::getNewBarnId, query.getNewBarnId())
             .ge(beginAt != null, PigTransfer::getTransferDate, beginAt)

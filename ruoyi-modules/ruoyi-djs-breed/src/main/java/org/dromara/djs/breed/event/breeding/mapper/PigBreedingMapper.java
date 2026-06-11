@@ -34,7 +34,7 @@ public interface PigBreedingMapper extends BaseMapperPlus<PigBreeding, PigBreedi
      *
      * @param page          MP 分页对象（{@link IPage}，框架自动拼 LIMIT + count）
      * @param pigId         母猪 id（可空）
-     * @param earNo         母猪耳号精确匹配（可空）
+     * @param earNo         母猪耳号模糊匹配 LIKE %earNo%（可空，记录列表筛选用）
      * @param breedingType  配种方式 code（可空）
      * @param boarEarNo     公猪耳号精确匹配（可空）
      * @param beginAt       配种日期下界（含，可空）
@@ -56,7 +56,7 @@ public interface PigBreedingMapper extends BaseMapperPlus<PigBreeding, PigBreedi
          WHERE b.del_flag = '0'
            AND b.tenant_id = '1001'
            <if test="pigId != null">AND b.pig_id = #{pigId}</if>
-           <if test="earNo != null and earNo != ''">AND b.ear_no = #{earNo}</if>
+           <if test="earNo != null and earNo != ''">AND b.ear_no LIKE CONCAT('%', #{earNo}, '%')</if>
            <if test="breedingType != null and breedingType != ''">AND b.breeding_type = #{breedingType}</if>
            <if test="boarEarNo != null and boarEarNo != ''">AND b.boar_ear_no = #{boarEarNo}</if>
            <if test="beginAt != null">AND b.breeding_date &gt;= #{beginAt}</if>

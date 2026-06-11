@@ -12,6 +12,7 @@ import org.dromara.common.core.exception.ServiceException;
 import org.dromara.djs.common.image.service.ImageUrlResolver;
 import org.dromara.djs.plant.crop.domain.CropInfo;
 import org.dromara.djs.plant.crop.mapper.CropInfoMapper;
+import org.dromara.djs.plant.farm.domain.vo.CropZoneCountVo;
 import org.dromara.djs.plant.farm.domain.vo.FarmCropTargetCardVo;
 import org.dromara.djs.plant.farm.domain.FarmRecords;
 import org.dromara.djs.plant.farm.domain.bo.DisasterBatchBo;
@@ -521,6 +522,41 @@ class FarmRecordsServiceImplTest {
         verify(baseMapper, never()).selectCropTargetCardsForGrow(any(), any(), any());
         verify(baseMapper, never()).selectCropTargetCardsForRotation(any(), any(), any());
         verify(baseMapper, never()).selectCropTargetCardsForTransplant(any(), any(), any());
+    }
+
+    @Test
+    @DisplayName("listCropZoneCounts: 工种 → 片区胶囊 @Select 分支（rotation/transplant/grow），含 0 片区透传")
+    void listCropZoneCounts_routesByFarmType() {
+        when(baseMapper.selectCropZoneCountsForRotation()).thenReturn(List.of(
+            Map.of("zoneId", 9L, "zoneName", "A区", "plotCount", 3),
+            Map.of("zoneId", 10L, "zoneName", "B区", "plotCount", 0)));
+        List<CropZoneCountVo> rot = service.listCropZoneCounts("rotation");
+        verify(baseMapper).selectCropZoneCountsForRotation();
+        verify(baseMapper, never()).selectCropZoneCountsForGrow();
+        verify(baseMapper, never()).selectCropZoneCountsForTransplant();
+        assertThat(rot).hasSize(2);
+        assertThat(rot.get(0).getZoneName()).isEqualTo("A区");
+        assertThat(rot.get(0).getPlotCount()).isEqualTo(3);
+        assertThat(rot.get(1).getPlotCount()).isZero();
+
+        when(baseMapper.selectCropZoneCountsForTransplant()).thenReturn(List.of(
+            Map.of("zoneId", 9L, "zoneName", "A区", "plotCount", 1)));
+        service.listCropZoneCounts("transplant");
+        verify(baseMapper).selectCropZoneCountsForTransplant();
+
+        when(baseMapper.selectCropZoneCountsForGrow()).thenReturn(List.of(
+            Map.of("zoneId", 9L, "zoneName", "A区", "plotCount", 2)));
+        service.listCropZoneCounts("water_fertilize");
+        verify(baseMapper).selectCropZoneCountsForGrow();
+    }
+
+    @Test
+    @DisplayName("listCropZoneCounts: farmType 空返空列表，不触 mapper")
+    void listCropZoneCounts_blankFarmType() {
+        assertThat(service.listCropZoneCounts("")).isEmpty();
+        verify(baseMapper, never()).selectCropZoneCountsForGrow();
+        verify(baseMapper, never()).selectCropZoneCountsForRotation();
+        verify(baseMapper, never()).selectCropZoneCountsForTransplant();
     }
 
     @Test

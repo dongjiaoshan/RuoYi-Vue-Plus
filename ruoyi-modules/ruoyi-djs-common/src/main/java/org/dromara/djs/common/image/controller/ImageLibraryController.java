@@ -2,6 +2,7 @@ package org.dromara.djs.common.image.controller;
 
 import cn.dev33.satoken.annotation.SaCheckPermission;
 import jakarta.servlet.http.HttpServletResponse;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.dromara.common.core.domain.R;
 import org.dromara.common.excel.utils.ExcelUtil;
@@ -12,8 +13,10 @@ import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.web.core.BaseController;
 import org.dromara.djs.common.image.api.ImageRematchProvider;
+import org.dromara.djs.common.image.domain.bo.ImageBatchItemBo;
 import org.dromara.djs.common.image.domain.bo.ImageLibraryBo;
 import org.dromara.djs.common.image.domain.query.ImageLibraryQuery;
+import org.dromara.djs.common.image.domain.vo.ImageBatchImportVo;
 import org.dromara.djs.common.image.domain.vo.ImageLibraryVo;
 import org.dromara.djs.common.image.service.IImageLibraryService;
 import org.springframework.beans.factory.ObjectProvider;
@@ -128,6 +131,20 @@ public class ImageLibraryController extends BaseController {
         Map<String, Integer> result = new LinkedHashMap<>();
         rematchProviders.forEach(p -> result.put(p.domainName(), p.rematchAll()));
         return R.ok(result);
+    }
+
+    /**
+     * 批量上传 + 按文件名自动归档：admin 整批传图后，前端用文件名（去扩展名）当主名配对 ossId 提交。
+     *
+     * <p>逐项按 image_name upsert（已存在替换 ossId / 不存在新建），导入后自动触发批量重新匹配，
+     * 让存量作物 / 商品立刻按名回填图。返回新建 / 更新 / 各域重新匹配条数。</p>
+     */
+    @SaCheckPermission("djs:common:image:add")
+    @Log(title = "公共图库批量导入", businessType = BusinessType.INSERT)
+    @RepeatSubmit
+    @PostMapping("/batchImport")
+    public R<ImageBatchImportVo> batchImport(@Validated @RequestBody @Valid List<ImageBatchItemBo> items) {
+        return R.ok(imageLibraryService.batchImport(items));
     }
 
 }

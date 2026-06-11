@@ -1,5 +1,6 @@
 package org.dromara.djs.common.image.service.impl;
 
+import org.dromara.djs.common.image.api.ImageRematchProvider;
 import org.dromara.djs.common.image.domain.ImageLibrary;
 import org.dromara.djs.common.image.mapper.ImageLibraryMapper;
 import org.dromara.djs.common.image.service.ImageUrlResolver;
@@ -12,6 +13,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
+import org.springframework.beans.factory.ObjectProvider;
 
 import java.util.List;
 
@@ -38,6 +40,9 @@ class ImageLibraryServiceImplTest {
     @Mock
     private ImageUrlResolver imageUrlResolver;
 
+    @Mock
+    private ObjectProvider<ImageRematchProvider> rematchProviders;
+
     private ImageLibraryServiceImpl service;
 
     private ImageLibrary img(String name, String aliases, String ossId) {
@@ -56,7 +61,7 @@ class ImageLibraryServiceImplTest {
             img("小白菜", null, "2059550583492132867"),
             img("无图作物", "noimg", null) // ossId 空 → 不进缓存
         ));
-        service = new ImageLibraryServiceImpl(imageLibraryMapper, imageUrlResolver);
+        service = new ImageLibraryServiceImpl(imageLibraryMapper, imageUrlResolver, rematchProviders);
         service.reload();
     }
 
