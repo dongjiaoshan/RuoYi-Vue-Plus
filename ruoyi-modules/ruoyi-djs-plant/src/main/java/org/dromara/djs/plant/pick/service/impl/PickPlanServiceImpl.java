@@ -114,10 +114,6 @@ public class PickPlanServiceImpl implements IPickPlanService {
         Date now = new Date();
         int updated = 0;
         for (PickDetailAdjustBo row : bo.getRows()) {
-            if (row.getBeginHarvestdate() != null && row.getEndHarvestdate() != null
-                && row.getBeginHarvestdate().isAfter(row.getEndHarvestdate())) {
-                throw new ServiceException("begin_harvestdate 不能晚于 end_harvestdate（明细 id=" + row.getId() + "）");
-            }
             if (row.getIsPick() != null && row.getIsPick() != 1 && row.getIsPick() != 2) {
                 throw new ServiceException("is_pick 仅允许 1 或 2（明细 id=" + row.getId() + "）");
             }
@@ -132,14 +128,31 @@ public class PickPlanServiceImpl implements IPickPlanService {
             if (!isGuestPick && effectiveHarvestBy == null) {
                 throw new ServiceException("请指派采摘班组后再发布（明细 id=" + row.getId() + "）");
             }
+
+            // 计划最早采摘日期可改；计划最晚按作物采摘周期窗口（创建时固化 = 原 last-earliest 天数）由最早派生重算。
+            // admin 不接收实际采摘起止（begin/end_harvestdate）—— 那由小程序采收录入回写。
+            java.time.LocalDate newEarliest = row.getEarliestHarvestdate();
+            java.time.LocalDate newLast = null;
+            if (newEarliest != null) {
+                long windowDays = 0L;
+                if (existing != null && existing.getEarliestHarvestdate() != null && existing.getLastHarvestdate() != null) {
+                    windowDays = java.time.temporal.ChronoUnit.DAYS.between(
+                        existing.getEarliestHarvestdate(), existing.getLastHarvestdate());
+                    if (windowDays < 0) {
+                        windowDays = 0L;
+                    }
+                }
+                newLast = newEarliest.plusDays(windowDays);
+            }
+
             updated += detailsMapper.update(null,
                 Wrappers.<PlantDetails>update()
                     .eq("id", row.getId())
                     .eq("del_flag", "0")
-                    .set(row.getBeginHarvestdate() != null, "begin_harvestdate", row.getBeginHarvestdate())
-                    .set(row.getEndHarvestdate()   != null, "end_harvestdate",   row.getEndHarvestdate())
-                    .set(row.getIsPick()           != null, "is_pick",           row.getIsPick())
-                    .set(row.getHarvestBy()        != null, "harvest_by",        row.getHarvestBy())
+                    .set(newEarliest != null, "earliest_harvestdate", newEarliest)
+                    .set(newLast     != null, "last_harvestdate",     newLast)
+                    .set(row.getIsPick()    != null, "is_pick",     row.getIsPick())
+                    .set(row.getHarvestBy() != null, "harvest_by",  row.getHarvestBy())
                     .set("update_by", updateBy)
                     .set("update_time", now));
         }

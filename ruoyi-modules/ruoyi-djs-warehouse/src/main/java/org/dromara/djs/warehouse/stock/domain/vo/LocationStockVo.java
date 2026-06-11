@@ -71,6 +71,12 @@ public class LocationStockVo implements Serializable {
     private Long plotId;
 
     /**
+     * 地块编号（service JOIN t_plant_plot_info.plot_code 回填）。
+     */
+    @ExcelProperty(value = "地块编号")
+    private String blockNo;
+
+    /**
      * 产品名称。
      */
     @ExcelProperty(value = "产品名称")

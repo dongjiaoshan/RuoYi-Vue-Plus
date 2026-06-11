@@ -39,22 +39,40 @@ public class BreedConfigVo implements Serializable {
     private Integer breedStrain;
 
     /**
-     * 母本编码。
+     * 母系编码。
      */
-    @ExcelProperty(value = "母本编码")
+    @ExcelProperty(value = "母系编码")
     private String motherCode;
 
     /**
-     * 父本编码。
+     * 母系名称（由 {@code motherCode} JOIN t_farm_breed_info 取 breed_strain_name 富集，非持久化列）。
      */
-    @ExcelProperty(value = "父本编码")
+    @ExcelProperty(value = "母系名称")
+    private String motherName;
+
+    /**
+     * 父系编码。
+     */
+    @ExcelProperty(value = "父系编码")
     private String fatherCode;
+
+    /**
+     * 父系名称（由 {@code fatherCode} JOIN t_farm_breed_info 取 breed_strain_name 富集，非持久化列）。
+     */
+    @ExcelProperty(value = "父系名称")
+    private String fatherName;
 
     /**
      * 仔代编码。
      */
     @ExcelProperty(value = "仔代编码")
     private String cubCode;
+
+    /**
+     * 仔代名称（由 {@code cubCode} JOIN t_farm_breed_info 取 breed_strain_name 富集，非持久化列）。
+     */
+    @ExcelProperty(value = "仔代名称")
+    private String offspringName;
 
     /**
      * 备注。

@@ -5,6 +5,8 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
+import org.dromara.djs.plant.plot.domain.PlotInfo;
+import org.dromara.djs.plant.plot.mapper.PlotInfoMapper;
 import org.dromara.djs.warehouse.location.domain.LocationInfo;
 import org.dromara.djs.warehouse.location.mapper.LocationInfoMapper;
 import org.dromara.djs.warehouse.stock.domain.LocationStock;
@@ -64,13 +66,16 @@ class LocationStockServiceImplTest {
     @Mock
     private LocationInfoMapper locationInfoMapper;
 
+    @Mock
+    private PlotInfoMapper plotInfoMapper;
+
     private TestableLocationStockServiceImpl service;
 
     private MockedStatic<LoginHelper> loginHelperMock;
 
     static class TestableLocationStockServiceImpl extends LocationStockServiceImpl {
-        TestableLocationStockServiceImpl(LocationStockMapper baseMapper, LocationInfoMapper locInfoMapper) {
-            super(baseMapper, locInfoMapper);
+        TestableLocationStockServiceImpl(LocationStockMapper baseMapper, LocationInfoMapper locInfoMapper, PlotInfoMapper plotInfoMapper) {
+            super(baseMapper, locInfoMapper, plotInfoMapper);
         }
 
         @Override
@@ -93,7 +98,7 @@ class LocationStockServiceImplTest {
 
     @BeforeEach
     void setup() {
-        service = new TestableLocationStockServiceImpl(stockMapper, locationInfoMapper);
+        service = new TestableLocationStockServiceImpl(stockMapper, locationInfoMapper, plotInfoMapper);
         loginHelperMock = Mockito.mockStatic(LoginHelper.class);
         loginHelperMock.when(LoginHelper::getUserId).thenReturn(10086L);
     }
@@ -139,6 +144,34 @@ class LocationStockServiceImplTest {
         assertThat(result.getTotal()).isEqualTo(1);
         assertThat(result.getRows()).hasSize(1);
         assertThat(result.getRows().get(0).getLocationName()).as("应回填 locationName").isEqualTo("冻品库");
+    }
+
+    @Test
+    @DisplayName("queryPageList: happy → JOIN 地块表回填 blockNo（地块编号 = plot_code）")
+    void testQueryPageList_FillBlockNo() {
+        LocationStockQuery query = new LocationStockQuery();
+        PageQuery pageQuery = new PageQuery(1, 10);
+
+        LocationStockVo vo = new LocationStockVo();
+        vo.setId(80002L);
+        vo.setLocationId(90001L);
+        vo.setPlotId(70001L);
+        vo.setProductName("小白菜");
+        Page<LocationStockVo> mockPage = new Page<>(1, 10);
+        mockPage.setRecords(List.of(vo));
+        mockPage.setTotal(1);
+        when(stockMapper.selectVoPage(any(Page.class), any(Wrapper.class))).thenReturn(mockPage);
+        when(locationInfoMapper.selectList(any())).thenReturn(List.of());
+
+        PlotInfo plot = new PlotInfo();
+        plot.setId(70001L);
+        plot.setPlotCode("DK-001");
+        when(plotInfoMapper.selectList(any())).thenReturn(List.of(plot));
+
+        TableDataInfo<LocationStockVo> result = service.queryPageList(query, pageQuery);
+
+        assertThat(result.getRows()).hasSize(1);
+        assertThat(result.getRows().get(0).getBlockNo()).as("应回填地块编号").isEqualTo("DK-001");
     }
 
     @Test

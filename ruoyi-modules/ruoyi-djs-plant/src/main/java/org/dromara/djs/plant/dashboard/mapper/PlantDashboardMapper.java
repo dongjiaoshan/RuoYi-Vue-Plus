@@ -42,13 +42,17 @@ public interface PlantDashboardMapper {
      * @return 单行聚合（各字段可能为 0，总面积可能为 0）
      */
     @Select("SELECT COUNT(*)                                            AS totalCount, "
-        + "       COALESCE(SUM(CASE WHEN plot_status = 1 THEN 1 ELSE 0 END), 0) AS idleCount, "
-        + "       COALESCE(SUM(CASE WHEN plot_status = 2 THEN 1 ELSE 0 END), 0) AS plantingCount, "
-        + "       COALESCE(SUM(CASE WHEN plot_status = 3 THEN 1 ELSE 0 END), 0) AS harvestingCount, "
-        + "       COALESCE(SUM(plot_area), 0)                           AS totalArea "
-        + "  FROM t_plant_plot_info "
-        + " WHERE tenant_id = #{tenantId} "
-        + "   AND del_flag = '0'")
+        + "       COALESCE(SUM(CASE WHEN p.plot_status = 1 THEN 1 ELSE 0 END), 0) AS idleCount, "
+        + "       COALESCE(SUM(CASE WHEN p.plot_status = 2 THEN 1 ELSE 0 END), 0) AS plantingCount, "
+        + "       COALESCE(SUM(CASE WHEN p.plot_status = 3 THEN 1 ELSE 0 END), 0) AS harvestingCount, "
+        + "       COALESCE(SUM(p.plot_area), 0)                         AS totalArea "
+        + "  FROM t_plant_plot_info p "
+        + "  JOIN t_plant_plot_zone z ON z.id = p.zone_id "
+        + "                          AND z.tenant_id = #{tenantId} "
+        + "                          AND z.del_flag = '0' "
+        + "                          AND z.zone_status = 1 "
+        + " WHERE p.tenant_id = #{tenantId} "
+        + "   AND p.del_flag = '0'")
     PlotOverviewRow selectPlotOverview(@Param("tenantId") String tenantId);
 
     /**
@@ -60,6 +64,13 @@ public interface PlantDashboardMapper {
      */
     @Select("SELECT COUNT(DISTINCT d.plot_id) "
         + "  FROM t_plant_plant_details d "
+        + "  JOIN t_plant_plot_info p ON p.id = d.plot_id "
+        + "                          AND p.tenant_id = #{tenantId} "
+        + "                          AND p.del_flag = '0' "
+        + "  JOIN t_plant_plot_zone z ON z.id = p.zone_id "
+        + "                          AND z.tenant_id = #{tenantId} "
+        + "                          AND z.del_flag = '0' "
+        + "                          AND z.zone_status = 1 "
         + " WHERE d.tenant_id = #{tenantId} "
         + "   AND d.del_flag = '0' "
         + "   AND d.plant_status = 'pending' "

@@ -2,16 +2,21 @@ package org.dromara.djs.breed.breeding.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
+import com.baomidou.mybatisplus.core.MybatisConfiguration;
+import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.breed.breeding.domain.BreedConfig;
+import org.dromara.djs.breed.breeding.domain.BreedInfo;
 import org.dromara.djs.breed.breeding.domain.bo.BreedConfigBo;
 import org.dromara.djs.breed.breeding.domain.query.BreedConfigQuery;
 import org.dromara.djs.breed.breeding.domain.vo.BreedConfigVo;
 import org.dromara.djs.breed.breeding.mapper.BreedConfigMapper;
 import org.dromara.djs.breed.breeding.mapper.BreedInfoMapper;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
@@ -54,6 +59,16 @@ import static org.mockito.Mockito.when;
 @MockitoSettings(strictness = Strictness.LENIENT)
 @DisplayName("BreedConfigServiceImpl 单元测试")
 class BreedConfigServiceImplTest {
+
+    @BeforeAll
+    static void initMpEntityCache() {
+        // 预热 MyBatis-Plus 实体 lambda cache（纯 Mockito 无 Spring/DB 上下文，enrichNames 用 LambdaQueryWrapper&lt;BreedInfo&gt; 需 TableInfo）
+        MybatisConfiguration cfg = new MybatisConfiguration();
+        MapperBuilderAssistant assistant = new MapperBuilderAssistant(cfg, "");
+        assistant.setCurrentNamespace("test");
+        TableInfoHelper.initTableInfo(assistant, BreedInfo.class);
+        TableInfoHelper.initTableInfo(assistant, BreedConfig.class);
+    }
 
     @Mock
     private BreedConfigMapper breedConfigMapper;
@@ -149,6 +164,48 @@ class BreedConfigServiceImplTest {
 
         assertThat(result.getTotal()).isEqualTo(1);
         assertThat(result.getRows().get(0).getMotherCode()).isEqualTo("landrace");
+    }
+
+    @Test
+    @DisplayName("queryPageList: 富集 motherName/fatherName/offspringName（批量 JOIN breed_info，避免 N+1）")
+    void testQueryPageList_EnrichNames() {
+        BreedConfigQuery query = new BreedConfigQuery();
+        query.setBreedStrain(1);
+        PageQuery pageQuery = new PageQuery(1, 10);
+
+        BreedConfigVo vo = new BreedConfigVo();
+        vo.setId(40001L);
+        vo.setBreedStrain(1);
+        vo.setMotherCode("landrace");
+        vo.setFatherCode("yorkshire");
+        vo.setCubCode("binary");
+        Page<BreedConfigVo> mockPage = new Page<>(1, 10);
+        mockPage.setRecords(List.of(vo));
+        mockPage.setTotal(1);
+        when(breedConfigMapper.selectVoPage(any(Page.class), any(Wrapper.class))).thenReturn(mockPage);
+
+        // breed_info 批量查名：一次 selectList 返三条 code→name
+        when(breedInfoMapper.selectList(any(Wrapper.class))).thenReturn(List.of(
+            breedInfo("landrace", "长白"),
+            breedInfo("yorkshire", "大约克"),
+            breedInfo("binary", "长大二元")
+        ));
+
+        TableDataInfo<BreedConfigVo> result = service.queryPageList(query, pageQuery);
+
+        BreedConfigVo row = result.getRows().get(0);
+        assertThat(row.getMotherName()).isEqualTo("长白");
+        assertThat(row.getFatherName()).isEqualTo("大约克");
+        assertThat(row.getOffspringName()).isEqualTo("长大二元");
+        // 避免 N+1：3 行 code 仅 1 次批量查（同一 breedStrain 分组）
+        verify(breedInfoMapper, times(1)).selectList(any(Wrapper.class));
+    }
+
+    private BreedInfo breedInfo(String code, String name) {
+        BreedInfo info = new BreedInfo();
+        info.setBreedStrainCode(code);
+        info.setBreedStrainName(name);
+        return info;
     }
 
     @Test

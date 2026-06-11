@@ -20,8 +20,12 @@ import org.dromara.djs.common.base.DjsBaseServiceImpl;
 import org.springframework.stereotype.Service;
 
 import java.util.Collection;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 
 /**
  * 育种配置 Service 实现（BRD-MD-001 / CR-20260519-06）。
@@ -54,12 +58,15 @@ public class BreedConfigServiceImpl extends DjsBaseServiceImpl<BreedConfigMapper
     public TableDataInfo<BreedConfigVo> queryPageList(BreedConfigQuery query, PageQuery pageQuery) {
         LambdaQueryWrapper<BreedConfig> wrapper = buildQueryWrapper(query);
         Page<BreedConfigVo> page = baseMapper.selectVoPage(pageQuery.build(), wrapper);
+        enrichNames(page.getRecords());
         return TableDataInfo.build(page);
     }
 
     @Override
     public List<BreedConfigVo> queryList(BreedConfigQuery query) {
-        return baseMapper.selectVoList(buildQueryWrapper(query));
+        List<BreedConfigVo> list = baseMapper.selectVoList(buildQueryWrapper(query));
+        enrichNames(list);
+        return list;
     }
 
     @Override
@@ -125,6 +132,69 @@ public class BreedConfigServiceImpl extends DjsBaseServiceImpl<BreedConfigMapper
         if (count == null || count == 0L) {
             throw new ServiceException(role + "编码 [" + code + "] 在育种信息中不存在，请先到品种/品系页登记");
         }
+    }
+
+    /**
+     * 批量富集 motherName / fatherName / offspringName：一次性把当页所有引用到的
+     * {@code breed_strain_code} 查回 {@code t_farm_breed_info.breed_strain_name}，
+     * 按 {@code breedStrain + code} 作键建 map 回填，避免 N+1（每行 3 次查询）。
+     *
+     * <p>code 在 {@code t_farm_breed_info} 内按 {@code (tenant_id, breed_strain)} 唯一，
+     * 故 map key 必须带 breedStrain；同时按 breedStrain 分组下推 IN 条件减少回表。</p>
+     */
+    private void enrichNames(List<BreedConfigVo> list) {
+        if (list == null || list.isEmpty()) {
+            return;
+        }
+        // 1. 收集每个 breedStrain 下用到的全部 code
+        Map<Integer, Set<String>> codesByStrain = new HashMap<>();
+        for (BreedConfigVo vo : list) {
+            Integer strain = vo.getBreedStrain();
+            if (strain == null) {
+                continue;
+            }
+            Set<String> codes = codesByStrain.computeIfAbsent(strain, k -> new HashSet<>());
+            addIfNotBlank(codes, vo.getMotherCode());
+            addIfNotBlank(codes, vo.getFatherCode());
+            addIfNotBlank(codes, vo.getCubCode());
+        }
+        if (codesByStrain.isEmpty()) {
+            return;
+        }
+        // 2. 按 breedStrain 分组批量查名 → 建 (strain::code) → name map
+        Map<String, String> nameMap = new HashMap<>();
+        codesByStrain.forEach((strain, codes) -> {
+            if (codes.isEmpty()) {
+                return;
+            }
+            List<BreedInfo> infos = breedInfoMapper.selectList(new LambdaQueryWrapper<BreedInfo>()
+                .select(BreedInfo::getBreedStrainCode, BreedInfo::getBreedStrainName)
+                .eq(BreedInfo::getBreedStrain, strain)
+                .in(BreedInfo::getBreedStrainCode, codes));
+            for (BreedInfo info : infos) {
+                nameMap.put(nameKey(strain, info.getBreedStrainCode()), info.getBreedStrainName());
+            }
+        });
+        // 3. 回填
+        for (BreedConfigVo vo : list) {
+            Integer strain = vo.getBreedStrain();
+            if (strain == null) {
+                continue;
+            }
+            vo.setMotherName(nameMap.get(nameKey(strain, vo.getMotherCode())));
+            vo.setFatherName(nameMap.get(nameKey(strain, vo.getFatherCode())));
+            vo.setOffspringName(nameMap.get(nameKey(strain, vo.getCubCode())));
+        }
+    }
+
+    private void addIfNotBlank(Set<String> set, String code) {
+        if (StringUtils.isNotBlank(code)) {
+            set.add(code);
+        }
+    }
+
+    private String nameKey(Integer breedStrain, String code) {
+        return breedStrain + "::" + code;
     }
 
     /**

@@ -10,6 +10,8 @@ import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.satoken.utils.LoginHelper;
 import org.dromara.djs.common.base.DjsBaseServiceImpl;
+import org.dromara.djs.plant.plot.domain.PlotInfo;
+import org.dromara.djs.plant.plot.mapper.PlotInfoMapper;
 import org.dromara.djs.warehouse.location.domain.LocationInfo;
 import org.dromara.djs.warehouse.location.mapper.LocationInfoMapper;
 import org.dromara.djs.warehouse.stock.domain.LocationStock;
@@ -43,10 +45,12 @@ import java.util.stream.Collectors;
 public class LocationStockServiceImpl extends DjsBaseServiceImpl<LocationStockMapper, LocationStock> implements ILocationStockService {
 
     private final LocationInfoMapper locationInfoMapper;
+    private final PlotInfoMapper plotInfoMapper;
 
-    public LocationStockServiceImpl(LocationStockMapper baseMapper, LocationInfoMapper locationInfoMapper) {
+    public LocationStockServiceImpl(LocationStockMapper baseMapper, LocationInfoMapper locationInfoMapper, PlotInfoMapper plotInfoMapper) {
         super(baseMapper);
         this.locationInfoMapper = locationInfoMapper;
+        this.plotInfoMapper = plotInfoMapper;
     }
 
     @Override
@@ -54,6 +58,7 @@ public class LocationStockServiceImpl extends DjsBaseServiceImpl<LocationStockMa
         LambdaQueryWrapper<LocationStock> wrapper = buildQueryWrapper(query);
         Page<LocationStockVo> page = baseMapper.selectVoPage(pageQuery.build(), wrapper);
         fillLocationNames(page.getRecords());
+        fillBlockNos(page.getRecords());
         return TableDataInfo.build(page);
     }
 
@@ -61,6 +66,7 @@ public class LocationStockServiceImpl extends DjsBaseServiceImpl<LocationStockMa
     public List<LocationStockVo> queryList(LocationStockQuery query) {
         List<LocationStockVo> list = baseMapper.selectVoList(buildQueryWrapper(query));
         fillLocationNames(list);
+        fillBlockNos(list);
         return list;
     }
 
@@ -69,6 +75,7 @@ public class LocationStockServiceImpl extends DjsBaseServiceImpl<LocationStockMa
         LocationStockVo vo = baseMapper.selectVoById(id);
         if (vo != null) {
             fillLocationNames(List.of(vo));
+            fillBlockNos(List.of(vo));
         }
         return vo;
     }
@@ -142,6 +149,47 @@ public class LocationStockServiceImpl extends DjsBaseServiceImpl<LocationStockMa
     }
 
     /**
+     * 批量回填 {@code blockNo}（地块编号 = {@code t_plant_plot_info.plot_code}）。
+     *
+     * <p>库存表只存 {@code plotId}，地块编号在地块主数据表。单次 IN 查地块表回填，避免 N+1。
+     * 库存行 {@code plotId} 为空（按产品 / 耳号入库的行）→ blockNo 保持 null。</p>
+     */
+    private void fillBlockNos(List<LocationStockVo> records) {
+        if (records == null || records.isEmpty()) {
+            return;
+        }
+        List<Long> plotIds = records.stream()
+            .map(LocationStockVo::getPlotId)
+            .filter(Objects::nonNull)
+            .distinct()
+            .toList();
+        if (plotIds.isEmpty()) {
+            return;
+        }
+        List<PlotInfo> plots = plotInfoMapper.selectList(
+            new LambdaQueryWrapper<PlotInfo>().in(PlotInfo::getId, plotIds));
+        Map<Long, String> codeMap = plots.stream()
+            .filter(p -> p.getPlotCode() != null)
+            .collect(Collectors.toMap(PlotInfo::getId, PlotInfo::getPlotCode, (a, b) -> a));
+        for (LocationStockVo vo : records) {
+            if (vo.getPlotId() != null) {
+                vo.setBlockNo(codeMap.get(vo.getPlotId()));
+            }
+        }
+    }
+
+    /**
+     * 按地块编号（模糊）解析匹配的 plotId 集合；无匹配返空 list（调用方据此让查询恒空）。
+     */
+    private List<Long> resolvePlotIdsByBlockNo(String blockNo) {
+        List<PlotInfo> plots = plotInfoMapper.selectList(
+            new LambdaQueryWrapper<PlotInfo>()
+                .like(PlotInfo::getPlotCode, blockNo)
+                .select(PlotInfo::getId));
+        return plots.stream().map(PlotInfo::getId).toList();
+    }
+
+    /**
      * 构造查询条件。
      */
     private LambdaQueryWrapper<LocationStock> buildQueryWrapper(LocationStockQuery query) {
@@ -156,6 +204,15 @@ public class LocationStockServiceImpl extends DjsBaseServiceImpl<LocationStockMa
             .eq(query.getPlotId() != null, LocationStock::getPlotId, query.getPlotId())
             .eq(query.getIsEnd() != null, LocationStock::getIsEnd, query.getIsEnd())
             .orderByDesc(LocationStock::getId);
+        // 地块编号过滤：先解析匹配的 plotId 集合再 IN 过滤；无匹配则用不存在的 id 让结果恒空
+        if (StringUtils.isNotBlank(query.getBlockNo())) {
+            List<Long> plotIds = resolvePlotIdsByBlockNo(query.getBlockNo());
+            if (plotIds.isEmpty()) {
+                wrapper.eq(LocationStock::getId, -1L);
+            } else {
+                wrapper.in(LocationStock::getPlotId, plotIds);
+            }
+        }
         return wrapper;
     }
 

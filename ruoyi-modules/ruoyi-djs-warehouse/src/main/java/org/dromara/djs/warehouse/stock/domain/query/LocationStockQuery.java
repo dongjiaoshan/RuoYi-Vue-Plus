@@ -40,6 +40,11 @@ public class LocationStockQuery extends BaseEntity {
     private Long plotId;
 
     /**
+     * 地块编号（模糊；service 先解析匹配的 plotId 集合再过滤库存）。
+     */
+    private String blockNo;
+
+    /**
      * 是否完成（1=是 / 0=否）。
      */
     private Integer isEnd;
