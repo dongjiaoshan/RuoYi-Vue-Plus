@@ -48,7 +48,7 @@ public interface PlantDetailsMapper extends BaseMapperPlus<PlantDetails, PlantDe
             z.zone_name     AS zoneName,
             d.crop_id       AS cropId,
             c.crop_name     AS cropName,
-            c.crop_image_preview AS cropImg,
+            c.image_oss_id  AS cropImg,
             d.plot_area     AS area,
             d.plant_month   AS plantMonth,
             d.begin_actualdate AS beginActualdate,

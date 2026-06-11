@@ -87,6 +87,8 @@ class PigBurnRecordServiceImplTest {
     private IStockCheckService stockCheckService;
     @Mock
     private org.dromara.djs.warehouse.trace.service.ITraceService traceService;
+    @Mock
+    private org.dromara.djs.common.image.service.ImageUrlResolver imageUrlResolver;
 
     private TestablePigBurnRecordServiceImpl service;
 
@@ -100,8 +102,9 @@ class PigBurnRecordServiceImplTest {
         TestablePigBurnRecordServiceImpl(PigBurnRecordMapper b, StockFlowMapper f, BarInfoMapper bi,
                                          ProductInhouseMapper ih, LocationInfoMapper l, ProductInfoMapper pm,
                                          IBizCodeGenerator g, IStockCheckService cs,
-                                         org.dromara.djs.warehouse.trace.service.ITraceService ts) {
-            super(b, f, bi, ih, l, pm, g, cs, ts);
+                                         org.dromara.djs.warehouse.trace.service.ITraceService ts,
+                                         org.dromara.djs.common.image.service.ImageUrlResolver ir) {
+            super(b, f, bi, ih, l, pm, g, cs, ts, ir);
         }
 
         @Override
@@ -127,7 +130,7 @@ class PigBurnRecordServiceImplTest {
     void setup() {
         service = new TestablePigBurnRecordServiceImpl(
             burnMapper, flowMapper, barInfoMapper, productInhouseMapper,
-            locationInfoMapper, productInfoMapper, bizCodeGenerator, stockCheckService, traceService);
+            locationInfoMapper, productInfoMapper, bizCodeGenerator, stockCheckService, traceService, imageUrlResolver);
     }
 
     private BarInfo sampleBar(String status) {

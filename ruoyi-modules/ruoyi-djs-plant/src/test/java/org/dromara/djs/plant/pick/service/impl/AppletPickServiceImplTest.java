@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.dromara.common.core.exception.ServiceException;
+import org.dromara.djs.common.image.service.ImageUrlResolver;
 import org.dromara.djs.plant.crop.mapper.CropInfoMapper;
 import org.dromara.djs.plant.farm.domain.bo.GrowRecordBo;
 import org.dromara.djs.plant.farm.service.IFarmRecordsService;
@@ -75,6 +76,8 @@ class AppletPickServiceImplTest {
     private IFarmRecordsService farmRecordsService;
     @Mock
     private ApplicationEventPublisher eventPublisher;
+    @Mock
+    private ImageUrlResolver imageUrlResolver;
 
     private AppletPickServiceImpl service;
 
@@ -88,7 +91,7 @@ class AppletPickServiceImplTest {
 
     @BeforeEach
     void setUp() {
-        service = new AppletPickServiceImpl(detailsMapper, planMapper, plotMapper, cropMapper, teamMapper, peopleMapper, farmRecordsService, eventPublisher);
+        service = new AppletPickServiceImpl(detailsMapper, planMapper, plotMapper, cropMapper, teamMapper, peopleMapper, farmRecordsService, eventPublisher, imageUrlResolver);
     }
 
     private PlantDetails detailFixture() {

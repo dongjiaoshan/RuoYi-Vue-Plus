@@ -1,5 +1,6 @@
 package org.dromara.djs.plant.dashboard.applet.service.impl;
 
+import org.dromara.djs.common.image.service.ImageUrlResolver;
 import org.dromara.djs.plant.dashboard.applet.domain.vo.PlantManageOverviewVo;
 import org.dromara.djs.plant.dashboard.applet.mapper.AppletPlantManageDashboardMapper;
 import org.junit.jupiter.api.DisplayName;
@@ -35,6 +36,9 @@ class AppletPlantManageDashboardServiceImplTest {
 
     @Mock
     private AppletPlantManageDashboardMapper dashboardMapper;
+
+    @Mock
+    private ImageUrlResolver imageUrlResolver;
 
     @InjectMocks
     private AppletPlantManageDashboardServiceImpl service;

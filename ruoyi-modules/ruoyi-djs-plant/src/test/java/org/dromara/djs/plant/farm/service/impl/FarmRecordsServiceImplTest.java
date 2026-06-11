@@ -2,11 +2,17 @@ package org.dromara.djs.plant.farm.service.impl;
 
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import org.dromara.common.mybatis.core.page.PageQuery;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.dromara.common.core.exception.ServiceException;
+import org.dromara.djs.common.image.service.ImageUrlResolver;
 import org.dromara.djs.plant.crop.domain.CropInfo;
 import org.dromara.djs.plant.crop.mapper.CropInfoMapper;
+import org.dromara.djs.plant.farm.domain.vo.FarmCropTargetCardVo;
 import org.dromara.djs.plant.farm.domain.FarmRecords;
 import org.dromara.djs.plant.farm.domain.bo.DisasterBatchBo;
 import org.dromara.djs.plant.farm.domain.bo.DisasterRecordBo;
@@ -15,8 +21,11 @@ import org.dromara.djs.plant.farm.domain.bo.GrowBatchBo;
 import org.dromara.djs.plant.farm.domain.bo.HarvestWeightBo;
 import org.dromara.djs.plant.farm.domain.bo.RotationRecordBo;
 import org.dromara.djs.plant.farm.domain.bo.TransplantRecordBo;
+import org.dromara.djs.plant.farm.domain.query.FarmRecordsQuery;
 import org.dromara.djs.plant.farm.domain.vo.DispatchSummaryVo;
+import org.dromara.djs.plant.farm.domain.vo.FarmRecordsVo;
 import org.dromara.djs.plant.farm.mapper.FarmRecordsMapper;
+import org.dromara.djs.plant.team.domain.PlantWorkPeople;
 import org.dromara.djs.plant.plan.domain.PlantDetails;
 import org.dromara.djs.plant.plan.mapper.PlantDetailsMapper;
 import org.dromara.djs.plant.plot.domain.PlotInfo;
@@ -86,6 +95,8 @@ class FarmRecordsServiceImplTest {
     private PlantWorkTeamMapper teamMapper;
     @Mock
     private PlantWorkPeopleMapper peopleMapper;
+    @Mock
+    private ImageUrlResolver imageUrlResolver;
 
     private FarmRecordsServiceImpl service;
 
@@ -101,11 +112,12 @@ class FarmRecordsServiceImplTest {
         TableInfoHelper.initTableInfo(assistant, FarmRecords.class);
         TableInfoHelper.initTableInfo(assistant, PlantDetails.class);
         TableInfoHelper.initTableInfo(assistant, PlotInfo.class);
+        TableInfoHelper.initTableInfo(assistant, PlantWorkPeople.class);
     }
 
     @BeforeEach
     void setUp() {
-        service = new FarmRecordsServiceImpl(baseMapper, plotInfoMapper, cropInfoMapper, plantDetailsMapper, teamMapper, peopleMapper);
+        service = new FarmRecordsServiceImpl(baseMapper, plotInfoMapper, cropInfoMapper, plantDetailsMapper, teamMapper, peopleMapper, imageUrlResolver);
         // mocking selectMaxRecordNoByPrefix 返 null（当日尚无序号）→ next=1
         when(baseMapper.selectMaxRecordNoByPrefix(any(), any())).thenReturn(null);
         // mocking plot / crop 落库快照（plot_type / crop_name 冗余）
@@ -416,5 +428,133 @@ class FarmRecordsServiceImplTest {
         assertThat(saved.getHarvestWeight()).isEqualByComparingTo("52.21");
         // 累加 actual_yield
         verify(plantDetailsMapper).update(isNull(), any(Wrapper.class));
+    }
+
+    @Test
+    @DisplayName("myRecords 必须同时按 farmType 与所属班组 farmBy 过滤（修 P4/P8 漏 farmType）")
+    @SuppressWarnings("unchecked")
+    void myRecords_filters_by_farmType_and_team() {
+        // 登录用户经 work_people 反查所属班组 → teamIds [10,20]
+        PlantWorkPeople m1 = new PlantWorkPeople();
+        m1.setTeamId(10L);
+        PlantWorkPeople m2 = new PlantWorkPeople();
+        m2.setTeamId(20L);
+        when(peopleMapper.selectList(any())).thenReturn(List.of(m1, m2));
+
+        when(baseMapper.selectVoPage(any(IPage.class), any(Wrapper.class)))
+            .thenReturn(new Page<FarmRecordsVo>());
+
+        FarmRecordsQuery query = new FarmRecordsQuery();
+        query.setFarmType("tillage_break");
+        query.setOperatorId(99L);
+
+        service.myRecords(query, new PageQuery(10, 1));
+
+        ArgumentCaptor<Wrapper> cap = ArgumentCaptor.forClass(Wrapper.class);
+        verify(baseMapper).selectVoPage(any(IPage.class), cap.capture());
+        LambdaQueryWrapper<FarmRecords> w = (LambdaQueryWrapper<FarmRecords>) cap.getValue();
+        // 同一 wrapper 内 farmType eq + farmBy in 都在（buildWrapper 已含 farm_type）
+        String sql = w.getCustomSqlSegment();
+        assertThat(sql).contains("farm_type");
+        assertThat(sql).contains("farm_by");
+        Map<String, Object> params = w.getParamNameValuePairs();
+        assertThat(params.values()).contains("tillage_break", 10L, 20L);
+    }
+
+    @Test
+    @DisplayName("listCropTargetCards: rotation 走 ForRotation @Select（harvest_status='completed'），透传 farmType/zoneId/plotCode")
+    void listCropTargetCards_rotationUsesCompletedStatus() {
+        when(baseMapper.selectCropTargetCardsForRotation(any(), any(), any())).thenReturn(List.of(
+            Map.of("cropId", 2L, "cropName", "白菜", "cropCode", "C001", "plotCount", 3)));
+        when(imageUrlResolver.resolveList(any())).thenReturn(List.of("http://img/c001.png"));
+
+        List<FarmCropTargetCardVo> cards = service.listCropTargetCards("rotation", 9L, "PL001");
+
+        // 路由到退茬聚合且参数原样透传
+        verify(baseMapper).selectCropTargetCardsForRotation(eq("rotation"), eq(9L), eq("PL001"));
+        verify(baseMapper, never()).selectCropTargetCardsForGrow(any(), any(), any());
+        verify(baseMapper, never()).selectCropTargetCardsForTransplant(any(), any(), any());
+        assertThat(cards).hasSize(1);
+        assertThat(cards.get(0).getId()).isEqualTo(2L);
+        assertThat(cards.get(0).getPlotCount()).isEqualTo(3);
+        // cropImg 回填（IMG-LIB-001 resolver）
+        assertThat(cards.get(0).getCropImg()).isEqualTo("http://img/c001.png");
+    }
+
+    @Test
+    @DisplayName("listCropTargetCards: 生长工种走 ForGrow @Select（plant_status='ongoing'）")
+    void listCropTargetCards_growUsesOngoingStatus() {
+        when(baseMapper.selectCropTargetCardsForGrow(any(), any(), any())).thenReturn(List.of(
+            Map.of("cropId", 2L, "cropName", "番茄", "cropCode", "C002", "plotCount", 2)));
+        when(imageUrlResolver.resolveList(any())).thenReturn(List.of("http://img/c002.png"));
+
+        List<FarmCropTargetCardVo> cards = service.listCropTargetCards("water_fertilize", null, null);
+
+        verify(baseMapper).selectCropTargetCardsForGrow(eq("water_fertilize"), isNull(), isNull());
+        verify(baseMapper, never()).selectCropTargetCardsForRotation(any(), any(), any());
+        verify(baseMapper, never()).selectCropTargetCardsForTransplant(any(), any(), any());
+        assertThat(cards).hasSize(1);
+        assertThat(cards.get(0).getCropName()).isEqualTo("番茄");
+        assertThat(cards.get(0).getPlotCount()).isEqualTo(2);
+    }
+
+    @Test
+    @DisplayName("listCropTargetCards: 移栽走 ForTransplant @Select（叠 plot_type='nursery' 保育地块）")
+    void listCropTargetCards_transplantStatusRule() {
+        when(baseMapper.selectCropTargetCardsForTransplant(any(), any(), any())).thenReturn(List.of(
+            Map.of("cropId", 2L, "cropName", "辣椒", "cropCode", "C003", "plotCount", 1)));
+        when(imageUrlResolver.resolveList(any())).thenReturn(List.of("http://img/c003.png"));
+
+        List<FarmCropTargetCardVo> cards = service.listCropTargetCards("transplant", null, null);
+
+        verify(baseMapper).selectCropTargetCardsForTransplant(eq("transplant"), isNull(), isNull());
+        verify(baseMapper, never()).selectCropTargetCardsForGrow(any(), any(), any());
+        verify(baseMapper, never()).selectCropTargetCardsForRotation(any(), any(), any());
+        assertThat(cards).hasSize(1);
+        assertThat(cards.get(0).getCropName()).isEqualTo("辣椒");
+    }
+
+    @Test
+    @DisplayName("listCropTargetCards: farmType 空返空列表，不触 mapper")
+    void listCropTargetCards_blankFarmType() {
+        assertThat(service.listCropTargetCards("", 1L, null)).isEmpty();
+        verify(baseMapper, never()).selectCropTargetCardsForGrow(any(), any(), any());
+        verify(baseMapper, never()).selectCropTargetCardsForRotation(any(), any(), any());
+        verify(baseMapper, never()).selectCropTargetCardsForTransplant(any(), any(), any());
+    }
+
+    @Test
+    @DisplayName("listCropPlots: rotation 改判 harvest_status='completed'（T3 与 listCropTargetCards 退茬口径一致）")
+    @SuppressWarnings("unchecked")
+    void listCropPlots_rotationUsesHarvestStatusCompleted() {
+        when(plantDetailsMapper.selectList(any(Wrapper.class))).thenReturn(List.of());
+
+        service.listCropPlots(2L, "rotation");
+
+        ArgumentCaptor<Wrapper> cap = ArgumentCaptor.forClass(Wrapper.class);
+        verify(plantDetailsMapper).selectList(cap.capture());
+        LambdaQueryWrapper<PlantDetails> w = (LambdaQueryWrapper<PlantDetails>) cap.getValue();
+        String sql = w.getCustomSqlSegment();
+        // 退茬口径走 harvest_status 列、值 completed；不再用 plant_status
+        assertThat(sql).contains("harvest_status");
+        assertThat(sql).doesNotContain("plant_status");
+        assertThat(w.getParamNameValuePairs().values()).contains("completed", 2L);
+    }
+
+    @Test
+    @DisplayName("listCropPlots: 生长工种仍判 plant_status='ongoing'")
+    @SuppressWarnings("unchecked")
+    void listCropPlots_growUsesPlantStatusOngoing() {
+        when(plantDetailsMapper.selectList(any(Wrapper.class))).thenReturn(List.of());
+
+        service.listCropPlots(2L, "water_fertilize");
+
+        ArgumentCaptor<Wrapper> cap = ArgumentCaptor.forClass(Wrapper.class);
+        verify(plantDetailsMapper).selectList(cap.capture());
+        LambdaQueryWrapper<PlantDetails> w = (LambdaQueryWrapper<PlantDetails>) cap.getValue();
+        String sql = w.getCustomSqlSegment();
+        assertThat(sql).contains("plant_status");
+        assertThat(sql).doesNotContain("harvest_status");
+        assertThat(w.getParamNameValuePairs().values()).contains("ongoing", 2L);
     }
 }

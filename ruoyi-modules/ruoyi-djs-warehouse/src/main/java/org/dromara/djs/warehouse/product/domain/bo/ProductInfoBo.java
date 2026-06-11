@@ -99,6 +99,17 @@ public class ProductInfoBo extends BaseEntity {
     private String productImg;
 
     /**
+     * 主图 ossId（IMG-LIB-001；用户手选则随提交带 imageSource=1）。
+     */
+    @Size(max = 32, message = "{product.thumb.size}")
+    private String imageOssId;
+
+    /**
+     * 图来源（IMG-LIB-001：0 自动匹配 / 1 用户手改）。
+     */
+    private Integer imageSource;
+
+    /**
      * 字典 {@code djs_product_attr}：1=生产产品 / 2=原材料。
      */
     private Integer productAttr;

@@ -39,4 +39,9 @@ public class BurnProductTypeVo implements Serializable {
      */
     private String productName;
 
+    /**
+     * 产品图 public URL（IMG-LIB-001 4 层 resolver 回填，L2 兜底 white_bar 默认图）。
+     */
+    private String imageUrl;
+
 }

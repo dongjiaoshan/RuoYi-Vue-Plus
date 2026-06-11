@@ -4,6 +4,7 @@ import cn.dev33.satoken.annotation.SaCheckLogin;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import lombok.RequiredArgsConstructor;
 import org.dromara.common.core.domain.R;
+import org.dromara.djs.common.image.service.ImageUrlResolver;
 import org.dromara.djs.warehouse.flow.domain.vo.MatTodaySummaryVo;
 import org.dromara.djs.warehouse.flow.domain.vo.SeedStockVo;
 import org.dromara.djs.warehouse.flow.service.IMatFlowService;
@@ -65,6 +66,7 @@ public class AppletSeedController {
     private final ProductInfoMapper productInfoMapper;
     private final LocationStockMapper locationStockMapper;
     private final IMatFlowService matFlowService;
+    private final ImageUrlResolver imageUrlResolver;
 
     /**
      * 种子库存聚合列表（仿 {@link AppletFeedController#stock}）。
@@ -107,6 +109,7 @@ public class AppletSeedController {
         }
 
         // 4. 拼 VO（无库存的产品 totalStock=0）+ enrich 当前登录人今日已领 / 已退
+        //    productImage 暂存 image_oss_id，第 5 步批量 resolver 替换成 URL（禁 N+1）
         List<SeedStockVo> vos = products.stream().map(p -> {
             SeedStockVo vo = new SeedStockVo();
             vo.setProductId(p.getId());
@@ -117,8 +120,22 @@ public class AppletSeedController {
             MatTodaySummaryVo today = matFlowService.todaySummary(MAT_TYPE_SEED, String.valueOf(p.getId()));
             vo.setTodayPicked(zeroIfNull(today.getPickedQuantity()));
             vo.setTodayReturned(zeroIfNull(today.getReturnedQuantity()));
+            vo.setProductImage(p.getImageOssId());
             return vo;
         }).sorted(Comparator.comparing(SeedStockVo::getProductCode, Comparator.nullsLast(String::compareTo))).toList();
+
+        // 5. IMG-LIB-001：productImage 走 4 层 resolver（L1 image_oss_id → L2 seed 默认图 → L3 全局），禁 N+1
+        if (!vos.isEmpty()) {
+            List<ImageUrlResolver.Item> items = vos.stream()
+                .map(v -> new ImageUrlResolver.Item(v.getProductImage(), MAT_TYPE_SEED))
+                .toList();
+            List<String> urls = imageUrlResolver.resolveList(items);
+            if (urls.size() == vos.size()) {
+                for (int i = 0; i < vos.size(); i++) {
+                    vos.get(i).setProductImage(urls.get(i));
+                }
+            }
+        }
 
         return R.ok(vos);
     }

@@ -1,8 +1,6 @@
 package org.dromara.djs.breed.event.breeding.service.impl;
 
-import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import org.dromara.common.satoken.utils.LoginHelper;
-import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -97,7 +95,8 @@ public class BreedingServiceImpl implements IBreedingService {
         entity.setPenName(resolvePenName(pig.getPenId()));
         entity.setProofOssIds(bo.getProofOssIds());
         entity.setRemark(bo.getRemark());
-        entity.setOperatorId(LoginHelper.getUserId());
+        // #20：优先用录入选中的配种人员（EmployeePicker），未选回落当前登录态
+        entity.setOperatorId(bo.getOperatorId() != null ? bo.getOperatorId() : LoginHelper.getUserId());
         entity.setDelFlag("0");
         breedingMapper.insert(entity);
 
@@ -124,15 +123,16 @@ public class BreedingServiceImpl implements IBreedingService {
     public TableDataInfo<PigBreedingVo> queryPage(BreedingQuery query, PageQuery pageQuery) {
         LocalDateTime beginAt = query.getBeginDate() != null ? query.getBeginDate().atStartOfDay() : null;
         LocalDateTime endBefore = query.getEndDate() != null ? query.getEndDate().plusDays(1).atStartOfDay() : null;
-        LambdaQueryWrapper<PigBreeding> w = Wrappers.<PigBreeding>lambdaQuery()
-            .eq(query.getPigId() != null, PigBreeding::getPigId, query.getPigId())
-            .eq(StringUtils.isNotBlank(query.getEarNo()), PigBreeding::getEarNo, query.getEarNo())
-            .eq(StringUtils.isNotBlank(query.getBreedingType()), PigBreeding::getBreedingType, query.getBreedingType())
-            .eq(StringUtils.isNotBlank(query.getBoarEarNo()), PigBreeding::getBoarEarNo, query.getBoarEarNo())
-            .ge(beginAt != null, PigBreeding::getBreedingDate, beginAt)
-            .lt(endBefore != null, PigBreeding::getBreedingDate, endBefore)
-            .orderByDesc(PigBreeding::getBreedingDate, PigBreeding::getId);
-        Page<PigBreedingVo> page = breedingMapper.selectVoPage(pageQuery.build(), w);
+        // 自定义 @Select JOIN t_farm_pig_info 派生 sowStatus/statusDays（裸 selectVoPage 拼不出 JOIN/DATEDIFF）；
+        // operatorName 由 VO 上 @Translation 按 operatorId 翻译。
+        Page<PigBreedingVo> page = (Page<PigBreedingVo>) breedingMapper.selectBreedingVoPage(
+            pageQuery.build(),
+            query.getPigId(),
+            StringUtils.isNotBlank(query.getEarNo()) ? query.getEarNo() : null,
+            StringUtils.isNotBlank(query.getBreedingType()) ? query.getBreedingType() : null,
+            StringUtils.isNotBlank(query.getBoarEarNo()) ? query.getBoarEarNo() : null,
+            beginAt,
+            endBefore);
         return TableDataInfo.build(page);
     }
 

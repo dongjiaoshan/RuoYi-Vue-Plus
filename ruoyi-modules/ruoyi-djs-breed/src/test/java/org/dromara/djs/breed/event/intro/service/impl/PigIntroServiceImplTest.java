@@ -100,17 +100,20 @@ class PigIntroServiceImplTest {
     private PigIntroServiceImpl service;
     private org.dromara.djs.breed.core.mapper.PigMapper innerPigMapper;
     private org.dromara.common.core.service.DictService dictService;
+    private org.dromara.common.core.service.OssService ossService;
 
     @BeforeEach
     void setup() {
         innerPigMapper = org.mockito.Mockito.mock(org.dromara.djs.breed.core.mapper.PigMapper.class);
         dictService = org.mockito.Mockito.mock(org.dromara.common.core.service.DictService.class);
+        ossService = org.mockito.Mockito.mock(org.dromara.common.core.service.OssService.class);
         service = new PigIntroServiceImpl(
             introduceMapper, pigCoreService, bizCodeGenerator,
             supplierMapper, barnMapper, penMapper, bizReferenceChecker,
             innerPigMapper,
             dictService,
-            earNoAllocator);
+            earNoAllocator,
+            ossService);
         // 用户填首号路径默认无撞号（existsEarNo 返 null 放行）
         when(innerPigMapper.existsEarNo(org.mockito.ArgumentMatchers.anyString())).thenReturn(null);
         // 通用 stubs
@@ -514,10 +517,14 @@ class PigIntroServiceImplTest {
         external.setPigStrainCode("4");
         external.setIntroduceDate(LocalDate.of(2026, 6, 1));
         external.setPigId(null);
+        external.setProofOssIds("100,101");
 
         Page<PigIntroduce> page = new Page<>(1, 10, 2);
         page.setRecords(List.of(internal, external));
         when(introduceMapper.selectPage(any(), any())).thenReturn(page);
+
+        // 外部引种凭证图 ossId → 可访问 URL（service JOIN sys_oss resolve）
+        when(ossService.selectUrlByIds(eq("100,101"))).thenReturn("https://oss/a.jpg,https://oss/b.jpg");
 
         // pigId=5001 的猪 birth_date 在 50 天前
         LocalDate birth = LocalDate.now().minusDays(50);
@@ -539,10 +546,14 @@ class PigIntroServiceImplTest {
         assertThat(internalVo.getAgeDays()).isEqualTo(50);
         // VO 仍保留 pigCount（前端不渲染，但 payload 在）
         assertThat(internalVo.getPigCount()).isEqualTo(1);
+        // 内部引种无凭证图 → 空 list
+        assertThat(internalVo.getProofImageUrls()).isEmpty();
 
         IntroRecordVo externalVo = rows.stream().filter(r -> "INT-EXTERNAL".equals(r.getIntroduceNo())).findFirst().orElseThrow();
         assertThat(externalVo.getPigStrainLabel()).isEqualTo("杜洛克");
         assertThat(externalVo.getAgeDays()).isNull();
+        // 外部引种凭证图 resolve 出可访问 URL 列表
+        assertThat(externalVo.getProofImageUrls()).containsExactly("https://oss/a.jpg", "https://oss/b.jpg");
     }
 
     // ---------- 测试夹具 ----------

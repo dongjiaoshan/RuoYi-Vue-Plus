@@ -14,6 +14,7 @@ import org.dromara.djs.plant.farm.domain.bo.TransplantRecordBo;
 import org.dromara.djs.plant.farm.domain.query.FarmRecordsQuery;
 import org.dromara.djs.plant.farm.domain.vo.DispatchSummaryVo;
 import org.dromara.djs.plant.farm.domain.vo.FarmCropPlotVo;
+import org.dromara.djs.plant.farm.domain.vo.FarmCropTargetCardVo;
 import org.dromara.djs.plant.farm.domain.vo.FarmRecordsVo;
 
 import java.util.List;
@@ -91,6 +92,22 @@ public interface IFarmRecordsService {
      * @return 候选地块卡列表（无数据返空列表）
      */
     List<FarmCropPlotVo> listCropPlots(Long cropId, String farmType);
+
+    /**
+     * 工种列表页「作物目标卡」聚合（FIX-PLT-MP-CROPSEL-001）。
+     *
+     * <p>种植类工种作业 tab 的作物卡数据源：只列「已种植」作物，按工种状态规则过滤后聚合每个作物的
+     * 可操作地块去重数 + 最近同工种农事日期，并回填作物图（IMG-LIB-001 resolver）。</p>
+     *
+     * <p>工种 → 状态规则（{@code resolveStatusFilter} 一处定义）：rotation→{@code harvest_status='completed'}；
+     * transplant→{@code plant_status='ongoing'} 且 {@code plot_type='nursery'}；其余生长→{@code plant_status='ongoing'}。</p>
+     *
+     * @param farmType 农事类型（决定状态规则 + 最近同工种农事日期口径）
+     * @param zoneId   片区 id（可空，非空时只统计该片区下地块）
+     * @param plotCode 地块编号（可空，非空时只统计该地块）
+     * @return 作物目标卡列表（无数据返空列表）
+     */
+    List<FarmCropTargetCardVo> listCropTargetCards(String farmType, Long zoneId, String plotCode);
 
     /**
      * 土地采摘状态调整（FIX-PLT-MP-HARVEST-001 #3，HARVEST 富页）。

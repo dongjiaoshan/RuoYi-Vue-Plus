@@ -50,4 +50,14 @@ public class VegReceiveItemVo implements Serializable {
      */
     private BigDecimal pendingWeight;
 
+    /**
+     * 作物 / 产品主图 ossId（= image_oss_id；IMG-LIB-001 L1，内部解析用，回填 thumbUrl 后前端不直接读）。
+     */
+    private String imageOssId;
+
+    /**
+     * 缩略图 URL（IMG-LIB-001 4 层 resolver 回填，自产 L2 兜底蔬菜默认图；前端 image 直接绑定，保证非空兜底）。
+     */
+    private String thumbUrl;
+
 }

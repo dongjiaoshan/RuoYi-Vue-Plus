@@ -12,6 +12,8 @@ import org.dromara.common.core.utils.StringUtils;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.common.base.DjsBaseServiceImpl;
+import org.dromara.djs.common.image.service.IImageLibraryService;
+import org.dromara.djs.common.image.service.ImageUrlResolver;
 import org.dromara.djs.common.util.I18nMessages;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.domain.bo.GiftBoxBo;
@@ -26,6 +28,7 @@ import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.stream.Collectors;
@@ -61,22 +64,52 @@ public class ProductInfoServiceImpl extends DjsBaseServiceImpl<ProductInfoMapper
     private static final int PRODUCT_TYPE_GIFT_BOX = 3;
 
     private final IGiftBoxService giftBoxService;
+    private final IImageLibraryService imageLibraryService;
+    private final ImageUrlResolver imageUrlResolver;
 
-    public ProductInfoServiceImpl(ProductInfoMapper baseMapper, IGiftBoxService giftBoxService) {
+    public ProductInfoServiceImpl(ProductInfoMapper baseMapper,
+                                  IGiftBoxService giftBoxService,
+                                  IImageLibraryService imageLibraryService,
+                                  ImageUrlResolver imageUrlResolver) {
         super(baseMapper);
         this.giftBoxService = giftBoxService;
+        this.imageLibraryService = imageLibraryService;
+        this.imageUrlResolver = imageUrlResolver;
     }
 
     @Override
     public TableDataInfo<ProductInfoVo> queryPageList(ProductInfoQuery query, PageQuery pageQuery) {
         LambdaQueryWrapper<ProductInfo> wrapper = buildQueryWrapper(query);
         Page<ProductInfoVo> page = baseMapper.selectVoPage(pageQuery.build(), wrapper);
+        fillImageUrls(page.getRecords());
         return TableDataInfo.build(page);
     }
 
     @Override
     public List<ProductInfoVo> queryList(ProductInfoQuery query) {
-        return baseMapper.selectVoList(buildQueryWrapper(query));
+        List<ProductInfoVo> list = baseMapper.selectVoList(buildQueryWrapper(query));
+        fillImageUrls(list);
+        return list;
+    }
+
+    /**
+     * 批量回填商品 imageUrl（IMG-LIB-001 4 层 resolver，禁 N+1）。L2 兜底用各自 belong_type。
+     */
+    private void fillImageUrls(List<ProductInfoVo> records) {
+        if (records == null || records.isEmpty()) {
+            return;
+        }
+        List<ImageUrlResolver.Item> items = new ArrayList<>(records.size());
+        for (ProductInfoVo vo : records) {
+            items.add(new ImageUrlResolver.Item(vo.getImageOssId(), vo.getBelongType()));
+        }
+        List<String> urls = imageUrlResolver.resolveList(items);
+        if (urls.size() != records.size()) {
+            return;
+        }
+        for (int i = 0; i < records.size(); i++) {
+            records.get(i).setImageUrl(urls.get(i));
+        }
     }
 
     @Override
@@ -110,6 +143,16 @@ public class ProductInfoServiceImpl extends DjsBaseServiceImpl<ProductInfoMapper
             throw new ServiceException("产品入参转换失败");
         }
         applyDefaultsBeforeInsert(entity);
+
+        // IMG-LIB-001：image_oss_id 空且非手动 → 按 productName 自动匹配图库（匹配不上留 null，走 resolver 兜底）
+        boolean manual = entity.getImageSource() != null && entity.getImageSource() == 1;
+        if (StrUtil.isBlank(entity.getImageOssId()) && !manual) {
+            String matched = imageLibraryService.match(entity.getProductName());
+            entity.setImageOssId(matched);
+            entity.setImageSource(0);
+        } else if (StrUtil.isNotBlank(entity.getImageOssId())) {
+            entity.setImageSource(1);
+        }
 
         int rows;
         try {
@@ -150,6 +193,11 @@ public class ProductInfoServiceImpl extends DjsBaseServiceImpl<ProductInfoMapper
         // 编辑端点不允许改 productId / productType
         entity.setProductId(exists.getProductId());
         entity.setProductType(exists.getProductType());
+        // IMG-LIB-001：用户在编辑里改了图 → 标记手动（image_source=1），后续 rematch 不覆盖
+        if (StrUtil.isNotBlank(entity.getImageOssId())
+            && !entity.getImageOssId().equals(exists.getImageOssId())) {
+            entity.setImageSource(1);
+        }
         int rows = baseMapper.updateById(entity);
 
         // 礼盒组件"覆盖式 replace"

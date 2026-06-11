@@ -46,4 +46,7 @@ public class SeedStockVo implements Serializable {
     /** 当前登录人今日已退（当日 + 本产品，无流水时 0）。 */
     private BigDecimal todayReturned;
 
+    /** 缩略图 URL（IMG-LIB-001 4 层 resolver 回填，L1 产品 image_oss_id → L2 seed 默认图 → L3 全局；前端 image 直接绑定，保证非空兜底）。 */
+    private String productImage;
+
 }

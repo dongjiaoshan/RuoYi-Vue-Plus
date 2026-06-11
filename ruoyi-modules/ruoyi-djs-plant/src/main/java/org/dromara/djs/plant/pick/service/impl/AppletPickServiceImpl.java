@@ -5,6 +5,7 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.common.core.exception.ServiceException;
+import org.dromara.djs.common.image.service.ImageUrlResolver;
 import org.dromara.djs.plant.crop.domain.CropInfo;
 import org.dromara.djs.plant.crop.mapper.CropInfoMapper;
 import org.dromara.djs.plant.farm.domain.bo.GrowRecordBo;
@@ -64,6 +65,10 @@ public class AppletPickServiceImpl implements IAppletPickService {
     private final PlantWorkPeopleMapper peopleMapper;
     private final IFarmRecordsService farmRecordsService;
     private final ApplicationEventPublisher eventPublisher;
+    private final ImageUrlResolver imageUrlResolver;
+
+    /** 作物 L2 默认图统一走果蔬（IMG-LIB-001）。 */
+    private static final String CROP_BELONG_TYPE = "vegetable";
 
     /** is_pick=2 表示非游客采摘（普通采收）；mp 工人端只统计 / 展示这些。 */
     private static final int IS_PICK_NORMAL = 2;
@@ -233,7 +238,8 @@ public class AppletPickServiceImpl implements IAppletPickService {
             CropInfo crop = cropMap.get(e.getKey());
             if (crop != null) {
                 vo.setCropName(crop.getCropName());
-                vo.setCropImg(crop.getCropImagePreview());
+                // cropImg 暂存作物 image_oss_id（L1），return 前统一走 resolver 转 url + 兜底
+                vo.setCropImg(crop.getImageOssId());
             }
             int plotCount = rows.size();
             long completed = rows.stream().filter(d -> "completed".equals(d.getHarvestStatus())).count();
@@ -250,6 +256,18 @@ public class AppletPickServiceImpl implements IAppletPickService {
                 .map(d -> d.getActualYield() == null ? BigDecimal.ZERO : d.getActualYield())
                 .reduce(BigDecimal.ZERO, BigDecimal::add));
             result.add(vo);
+        }
+        // IMG-LIB-001：cropImg 走 4 层 resolver（L1 image_oss_id → L2 vegetable → L3 全局），批量禁 N+1
+        if (!result.isEmpty()) {
+            List<ImageUrlResolver.Item> items = result.stream()
+                .map(v -> new ImageUrlResolver.Item(v.getCropImg(), CROP_BELONG_TYPE))
+                .toList();
+            List<String> urls = imageUrlResolver.resolveList(items);
+            if (urls.size() == result.size()) {
+                for (int i = 0; i < result.size(); i++) {
+                    result.get(i).setCropImg(urls.get(i));
+                }
+            }
         }
         return result;
     }

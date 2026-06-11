@@ -76,6 +76,8 @@ class VegetableHandleServiceImplTest {
     private LocationInfoMapper locationInfoMapper;
     @Mock
     private IBizCodeGenerator bizCodeGenerator;
+    @Mock
+    private org.dromara.djs.common.image.service.ImageUrlResolver imageUrlResolver;
 
     private VegetableHandleServiceImpl service;
 
@@ -85,7 +87,7 @@ class VegetableHandleServiceImplTest {
     void setup() {
         service = new VegetableHandleServiceImpl(
             handleMapper, recordMapper, plantingRecordMapper, stockFlowMapper,
-            locationInfoMapper, bizCodeGenerator);
+            locationInfoMapper, bizCodeGenerator, imageUrlResolver);
         loginHelperMock = Mockito.mockStatic(LoginHelper.class);
         loginHelperMock.when(LoginHelper::getUserId).thenReturn(9001L);
     }

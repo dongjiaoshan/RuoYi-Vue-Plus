@@ -59,6 +59,9 @@ public class BreedingBo implements Serializable {
     @Size(max = 1024, message = "breeding.proof.size")
     private String proofOssIds;
 
+    /** 配种人员 userId（EmployeePicker 所选；空则 service 回落当前登录态 LoginHelper.getUserId()）。 */
+    private Long operatorId;
+
     /** 备注。 */
     @Size(max = 500, message = "breeding.remark.size")
     private String remark;

@@ -340,7 +340,8 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
                p.product_id                      AS productCode,
                p.product_name                    AS productName,
                p.product_unit                    AS productUnit,
-               p.product_thumb                   AS productThumb,
+               p.image_oss_id                    AS productThumb,
+               p.belong_type                     AS belongType,
                COALESCE(SUM(s.product_stock), 0) AS currentStock,
                (SELECT s2.location_id
                   FROM t_warehouse_location_stock s2
@@ -377,7 +378,7 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
                           WHERE s3.product_id = p.id AND s3.location_id = #{locationId}
                             AND s3.del_flag = '0' AND s3.tenant_id = '1001')
            </if>
-         GROUP BY p.id, p.product_id, p.product_name, p.product_unit, p.product_thumb
+         GROUP BY p.id, p.product_id, p.product_name, p.product_unit, p.image_oss_id, p.belong_type
          ORDER BY currentStock ASC, p.product_name ASC
         </script>
         """)

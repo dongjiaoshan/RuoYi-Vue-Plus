@@ -7,6 +7,7 @@ import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.core.service.DictService;
+import org.dromara.common.core.service.OssService;
 import org.dromara.common.core.utils.StringUtils;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
@@ -40,6 +41,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDate;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -84,6 +86,7 @@ public class PigIntroServiceImpl implements IPigIntroService {
     private final PigMapper pigMapper;
     private final DictService dictService;
     private final EarNoAllocator earNoAllocator;
+    private final OssService ossService;
 
     public PigIntroServiceImpl(PigIntroduceMapper introduceMapper,
                                IPigCoreService pigCoreService,
@@ -94,7 +97,8 @@ public class PigIntroServiceImpl implements IPigIntroService {
                                BizReferenceChecker bizReferenceChecker,
                                PigMapper pigMapper,
                                DictService dictService,
-                               EarNoAllocator earNoAllocator) {
+                               EarNoAllocator earNoAllocator,
+                               OssService ossService) {
         this.introduceMapper = introduceMapper;
         this.pigCoreService = pigCoreService;
         this.bizCodeGenerator = bizCodeGenerator;
@@ -105,6 +109,7 @@ public class PigIntroServiceImpl implements IPigIntroService {
         this.pigMapper = pigMapper;
         this.dictService = dictService;
         this.earNoAllocator = earNoAllocator;
+        this.ossService = ossService;
     }
 
     @PostConstruct
@@ -270,12 +275,32 @@ public class PigIntroServiceImpl implements IPigIntroService {
             vo.setIntroduceDate(e.getIntroduceDate());
             vo.setOperator(e.getOperator());
             vo.setProofOssIds(e.getProofOssIds());
+            vo.setProofImageUrls(resolveProofUrls(e.getProofOssIds()));
             rows.add(vo);
         }
 
         Page<IntroRecordVo> voPage = new Page<>(page.getCurrent(), page.getSize(), page.getTotal());
         voPage.setRecords(rows);
         return TableDataInfo.build(voPage);
+    }
+
+    /**
+     * 凭证图 ossId（逗号分隔）→ 可访问 URL 列表（外部引种有；内部引种 / 无凭证返空 list）。
+     * <p>mp {@code <image>} 无法携 Bearer token 取鉴权下载端点，故后端 JOIN sys_oss 预解析；
+     * {@link OssService#selectUrlByIds} 返逗号拼接 URL 串，按 {@code ,} 拆成 list。</p>
+     */
+    private List<String> resolveProofUrls(String proofOssIds) {
+        if (StringUtils.isBlank(proofOssIds)) {
+            return List.of();
+        }
+        String urls = ossService.selectUrlByIds(proofOssIds);
+        if (StringUtils.isBlank(urls)) {
+            return List.of();
+        }
+        return Arrays.stream(urls.split(","))
+            .map(String::trim)
+            .filter(StringUtils::isNotBlank)
+            .collect(Collectors.toList());
     }
 
     /** 品种字典翻译；翻不到回落 code。 */

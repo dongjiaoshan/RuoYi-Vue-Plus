@@ -15,6 +15,7 @@ import org.dromara.djs.warehouse.flow.domain.vo.MatTodaySummaryVo;
 import org.dromara.djs.warehouse.flow.domain.vo.StockFlowVo;
 import org.dromara.djs.warehouse.flow.service.IMatFlowService;
 import org.dromara.djs.warehouse.flow.service.IStockFlowService;
+import org.dromara.djs.common.image.service.ImageUrlResolver;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
 import org.dromara.djs.warehouse.stock.domain.LocationStock;
@@ -70,6 +71,7 @@ public class AppletFeedController extends BaseController {
     private final LocationStockMapper locationStockMapper;
     private final IStockFlowService stockFlowService;
     private final IMatFlowService matFlowService;
+    private final ImageUrlResolver imageUrlResolver;
 
     /**
      * 饲料原料库存聚合列表。
@@ -127,8 +129,22 @@ public class AppletFeedController extends BaseController {
             MatTodaySummaryVo today = matFlowService.todaySummary(MAT_TYPE_FEED, String.valueOf(p.getId()));
             vo.setTodayPicked(zeroIfNull(today.getPickedQuantity()));
             vo.setTodayReturned(zeroIfNull(today.getReturnedQuantity()));
+            vo.setProductImage(p.getImageOssId());
             return vo;
         }).sorted(Comparator.comparing(FeedStockVo::getProductCode, Comparator.nullsLast(String::compareTo))).toList();
+
+        // 5. IMG-LIB-001：productImage 走 4 层 resolver（L1 image_oss_id → L2 feed 默认图 → L3 全局），禁 N+1
+        if (!vos.isEmpty()) {
+            List<ImageUrlResolver.Item> items = vos.stream()
+                .map(v -> new ImageUrlResolver.Item(v.getProductImage(), MAT_TYPE_FEED))
+                .toList();
+            List<String> urls = imageUrlResolver.resolveList(items);
+            if (urls.size() == vos.size()) {
+                for (int i = 0; i < vos.size(); i++) {
+                    vos.get(i).setProductImage(urls.get(i));
+                }
+            }
+        }
 
         return R.ok(vos);
     }

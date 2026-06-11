@@ -77,6 +77,13 @@ public class CropInfoBo extends BaseEntity {
     @PositiveOrZero(message = "{plant.crop.unitPrice.positive}")
     private BigDecimal pickUnitPrice;
 
+    /** 主图 ossId（IMG-LIB-001；用户手选则随提交带 imageSource=1）。 */
+    @Size(max = 32, message = "{plant.crop.image.size}")
+    private String imageOssId;
+
+    /** 图来源（IMG-LIB-001：0 自动匹配 / 1 用户手改；前端手选图后置 1）。 */
+    private Integer imageSource;
+
     public interface OnCreate {
     }
 }

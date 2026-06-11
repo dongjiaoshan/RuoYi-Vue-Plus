@@ -49,9 +49,16 @@ public class MatIssueItemVo implements Serializable {
     private String productUnit;
 
     /**
-     * 缩略图 OSS ID（单张；卡片左侧图，可能为空）。
+     * 缩略图 public URL（IMG-LIB-001 4 层 resolver 回填；卡片左侧图。SQL 先取
+     * {@code image_oss_id}，service 层经 resolver 转 url + 兜底默认图后回写本字段）。
      */
     private String productThumb;
+
+    /**
+     * 产品归属类型（{@code djs_belong_type}；resolver L2 兜底键，可空 → 走全局默认图）。
+     * 仅供 service 层 resolver 回填用，前端不消费。
+     */
+    private String belongType;
 
     /**
      * 当前库存（跨库位 SUM；指定 locationId 时为该库位库存；无库存行为 0）。

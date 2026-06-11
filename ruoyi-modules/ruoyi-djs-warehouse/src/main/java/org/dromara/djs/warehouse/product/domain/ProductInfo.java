@@ -97,6 +97,16 @@ public class ProductInfo extends TenantEntity {
     private String productImg;
 
     /**
+     * 主图 ossId（IMG-LIB-001 4 层 resolver L1；create 时按 productName 自动匹配存入）。
+     */
+    private String imageOssId;
+
+    /**
+     * 图来源（IMG-LIB-001：0 自动匹配 / 1 用户手改）。
+     */
+    private Integer imageSource;
+
+    /**
      * 字典 {@code djs_product_attr}：1=生产产品 / 2=原材料。
      */
     private Integer productAttr;

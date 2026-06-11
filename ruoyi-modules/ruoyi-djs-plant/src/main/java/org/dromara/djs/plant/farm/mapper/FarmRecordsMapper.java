@@ -88,4 +88,103 @@ public interface FarmRecordsMapper extends BaseMapperPlus<FarmRecords, FarmRecor
          GROUP BY farm_type
         """)
     List<Map<String, Object>> selectTodayProcessedPlotCount(@Param("farmDate") java.time.LocalDate farmDate);
+
+    /**
+     * 生长类工种「作物目标卡」聚合（FIX-PLT-MP-CROPSEL-001）。
+     *
+     * <p>只列已种植（{@code t_plant_plant_details} 有行）且 {@code plant_status='ongoing'} 的作物，按作物聚合
+     * 可操作地块去重数 + 最近同工种农事日期。覆盖 6 生长工种（water_fertilize/irrigation/weed/pest_control/
+     * pruning/harvest_activity）+ 灾害（disaster）。显式 {@code tenant_id='1001'} + {@code del_flag='0'}
+     * （V1 单农场硬编码，不依赖租户拦截器）。</p>
+     *
+     * @param farmType 农事类型（用于 LEFT JOIN 取最近同工种农事日期）
+     * @param zoneId   片区 id（可空，非空时只统计该片区下地块）
+     * @param plotCode 地块编号（可空，非空时只统计该地块）
+     * @return 每行 {@code {cropId, cropName, cropCode, plotCount, lastFarmDate}}
+     */
+    @Select("""
+        SELECT d.crop_id AS cropId, c.crop_name AS cropName, c.crop_code AS cropCode,
+               COUNT(DISTINCT d.plot_id) AS plotCount, MAX(fr.farm_date) AS lastFarmDate
+          FROM t_plant_plant_details d
+          JOIN t_plant_plot_info p ON p.id = d.plot_id AND p.del_flag = '0' AND p.tenant_id = '1001'
+          JOIN t_plant_crop_info  c ON c.id = d.crop_id AND c.del_flag = '0' AND c.tenant_id = '1001'
+          LEFT JOIN t_plant_farm_records fr
+                 ON fr.crop_id = d.crop_id AND fr.farm_type = #{farmType}
+                AND fr.del_flag = '0' AND fr.tenant_id = '1001'
+         WHERE d.del_flag = '0'
+           AND d.tenant_id = '1001'
+           AND d.plant_status = 'ongoing'
+           AND (#{zoneId} IS NULL OR p.zone_id = #{zoneId})
+           AND (#{plotCode} IS NULL OR p.plot_code = #{plotCode})
+         GROUP BY d.crop_id, c.crop_name, c.crop_code
+         ORDER BY c.crop_code ASC
+        """)
+    List<Map<String, Object>> selectCropTargetCardsForGrow(@Param("farmType") String farmType,
+                                                            @Param("zoneId") Long zoneId,
+                                                            @Param("plotCode") String plotCode);
+
+    /**
+     * 移栽工种「作物目标卡」聚合（FIX-PLT-MP-CROPSEL-001 P13）。
+     *
+     * <p>同 {@link #selectCropTargetCardsForGrow}，但额外要求地块为保育类型（{@code plot_type='nursery'}）——
+     * 移栽 = 保育地块上、种植进行中的作物。「nursery」值由 FIX-PLT-PLOTTYPE-001 灌入 {@code djs_plot_type} 字典。</p>
+     *
+     * @param farmType 农事类型（transplant）
+     * @param zoneId   片区 id（可空）
+     * @param plotCode 地块编号（可空）
+     * @return 每行 {@code {cropId, cropName, cropCode, plotCount, lastFarmDate}}
+     */
+    @Select("""
+        SELECT d.crop_id AS cropId, c.crop_name AS cropName, c.crop_code AS cropCode,
+               COUNT(DISTINCT d.plot_id) AS plotCount, MAX(fr.farm_date) AS lastFarmDate
+          FROM t_plant_plant_details d
+          JOIN t_plant_plot_info p ON p.id = d.plot_id AND p.del_flag = '0' AND p.tenant_id = '1001'
+          JOIN t_plant_crop_info  c ON c.id = d.crop_id AND c.del_flag = '0' AND c.tenant_id = '1001'
+          LEFT JOIN t_plant_farm_records fr
+                 ON fr.crop_id = d.crop_id AND fr.farm_type = #{farmType}
+                AND fr.del_flag = '0' AND fr.tenant_id = '1001'
+         WHERE d.del_flag = '0'
+           AND d.tenant_id = '1001'
+           AND d.plant_status = 'ongoing'
+           AND p.plot_type = 'nursery'
+           AND (#{zoneId} IS NULL OR p.zone_id = #{zoneId})
+           AND (#{plotCode} IS NULL OR p.plot_code = #{plotCode})
+         GROUP BY d.crop_id, c.crop_name, c.crop_code
+         ORDER BY c.crop_code ASC
+        """)
+    List<Map<String, Object>> selectCropTargetCardsForTransplant(@Param("farmType") String farmType,
+                                                                  @Param("zoneId") Long zoneId,
+                                                                  @Param("plotCode") String plotCode);
+
+    /**
+     * 退茬工种「作物目标卡」聚合（FIX-PLT-MP-CROPSEL-001 P22）。
+     *
+     * <p>同 {@link #selectCropTargetCardsForGrow}，但状态口径用采摘状态 {@code harvest_status='completed'}
+     * （采摘完成 {@code djs_pick_status}），与多选页 {@code listCropPlots} 退茬口径一致（T3）。</p>
+     *
+     * @param farmType 农事类型（rotation）
+     * @param zoneId   片区 id（可空）
+     * @param plotCode 地块编号（可空）
+     * @return 每行 {@code {cropId, cropName, cropCode, plotCount, lastFarmDate}}
+     */
+    @Select("""
+        SELECT d.crop_id AS cropId, c.crop_name AS cropName, c.crop_code AS cropCode,
+               COUNT(DISTINCT d.plot_id) AS plotCount, MAX(fr.farm_date) AS lastFarmDate
+          FROM t_plant_plant_details d
+          JOIN t_plant_plot_info p ON p.id = d.plot_id AND p.del_flag = '0' AND p.tenant_id = '1001'
+          JOIN t_plant_crop_info  c ON c.id = d.crop_id AND c.del_flag = '0' AND c.tenant_id = '1001'
+          LEFT JOIN t_plant_farm_records fr
+                 ON fr.crop_id = d.crop_id AND fr.farm_type = #{farmType}
+                AND fr.del_flag = '0' AND fr.tenant_id = '1001'
+         WHERE d.del_flag = '0'
+           AND d.tenant_id = '1001'
+           AND d.harvest_status = 'completed'
+           AND (#{zoneId} IS NULL OR p.zone_id = #{zoneId})
+           AND (#{plotCode} IS NULL OR p.plot_code = #{plotCode})
+         GROUP BY d.crop_id, c.crop_name, c.crop_code
+         ORDER BY c.crop_code ASC
+        """)
+    List<Map<String, Object>> selectCropTargetCardsForRotation(@Param("farmType") String farmType,
+                                                               @Param("zoneId") Long zoneId,
+                                                               @Param("plotCode") String plotCode);
 }

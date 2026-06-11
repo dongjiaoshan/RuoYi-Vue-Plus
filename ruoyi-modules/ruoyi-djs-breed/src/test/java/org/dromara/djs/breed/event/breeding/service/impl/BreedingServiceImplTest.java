@@ -122,6 +122,21 @@ class BreedingServiceImplTest {
     }
 
     @Test
+    @DisplayName("#20: bo.operatorId 非空 → INSERT 用所选配种人员（不回落登录态）")
+    void recordBreeding_honorsExplicitOperatorId() {
+        Pig pig = mkSow(110L, PigLifecycle.HB);
+        when(pigMapper.selectById(110L)).thenReturn(pig);
+
+        BreedingBo bo = mkBo(110L, "1", "B-001");
+        bo.setOperatorId(8888L);
+        service.recordBreeding(bo);
+
+        ArgumentCaptor<PigBreeding> br = ArgumentCaptor.forClass(PigBreeding.class);
+        verify(breedingMapper, times(1)).insert(br.capture());
+        assertThat(br.getValue().getOperatorId()).isEqualTo(8888L);
+    }
+
+    @Test
     @DisplayName("校验: breedingType=1 缺 boarEarNo → ServiceException")
     void validate_type1_requires_boar() {
         Pig pig = mkSow(101L, PigLifecycle.DN);

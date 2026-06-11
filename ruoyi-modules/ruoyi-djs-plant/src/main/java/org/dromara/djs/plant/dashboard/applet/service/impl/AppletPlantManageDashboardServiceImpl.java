@@ -13,6 +13,7 @@ import org.dromara.djs.plant.dashboard.applet.domain.vo.PlantAnnualPlanVo;
 import org.dromara.djs.plant.dashboard.applet.domain.vo.PlantManageOverviewVo;
 import org.dromara.djs.plant.dashboard.applet.domain.vo.PlantPlanTimelineVo;
 import org.dromara.djs.plant.dashboard.applet.domain.vo.PlantRecordVo;
+import org.dromara.djs.common.image.service.ImageUrlResolver;
 import org.dromara.djs.plant.dashboard.applet.mapper.AppletPlantManageDashboardMapper;
 import org.dromara.djs.plant.dashboard.applet.service.IAppletPlantManageDashboardService;
 import org.springframework.stereotype.Service;
@@ -47,7 +48,11 @@ public class AppletPlantManageDashboardServiceImpl implements IAppletPlantManage
     /** is_pick = 1 → 游客采摘活动。 */
     private static final int PICK_TYPE_ACTIVITY = 1;
 
+    /** 作物 L2 默认图统一走果蔬（IMG-LIB-001，Kevin 拍板作物统一果蔬默认图）。 */
+    private static final String CROP_BELONG_TYPE = "vegetable";
+
     private final AppletPlantManageDashboardMapper dashboardMapper;
+    private final ImageUrlResolver imageUrlResolver;
 
     @Override
     public PlantManageOverviewVo getOverview() {
@@ -186,13 +191,46 @@ public class AppletPlantManageDashboardServiceImpl implements IAppletPlantManage
                 }
                 PlantPlanTimelineVo.CropItem item = new PlantPlanTimelineVo.CropItem();
                 item.setCropName(c.getCropName());
+                // cropImg 此处暂存作物 image_oss_id（SQL 取的是 c.image_oss_id），下面统一走 resolver
                 item.setCropImg(c.getCropImg());
                 item.setPlotCount(nz(c.getPlotCount()));
                 item.setArea(nzBd(c.getArea()));
                 parent.getCrops().add(item);
             }
         }
-        return new ArrayList<>(byMonth.values());
+        List<PlantPlanTimelineVo> result = new ArrayList<>(byMonth.values());
+        fillCropImageUrls(result);
+        return result;
+    }
+
+    /**
+     * 批量回填时间轴各月作物卡 cropImg（IMG-LIB-001 4 层 resolver，禁 N+1）。
+     *
+     * <p>cropImg 入参当前承载作物 {@code image_oss_id}（L1），统一兜底作物默认图（L2 vegetable）→
+     * 全局默认图（L3），转成 public URL 后回写同字段。</p>
+     *
+     * @param timeline 时间轴列表（其 {@code crops} 内每项 cropImg = image_oss_id）
+     */
+    private void fillCropImageUrls(List<PlantPlanTimelineVo> timeline) {
+        List<PlantPlanTimelineVo.CropItem> items = new ArrayList<>();
+        for (PlantPlanTimelineVo month : timeline) {
+            if (month.getCrops() != null) {
+                items.addAll(month.getCrops());
+            }
+        }
+        if (items.isEmpty()) {
+            return;
+        }
+        List<ImageUrlResolver.Item> resolveItems = items.stream()
+            .map(it -> new ImageUrlResolver.Item(it.getCropImg(), CROP_BELONG_TYPE))
+            .toList();
+        List<String> urls = imageUrlResolver.resolveList(resolveItems);
+        if (urls.size() != items.size()) {
+            return;
+        }
+        for (int i = 0; i < items.size(); i++) {
+            items.get(i).setCropImg(urls.get(i));
+        }
     }
 
     /**

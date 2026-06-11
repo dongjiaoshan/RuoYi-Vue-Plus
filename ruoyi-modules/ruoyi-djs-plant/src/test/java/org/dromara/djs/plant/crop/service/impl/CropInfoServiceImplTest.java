@@ -11,6 +11,8 @@ import org.dromara.djs.plant.crop.domain.bo.CropInfoBo;
 import org.dromara.djs.plant.crop.domain.query.CropInfoQuery;
 import org.dromara.djs.plant.crop.domain.vo.CropInfoVo;
 import org.dromara.djs.plant.crop.mapper.CropInfoMapper;
+import org.dromara.djs.common.image.service.IImageLibraryService;
+import org.dromara.djs.common.image.service.ImageUrlResolver;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
@@ -50,11 +52,19 @@ class CropInfoServiceImplTest {
     @Mock
     private CropInfoMapper cropInfoMapper;
 
+    @Mock
+    private IImageLibraryService imageLibraryService;
+
+    @Mock
+    private ImageUrlResolver imageUrlResolver;
+
     private TestableCropInfoServiceImpl service;
 
     static class TestableCropInfoServiceImpl extends CropInfoServiceImpl {
-        TestableCropInfoServiceImpl(CropInfoMapper baseMapper) {
-            super(baseMapper);
+        TestableCropInfoServiceImpl(CropInfoMapper baseMapper,
+                                    IImageLibraryService imageLibraryService,
+                                    ImageUrlResolver imageUrlResolver) {
+            super(baseMapper, imageLibraryService, imageUrlResolver);
         }
 
         @Override
@@ -80,7 +90,7 @@ class CropInfoServiceImplTest {
 
     @BeforeEach
     void setup() {
-        service = new TestableCropInfoServiceImpl(cropInfoMapper);
+        service = new TestableCropInfoServiceImpl(cropInfoMapper, imageLibraryService, imageUrlResolver);
     }
 
     private CropInfoBo sampleBo() {

@@ -6,6 +6,7 @@ import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.satoken.utils.LoginHelper;
 import org.dromara.djs.common.encoder.BizCodeType;
 import org.dromara.djs.common.encoder.IBizCodeGenerator;
+import org.dromara.djs.common.image.service.ImageUrlResolver;
 import org.dromara.djs.warehouse.check.service.IStockCheckService;
 import org.dromara.djs.warehouse.flow.domain.StockFlow;
 import org.dromara.djs.warehouse.flow.domain.bo.MatLossBo;
@@ -70,17 +71,20 @@ public class MatFlowServiceImpl implements IMatFlowService {
     private final ProductInfoMapper productInfoMapper;
     private final IBizCodeGenerator bizCodeGenerator;
     private final IStockCheckService stockCheckService;
+    private final ImageUrlResolver imageUrlResolver;
 
     public MatFlowServiceImpl(StockFlowMapper stockFlowMapper,
                               LocationStockMapper locationStockMapper,
                               ProductInfoMapper productInfoMapper,
                               IBizCodeGenerator bizCodeGenerator,
-                              IStockCheckService stockCheckService) {
+                              IStockCheckService stockCheckService,
+                              ImageUrlResolver imageUrlResolver) {
         this.stockFlowMapper = stockFlowMapper;
         this.locationStockMapper = locationStockMapper;
         this.productInfoMapper = productInfoMapper;
         this.bizCodeGenerator = bizCodeGenerator;
         this.stockCheckService = stockCheckService;
+        this.imageUrlResolver = imageUrlResolver;
     }
 
     @Override
@@ -253,7 +257,20 @@ public class MatFlowServiceImpl implements IMatFlowService {
         List<String> belongTypes = parseBelongTypes(belongType);
         Long locId = parseLocationId(locationId);
         Long userId = LoginHelper.getUserId();
-        return locationStockMapper.selectMatIssueItems(belongTypes, locId, userId);
+        List<MatIssueItemVo> items = locationStockMapper.selectMatIssueItems(belongTypes, locId, userId);
+        // IMG-LIB-001：productThumb 走 4 层 resolver（L1 image_oss_id → L2 belong_type 默认图 → L3 全局），批量禁 N+1
+        if (items != null && !items.isEmpty()) {
+            List<ImageUrlResolver.Item> resolveItems = items.stream()
+                .map(v -> new ImageUrlResolver.Item(v.getProductThumb(), v.getBelongType()))
+                .toList();
+            List<String> urls = imageUrlResolver.resolveList(resolveItems);
+            if (urls.size() == items.size()) {
+                for (int i = 0; i < items.size(); i++) {
+                    items.get(i).setProductThumb(urls.get(i));
+                }
+            }
+        }
+        return items;
     }
 
     /**

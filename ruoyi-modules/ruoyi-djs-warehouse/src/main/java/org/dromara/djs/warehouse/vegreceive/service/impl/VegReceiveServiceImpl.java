@@ -6,6 +6,7 @@ import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.satoken.utils.LoginHelper;
 import org.dromara.djs.common.encoder.BizCodeType;
 import org.dromara.djs.common.encoder.IBizCodeGenerator;
+import org.dromara.djs.common.image.service.ImageUrlResolver;
 import org.dromara.djs.common.supplier.domain.Supplier;
 import org.dromara.djs.common.supplier.mapper.SupplierMapper;
 import org.dromara.djs.warehouse.flow.domain.StockFlow;
@@ -85,36 +86,63 @@ public class VegReceiveServiceImpl implements IVegReceiveService {
     private static final String FLOW_VEG_RECEIVE_IN = "veg_receive_in";
     private static final String FLOW_VEG_PURCHASE_IN = "veg_purchase_in";
 
+    /**
+     * 果蔬缩略图 L2 兜底分类键（IMG-LIB-001；自产 / 外购果蔬统一蔬菜默认图）。
+     */
+    private static final String CROP_BELONG_TYPE = "vegetable";
+
     private final VegReceiveMapper vegReceiveMapper;
     private final LocationStockMapper locationStockMapper;
     private final StockFlowMapper stockFlowMapper;
     private final ProductInfoMapper productInfoMapper;
     private final SupplierMapper supplierMapper;
     private final IBizCodeGenerator bizCodeGenerator;
+    private final ImageUrlResolver imageUrlResolver;
 
     public VegReceiveServiceImpl(VegReceiveMapper vegReceiveMapper,
                                  LocationStockMapper locationStockMapper,
                                  StockFlowMapper stockFlowMapper,
                                  ProductInfoMapper productInfoMapper,
                                  SupplierMapper supplierMapper,
-                                 IBizCodeGenerator bizCodeGenerator) {
+                                 IBizCodeGenerator bizCodeGenerator,
+                                 ImageUrlResolver imageUrlResolver) {
         this.vegReceiveMapper = vegReceiveMapper;
         this.locationStockMapper = locationStockMapper;
         this.stockFlowMapper = stockFlowMapper;
         this.productInfoMapper = productInfoMapper;
         this.supplierMapper = supplierMapper;
         this.bizCodeGenerator = bizCodeGenerator;
+        this.imageUrlResolver = imageUrlResolver;
     }
 
     @Override
     public List<VegReceiveItemVo> listSelf() {
-        return vegReceiveMapper.selectSelfPending();
+        return fillThumb(vegReceiveMapper.selectSelfPending());
     }
 
     @Override
     public List<VegReceiveItemVo> listPurchased(String productName, String productType) {
         // productType V1 不参与过滤（外购果蔬恒「果蔬产品」文案，预留扩展），仅按产品名模糊
-        return vegReceiveMapper.selectPurchasedPending(productName);
+        return fillThumb(vegReceiveMapper.selectPurchasedPending(productName));
+    }
+
+    /**
+     * 批量回填 thumbUrl（IMG-LIB-001：L1 作物/产品 image_oss_id → L2 蔬菜默认图 → L3 全局），禁 N+1。
+     */
+    private List<VegReceiveItemVo> fillThumb(List<VegReceiveItemVo> list) {
+        if (list.isEmpty()) {
+            return list;
+        }
+        List<ImageUrlResolver.Item> items = list.stream()
+            .map(v -> new ImageUrlResolver.Item(v.getImageOssId(), CROP_BELONG_TYPE))
+            .toList();
+        List<String> urls = imageUrlResolver.resolveList(items);
+        if (urls.size() == list.size()) {
+            for (int i = 0; i < list.size(); i++) {
+                list.get(i).setThumbUrl(urls.get(i));
+            }
+        }
+        return list;
     }
 
     @Override

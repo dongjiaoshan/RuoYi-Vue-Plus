@@ -4,6 +4,7 @@ import cn.dev33.satoken.annotation.SaCheckLogin;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.dromara.common.core.domain.R;
+import org.dromara.djs.common.image.service.ImageUrlResolver;
 import org.dromara.djs.plant.plan.domain.bo.PlantStartBo;
 import org.dromara.djs.plant.plan.domain.vo.PlantCropTaskVo;
 import org.dromara.djs.plant.plan.domain.vo.PlantMonthTaskVo;
@@ -45,6 +46,10 @@ public class AppletPlantTaskController {
 
     private final PlantDetailsMapper plantDetailsMapper;
     private final IPlantPlanService plantPlanService;
+    private final ImageUrlResolver imageUrlResolver;
+
+    /** 作物 L2 默认图统一走果蔬（IMG-LIB-001）。 */
+    private static final String CROP_BELONG_TYPE = "vegetable";
 
     /**
      * 当月播种作物聚合卡列表（D2 拆接口聚合侧）：喂首页作物卡 + 「全部(N)」计数（= 作物数 = 行数）
@@ -69,7 +74,20 @@ public class AppletPlantTaskController {
     @GetMapping("/monthTasks")
     public R<List<PlantMonthTaskVo>> monthTasks(@RequestParam(required = false) Integer month) {
         int m = (month == null || month < 1 || month > 12) ? LocalDate.now().getMonthValue() : month;
-        return R.ok(plantDetailsMapper.selectMonthTasks(m));
+        List<PlantMonthTaskVo> rows = plantDetailsMapper.selectMonthTasks(m);
+        // IMG-LIB-001：cropImg 走 4 层 resolver（L1 image_oss_id → L2 vegetable → L3 全局），批量禁 N+1
+        if (rows != null && !rows.isEmpty()) {
+            List<ImageUrlResolver.Item> items = rows.stream()
+                .map(v -> new ImageUrlResolver.Item(v.getCropImg(), CROP_BELONG_TYPE))
+                .toList();
+            List<String> urls = imageUrlResolver.resolveList(items);
+            if (urls.size() == rows.size()) {
+                for (int i = 0; i < rows.size(); i++) {
+                    rows.get(i).setCropImg(urls.get(i));
+                }
+            }
+        }
+        return R.ok(rows);
     }
 
     /**

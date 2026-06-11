@@ -5,6 +5,7 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import lombok.RequiredArgsConstructor;
 import org.dromara.common.core.domain.R;
 import org.dromara.common.core.utils.StringUtils;
+import org.dromara.djs.common.image.service.ImageUrlResolver;
 import org.dromara.djs.plant.crop.domain.CropInfo;
 import org.dromara.djs.plant.crop.domain.vo.CropPickerVo;
 import org.dromara.djs.plant.crop.mapper.CropInfoMapper;
@@ -41,7 +42,11 @@ import java.util.stream.Collectors;
 @RequestMapping("/djs/applet/plant/crop")
 public class AppletCropPickerController {
 
+    /** 作物 L2 默认图统一走果蔬（IMG-LIB-001）。 */
+    private static final String CROP_BELONG_TYPE = "vegetable";
+
     private final CropInfoMapper cropInfoMapper;
+    private final ImageUrlResolver imageUrlResolver;
 
     /**
      * 作物 picker 列表。
@@ -64,8 +69,22 @@ public class AppletCropPickerController {
             vo.setId(c.getId());
             vo.setCropName(c.getCropName());
             vo.setCropCode(c.getCropCode());
+            // cropImg 暂存 image_oss_id（L1），下面统一走 resolver 转 url + 兜底
+            vo.setCropImg(c.getImageOssId());
             return vo;
         }).collect(Collectors.toList());
+        // IMG-LIB-001：cropImg 走 4 层 resolver（L1 image_oss_id → L2 vegetable → L3 全局），批量禁 N+1
+        if (!vos.isEmpty()) {
+            List<ImageUrlResolver.Item> items = vos.stream()
+                .map(v -> new ImageUrlResolver.Item(v.getCropImg(), CROP_BELONG_TYPE))
+                .toList();
+            List<String> urls = imageUrlResolver.resolveList(items);
+            if (urls.size() == vos.size()) {
+                for (int i = 0; i < vos.size(); i++) {
+                    vos.get(i).setCropImg(urls.get(i));
+                }
+            }
+        }
         return R.ok(vos);
     }
 

@@ -52,3 +52,4 @@ nbdist/
 .flattened-pom.xml
 
 .env
+.env.staging

@@ -3,6 +3,7 @@ package org.dromara.djs.warehouse.flow.service.impl;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.satoken.utils.LoginHelper;
 import org.dromara.djs.common.encoder.IBizCodeGenerator;
+import org.dromara.djs.common.image.service.ImageUrlResolver;
 import org.dromara.djs.warehouse.check.service.IStockCheckService;
 import org.dromara.djs.warehouse.flow.domain.StockFlow;
 import org.dromara.djs.warehouse.flow.domain.bo.MatLossBo;
@@ -72,6 +73,7 @@ class MatFlowServiceImplTest {
     @Mock private ProductInfoMapper productInfoMapper;
     @Mock private IBizCodeGenerator bizCodeGenerator;
     @Mock private IStockCheckService stockCheckService;
+    @Mock private ImageUrlResolver imageUrlResolver;
 
     private MatFlowServiceImpl service;
     private MockedStatic<LoginHelper> loginHelperMock;
@@ -82,7 +84,7 @@ class MatFlowServiceImplTest {
 
     @BeforeEach
     void setup() {
-        service = new MatFlowServiceImpl(stockFlowMapper, locationStockMapper, productInfoMapper, bizCodeGenerator, stockCheckService);
+        service = new MatFlowServiceImpl(stockFlowMapper, locationStockMapper, productInfoMapper, bizCodeGenerator, stockCheckService, imageUrlResolver);
         loginHelperMock = Mockito.mockStatic(LoginHelper.class);
         loginHelperMock.when(LoginHelper::getUserId).thenReturn(USER_ID);
 

@@ -12,6 +12,7 @@ import org.dromara.common.satoken.utils.LoginHelper;
 import org.dromara.djs.common.base.DjsBaseServiceImpl;
 import org.dromara.djs.common.encoder.BizCodeType;
 import org.dromara.djs.common.encoder.IBizCodeGenerator;
+import org.dromara.djs.common.image.service.ImageUrlResolver;
 import org.dromara.djs.warehouse.check.service.IStockCheckService;
 import org.dromara.djs.warehouse.burn.domain.PigBurnRecord;
 import org.dromara.djs.warehouse.burn.domain.bo.PigBurnRecordBo;
@@ -112,6 +113,7 @@ public class PigBurnRecordServiceImpl
     private final IBizCodeGenerator bizCodeGenerator;
     private final IStockCheckService stockCheckService;
     private final ITraceService traceService;
+    private final ImageUrlResolver imageUrlResolver;
 
     public PigBurnRecordServiceImpl(PigBurnRecordMapper baseMapper,
                                     StockFlowMapper stockFlowMapper,
@@ -121,7 +123,8 @@ public class PigBurnRecordServiceImpl
                                     ProductInfoMapper productInfoMapper,
                                     IBizCodeGenerator bizCodeGenerator,
                                     IStockCheckService stockCheckService,
-                                    ITraceService traceService) {
+                                    ITraceService traceService,
+                                    ImageUrlResolver imageUrlResolver) {
         super(baseMapper);
         this.stockFlowMapper = stockFlowMapper;
         this.barInfoMapper = barInfoMapper;
@@ -131,6 +134,7 @@ public class PigBurnRecordServiceImpl
         this.bizCodeGenerator = bizCodeGenerator;
         this.stockCheckService = stockCheckService;
         this.traceService = traceService;
+        this.imageUrlResolver = imageUrlResolver;
     }
 
     @Override
@@ -259,13 +263,24 @@ public class PigBurnRecordServiceImpl
 
     @Override
     public List<BurnProductTypeVo> queryProductTypes() {
-        return loadWhiteBarTypes().stream().map(p -> {
+        List<ProductInfo> types = loadWhiteBarTypes();
+        // IMG-LIB-001：批量解析产品图（L1 image_oss_id → L2 white_bar 默认图 → L3 全局），禁 N+1
+        List<ImageUrlResolver.Item> items = types.stream()
+            .map(p -> new ImageUrlResolver.Item(p.getImageOssId(), WHITE_BAR_BELONG_TYPE))
+            .toList();
+        List<String> urls = imageUrlResolver.resolveList(items);
+        boolean urlsAligned = urls.size() == types.size();
+        List<BurnProductTypeVo> result = new ArrayList<>(types.size());
+        for (int i = 0; i < types.size(); i++) {
+            ProductInfo p = types.get(i);
             BurnProductTypeVo vo = new BurnProductTypeVo();
             vo.setProductId(p.getId());
             vo.setProductCode(p.getProductId());
             vo.setProductName(p.getProductName());
-            return vo;
-        }).toList();
+            vo.setImageUrl(urlsAligned ? urls.get(i) : null);
+            result.add(vo);
+        }
+        return result;
     }
 
     /**

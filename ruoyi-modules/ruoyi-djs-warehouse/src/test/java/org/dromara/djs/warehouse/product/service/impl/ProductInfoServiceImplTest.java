@@ -71,14 +71,22 @@ class ProductInfoServiceImplTest {
     @Mock
     private IGiftBoxService giftBoxService;
 
+    @Mock
+    private org.dromara.djs.common.image.service.IImageLibraryService imageLibraryService;
+
+    @Mock
+    private org.dromara.djs.common.image.service.ImageUrlResolver imageUrlResolver;
+
     private TestableProductInfoServiceImpl service;
 
     /**
      * 子类覆盖 toEntity 钩子，避开 SpringUtils.getBean(Converter.class)（MapStruct-Plus 容器）。
      */
     static class TestableProductInfoServiceImpl extends ProductInfoServiceImpl {
-        TestableProductInfoServiceImpl(ProductInfoMapper baseMapper, IGiftBoxService giftBoxService) {
-            super(baseMapper, giftBoxService);
+        TestableProductInfoServiceImpl(ProductInfoMapper baseMapper, IGiftBoxService giftBoxService,
+                                       org.dromara.djs.common.image.service.IImageLibraryService imageLibraryService,
+                                       org.dromara.djs.common.image.service.ImageUrlResolver imageUrlResolver) {
+            super(baseMapper, giftBoxService, imageLibraryService, imageUrlResolver);
         }
 
         @Override
@@ -113,7 +121,7 @@ class ProductInfoServiceImplTest {
 
     @BeforeEach
     void setup() {
-        service = new TestableProductInfoServiceImpl(productInfoMapper, giftBoxService);
+        service = new TestableProductInfoServiceImpl(productInfoMapper, giftBoxService, imageLibraryService, imageUrlResolver);
     }
 
     private ProductInfoBo selfBo() {

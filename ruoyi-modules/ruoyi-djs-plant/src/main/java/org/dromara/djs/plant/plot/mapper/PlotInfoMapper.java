@@ -1,5 +1,6 @@
 package org.dromara.djs.plant.plot.mapper;
 
+import com.baomidou.mybatisplus.annotation.InterceptorIgnore;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 import org.dromara.common.mybatis.core.mapper.BaseMapperPlus;
@@ -22,10 +23,17 @@ public interface PlotInfoMapper extends BaseMapperPlus<PlotInfo, PlotInfoVo> {
      *
      * <p>LEFT JOIN 片区表，保证 0 空地的启用片区也出 {@code X区(0)} 胶囊。
      * 只统计未删除空地，启用片区（zone_status=1）。返回每行 {@code {zoneId, zoneName, idleCount}}，
-     * 按 zone_code 升序。</p>
+     * 按片区名升序。</p>
+     *
+     * <p>SQL 已手写完整 {@code tenant_id = '1001'}（与全库 V1 单租户口径一致），用
+     * {@code @InterceptorIgnore(tenantLine = "true")} 关掉 MP 租户拦截器对这条手写 LEFT JOIN
+     * 的二次注入——否则拦截器会把从表 {@code p} 的租户条件推进 WHERE，令 LEFT JOIN 退化为
+     * INNER JOIN、{@code COUNT(p.id)} 落空致 idleCount 全 0。仅作用于本方法，不影响 mapper
+     * 其余 CRUD 的租户隔离。</p>
      *
      * @return 每行 {@code {zoneId, zoneName, idleCount}}
      */
+    @InterceptorIgnore(tenantLine = "true")
     @Select("""
         SELECT z.id AS zoneId, z.zone_name AS zoneName, COUNT(p.id) AS idleCount
           FROM t_plant_plot_zone z
@@ -37,8 +45,8 @@ public interface PlotInfoMapper extends BaseMapperPlus<PlotInfo, PlotInfoVo> {
          WHERE z.del_flag = '0'
            AND z.tenant_id = '1001'
            AND z.zone_status = 1
-         GROUP BY z.id, z.zone_name, z.zone_code
-         ORDER BY z.zone_code ASC
+         GROUP BY z.id, z.zone_name
+         ORDER BY z.zone_name ASC
         """)
     List<Map<String, Object>> selectIdleZoneCounts();
 

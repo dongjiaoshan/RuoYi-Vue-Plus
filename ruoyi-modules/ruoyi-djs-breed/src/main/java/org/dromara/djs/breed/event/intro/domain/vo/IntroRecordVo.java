@@ -7,6 +7,7 @@ import org.dromara.common.translation.constant.TransConstant;
 import java.io.Serial;
 import java.io.Serializable;
 import java.time.LocalDate;
+import java.util.List;
 
 /**
  * mp 端「引种记录」列表出参（BRD-FIX-MP-INTRO-001，原型 86 第 3 段）。
@@ -64,4 +65,11 @@ public class IntroRecordVo implements Serializable {
 
     /** 凭证图 OSS IDs 逗号分隔（外部引种有；mp 端渲染缩略图）。 */
     private String proofOssIds;
+
+    /**
+     * 凭证图可访问 URL 列表（service JOIN sys_oss resolve）。
+     * <p>mp {@code <image>} 无法携 Bearer token 访问鉴权下载端点，裸 ossId 渲不出图，
+     * 故后端预解析成可直接渲染的 URL；无凭证图返空 list。</p>
+     */
+    private List<String> proofImageUrls;
 }

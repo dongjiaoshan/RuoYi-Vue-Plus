@@ -12,6 +12,7 @@ import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.satoken.utils.LoginHelper;
 import org.dromara.common.tenant.helper.TenantHelper;
 import org.dromara.djs.common.base.DjsBaseServiceImpl;
+import org.dromara.djs.common.image.service.ImageUrlResolver;
 import org.dromara.djs.plant.crop.domain.CropInfo;
 import org.dromara.djs.plant.crop.mapper.CropInfoMapper;
 import org.dromara.djs.plant.farm.domain.FarmRecords;
@@ -27,6 +28,7 @@ import org.dromara.djs.plant.farm.domain.bo.TransplantRecordBo;
 import org.dromara.djs.plant.farm.domain.query.FarmRecordsQuery;
 import org.dromara.djs.plant.farm.domain.vo.DispatchSummaryVo;
 import org.dromara.djs.plant.farm.domain.vo.FarmCropPlotVo;
+import org.dromara.djs.plant.farm.domain.vo.FarmCropTargetCardVo;
 import org.dromara.djs.plant.farm.domain.vo.FarmRecordsVo;
 import org.dromara.djs.plant.farm.mapper.FarmRecordsMapper;
 import org.dromara.djs.plant.farm.service.IFarmRecordsService;
@@ -89,24 +91,30 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
         "disaster", "harvest_activity"
     );
 
+    /** 作物图 belongType（与 CropInfoServiceImpl 默认图口径一致）。 */
+    private static final String CROP_BELONG_TYPE = "vegetable";
+
     private final PlotInfoMapper plotInfoMapper;
     private final CropInfoMapper cropInfoMapper;
     private final PlantDetailsMapper plantDetailsMapper;
     private final PlantWorkTeamMapper teamMapper;
     private final PlantWorkPeopleMapper peopleMapper;
+    private final ImageUrlResolver imageUrlResolver;
 
     public FarmRecordsServiceImpl(FarmRecordsMapper baseMapper,
                                   PlotInfoMapper plotInfoMapper,
                                   CropInfoMapper cropInfoMapper,
                                   PlantDetailsMapper plantDetailsMapper,
                                   PlantWorkTeamMapper teamMapper,
-                                  PlantWorkPeopleMapper peopleMapper) {
+                                  PlantWorkPeopleMapper peopleMapper,
+                                  ImageUrlResolver imageUrlResolver) {
         super(baseMapper);
         this.plotInfoMapper = plotInfoMapper;
         this.cropInfoMapper = cropInfoMapper;
         this.plantDetailsMapper = plantDetailsMapper;
         this.teamMapper = teamMapper;
         this.peopleMapper = peopleMapper;
+        this.imageUrlResolver = imageUrlResolver;
     }
 
     // ============================================================
@@ -294,14 +302,18 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
         if (cropId == null) {
             return List.of();
         }
-        // 退茬只列采摘完成的地块；其余生长活动列进行中（ongoing）地块
-        boolean isRotation = "rotation".equals(farmType);
-        String targetPlantStatus = isRotation ? "completed" : "ongoing";
+        // 工种 → 状态规则（与 listCropTargetCards 共用 resolveStatusFilter，避免口径漂移）：
+        // 退茬 → harvest_status='completed'（采摘完成）；其余 → plant_status='ongoing'（进行中）。
+        StatusFilter filter = resolveStatusFilter(farmType);
+        LambdaQueryWrapper<PlantDetails> dw = new LambdaQueryWrapper<PlantDetails>()
+            .eq(PlantDetails::getCropId, cropId);
+        if (filter.byHarvestStatus()) {
+            dw.eq(PlantDetails::getHarvestStatus, filter.value());
+        } else {
+            dw.eq(PlantDetails::getPlantStatus, filter.value());
+        }
         List<PlantDetails> details = plantDetailsMapper.selectList(
-            new LambdaQueryWrapper<PlantDetails>()
-                .eq(PlantDetails::getCropId, cropId)
-                .eq(PlantDetails::getPlantStatus, targetPlantStatus)
-                .orderByAsc(PlantDetails::getPlotId)
+            dw.orderByAsc(PlantDetails::getPlotId)
                 .orderByAsc(PlantDetails::getId));
         if (CollUtil.isEmpty(details)) {
             return List.of();
@@ -365,6 +377,102 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
             result.add(vo);
         }
         return result;
+    }
+
+    @Override
+    public List<FarmCropTargetCardVo> listCropTargetCards(String farmType, Long zoneId, String plotCode) {
+        if (StringUtils.isBlank(farmType)) {
+            return List.of();
+        }
+        String code = StringUtils.isBlank(plotCode) ? null : plotCode;
+        // 工种 → 聚合 @Select 分支（rotation 用 harvest_status；transplant 叠 plot_type='nursery'；其余 plant_status='ongoing'）
+        List<Map<String, Object>> rows;
+        if ("rotation".equals(farmType)) {
+            rows = baseMapper.selectCropTargetCardsForRotation(farmType, zoneId, code);
+        } else if ("transplant".equals(farmType)) {
+            rows = baseMapper.selectCropTargetCardsForTransplant(farmType, zoneId, code);
+        } else {
+            rows = baseMapper.selectCropTargetCardsForGrow(farmType, zoneId, code);
+        }
+        if (CollUtil.isEmpty(rows)) {
+            return List.of();
+        }
+
+        List<FarmCropTargetCardVo> result = new ArrayList<>(rows.size());
+        List<Long> cropIds = new ArrayList<>(rows.size());
+        for (Map<String, Object> row : rows) {
+            FarmCropTargetCardVo vo = new FarmCropTargetCardVo();
+            Object cropId = row.get("cropId");
+            if (cropId != null) {
+                vo.setId(((Number) cropId).longValue());
+                cropIds.add(vo.getId());
+            }
+            vo.setCropName(row.get("cropName") == null ? null : row.get("cropName").toString());
+            vo.setCropCode(row.get("cropCode") == null ? null : row.get("cropCode").toString());
+            Object cnt = row.get("plotCount");
+            vo.setPlotCount(cnt == null ? 0 : ((Number) cnt).intValue());
+            Object last = row.get("lastFarmDate");
+            if (last instanceof java.sql.Date sqlDate) {
+                vo.setLastFarmDate(sqlDate.toLocalDate());
+            } else if (last instanceof LocalDate ld) {
+                vo.setLastFarmDate(ld);
+            }
+            result.add(vo);
+        }
+
+        // 批量回填作物图（IMG-LIB-001 resolver，禁 N+1）
+        fillCropImg(result, cropIds);
+        return result;
+    }
+
+    /**
+     * 批量回填作物卡图 public URL（IMG-LIB-001 4 层 resolver）。
+     *
+     * <p>一次 {@code selectByIds} 取 image_oss_id，再一次 {@code resolveList} 转 public URL，禁 N+1。</p>
+     */
+    private void fillCropImg(List<FarmCropTargetCardVo> cards, List<Long> cropIds) {
+        if (CollUtil.isEmpty(cards) || CollUtil.isEmpty(cropIds)) {
+            return;
+        }
+        Map<Long, String> ossIdMap = cropInfoMapper.selectByIds(cropIds).stream()
+            .filter(c -> c.getId() != null)
+            .collect(Collectors.toMap(CropInfo::getId, c -> c.getImageOssId() == null ? "" : c.getImageOssId(), (a, b) -> a));
+        List<ImageUrlResolver.Item> items = new ArrayList<>(cards.size());
+        for (FarmCropTargetCardVo card : cards) {
+            String ossId = card.getId() == null ? null : ossIdMap.get(card.getId());
+            items.add(new ImageUrlResolver.Item(StringUtils.isBlank(ossId) ? null : ossId, CROP_BELONG_TYPE));
+        }
+        List<String> urls = imageUrlResolver.resolveList(items);
+        if (urls.size() != cards.size()) {
+            return;
+        }
+        for (int i = 0; i < cards.size(); i++) {
+            cards.get(i).setCropImg(urls.get(i));
+        }
+    }
+
+    /**
+     * 工种 → 作物卡状态过滤规则（listCropPlots 多选页 + listCropTargetCards 列表卡两处共用，避免口径漂移）。
+     *
+     * <ul>
+     *   <li>rotation（退茬）→ {@code harvest_status='completed'}（采摘完成）</li>
+     *   <li>其余（含 transplant / 生长类）→ {@code plant_status='ongoing'}（进行中）</li>
+     * </ul>
+     *
+     * <p>移栽（transplant）的额外 {@code plot_type='nursery'} 约束只在列表卡聚合 SQL 里叠加（多选页按作物已选定、
+     * 不重复地块类型过滤），故 transplant 在此仍归 plant_status='ongoing'。</p>
+     */
+    private StatusFilter resolveStatusFilter(String farmType) {
+        if ("rotation".equals(farmType)) {
+            return new StatusFilter(true, "completed");
+        }
+        return new StatusFilter(false, "ongoing");
+    }
+
+    /**
+     * 状态过滤口径：{@code byHarvestStatus=true} 判 harvest_status 列，否则判 plant_status 列。
+     */
+    private record StatusFilter(boolean byHarvestStatus, String value) {
     }
 
     @Override
@@ -449,11 +557,10 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
             if (CollUtil.isEmpty(teamIds)) {
                 return TableDataInfo.build(new Page<>());
             }
-            Page<FarmRecordsVo> page = baseMapper.selectVoPage(pageQuery.build(),
-                new LambdaQueryWrapper<FarmRecords>()
-                    .in(FarmRecords::getFarmBy, teamIds)
-                    .orderByDesc(FarmRecords::getFarmDate)
-                    .orderByDesc(FarmRecords::getId));
+            // 复用 buildWrapper：内含 farmType eq（前端传的工种过滤）+ 排序，再叠加班组 farmBy IN
+            LambdaQueryWrapper<FarmRecords> w = buildWrapper(query);
+            w.in(FarmRecords::getFarmBy, teamIds);
+            Page<FarmRecordsVo> page = baseMapper.selectVoPage(pageQuery.build(), w);
             enrichRefs(page.getRecords());
             return TableDataInfo.build(page);
         }

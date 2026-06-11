@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
+import org.dromara.djs.common.image.service.ImageUrlResolver;
 import org.dromara.djs.plant.crop.mapper.CropInfoMapper;
 import org.dromara.djs.plant.farm.domain.FarmRecords;
 import org.dromara.djs.plant.farm.domain.vo.FarmRecordsVo;
@@ -68,6 +69,8 @@ class FarmRecordsDisasterQueryTest {
     private PlantWorkTeamMapper teamMapper;
     @Mock
     private PlantWorkPeopleMapper peopleMapper;
+    @Mock
+    private ImageUrlResolver imageUrlResolver;
 
     private FarmRecordsServiceImpl service;
 
@@ -83,7 +86,7 @@ class FarmRecordsDisasterQueryTest {
 
     @BeforeEach
     void setUp() {
-        service = new FarmRecordsServiceImpl(baseMapper, plotInfoMapper, cropInfoMapper, plantDetailsMapper, teamMapper, peopleMapper);
+        service = new FarmRecordsServiceImpl(baseMapper, plotInfoMapper, cropInfoMapper, plantDetailsMapper, teamMapper, peopleMapper, imageUrlResolver);
     }
 
     private FarmRecordsVo buildDisasterVo() {

@@ -68,6 +68,15 @@ public class ProductInfoVo implements Serializable {
     @ExcelProperty(value = "原图")
     private String productImg;
 
+    /** 主图 ossId（IMG-LIB-001 L1）。 */
+    private String imageOssId;
+
+    /** 图来源（IMG-LIB-001：0 自动 / 1 手动）。 */
+    private Integer imageSource;
+
+    /** 主图 public URL（IMG-LIB-001 resolver 4 层兜底回填）。 */
+    private String imageUrl;
+
     @ExcelProperty(value = "产品属性", converter = ExcelDictConvert.class)
     @ExcelDictFormat(dictType = "djs_product_attr")
     private Integer productAttr;

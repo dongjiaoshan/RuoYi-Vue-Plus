@@ -10,6 +10,7 @@ import org.dromara.common.satoken.utils.LoginHelper;
 import org.dromara.djs.common.base.DjsBaseServiceImpl;
 import org.dromara.djs.common.encoder.BizCodeType;
 import org.dromara.djs.common.encoder.IBizCodeGenerator;
+import org.dromara.djs.common.image.service.ImageUrlResolver;
 import org.dromara.djs.warehouse.flow.domain.StockFlow;
 import org.dromara.djs.warehouse.flow.mapper.StockFlowMapper;
 import org.dromara.djs.warehouse.location.domain.LocationInfo;
@@ -109,19 +110,27 @@ public class VegetableHandleServiceImpl
     private final StockFlowMapper stockFlowMapper;
     private final LocationInfoMapper locationInfoMapper;
     private final IBizCodeGenerator bizCodeGenerator;
+    private final ImageUrlResolver imageUrlResolver;
+
+    /**
+     * 作物图 L2 兜底分类键（作物无 belong_type，统一走"蔬菜默认图"）。
+     */
+    private static final String CROP_BELONG_TYPE = "vegetable";
 
     public VegetableHandleServiceImpl(VegetableHandleMapper baseMapper,
                                       HandleRecordMapper handleRecordMapper,
                                       PlantingRecordMapper plantingRecordMapper,
                                       StockFlowMapper stockFlowMapper,
                                       LocationInfoMapper locationInfoMapper,
-                                      IBizCodeGenerator bizCodeGenerator) {
+                                      IBizCodeGenerator bizCodeGenerator,
+                                      ImageUrlResolver imageUrlResolver) {
         super(baseMapper);
         this.handleRecordMapper = handleRecordMapper;
         this.plantingRecordMapper = plantingRecordMapper;
         this.stockFlowMapper = stockFlowMapper;
         this.locationInfoMapper = locationInfoMapper;
         this.bizCodeGenerator = bizCodeGenerator;
+        this.imageUrlResolver = imageUrlResolver;
     }
 
     @Override
@@ -338,7 +347,20 @@ public class VegetableHandleServiceImpl
 
     @Override
     public List<VegCropVo> listCrops() {
-        return baseMapper.selectCropAggList();
+        List<VegCropVo> list = baseMapper.selectCropAggList();
+        // IMG-LIB-001：thumbUrl 走 4 层 resolver（L1 作物 image_oss_id → L2 蔬菜默认图 → L3 全局），禁 N+1
+        if (!list.isEmpty()) {
+            List<ImageUrlResolver.Item> items = list.stream()
+                .map(v -> new ImageUrlResolver.Item(v.getImageOssId(), CROP_BELONG_TYPE))
+                .toList();
+            List<String> urls = imageUrlResolver.resolveList(items);
+            if (urls.size() == list.size()) {
+                for (int i = 0; i < list.size(); i++) {
+                    list.get(i).setThumbUrl(urls.get(i));
+                }
+            }
+        }
+        return list;
     }
 
     @Override

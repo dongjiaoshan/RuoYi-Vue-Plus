@@ -21,6 +21,7 @@ import org.dromara.djs.plant.farm.domain.bo.TransplantRecordBo;
 import org.dromara.djs.plant.farm.domain.query.FarmRecordsQuery;
 import org.dromara.djs.plant.farm.domain.vo.DispatchSummaryVo;
 import org.dromara.djs.plant.farm.domain.vo.FarmCropPlotVo;
+import org.dromara.djs.plant.farm.domain.vo.FarmCropTargetCardVo;
 import org.dromara.djs.plant.farm.domain.vo.FarmRecordsVo;
 import org.dromara.djs.plant.farm.service.IFarmRecordsService;
 import org.springframework.validation.annotation.Validated;
@@ -141,6 +142,21 @@ public class AppletFarmRecordsController extends BaseController {
     @GetMapping("/cropPlots")
     public R<List<FarmCropPlotVo>> cropPlots(@RequestParam Long cropId, @RequestParam String farmType) {
         return R.ok(farmRecordsService.listCropPlots(cropId, farmType));
+    }
+
+    /**
+     * 工种列表页「作物目标卡」聚合（FIX-PLT-MP-CROPSEL-001）：种植类工种作业 tab 的作物卡数据源。
+     *
+     * <p>只列已种植作物，按工种状态规则过滤后聚合可操作地块去重数 + 最近同工种农事日期 + 作物图。
+     * 退茬只列采摘完成作物；移栽只列保育地块（plot_type='nursery'）上种植的作物。</p>
+     */
+    @SaCheckLogin
+    @SaCheckPermission("djs:applet:plant:work:grow")
+    @GetMapping("/cropTargetCards")
+    public R<List<FarmCropTargetCardVo>> cropTargetCards(@RequestParam String farmType,
+                                                         @RequestParam(required = false) Long zoneId,
+                                                         @RequestParam(required = false) String plotCode) {
+        return R.ok(farmRecordsService.listCropTargetCards(farmType, zoneId, plotCode));
     }
 
     /**

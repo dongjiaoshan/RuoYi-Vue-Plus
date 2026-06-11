@@ -37,4 +37,9 @@ public class CropPickerVo implements Serializable {
      */
     private String cropCode;
 
+    /**
+     * 作物缩略图 public URL（IMG-LIB-001 4 层 resolver 回填；listAll 端点回填，picker 场景可忽略）。
+     */
+    private String cropImg;
+
 }

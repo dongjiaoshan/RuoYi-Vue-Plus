@@ -86,6 +86,12 @@ public class CropInfo extends TenantEntity {
     /** 采摘单价（元/斤）。 */
     private BigDecimal pickUnitPrice;
 
+    /** 主图 ossId（IMG-LIB-001 4 层 resolver L1；create 时按 cropName 自动匹配存入）。 */
+    private String imageOssId;
+
+    /** 图来源（IMG-LIB-001：0 自动匹配 / 1 用户手改）。 */
+    private Integer imageSource;
+
     @TableLogic
     private String delFlag;
 

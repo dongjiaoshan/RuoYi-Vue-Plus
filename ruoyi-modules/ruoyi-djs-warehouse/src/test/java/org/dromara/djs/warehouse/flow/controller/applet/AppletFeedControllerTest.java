@@ -1,6 +1,7 @@
 package org.dromara.djs.warehouse.flow.controller.applet;
 
 import org.dromara.common.core.domain.R;
+import org.dromara.djs.common.image.service.ImageUrlResolver;
 import org.dromara.djs.warehouse.flow.domain.vo.FeedStockVo;
 import org.dromara.djs.warehouse.flow.domain.vo.MatTodaySummaryVo;
 import org.dromara.djs.warehouse.flow.service.IMatFlowService;
@@ -55,6 +56,7 @@ class AppletFeedControllerTest {
     @Mock private LocationStockMapper locationStockMapper;
     @Mock private IStockFlowService stockFlowService;
     @Mock private IMatFlowService matFlowService;
+    @Mock private ImageUrlResolver imageUrlResolver;
 
     private AppletFeedController controller;
 
@@ -64,7 +66,7 @@ class AppletFeedControllerTest {
     @BeforeEach
     void setup() {
         controller = new AppletFeedController(
-            productInfoMapper, locationStockMapper, stockFlowService, matFlowService);
+            productInfoMapper, locationStockMapper, stockFlowService, matFlowService, imageUrlResolver);
     }
 
     private static ProductInfo product(Long id, String code, String name) {

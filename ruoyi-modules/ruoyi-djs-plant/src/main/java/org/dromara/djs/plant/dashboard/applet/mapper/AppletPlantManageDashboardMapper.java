@@ -188,7 +188,7 @@ public interface AppletPlantManageDashboardMapper {
      */
     @Select("SELECT d.plant_month                  AS month, "
         + "       c.crop_name                    AS cropName, "
-        + "       c.crop_image_preview           AS cropImg, "
+        + "       c.image_oss_id                 AS cropImg, "
         + "       COUNT(DISTINCT d.plot_id)      AS plotCount, "
         + "       COALESCE(SUM(d.plot_area), 0)  AS area "
         + "  FROM t_plant_plant_details d "
@@ -197,7 +197,7 @@ public interface AppletPlantManageDashboardMapper {
         + " WHERE d.tenant_id = #{tenantId} "
         + "   AND d.del_flag = '0' "
         + "   AND pp.plan_year = #{year} "
-        + " GROUP BY d.plant_month, d.crop_id, c.crop_name, c.crop_image_preview "
+        + " GROUP BY d.plant_month, d.crop_id, c.crop_name, c.image_oss_id "
         + " ORDER BY d.plant_month ASC, area DESC")
     List<MonthCropRow> selectPlanMonthCrops(@Param("tenantId") String tenantId, @Param("year") Integer year);
 
@@ -266,7 +266,7 @@ public interface AppletPlantManageDashboardMapper {
      */
     @Select("SELECT MONTH(d.earliest_harvestdate) AS month, "
         + "       c.crop_name                    AS cropName, "
-        + "       c.crop_image_preview           AS cropImg, "
+        + "       c.image_oss_id                 AS cropImg, "
         + "       COUNT(DISTINCT d.plot_id)      AS plotCount, "
         + "       COALESCE(SUM(d.plot_area), 0)  AS area "
         + "  FROM t_plant_plant_details d "
@@ -274,7 +274,7 @@ public interface AppletPlantManageDashboardMapper {
         + " WHERE d.tenant_id = #{tenantId} "
         + "   AND d.del_flag = '0' "
         + "   AND YEAR(d.earliest_harvestdate) = #{year} "
-        + " GROUP BY MONTH(d.earliest_harvestdate), d.crop_id, c.crop_name, c.crop_image_preview "
+        + " GROUP BY MONTH(d.earliest_harvestdate), d.crop_id, c.crop_name, c.image_oss_id "
         + " ORDER BY month ASC, area DESC")
     List<MonthCropRow> selectPickMonthCrops(@Param("tenantId") String tenantId, @Param("year") Integer year);
 

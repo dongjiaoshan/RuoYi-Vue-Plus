@@ -33,7 +33,12 @@ public class VegCropVo implements Serializable {
     private String cropName;
 
     /**
-     * 缩略图 URL（= t_plant_crop_info.crop_image_preview，可空）。
+     * 主图 ossId（= t_plant_crop_info.image_oss_id，IMG-LIB-001 L1，内部解析用）。
+     */
+    private String imageOssId;
+
+    /**
+     * 缩略图 URL（IMG-LIB-001 4 层 resolver 回填，L2 兜底蔬菜默认图；前端 image 直接绑定，保证非空兜底）。
      */
     private String thumbUrl;
 

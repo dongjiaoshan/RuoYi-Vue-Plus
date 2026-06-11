@@ -34,6 +34,7 @@ public interface VegReceiveMapper extends BaseMapperPlus<VegReceive, VegReceive>
     @Select("""
         SELECT t.crop_id      AS cropId,
                cr.crop_name   AS cropName,
+               cr.image_oss_id AS imageOssId,
                t.pending      AS pendingWeight
           FROM (
             SELECT vh.crop_id,
@@ -76,6 +77,7 @@ public interface VegReceiveMapper extends BaseMapperPlus<VegReceive, VegReceive>
         <script>
         SELECT p.id            AS cropId,
                p.product_name  AS cropName,
+               p.image_oss_id  AS imageOssId,
                '果蔬产品'       AS productType,
                0               AS pendingWeight
           FROM t_warehouse_product_info p
