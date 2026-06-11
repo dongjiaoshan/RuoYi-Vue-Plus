@@ -30,7 +30,6 @@ public class PigAbnormalVo implements Serializable {
     private String abnormalType;
 
     private Long relatedBreedingId;
-    private String abnormalReason;
     private Long operatorId;
     private String remark;
 

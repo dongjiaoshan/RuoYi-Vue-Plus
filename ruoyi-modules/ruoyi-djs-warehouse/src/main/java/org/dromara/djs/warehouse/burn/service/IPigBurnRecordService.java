@@ -29,10 +29,24 @@ public interface IPigBurnRecordService {
     /**
      * mp 端提交燎毛入库记录（核心方法，按产品类型分别入库）。
      *
+     * <p>FIX-WMS-MP-BURN-001：产品逐项入库只推进 bar 到中间态 {@code singing}（燎毛中），
+     * 不直推 {@code in_stock}；bar 终态由 {@link #finishBurn} 推进。</p>
+     *
      * @param bo 入参
      * @return 燎毛记录主键 id
      */
     Long submitBurnRecord(PigBurnRecordBo bo);
+
+    /**
+     * mp 端燎毛「处理完成」（FIX-WMS-MP-BURN-001 客户 6/11 新需求）。
+     *
+     * <p>校验 bar 在 {@code singing} 态 + 累计已入库产品总重 ≤ 出栏重量 + 整只/半只互斥（后端兜底前端约束）
+     * → UPDATE bar status → {@code singed}（燎毛处理完成终态），回填 in_weight。</p>
+     *
+     * @param barInfoId  白条 ID
+     * @param operatorId 操作人 ID（处理完成人）
+     */
+    void finishBurn(Long barInfoId, Long operatorId);
 
     /**
      * 已出栏待燎毛入库白条列表（bar_info status IN ('pending_singe','singing')，按出栏时间倒序）。

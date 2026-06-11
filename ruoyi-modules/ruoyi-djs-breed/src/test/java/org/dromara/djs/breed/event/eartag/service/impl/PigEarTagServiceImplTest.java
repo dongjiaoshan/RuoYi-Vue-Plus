@@ -340,6 +340,77 @@ class PigEarTagServiceImplTest {
             .hasMessageContaining("pigletno.farrow.not_found");
     }
 
+    @Test
+    @DisplayName("batchTag 写库 ear_tag=全号（K132）+ operatorId 取 bo 值（K124）")
+    void batchTag_writesEarTagFull_andOperatorIdFromBo() {
+        PigFarrow farrow = mkFarrow(910L, 5, null);
+        when(farrowMapper.selectById(910L)).thenReturn(farrow);
+        when(pigMapper.selectById(101L)).thenReturn(mkSow());
+        when(pigletnoMapper.selectCount(any())).thenReturn(0L);
+        when(earNoAllocator.allocate(eq("4"), eq("04"), eq("M"), any(LocalDate.class), eq(1)))
+            .thenReturn(List.of("4-04-1-260508-0011"));
+
+        PigletBatchEarTagBo bo = new PigletBatchEarTagBo();
+        bo.setFarrowId(910L);
+        bo.setOperatorId(777L);
+        bo.setPiglets(List.of(mkItem("M", new BigDecimal("1.5"))));
+
+        service.batchTag(bo);
+
+        // K132：ear_no 与 ear_tag 均存全号（全号为准，库内不拆短号）
+        ArgumentCaptor<Pig> pigCap = ArgumentCaptor.forClass(Pig.class);
+        verify(pigMapper).insert(pigCap.capture());
+        assertThat(pigCap.getValue().getEarNo()).isEqualTo("4-04-1-260508-0011");
+        assertThat(pigCap.getValue().getEarTag()).isEqualTo("4-04-1-260508-0011");
+
+        // K124：operatorId 取 bo 传入值（不回落登录态）
+        ArgumentCaptor<PigPigletno> logCap = ArgumentCaptor.forClass(PigPigletno.class);
+        verify(pigletnoMapper).insert(logCap.capture());
+        assertThat(logCap.getValue().getOperatorId()).isEqualTo(777L);
+    }
+
+    @Test
+    @DisplayName("previewEarNos 公母两组按 DB max+1 连号预览（K122，仅预览不占号）")
+    void previewEarNos_happyPath() {
+        PigFarrow farrow = mkFarrow(911L, 10, null);
+        when(farrowMapper.selectById(911L)).thenReturn(farrow);
+        when(pigMapper.selectById(101L)).thenReturn(mkSow());
+        // 公组前缀 max 已到 0003 → 下一号 0004；母组前缀无现存 → 从 0001 起
+        when(earNoAllocator.buildPrefix(eq("4"), eq("04"), eq("M"), any(LocalDate.class)))
+            .thenReturn("4-04-1-260508");
+        when(earNoAllocator.buildPrefix(eq("4"), eq("04"), eq("F"), any(LocalDate.class)))
+            .thenReturn("4-04-2-260508");
+        when(earNoAllocator.nextSeqForPrefix("4-04-1-260508")).thenReturn(4L);
+        when(earNoAllocator.nextSeqForPrefix("4-04-2-260508")).thenReturn(1L);
+
+        var vo = service.previewEarNos(911L, 2, 1);
+
+        assertThat(vo.getMaleEarNos())
+            .containsExactly("4-04-1-260508-0004", "4-04-1-260508-0005");
+        assertThat(vo.getFemaleEarNos())
+            .containsExactly("4-04-2-260508-0001");
+        // 预览仅读不分配，不应触碰 allocate
+        verify(earNoAllocator, times(0)).allocate(any(), any(), any(), any(), anyInt());
+    }
+
+    @Test
+    @DisplayName("previewEarNos count 为 0 的组返空列表，不查前缀")
+    void previewEarNos_zeroCountGroupEmpty() {
+        PigFarrow farrow = mkFarrow(912L, 5, null);
+        when(farrowMapper.selectById(912L)).thenReturn(farrow);
+        when(pigMapper.selectById(101L)).thenReturn(mkSow());
+        when(earNoAllocator.buildPrefix(eq("4"), eq("04"), eq("M"), any(LocalDate.class)))
+            .thenReturn("4-04-1-260508");
+        when(earNoAllocator.nextSeqForPrefix("4-04-1-260508")).thenReturn(1L);
+
+        var vo = service.previewEarNos(912L, 1, 0);
+
+        assertThat(vo.getMaleEarNos()).containsExactly("4-04-1-260508-0001");
+        assertThat(vo.getFemaleEarNos()).isEmpty();
+        // 母组 count=0 → 不构造前缀
+        verify(earNoAllocator, times(0)).buildPrefix(any(), any(), eq("F"), any(LocalDate.class));
+    }
+
     private static int anyInt() {
         return org.mockito.ArgumentMatchers.anyInt();
     }

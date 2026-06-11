@@ -198,6 +198,22 @@ class TransferServiceImplTest {
     }
 
     @Test
+    @DisplayName("K111: bo.operator 显式选中 → 写入 PigTransfer.operatorId（不回落登录用户）")
+    void operator_picked_written_to_operatorId() {
+        Pig pig = mkPig(407L, "sow", PigLifecycle.HB, 1L);
+        when(pigMapper.selectById(407L)).thenReturn(pig);
+        when(barnMapper.selectById(2L)).thenReturn(mkBarn(2L, "妊娠舍-A", "pregnant"));
+
+        TransferBo bo = mkBo(407L, 2L, null);
+        bo.setOperator(8888L);
+        service.recordTransfer(bo);
+
+        ArgumentCaptor<PigTransfer> t = ArgumentCaptor.forClass(PigTransfer.class);
+        verify(transferMapper, times(1)).insert(t.capture());
+        assertThat(t.getValue().getOperatorId()).isEqualTo(8888L);
+    }
+
+    @Test
     @DisplayName("fireEvent 调用时 eventType=TRANSFER + relatedEventId=transferId")
     void verify_event_type_and_related_id() {
         Pig pig = mkPig(406L, "sow", PigLifecycle.HB, 1L);

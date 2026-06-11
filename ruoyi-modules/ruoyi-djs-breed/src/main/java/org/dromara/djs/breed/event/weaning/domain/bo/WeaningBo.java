@@ -35,8 +35,11 @@ public class WeaningBo implements Serializable {
     /** 猪只耳号简版（mp 端工人输入；与 pigId 二选一，service 入口按 earNo 查 pig.id）。 */
     private String earNo;
 
-    /** 关联分娩 ID（mp 端从近期分娩 picker 选）。 */
-    @NotNull(message = "weaning.farrow_id.required")
+    /**
+     * 关联分娩 ID（mp 端从近期分娩 picker 默认选最近一次，可空）。
+     * <p>空时 service 按 {@code pigId} 自动取该母猪最近一次分娩兜底（FIX-BRD-MP-WEAN-FORM-001 K065/K079，
+     * 决策 Y2(b)：去前端强制 + 后端自动匹配最近分娩），仍无分娩记录才抛明确异常。</p>
+     */
     private Long farrowId;
 
     @NotNull(message = "weaning.date.required")

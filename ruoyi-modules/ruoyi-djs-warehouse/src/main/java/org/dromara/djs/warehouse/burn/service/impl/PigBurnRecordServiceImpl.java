@@ -99,11 +99,18 @@ public class PigBurnRecordServiceImpl
     private static final String WHITE_BAR_CODE_PREFIX = "PROD-WHITE-BAR-";
 
     /**
+     * 白条产品类别枚举（FIX-WMS-MP-BURN-001 录入约束 + 去前缀用），按 product_id 业务码后缀映射。
+     */
+    private static final String PRODUCT_TYPE_WHOLE = "whole";
+    private static final String PRODUCT_TYPE_HALF = "half";
+    private static final String PRODUCT_TYPE_HEAD = "head";
+    private static final String PRODUCT_TYPE_TROTTER = "trotter";
+
+    /**
      * 白条状态码（{@code t_warehouse_bar_info.status}）。
      */
     private static final String BAR_STATUS_PENDING_SINGE = "pending_singe";
     private static final String BAR_STATUS_SINGING = "singing";
-    private static final String BAR_STATUS_IN_STOCK = "in_stock";
 
     private final StockFlowMapper stockFlowMapper;
     private final BarInfoMapper barInfoMapper;
@@ -227,11 +234,13 @@ public class PigBurnRecordServiceImpl
             stockFlowMapper.insert(flowIn);
         }
 
-        // ---------- Step 4：UPDATE bar_info status → in_stock（乐观锁） ----------
-        int affected = barInfoMapper.updateStatusToInStock(
-            bar.getId(), inWeightTotal, burnTime, bo.getOperatorId());
+        // ---------- Step 4：UPDATE bar_info status → singing（燎毛中，中间态；FIX-WMS-MP-BURN-001） ----------
+        // 产品逐项入库只推进到中间态 singing（不直推 in_stock），解决「多产品逐个入库第 2 个抛错」现状 bug；
+        // bar 终态 singed 由「处理完成」按钮调 finishBurn 推进。乐观锁 WHERE status IN(pending_singe,singing) 幂等兜并发。
+        int affected = barInfoMapper.updateStatusToSinging(
+            bar.getId(), burnTime, bo.getOperatorId());
         if (affected == 0) {
-            throw new ServiceException("白条状态不符（已入库或不在待燎毛态），请刷新列表");
+            throw new ServiceException("白条状态不符（已处理完成或不在待燎毛态），请刷新列表");
         }
 
         // TRC-CORE-001：燎毛追溯事件（按耳号反查 trace_code；猪肉链当前无生成入口 → warn 跳过，不拖垮燎毛事务）
@@ -277,10 +286,96 @@ public class PigBurnRecordServiceImpl
             vo.setProductId(p.getId());
             vo.setProductCode(p.getProductId());
             vo.setProductName(p.getProductName());
+            vo.setProductType(resolveProductType(p.getProductId()));
             vo.setImageUrl(urlsAligned ? urls.get(i) : null);
             result.add(vo);
         }
         return result;
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void finishBurn(Long barInfoId, Long operatorId) {
+        if (barInfoId == null) {
+            throw new ServiceException("白条 ID 不能为空");
+        }
+        // ---------- Step 1：校验 bar 在燎毛中态 ----------
+        BarInfo bar = barInfoMapper.selectById(barInfoId);
+        if (bar == null) {
+            throw new ServiceException("白条不存在：" + barInfoId);
+        }
+        if (!BAR_STATUS_SINGING.equals(bar.getStatus())) {
+            throw new ServiceException("白条状态不符（当前：" + bar.getStatus() + "，需燎毛中），请先录入产品入库");
+        }
+
+        // ---------- Step 2：聚合该白条已入库产品 → 校验总重 + 整只/半只互斥（后端兜底前端约束）----------
+        List<ProductInhouse> inhouses = productInhouseMapper.selectList(
+            new LambdaQueryWrapper<ProductInhouse>()
+                .eq(ProductInhouse::getWhiteBarId, bar.getId()));
+        if (inhouses.isEmpty()) {
+            throw new ServiceException("尚未录入任何产品入库，无法处理完成");
+        }
+
+        Map<Long, ProductInfo> typeMap = loadWhiteBarTypeMap();
+        BigDecimal inWeightTotal = BigDecimal.ZERO;
+        boolean hasWhole = false;
+        boolean hasHalf = false;
+        int headCount = 0;
+        for (ProductInhouse ih : inhouses) {
+            BigDecimal w = ih.getProductWeight();
+            if (w != null) {
+                inWeightTotal = inWeightTotal.add(w);
+            }
+            ProductInfo type = typeMap.get(ih.getProductId());
+            String pt = type == null ? null : resolveProductType(type.getProductId());
+            if (PRODUCT_TYPE_WHOLE.equals(pt)) {
+                hasWhole = true;
+            } else if (PRODUCT_TYPE_HALF.equals(pt)) {
+                hasHalf = true;
+            } else if (PRODUCT_TYPE_HEAD.equals(pt)) {
+                headCount++;
+            }
+        }
+        // 整只 / 半只互斥（一头白条不能既整只又半只）
+        if (hasWhole && hasHalf) {
+            throw new ServiceException("整只与半只不能同时入库");
+        }
+        // 猪头限 1 次
+        if (headCount > 1) {
+            throw new ServiceException("猪头最多入库 1 次");
+        }
+        // 累计入库总重 ≤ 出栏重量
+        BigDecimal marketingWeight = bar.getMarketingWeight();
+        if (marketingWeight != null && inWeightTotal.compareTo(marketingWeight) > 0) {
+            throw new ServiceException("已录入产品总重不能超过出栏重量");
+        }
+
+        // ---------- Step 3：UPDATE bar status singing → in_stock（燎毛处理完成=已入库，乐观锁）----------
+        // 下游分割 availableBars / 库存自检均认 in_stock，故燎毛终态直接落 in_stock，
+        // 不另立 singed 中间终态（否则白条进不了分割、不计在库，断链）。singing 中间态已解决多产品逐项入库 bug。
+        int affected = barInfoMapper.updateStatusToInStock(bar.getId(), inWeightTotal, new Date(), operatorId);
+        if (affected == 0) {
+            throw new ServiceException("白条状态不符（已处理完成或不在燎毛中态），请刷新列表");
+        }
+    }
+
+    /**
+     * 按 product_id 业务码后缀映射结构化产品类别（FIX-WMS-MP-BURN-001）。
+     *
+     * <p>PROD-WHITE-BAR-01=整只 / -02=猪头 / -03=猪蹄 / -04=半只（与 white-bar seed 对齐）。
+     * 未识别码返回 {@code null}（前端 graceful 不拦）。</p>
+     */
+    private String resolveProductType(String productCode) {
+        if (productCode == null) {
+            return null;
+        }
+        return switch (productCode) {
+            case "PROD-WHITE-BAR-01" -> PRODUCT_TYPE_WHOLE;
+            case "PROD-WHITE-BAR-02" -> PRODUCT_TYPE_HEAD;
+            case "PROD-WHITE-BAR-03" -> PRODUCT_TYPE_TROTTER;
+            case "PROD-WHITE-BAR-04" -> PRODUCT_TYPE_HALF;
+            default -> null;
+        };
     }
 
     /**

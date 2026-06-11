@@ -128,7 +128,8 @@ public class TransferServiceImpl implements ITransferService {
         entity.setNewPenName(newPen == null ? null : newPen.getPenName());
         entity.setTransferReason(bo.getTransferReason());
         entity.setRemark(bo.getRemark());
-        entity.setOperatorId(LoginHelper.getUserId());
+        // 转移人员：优先 EmployeePicker 所选 userId（bo.operator），未选回落登录用户
+        entity.setOperatorId(bo.getOperator() != null ? bo.getOperator() : LoginHelper.getUserId());
         entity.setDelFlag("0");
         transferMapper.insert(entity);
 
@@ -179,6 +180,7 @@ public class TransferServiceImpl implements ITransferService {
             single.setNewPenId(batchBo.getNewPenId());
             single.setNewPenCode(batchBo.getNewPenCode());
             single.setTransferReason(batchBo.getTransferReason());
+            single.setOperator(batchBo.getOperator());
             single.setRemark(batchBo.getRemark());
             results.add(recordTransfer(single));
         }

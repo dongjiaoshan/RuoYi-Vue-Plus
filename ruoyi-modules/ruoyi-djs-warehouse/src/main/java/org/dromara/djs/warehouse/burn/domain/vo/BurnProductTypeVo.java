@@ -44,4 +44,14 @@ public class BurnProductTypeVo implements Serializable {
      */
     private String imageUrl;
 
+    /**
+     * 结构化产品类别（FIX-WMS-MP-BURN-001 录入约束用）：
+     * whole=整只 / half=半只 / head=猪头 / trotter=猪蹄。
+     *
+     * <p>按 {@code product_id} 业务码后缀映射（PROD-WHITE-BAR-01/02/03/04），让 mp 端互斥/限次约束
+     * （整只半只互斥各 1 次、猪头 1 次、猪蹄不限）+ 「猪头猪蹄不显白条编码」基于结构化枚举判断，
+     * 不靠 productName 字符串脆判。未识别码返回 {@code null}。</p>
+     */
+    private String productType;
+
 }

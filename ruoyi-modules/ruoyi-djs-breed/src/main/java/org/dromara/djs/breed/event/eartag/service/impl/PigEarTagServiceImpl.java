@@ -19,6 +19,7 @@ import org.dromara.djs.breed.event.eartag.domain.PigPigletno;
 import org.dromara.djs.breed.event.eartag.domain.bo.PigletBatchEarTagBo;
 import org.dromara.djs.breed.event.eartag.domain.bo.PigletEarTagItem;
 import org.dromara.djs.breed.event.eartag.domain.query.PigletEarTagQuery;
+import org.dromara.djs.breed.event.eartag.domain.vo.EarNoPreviewVo;
 import org.dromara.djs.breed.event.eartag.domain.vo.FarrowEarTagStatVo;
 import org.dromara.djs.breed.event.eartag.domain.vo.PigletEarTagVo;
 import org.dromara.djs.breed.event.eartag.domain.vo.PigletnoVo;
@@ -159,7 +160,10 @@ public class PigEarTagServiceImpl implements IPigEarTagService {
             String earNo = earNos.get(i);
 
             Pig piglet = new Pig();
+            // 耳号全号写入：ear_no（UNIQUE 连号源）+ ear_tag（耳号全版列）均存全号，
+            // 以全号为权威；短号仅在展示层（mp）按需截取，不在库内拆分。
             piglet.setEarNo(earNo);
+            piglet.setEarTag(earNo);
             piglet.setLifecycleId(1);
             piglet.setRecyclable(0);
             piglet.setPigSex(item.getPigletSex());
@@ -191,7 +195,8 @@ public class PigEarTagServiceImpl implements IPigEarTagService {
             log.setBirthWeight(item.getBirthWeight());
             log.setPigId(piglet.getId());
             log.setRemark(item.getRemark());
-            log.setOperatorId(LoginHelper.getUserId());
+            // 打标人员：优先取前端所选 operatorId，空则回落登录态（兼容旧入参不带人员）
+            log.setOperatorId(bo.getOperatorId() != null ? bo.getOperatorId() : LoginHelper.getUserId());
             log.setDelFlag("0");
             log.setDelUnique(0L);
             pigletnoMapper.insert(log);
@@ -206,6 +211,53 @@ public class PigEarTagServiceImpl implements IPigEarTagService {
         // VO 列表按耳号 asc 返回，便于前端展示连续序号
         result.sort(Comparator.comparing(PigletEarTagVo::getPigletEarNo));
         return result;
+    }
+
+    /** 预览序号补零位宽（与 EarNoAllocator SEQ_WIDTH 对齐）。 */
+    private static final int PREVIEW_SEQ_WIDTH = 4;
+
+    /** 段间分隔符（与 EarNoAllocator SEG_SEP 对齐）。 */
+    private static final String PREVIEW_SEG_SEP = "-";
+
+    @Override
+    public EarNoPreviewVo previewEarNos(Long farrowId, int maleCount, int femaleCount) {
+        if (farrowId == null) {
+            throw new ServiceException(I18nMessages.t("pigletno.farrow_id.required"));
+        }
+        PigFarrow farrow = farrowMapper.selectById(farrowId);
+        if (farrow == null) {
+            throw new ServiceException(I18nMessages.t("pigletno.farrow.not_found", farrowId));
+        }
+        Pig mother = pigMapper.selectById(farrow.getPigId());
+        if (mother == null) {
+            throw new ServiceException(I18nMessages.t("pigletno.mother.not_found", farrow.getPigId()));
+        }
+        LocalDate birthDate = farrow.getFarrowDate() == null
+            ? LocalDate.now()
+            : farrow.getFarrowDate().toLocalDate();
+
+        EarNoPreviewVo vo = new EarNoPreviewVo();
+        vo.setMaleEarNos(previewGroup(mother, "M", birthDate, maleCount));
+        vo.setFemaleEarNos(previewGroup(mother, "F", birthDate, femaleCount));
+        return vo;
+    }
+
+    /**
+     * 预览单组（公或母）下一批连号：{@code 前缀 + (DB max 同前缀 + 1 .. +count)}。
+     * 仅读不锁不占号；count ≤ 0 返空列表。
+     */
+    private List<String> previewGroup(Pig mother, String pigSex, LocalDate birthDate, int count) {
+        if (count <= 0) {
+            return Collections.emptyList();
+        }
+        String prefix = earNoAllocator.buildPrefix(
+            mother.getPigStrainCode(), mother.getPigBreedCode(), pigSex, birthDate);
+        long nextSeq = earNoAllocator.nextSeqForPrefix(prefix);
+        List<String> earNos = new ArrayList<>(count);
+        for (int i = 0; i < count; i++) {
+            earNos.add(prefix + PREVIEW_SEG_SEP + String.format("%0" + PREVIEW_SEQ_WIDTH + "d", nextSeq + i));
+        }
+        return earNos;
     }
 
     /**

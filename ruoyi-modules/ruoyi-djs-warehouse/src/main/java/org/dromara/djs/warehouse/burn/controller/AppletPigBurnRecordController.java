@@ -8,6 +8,7 @@ import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.satoken.utils.LoginHelper;
 import org.dromara.common.web.core.BaseController;
+import org.dromara.djs.warehouse.burn.domain.bo.PigBurnFinishBo;
 import org.dromara.djs.warehouse.burn.domain.bo.PigBurnRecordBo;
 import org.dromara.djs.warehouse.burn.domain.query.PigBurnRecordQuery;
 import org.dromara.djs.warehouse.burn.domain.vo.BarPendingVo;
@@ -72,6 +73,19 @@ public class AppletPigBurnRecordController extends BaseController {
     @PostMapping("/submit")
     public R<Long> submit(@Valid @RequestBody PigBurnRecordBo bo) {
         return R.ok(service.submitBurnRecord(bo));
+    }
+
+    /**
+     * mp 燎毛「处理完成」（FIX-WMS-MP-BURN-001 客户 6/11 新需求）。
+     *
+     * <p>校验 bar 在燎毛中态 + 累计已入库产品总重 ≤ 出栏重量 + 整只/半只互斥 → 推 bar 到
+     * {@code singed}（燎毛处理完成终态），从待燎毛列表移除。处理完成人取当前登录人。</p>
+     */
+    @SaCheckLogin
+    @PostMapping("/finish")
+    public R<Void> finish(@Valid @RequestBody PigBurnFinishBo bo) {
+        service.finishBurn(bo.getBarInfoId(), LoginHelper.getUserId());
+        return R.ok();
     }
 
     /**

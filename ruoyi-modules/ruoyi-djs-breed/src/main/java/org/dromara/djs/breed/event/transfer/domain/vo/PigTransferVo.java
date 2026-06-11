@@ -4,6 +4,8 @@ import cn.idev.excel.annotation.ExcelIgnoreUnannotated;
 import com.fasterxml.jackson.annotation.JsonFormat;
 import io.github.linpeilie.annotations.AutoMapper;
 import lombok.Data;
+import org.dromara.common.translation.annotation.Translation;
+import org.dromara.common.translation.constant.TransConstant;
 import org.dromara.djs.breed.event.transfer.domain.PigTransfer;
 
 import java.io.Serial;
@@ -41,6 +43,11 @@ public class PigTransferVo implements Serializable {
     private String newPenName;
     private String transferReason;
     private Long operatorId;
+
+    /** 转移人员姓名（FIX-CC-PERSON-001 K111：operator_id → USER_ID_TO_NICKNAME 翻译；记录列表显名不显 ID）。 */
+    @Translation(type = TransConstant.USER_ID_TO_NICKNAME, mapper = "operatorId")
+    private String operatorName;
+
     private String remark;
 
     @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")

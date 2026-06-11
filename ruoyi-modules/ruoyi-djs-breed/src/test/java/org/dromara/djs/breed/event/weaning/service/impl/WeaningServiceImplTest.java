@@ -7,6 +7,7 @@ import org.dromara.djs.breed.core.enums.PigLifecycle;
 import org.dromara.djs.breed.core.enums.PigStatusEvent;
 import org.dromara.djs.breed.core.mapper.PigMapper;
 import org.dromara.djs.breed.core.service.IPigCoreService;
+import org.dromara.djs.breed.event.eartag.domain.PigPigletno;
 import org.dromara.djs.breed.event.eartag.mapper.PigPigletnoMapper;
 import org.dromara.djs.breed.event.farrow.domain.PigFarrow;
 import org.dromara.djs.breed.event.farrow.mapper.PigFarrowMapper;
@@ -116,6 +117,13 @@ class WeaningServiceImplTest {
         return bo;
     }
 
+    private PigPigletno mkPiglet(Long pigId, String earNo) {
+        PigPigletno p = new PigPigletno();
+        p.setPigId(pigId);
+        p.setPigletEarNo(earNo);
+        return p;
+    }
+
     private WeaningDetailBo mkDetail(Integer seq, String earNo, String weight) {
         WeaningDetailBo d = new WeaningDetailBo();
         d.setPigletSeq(seq);
@@ -156,6 +164,8 @@ class WeaningServiceImplTest {
         when(pigMapper.selectById(320L)).thenReturn(pig);
         PigFarrow farrow = mkFarrow(520L, 320L, 10, 7777L);
         when(farrowMapper.selectById(520L)).thenReturn(farrow);
+        // 该分娩无已建行仔猪 → 仅转母猪
+        when(pigletnoMapper.selectList(any())).thenReturn(List.of());
 
         WeaningBo bo = mkBo(320L, 520L, 8, new BigDecimal("60.000"));
         bo.setTransferBarnCode("B02");
@@ -169,6 +179,87 @@ class WeaningServiceImplTest {
         assertThat(cap.getValue().getNewPenCode()).isEqualTo("P03");
         // 转移日期 = 断奶日期
         assertThat(cap.getValue().getTransferDate()).isEqualTo(bo.getWeaningDate());
+    }
+
+    @Test
+    @DisplayName("Y2(b): farrowId 空 → 自动取该母猪最近一次分娩兜底（按 pigId 查 selectOne）")
+    void autoMatchLatestFarrow_whenFarrowIdAbsent() {
+        Pig pig = mkSow(330L, PigLifecycle.FM);
+        when(pigMapper.selectById(330L)).thenReturn(pig);
+        PigFarrow latest = mkFarrow(530L, 330L, 10, 7777L);
+        // farrowId 空时走 selectOne（最近分娩）
+        when(farrowMapper.selectOne(any())).thenReturn(latest);
+
+        WeaningBo bo = mkBo(330L, null /* 无 farrowId */, 8, new BigDecimal("60.000"));
+        var vo = service.recordWeaning(bo);
+
+        // 兜底回填 farrowId
+        assertThat(bo.getFarrowId()).isEqualTo(530L);
+        ArgumentCaptor<PigWeaning> cap = ArgumentCaptor.forClass(PigWeaning.class);
+        verify(weaningMapper, times(1)).insert(cap.capture());
+        assertThat(cap.getValue().getFarrowId()).isEqualTo(530L);
+        assertThat(vo.getFarrowId()).isEqualTo(530L);
+        // 未传 farrowId 时不应再按 id 查（只走 selectOne 兜底）
+        verify(farrowMapper, never()).selectById(any());
+    }
+
+    @Test
+    @DisplayName("Y2(b): farrowId 空且该母猪无任何分娩 → 抛明确异常 weaning.no_farrow_for_pig")
+    void autoMatchLatestFarrow_noFarrowAtAll() {
+        Pig pig = mkSow(331L, PigLifecycle.FM);
+        when(pigMapper.selectById(331L)).thenReturn(pig);
+        when(farrowMapper.selectOne(any())).thenReturn(null);
+
+        WeaningBo bo = mkBo(331L, null, 8, new BigDecimal("60.000"));
+        assertThatThrownBy(() -> service.recordWeaning(bo))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("weaning.no_farrow_for_pig");
+        verify(weaningMapper, never()).insert(any(PigWeaning.class));
+        verify(pigCoreService, never()).fireEvent(any());
+    }
+
+    @Test
+    @DisplayName("K071: 给了转移目标 → 母猪 + 该分娩已贴标仔猪（pig_id 非空）逐头转到同目标（N+1 次）")
+    void pigletTransferAfterWean_sameTarget() {
+        Pig pig = mkSow(340L, PigLifecycle.FM);
+        when(pigMapper.selectById(340L)).thenReturn(pig);
+        PigFarrow farrow = mkFarrow(540L, 340L, 10, 7777L);
+        when(farrowMapper.selectById(540L)).thenReturn(farrow);
+        // 该分娩下 2 头已建 pig_info 行的仔猪 + 1 头未落 pig_id（应跳过）
+        when(pigletnoMapper.selectList(any())).thenReturn(List.of(
+            mkPiglet(9001L, "P-001"),
+            mkPiglet(9002L, "P-002")
+        ));
+
+        WeaningBo bo = mkBo(340L, 540L, 2, new BigDecimal("16.000"));
+        bo.setTransferBarnCode("B05");
+        bo.setTransferPenCode("P07");
+        service.recordWeaning(bo);
+
+        // 母猪 1 + 仔猪 2 = 3 次转移
+        ArgumentCaptor<TransferBo> cap = ArgumentCaptor.forClass(TransferBo.class);
+        verify(transferService, times(3)).recordTransfer(cap.capture());
+        assertThat(cap.getAllValues()).extracting(TransferBo::getPigId)
+            .containsExactly(340L, 9001L, 9002L);
+        // 全部转到同目标
+        assertThat(cap.getAllValues()).allMatch(t -> "B05".equals(t.getNewBarnCode()));
+        assertThat(cap.getAllValues()).allMatch(t -> "P07".equals(t.getNewPenCode()));
+    }
+
+    @Test
+    @DisplayName("K071: 给了转移目标但该分娩无已建行仔猪 → 仅转母猪（1 次）")
+    void onlySowTransfer_whenNoPiglets() {
+        Pig pig = mkSow(341L, PigLifecycle.FM);
+        when(pigMapper.selectById(341L)).thenReturn(pig);
+        PigFarrow farrow = mkFarrow(541L, 341L, 10, 7777L);
+        when(farrowMapper.selectById(541L)).thenReturn(farrow);
+        when(pigletnoMapper.selectList(any())).thenReturn(List.of());
+
+        WeaningBo bo = mkBo(341L, 541L, 5, new BigDecimal("40.000"));
+        bo.setTransferBarnCode("B05");
+        service.recordWeaning(bo);
+
+        verify(transferService, times(1)).recordTransfer(any(TransferBo.class));
     }
 
     @Test

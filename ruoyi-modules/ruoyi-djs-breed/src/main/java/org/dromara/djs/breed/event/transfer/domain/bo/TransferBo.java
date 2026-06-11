@@ -48,6 +48,9 @@ public class TransferBo implements Serializable {
     @Size(max = 64, message = "transfer.reason.size")
     private String transferReason;
 
+    /** 转移人员 userId（EmployeePicker 选中，snowflake；可空，空则回落登录用户）。 */
+    private Long operator;
+
     @Size(max = 500, message = "transfer.remark.size")
     private String remark;
 }

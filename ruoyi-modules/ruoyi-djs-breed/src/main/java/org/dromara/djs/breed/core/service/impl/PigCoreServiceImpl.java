@@ -478,10 +478,11 @@ public class PigCoreServiceImpl implements IPigCoreService {
                 }
             }
             // 到期软提示：dueDate（预产期/到断奶期）+ due 标记；无基准日期 → 留 null（mp 该格不渲染）
+            // 临产/临断奶阈值 = 距 dueDate ≤ 5 天即标 due（含已到期）；D-FIX-14 G3 固定 5 天。
             LocalDate dd = dueDateMap.get(p.getId());
             if (dd != null) {
                 vo.setDueDate(dd);
-                vo.setDue(!dd.isAfter(today));
+                vo.setDue(!dd.isAfter(today.plusDays(5)));
             }
             result.add(vo);
         }

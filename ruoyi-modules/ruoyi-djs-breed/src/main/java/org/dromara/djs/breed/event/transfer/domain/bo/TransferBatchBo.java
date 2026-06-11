@@ -50,6 +50,9 @@ public class TransferBatchBo implements Serializable {
     @Size(max = 64, message = "transfer.reason.size")
     private String transferReason;
 
+    /** 转移人员 userId（整批共用，EmployeePicker 选中，snowflake；可空，空则回落登录用户）。 */
+    private Long operator;
+
     @Size(max = 500, message = "transfer.remark.size")
     private String remark;
 }

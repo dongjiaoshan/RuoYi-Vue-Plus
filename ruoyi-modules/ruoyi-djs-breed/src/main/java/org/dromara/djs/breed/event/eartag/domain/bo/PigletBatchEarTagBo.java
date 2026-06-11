@@ -29,6 +29,9 @@ public class PigletBatchEarTagBo implements Serializable {
     @NotNull(message = "{pigletno.farrow_id.required}")
     private Long farrowId;
 
+    /** 打标人员 userId（可空；空则后端回落当前登录态）。 */
+    private Long operatorId;
+
     /** 本批贴标的仔猪列表（每头一条 item）。 */
     @NotEmpty(message = "{pigletno.piglets.required}")
     @Size(max = 50, message = "{pigletno.piglets.too_many}")

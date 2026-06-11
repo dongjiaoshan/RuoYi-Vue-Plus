@@ -40,10 +40,6 @@ public class NullReturnBo implements Serializable {
     @Pattern(regexp = "^(abort|return|idle)$", message = "null_return.abnormal_type.invalid")
     private String abnormalType;
 
-    /** 异常原因（可选自由文本）。 */
-    @Size(max = 32, message = "null_return.reason.size")
-    private String abnormalReason;
-
     @Size(max = 500, message = "null_return.remark.size")
     private String remark;
 }

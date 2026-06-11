@@ -33,6 +33,22 @@ public interface BarInfoMapper extends BaseMapperPlus<BarInfo, BarInfo> {
                               @Param("userId") Long userId);
 
     /**
+     * 燎毛产品逐项入库阶段乐观锁：bar_info.status pending_singe/singing → singing（燎毛中，FIX-WMS-MP-BURN-001）。
+     *
+     * <p>客户 6/11 新需求：产品逐个入库时只推进到中间态 {@code singing}（不直推 {@code in_stock}），
+     * 解决「多产品逐个入库到第 2 个抛白条状态不符」的现状 bug。bar 终态由「处理完成」按钮调
+     * {@link #updateStatusToSinged} 推进。WHERE status IN ('pending_singe','singing') 幂等 +
+     * 兜并发；首次入库回填 in_time/in_method=1，后续幂等推进。</p>
+     */
+    @Update("UPDATE t_warehouse_bar_info "
+        + "   SET status='singing', in_time=#{inTime}, in_method=1,"
+        + "       update_by=#{userId}, update_time=NOW() "
+        + " WHERE id = #{id} AND status IN ('pending_singe','singing') AND del_flag = '0'")
+    int updateStatusToSinging(@Param("id") Long id,
+                              @Param("inTime") Date inTime,
+                              @Param("userId") Long userId);
+
+    /**
      * pickup 阶段乐观锁：bar_info.status in_stock → pending_cut。
      *
      * <p>WHERE status='in_stock' 保证并发分割师同时领用同一条白条只有一个成功。

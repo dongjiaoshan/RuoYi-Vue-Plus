@@ -92,7 +92,6 @@ public class NullReturnServiceImpl implements INullReturnService {
         entity.setAbnormalDate(bo.getNullReturnDate());
         entity.setAbnormalType(dbCode);
         entity.setRelatedBreedingId(pig.getMatingId());
-        entity.setAbnormalReason(bo.getAbnormalReason());
         entity.setRemark(bo.getRemark());
         entity.setOperatorId(LoginHelper.getUserId());
         entity.setDelFlag("0");
@@ -151,7 +150,6 @@ public class NullReturnServiceImpl implements INullReturnService {
         v.setAbnormalDate(e.getAbnormalDate());
         v.setAbnormalType(e.getAbnormalType());
         v.setRelatedBreedingId(e.getRelatedBreedingId());
-        v.setAbnormalReason(e.getAbnormalReason());
         v.setOperatorId(e.getOperatorId());
         v.setRemark(e.getRemark());
         return v;

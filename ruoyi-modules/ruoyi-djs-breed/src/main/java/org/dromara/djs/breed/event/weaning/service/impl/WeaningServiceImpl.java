@@ -91,13 +91,29 @@ public class WeaningServiceImpl implements IWeaningService {
             throw new ServiceException(I18nMessages.t("pig.not_found", bo.getPigId()));
         }
 
-        PigFarrow farrow = farrowMapper.selectById(bo.getFarrowId());
-        if (farrow == null) {
-            throw new ServiceException(I18nMessages.t("weaning.farrow_not_found", bo.getFarrowId()));
-        }
-        if (!Objects.equals(farrow.getPigId(), pig.getId())) {
-            throw new ServiceException(I18nMessages.t("weaning.farrow_pig_mismatch",
-                bo.getFarrowId(), bo.getPigId()));
+        // 关联分娩（FIX-BRD-MP-WEAN-FORM-001 K065/K079，决策 Y2(b)）：
+        //   farrowId 给了 → 按 id 取并校验属于该母猪；
+        //   farrowId 空（mp 反查不到 / 未传）→ 自动取该母猪最近一次分娩兜底，仍无才抛明确异常。
+        PigFarrow farrow;
+        if (bo.getFarrowId() != null) {
+            farrow = farrowMapper.selectById(bo.getFarrowId());
+            if (farrow == null) {
+                throw new ServiceException(I18nMessages.t("weaning.farrow_not_found", bo.getFarrowId()));
+            }
+            if (!Objects.equals(farrow.getPigId(), pig.getId())) {
+                throw new ServiceException(I18nMessages.t("weaning.farrow_pig_mismatch",
+                    bo.getFarrowId(), bo.getPigId()));
+            }
+        } else {
+            farrow = farrowMapper.selectOne(
+                Wrappers.<PigFarrow>lambdaQuery()
+                    .eq(PigFarrow::getPigId, pig.getId())
+                    .orderByDesc(PigFarrow::getFarrowDate, PigFarrow::getId)
+                    .last("LIMIT 1"));
+            if (farrow == null) {
+                throw new ServiceException(I18nMessages.t("weaning.no_farrow_for_pig", pig.getEarNo()), 400);
+            }
+            bo.setFarrowId(farrow.getId());
         }
         if (bo.getWeanedCount() != null && farrow.getLiveBorn() != null
             && bo.getWeanedCount() > farrow.getLiveBorn()) {
@@ -132,9 +148,10 @@ public class WeaningServiceImpl implements IWeaningService {
         pigCoreService.fireEvent(eventBo);
 
         // 4. 断奶后转移（FIX-WEAN-001 #32a 决策 a：断奶时内联填转移，一步到位）
-        //    给了目标栋舍 → 同事务复用 ITransferService 把母猪转到目标 barn/pen（写转移历史 + 更新 pig 位置）。
-        //    复用转移事件而非加断奶表列：转移历史 + pig 位置更新原子落地，无需 DDL。
-        maybeTransferAfterWean(pig.getId(), bo);
+        //    给了目标栋舍 → 同事务复用 ITransferService 把母猪 + 该分娩已贴标仔猪转到同目标 barn/pen
+        //    （写转移历史 + 更新 pig 位置）。复用转移事件而非加断奶表列：转移历史 + pig 位置更新原子落地，无需 DDL。
+        //    决策 G4(a)：母猪与仔猪转移到「同目标」（独立目标作 follow-up，避免 BO 字段膨胀）。
+        maybeTransferAfterWean(pig.getId(), farrow.getId(), bo);
 
         log.info("[BRD-EVENT-002] recordWeaning pigId={} earNo={} weaningId={} count={} detailRows={}",
             pig.getId(), pig.getEarNo(), entity.getId(), bo.getWeanedCount(), savedDetails.size());
@@ -143,15 +160,42 @@ public class WeaningServiceImpl implements IWeaningService {
     }
 
     /**
-     * 断奶后内联转移母猪（FIX-WEAN-001 #32a）。给了目标栋舍才触发；与断奶主记录同事务，
-     * 任一失败整体回滚。转移目标二选一：{@code transferBarnCode}（mp）/ {@code transferBarnId}（admin）。
+     * 断奶后内联转移母猪 + 该分娩已贴标仔猪（FIX-WEAN-001 #32a / FIX-BRD-MP-WEAN-FORM-001 K071）。
+     * 给了目标栋舍才触发；与断奶主记录同事务，任一失败整体回滚。
+     * 转移目标二选一：{@code transferBarnCode}（mp）/ {@code transferBarnId}（admin）。
+     * 决策 G4(a)：母猪与仔猪转移到「同目标」barn/pen。仔猪取自 {@code t_farm_pig_pigletno}
+     * 中该分娩 farrowId 下已落 pig_id（已建 pig_info 行）的仔猪，逐头复用 {@link ITransferService}。
      */
-    private void maybeTransferAfterWean(Long pigId, WeaningBo bo) {
+    private void maybeTransferAfterWean(Long sowPigId, Long farrowId, WeaningBo bo) {
         boolean hasTarget = bo.getTransferBarnId() != null
             || (bo.getTransferBarnCode() != null && !bo.getTransferBarnCode().isBlank());
         if (!hasTarget) {
             return;
         }
+        // 母猪转移
+        transferOne(sowPigId, bo);
+        log.info("[FIX-WEAN-001] inline transfer after wean sowPigId={} → barnCode={} barnId={} penCode={} penId={}",
+            sowPigId, bo.getTransferBarnCode(), bo.getTransferBarnId(), bo.getTransferPenCode(), bo.getTransferPenId());
+
+        // 仔猪转移（K071）：取该分娩已贴标且已建 pig_info 行的仔猪，逐头转到同目标
+        List<PigPigletno> piglets = pigletnoMapper.selectList(
+            Wrappers.<PigPigletno>lambdaQuery()
+                .eq(PigPigletno::getFarrowId, farrowId)
+                .isNotNull(PigPigletno::getPigId));
+        int transferred = 0;
+        for (PigPigletno piglet : piglets) {
+            if (piglet.getPigId() == null) {
+                continue;
+            }
+            transferOne(piglet.getPigId(), bo);
+            transferred++;
+        }
+        log.info("[FIX-BRD-MP-WEAN-FORM-001] K071 piglet transfer after wean farrowId={} pigletCount={}",
+            farrowId, transferred);
+    }
+
+    /** 把单头猪转移到 bo 指定目标 barn/pen（复用 ITransferService，断奶事务内联）。 */
+    private void transferOne(Long pigId, WeaningBo bo) {
         TransferBo transfer = new TransferBo();
         transfer.setPigId(pigId);
         transfer.setTransferDate(bo.getWeaningDate());
@@ -161,8 +205,6 @@ public class WeaningServiceImpl implements IWeaningService {
         transfer.setNewPenCode(bo.getTransferPenCode());
         transfer.setTransferReason("weaning");
         transferService.recordTransfer(transfer);
-        log.info("[FIX-WEAN-001] inline transfer after wean pigId={} → barnCode={} barnId={} penCode={} penId={}",
-            pigId, bo.getTransferBarnCode(), bo.getTransferBarnId(), bo.getTransferPenCode(), bo.getTransferPenId());
     }
 
     /**

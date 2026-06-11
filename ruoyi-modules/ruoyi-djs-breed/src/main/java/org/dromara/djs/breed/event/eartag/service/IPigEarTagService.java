@@ -4,6 +4,7 @@ import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.breed.event.eartag.domain.bo.PigletBatchEarTagBo;
 import org.dromara.djs.breed.event.eartag.domain.query.PigletEarTagQuery;
+import org.dromara.djs.breed.event.eartag.domain.vo.EarNoPreviewVo;
 import org.dromara.djs.breed.event.eartag.domain.vo.FarrowEarTagStatVo;
 import org.dromara.djs.breed.event.eartag.domain.vo.PigletEarTagVo;
 import org.dromara.djs.breed.event.eartag.domain.vo.PigletnoVo;
@@ -43,6 +44,20 @@ public interface IPigEarTagService {
      * @return 生成的 N 个 VO（耳号、pig_id、出生重等）
      */
     List<PigletEarTagVo> batchTag(PigletBatchEarTagBo bo);
+
+    /**
+     * 预览某次分娩下一批公/母连号耳号（K122，仅预览不占号）。
+     *
+     * <p>按 farrowId 反查母猪品系/品种 + 分娩日，分别为公组/母组按 {@code DB max 同前缀 + 1} 推算 N 个
+     * 连号全号，供录入行预填「预计耳号」。真实分配仍在 {@link #batchTag} 提交时锁内做，并发下预览号可能
+     * 与最终号有偏差，前端以提交回显为准。</p>
+     *
+     * @param farrowId    分娩记录 ID
+     * @param maleCount   公组预览头数（&lt; 0 视为 0）
+     * @param femaleCount 母组预览头数（&lt; 0 视为 0）
+     * @return 公/母两组预计耳号串
+     */
+    EarNoPreviewVo previewEarNos(Long farrowId, int maleCount, int femaleCount);
 
     /**
      * 分页查询仔猪耳标历史（admin 只读列表）。
