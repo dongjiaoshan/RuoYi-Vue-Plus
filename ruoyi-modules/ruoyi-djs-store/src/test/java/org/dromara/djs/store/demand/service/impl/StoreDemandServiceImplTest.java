@@ -1,16 +1,24 @@
 package org.dromara.djs.store.demand.service.impl;
 
+import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.satoken.utils.LoginHelper;
+import org.dromara.djs.store.demand.domain.bo.StoreDemandBatchBo;
 import org.dromara.djs.warehouse.demand.core.enums.DemandEvent;
+import org.dromara.djs.warehouse.demand.core.enums.DemandStatus;
+import org.dromara.djs.warehouse.demand.domain.DemandManage;
 import org.dromara.djs.warehouse.demand.domain.bo.DemandManageBo;
+import org.dromara.djs.warehouse.demand.mapper.DemandManageMapper;
 import org.dromara.djs.warehouse.demand.service.IDemandManageService;
 import org.dromara.djs.warehouse.demand.service.IDemandStatusService;
+import org.dromara.djs.warehouse.product.domain.ProductInfo;
+import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.MockedStatic;
@@ -21,9 +29,13 @@ import org.mockito.quality.Strictness;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -57,6 +69,12 @@ class StoreDemandServiceImplTest {
 
     @Mock
     private IDemandStatusService demandStatusService;
+
+    @Mock
+    private ProductInfoMapper productInfoMapper;
+
+    @Mock
+    private DemandManageMapper demandManageMapper;
 
     @InjectMocks
     private StoreDemandServiceImpl service;
@@ -113,5 +131,88 @@ class StoreDemandServiceImplTest {
         assertThat(bo.getId()).isNull();
         verify(demandManageService, times(1)).insertByBo(bo);
         verify(demandStatusService, times(1)).transition(eq(9002L), eq(DemandEvent.SUBMIT), eq(2001L), eq("门店发起"));
+    }
+
+    @Test
+    @DisplayName("batchCreate：多产品整单逐条建需求，补冗余字段 + mailing 标记 + 全部 SUBMITTED")
+    void batchCreateBuildsMultipleDemands() {
+        ProductInfo p1 = new ProductInfo();
+        p1.setId(8001L);
+        p1.setProductName("白条(半扇)");
+        p1.setProductSpec("半头");
+        p1.setProductUnit("头");
+        ProductInfo p2 = new ProductInfo();
+        p2.setId(8002L);
+        p2.setProductName("猪肉礼盒");
+        p2.setProductSpec("250g");
+        p2.setProductUnit("盒");
+        when(productInfoMapper.selectById(8001L)).thenReturn(p1);
+        when(productInfoMapper.selectById(8002L)).thenReturn(p2);
+        when(demandManageService.insertByBo(any(DemandManageBo.class))).thenReturn(9101L, 9102L);
+
+        StoreDemandBatchBo batch = new StoreDemandBatchBo();
+        batch.setStoreId(5001L);
+        batch.setDemandRemark("整单备注");
+        StoreDemandBatchBo.Item i1 = new StoreDemandBatchBo.Item();
+        i1.setProductId(8001L);
+        i1.setProductType("white_bar");
+        i1.setDemandQuantity(new BigDecimal("1"));
+        i1.setMailing(false);
+        StoreDemandBatchBo.Item i2 = new StoreDemandBatchBo.Item();
+        i2.setProductId(8002L);
+        i2.setProductType("gift_box");
+        i2.setDemandQuantity(new BigDecimal("3"));
+        i2.setMailing(true);
+        batch.setItems(List.of(i1, i2));
+
+        int created = service.batchCreate(batch);
+
+        assertThat(created).isEqualTo(2);
+        ArgumentCaptor<DemandManageBo> cap = ArgumentCaptor.forClass(DemandManageBo.class);
+        verify(demandManageService, times(2)).insertByBo(cap.capture());
+        List<DemandManageBo> bos = cap.getAllValues();
+        // 第 1 条：白条，门店自取
+        assertThat(bos.get(0).getProductName()).isEqualTo("白条(半扇)");
+        assertThat(bos.get(0).getProductUnit()).isEqualTo("头");
+        assertThat(bos.get(0).getDemandType()).isEqualTo("store");
+        assertThat(bos.get(0).getDemandRemark()).isEqualTo("整单备注");
+        // 第 2 条：礼盒，个人邮寄
+        assertThat(bos.get(1).getProductName()).isEqualTo("猪肉礼盒");
+        assertThat(bos.get(1).getDemandType()).isEqualTo("mailing");
+        // 两条都被立即推到 SUBMITTED
+        verify(demandStatusService, times(2)).transition(any(), eq(DemandEvent.SUBMIT), eq(2001L), eq("门店发起"));
+    }
+
+    @Test
+    @DisplayName("receive：CONFIRMED 态门店收货 → patch received_time/received_by")
+    void receiveConfirmedDemand() {
+        DemandManage demand = new DemandManage();
+        demand.setId(9001L);
+        demand.setDemandNo("DEMWB20260101001");
+        demand.setDemandStatus(DemandStatus.CONFIRMED.name());
+        when(demandManageMapper.selectById(9001L)).thenReturn(demand);
+
+        service.receive(9001L);
+
+        ArgumentCaptor<DemandManage> cap = ArgumentCaptor.forClass(DemandManage.class);
+        verify(demandManageMapper, times(1)).updateById(cap.capture());
+        DemandManage patch = cap.getValue();
+        assertThat(patch.getId()).isEqualTo(9001L);
+        assertThat(patch.getReceivedTime()).isNotNull();
+        assertThat(patch.getReceivedBy()).isEqualTo(2001L);
+        // 不触碰状态机
+        verify(demandStatusService, never()).transition(any(), any(), any(), any());
+    }
+
+    @Test
+    @DisplayName("receive：非 CONFIRMED 态拒绝（如 SUBMITTED）")
+    void receiveRejectNonConfirmed() {
+        DemandManage demand = new DemandManage();
+        demand.setId(9002L);
+        demand.setDemandStatus(DemandStatus.SUBMITTED.name());
+        when(demandManageMapper.selectById(9002L)).thenReturn(demand);
+
+        assertThatThrownBy(() -> service.receive(9002L)).isInstanceOf(ServiceException.class);
+        verify(demandManageMapper, never()).updateById(any(DemandManage.class));
     }
 }

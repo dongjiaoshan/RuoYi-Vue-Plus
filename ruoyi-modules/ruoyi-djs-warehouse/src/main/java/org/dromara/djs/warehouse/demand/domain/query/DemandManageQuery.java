@@ -22,6 +22,9 @@ public class DemandManageQuery extends BaseEntity {
     /** 单号 LIKE 中部匹配。 */
     private String demandNo;
 
+    /** 产品名称 LIKE 中部匹配（门店需求列表筛选用）。 */
+    private String productName;
+
     /** 业态过滤；admin 4 业态列表页固定值（white_bar / vegetable / gift_box / other）。 */
     private String productType;
 

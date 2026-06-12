@@ -147,6 +147,49 @@ public class TraceServiceImpl
     }
 
     @Override
+    public String genPorkOnsiteCode(String earNo, String cutLabel, java.math.BigDecimal weight) {
+        if (StringUtils.isBlank(earNo)) {
+            throw new ServiceException("现场生码失败：猪只耳号为空");
+        }
+        if (weight == null || weight.signum() <= 0) {
+            throw new ServiceException("现场生码失败：产品重量需大于 0");
+        }
+        // a. 固定 pork 业态生码（零售部位非标准 SKU，不查 product_info）
+        String produceCode = bizCodeGenerator.generate(
+            BizCodeType.TRACE_CODE, Map.of("productCode", TraceCodeTypeConst.PRODUCT_CODE_PORK));
+
+        // b. 组装 trace_code（部位 + 重量写 remark，表无 cut_part / weight 列）
+        TraceCode traceCode = new TraceCode();
+        traceCode.setProduceCode(produceCode);
+        traceCode.setCodeType(TraceCodeTypeConst.PORK);
+        traceCode.setPigEarNo(earNo);
+        traceCode.setRemark(buildOnsiteRemark(cutLabel, weight));
+        insertTraceCode(traceCode);
+
+        // c. 写一条 in_stock 事件锚定现场生码时刻（operator=当前门店操作员）
+        recordEvent(produceCode, TraceContentConst.IN_STOCK);
+
+        // d. 按耳号回填上游 4 事件（marketing/singe/slaughter/acid，真实时间戳），补齐链路
+        backfillEarNoEvents(produceCode, earNo);
+
+        log.info("[STORE-TRACE-ONSITE-001] genPorkOnsiteCode produceCode={} earNo={} cut={} weight={}",
+            produceCode, earNo, cutLabel, weight);
+        return produceCode;
+    }
+
+    /**
+     * 现场生码备注：部位 + 重量（trace_code 无专用列，落 remark）。
+     */
+    private String buildOnsiteRemark(String cutLabel, java.math.BigDecimal weight) {
+        StringBuilder sb = new StringBuilder("现场生码");
+        if (StringUtils.isNotBlank(cutLabel)) {
+            sb.append(" 部位=").append(cutLabel);
+        }
+        sb.append(" 重量=").append(weight).append("kg");
+        return sb.toString();
+    }
+
+    @Override
     public void recordEvent(String produceCode, String traceContent) {
         if (StringUtils.isBlank(produceCode)) {
             log.warn("[TRC-CORE-001] recordEvent skipped: empty produceCode, content={}", traceContent);

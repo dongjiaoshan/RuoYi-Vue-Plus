@@ -1,5 +1,6 @@
 package org.dromara.djs.store.demand.service;
 
+import org.dromara.djs.store.demand.domain.bo.StoreDemandBatchBo;
 import org.dromara.djs.warehouse.demand.domain.bo.DemandManageBo;
 
 /**
@@ -28,4 +29,27 @@ public interface IStoreDemandService {
      * @return 新建记录 ID
      */
     Long createStoreDemand(DemandManageBo bo);
+
+    /**
+     * 门店购物车整单发起需求（STORE-DEMAND-REALIGN-001，对齐原型「新增需求」多产品整页）。
+     *
+     * <p>一次提交多产品：逐项查产品主数据冗余 productName/productSpec/productUnit，循环走
+     * {@code createStoreDemand}（每条 insert DRAFT + 立即 SUBMIT）。整批在同一事务，任一项失败全回滚。
+     * {@code mailing} 标记落 {@code demand_type}（store / mailing）。</p>
+     *
+     * @param bo 购物车整单 BO（storeId + items[] + demandRemark + 日期）
+     * @return 成功创建的需求条数（= items.size()）
+     */
+    int batchCreate(StoreDemandBatchBo bo);
+
+    /**
+     * 门店收货确认（STORE-DEMAND-REALIGN-001，对齐原型列表「确认收货」）。
+     *
+     * <p>门店侧确认实物到店，patch {@code received_time} + {@code received_by}。
+     * 仅 CONFIRMED 态可确认收货（原型「已确认」行才显按钮）；重复确认拒绝。
+     * 不触碰仓库域状态机（薄封装铁律），状态仍由仓库主导推进。</p>
+     *
+     * @param id 需求 ID
+     */
+    void receive(Long id);
 }

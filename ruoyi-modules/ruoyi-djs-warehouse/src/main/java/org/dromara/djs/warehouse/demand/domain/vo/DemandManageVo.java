@@ -92,6 +92,24 @@ public class DemandManageVo implements Serializable {
     @ExcelProperty(value = "确认时间")
     private LocalDateTime confirmerTime;
 
+    @ExcelProperty(value = "需求类型", converter = ExcelDictConvert.class)
+    @ExcelDictFormat(dictType = "djs_demand_mailing_type")
+    private String demandType;
+
+    @ExcelProperty(value = "预计到店重量")
+    private BigDecimal expectedWeight;
+
+    /** 门店收货确认时间（门店侧「确认收货」）。 */
+    @ExcelProperty(value = "收货时间")
+    private LocalDateTime receivedTime;
+
+    /** 门店收货确认人 user_id。 */
+    private Long receivedBy;
+
+    /** 门店收货确认人姓名（{@code sys_user.nick_name} 翻译）。 */
+    @Translation(type = TransConstant.USER_ID_TO_NICKNAME, mapper = "receivedBy")
+    private String receivedByName;
+
     @ExcelProperty(value = "期望到货日")
     private LocalDate expectedArriveDate;
 

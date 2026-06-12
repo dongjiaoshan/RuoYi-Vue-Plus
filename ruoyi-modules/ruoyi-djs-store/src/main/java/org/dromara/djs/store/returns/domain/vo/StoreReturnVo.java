@@ -61,6 +61,28 @@ public class StoreReturnVo implements Serializable {
     @ExcelProperty(value = "退回数量")
     private BigDecimal returnQuantity;
 
+    /** 报退货物重量(kg)（原型「货物重量」）。 */
+    @ExcelProperty(value = "货物重量")
+    private BigDecimal goodsWeight;
+
+    /** 退货状态 djs_store_return_status：pending=待仓库确认 / received=已入库。 */
+    @ExcelProperty(value = "退货状态")
+    private String returnStatus;
+
+    /** 仓库实收量（原型「仓库实收量」）。 */
+    @ExcelProperty(value = "仓库实收量")
+    private BigDecimal receivedQty;
+
+    /** 仓库实收重量(kg)（原型「仓库实收重量」）。 */
+    @ExcelProperty(value = "仓库实收重量")
+    private BigDecimal receivedWeight;
+
+    /** 仓库确认时间。 */
+    @ExcelProperty(value = "确认时间")
+    @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")
+    @DateTimeFormat("yyyy-MM-dd HH:mm:ss")
+    private LocalDateTime confirmTime;
+
     @ExcelProperty(value = "退回原因")
     private String returnReason;
 

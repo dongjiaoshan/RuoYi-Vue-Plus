@@ -12,7 +12,9 @@ import org.dromara.common.log.enums.BusinessType;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.web.core.BaseController;
+import org.dromara.djs.store.returns.domain.bo.StoreReturnBatchBo;
 import org.dromara.djs.store.returns.domain.bo.StoreReturnBo;
+import org.dromara.djs.store.returns.domain.bo.StoreReturnConfirmBo;
 import org.dromara.djs.store.returns.domain.query.StoreReturnQuery;
 import org.dromara.djs.store.returns.domain.vo.StoreReturnVo;
 import org.dromara.djs.store.returns.service.IStoreReturnService;
@@ -74,6 +76,24 @@ public class StoreReturnController extends BaseController {
     @PutMapping
     public R<Void> edit(@Valid @RequestBody StoreReturnBo bo) {
         return toAjax(service.updateByBo(bo));
+    }
+
+    /** 退回操作批量录入（原型「退回操作」整页矩阵，建 pending 待仓库确认，不入库）。 */
+    @SaCheckPermission("djs:store:return:add")
+    @Log(title = "门店退回操作", businessType = BusinessType.INSERT)
+    @RepeatSubmit
+    @PostMapping("/operation/batch")
+    public R<Integer> batchCreate(@Valid @RequestBody StoreReturnBatchBo bo) {
+        return R.ok(service.batchCreate(bo));
+    }
+
+    /** 仓库确认实收（原型「退回记录」仓库确认入库，pending→received 联动外购入库）。 */
+    @SaCheckPermission("djs:store:return:confirm")
+    @Log(title = "门店退回确认入库", businessType = BusinessType.UPDATE)
+    @RepeatSubmit
+    @PutMapping("/confirm")
+    public R<Void> confirm(@Valid @RequestBody StoreReturnConfirmBo bo) {
+        return toAjax(service.confirm(bo));
     }
 
     /** 软删（支持批量）。 */

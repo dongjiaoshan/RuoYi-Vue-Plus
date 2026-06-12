@@ -14,7 +14,9 @@ import org.dromara.djs.common.encoder.IBizCodeGenerator;
 import org.dromara.djs.common.store.domain.Store;
 import org.dromara.djs.common.store.mapper.StoreMapper;
 import org.dromara.djs.store.returns.domain.StoreReturn;
+import org.dromara.djs.store.returns.domain.bo.StoreReturnBatchBo;
 import org.dromara.djs.store.returns.domain.bo.StoreReturnBo;
+import org.dromara.djs.store.returns.domain.bo.StoreReturnConfirmBo;
 import org.dromara.djs.store.returns.domain.query.StoreReturnQuery;
 import org.dromara.djs.store.returns.domain.vo.StoreReturnVo;
 import org.dromara.djs.store.returns.mapper.StoreReturnMapper;
@@ -65,6 +67,12 @@ public class StoreReturnServiceImpl
 
     /** 退回入库流水类型 djs_flow_type（与材料退回 / 仓库退货一致，不污染采购入库列表）。 */
     private static final String FLOW_TYPE_RETURN_IN = "return_in";
+
+    /** 退货状态 djs_store_return_status：待仓库确认。 */
+    private static final String STATUS_PENDING = "pending";
+
+    /** 退货状态 djs_store_return_status：已入库（仓库确认实收后）。 */
+    private static final String STATUS_RECEIVED = "received";
 
     private final StoreMapper storeMapper;
     private final ProductInfoMapper productInfoMapper;
@@ -137,6 +145,8 @@ public class StoreReturnServiceImpl
         entity.setReturnDate(bo.getReturnDate() == null ? LocalDateTime.now() : bo.getReturnDate());
         entity.setOperatorId(LoginHelper.getUserId());
         entity.setRemark(bo.getRemark());
+        // 单条直登即时入库 → 状态直接置 received（两段式的 confirm 态由 batchCreate + confirm 走）
+        entity.setReturnStatus(STATUS_RECEIVED);
         baseMapper.insert(entity);
 
         // K4 联动外购入库：同事务 UPSERT location_stock + stock_flow(return_in)。
@@ -182,6 +192,72 @@ public class StoreReturnServiceImpl
     }
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
+    public int batchCreate(StoreReturnBatchBo bo) {
+        if (storeMapper.selectById(bo.getStoreId()) == null) {
+            throw new ServiceException("门店不存在或已删除：" + bo.getStoreId(), 404);
+        }
+        Long operatorId = LoginHelper.getUserId();
+        int created = 0;
+        for (StoreReturnBatchBo.Item item : bo.getItems()) {
+            ProductInfo product = productInfoMapper.selectById(item.getProductId());
+            if (product == null) {
+                throw new ServiceException("产品不存在或已删除：" + item.getProductId(), 404);
+            }
+            StoreReturn entity = new StoreReturn();
+            entity.setReturnNo(generateReturnNo());
+            entity.setReturnDirection(DIRECTION_CUSTOMER_TO_STORE);
+            entity.setStoreId(bo.getStoreId());
+            entity.setProductId(item.getProductId());
+            // 退回操作录入的是「退回产品重量(KG)」→ 同时落 goods_weight 与 return_quantity（V1 按重量计量）
+            entity.setReturnQuantity(item.getReturnWeight());
+            entity.setGoodsWeight(item.getReturnWeight());
+            entity.setTraceCode(item.getTraceCode());
+            entity.setReturnDate(LocalDateTime.now());
+            entity.setOperatorId(operatorId);
+            // 两段式：待仓库确认，不联动入库（库存联动延后到 confirm）
+            entity.setReturnStatus(STATUS_PENDING);
+            baseMapper.insert(entity);
+            created++;
+        }
+        log.info("[STORE-RETURN-REALIGN-001] batchCreate store={} 行数={} → pending（未入库）",
+            bo.getStoreId(), created);
+        return created;
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public int confirm(StoreReturnConfirmBo bo) {
+        StoreReturn existing = baseMapper.selectById(bo.getId());
+        if (existing == null) {
+            throw new ServiceException("退回记录不存在：" + bo.getId(), 404);
+        }
+        if (STATUS_RECEIVED.equals(existing.getReturnStatus())) {
+            throw new ServiceException("该退回记录已确认入库，请勿重复确认", 400);
+        }
+
+        StoreReturn entity = new StoreReturn();
+        entity.setId(bo.getId());
+        entity.setLocationId(bo.getLocationId());
+        entity.setReceivedQty(bo.getReceivedQty());
+        // 实收重量缺省按实收量计（V1：果蔬/猪肉退回多按重量计量）
+        entity.setReceivedWeight(bo.getReceivedWeight() == null ? bo.getReceivedQty() : bo.getReceivedWeight());
+        entity.setConfirmUserId(LoginHelper.getUserId());
+        entity.setConfirmTime(LocalDateTime.now());
+        entity.setReturnStatus(STATUS_RECEIVED);
+        int rows = baseMapper.updateById(entity);
+
+        // 确认实收时才联动外购入库：同事务 UPSERT location_stock + stock_flow(return_in)，
+        // inbound 内部校验库位 / 数量，失败抛 → 整体回滚（确认与入库一致，不留半态）。
+        purchaseInService.inbound(existing.getProductId(), bo.getLocationId(), bo.getReceivedQty(),
+            FLOW_TYPE_RETURN_IN, "门店退回仓库确认入库：" + existing.getReturnNo());
+
+        log.info("[STORE-RETURN-REALIGN-001] confirm id={} no={} location={} receivedQty={} → received 联动入库",
+            bo.getId(), existing.getReturnNo(), bo.getLocationId(), bo.getReceivedQty());
+        return rows;
+    }
+
+    @Override
     public int deleteByIds(Collection<Long> ids) {
         // 走 DjsBaseServiceImpl#softDelete
         return softDelete(ids);
@@ -197,6 +273,8 @@ public class StoreReturnServiceImpl
         w.like(StringUtils.isNotBlank(q.getReturnNo()), StoreReturn::getReturnNo, q.getReturnNo())
             .eq(q.getStoreId() != null, StoreReturn::getStoreId, q.getStoreId())
             .eq(q.getProductId() != null, StoreReturn::getProductId, q.getProductId())
+            .eq(StringUtils.isNotBlank(q.getReturnStatus()),
+                StoreReturn::getReturnStatus, q.getReturnStatus())
             .eq(StringUtils.isNotBlank(q.getReturnDirection()),
                 StoreReturn::getReturnDirection, q.getReturnDirection())
             .ge(q.getReturnDateFrom() != null, StoreReturn::getReturnDate,

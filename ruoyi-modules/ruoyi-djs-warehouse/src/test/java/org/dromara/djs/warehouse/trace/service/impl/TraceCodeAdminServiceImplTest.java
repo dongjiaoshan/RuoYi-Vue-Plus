@@ -75,6 +75,7 @@ class TraceCodeAdminServiceImplTest {
     @Mock private StoreMapper storeMapper;
     @Mock private PlotInfoMapper plotInfoMapper;
     @Mock private TraceFarmNameMapper traceFarmNameMapper;
+    @Mock private org.dromara.djs.warehouse.pack.mapper.ProductProductionMapper productProductionMapper;
 
     private TraceCodeAdminServiceImpl service;
     private MockedStatic<TenantHelper> tenantHelperMock;
@@ -96,12 +97,15 @@ class TraceCodeAdminServiceImplTest {
         TableInfoHelper.initTableInfo(assistant, TraceCode.class);
         TableInfoHelper.initTableInfo(assistant, ProductInfo.class);
         TableInfoHelper.initTableInfo(assistant, Store.class);
+        TableInfoHelper.initTableInfo(assistant, org.dromara.djs.warehouse.trace.domain.TraceEvent.class);
+        TableInfoHelper.initTableInfo(assistant, org.dromara.djs.warehouse.pack.domain.ProductProduction.class);
     }
 
     @BeforeEach
     void setup() {
         service = new TraceCodeAdminServiceImpl(
-            traceCodeMapper, traceEventMapper, productInfoMapper, storeMapper, plotInfoMapper, traceFarmNameMapper);
+            traceCodeMapper, traceEventMapper, productInfoMapper, storeMapper, plotInfoMapper, traceFarmNameMapper,
+            productProductionMapper);
         tenantHelperMock = Mockito.mockStatic(TenantHelper.class);
         tenantHelperMock.when(TenantHelper::getTenantId).thenReturn(TENANT);
     }

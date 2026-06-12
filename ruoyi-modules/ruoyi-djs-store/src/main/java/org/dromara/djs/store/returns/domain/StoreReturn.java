@@ -57,6 +57,27 @@ public class StoreReturn extends TenantEntity {
     /** 退回数量。 */
     private BigDecimal returnQuantity;
 
+    /** 报退货物重量(kg)（原型「货物重量」，退回操作录入；STORE-RETURN-REALIGN-001）。 */
+    private BigDecimal goodsWeight;
+
+    /**
+     * 退货状态字典 {@code djs_store_return_status}：pending=待仓库确认 / received=已入库
+     * （STORE-RETURN-REALIGN-001 两段式：退回操作建 pending → 仓库确认实收转 received）。
+     */
+    private String returnStatus;
+
+    /** 仓库实收量（原型「仓库实收量」，仓库确认时填）。 */
+    private BigDecimal receivedQty;
+
+    /** 仓库实收重量(kg)（原型「仓库实收重量」，仓库确认时填）。 */
+    private BigDecimal receivedWeight;
+
+    /** 仓库确认人 user_id → {@code sys_user.user_id}（确认实收时 LoginHelper 注入）。 */
+    private Long confirmUserId;
+
+    /** 仓库确认时间。 */
+    private LocalDateTime confirmTime;
+
     /** 退回原因（自由文本，对齐 t_warehouse_return_product.return_reason 范式）。 */
     private String returnReason;
 

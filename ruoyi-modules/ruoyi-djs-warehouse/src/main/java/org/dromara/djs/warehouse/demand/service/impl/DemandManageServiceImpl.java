@@ -506,6 +506,7 @@ public class DemandManageServiceImpl extends DjsBaseServiceImpl<DemandManageMapp
             return wrapper.orderByDesc(DemandManage::getDemandDate).orderByDesc(DemandManage::getId);
         }
         wrapper.like(StringUtils.isNotBlank(query.getDemandNo()), DemandManage::getDemandNo, query.getDemandNo())
+            .like(StringUtils.isNotBlank(query.getProductName()), DemandManage::getProductName, query.getProductName())
             .eq(StringUtils.isNotBlank(query.getProductType()), DemandManage::getProductType, query.getProductType())
             .eq(StringUtils.isNotBlank(query.getDemandStatus()), DemandManage::getDemandStatus, query.getDemandStatus())
             .eq(query.getStoreId() != null, DemandManage::getStoreId, query.getStoreId())

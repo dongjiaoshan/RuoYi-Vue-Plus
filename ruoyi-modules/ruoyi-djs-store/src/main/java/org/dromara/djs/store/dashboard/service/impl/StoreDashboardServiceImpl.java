@@ -19,6 +19,7 @@ import org.springframework.stereotype.Service;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -84,12 +85,15 @@ public class StoreDashboardServiceImpl implements IStoreDashboardService {
         vo.setPendingShipCount(nz(dashboardMapper.countPendingShip(tenantId, storeId)));
         vo.setPendingPurchaseCount(nz(dashboardMapper.countPendingPurchase(tenantId, storeId)));
 
+        // 会员 KPI（原型「客户/会员信息组」；member 表保留作 dashboard 数据源）
+        vo.setTotalMembers(nzLong(dashboardMapper.countTotalMembers(tenantId, storeId)));
+        vo.setTodayNewMembers(nzLong(dashboardMapper.countTodayNewMembers(tenantId, storeId)));
+
         vo.setProductStructure(nzList(dashboardMapper.selectProductStructure(tenantId, storeId)));
         vo.setTop10Products(nzList(dashboardMapper.selectTop10Products(tenantId, storeId)));
 
-        List<StoreTrendPointVo> trend = nzList(dashboardMapper.selectTrend10Days(tenantId, storeId));
-        trend.forEach(p -> p.setAvgPrice(avg(p.getSaleAmount(), p.getOrderCount())));
-        vo.setTrend10Days(trend);
+        // 近 10 日趋势：销售 trend 为基，按日期 union merge 退货量（无销售但有退货的日补点），算客单价
+        vo.setTrend10Days(buildTrend10Days(tenantId, storeId));
 
         // 4 业态当日销售分布（猪肉 / 蔬菜 / 礼盒 / 其他，固定 4 行）
         vo.setSaleByCategory(buildSaleByCategory(tenantId, storeId));
@@ -133,6 +137,44 @@ public class StoreDashboardServiceImpl implements IStoreDashboardService {
         vo.setDemandStat(nzList(dashboardMapper.countDemandByStatus(tenantId, storeId)));
         vo.setShipStat(nzList(dashboardMapper.countShipByStatus(tenantId, storeId)));
         return vo;
+    }
+
+    /**
+     * 组装近 10 日趋势：销售 trend 为基，按日期 union merge 退货量，算客单价。
+     *
+     * <p>销售 trend 仅出「当日有销售」的日期；退货 trend 出「当日有退货」的日期。两份按 date
+     * union（无销售但有退货的日补点 saleAmount=0/orderCount=0/saleQty=0），按日期升序，
+     * 无退货日 returnQty 补 0。前端「销售量与退货量趋势」双柱 + 「销售额折线」共用本序列。</p>
+     *
+     * @param tenantId 租户
+     * @param storeId  门店 ID（可空）
+     * @return 近 10 日趋势点（按日期升序，每点含订单数/销售额/销售量/退货量/客单价）
+     */
+    private List<StoreTrendPointVo> buildTrend10Days(String tenantId, Long storeId) {
+        Map<String, StoreTrendPointVo> byDate = new LinkedHashMap<>();
+        for (StoreTrendPointVo p : nzList(dashboardMapper.selectTrend10Days(tenantId, storeId))) {
+            p.setSaleQty(nzBd(p.getSaleQty()));
+            byDate.put(p.getDate(), p);
+        }
+        for (StoreTrendPointVo r : nzList(dashboardMapper.selectReturnTrend10Days(tenantId, storeId))) {
+            StoreTrendPointVo p = byDate.get(r.getDate());
+            if (p == null) {
+                p = new StoreTrendPointVo();
+                p.setDate(r.getDate());
+                p.setOrderCount(0);
+                p.setSaleAmount(BigDecimal.ZERO);
+                p.setSaleQty(BigDecimal.ZERO);
+                byDate.put(r.getDate(), p);
+            }
+            p.setReturnQty(nzBd(r.getReturnQty()));
+        }
+        List<StoreTrendPointVo> merged = new ArrayList<>(byDate.values());
+        merged.sort(Comparator.comparing(StoreTrendPointVo::getDate));
+        merged.forEach(p -> {
+            p.setReturnQty(nzBd(p.getReturnQty()));
+            p.setAvgPrice(avg(p.getSaleAmount(), p.getOrderCount()));
+        });
+        return merged;
     }
 
     /**

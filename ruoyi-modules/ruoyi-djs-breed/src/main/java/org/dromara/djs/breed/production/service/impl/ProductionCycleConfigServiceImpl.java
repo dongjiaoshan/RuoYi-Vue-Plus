@@ -16,9 +16,12 @@ import org.dromara.djs.breed.production.mapper.ProductionCycleConfigMapper;
 import org.dromara.djs.breed.production.service.IProductionCycleConfigService;
 import org.dromara.djs.common.base.DjsBaseServiceImpl;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.Collection;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 生产周期配置 Service 实现（BRD-MD-003 Tab1）。
@@ -103,6 +106,60 @@ public class ProductionCycleConfigServiceImpl
             return null;
         }
         return row.getCustomValue() != null ? row.getCustomValue() : row.getDefaultValue();
+    }
+
+    @Override
+    public Map<String, Integer> getValuesByKeys(Collection<String> configKeys) {
+        if (configKeys == null || configKeys.isEmpty()) {
+            return new HashMap<>();
+        }
+        List<ProductionCycleConfig> rows = baseMapper.selectList(new LambdaQueryWrapper<ProductionCycleConfig>()
+            .in(ProductionCycleConfig::getConfigKey, configKeys));
+        Map<String, Integer> result = new HashMap<>(rows.size());
+        for (ProductionCycleConfig row : rows) {
+            Integer val = row.getCustomValue() != null ? row.getCustomValue() : row.getDefaultValue();
+            result.put(row.getConfigKey(), val);
+        }
+        return result;
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public int batchSaveValues(Map<String, Integer> values,
+                               Map<String, Integer> defaultValues,
+                               Map<String, String> descriptions) {
+        if (values == null || values.isEmpty()) {
+            return 0;
+        }
+        Map<String, Integer> defaults = defaultValues != null ? defaultValues : new HashMap<>();
+        Map<String, String> descs = descriptions != null ? descriptions : new HashMap<>();
+        int count = 0;
+        for (Map.Entry<String, Integer> e : values.entrySet()) {
+            String key = e.getKey();
+            if (StringUtils.isBlank(key)) {
+                continue;
+            }
+            Integer customValue = e.getValue();
+            ProductionCycleConfig exists = baseMapper.selectOne(new LambdaQueryWrapper<ProductionCycleConfig>()
+                .eq(ProductionCycleConfig::getConfigKey, key)
+                .last("LIMIT 1"));
+            if (exists != null) {
+                exists.setCustomValue(customValue);
+                count += baseMapper.updateById(exists);
+            } else {
+                ProductionCycleConfig row = new ProductionCycleConfig();
+                row.setConfigKey(key);
+                // 新落库行：default_value 取入参兜底（缺则用 customValue / 0），custom_value 存客户值
+                row.setDefaultValue(defaults.getOrDefault(key, customValue != null ? customValue : 0));
+                row.setCustomValue(customValue);
+                row.setUnit("天");
+                row.setDescription(descs.get(key));
+                row.setDelFlag("0");
+                row.setDelUnique(0L);
+                count += baseMapper.insert(row);
+            }
+        }
+        return count;
     }
 
     /**

@@ -13,6 +13,7 @@ import org.dromara.common.satoken.utils.LoginHelper;
 import org.dromara.common.web.core.BaseController;
 import org.dromara.djs.breed.core.domain.vo.PigAvailableVo;
 import org.dromara.djs.breed.core.service.IPigQueryService;
+import org.dromara.djs.store.demand.domain.bo.StoreDemandBatchBo;
 import org.dromara.djs.store.demand.service.IStoreDemandService;
 import org.dromara.djs.warehouse.demand.core.enums.DemandEvent;
 import org.dromara.djs.warehouse.demand.domain.bo.AssignPigBo;
@@ -87,6 +88,25 @@ public class StoreDemandController extends BaseController {
     @PostMapping("/add")
     public R<Long> add(@Validated @RequestBody DemandManageBo bo) {
         return R.ok(storeDemandService.createStoreDemand(bo));
+    }
+
+    /** 购物车整单发起需求（原型「新增需求」多产品整页，一次提交多条 → 逐条 SUBMITTED）。 */
+    @SaCheckPermission("djs:store:demand:add")
+    @Log(title = "门店需求整单", businessType = BusinessType.INSERT)
+    @RepeatSubmit
+    @PostMapping("/operation/batch")
+    public R<Integer> batchCreate(@Validated @RequestBody StoreDemandBatchBo bo) {
+        return R.ok(storeDemandService.batchCreate(bo));
+    }
+
+    /** 门店收货确认（原型列表「确认收货」，CONFIRMED 态 patch received_time / received_by）。 */
+    @SaCheckPermission("djs:store:demand:receive")
+    @Log(title = "门店需求确认收货", businessType = BusinessType.UPDATE)
+    @RepeatSubmit
+    @PutMapping("/{id}/receive")
+    public R<Void> receive(@PathVariable Long id) {
+        storeDemandService.receive(id);
+        return R.ok();
     }
 
     /** 编辑（仅 DRAFT/SUBMITTED 态可改业务字段，规则由 warehouse service 兜底）。 */

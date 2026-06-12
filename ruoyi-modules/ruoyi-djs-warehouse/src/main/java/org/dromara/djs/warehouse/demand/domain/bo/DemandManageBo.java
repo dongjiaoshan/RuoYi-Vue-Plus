@@ -84,6 +84,13 @@ public class DemandManageBo extends BaseEntity {
     /** 期望到货日。 */
     private LocalDate expectedArriveDate;
 
+    /** 需求类型（字典 {@code djs_demand_mailing_type}：store 门店 / mailing 个人邮寄）。 */
+    @Size(max = 16, message = "{demand.field.demandType.size}")
+    private String demandType;
+
+    /** 预计到店重量(kg)。 */
+    private BigDecimal expectedWeight;
+
     /** 通用备注（继承自 BaseEntity 的 remark）。 */
     @Size(max = 500, message = "{demand.field.remark.size}")
     private String remark;

@@ -116,4 +116,55 @@ public class TraceCodeListVo implements Serializable {
     @ExcelProperty(value = "生成时间")
     private Date createTime;
 
+    // ============== 果蔬追溯码管理列对齐原型补充字段（STORE-TRACE-ONSITE-001） ==============
+    // 原型「果蔬追溯码管理」列：到店日期/生产编号/序号/产品名称/产品规格/实际重量/来源地块/采摘时间/月台接收时间/发货时间。
+    // 主表无这些列，service 按 produce_code JOIN t_warehouse_trace_event 时间轴 +
+    // t_warehouse_product_production 产出记录聚合填。确无数据源的字段留空（不造假），openIssue 标注。
+
+    /**
+     * 到店日期（trace_event 中 {@code trace_content='arrival'} 事件时间；无 arrival 事件则空）。
+     */
+    @JsonFormat(pattern = "yyyy-MM-dd")
+    @ExcelProperty(value = "到店日期")
+    private LocalDate arrivalDate;
+
+    /**
+     * 生产编号（JOIN {@code t_warehouse_product_production.produce_no}，按 produce_code 反查产出记录）。
+     */
+    @ExcelProperty(value = "生产编号")
+    private String produceNo;
+
+    /**
+     * 序号（生产编号末段流水号，从 {@code produce_no} 尾部数字截取；无产出记录则空）。
+     */
+    @ExcelProperty(value = "序号")
+    private Integer serialNo;
+
+    /**
+     * 实际重量 kg（JOIN 产出记录 {@code produce_quantity}；无产出记录则空）。
+     */
+    @ExcelProperty(value = "实际重量")
+    private java.math.BigDecimal actualWeight;
+
+    /**
+     * 采摘时间（JOIN 产出记录 {@code produce_date}；trace_code.havest_date 仅日期无时刻，产出记录时刻优先）。
+     */
+    @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")
+    @ExcelProperty(value = "采摘时间")
+    private Date pickTime;
+
+    /**
+     * 月台接收时间（trace_event 中 {@code trace_content='in_stock'} 事件时间；无则空）。
+     */
+    @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")
+    @ExcelProperty(value = "月台接收时间")
+    private Date platformReceiveTime;
+
+    /**
+     * 发货时间（trace_event 中 {@code trace_content='ship'} 事件时间；无则空）。
+     */
+    @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")
+    @ExcelProperty(value = "发货时间")
+    private Date shipTime;
+
 }

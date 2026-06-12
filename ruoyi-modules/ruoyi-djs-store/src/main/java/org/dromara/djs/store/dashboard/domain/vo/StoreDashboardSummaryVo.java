@@ -56,6 +56,16 @@ public class StoreDashboardSummaryVo implements Serializable {
     private Integer pendingPurchaseCount;
 
     /**
+     * KPI 7：会员总数（{@code COUNT(*)} t_store_member，原型「客户/会员信息组」）。
+     */
+    private Long totalMembers;
+
+    /**
+     * KPI 8：今日新增会员数（{@code create_time} 落在今天，原型「客户/会员信息组」）。
+     */
+    private Long todayNewMembers;
+
+    /**
      * 当日产品结构（按业态 djs_demand_product_type 分组，key=业态 / value=需求量）。
      */
     private List<StoreGroupCountVo> productStructure;
@@ -118,6 +128,8 @@ public class StoreDashboardSummaryVo implements Serializable {
         vo.setMonthOrderCount(0);
         vo.setPendingShipCount(0);
         vo.setPendingPurchaseCount(0);
+        vo.setTotalMembers(0L);
+        vo.setTodayNewMembers(0L);
         vo.setProductStructure(List.of());
         vo.setTop10Products(List.of());
         vo.setTrend10Days(List.of());

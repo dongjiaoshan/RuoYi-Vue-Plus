@@ -50,4 +50,17 @@ public interface IPigQueryService {
      */
     int countAvailableForOutbound();
 
+    /**
+     * 分页查「可追溯猪只」列表（STORE-TRACE-ONSITE-001 门店现场生码选猪）。
+     *
+     * <p>语义：对<b>已出栏 / 可追溯</b>育肥猪生码，故<b>不</b>过滤 {@code current_status='END'}、
+     * <b>不</b>过滤需求占用（与 {@link #listAvailableForOutbound(PageQuery)} 的「可出栏 = 待派单活体」
+     * 语义相反）。返回字段含耳号 / 性别 / 品种品系 label / 日龄，供门店现场生码页 PigChip 选择器
+     * + 猪只信息只读面板展示。仅暴露门店现场生码使用，不要在养殖业务里复用。</p>
+     *
+     * @param pageQuery 分页参数
+     * @return 分页 VO（复用 {@link PigAvailableVo}）
+     */
+    TableDataInfo<PigAvailableVo> listTraceablePigs(PageQuery pageQuery);
+
 }

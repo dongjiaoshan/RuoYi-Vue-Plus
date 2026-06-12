@@ -25,6 +25,9 @@ public class StoreReturnQuery {
     /** 退回方向精确。 */
     private String returnDirection;
 
+    /** 退货状态精确（djs_store_return_status：pending/received）。 */
+    private String returnStatus;
+
     /** 退回日期下界（含）。 */
     private LocalDate returnDateFrom;
 

@@ -140,6 +140,56 @@ public interface PigMapper extends BaseMapperPlus<Pig, PigVo> {
     IPage<PigAvailableVo> selectAvailableForOutboundPage(IPage<PigAvailableVo> page);
 
     /**
+     * 分页查「可追溯猪只」列表（STORE-TRACE-ONSITE-001 门店现场生码选猪）。
+     *
+     * <p>语义区别于 {@link #selectAvailableForOutboundPage}：现场生码是<b>对已出栏猪只追溯</b>，
+     * 故<b>不</b>过滤 {@code current_status != 'END'}、<b>不</b>过滤需求占用——已上市 / 已终止的猪
+     * 同样可被门店现场扫码追溯。仅保留 {@code pig_type='fattening'}（育肥商品猪）+ {@code del_flag='0'}。</p>
+     *
+     * <p>展示字段与 {@link #selectAvailableForOutboundPage} 完全一致（earNo / pigSex / pigBreedLabel /
+     * ageDays），{@code lastBackfat} 复用同子查询（门店选猪卡不显但 VO 复用不另立）。
+     * 排序 {@code ear_no DESC}（新出栏排前）。租户显式 {@code tenant_id='1001'}（V1 单租户）。</p>
+     */
+    @Select("""
+        SELECT
+            p.ear_no AS earNo,
+            p.pig_sex AS pigSex,
+            CASE
+                WHEN bi.breed_strain_name IS NOT NULL AND si.breed_strain_name IS NOT NULL
+                    THEN CONCAT(bi.breed_strain_name, '/', si.breed_strain_name)
+                WHEN bi.breed_strain_name IS NOT NULL
+                    THEN bi.breed_strain_name
+                WHEN p.pig_strain_code IS NOT NULL AND p.pig_breed_code IS NOT NULL
+                    THEN CONCAT(p.pig_breed_code, '/', p.pig_strain_code)
+                ELSE COALESCE(p.pig_breed_code, p.pig_strain_code)
+            END AS pigBreedLabel,
+            CASE WHEN p.birth_date IS NULL THEN NULL ELSE DATEDIFF(CURDATE(), p.birth_date) END AS ageDays,
+            (SELECT g.backfat_thickness
+               FROM t_farm_pig_growth g
+              WHERE g.pig_id = p.id
+                AND g.del_flag = '0'
+                AND g.backfat_thickness IS NOT NULL
+              ORDER BY g.measure_date DESC, g.id DESC
+              LIMIT 1) AS lastBackfat
+        FROM t_farm_pig_info p
+        LEFT JOIN t_farm_breed_info bi
+               ON bi.breed_strain_code = p.pig_breed_code
+              AND bi.breed_strain = 1
+              AND bi.del_flag = '0'
+              AND bi.tenant_id = p.tenant_id
+        LEFT JOIN t_farm_breed_info si
+               ON si.breed_strain_code = p.pig_strain_code
+              AND si.breed_strain = 2
+              AND si.del_flag = '0'
+              AND si.tenant_id = p.tenant_id
+        WHERE p.pig_type = 'fattening'
+          AND p.del_flag = '0'
+          AND p.tenant_id = '1001'
+        ORDER BY p.ear_no DESC
+        """)
+    IPage<PigAvailableVo> selectTraceablePigPage(IPage<PigAvailableVo> page);
+
+    /**
      * 批量查给定母猪集合各自的「最近一条分娩日期」（D12X-MP-FARROW-WEANING-001 断奶选猪到期窗口）。
      *
      * <p>跨表读 {@code t_farm_pig_farrow}（本 mapper 是 core 自有 mapper，仅在 SQL 字符串里引表名，

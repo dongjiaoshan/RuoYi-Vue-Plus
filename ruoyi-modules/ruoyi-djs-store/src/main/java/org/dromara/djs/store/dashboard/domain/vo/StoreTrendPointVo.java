@@ -40,6 +40,17 @@ public class StoreTrendPointVo implements Serializable {
     private BigDecimal saleAmount;
 
     /**
+     * 当日销售量（{@code SUM(sale_qty)}，原型「销售量与退货量趋势」柱）。
+     */
+    private BigDecimal saleQty;
+
+    /**
+     * 当日退货量（{@code t_store_return} 按 {@code return_date} 当日聚合 {@code SUM(return_quantity)}，
+     * 原型「销售量与退货量趋势」第二根柱；service merge 进同日趋势点，无退货日补 0）。
+     */
+    private BigDecimal returnQty;
+
+    /**
      * 当日客单价（销售额 / 订单数，service 计算；订单数 0 时为 0）。
      */
     private BigDecimal avgPrice;

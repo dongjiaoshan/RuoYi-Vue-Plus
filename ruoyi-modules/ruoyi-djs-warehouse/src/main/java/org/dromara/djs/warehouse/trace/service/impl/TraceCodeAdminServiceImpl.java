@@ -12,9 +12,12 @@ import org.dromara.djs.common.store.domain.Store;
 import org.dromara.djs.common.store.mapper.StoreMapper;
 import org.dromara.djs.plant.plot.domain.PlotInfo;
 import org.dromara.djs.plant.plot.mapper.PlotInfoMapper;
+import org.dromara.djs.warehouse.pack.domain.ProductProduction;
+import org.dromara.djs.warehouse.pack.mapper.ProductProductionMapper;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
 import org.dromara.djs.warehouse.trace.domain.TraceCode;
+import org.dromara.djs.warehouse.trace.domain.TraceContentConst;
 import org.dromara.djs.warehouse.trace.domain.TraceEvent;
 import org.dromara.djs.warehouse.trace.domain.query.TraceCodeQuery;
 import org.dromara.djs.warehouse.trace.domain.vo.TraceCodeDetailVo;
@@ -26,10 +29,15 @@ import org.dromara.djs.warehouse.trace.mapper.TraceFarmNameMapper;
 import org.dromara.djs.warehouse.trace.service.ITraceCodeAdminService;
 import org.springframework.stereotype.Service;
 
+import java.time.LocalDate;
+import java.time.ZoneId;
 import java.util.Collections;
+import java.util.Date;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 /**
@@ -60,24 +68,32 @@ public class TraceCodeAdminServiceImpl
      */
     private static final String DEFAULT_TENANT = "1001";
 
+    /**
+     * 生产编号尾部连续数字（序号）匹配，如 {@code 260301003} → 末 4 位序号 / {@code 260312Z0001} → 0001。
+     */
+    private static final Pattern SERIAL_TAIL = Pattern.compile("(\\d+)$");
+
     private final TraceEventMapper traceEventMapper;
     private final ProductInfoMapper productInfoMapper;
     private final StoreMapper storeMapper;
     private final PlotInfoMapper plotInfoMapper;
     private final TraceFarmNameMapper traceFarmNameMapper;
+    private final ProductProductionMapper productProductionMapper;
 
     public TraceCodeAdminServiceImpl(TraceCodeMapper baseMapper,
                                      TraceEventMapper traceEventMapper,
                                      ProductInfoMapper productInfoMapper,
                                      StoreMapper storeMapper,
                                      PlotInfoMapper plotInfoMapper,
-                                     TraceFarmNameMapper traceFarmNameMapper) {
+                                     TraceFarmNameMapper traceFarmNameMapper,
+                                     ProductProductionMapper productProductionMapper) {
         super(baseMapper);
         this.traceEventMapper = traceEventMapper;
         this.productInfoMapper = productInfoMapper;
         this.storeMapper = storeMapper;
         this.plotInfoMapper = plotInfoMapper;
         this.traceFarmNameMapper = traceFarmNameMapper;
+        this.productProductionMapper = productProductionMapper;
     }
 
     // ============================ 列表 ============================
@@ -231,6 +247,113 @@ public class TraceCodeAdminServiceImpl
         fillStoreNames(vos);
         fillPlotNames(vos);
         fillFarmNames(vos);
+        fillProductionFields(vos);
+        fillTraceTimes(vos);
+    }
+
+    /**
+     * 填 果蔬追溯码管理 原型列：生产编号 / 序号 / 实际重量 / 采摘时间。
+     *
+     * <p>按 {@code produce_code} 反查 {@code t_warehouse_product_production}（产出记录 {@code trace_code}
+     * 字段回填了追溯码），一次性批量查后内存 JOIN（避免 N+1）。一个追溯码对应一条产出记录（打包入库时
+     * genCode 回填 production.traceCode）；多条取最新。</p>
+     */
+    private void fillProductionFields(List<? extends TraceCodeListVo> vos) {
+        List<String> codes = vos.stream()
+            .map(TraceCodeListVo::getProduceCode).filter(Objects::nonNull).distinct().toList();
+        if (codes.isEmpty()) {
+            return;
+        }
+        // produce_code → 最新一条产出记录（id 大者优先）
+        List<ProductProduction> rows = productProductionMapper.selectList(
+            new LambdaQueryWrapper<ProductProduction>()
+                .in(ProductProduction::getTraceCode, codes)
+                .orderByDesc(ProductProduction::getId));
+        if (rows == null || rows.isEmpty()) {
+            return;
+        }
+        Map<String, ProductProduction> byCode = rows.stream()
+            .collect(Collectors.toMap(ProductProduction::getTraceCode, p -> p, (a, b) -> a));
+        for (TraceCodeListVo vo : vos) {
+            ProductProduction p = vo.getProduceCode() == null ? null : byCode.get(vo.getProduceCode());
+            if (p == null) {
+                continue;
+            }
+            vo.setProduceNo(p.getProduceNo());
+            vo.setSerialNo(p.getProductSort() != null ? p.getProductSort() : parseSerial(p.getProduceNo()));
+            // 实际重量：优先 productWeight（成品净重），缺则 produceQuantity
+            vo.setActualWeight(p.getProductWeight() != null ? p.getProductWeight() : p.getProduceQuantity());
+            // 采摘时间：产出记录 produceTime（时刻）优先，缺则 produceDate
+            vo.setPickTime(p.getProduceTime() != null ? p.getProduceTime() : p.getProduceDate());
+        }
+    }
+
+    /**
+     * 填 到店日期 / 月台接收时间 / 发货时间：按 {@code produce_code} 批量查 trace_event，
+     * 取 arrival / in_stock / ship 三类事件各自最新一条的时间（无对应事件则该字段空，不造假）。
+     */
+    private void fillTraceTimes(List<? extends TraceCodeListVo> vos) {
+        List<String> codes = vos.stream()
+            .map(TraceCodeListVo::getProduceCode).filter(Objects::nonNull).distinct().toList();
+        if (codes.isEmpty()) {
+            return;
+        }
+        List<TraceEvent> events = traceEventMapper.selectList(
+            new LambdaQueryWrapper<TraceEvent>()
+                .in(TraceEvent::getProduceCode, codes)
+                .in(TraceEvent::getTraceContent, List.of(
+                    TraceContentConst.ARRIVAL, TraceContentConst.IN_STOCK, TraceContentConst.SHIP))
+                .orderByAsc(TraceEvent::getTraceTime).orderByAsc(TraceEvent::getId));
+        if (events == null || events.isEmpty()) {
+            return;
+        }
+        // produceCode → content → 最新事件时间（升序遍历后者覆盖前者 = 取最新）
+        Map<String, Map<String, Date>> byCode = new java.util.HashMap<>();
+        for (TraceEvent e : events) {
+            if (e.getTraceTime() == null) {
+                continue;
+            }
+            byCode.computeIfAbsent(e.getProduceCode(), k -> new java.util.HashMap<>())
+                .put(e.getTraceContent(), toDate(e.getTraceTime()));
+        }
+        for (TraceCodeListVo vo : vos) {
+            Map<String, Date> m = vo.getProduceCode() == null ? null : byCode.get(vo.getProduceCode());
+            if (m == null) {
+                continue;
+            }
+            Date arrival = m.get(TraceContentConst.ARRIVAL);
+            vo.setPlatformReceiveTime(m.get(TraceContentConst.IN_STOCK));
+            vo.setShipTime(m.get(TraceContentConst.SHIP));
+            if (arrival != null) {
+                vo.setArrivalDate(toLocalDate(arrival));
+            }
+        }
+    }
+
+    /**
+     * 生产编号尾部连续数字 → 序号 Integer；无尾部数字 / 溢出返 null。
+     */
+    private Integer parseSerial(String produceNo) {
+        if (produceNo == null) {
+            return null;
+        }
+        Matcher m = SERIAL_TAIL.matcher(produceNo);
+        if (!m.find()) {
+            return null;
+        }
+        try {
+            return Integer.valueOf(m.group(1));
+        } catch (NumberFormatException ex) {
+            return null;
+        }
+    }
+
+    private Date toDate(java.time.LocalDateTime ldt) {
+        return Date.from(ldt.atZone(ZoneId.systemDefault()).toInstant());
+    }
+
+    private LocalDate toLocalDate(Date d) {
+        return d.toInstant().atZone(ZoneId.systemDefault()).toLocalDate();
     }
 
     private void fillProducts(List<? extends TraceCodeListVo> vos) {

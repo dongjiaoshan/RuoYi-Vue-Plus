@@ -139,7 +139,7 @@ public interface StoreDashboardMapper {
     List<StoreGroupCountVo> selectProductStructure(@Param("tenantId") String tenantId, @Param("storeId") Long storeId);
 
     /**
-     * 当月 TOP10 产品排行（按销售额倒序）。
+     * 当日热销产品 TOP10 排行（按销售额倒序，原型「当日热销产品TOP10」环形 + 条形）。
      *
      * @param tenantId 租户
      * @param storeId  门店 ID（可空）
@@ -151,7 +151,7 @@ public interface StoreDashboardMapper {
         + "  FROM t_store_sale_record "
         + " WHERE tenant_id = #{tenantId} "
         + "   AND del_flag = '0' "
-        + "   AND sale_date >= DATE_FORMAT(NOW(), '%Y-%m-01') "
+        + "   AND sale_date = CURDATE() "
         + "   AND (#{storeId} IS NULL OR store_id = #{storeId}) "
         + " GROUP BY product_id, product_name "
         + " ORDER BY SUM(sale_amount) DESC "
@@ -166,7 +166,8 @@ public interface StoreDashboardMapper {
      * @return 近 10 日趋势点列表（按日期升序），无记录返空
      */
     @Select("SELECT sale_date AS `date`, COUNT(*) AS orderCount, "
-        + "       COALESCE(SUM(sale_amount), 0) AS saleAmount "
+        + "       COALESCE(SUM(sale_amount), 0) AS saleAmount, "
+        + "       COALESCE(SUM(sale_qty), 0) AS saleQty "
         + "  FROM t_store_sale_record "
         + " WHERE tenant_id = #{tenantId} "
         + "   AND del_flag = '0' "
@@ -175,6 +176,27 @@ public interface StoreDashboardMapper {
         + " GROUP BY sale_date "
         + " ORDER BY sale_date")
     List<StoreTrendPointVo> selectTrend10Days(@Param("tenantId") String tenantId, @Param("storeId") Long storeId);
+
+    /**
+     * 近 10 日退货量趋势（{@code t_store_return} 按 {@code return_date} 当日聚合）。
+     *
+     * <p>原型「销售量与退货量趋势」第二根柱的数据源。t_store_return（STR-RETURN-001）
+     * 已具备 {@code return_quantity} + {@code return_date}，无需建表。service 按 date
+     * merge 进 {@link #selectTrend10Days} 的趋势点，无退货日补 0。</p>
+     *
+     * @param tenantId 租户
+     * @param storeId  门店 ID（可空）
+     * @return 近 10 日每日退货量（{@code date} / {@code returnQty}），无记录返空
+     */
+    @Select("SELECT DATE(return_date) AS `date`, COALESCE(SUM(return_quantity), 0) AS returnQty "
+        + "  FROM t_store_return "
+        + " WHERE tenant_id = #{tenantId} "
+        + "   AND del_flag = '0' "
+        + "   AND return_date >= DATE_SUB(CURDATE(), INTERVAL 9 DAY) "
+        + "   AND (#{storeId} IS NULL OR store_id = #{storeId}) "
+        + " GROUP BY DATE(return_date) "
+        + " ORDER BY DATE(return_date)")
+    List<StoreTrendPointVo> selectReturnTrend10Days(@Param("tenantId") String tenantId, @Param("storeId") Long storeId);
 
     /**
      * mp 单业态当日速览：销售额 + 订单数（按 belong_type 列表过滤）。

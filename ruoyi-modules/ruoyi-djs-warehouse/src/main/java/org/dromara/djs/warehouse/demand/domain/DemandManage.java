@@ -91,6 +91,18 @@ public class DemandManage extends TenantEntity {
     /** 确认时间。 */
     private LocalDateTime confirmerTime;
 
+    /** 需求类型（字典 {@code djs_demand_mailing_type}：store 门店 / mailing 个人邮寄）。 */
+    private String demandType;
+
+    /** 预计到店重量(kg)。 */
+    private BigDecimal expectedWeight;
+
+    /** 门店收货确认时间（门店侧「确认收货」）。 */
+    private LocalDateTime receivedTime;
+
+    /** 门店收货确认人 user_id，FK {@code sys_user.user_id}。 */
+    private Long receivedBy;
+
     /** 期望到货日。 */
     private LocalDate expectedArriveDate;
 

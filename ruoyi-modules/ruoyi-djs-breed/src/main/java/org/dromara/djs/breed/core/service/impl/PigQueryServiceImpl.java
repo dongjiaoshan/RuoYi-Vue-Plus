@@ -42,4 +42,11 @@ public class PigQueryServiceImpl implements IPigQueryService {
     public int countAvailableForOutbound() {
         return pigMapper.countAvailableForOutbound();
     }
+
+    @Override
+    public TableDataInfo<PigAvailableVo> listTraceablePigs(PageQuery pageQuery) {
+        PageQuery pq = pageQuery != null ? pageQuery : new PageQuery(1, 10);
+        IPage<PigAvailableVo> page = pigMapper.selectTraceablePigPage(pq.build());
+        return TableDataInfo.build(page);
+    }
 }
