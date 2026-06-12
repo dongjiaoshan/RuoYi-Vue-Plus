@@ -16,6 +16,9 @@ import org.dromara.djs.warehouse.pack.domain.bo.DryPackBo;
 import org.dromara.djs.warehouse.pack.domain.bo.GiftPackBo;
 import org.dromara.djs.warehouse.pack.domain.bo.VegPackBo;
 import org.dromara.djs.warehouse.pack.domain.bo.WhiteBarOutBo;
+import org.dromara.djs.warehouse.pack.domain.vo.PackSubmitResultVo;
+import org.dromara.djs.warehouse.pack.domain.vo.ProductProductionVo;
+import org.dromara.djs.warehouse.pack.domain.vo.StoreDemandCopiesVo;
 import org.dromara.djs.warehouse.pack.service.IProductProductionService;
 import org.dromara.djs.warehouse.product.domain.ProductInhouse;
 import org.springframework.validation.annotation.Validated;
@@ -23,6 +26,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
@@ -68,12 +72,13 @@ public class WarehousePackEntryController extends BaseController {
      * 肉品/其他产品打包提交（按目标 SKU 打包，复用 dry 打包业务）。
      *
      * <p>原型「肉品打包管理」「其他产品打包管理」共用此口：选来源过程产品 + 目标产品 SKU +
-     * 重量/数量 + 入库库位 + 需求门店 + 发货位置。</p>
+     * 重量/数量 + 入库库位 + 需求门店 + 发送位置。返回 {@code {id, traceCode}}
+     * 供「确认并打印追溯码」展示。</p>
      */
     @SaCheckPermission("djs:warehouse:packEntry:dry")
     @PostMapping("/dry")
-    public R<Long> packDry(@Valid @RequestBody DryPackBo bo) {
-        return R.ok(productionService.submitDryPack(bo));
+    public R<PackSubmitResultVo> packDry(@Valid @RequestBody DryPackBo bo) {
+        return R.ok(toResult(productionService.submitDryPack(bo)));
     }
 
     /**
@@ -83,8 +88,8 @@ public class WarehousePackEntryController extends BaseController {
      */
     @SaCheckPermission("djs:warehouse:packEntry:gift")
     @PostMapping("/gift")
-    public R<Long> packGift(@Valid @RequestBody GiftPackBo bo) {
-        return R.ok(productionService.submitGiftPack(bo));
+    public R<PackSubmitResultVo> packGift(@Valid @RequestBody GiftPackBo bo) {
+        return R.ok(toResult(productionService.submitGiftPack(bo)));
     }
 
     /**
@@ -94,8 +99,29 @@ public class WarehousePackEntryController extends BaseController {
      */
     @SaCheckPermission("djs:warehouse:packEntry:veg")
     @PostMapping("/veg")
-    public R<Long> packVeg(@Valid @RequestBody VegPackBo bo) {
-        return R.ok(productionService.submitVegPack(bo));
+    public R<PackSubmitResultVo> packVeg(@Valid @RequestBody VegPackBo bo) {
+        return R.ok(toResult(productionService.submitVegPack(bo)));
+    }
+
+    /**
+     * 某产品各门店未发货需求份数（打包录入页底部「门店(N份)」标签条）。
+     *
+     * <p>原型「肉品 / 果蔬 / 其他产品打包管理」底部需求门店标签：按所选目标产品在需求管理表里
+     * 各门店未发货需求量（{@code demand_quantity - shipped_count > 0}）聚合。纯展示/选择参考——
+     * 打包提交仍单店语义（带单 storeId），不做多店拆分。</p>
+     */
+    @SaCheckPermission("djs:warehouse:packEntry:dry")
+    @GetMapping("/storeDemand")
+    public R<List<StoreDemandCopiesVo>> storeDemand(@RequestParam Long productId) {
+        return R.ok(productionService.listStoreDemandCopies(productId));
+    }
+
+    /**
+     * 提交结果包装：按新建 production id 反查 traceCode，组装 {@code {id, traceCode}}。
+     */
+    private PackSubmitResultVo toResult(Long id) {
+        ProductProductionVo vo = id == null ? null : productionService.queryById(id);
+        return new PackSubmitResultVo(id, vo == null ? null : vo.getTraceCode());
     }
 
     /**

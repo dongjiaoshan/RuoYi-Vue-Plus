@@ -14,11 +14,14 @@ import java.math.BigDecimal;
  *
  * <p>雪花 ID 全链路保持 String（前端不 Number()，防 19 位精度丢失），后端在 service 显式 parse。</p>
  *
+ * <p>类名 ProductStockInBo（非 ProductInboundBo）以避开与
+ * {@code selfcheck.domain.bo.ProductInboundBo} 的 MyBatis 类型别名（简单类名）冲突。</p>
+ *
  * @author djs
  * @since DJS-FIX-WMS-RALN-B
  */
 @Data
-public class ProductInboundBo {
+public class ProductStockInBo {
 
     /**
      * 产品 ID（snowflake string）。

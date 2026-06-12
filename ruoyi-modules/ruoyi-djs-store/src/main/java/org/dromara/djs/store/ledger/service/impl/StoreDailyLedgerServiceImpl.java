@@ -46,10 +46,11 @@ import java.util.stream.Collectors;
  * <h3>口径</h3>
  * <ul>
  *   <li>盘点候选 = 门店关联产品（{@code t_store_product_relation}）全 SKU，预填可推导的量列。</li>
- *   <li>预填 saleQty（{@code t_store_sale_record} 当日聚合）/ returnQty（{@code t_store_return} 当日聚合）。
+ *   <li>预填 saleQty（{@code t_store_sale_record} 当日聚合）/ returnQty（{@code t_store_return}
+ *       customer_to_store 当日聚合）/ whReturnQty（{@code t_store_return} store_to_warehouse 当日聚合）。
  *       inboundQty V1 不自动预填 0（{@code t_warehouse_shipment} 为 demand/业态粒度，非产品 SKU 粒度，
  *       无法干净 join 到产品；门店端手填，见 _open-issues）。</li>
- *   <li>期末库存落库时算：closing = opening + inbound − sale − gift − return − loss（量列缺省 0）。</li>
+ *   <li>期末库存落库时算：closing = opening + inbound − sale − gift − return − whReturn − loss（量列缺省 0）。</li>
  * </ul>
  *
  * @author djs
@@ -106,9 +107,10 @@ public class StoreDailyLedgerServiceImpl implements IStoreDailyLedgerService {
                 new LambdaQueryWrapper<ProductInfo>().in(ProductInfo::getId, productIds))
             .stream().collect(Collectors.toMap(ProductInfo::getId, p -> p, (a, b) -> a));
 
-        // 2. 预填：销售量（当日 sale_record 聚合）+ 退货量（当日 store_return 聚合）
+        // 2. 预填：销售量（当日 sale_record 聚合）+ 退货量 / 退回量（当日 store_return 按方向聚合）
         Map<Long, BigDecimal> saleMap = sumSaleByProduct(storeId, date, productIds);
-        Map<Long, BigDecimal> returnMap = sumReturnByProduct(storeId, date, productIds);
+        Map<Long, BigDecimal> returnMap = sumReturnByProduct(storeId, date, productIds, "customer_to_store");
+        Map<Long, BigDecimal> whReturnMap = sumReturnByProduct(storeId, date, productIds, "store_to_warehouse");
 
         List<StoreDailyLedgerCandidateVo> result = new ArrayList<>();
         for (Long pid : productIds) {
@@ -123,6 +125,7 @@ public class StoreDailyLedgerServiceImpl implements IStoreDailyLedgerService {
             vo.setProductSpec(p.getProductSpec());
             vo.setSaleQty(saleMap.getOrDefault(pid, BigDecimal.ZERO));
             vo.setReturnQty(returnMap.getOrDefault(pid, BigDecimal.ZERO));
+            vo.setWhReturnQty(whReturnMap.getOrDefault(pid, BigDecimal.ZERO));
             vo.setInboundQty(BigDecimal.ZERO);
             result.add(vo);
         }
@@ -155,8 +158,10 @@ public class StoreDailyLedgerServiceImpl implements IStoreDailyLedgerService {
             BigDecimal sale = nz(item.getSaleQty());
             BigDecimal gift = nz(item.getGiftQty());
             BigDecimal ret = nz(item.getReturnQty());
+            BigDecimal whRet = nz(item.getWhReturnQty());
             BigDecimal loss = nz(item.getLossQty());
-            BigDecimal closing = opening.add(inbound).subtract(sale).subtract(gift).subtract(ret).subtract(loss);
+            BigDecimal closing = opening.add(inbound)
+                .subtract(sale).subtract(gift).subtract(ret).subtract(whRet).subtract(loss);
 
             StoreDailyLedger existing = existingByProduct.get(item.getProductId());
             StoreDailyLedger entity = new StoreDailyLedger();
@@ -168,6 +173,7 @@ public class StoreDailyLedgerServiceImpl implements IStoreDailyLedgerService {
             entity.setSaleQty(sale);
             entity.setGiftQty(gift);
             entity.setReturnQty(ret);
+            entity.setWhReturnQty(whRet);
             entity.setLossQty(loss);
             entity.setClosingQty(closing);
             entity.setOperatorId(operatorId);
@@ -327,12 +333,18 @@ public class StoreDailyLedgerServiceImpl implements IStoreDailyLedgerService {
             BigDecimal::add));
     }
 
-    private Map<Long, BigDecimal> sumReturnByProduct(Long storeId, LocalDate date, List<Long> productIds) {
+    /**
+     * 按退回方向当日聚合退回数量（按产品）。
+     *
+     * @param direction {@code djs_return_direction} 字典值：customer_to_store=退货量 / store_to_warehouse=退回量
+     */
+    private Map<Long, BigDecimal> sumReturnByProduct(Long storeId, LocalDate date, List<Long> productIds, String direction) {
         LocalDateTime from = date.atStartOfDay();
         LocalDateTime to = date.plusDays(1).atStartOfDay();
         List<StoreReturn> records = storeReturnMapper.selectList(
             new LambdaQueryWrapper<StoreReturn>()
                 .eq(StoreReturn::getStoreId, storeId)
+                .eq(StoreReturn::getReturnDirection, direction)
                 .in(StoreReturn::getProductId, productIds)
                 .ge(StoreReturn::getReturnDate, from)
                 .lt(StoreReturn::getReturnDate, to));

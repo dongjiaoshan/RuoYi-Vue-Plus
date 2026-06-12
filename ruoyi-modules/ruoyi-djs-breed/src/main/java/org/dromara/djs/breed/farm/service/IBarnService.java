@@ -3,6 +3,7 @@ package org.dromara.djs.breed.farm.service;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.breed.farm.domain.bo.BarnBo;
+import org.dromara.djs.breed.farm.domain.bo.BarnCreateBo;
 import org.dromara.djs.breed.farm.domain.query.BarnQuery;
 import org.dromara.djs.breed.farm.domain.vo.BarnVo;
 
@@ -38,6 +39,15 @@ public interface IBarnService {
      * @return 受影响行数（成功 1）
      */
     int insertByBo(BarnBo bo);
+
+    /**
+     * 新建栋舍并按三类数量批量生成栏位（对齐原型「新建栋舍」弹窗）。
+     * 栋舍编码自动生成；同一事务里生成 big/stall/farrow 三类栏位（编号连号）。
+     *
+     * @param bo 名称 / 类型 / 大栏数量 / 限位栏数量 / 产床数量
+     * @return 新建栋舍 ID
+     */
+    Long createWithPens(BarnCreateBo bo);
 
     /**
      * 修改。

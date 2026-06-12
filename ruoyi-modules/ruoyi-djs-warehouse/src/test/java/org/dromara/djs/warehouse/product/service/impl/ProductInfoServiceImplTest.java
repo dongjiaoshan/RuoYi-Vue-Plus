@@ -454,8 +454,8 @@ class ProductInfoServiceImplTest {
         when(locationStockMapper.addByProductLocation(eq(30001L), eq(20001L), any(BigDecimal.class), any()))
             .thenReturn(1);
 
-        org.dromara.djs.warehouse.product.domain.bo.ProductInboundBo bo =
-            new org.dromara.djs.warehouse.product.domain.bo.ProductInboundBo();
+        org.dromara.djs.warehouse.product.domain.bo.ProductStockInBo bo =
+            new org.dromara.djs.warehouse.product.domain.bo.ProductStockInBo();
         bo.setProductId(20001L);
         bo.setLocationId(30001L);
         bo.setQuantity(new BigDecimal("22"));
@@ -480,8 +480,8 @@ class ProductInfoServiceImplTest {
     @DisplayName("产品入库：产品不存在 → ServiceException")
     void testInbound_ProductNotFound() {
         when(productInfoMapper.selectById(eq(99999L))).thenReturn(null);
-        org.dromara.djs.warehouse.product.domain.bo.ProductInboundBo bo =
-            new org.dromara.djs.warehouse.product.domain.bo.ProductInboundBo();
+        org.dromara.djs.warehouse.product.domain.bo.ProductStockInBo bo =
+            new org.dromara.djs.warehouse.product.domain.bo.ProductStockInBo();
         bo.setProductId(99999L);
         bo.setLocationId(30001L);
         bo.setQuantity(new BigDecimal("5"));

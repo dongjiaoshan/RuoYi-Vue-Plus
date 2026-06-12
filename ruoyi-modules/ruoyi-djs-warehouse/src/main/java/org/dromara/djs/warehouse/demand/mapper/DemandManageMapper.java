@@ -6,9 +6,11 @@ import org.apache.ibatis.annotations.Update;
 import org.dromara.common.mybatis.core.mapper.BaseMapperPlus;
 import org.dromara.djs.warehouse.demand.domain.DemandManage;
 import org.dromara.djs.warehouse.demand.domain.vo.DemandManageVo;
+import org.dromara.djs.warehouse.pack.domain.vo.StoreDemandCopiesVo;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -101,5 +103,37 @@ public interface DemandManageMapper extends BaseMapperPlus<DemandManage, DemandM
     int incrementShipped(@Param("demandId") Long demandId,
                          @Param("tenantId") String tenantId,
                          @Param("delta") BigDecimal delta);
+
+    /**
+     * 某产品各门店未发货需求量聚合（DJS-FIX-WMS-PACK 打包录入「门店(N份)」标签条）。
+     *
+     * <p>按 {@code product_id} 取各门店未发货需求量
+     * {@code SUM(demand_quantity - COALESCE(shipped_count,0))}，仅保留剩余 &gt; 0 的门店，
+     * 排除已取消单（{@code demand_status <> 'CANCELLED'}）。JOIN {@code t_md_store} 取门店名。</p>
+     *
+     * <p>租户隔离：未启全局 MP 拦截器，显式 {@code tenant_id='1001'}（V1 单租户，与本 mapper
+     * 既有聚合 SQL 范式一致）；{@code del_flag='0'}（CHAR(1) 未删）。</p>
+     *
+     * @param productId 产品 FK（{@code t_warehouse_product_info.id}）
+     * @return 各门店未发货份数（按 copies 降序；无则空 List）
+     */
+    @Select("""
+        SELECT dm.store_id AS storeId,
+               s.store_name AS storeName,
+               SUM(dm.demand_quantity - COALESCE(dm.shipped_count, 0)) AS copies
+        FROM t_warehouse_demand_manage dm
+        JOIN t_md_store s ON s.id = dm.store_id
+             AND s.del_flag = '0'
+             AND s.tenant_id = dm.tenant_id
+        WHERE dm.product_id = #{productId}
+          AND dm.store_id IS NOT NULL
+          AND dm.demand_status <> 'CANCELLED'
+          AND dm.del_flag = '0'
+          AND dm.tenant_id = '1001'
+        GROUP BY dm.store_id, s.store_name
+        HAVING copies > 0
+        ORDER BY copies DESC
+        """)
+    List<StoreDemandCopiesVo> selectStoreDemandCopies(@Param("productId") Long productId);
 }
 

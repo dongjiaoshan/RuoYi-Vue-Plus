@@ -2,7 +2,7 @@ package org.dromara.djs.warehouse.product.service;
 
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
-import org.dromara.djs.warehouse.product.domain.bo.ProductInboundBo;
+import org.dromara.djs.warehouse.product.domain.bo.ProductStockInBo;
 import org.dromara.djs.warehouse.product.domain.bo.ProductInfoBo;
 import org.dromara.djs.warehouse.product.domain.query.ProductInfoQuery;
 import org.dromara.djs.warehouse.product.domain.vo.ProductFlowRecordVo;
@@ -108,6 +108,6 @@ public interface IProductInfoService {
      * @param bo 入库入参
      * @return 入库流水 ID
      */
-    Long inbound(ProductInboundBo bo);
+    Long inbound(ProductStockInBo bo);
 
 }

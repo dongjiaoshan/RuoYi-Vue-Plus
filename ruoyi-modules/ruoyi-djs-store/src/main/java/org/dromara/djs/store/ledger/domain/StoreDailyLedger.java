@@ -14,11 +14,11 @@ import java.time.LocalDate;
 /**
  * 门店经营流水盘点台账实体（{@code t_store_daily_ledger}，STORE-LEDGER-001）。
  *
- * <p>一行 = 某门店某产品某盘点日的经营六列流水 + 期末库存。客户口径：对仓库发货到门店的产品，
+ * <p>一行 = 某门店某产品某盘点日的经营七列流水 + 期末库存。客户口径：对仓库发货到门店的产品，
  * 录期初 / 当日入库 / 销售 / 赠送 / 退货 / 退回 / 损耗，相当于门店自己的库存盘点（首次建账即期初）。</p>
  *
  * <p>期末库存公式（service 落库时算）：
- * {@code closing_qty = opening_qty + inbound_qty − sale_qty − gift_qty − return_qty − loss_qty}。</p>
+ * {@code closing_qty = opening_qty + inbound_qty − sale_qty − gift_qty − return_qty − wh_return_qty − loss_qty}。</p>
  *
  * @author djs
  * @since STORE-LEDGER-001
@@ -56,13 +56,16 @@ public class StoreDailyLedger extends TenantEntity {
     /** 赠送量（手填）。 */
     private BigDecimal giftQty;
 
-    /** 退货量（顾客退货，可由 {@code t_store_return} 当日聚合预填）。 */
+    /** 退货量（顾客退货，可由 {@code t_store_return} customer_to_store 当日聚合预填）。 */
     private BigDecimal returnQty;
+
+    /** 退回量（门店退回仓库，可由 {@code t_store_return} store_to_warehouse 当日聚合预填；原型只读）。 */
+    private BigDecimal whReturnQty;
 
     /** 损耗量（手填，未填按 0）。 */
     private BigDecimal lossQty;
 
-    /** 期末库存（service 算：期初+入库−销售−赠送−退货−损耗）。 */
+    /** 期末库存（service 算：期初+入库−销售−赠送−退货−退回−损耗）。 */
     private BigDecimal closingQty;
 
     /** 盘点人 user_id → {@code sys_user.user_id}（LoginHelper 注入）。 */

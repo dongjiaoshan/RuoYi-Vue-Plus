@@ -10,6 +10,7 @@ import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.web.core.BaseController;
 import org.dromara.djs.breed.farm.domain.bo.BarnBo;
+import org.dromara.djs.breed.farm.domain.bo.BarnCreateBo;
 import org.dromara.djs.breed.farm.domain.query.BarnQuery;
 import org.dromara.djs.breed.farm.domain.vo.BarnVo;
 import org.dromara.djs.breed.farm.service.IBarnService;
@@ -70,6 +71,17 @@ public class BarnController extends BaseController {
     @PostMapping("/add")
     public R<Void> add(@Validated @RequestBody BarnBo bo) {
         return toAjax(barnService.insertByBo(bo));
+    }
+
+    /**
+     * 新建栋舍并按三类数量批量生成栏位（对齐原型「新建栋舍」：填大栏 / 限位栏 / 产床数量自动建栏位）。
+     */
+    @SaCheckPermission("djs:breed:barn:add")
+    @Log(title = "栋舍管理", businessType = BusinessType.INSERT)
+    @RepeatSubmit
+    @PostMapping("/createWithPens")
+    public R<Long> createWithPens(@Validated @RequestBody BarnCreateBo bo) {
+        return R.ok(barnService.createWithPens(bo));
     }
 
     /**

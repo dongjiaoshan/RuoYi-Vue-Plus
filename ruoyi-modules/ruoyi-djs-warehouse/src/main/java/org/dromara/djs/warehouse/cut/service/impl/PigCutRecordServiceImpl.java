@@ -226,14 +226,33 @@ public class PigCutRecordServiceImpl
         BigDecimal totalWeight = BigDecimal.ZERO;
         LocalDate today = LocalDate.now();
         for (PigCutOutBo.PartItem part : bo.getPartItems()) {
-            Long productId = resolveProductIdByCutPart(part.getCutPart());
+            // 按具体产品对齐原型（Kevin 定）：productId 非空 → 直接用该分割成品落库；
+            // 否则回落 cutPart 5 部位枚举解析标准 SKU（向后兼容 mp 旧端 + 成品主数据未 seed）。
+            Long productId;
+            String productName;
+            String productUnit;
+            if (part.getProductId() != null) {
+                ProductInfo product = productInfoMapper.selectById(part.getProductId());
+                if (product == null) {
+                    throw new ServiceException("分割成品产品主数据不存在：" + part.getProductId());
+                }
+                productId = product.getId();
+                productName = product.getProductName();
+                productUnit = StringUtils.isNotBlank(product.getProductUnit()) ? product.getProductUnit() : "kg";
+            } else if (StringUtils.isNotBlank(part.getCutPart())) {
+                productId = resolveProductIdByCutPart(part.getCutPart());
+                productName = productNameByCutPart(part.getCutPart());
+                productUnit = "kg";
+            } else {
+                throw new ServiceException("分割明细须指定具体产品(productId) 或部位(cutPart) 之一");
+            }
 
             ProductInhouse inhouse = new ProductInhouse();
             inhouse.setProduceDate(java.sql.Date.valueOf(today));
             inhouse.setProductId(productId);
-            inhouse.setProductName(productNameByCutPart(part.getCutPart()));
+            inhouse.setProductName(productName);
             inhouse.setProductType(1); // 自产
-            inhouse.setProductUnit("kg");
+            inhouse.setProductUnit(productUnit);
             inhouse.setProductSpec(part.getProductSpec());
             inhouse.setEarNo(record.getEarNo());
             inhouse.setProductWeight(part.getProductWeight());

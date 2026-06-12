@@ -15,6 +15,7 @@ import org.dromara.djs.common.store.domain.Store;
 import org.dromara.djs.common.store.mapper.StoreMapper;
 import org.dromara.djs.plant.plot.domain.PlotInfo;
 import org.dromara.djs.plant.plot.mapper.PlotInfoMapper;
+import org.dromara.djs.warehouse.demand.mapper.DemandManageMapper;
 import org.dromara.djs.warehouse.flow.domain.StockFlow;
 import org.dromara.djs.warehouse.flow.mapper.StockFlowMapper;
 import org.dromara.djs.warehouse.location.domain.LocationInfo;
@@ -27,6 +28,7 @@ import org.dromara.djs.warehouse.pack.domain.bo.VegPackBo;
 import org.dromara.djs.warehouse.pack.domain.bo.WhiteBarOutBo;
 import org.dromara.djs.warehouse.pack.domain.query.ProductProductionQuery;
 import org.dromara.djs.warehouse.pack.domain.vo.ProductProductionVo;
+import org.dromara.djs.warehouse.pack.domain.vo.StoreDemandCopiesVo;
 import org.dromara.djs.warehouse.pack.mapper.ProductProductionMapper;
 import org.dromara.djs.warehouse.pack.service.IProductProductionService;
 import org.dromara.djs.warehouse.product.domain.GiftBox;
@@ -135,6 +137,7 @@ public class ProductProductionServiceImpl
     private final StockFlowMapper stockFlowMapper;
     private final StoreMapper storeMapper;
     private final PlotInfoMapper plotInfoMapper;
+    private final DemandManageMapper demandManageMapper;
     private final IBizCodeGenerator bizCodeGenerator;
     private final ITraceService traceService;
 
@@ -147,6 +150,7 @@ public class ProductProductionServiceImpl
                                         StockFlowMapper stockFlowMapper,
                                         StoreMapper storeMapper,
                                         PlotInfoMapper plotInfoMapper,
+                                        DemandManageMapper demandManageMapper,
                                         IBizCodeGenerator bizCodeGenerator,
                                         ITraceService traceService) {
         super(baseMapper);
@@ -158,6 +162,7 @@ public class ProductProductionServiceImpl
         this.stockFlowMapper = stockFlowMapper;
         this.storeMapper = storeMapper;
         this.plotInfoMapper = plotInfoMapper;
+        this.demandManageMapper = demandManageMapper;
         this.bizCodeGenerator = bizCodeGenerator;
         this.traceService = traceService;
     }
@@ -200,6 +205,7 @@ public class ProductProductionServiceImpl
         p.setMaterialConsume(bo.getMaterialConsume());
         p.setProduceLocation(PRODUCE_LOCATION_WAREHOUSE);
         p.setPackStatus(PACK_STATUS_PACKED);
+        p.setDeliverDest(bo.getDeliverDest());
         p.setProofOssIds(bo.getProofOssIds());
         p.setRemark(bo.getRemark());
         baseMapper.insert(p);
@@ -286,6 +292,7 @@ public class ProductProductionServiceImpl
         p.setIsArrivalConfirm(YN_NO);
         p.setProduceLocation(PRODUCE_LOCATION_WAREHOUSE);
         p.setPackStatus(PACK_STATUS_PACKED);
+        p.setDeliverDest(bo.getDeliverDest());
         p.setProofOssIds(bo.getProofOssIds());
         p.setRemark(bo.getRemark());
         baseMapper.insert(p);
@@ -335,6 +342,7 @@ public class ProductProductionServiceImpl
         p.setIsArrivalConfirm(YN_NO);
         p.setProduceLocation(PRODUCE_LOCATION_WAREHOUSE);
         p.setPackStatus(PACK_STATUS_PACKED);
+        p.setDeliverDest(bo.getDeliverDest());
         p.setProofOssIds(bo.getProofOssIds());
         p.setRemark(bo.getRemark());
         baseMapper.insert(p);
@@ -550,6 +558,14 @@ public class ProductProductionServiceImpl
                 .gt(ProductInhouse::getProductWeight, BigDecimal.ZERO)
                 .orderByDesc(ProductInhouse::getId)
                 .last("LIMIT 50"));
+    }
+
+    @Override
+    public List<StoreDemandCopiesVo> listStoreDemandCopies(Long productId) {
+        if (productId == null) {
+            return List.of();
+        }
+        return demandManageMapper.selectStoreDemandCopies(productId);
     }
 
     // ============================================================

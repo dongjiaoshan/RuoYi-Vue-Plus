@@ -1,6 +1,7 @@
 package org.dromara.djs.breed.farm.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.toolkit.IdWorker;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.common.core.exception.ServiceException;
@@ -9,14 +10,19 @@ import org.dromara.common.core.utils.StringUtils;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.breed.farm.domain.Barn;
+import org.dromara.djs.breed.farm.domain.Pen;
 import org.dromara.djs.breed.farm.domain.bo.BarnBo;
+import org.dromara.djs.breed.farm.domain.bo.BarnCreateBo;
 import org.dromara.djs.breed.farm.domain.query.BarnQuery;
 import org.dromara.djs.breed.farm.domain.vo.BarnVo;
 import org.dromara.djs.breed.farm.mapper.BarnMapper;
+import org.dromara.djs.breed.farm.mapper.FarmStatMapper;
+import org.dromara.djs.breed.farm.mapper.PenMapper;
 import org.dromara.djs.breed.farm.mapper.PigReferenceCheckMapper;
 import org.dromara.djs.breed.farm.service.IBarnService;
 import org.dromara.djs.common.base.DjsBaseServiceImpl;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.Collection;
 import java.util.List;
@@ -38,18 +44,47 @@ import java.util.Objects;
 @Service
 public class BarnServiceImpl extends DjsBaseServiceImpl<BarnMapper, Barn> implements IBarnService {
 
-    private final PigReferenceCheckMapper pigReferenceCheckMapper;
+    /** 栏位类型字典值（djs_pen_type）：大栏 / 限位栏 / 产床。 */
+    private static final String PEN_TYPE_BIG = "big";
+    private static final String PEN_TYPE_STALL = "stall";
+    private static final String PEN_TYPE_FARROW = "farrow";
 
-    public BarnServiceImpl(BarnMapper baseMapper, PigReferenceCheckMapper pigReferenceCheckMapper) {
+    private final PigReferenceCheckMapper pigReferenceCheckMapper;
+    private final PenMapper penMapper;
+    private final FarmStatMapper farmStatMapper;
+
+    public BarnServiceImpl(BarnMapper baseMapper,
+                           PigReferenceCheckMapper pigReferenceCheckMapper,
+                           PenMapper penMapper,
+                           FarmStatMapper farmStatMapper) {
         super(baseMapper);
         this.pigReferenceCheckMapper = pigReferenceCheckMapper;
+        this.penMapper = penMapper;
+        this.farmStatMapper = farmStatMapper;
     }
 
     @Override
     public TableDataInfo<BarnVo> queryPageList(BarnQuery query, PageQuery pageQuery) {
         LambdaQueryWrapper<Barn> wrapper = buildQueryWrapper(query);
         Page<BarnVo> page = baseMapper.selectVoPage(pageQuery.build(), wrapper);
+        enrichCounts(page.getRecords());
         return TableDataInfo.build(page);
+    }
+
+    /**
+     * 富集列表的三类栏位数量 + 当前存栏（实时统计，非表字段）。
+     */
+    private void enrichCounts(List<BarnVo> records) {
+        if (records == null || records.isEmpty()) {
+            return;
+        }
+        for (BarnVo vo : records) {
+            Long id = vo.getId();
+            vo.setBigPenCount(farmStatMapper.countPenByType(id, PEN_TYPE_BIG));
+            vo.setLimitPenCount(farmStatMapper.countPenByType(id, PEN_TYPE_STALL));
+            vo.setBedCount(farmStatMapper.countPenByType(id, PEN_TYPE_FARROW));
+            vo.setLiveCount(farmStatMapper.countLivePigByBarn(id));
+        }
     }
 
     @Override
@@ -75,6 +110,50 @@ public class BarnServiceImpl extends DjsBaseServiceImpl<BarnMapper, Barn> implem
             entity.setCurrentCount(0);
         }
         return baseMapper.insert(entity);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public Long createWithPens(BarnCreateBo bo) {
+        // 1. 建栋舍（编码自动生成 "B"+雪花 id，不暴露给用户；与原型新建弹窗无编码字段一致）
+        Long barnId = IdWorker.getId();
+        Barn barn = new Barn();
+        barn.setId(barnId);
+        barn.setBarnCode("B" + barnId);
+        barn.setBarnName(bo.getBarnName());
+        barn.setBarnType(bo.getBarnType());
+        barn.setBarnStatus(1);
+        barn.setCurrentCount(0);
+        barn.setRemark(bo.getRemark());
+        baseMapper.insert(barn);
+
+        // 2. 按三类数量批量生成栏位（编号连号「1栏…N栏」，pen_code 类型前缀 + 序号保证栏内唯一）
+        generatePens(barnId, PEN_TYPE_BIG, "DL", bo.getBigPenCount());
+        generatePens(barnId, PEN_TYPE_STALL, "XW", bo.getLimitPenCount());
+        generatePens(barnId, PEN_TYPE_FARROW, "CC", bo.getBedCount());
+        return barnId;
+    }
+
+    /**
+     * 生成某栋舍下 count 个指定类型栏位。penName=「{seq}栏」，penCode=「{prefix}-{seq}」。
+     * 大栏容量不限（null），限位栏 / 产床单头（capacity=1）。
+     */
+    private void generatePens(Long barnId, String penType, String codePrefix, Integer count) {
+        if (count == null || count <= 0) {
+            return;
+        }
+        Integer capacity = PEN_TYPE_BIG.equals(penType) ? null : 1;
+        for (int i = 1; i <= count; i++) {
+            Pen pen = new Pen();
+            pen.setBarnId(barnId);
+            pen.setPenCode(codePrefix + "-" + i);
+            pen.setPenName(i + "栏");
+            pen.setPenType(penType);
+            pen.setCapacity(capacity);
+            pen.setCurrentCount(0);
+            pen.setPenStatus(1);
+            penMapper.insert(pen);
+        }
     }
 
     @Override

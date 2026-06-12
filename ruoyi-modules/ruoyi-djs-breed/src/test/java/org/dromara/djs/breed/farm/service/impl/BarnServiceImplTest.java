@@ -5,6 +5,8 @@ import org.dromara.common.core.exception.ServiceException;
 import org.dromara.djs.breed.farm.domain.Barn;
 import org.dromara.djs.breed.farm.domain.bo.BarnBo;
 import org.dromara.djs.breed.farm.mapper.BarnMapper;
+import org.dromara.djs.breed.farm.mapper.FarmStatMapper;
+import org.dromara.djs.breed.farm.mapper.PenMapper;
 import org.dromara.djs.breed.farm.mapper.PigReferenceCheckMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -50,11 +52,17 @@ class BarnServiceImplTest {
     @Mock
     private PigReferenceCheckMapper pigReferenceCheckMapper;
 
+    @Mock
+    private PenMapper penMapper;
+
+    @Mock
+    private FarmStatMapper farmStatMapper;
+
     private TestableBarnServiceImpl service;
 
     static class TestableBarnServiceImpl extends BarnServiceImpl {
-        TestableBarnServiceImpl(BarnMapper m, PigReferenceCheckMapper p) {
-            super(m, p);
+        TestableBarnServiceImpl(BarnMapper m, PigReferenceCheckMapper p, PenMapper pen, FarmStatMapper stat) {
+            super(m, p, pen, stat);
         }
 
         @Override
@@ -74,7 +82,7 @@ class BarnServiceImplTest {
 
     @BeforeEach
     void setup() {
-        service = new TestableBarnServiceImpl(barnMapper, pigReferenceCheckMapper);
+        service = new TestableBarnServiceImpl(barnMapper, pigReferenceCheckMapper, penMapper, farmStatMapper);
     }
 
     private BarnBo sampleBo() {

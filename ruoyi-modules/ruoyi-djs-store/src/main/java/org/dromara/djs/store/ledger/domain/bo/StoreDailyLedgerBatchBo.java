@@ -61,8 +61,11 @@ public class StoreDailyLedgerBatchBo {
         /** 赠送量。 */
         private BigDecimal giftQty;
 
-        /** 退货量。 */
+        /** 退货量（顾客退货）。 */
         private BigDecimal returnQty;
+
+        /** 退回量（门店退回仓库，原型只读，未填按 0）。 */
+        private BigDecimal whReturnQty;
 
         /** 损耗量（未填按 0）。 */
         private BigDecimal lossQty;

@@ -11,7 +11,9 @@ import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.breed.farm.domain.Pen;
 import org.dromara.djs.breed.farm.domain.bo.PenBo;
 import org.dromara.djs.breed.farm.domain.query.PenQuery;
+import org.dromara.djs.breed.farm.domain.vo.PenDetailVo;
 import org.dromara.djs.breed.farm.domain.vo.PenVo;
+import org.dromara.djs.breed.farm.mapper.FarmStatMapper;
 import org.dromara.djs.breed.farm.mapper.PenMapper;
 import org.dromara.djs.breed.farm.mapper.PigReferenceCheckMapper;
 import org.dromara.djs.breed.farm.service.IPenService;
@@ -39,10 +41,22 @@ import java.util.Objects;
 public class PenServiceImpl extends DjsBaseServiceImpl<PenMapper, Pen> implements IPenService {
 
     private final PigReferenceCheckMapper pigReferenceCheckMapper;
+    private final FarmStatMapper farmStatMapper;
 
-    public PenServiceImpl(PenMapper baseMapper, PigReferenceCheckMapper pigReferenceCheckMapper) {
+    public PenServiceImpl(PenMapper baseMapper,
+                          PigReferenceCheckMapper pigReferenceCheckMapper,
+                          FarmStatMapper farmStatMapper) {
         super(baseMapper);
         this.pigReferenceCheckMapper = pigReferenceCheckMapper;
+        this.farmStatMapper = farmStatMapper;
+    }
+
+    @Override
+    public List<PenDetailVo> queryDetailByBarn(Long barnId, String penType) {
+        if (barnId == null || StringUtils.isBlank(penType)) {
+            return List.of();
+        }
+        return farmStatMapper.selectPenDetail(barnId, penType);
     }
 
     @Override

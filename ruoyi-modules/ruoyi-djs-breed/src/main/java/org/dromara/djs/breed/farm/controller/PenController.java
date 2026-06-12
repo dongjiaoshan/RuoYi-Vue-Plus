@@ -11,6 +11,7 @@ import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.web.core.BaseController;
 import org.dromara.djs.breed.farm.domain.bo.PenBo;
 import org.dromara.djs.breed.farm.domain.query.PenQuery;
+import org.dromara.djs.breed.farm.domain.vo.PenDetailVo;
 import org.dromara.djs.breed.farm.domain.vo.PenVo;
 import org.dromara.djs.breed.farm.service.IPenService;
 import org.springframework.validation.annotation.Validated;
@@ -21,9 +22,11 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.Arrays;
+import java.util.List;
 
 /**
  * 栏位 Controller（BRD-MD-002）。
@@ -57,6 +60,18 @@ public class PenController extends BaseController {
     @GetMapping("/getInfo/{id}")
     public R<PenVo> getInfo(@PathVariable Long id) {
         return R.ok(penService.queryById(id));
+    }
+
+    /**
+     * 栏位详情（对齐原型「栏位详情」3-tab）：按栋舍 + 栏位类型查，含占栏猪只关联。
+     *
+     * @param barnId  栋舍 ID
+     * @param penType 栏位类型（big 大栏 / stall 限位栏 / farrow 产床）
+     */
+    @SaCheckPermission("djs:breed:pen:list")
+    @GetMapping("/detail")
+    public R<List<PenDetailVo>> detail(@RequestParam Long barnId, @RequestParam String penType) {
+        return R.ok(penService.queryDetailByBarn(barnId, penType));
     }
 
     /**

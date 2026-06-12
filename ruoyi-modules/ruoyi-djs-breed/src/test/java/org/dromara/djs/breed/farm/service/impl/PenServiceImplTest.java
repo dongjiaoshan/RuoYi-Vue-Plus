@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.djs.breed.farm.domain.Pen;
 import org.dromara.djs.breed.farm.domain.bo.PenBo;
+import org.dromara.djs.breed.farm.mapper.FarmStatMapper;
 import org.dromara.djs.breed.farm.mapper.PenMapper;
 import org.dromara.djs.breed.farm.mapper.PigReferenceCheckMapper;
 import org.junit.jupiter.api.BeforeEach;
@@ -53,11 +54,14 @@ class PenServiceImplTest {
     @Mock
     private PigReferenceCheckMapper pigReferenceCheckMapper;
 
+    @Mock
+    private FarmStatMapper farmStatMapper;
+
     private TestablePenServiceImpl service;
 
     static class TestablePenServiceImpl extends PenServiceImpl {
-        TestablePenServiceImpl(PenMapper m, PigReferenceCheckMapper p) {
-            super(m, p);
+        TestablePenServiceImpl(PenMapper m, PigReferenceCheckMapper p, FarmStatMapper stat) {
+            super(m, p, stat);
         }
 
         @Override
@@ -78,7 +82,7 @@ class PenServiceImplTest {
 
     @BeforeEach
     void setup() {
-        service = new TestablePenServiceImpl(penMapper, pigReferenceCheckMapper);
+        service = new TestablePenServiceImpl(penMapper, pigReferenceCheckMapper, farmStatMapper);
     }
 
     private PenBo sampleBo() {

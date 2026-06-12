@@ -2,6 +2,8 @@ package org.dromara.djs.breed.farm.domain.vo;
 
 import io.github.linpeilie.annotations.AutoMapper;
 import lombok.Data;
+import org.dromara.common.translation.annotation.Translation;
+import org.dromara.common.translation.constant.TransConstant;
 import org.dromara.djs.breed.farm.domain.Barn;
 
 import java.io.Serial;
@@ -47,7 +49,7 @@ public class BarnVo implements Serializable {
     private Integer capacity;
 
     /**
-     * 当前存栏。
+     * 当前存栏（维护列；列表展示用实时计算的 {@link #liveCount}）。
      */
     private Integer currentCount;
 
@@ -65,5 +67,41 @@ public class BarnVo implements Serializable {
      * 创建时间。
      */
     private Date createTime;
+
+    /**
+     * 更新时间（列表「更新时间」列）。
+     */
+    private Date updateTime;
+
+    /**
+     * 更新人 ID（翻译成昵称用）。
+     */
+    private Long updateBy;
+
+    /**
+     * 更新人昵称（列表「更新人员」列）。
+     */
+    @Translation(type = TransConstant.USER_ID_TO_NICKNAME, mapper = "updateBy")
+    private String updateByName;
+
+    /**
+     * 大栏数量（列表列；Service 按 pen_type=big 实时统计，非表字段）。
+     */
+    private Integer bigPenCount;
+
+    /**
+     * 限位栏数量（列表列；Service 按 pen_type=stall 实时统计，非表字段）。
+     */
+    private Integer limitPenCount;
+
+    /**
+     * 产床数量（列表列；Service 按 pen_type=farrow 实时统计，非表字段）。
+     */
+    private Integer bedCount;
+
+    /**
+     * 当前存栏（列表「当前猪只存栏数量」列；Service 实时统计存活猪只，非表字段）。
+     */
+    private Integer liveCount;
 
 }

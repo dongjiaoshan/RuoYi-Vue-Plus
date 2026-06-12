@@ -184,6 +184,14 @@ public class ProductProduction extends TenantEntity {
     private Integer deliverType;
 
     /**
+     * 发送位置字典 {@code djs_pack_send_dest}：platform 发货月台 / mail 邮寄 / gift 礼盒。
+     *
+     * <p>生产管理打包录入「发送位置」（肉品 / 果蔬三选；其他产品二选无 gift）。
+     * 区别于 {@link #deliverType}「发货方式」，互不覆盖。</p>
+     */
+    private String deliverDest;
+
+    /**
      * 打包状态字典 {@code djs_pack_status}：pending / packed / shipped_out。
      */
     private String packStatus;

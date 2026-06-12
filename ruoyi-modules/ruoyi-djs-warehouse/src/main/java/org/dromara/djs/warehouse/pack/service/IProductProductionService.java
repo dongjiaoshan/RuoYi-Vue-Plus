@@ -9,6 +9,7 @@ import org.dromara.djs.warehouse.pack.domain.bo.VegPackBo;
 import org.dromara.djs.warehouse.pack.domain.bo.WhiteBarOutBo;
 import org.dromara.djs.warehouse.pack.domain.query.ProductProductionQuery;
 import org.dromara.djs.warehouse.pack.domain.vo.ProductProductionVo;
+import org.dromara.djs.warehouse.pack.domain.vo.StoreDemandCopiesVo;
 import org.dromara.djs.warehouse.product.domain.ProductInhouse;
 
 import java.util.List;
@@ -94,5 +95,16 @@ public interface IProductProductionService {
      * 白条/猪肉出库可选来源 inhouse（belong_type ∈ {white_bar, pork} 的活动过程产品）。
      */
     List<ProductInhouse> listSourceForWhiteBar();
+
+    /**
+     * 某产品各门店未发货需求份数（打包录入「门店(N份)」标签条）。
+     *
+     * <p>按 productId 在需求管理表聚合各门店 {@code demand_quantity - shipped_count > 0} 的剩余量。
+     * 纯展示/选择参考——打包提交仍单店语义，不做多店拆分。</p>
+     *
+     * @param productId 产品 FK（{@code t_warehouse_product_info.id}）
+     * @return 各门店未发货份数（无则空 List）
+     */
+    List<StoreDemandCopiesVo> listStoreDemandCopies(Long productId);
 
 }

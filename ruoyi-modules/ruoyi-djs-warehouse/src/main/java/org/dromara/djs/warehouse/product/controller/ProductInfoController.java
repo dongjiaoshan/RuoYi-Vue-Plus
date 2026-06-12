@@ -13,7 +13,7 @@ import org.dromara.common.log.enums.BusinessType;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.web.core.BaseController;
-import org.dromara.djs.warehouse.product.domain.bo.ProductInboundBo;
+import org.dromara.djs.warehouse.product.domain.bo.ProductStockInBo;
 import org.dromara.djs.warehouse.product.domain.bo.ProductInfoBo;
 import org.dromara.djs.warehouse.product.domain.query.ProductInfoQuery;
 import org.dromara.djs.warehouse.product.domain.vo.ProductFlowRecordVo;
@@ -163,7 +163,7 @@ public class ProductInfoController extends BaseController {
     @Log(title = "商品管理", businessType = BusinessType.INSERT)
     @RepeatSubmit
     @PostMapping("/inbound")
-    public R<Long> inbound(@Valid @RequestBody ProductInboundBo bo) {
+    public R<Long> inbound(@Valid @RequestBody ProductStockInBo bo) {
         return R.ok(productInfoService.inbound(bo));
     }
 

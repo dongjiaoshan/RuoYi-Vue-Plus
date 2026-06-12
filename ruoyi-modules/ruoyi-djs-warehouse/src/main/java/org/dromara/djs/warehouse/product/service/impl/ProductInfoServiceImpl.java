@@ -25,7 +25,7 @@ import org.dromara.djs.warehouse.location.domain.LocationInfo;
 import org.dromara.djs.warehouse.location.mapper.LocationInfoMapper;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.domain.bo.GiftBoxBo;
-import org.dromara.djs.warehouse.product.domain.bo.ProductInboundBo;
+import org.dromara.djs.warehouse.product.domain.bo.ProductStockInBo;
 import org.dromara.djs.warehouse.product.domain.bo.ProductInfoBo;
 import org.dromara.djs.warehouse.product.domain.query.ProductInfoQuery;
 import org.dromara.djs.warehouse.product.domain.vo.GiftBoxVo;
@@ -475,7 +475,7 @@ public class ProductInfoServiceImpl extends DjsBaseServiceImpl<ProductInfoMapper
 
     @Override
     @Transactional(rollbackFor = Exception.class)
-    public Long inbound(ProductInboundBo bo) {
+    public Long inbound(ProductStockInBo bo) {
         if (bo == null || bo.getProductId() == null || bo.getLocationId() == null
             || bo.getQuantity() == null || bo.getQuantity().compareTo(BigDecimal.ZERO) <= 0) {
             throw new ServiceException("入库参数不合法");

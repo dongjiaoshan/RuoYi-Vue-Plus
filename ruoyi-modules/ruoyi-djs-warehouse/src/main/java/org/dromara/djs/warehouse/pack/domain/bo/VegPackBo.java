@@ -2,6 +2,7 @@ package org.dromara.djs.warehouse.pack.domain.bo;
 
 import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 import lombok.Data;
 
@@ -65,6 +66,12 @@ public class VegPackBo {
      * 需求门店 ID（可选）。
      */
     private Long storeId;
+
+    /**
+     * 发送位置字典 {@code djs_pack_send_dest}：platform 发货月台 / mail 邮寄 / gift 礼盒（可选）。
+     */
+    @Pattern(regexp = "^(platform|mail|gift)$", message = "{pack.deliver_dest.invalid}")
+    private String deliverDest;
 
     /**
      * 规格（可选）。

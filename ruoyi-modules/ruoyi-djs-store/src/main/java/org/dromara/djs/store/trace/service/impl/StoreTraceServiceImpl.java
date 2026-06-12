@@ -2,7 +2,6 @@ package org.dromara.djs.store.trace.service.impl;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.dromara.common.core.utils.MapstructUtils;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.breed.core.domain.vo.PigAvailableVo;
@@ -35,7 +34,19 @@ public class StoreTraceServiceImpl implements IStoreTraceService {
     @Override
     public TableDataInfo<TraceablePigVo> listTraceablePigs(PageQuery pageQuery) {
         TableDataInfo<PigAvailableVo> src = pigQueryService.listTraceablePigs(pageQuery);
-        List<TraceablePigVo> rows = MapstructUtils.convert(src.getRows(), TraceablePigVo.class);
+        List<PigAvailableVo> srcRows = src.getRows();
+        // 显式字段映射（养殖 PigAvailableVo → 门店 TraceablePigVo，同名字段 earNo/pigSex/pigBreedLabel/ageDays）。
+        // 不用 MapstructUtils.convert：两域 VO 间无 @AutoMapper 注册，linpeilie 找不到 converter 会抛 ConvertException。
+        List<TraceablePigVo> rows = (srcRows == null ? List.<PigAvailableVo>of() : srcRows).stream()
+            .map(p -> {
+                TraceablePigVo v = new TraceablePigVo();
+                v.setEarNo(p.getEarNo());
+                v.setPigSex(p.getPigSex());
+                v.setPigBreedLabel(p.getPigBreedLabel());
+                v.setAgeDays(p.getAgeDays());
+                return v;
+            })
+            .toList();
         TableDataInfo<TraceablePigVo> out = TableDataInfo.build();
         out.setRows(rows);
         out.setTotal(src.getTotal());

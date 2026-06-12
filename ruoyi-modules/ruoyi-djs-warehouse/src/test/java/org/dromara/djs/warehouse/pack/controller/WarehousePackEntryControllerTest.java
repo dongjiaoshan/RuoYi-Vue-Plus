@@ -12,6 +12,7 @@ import org.dromara.djs.warehouse.pack.domain.bo.DryPackBo;
 import org.dromara.djs.warehouse.pack.domain.bo.GiftPackBo;
 import org.dromara.djs.warehouse.pack.domain.bo.VegPackBo;
 import org.dromara.djs.warehouse.pack.domain.bo.WhiteBarOutBo;
+import org.dromara.djs.warehouse.pack.domain.vo.PackSubmitResultVo;
 import org.dromara.djs.warehouse.pack.service.IProductProductionService;
 import org.dromara.djs.warehouse.product.domain.ProductInhouse;
 import org.junit.jupiter.api.BeforeEach;
@@ -70,10 +71,10 @@ class WarehousePackEntryControllerTest {
         DryPackBo bo = new DryPackBo();
         when(productionService.submitDryPack(any())).thenReturn(1001L);
 
-        R<Long> r = controller.packDry(bo);
+        R<PackSubmitResultVo> r = controller.packDry(bo);
 
         assertThat(r.getCode()).isEqualTo(200);
-        assertThat(r.getData()).isEqualTo(1001L);
+        assertThat(r.getData().getId()).isEqualTo(1001L);
         verify(productionService).submitDryPack(bo);
     }
 
@@ -83,9 +84,9 @@ class WarehousePackEntryControllerTest {
         GiftPackBo bo = new GiftPackBo();
         when(productionService.submitGiftPack(any())).thenReturn(1002L);
 
-        R<Long> r = controller.packGift(bo);
+        R<PackSubmitResultVo> r = controller.packGift(bo);
 
-        assertThat(r.getData()).isEqualTo(1002L);
+        assertThat(r.getData().getId()).isEqualTo(1002L);
         verify(productionService).submitGiftPack(bo);
     }
 
@@ -95,9 +96,9 @@ class WarehousePackEntryControllerTest {
         VegPackBo bo = new VegPackBo();
         when(productionService.submitVegPack(any())).thenReturn(1003L);
 
-        R<Long> r = controller.packVeg(bo);
+        R<PackSubmitResultVo> r = controller.packVeg(bo);
 
-        assertThat(r.getData()).isEqualTo(1003L);
+        assertThat(r.getData().getId()).isEqualTo(1003L);
         verify(productionService).submitVegPack(bo);
     }
 

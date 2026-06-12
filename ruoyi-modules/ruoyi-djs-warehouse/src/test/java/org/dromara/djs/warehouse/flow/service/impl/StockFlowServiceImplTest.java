@@ -13,6 +13,7 @@ import org.dromara.djs.warehouse.flow.domain.vo.PackingHomeVo;
 import org.dromara.djs.warehouse.flow.domain.vo.PackingItemVo;
 import org.dromara.djs.warehouse.flow.domain.vo.StockFlowVo;
 import org.dromara.djs.warehouse.flow.mapper.StockFlowMapper;
+import org.dromara.djs.plant.plot.mapper.PlotInfoMapper;
 import org.dromara.djs.warehouse.location.domain.LocationInfo;
 import org.dromara.djs.warehouse.location.mapper.LocationInfoMapper;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
@@ -78,6 +79,9 @@ class StockFlowServiceImplTest {
     @Mock
     private LocationStockMapper locationStockMapper;
 
+    @Mock
+    private PlotInfoMapper plotInfoMapper;
+
     private StockFlowServiceImpl service;
 
     @BeforeAll
@@ -93,7 +97,7 @@ class StockFlowServiceImplTest {
 
     @BeforeEach
     void setUp() {
-        service = new StockFlowServiceImpl(stockFlowMapper, locationInfoMapper, productInfoMapper, locationStockMapper);
+        service = new StockFlowServiceImpl(stockFlowMapper, locationInfoMapper, productInfoMapper, locationStockMapper, plotInfoMapper);
     }
 
     @Test

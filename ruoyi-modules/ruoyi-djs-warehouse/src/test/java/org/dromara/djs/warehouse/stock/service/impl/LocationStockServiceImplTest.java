@@ -5,10 +5,14 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
+import org.dromara.djs.common.encoder.IBizCodeGenerator;
 import org.dromara.djs.plant.plot.domain.PlotInfo;
 import org.dromara.djs.plant.plot.mapper.PlotInfoMapper;
+import org.dromara.djs.warehouse.check.service.IStockCheckService;
+import org.dromara.djs.warehouse.flow.mapper.StockFlowMapper;
 import org.dromara.djs.warehouse.location.domain.LocationInfo;
 import org.dromara.djs.warehouse.location.mapper.LocationInfoMapper;
+import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
 import org.dromara.djs.warehouse.stock.domain.LocationStock;
 import org.dromara.djs.warehouse.stock.domain.bo.LocationStockBo;
 import org.dromara.djs.warehouse.stock.domain.query.LocationStockQuery;
@@ -69,13 +73,27 @@ class LocationStockServiceImplTest {
     @Mock
     private PlotInfoMapper plotInfoMapper;
 
+    @Mock
+    private ProductInfoMapper productInfoMapper;
+
+    @Mock
+    private StockFlowMapper stockFlowMapper;
+
+    @Mock
+    private IBizCodeGenerator bizCodeGenerator;
+
+    @Mock
+    private IStockCheckService stockCheckService;
+
     private TestableLocationStockServiceImpl service;
 
     private MockedStatic<LoginHelper> loginHelperMock;
 
     static class TestableLocationStockServiceImpl extends LocationStockServiceImpl {
-        TestableLocationStockServiceImpl(LocationStockMapper baseMapper, LocationInfoMapper locInfoMapper, PlotInfoMapper plotInfoMapper) {
-            super(baseMapper, locInfoMapper, plotInfoMapper);
+        TestableLocationStockServiceImpl(LocationStockMapper baseMapper, LocationInfoMapper locInfoMapper, PlotInfoMapper plotInfoMapper,
+                                         ProductInfoMapper productInfoMapper, StockFlowMapper stockFlowMapper,
+                                         IBizCodeGenerator bizCodeGenerator, IStockCheckService stockCheckService) {
+            super(baseMapper, locInfoMapper, plotInfoMapper, productInfoMapper, stockFlowMapper, bizCodeGenerator, stockCheckService);
         }
 
         @Override
@@ -98,7 +116,8 @@ class LocationStockServiceImplTest {
 
     @BeforeEach
     void setup() {
-        service = new TestableLocationStockServiceImpl(stockMapper, locationInfoMapper, plotInfoMapper);
+        service = new TestableLocationStockServiceImpl(stockMapper, locationInfoMapper, plotInfoMapper,
+            productInfoMapper, stockFlowMapper, bizCodeGenerator, stockCheckService);
         loginHelperMock = Mockito.mockStatic(LoginHelper.class);
         loginHelperMock.when(LoginHelper::getUserId).thenReturn(10086L);
     }
