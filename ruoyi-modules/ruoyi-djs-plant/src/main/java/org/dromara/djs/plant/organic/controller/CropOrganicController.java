@@ -13,6 +13,7 @@ import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.web.core.BaseController;
 import org.dromara.djs.plant.organic.domain.bo.CropOrganicBo;
+import org.dromara.djs.plant.organic.domain.bo.CropOrganicRelateBo;
 import org.dromara.djs.plant.organic.domain.query.CropOrganicQuery;
 import org.dromara.djs.plant.organic.domain.vo.CropOrganicVo;
 import org.dromara.djs.plant.organic.service.ICropOrganicService;
@@ -92,5 +93,18 @@ public class CropOrganicController extends BaseController {
     @DeleteMapping("/remove/{ids}")
     public R<Void> remove(@PathVariable Long[] ids) {
         return toAjax(cropOrganicService.deleteWithValidByIds(Arrays.asList(ids)));
+    }
+
+    /**
+     * 关联作物（列表行操作「关联作物」el-transfer 弹窗，一证多作物）。
+     *
+     * <p>复用 edit 权限，仅更新证书-作物关联，不动证书主行。</p>
+     */
+    @SaCheckPermission("djs:plant:cropOrganic:edit")
+    @Log(title = "种植-果蔬有机证书关联作物", businessType = BusinessType.UPDATE)
+    @RepeatSubmit
+    @PutMapping("/relate")
+    public R<Void> relate(@Validated @RequestBody CropOrganicRelateBo bo) {
+        return toAjax(cropOrganicService.relateCrops(bo));
     }
 }

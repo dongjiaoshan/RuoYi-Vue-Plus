@@ -6,6 +6,8 @@ import io.github.linpeilie.annotations.AutoMapper;
 import lombok.Data;
 import org.dromara.common.excel.annotation.ExcelDictFormat;
 import org.dromara.common.excel.convert.ExcelDictConvert;
+import org.dromara.common.translation.annotation.Translation;
+import org.dromara.common.translation.constant.TransConstant;
 import org.dromara.djs.plant.crop.domain.CropInfo;
 
 import java.io.Serial;
@@ -90,4 +92,37 @@ public class CropInfoVo implements Serializable {
 
     @ExcelProperty(value = "创建时间")
     private Date createTime;
+
+    /** 更新时间（BaseEntity，AutoMapper 自动回填；列表时间列对齐原型「更新时间」）。 */
+    @ExcelProperty(value = "更新时间")
+    private Date updateTime;
+
+    /** 更新人 ID（{@code sys_user.user_id}），供 {@link Translation} 反射翻译成 updateByName。 */
+    private Long updateBy;
+
+    /** 更新人姓名（注解翻译，VO 序列化时填）。 */
+    @ExcelProperty(value = "更新人")
+    @Translation(type = TransConstant.USER_ID_TO_NICKNAME, mapper = "updateBy")
+    private String updateByName;
+
+    /**
+     * 历史种植次数（派生统计，按 crop_id 聚合 {@code t_plant_plant_details} COUNT）。
+     *
+     * <p>service 层 {@code queryPageList} 批量 enrich 回填，避免 N+1；无种植记录返 0。</p>
+     */
+    private Long historyPlantCount;
+
+    /**
+     * 平均亩产 kg/亩（派生统计，AVG({@code t_plant_plant_details.average_yield})，仅纳入有实际产量行）。
+     *
+     * <p>service 层批量 enrich 回填；无数据返 null。决策#7 明细/卡片用 kg。</p>
+     */
+    private BigDecimal avgYield;
+
+    /**
+     * 最大亩产 kg/亩（派生统计，MAX({@code t_plant_plant_details.average_yield})）。
+     *
+     * <p>service 层批量 enrich 回填；无数据返 null。</p>
+     */
+    private BigDecimal maxYield;
 }

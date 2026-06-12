@@ -14,7 +14,9 @@ import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.web.core.BaseController;
 import org.dromara.djs.plant.crop.domain.bo.CropInfoBo;
 import org.dromara.djs.plant.crop.domain.query.CropInfoQuery;
+import org.dromara.djs.plant.crop.domain.vo.CropFarmworkVo;
 import org.dromara.djs.plant.crop.domain.vo.CropInfoVo;
+import org.dromara.djs.plant.crop.domain.vo.CropPlantingRecordVo;
 import org.dromara.djs.plant.crop.service.ICropInfoService;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -61,6 +63,24 @@ public class CropInfoController extends BaseController {
     @GetMapping("/getInfo/{id}")
     public R<CropInfoVo> getInfo(@PathVariable Long id) {
         return R.ok(cropInfoService.queryById(id));
+    }
+
+    /**
+     * 作物详情·种植信息子表（按 cropId 聚合 t_plant_plant_details，9 列；FIX-PLT-AD-DETAIL-001）。
+     */
+    @SaCheckPermission("djs:plant:crop:list")
+    @GetMapping("/{cropId}/planting")
+    public R<List<CropPlantingRecordVo>> listPlanting(@PathVariable Long cropId) {
+        return R.ok(cropInfoService.listPlantingByCrop(cropId));
+    }
+
+    /**
+     * 作物详情·农事信息子表（按 cropId 关联 t_plant_farm_records；FIX-PLT-AD-DETAIL-001）。
+     */
+    @SaCheckPermission("djs:plant:crop:list")
+    @GetMapping("/{cropId}/farmwork")
+    public R<List<CropFarmworkVo>> listFarmwork(@PathVariable Long cropId) {
+        return R.ok(cropInfoService.listFarmworkByCrop(cropId));
     }
 
     @SaCheckPermission("djs:plant:crop:add")

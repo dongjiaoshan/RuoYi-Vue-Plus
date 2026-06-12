@@ -16,6 +16,7 @@ import org.dromara.djs.plant.plan.domain.bo.PlantPlanUpdateBo;
 import org.dromara.djs.plant.plan.domain.query.PlantPlanQuery;
 import org.dromara.djs.plant.plan.domain.vo.PlantPlanDetailVo;
 import org.dromara.djs.plant.plan.domain.vo.PlantPlanGanttVo;
+import org.dromara.djs.plant.plan.domain.vo.PlantPlanStatsVo;
 import org.dromara.djs.plant.plan.domain.vo.PlantPlanVo;
 import org.dromara.djs.plant.plan.domain.vo.PlotByZoneVo;
 import org.dromara.djs.plant.plan.service.IPlantPlanService;
@@ -38,6 +39,7 @@ import java.util.List;
  * <p>端点：</p>
  * <ul>
  *   <li>GET  /list                列表分页</li>
+ *   <li>GET  /stats               列表顶部 5 KPI 统计卡（FIX-PLT-AD-PLAN-001）</li>
  *   <li>GET  /getInfo/{id}        详情（主表 + 明细 list）</li>
  *   <li>POST /add                 向导 3 步合一提交（{@link PlantPlanCreateBo}）</li>
  *   <li>PUT  /edit                编辑（{@link PlantPlanUpdateBo}）</li>
@@ -62,6 +64,16 @@ public class PlantPlanController extends BaseController {
     @GetMapping("/list")
     public TableDataInfo<PlantPlanVo> list(PlantPlanQuery query, PageQuery pageQuery) {
         return plantPlanService.queryPageList(query, pageQuery);
+    }
+
+    /**
+     * 列表顶部 5 KPI 统计卡（FIX-PLT-AD-PLAN-001）：空地块数 / 已种植地块数 /
+     * 计划种植地块数 / 计划地块使用频次 / 计划种植作物品种数。
+     */
+    @SaCheckPermission("djs:plant:plan:list")
+    @GetMapping("/stats")
+    public R<PlantPlanStatsVo> stats() {
+        return R.ok(plantPlanService.getPlanStats());
     }
 
     @SaCheckPermission("djs:plant:plan:export")

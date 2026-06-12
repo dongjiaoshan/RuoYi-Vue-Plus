@@ -12,7 +12,10 @@ import org.dromara.djs.common.base.DjsBaseServiceImpl;
 import org.dromara.djs.plant.plot.domain.PlotInfo;
 import org.dromara.djs.plant.plot.domain.bo.PlotInfoBo;
 import org.dromara.djs.plant.plot.domain.query.PlotInfoQuery;
+import org.dromara.djs.plant.plot.domain.vo.PlotFarmworkRecordVo;
 import org.dromara.djs.plant.plot.domain.vo.PlotInfoVo;
+import org.dromara.djs.plant.plot.domain.vo.PlotOrganicRefVo;
+import org.dromara.djs.plant.plot.domain.vo.PlotPlantingRecordVo;
 import org.dromara.djs.plant.plot.mapper.PlotInfoMapper;
 import org.dromara.djs.plant.plot.service.IPlotInfoService;
 import org.dromara.djs.plant.zone.domain.PlotZone;
@@ -136,6 +139,30 @@ public class PlotInfoServiceImpl extends DjsBaseServiceImpl<PlotInfoMapper, Plot
         //                + detailMapper.selectCount(...);
         //   if (active > 0) throw new ServiceException("plant.plot.has_business_data");
         return softDelete(ids);
+    }
+
+    @Override
+    public List<PlotPlantingRecordVo> listPlantingByPlot(Long plotId) {
+        if (plotId == null) {
+            return List.of();
+        }
+        return baseMapper.selectPlantingByPlot(plotId);
+    }
+
+    @Override
+    public List<PlotFarmworkRecordVo> listFarmworkByPlot(Long plotId) {
+        if (plotId == null) {
+            return List.of();
+        }
+        return baseMapper.selectFarmworkByPlot(plotId);
+    }
+
+    @Override
+    public List<PlotOrganicRefVo> listOrganicByPlot(Long plotId) {
+        if (plotId == null) {
+            return List.of();
+        }
+        return baseMapper.selectOrganicByPlot(plotId);
     }
 
     /** 批量取 zone 名字 enrich 到 VO。 */

@@ -19,7 +19,7 @@ import java.util.List;
 public interface IPickPlanService {
 
     /**
-     * 按 (plant_id, crop_id) 聚合采摘计划列表。
+     * 按作物聚合采摘计划列表（对齐原型按作物维度）。
      *
      * <p>doc/10 §F-PLT-05 admin 入口 1：按作物聚合显示。</p>
      */

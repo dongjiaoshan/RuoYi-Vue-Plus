@@ -395,6 +395,7 @@ public class AppletPickServiceImpl implements IAppletPickService {
             vo.setCropName(cropMap.get(d.getCropId()));
             vo.setPlantMonth(d.getPlantMonth());
             vo.setPlantPeriod(d.getPlantPeriod());
+            vo.setPlantDate(d.getBeginActualdate());
             vo.setEarliestHarvestdate(d.getEarliestHarvestdate());
             vo.setLastHarvestdate(d.getLastHarvestdate());
             vo.setBeginHarvestdate(d.getBeginHarvestdate());

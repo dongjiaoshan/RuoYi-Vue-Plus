@@ -1,16 +1,15 @@
 package org.dromara.djs.plant.pick.service.impl;
 
-import org.dromara.djs.plant.crop.domain.CropInfo;
-import org.dromara.djs.plant.crop.mapper.CropInfoMapper;
-import org.dromara.djs.plant.pick.domain.PickActivity;
-import org.dromara.djs.plant.pick.domain.bo.PickActivityBo;
+import org.dromara.common.mybatis.core.page.PageQuery;
+import org.dromara.common.mybatis.core.page.TableDataInfo;
+import org.dromara.djs.plant.pick.domain.query.PickActivityQuery;
+import org.dromara.djs.plant.pick.domain.vo.PickActivityVo;
 import org.dromara.djs.plant.pick.mapper.PickActivityMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
@@ -18,115 +17,94 @@ import org.mockito.quality.Strictness;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.times;
-import static org.mockito.Mockito.verify;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.when;
 
 /**
- * {@link PickActivityServiceImpl} 单测（PLT-PLAN-002）。
+ * {@link PickActivityServiceImpl} 单测（只读每日采摘聚合报表）。
  *
- * <h3>覆盖 case</h3>
+ * <h3>覆盖 case（happy path）</h3>
  * <ol>
- *   <li>happy create：crop 校验通过 → activity_no = PA + yyyyMMdd + 001 + default upcoming + cropName 冗余</li>
- *   <li>nextActivityNo 连续递增：mock 已有 max=5 → 下一次返回 006</li>
- *   <li>summary：拉 SUM(actual_yield) → 写回 total_yield + 状态 ended</li>
+ *   <li>queryList：透传 cropId / activityDate 到 mapper 聚合查询</li>
+ *   <li>queryPageList：应用层分页切片 + total 正确</li>
  * </ol>
  *
  * @author djs
- * @since PLT-PLAN-002
  */
 @Tag("local")
 @Tag("dev")
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.LENIENT)
-@DisplayName("PickActivityServiceImpl 单元测试")
+@DisplayName("PickActivityServiceImpl 只读报表单元测试")
 class PickActivityServiceImplTest {
 
     @Mock
-    private PickActivityMapper baseMapper;
-
-    @Mock
-    private CropInfoMapper cropMapper;
+    private PickActivityMapper activityMapper;
 
     private PickActivityServiceImpl service;
 
     @BeforeEach
     void setUp() {
-        service = new PickActivityServiceImpl(baseMapper, cropMapper);
+        service = new PickActivityServiceImpl(activityMapper);
+    }
+
+    private PickActivityVo row(Long cropId, LocalDate date, double today, double cumulative) {
+        PickActivityVo vo = new PickActivityVo();
+        vo.setCropId(cropId);
+        vo.setActivityDate(date);
+        vo.setCropName("南瓜");
+        vo.setPlotCount(2);
+        vo.setTodayPickWeight(new BigDecimal(String.valueOf(today)));
+        vo.setExpectedYield(new BigDecimal("100"));
+        vo.setCumulativePickWeight(new BigDecimal(String.valueOf(cumulative)));
+        return vo;
     }
 
     @Test
-    @DisplayName("happy create：activity_no=PA20260620001 / status=upcoming / cropName 冗余")
-    void create_happy() {
-        // given
-        CropInfo crop = new CropInfo();
-        crop.setId(701L);
-        crop.setCropName("南瓜");
-        when(cropMapper.selectById(701L)).thenReturn(crop);
-        when(baseMapper.selectMaxSeqByPrefix(eq("1001"), eq("PA20260620"))).thenReturn(0);
+    @DisplayName("queryList：透传 cropId/activityDate；返回 mapper 聚合结果")
+    void queryList_passesFilters() {
+        PickActivityQuery q = new PickActivityQuery();
+        q.setCropId(701L);
+        q.setActivityDate(LocalDate.of(2026, 6, 20));
+        when(activityMapper.selectDailyReport(any(), eq(701L), eq(LocalDate.of(2026, 6, 20))))
+            .thenReturn(List.of(row(701L, LocalDate.of(2026, 6, 20), 38.5, 120.0)));
 
-        PickActivityBo bo = new PickActivityBo();
-        bo.setActivityName("南瓜采摘节");
-        bo.setActivityDate(LocalDate.of(2026, 6, 20));
-        bo.setCropId(701L);
+        List<PickActivityVo> list = service.queryList(q);
 
-        // when
-        service.createByBo(bo);
-
-        // then
-        ArgumentCaptor<PickActivity> captor = ArgumentCaptor.forClass(PickActivity.class);
-        verify(baseMapper, times(1)).insert(captor.capture());
-        PickActivity inserted = captor.getValue();
-        assertThat(inserted.getActivityNo()).isEqualTo("PA20260620001");
-        assertThat(inserted.getActivityStatus()).isEqualTo("upcoming");
-        assertThat(inserted.getCropName()).isEqualTo("南瓜");
-        assertThat(inserted.getTotalPlot()).isEqualTo(0);
-        assertThat(inserted.getTotalYield()).isEqualByComparingTo(BigDecimal.ZERO);
+        assertThat(list).hasSize(1);
+        assertThat(list.get(0).getTodayPickWeight()).isEqualByComparingTo("38.5");
+        assertThat(list.get(0).getCumulativePickWeight()).isEqualByComparingTo("120.0");
     }
 
     @Test
-    @DisplayName("nextActivityNo：max=5 → 返回 PAyyyyMMdd006（连续递增）")
-    void nextActivityNo_increments() {
-        when(baseMapper.selectMaxSeqByPrefix(eq("1001"), eq("PA20260620"))).thenReturn(5);
-        String next = service.nextActivityNo(LocalDate.of(2026, 6, 20));
-        assertThat(next).isEqualTo("PA20260620006");
+    @DisplayName("queryList：null query 兜底（cropId/activityDate 传 null）")
+    void queryList_nullQuery() {
+        when(activityMapper.selectDailyReport(any(), isNull(), isNull())).thenReturn(List.of());
+        assertThat(service.queryList(null)).isEmpty();
     }
 
     @Test
-    @DisplayName("summary：聚合 actual_yield 写回 total_yield + status=ended")
-    void summary_writesBackTotalAndEnded() {
-        // given
-        PickActivity existing = new PickActivity();
-        existing.setId(10001L);
-        existing.setCropId(701L);
-        existing.setActivityDate(LocalDate.of(2026, 6, 20));
-        existing.setActivityStatus("ongoing");
-        when(baseMapper.selectById(10001L)).thenReturn(existing);
-        when(baseMapper.sumYieldForActivity(eq(701L), eq(LocalDate.of(2026, 6, 20))))
-            .thenReturn(new BigDecimal("38.5"));
+    @DisplayName("queryPageList：应用层分页切片 + total")
+    void queryPageList_slices() {
+        when(activityMapper.selectDailyReport(any(), isNull(), isNull())).thenReturn(List.of(
+            row(701L, LocalDate.of(2026, 6, 22), 10, 10),
+            row(701L, LocalDate.of(2026, 6, 21), 20, 30),
+            row(702L, LocalDate.of(2026, 6, 20), 30, 30)
+        ));
 
-        // 返回 vo 简化
-        org.dromara.djs.plant.pick.domain.vo.PickActivityVo vo =
-            new org.dromara.djs.plant.pick.domain.vo.PickActivityVo();
-        vo.setId(10001L);
-        vo.setTotalYield(new BigDecimal("38.5"));
-        vo.setActivityStatus("ended");
-        when(baseMapper.selectVoById(10001L)).thenReturn(vo);
+        PageQuery pq = new PageQuery(2, 1);
+        TableDataInfo<PickActivityVo> page = service.queryPageList(new PickActivityQuery(), pq);
 
-        // when
-        org.dromara.djs.plant.pick.domain.vo.PickActivityVo result = service.summary(10001L);
+        assertThat(page.getTotal()).isEqualTo(3);
+        assertThat(page.getRows()).hasSize(2);
 
-        // then
-        ArgumentCaptor<PickActivity> captor = ArgumentCaptor.forClass(PickActivity.class);
-        verify(baseMapper, times(1)).updateById(captor.capture());
-        PickActivity updated = captor.getValue();
-        assertThat(updated.getTotalYield()).isEqualByComparingTo("38.5");
-        assertThat(updated.getActivityStatus()).isEqualTo("ended");
-        assertThat(result.getActivityStatus()).isEqualTo("ended");
+        pq.setPageNum(2);
+        TableDataInfo<PickActivityVo> page2 = service.queryPageList(new PickActivityQuery(), pq);
+        assertThat(page2.getRows()).hasSize(1);
     }
 }

@@ -9,6 +9,7 @@ import org.dromara.djs.plant.plan.domain.PlantDetails;
 import org.dromara.djs.plant.plan.mapper.PlantDetailsMapper;
 import org.dromara.djs.plant.plot.mapper.PlotInfoMapper;
 import org.dromara.djs.plant.team.mapper.PlantWorkTeamMapper;
+import org.dromara.djs.common.image.service.ImageUrlResolver;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
@@ -57,12 +58,14 @@ class PickPlanServiceImplTest {
     private PlotInfoMapper plotMapper;
     @Mock
     private PlantWorkTeamMapper teamMapper;
+    @Mock
+    private ImageUrlResolver imageUrlResolver;
 
     private PickPlanServiceImpl service;
 
     @BeforeEach
     void setUp() {
-        service = new PickPlanServiceImpl(pickPlanMapper, detailsMapper, cropMapper, plotMapper, teamMapper);
+        service = new PickPlanServiceImpl(pickPlanMapper, detailsMapper, cropMapper, plotMapper, teamMapper, imageUrlResolver);
     }
 
     @Test

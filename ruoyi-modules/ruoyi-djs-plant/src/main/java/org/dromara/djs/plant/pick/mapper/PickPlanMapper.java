@@ -7,64 +7,67 @@ import org.dromara.djs.plant.pick.domain.vo.PickPlanGroupVo;
 import java.util.List;
 
 /**
- * 采摘计划聚合 Mapper（PLT-PLAN-002）。
+ * 采摘计划聚合 Mapper。
  *
- * <p>专做 GROUP BY (plant_id, crop_id) 聚合查询，配合
- * {@link org.dromara.djs.plant.plan.mapper.PlantDetailsMapper} 单行操作。</p>
+ * <p>按作物聚合 {@code t_plant_plant_details}（对齐原型「采摘计划列表」按作物维度），
+ * 配合 {@link org.dromara.djs.plant.plan.mapper.PlantDetailsMapper} 单行操作。</p>
  *
  * @author djs
- * @since PLT-PLAN-002
  */
 public interface PickPlanMapper {
 
     /**
-     * 按计划 × 作物聚合采摘计划行（用于 admin 列表 doc/10 §F-PLT-05）。
+     * 按作物聚合采摘计划列表（对齐原型按作物维度）。
      *
-     * <p>过滤：{@code details.del_flag='0' AND plan.del_flag='0' AND tenant_id=current}。</p>
+     * <p>聚合字段：</p>
+     * <ul>
+     *   <li>{@code plotCount} = COUNT(DISTINCT plot_id)</li>
+     *   <li>{@code totalAcreage} = SUM(plot_area)（当前种植亩数，亩）</li>
+     *   <li>{@code expectedYield} = SUM(expected_yield)</li>
+     *   <li>{@code actualYield} = 当年 SUM(actual_yield)（当年已采摘量，按 earliest_harvestdate 年份过滤）</li>
+     *   <li>{@code disasterLoss} = SUM(loss_yield)（预计灾害损失量）</li>
+     *   <li>{@code plotTotalCount} = 当年 COUNT(DISTINCT plot_id)（当年种植地块总数）</li>
+     *   <li>{@code activityPlotCount} = SUM(is_pick=1)</li>
+     * </ul>
+     *
+     * <p>{@code imageOssId} 透传作物主图 L1，由 Service enrich 转 public URL 写 {@code cropImageUrl}。
+     * {@code demandQty}（预计需求量）暂无来源，由 Service 置 NULL（前端 - 兜底）。</p>
      *
      * @param tenantId      租户编号
-     * @param planYear      可选：年份过滤
-     * @param planSeason    可选：季节过滤
+     * @param currentYear   当年（用于「当年已采摘量 / 当年种植地块总数」过滤）
      * @param cropId        可选：作物 id 过滤
      * @param harvestStatus 可选：details.harvest_status 过滤
-     * @return 聚合行列表（按 plan_year DESC, plan_id DESC, crop_id ASC 排序）
+     * @return 按作物聚合行（按作物名 ASC、作物 id ASC 排序）
      */
     @Select("""
         <script>
         SELECT
-            d.plant_id        AS plantId,
-            p.plan_no         AS planNo,
-            p.plan_year       AS planYear,
-            p.plan_season     AS planSeason,
-            d.crop_id         AS cropId,
-            c.crop_name       AS cropName,
+            d.crop_id        AS cropId,
+            MAX(c.crop_name) AS cropName,
+            MAX(c.image_oss_id) AS imageOssId,
             COUNT(DISTINCT d.plot_id) AS plotCount,
             MIN(d.earliest_harvestdate) AS planEarliest,
             MAX(d.last_harvestdate)     AS planLatest,
-            MIN(d.begin_harvestdate)    AS actualBegin,
-            MAX(d.end_harvestdate)      AS actualEnd,
+            COALESCE(SUM(d.plot_area),      0) AS totalAcreage,
             COALESCE(SUM(d.expected_yield), 0) AS expectedYield,
-            COALESCE(SUM(d.actual_yield),   0) AS actualYield,
+            COALESCE(SUM(CASE WHEN YEAR(d.earliest_harvestdate) = #{currentYear} THEN d.actual_yield ELSE 0 END), 0) AS actualYield,
+            COALESCE(SUM(d.loss_yield),     0) AS disasterLoss,
+            COUNT(DISTINCT CASE WHEN YEAR(d.earliest_harvestdate) = #{currentYear} THEN d.plot_id END) AS plotTotalCount,
             SUM(CASE WHEN d.is_pick = 1 THEN 1 ELSE 0 END) AS activityPlotCount
           FROM t_plant_plant_details d
-          INNER JOIN t_plant_plant_plan p ON p.id = d.plant_id AND p.del_flag='0'
-          LEFT  JOIN t_plant_crop_info  c ON c.id = d.crop_id  AND c.del_flag='0'
-         WHERE d.del_flag='0'
+          LEFT JOIN t_plant_crop_info c ON c.id = d.crop_id AND c.del_flag = '0'
+         WHERE d.del_flag = '0'
            AND d.tenant_id = #{tenantId}
-           <if test='planYear != null'>      AND p.plan_year = #{planYear}     </if>
-           <if test='planSeason != null and planSeason != ""'>
-                                             AND p.plan_season = #{planSeason} </if>
-           <if test='cropId != null'>        AND d.crop_id = #{cropId}         </if>
+           <if test='cropId != null'>        AND d.crop_id = #{cropId}                </if>
            <if test='harvestStatus != null and harvestStatus != ""'>
-                                             AND d.harvest_status = #{harvestStatus} </if>
-         GROUP BY d.plant_id, p.plan_no, p.plan_year, p.plan_season, d.crop_id, c.crop_name
-         ORDER BY p.plan_year DESC, d.plant_id DESC, d.crop_id ASC
+                                             AND d.harvest_status = #{harvestStatus}   </if>
+         GROUP BY d.crop_id
+         ORDER BY cropName ASC, d.crop_id ASC
         </script>
         """)
-    List<PickPlanGroupVo> aggregateByPlanCrop(
+    List<PickPlanGroupVo> aggregateByCrop(
         @Param("tenantId") String tenantId,
-        @Param("planYear") Integer planYear,
-        @Param("planSeason") String planSeason,
+        @Param("currentYear") int currentYear,
         @Param("cropId") Long cropId,
         @Param("harvestStatus") String harvestStatus);
 }

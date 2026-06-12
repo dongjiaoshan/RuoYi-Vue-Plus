@@ -40,6 +40,9 @@ public class PickTaskVo implements Serializable {
     /** 计划阶段 CHAR(2)（字典 djs_plant_period：05=上旬 / 15=中旬 / 25=下旬）。 */
     private String plantPeriod;
 
+    /** 种植日期（取实际开始种植 begin_actualdate）。 */
+    private LocalDate plantDate;
+
     private LocalDate earliestHarvestdate;
     private LocalDate lastHarvestdate;
     private LocalDate beginHarvestdate;

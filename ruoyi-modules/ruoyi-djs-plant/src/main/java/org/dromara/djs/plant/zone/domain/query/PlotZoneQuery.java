@@ -28,4 +28,19 @@ public class PlotZoneQuery extends BaseEntity {
      * 状态（1 正常 / 2 停用）。
      */
     private Integer zoneStatus;
+
+    /**
+     * 更新人 ID（{@code sys_user.user_id}，精确匹配）。
+     */
+    private Long updateBy;
+
+    /**
+     * 更新时间起（{@code yyyy-MM-dd HH:mm:ss}，含；前端传日期则自动补 00:00:00）。
+     */
+    private String updateTimeStart;
+
+    /**
+     * 更新时间止（{@code yyyy-MM-dd HH:mm:ss}，含；前端传日期则自动补 23:59:59）。
+     */
+    private String updateTimeEnd;
 }

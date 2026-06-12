@@ -23,6 +23,7 @@ import org.dromara.djs.plant.plan.domain.query.PlantPlanQuery;
 import org.dromara.djs.plant.plan.domain.vo.PlantDetailsVo;
 import org.dromara.djs.plant.plan.domain.vo.PlantPlanDetailVo;
 import org.dromara.djs.plant.plan.domain.vo.PlantPlanGanttVo;
+import org.dromara.djs.plant.plan.domain.vo.PlantPlanStatsVo;
 import org.dromara.djs.plant.plan.domain.vo.PlantPlanSummaryVo;
 import org.dromara.djs.plant.plan.domain.vo.PlantPlanVo;
 import org.dromara.djs.plant.plan.domain.vo.PlotByZoneVo;
@@ -39,6 +40,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -108,14 +110,16 @@ public class PlantPlanServiceImpl extends DjsBaseServiceImpl<PlantPlanMapper, Pl
     @Override
     public TableDataInfo<PlantPlanVo> queryPageList(PlantPlanQuery query, PageQuery pageQuery) {
         Page<PlantPlanVo> page = baseMapper.selectVoPage(pageQuery.build(), buildWrapper(query));
-        enrichCropName(page.getRecords());
+        enrichCrop(page.getRecords());
+        enrichAggregates(page.getRecords());
         return TableDataInfo.build(page);
     }
 
     @Override
     public List<PlantPlanVo> queryList(PlantPlanQuery query) {
         List<PlantPlanVo> list = baseMapper.selectVoList(buildWrapper(query));
-        enrichCropName(list);
+        enrichCrop(list);
+        enrichAggregates(list);
         return list;
     }
 
@@ -125,7 +129,7 @@ public class PlantPlanServiceImpl extends DjsBaseServiceImpl<PlantPlanMapper, Pl
         if (planVo == null) {
             throw new ServiceException("种植计划不存在或已删除：" + id);
         }
-        enrichCropName(Collections.singletonList(planVo));
+        enrichCrop(Collections.singletonList(planVo));
         List<PlantDetailsVo> details = detailsMapper.selectVoList(
             new LambdaQueryWrapper<PlantDetails>()
                 .eq(PlantDetails::getPlantId, id)
@@ -148,11 +152,17 @@ public class PlantPlanServiceImpl extends DjsBaseServiceImpl<PlantPlanMapper, Pl
             .eq(StringUtils.isNotBlank(query.getPlanSeason()), PlantPlan::getPlanSeason, query.getPlanSeason())
             .eq(query.getCropId() != null, PlantPlan::getCropId, query.getCropId())
             .eq(StringUtils.isNotBlank(query.getPlantStatus()), PlantPlan::getPlantStatus, query.getPlantStatus())
+            .like(StringUtils.isNotBlank(query.getPlanDate()), PlantPlan::getPlantDate, query.getPlanDate())
+            .eq(query.getQueryCreateBy() != null, PlantPlan::getCreateBy, query.getQueryCreateBy())
+            .apply(query.getQueryUpdateTime() != null, "DATE(update_time) = {0}", query.getQueryUpdateTime())
             .orderByDesc(PlantPlan::getId);
         return wrapper;
     }
 
-    private void enrichCropName(List<PlantPlanVo> list) {
+    /**
+     * 按 cropId 批量 enrich {@code cropName} + {@code cropImage}（crop_image_preview）。
+     */
+    private void enrichCrop(List<PlantPlanVo> list) {
         if (CollUtil.isEmpty(list)) {
             return;
         }
@@ -161,11 +171,88 @@ public class PlantPlanServiceImpl extends DjsBaseServiceImpl<PlantPlanMapper, Pl
         if (cropIds.isEmpty()) {
             return;
         }
-        Map<Long, String> cropMap = cropMapper.selectByIds(cropIds).stream()
-            .collect(Collectors.toMap(CropInfo::getId, CropInfo::getCropName, (a, b) -> a));
+        Map<Long, CropInfo> cropMap = cropMapper.selectByIds(cropIds).stream()
+            .collect(Collectors.toMap(CropInfo::getId, c -> c, (a, b) -> a));
         for (PlantPlanVo vo : list) {
-            vo.setCropName(cropMap.get(vo.getCropId()));
+            CropInfo crop = cropMap.get(vo.getCropId());
+            if (crop != null) {
+                vo.setCropName(crop.getCropName());
+                vo.setCropImage(crop.getCropImagePreview());
+            }
         }
+    }
+
+    /**
+     * 按 planId 批量聚合明细回填列表 enrich 字段（FIX-PLT-AD-PLAN-001）：
+     * 预计产量 SUM / 实际产量 SUM / 已完成地块数 COUNT / 计划完成率 / 最早最晚开始日期。
+     *
+     * <p>完成率 = finishedPlot / totalPlot × 100，向半进位保留 1 位，0~100；
+     * totalPlot 为 0 或 null 时返 0。产量口径 kg（决策 #7）。</p>
+     */
+    private void enrichAggregates(List<PlantPlanVo> list) {
+        if (CollUtil.isEmpty(list)) {
+            return;
+        }
+        List<Long> planIds = list.stream()
+            .map(PlantPlanVo::getId).filter(Objects::nonNull).distinct().collect(Collectors.toList());
+        if (planIds.isEmpty()) {
+            return;
+        }
+        Map<Long, Map<String, Object>> aggMap = baseMapper.selectListAggregates(planIds).stream()
+            .filter(row -> row.get("planId") != null)
+            .collect(Collectors.toMap(
+                row -> ((Number) row.get("planId")).longValue(), row -> row, (a, b) -> a));
+
+        for (PlantPlanVo vo : list) {
+            Map<String, Object> row = aggMap.get(vo.getId());
+            BigDecimal expected = row == null ? BigDecimal.ZERO : toBigDecimal(row.get("expectedYield"));
+            BigDecimal actual = row == null ? BigDecimal.ZERO : toBigDecimal(row.get("actualYield"));
+            int finished = row == null ? 0 : toInt(row.get("finishedPlot"));
+            vo.setExpectedYield(expected);
+            vo.setActualYield(actual);
+            vo.setFinishedPlot(finished);
+            vo.setEarliestBegindate(row == null ? null : toLocalDate(row.get("earliestBegindate")));
+            vo.setLastBegindate(row == null ? null : toLocalDate(row.get("lastBegindate")));
+
+            int total = vo.getTotalPlot() == null ? 0 : vo.getTotalPlot();
+            if (total > 0) {
+                vo.setCompletionRate(BigDecimal.valueOf(finished)
+                    .multiply(BigDecimal.valueOf(100))
+                    .divide(BigDecimal.valueOf(total), 1, RoundingMode.HALF_UP));
+            } else {
+                vo.setCompletionRate(BigDecimal.ZERO);
+            }
+        }
+    }
+
+    private BigDecimal toBigDecimal(Object v) {
+        if (v == null) {
+            return BigDecimal.ZERO;
+        }
+        if (v instanceof BigDecimal bd) {
+            return bd;
+        }
+        return new BigDecimal(v.toString());
+    }
+
+    private int toInt(Object v) {
+        return v == null ? 0 : ((Number) v).intValue();
+    }
+
+    private LocalDate toLocalDate(Object v) {
+        if (v == null) {
+            return null;
+        }
+        if (v instanceof LocalDate ld) {
+            return ld;
+        }
+        if (v instanceof java.sql.Date d) {
+            return d.toLocalDate();
+        }
+        if (v instanceof java.util.Date d) {
+            return d.toInstant().atZone(java.time.ZoneId.systemDefault()).toLocalDate();
+        }
+        return LocalDate.parse(v.toString());
     }
 
     private void enrichDetails(List<PlantDetailsVo> details) {
@@ -628,6 +715,33 @@ public class PlantPlanServiceImpl extends DjsBaseServiceImpl<PlantPlanMapper, Pl
         }
         if (vo.getExpectedYieldKg() == null) {
             vo.setExpectedYieldKg(BigDecimal.ZERO);
+        }
+        return vo;
+    }
+
+    // ============================================================
+    // 列表顶部 5 KPI 卡（FIX-PLT-AD-PLAN-001）
+    // ============================================================
+
+    @Override
+    public PlantPlanStatsVo getPlanStats() {
+        PlantPlanStatsVo vo = new PlantPlanStatsVo();
+
+        Map<String, Object> plotStats = baseMapper.selectPlotStatusStats();
+        vo.setIdlePlot(plotStats == null ? 0 : toInt(plotStats.get("idlePlot")));
+        vo.setPlantedPlot(plotStats == null ? 0 : toInt(plotStats.get("plantedPlot")));
+
+        Map<String, Object> planStats = baseMapper.selectPlanDetailStats();
+        int plannedPlot = planStats == null ? 0 : toInt(planStats.get("plannedPlot"));
+        int detailRows = planStats == null ? 0 : toInt(planStats.get("detailRows"));
+        int cropVariety = planStats == null ? 0 : toInt(planStats.get("cropVarietyCount"));
+        vo.setPlannedPlot(plannedPlot);
+        vo.setCropVarietyCount(cropVariety);
+        if (plannedPlot > 0) {
+            vo.setPlotUsageFreq(BigDecimal.valueOf(detailRows)
+                .divide(BigDecimal.valueOf(plannedPlot), 1, RoundingMode.HALF_UP));
+        } else {
+            vo.setPlotUsageFreq(BigDecimal.ZERO);
         }
         return vo;
     }

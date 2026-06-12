@@ -7,6 +7,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.satoken.utils.LoginHelper;
+import org.dromara.djs.common.image.service.ImageUrlResolver;
 import org.dromara.djs.plant.crop.domain.CropInfo;
 import org.dromara.djs.plant.crop.mapper.CropInfoMapper;
 import org.dromara.djs.plant.pick.domain.bo.PickAdjustBatchBo;
@@ -25,6 +26,7 @@ import org.dromara.djs.plant.team.mapper.PlantWorkTeamMapper;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDate;
 import java.util.Date;
 import java.util.HashSet;
 import java.util.List;
@@ -38,7 +40,7 @@ import java.util.stream.Collectors;
  *
  * <p>核心职责（doc/10 §F-PLT-05）：</p>
  * <ol>
- *   <li>{@link #listByCrop(PickPlanQuery)}：admin 列表，按 (plant_id, crop_id) 聚合 plant_details</li>
+ *   <li>{@link #listByCrop(PickPlanQuery)}：admin 列表，按作物聚合 plant_details（对齐原型按作物维度）</li>
  *   <li>{@link #listDetailsByPlanCrop(Long, Long)}：admin 调整页 step1，拉行</li>
  *   <li>{@link #adjustDetails(PickAdjustBatchBo)}：admin 调整页 step2，批量 UPDATE 4 时间字段 + is_pick + harvest_by</li>
  * </ol>
@@ -58,18 +60,39 @@ public class PickPlanServiceImpl implements IPickPlanService {
     private final CropInfoMapper cropMapper;
     private final PlotInfoMapper plotMapper;
     private final PlantWorkTeamMapper teamMapper;
+    private final ImageUrlResolver imageUrlResolver;
+
+    /** 作物 L2 默认图统一走果蔬（IMG-LIB-001）。 */
+    private static final String CROP_BELONG_TYPE = "vegetable";
 
     @Override
     public List<PickPlanGroupVo> listByCrop(PickPlanQuery query) {
         String tenantId = currentTenantSafe();
         PickPlanQuery q = (query == null) ? new PickPlanQuery() : query;
-        return pickPlanMapper.aggregateByPlanCrop(
+        List<PickPlanGroupVo> rows = pickPlanMapper.aggregateByCrop(
             tenantId,
-            q.getPlanYear(),
-            q.getPlanSeason(),
+            LocalDate.now().getYear(),
             q.getCropId(),
             q.getHarvestStatus()
         );
+        enrichCropImage(rows);
+        return rows;
+    }
+
+    /** 作物主图：L1 image_oss_id → resolver 4 层兜底转 public URL，批量禁 N+1。 */
+    private void enrichCropImage(List<PickPlanGroupVo> rows) {
+        if (CollUtil.isEmpty(rows)) {
+            return;
+        }
+        List<ImageUrlResolver.Item> items = rows.stream()
+            .map(v -> new ImageUrlResolver.Item(v.getImageOssId(), CROP_BELONG_TYPE))
+            .toList();
+        List<String> urls = imageUrlResolver.resolveList(items);
+        if (urls.size() == rows.size()) {
+            for (int i = 0; i < rows.size(); i++) {
+                rows.get(i).setCropImageUrl(urls.get(i));
+            }
+        }
     }
 
     @Override
@@ -129,11 +152,20 @@ public class PickPlanServiceImpl implements IPickPlanService {
                 throw new ServiceException("请指派采摘班组后再发布（明细 id=" + row.getId() + "）");
             }
 
-            // 计划最早采摘日期可改；计划最晚按作物采摘周期窗口（创建时固化 = 原 last-earliest 天数）由最早派生重算。
+            // 「设置采摘计划」modal：用户显式给定开始/结束采摘日期（earliest/last_harvestdate）。
+            //   - 两端都给：直接采用（结束 ≥ 开始 校验）。
+            //   - 只给开始：计划最晚按作物采摘周期窗口（创建时固化 = 原 last-earliest 天数）由最早派生重算。
             // admin 不接收实际采摘起止（begin/end_harvestdate）—— 那由小程序采收录入回写。
-            java.time.LocalDate newEarliest = row.getEarliestHarvestdate();
-            java.time.LocalDate newLast = null;
-            if (newEarliest != null) {
+            LocalDate newEarliest = row.getEarliestHarvestdate();
+            LocalDate newLast;
+            if (row.getLastHarvestdate() != null) {
+                newLast = row.getLastHarvestdate();
+                LocalDate effEarliest = newEarliest != null ? newEarliest
+                    : (existing != null ? existing.getEarliestHarvestdate() : null);
+                if (effEarliest != null && newLast.isBefore(effEarliest)) {
+                    throw new ServiceException("结束采摘日期不得早于开始采摘日期（明细 id=" + row.getId() + "）");
+                }
+            } else if (newEarliest != null) {
                 long windowDays = 0L;
                 if (existing != null && existing.getEarliestHarvestdate() != null && existing.getLastHarvestdate() != null) {
                     windowDays = java.time.temporal.ChronoUnit.DAYS.between(
@@ -143,6 +175,8 @@ public class PickPlanServiceImpl implements IPickPlanService {
                     }
                 }
                 newLast = newEarliest.plusDays(windowDays);
+            } else {
+                newLast = null;
             }
 
             updated += detailsMapper.update(null,
@@ -190,6 +224,8 @@ public class PickPlanServiceImpl implements IPickPlanService {
             d.setCropName(cropMap.get(d.getCropId()));
             d.setPlantTeamName(teamMap.get(d.getPlantBy()));
             d.setHarvestTeamName(teamMap.get(d.getHarvestBy()));
+            // 种植日期 = 实际开始种植日期（采摘计划详情列展示用）
+            d.setPlantDate(d.getBeginActualdate());
         }
     }
 

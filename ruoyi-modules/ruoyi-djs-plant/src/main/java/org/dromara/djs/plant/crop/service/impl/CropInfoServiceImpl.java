@@ -15,7 +15,10 @@ import org.dromara.djs.common.image.service.ImageUrlResolver;
 import org.dromara.djs.plant.crop.domain.CropInfo;
 import org.dromara.djs.plant.crop.domain.bo.CropInfoBo;
 import org.dromara.djs.plant.crop.domain.query.CropInfoQuery;
+import org.dromara.djs.plant.crop.domain.vo.CropFarmworkVo;
 import org.dromara.djs.plant.crop.domain.vo.CropInfoVo;
+import org.dromara.djs.plant.crop.domain.vo.CropPlantingRecordVo;
+import org.dromara.djs.plant.crop.domain.vo.CropPlantingStatVo;
 import org.dromara.djs.plant.crop.mapper.CropInfoMapper;
 import org.dromara.djs.plant.crop.service.ICropInfoService;
 import org.springframework.stereotype.Service;
@@ -23,6 +26,9 @@ import org.springframework.stereotype.Service;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
+import java.util.Map;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 /**
  * 作物 Service 实现（PLT-MD-001）。
@@ -57,6 +63,7 @@ public class CropInfoServiceImpl extends DjsBaseServiceImpl<CropInfoMapper, Crop
         LambdaQueryWrapper<CropInfo> wrapper = buildQueryWrapper(query);
         Page<CropInfoVo> page = baseMapper.selectVoPage(pageQuery.build(), wrapper);
         fillImageUrls(page.getRecords());
+        fillPlantingStats(page.getRecords());
         return TableDataInfo.build(page);
     }
 
@@ -153,16 +160,70 @@ public class CropInfoServiceImpl extends DjsBaseServiceImpl<CropInfoMapper, Crop
         }
     }
 
+    /**
+     * 批量回填作物派生统计（历史种植次数 / 平均亩产 / 最大亩产，按 crop_id 聚合 t_plant_plant_details）。
+     *
+     * <p>一次性 IN 查询所有 cropId 的聚合行（禁 N+1）；无种植记录的作物兜底 0 / null。</p>
+     */
+    private void fillPlantingStats(List<CropInfoVo> records) {
+        if (records == null || records.isEmpty()) {
+            return;
+        }
+        List<Long> cropIds = records.stream()
+            .map(CropInfoVo::getId)
+            .filter(java.util.Objects::nonNull)
+            .distinct()
+            .collect(Collectors.toList());
+        if (cropIds.isEmpty()) {
+            return;
+        }
+        List<CropPlantingStatVo> stats = baseMapper.selectPlantingStats(cropIds);
+        Map<Long, CropPlantingStatVo> statMap = stats.stream()
+            .collect(Collectors.toMap(CropPlantingStatVo::getCropId, Function.identity(), (a, b) -> a));
+        for (CropInfoVo vo : records) {
+            CropPlantingStatVo stat = statMap.get(vo.getId());
+            if (stat != null) {
+                vo.setHistoryPlantCount(stat.getHistoryPlantCount());
+                vo.setAvgYield(stat.getAvgYield());
+                vo.setMaxYield(stat.getMaxYield());
+            } else {
+                vo.setHistoryPlantCount(0L);
+            }
+        }
+    }
+
+    @Override
+    public List<CropPlantingRecordVo> listPlantingByCrop(Long cropId) {
+        if (cropId == null) {
+            return new ArrayList<>();
+        }
+        return baseMapper.selectPlantingRecordsByCrop(cropId);
+    }
+
+    @Override
+    public List<CropFarmworkVo> listFarmworkByCrop(Long cropId) {
+        if (cropId == null) {
+            return new ArrayList<>();
+        }
+        return baseMapper.selectFarmworkByCrop(cropId);
+    }
+
     private LambdaQueryWrapper<CropInfo> buildQueryWrapper(CropInfoQuery query) {
         LambdaQueryWrapper<CropInfo> wrapper = new LambdaQueryWrapper<>();
         if (query == null) {
             return wrapper.orderByDesc(CropInfo::getId);
         }
+        Map<String, Object> params = query.getParams();
+        Object beginTime = params == null ? null : params.get("beginTime");
+        Object endTime = params == null ? null : params.get("endTime");
         wrapper.eq(StringUtils.isNotBlank(query.getCropCode()), CropInfo::getCropCode, query.getCropCode())
             .like(StringUtils.isNotBlank(query.getCropName()), CropInfo::getCropName, query.getCropName())
             .like(StringUtils.isNotBlank(query.getVarietyName()), CropInfo::getVarietyName, query.getVarietyName())
+            .like(StringUtils.isNotBlank(query.getVarietyOrigin()), CropInfo::getVarietyOrigin, query.getVarietyOrigin())
             .eq(StringUtils.isNotBlank(query.getCropFamily()), CropInfo::getCropFamily, query.getCropFamily())
             .like(StringUtils.isNotBlank(query.getPlantingSeason()), CropInfo::getPlantingSeason, query.getPlantingSeason())
+            .eq(query.getUpdateBy() != null, CropInfo::getUpdateBy, query.getUpdateBy())
+            .between(beginTime != null && endTime != null, CropInfo::getUpdateTime, beginTime, endTime)
             .orderByDesc(CropInfo::getId);
         return wrapper;
     }

@@ -3,6 +3,7 @@ package org.dromara.djs.plant.organic.service;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.plant.organic.domain.bo.CropOrganicBo;
+import org.dromara.djs.plant.organic.domain.bo.CropOrganicRelateBo;
 import org.dromara.djs.plant.organic.domain.query.CropOrganicQuery;
 import org.dromara.djs.plant.organic.domain.vo.CropOrganicVo;
 
@@ -10,7 +11,7 @@ import java.util.Collection;
 import java.util.List;
 
 /**
- * 果蔬有机证书 Service（PLT-MD-003）。
+ * 果蔬有机证书 Service（PLT-MD-003 / FIX-PLT-AD-INFO-LIST-001）。
  *
  * @author djs
  * @since PLT-MD-003
@@ -28,4 +29,12 @@ public interface ICropOrganicService {
     int updateByBo(CropOrganicBo bo);
 
     int deleteWithValidByIds(Collection<Long> ids);
+
+    /**
+     * 仅更新证书的关联作物（列表「关联作物」el-transfer 弹窗用，一证多作物）。
+     *
+     * @param bo 证书 id + 作物 id 列表
+     * @return 受影响行数（关联表插入行数）
+     */
+    int relateCrops(CropOrganicRelateBo bo);
 }

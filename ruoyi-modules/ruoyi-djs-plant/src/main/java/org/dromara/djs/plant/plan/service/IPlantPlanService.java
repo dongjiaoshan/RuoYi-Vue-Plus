@@ -8,6 +8,7 @@ import org.dromara.djs.plant.plan.domain.bo.PlantStartBo;
 import org.dromara.djs.plant.plan.domain.query.PlantPlanQuery;
 import org.dromara.djs.plant.plan.domain.vo.PlantPlanDetailVo;
 import org.dromara.djs.plant.plan.domain.vo.PlantPlanGanttVo;
+import org.dromara.djs.plant.plan.domain.vo.PlantPlanStatsVo;
 import org.dromara.djs.plant.plan.domain.vo.PlantPlanSummaryVo;
 import org.dromara.djs.plant.plan.domain.vo.PlantPlanVo;
 import org.dromara.djs.plant.plan.domain.vo.PlotByZoneVo;
@@ -84,4 +85,14 @@ public interface IPlantPlanService {
      * @return 聚合 VO（无数据时各字段返 0 / null，永远不返 null 对象）
      */
     PlantPlanSummaryVo aggregateForDemandSummary();
+
+    /**
+     * 列表顶部 5 KPI 卡（FIX-PLT-AD-PLAN-001）：空地块数 / 已种植地块数 /
+     * 计划种植地块数 / 计划地块使用频次 / 计划种植作物品种数。
+     *
+     * <p>地块维度取 plot_info；计划维度取 pending/ongoing 计划聚合明细，V1 单租户 '1001'。</p>
+     *
+     * @return KPI 聚合 VO（无数据返零值，永不返 null）
+     */
+    PlantPlanStatsVo getPlanStats();
 }

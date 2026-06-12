@@ -22,13 +22,13 @@ import java.util.Map;
 public interface PlantWorkTeamMapper extends BaseMapperPlus<PlantWorkTeam, PlantWorkTeamVo> {
 
     /**
-     * 批量查询 leaderId → nickName 映射（一次 SQL）。
+     * 批量查询 leaderId → (nickName, phonenumber) 映射（一次 SQL）。
      *
      * @param userIds sys_user.user_id 集合（已 dedupe，且非空）
-     * @return key=userId(Long) / value=nickName(String)
+     * @return 每行 key=userId(Long) / nickName(String) / phonenumber(String)
      */
     @Select("<script>" +
-        "SELECT user_id AS userId, nick_name AS nickName " +
+        "SELECT user_id AS userId, nick_name AS nickName, phonenumber AS phonenumber " +
         "FROM sys_user " +
         "WHERE del_flag = '0' AND user_id IN " +
         "<foreach collection='userIds' item='id' open='(' separator=',' close=')'>#{id}</foreach>" +

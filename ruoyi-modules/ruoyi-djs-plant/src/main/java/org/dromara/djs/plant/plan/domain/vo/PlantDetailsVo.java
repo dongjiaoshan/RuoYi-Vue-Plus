@@ -55,4 +55,7 @@ public class PlantDetailsVo implements Serializable {
     private String cropName;
     private String plantTeamName;
     private String harvestTeamName;
+
+    /** 种植日期（取实际开始种植 begin_actualdate；采摘计划详情列展示用）。 */
+    private LocalDate plantDate;
 }

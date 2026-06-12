@@ -19,7 +19,9 @@ import org.dromara.djs.plant.zone.service.IPlotZoneService;
 import org.springframework.stereotype.Service;
 
 import java.util.Collection;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 片区 Service 实现（PLT-MD-001）。
@@ -46,17 +48,24 @@ public class PlotZoneServiceImpl extends DjsBaseServiceImpl<PlotZoneMapper, Plot
     public TableDataInfo<PlotZoneVo> queryPageList(PlotZoneQuery query, PageQuery pageQuery) {
         LambdaQueryWrapper<PlotZone> wrapper = buildQueryWrapper(query);
         Page<PlotZoneVo> page = baseMapper.selectVoPage(pageQuery.build(), wrapper);
+        enrichPlotCount(page.getRecords());
         return TableDataInfo.build(page);
     }
 
     @Override
     public List<PlotZoneVo> queryList(PlotZoneQuery query) {
-        return baseMapper.selectVoList(buildQueryWrapper(query));
+        List<PlotZoneVo> list = baseMapper.selectVoList(buildQueryWrapper(query));
+        enrichPlotCount(list);
+        return list;
     }
 
     @Override
     public PlotZoneVo queryById(Long id) {
-        return baseMapper.selectVoById(id);
+        PlotZoneVo vo = baseMapper.selectVoById(id);
+        if (vo != null) {
+            enrichPlotCount(List.of(vo));
+        }
+        return vo;
     }
 
     @Override
@@ -132,6 +141,33 @@ public class PlotZoneServiceImpl extends DjsBaseServiceImpl<PlotZoneMapper, Plot
         return MapstructUtils.convert(bo, PlotZone.class);
     }
 
+    /**
+     * 批量回填「管理地块数量」：一次 GROUP BY 取全片区地块数，按 zoneId 回填 VO，
+     * 无地块片区兜底 0（避免 N+1，对齐 {@code PlotInfoServiceImpl.enrichZoneNames}）。
+     */
+    private void enrichPlotCount(List<PlotZoneVo> list) {
+        if (list == null || list.isEmpty()) {
+            return;
+        }
+        List<Map<String, Object>> rows = baseMapper.selectPlotCountByZone();
+        Map<Long, Long> countMap = new HashMap<>();
+        if (rows == null) {
+            rows = List.of();
+        }
+        for (Map<String, Object> row : rows) {
+            Object zoneIdObj = row.get("zoneId");
+            Object countObj = row.get("plotCount");
+            if (zoneIdObj != null && countObj != null) {
+                countMap.put(((Number) zoneIdObj).longValue(), ((Number) countObj).longValue());
+            }
+        }
+        for (PlotZoneVo vo : list) {
+            if (vo.getId() != null) {
+                vo.setPlotCount(countMap.getOrDefault(vo.getId(), 0L));
+            }
+        }
+    }
+
     private LambdaQueryWrapper<PlotZone> buildQueryWrapper(PlotZoneQuery query) {
         LambdaQueryWrapper<PlotZone> wrapper = new LambdaQueryWrapper<>();
         if (query == null) {
@@ -140,6 +176,9 @@ public class PlotZoneServiceImpl extends DjsBaseServiceImpl<PlotZoneMapper, Plot
         wrapper.eq(StringUtils.isNotBlank(query.getZoneCode()), PlotZone::getZoneCode, query.getZoneCode())
             .like(StringUtils.isNotBlank(query.getZoneName()), PlotZone::getZoneName, query.getZoneName())
             .eq(query.getZoneStatus() != null, PlotZone::getZoneStatus, query.getZoneStatus())
+            .eq(query.getUpdateBy() != null, PlotZone::getUpdateBy, query.getUpdateBy())
+            .ge(StringUtils.isNotBlank(query.getUpdateTimeStart()), PlotZone::getUpdateTime, query.getUpdateTimeStart())
+            .le(StringUtils.isNotBlank(query.getUpdateTimeEnd()), PlotZone::getUpdateTime, query.getUpdateTimeEnd())
             .orderByDesc(PlotZone::getId);
         return wrapper;
     }

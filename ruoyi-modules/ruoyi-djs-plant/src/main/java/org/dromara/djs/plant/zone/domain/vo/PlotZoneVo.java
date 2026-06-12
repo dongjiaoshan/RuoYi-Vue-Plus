@@ -59,6 +59,13 @@ public class PlotZoneVo implements Serializable {
     private String zoneBelong;
 
     /**
+     * 管理地块数量（聚合）：该片区下未删除地块数（{@code t_plant_plot_info.zone_id = id AND del_flag='0'}）。
+     * 由 {@code PlotZoneServiceImpl} 批量 GROUP BY 回填，避免 N+1。
+     */
+    @ExcelProperty(value = "管理地块数量")
+    private Long plotCount;
+
+    /**
      * 状态（字典 sys_normal_disable）。
      */
     @ExcelProperty(value = "状态", converter = ExcelDictConvert.class)

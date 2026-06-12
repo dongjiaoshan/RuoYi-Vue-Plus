@@ -225,7 +225,10 @@ public class PlotOrganicServiceImpl extends DjsBaseServiceImpl<PlotOrganicMapper
         List<OrganicPlotno> rels = plotnoMapper.selectList(
             new LambdaQueryWrapper<OrganicPlotno>().in(OrganicPlotno::getOrganicId, organicIds));
         if (CollUtil.isEmpty(rels)) {
-            list.forEach(vo -> vo.setRelatedPlots(Collections.emptyList()));
+            list.forEach(vo -> {
+                vo.setRelatedPlots(Collections.emptyList());
+                vo.setPlotCount(0);
+            });
             return;
         }
         Set<Long> plotIds = rels.stream().map(OrganicPlotno::getPlotId).collect(Collectors.toSet());
@@ -240,7 +243,9 @@ public class PlotOrganicServiceImpl extends DjsBaseServiceImpl<PlotOrganicMapper
                 .add(new PlotRefVo(r.getPlotId(), plotNameMap.get(r.getPlotId())));
         }
         for (PlotOrganicVo vo : list) {
-            vo.setRelatedPlots(byOrganic.getOrDefault(vo.getId(), Collections.emptyList()));
+            List<PlotRefVo> refs = byOrganic.getOrDefault(vo.getId(), Collections.emptyList());
+            vo.setRelatedPlots(refs);
+            vo.setPlotCount(refs.size());
         }
     }
 

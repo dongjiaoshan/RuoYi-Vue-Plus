@@ -169,24 +169,26 @@ public class PlantWorkTeamServiceImpl extends DjsBaseServiceImpl<PlantWorkTeamMa
     }
 
     /**
-     * 批量给 VO 补 leaderName + memberCount（避免列表 N+1 查询）。
+     * 批量给 VO 补 leaderName + leaderPhone + memberCount（避免列表 N+1 查询）。
      */
     private void enrich(List<PlantWorkTeamVo> list) {
         if (list == null || list.isEmpty()) {
             return;
         }
-        // 1) 收集 leader user_ids → 一次 sys_user 查询
+        // 1) 收集 leader user_ids → 一次 sys_user 查询（取 nick_name + phonenumber）
         Set<Long> leaderIds = list.stream()
             .map(PlantWorkTeamVo::getLeaderId)
             .filter(java.util.Objects::nonNull)
             .collect(Collectors.toCollection(HashSet::new));
         Map<Long, String> idToName = new HashMap<>();
+        Map<Long, String> idToPhone = new HashMap<>();
         if (!leaderIds.isEmpty()) {
             List<Map<String, Object>> rows = baseMapper.selectLeaderNames(leaderIds);
             for (Map<String, Object> row : rows) {
                 Object idObj = row.get("userId");
                 if (idObj instanceof Number n) {
                     idToName.put(n.longValue(), (String) row.get("nickName"));
+                    idToPhone.put(n.longValue(), (String) row.get("phonenumber"));
                 }
             }
         }
@@ -210,6 +212,7 @@ public class PlantWorkTeamServiceImpl extends DjsBaseServiceImpl<PlantWorkTeamMa
         for (PlantWorkTeamVo vo : list) {
             if (vo.getLeaderId() != null) {
                 vo.setLeaderName(idToName.get(vo.getLeaderId()));
+                vo.setLeaderPhone(idToPhone.get(vo.getLeaderId()));
             }
             vo.setMemberCount(teamToCount.getOrDefault(vo.getId(), 0));
         }

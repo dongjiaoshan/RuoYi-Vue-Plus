@@ -53,6 +53,12 @@ public class PlantWorkTeamVo implements Serializable {
     private String leaderName;
 
     /**
+     * 负责人手机号（enrich：LEFT JOIN sys_user.phonenumber by leader_id，非落库）。
+     */
+    @ExcelProperty(value = "负责人联系方式")
+    private String leaderPhone;
+
+    /**
      * 班组状态（字典 {@code djs_common_status}）。
      */
     @ExcelProperty(value = "状态", converter = ExcelDictConvert.class)

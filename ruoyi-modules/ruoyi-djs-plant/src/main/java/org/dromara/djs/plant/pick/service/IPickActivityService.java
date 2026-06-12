@@ -2,40 +2,24 @@ package org.dromara.djs.plant.pick.service;
 
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
-import org.dromara.djs.plant.pick.domain.bo.PickActivityBo;
 import org.dromara.djs.plant.pick.domain.query.PickActivityQuery;
 import org.dromara.djs.plant.pick.domain.vo.PickActivityVo;
 
-import java.util.Collection;
 import java.util.List;
 
 /**
- * 采摘活动 Service（PLT-PLAN-002）。
+ * 采摘活动只读聚合报表 Service。
  *
- * <p>游客体验采摘场景的 5 CRUD + 活动结束时汇总。</p>
+ * <p>按「作物 + 活动日期」聚合 {@code t_plant_plant_details} 的每日采摘统计。
+ * 仅查询 + 导出，无任何写操作。</p>
  *
  * @author djs
- * @since PLT-PLAN-002
  */
 public interface IPickActivityService {
 
+    /** 分页查询每日采摘聚合报表。 */
     TableDataInfo<PickActivityVo> queryPageList(PickActivityQuery query, PageQuery pageQuery);
 
+    /** 全量查询（导出用）。 */
     List<PickActivityVo> queryList(PickActivityQuery query);
-
-    PickActivityVo getInfo(Long id);
-
-    Long createByBo(PickActivityBo bo);
-
-    int updateByBo(PickActivityBo bo);
-
-    int deleteByIds(Collection<Long> ids);
-
-    /**
-     * 活动结束后汇总：从同 cropId + activity_date 的 plant_details.actual_yield 聚合写回
-     * {@code total_yield}，并把状态置为 ended。
-     *
-     * @return 更新后的 totalYield 值
-     */
-    PickActivityVo summary(Long id);
 }

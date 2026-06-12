@@ -14,7 +14,10 @@ import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.web.core.BaseController;
 import org.dromara.djs.plant.plot.domain.bo.PlotInfoBo;
 import org.dromara.djs.plant.plot.domain.query.PlotInfoQuery;
+import org.dromara.djs.plant.plot.domain.vo.PlotFarmworkRecordVo;
 import org.dromara.djs.plant.plot.domain.vo.PlotInfoVo;
+import org.dromara.djs.plant.plot.domain.vo.PlotOrganicRefVo;
+import org.dromara.djs.plant.plot.domain.vo.PlotPlantingRecordVo;
 import org.dromara.djs.plant.plot.service.IPlotInfoService;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -92,5 +95,26 @@ public class PlotInfoController extends BaseController {
     @DeleteMapping("/remove/{ids}")
     public R<Void> remove(@PathVariable Long[] ids) {
         return toAjax(plotInfoService.deleteWithValidByIds(Arrays.asList(ids)));
+    }
+
+    /** 地块详情·种植信息子表（FIX-PLT-AD-DETAIL-001，11 列，按 plotId 透视）。 */
+    @SaCheckPermission("djs:plant:plot:list")
+    @GetMapping("/{plotId}/planting")
+    public R<List<PlotPlantingRecordVo>> listPlantingByPlot(@PathVariable Long plotId) {
+        return R.ok(plotInfoService.listPlantingByPlot(plotId));
+    }
+
+    /** 地块详情·农事信息子表（FIX-PLT-AD-DETAIL-001，按 plotId 透视）。 */
+    @SaCheckPermission("djs:plant:plot:list")
+    @GetMapping("/{plotId}/farmwork")
+    public R<List<PlotFarmworkRecordVo>> listFarmworkByPlot(@PathVariable Long plotId) {
+        return R.ok(plotInfoService.listFarmworkByPlot(plotId));
+    }
+
+    /** 地块详情·认证信息子表（FIX-PLT-AD-DETAIL-001，按 plotId 关联有机证书）。 */
+    @SaCheckPermission("djs:plant:plot:list")
+    @GetMapping("/{plotId}/organic")
+    public R<List<PlotOrganicRefVo>> listOrganicByPlot(@PathVariable Long plotId) {
+        return R.ok(plotInfoService.listOrganicByPlot(plotId));
     }
 }

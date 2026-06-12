@@ -8,6 +8,9 @@ import org.dromara.djs.plant.plan.domain.PlantPlan;
 import org.dromara.djs.plant.plan.domain.vo.PlantPlanSummaryVo;
 import org.dromara.djs.plant.plan.domain.vo.PlantPlanVo;
 
+import java.util.List;
+import java.util.Map;
+
 /**
  * 种植计划主表 Mapper（PLT-PLAN-001）。
  *
@@ -82,4 +85,80 @@ public interface PlantPlanMapper extends BaseMapperPlus<PlantPlan, PlantPlanVo> 
            AND p.plant_status IN ('pending','ongoing')
         """)
     PlantPlanSummaryVo selectDemandSummary();
+
+    /**
+     * 列表聚合 enrich（FIX-PLT-AD-PLAN-001）：按 planId 批量聚合明细。
+     *
+     * <p>每行 key=planId(Long) / expectedYield(BigDecimal SUM) / actualYield(BigDecimal SUM)
+     * / finishedPlot(Long COUNT plant_status='completed')
+     * / earliestBegindate(DATE MIN) / lastBegindate(DATE MAX)。</p>
+     *
+     * <p>计划开始日期 = {@code DATE(CONCAT(plan_year,'-',LPAD(plant_month,2,'0'),'-',plant_period))}
+     * （plant_period 取值 05/15/25 恰为合法日，无需 periodToDay 映射）。
+     * del_flag='0' 过滤软删；tenant_id='1001'（V1 单租户）。</p>
+     *
+     * @param planIds 当前分页页的计划 id 列表（空列表外层不调）
+     */
+    @Select("""
+        <script>
+        SELECT
+            d.plant_id AS planId,
+            COALESCE(SUM(d.expected_yield), 0) AS expectedYield,
+            COALESCE(SUM(d.actual_yield), 0) AS actualYield,
+            SUM(CASE WHEN d.plant_status = 'completed' THEN 1 ELSE 0 END) AS finishedPlot,
+            MIN(DATE(CONCAT(p.plan_year, '-', LPAD(d.plant_month, 2, '0'), '-', d.plant_period))) AS earliestBegindate,
+            MAX(DATE(CONCAT(p.plan_year, '-', LPAD(d.plant_month, 2, '0'), '-', d.plant_period))) AS lastBegindate
+          FROM t_plant_plant_details d
+          JOIN t_plant_plant_plan p
+            ON p.id = d.plant_id
+           AND p.del_flag = '0'
+           AND p.tenant_id = d.tenant_id
+         WHERE d.del_flag = '0'
+           AND d.tenant_id = '1001'
+           AND d.plant_id IN
+           <foreach collection="planIds" item="pid" open="(" separator="," close=")">#{pid}</foreach>
+         GROUP BY d.plant_id
+        </script>
+        """)
+    List<Map<String, Object>> selectListAggregates(@Param("planIds") List<Long> planIds);
+
+    /**
+     * KPI 卡：地块维度统计（FIX-PLT-AD-PLAN-001）。
+     *
+     * <p>每行单条：idlePlot(plot_status=1) / plantedPlot(plot_status IN (2,3))。
+     * tenant_id='1001'（V1 单租户），del_flag='0'。</p>
+     */
+    @Select("""
+        SELECT
+            COALESCE(SUM(CASE WHEN plot_status = 1 THEN 1 ELSE 0 END), 0) AS idlePlot,
+            COALESCE(SUM(CASE WHEN plot_status IN (2, 3) THEN 1 ELSE 0 END), 0) AS plantedPlot
+          FROM t_plant_plot_info
+         WHERE del_flag = '0'
+           AND tenant_id = '1001'
+        """)
+    Map<String, Object> selectPlotStatusStats();
+
+    /**
+     * KPI 卡：计划维度统计（FIX-PLT-AD-PLAN-001）。
+     *
+     * <p>仅进行中计划（plant_status IN ('pending','ongoing')）。每行单条：
+     * plannedPlot(COUNT DISTINCT details.plot_id) / detailRows(明细总行数，算频次用)
+     * / cropVarietyCount(COUNT DISTINCT plan.crop_id)。
+     * tenant_id='1001'（V1 单租户），del_flag='0'。</p>
+     */
+    @Select("""
+        SELECT
+            COUNT(DISTINCT d.plot_id) AS plannedPlot,
+            COUNT(d.id) AS detailRows,
+            COUNT(DISTINCT p.crop_id) AS cropVarietyCount
+          FROM t_plant_plant_plan p
+          JOIN t_plant_plant_details d
+            ON d.plant_id = p.id
+           AND d.del_flag = '0'
+           AND d.tenant_id = p.tenant_id
+         WHERE p.del_flag = '0'
+           AND p.tenant_id = '1001'
+           AND p.plant_status IN ('pending', 'ongoing')
+        """)
+    Map<String, Object> selectPlanDetailStats();
 }

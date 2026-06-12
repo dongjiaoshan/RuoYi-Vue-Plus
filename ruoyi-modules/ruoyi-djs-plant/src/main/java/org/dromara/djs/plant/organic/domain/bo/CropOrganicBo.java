@@ -10,9 +10,13 @@ import org.dromara.common.mybatis.core.domain.BaseEntity;
 import org.dromara.djs.plant.organic.domain.CropOrganic;
 
 import java.time.LocalDate;
+import java.util.List;
 
 /**
- * 果蔬有机证书入参 BO（PLT-MD-003）。
+ * 果蔬有机证书入参 BO（PLT-MD-003 / FIX-PLT-AD-INFO-LIST-001）。
+ *
+ * <p>{@code cropIds} 关联作物多选列表（一证多作物），service 层先软删旧关联再插入新关联，
+ * 与土地证书 {@code PlotOrganicBo.plotIds} 同范式。</p>
  *
  * @author djs
  * @since PLT-MD-003
@@ -39,9 +43,11 @@ public class CropOrganicBo extends BaseEntity {
     @NotNull(message = "{plant.organic.valid.required}")
     private LocalDate cropCertValid;
 
-    /** 关联作物 ID。 */
-    @NotNull(message = "{plant.organic.crop_required}")
+    /** 旧单值关联作物 ID（过渡保留，一证多作物以 cropIds 为准，不再强制）。 */
     private Long cropId;
+
+    /** 关联作物 ID 列表（一证多作物，前端 el-transfer 选）。 */
+    private List<Long> cropIds;
 
     /** 缩略图 OSS ossId。 */
     @Size(max = 512, message = "{plant.organic.image.size}")
