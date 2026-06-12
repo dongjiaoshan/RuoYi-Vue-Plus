@@ -197,4 +197,14 @@ public class AppletFarmRecordsController extends BaseController {
         query.setOperatorId(LoginHelper.getUserId());
         return farmRecordsService.myRecords(query, pageQuery);
     }
+
+    /**
+     * 农事「记录」tab 列表：按 farmType 全场展示（不按登录人班组过滤），各工种列表页记录 tab +
+     * 采摘活动记录 tab 共用。与 {@link #myRecords}（我的全部农事，按本人班组过滤）口径区分。
+     */
+    @SaCheckLogin
+    @GetMapping("/records")
+    public TableDataInfo<FarmRecordsVo> records(FarmRecordsQuery query, PageQuery pageQuery) {
+        return farmRecordsService.queryPageList(query, pageQuery);
+    }
 }
