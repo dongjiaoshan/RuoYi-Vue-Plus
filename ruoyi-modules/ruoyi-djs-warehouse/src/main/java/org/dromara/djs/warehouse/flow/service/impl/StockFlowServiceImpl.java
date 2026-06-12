@@ -14,6 +14,8 @@ import org.dromara.djs.warehouse.flow.domain.vo.PackingItemVo;
 import org.dromara.djs.warehouse.flow.domain.vo.StockFlowVo;
 import org.dromara.djs.warehouse.flow.mapper.StockFlowMapper;
 import org.dromara.djs.warehouse.flow.service.IStockFlowService;
+import org.dromara.djs.plant.plot.domain.PlotInfo;
+import org.dromara.djs.plant.plot.mapper.PlotInfoMapper;
 import org.dromara.djs.warehouse.location.domain.LocationInfo;
 import org.dromara.djs.warehouse.location.mapper.LocationInfoMapper;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
@@ -22,6 +24,7 @@ import org.dromara.djs.warehouse.stock.mapper.LocationStockMapper;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -56,15 +59,18 @@ public class StockFlowServiceImpl
     private final LocationInfoMapper locationInfoMapper;
     private final ProductInfoMapper productInfoMapper;
     private final LocationStockMapper locationStockMapper;
+    private final PlotInfoMapper plotInfoMapper;
 
     public StockFlowServiceImpl(StockFlowMapper baseMapper,
                                 LocationInfoMapper locationInfoMapper,
                                 ProductInfoMapper productInfoMapper,
-                                LocationStockMapper locationStockMapper) {
+                                LocationStockMapper locationStockMapper,
+                                PlotInfoMapper plotInfoMapper) {
         super(baseMapper);
         this.locationInfoMapper = locationInfoMapper;
         this.productInfoMapper = productInfoMapper;
         this.locationStockMapper = locationStockMapper;
+        this.plotInfoMapper = plotInfoMapper;
     }
 
     @Override
@@ -163,16 +169,34 @@ public class StockFlowServiceImpl
         if (query == null) {
             return w.orderByDesc(StockFlow::getId);
         }
-        // matType → 反查 product.id 集合
-        if (StringUtils.isNotBlank(query.getMatType())) {
-            List<ProductInfo> products = productInfoMapper.selectList(
-                new LambdaQueryWrapper<ProductInfo>().eq(ProductInfo::getBelongType, query.getMatType()));
+        // matType / productName → 反查 product.id 集合（两者取交集下推 productId IN）
+        if (StringUtils.isNotBlank(query.getMatType()) || StringUtils.isNotBlank(query.getProductName())) {
+            LambdaQueryWrapper<ProductInfo> pw = new LambdaQueryWrapper<>();
+            pw.eq(StringUtils.isNotBlank(query.getMatType()), ProductInfo::getBelongType, query.getMatType())
+                .like(StringUtils.isNotBlank(query.getProductName()), ProductInfo::getProductName, query.getProductName());
+            List<ProductInfo> products = productInfoMapper.selectList(pw);
             if (products.isEmpty()) {
-                // 无任何符合 belong_type 的产品 → 兜底空集 → 流水必空
+                // 无任何符合条件的产品 → 兜底空集 → 流水必空
                 return w.eq(StockFlow::getId, -1L);
             }
             List<Long> productIds = products.stream().map(ProductInfo::getId).distinct().toList();
             w.in(StockFlow::getProductId, productIds);
+        }
+        // blockNo → 反查 plot.id 集合下推 plotId IN
+        if (StringUtils.isNotBlank(query.getBlockNo())) {
+            List<Long> plotIds = resolvePlotIdsByBlockNo(query.getBlockNo());
+            if (plotIds.isEmpty()) {
+                return w.eq(StockFlow::getId, -1L);
+            }
+            w.in(StockFlow::getPlotId, plotIds);
+        }
+        // operatorName → 反查 sys_user.user_id 集合下推 operatorId IN
+        if (StringUtils.isNotBlank(query.getOperatorName())) {
+            List<Long> userIds = baseMapper.selectUserIdsByNickName(query.getOperatorName());
+            if (userIds.isEmpty()) {
+                return w.eq(StockFlow::getId, -1L);
+            }
+            w.in(StockFlow::getOperatorId, userIds);
         }
         w.eq(StringUtils.isNotBlank(query.getFlowNo()),      StockFlow::getFlowNo, query.getFlowNo())
             .eq(StringUtils.isNotBlank(query.getFlowType()),  StockFlow::getFlowType, query.getFlowType())
@@ -233,6 +257,33 @@ public class StockFlowServiceImpl
                 vo.setLocationName(lm.get(vo.getWarehouseId()));
             }
         }
+        // 3. plots（地块编号 = t_plant_plot_info.plot_code；plotId 为空的行 blockNo 保持 null）
+        List<Long> plotIds = rows.stream()
+            .map(StockFlowVo::getPlotId)
+            .filter(Objects::nonNull)
+            .distinct()
+            .toList();
+        Map<Long, String> plm = plotIds.isEmpty() ? Map.of() :
+            plotInfoMapper.selectList(new LambdaQueryWrapper<PlotInfo>().in(PlotInfo::getId, plotIds))
+                .stream()
+                .filter(p -> p.getPlotCode() != null)
+                .collect(Collectors.toMap(PlotInfo::getId, PlotInfo::getPlotCode, (a, b) -> a));
+        for (StockFlowVo vo : rows) {
+            if (vo.getPlotId() != null) {
+                vo.setBlockNo(plm.get(vo.getPlotId()));
+            }
+        }
+    }
+
+    /**
+     * 按地块编号（模糊）解析匹配的 plotId 集合；无匹配返空 list（调用方据此让查询恒空）。
+     */
+    private List<Long> resolvePlotIdsByBlockNo(String blockNo) {
+        List<PlotInfo> plots = plotInfoMapper.selectList(
+            new LambdaQueryWrapper<PlotInfo>()
+                .like(PlotInfo::getPlotCode, blockNo)
+                .select(PlotInfo::getId));
+        return new ArrayList<>(plots.stream().map(PlotInfo::getId).toList());
     }
 
 }

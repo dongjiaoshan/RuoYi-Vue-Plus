@@ -2,20 +2,25 @@ package org.dromara.djs.warehouse.stock.controller;
 
 import cn.dev33.satoken.annotation.SaCheckPermission;
 import jakarta.servlet.http.HttpServletResponse;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.dromara.common.core.domain.R;
 import org.dromara.common.excel.utils.ExcelUtil;
+import org.dromara.common.idempotent.annotation.RepeatSubmit;
 import org.dromara.common.log.annotation.Log;
 import org.dromara.common.log.enums.BusinessType;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.web.core.BaseController;
+import org.dromara.djs.warehouse.stock.domain.bo.StockOutBo;
 import org.dromara.djs.warehouse.stock.domain.query.LocationStockQuery;
 import org.dromara.djs.warehouse.stock.domain.vo.LocationStockVo;
 import org.dromara.djs.warehouse.stock.service.ILocationStockService;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -31,6 +36,7 @@ import java.util.List;
  * @author djs
  * @since WMS-MD-001
  */
+@Validated
 @RequiredArgsConstructor
 @RestController
 @RequestMapping("/djs/warehouse/stock")
@@ -65,6 +71,20 @@ public class LocationStockController extends BaseController {
     public void export(LocationStockQuery query, HttpServletResponse response) {
         List<LocationStockVo> list = stockService.queryList(query);
         ExcelUtil.exportExcel(list, "库存明细", LocationStockVo.class, response);
+    }
+
+    /**
+     * 库存查询行「产品出库」（DJS-FIX-WMS-RALN-B）。
+     *
+     * <p>按库存行 ID 出库：同事务 INSERT 出库流水 + 原子扣减库存。</p>
+     */
+    @SaCheckPermission("djs:warehouse:stock:out")
+    @Log(title = "库存查询", businessType = BusinessType.UPDATE)
+    @RepeatSubmit
+    @PostMapping("/out")
+    public R<Void> productOut(@Valid @RequestBody StockOutBo bo) {
+        stockService.productOut(bo);
+        return R.ok();
     }
 
 }

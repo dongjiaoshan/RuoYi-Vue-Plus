@@ -41,6 +41,12 @@ public class LocationStockVo implements Serializable {
     private Long id;
 
     /**
+     * 产品代码（业务码 {@code ProductInfo.productId}，service 层按 {@code product_id} FK 回填；如 P10002）。
+     */
+    @ExcelProperty(value = "产品代码")
+    private String productCode;
+
+    /**
      * 库位 ID。
      */
     @ExcelProperty(value = "库位ID")

@@ -74,6 +74,16 @@ public class LocationInfo extends TenantEntity {
     private Integer locationStatus;
 
     /**
+     * 库位排序（升序，越小越靠前）。
+     */
+    private Integer locationSort;
+
+    /**
+     * 库位说明（文字描述用途）。
+     */
+    private String locationDesc;
+
+    /**
      * 容量（kg / m³，单位由 {@link #locationType} 决定）。
      */
     private BigDecimal capacity;

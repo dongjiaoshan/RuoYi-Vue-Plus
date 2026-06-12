@@ -22,6 +22,9 @@ public class ReturnProductQuery {
     /** 产品精确。 */
     private Long productId;
 
+    /** 退货品类（产品 belongType 字典 djs_belong_type；按品类过滤命中产品集合）。 */
+    private String returnCategory;
+
     /** 是否已确认 1/0。 */
     private Integer isConfirm;
 

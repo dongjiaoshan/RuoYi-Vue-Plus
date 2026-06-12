@@ -62,6 +62,15 @@ public interface IProductProductionService {
     List<ProductProductionVo> queryList(ProductProductionQuery query);
 
     /**
+     * admin 产品列表下钻（按"生产日期 + 产品"锁定一个生产批次，列出该批次逐件产品）。
+     *
+     * <p>主列表「查看」→ 子页「产品列表」：逐件返回 produce_no（生产编号）/ product_sort（产品序号）/
+     * product_weight（产品重量）/ store_name（所属门店）/ trace_code（追溯码），按 product_sort 升序。
+     * query 必带 produceDate + productId；可选 productSort（序号筛选）/ storeId（所属门店筛选）。</p>
+     */
+    TableDataInfo<ProductProductionVo> queryItemPageList(ProductProductionQuery query, PageQuery pageQuery);
+
+    /**
      * admin 详情。
      */
     ProductProductionVo queryById(Long id);

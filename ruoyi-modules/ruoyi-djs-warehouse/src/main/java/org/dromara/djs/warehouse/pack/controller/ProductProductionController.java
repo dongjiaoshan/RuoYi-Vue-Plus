@@ -48,6 +48,18 @@ public class ProductProductionController extends BaseController {
     }
 
     /**
+     * 产品列表下钻（按"生产日期 + 产品"锁定一个生产批次，分页列出逐件产品）。
+     *
+     * <p>主列表「查看」→ 子页「产品列表」：逐件展示 生产编号 / 产品序号 / 产品重量 / 所属门店 + 行「追溯码」。
+     * query 必带 produceDate + productId；可选 productSort（序号）/ storeId（所属门店）筛选。</p>
+     */
+    @SaCheckPermission("djs:warehouse:production:list")
+    @GetMapping("/items")
+    public TableDataInfo<ProductProductionVo> items(ProductProductionQuery query, PageQuery pageQuery) {
+        return service.queryItemPageList(query, pageQuery);
+    }
+
+    /**
      * 详情。
      */
     @SaCheckPermission("djs:warehouse:production:list")

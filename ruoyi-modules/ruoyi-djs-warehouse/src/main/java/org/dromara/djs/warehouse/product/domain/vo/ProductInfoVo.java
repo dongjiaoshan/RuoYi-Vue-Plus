@@ -88,6 +88,12 @@ public class ProductInfoVo implements Serializable {
     @ExcelProperty(value = "存储库位")
     private String storeLocationId;
 
+    /**
+     * 存储仓库名称（service 层按 store_location_id 关联 location_info 回填；多库位逗号拼接）。
+     */
+    @ExcelProperty(value = "存储仓库")
+    private String storeLocationName;
+
     @ExcelProperty(value = "状态", converter = ExcelDictConvert.class)
     @ExcelDictFormat(dictType = "sys_normal_disable")
     private Integer productStatus;

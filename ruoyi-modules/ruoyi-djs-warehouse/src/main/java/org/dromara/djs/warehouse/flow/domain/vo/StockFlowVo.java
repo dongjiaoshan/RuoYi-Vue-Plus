@@ -112,6 +112,13 @@ public class StockFlowVo implements Serializable {
 
     private Long plotId;
 
+    /**
+     * 地块编号（= {@code t_plant_plot_info.plot_code}，service 层 JOIN 回填；
+     * 流水行 {@code plotId} 为空 → blockNo 保持 null）。
+     */
+    @ExcelProperty(value = "地块编号")
+    private String blockNo;
+
     private Long operatorId;
 
     /**

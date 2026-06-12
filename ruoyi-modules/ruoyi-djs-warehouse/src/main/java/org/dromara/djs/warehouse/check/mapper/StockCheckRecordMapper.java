@@ -6,6 +6,8 @@ import org.dromara.common.mybatis.core.mapper.BaseMapperPlus;
 import org.dromara.djs.warehouse.check.domain.StockCheckRecord;
 import org.dromara.djs.warehouse.check.domain.vo.StockCheckRecordVo;
 
+import java.util.List;
+
 /**
  * 盘点记录 Mapper（WMS-STOCK-001）。
  *
@@ -30,5 +32,18 @@ public interface StockCheckRecordMapper extends BaseMapperPlus<StockCheckRecord,
         + "  AND check_status = 'in_progress' "
         + "  AND del_flag = '0'")
     long countActiveByLocation(@Param("locationId") Long locationId);
+
+    /**
+     * 按盘点人姓名模糊查 user_id（admin 盘点单列表「盘点人」筛选用，姓名 → ID 反查）。
+     *
+     * <p>{@code sys_user} 是 ruoyi 全局表，注解 SQL 不走 MP 多租户拦截器；仅按 {@code nick_name}
+     * LIKE 返回 user_id，供 header 列表按发起人 {@code create_by} 过滤。</p>
+     *
+     * @param nickName 盘点人姓名（模糊）
+     * @return 命中的 user_id 列表（可能为空）
+     */
+    @Select("SELECT user_id FROM sys_user "
+        + "WHERE del_flag = '0' AND nick_name LIKE CONCAT('%', #{nickName}, '%')")
+    List<Long> selectUserIdsByNickName(@Param("nickName") String nickName);
 
 }

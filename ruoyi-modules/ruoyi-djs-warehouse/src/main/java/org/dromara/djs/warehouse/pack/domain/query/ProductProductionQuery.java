@@ -27,6 +27,17 @@ public class ProductProductionQuery {
     private Long productId;
 
     /**
+     * 生产日期精确匹配（产品列表下钻按"生产日期 + 产品"锁定一个生产批次）。
+     */
+    @JsonFormat(pattern = "yyyy-MM-dd")
+    private Date produceDate;
+
+    /**
+     * 产品序号精确匹配（下钻子页"序号"筛选）。
+     */
+    private Integer productSort;
+
+    /**
      * 产品类型字典 {@code djs_product_type}：1=自产 / 2=外购 / 3=礼盒。
      */
     private Integer productType;

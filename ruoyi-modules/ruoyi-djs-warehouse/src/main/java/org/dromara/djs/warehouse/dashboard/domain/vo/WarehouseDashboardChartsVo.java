@@ -32,57 +32,120 @@ public class WarehouseDashboardChartsVo implements Serializable {
     @Serial
     private static final long serialVersionUID = 1L;
 
-    /** 图①：果蔬需求饼（按 4 业态 SUM 需求量）。 */
+    /** 图①：果蔬产品当日需求分布饼（近 30 日 vegetable 业态按产品名 SUM 需求量，对齐原型）。 */
     private List<ChartSeriesItemVo> demandByType;
 
-    /** 图②：退货环（按退货方向构成 COUNT）。 */
+    /** 图②：退货环（按退货方向构成 COUNT，兼容旧口径）。 */
     private List<ChartSeriesItemVo> returnByDirection;
 
-    /** 图③：生产趋势折线（近 7 日按日生产重量）。 */
+    /** 图②（对齐原型）：产品退货分布·猪肉（pork belong_type 按产品名 COUNT）。 */
+    private List<ChartSeriesItemVo> returnPork;
+
+    /** 图②（对齐原型）：产品退货分布·果蔬（vegetable belong_type 按产品名 COUNT，前端「猪肉/果蔬」切换）。 */
+    private List<ChartSeriesItemVo> returnVegetable;
+
+    /** 图③：生产趋势折线（近 7 日按日生产重量，兼容旧口径）。 */
     private List<ChartTrendPointVo> productionTrend;
+
+    /** 图③（对齐原型组合图）：近 7 日白条头数（柱）。 */
+    private List<ChartTrendPointVo> productionWhiteBarHeadTrend;
+
+    /** 图③（对齐原型组合图）：近 7 日猪肉产品重量（线）。 */
+    private List<ChartTrendPointVo> productionPorkWeightTrend;
+
+    /** 图③（对齐原型组合图）：近 7 日果蔬产品重量（线）。 */
+    private List<ChartTrendPointVo> productionVegWeightTrend;
 
     /** 图④：盘点结果饼（正常 / 异常 / 计损 COUNT，最近一个盘点单）。 */
     private List<ChartSeriesItemVo> checkResult;
 
-    /** 图⑤：异常库位环（当月异常 vs 正常库位数）。 */
+    /** 图⑤：异常库位环（当月异常 vs 正常库位数，兼容旧口径）。 */
     private List<ChartSeriesItemVo> locationHealth;
 
-    /** 图⑥：损耗折线（近 7 日按日损耗量）。 */
+    /** 图⑤（对齐原型）：当月盘点异常库位分布环（按库位名，雪花 ID 已映射名称）。 */
+    private List<ChartSeriesItemVo> abnormalLocationByName;
+
+    /** 图⑥：损耗折线（近 7 日按日损耗量，兼容旧口径）。 */
     private List<ChartTrendPointVo> lossTrend;
 
-    // ====== 双 KPI 横条（11 指标） ======
+    /** 图⑥（对齐原型多系列）：近 7 日猪肉产品损耗量（线）。 */
+    private List<ChartTrendPointVo> lossPorkTrend;
 
-    /** 横条 1「今日需求」：白条业态需求量（SUM demand_quantity，product_type='white_bar'）。 */
+    /** 图⑥（对齐原型多系列）：近 7 日果蔬产品损耗量（线）。 */
+    private List<ChartTrendPointVo> lossVegTrend;
+
+    // ====== 双 KPI 横条（今日需求 8 项 + 今日生产 8 项，对齐原型） ======
+
+    /** 横条 1「今日需求」1：白条需求（头，product_type='white_bar' SUM demand_quantity 计头）。 */
     private BigDecimal todayDemandWhiteBar;
 
-    /** 横条 1：蔬菜业态需求量。 */
-    private BigDecimal todayDemandVegetable;
+    /** 横条 1「今日需求」2：猪肉产品需求量（kg，belong_type='pork'）。 */
+    private BigDecimal todayDemandPork;
 
-    /** 横条 1：礼盒业态需求量。 */
+    /** 横条 1「今日需求」3：红白脏产品需求量（kg）。V1 无对应 belong_type 数据源，默认 0。 */
+    private BigDecimal todayDemandOffal;
+
+    /** 横条 1「今日需求」4：礼盒需求量（份，product_type='gift_box'）。 */
     private BigDecimal todayDemandGiftBox;
 
-    /** 横条 1：其他业态需求量。 */
+    /** 横条 1「今日需求」5：果蔬需求品类数（种，belong_type='vegetable' 去重产品数）。 */
+    private Integer todayDemandVegetableKinds;
+
+    /** 横条 1「今日需求」6：果蔬需求量（kg，belong_type='vegetable' SUM demand_quantity）。 */
+    private BigDecimal todayDemandVegetable;
+
+    /** 横条 1「今日需求」7：鸡蛋需求量（个，belong_type='egg'）。 */
+    private BigDecimal todayDemandEgg;
+
+    /** 横条 1「今日需求」8：干货需求量（kg，belong_type='dry_good'）。 */
+    private BigDecimal todayDemandDryGood;
+
+    /** 横条 1（兼容旧口径）：其他业态需求量。 */
     private BigDecimal todayDemandOther;
 
-    /** 横条 1：今日需求单数（COUNT，去重 demand_no）。 */
+    /** 横条 1（兼容旧口径）：今日需求单数（COUNT，去重 demand_no）。 */
     private Integer todayDemandOrderCount;
 
-    /** 横条 1：今日需求总量（SUM 全业态 demand_quantity）。 */
+    /** 横条 1（兼容旧口径）：今日需求总量（SUM 全业态 demand_quantity）。 */
     private BigDecimal todayDemandTotal;
 
-    /** 横条 2「今日生产」：今日生产笔数（COUNT product_production）。 */
+    /** 横条 2「今日生产」1：送宰猪只（头，今日燎毛记录数）。 */
+    private Integer todaySlaughterPigCount;
+
+    /** 横条 2「今日生产」2：白条总重（kg，今日燎毛 burn_weight 合计）。 */
+    private BigDecimal todayWhiteBarWeight;
+
+    /** 横条 2「今日生产」3：分割白条（头，今日分割记录数）。 */
+    private Integer todayCutBarCount;
+
+    /** 横条 2「今日生产」4：分割猪只产品总重（kg，今日 ear_no 来源生产记录重量）。 */
+    private BigDecimal todayCutProductWeight;
+
+    /** 横条 2「今日生产」5：果蔬接收品种（种，今日收货去重地块/产品数）。 */
+    private Integer todayVegReceiveKinds;
+
+    /** 横条 2「今日生产」6：果蔬接收总重（kg，今日收货重量合计）。 */
+    private BigDecimal todayVegReceiveWeight;
+
+    /** 横条 2「今日生产」7：果蔬产品种类（种，今日 plot_id 来源生产记录去重产品数）。 */
+    private Integer todayVegProductKinds;
+
+    /** 横条 2「今日生产」8：果蔬产品总重（kg，今日 plot_id 来源生产记录重量）。 */
+    private BigDecimal todayVegProductWeight;
+
+    /** 横条 2（兼容旧口径）：今日生产笔数（COUNT product_production）。 */
     private Integer todayProductionCount;
 
-    /** 横条 2：今日生产重量（SUM product_weight）。 */
+    /** 横条 2（兼容旧口径）：今日生产重量（SUM product_weight）。 */
     private BigDecimal todayProductionWeight;
 
-    /** 横条 2：今日入库笔数（stock_flow inout_type='IN'）。 */
+    /** 横条 2（兼容旧口径）：今日入库笔数（stock_flow inout_type='IN'）。 */
     private Integer todayInboundCount;
 
-    /** 横条 2：今日出库笔数（stock_flow inout_type='OT'）。 */
+    /** 横条 2（兼容旧口径）：今日出库笔数（stock_flow inout_type='OT'）。 */
     private Integer todayOutboundCount;
 
-    /** 横条 2：今日损耗量（stock_flow flow_type='loss' SUM change_quantity）。 */
+    /** 横条 2（兼容旧口径）：今日损耗量（stock_flow flow_type='loss' SUM change_quantity）。 */
     private BigDecimal todayLossQuantity;
 
     /**
@@ -94,16 +157,39 @@ public class WarehouseDashboardChartsVo implements Serializable {
         WarehouseDashboardChartsVo vo = new WarehouseDashboardChartsVo();
         vo.setDemandByType(List.of());
         vo.setReturnByDirection(List.of());
+        vo.setReturnPork(List.of());
+        vo.setReturnVegetable(List.of());
         vo.setProductionTrend(List.of());
+        vo.setProductionWhiteBarHeadTrend(List.of());
+        vo.setProductionPorkWeightTrend(List.of());
+        vo.setProductionVegWeightTrend(List.of());
         vo.setCheckResult(List.of());
         vo.setLocationHealth(List.of());
+        vo.setAbnormalLocationByName(List.of());
         vo.setLossTrend(List.of());
+        vo.setLossPorkTrend(List.of());
+        vo.setLossVegTrend(List.of());
+        // 今日需求 8 项 + 兼容旧 3 项
         vo.setTodayDemandWhiteBar(BigDecimal.ZERO);
-        vo.setTodayDemandVegetable(BigDecimal.ZERO);
+        vo.setTodayDemandPork(BigDecimal.ZERO);
+        vo.setTodayDemandOffal(BigDecimal.ZERO);
         vo.setTodayDemandGiftBox(BigDecimal.ZERO);
+        vo.setTodayDemandVegetableKinds(0);
+        vo.setTodayDemandVegetable(BigDecimal.ZERO);
+        vo.setTodayDemandEgg(BigDecimal.ZERO);
+        vo.setTodayDemandDryGood(BigDecimal.ZERO);
         vo.setTodayDemandOther(BigDecimal.ZERO);
         vo.setTodayDemandOrderCount(0);
         vo.setTodayDemandTotal(BigDecimal.ZERO);
+        // 今日生产 8 项 + 兼容旧 5 项
+        vo.setTodaySlaughterPigCount(0);
+        vo.setTodayWhiteBarWeight(BigDecimal.ZERO);
+        vo.setTodayCutBarCount(0);
+        vo.setTodayCutProductWeight(BigDecimal.ZERO);
+        vo.setTodayVegReceiveKinds(0);
+        vo.setTodayVegReceiveWeight(BigDecimal.ZERO);
+        vo.setTodayVegProductKinds(0);
+        vo.setTodayVegProductWeight(BigDecimal.ZERO);
         vo.setTodayProductionCount(0);
         vo.setTodayProductionWeight(BigDecimal.ZERO);
         vo.setTodayInboundCount(0);

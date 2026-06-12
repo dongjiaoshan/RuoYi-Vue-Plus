@@ -30,6 +30,11 @@ public class StockCheckQuery {
     private String checkStatus;
 
     /**
+     * 盘点人姓名（按发起人 {@code sys_user.nick_name} 模糊匹配；admin 列表筛选）。
+     */
+    private String checkByName;
+
+    /**
      * 盘点日期起。
      */
     @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")

@@ -203,6 +203,16 @@ public class StockCheckServiceImpl
                     StockCheckRecord::getCheckStatus, query.getCheckStatus())
                 .ge(query.getCheckDateFrom() != null, StockCheckRecord::getCheckDate, query.getCheckDateFrom())
                 .le(query.getCheckDateTo() != null, StockCheckRecord::getCheckDate, query.getCheckDateTo());
+            // 盘点人筛选：姓名 → 发起人 user_id 反查（命中为空时返回空集，避免漏过滤）
+            if (query.getCheckByName() != null && !query.getCheckByName().isBlank()) {
+                List<Long> userIds = baseMapper.selectUserIdsByNickName(query.getCheckByName().trim());
+                if (userIds.isEmpty()) {
+                    Page<StockCheckHeaderVo> empty = pageQuery.build();
+                    empty.setTotal(0);
+                    return TableDataInfo.build(empty);
+                }
+                w.in(StockCheckRecord::getCreateBy, userIds);
+            }
         }
         w.orderByDesc(StockCheckRecord::getCheckDate).orderByDesc(StockCheckRecord::getId);
 
@@ -228,6 +238,8 @@ public class StockCheckServiceImpl
         w.orderByDesc(StockCheckRecord::getId);
         List<StockCheckRecordVo> list = baseMapper.selectVoList(w);
         fillLineLocationNames(list);
+        fillLineProductCodes(list);
+        fillLineLossWeight(list);
         return list;
     }
 
@@ -318,6 +330,8 @@ public class StockCheckServiceImpl
                 .eq(StockCheckRecord::getIsHeader, 0)
                 .orderByDesc(StockCheckRecord::getId));
         fillLineLocationNames(list);
+        fillLineProductCodes(list);
+        fillLineLossWeight(list);
         return list;
     }
 
@@ -419,6 +433,8 @@ public class StockCheckServiceImpl
         vo.setLocationId(r.getLocationId());
         vo.setCheckDate(r.getCheckDate());
         vo.setCheckStatus(r.getCheckStatus());
+        // 盘点人 = 盘点单头发起人（create_by）→ @Translation 取昵称
+        vo.setCheckBy(r.getCreateBy());
         vo.setCreateTime(r.getCreateTime());
         return vo;
     }
@@ -443,7 +459,13 @@ public class StockCheckServiceImpl
             .collect(Collectors.groupingBy(StockCheckRecord::getCheckId));
         for (StockCheckHeaderVo h : headers) {
             List<StockCheckRecord> ls = byCheckId.getOrDefault(h.getCheckId(), List.of());
+            // 盘点商品数 = 明细 line 数
             h.setLineCount(ls.size());
+            // 盘点异常数 = 结果为异常（djs_check_result=2）的 line 数
+            long abnormal = ls.stream()
+                .filter(l -> l.getCheckResultType() != null && l.getCheckResultType() == RESULT_ABNORMAL)
+                .count();
+            h.setAbnormalCount((int) abnormal);
             BigDecimal sum = ls.stream()
                 .map(l -> l.getDiffStock() == null ? BigDecimal.ZERO : l.getDiffStock())
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
@@ -473,6 +495,49 @@ public class StockCheckServiceImpl
         for (StockCheckRecordVo l : lines) {
             if (l.getLocationId() != null) {
                 l.setLocationName(nameMap.get(l.getLocationId()));
+            }
+        }
+    }
+
+    /**
+     * 批量回填明细的产品代码（{@code productCode} = {@code ProductInfo.productId} 业务码）。
+     */
+    private void fillLineProductCodes(List<StockCheckRecordVo> lines) {
+        if (lines == null || lines.isEmpty()) {
+            return;
+        }
+        List<Long> productIds = lines.stream()
+            .map(StockCheckRecordVo::getProductId).filter(Objects::nonNull).distinct().toList();
+        if (productIds.isEmpty()) {
+            return;
+        }
+        Map<Long, String> codeMap = productInfoMapper.selectList(
+                new LambdaQueryWrapper<ProductInfo>().in(ProductInfo::getId, productIds))
+            .stream()
+            .filter(p -> p.getProductId() != null)
+            .collect(Collectors.toMap(ProductInfo::getId, ProductInfo::getProductId, (a, b) -> a));
+        for (StockCheckRecordVo l : lines) {
+            if (l.getProductId() != null) {
+                l.setProductCode(codeMap.get(l.getProductId()));
+            }
+        }
+    }
+
+    /**
+     * 派生明细的盘点计损量（{@code lossWeight}）：
+     * 结果为正常（{@link #RESULT_NORMAL}）时按 {@code |sysStock - checkStock|} 计入计损，否则为 0
+     * （异常差额走「差异」列，由前端按结果类型呈现）。
+     */
+    private void fillLineLossWeight(List<StockCheckRecordVo> lines) {
+        if (lines == null || lines.isEmpty()) {
+            return;
+        }
+        for (StockCheckRecordVo l : lines) {
+            if (l.getCheckResultType() != null && l.getCheckResultType() == RESULT_NORMAL
+                && l.getSysStock() != null && l.getCheckStock() != null) {
+                l.setLossWeight(l.getSysStock().subtract(l.getCheckStock()).abs());
+            } else {
+                l.setLossWeight(BigDecimal.ZERO);
             }
         }
     }

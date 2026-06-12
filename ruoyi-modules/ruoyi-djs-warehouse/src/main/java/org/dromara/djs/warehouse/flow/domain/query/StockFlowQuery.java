@@ -57,6 +57,11 @@ public class StockFlowQuery {
     private String productCode;
 
     /**
+     * 产品名称模糊匹配（service 内部反查 product.id 集合后作为 productId IN 下推）。
+     */
+    private String productName;
+
+    /**
      * 耳号精确匹配。
      */
     private String earNo;
@@ -65,6 +70,12 @@ public class StockFlowQuery {
      * 地块 ID 精确匹配。
      */
     private Long plotId;
+
+    /**
+     * 地块编号（= {@code t_plant_plot_info.plot_code}）模糊匹配，
+     * service 内部反查 plot.id 集合后作为 plotId IN 下推。
+     */
+    private String blockNo;
 
     /**
      * 库位 ID（stockFlow.warehouse_id 物理列名，实为 location FK）精确匹配。
@@ -85,6 +96,11 @@ public class StockFlowQuery {
      * 操作人（mp 我的查询自动填）。
      */
     private Long operatorId;
+
+    /**
+     * 入/出库人姓名模糊匹配（admin 流水页按昵称过滤；service 内部反查 user.id 集合后作为 operatorId IN 下推）。
+     */
+    private String operatorName;
 
     /**
      * 业务时间起。

@@ -200,12 +200,14 @@ public class LocationInfoServiceImpl extends DjsBaseServiceImpl<LocationInfoMapp
     private LambdaQueryWrapper<LocationInfo> buildQueryWrapper(LocationInfoQuery query) {
         LambdaQueryWrapper<LocationInfo> wrapper = new LambdaQueryWrapper<>();
         if (query == null) {
-            return wrapper.orderByDesc(LocationInfo::getId);
+            return wrapper.orderByAsc(LocationInfo::getLocationSort).orderByDesc(LocationInfo::getId);
         }
         wrapper.eq(StringUtils.isNotBlank(query.getLocationCode()), LocationInfo::getLocationCode, query.getLocationCode())
             .like(StringUtils.isNotBlank(query.getLocationName()), LocationInfo::getLocationName, query.getLocationName())
             .eq(StringUtils.isNotBlank(query.getLocationType()), LocationInfo::getLocationType, query.getLocationType())
             .eq(query.getLocationStatus() != null, LocationInfo::getLocationStatus, query.getLocationStatus())
+            // 库位排序升序优先（越小越靠前），同序按 id 倒序
+            .orderByAsc(LocationInfo::getLocationSort)
             .orderByDesc(LocationInfo::getId);
         return wrapper;
     }

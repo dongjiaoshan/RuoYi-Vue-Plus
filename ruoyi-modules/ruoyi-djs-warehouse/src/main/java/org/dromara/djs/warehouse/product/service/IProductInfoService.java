@@ -2,11 +2,15 @@ package org.dromara.djs.warehouse.product.service;
 
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
+import org.dromara.djs.warehouse.product.domain.bo.ProductInboundBo;
 import org.dromara.djs.warehouse.product.domain.bo.ProductInfoBo;
 import org.dromara.djs.warehouse.product.domain.query.ProductInfoQuery;
+import org.dromara.djs.warehouse.product.domain.vo.ProductFlowRecordVo;
 import org.dromara.djs.warehouse.product.domain.vo.ProductInfoVo;
+import org.dromara.djs.warehouse.product.domain.vo.ProductProductionRecordVo;
 
 import java.util.Collection;
+import java.util.Date;
 import java.util.List;
 
 /**
@@ -80,5 +84,30 @@ public interface IProductInfoService {
      * @return 受影响行数（仅主表，组件软删不计）
      */
     int deleteWithValidByIds(Collection<Long> ids);
+
+    /**
+     * 产品详情「生产记录」子表（DJS-FIX-WMS-RALN-B）：按 productId 查生产 + 退货记录。
+     *
+     * @param productId   产品 ID
+     * @param produceDate 生产日期（可空，DATE 精确）
+     * @param produceType 生产类型 produce / return（可空）
+     */
+    List<ProductProductionRecordVo> queryProductionRecords(Long productId, Date produceDate, String produceType);
+
+    /**
+     * 商品详情「业务流水」子表（DJS-FIX-WMS-RALN-B）：按 productId 查 stock_flow（入库 / 领用出库 / 后台出库）。
+     *
+     * @param productId 产品 ID
+     * @param bizDate   业务日期（可空，DATE 精确）
+     */
+    List<ProductFlowRecordVo> queryFlowRecords(Long productId, Date bizDate);
+
+    /**
+     * 商品配置「产品入库」（DJS-FIX-WMS-RALN-B）：录入 产品 / 库位 / 数量 → 写入库 stock_flow + 增 location_stock。
+     *
+     * @param bo 入库入参
+     * @return 入库流水 ID
+     */
+    Long inbound(ProductInboundBo bo);
 
 }

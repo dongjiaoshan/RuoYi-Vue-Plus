@@ -2,6 +2,7 @@ package org.dromara.djs.warehouse.product.controller;
 
 import cn.dev33.satoken.annotation.SaCheckPermission;
 import jakarta.servlet.http.HttpServletResponse;
+import jakarta.validation.Valid;
 import jakarta.validation.groups.Default;
 import lombok.RequiredArgsConstructor;
 import org.dromara.common.core.domain.R;
@@ -12,10 +13,14 @@ import org.dromara.common.log.enums.BusinessType;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.web.core.BaseController;
+import org.dromara.djs.warehouse.product.domain.bo.ProductInboundBo;
 import org.dromara.djs.warehouse.product.domain.bo.ProductInfoBo;
 import org.dromara.djs.warehouse.product.domain.query.ProductInfoQuery;
+import org.dromara.djs.warehouse.product.domain.vo.ProductFlowRecordVo;
 import org.dromara.djs.warehouse.product.domain.vo.ProductInfoVo;
+import org.dromara.djs.warehouse.product.domain.vo.ProductProductionRecordVo;
 import org.dromara.djs.warehouse.product.service.IProductInfoService;
+import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -24,9 +29,11 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.Arrays;
+import java.util.Date;
 import java.util.List;
 
 /**
@@ -117,6 +124,47 @@ public class ProductInfoController extends BaseController {
     @DeleteMapping("/remove/{ids}")
     public R<Void> remove(@PathVariable Long[] ids) {
         return toAjax(productInfoService.deleteWithValidByIds(Arrays.asList(ids)));
+    }
+
+    /**
+     * 产品详情「生产记录」子表（DJS-FIX-WMS-RALN-B）：按 productId 查生产 + 退货记录。
+     *
+     * @param productId   产品 ID
+     * @param produceDate 生产日期（可空，{@code yyyy-MM-dd}）
+     * @param produceType 生产类型 produce / return（可空）
+     */
+    @SaCheckPermission("djs:warehouse:product:list")
+    @GetMapping("/production/{productId}")
+    public R<List<ProductProductionRecordVo>> productionRecords(
+        @PathVariable Long productId,
+        @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd") Date produceDate,
+        @RequestParam(required = false) String produceType) {
+        return R.ok(productInfoService.queryProductionRecords(productId, produceDate, produceType));
+    }
+
+    /**
+     * 商品详情「业务流水」子表（DJS-FIX-WMS-RALN-B）：按 productId 查 stock_flow（入库 / 领用出库 / 后台出库）。
+     *
+     * @param productId 产品 ID
+     * @param bizDate   业务日期（可空，{@code yyyy-MM-dd}）
+     */
+    @SaCheckPermission("djs:warehouse:product:list")
+    @GetMapping("/flow/{productId}")
+    public R<List<ProductFlowRecordVo>> flowRecords(
+        @PathVariable Long productId,
+        @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd") Date bizDate) {
+        return R.ok(productInfoService.queryFlowRecords(productId, bizDate));
+    }
+
+    /**
+     * 商品配置「产品入库」（DJS-FIX-WMS-RALN-B）：录入 产品 / 库位 / 数量 → 写入库流水 + 增库存。
+     */
+    @SaCheckPermission("djs:warehouse:product:edit")
+    @Log(title = "商品管理", businessType = BusinessType.INSERT)
+    @RepeatSubmit
+    @PostMapping("/inbound")
+    public R<Long> inbound(@Valid @RequestBody ProductInboundBo bo) {
+        return R.ok(productInfoService.inbound(bo));
     }
 
 }

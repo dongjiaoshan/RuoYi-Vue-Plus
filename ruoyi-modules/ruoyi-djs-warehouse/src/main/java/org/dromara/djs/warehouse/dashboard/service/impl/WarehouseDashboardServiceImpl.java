@@ -40,18 +40,10 @@ public class WarehouseDashboardServiceImpl implements IWarehouseDashboardService
 
     private static final DateTimeFormatter DAY_FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd");
 
-    /** 4 业态值 → 中文标签（与字典 djs_demand_product_type 对齐）。 */
-    private static final Map<String, String> DEMAND_TYPE_LABELS = new LinkedHashMap<>();
-
     /** 盘点结果 check_result_type → 中文标签（djs_check_result）。 */
     private static final Map<String, String> CHECK_RESULT_LABELS = new LinkedHashMap<>();
 
     static {
-        DEMAND_TYPE_LABELS.put("white_bar", "白条");
-        DEMAND_TYPE_LABELS.put("vegetable", "蔬菜");
-        DEMAND_TYPE_LABELS.put("gift_box", "礼盒");
-        DEMAND_TYPE_LABELS.put("other", "其他");
-
         CHECK_RESULT_LABELS.put("1", "正常");
         CHECK_RESULT_LABELS.put("2", "异常");
         CHECK_RESULT_LABELS.put("3", "计损");
@@ -83,33 +75,54 @@ public class WarehouseDashboardServiceImpl implements IWarehouseDashboardService
         String tenantId = currentTenant();
         WarehouseDashboardChartsVo vo = new WarehouseDashboardChartsVo();
 
-        // 图① 需求饼：补齐 4 业态、映射中文标签
-        vo.setDemandByType(buildDemandByType(dashboardMapper.selectDemandByType(tenantId)));
+        // 图① 果蔬产品当日需求分布饼：近 30 日 vegetable 业态按产品名（对齐原型小白菜/大白菜/...）
+        vo.setDemandByType(nullToEmpty(dashboardMapper.selectDemandByProductName(tenantId, "vegetable")));
 
-        // 图② 退货环：映射方向中文标签
+        // 图② 退货环：旧口径（方向）保留兼容；新口径按产品名分猪肉/果蔬，前端切换
         vo.setReturnByDirection(buildReturnByDirection(dashboardMapper.selectReturnByDirection(tenantId)));
+        vo.setReturnPork(nullToEmpty(dashboardMapper.selectReturnByProductName(tenantId, "pork")));
+        vo.setReturnVegetable(nullToEmpty(dashboardMapper.selectReturnByProductName(tenantId, "vegetable")));
 
-        // 图③ 生产趋势折线：近 N 日补齐
+        // 图③ 生产趋势：旧口径（总重）保留；新口径组合图（白条头数柱 + 猪肉/果蔬重量线），近 N 日补齐
         vo.setProductionTrend(fillTrend(dashboardMapper.selectProductionTrend(tenantId, TREND_DAYS)));
+        vo.setProductionWhiteBarHeadTrend(fillTrend(dashboardMapper.selectWhiteBarHeadTrend(tenantId, TREND_DAYS)));
+        vo.setProductionPorkWeightTrend(fillTrend(dashboardMapper.selectProductionWeightTrendByBelong(tenantId, TREND_DAYS, "pork")));
+        vo.setProductionVegWeightTrend(fillTrend(dashboardMapper.selectProductionWeightTrendByBelong(tenantId, TREND_DAYS, "vegetable")));
 
         // 图④ 盘点结果饼：映射 1/2/3 中文标签
         vo.setCheckResult(buildCheckResult(dashboardMapper.selectCheckResult(tenantId)));
 
-        // 图⑤ 异常库位环：异常 vs 正常
+        // 图⑤ 异常库位：旧口径（异常 vs 正常）保留兼容；新口径当月异常库位按库位名分布环
         vo.setLocationHealth(buildLocationHealth(tenantId));
+        vo.setAbnormalLocationByName(nullToEmpty(dashboardMapper.selectMonthAbnormalLocationByName(tenantId)));
 
-        // 图⑥ 损耗折线：近 N 日补齐
+        // 图⑥ 损耗趋势：旧口径（总量）保留；新口径多系列（猪肉/果蔬），近 N 日补齐
         vo.setLossTrend(fillTrend(dashboardMapper.selectLossTrend(tenantId, TREND_DAYS)));
+        vo.setLossPorkTrend(fillTrend(dashboardMapper.selectLossTrendByBelong(tenantId, TREND_DAYS, "pork")));
+        vo.setLossVegTrend(fillTrend(dashboardMapper.selectLossTrendByBelong(tenantId, TREND_DAYS, "vegetable")));
 
-        // 横条 1「今日需求」6 项
-        vo.setTodayDemandWhiteBar(nzd(dashboardMapper.sumTodayDemandByType(tenantId, "white_bar")));
-        vo.setTodayDemandVegetable(nzd(dashboardMapper.sumTodayDemandByType(tenantId, "vegetable")));
+        // 横条 1「今日需求」8 项（对齐原型）+ 兼容旧 3 项
+        vo.setTodayDemandWhiteBar(nzd(dashboardMapper.sumTodayWhiteBarHeads(tenantId)));
+        vo.setTodayDemandPork(nzd(dashboardMapper.sumTodayDemandByBelong(tenantId, "pork")));
+        vo.setTodayDemandOffal(BigDecimal.ZERO);   // 红白脏产品 V1 无对应 belong_type 数据源，默认 0
         vo.setTodayDemandGiftBox(nzd(dashboardMapper.sumTodayDemandByType(tenantId, "gift_box")));
+        vo.setTodayDemandVegetableKinds(nz(dashboardMapper.countTodayDemandKindsByBelong(tenantId, "vegetable")));
+        vo.setTodayDemandVegetable(nzd(dashboardMapper.sumTodayDemandByBelong(tenantId, "vegetable")));
+        vo.setTodayDemandEgg(nzd(dashboardMapper.sumTodayDemandByBelong(tenantId, "egg")));
+        vo.setTodayDemandDryGood(nzd(dashboardMapper.sumTodayDemandByBelong(tenantId, "dry_good")));
         vo.setTodayDemandOther(nzd(dashboardMapper.sumTodayDemandByType(tenantId, "other")));
         vo.setTodayDemandOrderCount(nz(dashboardMapper.countTodayDemandOrders(tenantId)));
         vo.setTodayDemandTotal(nzd(dashboardMapper.sumTodayDemandTotal(tenantId)));
 
-        // 横条 2「今日生产」5 项
+        // 横条 2「今日生产」8 项（对齐原型）+ 兼容旧 5 项
+        vo.setTodaySlaughterPigCount(nz(dashboardMapper.countTodaySlaughterPigs(tenantId)));
+        vo.setTodayWhiteBarWeight(nzd(dashboardMapper.sumTodayWhiteBarWeight(tenantId)));
+        vo.setTodayCutBarCount(nz(dashboardMapper.countTodayCutBars(tenantId)));
+        vo.setTodayCutProductWeight(nzd(dashboardMapper.sumTodayCutProductWeight(tenantId)));
+        vo.setTodayVegReceiveKinds(nz(dashboardMapper.countTodayVegReceiveKinds(tenantId)));
+        vo.setTodayVegReceiveWeight(nzd(dashboardMapper.sumTodayVegReceiveWeight(tenantId)));
+        vo.setTodayVegProductKinds(nz(dashboardMapper.countTodayVegProductKinds(tenantId)));
+        vo.setTodayVegProductWeight(nzd(dashboardMapper.sumTodayVegProductWeight(tenantId)));
         vo.setTodayProductionCount(nz(dashboardMapper.countTodayProduction(tenantId)));
         vo.setTodayProductionWeight(nzd(dashboardMapper.sumTodayProductionWeight(tenantId)));
         vo.setTodayInboundCount(nz(dashboardMapper.countTodayFlowByDirection(tenantId, "IN")));
@@ -117,21 +130,6 @@ public class WarehouseDashboardServiceImpl implements IWarehouseDashboardService
         vo.setTodayLossQuantity(nzd(dashboardMapper.sumTodayLoss(tenantId)));
 
         return vo;
-    }
-
-    /**
-     * 图① 需求饼：按固定 4 业态顺序补齐（无数据业态补 0），值映射成中文标签。
-     *
-     * @param rows mapper 原始行（name=product_type 值）
-     * @return 4 项 series（中文标签 + 需求量）
-     */
-    private List<ChartSeriesItemVo> buildDemandByType(List<ChartSeriesItemVo> rows) {
-        Map<String, BigDecimal> raw = toValueMap(rows);
-        List<ChartSeriesItemVo> result = new ArrayList<>();
-        for (Map.Entry<String, String> e : DEMAND_TYPE_LABELS.entrySet()) {
-            result.add(new ChartSeriesItemVo(e.getValue(), raw.getOrDefault(e.getKey(), BigDecimal.ZERO)));
-        }
-        return result;
     }
 
     /**
@@ -214,21 +212,14 @@ public class WarehouseDashboardServiceImpl implements IWarehouseDashboardService
     }
 
     /**
-     * 把 mapper 行列表压成 name→value map（null-safe）。
+     * null → 空列表（series 直传前的 null-safe 兜底）。
      *
-     * @param rows series 行
-     * @return name→value map
+     * @param rows mapper 原始 series 行（可空）
+     * @param <T>  series 元素类型
+     * @return 非空列表
      */
-    private Map<String, BigDecimal> toValueMap(List<ChartSeriesItemVo> rows) {
-        Map<String, BigDecimal> map = new LinkedHashMap<>();
-        if (rows != null) {
-            for (ChartSeriesItemVo row : rows) {
-                if (row.getName() != null) {
-                    map.put(row.getName(), nzd(row.getValue()));
-                }
-            }
-        }
-        return map;
+    private <T> List<T> nullToEmpty(List<T> rows) {
+        return rows == null ? List.of() : rows;
     }
 
     /**

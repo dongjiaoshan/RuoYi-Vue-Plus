@@ -3,6 +3,7 @@ package org.dromara.djs.warehouse.stock.service;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.warehouse.stock.domain.bo.LocationStockBo;
+import org.dromara.djs.warehouse.stock.domain.bo.StockOutBo;
 import org.dromara.djs.warehouse.stock.domain.query.LocationStockQuery;
 import org.dromara.djs.warehouse.stock.domain.vo.LocationStockVo;
 
@@ -49,5 +50,16 @@ public interface ILocationStockService {
      * 软删除库存明细（支持批量）。
      */
     int deleteWithValidByIds(Collection<Long> ids);
+
+    /**
+     * 库存查询行「产品出库」（DJS-FIX-WMS-RALN-B）。
+     *
+     * <p>按 {@link StockOutBo#getId()} 取库存行的 {@code locationId + productId}，同一 {@code @Transactional}：
+     * INSERT 出库流水（{@code inout_type='OT'} / {@code flow_type='other'}）+ 原子扣减 location_stock；
+     * 库存不足 / 库位被盘点锁定 → 抛 ServiceException 回滚。</p>
+     *
+     * @return 新增流水行主键
+     */
+    Long productOut(StockOutBo bo);
 
 }

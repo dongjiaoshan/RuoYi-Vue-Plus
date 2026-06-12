@@ -17,6 +17,8 @@ import org.dromara.djs.common.store.mapper.StoreMapper;
 import org.dromara.djs.common.util.I18nMessages;
 import org.dromara.djs.warehouse.flow.domain.StockFlow;
 import org.dromara.djs.warehouse.flow.mapper.StockFlowMapper;
+import org.dromara.djs.warehouse.product.domain.ProductInfo;
+import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
 import org.dromara.djs.warehouse.shipment.returnpkg.domain.ReturnProduct;
 import org.dromara.djs.warehouse.shipment.returnpkg.domain.bo.ReturnConfirmBo;
 import org.dromara.djs.warehouse.shipment.returnpkg.domain.bo.ReturnProductBo;
@@ -69,30 +71,50 @@ public class ReturnProductServiceImpl
 
     private final StoreMapper storeMapper;
 
+    private final ProductInfoMapper productInfoMapper;
+
     public ReturnProductServiceImpl(ReturnProductMapper baseMapper,
                                     StockFlowMapper stockFlowMapper,
                                     IBizCodeGenerator bizCodeGenerator,
-                                    StoreMapper storeMapper) {
+                                    StoreMapper storeMapper,
+                                    ProductInfoMapper productInfoMapper) {
         super(baseMapper);
         this.stockFlowMapper = stockFlowMapper;
         this.bizCodeGenerator = bizCodeGenerator;
         this.storeMapper = storeMapper;
+        this.productInfoMapper = productInfoMapper;
     }
 
     @Override
     public TableDataInfo<ReturnProductVo> queryPageList(ReturnProductQuery query, PageQuery pageQuery) {
-        Page<ReturnProductVo> page = baseMapper.selectVoPage(pageQuery.build(), buildQueryWrapper(query));
+        LambdaQueryWrapper<ReturnProduct> wrapper = buildQueryWrapper(query);
+        if (wrapper == null) {
+            // returnCategory 命中 0 个产品 → 空结果
+            return TableDataInfo.build();
+        }
+        Page<ReturnProductVo> page = baseMapper.selectVoPage(pageQuery.build(), wrapper);
+        enrichVos(page.getRecords());
         return TableDataInfo.build(page);
     }
 
     @Override
     public List<ReturnProductVo> queryList(ReturnProductQuery query) {
-        return baseMapper.selectVoList(buildQueryWrapper(query));
+        LambdaQueryWrapper<ReturnProduct> wrapper = buildQueryWrapper(query);
+        if (wrapper == null) {
+            return List.of();
+        }
+        List<ReturnProductVo> list = baseMapper.selectVoList(wrapper);
+        enrichVos(list);
+        return list;
     }
 
     @Override
     public ReturnProductVo queryById(Long id) {
-        return baseMapper.selectVoById(id);
+        ReturnProductVo vo = baseMapper.selectVoById(id);
+        if (vo != null) {
+            enrichVos(List.of(vo));
+        }
+        return vo;
     }
 
     @Override
@@ -262,14 +284,31 @@ public class ReturnProductServiceImpl
                 LinkedHashMap::new));
     }
 
+    /**
+     * 构建列表查询条件。
+     *
+     * <p>返回 {@code null} 表示「退货品类」过滤命中 0 个产品 → 调用方应直接返回空结果。</p>
+     */
     private LambdaQueryWrapper<ReturnProduct> buildQueryWrapper(ReturnProductQuery q) {
         LambdaQueryWrapper<ReturnProduct> w = new LambdaQueryWrapper<>();
         if (q == null) {
             return w.orderByDesc(ReturnProduct::getId);
         }
+        // 退货品类（belongType）→ 命中产品集合，再按 product_id IN 过滤退货记录
+        List<Long> categoryProductIds = null;
+        if (StringUtils.isNotBlank(q.getReturnCategory())) {
+            categoryProductIds = productInfoMapper.selectList(new LambdaQueryWrapper<ProductInfo>()
+                    .select(ProductInfo::getId)
+                    .eq(ProductInfo::getBelongType, q.getReturnCategory()))
+                .stream().map(ProductInfo::getId).filter(Objects::nonNull).collect(Collectors.toList());
+            if (categoryProductIds.isEmpty()) {
+                return null;
+            }
+        }
         w.like(StringUtils.isNotBlank(q.getReturnNo()), ReturnProduct::getReturnNo, q.getReturnNo())
             .eq(q.getStoreId() != null, ReturnProduct::getStoreId, q.getStoreId())
             .eq(q.getProductId() != null, ReturnProduct::getProductId, q.getProductId())
+            .in(categoryProductIds != null, ReturnProduct::getProductId, categoryProductIds)
             .eq(q.getIsConfirm() != null, ReturnProduct::getIsConfirm, q.getIsConfirm())
             .eq(StringUtils.isNotBlank(q.getReturnDirection()),
                 ReturnProduct::getReturnDirection, q.getReturnDirection())
@@ -281,6 +320,59 @@ public class ReturnProductServiceImpl
                 q.getApplyDateTo() == null ? null : q.getApplyDateTo().atTime(23, 59, 59))
             .orderByDesc(ReturnProduct::getId);
         return w;
+    }
+
+    /**
+     * 批量回填列表派生列（对齐原型）：门店名 / 退货品类(belongType) / 退货产品编号 / 退货单位 /
+     * 产品原材料名 / 重量差异。一次 in 查门店 + 产品 + 原材料，无 N+1。
+     */
+    private void enrichVos(List<ReturnProductVo> vos) {
+        if (vos == null || vos.isEmpty()) {
+            return;
+        }
+        // 1. 门店名
+        Set<Long> storeIds = vos.stream().map(ReturnProductVo::getStoreId)
+            .filter(Objects::nonNull).collect(Collectors.toSet());
+        Map<Long, String> storeNameMap = loadStoreNameMap(storeIds);
+        // 2. 产品主数据（编号 / 单位 / 品类 / 原材料 FK）
+        Set<Long> productIds = vos.stream().map(ReturnProductVo::getProductId)
+            .filter(Objects::nonNull).collect(Collectors.toSet());
+        Map<Long, ProductInfo> productMap = loadProductMap(productIds);
+        // 3. 原材料产品名（product_material FK → 另一产品）
+        Set<Long> materialIds = productMap.values().stream()
+            .map(ProductInfo::getProductMaterial).filter(Objects::nonNull).collect(Collectors.toSet());
+        Map<Long, ProductInfo> materialMap = loadProductMap(materialIds);
+        // 4. 逐行回填
+        for (ReturnProductVo vo : vos) {
+            if (vo.getStoreId() != null) {
+                vo.setStoreName(storeNameMap.get(vo.getStoreId()));
+            }
+            ProductInfo p = vo.getProductId() == null ? null : productMap.get(vo.getProductId());
+            if (p != null) {
+                vo.setReturnCategory(p.getBelongType());
+                vo.setReturnProductCode(p.getProductId());
+                vo.setProductUnit(p.getProductUnit());
+                // 原材料：优先取 product_material 关联产品名；无关联则取自身名（自身即原材料）
+                ProductInfo material = p.getProductMaterial() == null ? null : materialMap.get(p.getProductMaterial());
+                vo.setProductMaterialName(material != null ? material.getProductName() : p.getProductName());
+            }
+            // 重量差异 = 退货重量 - 实收重量（未确认时 confirmWeight 为 null → 差异留空）
+            if (vo.getReturnWeight() != null && vo.getConfirmWeight() != null) {
+                vo.setWeightDiff(vo.getReturnWeight().subtract(vo.getConfirmWeight()));
+            }
+        }
+    }
+
+    /** 批量取产品主数据 map（无 N+1）。 */
+    private Map<Long, ProductInfo> loadProductMap(Set<Long> productIds) {
+        if (productIds == null || productIds.isEmpty()) {
+            return Map.of();
+        }
+        return productInfoMapper.selectList(new LambdaQueryWrapper<ProductInfo>()
+                .select(ProductInfo::getId, ProductInfo::getProductId, ProductInfo::getProductName,
+                    ProductInfo::getProductUnit, ProductInfo::getBelongType, ProductInfo::getProductMaterial)
+                .in(ProductInfo::getId, productIds))
+            .stream().collect(Collectors.toMap(ProductInfo::getId, p -> p, (a, b) -> a, LinkedHashMap::new));
     }
 
     /**

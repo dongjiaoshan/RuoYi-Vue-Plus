@@ -36,13 +36,13 @@ public interface DemandManageMapper extends BaseMapperPlus<DemandManage, DemandM
      */
     @Select("""
         SELECT
-          COALESCE(SUM(CASE WHEN product_type = 'white_bar' THEN demand_quantity ELSE 0 END), 0) AS todayPigDemand,
+          COALESCE(SUM(CASE WHEN product_type IN ('white_bar','pig') THEN demand_quantity ELSE 0 END), 0) AS todayPigDemand,
           COUNT(DISTINCT CASE WHEN product_type = 'vegetable' THEN product_id END) AS todayVegSpeciesDemand,
           COUNT(DISTINCT CASE WHEN product_type = 'vegetable'
                 AND demand_status IN ('CONFIRMED','IN_PRODUCTION','PARTIAL_SHIPPED','COMPLETED')
                 THEN product_id END) AS todayVegSpeciesAssigned,
-          COUNT(CASE WHEN product_type IN ('other','gift_box') THEN 1 END) AS todayOtherDemand,
-          COUNT(CASE WHEN product_type IN ('other','gift_box')
+          COUNT(CASE WHEN product_type IN ('other','gift_box','dry','egg') THEN 1 END) AS todayOtherDemand,
+          COUNT(CASE WHEN product_type IN ('other','gift_box','dry','egg')
                 AND demand_status IN ('CONFIRMED','IN_PRODUCTION','PARTIAL_SHIPPED','COMPLETED')
                 THEN 1 END) AS todayOtherAssigned
         FROM t_warehouse_demand_manage
@@ -69,7 +69,7 @@ public interface DemandManageMapper extends BaseMapperPlus<DemandManage, DemandM
              AND dm.del_flag = '0'
              AND dm.tenant_id = dp.tenant_id
         WHERE dm.demand_date = #{today}
-          AND dm.product_type = 'white_bar'
+          AND dm.product_type IN ('white_bar','pig')
           AND dp.del_flag = '0'
           AND dp.tenant_id = '1001'
         """)

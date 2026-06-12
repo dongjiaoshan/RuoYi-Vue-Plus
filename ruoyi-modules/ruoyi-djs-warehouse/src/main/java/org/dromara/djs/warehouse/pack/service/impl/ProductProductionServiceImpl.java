@@ -11,6 +11,10 @@ import org.dromara.common.satoken.utils.LoginHelper;
 import org.dromara.djs.common.base.DjsBaseServiceImpl;
 import org.dromara.djs.common.encoder.BizCodeType;
 import org.dromara.djs.common.encoder.IBizCodeGenerator;
+import org.dromara.djs.common.store.domain.Store;
+import org.dromara.djs.common.store.mapper.StoreMapper;
+import org.dromara.djs.plant.plot.domain.PlotInfo;
+import org.dromara.djs.plant.plot.mapper.PlotInfoMapper;
 import org.dromara.djs.warehouse.flow.domain.StockFlow;
 import org.dromara.djs.warehouse.flow.mapper.StockFlowMapper;
 import org.dromara.djs.warehouse.location.domain.LocationInfo;
@@ -45,6 +49,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
@@ -128,6 +133,8 @@ public class ProductProductionServiceImpl
     private final LocationInfoMapper locationInfoMapper;
     private final LocationStockMapper locationStockMapper;
     private final StockFlowMapper stockFlowMapper;
+    private final StoreMapper storeMapper;
+    private final PlotInfoMapper plotInfoMapper;
     private final IBizCodeGenerator bizCodeGenerator;
     private final ITraceService traceService;
 
@@ -138,6 +145,8 @@ public class ProductProductionServiceImpl
                                         LocationInfoMapper locationInfoMapper,
                                         LocationStockMapper locationStockMapper,
                                         StockFlowMapper stockFlowMapper,
+                                        StoreMapper storeMapper,
+                                        PlotInfoMapper plotInfoMapper,
                                         IBizCodeGenerator bizCodeGenerator,
                                         ITraceService traceService) {
         super(baseMapper);
@@ -147,6 +156,8 @@ public class ProductProductionServiceImpl
         this.locationInfoMapper = locationInfoMapper;
         this.locationStockMapper = locationStockMapper;
         this.stockFlowMapper = stockFlowMapper;
+        this.storeMapper = storeMapper;
+        this.plotInfoMapper = plotInfoMapper;
         this.bizCodeGenerator = bizCodeGenerator;
         this.traceService = traceService;
     }
@@ -468,6 +479,24 @@ public class ProductProductionServiceImpl
     }
 
     @Override
+    public TableDataInfo<ProductProductionVo> queryItemPageList(ProductProductionQuery query, PageQuery pageQuery) {
+        // 下钻必须锁定一个生产批次（生产日期 + 产品），缺则返回空（避免误拉全表逐件）
+        if (query == null || query.getProductId() == null || query.getProduceDate() == null) {
+            return TableDataInfo.build(List.of());
+        }
+        LambdaQueryWrapper<ProductProduction> wrapper = new LambdaQueryWrapper<>();
+        wrapper.eq(ProductProduction::getProductId, query.getProductId())
+            .apply("DATE(produce_date) = DATE({0})", query.getProduceDate())
+            .eq(query.getProductSort() != null, ProductProduction::getProductSort, query.getProductSort())
+            .eq(query.getStoreId() != null, ProductProduction::getStoreId, query.getStoreId())
+            .orderByAsc(ProductProduction::getProductSort)
+            .orderByAsc(ProductProduction::getId);
+        Page<ProductProductionVo> page = baseMapper.selectVoPage(pageQuery.build(), wrapper);
+        fillJoinNames(page.getRecords());
+        return TableDataInfo.build(page);
+    }
+
+    @Override
     public ProductProductionVo queryById(Long id) {
         ProductProductionVo vo = baseMapper.selectVoById(id);
         if (vo != null) {
@@ -684,10 +713,12 @@ public class ProductProductionServiceImpl
         w.eq(StringUtils.isNotBlank(query.getProduceNo()),  ProductProduction::getProduceNo, query.getProduceNo())
             .eq(query.getProductId() != null,    ProductProduction::getProductId, query.getProductId())
             .eq(query.getProductType() != null,  ProductProduction::getProductType, query.getProductType())
+            .eq(query.getProductSort() != null,  ProductProduction::getProductSort, query.getProductSort())
             .eq(StringUtils.isNotBlank(query.getPackStatus()), ProductProduction::getPackStatus, query.getPackStatus())
             .eq(StringUtils.isNotBlank(query.getEarNo()), ProductProduction::getEarNo, query.getEarNo())
             .eq(query.getPlotId() != null, ProductProduction::getPlotId, query.getPlotId())
             .eq(query.getStoreId() != null, ProductProduction::getStoreId, query.getStoreId())
+            .apply(query.getProduceDate() != null, "DATE(produce_date) = DATE({0})", query.getProduceDate())
             .ge(query.getProduceTimeFrom() != null, ProductProduction::getProduceTime, query.getProduceTimeFrom())
             .le(query.getProduceTimeTo() != null,   ProductProduction::getProduceTime, query.getProduceTimeTo())
             .orderByDesc(ProductProduction::getProduceTime)
@@ -696,19 +727,44 @@ public class ProductProductionServiceImpl
     }
 
     /**
-     * 批量回填 plotName / storeName（V1 简化：仅按 ID 占位 log，admin 列表 plot/store 字段
-     * 由前端字典 / 翻译注解处理；N+1 优化推 D11 集中治理）。
+     * 批量回填 plotName / storeName（按 store_id / plot_id 跨域 IN 查，无 N+1）。
+     *
+     * <p>所属门店 / 来源地块列把 ID 显示成名称：store_id → {@code t_md_store.store_name}
+     * （StoreMapper 在 ruoyi-djs-common），plot_id → {@code t_plant_plot_info.plot_name}
+     * （PlotInfoMapper 在 ruoyi-djs-plant，warehouse 模块已依赖）。</p>
      */
     private void fillJoinNames(List<ProductProductionVo> rows) {
         if (rows == null || rows.isEmpty()) {
             return;
         }
-        List<Long> ids = rows.stream()
-            .map(ProductProductionVo::getId)
+        Set<Long> storeIds = rows.stream()
+            .map(ProductProductionVo::getStoreId)
             .filter(Objects::nonNull)
-            .distinct()
-            .collect(Collectors.toList());
-        log.debug("[WMS-PACK-001] fillJoinNames rows={} ids={}", rows.size(), ids);
+            .collect(Collectors.toSet());
+        Set<Long> plotIds = rows.stream()
+            .map(ProductProductionVo::getPlotId)
+            .filter(Objects::nonNull)
+            .collect(Collectors.toSet());
+
+        Map<Long, String> storeNameMap = storeIds.isEmpty() ? Map.of()
+            : storeMapper.selectList(new LambdaQueryWrapper<Store>()
+                    .select(Store::getId, Store::getStoreName)
+                    .in(Store::getId, storeIds))
+                .stream().collect(Collectors.toMap(Store::getId, Store::getStoreName, (a, b) -> a));
+        Map<Long, String> plotNameMap = plotIds.isEmpty() ? Map.of()
+            : plotInfoMapper.selectList(new LambdaQueryWrapper<PlotInfo>()
+                    .select(PlotInfo::getId, PlotInfo::getPlotName)
+                    .in(PlotInfo::getId, plotIds))
+                .stream().collect(Collectors.toMap(PlotInfo::getId, PlotInfo::getPlotName, (a, b) -> a));
+
+        for (ProductProductionVo vo : rows) {
+            if (vo.getStoreId() != null) {
+                vo.setStoreName(storeNameMap.get(vo.getStoreId()));
+            }
+            if (vo.getPlotId() != null) {
+                vo.setPlotName(plotNameMap.get(vo.getPlotId()));
+            }
+        }
     }
 
 }

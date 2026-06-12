@@ -47,22 +47,34 @@ public class StockCheckRecordVo implements Serializable {
 
     private Long productId;
 
-    @ExcelProperty(value = "产品")
+    /**
+     * 产品代码（业务码，service 层按 productId 回填 {@code ProductInfo.productId}）。
+     */
+    @ExcelProperty(value = "产品代码")
+    private String productCode;
+
+    @ExcelProperty(value = "产品名称")
     private String productName;
 
     @ExcelProperty(value = "单位")
     private String productUnit;
 
-    @ExcelProperty(value = "系统量")
+    @ExcelProperty(value = "库存量")
     private BigDecimal sysStock;
 
-    @ExcelProperty(value = "实盘量")
+    @ExcelProperty(value = "盘点库存量")
     private BigDecimal checkStock;
+
+    /**
+     * 盘点计损量（正常结果时计入的损耗量 = {@code |sysStock - checkStock|}；异常时为 0；service 层派生）。
+     */
+    @ExcelProperty(value = "盘点计损量")
+    private BigDecimal lossWeight;
 
     @ExcelProperty(value = "差异")
     private BigDecimal diffStock;
 
-    @ExcelProperty(value = "结果类型")
+    @ExcelProperty(value = "盘点结果")
     private Integer checkResultType;
 
     @ExcelProperty(value = "差异原因")

@@ -4,6 +4,8 @@ import cn.idev.excel.annotation.ExcelIgnoreUnannotated;
 import cn.idev.excel.annotation.ExcelProperty;
 import com.fasterxml.jackson.annotation.JsonFormat;
 import lombok.Data;
+import org.dromara.common.translation.annotation.Translation;
+import org.dromara.common.translation.constant.TransConstant;
 
 import java.io.Serial;
 import java.io.Serializable;
@@ -54,16 +56,34 @@ public class StockCheckHeaderVo implements Serializable {
     private String checkStatus;
 
     /**
-     * 明细行数（service 聚合）。
+     * 盘点商品数 = 本盘点单明细 line 数（service 聚合）。
      */
-    @ExcelProperty(value = "明细数")
+    @ExcelProperty(value = "盘点商品数")
     private Integer lineCount;
+
+    /**
+     * 盘点异常数 = 结果类型为异常（{@code djs_check_result=2}）的 line 数（service 聚合）。
+     */
+    @ExcelProperty(value = "盘点异常数")
+    private Integer abnormalCount;
 
     /**
      * 盈亏计 = SUM(diff_stock)（service 聚合；&gt;0 净盘盈 / &lt;0 净盘亏）。
      */
     @ExcelProperty(value = "盈亏计")
     private BigDecimal diffSum;
+
+    /**
+     * 盘点人 ID（取盘点单头 {@code create_by} 发起人；供 {@link Translation} 取昵称）。
+     */
+    private Long checkBy;
+
+    /**
+     * 盘点人姓名（{@code USER_ID_TO_NICKNAME} 翻译，VO 序列化时填）。
+     */
+    @ExcelProperty(value = "盘点人")
+    @Translation(type = TransConstant.USER_ID_TO_NICKNAME, mapper = "checkBy")
+    private String checkByName;
 
     @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")
     @ExcelProperty(value = "创建时间")

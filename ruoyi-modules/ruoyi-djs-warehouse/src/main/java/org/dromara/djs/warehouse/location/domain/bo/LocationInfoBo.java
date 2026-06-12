@@ -69,6 +69,18 @@ public class LocationInfoBo extends BaseEntity {
     private Integer locationStatus;
 
     /**
+     * 库位排序（升序，越小越靠前）。
+     */
+    @PositiveOrZero(message = "{location.sort.positive}")
+    private Integer locationSort;
+
+    /**
+     * 库位说明。
+     */
+    @Size(max = 500, message = "{location.desc.size}")
+    private String locationDesc;
+
+    /**
      * 容量（kg / m³）。
      */
     @PositiveOrZero(message = "{location.capacity.positive}")

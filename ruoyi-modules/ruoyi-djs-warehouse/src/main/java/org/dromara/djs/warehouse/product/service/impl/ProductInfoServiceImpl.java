@@ -11,26 +11,44 @@ import org.dromara.common.core.utils.StringUtils;
 
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
+import org.dromara.common.satoken.utils.LoginHelper;
 import org.dromara.djs.common.base.DjsBaseServiceImpl;
+import org.dromara.djs.common.encoder.BizCodeType;
+import org.dromara.djs.common.encoder.IBizCodeGenerator;
 import org.dromara.djs.common.image.service.IImageLibraryService;
 import org.dromara.djs.common.image.service.ImageUrlResolver;
 import org.dromara.djs.common.util.I18nMessages;
+import org.dromara.djs.warehouse.check.service.IStockCheckService;
+import org.dromara.djs.warehouse.flow.domain.StockFlow;
+import org.dromara.djs.warehouse.flow.mapper.StockFlowMapper;
+import org.dromara.djs.warehouse.location.domain.LocationInfo;
+import org.dromara.djs.warehouse.location.mapper.LocationInfoMapper;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.domain.bo.GiftBoxBo;
+import org.dromara.djs.warehouse.product.domain.bo.ProductInboundBo;
 import org.dromara.djs.warehouse.product.domain.bo.ProductInfoBo;
 import org.dromara.djs.warehouse.product.domain.query.ProductInfoQuery;
 import org.dromara.djs.warehouse.product.domain.vo.GiftBoxVo;
+import org.dromara.djs.warehouse.product.domain.vo.ProductFlowRecordVo;
 import org.dromara.djs.warehouse.product.domain.vo.ProductInfoVo;
+import org.dromara.djs.warehouse.product.domain.vo.ProductProductionRecordVo;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
 import org.dromara.djs.warehouse.product.service.IGiftBoxService;
 import org.dromara.djs.warehouse.product.service.IProductInfoService;
+import org.dromara.djs.warehouse.stock.domain.LocationStock;
+import org.dromara.djs.warehouse.stock.mapper.LocationStockMapper;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Date;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 import java.util.stream.Collectors;
 
 /**
@@ -63,18 +81,38 @@ public class ProductInfoServiceImpl extends DjsBaseServiceImpl<ProductInfoMapper
     private static final int PRODUCT_TYPE_PURCHASE = 2;
     private static final int PRODUCT_TYPE_GIFT_BOX = 3;
 
+    /** 出入库方向（stock_flow.inout_type CHAR(3)）。 */
+    private static final String INOUT_IN = "IN";
+    /** 产品入库 flow_type（djs_flow_type）。 */
+    private static final String FLOW_TYPE_PURCHASE_IN = "purchase_in";
+
     private final IGiftBoxService giftBoxService;
     private final IImageLibraryService imageLibraryService;
     private final ImageUrlResolver imageUrlResolver;
+    private final LocationInfoMapper locationInfoMapper;
+    private final StockFlowMapper stockFlowMapper;
+    private final LocationStockMapper locationStockMapper;
+    private final IBizCodeGenerator bizCodeGenerator;
+    private final IStockCheckService stockCheckService;
 
     public ProductInfoServiceImpl(ProductInfoMapper baseMapper,
                                   IGiftBoxService giftBoxService,
                                   IImageLibraryService imageLibraryService,
-                                  ImageUrlResolver imageUrlResolver) {
+                                  ImageUrlResolver imageUrlResolver,
+                                  LocationInfoMapper locationInfoMapper,
+                                  StockFlowMapper stockFlowMapper,
+                                  LocationStockMapper locationStockMapper,
+                                  IBizCodeGenerator bizCodeGenerator,
+                                  IStockCheckService stockCheckService) {
         super(baseMapper);
         this.giftBoxService = giftBoxService;
         this.imageLibraryService = imageLibraryService;
         this.imageUrlResolver = imageUrlResolver;
+        this.locationInfoMapper = locationInfoMapper;
+        this.stockFlowMapper = stockFlowMapper;
+        this.locationStockMapper = locationStockMapper;
+        this.bizCodeGenerator = bizCodeGenerator;
+        this.stockCheckService = stockCheckService;
     }
 
     @Override
@@ -82,6 +120,7 @@ public class ProductInfoServiceImpl extends DjsBaseServiceImpl<ProductInfoMapper
         LambdaQueryWrapper<ProductInfo> wrapper = buildQueryWrapper(query);
         Page<ProductInfoVo> page = baseMapper.selectVoPage(pageQuery.build(), wrapper);
         fillImageUrls(page.getRecords());
+        fillStoreLocationNames(page.getRecords());
         return TableDataInfo.build(page);
     }
 
@@ -89,6 +128,7 @@ public class ProductInfoServiceImpl extends DjsBaseServiceImpl<ProductInfoMapper
     public List<ProductInfoVo> queryList(ProductInfoQuery query) {
         List<ProductInfoVo> list = baseMapper.selectVoList(buildQueryWrapper(query));
         fillImageUrls(list);
+        fillStoreLocationNames(list);
         return list;
     }
 
@@ -338,14 +378,153 @@ public class ProductInfoServiceImpl extends DjsBaseServiceImpl<ProductInfoMapper
         if (query == null) {
             return wrapper.orderByDesc(ProductInfo::getId);
         }
+        boolean hasTypeSet = query.getProductTypes() != null && !query.getProductTypes().isEmpty();
         wrapper.eq(StringUtils.isNotBlank(query.getProductId()), ProductInfo::getProductId, query.getProductId())
             .like(StringUtils.isNotBlank(query.getProductName()), ProductInfo::getProductName, query.getProductName())
-            .eq(query.getProductType() != null, ProductInfo::getProductType, query.getProductType())
+            // productTypes 集合优先（产品配置入口 {1,3}）；否则退回单值 productType
+            .in(hasTypeSet, ProductInfo::getProductType, query.getProductTypes())
+            .eq(!hasTypeSet && query.getProductType() != null, ProductInfo::getProductType, query.getProductType())
             .eq(StringUtils.isNotBlank(query.getBelongType()), ProductInfo::getBelongType, query.getBelongType())
             .eq(StringUtils.isNotBlank(query.getBuyClass()), ProductInfo::getBuyClass, query.getBuyClass())
+            .eq(query.getProductWorkshop() != null, ProductInfo::getProductWorkshop, query.getProductWorkshop())
+            .eq(StringUtils.isNotBlank(query.getStoreLocationId()), ProductInfo::getStoreLocationId, query.getStoreLocationId())
             .eq(query.getProductStatus() != null, ProductInfo::getProductStatus, query.getProductStatus())
+            .eq(query.getUpdateBy() != null, ProductInfo::getUpdateBy, query.getUpdateBy())
+            .ge(query.getUpdateBeginTime() != null, ProductInfo::getUpdateTime, query.getUpdateBeginTime())
+            .le(query.getUpdateEndTime() != null, ProductInfo::getUpdateTime, query.getUpdateEndTime())
             .orderByDesc(ProductInfo::getId);
         return wrapper;
+    }
+
+    /**
+     * 批量回填 {@code storeLocationName}（store_location_id 逗号分隔 → location_info.location_name 逗号拼接，禁 N+1）。
+     */
+    private void fillStoreLocationNames(List<ProductInfoVo> records) {
+        if (records == null || records.isEmpty()) {
+            return;
+        }
+        // 收集全部库位 ID（逗号分隔展开 + 去重）
+        List<Long> allLocIds = records.stream()
+            .map(ProductInfoVo::getStoreLocationId)
+            .filter(StringUtils::isNotBlank)
+            .flatMap(s -> java.util.Arrays.stream(s.split(",")))
+            .map(String::trim)
+            .filter(StringUtils::isNotBlank)
+            .map(s -> {
+                try {
+                    return Long.valueOf(s);
+                } catch (NumberFormatException e) {
+                    return null;
+                }
+            })
+            .filter(Objects::nonNull)
+            .distinct()
+            .toList();
+        if (allLocIds.isEmpty()) {
+            return;
+        }
+        List<LocationInfo> locations = locationInfoMapper.selectList(
+            new LambdaQueryWrapper<LocationInfo>().in(LocationInfo::getId, allLocIds));
+        Map<Long, String> nameMap = locations.stream()
+            .collect(Collectors.toMap(LocationInfo::getId, LocationInfo::getLocationName, (a, b) -> a));
+        for (ProductInfoVo vo : records) {
+            if (StringUtils.isBlank(vo.getStoreLocationId())) {
+                continue;
+            }
+            String names = java.util.Arrays.stream(vo.getStoreLocationId().split(","))
+                .map(String::trim)
+                .filter(StringUtils::isNotBlank)
+                .map(s -> {
+                    try {
+                        return nameMap.get(Long.valueOf(s));
+                    } catch (NumberFormatException e) {
+                        return null;
+                    }
+                })
+                .filter(Objects::nonNull)
+                .collect(Collectors.joining(", "));
+            vo.setStoreLocationName(StringUtils.isBlank(names) ? null : names);
+        }
+    }
+
+    @Override
+    public List<ProductProductionRecordVo> queryProductionRecords(Long productId, Date produceDate, String produceType) {
+        if (productId == null) {
+            throw new ServiceException("产品 ID 不能为空");
+        }
+        String type = StringUtils.isBlank(produceType) ? null : produceType.trim();
+        List<ProductProductionRecordVo> records =
+            baseMapper.selectProductionRecords(productId, produceDate, type);
+        // 标准计重 / 差异源表无独立列，留 NULL；若后续 schema 补 standard_weight，此处计算 diff = 生产重量 - 标准计重
+        for (ProductProductionRecordVo r : records) {
+            BigDecimal std = r.getStandardWeight();
+            if (std != null && r.getProduceWeight() != null) {
+                r.setDiffWeight(r.getProduceWeight().subtract(std));
+            }
+        }
+        return records;
+    }
+
+    @Override
+    public List<ProductFlowRecordVo> queryFlowRecords(Long productId, Date bizDate) {
+        if (productId == null) {
+            throw new ServiceException("产品 ID 不能为空");
+        }
+        return baseMapper.selectFlowRecords(productId, bizDate);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public Long inbound(ProductInboundBo bo) {
+        if (bo == null || bo.getProductId() == null || bo.getLocationId() == null
+            || bo.getQuantity() == null || bo.getQuantity().compareTo(BigDecimal.ZERO) <= 0) {
+            throw new ServiceException("入库参数不合法");
+        }
+        ProductInfo product = baseMapper.selectById(bo.getProductId());
+        if (product == null) {
+            throw new ServiceException("产品不存在或已删除：" + bo.getProductId());
+        }
+        // 盘点锁：库位被盘点锁定时禁止入库（与其他写入路径一致）
+        stockCheckService.assertLocationUnlocked(bo.getLocationId());
+        Long userId = LoginHelper.getUserId();
+
+        // 1. INSERT 入库流水（IN / purchase_in）
+        StockFlow flow = new StockFlow();
+        flow.setFlowNo(generateFlowNo(INOUT_IN));
+        flow.setFlowDate(new Date());
+        flow.setProductId(bo.getProductId());
+        flow.setWarehouseId(bo.getLocationId());
+        flow.setInoutType(INOUT_IN);
+        flow.setFlowType(FLOW_TYPE_PURCHASE_IN);
+        flow.setChangeNum(bo.getQuantity());
+        flow.setChangeQuantity(bo.getQuantity());
+        flow.setOperatorId(userId);
+        flow.setRemark(bo.getRemark());
+        stockFlowMapper.insert(flow);
+
+        // 2. UPDATE location_stock 加库存；无对应行 → 兜底 INSERT 新库存行
+        int affected = locationStockMapper.addByProductLocation(bo.getLocationId(), bo.getProductId(), bo.getQuantity(), userId);
+        if (affected == 0) {
+            LocationStock stock = new LocationStock();
+            stock.setLocationId(bo.getLocationId());
+            stock.setProductId(bo.getProductId());
+            stock.setProductName(product.getProductName());
+            stock.setProductStock(bo.getQuantity());
+            stock.setProductUnit(product.getProductUnit());
+            stock.setIsEnd(0);
+            stock.setOperatorId(userId);
+            locationStockMapper.insert(stock);
+        }
+        return flow.getId();
+    }
+
+    /**
+     * 生成流水号（复用 SYS-INFRA-004 BizCodeService；ioCode = IN/OT）。
+     */
+    private String generateFlowNo(String ioCode) {
+        Map<String, Object> ctx = new HashMap<>(2);
+        ctx.put("ioCode", ioCode);
+        return bizCodeGenerator.generate(BizCodeType.STOCK_FLOW_NO, ctx);
     }
 
 }

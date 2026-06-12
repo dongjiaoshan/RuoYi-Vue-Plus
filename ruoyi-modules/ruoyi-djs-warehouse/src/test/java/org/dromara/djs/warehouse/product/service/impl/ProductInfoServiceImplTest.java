@@ -19,6 +19,7 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
+import org.mockito.ArgumentMatchers;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
@@ -77,6 +78,21 @@ class ProductInfoServiceImplTest {
     @Mock
     private org.dromara.djs.common.image.service.ImageUrlResolver imageUrlResolver;
 
+    @Mock
+    private org.dromara.djs.warehouse.location.mapper.LocationInfoMapper locationInfoMapper;
+
+    @Mock
+    private org.dromara.djs.warehouse.flow.mapper.StockFlowMapper stockFlowMapper;
+
+    @Mock
+    private org.dromara.djs.warehouse.stock.mapper.LocationStockMapper locationStockMapper;
+
+    @Mock
+    private org.dromara.djs.common.encoder.IBizCodeGenerator bizCodeGenerator;
+
+    @Mock
+    private org.dromara.djs.warehouse.check.service.IStockCheckService stockCheckService;
+
     private TestableProductInfoServiceImpl service;
 
     /**
@@ -85,8 +101,14 @@ class ProductInfoServiceImplTest {
     static class TestableProductInfoServiceImpl extends ProductInfoServiceImpl {
         TestableProductInfoServiceImpl(ProductInfoMapper baseMapper, IGiftBoxService giftBoxService,
                                        org.dromara.djs.common.image.service.IImageLibraryService imageLibraryService,
-                                       org.dromara.djs.common.image.service.ImageUrlResolver imageUrlResolver) {
-            super(baseMapper, giftBoxService, imageLibraryService, imageUrlResolver);
+                                       org.dromara.djs.common.image.service.ImageUrlResolver imageUrlResolver,
+                                       org.dromara.djs.warehouse.location.mapper.LocationInfoMapper locationInfoMapper,
+                                       org.dromara.djs.warehouse.flow.mapper.StockFlowMapper stockFlowMapper,
+                                       org.dromara.djs.warehouse.stock.mapper.LocationStockMapper locationStockMapper,
+                                       org.dromara.djs.common.encoder.IBizCodeGenerator bizCodeGenerator,
+                                       org.dromara.djs.warehouse.check.service.IStockCheckService stockCheckService) {
+            super(baseMapper, giftBoxService, imageLibraryService, imageUrlResolver,
+                locationInfoMapper, stockFlowMapper, locationStockMapper, bizCodeGenerator, stockCheckService);
         }
 
         @Override
@@ -121,7 +143,8 @@ class ProductInfoServiceImplTest {
 
     @BeforeEach
     void setup() {
-        service = new TestableProductInfoServiceImpl(productInfoMapper, giftBoxService, imageLibraryService, imageUrlResolver);
+        service = new TestableProductInfoServiceImpl(productInfoMapper, giftBoxService, imageLibraryService, imageUrlResolver,
+            locationInfoMapper, stockFlowMapper, locationStockMapper, bizCodeGenerator, stockCheckService);
     }
 
     private ProductInfoBo selfBo() {
@@ -416,6 +439,54 @@ class ProductInfoServiceImplTest {
         assertThat(result.getTotal()).isEqualTo(1);
         assertThat(result.getRows()).hasSize(1);
         assertThat(result.getRows().get(0).getProductId()).isEqualTo("P0001");
+    }
+
+    @Test
+    @DisplayName("产品入库 happy → 写入库流水（IN/purchase_in）+ addByProductLocation 命中既有库存行")
+    void testInbound_Happy() {
+        ProductInfo product = new ProductInfo();
+        product.setId(20001L);
+        product.setProductName("支原体保健药");
+        product.setProductUnit("盒");
+        when(productInfoMapper.selectById(eq(20001L))).thenReturn(product);
+        when(bizCodeGenerator.generate(any(), any())).thenReturn("F20260612IN0001");
+        // 既有库存行命中 → 返 1，不走兜底 INSERT
+        when(locationStockMapper.addByProductLocation(eq(30001L), eq(20001L), any(BigDecimal.class), any()))
+            .thenReturn(1);
+
+        org.dromara.djs.warehouse.product.domain.bo.ProductInboundBo bo =
+            new org.dromara.djs.warehouse.product.domain.bo.ProductInboundBo();
+        bo.setProductId(20001L);
+        bo.setLocationId(30001L);
+        bo.setQuantity(new BigDecimal("22"));
+
+        service.inbound(bo);
+
+        ArgumentCaptor<org.dromara.djs.warehouse.flow.domain.StockFlow> flowCaptor =
+            ArgumentCaptor.forClass(org.dromara.djs.warehouse.flow.domain.StockFlow.class);
+        verify(stockFlowMapper).insert(flowCaptor.capture());
+        org.dromara.djs.warehouse.flow.domain.StockFlow flow = flowCaptor.getValue();
+        assertThat(flow.getInoutType()).isEqualTo("IN");
+        assertThat(flow.getFlowType()).isEqualTo("purchase_in");
+        assertThat(flow.getProductId()).isEqualTo(20001L);
+        assertThat(flow.getWarehouseId()).isEqualTo(30001L);
+        assertThat(flow.getChangeQuantity()).isEqualByComparingTo("22");
+        // 命中既有库存行（addByProductLocation 返 1）→ 不兜底 INSERT；盘点锁已校验
+        verify(locationStockMapper).addByProductLocation(eq(30001L), eq(20001L), any(BigDecimal.class), any());
+        verify(stockCheckService).assertLocationUnlocked(eq(30001L));
+    }
+
+    @Test
+    @DisplayName("产品入库：产品不存在 → ServiceException")
+    void testInbound_ProductNotFound() {
+        when(productInfoMapper.selectById(eq(99999L))).thenReturn(null);
+        org.dromara.djs.warehouse.product.domain.bo.ProductInboundBo bo =
+            new org.dromara.djs.warehouse.product.domain.bo.ProductInboundBo();
+        bo.setProductId(99999L);
+        bo.setLocationId(30001L);
+        bo.setQuantity(new BigDecimal("5"));
+        assertThatThrownBy(() -> service.inbound(bo)).isInstanceOf(ServiceException.class);
+        verify(stockFlowMapper, never()).insert(ArgumentMatchers.<org.dromara.djs.warehouse.flow.domain.StockFlow>any());
     }
 
 }

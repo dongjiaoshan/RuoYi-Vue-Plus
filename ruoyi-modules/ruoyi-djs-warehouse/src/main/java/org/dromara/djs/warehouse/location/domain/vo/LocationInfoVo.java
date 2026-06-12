@@ -74,6 +74,18 @@ public class LocationInfoVo implements Serializable {
     private Integer locationStatus;
 
     /**
+     * 库位排序（升序，越小越靠前）。
+     */
+    @ExcelProperty(value = "库位排序")
+    private Integer locationSort;
+
+    /**
+     * 库位说明。
+     */
+    @ExcelProperty(value = "库位说明")
+    private String locationDesc;
+
+    /**
      * 容量。
      */
     @ExcelProperty(value = "容量")

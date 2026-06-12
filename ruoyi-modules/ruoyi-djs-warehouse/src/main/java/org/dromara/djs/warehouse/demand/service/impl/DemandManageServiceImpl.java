@@ -68,10 +68,13 @@ import java.util.Set;
 public class DemandManageServiceImpl extends DjsBaseServiceImpl<DemandManageMapper, DemandManage>
     implements IDemandManageService {
 
-    /** 4 业态码 → 业务编码 2 位（DEMAND_NO pattern 用 {bizCode2}）。 */
+    /** 7 业态码 → 业务编码 2 位（DEMAND_NO pattern 用 {bizCode2}）。 */
     private static final Map<String, String> PRODUCT_TYPE_TO_BIZ_CODE = Map.of(
         "white_bar", "WB",
+        "pig", "PG",
         "vegetable", "VG",
+        "dry", "DR",
+        "egg", "EG",
         "gift_box", "GB",
         "other", "OT"
     );
@@ -227,7 +230,8 @@ public class DemandManageServiceImpl extends DjsBaseServiceImpl<DemandManageMapp
         if (demand == null) {
             throw new ServiceException(I18nMessages.t("demand.not_found", demandId), 404);
         }
-        if (!"white_bar".equals(demand.getProductType())) {
+        // 指定猪只仅限白条 / 猪业态（原型白条 + 猪 tab 均有「指定猪只」）
+        if (!"white_bar".equals(demand.getProductType()) && !"pig".equals(demand.getProductType())) {
             throw new ServiceException(I18nMessages.t("demand.assign_pig.white_bar_only"), 400);
         }
         // 只允许 DRAFT / SUBMITTED 态指定（CONFIRMED 之后猪只已"锁定"，要修改走移除 + 重指定，但要校验状态）
@@ -341,7 +345,8 @@ public class DemandManageServiceImpl extends DjsBaseServiceImpl<DemandManageMapp
         DemandSummaryVo vo = new DemandSummaryVo();
         vo.setProductType(productType);
         switch (productType) {
-            case "white_bar" -> vo.setAvailablePigs(pigQueryService.countAvailableForOutbound());
+            // 白条 / 猪：可出栏育肥猪头数（原型「可出栏猪只头数」）
+            case "white_bar", "pig" -> vo.setAvailablePigs(pigQueryService.countAvailableForOutbound());
             case "vegetable" -> {
                 PlantPlanSummaryVo agg = plantPlanService.aggregateForDemandSummary();
                 vo.setPlotCount(agg.getPlotCount());
@@ -356,7 +361,8 @@ public class DemandManageServiceImpl extends DjsBaseServiceImpl<DemandManageMapp
                 BigDecimal stock = locationStockMapper.sumStockByBelongType("gift_box");
                 vo.setGiftBoxStock(stock != null ? stock : BigDecimal.ZERO);
             }
-            case "other" -> {
+            // 干货 / 鸡蛋 / 其他：原材料库存合计（原型干货·鸡蛋 tab「原材料库存」列）
+            case "dry", "egg", "other" -> {
                 // 原料/干货合计：product_attr=2（原材料）的所有 location_stock 之和
                 BigDecimal stock = locationStockMapper.sumRawMaterialStock();
                 vo.setRawMaterialStockKg(stock != null ? stock : BigDecimal.ZERO);
