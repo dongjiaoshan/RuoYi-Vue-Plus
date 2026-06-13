@@ -420,7 +420,7 @@ public class AppletPickServiceImpl implements IAppletPickService {
             vo.setActualYield(d.getActualYield());
             vo.setIsPick(d.getIsPick());
             vo.setHarvestBy(d.getHarvestBy());
-            vo.setHarvestTeamName(teamMap.get(d.getHarvestBy()));
+            vo.setHarvestTeamName(d.getHarvestBy() == null ? null : teamMap.get(d.getHarvestBy()));
             vo.setMemberCount(d.getHarvestBy() == null ? null
                 : Math.toIntExact(teamMemberCountMap.getOrDefault(d.getHarvestBy(), 0L)));
             return vo;

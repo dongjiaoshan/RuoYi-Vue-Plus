@@ -243,8 +243,8 @@ public class PickPlanServiceImpl implements IPickPlanService {
                 d.setPlotCode(plot.getPlotCode());
             }
             d.setCropName(cropMap.get(d.getCropId()));
-            d.setPlantTeamName(teamMap.get(d.getPlantBy()));
-            d.setHarvestTeamName(teamMap.get(d.getHarvestBy()));
+            d.setPlantTeamName(d.getPlantBy() == null ? null : teamMap.get(d.getPlantBy()));
+            d.setHarvestTeamName(d.getHarvestBy() == null ? null : teamMap.get(d.getHarvestBy()));
             // 种植日期 = 实际开始种植日期（采摘计划详情列展示用）
             d.setPlantDate(d.getBeginActualdate());
         }

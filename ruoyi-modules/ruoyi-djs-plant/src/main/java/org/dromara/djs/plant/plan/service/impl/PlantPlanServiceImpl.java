@@ -286,8 +286,8 @@ public class PlantPlanServiceImpl extends DjsBaseServiceImpl<PlantPlanMapper, Pl
                 d.setPlotCode(plot.getPlotCode());
             }
             d.setCropName(cropMap.get(d.getCropId()));
-            d.setPlantTeamName(teamMap.get(d.getPlantBy()));
-            d.setHarvestTeamName(teamMap.get(d.getHarvestBy()));
+            d.setPlantTeamName(d.getPlantBy() == null ? null : teamMap.get(d.getPlantBy()));
+            d.setHarvestTeamName(d.getHarvestBy() == null ? null : teamMap.get(d.getHarvestBy()));
         }
     }
 

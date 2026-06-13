@@ -836,11 +836,11 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
                 vo.setPlotName(plot.getPlotName());
                 vo.setPlotCode(plot.getPlotCode());
             }
-            PlotInfo transplant = plotMap.get(vo.getTransplantPlot());
+            PlotInfo transplant = vo.getTransplantPlot() == null ? null : plotMap.get(vo.getTransplantPlot());
             if (transplant != null) {
                 vo.setTransplantPlotName(transplant.getPlotName());
             }
-            vo.setTeamName(teamMap.get(vo.getFarmBy()));
+            vo.setTeamName(vo.getFarmBy() == null ? null : teamMap.get(vo.getFarmBy()));
         }
     }
 
