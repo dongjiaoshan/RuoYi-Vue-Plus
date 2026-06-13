@@ -33,6 +33,14 @@ public interface IPickPlanService {
     List<PlantDetailsVo> listDetailsByPlanCrop(Long planId, Long cropId);
 
     /**
+     * 详情：指定作物名下全部 plant_details 明细（跨多计划聚合，含 enrich plot/team 名称）。
+     *
+     * <p>admin 调整抽屉 step1：列表已重构为纯作物聚合，UI 侧不再持有单一 planId，按 cropId 拉行。
+     * 与 {@link #listDetailsByPlanCrop(Long, Long)} 同一返回形状，仅去 planId 过滤与必填壳。</p>
+     */
+    List<PlantDetailsVo> listDetailsByCrop(Long cropId);
+
+    /**
      * 按计划批量调整 plant_details 的 4 时间字段 + is_pick + harvest_by。
      *
      * <p>校验：</p>

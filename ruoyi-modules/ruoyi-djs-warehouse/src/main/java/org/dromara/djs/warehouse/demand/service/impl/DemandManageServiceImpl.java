@@ -26,6 +26,7 @@ import org.dromara.djs.warehouse.demand.domain.query.DemandManageQuery;
 import org.dromara.djs.warehouse.demand.domain.vo.AuditHistoryEntryVo;
 import org.dromara.djs.warehouse.demand.domain.vo.DemandManageVo;
 import org.dromara.djs.warehouse.demand.domain.vo.DemandPigVo;
+import org.dromara.djs.warehouse.demand.domain.vo.DemandProductStoreDetailVo;
 import org.dromara.djs.warehouse.demand.domain.vo.DemandSummaryVo;
 import org.dromara.djs.warehouse.demand.domain.vo.DemandTodayKpiVo;
 import org.dromara.djs.warehouse.demand.mapper.DemandManageMapper;
@@ -129,7 +130,49 @@ public class DemandManageServiceImpl extends DjsBaseServiceImpl<DemandManageMapp
     public TableDataInfo<DemandManageVo> queryPageList(DemandManageQuery query, PageQuery pageQuery) {
         LambdaQueryWrapper<DemandManage> wrapper = buildQueryWrapper(query);
         Page<DemandManageVo> page = baseMapper.selectVoPage(pageQuery.build(), wrapper);
+        fillStoreCount(page.getRecords());
         return TableDataInfo.build(page);
+    }
+
+    /**
+     * 回填「有该产品需求的去重门店数」storeCount（D-FIX-24 决策 #8）。
+     *
+     * <p>按当前页涉及的 product_id 一次聚合查 DB（避免前端分页下跨页聚合不全）。
+     * 无 product_id 的行 storeCount 保持 null。</p>
+     */
+    private void fillStoreCount(List<DemandManageVo> rows) {
+        if (CollUtil.isEmpty(rows)) {
+            return;
+        }
+        List<Long> productIds = rows.stream()
+            .map(DemandManageVo::getProductId)
+            .filter(Objects::nonNull)
+            .distinct()
+            .toList();
+        if (productIds.isEmpty()) {
+            return;
+        }
+        Map<Long, Integer> countByProduct = new HashMap<>();
+        for (Map<String, Object> r : baseMapper.selectStoreCountByProductIds(productIds)) {
+            Object pid = r.get("productId");
+            Object cnt = r.get("storeCount");
+            if (pid != null && cnt != null) {
+                countByProduct.put(((Number) pid).longValue(), ((Number) cnt).intValue());
+            }
+        }
+        for (DemandManageVo vo : rows) {
+            if (vo.getProductId() != null) {
+                vo.setStoreCount(countByProduct.getOrDefault(vo.getProductId(), 0));
+            }
+        }
+    }
+
+    @Override
+    public List<DemandProductStoreDetailVo> listProductStoreDetail(Long productId) {
+        if (productId == null) {
+            return List.of();
+        }
+        return baseMapper.selectProductStoreDetail(productId);
     }
 
     @Override

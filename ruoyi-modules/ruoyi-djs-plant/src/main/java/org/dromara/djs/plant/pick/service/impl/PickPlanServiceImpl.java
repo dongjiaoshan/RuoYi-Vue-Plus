@@ -101,13 +101,34 @@ public class PickPlanServiceImpl implements IPickPlanService {
             throw new ServiceException("planId / cropId 必填");
         }
         List<PlantDetailsVo> details = detailsMapper.selectVoList(
-            new LambdaQueryWrapper<PlantDetails>()
-                .eq(PlantDetails::getPlantId, planId)
-                .eq(PlantDetails::getCropId, cropId)
-                .orderByAsc(PlantDetails::getPlantMonth)
-                .orderByAsc(PlantDetails::getPlantPeriod));
+            buildDetailsQuery(planId, cropId));
         enrich(details);
         return details;
+    }
+
+    @Override
+    public List<PlantDetailsVo> listDetailsByCrop(Long cropId) {
+        if (cropId == null) {
+            throw new ServiceException("cropId 必填");
+        }
+        List<PlantDetailsVo> details = detailsMapper.selectVoList(
+            buildDetailsQuery(null, cropId));
+        enrich(details);
+        return details;
+    }
+
+    /**
+     * 调整页拉行公共 query 片段：按 cropId 过滤（必），planId 可选（为空则跨计划聚合）。
+     *
+     * @param planId 计划 id（null = 不拼 planId 过滤，跨计划聚合）
+     * @param cropId 作物 id（必填，调用方已校验）
+     */
+    private LambdaQueryWrapper<PlantDetails> buildDetailsQuery(Long planId, Long cropId) {
+        return new LambdaQueryWrapper<PlantDetails>()
+            .eq(planId != null, PlantDetails::getPlantId, planId)
+            .eq(PlantDetails::getCropId, cropId)
+            .orderByAsc(PlantDetails::getPlantMonth)
+            .orderByAsc(PlantDetails::getPlantPeriod);
     }
 
     @Override

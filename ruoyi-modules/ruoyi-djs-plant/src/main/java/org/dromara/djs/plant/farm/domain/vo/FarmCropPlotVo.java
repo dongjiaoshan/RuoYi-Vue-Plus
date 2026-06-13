@@ -55,4 +55,16 @@ public class FarmCropPlotVo implements Serializable {
      * 移栽单块录入弹窗按此校验"最多可移 100 − transplantedPercent"。</p>
      */
     private Integer transplantedPercent;
+
+    /** 采摘状态（字典 {@code djs_pick_status}：pending/picking/completed），退茬多选页每行展示。 */
+    private String harvestStatus;
+
+    /** 计划最早采摘日期。 */
+    private LocalDate earliestHarvestdate;
+
+    /** 计划最晚采摘日期。 */
+    private LocalDate lastHarvestdate;
+
+    /** 实际结束采摘日期（采摘完成时间，退茬多选页「完成时间」列）。 */
+    private LocalDate endHarvestdate;
 }

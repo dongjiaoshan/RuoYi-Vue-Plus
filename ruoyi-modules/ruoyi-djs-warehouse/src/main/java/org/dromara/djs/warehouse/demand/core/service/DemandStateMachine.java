@@ -13,7 +13,6 @@ import static org.dromara.djs.warehouse.demand.core.enums.DemandEvent.CANCEL;
 import static org.dromara.djs.warehouse.demand.core.enums.DemandEvent.COMPLETE;
 import static org.dromara.djs.warehouse.demand.core.enums.DemandEvent.CONFIRM;
 import static org.dromara.djs.warehouse.demand.core.enums.DemandEvent.PARTIAL_SHIP;
-import static org.dromara.djs.warehouse.demand.core.enums.DemandEvent.START_PRODUCTION;
 import static org.dromara.djs.warehouse.demand.core.enums.DemandEvent.SUBMIT;
 import static org.dromara.djs.warehouse.demand.core.enums.DemandStatus.CANCELLED;
 import static org.dromara.djs.warehouse.demand.core.enums.DemandStatus.COMPLETED;
@@ -27,11 +26,15 @@ import static org.dromara.djs.warehouse.demand.core.enums.DemandStatus.SUBMITTED
  * 需求单状态机（WMS-DEMAND-001 业务心脏）。
  *
  * <p>手写 FSM，不引 spring-statemachine / Flowable。{@link #nextStatus} 为纯函数，
- * 不访问 DB，方便单测覆盖 7×6 转移矩阵（参 BRD-CORE-001 {@code PigStateMachine} 范式）。</p>
+ * 不访问 DB，方便单测覆盖转移矩阵（参 BRD-CORE-001 {@code PigStateMachine} 范式）。</p>
  *
- * <p>4 业态（white_bar/vegetable/gift_box/other）共享同一套状态机；业态差异由
- * {@link DemandStatusService} 在 transition 入口按 {@code product_type} 做业务前置校验
- * （白条 CONFIRM 必须已指定猪只）。</p>
+ * <p>主链路：{@code DRAFT → SUBMITTED → CONFIRMED → (PARTIAL_SHIPPED) → COMPLETED}。
+ * 无「开始排产」环节——CONFIRMED 是用户侧最终态，确认后由发货链路（CROSS-FLOW-003 listener）
+ * 自动推进 PARTIAL_SHIP / COMPLETE。{@code IN_PRODUCTION} 态已废弃（新流程不再产生），仅保留
+ * 兼容转移供存量数据走完发货。</p>
+ *
+ * <p>4 业态（white_bar/vegetable/gift_box/other）共享同一套状态机。白条 CONFIRM 不再强制
+ * 已指定猪只（D-FIX-24 决策 #7a）——指派猪只为 CONFIRMED 后可选后置动作。</p>
  *
  * <p>错误信息走 i18n，key 在 {@code ruoyi-admin/.../i18n/messages_zh_CN.properties} +
  * {@code messages_en_US.properties}。</p>
@@ -46,22 +49,23 @@ public class DemandStateMachine {
     private static final Map<TransitionKey, DemandStatus> SIMPLE = Map.ofEntries(
         // 提交
         Map.entry(new TransitionKey(DRAFT, SUBMIT), SUBMITTED),
-        // 确认
+        // 确认（CONFIRMED 即用户最终态：无「开始排产」环节，确认后直接进发货链路）
         Map.entry(new TransitionKey(SUBMITTED, CONFIRM), CONFIRMED),
-        // 排产
-        Map.entry(new TransitionKey(CONFIRMED, START_PRODUCTION), IN_PRODUCTION),
-        // 部分发货（CROSS-FLOW-003 listener 调）
-        Map.entry(new TransitionKey(IN_PRODUCTION, PARTIAL_SHIP), PARTIAL_SHIPPED),
+        // 部分发货（CROSS-FLOW-003 listener 调；从 CONFIRMED 直接进入，不经排产中）
+        Map.entry(new TransitionKey(CONFIRMED, PARTIAL_SHIP), PARTIAL_SHIPPED),
         // 继续部分发货（仍未达到 demand_quantity）
         Map.entry(new TransitionKey(PARTIAL_SHIPPED, PARTIAL_SHIP), PARTIAL_SHIPPED),
-        // 完成
-        Map.entry(new TransitionKey(IN_PRODUCTION, COMPLETE), COMPLETED),
+        // 完成（CONFIRMED 一次发足即完成）
+        Map.entry(new TransitionKey(CONFIRMED, COMPLETE), COMPLETED),
         Map.entry(new TransitionKey(PARTIAL_SHIPPED, COMPLETE), COMPLETED),
-        // 取消（任意非终态非排产后状态均可取消）
+        // 取消（任意未发货态均可取消）
         Map.entry(new TransitionKey(DRAFT, CANCEL), CANCELLED),
         Map.entry(new TransitionKey(SUBMITTED, CANCEL), CANCELLED),
-        Map.entry(new TransitionKey(CONFIRMED, CANCEL), CANCELLED)
-        // IN_PRODUCTION / PARTIAL_SHIPPED 之后不允许取消，要走退货流程（STR-RETURN-001 / WMS-SHIP-001）
+        Map.entry(new TransitionKey(CONFIRMED, CANCEL), CANCELLED),
+        // 兼容存量数据：历史卡在 IN_PRODUCTION 的需求仍可正常走发货 / 完成（新流程不再产生该态）
+        Map.entry(new TransitionKey(IN_PRODUCTION, PARTIAL_SHIP), PARTIAL_SHIPPED),
+        Map.entry(new TransitionKey(IN_PRODUCTION, COMPLETE), COMPLETED)
+        // PARTIAL_SHIPPED 之后不允许取消，要走退货流程（STR-RETURN-001 / WMS-SHIP-001）
     );
 
     /**

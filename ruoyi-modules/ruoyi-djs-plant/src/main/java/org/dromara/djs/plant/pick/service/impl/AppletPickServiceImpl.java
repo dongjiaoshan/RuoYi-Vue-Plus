@@ -193,10 +193,15 @@ public class AppletPickServiceImpl implements IAppletPickService {
 
     @Override
     public List<PickCropTaskVo> listCropTasks(Long zoneId) {
-        // 全部非游客采摘明细（is_pick=2），应用层按片区过滤 + 作物聚合（V1 数据量小）
+        // 全部非游客采摘明细（is_pick=2），应用层按片区过滤 + 作物聚合（V1 数据量小）。
+        // 181-1（决策#1=a）：只取「当前日期落在 [earliest_harvestdate, last_harvestdate] 采摘窗口」的明细
+        //   （earliest_harvestdate ≤ today ≤ last_harvestdate），区间外的不在采摘活动列表显示。
+        LocalDate today = LocalDate.now();
         List<PlantDetails> all = detailsMapper.selectList(
             new LambdaQueryWrapper<PlantDetails>()
-                .eq(PlantDetails::getIsPick, IS_PICK_NORMAL));
+                .eq(PlantDetails::getIsPick, IS_PICK_NORMAL)
+                .le(PlantDetails::getEarliestHarvestdate, today)
+                .ge(PlantDetails::getLastHarvestdate, today));
         if (CollUtil.isEmpty(all)) {
             return Collections.emptyList();
         }

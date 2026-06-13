@@ -42,14 +42,21 @@ class DemandStateMachineTest {
         }
 
         @Test
-        @DisplayName("CONFIRMED + START_PRODUCTION → IN_PRODUCTION")
-        void confirmedStart() {
-            assertThat(sm.nextStatus(DemandStatus.CONFIRMED, DemandEvent.START_PRODUCTION))
-                .isEqualTo(DemandStatus.IN_PRODUCTION);
+        @DisplayName("CONFIRMED + PARTIAL_SHIP → PARTIAL_SHIPPED（无排产环节，确认后直接发货）")
+        void confirmedPartialShip() {
+            assertThat(sm.nextStatus(DemandStatus.CONFIRMED, DemandEvent.PARTIAL_SHIP))
+                .isEqualTo(DemandStatus.PARTIAL_SHIPPED);
         }
 
         @Test
-        @DisplayName("IN_PRODUCTION + PARTIAL_SHIP → PARTIAL_SHIPPED")
+        @DisplayName("CONFIRMED + COMPLETE → COMPLETED（一次发足）")
+        void confirmedComplete() {
+            assertThat(sm.nextStatus(DemandStatus.CONFIRMED, DemandEvent.COMPLETE))
+                .isEqualTo(DemandStatus.COMPLETED);
+        }
+
+        @Test
+        @DisplayName("IN_PRODUCTION + PARTIAL_SHIP → PARTIAL_SHIPPED（存量数据兼容）")
         void inProductionPartialShip() {
             assertThat(sm.nextStatus(DemandStatus.IN_PRODUCTION, DemandEvent.PARTIAL_SHIP))
                 .isEqualTo(DemandStatus.PARTIAL_SHIPPED);
@@ -63,7 +70,7 @@ class DemandStateMachineTest {
         }
 
         @Test
-        @DisplayName("IN_PRODUCTION + COMPLETE → COMPLETED")
+        @DisplayName("IN_PRODUCTION + COMPLETE → COMPLETED（存量数据兼容）")
         void inProductionComplete() {
             assertThat(sm.nextStatus(DemandStatus.IN_PRODUCTION, DemandEvent.COMPLETE))
                 .isEqualTo(DemandStatus.COMPLETED);
@@ -144,9 +151,9 @@ class DemandStateMachineTest {
         }
 
         @Test
-        @DisplayName("SUBMITTED + START_PRODUCTION → 拒绝（跳过确认）")
-        void submittedStartSkip() {
-            assertThatThrownBy(() -> sm.nextStatus(DemandStatus.SUBMITTED, DemandEvent.START_PRODUCTION))
+        @DisplayName("SUBMITTED + PARTIAL_SHIP → 拒绝（跳过确认）")
+        void submittedPartialShipSkip() {
+            assertThatThrownBy(() -> sm.nextStatus(DemandStatus.SUBMITTED, DemandEvent.PARTIAL_SHIP))
                 .isInstanceOf(ServiceException.class)
                 .hasMessageContaining("illegal_transition");
         }
@@ -155,14 +162,6 @@ class DemandStateMachineTest {
         @DisplayName("DRAFT + PARTIAL_SHIP → 拒绝")
         void draftPartialShip() {
             assertThatThrownBy(() -> sm.nextStatus(DemandStatus.DRAFT, DemandEvent.PARTIAL_SHIP))
-                .isInstanceOf(ServiceException.class)
-                .hasMessageContaining("illegal_transition");
-        }
-
-        @Test
-        @DisplayName("CONFIRMED + COMPLETE → 拒绝（必须先 START_PRODUCTION）")
-        void confirmedCompleteForbidden() {
-            assertThatThrownBy(() -> sm.nextStatus(DemandStatus.CONFIRMED, DemandEvent.COMPLETE))
                 .isInstanceOf(ServiceException.class)
                 .hasMessageContaining("illegal_transition");
         }

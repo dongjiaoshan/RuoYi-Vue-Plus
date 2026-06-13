@@ -40,6 +40,8 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.Date;
@@ -79,6 +81,12 @@ import java.util.stream.Collectors;
 public class ShipmentServiceImpl
     extends DjsBaseServiceImpl<ShipmentMapper, Shipment>
     implements IShipmentService {
+
+    /**
+     * 「今日」算法时区（D-FIX-24 决策 #6a 发货月台当天过滤）：不依赖 DB CURDATE() 时区，
+     * 避免部署到非 UTC+8 实例时「今日」偏移埋雷。
+     */
+    private static final ZoneId SHIP_TODAY_ZONE = ZoneId.of("Asia/Shanghai");
 
     /**
      * stock_flow.flow_type — 发货出库（dict djs_flow_type 已 D9 seed）。
@@ -424,8 +432,12 @@ public class ShipmentServiceImpl
     private List<DemandManage> loadShippableDemands(Long storeId) {
         List<String> shippableCodes = SHIPPABLE_DEMAND_STATUSES.stream()
             .map(DemandStatus::name).toList();
+        // mp 发货月台只看「当天有需求」的门店：按业务日期 demand_date = 今天过滤（非 create_time），
+        // 今日按 Asia/Shanghai 算，避免部署到非 UTC+8 实例时跨日凌晨归错天（D-FIX-24 决策 #6a）。
+        LocalDate today = LocalDate.now(SHIP_TODAY_ZONE);
         return demandMapper.selectList(new LambdaQueryWrapper<DemandManage>()
             .in(DemandManage::getDemandStatus, shippableCodes)
+            .eq(DemandManage::getDemandDate, today)
             .eq(storeId != null, DemandManage::getStoreId, storeId)
             .orderByDesc(DemandManage::getDemandDate));
     }

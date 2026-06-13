@@ -61,6 +61,9 @@ public interface IReturnProductService {
      * <p>仅取 {@code store_to_warehouse} 方向（mp 退货管理只管门店→仓库这条链；
      * 其他 2 方向是 admin 端占位录入，不进 mp 分组卡）。</p>
      *
+     * <p>只含「当天退货」：按业务日期 {@code apply_time} 落在今天（Asia/Shanghai）过滤，
+     * 配合「当天退货当天确认」（D-FIX-24 决策 #6a）。</p>
+     *
      * @return 门店分组卡列表（门店名 + 状态 + 品种数 + 退货时间），按状态（待确认在前）+ 时间倒序
      */
     List<ReturnStoreGroupVo> listPendingGroups();

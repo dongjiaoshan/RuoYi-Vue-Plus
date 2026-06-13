@@ -4,6 +4,11 @@ import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.store.trace.domain.bo.StoreTraceOnsiteBo;
 import org.dromara.djs.store.trace.domain.vo.TraceablePigVo;
+import org.dromara.djs.warehouse.trace.domain.query.TraceCodeQuery;
+import org.dromara.djs.warehouse.trace.domain.vo.TraceCodeDetailVo;
+import org.dromara.djs.warehouse.trace.domain.vo.TraceCodeListVo;
+
+import java.util.List;
 
 /**
  * 门店现场生码服务（STORE-TRACE-ONSITE-001，门店域薄壳）。
@@ -12,6 +17,10 @@ import org.dromara.djs.store.trace.domain.vo.TraceablePigVo;
  * ① 可追溯猪只 picker → 委托养殖域 {@code IPigQueryService.listTraceablePigs}（不直接读养殖表）；<br>
  * ② 现场按需生码 → 委托仓库域 {@code ITraceService.genPorkOnsiteCode}（trace 表归 warehouse，INSERT 在 warehouse）。<br>
  * 门店模块本身不持有 trace / pig 表 mapper，纯 orchestration 避免反向依赖。</p>
+ *
+ * <p><b>已生成猪肉追溯码管理（ADMIN-STORE 91-1）</b>：参照果蔬追溯 listTrace 范式，补已生码列表 / 详情 /
+ * 补打取数三个只读端点，全部委托仓库域 {@code ITraceCodeAdminService}（追溯表归 warehouse，门店侧只读查询不反向写）。
+ * 门店口径恒固定 {@code codeType='pork'}，前端 PorkTracePanel 只看猪肉追溯码。</p>
  *
  * @author djs
  * @since STORE-TRACE-ONSITE-001
@@ -33,4 +42,34 @@ public interface IStoreTraceService {
      * @return 生成的追溯码 produce_code
      */
     String genOnsiteCode(StoreTraceOnsiteBo bo);
+
+    /**
+     * 已生成猪肉追溯码分页列表（ADMIN-STORE 91-1，恒 {@code codeType='pork'}）。
+     *
+     * <p>委托仓库 {@code ITraceCodeAdminService.queryPage}，入参强制覆写 {@code codeType=pork}
+     * （门店端只看猪肉追溯码，前端传入的其它 codeType 一律忽略）。支持按追溯码 / 猪只耳号 /
+     * 生成时间范围过滤。</p>
+     *
+     * @param query     查询条件（codeType 由 service 强制为 pork）
+     * @param pageQuery 分页参数
+     * @return 追溯码列表分页（含 JOIN 展示名）
+     */
+    TableDataInfo<TraceCodeListVo> listPorkTrace(TraceCodeQuery query, PageQuery pageQuery);
+
+    /**
+     * 已生成猪肉追溯码详情（主表 + 关联 + 完整事件时间轴）。委托仓库 {@code ITraceCodeAdminService.getDetail}。
+     *
+     * @param id 追溯码记录 ID
+     * @return 详情聚合 VO
+     */
+    TraceCodeDetailVo getPorkTraceDetail(Long id);
+
+    /**
+     * 补打取数：按勾选 ID 批量拉详情（含事件链），供前端 jsPDF 批量补打追溯码。
+     * 委托仓库 {@code ITraceCodeAdminService.batchDetail}。
+     *
+     * @param ids 追溯码记录 ID 列表
+     * @return 详情聚合 VO 列表
+     */
+    List<TraceCodeDetailVo> batchPorkTraceDetail(List<Long> ids);
 }

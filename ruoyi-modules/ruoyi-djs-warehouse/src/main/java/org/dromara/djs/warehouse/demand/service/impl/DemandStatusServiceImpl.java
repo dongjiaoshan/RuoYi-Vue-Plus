@@ -1,6 +1,5 @@
 package org.dromara.djs.warehouse.demand.service.impl;
 
-import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
@@ -12,9 +11,7 @@ import org.dromara.djs.warehouse.demand.core.enums.DemandStatus;
 import org.dromara.djs.warehouse.demand.core.service.DemandStateMachine;
 import org.dromara.djs.common.util.I18nMessages;
 import org.dromara.djs.warehouse.demand.domain.DemandManage;
-import org.dromara.djs.warehouse.demand.domain.DemandPig;
 import org.dromara.djs.warehouse.demand.mapper.DemandManageMapper;
-import org.dromara.djs.warehouse.demand.mapper.DemandPigMapper;
 import org.dromara.djs.warehouse.demand.service.IDemandStatusService;
 import org.redisson.api.RLock;
 import org.redisson.api.RedissonClient;
@@ -53,17 +50,13 @@ public class DemandStatusServiceImpl implements IDemandStatusService {
 
     private final DemandManageMapper demandMapper;
 
-    private final DemandPigMapper demandPigMapper;
-
     private final RedissonClient redissonClient;
 
     public DemandStatusServiceImpl(DemandStateMachine stateMachine,
                                    DemandManageMapper demandMapper,
-                                   DemandPigMapper demandPigMapper,
                                    RedissonClient redissonClient) {
         this.stateMachine = stateMachine;
         this.demandMapper = demandMapper;
-        this.demandPigMapper = demandPigMapper;
         this.redissonClient = redissonClient;
     }
 
@@ -109,14 +102,7 @@ public class DemandStatusServiceImpl implements IDemandStatusService {
         }
         DemandStatus to = stateMachine.nextStatus(from, event);
 
-        // 业务前置校验：白条业态 CONFIRM 前必须已指定猪只
-        if (event == DemandEvent.CONFIRM && "white_bar".equals(demand.getProductType())) {
-            long pigCount = demandPigMapper.selectCount(
-                new LambdaQueryWrapper<DemandPig>().eq(DemandPig::getDemandId, demandId));
-            if (pigCount == 0) {
-                throw new ServiceException(I18nMessages.t("demand.white_bar.no_pig_assigned"), 400);
-            }
-        }
+        // 白条业态确认不再强制已指定猪只：指派猪只改为 CONFIRMED 后可选后置动作（D-FIX-24 决策 #7a）。
 
         // 更新状态字段
         demand.setDemandStatus(to.name());

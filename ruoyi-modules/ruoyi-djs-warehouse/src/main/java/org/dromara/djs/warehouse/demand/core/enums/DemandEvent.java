@@ -16,16 +16,13 @@ public enum DemandEvent {
     /** 提交：DRAFT → SUBMITTED。 */
     SUBMIT("提交"),
 
-    /** 确认：SUBMITTED → CONFIRMED；白条业态校验已指定猪只。 */
+    /** 确认：SUBMITTED → CONFIRMED（用户侧最终态，无后续排产环节）。 */
     CONFIRM("确认"),
 
-    /** 开始排产：CONFIRMED → IN_PRODUCTION。 */
-    START_PRODUCTION("开始排产"),
-
-    /** 部分发货：IN_PRODUCTION → PARTIAL_SHIPPED（CROSS-FLOW-003 listener 触发）。 */
+    /** 部分发货：CONFIRMED / PARTIAL_SHIPPED → PARTIAL_SHIPPED（CROSS-FLOW-003 listener 触发）。 */
     PARTIAL_SHIP("部分发货"),
 
-    /** 完成：IN_PRODUCTION / PARTIAL_SHIPPED → COMPLETED（CROSS-FLOW-003 listener 触发）。 */
+    /** 完成：CONFIRMED / PARTIAL_SHIPPED → COMPLETED（CROSS-FLOW-003 listener 触发）。 */
     COMPLETE("完成"),
 
     /** 取消：DRAFT / SUBMITTED / CONFIRMED → CANCELLED；IN_PRODUCTION 之后禁止取消。 */

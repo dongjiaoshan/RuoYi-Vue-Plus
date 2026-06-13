@@ -22,6 +22,7 @@ import org.dromara.djs.warehouse.demand.domain.query.DemandManageQuery;
 import org.dromara.djs.warehouse.demand.domain.vo.AuditHistoryEntryVo;
 import org.dromara.djs.warehouse.demand.domain.vo.DemandManageVo;
 import org.dromara.djs.warehouse.demand.domain.vo.DemandPigVo;
+import org.dromara.djs.warehouse.demand.domain.vo.DemandProductStoreDetailVo;
 import org.dromara.djs.warehouse.demand.domain.vo.DemandSummaryVo;
 import org.dromara.djs.warehouse.demand.domain.vo.DemandTodayKpiVo;
 import org.dromara.djs.warehouse.demand.service.IDemandManageService;
@@ -43,9 +44,10 @@ import java.util.List;
 /**
  * 需求管理 Controller（WMS-DEMAND-001）。
  *
- * <p>端点分组：CRUD 5 + 状态机 3（confirm / start-production / cancel）+ 指定猪只 3 + 历史 1 + 导出 1。</p>
+ * <p>端点分组：CRUD 5 + 状态机 3（submit / confirm / cancel）+ 指定猪只 3 + 历史 1 + 导出 1
+ * + 产品门店明细 1。无「开始排产」（CONFIRMED 即用户最终态，发货链路自动推进）。</p>
  *
- * <p>权限串：{@code djs:warehouse:demand:{list,query,add,edit,remove,confirm,start_production,cancel,assign_pig,history,export}}
+ * <p>权限串：{@code djs:warehouse:demand:{list,query,add,edit,remove,confirm,cancel,assign_pig,history,export}}
  * （seed 在 {@code V202606060920__WMS-DEMAND-001-menu-seed.sql}，menu_id 9040-9054）。</p>
  *
  * @author djs
@@ -135,15 +137,6 @@ public class DemandManageController extends BaseController {
         return R.ok();
     }
 
-    /** 开始排产：CONFIRMED → IN_PRODUCTION。 */
-    @SaCheckPermission("djs:warehouse:demand:start_production")
-    @Log(title = "开始排产", businessType = BusinessType.UPDATE)
-    @PostMapping("/{id}/start-production")
-    public R<Void> startProduction(@PathVariable Long id, @RequestParam(required = false) String remark) {
-        statusService.transition(id, DemandEvent.START_PRODUCTION, LoginHelper.getUserId(), remark);
-        return R.ok();
-    }
-
     /** 取消：DRAFT/SUBMITTED/CONFIRMED → CANCELLED。 */
     @SaCheckPermission("djs:warehouse:demand:cancel")
     @Log(title = "取消需求", businessType = BusinessType.UPDATE)
@@ -190,6 +183,22 @@ public class DemandManageController extends BaseController {
     @GetMapping("/pigs/available")
     public TableDataInfo<PigAvailableVo> listAvailablePigs(PageQuery pageQuery) {
         return pigQueryService.listAvailableForOutbound(pageQuery);
+    }
+
+    // =============== 产品门店需求明细（D-FIX-24 决策 #8）===============
+
+    /**
+     * 某产品「按门店聚合需求量明细」（列表「详情」弹窗）。
+     *
+     * <p>返回有该产品需求的各门店及需求量合计 / 单数（非取消单），供列表「门店」列点详情
+     * 展示「该产品被几门店需求 + 各门店需求量」。</p>
+     *
+     * <p>权限：复用 {@code djs:warehouse:demand:query}（同入口同角色）。</p>
+     */
+    @SaCheckPermission("djs:warehouse:demand:query")
+    @GetMapping("/product-store-detail")
+    public R<List<DemandProductStoreDetailVo>> getProductStoreDetail(@RequestParam Long productId) {
+        return R.ok(demandService.listProductStoreDetail(productId));
     }
 
     // =============== 状态历史 ===============

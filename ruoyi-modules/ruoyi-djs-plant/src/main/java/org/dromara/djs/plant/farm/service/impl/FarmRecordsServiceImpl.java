@@ -362,6 +362,11 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
             vo.setPlotId(d.getPlotId());
             vo.setCropId(d.getCropId());
             vo.setPlantStatus(d.getPlantStatus());
+            // 180-2：退茬多选页每行展示「采摘状态 / 采摘完成时间」（earliest/last/end harvestdate）。
+            vo.setHarvestStatus(d.getHarvestStatus());
+            vo.setEarliestHarvestdate(d.getEarliestHarvestdate());
+            vo.setLastHarvestdate(d.getLastHarvestdate());
+            vo.setEndHarvestdate(d.getEndHarvestdate());
             PlotInfo plot = plotMap.get(d.getPlotId());
             if (plot != null) {
                 vo.setPlotCode(plot.getPlotCode());

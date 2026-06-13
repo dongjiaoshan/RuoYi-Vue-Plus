@@ -15,8 +15,10 @@ import org.dromara.djs.warehouse.burn.domain.vo.BarPendingVo;
 import org.dromara.djs.warehouse.burn.domain.vo.BurnProductTypeVo;
 import org.dromara.djs.warehouse.burn.domain.vo.PigBurnRecordVo;
 import org.dromara.djs.warehouse.burn.service.IPigBurnRecordService;
+import org.dromara.djs.warehouse.location.domain.vo.LocationPickerVo;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -64,6 +66,18 @@ public class AppletPigBurnRecordController extends BaseController {
     @GetMapping("/productTypes")
     public R<List<BurnProductTypeVo>> productTypes() {
         return R.ok(service.queryProductTypes());
+    }
+
+    /**
+     * mp 按产品取已配置的入库库位列表（MP-PRODIN 决策 #2）。
+     *
+     * <p>产品入库弹层打开时调用：返回该产品 {@code store_location_id} 配置的入库库位（启用 + 冻品库）。
+     * 单库位 → 前端只读预填；多库位 → 可选随机默认其一；空 → 前端回落全量冻品库可选。</p>
+     */
+    @SaCheckLogin
+    @GetMapping("/product/{productId}/inboundLocations")
+    public R<List<LocationPickerVo>> productInboundLocations(@PathVariable Long productId) {
+        return R.ok(service.queryProductInboundLocations(productId));
     }
 
     /**

@@ -16,7 +16,7 @@ import java.math.BigDecimal;
  * <ol>
  *   <li>UPDATE {@code t_warehouse_demand_manage SET shipped_count = shipped_count + shippedQuantity}</li>
  *   <li>判断 {@code shipped_count >= demand_quantity} → 触发 {@code IDemandStatusService.transition(COMPLETE)}；
- *       否则若 status='IN_PRODUCTION' → 触发 {@code transition(PARTIAL_SHIP)}</li>
+ *       否则 → 触发 {@code transition(PARTIAL_SHIP)}（从 CONFIRMED 直接进入，无排产环节）</li>
  *   <li>INSERT {@code t_trace_event}（warehouse_ship 节点）</li>
  * </ol>
  *

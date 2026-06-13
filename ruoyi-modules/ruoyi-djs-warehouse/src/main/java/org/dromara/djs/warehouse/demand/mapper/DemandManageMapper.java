@@ -6,10 +6,12 @@ import org.apache.ibatis.annotations.Update;
 import org.dromara.common.mybatis.core.mapper.BaseMapperPlus;
 import org.dromara.djs.warehouse.demand.domain.DemandManage;
 import org.dromara.djs.warehouse.demand.domain.vo.DemandManageVo;
+import org.dromara.djs.warehouse.demand.domain.vo.DemandProductStoreDetailVo;
 import org.dromara.djs.warehouse.pack.domain.vo.StoreDemandCopiesVo;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 
@@ -135,5 +137,63 @@ public interface DemandManageMapper extends BaseMapperPlus<DemandManage, DemandM
         ORDER BY copies DESC
         """)
     List<StoreDemandCopiesVo> selectStoreDemandCopies(@Param("productId") Long productId);
+
+    /**
+     * 按 product_id 聚合「有该产品需求的去重门店数」（D-FIX-24 决策 #8 列表 storeCount）。
+     *
+     * <p>口径：同 product_id 下，非取消单（{@code demand_status <> 'CANCELLED'}）、有门店
+     * （{@code store_id IS NOT NULL}）的去重门店数。仅统计入参 product_id 集合，避免全表扫。</p>
+     *
+     * <p>租户隔离：未启全局 MP 拦截器，显式 {@code tenant_id='1001'}（V1 单租户）；
+     * {@code del_flag='0'}（CHAR(1) 未删）。</p>
+     *
+     * @param productIds 当前页涉及的产品 ID 集合（空集调用方需短路，不传空 IN）
+     * @return 每行 {@code {productId, storeCount}}（Map 键 productId / storeCount）
+     */
+    @Select("""
+        <script>
+        SELECT product_id AS productId,
+               COUNT(DISTINCT store_id) AS storeCount
+        FROM t_warehouse_demand_manage
+        WHERE store_id IS NOT NULL
+          AND demand_status &lt;&gt; 'CANCELLED'
+          AND del_flag = '0'
+          AND tenant_id = '1001'
+          AND product_id IN
+          <foreach collection="productIds" item="pid" open="(" separator="," close=")">#{pid}</foreach>
+        GROUP BY product_id
+        </script>
+        """)
+    List<Map<String, Object>> selectStoreCountByProductIds(@Param("productIds") Collection<Long> productIds);
+
+    /**
+     * 某产品「按门店聚合需求量明细」（D-FIX-24 决策 #8 详情弹窗）。
+     *
+     * <p>口径：同 product_id 下，非取消单、有门店，按 store 分组求需求量合计 + 单数。
+     * JOIN {@code t_md_store} 取门店名。按需求量降序。</p>
+     *
+     * <p>租户隔离：显式 {@code tenant_id='1001'}；{@code del_flag='0'}。</p>
+     *
+     * @param productId 产品 FK
+     * @return 各门店需求量明细（无则空 List）
+     */
+    @Select("""
+        SELECT dm.store_id AS storeId,
+               s.store_name AS storeName,
+               SUM(dm.demand_quantity) AS demandQuantity,
+               COUNT(*) AS demandCount
+        FROM t_warehouse_demand_manage dm
+        JOIN t_md_store s ON s.id = dm.store_id
+             AND s.del_flag = '0'
+             AND s.tenant_id = dm.tenant_id
+        WHERE dm.product_id = #{productId}
+          AND dm.store_id IS NOT NULL
+          AND dm.demand_status <> 'CANCELLED'
+          AND dm.del_flag = '0'
+          AND dm.tenant_id = '1001'
+        GROUP BY dm.store_id, s.store_name
+        ORDER BY demandQuantity DESC
+        """)
+    List<DemandProductStoreDetailVo> selectProductStoreDetail(@Param("productId") Long productId);
 }
 

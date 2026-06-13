@@ -13,12 +13,18 @@ import org.dromara.common.web.core.BaseController;
 import org.dromara.djs.store.trace.domain.bo.StoreTraceOnsiteBo;
 import org.dromara.djs.store.trace.domain.vo.TraceablePigVo;
 import org.dromara.djs.store.trace.service.IStoreTraceService;
+import org.dromara.djs.warehouse.trace.domain.query.TraceCodeQuery;
+import org.dromara.djs.warehouse.trace.domain.vo.TraceCodeDetailVo;
+import org.dromara.djs.warehouse.trace.domain.vo.TraceCodeListVo;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+
+import java.util.List;
 
 /**
  * 门店猪肉现场生码 Controller（STORE-TRACE-ONSITE-001，admin only）。
@@ -26,9 +32,12 @@ import org.springframework.web.bind.annotation.RestController;
  * <p>原型「猪肉追溯码管理」卡片式现场生码：选已出栏猪只 → 选零售部位 → 录重量 → 生码打印。
  * 追溯表归 warehouse、猪只表归 breed，本 Controller 走门店域写端点（ADR-0015），service 纯编排两域。</p>
  *
- * <p>权限串：picker / 生码走 {@code djs:store:trace:gen}（生码动作的取数前置）；打印走
- * {@code djs:store:trace:print}（前端 jsPDF 出码按钮门控，生码返回的 produce_code 直接打印，
- * 不另设取数端点）。</p>
+ * <p>已生成猪肉追溯码管理（ADMIN-STORE 91-1，对齐果蔬追溯码管理范式）：{@code /code/list} 已生码列表 /
+ * {@code /code/{id}} 详情 / {@code /code/batch} 补打取数，全部只读，恒 {@code codeType=pork}，委托仓库追溯
+ * 只读 service（追溯表归 warehouse，门店侧不反向写）。</p>
+ *
+ * <p>权限串：picker / 生码 / 已生码列表 / 详情走 {@code djs:store:trace:gen}；打印 / 补打走
+ * {@code djs:store:trace:print}（前端 jsPDF 出码按钮门控）。</p>
  *
  * @author djs
  * @since STORE-TRACE-ONSITE-001
@@ -59,5 +68,36 @@ public class StoreTraceController extends BaseController {
     @PostMapping("/gen")
     public R<String> gen(@Valid @RequestBody StoreTraceOnsiteBo bo) {
         return R.ok("生码成功", storeTraceService.genOnsiteCode(bo));
+    }
+
+    /**
+     * 已生成猪肉追溯码分页列表（ADMIN-STORE 91-1，恒 codeType=pork）。
+     *
+     * <p>对齐果蔬追溯码管理列表范式（只读）。委托仓库追溯只读 service，门店侧不反向写 trace 表。</p>
+     */
+    @SaCheckPermission("djs:store:trace:gen")
+    @GetMapping("/code/list")
+    public TableDataInfo<TraceCodeListVo> codeList(TraceCodeQuery query, PageQuery pageQuery) {
+        return storeTraceService.listPorkTrace(query, pageQuery);
+    }
+
+    /**
+     * 已生成猪肉追溯码详情（主表 + 关联 + 完整事件时间轴，只读）。
+     */
+    @SaCheckPermission("djs:store:trace:gen")
+    @GetMapping("/code/{id}")
+    public R<TraceCodeDetailVo> codeDetail(@PathVariable Long id) {
+        return R.ok(storeTraceService.getPorkTraceDetail(id));
+    }
+
+    /**
+     * 补打取数：按勾选 ID 批量拉详情（含事件链），供前端 jsPDF 批量补打追溯码。
+     *
+     * <p>POST 仅因入参 id 列表体大，非数据写入（追溯链不可篡改，门店侧纯只读）。</p>
+     */
+    @SaCheckPermission("djs:store:trace:print")
+    @PostMapping("/code/batch")
+    public R<List<TraceCodeDetailVo>> codeBatch(@RequestBody List<Long> ids) {
+        return R.ok(storeTraceService.batchPorkTraceDetail(ids));
     }
 }

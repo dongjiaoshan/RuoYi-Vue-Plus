@@ -73,9 +73,12 @@ public interface IShipmentService {
     /**
      * 门店维度待发货聚合（发货月台 IA 进页 = 门店列表，D12X-MP-SHIPDOCK-IA-001）。
      *
-     * <p>扫所有 SHIPPABLE 状态的 demand（CONFIRMED / IN_PRODUCTION / PARTIAL_SHIPPED）
+     * <p>扫所有 SHIPPABLE 状态的 demand（CONFIRMED / PARTIAL_SHIPPED；IN_PRODUCTION 存量兼容）
      * {@code group by store_id}，每门店算待发需求数 + 待发产品种类数（distinct product_id）+ 总量。
      * 门店名走 {@code StoreMapper} 批量填充（无 N+1）。只列还有待发 demand 的门店。</p>
+     *
+     * <p>仅含「当天有需求」的门店：按业务日期 {@code demand_date = 今天}（Asia/Shanghai）过滤，
+     * 非 create_time（D-FIX-24 决策 #6a）。</p>
      *
      * @return 按 storeName 稳定排序的门店列表
      */

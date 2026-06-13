@@ -7,6 +7,7 @@ import org.dromara.djs.warehouse.burn.domain.query.PigBurnRecordQuery;
 import org.dromara.djs.warehouse.burn.domain.vo.BarPendingVo;
 import org.dromara.djs.warehouse.burn.domain.vo.BurnProductTypeVo;
 import org.dromara.djs.warehouse.burn.domain.vo.PigBurnRecordVo;
+import org.dromara.djs.warehouse.location.domain.vo.LocationPickerVo;
 
 import java.util.List;
 
@@ -61,6 +62,18 @@ public interface IPigBurnRecordService {
      * <p>mp 入库子页拉取，每类型分别录入库重量。</p>
      */
     List<BurnProductTypeVo> queryProductTypes();
+
+    /**
+     * 按产品取已配置的入库库位列表（MP-PRODIN 决策 #2）。
+     *
+     * <p>读 {@code t_warehouse_product_info.store_location_id}（逗号分隔库位 ID），过滤为
+     * 启用 + 冻品库（与燎毛入库 frozen 约束一致），按配置顺序返回。mp 产品入库弹层据此：
+     * 单库位 → 只读预填；多库位 → 可选并随机默认其一；空 → 回落全量冻品库可选。</p>
+     *
+     * @param productId 产品主键（{@code t_warehouse_product_info.id}）
+     * @return 该产品配置的入库库位（启用 + 冻品库）；未配置或无命中返回空列表
+     */
+    List<LocationPickerVo> queryProductInboundLocations(Long productId);
 
     /**
      * 分页查询。

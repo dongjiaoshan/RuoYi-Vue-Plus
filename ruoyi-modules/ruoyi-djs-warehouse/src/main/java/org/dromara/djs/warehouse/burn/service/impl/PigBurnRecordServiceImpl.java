@@ -27,6 +27,7 @@ import org.dromara.djs.warehouse.cross.mapper.BarInfoMapper;
 import org.dromara.djs.warehouse.flow.domain.StockFlow;
 import org.dromara.djs.warehouse.flow.mapper.StockFlowMapper;
 import org.dromara.djs.warehouse.location.domain.LocationInfo;
+import org.dromara.djs.warehouse.location.domain.vo.LocationPickerVo;
 import org.dromara.djs.warehouse.location.mapper.LocationInfoMapper;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.domain.ProductInhouse;
@@ -112,6 +113,16 @@ public class PigBurnRecordServiceImpl
     private static final String BAR_STATUS_PENDING_SINGE = "pending_singe";
     private static final String BAR_STATUS_SINGING = "singing";
 
+    /**
+     * 燎毛白条入库限定库位类型：冻品库（字典 {@code djs_location_type}）。
+     */
+    private static final String LOCATION_TYPE_FROZEN = "frozen";
+
+    /**
+     * 库位启用态（{@code t_warehouse_location_info.location_status}）。
+     */
+    private static final Integer LOCATION_STATUS_ENABLED = 1;
+
     private final StockFlowMapper stockFlowMapper;
     private final BarInfoMapper barInfoMapper;
     private final ProductInhouseMapper productInhouseMapper;
@@ -167,10 +178,17 @@ public class PigBurnRecordServiceImpl
             throw new ServiceException("入冻品库位不存在：" + bo.getLocationId());
         }
         Map<Long, ProductInfo> typeMap = loadWhiteBarTypeMap();
+        // 单品上限兜底（MP-BURN 决策 #4）：单个产品入库重量不能超过出栏重量（防直连 API 绕过前端拦截）。
+        // 累计校验之前先拦单品，给更早更明确的报错。
+        BigDecimal marketingWeight = bar.getMarketingWeight();
         BigDecimal inWeightTotal = BigDecimal.ZERO;
         for (PigBurnRecordBo.ProductTypeItem item : bo.getProductTypeItems()) {
             if (!typeMap.containsKey(item.getProductId())) {
                 throw new ServiceException("无效的白条产品类型：" + item.getProductId());
+            }
+            if (marketingWeight != null && item.getWeight() != null
+                && item.getWeight().compareTo(marketingWeight) > 0) {
+                throw new ServiceException("单个产品重量不能超过出栏重量");
             }
             inWeightTotal = inWeightTotal.add(item.getWeight());
         }
@@ -288,6 +306,55 @@ public class PigBurnRecordServiceImpl
             vo.setProductName(p.getProductName());
             vo.setProductType(resolveProductType(p.getProductId()));
             vo.setImageUrl(urlsAligned ? urls.get(i) : null);
+            result.add(vo);
+        }
+        return result;
+    }
+
+    @Override
+    public List<LocationPickerVo> queryProductInboundLocations(Long productId) {
+        if (productId == null) {
+            return List.of();
+        }
+        ProductInfo product = productInfoMapper.selectById(productId);
+        if (product == null || StringUtils.isBlank(product.getStoreLocationId())) {
+            // 该产品未配置入库库位 → 返回空，前端回落全量冻品库可选
+            return List.of();
+        }
+        // store_location_id 逗号分隔库位 ID 列表（doc/11 §2.5；V2 改关联表）
+        List<Long> locationIds = new ArrayList<>();
+        for (String token : product.getStoreLocationId().split(",")) {
+            String trimmed = token.trim();
+            if (StringUtils.isNotBlank(trimmed)) {
+                try {
+                    locationIds.add(Long.valueOf(trimmed));
+                } catch (NumberFormatException ignore) {
+                    // 脏数据（非数字 ID）跳过，不拖垮整体取数
+                }
+            }
+        }
+        if (locationIds.isEmpty()) {
+            return List.of();
+        }
+        // 仅返启用 + 冻品库（与燎毛入库 frozen 约束一致），保持配置顺序
+        List<LocationInfo> rows = locationInfoMapper.selectList(
+            new LambdaQueryWrapper<LocationInfo>()
+                .in(LocationInfo::getId, locationIds)
+                .eq(LocationInfo::getLocationStatus, LOCATION_STATUS_ENABLED)
+                .eq(LocationInfo::getLocationType, LOCATION_TYPE_FROZEN));
+        Map<Long, LocationInfo> rowMap = rows.stream()
+            .collect(Collectors.toMap(LocationInfo::getId, l -> l, (a, b) -> a));
+        List<LocationPickerVo> result = new ArrayList<>(locationIds.size());
+        for (Long id : locationIds) {
+            LocationInfo l = rowMap.get(id);
+            if (l == null) {
+                continue;
+            }
+            LocationPickerVo vo = new LocationPickerVo();
+            vo.setId(l.getId());
+            vo.setLocationCode(l.getLocationCode());
+            vo.setLocationName(l.getLocationName());
+            vo.setLocationType(l.getLocationType());
             result.add(vo);
         }
         return result;

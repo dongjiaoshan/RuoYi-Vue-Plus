@@ -25,10 +25,11 @@ import java.util.List;
 /**
  * 采摘计划 Controller（admin，PLT-PLAN-002）。
  *
- * <h2>3 端点</h2>
+ * <h2>4 端点</h2>
  * <ul>
  *   <li>{@code GET /list}：按作物聚合采摘计划列表（doc/10 §F-PLT-05 入口 1）</li>
- *   <li>{@code GET /{planId}/{cropId}/details}：调整页拉行</li>
+ *   <li>{@code GET /{planId}/{cropId}/details}：调整页拉行（按计划 + 作物）</li>
+ *   <li>{@code GET /crop/{cropId}/details}：调整页拉行（纯作物聚合，跨多计划；列表已重构为纯作物聚合，UI 侧不再持有单一 planId）</li>
  *   <li>{@code PUT /adjust}：批量调整 plant_details 的 4 时间字段 + is_pick + harvest_by</li>
  * </ul>
  *
@@ -53,6 +54,18 @@ public class PickPlanController extends BaseController {
     @GetMapping("/{planId}/{cropId}/details")
     public R<List<PlantDetailsVo>> details(@PathVariable Long planId, @PathVariable Long cropId) {
         return R.ok(pickPlanService.listDetailsByPlanCrop(planId, cropId));
+    }
+
+    /**
+     * 调整页拉行（纯作物聚合）：列表已重构为按作物聚合（跨多 plant_plan），调整抽屉只持有 cropId、
+     * 拿不到单一 planId。本端点按 cropId 跨计划聚合返回该作物名下全部 plant_details 行。
+     *
+     * <p>定值段 {@code /crop/} 优先级高于 {@code /{planId}/} 占位段，Spring 正确分流、不与旧端点冲突。</p>
+     */
+    @SaCheckPermission("djs:plant:pick:list")
+    @GetMapping("/crop/{cropId}/details")
+    public R<List<PlantDetailsVo>> detailsByCrop(@PathVariable Long cropId) {
+        return R.ok(pickPlanService.listDetailsByCrop(cropId));
     }
 
     @SaCheckPermission("djs:plant:pick:adjust")

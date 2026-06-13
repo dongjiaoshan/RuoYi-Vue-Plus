@@ -8,6 +8,7 @@ import org.dromara.djs.warehouse.demand.domain.query.DemandManageQuery;
 import org.dromara.djs.warehouse.demand.domain.vo.AuditHistoryEntryVo;
 import org.dromara.djs.warehouse.demand.domain.vo.DemandManageVo;
 import org.dromara.djs.warehouse.demand.domain.vo.DemandPigVo;
+import org.dromara.djs.warehouse.demand.domain.vo.DemandProductStoreDetailVo;
 import org.dromara.djs.warehouse.demand.domain.vo.DemandSummaryVo;
 import org.dromara.djs.warehouse.demand.domain.vo.DemandTodayKpiVo;
 
@@ -81,6 +82,16 @@ public interface IDemandManageService {
      * @throws org.dromara.common.core.exception.ServiceException 业态非法时
      */
     DemandSummaryVo getSummary(String productType);
+
+    /**
+     * 某产品「按门店聚合需求量明细」（D-FIX-24 决策 #8 列表详情弹窗）。
+     *
+     * <p>返回有该产品需求的各门店及其需求量合计 / 单数（非取消单）。空集时返空 List。</p>
+     *
+     * @param productId 产品 FK（{@code t_warehouse_product_info.id}）
+     * @return 各门店需求明细
+     */
+    List<DemandProductStoreDetailVo> listProductStoreDetail(Long productId);
 
     /**
      * 需求管理页顶部「今日全局」KPI 横条（DJS-FIX-ADMIN-W22-007）。

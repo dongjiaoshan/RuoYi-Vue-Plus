@@ -47,6 +47,15 @@ public class DemandManageVo implements Serializable {
     @ExcelProperty(value = "门店ID")
     private Long storeId;
 
+    /**
+     * 有该产品需求的门店数（去重，非取消单）。
+     *
+     * <p>列表页「门店」列显此数字而非原始门店编码（D-FIX-24 决策 #8）；service 层按 product_id
+     * 聚合后回填，前端分页下不可靠故不在前端 reduce。</p>
+     */
+    @ExcelProperty(value = "需求门店数")
+    private Integer storeCount;
+
     @ExcelProperty(value = "产品ID")
     private Long productId;
 

@@ -10,8 +10,12 @@ import org.dromara.common.core.utils.StringUtils;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.common.base.DjsBaseServiceImpl;
+import org.dromara.djs.common.encoder.BizCodeType;
+import org.dromara.djs.common.encoder.IBizCodeGenerator;
 import org.dromara.djs.common.supplier.domain.Supplier;
 import org.dromara.djs.common.supplier.mapper.SupplierMapper;
+import org.dromara.djs.warehouse.cross.domain.BarInfo;
+import org.dromara.djs.warehouse.cross.mapper.BarInfoMapper;
 import org.dromara.djs.warehouse.outsource.domain.OutsourcePig;
 import org.dromara.djs.warehouse.outsource.domain.bo.OutsourcePigBo;
 import org.dromara.djs.warehouse.outsource.domain.query.OutsourcePigQuery;
@@ -43,11 +47,28 @@ import java.util.stream.Collectors;
 @Service
 public class OutsourcePigServiceImpl extends DjsBaseServiceImpl<OutsourcePigMapper, OutsourcePig> implements IOutsourcePigService {
 
-    private final SupplierMapper supplierMapper;
+    /**
+     * bar_info.status 初始态：待燎毛（字典 {@code djs_bar_status}）。
+     */
+    private static final String BAR_STATUS_PENDING_SINGE = "pending_singe";
 
-    public OutsourcePigServiceImpl(OutsourcePigMapper baseMapper, SupplierMapper supplierMapper) {
+    /**
+     * bar_info.in_method=1 燎毛间（字典 {@code djs_bar_in_method}；与自养出栏路径一致）。
+     */
+    private static final Integer IN_METHOD_SINGE_ROOM = 1;
+
+    private final SupplierMapper supplierMapper;
+    private final BarInfoMapper barInfoMapper;
+    private final IBizCodeGenerator bizCodeGenerator;
+
+    public OutsourcePigServiceImpl(OutsourcePigMapper baseMapper,
+                                   SupplierMapper supplierMapper,
+                                   BarInfoMapper barInfoMapper,
+                                   IBizCodeGenerator bizCodeGenerator) {
         super(baseMapper);
         this.supplierMapper = supplierMapper;
+        this.barInfoMapper = barInfoMapper;
+        this.bizCodeGenerator = bizCodeGenerator;
     }
 
     @Override
@@ -81,7 +102,43 @@ public class OutsourcePigServiceImpl extends DjsBaseServiceImpl<OutsourcePigMapp
             throw new ServiceException("外购猪只入参转换失败");
         }
         // tenant_id / create_by 等不显式赋，走 MetaObjectHandler.insertFill
-        return baseMapper.insert(entity);
+        int rows = baseMapper.insert(entity);
+        // 外购猪走燎毛：镜像 PigMarketingEventListener 补写一行外购 bar_info（status=pending_singe），
+        // 否则 mp 待燎毛列表（queryPendingBars 唯一数据源是 bar_info）查不到外购猪。
+        createOutsourceBar(bo);
+        return rows;
+    }
+
+    /**
+     * 外购猪入库时镜像自养出栏路径补写一行外购白条（{@code t_warehouse_bar_info}）。
+     *
+     * <p>字段口径与自养 {@link org.dromara.djs.warehouse.cross.listener.PigMarketingEventListener#onPigMarketing}
+     * 对齐：{@code status=pending_singe} / {@code inMethod=1}（燎毛间）/ {@code barId} 走
+     * {@link BizCodeType#BAR_NO}；外购列 {@code supplierId / buyDate / buyWeight} 回填。
+     * 外购无耳标，用 {@code pigMarkNo}（猪只标识号）填 {@code earNo} 与 {@code markId}。</p>
+     *
+     * <p>补 bar 失败不应阻塞外购登记主流程（外购台账已写成功），故 swallow + log（同 listener 失败策略）。</p>
+     */
+    private void createOutsourceBar(OutsourcePigBo bo) {
+        try {
+            BarInfo bar = new BarInfo();
+            bar.setBarId(bizCodeGenerator.generate(BizCodeType.BAR_NO, Map.of()));
+            bar.setEarNo(bo.getPigMarkNo());
+            bar.setMarkId(bo.getPigMarkNo());
+            bar.setMarketingWeight(bo.getPigWeight());
+            bar.setStatus(BAR_STATUS_PENDING_SINGE);
+            bar.setInMethod(IN_METHOD_SINGE_ROOM);
+            bar.setSupplierId(bo.getSupplierId());
+            bar.setBuyDate(bo.getPurchaseDate());
+            bar.setBuyWeight(bo.getPigWeight());
+            // tenant_id / 6 个审计字段由 MetaObjectHandler 自动 fill；del_unique=0 由 DDL DEFAULT
+            barInfoMapper.insert(bar);
+            log.info("[DJS-FIX-WMS-RALN] 外购猪 bar_info 创建成功 barId={} pigMarkNo={} supplierId={}",
+                bar.getBarId(), bo.getPigMarkNo(), bo.getSupplierId());
+        } catch (Exception e) {
+            log.error("[DJS-FIX-WMS-RALN] 外购猪自动创建 bar_info 失败 pigMarkNo={} supplierId={}: {}",
+                bo.getPigMarkNo(), bo.getSupplierId(), e.getMessage(), e);
+        }
     }
 
     @Override

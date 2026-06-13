@@ -5,6 +5,7 @@ import cn.dev33.satoken.annotation.SaCheckPermission;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.dromara.common.core.domain.R;
+import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.web.core.BaseController;
 import org.dromara.djs.plant.pick.domain.bo.PickSubmitBo;
 import org.dromara.djs.plant.pick.domain.vo.PickCropTaskVo;
@@ -91,11 +92,40 @@ public class AppletPickController extends BaseController {
     /**
      * 采收作物详情下「N 张地块卡」（FIX-PLT-MP-PICK-001 #3）：该作物（+ 计划）下逐地块卡。
      *
-     * @param planId 计划 id（可空）
-     * @param cropId 作物 id（必填）
+     * <p>cropId / planId 以 String 接收后自行解析（前端 mp 传 snowflake string）：空 / 非数字直接抛
+     * {@link ServiceException} 给明确友好提示，避免 String→Long 绑定失败触发框架级 MethodArgumentTypeMismatch
+     * 导致 mp 「发生未知异常」（采摘活动管理详情 / 采收详情两页共用本端点）。</p>
+     *
+     * @param planId 计划 id（可空字符串）
+     * @param cropId 作物 id（必填字符串）
      */
     @GetMapping("/cropPlots")
-    public R<List<PickTaskVo>> cropPlots(@RequestParam(required = false) Long planId, @RequestParam Long cropId) {
-        return R.ok(appletPickService.listCropPlots(planId, cropId));
+    public R<List<PickTaskVo>> cropPlots(@RequestParam(required = false) String planId,
+                                         @RequestParam(required = false) String cropId) {
+        return R.ok(appletPickService.listCropPlots(parsePlanId(planId), parseCropId(cropId)));
+    }
+
+    /** 必填作物 id 解析：空 / 非数字 → 明确友好 ServiceException（不让框架抛类型不匹配）。 */
+    private Long parseCropId(String cropId) {
+        if (cropId == null || cropId.isBlank()) {
+            throw new ServiceException("作物 id 不能为空");
+        }
+        try {
+            return Long.parseLong(cropId.trim());
+        } catch (NumberFormatException e) {
+            throw new ServiceException("作物 id 非法：" + cropId);
+        }
+    }
+
+    /** 可空计划 id 解析：空 → null（不过滤计划）；非数字 → 明确友好 ServiceException。 */
+    private Long parsePlanId(String planId) {
+        if (planId == null || planId.isBlank()) {
+            return null;
+        }
+        try {
+            return Long.parseLong(planId.trim());
+        } catch (NumberFormatException e) {
+            throw new ServiceException("计划 id 非法：" + planId);
+        }
     }
 }

@@ -5,6 +5,7 @@ import cn.dev33.satoken.annotation.SaCheckPermission;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.dromara.common.core.domain.R;
+import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.satoken.utils.LoginHelper;
@@ -138,11 +139,28 @@ public class AppletFarmRecordsController extends BaseController {
     /**
      * 农事多选页候选地块（FIX-PLT-MP-WORK-BATCH-001 #2）：按作物列出可批量录入的地块
      * （含上次同类农事日期 + 间隔天数）。退茬只列采摘完成地块。
+     *
+     * <p>cropId 以 String 接收后自行解析（前端 mp 传 snowflake string）：空 / 非数字直接抛
+     * {@link ServiceException} 给明确友好提示，避免 String→Long 绑定失败触发框架级
+     * MethodArgumentTypeMismatch 导致 mp「发生未知异常」（退茬多选页崩溃同源）。</p>
      */
     @SaCheckLogin
     @GetMapping("/cropPlots")
-    public R<List<FarmCropPlotVo>> cropPlots(@RequestParam Long cropId, @RequestParam String farmType) {
-        return R.ok(farmRecordsService.listCropPlots(cropId, farmType));
+    public R<List<FarmCropPlotVo>> cropPlots(@RequestParam(required = false) String cropId,
+                                             @RequestParam(required = false) String farmType) {
+        return R.ok(farmRecordsService.listCropPlots(parseCropId(cropId), farmType));
+    }
+
+    /** 必填作物 id 解析：空 / 非数字 → 明确友好 ServiceException（不让框架抛类型不匹配）。 */
+    private Long parseCropId(String cropId) {
+        if (cropId == null || cropId.isBlank()) {
+            throw new ServiceException("作物 id 不能为空");
+        }
+        try {
+            return Long.parseLong(cropId.trim());
+        } catch (NumberFormatException e) {
+            throw new ServiceException("作物 id 非法：" + cropId);
+        }
     }
 
     /**

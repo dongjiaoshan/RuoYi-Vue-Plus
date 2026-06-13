@@ -18,12 +18,13 @@ import org.dromara.djs.store.ledger.domain.vo.StoreDailyLedgerHeaderVo;
 import org.dromara.djs.store.ledger.domain.vo.StoreDailyLedgerVo;
 import org.dromara.djs.store.ledger.mapper.StoreDailyLedgerMapper;
 import org.dromara.djs.store.ledger.service.IStoreDailyLedgerService;
-import org.dromara.djs.store.operation.domain.StoreProductRelation;
 import org.dromara.djs.store.operation.domain.StoreSaleRecord;
-import org.dromara.djs.store.operation.mapper.StoreProductRelationMapper;
 import org.dromara.djs.store.operation.mapper.StoreSaleRecordMapper;
 import org.dromara.djs.store.returns.domain.StoreReturn;
 import org.dromara.djs.store.returns.mapper.StoreReturnMapper;
+import org.dromara.djs.warehouse.demand.core.enums.DemandStatus;
+import org.dromara.djs.warehouse.demand.domain.DemandManage;
+import org.dromara.djs.warehouse.demand.mapper.DemandManageMapper;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
 import org.springframework.stereotype.Service;
@@ -35,9 +36,11 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
@@ -45,7 +48,11 @@ import java.util.stream.Collectors;
  *
  * <h3>口径</h3>
  * <ul>
- *   <li>盘点候选 = 门店关联产品（{@code t_store_product_relation}）全 SKU，预填可推导的量列。</li>
+ *   <li>盘点候选 = 两类产品并集（仅这两类，不再全 SKU）：<br>
+ *       ① 昨日（{@code ledgerDate-1}）该门店盘点结存 {@code closingQty>0} 的产品；<br>
+ *       ② 该门店已进入「确认收货」状态的需求产品（{@code t_warehouse_demand_manage}
+ *          {@code demand_status='CONFIRMED' AND received_time IS NOT NULL}）。<br>
+ *       两类都没有则返回空表（门店当日确无可盘产品）。</li>
  *   <li>预填 saleQty（{@code t_store_sale_record} 当日聚合）/ returnQty（{@code t_store_return}
  *       customer_to_store 当日聚合）/ whReturnQty（{@code t_store_return} store_to_warehouse 当日聚合）。
  *       inboundQty V1 不自动预填 0（{@code t_warehouse_shipment} 为 demand/业态粒度，非产品 SKU 粒度，
@@ -64,9 +71,9 @@ public class StoreDailyLedgerServiceImpl implements IStoreDailyLedgerService {
     private final StoreDailyLedgerMapper baseMapper;
     private final StoreMapper storeMapper;
     private final ProductInfoMapper productInfoMapper;
-    private final StoreProductRelationMapper relationMapper;
     private final StoreSaleRecordMapper saleRecordMapper;
     private final StoreReturnMapper storeReturnMapper;
+    private final DemandManageMapper demandManageMapper;
 
     @Override
     public TableDataInfo<StoreDailyLedgerHeaderVo> queryHeaderPage(StoreDailyLedgerQuery query, PageQuery pageQuery) {
@@ -94,11 +101,12 @@ public class StoreDailyLedgerServiceImpl implements IStoreDailyLedgerService {
         }
         LocalDate date = ledgerDate == null ? LocalDate.now() : ledgerDate;
 
-        // 1. 门店关联产品全 SKU（启用态）
-        List<StoreProductRelation> relations = relationMapper.selectList(
-            new LambdaQueryWrapper<StoreProductRelation>().eq(StoreProductRelation::getStoreId, storeId));
-        List<Long> productIds = relations.stream()
-            .map(StoreProductRelation::getProductId).filter(Objects::nonNull).distinct().toList();
+        // 1. 候选产品 = 两类并集（仅这两类，不再门店关联全 SKU）
+        //    ① 昨日盘点结存 closingQty>0 的产品；② 已确认收货的需求产品。
+        Set<Long> productIdSet = new LinkedHashSet<>();
+        productIdSet.addAll(yesterdayPositiveClosingProductIds(storeId, date));
+        productIdSet.addAll(confirmedReceivedDemandProductIds(storeId));
+        List<Long> productIds = new ArrayList<>(productIdSet);
         if (productIds.isEmpty()) {
             return List.of();
         }
@@ -225,6 +233,34 @@ public class StoreDailyLedgerServiceImpl implements IStoreDailyLedgerService {
 
     private static BigDecimal nz(BigDecimal v) {
         return v == null ? BigDecimal.ZERO : v;
+    }
+
+    /**
+     * 候选维度①：昨日（{@code date-1}）该门店盘点结存 {@code closingQty>0} 的产品 ID。
+     */
+    private List<Long> yesterdayPositiveClosingProductIds(Long storeId, LocalDate date) {
+        LocalDate yesterday = date.minusDays(1);
+        return baseMapper.selectList(
+                new LambdaQueryWrapper<StoreDailyLedger>()
+                    .eq(StoreDailyLedger::getStoreId, storeId)
+                    .eq(StoreDailyLedger::getLedgerDate, yesterday)
+                    .gt(StoreDailyLedger::getClosingQty, BigDecimal.ZERO)
+                    .select(StoreDailyLedger::getProductId))
+            .stream().map(StoreDailyLedger::getProductId).filter(Objects::nonNull).distinct().toList();
+    }
+
+    /**
+     * 候选维度②：该门店已进入「确认收货」状态的需求对应产品 ID
+     * （{@code demand_status='CONFIRMED' AND received_time IS NOT NULL}）。
+     */
+    private List<Long> confirmedReceivedDemandProductIds(Long storeId) {
+        return demandManageMapper.selectList(
+                new LambdaQueryWrapper<DemandManage>()
+                    .eq(DemandManage::getStoreId, storeId)
+                    .eq(DemandManage::getDemandStatus, DemandStatus.CONFIRMED.name())
+                    .isNotNull(DemandManage::getReceivedTime)
+                    .select(DemandManage::getProductId))
+            .stream().map(DemandManage::getProductId).filter(Objects::nonNull).distinct().toList();
     }
 
     private LambdaQueryWrapper<StoreDailyLedger> buildQueryWrapper(StoreDailyLedgerQuery q) {

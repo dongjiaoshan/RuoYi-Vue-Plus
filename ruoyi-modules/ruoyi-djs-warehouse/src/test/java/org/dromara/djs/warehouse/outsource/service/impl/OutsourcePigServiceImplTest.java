@@ -7,8 +7,12 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
+import org.dromara.djs.common.encoder.BizCodeType;
+import org.dromara.djs.common.encoder.IBizCodeGenerator;
 import org.dromara.djs.common.supplier.domain.Supplier;
 import org.dromara.djs.common.supplier.mapper.SupplierMapper;
+import org.dromara.djs.warehouse.cross.domain.BarInfo;
+import org.dromara.djs.warehouse.cross.mapper.BarInfoMapper;
 import org.dromara.djs.warehouse.outsource.domain.OutsourcePig;
 import org.dromara.djs.warehouse.outsource.domain.bo.OutsourcePigBo;
 import org.dromara.djs.warehouse.outsource.domain.query.OutsourcePigQuery;
@@ -32,6 +36,8 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyCollection;
+import static org.mockito.ArgumentMatchers.anyMap;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -65,6 +71,12 @@ class OutsourcePigServiceImplTest {
     @Mock
     private SupplierMapper supplierMapper;
 
+    @Mock
+    private BarInfoMapper barInfoMapper;
+
+    @Mock
+    private IBizCodeGenerator bizCodeGenerator;
+
     private OutsourcePigServiceImpl service;
 
     @BeforeAll
@@ -74,19 +86,21 @@ class OutsourcePigServiceImplTest {
         assistant.setCurrentNamespace("test");
         TableInfoHelper.initTableInfo(assistant, OutsourcePig.class);
         TableInfoHelper.initTableInfo(assistant, Supplier.class);
+        TableInfoHelper.initTableInfo(assistant, BarInfo.class);
     }
 
     @BeforeEach
     void setUp() {
-        service = new TestableOutsourcePigServiceImpl(baseMapper, supplierMapper);
+        service = new TestableOutsourcePigServiceImpl(baseMapper, supplierMapper, barInfoMapper, bizCodeGenerator);
     }
 
     /**
      * 子类覆盖 toEntity 钩子，避开 MapstructUtils 的 Spring 上下文依赖（参 DemandManageServiceImplTest 范式）。
      */
     static class TestableOutsourcePigServiceImpl extends OutsourcePigServiceImpl {
-        TestableOutsourcePigServiceImpl(OutsourcePigMapper m, SupplierMapper sm) {
-            super(m, sm);
+        TestableOutsourcePigServiceImpl(OutsourcePigMapper m, SupplierMapper sm,
+                                        BarInfoMapper bim, IBizCodeGenerator gen) {
+            super(m, sm, bim, gen);
         }
 
         @Override
@@ -109,7 +123,7 @@ class OutsourcePigServiceImplTest {
     }
 
     @Test
-    @DisplayName("insertByBo: happy → 转换后 insert，受影响 1 行")
+    @DisplayName("insertByBo: happy → 转换后 insert outsource_pig + 镜像写一行外购 bar_info（pending_singe）")
     void testInsertByBo_Happy() {
         OutsourcePigBo bo = new OutsourcePigBo();
         bo.setPurchaseDate(new Date());
@@ -120,11 +134,16 @@ class OutsourcePigServiceImplTest {
         bo.setBuyer("100");
 
         when(baseMapper.insert(any(OutsourcePig.class))).thenReturn(1);
+        when(bizCodeGenerator.generate(eq(BizCodeType.BAR_NO), anyMap())).thenReturn("BAR2606130001");
+        when(barInfoMapper.insert(any(BarInfo.class))).thenReturn(1);
 
         int affected = service.insertByBo(bo);
 
         assertThat(affected).isEqualTo(1);
         verify(baseMapper, times(1)).insert(any(OutsourcePig.class));
+        // 决策 #5：外购猪走燎毛必须显示 → 镜像补写一行外购 bar_info
+        verify(barInfoMapper, times(1)).insert(any(BarInfo.class));
+        verify(bizCodeGenerator, times(1)).generate(eq(BizCodeType.BAR_NO), anyMap());
     }
 
     @Test

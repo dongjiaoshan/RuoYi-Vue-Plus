@@ -30,7 +30,9 @@ import org.dromara.djs.warehouse.shipment.returnpkg.service.IReturnProductServic
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Comparator;
@@ -54,6 +56,12 @@ import java.util.stream.Collectors;
 public class ReturnProductServiceImpl
     extends DjsBaseServiceImpl<ReturnProductMapper, ReturnProduct>
     implements IReturnProductService {
+
+    /**
+     * 「今日」算法时区（D-FIX-24 决策 #6a 退货管理当天过滤）：不依赖 DB CURDATE() 时区，
+     * 避免部署到非 UTC+8 实例时「今日」偏移埋雷。
+     */
+    private static final ZoneId RETURN_TODAY_ZONE = ZoneId.of("Asia/Shanghai");
 
     private static final String DIRECTION_STORE_TO_WAREHOUSE = "store_to_warehouse";
 
@@ -216,10 +224,18 @@ public class ReturnProductServiceImpl
     public List<ReturnStoreGroupVo> listPendingGroups() {
         // 1. 只取 mp 退货管理这条链：store_to_warehouse 方向 + 有门店 + 状态 pending/confirmed。
         //    （其他 2 方向是 admin 端占位录入，不进 mp 分组卡）
+        //    只看当天退货：按业务日期 apply_time 落在今天（Asia/Shanghai）过滤，非 create_time，
+        //    配合「当天退货当天确认」（D-FIX-24 决策 #6a）。t_warehouse_return_product 无独立 return_date 列，
+        //    业务日期即申请时间 apply_time。
+        LocalDate today = LocalDate.now(RETURN_TODAY_ZONE);
+        LocalDateTime todayStart = today.atStartOfDay();
+        LocalDateTime tomorrowStart = today.plusDays(1).atStartOfDay();
         List<ReturnProduct> rows = baseMapper.selectList(new LambdaQueryWrapper<ReturnProduct>()
             .eq(ReturnProduct::getReturnDirection, DIRECTION_STORE_TO_WAREHOUSE)
             .isNotNull(ReturnProduct::getStoreId)
-            .in(ReturnProduct::getReturnStatus, List.of(STATUS_PENDING, STATUS_CONFIRMED)));
+            .in(ReturnProduct::getReturnStatus, List.of(STATUS_PENDING, STATUS_CONFIRMED))
+            .ge(ReturnProduct::getApplyTime, todayStart)
+            .lt(ReturnProduct::getApplyTime, tomorrowStart));
         if (rows.isEmpty()) {
             return List.of();
         }
