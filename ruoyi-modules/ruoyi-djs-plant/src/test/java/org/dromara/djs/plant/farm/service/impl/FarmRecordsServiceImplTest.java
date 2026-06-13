@@ -10,6 +10,7 @@ import org.dromara.common.mybatis.core.page.PageQuery;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.djs.common.image.service.ImageUrlResolver;
+import org.dromara.djs.plant.activity.service.IPlantActivityService;
 import org.dromara.djs.plant.crop.domain.CropInfo;
 import org.dromara.djs.plant.crop.mapper.CropInfoMapper;
 import org.dromara.djs.plant.farm.domain.vo.CropZoneCountVo;
@@ -98,6 +99,8 @@ class FarmRecordsServiceImplTest {
     private PlantWorkPeopleMapper peopleMapper;
     @Mock
     private ImageUrlResolver imageUrlResolver;
+    @Mock
+    private IPlantActivityService plantActivityService;
 
     private FarmRecordsServiceImpl service;
 
@@ -118,7 +121,7 @@ class FarmRecordsServiceImplTest {
 
     @BeforeEach
     void setUp() {
-        service = new FarmRecordsServiceImpl(baseMapper, plotInfoMapper, cropInfoMapper, plantDetailsMapper, teamMapper, peopleMapper, imageUrlResolver);
+        service = new FarmRecordsServiceImpl(baseMapper, plotInfoMapper, cropInfoMapper, plantDetailsMapper, teamMapper, peopleMapper, imageUrlResolver, plantActivityService);
         // mocking selectMaxRecordNoByPrefix 返 null（当日尚无序号）→ next=1
         when(baseMapper.selectMaxRecordNoByPrefix(any(), any())).thenReturn(null);
         // mocking plot / crop 落库快照（plot_type / crop_name 冗余）
