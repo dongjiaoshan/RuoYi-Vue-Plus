@@ -16,6 +16,7 @@ import org.dromara.djs.plant.crop.mapper.CropInfoMapper;
 import org.dromara.djs.plant.plan.domain.PlantDetails;
 import org.dromara.djs.plant.plan.domain.PlantPlan;
 import org.dromara.djs.plant.plan.domain.bo.PlantDetailInputBo;
+import org.dromara.djs.plant.plan.domain.bo.PlantFinishBo;
 import org.dromara.djs.plant.plan.domain.bo.PlantPlanCreateBo;
 import org.dromara.djs.plant.plan.domain.bo.PlantPlanUpdateBo;
 import org.dromara.djs.plant.plan.domain.bo.PlantStartBo;
@@ -702,6 +703,47 @@ public class PlantPlanServiceImpl extends DjsBaseServiceImpl<PlantPlanMapper, Pl
                     .set(PlotInfo::getUpdateBy, updateBy));
         }
         return startableDetailIds.size();
+    }
+
+    // ============================================================
+    // mp 种植完成收工
+    // ============================================================
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public int finishPlant(PlantFinishBo bo) {
+        if (bo == null || CollUtil.isEmpty(bo.getDetailIds())) {
+            return 0;
+        }
+        // 查目标明细（基类查询自动带 del_flag + V1 单租户）
+        List<PlantDetails> details = detailsMapper.selectList(
+            new LambdaQueryWrapper<PlantDetails>()
+                .in(PlantDetails::getId, bo.getDetailIds()));
+        // 校验：传入的 detailIds 必须全部存在（属当前租户）；缺失即跨租户 / 已删除 / 非法 id
+        if (details.size() != new java.util.HashSet<>(bo.getDetailIds()).size()) {
+            throw new ServiceException("部分计划地块不存在或无权操作，请刷新后重试");
+        }
+        // 仅保留进行中（plant_status='ongoing' + 已开工 + 未完成）的明细可被完成
+        List<Long> finishableDetailIds = details.stream()
+            .filter(d -> "ongoing".equals(d.getPlantStatus())
+                && d.getBeginActualdate() != null
+                && d.getEndActualdate() == null)
+            .map(PlantDetails::getId)
+            .toList();
+        if (finishableDetailIds.isEmpty()) {
+            // 所选明细均非进行中 / 已完成：幂等返 0（非错误，前端按 0 行提示"已完成"）
+            return 0;
+        }
+
+        // 批量回写明细：plant_status='completed' + end_actualdate；不动地块 plot_status（保持 2 种植）
+        Long updateBy = currentUserIdSafe();
+        detailsMapper.update(null,
+            new com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<PlantDetails>()
+                .in(PlantDetails::getId, finishableDetailIds)
+                .set(PlantDetails::getPlantStatus, "completed")
+                .set(PlantDetails::getEndActualdate, bo.getEndActualdate())
+                .set(PlantDetails::getUpdateBy, updateBy));
+        return finishableDetailIds.size();
     }
 
     @Override

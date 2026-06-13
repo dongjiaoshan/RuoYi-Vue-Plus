@@ -110,7 +110,7 @@ public class AppletPickServiceImpl implements IAppletPickService {
         // 2. harvest_status 流转：pending → picking；finish 时 → completed
         if (finish) {
             detail.setHarvestStatus("completed");
-            detail.setEndActualdate(LocalDate.now());
+            // end_actualdate 归「种植完成」finishPlant 独占，采摘完成不再写
             detail.setEndHarvestdate(bo.getHarvestDate());
             // 3. average_yield = actual_yield / plot_area（actual_yield 由采摘活动管理累加；为空 / area 为 0 时跳过，不抛）
             BigDecimal yield = detail.getActualYield();
@@ -118,8 +118,18 @@ public class AppletPickServiceImpl implements IAppletPickService {
             if (yield != null && area != null && area.compareTo(BigDecimal.ZERO) > 0) {
                 detail.setAverageYield(yield.divide(area, 3, RoundingMode.HALF_UP));
             }
-        } else if (!"completed".equals(detail.getHarvestStatus())) {
+        } else if (!"picking".equals(detail.getHarvestStatus())
+            && !"completed".equals(detail.getHarvestStatus())) {
+            // 「开始采摘」：harvest_status 非 picking/completed 首次转 picking
             detail.setHarvestStatus("picking");
+            // 同步把关联地块 plot_status 从 2（种植）置 3（采摘），字典 djs_plot_status：1=空闲/2=种植/3=采摘
+            if (detail.getPlotId() != null) {
+                PlotInfo plot = plotMapper.selectById(detail.getPlotId());
+                if (plot != null) {
+                    plot.setPlotStatus(3);
+                    plotMapper.updateById(plot);
+                }
+            }
         }
         // 决策①：绝不动 is_pick
         detailsMapper.updateById(detail);

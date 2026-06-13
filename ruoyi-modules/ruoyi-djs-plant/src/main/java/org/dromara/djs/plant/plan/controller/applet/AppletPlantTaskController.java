@@ -5,6 +5,7 @@ import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.dromara.common.core.domain.R;
 import org.dromara.djs.common.image.service.ImageUrlResolver;
+import org.dromara.djs.plant.plan.domain.bo.PlantFinishBo;
 import org.dromara.djs.plant.plan.domain.bo.PlantStartBo;
 import org.dromara.djs.plant.plan.domain.vo.PlantCropTaskVo;
 import org.dromara.djs.plant.plan.domain.vo.PlantMonthTaskVo;
@@ -33,6 +34,7 @@ import java.util.List;
  *   <li>{@code GET  /djs/applet/plant/plan/monthTasks?month=}  当月播种任务明细行（含明细 id + beginActualdate，喂详情页逐块开工，D2 拆接口明细侧）</li>
  *   <li>{@code GET  /djs/applet/plant/plan/seedSummary}        播种首页 3 KPI（种植口径，完成率 = 当月已开工明细/当月明细总数）</li>
  *   <li>{@code POST /djs/applet/plant/plan/startPlant}         开始种植开工（批量标记计划地块实际开工）</li>
+ *   <li>{@code POST /djs/applet/plant/plan/finishPlant}        种植完成收工（批量标记计划地块种植完成）</li>
  * </ul>
  *
  * @author djs
@@ -112,5 +114,16 @@ public class AppletPlantTaskController {
     @PostMapping("/startPlant")
     public R<Integer> startPlant(@Valid @RequestBody PlantStartBo bo) {
         return R.ok(plantPlanService.startPlant(bo));
+    }
+
+    /**
+     * 种植完成收工：批量标记所选计划地块种植完成。
+     *
+     * @return 实际完成的明细行数（非进行中 / 已完成的被跳过）
+     */
+    @SaCheckLogin
+    @PostMapping("/finishPlant")
+    public R<Integer> finishPlant(@Valid @RequestBody PlantFinishBo bo) {
+        return R.ok(plantPlanService.finishPlant(bo));
     }
 }

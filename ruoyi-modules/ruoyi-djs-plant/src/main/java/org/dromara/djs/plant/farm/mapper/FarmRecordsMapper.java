@@ -93,7 +93,8 @@ public interface FarmRecordsMapper extends BaseMapperPlus<FarmRecords, FarmRecor
     /**
      * 生长类工种「作物目标卡」聚合（FIX-PLT-MP-CROPSEL-001）。
      *
-     * <p>只列已种植（{@code t_plant_plant_details} 有行）且 {@code plant_status='ongoing'} 的作物，按作物聚合
+     * <p>只列已种植（{@code t_plant_plant_details} 有行）且处于产出期（{@code plant_status='completed' AND
+     * harvest_status<>'completed'}，即种植完成但未采完）的作物，按作物聚合
      * 可操作地块去重数 + 最近同工种农事日期。覆盖 6 生长工种（water_fertilize/irrigation/weed/pest_control/
      * pruning/harvest_activity）+ 灾害（disaster）。显式 {@code tenant_id='1001'} + {@code del_flag='0'}
      * （V1 单农场硬编码，不依赖租户拦截器）。</p>
@@ -114,7 +115,8 @@ public interface FarmRecordsMapper extends BaseMapperPlus<FarmRecords, FarmRecor
                 AND fr.del_flag = '0' AND fr.tenant_id = '1001'
          WHERE d.del_flag = '0'
            AND d.tenant_id = '1001'
-           AND d.plant_status = 'ongoing'
+           AND d.plant_status = 'completed'
+           AND d.harvest_status <> 'completed'
            AND (#{zoneId} IS NULL OR p.zone_id = #{zoneId})
            AND (#{plotCode} IS NULL OR p.plot_code = #{plotCode})
          GROUP BY d.crop_id, c.crop_name, c.crop_code
@@ -128,7 +130,8 @@ public interface FarmRecordsMapper extends BaseMapperPlus<FarmRecords, FarmRecor
      * 移栽工种「作物目标卡」聚合（FIX-PLT-MP-CROPSEL-001 P13）。
      *
      * <p>同 {@link #selectCropTargetCardsForGrow}，但额外要求地块为保育类型（{@code plot_type='nursery'}）——
-     * 移栽 = 保育地块上、种植进行中的作物。「nursery」值由 FIX-PLT-PLOTTYPE-001 灌入 {@code djs_plot_type} 字典。</p>
+     * 移栽 = 保育地块上、处于产出期（{@code plant_status='completed' AND harvest_status<>'completed'}，
+     * 即种植完成但未采完）的作物。「nursery」值由 FIX-PLT-PLOTTYPE-001 灌入 {@code djs_plot_type} 字典。</p>
      *
      * @param farmType 农事类型（transplant）
      * @param zoneId   片区 id（可空）
@@ -146,7 +149,8 @@ public interface FarmRecordsMapper extends BaseMapperPlus<FarmRecords, FarmRecor
                 AND fr.del_flag = '0' AND fr.tenant_id = '1001'
          WHERE d.del_flag = '0'
            AND d.tenant_id = '1001'
-           AND d.plant_status = 'ongoing'
+           AND d.plant_status = 'completed'
+           AND d.harvest_status <> 'completed'
            AND p.plot_type = 'nursery'
            AND (#{zoneId} IS NULL OR p.zone_id = #{zoneId})
            AND (#{plotCode} IS NULL OR p.plot_code = #{plotCode})
@@ -192,7 +196,8 @@ public interface FarmRecordsMapper extends BaseMapperPlus<FarmRecords, FarmRecor
     /**
      * 生长工种「片区胶囊」聚合（FIX-PLT-MP-CROPSEL-001 P12/P15·补片区筛选）。
      *
-     * <p>按片区统计该工种可操作地块去重数（已种植 {@code plant_status='ongoing'}），含 0 地块的活跃片区
+     * <p>按片区统计该工种可操作地块去重数（产出期 {@code plant_status='completed' AND harvest_status<>'completed'}，
+     * 即种植完成但未采完），含 0 地块的活跃片区
      * （{@code LEFT JOIN} 从片区表起，胶囊全量显示）。与 {@link #selectCropTargetCardsForGrow} 同口径，
      * 胶囊计数 = 该片区下作物卡 plotCount 之和。手写多表 LEFT JOIN，{@code @InterceptorIgnore} 关租户行注入。</p>
      *
@@ -207,7 +212,7 @@ public interface FarmRecordsMapper extends BaseMapperPlus<FarmRecords, FarmRecor
             ON p.zone_id = z.id AND p.del_flag = '0' AND p.tenant_id = '1001'
           LEFT JOIN t_plant_plant_details d
             ON d.plot_id = p.id AND d.del_flag = '0' AND d.tenant_id = '1001'
-           AND d.plant_status = 'ongoing'
+           AND d.plant_status = 'completed' AND d.harvest_status <> 'completed'
          WHERE z.del_flag = '0' AND z.tenant_id = '1001' AND z.zone_status = 1
          GROUP BY z.id, z.zone_name
          ORDER BY z.zone_name ASC
@@ -231,7 +236,7 @@ public interface FarmRecordsMapper extends BaseMapperPlus<FarmRecords, FarmRecor
            AND p.plot_type = 'nursery'
           LEFT JOIN t_plant_plant_details d
             ON d.plot_id = p.id AND d.del_flag = '0' AND d.tenant_id = '1001'
-           AND d.plant_status = 'ongoing'
+           AND d.plant_status = 'completed' AND d.harvest_status <> 'completed'
          WHERE z.del_flag = '0' AND z.tenant_id = '1001' AND z.zone_status = 1
          GROUP BY z.id, z.zone_name
          ORDER BY z.zone_name ASC

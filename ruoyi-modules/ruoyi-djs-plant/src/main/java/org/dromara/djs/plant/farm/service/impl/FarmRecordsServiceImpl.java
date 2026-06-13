@@ -13,6 +13,7 @@ import org.dromara.common.satoken.utils.LoginHelper;
 import org.dromara.common.tenant.helper.TenantHelper;
 import org.dromara.djs.common.base.DjsBaseServiceImpl;
 import org.dromara.djs.common.image.service.ImageUrlResolver;
+import org.dromara.djs.plant.activity.service.IPlantActivityService;
 import org.dromara.djs.plant.crop.domain.CropInfo;
 import org.dromara.djs.plant.crop.mapper.CropInfoMapper;
 import org.dromara.djs.plant.farm.domain.FarmRecords;
@@ -65,7 +66,7 @@ import java.util.stream.Collectors;
  *
  * <ul>
  *   <li>{@link #submitDisaster}：累加 {@code plant_details.loss_yield}（按 plantId + plotId + cropId 定位最新一条 details）</li>
- *   <li>{@link #submitRotation}：置 {@code plot_info.plot_status=1} + 同 plot 未结束 details {@code plant_status='completed'} + {@code end_actualdate=今日}</li>
+ *   <li>{@link #submitRotation}：置 {@code plot_info.plot_status=1}（plant_status='completed' + end_actualdate 归「种植完成」finishPlant 独占，退茬不写）</li>
  * </ul>
  *
  * <p>业务码 {@code record_no} 格式 {@code FRyyyyMMddNNNN}（NNNN 当日 4 位序号，inline mapper.selectMaxRecordNoByPrefix）。
@@ -101,6 +102,7 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
     private final PlantWorkTeamMapper teamMapper;
     private final PlantWorkPeopleMapper peopleMapper;
     private final ImageUrlResolver imageUrlResolver;
+    private final IPlantActivityService plantActivityService;
 
     public FarmRecordsServiceImpl(FarmRecordsMapper baseMapper,
                                   PlotInfoMapper plotInfoMapper,
@@ -108,7 +110,8 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
                                   PlantDetailsMapper plantDetailsMapper,
                                   PlantWorkTeamMapper teamMapper,
                                   PlantWorkPeopleMapper peopleMapper,
-                                  ImageUrlResolver imageUrlResolver) {
+                                  ImageUrlResolver imageUrlResolver,
+                                  IPlantActivityService plantActivityService) {
         super(baseMapper);
         this.plotInfoMapper = plotInfoMapper;
         this.cropInfoMapper = cropInfoMapper;
@@ -116,6 +119,7 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
         this.teamMapper = teamMapper;
         this.peopleMapper = peopleMapper;
         this.imageUrlResolver = imageUrlResolver;
+        this.plantActivityService = plantActivityService;
     }
 
     // ============================================================
@@ -200,22 +204,14 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
             bo.getFarmDate(), bo.getProofOssIds(), bo.getRemark());
         baseMapper.insert(r);
 
-        // 副作用 1：plot_info.plot_status 回 1（空闲）
+        // 副作用：plot_info.plot_status 回 1（空闲）。plant_status='completed' + end_actualdate
+        // 归「种植完成」finishPlant 独占，退茬不再重复写。
         PlotInfo plot = plotInfoMapper.selectById(bo.getPlotId());
         if (plot == null) {
             throw new ServiceException("地块不存在: " + bo.getPlotId());
         }
         plot.setPlotStatus(1);
         plotInfoMapper.updateById(plot);
-
-        // 副作用 2：同 plant + plot 下未结束 details → completed + end_actualdate=今日
-        LambdaUpdateWrapper<PlantDetails> uw = new LambdaUpdateWrapper<PlantDetails>()
-            .eq(PlantDetails::getPlantId, bo.getPlantId())
-            .eq(PlantDetails::getPlotId, bo.getPlotId())
-            .isNull(PlantDetails::getEndActualdate)
-            .set(PlantDetails::getPlantStatus, "completed")
-            .set(PlantDetails::getEndActualdate, LocalDate.now());
-        plantDetailsMapper.update(null, uw);
         return r.getId();
     }
 
@@ -234,9 +230,9 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
                 bo.getFarmBy(), bo.getFarmDate(), bo.getProofOssIds(), bo.getRemark());
             baseMapper.insert(r);
             count++;
-            // 退茬副作用：每条 plot_status=1（空闲）+ 同 plant+plot 未结束 details 完结
+            // 退茬副作用：每条 plot_status=1（空闲）。plant_status/end_actualdate 归「种植完成」独占。
             if (isRotation) {
-                applyRotationSideEffect(target.getPlantId(), target.getPlotId());
+                applyRotationSideEffect(target.getPlotId());
             }
         }
         return count;
@@ -274,28 +270,22 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
         baseMapper.insert(r);
         // 2. 副作用：累加对应 plant_details.actual_yield（#3=a 采摘重量唯一录入口，采收 tab 已去重量）
         accumulateActualYield(bo.getPlantId(), bo.getPlotId(), bo.getCropId(), bo.getHarvestWeight());
+        // 3. 副作用：写一行采摘活动流水（t_plant_plant_activity，邓博权威 spec：报表 SUM(daily_weight) GROUP BY crop_id,activity_date）
+        plantActivityService.recordDailyWeight(bo.getCropId(), bo.getFarmDate(), bo.getHarvestWeight(), bo.getFarmBy());
         return r.getId();
     }
 
     /**
      * 退茬副作用（与 {@link #submitRotation} 单条一致，抽出供批量复用）：
-     * plot_info.plot_status=1（空闲）+ 同 plant+plot 未结束 details → completed + end_actualdate=今日。
+     * plot_info.plot_status=1（空闲）。plant_status='completed' + end_actualdate 归「种植完成」独占，退茬不写。
      */
-    private void applyRotationSideEffect(Long plantId, Long plotId) {
+    private void applyRotationSideEffect(Long plotId) {
         PlotInfo plot = plotInfoMapper.selectById(plotId);
         if (plot == null) {
             throw new ServiceException("地块不存在: " + plotId);
         }
         plot.setPlotStatus(1);
         plotInfoMapper.updateById(plot);
-
-        LambdaUpdateWrapper<PlantDetails> uw = new LambdaUpdateWrapper<PlantDetails>()
-            .eq(PlantDetails::getPlantId, plantId)
-            .eq(PlantDetails::getPlotId, plotId)
-            .isNull(PlantDetails::getEndActualdate)
-            .set(PlantDetails::getPlantStatus, "completed")
-            .set(PlantDetails::getEndActualdate, LocalDate.now());
-        plantDetailsMapper.update(null, uw);
     }
 
     @Override
@@ -304,14 +294,16 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
             return List.of();
         }
         // 工种 → 状态规则（与 listCropTargetCards 共用 resolveStatusFilter，避免口径漂移）：
-        // 退茬 → harvest_status='completed'（采摘完成）；其余 → plant_status='ongoing'（进行中）。
+        // 退茬 → harvest_status='completed'（采摘完成）；
+        // 其余 → 产出期 plant_status='completed' AND harvest_status<>'completed'（种植完成但未采完，与列表卡同口径）。
         StatusFilter filter = resolveStatusFilter(farmType);
         LambdaQueryWrapper<PlantDetails> dw = new LambdaQueryWrapper<PlantDetails>()
             .eq(PlantDetails::getCropId, cropId);
         if (filter.byHarvestStatus()) {
-            dw.eq(PlantDetails::getHarvestStatus, filter.value());
+            dw.eq(PlantDetails::getHarvestStatus, filter.harvestStatus());
         } else {
-            dw.eq(PlantDetails::getPlantStatus, filter.value());
+            dw.eq(PlantDetails::getPlantStatus, filter.plantStatus())
+                .ne(PlantDetails::getHarvestStatus, filter.harvestStatus());
         }
         List<PlantDetails> details = plantDetailsMapper.selectList(
             dw.orderByAsc(PlantDetails::getPlotId)
@@ -391,7 +383,8 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
             return List.of();
         }
         String code = StringUtils.isBlank(plotCode) ? null : plotCode;
-        // 工种 → 聚合 @Select 分支（rotation 用 harvest_status；transplant 叠 plot_type='nursery'；其余 plant_status='ongoing'）
+        // 工种 → 聚合 @Select 分支（rotation 用 harvest_status；transplant 叠 plot_type='nursery'；
+        // 其余产出期 plant_status='completed' AND harvest_status<>'completed'）
         List<Map<String, Object>> rows;
         if ("rotation".equals(farmType)) {
             rows = baseMapper.selectCropTargetCardsForRotation(farmType, zoneId, code);
@@ -494,23 +487,25 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
      *
      * <ul>
      *   <li>rotation（退茬）→ {@code harvest_status='completed'}（采摘完成）</li>
-     *   <li>其余（含 transplant / 生长类）→ {@code plant_status='ongoing'}（进行中）</li>
+     *   <li>其余（含 transplant / 生长类）→ 产出期 {@code plant_status='completed' AND harvest_status<>'completed'}
+     *       （种植完成但未采完）</li>
      * </ul>
      *
      * <p>移栽（transplant）的额外 {@code plot_type='nursery'} 约束只在列表卡聚合 SQL 里叠加（多选页按作物已选定、
-     * 不重复地块类型过滤），故 transplant 在此仍归 plant_status='ongoing'。</p>
+     * 不重复地块类型过滤），故 transplant 在此仍归产出期口径。</p>
      */
     private StatusFilter resolveStatusFilter(String farmType) {
         if ("rotation".equals(farmType)) {
-            return new StatusFilter(true, "completed");
+            return new StatusFilter(true, null, "completed");
         }
-        return new StatusFilter(false, "ongoing");
+        return new StatusFilter(false, "completed", "completed");
     }
 
     /**
-     * 状态过滤口径：{@code byHarvestStatus=true} 判 harvest_status 列，否则判 plant_status 列。
+     * 状态过滤口径：{@code byHarvestStatus=true} 时按 {@code harvest_status='完成'} 单条件过滤（退茬）；
+     * 否则按产出期双条件 {@code plant_status=plantStatus AND harvest_status<>harvestStatus} 过滤。
      */
-    private record StatusFilter(boolean byHarvestStatus, String value) {
+    private record StatusFilter(boolean byHarvestStatus, String plantStatus, String harvestStatus) {
     }
 
     @Override

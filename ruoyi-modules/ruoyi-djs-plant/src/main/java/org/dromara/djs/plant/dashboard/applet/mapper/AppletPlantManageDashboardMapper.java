@@ -65,7 +65,8 @@ public interface AppletPlantManageDashboardMapper {
     Integer countPlantedCrop(@Param("tenantId") String tenantId);
 
     /**
-     * 当前种植面积（亩）：进行中明细（{@code plant_status='ongoing'}）的 {@code plot_area} 合计。
+     * 当前种植面积（亩）：在地明细（{@code plant_status IN ('ongoing','completed')}）的 {@code plot_area} 合计。
+     * 含"种植完成但作物仍在地里"（completed，采摘前），故口径为 ongoing + completed。
      *
      * @param tenantId 租户
      * @return 面积合计，无则 0
@@ -74,7 +75,7 @@ public interface AppletPlantManageDashboardMapper {
         + "  FROM t_plant_plant_details "
         + " WHERE tenant_id = #{tenantId} "
         + "   AND del_flag = '0' "
-        + "   AND plant_status = 'ongoing'")
+        + "   AND plant_status IN ('ongoing', 'completed')")
     BigDecimal sumCurrentPlantArea(@Param("tenantId") String tenantId);
 
     /**
@@ -119,7 +120,8 @@ public interface AppletPlantManageDashboardMapper {
     // ============================ 端点 3 cropAreaShare 果蔬分布饼图 ============================
 
     /**
-     * 进行中计划（{@code plant_status='ongoing'}）按作物分组面积合计（喂饼图）。
+     * 在地明细（{@code plant_status IN ('ongoing','completed')}）按作物分组面积合计（喂饼图）。
+     * 含"种植完成但作物仍在地里"（completed，采摘前），与 {@link #sumCurrentPlantArea} 当前种植面积口径一致。
      *
      * @param tenantId 租户
      * @return 每作物一行 {cropName, area}，按面积降序，无则空列表
@@ -130,7 +132,7 @@ public interface AppletPlantManageDashboardMapper {
         + "  LEFT JOIN t_plant_crop_info c ON c.id = d.crop_id AND c.del_flag = '0' "
         + " WHERE d.tenant_id = #{tenantId} "
         + "   AND d.del_flag = '0' "
-        + "   AND d.plant_status = 'ongoing' "
+        + "   AND d.plant_status IN ('ongoing', 'completed') "
         + " GROUP BY d.crop_id, c.crop_name "
         + " ORDER BY area DESC "
         + " LIMIT 50")

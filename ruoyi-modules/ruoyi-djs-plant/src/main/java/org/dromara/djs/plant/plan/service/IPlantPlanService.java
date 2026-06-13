@@ -2,6 +2,7 @@ package org.dromara.djs.plant.plan.service;
 
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
+import org.dromara.djs.plant.plan.domain.bo.PlantFinishBo;
 import org.dromara.djs.plant.plan.domain.bo.PlantPlanCreateBo;
 import org.dromara.djs.plant.plan.domain.bo.PlantPlanUpdateBo;
 import org.dromara.djs.plant.plan.domain.bo.PlantStartBo;
@@ -74,6 +75,19 @@ public interface IPlantPlanService {
      * @return 实际开工的明细行数（已开工的明细被跳过，不计入）
      */
     int startPlant(PlantStartBo bo);
+
+    /**
+     * mp 播种「种植完成」收工。
+     *
+     * <p>单事务：仅 {@code plant_status='ongoing'} 且 {@code begin_actualdate IS NOT NULL} 且
+     * {@code end_actualdate IS NULL}（已开工尚未完成）的明细可完成，批量回写
+     * {@code plant_status='completed'} + {@code end_actualdate=入参日期}。不动地块
+     * {@code t_plant_plot_info.plot_status}（保持 2 种植，待采摘开始才转 3）。所有 detailIds 必须属当前租户。</p>
+     *
+     * @param bo 收工入参（detailIds + 结束日期）
+     * @return 实际完成的明细行数（非进行中 / 已完成的明细被跳过，不计入）
+     */
+    int finishPlant(PlantFinishBo bo);
 
     /**
      * 跨模块薄壳：聚合"进行中（pending/ongoing）"种植计划摘要给需求确认 SummaryBar 用

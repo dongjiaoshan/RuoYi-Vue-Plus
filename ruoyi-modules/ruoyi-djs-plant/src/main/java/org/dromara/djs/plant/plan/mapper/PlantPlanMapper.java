@@ -93,6 +93,10 @@ public interface PlantPlanMapper extends BaseMapperPlus<PlantPlan, PlantPlanVo> 
      * / finishedPlot(Long COUNT plant_status='completed')
      * / earliestBegindate(DATE MIN) / lastBegindate(DATE MAX)。</p>
      *
+     * <p>finishedPlot 语义：实施 finishPlant（pending→ongoing→completed 状态机的"种植完成"动作）后，
+     * plant_status='completed' 即表示该地块种植已完成，故 {@code COUNT(plant_status='completed')}
+     * 对齐 {@code PlantPlanVo} 的"已完成种植地数量"（finishedPlot），无需改 SQL。</p>
+     *
      * <p>计划开始日期 = {@code DATE(CONCAT(plan_year,'-',LPAD(plant_month,2,'0'),'-',plant_period))}
      * （plant_period 取值 05/15/25 恰为合法日，无需 periodToDay 映射）。
      * del_flag='0' 过滤软删；tenant_id='1001'（V1 单租户）。</p>
