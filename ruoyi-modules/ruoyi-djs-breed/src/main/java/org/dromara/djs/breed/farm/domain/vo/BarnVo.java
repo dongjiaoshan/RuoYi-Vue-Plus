@@ -100,6 +100,16 @@ public class BarnVo implements Serializable {
     private Integer bedCount;
 
     /**
+     * 散栏数量（列表列；Service 按 pen_type=scatter 实时统计，非表字段）。
+     */
+    private Integer scatterPenCount;
+
+    /**
+     * 保育栏数量（列表列；Service 按 pen_type=nursery_pen 实时统计，非表字段）。
+     */
+    private Integer nurseryPenCount;
+
+    /**
      * 当前存栏（列表「当前猪只存栏数量」列；Service 实时统计存活猪只，非表字段）。
      */
     private Integer liveCount;

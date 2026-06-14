@@ -44,10 +44,12 @@ import java.util.Objects;
 @Service
 public class BarnServiceImpl extends DjsBaseServiceImpl<BarnMapper, Barn> implements IBarnService {
 
-    /** 栏位类型字典值（djs_pen_type）：大栏 / 限位栏 / 产床。 */
+    /** 栏位类型字典值（djs_pen_type）：大栏 / 限位栏 / 产床 / 散栏 / 保育栏。 */
     private static final String PEN_TYPE_BIG = "big";
     private static final String PEN_TYPE_STALL = "stall";
     private static final String PEN_TYPE_FARROW = "farrow";
+    private static final String PEN_TYPE_SCATTER = "scatter";
+    private static final String PEN_TYPE_NURSERY_PEN = "nursery_pen";
 
     private final PigReferenceCheckMapper pigReferenceCheckMapper;
     private final PenMapper penMapper;
@@ -83,6 +85,8 @@ public class BarnServiceImpl extends DjsBaseServiceImpl<BarnMapper, Barn> implem
             vo.setBigPenCount(farmStatMapper.countPenByType(id, PEN_TYPE_BIG));
             vo.setLimitPenCount(farmStatMapper.countPenByType(id, PEN_TYPE_STALL));
             vo.setBedCount(farmStatMapper.countPenByType(id, PEN_TYPE_FARROW));
+            vo.setScatterPenCount(farmStatMapper.countPenByType(id, PEN_TYPE_SCATTER));
+            vo.setNurseryPenCount(farmStatMapper.countPenByType(id, PEN_TYPE_NURSERY_PEN));
             vo.setLiveCount(farmStatMapper.countLivePigByBarn(id));
         }
     }
@@ -127,22 +131,27 @@ public class BarnServiceImpl extends DjsBaseServiceImpl<BarnMapper, Barn> implem
         barn.setRemark(bo.getRemark());
         baseMapper.insert(barn);
 
-        // 2. 按三类数量批量生成栏位（编号连号「1栏…N栏」，pen_code 类型前缀 + 序号保证栏内唯一）
+        // 2. 按五类数量批量生成栏位（编号连号「1栏…N栏」，pen_code 类型前缀 + 序号保证栏内唯一）
         generatePens(barnId, PEN_TYPE_BIG, "DL", bo.getBigPenCount());
         generatePens(barnId, PEN_TYPE_STALL, "XW", bo.getLimitPenCount());
         generatePens(barnId, PEN_TYPE_FARROW, "CC", bo.getBedCount());
+        generatePens(barnId, PEN_TYPE_SCATTER, "SL", bo.getScatterPenCount());
+        generatePens(barnId, PEN_TYPE_NURSERY_PEN, "BY", bo.getNurseryPenCount());
         return barnId;
     }
 
     /**
      * 生成某栋舍下 count 个指定类型栏位。penName=「{seq}栏」，penCode=「{prefix}-{seq}」。
-     * 大栏容量不限（null），限位栏 / 产床单头（capacity=1）。
+     * 多头栏（大栏 / 散栏 / 保育栏）容量不限（null），限位栏 / 产床单头（capacity=1）。
      */
     private void generatePens(Long barnId, String penType, String codePrefix, Integer count) {
         if (count == null || count <= 0) {
             return;
         }
-        Integer capacity = PEN_TYPE_BIG.equals(penType) ? null : 1;
+        boolean multiHead = PEN_TYPE_BIG.equals(penType)
+            || PEN_TYPE_SCATTER.equals(penType)
+            || PEN_TYPE_NURSERY_PEN.equals(penType);
+        Integer capacity = multiHead ? null : 1;
         for (int i = 1; i <= count; i++) {
             Pen pen = new Pen();
             pen.setBarnId(barnId);

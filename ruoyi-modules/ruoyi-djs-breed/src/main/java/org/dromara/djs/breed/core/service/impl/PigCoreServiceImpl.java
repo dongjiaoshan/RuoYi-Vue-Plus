@@ -342,8 +342,9 @@ public class PigCoreServiceImpl implements IPigCoreService {
     }
 
     /**
-     * 批量回填 barnCode / penCode（Pig 与 Barn/Pen 不同聚合，VO 出参用 code 而非
-     * snowflake id 给用户看；列表场景用 selectBatchIds 一次性查，避免 N+1）。
+     * 批量回填 barnCode/barnName + penCode/penName（Pig 与 Barn/Pen 不同聚合，VO 出参给用户看
+     * code + 中文名而非 snowflake id；列表场景用 selectBatchIds 一次性查，避免 N+1），
+     * 并填品种/品系中文名（字典翻译，翻不到回落 code）。
      */
     private void enrichBarnPenCodes(List<PigVo> rows) {
         if (rows == null || rows.isEmpty()) {
@@ -351,19 +352,30 @@ public class PigCoreServiceImpl implements IPigCoreService {
         }
         Set<Long> barnIds = rows.stream().map(PigVo::getBarnId).filter(Objects::nonNull).collect(Collectors.toSet());
         Set<Long> penIds = rows.stream().map(PigVo::getPenId).filter(Objects::nonNull).collect(Collectors.toSet());
-        Map<Long, String> barnCodeMap = barnIds.isEmpty() ? Map.of()
+        Map<Long, Barn> barnMap = barnIds.isEmpty() ? Map.of()
             : barnMapper.selectBatchIds(barnIds).stream()
-                .collect(Collectors.toMap(Barn::getId, Barn::getBarnCode, (a, b) -> a));
-        Map<Long, String> penCodeMap = penIds.isEmpty() ? Map.of()
+                .collect(Collectors.toMap(Barn::getId, Function.identity(), (a, b) -> a));
+        Map<Long, Pen> penMap = penIds.isEmpty() ? Map.of()
             : penMapper.selectBatchIds(penIds).stream()
-                .collect(Collectors.toMap(Pen::getId, Pen::getPenCode, (a, b) -> a));
+                .collect(Collectors.toMap(Pen::getId, Function.identity(), (a, b) -> a));
         for (PigVo vo : rows) {
             if (vo.getBarnId() != null) {
-                vo.setBarnCode(barnCodeMap.get(vo.getBarnId()));
+                Barn barn = barnMap.get(vo.getBarnId());
+                if (barn != null) {
+                    vo.setBarnCode(barn.getBarnCode());
+                    vo.setBarnName(barn.getBarnName());
+                }
             }
             if (vo.getPenId() != null) {
-                vo.setPenCode(penCodeMap.get(vo.getPenId()));
+                Pen pen = penMap.get(vo.getPenId());
+                if (pen != null) {
+                    vo.setPenCode(pen.getPenCode());
+                    vo.setPenName(pen.getPenName());
+                }
             }
+            // 品种/品系中文名（djs_pig_breed / djs_pig_strain 字典；翻不到回落 code）
+            vo.setPigBreedName(translateDictOrCode("djs_pig_breed", vo.getPigBreedCode()));
+            vo.setPigStrainName(translateDictOrCode("djs_pig_strain", vo.getPigStrainCode()));
         }
     }
 
@@ -662,6 +674,11 @@ public class PigCoreServiceImpl implements IPigCoreService {
             .like(StringUtils.isNotBlank(query.getEarNo()), PigStatusRecord::getEarNo, query.getEarNo())
             .eq(StringUtils.isNotBlank(query.getEventType()), PigStatusRecord::getEventType, query.getEventType())
             .eq(StringUtils.isNotBlank(query.getNewStatus()), PigStatusRecord::getNewStatus, query.getNewStatus())
+            // 变更人模糊：按 sys_user.nick_name LIKE 命中的 user_id 反查 create_by。
+            // 用 {0} 占位 + apply 防注入；create_by 即变更人（记录由触发事件的用户写入）。
+            .apply(StringUtils.isNotBlank(query.getCreateByName()),
+                "create_by IN (SELECT user_id FROM sys_user WHERE nick_name LIKE CONCAT('%', {0}, '%'))",
+                query.getCreateByName())
             .ge(query.getChangeTimeStart() != null, PigStatusRecord::getChangeTime, query.getChangeTimeStart())
             .le(query.getChangeTimeEnd() != null, PigStatusRecord::getChangeTime, query.getChangeTimeEnd())
             .orderByDesc(PigStatusRecord::getChangeTime, PigStatusRecord::getId);
@@ -843,7 +860,9 @@ public class PigCoreServiceImpl implements IPigCoreService {
         d.setPigSex(src.getPigSex());
         d.setPigType(src.getPigType());
         d.setPigBreedCode(src.getPigBreedCode());
+        d.setPigBreedName(src.getPigBreedName());
         d.setPigStrainCode(src.getPigStrainCode());
+        d.setPigStrainName(src.getPigStrainName());
         d.setCurrentStatus(src.getCurrentStatus());
         d.setStatusStartedAt(src.getStatusStartedAt());
         d.setEndReason(src.getEndReason());
@@ -852,8 +871,10 @@ public class PigCoreServiceImpl implements IPigCoreService {
         d.setParity(src.getParity());
         d.setBarnId(src.getBarnId());
         d.setBarnCode(src.getBarnCode());
+        d.setBarnName(src.getBarnName());
         d.setPenId(src.getPenId());
         d.setPenCode(src.getPenCode());
+        d.setPenName(src.getPenName());
         d.setMatingId(src.getMatingId());
         d.setMotherEar(src.getMotherEar());
         d.setFatherEar(src.getFatherEar());

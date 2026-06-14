@@ -62,6 +62,22 @@ public class BarnCreateBo extends BaseEntity {
     private Integer bedCount;
 
     /**
+     * 散栏数量（生成 pen_type=scatter 的栏位数；0 表示不建散栏）。
+     */
+    @NotNull(message = "散栏数量不能为空")
+    @PositiveOrZero(message = "散栏数量不能为负数")
+    @Max(value = 999, message = "散栏数量不能超过 {value}")
+    private Integer scatterPenCount;
+
+    /**
+     * 保育栏数量（生成 pen_type=nursery_pen 的栏位数；0 表示不建保育栏）。
+     */
+    @NotNull(message = "保育栏数量不能为空")
+    @PositiveOrZero(message = "保育栏数量不能为负数")
+    @Max(value = 999, message = "保育栏数量不能超过 {value}")
+    private Integer nurseryPenCount;
+
+    /**
      * 备注。
      */
     @Size(max = 500, message = "备注长度不能超过 {max} 个字符")

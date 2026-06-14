@@ -4,6 +4,8 @@ import cn.idev.excel.annotation.ExcelIgnoreUnannotated;
 import cn.idev.excel.annotation.ExcelProperty;
 import io.github.linpeilie.annotations.AutoMapper;
 import lombok.Data;
+import org.dromara.common.translation.annotation.Translation;
+import org.dromara.common.translation.constant.TransConstant;
 import org.dromara.djs.breed.core.domain.PigStatusRecord;
 
 import java.io.Serial;
@@ -54,4 +56,12 @@ public class PigStatusRecordVo implements Serializable {
 
     @ExcelProperty(value = "创建时间")
     private Date createTime;
+
+    @ExcelProperty(value = "变更人ID")
+    private Long createBy;
+
+    /** 变更人姓名（USER_ID_TO_NICKNAME 取 sys_user.nick_name 中文名；create_by 即触发事件的用户）。 */
+    @Translation(type = TransConstant.USER_ID_TO_NICKNAME, mapper = "createBy")
+    @ExcelProperty(value = "变更人")
+    private String createByName;
 }

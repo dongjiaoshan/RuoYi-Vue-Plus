@@ -67,6 +67,7 @@ public interface CropInfoMapper extends BaseMapperPlus<CropInfo, CropInfoVo> {
         SELECT
             d.id AS id,
             d.begin_actualdate AS plantDate,
+            p.plot_code AS plotCode,
             p.plot_name AS plotName,
             pt.team_name AS plantTeamName,
             c.predicted_per AS predictedPer,

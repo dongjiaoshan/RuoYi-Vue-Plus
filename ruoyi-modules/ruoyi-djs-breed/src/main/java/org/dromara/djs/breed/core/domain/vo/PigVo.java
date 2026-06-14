@@ -52,8 +52,16 @@ public class PigVo implements Serializable {
     @ExcelProperty(value = "品种")
     private String pigBreedCode;
 
+    /** 品种中文名（djs_pig_breed 字典翻译，service 层 enrich；翻不到回落 code）。 */
+    @ExcelProperty(value = "品种名称")
+    private String pigBreedName;
+
     @ExcelProperty(value = "品系")
     private String pigStrainCode;
+
+    /** 品系中文名（djs_pig_strain 字典翻译，service 层 enrich；翻不到回落 code）。 */
+    @ExcelProperty(value = "品系名称")
+    private String pigStrainName;
 
     @ExcelProperty(value = "当前状态")
     private String currentStatus;
@@ -80,12 +88,20 @@ public class PigVo implements Serializable {
     @ExcelProperty(value = "栋舍编码")
     private String barnCode;
 
+    /** 栋舍名称（同 barnCode，service 层 enrich）。 */
+    @ExcelProperty(value = "栋舍名称")
+    private String barnName;
+
     @ExcelProperty(value = "栏位ID")
     private Long penId;
 
     /** 栏位编码（同 barnCode，service 层 enrich）。 */
     @ExcelProperty(value = "栏位编码")
     private String penCode;
+
+    /** 栏位名称（同 barnCode，service 层 enrich）。 */
+    @ExcelProperty(value = "栏位名称")
+    private String penName;
 
     @ExcelProperty(value = "最近配种ID")
     private Long matingId;

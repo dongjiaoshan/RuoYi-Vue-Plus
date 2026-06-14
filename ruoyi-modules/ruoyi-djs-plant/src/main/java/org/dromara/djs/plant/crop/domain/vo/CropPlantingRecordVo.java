@@ -28,6 +28,9 @@ public class CropPlantingRecordVo implements Serializable {
     /** 种植日期（实际开始种植日）。 */
     private Date plantDate;
 
+    /** 地块编码。 */
+    private String plotCode;
+
     /** 种植地块名。 */
     private String plotName;
 

@@ -32,6 +32,9 @@ public class PigStatusRecordQuery extends BaseEntity {
     /** 新状态（10 lifecycle 之一，精确）。 */
     private String newStatus;
 
+    /** 变更人用户名（按 sys_user.nick_name 模糊；service 端反查 create_by IN 命中 user_id）。 */
+    private String createByName;
+
     /** 变更时间 ≥ */
     private LocalDateTime changeTimeStart;
 
