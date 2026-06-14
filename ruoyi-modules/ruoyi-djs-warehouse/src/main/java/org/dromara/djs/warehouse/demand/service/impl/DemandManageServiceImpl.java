@@ -134,6 +134,10 @@ public class DemandManageServiceImpl extends DjsBaseServiceImpl<DemandManageMapp
         Page<DemandManageVo> page = baseMapper.selectVoPage(pageQuery.build(), wrapper);
         fillStoreCount(page.getRecords());
         fillStoreDemandStatus(page.getRecords());
+        // 确认页下钻场景（带 productId）才回填「是否指定猪只」，主列表不查省一次子表 IN
+        if (query != null && query.getProductId() != null) {
+            fillPigAssigned(page.getRecords());
+        }
         return TableDataInfo.build(page);
     }
 
@@ -204,6 +208,30 @@ public class DemandManageServiceImpl extends DjsBaseServiceImpl<DemandManageMapp
             if (vo.getProductId() != null) {
                 vo.setStoreCount(countByProduct.getOrDefault(vo.getProductId(), 0));
             }
+        }
+    }
+
+    /**
+     * 回填「是否指定猪只」pigAssigned（0613-11 确认页）。
+     *
+     * <p>按当前页 demand id 一次批量查 {@code t_warehouse_demand_pig}，命中集合内的行置 true，其余 false。
+     * 仅确认页（带 productId）调用。</p>
+     */
+    private void fillPigAssigned(List<DemandManageVo> rows) {
+        if (CollUtil.isEmpty(rows)) {
+            return;
+        }
+        List<Long> demandIds = rows.stream()
+            .map(DemandManageVo::getId)
+            .filter(Objects::nonNull)
+            .distinct()
+            .toList();
+        if (demandIds.isEmpty()) {
+            return;
+        }
+        Set<Long> withPig = new HashSet<>(baseMapper.selectDemandIdsWithPig(demandIds));
+        for (DemandManageVo vo : rows) {
+            vo.setPigAssigned(vo.getId() != null && withPig.contains(vo.getId()));
         }
     }
 

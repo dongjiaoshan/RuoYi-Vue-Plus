@@ -290,5 +290,29 @@ public interface DemandManageMapper extends BaseMapperPlus<DemandManage, DemandM
     List<DemandGroupVo> selectDemandGroupList(@Param("productName") String productName,
                                               @Param("beginDate") LocalDate beginDate,
                                               @Param("endDate") LocalDate endDate);
+
+    /**
+     * 在入参 demand id 集合里，筛出「至少指定 1 头未删猪只」的 demand id（0613-11 确认页「是否指定猪只」列）。
+     *
+     * <p>口径：{@code t_warehouse_demand_pig} 按 demand_id 去重存在未删行即视为已指定。仅查当前页 demand id
+     * 集合，避免全表扫；调用方拿到集合后对页内 VO 置 {@code pigAssigned}。</p>
+     *
+     * <p>租户隔离：未启全局 MP 拦截器，显式 {@code tenant_id='1001'}（V1 单租户，与本 mapper 既有聚合 SQL 范式一致）；
+     * {@code del_flag='0'}（CHAR(1) 未删）。</p>
+     *
+     * @param demandIds 当前页涉及的 demand id 集合（空集调用方需短路，不传空 IN）
+     * @return 已指定猪只的 demand id 去重集合（无则空 List）
+     */
+    @Select("""
+        <script>
+        SELECT DISTINCT demand_id
+        FROM t_warehouse_demand_pig
+        WHERE del_flag = '0'
+          AND tenant_id = '1001'
+          AND demand_id IN
+          <foreach collection="demandIds" item="did" open="(" separator="," close=")">#{did}</foreach>
+        </script>
+        """)
+    List<Long> selectDemandIdsWithPig(@Param("demandIds") Collection<Long> demandIds);
 }
 

@@ -142,6 +142,14 @@ public class DemandManageVo implements Serializable {
     /** 状态历史 JSON 串（admin 详情 timeline 弹窗解析渲染）。 */
     private String auditHistory;
 
+    /**
+     * 是否已指定猪只（0613-11 需求确认页「是否指定猪只」列）。
+     *
+     * <p>白条 / 猪业态行才有意义；仅当 {@code queryPageList} 入参带 {@code productId}（确认页下钻场景）
+     * 时按页 demand id 批量回填，主列表查询不回填（保持 null）。{@code true} = 该需求至少指定 1 头未删猪只。</p>
+     */
+    private Boolean pigAssigned;
+
     @ExcelProperty(value = "创建时间")
     private Date createTime;
 

@@ -113,6 +113,18 @@ public class ShipmentServiceImpl
     );
 
     /**
+     * 发货月台门店列表展示状态集：在可发货白名单基础上 + COMPLETED（当天已发货完成），
+     * 让「当天有需求且已发货」的门店也进列表（状态显「已发货」）。仅用于 listPendingStores 展示，
+     * 不影响发货动作校验（动作仍只认 SHIPPABLE_DEMAND_STATUSES）。
+     */
+    private static final Set<DemandStatus> STORE_LIST_DEMAND_STATUSES = Set.of(
+        DemandStatus.CONFIRMED,
+        DemandStatus.IN_PRODUCTION,
+        DemandStatus.PARTIAL_SHIPPED,
+        DemandStatus.COMPLETED
+    );
+
+    /**
      * demand.product_type（dict {@code djs_demand_product_type}：white_bar/vegetable/gift_box/other）
      * → production 关联 {@code ProductInfo.belong_type}（dict {@code djs_belong_type}）集合的映射。
      *
@@ -302,8 +314,8 @@ public class ShipmentServiceImpl
 
     @Override
     public List<ShipStoreVo> listPendingStores() {
-        // 1. 扫所有 SHIPPABLE 状态的 demand（门店列表的数据驱动单位是需求单，非 production）。
-        List<DemandManage> demands = loadShippableDemands(null);
+        // 1. 扫当天展示状态的 demand（SHIPPABLE + COMPLETED，门店列表数据驱动单位是需求单，非 production）。
+        List<DemandManage> demands = loadStoreListDemands(null);
         if (demands.isEmpty()) {
             return List.of();
         }
@@ -328,7 +340,10 @@ public class ShipmentServiceImpl
             vo.setPendingQuantity(storeDemands.stream()
                 .map(DemandManage::getDemandQuantity).filter(Objects::nonNull)
                 .reduce(BigDecimal.ZERO, BigDecimal::add));
-            vo.setShipStatus("待发货");
+            // 门店当天 demand 全 COMPLETED → 已发货；否则仍有可发 → 待发货（#201）。
+            boolean allShipped = storeDemands.stream()
+                .allMatch(d -> DemandStatus.COMPLETED.name().equals(d.getDemandStatus()));
+            vo.setShipStatus(allShipped ? "已发货" : "待发货");
             list.add(vo);
         });
         // 5. 稳定排序：待发需求多的门店在前，其次按门店名。
@@ -437,6 +452,20 @@ public class ShipmentServiceImpl
         LocalDate today = LocalDate.now(SHIP_TODAY_ZONE);
         return demandMapper.selectList(new LambdaQueryWrapper<DemandManage>()
             .in(DemandManage::getDemandStatus, shippableCodes)
+            .eq(DemandManage::getDemandDate, today)
+            .eq(storeId != null, DemandManage::getStoreId, storeId)
+            .orderByDesc(DemandManage::getDemandDate));
+    }
+
+    /**
+     * 门店列表展示用：当天 + {@link #STORE_LIST_DEMAND_STATUSES}（含 COMPLETED 已发货）。仅 listPendingStores 用。
+     */
+    private List<DemandManage> loadStoreListDemands(Long storeId) {
+        List<String> codes = STORE_LIST_DEMAND_STATUSES.stream()
+            .map(DemandStatus::name).toList();
+        LocalDate today = LocalDate.now(SHIP_TODAY_ZONE);
+        return demandMapper.selectList(new LambdaQueryWrapper<DemandManage>()
+            .in(DemandManage::getDemandStatus, codes)
             .eq(DemandManage::getDemandDate, today)
             .eq(storeId != null, DemandManage::getStoreId, storeId)
             .orderByDesc(DemandManage::getDemandDate));
