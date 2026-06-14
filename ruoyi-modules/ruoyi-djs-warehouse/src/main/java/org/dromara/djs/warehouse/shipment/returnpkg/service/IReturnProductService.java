@@ -6,6 +6,7 @@ import org.dromara.djs.warehouse.shipment.returnpkg.domain.bo.ReturnConfirmBo;
 import org.dromara.djs.warehouse.shipment.returnpkg.domain.bo.ReturnProductBo;
 import org.dromara.djs.warehouse.shipment.returnpkg.domain.query.ReturnProductQuery;
 import org.dromara.djs.warehouse.shipment.returnpkg.domain.vo.ReturnProductVo;
+import org.dromara.djs.warehouse.shipment.returnpkg.domain.vo.ReturnStoreDailyVo;
 import org.dromara.djs.warehouse.shipment.returnpkg.domain.vo.ReturnStoreGroupVo;
 
 import java.util.Collection;
@@ -26,6 +27,16 @@ import java.util.List;
 public interface IReturnProductService {
 
     TableDataInfo<ReturnProductVo> queryPageList(ReturnProductQuery query, PageQuery pageQuery);
+
+    /**
+     * admin 外层「门店 + 当日」汇总分页（图 153）：按 退货日期(apply_time 截到天) + store_id 内存聚合。
+     *
+     * <p>每行 = 某门店某天全部退货行的汇总（品种数 / 退货重量 / 确认重量 / 重量差异 /
+     * 最近确认时间 / 最近确认人）。明细下钻复用 {@link #queryPageList} 带 storeId + applyDateFrom/To。</p>
+     *
+     * @return 汇总行分页（按退货日期 + 门店倒序）
+     */
+    TableDataInfo<ReturnStoreDailyVo> queryStoreDailyPage(ReturnProductQuery query, PageQuery pageQuery);
 
     List<ReturnProductVo> queryList(ReturnProductQuery query);
 

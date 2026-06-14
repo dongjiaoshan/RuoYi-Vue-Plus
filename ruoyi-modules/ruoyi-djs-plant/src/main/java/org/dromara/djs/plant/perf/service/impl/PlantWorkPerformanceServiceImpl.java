@@ -1,7 +1,7 @@
 package org.dromara.djs.plant.perf.service.impl;
 
-import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
+import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import lombok.extern.slf4j.Slf4j;
@@ -12,7 +12,9 @@ import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.common.base.DjsBaseServiceImpl;
 import org.dromara.djs.plant.perf.domain.PlantWorkPerformance;
 import org.dromara.djs.plant.perf.domain.query.PlantWorkPerformanceQuery;
+import org.dromara.djs.plant.perf.domain.vo.FarmCountRow;
 import org.dromara.djs.plant.perf.domain.vo.PerfAggRow;
+import org.dromara.djs.plant.perf.domain.vo.PerfListRow;
 import org.dromara.djs.plant.perf.domain.vo.PlantWorkPerformanceVo;
 import org.dromara.djs.plant.perf.mapper.PlantWorkPerformanceMapper;
 import org.dromara.djs.plant.perf.service.IPlantWorkPerformanceService;
@@ -64,27 +66,33 @@ public class PlantWorkPerformanceServiceImpl
     }
 
     @Override
-    public TableDataInfo<PlantWorkPerformanceVo> queryPageList(PlantWorkPerformanceQuery query, PageQuery pageQuery) {
-        LambdaQueryWrapper<PlantWorkPerformance> wrapper = buildQueryWrapper(query);
-        Page<PlantWorkPerformanceVo> page = baseMapper.selectVoPage(pageQuery.build(), wrapper);
-        enrich(page.getRecords());
+    public TableDataInfo<PerfListRow> queryPageList(PlantWorkPerformanceQuery query, PageQuery pageQuery) {
+        String statMonth = query != null ? query.getStatMonth() : null;
+        Long teamId = query != null ? query.getTeamId() : null;
+        IPage<PerfListRow> page = baseMapper.selectTeamMonthPage(pageQuery.build(), statMonth, teamId);
+        enrichListRows(page.getRecords());
         return TableDataInfo.build(page);
     }
 
     @Override
-    public List<PlantWorkPerformanceVo> queryList(PlantWorkPerformanceQuery query) {
-        List<PlantWorkPerformanceVo> list = baseMapper.selectVoList(buildQueryWrapper(query));
-        enrich(list);
+    public List<PerfListRow> queryList(PlantWorkPerformanceQuery query) {
+        String statMonth = query != null ? query.getStatMonth() : null;
+        Long teamId = query != null ? query.getTeamId() : null;
+        // 导出走全量（不分页）：用一个大页拉回全部聚合行，与主列表口径一致
+        Page<PerfListRow> page = new Page<>(1, Integer.MAX_VALUE, false);
+        List<PerfListRow> list = baseMapper.selectTeamMonthPage(page, statMonth, teamId).getRecords();
+        enrichListRows(list);
         return list;
     }
 
     @Override
-    public PlantWorkPerformanceVo queryById(Long id) {
-        PlantWorkPerformanceVo vo = baseMapper.selectVoById(id);
-        if (vo != null) {
-            enrich(Collections.singletonList(vo));
+    public List<PlantWorkPerformanceVo> queryCropRows(Long teamId, String statMonth) {
+        if (teamId == null || StringUtils.isBlank(statMonth)) {
+            return Collections.emptyList();
         }
-        return vo;
+        List<PlantWorkPerformanceVo> rows = baseMapper.selectCropRowsByTeamMonth(teamId, statMonth);
+        enrichCropNames(rows);
+        return rows;
     }
 
     @Override
@@ -165,14 +173,15 @@ public class PlantWorkPerformanceServiceImpl
     }
 
     /**
-     * 批量给 VO 补 teamName / cropName（避免列表 N+1）。
+     * 批量给聚合列表行补 teamName + farmCount（避免 N+1，rework 134）。
      */
-    private void enrich(List<PlantWorkPerformanceVo> list) {
+    private void enrichListRows(List<PerfListRow> list) {
         if (list == null || list.isEmpty()) {
             return;
         }
+        // 1. teamName 批量反查 t_plant_work_team.team_name
         Set<Long> teamIds = list.stream()
-            .map(PlantWorkPerformanceVo::getTeamId)
+            .map(PerfListRow::getTeamId)
             .filter(Objects::nonNull)
             .collect(Collectors.toCollection(HashSet::new));
         Map<Long, String> teamNameMap = new HashMap<>();
@@ -182,6 +191,48 @@ public class PlantWorkPerformanceServiceImpl
                     teamNameMap.put(n.longValue(), (String) r.get("teamName"));
                 }
             }
+        }
+        // 2. farmCount 批量 count t_plant_farm_records（按 (teamId, statMonth) 组合一次取回）
+        Map<String, Integer> farmCountMap = loadFarmCounts(list);
+        for (PerfListRow row : list) {
+            if (row.getTeamId() != null) {
+                row.setTeamName(teamNameMap.get(row.getTeamId()));
+            }
+            row.setFarmCount(farmCountMap.getOrDefault(farmKey(row.getTeamId(), row.getStatMonth()), 0));
+        }
+    }
+
+    /**
+     * 批量统计各 (班组, 月) 的农事次数，返回 key=teamId|statMonth / value=cnt。
+     */
+    private Map<String, Integer> loadFarmCounts(List<PerfListRow> list) {
+        Map<String, Integer> map = new HashMap<>();
+        List<Object[]> pairs = list.stream()
+            .filter(r -> r.getTeamId() != null && StringUtils.isNotBlank(r.getStatMonth()))
+            .map(r -> new Object[]{r.getTeamId(), r.getStatMonth()})
+            .distinct()
+            .collect(Collectors.toList());
+        if (pairs.isEmpty()) {
+            return map;
+        }
+        for (FarmCountRow r : baseMapper.countFarmByTeamMonths(pairs)) {
+            if (r.getFarmBy() != null && StringUtils.isNotBlank(r.getStatMonth())) {
+                map.put(farmKey(r.getFarmBy(), r.getStatMonth()), r.getCnt() != null ? r.getCnt() : 0);
+            }
+        }
+        return map;
+    }
+
+    private String farmKey(Long teamId, String statMonth) {
+        return teamId + "|" + statMonth;
+    }
+
+    /**
+     * 批量给逐作物绩效行补 cropName（详情按作物分行，避免 N+1）。
+     */
+    private void enrichCropNames(List<PlantWorkPerformanceVo> list) {
+        if (list == null || list.isEmpty()) {
+            return;
         }
         Set<Long> cropIds = list.stream()
             .map(PlantWorkPerformanceVo::getCropId)
@@ -196,25 +247,9 @@ public class PlantWorkPerformanceServiceImpl
             }
         }
         for (PlantWorkPerformanceVo vo : list) {
-            if (vo.getTeamId() != null) {
-                vo.setTeamName(teamNameMap.get(vo.getTeamId()));
-            }
             if (vo.getCropId() != null) {
                 vo.setCropName(cropNameMap.get(vo.getCropId()));
             }
         }
-    }
-
-    private LambdaQueryWrapper<PlantWorkPerformance> buildQueryWrapper(PlantWorkPerformanceQuery query) {
-        LambdaQueryWrapper<PlantWorkPerformance> wrapper = new LambdaQueryWrapper<>();
-        if (query == null) {
-            return wrapper.orderByDesc(PlantWorkPerformance::getStatMonth).orderByAsc(PlantWorkPerformance::getTeamId);
-        }
-        wrapper.eq(StringUtils.isNotBlank(query.getStatMonth()), PlantWorkPerformance::getStatMonth, query.getStatMonth())
-            .eq(query.getTeamId() != null, PlantWorkPerformance::getTeamId, query.getTeamId())
-            .eq(query.getCropId() != null, PlantWorkPerformance::getCropId, query.getCropId())
-            .orderByDesc(PlantWorkPerformance::getStatMonth)
-            .orderByAsc(PlantWorkPerformance::getTeamId);
-        return wrapper;
     }
 }

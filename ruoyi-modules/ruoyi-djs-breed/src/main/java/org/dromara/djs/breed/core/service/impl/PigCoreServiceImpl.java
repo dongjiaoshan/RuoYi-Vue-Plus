@@ -418,13 +418,20 @@ public class PigCoreServiceImpl implements IPigCoreService {
             }
         }
 
+        // 215：pigTypeFilter 支持 CSV（如 'sow,boar' 给生长记录 tab2「其他猪只」=母猪+生产公猪）；
+        // 单值时退化为 .eq，CSV 时走 IN。空 → 不限类型。
+        List<String> pigTypes = StringUtils.isNotBlank(pigTypeFilter)
+            ? Arrays.stream(pigTypeFilter.split(",")).map(String::trim).filter(StringUtils::isNotBlank).distinct().collect(Collectors.toList())
+            : Collections.emptyList();
+
         LambdaQueryWrapper<Pig> w = new LambdaQueryWrapper<Pig>()
             // 默认排除 END 猪只——给事件录入 picker 用（配种 / 转栏等 END 不能再触发的事件）；
             // 但 statusFilter 显式声明要 END（如 WMS-PIG-001 燎毛工序）时放行
             .ne(!callerWantsEnd, Pig::getCurrentStatus, PigLifecycle.END.name())
             .like(StringUtils.isNotBlank(earNoKeyword), Pig::getEarNo, earNoKeyword)
             .eq(StringUtils.isNotBlank(sexFilter), Pig::getPigSex, sexFilter)
-            .eq(StringUtils.isNotBlank(pigTypeFilter), Pig::getPigType, pigTypeFilter)
+            .eq(pigTypes.size() == 1, Pig::getPigType, pigTypes.isEmpty() ? null : pigTypes.get(0))
+            .in(pigTypes.size() > 1, Pig::getPigType, pigTypes)
             .eq(barnIdFilter != null, Pig::getBarnId, barnIdFilter)
             // #23a：opt-in 排除无栋舍归属猪只，与 countByBarn 的 .isNotNull(barn_id) 口径一致
             .isNotNull(dropNullBarn, Pig::getBarnId)

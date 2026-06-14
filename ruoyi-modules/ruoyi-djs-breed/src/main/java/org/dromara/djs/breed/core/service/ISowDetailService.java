@@ -1,7 +1,10 @@
 package org.dromara.djs.breed.core.service;
 
 import org.dromara.djs.breed.core.domain.vo.FarrowByParityVo;
+import org.dromara.djs.breed.core.domain.vo.FarrowRecordMpVo;
 import org.dromara.djs.breed.core.domain.vo.PedigreeVo;
+import org.dromara.djs.breed.core.domain.vo.PigMedRecordMpVo;
+import org.dromara.djs.breed.core.domain.vo.PigTransferMpVo;
 import org.dromara.djs.breed.core.domain.vo.SowPerformanceMpVo;
 
 import java.util.List;
@@ -41,4 +44,28 @@ public interface ISowDetailService {
      * @return 谱系 VO（关联缺失字段 null）；pigId 不存在抛 ServiceException
      */
     PedigreeVo queryPedigree(Long pigId);
+
+    /**
+     * 母猪分娩记录逐条明细（DJS-FIX-6-14，原型 分娩记录 tab）。
+     *
+     * @param pigId 母猪 ID
+     * @return 倒序 by 分娩日期的明细列表；无分娩返空集
+     */
+    List<FarrowRecordMpVo> queryFarrowRecords(Long pigId);
+
+    /**
+     * 本猪用药记录（DJS-FIX-6-14，原型 用药记录 tab）。原因 / 方式已翻中文 label。
+     *
+     * @param pigId 本猪 ID
+     * @return 倒序 by 用药日期的用药列表；无用药返空集
+     */
+    List<PigMedRecordMpVo> queryMedRecords(Long pigId);
+
+    /**
+     * 本猪转移记录（DJS-FIX-6-14，原型 转移记录 tab）。含旧栏位驻留区间（相邻转移日期补算）。
+     *
+     * @param pigId 本猪 ID
+     * @return 倒序 by 转移日期的转移列表；无转移返空集
+     */
+    List<PigTransferMpVo> queryTransferRecords(Long pigId);
 }

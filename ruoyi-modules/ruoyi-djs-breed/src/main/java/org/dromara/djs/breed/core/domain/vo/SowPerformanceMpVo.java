@@ -7,22 +7,21 @@ import java.io.Serializable;
 import java.math.BigDecimal;
 
 /**
- * 母猪详情「母猪性能」6 KPI 出参（BRD-FIX-MP-DETAIL-SPLIT-001，原型 09）。
+ * 母猪详情「母猪性能」6 KPI 出参（BRD-FIX-MP-DETAIL-SPLIT-001 / DJS-FIX-6-14，原型 母猪详情）。
  *
  * <p>mp 端母猪详情页顶部 6 格 KPI 网格用。**从零按本母猪分娩 / 断奶 / 配种记录实时聚合**
  * （Kevin 2026-05-30 D2 拍板：本期 BE 从零建聚合，非读统计预聚合表）。</p>
  *
- * <p>每个指标都可空——数据源缺失（如某母猪还没断奶记录）时该字段返 {@code null}，
- * mp 端对应格子显 {@code —}（不渲染 NaN / undefined）。不抛异常。</p>
+ * <p>每个指标都可空——数据源缺失时该字段返 {@code null}，mp 端对应格子显 {@code —}（不渲染 NaN）。不抛异常。</p>
  *
- * <p>口径（V1 粗算，客户验收 sense check 用）：</p>
+ * <p>口径（V1 粗算，客户验收 sense check 用；对齐原型 6 指标）：</p>
  * <ul>
- *   <li>{@link #totalBorn} 总产仔 = Σ farrow.total_born（缺 total_born 时退化 Σ(健仔+弱仔+死胎+木乃伊)）；</li>
- *   <li>{@link #healthyRate} 健仔率 = Σ(healthy_male+healthy_female) / Σ total_born；</li>
- *   <li>{@link #avgLitterWeight} 平均窝重 = avg(farrow.total_weight)；无 total_weight 列数据 → null（降级）；</li>
- *   <li>{@link #weanSurvivalRate} 断奶成活率 = Σ weaning.weaned_count / Σ farrow.live_born；</li>
- *   <li>{@link #currentParity} 当前胎次 = max(farrow.parity) 与 pig.parity 取大；</li>
- *   <li>{@link #npd} NPD 非生产天数 = 今天 − 最近一次配种 / 分娩日期（V1 粗口径，取较近者）。</li>
+ *   <li>{@link #avgGestationDays} 平均怀孕天数 = avg(分娩日期 − 关联配种日期)；无配种-分娩配对 → null；</li>
+ *   <li>{@link #weanToBreedDays} 断奶-配种天数 = avg(配种日期 − 上一次断奶日期)；无配对 → null；</li>
+ *   <li>{@link #npdTotalDays} NPD 总天数 = 累计非生产天数（今天 − 最近配种/分娩较晚者，V1 粗口径）；缺基准 → null；</li>
+ *   <li>{@link #nullReturnTotal} 返空流总数 = 该母猪返情 + 空怀 + 流产事件累计次数（t_farm_pig_abnormal）；</li>
+ *   <li>{@link #avgBornPerLitter} 窝均产仔数 = Σ total_born / 分娩窝数；无分娩 → null；</li>
+ *   <li>{@link #avgWeanedPerLitter} 窝均断奶数 = Σ weaning.weaned_count / 断奶批数；无断奶 → null。</li>
  * </ul>
  *
  * @author djs
@@ -34,21 +33,21 @@ public class SowPerformanceMpVo implements Serializable {
     @Serial
     private static final long serialVersionUID = 1L;
 
-    /** 总产仔数（Σ total_born）；无分娩记录 → null。 */
-    private Integer totalBorn;
+    /** 平均怀孕天数（avg 分娩−配种）；无配对 → null。 */
+    private BigDecimal avgGestationDays;
 
-    /** 健仔率（0~1 小数，mp 端 ×100 显百分比）；Σ total_born=0 → null。 */
-    private BigDecimal healthyRate;
+    /** 断奶-配种天数（avg 配种−上次断奶）；无配对 → null。 */
+    private BigDecimal weanToBreedDays;
 
-    /** 平均窝重 kg（avg total_weight）；无 total_weight 数据 → null（降级）。 */
-    private BigDecimal avgLitterWeight;
+    /** NPD 总天数（累计非生产天数，V1 粗口径）；缺基准 → null。 */
+    private Integer npdTotalDays;
 
-    /** 断奶成活率（0~1 小数）；无分娩活产基数 → null。 */
-    private BigDecimal weanSurvivalRate;
+    /** 返空流总数（返情 + 空怀 + 流产累计次数）；无异常事件 → 0。 */
+    private Integer nullReturnTotal;
 
-    /** 当前胎次；max(farrow.parity, pig.parity)；均 0/缺 → null。 */
-    private Integer currentParity;
+    /** 窝均产仔数（Σ total_born / 分娩窝数）；无分娩 → null。 */
+    private BigDecimal avgBornPerLitter;
 
-    /** NPD 非生产天数（天）；无配种 / 分娩基准日期 → null。 */
-    private Integer npd;
+    /** 窝均断奶数（Σ weaned_count / 断奶批数）；无断奶 → null。 */
+    private BigDecimal avgWeanedPerLitter;
 }

@@ -51,4 +51,20 @@ public class TraceCodeQuery {
     @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")
     private Date endDate;
 
+    /**
+     * 到店日期起（按 trace_event ARRIVAL 事件 trace_time 过滤）。
+     *
+     * <p>果蔬追溯码管理默认显示「当天到店」：到店日期是 trace_event 的 arrival 事件时间，
+     * 不是主表 create_time（生成时间）。buildWrapper 先按本区间查 arrival 事件命中的
+     * produce_code 集合，再 in 主表过滤，语义对齐列表展示的「到店日期」列。</p>
+     */
+    @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")
+    private Date arrivalBeginDate;
+
+    /**
+     * 到店日期止（按 trace_event ARRIVAL 事件 trace_time 过滤）。
+     */
+    @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")
+    private Date arrivalEndDate;
+
 }

@@ -23,9 +23,4 @@ public class PlantWorkPerformanceQuery extends BaseEntity {
      * 班组 ID（精确匹配，可空）。
      */
     private Long teamId;
-
-    /**
-     * 作物 ID（精确匹配，可空）。
-     */
-    private Long cropId;
 }

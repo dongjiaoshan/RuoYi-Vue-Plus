@@ -96,6 +96,10 @@ public class FarrowBo implements Serializable {
     @Min(value = 0, message = "farrow.deformed_born.invalid")
     private Integer deformedBorn;
 
+    /** 压死数（原型 93 产仔性能·压死系列，DJS-FIX-6-14-FARROW-CRUSHED-COL-001）。 */
+    @Min(value = 0, message = "farrow.crushed_born.invalid")
+    private Integer crushedBorn;
+
     /** 出生总重 kg。 */
     private BigDecimal totalWeight;
 

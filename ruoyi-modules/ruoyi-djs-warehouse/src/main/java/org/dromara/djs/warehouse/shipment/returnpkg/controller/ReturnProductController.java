@@ -16,6 +16,7 @@ import org.dromara.djs.warehouse.shipment.returnpkg.domain.bo.ReturnConfirmBo;
 import org.dromara.djs.warehouse.shipment.returnpkg.domain.bo.ReturnProductBo;
 import org.dromara.djs.warehouse.shipment.returnpkg.domain.query.ReturnProductQuery;
 import org.dromara.djs.warehouse.shipment.returnpkg.domain.vo.ReturnProductVo;
+import org.dromara.djs.warehouse.shipment.returnpkg.domain.vo.ReturnStoreDailyVo;
 import org.dromara.djs.warehouse.shipment.returnpkg.service.IReturnProductService;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -45,11 +46,18 @@ public class ReturnProductController extends BaseController {
 
     private final IReturnProductService service;
 
-    /** 列表（分页）。 */
+    /** 列表（分页，逐条明细；明细弹窗下钻复用）。 */
     @SaCheckPermission("djs:warehouse:return:list")
     @GetMapping("/list")
     public TableDataInfo<ReturnProductVo> list(ReturnProductQuery query, PageQuery pageQuery) {
         return service.queryPageList(query, pageQuery);
+    }
+
+    /** 外层「门店 + 当日」汇总列表（图 153，主从视图外层）。 */
+    @SaCheckPermission("djs:warehouse:return:list")
+    @GetMapping("/store-daily")
+    public TableDataInfo<ReturnStoreDailyVo> storeDaily(ReturnProductQuery query, PageQuery pageQuery) {
+        return service.queryStoreDailyPage(query, pageQuery);
     }
 
     /** 详情。 */

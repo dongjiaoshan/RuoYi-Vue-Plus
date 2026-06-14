@@ -12,6 +12,8 @@ import org.dromara.djs.plant.crop.domain.CropInfo;
 import org.dromara.djs.plant.crop.mapper.CropInfoMapper;
 import org.dromara.djs.plant.pick.domain.bo.PickAdjustBatchBo;
 import org.dromara.djs.plant.pick.domain.bo.PickDetailAdjustBo;
+import org.dromara.djs.plant.pick.domain.bo.PickSetScheduleBo;
+import org.dromara.djs.plant.pick.domain.bo.PickToggleActivityBo;
 import org.dromara.djs.plant.pick.domain.query.PickPlanQuery;
 import org.dromara.djs.plant.pick.domain.vo.PickPlanGroupVo;
 import org.dromara.djs.plant.pick.mapper.PickPlanMapper;
@@ -212,6 +214,78 @@ public class PickPlanServiceImpl implements IPickPlanService {
                     .set("update_time", now));
         }
         return updated;
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public int setSchedule(PickSetScheduleBo bo) {
+        PlantDetails existing = detailsMapper.selectOne(
+            new LambdaQueryWrapper<PlantDetails>()
+                .eq(PlantDetails::getId, bo.getId())
+                .eq(PlantDetails::getDelFlag, "0"));
+        if (existing == null) {
+            throw new ServiceException("采摘明细不存在或已删除（id=" + bo.getId() + "）");
+        }
+
+        // 「设置采摘计划」：用户显式给定开始（必填）/ 结束采摘日期（earliest/last_harvestdate）。
+        //   - 两端都给：直接采用（结束 ≥ 开始 校验）。
+        //   - 只给开始：计划最晚按作物采摘周期窗口（创建时固化 = 原 last-earliest 天数）由最早派生重算。
+        LocalDate newEarliest = bo.getEarliestHarvestdate();
+        LocalDate newLast;
+        if (bo.getLastHarvestdate() != null) {
+            newLast = bo.getLastHarvestdate();
+            if (newLast.isBefore(newEarliest)) {
+                throw new ServiceException("结束采摘日期不得早于开始采摘日期（id=" + bo.getId() + "）");
+            }
+        } else {
+            long windowDays = 0L;
+            if (existing.getEarliestHarvestdate() != null && existing.getLastHarvestdate() != null) {
+                windowDays = java.time.temporal.ChronoUnit.DAYS.between(
+                    existing.getEarliestHarvestdate(), existing.getLastHarvestdate());
+                if (windowDays < 0) {
+                    windowDays = 0L;
+                }
+            }
+            newLast = newEarliest.plusDays(windowDays);
+        }
+
+        return detailsMapper.update(null,
+            Wrappers.<PlantDetails>update()
+                .eq("id", bo.getId())
+                .eq("del_flag", "0")
+                .set("earliest_harvestdate", newEarliest)
+                .set("last_harvestdate", newLast)
+                .set("update_by", currentUserIdSafe())
+                .set("update_time", new Date()));
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public int toggleActivity(PickToggleActivityBo bo) {
+        Integer isPick = bo.getIsPick();
+        if (isPick != 1 && isPick != 2) {
+            throw new ServiceException("is_pick 仅允许 1 或 2（id=" + bo.getId() + "）");
+        }
+        PlantDetails existing = detailsMapper.selectOne(
+            new LambdaQueryWrapper<PlantDetails>()
+                .eq(PlantDetails::getId, bo.getId())
+                .eq(PlantDetails::getDelFlag, "0"));
+        if (existing == null) {
+            throw new ServiceException("采摘明细不存在或已删除（id=" + bo.getId() + "）");
+        }
+
+        // 普通采收（is_pick=2）必须有采摘班组（源头杜绝 mp 空 picker）；游客采摘活动（is_pick=1）不强制。
+        if (isPick == 2 && existing.getHarvestBy() == null) {
+            throw new ServiceException("请先指派采摘班组再取消采摘活动（id=" + bo.getId() + "）");
+        }
+
+        return detailsMapper.update(null,
+            Wrappers.<PlantDetails>update()
+                .eq("id", bo.getId())
+                .eq("del_flag", "0")
+                .set("is_pick", isPick)
+                .set("update_by", currentUserIdSafe())
+                .set("update_time", new Date()));
     }
 
     // ============================================================

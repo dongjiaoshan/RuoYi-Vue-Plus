@@ -226,9 +226,11 @@ public class StoreReturnServiceImpl
             entity.setReturnDirection(DIRECTION_CUSTOMER_TO_STORE);
             entity.setStoreId(bo.getStoreId());
             entity.setProductId(item.getProductId());
-            // 退回操作录入的是「退回产品重量(KG)」→ 同时落 goods_weight 与 return_quantity（V1 按重量计量）
-            entity.setReturnQuantity(item.getReturnWeight());
+            // 退回重量(KG) 始终落 goods_weight；退回量（果蔬份数/把/盒）落 return_quantity，
+            // 猪肉行无 returnQuantity 时回退 returnWeight（按重量计量，保留旧行为）。
             entity.setGoodsWeight(item.getReturnWeight());
+            entity.setReturnQuantity(item.getReturnQuantity() != null
+                ? item.getReturnQuantity() : item.getReturnWeight());
             entity.setTraceCode(item.getTraceCode());
             entity.setReturnDate(LocalDateTime.now());
             entity.setOperatorId(operatorId);

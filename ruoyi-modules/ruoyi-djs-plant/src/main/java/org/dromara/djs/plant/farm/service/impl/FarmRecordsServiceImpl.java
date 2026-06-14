@@ -199,6 +199,15 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
     @Override
     @Transactional(rollbackFor = Exception.class)
     public Long submitRotation(RotationRecordBo bo) {
+        // 幂等拦截（231）：地块 plot_status 须为 3（采摘态），已退茬变空地（plot_status=1）的地块拒绝重复退茬。
+        PlotInfo plot = plotInfoMapper.selectById(bo.getPlotId());
+        if (plot == null) {
+            throw new ServiceException("地块不存在: " + bo.getPlotId());
+        }
+        if (plot.getPlotStatus() == null || plot.getPlotStatus() != 3) {
+            throw new ServiceException("该地块已退茬，无需重复退茬");
+        }
+
         FarmRecords r = new FarmRecords();
         buildBase(r, "rotation", bo.getPlotId(), bo.getCropId(), bo.getPlantId(), bo.getFarmBy(),
             bo.getFarmDate(), bo.getProofOssIds(), bo.getRemark());
@@ -206,10 +215,6 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
 
         // 副作用：plot_info.plot_status 回 1（空闲）。plant_status='completed' + end_actualdate
         // 归「种植完成」finishPlant 独占，退茬不再重复写。
-        PlotInfo plot = plotInfoMapper.selectById(bo.getPlotId());
-        if (plot == null) {
-            throw new ServiceException("地块不存在: " + bo.getPlotId());
-        }
         plot.setPlotStatus(1);
         plotInfoMapper.updateById(plot);
         return r.getId();
@@ -284,6 +289,10 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
         if (plot == null) {
             throw new ServiceException("地块不存在: " + plotId);
         }
+        // 幂等拦截（231）：已退茬变空地（plot_status=1）的地块拒绝重复退茬。
+        if (plot.getPlotStatus() == null || plot.getPlotStatus() != 3) {
+            throw new ServiceException("该地块已退茬，无需重复退茬");
+        }
         plot.setPlotStatus(1);
         plotInfoMapper.updateById(plot);
     }
@@ -301,6 +310,19 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
             .eq(PlantDetails::getCropId, cropId);
         if (filter.byHarvestStatus()) {
             dw.eq(PlantDetails::getHarvestStatus, filter.harvestStatus());
+            // 退茬口径（231）：地块须 plot_status=3（仍采摘态、未退茬变空地）。
+            // 已退茬地块 plot_status=1 应排除，否则空地仍出现在退茬多选页并可被重复退茬。
+            // 与列表卡/片区胶囊（selectCropTargetCardsForRotation / selectCropZoneCountsForRotation）同口径。
+            if ("rotation".equals(farmType)) {
+                List<PlotInfo> activePlots = plotInfoMapper.selectList(
+                    new LambdaQueryWrapper<PlotInfo>().eq(PlotInfo::getPlotStatus, 3));
+                Set<Long> activePlotIds = activePlots.stream()
+                    .map(PlotInfo::getId).filter(Objects::nonNull).collect(Collectors.toSet());
+                if (activePlotIds.isEmpty()) {
+                    return List.of();
+                }
+                dw.in(PlantDetails::getPlotId, activePlotIds);
+            }
         } else {
             dw.eq(PlantDetails::getPlantStatus, filter.plantStatus())
                 .ne(PlantDetails::getHarvestStatus, filter.harvestStatus());
@@ -792,11 +814,22 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
         }
         // PLT-WORK-002 admin 5 Tab：farmWorkTypes 多选优先（IN）；为空时退回 farmType 单值（mp / 旧调用方）
         boolean hasWorkTypes = CollUtil.isNotEmpty(query.getFarmWorkTypes());
+        // 地块名称模糊搜索：plot_name 不在主表，经 plot_info 反查 plotId 列表再 IN（无命中则强制空结果）
+        boolean filterByPlotName = StringUtils.isNotBlank(query.getPlotName());
+        List<Long> plotIdsByName = filterByPlotName
+            ? plotInfoMapper.selectList(new LambdaQueryWrapper<PlotInfo>()
+                .select(PlotInfo::getId)
+                .like(PlotInfo::getPlotName, query.getPlotName()))
+            .stream().map(PlotInfo::getId).collect(Collectors.toList())
+            : null;
         w.like(StringUtils.isNotBlank(query.getRecordNo()), FarmRecords::getRecordNo, query.getRecordNo())
             .in(hasWorkTypes, FarmRecords::getFarmType, query.getFarmWorkTypes())
             .eq(!hasWorkTypes && StringUtils.isNotBlank(query.getFarmType()), FarmRecords::getFarmType, query.getFarmType())
             .eq(query.getPlotId() != null, FarmRecords::getPlotId, query.getPlotId())
+            // 地块名命中 → IN plotIds；命中为空 → IN (-1) 哨兵 id，确保返回空结果
+            .in(filterByPlotName, FarmRecords::getPlotId, CollUtil.isEmpty(plotIdsByName) ? List.of(-1L) : plotIdsByName)
             .eq(query.getCropId() != null, FarmRecords::getCropId, query.getCropId())
+            .like(StringUtils.isNotBlank(query.getCropName()), FarmRecords::getCropName, query.getCropName())
             .eq(query.getFarmBy() != null, FarmRecords::getFarmBy, query.getFarmBy())
             // PLT-WORK-003 灾害子页：disaster_type / is_warning 筛选
             .eq(StringUtils.isNotBlank(query.getDisasterType()), FarmRecords::getDisasterType, query.getDisasterType())

@@ -27,6 +27,7 @@ import org.dromara.djs.warehouse.pack.domain.bo.GiftPackBo;
 import org.dromara.djs.warehouse.pack.domain.bo.VegPackBo;
 import org.dromara.djs.warehouse.pack.domain.bo.WhiteBarOutBo;
 import org.dromara.djs.warehouse.pack.domain.query.ProductProductionQuery;
+import org.dromara.djs.warehouse.pack.domain.vo.ProductProductionGroupVo;
 import org.dromara.djs.warehouse.pack.domain.vo.ProductProductionVo;
 import org.dromara.djs.warehouse.pack.domain.vo.StoreDemandCopiesVo;
 import org.dromara.djs.warehouse.pack.mapper.ProductProductionMapper;
@@ -469,6 +470,31 @@ public class ProductProductionServiceImpl
         log.info("[WMS-WHITEBAR-SHIP-001] white_bar/pork out done id={} produceNo={} belongType={} weight={} store={} traceCode={}",
             p.getId(), p.getProduceNo(), belongType, bo.getProductWeight(), bo.getStoreId(), p.getTraceCode());
         return p.getId();
+    }
+
+    @Override
+    public TableDataInfo<ProductProductionGroupVo> queryGroupPageList(ProductProductionQuery query, PageQuery pageQuery) {
+        String produceNo = query == null ? null : query.getProduceNo();
+        String belongType = query == null ? null : query.getBelongType();
+        Integer productType = query == null ? null : query.getProductType();
+        Date from = query == null ? null : query.getProduceDateFrom();
+        Date to = query == null ? null : query.getProduceDateTo();
+        // belongType（产品品类，product_info 维度）/ productType（组内同值）均下推 mapper WHERE 过滤
+        List<ProductProductionGroupVo> all =
+            baseMapper.selectProductionGroupList(produceNo, belongType, productType, from, to);
+        // 聚合后内存分页（分组行数小，范式同 DemandManageServiceImpl.queryGroupList）
+        int total = all.size();
+        int pageNum = pageQuery == null || pageQuery.getPageNum() == null ? 1 : pageQuery.getPageNum();
+        int pageSize = pageQuery == null || pageQuery.getPageSize() == null ? 10 : pageQuery.getPageSize();
+        int fromIdx = Math.max(0, (pageNum - 1) * pageSize);
+        int toIdx = Math.min(total, fromIdx + pageSize);
+        List<ProductProductionGroupVo> pageRows = fromIdx >= total ? List.of() : all.subList(fromIdx, toIdx);
+        TableDataInfo<ProductProductionGroupVo> rsp = new TableDataInfo<>();
+        rsp.setRows(pageRows);
+        rsp.setTotal(total);
+        rsp.setCode(200);
+        rsp.setMsg("查询成功");
+        return rsp;
     }
 
     @Override

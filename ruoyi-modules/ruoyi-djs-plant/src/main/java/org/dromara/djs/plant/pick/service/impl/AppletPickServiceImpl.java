@@ -6,6 +6,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.djs.common.image.service.ImageUrlResolver;
+import org.dromara.djs.plant.activity.mapper.PlantActivityMapper;
 import org.dromara.djs.plant.crop.domain.CropInfo;
 import org.dromara.djs.plant.crop.mapper.CropInfoMapper;
 import org.dromara.djs.plant.farm.domain.bo.GrowRecordBo;
@@ -63,6 +64,7 @@ public class AppletPickServiceImpl implements IAppletPickService {
     private final CropInfoMapper cropMapper;
     private final PlantWorkTeamMapper teamMapper;
     private final PlantWorkPeopleMapper peopleMapper;
+    private final PlantActivityMapper plantActivityMapper;
     private final IFarmRecordsService farmRecordsService;
     private final ApplicationEventPublisher eventPublisher;
     private final ImageUrlResolver imageUrlResolver;
@@ -70,8 +72,13 @@ public class AppletPickServiceImpl implements IAppletPickService {
     /** 作物 L2 默认图统一走果蔬（IMG-LIB-001）。 */
     private static final String CROP_BELONG_TYPE = "vegetable";
 
-    /** is_pick=2 表示非游客采摘（普通采收）；mp 工人端只统计 / 展示这些。 */
+    /** is_pick=2 表示非游客采摘（普通采收）；mp 工人采收 tab（listMyTasks/todaySummary）统计 / 展示这些。 */
     private static final int IS_PICK_NORMAL = 2;
+    /**
+     * is_pick=1 表示「是采摘活动」（字典 djs_yes_no：1=是 / 2=否）。
+     * 235：mp「采摘活动管理」列表卡 + 详情地块取 is_pick=1 的明细。
+     */
+    private static final int IS_PICK_ACTIVITY = 1;
     /** harvest_activity：农事记录采收类型（与 t_plant_farm_records.farm_type 字典 djs_farm_work_type 对齐）。 */
     private static final String HARVEST_FARM_TYPE = "harvest_activity";
 
@@ -203,13 +210,13 @@ public class AppletPickServiceImpl implements IAppletPickService {
 
     @Override
     public List<PickCropTaskVo> listCropTasks(Long zoneId) {
-        // 全部非游客采摘明细（is_pick=2），应用层按片区过滤 + 作物聚合（V1 数据量小）。
+        // 235：「采摘活动管理」取 is_pick=1（是采摘活动）的明细，应用层按片区过滤 + 作物聚合（V1 数据量小）。
         // 181-1（决策#1=a）：只取「当前日期落在 [earliest_harvestdate, last_harvestdate] 采摘窗口」的明细
         //   （earliest_harvestdate ≤ today ≤ last_harvestdate），区间外的不在采摘活动列表显示。
         LocalDate today = LocalDate.now();
         List<PlantDetails> all = detailsMapper.selectList(
             new LambdaQueryWrapper<PlantDetails>()
-                .eq(PlantDetails::getIsPick, IS_PICK_NORMAL)
+                .eq(PlantDetails::getIsPick, IS_PICK_ACTIVITY)
                 .le(PlantDetails::getEarliestHarvestdate, today)
                 .ge(PlantDetails::getLastHarvestdate, today));
         if (CollUtil.isEmpty(all)) {
@@ -267,11 +274,17 @@ public class AppletPickServiceImpl implements IAppletPickService {
             vo.setExpectedYield(rows.stream()
                 .map(d -> d.getExpectedYield() == null ? BigDecimal.ZERO : d.getExpectedYield())
                 .reduce(BigDecimal.ZERO, BigDecimal::add));
-            vo.setActualYield(rows.stream()
-                .map(d -> d.getActualYield() == null ? BigDecimal.ZERO : d.getActualYield())
-                .reduce(BigDecimal.ZERO, BigDecimal::add));
+            // actualYield（已采重量）改取 t_plant_plant_activity.daily_weight（235 客户权威口径），
+            // 循环外批量按 (cropId, activityDate) 聚合后回填；此处先置 0。
+            vo.setActualYield(BigDecimal.ZERO);
             result.add(vo);
         }
+
+        // 235：已采重量 = SUM(t_plant_plant_activity.daily_weight)，按 crop_id 关联、activity_date 落在该作物
+        // 采摘窗口 [startDate, lastDate] 内。一次 IN(cropIds) + GROUP BY 取按日明细（各作物窗口不同），
+        // Java 端按各作物窗口过滤累加，避免 N+1。
+        fillActualYieldFromActivity(result);
+
         // IMG-LIB-001：cropImg 走 4 层 resolver（L1 image_oss_id → L2 vegetable → L3 全局），批量禁 N+1
         if (!result.isEmpty()) {
             List<ImageUrlResolver.Item> items = result.stream()
@@ -292,9 +305,10 @@ public class AppletPickServiceImpl implements IAppletPickService {
         if (cropId == null) {
             throw new ServiceException("作物 id 必填");
         }
+        // 235：与「采摘活动管理」列表卡（listCropTasks）同口径取 is_pick=1，点卡进详情看到的是同一批地块。
         List<PlantDetails> entities = detailsMapper.selectList(
             new LambdaQueryWrapper<PlantDetails>()
-                .eq(PlantDetails::getIsPick, IS_PICK_NORMAL)
+                .eq(PlantDetails::getIsPick, IS_PICK_ACTIVITY)
                 .eq(PlantDetails::getCropId, cropId)
                 .eq(planId != null, PlantDetails::getPlantId, planId)
                 .orderByAsc(PlantDetails::getEarliestHarvestdate)
@@ -318,6 +332,90 @@ public class AppletPickServiceImpl implements IAppletPickService {
     // ============================================================
     // 内部
     // ============================================================
+
+    /**
+     * 235：按 t_plant_plant_activity.daily_weight 回填各作物卡「已采重量」（actualYield）。
+     *
+     * <p>口径：SUM(daily_weight) WHERE crop_id=该作物 AND activity_date ∈ [vo.startDate, vo.lastDate]（该作物采摘窗口）。
+     * 一次 IN(cropIds) + 全局窗口 [minStart, maxLast] 取按 (cropId, activityDate) 日聚合行（避免 N+1），
+     * Java 端按各作物自身窗口过滤累加。无 startDate/lastDate（窗口未知）的作物 actualYield 保持 0。</p>
+     */
+    private void fillActualYieldFromActivity(List<PickCropTaskVo> vos) {
+        if (CollUtil.isEmpty(vos)) {
+            return;
+        }
+        Set<Long> cropIds = vos.stream().map(PickCropTaskVo::getCropId)
+            .filter(Objects::nonNull).collect(Collectors.toSet());
+        if (cropIds.isEmpty()) {
+            return;
+        }
+        // 全局窗口 = 各作物窗口并集（缩小扫描）。任一作物缺窗口端点则跳过聚合（无法界定区间）。
+        LocalDate minStart = vos.stream().map(PickCropTaskVo::getStartDate)
+            .filter(Objects::nonNull).min(Comparator.naturalOrder()).orElse(null);
+        LocalDate maxLast = vos.stream().map(PickCropTaskVo::getLastDate)
+            .filter(Objects::nonNull).max(Comparator.naturalOrder()).orElse(null);
+        if (minStart == null || maxLast == null) {
+            return;
+        }
+
+        List<Map<String, Object>> rows = plantActivityMapper.selectDailyWeightByCropInRange(cropIds, minStart, maxLast);
+        if (CollUtil.isEmpty(rows)) {
+            return;
+        }
+        // cropId → (activityDate → daySum) 明细，供按各作物窗口精确聚合
+        Map<Long, Map<LocalDate, BigDecimal>> byCropDate = new LinkedHashMap<>();
+        for (Map<String, Object> row : rows) {
+            Object cidObj = row.get("cropId");
+            LocalDate date = toLocalDate(row.get("activityDate"));
+            if (cidObj == null || date == null) {
+                continue;
+            }
+            Long cid = ((Number) cidObj).longValue();
+            BigDecimal sum = toBigDecimal(row.get("daySum"));
+            byCropDate.computeIfAbsent(cid, k -> new LinkedHashMap<>()).merge(date, sum, BigDecimal::add);
+        }
+
+        for (PickCropTaskVo vo : vos) {
+            Map<LocalDate, BigDecimal> dayMap = byCropDate.get(vo.getCropId());
+            if (dayMap == null || vo.getStartDate() == null || vo.getLastDate() == null) {
+                continue;
+            }
+            BigDecimal total = BigDecimal.ZERO;
+            for (Map.Entry<LocalDate, BigDecimal> de : dayMap.entrySet()) {
+                LocalDate d = de.getKey();
+                if (!d.isBefore(vo.getStartDate()) && !d.isAfter(vo.getLastDate())) {
+                    total = total.add(de.getValue());
+                }
+            }
+            vo.setActualYield(total);
+        }
+    }
+
+    /** 把 mapper 返回的日期值（java.sql.Date / LocalDate）归一为 LocalDate（其它类型返 null）。 */
+    private LocalDate toLocalDate(Object v) {
+        if (v instanceof java.sql.Date sqlDate) {
+            return sqlDate.toLocalDate();
+        }
+        if (v instanceof LocalDate ld) {
+            return ld;
+        }
+        return null;
+    }
+
+    /** 把 mapper 返回的数值归一为 BigDecimal（null 当 0）。 */
+    private BigDecimal toBigDecimal(Object v) {
+        if (v == null) {
+            return BigDecimal.ZERO;
+        }
+        if (v instanceof BigDecimal bd) {
+            return bd;
+        }
+        if (v instanceof Number n) {
+            return BigDecimal.valueOf(n.doubleValue());
+        }
+        return BigDecimal.ZERO;
+    }
+
     /** 凭证图 OSS id 列表拼成逗号分隔 string（与 t_plant_farm_records.proof_oss_ids 存法一致）。 */
     private String joinOssIds(List<Long> ids) {
         if (CollUtil.isEmpty(ids)) {

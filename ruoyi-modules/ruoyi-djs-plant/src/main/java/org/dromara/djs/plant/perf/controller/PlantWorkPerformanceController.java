@@ -12,11 +12,11 @@ import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.web.core.BaseController;
 import org.dromara.djs.plant.perf.domain.query.PlantWorkPerformanceQuery;
+import org.dromara.djs.plant.perf.domain.vo.PerfListRow;
 import org.dromara.djs.plant.perf.domain.vo.PlantWorkPerformanceVo;
 import org.dromara.djs.plant.perf.service.IPlantWorkPerformanceService;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -43,18 +43,18 @@ public class PlantWorkPerformanceController extends BaseController {
 
     private final IPlantWorkPerformanceService performanceService;
 
-    /** 分页查询绩效列表（query: statMonth / teamId / cropId）。 */
+    /** 分页查询绩效列表（班组 × 月聚合；query: statMonth / teamId）。 */
     @SaCheckPermission("djs:plantPerformance:list")
     @GetMapping("/list")
-    public TableDataInfo<PlantWorkPerformanceVo> list(PlantWorkPerformanceQuery query, PageQuery pageQuery) {
+    public TableDataInfo<PerfListRow> list(PlantWorkPerformanceQuery query, PageQuery pageQuery) {
         return performanceService.queryPageList(query, pageQuery);
     }
 
-    /** 绩效行详情（产量绩效 tab 数据）。 */
+    /** 详情按作物分行（产量绩效 tab：某班组某月全部作物的采摘量 / 单价 / 绩效额）。 */
     @SaCheckPermission("djs:plantPerformance:query")
-    @GetMapping("/{id}")
-    public R<PlantWorkPerformanceVo> getInfo(@PathVariable Long id) {
-        return R.ok(performanceService.queryById(id));
+    @GetMapping("/crop-rows")
+    public R<List<PlantWorkPerformanceVo>> cropRows(@RequestParam Long teamId, @RequestParam String statMonth) {
+        return R.ok(performanceService.queryCropRows(teamId, statMonth));
     }
 
     /** 手动生成指定月份的班组绩效结算（幂等：先软删该月旧行再聚合 INSERT）。 */
@@ -66,12 +66,12 @@ public class PlantWorkPerformanceController extends BaseController {
         return R.ok("结算生成成功", performanceService.generate(statMonth));
     }
 
-    /** 导出绩效列表。 */
+    /** 导出绩效列表（班组 × 月聚合行，与主列表一致）。 */
     @SaCheckPermission("djs:plantPerformance:export")
     @Log(title = "种植-班组绩效", businessType = BusinessType.EXPORT)
     @PostMapping("/export")
     public void export(PlantWorkPerformanceQuery query, HttpServletResponse response) {
-        List<PlantWorkPerformanceVo> list = performanceService.queryList(query);
-        ExcelUtil.exportExcel(list, "班组绩效", PlantWorkPerformanceVo.class, response);
+        List<PerfListRow> list = performanceService.queryList(query);
+        ExcelUtil.exportExcel(list, "班组绩效", PerfListRow.class, response);
     }
 }

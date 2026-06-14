@@ -205,7 +205,7 @@ public class StockFlowServiceImpl
             .eq(query.getProductId() != null,    StockFlow::getProductId,   query.getProductId())
             .eq(query.getOperatorId() != null,   StockFlow::getOperatorId,  query.getOperatorId())
             .eq(query.getWarehouseId() != null,  StockFlow::getWarehouseId, query.getWarehouseId())
-            .eq(StringUtils.isNotBlank(query.getEarNo()), StockFlow::getEarNo, query.getEarNo())
+            .like(StringUtils.isNotBlank(query.getEarNo()), StockFlow::getEarNo, query.getEarNo())
             .eq(query.getPlotId() != null, StockFlow::getPlotId, query.getPlotId())
             .ge(query.getDateFrom() != null, StockFlow::getFlowDate, query.getDateFrom())
             .le(query.getDateTo()   != null, StockFlow::getFlowDate, query.getDateTo())

@@ -8,11 +8,15 @@ import org.dromara.djs.breed.core.domain.vo.InventoryBoarItemVo;
 import org.dromara.djs.breed.core.domain.vo.InventoryDistItemVo;
 import org.dromara.djs.breed.core.mapper.PigMapper;
 import org.dromara.djs.breed.core.service.IInventoryAppletService;
+import org.dromara.djs.breed.event.breeding.mapper.PigBreedingMapper;
 import org.dromara.djs.breed.farm.domain.Barn;
 import org.dromara.djs.breed.farm.mapper.BarnMapper;
+import org.dromara.djs.breed.production.domain.vo.FattenAgeStageVo;
+import org.dromara.djs.breed.production.service.IFattenAgeStageService;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
@@ -40,12 +44,19 @@ public class InventoryAppletServiceImpl implements IInventoryAppletService {
 
     private final PigMapper pigMapper;
     private final BarnMapper barnMapper;
+    private final IFattenAgeStageService fattenAgeStageService;
+    private final PigBreedingMapper pigBreedingMapper;
 
     /** 后备段标记：前端传 pigType=reserve，后端按 current_status='HB' 过滤（非 pig_type） */
     private static final String RESERVE = "reserve";
     private static final String RESERVE_STATUS = "HB";
     private static final String SOW = "sow";
     private static final String BOAR = "boar";
+    private static final String PIGLET = "piglet";
+    private static final String FATTENING = "fattening";
+
+    /** 离场状态：库存分布栋舍卡按客户口径排除（不计头数、不计状态） */
+    private static final String STATUS_END = "END";
 
     private static final DateTimeFormatter DATE_FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd");
 
@@ -68,23 +79,45 @@ public class InventoryAppletServiceImpl implements IInventoryAppletService {
         if (pigs.isEmpty()) {
             return Collections.emptyList();
         }
-        // 母猪段 byStatus 维度 = current_status；其它段无细分状态 → byStatus 留空（mp 仅展示头数）
+        // 母猪段 byStatus 维度 = current_status；肥猪/仔猪/后备段 byAge 维度 = 日龄/周龄分段；
         boolean withStatus = SOW.equals(pigType);
+        boolean withAge = FATTENING.equals(pigType) || PIGLET.equals(pigType) || RESERVE.equals(pigType);
 
-        Map<Long, Map<String, Integer>> matrix = new LinkedHashMap<>();
+        // 肥猪/仔猪/后备分段器（一次性算好，全栋复用，保证段顺序与日龄分布图一致）
+        Bucketing bucketing = withAge ? bucketingFor(pigType) : null;
+        String[] ageLabels = withAge ? bucketing.labels() : null;
+        LocalDate today = LocalDate.now();
+
+        Map<Long, Map<String, Integer>> statusMatrix = new LinkedHashMap<>();
+        Map<Long, int[]> ageMatrix = new LinkedHashMap<>();
         Map<Long, Integer> totalByBarn = new LinkedHashMap<>();
         for (Pig p : pigs) {
             if (p.getBarnId() == null) {
                 continue;
             }
+            String status = p.getCurrentStatus();
+            // 客户口径（206③）：库存分布栋舍卡排除离场 END（不计头数、不计分段）
+            if (STATUS_END.equals(status)) {
+                continue;
+            }
             Long barnId = p.getBarnId();
             totalByBarn.merge(barnId, 1, Integer::sum);
             if (withStatus) {
-                String status = p.getCurrentStatus();
                 if (status != null && !status.isEmpty()) {
-                    matrix.computeIfAbsent(barnId, k -> new LinkedHashMap<>())
+                    statusMatrix.computeIfAbsent(barnId, k -> new LinkedHashMap<>())
                           .merge(status, 1, Integer::sum);
                 }
+            } else if (withAge) {
+                LocalDate birthDate = p.getBirthDate();
+                if (birthDate == null) {
+                    continue;
+                }
+                long days = ChronoUnit.DAYS.between(birthDate, today);
+                if (days < 0) {
+                    continue;
+                }
+                int[] buckets = ageMatrix.computeIfAbsent(barnId, k -> new int[ageLabels.length]);
+                buckets[bucketing.indexOf(days)]++;
             }
         }
         if (totalByBarn.isEmpty()) {
@@ -95,14 +128,32 @@ public class InventoryAppletServiceImpl implements IInventoryAppletService {
 
         List<InventoryBarnMatrixVo> result = new ArrayList<>();
         for (Map.Entry<Long, Integer> e : totalByBarn.entrySet()) {
+            Long barnId = e.getKey();
             InventoryBarnMatrixVo vo = new InventoryBarnMatrixVo();
-            vo.setBarnId(String.valueOf(e.getKey()));
-            vo.setBarnName(barnNameMap.getOrDefault(e.getKey(), "未分配"));
+            vo.setBarnId(String.valueOf(barnId));
+            vo.setBarnName(barnNameMap.getOrDefault(barnId, "未分配"));
             vo.setCount(e.getValue());
-            vo.setByStatus(matrix.getOrDefault(e.getKey(), Collections.emptyMap()));
+            vo.setByStatus(statusMatrix.getOrDefault(barnId, Collections.emptyMap()));
+            if (withAge) {
+                vo.setByAge(toAgeMap(ageLabels, ageMatrix.get(barnId)));
+            } else {
+                vo.setByAge(Collections.emptyMap());
+            }
             result.add(vo);
         }
         return result;
+    }
+
+    /**
+     * 把某栋舍的分段计数数组装成有序 label→count（按分段标签顺序，6/7 段全列，缺省 0）。
+     * 与原型一致：每段都显示（含 0），保证各栋卡片分段位置对齐。
+     */
+    private Map<String, Integer> toAgeMap(String[] labels, int[] counts) {
+        Map<String, Integer> map = new LinkedHashMap<>();
+        for (int i = 0; i < labels.length; i++) {
+            map.put(labels[i], counts == null ? 0 : counts[i]);
+        }
+        return map;
     }
 
     @Override
@@ -138,7 +189,8 @@ public class InventoryAppletServiceImpl implements IInventoryAppletService {
     public List<InventoryDistItemVo> ageDist(String pigType) {
         List<Pig> pigs = loadPigs(pigType);
         LocalDate today = LocalDate.now();
-        String[] bucketLabels = {"0-30天", "31-60天", "61-90天", "91-180天", "180天以上"};
+        Bucketing bucketing = bucketingFor(pigType);
+        String[] bucketLabels = bucketing.labels();
         int[] counts = new int[bucketLabels.length];
         boolean any = false;
         for (Pig p : pigs) {
@@ -150,7 +202,7 @@ public class InventoryAppletServiceImpl implements IInventoryAppletService {
             if (days < 0) {
                 continue;
             }
-            counts[bucketIndex(days)]++;
+            counts[bucketing.indexOf(days)]++;
             any = true;
         }
         if (!any) {
@@ -166,17 +218,100 @@ public class InventoryAppletServiceImpl implements IInventoryAppletService {
         return result;
     }
 
-    private int bucketIndex(long days) {
-        if (days <= 30) {
-            return 0;
-        } else if (days <= 60) {
-            return 1;
-        } else if (days <= 90) {
-            return 2;
-        } else if (days <= 180) {
-            return 3;
+    /**
+     * 分桶器：labels 与 indexOf 同源，保证日龄分布图与库存分布按段细分口径完全一致。
+     *
+     * @param labels    分段中文标签（图表 X 轴 / 栋舍卡分段 key）
+     * @param upper     第 i 段上界（含，天数 ≤ upper[i] 落第 i 段）；最后一段为兜底 → 不参与比较
+     */
+    private record Bucketing(String[] labels, long[] upper) {
+        int indexOf(long days) {
+            // 最后一段为「X 以上」兜底，只比前 n-1 段上界
+            for (int i = 0; i < upper.length; i++) {
+                if (days <= upper[i]) {
+                    return i;
+                }
+            }
+            return labels.length - 1;
         }
-        return 4;
+    }
+
+    /**
+     * 各 pigType 的分桶器（标签 + 上界一体，杜绝 labels/index 两处口径漂移）。
+     *
+     * <ul>
+     *   <li>仔猪：按日龄 6 段（1-5/6-10/11-15/16-20/21-25/25日以上，客户 6/14 反馈）。</li>
+     *   <li>后备：按周龄 6 段（15周以下/16-20/21-25/26-30/31-35/36周以上，客户 6/14 反馈）。
+     *       末段口径与原型对齐为「36周以上」。</li>
+     *   <li>肥猪：动态读后台「育肥日龄阶段配置」{@code t_farm_fatten_age_stage}（客户原文「取后台生产配置里的日龄分布」）：
+     *       配置 n 行 → 「保育期」(< 首行起始) + n 个「{start}-{end}日」段 + 「{末行截止}日以上」共 n+2 段。
+     *       配置为空时退回默认日龄 5 段。</li>
+     *   <li>其它：默认日龄 5 段。</li>
+     * </ul>
+     */
+    private Bucketing bucketingFor(String pigType) {
+        if (PIGLET.equals(pigType)) {
+            return new Bucketing(
+                new String[]{"1-5日", "6-10日", "11-15日", "16-20日", "21-25日", "25日以上"},
+                new long[]{5, 10, 15, 20, 25}
+            );
+        }
+        if (RESERVE.equals(pigType)) {
+            // 周龄分段：上界用「天数」表达（weeks*7 + 6，保证整周内全部落同段）
+            return new Bucketing(
+                new String[]{"15周以下", "16-20周", "21-25周", "26-30周", "31-35周", "36周以上"},
+                new long[]{15 * 7 + 6, 20 * 7 + 6, 25 * 7 + 6, 30 * 7 + 6, 35 * 7 + 6}
+            );
+        }
+        if (FATTENING.equals(pigType)) {
+            Bucketing fatten = fattenBucketing();
+            if (fatten != null) {
+                return fatten;
+            }
+        }
+        return new Bucketing(
+            new String[]{"0-30天", "31-60天", "61-90天", "91-180天", "180天以上"},
+            new long[]{30, 60, 90, 180}
+        );
+    }
+
+    /**
+     * 从「育肥日龄阶段配置」动态构建肥猪分桶器。配置缺失（空表）返回 null → 上层退回默认 5 段。
+     */
+    private Bucketing fattenBucketing() {
+        List<FattenAgeStageVo> stages = fattenAgeStageService.queryList();
+        if (stages == null || stages.isEmpty()) {
+            return null;
+        }
+        // queryList 已按 start_age 升序；过滤掉 start/end 缺失的脏行
+        List<FattenAgeStageVo> valid = new ArrayList<>();
+        for (FattenAgeStageVo s : stages) {
+            if (s.getStartAge() != null && s.getEndAge() != null && s.getEndAge() >= s.getStartAge()) {
+                valid.add(s);
+            }
+        }
+        if (valid.isEmpty()) {
+            return null;
+        }
+        int firstStart = valid.get(0).getStartAge();
+        int lastEnd = valid.get(valid.size() - 1).getEndAge();
+
+        // 段：「保育期」(< 首段起始) + n 个配置段 + 「{末段截止}日以上」
+        List<String> labels = new ArrayList<>();
+        List<Long> upper = new ArrayList<>();
+        labels.add("保育期");
+        upper.add((long) (firstStart - 1)); // days ≤ firstStart-1 → 保育期
+        for (FattenAgeStageVo s : valid) {
+            labels.add(s.getStartAge() + "-" + s.getEndAge() + "日");
+            upper.add((long) (int) s.getEndAge());
+        }
+        labels.add(lastEnd + "日以上"); // 兜底段（不入 upper，indexOf 末段）
+
+        long[] upperArr = new long[upper.size()];
+        for (int i = 0; i < upper.size(); i++) {
+            upperArr[i] = upper.get(i);
+        }
+        return new Bucketing(labels.toArray(new String[0]), upperArr);
     }
 
     @Override
@@ -196,6 +331,30 @@ public class InventoryAppletServiceImpl implements IInventoryAppletService {
             .distinct()
             .toList();
         Map<Long, String> barnNameMap = resolveBarnNames(barnIds);
+        // 配种次数 + 最近配种日期：按本批公猪耳号一次性聚合（t_farm_pig_breeding，row210）
+        Map<String, int[]> matingCountByEar = new LinkedHashMap<>();
+        Map<String, LocalDate> lastMatingByEar = new LinkedHashMap<>();
+        List<String> earNos = boars.stream()
+            .map(Pig::getEarNo)
+            .filter(e -> e != null && !e.isEmpty())
+            .distinct()
+            .toList();
+        if (!earNos.isEmpty()) {
+            for (Map<String, Object> row : pigBreedingMapper.aggregateMatingByBoarEarNo(earNos)) {
+                Object earNoObj = row.get("boarEarNo");
+                if (earNoObj == null) {
+                    continue;
+                }
+                String earNo = String.valueOf(earNoObj);
+                Object cnt = row.get("matingCount");
+                matingCountByEar.put(earNo, new int[]{cnt == null ? 0 : ((Number) cnt).intValue()});
+                LocalDate last = toLocalDate(row.get("lastMatingDate"));
+                if (last != null) {
+                    lastMatingByEar.put(earNo, last);
+                }
+            }
+        }
+        LocalDate today = LocalDate.now();
 
         List<InventoryBoarItemVo> result = new ArrayList<>();
         for (Pig p : boars) {
@@ -205,7 +364,13 @@ public class InventoryAppletServiceImpl implements IInventoryAppletService {
             vo.setBreedCode(p.getPigBreedCode());
             vo.setBarnName(p.getBarnId() == null ? "未分配"
                 : barnNameMap.getOrDefault(p.getBarnId(), "未分配"));
+            vo.setAgeDays(p.getBirthDate() == null ? null
+                : (int) ChronoUnit.DAYS.between(p.getBirthDate(), today));
             vo.setEntryDate(formatDate(p.getIntroduceDate()));
+            int[] cnt = p.getEarNo() == null ? null : matingCountByEar.get(p.getEarNo());
+            vo.setMatingCount(cnt == null ? 0 : cnt[0]);
+            vo.setLastMatingDate(p.getEarNo() == null ? null
+                : formatDate(lastMatingByEar.get(p.getEarNo())));
             result.add(vo);
         }
         return result;
@@ -229,5 +394,28 @@ public class InventoryAppletServiceImpl implements IInventoryAppletService {
             return null;
         }
         return date.format(DATE_FMT);
+    }
+
+    /**
+     * 把 MyBatis 通用 Map 取出的日期对象（MAX(datetime) 聚合可能是 LocalDateTime / LocalDate /
+     * java.sql.Timestamp / java.util.Date）统一转 LocalDate；无法识别返回 null。
+     */
+    private LocalDate toLocalDate(Object value) {
+        if (value == null) {
+            return null;
+        }
+        if (value instanceof LocalDateTime ldt) {
+            return ldt.toLocalDate();
+        }
+        if (value instanceof LocalDate ld) {
+            return ld;
+        }
+        if (value instanceof java.sql.Date sqlDate) {
+            return sqlDate.toLocalDate();
+        }
+        if (value instanceof java.util.Date date) {
+            return date.toInstant().atZone(java.time.ZoneId.systemDefault()).toLocalDate();
+        }
+        return null;
     }
 }

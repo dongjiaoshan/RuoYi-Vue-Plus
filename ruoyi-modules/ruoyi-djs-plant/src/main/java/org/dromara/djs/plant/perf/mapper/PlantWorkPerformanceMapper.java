@@ -1,10 +1,13 @@
 package org.dromara.djs.plant.perf.mapper;
 
+import com.baomidou.mybatisplus.core.metadata.IPage;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 import org.dromara.common.mybatis.core.mapper.BaseMapperPlus;
 import org.dromara.djs.plant.perf.domain.PlantWorkPerformance;
+import org.dromara.djs.plant.perf.domain.vo.FarmCountRow;
 import org.dromara.djs.plant.perf.domain.vo.PerfAggRow;
+import org.dromara.djs.plant.perf.domain.vo.PerfListRow;
 import org.dromara.djs.plant.perf.domain.vo.PlantWorkPerformanceVo;
 
 import java.util.Collection;
@@ -52,6 +55,106 @@ public interface PlantWorkPerformanceMapper extends BaseMapperPlus<PlantWorkPerf
          GROUP BY harvest_by, crop_id
         """)
     List<PerfAggRow> aggregateByMonth(@Param("statMonth") String statMonth);
+
+    /**
+     * 主列表分页：按 班组 × 月 聚合已结算绩效行（rework 134/135）。
+     *
+     * <p>聚合源：{@code t_plant_work_performance}（已结算落库的逐作物行）。
+     * GROUP BY {@code stat_month, team_id}，每组算绩效总额 / 采摘总量 / 作物种类数。
+     * 命中索引 {@code idx_month_team (stat_month, team_id)}。</p>
+     *
+     * <p>显式 {@code tenant_id='1001' AND del_flag='0'}（V1 无全局拦截器，原生 SQL 不自动注入
+     * 租户 / 软删过滤，漏写会串租户或带出 del_flag='2' 的被覆盖历史行）。</p>
+     *
+     * @param page      分页参数（IPage，由 MP 分页拦截器填充 total / 切片）
+     * @param statMonth 统计月份精确匹配（可空）
+     * @param teamId    班组精确匹配（可空）
+     * @return 班组 × 月聚合行（teamName / farmCount 由 service enrich，此处不含）
+     */
+    @Select("""
+        <script>
+        SELECT
+            stat_month AS statMonth,
+            team_id AS teamId,
+            SUM(performance_amount) AS teamMonthAmount,
+            SUM(pick_weight) AS totalPickWeight,
+            COUNT(DISTINCT crop_id) AS cropCount
+          FROM t_plant_work_performance
+         WHERE tenant_id = '1001'
+           AND del_flag = '0'
+        <if test="statMonth != null and statMonth != ''"> AND stat_month = #{statMonth} </if>
+        <if test="teamId != null"> AND team_id = #{teamId} </if>
+         GROUP BY stat_month, team_id
+         ORDER BY stat_month DESC, team_id ASC
+        </script>
+        """)
+    IPage<PerfListRow> selectTeamMonthPage(IPage<PerfListRow> page,
+                                           @Param("statMonth") String statMonth,
+                                           @Param("teamId") Long teamId);
+
+    /**
+     * 批量统计农事次数：对 {@code t_plant_farm_records} 按 (班组, 月) 计数（rework 134 农事次数列）。
+     *
+     * <p>口径：全部 {@code farm_type}（不过滤采摘类，与详情农事记录 tab 现有口径一致）。
+     * 月份维度 {@code DATE_FORMAT(farm_date,'%Y-%m')}。仅统计入参 (teamId, statMonth) 组合，
+     * 一次取回避免 N+1。</p>
+     *
+     * <p>显式 {@code tenant_id='1001' AND del_flag='0'}（V1 单租户，原生 SQL 不自动注入）。</p>
+     *
+     * @param pairs (farmBy, statMonth) 组合集合（已 dedupe，非空；每元素为长度 2 的对象数组 [Long teamId, String month]）
+     * @return 命中的 (farmBy / statMonth / cnt) 行；未命中组合不返回（service 端默认 0）
+     */
+    @Select("""
+        <script>
+        SELECT
+            farm_by AS farmBy,
+            DATE_FORMAT(farm_date, '%Y-%m') AS statMonth,
+            COUNT(*) AS cnt
+          FROM t_plant_farm_records
+         WHERE tenant_id = '1001'
+           AND del_flag = '0'
+           AND (farm_by, DATE_FORMAT(farm_date, '%Y-%m')) IN
+        <foreach collection='pairs' item='p' open='(' separator=',' close=')'>
+            (#{p[0]}, #{p[1]})
+        </foreach>
+         GROUP BY farm_by, DATE_FORMAT(farm_date, '%Y-%m')
+        </script>
+        """)
+    List<FarmCountRow> countFarmByTeamMonths(@Param("pairs") Collection<Object[]> pairs);
+
+    /**
+     * 详情按作物分行：查某 班组 × 月 下全部作物绩效行（rework 135 产量绩效 tab）。
+     *
+     * <p>返回逐作物的采摘量 / 单价快照 / 该作物绩效额；cropName 由 service enrich
+     * （复用 {@link #selectCropNames}）。</p>
+     *
+     * <p>显式 {@code tenant_id='1001' AND del_flag='0'}（V1 单租户，原生 SQL 不自动注入）。</p>
+     *
+     * @param teamId    班组 ID（非空）
+     * @param statMonth 统计月份 yyyy-MM（非空）
+     * @return 逐作物绩效行（不含 cropName，service enrich 后填）
+     */
+    @Select("""
+        SELECT
+            id,
+            stat_month AS statMonth,
+            team_id AS teamId,
+            crop_id AS cropId,
+            pick_weight AS pickWeight,
+            unit_price_snapshot AS unitPriceSnapshot,
+            performance_amount AS performanceAmount,
+            performance_rule AS performanceRule,
+            remark,
+            create_time AS createTime
+          FROM t_plant_work_performance
+         WHERE tenant_id = '1001'
+           AND del_flag = '0'
+           AND team_id = #{teamId}
+           AND stat_month = #{statMonth}
+         ORDER BY crop_id ASC
+        """)
+    List<PlantWorkPerformanceVo> selectCropRowsByTeamMonth(@Param("teamId") Long teamId,
+                                                           @Param("statMonth") String statMonth);
 
     /**
      * 批量查询作物当前采摘单价（结算瞬间取快照用）。

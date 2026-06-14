@@ -24,12 +24,14 @@ import org.dromara.djs.warehouse.shipment.returnpkg.domain.bo.ReturnConfirmBo;
 import org.dromara.djs.warehouse.shipment.returnpkg.domain.bo.ReturnProductBo;
 import org.dromara.djs.warehouse.shipment.returnpkg.domain.query.ReturnProductQuery;
 import org.dromara.djs.warehouse.shipment.returnpkg.domain.vo.ReturnProductVo;
+import org.dromara.djs.warehouse.shipment.returnpkg.domain.vo.ReturnStoreDailyVo;
 import org.dromara.djs.warehouse.shipment.returnpkg.domain.vo.ReturnStoreGroupVo;
 import org.dromara.djs.warehouse.shipment.returnpkg.mapper.ReturnProductMapper;
 import org.dromara.djs.warehouse.shipment.returnpkg.service.IReturnProductService;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
@@ -103,6 +105,78 @@ public class ReturnProductServiceImpl
         Page<ReturnProductVo> page = baseMapper.selectVoPage(pageQuery.build(), wrapper);
         enrichVos(page.getRecords());
         return TableDataInfo.build(page);
+    }
+
+    @Override
+    public TableDataInfo<ReturnStoreDailyVo> queryStoreDailyPage(ReturnProductQuery query, PageQuery pageQuery) {
+        LambdaQueryWrapper<ReturnProduct> wrapper = buildQueryWrapper(query);
+        if (wrapper == null) {
+            // returnCategory 命中 0 个产品 → 空结果
+            return TableDataInfo.build();
+        }
+        // 1. 拉出符合筛选的全部退货行（内存聚合范式同 listPendingGroups）。
+        List<ReturnProduct> rows = baseMapper.selectList(wrapper);
+        if (rows.isEmpty()) {
+            return TableDataInfo.build(new ArrayList<>());
+        }
+        // 2. 按 退货日期(apply_time 截到天) + store_id 分组（混合 pending / confirmed）。
+        //    无 apply_time / store_id 的行不进汇总（外层视图按门店当日组织）。
+        Map<String, List<ReturnProduct>> byGroup = rows.stream()
+            .filter(r -> r.getApplyTime() != null && r.getStoreId() != null)
+            .collect(Collectors.groupingBy(
+                r -> r.getApplyTime().toLocalDate() + "|" + r.getStoreId(),
+                LinkedHashMap::new, Collectors.toList()));
+        if (byGroup.isEmpty()) {
+            return TableDataInfo.build(new ArrayList<>());
+        }
+        // 3. 批量回填门店名（无 N+1）。
+        Set<Long> storeIds = byGroup.values().stream()
+            .map(g -> g.get(0).getStoreId()).filter(Objects::nonNull).collect(Collectors.toSet());
+        Map<Long, String> storeNameMap = loadStoreNameMap(storeIds);
+        // 4. 逐组算汇总。
+        List<ReturnStoreDailyVo> all = new ArrayList<>(byGroup.size());
+        for (List<ReturnProduct> group : byGroup.values()) {
+            ReturnProduct any = group.get(0);
+            ReturnStoreDailyVo vo = new ReturnStoreDailyVo();
+            vo.setReturnDate(any.getApplyTime().toLocalDate());
+            vo.setStoreId(any.getStoreId());
+            vo.setStoreName(storeNameMap.get(any.getStoreId()));
+            vo.setProductKindCount((int) group.stream()
+                .map(ReturnProduct::getProductId).filter(Objects::nonNull).distinct().count());
+            BigDecimal returnTotal = group.stream()
+                .map(ReturnProduct::getReturnWeight).filter(Objects::nonNull)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+            BigDecimal confirmTotal = group.stream()
+                .map(ReturnProduct::getConfirmWeight).filter(Objects::nonNull)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+            vo.setReturnWeightTotal(returnTotal);
+            vo.setConfirmWeightTotal(confirmTotal);
+            vo.setWeightDiffTotal(returnTotal.subtract(confirmTotal));
+            // 确认时间 / 确认人 = 该组最近一条已确认行（confirm_time 最大）。
+            group.stream()
+                .filter(r -> r.getConfirmTime() != null)
+                .max(Comparator.comparing(ReturnProduct::getConfirmTime))
+                .ifPresent(latest -> {
+                    vo.setConfirmTime(latest.getConfirmTime());
+                    vo.setConfirmUser(latest.getConfirmUser());
+                });
+            all.add(vo);
+        }
+        // 5. 退货日期倒序、再门店倒序的稳定排序。
+        all.sort(Comparator
+            .comparing(ReturnStoreDailyVo::getReturnDate, Comparator.reverseOrder())
+            .thenComparing(ReturnStoreDailyVo::getStoreId, Comparator.reverseOrder()));
+        // 6. 内存分页。
+        int total = all.size();
+        int pageNum = Math.max(pageQuery == null || pageQuery.getPageNum() == null ? 1 : pageQuery.getPageNum(), 1);
+        int pageSize = pageQuery == null || pageQuery.getPageSize() == null ? 10 : pageQuery.getPageSize();
+        int from = Math.min((pageNum - 1) * pageSize, total);
+        int to = Math.min(from + pageSize, total);
+        TableDataInfo<ReturnStoreDailyVo> dataInfo = new TableDataInfo<>();
+        dataInfo.setCode(200);
+        dataInfo.setRows(new ArrayList<>(all.subList(from, to)));
+        dataInfo.setTotal(total);
+        return dataInfo;
     }
 
     @Override

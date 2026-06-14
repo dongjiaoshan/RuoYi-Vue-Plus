@@ -30,7 +30,7 @@ public class LocationStockQuery extends BaseEntity {
     private String productName;
 
     /**
-     * 耳号（精确）。
+     * 耳号（模糊）。
      */
     private String earNo;
 

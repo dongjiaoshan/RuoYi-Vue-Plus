@@ -29,7 +29,13 @@ public class FarmRecordsQuery {
 
     private Long plotId;
 
+    /** 地块名称模糊搜索（admin 农事记录列表，经 plot_info 反查 plotId 列表后 IN 过滤）。 */
+    private String plotName;
+
     private Long cropId;
+
+    /** 作物名称模糊搜索（crop_name 已冗余落 t_plant_farm_records，直接 like）。 */
+    private String cropName;
 
     /** 灾害类型筛选（字典 djs_disaster_type；PLT-WORK-003 admin 灾害子页用，对 disaster_type 列 eq）。 */
     private String disasterType;

@@ -238,9 +238,12 @@ public class DemandManageServiceImpl extends DjsBaseServiceImpl<DemandManageMapp
     @Override
     public TableDataInfo<DemandGroupVo> queryGroupList(DemandManageQuery query, PageQuery pageQuery) {
         String productName = query == null ? null : query.getProductName();
+        String productType = query == null ? null : query.getProductType();
+        String demandStatus = query == null ? null : query.getDemandStatus();
         LocalDate begin = query == null ? null : query.getBeginDate();
         LocalDate end = query == null ? null : query.getEndDate();
-        List<DemandGroupVo> all = baseMapper.selectDemandGroupList(productName, begin, end);
+        // productType（业态）组内同值，下推到 mapper WHERE 过滤
+        List<DemandGroupVo> all = baseMapper.selectDemandGroupList(productName, productType, begin, end);
         // 三态需求状态 + 确认率（按 storeCount / confirmedStoreCount 算）
         for (DemandGroupVo vo : all) {
             int storeCount = vo.getStoreCount() == null ? 0 : vo.getStoreCount();
@@ -249,6 +252,12 @@ public class DemandManageServiceImpl extends DjsBaseServiceImpl<DemandManageMapp
             vo.setConfirmRate(storeCount == 0
                 ? BigDecimal.ZERO
                 : BigDecimal.valueOf(confirmed).divide(BigDecimal.valueOf(storeCount), 4, java.math.RoundingMode.HALF_UP));
+        }
+        // 需求状态是聚合三态（PENDING/ALL_CONFIRMED/PARTIAL），算完后再内存过滤（不能下推 mapper WHERE）
+        if (StringUtils.isNotBlank(demandStatus)) {
+            all = all.stream()
+                .filter(vo -> demandStatus.equals(vo.getDemandStatus()))
+                .toList();
         }
         // 聚合后内存分页（分组行数小）
         int total = all.size();

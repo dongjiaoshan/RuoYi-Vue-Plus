@@ -200,9 +200,43 @@ public class TraceCodeAdminServiceImpl
                     TraceCode::getPigEarNo, query.getPigEarNo())
                 .ge(query.getBeginDate() != null, TraceCode::getCreateTime, query.getBeginDate())
                 .le(query.getEndDate() != null, TraceCode::getCreateTime, query.getEndDate());
+            applyArrivalDateFilter(w, query);
         }
         w.orderByDesc(TraceCode::getCreateTime).orderByDesc(TraceCode::getId);
         return w;
+    }
+
+    /**
+     * 按「到店日期」过滤（果蔬追溯码管理默认显示当天到店）。
+     *
+     * <p>到店日期 = trace_event 的 ARRIVAL 事件 trace_time，非主表 create_time（生成时间）。
+     * 先查命中区间的 ARRIVAL 事件 produce_code 集合，再 in 主表过滤；DB 层先过滤维度正确，
+     * 避免「昨天生成今天到店」的码被生成时间区间漏掉。区间内无任何 arrival 事件时强制空结果
+     * （in 空集合恒 false），不退化成全量。</p>
+     */
+    private void applyArrivalDateFilter(LambdaQueryWrapper<TraceCode> w, TraceCodeQuery query) {
+        if (query.getArrivalBeginDate() == null && query.getArrivalEndDate() == null) {
+            return;
+        }
+        LambdaQueryWrapper<TraceEvent> ew = new LambdaQueryWrapper<TraceEvent>()
+            .select(TraceEvent::getProduceCode)
+            .eq(TraceEvent::getTraceContent, TraceContentConst.ARRIVAL)
+            .ge(query.getArrivalBeginDate() != null,
+                TraceEvent::getTraceTime, toLocalDateTime(query.getArrivalBeginDate()))
+            .le(query.getArrivalEndDate() != null,
+                TraceEvent::getTraceTime, toLocalDateTime(query.getArrivalEndDate()));
+        List<String> arrivalCodes = traceEventMapper.selectList(ew).stream()
+            .map(TraceEvent::getProduceCode).filter(Objects::nonNull).distinct().toList();
+        if (arrivalCodes.isEmpty()) {
+            // 区间内无到店事件 → 列表为空（恒 false 条件）
+            w.apply("1 = 0");
+            return;
+        }
+        w.in(TraceCode::getProduceCode, arrivalCodes);
+    }
+
+    private java.time.LocalDateTime toLocalDateTime(Date d) {
+        return d.toInstant().atZone(ZoneId.systemDefault()).toLocalDateTime();
     }
 
     /**

@@ -49,6 +49,7 @@ public class PigFarrowVo implements Serializable {
     private Integer weakRaisedFemale;
     private Integer weakCulled;
     private Integer deformedBorn;
+    private Integer crushedBorn;
     private BigDecimal totalWeight;
     private BigDecimal avgWeight;
     private Integer parity;

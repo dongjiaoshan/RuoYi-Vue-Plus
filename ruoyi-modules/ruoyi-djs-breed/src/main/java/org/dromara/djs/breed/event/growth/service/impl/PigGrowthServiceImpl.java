@@ -11,6 +11,8 @@ import org.dromara.common.core.utils.StringUtils;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.breed.core.domain.Pig;
+import org.dromara.djs.breed.core.domain.vo.PigSearchVo;
+import org.dromara.djs.breed.core.enums.PigLifecycle;
 import org.dromara.djs.breed.core.mapper.PigMapper;
 import org.dromara.djs.breed.core.service.I18nMessages;
 import org.dromara.djs.breed.event.growth.domain.PigGrowth;
@@ -23,15 +25,22 @@ import org.dromara.djs.breed.farm.domain.Barn;
 import org.dromara.djs.breed.farm.domain.Pen;
 import org.dromara.djs.breed.farm.mapper.BarnMapper;
 import org.dromara.djs.breed.farm.mapper.PenMapper;
+import org.dromara.djs.breed.production.domain.vo.FattenAgeStageVo;
+import org.dromara.djs.breed.production.service.IFattenAgeStageService;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Date;
+import java.util.List;
+import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * 生长记录 Service 实现（BRD-EVENT-005 GROWTH）。
@@ -62,6 +71,7 @@ public class PigGrowthServiceImpl implements IPigGrowthService {
     private final PigMapper pigMapper;
     private final BarnMapper barnMapper;
     private final PenMapper penMapper;
+    private final IFattenAgeStageService fattenAgeStageService;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -103,6 +113,99 @@ public class PigGrowthServiceImpl implements IPigGrowthService {
             pig.getId(), pig.getEarNo(), bo.getMeasureDate(), bo.getWeight(), entity.getId());
 
         return toVo(entity);
+    }
+
+    @Override
+    public List<PigSearchVo> listGrowthTodo(String earNoKeyword) {
+        // 1. 取 record_growth=1 的日龄段（升序）；无配置 → 没有待办，返空
+        List<FattenAgeStageVo> stages = fattenAgeStageService.queryList().stream()
+            .filter(s -> s.getRecordGrowth() != null && s.getRecordGrowth() == 1
+                && s.getStartAge() != null && s.getEndAge() != null)
+            .collect(Collectors.toList());
+        if (stages.isEmpty()) {
+            return List.of();
+        }
+
+        // 2. 取在场育肥猪（pig_type='fattening' AND status != END），可选耳号 LIKE
+        List<Pig> pigs = pigMapper.selectList(Wrappers.<Pig>lambdaQuery()
+            .eq(Pig::getPigType, "fattening")
+            .ne(Pig::getCurrentStatus, PigLifecycle.END.name())
+            .like(StringUtils.isNotBlank(earNoKeyword), Pig::getEarNo, earNoKeyword)
+            .orderByDesc(Pig::getId));
+        if (pigs.isEmpty()) {
+            return List.of();
+        }
+
+        LocalDate today = LocalDate.now();
+        // 命中阶段且「该段日龄区间内尚无生长记录」的育肥猪
+        List<Pig> todoPigs = new ArrayList<>();
+        for (Pig p : pigs) {
+            LocalDate base = p.getBirthDate() != null ? p.getBirthDate() : p.getIntroduceDate();
+            if (base == null) {
+                continue; // 无基准日期算不出日龄 → 跳过（与 ageDist 一致）
+            }
+            int ageDays = (int) Math.max(ChronoUnit.DAYS.between(base, today), 0L);
+            // 找当前日龄落在哪个 record_growth=1 段（含端点）
+            FattenAgeStageVo hit = stages.stream()
+                .filter(s -> ageDays >= s.getStartAge() && ageDays <= s.getEndAge())
+                .findFirst().orElse(null);
+            if (hit == null) {
+                continue; // 当前日龄不在任何需记录段内
+            }
+            // 该段日龄区间映射成实际日期窗口 [base+startAge, base+endAge]，查该窗口内是否已有任意 1 条生长记录
+            LocalDate windowStart = base.plusDays(hit.getStartAge());
+            LocalDate windowEnd = base.plusDays(hit.getEndAge());
+            Long recorded = growthMapper.selectCount(Wrappers.<PigGrowth>lambdaQuery()
+                .eq(PigGrowth::getPigId, p.getId())
+                .ge(PigGrowth::getMeasureDate, windowStart)
+                .le(PigGrowth::getMeasureDate, windowEnd));
+            if (recorded != null && recorded > 0) {
+                continue; // 该阶段已录过 → 剔除（每阶段只录一次）
+            }
+            todoPigs.add(p);
+        }
+        if (todoPigs.isEmpty()) {
+            return List.of();
+        }
+
+        // 3. 批量 enrich 栋舍/栏位 + 日龄，组装 PigSearchVo（与 searchByEarKeyword 卡片字段一致）
+        Set<Long> barnIds = todoPigs.stream().map(Pig::getBarnId).filter(Objects::nonNull).collect(Collectors.toSet());
+        Set<Long> penIds = todoPigs.stream().map(Pig::getPenId).filter(Objects::nonNull).collect(Collectors.toSet());
+        Map<Long, Barn> barnMap = barnIds.isEmpty() ? Map.of()
+            : barnMapper.selectBatchIds(barnIds).stream().collect(Collectors.toMap(Barn::getId, b -> b, (a, b) -> a));
+        Map<Long, Pen> penMap = penIds.isEmpty() ? Map.of()
+            : penMapper.selectBatchIds(penIds).stream().collect(Collectors.toMap(Pen::getId, p -> p, (a, b) -> a));
+
+        List<PigSearchVo> result = new ArrayList<>(todoPigs.size());
+        for (Pig p : todoPigs) {
+            PigSearchVo vo = new PigSearchVo();
+            vo.setId(p.getId());
+            vo.setEarNo(p.getEarNo());
+            vo.setPigSex(p.getPigSex());
+            vo.setPigType(p.getPigType());
+            vo.setCurrentStatus(p.getCurrentStatus());
+            LocalDate base = p.getBirthDate() != null ? p.getBirthDate() : p.getIntroduceDate();
+            if (base != null) {
+                vo.setAgeDays((int) Math.max(ChronoUnit.DAYS.between(base, today), 0L));
+            }
+            vo.setParity(p.getParity());
+            if (p.getBarnId() != null) {
+                Barn barn = barnMap.get(p.getBarnId());
+                if (barn != null) {
+                    vo.setBarnCode(barn.getBarnCode());
+                    vo.setBarnName(barn.getBarnName());
+                }
+            }
+            if (p.getPenId() != null) {
+                Pen pen = penMap.get(p.getPenId());
+                if (pen != null) {
+                    vo.setPenCode(pen.getPenCode());
+                    vo.setPenName(pen.getPenName());
+                }
+            }
+            result.add(vo);
+        }
+        return result;
     }
 
     @Override

@@ -165,7 +165,9 @@ public interface FarmRecordsMapper extends BaseMapperPlus<FarmRecords, FarmRecor
      * 退茬工种「作物目标卡」聚合（FIX-PLT-MP-CROPSEL-001 P22）。
      *
      * <p>同 {@link #selectCropTargetCardsForGrow}，但状态口径用采摘状态 {@code harvest_status='completed'}
-     * （采摘完成 {@code djs_pick_status}），与多选页 {@code listCropPlots} 退茬口径一致（T3）。</p>
+     * （采摘完成 {@code djs_pick_status}），与多选页 {@code listCropPlots} 退茬口径一致（T3）。
+     * 额外要求 {@code p.plot_status=3}（地块仍处采摘态、未退茬变空地）——已退茬地块 plot_status=1 应排除，
+     * 否则空地仍出现在退茬候选并可被重复退茬（231）。</p>
      *
      * @param farmType 农事类型（rotation）
      * @param zoneId   片区 id（可空）
@@ -184,6 +186,7 @@ public interface FarmRecordsMapper extends BaseMapperPlus<FarmRecords, FarmRecor
          WHERE d.del_flag = '0'
            AND d.tenant_id = '1001'
            AND d.harvest_status = 'completed'
+           AND p.plot_status = 3
            AND (#{zoneId} IS NULL OR p.zone_id = #{zoneId})
            AND (#{plotCode} IS NULL OR p.plot_code = #{plotCode})
          GROUP BY d.crop_id, c.crop_name, c.crop_code
@@ -247,7 +250,8 @@ public interface FarmRecordsMapper extends BaseMapperPlus<FarmRecords, FarmRecor
      * 退茬工种「片区胶囊」聚合（FIX-PLT-MP-CROPSEL-001 P22 退茬·补片区筛选）。
      *
      * <p>同 {@link #selectCropZoneCountsForGrow}，但状态口径用采摘完成（{@code d.harvest_status='completed'}）——
-     * 与 {@link #selectCropTargetCardsForRotation} 同口径。</p>
+     * 与 {@link #selectCropTargetCardsForRotation} 同口径。地块额外要求 {@code p.plot_status=3}
+     * （未退茬变空地），与列表卡/多选页退茬口径一致（231）。</p>
      *
      * @return 每行 {@code {zoneId, zoneName, plotCount}}
      */
@@ -257,6 +261,7 @@ public interface FarmRecordsMapper extends BaseMapperPlus<FarmRecords, FarmRecor
           FROM t_plant_plot_zone z
           LEFT JOIN t_plant_plot_info p
             ON p.zone_id = z.id AND p.del_flag = '0' AND p.tenant_id = '1001'
+           AND p.plot_status = 3
           LEFT JOIN t_plant_plant_details d
             ON d.plot_id = p.id AND d.del_flag = '0' AND d.tenant_id = '1001'
            AND d.harvest_status = 'completed'

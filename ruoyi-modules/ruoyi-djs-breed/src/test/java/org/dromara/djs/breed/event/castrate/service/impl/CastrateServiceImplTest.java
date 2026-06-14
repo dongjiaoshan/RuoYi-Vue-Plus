@@ -7,6 +7,8 @@ import org.dromara.djs.breed.core.enums.PigLifecycle;
 import org.dromara.djs.breed.core.enums.PigStatusEvent;
 import org.dromara.djs.breed.core.mapper.PigMapper;
 import org.dromara.djs.breed.core.service.IPigCoreService;
+import org.dromara.common.core.service.DictService;
+import org.dromara.common.core.service.UserService;
 import org.dromara.djs.breed.event.castrate.domain.CastrateRecord;
 import org.dromara.djs.breed.event.castrate.domain.bo.CastrateBo;
 import org.dromara.djs.breed.event.castrate.domain.vo.CastrateRecordVo;
@@ -53,12 +55,16 @@ class CastrateServiceImplTest {
     private PigMapper pigMapper;
     @Mock
     private IPigCoreService pigCoreService;
+    @Mock
+    private DictService dictService;
+    @Mock
+    private UserService userService;
 
     private CastrateServiceImpl service;
 
     @BeforeEach
     void setup() {
-        service = new CastrateServiceImpl(castrateMapper, pigMapper, pigCoreService);
+        service = new CastrateServiceImpl(castrateMapper, pigMapper, pigCoreService, dictService, userService);
     }
 
     private Pig mkBoar(Long id) {

@@ -236,6 +236,7 @@ public class TracePublicServiceImpl
                 block.setSpec(p.getProductSpec());
                 // 净重 V1 无独立列，用规格兜底（推断字段，见 _open-issues）
                 block.setWeight(p.getProductSpec());
+                block.setDescription(p.getProductDesc());
                 block.setImageUrl(resolveOssUrl(p.getProductImg()));
             }
         }
@@ -246,8 +247,8 @@ public class TracePublicServiceImpl
         List<TraceEvent> events = traceEventMapper.selectList(
             new LambdaQueryWrapper<TraceEvent>()
                 .eq(TraceEvent::getProduceCode, produceCode)
-                .orderByAsc(TraceEvent::getTraceTime)
-                .orderByAsc(TraceEvent::getId));
+                .orderByDesc(TraceEvent::getTraceTime)
+                .orderByDesc(TraceEvent::getId));
         if (events.isEmpty()) {
             return new ArrayList<>();
         }
@@ -283,17 +284,25 @@ public class TracePublicServiceImpl
                 new LambdaQueryWrapper<Pig>().eq(Pig::getEarNo, earNo).last("limit 1"));
             if (pig != null) {
                 birthDate = pig.getBirthDate();
+                pigBlock.setSex(pig.getPigSex());
                 pigBlock.setBreed(pig.getPigBreedCode());
                 pigBlock.setBirthDate(birthDate);
-                // 生长记录 + 栋舍名（barnName 用生长记录冗余兜底）
+                // 生长记录倒序（最新在前）+ 栋舍名（barnName 用生长记录冗余兜底）
                 List<PigGrowth> growths = pigGrowthMapper.selectList(
                     new LambdaQueryWrapper<PigGrowth>()
                         .eq(PigGrowth::getPigId, pig.getId())
-                        .orderByAsc(PigGrowth::getMeasureDate));
+                        .orderByDesc(PigGrowth::getMeasureDate)
+                        .orderByDesc(PigGrowth::getId));
                 vo.setGrowthRecords(toGrowthRows(growths, birthDate));
                 growths.stream()
                     .map(PigGrowth::getBarnName).filter(StringUtils::isNotBlank)
                     .findFirst().ifPresent(pigBlock::setBarnName);
+                // 体重 / 照片：取最新一条生长记录（倒序后首条）的 weight / 首图（Pig 实体无体重列）
+                if (!growths.isEmpty()) {
+                    PigGrowth latest = growths.get(0);
+                    pigBlock.setWeight(toStr(latest.getWeight()));
+                    pigBlock.setPhotoUrl(resolveOssUrl(latest.getPhotoOssIds()));
+                }
                 // 谱系：复用 breed queryPedigree（本猪 father_ear/mother_ear 反查父母 Pig）
                 vo.setPedigree(buildPedigree(pig.getId()));
             } else {
@@ -410,6 +419,12 @@ public class TracePublicServiceImpl
         }
         vo.setCrop(cropBlock);
 
+        // 产品块补 果蔬专属字段：生长天数 / 采摘日期（trace_code 直接有；地块名见下方 plot 分支）
+        if (vo.getProduct() != null) {
+            vo.getProduct().setGrowthDays(code.getPlantDays());
+            vo.getProduct().setHarvestDate(code.getHarvestDate());
+        }
+
         // 地块 + 片区
         if (code.getPlotId() != null) {
             PlotInfo plot = plotInfoMapper.selectById(code.getPlotId());
@@ -424,6 +439,10 @@ public class TracePublicServiceImpl
                     }
                 }
                 vo.setPlot(plotBlock);
+                // 产品块冗余地块名（原型产品信息块展示地块编号/名）
+                if (vo.getProduct() != null) {
+                    vo.getProduct().setPlotName(plot.getPlotName());
+                }
             }
             // 地块农事
             List<FarmRecords> records = farmRecordsMapper.selectList(
@@ -460,12 +479,16 @@ public class TracePublicServiceImpl
     }
 
     private List<PublicTraceVo.PlotRecordRow> toPlotRecordRows(List<FarmRecords> records) {
+        // 记录人 id → 姓名（批量，避免 N+1；@SaIgnore 不走翻译注解）
+        Map<Long, String> nameMap = resolveOperatorNames(
+            records.stream().map(FarmRecords::getOperatorUserId).filter(Objects::nonNull).distinct().toList());
         List<PublicTraceVo.PlotRecordRow> rows = new ArrayList<>(records.size());
         for (FarmRecords r : records) {
             PublicTraceVo.PlotRecordRow row = new PublicTraceVo.PlotRecordRow();
             row.setDate(r.getFarmDate());
             row.setWorkType(r.getFarmType());
             row.setDetail(r.getRemark());
+            row.setOperatorName(r.getOperatorUserId() == null ? null : nameMap.get(r.getOperatorUserId()));
             rows.add(row);
         }
         return rows;

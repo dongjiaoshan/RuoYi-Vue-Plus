@@ -1,6 +1,8 @@
 package org.dromara.djs.plant.pick.service;
 
 import org.dromara.djs.plant.pick.domain.bo.PickAdjustBatchBo;
+import org.dromara.djs.plant.pick.domain.bo.PickSetScheduleBo;
+import org.dromara.djs.plant.pick.domain.bo.PickToggleActivityBo;
 import org.dromara.djs.plant.pick.domain.query.PickPlanQuery;
 import org.dromara.djs.plant.pick.domain.vo.PickPlanGroupVo;
 import org.dromara.djs.plant.plan.domain.vo.PlantDetailsVo;
@@ -54,4 +56,32 @@ public interface IPickPlanService {
      * @return 实际 UPDATE 行数
      */
     int adjustDetails(PickAdjustBatchBo bo);
+
+    /**
+     * 「设置计划」单行：按 {@code plant_details.id} 更新计划最早 / 最晚采摘日期。
+     *
+     * <p>列表已重构为纯作物聚合（UI 不再持有单一 plantId），按行 id 直接定位，无 plantId 越权壳。</p>
+     *
+     * <p>校验：</p>
+     * <ul>
+     *   <li>earliestHarvestdate 必填</li>
+     *   <li>lastHarvestdate 给定时必须 ≥ earliestHarvestdate；为空时按作物采摘周期窗口由最早派生</li>
+     * </ul>
+     *
+     * @return 实际 UPDATE 行数（0 = 行不存在 / 已删）
+     */
+    int setSchedule(PickSetScheduleBo bo);
+
+    /**
+     * 「设为/取消采摘活动」单行：按 {@code plant_details.id} 更新 {@code is_pick}。
+     *
+     * <p>校验：</p>
+     * <ul>
+     *   <li>isPick 仅允许 1（游客采摘活动）或 2（否）</li>
+     *   <li>设为普通采收（is_pick=2）时若该行无采摘班组（harvest_by 为空）则拒绝（源头杜绝 mp 空 picker）</li>
+     * </ul>
+     *
+     * @return 实际 UPDATE 行数（0 = 行不存在 / 已删）
+     */
+    int toggleActivity(PickToggleActivityBo bo);
 }

@@ -20,6 +20,15 @@ public class InventoryBoarItemVo {
     /** 栋舍名称 */
     private String barnName;
 
+    /** 日龄（出生日期至今天数，无出生日期则 null） */
+    private Integer ageDays;
+
     /** 引种日期 yyyy-MM-dd（无则 null） */
     private String entryDate;
+
+    /** 配种次数（t_farm_pig_breeding 按 boar_ear_no 聚合 COUNT，无则 0） */
+    private Integer matingCount;
+
+    /** 最近配种日期 yyyy-MM-dd（t_farm_pig_breeding 按 boar_ear_no 聚合 MAX(breeding_date)，无则 null） */
+    private String lastMatingDate;
 }

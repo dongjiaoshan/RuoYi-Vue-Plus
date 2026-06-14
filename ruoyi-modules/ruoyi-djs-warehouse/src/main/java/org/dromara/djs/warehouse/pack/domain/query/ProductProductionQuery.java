@@ -43,6 +43,24 @@ public class ProductProductionQuery {
     private Integer productType;
 
     /**
+     * 产品品类字典 {@code djs_belong_type}：pork / vegetable / gift_box…
+     * （聚合主列表「产品品类」筛选，经 product_info JOIN 过滤）。
+     */
+    private String belongType;
+
+    /**
+     * 生产日期起（聚合主列表区间筛选，截到天）。
+     */
+    @JsonFormat(pattern = "yyyy-MM-dd")
+    private Date produceDateFrom;
+
+    /**
+     * 生产日期止（聚合主列表区间筛选，截到天）。
+     */
+    @JsonFormat(pattern = "yyyy-MM-dd")
+    private Date produceDateTo;
+
+    /**
      * 打包状态字典 {@code djs_pack_status}：pending / packed / shipped_out。
      */
     private String packStatus;

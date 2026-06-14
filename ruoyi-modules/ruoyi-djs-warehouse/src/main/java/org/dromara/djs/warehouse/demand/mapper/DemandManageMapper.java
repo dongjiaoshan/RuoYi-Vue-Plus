@@ -248,6 +248,7 @@ public interface DemandManageMapper extends BaseMapperPlus<DemandManage, DemandM
      * 既有聚合 SQL 范式一致）；{@code del_flag='0'}（CHAR(1) 未删）。</p>
      *
      * @param productName 产品名 LIKE 过滤（空则不过滤，由 @if 控制）
+     * @param productType 需求产品类型过滤（业态，空则不过滤；同 product_id 组内 product_type 同值，可放 WHERE）
      * @param beginDate   需求日期起（空则不过滤）
      * @param endDate     需求日期止（空则不过滤）
      * @return 分组聚合行（按需求日期倒序 + 产品名升序；三态/确认率待 service 回填）
@@ -277,6 +278,9 @@ public interface DemandManageMapper extends BaseMapperPlus<DemandManage, DemandM
           <if test="productName != null and productName != ''">
             AND product_name LIKE CONCAT('%', #{productName}, '%')
           </if>
+          <if test="productType != null and productType != ''">
+            AND product_type = #{productType}
+          </if>
           <if test="beginDate != null">
             AND demand_date &gt;= #{beginDate}
           </if>
@@ -288,6 +292,7 @@ public interface DemandManageMapper extends BaseMapperPlus<DemandManage, DemandM
         </script>
         """)
     List<DemandGroupVo> selectDemandGroupList(@Param("productName") String productName,
+                                              @Param("productType") String productType,
                                               @Param("beginDate") LocalDate beginDate,
                                               @Param("endDate") LocalDate endDate);
 

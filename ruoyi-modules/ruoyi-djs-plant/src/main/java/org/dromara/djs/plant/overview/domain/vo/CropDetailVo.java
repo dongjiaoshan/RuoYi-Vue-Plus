@@ -40,7 +40,11 @@ public class CropDetailVo implements Serializable {
     @ExcelProperty(value = "作物名称")
     private String cropName;
 
-    /** 2 种植地块（plot_name）。 */
+    /** 2 地块编号（plot_code，用户手填业务码）。 */
+    @ExcelProperty(value = "地块编号")
+    private String plotCode;
+
+    /** 3 种植地块（plot_name）。 */
     @ExcelProperty(value = "种植地块")
     private String plotName;
 

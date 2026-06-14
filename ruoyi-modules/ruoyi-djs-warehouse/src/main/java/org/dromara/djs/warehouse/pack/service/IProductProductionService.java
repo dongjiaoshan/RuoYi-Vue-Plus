@@ -8,6 +8,7 @@ import org.dromara.djs.warehouse.pack.domain.bo.GiftPackBo;
 import org.dromara.djs.warehouse.pack.domain.bo.VegPackBo;
 import org.dromara.djs.warehouse.pack.domain.bo.WhiteBarOutBo;
 import org.dromara.djs.warehouse.pack.domain.query.ProductProductionQuery;
+import org.dromara.djs.warehouse.pack.domain.vo.ProductProductionGroupVo;
 import org.dromara.djs.warehouse.pack.domain.vo.ProductProductionVo;
 import org.dromara.djs.warehouse.pack.domain.vo.StoreDemandCopiesVo;
 import org.dromara.djs.warehouse.product.domain.ProductInhouse;
@@ -53,7 +54,16 @@ public interface IProductProductionService {
     Long submitWhiteBarOut(WhiteBarOutBo bo);
 
     /**
-     * admin 分页查询（按 produce_no / product_id / product_type / pack_status / 时间区间）。
+     * admin 产品维度聚合分页查询（主列表「产品生产」概览）。
+     *
+     * <p>按 {@code (product_id, DATE(produce_date))} 分组：生产日期 / 产品名称 / 产品品类(belong_type) /
+     * 生产量(SUM product_weight) / 件数(COUNT)。逐件明细经「查看」下钻
+     * {@link #queryItemPageList} 子页。范式同 DemandManage 聚合（全量查 + 内存分页）。</p>
+     */
+    TableDataInfo<ProductProductionGroupVo> queryGroupPageList(ProductProductionQuery query, PageQuery pageQuery);
+
+    /**
+     * admin 逐件分页查询（按 produce_no / product_id / product_type / pack_status / 时间区间）。
      */
     TableDataInfo<ProductProductionVo> queryPageList(ProductProductionQuery query, PageQuery pageQuery);
 

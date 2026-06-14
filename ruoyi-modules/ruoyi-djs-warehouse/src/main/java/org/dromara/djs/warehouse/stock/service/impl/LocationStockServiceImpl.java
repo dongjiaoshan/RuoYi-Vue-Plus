@@ -334,7 +334,7 @@ public class LocationStockServiceImpl extends DjsBaseServiceImpl<LocationStockMa
         wrapper.eq(query.getLocationId() != null, LocationStock::getLocationId, query.getLocationId())
             .eq(query.getProductId() != null, LocationStock::getProductId, query.getProductId())
             .like(StringUtils.isNotBlank(query.getProductName()), LocationStock::getProductName, query.getProductName())
-            .eq(StringUtils.isNotBlank(query.getEarNo()), LocationStock::getEarNo, query.getEarNo())
+            .like(StringUtils.isNotBlank(query.getEarNo()), LocationStock::getEarNo, query.getEarNo())
             .eq(query.getPlotId() != null, LocationStock::getPlotId, query.getPlotId())
             .eq(query.getIsEnd() != null, LocationStock::getIsEnd, query.getIsEnd())
             .orderByDesc(LocationStock::getId);

@@ -153,11 +153,48 @@ public class PlantPlanServiceImpl extends DjsBaseServiceImpl<PlantPlanMapper, Pl
             .eq(StringUtils.isNotBlank(query.getPlanSeason()), PlantPlan::getPlanSeason, query.getPlanSeason())
             .eq(query.getCropId() != null, PlantPlan::getCropId, query.getCropId())
             .eq(StringUtils.isNotBlank(query.getPlantStatus()), PlantPlan::getPlantStatus, query.getPlantStatus())
-            .like(StringUtils.isNotBlank(query.getPlanDate()), PlantPlan::getPlantDate, query.getPlanDate())
             .eq(query.getQueryCreateBy() != null, PlantPlan::getCreateBy, query.getQueryCreateBy())
-            .apply(query.getQueryUpdateTime() != null, "DATE(update_time) = {0}", query.getQueryUpdateTime())
-            .orderByDesc(PlantPlan::getId);
+            .apply(query.getQueryUpdateTime() != null, "DATE(update_time) = {0}", query.getQueryUpdateTime());
+        applyPlanDateRange(wrapper, query.getBeginPlanDate(), query.getEndPlanDate());
+        wrapper.orderByDesc(PlantPlan::getId);
         return wrapper;
+    }
+
+    /**
+     * 计划日期范围过滤：按"该计划的最早开始日期 earliestBegindate 落在 [begin,end] 内"过滤主表
+     * （原型「计划日期」改为时间范围搜索，列表展示口径一致）。
+     *
+     * <p>earliestBegindate 非主表存储列，是明细派生值
+     * {@code MIN(DATE(CONCAT(plan_year,'-',LPAD(plant_month,2,'0'),'-',plant_period)))}，
+     * 故用相关子查询 + HAVING 在 details 上算出 MIN 后再与范围比较：</p>
+     *
+     * <pre>
+     * EXISTS (SELECT 1 FROM t_plant_plant_details d
+     *          WHERE d.plant_id = t_plant_plant_plan.id AND d.del_flag = '0'
+     *          HAVING MIN(DATE(CONCAT(t_plant_plant_plan.plan_year,'-',LPAD(d.plant_month,2,'0'),'-',d.plant_period)))
+     *                 BETWEEN {0} AND {1})
+     * </pre>
+     *
+     * <p>plan_year 取外层主表列（相关子查询合法引用外层），无明细的计划自然不命中（EXISTS=false）。
+     * 仅传 begin 或仅传 end 时退化为单边 {@code >=} / {@code <=}。</p>
+     */
+    private void applyPlanDateRange(LambdaQueryWrapper<PlantPlan> wrapper,
+                                    java.util.Date begin, java.util.Date end) {
+        if (begin == null && end == null) {
+            return;
+        }
+        String minExpr = "MIN(DATE(CONCAT(t_plant_plant_plan.plan_year, '-', "
+            + "LPAD(d.plant_month, 2, '0'), '-', d.plant_period)))";
+        StringBuilder sub = new StringBuilder(
+            "EXISTS (SELECT 1 FROM t_plant_plant_details d "
+                + "WHERE d.plant_id = t_plant_plant_plan.id AND d.del_flag = '0' HAVING ");
+        if (begin != null && end != null) {
+            wrapper.apply(sub.append(minExpr).append(" BETWEEN {0} AND {1})").toString(), begin, end);
+        } else if (begin != null) {
+            wrapper.apply(sub.append(minExpr).append(" >= {0})").toString(), begin);
+        } else {
+            wrapper.apply(sub.append(minExpr).append(" <= {0})").toString(), end);
+        }
     }
 
     /**

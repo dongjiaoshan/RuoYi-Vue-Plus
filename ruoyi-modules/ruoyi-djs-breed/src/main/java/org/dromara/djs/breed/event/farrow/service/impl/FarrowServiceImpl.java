@@ -111,15 +111,23 @@ public class FarrowServiceImpl implements IFarrowService {
         farrow.setDeadBorn(Optional.ofNullable(bo.getDeadBorn()).orElse(0));
         farrow.setMummyBorn(Optional.ofNullable(bo.getMummyBorn()).orElse(0));
         farrow.setWeakBorn(Optional.ofNullable(bo.getWeakBorn()).orElse(0));
-        farrow.setMaleCount(bo.getMaleCount());
-        farrow.setFemaleCount(bo.getFemaleCount());
         // 原型 93 多分类仔猪字段（BRD-FIX-MP-EVENT-BREED-IA-001）：透传入库，缺省 0
-        farrow.setHealthyMale(Optional.ofNullable(bo.getHealthyMale()).orElse(0));
-        farrow.setHealthyFemale(Optional.ofNullable(bo.getHealthyFemale()).orElse(0));
-        farrow.setWeakRaisedMale(Optional.ofNullable(bo.getWeakRaisedMale()).orElse(0));
-        farrow.setWeakRaisedFemale(Optional.ofNullable(bo.getWeakRaisedFemale()).orElse(0));
+        int healthyMale = Optional.ofNullable(bo.getHealthyMale()).orElse(0);
+        int healthyFemale = Optional.ofNullable(bo.getHealthyFemale()).orElse(0);
+        int weakRaisedMale = Optional.ofNullable(bo.getWeakRaisedMale()).orElse(0);
+        int weakRaisedFemale = Optional.ofNullable(bo.getWeakRaisedFemale()).orElse(0);
+        farrow.setHealthyMale(healthyMale);
+        farrow.setHealthyFemale(healthyFemale);
+        farrow.setWeakRaisedMale(weakRaisedMale);
+        farrow.setWeakRaisedFemale(weakRaisedFemale);
+        // 217-②：耳标页公/母头数 = 活产里要打标的公/母总数。mp 录入只下发健仔/弱仔留养的公母细分，
+        // 不显式传 maleCount/femaleCount → 此处由「健仔公+弱留公 / 健仔母+弱留母」派生回填，
+        // 避免落库 NULL 致耳标选窝卡公母数恒显 0。BO 显式传了汇总值时以其为准。
+        farrow.setMaleCount(Optional.ofNullable(bo.getMaleCount()).orElse(healthyMale + weakRaisedMale));
+        farrow.setFemaleCount(Optional.ofNullable(bo.getFemaleCount()).orElse(healthyFemale + weakRaisedFemale));
         farrow.setWeakCulled(Optional.ofNullable(bo.getWeakCulled()).orElse(0));
         farrow.setDeformedBorn(Optional.ofNullable(bo.getDeformedBorn()).orElse(0));
+        farrow.setCrushedBorn(Optional.ofNullable(bo.getCrushedBorn()).orElse(0));
         farrow.setTotalWeight(bo.getTotalWeight());
         farrow.setAvgWeight(bo.getAvgWeight());
         // 胎次：用母猪当前 parity + 1（状态机 applyEventSideEffects 也会同步 +1，两端一致）
@@ -364,6 +372,7 @@ public class FarrowServiceImpl implements IFarrowService {
         v.setWeakRaisedFemale(e.getWeakRaisedFemale());
         v.setWeakCulled(e.getWeakCulled());
         v.setDeformedBorn(e.getDeformedBorn());
+        v.setCrushedBorn(e.getCrushedBorn());
         v.setTotalWeight(e.getTotalWeight());
         v.setAvgWeight(e.getAvgWeight());
         v.setParity(e.getParity());

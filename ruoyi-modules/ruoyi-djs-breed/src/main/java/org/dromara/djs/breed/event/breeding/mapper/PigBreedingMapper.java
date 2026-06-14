@@ -9,6 +9,9 @@ import org.dromara.djs.breed.event.breeding.domain.PigBreeding;
 import org.dromara.djs.breed.event.breeding.domain.vo.PigBreedingVo;
 
 import java.time.LocalDateTime;
+import java.util.Collection;
+import java.util.List;
+import java.util.Map;
 
 /**
  * 配种记录 mapper（BRD-EVENT-002）。
@@ -71,4 +74,36 @@ public interface PigBreedingMapper extends BaseMapperPlus<PigBreeding, PigBreedi
                                               @Param("boarEarNo") String boarEarNo,
                                               @Param("beginAt") LocalDateTime beginAt,
                                               @Param("endBefore") LocalDateTime endBefore);
+
+    /**
+     * 按公猪耳号聚合配种次数 + 最近配种日期（小程序公猪库存列表 enrich 用，row210）。
+     *
+     * <p>对入参 {@code boarEarNos} 集合内的每个公猪耳号，GROUP BY 统计 COUNT(*) 配种次数与
+     * MAX(breeding_date) 最近配种时间。返回每行 Map：{@code boarEarNo}(String) /
+     * {@code matingCount}(Long) / {@code lastMatingDate}(LocalDateTime)。空集合时上层不调用。</p>
+     *
+     * <p>手写 {@code tenant_id = '1001'}（V1 单租户口径），用
+     * {@code @InterceptorIgnore(tenantLine = "true")} 避免 MP 租户拦截器二次注入。</p>
+     *
+     * @param boarEarNos 本批公猪耳号集合（非空）
+     * @return 每个耳号一行聚合结果（无配种记录的耳号不出现 → 上层按缺省 0/null 兜底）
+     */
+    @InterceptorIgnore(tenantLine = "true")
+    @Select("""
+        <script>
+        SELECT b.boar_ear_no AS boarEarNo,
+               COUNT(*) AS matingCount,
+               MAX(b.breeding_date) AS lastMatingDate
+          FROM t_farm_pig_breeding b
+         WHERE b.del_flag = '0'
+           AND b.tenant_id = '1001'
+           AND b.boar_ear_no IS NOT NULL
+           AND b.boar_ear_no IN
+           <foreach collection="boarEarNos" item="earNo" open="(" separator="," close=")">
+               #{earNo}
+           </foreach>
+         GROUP BY b.boar_ear_no
+        </script>
+        """)
+    List<Map<String, Object>> aggregateMatingByBoarEarNo(@Param("boarEarNos") Collection<String> boarEarNos);
 }

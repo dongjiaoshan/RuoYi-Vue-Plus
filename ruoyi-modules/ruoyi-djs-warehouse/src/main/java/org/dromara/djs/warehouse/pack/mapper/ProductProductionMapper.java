@@ -5,6 +5,7 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 import org.dromara.common.mybatis.core.mapper.BaseMapperPlus;
 import org.dromara.djs.warehouse.pack.domain.ProductProduction;
+import org.dromara.djs.warehouse.pack.domain.vo.ProductProductionGroupVo;
 import org.dromara.djs.warehouse.pack.domain.vo.ProductProductionVo;
 
 import java.util.Date;
@@ -71,5 +72,69 @@ public interface ProductProductionMapper extends BaseMapperPlus<ProductProductio
     int markDeliveryChecked(@Param("ids") List<Long> ids,
                             @Param("checkTime") Date checkTime,
                             @Param("demandId") Long demandId);
+
+    /**
+     * 产品维度聚合查询（主列表「产品生产」概览）。
+     *
+     * <p>按 {@code (product_id, DATE(produce_date))} 分组：同一产品同一天的 N 件生产记录合并成一行。
+     * 范式同 {@link org.dromara.djs.warehouse.demand.mapper.DemandManageMapper#selectDemandGroupList}
+     * （{@code <script>} + {@code <if>} 可选过滤 + SUM/COUNT + MAX 冗余字段兜底 + 显式 tenant_id）。</p>
+     *
+     * <p>产品品类 {@code belong_type} 只在 {@code t_warehouse_product_info} 维度，经 product_id FK
+     * LEFT JOIN 取（组内同 product_id 必同值，放 MAX 兜底；按品类过滤时下推 WHERE pi.belong_type）。
+     * 少数历史行 product_id 找不到 product_info → LEFT JOIN 后 belongType 为 NULL，前端 dict-tag 容错。</p>
+     *
+     * <p>租户隔离：未启全局 MP 拦截器，显式 {@code pp.tenant_id='1001'}（V1 单租户，与本模块既有
+     * 聚合 SQL 范式一致）；{@code pp.del_flag='0'}（CHAR(1) 未删）。</p>
+     *
+     * @param produceNo   生产编号 LIKE 过滤（空则不过滤）
+     * @param belongType  产品品类过滤（字典 djs_belong_type，空则不过滤；下推 product_info WHERE）
+     * @param productType 产品类型过滤（空则不过滤；同 product_id 组内同值，放 WHERE）
+     * @param beginDate   生产日期起（空则不过滤）
+     * @param endDate     生产日期止（空则不过滤）
+     * @return 分组聚合行（按生产日期倒序 + 组内最大生产时间倒序）
+     */
+    @Select({
+        "<script>",
+        "SELECT pp.product_id          AS productId,",
+        "       DATE(pp.produce_date)  AS produceDate,",
+        "       MAX(pp.product_name)   AS productName,",
+        "       MAX(pp.product_unit)   AS productUnit,",
+        "       MAX(pp.product_spec)   AS productSpec,",
+        "       MAX(pi.belong_type)    AS belongType,",
+        "       MAX(pp.product_type)   AS productType,",
+        "       SUM(pp.product_weight) AS produceQty,",
+        "       COUNT(*)               AS itemCount",
+        "  FROM t_warehouse_product_production pp",
+        "  LEFT JOIN t_warehouse_product_info pi",
+        "         ON pi.id = pp.product_id",
+        "        AND pi.del_flag = '0'",
+        "        AND pi.tenant_id = pp.tenant_id",
+        " WHERE pp.del_flag = '0'",
+        "   AND pp.tenant_id = '1001'",
+        "   <if test='produceNo != null and produceNo != \"\"'>",
+        "     AND pp.produce_no LIKE CONCAT('%', #{produceNo}, '%')",
+        "   </if>",
+        "   <if test='belongType != null and belongType != \"\"'>",
+        "     AND pi.belong_type = #{belongType}",
+        "   </if>",
+        "   <if test='productType != null'>",
+        "     AND pp.product_type = #{productType}",
+        "   </if>",
+        "   <if test='beginDate != null'>",
+        "     AND DATE(pp.produce_date) &gt;= DATE(#{beginDate})",
+        "   </if>",
+        "   <if test='endDate != null'>",
+        "     AND DATE(pp.produce_date) &lt;= DATE(#{endDate})",
+        "   </if>",
+        " GROUP BY pp.product_id, DATE(pp.produce_date)",
+        " ORDER BY produceDate DESC, MAX(pp.produce_time) DESC",
+        "</script>"
+    })
+    List<ProductProductionGroupVo> selectProductionGroupList(@Param("produceNo") String produceNo,
+                                                             @Param("belongType") String belongType,
+                                                             @Param("productType") Integer productType,
+                                                             @Param("beginDate") Date beginDate,
+                                                             @Param("endDate") Date endDate);
 
 }

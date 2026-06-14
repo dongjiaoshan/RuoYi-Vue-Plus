@@ -43,7 +43,7 @@ public class PublicTraceVo implements Serializable {
     /** 通用产品信息块（三业态共用）。 */
     private ProductBlock product;
 
-    /** 流程时间轴（按 trace_time 升序，节点数 = 实际 event 行数）。 */
+    /** 流程时间轴（按 trace_time 倒序，最近的事件在前；节点数 = 实际 event 行数）。 */
     private List<TimelineNode> timeline;
 
     // ============ pork 专属（veg/gift 为 null）============
@@ -108,12 +108,20 @@ public class PublicTraceVo implements Serializable {
         private String spec;
         /** 净重（V1 无独立列，从 spec 推断兜底，可能为 null）。 */
         private String weight;
+        /** 产品描述（{@code t_warehouse_product_info.product_desc}；无则 null）。 */
+        private String description;
         /** 产品图可访问 URL（ossId 后端解析；无图为 null）。 */
         private String imageUrl;
         /** 追溯码（= produce_code）。 */
         private String produceCode;
         /** 打包日期（V1 无独立列，用追溯码生成时间兜底）。 */
         private Date packDate;
+        /** 生长天数（veg 专属，源 {@code trace_code.plant_days}；无则 null）。 */
+        private Integer growthDays;
+        /** 来源地块名（veg 专属，源 {@code t_plant_plot_info.plot_name}；无则 null）。 */
+        private String plotName;
+        /** 采摘日期（veg 专属，源 {@code trace_code.havest_date}；无则 null）。 */
+        private LocalDate harvestDate;
     }
 
     /** 时间轴节点。 */
@@ -136,6 +144,12 @@ public class PublicTraceVo implements Serializable {
         private static final long serialVersionUID = 1L;
         /** 耳号。 */
         private String earNo;
+        /** 性别码（{@code F=母 M=公}，源 {@code t_farm_pig.pig_sex}，前端映射中文）。 */
+        private String sex;
+        /** 体重（kg，源最新一条生长记录 {@code PigGrowth.weight}；无生长记录为 null）。 */
+        private String weight;
+        /** 猪只照片可访问 URL（源最新生长记录 {@code photo_oss_ids} 首图后端解析；无图为 null）。 */
+        private String photoUrl;
         /** 品种码（前端映射中文）。 */
         private String breed;
         /** 出生日期。 */
@@ -270,6 +284,8 @@ public class PublicTraceVo implements Serializable {
         private String workType;
         /** 详情（备注）。 */
         private String detail;
+        /** 记录人姓名（{@code operator_user_id} 翻译 nick_name；缺 → null）。 */
+        private String operatorName;
     }
 
     /** 地块历史种植作物行（veg）。 */

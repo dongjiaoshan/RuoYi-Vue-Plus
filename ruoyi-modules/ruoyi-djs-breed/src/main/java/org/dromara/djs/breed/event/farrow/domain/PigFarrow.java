@@ -90,6 +90,9 @@ public class PigFarrow extends TenantEntity {
     /** 畸形数（原型 93 畸形数）。 */
     private Integer deformedBorn;
 
+    /** 压死数（原型 93 产仔性能·压死系列，DJS-FIX-6-14-FARROW-CRUSHED-COL-001）。 */
+    private Integer crushedBorn;
+
     /** 总重 kg。 */
     private BigDecimal totalWeight;
 

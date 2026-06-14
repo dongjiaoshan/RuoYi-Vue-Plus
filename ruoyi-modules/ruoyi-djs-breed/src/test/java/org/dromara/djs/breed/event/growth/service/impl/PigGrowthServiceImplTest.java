@@ -10,6 +10,7 @@ import org.dromara.djs.breed.event.growth.domain.vo.PigGrowthVo;
 import org.dromara.djs.breed.event.growth.mapper.PigGrowthMapper;
 import org.dromara.djs.breed.farm.mapper.BarnMapper;
 import org.dromara.djs.breed.farm.mapper.PenMapper;
+import org.dromara.djs.breed.production.service.IFattenAgeStageService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
@@ -64,12 +65,14 @@ class PigGrowthServiceImplTest {
     private BarnMapper barnMapper;
     @Mock
     private PenMapper penMapper;
+    @Mock
+    private IFattenAgeStageService fattenAgeStageService;
 
     private PigGrowthServiceImpl service;
 
     @BeforeEach
     void setup() {
-        service = new PigGrowthServiceImpl(growthMapper, pigMapper, barnMapper, penMapper);
+        service = new PigGrowthServiceImpl(growthMapper, pigMapper, barnMapper, penMapper, fattenAgeStageService);
     }
 
     private Pig mkPig(Long id) {

@@ -10,6 +10,7 @@ import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.web.core.BaseController;
 import org.dromara.djs.warehouse.pack.domain.query.ProductProductionQuery;
+import org.dromara.djs.warehouse.pack.domain.vo.ProductProductionGroupVo;
 import org.dromara.djs.warehouse.pack.domain.vo.ProductProductionVo;
 import org.dromara.djs.warehouse.pack.service.IProductProductionService;
 import org.springframework.validation.annotation.Validated;
@@ -39,12 +40,15 @@ public class ProductProductionController extends BaseController {
     private final IProductProductionService service;
 
     /**
-     * 列表（分页 + 多维筛选）。
+     * 列表（产品维度聚合：生产日期 + 产品分组，概览主列表）。
+     *
+     * <p>主列表只展示概览 5 列（生产日期 / 产品名称 / 产品品类 / 生产量 / 件数）；逐件明细经
+     * 「查看」下钻 {@link #items}。</p>
      */
     @SaCheckPermission("djs:warehouse:production:list")
     @GetMapping("/list")
-    public TableDataInfo<ProductProductionVo> list(ProductProductionQuery query, PageQuery pageQuery) {
-        return service.queryPageList(query, pageQuery);
+    public TableDataInfo<ProductProductionGroupVo> list(ProductProductionQuery query, PageQuery pageQuery) {
+        return service.queryGroupPageList(query, pageQuery);
     }
 
     /**

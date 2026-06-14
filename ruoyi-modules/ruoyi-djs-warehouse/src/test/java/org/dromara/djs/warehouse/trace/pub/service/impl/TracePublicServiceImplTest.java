@@ -189,14 +189,15 @@ class TracePublicServiceImplTest {
         product.setId(PRODUCT_ID);
         product.setProductName("猪肉·里脊");
         product.setProductSpec("500g/份");
+        product.setProductDesc("散养黑猪精选里脊");
         product.setProductImg("9001");
         when(productInfoMapper.selectById(PRODUCT_ID)).thenReturn(product);
         when(ossService.selectUrlByIds("9001")).thenReturn("http://oss/img-9001.jpg");
 
-        // 两条事件，乱序插入，断言返回升序
+        // 两条事件，mapper 倒序返回（最新在前）：ship(6/3) 在 in_stock(6/1) 前
         TraceEvent e1 = event("ship", LocalDateTime.of(2026, 6, 3, 10, 0), 9101L);
         TraceEvent e2 = event("in_stock", LocalDateTime.of(2026, 6, 1, 8, 0), 9102L);
-        when(traceEventMapper.selectList(any(Wrapper.class))).thenReturn(List.of(e2, e1));
+        when(traceEventMapper.selectList(any(Wrapper.class))).thenReturn(List.of(e1, e2));
         when(traceUserNameMapper.selectUserNames(anyList())).thenReturn(List.of(
             Map.of("userId", 9101L, "nickName", "张三"),
             Map.of("userId", 9102L, "nickName", "李四")));
@@ -204,16 +205,25 @@ class TracePublicServiceImplTest {
         Pig pig = new Pig();
         pig.setId(PIG_ID);
         pig.setEarNo(EAR_NO);
+        pig.setPigSex("M");
         pig.setPigBreedCode("black_pig");
         pig.setBirthDate(LocalDate.of(2025, 12, 1));
         when(pigMapper.selectOne(any(Wrapper.class))).thenReturn(pig);
 
-        PigGrowth g = new PigGrowth();
-        g.setMeasureDate(LocalDate.of(2026, 3, 1));
-        g.setWeight(new BigDecimal("88.50"));
-        g.setBackfatThickness(new BigDecimal("12.0"));
-        g.setBarnName("1号栋舍");
-        when(pigGrowthMapper.selectList(any(Wrapper.class))).thenReturn(List.of(g));
+        // 两条生长记录，mapper 倒序返回（最新在前）：4/1 在 3/1 前，取首条体重/首图
+        PigGrowth gLatest = new PigGrowth();
+        gLatest.setMeasureDate(LocalDate.of(2026, 4, 1));
+        gLatest.setWeight(new BigDecimal("95.00"));
+        gLatest.setBackfatThickness(new BigDecimal("13.0"));
+        gLatest.setBarnName("1号栋舍");
+        gLatest.setPhotoOssIds("9100");
+        PigGrowth gOld = new PigGrowth();
+        gOld.setMeasureDate(LocalDate.of(2026, 3, 1));
+        gOld.setWeight(new BigDecimal("88.50"));
+        gOld.setBackfatThickness(new BigDecimal("12.0"));
+        gOld.setBarnName("1号栋舍");
+        when(pigGrowthMapper.selectList(any(Wrapper.class))).thenReturn(List.of(gLatest, gOld));
+        when(ossService.selectUrlByIds("9100")).thenReturn("http://oss/grow-9100.jpg");
 
         MedRecord med = new MedRecord();
         med.setUseDate(LocalDateTime.of(2026, 2, 1, 9, 0));
@@ -248,21 +258,26 @@ class TracePublicServiceImplTest {
         assertThat(vo.getCodeType()).isEqualTo("pork");
         // 通用产品块
         assertThat(vo.getProduct().getName()).isEqualTo("猪肉·里脊");
+        assertThat(vo.getProduct().getDescription()).isEqualTo("散养黑猪精选里脊");
         assertThat(vo.getProduct().getImageUrl()).isEqualTo("http://oss/img-9001.jpg");
         assertThat(vo.getProduct().getProduceCode()).isEqualTo(PORK_CODE);
-        // timeline 升序 + 翻译
+        // timeline 倒序 + 翻译（最新 ship 在前）
         assertThat(vo.getTimeline()).hasSize(2);
-        assertThat(vo.getTimeline().get(0).getTraceContent()).isEqualTo("in_stock");
-        assertThat(vo.getTimeline().get(0).getTraceTime()).isBefore(vo.getTimeline().get(1).getTraceTime());
-        assertThat(vo.getTimeline().get(0).getOperatorName()).isEqualTo("李四");
+        assertThat(vo.getTimeline().get(0).getTraceContent()).isEqualTo("ship");
+        assertThat(vo.getTimeline().get(0).getTraceTime()).isAfter(vo.getTimeline().get(1).getTraceTime());
+        assertThat(vo.getTimeline().get(0).getOperatorName()).isEqualTo("张三");
         // pork 专属填充
         assertThat(vo.getPig()).isNotNull();
         assertThat(vo.getPig().getEarNo()).isEqualTo(EAR_NO);
+        assertThat(vo.getPig().getSex()).isEqualTo("M");
         assertThat(vo.getPig().getBreed()).isEqualTo("black_pig");
         assertThat(vo.getPig().getBarnName()).isEqualTo("1号栋舍");
         assertThat(vo.getPig().getFarmName()).isEqualTo("东角山农场");
-        assertThat(vo.getGrowthRecords()).hasSize(1);
-        assertThat(vo.getGrowthRecords().get(0).getWeight()).isEqualTo("88.5");
+        // 体重/照片取最新一条生长记录（倒序后首条 = 4/1 那条）
+        assertThat(vo.getPig().getWeight()).isEqualTo("95");
+        assertThat(vo.getPig().getPhotoUrl()).isEqualTo("http://oss/grow-9100.jpg");
+        assertThat(vo.getGrowthRecords()).hasSize(2);
+        assertThat(vo.getGrowthRecords().get(0).getWeight()).isEqualTo("95");
         assertThat(vo.getMedications()).hasSize(1);
         assertThat(vo.getMedications().get(0).getName()).isEqualTo("猪瘟疫苗");
         assertThat(vo.getStore().getName()).isEqualTo("东角山旗舰店");
@@ -293,6 +308,8 @@ class TracePublicServiceImplTest {
         code.setProductId(PRODUCT_ID);
         code.setPlotId(PLOT_ID);
         code.setCropCertId(CROP_CERT_ID);
+        code.setPlantDays(75);
+        code.setHarvestDate(LocalDate.of(2026, 6, 1));
         when(traceCodeMapper.selectOne(any(Wrapper.class))).thenReturn(code);
 
         ProductInfo product = new ProductInfo();
@@ -322,6 +339,7 @@ class TracePublicServiceImplTest {
         fr.setFarmDate(LocalDate.of(2026, 4, 1));
         fr.setFarmType("transplant");
         fr.setRemark("移栽番茄苗");
+        fr.setOperatorUserId(9103L);
         when(farmRecordsMapper.selectList(any(Wrapper.class))).thenReturn(List.of(fr));
 
         CropOrganic cert = new CropOrganic();
@@ -365,11 +383,16 @@ class TracePublicServiceImplTest {
         // veg 专属填充
         assertThat(vo.getCrop()).isNotNull();
         assertThat(vo.getCrop().getName()).isEqualTo("有机番茄");
+        // 产品块补 果蔬专属：生长天数 / 采摘日期 / 地块名
+        assertThat(vo.getProduct().getGrowthDays()).isEqualTo(75);
+        assertThat(vo.getProduct().getHarvestDate()).isEqualTo(LocalDate.of(2026, 6, 1));
+        assertThat(vo.getProduct().getPlotName()).isEqualTo("东区3号地块");
         assertThat(vo.getPlot().getPlotName()).isEqualTo("东区3号地块");
         assertThat(vo.getPlot().getZoneName()).isEqualTo("东片区");
         assertThat(vo.getPlot().getArea()).isEqualTo("2.5");
         assertThat(vo.getPlotRecords()).hasSize(1);
         assertThat(vo.getPlotRecords().get(0).getWorkType()).isEqualTo("transplant");
+        assertThat(vo.getPlotRecords().get(0).getOperatorName()).isEqualTo("王五");
         assertThat(vo.getOrganicCerts()).hasSize(1);
         assertThat(vo.getOrganicCerts().get(0).getImageUrl()).isEqualTo("http://oss/cert-8001.jpg");
         assertThat(vo.getOrganicCerts().get(0).getCertNo()).isEqualTo("ORG-2026-001");
