@@ -419,6 +419,97 @@ public interface StoreDashboardMapper {
     Long countMonthNewMembers(@Param("tenantId") String tenantId, @Param("storeId") Long storeId);
 
     /**
+     * 老客复购数：当月在 {@code t_store_member_consumption} 下单 ≥ 2 次的会员数
+     * （原型「会员信息组-老客复购数」）。
+     *
+     * <p>口径：本月（{@code consume_date >= 当月1号}）按 {@code member_id} 分组，
+     * 组内消费记录数 ≥ 2 的会员计入；外层 COUNT(*) 得复购会员数。
+     * {@code t_store_member_consumption} 无 {@code del_unique}/部分软删字段差异，统一按
+     * {@code del_flag='0'} 过滤。门店过滤走 consumption.store_id（可空）。</p>
+     *
+     * @param tenantId 租户
+     * @param storeId  门店 ID（可空）
+     * @return 当月复购会员数，无记录返 0
+     */
+    @Select("SELECT COUNT(*) FROM ( "
+        + "  SELECT member_id "
+        + "    FROM t_store_member_consumption "
+        + "   WHERE tenant_id = #{tenantId} "
+        + "     AND del_flag = '0' "
+        + "     AND consume_date >= DATE_FORMAT(NOW(), '%Y-%m-01') "
+        + "     AND (#{storeId} IS NULL OR store_id = #{storeId}) "
+        + "   GROUP BY member_id "
+        + "  HAVING COUNT(*) >= 2 "
+        + ") t")
+    Long countRepeatCustomers(@Param("tenantId") String tenantId, @Param("storeId") Long storeId);
+
+    /**
+     * 当月订单产品结构（原型「当月订单产品结构」饼图）：按 product_name 分组本月订单数。
+     *
+     * <p>口径：本月（{@code sale_date >= 当月1号}）{@code t_store_sale_record} 按 product_name
+     * 分组 COUNT(*) 当订单数。返回 key=产品名 / value=订单数，按订单数倒序便于饼图扇区可读。</p>
+     *
+     * @param tenantId 租户
+     * @param storeId  门店 ID（可空）
+     * @return 产品名:订单数 列表，无记录返空
+     */
+    @Select("SELECT product_name AS `key`, CAST(COUNT(*) AS SIGNED) AS `value` "
+        + "  FROM t_store_sale_record "
+        + " WHERE tenant_id = #{tenantId} "
+        + "   AND del_flag = '0' "
+        + "   AND sale_date >= DATE_FORMAT(NOW(), '%Y-%m-01') "
+        + "   AND (#{storeId} IS NULL OR store_id = #{storeId}) "
+        + " GROUP BY product_name "
+        + " ORDER BY COUNT(*) DESC")
+    List<StoreGroupCountVo> selectMonthProductStructure(@Param("tenantId") String tenantId, @Param("storeId") Long storeId);
+
+    /**
+     * 当月热门产品排行 TOP10（原型「当月热门产品排行 TOP10（按订单数）」横向柱）。
+     *
+     * <p>口径：本月按 product_id + product_name 分组，{@code orderCount=COUNT(*)} 订单数倒序
+     * LIMIT 10；附带销售额 / 销售量供 tooltip。</p>
+     *
+     * @param tenantId 租户
+     * @param storeId  门店 ID（可空）
+     * @return 当月 TOP10（按订单数倒序），无记录返空
+     */
+    @Select("SELECT product_id AS productId, product_name AS productName, "
+        + "       CAST(COUNT(*) AS SIGNED) AS orderCount, "
+        + "       COALESCE(SUM(sale_amount), 0) AS saleAmount, "
+        + "       COALESCE(SUM(sale_qty), 0) AS saleQty "
+        + "  FROM t_store_sale_record "
+        + " WHERE tenant_id = #{tenantId} "
+        + "   AND del_flag = '0' "
+        + "   AND sale_date >= DATE_FORMAT(NOW(), '%Y-%m-01') "
+        + "   AND (#{storeId} IS NULL OR store_id = #{storeId}) "
+        + " GROUP BY product_id, product_name "
+        + " ORDER BY COUNT(*) DESC "
+        + " LIMIT 10")
+    List<StoreProductRankItemVo> selectMonthTop10ByOrder(@Param("tenantId") String tenantId, @Param("storeId") Long storeId);
+
+    /**
+     * 本月逐日趋势（原型「销售额与客单价趋势」横轴本月每天）：每日订单数 + 销售额。
+     *
+     * <p>口径：本月（{@code sale_date >= 当月1号 AND < 下月1号}）按 sale_date 分组，订单数 +
+     * 销售额；客单价 service 计算。仅出有销售的日期，前端按本月天数补 0。</p>
+     *
+     * @param tenantId 租户
+     * @param storeId  门店 ID（可空）
+     * @return 本月逐日趋势点（按日期升序），无记录返空
+     */
+    @Select("SELECT sale_date AS `date`, CAST(COUNT(*) AS SIGNED) AS orderCount, "
+        + "       COALESCE(SUM(sale_amount), 0) AS saleAmount "
+        + "  FROM t_store_sale_record "
+        + " WHERE tenant_id = #{tenantId} "
+        + "   AND del_flag = '0' "
+        + "   AND sale_date >= DATE_FORMAT(NOW(), '%Y-%m-01') "
+        + "   AND sale_date < DATE_FORMAT(DATE_ADD(NOW(), INTERVAL 1 MONTH), '%Y-%m-01') "
+        + "   AND (#{storeId} IS NULL OR store_id = #{storeId}) "
+        + " GROUP BY sale_date "
+        + " ORDER BY sale_date")
+    List<StoreTrendPointVo> selectMonthDailyTrend(@Param("tenantId") String tenantId, @Param("storeId") Long storeId);
+
+    /**
      * mp 单业态当日速览原始行（销售额 + 订单数；客单价 service 计算）。
      *
      * @author djs

@@ -105,11 +105,14 @@ public class StoreDemandServiceImpl implements IStoreDemandService {
             throw new ServiceException("需求不存在或已删除：" + id, 404);
         }
         if (demand.getReceivedTime() != null) {
-            throw new ServiceException("该需求已确认收货，请勿重复确认", 400);
+            throw new ServiceException("该需求已确认到店，请勿重复确认", 400);
         }
-        // 原型「确认收货」按钮仅在「已确认」行显示：仅 CONFIRMED 态可门店收货确认
-        if (!DemandStatus.CONFIRMED.name().equals(demand.getDemandStatus())) {
-            throw new ServiceException("仅「已确认」状态的需求可确认收货，当前状态：" + demand.getDemandStatus(), 400);
+        // 原型 0613-04 点4：「确认收货」按钮仅在「已发货」行展示。
+        // 门店视角「已发货」= 仓库侧 PARTIAL_SHIPPED / COMPLETED；点确认收货后 received_time 置位，
+        // 门店派生状态算成「确认到店」(ARRIVED)。不触碰仓库状态机（薄封装铁律）。
+        String status = demand.getDemandStatus();
+        if (!DemandStatus.PARTIAL_SHIPPED.name().equals(status) && !DemandStatus.COMPLETED.name().equals(status)) {
+            throw new ServiceException("仅「已发货」状态的需求可确认到店，当前状态：" + status, 400);
         }
         // 仅 patch 收货字段，不触碰仓库状态机 / 业务字段
         DemandManage patch = new DemandManage();

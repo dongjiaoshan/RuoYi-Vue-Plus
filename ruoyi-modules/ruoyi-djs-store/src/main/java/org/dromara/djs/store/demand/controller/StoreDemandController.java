@@ -118,7 +118,7 @@ public class StoreDemandController extends BaseController {
         return toAjax(demandManageService.updateByBo(bo));
     }
 
-    /** 批量删除（仅 DRAFT/CANCELLED 态可删，规则由 warehouse service 兜底）。 */
+    /** 批量删除（仅 DRAFT/SUBMITTED/CANCELLED 态可删，删除即置 DELETED 终态；规则由 warehouse service 兜底）。 */
     @SaCheckPermission("djs:store:demand:remove")
     @Log(title = "门店需求", businessType = BusinessType.DELETE)
     @DeleteMapping("/remove/{ids}")

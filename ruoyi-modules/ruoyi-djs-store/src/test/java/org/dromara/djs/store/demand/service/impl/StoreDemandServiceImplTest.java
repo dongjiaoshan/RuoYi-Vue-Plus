@@ -184,12 +184,12 @@ class StoreDemandServiceImplTest {
     }
 
     @Test
-    @DisplayName("receive：CONFIRMED 态门店收货 → patch received_time/received_by")
-    void receiveConfirmedDemand() {
+    @DisplayName("receive：已发货态（PARTIAL_SHIPPED）门店确认到店 → patch received_time/received_by")
+    void receiveShippedDemand() {
         DemandManage demand = new DemandManage();
         demand.setId(9001L);
         demand.setDemandNo("DEMWB20260101001");
-        demand.setDemandStatus(DemandStatus.CONFIRMED.name());
+        demand.setDemandStatus(DemandStatus.PARTIAL_SHIPPED.name());
         when(demandManageMapper.selectById(9001L)).thenReturn(demand);
 
         service.receive(9001L);
@@ -205,12 +205,25 @@ class StoreDemandServiceImplTest {
     }
 
     @Test
-    @DisplayName("receive：非 CONFIRMED 态拒绝（如 SUBMITTED）")
-    void receiveRejectNonConfirmed() {
+    @DisplayName("receive：已发货态（COMPLETED）门店确认到店 → patch received_time/received_by")
+    void receiveCompletedDemand() {
         DemandManage demand = new DemandManage();
-        demand.setId(9002L);
-        demand.setDemandStatus(DemandStatus.SUBMITTED.name());
-        when(demandManageMapper.selectById(9002L)).thenReturn(demand);
+        demand.setId(9003L);
+        demand.setDemandStatus(DemandStatus.COMPLETED.name());
+        when(demandManageMapper.selectById(9003L)).thenReturn(demand);
+
+        service.receive(9003L);
+
+        verify(demandManageMapper, times(1)).updateById(any(DemandManage.class));
+    }
+
+    @Test
+    @DisplayName("receive：未发货态拒绝（如 CONFIRMED / SUBMITTED — 原型仅「已发货」行可确认收货）")
+    void receiveRejectNotShipped() {
+        DemandManage confirmed = new DemandManage();
+        confirmed.setId(9002L);
+        confirmed.setDemandStatus(DemandStatus.CONFIRMED.name());
+        when(demandManageMapper.selectById(9002L)).thenReturn(confirmed);
 
         assertThatThrownBy(() -> service.receive(9002L)).isInstanceOf(ServiceException.class);
         verify(demandManageMapper, never()).updateById(any(DemandManage.class));

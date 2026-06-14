@@ -91,6 +91,17 @@ public class DemandManageVo implements Serializable {
     @ExcelDictFormat(dictType = "djs_demand_status")
     private String demandStatus;
 
+    /**
+     * 门店视角派生状态（字典 {@code djs_store_demand_status} 5 态，0613-04）。
+     *
+     * <p>仓库 {@code demand_status}（7 态）映射到门店视角：
+     * {@code SUBMITTED→待确认 / CONFIRMED→已确认 / PARTIAL_SHIPPED|COMPLETED→已发货 /
+     * 已确认且 received_time!=null→确认到店(ARRIVED) / DELETED→已删除}。
+     * 仓库列表不展示本字段（仍用 {@code demandStatus}），门店列表用本字段显门店语义状态。
+     * service 层 {@code queryPageList} 按行计算回填，非 entity 列。</p>
+     */
+    private String storeDemandStatus;
+
     @ExcelProperty(value = "确认人ID")
     private Long demandConfirmer;
 

@@ -61,9 +61,19 @@ public class StoreDashboardSummaryVo implements Serializable {
     private Long totalMembers;
 
     /**
-     * KPI 8：今日新增会员数（{@code create_time} 落在今天，原型「客户/会员信息组」）。
+     * KPI 8：今日新增会员数（{@code create_time} 落在今天，原型「会员信息组」）。
      */
     private Long todayNewMembers;
+
+    /**
+     * KPI 9：老客复购数（{@code t_store_member_consumption} 当月下单 ≥ 2 次的会员数，原型「会员信息组」）。
+     */
+    private Long repeatCustomer;
+
+    /**
+     * KPI 10：本月客单价（{@code monthSaleAmount / monthOrderCount}，订单数 0 时为 0，原型「会员信息组」）。
+     */
+    private BigDecimal monthAvgPrice;
 
     /**
      * 当日产品结构（按业态 djs_demand_product_type 分组，key=业态 / value=需求量）。
@@ -71,14 +81,34 @@ public class StoreDashboardSummaryVo implements Serializable {
     private List<StoreGroupCountVo> productStructure;
 
     /**
-     * 当月 TOP10 产品排行（按销售额倒序）。
+     * 当月订单产品结构（原型「当月订单产品结构」饼图，key=产品名 / value=当月订单数）。
+     */
+    private List<StoreGroupCountVo> monthProductStructure;
+
+    /**
+     * 当日热销产品 TOP10（按销售额倒序，原型「当日热销产品 TOP10」环形/横条）。
      */
     private List<StoreProductRankItemVo> top10Products;
 
     /**
-     * 近 10 日趋势（订单数 / 销售额 / 客单价）。
+     * 当月热门产品排行 TOP10（按订单数倒序，原型「当月热门产品排行 TOP10（按订单数）」横向柱）。
+     */
+    private List<StoreProductRankItemVo> monthTop10ByOrder;
+
+    /**
+     * 近 10 日趋势（订单数 / 销售额 / 客单价 / 销售量 / 退货量）。
      */
     private List<StoreTrendPointVo> trend10Days;
+
+    /**
+     * 近 10 日新增会员趋势（原型「近十日订单数与新会员趋势」竖柱，按日补 0 至 10 个点）。
+     */
+    private List<StoreMemberGrowthPointVo> memberGrowth10Days;
+
+    /**
+     * 本月逐日趋势（原型「销售额与客单价趋势」竖柱=销售额 + 折线=客单价，横轴本月每天）。
+     */
+    private List<StoreTrendPointVo> monthDailyTrend;
 
     /**
      * 4 业态当日销售分布（猪肉 / 蔬菜 / 礼盒 / 其他，固定 4 行；各含销售额 + 订单数 + 当月累计）。
@@ -130,9 +160,15 @@ public class StoreDashboardSummaryVo implements Serializable {
         vo.setPendingPurchaseCount(0);
         vo.setTotalMembers(0L);
         vo.setTodayNewMembers(0L);
+        vo.setRepeatCustomer(0L);
+        vo.setMonthAvgPrice(BigDecimal.ZERO);
         vo.setProductStructure(List.of());
+        vo.setMonthProductStructure(List.of());
         vo.setTop10Products(List.of());
+        vo.setMonthTop10ByOrder(List.of());
         vo.setTrend10Days(List.of());
+        vo.setMemberGrowth10Days(List.of());
+        vo.setMonthDailyTrend(List.of());
         vo.setSaleByCategory(List.of());
         vo.setAvgPriceToday(BigDecimal.ZERO);
         vo.setTodaySaleAmountYoy(null);

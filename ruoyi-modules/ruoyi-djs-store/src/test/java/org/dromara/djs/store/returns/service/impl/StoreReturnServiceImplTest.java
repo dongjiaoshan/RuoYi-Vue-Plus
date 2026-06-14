@@ -11,6 +11,7 @@ import org.dromara.djs.common.store.mapper.StoreMapper;
 import org.dromara.djs.store.returns.domain.StoreReturn;
 import org.dromara.djs.store.returns.domain.bo.StoreReturnBo;
 import org.dromara.djs.store.returns.mapper.StoreReturnMapper;
+import org.dromara.djs.warehouse.demand.mapper.DemandManageMapper;
 import org.dromara.djs.warehouse.location.mapper.LocationInfoMapper;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
@@ -72,6 +73,7 @@ class StoreReturnServiceImplTest {
     @Mock private LocationInfoMapper locationInfoMapper;
     @Mock private IBizCodeGenerator bizCodeGenerator;
     @Mock private IWarehousePurchaseInService purchaseInService;
+    @Mock private DemandManageMapper demandManageMapper;
 
     private TestableStoreReturnServiceImpl service;
     private MockedStatic<LoginHelper> loginHelperMock;
@@ -104,8 +106,9 @@ class StoreReturnServiceImplTest {
     static class TestableStoreReturnServiceImpl extends StoreReturnServiceImpl {
         TestableStoreReturnServiceImpl(StoreReturnMapper b, StoreMapper sm,
                                        ProductInfoMapper pm, LocationInfoMapper lm,
-                                       IBizCodeGenerator g, IWarehousePurchaseInService pis) {
-            super(b, sm, pm, lm, g, pis);
+                                       IBizCodeGenerator g, IWarehousePurchaseInService pis,
+                                       DemandManageMapper dm) {
+            super(b, sm, pm, lm, g, pis, dm);
         }
 
         @Override
@@ -117,7 +120,7 @@ class StoreReturnServiceImplTest {
     @BeforeEach
     void setup() {
         service = new TestableStoreReturnServiceImpl(baseMapper, storeMapper, productInfoMapper,
-            locationInfoMapper, bizCodeGenerator, purchaseInService);
+            locationInfoMapper, bizCodeGenerator, purchaseInService, demandManageMapper);
         loginHelperMock = Mockito.mockStatic(LoginHelper.class);
         loginHelperMock.when(LoginHelper::getUserId).thenReturn(USER_ID);
         when(baseMapper.insert(any(StoreReturn.class))).thenAnswer(inv -> {

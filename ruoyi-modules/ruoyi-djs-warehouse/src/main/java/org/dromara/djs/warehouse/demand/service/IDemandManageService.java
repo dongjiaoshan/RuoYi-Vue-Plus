@@ -6,6 +6,7 @@ import org.dromara.djs.warehouse.demand.domain.bo.AssignPigBo;
 import org.dromara.djs.warehouse.demand.domain.bo.DemandManageBo;
 import org.dromara.djs.warehouse.demand.domain.query.DemandManageQuery;
 import org.dromara.djs.warehouse.demand.domain.vo.AuditHistoryEntryVo;
+import org.dromara.djs.warehouse.demand.domain.vo.DemandGroupVo;
 import org.dromara.djs.warehouse.demand.domain.vo.DemandManageVo;
 import org.dromara.djs.warehouse.demand.domain.vo.DemandPigVo;
 import org.dromara.djs.warehouse.demand.domain.vo.DemandProductStoreDetailVo;
@@ -29,6 +30,19 @@ public interface IDemandManageService {
     /** 分页查询。 */
     TableDataInfo<DemandManageVo> queryPageList(DemandManageQuery query, PageQuery pageQuery);
 
+    /**
+     * 需求汇总分组列表（0613-10 需求管理列表重做）。
+     *
+     * <p>按「需求日期 + 需求产品」分组聚合（同日同产品 N 门店合并成一行）。三态需求状态
+     * （待确认 / 已全部确认 / 部分确认）+ 确认率在 service 层按 storeCount/confirmedStoreCount 算；
+     * 聚合后内存分页（分组行数小，一天产品有限）。</p>
+     *
+     * @param query    复用 DemandManageQuery（仅 productName / beginDate / endDate 生效）
+     * @param pageQuery 分页参数
+     * @return 分组聚合分页结果
+     */
+    TableDataInfo<DemandGroupVo> queryGroupList(DemandManageQuery query, PageQuery pageQuery);
+
     /** 不分页查询（导出用）。 */
     List<DemandManageVo> queryList(DemandManageQuery query);
 
@@ -45,7 +59,7 @@ public interface IDemandManageService {
     /** 编辑需求（仅 DRAFT/SUBMITTED 态可改业务字段；其他态仅允许改 remark）。 */
     int updateByBo(DemandManageBo bo);
 
-    /** 批量软删（仅 DRAFT/CANCELLED 态可删；其他态拒绝）。 */
+    /** 批量软删（仅 DRAFT/SUBMITTED/CANCELLED 态可删；删除即置 DELETED 终态留痕；其他态拒绝）。 */
     int deleteWithValidByIds(Collection<Long> ids);
 
     /** 白条业态：批量指定猪只（去重 + UNIQUE 兜底）。 */

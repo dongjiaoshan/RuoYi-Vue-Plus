@@ -7,6 +7,8 @@ import org.dromara.djs.store.returns.domain.bo.StoreReturnBo;
 import org.dromara.djs.store.returns.domain.bo.StoreReturnConfirmBo;
 import org.dromara.djs.store.returns.domain.query.StoreReturnQuery;
 import org.dromara.djs.store.returns.domain.vo.StoreReturnVo;
+import org.dromara.djs.store.returns.domain.vo.StoreReturnPorkCandidateVo;
+import org.dromara.djs.store.returns.domain.vo.StoreReturnVegCandidateVo;
 
 import java.util.Collection;
 import java.util.List;
@@ -48,6 +50,29 @@ public interface IStoreReturnService {
      * @return 成功建条数
      */
     int batchCreate(StoreReturnBatchBo bo);
+
+    /**
+     * 退回操作「猪肉产品」tab 固定候选列表（对齐原型「可退回商品列表配置在字典项中，固定展示」）。
+     *
+     * <p>取 {@code t_warehouse_product_info} 中 {@code belong_type IN ('pork','white_bar')} 的产品，
+     * 与门店关联无关——猪肉为中央生产、各门店共用同一可退回清单，故不按门店过滤。每行带真实
+     * 产品雪花 {@code productId} 供 {@link #batchCreate} 提交（提交时仍走产品 FK 校验）。</p>
+     *
+     * @return 猪肉/白条产品候选（productId + productName + productUnit）
+     */
+    List<StoreReturnPorkCandidateVo> listPorkCandidates();
+
+    /**
+     * 退回操作「果蔬产品」tab 候选列表（对齐原型「可退回 = 当天已确认到店的需求产品」）。
+     *
+     * <p>取该门店<b>当天</b>（Asia/Shanghai）果蔬业态、已确认（{@code CONFIRMED}）且已门店收货
+     * （{@code received_time IS NOT NULL}）的需求，按 {@code product_id} 去重。猪肉为另一固定 tab
+     * （{@link #listPorkCandidates}），果蔬 tab 仅按当天到店需求动态出，不再靠门店关联产品全量。</p>
+     *
+     * @param storeId 门店 ID（必填；空返空列表）
+     * @return 果蔬候选（productId + productName + productUnit）
+     */
+    List<StoreReturnVegCandidateVo> listVegCandidates(Long storeId);
 
     /**
      * 仓库确认实收（STORE-RETURN-REALIGN-001 原型「退回记录」仓库确认入库）：

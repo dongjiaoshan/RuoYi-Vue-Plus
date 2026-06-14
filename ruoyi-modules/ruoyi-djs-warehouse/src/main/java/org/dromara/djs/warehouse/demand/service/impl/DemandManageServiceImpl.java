@@ -24,6 +24,7 @@ import org.dromara.djs.warehouse.demand.domain.bo.AssignPigBo;
 import org.dromara.djs.warehouse.demand.domain.bo.DemandManageBo;
 import org.dromara.djs.warehouse.demand.domain.query.DemandManageQuery;
 import org.dromara.djs.warehouse.demand.domain.vo.AuditHistoryEntryVo;
+import org.dromara.djs.warehouse.demand.domain.vo.DemandGroupVo;
 import org.dromara.djs.warehouse.demand.domain.vo.DemandManageVo;
 import org.dromara.djs.warehouse.demand.domain.vo.DemandPigVo;
 import org.dromara.djs.warehouse.demand.domain.vo.DemandProductStoreDetailVo;
@@ -59,7 +60,8 @@ import java.util.Set;
  * <p>4 业态共表：表单字段在 admin 端按 product_type 切；service 端做应用层校验，
  * DDL 不写 CHECK 约束（与 WMS-MD-002 ProductInfoServiceImpl 同范式）。</p>
  *
- * <p>软删走基类 {@link DjsBaseServiceImpl#softDelete}；删除前校验：仅 DRAFT / CANCELLED 态可删。</p>
+ * <p>软删走基类 {@link DjsBaseServiceImpl#softDelete}；删除前校验：仅 DRAFT / SUBMITTED / CANCELLED 态可删，
+ * 删除时同时置 demand_status='DELETED' 终态留痕。</p>
  *
  * @author djs
  * @since WMS-DEMAND-001
@@ -83,9 +85,9 @@ public class DemandManageServiceImpl extends DjsBaseServiceImpl<DemandManageMapp
     /** 业态白名单（service 端硬校验，避免下游靠字典维护）。 */
     private static final Set<String> ALLOWED_PRODUCT_TYPES = PRODUCT_TYPE_TO_BIZ_CODE.keySet();
 
-    /** 允许硬删的状态。 */
+    /** 允许删除的状态（删除 = 置 DELETED 终态 + 软删；待确认 SUBMITTED 亦可删）。 */
     private static final Set<String> DELETABLE_STATUSES = Set.of(
-        DemandStatus.DRAFT.name(), DemandStatus.CANCELLED.name()
+        DemandStatus.DRAFT.name(), DemandStatus.SUBMITTED.name(), DemandStatus.CANCELLED.name()
     );
 
     /** 允许全字段编辑的状态（其他态仅可改 remark）。 */
@@ -131,7 +133,45 @@ public class DemandManageServiceImpl extends DjsBaseServiceImpl<DemandManageMapp
         LambdaQueryWrapper<DemandManage> wrapper = buildQueryWrapper(query);
         Page<DemandManageVo> page = baseMapper.selectVoPage(pageQuery.build(), wrapper);
         fillStoreCount(page.getRecords());
+        fillStoreDemandStatus(page.getRecords());
         return TableDataInfo.build(page);
+    }
+
+    /**
+     * 回填门店视角派生状态 {@code storeDemandStatus}（0613-04 门店端 5 态）。
+     *
+     * <p>映射规则：{@code SUBMITTED→待确认 / CONFIRMED 且未收货→已确认 / CONFIRMED 且已收货→确认到店(ARRIVED) /
+     * PARTIAL_SHIPPED|COMPLETED→已发货(SHIPPED) / DELETED→已删除 / CANCELLED→已删除（门店端不区分取消/删除，统一灰显）}。
+     * 仓库列表不读本字段（用 {@code demandStatus}），只为门店列表 dict-tag 提供门店语义状态。</p>
+     */
+    private void fillStoreDemandStatus(List<DemandManageVo> rows) {
+        if (CollUtil.isEmpty(rows)) {
+            return;
+        }
+        for (DemandManageVo vo : rows) {
+            vo.setStoreDemandStatus(toStoreDemandStatus(vo.getDemandStatus(), vo.getReceivedTime() != null));
+        }
+    }
+
+    /**
+     * 仓库 7 态 → 门店视角 5 态码（{@code djs_store_demand_status}）。
+     *
+     * @param status   仓库 demand_status
+     * @param received 是否已门店收货（received_time != null）
+     * @return 门店视角状态码（SUBMITTED/CONFIRMED/SHIPPED/ARRIVED/DELETED）；未知态回退原值
+     */
+    private String toStoreDemandStatus(String status, boolean received) {
+        if (status == null) {
+            return null;
+        }
+        return switch (status) {
+            case "SUBMITTED" -> "SUBMITTED";
+            case "CONFIRMED" -> received ? "ARRIVED" : "CONFIRMED";
+            case "PARTIAL_SHIPPED", "COMPLETED" -> received ? "ARRIVED" : "SHIPPED";
+            case "DELETED", "CANCELLED" -> "DELETED";
+            // DRAFT 等门店端不可见态：回退原值（门店列表不展示这些行）
+            default -> status;
+        };
     }
 
     /**
@@ -165,6 +205,49 @@ public class DemandManageServiceImpl extends DjsBaseServiceImpl<DemandManageMapp
                 vo.setStoreCount(countByProduct.getOrDefault(vo.getProductId(), 0));
             }
         }
+    }
+
+    @Override
+    public TableDataInfo<DemandGroupVo> queryGroupList(DemandManageQuery query, PageQuery pageQuery) {
+        String productName = query == null ? null : query.getProductName();
+        LocalDate begin = query == null ? null : query.getBeginDate();
+        LocalDate end = query == null ? null : query.getEndDate();
+        List<DemandGroupVo> all = baseMapper.selectDemandGroupList(productName, begin, end);
+        // 三态需求状态 + 确认率（按 storeCount / confirmedStoreCount 算）
+        for (DemandGroupVo vo : all) {
+            int storeCount = vo.getStoreCount() == null ? 0 : vo.getStoreCount();
+            int confirmed = vo.getConfirmedStoreCount() == null ? 0 : vo.getConfirmedStoreCount();
+            vo.setDemandStatus(groupStatus(storeCount, confirmed));
+            vo.setConfirmRate(storeCount == 0
+                ? BigDecimal.ZERO
+                : BigDecimal.valueOf(confirmed).divide(BigDecimal.valueOf(storeCount), 4, java.math.RoundingMode.HALF_UP));
+        }
+        // 聚合后内存分页（分组行数小）
+        int total = all.size();
+        int pageNum = pageQuery == null || pageQuery.getPageNum() == null ? 1 : pageQuery.getPageNum();
+        int pageSize = pageQuery == null || pageQuery.getPageSize() == null ? 10 : pageQuery.getPageSize();
+        int from = Math.max(0, (pageNum - 1) * pageSize);
+        int to = Math.min(total, from + pageSize);
+        List<DemandGroupVo> pageRows = from >= total ? List.of() : all.subList(from, to);
+        TableDataInfo<DemandGroupVo> rsp = new TableDataInfo<>();
+        rsp.setRows(pageRows);
+        rsp.setTotal(total);
+        rsp.setCode(200);
+        rsp.setMsg("查询成功");
+        return rsp;
+    }
+
+    /**
+     * 分组三态（0613-10 点4）：无一已确认门店 → PENDING；全部确认 → ALL_CONFIRMED；否则 PARTIAL。
+     */
+    private String groupStatus(int storeCount, int confirmedStoreCount) {
+        if (confirmedStoreCount <= 0) {
+            return "PENDING";
+        }
+        if (confirmedStoreCount >= storeCount) {
+            return "ALL_CONFIRMED";
+        }
+        return "PARTIAL";
     }
 
     @Override
@@ -250,13 +333,20 @@ public class DemandManageServiceImpl extends DjsBaseServiceImpl<DemandManageMapp
         if (CollUtil.isEmpty(ids)) {
             return 0;
         }
-        // 校验所有 id 状态都允许删除
+        // 校验所有 id 状态都允许删除（DRAFT/SUBMITTED/CANCELLED）
         List<DemandManage> demands = baseMapper.selectByIds(ids);
         for (DemandManage d : demands) {
             if (!DELETABLE_STATUSES.contains(d.getDemandStatus())) {
                 throw new ServiceException(
                     I18nMessages.t("demand.delete.status_forbidden", d.getDemandNo(), d.getDemandStatus()));
             }
+        }
+        // 删除即置「已删除」终态留痕（行随后软删，从列表消失但 DB 可追溯）
+        for (Long id : ids) {
+            DemandManage patch = new DemandManage();
+            patch.setId(id);
+            patch.setDemandStatus(DemandStatus.DELETED.name());
+            baseMapper.updateById(patch);
         }
         int rows = softDelete(ids);
         // 级联软删关联猪只（白条业态）
@@ -559,6 +649,8 @@ public class DemandManageServiceImpl extends DjsBaseServiceImpl<DemandManageMapp
             .eq(StringUtils.isNotBlank(query.getProductType()), DemandManage::getProductType, query.getProductType())
             .eq(StringUtils.isNotBlank(query.getDemandStatus()), DemandManage::getDemandStatus, query.getDemandStatus())
             .eq(query.getStoreId() != null, DemandManage::getStoreId, query.getStoreId())
+            .eq(query.getProductId() != null, DemandManage::getProductId, query.getProductId())
+            .eq(query.getDemandDate() != null, DemandManage::getDemandDate, query.getDemandDate())
             .ge(query.getBeginDate() != null, DemandManage::getDemandDate, query.getBeginDate())
             .le(query.getEndDate() != null, DemandManage::getDemandDate, query.getEndDate())
             .orderByDesc(DemandManage::getDemandDate)

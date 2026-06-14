@@ -17,6 +17,8 @@ import org.dromara.djs.store.returns.domain.bo.StoreReturnBo;
 import org.dromara.djs.store.returns.domain.bo.StoreReturnConfirmBo;
 import org.dromara.djs.store.returns.domain.query.StoreReturnQuery;
 import org.dromara.djs.store.returns.domain.vo.StoreReturnVo;
+import org.dromara.djs.store.returns.domain.vo.StoreReturnPorkCandidateVo;
+import org.dromara.djs.store.returns.domain.vo.StoreReturnVegCandidateVo;
 import org.dromara.djs.store.returns.service.IStoreReturnService;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -85,6 +87,26 @@ public class StoreReturnController extends BaseController {
     @PostMapping("/operation/batch")
     public R<Integer> batchCreate(@Valid @RequestBody StoreReturnBatchBo bo) {
         return R.ok(service.batchCreate(bo));
+    }
+
+    /**
+     * 退回操作「猪肉产品」tab 固定候选（对齐原型「可退回商品列表配置在字典项中，固定展示」）：
+     * 取 belong_type IN ('pork','white_bar') 的产品，与门店关联无关。
+     */
+    @SaCheckPermission("djs:store:return:list")
+    @GetMapping("/operation/pork-candidates")
+    public R<List<StoreReturnPorkCandidateVo>> porkCandidates() {
+        return R.ok(service.listPorkCandidates());
+    }
+
+    /**
+     * 退回操作「果蔬产品」tab 候选（对齐原型「可退回 = 当天已确认到店的需求产品」）：
+     * 取该门店当天果蔬业态、已确认且已门店收货的需求产品（按 product_id 去重）。
+     */
+    @SaCheckPermission("djs:store:return:list")
+    @GetMapping("/operation/veg-candidates")
+    public R<List<StoreReturnVegCandidateVo>> vegCandidates(Long storeId) {
+        return R.ok(service.listVegCandidates(storeId));
     }
 
     /** 仓库确认实收（原型「退回记录」仓库确认入库，pending→received 联动外购入库）。 */

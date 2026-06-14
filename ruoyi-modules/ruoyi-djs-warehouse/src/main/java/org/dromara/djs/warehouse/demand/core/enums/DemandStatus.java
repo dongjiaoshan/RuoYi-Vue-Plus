@@ -35,7 +35,10 @@ public enum DemandStatus {
     COMPLETED("已完成", true),
 
     /** 已取消 — 终态，DRAFT/SUBMITTED/CONFIRMED 时可取消。 */
-    CANCELLED("已取消", true);
+    CANCELLED("已取消", true),
+
+    /** 已删除 — 终态，删除（DRAFT/SUBMITTED/CANCELLED）时置位；行同时软删（del_flag），留痕用。 */
+    DELETED("已删除", true);
 
     private final String label;
     private final boolean terminal;

@@ -20,6 +20,7 @@ import org.dromara.djs.warehouse.demand.domain.bo.AssignPigBo;
 import org.dromara.djs.warehouse.demand.domain.bo.DemandManageBo;
 import org.dromara.djs.warehouse.demand.domain.query.DemandManageQuery;
 import org.dromara.djs.warehouse.demand.domain.vo.AuditHistoryEntryVo;
+import org.dromara.djs.warehouse.demand.domain.vo.DemandGroupVo;
 import org.dromara.djs.warehouse.demand.domain.vo.DemandManageVo;
 import org.dromara.djs.warehouse.demand.domain.vo.DemandPigVo;
 import org.dromara.djs.warehouse.demand.domain.vo.DemandProductStoreDetailVo;
@@ -74,6 +75,20 @@ public class DemandManageController extends BaseController {
         return demandService.queryPageList(query, pageQuery);
     }
 
+    /**
+     * 需求汇总分组列表（0613-10 需求管理列表重做）。
+     *
+     * <p>按「需求日期 + 需求产品」分组聚合：同日同产品 N 门店需求合并成一行（需求量 / 原材料计算量 /
+     * 需求门店数 / 三态状态 / 确认率 / 最终确认时间）。点「查看需求」携 demandDate+productId 下钻确认页。</p>
+     *
+     * <p>权限：复用 {@code djs:warehouse:demand:list}（同入口同角色，不需新菜单）。</p>
+     */
+    @SaCheckPermission("djs:warehouse:demand:list")
+    @GetMapping("/group-list")
+    public TableDataInfo<DemandGroupVo> groupList(DemandManageQuery query, PageQuery pageQuery) {
+        return demandService.queryGroupList(query, pageQuery);
+    }
+
     /** 详情。 */
     @SaCheckPermission("djs:warehouse:demand:query")
     @GetMapping("/getInfo/{id}")
@@ -100,7 +115,7 @@ public class DemandManageController extends BaseController {
         return toAjax(demandService.updateByBo(bo));
     }
 
-    /** 批量删除（仅 DRAFT/CANCELLED 可删；级联软删关联猪只）。 */
+    /** 批量删除（仅 DRAFT/SUBMITTED/CANCELLED 可删，删除即置 DELETED 终态；级联软删关联猪只）。 */
     @SaCheckPermission("djs:warehouse:demand:remove")
     @Log(title = "需求管理", businessType = BusinessType.DELETE)
     @DeleteMapping("/remove/{ids}")

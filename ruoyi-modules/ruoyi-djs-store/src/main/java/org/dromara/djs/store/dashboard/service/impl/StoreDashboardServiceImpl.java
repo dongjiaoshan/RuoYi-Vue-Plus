@@ -85,15 +85,25 @@ public class StoreDashboardServiceImpl implements IStoreDashboardService {
         vo.setPendingShipCount(nz(dashboardMapper.countPendingShip(tenantId, storeId)));
         vo.setPendingPurchaseCount(nz(dashboardMapper.countPendingPurchase(tenantId, storeId)));
 
-        // 会员 KPI（原型「客户/会员信息组」；member 表保留作 dashboard 数据源）
+        // 会员 KPI（原型「会员信息组」：今日新增 / 会员总数 / 老客复购 / 本月客单价）
         vo.setTotalMembers(nzLong(dashboardMapper.countTotalMembers(tenantId, storeId)));
         vo.setTodayNewMembers(nzLong(dashboardMapper.countTodayNewMembers(tenantId, storeId)));
+        vo.setRepeatCustomer(nzLong(dashboardMapper.countRepeatCustomers(tenantId, storeId)));
+        vo.setMonthAvgPrice(avg(vo.getMonthSaleAmount(), vo.getMonthOrderCount()));
 
         vo.setProductStructure(nzList(dashboardMapper.selectProductStructure(tenantId, storeId)));
+        vo.setMonthProductStructure(nzList(dashboardMapper.selectMonthProductStructure(tenantId, storeId)));
         vo.setTop10Products(nzList(dashboardMapper.selectTop10Products(tenantId, storeId)));
+        vo.setMonthTop10ByOrder(nzList(dashboardMapper.selectMonthTop10ByOrder(tenantId, storeId)));
 
         // 近 10 日趋势：销售 trend 为基，按日期 union merge 退货量（无销售但有退货的日补点），算客单价
         vo.setTrend10Days(buildTrend10Days(tenantId, storeId));
+
+        // 近 10 日新增会员趋势（原型「近十日订单数与新会员趋势」竖柱）
+        vo.setMemberGrowth10Days(nzList(dashboardMapper.selectMemberGrowth10Days(tenantId, storeId)));
+
+        // 本月逐日趋势（原型「销售额与客单价趋势」竖柱=销售额 + 折线=客单价）
+        vo.setMonthDailyTrend(buildMonthDailyTrend(tenantId, storeId));
 
         // 4 业态当日销售分布（猪肉 / 蔬菜 / 礼盒 / 其他，固定 4 行）
         vo.setSaleByCategory(buildSaleByCategory(tenantId, storeId));
@@ -175,6 +185,25 @@ public class StoreDashboardServiceImpl implements IStoreDashboardService {
             p.setAvgPrice(avg(p.getSaleAmount(), p.getOrderCount()));
         });
         return merged;
+    }
+
+    /**
+     * 组装本月逐日趋势：每日订单数 + 销售额（mapper 出有销售的日），逐点算客单价。
+     *
+     * <p>原型「销售额与客单价趋势」竖柱=销售额 + 折线=客单价，横轴本月每天。mapper 仅出
+     * 有销售的日期，前端按本月天数（横轴）补 0；后端只回填客单价 = 销售额 / 订单数。</p>
+     *
+     * @param tenantId 租户
+     * @param storeId  门店 ID（可空）
+     * @return 本月逐日趋势点（按日期升序，每点含订单数/销售额/客单价）
+     */
+    private List<StoreTrendPointVo> buildMonthDailyTrend(String tenantId, Long storeId) {
+        List<StoreTrendPointVo> list = new ArrayList<>(nzList(dashboardMapper.selectMonthDailyTrend(tenantId, storeId)));
+        list.forEach(p -> {
+            p.setSaleAmount(nzBd(p.getSaleAmount()));
+            p.setAvgPrice(avg(p.getSaleAmount(), p.getOrderCount()));
+        });
+        return list;
     }
 
     /**

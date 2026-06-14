@@ -43,4 +43,9 @@ public class StoreProductRankItemVo implements Serializable {
      */
     private BigDecimal saleQty;
 
+    /**
+     * 当月订单数（{@code COUNT(*)}，原型「当月热门产品排行 TOP10（按订单数）」横向柱）。
+     */
+    private Integer orderCount;
+
 }

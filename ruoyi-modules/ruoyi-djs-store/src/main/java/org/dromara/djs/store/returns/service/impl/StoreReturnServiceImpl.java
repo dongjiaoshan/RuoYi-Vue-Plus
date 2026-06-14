@@ -19,8 +19,11 @@ import org.dromara.djs.store.returns.domain.bo.StoreReturnBo;
 import org.dromara.djs.store.returns.domain.bo.StoreReturnConfirmBo;
 import org.dromara.djs.store.returns.domain.query.StoreReturnQuery;
 import org.dromara.djs.store.returns.domain.vo.StoreReturnVo;
+import org.dromara.djs.store.returns.domain.vo.StoreReturnPorkCandidateVo;
+import org.dromara.djs.store.returns.domain.vo.StoreReturnVegCandidateVo;
 import org.dromara.djs.store.returns.mapper.StoreReturnMapper;
 import org.dromara.djs.store.returns.service.IStoreReturnService;
+import org.dromara.djs.warehouse.demand.mapper.DemandManageMapper;
 import org.dromara.djs.warehouse.location.domain.LocationInfo;
 import org.dromara.djs.warehouse.location.mapper.LocationInfoMapper;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
@@ -29,7 +32,9 @@ import org.dromara.djs.warehouse.purchase.service.IWarehousePurchaseInService;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
@@ -74,24 +79,36 @@ public class StoreReturnServiceImpl
     /** 退货状态 djs_store_return_status：已入库（仓库确认实收后）。 */
     private static final String STATUS_RECEIVED = "received";
 
+    /**
+     * 「猪肉产品」tab 归属类型（字典 djs_belong_type）：猪肉 + 白条。
+     * 退回操作猪肉 tab 取这两类产品做固定候选清单，与门店关联无关。
+     */
+    private static final List<String> PORK_BELONG_TYPES = List.of("pork", "white_bar");
+
+    /** 业务日时区（与项目其余「今日」口径一致，避免 DB CURDATE() 时区雷）。 */
+    private static final ZoneId ZONE_SHANGHAI = ZoneId.of("Asia/Shanghai");
+
     private final StoreMapper storeMapper;
     private final ProductInfoMapper productInfoMapper;
     private final LocationInfoMapper locationInfoMapper;
     private final IBizCodeGenerator bizCodeGenerator;
     private final IWarehousePurchaseInService purchaseInService;
+    private final DemandManageMapper demandManageMapper;
 
     public StoreReturnServiceImpl(StoreReturnMapper baseMapper,
                                   StoreMapper storeMapper,
                                   ProductInfoMapper productInfoMapper,
                                   LocationInfoMapper locationInfoMapper,
                                   IBizCodeGenerator bizCodeGenerator,
-                                  IWarehousePurchaseInService purchaseInService) {
+                                  IWarehousePurchaseInService purchaseInService,
+                                  DemandManageMapper demandManageMapper) {
         super(baseMapper);
         this.storeMapper = storeMapper;
         this.productInfoMapper = productInfoMapper;
         this.locationInfoMapper = locationInfoMapper;
         this.bizCodeGenerator = bizCodeGenerator;
         this.purchaseInService = purchaseInService;
+        this.demandManageMapper = demandManageMapper;
     }
 
     @Override
@@ -223,6 +240,40 @@ public class StoreReturnServiceImpl
         log.info("[STORE-RETURN-REALIGN-001] batchCreate store={} 行数={} → pending（未入库）",
             bo.getStoreId(), created);
         return created;
+    }
+
+    @Override
+    public List<StoreReturnPorkCandidateVo> listPorkCandidates() {
+        List<ProductInfo> products = productInfoMapper.selectList(
+            new LambdaQueryWrapper<ProductInfo>()
+                .in(ProductInfo::getBelongType, PORK_BELONG_TYPES)
+                .orderByAsc(ProductInfo::getId));
+        return products.stream().map(p -> {
+            StoreReturnPorkCandidateVo vo = new StoreReturnPorkCandidateVo();
+            vo.setProductId(p.getId());
+            vo.setProductName(p.getProductName());
+            vo.setProductUnit(p.getProductUnit());
+            return vo;
+        }).collect(Collectors.toList());
+    }
+
+    @Override
+    public List<StoreReturnVegCandidateVo> listVegCandidates(Long storeId) {
+        if (storeId == null) {
+            return List.of();
+        }
+        LocalDate today = LocalDate.now(ZONE_SHANGHAI);
+        List<Map<String, Object>> rows = demandManageMapper.selectStoreReceivedVegProducts(storeId, today);
+        return rows.stream().map(r -> {
+            StoreReturnVegCandidateVo vo = new StoreReturnVegCandidateVo();
+            Object pid = r.get("productId");
+            vo.setProductId(pid == null ? null : Long.valueOf(pid.toString()));
+            Object name = r.get("productName");
+            vo.setProductName(name == null ? null : name.toString());
+            Object unit = r.get("productUnit");
+            vo.setProductUnit(unit == null ? null : unit.toString());
+            return vo;
+        }).collect(Collectors.toList());
     }
 
     @Override

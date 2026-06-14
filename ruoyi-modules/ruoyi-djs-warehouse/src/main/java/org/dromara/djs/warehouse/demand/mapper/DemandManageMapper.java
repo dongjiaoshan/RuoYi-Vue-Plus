@@ -5,6 +5,7 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 import org.dromara.common.mybatis.core.mapper.BaseMapperPlus;
 import org.dromara.djs.warehouse.demand.domain.DemandManage;
+import org.dromara.djs.warehouse.demand.domain.vo.DemandGroupVo;
 import org.dromara.djs.warehouse.demand.domain.vo.DemandManageVo;
 import org.dromara.djs.warehouse.demand.domain.vo.DemandProductStoreDetailVo;
 import org.dromara.djs.warehouse.pack.domain.vo.StoreDemandCopiesVo;
@@ -195,5 +196,99 @@ public interface DemandManageMapper extends BaseMapperPlus<DemandManage, DemandM
         ORDER BY demandQuantity DESC
         """)
     List<DemandProductStoreDetailVo> selectProductStoreDetail(@Param("productId") Long productId);
+
+    /**
+     * 门店「当天已确认到店」的果蔬需求产品去重清单（STORE-RETURN-VEG-CANDIDATE 退回操作果蔬 tab 数据源）。
+     *
+     * <p>口径：指定门店、{@code demand_date=#{day}}、果蔬业态（{@code product_type='vegetable'}）、
+     * 已确认（{@code demand_status='CONFIRMED'}）且已门店收货（{@code received_time IS NOT NULL}），
+     * 按 {@code product_id} 去重，取冗余 {@code product_name / product_unit}（同 product 多单时取任一，
+     * {@code MAX} 仅为分组兜底，名称冗余通常一致）。</p>
+     *
+     * <p>租户隔离：未启全局 MP 拦截器，显式 {@code tenant_id='1001'}（V1 单租户，与本 mapper
+     * 既有聚合 SQL 范式一致）；{@code del_flag='0'}（CHAR(1) 未删）。</p>
+     *
+     * @param storeId 门店 FK（{@code t_md_store.id}）
+     * @param day     需求日期（今日，由 service 按 Asia/Shanghai 传入，不用 DB CURDATE() 避免时区雷）
+     * @return 每行 {@code {productId, productName, productUnit}}（无则空 List）
+     */
+    @Select("""
+        SELECT product_id AS productId,
+               MAX(product_name) AS productName,
+               MAX(product_unit) AS productUnit
+        FROM t_warehouse_demand_manage
+        WHERE store_id = #{storeId}
+          AND demand_date = #{day}
+          AND product_type = 'vegetable'
+          AND demand_status = 'CONFIRMED'
+          AND received_time IS NOT NULL
+          AND product_id IS NOT NULL
+          AND del_flag = '0'
+          AND tenant_id = '1001'
+        GROUP BY product_id
+        ORDER BY product_id
+        """)
+    List<Map<String, Object>> selectStoreReceivedVegProducts(@Param("storeId") Long storeId,
+                                                             @Param("day") LocalDate day);
+
+    /**
+     * 需求汇总分组聚合（0613-10 需求管理列表重做）。
+     *
+     * <p>按 {@code (demand_date, product_id)} 分组，同日同产品 N 门店需求合并成一行：
+     * {@code SUM(demand_quantity)} 需求量 / {@code SUM(material_qty)} 原材料计算量 /
+     * {@code COUNT(DISTINCT store_id)} 需求门店数 / 已确认门店数（demand_status IN
+     * CONFIRMED/IN_PRODUCTION/PARTIAL_SHIPPED/COMPLETED）/ {@code MAX(confirmer_time)} 最终确认时间。
+     * 排除已取消（CANCELLED）/ 已删除（del_flag=1）单；三态 demandStatus + 确认率 confirmRate
+     * 在 service 层按 storeCount/confirmedStoreCount 算（避免 SQL 重复 CASE）。</p>
+     *
+     * <p>产品冗余字段（productName/productSpec/productType/rawMaterial/productUnit）取 {@code MAX}
+     * 分组兜底（同 product 冗余通常一致）。可选过滤：产品名 LIKE / 需求日期区间。</p>
+     *
+     * <p>租户隔离：未启全局 MP 拦截器，显式 {@code tenant_id='1001'}（V1 单租户，与本 mapper
+     * 既有聚合 SQL 范式一致）；{@code del_flag='0'}（CHAR(1) 未删）。</p>
+     *
+     * @param productName 产品名 LIKE 过滤（空则不过滤，由 @if 控制）
+     * @param beginDate   需求日期起（空则不过滤）
+     * @param endDate     需求日期止（空则不过滤）
+     * @return 分组聚合行（按需求日期倒序 + 产品名升序；三态/确认率待 service 回填）
+     */
+    @Select("""
+        <script>
+        SELECT demand_date              AS demandDate,
+               product_id               AS productId,
+               MAX(product_name)        AS productName,
+               MAX(product_spec)        AS productSpec,
+               MAX(product_type)        AS productType,
+               MAX(raw_material)        AS rawMaterial,
+               MAX(product_unit)        AS productUnit,
+               SUM(demand_quantity)     AS demandQuantity,
+               SUM(COALESCE(material_qty, 0)) AS materialQty,
+               COUNT(DISTINCT store_id) AS storeCount,
+               COUNT(DISTINCT CASE WHEN demand_status IN ('CONFIRMED','IN_PRODUCTION','PARTIAL_SHIPPED','COMPLETED')
+                     THEN store_id END) AS confirmedStoreCount,
+               MAX(confirmer_time)      AS lastConfirmTime
+        FROM t_warehouse_demand_manage
+        WHERE product_id IS NOT NULL
+          AND store_id IS NOT NULL
+          AND demand_status &lt;&gt; 'CANCELLED'
+          AND demand_status &lt;&gt; 'DELETED'
+          AND del_flag = '0'
+          AND tenant_id = '1001'
+          <if test="productName != null and productName != ''">
+            AND product_name LIKE CONCAT('%', #{productName}, '%')
+          </if>
+          <if test="beginDate != null">
+            AND demand_date &gt;= #{beginDate}
+          </if>
+          <if test="endDate != null">
+            AND demand_date &lt;= #{endDate}
+          </if>
+        GROUP BY demand_date, product_id
+        ORDER BY demand_date DESC, MAX(product_name) ASC
+        </script>
+        """)
+    List<DemandGroupVo> selectDemandGroupList(@Param("productName") String productName,
+                                              @Param("beginDate") LocalDate beginDate,
+                                              @Param("endDate") LocalDate endDate);
 }
 

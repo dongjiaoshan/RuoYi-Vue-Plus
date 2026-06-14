@@ -34,6 +34,12 @@ public class DemandManageQuery extends BaseEntity {
     /** 门店 ID。 */
     private Long storeId;
 
+    /** 产品 ID 精确过滤（0613-11 确认页：只看某产品某日的所有门店需求单）。 */
+    private Long productId;
+
+    /** 需求日期精确过滤（0613-11 确认页：配合 productId 锁定某日某产品）。 */
+    private LocalDate demandDate;
+
     /** 需求日期起始。 */
     private LocalDate beginDate;
 
