@@ -38,6 +38,8 @@ import org.dromara.djs.plant.plan.domain.PlantDetails;
 import org.dromara.djs.plant.plan.mapper.PlantDetailsMapper;
 import org.dromara.djs.plant.plot.domain.PlotInfo;
 import org.dromara.djs.plant.plot.mapper.PlotInfoMapper;
+import org.dromara.djs.plant.zone.domain.PlotZone;
+import org.dromara.djs.plant.zone.mapper.PlotZoneMapper;
 import org.dromara.djs.plant.team.domain.PlantWorkPeople;
 import org.dromara.djs.plant.team.domain.PlantWorkTeam;
 import org.dromara.djs.plant.team.mapper.PlantWorkPeopleMapper;
@@ -97,6 +99,7 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
     private static final String CROP_BELONG_TYPE = "vegetable";
 
     private final PlotInfoMapper plotInfoMapper;
+    private final PlotZoneMapper plotZoneMapper;
     private final CropInfoMapper cropInfoMapper;
     private final PlantDetailsMapper plantDetailsMapper;
     private final PlantWorkTeamMapper teamMapper;
@@ -106,6 +109,7 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
 
     public FarmRecordsServiceImpl(FarmRecordsMapper baseMapper,
                                   PlotInfoMapper plotInfoMapper,
+                                  PlotZoneMapper plotZoneMapper,
                                   CropInfoMapper cropInfoMapper,
                                   PlantDetailsMapper plantDetailsMapper,
                                   PlantWorkTeamMapper teamMapper,
@@ -114,6 +118,7 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
                                   IPlantActivityService plantActivityService) {
         super(baseMapper);
         this.plotInfoMapper = plotInfoMapper;
+        this.plotZoneMapper = plotZoneMapper;
         this.cropInfoMapper = cropInfoMapper;
         this.plantDetailsMapper = plantDetailsMapper;
         this.teamMapper = teamMapper;
@@ -355,6 +360,13 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
             : plotInfoMapper.selectByIds(plotIds).stream()
             .collect(Collectors.toMap(PlotInfo::getId, p -> p, (a, b) -> a));
 
+        // enrich 片区（FIX-PLT-MP-ROTATION-ZONE-001）：批量按 zone_id 取 zoneCode/zoneName，禁 N+1。
+        Set<Long> zoneIds = plotMap.values().stream()
+            .map(PlotInfo::getZoneId).filter(Objects::nonNull).collect(Collectors.toSet());
+        Map<Long, PlotZone> zoneMap = zoneIds.isEmpty() ? Map.of()
+            : plotZoneMapper.selectByIds(zoneIds).stream()
+            .collect(Collectors.toMap(PlotZone::getId, z -> z, (a, b) -> a));
+
         // 移栽进度层：返各地块累计已移% + 上次时间（FIX-PLT-MP-WORK-BATCH-001 移栽单块录入用）
         Map<Long, Integer> transplantedMap = new HashMap<>();
         if ("transplant".equals(farmType)) {
@@ -385,6 +397,11 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
             if (plot != null) {
                 vo.setPlotCode(plot.getPlotCode());
                 vo.setPlotName(plot.getPlotName());
+                PlotZone zone = plot.getZoneId() == null ? null : zoneMap.get(plot.getZoneId());
+                if (zone != null) {
+                    vo.setZoneCode(zone.getZoneCode());
+                    vo.setZoneName(zone.getZoneName());
+                }
             }
             LocalDate last = lastDateMap.get(d.getPlotId());
             if (last != null) {

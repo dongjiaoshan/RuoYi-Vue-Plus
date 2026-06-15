@@ -109,11 +109,39 @@ public class PigVo implements Serializable {
     @ExcelProperty(value = "母猪耳号")
     private String motherEar;
 
+    /** 母系全版耳号（service 层按 motherEar 反查父母猪 ear_tag enrich；查不到为 null，前端回落短号）。 */
+    @ExcelProperty(value = "母猪耳号全版")
+    private String motherEarTag;
+
     @ExcelProperty(value = "公猪耳号")
     private String fatherEar;
 
+    /** 父系全版耳号（service 层按 fatherEar 反查父母猪 ear_tag enrich；查不到为 null，前端回落短号）。 */
+    @ExcelProperty(value = "公猪耳号全版")
+    private String fatherEarTag;
+
     @ExcelProperty(value = "配种次数")
     private Integer matingCount;
+
+    /**
+     * 活仔数（母猪列表，所有分娩记录 SUM(live_born) — 只算活着出生的，不含死胎/木乃伊；
+     * service queryPage 批量聚合 enrich，无分娩记录时 null）。
+     */
+    @ExcelProperty(value = "活仔数")
+    private Integer liveBornCount;
+
+    /**
+     * 断奶仔猪数（母猪列表，所有断奶记录 SUM(weaned_count)；service queryPage 批量聚合 enrich，
+     * 无断奶记录时 null）。
+     */
+    @ExcelProperty(value = "断奶仔猪数")
+    private Integer weanedCount;
+
+    /**
+     * 窝均仔数 = 活仔数 ÷ 胎次（parity），保留 1 位小数；parity=0 / null 时返回 null（与活仔=活口径一致）。
+     */
+    @ExcelProperty(value = "窝均仔数")
+    private java.math.BigDecimal avgLitterSize;
 
     @ExcelProperty(value = "上次配种日")
     private LocalDate lastMatingDate;

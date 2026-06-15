@@ -75,6 +75,18 @@ public final class DictTypeConstants {
     /** 兽药类型。 */
     public static final String MED_TYPE = "djs_med_type";
 
+    /** 用药类型（mp 用药治疗/批量用药：保健 / 治疗 / 疫苗；疫苗联动二级 djs_vaccine_type）。 */
+    public static final String MEDICINE_USE_TYPE = "djs_medicine_use_type";
+
+    /** 用药方式（mp 用药：注射 / 口服 / 喷雾 等）。 */
+    public static final String MEDICINE_WAY = "djs_medicine_way";
+
+    /** 用药原因（mp 用药）。 */
+    public static final String MEDICINE_REASON = "djs_medicine_reason";
+
+    /** 疫苗类型（mp 用药类型=疫苗 时联动二级下拉）。 */
+    public static final String VACCINE_TYPE = "djs_vaccine_type";
+
     /** 配种方式（BRD-EVENT-002 BREED breedingType；1=本场公猪 / 2=精液产品 / AI / LQ / RJ；对齐 doc/11）。 */
     public static final String MATING_METHOD = "djs_mating_method";
 

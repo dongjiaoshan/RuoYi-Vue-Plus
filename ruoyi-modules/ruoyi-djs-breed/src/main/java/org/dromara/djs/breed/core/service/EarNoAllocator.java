@@ -20,15 +20,15 @@ import java.util.concurrent.TimeUnit;
  * 耳号（EAR_NO）连号分配器（ADR-0011 客户权威带分隔符格式）。
  *
  * <h3>格式</h3>
- * <p>各段以 {@code -} 分隔 = {@code {品系1}-{品种2}-{公母1}-{出生yyMMdd6}-{当天序号4}}（客户权威编码表）：</p>
+ * <p>各段以 {@code -} 分隔 = {@code {品系}-{品种2}-{出生yyMMdd6}-{当天序号3}}（客户权威编码表，6/15 起耳号不再编码性别）：</p>
  * <ul>
- *   <li>品系码 = {@code djs_pig_strain} 字典 dict_value（1 位，1-5）；</li>
+ *   <li>品系码 = {@code djs_pig_strain} 字典 dict_value（原样取，支持 1-2 位）；</li>
  *   <li>品种码 = {@code djs_pig_breed} 字典 dict_value（定长 2 位，01-06）；</li>
- *   <li>公母码 = {@code M→1 / F→2}（业务恒定，唯一允许硬编码的映射）；</li>
  *   <li>出生年月日 = {@code yyMMdd}（猪只出生日，非系统当前日）；</li>
- *   <li>序号 = 4 位补零，<b>当天级</b>同前缀 max+1，每天从 0001 起重新编号。</li>
+ *   <li>序号 = 3 位补零，<b>当天级</b>同前缀 max+1，每天从 001 起重新编号。</li>
  * </ul>
- * <p>前缀 = {@code 品系1-品种2-公母1-yyMMdd6}（如 {@code 1-01-1-260609}）→ 拼上 {@code -序号4} 总长 17。</p>
+ * <p>前缀 = {@code 品系-品种2-yyMMdd6}（如 {@code 1-01-260609}）→ 拼上 {@code -序号3}（如 {@code 1-01-260609-001}）。
+ * 性别不再入耳号（公母仔猪同前缀连号），{@code pigSex} 参数保留仅为兼容老调用方，前缀组装不再使用。</p>
  *
  * <h3>序号源 = DB max（权威源）</h3>
  * <p>在 Redisson 锁内 {@code SELECT MAX(ear_no)} 同前缀现存耳号（{@code likeRight}），按 {@code -} 拆出末段
@@ -52,8 +52,8 @@ import java.util.concurrent.TimeUnit;
 @RequiredArgsConstructor
 public class EarNoAllocator {
 
-    /** 序号位数（耳号末段，当天单前缀 ≤ 9999 头足够）。 */
-    private static final int SEQ_WIDTH = 4;
+    /** 序号位数（耳号末段，当天单前缀 ≤ 999 头足够）。 */
+    private static final int SEQ_WIDTH = 3;
 
     /** 品种码定长（耳号第 2 段，客户码表 01-06）。 */
     private static final int BREED_CODE_WIDTH = 2;
@@ -121,9 +121,10 @@ public class EarNoAllocator {
     }
 
     /**
-     * 组装耳号前缀 = 品系1 + {@code -} + 品种2 + {@code -} + 公母1 + {@code -} + yyMMdd6（如 {@code 1-01-1-260609}）。
+     * 组装耳号前缀 = 品系 + {@code -} + 品种2 + {@code -} + yyMMdd6（如 {@code 1-01-260609}）。
      * <p>位码取自字典 dict_value（前端选品种/品系直接传 dict_value，即位码本身，ADR-0011 §2.2）。
-     * 拼上 {@code -序号4} 即完整耳号（如 {@code 1-01-1-260609-0001}）。</p>
+     * 拼上 {@code -序号3} 即完整耳号（如 {@code 1-01-260609-001}）。性别不再入前缀（6/15 起公母仔猪同前缀连号）；
+     * {@code pigSex} 参数保留仅为兼容老调用方签名，不参与组装。</p>
      */
     public String buildPrefix(String strainCode, String breedCode, String pigSex, LocalDate birthDate) {
         if (StringUtils.isBlank(strainCode)) {
@@ -135,22 +136,10 @@ public class EarNoAllocator {
         if (birthDate == null) {
             throw new ServiceException("耳号生成失败：出生日期不能为空");
         }
-        String strain1 = strainCode.trim();
+        String strain = strainCode.trim();
         String breed2 = padLeftZero(breedCode.trim(), BREED_CODE_WIDTH);
-        String sex1 = sexCode(pigSex);
         String yyMMdd = birthDate.format(BIRTH_FMT);
-        return strain1 + SEG_SEP + breed2 + SEG_SEP + sex1 + SEG_SEP + yyMMdd;
-    }
-
-    /** 公母码映射（业务恒定，唯一允许硬编码）：M→1 公 / F→2 母；其余拒绝，不默认未约定值。 */
-    private String sexCode(String pigSex) {
-        if ("M".equals(pigSex)) {
-            return "1";
-        }
-        if ("F".equals(pigSex)) {
-            return "2";
-        }
-        throw new ServiceException("耳号生成失败：未知性别（仅支持 M 公 / F 母），实际：" + pigSex);
+        return strain + SEG_SEP + breed2 + SEG_SEP + yyMMdd;
     }
 
     /**

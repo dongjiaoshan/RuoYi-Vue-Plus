@@ -27,9 +27,12 @@ public class PigCutPickupBo {
     private Long barInfoId;
 
     /**
-     * 入冻品库库位（FK → {@code t_warehouse_location_info.id}）。
+     * 入冻品库库位（FK → {@code t_warehouse_location_info.id}，领用阶段可空）。
+     *
+     * <p>FIX-WMS-PACK-CASHIER：白条领用收银台不再在领用阶段采集库位（仅领用进分割车间，
+     * 实际入冻品库位在后续「分割出库称重」cutOut 阶段采集）。领用阶段仅作为 cut_record 的领用提示，
+     * 可空——故去 {@code @NotNull}。</p>
      */
-    @NotNull(message = "{cut.location_id.required}")
     private Long locationId;
 
     /**

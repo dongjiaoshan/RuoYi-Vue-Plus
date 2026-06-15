@@ -36,6 +36,12 @@ public class FarmCropPlotVo implements Serializable {
     /** 地块名称。 */
     private String plotName;
 
+    /** 所属片区业务码（join t_plant_plot_zone，退茬多选页展示片区，FIX-PLT-MP-ROTATION-ZONE-001）。 */
+    private String zoneCode;
+
+    /** 所属片区名称（join t_plant_plot_zone）。 */
+    private String zoneName;
+
     /** 作物 id。 */
     private Long cropId;
 

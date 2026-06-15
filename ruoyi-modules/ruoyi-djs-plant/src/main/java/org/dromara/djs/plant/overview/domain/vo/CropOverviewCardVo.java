@@ -32,6 +32,9 @@ public class CropOverviewCardVo implements Serializable {
     /** 作物名称。 */
     private String cropName;
 
+    /** 作物编码（卡片上随作物名展示，区分同名不同编码作物）。 */
+    private String cropCode;
+
     /** 作物缩略图 ossId（卡片缩略图）。 */
     private String cropImageOssId;
 

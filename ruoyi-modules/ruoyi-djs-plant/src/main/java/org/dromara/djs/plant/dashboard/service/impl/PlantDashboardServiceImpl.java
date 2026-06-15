@@ -4,7 +4,6 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.common.tenant.helper.TenantHelper;
 import org.dromara.djs.plant.dashboard.domain.vo.CropPlantStatItemVo;
-import org.dromara.djs.plant.dashboard.domain.vo.FarmWorkCountVo;
 import org.dromara.djs.plant.dashboard.domain.vo.GanttItemVo;
 import org.dromara.djs.plant.dashboard.domain.vo.MonthCompletionItemVo;
 import org.dromara.djs.plant.dashboard.domain.vo.OrganicCertOverviewVo;
@@ -39,8 +38,6 @@ public class PlantDashboardServiceImpl implements IPlantDashboardService {
     private static final int PROGRESS_ONGOING = 50;
     private static final int PROGRESS_COMPLETED = 100;
     private static final int PROGRESS_DELAYED = 80;
-    /** 采摘进行中（djs_pick_status = picking）进度。 */
-    private static final int PROGRESS_PICKING = 50;
 
     private final PlantDashboardMapper dashboardMapper;
 
@@ -68,10 +65,13 @@ public class PlantDashboardServiceImpl implements IPlantDashboardService {
         vo.setCurrentPlantingArea(nzBd(dashboardMapper.selectCurrentPlantingArea(tenantId)));
         vo.setCurrentExpectedYield(nzBd(dashboardMapper.selectCurrentExpectedYield(tenantId)));
 
-        // 块 ① 今日农事
-        List<FarmWorkCountVo> todayFarmWork = dashboardMapper.selectTodayFarmWork(tenantId);
-        vo.setTodayFarmWork(todayFarmWork == null ? List.of() : todayFarmWork);
-        vo.setTodayFarmWorkTotal(nz(dashboardMapper.countTodayFarmWorkTotal(tenantId)));
+        // 块 ① 今日工作（固定 6 格：种植 / 采摘 / 空地管理 / 种植管理 / 灾害损失 / 采摘活动）
+        vo.setTodayPlantingPlotCount(nz(dashboardMapper.countTodayPlanting(tenantId)));
+        vo.setTodayHarvestPlotCount(nz(dashboardMapper.countTodayHarvest(tenantId)));
+        vo.setTodayIdleMgmtPlotCount(nz(dashboardMapper.countTodayIdleMgmt(tenantId)));
+        vo.setTodayPlantMgmtPlotCount(nz(dashboardMapper.countTodayPlantMgmt(tenantId)));
+        vo.setTodayDisasterPlotCount(nz(dashboardMapper.countTodayDisaster(tenantId)));
+        vo.setTodayPickActivityWeight(nzBd(dashboardMapper.selectTodayPickActivityWeight(tenantId)));
 
         // 块 ② 当月完成率
         List<MonthCompletionItemVo> monthCompletion = dashboardMapper.selectMonthCompletion(tenantId);
@@ -88,47 +88,135 @@ public class PlantDashboardServiceImpl implements IPlantDashboardService {
     }
 
     /**
-     * 组装有机证书情况一览（区块 ③）。
+     * 组装有机证书一览（区块 ③，果蔬证书口径）。
+     *
+     * <ul>
+     *   <li>子项1 果蔬有机证到期日 = 最新一张果蔬证书到期日（{@code MAX(crop_cert_valid)}）。</li>
+     *   <li>子项2 果蔬有机证书到期天数 = {@code DATEDIFF(MAX(crop_cert_valid), CURDATE())}。</li>
+     *   <li>子项3 作物无证书品类数 = 在种作物总数 − 在最新证书覆盖品类里的在种作物数。</li>
+     *   <li>子项4 果蔬有机证书品类数 = 在种作物中在最新证书覆盖品类里的数量。</li>
+     * </ul>
      *
      * @param tenantId 租户
-     * @return 4 数字 VO，无证书时到期天数 null、计数 0
+     * @return 证书一览 VO，无证书时到期日/天数 null、计数 0
      */
     private OrganicCertOverviewVo buildOrganicCertOverview(String tenantId) {
         OrganicCertOverviewVo cert = new OrganicCertOverviewVo();
-        cert.setPlotCertMinDays(dashboardMapper.selectPlotCertMinDays(tenantId));
-        cert.setCropCertMinDays(dashboardMapper.selectCropCertMinDays(tenantId));
-        cert.setCropNoCertCount(nz(dashboardMapper.selectCropNoCertCount(tenantId)));
-        cert.setCropReservedCount(nz(dashboardMapper.selectCropTotalCount(tenantId)));
+
+        PlantDashboardMapper.CropCertLatestRow latest = dashboardMapper.selectLatestCropCert(tenantId);
+        if (latest == null || latest.getCertDate() == null) {
+            cert.setCropCertExpiryDate(null);
+            cert.setCropCertDaysToExpiry(null);
+        } else {
+            cert.setCropCertExpiryDate(latest.getCertDate().toString());
+            cert.setCropCertDaysToExpiry(latest.getDaysToExpiry());
+        }
+
+        int inCert = nz(dashboardMapper.selectInLatestCertCropCount(tenantId));
+        int activeTotal = nz(dashboardMapper.selectActiveCropCount(tenantId));
+        cert.setCropCertCategoryCount(inCert);
+        cert.setCropNoCertCount(Math.max(activeTotal - inCert, 0));
+
         return cert;
     }
 
     @Override
     public List<GanttItemVo> getGantt() {
         String tenantId = currentTenant();
-        List<PlantDashboardMapper.GanttRow> rows = dashboardMapper.selectGanttRows(tenantId);
+        List<GanttItemVo> items = new ArrayList<>();
+        items.addAll(buildPlantGantt(tenantId));
+        items.addAll(buildPickGantt(tenantId));
+        return items;
+    }
+
+    /**
+     * 种植甘特段（按 明细/地块 维度）：开始用实际开始种植日（无则计划开始旬日），
+     * 结束用实际结束日；未结束（{@code end_actualdate} 为空）时用计划结束日（{@code earliest_harvestdate}）
+     * 兜底，保证未结束计划也能画出条。
+     *
+     * @param tenantId 租户
+     * @return 种植甘特条列表
+     */
+    private List<GanttItemVo> buildPlantGantt(String tenantId) {
+        List<PlantDashboardMapper.PlantGanttRow> rows = dashboardMapper.selectPlantGanttRows(tenantId);
         if (rows == null || rows.isEmpty()) {
             return List.of();
         }
-
-        List<GanttItemVo> items = new ArrayList<>(rows.size() * 2);
-        for (PlantDashboardMapper.GanttRow row : rows) {
+        List<GanttItemVo> items = new ArrayList<>(rows.size());
+        for (PlantDashboardMapper.PlantGanttRow row : rows) {
+            LocalDate start = row.getBeginActualdate() != null
+                ? row.getBeginActualdate()
+                : planStartDate(row.getPlantMonth(), row.getPlantPeriod());
+            LocalDate end = row.getEndActualdate() != null
+                ? row.getEndActualdate()
+                : row.getEarliestHarvestdate();
+            // 起止任一缺失（无实际且无计划推算）则跳过该条
+            if (start == null || end == null) {
+                continue;
+            }
+            // 结束早于开始（计划日历异常）时夹紧为开始日，避免负宽
+            if (end.isBefore(start)) {
+                end = start;
+            }
             String text = buildText(row.getCropName(), row.getPlotName());
             String idStr = row.getId() == null ? "" : String.valueOf(row.getId());
-
-            // 种植段（绿）：begin/end 都非 null 才画
-            if (row.getBeginActualdate() != null && row.getEndActualdate() != null) {
-                items.add(buildItem(idStr + "-plant", text,
-                    row.getBeginActualdate(), row.getEndActualdate(),
-                    plantProgress(row.getPlantStatus()), "plant"));
-            }
-            // 采摘段（黄）：begin/end 都非 null 才画
-            if (row.getBeginHarvestdate() != null && row.getEndHarvestdate() != null) {
-                items.add(buildItem(idStr + "-pick", text,
-                    row.getBeginHarvestdate(), row.getEndHarvestdate(),
-                    pickProgress(row.getHarvestStatus()), "pick"));
-            }
+            items.add(buildItem(idStr + "-plant", text, start, end,
+                plantProgress(row.getPlantStatus()), "plant"));
         }
         return items;
+    }
+
+    /**
+     * 采摘甘特段（按 作物 维度聚合）：每个作物一条整段
+     * {@code MIN(begin_harvestdate) .. MAX(end_harvestdate)}，进度 = 该作物已采摘完成明细占比。
+     * y 轴类目 = 作物名。
+     *
+     * @param tenantId 租户
+     * @return 采摘甘特条列表
+     */
+    private List<GanttItemVo> buildPickGantt(String tenantId) {
+        List<PlantDashboardMapper.PickGanttCropRow> rows = dashboardMapper.selectPickGanttByCrop(tenantId);
+        if (rows == null || rows.isEmpty()) {
+            return List.of();
+        }
+        List<GanttItemVo> items = new ArrayList<>(rows.size());
+        for (PlantDashboardMapper.PickGanttCropRow row : rows) {
+            LocalDate start = row.getBeginHarvestdate();
+            // 整段未结束（无任何 end_harvestdate）时用开始日兜底，至少画出起点
+            LocalDate end = row.getEndHarvestdate() != null ? row.getEndHarvestdate() : start;
+            if (start == null) {
+                continue;
+            }
+            if (end.isBefore(start)) {
+                end = start;
+            }
+            String text = row.getCropName() == null || row.getCropName().isBlank()
+                ? "未知作物" : row.getCropName();
+            String idStr = row.getCropId() == null ? "" : String.valueOf(row.getCropId());
+            items.add(buildItem(idStr + "-pick", text, start, end,
+                pickRatioProgress(row.getCompletedCount(), row.getTotalCount()), "pick"));
+        }
+        return items;
+    }
+
+    /**
+     * 计划开始种植日推算：{@code plant_month}（1-12）+ {@code plant_period}（05=上旬 / 15=中旬 /
+     * 25=下旬），年份取当年。旬 → 日：05→1 号 / 15→11 号 / 25→21 号；非法旬码回落 1 号。
+     *
+     * @param month  计划月份 1-12（可空）
+     * @param period 计划阶段码 05/15/25（可空）
+     * @return 计划开始种植日；月份缺失时 null
+     */
+    private LocalDate planStartDate(Integer month, String period) {
+        if (month == null || month < 1 || month > 12) {
+            return null;
+        }
+        int day = switch (period == null ? "" : period) {
+            case "15" -> 11;
+            case "25" -> 21;
+            default -> 1;
+        };
+        return LocalDate.of(LocalDate.now().getYear(), month, day);
     }
 
     /**
@@ -185,21 +273,19 @@ public class PlantDashboardServiceImpl implements IPlantDashboardService {
     }
 
     /**
-     * 采摘状态 → 进度（字典 djs_pick_status：pending/picking/completed/delayed）。
+     * 采摘进度（作物聚合后）：已采摘完成明细占比 = {@code completed / total × 100}（四舍五入 0~100）。
      *
-     * @param status 采摘状态 code（可空）
-     * @return 进度 0~100
+     * @param completed 已采摘完成明细数（可空）
+     * @param total     该作物有采摘日期的明细总数（可空 / 0）
+     * @return 进度 0~100；total 为 0 时返回 0
      */
-    private int pickProgress(String status) {
-        if (status == null) {
+    private int pickRatioProgress(Integer completed, Integer total) {
+        int t = nz(total);
+        if (t <= 0) {
             return PROGRESS_PENDING;
         }
-        return switch (status) {
-            case "picking" -> PROGRESS_PICKING;
-            case "completed" -> PROGRESS_COMPLETED;
-            case "delayed" -> PROGRESS_DELAYED;
-            default -> PROGRESS_PENDING;
-        };
+        int c = Math.min(nz(completed), t);
+        return (int) Math.round(c * 100.0 / t);
     }
 
     /**

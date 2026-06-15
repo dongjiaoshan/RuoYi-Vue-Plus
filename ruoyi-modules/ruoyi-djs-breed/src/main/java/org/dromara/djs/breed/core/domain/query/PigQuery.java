@@ -34,8 +34,14 @@ public class PigQuery extends BaseEntity {
     /** 栋舍 ID。 */
     private Long barnId;
 
+    /** 栋舍名称（模糊，反查 t_farm_barn_info.barn_name 命中的 barn_id 集合再 in(barnIds)）。 */
+    private String barnName;
+
     /** 栏位 ID。 */
     private Long penId;
+
+    /** 栏位名称（模糊，反查 t_farm_barn_pen.pen_name 命中的 pen_id 集合再 in(penIds)）。 */
+    private String penName;
 
     /** 是否排除终态（true=不返 END 行）。 */
     private Boolean excludeEnd;

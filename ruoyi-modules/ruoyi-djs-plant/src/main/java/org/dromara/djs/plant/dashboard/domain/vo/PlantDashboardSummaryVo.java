@@ -13,7 +13,7 @@ import java.util.List;
  * <p>一个 {@code /summary} 端点返回三块：</p>
  * <ul>
  *   <li>土地总览：空闲 / 种植中 / 采摘中 / 待种 / 总数 各地块计数 + 总面积（亩）。</li>
- *   <li>今日农事：按 {@code farm_type} 分桶计数列表 + 今日总条数。</li>
+ *   <li>今日工作：固定 6 格（种植 / 采摘 / 空地管理 / 种植管理 / 灾害损失 各地块数 + 采摘活动 kg）。</li>
  *   <li>当月完成率：按作物分组的实际 / 预期产量列表（完成率前端算）。</li>
  * </ul>
  *
@@ -60,14 +60,37 @@ public class PlantDashboardSummaryVo implements Serializable {
     private BigDecimal totalPlotArea;
 
     /**
-     * 今日农事按类型分桶列表（{@code farm_date = CURDATE()} GROUP BY {@code farm_type}）。
+     * 今日工作 - 种植（今日 {@code begin_actualdate = CURDATE()} 的不重复地块数）。
      */
-    private List<FarmWorkCountVo> todayFarmWork;
+    private Integer todayPlantingPlotCount;
 
     /**
-     * 今日农事总条数（{@code farm_date = CURDATE()}）。
+     * 今日工作 - 采摘（今日 {@code begin_harvestdate = CURDATE()} 的不重复地块数）。
      */
-    private Integer todayFarmWorkTotal;
+    private Integer todayHarvestPlotCount;
+
+    /**
+     * 今日工作 - 空地管理（今日农事 {@code farm_type IN (tillage_break, tillage_prepare, fertilize)}
+     * 的不重复地块数）。
+     */
+    private Integer todayIdleMgmtPlotCount;
+
+    /**
+     * 今日工作 - 种植管理（今日农事 {@code farm_type IN (transplant, water_fertilize, irrigation,
+     * weed, pruning, pest_control, rotation)} 的不重复地块数）。
+     */
+    private Integer todayPlantMgmtPlotCount;
+
+    /**
+     * 今日工作 - 灾害损失（今日农事 {@code farm_type = 'disaster'} 的不重复地块数）。
+     */
+    private Integer todayDisasterPlotCount;
+
+    /**
+     * 今日工作 - 采摘活动（今日 {@code t_plant_pick_activity.activity_date = CURDATE()}
+     * 的采摘量合计 kg）。
+     */
+    private BigDecimal todayPickActivityWeight;
 
     /**
      * 当前种植面积（亩，{@code SUM(plot_area)} WHERE {@code plot_status = 2} 种植中）。
@@ -113,8 +136,12 @@ public class PlantDashboardSummaryVo implements Serializable {
         vo.setTotalPlotArea(BigDecimal.ZERO);
         vo.setCurrentPlantingArea(BigDecimal.ZERO);
         vo.setCurrentExpectedYield(BigDecimal.ZERO);
-        vo.setTodayFarmWork(List.of());
-        vo.setTodayFarmWorkTotal(0);
+        vo.setTodayPlantingPlotCount(0);
+        vo.setTodayHarvestPlotCount(0);
+        vo.setTodayIdleMgmtPlotCount(0);
+        vo.setTodayPlantMgmtPlotCount(0);
+        vo.setTodayDisasterPlotCount(0);
+        vo.setTodayPickActivityWeight(BigDecimal.ZERO);
         vo.setMonthCompletion(List.of());
         vo.setCropPlantStat(List.of());
         vo.setOrganicCertOverview(new OrganicCertOverviewVo());

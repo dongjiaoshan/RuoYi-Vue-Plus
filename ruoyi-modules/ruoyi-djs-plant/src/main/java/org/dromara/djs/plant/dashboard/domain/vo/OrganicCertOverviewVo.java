@@ -6,17 +6,21 @@ import java.io.Serial;
 import java.io.Serializable;
 
 /**
- * 种植看板 - 有机证书情况一览（区块 3，PLT-DASH-001）。
+ * 种植看板 - 有机证书一览（区块 3，口径以「果蔬有机证书」为准）。
  *
- * <p>原型右上卡 4 个数字：</p>
- * <ul>
- *   <li>土地有机证书最早到期天数：{@code MIN(DATEDIFF(organic_valid, CURDATE()))}（t_plant_plot_organic）。</li>
- *   <li>作物有机证书最早到期天数：{@code MIN(DATEDIFF(crop_cert_valid, CURDATE()))}（t_plant_crop_organic）。</li>
- *   <li>作物无证书品类数：{@code t_plant_crop_info} 中无对应 {@code t_plant_crop_organic} 记录的作物数。</li>
- *   <li>预留证书品类数：{@code t_plant_crop_info} 总作物数（原型"预留证书品类数"= 已建档可挂证的作物品类总数）。</li>
- * </ul>
+ * <p>4 子项（{@code t_plant_crop_organic} 果蔬证书 + {@code t_plant_crop_info} 作物
+ * + {@code t_plant_plant_details} 在种明细）：</p>
+ * <ol>
+ *   <li>果蔬有机证到期日：最新一张果蔬证书的有效期到期日（{@code MAX(crop_cert_valid)}），
+ *       显示日期 {@code YYYY-MM-DD}，无证书时 null。</li>
+ *   <li>果蔬有机证书到期天数：{@code DATEDIFF(MAX(crop_cert_valid), CURDATE())}，
+ *       可为负（已过期），无证书时 null。</li>
+ *   <li>作物无证书品类数：在种作物（{@code plant_status <> 'completed'}）中
+ *       <b>不在</b>最新一张果蔬证书覆盖品类（{@code crop_id}）里的作物数量。</li>
+ *   <li>果蔬有机证书品类数：在种作物中 <b>在</b>最新果蔬证书覆盖品类里的作物数量。</li>
+ * </ol>
  *
- * <p>无证书时到期天数返回 null（前端展示"-"）；计数返回 0。</p>
+ * <p>「最新证书」= 有效期最晚（{@code crop_cert_valid} MAX）的一张。</p>
  *
  * @author djs
  * @since PLT-DASH-001
@@ -28,27 +32,27 @@ public class OrganicCertOverviewVo implements Serializable {
     private static final long serialVersionUID = 1L;
 
     /**
-     * 土地有机证书最早到期天数（{@code MIN(DATEDIFF(organic_valid, CURDATE()))}，可为负=已过期）。
+     * 果蔬有机证到期日（最新一张果蔬证书的到期日，{@code YYYY-MM-DD}）。
      *
-     * <p>无在册土地证书时为 null。</p>
+     * <p>无在册果蔬证书时为 null（前端展示"-"）。</p>
      */
-    private Integer plotCertMinDays;
+    private String cropCertExpiryDate;
 
     /**
-     * 作物有机证书最早到期天数（{@code MIN(DATEDIFF(crop_cert_valid, CURDATE()))}，可为负=已过期）。
+     * 果蔬有机证书到期天数（{@code DATEDIFF(MAX(crop_cert_valid), CURDATE())}，可为负=已过期）。
      *
-     * <p>无在册作物证书时为 null。</p>
+     * <p>无在册果蔬证书时为 null（前端展示"-"）。</p>
      */
-    private Integer cropCertMinDays;
+    private Integer cropCertDaysToExpiry;
 
     /**
-     * 作物无证书品类数（已建档作物中尚无有机证书的作物品类数）。
+     * 作物无证书品类数（在种作物中不在最新果蔬证书覆盖品类里的数量）。
      */
     private Integer cropNoCertCount;
 
     /**
-     * 预留证书品类数（已建档作物品类总数，可挂有机证书的候选品类）。
+     * 果蔬有机证书品类数（在种作物中在最新果蔬证书覆盖品类里的数量）。
      */
-    private Integer cropReservedCount;
+    private Integer cropCertCategoryCount;
 
 }

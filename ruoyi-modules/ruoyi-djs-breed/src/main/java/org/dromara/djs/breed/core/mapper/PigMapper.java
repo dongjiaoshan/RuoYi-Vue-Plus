@@ -7,8 +7,11 @@ import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 import org.dromara.common.mybatis.core.mapper.BaseMapperPlus;
 import org.dromara.djs.breed.core.domain.Pig;
+import org.dromara.djs.breed.core.domain.vo.BoarMatingCountVo;
 import org.dromara.djs.breed.core.domain.vo.PigAvailableVo;
+import org.dromara.djs.breed.core.domain.vo.PigEarTagMapVo;
 import org.dromara.djs.breed.core.domain.vo.PigLastFarrowVo;
+import org.dromara.djs.breed.core.domain.vo.PigLitterAggVo;
 import org.dromara.djs.breed.core.domain.vo.PigVo;
 
 import java.util.Collection;
@@ -190,6 +193,54 @@ public interface PigMapper extends BaseMapperPlus<Pig, PigVo> {
     IPage<PigAvailableVo> selectTraceablePigPage(IPage<PigAvailableVo> page);
 
     /**
+     * 按耳号批量查猪只展示信息（earNo / pigSex / pigBreedLabel / ageDays），门店追溯白条 enrich 用（FIX-STORE-TRACE-BAR-001）。
+     *
+     * <p>additive 跨域只读方法：门店「猪肉追溯码管理」picker 改为「当天确认收货白条」口径后，
+     * 先按 {@code t_warehouse_bar_info} 过滤出白条，再按白条耳号批量 enrich 猪只信息。
+     * <b>不复用也不改动</b> {@link #selectTraceablePigPage}（共享 mapper 保持原样，避免跨域污染）。</p>
+     *
+     * <p>SELECT / 品种 label / 日龄口径与 {@link #selectTraceablePigPage} 完全一致；区别：
+     * 按 {@code ear_no IN} 过滤、不限 {@code pig_type='fattening'}（白条来源猪只类型不限）、返 List 非分页。
+     * 租户显式 {@code tenant_id='1001' AND del_flag='0'}（V1 单租户）。耳号集合为空由 service 端短路，不传空。</p>
+     *
+     * @param earNos 耳号集合（已 dedupe，非空）
+     * @return 命中的猪只信息行（earNo 未命中档案的白条不返回，service 端按 earNo map 回填，取不到留 null）
+     */
+    @Select("""
+        <script>
+        SELECT
+            p.ear_no AS earNo,
+            p.pig_sex AS pigSex,
+            CASE
+                WHEN bi.breed_strain_name IS NOT NULL AND si.breed_strain_name IS NOT NULL
+                    THEN CONCAT(bi.breed_strain_name, '/', si.breed_strain_name)
+                WHEN bi.breed_strain_name IS NOT NULL
+                    THEN bi.breed_strain_name
+                WHEN p.pig_strain_code IS NOT NULL AND p.pig_breed_code IS NOT NULL
+                    THEN CONCAT(p.pig_breed_code, '/', p.pig_strain_code)
+                ELSE COALESCE(p.pig_breed_code, p.pig_strain_code)
+            END AS pigBreedLabel,
+            CASE WHEN p.birth_date IS NULL THEN NULL ELSE DATEDIFF(CURDATE(), p.birth_date) END AS ageDays
+        FROM t_farm_pig_info p
+        LEFT JOIN t_farm_breed_info bi
+               ON bi.breed_strain_code = p.pig_breed_code
+              AND bi.breed_strain = 1
+              AND bi.del_flag = '0'
+              AND bi.tenant_id = p.tenant_id
+        LEFT JOIN t_farm_breed_info si
+               ON si.breed_strain_code = p.pig_strain_code
+              AND si.breed_strain = 2
+              AND si.del_flag = '0'
+              AND si.tenant_id = p.tenant_id
+        WHERE p.del_flag = '0'
+          AND p.tenant_id = '1001'
+          AND p.ear_no IN
+        <foreach collection='earNos' item='en' open='(' separator=',' close=')'>#{en}</foreach>
+        </script>
+        """)
+    List<PigAvailableVo> selectPigInfoByEarNos(@Param("earNos") Collection<String> earNos);
+
+    /**
      * 批量查给定母猪集合各自的「最近一条分娩日期」（D12X-MP-FARROW-WEANING-001 断奶选猪到期窗口）。
      *
      * <p>跨表读 {@code t_farm_pig_farrow}（本 mapper 是 core 自有 mapper，仅在 SQL 字符串里引表名，
@@ -244,4 +295,104 @@ public interface PigMapper extends BaseMapperPlus<Pig, PigVo> {
            )
         """)
     int countAvailableForOutbound();
+
+    /**
+     * 批量聚合母猪集合各自的「活仔数」（母猪列表列，避免 N+1）。
+     *
+     * <p>口径：{@code SUM(live_born)} —— 只算活着出生的（不含死胎 {@code dead_born} /
+     * 木乃伊 {@code mummy_born}），与 Kevin 拍板「活仔=活口径」一致。
+     * {@code GROUP BY pig_id}、只算未软删行、显式 {@code tenant_id='1001'}（V1 单租户）。
+     * 空集合由调用方短路，不入 SQL；无分娩记录的母猪不在结果里（service 端回填 null）。</p>
+     *
+     * @param pigIds 候选母猪 id 集合（非空）
+     * @return 每头有分娩记录的母猪一行 {@code (pigId, total=SUM(live_born))}
+     */
+    @Select("""
+        <script>
+        SELECT pig_id AS pigId, COALESCE(SUM(live_born), 0) AS total
+          FROM t_farm_pig_farrow
+         WHERE del_flag = '0'
+           AND tenant_id = '1001'
+           AND pig_id IN
+           <foreach collection="pigIds" item="id" open="(" separator="," close=")">#{id}</foreach>
+         GROUP BY pig_id
+        </script>
+        """)
+    List<PigLitterAggVo> sumLiveBornByPigIds(@Param("pigIds") Collection<Long> pigIds);
+
+    /**
+     * 批量聚合母猪集合各自的「断奶仔猪数」（母猪列表列，避免 N+1）。
+     *
+     * <p>口径：{@code SUM(weaned_count)} —— 所有断奶记录的当前活仔数之和。
+     * {@code GROUP BY pig_id}、只算未软删行、显式 {@code tenant_id='1001'}（V1 单租户）。
+     * 空集合由调用方短路，不入 SQL；无断奶记录的母猪不在结果里（service 端回填 null）。</p>
+     *
+     * @param pigIds 候选母猪 id 集合（非空）
+     * @return 每头有断奶记录的母猪一行 {@code (pigId, total=SUM(weaned_count))}
+     */
+    @Select("""
+        <script>
+        SELECT pig_id AS pigId, COALESCE(SUM(weaned_count), 0) AS total
+          FROM t_farm_pig_weaning
+         WHERE del_flag = '0'
+           AND tenant_id = '1001'
+           AND pig_id IN
+           <foreach collection="pigIds" item="id" open="(" separator="," close=")">#{id}</foreach>
+         GROUP BY pig_id
+        </script>
+        """)
+    List<PigLitterAggVo> sumWeanedByPigIds(@Param("pigIds") Collection<Long> pigIds);
+
+    /**
+     * 批量聚合给定公猪耳号集合各自的「配种次数」（公猪列表 matingCount 真实统计，避免 N+1）。
+     *
+     * <p>配种表关联公猪用耳号（{@code t_farm_pig_breeding.boar_ear_no}，本场公猪配种时填），
+     * 故按 {@code boar_ear_no} {@code COUNT(*) GROUP BY boar_ear_no}。排除已软删配种记录、
+     * 排除空耳号（精液配种 boar_ear_no 为空，不计入任何公猪）；显式 {@code tenant_id='1001'}
+     * （V1 单租户）。空集合由调用方短路，不入 SQL。</p>
+     *
+     * @param boarEarNos 公猪耳号简版集合（非空）
+     * @return 每个有配种记录的公猪耳号一行 {@code (boarEarNo, total=COUNT(*))}
+     */
+    @Select("""
+        <script>
+        SELECT boar_ear_no AS boarEarNo, COUNT(*) AS total
+          FROM t_farm_pig_breeding
+         WHERE del_flag = '0'
+           AND tenant_id = '1001'
+           AND boar_ear_no IS NOT NULL
+           AND boar_ear_no != ''
+           AND boar_ear_no IN
+           <foreach collection="boarEarNos" item="en" open="(" separator="," close=")">#{en}</foreach>
+         GROUP BY boar_ear_no
+        </script>
+        """)
+    List<BoarMatingCountVo> countBreedingByBoarEarNos(@Param("boarEarNos") Collection<String> boarEarNos);
+
+    /**
+     * 按耳号简版批量查全版耳号 {@code (ear_no, ear_tag)}（详情父系/母系显示全版耳号 enrich，避免 N+1）。
+     *
+     * <p>{@code motherEar / fatherEar} 存的是短号，详情要显示全版 → 按短号 IN 批量反查 ear_tag。
+     * 同一短号可能因耳号复用对应多 lifecycle 行，取 {@code id DESC} 最新一条（活的优先）；
+     * 只算未软删行、显式 {@code tenant_id='1001'}（V1 单租户）。空集合由调用方短路。</p>
+     *
+     * @param earNos 耳号简版集合（非空，已 dedupe）
+     * @return 命中行 {@code (earNo, earTag)}；未命中的短号不返回（service 端回填 null）
+     */
+    @Select("""
+        <script>
+        SELECT t.ear_no AS earNo, t.ear_tag AS earTag
+          FROM t_farm_pig_info t
+          JOIN (
+                SELECT ear_no, MAX(id) AS max_id
+                  FROM t_farm_pig_info
+                 WHERE del_flag = '0'
+                   AND tenant_id = '1001'
+                   AND ear_no IN
+                   <foreach collection="earNos" item="en" open="(" separator="," close=")">#{en}</foreach>
+                 GROUP BY ear_no
+          ) m ON m.max_id = t.id
+        </script>
+        """)
+    List<PigEarTagMapVo> selectEarTagByEarNos(@Param("earNos") Collection<String> earNos);
 }

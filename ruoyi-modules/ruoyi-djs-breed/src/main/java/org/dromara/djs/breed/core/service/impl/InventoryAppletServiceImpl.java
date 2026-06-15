@@ -293,14 +293,12 @@ public class InventoryAppletServiceImpl implements IInventoryAppletService {
         if (valid.isEmpty()) {
             return null;
         }
-        int firstStart = valid.get(0).getStartAge();
         int lastEnd = valid.get(valid.size() - 1).getEndAge();
 
-        // 段：「保育期」(< 首段起始) + n 个配置段 + 「{末段截止}日以上」
+        // 段：n 个配置段 + 「{末段截止}日以上」（育肥猪无「保育期」阶段 —— 6/15 测试 row63：
+        // 去掉首档「保育期」恒 0 列；小于首段起始的极少数低日龄并入首个配置段，不丢数据不显保育期）。
         List<String> labels = new ArrayList<>();
         List<Long> upper = new ArrayList<>();
-        labels.add("保育期");
-        upper.add((long) (firstStart - 1)); // days ≤ firstStart-1 → 保育期
         for (FattenAgeStageVo s : valid) {
             labels.add(s.getStartAge() + "-" + s.getEndAge() + "日");
             upper.add((long) (int) s.getEndAge());

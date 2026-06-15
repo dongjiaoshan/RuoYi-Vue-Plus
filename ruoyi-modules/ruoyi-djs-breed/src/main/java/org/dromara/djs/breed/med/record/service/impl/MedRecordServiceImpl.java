@@ -115,7 +115,7 @@ public class MedRecordServiceImpl extends DjsBaseServiceImpl<MedRecordMapper, Me
         entity.setDrugType(1);
         entity.setEarNo(pig.getEarNo());
         entity.setMedicineName(medicine.getMedicineName());
-        fillOperator(entity);
+        fillOperator(entity, bo.getOperatorId(), bo.getOperatorName());
         baseMapper.insert(entity);
 
         log.info("[BRD-MED-003] addSingle pigId={} earNo={} batchId={} dosage={} recordId={}",
@@ -172,7 +172,7 @@ public class MedRecordServiceImpl extends DjsBaseServiceImpl<MedRecordMapper, Me
         master.setScheduleId(bo.getScheduleId());
         master.setMedicineDosage(totalDosage); // master 行存合计
         master.setRemark(bo.getRemark());
-        fillOperator(master);
+        fillOperator(master, bo.getOperatorId(), bo.getOperatorName());
         baseMapper.insert(master);
 
         // detail rows
@@ -195,7 +195,7 @@ public class MedRecordServiceImpl extends DjsBaseServiceImpl<MedRecordMapper, Me
             d.setScheduleId(bo.getScheduleId());
             d.setMedicineDosage(bo.getMedicineDosage());
             d.setRemark(bo.getRemark());
-            fillOperator(d);
+            fillOperator(d, bo.getOperatorId(), bo.getOperatorName());
             details.add(d);
         }
         baseMapper.insertBatch(details);
@@ -347,7 +347,16 @@ public class MedRecordServiceImpl extends DjsBaseServiceImpl<MedRecordMapper, Me
      *
      * <p>从 sa-token {@link LoginHelper} 拿 LoginUser，避免引入 ruoyi-system 模块依赖。</p>
      */
-    private void fillOperator(MedRecord entity) {
+    private void fillOperator(MedRecord entity, Long boOperatorId, String boOperatorName) {
+        // 前端选了用药人（默认当前登录人，可改选其他员工）→ 用所选；EmployeePicker 一并传 name 快照，免跨模块查 sys_user。
+        if (boOperatorId != null) {
+            entity.setOperatorId(boOperatorId);
+            if (StringUtils.isNotBlank(boOperatorName)) {
+                entity.setOperatorName(boOperatorName);
+            }
+            return;
+        }
+        // 未选 → 回落当前登录人（ADR-0007）。
         Long userId;
         LoginUser loginUser;
         try {

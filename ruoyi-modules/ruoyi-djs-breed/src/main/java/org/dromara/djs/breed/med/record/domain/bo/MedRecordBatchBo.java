@@ -97,4 +97,14 @@ public class MedRecordBatchBo {
     @Size(max = 500)
     private String remark;
 
+    /**
+     * 用药人 user_id（选填；mp 默认当前登录人可改选。空 → 后端回落 LoginHelper.getUserId）。
+     */
+    private Long operatorId;
+
+    /**
+     * 用药人姓名快照（前端 EmployeePicker 选中一并传；空 → 后端取登录人昵称）。
+     */
+    private String operatorName;
+
 }

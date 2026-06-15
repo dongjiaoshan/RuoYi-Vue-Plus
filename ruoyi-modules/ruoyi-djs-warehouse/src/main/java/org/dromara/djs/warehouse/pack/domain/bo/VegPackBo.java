@@ -47,8 +47,10 @@ public class VegPackBo {
 
     /**
      * 入库目标库位 FK → {@code t_warehouse_location_info.id}（蔬菜鲜品库）。
+     *
+     * <p>FIX-WMS-PACK-CASHIER：前端打包收银台不再采集入库库位，可空；service 端默认取该产品配置的
+     * 入库库位（{@code product_info.store_location_id} 首个），无配置则取首个可用库位兜底。</p>
      */
-    @NotNull(message = "{pack.location_id.required}")
     private Long locationId;
 
     /**

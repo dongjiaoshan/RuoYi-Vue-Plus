@@ -189,6 +189,26 @@ public interface PlantWorkPerformanceMapper extends BaseMapperPlus<PlantWorkPerf
     List<Map<String, Object>> selectTeamNames(@Param("teamIds") Collection<Long> teamIds);
 
     /**
+     * 批量统计各班组当前成员数（列表「班组人数」列 enrich，rework 134/135）。
+     *
+     * <p>口径：{@code t_plant_work_people} 按 team_id 计活动成员行数（{@code del_flag='0'}）。
+     * 当前快照成员数（成员表无历史快照），同班组各月行显示同一人数。一次 IN 取回避免 N+1。</p>
+     *
+     * <p>显式 {@code tenant_id='1001' AND del_flag='0'}（V1 单租户，原生 SQL 不自动注入）。</p>
+     *
+     * @param teamIds 班组 id 集合（已 dedupe，非空）
+     * @return 命中的 (teamId / cnt) 行；未命中班组不返回（service 端默认 0）
+     */
+    @Select("<script>" +
+        "SELECT team_id AS teamId, COUNT(*) AS cnt " +
+        "FROM t_plant_work_people " +
+        "WHERE tenant_id = '1001' AND del_flag = '0' AND team_id IN " +
+        "<foreach collection='teamIds' item='tid' open='(' separator=',' close=')'>#{tid}</foreach>" +
+        " GROUP BY team_id" +
+        "</script>")
+    List<Map<String, Object>> countTeamMembers(@Param("teamIds") Collection<Long> teamIds);
+
+    /**
      * 批量查询 cropId → cropName 映射（列表 enrich）。
      *
      * @param cropIds 作物 id 集合（非空）

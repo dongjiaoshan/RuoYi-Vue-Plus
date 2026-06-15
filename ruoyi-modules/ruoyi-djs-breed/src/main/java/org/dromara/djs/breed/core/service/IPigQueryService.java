@@ -4,6 +4,9 @@ import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.breed.core.domain.vo.PigAvailableVo;
 
+import java.util.Collection;
+import java.util.List;
+
 /**
  * 猪只领域只读查询接口（跨模块薄壳）。
  *
@@ -62,5 +65,17 @@ public interface IPigQueryService {
      * @return 分页 VO（复用 {@link PigAvailableVo}）
      */
     TableDataInfo<PigAvailableVo> listTraceablePigs(PageQuery pageQuery);
+
+    /**
+     * 按耳号批量查猪只展示信息（FIX-STORE-TRACE-BAR-001 门店追溯白条 enrich 用）。
+     *
+     * <p>additive 跨域只读：门店「猪肉追溯码管理」picker 改为「当天确认收货白条」口径后，
+     * 先按白条过滤、再按白条耳号 enrich 猪只信息（性别 / 品种品系 / 日龄）。
+     * 不复用也不污染分页选猪 {@link #listTraceablePigs(PageQuery)}。</p>
+     *
+     * @param earNos 耳号集合（可空 / 空时返空 list）
+     * @return 命中档案的猪只信息（earNo / pigSex / pigBreedLabel / ageDays）；未命中耳号不返回
+     */
+    List<PigAvailableVo> listPigInfoByEarNos(Collection<String> earNos);
 
 }

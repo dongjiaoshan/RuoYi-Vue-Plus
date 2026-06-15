@@ -211,14 +211,21 @@ public class DashboardServiceImpl implements IDashboardService {
         }
         String tenantId = currentTenant();
         LocalDate first = ym.atDay(1);
-        LocalDate last = ym.atEndOfMonth();
-        LocalDate toExclusive = last.plusDays(1); // 右开区间
+        // FIX-MGMT-MP-BRD-ACTIVITY-RANGE-001：日期列「从昨日开始往前」——活动统计只展示已发生的日期，
+        // 不再铺满整月（避免今天及未来日期全 0 列），且数组顺序为昨日 → 月初倒序（days[0]=昨日）。
+        // 上界 last = min(当月最后一天, 昨日)：
+        //   · 查当月：昨日通常 < 月末 → 列从昨日倒排到月初；今天是 1 号查本月时昨日落上月 → last < first → days 空。
+        //   · 查历史已过完的月：昨日 ≥ 月末 → last = 月末，从月末倒排到月初（整月）。
+        LocalDate yesterday = LocalDate.now().minusDays(1);
+        LocalDate last = ym.atEndOfMonth().isAfter(yesterday) ? yesterday : ym.atEndOfMonth();
+        LocalDate toExclusive = last.plusDays(1); // 右开区间（聚合查询用，缩到昨日+1）
         LocalDateTime dtFrom = first.atStartOfDay();
         LocalDateTime dtTo = toExclusive.atStartOfDay();
 
         java.time.format.DateTimeFormatter md = java.time.format.DateTimeFormatter.ofPattern("MM-dd");
         List<String> days = new ArrayList<>();
-        for (LocalDate d = first; !d.isAfter(last); d = d.plusDays(1)) {
+        // 从 last（昨日 / 月末）倒排到 first（月初）。last < first（今天 1 号查本月）时不进循环 → days 空。
+        for (LocalDate d = last; !d.isBefore(first); d = d.minusDays(1)) {
             days.add(d.format(md));
         }
 

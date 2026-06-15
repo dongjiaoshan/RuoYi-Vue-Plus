@@ -181,8 +181,8 @@ public class ProductProductionServiceImpl
         ProductInhouse src = requireActiveInhouse(bo.getSourceInhouseId());
         // Step 2：校验目标产品存在 + 是发货品
         ProductInfo product = requireDeliveryProduct(bo.getProductId());
-        // Step 3：校验入库库位存在
-        requireLocation(bo.getLocationId());
+        // Step 3：入库库位（前端收银台不采集，可空 → 默认取产品配置库位/首个可用库位兜底）
+        Long locationId = resolveLocationId(bo.getLocationId(), product);
 
         // Step 4：INSERT product_production
         ProductProduction p = new ProductProduction();
@@ -212,11 +212,11 @@ public class ProductProductionServiceImpl
         baseMapper.insert(p);
 
         // Step 5：INSERT stock_flow 入库
-        insertPackInFlow(product.getId(), bo.getLocationId(), bo.getProductWeight(),
+        insertPackInFlow(product.getId(), locationId, bo.getProductWeight(),
             src.getEarNo(), src.getPlotId(), p.getProduceNo(), userId, now);
 
         // Step 6：UPSERT location_stock += weight（不存在则建新行，WMS-PACK-UPSERT-001）
-        upsertLocationStock(bo.getLocationId(), p, bo.getProductWeight(), userId);
+        upsertLocationStock(locationId, p, bo.getProductWeight(), userId);
 
         // Step 7：软删来源 inhouse（V1 整 row 消耗）
         consumeInhouse(src);
@@ -243,7 +243,8 @@ public class ProductProductionServiceImpl
         if (!PRODUCT_TYPE_GIFT.equals(giftBoxProduct.getProductType())) {
             throw new ServiceException("产品不是礼盒类型（product_type != 3）：" + bo.getGiftBoxProductId());
         }
-        requireLocation(bo.getLocationId());
+        // 入库库位（前端收银台不采集，可空 → 默认取礼盒产品配置库位/首个可用库位兜底）
+        Long locationId = resolveLocationId(bo.getLocationId(), giftBoxProduct);
 
         // Step 2：查 D8 gift_box 拿组件清单
         List<GiftBox> components = giftBoxMapper.selectList(
@@ -261,15 +262,15 @@ public class ProductProductionServiceImpl
         for (GiftBox c : components) {
             BigDecimal needQty = c.getComponentCount().multiply(packCount);
             int affected = locationStockMapper.deductByProductLocation(
-                bo.getLocationId(), c.getComponentProductId(), needQty, userId);
+                locationId, c.getComponentProductId(), needQty, userId);
             if (affected == 0) {
                 throw new ServiceException(
                     "组件库存不足 component_product_id=" + c.getComponentProductId()
                     + " 需要=" + needQty + c.getComponentUnit()
-                    + "（库位=" + bo.getLocationId() + "）");
+                    + "（库位=" + locationId + "）");
             }
             // 组件消耗流水
-            insertPackConsumeFlow(c.getComponentProductId(), bo.getLocationId(),
+            insertPackConsumeFlow(c.getComponentProductId(), locationId,
                 needQty, bo.getGiftBoxProductId(), userId, now);
         }
 
@@ -299,9 +300,9 @@ public class ProductProductionServiceImpl
         baseMapper.insert(p);
 
         // Step 5：INSERT stock_flow 礼盒入库 + UPSERT location_stock += packBoxCount（WMS-PACK-UPSERT-001）
-        insertPackInFlow(giftBoxProduct.getId(), bo.getLocationId(), giftWeight,
+        insertPackInFlow(giftBoxProduct.getId(), locationId, giftWeight,
             null, null, p.getProduceNo(), userId, now);
-        upsertLocationStock(bo.getLocationId(), p, giftWeight, userId);
+        upsertLocationStock(locationId, p, giftWeight, userId);
 
         // 生成追溯码回填 + 写 in_stock 事件（TRC-CORE-001）；礼盒无 earNo / plotId
         fillTraceCode(p, null, null);
@@ -322,7 +323,8 @@ public class ProductProductionServiceImpl
 
         ProductInhouse src = requireActiveInhouse(bo.getSourceInhouseId());
         ProductInfo product = requireDeliveryProduct(bo.getProductId());
-        requireLocation(bo.getLocationId());
+        // 入库库位（前端收银台不采集，可空 → 默认取产品配置库位/首个可用库位兜底）
+        Long locationId = resolveLocationId(bo.getLocationId(), product);
 
         ProductProduction p = new ProductProduction();
         p.setProduceDate(java.sql.Date.valueOf(LocalDate.now()));
@@ -348,9 +350,9 @@ public class ProductProductionServiceImpl
         p.setRemark(bo.getRemark());
         baseMapper.insert(p);
 
-        insertPackInFlow(product.getId(), bo.getLocationId(), bo.getProductWeight(),
+        insertPackInFlow(product.getId(), locationId, bo.getProductWeight(),
             src.getEarNo(), src.getPlotId(), p.getProduceNo(), userId, now);
-        upsertLocationStock(bo.getLocationId(), p, bo.getProductWeight(), userId);
+        upsertLocationStock(locationId, p, bo.getProductWeight(), userId);
         consumeInhouse(src);
 
         // 生成追溯码回填 + 写 in_stock 事件（TRC-CORE-001）
@@ -650,6 +652,54 @@ public class ProductProductionServiceImpl
         if (location == null) {
             throw new ServiceException("入库库位不存在：" + locationId);
         }
+    }
+
+    /**
+     * 解析入库库位（FIX-WMS-PACK-CASHIER 决策 2）：前端打包收银台不再采集入库库位。
+     *
+     * <p>优先级：① 入参 {@code boLocationId} 非空 → 校验存在后用；
+     * ② 否则取该产品配置的入库库位（{@code product_info.store_location_id} 逗号分隔列表首个有效项）；
+     * ③ 仍无 → 取首个可用库位（{@code t_warehouse_location_info} 未软删按 id 升序第一条）兜底。
+     * 全部落空（系统未建任何库位）→ 抛 ServiceException。</p>
+     *
+     * @param boLocationId 前端传入的库位 id（可空）
+     * @param product      目标打包产品（取其 store_location_id 配置）
+     * @return 解析出的有效库位 id（非空）
+     */
+    protected Long resolveLocationId(Long boLocationId, ProductInfo product) {
+        // ① 前端显式传了库位 → 校验存在后用
+        if (boLocationId != null) {
+            requireLocation(boLocationId);
+            return boLocationId;
+        }
+        // ② 产品配置的入库库位（store_location_id 逗号分隔，取首个存在的有效项）
+        if (product != null && StringUtils.isNotBlank(product.getStoreLocationId())) {
+            for (String token : product.getStoreLocationId().split(",")) {
+                String trimmed = token.trim();
+                if (trimmed.isEmpty()) {
+                    continue;
+                }
+                Long candidate;
+                try {
+                    candidate = Long.valueOf(trimmed);
+                } catch (NumberFormatException ex) {
+                    continue;
+                }
+                if (locationInfoMapper.selectById(candidate) != null) {
+                    return candidate;
+                }
+            }
+        }
+        // ③ 首个可用库位兜底
+        LocationInfo first = locationInfoMapper.selectList(
+                new LambdaQueryWrapper<LocationInfo>()
+                    .orderByAsc(LocationInfo::getId)
+                    .last("LIMIT 1"))
+            .stream().findFirst().orElse(null);
+        if (first == null) {
+            throw new ServiceException("系统未配置任何入库库位，无法打包入库（请先在仓库管理 → 库位维护新建库位）");
+        }
+        return first.getId();
     }
 
     /**

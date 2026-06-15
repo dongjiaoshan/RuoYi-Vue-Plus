@@ -51,8 +51,10 @@ public class AppletPlotZoneController {
     @SaCheckLogin
     @GetMapping("/listAll")
     public R<List<ZonePickerVo>> listAll(@RequestParam(required = false) String keyword) {
+        // zone_status 走字典 sys_normal_disable：0=正常（启用）/ 1=停用（与 admin 列表 toggle 同口径）。
+        // mp picker 只列启用片区 → eq 0。
         LambdaQueryWrapper<PlotZone> wrapper = new LambdaQueryWrapper<PlotZone>()
-            .eq(PlotZone::getZoneStatus, 1)
+            .eq(PlotZone::getZoneStatus, 0)
             .and(StringUtils.isNotBlank(keyword), w -> w
                 .like(PlotZone::getZoneName, keyword)
                 .or()

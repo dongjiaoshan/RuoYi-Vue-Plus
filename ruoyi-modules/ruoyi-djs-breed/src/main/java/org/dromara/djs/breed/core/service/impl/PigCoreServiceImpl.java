@@ -15,9 +15,12 @@ import org.dromara.djs.breed.core.domain.bo.PigCreateBo;
 import org.dromara.djs.breed.core.domain.bo.PigEventBo;
 import org.dromara.djs.breed.core.domain.query.PigQuery;
 import org.dromara.djs.breed.core.domain.query.PigStatusRecordQuery;
+import org.dromara.djs.breed.core.domain.vo.BoarMatingCountVo;
 import org.dromara.djs.breed.core.domain.vo.PigBarnCountVo;
 import org.dromara.djs.breed.core.domain.vo.PigDetailVo;
+import org.dromara.djs.breed.core.domain.vo.PigEarTagMapVo;
 import org.dromara.djs.breed.core.domain.vo.PigIntroDetailVo;
+import org.dromara.djs.breed.core.domain.vo.PigLitterAggVo;
 import org.dromara.djs.breed.core.domain.vo.PigSearchVo;
 import org.dromara.djs.breed.core.domain.vo.PigStatusRecordVo;
 import org.dromara.djs.breed.core.domain.vo.PigVo;
@@ -280,6 +283,7 @@ public class PigCoreServiceImpl implements IPigCoreService {
             throw new ServiceException(I18nMessages.t("pig.not_found", pigId));
         }
         enrichBarnPenCodes(List.of(vo));
+        enrichParentEarTags(List.of(vo));
         PigDetailVo detail = toDetailVo(vo);
         LambdaQueryWrapper<PigStatusRecord> w = new LambdaQueryWrapper<PigStatusRecord>()
             .eq(PigStatusRecord::getPigId, pigId)
@@ -338,7 +342,79 @@ public class PigCoreServiceImpl implements IPigCoreService {
         LambdaQueryWrapper<Pig> wrapper = buildWrapper(query);
         Page<PigVo> page = pigMapper.selectVoPage(pageQuery.build(), wrapper);
         enrichBarnPenCodes(page.getRecords());
+        // 母猪列表：批量回填活仔数 / 断奶仔猪数 / 窝均仔数；公猪列表：批量回填配种次数。
+        // 按 pigType 分支只在对应 tab 触发对应聚合（避免无谓查询）。
+        enrichSowLitterStats(page.getRecords());
+        enrichBoarMatingCount(page.getRecords());
         return TableDataInfo.build(page);
+    }
+
+    /**
+     * 母猪列表 enrich：活仔数（SUM(live_born)）/ 断奶仔猪数（SUM(weaned_count)）/ 窝均仔数（活仔÷胎次）。
+     * 批量 IN + GROUP BY 各一次回填，避免 N+1。仅对 pig_sex=F 的母猪行计算。
+     */
+    private void enrichSowLitterStats(List<PigVo> rows) {
+        if (rows == null || rows.isEmpty()) {
+            return;
+        }
+        Set<Long> sowIds = rows.stream()
+            .filter(v -> "F".equals(v.getPigSex()) && v.getId() != null)
+            .map(PigVo::getId)
+            .collect(Collectors.toSet());
+        if (sowIds.isEmpty()) {
+            return;
+        }
+        Map<Long, Integer> liveBornMap = pigMapper.sumLiveBornByPigIds(sowIds).stream()
+            .filter(v -> v.getPigId() != null)
+            .collect(Collectors.toMap(PigLitterAggVo::getPigId,
+                v -> Optional.ofNullable(v.getTotal()).orElse(0), (a, b) -> a));
+        Map<Long, Integer> weanedMap = pigMapper.sumWeanedByPigIds(sowIds).stream()
+            .filter(v -> v.getPigId() != null)
+            .collect(Collectors.toMap(PigLitterAggVo::getPigId,
+                v -> Optional.ofNullable(v.getTotal()).orElse(0), (a, b) -> a));
+        for (PigVo vo : rows) {
+            if (!"F".equals(vo.getPigSex()) || vo.getId() == null) {
+                continue;
+            }
+            Integer liveBorn = liveBornMap.get(vo.getId());
+            vo.setLiveBornCount(liveBorn);
+            vo.setWeanedCount(weanedMap.get(vo.getId()));
+            // 窝均仔数 = 活仔数 ÷ 胎次；parity=0 / null → null（与活仔=活口径一致）
+            Integer parity = vo.getParity();
+            if (liveBorn != null && parity != null && parity > 0) {
+                vo.setAvgLitterSize(java.math.BigDecimal.valueOf(liveBorn)
+                    .divide(java.math.BigDecimal.valueOf(parity), 1, java.math.RoundingMode.HALF_UP));
+            }
+        }
+    }
+
+    /**
+     * 公猪列表 enrich：配种次数（COUNT(t_farm_pig_breeding) GROUP BY boar_ear_no）。
+     * 配种表按公猪耳号关联（本场公猪配种填 boar_ear_no），批量 IN + GROUP BY 一次回填，避免 N+1。
+     * 仅对 pig_sex=M 的公猪行计算。
+     */
+    private void enrichBoarMatingCount(List<PigVo> rows) {
+        if (rows == null || rows.isEmpty()) {
+            return;
+        }
+        Set<String> boarEarNos = rows.stream()
+            .filter(v -> "M".equals(v.getPigSex()) && StringUtils.isNotBlank(v.getEarNo()))
+            .map(PigVo::getEarNo)
+            .collect(Collectors.toSet());
+        if (boarEarNos.isEmpty()) {
+            return;
+        }
+        Map<String, Integer> countMap = pigMapper.countBreedingByBoarEarNos(boarEarNos).stream()
+            .filter(v -> StringUtils.isNotBlank(v.getBoarEarNo()))
+            .collect(Collectors.toMap(BoarMatingCountVo::getBoarEarNo,
+                v -> Optional.ofNullable(v.getTotal()).orElse(0), (a, b) -> a));
+        for (PigVo vo : rows) {
+            if ("M".equals(vo.getPigSex()) && StringUtils.isNotBlank(vo.getEarNo())) {
+                // 公猪 matingCount 列原本恒 0（Pig.matingCount 是母猪累计配种计数器，公猪不写），
+                // 这里覆盖为按配种记录的真实统计；无配种记录回 0。
+                vo.setMatingCount(countMap.getOrDefault(vo.getEarNo(), 0));
+            }
+        }
     }
 
     /**
@@ -376,6 +452,40 @@ public class PigCoreServiceImpl implements IPigCoreService {
             // 品种/品系中文名（djs_pig_breed / djs_pig_strain 字典；翻不到回落 code）
             vo.setPigBreedName(translateDictOrCode("djs_pig_breed", vo.getPigBreedCode()));
             vo.setPigStrainName(translateDictOrCode("djs_pig_strain", vo.getPigStrainCode()));
+        }
+    }
+
+    /**
+     * 详情 enrich：按 motherEar / fatherEar 短号批量反查父母猪 ear_tag（全版耳号），
+     * 回填 {@code motherEarTag / fatherEarTag}（查不到留 null，前端回落短号）。
+     * 批量 IN 一次查（详情虽单行，但父母两个短号合并一次查），避免两次单查。
+     */
+    private void enrichParentEarTags(List<PigVo> rows) {
+        if (rows == null || rows.isEmpty()) {
+            return;
+        }
+        Set<String> earNos = new HashSet<>();
+        for (PigVo vo : rows) {
+            if (StringUtils.isNotBlank(vo.getMotherEar())) {
+                earNos.add(vo.getMotherEar());
+            }
+            if (StringUtils.isNotBlank(vo.getFatherEar())) {
+                earNos.add(vo.getFatherEar());
+            }
+        }
+        if (earNos.isEmpty()) {
+            return;
+        }
+        Map<String, String> tagMap = pigMapper.selectEarTagByEarNos(earNos).stream()
+            .filter(v -> StringUtils.isNotBlank(v.getEarNo()) && StringUtils.isNotBlank(v.getEarTag()))
+            .collect(Collectors.toMap(PigEarTagMapVo::getEarNo, PigEarTagMapVo::getEarTag, (a, b) -> a));
+        for (PigVo vo : rows) {
+            if (StringUtils.isNotBlank(vo.getMotherEar())) {
+                vo.setMotherEarTag(tagMap.get(vo.getMotherEar()));
+            }
+            if (StringUtils.isNotBlank(vo.getFatherEar())) {
+                vo.setFatherEarTag(tagMap.get(vo.getFatherEar()));
+            }
         }
     }
 
@@ -798,9 +908,47 @@ public class PigCoreServiceImpl implements IPigCoreService {
             .eq(StringUtils.isNotBlank(query.getCurrentStatus()), Pig::getCurrentStatus, query.getCurrentStatus())
             .eq(query.getBarnId() != null, Pig::getBarnId, query.getBarnId())
             .eq(query.getPenId() != null, Pig::getPenId, query.getPenId())
-            .ne(Boolean.TRUE.equals(query.getExcludeEnd()), Pig::getCurrentStatus, PigLifecycle.END.name())
-            .orderByDesc(Pig::getId);
+            .ne(Boolean.TRUE.equals(query.getExcludeEnd()), Pig::getCurrentStatus, PigLifecycle.END.name());
+
+        // 栋舍/栏位按名称模糊：先反查命中的 barn_id / pen_id 集合，再 in(...)；
+        // 命中空集合时强制返空（in 空集合在 MP 里被忽略 → 改用恒假条件），避免误返全量。
+        if (StringUtils.isNotBlank(query.getBarnName())) {
+            Set<Long> barnIds = resolveBarnIdsByName(query.getBarnName());
+            if (barnIds.isEmpty()) {
+                w.apply("1 = 0");
+            } else {
+                w.in(Pig::getBarnId, barnIds);
+            }
+        }
+        if (StringUtils.isNotBlank(query.getPenName())) {
+            Set<Long> penIds = resolvePenIdsByName(query.getPenName());
+            if (penIds.isEmpty()) {
+                w.apply("1 = 0");
+            } else {
+                w.in(Pig::getPenId, penIds);
+            }
+        }
+
+        w.orderByDesc(Pig::getId);
         return w;
+    }
+
+    /** 栋舍名称模糊 → barn_id 集合（多匹配）；无命中返空集合。 */
+    private Set<Long> resolveBarnIdsByName(String barnName) {
+        return barnMapper.selectList(
+                new LambdaQueryWrapper<Barn>()
+                    .select(Barn::getId)
+                    .like(Barn::getBarnName, barnName))
+            .stream().map(Barn::getId).filter(Objects::nonNull).collect(Collectors.toSet());
+    }
+
+    /** 栏位名称模糊 → pen_id 集合（多匹配）；无命中返空集合。 */
+    private Set<Long> resolvePenIdsByName(String penName) {
+        return penMapper.selectList(
+                new LambdaQueryWrapper<Pen>()
+                    .select(Pen::getId)
+                    .like(Pen::getPenName, penName))
+            .stream().map(Pen::getId).filter(Objects::nonNull).collect(Collectors.toSet());
     }
 
     private PigLifecycle parseLifecycle(String name, Long pigId) {
@@ -884,7 +1032,9 @@ public class PigCoreServiceImpl implements IPigCoreService {
         d.setPenName(src.getPenName());
         d.setMatingId(src.getMatingId());
         d.setMotherEar(src.getMotherEar());
+        d.setMotherEarTag(src.getMotherEarTag());
         d.setFatherEar(src.getFatherEar());
+        d.setFatherEarTag(src.getFatherEarTag());
         d.setMatingCount(src.getMatingCount());
         d.setLastMatingDate(src.getLastMatingDate());
         d.setRemark(src.getRemark());

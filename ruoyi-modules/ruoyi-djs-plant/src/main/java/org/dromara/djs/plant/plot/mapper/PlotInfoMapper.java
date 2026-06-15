@@ -25,7 +25,8 @@ public interface PlotInfoMapper extends BaseMapperPlus<PlotInfo, PlotInfoVo> {
      * 按片区聚合「空地（plot_status=1）」地块数（FIX-PLT-MP-TILL-001 P6 翻耕筛选胶囊）。
      *
      * <p>LEFT JOIN 片区表，保证 0 空地的启用片区也出 {@code X区(0)} 胶囊。
-     * 只统计未删除空地，启用片区（zone_status=1）。返回每行 {@code {zoneId, zoneName, idleCount}}，
+     * 只统计未删除空地，启用片区（zone_status=0，字典 sys_normal_disable：0=正常/启用，1=停用，
+     * 与 admin 片区列表 toggle 同口径）。返回每行 {@code {zoneId, zoneName, idleCount}}，
      * 按片区名升序。</p>
      *
      * <p>SQL 已手写完整 {@code tenant_id = '1001'}（与全库 V1 单租户口径一致），用
@@ -47,7 +48,7 @@ public interface PlotInfoMapper extends BaseMapperPlus<PlotInfo, PlotInfoVo> {
            AND p.tenant_id = '1001'
          WHERE z.del_flag = '0'
            AND z.tenant_id = '1001'
-           AND z.zone_status = 1
+           AND z.zone_status = 0
          GROUP BY z.id, z.zone_name
          ORDER BY z.zone_name ASC
         """)

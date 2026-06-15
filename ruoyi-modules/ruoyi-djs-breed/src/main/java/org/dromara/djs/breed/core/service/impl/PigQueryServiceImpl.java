@@ -49,4 +49,12 @@ public class PigQueryServiceImpl implements IPigQueryService {
         IPage<PigAvailableVo> page = pigMapper.selectTraceablePigPage(pq.build());
         return TableDataInfo.build(page);
     }
+
+    @Override
+    public java.util.List<PigAvailableVo> listPigInfoByEarNos(java.util.Collection<String> earNos) {
+        if (earNos == null || earNos.isEmpty()) {
+            return java.util.List.of();
+        }
+        return pigMapper.selectPigInfoByEarNos(earNos);
+    }
 }

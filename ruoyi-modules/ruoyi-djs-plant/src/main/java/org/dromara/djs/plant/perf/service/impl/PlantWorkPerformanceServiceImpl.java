@@ -185,10 +185,17 @@ public class PlantWorkPerformanceServiceImpl
             .filter(Objects::nonNull)
             .collect(Collectors.toCollection(HashSet::new));
         Map<Long, String> teamNameMap = new HashMap<>();
+        Map<Long, Integer> teamMemberCountMap = new HashMap<>();
         if (!teamIds.isEmpty()) {
             for (Map<String, Object> r : baseMapper.selectTeamNames(teamIds)) {
                 if (r.get("teamId") instanceof Number n) {
                     teamNameMap.put(n.longValue(), (String) r.get("teamName"));
+                }
+            }
+            // 班组人数：一次 IN 查 t_plant_work_people 活动成员数（rework 134/135）
+            for (Map<String, Object> r : baseMapper.countTeamMembers(teamIds)) {
+                if (r.get("teamId") instanceof Number n && r.get("cnt") instanceof Number c) {
+                    teamMemberCountMap.put(n.longValue(), c.intValue());
                 }
             }
         }
@@ -197,6 +204,7 @@ public class PlantWorkPerformanceServiceImpl
         for (PerfListRow row : list) {
             if (row.getTeamId() != null) {
                 row.setTeamName(teamNameMap.get(row.getTeamId()));
+                row.setTeamMemberCount(teamMemberCountMap.getOrDefault(row.getTeamId(), 0));
             }
             row.setFarmCount(farmCountMap.getOrDefault(farmKey(row.getTeamId(), row.getStatMonth()), 0));
         }

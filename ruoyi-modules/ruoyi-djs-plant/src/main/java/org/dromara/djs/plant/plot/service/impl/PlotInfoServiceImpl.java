@@ -199,7 +199,7 @@ public class PlotInfoServiceImpl extends DjsBaseServiceImpl<PlotInfoMapper, Plot
             return wrapper.orderByDesc(PlotInfo::getId);
         }
         wrapper.eq(query.getZoneId() != null, PlotInfo::getZoneId, query.getZoneId())
-            .eq(StringUtils.isNotBlank(query.getPlotCode()), PlotInfo::getPlotCode, query.getPlotCode())
+            .like(StringUtils.isNotBlank(query.getPlotCode()), PlotInfo::getPlotCode, query.getPlotCode())
             .like(StringUtils.isNotBlank(query.getPlotName()), PlotInfo::getPlotName, query.getPlotName())
             .eq(StringUtils.isNotBlank(query.getPlotType()), PlotInfo::getPlotType, query.getPlotType())
             .eq(query.getPlotStatus() != null, PlotInfo::getPlotStatus, query.getPlotStatus())

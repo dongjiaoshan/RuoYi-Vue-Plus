@@ -51,4 +51,26 @@ public interface PlantActivityMapper extends BaseMapperPlus<PlantActivity, Plant
     List<Map<String, Object>> selectDailyWeightByCropInRange(@Param("cropIds") Collection<Long> cropIds,
                                                              @Param("minDate") LocalDate minDate,
                                                              @Param("maxDate") LocalDate maxDate);
+
+    /**
+     * 采摘量合计（kg）：activity_date 落在 {@code [startDate, endDate]} 区间内的 daily_weight 全量求和
+     * （mp 采收概览 KPI「当月采摘量」取数，FIX-PLT-MP-PICK-SUMMARY-001）。
+     *
+     * <p>不限作物，口径与采摘活动管理「已采重量」一致（取 {@code t_plant_plant_activity.daily_weight}）。
+     * 显式 {@code tenant_id='1001'} + {@code del_flag='0'}（V1 单农场，关租户行注入）。</p>
+     *
+     * @param startDate 区间下界（含），如当月第一天
+     * @param endDate   区间上界（含），如当月最后一天
+     * @return 区间内 daily_weight 合计（无记录返 0）
+     */
+    @InterceptorIgnore(tenantLine = "true")
+    @Select("""
+        SELECT COALESCE(SUM(daily_weight), 0)
+          FROM t_plant_plant_activity
+         WHERE del_flag = '0'
+           AND tenant_id = '1001'
+           AND activity_date BETWEEN #{startDate} AND #{endDate}
+        """)
+    java.math.BigDecimal selectTotalWeightInRange(@Param("startDate") LocalDate startDate,
+                                                  @Param("endDate") LocalDate endDate);
 }

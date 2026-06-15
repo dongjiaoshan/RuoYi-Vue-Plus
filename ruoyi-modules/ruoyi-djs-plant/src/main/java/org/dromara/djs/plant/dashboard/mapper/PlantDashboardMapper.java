@@ -4,10 +4,7 @@ import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 import org.dromara.djs.plant.dashboard.domain.vo.CropPlantStatItemVo;
-import org.dromara.djs.plant.dashboard.domain.vo.FarmWorkCountVo;
-import org.dromara.djs.plant.dashboard.domain.vo.GanttItemVo;
 import org.dromara.djs.plant.dashboard.domain.vo.MonthCompletionItemVo;
-import org.dromara.djs.plant.dashboard.domain.vo.OrganicCertOverviewVo;
 
 import java.math.BigDecimal;
 import java.util.List;
@@ -16,8 +13,10 @@ import java.util.List;
  * 种植看板聚合查询 Mapper（PLT-DASH-001）。
  *
  * <p>本 mapper 不绑定单表实体；只提供 dashboard service 调用的原始聚合 SQL。
- * 数据源：{@code t_plant_plot_info}（土地总览）+ {@code t_plant_farm_records}（今日农事）
- * + {@code t_plant_plant_details}（当月完成率 + 双甘特）+ {@code t_plant_crop_info}（作物名）。</p>
+ * 数据源：{@code t_plant_plot_info}（土地总览）+ {@code t_plant_farm_records}（今日空地/种植管理/灾害）
+ * + {@code t_plant_plant_details}（当月完成率 + 今日种植/采摘 + 双甘特）
+ * + {@code t_plant_pick_activity}（今日采摘活动）+ {@code t_plant_crop_organic}（果蔬有机证书）
+ * + {@code t_plant_crop_info}（作物名）。</p>
  *
  * <p>dashboard 聚合不走 BaseMapperPlus（不绑实体），故所有 SQL 显式
  * {@code WHERE tenant_id = #{tenantId} AND del_flag = '0'}（参照
@@ -114,32 +113,94 @@ public interface PlantDashboardMapper {
     Integer countPendingPlot(@Param("tenantId") String tenantId);
 
     /**
-     * 今日农事按类型分桶（{@code farm_date = CURDATE()} GROUP BY {@code farm_type}）。
+     * 今日工作 - 种植：今日实际开始种植（{@code begin_actualdate = CURDATE()}）的不重复地块数。
      *
      * @param tenantId 租户
-     * @return 每个农事类型一行 {farmType, count}，无则空列表
+     * @return 不重复地块数，无则 0
      */
-    @Select("SELECT farm_type AS farmType, COUNT(*) AS count "
+    @Select("SELECT COUNT(DISTINCT d.plot_id) "
+        + "  FROM t_plant_plant_details d "
+        + " WHERE d.tenant_id = #{tenantId} "
+        + "   AND d.del_flag = '0' "
+        + "   AND d.begin_actualdate = CURDATE()")
+    Integer countTodayPlanting(@Param("tenantId") String tenantId);
+
+    /**
+     * 今日工作 - 采摘：今日实际开始采摘（{@code begin_harvestdate = CURDATE()}）的不重复地块数。
+     *
+     * @param tenantId 租户
+     * @return 不重复地块数，无则 0
+     */
+    @Select("SELECT COUNT(DISTINCT d.plot_id) "
+        + "  FROM t_plant_plant_details d "
+        + " WHERE d.tenant_id = #{tenantId} "
+        + "   AND d.del_flag = '0' "
+        + "   AND d.begin_harvestdate = CURDATE()")
+    Integer countTodayHarvest(@Param("tenantId") String tenantId);
+
+    /**
+     * 今日工作 - 空地管理：今日农事（{@code farm_date = CURDATE()}）且
+     * {@code farm_type IN (tillage_break, tillage_prepare, fertilize)} 的不重复地块数。
+     *
+     * <p>映射权威 doc/10 §F-PLT-06：空地管理 = 翻耕 / 整地 / 施肥。</p>
+     *
+     * @param tenantId 租户
+     * @return 不重复地块数，无则 0
+     */
+    @Select("SELECT COUNT(DISTINCT plot_id) "
         + "  FROM t_plant_farm_records "
         + " WHERE tenant_id = #{tenantId} "
         + "   AND del_flag = '0' "
         + "   AND farm_date = CURDATE() "
-        + " GROUP BY farm_type "
-        + " ORDER BY count DESC")
-    List<FarmWorkCountVo> selectTodayFarmWork(@Param("tenantId") String tenantId);
+        + "   AND farm_type IN ('tillage_break', 'tillage_prepare', 'fertilize')")
+    Integer countTodayIdleMgmt(@Param("tenantId") String tenantId);
 
     /**
-     * 今日农事总条数（{@code farm_date = CURDATE()}）。
+     * 今日工作 - 种植管理：今日农事（{@code farm_date = CURDATE()}）且 {@code farm_type IN
+     * (transplant, water_fertilize, irrigation, weed, pruning, pest_control, rotation)} 的不重复地块数。
+     *
+     * <p>映射权威 doc/10 §F-PLT-06：种植管理 = 移栽 / 水肥 / 浇灌 / 除草 / 整枝绑蔓 / 病虫防治 / 退茬。</p>
      *
      * @param tenantId 租户
-     * @return 今日农事记录数，无则 0
+     * @return 不重复地块数，无则 0
      */
-    @Select("SELECT COUNT(*) "
+    @Select("SELECT COUNT(DISTINCT plot_id) "
         + "  FROM t_plant_farm_records "
         + " WHERE tenant_id = #{tenantId} "
         + "   AND del_flag = '0' "
-        + "   AND farm_date = CURDATE()")
-    Integer countTodayFarmWorkTotal(@Param("tenantId") String tenantId);
+        + "   AND farm_date = CURDATE() "
+        + "   AND farm_type IN ('transplant', 'water_fertilize', 'irrigation', "
+        + "                     'weed', 'pruning', 'pest_control', 'rotation')")
+    Integer countTodayPlantMgmt(@Param("tenantId") String tenantId);
+
+    /**
+     * 今日工作 - 灾害损失：今日农事（{@code farm_date = CURDATE()}）且 {@code farm_type = 'disaster'}
+     * 的不重复地块数。
+     *
+     * @param tenantId 租户
+     * @return 不重复地块数，无则 0
+     */
+    @Select("SELECT COUNT(DISTINCT plot_id) "
+        + "  FROM t_plant_farm_records "
+        + " WHERE tenant_id = #{tenantId} "
+        + "   AND del_flag = '0' "
+        + "   AND farm_date = CURDATE() "
+        + "   AND farm_type = 'disaster'")
+    Integer countTodayDisaster(@Param("tenantId") String tenantId);
+
+    /**
+     * 今日工作 - 采摘活动：今日采摘活动（{@code t_plant_pick_activity.activity_date = CURDATE()}）
+     * 的采摘量合计 kg（{@code SUM(total_yield)}）。
+     *
+     * @param tenantId 租户
+     * @return 今日采摘量 kg，无则 0
+     */
+    @Select("SELECT COALESCE(SUM(total_yield), 0) "
+        + "  FROM t_plant_pick_activity "
+        + " WHERE tenant_id = #{tenantId} "
+        + "   AND del_flag = '0' "
+        + "   AND activity_date = CURDATE()")
+    BigDecimal selectTodayPickActivityWeight(@Param("tenantId") String tenantId);
 
     // ============================ 块 ② 当月完成率 ============================
 
@@ -191,90 +252,200 @@ public interface PlantDashboardMapper {
         + " LIMIT 30")
     List<CropPlantStatItemVo> selectCropPlantStat(@Param("tenantId") String tenantId);
 
-    // ============================ 块 ③ 有机证书情况一览 ============================
+    // ============================ 块 ③ 有机证书一览（果蔬证书口径） ============================
 
     /**
-     * 土地有机证书最早到期天数（{@code MIN(DATEDIFF(organic_valid, CURDATE()))}）。
+     * 最新一张果蔬有机证书的到期日 + 到期天数。
+     *
+     * <p>「最新证书」= 有效期最晚（{@code MAX(crop_cert_valid)}）的一张。</p>
+     * <ul>
+     *   <li>{@code certDate} = {@code MAX(crop_cert_valid)}（{@code YYYY-MM-DD}）；无证书 null。</li>
+     *   <li>{@code daysToExpiry} = {@code DATEDIFF(MAX(crop_cert_valid), CURDATE())}（可为负）；无证书 null。</li>
+     * </ul>
      *
      * @param tenantId 租户
-     * @return 最早到期天数（可为负=已过期），无在册证书时 null
+     * @return 单行 {certDate, daysToExpiry}；无在册果蔬证书时两值均 null
      */
-    @Select("SELECT MIN(DATEDIFF(organic_valid, CURDATE())) "
-        + "  FROM t_plant_plot_organic "
-        + " WHERE tenant_id = #{tenantId} "
-        + "   AND del_flag = '0'")
-    Integer selectPlotCertMinDays(@Param("tenantId") String tenantId);
-
-    /**
-     * 作物有机证书最早到期天数（{@code MIN(DATEDIFF(crop_cert_valid, CURDATE()))}）。
-     *
-     * @param tenantId 租户
-     * @return 最早到期天数（可为负=已过期），无在册证书时 null
-     */
-    @Select("SELECT MIN(DATEDIFF(crop_cert_valid, CURDATE())) "
+    @Select("SELECT MAX(crop_cert_valid)                          AS certDate, "
+        + "       DATEDIFF(MAX(crop_cert_valid), CURDATE())     AS daysToExpiry "
         + "  FROM t_plant_crop_organic "
         + " WHERE tenant_id = #{tenantId} "
         + "   AND del_flag = '0'")
-    Integer selectCropCertMinDays(@Param("tenantId") String tenantId);
+    CropCertLatestRow selectLatestCropCert(@Param("tenantId") String tenantId);
 
     /**
-     * 作物无证书品类数（已建档作物中尚无有效有机证书的作物数）。
+     * 在种作物中「在」最新一张果蔬证书覆盖品类（{@code crop_id}）里的不重复作物数。
+     *
+     * <p>在种作物 = {@code t_plant_plant_details} 进行中（{@code plant_status <> 'completed'}）的
+     * 不重复 {@code crop_id}；最新证书 = {@code crop_cert_valid} 最晚的一张，其 {@code crop_id}
+     * 为覆盖品类（一证一作物）。</p>
      *
      * @param tenantId 租户
-     * @return 无证书作物品类数，无则 0
+     * @return 在最新证书覆盖品类里的在种作物数，无则 0
      */
-    @Select("SELECT COUNT(*) "
-        + "  FROM t_plant_crop_info c "
-        + " WHERE c.tenant_id = #{tenantId} "
-        + "   AND c.del_flag = '0' "
-        + "   AND NOT EXISTS ( "
-        + "       SELECT 1 FROM t_plant_crop_organic o "
+    @Select("SELECT COUNT(DISTINCT d.crop_id) "
+        + "  FROM t_plant_plant_details d "
+        + " WHERE d.tenant_id = #{tenantId} "
+        + "   AND d.del_flag = '0' "
+        + "   AND d.plant_status <> 'completed' "
+        + "   AND d.crop_id = ( "
+        + "       SELECT o.crop_id FROM t_plant_crop_organic o "
         + "        WHERE o.tenant_id = #{tenantId} "
         + "          AND o.del_flag = '0' "
-        + "          AND o.crop_id = c.id)")
-    Integer selectCropNoCertCount(@Param("tenantId") String tenantId);
+        + "        ORDER BY o.crop_cert_valid DESC, o.id DESC "
+        + "        LIMIT 1)")
+    Integer selectInLatestCertCropCount(@Param("tenantId") String tenantId);
 
     /**
-     * 已建档作物品类总数（"预留证书品类数"= 可挂证的作物品类候选总数）。
+     * 在种作物（{@code plant_status <> 'completed'}）的不重复 {@code crop_id} 数。
+     *
+     * <p>「不在」最新证书覆盖品类的在种作物数 = 本总数 − {@link #selectInLatestCertCropCount}
+     * （service 层相减；无证书时 inCert=0 → 全部计入无证书品类）。</p>
      *
      * @param tenantId 租户
-     * @return 作物品类总数，无则 0
+     * @return 在种作物不重复品类数，无则 0
      */
-    @Select("SELECT COUNT(*) "
-        + "  FROM t_plant_crop_info "
-        + " WHERE tenant_id = #{tenantId} "
-        + "   AND del_flag = '0'")
-    Integer selectCropTotalCount(@Param("tenantId") String tenantId);
+    @Select("SELECT COUNT(DISTINCT d.crop_id) "
+        + "  FROM t_plant_plant_details d "
+        + " WHERE d.tenant_id = #{tenantId} "
+        + "   AND d.del_flag = '0' "
+        + "   AND d.plant_status <> 'completed'")
+    Integer selectActiveCropCount(@Param("tenantId") String tenantId);
 
-    // ============================ 块 ⑤ 双甘特 ============================
+    // ============================ 块 ⑤ 种植甘特（按 明细 / 地块 维度） ============================
 
     /**
-     * 双甘特原始行（4 时间字段 JOIN crop/plot 出 text）。
+     * 种植甘特原始行（种植段；含计划兜底日期）。
      *
-     * <p>只取至少有一段日期（种植 begin 或采摘 begin 非 null）的明细。service 层把每行拆成
-     * 种植段 / 采摘段两个 {@link GanttItemVo}，日期 null 的段跳过。</p>
+     * <p>每行拆出一个种植段：开始 = {@code begin_actualdate}（无则 null，service 用计划日期兜底）；
+     * 结束 = {@code end_actualdate}，<b>未结束（null）时用计划结束日期兜底</b>——计划结束取
+     * {@code earliest_harvestdate}（= 计划种植开始 + crop.min_cycle，即可开始采摘日 = 计划种植完成日）。
+     * 计划开始 {@code planStartDate} 由 {@code plant_month} + {@code plant_period}（05/15/25 旬）
+     * 在 service 层推算（当年）。</p>
      *
      * @param tenantId 租户
-     * @return 甘特原始行列表（最多 100 行），无则空列表
+     * @return 种植甘特原始行（最多 100 行），无则空列表
      */
     @Select("SELECT d.id                 AS id, "
         + "       c.crop_name           AS cropName, "
         + "       p.plot_name           AS plotName, "
         + "       d.begin_actualdate    AS beginActualdate, "
         + "       d.end_actualdate      AS endActualdate, "
-        + "       d.begin_harvestdate   AS beginHarvestdate, "
-        + "       d.end_harvestdate     AS endHarvestdate, "
-        + "       d.plant_status        AS plantStatus, "
-        + "       d.harvest_status      AS harvestStatus "
+        + "       d.earliest_harvestdate AS earliestHarvestdate, "
+        + "       d.plant_month         AS plantMonth, "
+        + "       d.plant_period        AS plantPeriod, "
+        + "       d.plant_status        AS plantStatus "
         + "  FROM t_plant_plant_details d "
         + "  LEFT JOIN t_plant_crop_info c ON c.id = d.crop_id AND c.del_flag = '0' "
         + "  LEFT JOIN t_plant_plot_info p ON p.id = d.plot_id AND p.del_flag = '0' "
         + " WHERE d.tenant_id = #{tenantId} "
         + "   AND d.del_flag = '0' "
-        + "   AND (d.begin_actualdate IS NOT NULL OR d.begin_harvestdate IS NOT NULL) "
         + " ORDER BY d.begin_actualdate "
         + " LIMIT 100")
-    List<GanttRow> selectGanttRows(@Param("tenantId") String tenantId);
+    List<PlantGanttRow> selectPlantGanttRows(@Param("tenantId") String tenantId);
+
+    // ============================ 块 ⑥ 采摘甘特（按 作物 维度聚合） ============================
+
+    /**
+     * 采摘甘特按作物聚合行（GROUP BY crop_id）。
+     *
+     * <p>每个作物一条采摘整段：开始 = {@code MIN(begin_harvestdate)}、结束 = {@code MAX(end_harvestdate)}；
+     * 进度 = 该作物已采摘完成明细占比（{@code harvest_status='completed'} 的明细数 / 该作物有采摘日期的
+     * 明细数 × 100）。只统计至少有一段采摘日期（{@code begin_harvestdate} 非 null）的作物。</p>
+     *
+     * @param tenantId 租户
+     * @return 采摘甘特聚合行（按作物，最多 100 行），无则空列表
+     */
+    @Select("SELECT d.crop_id                                                 AS cropId, "
+        + "       MAX(c.crop_name)                                          AS cropName, "
+        + "       MIN(d.begin_harvestdate)                                  AS beginHarvestdate, "
+        + "       MAX(d.end_harvestdate)                                    AS endHarvestdate, "
+        + "       COUNT(*)                                                  AS totalCount, "
+        + "       SUM(CASE WHEN d.harvest_status = 'completed' THEN 1 ELSE 0 END) AS completedCount "
+        + "  FROM t_plant_plant_details d "
+        + "  LEFT JOIN t_plant_crop_info c ON c.id = d.crop_id AND c.del_flag = '0' "
+        + " WHERE d.tenant_id = #{tenantId} "
+        + "   AND d.del_flag = '0' "
+        + "   AND d.begin_harvestdate IS NOT NULL "
+        + " GROUP BY d.crop_id "
+        + " ORDER BY MIN(d.begin_harvestdate) "
+        + " LIMIT 100")
+    List<PickGanttCropRow> selectPickGanttByCrop(@Param("tenantId") String tenantId);
+
+    /**
+     * 最新果蔬证书到期日 + 到期天数载体（mapper 内部用）。
+     */
+    @lombok.Data
+    class CropCertLatestRow {
+
+        /** 最新果蔬证书到期日（YYYY-MM-DD，无证书 null）。 */
+        private java.time.LocalDate certDate;
+
+        /** 最新果蔬证书到期天数（DATEDIFF，可为负；无证书 null）。 */
+        private Integer daysToExpiry;
+
+    }
+
+    /**
+     * 种植甘特原始行（mapper 内部用，service 拼计划兜底）。
+     */
+    @lombok.Data
+    class PlantGanttRow {
+
+        /** 明细 snowflake id（拼接前缀后作为甘特条 id）。 */
+        private Long id;
+
+        /** 作物名称。 */
+        private String cropName;
+
+        /** 地块名称。 */
+        private String plotName;
+
+        /** 实际开始种植日期（可空）。 */
+        private java.time.LocalDate beginActualdate;
+
+        /** 实际结束种植日期（可空，null 时用计划结束兜底）。 */
+        private java.time.LocalDate endActualdate;
+
+        /** 计划最早采摘日（= 计划种植完成日，end 兜底）。 */
+        private java.time.LocalDate earliestHarvestdate;
+
+        /** 计划月份 1-12。 */
+        private Integer plantMonth;
+
+        /** 计划阶段（05=上旬 / 15=中旬 / 25=下旬）。 */
+        private String plantPeriod;
+
+        /** 种植状态（字典 djs_plant_plan_status）。 */
+        private String plantStatus;
+
+    }
+
+    /**
+     * 采摘甘特按作物聚合行（mapper 内部用）。
+     */
+    @lombok.Data
+    class PickGanttCropRow {
+
+        /** 作物 id（拼接前缀后作为甘特条 id）。 */
+        private Long cropId;
+
+        /** 作物名称。 */
+        private String cropName;
+
+        /** 该作物采摘整段开始（MIN begin_harvestdate）。 */
+        private java.time.LocalDate beginHarvestdate;
+
+        /** 该作物采摘整段结束（MAX end_harvestdate，可空）。 */
+        private java.time.LocalDate endHarvestdate;
+
+        /** 该作物有采摘日期的明细总数。 */
+        private Integer totalCount;
+
+        /** 该作物已采摘完成（harvest_status='completed'）明细数。 */
+        private Integer completedCount;
+
+    }
 
     /**
      * 土地总览单行聚合载体（mapper 内部用）。
@@ -296,41 +467,6 @@ public interface PlantDashboardMapper {
 
         /** 土地总面积（亩）。 */
         private BigDecimal totalArea;
-
-    }
-
-    /**
-     * 甘特原始行（mapper 内部用，service 层拆成 plant/pick 两段）。
-     */
-    @lombok.Data
-    class GanttRow {
-
-        /** 明细 snowflake id（拼接前缀后作为甘特条 id）。 */
-        private Long id;
-
-        /** 作物名称。 */
-        private String cropName;
-
-        /** 地块名称。 */
-        private String plotName;
-
-        /** 种植段开始日期。 */
-        private java.time.LocalDate beginActualdate;
-
-        /** 种植段结束日期。 */
-        private java.time.LocalDate endActualdate;
-
-        /** 采摘段开始日期。 */
-        private java.time.LocalDate beginHarvestdate;
-
-        /** 采摘段结束日期。 */
-        private java.time.LocalDate endHarvestdate;
-
-        /** 种植状态（字典 djs_plant_plan_status）。 */
-        private String plantStatus;
-
-        /** 采摘状态（字典 djs_pick_status）。 */
-        private String harvestStatus;
 
     }
 

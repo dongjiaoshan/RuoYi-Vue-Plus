@@ -58,7 +58,7 @@ public class CropDetailVo implements Serializable {
     @ExcelDictFormat(dictType = "djs_planting_season")
     private String planSeason;
 
-    /** 5 计划种植日期（模糊文案，例 "4月中旬"，来源计划主表 plant_date）。 */
+    /** 5 计划种植日期（模糊文案，例 "4月中旬"，由明细行 plant_month + plant_period 拼接）。 */
     @ExcelProperty(value = "计划种植日期")
     private String planPlantDate;
 

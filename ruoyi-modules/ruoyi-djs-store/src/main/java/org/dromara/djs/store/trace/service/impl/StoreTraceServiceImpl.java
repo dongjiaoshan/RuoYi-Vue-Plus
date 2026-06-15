@@ -1,7 +1,9 @@
 package org.dromara.djs.store.trace.service.impl;
 
+import com.baomidou.mybatisplus.core.metadata.IPage;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.dromara.common.core.utils.StringUtils;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.breed.core.domain.vo.PigAvailableVo;
@@ -9,6 +11,8 @@ import org.dromara.djs.breed.core.service.IPigQueryService;
 import org.dromara.djs.store.trace.domain.bo.StoreTraceOnsiteBo;
 import org.dromara.djs.store.trace.domain.vo.TraceablePigVo;
 import org.dromara.djs.store.trace.service.IStoreTraceService;
+import org.dromara.djs.warehouse.cross.domain.vo.TodayBarVo;
+import org.dromara.djs.warehouse.cross.mapper.BarInfoMapper;
 import org.dromara.djs.warehouse.trace.domain.query.TraceCodeQuery;
 import org.dromara.djs.warehouse.trace.domain.vo.TraceCodeDetailVo;
 import org.dromara.djs.warehouse.trace.domain.vo.TraceCodeListVo;
@@ -16,7 +20,13 @@ import org.dromara.djs.warehouse.trace.service.ITraceCodeAdminService;
 import org.dromara.djs.warehouse.trace.service.ITraceService;
 import org.springframework.stereotype.Service;
 
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 /**
  * 门店现场生码服务实现（STORE-TRACE-ONSITE-001）。
@@ -39,26 +49,62 @@ public class StoreTraceServiceImpl implements IStoreTraceService {
     private final IPigQueryService pigQueryService;
     private final ITraceService traceService;
     private final ITraceCodeAdminService traceCodeAdminService;
+    private final BarInfoMapper barInfoMapper;
 
+    /**
+     * 可追溯 picker = 当天确认收货白条（FIX-STORE-TRACE-BAR-001 测试问题 158）。
+     *
+     * <p>口径改为「{@code t_warehouse_bar_info.status='in_stock'} 且 {@code DATE(in_time)=CURDATE()}」
+     * 的白条（含外购）：先按白条过滤（warehouse {@link BarInfoMapper}），再按白条耳号 enrich 猪只
+     * 性别 / 品种品系 / 日龄（breed {@link IPigQueryService#listPigInfoByEarNos}，additive 只读方法，
+     * <b>不</b>改 breed 共享分页选猪 mapper，避免跨域污染）。</p>
+     *
+     * <p>外购白条无耳号或耳号无猪档案时，{@code pigSex/pigBreedLabel/ageDays} 留 null；
+     * chip 主显值 {@code earNo} 为空时回退用 {@code barId}（保证选择器有可点项）。
+     * 当天无白条入库 → 空结果，属正常态（前端显示「暂无当天确认收货白条」），非 bug。</p>
+     */
     @Override
     public TableDataInfo<TraceablePigVo> listTraceablePigs(PageQuery pageQuery) {
-        TableDataInfo<PigAvailableVo> src = pigQueryService.listTraceablePigs(pageQuery);
-        List<PigAvailableVo> srcRows = src.getRows();
-        // 显式字段映射（养殖 PigAvailableVo → 门店 TraceablePigVo，同名字段 earNo/pigSex/pigBreedLabel/ageDays）。
-        // 不用 MapstructUtils.convert：两域 VO 间无 @AutoMapper 注册，linpeilie 找不到 converter 会抛 ConvertException。
-        List<TraceablePigVo> rows = (srcRows == null ? List.<PigAvailableVo>of() : srcRows).stream()
-            .map(p -> {
+        PageQuery pq = pageQuery != null ? pageQuery : new PageQuery(1, 10);
+        IPage<TodayBarVo> barPage = barInfoMapper.selectTodayInStockBarPage(pq.build());
+        List<TodayBarVo> bars = barPage.getRecords();
+        if (bars == null || bars.isEmpty()) {
+            TableDataInfo<TraceablePigVo> empty = TableDataInfo.build();
+            empty.setRows(List.of());
+            empty.setTotal(barPage.getTotal());
+            return empty;
+        }
+
+        // 按白条耳号批量 enrich 猪只信息（earNo → PigAvailableVo），additive 跨域只读
+        Set<String> earNos = bars.stream()
+            .map(TodayBarVo::getEarNo)
+            .filter(StringUtils::isNotBlank)
+            .collect(Collectors.toCollection(LinkedHashSet::new));
+        Map<String, PigAvailableVo> pigByEarNo = earNos.isEmpty() ? Map.of()
+            : pigQueryService.listPigInfoByEarNos(earNos).stream()
+                .filter(p -> StringUtils.isNotBlank(p.getEarNo()))
+                .collect(Collectors.toMap(PigAvailableVo::getEarNo, Function.identity(), (a, b) -> a));
+
+        List<TraceablePigVo> rows = bars.stream()
+            .filter(Objects::nonNull)
+            .map(bar -> {
                 TraceablePigVo v = new TraceablePigVo();
-                v.setEarNo(p.getEarNo());
-                v.setPigSex(p.getPigSex());
-                v.setPigBreedLabel(p.getPigBreedLabel());
-                v.setAgeDays(p.getAgeDays());
+                // chip 主键：耳号优先，外购无耳号时回退白条编号，保证选择器有可点值
+                String chipKey = StringUtils.isNotBlank(bar.getEarNo()) ? bar.getEarNo() : bar.getBarId();
+                v.setEarNo(chipKey);
+                PigAvailableVo pig = pigByEarNo.get(bar.getEarNo());
+                if (pig != null) {
+                    v.setPigSex(pig.getPigSex());
+                    v.setPigBreedLabel(pig.getPigBreedLabel());
+                    v.setAgeDays(pig.getAgeDays());
+                }
                 return v;
             })
             .toList();
+
         TableDataInfo<TraceablePigVo> out = TableDataInfo.build();
         out.setRows(rows);
-        out.setTotal(src.getTotal());
+        out.setTotal(barPage.getTotal());
         return out;
     }
 

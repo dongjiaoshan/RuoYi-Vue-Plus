@@ -1,9 +1,12 @@
 package org.dromara.djs.warehouse.cross.mapper;
 
+import com.baomidou.mybatisplus.core.metadata.IPage;
 import org.apache.ibatis.annotations.Param;
+import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 import org.dromara.common.mybatis.core.mapper.BaseMapperPlus;
 import org.dromara.djs.warehouse.cross.domain.BarInfo;
+import org.dromara.djs.warehouse.cross.domain.vo.TodayBarVo;
 
 import java.math.BigDecimal;
 import java.util.Date;
@@ -85,5 +88,28 @@ public interface BarInfoMapper extends BaseMapperPlus<BarInfo, BarInfo> {
                               @Param("acidRemoveTime") Integer acidRemoveTime,
                               @Param("acidRemoveLoss") BigDecimal acidRemoveLoss,
                               @Param("userId") Long userId);
+
+    /**
+     * 分页查「当天确认收货白条」（FIX-STORE-TRACE-BAR-001 门店猪肉追溯 picker 口径）。
+     *
+     * <p>口径：{@code status='in_stock'}（已入库 / 确认收货）且 {@code DATE(in_time)=CURDATE()} 的白条，
+     * 含外购（bar_info 即白条主表，不按业态过滤）。按 in_time DESC 排序（最新入库排前）。
+     * 当天无白条入库 → 空结果（picker 显示「暂无当天确认收货白条」，属正常态非 bug）。</p>
+     *
+     * <p>显式 {@code tenant_id='1001' AND del_flag='0'}（V1 单租户，原生 SQL 不自动注入）。</p>
+     *
+     * @param page 分页参数（MP 分页拦截器填充 total / 切片）
+     * @return 当天 in_stock 白条分页（id / barId / earNo / inWeight / inTime / status）
+     */
+    @Select("""
+        SELECT id, bar_id AS barId, ear_no AS earNo, in_weight AS inWeight, in_time AS inTime, status
+          FROM t_warehouse_bar_info
+         WHERE tenant_id = '1001'
+           AND del_flag = '0'
+           AND status = 'in_stock'
+           AND DATE(in_time) = CURDATE()
+         ORDER BY in_time DESC, id DESC
+        """)
+    IPage<TodayBarVo> selectTodayInStockBarPage(IPage<TodayBarVo> page);
 
 }

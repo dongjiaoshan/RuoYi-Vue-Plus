@@ -103,4 +103,14 @@ public class MedRecordBo extends BaseEntity {
     @Size(max = 500, message = "备注长度不能超过 {max} 个字符")
     private String remark;
 
+    /**
+     * 用药人 user_id（选填；mp 端默认当前登录人，可改选其他员工。空 → 后端回落 LoginHelper.getUserId）。
+     */
+    private Long operatorId;
+
+    /**
+     * 用药人姓名快照（前端 EmployeePicker 选中时一并传，避免后端跨模块查 sys_user；空 → 后端取登录人昵称）。
+     */
+    private String operatorName;
+
 }

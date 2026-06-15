@@ -47,6 +47,14 @@ public class PerfListRow implements Serializable {
     private String teamName;
 
     /**
+     * 班组人数（= 该 team_id 下 t_plant_work_people 活动成员数，service 批量补）。
+     *
+     * <p>当前快照成员数（成员表无历史快照），同班组各月行显示同一人数。</p>
+     */
+    @ExcelProperty(value = "班组人数")
+    private Integer teamMemberCount;
+
+    /**
      * 采摘总量（斤，= SUM(pick_weight)）。
      */
     @ExcelProperty(value = "采摘总量(斤)")

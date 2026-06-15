@@ -72,13 +72,12 @@ public class AppletPickServiceImpl implements IAppletPickService {
     /** 作物 L2 默认图统一走果蔬（IMG-LIB-001）。 */
     private static final String CROP_BELONG_TYPE = "vegetable";
 
-    /** is_pick=2 表示非游客采摘（普通采收）；mp 工人采收 tab（listMyTasks/todaySummary）统计 / 展示这些。 */
-    private static final int IS_PICK_NORMAL = 2;
     /**
-     * is_pick=1 表示「是采摘活动」（字典 djs_yes_no：1=是 / 2=否）。
-     * 235：mp「采摘活动管理」列表卡 + 详情地块取 is_pick=1 的明细。
+     * is_pick=2 表示非游客采摘（普通采收，字典 djs_yes_no：1=是 / 2=否）。
+     * mp 工人采收全链路（listMyTasks/todaySummary/listCropTasks/listCropPlots）一律取 is_pick=2，
+     * 排除 is_pick=1 的游客采摘活动。
      */
-    private static final int IS_PICK_ACTIVITY = 1;
+    private static final int IS_PICK_NORMAL = 2;
     /** harvest_activity：农事记录采收类型（与 t_plant_farm_records.farm_type 字典 djs_farm_work_type 对齐）。 */
     private static final String HARVEST_FARM_TYPE = "harvest_activity";
 
@@ -179,46 +178,56 @@ public class AppletPickServiceImpl implements IAppletPickService {
 
     @Override
     public PickSummaryVo todaySummary() {
+        // FIX-PLT-MP-PICK-SUMMARY-001：KPI 口径由「今日」改「当月」，与采收列表（listCropTasks）当月窗口同口径。
+        //   完成率 = 当月完成地块数 / 当月总地块数；当月采摘品种数 = 当月明细 distinct crop；
+        //   当月采摘量 = 当月 t_plant_plant_activity.daily_weight 合计（235 客户权威口径）。
+        // VO 字段名沿用（taskCompletionRate / todayCropKindCount / todayWeight），前端同步改文案。
         LocalDate today = LocalDate.now();
-        // 全部非游客采摘任务（is_pick=2），应用层聚合（V1 数据量小，不写裸 SQL）
-        List<PlantDetails> all = detailsMapper.selectList(
+        LocalDate firstDay = today.withDayOfMonth(1);
+        LocalDate lastDay = today.with(java.time.temporal.TemporalAdjusters.lastDayOfMonth());
+
+        // 当月地块 = is_pick=2（非游客）且采摘窗口 [earliest, last] 与当月 [firstDay, lastDay] 相交的明细。
+        List<PlantDetails> monthly = detailsMapper.selectList(
             new LambdaQueryWrapper<PlantDetails>()
                 .eq(PlantDetails::getIsPick, IS_PICK_NORMAL)
-                .select(PlantDetails::getHarvestStatus, PlantDetails::getCropId,
-                    PlantDetails::getActualYield, PlantDetails::getBeginHarvestdate));
+                .le(PlantDetails::getEarliestHarvestdate, lastDay)
+                .ge(PlantDetails::getLastHarvestdate, firstDay)
+                .select(PlantDetails::getHarvestStatus, PlantDetails::getCropId));
 
-        long total = all.size();
-        long completed = all.stream().filter(d -> "completed".equals(d.getHarvestStatus())).count();
+        long total = monthly.size();
+        long completed = monthly.stream().filter(d -> "completed".equals(d.getHarvestStatus())).count();
         int rate = total == 0 ? 0 : (int) Math.round(completed * 100.0 / total);
 
-        // 今日采摘明细 = begin_harvestdate=今日（首次采收落在今日的明细）
-        List<PlantDetails> todayPicked = all.stream()
-            .filter(d -> today.equals(d.getBeginHarvestdate()))
-            .toList();
-        int cropKindCount = (int) todayPicked.stream()
+        int cropKindCount = (int) monthly.stream()
             .map(PlantDetails::getCropId).filter(Objects::nonNull).distinct().count();
-        BigDecimal todayWeight = todayPicked.stream()
-            .map(d -> d.getActualYield() == null ? BigDecimal.ZERO : d.getActualYield())
-            .reduce(BigDecimal.ZERO, BigDecimal::add);
+
+        // 当月采摘量 = 当月活动 daily_weight 合计（与作物卡 actualYield 同口径，避免与 actual_yield 累计值口径漂移）。
+        BigDecimal monthWeight = plantActivityMapper.selectTotalWeightInRange(firstDay, lastDay);
+        if (monthWeight == null) {
+            monthWeight = BigDecimal.ZERO;
+        }
 
         PickSummaryVo vo = new PickSummaryVo();
         vo.setTaskCompletionRate(rate);
         vo.setTodayCropKindCount(cropKindCount);
-        vo.setTodayWeight(todayWeight);
+        vo.setTodayWeight(monthWeight);
         return vo;
     }
 
     @Override
     public List<PickCropTaskVo> listCropTasks(Long zoneId) {
-        // 235：「采摘活动管理」取 is_pick=1（是采摘活动）的明细，应用层按片区过滤 + 作物聚合（V1 数据量小）。
-        // 181-1（决策#1=a）：只取「当前日期落在 [earliest_harvestdate, last_harvestdate] 采摘窗口」的明细
-        //   （earliest_harvestdate ≤ today ≤ last_harvestdate），区间外的不在采摘活动列表显示。
+        // 当月采摘任务 = is_pick=2（正常采收，隐藏游客采摘活动）且采摘窗口与当月有交集的明细，
+        // 应用层按片区过滤 + 作物聚合（V1 数据量小）。
+        // 窗口与当月有交集判定：earliest_harvestdate ≤ 当月最后一天 AND last_harvestdate ≥ 当月第一天
+        //   （即采摘窗口 [earliest, last] 与 [firstDay, lastDay] 区间相交），跨月在采的作物也展示。
         LocalDate today = LocalDate.now();
+        LocalDate firstDay = today.withDayOfMonth(1);
+        LocalDate lastDay = today.with(java.time.temporal.TemporalAdjusters.lastDayOfMonth());
         List<PlantDetails> all = detailsMapper.selectList(
             new LambdaQueryWrapper<PlantDetails>()
-                .eq(PlantDetails::getIsPick, IS_PICK_ACTIVITY)
-                .le(PlantDetails::getEarliestHarvestdate, today)
-                .ge(PlantDetails::getLastHarvestdate, today));
+                .eq(PlantDetails::getIsPick, IS_PICK_NORMAL)
+                .le(PlantDetails::getEarliestHarvestdate, lastDay)
+                .ge(PlantDetails::getLastHarvestdate, firstDay));
         if (CollUtil.isEmpty(all)) {
             return Collections.emptyList();
         }
@@ -305,10 +314,10 @@ public class AppletPickServiceImpl implements IAppletPickService {
         if (cropId == null) {
             throw new ServiceException("作物 id 必填");
         }
-        // 235：与「采摘活动管理」列表卡（listCropTasks）同口径取 is_pick=1，点卡进详情看到的是同一批地块。
+        // 与采摘任务列表卡（listCropTasks）同口径取 is_pick=2（普通采收），点卡进详情看到的是同一批地块。
         List<PlantDetails> entities = detailsMapper.selectList(
             new LambdaQueryWrapper<PlantDetails>()
-                .eq(PlantDetails::getIsPick, IS_PICK_ACTIVITY)
+                .eq(PlantDetails::getIsPick, IS_PICK_NORMAL)
                 .eq(PlantDetails::getCropId, cropId)
                 .eq(planId != null, PlantDetails::getPlantId, planId)
                 .orderByAsc(PlantDetails::getEarliestHarvestdate)
