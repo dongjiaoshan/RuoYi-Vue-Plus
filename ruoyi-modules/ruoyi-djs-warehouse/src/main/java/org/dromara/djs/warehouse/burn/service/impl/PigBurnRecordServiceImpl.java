@@ -262,7 +262,8 @@ public class PigBurnRecordServiceImpl
         }
 
         // TRC-CORE-001：燎毛追溯事件（按耳号反查 trace_code；猪肉链当前无生成入口 → warn 跳过，不拖垮燎毛事务）
-        traceService.recordEventByEarNo(earNo, TraceContentConst.SINGE);
+        // 追溯时间轴每节点重量：燎毛节点重量 = 本次燎毛入库总重 burnWeight
+        traceService.recordEventByEarNo(earNo, TraceContentConst.SINGE, record.getBurnWeight());
 
         return record.getId();
     }

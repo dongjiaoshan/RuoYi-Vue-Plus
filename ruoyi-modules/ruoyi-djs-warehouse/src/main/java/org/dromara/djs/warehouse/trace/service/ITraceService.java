@@ -60,6 +60,19 @@ public interface ITraceService {
     void recordEvent(String produceCode, String traceContent);
 
     /**
+     * 写一条事件流水并把该节点重量写入 {@code event_data} JSON（追溯时间轴每节点重量）。
+     *
+     * <p>与 {@link #recordEvent(String, String)} 一致（容错、immutable），仅多把工序重量序列化进
+     * {@code event_data}（如 {@code {"weight":"5.20"}}）。{@code weight} 为 null → {@code event_data}
+     * 保持 NULL（不写空对象）。重量取不到的 hook 仍调无 weight 重载，不强造。</p>
+     *
+     * @param produceCode  追溯码（空 → 跳过）
+     * @param traceContent 事件类型
+     * @param weight       该节点工序重量 kg（null → event_data 不写）
+     */
+    void recordEvent(String produceCode, String traceContent, java.math.BigDecimal weight);
+
+    /**
      * 按猪只耳号反查追溯码后写事件流水（猪肉链工序便捷封装）。
      *
      * <p>出栏 / 燎毛 / 分割工序只有 {@code ear_no}、无 produce_code 上下文，本方法先按
@@ -71,5 +84,17 @@ public interface ITraceService {
      * @param traceContent 事件类型
      */
     void recordEventByEarNo(String earNo, String traceContent);
+
+    /**
+     * 按猪只耳号反查追溯码后写事件流水并把该节点重量写入 {@code event_data}（追溯时间轴每节点重量）。
+     *
+     * <p>与 {@link #recordEventByEarNo(String, String)} 一致，仅多把工序重量序列化进 {@code event_data}。
+     * {@code weight} 为 null → {@code event_data} 保持 NULL。</p>
+     *
+     * @param earNo        猪只耳号（空 → 跳过）
+     * @param traceContent 事件类型
+     * @param weight       该节点工序重量 kg（null → event_data 不写）
+     */
+    void recordEventByEarNo(String earNo, String traceContent, java.math.BigDecimal weight);
 
 }

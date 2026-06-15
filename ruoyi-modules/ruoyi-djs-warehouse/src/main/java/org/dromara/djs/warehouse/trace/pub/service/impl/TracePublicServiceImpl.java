@@ -260,9 +260,31 @@ public class TracePublicServiceImpl
             node.setTraceContent(e.getTraceContent());
             node.setTraceTime(e.getTraceTime());
             node.setOperatorName(e.getOperatorId() == null ? null : nameMap.get(e.getOperatorId()));
+            node.setWeight(parseEventWeight(e.getEventData()));
             nodes.add(node);
         }
         return nodes;
+    }
+
+    /**
+     * 解析 {@code trace_event.event_data} JSON 里的 {@code weight}（追溯时间轴每节点重量）。
+     * event_data 为空 / 非合法 JSON / 无 weight → null（容错不抛，缺重量时节点照常展示）。
+     */
+    private String parseEventWeight(String eventData) {
+        if (StringUtils.isBlank(eventData)) {
+            return null;
+        }
+        try {
+            Dict map = JsonUtils.parseMap(eventData);
+            if (map == null) {
+                return null;
+            }
+            String weight = map.getStr("weight");
+            return StringUtils.isBlank(weight) ? null : weight;
+        } catch (Exception ex) {
+            log.warn("[trace-public] event_data 解析重量失败 eventData={}: {}", eventData, ex.getMessage());
+            return null;
+        }
     }
 
     // ============================ pork 分支 ============================

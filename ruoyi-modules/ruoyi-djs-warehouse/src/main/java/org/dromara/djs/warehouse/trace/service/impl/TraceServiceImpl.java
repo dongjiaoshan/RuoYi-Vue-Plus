@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.core.utils.StringUtils;
+import org.dromara.common.json.utils.JsonUtils;
 import org.dromara.common.satoken.utils.LoginHelper;
 import org.dromara.djs.common.base.DjsBaseServiceImpl;
 import org.dromara.djs.common.encoder.BizCodeType;
@@ -21,6 +22,7 @@ import org.dromara.djs.warehouse.trace.mapper.TraceEventMapper;
 import org.dromara.djs.warehouse.trace.service.ITraceService;
 import org.springframework.stereotype.Service;
 
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.ArrayList;
@@ -81,6 +83,12 @@ public class TraceServiceImpl
     private static final Set<String> EAR_NO_BACKFILL_CONTENTS = Set.of(
         TraceContentConst.MARKETING, TraceContentConst.SINGE,
         TraceContentConst.SLAUGHTER, TraceContentConst.ACID);
+
+    /**
+     * {@code trace_event.event_data} JSON 里重量字段 key（追溯时间轴每节点重量）。
+     * 序列化形如 {@code {"weight":"5.20"}}，前端时间轴节点据此展示「· 5.20kg」。
+     */
+    private static final String EVENT_DATA_WEIGHT_KEY = "weight";
 
     private final TraceEventMapper traceEventMapper;
     private final ProductInfoMapper productInfoMapper;
@@ -191,6 +199,11 @@ public class TraceServiceImpl
 
     @Override
     public void recordEvent(String produceCode, String traceContent) {
+        recordEvent(produceCode, traceContent, null);
+    }
+
+    @Override
+    public void recordEvent(String produceCode, String traceContent, BigDecimal weight) {
         if (StringUtils.isBlank(produceCode)) {
             log.warn("[TRC-CORE-001] recordEvent skipped: empty produceCode, content={}", traceContent);
             return;
@@ -201,8 +214,10 @@ public class TraceServiceImpl
             event.setTraceContent(traceContent);
             event.setTraceTime(LocalDateTime.now());
             event.setOperatorId(LoginHelper.getUserId());
+            event.setEventData(buildWeightEventData(weight));
             insertTraceEvent(event);
-            log.info("[TRC-CORE-001] recordEvent produceCode={} content={}", produceCode, traceContent);
+            log.info("[TRC-CORE-001] recordEvent produceCode={} content={} weight={}",
+                produceCode, traceContent, weight);
         } catch (Exception e) {
             // 追溯写失败绝不拖垮主业务工序 → 仅 warn，不抛
             log.warn("[TRC-CORE-001] recordEvent failed (skipped) produceCode={} content={}: {}",
@@ -212,6 +227,11 @@ public class TraceServiceImpl
 
     @Override
     public void recordEventByEarNo(String earNo, String traceContent) {
+        recordEventByEarNo(earNo, traceContent, null);
+    }
+
+    @Override
+    public void recordEventByEarNo(String earNo, String traceContent, BigDecimal weight) {
         if (StringUtils.isBlank(earNo)) {
             log.warn("[TRC-CORE-001] recordEventByEarNo skipped: empty earNo, content={}", traceContent);
             return;
@@ -223,7 +243,19 @@ public class TraceServiceImpl
                 earNo, traceContent);
             return;
         }
-        recordEvent(produceCode, traceContent);
+        recordEvent(produceCode, traceContent, weight);
+    }
+
+    /**
+     * 把节点重量序列化成 {@code event_data} JSON（{@code {"weight":"5.20"}}，Jackson 经 {@link JsonUtils}）。
+     * {@code weight} 为 null → 返 null（event_data 保持 NULL，不写空对象）。重量用 {@code toPlainString}
+     * 保留原始精度，避免科学计数法。
+     */
+    private String buildWeightEventData(BigDecimal weight) {
+        if (weight == null) {
+            return null;
+        }
+        return JsonUtils.toJsonString(Map.of(EVENT_DATA_WEIGHT_KEY, weight.toPlainString()));
     }
 
     /**

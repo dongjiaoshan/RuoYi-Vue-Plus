@@ -354,8 +354,9 @@ public class PigCutRecordServiceImpl
 
         // TRC-CORE-001：屠宰分割 + 排酸追溯事件（分割完成同时记两条；按耳号反查 trace_code，
         // 猪肉链当前无生成入口 → warn 跳过，不拖垮分割事务）
-        traceService.recordEventByEarNo(record.getEarNo(), TraceContentConst.SLAUGHTER);
-        traceService.recordEventByEarNo(record.getEarNo(), TraceContentConst.ACID);
+        // 追溯时间轴每节点重量：分割 / 排酸节点重量 = 白条重量 outWeight（pickupWeight − dripLoss）
+        traceService.recordEventByEarNo(record.getEarNo(), TraceContentConst.SLAUGHTER, outWeight);
+        traceService.recordEventByEarNo(record.getEarNo(), TraceContentConst.ACID, outWeight);
     }
 
     @Override

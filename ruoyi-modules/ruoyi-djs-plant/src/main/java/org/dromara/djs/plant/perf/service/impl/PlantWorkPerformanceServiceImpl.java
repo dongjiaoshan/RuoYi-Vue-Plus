@@ -207,15 +207,15 @@ public class PlantWorkPerformanceServiceImpl
      */
     private Map<String, Integer> loadFarmCounts(List<PerfListRow> list) {
         Map<String, Integer> map = new HashMap<>();
-        List<Object[]> pairs = list.stream()
+        List<PerfListRow> valid = list.stream()
             .filter(r -> r.getTeamId() != null && StringUtils.isNotBlank(r.getStatMonth()))
-            .map(r -> new Object[]{r.getTeamId(), r.getStatMonth()})
-            .distinct()
             .collect(Collectors.toList());
-        if (pairs.isEmpty()) {
+        if (valid.isEmpty()) {
             return map;
         }
-        for (FarmCountRow r : baseMapper.countFarmByTeamMonths(pairs)) {
+        List<Long> teamIds = valid.stream().map(PerfListRow::getTeamId).distinct().collect(Collectors.toList());
+        List<String> months = valid.stream().map(PerfListRow::getStatMonth).distinct().collect(Collectors.toList());
+        for (FarmCountRow r : baseMapper.countFarmByTeamMonths(teamIds, months)) {
             if (r.getFarmBy() != null && StringUtils.isNotBlank(r.getStatMonth())) {
                 map.put(farmKey(r.getFarmBy(), r.getStatMonth()), r.getCnt() != null ? r.getCnt() : 0);
             }

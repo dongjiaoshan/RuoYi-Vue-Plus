@@ -97,7 +97,8 @@ public class PigMarketingEventListener {
             log.info("[CROSS-FLOW-001] bar_info 创建成功 barId={} earNo={} marketingId={}",
                 bar.getBarId(), earNo, marketing.getId());
             // TRC-CORE-001：出栏上市追溯事件（按耳号反查 trace_code；猪肉链当前无生成入口 → warn 跳过）
-            traceService.recordEventByEarNo(earNo, TraceContentConst.MARKETING);
+            // 追溯时间轴每节点重量：出栏节点重量 = 出栏体重 outWeight
+            traceService.recordEventByEarNo(earNo, TraceContentConst.MARKETING, marketing.getOutWeight());
         } catch (Exception e) {
             // AFTER_COMMIT 抛异常不会回滚养殖事务（已提交），但会让上游误以为出栏失败 → 全 swallow + log
             log.error("[CROSS-FLOW-001] 自动创建 bar_info 失败 earNo={} marketingId={}: {}",

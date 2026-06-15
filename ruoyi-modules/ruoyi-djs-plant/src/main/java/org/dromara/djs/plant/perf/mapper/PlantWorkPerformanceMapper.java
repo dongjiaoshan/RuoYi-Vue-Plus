@@ -113,14 +113,15 @@ public interface PlantWorkPerformanceMapper extends BaseMapperPlus<PlantWorkPerf
           FROM t_plant_farm_records
          WHERE tenant_id = '1001'
            AND del_flag = '0'
-           AND (farm_by, DATE_FORMAT(farm_date, '%Y-%m')) IN
-        <foreach collection='pairs' item='p' open='(' separator=',' close=')'>
-            (#{p[0]}, #{p[1]})
-        </foreach>
+           AND farm_by IN
+        <foreach collection='teamIds' item='tid' open='(' separator=',' close=')'>#{tid}</foreach>
+           AND DATE_FORMAT(farm_date, '%Y-%m') IN
+        <foreach collection='months' item='m' open='(' separator=',' close=')'>#{m}</foreach>
          GROUP BY farm_by, DATE_FORMAT(farm_date, '%Y-%m')
         </script>
         """)
-    List<FarmCountRow> countFarmByTeamMonths(@Param("pairs") Collection<Object[]> pairs);
+    List<FarmCountRow> countFarmByTeamMonths(@Param("teamIds") Collection<Long> teamIds,
+                                             @Param("months") Collection<String> months);
 
     /**
      * 详情按作物分行：查某 班组 × 月 下全部作物绩效行（rework 135 产量绩效 tab）。

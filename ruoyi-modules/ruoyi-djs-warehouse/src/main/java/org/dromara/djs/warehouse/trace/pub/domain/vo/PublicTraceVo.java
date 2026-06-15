@@ -135,6 +135,11 @@ public class PublicTraceVo implements Serializable {
         private LocalDateTime traceTime;
         /** 操作人姓名（operatorId 翻译，无裸 id）。 */
         private String operatorName;
+        /**
+         * 该节点工序重量 kg（源 {@code trace_event.event_data} 的 {@code weight} 字段，如 {@code "5.20"}）；
+         * event_data 为空 / 无 weight / 解析失败 → null，前端有才展示「· 5.20kg」。
+         */
+        private String weight;
     }
 
     /** 猪只信息块（pork）。 */

@@ -613,7 +613,8 @@ public class ProductProductionServiceImpl
         String produceCode = traceService.genCode(p.getProductId(), earNo, plotId);
         p.setTraceCode(produceCode);
         baseMapper.updateById(p);
-        traceService.recordEvent(produceCode, TraceContentConst.IN_STOCK);
+        // 追溯时间轴每节点重量：入库节点重量 = 该生产记录 productWeight
+        traceService.recordEvent(produceCode, TraceContentConst.IN_STOCK, p.getProductWeight());
     }
 
     /**

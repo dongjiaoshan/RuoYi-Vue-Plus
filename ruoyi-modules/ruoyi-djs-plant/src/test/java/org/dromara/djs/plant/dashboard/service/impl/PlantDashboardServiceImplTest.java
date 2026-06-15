@@ -1,5 +1,6 @@
 package org.dromara.djs.plant.dashboard.service.impl;
 
+import org.dromara.djs.plant.dashboard.domain.vo.CropPlantStatItemVo;
 import org.dromara.djs.plant.dashboard.domain.vo.FarmWorkCountVo;
 import org.dromara.djs.plant.dashboard.domain.vo.GanttItemVo;
 import org.dromara.djs.plant.dashboard.domain.vo.MonthCompletionItemVo;
@@ -72,6 +73,20 @@ class PlantDashboardServiceImplTest {
         mc.setExpectedYield(new BigDecimal("100"));
         when(dashboardMapper.selectMonthCompletion(anyString())).thenReturn(List.of(mc));
 
+        when(dashboardMapper.selectCurrentPlantingArea(anyString())).thenReturn(new BigDecimal("66.00"));
+        when(dashboardMapper.selectCurrentExpectedYield(anyString())).thenReturn(new BigDecimal("5000"));
+
+        CropPlantStatItemVo cs = new CropPlantStatItemVo();
+        cs.setCropName("番茄");
+        cs.setPlotCount(3);
+        cs.setExpectedYield(new BigDecimal("2000"));
+        when(dashboardMapper.selectCropPlantStat(anyString())).thenReturn(List.of(cs));
+
+        when(dashboardMapper.selectPlotCertMinDays(anyString())).thenReturn(143);
+        when(dashboardMapper.selectCropCertMinDays(anyString())).thenReturn(167);
+        when(dashboardMapper.selectCropNoCertCount(anyString())).thenReturn(6);
+        when(dashboardMapper.selectCropTotalCount(anyString())).thenReturn(8);
+
         PlantDashboardSummaryVo vo = service.getSummary();
 
         assertThat(vo.getTotalPlotCount()).isEqualTo(10);
@@ -85,6 +100,14 @@ class PlantDashboardServiceImplTest {
         assertThat(vo.getTodayFarmWorkTotal()).isEqualTo(5);
         assertThat(vo.getMonthCompletion()).hasSize(1);
         assertThat(vo.getMonthCompletion().get(0).getCropName()).isEqualTo("番茄");
+        assertThat(vo.getCurrentPlantingArea()).isEqualByComparingTo("66.00");
+        assertThat(vo.getCurrentExpectedYield()).isEqualByComparingTo("5000");
+        assertThat(vo.getCropPlantStat()).hasSize(1);
+        assertThat(vo.getCropPlantStat().get(0).getPlotCount()).isEqualTo(3);
+        assertThat(vo.getOrganicCertOverview().getPlotCertMinDays()).isEqualTo(143);
+        assertThat(vo.getOrganicCertOverview().getCropCertMinDays()).isEqualTo(167);
+        assertThat(vo.getOrganicCertOverview().getCropNoCertCount()).isEqualTo(6);
+        assertThat(vo.getOrganicCertOverview().getCropReservedCount()).isEqualTo(8);
     }
 
     @Test
@@ -107,6 +130,14 @@ class PlantDashboardServiceImplTest {
         assertThat(vo.getTodayFarmWork()).isEmpty();
         assertThat(vo.getTodayFarmWorkTotal()).isZero();
         assertThat(vo.getMonthCompletion()).isEmpty();
+        // 新增字段 null 兜底：面积 / 产量 ZERO，统计空列表，证书一览各 count 0 + 到期天数 null
+        assertThat(vo.getCurrentPlantingArea()).isEqualByComparingTo(BigDecimal.ZERO);
+        assertThat(vo.getCurrentExpectedYield()).isEqualByComparingTo(BigDecimal.ZERO);
+        assertThat(vo.getCropPlantStat()).isEmpty();
+        assertThat(vo.getOrganicCertOverview().getPlotCertMinDays()).isNull();
+        assertThat(vo.getOrganicCertOverview().getCropCertMinDays()).isNull();
+        assertThat(vo.getOrganicCertOverview().getCropNoCertCount()).isZero();
+        assertThat(vo.getOrganicCertOverview().getCropReservedCount()).isZero();
     }
 
     @Test

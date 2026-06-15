@@ -70,9 +70,33 @@ public class PlantDashboardSummaryVo implements Serializable {
     private Integer todayFarmWorkTotal;
 
     /**
+     * 当前种植面积（亩，{@code SUM(plot_area)} WHERE {@code plot_status = 2} 种植中）。
+     *
+     * <p>区块 ① "当前种植面积亩"。无数据返 ZERO。</p>
+     */
+    private BigDecimal currentPlantingArea;
+
+    /**
+     * 当前预计产量（kg，{@code SUM(expected_yield)} WHERE {@code plant_status != 'completed'}）。
+     *
+     * <p>区块 ① "当前预计产量"。前端按 kg → 万斤（{@code kg × 2 / 10000}）换算展示。无数据返 ZERO。</p>
+     */
+    private BigDecimal currentExpectedYield;
+
+    /**
      * 当月种植任务完成率列表（按作物分组，前端按 actual/expected 算柱高）。
      */
     private List<MonthCompletionItemVo> monthCompletion;
+
+    /**
+     * 实时种植物统计列表（区块 ④，按作物分组：在种地块数 bar + 预计产量 line）。
+     */
+    private List<CropPlantStatItemVo> cropPlantStat;
+
+    /**
+     * 有机证书情况一览（区块 ③，土地 / 作物证书最早到期天数 + 无证书 / 已建档品类数）。
+     */
+    private OrganicCertOverviewVo organicCertOverview;
 
     /**
      * 全空兜底实例（无任何数据时返回，避免前端空指针）。
@@ -87,9 +111,13 @@ public class PlantDashboardSummaryVo implements Serializable {
         vo.setPendingPlotCount(0);
         vo.setTotalPlotCount(0);
         vo.setTotalPlotArea(BigDecimal.ZERO);
+        vo.setCurrentPlantingArea(BigDecimal.ZERO);
+        vo.setCurrentExpectedYield(BigDecimal.ZERO);
         vo.setTodayFarmWork(List.of());
         vo.setTodayFarmWorkTotal(0);
         vo.setMonthCompletion(List.of());
+        vo.setCropPlantStat(List.of());
+        vo.setOrganicCertOverview(new OrganicCertOverviewVo());
         return vo;
     }
 

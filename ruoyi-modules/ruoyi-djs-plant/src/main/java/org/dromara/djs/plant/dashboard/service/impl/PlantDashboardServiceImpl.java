@@ -3,9 +3,11 @@ package org.dromara.djs.plant.dashboard.service.impl;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.common.tenant.helper.TenantHelper;
+import org.dromara.djs.plant.dashboard.domain.vo.CropPlantStatItemVo;
 import org.dromara.djs.plant.dashboard.domain.vo.FarmWorkCountVo;
 import org.dromara.djs.plant.dashboard.domain.vo.GanttItemVo;
 import org.dromara.djs.plant.dashboard.domain.vo.MonthCompletionItemVo;
+import org.dromara.djs.plant.dashboard.domain.vo.OrganicCertOverviewVo;
 import org.dromara.djs.plant.dashboard.domain.vo.PlantDashboardSummaryVo;
 import org.dromara.djs.plant.dashboard.mapper.PlantDashboardMapper;
 import org.dromara.djs.plant.dashboard.service.IPlantDashboardService;
@@ -63,6 +65,8 @@ public class PlantDashboardServiceImpl implements IPlantDashboardService {
             vo.setTotalPlotArea(nzBd(overview.getTotalArea()));
         }
         vo.setPendingPlotCount(nz(dashboardMapper.countPendingPlot(tenantId)));
+        vo.setCurrentPlantingArea(nzBd(dashboardMapper.selectCurrentPlantingArea(tenantId)));
+        vo.setCurrentExpectedYield(nzBd(dashboardMapper.selectCurrentExpectedYield(tenantId)));
 
         // 块 ① 今日农事
         List<FarmWorkCountVo> todayFarmWork = dashboardMapper.selectTodayFarmWork(tenantId);
@@ -73,7 +77,29 @@ public class PlantDashboardServiceImpl implements IPlantDashboardService {
         List<MonthCompletionItemVo> monthCompletion = dashboardMapper.selectMonthCompletion(tenantId);
         vo.setMonthCompletion(monthCompletion == null ? List.of() : monthCompletion);
 
+        // 块 ④ 实时种植物统计（by 作物）
+        List<CropPlantStatItemVo> cropPlantStat = dashboardMapper.selectCropPlantStat(tenantId);
+        vo.setCropPlantStat(cropPlantStat == null ? List.of() : cropPlantStat);
+
+        // 块 ③ 有机证书情况一览
+        vo.setOrganicCertOverview(buildOrganicCertOverview(tenantId));
+
         return vo;
+    }
+
+    /**
+     * 组装有机证书情况一览（区块 ③）。
+     *
+     * @param tenantId 租户
+     * @return 4 数字 VO，无证书时到期天数 null、计数 0
+     */
+    private OrganicCertOverviewVo buildOrganicCertOverview(String tenantId) {
+        OrganicCertOverviewVo cert = new OrganicCertOverviewVo();
+        cert.setPlotCertMinDays(dashboardMapper.selectPlotCertMinDays(tenantId));
+        cert.setCropCertMinDays(dashboardMapper.selectCropCertMinDays(tenantId));
+        cert.setCropNoCertCount(nz(dashboardMapper.selectCropNoCertCount(tenantId)));
+        cert.setCropReservedCount(nz(dashboardMapper.selectCropTotalCount(tenantId)));
+        return cert;
     }
 
     @Override

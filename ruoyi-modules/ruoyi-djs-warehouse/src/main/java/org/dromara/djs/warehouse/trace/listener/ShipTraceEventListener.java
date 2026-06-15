@@ -57,7 +57,8 @@ public class ShipTraceEventListener {
             int recorded = 0;
             for (ProductProduction p : productions) {
                 if (StringUtils.isNotBlank(p.getTraceCode())) {
-                    traceService.recordEvent(p.getTraceCode(), TraceContentConst.SHIP);
+                    // 追溯时间轴每节点重量：发货节点重量 = 该生产记录 productWeight
+                    traceService.recordEvent(p.getTraceCode(), TraceContentConst.SHIP, p.getProductWeight());
                     recorded++;
                 }
             }

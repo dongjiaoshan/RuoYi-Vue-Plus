@@ -3,9 +3,11 @@ package org.dromara.djs.plant.dashboard.mapper;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
+import org.dromara.djs.plant.dashboard.domain.vo.CropPlantStatItemVo;
 import org.dromara.djs.plant.dashboard.domain.vo.FarmWorkCountVo;
 import org.dromara.djs.plant.dashboard.domain.vo.GanttItemVo;
 import org.dromara.djs.plant.dashboard.domain.vo.MonthCompletionItemVo;
+import org.dromara.djs.plant.dashboard.domain.vo.OrganicCertOverviewVo;
 
 import java.math.BigDecimal;
 import java.util.List;
@@ -54,6 +56,40 @@ public interface PlantDashboardMapper {
         + " WHERE p.tenant_id = #{tenantId} "
         + "   AND p.del_flag = '0'")
     PlotOverviewRow selectPlotOverview(@Param("tenantId") String tenantId);
+
+    /**
+     * 当前种植面积（亩）：种植中地块（{@code plot_status = 2}）的 {@code SUM(plot_area)}。
+     *
+     * <p>区块 ① "当前种植面积亩"。仅统计有效片区下的种植中地块。</p>
+     *
+     * @param tenantId 租户
+     * @return 当前种植面积（亩），无则 0
+     */
+    @Select("SELECT COALESCE(SUM(p.plot_area), 0) "
+        + "  FROM t_plant_plot_info p "
+        + "  JOIN t_plant_plot_zone z ON z.id = p.zone_id "
+        + "                          AND z.tenant_id = #{tenantId} "
+        + "                          AND z.del_flag = '0' "
+        + "                          AND z.zone_status = 1 "
+        + " WHERE p.tenant_id = #{tenantId} "
+        + "   AND p.del_flag = '0' "
+        + "   AND p.plot_status = 2")
+    BigDecimal selectCurrentPlantingArea(@Param("tenantId") String tenantId);
+
+    /**
+     * 当前预计产量（kg）：未完成种植明细（{@code plant_status != 'completed'}）的 {@code SUM(expected_yield)}。
+     *
+     * <p>区块 ① "当前预计产量"。前端按 kg → 万斤换算（{@code kg × 2 / 10000}）。</p>
+     *
+     * @param tenantId 租户
+     * @return 当前预计产量（kg），无则 0
+     */
+    @Select("SELECT COALESCE(SUM(d.expected_yield), 0) "
+        + "  FROM t_plant_plant_details d "
+        + " WHERE d.tenant_id = #{tenantId} "
+        + "   AND d.del_flag = '0' "
+        + "   AND d.plant_status <> 'completed'")
+    BigDecimal selectCurrentExpectedYield(@Param("tenantId") String tenantId);
 
     /**
      * 待种地块数（存在 {@code plant_status='pending'} 且 {@code begin_actualdate IS NULL}
@@ -130,7 +166,87 @@ public interface PlantDashboardMapper {
         + " LIMIT 30")
     List<MonthCompletionItemVo> selectMonthCompletion(@Param("tenantId") String tenantId);
 
-    // ============================ 块 ③ 双甘特 ============================
+    // ============================ 块 ④ 实时种植物统计（by 作物） ============================
+
+    /**
+     * 实时种植物统计（按作物分组）：在种地块数 + 预计产量合计。
+     *
+     * <p>仅统计未完成种植（{@code plant_status != 'completed'}）的明细，按 {@code crop_id} 分组，
+     * JOIN {@code t_plant_crop_info} 取作物名。bar = {@code COUNT(DISTINCT plot_id)}，
+     * line = {@code SUM(expected_yield)}（kg）。</p>
+     *
+     * @param tenantId 租户
+     * @return 每个作物一行 {cropName, plotCount, expectedYield}，无则空列表（最多 30 行）
+     */
+    @Select("SELECT c.crop_name                          AS cropName, "
+        + "       COUNT(DISTINCT d.plot_id)            AS plotCount, "
+        + "       COALESCE(SUM(d.expected_yield), 0)   AS expectedYield "
+        + "  FROM t_plant_plant_details d "
+        + "  LEFT JOIN t_plant_crop_info c ON c.id = d.crop_id AND c.del_flag = '0' "
+        + " WHERE d.tenant_id = #{tenantId} "
+        + "   AND d.del_flag = '0' "
+        + "   AND d.plant_status <> 'completed' "
+        + " GROUP BY d.crop_id, c.crop_name "
+        + " ORDER BY plotCount DESC, c.crop_name "
+        + " LIMIT 30")
+    List<CropPlantStatItemVo> selectCropPlantStat(@Param("tenantId") String tenantId);
+
+    // ============================ 块 ③ 有机证书情况一览 ============================
+
+    /**
+     * 土地有机证书最早到期天数（{@code MIN(DATEDIFF(organic_valid, CURDATE()))}）。
+     *
+     * @param tenantId 租户
+     * @return 最早到期天数（可为负=已过期），无在册证书时 null
+     */
+    @Select("SELECT MIN(DATEDIFF(organic_valid, CURDATE())) "
+        + "  FROM t_plant_plot_organic "
+        + " WHERE tenant_id = #{tenantId} "
+        + "   AND del_flag = '0'")
+    Integer selectPlotCertMinDays(@Param("tenantId") String tenantId);
+
+    /**
+     * 作物有机证书最早到期天数（{@code MIN(DATEDIFF(crop_cert_valid, CURDATE()))}）。
+     *
+     * @param tenantId 租户
+     * @return 最早到期天数（可为负=已过期），无在册证书时 null
+     */
+    @Select("SELECT MIN(DATEDIFF(crop_cert_valid, CURDATE())) "
+        + "  FROM t_plant_crop_organic "
+        + " WHERE tenant_id = #{tenantId} "
+        + "   AND del_flag = '0'")
+    Integer selectCropCertMinDays(@Param("tenantId") String tenantId);
+
+    /**
+     * 作物无证书品类数（已建档作物中尚无有效有机证书的作物数）。
+     *
+     * @param tenantId 租户
+     * @return 无证书作物品类数，无则 0
+     */
+    @Select("SELECT COUNT(*) "
+        + "  FROM t_plant_crop_info c "
+        + " WHERE c.tenant_id = #{tenantId} "
+        + "   AND c.del_flag = '0' "
+        + "   AND NOT EXISTS ( "
+        + "       SELECT 1 FROM t_plant_crop_organic o "
+        + "        WHERE o.tenant_id = #{tenantId} "
+        + "          AND o.del_flag = '0' "
+        + "          AND o.crop_id = c.id)")
+    Integer selectCropNoCertCount(@Param("tenantId") String tenantId);
+
+    /**
+     * 已建档作物品类总数（"预留证书品类数"= 可挂证的作物品类候选总数）。
+     *
+     * @param tenantId 租户
+     * @return 作物品类总数，无则 0
+     */
+    @Select("SELECT COUNT(*) "
+        + "  FROM t_plant_crop_info "
+        + " WHERE tenant_id = #{tenantId} "
+        + "   AND del_flag = '0'")
+    Integer selectCropTotalCount(@Param("tenantId") String tenantId);
+
+    // ============================ 块 ⑤ 双甘特 ============================
 
     /**
      * 双甘特原始行（4 时间字段 JOIN crop/plot 出 text）。
