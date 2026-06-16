@@ -128,8 +128,8 @@ public class TransferServiceImpl implements ITransferService {
         entity.setNewPenName(newPen == null ? null : newPen.getPenName());
         entity.setTransferReason(bo.getTransferReason());
         entity.setRemark(bo.getRemark());
-        // 转移人员：优先 EmployeePicker 所选 userId（bo.operator），未选回落登录用户
-        entity.setOperatorId(bo.getOperator() != null && !bo.getOperator().isBlank() ? Long.parseLong(bo.getOperator()) : LoginHelper.getUserId());
+        // 转移人员：优先 EmployeePicker 所选 userId（bo.operator 数字串），未选 / 非数字回落登录用户
+        entity.setOperatorId(resolveOperatorId(bo.getOperator()));
         entity.setDelFlag("0");
         transferMapper.insert(entity);
 
@@ -206,6 +206,17 @@ public class TransferServiceImpl implements ITransferService {
             .orderByDesc(PigTransfer::getTransferDate, PigTransfer::getId);
         Page<PigTransferVo> page = transferMapper.selectVoPage(pageQuery.build(), w);
         return TableDataInfo.build(page);
+    }
+
+    /**
+     * 解析转移人员 id：EmployeePicker 选中传 userId（数字串）→ 解析；空 / 非数字（无效输入）→ 回落登录用户。
+     * 防止非数字 operator（历史脏数据或异常前端）触发 NumberFormatException 500。
+     */
+    private Long resolveOperatorId(String operator) {
+        if (operator != null && operator.matches("\\d+")) {
+            return Long.parseLong(operator);
+        }
+        return LoginHelper.getUserId();
     }
 
     private String resolveBarnName(Long barnId) {

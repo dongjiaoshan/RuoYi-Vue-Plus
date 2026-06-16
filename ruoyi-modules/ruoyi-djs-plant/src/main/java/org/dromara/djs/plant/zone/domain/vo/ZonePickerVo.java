@@ -37,4 +37,12 @@ public class ZonePickerVo implements Serializable {
      */
     private String zoneName;
 
+    /**
+     * 该片区当月采摘任务数（应用层聚合回填，无任务为 0）。
+     *
+     * <p>口径与采收列表 {@code AppletPickServiceImpl#listCropTasks} 一致：is_pick=2（非游客）
+     * 且采摘窗口 [earliest, last] 与当月 [firstDay, lastDay] 相交的明细，按地块所属片区计数。</p>
+     */
+    private Integer pickTaskCount;
+
 }

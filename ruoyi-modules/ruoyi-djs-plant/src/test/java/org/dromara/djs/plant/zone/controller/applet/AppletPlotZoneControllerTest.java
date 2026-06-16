@@ -2,6 +2,8 @@ package org.dromara.djs.plant.zone.controller.applet;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import org.dromara.common.core.domain.R;
+import org.dromara.djs.plant.plan.mapper.PlantDetailsMapper;
+import org.dromara.djs.plant.plot.mapper.PlotInfoMapper;
 import org.dromara.djs.plant.zone.domain.PlotZone;
 import org.dromara.djs.plant.zone.domain.vo.ZonePickerVo;
 import org.dromara.djs.plant.zone.mapper.PlotZoneMapper;
@@ -45,11 +47,19 @@ class AppletPlotZoneControllerTest {
     @Mock
     private PlotZoneMapper plotZoneMapper;
 
+    @Mock
+    private PlantDetailsMapper plantDetailsMapper;
+
+    @Mock
+    private PlotInfoMapper plotInfoMapper;
+
     private AppletPlotZoneController controller;
 
     @BeforeEach
     void setUp() {
-        controller = new AppletPlotZoneController(plotZoneMapper);
+        // plantDetailsMapper.selectList 默认返回空（Mockito 对 List 返回空集合），
+        // fillPickTaskCount 当月无明细即早退，pickTaskCount 保持 null，不影响 3 字段断言。
+        controller = new AppletPlotZoneController(plotZoneMapper, plantDetailsMapper, plotInfoMapper);
     }
 
     @Test

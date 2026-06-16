@@ -11,10 +11,10 @@ import java.util.List;
  * mp 工人采收录入入参 BO（PLT-PICK-001 / FIX-PLT-MP-PICK-001 #3=a）。
  *
  * <p>工人从待采列表 / 详情进入，{@code detailId} 由路由 query 带入（不手输 ID）。
- * 按原型采收 tab 只走"开始/完成采摘"流程（采摘人员 + 日期），<b>不录重量</b>；首次回填
+ * 按原型采收 tab 只走"开始/完成采摘"流程（采收班组 + 日期），<b>不录重量</b>；首次回填
  * {@code begin_harvestdate} + 流转 {@code harvest_status}；{@code finish=true} 时额外置
  * {@code end_actualdate=NOW} + {@code harvest_status='completed'}，并 INSERT 一行
- * {@code t_plant_farm_records}（{@code farm_type='harvest_activity'}）。采摘重量由农事「采摘活动管理」
+ * {@code t_plant_farm_records}（{@code farm_type='harvest_activity'}，{@code farm_by} 落所选班组）。采摘重量由农事「采摘活动管理」
  * {@code submitHarvestWeight} 累加 {@code actual_yield}。</p>
  *
  * @author djs
@@ -34,8 +34,8 @@ public class PickSubmitBo {
     /** 是否完成采收（true 置 completed + end_actualdate；默认 false 继续采）。 */
     private Boolean finish = false;
 
-    /** 采摘人员 sys_user.user_id（可空；落 t_plant_farm_records.operator_user_id）。 */
-    private Long pickerUserId;
+    /** 采收班组 t_plant_work_team.id（可空；落 t_plant_farm_records.farm_by）。 */
+    private Long workTeamId;
 
     /** 凭证图 OSS id（可选；bizType=plant_farm_proof）。 */
     private List<Long> proofOssIds;

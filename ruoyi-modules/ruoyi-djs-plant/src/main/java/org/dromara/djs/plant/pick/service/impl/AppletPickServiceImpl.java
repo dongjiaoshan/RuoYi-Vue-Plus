@@ -142,15 +142,15 @@ public class AppletPickServiceImpl implements IAppletPickService {
 
         // 5. INSERT 一行 t_plant_farm_records（farm_type='harvest_activity'，可追溯）
         //    复用 IFarmRecordsService.submitGrow（内含 record_no 生成 + plot_type/crop_name 冗余）。
-        //    farm_by 允许 NULL（FIX-PLT-MP-PICK-PERSON-001）：有指派班组就用 harvest_by；
-        //    个人采摘（未指派班组）置 NULL，归属落 operator_user_id（采摘人员）。
+        //    farm_by 落工人在采收录入时所选「采收班组」（FIX-PLT-PICK-TEAM-001）；
+        //    未选班组时优先回退明细指派班组 harvest_by，仍为空则 NULL（farm_by 已允许 NULL）。
         GrowRecordBo grow = new GrowRecordBo();
         grow.setFarmType(HARVEST_FARM_TYPE);
         grow.setPlantId(detail.getPlantId());
         grow.setPlotId(detail.getPlotId());
         grow.setCropId(detail.getCropId());
-        grow.setFarmBy(detail.getHarvestBy());          // 未指派则为 NULL，submitGrow 直写空
-        grow.setOperatorUserId(bo.getPickerUserId());   // FIX-PLT-MP-PICK-001：采摘人员落 operator_user_id
+        Long teamId = bo.getWorkTeamId() != null ? bo.getWorkTeamId() : detail.getHarvestBy();
+        grow.setFarmBy(teamId);                         // 采收班组落 farm_by（采收人员维度去除）
         grow.setFarmDate(bo.getHarvestDate());
         grow.setProofOssIds(joinOssIds(bo.getProofOssIds()));
         grow.setRemark(bo.getRemark());

@@ -201,20 +201,22 @@ class AppletPickServiceImplTest {
     }
 
     @Test
-    @DisplayName("未指派采摘班组(harvest_by=null) → ServiceException")
-    void submitPick_no_team() {
-        PlantDetails d = detailFixture();
-        d.setHarvestBy(null);
+    @DisplayName("采收提交传 workTeamId → farm_by 落所选采收班组（覆盖明细 harvest_by）")
+    void submitPick_workTeam_overrides_harvestBy() {
+        PlantDetails d = detailFixture();   // harvestBy=40
         when(detailsMapper.selectById(100L)).thenReturn(d);
 
         PickSubmitBo bo = new PickSubmitBo();
         bo.setDetailId(100L);
         bo.setHarvestDate(LocalDate.now());
+        bo.setWorkTeamId(77L);
 
-        assertThatThrownBy(() -> service.submitPick(bo))
-            .isInstanceOf(ServiceException.class)
-            .hasMessageContaining("未指派采摘班组");
-        verify(farmRecordsService, never()).submitGrow(any());
+        service.submitPick(bo);
+
+        ArgumentCaptor<GrowRecordBo> grow = ArgumentCaptor.forClass(GrowRecordBo.class);
+        verify(farmRecordsService).submitGrow(grow.capture());
+        // 工人选的采收班组优先于明细指派班组
+        assertThat(grow.getValue().getFarmBy()).isEqualTo(77L);
     }
 
     // ============================================================
