@@ -8,6 +8,7 @@ import org.dromara.djs.breed.core.service.IPigCoreService;
 import org.dromara.djs.breed.event.heat.domain.PigHeat;
 import org.dromara.djs.breed.event.heat.domain.bo.HeatBo;
 import org.dromara.djs.breed.event.heat.mapper.PigHeatMapper;
+import org.dromara.djs.breed.event.weaning.mapper.PigWeaningMapper;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -49,12 +50,14 @@ class HeatServiceImplTest {
     @Mock
     private PigMapper pigMapper;
     @Mock
+    private PigWeaningMapper weaningMapper;
+    @Mock
     private IPigCoreService pigCoreService;
 
     private static final long LOGIN_USER_ID = 1001L;
 
     private HeatServiceImpl service() {
-        return new HeatServiceImpl(heatMapper, pigMapper, pigCoreService);
+        return new HeatServiceImpl(heatMapper, pigMapper, weaningMapper, pigCoreService);
     }
 
     private Pig mkSow() {
