@@ -39,7 +39,7 @@ public interface IPlantActivityService {
     /**
      * 采摘活动记录列表（mp 采摘活动记录，按采摘日期倒序）。
      *
-     * @param cropId 作物 id（非空，按作物过滤）
+     * @param cropId 作物 id（可空 = 全场查询，不按作物过滤；非空则按作物过滤）
      * @param begin  起始采摘日期（含，可空 = 不限下界）
      * @param end    结束采摘日期（含，可空 = 不限上界）
      * @return 采摘活动流水列表（无数据返空列表，按 {@code activity_date} 倒序）

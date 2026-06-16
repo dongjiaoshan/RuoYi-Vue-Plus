@@ -315,11 +315,19 @@ public class AppletPickServiceImpl implements IAppletPickService {
             throw new ServiceException("作物 id 必填");
         }
         // 与采摘任务列表卡（listCropTasks）同口径取 is_pick=2（普通采收），点卡进详情看到的是同一批地块。
+        // 同样只展示采摘窗口与「当月」相交的地块：earliest_harvestdate ≤ 当月最后一天
+        //   AND last_harvestdate ≥ 当月第一天（窗口 [earliest, last] 与 [firstDay, lastDay] 相交）。
+        //   否则会把次月 / 跨月地块也带进详情，与列表卡口径不一致（FIX row4）。
+        LocalDate today = LocalDate.now();
+        LocalDate firstDay = today.withDayOfMonth(1);
+        LocalDate lastDay = today.with(java.time.temporal.TemporalAdjusters.lastDayOfMonth());
         List<PlantDetails> entities = detailsMapper.selectList(
             new LambdaQueryWrapper<PlantDetails>()
                 .eq(PlantDetails::getIsPick, IS_PICK_NORMAL)
                 .eq(PlantDetails::getCropId, cropId)
                 .eq(planId != null, PlantDetails::getPlantId, planId)
+                .le(PlantDetails::getEarliestHarvestdate, lastDay)
+                .ge(PlantDetails::getLastHarvestdate, firstDay)
                 .orderByAsc(PlantDetails::getEarliestHarvestdate)
                 .orderByAsc(PlantDetails::getId));
         return enrichToVoList(entities);

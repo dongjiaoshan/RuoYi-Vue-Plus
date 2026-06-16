@@ -10,15 +10,15 @@ import java.time.LocalDateTime;
  * 退货管理 mp 门店分组聚合 VO（{@code GET /applet/warehouse/return/pending}）。
  *
  * <p>FIX-WMS-MP-RETURN-001（原型图 57）：进页 = 门店分组卡片，
- * 每张卡 = 同门店 + 同状态（{@code pending} / {@code confirmed}）的一批退货行：</p>
+ * 每张卡 = 一个门店当天的全部退货行（状态为派生值）：</p>
  * <ul>
- *   <li>门店名 + 状态（待确认 / 已确认）</li>
- *   <li>退货产品品种数（该门店该状态下 distinct product_id 计数）</li>
- *   <li>退货时间（该组最近一条 apply_time）</li>
+ *   <li>门店名 + 派生状态：该门店当天退回记录全部 confirmed → 已确认，否则待确认</li>
+ *   <li>退货产品品种数（该门店当天全部行 distinct product_id 计数，不分状态）</li>
+ *   <li>退货时间（该门店当天退回记录中最大 apply_time）</li>
  * </ul>
  *
  * <p>聚合口径：表 {@code t_warehouse_return_product} 一行 = 一个产品，
- * 按 {@code store_id + return_status} 分组（与原型一张卡一门店一状态一致）。</p>
+ * 按 {@code store_id} 分组（一门店一卡），状态由组内各行 rollup 派生。</p>
  *
  * @author djs
  * @since FIX-WMS-MP-RETURN-001

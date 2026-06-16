@@ -26,7 +26,9 @@ import org.dromara.djs.breed.event.nullreturn.service.INullReturnService;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.temporal.ChronoUnit;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
@@ -93,7 +95,8 @@ public class NullReturnServiceImpl implements INullReturnService {
         entity.setAbnormalType(dbCode);
         entity.setRelatedBreedingId(pig.getMatingId());
         entity.setRemark(bo.getRemark());
-        entity.setOperatorId(LoginHelper.getUserId());
+        // 录入人员：优先 BO.operatorId（mp EmployeePicker 选）；空则回落登录态
+        entity.setOperatorId(bo.getOperatorId() != null ? bo.getOperatorId() : LoginHelper.getUserId());
         entity.setDelFlag("0");
         abnormalMapper.insert(entity);
 
@@ -112,7 +115,11 @@ public class NullReturnServiceImpl implements INullReturnService {
         log.info("[BRD-EVENT-002] recordNullReturn pigId={} earNo={} abnormalId={} bo={} db={}",
             pig.getId(), pig.getEarNo(), entity.getId(), bo.getAbnormalType(), dbCode);
 
-        return toVo(entity);
+        // 状态机已流转母猪状态，回读最新 pig 给前端结果卡展示 currentStatus + 日龄/胎次
+        Pig fired = pigMapper.selectById(pig.getId());
+        PigAbnormalVo vo = toVo(entity);
+        enrichFromPig(vo, fired != null ? fired : pig);
+        return vo;
     }
 
     @Override
@@ -128,7 +135,56 @@ public class NullReturnServiceImpl implements INullReturnService {
             .lt(endBefore != null, PigAbnormal::getAbnormalDate, endBefore)
             .orderByDesc(PigAbnormal::getAbnormalDate, PigAbnormal::getId);
         Page<PigAbnormalVo> page = abnormalMapper.selectVoPage(pageQuery.build(), w);
+        enrichRows(page.getRecords());
         return TableDataInfo.build(page);
+    }
+
+    /**
+     * 列表 enrich 母猪日龄/胎次/当前状态/持续天数（mp 记录列表多行展示用）。
+     *
+     * <p>批查去重 pigId 避免 N+1；日龄/持续天数用 LocalDate 在 service 算（避免 SQL 方言）。
+     * operatorName 由 VO 上 {@code @Translation} 按 operatorId 翻译，本方法不处理。</p>
+     */
+    private void enrichRows(java.util.List<PigAbnormalVo> rows) {
+        if (rows == null || rows.isEmpty()) {
+            return;
+        }
+        java.util.List<Long> pigIds = rows.stream()
+            .map(PigAbnormalVo::getPigId).filter(Objects::nonNull).distinct().toList();
+        if (pigIds.isEmpty()) {
+            return;
+        }
+        java.util.Map<Long, Pig> pigById = new java.util.HashMap<>();
+        for (Pig p : pigMapper.selectByIds(pigIds)) {
+            pigById.put(p.getId(), p);
+        }
+        for (PigAbnormalVo vo : rows) {
+            Pig p = vo.getPigId() == null ? null : pigById.get(vo.getPigId());
+            if (p != null) {
+                enrichFromPig(vo, p);
+            }
+        }
+    }
+
+    /**
+     * 单条 enrich：从 pig 取 parity/current_status，按 birthDate(fallback introduceDate) 算日龄，
+     * 按 abnormalDate 至今算持续天数。基准/异常日期缺失时对应字段留 null。
+     */
+    private void enrichFromPig(PigAbnormalVo vo, Pig pig) {
+        if (pig == null) {
+            return;
+        }
+        vo.setParity(pig.getParity());
+        vo.setCurrentStatus(pig.getCurrentStatus());
+        LocalDate today = LocalDate.now();
+        LocalDate base = pig.getBirthDate() != null ? pig.getBirthDate() : pig.getIntroduceDate();
+        if (base != null) {
+            vo.setDayAge((int) Math.max(ChronoUnit.DAYS.between(base, today), 0L));
+        }
+        if (vo.getAbnormalDate() != null) {
+            vo.setDurationDays((int) Math.max(
+                ChronoUnit.DAYS.between(vo.getAbnormalDate().toLocalDate(), today), 0L));
+        }
     }
 
     /** abort→A / idle→N / return→R（CR-20260524-07）。 */

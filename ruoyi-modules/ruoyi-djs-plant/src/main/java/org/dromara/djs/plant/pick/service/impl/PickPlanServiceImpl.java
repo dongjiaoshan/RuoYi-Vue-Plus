@@ -75,7 +75,10 @@ public class PickPlanServiceImpl implements IPickPlanService {
             tenantId,
             LocalDate.now().getYear(),
             q.getCropId(),
-            q.getHarvestStatus()
+            q.getCropName(),
+            q.getHarvestStatus(),
+            q.getBeginEarliest(),
+            q.getEndEarliest()
         );
         enrichCropImage(rows);
         return rows;

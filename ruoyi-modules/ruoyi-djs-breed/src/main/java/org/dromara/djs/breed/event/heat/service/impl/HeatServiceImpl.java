@@ -22,13 +22,20 @@ import org.dromara.djs.breed.event.heat.domain.query.HeatQuery;
 import org.dromara.djs.breed.event.heat.domain.vo.PigHeatVo;
 import org.dromara.djs.breed.event.heat.mapper.PigHeatMapper;
 import org.dromara.djs.breed.event.heat.service.IHeatService;
+import org.dromara.djs.breed.event.weaning.domain.PigWeaning;
+import org.dromara.djs.breed.event.weaning.mapper.PigWeaningMapper;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.temporal.ChronoUnit;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * 查情事件 Service 实现（BRD-EVENT-002 OESTRUS）。
@@ -47,6 +54,7 @@ public class HeatServiceImpl implements IHeatService {
 
     private final PigHeatMapper heatMapper;
     private final PigMapper pigMapper;
+    private final PigWeaningMapper weaningMapper;
     private final IPigCoreService pigCoreService;
 
     @Override
@@ -126,7 +134,75 @@ public class HeatServiceImpl implements IHeatService {
             .lt(endBefore != null, PigHeat::getHeatDate, endBefore)
             .orderByDesc(PigHeat::getHeatDate, PigHeat::getId);
         Page<PigHeatVo> page = heatMapper.selectVoPage(pageQuery.build(), w);
+        enrichSowMetrics(page.getRecords());
         return TableDataInfo.build(page);
+    }
+
+    /**
+     * 记录列表行级 enrich（row97）：断奶后天数 / 母猪日龄 / 胎次。
+     *
+     * <ul>
+     *   <li>断奶后天数 = 查情日期 - 该母猪「最近一条断奶记录」weaning_date（按 pigId 批量取最近一条，避免 N+1）；</li>
+     *   <li>日龄 = 查情日期 - 母猪 birth_date；胎次 = t_farm_pig_info.parity（按 pigId 批量取）。</li>
+     * </ul>
+     *
+     * <p>任一来源缺失（无断奶记录 / 无出生日期）对应字段留 null，前端兜底 — 占位。</p>
+     */
+    private void enrichSowMetrics(List<PigHeatVo> rows) {
+        if (rows == null || rows.isEmpty()) {
+            return;
+        }
+        Set<Long> pigIds = rows.stream()
+            .map(PigHeatVo::getPigId)
+            .filter(Objects::nonNull)
+            .collect(Collectors.toSet());
+        if (pigIds.isEmpty()) {
+            return;
+        }
+
+        // 母猪基础信息（日龄基准 birth_date + 胎次 parity）：批量按 id 查，回 map
+        Map<Long, Pig> pigMap = pigMapper.selectByIds(pigIds).stream()
+            .collect(Collectors.toMap(Pig::getId, p -> p, (a, b) -> a));
+
+        // 每头母猪最近一条断奶日期：批量查未软删断奶记录后 group 取 max（避免逐行查 DB）
+        Map<Long, LocalDateTime> lastWeaningMap = new HashMap<>();
+        List<PigWeaning> weanings = weaningMapper.selectList(
+            Wrappers.<PigWeaning>lambdaQuery()
+                .select(PigWeaning::getPigId, PigWeaning::getWeaningDate)
+                .in(PigWeaning::getPigId, pigIds)
+                .isNotNull(PigWeaning::getWeaningDate));
+        for (PigWeaning wn : weanings) {
+            if (wn.getPigId() == null || wn.getWeaningDate() == null) {
+                continue;
+            }
+            lastWeaningMap.merge(wn.getPigId(), wn.getWeaningDate(),
+                (cur, cand) -> cand.isAfter(cur) ? cand : cur);
+        }
+
+        for (PigHeatVo row : rows) {
+            Long pigId = row.getPigId();
+            if (pigId == null) {
+                continue;
+            }
+            LocalDate heatDay = row.getHeatDate() != null ? row.getHeatDate().toLocalDate() : null;
+
+            // 断奶后天数
+            LocalDateTime lastWeaning = lastWeaningMap.get(pigId);
+            if (heatDay != null && lastWeaning != null) {
+                long days = ChronoUnit.DAYS.between(lastWeaning.toLocalDate(), heatDay);
+                row.setDaysAfterWeaning((int) days);
+            }
+
+            // 日龄 + 胎次
+            Pig pig = pigMap.get(pigId);
+            if (pig != null) {
+                if (heatDay != null && pig.getBirthDate() != null) {
+                    long age = ChronoUnit.DAYS.between(pig.getBirthDate(), heatDay);
+                    row.setDayAge((int) age);
+                }
+                row.setParity(pig.getParity());
+            }
+        }
     }
 
     private PigHeatVo toVo(PigHeat e) {

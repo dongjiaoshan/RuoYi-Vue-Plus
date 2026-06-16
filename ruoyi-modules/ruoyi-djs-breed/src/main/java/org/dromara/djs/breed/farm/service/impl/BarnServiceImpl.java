@@ -131,20 +131,23 @@ public class BarnServiceImpl extends DjsBaseServiceImpl<BarnMapper, Barn> implem
         barn.setRemark(bo.getRemark());
         baseMapper.insert(barn);
 
-        // 2. 按五类数量批量生成栏位（编号连号「1栏…N栏」，pen_code 类型前缀 + 序号保证栏内唯一）
-        generatePens(barnId, PEN_TYPE_BIG, "DL", bo.getBigPenCount());
-        generatePens(barnId, PEN_TYPE_STALL, "XW", bo.getLimitPenCount());
-        generatePens(barnId, PEN_TYPE_FARROW, "CC", bo.getBedCount());
-        generatePens(barnId, PEN_TYPE_SCATTER, "SL", bo.getScatterPenCount());
-        generatePens(barnId, PEN_TYPE_NURSERY_PEN, "BY", bo.getNurseryPenCount());
+        // 2. 按五类数量批量生成栏位（每类独立从 1 连续编号，penName=「{类型中文名}{序号}」，
+        //    如 产床1/产床2、限位栏1、大栏1；pen_code 类型前缀 + 序号保证栏内唯一）
+        generatePens(barnId, PEN_TYPE_BIG, "DL", "大栏", bo.getBigPenCount());
+        generatePens(barnId, PEN_TYPE_STALL, "XW", "限位栏", bo.getLimitPenCount());
+        generatePens(barnId, PEN_TYPE_FARROW, "CC", "产床", bo.getBedCount());
+        generatePens(barnId, PEN_TYPE_SCATTER, "SL", "散栏", bo.getScatterPenCount());
+        generatePens(barnId, PEN_TYPE_NURSERY_PEN, "BY", "保育栏", bo.getNurseryPenCount());
         return barnId;
     }
 
     /**
-     * 生成某栋舍下 count 个指定类型栏位。penName=「{seq}栏」，penCode=「{prefix}-{seq}」。
+     * 生成某栋舍下 count 个指定类型栏位。penName=「{typeName}{seq}」（如 产床1/限位栏2），
+     * penCode=「{prefix}-{seq}」。typeName 与字典 djs_pen_type 标签一致
+     * （大栏 big / 限位栏 stall / 产床 farrow / 散栏 scatter / 保育栏 nursery_pen）。
      * 多头栏（大栏 / 散栏 / 保育栏）容量不限（null），限位栏 / 产床单头（capacity=1）。
      */
-    private void generatePens(Long barnId, String penType, String codePrefix, Integer count) {
+    private void generatePens(Long barnId, String penType, String codePrefix, String typeName, Integer count) {
         if (count == null || count <= 0) {
             return;
         }
@@ -156,7 +159,7 @@ public class BarnServiceImpl extends DjsBaseServiceImpl<BarnMapper, Barn> implem
             Pen pen = new Pen();
             pen.setBarnId(barnId);
             pen.setPenCode(codePrefix + "-" + i);
-            pen.setPenName(i + "栏");
+            pen.setPenName(typeName + i);
             pen.setPenType(penType);
             pen.setCapacity(capacity);
             pen.setCurrentCount(0);

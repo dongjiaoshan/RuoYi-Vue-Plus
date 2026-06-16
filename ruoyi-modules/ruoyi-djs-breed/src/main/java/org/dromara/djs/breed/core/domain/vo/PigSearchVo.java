@@ -57,6 +57,18 @@ public class PigSearchVo implements Serializable {
     /** 栏位名称（service enrich，与 penCode 同批查；用途同 barnName）。 */
     private String penName;
 
+    /** 品种编码（{@code djs_pig_breed}）。mp 选猪弹层「品种」标签用。 */
+    private String pigBreedCode;
+
+    /** 品种中文名（service 用 {@code translateDictOrCode(djs_pig_breed)} 翻译；缺则回落 code）。 */
+    private String pigBreedName;
+
+    /** 品系编码（{@code djs_pig_strain}）。mp 选猪弹层「品系」标签用。 */
+    private String pigStrainCode;
+
+    /** 品系中文名（service 用 {@code translateDictOrCode(djs_pig_strain)} 翻译；缺则回落 code）。 */
+    private String pigStrainName;
+
     /**
      * 终止原因（{@code djs_pig_end_reason} 字典：{@code DEAD/CULL/MARKET}）。
      *
@@ -88,6 +100,15 @@ public class PigSearchVo implements Serializable {
      * 为空时为 null。BRD-FIX-MP-PIGSELECT-001 卡片右上「13天」格子用。</p>
      */
     private Integer lastEventDays;
+
+    /**
+     * 最近一次配种日期（{@code Pig.lastMatingDate}，BREED 事件写入）。
+     *
+     * <p>仅当 {@code searchByEarKeyword} 带 {@code dueType=FARROW}（分娩选猪）时 enrich：
+     * mp 端分娩录入概况卡「配种日期」格子展示用；无配种记录 → null，mp 卡片该格显「—」。</p>
+     */
+    @JsonFormat(pattern = "yyyy-MM-dd")
+    private LocalDate matingDate;
 
     /**
      * 预产期 / 到断奶期（D12X-MP-FARROW-WEANING-001 软提示）。

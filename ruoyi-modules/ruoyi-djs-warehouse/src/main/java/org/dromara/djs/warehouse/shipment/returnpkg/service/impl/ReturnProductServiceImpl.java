@@ -313,21 +313,22 @@ public class ReturnProductServiceImpl
         if (rows.isEmpty()) {
             return List.of();
         }
-        // 2. group by store_id + return_status（与原型一张卡 = 一门店一状态一致）。
-        Map<String, List<ReturnProduct>> byGroup = rows.stream()
-            .collect(Collectors.groupingBy(r -> r.getStoreId() + "|" + r.getReturnStatus()));
+        // 2. group by store_id（一门店一张卡，状态为派生值）。
+        Map<Long, List<ReturnProduct>> byStore = rows.stream()
+            .collect(Collectors.groupingBy(ReturnProduct::getStoreId));
         // 3. 批量填门店名（无 N+1）。
-        Set<Long> storeIds = rows.stream().map(ReturnProduct::getStoreId)
-            .filter(Objects::nonNull).collect(Collectors.toSet());
+        Set<Long> storeIds = byStore.keySet();
         Map<Long, String> storeNameMap = loadStoreNameMap(storeIds);
-        // 4. 每组算品种数 + 最近退货时间。
-        List<ReturnStoreGroupVo> list = new ArrayList<>(byGroup.size());
-        byGroup.values().forEach(group -> {
-            ReturnProduct first = group.get(0);
+        // 4. 每组算派生状态 + 品种数（不分状态去重）+ 最近退货时间。
+        List<ReturnStoreGroupVo> list = new ArrayList<>(byStore.size());
+        byStore.forEach((storeId, group) -> {
             ReturnStoreGroupVo vo = new ReturnStoreGroupVo();
-            vo.setStoreId(first.getStoreId());
-            vo.setStoreName(storeNameMap.get(first.getStoreId()));
-            vo.setReturnStatus(first.getReturnStatus());
+            vo.setStoreId(storeId);
+            vo.setStoreName(storeNameMap.get(storeId));
+            // 派生状态：该门店当天退回记录全部 confirmed → 已确认，否则待确认。
+            boolean allConfirmed = group.stream()
+                .allMatch(r -> STATUS_CONFIRMED.equals(r.getReturnStatus()));
+            vo.setReturnStatus(allConfirmed ? STATUS_CONFIRMED : STATUS_PENDING);
             vo.setProductKindCount((int) group.stream()
                 .map(ReturnProduct::getProductId).filter(Objects::nonNull).distinct().count());
             vo.setReturnTime(group.stream()

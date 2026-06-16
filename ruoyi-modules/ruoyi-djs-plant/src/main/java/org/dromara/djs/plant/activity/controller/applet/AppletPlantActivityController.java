@@ -48,12 +48,12 @@ public class AppletPlantActivityController extends BaseController {
     /**
      * 采摘活动记录列表（mp 采摘活动记录，按采摘日期倒序）。
      *
-     * @param cropId 作物 id（必填）
+     * @param cropId 作物 id（可空 = 全场查询，不按作物过滤）
      * @param begin  起始采摘日期（含，可空）
      * @param end    结束采摘日期（含，可空）
      */
     @GetMapping("/records")
-    public R<List<PlantActivityVo>> records(@RequestParam Long cropId,
+    public R<List<PlantActivityVo>> records(@RequestParam(required = false) Long cropId,
                                             @RequestParam(required = false)
                                             @DateTimeFormat(pattern = "yyyy-MM-dd") LocalDate begin,
                                             @RequestParam(required = false)
@@ -63,9 +63,18 @@ public class AppletPlantActivityController extends BaseController {
             return R.ok(List.of());
         }
 
-        // 批量 enrich 作物名（单作物入参，一次查即可）+ 班组名（按 activityBy 去重批量查）
-        CropInfo crop = cropInfoMapper.selectById(cropId);
-        String cropName = crop == null ? null : crop.getCropName();
+        // 批量 enrich：作物名按 records 里出现的 cropId 去重批量查（全场场景多作物，防串名）；
+        // 班组名按 activityBy 去重批量查
+        List<Long> cropIds = records.stream()
+            .map(PlantActivity::getCropId)
+            .filter(Objects::nonNull)
+            .distinct()
+            .collect(Collectors.toList());
+        Map<Long, String> cropNameMap = cropIds.isEmpty()
+            ? Map.of()
+            : cropInfoMapper.selectByIds(cropIds).stream()
+                .filter(c -> c.getCropName() != null)
+                .collect(Collectors.toMap(CropInfo::getId, CropInfo::getCropName, (a, b) -> a));
 
         List<Long> teamIds = records.stream()
             .map(PlantActivity::getActivityBy)
@@ -82,7 +91,7 @@ public class AppletPlantActivityController extends BaseController {
             PlantActivityVo vo = new PlantActivityVo();
             vo.setId(r.getId());
             vo.setCropId(r.getCropId());
-            vo.setCropName(cropName);
+            vo.setCropName(r.getCropId() == null ? null : cropNameMap.get(r.getCropId()));
             vo.setActivityDate(r.getActivityDate());
             vo.setDailyWeight(r.getDailyWeight());
             vo.setActivityBy(r.getActivityBy());

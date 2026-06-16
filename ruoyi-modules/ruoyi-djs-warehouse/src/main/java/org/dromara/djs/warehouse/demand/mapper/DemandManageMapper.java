@@ -30,6 +30,10 @@ public interface DemandManageMapper extends BaseMapperPlus<DemandManage, DemandM
      * <p>「已调配」= 状态 {@code IN ('CONFIRMED','IN_PRODUCTION','PARTIAL_SHIPPED','COMPLETED')}
      * （已脱离待确认态、未取消；状态集合是固定枚举不随租户变，直接写死 SQL）。</p>
      *
+     * <p>{@code todayPigDemand}「今日猪需求头数」口径：白条/猪业态下仅统计【白条整只】+【白条半只】
+     * 两类（产品名含「整只」/「半只」），整只按 1 头、半只按 0.5 头折算（半只 = 半头猪），
+     * 猪头 / 猪蹄不计入头数。可出 0.5 小数，service 端用 BigDecimal 承接。</p>
+     *
      * <p>返 Map 键：{@code todayPigDemand / todayVegSpeciesDemand / todayVegSpeciesAssigned /
      * todayOtherDemand / todayOtherAssigned}（白条已调配头数走 {@link #selectTodayPigAssigned} 子表）。</p>
      *
@@ -41,7 +45,10 @@ public interface DemandManageMapper extends BaseMapperPlus<DemandManage, DemandM
      */
     @Select("""
         SELECT
-          COALESCE(SUM(CASE WHEN product_type IN ('white_bar','pig') THEN demand_quantity ELSE 0 END), 0) AS todayPigDemand,
+          COALESCE(SUM(CASE
+                  WHEN product_type IN ('white_bar','pig') AND product_name LIKE '%整只%' THEN demand_quantity
+                  WHEN product_type IN ('white_bar','pig') AND product_name LIKE '%半只%' THEN demand_quantity * 0.5
+                  ELSE 0 END), 0) AS todayPigDemand,
           COUNT(DISTINCT CASE WHEN product_type = 'vegetable' THEN product_id END) AS todayVegSpeciesDemand,
           COUNT(DISTINCT CASE WHEN product_type = 'vegetable'
                 AND demand_status IN ('CONFIRMED','IN_PRODUCTION','PARTIAL_SHIPPED','COMPLETED')

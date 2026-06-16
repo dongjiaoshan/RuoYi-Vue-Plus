@@ -4,6 +4,7 @@ import lombok.Data;
 
 import java.io.Serial;
 import java.io.Serializable;
+import java.math.BigDecimal;
 
 /**
  * 需求管理页顶部「今日全局」KPI 横条（DJS-FIX-ADMIN-W22-007）。
@@ -32,8 +33,12 @@ public class DemandTodayKpiVo implements Serializable {
     @Serial
     private static final long serialVersionUID = 1L;
 
-    /** 今日白条猪需求头数（white_bar 今日 demand 的 demand_quantity 之和，头）。 */
-    private Integer todayPigDemand;
+    /**
+     * 今日白条猪需求头数（头）：仅统计【白条整只】+【白条半只】两类，
+     * 整只按 1 头、半只按 0.5 头折算（产品名含「整只」=整只 / 含「半只」=半只；
+     * 猪头 / 猪蹄不计入头数）。可含 0.5 小数，故用 {@link BigDecimal}。
+     */
+    private BigDecimal todayPigDemand;
 
     /** 今日白条猪已调配头数（demand_pig 子表今日白条下去重耳号数）。 */
     private Integer todayPigAssigned;

@@ -44,7 +44,7 @@ public class PickActivityServiceImpl implements IPickActivityService {
     @Override
     public List<PickActivityVo> queryList(PickActivityQuery query) {
         PickActivityQuery q = query == null ? new PickActivityQuery() : query;
-        return activityMapper.selectDailyReport(currentTenantSafe(), q.getCropId(), q.getActivityDate());
+        return activityMapper.selectDailyReport(currentTenantSafe(), q.getCropName(), q.getBeginDate(), q.getEndDate());
     }
 
     private String currentTenantSafe() {

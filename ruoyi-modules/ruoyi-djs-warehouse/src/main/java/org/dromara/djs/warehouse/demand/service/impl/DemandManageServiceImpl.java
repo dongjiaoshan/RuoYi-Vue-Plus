@@ -318,7 +318,10 @@ public class DemandManageServiceImpl extends DjsBaseServiceImpl<DemandManageMapp
         ctx.put("bizCode", PRODUCT_TYPE_TO_BIZ_CODE.get(bo.getProductType()));
         String demandNo = bizCodeGenerator.generate(BizCodeType.DEMAND_NO, ctx);
         entity.setDemandNo(demandNo);
-        entity.setDemandStatus(DemandStatus.DRAFT.name());
+        // 新增即「待确认」（SUBMITTED）：admin 购物车 / mp 门店录入都是「提交需求给仓库」动作，
+        // 无独立「存草稿」环节。落 DRAFT 会让确认页无法确认（canConfirm 仅 SUBMITTED）+ 分组列表
+        // 误显示状态，故初始态用状态机起点之后的「已提交」。
+        entity.setDemandStatus(DemandStatus.SUBMITTED.name());
         applyInsertDefaults(entity);
 
         try {
@@ -550,7 +553,8 @@ public class DemandManageServiceImpl extends DjsBaseServiceImpl<DemandManageMapp
         // 主表 1 query：白条需求头数 + 果蔬需求/已调配品种数 + 其他需求/已调配条数
         //（「已调配」= demand_status IN CONFIRMED/IN_PRODUCTION/PARTIAL_SHIPPED/COMPLETED，写死在 mapper SQL）
         Map<String, Object> agg = baseMapper.selectTodayKpiMainAgg(today);
-        vo.setTodayPigDemand(intFromAgg(agg, "todayPigDemand"));
+        // 白条猪需求头数含半只 0.5 折算，可出小数 → BigDecimal（其余仍为整数计数）
+        vo.setTodayPigDemand(bdFromAgg(agg, "todayPigDemand"));
         vo.setTodayVegSpeciesDemand(intFromAgg(agg, "todayVegSpeciesDemand"));
         vo.setTodayVegSpeciesAssigned(intFromAgg(agg, "todayVegSpeciesAssigned"));
         vo.setTodayOtherDemand(intFromAgg(agg, "todayOtherDemand"));
@@ -577,6 +581,23 @@ public class DemandManageServiceImpl extends DjsBaseServiceImpl<DemandManageMapp
         }
         Object v = agg.get(key);
         return v instanceof Number num ? num.intValue() : 0;
+    }
+
+    /**
+     * 从聚合 Map 取 BigDecimal；null（无行/无值）兜底为 {@link BigDecimal#ZERO}。
+     *
+     * <p>用于含 0.5 折算的「今日猪需求头数」（半只 ×0.5），不能走 {@link #intFromAgg} 截断；
+     * 末尾去多余 0（如 7.50 → 7.5、7.00 → 7），前端直接 stringify 展示。</p>
+     */
+    private BigDecimal bdFromAgg(Map<String, Object> agg, String key) {
+        if (agg == null) {
+            return BigDecimal.ZERO;
+        }
+        Object v = agg.get(key);
+        if (v instanceof BigDecimal bd) {
+            return bd.stripTrailingZeros();
+        }
+        return v instanceof Number num ? BigDecimal.valueOf(num.doubleValue()).stripTrailingZeros() : BigDecimal.ZERO;
     }
 
     /**
@@ -637,7 +658,7 @@ public class DemandManageServiceImpl extends DjsBaseServiceImpl<DemandManageMapp
             entity.setConfirmedCount(java.math.BigDecimal.ZERO);
         }
         if (entity.getDemandStatus() == null) {
-            entity.setDemandStatus(DemandStatus.DRAFT.name());
+            entity.setDemandStatus(DemandStatus.SUBMITTED.name());
         }
     }
 

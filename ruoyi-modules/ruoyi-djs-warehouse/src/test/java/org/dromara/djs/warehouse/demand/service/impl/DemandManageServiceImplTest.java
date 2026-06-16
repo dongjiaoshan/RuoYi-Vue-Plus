@@ -294,7 +294,8 @@ class DemandManageServiceImplTest {
         when(demandMapper.selectTodayPigAssigned(any(LocalDate.class))).thenReturn(12);
 
         DemandTodayKpiVo vo = service.getTodayKpi();
-        assertThat(vo.getTodayPigDemand()).isEqualTo(12);
+        // 猪需求头数含半只 0.5 折算 → BigDecimal，比值不比 scale
+        assertThat(vo.getTodayPigDemand()).isEqualByComparingTo(new BigDecimal("12"));
         assertThat(vo.getTodayPigAssigned()).isEqualTo(12);
         assertThat(vo.getTodayVegSpeciesDemand()).isEqualTo(5);
         assertThat(vo.getTodayVegSpeciesAssigned()).isEqualTo(4);

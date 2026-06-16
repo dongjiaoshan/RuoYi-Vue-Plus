@@ -30,7 +30,7 @@ import static org.mockito.Mockito.when;
  *
  * <h3>覆盖 case（happy path）</h3>
  * <ol>
- *   <li>queryList：透传 cropId / activityDate 到 mapper 聚合查询</li>
+ *   <li>queryList：透传 cropName / beginDate / endDate 到 mapper 聚合查询</li>
  *   <li>queryPageList：应用层分页切片 + total 正确</li>
  * </ol>
  *
@@ -66,12 +66,13 @@ class PickActivityServiceImplTest {
     }
 
     @Test
-    @DisplayName("queryList：透传 cropId/activityDate；返回 mapper 聚合结果")
+    @DisplayName("queryList：透传 cropName/beginDate/endDate；返回 mapper 聚合结果")
     void queryList_passesFilters() {
         PickActivityQuery q = new PickActivityQuery();
-        q.setCropId(701L);
-        q.setActivityDate(LocalDate.of(2026, 6, 20));
-        when(activityMapper.selectDailyReport(any(), eq(701L), eq(LocalDate.of(2026, 6, 20))))
+        q.setCropName("南瓜");
+        q.setBeginDate(LocalDate.of(2026, 6, 1));
+        q.setEndDate(LocalDate.of(2026, 6, 30));
+        when(activityMapper.selectDailyReport(any(), eq("南瓜"), eq(LocalDate.of(2026, 6, 1)), eq(LocalDate.of(2026, 6, 30))))
             .thenReturn(List.of(row(701L, LocalDate.of(2026, 6, 20), 38.5, 120.0)));
 
         List<PickActivityVo> list = service.queryList(q);
@@ -82,16 +83,16 @@ class PickActivityServiceImplTest {
     }
 
     @Test
-    @DisplayName("queryList：null query 兜底（cropId/activityDate 传 null）")
+    @DisplayName("queryList：null query 兜底（cropName/beginDate/endDate 传 null）")
     void queryList_nullQuery() {
-        when(activityMapper.selectDailyReport(any(), isNull(), isNull())).thenReturn(List.of());
+        when(activityMapper.selectDailyReport(any(), isNull(), isNull(), isNull())).thenReturn(List.of());
         assertThat(service.queryList(null)).isEmpty();
     }
 
     @Test
     @DisplayName("queryPageList：应用层分页切片 + total")
     void queryPageList_slices() {
-        when(activityMapper.selectDailyReport(any(), isNull(), isNull())).thenReturn(List.of(
+        when(activityMapper.selectDailyReport(any(), isNull(), isNull(), isNull())).thenReturn(List.of(
             row(701L, LocalDate.of(2026, 6, 22), 10, 10),
             row(701L, LocalDate.of(2026, 6, 21), 20, 30),
             row(702L, LocalDate.of(2026, 6, 20), 30, 30)

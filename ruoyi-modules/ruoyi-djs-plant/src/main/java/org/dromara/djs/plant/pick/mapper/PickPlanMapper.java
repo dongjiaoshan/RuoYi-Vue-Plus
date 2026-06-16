@@ -4,6 +4,7 @@ import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 import org.dromara.djs.plant.pick.domain.vo.PickPlanGroupVo;
 
+import java.time.LocalDate;
 import java.util.List;
 
 /**
@@ -22,8 +23,9 @@ public interface PickPlanMapper {
      * <p>聚合字段：</p>
      * <ul>
      *   <li>{@code plotCount} = COUNT(DISTINCT plot_id)</li>
-     *   <li>{@code totalAcreage} = SUM(plot_area)（当前种植亩数，亩）</li>
-     *   <li>{@code expectedYield} = SUM(expected_yield)</li>
+     *   <li>{@code totalAcreage} = SUM(plot_area)（计划种植亩数，亩）</li>
+     *   <li>{@code currentPlantedArea} = SUM(plot_area WHERE begin_actualdate IS NOT NULL)（当前已种植亩数，亩）</li>
+     *   <li>{@code expectedYield} = SUM(expected_yield)（预计产量）</li>
      *   <li>{@code actualYield} = 当年 SUM(actual_yield)（当年已采摘量，按 earliest_harvestdate 年份过滤）</li>
      *   <li>{@code disasterLoss} = SUM(loss_yield)（预计灾害损失量）</li>
      *   <li>{@code plotTotalCount} = 当年 COUNT(DISTINCT plot_id)（当年种植地块总数）</li>
@@ -36,7 +38,10 @@ public interface PickPlanMapper {
      * @param tenantId      租户编号
      * @param currentYear   当年（用于「当年已采摘量 / 当年种植地块总数」过滤）
      * @param cropId        可选：作物 id 过滤
+     * @param cropName      可选：作物名称模糊过滤
      * @param harvestStatus 可选：details.harvest_status 过滤
+     * @param beginEarliest 可选：最早开始时间范围起（含，过滤 MIN(earliest_harvestdate)）
+     * @param endEarliest   可选：最早开始时间范围止（含，过滤 MIN(earliest_harvestdate)）
      * @return 按作物聚合行（按作物名 ASC、作物 id ASC 排序）
      */
     @Select("""
@@ -49,6 +54,7 @@ public interface PickPlanMapper {
             MIN(d.earliest_harvestdate) AS planEarliest,
             MAX(d.last_harvestdate)     AS planLatest,
             COALESCE(SUM(d.plot_area),      0) AS totalAcreage,
+            COALESCE(SUM(CASE WHEN d.begin_actualdate IS NOT NULL THEN d.plot_area ELSE 0 END), 0) AS currentPlantedArea,
             COALESCE(SUM(d.expected_yield), 0) AS expectedYield,
             COALESCE(SUM(CASE WHEN YEAR(d.earliest_harvestdate) = #{currentYear} THEN d.actual_yield ELSE 0 END), 0) AS actualYield,
             COALESCE(SUM(d.loss_yield),     0) AS disasterLoss,
@@ -59,9 +65,15 @@ public interface PickPlanMapper {
          WHERE d.del_flag = '0'
            AND d.tenant_id = #{tenantId}
            <if test='cropId != null'>        AND d.crop_id = #{cropId}                </if>
+           <if test='cropName != null and cropName != ""'>
+                                             AND c.crop_name LIKE CONCAT('%', #{cropName}, '%') </if>
            <if test='harvestStatus != null and harvestStatus != ""'>
                                              AND d.harvest_status = #{harvestStatus}   </if>
          GROUP BY d.crop_id
+         <trim prefix="HAVING" prefixOverrides="AND">
+            <if test='beginEarliest != null'> AND MIN(d.earliest_harvestdate) &gt;= #{beginEarliest} </if>
+            <if test='endEarliest != null'>   AND MIN(d.earliest_harvestdate) &lt;= #{endEarliest}   </if>
+         </trim>
          ORDER BY cropName ASC, d.crop_id ASC
         </script>
         """)
@@ -69,5 +81,8 @@ public interface PickPlanMapper {
         @Param("tenantId") String tenantId,
         @Param("currentYear") int currentYear,
         @Param("cropId") Long cropId,
-        @Param("harvestStatus") String harvestStatus);
+        @Param("cropName") String cropName,
+        @Param("harvestStatus") String harvestStatus,
+        @Param("beginEarliest") LocalDate beginEarliest,
+        @Param("endEarliest") LocalDate endEarliest);
 }

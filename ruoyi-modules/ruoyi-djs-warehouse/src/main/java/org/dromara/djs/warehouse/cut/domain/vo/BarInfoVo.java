@@ -28,6 +28,11 @@ public class BarInfoVo implements Serializable {
 
     private String earNo;
 
+    /**
+     * 出栏重量 kg（领用称重校验上界：领用称重不应大于该值）。
+     */
+    private BigDecimal marketingWeight;
+
     private BigDecimal inWeight;
 
     @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")

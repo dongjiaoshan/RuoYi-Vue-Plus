@@ -576,6 +576,9 @@ public class PigCoreServiceImpl implements IPigCoreService {
 
         LocalDate today = LocalDate.now();
         LocalDateTime now = LocalDateTime.now();
+        // row92 #1：分娩选猪（dueType=FARROW）时 enrich 最近配种日期，给 mp 分娩录入概况卡「配种日期」格用；
+        // 其他 picker 场景不下发（保持 VO 轻量）。
+        boolean enrichMatingDate = "FARROW".equalsIgnoreCase(dueType);
         List<PigSearchVo> result = new ArrayList<>(pigs.size());
         for (Pig p : pigs) {
             PigSearchVo vo = new PigSearchVo();
@@ -584,6 +587,11 @@ public class PigCoreServiceImpl implements IPigCoreService {
             vo.setPigSex(p.getPigSex());
             vo.setPigType(p.getPigType());
             vo.setCurrentStatus(p.getCurrentStatus());
+            // 品种/品系编码 + 中文名（mp 选猪弹层「品种/品系」标签）；缺 code 时 translate 回落空
+            vo.setPigBreedCode(p.getPigBreedCode());
+            vo.setPigBreedName(translateDictOrCode("djs_pig_breed", p.getPigBreedCode()));
+            vo.setPigStrainCode(p.getPigStrainCode());
+            vo.setPigStrainName(translateDictOrCode("djs_pig_strain", p.getPigStrainCode()));
             // MP-UX-002：END 状态时携带 endReason，给 mp PigPicker 显示 "终止 · 死亡 / 上市" 用
             if (PigLifecycle.END.name().equals(p.getCurrentStatus())) {
                 vo.setEndReason(p.getEndReason());
@@ -592,6 +600,9 @@ public class PigCoreServiceImpl implements IPigCoreService {
             vo.setAgeDays(calcAgeDays(p, today));
             vo.setParity(p.getParity());
             vo.setLastEventDays(calcDaysSince(p.getStatusStartedAt(), now));
+            if (enrichMatingDate) {
+                vo.setMatingDate(p.getLastMatingDate());
+            }
             if (p.getBarnId() != null) {
                 Barn barn = barnMap.get(p.getBarnId());
                 if (barn != null) {

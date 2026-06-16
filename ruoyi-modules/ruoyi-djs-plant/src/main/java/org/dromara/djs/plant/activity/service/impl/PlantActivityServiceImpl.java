@@ -71,11 +71,9 @@ public class PlantActivityServiceImpl extends DjsBaseServiceImpl<PlantActivityMa
 
     @Override
     public List<PlantActivity> listRecords(Long cropId, LocalDate begin, LocalDate end) {
-        if (cropId == null) {
-            return List.of();
-        }
+        // cropId 可空 = 全场查询（不按作物过滤）；条件化拼接
         LambdaQueryWrapper<PlantActivity> lqw = new LambdaQueryWrapper<PlantActivity>()
-            .eq(PlantActivity::getCropId, cropId)
+            .eq(cropId != null, PlantActivity::getCropId, cropId)
             .ge(begin != null, PlantActivity::getActivityDate, begin)
             .le(end != null, PlantActivity::getActivityDate, end)
             .orderByDesc(PlantActivity::getActivityDate)

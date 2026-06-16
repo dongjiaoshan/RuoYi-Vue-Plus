@@ -31,9 +31,10 @@ public interface PickActivityMapper {
      * <p>口径：{@code end_harvestdate IS NOT NULL}（已采摘完成才计入活动日期）、
      * {@code del_flag='0'}、租户过滤。</p>
      *
-     * @param tenantId     租户编号
-     * @param cropId       可选：作物 id 过滤
-     * @param activityDate 可选：活动日期（单日）过滤
+     * @param tenantId  租户编号
+     * @param cropName  可选：作物名称模糊过滤
+     * @param beginDate 可选：活动日期范围起（含）
+     * @param endDate   可选：活动日期范围止（含）
      * @return 聚合行列表（按活动日期 DESC、作物 id ASC 排序）
      */
     @Select("""
@@ -62,17 +63,19 @@ public interface PickActivityMapper {
              WHERE d.del_flag = '0'
                AND d.tenant_id = #{tenantId}
                AND d.end_harvestdate IS NOT NULL
-               <if test='cropId != null'>       AND d.crop_id = #{cropId}              </if>
+               <if test='cropName != null and cropName != ""'> AND c.crop_name LIKE CONCAT('%', #{cropName}, '%') </if>
              GROUP BY d.crop_id, d.end_harvestdate
           ) t
          <where>
-            <if test='activityDate != null'>     t.activity_date = #{activityDate}     </if>
+            <if test='beginDate != null'>        AND t.activity_date &gt;= #{beginDate}  </if>
+            <if test='endDate != null'>          AND t.activity_date &lt;= #{endDate}    </if>
          </where>
          ORDER BY t.activity_date DESC, t.crop_id ASC
         </script>
         """)
     List<PickActivityVo> selectDailyReport(
         @Param("tenantId") String tenantId,
-        @Param("cropId") Long cropId,
-        @Param("activityDate") LocalDate activityDate);
+        @Param("cropName") String cropName,
+        @Param("beginDate") LocalDate beginDate,
+        @Param("endDate") LocalDate endDate);
 }

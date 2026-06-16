@@ -53,8 +53,11 @@ public class PickPlanGroupVo implements Serializable {
     /** 计划最晚采摘（MAX last_harvestdate）。 */
     private LocalDate planLatest;
 
-    /** 当前种植亩数（SUM plot_area，亩）。 */
+    /** 计划种植亩数（SUM plot_area，亩）。 */
     private BigDecimal totalAcreage;
+
+    /** 当前已种植亩数（SUM plot_area WHERE begin_actualdate IS NOT NULL，亩；已实际开始种植的地块面积）。 */
+    private BigDecimal currentPlantedArea;
 
     /** 预计需求量（kg；无来源时为 0/NULL，前端 - 兜底）。 */
     private BigDecimal demandQty;

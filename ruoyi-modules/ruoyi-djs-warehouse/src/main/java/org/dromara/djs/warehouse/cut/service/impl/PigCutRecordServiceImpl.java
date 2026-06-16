@@ -160,6 +160,15 @@ public class PigCutRecordServiceImpl
             throw new ServiceException("白条状态不符（当前：" + bar.getStatus() + "，需 in_stock）");
         }
 
+        // 领用称重：现场录入优先，未录入回落 in_weight 快照（兼容 mp 旧端 / 不录重场景）
+        BigDecimal pickupWeight = bo.getPickupWeight() != null ? bo.getPickupWeight() : bar.getInWeight();
+        // 校验：领用称重不应大于该白条出栏重量（marketing_weight）
+        if (pickupWeight != null && bar.getMarketingWeight() != null
+            && pickupWeight.compareTo(bar.getMarketingWeight()) > 0) {
+            throw new ServiceException("领用称重（" + pickupWeight + "kg）不应大于该白条出栏重量（"
+                + bar.getMarketingWeight() + "kg）");
+        }
+
         // Step 2：UPDATE bar_info status → pending_cut（乐观锁）
         int affected = barInfoMapper.updateStatusToPendingCut(bar.getId(), userId);
         if (affected == 0) {
@@ -173,7 +182,7 @@ public class PigCutRecordServiceImpl
         record.setBarId(bar.getBarId());
         record.setEarNo(bar.getEarNo());
         record.setPickupTime(new Date());
-        record.setPickupWeight(bar.getInWeight());
+        record.setPickupWeight(pickupWeight);
         record.setOperatorId(userId);
         record.setLocationId(bo.getLocationId());
         record.setTargetStoreId(bo.getTargetStoreId());
@@ -364,6 +373,7 @@ public class PigCutRecordServiceImpl
         LambdaQueryWrapper<PigCutRecord> wrapper = buildQueryWrapper(query);
         Page<PigCutRecordVo> page = baseMapper.selectVoPage(pageQuery.build(), wrapper);
         fillLocationNames(page.getRecords());
+        fillRemainingWeight(page.getRecords());
         return TableDataInfo.build(page);
     }
 
@@ -371,6 +381,7 @@ public class PigCutRecordServiceImpl
     public List<PigCutRecordVo> queryList(PigCutRecordQuery query) {
         List<PigCutRecordVo> list = baseMapper.selectVoList(buildQueryWrapper(query));
         fillLocationNames(list);
+        fillRemainingWeight(list);
         return list;
     }
 
@@ -379,6 +390,7 @@ public class PigCutRecordServiceImpl
         PigCutRecordVo vo = baseMapper.selectVoById(id);
         if (vo != null) {
             fillLocationNames(List.of(vo));
+            fillRemainingWeight(List.of(vo));
         }
         return vo;
     }
@@ -395,6 +407,7 @@ public class PigCutRecordServiceImpl
             vo.setId(b.getId());
             vo.setBarId(b.getBarId());
             vo.setEarNo(b.getEarNo());
+            vo.setMarketingWeight(b.getMarketingWeight());
             vo.setInWeight(b.getInWeight());
             vo.setInTime(b.getInTime());
             vo.setStatus(b.getStatus());
@@ -476,6 +489,26 @@ public class PigCutRecordServiceImpl
             if (vo.getLocationId() != null) {
                 vo.setLocationName(nameMap.get(vo.getLocationId()));
             }
+        }
+    }
+
+    /**
+     * 回填剩余可分割重量：remainingWeight = pickupWeight − 该白条已入库分割产品重量合计。
+     *
+     * <p>每次分割出库称重（cutOut）入库一件产品后，剩余重量随之减少，前端分割单 chip 据此展示
+     * 当前白条还可继续分割的余量（不为负）。</p>
+     */
+    private void fillRemainingWeight(List<PigCutRecordVo> records) {
+        if (records == null || records.isEmpty()) {
+            return;
+        }
+        for (PigCutRecordVo vo : records) {
+            if (vo.getPickupWeight() == null || vo.getWhiteBarId() == null) {
+                continue;
+            }
+            BigDecimal used = productInhouseMapper.sumProductWeightByWhiteBarId(vo.getWhiteBarId());
+            BigDecimal remaining = vo.getPickupWeight().subtract(used == null ? BigDecimal.ZERO : used);
+            vo.setRemainingWeight(remaining.max(BigDecimal.ZERO));
         }
     }
 

@@ -370,6 +370,8 @@ public class PlantPlanServiceImpl extends DjsBaseServiceImpl<PlantPlanMapper, Pl
             PlantDetails detail = buildDetail(plan.getId(), plan.getCropId(), crop, plot, item, bo.getPlanYear());
             detailEntities.add(detail);
         }
+        // 采摘区间交叉校验：同一地块已有种植明细的采摘区间不可与本次重叠
+        validateHarvestOverlap(detailEntities, plotMap, null);
         for (PlantDetails d : detailEntities) {
             detailsMapper.insert(d);
         }
@@ -403,6 +405,63 @@ public class PlantPlanServiceImpl extends DjsBaseServiceImpl<PlantPlanMapper, Pl
         d.setPlantBy(input.getPlantBy());
         d.setHarvestBy(input.getHarvestBy());
         return d;
+    }
+
+    /**
+     * 采摘区间交叉校验：本次提交的每个明细，按地块比对同地块已有明细的采摘区间
+     * （{@code earliest_harvestdate ~ last_harvestdate}），若日期区间重叠则阻止提交。
+     *
+     * <p>重叠判定：两区间 {@code [a1,a2]} 与 {@code [b1,b2]} 重叠 ⇔ {@code a1 <= b2 && a2 >= b1}（含端点）。
+     * 同一地块上一茬采摘尚未结束、下一茬采摘已开始即视为冲突，避免地块采摘期撞车。</p>
+     *
+     * <p>{@code excludePlanId} 非空时排除该计划自身的已有明细（编辑场景：本计划明细将被整体替换，
+     * 不应与"旧的自己"判冲突）。</p>
+     *
+     * @param incoming      本次待落库的明细（已算好 earliest/last harvestdate）
+     * @param plotMap       地块 id → 地块（用于错误信息展示地块名）
+     * @param excludePlanId 需排除的计划 id（编辑场景传本计划 id；新建传 null）
+     */
+    private void validateHarvestOverlap(List<PlantDetails> incoming,
+                                        Map<Long, PlotInfo> plotMap,
+                                        Long excludePlanId) {
+        Set<Long> plotIds = incoming.stream()
+            .map(PlantDetails::getPlotId).filter(Objects::nonNull).collect(Collectors.toSet());
+        if (plotIds.isEmpty()) {
+            return;
+        }
+        LambdaQueryWrapper<PlantDetails> lqw = new LambdaQueryWrapper<PlantDetails>()
+            .in(PlantDetails::getPlotId, plotIds)
+            .isNotNull(PlantDetails::getEarliestHarvestdate)
+            .isNotNull(PlantDetails::getLastHarvestdate);
+        if (excludePlanId != null) {
+            lqw.ne(PlantDetails::getPlantId, excludePlanId);
+        }
+        List<PlantDetails> existing = detailsMapper.selectList(lqw);
+        if (existing.isEmpty()) {
+            return;
+        }
+        Map<Long, List<PlantDetails>> existingByPlot = existing.stream()
+            .collect(Collectors.groupingBy(PlantDetails::getPlotId));
+
+        for (PlantDetails item : incoming) {
+            LocalDate a1 = item.getEarliestHarvestdate();
+            LocalDate a2 = item.getLastHarvestdate();
+            if (a1 == null || a2 == null) {
+                continue;
+            }
+            for (PlantDetails old : existingByPlot.getOrDefault(item.getPlotId(), Collections.emptyList())) {
+                LocalDate b1 = old.getEarliestHarvestdate();
+                LocalDate b2 = old.getLastHarvestdate();
+                if (!a1.isAfter(b2) && !a2.isBefore(b1)) {
+                    PlotInfo plot = plotMap == null ? null : plotMap.get(item.getPlotId());
+                    String plotLabel = plot != null && plot.getPlotName() != null
+                        ? plot.getPlotName() : ("地块 " + item.getPlotId());
+                    throw new ServiceException("「" + plotLabel + "」已有种植记录的采摘区间（"
+                        + b1 + " ~ " + b2 + "）与本次采摘区间（" + a1 + " ~ " + a2
+                        + "）重叠，请调整种植月份或旬别后再提交");
+                }
+            }
+        }
     }
 
     /**
@@ -505,6 +564,24 @@ public class PlantPlanServiceImpl extends DjsBaseServiceImpl<PlantPlanMapper, Pl
         Map<Long, PlotInfo> plotMap = needPlotIds.isEmpty()
             ? Map.of()
             : plotMapper.selectByIds(needPlotIds).stream().collect(Collectors.toMap(PlotInfo::getId, p -> p));
+
+        // 采摘区间交叉校验：先按本次提交算出各明细采摘区间（已开始执行的保持旧值），
+        // 比对其它计划同地块已有采摘区间，重叠则阻止（排除本计划自身明细）
+        List<PlantDetails> prospective = new ArrayList<>(newList.size());
+        for (PlantDetailInputBo input : newList) {
+            PlotInfo plot = plotMap.get(input.getPlotId());
+            if (plot == null) {
+                throw new ServiceException("地块不存在：" + input.getPlotId());
+            }
+            PlantDetails old = input.getId() == null ? null : existingMap.get(input.getId());
+            if (old != null && old.getBeginActualdate() != null) {
+                // 已开始：采摘区间不变，沿用旧值参与校验
+                prospective.add(old);
+            } else {
+                prospective.add(buildDetail(plan.getId(), plan.getCropId(), crop, plot, input, plan.getPlanYear()));
+            }
+        }
+        validateHarvestOverlap(prospective, plotMap, plan.getId());
 
         for (PlantDetailInputBo input : newList) {
             PlotInfo plot = plotMap.get(input.getPlotId());
@@ -727,6 +804,35 @@ public class PlantPlanServiceImpl extends DjsBaseServiceImpl<PlantPlanMapper, Pl
                 .set(PlantDetails::getPlantBy, bo.getPlantBy())
                 .set(PlantDetails::getPlantStatus, "ongoing")
                 .set(PlantDetails::getUpdateBy, updateBy));
+
+        // 采摘区间按实际开始日期重算（复用创建逻辑同一套 plusDays 公式，锚点从计划旬别换成 begin_actualdate）：
+        // earliest_harvestdate = beginActualdate + crop.minCycle，last_harvestdate = beginActualdate + crop.maxCycle。
+        // 各明细 cropId 可能不同 → 按 cropId 批量查 crop 后逐条 set；cycle 为空则跳过保留原值。
+        Set<Long> startableSet = new java.util.HashSet<>(startableDetailIds);
+        List<PlantDetails> startables = details.stream()
+            .filter(d -> startableSet.contains(d.getId()))
+            .toList();
+        Set<Long> cropIds = startables.stream()
+            .map(PlantDetails::getCropId).filter(Objects::nonNull).collect(Collectors.toSet());
+        Map<Long, CropInfo> cropMap = cropIds.isEmpty()
+            ? Map.of()
+            : cropMapper.selectByIds(cropIds).stream()
+                .collect(Collectors.toMap(CropInfo::getId, c -> c, (a, b) -> a));
+        for (PlantDetails d : startables) {
+            CropInfo crop = d.getCropId() == null ? null : cropMap.get(d.getCropId());
+            if (crop == null || crop.getMinCycle() == null || crop.getMaxCycle() == null) {
+                // cycle 未配置：跳过重算，保留创建时按计划旬别算出的原值
+                continue;
+            }
+            LocalDate earliest = bo.getBeginActualdate().plusDays(crop.getMinCycle());
+            LocalDate last = bo.getBeginActualdate().plusDays(crop.getMaxCycle());
+            detailsMapper.update(null,
+                new com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<PlantDetails>()
+                    .eq(PlantDetails::getId, d.getId())
+                    .set(PlantDetails::getEarliestHarvestdate, earliest)
+                    .set(PlantDetails::getLastHarvestdate, last)
+                    .set(PlantDetails::getUpdateBy, updateBy));
+        }
 
         // 同步关联地块 plot_status=2（种植中）
         Set<Long> plotIds = details.stream()

@@ -1,8 +1,11 @@
 package org.dromara.djs.warehouse.cut.domain.bo;
 
+import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
 import lombok.Data;
+
+import java.math.BigDecimal;
 
 /**
  * 阶段 1 白条领用 BO（WMS-PIG-002）。
@@ -44,6 +47,15 @@ public class PigCutPickupBo {
      * 关联需求（V1 可空）。
      */
     private Long targetDemandId;
+
+    /**
+     * 领用称重 kg（分割白条领用时现场过磅录入）。
+     *
+     * <p>可空：为空时回落 {@code bar_info.in_weight} 快照（兼容 mp 旧端 / 不录重场景）。
+     * 非空时 service 校验 {@code pickupWeight <= bar_info.marketing_weight}（不应大于该白条出栏重量）。</p>
+     */
+    @DecimalMin(value = "0", inclusive = false, message = "领用称重须大于 0")
+    private BigDecimal pickupWeight;
 
     /**
      * 是否半扇分割 1=是 / 2=否（整只），默认 2。

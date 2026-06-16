@@ -57,6 +57,12 @@ public class PigCutRecordVo implements Serializable {
     @ExcelProperty(value = "领用重量(kg)")
     private BigDecimal pickupWeight;
 
+    /**
+     * 剩余可分割重量 kg（= pickupWeight − 已入库分割产品重量合计，service 计算回填）。
+     * 不入库（仅运行期展示），故无 {@code @ExcelProperty}。
+     */
+    private BigDecimal remainingWeight;
+
     @ExcelProperty(value = "滴水损失(kg)")
     private BigDecimal dripLoss;
 

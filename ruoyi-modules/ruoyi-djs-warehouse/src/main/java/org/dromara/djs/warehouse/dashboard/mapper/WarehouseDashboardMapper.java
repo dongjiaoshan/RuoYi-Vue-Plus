@@ -210,10 +210,10 @@ public interface WarehouseDashboardMapper {
      * 今日送宰猪只头数（燎毛记录 = 白条产出，按耳号计头）。
      *
      * @param tenantId 租户
-     * @return COUNT(*) t_warehouse_pig_burn WHERE DATE(burn_time)=CURDATE()，无记录返 0
+     * @return COUNT(*) t_warehouse_pig_burn_record WHERE DATE(burn_time)=CURDATE()，无记录返 0
      */
     @Select("SELECT COUNT(*) "
-        + "  FROM t_warehouse_pig_burn "
+        + "  FROM t_warehouse_pig_burn_record "
         + " WHERE tenant_id = #{tenantId} "
         + "   AND DATE(burn_time) = CURDATE() "
         + "   AND del_flag = '0'")
@@ -226,7 +226,7 @@ public interface WarehouseDashboardMapper {
      * @return SUM(burn_weight)，无记录返 0
      */
     @Select("SELECT COALESCE(SUM(burn_weight), 0) "
-        + "  FROM t_warehouse_pig_burn "
+        + "  FROM t_warehouse_pig_burn_record "
         + " WHERE tenant_id = #{tenantId} "
         + "   AND DATE(burn_time) = CURDATE() "
         + "   AND del_flag = '0'")
@@ -236,10 +236,10 @@ public interface WarehouseDashboardMapper {
      * 今日分割白条头数（分割记录 = 已分割白条，按 pickup_time 当天计）。
      *
      * @param tenantId 租户
-     * @return COUNT(*) t_warehouse_pig_cut WHERE DATE(pickup_time)=CURDATE()，无记录返 0
+     * @return COUNT(*) t_warehouse_pig_cut_record WHERE DATE(pickup_time)=CURDATE()，无记录返 0
      */
     @Select("SELECT COUNT(*) "
-        + "  FROM t_warehouse_pig_cut "
+        + "  FROM t_warehouse_pig_cut_record "
         + " WHERE tenant_id = #{tenantId} "
         + "   AND DATE(pickup_time) = CURDATE() "
         + "   AND del_flag = '0'")
@@ -526,7 +526,7 @@ public interface WarehouseDashboardMapper {
      * @return 各日 date + value(=白条头数)
      */
     @Select("SELECT DATE_FORMAT(burn_time, '%Y-%m-%d') AS date, COUNT(*) AS value "
-        + "  FROM t_warehouse_pig_burn "
+        + "  FROM t_warehouse_pig_burn_record "
         + " WHERE tenant_id = #{tenantId} "
         + "   AND del_flag = '0' "
         + "   AND burn_time >= DATE_SUB(CURDATE(), INTERVAL #{days} DAY) "

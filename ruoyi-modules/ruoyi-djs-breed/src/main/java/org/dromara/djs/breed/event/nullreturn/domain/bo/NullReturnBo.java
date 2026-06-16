@@ -32,6 +32,9 @@ public class NullReturnBo implements Serializable {
     /** 猪只耳号简版（mp 端工人输入；与 pigId 二选一，service 入口按 earNo 查 pig.id）。 */
     private String earNo;
 
+    /** 录入人员 userId（mp EmployeePicker role=breed_worker 选；空则 service 回落 LoginHelper.getUserId()）。 */
+    private Long operatorId;
+
     @NotNull(message = "null_return.date.required")
     private LocalDateTime nullReturnDate;
 
