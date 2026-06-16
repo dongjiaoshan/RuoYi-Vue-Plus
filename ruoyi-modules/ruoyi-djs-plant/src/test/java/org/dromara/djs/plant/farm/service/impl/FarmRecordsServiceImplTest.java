@@ -211,7 +211,7 @@ class FarmRecordsServiceImplTest {
         bo.setFarmDate(LocalDate.now());
         bo.setDisasterType("flood");
         bo.setLossRate(new BigDecimal("45.0"));
-        bo.setLossYield(new BigDecimal("120.5"));
+        // 前端不再传损失产量；系统按 expected_yield × lossRate/100 算出
 
         when(baseMapper.insert(any(FarmRecords.class))).thenAnswer(inv -> {
             FarmRecords r = inv.getArgument(0);
@@ -221,6 +221,7 @@ class FarmRecordsServiceImplTest {
 
         PlantDetails details = new PlantDetails();
         details.setId(55L);
+        details.setExpectedYield(new BigDecimal("200"));   // 200 × 45/100 = 90.00
         details.setLossYield(new BigDecimal("10.0"));
         when(plantDetailsMapper.selectOne(any())).thenReturn(details);
         when(plantDetailsMapper.update(isNull(), any(Wrapper.class))).thenReturn(1);
@@ -234,6 +235,8 @@ class FarmRecordsServiceImplTest {
         assertThat(saved.getFarmType()).isEqualTo("disaster");
         assertThat(saved.getDisasterType()).isEqualTo("flood");
         assertThat(saved.getIsWarning()).isEqualTo(1);   // 45 ≥ 30
+        // 损失产量 = 预计产量 200 × 损失率 45/100 = 90.00（两位小数）
+        assertThat(saved.getLossYield()).isEqualByComparingTo("90.00");
 
         verify(plantDetailsMapper).update(isNull(), any(Wrapper.class));
     }
@@ -373,13 +376,12 @@ class FarmRecordsServiceImplTest {
         t1.setPlantId(7L);
         t1.setPlotId(1L);
         t1.setCropId(2L);
-        t1.setLossYield(new BigDecimal("23.12"));
         DisasterBatchBo.PlotTarget t2 = new DisasterBatchBo.PlotTarget();
         t2.setPlantId(7L);
         t2.setPlotId(1L);
         t2.setCropId(2L);
-        t2.setLossYield(new BigDecimal("15.21"));
         bo.setTargets(List.of(t1, t2));
+        // 前端不再传各地块损失产量；系统按各地块 expected_yield × lossRate/100 算出
 
         when(baseMapper.insert(any(FarmRecords.class))).thenAnswer(inv -> {
             ((FarmRecords) inv.getArgument(0)).setId(400L);
@@ -387,6 +389,7 @@ class FarmRecordsServiceImplTest {
         });
         PlantDetails d = new PlantDetails();
         d.setId(55L);
+        d.setExpectedYield(new BigDecimal("200"));   // 200 × 45/100 = 90.00
         when(plantDetailsMapper.selectOne(any())).thenReturn(d);
         when(plantDetailsMapper.update(isNull(), any(Wrapper.class))).thenReturn(1);
 
@@ -399,6 +402,8 @@ class FarmRecordsServiceImplTest {
             assertThat(r.getFarmType()).isEqualTo("disaster");
             assertThat(r.getDisasterType()).isEqualTo("flood");
             assertThat(r.getIsWarning()).isEqualTo(1);   // 45 ≥ 30
+            // 损失产量 = 预计产量 200 × 损失率 45/100 = 90.00（两位小数）
+            assertThat(r.getLossYield()).isEqualByComparingTo("90.00");
         });
         // 各地块累加 loss_yield
         verify(plantDetailsMapper, times(2)).update(isNull(), any(Wrapper.class));

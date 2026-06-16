@@ -3,13 +3,11 @@ package org.dromara.djs.store.demand.service.impl;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.satoken.utils.LoginHelper;
 import org.dromara.djs.store.demand.domain.bo.StoreDemandBatchBo;
-import org.dromara.djs.warehouse.demand.core.enums.DemandEvent;
 import org.dromara.djs.warehouse.demand.core.enums.DemandStatus;
 import org.dromara.djs.warehouse.demand.domain.DemandManage;
 import org.dromara.djs.warehouse.demand.domain.bo.DemandManageBo;
 import org.dromara.djs.warehouse.demand.mapper.DemandManageMapper;
 import org.dromara.djs.warehouse.demand.service.IDemandManageService;
-import org.dromara.djs.warehouse.demand.service.IDemandStatusService;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
 import org.junit.jupiter.api.AfterEach;
@@ -34,7 +32,6 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -43,12 +40,12 @@ import static org.mockito.Mockito.when;
 /**
  * {@link StoreDemandServiceImpl} 单测（STR-DEMAND-001）。
  *
- * <p>覆盖薄封装层核心语义：门店发起需求 = insertByBo（DRAFT）+ transition(SUBMIT) 两步原子，
- * 落库后立即推到 SUBMITTED（跳过 DRAFT）。验证：</p>
+ * <p>覆盖薄封装层核心语义：门店发起需求 = insertByBo（warehouse 侧直接落 SUBMITTED），
+ * 不再二次 transition(SUBMIT)（否则对已 SUBMITTED 的单子触发 SUBMIT = 非法状态转移）。验证：</p>
  * <ol>
- *   <li>createStoreDemand happy：返回 warehouse insertByBo 的 id；id 被 SUBMIT transition 用一次</li>
+ *   <li>createStoreDemand happy：返回 warehouse insertByBo 的 id；insertByBo 恰调用一次</li>
  *   <li>BO.id 被强制清空（门店端创建专用，不走编辑路径）</li>
- *   <li>operator 取 LoginHelper 当前 userId 透传给状态机</li>
+ *   <li>batchCreate：逐项补冗余字段 + mailing 标记 + 逐条 insertByBo</li>
  * </ol>
  *
  * <p>不验证状态机 / 编码 / 业态校验细节——那是 warehouse service 的职责（已被 DemandManageServiceImplTest /
@@ -66,9 +63,6 @@ class StoreDemandServiceImplTest {
 
     @Mock
     private IDemandManageService demandManageService;
-
-    @Mock
-    private IDemandStatusService demandStatusService;
 
     @Mock
     private ProductInfoMapper productInfoMapper;
@@ -105,7 +99,7 @@ class StoreDemandServiceImplTest {
     }
 
     @Test
-    @DisplayName("createStoreDemand：insertByBo → transition(SUBMIT) 两步，返回新建 id + 推到 SUBMITTED")
+    @DisplayName("createStoreDemand：仅 insertByBo（已落 SUBMITTED），不再二次 transition(SUBMIT)")
     void createStoreDemandSubmitsImmediately() {
         DemandManageBo bo = buildBo();
         when(demandManageService.insertByBo(bo)).thenReturn(9001L);
@@ -113,10 +107,8 @@ class StoreDemandServiceImplTest {
         Long id = service.createStoreDemand(bo);
 
         assertThat(id).isEqualTo(9001L);
-        // 第 1 步：warehouse 落库
+        // warehouse insertByBo 直接落 SUBMITTED，恰调用一次
         verify(demandManageService, times(1)).insertByBo(bo);
-        // 第 2 步：对同一 id 触发 SUBMIT，operator 取当前 userId
-        verify(demandStatusService, times(1)).transition(eq(9001L), eq(DemandEvent.SUBMIT), eq(2001L), eq("门店发起"));
     }
 
     @Test
@@ -130,11 +122,10 @@ class StoreDemandServiceImplTest {
 
         assertThat(bo.getId()).isNull();
         verify(demandManageService, times(1)).insertByBo(bo);
-        verify(demandStatusService, times(1)).transition(eq(9002L), eq(DemandEvent.SUBMIT), eq(2001L), eq("门店发起"));
     }
 
     @Test
-    @DisplayName("batchCreate：多产品整单逐条建需求，补冗余字段 + mailing 标记 + 全部 SUBMITTED")
+    @DisplayName("batchCreate：多产品整单逐条建需求，补冗余字段 + mailing 标记 + 逐条 insertByBo")
     void batchCreateBuildsMultipleDemands() {
         ProductInfo p1 = new ProductInfo();
         p1.setId(8001L);
@@ -179,8 +170,6 @@ class StoreDemandServiceImplTest {
         // 第 2 条：礼盒，个人邮寄
         assertThat(bos.get(1).getProductName()).isEqualTo("猪肉礼盒");
         assertThat(bos.get(1).getDemandType()).isEqualTo("mailing");
-        // 两条都被立即推到 SUBMITTED
-        verify(demandStatusService, times(2)).transition(any(), eq(DemandEvent.SUBMIT), eq(2001L), eq("门店发起"));
     }
 
     @Test
@@ -200,8 +189,6 @@ class StoreDemandServiceImplTest {
         assertThat(patch.getId()).isEqualTo(9001L);
         assertThat(patch.getReceivedTime()).isNotNull();
         assertThat(patch.getReceivedBy()).isEqualTo(2001L);
-        // 不触碰状态机
-        verify(demandStatusService, never()).transition(any(), any(), any(), any());
     }
 
     @Test

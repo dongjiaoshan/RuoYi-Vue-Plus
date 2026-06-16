@@ -312,37 +312,43 @@ public interface PlantDashboardMapper {
         + "   AND d.plant_status <> 'completed'")
     Integer selectActiveCropCount(@Param("tenantId") String tenantId);
 
-    // ============================ 块 ⑤ 种植甘特（按 明细 / 地块 维度） ============================
+    // ============================ 块 ⑤ 种植甘特（按 作物 维度聚合） ============================
 
     /**
-     * 种植甘特原始行（种植段；含计划兜底日期）。
+     * 种植甘特按作物聚合行（GROUP BY crop_id）。
      *
-     * <p>每行拆出一个种植段：开始 = {@code begin_actualdate}（无则 null，service 用计划日期兜底）；
-     * 结束 = {@code end_actualdate}，<b>未结束（null）时用计划结束日期兜底</b>——计划结束取
-     * {@code earliest_harvestdate}（= 计划种植开始 + crop.min_cycle，即可开始采摘日 = 计划种植完成日）。
-     * 计划开始 {@code planStartDate} 由 {@code plant_month} + {@code plant_period}（05/15/25 旬）
-     * 在 service 层推算（当年）。</p>
+     * <p>每个作物一条种植整段，y 轴类目 = 作物名：</p>
+     * <ul>
+     *   <li>开始 = {@code MIN(实际开始 / 计划开始旬日兜底)}——计划开始旬日由 {@code plant_month} +
+     *       {@code plant_period}（05/15/25 旬 → 当年 1/11/21 号）在 SQL 内推算，无 begin_actualdate
+     *       时用它兜底，与原"明细维度"service 推算口径一致。</li>
+     *   <li>结束 = {@code MAX(COALESCE(end_actualdate, earliest_harvestdate))}——未结束明细用计划
+     *       结束日（{@code earliest_harvestdate}）兜底。</li>
+     *   <li>进度 = 该作物种植完成明细占比（{@code plant_status='completed'} 的明细数 / 该作物明细总数 × 100）。</li>
+     * </ul>
      *
      * @param tenantId 租户
-     * @return 种植甘特原始行（最多 100 行），无则空列表
+     * @return 种植甘特聚合行（按作物，最多 100 行），无则空列表
      */
-    @Select("SELECT d.id                 AS id, "
-        + "       c.crop_name           AS cropName, "
-        + "       p.plot_name           AS plotName, "
-        + "       d.begin_actualdate    AS beginActualdate, "
-        + "       d.end_actualdate      AS endActualdate, "
-        + "       d.earliest_harvestdate AS earliestHarvestdate, "
-        + "       d.plant_month         AS plantMonth, "
-        + "       d.plant_period        AS plantPeriod, "
-        + "       d.plant_status        AS plantStatus "
+    @Select("SELECT d.crop_id                                                          AS cropId, "
+        + "       MAX(c.crop_name)                                                   AS cropName, "
+        + "       MIN(COALESCE(d.begin_actualdate, "
+        + "           CASE WHEN d.plant_month BETWEEN 1 AND 12 THEN "
+        + "                STR_TO_DATE(CONCAT(YEAR(CURDATE()), '-', LPAD(d.plant_month, 2, '0'), '-', "
+        + "                    CASE d.plant_period WHEN '15' THEN '11' WHEN '25' THEN '21' ELSE '01' END), "
+        + "                    '%Y-%m-%d') "
+        + "                ELSE NULL END))                                            AS startDate, "
+        + "       MAX(COALESCE(d.end_actualdate, d.earliest_harvestdate))            AS endDate, "
+        + "       COUNT(*)                                                           AS totalCount, "
+        + "       SUM(CASE WHEN d.plant_status = 'completed' THEN 1 ELSE 0 END)      AS completedCount "
         + "  FROM t_plant_plant_details d "
         + "  LEFT JOIN t_plant_crop_info c ON c.id = d.crop_id AND c.del_flag = '0' "
-        + "  LEFT JOIN t_plant_plot_info p ON p.id = d.plot_id AND p.del_flag = '0' "
         + " WHERE d.tenant_id = #{tenantId} "
         + "   AND d.del_flag = '0' "
-        + " ORDER BY d.begin_actualdate "
+        + " GROUP BY d.crop_id "
+        + " ORDER BY MIN(d.begin_actualdate) "
         + " LIMIT 100")
-    List<PlantGanttRow> selectPlantGanttRows(@Param("tenantId") String tenantId);
+    List<PlantGanttCropRow> selectPlantGanttByCrop(@Param("tenantId") String tenantId);
 
     // ============================ 块 ⑥ 采摘甘特（按 作物 维度聚合） ============================
 
@@ -387,37 +393,28 @@ public interface PlantDashboardMapper {
     }
 
     /**
-     * 种植甘特原始行（mapper 内部用，service 拼计划兜底）。
+     * 种植甘特按作物聚合行（mapper 内部用）。
      */
     @lombok.Data
-    class PlantGanttRow {
+    class PlantGanttCropRow {
 
-        /** 明细 snowflake id（拼接前缀后作为甘特条 id）。 */
-        private Long id;
+        /** 作物 id（拼接前缀后作为甘特条 id）。 */
+        private Long cropId;
 
         /** 作物名称。 */
         private String cropName;
 
-        /** 地块名称。 */
-        private String plotName;
+        /** 该作物种植整段开始（MIN(实际开始 / 计划开始旬日兜底)，可空）。 */
+        private java.time.LocalDate startDate;
 
-        /** 实际开始种植日期（可空）。 */
-        private java.time.LocalDate beginActualdate;
+        /** 该作物种植整段结束（MAX(COALESCE(实际结束, 计划最早采摘日))，可空）。 */
+        private java.time.LocalDate endDate;
 
-        /** 实际结束种植日期（可空，null 时用计划结束兜底）。 */
-        private java.time.LocalDate endActualdate;
+        /** 该作物种植明细总数。 */
+        private Integer totalCount;
 
-        /** 计划最早采摘日（= 计划种植完成日，end 兜底）。 */
-        private java.time.LocalDate earliestHarvestdate;
-
-        /** 计划月份 1-12。 */
-        private Integer plantMonth;
-
-        /** 计划阶段（05=上旬 / 15=中旬 / 25=下旬）。 */
-        private String plantPeriod;
-
-        /** 种植状态（字典 djs_plant_plan_status）。 */
-        private String plantStatus;
+        /** 该作物种植完成（plant_status='completed'）明细数。 */
+        private Integer completedCount;
 
     }
 

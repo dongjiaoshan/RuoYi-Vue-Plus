@@ -87,7 +87,13 @@ public interface ProductProductionMapper extends BaseMapperPlus<ProductProductio
      * <p>租户隔离：未启全局 MP 拦截器，显式 {@code pp.tenant_id='1001'}（V1 单租户，与本模块既有
      * 聚合 SQL 范式一致）；{@code pp.del_flag='0'}（CHAR(1) 未删）。</p>
      *
+     * <p>「需求门店数」{@code storeDemandCount} 经相关子查询统计该 product_id 当前有未发货需求的
+     * 门店去重家数（口径同打包台 {@link org.dromara.djs.warehouse.demand.mapper.DemandManageMapper#selectStoreDemandCopies}：
+     * 非取消单 + 有门店 + 该门店剩余需求量 {@code SUM(demand_quantity - shipped_count) > 0}）。
+     * 无需求 → 0。</p>
+     *
      * @param produceNo   生产编号 LIKE 过滤（空则不过滤）
+     * @param productName 产品名称 LIKE 过滤（空则不过滤）
      * @param belongType  产品品类过滤（字典 djs_belong_type，空则不过滤；下推 product_info WHERE）
      * @param productType 产品类型过滤（空则不过滤；同 product_id 组内同值，放 WHERE）
      * @param beginDate   生产日期起（空则不过滤）
@@ -104,7 +110,18 @@ public interface ProductProductionMapper extends BaseMapperPlus<ProductProductio
         "       MAX(pi.belong_type)    AS belongType,",
         "       MAX(pp.product_type)   AS productType,",
         "       SUM(pp.product_weight) AS produceQty,",
-        "       COUNT(*)               AS itemCount",
+        "       COUNT(*)               AS itemCount,",
+        "       (SELECT COUNT(*) FROM (",
+        "          SELECT dm.store_id",
+        "            FROM t_warehouse_demand_manage dm",
+        "           WHERE dm.product_id = pp.product_id",
+        "             AND dm.store_id IS NOT NULL",
+        "             AND dm.demand_status &lt;&gt; 'CANCELLED'",
+        "             AND dm.del_flag = '0'",
+        "             AND dm.tenant_id = pp.tenant_id",
+        "           GROUP BY dm.store_id",
+        "          HAVING SUM(dm.demand_quantity - COALESCE(dm.shipped_count, 0)) &gt; 0",
+        "       ) sd) AS storeDemandCount",
         "  FROM t_warehouse_product_production pp",
         "  LEFT JOIN t_warehouse_product_info pi",
         "         ON pi.id = pp.product_id",
@@ -114,6 +131,9 @@ public interface ProductProductionMapper extends BaseMapperPlus<ProductProductio
         "   AND pp.tenant_id = '1001'",
         "   <if test='produceNo != null and produceNo != \"\"'>",
         "     AND pp.produce_no LIKE CONCAT('%', #{produceNo}, '%')",
+        "   </if>",
+        "   <if test='productName != null and productName != \"\"'>",
+        "     AND pp.product_name LIKE CONCAT('%', #{productName}, '%')",
         "   </if>",
         "   <if test='belongType != null and belongType != \"\"'>",
         "     AND pi.belong_type = #{belongType}",
@@ -132,6 +152,7 @@ public interface ProductProductionMapper extends BaseMapperPlus<ProductProductio
         "</script>"
     })
     List<ProductProductionGroupVo> selectProductionGroupList(@Param("produceNo") String produceNo,
+                                                             @Param("productName") String productName,
                                                              @Param("belongType") String belongType,
                                                              @Param("productType") Integer productType,
                                                              @Param("beginDate") Date beginDate,

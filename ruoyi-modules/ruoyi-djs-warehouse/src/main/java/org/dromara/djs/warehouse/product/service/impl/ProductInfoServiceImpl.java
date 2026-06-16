@@ -484,6 +484,9 @@ public class ProductInfoServiceImpl extends DjsBaseServiceImpl<ProductInfoMapper
         if (product == null) {
             throw new ServiceException("产品不存在或已删除：" + bo.getProductId());
         }
+        // 配置库位强制：商品/产品配了 store_location_id（逗号分隔多库位）时，
+        // 只能入配置库位之一；前端已锁库位下拉，此处后端兜底防绕过（118.2 / 119.2）。
+        enforceConfiguredLocation(product, bo.getLocationId());
         // 盘点锁：库位被盘点锁定时禁止入库（与其他写入路径一致）
         stockCheckService.assertLocationUnlocked(bo.getLocationId());
         Long userId = LoginHelper.getUserId();
@@ -516,6 +519,36 @@ public class ProductInfoServiceImpl extends DjsBaseServiceImpl<ProductInfoMapper
             locationStockMapper.insert(stock);
         }
         return flow.getId();
+    }
+
+    /**
+     * 配置库位约束校验：商品/产品在配置里设了 {@code store_location_id}
+     * （逗号分隔，可多库位）时，入库 {@code locationId} 必须命中其中之一；
+     * 否则抛 {@link ServiceException}。未配置库位的产品则不限制（任意库位可入）。
+     *
+     * @param product    入库产品
+     * @param locationId 前端传入的入库库位 ID
+     */
+    private void enforceConfiguredLocation(ProductInfo product, Long locationId) {
+        String configured = product.getStoreLocationId();
+        if (StringUtils.isBlank(configured)) {
+            return;
+        }
+        boolean matched = java.util.Arrays.stream(configured.split(","))
+            .map(String::trim)
+            .filter(StringUtils::isNotBlank)
+            .map(s -> {
+                try {
+                    return Long.valueOf(s);
+                } catch (NumberFormatException e) {
+                    return null;
+                }
+            })
+            .filter(Objects::nonNull)
+            .anyMatch(id -> id.equals(locationId));
+        if (!matched) {
+            throw new ServiceException("该产品已配置专属存储库位，只能入库到配置库位");
+        }
     }
 
     /**

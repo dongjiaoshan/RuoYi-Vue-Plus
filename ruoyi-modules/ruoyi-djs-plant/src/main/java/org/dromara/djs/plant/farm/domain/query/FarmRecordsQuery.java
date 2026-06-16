@@ -32,6 +32,9 @@ public class FarmRecordsQuery {
     /** 地块名称模糊搜索（admin 农事记录列表，经 plot_info 反查 plotId 列表后 IN 过滤）。 */
     private String plotName;
 
+    /** 地块编号模糊搜索（admin 农事/灾害记录列表，经 plot_info.plot_code like 反查 plotId 列表后 IN 过滤，与 plotName 叠加为 AND）。 */
+    private String plotCode;
+
     private Long cropId;
 
     /** 作物名称模糊搜索（crop_name 已冗余落 t_plant_farm_records，直接 like）。 */

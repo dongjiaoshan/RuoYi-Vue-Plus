@@ -123,7 +123,7 @@ class PigIntroServiceImplTest {
         when(earNoAllocator.allocateOne(
                 org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(),
                 org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any()))
-            .thenReturn("4-04-2-251200-0001");
+            .thenReturn("4-04-251200-001");
         Supplier breedSupplier = new Supplier();
         breedSupplier.setId(SUPPLIER_ID);
         breedSupplier.setSupplierType("breed");
@@ -173,7 +173,7 @@ class PigIntroServiceImplTest {
 
         ArgumentCaptor<PigCreateBo> captor = ArgumentCaptor.forClass(PigCreateBo.class);
         verify(pigCoreService).createPig(captor.capture());
-        assertThat(captor.getValue().getEarNo()).isEqualTo("4-04-2-251200-0001");
+        assertThat(captor.getValue().getEarNo()).isEqualTo("4-04-251200-001");
         assertThat(captor.getValue().getPigSex()).isEqualTo("F");
         assertThat(captor.getValue().getSupplierId()).isEqualTo(SUPPLIER_ID);
 
@@ -282,8 +282,8 @@ class PigIntroServiceImplTest {
                 org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(),
                 org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(), eq(5)))
             .thenReturn(List.of(
-                "4-04-2-251200-0001", "4-04-2-251200-0002", "4-04-2-251200-0003",
-                "4-04-2-251200-0004", "4-04-2-251200-0005"));
+                "4-04-251200-001", "4-04-251200-002", "4-04-251200-003",
+                "4-04-251200-004", "4-04-251200-005"));
 
         PigIntroBatchBo bo = new PigIntroBatchBo();
         copyFromSingle(mkSingleBo("external", "F"), bo);
@@ -310,14 +310,14 @@ class PigIntroServiceImplTest {
         PigIntroBatchBo bo = new PigIntroBatchBo();
         copyFromSingle(mkSingleBo("external", "F"), bo);
         bo.setPigCount(3);
-        bo.setStartEarNo("4-04-2-251200-0010");  // 用户改首号 → 后续 0011 / 0012
+        bo.setStartEarNo("4-04-251200-010");  // 用户改首号 → 后续 0011 / 0012
 
         PigIntroResultVo result = service.introduceBatch(bo);
 
         assertThat(result.getPigs()).hasSize(3);
-        assertThat(result.getPigs().get(0).getEarNo()).isEqualTo("4-04-2-251200-0010");
-        assertThat(result.getPigs().get(1).getEarNo()).isEqualTo("4-04-2-251200-0011");
-        assertThat(result.getPigs().get(2).getEarNo()).isEqualTo("4-04-2-251200-0012");
+        assertThat(result.getPigs().get(0).getEarNo()).isEqualTo("4-04-251200-010");
+        assertThat(result.getPigs().get(1).getEarNo()).isEqualTo("4-04-251200-011");
+        assertThat(result.getPigs().get(2).getEarNo()).isEqualTo("4-04-251200-012");
         // 走用户首号路径，不调 allocator.allocate
         verify(earNoAllocator, times(0)).allocate(any(), any(), any(), any(), org.mockito.ArgumentMatchers.anyInt());
     }
@@ -328,15 +328,15 @@ class PigIntroServiceImplTest {
         PigIntroBatchBo bo = new PigIntroBatchBo();
         copyFromSingle(mkSingleBo("external", "F"), bo);
         bo.setPigCount(1);                       // 单头走批量端点以消费 startEarNo
-        bo.setStartEarNo("4-04-2-251200-0888");  // 用户填的合法带分隔符首号
+        bo.setStartEarNo("4-04-251200-888");  // 用户填的合法带分隔符首号
 
         PigIntroResultVo result = service.introduceBatch(bo);
 
         assertThat(result.getIntroduce().getPigCount()).isEqualTo(1);
-        assertThat(result.getIntroduce().getStartEarNo()).isEqualTo("4-04-2-251200-0888");
+        assertThat(result.getIntroduce().getStartEarNo()).isEqualTo("4-04-251200-888");
         assertThat(result.getPigs()).hasSize(1);
         // 落库 earNo = 用户填的首号（不调后端 allocator）
-        assertThat(result.getPigs().get(0).getEarNo()).isEqualTo("4-04-2-251200-0888");
+        assertThat(result.getPigs().get(0).getEarNo()).isEqualTo("4-04-251200-888");
         verify(earNoAllocator, times(0)).allocate(any(), any(), any(), any(), anyInt());
         // pen.current_count += 1
         verify(penMapper, times(1)).update(eq(null), any());
@@ -350,7 +350,7 @@ class PigIntroServiceImplTest {
         PigIntroBatchBo bo = new PigIntroBatchBo();
         copyFromSingle(mkSingleBo("external", "F"), bo);
         bo.setPigCount(1);
-        bo.setStartEarNo("4-04-2-251200-0010");  // seq=10 < 后台 min 11
+        bo.setStartEarNo("4-04-251200-010");  // seq=10 < 后台 min 11
 
         assertThatThrownBy(() -> service.introduceBatch(bo))
             .isInstanceOf(ServiceException.class)
@@ -366,13 +366,13 @@ class PigIntroServiceImplTest {
         PigIntroBatchBo bo = new PigIntroBatchBo();
         copyFromSingle(mkSingleBo("external", "F"), bo);
         bo.setPigCount(2);
-        bo.setStartEarNo("4-04-2-251200-0010");  // seq=10 == min 10 → OK
+        bo.setStartEarNo("4-04-251200-010");  // seq=10 == min 10 → OK
 
         PigIntroResultVo result = service.introduceBatch(bo);
 
         assertThat(result.getPigs()).hasSize(2);
-        assertThat(result.getPigs().get(0).getEarNo()).isEqualTo("4-04-2-251200-0010");
-        assertThat(result.getPigs().get(1).getEarNo()).isEqualTo("4-04-2-251200-0011");
+        assertThat(result.getPigs().get(0).getEarNo()).isEqualTo("4-04-251200-010");
+        assertThat(result.getPigs().get(1).getEarNo()).isEqualTo("4-04-251200-011");
     }
 
     @Test
@@ -500,7 +500,7 @@ class PigIntroServiceImplTest {
         PigIntroduce internal = new PigIntroduce();
         internal.setIntroduceNo("INT-INTERNAL");
         internal.setIntroduceType("internal");
-        internal.setStartEarNo("4-04-2-251200-0001");
+        internal.setStartEarNo("4-04-251200-001");
         internal.setPigCount(1);
         internal.setPigBreedCode("04");
         internal.setPigStrainCode("4");
@@ -511,7 +511,7 @@ class PigIntroServiceImplTest {
         PigIntroduce external = new PigIntroduce();
         external.setIntroduceNo("INT-EXTERNAL");
         external.setIntroduceType("external");
-        external.setStartEarNo("4-04-2-251200-0099");
+        external.setStartEarNo("4-04-251200-099");
         external.setPigCount(1);
         external.setPigBreedCode("04");
         external.setPigStrainCode("4");

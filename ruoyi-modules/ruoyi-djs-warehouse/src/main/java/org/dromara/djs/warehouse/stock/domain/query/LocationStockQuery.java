@@ -30,6 +30,12 @@ public class LocationStockQuery extends BaseEntity {
     private String productName;
 
     /**
+     * 归属类型（{@code djs_belong_type} 字典值，精确；belong_type 不在库存表，
+     * service 先按产品主数据 belong_type 解析 productId 集合再过滤库存）。
+     */
+    private String belongType;
+
+    /**
      * 耳号（模糊）。
      */
     private String earNo;

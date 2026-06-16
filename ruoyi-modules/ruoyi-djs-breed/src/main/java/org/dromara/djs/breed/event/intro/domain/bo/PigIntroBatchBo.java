@@ -40,13 +40,15 @@ public class PigIntroBatchBo extends PigIntroBo {
     /**
      * 起始耳号（外部引种"用户可改"，601-5 / ADR-0011 §2.6）。
      *
-     * <p>空 → 后端按带分隔符格式（品系1-品种2-公母1-出生yyMMdd6-序号4）当天级 max+1 生成，整批连号；
-     * 非空 → 校带分隔符格式 + 提交时逐头 {@code existsEarNo} 探测 UNIQUE，以用户首号为起点连号。</p>
+     * <p>空 → 后端按权威格式（品系2-品种2-出生yyMMdd6-序号3，6/15 起不再编码性别）当天级 max+1 生成，整批连号；
+     * 非空 → 校格式 + 提交时逐头 {@code existsEarNo} 探测 UNIQUE，以用户首号为起点连号。</p>
      *
-     * <p>regex 用 {@code ^(\d-\d{2}-\d-\d{6}-\d{4})?$} —— **允许留空**（留空走上面"后端生成"分支，对齐 601-5
-     * 设计 + allocateEarNos isBlank 分支）；非空才校 {@code 1-01-1-260609-0001} 格式。注意 @Pattern 在入参绑定阶段
-     * 先触发，与 service 端 {@code allocateFromUserStart} 的 matches 校验必须同口径，否则带 {@code -} 值先在此被拦 422。</p>
+     * <p>regex 用 {@code ^(\d{1,2}-\d{2}-\d{6}-\d{3})?$} —— **允许留空**（留空走上面"后端生成"分支，对齐 601-5
+     * 设计 + allocateEarNos isBlank 分支）；非空才校 {@code 02-01-260609-001} 格式（与 {@link EarNoAllocator} 输出
+     * 同口径；品系位宽 1~2 兼容历史 1 位数据 + 当前 2 位字典码）。message 套 {@code {}} 走 i18n 解析返中文，
+     * 否则前端直显原始 key。注意 @Pattern 在入参绑定阶段先触发，与 service 端 {@code allocateFromUserStart}
+     * 的 matches 校验必须同口径，否则带 {@code -} 值先在此被拦 422。</p>
      */
-    @Pattern(regexp = "^(\\d-\\d{2}-\\d-\\d{6}-\\d{4})?$", message = "intro.start_ear_no.pattern")
+    @Pattern(regexp = "^(\\d{1,2}-\\d{2}-\\d{6}-\\d{3})?$", message = "{intro.start_ear_no.pattern}")
     private String startEarNo;
 }

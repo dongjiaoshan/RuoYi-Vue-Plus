@@ -16,7 +16,7 @@ import java.util.List;
  *
  * <p>一次提交某门店多产品需求（购物车里逐项）。service 循环建多条
  * {@link org.dromara.djs.warehouse.demand.domain.DemandManage}，每条复用仓库域
- * {@code insertByBo}（自动 demand_no + 校验）再立即推 {@code SUBMITTED}（门店发起跳过 DRAFT）。</p>
+ * {@code insertByBo}（自动 demand_no + 校验 + 直接落 {@code SUBMITTED}，门店发起跳过 DRAFT）。</p>
  *
  * <p>每行的 {@code productType} 是仓库域 4 业态码（{@code white_bar/vegetable/gift_box/other}）；
  * 创建页 7 业态 tab（白条/猪肉/果蔬/干货/鸡蛋/礼盒/其他）由前端按产品 {@code belongType} 分组，

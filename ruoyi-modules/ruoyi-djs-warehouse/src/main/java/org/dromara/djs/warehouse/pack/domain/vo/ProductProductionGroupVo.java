@@ -55,4 +55,13 @@ public class ProductProductionGroupVo implements Serializable {
 
     /** 件数（组内行数 COUNT(*)）。 */
     private Integer itemCount;
+
+    /**
+     * 需求门店数：该产品当前有未发货需求的门店去重家数。
+     *
+     * <p>口径对齐打包台「门店(N份)」标签（{@code DemandManageMapper.selectStoreDemandCopies}）：
+     * 同 product_id 下，非取消单（{@code demand_status <> 'CANCELLED'}）、有门店，且该门店剩余
+     * 需求量 {@code SUM(demand_quantity - shipped_count) > 0} 的去重门店家数。无需求则 0。</p>
+     */
+    private Integer storeDemandCount;
 }

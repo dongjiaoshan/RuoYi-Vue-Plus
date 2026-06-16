@@ -488,12 +488,13 @@ public class PigIntroServiceImpl implements IPigIntroService {
     }
 
     /**
-     * 以用户给定首号为起点连号（首号校带分隔符格式 + UNIQUE；后续 N-1 头序号 +1，逐头探测 UNIQUE 撞则报错）。
-     * <p>前缀 = 末段 {@code -} 之前（品系1-品种2-公母1-yyMMdd6），序号 = 末段；与 allocator 同口径只看末段，
-     * 不按定长截位（根除旧位长不一致导致解析出 &gt;9999 的 P9 自相矛盾）。</p>
+     * 以用户给定首号为起点连号（首号校格式 + UNIQUE；后续 N-1 头序号 +1，逐头探测 UNIQUE 撞则报错）。
+     * <p>前缀 = 末段 {@code -} 之前（品系-品种2-yyMMdd6，6/15 起不再编码性别），序号 = 末段；与 {@link EarNoAllocator}
+     * 同口径只看末段，不按定长截位（根除旧位长不一致导致解析出 &gt;999 的自相矛盾）。格式校验须与 allocator 输出
+     * 一致：{@code 品系{1,2}-品种2-yyMMdd6-序号3}（品系位宽 1~2 兼容历史 1 位 + 当前 2 位字典码）。</p>
      */
     private List<String> allocateFromUserStart(String startEarNo, int count) {
-        if (!startEarNo.matches("^\\d-\\d{2}-\\d-\\d{6}-\\d{4}$")) {
+        if (!startEarNo.matches("^\\d{1,2}-\\d{2}-\\d{6}-\\d{3}$")) {
             throw new ServiceException(I18nMessages.t("intro.start_ear_no.pattern"));
         }
         int sepIdx = startEarNo.lastIndexOf('-');
@@ -512,7 +513,8 @@ public class PigIntroServiceImpl implements IPigIntroService {
         }
         List<String> earNos = new ArrayList<>(count);
         for (int i = 0; i < count; i++) {
-            String earNo = prefix + "-" + String.format("%04d", startSeq + i);
+            // 序号补零须与 EarNoAllocator.SEQ_WIDTH(=3) 同口径，否则连号 earNo 与 allocator 自动生成的位宽不一致
+            String earNo = prefix + "-" + String.format("%03d", startSeq + i);
             if (pigMapper.existsEarNo(earNo) != null) {
                 throw new ServiceException(I18nMessages.t("intro.start_ear_no.duplicate", earNo));
             }

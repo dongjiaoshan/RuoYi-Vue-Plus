@@ -55,11 +55,22 @@ public interface ILocationStockService {
      * 库存查询行「产品出库」（DJS-FIX-WMS-RALN-B）。
      *
      * <p>按 {@link StockOutBo#getId()} 取库存行的 {@code locationId + productId}，同一 {@code @Transactional}：
-     * INSERT 出库流水（{@code inout_type='OT'} / {@code flow_type='other'}）+ 原子扣减 location_stock；
+     * INSERT 出库流水（{@code inout_type='OT'} / {@code flow_type='backstage_out'}）+ 原子扣减 location_stock；
      * 库存不足 / 库位被盘点锁定 → 抛 ServiceException 回滚。</p>
      *
      * @return 新增流水行主键
      */
     Long productOut(StockOutBo bo);
+
+    /**
+     * 查询当前库存中实际存在的猪只耳号（去重，供库存查询页耳号下拉用，row152-2）。
+     *
+     * <p>取 {@code t_warehouse_location_stock} 中 {@code ear_no} 非空的去重列表；
+     * {@code locationId} 非空时按库位过滤。</p>
+     *
+     * @param locationId 库位 ID（可空，不传则取全部库存）
+     * @return 去重后的耳号列表
+     */
+    List<String> listStockEarNos(Long locationId);
 
 }

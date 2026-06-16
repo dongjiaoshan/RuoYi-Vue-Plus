@@ -6,13 +6,11 @@ import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.satoken.utils.LoginHelper;
 import org.dromara.djs.store.demand.domain.bo.StoreDemandBatchBo;
 import org.dromara.djs.store.demand.service.IStoreDemandService;
-import org.dromara.djs.warehouse.demand.core.enums.DemandEvent;
 import org.dromara.djs.warehouse.demand.core.enums.DemandStatus;
 import org.dromara.djs.warehouse.demand.domain.DemandManage;
 import org.dromara.djs.warehouse.demand.domain.bo.DemandManageBo;
 import org.dromara.djs.warehouse.demand.mapper.DemandManageMapper;
 import org.dromara.djs.warehouse.demand.service.IDemandManageService;
-import org.dromara.djs.warehouse.demand.service.IDemandStatusService;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
 import org.springframework.stereotype.Service;
@@ -26,7 +24,7 @@ import java.time.LocalDateTime;
  *
  * <p>不写状态机 / 编码 / 业态校验——全部复用 warehouse service。本类职责：</p>
  * <ul>
- *   <li>{@link #createStoreDemand} 单产品「门店发起」收口为 insertByBo + transition(SUBMIT) 原子事务（落 SUBMITTED）</li>
+ *   <li>{@link #createStoreDemand} 单产品「门店发起」= insertByBo（warehouse 侧已直接落 SUBMITTED，不再二次 transition）</li>
  *   <li>{@link #batchCreate} 购物车整单：逐项补产品冗余字段后循环 createStoreDemand</li>
  *   <li>{@link #receive} 门店收货确认：patch received_time / received_by（不触碰仓库状态机）</li>
  * </ul>
@@ -47,8 +45,6 @@ public class StoreDemandServiceImpl implements IStoreDemandService {
 
     private final IDemandManageService demandManageService;
 
-    private final IDemandStatusService demandStatusService;
-
     private final ProductInfoMapper productInfoMapper;
 
     private final DemandManageMapper demandManageMapper;
@@ -58,11 +54,9 @@ public class StoreDemandServiceImpl implements IStoreDemandService {
     public Long createStoreDemand(DemandManageBo bo) {
         // 编辑路径不走本方法（门店端创建专用）；强制清空 id 避免误更新
         bo.setId(null);
-        // 第 1 步：warehouse 落库（初始 DRAFT + 自动生成 demand_no + 业态字段校验）
-        Long id = demandManageService.insertByBo(bo);
-        // 第 2 步：立即提交，推到 SUBMITTED（门店发起跳过 DRAFT，doc/10 §4.F-STR-01）
-        demandStatusService.transition(id, DemandEvent.SUBMIT, LoginHelper.getUserId(), "门店发起");
-        return id;
+        // warehouse insertByBo 已直接落 SUBMITTED（门店发起 = 提交需求给仓库，无独立存草稿环节，
+        // 与 admin 仓库侧 add 同契约）+ 自动生成 demand_no + 业态字段校验，无需再 transition(SUBMIT)。
+        return demandManageService.insertByBo(bo);
     }
 
     @Override

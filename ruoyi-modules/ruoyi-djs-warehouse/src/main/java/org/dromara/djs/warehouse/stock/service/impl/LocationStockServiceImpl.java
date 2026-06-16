@@ -57,10 +57,14 @@ import java.util.stream.Collectors;
 public class LocationStockServiceImpl extends DjsBaseServiceImpl<LocationStockMapper, LocationStock> implements ILocationStockService {
 
     /**
-     * 产品出库流水类型：{@code other}（非 pick_out → 列表派生「后台出库」backend_out，
-     * 与商品详情业务流水口径一致，参 {@link ProductInfoMapper#selectFlowRecords}）。
+     * 产品出库流水类型：{@code backstage_out}（后台手工出库）。
+     *
+     * <p>出库记录页 {@code flow/out} 直接按 {@code djs_flow_type} 字典渲染 flow_type，
+     * 字典值 {@code backstage_out} = 「后台出库」（seed 102450019）。与商品详情业务流水
+     * {@link ProductInfoMapper#selectFlowRecords} 把非 pick_out 的出库派生为 {@code backend_out}
+     * 文案口径一致（均为「后台出库」语义）。</p>
      */
-    private static final String FLOW_OTHER = "other";
+    private static final String FLOW_BACKSTAGE_OUT = "backstage_out";
 
     /**
      * 出库方向（DDL CHAR(3)）。
@@ -161,14 +165,15 @@ public class LocationStockServiceImpl extends DjsBaseServiceImpl<LocationStockMa
         stockCheckService.assertLocationUnlocked(locationId);
         Long userId = LoginHelper.getUserId();
 
-        // 2. INSERT 出库流水（flow_type=other → 列表派生「后台出库」）
+        // 2. INSERT 出库流水（flow_type=backstage_out → 出库记录显示「后台出库」）
         StockFlow flow = new StockFlow();
         flow.setFlowNo(generateFlowNo(INOUT_OUT));
-        flow.setFlowDate(bo.getOutDate() != null ? bo.getOutDate() : new Date());
+        // flow_date 记录实际操作时刻（含时分秒）；bo.outDate 仅是用户选的业务日期、为纯日期会落 00:00:00
+        flow.setFlowDate(new Date());
         flow.setProductId(productId);
         flow.setWarehouseId(locationId);
         flow.setInoutType(INOUT_OUT);
-        flow.setFlowType(FLOW_OTHER);
+        flow.setFlowType(FLOW_BACKSTAGE_OUT);
         flow.setStockOutDest(bo.getStockOutDest());
         flow.setChangeNum(bo.getQuantity().negate());
         flow.setChangeQuantity(bo.getQuantity());
@@ -186,6 +191,22 @@ public class LocationStockServiceImpl extends DjsBaseServiceImpl<LocationStockMa
                     + " / 申请=" + bo.getQuantity() + product.getProductUnit() + "）");
         }
         return flow.getId();
+    }
+
+    @Override
+    public List<String> listStockEarNos(Long locationId) {
+        List<LocationStock> rows = baseMapper.selectList(
+            new LambdaQueryWrapper<LocationStock>()
+                .select(LocationStock::getEarNo)
+                .eq(locationId != null, LocationStock::getLocationId, locationId)
+                .isNotNull(LocationStock::getEarNo)
+                .ne(LocationStock::getEarNo, ""));
+        return rows.stream()
+            .map(LocationStock::getEarNo)
+            .filter(StringUtils::isNotBlank)
+            .distinct()
+            .sorted()
+            .toList();
     }
 
     /**
@@ -325,6 +346,22 @@ public class LocationStockServiceImpl extends DjsBaseServiceImpl<LocationStockMa
     }
 
     /**
+     * 按归属类型（{@code djs_belong_type} 字典值，精确）解析匹配的 productId 集合；无匹配返空 list
+     * （调用方据此让查询恒空）。
+     *
+     * <p>{@code belong_type} 不在 {@code t_warehouse_location_stock} 表，仅存于产品主数据
+     * {@code t_warehouse_product_info}，故先按 belong_type 查出 productId 再 IN 过滤库存
+     * （参 {@link #fillProductCodes} 的 productInfoMapper 用法）。</p>
+     */
+    private List<Long> resolveProductIdsByBelongType(String belongType) {
+        List<ProductInfo> products = productInfoMapper.selectList(
+            new LambdaQueryWrapper<ProductInfo>()
+                .eq(ProductInfo::getBelongType, belongType)
+                .select(ProductInfo::getId));
+        return products.stream().map(ProductInfo::getId).toList();
+    }
+
+    /**
      * 构造查询条件。
      */
     private LambdaQueryWrapper<LocationStock> buildQueryWrapper(LocationStockQuery query) {
@@ -347,6 +384,15 @@ public class LocationStockServiceImpl extends DjsBaseServiceImpl<LocationStockMa
                 wrapper.eq(LocationStock::getId, -1L);
             } else {
                 wrapper.in(LocationStock::getPlotId, plotIds);
+            }
+        }
+        // 归属类型过滤：belong_type 不在库存表，先按产品主数据 belong_type 解析 productId 集合再 IN 过滤；无匹配则恒空
+        if (StringUtils.isNotBlank(query.getBelongType())) {
+            List<Long> productIds = resolveProductIdsByBelongType(query.getBelongType());
+            if (productIds.isEmpty()) {
+                wrapper.eq(LocationStock::getId, -1L);
+            } else {
+                wrapper.in(LocationStock::getProductId, productIds);
             }
         }
         return wrapper;

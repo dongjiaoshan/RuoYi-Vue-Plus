@@ -48,6 +48,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.time.temporal.ChronoUnit;
@@ -177,12 +178,14 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
             bo.getFarmDate(), bo.getProofOssIds(), bo.getRemark());
         r.setDisasterType(bo.getDisasterType());
         r.setLossRate(bo.getLossRate());
-        r.setLossYield(bo.getLossYield());
+        // 损失产量由系统按 预计产量 × 损失率/100（保留两位）算出，不信任前端传值
+        BigDecimal lossYield = computeLossYield(bo.getPlantId(), bo.getPlotId(), bo.getCropId(), bo.getLossRate());
+        r.setLossYield(lossYield);
         r.setIsWarning(bo.getLossRate() != null && bo.getLossRate().compareTo(WARNING_LOSS_RATE) >= 0 ? 1 : 2);
         baseMapper.insert(r);
 
         // 副作用：累加 plant_details.loss_yield（按 plantId + plotId + cropId 定位未结束 details）
-        accumulateLossYield(bo.getPlantId(), bo.getPlotId(), bo.getCropId(), bo.getLossYield());
+        accumulateLossYield(bo.getPlantId(), bo.getPlotId(), bo.getCropId(), lossYield);
         return r.getId();
     }
 
@@ -259,12 +262,14 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
                 bo.getFarmDate(), bo.getProofOssIds(), bo.getRemark());
             r.setDisasterType(bo.getDisasterType());
             r.setLossRate(bo.getLossRate());
-            r.setLossYield(t.getLossYield());
+            // 各地块损失产量由系统按 该地块预计产量 × 批量损失率/100（保留两位）算出，不信任前端传值
+            BigDecimal lossYield = computeLossYield(t.getPlantId(), t.getPlotId(), t.getCropId(), bo.getLossRate());
+            r.setLossYield(lossYield);
             r.setIsWarning(warning);
             baseMapper.insert(r);
             count++;
             // 副作用：各地块累加对应 plant_details.loss_yield
-            accumulateLossYield(t.getPlantId(), t.getPlotId(), t.getCropId(), t.getLossYield());
+            accumulateLossYield(t.getPlantId(), t.getPlotId(), t.getCropId(), lossYield);
         }
         return count;
     }
@@ -743,23 +748,7 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
         if (lossYield == null || lossYield.compareTo(BigDecimal.ZERO) <= 0) {
             return;
         }
-        PlantDetails target = plantDetailsMapper.selectOne(
-            new LambdaQueryWrapper<PlantDetails>()
-                .eq(PlantDetails::getPlantId, plantId)
-                .eq(PlantDetails::getPlotId, plotId)
-                .eq(PlantDetails::getCropId, cropId)
-                .isNull(PlantDetails::getEndActualdate)
-                .orderByDesc(PlantDetails::getId)
-                .last("LIMIT 1"));
-        if (target == null) {
-            target = plantDetailsMapper.selectOne(
-                new LambdaQueryWrapper<PlantDetails>()
-                    .eq(PlantDetails::getPlantId, plantId)
-                    .eq(PlantDetails::getPlotId, plotId)
-                    .eq(PlantDetails::getCropId, cropId)
-                    .orderByDesc(PlantDetails::getId)
-                    .last("LIMIT 1"));
-        }
+        PlantDetails target = locatePlantDetails(plantId, plotId, cropId);
         if (target == null) {
             log.warn("submitDisaster: no plant_details for plantId={} plotId={} cropId={}, skip loss_yield accumulate",
                 plantId, plotId, cropId);
@@ -776,15 +765,10 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
     }
 
     /**
-     * 采摘活动管理副作用：累加 plant_details.actual_yield（FIX-PLT-MP-HARVEST-001 #3=a）。
-     *
-     * <p>定位策略同 {@link #accumulateLossYield}：取 (plantId, plotId, cropId) + end_actualdate IS NULL
-     * 的最新一行 details；无未结束行则取最新一行。</p>
+     * 定位 (plantId, plotId, cropId) 对应的 plant_details 行：优先 end_actualdate IS NULL 的最新一行；
+     * 无未结束行时（极端：先标完结再补登记灾害）退回最新一行。无任何行返回 null。
      */
-    private void accumulateActualYield(Long plantId, Long plotId, Long cropId, BigDecimal weight) {
-        if (weight == null || weight.compareTo(BigDecimal.ZERO) <= 0) {
-            return;
-        }
+    private PlantDetails locatePlantDetails(Long plantId, Long plotId, Long cropId) {
         PlantDetails target = plantDetailsMapper.selectOne(
             new LambdaQueryWrapper<PlantDetails>()
                 .eq(PlantDetails::getPlantId, plantId)
@@ -802,6 +786,42 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
                     .orderByDesc(PlantDetails::getId)
                     .last("LIMIT 1"));
         }
+        return target;
+    }
+
+    /**
+     * 损失产量计算口径：损失产量 = 预计产量(plant_details.expected_yield) × 损失率(0-100) / 100，
+     * 保留两位小数（HALF_UP）。预计产量缺失或 ≤0 时返回 BigDecimal.ZERO（不入库假值）。
+     *
+     * <p>不再信任前端传入的 loss_yield，由系统按地块预计产量统一算出。</p>
+     */
+    private BigDecimal computeLossYield(Long plantId, Long plotId, Long cropId, BigDecimal lossRate) {
+        if (lossRate == null) {
+            return BigDecimal.ZERO;
+        }
+        PlantDetails target = locatePlantDetails(plantId, plotId, cropId);
+        if (target == null || target.getExpectedYield() == null
+            || target.getExpectedYield().compareTo(BigDecimal.ZERO) <= 0) {
+            log.warn("submitDisaster: no expected_yield for plantId={} plotId={} cropId={}, loss_yield=0",
+                plantId, plotId, cropId);
+            return BigDecimal.ZERO;
+        }
+        return target.getExpectedYield()
+            .multiply(lossRate)
+            .divide(new BigDecimal("100"), 2, RoundingMode.HALF_UP);
+    }
+
+    /**
+     * 采摘活动管理副作用：累加 plant_details.actual_yield（FIX-PLT-MP-HARVEST-001 #3=a）。
+     *
+     * <p>定位策略同 {@link #accumulateLossYield}：取 (plantId, plotId, cropId) + end_actualdate IS NULL
+     * 的最新一行 details；无未结束行则取最新一行。</p>
+     */
+    private void accumulateActualYield(Long plantId, Long plotId, Long cropId, BigDecimal weight) {
+        if (weight == null || weight.compareTo(BigDecimal.ZERO) <= 0) {
+            return;
+        }
+        PlantDetails target = locatePlantDetails(plantId, plotId, cropId);
         if (target == null) {
             log.warn("submitHarvestWeight: no plant_details for plantId={} plotId={} cropId={}, skip actual_yield accumulate",
                 plantId, plotId, cropId);
@@ -839,12 +859,22 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
                 .like(PlotInfo::getPlotName, query.getPlotName()))
             .stream().map(PlotInfo::getId).collect(Collectors.toList())
             : null;
+        // 地块编号模糊搜索：plot_code 不在主表，经 plot_info 反查 plotId 列表再 IN（与 plotName IN 叠加为 AND）
+        boolean filterByPlotCode = StringUtils.isNotBlank(query.getPlotCode());
+        List<Long> plotIdsByCode = filterByPlotCode
+            ? plotInfoMapper.selectList(new LambdaQueryWrapper<PlotInfo>()
+                .select(PlotInfo::getId)
+                .like(PlotInfo::getPlotCode, query.getPlotCode()))
+            .stream().map(PlotInfo::getId).collect(Collectors.toList())
+            : null;
         w.like(StringUtils.isNotBlank(query.getRecordNo()), FarmRecords::getRecordNo, query.getRecordNo())
             .in(hasWorkTypes, FarmRecords::getFarmType, query.getFarmWorkTypes())
             .eq(!hasWorkTypes && StringUtils.isNotBlank(query.getFarmType()), FarmRecords::getFarmType, query.getFarmType())
             .eq(query.getPlotId() != null, FarmRecords::getPlotId, query.getPlotId())
             // 地块名命中 → IN plotIds；命中为空 → IN (-1) 哨兵 id，确保返回空结果
             .in(filterByPlotName, FarmRecords::getPlotId, CollUtil.isEmpty(plotIdsByName) ? List.of(-1L) : plotIdsByName)
+            // 地块编号命中 → IN plotIds；命中为空 → IN (-1) 哨兵 id，确保返回空结果
+            .in(filterByPlotCode, FarmRecords::getPlotId, CollUtil.isEmpty(plotIdsByCode) ? List.of(-1L) : plotIdsByCode)
             .eq(query.getCropId() != null, FarmRecords::getCropId, query.getCropId())
             .like(StringUtils.isNotBlank(query.getCropName()), FarmRecords::getCropName, query.getCropName())
             .eq(query.getFarmBy() != null, FarmRecords::getFarmBy, query.getFarmBy())

@@ -134,7 +134,7 @@ public class SupplierServiceImpl extends DjsBaseServiceImpl<SupplierMapper, Supp
 
     /**
      * 构造查询条件：supplier_name like / supplier_type eq / liaison_name like
-     * / liaison_phone like / business_status eq / settle_type eq / supplier_code eq。
+     * / liaison_phone like / business_status eq / settle_type eq / supplier_code like。
      */
     private LambdaQueryWrapper<Supplier> buildQueryWrapper(SupplierQuery query) {
         LambdaQueryWrapper<Supplier> wrapper = new LambdaQueryWrapper<>();
@@ -142,7 +142,7 @@ public class SupplierServiceImpl extends DjsBaseServiceImpl<SupplierMapper, Supp
             return wrapper.orderByDesc(Supplier::getId);
         }
         wrapper.like(StringUtils.isNotBlank(query.getSupplierName()), Supplier::getSupplierName, query.getSupplierName())
-            .eq(StringUtils.isNotBlank(query.getSupplierCode()), Supplier::getSupplierCode, query.getSupplierCode())
+            .like(StringUtils.isNotBlank(query.getSupplierCode()), Supplier::getSupplierCode, query.getSupplierCode())
             .eq(StringUtils.isNotBlank(query.getSupplierType()), Supplier::getSupplierType, query.getSupplierType())
             .like(StringUtils.isNotBlank(query.getLiaisonName()), Supplier::getLiaisonName, query.getLiaisonName())
             .like(StringUtils.isNotBlank(query.getLiaisonPhone()), Supplier::getLiaisonPhone, query.getLiaisonPhone())

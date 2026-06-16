@@ -63,6 +63,17 @@ public class LocationStockController extends BaseController {
     }
 
     /**
+     * 查询当前库存中实际存在的猪只耳号（去重，供库存查询页耳号下拉用，row152-2）。
+     *
+     * @param locationId 库位 ID（可空，不传则取全部库存）
+     */
+    @SaCheckPermission("djs:warehouse:stock:list")
+    @GetMapping("/earNos")
+    public R<List<String>> earNos(Long locationId) {
+        return R.ok(stockService.listStockEarNos(locationId));
+    }
+
+    /**
      * 导出库存明细（不分页）。
      */
     @SaCheckPermission("djs:warehouse:stock:export")

@@ -117,6 +117,7 @@ public interface PlotInfoMapper extends BaseMapperPlus<PlotInfo, PlotInfoVo> {
             tp.team_name          AS plantByName,
             d.expected_yield      AS expectedYield,
             d.earliest_harvestdate AS earliestHarvestdate,
+            d.last_harvestdate    AS lastHarvestdate,
             d.actual_yield        AS actualYield,
             d.begin_harvestdate   AS beginHarvestdate,
             d.end_harvestdate     AS endHarvestdate,

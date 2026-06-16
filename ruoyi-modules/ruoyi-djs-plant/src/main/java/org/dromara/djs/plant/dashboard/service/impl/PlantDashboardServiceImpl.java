@@ -33,11 +33,8 @@ public class PlantDashboardServiceImpl implements IPlantDashboardService {
 
     private static final String DEFAULT_TENANT = "1001";
 
-    /** 种植状态 → 进度映射（字典 djs_plant_plan_status）。 */
+    /** 进度兜底值（total 为 0 / 无完成时返回 0）。 */
     private static final int PROGRESS_PENDING = 0;
-    private static final int PROGRESS_ONGOING = 50;
-    private static final int PROGRESS_COMPLETED = 100;
-    private static final int PROGRESS_DELAYED = 80;
 
     private final PlantDashboardMapper dashboardMapper;
 
@@ -130,38 +127,35 @@ public class PlantDashboardServiceImpl implements IPlantDashboardService {
     }
 
     /**
-     * 种植甘特段（按 明细/地块 维度）：开始用实际开始种植日（无则计划开始旬日），
-     * 结束用实际结束日；未结束（{@code end_actualdate} 为空）时用计划结束日（{@code earliest_harvestdate}）
-     * 兜底，保证未结束计划也能画出条。
+     * 种植甘特段（按 作物 维度聚合）：每个作物一条整段，y 轴类目 = 作物名。
+     * 开始 = {@code MIN(实际开始 / 计划开始旬日兜底)}、结束 = {@code MAX(COALESCE(实际结束, 计划最早采摘日))}
+     * （SQL 内聚合，旬日兜底口径与原明细维度一致）；进度 = 该作物种植完成明细占比。
      *
      * @param tenantId 租户
      * @return 种植甘特条列表
      */
     private List<GanttItemVo> buildPlantGantt(String tenantId) {
-        List<PlantDashboardMapper.PlantGanttRow> rows = dashboardMapper.selectPlantGanttRows(tenantId);
+        List<PlantDashboardMapper.PlantGanttCropRow> rows = dashboardMapper.selectPlantGanttByCrop(tenantId);
         if (rows == null || rows.isEmpty()) {
             return List.of();
         }
         List<GanttItemVo> items = new ArrayList<>(rows.size());
-        for (PlantDashboardMapper.PlantGanttRow row : rows) {
-            LocalDate start = row.getBeginActualdate() != null
-                ? row.getBeginActualdate()
-                : planStartDate(row.getPlantMonth(), row.getPlantPeriod());
-            LocalDate end = row.getEndActualdate() != null
-                ? row.getEndActualdate()
-                : row.getEarliestHarvestdate();
-            // 起止任一缺失（无实际且无计划推算）则跳过该条
-            if (start == null || end == null) {
+        for (PlantDashboardMapper.PlantGanttCropRow row : rows) {
+            LocalDate start = row.getStartDate();
+            LocalDate end = row.getEndDate() != null ? row.getEndDate() : start;
+            // 整段无任何可用开始（无实际且无计划推算）则跳过该作物
+            if (start == null) {
                 continue;
             }
             // 结束早于开始（计划日历异常）时夹紧为开始日，避免负宽
             if (end.isBefore(start)) {
                 end = start;
             }
-            String text = buildText(row.getCropName(), row.getPlotName());
-            String idStr = row.getId() == null ? "" : String.valueOf(row.getId());
+            String text = row.getCropName() == null || row.getCropName().isBlank()
+                ? "未知作物" : row.getCropName();
+            String idStr = row.getCropId() == null ? "" : String.valueOf(row.getCropId());
             items.add(buildItem(idStr + "-plant", text, start, end,
-                plantProgress(row.getPlantStatus()), "plant"));
+                pickRatioProgress(row.getCompletedCount(), row.getTotalCount()), "plant"));
         }
         return items;
     }
@@ -200,26 +194,6 @@ public class PlantDashboardServiceImpl implements IPlantDashboardService {
     }
 
     /**
-     * 计划开始种植日推算：{@code plant_month}（1-12）+ {@code plant_period}（05=上旬 / 15=中旬 /
-     * 25=下旬），年份取当年。旬 → 日：05→1 号 / 15→11 号 / 25→21 号；非法旬码回落 1 号。
-     *
-     * @param month  计划月份 1-12（可空）
-     * @param period 计划阶段码 05/15/25（可空）
-     * @return 计划开始种植日；月份缺失时 null
-     */
-    private LocalDate planStartDate(Integer month, String period) {
-        if (month == null || month < 1 || month > 12) {
-            return null;
-        }
-        int day = switch (period == null ? "" : period) {
-            case "15" -> 11;
-            case "25" -> 21;
-            default -> 1;
-        };
-        return LocalDate.of(LocalDate.now().getYear(), month, day);
-    }
-
-    /**
      * 组装单个甘特条。
      *
      * @param id       甘特条 id（已含 -plant / -pick 后缀）
@@ -242,41 +216,11 @@ public class PlantDashboardServiceImpl implements IPlantDashboardService {
     }
 
     /**
-     * 拼"作物-地块"文本，任一为空用占位。
+     * 完成占比进度（作物聚合后）：完成明细占比 = {@code completed / total × 100}（四舍五入 0~100）。
+     * 种植段用 {@code plant_status='completed'} 占比、采摘段用 {@code harvest_status='completed'} 占比。
      *
-     * @param cropName 作物名（可空）
-     * @param plotName 地块名（可空）
-     * @return 文本
-     */
-    private String buildText(String cropName, String plotName) {
-        String crop = cropName == null || cropName.isBlank() ? "未知作物" : cropName;
-        String plot = plotName == null || plotName.isBlank() ? "未知地块" : plotName;
-        return crop + "-" + plot;
-    }
-
-    /**
-     * 种植状态 → 进度（字典 djs_plant_plan_status：pending/ongoing/completed/delayed）。
-     *
-     * @param status 种植状态 code（可空）
-     * @return 进度 0~100
-     */
-    private int plantProgress(String status) {
-        if (status == null) {
-            return PROGRESS_PENDING;
-        }
-        return switch (status) {
-            case "ongoing" -> PROGRESS_ONGOING;
-            case "completed" -> PROGRESS_COMPLETED;
-            case "delayed" -> PROGRESS_DELAYED;
-            default -> PROGRESS_PENDING;
-        };
-    }
-
-    /**
-     * 采摘进度（作物聚合后）：已采摘完成明细占比 = {@code completed / total × 100}（四舍五入 0~100）。
-     *
-     * @param completed 已采摘完成明细数（可空）
-     * @param total     该作物有采摘日期的明细总数（可空 / 0）
+     * @param completed 完成明细数（可空）
+     * @param total     该作物明细总数（可空 / 0）
      * @return 进度 0~100；total 为 0 时返回 0
      */
     private int pickRatioProgress(Integer completed, Integer total) {

@@ -27,15 +27,20 @@ public class ProductProductionQuery {
     private Long productId;
 
     /**
+     * 产品名称模糊匹配（聚合主列表「产品名称」搜索，LIKE %kw%）。
+     */
+    private String productName;
+
+    /**
      * 生产日期精确匹配（产品列表下钻按"生产日期 + 产品"锁定一个生产批次）。
      */
     @JsonFormat(pattern = "yyyy-MM-dd")
     private Date produceDate;
 
     /**
-     * 产品序号精确匹配（下钻子页"序号"筛选）。
+     * 产品序号模糊匹配（下钻子页"序号"搜索框，对 product_sort 做 CAST(... AS CHAR) LIKE %kw%）。
      */
-    private Integer productSort;
+    private String productSort;
 
     /**
      * 产品类型字典 {@code djs_product_type}：1=自产 / 2=外购 / 3=礼盒。

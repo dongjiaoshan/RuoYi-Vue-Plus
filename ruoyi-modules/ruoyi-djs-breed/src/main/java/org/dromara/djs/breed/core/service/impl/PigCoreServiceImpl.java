@@ -1009,6 +1009,7 @@ public class PigCoreServiceImpl implements IPigCoreService {
         vo.setDurationDays(r.getDurationDays());
         vo.setChangeTime(r.getChangeTime());
         vo.setCreateTime(r.getCreateTime());
+        vo.setCreateBy(r.getCreateBy());
         return vo;
     }
 

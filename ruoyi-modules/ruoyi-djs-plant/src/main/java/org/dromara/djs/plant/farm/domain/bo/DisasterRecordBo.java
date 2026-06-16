@@ -53,8 +53,10 @@ public class DisasterRecordBo {
     @DecimalMax(value = "100", message = "{plant.farm.loss_rate.range}")
     private BigDecimal lossRate;
 
-    /** 损失产量；触发 plant_details.loss_yield 累加。 */
-    @NotNull(message = "{plant.farm.loss_yield.required}")
+    /**
+     * 损失产量（可选）：由服务端按 预计产量 × 损失率/100 统一算出并回写，前端无需传。
+     * 历史调用方仍可传入但会被服务端计算值覆盖。
+     */
     @PositiveOrZero(message = "{plant.farm.loss_yield.positive}")
     private BigDecimal lossYield;
 

@@ -477,13 +477,14 @@ public class ProductProductionServiceImpl
     @Override
     public TableDataInfo<ProductProductionGroupVo> queryGroupPageList(ProductProductionQuery query, PageQuery pageQuery) {
         String produceNo = query == null ? null : query.getProduceNo();
+        String productName = query == null ? null : query.getProductName();
         String belongType = query == null ? null : query.getBelongType();
         Integer productType = query == null ? null : query.getProductType();
         Date from = query == null ? null : query.getProduceDateFrom();
         Date to = query == null ? null : query.getProduceDateTo();
-        // belongType（产品品类，product_info 维度）/ productType（组内同值）均下推 mapper WHERE 过滤
+        // belongType（产品品类，product_info 维度）/ productType（组内同值）/ productName(LIKE) 均下推 mapper WHERE 过滤
         List<ProductProductionGroupVo> all =
-            baseMapper.selectProductionGroupList(produceNo, belongType, productType, from, to);
+            baseMapper.selectProductionGroupList(produceNo, productName, belongType, productType, from, to);
         // 聚合后内存分页（分组行数小，范式同 DemandManageServiceImpl.queryGroupList）
         int total = all.size();
         int pageNum = pageQuery == null || pageQuery.getPageNum() == null ? 1 : pageQuery.getPageNum();
@@ -523,7 +524,9 @@ public class ProductProductionServiceImpl
         LambdaQueryWrapper<ProductProduction> wrapper = new LambdaQueryWrapper<>();
         wrapper.eq(ProductProduction::getProductId, query.getProductId())
             .apply("DATE(produce_date) = DATE({0})", query.getProduceDate())
-            .eq(query.getProductSort() != null, ProductProduction::getProductSort, query.getProductSort())
+            // 产品序号模糊搜索（int 列 CAST 成字符串 LIKE %kw%；row115-n1）
+            .apply(StringUtils.isNotBlank(query.getProductSort()),
+                "CAST(product_sort AS CHAR) LIKE CONCAT('%', {0}, '%')", query.getProductSort())
             .eq(query.getStoreId() != null, ProductProduction::getStoreId, query.getStoreId())
             .orderByAsc(ProductProduction::getProductSort)
             .orderByAsc(ProductProduction::getId);
@@ -806,7 +809,8 @@ public class ProductProductionServiceImpl
         w.eq(StringUtils.isNotBlank(query.getProduceNo()),  ProductProduction::getProduceNo, query.getProduceNo())
             .eq(query.getProductId() != null,    ProductProduction::getProductId, query.getProductId())
             .eq(query.getProductType() != null,  ProductProduction::getProductType, query.getProductType())
-            .eq(query.getProductSort() != null,  ProductProduction::getProductSort, query.getProductSort())
+            .apply(StringUtils.isNotBlank(query.getProductSort()),
+                "CAST(product_sort AS CHAR) LIKE CONCAT('%', {0}, '%')", query.getProductSort())
             .eq(StringUtils.isNotBlank(query.getPackStatus()), ProductProduction::getPackStatus, query.getPackStatus())
             .eq(StringUtils.isNotBlank(query.getEarNo()), ProductProduction::getEarNo, query.getEarNo())
             .eq(query.getPlotId() != null, ProductProduction::getPlotId, query.getPlotId())
