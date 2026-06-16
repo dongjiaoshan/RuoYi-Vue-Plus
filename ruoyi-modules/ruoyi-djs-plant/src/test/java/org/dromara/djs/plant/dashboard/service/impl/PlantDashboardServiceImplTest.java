@@ -30,11 +30,11 @@ import static org.mockito.Mockito.when;
  * <ul>
  *   <li>getSummary happy：土地总览 5 计数 + 总面积 + 今日工作 6 格 + 当月完成率 + 证书一览组装正确</li>
  *   <li>getSummary null 兜底：mapper 全返 null → 计数全 0 / 面积 ZERO / list 空 / 证书字段 null/0，不抛错</li>
- *   <li>getGantt 种植段：PlantGanttRow 有实际日期 → plant 段组装正确 + 进度映射</li>
+ *   <li>getGantt 种植段：PlantGanttCropRow 有起止日期 → plant 段按作物聚合 + 进度按完成占比</li>
  *   <li>getGantt 采摘段：PickGanttCropRow 有采摘日期 → pick 段组装正确 + 进度比例计算</li>
  *   <li>getGantt 空：两 mapper 均返 null → 空列表</li>
- *   <li>getGantt 种植段兜底：begin_actualdate 为 null，用 plantMonth+plantPeriod 推算起始日</li>
- *   <li>getGantt 名称为空时用占位文本</li>
+ *   <li>getGantt 种植段 endDate 兜底：endDate 为 null → 用 startDate 兜底，进度比例四舍五入</li>
+ *   <li>getGantt 名称为空时用占位文本 '未知作物'</li>
  * </ul>
  */
 @Tag("local")
@@ -188,20 +188,17 @@ class PlantDashboardServiceImplTest {
     // ======================== getGantt ========================
 
     @Test
-    @DisplayName("getGantt 种植段 happy：PlantGanttRow 有实际日期 → plant 段 + 进度 completed=100")
+    @DisplayName("getGantt 种植段 happy：PlantGanttCropRow 有起止日期 → plant 段按作物聚合 + 进度 completed/total=100")
     void getGanttPlantSegmentHappy() {
-        // Arrange
-        PlantDashboardMapper.PlantGanttRow row = new PlantDashboardMapper.PlantGanttRow();
-        row.setId(2058525064717926401L);
+        // Arrange — 按作物聚合，cropId 为 snowflake（契约：不转 number 丢精度）
+        PlantDashboardMapper.PlantGanttCropRow row = new PlantDashboardMapper.PlantGanttCropRow();
+        row.setCropId(2058525064717926401L);
         row.setCropName("番茄");
-        row.setPlotName("A 区 01 号");
-        row.setBeginActualdate(LocalDate.of(2026, 6, 1));
-        row.setEndActualdate(LocalDate.of(2026, 6, 20));
-        row.setEarliestHarvestdate(null);
-        row.setPlantMonth(null);
-        row.setPlantPeriod(null);
-        row.setPlantStatus("completed");
-        when(dashboardMapper.selectPlantGanttRows(anyString())).thenReturn(List.of(row));
+        row.setStartDate(LocalDate.of(2026, 6, 1));
+        row.setEndDate(LocalDate.of(2026, 6, 20));
+        row.setTotalCount(3);
+        row.setCompletedCount(3);
+        when(dashboardMapper.selectPlantGanttByCrop(anyString())).thenReturn(List.of(row));
         when(dashboardMapper.selectPickGanttByCrop(anyString())).thenReturn(null);
 
         // Act
@@ -211,9 +208,11 @@ class PlantDashboardServiceImplTest {
         assertThat(items).hasSize(1);
         GanttItemVo plant = items.get(0);
         assertThat(plant.getType()).isEqualTo("plant");
-        // id 拼接为 string，保留完整 snowflake（契约：不转 number 丢精度）
+        // id 拼接为 string，保留完整 snowflake cropId（契约：不转 number 丢精度）
         assertThat(plant.getId()).isEqualTo("2058525064717926401-plant");
-        assertThat(plant.getText()).isEqualTo("番茄-A 区 01 号");
+        // y 轴类目 = 作物名（按作物聚合后不再含地块名）
+        assertThat(plant.getText()).isEqualTo("番茄");
+        // completed=3, total=3 → 100
         assertThat(plant.getProgress()).isEqualTo(100);
         assertThat(plant.getStartDate()).isEqualTo(LocalDate.of(2026, 6, 1));
         assertThat(plant.getEndDate()).isEqualTo(LocalDate.of(2026, 6, 20));
@@ -230,7 +229,7 @@ class PlantDashboardServiceImplTest {
         row.setEndHarvestdate(LocalDate.of(2026, 6, 30));
         row.setTotalCount(4);
         row.setCompletedCount(2);
-        when(dashboardMapper.selectPlantGanttRows(anyString())).thenReturn(null);
+        when(dashboardMapper.selectPlantGanttByCrop(anyString())).thenReturn(null);
         when(dashboardMapper.selectPickGanttByCrop(anyString())).thenReturn(List.of(row));
 
         // Act
@@ -251,54 +250,50 @@ class PlantDashboardServiceImplTest {
     @Test
     @DisplayName("getGantt 空：两 mapper 均返 null → 空列表，不抛错")
     void getGanttEmpty() {
-        when(dashboardMapper.selectPlantGanttRows(anyString())).thenReturn(null);
+        when(dashboardMapper.selectPlantGanttByCrop(anyString())).thenReturn(null);
         when(dashboardMapper.selectPickGanttByCrop(anyString())).thenReturn(null);
 
         assertThat(service.getGantt()).isEmpty();
     }
 
     @Test
-    @DisplayName("getGantt 种植段兜底：begin_actualdate=null，用 plantMonth+plantPeriod 推算起始日（上旬=1号）")
-    void getGanttPlantFallbackToPlanDate() {
-        // Arrange — 无实际日期，用计划推算
-        PlantDashboardMapper.PlantGanttRow row = new PlantDashboardMapper.PlantGanttRow();
-        row.setId(100L);
+    @DisplayName("getGantt 种植段 endDate 兜底：endDate=null → 用 startDate 兜底，进度比例 1/2=50")
+    void getGanttPlantEndDateFallback() {
+        // Arrange — 整段未结束（endDate=null），用 startDate 兜底画出起点
+        PlantDashboardMapper.PlantGanttCropRow row = new PlantDashboardMapper.PlantGanttCropRow();
+        row.setCropId(100L);
         row.setCropName("黄瓜");
-        row.setPlotName("B 区");
-        row.setBeginActualdate(null);
-        row.setEndActualdate(null);
-        // 计划 6 月上旬（05=1号）种植，最早采摘日 7-15
-        row.setPlantMonth(6);
-        row.setPlantPeriod("05");
-        row.setEarliestHarvestdate(LocalDate.of(2026, 7, 15));
-        row.setPlantStatus("ongoing");
-        when(dashboardMapper.selectPlantGanttRows(anyString())).thenReturn(List.of(row));
+        row.setStartDate(LocalDate.of(2026, 6, 1));
+        row.setEndDate(null);
+        row.setTotalCount(2);
+        row.setCompletedCount(1);
+        when(dashboardMapper.selectPlantGanttByCrop(anyString())).thenReturn(List.of(row));
         when(dashboardMapper.selectPickGanttByCrop(anyString())).thenReturn(null);
 
         // Act
         List<GanttItemVo> items = service.getGantt();
 
-        // Assert — 推算出 6-1 ~ 7-15，ongoing=50
+        // Assert — endDate 兜底 = startDate，completed=1/total=2 → round(50)=50
         assertThat(items).hasSize(1);
         GanttItemVo item = items.get(0);
         assertThat(item.getType()).isEqualTo("plant");
         assertThat(item.getStartDate()).isEqualTo(LocalDate.of(2026, 6, 1));
-        assertThat(item.getEndDate()).isEqualTo(LocalDate.of(2026, 7, 15));
+        assertThat(item.getEndDate()).isEqualTo(LocalDate.of(2026, 6, 1));
         assertThat(item.getProgress()).isEqualTo(50);
     }
 
     @Test
-    @DisplayName("getGantt 种植段名称为空 → 占位 '未知作物-未知地块'，进度 pending=0")
+    @DisplayName("getGantt 种植段名称为空 → 占位 '未知作物'，total=0 进度=0")
     void getGanttBlankNamePlaceholder() {
-        // Arrange
-        PlantDashboardMapper.PlantGanttRow row = new PlantDashboardMapper.PlantGanttRow();
-        row.setId(101L);
+        // Arrange — cropName 空 + total 0
+        PlantDashboardMapper.PlantGanttCropRow row = new PlantDashboardMapper.PlantGanttCropRow();
+        row.setCropId(101L);
         row.setCropName(null);
-        row.setPlotName(null);
-        row.setBeginActualdate(LocalDate.of(2026, 6, 1));
-        row.setEndActualdate(LocalDate.of(2026, 6, 10));
-        row.setPlantStatus("pending");
-        when(dashboardMapper.selectPlantGanttRows(anyString())).thenReturn(List.of(row));
+        row.setStartDate(LocalDate.of(2026, 6, 1));
+        row.setEndDate(LocalDate.of(2026, 6, 10));
+        row.setTotalCount(0);
+        row.setCompletedCount(0);
+        when(dashboardMapper.selectPlantGanttByCrop(anyString())).thenReturn(List.of(row));
         when(dashboardMapper.selectPickGanttByCrop(anyString())).thenReturn(null);
 
         // Act
@@ -306,7 +301,7 @@ class PlantDashboardServiceImplTest {
 
         // Assert
         assertThat(items).hasSize(1);
-        assertThat(items.get(0).getText()).isEqualTo("未知作物-未知地块");
+        assertThat(items.get(0).getText()).isEqualTo("未知作物");
         assertThat(items.get(0).getProgress()).isZero();
     }
 
