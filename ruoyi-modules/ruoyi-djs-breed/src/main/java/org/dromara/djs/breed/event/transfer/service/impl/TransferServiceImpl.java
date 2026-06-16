@@ -129,7 +129,7 @@ public class TransferServiceImpl implements ITransferService {
         entity.setTransferReason(bo.getTransferReason());
         entity.setRemark(bo.getRemark());
         // 转移人员：优先 EmployeePicker 所选 userId（bo.operator），未选回落登录用户
-        entity.setOperatorId(bo.getOperator() != null ? bo.getOperator() : LoginHelper.getUserId());
+        entity.setOperatorId(bo.getOperator() != null && !bo.getOperator().isBlank() ? Long.parseLong(bo.getOperator()) : LoginHelper.getUserId());
         entity.setDelFlag("0");
         transferMapper.insert(entity);
 

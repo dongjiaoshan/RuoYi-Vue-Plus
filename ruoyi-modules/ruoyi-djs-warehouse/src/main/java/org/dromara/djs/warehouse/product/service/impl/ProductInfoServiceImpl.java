@@ -385,6 +385,8 @@ public class ProductInfoServiceImpl extends DjsBaseServiceImpl<ProductInfoMapper
             .in(hasTypeSet, ProductInfo::getProductType, query.getProductTypes())
             .eq(!hasTypeSet && query.getProductType() != null, ProductInfo::getProductType, query.getProductType())
             .eq(StringUtils.isNotBlank(query.getBelongType()), ProductInfo::getBelongType, query.getBelongType())
+            // belongTypes 集合（其他产品打包入口 {egg, dry_good, other}）落 belong_type IN (...)
+            .in(CollUtil.isNotEmpty(query.getBelongTypes()), ProductInfo::getBelongType, query.getBelongTypes())
             .eq(StringUtils.isNotBlank(query.getBuyClass()), ProductInfo::getBuyClass, query.getBuyClass())
             .eq(query.getProductWorkshop() != null, ProductInfo::getProductWorkshop, query.getProductWorkshop())
             .eq(StringUtils.isNotBlank(query.getStoreLocationId()), ProductInfo::getStoreLocationId, query.getStoreLocationId())

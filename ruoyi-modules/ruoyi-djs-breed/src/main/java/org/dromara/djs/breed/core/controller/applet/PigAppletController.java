@@ -12,6 +12,7 @@ import org.dromara.djs.breed.core.domain.vo.PigIntroDetailVo;
 import org.dromara.djs.breed.core.domain.vo.PigSearchVo;
 import org.dromara.djs.breed.core.service.IPigCoreService;
 import org.dromara.djs.breed.core.service.IPigQueryService;
+import org.dromara.djs.breed.production.service.IProductionCycleConfigService;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -52,6 +53,8 @@ public class PigAppletController {
 
     private final IPigQueryService pigQueryService;
 
+    private final IProductionCycleConfigService cycleConfigService;
+
     /**
      * 耳号关键字搜索（picker 用）。
      *
@@ -70,6 +73,8 @@ public class PigAppletController {
      * @param excludeNullBarn 是否排除无栋舍归属（{@code barn_id} 为 null）的猪只（FIX-BREEDING-001 #23a）。
      *                        {@code true} → 列表口径与 {@code /barn-count} chip 一致；配种选猪传 true，
      *                        其余调用方不传（默认 false）行为不变。
+     * @param minAgeDays    最小日龄过滤（天）：仅返回 {@code 日龄 >= minAgeDays} 的猪只（出栏选猪传出栏
+     *                      配置 {@code slaughter_age_days}，只列到龄肥猪）。{@code null}/≤0 → 不过滤。
      */
     @SaCheckLogin
     @SaCheckPermission("djs:applet:pig:search")
@@ -82,9 +87,27 @@ public class PigAppletController {
         @RequestParam(required = false) String barnCode,
         @RequestParam(required = false, defaultValue = "20") Integer limit,
         @RequestParam(required = false) String dueType,
-        @RequestParam(required = false) Boolean excludeNullBarn
+        @RequestParam(required = false) Boolean excludeNullBarn,
+        @RequestParam(required = false) Integer minAgeDays
     ) {
-        return R.ok(pigCoreService.searchByEarKeyword(earNoKeyword, statusFilter, sexFilter, pigTypeFilter, barnCode, limit, dueType, excludeNullBarn));
+        return R.ok(pigCoreService.searchByEarKeyword(earNoKeyword, statusFilter, sexFilter, pigTypeFilter, barnCode, limit, dueType, excludeNullBarn, minAgeDays));
+    }
+
+    /**
+     * 出栏日龄配置（mp 出栏选猪用）。
+     *
+     * <p>返回出栏配置 {@code slaughter_age_days} 的生效值（custom 优先，无则 default 175）。mp 出栏录入页
+     * onMounted 调本端点拿到日龄阈值后，调 {@code /search?minAgeDays=&pigTypeFilter=fattening}
+     * 只列到龄育肥猪。复用 {@code djs:applet:pig:search} 权限（mp 默认含），不新引 production-cycle 权限。</p>
+     *
+     * @return 出栏日龄阈值（天）
+     */
+    @SaCheckLogin
+    @SaCheckPermission("djs:applet:pig:search")
+    @GetMapping("/slaughter-age")
+    public R<Integer> slaughterAge() {
+        Integer days = cycleConfigService.getValue("slaughter_age_days");
+        return R.ok(days != null ? days : 175);
     }
 
     /**

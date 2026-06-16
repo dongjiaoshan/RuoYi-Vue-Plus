@@ -276,6 +276,8 @@ public class PigBurnRecordServiceImpl
                 .in(BarInfo::getStatus, List.of(BAR_STATUS_PENDING_SINGE, BAR_STATUS_SINGING))
                 .orderByDesc(BarInfo::getMarketingTime)
                 .last("LIMIT 200"));
+        // 已入库产品重量之和（剩余未入库重量计算用）：对 singing 白条批量聚合 product_inhouse，避免 N+1
+        Map<Long, BigDecimal> inboundedMap = loadInboundedWeightMap(bars);
         List<BarPendingVo> list = new ArrayList<>(bars.size());
         for (BarInfo bar : bars) {
             BarPendingVo vo = new BarPendingVo();
@@ -285,9 +287,40 @@ public class PigBurnRecordServiceImpl
             vo.setMarketingTime(bar.getMarketingTime());
             vo.setMarketingWeight(bar.getMarketingWeight());
             vo.setStatus(bar.getStatus());
+            vo.setArriveWeight(bar.getArriveWeight());
+            // pending_singe 尚未入库任何产品 → 0；singing 取聚合值（无则 0）
+            vo.setInboundedWeight(inboundedMap.getOrDefault(bar.getId(), BigDecimal.ZERO));
             list.add(vo);
         }
         return list;
+    }
+
+    /**
+     * 批量聚合 singing 白条已入库产品重量之和（product_inhouse 按 white_bar_id IN + groupBy，避免 N+1）。
+     *
+     * @return white_bar_id → 已入库产品重量之和（pending_singe 白条不参与聚合，调用方默认 0）
+     */
+    private Map<Long, BigDecimal> loadInboundedWeightMap(List<BarInfo> bars) {
+        List<Long> singingBarIds = bars.stream()
+            .filter(b -> BAR_STATUS_SINGING.equals(b.getStatus()))
+            .map(BarInfo::getId)
+            .toList();
+        if (singingBarIds.isEmpty()) {
+            return Map.of();
+        }
+        List<ProductInhouse> inhouses = productInhouseMapper.selectList(
+            new LambdaQueryWrapper<ProductInhouse>()
+                .select(ProductInhouse::getWhiteBarId, ProductInhouse::getProductWeight)
+                .in(ProductInhouse::getWhiteBarId, singingBarIds));
+        Map<Long, BigDecimal> map = new HashMap<>();
+        for (ProductInhouse ih : inhouses) {
+            if (ih.getWhiteBarId() == null) {
+                continue;
+            }
+            BigDecimal w = ih.getProductWeight() == null ? BigDecimal.ZERO : ih.getProductWeight();
+            map.merge(ih.getWhiteBarId(), w, BigDecimal::add);
+        }
+        return map;
     }
 
     @Override

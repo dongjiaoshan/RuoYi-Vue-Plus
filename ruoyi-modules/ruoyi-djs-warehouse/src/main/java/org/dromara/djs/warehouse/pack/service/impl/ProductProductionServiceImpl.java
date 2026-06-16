@@ -563,6 +563,26 @@ public class ProductProductionServiceImpl
     }
 
     @Override
+    public List<ProductInhouse> listSourceForMeat() {
+        // 肉品打包来源 = belong_type='pork' 的活动 inhouse（已领用出库猪肉的过程产品，ear_no = 来源猪只耳号）；
+        // 排除白条/蔬菜，避免混入肉品耳号去重条。
+        List<Long> productIds = productInfoMapper.selectList(
+                new LambdaQueryWrapper<ProductInfo>()
+                    .select(ProductInfo::getId)
+                    .eq(ProductInfo::getBelongType, BELONG_TYPE_PORK))
+            .stream().map(ProductInfo::getId).toList();
+        if (productIds.isEmpty()) {
+            return List.of();
+        }
+        return productInhouseMapper.selectList(
+            new LambdaQueryWrapper<ProductInhouse>()
+                .in(ProductInhouse::getProductId, productIds)
+                .gt(ProductInhouse::getProductWeight, BigDecimal.ZERO)
+                .orderByDesc(ProductInhouse::getId)
+                .last("LIMIT 50"));
+    }
+
+    @Override
     public List<ProductInhouse> listSourceForCelery() {
         return productInhouseMapper.selectList(
             new LambdaQueryWrapper<ProductInhouse>()

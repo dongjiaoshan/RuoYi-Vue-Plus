@@ -7,6 +7,7 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.common.core.exception.ServiceException;
+import org.dromara.common.core.service.OssService;
 import org.dromara.common.core.utils.StringUtils;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
@@ -26,7 +27,10 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
+import java.util.Arrays;
+import java.util.List;
 import java.util.Objects;
+import java.util.stream.Collectors;
 
 /**
  * 淘汰事件 Service 实现（BRD-EVENT-004 ELIMINATE）。
@@ -42,6 +46,7 @@ public class EliminateServiceImpl implements IEliminateService {
     private final PigCullingMapper cullingMapper;
     private final PigMapper pigMapper;
     private final IPigCoreService pigCoreService;
+    private final OssService ossService;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -78,6 +83,7 @@ public class EliminateServiceImpl implements IEliminateService {
         entity.setOssIds(bo.getOssIds());
         entity.setRemark(bo.getRemark());
         entity.setOperatorId(LoginHelper.getUserId());
+        entity.setCullingRecorderId(bo.getCullingRecorderId());
         entity.setDelFlag("0");
         cullingMapper.insert(entity);
 
@@ -106,7 +112,30 @@ public class EliminateServiceImpl implements IEliminateService {
             .lt(endBefore != null, PigCulling::getCullingDate, endBefore)
             .orderByDesc(PigCulling::getCullingDate, PigCulling::getId);
         Page<PigCullingVo> page = cullingMapper.selectVoPage(pageQuery.build(), w);
+        // 列表每行解析淘汰照片 ossIds → 可访问 URL（mp <image> 无法携 token 取鉴权下载端点，故后端预解析）
+        for (PigCullingVo vo : page.getRecords()) {
+            vo.setImageUrls(resolveImageUrls(vo.getOssIds()));
+        }
         return TableDataInfo.build(page);
+    }
+
+    /**
+     * 淘汰照片 ossId（逗号分隔）→ 可访问 URL 列表（无照片返空 list）。
+     * <p>mp {@code <image>} 无法携 Bearer token 取鉴权下载端点，故后端 JOIN sys_oss 预解析；
+     * {@link OssService#selectUrlByIds} 返逗号拼接 URL 串，按 {@code ,} 拆成 list。</p>
+     */
+    private List<String> resolveImageUrls(String ossIds) {
+        if (StringUtils.isBlank(ossIds)) {
+            return List.of();
+        }
+        String urls = ossService.selectUrlByIds(ossIds);
+        if (StringUtils.isBlank(urls)) {
+            return List.of();
+        }
+        return Arrays.stream(urls.split(","))
+            .map(String::trim)
+            .filter(StringUtils::isNotBlank)
+            .collect(Collectors.toList());
     }
 
     private PigCullingVo toVo(PigCulling e) {
@@ -120,7 +149,9 @@ public class EliminateServiceImpl implements IEliminateService {
         v.setCullingWeight(e.getCullingWeight());
         v.setOssIds(e.getOssIds());
         v.setOperatorId(e.getOperatorId());
+        v.setCullingRecorderId(e.getCullingRecorderId());
         v.setRemark(e.getRemark());
+        v.setImageUrls(resolveImageUrls(e.getOssIds()));
         return v;
     }
 }

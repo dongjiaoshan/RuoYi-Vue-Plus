@@ -31,18 +31,25 @@ public interface VegetableHandleMapper extends BaseMapperPlus<VegetableHandle, V
     /**
      * mp 毛菜处理菜品列表：按 crop_id 聚合 4 个重量（采摘 / 饲喂 / 处理后 / 损耗）。
      *
-     * <p>左联 t_plant_crop_info 取菜名 + 缩略图（纯 SQL 跨表，不引 plant 模块依赖）。
+     * <p>仅展示「采摘开始 → 地块处理结束之前」的作物：当某作物所有汇总行都已 {@code handle_status='done'}
+     * （全部地块处理完成）时整条作物从列表消失（HAVING 过滤，至少要有 1 条非 done 才展示）。</p>
+     *
+     * <p>菜名取同模块 {@code t_warehouse_planting_record.crop_name} 冗余快照（与 selectPendingList /
+     * fillPlantingNames 同源）——vegetable_handle.crop_id 与 t_plant_crop_info.id 不在同一注册表、跨表
+     * 关联取不到名；缩略图仍左联 t_plant_crop_info 尽力取（取不到走前端默认图兜底）。
      * 按最近采摘时间倒序，让"刚开工"的菜品排前面。</p>
      */
-    @Select("SELECT vh.crop_id AS cropId, c.crop_name AS cropName, c.image_oss_id AS imageOssId,"
+    @Select("SELECT vh.crop_id AS cropId, MAX(p.crop_name) AS cropName, MAX(c.image_oss_id) AS imageOssId,"
         + "       COALESCE(SUM(vh.picked_weight),0) AS harvestWeight,"
         + "       COALESCE(SUM(vh.feed_weight),0) AS feedWeight,"
         + "       COALESCE(SUM(vh.handled_weight),0) AS handledWeight,"
         + "       COALESCE(SUM(vh.loss_weight),0) AS lossWeight"
         + "  FROM t_warehouse_vegetable_handle vh"
+        + "  LEFT JOIN t_warehouse_planting_record p ON p.id=vh.planting_record_id AND p.del_flag='0'"
         + "  LEFT JOIN t_plant_crop_info c ON c.id=vh.crop_id AND c.del_flag='0'"
         + " WHERE vh.tenant_id='1001' AND vh.del_flag='0'"
-        + " GROUP BY vh.crop_id, c.crop_name, c.image_oss_id"
+        + " GROUP BY vh.crop_id"
+        + " HAVING SUM(CASE WHEN vh.handle_status <> 'done' THEN 1 ELSE 0 END) > 0"
         + " ORDER BY MAX(vh.pick_start_time) DESC")
     List<VegCropVo> selectCropAggList();
 

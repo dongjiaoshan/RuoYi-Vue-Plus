@@ -7,6 +7,7 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.common.core.exception.ServiceException;
+import org.dromara.common.core.service.OssService;
 import org.dromara.common.core.utils.StringUtils;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
@@ -30,7 +31,10 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
+import java.util.Arrays;
+import java.util.List;
 import java.util.Objects;
+import java.util.stream.Collectors;
 
 /**
  * 死亡事件 Service 实现（BRD-EVENT-004 DIE）。
@@ -55,6 +59,7 @@ public class DieServiceImpl implements IDieService {
     private final BarnMapper barnMapper;
     private final PenMapper penMapper;
     private final IPigCoreService pigCoreService;
+    private final OssService ossService;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -96,6 +101,7 @@ public class DieServiceImpl implements IDieService {
         entity.setPenName(resolvePenName(pig.getPenId()));
         entity.setRemark(bo.getRemark());
         entity.setOperatorId(LoginHelper.getUserId());
+        entity.setRecorderId(bo.getRecorderId());
         entity.setDelFlag("0");
         deathMapper.insert(entity);
 
@@ -126,7 +132,28 @@ public class DieServiceImpl implements IDieService {
             .lt(endBefore != null, PigDeath::getDeathDate, endBefore)
             .orderByDesc(PigDeath::getDeathDate, PigDeath::getId);
         Page<PigDeathVo> page = deathMapper.selectVoPage(pageQuery.build(), w);
+        // 死亡照片 ossIds → 可访问 URL 列表（mp <image> 无法携 Bearer token 取鉴权下载端点，故后端预解析）
+        page.getRecords().forEach(v -> v.setImageUrls(resolveImageUrls(v.getOssIds())));
         return TableDataInfo.build(page);
+    }
+
+    /**
+     * 死亡照片 ossId（逗号分隔）→ 可访问 URL 列表（无照片返空 list）。
+     * <p>参照 {@code PigIntroServiceImpl.resolveProofUrls}：{@link OssService#selectUrlByIds}
+     * 返逗号拼接 URL 串，按 {@code ,} 拆成 list 供 mp {@code <image>} 直接渲染。</p>
+     */
+    private List<String> resolveImageUrls(String ossIds) {
+        if (StringUtils.isBlank(ossIds)) {
+            return List.of();
+        }
+        String urls = ossService.selectUrlByIds(ossIds);
+        if (StringUtils.isBlank(urls)) {
+            return List.of();
+        }
+        return Arrays.stream(urls.split(","))
+            .map(String::trim)
+            .filter(StringUtils::isNotBlank)
+            .collect(Collectors.toList());
     }
 
     private String resolveBarnName(Long barnId) {
@@ -157,7 +184,9 @@ public class DieServiceImpl implements IDieService {
         v.setDeathDest(e.getDeathDest());
         v.setDeathWeight(e.getDeathWeight());
         v.setOssIds(e.getOssIds());
+        v.setImageUrls(resolveImageUrls(e.getOssIds()));
         v.setOperatorId(e.getOperatorId());
+        v.setRecorderId(e.getRecorderId());
         v.setBarnName(e.getBarnName());
         v.setPenName(e.getPenName());
         v.setRemark(e.getRemark());

@@ -134,6 +134,15 @@ public class WarehousePackEntryController extends BaseController {
     }
 
     /**
+     * 肉品打包可选来源（belong_type='pork' 的活动 inhouse，ear_no = 来源猪只耳号，admin 肉品打包页「耳号去重选择条」）。
+     */
+    @SaCheckPermission("djs:warehouse:packEntry:dry")
+    @GetMapping("/sourceMeat")
+    public R<List<ProductInhouse>> sourceMeat() {
+        return R.ok(productionService.listSourceForMeat());
+    }
+
+    /**
      * 蔬菜可打包来源列表（plot_id 非空，admin 果蔬打包页选「来源/地块」）。
      */
     @SaCheckPermission("djs:warehouse:packEntry:veg")

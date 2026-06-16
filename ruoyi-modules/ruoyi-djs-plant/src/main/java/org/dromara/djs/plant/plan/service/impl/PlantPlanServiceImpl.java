@@ -857,6 +857,14 @@ public class PlantPlanServiceImpl extends DjsBaseServiceImpl<PlantPlanMapper, Pl
                     .set(PlotInfo::getPlotStatus, 2)
                     .set(PlotInfo::getUpdateBy, updateBy));
         }
+
+        // 派生重算受影响计划主表 plant_status（开工 done=0 时仍落 pending，无害；与 finishPlant 对称）
+        Set<Long> affectedPlanIds = details.stream()
+            .filter(d -> startableSet.contains(d.getId()))
+            .map(PlantDetails::getPlantId).filter(Objects::nonNull).collect(Collectors.toSet());
+        for (Long pid : affectedPlanIds) {
+            baseMapper.recalcPlanStatus(pid);
+        }
         return startableDetailIds.size();
     }
 
@@ -898,6 +906,15 @@ public class PlantPlanServiceImpl extends DjsBaseServiceImpl<PlantPlanMapper, Pl
                 .set(PlantDetails::getPlantStatus, "completed")
                 .set(PlantDetails::getEndActualdate, bo.getEndActualdate())
                 .set(PlantDetails::getUpdateBy, updateBy));
+
+        // 派生重算受影响计划主表 plant_status（任一完成→ongoing / 全部完成→completed）
+        Set<Long> finishableSet = new java.util.HashSet<>(finishableDetailIds);
+        Set<Long> affectedPlanIds = details.stream()
+            .filter(d -> finishableSet.contains(d.getId()))
+            .map(PlantDetails::getPlantId).filter(Objects::nonNull).collect(Collectors.toSet());
+        for (Long pid : affectedPlanIds) {
+            baseMapper.recalcPlanStatus(pid);
+        }
         return finishableDetailIds.size();
     }
 

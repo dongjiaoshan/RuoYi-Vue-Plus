@@ -48,6 +48,14 @@ public class PigBreedingVo implements Serializable {
     private String sowStatus;
     /** 母猪进入当前状态的天数（DATEDIFF(NOW, status_started_at)；记录卡状态天数）。 */
     private Integer statusDays;
+    /** 母猪日龄（DATEDIFF(NOW(), p.birth_date)；记录卡最后一列「日龄」格；缺出生日期 → null）。 */
+    private Integer ageDays;
+    /**
+     * 上一次状态 lifecycle code（该母猪当前状态之前的状态）。
+     * 取 t_farm_status_record 该 pig_id 最新一条的 old_status（前端按 lifecycle 字典翻中文）。
+     * 无状态流水 → null（前端该段不渲染）。
+     */
+    private String previousStatus;
     private String remark;
 
     @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")

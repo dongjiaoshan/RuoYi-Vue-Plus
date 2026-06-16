@@ -53,6 +53,46 @@ public interface PlantPlanMapper extends BaseMapperPlus<PlantPlan, PlantPlanVo> 
     int recalcAggregates(@Param("planId") Long planId);
 
     /**
+     * 派生重算主表 plant_status（FIX-PLT-PLAN-STATUS-derive）。
+     *
+     * <p>口径（Kevin 拍定，按"完成种植"计数判定）：</p>
+     * <ul>
+     *   <li>明细全部完成（done = total）→ 'completed'（已完成）</li>
+     *   <li>任一明细完成（done &gt; 0）→ 'ongoing'（进行中/已开始）</li>
+     *   <li>0 完成（含无明细）→ 'pending'（待开始）</li>
+     * </ul>
+     *
+     * <p>done = 子表 plant_status='completed' 计数；total = 子表有效明细行数。
+     * 仅数"完成"，开工未完成（ongoing 明细但 0 completed）仍落 'pending'。
+     * delayed（延期）此派生不覆盖，保持现状不自动设。</p>
+     *
+     * <p>实现：单 SQL UPDATE plan LEFT JOIN 子查询聚合 details，对齐 recalcAggregates 风格。
+     * details / plan 均过滤 del_flag='0'。</p>
+     *
+     * <p>调用时机：finishPlant / startPlant 末尾，按受影响 planId 去重逐个调。</p>
+     *
+     * @param planId 主表 id
+     * @return 受影响行数（1 或 0）
+     */
+    @Update("UPDATE t_plant_plant_plan p "
+        + "LEFT JOIN ("
+        + "  SELECT plant_id, "
+        + "         COUNT(1) AS total, "
+        + "         SUM(plant_status = 'completed') AS done "
+        + "  FROM t_plant_plant_details "
+        + "  WHERE plant_id = #{planId} AND del_flag = '0' "
+        + "  GROUP BY plant_id"
+        + ") d ON p.id = d.plant_id "
+        + "SET p.plant_status = CASE "
+        + "    WHEN d.total IS NULL OR d.total = 0 THEN 'pending' "
+        + "    WHEN d.done = d.total THEN 'completed' "
+        + "    WHEN d.done > 0 THEN 'ongoing' "
+        + "    ELSE 'pending' END, "
+        + "    p.update_time = NOW() "
+        + "WHERE p.id = #{planId} AND p.del_flag = '0'")
+    int recalcPlanStatus(@Param("planId") Long planId);
+
+    /**
      * 跨模块只读：聚合"进行中"种植计划给需求确认 SummaryBar 用
      * （DJS-FIX-ADMIN-W22-003）。
      *

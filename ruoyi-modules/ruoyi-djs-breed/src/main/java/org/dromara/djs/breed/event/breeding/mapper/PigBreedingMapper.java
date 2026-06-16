@@ -27,8 +27,11 @@ public interface PigBreedingMapper extends BaseMapperPlus<PigBreeding, PigBreedi
      * <p>裸 {@code selectVoPage} 只透传 breeding 本表字段，记录卡缺母猪实时状态/状态天数。
      * 本方法 LEFT JOIN {@code t_farm_pig_info p} → {@code p.current_status AS sowStatus}、
      * {@code DATEDIFF(NOW(), p.status_started_at) AS statusDays}（母猪当前 lifecycle + 状态天数，
-     * 实时派生而非配种时快照）。配种人员姓名由 VO 上 {@code @Translation(USER_ID_TO_NICKNAME)} 按
-     * {@code operatorId} 序列化时翻译，本 SQL 不 JOIN sys_user。</p>
+     * 实时派生而非配种时快照），并 {@code DATEDIFF(NOW(), p.birth_date) AS ageDays}（母猪日龄，记录卡最后一列）。
+     * 「上一次状态」{@code previousStatus} = 该母猪状态流水 {@code t_farm_status_record} 最新一条的
+     * {@code old_status}（LEFT JOIN 子查询取 MAX(id) 那条）：即母猪进入当前状态之前所处的状态 code，
+     * 前端按 lifecycle 字典翻中文；无状态流水 → null。配种人员姓名由 VO 上
+     * {@code @Translation(USER_ID_TO_NICKNAME)} 按 {@code operatorId} 序列化时翻译，本 SQL 不 JOIN sys_user。</p>
      *
      * <p>SQL 手写完整 {@code tenant_id = '1001'}（V1 单租户口径），用
      * {@code @InterceptorIgnore(tenantLine = "true")} 关掉 MP 租户拦截器对这条手写 LEFT JOIN 的二次注入——
@@ -50,12 +53,22 @@ public interface PigBreedingMapper extends BaseMapperPlus<PigBreeding, PigBreedi
         SELECT b.id, b.pig_id, b.ear_no, b.breeding_date, b.breeding_type, b.boar_ear_no,
                b.semen_code, b.parity, b.operator_id, b.barn_name, b.pen_name, b.remark, b.create_time,
                p.current_status AS sow_status,
-               DATEDIFF(NOW(), p.status_started_at) AS status_days
+               DATEDIFF(NOW(), p.status_started_at) AS status_days,
+               DATEDIFF(NOW(), p.birth_date) AS age_days,
+               sr.old_status AS previous_status
           FROM t_farm_pig_breeding b
           LEFT JOIN t_farm_pig_info p
             ON p.id = b.pig_id
            AND p.del_flag = '0'
            AND p.tenant_id = '1001'
+          LEFT JOIN t_farm_status_record sr
+            ON sr.id = (
+                SELECT MAX(s2.id)
+                  FROM t_farm_status_record s2
+                 WHERE s2.pig_id = b.pig_id
+                   AND s2.del_flag = '0'
+                   AND s2.tenant_id = '1001'
+            )
          WHERE b.del_flag = '0'
            AND b.tenant_id = '1001'
            <if test="pigId != null">AND b.pig_id = #{pigId}</if>

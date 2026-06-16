@@ -31,6 +31,10 @@ public class EliminateBo implements Serializable {
     @NotNull(message = "eliminate.date.required")
     private LocalDateTime cullingDate;
 
+    /** 淘汰记录人 sys_user.user_id（mp EmployeePicker 所选；必填）。 */
+    @NotNull(message = "eliminate.recorder.required")
+    private Long cullingRecorderId;
+
     /** 淘汰原因（字典 eliminate_reason）。 */
     @NotBlank(message = "eliminate.reason.required")
     @Size(max = 32, message = "eliminate.reason.size")
@@ -41,6 +45,8 @@ public class EliminateBo implements Serializable {
     @Size(max = 32, message = "eliminate.dest.size")
     private String cullingDest;
 
+    /** 淘汰体重 kg（row140：所有数据必填）。 */
+    @NotNull(message = "eliminate.weight.required")
     private BigDecimal cullingWeight;
 
     /** 淘汰照片 OSS IDs（强制至少 1 张）。 */
@@ -48,6 +54,8 @@ public class EliminateBo implements Serializable {
     @Size(max = 1024, message = "eliminate.photo.size")
     private String ossIds;
 
+    /** 备注（row140：所有数据必填）。 */
+    @NotBlank(message = "eliminate.remark.required")
     @Size(max = 500, message = "eliminate.remark.size")
     private String remark;
 }

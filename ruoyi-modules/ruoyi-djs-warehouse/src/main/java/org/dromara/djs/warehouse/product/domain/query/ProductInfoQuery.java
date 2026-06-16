@@ -46,6 +46,13 @@ public class ProductInfoQuery extends BaseEntity {
     private String belongType;
 
     /**
+     * 归属类型集合（多入口预过滤用）：其他产品打包入口显示 {egg, dry_good, other}。
+     *
+     * <p>非空时叠加在 {@link #belongType} 单值之上，落 {@code belong_type IN (...)}。</p>
+     */
+    private List<String> belongTypes;
+
+    /**
      * 字典 djs_buy_class：外购产品类。
      */
     private String buyClass;

@@ -355,26 +355,33 @@ public interface PlantDashboardMapper {
     /**
      * 采摘甘特按作物聚合行（GROUP BY crop_id）。
      *
-     * <p>每个作物一条采摘整段：开始 = {@code MIN(begin_harvestdate)}、结束 = {@code MAX(end_harvestdate)}；
-     * 进度 = 该作物已采摘完成明细占比（{@code harvest_status='completed'} 的明细数 / 该作物有采摘日期的
-     * 明细数 × 100）。只统计至少有一段采摘日期（{@code begin_harvestdate} 非 null）的作物。</p>
+     * <p>每个作物一条采摘整段，开始/结束用「实际采摘日期 → 计划采摘窗口兜底」：</p>
+     * <ul>
+     *   <li>开始 = {@code MIN(COALESCE(begin_harvestdate, earliest_harvestdate))}——尚未实际开始采摘
+     *       （{@code begin_harvestdate} 为 null）时用计划最早采摘日（{@code earliest_harvestdate}）兜底。</li>
+     *   <li>结束 = {@code MAX(COALESCE(end_harvestdate, last_harvestdate))}——尚未实际结束采摘
+     *       （{@code end_harvestdate} 为 null）时用计划最晚采摘日（{@code last_harvestdate}）兜底。</li>
+     *   <li>进度 = 该作物已采摘完成明细占比（{@code harvest_status='completed'} 的明细数 / 该作物明细数 × 100）。</li>
+     * </ul>
+     * <p>过滤口径放宽为 {@code COALESCE(begin_harvestdate, earliest_harvestdate) IS NOT NULL}：实际采摘未
+     * 开始（{@code begin_harvestdate} 全空）的作物也按计划窗口出条，避免甘特空白。</p>
      *
      * @param tenantId 租户
      * @return 采摘甘特聚合行（按作物，最多 100 行），无则空列表
      */
     @Select("SELECT d.crop_id                                                 AS cropId, "
         + "       MAX(c.crop_name)                                          AS cropName, "
-        + "       MIN(d.begin_harvestdate)                                  AS beginHarvestdate, "
-        + "       MAX(d.end_harvestdate)                                    AS endHarvestdate, "
+        + "       MIN(COALESCE(d.begin_harvestdate, d.earliest_harvestdate)) AS beginHarvestdate, "
+        + "       MAX(COALESCE(d.end_harvestdate, d.last_harvestdate))       AS endHarvestdate, "
         + "       COUNT(*)                                                  AS totalCount, "
         + "       SUM(CASE WHEN d.harvest_status = 'completed' THEN 1 ELSE 0 END) AS completedCount "
         + "  FROM t_plant_plant_details d "
         + "  LEFT JOIN t_plant_crop_info c ON c.id = d.crop_id AND c.del_flag = '0' "
         + " WHERE d.tenant_id = #{tenantId} "
         + "   AND d.del_flag = '0' "
-        + "   AND d.begin_harvestdate IS NOT NULL "
+        + "   AND COALESCE(d.begin_harvestdate, d.earliest_harvestdate) IS NOT NULL "
         + " GROUP BY d.crop_id "
-        + " ORDER BY MIN(d.begin_harvestdate) "
+        + " ORDER BY MIN(COALESCE(d.begin_harvestdate, d.earliest_harvestdate)) "
         + " LIMIT 100")
     List<PickGanttCropRow> selectPickGanttByCrop(@Param("tenantId") String tenantId);
 
@@ -430,13 +437,13 @@ public interface PlantDashboardMapper {
         /** 作物名称。 */
         private String cropName;
 
-        /** 该作物采摘整段开始（MIN begin_harvestdate）。 */
+        /** 该作物采摘整段开始（MIN(COALESCE(实际开始采摘, 计划最早采摘日))）。 */
         private java.time.LocalDate beginHarvestdate;
 
-        /** 该作物采摘整段结束（MAX end_harvestdate，可空）。 */
+        /** 该作物采摘整段结束（MAX(COALESCE(实际结束采摘, 计划最晚采摘日))，可空）。 */
         private java.time.LocalDate endHarvestdate;
 
-        /** 该作物有采摘日期的明细总数。 */
+        /** 该作物采摘甘特明细总数。 */
         private Integer totalCount;
 
         /** 该作物已采摘完成（harvest_status='completed'）明细数。 */

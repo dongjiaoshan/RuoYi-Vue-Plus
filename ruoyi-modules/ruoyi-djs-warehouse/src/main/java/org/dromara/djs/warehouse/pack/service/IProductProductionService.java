@@ -97,6 +97,13 @@ public interface IProductProductionService {
     List<ProductInhouse> listSourceForDry();
 
     /**
+     * 肉品打包可选来源（{@code belong_type='pork'} 的活动 inhouse，ear_no = 来源猪只耳号）。
+     *
+     * <p>仅返猪肉过程产品，排除白条/蔬菜，供肉品打包页「耳号去重选择条」用。</p>
+     */
+    List<ProductInhouse> listSourceForMeat();
+
+    /**
      * mp 端 - 芹菜可打包来源（蔬菜类 inhouse）。
      */
     List<ProductInhouse> listSourceForCelery();

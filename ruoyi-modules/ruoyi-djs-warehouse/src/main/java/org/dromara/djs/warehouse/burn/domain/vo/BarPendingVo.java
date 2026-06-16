@@ -59,4 +59,15 @@ public class BarPendingVo implements Serializable {
      */
     private String status;
 
+    /**
+     * 到场重量 kg（已称重的 singing 白条回填，前端「头皮肉重量」原型字段）。
+     */
+    private BigDecimal arriveWeight;
+
+    /**
+     * 已入库产品重量之和 kg（product_inhouse 按 white_bar_id 聚合；
+     * 前端「剩余未入库重量 = 头皮肉重量 - 已入库产品重量之和」计算用）。
+     */
+    private BigDecimal inboundedWeight;
+
 }

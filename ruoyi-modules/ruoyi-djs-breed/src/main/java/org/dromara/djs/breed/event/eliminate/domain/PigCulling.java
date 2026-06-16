@@ -56,6 +56,9 @@ public class PigCulling extends TenantEntity {
     /** 操作人。 */
     private Long operatorId;
 
+    /** 淘汰记录人 sys_user.user_id（mp EmployeePicker 所选）。 */
+    private Long cullingRecorderId;
+
     /** 软删标记。 */
     @TableLogic
     private String delFlag;

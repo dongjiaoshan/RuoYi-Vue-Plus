@@ -122,6 +122,10 @@ public interface IPigCoreService {
      * @param excludeNullBarn 是否排除无栋舍归属（{@code barn_id} 为 null）的猪只（FIX-BREEDING-001 #23a）。
      *                        {@code true} 时与 {@link #countByBarn} 口径一致（列表数 = 各栋舍 chip 之和）；
      *                        配种选猪场景传 true，其余调用方传 {@code null}/false 不变（向后兼容）。
+     * @param minAgeDays   最小日龄过滤（天）：仅返回 {@code 日龄 >= minAgeDays} 的猪只（出栏选猪用，
+     *                     按出栏配置 {@code slaughter_age_days} 限到龄肥猪）。日龄 = NOW − birth_date
+     *                     （缺 birth_date 时回落 introduce_date）；两者均空的猪不满足该过滤、被剔除。
+     *                     {@code null}/≤0 → 不做日龄过滤（向后兼容所有现有调用方）。
      * @return 轻量 PigSearchVo 列表（含 ageDays/parity/lastEventDays）
      */
     List<PigSearchVo> searchByEarKeyword(String earNoKeyword,
@@ -131,7 +135,8 @@ public interface IPigCoreService {
                                          String barnCode,
                                          Integer limit,
                                          String dueType,
-                                         Boolean excludeNullBarn);
+                                         Boolean excludeNullBarn,
+                                         Integer minAgeDays);
 
     /**
      * 栋舍 × 头数聚合（BRD-FIX-MP-PIGSELECT-001）——mp 端 PigSelectPanel 顶部「栋舍 chip」数据源。

@@ -1,6 +1,7 @@
 package org.dromara.djs.breed.event.eliminate.service.impl;
 
 import org.dromara.common.core.exception.ServiceException;
+import org.dromara.common.core.service.OssService;
 import org.dromara.djs.breed.core.domain.Pig;
 import org.dromara.djs.breed.core.domain.bo.PigEventBo;
 import org.dromara.djs.breed.core.enums.PigLifecycle;
@@ -50,12 +51,14 @@ class EliminateServiceImplTest {
     private PigMapper pigMapper;
     @Mock
     private IPigCoreService pigCoreService;
+    @Mock
+    private OssService ossService;
 
     private EliminateServiceImpl service;
 
     @BeforeEach
     void setup() {
-        service = new EliminateServiceImpl(cullingMapper, pigMapper, pigCoreService);
+        service = new EliminateServiceImpl(cullingMapper, pigMapper, pigCoreService, ossService);
     }
 
     private Pig mkPig(Long id, PigLifecycle status) {

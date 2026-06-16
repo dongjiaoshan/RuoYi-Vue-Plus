@@ -244,6 +244,33 @@ public class PigCoreServiceImpl implements IPigCoreService {
         if (!"fattening".equals(pig.getPigType())) {
             return;
         }
+        // 防御：fattening 猪 current_status 为 null（旧 import / 非 createPig 路径数据异常）→ 视为需初始化，
+        // 直接执行「(null) → HB」的状态转移（不走 parseLifecycle，避免 pig.state.invalid 抛错），
+        // 写 status_record（old_status=null）+ 更新 pig，与正常分支同事务。
+        if (StringUtils.isBlank(pig.getCurrentStatus())) {
+            LocalDateTime now = LocalDateTime.now();
+            PigStatusRecord record = new PigStatusRecord();
+            record.setPigId(pig.getId());
+            record.setEarNo(pig.getEarNo());
+            record.setOldStatus(null);
+            record.setNewStatus(PigLifecycle.HB.name());
+            record.setEventType(PigStatusEvent.INTRO.name());
+            record.setChangeTime(now);
+            statusRecordMapper.insert(record);
+
+            pig.setCurrentStatus(PigLifecycle.HB.name());
+            pig.setStatusStartedAt(now);
+            int affectedNull = pigMapper.updateById(pig);
+            if (affectedNull == 0) {
+                throw new ServiceException(I18nMessages.t("pig.update.optimistic_lock_conflict", pig.getId()));
+            }
+
+            eventPublisher.publishEvent(new PigStateChangedEvent(this, record, pig, null, PigLifecycle.HB));
+
+            log.warn("[FIX-INTRO-NULL-STATUS] internalIntroToReserve pigId={} earNo={} current_status was null, initialized to HB",
+                pig.getId(), pig.getEarNo());
+            return;
+        }
         PigLifecycle from = parseLifecycle(pig.getCurrentStatus(), pig.getId());
         if (from == PigLifecycle.HB || from.isTerminal()) {
             return;
@@ -509,8 +536,12 @@ public class PigCoreServiceImpl implements IPigCoreService {
                                                 String barnCode,
                                                 Integer limit,
                                                 String dueType,
-                                                Boolean excludeNullBarn) {
+                                                Boolean excludeNullBarn,
+                                                Integer minAgeDays) {
         int effectiveLimit = clampLimit(limit);
+        // 出栏选猪：仅返回到龄肥猪（日龄 >= slaughter_age_days）。日龄 = NOW − birth_date（缺则 introduce_date）；
+        // 两者均空 → DATEDIFF 为 NULL，比较结果非真 → 自动剔除（无生日的猪不算到龄）。minAgeDays ≤0/null 不过滤。
+        boolean applyMinAge = minAgeDays != null && minAgeDays > 0;
         // FIX-BREEDING-001 #23a：配种选猪场景传 excludeNullBarn=true，排除无栋舍归属猪只，
         // 与 countByBarn（barn-count chip）口径对齐（列表数 = 各栋舍 chip 之和）。默认 false 不变。
         boolean dropNullBarn = Boolean.TRUE.equals(excludeNullBarn);
@@ -535,6 +566,9 @@ public class PigCoreServiceImpl implements IPigCoreService {
             : Collections.emptyList();
 
         LambdaQueryWrapper<Pig> w = new LambdaQueryWrapper<Pig>()
+            // 排除 current_status 为 null 的数据异常猪（旧 import / 非 createPig 路径写入），
+            // 这些猪无 lifecycle，选中后任何事件 parseLifecycle 都会抛 pig.state.invalid → 不进任何 picker 候选
+            .isNotNull(Pig::getCurrentStatus)
             // 默认排除 END 猪只——给事件录入 picker 用（配种 / 转栏等 END 不能再触发的事件）；
             // 但 statusFilter 显式声明要 END（如 WMS-PIG-001 燎毛工序）时放行
             .ne(!callerWantsEnd, Pig::getCurrentStatus, PigLifecycle.END.name())
@@ -545,6 +579,9 @@ public class PigCoreServiceImpl implements IPigCoreService {
             .eq(barnIdFilter != null, Pig::getBarnId, barnIdFilter)
             // #23a：opt-in 排除无栋舍归属猪只，与 countByBarn 的 .isNotNull(barn_id) 口径一致
             .isNotNull(dropNullBarn, Pig::getBarnId)
+            // 出栏选猪：日龄 >= minAgeDays（到龄肥猪）。{0} 占位 + apply 防注入；
+            // COALESCE(birth_date, introduce_date) 与 calcAgeDays 同口径；无生日（结果 NULL）则比较非真自动剔除。
+            .apply(applyMinAge, "DATEDIFF(NOW(), COALESCE(birth_date, introduce_date)) >= {0}", minAgeDays)
             .orderByDesc(Pig::getId)
             .last("LIMIT " + effectiveLimit);
 
@@ -579,6 +616,9 @@ public class PigCoreServiceImpl implements IPigCoreService {
         // row92 #1：分娩选猪（dueType=FARROW）时 enrich 最近配种日期，给 mp 分娩录入概况卡「配种日期」格用；
         // 其他 picker 场景不下发（保持 VO 轻量）。
         boolean enrichMatingDate = "FARROW".equalsIgnoreCase(dueType);
+        // 「临产 / 到断奶期」badge 阈值（dueDate 距今 > N 天即标 due）：分娩 5 天 / 断奶 3 天。
+        // 口径 = 预产期/到断奶期 - 当前日期 > N 天的母猪打标签（row121/124：还有 >N 天到期的提前进入提醒池）。
+        int dueWindowDays = "WEANING".equalsIgnoreCase(dueType) ? 3 : 5;
         List<PigSearchVo> result = new ArrayList<>(pigs.size());
         for (Pig p : pigs) {
             PigSearchVo vo = new PigSearchVo();
@@ -599,9 +639,14 @@ public class PigCoreServiceImpl implements IPigCoreService {
             // BRD-FIX-MP-PIGSELECT-001：卡片量化字段。缺基准日期 → 该字段 null，mp 卡片该格不渲染
             vo.setAgeDays(calcAgeDays(p, today));
             vo.setParity(p.getParity());
-            vo.setLastEventDays(calcDaysSince(p.getStatusStartedAt(), now));
-            if (enrichMatingDate) {
+            // FARROW 选猪卡：状态右侧天数显示「配种天数」（today - lastMatingDate），更贴近养殖「配了多少天」直觉；
+            // 其余场景仍显「距上次事件天数」（today - statusStartedAt）。无配种日期时回落 statusStartedAt。
+            if (enrichMatingDate && p.getLastMatingDate() != null) {
+                vo.setLastEventDays(calcDaysSince(p.getLastMatingDate().atStartOfDay(), now));
                 vo.setMatingDate(p.getLastMatingDate());
+            }
+            else {
+                vo.setLastEventDays(calcDaysSince(p.getStatusStartedAt(), now));
             }
             if (p.getBarnId() != null) {
                 Barn barn = barnMap.get(p.getBarnId());
@@ -618,11 +663,11 @@ public class PigCoreServiceImpl implements IPigCoreService {
                 }
             }
             // 到期软提示：dueDate（预产期/到断奶期）+ due 标记；无基准日期 → 留 null（mp 该格不渲染）
-            // 临产/临断奶阈值 = 距 dueDate ≤ 5 天即标 due（含已到期）；D-FIX-14 G3 固定 5 天。
+            // 临产/临断奶阈值 = dueDate - today > dueWindowDays 天即标 due（row121/124 测试口径）：分娩 5 天 / 断奶 3 天。
             LocalDate dd = dueDateMap.get(p.getId());
             if (dd != null) {
                 vo.setDueDate(dd);
-                vo.setDue(!dd.isAfter(today.plusDays(5)));
+                vo.setDue(dd.isAfter(today.plusDays(dueWindowDays)));
             }
             result.add(vo);
         }

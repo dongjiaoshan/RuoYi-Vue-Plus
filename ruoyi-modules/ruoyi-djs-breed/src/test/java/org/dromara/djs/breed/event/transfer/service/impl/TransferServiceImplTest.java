@@ -205,7 +205,7 @@ class TransferServiceImplTest {
         when(barnMapper.selectById(2L)).thenReturn(mkBarn(2L, "妊娠舍-A", "pregnant"));
 
         TransferBo bo = mkBo(407L, 2L, null);
-        bo.setOperator(8888L);
+        bo.setOperator("8888");
         service.recordTransfer(bo);
 
         ArgumentCaptor<PigTransfer> t = ArgumentCaptor.forClass(PigTransfer.class);

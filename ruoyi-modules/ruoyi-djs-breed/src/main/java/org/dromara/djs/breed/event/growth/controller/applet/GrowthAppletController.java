@@ -7,11 +7,14 @@ import org.dromara.common.core.domain.R;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.breed.core.domain.vo.PigSearchVo;
+import org.dromara.djs.breed.event.growth.domain.bo.GrowthBo;
 import org.dromara.djs.breed.event.growth.domain.query.GrowthQuery;
 import org.dromara.djs.breed.event.growth.domain.vo.PigGrowthVo;
 import org.dromara.djs.breed.event.growth.service.IPigGrowthService;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -72,5 +75,20 @@ public class GrowthAppletController {
     @GetMapping("/pending")
     public R<List<PigSearchVo>> pending(@RequestParam(required = false) String earNoKeyword) {
         return R.ok(growthService.listGrowthTodo(earNoKeyword));
+    }
+
+    /**
+     * mp 端录入生长记录（提交体测，不触发状态机）。
+     *
+     * <p>独立 applet 权限 {@code djs:applet:breed:growth:add}，与 admin 端
+     * {@code djs:breed:event:growth:add} 分离——mp 角色只授前者（菜单 seed 见
+     * {@code V202607021100__FIX-BRD-GROWTH-APPLET-POST-001.sql}）。复用同一 service
+     * {@link IPigGrowthService#addGrowthRecord} INSERT t_farm_pig_growth。</p>
+     */
+    @SaCheckLogin
+    @SaCheckPermission("djs:applet:breed:growth:add")
+    @PostMapping
+    public R<PigGrowthVo> add(@Validated @RequestBody GrowthBo bo) {
+        return R.ok(growthService.addGrowthRecord(bo));
     }
 }

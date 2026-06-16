@@ -59,8 +59,11 @@ public class PigDeath extends TenantEntity {
     /** 多角度照片 OSS IDs（逗号分隔；强制至少 1 张，prompt §1）。 */
     private String ossIds;
 
-    /** 操作人。 */
+    /** 操作人（登录态自动写入）。 */
     private Long operatorId;
+
+    /** 死亡记录人员（EmployeePicker 选中的 sys_user.user_id）。 */
+    private Long recorderId;
 
     /** 栋舍名称冗余。 */
     private String barnName;
