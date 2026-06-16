@@ -11,6 +11,7 @@ import org.dromara.djs.breed.med.domain.bo.MedUsageBo;
 import org.dromara.djs.breed.med.domain.vo.MedUsageVo;
 import org.dromara.djs.breed.med.mapper.MedBatchMapper;
 import org.dromara.djs.breed.med.mapper.MedUsageMapper;
+import org.dromara.djs.common.medicine.api.MedicineStockProvider;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
@@ -31,6 +32,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -42,6 +44,10 @@ import static org.mockito.Mockito.when;
  * <p>覆盖：use happy path 扣减 / 库存不足拒绝 / return 归还 / loss 扣减 /
  * 药品与批次归属不一致拒绝 / 批次不存在拒绝 / today-stat 聚合 / softDelete 不回滚库存。</p>
  *
+ * <p>ADR-0012：库存真值在仓库 location_stock，use/loss 走
+ * {@link MedicineStockProvider#deduct}、return 走 {@link MedicineStockProvider#add}；
+ * 批次 quantity 退化为入库快照不再随领用扣减。库存不足由 provider 抛 ServiceException。</p>
+ *
  * @author djs
  * @since BRD-MED-002
  */
@@ -52,17 +58,21 @@ import static org.mockito.Mockito.when;
 @DisplayName("MedUsageServiceImpl 单元测试")
 class MedUsageServiceImplTest {
 
+    private static final Long MEDICINE_ID = 40001L;
+
     @Mock
     private MedUsageMapper medUsageMapper;
     @Mock
     private MedBatchMapper medBatchMapper;
+    @Mock
+    private MedicineStockProvider medicineStockProvider;
 
     private TestableMedUsageServiceImpl service;
 
     static class TestableMedUsageServiceImpl extends MedUsageServiceImpl {
         // enrich 用的 medicine/pig/pen mapper 本单测不触发列表 enrich 路径，传 null 即可
-        TestableMedUsageServiceImpl(MedUsageMapper m, MedBatchMapper b) {
-            super(m, b, null, null, null);
+        TestableMedUsageServiceImpl(MedUsageMapper m, MedBatchMapper b, MedicineStockProvider sp) {
+            super(m, b, null, null, null, sp);
         }
 
         @Override
@@ -86,13 +96,13 @@ class MedUsageServiceImplTest {
 
     @BeforeEach
     void setup() {
-        service = new TestableMedUsageServiceImpl(medUsageMapper, medBatchMapper);
+        service = new TestableMedUsageServiceImpl(medUsageMapper, medBatchMapper, medicineStockProvider);
     }
 
     private MedBatch existingBatch(BigDecimal remaining) {
         MedBatch b = new MedBatch();
         b.setId(50001L);
-        b.setMedicineId(40001L);
+        b.setMedicineId(MEDICINE_ID);
         b.setBatchNo("B20260501");
         b.setQuantity(remaining);
         b.setDelFlag("0");
@@ -102,7 +112,7 @@ class MedUsageServiceImplTest {
     private MedUsageBo sampleBo(String type, String qty) {
         MedUsageBo bo = new MedUsageBo();
         bo.setBatchId(50001L);
-        bo.setMedicineId(40001L);
+        bo.setMedicineId(MEDICINE_ID);
         bo.setUsageType(type);
         bo.setUsageQty(new BigDecimal(qty));
         bo.setUseDate(LocalDate.of(2026, 5, 27));
@@ -111,18 +121,19 @@ class MedUsageServiceImplTest {
     }
 
     @Test
-    @DisplayName("insertByBo[use]: happy path → decrementQuantity 调一次 + INSERT 调一次")
+    @DisplayName("insertByBo[use]: happy path → provider.deduct 调一次 + INSERT 调一次")
     void testInsertUse_HappyPath() {
         when(medBatchMapper.selectById(50001L)).thenReturn(existingBatch(new BigDecimal("100.000")));
-        when(medBatchMapper.decrementQuantity(eq(50001L), any(BigDecimal.class))).thenReturn(1);
         when(medUsageMapper.insert(any(MedUsage.class))).thenReturn(1);
 
         int rows = service.insertByBo(sampleBo("use", "5.000"));
 
         assertThat(rows).isEqualTo(1);
+        // ADR-0012：扣仓库库存（medicineId 取 batch.getMedicineId()，operatorId 单测无登录上下文为 null）
         ArgumentCaptor<BigDecimal> qtyCaptor = ArgumentCaptor.forClass(BigDecimal.class);
-        verify(medBatchMapper, times(1)).decrementQuantity(eq(50001L), qtyCaptor.capture());
+        verify(medicineStockProvider, times(1)).deduct(eq(MEDICINE_ID), qtyCaptor.capture(), any());
         assertThat(qtyCaptor.getValue()).isEqualByComparingTo("5.000");
+        verify(medicineStockProvider, never()).add(any(), any(), any());
 
         ArgumentCaptor<MedUsage> captor = ArgumentCaptor.forClass(MedUsage.class);
         verify(medUsageMapper, times(1)).insert(captor.capture());
@@ -131,44 +142,46 @@ class MedUsageServiceImplTest {
     }
 
     @Test
-    @DisplayName("insertByBo[use]: 库存不足 → 抛 ServiceException，不 INSERT 台账")
+    @DisplayName("insertByBo[use]: 库存不足 → provider.deduct 抛 ServiceException，不 INSERT 台账")
     void testInsertUse_InsufficientStock() {
         when(medBatchMapper.selectById(50001L)).thenReturn(existingBatch(new BigDecimal("3.000")));
-        when(medBatchMapper.decrementQuantity(eq(50001L), any(BigDecimal.class))).thenReturn(0);
+        // ADR-0012：库存不足由 provider.deduct 抛业务异常（@Transactional 自然回滚）
+        doThrow(new ServiceException("药品库存不足"))
+            .when(medicineStockProvider).deduct(eq(MEDICINE_ID), any(BigDecimal.class), any());
 
         assertThatThrownBy(() -> service.insertByBo(sampleBo("use", "10.000")))
             .isInstanceOf(ServiceException.class)
-            .hasMessageContaining("批次库存不足");
+            .hasMessageContaining("库存不足");
 
         verify(medUsageMapper, never()).insert(any(MedUsage.class));
     }
 
     @Test
-    @DisplayName("insertByBo[loss]: 走 decrementQuantity（与 use 一致），库存不足同样拒绝")
+    @DisplayName("insertByBo[loss]: 走 provider.deduct（与 use 一致），不调 add")
     void testInsertLoss_DeductSamePath() {
         when(medBatchMapper.selectById(50001L)).thenReturn(existingBatch(new BigDecimal("100.000")));
-        when(medBatchMapper.decrementQuantity(eq(50001L), any(BigDecimal.class))).thenReturn(1);
         when(medUsageMapper.insert(any(MedUsage.class))).thenReturn(1);
 
         int rows = service.insertByBo(sampleBo("loss", "2.500"));
 
         assertThat(rows).isEqualTo(1);
-        verify(medBatchMapper, times(1)).decrementQuantity(eq(50001L), any(BigDecimal.class));
-        verify(medBatchMapper, never()).incrementQuantity(any(), any());
+        verify(medicineStockProvider, times(1)).deduct(eq(MEDICINE_ID), any(BigDecimal.class), any());
+        verify(medicineStockProvider, never()).add(any(), any(), any());
     }
 
     @Test
-    @DisplayName("insertByBo[return]: 走 incrementQuantity 归还库存")
+    @DisplayName("insertByBo[return]: 走 provider.add 归还仓库库存")
     void testInsertReturn_Increment() {
         when(medBatchMapper.selectById(50001L)).thenReturn(existingBatch(new BigDecimal("50.000")));
-        when(medBatchMapper.incrementQuantity(eq(50001L), any(BigDecimal.class))).thenReturn(1);
         when(medUsageMapper.insert(any(MedUsage.class))).thenReturn(1);
 
         int rows = service.insertByBo(sampleBo("return", "1.500"));
 
         assertThat(rows).isEqualTo(1);
-        verify(medBatchMapper, times(1)).incrementQuantity(eq(50001L), any(BigDecimal.class));
-        verify(medBatchMapper, never()).decrementQuantity(any(), any());
+        ArgumentCaptor<BigDecimal> qtyCaptor = ArgumentCaptor.forClass(BigDecimal.class);
+        verify(medicineStockProvider, times(1)).add(eq(MEDICINE_ID), qtyCaptor.capture(), any());
+        assertThat(qtyCaptor.getValue()).isEqualByComparingTo("1.500");
+        verify(medicineStockProvider, never()).deduct(any(), any(), any());
     }
 
     @Test
@@ -180,7 +193,8 @@ class MedUsageServiceImplTest {
             .isInstanceOf(ServiceException.class)
             .hasMessageContaining("批次不存在或已删除");
 
-        verify(medBatchMapper, never()).decrementQuantity(any(), any());
+        verify(medicineStockProvider, never()).deduct(any(), any(), any());
+        verify(medicineStockProvider, never()).add(any(), any(), any());
         verify(medUsageMapper, never()).insert(any(MedUsage.class));
     }
 
@@ -195,7 +209,7 @@ class MedUsageServiceImplTest {
             .isInstanceOf(ServiceException.class)
             .hasMessageContaining("药品 ID 与批次归属不一致");
 
-        verify(medBatchMapper, never()).decrementQuantity(any(), any());
+        verify(medicineStockProvider, never()).deduct(any(), any(), any());
     }
 
     @Test
@@ -232,7 +246,7 @@ class MedUsageServiceImplTest {
     }
 
     @Test
-    @DisplayName("deleteWithValidByIds: 软删走基类 → 不调用 incrementQuantity 回滚库存")
+    @DisplayName("deleteWithValidByIds: 软删走基类 → 不调用 provider.add 回滚库存")
     void testSoftDelete_NoStockRollback() {
         when(medUsageMapper.update(any(), any())).thenReturn(1);
 
@@ -240,7 +254,7 @@ class MedUsageServiceImplTest {
 
         assertThat(rows).isEqualTo(1);
         // 关键断言：软删不触发归还
-        verify(medBatchMapper, never()).incrementQuantity(any(), any());
+        verify(medicineStockProvider, never()).add(any(), any(), any());
     }
 
     @Test

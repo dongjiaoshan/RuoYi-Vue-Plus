@@ -3,6 +3,7 @@ package org.dromara.djs.warehouse.burn.service;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.warehouse.burn.domain.bo.PigBurnRecordBo;
+import org.dromara.djs.warehouse.burn.domain.bo.PigBurnWeighBo;
 import org.dromara.djs.warehouse.burn.domain.query.PigBurnRecordQuery;
 import org.dromara.djs.warehouse.burn.domain.vo.BarPendingVo;
 import org.dromara.djs.warehouse.burn.domain.vo.BurnProductTypeVo;
@@ -37,6 +38,18 @@ public interface IPigBurnRecordService {
      * @return 燎毛记录主键 id
      */
     Long submitBurnRecord(PigBurnRecordBo bo);
+
+    /**
+     * mp 端燎毛「称重」落库（pending_singe → singing 推进，解决「称重只做本地态不落库」）。
+     *
+     * <p>{@code @Transactional} 内校验 bar 在 {@code pending_singe}/{@code singing} 态 +
+     * 到场重 ≤ 出栏重 → 复用 {@code updateStatusToSinging}（乐观锁推进 + 回填 in_time/in_method）
+     * + 回填 {@code arrive_weight}。乐观锁 affected==0 抛 ServiceException。</p>
+     *
+     * @param bo 入参（白条 ID / 到场重量 / 称重人）
+     * @return true 推进成功
+     */
+    boolean weighBurn(PigBurnWeighBo bo);
 
     /**
      * mp 端燎毛「处理完成」（FIX-WMS-MP-BURN-001 客户 6/11 新需求）。

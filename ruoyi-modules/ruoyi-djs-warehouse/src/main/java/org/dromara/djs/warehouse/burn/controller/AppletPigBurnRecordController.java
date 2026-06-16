@@ -10,6 +10,7 @@ import org.dromara.common.satoken.utils.LoginHelper;
 import org.dromara.common.web.core.BaseController;
 import org.dromara.djs.warehouse.burn.domain.bo.PigBurnFinishBo;
 import org.dromara.djs.warehouse.burn.domain.bo.PigBurnRecordBo;
+import org.dromara.djs.warehouse.burn.domain.bo.PigBurnWeighBo;
 import org.dromara.djs.warehouse.burn.domain.query.PigBurnRecordQuery;
 import org.dromara.djs.warehouse.burn.domain.vo.BarPendingVo;
 import org.dromara.djs.warehouse.burn.domain.vo.BurnProductTypeVo;
@@ -78,6 +79,18 @@ public class AppletPigBurnRecordController extends BaseController {
     @GetMapping("/product/{productId}/inboundLocations")
     public R<List<LocationPickerVo>> productInboundLocations(@PathVariable Long productId) {
         return R.ok(service.queryProductInboundLocations(productId));
+    }
+
+    /**
+     * mp 燎毛「称重」落库（pending_singe → singing 推进 + 回填 arrive_weight）。
+     *
+     * <p>解决现状「mp 称重只做本地态不落库」：校验 bar 在待燎毛/燎毛中态 + 到场重 ≤ 出栏重 →
+     * 推 bar 到 {@code singing}（燎毛中），回填 {@code arrive_weight}。</p>
+     */
+    @SaCheckLogin
+    @PostMapping("/weigh")
+    public R<Void> weigh(@Validated @RequestBody PigBurnWeighBo bo) {
+        return service.weighBurn(bo) ? R.ok() : R.fail("白条状态不符，无法称重");
     }
 
     /**

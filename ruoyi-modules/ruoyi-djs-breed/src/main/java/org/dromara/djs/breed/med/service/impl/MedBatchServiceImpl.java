@@ -8,6 +8,7 @@ import org.dromara.common.core.utils.MapstructUtils;
 import org.dromara.common.core.utils.StringUtils;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
+import org.dromara.common.satoken.utils.LoginHelper;
 import org.dromara.djs.breed.med.domain.MedBatch;
 import org.dromara.djs.breed.med.domain.Medicine;
 import org.dromara.djs.breed.med.domain.bo.MedBatchBo;
@@ -17,7 +18,9 @@ import org.dromara.djs.breed.med.mapper.MedBatchMapper;
 import org.dromara.djs.breed.med.mapper.MedicineMapper;
 import org.dromara.djs.breed.med.service.IMedBatchService;
 import org.dromara.djs.common.base.DjsBaseServiceImpl;
+import org.dromara.djs.common.medicine.api.MedicineStockProvider;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.Collection;
 import java.util.List;
@@ -39,10 +42,13 @@ import java.util.stream.Collectors;
 public class MedBatchServiceImpl extends DjsBaseServiceImpl<MedBatchMapper, MedBatch> implements IMedBatchService {
 
     private final MedicineMapper medicineMapper;
+    private final MedicineStockProvider medicineStockProvider;
 
-    public MedBatchServiceImpl(MedBatchMapper baseMapper, MedicineMapper medicineMapper) {
+    public MedBatchServiceImpl(MedBatchMapper baseMapper, MedicineMapper medicineMapper,
+                               MedicineStockProvider medicineStockProvider) {
         super(baseMapper);
         this.medicineMapper = medicineMapper;
+        this.medicineStockProvider = medicineStockProvider;
     }
 
     @Override
@@ -90,12 +96,19 @@ public class MedBatchServiceImpl extends DjsBaseServiceImpl<MedBatchMapper, MedB
     }
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public int insertByBo(MedBatchBo bo) {
         MedBatch entity = toEntity(bo);
         if (entity == null) {
             throw new ServiceException("药品批次入参转换失败");
         }
-        return baseMapper.insert(entity);
+        int rows = baseMapper.insert(entity);
+        // ADR-0012：采购入库同步把入库量增到仓库库存（batch 行 quantity 仅作入库快照）
+        if (entity.getMedicineId() != null && entity.getQuantity() != null
+            && entity.getQuantity().signum() > 0) {
+            medicineStockProvider.add(entity.getMedicineId(), entity.getQuantity(), LoginHelper.getUserId());
+        }
+        return rows;
     }
 
     @Override
@@ -113,6 +126,8 @@ public class MedBatchServiceImpl extends DjsBaseServiceImpl<MedBatchMapper, MedB
         }
         // medicine_id 不允许通过编辑端点修改（批次归属固定，要换药品请新建批次）
         entity.setMedicineId(exists.getMedicineId());
+        // ADR-0012：编辑修正 quantity 暂不联动仓库库存（入库修正是边角场景，本次不处理；
+        // 要纠正仓库库存走仓库盘点。batch.quantity 仅为入库快照，不再被领用/治疗扣减）
         return baseMapper.updateById(entity);
     }
 

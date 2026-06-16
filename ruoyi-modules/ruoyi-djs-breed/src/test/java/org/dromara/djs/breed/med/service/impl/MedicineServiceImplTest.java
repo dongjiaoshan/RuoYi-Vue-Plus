@@ -11,6 +11,7 @@ import org.dromara.djs.breed.med.domain.bo.MedicineBo;
 import org.dromara.djs.breed.med.domain.query.MedicineQuery;
 import org.dromara.djs.breed.med.domain.vo.MedicineVo;
 import org.dromara.djs.breed.med.mapper.MedicineMapper;
+import org.dromara.djs.common.medicine.api.MedicineStockProvider;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
@@ -27,8 +28,11 @@ import java.time.LocalDate;
 import java.util.Collections;
 import java.util.List;
 
+import java.util.Map;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.anyCollection;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.times;
@@ -54,6 +58,8 @@ class MedicineServiceImplTest {
 
     @Mock
     private MedicineMapper medicineMapper;
+    @Mock
+    private MedicineStockProvider medicineStockProvider;
 
     private TestableMedicineServiceImpl service;
 
@@ -61,8 +67,8 @@ class MedicineServiceImplTest {
      * 子类覆盖 toEntity 钩子，避开 SpringUtils.getBean(Converter.class)。
      */
     static class TestableMedicineServiceImpl extends MedicineServiceImpl {
-        TestableMedicineServiceImpl(MedicineMapper mapper) {
-            super(mapper);
+        TestableMedicineServiceImpl(MedicineMapper mapper, MedicineStockProvider sp) {
+            super(mapper, sp);
         }
 
         @Override
@@ -93,7 +99,7 @@ class MedicineServiceImplTest {
 
     @BeforeEach
     void setup() {
-        service = new TestableMedicineServiceImpl(medicineMapper);
+        service = new TestableMedicineServiceImpl(medicineMapper, medicineStockProvider);
     }
 
     private MedicineBo sampleBo() {
@@ -141,7 +147,7 @@ class MedicineServiceImplTest {
     }
 
     @Test
-    @DisplayName("queryPageList: 走 mapper.selectVoPage 返 TableDataInfo")
+    @DisplayName("queryPageList: 走 mapper.selectVoPage + provider.getStocks 回填 currentStock（ADR-0012）")
     void testQueryPageList() {
         MedicineQuery query = new MedicineQuery();
         query.setMedicineType("vaccine");
@@ -154,12 +160,40 @@ class MedicineServiceImplTest {
         mockPage.setRecords(List.of(vo));
         mockPage.setTotal(1);
         when(medicineMapper.selectVoPage(any(Page.class), any(Wrapper.class))).thenReturn(mockPage);
+        // ADR-0012：currentStock 由仓库 location_stock 聚合回填，不再取主数据字段
+        when(medicineStockProvider.getStocks(anyCollection()))
+            .thenReturn(Map.of(40001L, new BigDecimal("88.500")));
 
         TableDataInfo<MedicineVo> result = service.queryPageList(query, pageQuery);
 
         assertThat(result.getTotal()).isEqualTo(1);
         assertThat(result.getRows()).hasSize(1);
         assertThat(result.getRows().get(0).getMedicineCode()).isEqualTo("MED-001");
+        // 关键：currentStock 被仓库库存回填
+        assertThat(result.getRows().get(0).getCurrentStock()).isEqualByComparingTo("88.500");
+        verify(medicineStockProvider, times(1)).getStocks(anyCollection());
+    }
+
+    @Test
+    @DisplayName("queryPageList: 仓库无该药品库存行 → getStocks 空 Map → currentStock 缺省 0")
+    void testQueryPageList_NoStock_DefaultZero() {
+        MedicineQuery query = new MedicineQuery();
+        PageQuery pageQuery = new PageQuery(1, 10);
+
+        MedicineVo vo = new MedicineVo();
+        vo.setId(40002L);
+        vo.setMedicineCode("MED-002");
+        Page<MedicineVo> mockPage = new Page<>(1, 10);
+        mockPage.setRecords(List.of(vo));
+        mockPage.setTotal(1);
+        when(medicineMapper.selectVoPage(any(Page.class), any(Wrapper.class))).thenReturn(mockPage);
+        // 空结果用 emptyMap → getOrDefault 回落 ZERO
+        when(medicineStockProvider.getStocks(anyCollection())).thenReturn(Collections.emptyMap());
+
+        TableDataInfo<MedicineVo> result = service.queryPageList(query, pageQuery);
+
+        assertThat(result.getRows()).hasSize(1);
+        assertThat(result.getRows().get(0).getCurrentStock()).isEqualByComparingTo("0");
     }
 
     @Test

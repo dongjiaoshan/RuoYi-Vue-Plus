@@ -142,16 +142,14 @@ public class AppletPickServiceImpl implements IAppletPickService {
 
         // 5. INSERT 一行 t_plant_farm_records（farm_type='harvest_activity'，可追溯）
         //    复用 IFarmRecordsService.submitGrow（内含 record_no 生成 + plot_type/crop_name 冗余）。
-        //    farm_by NOT NULL：取采摘明细指派班组 harvest_by；未指派则硬拦（采收需归属班组才能追溯）。
-        if (detail.getHarvestBy() == null) {
-            throw new ServiceException("该地块未指派采摘班组，无法录入采收（请在采摘计划中指派）");
-        }
+        //    farm_by 允许 NULL（FIX-PLT-MP-PICK-PERSON-001）：有指派班组就用 harvest_by；
+        //    个人采摘（未指派班组）置 NULL，归属落 operator_user_id（采摘人员）。
         GrowRecordBo grow = new GrowRecordBo();
         grow.setFarmType(HARVEST_FARM_TYPE);
         grow.setPlantId(detail.getPlantId());
         grow.setPlotId(detail.getPlotId());
         grow.setCropId(detail.getCropId());
-        grow.setFarmBy(detail.getHarvestBy());
+        grow.setFarmBy(detail.getHarvestBy());          // 未指派则为 NULL，submitGrow 直写空
         grow.setOperatorUserId(bo.getPickerUserId());   // FIX-PLT-MP-PICK-001：采摘人员落 operator_user_id
         grow.setFarmDate(bo.getHarvestDate());
         grow.setProofOssIds(joinOssIds(bo.getProofOssIds()));
@@ -215,17 +213,19 @@ public class AppletPickServiceImpl implements IAppletPickService {
     }
 
     @Override
-    public List<PickCropTaskVo> listCropTasks(Long zoneId) {
-        // 当月采摘任务 = is_pick=2（正常采收，隐藏游客采摘活动）且采摘窗口与当月有交集的明细，
+    public List<PickCropTaskVo> listCropTasks(Long zoneId, Integer isPick) {
+        // 当月采摘任务 = 按 isPick 过滤（默认 is_pick=2 正常采收，隐藏游客采摘活动；
+        // 「采摘活动管理」页传 isPick=1 只看游客采摘活动）且采摘窗口与当月有交集的明细，
         // 应用层按片区过滤 + 作物聚合（V1 数据量小）。
         // 窗口与当月有交集判定：earliest_harvestdate ≤ 当月最后一天 AND last_harvestdate ≥ 当月第一天
         //   （即采摘窗口 [earliest, last] 与 [firstDay, lastDay] 区间相交），跨月在采的作物也展示。
+        int pickFlag = isPick == null ? IS_PICK_NORMAL : isPick;
         LocalDate today = LocalDate.now();
         LocalDate firstDay = today.withDayOfMonth(1);
         LocalDate lastDay = today.with(java.time.temporal.TemporalAdjusters.lastDayOfMonth());
         List<PlantDetails> all = detailsMapper.selectList(
             new LambdaQueryWrapper<PlantDetails>()
-                .eq(PlantDetails::getIsPick, IS_PICK_NORMAL)
+                .eq(PlantDetails::getIsPick, pickFlag)
                 .le(PlantDetails::getEarliestHarvestdate, lastDay)
                 .ge(PlantDetails::getLastHarvestdate, firstDay));
         if (CollUtil.isEmpty(all)) {
@@ -310,20 +310,22 @@ public class AppletPickServiceImpl implements IAppletPickService {
     }
 
     @Override
-    public List<PickTaskVo> listCropPlots(Long planId, Long cropId) {
+    public List<PickTaskVo> listCropPlots(Long planId, Long cropId, Integer isPick) {
         if (cropId == null) {
             throw new ServiceException("作物 id 必填");
         }
-        // 与采摘任务列表卡（listCropTasks）同口径取 is_pick=2（普通采收），点卡进详情看到的是同一批地块。
+        // 与采摘任务列表卡（listCropTasks）同口径按 isPick 过滤（默认 is_pick=2 普通采收；
+        // 「采摘活动管理」页传 isPick=1 游客采摘活动），点卡进详情看到的是同一批地块。
         // 同样只展示采摘窗口与「当月」相交的地块：earliest_harvestdate ≤ 当月最后一天
         //   AND last_harvestdate ≥ 当月第一天（窗口 [earliest, last] 与 [firstDay, lastDay] 相交）。
         //   否则会把次月 / 跨月地块也带进详情，与列表卡口径不一致（FIX row4）。
+        int pickFlag = isPick == null ? IS_PICK_NORMAL : isPick;
         LocalDate today = LocalDate.now();
         LocalDate firstDay = today.withDayOfMonth(1);
         LocalDate lastDay = today.with(java.time.temporal.TemporalAdjusters.lastDayOfMonth());
         List<PlantDetails> entities = detailsMapper.selectList(
             new LambdaQueryWrapper<PlantDetails>()
-                .eq(PlantDetails::getIsPick, IS_PICK_NORMAL)
+                .eq(PlantDetails::getIsPick, pickFlag)
                 .eq(PlantDetails::getCropId, cropId)
                 .eq(planId != null, PlantDetails::getPlantId, planId)
                 .le(PlantDetails::getEarliestHarvestdate, lastDay)

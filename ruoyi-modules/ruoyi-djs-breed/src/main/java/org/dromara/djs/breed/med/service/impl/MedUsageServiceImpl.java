@@ -8,6 +8,7 @@ import org.dromara.common.core.utils.MapstructUtils;
 import org.dromara.common.core.utils.StringUtils;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
+import org.dromara.common.satoken.utils.LoginHelper;
 import org.dromara.djs.breed.core.domain.Pig;
 import org.dromara.djs.breed.core.mapper.PigMapper;
 import org.dromara.djs.breed.farm.domain.Pen;
@@ -23,6 +24,7 @@ import org.dromara.djs.breed.med.mapper.MedUsageMapper;
 import org.dromara.djs.breed.med.mapper.MedicineMapper;
 import org.dromara.djs.breed.med.service.IMedUsageService;
 import org.dromara.djs.common.base.DjsBaseServiceImpl;
+import org.dromara.djs.common.medicine.api.MedicineStockProvider;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -43,10 +45,10 @@ import java.util.stream.Collectors;
  *
  * <p>核心逻辑：</p>
  * <ul>
- *   <li><b>原子扣减</b>：use / loss 走 {@link MedBatchMapper#decrementQuantity}，
- *       WHERE quantity >= qty 保证不超领；返 0 即库存不足或 race 失败，统一抛
- *       {@code medicine.batch.insufficient}。</li>
- *   <li><b>原子归还</b>：return 走 {@link MedBatchMapper#incrementQuantity}。</li>
+ *   <li><b>库存真值在仓库</b>（ADR-0012 药品归仓库库位统一）：use / loss 走
+ *       {@link MedicineStockProvider#deduct}（落仓库 location_stock，库存不足抛业务异常自然回滚），
+ *       return 走 {@link MedicineStockProvider#add}。批次行 {@code t_breed_medicine_batch.quantity}
+ *       退化为入库快照（不再随领用扣减），但 batchId 仍写台账行作溯源。</li>
  *   <li><b>幂等性</b>：本方法不做幂等去重，依赖 Controller 上的
  *       {@code @RepeatSubmit} 防同一用户短时重复 POST。</li>
  *   <li><b>软删不回滚库存</b>：已领用历史不可逆，对账不允许凭空消失（约束 #5）。</li>
@@ -67,14 +69,17 @@ public class MedUsageServiceImpl extends DjsBaseServiceImpl<MedUsageMapper, MedU
     private final MedicineMapper medicineMapper;
     private final PigMapper pigMapper;
     private final PenMapper penMapper;
+    private final MedicineStockProvider medicineStockProvider;
 
     public MedUsageServiceImpl(MedUsageMapper baseMapper, MedBatchMapper medBatchMapper,
-                               MedicineMapper medicineMapper, PigMapper pigMapper, PenMapper penMapper) {
+                               MedicineMapper medicineMapper, PigMapper pigMapper, PenMapper penMapper,
+                               MedicineStockProvider medicineStockProvider) {
         super(baseMapper);
         this.medBatchMapper = medBatchMapper;
         this.medicineMapper = medicineMapper;
         this.pigMapper = pigMapper;
         this.penMapper = penMapper;
+        this.medicineStockProvider = medicineStockProvider;
     }
 
     @Override
@@ -157,24 +162,16 @@ public class MedUsageServiceImpl extends DjsBaseServiceImpl<MedUsageMapper, MedU
             throw new ServiceException("药品 ID 与批次归属不一致：batch.medicineId=" + batch.getMedicineId());
         }
 
-        // 2. 按 usageType 扣减或归还（wrapper-only update，原子）
+        // 2. 按 usageType 扣减或归还仓库库存（ADR-0012：库存真值在仓库 location_stock，
+        //    medicineId 取已校验归属的 batch.getMedicineId()；batchId 仍写台账行作溯源但不扣 batch.quantity）
         String type = StringUtils.isBlank(bo.getUsageType()) ? TYPE_USE : bo.getUsageType();
         BigDecimal qty = bo.getUsageQty();
+        Long medicineId = batch.getMedicineId();
+        Long operatorId = LoginHelper.getUserId();
         switch (type) {
-            case TYPE_USE, TYPE_LOSS -> {
-                int affected = medBatchMapper.decrementQuantity(bo.getBatchId(), qty);
-                if (affected == 0) {
-                    // 库存不足 / race condition 双失败模式（两者前端无须区分）
-                    throw new ServiceException("批次库存不足：batchId=" + bo.getBatchId()
-                        + "，当前剩余=" + batch.getQuantity() + "，申请=" + qty);
-                }
-            }
-            case TYPE_RETURN -> {
-                int affected = medBatchMapper.incrementQuantity(bo.getBatchId(), qty);
-                if (affected == 0) {
-                    throw new ServiceException("批次归还失败：batchId=" + bo.getBatchId());
-                }
-            }
+            // deduct 库存不足自抛 ServiceException → @Transactional 自然回滚（不 catch 吞）
+            case TYPE_USE, TYPE_LOSS -> medicineStockProvider.deduct(medicineId, qty, operatorId);
+            case TYPE_RETURN -> medicineStockProvider.add(medicineId, qty, operatorId);
             default -> throw new ServiceException("无效的领用类型：" + type);
         }
 

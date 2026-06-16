@@ -27,6 +27,7 @@ import org.dromara.djs.breed.med.record.domain.vo.UsableBatchVo;
 import org.dromara.djs.breed.med.record.mapper.MedRecordMapper;
 import org.dromara.djs.breed.med.record.service.IMedRecordService;
 import org.dromara.djs.common.base.DjsBaseServiceImpl;
+import org.dromara.djs.common.medicine.api.MedicineStockProvider;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -50,9 +51,9 @@ import java.util.stream.Collectors;
  *       {@link MedRecordMapper#selectUsableBatchesByPig} 返回集合中（按 operatorId 限定
  *       当前 mp 用户领过），否则 {@code medicine.batch.expired_for_use}。admin 端
  *       不限 operator，允许跨用户用药。</li>
- *   <li><b>批量原子扣减</b>：addBatch 触发的 quantity 扣减 = dosage × N，
- *       走 {@link MedBatchMapper#decrementQuantity}（WHERE quantity ≥ qty 防超扣）；
- *       失败抛 {@code medicine.batch.insufficient}。</li>
+ *   <li><b>批量扣减仓库库存</b>（ADR-0012）：addBatch 触发的扣减 = dosage × N，
+ *       走 {@link MedicineStockProvider#deduct}（落仓库 location_stock，库存不足自抛业务异常）；
+ *       批次 {@code quantity} 退化为入库快照不再扣。</li>
  *   <li><b>事务包</b>：扣减库存 + INSERT master + N detail 单事务，
  *       任一步失败全回滚。N ≤ 200（DDL 已限定，BO {@code @Size(max=200)}）。</li>
  *   <li><b>operator_id 必填</b>：ADR-0007，所有 INSERT 取 LoginHelper.getUserId
@@ -73,15 +74,18 @@ public class MedRecordServiceImpl extends DjsBaseServiceImpl<MedRecordMapper, Me
     private final MedBatchMapper medBatchMapper;
     private final MedicineMapper medicineMapper;
     private final PigMapper pigMapper;
+    private final MedicineStockProvider medicineStockProvider;
 
     public MedRecordServiceImpl(MedRecordMapper baseMapper,
                                 MedBatchMapper medBatchMapper,
                                 MedicineMapper medicineMapper,
-                                PigMapper pigMapper) {
+                                PigMapper pigMapper,
+                                MedicineStockProvider medicineStockProvider) {
         super(baseMapper);
         this.medBatchMapper = medBatchMapper;
         this.medicineMapper = medicineMapper;
         this.pigMapper = pigMapper;
+        this.medicineStockProvider = medicineStockProvider;
     }
 
     // ---------------------------------------------------------------
@@ -329,17 +333,14 @@ public class MedRecordServiceImpl extends DjsBaseServiceImpl<MedRecordMapper, Me
     }
 
     /**
-     * 原子扣减批次 quantity，失败抛 {@code medicine.batch.insufficient}。
+     * 扣减仓库药品库存（ADR-0012：库存真值在仓库 location_stock，按 batch.medicineId 扣减；
+     * 批次 quantity 退化为入库快照不再扣）。库存不足由 provider 抛 ServiceException → 事务回滚。
      */
     private void decrementBatch(MedBatch batch, BigDecimal qty) {
         if (qty == null || qty.signum() <= 0) {
             throw new ServiceException("用药剂量必须大于 0");
         }
-        int affected = medBatchMapper.decrementQuantity(batch.getId(), qty);
-        if (affected == 0) {
-            throw new ServiceException("批次库存不足：batchId=" + batch.getId()
-                + "，剩余=" + batch.getQuantity() + "，申请=" + qty);
-        }
+        medicineStockProvider.deduct(batch.getMedicineId(), qty, LoginHelper.getUserId());
     }
 
     /**

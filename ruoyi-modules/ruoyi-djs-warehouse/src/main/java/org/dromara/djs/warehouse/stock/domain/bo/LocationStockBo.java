@@ -56,6 +56,11 @@ public class LocationStockBo extends BaseEntity {
     private Long plotId;
 
     /**
+     * 药品维（FK → t_breed_medicine_info.id；与 productId/earNo/plotId 四选一）。
+     */
+    private Long medicineId;
+
+    /**
      * 产品名称（冗余字段，必填）。
      */
     @NotBlank(message = "{stock.product_name.required}")

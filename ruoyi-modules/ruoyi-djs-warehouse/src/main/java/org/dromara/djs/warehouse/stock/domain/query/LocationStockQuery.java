@@ -40,6 +40,11 @@ public class LocationStockQuery extends BaseEntity {
     private Long plotId;
 
     /**
+     * 药品 ID（精确）。
+     */
+    private Long medicineId;
+
+    /**
      * 地块编号（模糊；service 先解析匹配的 plotId 集合再过滤库存）。
      */
     private String blockNo;

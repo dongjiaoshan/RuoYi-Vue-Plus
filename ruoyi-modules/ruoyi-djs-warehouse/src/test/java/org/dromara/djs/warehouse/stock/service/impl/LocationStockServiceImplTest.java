@@ -50,8 +50,8 @@ import static org.mockito.Mockito.when;
  * <ul>
  *   <li>queryPageList happy path：JOIN 回填 locationName 不为 null</li>
  *   <li>insertByBo happy：operatorId 走 LoginHelper.getUserId() 注入（ADR-0007）</li>
- *   <li>insertByBo error：三选一规则违反（productId + earNo 同时填）→ 抛 stock.three_way.exclusive</li>
- *   <li>insertByBo error：三选一全空 → 抛 stock.three_way.exclusive</li>
+ *   <li>insertByBo error：四选一规则违反（productId + earNo 同时填）→ 抛 stock.dimension.exclusive</li>
+ *   <li>insertByBo error：四选一全空 → 抛 stock.dimension.exclusive</li>
  * </ul>
  *
  * @author djs
@@ -215,28 +215,28 @@ class LocationStockServiceImplTest {
     }
 
     @Test
-    @DisplayName("insertByBo: error → productId + earNo 同时填，抛 stock.three_way.exclusive")
-    void testInsertByBo_ThreeWay_BothProductIdAndEarNo() {
+    @DisplayName("insertByBo: error → productId + earNo 同时填，抛 stock.dimension.exclusive")
+    void testInsertByBo_Dimension_BothProductIdAndEarNo() {
         LocationStockBo bo = sampleBo();
         bo.setEarNo("01A12605001");  // productId 已有 → 同时填 → 违规
 
         assertThatThrownBy(() -> service.insertByBo(bo))
             .isInstanceOf(ServiceException.class)
-            .hasMessageContaining("stock.three_way.exclusive");
+            .hasMessageContaining("stock.dimension.exclusive");
 
         verify(stockMapper, times(0)).insert(any(LocationStock.class));
     }
 
     @Test
-    @DisplayName("insertByBo: error → productId / earNo / plotId 全空，抛 stock.three_way.exclusive")
-    void testInsertByBo_ThreeWay_AllNull() {
+    @DisplayName("insertByBo: error → productId / earNo / plotId / medicineId 全空，抛 stock.dimension.exclusive")
+    void testInsertByBo_Dimension_AllNull() {
         LocationStockBo bo = sampleBo();
         bo.setProductId(null);
-        // earNo / plotId 默认就是 null
+        // earNo / plotId / medicineId 默认就是 null
 
         assertThatThrownBy(() -> service.insertByBo(bo))
             .isInstanceOf(ServiceException.class)
-            .hasMessageContaining("stock.three_way.exclusive");
+            .hasMessageContaining("stock.dimension.exclusive");
     }
 
 }

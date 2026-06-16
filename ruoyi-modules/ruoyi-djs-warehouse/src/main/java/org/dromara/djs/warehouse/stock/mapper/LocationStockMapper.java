@@ -11,8 +11,10 @@ import org.dromara.djs.warehouse.stock.domain.LocationStock;
 import org.dromara.djs.warehouse.stock.domain.vo.LocationStockVo;
 
 import java.math.BigDecimal;
+import java.util.Collection;
 import java.util.Date;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 库存明细 Mapper（WMS-MD-001 / WMS-PIG-001 扩展）。
@@ -123,6 +125,85 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
                              @Param("productId") Long productId,
                              @Param("addQty") BigDecimal addQty,
                              @Param("userId") Long userId);
+
+    /**
+     * 按 {@code medicine_id} + {@code location_id} 原子扣减药品库存（ADR-0012 药品归仓库库位统一，
+     * FIX-MED-MODEL-004/005 领用 / 损耗 / 治疗用药）。
+     *
+     * <p>SQL 在 {@code WHERE} 加 {@code product_stock >= deductQty} —— MySQL 行锁 + 数量校验同步发生，
+     * 并发提交（同 medicine+location 两次领用）只有一次 affectedRows > 0。
+     * {@code tenant_id} 由 MP 多租户拦截器在 final SQL 阶段注入，应用层无需显式 WHERE。</p>
+     *
+     * @return affectedRows（0 = 库存不足 / medicine/location 不匹配 / 已软删）
+     */
+    @Update("UPDATE t_warehouse_location_stock "
+        + "   SET product_stock = product_stock - #{deductQty},"
+        + "       update_by = #{userId},"
+        + "       update_time = NOW() "
+        + " WHERE location_id = #{locationId} "
+        + "   AND medicine_id = #{medicineId} "
+        + "   AND product_stock >= #{deductQty} "
+        + "   AND del_flag = '0'")
+    int deductByMedicineLocation(@Param("locationId") Long locationId,
+                                 @Param("medicineId") Long medicineId,
+                                 @Param("deductQty") BigDecimal deductQty,
+                                 @Param("userId") Long userId);
+
+    /**
+     * 按 {@code medicine_id} + {@code location_id} 增加药品库存（ADR-0012；退回 / 采购入库）。
+     *
+     * <p>增回库存无需校验上限；库存行不存在（affectedRows=0）由 provider 兜底新建一行。
+     * {@code tenant_id} 由 MP 拦截器注入，{@code update_time / update_by} 同步刷新。</p>
+     *
+     * @return affectedRows（0 = location/medicine 无库存行，provider 兜底 insert）
+     */
+    @Update("UPDATE t_warehouse_location_stock "
+        + "   SET product_stock = product_stock + #{addQty},"
+        + "       update_by = #{userId},"
+        + "       update_time = NOW() "
+        + " WHERE location_id = #{locationId} "
+        + "   AND medicine_id = #{medicineId} "
+        + "   AND del_flag = '0'")
+    int addByMedicineLocation(@Param("locationId") Long locationId,
+                              @Param("medicineId") Long medicineId,
+                              @Param("addQty") BigDecimal addQty,
+                              @Param("userId") Long userId);
+
+    /**
+     * 取默认药品库位 id（ADR-0012；{@code location_type='medicine'}）。
+     *
+     * <p>V1 单药品库位（L0012 / 药品库），按 id 升序取第一个作默认落位。无配置返 null
+     * → provider 抛「未配置药品库位」。租户单租户显式 {@code tenant_id='1001'}。</p>
+     *
+     * @return 默认药品库位 location_id，或 null（未配置）
+     */
+    @Select("SELECT id FROM t_warehouse_location_info "
+        + " WHERE location_type = 'medicine' AND del_flag = '0' AND tenant_id = '1001' "
+        + " ORDER BY id LIMIT 1")
+    Long selectDefaultMedicineLocationId();
+
+    /**
+     * 批量取药品当前库存合计（ADR-0012；供领用列表回显）。
+     *
+     * <p>只统计 {@code is_end=0}（未用完）且未软删的行；按 {@code medicine_id} 聚合 SUM(product_stock)。
+     * 调用方对空集合直接跳过（不进 SQL）。返 {@code List<Map>}，key = {@code medicine_id} / {@code stock}。</p>
+     *
+     * @param ids 药品 id 集合（非空）
+     * @return 每个 medicine_id 的库存合计行（无库存行的 medicine 不出）
+     */
+    @Select("""
+        <script>
+        SELECT medicine_id AS medicine_id, SUM(product_stock) AS stock
+          FROM t_warehouse_location_stock
+         WHERE medicine_id IN
+         <foreach collection="ids" item="id" open="(" separator="," close=")">#{id}</foreach>
+           AND is_end = 0
+           AND del_flag = '0'
+           AND tenant_id = '1001'
+         GROUP BY medicine_id
+        </script>
+        """)
+    List<Map<String, Object>> selectMedicineStocks(@Param("ids") Collection<Long> ids);
 
     /**
      * 按 {@code product_info.belong_type} 聚合活跃库存总量（DJS-FIX-ADMIN-W22-003 SummaryBar）。

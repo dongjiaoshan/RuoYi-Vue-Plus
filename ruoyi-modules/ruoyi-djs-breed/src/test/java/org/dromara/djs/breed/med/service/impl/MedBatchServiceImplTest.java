@@ -11,6 +11,7 @@ import org.dromara.djs.breed.med.domain.bo.MedBatchBo;
 import org.dromara.djs.breed.med.domain.query.MedBatchQuery;
 import org.dromara.djs.breed.med.domain.vo.MedBatchVo;
 import org.dromara.djs.breed.med.mapper.MedBatchMapper;
+import org.dromara.djs.common.medicine.api.MedicineStockProvider;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
@@ -29,6 +30,7 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.times;
@@ -50,15 +52,19 @@ import static org.mockito.Mockito.when;
 @DisplayName("MedBatchServiceImpl 单元测试")
 class MedBatchServiceImplTest {
 
+    private static final Long MEDICINE_ID = 40001L;
+
     @Mock
     private MedBatchMapper medBatchMapper;
+    @Mock
+    private MedicineStockProvider medicineStockProvider;
 
     private TestableMedBatchServiceImpl service;
 
     static class TestableMedBatchServiceImpl extends MedBatchServiceImpl {
         // enrich 用的 medicineMapper 本单测 mock VO 不带 medicineId（enrich 早返回），传 null 即可
-        TestableMedBatchServiceImpl(MedBatchMapper mapper) {
-            super(mapper, null);
+        TestableMedBatchServiceImpl(MedBatchMapper mapper, MedicineStockProvider sp) {
+            super(mapper, null, sp);
         }
 
         @Override
@@ -81,7 +87,7 @@ class MedBatchServiceImplTest {
 
     @BeforeEach
     void setup() {
-        service = new TestableMedBatchServiceImpl(medBatchMapper);
+        service = new TestableMedBatchServiceImpl(medBatchMapper, medicineStockProvider);
     }
 
     private MedBatchBo sampleBo() {
@@ -96,7 +102,7 @@ class MedBatchServiceImplTest {
     }
 
     @Test
-    @DisplayName("insertByBo: happy path → mapper.insert 调一次")
+    @DisplayName("insertByBo: happy path → mapper.insert 调一次 + provider.add 同步入库量到仓库库存")
     void testInsertByBo_HappyPath() {
         MedBatchBo bo = sampleBo();
         when(medBatchMapper.insert(any(MedBatch.class))).thenAnswer(inv -> {
@@ -114,6 +120,11 @@ class MedBatchServiceImplTest {
         assertThat(saved.getMedicineId()).isEqualTo(40001L);
         assertThat(saved.getBatchNo()).isEqualTo("B20260501");
         assertThat(saved.getQuantity()).isEqualByComparingTo("120.00");
+
+        // ADR-0012：采购入库把入库量增到仓库库存（operatorId 单测无登录上下文为 null）
+        ArgumentCaptor<BigDecimal> addQty = ArgumentCaptor.forClass(BigDecimal.class);
+        verify(medicineStockProvider, times(1)).add(eq(MEDICINE_ID), addQty.capture(), any());
+        assertThat(addQty.getValue()).isEqualByComparingTo("120.00");
     }
 
     @Test

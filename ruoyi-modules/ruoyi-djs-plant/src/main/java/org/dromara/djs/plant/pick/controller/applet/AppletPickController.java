@@ -83,10 +83,12 @@ public class AppletPickController extends BaseController {
      * 采收列表「作物维度」任务卡（FIX-PLT-MP-PICK-001 #3）：按片区分组 → 作物聚合。
      *
      * @param zoneId 片区 id（可空 = 全部片区）
+     * @param isPick is_pick 过滤值（可空，空时默认 2=普通采收；「采摘活动管理」页传 1 = 游客采摘活动）
      */
     @GetMapping("/cropTasks")
-    public R<List<PickCropTaskVo>> cropTasks(@RequestParam(required = false) Long zoneId) {
-        return R.ok(appletPickService.listCropTasks(zoneId));
+    public R<List<PickCropTaskVo>> cropTasks(@RequestParam(required = false) Long zoneId,
+                                             @RequestParam(required = false) Integer isPick) {
+        return R.ok(appletPickService.listCropTasks(zoneId, isPick));
     }
 
     /**
@@ -98,11 +100,13 @@ public class AppletPickController extends BaseController {
      *
      * @param planId 计划 id（可空字符串）
      * @param cropId 作物 id（必填字符串）
+     * @param isPick is_pick 过滤值（可空，空时默认 2=普通采收；「采摘活动管理」页传 1 = 游客采摘活动）
      */
     @GetMapping("/cropPlots")
     public R<List<PickTaskVo>> cropPlots(@RequestParam(required = false) String planId,
-                                         @RequestParam(required = false) String cropId) {
-        return R.ok(appletPickService.listCropPlots(parsePlanId(planId), parseCropId(cropId)));
+                                         @RequestParam(required = false) String cropId,
+                                         @RequestParam(required = false) Integer isPick) {
+        return R.ok(appletPickService.listCropPlots(parsePlanId(planId), parseCropId(cropId), isPick));
     }
 
     /** 必填作物 id 解析：空 / 非数字 → 明确友好 ServiceException（不让框架抛类型不匹配）。 */

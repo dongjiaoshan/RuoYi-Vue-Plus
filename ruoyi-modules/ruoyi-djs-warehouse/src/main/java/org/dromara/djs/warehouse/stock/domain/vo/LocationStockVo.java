@@ -83,6 +83,12 @@ public class LocationStockVo implements Serializable {
     private String blockNo;
 
     /**
+     * 药品 ID（FK → t_breed_medicine_info.id；ADR-0012 药品归仓库库位统一）。
+     */
+    @ExcelProperty(value = "药品ID")
+    private Long medicineId;
+
+    /**
      * 产品名称。
      */
     @ExcelProperty(value = "产品名称")

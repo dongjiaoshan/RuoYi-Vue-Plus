@@ -15,11 +15,16 @@ import org.dromara.djs.breed.med.domain.vo.MedicineVo;
 import org.dromara.djs.breed.med.mapper.MedicineMapper;
 import org.dromara.djs.breed.med.service.IMedicineService;
 import org.dromara.djs.common.base.DjsBaseServiceImpl;
+import org.dromara.djs.common.medicine.api.MedicineStockProvider;
 import org.springframework.stereotype.Service;
 
+import java.math.BigDecimal;
 import java.util.Collection;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * 药品库 Service 实现（BRD-MED-001）。
@@ -39,15 +44,39 @@ import java.util.Objects;
 @Service
 public class MedicineServiceImpl extends DjsBaseServiceImpl<MedicineMapper, Medicine> implements IMedicineService {
 
-    public MedicineServiceImpl(MedicineMapper baseMapper) {
+    private final MedicineStockProvider medicineStockProvider;
+
+    public MedicineServiceImpl(MedicineMapper baseMapper, MedicineStockProvider medicineStockProvider) {
         super(baseMapper);
+        this.medicineStockProvider = medicineStockProvider;
     }
 
     @Override
     public TableDataInfo<MedicineVo> queryPageList(MedicineQuery query, PageQuery pageQuery) {
         LambdaQueryWrapper<Medicine> wrapper = buildQueryWrapper(query);
         Page<MedicineVo> page = baseMapper.selectVoPage(pageQuery.build(), wrapper);
+        fillStockFromWarehouse(page.getRecords());
         return TableDataInfo.build(page);
+    }
+
+    /**
+     * 用仓库 location_stock 聚合回填 {@code currentStock}（ADR-0012：库存真值在仓库，
+     * VO.currentStock 语义从"主数据 current_stock"改为"仓库药品库位库存合计"）。
+     * 无库存行的药品缺省按 {@link BigDecimal#ZERO}。空列表跳过。
+     */
+    private void fillStockFromWarehouse(List<MedicineVo> rows) {
+        if (rows == null || rows.isEmpty()) {
+            return;
+        }
+        Set<Long> medicineIds = rows.stream().map(MedicineVo::getId)
+            .filter(Objects::nonNull).collect(Collectors.toSet());
+        if (medicineIds.isEmpty()) {
+            return;
+        }
+        Map<Long, BigDecimal> stocks = medicineStockProvider.getStocks(medicineIds);
+        for (MedicineVo vo : rows) {
+            vo.setCurrentStock(stocks.getOrDefault(vo.getId(), BigDecimal.ZERO));
+        }
     }
 
     @Override

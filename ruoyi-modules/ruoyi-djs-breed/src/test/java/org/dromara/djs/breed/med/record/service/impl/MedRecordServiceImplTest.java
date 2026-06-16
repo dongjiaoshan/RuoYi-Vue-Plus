@@ -11,6 +11,7 @@ import org.dromara.djs.breed.med.record.domain.MedRecord;
 import org.dromara.djs.breed.med.record.domain.bo.MedRecordBatchBo;
 import org.dromara.djs.breed.med.record.domain.bo.MedRecordBo;
 import org.dromara.djs.breed.med.record.mapper.MedRecordMapper;
+import org.dromara.djs.common.medicine.api.MedicineStockProvider;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
@@ -31,6 +32,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyCollection;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -64,6 +66,8 @@ import static org.mockito.Mockito.when;
 @DisplayName("MedRecordServiceImpl 单元测试")
 class MedRecordServiceImplTest {
 
+    private static final Long MEDICINE_ID = 40001L;
+
     @Mock
     private MedRecordMapper medRecordMapper;
     @Mock
@@ -72,12 +76,15 @@ class MedRecordServiceImplTest {
     private MedicineMapper medicineMapper;
     @Mock
     private PigMapper pigMapper;
+    @Mock
+    private MedicineStockProvider medicineStockProvider;
 
     private TestableMedRecordServiceImpl service;
 
     static class TestableMedRecordServiceImpl extends MedRecordServiceImpl {
-        TestableMedRecordServiceImpl(MedRecordMapper r, MedBatchMapper b, MedicineMapper m, PigMapper p) {
-            super(r, b, m, p);
+        TestableMedRecordServiceImpl(MedRecordMapper r, MedBatchMapper b, MedicineMapper m,
+                                     PigMapper p, MedicineStockProvider sp) {
+            super(r, b, m, p, sp);
         }
 
         @Override
@@ -100,7 +107,8 @@ class MedRecordServiceImplTest {
 
     @BeforeEach
     void setup() {
-        service = new TestableMedRecordServiceImpl(medRecordMapper, medBatchMapper, medicineMapper, pigMapper);
+        service = new TestableMedRecordServiceImpl(
+            medRecordMapper, medBatchMapper, medicineMapper, pigMapper, medicineStockProvider);
     }
 
     // ---------------- 工具方法 ----------------
@@ -147,20 +155,20 @@ class MedRecordServiceImplTest {
     // ---------------- 单只用药 ----------------
 
     @Test
-    @DisplayName("addSingle: happy path → 扣 quantity 1 次 + INSERT 1 条 drug_type=1")
+    @DisplayName("addSingle: happy path → provider.deduct 扣库存 1 次 + INSERT 1 条 drug_type=1")
     void testAddSingle_HappyPath() {
         when(medicineMapper.selectById(40001L)).thenReturn(existingMedicine());
         when(medBatchMapper.selectById(50001L)).thenReturn(existingBatch(new BigDecimal("100.000")));
         when(pigMapper.selectById(100123L)).thenReturn(pig(100123L, "260501-001", "PZ"));
-        when(medBatchMapper.decrementQuantity(eq(50001L), any(BigDecimal.class))).thenReturn(1);
         when(medRecordMapper.insert(any(MedRecord.class))).thenReturn(1);
 
         int rows = service.addSingle(singleBo("3.500"));
 
         assertThat(rows).isEqualTo(1);
 
+        // ADR-0012：扣仓库库存（medicineId 取 batch.getMedicineId()=40001，operatorId 单测无登录上下文为 null）
         ArgumentCaptor<BigDecimal> qty = ArgumentCaptor.forClass(BigDecimal.class);
-        verify(medBatchMapper, times(1)).decrementQuantity(eq(50001L), qty.capture());
+        verify(medicineStockProvider, times(1)).deduct(eq(MEDICINE_ID), qty.capture(), any());
         assertThat(qty.getValue()).isEqualByComparingTo("3.500");
 
         ArgumentCaptor<MedRecord> captor = ArgumentCaptor.forClass(MedRecord.class);
@@ -172,16 +180,18 @@ class MedRecordServiceImplTest {
     }
 
     @Test
-    @DisplayName("addSingle: 剂量超 quantity → medicine.batch.insufficient")
+    @DisplayName("addSingle: 仓库库存不足 → provider.deduct 抛 ServiceException，不 INSERT")
     void testAddSingle_Insufficient() {
         when(medicineMapper.selectById(40001L)).thenReturn(existingMedicine());
         when(medBatchMapper.selectById(50001L)).thenReturn(existingBatch(new BigDecimal("2.000")));
         when(pigMapper.selectById(100123L)).thenReturn(pig(100123L, "260501-001", "PZ"));
-        when(medBatchMapper.decrementQuantity(eq(50001L), any(BigDecimal.class))).thenReturn(0);
+        // ADR-0012：库存不足由 provider.deduct 抛业务异常
+        doThrow(new ServiceException("药品库存不足"))
+            .when(medicineStockProvider).deduct(eq(MEDICINE_ID), any(BigDecimal.class), any());
 
         assertThatThrownBy(() -> service.addSingle(singleBo("10.000")))
             .isInstanceOf(ServiceException.class)
-            .hasMessageContaining("批次库存不足");
+            .hasMessageContaining("库存不足");
 
         verify(medRecordMapper, never()).insert(any(MedRecord.class));
     }
@@ -197,7 +207,7 @@ class MedRecordServiceImplTest {
             .isInstanceOf(ServiceException.class)
             .hasMessageContaining("终态");
 
-        verify(medBatchMapper, never()).decrementQuantity(any(), any());
+        verify(medicineStockProvider, never()).deduct(any(), any(), any());
     }
 
     @Test
@@ -252,15 +262,14 @@ class MedRecordServiceImplTest {
             pig(100001L, "A002", "FM"),
             pig(100002L, "A003", "DN")
         ));
-        when(medBatchMapper.decrementQuantity(eq(50001L), any(BigDecimal.class))).thenReturn(1);
         when(medRecordMapper.insert(any(MedRecord.class))).thenReturn(1);
         when(medRecordMapper.insertBatch(any())).thenReturn(true);
 
         Long masterId = service.addBatch(batchBo(3, "2.000"));
 
-        // 总扣减 2 × 3 = 6.000
+        // ADR-0012：总扣减 2 × 3 = 6.000，落仓库库存（medicineId=batch.medicineId=40001）
         ArgumentCaptor<BigDecimal> qty = ArgumentCaptor.forClass(BigDecimal.class);
-        verify(medBatchMapper, times(1)).decrementQuantity(eq(50001L), qty.capture());
+        verify(medicineStockProvider, times(1)).deduct(eq(MEDICINE_ID), qty.capture(), any());
         assertThat(qty.getValue()).isEqualByComparingTo("6.000");
 
         // 1 master INSERT
@@ -283,7 +292,7 @@ class MedRecordServiceImplTest {
             .isInstanceOf(ServiceException.class)
             .hasMessageContaining("最多");
 
-        verify(medBatchMapper, never()).decrementQuantity(any(), any());
+        verify(medicineStockProvider, never()).deduct(any(), any(), any());
     }
 
     @Test
@@ -327,7 +336,9 @@ class MedRecordServiceImplTest {
             pig(100001L, "A002", "PZ"),
             pig(100002L, "A003", "PZ")
         ));
-        when(medBatchMapper.decrementQuantity(eq(50001L), any(BigDecimal.class))).thenReturn(0);
+        // ADR-0012：库存不足由 provider.deduct 抛业务异常
+        doThrow(new ServiceException("药品库存不足"))
+            .when(medicineStockProvider).deduct(eq(MEDICINE_ID), any(BigDecimal.class), any());
 
         assertThatThrownBy(() -> service.addBatch(batchBo(3, "10.0"))) // 总扣 30 > 余 5
             .isInstanceOf(ServiceException.class)
@@ -345,6 +356,7 @@ class MedRecordServiceImplTest {
         int rows = service.deleteByIds(List.of(60001L));
 
         assertThat(rows).isEqualTo(1);
-        verify(medBatchMapper, never()).incrementQuantity(any(), any());
+        // ADR-0012：软删不回滚仓库库存
+        verify(medicineStockProvider, never()).add(any(), any(), any());
     }
 }

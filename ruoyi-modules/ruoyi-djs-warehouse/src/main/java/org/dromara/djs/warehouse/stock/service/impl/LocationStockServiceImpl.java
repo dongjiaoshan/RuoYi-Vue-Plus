@@ -122,7 +122,7 @@ public class LocationStockServiceImpl extends DjsBaseServiceImpl<LocationStockMa
 
     @Override
     public int insertByBo(LocationStockBo bo) {
-        validateThreeWayExclusive(bo);
+        validateDimensionExclusive(bo);
         LocationStock entity = toEntity(bo);
         if (entity == null) {
             throw new ServiceException("库存入参转换失败");
@@ -214,15 +214,16 @@ public class LocationStockServiceImpl extends DjsBaseServiceImpl<LocationStockMa
     }
 
     /**
-     * 校验 productId / earNo / plotId 三选一（非空字段恰好一个）。
+     * 校验 productId / earNo / plotId / medicineId 四选一（非空字段恰好一个）。
      */
-    private void validateThreeWayExclusive(LocationStockBo bo) {
+    private void validateDimensionExclusive(LocationStockBo bo) {
         int filled = 0;
         if (bo.getProductId() != null) filled++;
         if (StringUtils.isNotBlank(bo.getEarNo())) filled++;
         if (bo.getPlotId() != null) filled++;
+        if (bo.getMedicineId() != null) filled++;
         if (filled != 1) {
-            throw new ServiceException("stock.three_way.exclusive");
+            throw new ServiceException("stock.dimension.exclusive");
         }
     }
 
@@ -336,6 +337,7 @@ public class LocationStockServiceImpl extends DjsBaseServiceImpl<LocationStockMa
             .like(StringUtils.isNotBlank(query.getProductName()), LocationStock::getProductName, query.getProductName())
             .like(StringUtils.isNotBlank(query.getEarNo()), LocationStock::getEarNo, query.getEarNo())
             .eq(query.getPlotId() != null, LocationStock::getPlotId, query.getPlotId())
+            .eq(query.getMedicineId() != null, LocationStock::getMedicineId, query.getMedicineId())
             .eq(query.getIsEnd() != null, LocationStock::getIsEnd, query.getIsEnd())
             .orderByDesc(LocationStock::getId);
         // 地块编号过滤：先解析匹配的 plotId 集合再 IN 过滤；无匹配则用不存在的 id 让结果恒空

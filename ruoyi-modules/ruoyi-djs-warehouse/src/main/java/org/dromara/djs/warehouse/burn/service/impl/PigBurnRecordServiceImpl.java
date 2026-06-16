@@ -16,6 +16,7 @@ import org.dromara.djs.common.image.service.ImageUrlResolver;
 import org.dromara.djs.warehouse.check.service.IStockCheckService;
 import org.dromara.djs.warehouse.burn.domain.PigBurnRecord;
 import org.dromara.djs.warehouse.burn.domain.bo.PigBurnRecordBo;
+import org.dromara.djs.warehouse.burn.domain.bo.PigBurnWeighBo;
 import org.dromara.djs.warehouse.burn.domain.query.PigBurnRecordQuery;
 import org.dromara.djs.warehouse.burn.domain.vo.BarPendingVo;
 import org.dromara.djs.warehouse.burn.domain.vo.BurnProductTypeVo;
@@ -359,6 +360,38 @@ public class PigBurnRecordServiceImpl
             result.add(vo);
         }
         return result;
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public boolean weighBurn(PigBurnWeighBo bo) {
+        // ---------- Step 1：校验 bar 在待燎毛 / 燎毛中态 + 到场重 ≤ 出栏重 ----------
+        BarInfo bar = barInfoMapper.selectById(bo.getBarInfoId());
+        if (bar == null) {
+            throw new ServiceException("白条不存在：" + bo.getBarInfoId());
+        }
+        if (!BAR_STATUS_PENDING_SINGE.equals(bar.getStatus())
+            && !BAR_STATUS_SINGING.equals(bar.getStatus())) {
+            throw new ServiceException("白条状态不符（当前：" + bar.getStatus() + "，需待燎毛/燎毛中），无法称重");
+        }
+        BigDecimal marketingWeight = bar.getMarketingWeight();
+        if (marketingWeight != null && bo.getArriveWeight().compareTo(marketingWeight) > 0) {
+            throw new ServiceException("到场重量不能超过出栏重量");
+        }
+
+        // ---------- Step 2：乐观锁推进 pending_singe/singing → singing（回填 in_time/in_method） ----------
+        int affected = barInfoMapper.updateStatusToSinging(bar.getId(), new Date(), bo.getWeigherId());
+        if (affected == 0) {
+            throw new ServiceException("白条状态不符，无法称重");
+        }
+
+        // ---------- Step 3：回填到场重量 arrive_weight（updateStatusToSinging 不触此列）----------
+        BarInfo patch = new BarInfo();
+        patch.setId(bar.getId());
+        patch.setArriveWeight(bo.getArriveWeight());
+        barInfoMapper.updateById(patch);
+
+        return true;
     }
 
     @Override
