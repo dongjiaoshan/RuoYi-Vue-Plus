@@ -104,15 +104,22 @@ public class AppletPlotPickerController {
             .orderByAsc(PlotInfo::getPlotCode)
             .last("LIMIT 200");
         List<PlotInfo> rows = plotInfoMapper.selectList(wrapper);
+        // 空地日期 = 最近退茬日（派生）：一次 GROUP BY 批量取，避免按地块逐条单查（远程 RDS 下 N+1 会拖到数十秒）
+        Map<Long, LocalDate> idleDateByPlot = rows.isEmpty()
+            ? Map.of()
+            : plotInfoMapper.selectLatestRotationDates(rows.stream().map(PlotInfo::getId).collect(Collectors.toList()))
+                .stream()
+                .filter(m -> m.get("plotId") != null && m.get("idleDate") != null)
+                .collect(Collectors.toMap(
+                    m -> Long.valueOf(m.get("plotId").toString()),
+                    m -> LocalDate.parse(m.get("idleDate").toString().substring(0, 10))));
         List<IdlePlotVo> vos = rows.stream().map(p -> {
             IdlePlotVo vo = new IdlePlotVo();
             vo.setId(p.getId());
             vo.setPlotCode(p.getPlotCode());
             vo.setPlotName(p.getPlotName());
             vo.setPlotStatusLabel("空闲");
-            // 空地日期 = 最近退茬日（派生）；无退茬记录留空（不动 DDL）
-            LocalDate idleDate = plotInfoMapper.selectLatestRotationDate(p.getId());
-            vo.setIdleDate(idleDate);
+            vo.setIdleDate(idleDateByPlot.get(p.getId()));
             return vo;
         }).collect(Collectors.toList());
         return R.ok(vos);

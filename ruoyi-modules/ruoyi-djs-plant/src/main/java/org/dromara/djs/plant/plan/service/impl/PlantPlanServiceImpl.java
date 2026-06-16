@@ -155,6 +155,18 @@ public class PlantPlanServiceImpl extends DjsBaseServiceImpl<PlantPlanMapper, Pl
             .eq(StringUtils.isNotBlank(query.getPlantStatus()), PlantPlan::getPlantStatus, query.getPlantStatus())
             .eq(query.getQueryCreateBy() != null, PlantPlan::getCreateBy, query.getQueryCreateBy())
             .apply(query.getQueryUpdateTime() != null, "DATE(update_time) = {0}", query.getQueryUpdateTime());
+        // 农作物名称模糊：crop_id 落在 crop_name LIKE 的作物集合内（crop_name 在 t_plant_crop_info，非主表列）
+        if (StringUtils.isNotBlank(query.getCropName())) {
+            wrapper.apply(
+                "crop_id IN (SELECT id FROM t_plant_crop_info WHERE del_flag = '0' AND crop_name LIKE {0})",
+                "%" + query.getCropName().trim() + "%");
+        }
+        // 计划编制人姓名模糊：create_by 落在 nick_name LIKE 的用户集合内（与列表 createByName 同源 sys_user.nick_name）
+        if (StringUtils.isNotBlank(query.getQueryCreateByName())) {
+            wrapper.apply(
+                "create_by IN (SELECT user_id FROM sys_user WHERE nick_name LIKE {0})",
+                "%" + query.getQueryCreateByName().trim() + "%");
+        }
         applyPlanDateRange(wrapper, query.getBeginPlanDate(), query.getEndPlanDate());
         wrapper.orderByDesc(PlantPlan::getId);
         return wrapper;

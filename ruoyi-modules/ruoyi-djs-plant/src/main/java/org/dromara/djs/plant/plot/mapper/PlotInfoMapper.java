@@ -73,6 +73,26 @@ public interface PlotInfoMapper extends BaseMapperPlus<PlotInfo, PlotInfoVo> {
     java.time.LocalDate selectLatestRotationDate(@Param("plotId") Long plotId);
 
     /**
+     * 批量取多地块最近退茬日（空地日期·派生），一次 GROUP BY 代替 N 次单查（避免远程 RDS N+1）。
+     *
+     * @param plotIds 地块 id 列表（非空）
+     * @return 行 {@code {plot_id, max_date}}；无退茬记录的地块不出行（service 兜底留空）
+     */
+    @Select("""
+        <script>
+        SELECT plot_id AS plotId, MAX(farm_date) AS idleDate
+          FROM t_plant_farm_records
+         WHERE farm_type = 'rotation'
+           AND del_flag = '0'
+           AND tenant_id = '1001'
+           AND plot_id IN
+           <foreach collection="plotIds" item="pid" open="(" separator="," close=")">#{pid}</foreach>
+         GROUP BY plot_id
+        </script>
+        """)
+    List<Map<String, Object>> selectLatestRotationDates(@Param("plotIds") List<Long> plotIds);
+
+    /**
      * 地块详情·种植信息子表（FIX-PLT-AD-DETAIL-001，11 列，按 plotId 透视）。
      *
      * <p>以种植明细 {@code t_plant_plant_details} 为基（一行一明细），JOIN 作物（名 / 码 / 图）

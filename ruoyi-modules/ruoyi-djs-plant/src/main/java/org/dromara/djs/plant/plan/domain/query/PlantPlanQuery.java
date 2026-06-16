@@ -33,8 +33,16 @@ public class PlantPlanQuery extends BaseEntity {
     /** 季节字典 djs_planting_season。 */
     private String planSeason;
 
-    /** 作物 id 精确（原型「种植农作物」筛选）。 */
+    /** 作物 id 精确（导出 / 兼容保留）。 */
     private Long cropId;
+
+    /**
+     * 农作物名称模糊（原型「种植农作物」筛选）。
+     *
+     * <p>cropName 非主表存储列（crop_name 在 t_plant_crop_info），故在 buildWrapper 用相关子查询
+     * 按 {@code crop_id IN (SELECT id FROM t_plant_crop_info WHERE crop_name LIKE ...)} 过滤。</p>
+     */
+    private String cropName;
 
     /** 计划状态字典 djs_plant_plan_status。 */
     private String plantStatus;
@@ -56,6 +64,15 @@ public class PlantPlanQuery extends BaseEntity {
     @JsonFormat(pattern = "yyyy-MM-dd")
     private Date queryUpdateTime;
 
-    /** 计划编制人 user_id 精确（原型「计划编制人」筛选，对 create_by）。 */
+    /** 计划编制人 user_id 精确（对 create_by，导出 / 兼容保留）。 */
     private Long queryCreateBy;
+
+    /**
+     * 计划编制人姓名模糊（原型「计划编制人」筛选）。
+     *
+     * <p>编制人姓名 = create_by 对应的 sys_user.nick_name（与列表 createByName 同源），
+     * 故在 buildWrapper 用相关子查询按
+     * {@code create_by IN (SELECT user_id FROM sys_user WHERE nick_name LIKE ...)} 过滤。</p>
+     */
+    private String queryCreateByName;
 }
