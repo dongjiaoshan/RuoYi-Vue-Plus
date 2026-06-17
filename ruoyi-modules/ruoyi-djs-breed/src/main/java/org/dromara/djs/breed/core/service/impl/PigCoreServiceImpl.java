@@ -34,6 +34,8 @@ import org.dromara.djs.breed.core.service.I18nMessages;
 import org.dromara.djs.breed.core.service.IPigCoreService;
 import org.dromara.djs.breed.core.service.PigStateMachine;
 import org.dromara.djs.breed.core.domain.vo.PigLastFarrowVo;
+import org.dromara.djs.breed.breeding.domain.BreedInfo;
+import org.dromara.djs.breed.breeding.mapper.BreedInfoMapper;
 import org.dromara.djs.breed.farm.domain.Barn;
 import org.dromara.djs.breed.farm.domain.Pen;
 import org.dromara.djs.breed.farm.mapper.BarnMapper;
@@ -95,6 +97,7 @@ public class PigCoreServiceImpl implements IPigCoreService {
     private final PenMapper penMapper;
     private final DictService dictService;
     private final IProductionCycleConfigService productionCycleConfigService;
+    private final BreedInfoMapper breedInfoMapper;
 
     public PigCoreServiceImpl(PigMapper pigMapper,
                               PigStatusRecordMapper statusRecordMapper,
@@ -103,7 +106,8 @@ public class PigCoreServiceImpl implements IPigCoreService {
                               BarnMapper barnMapper,
                               PenMapper penMapper,
                               DictService dictService,
-                              IProductionCycleConfigService productionCycleConfigService) {
+                              IProductionCycleConfigService productionCycleConfigService,
+                              BreedInfoMapper breedInfoMapper) {
         this.pigMapper = pigMapper;
         this.statusRecordMapper = statusRecordMapper;
         this.stateMachine = stateMachine;
@@ -112,6 +116,7 @@ public class PigCoreServiceImpl implements IPigCoreService {
         this.penMapper = penMapper;
         this.dictService = dictService;
         this.productionCycleConfigService = productionCycleConfigService;
+        this.breedInfoMapper = breedInfoMapper;
     }
 
     @Override
@@ -362,6 +367,32 @@ public class PigCoreServiceImpl implements IPigCoreService {
         }
         String label = dictService.getDictLabel(dictType, code);
         return StringUtils.isNotBlank(label) ? label : code;
+    }
+
+    /**
+     * 加载 t_farm_breed_info 主数据 code→中文名 映射（breedStrain 1=品种 / 2=品系）。
+     * 列表批量调用前预载一次，避免逐头查（N+1）。
+     */
+    private Map<String, String> loadBreedStrainNameMap(Integer breedStrain) {
+        return breedInfoMapper.selectList(new LambdaQueryWrapper<BreedInfo>()
+                .eq(BreedInfo::getBreedStrain, breedStrain)
+                .eq(BreedInfo::getDelFlag, "0"))
+            .stream()
+            .filter(b -> StringUtils.isNotBlank(b.getBreedStrainCode()) && StringUtils.isNotBlank(b.getBreedStrainName()))
+            .collect(Collectors.toMap(BreedInfo::getBreedStrainCode, BreedInfo::getBreedStrainName, (a, b) -> a));
+    }
+
+    /**
+     * 品种/品系 code→中文名解析（邓博 2026-06-17 #13：mp 选猪卡「品系」显示中文不显代码）。
+     * 主数据权威源 = t_farm_breed_info（外部引种 BreedInfoPicker 写入的 2 位码如 "01"）；
+     * 缺则回落字典（djs_pig_breed / djs_pig_strain，历史单位码如 "1"）；再缺回落原始 code。
+     */
+    private String resolveBreedStrainName(Map<String, String> infoNameMap, String dictType, String code) {
+        if (StringUtils.isBlank(code)) {
+            return null;
+        }
+        String name = infoNameMap.get(code);
+        return StringUtils.isNotBlank(name) ? name : translateDictOrCode(dictType, code);
     }
 
     @Override
@@ -619,6 +650,9 @@ public class PigCoreServiceImpl implements IPigCoreService {
         // 「临产 / 到断奶期」badge 阈值（dueDate 距今 > N 天即标 due）：分娩 5 天 / 断奶 3 天。
         // 口径 = 预产期/到断奶期 - 当前日期 > N 天的母猪打标签（row121/124：还有 >N 天到期的提前进入提醒池）。
         int dueWindowDays = "WEANING".equalsIgnoreCase(dueType) ? 3 : 5;
+        // 邓博 2026-06-17 #13：品系名优先取 breed_info 主数据（覆盖外部引种 BreedInfoPicker 写入的 2 位码如 "01"），批量预载一次防 N+1。
+        // 品种保持字典翻译（djs_pig_breed 已含 2 位码，不动 — 避免改动未被报的「品种」显示）。
+        Map<String, String> strainNameMap = loadBreedStrainNameMap(2);
         List<PigSearchVo> result = new ArrayList<>(pigs.size());
         for (Pig p : pigs) {
             PigSearchVo vo = new PigSearchVo();
@@ -627,11 +661,12 @@ public class PigCoreServiceImpl implements IPigCoreService {
             vo.setPigSex(p.getPigSex());
             vo.setPigType(p.getPigType());
             vo.setCurrentStatus(p.getCurrentStatus());
-            // 品种/品系编码 + 中文名（mp 选猪弹层「品种/品系」标签）；缺 code 时 translate 回落空
+            // 品种/品系编码 + 中文名（mp 选猪弹层「品种/品系」标签）
             vo.setPigBreedCode(p.getPigBreedCode());
             vo.setPigBreedName(translateDictOrCode("djs_pig_breed", p.getPigBreedCode()));
             vo.setPigStrainCode(p.getPigStrainCode());
-            vo.setPigStrainName(translateDictOrCode("djs_pig_strain", p.getPigStrainCode()));
+            // #13：品系 breed_info 主数据优先 → 字典回落 → code 回落
+            vo.setPigStrainName(resolveBreedStrainName(strainNameMap, "djs_pig_strain", p.getPigStrainCode()));
             // MP-UX-002：END 状态时携带 endReason，给 mp PigPicker 显示 "终止 · 死亡 / 上市" 用
             if (PigLifecycle.END.name().equals(p.getCurrentStatus())) {
                 vo.setEndReason(p.getEndReason());
