@@ -74,7 +74,7 @@ public class PigStateMachine {
     /**
      * 计算事件触发后的目标状态（纯函数，不访问 DB）。
      *
-     * @param from    当前状态（不可为 null）
+     * @param from    当前状态（可为 null：育肥猪 / 仔猪 / 公猪等非种母猪类型无繁殖状态 = 空状态）
      * @param event   触发事件（不可为 null；INTRO 在此抛异常 — 走 createPig 路径）
      * @param sex     猪只性别 F / M（用于 gender 校验）
      * @param payload 事件 payload（OESTRUS / NULL_RETURN 等使用；其他事件可空）
@@ -82,30 +82,37 @@ public class PigStateMachine {
      * @throws ServiceException 包含 i18n key：终态 / 性别不符 / 非法 transition 等
      */
     public PigLifecycle nextStatus(PigLifecycle from, PigStatusEvent event, String sex, Map<String, Object> payload) {
-        Objects.requireNonNull(from, "from must not be null");
         Objects.requireNonNull(event, "event must not be null");
+        // from 可为 null：育肥猪 / 仔猪 / 公猪等非种母猪类型无繁殖状态（空状态），仍可终止 / 转栏 / 阉割。
 
         // 1. INTRO 不走 fireEvent，由 createPig 路径直接创建初始状态
         if (event == INTRO) {
             throw new ServiceException(I18nMessages.t("pig.event.intro_use_create"), 400);
         }
 
-        // 2. 终态拒绝继续推进
-        if (from.isTerminal()) {
+        // 2. 终态拒绝继续推进（from 非空且为终态）
+        if (from != null && from.isTerminal()) {
             throw new ServiceException(I18nMessages.t("pig.state.terminal", from.getLabel()), 400);
         }
 
         // 3. 性别校验
         validateGender(event, sex);
 
-        // 4. 终态事件：DIE / ELIMINATE / SLAUGHTER → END
+        // 4. 终态事件：DIE / ELIMINATE / SLAUGHTER → END（含空状态育肥猪出栏 / 死亡 / 淘汰）
         if (TERMINAL_EVENTS.contains(event)) {
             return END;
         }
 
-        // 5. 状态不变事件
+        // 5. 状态不变事件（TRANSFER / CASTRATE）→ 保持原状态（空状态保持空）
         if (NO_CHANGE_EVENTS.contains(event)) {
             return from;
+        }
+
+        // 空状态（非种母猪）只允许上面的终态 + 状态不变事件；繁殖类事件（BREED/FARROW/WEAN/
+        // OESTRUS/NULL_RETURN）对空状态非法（这些事件母猪专属，母猪恒有有效状态）。
+        if (from == null) {
+            throw new ServiceException(
+                I18nMessages.t("pig.event.invalid_transition", "无状态", event.getLabel()), 400);
         }
 
         // 6. 复杂 transition（OESTRUS / NULL_RETURN）

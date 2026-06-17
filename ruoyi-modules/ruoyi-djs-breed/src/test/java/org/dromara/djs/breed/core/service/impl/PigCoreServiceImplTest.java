@@ -356,4 +356,54 @@ class PigCoreServiceImplTest {
 
         verify(pigMapper, never()).updateById(any(Pig.class));
     }
+
+    // ===== 空状态育肥猪事件（FIX-BRD-PIG-EMPTY-STATUS：育肥猪空状态可出栏/死亡/淘汰/转栏）=====
+
+    @Test
+    @DisplayName("fireEvent 空状态育肥猪 SLAUGHTER: 空 current_status → END + end_reason=MARKET（出栏报错根因）")
+    void fireEvent_emptyStatus_fattening_slaughter() {
+        Pig pig = mkFattening(210L, "F", null);
+        pig.setCurrentStatus("");  // 空状态（育肥猪正常态，与 staging 真实数据一致）
+        when(pigMapper.selectById(210L)).thenReturn(pig);
+        when(pigMapper.updateById(any(Pig.class))).thenReturn(1);
+
+        PigEventBo bo = new PigEventBo();
+        bo.setPigId(210L);
+        bo.setEventType(PigStatusEvent.SLAUGHTER);
+
+        service.fireEvent(bo);
+
+        ArgumentCaptor<Pig> captor = ArgumentCaptor.forClass(Pig.class);
+        verify(pigMapper).updateById(captor.capture());
+        assertThat(captor.getValue().getCurrentStatus()).isEqualTo("END");
+        assertThat(captor.getValue().getEndReason()).isEqualTo(PigEndReason.MARKET.name());
+
+        ArgumentCaptor<PigStatusRecord> rec = ArgumentCaptor.forClass(PigStatusRecord.class);
+        verify(statusRecordMapper).insert(rec.capture());
+        assertThat(rec.getValue().getOldStatus()).isNull();   // 空状态 → old_status=null
+        assertThat(rec.getValue().getNewStatus()).isEqualTo("END");
+    }
+
+    @Test
+    @DisplayName("fireEvent 空状态育肥猪 TRANSFER: 状态保持空（不写 current_status）")
+    void fireEvent_emptyStatus_fattening_transfer_keepsEmpty() {
+        Pig pig = mkFattening(211L, "F", null);
+        pig.setCurrentStatus("");
+        pig.setBarnId(1L);
+        when(pigMapper.selectById(211L)).thenReturn(pig);
+        when(pigMapper.updateById(any(Pig.class))).thenReturn(1);
+
+        PigEventBo bo = new PigEventBo();
+        bo.setPigId(211L);
+        bo.setEventType(PigStatusEvent.TRANSFER);
+        bo.setPayload(java.util.Map.of("newBarnId", 2L));
+
+        service.fireEvent(bo);
+
+        ArgumentCaptor<Pig> captor = ArgumentCaptor.forClass(Pig.class);
+        verify(pigMapper).updateById(captor.capture());
+        // 状态不变事件 + 空状态：current_status 保持空（""），barn 更新
+        assertThat(captor.getValue().getCurrentStatus()).isEqualTo("");
+        assertThat(captor.getValue().getBarnId()).isEqualTo(2L);
+    }
 }

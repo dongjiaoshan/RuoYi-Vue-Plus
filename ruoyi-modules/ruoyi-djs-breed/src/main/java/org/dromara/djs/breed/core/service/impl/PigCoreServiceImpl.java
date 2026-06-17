@@ -132,7 +132,9 @@ public class PigCoreServiceImpl implements IPigCoreService {
             throw new ServiceException(I18nMessages.t("pig.not_found", bo.getPigId()));
         }
 
-        PigLifecycle from = parseLifecycle(pig.getCurrentStatus(), pig.getId());
+        // from 可为 null：育肥猪 / 仔猪 / 公猪等非种母猪类型空状态（''/NULL），仍可终止 / 转栏 / 阉割。
+        String curStatus = pig.getCurrentStatus();
+        PigLifecycle from = StringUtils.isBlank(curStatus) ? null : parseLifecycle(curStatus, pig.getId());
         PigLifecycle to = stateMachine.nextStatus(from, bo.getEventType(), pig.getPigSex(), bo.getPayload());
 
         LocalDateTime eventAt = Optional.ofNullable(bo.getEventAt()).orElseGet(LocalDateTime::now);
@@ -141,16 +143,16 @@ public class PigCoreServiceImpl implements IPigCoreService {
         PigStatusRecord record = new PigStatusRecord();
         record.setPigId(pig.getId());
         record.setEarNo(pig.getEarNo());
-        record.setOldStatus(from.name());
-        record.setNewStatus(to.name());
+        record.setOldStatus(from == null ? null : from.name());
+        record.setNewStatus(to == null ? null : to.name());
         record.setEventType(bo.getEventType().name());
         record.setRelatedEventId(bo.getRelatedEventId());
         record.setChangeTime(eventAt);
         record.setDurationDays(calcDurationDays(pig.getStatusStartedAt(), eventAt));
         statusRecordMapper.insert(record);
 
-        // 2. 更新 pig（同事务，乐观锁强制）
-        if (to != from) {
+        // 2. 更新 pig（同事务，乐观锁强制）。Objects.equals 容空：空状态 NO_CHANGE 事件 to==from==null 不改。
+        if (!Objects.equals(to, from)) {
             pig.setCurrentStatus(to.name());
             pig.setStatusStartedAt(eventAt);
         }

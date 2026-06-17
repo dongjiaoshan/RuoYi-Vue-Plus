@@ -236,4 +236,39 @@ class PigStateMachineTest {
             .isInstanceOf(ServiceException.class)
             .hasMessageContaining("pig.event.invalid_transition");
     }
+
+    // ─────────── 空状态（育肥猪 / 仔猪 / 公猪等非种母猪，from=null）FIX-BRD-PIG-EMPTY-STATUS ───────────
+
+    @Test
+    @DisplayName("空状态 SLAUGHTER: null → END（育肥猪出栏，原报错根因）")
+    void empty_status_slaughter_to_END() {
+        assertThat(sm.nextStatus(null, PigStatusEvent.SLAUGHTER, "F", null)).isEqualTo(PigLifecycle.END);
+    }
+
+    @Test
+    @DisplayName("空状态 DIE / ELIMINATE: null → END")
+    void empty_status_die_eliminate_to_END() {
+        assertThat(sm.nextStatus(null, PigStatusEvent.DIE, "F", null)).isEqualTo(PigLifecycle.END);
+        assertThat(sm.nextStatus(null, PigStatusEvent.ELIMINATE, "M", null)).isEqualTo(PigLifecycle.END);
+    }
+
+    @Test
+    @DisplayName("空状态 TRANSFER: null → null（状态不变，保持空）")
+    void empty_status_transfer_keeps_null() {
+        assertThat(sm.nextStatus(null, PigStatusEvent.TRANSFER, "F", null)).isNull();
+    }
+
+    @Test
+    @DisplayName("空状态 CASTRATE: null(公猪) → null（状态不变）")
+    void empty_status_castrate_keeps_null() {
+        assertThat(sm.nextStatus(null, PigStatusEvent.CASTRATE, "M", null)).isNull();
+    }
+
+    @Test
+    @DisplayName("空状态 BREED: null → invalid_transition（繁殖事件对空状态非法）")
+    void empty_status_breed_invalid() {
+        assertThatThrownBy(() -> sm.nextStatus(null, PigStatusEvent.BREED, "F", null))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("pig.event.invalid_transition");
+    }
 }
