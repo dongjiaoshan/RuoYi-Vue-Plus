@@ -51,16 +51,18 @@ public interface IPigCoreService {
     Pig createPig(PigCreateBo bo);
 
     /**
-     * 内部引种触发状态转移到「后备 HB」（FIX-INTRO-001 #1）。
+     * 内部引种把场内肥猪转为种猪（FIX-INTRO-001 + 邓博 2026-06-18 重定类型）。
      *
      * <p>语义：内部引种把一头**已存在**的肥猪（{@code pig_type='fattening'}）登记进引种台账后，
-     * 该猪从原态转为「后备 HB」。本方法写 {@code t_farm_pig_status_record}（old=原态 / new=HB /
-     * event=INTRO）+ update {@code t_farm_pig.current_status}，与调用方（{@code PigIntroServiceImpl
-     * .introduceInternal}）同一 {@code @Transactional}（无独立事务注解，挂到调用方事务上）。</p>
+     * 按性别重定 {@code pig_type} + 初始种猪态——母 → {@code sow}/{@code HB}（后备母猪，可进配种选猪）；
+     * 公 → {@code boar}/{@code BOAR_ACTIVE}（种公猪）。否则肥猪转后备后 pig_type 仍 fattening，
+     * 配种选猪（{@code pig_type='sow'}）里看不到它。本方法写 {@code t_farm_pig_status_record}
+     * （old=原态 / new=种猪初始态 / event=INTRO）+ update {@code t_farm_pig}（pig_type + current_status），
+     * 与调用方（{@code PigIntroServiceImpl.introduceInternal}）同一 {@code @Transactional}。</p>
      *
-     * <p><b>仅对 fattening 来源猪转</b>：已是 HB 或母猪态（sow / boar 等非 fattening）的猪不重复转、
-     * 直接返回（幂等）。END 终态猪也不转。不走 {@link #fireEvent}——INTRO 不是状态机合法事件
-     * （{@code PigStateMachine} 对 INTRO 直接抛错），故手工写 record + update，与 createPig 初始
+     * <p><b>仅对 fattening 来源猪生效</b>：已重定为 sow / boar（含本方法幂等重跑）或 piglet → 直接返回。
+     * END 终态肥猪（已死亡 / 出栏）不转。{@code current_status} 空（旧脏数据）时 old=null 不抛。
+     * 不走 {@link #fireEvent}——INTRO 不是状态机合法事件，故手工写 record + update，与 createPig 初始
      * record 范式一致。</p>
      *
      * @param pigId 已存在猪只 ID

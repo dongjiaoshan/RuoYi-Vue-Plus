@@ -245,64 +245,51 @@ public class PigCoreServiceImpl implements IPigCoreService {
         if (pig == null) {
             throw new ServiceException(I18nMessages.t("pig.not_found", pigId));
         }
-        // 仅对 fattening 来源猪转 HB；非 fattening（sow/boar/piglet）或已 HB 或 END 终态 → 不转（幂等）
+        // 仅对 fattening 来源猪生效；已重定为 sow/boar（含本方法幂等重跑）或 piglet → 跳过
         if (!"fattening".equals(pig.getPigType())) {
             return;
         }
-        // 防御：fattening 猪 current_status 为 null（旧 import / 非 createPig 路径数据异常）→ 视为需初始化，
-        // 直接执行「(null) → HB」的状态转移（不走 parseLifecycle，避免 pig.state.invalid 抛错），
-        // 写 status_record（old_status=null）+ 更新 pig，与正常分支同事务。
-        if (StringUtils.isBlank(pig.getCurrentStatus())) {
-            LocalDateTime now = LocalDateTime.now();
-            PigStatusRecord record = new PigStatusRecord();
-            record.setPigId(pig.getId());
-            record.setEarNo(pig.getEarNo());
-            record.setOldStatus(null);
-            record.setNewStatus(PigLifecycle.HB.name());
-            record.setEventType(PigStatusEvent.INTRO.name());
-            record.setChangeTime(now);
-            statusRecordMapper.insert(record);
-
-            pig.setCurrentStatus(PigLifecycle.HB.name());
-            pig.setStatusStartedAt(now);
-            int affectedNull = pigMapper.updateById(pig);
-            if (affectedNull == 0) {
-                throw new ServiceException(I18nMessages.t("pig.update.optimistic_lock_conflict", pig.getId()));
-            }
-
-            eventPublisher.publishEvent(new PigStateChangedEvent(this, record, pig, null, PigLifecycle.HB));
-
-            log.warn("[FIX-INTRO-NULL-STATUS] internalIntroToReserve pigId={} earNo={} current_status was null, initialized to HB",
-                pig.getId(), pig.getEarNo());
+        // 终态（END）肥猪已死亡 / 出栏，不可转为种猪
+        if (StringUtils.isNotBlank(pig.getCurrentStatus())
+            && parseLifecycle(pig.getCurrentStatus(), pig.getId()).isTerminal()) {
             return;
         }
-        PigLifecycle from = parseLifecycle(pig.getCurrentStatus(), pig.getId());
-        if (from == PigLifecycle.HB || from.isTerminal()) {
-            return;
-        }
+
+        // 内部引种 = 把场内肥猪转为种猪：按性别重定 pig_type + 初始种猪态（邓博 2026-06-18：
+        // 否则母肥猪转后备后 pig_type 仍 fattening，配种选猪（pig_type='sow'）里看不到）。
+        //   母 → sow / HB（后备母猪，可进配种）；公 → boar / BOAR_ACTIVE（种公猪）。
+        boolean male = "M".equals(pig.getPigSex());
+        String newType = male ? "boar" : "sow";
+        PigLifecycle newStatus = male ? PigLifecycle.BOAR_ACTIVE : PigLifecycle.HB;
+        // current_status 空（旧 import 脏值）→ old_status=null 不抛 parseLifecycle；否则取原态
+        String oldStatus = StringUtils.isBlank(pig.getCurrentStatus()) ? null : pig.getCurrentStatus();
 
         LocalDateTime now = LocalDateTime.now();
         PigStatusRecord record = new PigStatusRecord();
         record.setPigId(pig.getId());
         record.setEarNo(pig.getEarNo());
-        record.setOldStatus(from.name());
-        record.setNewStatus(PigLifecycle.HB.name());
+        record.setOldStatus(oldStatus);
+        record.setNewStatus(newStatus.name());
         record.setEventType(PigStatusEvent.INTRO.name());
         record.setChangeTime(now);
-        record.setDurationDays(calcDurationDays(pig.getStatusStartedAt(), now));
+        if (oldStatus != null) {
+            record.setDurationDays(calcDurationDays(pig.getStatusStartedAt(), now));
+        }
         statusRecordMapper.insert(record);
 
-        pig.setCurrentStatus(PigLifecycle.HB.name());
+        pig.setPigType(newType);
+        pig.setCurrentStatus(newStatus.name());
         pig.setStatusStartedAt(now);
         int affected = pigMapper.updateById(pig);
         if (affected == 0) {
             throw new ServiceException(I18nMessages.t("pig.update.optimistic_lock_conflict", pig.getId()));
         }
 
-        eventPublisher.publishEvent(new PigStateChangedEvent(this, record, pig, from, PigLifecycle.HB));
+        PigLifecycle fromEnum = oldStatus == null ? null : PigLifecycle.valueOf(oldStatus);
+        eventPublisher.publishEvent(new PigStateChangedEvent(this, record, pig, fromEnum, newStatus));
 
-        log.info("[FIX-INTRO-001] internalIntroToReserve pigId={} earNo={} {} -> HB",
-            pig.getId(), pig.getEarNo(), from);
+        log.info("[FIX-INTRO-RECLASS] internalIntroToReserve pigId={} earNo={} type fattening->{} status {}->{}",
+            pig.getId(), pig.getEarNo(), newType, oldStatus, newStatus);
     }
 
     @Override
