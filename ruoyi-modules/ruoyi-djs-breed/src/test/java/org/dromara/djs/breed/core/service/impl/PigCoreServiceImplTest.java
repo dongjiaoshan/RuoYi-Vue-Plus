@@ -76,7 +76,8 @@ class PigCoreServiceImplTest {
         PigStateMachine sm = new PigStateMachine();
         service = new PigCoreServiceImpl(pigMapper, statusRecordMapper, sm, eventPublisher, barnMapper, penMapper,
             org.mockito.Mockito.mock(org.dromara.common.core.service.DictService.class),
-            org.mockito.Mockito.mock(org.dromara.djs.breed.production.service.IProductionCycleConfigService.class));
+            org.mockito.Mockito.mock(org.dromara.djs.breed.production.service.IProductionCycleConfigService.class),
+            org.mockito.Mockito.mock(org.dromara.djs.breed.breeding.mapper.BreedInfoMapper.class));
     }
 
     private Pig mkSow(Long id, PigLifecycle status) {

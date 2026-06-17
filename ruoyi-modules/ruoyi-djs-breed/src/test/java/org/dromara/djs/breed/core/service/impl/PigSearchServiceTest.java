@@ -78,7 +78,8 @@ class PigSearchServiceTest {
     @BeforeEach
     void setup() {
         service = new PigCoreServiceImpl(pigMapper, statusRecordMapper, stateMachine, publisher, barnMapper, penMapper,
-            org.mockito.Mockito.mock(org.dromara.common.core.service.DictService.class), productionCycleConfigService);
+            org.mockito.Mockito.mock(org.dromara.common.core.service.DictService.class), productionCycleConfigService,
+            org.mockito.Mockito.mock(org.dromara.djs.breed.breeding.mapper.BreedInfoMapper.class));
     }
 
     private Pig mkPig(long id, String earNo, String status, String sex, String type, Long barnId, Long penId) {
