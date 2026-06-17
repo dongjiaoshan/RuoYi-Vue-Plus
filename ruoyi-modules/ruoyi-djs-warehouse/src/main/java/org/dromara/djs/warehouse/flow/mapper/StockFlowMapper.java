@@ -142,4 +142,36 @@ public interface StockFlowMapper extends BaseMapperPlus<StockFlow, StockFlowVo> 
         + "WHERE del_flag = '0' AND nick_name LIKE CONCAT('%', #{nickName}, '%')")
     List<Long> selectUserIdsByNickName(@Param("nickName") String nickName);
 
+    /**
+     * 果蔬日损耗 compute-on-read 聚合（V4，果疏产品全流程处理.docx）：按自然日（{@code flow_date}）+
+     * 指定 {@code flow_type}，对 {@code belong_type='vegetable'} 产品流水 SUM change_quantity。
+     *
+     * <p>日损耗公式（service 端组装，不建汇总表）：
+     * {@code 日损耗 = 领用入库总重(veg_stock_in) − 打包消耗总重(pack_consume) − 退回(return_in) − 饲喂(loss)}。
+     * 各分量经本方法按 {@code flowType} 各查一次（V1 数据量小，单日按 flow_type 分桶聚合开销可忽略）。</p>
+     *
+     * <p>口径约束：果蔬「采收/饲喂」过程量当前权威落在 {@code t_warehouse_veg_handle_record}
+     * （按 {@code handle_time} 聚合到 {@code vegetable_handle}），并非全部写 {@code stock_flow}；
+     * 本聚合仅消费 stock_flow 中实际存在的果蔬流水类型，对应 flow_type 当日无流水时该分量为 0
+     * （优雅降级，不抛、不阻塞）。客户在毛菜处理间录入后数据自然完整。</p>
+     *
+     * <p>{@code flowDate} 传 {@code null} 时按当天（{@code CURDATE()}）聚合。租户隔离：
+     * 显式 {@code tenant_id='1001'}（V1 单租户，与 LocationStockMapper 同口径）。</p>
+     *
+     * @param flowType 流水类型（veg_stock_in / pack_consume / return_in / loss）
+     * @param flowDate 自然日（{@code null}=当天）
+     * @return 该自然日该 flow_type 果蔬流水 change_quantity 合计（无记录返 0，永不 null）
+     */
+    @Select("SELECT COALESCE(SUM(f.change_quantity), 0) "
+        + "  FROM t_warehouse_stock_flow f "
+        + "  JOIN t_warehouse_product_info p "
+        + "    ON p.id = f.product_id AND p.del_flag = '0' AND p.tenant_id = f.tenant_id "
+        + " WHERE f.flow_type   = #{flowType} "
+        + "   AND p.belong_type = 'vegetable' "
+        + "   AND DATE(f.flow_date) = COALESCE(DATE(#{flowDate}), CURDATE()) "
+        + "   AND f.del_flag    = '0' "
+        + "   AND f.tenant_id   = '1001'")
+    BigDecimal sumVegFlowByTypeAndDate(@Param("flowType") String flowType,
+                                       @Param("flowDate") java.util.Date flowDate);
+
 }

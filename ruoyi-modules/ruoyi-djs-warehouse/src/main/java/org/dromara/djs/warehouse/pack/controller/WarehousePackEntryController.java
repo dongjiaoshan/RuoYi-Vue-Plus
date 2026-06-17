@@ -19,8 +19,10 @@ import org.dromara.djs.warehouse.pack.domain.bo.WhiteBarOutBo;
 import org.dromara.djs.warehouse.pack.domain.vo.PackSubmitResultVo;
 import org.dromara.djs.warehouse.pack.domain.vo.ProductProductionVo;
 import org.dromara.djs.warehouse.pack.domain.vo.StoreDemandCopiesVo;
+import org.dromara.djs.warehouse.pack.domain.vo.VegDailyLossVo;
 import org.dromara.djs.warehouse.pack.service.IProductProductionService;
 import org.dromara.djs.warehouse.product.domain.ProductInhouse;
+import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -29,6 +31,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.util.Date;
 import java.util.List;
 
 /**
@@ -114,6 +117,22 @@ public class WarehousePackEntryController extends BaseController {
     @GetMapping("/storeDemand")
     public R<List<StoreDemandCopiesVo>> storeDemand(@RequestParam Long productId) {
         return R.ok(productionService.listStoreDemandCopies(productId));
+    }
+
+    /**
+     * 果蔬日损耗（V4，果疏产品全流程处理.docx）：按自然日聚合果蔬流水计算
+     * {@code 日损耗 = 领用入库 − 打包消耗 − 退回 − 饲喂}。compute-on-read 只读，不建汇总表。
+     *
+     * <p>果蔬打包录入页展示「当日损耗」。{@code statDate} 缺省取当天。</p>
+     *
+     * @param statDate 统计自然日（yyyy-MM-dd，可空 → 当天）
+     */
+    @SaCheckPermission("djs:warehouse:packEntry:veg")
+    @GetMapping("/vegDailyLoss")
+    public R<VegDailyLossVo> vegDailyLoss(
+        @RequestParam(required = false)
+        @DateTimeFormat(pattern = "yyyy-MM-dd") Date statDate) {
+        return R.ok(productionService.queryVegDailyLoss(statDate));
     }
 
     /**

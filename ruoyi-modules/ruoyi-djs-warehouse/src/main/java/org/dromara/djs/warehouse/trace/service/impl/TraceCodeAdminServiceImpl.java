@@ -48,7 +48,7 @@ import java.util.stream.Collectors;
  * 走基类范式（拿 baseMapper / 租户 helper），但<b>不调</b> {@code softDelete / deleteWithValidByIds}
  * （追溯码不删、事件不可篡改，doc/10 §F-TRC-01）。</p>
  *
- * <h3>JOIN 展示名（内存 fill，对齐 StoreCheckServiceImpl 范式）</h3>
+ * <h3>JOIN 展示名（内存 fill 范式）</h3>
  * <p>主表 {@code t_warehouse_trace_code} 只存 FK（product_id / store_id / plot_id / farm_id），名字非冗余列，
  * 用 {@code selectVoPage / selectVoList} 拿主表行后批量查关联表内存填名（避免 N+1）。
  * {@code productName} 模糊筛选在内存 JOIN 后过滤（主表无 product_name 列）。

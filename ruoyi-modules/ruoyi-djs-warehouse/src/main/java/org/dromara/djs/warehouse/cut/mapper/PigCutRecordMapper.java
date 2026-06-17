@@ -8,7 +8,10 @@ import org.dromara.djs.warehouse.cut.domain.PigCutRecord;
 import org.dromara.djs.warehouse.cut.domain.vo.PigCutRecordVo;
 
 import java.math.BigDecimal;
+import java.util.Collection;
 import java.util.Date;
+import java.util.List;
+import java.util.Map;
 
 /**
  * 分割工序记录 Mapper（WMS-PIG-002）。
@@ -62,5 +65,26 @@ public interface PigCutRecordMapper extends BaseMapperPlus<PigCutRecord, PigCutR
                            @Param("remark") String remark,
                            @Param("proofOssIds") String proofOssIds,
                            @Param("userId") Long userId);
+
+    /**
+     * 批量统计各白条的分割品总重（P7 统计 compute-on-read）。
+     *
+     * <p>口径：{@code product_inhouse.white_bar_id} 匹配且 {@code cut_part} 非空（仅算分割部位产品，
+     * 排除非分割来源的过程产品）。按 {@code white_bar_id} 聚合，一次 IN 查询避免 N+1。
+     * 返回每行 {@code {whiteBarId, totalWeight}}；无记录的白条不在结果中（service 端按缺失处理）。</p>
+     *
+     * @param whiteBarIds 白条 id 集合（service 已去重 + 非空过滤）
+     * @return 每行含 {@code whiteBarId}（Long）与 {@code totalWeight}（BigDecimal）
+     */
+    @Select("<script>"
+        + "SELECT white_bar_id AS whiteBarId, COALESCE(SUM(product_weight), 0) AS totalWeight "
+        + "  FROM t_warehouse_product_inhouse "
+        + " WHERE del_flag = '0' "
+        + "   AND cut_part IS NOT NULL AND cut_part != '' "
+        + "   AND white_bar_id IN "
+        + "   <foreach collection='whiteBarIds' item='id' open='(' separator=',' close=')'>#{id}</foreach> "
+        + " GROUP BY white_bar_id"
+        + "</script>")
+    List<Map<String, Object>> sumCutProductWeightByWhiteBarIds(@Param("whiteBarIds") Collection<Long> whiteBarIds);
 
 }

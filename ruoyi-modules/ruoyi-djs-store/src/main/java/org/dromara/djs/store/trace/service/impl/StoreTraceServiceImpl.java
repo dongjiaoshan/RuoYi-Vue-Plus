@@ -52,16 +52,25 @@ public class StoreTraceServiceImpl implements IStoreTraceService {
     private final BarInfoMapper barInfoMapper;
 
     /**
-     * 可追溯 picker = 当天确认收货白条（FIX-STORE-TRACE-BAR-001 测试问题 158）。
+     * 可追溯 picker = 当天入库白条（FIX-STORE-TRACE-BAR-001 测试问题 158）。
      *
-     * <p>口径改为「{@code t_warehouse_bar_info.status='in_stock'} 且 {@code DATE(in_time)=CURDATE()}」
+     * <p>口径：「{@code t_warehouse_bar_info.status='in_stock'} 且 {@code DATE(in_time)=CURDATE()}」
      * 的白条（含外购）：先按白条过滤（warehouse {@link BarInfoMapper}），再按白条耳号 enrich 猪只
      * 性别 / 品种品系 / 日龄（breed {@link IPigQueryService#listPigInfoByEarNos}，additive 只读方法，
      * <b>不</b>改 breed 共享分页选猪 mapper，避免跨域污染）。</p>
      *
+     * <p><b>「今日发货到门店白条」口径待补（S-C c1 链路评估结论）</b>：方案理想口径是
+     * 「shipment⋈bar（product 粒度，shipDate=今日 + storeId 不空）」，但当前 schema 下 shipment 到 bar
+     * 的唯一桥接是 {@code t_warehouse_product_production.whiteBarId/earNo}（冗余 FK），且该链路仅在
+     * <b>分割打包</b>路径回填——白条<b>整只</b>发货（{@code submitWhiteBarOut → updateStatusToShipOut}）
+     * 不保证产生带 earNo 的 product_production 行，现网 earNo/whiteBarId 多为 NULL。强行改成
+     * {@code bar ⋈ product_production ⋈ shipment} 的 INNER JOIN 会因 FK 大面积 NULL 而 picker 取空 /
+     * 漏白条，比现状「当天 in_stock 白条」更差。故 c1 轻量方案<b>保留当天入库白条口径</b>，
+     * shipment⋈bar 干净链路待 product_production.earNo/whiteBarId 回填完善后再切（见 blockers「链路待补」）。</p>
+     *
      * <p>外购白条无耳号或耳号无猪档案时，{@code pigSex/pigBreedLabel/ageDays} 留 null；
      * chip 主显值 {@code earNo} 为空时回退用 {@code barId}（保证选择器有可点项）。
-     * 当天无白条入库 → 空结果，属正常态（前端显示「暂无当天确认收货白条」），非 bug。</p>
+     * 当天无白条入库 → 空结果，属正常态（前端显示「暂无当天可追溯白条」），非 bug。</p>
      */
     @Override
     public TableDataInfo<TraceablePigVo> listTraceablePigs(PageQuery pageQuery) {
@@ -108,6 +117,17 @@ public class StoreTraceServiceImpl implements IStoreTraceService {
         return out;
     }
 
+    /**
+     * 门店现场按需生码（S-C c1 方案：部位字典驱动，<b>不</b>扣白条库存）。
+     *
+     * <p>部位卡口径：{@code bo.cutLabel} 来自字典 {@code djs_pork_cut_product}（5 部位），生码委托仓库域
+     * {@link ITraceService#genPorkOnsiteCode}，与门店打包间（{@code djs_product_workshop=5}）口径一致——
+     * 门店打包间属猪肉处理点，现场对当天入库白条按部位生追溯码，<b>纯生码不联动库存出入</b>。</p>
+     *
+     * <p><b>c2 不在本轮（保留现状）</b>：客户若要「打包扣白条库存 / 部位升级为 product 驱动」（即把 5 部位
+     * seed 成 product、PorkTracePanel 改产品驱动 + 生码同步扣 {@code t_warehouse_bar_info} 库存）才上 c2，
+     * 本轮仅保留 djs_pork_cut_product 字典驱动 + {@code genPorkOnsiteCode} 现状，不改 product 驱动。</p>
+     */
     @Override
     public String genOnsiteCode(StoreTraceOnsiteBo bo) {
         String produceCode = traceService.genPorkOnsiteCode(bo.getEarNo(), bo.getCutLabel(), bo.getWeight());

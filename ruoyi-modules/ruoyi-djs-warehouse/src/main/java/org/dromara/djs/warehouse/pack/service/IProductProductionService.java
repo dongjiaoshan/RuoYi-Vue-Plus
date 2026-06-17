@@ -11,8 +11,10 @@ import org.dromara.djs.warehouse.pack.domain.query.ProductProductionQuery;
 import org.dromara.djs.warehouse.pack.domain.vo.ProductProductionGroupVo;
 import org.dromara.djs.warehouse.pack.domain.vo.ProductProductionVo;
 import org.dromara.djs.warehouse.pack.domain.vo.StoreDemandCopiesVo;
+import org.dromara.djs.warehouse.pack.domain.vo.VegDailyLossVo;
 import org.dromara.djs.warehouse.product.domain.ProductInhouse;
 
+import java.util.Date;
 import java.util.List;
 
 /**
@@ -123,5 +125,17 @@ public interface IProductProductionService {
      * @return 各门店未发货份数（无则空 List）
      */
     List<StoreDemandCopiesVo> listStoreDemandCopies(Long productId);
+
+    /**
+     * 果蔬日损耗 compute-on-read 查询（V4，果疏产品全流程处理.docx）。
+     *
+     * <p>按自然日聚合果蔬（{@code belong_type='vegetable'}）出入库流水，
+     * 计算 {@code 日损耗 = 领用入库 − 打包消耗 − 退回 − 饲喂}。不建汇总表，纯只读聚合。
+     * 数据残缺（对应 flow_type 当日无流水）时该分量为 0，优雅降级不阻塞。</p>
+     *
+     * @param statDate 统计自然日（{@code null}=当天）
+     * @return 果蔬日损耗（永不 null）
+     */
+    VegDailyLossVo queryVegDailyLoss(Date statDate);
 
 }

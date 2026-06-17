@@ -63,6 +63,68 @@ public class PigCutRecordVo implements Serializable {
      */
     private BigDecimal remainingWeight;
 
+    // ===== P5 外购标注（compute-on-read，按 white_bar_id 关联 bar_info 派生，无持久列）=====
+
+    /**
+     * 是否外购普通白条（派生：bar_info.supplier_id != null）。
+     * true = 外购普通白条（无耳号，展示供应商名）；false/null = 自养（展示耳号）。
+     */
+    private Boolean isOutsource;
+
+    /**
+     * 供应商名称（仅外购，按 bar_info.supplier_id 批量回填；自养为 null）。
+     */
+    @ExcelProperty(value = "供应商")
+    private String supplierName;
+
+    // ===== P7 统计指标（compute-on-read，按 white_bar_id 关联 bar_info + product_inhouse 派生，无持久列）=====
+
+    /**
+     * 头皮肉出品率（= bar.arriveWeight / bar.marketingWeight）。
+     * 分母为 0 或缺失时返 null（前端显「—」）。
+     */
+    @ExcelProperty(value = "头皮肉出品率")
+    private BigDecimal headSkinYieldRate;
+
+    /**
+     * 白条出品率（= bar.inWeight / bar.arriveWeight）。
+     * 分母为 0 或缺失时返 null。
+     */
+    @ExcelProperty(value = "白条出品率")
+    private BigDecimal whiteBarYieldRate;
+
+    /**
+     * 预冷损耗量 kg（= bar.inWeight − bar.outWeight）。
+     */
+    @ExcelProperty(value = "预冷损耗量(kg)")
+    private BigDecimal precoolLossWeight;
+
+    /**
+     * 预冷损耗率（= (bar.inWeight − bar.outWeight) / bar.inWeight）。
+     * 分母为 0 或缺失时返 null。
+     */
+    @ExcelProperty(value = "预冷损耗率")
+    private BigDecimal precoolLossRate;
+
+    /**
+     * 冷库停留时长（分钟，= bar.outTime − bar.inTime）。
+     * 任一时间缺失时返 null。
+     */
+    @ExcelProperty(value = "冷库停留(min)")
+    private Long coldStorageMinutes;
+
+    /**
+     * 分割品总重 kg（= Σ product_inhouse.product_weight，white_bar_id 匹配且 cut_part 非空）。
+     */
+    @ExcelProperty(value = "分割品总重(kg)")
+    private BigDecimal cutProductTotalWeight;
+
+    /**
+     * 分割损耗 kg（= bar.outWeight − 分割品总重）。
+     */
+    @ExcelProperty(value = "分割损耗(kg)")
+    private BigDecimal cutLossWeight;
+
     @ExcelProperty(value = "滴水损失(kg)")
     private BigDecimal dripLoss;
 

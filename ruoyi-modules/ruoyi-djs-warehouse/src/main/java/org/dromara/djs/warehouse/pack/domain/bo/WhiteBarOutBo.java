@@ -36,8 +36,11 @@ public class WhiteBarOutBo {
     private BigDecimal productWeight;
 
     /**
-     * 指定门店 ID（猪只指定门店，工人 StorePicker 选；可空，清点时绑定）。
+     * 指定门店 ID（发货月台领用必填——发货月台关联门店；工人 StorePicker 选）。
+     *
+     * <p>猪肉全闭环 Part I P6：发货月台出库即发往某门店，故由可空收紧为必填 + service 校验门店存在。</p>
      */
+    @NotNull(message = "请选择发货门店")
     private Long storeId;
 
     /**

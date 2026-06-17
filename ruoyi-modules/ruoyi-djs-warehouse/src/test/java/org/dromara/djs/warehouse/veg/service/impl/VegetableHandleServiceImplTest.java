@@ -4,6 +4,8 @@ import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.satoken.utils.LoginHelper;
 import org.dromara.djs.common.encoder.BizCodeType;
 import org.dromara.djs.common.encoder.IBizCodeGenerator;
+import org.dromara.djs.plant.crop.domain.CropInfo;
+import org.dromara.djs.plant.crop.mapper.CropInfoMapper;
 import org.dromara.djs.warehouse.flow.domain.StockFlow;
 import org.dromara.djs.warehouse.flow.mapper.StockFlowMapper;
 import org.dromara.djs.warehouse.location.domain.LocationInfo;
@@ -78,6 +80,8 @@ class VegetableHandleServiceImplTest {
     private IBizCodeGenerator bizCodeGenerator;
     @Mock
     private org.dromara.djs.common.image.service.ImageUrlResolver imageUrlResolver;
+    @Mock
+    private CropInfoMapper cropInfoMapper;
 
     private VegetableHandleServiceImpl service;
 
@@ -87,7 +91,7 @@ class VegetableHandleServiceImplTest {
     void setup() {
         service = new VegetableHandleServiceImpl(
             handleMapper, recordMapper, plantingRecordMapper, stockFlowMapper,
-            locationInfoMapper, bizCodeGenerator, imageUrlResolver);
+            locationInfoMapper, bizCodeGenerator, imageUrlResolver, cropInfoMapper);
         loginHelperMock = Mockito.mockStatic(LoginHelper.class);
         loginHelperMock.when(LoginHelper::getUserId).thenReturn(9001L);
     }
@@ -400,6 +404,119 @@ class VegetableHandleServiceImplTest {
         verify(handleMapper).updateById(updCap.capture());
         assertThat(updCap.getValue().getIsFinish()).isEqualTo(1);
         assertThat(updCap.getValue().getHandleStatus()).isEqualTo("done");
+    }
+
+    // -------- 作物→产品转换 related_product（果疏全流程 Part II） --------
+
+    @Test
+    @DisplayName("采收建汇总行：crop.related_product 命中 → vegetable_handle.product_id 取该映射值")
+    void testPick_ResolvesProductIdFromCropRelatedProduct() {
+        when(plantingRecordMapper.selectById(60001L)).thenReturn(samplePlanting("pending"));
+        when(handleMapper.selectByPlantingRecordId(60001L)).thenReturn(null);
+        // 作物 12001 配置了 related_product=88001（→ t_warehouse_product_info.id，belong_type=vegetable）
+        CropInfo crop = new CropInfo();
+        crop.setId(12001L);
+        crop.setRelatedProduct(88001L);
+        when(cropInfoMapper.selectById(12001L)).thenReturn(crop);
+        when(handleMapper.insert(any(VegetableHandle.class))).thenAnswer(inv -> {
+            VegetableHandle h = inv.getArgument(0);
+            h.setId(70001L);
+            return 1;
+        });
+
+        HandleRecordSubmitBo bo = new HandleRecordSubmitBo();
+        bo.setPlantingRecordId(60001L);
+        bo.setRecordType(1);
+        bo.setRecordWeight(new BigDecimal("50.000"));
+
+        service.submitHandleRecord(bo);
+
+        // vegetable_handle INSERT 时 product_id = crop.related_product，重量不变
+        ArgumentCaptor<VegetableHandle> handleCap = ArgumentCaptor.forClass(VegetableHandle.class);
+        verify(handleMapper, times(1)).insert(handleCap.capture());
+        assertThat(handleCap.getValue().getProductId()).isEqualTo(88001L);
+        assertThat(handleCap.getValue().getPickedWeight()).isEqualByComparingTo("0");
+    }
+
+    @Test
+    @DisplayName("采收建汇总行：crop.related_product 为空 → product_id 降级（不抛、不阻塞采摘）")
+    void testPick_RelatedProductNull_Degrades() {
+        PlantingRecord planting = samplePlanting("pending");
+        planting.setProductId(null); // 旧来源也空
+        when(plantingRecordMapper.selectById(60001L)).thenReturn(planting);
+        when(handleMapper.selectByPlantingRecordId(60001L)).thenReturn(null);
+        // 作物未配 related_product（现网全 NULL 场景）
+        CropInfo crop = new CropInfo();
+        crop.setId(12001L);
+        crop.setRelatedProduct(null);
+        when(cropInfoMapper.selectById(12001L)).thenReturn(crop);
+        when(handleMapper.insert(any(VegetableHandle.class))).thenAnswer(inv -> {
+            VegetableHandle h = inv.getArgument(0);
+            h.setId(70001L);
+            return 1;
+        });
+
+        HandleRecordSubmitBo bo = new HandleRecordSubmitBo();
+        bo.setPlantingRecordId(60001L);
+        bo.setRecordType(1);
+        bo.setRecordWeight(new BigDecimal("50.000"));
+
+        // 不抛：降级保持现状（product_id 回退到旧来源 null）
+        Long handleId = service.submitHandleRecord(bo);
+        assertThat(handleId).isEqualTo(70001L);
+
+        ArgumentCaptor<VegetableHandle> handleCap = ArgumentCaptor.forClass(VegetableHandle.class);
+        verify(handleMapper, times(1)).insert(handleCap.capture());
+        assertThat(handleCap.getValue().getProductId()).isNull();
+        // 采摘聚合仍正常落库
+        verify(recordMapper, times(1)).insert(any(HandleRecord.class));
+        verify(handleMapper, times(1)).updateById(any(VegetableHandle.class));
+    }
+
+    @Test
+    @DisplayName("处理-入库：stock_flow.product_id 取作物 related_product 映射值")
+    void testHandle_StockIn_FlowProductIdFromCrop() {
+        when(plantingRecordMapper.selectById(60001L)).thenReturn(samplePlanting("processing"));
+        VegetableHandle existing = new VegetableHandle();
+        existing.setId(70001L);
+        existing.setPlantingRecordId(60001L);
+        existing.setPlotId(11001L);
+        existing.setCropId(12001L);
+        existing.setProductId(88001L); // 建汇总行时已解析存入
+        existing.setPickedWeight(new BigDecimal("50.000"));
+        existing.setHandledWeight(BigDecimal.ZERO);
+        existing.setFeedWeight(BigDecimal.ZERO);
+        existing.setSendPlatformWeight(BigDecimal.ZERO);
+        existing.setStockInWeight(BigDecimal.ZERO);
+        existing.setLossWeight(BigDecimal.ZERO);
+        existing.setHandleStatus("processing");
+        when(handleMapper.selectByPlantingRecordId(60001L)).thenReturn(existing);
+
+        CropInfo crop = new CropInfo();
+        crop.setId(12001L);
+        crop.setRelatedProduct(88001L);
+        when(cropInfoMapper.selectById(12001L)).thenReturn(crop);
+
+        LocationInfo loc = new LocationInfo();
+        loc.setId(90001L);
+        when(locationInfoMapper.selectById(90001L)).thenReturn(loc);
+        when(bizCodeGenerator.generate(eq(BizCodeType.STOCK_FLOW_NO), anyMap()))
+            .thenReturn("F2606070IN0001");
+
+        HandleRecordSubmitBo bo = new HandleRecordSubmitBo();
+        bo.setPlantingRecordId(60001L);
+        bo.setRecordType(2);
+        bo.setHandleTarget(1);
+        bo.setRecordWeight(new BigDecimal("30.000"));
+        bo.setLocationId(90001L);
+
+        service.submitHandleRecord(bo);
+
+        ArgumentCaptor<StockFlow> flowCap = ArgumentCaptor.forClass(StockFlow.class);
+        verify(stockFlowMapper, times(1)).insert(flowCap.capture());
+        assertThat(flowCap.getValue().getProductId()).isEqualTo(88001L);
+        // 重量不变
+        assertThat(flowCap.getValue().getChangeNum()).isEqualByComparingTo("30.000");
     }
 
     @Test

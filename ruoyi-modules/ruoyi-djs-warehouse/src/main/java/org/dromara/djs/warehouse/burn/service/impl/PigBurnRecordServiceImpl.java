@@ -179,17 +179,17 @@ public class PigBurnRecordServiceImpl
             throw new ServiceException("入冻品库位不存在：" + bo.getLocationId());
         }
         Map<Long, ProductInfo> typeMap = loadWhiteBarTypeMap();
-        // 单品上限兜底（MP-BURN 决策 #4）：单个产品入库重量不能超过出栏重量（防直连 API 绕过前端拦截）。
-        // 累计校验之前先拦单品，给更早更明确的报错。
-        BigDecimal marketingWeight = bar.getMarketingWeight();
+        // 单品上限兜底（MP-BURN 决策 #4）：单个产品入库重量不能超过头皮肉重量（到场重 arrive_weight，防直连 API 绕过前端拦截）。
+        // 累计校验之前先拦单品，给更早更明确的报错。arrive 为 null（未称重）时跳过本校验（向后兼容）。
+        BigDecimal headSkinWeight = bar.getArriveWeight();
         BigDecimal inWeightTotal = BigDecimal.ZERO;
         for (PigBurnRecordBo.ProductTypeItem item : bo.getProductTypeItems()) {
             if (!typeMap.containsKey(item.getProductId())) {
                 throw new ServiceException("无效的白条产品类型：" + item.getProductId());
             }
-            if (marketingWeight != null && item.getWeight() != null
-                && item.getWeight().compareTo(marketingWeight) > 0) {
-                throw new ServiceException("单个产品重量不能超过出栏重量");
+            if (headSkinWeight != null && item.getWeight() != null
+                && item.getWeight().compareTo(headSkinWeight) > 0) {
+                throw new ServiceException("单个产品重量不能超过头皮肉重量");
             }
             inWeightTotal = inWeightTotal.add(item.getWeight());
         }
@@ -478,10 +478,10 @@ public class PigBurnRecordServiceImpl
         if (headCount > 1) {
             throw new ServiceException("猪头最多入库 1 次");
         }
-        // 累计入库总重 ≤ 出栏重量
-        BigDecimal marketingWeight = bar.getMarketingWeight();
-        if (marketingWeight != null && inWeightTotal.compareTo(marketingWeight) > 0) {
-            throw new ServiceException("已录入产品总重不能超过出栏重量");
+        // 累计入库总重 ≤ 头皮肉重量（到场重 arrive_weight）。arrive 为 null（未称重）时跳过本校验（向后兼容）。
+        BigDecimal headSkinWeight = bar.getArriveWeight();
+        if (headSkinWeight != null && inWeightTotal.compareTo(headSkinWeight) > 0) {
+            throw new ServiceException("已录入产品总重不能超过头皮肉重量");
         }
 
         // ---------- Step 3：UPDATE bar status singing → in_stock（燎毛处理完成=已入库，乐观锁）----------
@@ -513,11 +513,18 @@ public class PigBurnRecordServiceImpl
     }
 
     /**
-     * 标准白条产品类型列表（belong_type='white_bar' + product_id 前缀 PROD-WHITE-BAR-，排除测试数据）。
+     * 燎毛间车间码（{@code t_warehouse_product_info.product_workshop}，字典 djs_product_workshop = 1）。
+     */
+    private static final Integer PRODUCT_WORKSHOP_BURN = 1;
+
+    /**
+     * 标准白条产品类型列表（product_workshop=1 燎毛间 + belong_type='white_bar' + product_id 前缀
+     * PROD-WHITE-BAR- 双条件，排除非燎毛车间 / 测试数据）。
      */
     private List<ProductInfo> loadWhiteBarTypes() {
         return productInfoMapper.selectList(
             new LambdaQueryWrapper<ProductInfo>()
+                .eq(ProductInfo::getProductWorkshop, PRODUCT_WORKSHOP_BURN)
                 .eq(ProductInfo::getBelongType, WHITE_BAR_BELONG_TYPE)
                 .likeRight(ProductInfo::getProductId, WHITE_BAR_CODE_PREFIX)
                 .orderByAsc(ProductInfo::getProductId));

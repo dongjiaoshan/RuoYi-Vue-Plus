@@ -23,7 +23,11 @@ import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
 import org.dromara.djs.warehouse.product.mapper.ProductInhouseMapper;
 import org.dromara.djs.warehouse.stock.domain.LocationStock;
 import org.dromara.djs.warehouse.stock.mapper.LocationStockMapper;
+import com.baomidou.mybatisplus.core.MybatisConfiguration;
+import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
+import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
@@ -88,18 +92,30 @@ class ProductProductionServiceImplTest {
     @Mock private org.dromara.djs.common.store.mapper.StoreMapper storeMapper;
     @Mock private org.dromara.djs.plant.plot.mapper.PlotInfoMapper plotInfoMapper;
     @Mock private org.dromara.djs.warehouse.demand.mapper.DemandManageMapper demandManageMapper;
+    @Mock private org.dromara.djs.warehouse.cross.mapper.BarInfoMapper barInfoMapper;
     @Mock private IBizCodeGenerator bizCodeGenerator;
     @Mock private org.dromara.djs.warehouse.trace.service.ITraceService traceService;
 
     private ProductProductionServiceImpl service;
     private MockedStatic<LoginHelper> loginHelperMock;
 
+    @BeforeAll
+    static void initMpEntityCache() {
+        // MyBatis-Plus 单测 entity cache 预热（coder-mp-entity-cache-test）：
+        // checkVegMaterialIfConfigured/deductPorkMaterialIfConfigured → sumProductStock 用
+        // LambdaQueryWrapper<LocationStock>，无 Spring 上下文时 TableInfoHelper 解析不到 → 预热。
+        MybatisConfiguration cfg = new MybatisConfiguration();
+        MapperBuilderAssistant assistant = new MapperBuilderAssistant(cfg, "");
+        assistant.setCurrentNamespace("test");
+        TableInfoHelper.initTableInfo(assistant, LocationStock.class);
+    }
+
     @BeforeEach
     void setup() {
         service = new ProductProductionServiceImpl(
             productionMapper, inhouseMapper, productInfoMapper, giftBoxMapper,
             locationInfoMapper, locationStockMapper, stockFlowMapper, storeMapper, plotInfoMapper,
-            demandManageMapper, bizCodeGenerator, traceService);
+            demandManageMapper, barInfoMapper, bizCodeGenerator, traceService);
 
         loginHelperMock = Mockito.mockStatic(LoginHelper.class);
         loginHelperMock.when(LoginHelper::getUserId).thenReturn(9001L);
@@ -527,6 +543,7 @@ class ProductProductionServiceImplTest {
         bo.setSourceInhouseId(70001L);
         bo.setProductWeight(new BigDecimal("12.000"));
         bo.setStoreId(9L);
+        when(storeMapper.selectById(9L)).thenReturn(new org.dromara.djs.common.store.domain.Store());
 
         Long id = service.submitWhiteBarOut(bo);
 
@@ -540,6 +557,121 @@ class ProductProductionServiceImplTest {
         assertThat(saved.getEarNo()).isEqualTo("010126050101");
         assertThat(saved.getProductWeight()).isEqualByComparingTo("12.000");
         verify(inhouseMapper, times(1)).deleteById(70001L); // consumeInhouse
+    }
+
+    // ============================================================
+    // veg pack — product_material 库存校验（V4 果疏全流程 Part II）
+    // ============================================================
+
+    @Test
+    @DisplayName("submitVegPack: 配 product_material 且原材料库存 < 打包重量 → 抛「原材料库存不足」+ production 不 INSERT")
+    void testVegPack_MaterialStockInsufficient() {
+        when(inhouseMapper.selectById(70001L)).thenReturn(sampleVegSource());
+        ProductInfo p = sampleVegProduct();
+        p.setProductMaterial(60001L); // 关联来源原材料果蔬产品
+        when(productInfoMapper.selectById(60010L)).thenReturn(p);
+        // 原材料 60001 当前库存合计 10kg（< 打包重量 30.5kg）
+        when(locationStockMapper.selectList(any())).thenReturn(List.of(stockRow(new BigDecimal("10.000"))));
+        when(productInfoMapper.selectById(60001L)).thenReturn(sampleVegProduct()); // 原材料名回显
+
+        assertThatThrownBy(() -> service.submitVegPack(sampleVegBo()))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("原材料库存不足");
+
+        verify(productionMapper, never()).insert(any(ProductProduction.class));
+    }
+
+    @Test
+    @DisplayName("submitVegPack: 配 product_material 且原材料库存 >= 打包重量 → 通过（不扣减原材料，沿用 consumeInhouse）")
+    void testVegPack_MaterialStockSufficient_NoExtraDeduct() {
+        when(inhouseMapper.selectById(70001L)).thenReturn(sampleVegSource());
+        ProductInfo p = sampleVegProduct();
+        p.setProductMaterial(60001L);
+        when(productInfoMapper.selectById(60010L)).thenReturn(p);
+        when(locationInfoMapper.selectById(90001L)).thenReturn(sampleLocation());
+        // 原材料库存 100kg >= 打包 30.5kg
+        when(locationStockMapper.selectList(any())).thenReturn(List.of(stockRow(new BigDecimal("100.000"))));
+        when(productionMapper.insert(any(ProductProduction.class))).thenAnswer(inv -> {
+            ((ProductProduction) inv.getArgument(0)).setId(80011L);
+            return 1;
+        });
+        when(locationStockMapper.addByProductLocation(any(), any(), any(), any())).thenReturn(1);
+        when(inhouseMapper.deleteById(any())).thenReturn(1);
+
+        Long id = service.submitVegPack(sampleVegBo());
+
+        assertThat(id).isEqualTo(80011L);
+        // 果蔬只校验不扣减：来源消耗走 consumeInhouse（deleteById），不调原材料 deductByProductLocation
+        verify(inhouseMapper, times(1)).deleteById(70001L);
+        verify(locationStockMapper, never()).deductByProductLocation(any(), any(), any(), any());
+    }
+
+    @Test
+    @DisplayName("submitVegPack: 未配 product_material → 降级跳过校验，正常打包（向后兼容现有数据全 NULL）")
+    void testVegPack_NoMaterialConfigured_Degrades() {
+        when(inhouseMapper.selectById(70001L)).thenReturn(sampleVegSource());
+        when(productInfoMapper.selectById(60010L)).thenReturn(sampleVegProduct()); // productMaterial=null
+        when(locationInfoMapper.selectById(90001L)).thenReturn(sampleLocation());
+        when(productionMapper.insert(any(ProductProduction.class))).thenAnswer(inv -> {
+            ((ProductProduction) inv.getArgument(0)).setId(80012L);
+            return 1;
+        });
+        when(locationStockMapper.addByProductLocation(any(), any(), any(), any())).thenReturn(1);
+        when(inhouseMapper.deleteById(any())).thenReturn(1);
+
+        Long id = service.submitVegPack(sampleVegBo());
+
+        assertThat(id).isEqualTo(80012L);
+        // 未配料 → 不查原材料库存（不调 selectList 做 sumProductStock）
+        verify(locationStockMapper, never()).selectList(any());
+    }
+
+    // ============================================================
+    // veg daily loss (V4 compute-on-read)
+    // ============================================================
+
+    @Test
+    @DisplayName("queryVegDailyLoss: 公式 = 领用入库 − 打包消耗 − 退回 − 饲喂；分量缺失兜 0")
+    void testVegDailyLoss_Formula() {
+        when(stockFlowMapper.sumVegFlowByTypeAndDate(eq("veg_stock_in"), any()))
+            .thenReturn(new BigDecimal("100.000"));
+        when(stockFlowMapper.sumVegFlowByTypeAndDate(eq("pack_consume"), any()))
+            .thenReturn(new BigDecimal("70.000"));
+        when(stockFlowMapper.sumVegFlowByTypeAndDate(eq("return_in"), any()))
+            .thenReturn(new BigDecimal("5.000"));
+        // loss(饲喂) 当日无流水 → mapper 返 null，service 兜 0
+        when(stockFlowMapper.sumVegFlowByTypeAndDate(eq("loss"), any())).thenReturn(null);
+
+        org.dromara.djs.warehouse.pack.domain.vo.VegDailyLossVo vo = service.queryVegDailyLoss(null);
+
+        assertThat(vo.getPickedWeight()).isEqualByComparingTo("100.000");
+        assertThat(vo.getPackedWeight()).isEqualByComparingTo("70.000");
+        assertThat(vo.getReturnedWeight()).isEqualByComparingTo("5.000");
+        assertThat(vo.getFeedWeight()).isEqualByComparingTo("0");
+        // 100 - 70 - 5 - 0 = 25
+        assertThat(vo.getLossWeight()).isEqualByComparingTo("25.000");
+        assertThat(vo.getStatDate()).isNotBlank();
+    }
+
+    @Test
+    @DisplayName("queryVegDailyLoss: 负损耗（打包+退回 > 领用，录入未配齐）→ 归零")
+    void testVegDailyLoss_NegativeClampedToZero() {
+        when(stockFlowMapper.sumVegFlowByTypeAndDate(eq("veg_stock_in"), any()))
+            .thenReturn(new BigDecimal("10.000"));
+        when(stockFlowMapper.sumVegFlowByTypeAndDate(eq("pack_consume"), any()))
+            .thenReturn(new BigDecimal("50.000"));
+        when(stockFlowMapper.sumVegFlowByTypeAndDate(eq("return_in"), any())).thenReturn(BigDecimal.ZERO);
+        when(stockFlowMapper.sumVegFlowByTypeAndDate(eq("loss"), any())).thenReturn(BigDecimal.ZERO);
+
+        org.dromara.djs.warehouse.pack.domain.vo.VegDailyLossVo vo = service.queryVegDailyLoss(null);
+
+        assertThat(vo.getLossWeight()).isEqualByComparingTo("0");
+    }
+
+    private LocationStock stockRow(BigDecimal stock) {
+        LocationStock s = new LocationStock();
+        s.setProductStock(stock);
+        return s;
     }
 
     @Test

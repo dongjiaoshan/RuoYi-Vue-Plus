@@ -15,6 +15,7 @@ import org.dromara.djs.common.store.domain.Store;
 import org.dromara.djs.common.store.mapper.StoreMapper;
 import org.dromara.djs.plant.plot.domain.PlotInfo;
 import org.dromara.djs.plant.plot.mapper.PlotInfoMapper;
+import org.dromara.djs.warehouse.cross.mapper.BarInfoMapper;
 import org.dromara.djs.warehouse.demand.mapper.DemandManageMapper;
 import org.dromara.djs.warehouse.flow.domain.StockFlow;
 import org.dromara.djs.warehouse.flow.mapper.StockFlowMapper;
@@ -30,6 +31,7 @@ import org.dromara.djs.warehouse.pack.domain.query.ProductProductionQuery;
 import org.dromara.djs.warehouse.pack.domain.vo.ProductProductionGroupVo;
 import org.dromara.djs.warehouse.pack.domain.vo.ProductProductionVo;
 import org.dromara.djs.warehouse.pack.domain.vo.StoreDemandCopiesVo;
+import org.dromara.djs.warehouse.pack.domain.vo.VegDailyLossVo;
 import org.dromara.djs.warehouse.pack.mapper.ProductProductionMapper;
 import org.dromara.djs.warehouse.pack.service.IProductProductionService;
 import org.dromara.djs.warehouse.product.domain.GiftBox;
@@ -130,6 +132,14 @@ public class ProductProductionServiceImpl
     private static final String BELONG_TYPE_WHITE_BAR = "white_bar";
     private static final String BELONG_TYPE_PORK = "pork";
 
+    /** 果蔬业态（V4 果蔬打包 product_material 校验 + 日损耗聚合）。 */
+    private static final String BELONG_TYPE_VEGETABLE = "vegetable";
+
+    /** V4 果蔬日损耗聚合 flow_type（领用入库 / 打包消耗 / 退回 / 饲喂）。 */
+    private static final String FLOW_TYPE_VEG_STOCK_IN = "veg_stock_in";
+    private static final String FLOW_TYPE_RETURN_IN = "return_in";
+    private static final String FLOW_TYPE_LOSS = "loss";
+
     private final ProductInhouseMapper productInhouseMapper;
     private final ProductInfoMapper productInfoMapper;
     private final GiftBoxMapper giftBoxMapper;
@@ -139,6 +149,7 @@ public class ProductProductionServiceImpl
     private final StoreMapper storeMapper;
     private final PlotInfoMapper plotInfoMapper;
     private final DemandManageMapper demandManageMapper;
+    private final BarInfoMapper barInfoMapper;
     private final IBizCodeGenerator bizCodeGenerator;
     private final ITraceService traceService;
 
@@ -152,6 +163,7 @@ public class ProductProductionServiceImpl
                                         StoreMapper storeMapper,
                                         PlotInfoMapper plotInfoMapper,
                                         DemandManageMapper demandManageMapper,
+                                        BarInfoMapper barInfoMapper,
                                         IBizCodeGenerator bizCodeGenerator,
                                         ITraceService traceService) {
         super(baseMapper);
@@ -164,6 +176,7 @@ public class ProductProductionServiceImpl
         this.storeMapper = storeMapper;
         this.plotInfoMapper = plotInfoMapper;
         this.demandManageMapper = demandManageMapper;
+        this.barInfoMapper = barInfoMapper;
         this.bizCodeGenerator = bizCodeGenerator;
         this.traceService = traceService;
     }
@@ -181,6 +194,12 @@ public class ProductProductionServiceImpl
         ProductInhouse src = requireActiveInhouse(bo.getSourceInhouseId());
         // Step 2：校验目标产品存在 + 是发货品
         ProductInfo product = requireDeliveryProduct(bo.getProductId());
+        // Step 2.5：果蔬打包来源原材料库存校验（V4，果疏产品全流程处理.docx）：
+        // 目标果蔬成品若配了 product_material（关联来源原材料果蔬产品），则按 doc 规则
+        // "领用果蔬重量（来源原材料库存）< 打包成品重量 → 拦截禁止"。
+        // fail-fast 放在任何写操作之前；未配 product_material → 降级跳过校验 + warn（不阻塞）。
+        // 注意：果蔬不在此扣减原材料库存（来源消耗沿用 consumeInhouse 整 row 软删，避免重复扣）。
+        checkVegMaterialIfConfigured(product, bo.getProductWeight());
         // Step 3：入库库位（前端收银台不采集，可空 → 默认取产品配置库位/首个可用库位兜底）
         Long locationId = resolveLocationId(bo.getLocationId(), product);
 
@@ -355,6 +374,12 @@ public class ProductProductionServiceImpl
         upsertLocationStock(locationId, p, bo.getProductWeight(), userId);
         consumeInhouse(src);
 
+        // 肉品打包原材料库存校验 + 扣减（猪肉全闭环 Part I P8）：
+        // 仅 belong_type=pork 且目标产品配了 product_material（关联原材料）时校验，
+        // 生产重量 > 原材料库存 → 抛 ServiceException（前端弹窗禁止）。未配 product_material 降级跳过（不阻塞）。
+        // 分支隔离：仅 pork + 配料命中，干货/果蔬/其他 dry 打包现状不受影响。
+        deductPorkMaterialIfConfigured(product, bo.getProductWeight(), userId, now);
+
         // 生成追溯码回填 + 写 in_stock 事件（TRC-CORE-001）
         fillTraceCode(p, src.getEarNo(), src.getPlotId());
 
@@ -436,6 +461,11 @@ public class ProductProductionServiceImpl
         if (!BELONG_TYPE_WHITE_BAR.equals(belongType) && !BELONG_TYPE_PORK.equals(belongType)) {
             throw new ServiceException("出库发货仅限白条/猪肉，当前来源业态=" + belongType);
         }
+        // 发货月台出库即发往某门店：校验门店存在（BO 已 @NotNull 兜空，此处兜「门店已删/不存在」）
+        Store store = storeMapper.selectById(bo.getStoreId());
+        if (store == null) {
+            throw new ServiceException("发货门店不存在或已删除：" + bo.getStoreId());
+        }
 
         ProductProduction p = new ProductProduction();
         p.setProduceDate(java.sql.Date.valueOf(LocalDate.now()));
@@ -466,6 +496,18 @@ public class ProductProductionServiceImpl
             upsertLocationStock(locationId, p, bo.getProductWeight(), userId);
         }
         consumeInhouse(src);
+
+        // 发货月台领用回写 bar 出库基础数据（猪肉全闭环 Part I P6）：来源为燎毛白条整只（whiteBarId 非空）时，
+        // 同事务把对应 t_warehouse_bar_info 推进到 cut_done + out_method=1 + out_time/out_weight。
+        // 独立于上方 inhouse 是否有 location（白条整只 inhouse 常无 locationId，但 bar 出库基础数据仍需补齐）。
+        // affectedRows==0（bar 不在 in_stock 态：已被领用/出库）→ 静默跳过（基础数据补写，非主链路硬阻塞）。
+        Long whiteBarId = src.getWhiteBarId();
+        if (whiteBarId != null) {
+            int barAffected = barInfoMapper.updateStatusToShipOut(whiteBarId, now, bo.getProductWeight(), userId);
+            log.info("[WHITEBAR-SHIP-P6] bar ship-out writeback barId={} affected={} (0=不在in_stock态,跳过)",
+                whiteBarId, barAffected);
+        }
+
         // 生成追溯码回填 + 写 in_stock 事件（TRC-CORE-001 pork 链首个 genCode 入口）
         fillTraceCode(p, src.getEarNo(), null);
 
@@ -617,6 +659,38 @@ public class ProductProductionServiceImpl
             return List.of();
         }
         return demandManageMapper.selectStoreDemandCopies(productId);
+    }
+
+    @Override
+    public VegDailyLossVo queryVegDailyLoss(Date statDate) {
+        // statDate 为空 → 当天；mapper 用 COALESCE(DATE(#{flowDate}), CURDATE()) 兜底，这里仅算回显日期
+        LocalDate day = statDate == null
+            ? LocalDate.now()
+            : statDate.toInstant().atZone(java.time.ZoneId.systemDefault()).toLocalDate();
+
+        BigDecimal picked = nullSafeStock(
+            stockFlowMapper.sumVegFlowByTypeAndDate(FLOW_TYPE_VEG_STOCK_IN, statDate));
+        BigDecimal packed = nullSafeStock(
+            stockFlowMapper.sumVegFlowByTypeAndDate(FLOW_TYPE_PACK_CONSUME, statDate));
+        BigDecimal returned = nullSafeStock(
+            stockFlowMapper.sumVegFlowByTypeAndDate(FLOW_TYPE_RETURN_IN, statDate));
+        BigDecimal feed = nullSafeStock(
+            stockFlowMapper.sumVegFlowByTypeAndDate(FLOW_TYPE_LOSS, statDate));
+
+        // 日损耗 = 领用入库 − 打包消耗 − 退回 − 饲喂；负值（录入未配齐）归零（与毛菜处理间 recomputeLoss 同口径）
+        BigDecimal loss = picked.subtract(packed).subtract(returned).subtract(feed);
+        if (loss.signum() < 0) {
+            loss = BigDecimal.ZERO;
+        }
+
+        VegDailyLossVo vo = new VegDailyLossVo();
+        vo.setStatDate(day.toString());
+        vo.setPickedWeight(picked);
+        vo.setPackedWeight(packed);
+        vo.setReturnedWeight(returned);
+        vo.setFeedWeight(feed);
+        vo.setLossWeight(loss);
+        return vo;
     }
 
     // ============================================================
@@ -802,6 +876,132 @@ public class ProductProductionServiceImpl
             fresh.setOperatorId(userId);
             locationStockMapper.insert(fresh);
         }
+    }
+
+    /**
+     * 肉品打包原材料库存校验 + 原子扣减 + 写消耗流水（猪肉全闭环 Part I P8）。
+     *
+     * <p>触发条件（同时满足）：</p>
+     * <ul>
+     *   <li>目标产品 {@code belong_type='pork'}（仅肉品打包；干货/果蔬/其他业态 dry 打包不进此分支）</li>
+     *   <li>目标产品配了 {@code product_material}（自引用 FK → 原材料产品 id）；未配则降级跳过校验，不阻塞</li>
+     * </ul>
+     *
+     * <p>校验：生产重量（{@code produceWeight}）> 原材料当前库存合计 → 抛 {@link ServiceException}（前端弹窗禁止）。
+     * 扣减：取原材料库存最多的库位（{@link LocationStockMapper#selectDefaultLocationByProduct}），
+     * 用 {@link LocationStockMapper#deductByProductLocation}（{@code product_stock>=deductQty} 行锁原子扣减）。
+     * 行锁 affected==0（并发抢扣 / 单库位不足）→ 抛 ServiceException 触发整事务回滚。
+     * 同步写 {@code pack_consume} 出库流水（参 {@code submitGiftPack} 组件消耗范式）。</p>
+     *
+     * @param product       目标打包产品（肉品 SKU）
+     * @param produceWeight 本次生产重量（即原材料消耗量，kg）
+     * @param userId        操作人
+     * @param now           操作时间
+     */
+    protected void deductPorkMaterialIfConfigured(ProductInfo product, BigDecimal produceWeight,
+                                                  Long userId, Date now) {
+        if (!BELONG_TYPE_PORK.equals(product.getBelongType()) || product.getProductMaterial() == null) {
+            return;
+        }
+        Long materialProductId = product.getProductMaterial();
+        // 取原材料库存最多的库位（V1 单库位常态唯一）；无任何库存行 → 库存视为 0，下面校验直接拦下
+        Long materialLocationId = locationStockMapper.selectDefaultLocationByProduct(materialProductId);
+        BigDecimal materialStock = sumProductStock(materialProductId);
+        if (materialLocationId == null || materialStock.compareTo(produceWeight) < 0) {
+            ProductInfo materialProduct = productInfoMapper.selectById(materialProductId);
+            String materialName = materialProduct != null ? materialProduct.getProductName() : ("#" + materialProductId);
+            throw new ServiceException("原材料库存不足：" + materialName
+                + " 当前库存 " + materialStock.stripTrailingZeros().toPlainString()
+                + "，本次需消耗 " + produceWeight.stripTrailingZeros().toPlainString());
+        }
+        int affected = locationStockMapper.deductByProductLocation(
+            materialLocationId, materialProductId, produceWeight, userId);
+        if (affected == 0) {
+            // 行锁未命中：并发抢扣 / 默认库位单库位余量不足 → 回滚整事务
+            throw new ServiceException("原材料库存扣减失败（库存不足或已被占用），请刷新后重试");
+        }
+        // 原材料消耗流水（pack_consume / OT）
+        insertMaterialConsumeFlow(materialProductId, materialLocationId, produceWeight,
+            product.getId(), userId, now);
+    }
+
+    /**
+     * 果蔬打包来源原材料库存校验（V4，果疏产品全流程处理.docx；仅校验、不扣减）。
+     *
+     * <p>触发条件（同时满足）：</p>
+     * <ul>
+     *   <li>目标产品 {@code belong_type='vegetable'}（仅果蔬打包；其他业态走各自分支不进此校验）</li>
+     *   <li>目标产品配了 {@code product_material}（FK → 来源原材料果蔬产品 id）；未配则降级跳过校验，不阻塞（log.warn）</li>
+     * </ul>
+     *
+     * <p>校验规则（doc 原文「领用果蔬重量 &lt; 打包成品重量 → 拦截禁止」）：来源原材料当前库存合计
+     * &lt; 本次打包成品重量（{@code produceWeight}）→ 抛 {@link ServiceException}（前端弹窗禁止）。</p>
+     *
+     * <p>与 pork 链 {@link #deductPorkMaterialIfConfigured} 的区别：果蔬<b>只拦截不扣减</b>——
+     * 来源消耗沿用 {@link #consumeInhouse}（整 row 软删 inhouse），此处再扣会重复扣减。</p>
+     *
+     * @param product       目标打包产品（果蔬成品 SKU）
+     * @param produceWeight 本次打包成品重量 kg
+     */
+    protected void checkVegMaterialIfConfigured(ProductInfo product, BigDecimal produceWeight) {
+        if (!BELONG_TYPE_VEGETABLE.equals(product.getBelongType()) || product.getProductMaterial() == null) {
+            if (BELONG_TYPE_VEGETABLE.equals(product.getBelongType()) && product.getProductMaterial() == null) {
+                log.warn("[VEG-PACK-V4] 果蔬成品未配 product_material（关联原材料），跳过库存校验 productId={} name={}",
+                    product.getId(), product.getProductName());
+            }
+            return;
+        }
+        Long materialProductId = product.getProductMaterial();
+        BigDecimal materialStock = sumProductStock(materialProductId);
+        if (materialStock.compareTo(produceWeight) < 0) {
+            ProductInfo materialProduct = productInfoMapper.selectById(materialProductId);
+            String materialName = materialProduct != null ? materialProduct.getProductName() : ("#" + materialProductId);
+            throw new ServiceException("原材料库存不足：" + materialName
+                + " 当前库存 " + materialStock.stripTrailingZeros().toPlainString()
+                + "kg，本次打包成品重量 " + produceWeight.stripTrailingZeros().toPlainString() + "kg");
+        }
+    }
+
+    /**
+     * BigDecimal 空兜底为 0（mapper COALESCE 已兜，叠加防御保证日损耗减法不 NPE）。
+     */
+    private static BigDecimal nullSafeStock(BigDecimal v) {
+        return v == null ? BigDecimal.ZERO : v;
+    }
+
+    /**
+     * 聚合某产品当前库存合计（未软删行 SUM(product_stock)；无行返 BigDecimal.ZERO）。
+     */
+    protected BigDecimal sumProductStock(Long productId) {
+        return locationStockMapper.selectList(
+                new LambdaQueryWrapper<LocationStock>()
+                    .select(LocationStock::getProductStock)
+                    .eq(LocationStock::getProductId, productId))
+            .stream()
+            .map(LocationStock::getProductStock)
+            .filter(Objects::nonNull)
+            .reduce(BigDecimal.ZERO, BigDecimal::add);
+    }
+
+    /**
+     * INSERT 肉品打包原材料消耗流水（pack_consume / OT，猪肉全闭环 Part I P8）。
+     */
+    protected void insertMaterialConsumeFlow(Long materialProductId, Long locationId, BigDecimal qty,
+                                             Long targetProductId, Long userId, Date now) {
+        StockFlow flow = new StockFlow();
+        Map<String, Object> ctx = new HashMap<>(2);
+        ctx.put("ioCode", INOUT_OUT);
+        flow.setFlowNo(bizCodeGenerator.generate(BizCodeType.STOCK_FLOW_NO, ctx));
+        flow.setFlowDate(now);
+        flow.setProductId(materialProductId);
+        flow.setWarehouseId(locationId);
+        flow.setInoutType(INOUT_OUT);
+        flow.setFlowType(FLOW_TYPE_PACK_CONSUME);
+        flow.setChangeNum(qty);
+        flow.setChangeQuantity(qty);
+        flow.setOperatorId(userId);
+        flow.setRemark("肉品打包原材料消耗 target_product_id=" + targetProductId);
+        stockFlowMapper.insert(flow);
     }
 
     /**

@@ -1,15 +1,18 @@
 package org.dromara.djs.store.ledger.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
-import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.common.core.exception.ServiceException;
+import org.dromara.common.core.service.DictService;
+import org.dromara.common.core.utils.StringUtils;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.satoken.utils.LoginHelper;
 import org.dromara.djs.common.store.domain.Store;
 import org.dromara.djs.common.store.mapper.StoreMapper;
+import org.dromara.djs.store.inventory.domain.StoreInventory;
+import org.dromara.djs.store.inventory.mapper.StoreInventoryMapper;
 import org.dromara.djs.store.ledger.domain.StoreDailyLedger;
 import org.dromara.djs.store.ledger.domain.bo.StoreDailyLedgerBatchBo;
 import org.dromara.djs.store.ledger.domain.query.StoreDailyLedgerQuery;
@@ -22,11 +25,12 @@ import org.dromara.djs.store.operation.domain.StoreSaleRecord;
 import org.dromara.djs.store.operation.mapper.StoreSaleRecordMapper;
 import org.dromara.djs.store.returns.domain.StoreReturn;
 import org.dromara.djs.store.returns.mapper.StoreReturnMapper;
-import org.dromara.djs.warehouse.demand.core.enums.DemandStatus;
 import org.dromara.djs.warehouse.demand.domain.DemandManage;
 import org.dromara.djs.warehouse.demand.mapper.DemandManageMapper;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
+import org.dromara.djs.warehouse.shipment.domain.Shipment;
+import org.dromara.djs.warehouse.shipment.mapper.ShipmentMapper;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -44,21 +48,31 @@ import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
- * 门店经营流水盘点台账 Service 实现（STORE-LEDGER-001）。
+ * 门店经营流水盘点台账 Service 实现（STORE-LEDGER-001 / WSA 阶段1 重构）。
  *
- * <h3>口径</h3>
+ * <h3>盘点候选（{@link #listCandidates}）= 三类产品并集</h3>
+ * <ol>
+ *   <li><b>猪肉</b>：字典 {@code djs_pork_return_product} 的 value（业务码）resolve 出的产品
+ *       （{@link #resolvePorkReturnProductIds}）。入库量手动可编辑，上限 = 当日白条发货重量。</li>
+ *   <li><b>新到货</b>：当日发货到该门店的产品（{@code t_warehouse_shipment} ⋈ {@code t_warehouse_demand_manage}
+ *       取 productId，排除 white_bar），{@code inboundQty}=发货量、{@code inboundReadonly}=true。</li>
+ *   <li><b>昨日库存</b>：{@code t_store_inventory.stock_qty>0} 的产品，{@code openingQty}=结存。</li>
+ * </ol>
+ * 并集去重；同一产品同时命中「新到货」与「库存」时合并一行（category=stock，保留 inbound 的 inboundQty）。
+ * 各行预填 {@code openingQty}（库存表结存，只读）、{@code returnWhQty}（退回模块当日聚合，只读）、
+ * {@code saleQty}/{@code returnSaleQty}（流水当日聚合）。
+ *
+ * <h3>盘点提交（{@link #batchSave}）口径（按 docx 字面）</h3>
  * <ul>
- *   <li>盘点候选 = 两类产品并集（仅这两类，不再全 SKU）：<br>
- *       ① 昨日（{@code ledgerDate-1}）该门店盘点结存 {@code closingQty>0} 的产品；<br>
- *       ② 该门店已进入「确认收货」状态的需求产品（{@code t_warehouse_demand_manage}
- *          {@code demand_status='CONFIRMED' AND received_time IS NOT NULL}）。<br>
- *       两类都没有则返回空表（门店当日确无可盘产品）。</li>
- *   <li>预填 saleQty（{@code t_store_sale_record} 当日聚合）/ returnQty（{@code t_store_return}
- *       customer_to_store 当日聚合）/ whReturnQty（{@code t_store_return} store_to_warehouse 当日聚合）。
- *       inboundQty V1 不自动预填 0（{@code t_warehouse_shipment} 为 demand/业态粒度，非产品 SKU 粒度，
- *       无法干净 join 到产品；门店端手填，见 _open-issues）。</li>
- *   <li>期末库存落库时算：closing = opening + inbound − sale − gift − return − whReturn − loss（量列缺省 0）。</li>
+ *   <li>期末 {@code closingQty} 手动入参（实盘录入）；</li>
+ *   <li>损耗 service 计算：{@code loss = opening + inbound − sale − gift + returnSale − returnWh − closing}；</li>
+ *   <li>猪肉行校验：{@code inboundQty ≤ } 当日白条发货重量（{@link #sumTodayWhiteBarShipWeight}）；</li>
+ *   <li>每行 {@code closingQty} UPSERT 进 {@code t_store_inventory.stock_qty}（期末回写、下次期初读）。</li>
  * </ul>
+ *
+ * <h3>优雅降级</h3>
+ * 现网 {@code t_plant_crop_info.related_product} 与果蔬成品 {@code product_material} 多为 NULL（客户未录），
+ * 涉及取数处一律空回退 + {@code log.warn}，不抛异常。
  *
  * @author djs
  * @since STORE-LEDGER-001
@@ -68,12 +82,27 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class StoreDailyLedgerServiceImpl implements IStoreDailyLedgerService {
 
+    /** 猪肉产品退回字典：label=产品名 / value=产品业务码（{@code t_warehouse_product_info.product_id} VARCHAR）。 */
+    private static final String DICT_PORK_RETURN_PRODUCT = "djs_pork_return_product";
+    /** 业态字典值：白条（新到货候选排除，白条作为猪肉入库上限的来源）。 */
+    private static final String PRODUCT_TYPE_WHITE_BAR = "white_bar";
+    /** 退回方向字典值。 */
+    private static final String DIRECTION_CUSTOMER_TO_STORE = "customer_to_store";
+    private static final String DIRECTION_STORE_TO_WAREHOUSE = "store_to_warehouse";
+
+    private static final String CATEGORY_PORK = "pork";
+    private static final String CATEGORY_INBOUND = "inbound";
+    private static final String CATEGORY_STOCK = "stock";
+
     private final StoreDailyLedgerMapper baseMapper;
     private final StoreMapper storeMapper;
     private final ProductInfoMapper productInfoMapper;
     private final StoreSaleRecordMapper saleRecordMapper;
     private final StoreReturnMapper storeReturnMapper;
+    private final ShipmentMapper shipmentMapper;
     private final DemandManageMapper demandManageMapper;
+    private final StoreInventoryMapper storeInventoryMapper;
+    private final DictService dictService;
 
     @Override
     public TableDataInfo<StoreDailyLedgerHeaderVo> queryHeaderPage(StoreDailyLedgerQuery query, PageQuery pageQuery) {
@@ -101,11 +130,24 @@ public class StoreDailyLedgerServiceImpl implements IStoreDailyLedgerService {
         }
         LocalDate date = ledgerDate == null ? LocalDate.now() : ledgerDate;
 
-        // 1. 候选产品 = 两类并集（仅这两类，不再门店关联全 SKU）
-        //    ① 昨日盘点结存 closingQty>0 的产品；② 已确认收货的需求产品。
-        Set<Long> productIdSet = new LinkedHashSet<>();
-        productIdSet.addAll(yesterdayPositiveClosingProductIds(storeId, date));
-        productIdSet.addAll(confirmedReceivedDemandProductIds(storeId));
+        // 三类候选并集（保留首次命中类别；inbound 与 stock 合并时 category=stock，inbound 量后面补）。
+        List<Long> porkIds = resolvePorkReturnProductIds();
+        Map<Long, BigDecimal> inboundMap = selectStoreShippedProducts(storeId, date);    // 新到货：productId → 当日发货量（排 white_bar）
+        Map<Long, BigDecimal> stockMap = selectPositiveStockByProduct(storeId);          // 昨日库存：productId → 结存（>0）
+
+        // 类别归属：优先级 pork > stock > inbound（库存优先于新到货以保留期初）。
+        Map<Long, String> categoryByProduct = new LinkedHashMap<>();
+        for (Long pid : porkIds) {
+            categoryByProduct.put(pid, CATEGORY_PORK);
+        }
+        for (Long pid : stockMap.keySet()) {
+            categoryByProduct.putIfAbsent(pid, CATEGORY_STOCK);
+        }
+        for (Long pid : inboundMap.keySet()) {
+            categoryByProduct.putIfAbsent(pid, CATEGORY_INBOUND);
+        }
+
+        Set<Long> productIdSet = new LinkedHashSet<>(categoryByProduct.keySet());
         List<Long> productIds = new ArrayList<>(productIdSet);
         if (productIds.isEmpty()) {
             return List.of();
@@ -115,26 +157,36 @@ public class StoreDailyLedgerServiceImpl implements IStoreDailyLedgerService {
                 new LambdaQueryWrapper<ProductInfo>().in(ProductInfo::getId, productIds))
             .stream().collect(Collectors.toMap(ProductInfo::getId, p -> p, (a, b) -> a));
 
-        // 2. 预填：销售量（当日 sale_record 聚合）+ 退货量 / 退回量（当日 store_return 按方向聚合）
+        // 预填：销售量 / 退货量(顾客) / 退回量(门店退仓库) 当日聚合 + 期初(库存结存)。
         Map<Long, BigDecimal> saleMap = sumSaleByProduct(storeId, date, productIds);
-        Map<Long, BigDecimal> returnMap = sumReturnByProduct(storeId, date, productIds, "customer_to_store");
-        Map<Long, BigDecimal> whReturnMap = sumReturnByProduct(storeId, date, productIds, "store_to_warehouse");
+        Map<Long, BigDecimal> returnSaleMap = sumReturnByProduct(storeId, date, productIds, DIRECTION_CUSTOMER_TO_STORE);
+        Map<Long, BigDecimal> returnWhMap = sumReturnByProduct(storeId, date, productIds, DIRECTION_STORE_TO_WAREHOUSE);
 
         List<StoreDailyLedgerCandidateVo> result = new ArrayList<>();
         for (Long pid : productIds) {
             ProductInfo p = productMap.get(pid);
             if (p == null) {
+                // 字典/库存里有但产品已删：优雅降级，跳过该行（不抛）。
+                log.warn("[STORE-LEDGER] 盘点候选产品已删除或不存在，跳过 productId={}", pid);
                 continue;
             }
+            String category = categoryByProduct.getOrDefault(pid, CATEGORY_STOCK);
+            boolean pork = CATEGORY_PORK.equals(category);
+            BigDecimal inbound = nz(inboundMap.get(pid));   // 新到货发货量（pork/stock 行也可能恰有发货，预填为参考）
+
             StoreDailyLedgerCandidateVo vo = new StoreDailyLedgerCandidateVo();
             vo.setProductId(pid);
             vo.setProductName(p.getProductName());
             vo.setProductUnit(p.getProductUnit());
             vo.setProductSpec(p.getProductSpec());
+            vo.setCategory(category);
+            vo.setOpeningQty(nz(stockMap.get(pid)));
+            vo.setInboundQty(inbound);
+            // 猪肉行入库手动可编辑（有上限）；其余（新到货/库存）入库为发货量只读。
+            vo.setInboundReadonly(!pork);
             vo.setSaleQty(saleMap.getOrDefault(pid, BigDecimal.ZERO));
-            vo.setReturnQty(returnMap.getOrDefault(pid, BigDecimal.ZERO));
-            vo.setWhReturnQty(whReturnMap.getOrDefault(pid, BigDecimal.ZERO));
-            vo.setInboundQty(BigDecimal.ZERO);
+            vo.setReturnSaleQty(returnSaleMap.getOrDefault(pid, BigDecimal.ZERO));
+            vo.setReturnWhQty(returnWhMap.getOrDefault(pid, BigDecimal.ZERO));
             result.add(vo);
         }
         return result;
@@ -149,12 +201,16 @@ public class StoreDailyLedgerServiceImpl implements IStoreDailyLedgerService {
         LocalDate date = bo.getLedgerDate() == null ? LocalDate.now() : bo.getLedgerDate();
         Long operatorId = LoginHelper.getUserId();
 
-        // 已存在的同门店同日行（产品 → entity），用于 UPSERT（重盘覆盖）
+        // 已存在的同门店同日行（产品 → entity），用于 UPSERT（重盘覆盖）。
         Map<Long, StoreDailyLedger> existingByProduct = baseMapper.selectList(
                 new LambdaQueryWrapper<StoreDailyLedger>()
                     .eq(StoreDailyLedger::getStoreId, bo.getStoreId())
                     .eq(StoreDailyLedger::getLedgerDate, date))
             .stream().collect(Collectors.toMap(StoreDailyLedger::getProductId, e -> e, (a, b) -> a));
+
+        // 猪肉入库上限 = 当日白条发货重量（一次取，所有猪肉行共用同一上限校验本行 inbound）。
+        Set<Long> porkProductIdSet = new LinkedHashSet<>(resolvePorkReturnProductIds());
+        BigDecimal whiteBarLimit = sumTodayWhiteBarShipWeight(bo.getStoreId(), date);
 
         int saved = 0;
         for (StoreDailyLedgerBatchBo.Item item : bo.getItems()) {
@@ -165,11 +221,21 @@ public class StoreDailyLedgerServiceImpl implements IStoreDailyLedgerService {
             BigDecimal inbound = nz(item.getInboundQty());
             BigDecimal sale = nz(item.getSaleQty());
             BigDecimal gift = nz(item.getGiftQty());
-            BigDecimal ret = nz(item.getReturnQty());
-            BigDecimal whRet = nz(item.getWhReturnQty());
-            BigDecimal loss = nz(item.getLossQty());
-            BigDecimal closing = opening.add(inbound)
-                .subtract(sale).subtract(gift).subtract(ret).subtract(whRet).subtract(loss);
+            BigDecimal returnSale = nz(item.getReturnSaleQty());
+            BigDecimal returnWh = nz(item.getReturnWhQty());
+            BigDecimal closing = nz(item.getClosingQty());
+
+            // 猪肉行入库上限校验。
+            if (porkProductIdSet.contains(item.getProductId()) && inbound.compareTo(whiteBarLimit) > 0) {
+                throw new ServiceException(
+                    "猪肉入库量(" + inbound.toPlainString() + ")不能超过当日白条发货重量(" + whiteBarLimit.toPlainString() + ")", 400);
+            }
+
+            // 损耗按 docx 字面反算：loss = 期初 + 入库 − 销售 − 赠送 + 退货 − 退回 − 期末。
+            BigDecimal loss = opening.add(inbound)
+                .subtract(sale).subtract(gift)
+                .add(returnSale).subtract(returnWh)
+                .subtract(closing);
 
             StoreDailyLedger existing = existingByProduct.get(item.getProductId());
             StoreDailyLedger entity = new StoreDailyLedger();
@@ -180,8 +246,8 @@ public class StoreDailyLedgerServiceImpl implements IStoreDailyLedgerService {
             entity.setInboundQty(inbound);
             entity.setSaleQty(sale);
             entity.setGiftQty(gift);
-            entity.setReturnQty(ret);
-            entity.setWhReturnQty(whRet);
+            entity.setReturnQty(returnSale);
+            entity.setWhReturnQty(returnWh);
             entity.setLossQty(loss);
             entity.setClosingQty(closing);
             entity.setOperatorId(operatorId);
@@ -192,6 +258,9 @@ public class StoreDailyLedgerServiceImpl implements IStoreDailyLedgerService {
                 entity.setId(existing.getId());
                 baseMapper.updateById(entity);
             }
+
+            // 盘点完成：期末结存 UPSERT 进门店独立库存（下次盘点期初读它）。
+            upsertStoreInventory(bo.getStoreId(), item.getProductId(), closing);
             saved++;
         }
         log.info("[STORE-LEDGER-001] batchSave store={} date={} 行数={}", bo.getStoreId(), date, saved);
@@ -236,31 +305,136 @@ public class StoreDailyLedgerServiceImpl implements IStoreDailyLedgerService {
     }
 
     /**
-     * 候选维度①：昨日（{@code date-1}）该门店盘点结存 {@code closingQty>0} 的产品 ID。
+     * 猪肉候选：字典 {@code djs_pork_return_product} 的 value（产品业务码 VARCHAR）→ 雪花主键。
+     *
+     * <p>字典 value = {@code t_warehouse_product_info.product_id}（业务码）。空字典 / 无匹配产品 → 空回退 + warn，不抛。</p>
      */
-    private List<Long> yesterdayPositiveClosingProductIds(Long storeId, LocalDate date) {
-        LocalDate yesterday = date.minusDays(1);
-        return baseMapper.selectList(
-                new LambdaQueryWrapper<StoreDailyLedger>()
-                    .eq(StoreDailyLedger::getStoreId, storeId)
-                    .eq(StoreDailyLedger::getLedgerDate, yesterday)
-                    .gt(StoreDailyLedger::getClosingQty, BigDecimal.ZERO)
-                    .select(StoreDailyLedger::getProductId))
-            .stream().map(StoreDailyLedger::getProductId).filter(Objects::nonNull).distinct().toList();
+    private List<Long> resolvePorkReturnProductIds() {
+        Map<String, String> dict = dictService.getAllDictByDictType(DICT_PORK_RETURN_PRODUCT);
+        if (dict == null || dict.isEmpty()) {
+            log.warn("[STORE-LEDGER] 字典 {} 为空，猪肉盘点候选回退为空", DICT_PORK_RETURN_PRODUCT);
+            return List.of();
+        }
+        // key=dictValue=产品业务码；过滤空值。
+        List<String> codes = dict.keySet().stream()
+            .filter(StringUtils::isNotBlank)
+            .distinct()
+            .toList();
+        if (codes.isEmpty()) {
+            return List.of();
+        }
+        List<Long> ids = productInfoMapper.selectList(
+                new LambdaQueryWrapper<ProductInfo>()
+                    .in(ProductInfo::getProductId, codes)
+                    .select(ProductInfo::getId))
+            .stream().map(ProductInfo::getId).filter(Objects::nonNull).distinct().toList();
+        if (ids.isEmpty()) {
+            log.warn("[STORE-LEDGER] 字典 {} 的业务码 {} 未匹配到任何产品，猪肉候选回退为空",
+                DICT_PORK_RETURN_PRODUCT, codes);
+        }
+        return ids;
     }
 
     /**
-     * 候选维度②：该门店已进入「确认收货」状态的需求对应产品 ID
-     * （{@code demand_status='CONFIRMED' AND received_time IS NOT NULL}）。
+     * 新到货候选：当日发货到该门店的产品（{@code t_warehouse_shipment} ⋈ {@code t_warehouse_demand_manage}
+     * 取 productId，排除 white_bar），按产品聚合发货量。
+     *
+     * <p>shipment 自带 productType，先按 storeId + shipDate + 非 white_bar 过滤；productId 经 demandId
+     * join demand 拿（shipment 表无 productId 列）。demand 缺失（脏数据）→ 跳过该 shipment 行 + warn，不抛。</p>
+     *
+     * @return productId(雪花) → 当日发货量合计
      */
-    private List<Long> confirmedReceivedDemandProductIds(Long storeId) {
+    private Map<Long, BigDecimal> selectStoreShippedProducts(Long storeId, LocalDate date) {
+        List<Shipment> shipments = shipmentMapper.selectList(
+            new LambdaQueryWrapper<Shipment>()
+                .eq(Shipment::getStoreId, storeId)
+                .eq(Shipment::getShipDate, date)
+                .ne(Shipment::getProductType, PRODUCT_TYPE_WHITE_BAR));
+        if (shipments.isEmpty()) {
+            return Map.of();
+        }
+        List<Long> demandIds = shipments.stream()
+            .map(Shipment::getDemandId).filter(Objects::nonNull).distinct().toList();
+        if (demandIds.isEmpty()) {
+            log.warn("[STORE-LEDGER] 门店 {} {} 有发货但均无 demandId，新到货候选回退为空", storeId, date);
+            return Map.of();
+        }
+        Map<Long, Long> demandToProduct = demandManageProductMap(demandIds);
+        Map<Long, BigDecimal> result = new LinkedHashMap<>();
+        for (Shipment s : shipments) {
+            Long productId = s.getDemandId() == null ? null : demandToProduct.get(s.getDemandId());
+            if (productId == null) {
+                log.warn("[STORE-LEDGER] 发货单 {} 关联需求 {} 缺产品，跳过新到货预填",
+                    s.getShipmentNo(), s.getDemandId());
+                continue;
+            }
+            result.merge(productId, nz(s.getShipQuantity()), BigDecimal::add);
+        }
+        return result;
+    }
+
+    /**
+     * 当日白条发货重量合计（猪肉入库上限）：{@code t_warehouse_shipment} storeId + shipDate + white_bar 的 shipQuantity 之和。
+     */
+    private BigDecimal sumTodayWhiteBarShipWeight(Long storeId, LocalDate date) {
+        List<Shipment> shipments = shipmentMapper.selectList(
+            new LambdaQueryWrapper<Shipment>()
+                .eq(Shipment::getStoreId, storeId)
+                .eq(Shipment::getShipDate, date)
+                .eq(Shipment::getProductType, PRODUCT_TYPE_WHITE_BAR)
+                .select(Shipment::getShipQuantity));
+        return shipments.stream().map(s -> nz(s.getShipQuantity())).reduce(BigDecimal.ZERO, BigDecimal::add);
+    }
+
+    /** demandId → productId(雪花) 映射（DemandManage 取 id + productId 两列；缺 productId 的脏数据跳过）。 */
+    private Map<Long, Long> demandManageProductMap(List<Long> demandIds) {
+        if (demandIds == null || demandIds.isEmpty()) {
+            return Map.of();
+        }
         return demandManageMapper.selectList(
                 new LambdaQueryWrapper<DemandManage>()
-                    .eq(DemandManage::getStoreId, storeId)
-                    .eq(DemandManage::getDemandStatus, DemandStatus.CONFIRMED.name())
-                    .isNotNull(DemandManage::getReceivedTime)
-                    .select(DemandManage::getProductId))
-            .stream().map(DemandManage::getProductId).filter(Objects::nonNull).distinct().toList();
+                    .in(DemandManage::getId, demandIds)
+                    .select(DemandManage::getId, DemandManage::getProductId))
+            .stream()
+            .filter(d -> d.getProductId() != null)
+            .collect(Collectors.toMap(
+                DemandManage::getId,
+                DemandManage::getProductId,
+                (a, b) -> a));
+    }
+
+    /** 昨日库存候选：门店独立库存 {@code stock_qty>0} 的产品。 */
+    private Map<Long, BigDecimal> selectPositiveStockByProduct(Long storeId) {
+        return storeInventoryMapper.selectList(
+                new LambdaQueryWrapper<StoreInventory>()
+                    .eq(StoreInventory::getStoreId, storeId)
+                    .gt(StoreInventory::getStockQty, BigDecimal.ZERO))
+            .stream()
+            .filter(inv -> inv.getProductId() != null)
+            .collect(Collectors.toMap(
+                StoreInventory::getProductId,
+                inv -> nz(inv.getStockQty()),
+                BigDecimal::add,
+                LinkedHashMap::new));
+    }
+
+    /** 期末结存 UPSERT 进门店独立库存（按 storeId + productId 找现有行；无则插入）。 */
+    private void upsertStoreInventory(Long storeId, Long productId, BigDecimal closingQty) {
+        StoreInventory existing = storeInventoryMapper.selectOne(
+            new LambdaQueryWrapper<StoreInventory>()
+                .eq(StoreInventory::getStoreId, storeId)
+                .eq(StoreInventory::getProductId, productId)
+                .last("LIMIT 1"));
+        if (existing == null) {
+            StoreInventory inv = new StoreInventory();
+            inv.setStoreId(storeId);
+            inv.setProductId(productId);
+            inv.setStockQty(nz(closingQty));
+            storeInventoryMapper.insert(inv);
+        } else {
+            existing.setStockQty(nz(closingQty));
+            storeInventoryMapper.updateById(existing);
+        }
     }
 
     private LambdaQueryWrapper<StoreDailyLedger> buildQueryWrapper(StoreDailyLedgerQuery q) {

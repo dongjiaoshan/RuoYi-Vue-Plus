@@ -60,6 +60,15 @@ import java.util.Map;
 public class PigMarketingEventListener {
 
     /**
+     * 出栏去向=送宰（字典 {@code djs_out_house_dest}）。
+     *
+     * <p>仅当 {@link PigMarketing#getOutDest()} 等于此值才进入白条入库链路 INSERT bar_info；
+     * 其余去向（如外销 / 留种等）出栏后不进燎毛 → 不创建白条记录。外购猪走
+     * {@code OutsourcePigServiceImpl} 不经此 listener，不受本过滤影响。</p>
+     */
+    private static final String OUT_DEST_SLAUGHTER = "slaughter";
+
+    /**
      * bar_info.status 初始态：待燎毛（字典 {@code djs_bar_status}）。
      */
     private static final String BAR_STATUS_PENDING_SINGE = "pending_singe";
@@ -84,6 +93,14 @@ public class PigMarketingEventListener {
     public void onPigMarketing(PigMarketingEvent event) {
         PigMarketing marketing = event.getMarketing();
         String earNo = marketing.getEarNo();
+        // 送宰过滤：仅出栏去向=送宰（字典 djs_out_house_dest，值 'slaughter'）才进白条入库链路。
+        // 其余去向（外销 / 留种等）出栏后不进燎毛，跳过 bar_info 创建。
+        String outDest = marketing.getOutDest();
+        if (!OUT_DEST_SLAUGHTER.equals(outDest)) {
+            log.debug("[CROSS-FLOW-001] 出栏去向非送宰，跳过创建 bar_info earNo={} marketingId={} outDest={}",
+                earNo, marketing.getId(), outDest);
+            return;
+        }
         try {
             BarInfo bar = new BarInfo();
             bar.setBarId(bizCodeGenerator.generate(BizCodeType.BAR_NO, Map.of()));

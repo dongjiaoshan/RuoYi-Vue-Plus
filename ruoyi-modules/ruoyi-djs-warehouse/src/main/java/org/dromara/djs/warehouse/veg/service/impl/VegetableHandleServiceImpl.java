@@ -11,6 +11,8 @@ import org.dromara.djs.common.base.DjsBaseServiceImpl;
 import org.dromara.djs.common.encoder.BizCodeType;
 import org.dromara.djs.common.encoder.IBizCodeGenerator;
 import org.dromara.djs.common.image.service.ImageUrlResolver;
+import org.dromara.djs.plant.crop.domain.CropInfo;
+import org.dromara.djs.plant.crop.mapper.CropInfoMapper;
 import org.dromara.djs.warehouse.flow.domain.StockFlow;
 import org.dromara.djs.warehouse.flow.mapper.StockFlowMapper;
 import org.dromara.djs.warehouse.location.domain.LocationInfo;
@@ -111,6 +113,7 @@ public class VegetableHandleServiceImpl
     private final LocationInfoMapper locationInfoMapper;
     private final IBizCodeGenerator bizCodeGenerator;
     private final ImageUrlResolver imageUrlResolver;
+    private final CropInfoMapper cropInfoMapper;
 
     /**
      * 作物图 L2 兜底分类键（作物无 belong_type，统一走"蔬菜默认图"）。
@@ -123,7 +126,8 @@ public class VegetableHandleServiceImpl
                                       StockFlowMapper stockFlowMapper,
                                       LocationInfoMapper locationInfoMapper,
                                       IBizCodeGenerator bizCodeGenerator,
-                                      ImageUrlResolver imageUrlResolver) {
+                                      ImageUrlResolver imageUrlResolver,
+                                      CropInfoMapper cropInfoMapper) {
         super(baseMapper);
         this.handleRecordMapper = handleRecordMapper;
         this.plantingRecordMapper = plantingRecordMapper;
@@ -131,6 +135,34 @@ public class VegetableHandleServiceImpl
         this.locationInfoMapper = locationInfoMapper;
         this.bizCodeGenerator = bizCodeGenerator;
         this.imageUrlResolver = imageUrlResolver;
+        this.cropInfoMapper = cropInfoMapper;
+    }
+
+    /**
+     * 按作物 {@code crop.related_product}（FK → t_warehouse_product_info.id）解析果蔬成品 product_id。
+     *
+     * <p>甲方《果疏产品全流程处理.docx》规则：作物→产品转换走 {@code t_plant_crop_info.related_product}，
+     * 毛菜处理产出的 product_id 取自该映射（重量不变）。</p>
+     *
+     * <p><b>优雅降级</b>：客户未在 admin 作物录入页填 related_product 时（现网全 NULL），返回
+     * {@code fallback} 并 {@code log.warn}，不抛、不阻塞采摘/处理流程。fallback 通常是
+     * {@code planting.getProductId()}（旧来源，多为 null），由调用方再行 0 兜底。</p>
+     *
+     * @param cropId   作物 id（planting_record.crop_id）
+     * @param fallback related_product 为空时的兜底 product_id（可为 null）
+     * @return 解析出的果蔬成品 product_id；无映射时返 fallback
+     */
+    private Long resolveProductIdByCrop(Long cropId, Long fallback) {
+        if (cropId == null) {
+            return fallback;
+        }
+        CropInfo crop = cropInfoMapper.selectById(cropId);
+        if (crop == null || crop.getRelatedProduct() == null) {
+            log.warn("作物 related_product 未配置，product_id 降级为 {} — cropId={}（请在 admin 作物录入页填写"
+                + "「关联产品」建立作物↔果蔬成品映射）", fallback, cropId);
+            return fallback;
+        }
+        return crop.getRelatedProduct();
     }
 
     @Override
@@ -275,16 +307,15 @@ public class VegetableHandleServiceImpl
         ctx.put("ioCode", INOUT_IN);
         flow.setFlowNo(bizCodeGenerator.generate(BizCodeType.STOCK_FLOW_NO, ctx));
         flow.setFlowDate(now);
-        // D9 closing _open-issues #18 决策 d：首选 planting_record.product_id（PLT-PICK-001/WMS-VEG-001 写入）；
-        // 兜底 handle.product_id（极少数 handle 直建场景）；都 null 则 0 + warning log（V1 蔬菜业态产品仅 1 种"蔬菜"，
-        // 0 兜底不影响 admin 列表显示，仅在 product 维度聚合查询会漏掉，由 PLT-PICK-001 落地后自然消除）。
-        Long resolvedProductId = planting.getProductId();
+        // 甲方《果疏产品全流程处理.docx》：product_id 走作物 related_product（作物↔果蔬成品映射）解析；
+        // fallback 链 crop.related_product → handle.product_id（建汇总行时已解析存入）→ planting.product_id（旧来源）；
+        // 全 null 则 0 + warning log（作物未配 related_product 时；V1 蔬菜业态产品 0 兜底不影响 admin 列表显示，
+        // 仅 product 维度聚合查询会漏，待客户在 admin 录入作物↔成品映射后自然消除）。
+        Long resolvedProductId = resolveProductIdByCrop(
+            planting.getCropId(), firstNonNull(handle.getProductId(), planting.getProductId()));
         if (resolvedProductId == null) {
-            resolvedProductId = handle.getProductId();
-        }
-        if (resolvedProductId == null) {
-            log.warn("stock_flow.product_id 兜底为 0 — plantingRecordId={} cropId={} crop={}（PLT-PICK-001 落地后应自然消除）",
-                planting.getId(), planting.getCropId(), planting.getCropName());
+            log.warn("stock_flow.product_id 兜底为 0 — plantingRecordId={} cropId={} crop={}（请在 admin 作物录入页"
+                + "填写「关联产品」建立作物↔果蔬成品映射）", planting.getId(), planting.getCropId(), planting.getCropName());
             resolvedProductId = 0L;
         }
         flow.setProductId(resolvedProductId);
@@ -304,6 +335,13 @@ public class VegetableHandleServiceImpl
     }
 
     /**
+     * 返回第一个非 null 值（两者皆 null 则 null）。用于 product_id fallback 链。
+     */
+    private static Long firstNonNull(Long a, Long b) {
+        return a != null ? a : b;
+    }
+
+    /**
      * 首次录入时建 vegetable_handle 汇总行（picked/handled/feed/sendPlatform/stockIn/loss 全 0，
      * is_weighed=2 / is_finish=2 / handle_status=processing）。tenant_id 走 MP 自动 fill。
      */
@@ -312,7 +350,8 @@ public class VegetableHandleServiceImpl
         handle.setPlantingRecordId(planting.getId());
         handle.setPlotId(planting.getPlotId());
         handle.setCropId(planting.getCropId());
-        handle.setProductId(planting.getProductId());
+        // product_id 优先按作物 related_product（作物↔果蔬成品映射）解析；未配置则降级回旧来源 planting.product_id
+        handle.setProductId(resolveProductIdByCrop(planting.getCropId(), planting.getProductId()));
         handle.setPickStartTime(now);
         handle.setPickedWeight(BigDecimal.ZERO);
         handle.setHandledWeight(BigDecimal.ZERO);

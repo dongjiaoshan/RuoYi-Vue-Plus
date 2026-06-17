@@ -17,8 +17,11 @@ import org.dromara.djs.common.store.mapper.StoreMapper;
 import org.dromara.djs.common.util.I18nMessages;
 import org.dromara.djs.warehouse.flow.domain.StockFlow;
 import org.dromara.djs.warehouse.flow.mapper.StockFlowMapper;
+import org.dromara.djs.warehouse.location.mapper.LocationInfoMapper;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
+import org.dromara.djs.warehouse.purchase.service.IWarehousePurchaseInService;
+import org.dromara.djs.warehouse.stock.mapper.LocationStockMapper;
 import org.dromara.djs.warehouse.shipment.returnpkg.domain.ReturnProduct;
 import org.dromara.djs.warehouse.shipment.returnpkg.domain.bo.ReturnConfirmBo;
 import org.dromara.djs.warehouse.shipment.returnpkg.domain.bo.ReturnProductBo;
@@ -83,16 +86,28 @@ public class ReturnProductServiceImpl
 
     private final ProductInfoMapper productInfoMapper;
 
+    private final LocationInfoMapper locationInfoMapper;
+
+    private final LocationStockMapper locationStockMapper;
+
+    private final IWarehousePurchaseInService purchaseInService;
+
     public ReturnProductServiceImpl(ReturnProductMapper baseMapper,
                                     StockFlowMapper stockFlowMapper,
                                     IBizCodeGenerator bizCodeGenerator,
                                     StoreMapper storeMapper,
-                                    ProductInfoMapper productInfoMapper) {
+                                    ProductInfoMapper productInfoMapper,
+                                    LocationInfoMapper locationInfoMapper,
+                                    LocationStockMapper locationStockMapper,
+                                    IWarehousePurchaseInService purchaseInService) {
         super(baseMapper);
         this.stockFlowMapper = stockFlowMapper;
         this.bizCodeGenerator = bizCodeGenerator;
         this.storeMapper = storeMapper;
         this.productInfoMapper = productInfoMapper;
+        this.locationInfoMapper = locationInfoMapper;
+        this.locationStockMapper = locationStockMapper;
+        this.purchaseInService = purchaseInService;
     }
 
     @Override
@@ -270,28 +285,103 @@ public class ReturnProductServiceImpl
         }
         baseMapper.updateById(upd);
 
-        // 2. 仅 store_to_warehouse 方向触发 stock_flow（其他方向 V1 占位不联动）
+        // 2. 仅 store_to_warehouse 方向真回库存（其他方向 V1 占位不联动）。
+        //    门店退回到仓库 = 真把 confirmWeight 加回 location_stock + 写一条 return_in 流水，
+        //    不是只写流水的「库存黑洞」（P9）。
         if (DIRECTION_STORE_TO_WAREHOUSE.equals(entity.getReturnDirection())) {
-            StockFlow flow = new StockFlow();
-            Map<String, Object> ctx = new HashMap<>(2);
-            ctx.put("ioCode", INOUT_IN);
-            flow.setFlowNo(bizCodeGenerator.generate(BizCodeType.STOCK_FLOW_NO, ctx));
-            flow.setFlowDate(new Date());
-            flow.setProductId(entity.getProductId());
-            flow.setInoutType(INOUT_IN);
-            flow.setFlowType(FLOW_TYPE_RETURN_IN);
-            flow.setChangeNum(bo.getConfirmWeight());
-            flow.setChangeQuantity(bo.getConfirmWeight());
-            flow.setOperatorId(userId);
-            flow.setRemark("门店退货入库 return_no=" + entity.getReturnNo()
-                + " store_id=" + entity.getStoreId());
-            stockFlowMapper.insert(flow);
-            log.info("[WMS-SHIP-001] confirmReturn returnId={} → stock_flow return_in confirmWeight={}",
-                id, bo.getConfirmWeight());
+            replenishStockOnReturn(entity, bo.getConfirmWeight(), userId);
         } else {
             log.info("[WMS-SHIP-001] confirmReturn returnId={} direction={} placeholder（不联动 stock_flow，V2 实现）",
                 id, entity.getReturnDirection());
         }
+    }
+
+    /**
+     * 门店退回到仓库确认后真回库存（P9）。
+     *
+     * <p>解析出有效入库库位 → 委托 {@link IWarehousePurchaseInService#inbound} 以 {@code flow_type='return_in'}
+     * 一次性完成「{@code location_stock += confirmWeight}」+「一条 return_in 流水」（避免重复写两条流水）。</p>
+     *
+     * <p>容错：产品已删 / 系统未配置任何库位时无法定位入库目标 —— 不阻断确认流程（确认行已更新），
+     * 退而求其次只写一条 return_in 流水（不增库存）并记 warn，由仓管事后手工盘点纠偏。</p>
+     *
+     * @param entity        退货行
+     * @param confirmWeight 确认实收重量（> 0，调用前已由确认表单约束）
+     * @param userId        操作人
+     */
+    private void replenishStockOnReturn(ReturnProduct entity, BigDecimal confirmWeight, Long userId) {
+        Long productId = entity.getProductId();
+        String remark = "门店退货入库 return_no=" + entity.getReturnNo() + " store_id=" + entity.getStoreId();
+
+        ProductInfo product = productId == null ? null
+            : productInfoMapper.selectOne(new LambdaQueryWrapper<ProductInfo>()
+                .eq(ProductInfo::getId, productId).last("LIMIT 1"));
+        Long locationId = product == null ? null : resolveReturnLocationId(product);
+
+        if (product != null && locationId != null) {
+            // 真回库存：inbound 内部 addByProductLocation（库存不存在则 INSERT 新行）+ 写一条 return_in 流水。
+            purchaseInService.inbound(productId, locationId, confirmWeight, FLOW_TYPE_RETURN_IN, remark);
+            log.info("[WMS-SHIP-001] confirmReturn returnId={} → 真回库存 productId={} locationId={} +{}（return_in）",
+                entity.getId(), productId, locationId, confirmWeight);
+            return;
+        }
+
+        // 兜底：无法定位入库库位（产品已删 / 无任何库位 / 产品无预设且无历史库存）→ 只写流水不增库存，不抛断流程。
+        log.warn("[WMS-SHIP-001] confirmReturn returnId={} productId={} 无法解析入库库位，"
+                + "仅写 return_in 流水不增库存（需仓管手工盘点纠偏）", entity.getId(), productId);
+        StockFlow flow = new StockFlow();
+        Map<String, Object> ctx = new HashMap<>(2);
+        ctx.put("ioCode", INOUT_IN);
+        flow.setFlowNo(bizCodeGenerator.generate(BizCodeType.STOCK_FLOW_NO, ctx));
+        flow.setFlowDate(new Date());
+        flow.setProductId(productId);
+        flow.setInoutType(INOUT_IN);
+        flow.setFlowType(FLOW_TYPE_RETURN_IN);
+        flow.setChangeNum(confirmWeight);
+        flow.setChangeQuantity(confirmWeight);
+        flow.setOperatorId(userId);
+        flow.setRemark(remark + "（未定位库位，未增库存）");
+        stockFlowMapper.insert(flow);
+    }
+
+    /**
+     * 解析退货入库目标库位（P9）。
+     *
+     * <p>{@code ReturnProduct} 无 {@code location_id} 字段（不新增 DDL）；按产品预设 + 历史库存解析：</p>
+     * <ol>
+     *   <li>产品 {@code store_location_id}（逗号分隔预设库位列表）首个存在的有效项；</li>
+     *   <li>否则取该产品当前库存最多的库位（{@code selectDefaultLocationByProduct}）；</li>
+     *   <li>都没有 → 返 {@code null}（调用方走「只写流水不增库存」兜底）。</li>
+     * </ol>
+     *
+     * <p>容错非数字 / 空 token：跳过继续下一个，不抛异常。</p>
+     *
+     * @param product 退货产品
+     * @return 有效库位 id，或 {@code null}（无可定位库位）
+     */
+    private Long resolveReturnLocationId(ProductInfo product) {
+        // ① 产品预设入库库位（store_location_id 逗号分隔，取首个存在的有效项）
+        if (StringUtils.isNotBlank(product.getStoreLocationId())) {
+            for (String token : product.getStoreLocationId().split(",")) {
+                String trimmed = token.trim();
+                if (trimmed.isEmpty()) {
+                    continue;
+                }
+                Long candidate;
+                try {
+                    candidate = Long.valueOf(trimmed);
+                } catch (NumberFormatException ex) {
+                    log.warn("[WMS-SHIP-001] 产品 productId={} store_location_id 含非法库位 token=[{}]，跳过",
+                        product.getId(), trimmed);
+                    continue;
+                }
+                if (locationInfoMapper.selectById(candidate) != null) {
+                    return candidate;
+                }
+            }
+        }
+        // ② 该产品当前库存最多的库位（V1 单库位常态唯一）
+        return locationStockMapper.selectDefaultLocationByProduct(product.getId());
     }
 
     @Override

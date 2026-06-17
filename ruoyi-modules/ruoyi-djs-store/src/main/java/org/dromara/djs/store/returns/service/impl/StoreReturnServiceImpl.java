@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.common.core.exception.ServiceException;
+import org.dromara.common.core.service.DictService;
 import org.dromara.common.core.utils.StringUtils;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
@@ -85,6 +86,12 @@ public class StoreReturnServiceImpl
      */
     private static final List<String> PORK_BELONG_TYPES = List.of("pork", "white_bar");
 
+    /** 猪肉产品退回字典（阶段0 seed，dict_value=产品业务码 product_id）。 */
+    private static final String DICT_PORK_RETURN_PRODUCT = "djs_pork_return_product";
+
+    /** 果蔬归属类型（字典 djs_belong_type）：退回入库回退到原材料 product_material 的判定。 */
+    private static final String BELONG_TYPE_VEGETABLE = "vegetable";
+
     /** 业务日时区（与项目其余「今日」口径一致，避免 DB CURDATE() 时区雷）。 */
     private static final ZoneId ZONE_SHANGHAI = ZoneId.of("Asia/Shanghai");
 
@@ -94,6 +101,7 @@ public class StoreReturnServiceImpl
     private final IBizCodeGenerator bizCodeGenerator;
     private final IWarehousePurchaseInService purchaseInService;
     private final DemandManageMapper demandManageMapper;
+    private final DictService dictService;
 
     public StoreReturnServiceImpl(StoreReturnMapper baseMapper,
                                   StoreMapper storeMapper,
@@ -101,7 +109,8 @@ public class StoreReturnServiceImpl
                                   LocationInfoMapper locationInfoMapper,
                                   IBizCodeGenerator bizCodeGenerator,
                                   IWarehousePurchaseInService purchaseInService,
-                                  DemandManageMapper demandManageMapper) {
+                                  DemandManageMapper demandManageMapper,
+                                  DictService dictService) {
         super(baseMapper);
         this.storeMapper = storeMapper;
         this.productInfoMapper = productInfoMapper;
@@ -109,6 +118,7 @@ public class StoreReturnServiceImpl
         this.bizCodeGenerator = bizCodeGenerator;
         this.purchaseInService = purchaseInService;
         this.demandManageMapper = demandManageMapper;
+        this.dictService = dictService;
     }
 
     @Override
@@ -168,7 +178,7 @@ public class StoreReturnServiceImpl
 
         // K4 联动外购入库：同事务 UPSERT location_stock + stock_flow(return_in)。
         // inbound 内部校验库位存在 / 数量 > 0，失败抛 → 整体回滚（退回记录一并撤销，不留半态）。
-        purchaseInService.inbound(bo.getProductId(), bo.getLocationId(), bo.getReturnQuantity(),
+        purchaseInService.inbound(resolveInboundProductId(bo.getProductId()), bo.getLocationId(), bo.getReturnQuantity(),
             FLOW_TYPE_RETURN_IN, "门店退回入库：" + entity.getReturnNo());
 
         log.info("[STR-RETURN-REBUILD-001] return id={} no={} product={} location={} qty={} → return_in 联动入库",
@@ -246,10 +256,15 @@ public class StoreReturnServiceImpl
 
     @Override
     public List<StoreReturnPorkCandidateVo> listPorkCandidates() {
-        List<ProductInfo> products = productInfoMapper.selectList(
-            new LambdaQueryWrapper<ProductInfo>()
-                .in(ProductInfo::getBelongType, PORK_BELONG_TYPES)
-                .orderByAsc(ProductInfo::getId));
+        List<Long> dictIds = resolvePorkReturnProductIds();
+        LambdaQueryWrapper<ProductInfo> w = new LambdaQueryWrapper<>();
+        if (!dictIds.isEmpty()) {
+            w.in(ProductInfo::getId, dictIds);
+        } else {
+            // 字典 djs_pork_return_product 为空 → 回退 belong_type 候选（向后兼容）
+            w.in(ProductInfo::getBelongType, PORK_BELONG_TYPES);
+        }
+        List<ProductInfo> products = productInfoMapper.selectList(w.orderByAsc(ProductInfo::getId));
         return products.stream().map(p -> {
             StoreReturnPorkCandidateVo vo = new StoreReturnPorkCandidateVo();
             vo.setProductId(p.getId());
@@ -259,23 +274,54 @@ public class StoreReturnServiceImpl
         }).collect(Collectors.toList());
     }
 
+    /**
+     * 猪肉退回候选产品 id：读字典 djs_pork_return_product 的 dict_value（产品业务码 product_id）
+     * → 经 t_warehouse_product_info.product_id resolve 成雪花主键。字典空 → 返空（调用方回退 belong_type）。
+     */
+    private List<Long> resolvePorkReturnProductIds() {
+        Map<String, String> dict = dictService.getAllDictByDictType(DICT_PORK_RETURN_PRODUCT);
+        if (dict == null || dict.isEmpty()) {
+            log.warn("[STORE-RETURN] 字典 {} 为空，猪肉退回候选回退 belong_type", DICT_PORK_RETURN_PRODUCT);
+            return List.of();
+        }
+        List<String> codes = dict.keySet().stream()
+            .filter(StringUtils::isNotBlank).distinct().collect(Collectors.toList());
+        if (codes.isEmpty()) {
+            return List.of();
+        }
+        return productInfoMapper.selectList(new LambdaQueryWrapper<ProductInfo>()
+                .in(ProductInfo::getProductId, codes).select(ProductInfo::getId))
+            .stream().map(ProductInfo::getId).filter(Objects::nonNull).distinct().collect(Collectors.toList());
+    }
+
     @Override
     public List<StoreReturnVegCandidateVo> listVegCandidates(Long storeId) {
         if (storeId == null) {
             return List.of();
         }
+        // docx：近两日（今天 + 昨天）发往该门店的果蔬。复用 selectStoreReceivedVegProducts 按天取，合并去重。
         LocalDate today = LocalDate.now(ZONE_SHANGHAI);
-        List<Map<String, Object>> rows = demandManageMapper.selectStoreReceivedVegProducts(storeId, today);
-        return rows.stream().map(r -> {
-            StoreReturnVegCandidateVo vo = new StoreReturnVegCandidateVo();
+        List<Map<String, Object>> rows = new java.util.ArrayList<>();
+        rows.addAll(demandManageMapper.selectStoreReceivedVegProducts(storeId, today));
+        rows.addAll(demandManageMapper.selectStoreReceivedVegProducts(storeId, today.minusDays(1)));
+        Map<Long, StoreReturnVegCandidateVo> dedup = new java.util.LinkedHashMap<>();
+        for (Map<String, Object> r : rows) {
             Object pid = r.get("productId");
-            vo.setProductId(pid == null ? null : Long.valueOf(pid.toString()));
-            Object name = r.get("productName");
-            vo.setProductName(name == null ? null : name.toString());
-            Object unit = r.get("productUnit");
-            vo.setProductUnit(unit == null ? null : unit.toString());
-            return vo;
-        }).collect(Collectors.toList());
+            if (pid == null) {
+                continue;
+            }
+            Long productId = Long.valueOf(pid.toString());
+            dedup.computeIfAbsent(productId, k -> {
+                StoreReturnVegCandidateVo vo = new StoreReturnVegCandidateVo();
+                vo.setProductId(productId);
+                Object name = r.get("productName");
+                vo.setProductName(name == null ? null : name.toString());
+                Object unit = r.get("productUnit");
+                vo.setProductUnit(unit == null ? null : unit.toString());
+                return vo;
+            });
+        }
+        return new java.util.ArrayList<>(dedup.values());
     }
 
     @Override
@@ -302,7 +348,7 @@ public class StoreReturnServiceImpl
 
         // 确认实收时才联动外购入库：同事务 UPSERT location_stock + stock_flow(return_in)，
         // inbound 内部校验库位 / 数量，失败抛 → 整体回滚（确认与入库一致，不留半态）。
-        purchaseInService.inbound(existing.getProductId(), bo.getLocationId(), bo.getReceivedQty(),
+        purchaseInService.inbound(resolveInboundProductId(existing.getProductId()), bo.getLocationId(), bo.getReceivedQty(),
             FLOW_TYPE_RETURN_IN, "门店退回仓库确认入库：" + existing.getReturnNo());
 
         log.info("[STORE-RETURN-REALIGN-001] confirm id={} no={} location={} receivedQty={} → received 联动入库",
@@ -317,6 +363,28 @@ public class StoreReturnServiceImpl
     }
 
     // ---------- private helpers ----------
+
+    /**
+     * 退回入库目标产品 id：果蔬成品退回入库用其原材料 product_material（docx：不以成品入库，用原材料 ID）；
+     * 原材料未配 → 回退成品 id + warn（现网 product_material 多为 NULL 的降级）。猪肉/其他用成品 id 本身。
+     */
+    private Long resolveInboundProductId(Long productId) {
+        if (productId == null) {
+            return null;
+        }
+        ProductInfo p = productInfoMapper.selectById(productId);
+        if (p == null) {
+            return productId;
+        }
+        if (BELONG_TYPE_VEGETABLE.equals(p.getBelongType())) {
+            Long material = p.getProductMaterial();
+            if (material != null) {
+                return material;
+            }
+            log.warn("[STORE-RETURN] 果蔬成品 {} 未配 product_material，退回入库回退用成品 id", productId);
+        }
+        return productId;
+    }
 
     private LambdaQueryWrapper<StoreReturn> buildQueryWrapper(StoreReturnQuery q) {
         LambdaQueryWrapper<StoreReturn> w = new LambdaQueryWrapper<>();

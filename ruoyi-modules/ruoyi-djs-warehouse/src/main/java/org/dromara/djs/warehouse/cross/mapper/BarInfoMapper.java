@@ -90,6 +90,33 @@ public interface BarInfoMapper extends BaseMapperPlus<BarInfo, BarInfo> {
                               @Param("userId") Long userId);
 
     /**
+     * 发货月台领用出库乐观锁：bar_info.status in_stock → cut_done + 写出库字段（猪肉全闭环 Part I P6）。
+     *
+     * <p>发货月台领用（{@code submitWhiteBarOut} 来源走燎毛白条整只时）回写 bar 出库基础数据，
+     * 补齐「发货月台 inhouse → product_production」链路里 bar_info 出库字段缺失的 base-data gap。</p>
+     *
+     * <p>终态复用 {@code cut_done}（不动 7 态状态机/字典）；用 {@code out_method=1}（发货领用）区分于
+     * 分割路径的 {@code out_method=2}（分割间，见 {@link #updateStatusToCutDone}）。
+     * <b>不写 acid_remove_*</b>（排酸字段语义保留分割路径专用，Kevin 拍板）。
+     * WHERE status='in_stock' 保证并发只有一个成功；affectedRows==0 → 该 bar 不在 in_stock 态
+     * （已被领用/出库/不存在），调用方静默跳过（白条整只发货为基础数据补写，非主链路硬阻塞）。</p>
+     *
+     * @param id        白条主键
+     * @param outTime   出库时间
+     * @param outWeight 出库重量（kg）
+     * @param userId    操作人
+     * @return affectedRows（0 = bar 不在 in_stock 态，调用方跳过回写）
+     */
+    @Update("UPDATE t_warehouse_bar_info "
+        + "   SET status='cut_done', out_time=#{outTime}, out_weight=#{outWeight}, out_method=1,"
+        + "       update_by=#{userId}, update_time=NOW() "
+        + " WHERE id = #{id} AND status = 'in_stock' AND del_flag = '0'")
+    int updateStatusToShipOut(@Param("id") Long id,
+                              @Param("outTime") Date outTime,
+                              @Param("outWeight") BigDecimal outWeight,
+                              @Param("userId") Long userId);
+
+    /**
      * 分页查「当天确认收货白条」（FIX-STORE-TRACE-BAR-001 门店猪肉追溯 picker 口径）。
      *
      * <p>口径：{@code status='in_stock'}（已入库 / 确认收货）且 {@code DATE(in_time)=CURDATE()} 的白条，

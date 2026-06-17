@@ -11,6 +11,8 @@ import org.dromara.common.satoken.utils.LoginHelper;
 import org.dromara.djs.common.base.DjsBaseServiceImpl;
 import org.dromara.djs.common.encoder.BizCodeType;
 import org.dromara.djs.common.encoder.IBizCodeGenerator;
+import org.dromara.djs.common.supplier.domain.Supplier;
+import org.dromara.djs.common.supplier.mapper.SupplierMapper;
 import org.dromara.djs.warehouse.cross.domain.BarInfo;
 import org.dromara.djs.warehouse.cross.mapper.BarInfoMapper;
 import org.dromara.djs.warehouse.cut.domain.PigCutRecord;
@@ -35,6 +37,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.Duration;
 import java.time.LocalDate;
 import java.util.Date;
@@ -42,6 +45,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
@@ -122,6 +126,7 @@ public class PigCutRecordServiceImpl
     private final StockFlowMapper stockFlowMapper;
     private final ProductInfoMapper productInfoMapper;
     private final LocationInfoMapper locationInfoMapper;
+    private final SupplierMapper supplierMapper;
     private final IBizCodeGenerator bizCodeGenerator;
     private final ITraceService traceService;
 
@@ -131,6 +136,7 @@ public class PigCutRecordServiceImpl
                                    StockFlowMapper stockFlowMapper,
                                    ProductInfoMapper productInfoMapper,
                                    LocationInfoMapper locationInfoMapper,
+                                   SupplierMapper supplierMapper,
                                    IBizCodeGenerator bizCodeGenerator,
                                    ITraceService traceService) {
         super(baseMapper);
@@ -139,6 +145,7 @@ public class PigCutRecordServiceImpl
         this.stockFlowMapper = stockFlowMapper;
         this.productInfoMapper = productInfoMapper;
         this.locationInfoMapper = locationInfoMapper;
+        this.supplierMapper = supplierMapper;
         this.bizCodeGenerator = bizCodeGenerator;
         this.traceService = traceService;
     }
@@ -225,10 +232,13 @@ public class PigCutRecordServiceImpl
             barInfoMapper.updateStatusToCutting(record.getWhiteBarId(), userId);
         }
 
+        // P4 库位兜底：前端未传 locationId 时按所选分割产品配置的 store_location_id 解析（参 ProductProductionServiceImpl.resolveLocationId）
+        Long effectiveLocationId = resolveCutLocationId(bo.getLocationId(), bo.getPartItems());
+
         // 校验 locationId 存在 + 是冻品库
-        LocationInfo location = locationInfoMapper.selectById(bo.getLocationId());
+        LocationInfo location = locationInfoMapper.selectById(effectiveLocationId);
         if (location == null) {
-            throw new ServiceException("入冻品库位不存在：" + bo.getLocationId());
+            throw new ServiceException("入冻品库位不存在：" + effectiveLocationId);
         }
 
         // Step 3：for each part → INSERT product_inhouse + INSERT stock_flow IN
@@ -268,7 +278,7 @@ public class PigCutRecordServiceImpl
             inhouse.setProduceTime(now);
             inhouse.setWhiteBarId(record.getWhiteBarId());
             inhouse.setCutPart(part.getCutPart());
-            inhouse.setLocationId(bo.getLocationId());
+            inhouse.setLocationId(effectiveLocationId);
             productInhouseMapper.insert(inhouse);
 
             // 分割品入冻品库流水
@@ -278,7 +288,7 @@ public class PigCutRecordServiceImpl
             flowIn.setFlowNo(bizCodeGenerator.generate(BizCodeType.STOCK_FLOW_NO, flowCtxIn));
             flowIn.setFlowDate(now);
             flowIn.setProductId(productId);
-            flowIn.setWarehouseId(bo.getLocationId());
+            flowIn.setWarehouseId(effectiveLocationId);
             flowIn.setInoutType(INOUT_IN);
             flowIn.setFlowType(FLOW_TYPE_CUT_OUT_IN);
             flowIn.setChangeNum(part.getProductWeight());
@@ -374,6 +384,7 @@ public class PigCutRecordServiceImpl
         Page<PigCutRecordVo> page = baseMapper.selectVoPage(pageQuery.build(), wrapper);
         fillLocationNames(page.getRecords());
         fillRemainingWeight(page.getRecords());
+        fillOutsourceAndStatistics(page.getRecords());
         return TableDataInfo.build(page);
     }
 
@@ -382,6 +393,7 @@ public class PigCutRecordServiceImpl
         List<PigCutRecordVo> list = baseMapper.selectVoList(buildQueryWrapper(query));
         fillLocationNames(list);
         fillRemainingWeight(list);
+        fillOutsourceAndStatistics(list);
         return list;
     }
 
@@ -391,6 +403,7 @@ public class PigCutRecordServiceImpl
         if (vo != null) {
             fillLocationNames(List.of(vo));
             fillRemainingWeight(List.of(vo));
+            fillOutsourceAndStatistics(List.of(vo));
         }
         return vo;
     }
@@ -510,6 +523,185 @@ public class PigCutRecordServiceImpl
             BigDecimal remaining = vo.getPickupWeight().subtract(used == null ? BigDecimal.ZERO : used);
             vo.setRemainingWeight(remaining.max(BigDecimal.ZERO));
         }
+    }
+
+    /**
+     * 统计/外购标注金额计算保留小数位。
+     */
+    private static final int STAT_SCALE = 2;
+
+    /**
+     * P5 外购标注 + P7 统计指标 compute-on-read 一体回填（按 white_bar_id 关联 bar_info 派生，无持久列）。
+     *
+     * <p>一次批量取齐所需上游数据，避免 N+1：</p>
+     * <ol>
+     *   <li>按 white_bar_id 批量查 bar_info（取 supplier_id / arrive_weight / marketing_weight /
+     *       in_weight / out_weight / in_time / out_time）；</li>
+     *   <li>按出现的 supplier_id 批量查 supplier 名（参 {@code OutsourcePigServiceImpl#fillSupplierName} 范式）；</li>
+     *   <li>按 white_bar_id 批量查分割品总重（{@code PigCutRecordMapper#sumCutProductWeightByWhiteBarIds}）。</li>
+     * </ol>
+     *
+     * <p>外购判定：{@code bar.supplierId != null}（已核实判据，外购优先 supplier_id）。
+     * 外购行 {@code isOutsource=true} + {@code supplierName}；自养行 {@code isOutsource=false}、{@code supplierName=null}。</p>
+     */
+    private void fillOutsourceAndStatistics(List<PigCutRecordVo> records) {
+        if (records == null || records.isEmpty()) {
+            return;
+        }
+        List<Long> whiteBarIds = records.stream()
+            .map(PigCutRecordVo::getWhiteBarId)
+            .filter(Objects::nonNull)
+            .distinct()
+            .toList();
+        if (whiteBarIds.isEmpty()) {
+            return;
+        }
+
+        // ① 批量查 bar_info（white_bar_id = bar_info.id）
+        List<BarInfo> bars = barInfoMapper.selectBatchIds(whiteBarIds);
+        Map<Long, BarInfo> barMap = new HashMap<>(bars.size());
+        for (BarInfo bar : bars) {
+            barMap.put(bar.getId(), bar);
+        }
+
+        // ② 批量查 supplier 名（仅外购 bar 的 supplier_id）
+        Set<Long> supplierIds = bars.stream()
+            .map(BarInfo::getSupplierId)
+            .filter(Objects::nonNull)
+            .collect(Collectors.toSet());
+        Map<Long, String> supplierNameMap = new HashMap<>(supplierIds.size());
+        if (!supplierIds.isEmpty()) {
+            List<Supplier> suppliers = supplierMapper.selectBatchIds(supplierIds);
+            for (Supplier s : suppliers) {
+                supplierNameMap.put(s.getId(), s.getSupplierName());
+            }
+        }
+
+        // ③ 批量查分割品总重（white_bar_id 匹配且 cut_part 非空）
+        Map<Long, BigDecimal> cutWeightMap = new HashMap<>(whiteBarIds.size());
+        List<Map<String, Object>> sums = baseMapper.sumCutProductWeightByWhiteBarIds(whiteBarIds);
+        if (sums != null) {
+            for (Map<String, Object> row : sums) {
+                Object idObj = row.get("whiteBarId");
+                Object weightObj = row.get("totalWeight");
+                if (idObj != null && weightObj != null) {
+                    cutWeightMap.put(((Number) idObj).longValue(), toBigDecimal(weightObj));
+                }
+            }
+        }
+
+        for (PigCutRecordVo vo : records) {
+            BarInfo bar = vo.getWhiteBarId() == null ? null : barMap.get(vo.getWhiteBarId());
+            if (bar == null) {
+                continue;
+            }
+            // P5 外购标注
+            boolean outsource = bar.getSupplierId() != null;
+            vo.setIsOutsource(outsource);
+            vo.setSupplierName(outsource ? supplierNameMap.get(bar.getSupplierId()) : null);
+
+            // P7 统计指标（compute-on-read，防除零）
+            // 头皮肉出品率 = arriveWeight / marketingWeight
+            vo.setHeadSkinYieldRate(safeDivide(bar.getArriveWeight(), bar.getMarketingWeight()));
+            // 白条出品率 = inWeight / arriveWeight
+            vo.setWhiteBarYieldRate(safeDivide(bar.getInWeight(), bar.getArriveWeight()));
+            // 预冷损耗量 = inWeight - outWeight
+            if (bar.getInWeight() != null && bar.getOutWeight() != null) {
+                BigDecimal precoolLoss = bar.getInWeight().subtract(bar.getOutWeight());
+                vo.setPrecoolLossWeight(precoolLoss);
+                // 预冷损耗率 = (inWeight - outWeight) / inWeight
+                vo.setPrecoolLossRate(safeDivide(precoolLoss, bar.getInWeight()));
+            }
+            // 冷库停留时长（分钟）= outTime - inTime
+            if (bar.getInTime() != null && bar.getOutTime() != null) {
+                vo.setColdStorageMinutes(Duration.between(
+                    bar.getInTime().toInstant(), bar.getOutTime().toInstant()).toMinutes());
+            }
+            // 分割品总重 = Σ product_inhouse.product_weight（white_bar_id 匹配且 cut_part 非空）
+            BigDecimal cutTotal = cutWeightMap.get(vo.getWhiteBarId());
+            vo.setCutProductTotalWeight(cutTotal);
+            // 分割损耗 = outWeight - 分割品总重
+            if (bar.getOutWeight() != null && cutTotal != null) {
+                vo.setCutLossWeight(bar.getOutWeight().subtract(cutTotal));
+            }
+        }
+    }
+
+    /**
+     * 比率安全除法：分母为 null 或 0 返 null（前端显「—」）；保留 {@link #STAT_SCALE} 位小数 HALF_UP。
+     */
+    private BigDecimal safeDivide(BigDecimal numerator, BigDecimal denominator) {
+        if (numerator == null || denominator == null
+            || denominator.compareTo(BigDecimal.ZERO) == 0) {
+            return null;
+        }
+        return numerator.divide(denominator, STAT_SCALE, RoundingMode.HALF_UP);
+    }
+
+    /**
+     * SQL 聚合标量（{@code SUM(...)}）→ BigDecimal 容错转换（MySQL 驱动可能返 BigDecimal / Double / Long）。
+     */
+    private BigDecimal toBigDecimal(Object value) {
+        if (value instanceof BigDecimal bd) {
+            return bd;
+        }
+        if (value instanceof Number n) {
+            return BigDecimal.valueOf(n.doubleValue());
+        }
+        return new BigDecimal(value.toString());
+    }
+
+    /**
+     * P4 分割入库库位解析兜底（参 {@code ProductProductionServiceImpl#resolveLocationId} 范式）。
+     *
+     * <p>优先级：</p>
+     * <ol>
+     *   <li>前端显式传 {@code boLocationId} 非空 → 直接用（存在性校验由调用方 {@code submitCutOut} 统一做）；</li>
+     *   <li>否则取所选分割产品配置的入库库位（{@code product_info.store_location_id} 逗号分隔，
+     *       取首个能解析为数字且 location 存在的有效项）；</li>
+     *   <li>仍无 → 抛 ServiceException 提示前端补库位（分割落库必须指定冻品/鲜品库位，不静默兜底任意库位）。</li>
+     * </ol>
+     *
+     * <p>容错：CSV 中非数字 token / 不存在的库位 id 跳过；遍历各 part 的 productId 直到解析出有效库位。</p>
+     *
+     * @param boLocationId 前端传入库位 id（P4 自动填后通常非空；mp 旧端或未填时为空）
+     * @param partItems    分割明细（取其 productId 关联 product_info.store_location_id 配置）
+     * @return 解析出的有效库位 id（非空）
+     */
+    private Long resolveCutLocationId(Long boLocationId, List<PigCutOutBo.PartItem> partItems) {
+        // ① 前端显式传了库位 → 直接用（存在 + 库类型校验由 submitCutOut 统一做）
+        if (boLocationId != null) {
+            return boLocationId;
+        }
+        // ② 按所选分割产品配置的 store_location_id 解析首个有效库位
+        if (partItems != null) {
+            for (PigCutOutBo.PartItem part : partItems) {
+                if (part.getProductId() == null) {
+                    continue;
+                }
+                ProductInfo product = productInfoMapper.selectById(part.getProductId());
+                if (product == null || StringUtils.isBlank(product.getStoreLocationId())) {
+                    continue;
+                }
+                for (String token : product.getStoreLocationId().split(",")) {
+                    String trimmed = token.trim();
+                    if (trimmed.isEmpty()) {
+                        continue;
+                    }
+                    Long candidate;
+                    try {
+                        candidate = Long.valueOf(trimmed);
+                    } catch (NumberFormatException ex) {
+                        continue;
+                    }
+                    if (locationInfoMapper.selectById(candidate) != null) {
+                        return candidate;
+                    }
+                }
+            }
+        }
+        // ③ 全部落空 → 要求前端补库位（不静默兜底任意库位，避免分割产出入错冷库）
+        throw new ServiceException("未指定入冻品库位，且所选分割产品未配置入库库位，请在录入页选择入库位置");
     }
 
     private LambdaQueryWrapper<PigCutRecord> buildQueryWrapper(PigCutRecordQuery query) {
