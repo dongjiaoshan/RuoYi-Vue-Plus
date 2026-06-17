@@ -1,5 +1,8 @@
 package org.dromara.djs.breed.event.weaning.service.impl;
 
+import com.baomidou.mybatisplus.core.MybatisConfiguration;
+import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
+import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.djs.breed.core.domain.Pig;
 import org.dromara.djs.breed.core.domain.bo.PigEventBo;
@@ -19,6 +22,7 @@ import org.dromara.djs.breed.event.weaning.domain.bo.WeaningBo;
 import org.dromara.djs.breed.event.weaning.domain.bo.WeaningDetailBo;
 import org.dromara.djs.breed.event.weaning.mapper.PigWeaningDetailMapper;
 import org.dromara.djs.breed.event.weaning.mapper.PigWeaningMapper;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
@@ -82,6 +86,20 @@ class WeaningServiceImplTest {
     private ITransferService transferService;
 
     private WeaningServiceImpl service;
+
+    /**
+     * MyBatis-Plus 单测 entity cache 预热（coder-mp-entity-cache-test）：flipWeanedPigletsToFattening
+     * 用 {@code Wrappers.<Pig>lambdaUpdate().set(...)}（eager 解析列名）+ {@code <PigPigletno>lambdaQuery()}，
+     * mock 路径下也会触发 TableInfoHelper.getTableInfo，必须先注册 entity。
+     */
+    @BeforeAll
+    static void initMpEntityCache() {
+        MybatisConfiguration cfg = new MybatisConfiguration();
+        MapperBuilderAssistant assistant = new MapperBuilderAssistant(cfg, "");
+        assistant.setCurrentNamespace("test");
+        TableInfoHelper.initTableInfo(assistant, Pig.class);
+        TableInfoHelper.initTableInfo(assistant, PigPigletno.class);
+    }
 
     @BeforeEach
     void setup() {
@@ -380,5 +398,40 @@ class WeaningServiceImplTest {
         assertThatThrownBy(() -> service.recordWeaning(bo))
             .isInstanceOf(ServiceException.class)
             .hasMessageContaining("pig.event.invalid_transition");
+    }
+
+    @Test
+    @DisplayName("FIX-BRD-PIGTYPE-001: 断奶把该窝已贴标仔猪批量翻育肥猪（pigMapper.update 调一次）")
+    void flipWeanedPigletsToFattening_onWean() {
+        Pig pig = mkSow(350L, PigLifecycle.FM);
+        when(pigMapper.selectById(350L)).thenReturn(pig);
+        PigFarrow farrow = mkFarrow(550L, 350L, 10, 7777L);
+        when(farrowMapper.selectById(550L)).thenReturn(farrow);
+        // 该分娩下 2 头已建 pig_info 行的仔猪
+        when(pigletnoMapper.selectList(any())).thenReturn(List.of(
+            mkPiglet(9101L, "P-001"),
+            mkPiglet(9102L, "P-002")
+        ));
+
+        WeaningBo bo = mkBo(350L, 550L, 2, new BigDecimal("16.000"));
+        service.recordWeaning(bo);
+
+        // 一次性 IN 批量条件 update（pig_type='piglet' 且非 END → set 'fattening'）
+        verify(pigMapper, times(1)).update(any(), any());
+    }
+
+    @Test
+    @DisplayName("FIX-BRD-PIGTYPE-001: 该分娩无已建行仔猪 → 不调 pigMapper.update（无可翻仔猪）")
+    void flipWeanedPiglets_noPiglets_noUpdate() {
+        Pig pig = mkSow(351L, PigLifecycle.FM);
+        when(pigMapper.selectById(351L)).thenReturn(pig);
+        PigFarrow farrow = mkFarrow(551L, 351L, 10, 7777L);
+        when(farrowMapper.selectById(551L)).thenReturn(farrow);
+        when(pigletnoMapper.selectList(any())).thenReturn(List.of());
+
+        WeaningBo bo = mkBo(351L, 551L, 5, new BigDecimal("40.000"));
+        service.recordWeaning(bo);
+
+        verify(pigMapper, never()).update(any(), any());
     }
 }

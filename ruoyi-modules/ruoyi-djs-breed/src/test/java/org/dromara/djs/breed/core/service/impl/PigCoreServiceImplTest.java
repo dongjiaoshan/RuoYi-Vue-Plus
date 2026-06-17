@@ -30,6 +30,7 @@ import java.time.LocalDateTime;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -282,5 +283,77 @@ class PigCoreServiceImplTest {
         ArgumentCaptor<Pig> pigCaptor = ArgumentCaptor.forClass(Pig.class);
         verify(pigMapper).insert(pigCaptor.capture());
         assertThat(pigCaptor.getValue().getCurrentStatus()).isEqualTo("HB");
+    }
+
+    // ===== internalIntroToReserve（内部留种：育肥猪→种猪类型变更，FIX-BRD-PIGTYPE-001）=====
+
+    private Pig mkFattening(Long id, String sex, PigLifecycle status) {
+        Pig p = new Pig();
+        p.setId(id);
+        p.setEarNo("260601-001");
+        p.setPigSex(sex);
+        p.setPigType("fattening");
+        p.setCurrentStatus(status == null ? null : status.name());
+        p.setStatusStartedAt(LocalDateTime.now().minusDays(30));
+        p.setVersion(0);
+        return p;
+    }
+
+    @Test
+    @DisplayName("internalIntroToReserve 母育肥猪: pig_type fattening→sow + 状态 HB(后备)")
+    void internalIntroToReserve_female_fattening_to_sow() {
+        Pig pig = mkFattening(200L, "F", PigLifecycle.HB);
+        when(pigMapper.selectById(200L)).thenReturn(pig);
+        when(pigMapper.updateById(any(Pig.class))).thenReturn(1);
+
+        service.internalIntroToReserve(200L);
+
+        ArgumentCaptor<Pig> captor = ArgumentCaptor.forClass(Pig.class);
+        verify(pigMapper).updateById(captor.capture());
+        assertThat(captor.getValue().getPigType()).isEqualTo("sow");
+        assertThat(captor.getValue().getCurrentStatus()).isEqualTo("HB");
+
+        ArgumentCaptor<PigStatusRecord> recCaptor = ArgumentCaptor.forClass(PigStatusRecord.class);
+        verify(statusRecordMapper).insert(recCaptor.capture());
+        assertThat(recCaptor.getValue().getNewStatus()).isEqualTo("HB");
+        assertThat(recCaptor.getValue().getEventType()).isEqualTo("INTRO");
+    }
+
+    @Test
+    @DisplayName("internalIntroToReserve 公育肥猪: pig_type fattening→boar + 状态 BOAR_ACTIVE")
+    void internalIntroToReserve_male_fattening_to_boar() {
+        Pig pig = mkFattening(201L, "M", PigLifecycle.HB);
+        when(pigMapper.selectById(201L)).thenReturn(pig);
+        when(pigMapper.updateById(any(Pig.class))).thenReturn(1);
+
+        service.internalIntroToReserve(201L);
+
+        ArgumentCaptor<Pig> captor = ArgumentCaptor.forClass(Pig.class);
+        verify(pigMapper).updateById(captor.capture());
+        assertThat(captor.getValue().getPigType()).isEqualTo("boar");
+        assertThat(captor.getValue().getCurrentStatus()).isEqualTo("BOAR_ACTIVE");
+    }
+
+    @Test
+    @DisplayName("internalIntroToReserve 非育肥猪(已是 sow): 幂等跳过，不 update/不写 record")
+    void internalIntroToReserve_non_fattening_skips() {
+        Pig pig = mkSow(202L, PigLifecycle.HB);
+        when(pigMapper.selectById(202L)).thenReturn(pig);
+
+        service.internalIntroToReserve(202L);
+
+        verify(pigMapper, never()).updateById(any(Pig.class));
+        verify(statusRecordMapper, never()).insert(any(PigStatusRecord.class));
+    }
+
+    @Test
+    @DisplayName("internalIntroToReserve 终止(END)育肥猪: 跳过不留种")
+    void internalIntroToReserve_terminal_skips() {
+        Pig pig = mkFattening(203L, "F", PigLifecycle.END);
+        when(pigMapper.selectById(203L)).thenReturn(pig);
+
+        service.internalIntroToReserve(203L);
+
+        verify(pigMapper, never()).updateById(any(Pig.class));
     }
 }

@@ -12,6 +12,7 @@ import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.breed.core.domain.Pig;
 import org.dromara.djs.breed.core.domain.bo.PigEventBo;
+import org.dromara.djs.breed.core.enums.PigLifecycle;
 import org.dromara.djs.breed.core.enums.PigStatusEvent;
 import org.dromara.djs.breed.core.mapper.PigMapper;
 import org.dromara.djs.breed.core.service.I18nMessages;
@@ -153,6 +154,10 @@ public class WeaningServiceImpl implements IWeaningService {
         //    决策 G4(a)：母猪与仔猪转移到「同目标」（独立目标作 follow-up，避免 BO 字段膨胀）。
         maybeTransferAfterWean(pig.getId(), farrow.getId(), bo);
 
+        // 5. 断奶即把该窝已贴标仔猪翻成育肥猪（FIX-BRD-PIGTYPE-001，原型「仔猪断奶操作→生成育肥猪档案」）。
+        //    断奶为主触发；转栏 newPigType 翻转保留作幂等兜底。仅改类型不动状态（最小改）。
+        flipWeanedPigletsToFattening(farrow.getId());
+
         log.info("[BRD-EVENT-002] recordWeaning pigId={} earNo={} weaningId={} count={} detailRows={}",
             pig.getId(), pig.getEarNo(), entity.getId(), bo.getWeanedCount(), savedDetails.size());
 
@@ -192,6 +197,32 @@ public class WeaningServiceImpl implements IWeaningService {
         }
         log.info("[FIX-BRD-MP-WEAN-FORM-001] K071 piglet transfer after wean farrowId={} pigletCount={}",
             farrowId, transferred);
+    }
+
+    /**
+     * 断奶即把该窝已贴标仔猪翻成育肥猪（FIX-BRD-PIGTYPE-001，原型「仔猪断奶操作→生成育肥猪档案」）。
+     * <p>取 {@code t_farm_pig_pigletno} 中该分娩已落 {@code pig_id} 的仔猪，一次性条件 update：
+     * 仅 {@code pig_type='piglet'} 且非终止(END) 的翻成 {@code 'fattening'}（只改类型不动状态，最小改）。
+     * 条件 update 幂等——重跑翻 0 行；与断奶主事务同生共死。尚未贴标的仔猪（pig_id 为空）不在此集合，
+     * 按现有流程贴标后归 piglet，由后续断奶/存量回填覆盖。</p>
+     */
+    private void flipWeanedPigletsToFattening(Long farrowId) {
+        List<Long> pigletPigIds = pigletnoMapper.selectList(
+                Wrappers.<PigPigletno>lambdaQuery()
+                    .eq(PigPigletno::getFarrowId, farrowId)
+                    .isNotNull(PigPigletno::getPigId))
+            .stream().map(PigPigletno::getPigId).filter(Objects::nonNull).toList();
+        if (pigletPigIds.isEmpty()) {
+            return;
+        }
+        int flipped = pigMapper.update(null,
+            Wrappers.<Pig>lambdaUpdate()
+                .in(Pig::getId, pigletPigIds)
+                .eq(Pig::getPigType, "piglet")
+                .ne(Pig::getCurrentStatus, PigLifecycle.END.name())
+                .set(Pig::getPigType, "fattening"));
+        log.info("[FIX-BRD-PIGTYPE-001] 断奶翻育肥 farrowId={} pigletCandidates={} flippedToFattening={}",
+            farrowId, pigletPigIds.size(), flipped);
     }
 
     /** 把单头猪转移到 bo 指定目标 barn/pen（复用 ITransferService，断奶事务内联）。 */

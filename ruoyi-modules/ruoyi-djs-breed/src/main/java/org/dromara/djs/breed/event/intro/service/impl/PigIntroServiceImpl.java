@@ -201,9 +201,10 @@ public class PigIntroServiceImpl implements IPigIntroService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public PigIntroResultVo introduceInternal(PigIntroInternalBo bo) {
-        // 内部引种：登记一头已存在的猪进引种台账，不新建猪 / 不动 pen.current_count。
-        // FIX-INTRO-001 #1：来源为 fattening 的肥猪登记后触发状态转移到「后备 HB」（同事务）；
-        // 非 fattening / 已 HB / END 终态由 internalIntroToReserve 内部幂等跳过。
+        // 内部引种 = 留种：登记一头已存在的肥猪进引种台账，不新建猪 / 不动 pen.current_count。
+        // 来源 fattening 肥猪由 internalIntroToReserve 按性别重定类型 + 初始种猪态（同事务）：
+        // 母→sow/HB（后备母猪，可进配种选猪）/ 公→boar/BOAR_ACTIVE（种公猪）；
+        // 非 fattening / END 终态由 internalIntroToReserve 内部幂等跳过。
         Pig pig = pigMapper.selectById(bo.getPigId());
         if (pig == null) {
             throw new ServiceException(I18nMessages.t("pig.not_found", bo.getPigId()));
