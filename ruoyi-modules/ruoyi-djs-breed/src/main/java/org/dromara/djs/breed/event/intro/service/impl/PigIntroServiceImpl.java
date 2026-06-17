@@ -260,6 +260,10 @@ public class PigIntroServiceImpl implements IPigIntroService {
                 .filter(p -> p.getBirthDate() != null)
                 .collect(Collectors.toMap(Pig::getId, Pig::getBirthDate, (a, b) -> a));
 
+        // 邓博 2026-06-17 #22：品种/品系名优先取 t_farm_breed_info 主表（客户配的权威名 04=国寿黑），
+        // 字典 djs_pig_breed(04=杜洛克)/djs_pig_strain 仅回落。批量预载一次防 N+1。
+        Map<String, String> breedNameMap = pigCoreService.loadBreedStrainNameMap(1);
+        Map<String, String> strainNameMap = pigCoreService.loadBreedStrainNameMap(2);
         List<IntroRecordVo> rows = new ArrayList<>(page.getRecords().size());
         for (PigIntroduce e : page.getRecords()) {
             IntroRecordVo vo = new IntroRecordVo();
@@ -269,8 +273,8 @@ public class PigIntroServiceImpl implements IPigIntroService {
                 : "external".equals(e.getIntroduceType()) ? "外部" : e.getIntroduceType());
             vo.setEarNo(e.getStartEarNo());
             vo.setPigCount(e.getPigCount());
-            vo.setPigBreedLabel(translateBreed(e.getPigBreedCode()));
-            vo.setPigStrainLabel(translateStrain(e.getPigStrainCode()));
+            vo.setPigBreedLabel(translateBreed(breedNameMap, e.getPigBreedCode()));
+            vo.setPigStrainLabel(translateStrain(strainNameMap, e.getPigStrainCode()));
             vo.setAgeDays(calcAgeDays(e.getPigId() != null ? birthDateById.get(e.getPigId()) : null));
             vo.setIntroduceDate(e.getIntroduceDate());
             vo.setOperator(e.getOperator());
@@ -303,19 +307,27 @@ public class PigIntroServiceImpl implements IPigIntroService {
             .collect(Collectors.toList());
     }
 
-    /** 品种字典翻译；翻不到回落 code。 */
-    private String translateBreed(String code) {
+    /** 品种名解析（#22）：t_farm_breed_info 主表优先 → djs_pig_breed 字典回落 → 原始 code 回落。 */
+    private String translateBreed(Map<String, String> breedNameMap, String code) {
         if (StringUtils.isBlank(code)) {
             return null;
+        }
+        String name = breedNameMap.get(code);
+        if (StringUtils.isNotBlank(name)) {
+            return name;
         }
         String label = dictService.getDictLabel("djs_pig_breed", code);
         return StringUtils.isNotBlank(label) ? label : code;
     }
 
-    /** 品系字典翻译（djs_pig_strain）；翻不到回落 code（601-6）。 */
-    private String translateStrain(String code) {
+    /** 品系名解析（#22）：t_farm_breed_info 主表优先 → djs_pig_strain 字典回落 → 原始 code 回落（601-6）。 */
+    private String translateStrain(Map<String, String> strainNameMap, String code) {
         if (StringUtils.isBlank(code)) {
             return null;
+        }
+        String name = strainNameMap.get(code);
+        if (StringUtils.isNotBlank(name)) {
+            return name;
         }
         String label = dictService.getDictLabel("djs_pig_strain", code);
         return StringUtils.isNotBlank(label) ? label : code;

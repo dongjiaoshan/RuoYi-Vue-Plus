@@ -346,11 +346,10 @@ public class DemandManageServiceImpl extends DjsBaseServiceImpl<DemandManageMapp
         // 编辑路径下：业态不可改（业态 confined to insert）
         bo.setProductType(exists.getProductType());
 
-        // 仅 DRAFT / SUBMITTED 态允许全字段编辑，其他态仅允许改 remark
+        // 仅 DRAFT / SUBMITTED（待确认）态允许编辑；其他态拒绝修改
         if (!FULLY_EDITABLE_STATUSES.contains(exists.getDemandStatus())) {
-            // 只 patch remark；其他字段全部回滚到 exists 原值
-            exists.setRemark(bo.getRemark());
-            return baseMapper.updateById(exists);
+            throw new ServiceException(
+                I18nMessages.t("demand.update.status_forbidden", exists.getDemandNo(), exists.getDemandStatus()), 400);
         }
         DemandManage entity = toEntity(bo);
         if (entity == null) {

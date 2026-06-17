@@ -52,7 +52,8 @@ import java.util.stream.Collectors;
  * <h3>校验</h3>
  * <ul>
  *   <li>pig 必须存在（否则 ServiceException）</li>
- *   <li>weight 必填 > 0（@Valid 已校验）</li>
+ *   <li>weight / backfatThickness 均可选（各端按需前端校验，> 0 且 ≤ 999.99 由 @Valid 兜底）；
+ *       mp 端主录 backfatThickness，admin 端可录 weight</li>
  *   <li>删除：3 天内（含当天）可删，超过抛 growth.delete.expired</li>
  * </ul>
  *

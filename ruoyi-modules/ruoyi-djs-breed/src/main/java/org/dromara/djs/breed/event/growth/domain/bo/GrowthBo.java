@@ -14,8 +14,9 @@ import java.time.LocalDate;
 /**
  * 生长记录录入入参（BRD-EVENT-005 GROWTH）。
  *
- * <p>mp 端：仅传 pigId + measureDate + weight（+ 可选 photoOssIds / remark）。
- * admin 端：可加 backfatThickness + backHeight。</p>
+ * <p>mp 端：传 pigId + measureDate + backfatThickness（背膘厚度 mm，mp 主录字段，前端必填）。
+ * admin 端：可加 weight + backHeight。weight / backfatThickness 后端均可选（各端按需前端校验），
+ * 不同时强制（邓博 2026-06-17 #35：mp 生长记录改录背膘厚度而非体重）。</p>
  *
  * @author djs
  * @since BRD-EVENT-005
@@ -37,8 +38,7 @@ public class GrowthBo implements Serializable {
     @NotNull(message = "growth.measure_date.required")
     private LocalDate measureDate;
 
-    /** 体重 kg（必填，> 0 且 ≤ 999.99 kg）。 */
-    @NotNull(message = "growth.weight.required")
+    /** 体重 kg（可选，admin 端录；> 0 且 ≤ 999.99 kg）。 */
     @DecimalMin(value = "0.01", message = "growth.weight.min")
     @DecimalMax(value = "999.99", message = "growth.weight.max")
     private BigDecimal weight;

@@ -341,10 +341,10 @@ public class PigCoreServiceImpl implements IPigCoreService {
         // 性别 label 硬映射（F→母猪 / M→公猪），pig_sex 是 F/M 与 sys_user_sex(0/1/2) 字典不通用
         vo.setPigSexLabel("F".equals(pig.getPigSex()) ? "母猪" : "M".equals(pig.getPigSex()) ? "公猪" : null);
         vo.setPigBreedCode(pig.getPigBreedCode());
-        vo.setPigBreedLabel(translateDictOrCode("djs_pig_breed", pig.getPigBreedCode()));
+        // #19/#22：品种/品系名优先取 t_farm_breed_info 主表（客户配的权威名 04=国寿黑），字典回落（单详情，按 code 各预载一次）
+        vo.setPigBreedLabel(resolveBreedStrainName(loadBreedStrainNameMap(1), "djs_pig_breed", pig.getPigBreedCode()));
         vo.setPigStrainCode(pig.getPigStrainCode());
-        // djs_pig_strain 字典 V1 缺 seed → 翻不到回落 code（BRD-FIX-MP-INTRO-001 raise）
-        vo.setPigStrainLabel(translateDictOrCode("djs_pig_strain", pig.getPigStrainCode()));
+        vo.setPigStrainLabel(resolveBreedStrainName(loadBreedStrainNameMap(2), "djs_pig_strain", pig.getPigStrainCode()));
         vo.setAgeDays(calcAgeDays(pig, LocalDate.now()));
         // 当前位置：栋舍名 + 栏位名拼接（缺任一则降级，全缺为 null）
         String barnName = pig.getBarnId() != null
@@ -373,7 +373,8 @@ public class PigCoreServiceImpl implements IPigCoreService {
      * 加载 t_farm_breed_info 主数据 code→中文名 映射（breedStrain 1=品种 / 2=品系）。
      * 列表批量调用前预载一次，避免逐头查（N+1）。
      */
-    private Map<String, String> loadBreedStrainNameMap(Integer breedStrain) {
+    @Override
+    public Map<String, String> loadBreedStrainNameMap(Integer breedStrain) {
         return breedInfoMapper.selectList(new LambdaQueryWrapper<BreedInfo>()
                 .eq(BreedInfo::getBreedStrain, breedStrain)
                 .eq(BreedInfo::getDelFlag, "0"))
@@ -650,8 +651,9 @@ public class PigCoreServiceImpl implements IPigCoreService {
         // 「临产 / 到断奶期」badge 阈值（dueDate 距今 > N 天即标 due）：分娩 5 天 / 断奶 3 天。
         // 口径 = 预产期/到断奶期 - 当前日期 > N 天的母猪打标签（row121/124：还有 >N 天到期的提前进入提醒池）。
         int dueWindowDays = "WEANING".equalsIgnoreCase(dueType) ? 3 : 5;
-        // 邓博 2026-06-17 #13：品系名优先取 breed_info 主数据（覆盖外部引种 BreedInfoPicker 写入的 2 位码如 "01"），批量预载一次防 N+1。
-        // 品种保持字典翻译（djs_pig_breed 已含 2 位码，不动 — 避免改动未被报的「品种」显示）。
+        // 邓博 2026-06-17 #13/#19：品种 + 品系名都优先取 t_farm_breed_info 主表（客户在「品种品系表」配的权威名，
+        // 如 04=国寿黑）；字典 djs_pig_breed(04=杜洛克) / djs_pig_strain 仅作回落。批量预载一次防 N+1。
+        Map<String, String> breedNameMap = loadBreedStrainNameMap(1);
         Map<String, String> strainNameMap = loadBreedStrainNameMap(2);
         List<PigSearchVo> result = new ArrayList<>(pigs.size());
         for (Pig p : pigs) {
@@ -663,7 +665,8 @@ public class PigCoreServiceImpl implements IPigCoreService {
             vo.setCurrentStatus(p.getCurrentStatus());
             // 品种/品系编码 + 中文名（mp 选猪弹层「品种/品系」标签）
             vo.setPigBreedCode(p.getPigBreedCode());
-            vo.setPigBreedName(translateDictOrCode("djs_pig_breed", p.getPigBreedCode()));
+            // #19：品种 breed_info 主表优先 → 字典回落 → code 回落（与品系同源，04=国寿黑而非杜洛克）
+            vo.setPigBreedName(resolveBreedStrainName(breedNameMap, "djs_pig_breed", p.getPigBreedCode()));
             vo.setPigStrainCode(p.getPigStrainCode());
             // #13：品系 breed_info 主数据优先 → 字典回落 → code 回落
             vo.setPigStrainName(resolveBreedStrainName(strainNameMap, "djs_pig_strain", p.getPigStrainCode()));

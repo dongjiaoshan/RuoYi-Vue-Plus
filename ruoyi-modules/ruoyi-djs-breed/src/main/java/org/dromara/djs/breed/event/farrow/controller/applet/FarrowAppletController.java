@@ -19,14 +19,14 @@ import java.util.List;
 /**
  * 小程序分娩 picker Controller（D9 closing Group D — FarrowPicker）。
  *
- * <p>专给 mp 端 {@code FarrowPicker} 用——业务上：工人先选母猪 earNo → 调本端点反查
- * 该母猪最近 N 次仍有 remain 的分娩记录 → 选中后自动 set farrowId（比手输 19 位
+ * <p>专给 mp 端断奶页 {@code FarrowPicker} 用——业务上：工人先选母猪 earNo → 调本端点反查
+ * 该母猪最近 N 次分娩记录 → 选中后自动 set farrowId（比手输 19 位
  * snowflake 更顺工人思维，参 _open-issues #8 决策 a）。</p>
  *
  * <h2>端点</h2>
  * <ul>
  *   <li>{@code GET /djs/applet/breed/farrow/recent-by-mother?earNo=&limit=}
- *       返回最近 N 次（默认 5）仍有 {@code remainEartag > 0} 的分娩记录。</li>
+ *       返回该母猪最近 N 次（默认 5）分娩记录（断奶用，不论是否已贴满标）。</li>
  * </ul>
  *
  * <h2>鉴权</h2>
@@ -45,12 +45,12 @@ public class FarrowAppletController {
     private final IFarrowService farrowService;
 
     /**
-     * 按母猪 earNo 反查最近 N 次未贴满标的分娩记录。
+     * 按母猪 earNo 反查最近 N 次分娩记录（断奶用）。
      *
      * <p>语义：</p>
      * <ul>
      *   <li>earNo 必填——FarrowPicker 强制先选母猪</li>
-     *   <li>仅返 {@code remainEartag > 0}（已贴满 liveBorn 的分娩 picker 不显示）</li>
+     *   <li>不按 remain 过滤：已贴满标的分娩照样返（断奶在贴标后，恰恰要选已贴满的窝）</li>
      *   <li>按 farrow_date 倒序，默认 5 条，最多 20 条</li>
      * </ul>
      *

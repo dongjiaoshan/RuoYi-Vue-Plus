@@ -15,6 +15,7 @@ import org.dromara.djs.breed.core.domain.vo.PigStatusRecordVo;
 import org.dromara.djs.breed.core.domain.vo.PigVo;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * 猪只主数据 + 状态机核心 Service（BRD-CORE-001 ★ 业务心脏）。
@@ -137,6 +138,16 @@ public interface IPigCoreService {
                                          String dueType,
                                          Boolean excludeNullBarn,
                                          Integer minAgeDays);
+
+    /**
+     * 加载 t_farm_breed_info 主表 code→中文名 映射（breedStrain 1=品种 / 2=品系）。
+     * 供需要把品种/品系码翻成「品种品系表」权威中文名的服务（如引种记录）复用，批量预载一次防 N+1。
+     * 取不到（表里无该 code）由调用方回落字典 / 原始 code（邓博 2026-06-17 #19/#22）。
+     *
+     * @param breedStrain 1=品种 / 2=品系
+     * @return code→中文名 映射（无数据返空 map）
+     */
+    Map<String, String> loadBreedStrainNameMap(Integer breedStrain);
 
     /**
      * 栋舍 × 头数聚合（BRD-FIX-MP-PIGSELECT-001）——mp 端 PigSelectPanel 顶部「栋舍 chip」数据源。
