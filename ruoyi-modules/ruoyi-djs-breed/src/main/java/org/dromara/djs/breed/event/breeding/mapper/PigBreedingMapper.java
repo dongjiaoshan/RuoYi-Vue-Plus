@@ -66,7 +66,6 @@ public interface PigBreedingMapper extends BaseMapperPlus<PigBreeding, PigBreedi
                 SELECT MAX(s2.id)
                   FROM t_farm_status_record s2
                  WHERE s2.pig_id = b.pig_id
-                   AND s2.del_flag = '0'
                    AND s2.tenant_id = '1001'
             )
          WHERE b.del_flag = '0'

@@ -20,8 +20,8 @@ import java.time.LocalDateTime;
  * DDL 注释里的 MATING/CONFIRM_PREG/... 旧词汇由本 ticket 的
  * {@code V202605260901__BRD-CORE-001-realign-status-record-comment.sql} 修正。</p>
  *
- * <p>流水表：保留 {@code del_flag} / {@code update_by} / {@code update_time}（与 DDL 一致），
- * 但 UNIQUE 索引不存在，故不需要 {@code del_unique}。</p>
+ * <p>append-only 流水表：DDL 有 {@code update_by} / {@code update_time}（MP insertFill 占位，实际不 update），
+ * 但**无 {@code del_flag}**（状态历史不软删）。查询本表时不要拼 {@code del_flag} 过滤。</p>
  *
  * @author djs
  * @since BRD-CORE-001
