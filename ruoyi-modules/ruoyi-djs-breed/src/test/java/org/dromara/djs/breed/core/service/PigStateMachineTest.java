@@ -168,14 +168,7 @@ class PigStateMachineTest {
             .hasMessageContaining("pig.event.male_only");
     }
 
-    // ─────────────────────── 状态不变事件：CASTRATE / TRANSFER ───────────────────────
-
-    @Test
-    @DisplayName("CASTRATE: BOAR_ACTIVE → BOAR_ACTIVE (状态不变)")
-    void castrate_boar_keeps_state() {
-        assertThat(sm.nextStatus(PigLifecycle.BOAR_ACTIVE, PigStatusEvent.CASTRATE, "M", null))
-            .isEqualTo(PigLifecycle.BOAR_ACTIVE);
-    }
+    // ─────────────────────── 状态不变事件：TRANSFER（CASTRATE 公猪空状态见末段） ───────────────────────
 
     @Test
     @DisplayName("TRANSFER: PZ → PZ (状态不变)")
@@ -189,7 +182,7 @@ class PigStateMachineTest {
     @DisplayName("DIE: 任何 (非 END) from → END")
     void die_any_to_END() {
         assertThat(sm.nextStatus(PigLifecycle.PZ, PigStatusEvent.DIE, "F", null)).isEqualTo(PigLifecycle.END);
-        assertThat(sm.nextStatus(PigLifecycle.BOAR_ACTIVE, PigStatusEvent.DIE, "M", null)).isEqualTo(PigLifecycle.END);
+        assertThat(sm.nextStatus(PigLifecycle.DN, PigStatusEvent.DIE, "F", null)).isEqualTo(PigLifecycle.END);
     }
 
     @Test
@@ -199,9 +192,9 @@ class PigStateMachineTest {
     }
 
     @Test
-    @DisplayName("SLAUGHTER: BOAR_ACTIVE → END")
+    @DisplayName("SLAUGHTER: PZ → END (非终态出栏)")
     void slaughter_to_END() {
-        assertThat(sm.nextStatus(PigLifecycle.BOAR_ACTIVE, PigStatusEvent.SLAUGHTER, "M", null)).isEqualTo(PigLifecycle.END);
+        assertThat(sm.nextStatus(PigLifecycle.PZ, PigStatusEvent.SLAUGHTER, "F", null)).isEqualTo(PigLifecycle.END);
     }
 
     // ─────────────────────── 终态拒绝继续 ───────────────────────

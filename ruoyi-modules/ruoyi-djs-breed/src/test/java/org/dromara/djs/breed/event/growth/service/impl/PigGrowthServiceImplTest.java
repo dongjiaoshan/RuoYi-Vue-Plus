@@ -1,6 +1,7 @@
 package org.dromara.djs.breed.event.growth.service.impl;
 
 import org.dromara.common.core.exception.ServiceException;
+import org.dromara.common.core.service.OssService;
 import org.dromara.djs.breed.core.domain.Pig;
 import org.dromara.djs.breed.core.enums.PigLifecycle;
 import org.dromara.djs.breed.core.mapper.PigMapper;
@@ -67,12 +68,14 @@ class PigGrowthServiceImplTest {
     private PenMapper penMapper;
     @Mock
     private IFattenAgeStageService fattenAgeStageService;
+    @Mock
+    private OssService ossService;
 
     private PigGrowthServiceImpl service;
 
     @BeforeEach
     void setup() {
-        service = new PigGrowthServiceImpl(growthMapper, pigMapper, barnMapper, penMapper, fattenAgeStageService);
+        service = new PigGrowthServiceImpl(growthMapper, pigMapper, barnMapper, penMapper, fattenAgeStageService, ossService);
     }
 
     private Pig mkPig(Long id) {

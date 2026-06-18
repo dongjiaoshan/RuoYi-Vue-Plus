@@ -13,6 +13,7 @@ import java.io.Serializable;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.List;
 
 /**
  * 生长记录视图（BRD-EVENT-005 GROWTH）。
@@ -39,6 +40,15 @@ public class PigGrowthVo implements Serializable {
     private BigDecimal backfatThickness;
     private BigDecimal backHeight;
     private String photoOssIds;
+
+    /**
+     * 测量照片可访问 URL 列表（由 photoOssIds 经 OssService 预解析；无照片 → 空 list）。
+     * <p>mp {@code <image>} 无法携 Bearer token 取鉴权下载端点，故后端 JOIN sys_oss 预解析成
+     * 直链注入（仿 {@code PigIntroServiceImpl.resolveProofUrls}）。仅 queryPage enrich，
+     * 新增 / 详情接口不填。</p>
+     */
+    private List<String> photoUrls;
+
     private Long operatorId;
 
     /**

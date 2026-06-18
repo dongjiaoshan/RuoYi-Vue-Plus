@@ -143,8 +143,9 @@ public class PigCoreServiceImpl implements IPigCoreService {
         PigStatusRecord record = new PigStatusRecord();
         record.setPigId(pig.getId());
         record.setEarNo(pig.getEarNo());
+        // new_status NOT NULL：空状态（非种母猪）写 ''（非 null）。old_status 可空，空前态写 null（与 createPig/internalIntro 一致）。
         record.setOldStatus(from == null ? null : from.name());
-        record.setNewStatus(to == null ? null : to.name());
+        record.setNewStatus(to == null ? "" : to.name());
         record.setEventType(bo.getEventType().name());
         record.setRelatedEventId(bo.getRelatedEventId());
         record.setChangeTime(eventAt);
@@ -187,9 +188,9 @@ public class PigCoreServiceImpl implements IPigCoreService {
             throw new ServiceException(I18nMessages.t("pig.create.required_fields_missing"));
         }
 
-        // 初始 lifecycle：公猪 → BOAR_ACTIVE；母猪 / piglet / fattening → HB
-        PigLifecycle initial = "M".equals(bo.getPigSex()) && "boar".equals(bo.getPigType())
-            ? PigLifecycle.BOAR_ACTIVE : PigLifecycle.HB;
+        // 初始 lifecycle（ADR-0016）：仅种母猪(sow)→后备 HB；非种母猪类型(boar/piglet/fattening)空状态('')。
+        PigLifecycle initial = "sow".equals(bo.getPigType()) ? PigLifecycle.HB : null;
+        String initialStatus = initial == null ? "" : initial.name();
 
         LocalDateTime now = LocalDateTime.now();
 
@@ -202,7 +203,7 @@ public class PigCoreServiceImpl implements IPigCoreService {
         pig.setPigType(bo.getPigType());
         pig.setPigBreedCode(bo.getPigBreedCode());
         pig.setPigStrainCode(bo.getPigStrainCode());
-        pig.setCurrentStatus(initial.name());
+        pig.setCurrentStatus(initialStatus);
         pig.setStatusStartedAt(now);
         pig.setFatherEar(bo.getFatherEar());
         pig.setMotherEar(bo.getMotherEar());
@@ -226,7 +227,7 @@ public class PigCoreServiceImpl implements IPigCoreService {
         record.setPigId(pig.getId());
         record.setEarNo(pig.getEarNo());
         record.setOldStatus(null);
-        record.setNewStatus(initial.name());
+        record.setNewStatus(initialStatus);   // new_status NOT NULL：非种母猪空状态写 ''（非 null）
         record.setEventType(PigStatusEvent.INTRO.name());
         record.setChangeTime(now);
         statusRecordMapper.insert(record);
@@ -259,10 +260,11 @@ public class PigCoreServiceImpl implements IPigCoreService {
 
         // 内部引种 = 把场内肥猪转为种猪：按性别重定 pig_type + 初始种猪态（邓博 2026-06-18：
         // 否则母肥猪转后备后 pig_type 仍 fattening，配种选猪（pig_type='sow'）里看不到）。
-        //   母 → sow / HB（后备母猪，可进配种）；公 → boar / BOAR_ACTIVE（种公猪）。
+        //   母 → sow / HB（后备母猪，可进配种）；公 → boar / 空状态 ''（种公猪无繁殖状态，ADR-0016）。
         boolean male = "M".equals(pig.getPigSex());
         String newType = male ? "boar" : "sow";
-        PigLifecycle newStatus = male ? PigLifecycle.BOAR_ACTIVE : PigLifecycle.HB;
+        String newStatus = male ? "" : PigLifecycle.HB.name();
+        PigLifecycle newStatusEnum = male ? null : PigLifecycle.HB;
         // current_status 空（旧 import 脏值）→ old_status=null 不抛 parseLifecycle；否则取原态
         String oldStatus = StringUtils.isBlank(pig.getCurrentStatus()) ? null : pig.getCurrentStatus();
 
@@ -271,7 +273,7 @@ public class PigCoreServiceImpl implements IPigCoreService {
         record.setPigId(pig.getId());
         record.setEarNo(pig.getEarNo());
         record.setOldStatus(oldStatus);
-        record.setNewStatus(newStatus.name());
+        record.setNewStatus(newStatus);
         record.setEventType(PigStatusEvent.INTRO.name());
         record.setChangeTime(now);
         if (oldStatus != null) {
@@ -280,7 +282,7 @@ public class PigCoreServiceImpl implements IPigCoreService {
         statusRecordMapper.insert(record);
 
         pig.setPigType(newType);
-        pig.setCurrentStatus(newStatus.name());
+        pig.setCurrentStatus(newStatus);
         pig.setStatusStartedAt(now);
         int affected = pigMapper.updateById(pig);
         if (affected == 0) {
@@ -288,7 +290,7 @@ public class PigCoreServiceImpl implements IPigCoreService {
         }
 
         PigLifecycle fromEnum = oldStatus == null ? null : PigLifecycle.valueOf(oldStatus);
-        eventPublisher.publishEvent(new PigStateChangedEvent(this, record, pig, fromEnum, newStatus));
+        eventPublisher.publishEvent(new PigStateChangedEvent(this, record, pig, fromEnum, newStatusEnum));
 
         log.info("[FIX-INTRO-RECLASS] internalIntroToReserve pigId={} earNo={} type fattening->{} status {}->{}",
             pig.getId(), pig.getEarNo(), newType, oldStatus, newStatus);
@@ -771,10 +773,17 @@ public class PigCoreServiceImpl implements IPigCoreService {
         List<String> statuses = parseStatusFilter(statusFilter);
         boolean callerWantsEnd = statuses.contains(PigLifecycle.END.name());
 
+        // pigTypeFilter 支持 CSV（如 'piglet,fattening' 给阉割选猪 = 公的仔猪+育肥猪）；单值退化 .eq，CSV 走 IN。
+        // 与 searchByEarKeyword 同口径，否则栋舍 chip 计数与列表条数对不上。
+        List<String> pigTypes = StringUtils.isNotBlank(pigTypeFilter)
+            ? Arrays.stream(pigTypeFilter.split(",")).map(String::trim).filter(StringUtils::isNotBlank).distinct().collect(Collectors.toList())
+            : Collections.emptyList();
+
         LambdaQueryWrapper<Pig> w = new LambdaQueryWrapper<Pig>()
             .ne(!callerWantsEnd, Pig::getCurrentStatus, PigLifecycle.END.name())
             .eq(StringUtils.isNotBlank(sexFilter), Pig::getPigSex, sexFilter)
-            .eq(StringUtils.isNotBlank(pigTypeFilter), Pig::getPigType, pigTypeFilter)
+            .eq(pigTypes.size() == 1, Pig::getPigType, pigTypes.isEmpty() ? null : pigTypes.get(0))
+            .in(pigTypes.size() > 1, Pig::getPigType, pigTypes)
             // 无栋舍归属的猪只不计入任何 chip
             .isNotNull(Pig::getBarnId);
         if (!statuses.isEmpty()) {

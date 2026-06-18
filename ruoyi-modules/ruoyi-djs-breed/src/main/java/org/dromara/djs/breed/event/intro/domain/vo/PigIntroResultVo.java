@@ -41,7 +41,7 @@ public class PigIntroResultVo implements Serializable {
 
         private String pigType;
 
-        /** 创建后 lifecycle 状态：F→HB / M→BOAR_ACTIVE。 */
+        /** 创建后 lifecycle 状态：F(种母猪)→HB / M(种公猪)→空('')。 */
         private String currentStatus;
     }
 }

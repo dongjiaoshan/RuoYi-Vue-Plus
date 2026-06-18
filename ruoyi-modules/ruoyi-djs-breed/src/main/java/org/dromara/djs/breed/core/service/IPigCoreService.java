@@ -55,7 +55,7 @@ public interface IPigCoreService {
      *
      * <p>语义：内部引种把一头**已存在**的肥猪（{@code pig_type='fattening'}）登记进引种台账后，
      * 按性别重定 {@code pig_type} + 初始种猪态——母 → {@code sow}/{@code HB}（后备母猪，可进配种选猪）；
-     * 公 → {@code boar}/{@code BOAR_ACTIVE}（种公猪）。否则肥猪转后备后 pig_type 仍 fattening，
+     * 公 → {@code boar} + 空状态 {@code ''}（种公猪，非种母猪无繁殖态）。否则肥猪转后备后 pig_type 仍 fattening，
      * 配种选猪（{@code pig_type='sow'}）里看不到它。本方法写 {@code t_farm_pig_status_record}
      * （old=原态 / new=种猪初始态 / event=INTRO）+ update {@code t_farm_pig}（pig_type + current_status），
      * 与调用方（{@code PigIntroServiceImpl.introduceInternal}）同一 {@code @Transactional}。</p>

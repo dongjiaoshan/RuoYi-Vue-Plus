@@ -145,7 +145,7 @@ class PigEarTagServiceImplTest {
         verify(pigMapper, times(3)).insert(pigCaptor.capture());
         for (Pig p : pigCaptor.getAllValues()) {
             assertThat(p.getPigType()).isEqualTo("piglet");
-            assertThat(p.getCurrentStatus()).isEqualTo(PigLifecycle.HB.name());
+            assertThat(p.getCurrentStatus()).isEqualTo("");
             assertThat(p.getMotherEar()).isEqualTo("01A12605001");
             assertThat(p.getFatherEar()).isEqualTo("01B12605900");
             assertThat(p.getBarnId()).isEqualTo(5L);
@@ -413,7 +413,8 @@ class PigEarTagServiceImplTest {
         // 6/15 起不编码性别 → 公母共用同一前缀连号；前缀 max 已到 0003 → 下一号 0004。
         when(earNoAllocator.buildPrefix(eq("4"), eq("04"), isNull(), any(LocalDate.class)))
             .thenReturn("4-04-260508");
-        when(earNoAllocator.nextSeqForPrefix("4-04-260508")).thenReturn(4L);
+        // R47：预览序号按出生日全场 max+1（不分品系品种）→ 下一号 004
+        when(earNoAllocator.nextSeqForDate(any(LocalDate.class))).thenReturn(4L);
 
         var vo = service.previewEarNos(911L, 2, 1);
 
@@ -434,7 +435,7 @@ class PigEarTagServiceImplTest {
         when(pigMapper.selectById(101L)).thenReturn(mkSow());
         when(earNoAllocator.buildPrefix(eq("4"), eq("04"), isNull(), any(LocalDate.class)))
             .thenReturn("4-04-260508");
-        when(earNoAllocator.nextSeqForPrefix("4-04-260508")).thenReturn(1L);
+        when(earNoAllocator.nextSeqForDate(any(LocalDate.class))).thenReturn(1L);
 
         var vo = service.previewEarNos(912L, 1, 0);
 

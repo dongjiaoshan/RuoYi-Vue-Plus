@@ -33,7 +33,7 @@ public enum PigStatusEvent {
     DIE("死亡"),
     /** 淘汰：(非 END) → END，end_reason=CULL。 */
     ELIMINATE("淘汰"),
-    /** 阉割：仅 BOAR_ACTIVE / pig_sex='M'，状态不变。 */
+    /** 阉割：仅公猪（pig_sex='M'，空状态），状态不变。 */
     CASTRATE("阉割"),
     /** 转移：(非 END)，状态不变，更新 barn_id / pen_id。 */
     TRANSFER("转移"),

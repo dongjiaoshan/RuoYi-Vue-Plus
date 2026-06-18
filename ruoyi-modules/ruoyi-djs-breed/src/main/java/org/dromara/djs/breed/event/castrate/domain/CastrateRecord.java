@@ -15,7 +15,7 @@ import java.time.LocalDateTime;
  *
  * <p>对应表 {@code t_farm_castrate_record}（SYS-INIT-001 DDL #19）。
  * 由 {@code CastrateServiceImpl} 在阉割事件录入时 INSERT；service 层校验 pig_sex='M'，
- * 状态机仅状态不变事件（NO_CHANGE_EVENTS），状态保持 BOAR_ACTIVE。</p>
+ * 状态机仅状态不变事件（NO_CHANGE_EVENTS），公猪空状态保持不变。</p>
  *
  * @author djs
  * @since BRD-EVENT-004

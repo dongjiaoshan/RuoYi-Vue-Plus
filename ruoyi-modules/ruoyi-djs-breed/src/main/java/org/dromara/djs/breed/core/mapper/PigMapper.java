@@ -1,8 +1,6 @@
 package org.dromara.djs.breed.core.mapper;
 
-import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
-import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 import org.dromara.common.mybatis.core.mapper.BaseMapperPlus;
@@ -23,22 +21,24 @@ import java.util.List;
 public interface PigMapper extends BaseMapperPlus<Pig, PigVo> {
 
     /**
-     * 取同前缀（{@code 品系1-品种2-公母1-yyMMdd6}，如 {@code 4-04-1-260508}）现存耳号的最大值（ADR-0011 序号源 DB max）。
+     * 取同<b>出生日段</b>（{@code yyMMdd}，如 {@code 260508}）现存耳号的最大序号（ADR-0011 序号源 DB max，
+     * R47：按出生日全场递增，不分品系品种）。
      *
-     * <p>{@code likeRight(ear_no, prefix)} + {@code orderByDesc(ear_no)} + {@code LIMIT 1}。
-     * 同前缀耳号末段序号定宽 4 位 → 字符串降序首条即序号最大。空前缀（无人引过）返回 null，调用方从 seq=1 起。</p>
+     * <p>序号 = 耳号末段（{@code 品系-品种2-yyMMdd6-序号3} 的第 4 段）。SQL 用 {@code REGEXP} 精确匹配
+     * 「{@code -出生日-数字结尾}」（出生日段是倒数第二段），{@code SUBSTRING_INDEX(ear_no,'-',-1)} 取末段序号，
+     * {@code CAST(... AS UNSIGNED)} 转数值取 {@code MAX}。当天无现存号返回 null，调用方从 seq=1 起。
+     * 旧 12 位无分隔历史号无 {@code -出生日-} 形态，天然不匹配，新旧隔离。</p>
      *
-     * @param prefix 耳号前缀（品系1-品种2-公母1-yyMMdd6）
-     * @return 该前缀下最大耳号；无则 null
+     * @param dateSeg 出生日段（{@code yyMMdd}，6 位）
+     * @return 当天全场最大序号；无则 null
      */
-    default String selectMaxEarNoByPrefix(String prefix) {
-        LambdaQueryWrapper<Pig> wrapper = Wrappers.<Pig>lambdaQuery()
-            .likeRight(Pig::getEarNo, prefix)
-            .orderByDesc(Pig::getEarNo)
-            .last("LIMIT 1");
-        Pig pig = selectOne(wrapper);
-        return pig == null ? null : pig.getEarNo();
-    }
+    @Select("""
+        SELECT MAX(CAST(SUBSTRING_INDEX(ear_no, '-', -1) AS UNSIGNED))
+          FROM t_farm_pig_info
+         WHERE del_flag = '0'
+           AND ear_no REGEXP CONCAT('-', #{dateSeg}, '-[0-9]+$')
+        """)
+    Long selectMaxSeqByDateSegment(@Param("dateSeg") String dateSeg);
 
     /**
      * 探测耳号是否已被占用（BRD-FIX-EARNO-001 UNIQUE 兜底，含已软删行 —— 软删行仍占 UNIQUE 中的 ear_no 列）。

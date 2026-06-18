@@ -7,6 +7,7 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.common.core.exception.ServiceException;
+import org.dromara.common.core.service.OssService;
 import org.dromara.common.core.utils.StringUtils;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
@@ -34,6 +35,7 @@ import java.time.LocalDate;
 import java.time.ZoneId;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Date;
 import java.util.List;
@@ -73,6 +75,7 @@ public class PigGrowthServiceImpl implements IPigGrowthService {
     private final BarnMapper barnMapper;
     private final PenMapper penMapper;
     private final IFattenAgeStageService fattenAgeStageService;
+    private final OssService ossService;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -219,6 +222,7 @@ public class PigGrowthServiceImpl implements IPigGrowthService {
             .orderByDesc(PigGrowth::getMeasureDate, PigGrowth::getId);
         Page<PigGrowthVo> page = growthMapper.selectVoPage(pageQuery.build(), w);
         enrichAgeDays(page.getRecords());
+        enrichPhotoUrls(page.getRecords());
         return TableDataInfo.build(page);
     }
 
@@ -250,6 +254,35 @@ public class PigGrowthServiceImpl implements IPigGrowthService {
             if (base != null) {
                 vo.setAgeDays((int) ChronoUnit.DAYS.between(base, vo.getMeasureDate()));
             }
+        }
+    }
+
+    /**
+     * 列表 enrich 测量照片可访问 URL（mp timeline 缩略图用）。
+     *
+     * <p>photoOssIds（逗号分隔 ossId）→ {@link OssService#selectUrlByIds} 预解析成直链列表注入
+     * {@code vo.photoUrls}（仿 {@code PigIntroServiceImpl.resolveProofUrls}）；mp {@code <image>}
+     * 无法携 Bearer token 取鉴权下载端点，故后端预解析。无照片 → 空 list。</p>
+     */
+    private void enrichPhotoUrls(java.util.List<PigGrowthVo> rows) {
+        if (rows == null || rows.isEmpty()) {
+            return;
+        }
+        for (PigGrowthVo vo : rows) {
+            String photoOssIds = vo.getPhotoOssIds();
+            if (StringUtils.isBlank(photoOssIds)) {
+                vo.setPhotoUrls(List.of());
+                continue;
+            }
+            String urls = ossService.selectUrlByIds(photoOssIds);
+            if (StringUtils.isBlank(urls)) {
+                vo.setPhotoUrls(List.of());
+                continue;
+            }
+            vo.setPhotoUrls(Arrays.stream(urls.split(","))
+                .map(String::trim)
+                .filter(StringUtils::isNotBlank)
+                .collect(Collectors.toList()));
         }
     }
 

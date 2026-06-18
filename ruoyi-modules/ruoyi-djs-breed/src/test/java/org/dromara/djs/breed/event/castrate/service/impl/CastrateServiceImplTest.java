@@ -37,7 +37,7 @@ import static org.mockito.Mockito.when;
 /**
  * {@link CastrateServiceImpl} 单元测试（BRD-EVENT-004 CASTRATE）。
  *
- * <p>状态机 NO_CHANGE：BOAR_ACTIVE 维持原状态；service 层提前校验 pig_sex='M'。</p>
+ * <p>状态机 NO_CHANGE：公猪空状态维持不变（ADR-0016 非种母猪无繁殖态）；service 层提前校验 pig_sex='M'。</p>
  *
  * @author djs
  * @since BRD-EVENT-004
@@ -67,13 +67,24 @@ class CastrateServiceImplTest {
         service = new CastrateServiceImpl(castrateMapper, pigMapper, pigCoreService, dictService, userService);
     }
 
-    private Pig mkBoar(Long id) {
+    /** 可阉割的公猪 = 育肥/仔猪公（R40：种公猪 boar 不可阉割，见 {@link #validate_boar_rejected}）。 */
+    private Pig mkCastratableMale(Long id) {
         Pig p = new Pig();
         p.setId(id);
         p.setEarNo("260520-M-001");
         p.setPigSex("M");
+        p.setPigType("fattening");
+        p.setCurrentStatus("");
+        return p;
+    }
+
+    private Pig mkBoar(Long id) {
+        Pig p = new Pig();
+        p.setId(id);
+        p.setEarNo("260520-B-001");
+        p.setPigSex("M");
         p.setPigType("boar");
-        p.setCurrentStatus(PigLifecycle.BOAR_ACTIVE.name());
+        p.setCurrentStatus("");
         return p;
     }
 
@@ -95,9 +106,9 @@ class CastrateServiceImplTest {
     }
 
     @Test
-    @DisplayName("happy: 公猪 CASTRATE → INSERT castrate + fireEvent(CASTRATE) 一次")
-    void happyPath_boar() {
-        Pig pig = mkBoar(300L);
+    @DisplayName("happy: 育肥公猪 CASTRATE → INSERT castrate + fireEvent(CASTRATE) 一次")
+    void happyPath_castratableMale() {
+        Pig pig = mkCastratableMale(300L);
         when(pigMapper.selectById(300L)).thenReturn(pig);
 
         service.recordCastrate(mkBo(300L));
@@ -114,7 +125,7 @@ class CastrateServiceImplTest {
     @Test
     @DisplayName("castrater: 阉割人员落库（BRD-FIX-MP-EVENT-LEAVE-IA-001 原型 87 字段）")
     void castrater_persisted() {
-        Pig pig = mkBoar(302L);
+        Pig pig = mkCastratableMale(302L);
         when(pigMapper.selectById(302L)).thenReturn(pig);
 
         CastrateBo bo = mkBo(302L);
@@ -133,7 +144,7 @@ class CastrateServiceImplTest {
     @Test
     @DisplayName("castrater: 空白阉割人员 → 落库 null（不存空串）")
     void castrater_blank_to_null() {
-        Pig pig = mkBoar(303L);
+        Pig pig = mkCastratableMale(303L);
         when(pigMapper.selectById(303L)).thenReturn(pig);
 
         CastrateBo bo = mkBo(303L);
@@ -155,6 +166,19 @@ class CastrateServiceImplTest {
         assertThatThrownBy(() -> service.recordCastrate(mkBo(301L)))
             .isInstanceOf(ServiceException.class)
             .hasMessageContaining("castrate.male_only");
+        verify(castrateMapper, never()).insert(any(CastrateRecord.class));
+        verify(pigCoreService, never()).fireEvent(any());
+    }
+
+    @Test
+    @DisplayName("类型校验: 种公猪 boar CASTRATE → ServiceException(种公猪不可阉割)，不 INSERT 不 fireEvent（R40：阉割对象仅公的仔猪/育肥猪）")
+    void validate_boar_rejected() {
+        Pig pig = mkBoar(304L);
+        when(pigMapper.selectById(304L)).thenReturn(pig);
+
+        assertThatThrownBy(() -> service.recordCastrate(mkBo(304L)))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("种公猪不可阉割");
         verify(castrateMapper, never()).insert(any(CastrateRecord.class));
         verify(pigCoreService, never()).fireEvent(any());
     }

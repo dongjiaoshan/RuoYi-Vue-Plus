@@ -134,7 +134,7 @@ class PigSearchServiceTest {
     @Test
     @DisplayName("sexFilter=M + pigTypeFilter=boar → 公猪过滤生效；终态 END 不返")
     void male_boar_filter_excludes_end() {
-        Pig boar = mkPig(10L, "B-001", "BOAR_ACTIVE", "M", "boar", null, null);
+        Pig boar = mkPig(10L, "B-001", "", "M", "boar", null, null);
         when(pigMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(List.of(boar));
 
         List<PigSearchVo> result = service.searchByEarKeyword(null, null, "M", "boar", null, 20, null, null, null);

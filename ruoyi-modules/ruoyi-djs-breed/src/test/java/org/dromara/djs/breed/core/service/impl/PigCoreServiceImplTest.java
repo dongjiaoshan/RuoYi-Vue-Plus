@@ -46,7 +46,7 @@ import static org.mockito.Mockito.when;
  *   <li>TRANSFER 事件：barn/pen 更新</li>
  *   <li>乐观锁冲突：updateById 返 0 → 抛 ServiceException</li>
  *   <li>非 END pig 不存在：抛 not_found</li>
- *   <li>createPig：公猪 → BOAR_ACTIVE / 母猪 → HB</li>
+ *   <li>createPig：种母猪(sow) → HB / 非种母猪(公猪/育肥/仔猪) → 空状态('')</li>
  * </ul>
  *
  * @author djs
@@ -247,8 +247,8 @@ class PigCoreServiceImplTest {
     }
 
     @Test
-    @DisplayName("createPig 公猪: initial=BOAR_ACTIVE + 写初始 status_record (old=null)")
-    void createPig_boar_initial_BOAR_ACTIVE() {
+    @DisplayName("createPig 公猪: 空状态 '' + 写初始 status_record (old=null, new='')")
+    void createPig_boar_initial_empty() {
         PigCreateBo bo = new PigCreateBo();
         bo.setEarNo("260520-099");
         bo.setPigSex("M");
@@ -259,14 +259,14 @@ class PigCoreServiceImplTest {
 
         ArgumentCaptor<Pig> pigCaptor = ArgumentCaptor.forClass(Pig.class);
         verify(pigMapper).insert(pigCaptor.capture());
-        assertThat(pigCaptor.getValue().getCurrentStatus()).isEqualTo("BOAR_ACTIVE");
+        assertThat(pigCaptor.getValue().getCurrentStatus()).isEqualTo("");
         assertThat(pigCaptor.getValue().getStatusStartedAt()).isNotNull();
 
         ArgumentCaptor<PigStatusRecord> recCaptor = ArgumentCaptor.forClass(PigStatusRecord.class);
         verify(statusRecordMapper).insert(recCaptor.capture());
         PigStatusRecord rec = recCaptor.getValue();
         assertThat(rec.getOldStatus()).isNull();
-        assertThat(rec.getNewStatus()).isEqualTo("BOAR_ACTIVE");
+        assertThat(rec.getNewStatus()).isEqualTo("");
         assertThat(rec.getEventType()).isEqualTo("INTRO");
     }
 
@@ -320,7 +320,7 @@ class PigCoreServiceImplTest {
     }
 
     @Test
-    @DisplayName("internalIntroToReserve 公育肥猪: pig_type fattening→boar + 状态 BOAR_ACTIVE")
+    @DisplayName("internalIntroToReserve 公育肥猪: pig_type fattening→boar + 空状态('')")
     void internalIntroToReserve_male_fattening_to_boar() {
         Pig pig = mkFattening(201L, "M", PigLifecycle.HB);
         when(pigMapper.selectById(201L)).thenReturn(pig);
@@ -331,7 +331,7 @@ class PigCoreServiceImplTest {
         ArgumentCaptor<Pig> captor = ArgumentCaptor.forClass(Pig.class);
         verify(pigMapper).updateById(captor.capture());
         assertThat(captor.getValue().getPigType()).isEqualTo("boar");
-        assertThat(captor.getValue().getCurrentStatus()).isEqualTo("BOAR_ACTIVE");
+        assertThat(captor.getValue().getCurrentStatus()).isEqualTo("");
     }
 
     @Test

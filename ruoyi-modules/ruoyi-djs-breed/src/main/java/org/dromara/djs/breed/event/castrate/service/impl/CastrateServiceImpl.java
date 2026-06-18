@@ -79,6 +79,10 @@ public class CastrateServiceImpl implements ICastrateService {
         if (!"M".equals(pig.getPigSex())) {
             throw new ServiceException(I18nMessages.t("castrate.male_only", pig.getId()));
         }
+        // 仅允许阉割「公的仔猪 + 育肥猪」，排除种公猪（boar）。
+        if (!"piglet".equals(pig.getPigType()) && !"fattening".equals(pig.getPigType())) {
+            throw new ServiceException("种公猪不可阉割");
+        }
 
         CastrateRecord entity = new CastrateRecord();
         entity.setPigId(pig.getId());

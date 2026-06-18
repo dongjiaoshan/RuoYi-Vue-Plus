@@ -101,19 +101,22 @@ class PigIntroServiceImplTest {
     private org.dromara.djs.breed.core.mapper.PigMapper innerPigMapper;
     private org.dromara.common.core.service.DictService dictService;
     private org.dromara.common.core.service.OssService ossService;
+    private org.dromara.djs.breed.event.transfer.service.ITransferService transferService;
 
     @BeforeEach
     void setup() {
         innerPigMapper = org.mockito.Mockito.mock(org.dromara.djs.breed.core.mapper.PigMapper.class);
         dictService = org.mockito.Mockito.mock(org.dromara.common.core.service.DictService.class);
         ossService = org.mockito.Mockito.mock(org.dromara.common.core.service.OssService.class);
+        transferService = org.mockito.Mockito.mock(org.dromara.djs.breed.event.transfer.service.ITransferService.class);
         service = new PigIntroServiceImpl(
             introduceMapper, pigCoreService, bizCodeGenerator,
             supplierMapper, barnMapper, penMapper, bizReferenceChecker,
             innerPigMapper,
             dictService,
             earNoAllocator,
-            ossService);
+            ossService,
+            transferService);
         // 用户填首号路径默认无撞号（existsEarNo 返 null 放行）
         when(innerPigMapper.existsEarNo(org.mockito.ArgumentMatchers.anyString())).thenReturn(null);
         // 通用 stubs
@@ -154,7 +157,7 @@ class PigIntroServiceImplTest {
             pig.setEarTag(bo.getEarTag());
             pig.setPigSex(bo.getPigSex());
             pig.setPigType(bo.getPigType());
-            pig.setCurrentStatus("F".equals(bo.getPigSex()) ? "HB" : "BOAR_ACTIVE");
+            pig.setCurrentStatus("F".equals(bo.getPigSex()) ? "HB" : "");
             return pig;
         });
     }
@@ -181,11 +184,11 @@ class PigIntroServiceImplTest {
     }
 
     @Test
-    @DisplayName("公猪引种 → BOAR_ACTIVE")
+    @DisplayName("公猪引种 → 空状态('')（非种母猪无繁殖态，ADR-0016）")
     void happy_boar() {
         PigIntroBo bo = mkSingleBo("external", "M");
         PigIntroResultVo result = service.introduce(bo);
-        assertThat(result.getPigs().get(0).getCurrentStatus()).isEqualTo("BOAR_ACTIVE");
+        assertThat(result.getPigs().get(0).getCurrentStatus()).isEqualTo("");
         assertThat(result.getPigs().get(0).getPigType()).isEqualTo("boar");
     }
 
@@ -345,7 +348,7 @@ class PigIntroServiceImplTest {
     @Test
     @DisplayName("FIX-CC-EARNO 用户首号 seq < 后台最小可用号 → 抛 intro.start_ear_no.too_small（不 createPig）")
     void batch_userStartEarNo_belowMin_throws() {
-        when(earNoAllocator.nextSeqForPrefix(org.mockito.ArgumentMatchers.anyString())).thenReturn(11L);
+        when(earNoAllocator.nextSeqForDateSegment(org.mockito.ArgumentMatchers.anyString())).thenReturn(11L);
 
         PigIntroBatchBo bo = new PigIntroBatchBo();
         copyFromSingle(mkSingleBo("external", "F"), bo);
@@ -361,7 +364,7 @@ class PigIntroServiceImplTest {
     @Test
     @DisplayName("FIX-CC-EARNO 用户首号 seq == 后台最小可用号 → 放行，以用户首号连号")
     void batch_userStartEarNo_atMin_ok() {
-        when(earNoAllocator.nextSeqForPrefix(org.mockito.ArgumentMatchers.anyString())).thenReturn(10L);
+        when(earNoAllocator.nextSeqForDateSegment(org.mockito.ArgumentMatchers.anyString())).thenReturn(10L);
 
         PigIntroBatchBo bo = new PigIntroBatchBo();
         copyFromSingle(mkSingleBo("external", "F"), bo);

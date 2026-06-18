@@ -1,5 +1,6 @@
 package org.dromara.djs.breed.event.intro.domain.bo;
 
+import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import lombok.Data;
 
@@ -37,4 +38,18 @@ public class PigIntroInternalBo implements Serializable {
 
     /** 引种人员（V1 自由文本，原型 86「引种人员」）。 */
     private String operator;
+
+    /**
+     * 引入栋舍编码（R45 李婷：内部引种必填，提交时把猪只转移到该栋舍并落转移记录）。
+     * <p>mp 端 BarnPicker 选中的业务码 string（如 "1"），service 按 barn_code 解析成 id。</p>
+     */
+    @NotBlank(message = "请选择引入栋舍")
+    private String barnCode;
+
+    /**
+     * 引入栏位编码（R45 李婷：内部引种必填，在所属栋舍下 unique）。
+     * <p>mp 端 PenPicker 联动选中的业务码 string，service 按 (barn_id, pen_code) 解析成 id。</p>
+     */
+    @NotBlank(message = "请选择引入栏位")
+    private String penCode;
 }

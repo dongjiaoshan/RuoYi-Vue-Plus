@@ -71,7 +71,7 @@ class SlaughterServiceImplTest {
         p.setEarNo("260520-S-001");
         p.setPigSex("M");
         p.setPigType("fattening");
-        p.setCurrentStatus(PigLifecycle.BOAR_ACTIVE.name());
+        p.setCurrentStatus("");
         return p;
     }
 

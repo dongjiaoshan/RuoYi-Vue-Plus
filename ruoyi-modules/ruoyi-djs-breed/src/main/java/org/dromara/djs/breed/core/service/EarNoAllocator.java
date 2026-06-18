@@ -25,20 +25,21 @@ import java.util.concurrent.TimeUnit;
  *   <li>品系码 = {@code djs_pig_strain} 字典 dict_value（原样取，支持 1-2 位）；</li>
  *   <li>品种码 = {@code djs_pig_breed} 字典 dict_value（定长 2 位，01-06）；</li>
  *   <li>出生年月日 = {@code yyMMdd}（猪只出生日，非系统当前日）；</li>
- *   <li>序号 = 3 位补零，<b>当天级</b>同前缀 max+1，每天从 001 起重新编号。</li>
+ *   <li>序号 = 3 位补零，<b>当天级全场 max+1（不分品系品种）</b>——同一天所有猪不分品系品种统一从 001 顺序递增，
+ *       每天从 001 起重新编号（全号仍是 品系-品种2-yyMMdd-序号3，只是序号在全天范围内连续唯一）。</li>
  * </ul>
  * <p>前缀 = {@code 品系-品种2-yyMMdd6}（如 {@code 1-01-260609}）→ 拼上 {@code -序号3}（如 {@code 1-01-260609-001}）。
- * 性别不再入耳号（公母仔猪同前缀连号），{@code pigSex} 参数保留仅为兼容老调用方，前缀组装不再使用。</p>
+ * 性别不再入耳号（公母仔猪同序列连号），{@code pigSex} 参数保留仅为兼容老调用方，前缀组装不再使用。
+ * 序号桶不再按前缀（品系×品种×日）切分，而是按<b>出生日</b>全场共享一个连号序列。</p>
  *
- * <h3>序号源 = DB max（权威源）</h3>
- * <p>在 Redisson 锁内 {@code SELECT MAX(ear_no)} 同前缀现存耳号（{@code likeRight}），按 {@code -} 拆出末段
- * 4 位序号 + 1 作为下一可用号，N 头连号一次性算出。前缀含出生日 yyMMdd → 天级桶天然隔离，同前缀第二天从
- * 0001 起不撞。旧 12 位历史耳号（无分隔的 {@code {农场2}{栋舍2}{yyMM4}{seq4}}）前缀组成不同，新前缀匹配不到，
- * 新旧隔离无撞号（ADR-0011 §2.7）。</p>
+ * <h3>序号源 = DB max（权威源，按出生日段全场聚合）</h3>
+ * <p>在 Redisson 锁内 {@code SELECT MAX(序号)} 同<b>出生日段</b>现存耳号（{@code ear_no REGEXP '-yyMMdd-数字结尾'}，
+ * 倒数第二段 = 出生日），取末段序号 + 1 作为下一可用号，N 头连号一次性算出。出生日段精确匹配（日期段是倒数第二段），
+ * 旧 12 位无分隔历史号天然不匹配，新旧隔离无撞号（ADR-0011 §2.7）。</p>
  *
  * <h3>并发安全</h3>
  * <ol>
- *   <li><b>Redisson 锁</b>（key 段含新前缀）—— 同前缀串行化，避免两批并发各读到同一 max 拿到重号。</li>
+ *   <li><b>Redisson 锁</b>（key 段含出生日 yyMMdd）—— 同一天全场串行化，避免跨前缀两批并发各读到同一 max 拿到重号。</li>
  *   <li><b>UNIQUE 兜底</b>—— 锁内对每个候选耳号显式 {@code existsEarNo} 探测；候选已被占用（脱锁写入 / 历史脏数据）
  *       则重新解析 max + 重试（≤ {@link #MAX_RETRY} 次），仍冲突抛 {@link ServiceException}，不让裸
  *       {@code DuplicateKeyException} 冒成 500。</li>
@@ -78,12 +79,12 @@ public class EarNoAllocator {
     private final RedissonClient redissonClient;
 
     /**
-     * 分配 N 个同前缀连号耳号（同品系 + 同品种 + 同公母 + 同出生日）。
+     * 分配 N 个连号耳号（同品系 + 同品种 + 同出生日；序号在当天全场范围内连续唯一）。
      *
      * @param strainCode 品系码（{@code djs_pig_strain} dict_value，1 位）；不可空
      * @param breedCode  品种码（{@code djs_pig_breed} dict_value，2 位）；不可空
-     * @param pigSex     性别（{@code M} 公 / {@code F} 母）；不可空
-     * @param birthDate  出生日期（耳号 yyMMdd 段）；不可空
+     * @param pigSex     性别（{@code M} 公 / {@code F} 母）；保留仅为兼容老调用方，不参与组装
+     * @param birthDate  出生日期（耳号 yyMMdd 段 + 序号桶维度）；不可空
      * @param count      分配数量；必须 &gt; 0
      * @return 长度为 count 的耳号列表，序号严格连续递增
      */
@@ -92,8 +93,10 @@ public class EarNoAllocator {
             throw new ServiceException("耳号分配数量必须大于 0，实际：" + count);
         }
         String prefix = buildPrefix(strainCode, breedCode, pigSex, birthDate);
+        String dateSeg = birthDate.format(BIRTH_FMT);
 
-        String lockKey = String.format(DjsRedisKey.BIZ_CODE_LOCK, "ear_no:" + prefix);
+        // 锁按出生日（同一天全场串行），避免跨前缀并发重号
+        String lockKey = String.format(DjsRedisKey.BIZ_CODE_LOCK, "ear_no:" + dateSeg);
         RLock lock = redissonClient.getLock(lockKey);
 
         boolean locked = false;
@@ -102,7 +105,7 @@ public class EarNoAllocator {
             if (!locked) {
                 throw new ServiceException("耳号分配抢锁超时：" + lockKey);
             }
-            return allocateLocked(prefix, count);
+            return allocateLocked(prefix, dateSeg, count);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new ServiceException("耳号分配被中断：" + prefix);
@@ -144,10 +147,11 @@ public class EarNoAllocator {
 
     /**
      * 锁内：DB max + 1 推算连号，含 UNIQUE 兜底重试。
+     * <p>序号源按<b>出生日段</b>全场 max（不分品系品种），候选耳号仍用各自 {@code prefix}（品系-品种-日）拼序号。</p>
      */
-    private List<String> allocateLocked(String prefix, int count) {
+    private List<String> allocateLocked(String prefix, String dateSeg, int count) {
         for (int attempt = 1; attempt <= MAX_RETRY; attempt++) {
-            long nextSeq = resolveNextSeq(prefix);
+            long nextSeq = resolveNextSeqByDate(dateSeg);
             List<String> candidates = new ArrayList<>(count);
             boolean conflict = false;
             for (int i = 0; i < count; i++) {
@@ -168,44 +172,38 @@ public class EarNoAllocator {
     }
 
     /**
-     * 同前缀下一可用序号 = {@code MAX(ear_no)} 末段 seq + 1；无现存号则 1。
-     * <p>供 service 端"用户首号下限校验"复用（甲方：用户填的数量编号不得小于后台返回的最小可用号），
-     * 不重写 SQL。仅读不锁——真正分配仍走 {@link #allocate} 的 Redisson 锁 + UNIQUE 兜底。</p>
+     * 出生日全场下一可用序号 = {@code MAX(序号)} 同出生日段 + 1；当天无现存号则 1。
+     * <p>供 service 端"用户首号下限校验" / 预览复用（甲方：用户填的数量编号不得小于后台返回的最小可用号）。
+     * 仅读不锁——真正分配仍走 {@link #allocate} 的 Redisson 锁 + UNIQUE 兜底。</p>
      *
-     * @param prefix 耳号前缀（品系1-品种2-公母1-yyMMdd6，如 {@code 1-01-1-260609}）
-     * @return 下一可用 4 位序号的数值（1-based）
+     * @param birthDate 出生日期；不可空
+     * @return 下一可用 3 位序号的数值（1-based）
      */
-    public long nextSeqForPrefix(String prefix) {
-        return resolveNextSeq(prefix);
+    public long nextSeqForDate(LocalDate birthDate) {
+        if (birthDate == null) {
+            throw new ServiceException("耳号序号查询失败：出生日期不能为空");
+        }
+        return nextSeqForDateSegment(birthDate.format(BIRTH_FMT));
     }
 
     /**
-     * 解析同前缀现存耳号的下一可用序号：{@code MAX(ear_no)} 末段 seq + 1；无则从 1 起。
+     * 同出生日段（{@code yyMMdd} 字符串）下一可用序号 = {@code MAX(序号)} 同日段 + 1；当天无号则 1。
+     * <p>供"用户首号下限校验"复用：用户首号里直接带 yyMMdd 段，按该段（而非转 LocalDate）取下限，
+     * 与候选耳号同口径。仅读不锁。</p>
+     *
+     * @param dateSeg 出生日段（{@code yyMMdd}，6 位）
+     * @return 下一可用 3 位序号的数值（1-based）
      */
-    private long resolveNextSeq(String prefix) {
-        String maxEarNo = pigMapper.selectMaxEarNoByPrefix(prefix);
-        if (StringUtils.isBlank(maxEarNo)) {
-            return 1L;
-        }
-        return parseSeq(maxEarNo, prefix) + 1L;
+    public long nextSeqForDateSegment(String dateSeg) {
+        return resolveNextSeqByDate(dateSeg);
     }
 
     /**
-     * 按 {@code -} 拆 {@code maxEarNo} 取末段序号转 long（仅看末段，不受前缀位长影响）。
-     * 末段解析不出数字（脏数据 / 旧无分隔号）时回落 0，让下一号从 1 起。
+     * 解析同出生日段现存耳号的下一可用序号：{@code MAX(序号)} 同日段 + 1；无则从 1 起。
      */
-    private long parseSeq(String maxEarNo, String prefix) {
-        String[] segs = maxEarNo.split(SEG_SEP);
-        String seqPart = segs.length == 0 ? "" : segs[segs.length - 1];
-        if (seqPart.isEmpty()) {
-            return 0L;
-        }
-        try {
-            return Long.parseLong(seqPart);
-        } catch (NumberFormatException e) {
-            log.warn("[ADR-0011] 解析耳号序号失败，回落 0：maxEarNo={} prefix={}", maxEarNo, prefix);
-            return 0L;
-        }
+    private long resolveNextSeqByDate(String dateSeg) {
+        Long maxSeq = pigMapper.selectMaxSeqByDateSegment(dateSeg);
+        return (maxSeq == null ? 0L : maxSeq) + 1L;
     }
 
     /** 序号补零到 {@link #SEQ_WIDTH} 位。 */

@@ -16,8 +16,8 @@ import java.time.LocalDate;
  * <p>BRD-EVENT-001 引种 ticket 调 {@code PigCoreService#createPig}，
  * Service 内部完成：</p>
  * <ol>
- *   <li>INSERT t_farm_pig_info（lifecycle 根据性别取 HB 或 BOAR_ACTIVE）</li>
- *   <li>INSERT t_farm_status_record（old_status=null, new_status=HB/BOAR_ACTIVE, event_type=INTRO）</li>
+ *   <li>INSERT t_farm_pig_info（lifecycle：种母猪取 HB，非种母猪空 ''）</li>
+ *   <li>INSERT t_farm_status_record（old_status=null, new_status=HB 或 ''，event_type=INTRO）</li>
  * </ol>
  *
  * <p>子 ticket 拿到 pig.id 后再 INSERT 自己的 t_farm_pig_introduce 业务表

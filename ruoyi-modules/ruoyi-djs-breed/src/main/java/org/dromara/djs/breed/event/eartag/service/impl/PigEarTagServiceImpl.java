@@ -11,7 +11,6 @@ import org.dromara.common.core.utils.StringUtils;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.breed.core.domain.Pig;
-import org.dromara.djs.breed.core.enums.PigLifecycle;
 import org.dromara.djs.breed.core.mapper.PigMapper;
 import org.dromara.djs.breed.core.service.EarNoAllocator;
 import org.dromara.djs.breed.core.service.I18nMessages;
@@ -113,7 +112,7 @@ public class PigEarTagServiceImpl implements IPigEarTagService {
                 if (p == null) {
                     p = new Pig();
                     p.setId(log.getPigId());
-                    p.setCurrentStatus(PigLifecycle.HB.name());
+                    p.setCurrentStatus("");
                     p.setBirthDate(farrow.getFarrowDate() == null ? null : farrow.getFarrowDate().toLocalDate());
                 }
                 taggedList.add(PigletEarTagVo.from(p, log));
@@ -182,7 +181,7 @@ public class PigEarTagServiceImpl implements IPigEarTagService {
             piglet.setPigType("piglet");
             piglet.setPigBreedCode(cubBreedCode);
             piglet.setPigStrainCode(cubStrainCode);
-            piglet.setCurrentStatus(PigLifecycle.HB.name());
+            piglet.setCurrentStatus("");   // 仔猪空状态（非种母猪无繁殖状态，ADR-0016）
             piglet.setStatusStartedAt(tagAt);
             piglet.setFatherEar(fatherEar);
             piglet.setMotherEar(mother.getEarNo());
@@ -272,7 +271,8 @@ public class PigEarTagServiceImpl implements IPigEarTagService {
             return Collections.emptyList();
         }
         String prefix = earNoAllocator.buildPrefix(cubStrainCode, cubBreedCode, null, birthDate);
-        long nextSeq = earNoAllocator.nextSeqForPrefix(prefix);
+        // R47：序号按出生日全场递增（不分品系品种），预览与正式打标同口径
+        long nextSeq = earNoAllocator.nextSeqForDate(birthDate);
         List<String> earNos = new ArrayList<>(count);
         for (int i = 0; i < count; i++) {
             earNos.add(prefix + PREVIEW_SEG_SEP + String.format("%0" + PREVIEW_SEQ_WIDTH + "d", nextSeq + i));

@@ -27,6 +27,8 @@ import org.dromara.djs.breed.event.intro.domain.vo.PigIntroResultVo;
 import org.dromara.djs.breed.event.intro.domain.vo.PigIntroduceVo;
 import org.dromara.djs.breed.event.intro.mapper.PigIntroduceMapper;
 import org.dromara.djs.breed.event.intro.service.IPigIntroService;
+import org.dromara.djs.breed.event.transfer.domain.bo.TransferBo;
+import org.dromara.djs.breed.event.transfer.service.ITransferService;
 import org.dromara.djs.breed.farm.domain.Barn;
 import org.dromara.djs.breed.farm.domain.Pen;
 import org.dromara.djs.breed.farm.mapper.BarnMapper;
@@ -40,6 +42,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -87,6 +90,7 @@ public class PigIntroServiceImpl implements IPigIntroService {
     private final DictService dictService;
     private final EarNoAllocator earNoAllocator;
     private final OssService ossService;
+    private final ITransferService transferService;
 
     public PigIntroServiceImpl(PigIntroduceMapper introduceMapper,
                                IPigCoreService pigCoreService,
@@ -98,7 +102,8 @@ public class PigIntroServiceImpl implements IPigIntroService {
                                PigMapper pigMapper,
                                DictService dictService,
                                EarNoAllocator earNoAllocator,
-                               OssService ossService) {
+                               OssService ossService,
+                               ITransferService transferService) {
         this.introduceMapper = introduceMapper;
         this.pigCoreService = pigCoreService;
         this.bizCodeGenerator = bizCodeGenerator;
@@ -110,6 +115,7 @@ public class PigIntroServiceImpl implements IPigIntroService {
         this.dictService = dictService;
         this.earNoAllocator = earNoAllocator;
         this.ossService = ossService;
+        this.transferService = transferService;
     }
 
     @PostConstruct
@@ -203,11 +209,27 @@ public class PigIntroServiceImpl implements IPigIntroService {
     public PigIntroResultVo introduceInternal(PigIntroInternalBo bo) {
         // 内部引种 = 留种：登记一头已存在的肥猪进引种台账，不新建猪 / 不动 pen.current_count。
         // 来源 fattening 肥猪由 internalIntroToReserve 按性别重定类型 + 初始种猪态（同事务）：
-        // 母→sow/HB（后备母猪，可进配种选猪）/ 公→boar/BOAR_ACTIVE（种公猪）；
+        // 母→sow/HB（后备母猪，可进配种选猪）/ 公→boar + 空状态（种公猪）；
         // 非 fattening / END 终态由 internalIntroToReserve 内部幂等跳过。
         Pig pig = pigMapper.selectById(bo.getPigId());
         if (pig == null) {
             throw new ServiceException(I18nMessages.t("pig.not_found", bo.getPigId()));
+        }
+
+        // R45（李婷）：内部引种新增必填「引入栋舍 / 引入栏位」，提交时把猪只转移到该目标位置并落转移记录。
+        // 先把 mp 端传的 barnCode / penCode 解析成目标 id（barn 先于 pen，pen 在所属 barn 下 unique）。
+        Barn targetBarn = barnMapper.selectOne(
+            Wrappers.<Barn>lambdaQuery().eq(Barn::getBarnCode, bo.getBarnCode()).last("LIMIT 1"));
+        if (targetBarn == null) {
+            throw new ServiceException(I18nMessages.t("intro.barn_not_found", bo.getBarnCode()));
+        }
+        Pen targetPen = penMapper.selectOne(
+            Wrappers.<Pen>lambdaQuery()
+                .eq(Pen::getBarnId, targetBarn.getId())
+                .eq(Pen::getPenCode, bo.getPenCode())
+                .last("LIMIT 1"));
+        if (targetPen == null) {
+            throw new ServiceException(I18nMessages.t("intro.pen_not_found", bo.getPenCode()));
         }
 
         String introNo = bizCodeGenerator.generate(BizCodeType.INTRO_NO, Map.of());
@@ -220,8 +242,9 @@ public class PigIntroServiceImpl implements IPigIntroService {
         intro.setPigBreedCode(pig.getPigBreedCode());
         intro.setPigStrainCode(pig.getPigStrainCode());
         intro.setPigSex(pig.getPigSex());
-        intro.setBarnId(pig.getBarnId());
-        intro.setPenId(pig.getPenId());
+        // R45：引种台账记的是「引入后」的目标位置，而非猪当前位置。
+        intro.setBarnId(targetBarn.getId());
+        intro.setPenId(targetPen.getId());
         intro.setPigId(pig.getId());
         intro.setOperator(bo.getOperator());
         intro.setIntroduceWeight(bo.getIntroduceWeight());
@@ -233,7 +256,20 @@ public class PigIntroServiceImpl implements IPigIntroService {
         // FIX-INTRO-001 #1：fattening 来源猪触发 → HB（写 status_record + update current_status，同事务）
         pigCoreService.internalIntroToReserve(pig.getId());
 
-        // 重读取得最新 current_status（若已转 HB），让 buildResult 返回的 pigs[0] 状态正确
+        // R45（李婷）：同一事务内完成猪只转移并落转移记录（写 t_farm_pig_transfer + 更新 pig.barn_id/pen_id）。
+        // 复用 ITransferService.recordTransfer：传目标 barn/pen id + code，转移人员=引种人员，事由=内部引种。
+        TransferBo transferBo = new TransferBo();
+        transferBo.setPigId(pig.getId());
+        transferBo.setTransferDate(LocalDateTime.now());
+        transferBo.setNewBarnId(targetBarn.getId());
+        transferBo.setNewBarnCode(bo.getBarnCode());
+        transferBo.setNewPenId(targetPen.getId());
+        transferBo.setNewPenCode(bo.getPenCode());
+        transferBo.setTransferReason("内部引种");
+        transferBo.setOperator(bo.getOperator());
+        transferService.recordTransfer(transferBo);
+
+        // 重读取得最新 current_status（若已转 HB）+ 最新 barn/pen，让 buildResult 返回的 pigs[0] 状态/位置正确
         Pig refreshed = pigMapper.selectById(pig.getId());
         return buildResult(intro, List.of(refreshed != null ? refreshed : pig));
     }
@@ -519,8 +555,10 @@ public class PigIntroServiceImpl implements IPigIntroService {
             throw new ServiceException(I18nMessages.t("intro.start_ear_no.pattern"));
         }
         // 甲方：用户填的数量编号不得小于后台当前最小可用号（防 FE 绕过 / 重号）。
-        // 复用 allocator 取该前缀 DB max+1，不重写 SQL。
-        long minSeq = earNoAllocator.nextSeqForPrefix(prefix);
+        // R47：按出生日全场 max+1（不分品系品种）。出生日段 = 首号前缀末段 yyMMdd（与候选 earNo 同口径，
+        // 直接取段字符串而非转 LocalDate，避免对用户输入做额外日期合法性约束）。
+        String dateSeg = prefix.substring(prefix.lastIndexOf('-') + 1);
+        long minSeq = earNoAllocator.nextSeqForDateSegment(dateSeg);
         if (startSeq < minSeq) {
             throw new ServiceException(I18nMessages.t("intro.start_ear_no.too_small", minSeq));
         }
