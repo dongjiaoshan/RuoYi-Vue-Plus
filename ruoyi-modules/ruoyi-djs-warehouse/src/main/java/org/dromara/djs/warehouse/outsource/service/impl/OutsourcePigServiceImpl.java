@@ -115,7 +115,8 @@ public class OutsourcePigServiceImpl extends DjsBaseServiceImpl<OutsourcePigMapp
      * <p>字段口径与自养 {@link org.dromara.djs.warehouse.cross.listener.PigMarketingEventListener#onPigMarketing}
      * 对齐：{@code status=pending_singe} / {@code inMethod=1}（燎毛间）/ {@code barId} 走
      * {@link BizCodeType#BAR_NO}；外购列 {@code supplierId / buyDate / buyWeight} 回填。
-     * 外购无耳标，用 {@code pigMarkNo}（猪只标识号）填 {@code earNo} 与 {@code markId}。</p>
+     * 外购无耳号，{@code earNo} 留空（NULL）；{@code pigMarkNo}（猪只标识号）仅填 {@code markId}，
+     * 外购白条靠 {@code supplierId} 非空区分通用白条。</p>
      *
      * <p>补 bar 失败不应阻塞外购登记主流程（外购台账已写成功），故 swallow + log（同 listener 失败策略）。</p>
      */
@@ -123,7 +124,7 @@ public class OutsourcePigServiceImpl extends DjsBaseServiceImpl<OutsourcePigMapp
         try {
             BarInfo bar = new BarInfo();
             bar.setBarId(bizCodeGenerator.generate(BizCodeType.BAR_NO, Map.of()));
-            bar.setEarNo(bo.getPigMarkNo());
+            // 外购无耳号：earNo 留空（NULL），pigMarkNo 仅填 markId，靠 supplierId 区分通用白条
             bar.setMarkId(bo.getPigMarkNo());
             bar.setMarketingWeight(bo.getPigWeight());
             bar.setStatus(BAR_STATUS_PENDING_SINGE);

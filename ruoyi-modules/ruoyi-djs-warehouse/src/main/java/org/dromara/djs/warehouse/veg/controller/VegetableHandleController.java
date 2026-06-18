@@ -10,16 +10,21 @@ import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.web.core.BaseController;
 import org.dromara.djs.warehouse.veg.domain.query.VegHandleQuery;
+import org.dromara.djs.warehouse.veg.domain.vo.FeedDailyStatVo;
 import org.dromara.djs.warehouse.veg.domain.vo.HandleRecordVo;
 import org.dromara.djs.warehouse.veg.domain.vo.VegetableHandleVo;
+import org.dromara.djs.warehouse.veg.service.IFeedLogService;
 import org.dromara.djs.warehouse.veg.service.IVegetableHandleService;
+import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.util.Date;
 import java.util.List;
 
 /**
@@ -38,11 +43,26 @@ import java.util.List;
 public class VegetableHandleController extends BaseController {
 
     private final IVegetableHandleService service;
+    private final IFeedLogService feedLogService;
 
     @SaCheckPermission("djs:warehouse:vegHandle:list")
     @GetMapping("/list")
     public TableDataInfo<VegetableHandleVo> list(VegHandleQuery query, PageQuery pageQuery) {
         return service.queryPageList(query, pageQuery);
+    }
+
+    /**
+     * 饲料饲喂按自然日 × 作物品类统计（去向③饲料台账，spec 步8）。
+     *
+     * @param startDate 起始日期 yyyy-MM-dd（含，可空）
+     * @param endDate   截止日期 yyyy-MM-dd（含，可空）
+     */
+    @SaCheckPermission("djs:warehouse:vegHandle:list")
+    @GetMapping("/feedDailyStat")
+    public R<List<FeedDailyStatVo>> feedDailyStat(
+        @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd") Date startDate,
+        @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd") Date endDate) {
+        return R.ok(feedLogService.dailyStat(startDate, endDate));
     }
 
     @SaCheckPermission("djs:warehouse:vegHandle:list")

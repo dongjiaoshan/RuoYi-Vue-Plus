@@ -41,4 +41,8 @@ public class PlotPickStatusBo {
     /** 记录班组 id（{@code t_plant_work_team.id}，写留痕农事记录的 farm_by）。 */
     @NotNull(message = "请选择记录班组")
     private Long teamId;
+
+    /** 采摘人员 user_id（{@code sys_user.user_id}）：先选班组、再从该班组成员中选采摘人，落 operator_user_id。 */
+    @NotNull(message = "请选择采摘人员")
+    private Long operatorUserId;
 }

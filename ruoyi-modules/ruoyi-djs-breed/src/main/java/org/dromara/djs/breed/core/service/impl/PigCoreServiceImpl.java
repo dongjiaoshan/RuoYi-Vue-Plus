@@ -470,7 +470,8 @@ public class PigCoreServiceImpl implements IPigCoreService {
     /**
      * 批量回填 barnCode/barnName + penCode/penName（Pig 与 Barn/Pen 不同聚合，VO 出参给用户看
      * code + 中文名而非 snowflake id；列表场景用 selectBatchIds 一次性查，避免 N+1），
-     * 并填品种/品系中文名（字典翻译，翻不到回落 code）。
+     * 并填品种/品系中文名（邓博 #13/#19：t_farm_breed_info 主表权威名优先 → 字典回落 → code 回落，
+     * 与选猪 picker 同源；纯字典查会让 2 位码 "12" 翻不到而显示编码）。
      */
     private void enrichBarnPenCodes(List<PigVo> rows) {
         if (rows == null || rows.isEmpty()) {
@@ -484,6 +485,9 @@ public class PigCoreServiceImpl implements IPigCoreService {
         Map<Long, Pen> penMap = penIds.isEmpty() ? Map.of()
             : penMapper.selectBatchIds(penIds).stream()
                 .collect(Collectors.toMap(Pen::getId, Function.identity(), (a, b) -> a));
+        // 品种/品系名：主数据 code→名 映射批量预载一次（防逐行查 N+1），与选猪 picker 同口径
+        Map<String, String> breedNameMap = loadBreedStrainNameMap(1);
+        Map<String, String> strainNameMap = loadBreedStrainNameMap(2);
         for (PigVo vo : rows) {
             if (vo.getBarnId() != null) {
                 Barn barn = barnMap.get(vo.getBarnId());
@@ -499,9 +503,9 @@ public class PigCoreServiceImpl implements IPigCoreService {
                     vo.setPenName(pen.getPenName());
                 }
             }
-            // 品种/品系中文名（djs_pig_breed / djs_pig_strain 字典；翻不到回落 code）
-            vo.setPigBreedName(translateDictOrCode("djs_pig_breed", vo.getPigBreedCode()));
-            vo.setPigStrainName(translateDictOrCode("djs_pig_strain", vo.getPigStrainCode()));
+            // 品种/品系中文名：t_farm_breed_info 主表优先 → 字典回落 → code 回落（2 位码也能翻出名）
+            vo.setPigBreedName(resolveBreedStrainName(breedNameMap, "djs_pig_breed", vo.getPigBreedCode()));
+            vo.setPigStrainName(resolveBreedStrainName(strainNameMap, "djs_pig_strain", vo.getPigStrainCode()));
         }
     }
 
@@ -639,8 +643,8 @@ public class PigCoreServiceImpl implements IPigCoreService {
         // row92 #1：分娩选猪（dueType=FARROW）时 enrich 最近配种日期，给 mp 分娩录入概况卡「配种日期」格用；
         // 其他 picker 场景不下发（保持 VO 轻量）。
         boolean enrichMatingDate = "FARROW".equalsIgnoreCase(dueType);
-        // 「临产 / 到断奶期」badge 阈值（dueDate 距今 > N 天即标 due）：分娩 5 天 / 断奶 3 天。
-        // 口径 = 预产期/到断奶期 - 当前日期 > N 天的母猪打标签（row121/124：还有 >N 天到期的提前进入提醒池）。
+        // 「临产 / 到断奶期」badge 临近窗口（dueDate 距今 ≤ N 天 或已过期即标 due）：分娩 5 天 / 断奶 3 天。
+        // 即到期日落在 [今天, 今天+N] 或更早才提醒；远未到期（差 >N 天）不打红标。
         int dueWindowDays = "WEANING".equalsIgnoreCase(dueType) ? 3 : 5;
         // 邓博 2026-06-17 #13/#19：品种 + 品系名都优先取 t_farm_breed_info 主表（客户在「品种品系表」配的权威名，
         // 如 04=国寿黑）；字典 djs_pig_breed(04=杜洛克) / djs_pig_strain 仅作回落。批量预载一次防 N+1。
@@ -692,11 +696,12 @@ public class PigCoreServiceImpl implements IPigCoreService {
                 }
             }
             // 到期软提示：dueDate（预产期/到断奶期）+ due 标记；无基准日期 → 留 null（mp 该格不渲染）
-            // 临产/临断奶阈值 = dueDate - today > dueWindowDays 天即标 due（row121/124 测试口径）：分娩 5 天 / 断奶 3 天。
+            // 临产/临断奶阈值 = dueDate ≤ today + dueWindowDays（临近窗口内或已过期）即标 due：分娩 5 天 / 断奶 3 天。
+            // 即"还有 ≤N 天到期 / 已到期"才打「到断奶期 / 临产」红标；远未到期（如还差 35 天）不标。
             LocalDate dd = dueDateMap.get(p.getId());
             if (dd != null) {
                 vo.setDueDate(dd);
-                vo.setDue(dd.isAfter(today.plusDays(dueWindowDays)));
+                vo.setDue(!dd.isAfter(today.plusDays(dueWindowDays)));
             }
             result.add(vo);
         }
@@ -715,9 +720,9 @@ public class PigCoreServiceImpl implements IPigCoreService {
      * <p>两个 dueType 共用「基准日期 + 生产周期配置天数」一套判定：</p>
      * <ul>
      *   <li>{@code FARROW}（预产期）：基准 = {@code Pig.lastMatingDate}（最近配种日，BREED 事件写入），
-     *       天数 = {@code gestation_days}（妊娠期）；{@code lastMatingDate} 为 null（无配种记录）→ 不入 map。</li>
+     *       天数 = {@code sow_breed_to_farrow_days}（配种到分娩，母猪生产配置）；{@code lastMatingDate} 为 null（无配种记录）→ 不入 map。</li>
      *   <li>{@code WEANING}（到断奶期）：基准 = 该母猪最近一条分娩日（批量一次查避免 N+1），
-     *       天数 = {@code lactation_days}（哺乳期）；无分娩记录 → 不入 map。</li>
+     *       天数 = {@code sow_farrow_to_wean_days}（分娩到断奶，母猪生产配置）；无分娩记录 → 不入 map。</li>
      * </ul>
      *
      * <p>天数从 {@code productionCycleConfigService.getValue} 读（配置驱动，禁硬编码）；配置缺失返 null
@@ -735,9 +740,10 @@ public class PigCoreServiceImpl implements IPigCoreService {
         }
 
         if ("FARROW".equalsIgnoreCase(dueType)) {
-            Integer gestationDays = productionCycleConfigService.getValue("gestation_days");
+            // 母猪生产配置（admin「生产配置管理 / 母猪生产配置」写入）：配种到分娩天数
+            Integer gestationDays = productionCycleConfigService.getValue("sow_breed_to_farrow_days");
             if (gestationDays == null) {
-                log.warn("[PigSearch] 生产周期配置 gestation_days 缺失，dueType=FARROW 退化为无预产期提示");
+                log.warn("[PigSearch] 母猪生产配置 sow_breed_to_farrow_days 缺失，dueType=FARROW 退化为无预产期提示");
                 return Map.of();
             }
             return pigs.stream()
@@ -746,9 +752,10 @@ public class PigCoreServiceImpl implements IPigCoreService {
         }
 
         if ("WEANING".equalsIgnoreCase(dueType)) {
-            Integer lactationDays = productionCycleConfigService.getValue("lactation_days");
+            // 母猪生产配置（admin「生产配置管理 / 母猪生产配置」写入）：分娩到断奶天数
+            Integer lactationDays = productionCycleConfigService.getValue("sow_farrow_to_wean_days");
             if (lactationDays == null) {
-                log.warn("[PigSearch] 生产周期配置 lactation_days 缺失，dueType=WEANING 退化为无到断奶期提示");
+                log.warn("[PigSearch] 母猪生产配置 sow_farrow_to_wean_days 缺失，dueType=WEANING 退化为无到断奶期提示");
                 return Map.of();
             }
             Set<Long> pigIds = pigs.stream().map(Pig::getId).filter(Objects::nonNull).collect(Collectors.toSet());
@@ -1115,6 +1122,7 @@ public class PigCoreServiceImpl implements IPigCoreService {
         d.setStatusStartedAt(src.getStatusStartedAt());
         d.setEndReason(src.getEndReason());
         d.setBirthDate(src.getBirthDate());
+        d.setBirthWeight(src.getBirthWeight());
         d.setIntroduceDate(src.getIntroduceDate());
         d.setParity(src.getParity());
         d.setBarnId(src.getBarnId());

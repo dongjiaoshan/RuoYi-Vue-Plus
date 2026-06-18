@@ -90,6 +90,130 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
                                 @Param("userId") Long userId);
 
     /**
+     * 按 {@code plot_id} + {@code location_id} 原子扣减自产果蔬库存（步11 偏差修复 · 决策 a：
+     * 自产果蔬「按地块维度」领用）。
+     *
+     * <p>自产果蔬入库时库存按 {@code (plot_id, location)} 维度建账（无 product_id，见
+     * {@code VegReceiveServiceImpl.insertPlotStockRow} / {@code VegReceiveMapper.addStockByPlotLocation}），
+     * 故领用扣减也必须按 plot 维度，镜像 {@link #deductByProductLocation}（product 维度）。</p>
+     *
+     * <p>SQL 在 {@code WHERE} 加 {@code product_stock >= deductQty} —— MySQL 行锁 + 数量校验同步发生，
+     * 并发提交（两个工人同时领同一 plot+location）只有一次 affectedRows > 0。
+     * {@code tenant_id} 由 MP 多租户拦截器在 final SQL 阶段注入；不走 MetaObjectHandler.updateFill，
+     * 手工 set {@code update_by} / {@code update_time}。</p>
+     *
+     * @return affectedRows（0 = 库存不足 / plot/location 不匹配 / 已软删）
+     */
+    @Update("UPDATE t_warehouse_location_stock "
+        + "   SET product_stock = product_stock - #{deductQty},"
+        + "       update_by = #{userId},"
+        + "       update_time = NOW() "
+        + " WHERE location_id = #{locationId} "
+        + "   AND plot_id     = #{plotId} "
+        + "   AND product_stock >= #{deductQty} "
+        + "   AND del_flag = '0'")
+    int deductByPlotLocation(@Param("locationId") Long locationId,
+                             @Param("plotId") Long plotId,
+                             @Param("deductQty") BigDecimal deductQty,
+                             @Param("userId") Long userId);
+
+    /**
+     * 按地块取默认库位（自产果蔬「按地块维度」领用时 {@code locationId} 为空的兜底）：该地块库存最多的
+     * 库位；无任何库存行返 null。
+     *
+     * <p>镜像 {@link #selectDefaultLocationByProduct}（product 维度）。自产果蔬常落 L0003/L0004/L0006，
+     * 工人未选库位时取库存最多的那个。返 null（该地块无 plot 维度 location_stock 行）→ service 抛
+     * ServiceException。租户单租户显式 {@code tenant_id='1001'}（V1）。</p>
+     *
+     * @param plotId 地块 ID
+     * @return 默认 location_id，或 null（该地块无 location_stock 行）
+     */
+    @Select("SELECT location_id FROM t_warehouse_location_stock "
+        + " WHERE plot_id = #{plotId} AND product_id IS NULL AND del_flag = '0' AND tenant_id = '1001' "
+        + " ORDER BY product_stock DESC, location_id ASC LIMIT 1")
+    Long selectDefaultLocationByPlot(@Param("plotId") Long plotId);
+
+    /**
+     * 自产果蔬「按地块维度」可领用列表（步11 偏差修复 · 决策 a；Agent F mp 物资领用蔬菜 tab 消费）。
+     *
+     * <p>口径：以 {@code t_warehouse_location_stock} 中 {@code plot_id 非空 + product_id 为空 + 仍有库存}
+     * 的行为粒度（即自产果蔬建的 plot 维度账），LEFT JOIN 地块表取地块编码、再回填作物名（plot→crop
+     * 取自 {@code t_warehouse_veg_receive} 该地块自产收货的作物，取最近一条）。一个地块在多个库位有库存
+     * → 各出一行（库位维度），便于工人按库位领。仅返 {@code product_stock > 0} 的行。</p>
+     *
+     * <p>VO 复用 {@link MatIssueItemVo}：</p>
+     * <ul>
+     *   <li>{@code productId} 置 null（自产果蔬无成品 product_id，领用时按 plotId 维度）；</li>
+     *   <li>新增承载：plotId / plotCode 走 VO 扩展字段（见 VO 注释）；</li>
+     *   <li>{@code productName} = 作物名（如「小白菜」）；{@code currentStock} = 该 (plot, location) 库存；
+     *       {@code defaultLocationId} = 该行库位（领用时直接用）。</li>
+     * </ul>
+     *
+     * <p>今日三量（已领/退/损）此处不按 plot 子查询（自产果蔬退/损 V1 暂不细分到 plot 维度统计），
+     * 统一返 0，避免与 product 维度子查询语义混淆；如需精确按 plot 统计留 openQuestion。
+     * 租户单租户显式 {@code tenant_id='1001'}。</p>
+     *
+     * @param locationId 库位 ID（可空，chip 选中态过滤；为空跨库位列全部自产果蔬 plot 行）
+     * @return 自产果蔬可领用行（按作物名、地块编码排序）；无则空 list
+     */
+    @Select("""
+        <script>
+        SELECT NULL                                AS productId,
+               NULL                                AS productCode,
+               COALESCE(cr.crop_name, s.product_name) AS productName,
+               COALESCE(s.product_unit, 'kg')      AS productUnit,
+               cr.image_oss_id                     AS productThumb,
+               'vegetable'                         AS belongType,
+               s.product_stock                     AS currentStock,
+               s.location_id                       AS defaultLocationId,
+               s.plot_id                           AS plotId,
+               pl.plot_code                        AS plotCode,
+               0                                   AS todayPicked,
+               0                                   AS todayReturned,
+               0                                   AS todayLoss
+          FROM t_warehouse_location_stock s
+          LEFT JOIN t_plant_plot_info pl
+            ON pl.id = s.plot_id
+           AND pl.del_flag = '0'
+          LEFT JOIN t_plant_crop_info cr
+            ON cr.id = (
+                 SELECT vr.crop_id
+                   FROM t_warehouse_veg_receive vr
+                  WHERE vr.receive_type = 1
+                    AND vr.plot_id = s.plot_id
+                    AND vr.del_flag = '0'
+                    AND vr.tenant_id = '1001'
+                  ORDER BY vr.receive_time DESC
+                  LIMIT 1)
+           AND cr.del_flag = '0'
+         WHERE s.del_flag    = '0'
+           AND s.tenant_id   = '1001'
+           AND s.plot_id IS NOT NULL
+           AND s.product_id IS NULL
+           AND s.product_stock > 0
+           <if test="locationId != null"> AND s.location_id = #{locationId} </if>
+         ORDER BY productName ASC, pl.plot_code ASC
+        </script>
+        """)
+    List<MatIssueItemVo> selectSelfVegIssueItems(@Param("locationId") Long locationId);
+
+    /**
+     * 按 {@code plot_id} 取该地块最近一条自产收货的作物 ID（步11；plot→crop→related_product 解析链）。
+     *
+     * <p>自产果蔬 plot 维度库存行不存 crop_id，领用时需 plot→crop 反查（取 {@code t_warehouse_veg_receive}
+     * 该地块 {@code receive_type=1} 最近一条的 crop_id），再 service 层 {@code crop.related_product} 解析
+     * 果蔬成品 product_id 写入 pick_out 流水。查不到返 null（service 兜底 product_id=0 + warn，不阻塞领用）。
+     * 租户单租户显式 {@code tenant_id='1001'}。</p>
+     *
+     * @param plotId 地块 ID
+     * @return 该地块最近自产收货的作物 ID，或 null
+     */
+    @Select("SELECT crop_id FROM t_warehouse_veg_receive "
+        + " WHERE receive_type = 1 AND plot_id = #{plotId} AND del_flag = '0' AND tenant_id = '1001' "
+        + " ORDER BY receive_time DESC LIMIT 1")
+    Long selectCropIdByPlot(@Param("plotId") Long plotId);
+
+    /**
      * 按产品取默认库位（投喂等无库位语义场景）：该产品库存最多的库位；无任何库存行返 null。
      *
      * <p>mp 饲料领退子页不让工人选库位（投喂本无库位语义），service 在 {@code locationId} 为空时

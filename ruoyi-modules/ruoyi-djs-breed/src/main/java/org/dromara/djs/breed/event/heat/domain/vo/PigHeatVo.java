@@ -39,6 +39,17 @@ public class PigHeatVo implements Serializable {
     /** 断奶后天数（row97：查情日期 - 该母猪最近一条断奶记录 weaning_date；无断奶记录留 null）。 */
     private Integer daysAfterWeaning;
 
+    /**
+     * 查情时母猪状态码（字典 {@code djs_pig_lifecycle}）。近似取 pig.currentStatus —— OESTRUS 方案A 查情不切母猪态，
+     * 查情后状态不变，故用当前状态近似「查情时状态」；前端走 statusLabel 翻译。pig 不存在留 null。
+     */
+    private String heatStatus;
+
+    /**
+     * 状态持续天数 = 查情日期 - pig.statusStartedAt（进入当前状态时间）。statusStartedAt 为 null 留 null。
+     */
+    private Integer statusDays;
+
     /** 母猪日龄（row97：查情日期 - 母猪出生日期；无出生日期留 null）。 */
     private Integer dayAge;
 

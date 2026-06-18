@@ -63,6 +63,28 @@ public class ProductInfoQuery extends BaseEntity {
     private Integer productWorkshop;
 
     /**
+     * 产品属性 djs_product_attr：1=生产产品（打包目标成品） / 2=原材料。
+     *
+     * <p>肉品/果蔬打包目标成品按 {@code product_attr=1} 过滤（取数逻辑 doc#13）。</p>
+     */
+    private Integer productAttr;
+
+    /**
+     * 关联原材料产品（自引用 FK → product_info.id 雪花 id）。
+     *
+     * <p>成品通过 {@code product_material} 指向它消耗的原材料；按此精确匹配可反查某原材料对应的成品。</p>
+     */
+    private Long productMaterial;
+
+    /**
+     * 关联原材料产品集合（findings 步12：果蔬打包页按「本次领用原料产品 ID」反查命中成品）。
+     *
+     * <p>非空时落 {@code product_material IN (...)}，叠加在 {@link #productMaterial} 单值之上。
+     * 空 → 不过滤（保持向后兼容，不破坏 dry/gift/meat 入口的全量加载）。</p>
+     */
+    private List<Long> productMaterials;
+
+    /**
      * 存储库位 ID（原型「存储仓库」筛选项；精确匹配 store_location_id）。
      */
     private String storeLocationId;

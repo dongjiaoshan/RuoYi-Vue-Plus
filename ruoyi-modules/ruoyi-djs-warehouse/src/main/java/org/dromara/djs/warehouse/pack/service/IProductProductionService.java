@@ -14,8 +14,10 @@ import org.dromara.djs.warehouse.pack.domain.vo.StoreDemandCopiesVo;
 import org.dromara.djs.warehouse.pack.domain.vo.VegDailyLossVo;
 import org.dromara.djs.warehouse.product.domain.ProductInhouse;
 
+import java.math.BigDecimal;
 import java.util.Date;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 发货产品生产记录 Service（WMS-PACK-001）。
@@ -127,11 +129,29 @@ public interface IProductProductionService {
     List<StoreDemandCopiesVo> listStoreDemandCopies(Long productId);
 
     /**
+     * 批量查目标成品的「原材料实时库存」（打包录入卡片库存口径统一，取数逻辑 doc#13）。
+     *
+     * <p>对每个目标成品取其 {@code product_material}（自引用 FK → 原材料产品 id），调
+     * {@link #sumProductStock 原材料库位库存合计}（{@code location_stock} 求和）。<b>与打包校验/扣减用的库存口径完全一致</b>，
+     * 修复「操作员看到的库存 ≠ 系统校验/扣减的库存」（卡片展示原先取来源 inhouse 汇总，与扣减口径分裂）。</p>
+     *
+     * <p>返回 Map：key = 成品雪花 id 字符串（避免 JS Number 精度丢失），value = 原材料当前库存合计。
+     * <b>未配 {@code product_material} 的成品不进 Map</b>（前端展示 '—'，不参与校验）；
+     * 产品库为空（运营未录数据）时返空 Map，优雅降级不报错。</p>
+     *
+     * @param productIds 目标成品 id 列表（{@code t_warehouse_product_info.id}）
+     * @return 成品 id 字符串 → 原材料库存合计（无配料/空入参 → 空 Map）
+     */
+    Map<String, BigDecimal> listMaterialStock(List<Long> productIds);
+
+    /**
      * 果蔬日损耗 compute-on-read 查询（V4，果疏产品全流程处理.docx）。
      *
-     * <p>按自然日聚合果蔬（{@code belong_type='vegetable'}）出入库流水，
-     * 计算 {@code 日损耗 = 领用入库 − 打包消耗 − 退回 − 饲喂}。不建汇总表，纯只读聚合。
-     * 数据残缺（对应 flow_type 当日无流水）时该分量为 0，优雅降级不阻塞。</p>
+     * <p>按自然日聚合果蔬（{@code belong_type='vegetable'}）流水，
+     * 计算 {@code 日损耗 = 领用 − 打包 − 退回 − 饲喂}：
+     * 领用={@code pick_out}（物资领用出库）/ 打包={@code pack_in}（果蔬打包入库）/
+     * 退回={@code return_in}。饲喂项物资领用 V1 无果蔬饲喂操作恒 0（待客户确认是否新增来源）。
+     * 不建汇总表，纯只读聚合。数据残缺（对应 flow_type 当日无流水）时该分量为 0，优雅降级不阻塞。</p>
      *
      * @param statDate 统计自然日（{@code null}=当天）
      * @return 果蔬日损耗（永不 null）

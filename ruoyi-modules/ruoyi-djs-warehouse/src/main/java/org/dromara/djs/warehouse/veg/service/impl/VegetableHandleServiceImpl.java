@@ -17,6 +17,7 @@ import org.dromara.djs.warehouse.flow.domain.StockFlow;
 import org.dromara.djs.warehouse.flow.mapper.StockFlowMapper;
 import org.dromara.djs.warehouse.location.domain.LocationInfo;
 import org.dromara.djs.warehouse.location.mapper.LocationInfoMapper;
+import org.dromara.djs.warehouse.veg.domain.FeedLog;
 import org.dromara.djs.warehouse.veg.domain.HandleRecord;
 import org.dromara.djs.warehouse.veg.domain.PlantingRecord;
 import org.dromara.djs.warehouse.veg.domain.VegetableHandle;
@@ -29,6 +30,7 @@ import org.dromara.djs.warehouse.veg.domain.vo.PendingPlantingRecordVo;
 import org.dromara.djs.warehouse.veg.domain.vo.VegCropVo;
 import org.dromara.djs.warehouse.veg.domain.vo.VegPlotDetailVo;
 import org.dromara.djs.warehouse.veg.domain.vo.VegetableHandleVo;
+import org.dromara.djs.warehouse.veg.mapper.FeedLogMapper;
 import org.dromara.djs.warehouse.veg.mapper.HandleRecordMapper;
 import org.dromara.djs.warehouse.veg.mapper.PlantingRecordMapper;
 import org.dromara.djs.warehouse.veg.mapper.VegetableHandleMapper;
@@ -103,6 +105,11 @@ public class VegetableHandleServiceImpl
     private static final String FLOW_TYPE_VEG_STOCK_IN = "veg_stock_in";
 
     /**
+     * 毛菜鲜品库库位业务码（果蔬全流程 spec 步6 去向①默认入库库位）。按 location_code 查 id，不硬编码 id。
+     */
+    private static final String LOCATION_CODE_FRESH_VEG = "L0006";
+
+    /**
      * stock_flow.inout_type CHAR(3) IN=入库。
      */
     private static final String INOUT_IN = "IN";
@@ -114,6 +121,7 @@ public class VegetableHandleServiceImpl
     private final IBizCodeGenerator bizCodeGenerator;
     private final ImageUrlResolver imageUrlResolver;
     private final CropInfoMapper cropInfoMapper;
+    private final FeedLogMapper feedLogMapper;
 
     /**
      * 作物图 L2 兜底分类键（作物无 belong_type，统一走"蔬菜默认图"）。
@@ -127,7 +135,8 @@ public class VegetableHandleServiceImpl
                                       LocationInfoMapper locationInfoMapper,
                                       IBizCodeGenerator bizCodeGenerator,
                                       ImageUrlResolver imageUrlResolver,
-                                      CropInfoMapper cropInfoMapper) {
+                                      CropInfoMapper cropInfoMapper,
+                                      FeedLogMapper feedLogMapper) {
         super(baseMapper);
         this.handleRecordMapper = handleRecordMapper;
         this.plantingRecordMapper = plantingRecordMapper;
@@ -136,6 +145,7 @@ public class VegetableHandleServiceImpl
         this.bizCodeGenerator = bizCodeGenerator;
         this.imageUrlResolver = imageUrlResolver;
         this.cropInfoMapper = cropInfoMapper;
+        this.feedLogMapper = feedLogMapper;
     }
 
     /**
@@ -257,7 +267,9 @@ public class VegetableHandleServiceImpl
                 sendPlatform = sendPlatform.add(weight);
                 handled = handled.add(weight);
             } else {
-                // FEED
+                // FEED：仅累加汇总 feed_weight。注意此 admin 端 /submit 旧路径【不写 t_warehouse_feed_log】，
+                // 饲料台账仅由 mp 录入路径 submitProcess 去向③写（WMS-VEG-FEED-LOG-001）；
+                // 两路径不对称是有意的——admin /submit 为兼容遗留入口，非果蔬全流程主链路。
                 feed = feed.add(weight);
             }
         }
@@ -434,6 +446,12 @@ public class VegetableHandleServiceImpl
             handle = createHandleRow(planting, now);
         }
 
+        // Step 2.1：spec 步4「地块称重完成后不再允许新增采摘录入」后端强约束
+        // （createHandleRow 把新行 isWeighed=2，不误伤本次新建的首录）
+        if (handle.getIsWeighed() != null && handle.getIsWeighed() == 1) {
+            throw new ServiceException("该地块已称重完成，不能再录入采摘重量");
+        }
+
         // Step 3：INSERT handle_record（采收）
         HandleRecord record = new HandleRecord();
         record.setHandleId(handle.getId());
@@ -510,15 +528,34 @@ public class VegetableHandleServiceImpl
             throw new ServiceException("请先录入采摘重量");
         }
 
+        // Step 3.1：去向①入库默认落毛菜鲜品库（L0006），按 location_code 查 id（不硬编码 id）
+        Long stockInLocationId = null;
+        if (handleTarget == HANDLE_TARGET_STOCK_IN) {
+            LocationInfo freshVegLoc = locationInfoMapper.selectOne(
+                new LambdaQueryWrapper<LocationInfo>()
+                    .eq(LocationInfo::getLocationCode, LOCATION_CODE_FRESH_VEG)
+                    .last("LIMIT 1"));
+            if (freshVegLoc == null) {
+                throw new ServiceException("毛菜鲜品库（库位编码 " + LOCATION_CODE_FRESH_VEG + "）不存在，请先在库位管理维护");
+            }
+            stockInLocationId = freshVegLoc.getId();
+        }
+
         // Step 4：INSERT handle_record（处理）
+        //   - 去向①入库：location_id = L0006、plot_id 保留
+        //   - 去向②月台：location_id = null、plot_id 保留
+        //   - 去向③饲料：location_id = null、plot_id = null（spec 步8 该类记录不记录地块编号）
         HandleRecord record = new HandleRecord();
         record.setHandleId(handle.getId());
+        // 三去向 handle_record 均记 plot_id（t_warehouse_handle_record.plot_id NOT NULL）。
+        // spec 步8「饲料饲喂不记地块」由专用台账表 t_warehouse_feed_log（无 plot_id 列）满足；
+        // handle_record 是毛菜处理事件日志（非饲料专用表），保留 plot_id 作处理来源上下文。
         record.setPlotId(planting.getPlotId());
         record.setCropId(planting.getCropId());
         record.setRecordType(RECORD_TYPE_HANDLE);
         record.setRecordWeight(weight);
         record.setHandleTarget(handleTarget);
-        record.setLocationId(null);
+        record.setLocationId(stockInLocationId);
         record.setIsFinish(processDone ? 1 : 2);
         record.setHandleUser(userId);
         record.setHandleTime(now);
@@ -559,7 +596,13 @@ public class VegetableHandleServiceImpl
         }
         baseMapper.updateById(delta);
 
-        // Step 6：target=1 入库不写 stock_flow（本期决策：库位流水留给果蔬月台入库线）
+        // Step 6：去向①入库 → 生成入库流水（产品维度 + 地块编号 + 库位 L0006，spec 步6）；
+        //         去向③饲料 → 写饲料台账（按日 × 作物品类，不记地块，spec 步8）
+        if (handleTarget == HANDLE_TARGET_STOCK_IN) {
+            insertVegStockInFlow(handle, planting, stockInLocationId, weight, userId, now);
+        } else if (handleTarget == HANDLE_TARGET_FEED) {
+            insertFeedLog(planting, weight, now);
+        }
 
         // Step 7：同步 planting_record.handle_status
         if (STATUS_PENDING.equals(planting.getHandleStatus())) {
@@ -572,6 +615,20 @@ public class VegetableHandleServiceImpl
         }
 
         return handle.getId();
+    }
+
+    /**
+     * 去向③饲料饲喂 → 插入饲料台账（{@code t_warehouse_feed_log}，spec 步8）。
+     *
+     * <p>按自然日 × 作物品类记录重量，{@code 不记录地块编号}（无 plot_id）。tenant_id 走 MP 自动 fill。</p>
+     */
+    private void insertFeedLog(PlantingRecord planting, BigDecimal weight, Date now) {
+        FeedLog feedLog = new FeedLog();
+        feedLog.setFeedDate(now);
+        feedLog.setCropId(planting.getCropId());
+        feedLog.setCropName(planting.getCropName());
+        feedLog.setFeedWeight(weight);
+        feedLogMapper.insert(feedLog);
     }
 
     @Override

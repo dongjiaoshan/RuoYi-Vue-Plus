@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.dromara.common.core.exception.ServiceException;
+import org.dromara.common.core.service.DictService;
 import org.dromara.djs.breed.core.domain.Pig;
 import org.dromara.djs.breed.core.domain.bo.PigEventBo;
 import org.dromara.djs.breed.core.enums.PigLifecycle;
@@ -14,6 +15,8 @@ import org.dromara.djs.breed.event.eartag.domain.PigPigletno;
 import org.dromara.djs.breed.event.eartag.mapper.PigPigletnoMapper;
 import org.dromara.djs.breed.event.farrow.domain.PigFarrow;
 import org.dromara.djs.breed.event.farrow.mapper.PigFarrowMapper;
+import org.dromara.djs.breed.farm.mapper.BarnMapper;
+import org.dromara.djs.breed.farm.mapper.PenMapper;
 import org.dromara.djs.breed.event.transfer.domain.bo.TransferBo;
 import org.dromara.djs.breed.event.transfer.service.ITransferService;
 import org.dromara.djs.breed.event.weaning.domain.PigWeaning;
@@ -84,6 +87,12 @@ class WeaningServiceImplTest {
     private IPigCoreService pigCoreService;
     @Mock
     private ITransferService transferService;
+    @Mock
+    private BarnMapper barnMapper;
+    @Mock
+    private PenMapper penMapper;
+    @Mock
+    private DictService dictService;
 
     private WeaningServiceImpl service;
 
@@ -104,7 +113,7 @@ class WeaningServiceImplTest {
     @BeforeEach
     void setup() {
         service = new WeaningServiceImpl(weaningMapper, weaningDetailMapper, pigMapper, farrowMapper,
-            pigletnoMapper, pigCoreService, transferService);
+            pigletnoMapper, pigCoreService, transferService, barnMapper, penMapper, dictService);
     }
 
     private Pig mkSow(Long id, PigLifecycle status) {

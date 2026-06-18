@@ -7,6 +7,7 @@ import org.dromara.djs.warehouse.cut.domain.bo.PigCutOutBo;
 import org.dromara.djs.warehouse.cut.domain.bo.PigCutPickupBo;
 import org.dromara.djs.warehouse.cut.domain.query.PigCutRecordQuery;
 import org.dromara.djs.warehouse.cut.domain.vo.BarInfoVo;
+import org.dromara.djs.warehouse.cut.domain.vo.CutProductTypeVo;
 import org.dromara.djs.warehouse.cut.domain.vo.PigCutRecordVo;
 
 import java.util.List;
@@ -62,5 +63,13 @@ public interface IPigCutRecordService {
      * mp 端"待领用白条"列表（status='in_stock'，按入库时间倒序）。
      */
     List<BarInfoVo> queryAvailableBars();
+
+    /**
+     * mp 分割车间产品类型列表（标准分割成品 5 类：精瘦肉 / 部位肉 / 骨类 / 猪皮 / 碎料）。
+     *
+     * <p>口径：{@code product_workshop=2}（分割车间）+ {@code belong_type='pork'} +
+     * {@code product_id LIKE 'PROD-PIG-%'}，按 product_id 升序，排除 D0001 / DEMO / 测试。</p>
+     */
+    List<CutProductTypeVo> queryCutProductTypes();
 
 }

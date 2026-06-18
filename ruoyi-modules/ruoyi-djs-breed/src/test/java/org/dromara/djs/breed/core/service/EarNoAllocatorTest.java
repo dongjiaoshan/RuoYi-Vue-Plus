@@ -29,10 +29,11 @@ import static org.mockito.Mockito.when;
 /**
  * {@link EarNoAllocator} 单元测试（ADR-0011 带分隔符客户格式；R47 序号按出生日全场递增）。
  *
- * <p>格式 = {@code {品系}-{品种2}-{出生yyMMdd6}-{当天序号3}}（如 {@code 4-04-260510-001}），
- * 前缀 = {@code 品系-品种2-yyMMdd6}（如 {@code 4-04-260510}）。性别不再入耳号。覆盖：</p>
+ * <p>格式（2026-06-18 起重新编入性别段）= {@code {品系}-{品种2}-{性别1}-{出生yyMMdd6}-{当天序号3}}
+ * （如 {@code 4-04-1-260510-001}，性别码 1=公 2=母）；性别空（仔猪批量混公母）回退旧格式
+ * {@code {品系}-{品种2}-{yyMMdd6}-{序号3}}。覆盖：</p>
  * <ul>
- *   <li>前缀组装：品系 - 品种2 - 出生 yyMMdd（性别不参与组装）</li>
+ *   <li>前缀组装：品系 - 品种2 - 性别1 - 出生 yyMMdd；性别空回退无性别段</li>
  *   <li>当天无现存号 → seq 从 001 起；现存 max → +1；批量连号</li>
  *   <li>序号按<b>出生日全场</b>递增（不分品系品种）：同日不同前缀共享同一序列，互相影响 max</li>
  *   <li>UNIQUE 兜底：候选已占用 → 重新解析 max 重试；重试耗尽 → 抛 ear_no.generate_conflict</li>
@@ -63,16 +64,16 @@ class EarNoAllocatorTest {
     private static final LocalDate BIRTH = LocalDate.of(2026, 5, 10);
     private static final String YYMMDD = "260510";
 
-    /** 品系=杜洛克(4) - 品种=杜洛克(04) - 260510 = 前缀 4-04-260510（11 字符，性别不入前缀）。 */
+    /** 品系=杜洛克(4) - 品种=杜洛克(04) - 性别 M=1 - 260510 = 前缀 4-04-1-260510（13 字符，2026-06-18 起编入性别段）。 */
     private String boarPrefix;
-    /** 同出生日不同品种品系（品系9-品种09）→ 前缀 9-09-260510，序号与 boarPrefix 共享全场序列。 */
+    /** 同出生日不同品种品系性别（品系9-品种09-性别 F=2）→ 前缀 9-09-2-260510，序号与 boarPrefix 共享全场序列。 */
     private String otherPrefix;
 
     @BeforeEach
     void setup() throws InterruptedException {
         allocator = new EarNoAllocator(pigMapper, redissonClient);
-        boarPrefix = "4-04-" + YYMMDD;
-        otherPrefix = "9-09-" + YYMMDD;
+        boarPrefix = "4-04-1-" + YYMMDD;
+        otherPrefix = "9-09-2-" + YYMMDD;
         when(redissonClient.getLock(anyString())).thenReturn(lock);
         when(lock.tryLock(anyLong(), anyLong(), any())).thenReturn(true);
         when(lock.isHeldByCurrentThread()).thenReturn(true);
@@ -80,36 +81,50 @@ class EarNoAllocatorTest {
     }
 
     @Test
-    @DisplayName("前缀组装：品系4-品种04-260510 = 4-04-260510，长度 11（性别不入前缀）")
+    @DisplayName("前缀组装：品系4-品种04-性别M(1)-260510 = 4-04-1-260510，长度 13（2026-06-18 编入性别段）")
     void buildPrefix_basic() {
         String prefix = allocator.buildPrefix("4", "04", "M", BIRTH);
-        assertThat(prefix).isEqualTo("4-04-260510").hasSize(11);
+        assertThat(prefix).isEqualTo("4-04-1-260510").hasSize(13);
     }
 
     @Test
-    @DisplayName("公母同前缀：F 与 M 组装结果一致（性别不参与组装）")
-    void buildPrefix_sexIgnored() {
-        assertThat(allocator.buildPrefix("4", "04", "F", BIRTH))
-            .isEqualTo(allocator.buildPrefix("4", "04", "M", BIRTH))
-            .isEqualTo("4-04-260510");
+    @DisplayName("性别编码：F→2 / M→1，公母前缀不同（客户权威表 1=公 2=母）")
+    void buildPrefix_sexEncoded() {
+        assertThat(allocator.buildPrefix("4", "04", "M", BIRTH)).isEqualTo("4-04-1-260510");
+        assertThat(allocator.buildPrefix("4", "04", "F", BIRTH)).isEqualTo("4-04-2-260510");
+    }
+
+    @Test
+    @DisplayName("性别空（仔猪耳标批量混公母）→ 保持旧格式 4-04-260510，不编性别段（向后兼容）")
+    void buildPrefix_nullSex_legacyFormat() {
+        assertThat(allocator.buildPrefix("4", "04", null, BIRTH)).isEqualTo("4-04-260510").hasSize(11);
+        assertThat(allocator.buildPrefix("4", "04", "", BIRTH)).isEqualTo("4-04-260510");
+    }
+
+    @Test
+    @DisplayName("性别码非法 → 抛参数异常")
+    void buildPrefix_invalidSex_throws() {
+        assertThatThrownBy(() -> allocator.buildPrefix("4", "04", "X", BIRTH))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("性别码");
     }
 
     @Test
     @DisplayName("品种短码 '4' 左补零到 2 位 '04'")
     void buildPrefix_padsBreedCode() {
         String prefix = allocator.buildPrefix("4", "4", "M", BIRTH);
-        assertThat(prefix).isEqualTo("4-04-260510");
+        assertThat(prefix).isEqualTo("4-04-1-260510");
     }
 
     @Test
-    @DisplayName("当天无现存号 → 带分隔符耳号 seq 从 001 起，长度 15")
+    @DisplayName("当天无现存号 → 带分隔符耳号 seq 从 001 起，长度 17（含性别段）")
     void emptyDate_startsAt1() {
         when(pigMapper.selectMaxSeqByDateSegment(YYMMDD)).thenReturn(null);
 
         List<String> earNos = allocator.allocate("4", "04", "M", BIRTH, 1);
 
         assertThat(earNos).containsExactly(boarPrefix + "-001");
-        assertThat(earNos.get(0)).hasSize(15);
+        assertThat(earNos.get(0)).hasSize(17);
     }
 
     @Test
@@ -214,13 +229,13 @@ class EarNoAllocatorTest {
     }
 
     @Test
-    @DisplayName("allocateOne 单头 → 返带分隔符耳号，长度 15")
-    void allocateOne_returns15() {
+    @DisplayName("allocateOne 单头 → 返带分隔符耳号，长度 17（含性别段）")
+    void allocateOne_returns17() {
         when(pigMapper.selectMaxSeqByDateSegment(YYMMDD)).thenReturn(null);
 
-        String earNo = allocator.allocateOne("4", "04", "F", BIRTH);
+        String earNo = allocator.allocateOne("4", "04", "M", BIRTH);
 
-        assertThat(earNo).isEqualTo(boarPrefix + "-001").hasSize(15);
+        assertThat(earNo).isEqualTo(boarPrefix + "-001").hasSize(17);
     }
 
     @Test

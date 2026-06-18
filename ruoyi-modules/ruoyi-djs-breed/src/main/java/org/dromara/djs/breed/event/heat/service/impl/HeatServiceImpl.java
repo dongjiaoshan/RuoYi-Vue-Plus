@@ -139,14 +139,15 @@ public class HeatServiceImpl implements IHeatService {
     }
 
     /**
-     * 记录列表行级 enrich（row97）：断奶后天数 / 母猪日龄 / 胎次。
+     * 记录列表行级 enrich（row97 + row30）：断奶后天数 / 母猪日龄 / 胎次 / 查情时状态 / 状态持续天数。
      *
      * <ul>
      *   <li>断奶后天数 = 查情日期 - 该母猪「最近一条断奶记录」weaning_date（按 pigId 批量取最近一条，避免 N+1）；</li>
-     *   <li>日龄 = 查情日期 - 母猪 birth_date；胎次 = t_farm_pig_info.parity（按 pigId 批量取）。</li>
+     *   <li>日龄 = 查情日期 - 母猪 birth_date；胎次 = t_farm_pig_info.parity（按 pigId 批量取）；</li>
+     *   <li>查情时状态 = pig.currentStatus（近似，字典 djs_pig_lifecycle）；状态持续天数 = 查情日期 - pig.statusStartedAt。</li>
      * </ul>
      *
-     * <p>任一来源缺失（无断奶记录 / 无出生日期）对应字段留 null，前端兜底 — 占位。</p>
+     * <p>任一来源缺失（无断奶记录 / 无出生日期 / statusStartedAt 为 null）对应字段留 null，前端兜底 — 占位。</p>
      */
     private void enrichSowMetrics(List<PigHeatVo> rows) {
         if (rows == null || rows.isEmpty()) {
@@ -193,7 +194,7 @@ public class HeatServiceImpl implements IHeatService {
                 row.setDaysAfterWeaning((int) days);
             }
 
-            // 日龄 + 胎次
+            // 日龄 + 胎次 + 查情时母猪状态 + 状态持续天数
             Pig pig = pigMap.get(pigId);
             if (pig != null) {
                 if (heatDay != null && pig.getBirthDate() != null) {
@@ -201,6 +202,16 @@ public class HeatServiceImpl implements IHeatService {
                     row.setDayAge((int) age);
                 }
                 row.setParity(pig.getParity());
+
+                // 查情时母猪状态：近似取 currentStatus（OESTRUS 方案A 不切母猪态，查情后状态不变）
+                row.setHeatStatus(pig.getCurrentStatus());
+
+                // 状态持续天数 = 查情日期 - 进入当前状态时间（statusStartedAt 为 null 留 null）
+                if (heatDay != null && pig.getStatusStartedAt() != null) {
+                    long statusDays = ChronoUnit.DAYS.between(
+                        pig.getStatusStartedAt().toLocalDate(), heatDay);
+                    row.setStatusDays((int) statusDays);
+                }
             }
         }
     }

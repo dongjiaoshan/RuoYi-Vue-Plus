@@ -31,11 +31,12 @@ public class AppletEmployeeServiceImpl implements IAppletEmployeeService {
     private final AppletUserQueryMapper appletUserQueryMapper;
 
     @Override
-    public List<EmployeeVo> queryEmployees(String keyword, String role) {
+    public List<EmployeeVo> queryEmployees(String keyword, String role, Long deptId) {
         // 前后空白裁掉再判空，避免 "  " 命中 SQL <if>
         String normalizedKeyword = StrUtil.trimToNull(keyword);
         String normalizedRole = StrUtil.trimToNull(role);
-        List<Map<String, Object>> rows = appletUserQueryMapper.selectEmployeesRaw(normalizedKeyword, normalizedRole);
+        List<Map<String, Object>> rows =
+            appletUserQueryMapper.selectEmployeesRaw(normalizedKeyword, normalizedRole, deptId);
         if (rows == null || rows.isEmpty()) {
             return Collections.emptyList();
         }

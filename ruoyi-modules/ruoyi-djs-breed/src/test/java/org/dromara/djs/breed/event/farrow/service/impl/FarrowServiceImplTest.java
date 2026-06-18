@@ -1,6 +1,7 @@
 package org.dromara.djs.breed.event.farrow.service.impl;
 
 import org.dromara.common.core.exception.ServiceException;
+import org.dromara.common.core.service.DictService;
 import org.dromara.djs.breed.core.domain.Pig;
 import org.dromara.djs.breed.core.domain.bo.PigEventBo;
 import org.dromara.djs.breed.core.enums.PigLifecycle;
@@ -68,13 +69,15 @@ class FarrowServiceImplTest {
     private PigPigletnoMapper pigletnoMapper;
     @Mock
     private IPigCoreService pigCoreService;
+    @Mock
+    private DictService dictService;
 
     private FarrowServiceImpl service;
 
     @BeforeEach
     void setup() {
         service = new FarrowServiceImpl(farrowMapper, pigMapper, barnMapper, penMapper,
-            pigletnoMapper, pigCoreService);
+            pigletnoMapper, pigCoreService, dictService);
     }
 
     private Pig mkSow(Long id, PigLifecycle status, Long matingId) {

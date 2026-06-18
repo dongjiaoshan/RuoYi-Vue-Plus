@@ -49,6 +49,7 @@ public class EmployeeAppletController {
      * GET /djs/applet/common/employee/list                  # 列全部可选员工
      * GET /djs/applet/common/employee/list?keyword=张        # 按昵称 / 登录名模糊
      * GET /djs/applet/common/employee/list?role=breed_worker # 仅养殖工人
+     * GET /djs/applet/common/employee/list?deptId=200        # 仅养殖部员工
      * </pre>
      *
      * <p>响应是已按 dept_id, user_id 升序的 {@code List<EmployeeVo>}，每项 {@code userId} 为
@@ -56,11 +57,13 @@ public class EmployeeAppletController {
      *
      * @param keyword 可选关键字（按 nick_name / user_name 模糊）
      * @param role    可选 role_key（按角色过滤，如 {@code breed_worker}）
+     * @param deptId  可选部门 id（按 sys_user.dept_id 等值过滤，如养殖部 200）
      */
     @SaCheckLogin
     @GetMapping("/list")
     public R<List<EmployeeVo>> list(@RequestParam(required = false) String keyword,
-                                    @RequestParam(required = false) String role) {
-        return R.ok(appletEmployeeService.queryEmployees(keyword, role));
+                                    @RequestParam(required = false) String role,
+                                    @RequestParam(required = false) Long deptId) {
+        return R.ok(appletEmployeeService.queryEmployees(keyword, role, deptId));
     }
 }

@@ -20,7 +20,8 @@ public interface IAppletEmployeeService {
      *
      * @param keyword 可选关键字（按 nick_name / user_name 模糊；null 或空串不过滤）
      * @param role    可选 role_key（按角色过滤，如 {@code breed_worker}；null 或空串则全员可选）
+     * @param deptId  可选部门 id（按 sys_user.dept_id 等值过滤，如养殖部 200；null 则不限部门）
      * @return 员工列表（userId 为 String，已按部门 / userId 升序）；无命中返空数组
      */
-    List<EmployeeVo> queryEmployees(String keyword, String role);
+    List<EmployeeVo> queryEmployees(String keyword, String role, Long deptId);
 }

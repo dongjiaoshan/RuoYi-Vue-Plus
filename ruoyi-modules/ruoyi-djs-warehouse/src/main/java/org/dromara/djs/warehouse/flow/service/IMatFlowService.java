@@ -85,4 +85,17 @@ public interface IMatFlowService {
      */
     List<MatIssueItemVo> issueItems(String belongType, String locationId);
 
+    /**
+     * mp 物资领用「自产果蔬可领用」列表（步11 偏差修复 · 决策 a；蔬菜 tab 自产果蔬数据源）。
+     *
+     * <p>自产果蔬库存按 {@code (plot_id, location)} 维度建账（无 product_id），常规
+     * {@link #issueItems}（按 product_id JOIN）列不到。本方法以 plot 维度列出可领用项：
+     * 复用 {@link MatIssueItemVo}，回填 {@code plotId} / {@code plotCode}（productId 为 null），
+     * 前端点卡进领用表单时把 plotId 回填 {@code MatPickBo.plotId} 走 plot 维度领用。</p>
+     *
+     * @param locationId 库位 ID（可空，chip 选中态过滤；snowflake string 防截断，service 内 parse）
+     * @return 自产果蔬可领用项（按作物名、地块编码排序）；无则空 list
+     */
+    List<MatIssueItemVo> selfVegIssueItems(String locationId);
+
 }

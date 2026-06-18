@@ -389,6 +389,12 @@ public class ProductInfoServiceImpl extends DjsBaseServiceImpl<ProductInfoMapper
             .in(CollUtil.isNotEmpty(query.getBelongTypes()), ProductInfo::getBelongType, query.getBelongTypes())
             .eq(StringUtils.isNotBlank(query.getBuyClass()), ProductInfo::getBuyClass, query.getBuyClass())
             .eq(query.getProductWorkshop() != null, ProductInfo::getProductWorkshop, query.getProductWorkshop())
+            // 产品属性（打包目标成品 product_attr=1 / 原材料=2，取数逻辑 doc#13）
+            .eq(query.getProductAttr() != null, ProductInfo::getProductAttr, query.getProductAttr())
+            // 关联原材料（自引用 FK → product_info.id 雪花 id）
+            .eq(query.getProductMaterial() != null, ProductInfo::getProductMaterial, query.getProductMaterial())
+            // 关联原材料集合（findings 步12：果蔬打包按「本次领用原料产品 ID」反查命中成品）
+            .in(CollUtil.isNotEmpty(query.getProductMaterials()), ProductInfo::getProductMaterial, query.getProductMaterials())
             .eq(StringUtils.isNotBlank(query.getStoreLocationId()), ProductInfo::getStoreLocationId, query.getStoreLocationId())
             .eq(query.getProductStatus() != null, ProductInfo::getProductStatus, query.getProductStatus())
             .eq(query.getUpdateBy() != null, ProductInfo::getUpdateBy, query.getUpdateBy())

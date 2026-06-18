@@ -124,10 +124,16 @@ public class EarNoAllocator {
     }
 
     /**
-     * 组装耳号前缀 = 品系 + {@code -} + 品种2 + {@code -} + yyMMdd6（如 {@code 1-01-260609}）。
-     * <p>位码取自字典 dict_value（前端选品种/品系直接传 dict_value，即位码本身，ADR-0011 §2.2）。
-     * 拼上 {@code -序号3} 即完整耳号（如 {@code 1-01-260609-001}）。性别不再入前缀（6/15 起公母仔猪同前缀连号）；
-     * {@code pigSex} 参数保留仅为兼容老调用方签名，不参与组装。</p>
+     * 组装耳号前缀（ADR-0011 2026-06-18 修订：外部引种重新编入性别段）。
+     * <p>位码取自字典 dict_value（前端选品种/品系直接传 dict_value，即位码本身，ADR-0011 §2.2）。</p>
+     * <ul>
+     *   <li>{@code pigSex} 非空（外部引种，单批同性别）→ {@code 品系-品种2-性别1-yyMMdd6}（如 {@code 12-01-2-260618}）；
+     *       性别码客户权威表：{@code 1=公(M) / 2=母(F)}。拼上 {@code -序号3} 即完整耳号（如 {@code 12-01-2-260618-001}）。</li>
+     *   <li>{@code pigSex} 空（仔猪耳标批量，同批可混公母，走全场连号不编性别）→ 保持 {@code 品系-品种2-yyMMdd6} 旧格式，
+     *       向后兼容、不影响未报问题的仔猪耳标特性。</li>
+     * </ul>
+     * <p>两种格式 yyMMdd 段都在倒数第二段、序号在末段，{@link PigMapper#selectMaxSeqByDateSegment} 的
+     * {@code REGEXP '-yyMMdd-[0-9]+$'} 对两者都匹配，当天全场连号序列不受格式差异影响、无撞号。</p>
      */
     public String buildPrefix(String strainCode, String breedCode, String pigSex, LocalDate birthDate) {
         if (StringUtils.isBlank(strainCode)) {
@@ -142,7 +148,22 @@ public class EarNoAllocator {
         String strain = strainCode.trim();
         String breed2 = padLeftZero(breedCode.trim(), BREED_CODE_WIDTH);
         String yyMMdd = birthDate.format(BIRTH_FMT);
+        if (StringUtils.isNotBlank(pigSex)) {
+            return strain + SEG_SEP + breed2 + SEG_SEP + sexCode(pigSex) + SEG_SEP + yyMMdd;
+        }
         return strain + SEG_SEP + breed2 + SEG_SEP + yyMMdd;
+    }
+
+    /** 性别位码（客户权威耳号编码表：1=公 / 2=母；入参 M=公 / F=母）。 */
+    private String sexCode(String pigSex) {
+        String s = pigSex.trim().toUpperCase();
+        if ("M".equals(s)) {
+            return "1";
+        }
+        if ("F".equals(s)) {
+            return "2";
+        }
+        throw new ServiceException("耳号生成失败：性别码非法（须 M 公 / F 母）：" + pigSex);
     }
 
     /**

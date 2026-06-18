@@ -22,6 +22,9 @@ import org.dromara.djs.warehouse.pack.domain.vo.StoreDemandCopiesVo;
 import org.dromara.djs.warehouse.pack.domain.vo.VegDailyLossVo;
 import org.dromara.djs.warehouse.pack.service.IProductProductionService;
 import org.dromara.djs.warehouse.product.domain.ProductInhouse;
+import org.dromara.djs.warehouse.product.domain.query.ProductInfoQuery;
+import org.dromara.djs.warehouse.product.domain.vo.ProductInfoVo;
+import org.dromara.djs.warehouse.product.service.IProductInfoService;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -31,8 +34,10 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.math.BigDecimal;
 import java.util.Date;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 仓库生产管理 - 打包/分割录入 admin 端 Controller（A5）。
@@ -68,6 +73,12 @@ public class WarehousePackEntryController extends BaseController {
 
     private final IProductProductionService productionService;
     private final IPigCutRecordService pigCutService;
+    private final IProductInfoService productInfoService;
+
+    /** 果蔬业态（按领用原料反查命中成品时叠加，避免混入猪肉/干货成品）。 */
+    private static final String BELONG_TYPE_VEGETABLE = "vegetable";
+    /** 自产产品类型（djs_product_type：1=自产成品）。 */
+    private static final Integer PRODUCT_TYPE_SELF = 1;
 
     // ==================== 肉品打包 / 其他产品打包（干货/标准 SKU 口）====================
 
@@ -120,6 +131,21 @@ public class WarehousePackEntryController extends BaseController {
     }
 
     /**
+     * 批量查目标成品的「原材料实时库存」（打包录入卡片库存口径统一，取数逻辑 doc#13）。
+     *
+     * <p>卡片展示库存改用此口径：对每个成品取其 {@code product_material} 指向的原材料 {@code location_stock} 合计，
+     * <b>与打包校验/扣减用的库存完全一致</b>，修复「操作员看到的库存 ≠ 系统校验/扣减的库存」。
+     * 返回 {@code Map<成品雪花id字符串, 库存合计>}；未配 product_material 的成品不在 Map 中（前端展示 '—'）。</p>
+     *
+     * @param productIds 目标成品 id 列表（逗号分隔；{@code t_warehouse_product_info.id}）
+     */
+    @SaCheckPermission("djs:warehouse:packEntry:dry")
+    @GetMapping("/materialStock")
+    public R<Map<String, BigDecimal>> materialStock(@RequestParam List<Long> productIds) {
+        return R.ok(productionService.listMaterialStock(productIds));
+    }
+
+    /**
      * 果蔬日损耗（V4，果疏产品全流程处理.docx）：按自然日聚合果蔬流水计算
      * {@code 日损耗 = 领用入库 − 打包消耗 − 退回 − 饲喂}。compute-on-read 只读，不建汇总表。
      *
@@ -133,6 +159,33 @@ public class WarehousePackEntryController extends BaseController {
         @RequestParam(required = false)
         @DateTimeFormat(pattern = "yyyy-MM-dd") Date statDate) {
         return R.ok(productionService.queryVegDailyLoss(statDate));
+    }
+
+    /**
+     * 按「本次领用原料产品 ID」反查命中成品（findings 步12，果蔬打包页成品下拉收敛）。
+     *
+     * <p>原型「果蔬打包管理」加载规则：读 {@code t_warehouse_product_info}，筛选
+     * {@code product_material} 字段命中本次领用产品 ID 的果蔬自产成品。本端点用
+     * {@link ProductInfoQuery#getProductMaterials() productMaterials IN} + belong_type='vegetable'
+     * + product_type=1（自产）过滤，复用 {@link IProductInfoService#queryList} 不重写业务。</p>
+     *
+     * <p><b>向后兼容</b>：{@code materialIds} 为空 → 不按原料过滤（退回「全部果蔬自产成品」，
+     * 不破坏 dry/gift/meat 入口现状）。{@code materialIds} 来源 = admin 打包页前端「本次领用的原料产品 ID」。</p>
+     *
+     * @param materialIds 本次领用原料产品 id 列表（逗号分隔；{@code t_warehouse_product_info.id}，可空）
+     * @return 命中成品列表（{@link ProductInfoVo}）
+     */
+    @SaCheckPermission("djs:warehouse:packEntry:veg")
+    @GetMapping("/vegProductsByMaterial")
+    public R<List<ProductInfoVo>> vegProductsByMaterial(
+        @RequestParam(required = false) List<Long> materialIds) {
+        ProductInfoQuery query = new ProductInfoQuery();
+        query.setBelongType(BELONG_TYPE_VEGETABLE);
+        query.setProductType(PRODUCT_TYPE_SELF);
+        if (materialIds != null && !materialIds.isEmpty()) {
+            query.setProductMaterials(materialIds);
+        }
+        return R.ok(productInfoService.queryList(query));
     }
 
     /**

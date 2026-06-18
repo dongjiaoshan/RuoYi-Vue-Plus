@@ -310,6 +310,7 @@ public class PigIntroServiceImpl implements IPigIntroService {
                 : "external".equals(e.getIntroduceType()) ? "外部" : e.getIntroduceType());
             vo.setEarNo(e.getStartEarNo());
             vo.setPigCount(e.getPigCount());
+            vo.setPigSexLabel("F".equals(e.getPigSex()) ? "母" : "M".equals(e.getPigSex()) ? "公" : null);
             vo.setPigBreedLabel(translateBreed(breedNameMap, e.getPigBreedCode()));
             vo.setPigStrainLabel(translateStrain(strainNameMap, e.getPigStrainCode()));
             vo.setAgeDays(calcAgeDays(e.getPigId() != null ? birthDateById.get(e.getPigId()) : null));

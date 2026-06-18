@@ -15,11 +15,15 @@ import org.dromara.djs.warehouse.pack.domain.bo.WhiteBarOutBo;
 import org.dromara.djs.warehouse.pack.domain.vo.PackSubmitResultVo;
 import org.dromara.djs.warehouse.pack.service.IProductProductionService;
 import org.dromara.djs.warehouse.product.domain.ProductInhouse;
+import org.dromara.djs.warehouse.product.domain.query.ProductInfoQuery;
+import org.dromara.djs.warehouse.product.domain.vo.ProductInfoVo;
+import org.dromara.djs.warehouse.product.service.IProductInfoService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
@@ -57,12 +61,13 @@ class WarehousePackEntryControllerTest {
 
     @Mock private IProductProductionService productionService;
     @Mock private IPigCutRecordService pigCutService;
+    @Mock private IProductInfoService productInfoService;
 
     private WarehousePackEntryController controller;
 
     @BeforeEach
     void setup() {
-        controller = new WarehousePackEntryController(productionService, pigCutService);
+        controller = new WarehousePackEntryController(productionService, pigCutService, productInfoService);
     }
 
     @Test
@@ -176,5 +181,36 @@ class WarehousePackEntryControllerTest {
         R<List<PigCutRecordVo>> r = controller.cuttableList();
 
         assertThat(r.getData()).hasSize(2);
+    }
+
+    @Test
+    @DisplayName("vegProductsByMaterial: materialIds 非空 → 按 productMaterials IN + 果蔬自产过滤委托 queryList")
+    void vegProductsByMaterialFiltersByMaterial() {
+        when(productInfoService.queryList(any(ProductInfoQuery.class)))
+            .thenReturn(List.of(new ProductInfoVo()));
+
+        R<List<ProductInfoVo>> r = controller.vegProductsByMaterial(List.of(100L, 200L));
+
+        assertThat(r.getData()).hasSize(1);
+        ArgumentCaptor<ProductInfoQuery> cap = ArgumentCaptor.forClass(ProductInfoQuery.class);
+        verify(productInfoService).queryList(cap.capture());
+        ProductInfoQuery q = cap.getValue();
+        assertThat(q.getBelongType()).isEqualTo("vegetable");
+        assertThat(q.getProductType()).isEqualTo(1);
+        assertThat(q.getProductMaterials()).containsExactly(100L, 200L);
+    }
+
+    @Test
+    @DisplayName("vegProductsByMaterial: materialIds 为空 → 不按原料过滤（向后兼容，全部果蔬自产成品）")
+    void vegProductsByMaterialEmptyKeepsBackwardCompatible() {
+        when(productInfoService.queryList(any(ProductInfoQuery.class)))
+            .thenReturn(List.of(new ProductInfoVo(), new ProductInfoVo()));
+
+        R<List<ProductInfoVo>> r = controller.vegProductsByMaterial(null);
+
+        assertThat(r.getData()).hasSize(2);
+        ArgumentCaptor<ProductInfoQuery> cap = ArgumentCaptor.forClass(ProductInfoQuery.class);
+        verify(productInfoService).queryList(cap.capture());
+        assertThat(cap.getValue().getProductMaterials()).isNull();
     }
 }

@@ -13,6 +13,8 @@ import org.dromara.djs.breed.core.domain.vo.PedigreeVo;
 import org.dromara.djs.breed.core.domain.vo.PigMedRecordMpVo;
 import org.dromara.djs.breed.core.domain.vo.PigTransferMpVo;
 import org.dromara.djs.breed.core.domain.vo.SowPerformanceMpVo;
+import org.dromara.djs.breed.breeding.domain.BreedInfo;
+import org.dromara.djs.breed.breeding.mapper.BreedInfoMapper;
 import org.dromara.djs.breed.core.mapper.PigMapper;
 import org.dromara.djs.breed.core.mapper.SowDetailAggMapper;
 import org.dromara.djs.breed.core.service.I18nMessages;
@@ -26,7 +28,9 @@ import java.time.format.DateTimeParseException;
 import java.time.temporal.ChronoUnit;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.stream.Collectors;
 
 /**
  * {@link ISowDetailService} 实现（BRD-FIX-MP-DETAIL-SPLIT-001 + DJS-FIX-6-14）。
@@ -44,6 +48,8 @@ public class SowDetailServiceImpl implements ISowDetailService {
 
     /** 字典：猪只品种（谱系卡品种 label）。 */
     private static final String DICT_PIG_BREED = "djs_pig_breed";
+    /** 字典：猪只品系（谱系卡品系 label）。 */
+    private static final String DICT_PIG_STRAIN = "djs_pig_strain";
     /** 字典：用药原因（用药记录 reason label）。 */
     private static final String DICT_MED_REASON = "djs_medicine_reason";
     /** 字典：用药方式（用药记录 way label）。 */
@@ -52,6 +58,7 @@ public class SowDetailServiceImpl implements ISowDetailService {
     private final SowDetailAggMapper aggMapper;
     private final PigMapper pigMapper;
     private final DictService dictService;
+    private final BreedInfoMapper breedInfoMapper;
 
     @Override
     public SowPerformanceMpVo querySowPerformance(Long pigId) {
@@ -92,13 +99,18 @@ public class SowDetailServiceImpl implements ISowDetailService {
         Pig pig = requirePig(pigId);
         PedigreeVo vo = new PedigreeVo();
         LocalDate today = LocalDate.now();
+        // 品种/品系名优先取 t_farm_breed_info 主数据（外部引种 BreedInfoPicker 写的 2 位码如 "01"），
+        // 字典回落（djs_pig_breed/strain 历史 1 位码）；与列表 PigCoreServiceImpl 同口径，避免品系显示成纯 code。
+        Map<String, String> breedNameMap = breedStrainNameMap(1);
+        Map<String, String> strainNameMap = breedStrainNameMap(2);
 
         // 母系：本猪 mother_ear → 反查母猪只
         Pig dam = findByEarNo(pig.getMotherEar());
         if (dam != null) {
             vo.setDamPigId(dam.getId());
             vo.setDamEarNo(dam.getEarNo());
-            vo.setDamBreed(translateBreed(dam.getPigBreedCode()));
+            vo.setDamBreed(resolveBreedStrainName(breedNameMap, DICT_PIG_BREED, dam.getPigBreedCode()));
+            vo.setDamStrain(resolveBreedStrainName(strainNameMap, DICT_PIG_STRAIN, dam.getPigStrainCode()));
             vo.setDamAgeDays(calcAgeDays(dam, today));
             vo.setDamParity(nz(dam.getParity()) > 0 ? dam.getParity() : null);
         } else if (StringUtils.isNotBlank(pig.getMotherEar())) {
@@ -111,7 +123,8 @@ public class SowDetailServiceImpl implements ISowDetailService {
         if (sire != null) {
             vo.setSirePigId(sire.getId());
             vo.setSireEarNo(sire.getEarNo());
-            vo.setSireBreed(translateBreed(sire.getPigBreedCode()));
+            vo.setSireBreed(resolveBreedStrainName(breedNameMap, DICT_PIG_BREED, sire.getPigBreedCode()));
+            vo.setSireStrain(resolveBreedStrainName(strainNameMap, DICT_PIG_STRAIN, sire.getPigStrainCode()));
             vo.setSireAgeDays(calcAgeDays(sire, today));
         } else if (StringUtils.isNotBlank(pig.getFatherEar())) {
             vo.setSireEarNo(pig.getFatherEar());
@@ -186,10 +199,6 @@ public class SowDetailServiceImpl implements ISowDetailService {
     }
 
     /** 品种字典翻译；翻不到回落 code，code 空 → null。 */
-    private String translateBreed(String code) {
-        return translateDict(DICT_PIG_BREED, code);
-    }
-
     /** 通用字典翻译；翻不到回落 code，code 空 → null。 */
     private String translateDict(String dictType, String code) {
         if (StringUtils.isBlank(code)) {
@@ -197,6 +206,25 @@ public class SowDetailServiceImpl implements ISowDetailService {
         }
         String label = dictService.getDictLabel(dictType, code);
         return StringUtils.isNotBlank(label) ? label : code;
+    }
+
+    /** t_farm_breed_info 主数据 code→中文名 映射（breedStrain 1=品种 / 2=品系）；谱系卡两系各预载一次。 */
+    private Map<String, String> breedStrainNameMap(Integer breedStrain) {
+        return breedInfoMapper.selectList(new LambdaQueryWrapper<BreedInfo>()
+                .eq(BreedInfo::getBreedStrain, breedStrain)
+                .eq(BreedInfo::getDelFlag, "0"))
+            .stream()
+            .filter(b -> StringUtils.isNotBlank(b.getBreedStrainCode()) && StringUtils.isNotBlank(b.getBreedStrainName()))
+            .collect(Collectors.toMap(BreedInfo::getBreedStrainCode, BreedInfo::getBreedStrainName, (a, b) -> a));
+    }
+
+    /** 品种/品系名解析：主数据优先（2 位码权威名）→ 字典回落（历史 1 位码）→ 原始 code；与列表口径一致。 */
+    private String resolveBreedStrainName(Map<String, String> infoNameMap, String dictType, String code) {
+        if (StringUtils.isBlank(code)) {
+            return null;
+        }
+        String name = infoNameMap.get(code);
+        return StringUtils.isNotBlank(name) ? name : translateDict(dictType, code);
     }
 
     /** 日龄 = NOW − birthDate（缺 birthDate fallback introduceDate）；均空 → null。 */

@@ -114,7 +114,7 @@ public class PigSearchVo implements Serializable {
      * 预产期 / 到断奶期（D12X-MP-FARROW-WEANING-001 软提示）。
      *
      * <p>仅当 {@code searchByEarKeyword} 带 {@code dueType}（FARROW/WEANING）时计算填充：
-     * FARROW = {@code lastMatingDate + gestation_days}；WEANING = 最近分娩日 + {@code lactation_days}。
+     * FARROW = {@code lastMatingDate + sow_breed_to_farrow_days}；WEANING = 最近分娩日 + {@code sow_farrow_to_wean_days}（母猪生产配置）。
      * 无基准日期（未配种 / 未分娩）→ null，mp 卡片该格不渲染。**不再作为硬过滤门槛**，
      * 仅供 mp 排序（临产排前）+「临产 / 预产期」badge 展示。</p>
      */

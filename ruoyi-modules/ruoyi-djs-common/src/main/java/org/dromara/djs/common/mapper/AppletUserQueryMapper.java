@@ -119,6 +119,8 @@ public interface AppletUserQueryMapper {
      *   <li>不排除当前登录用户（录入人和被记录的"实际执行人"常常是同一人，工人要能选自己）</li>
      *   <li>不查角色 / 手机 / 邮箱（选员工只需 id + 名字 + 部门），SQL 更轻无 GROUP_CONCAT</li>
      *   <li>{@code role} 不为空时按 {@code sys_role.role_key} 过滤（如只要养殖工人）；为空则全员可选</li>
+     *   <li>{@code deptId} 不为空时按 {@code sys_user.dept_id} 等值过滤（如只列养殖部 dept_id=200）；
+     *       养殖部是叶子部门，直接等值即可，不需按 ancestors 递归子部门</li>
      * </ul>
      *
      * <p>{@code userId} 出口仍是 {@code Long}（DB 原值），service 层转 {@code String} 装配进
@@ -127,6 +129,7 @@ public interface AppletUserQueryMapper {
      *
      * @param keyword 可选关键字（按 nick_name / user_name 模糊；null 或空串不过滤）
      * @param role    可选 role_key（按角色过滤；null 或空串不过滤）
+     * @param deptId  可选部门 id（按 sys_user.dept_id 等值过滤；null 不过滤）
      * @return 员工原始行（已按 dept_id, user_id 升序，硬上限 500 条）
      */
     @Select("""
@@ -145,6 +148,9 @@ public interface AppletUserQueryMapper {
         </if>
         WHERE u.del_flag = '0'
           AND u.status = '0'
+        <if test="deptId != null">
+          AND u.dept_id = #{deptId}
+        </if>
         <if test="keyword != null and keyword != ''">
           AND (u.nick_name LIKE CONCAT('%', #{keyword}, '%')
             OR u.user_name LIKE CONCAT('%', #{keyword}, '%'))
@@ -155,5 +161,6 @@ public interface AppletUserQueryMapper {
         </script>
         """)
     List<Map<String, Object>> selectEmployeesRaw(@Param("keyword") String keyword,
-                                                 @Param("role") String role);
+                                                 @Param("role") String role,
+                                                 @Param("deptId") Long deptId);
 }

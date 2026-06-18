@@ -85,4 +85,22 @@ public class MatIssueItemVo implements Serializable {
      */
     private BigDecimal todayLoss;
 
+    /**
+     * 地块 ID（步11 偏差修复 · 决策 a：自产果蔬「按地块维度」领用专用）。
+     *
+     * <p>仅 {@code selectSelfVegIssueItems}（自产果蔬可领用列表）回填非空：自产果蔬库存按
+     * {@code (plot_id, location)} 维度建账（无 product_id），列表项以 plotId 标识。前端蔬菜 tab
+     * 点此卡进领用表单时，把 plotId 回填到 {@code MatPickBo.plotId}（而非 productId），后端走
+     * plot 维度扣减 + pick_out 流水带 plot_id。常规 product 维度领用列表此字段为 null。
+     * snowflake，前端按 string 处理。</p>
+     */
+    private Long plotId;
+
+    /**
+     * 地块编码（步11；自产果蔬列表项次标签展示，如「PLOT001」，可空）。
+     *
+     * <p>仅 {@code selectSelfVegIssueItems} 回填；常规 product 维度领用列表为 null。</p>
+     */
+    private String plotCode;
+
 }

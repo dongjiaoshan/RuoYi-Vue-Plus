@@ -147,18 +147,21 @@ public interface StockFlowMapper extends BaseMapperPlus<StockFlow, StockFlowVo> 
      * 指定 {@code flow_type}，对 {@code belong_type='vegetable'} 产品流水 SUM change_quantity。
      *
      * <p>日损耗公式（service 端组装，不建汇总表）：
-     * {@code 日损耗 = 领用入库总重(veg_stock_in) − 打包消耗总重(pack_consume) − 退回(return_in) − 饲喂(loss)}。
+     * {@code 日损耗 = 领用(pick_out) − 打包(pack_in) − 退回(return_in) − 饲喂}（口径校正见 findings 步14）。
+     * 领用取物资领用出库 {@code pick_out}（{@code MatFlowServiceImpl.pick} 写）；
+     * 打包取果蔬打包入库 {@code pack_in}（{@code submitVegPack} 写，不写 pack_consume）；
+     * 退回取 {@code return_in}。饲喂项物资领用 V1 无果蔬饲喂操作，service 端直接置 0（不经本方法查询）。
      * 各分量经本方法按 {@code flowType} 各查一次（V1 数据量小，单日按 flow_type 分桶聚合开销可忽略）。</p>
      *
-     * <p>口径约束：果蔬「采收/饲喂」过程量当前权威落在 {@code t_warehouse_veg_handle_record}
-     * （按 {@code handle_time} 聚合到 {@code vegetable_handle}），并非全部写 {@code stock_flow}；
-     * 本聚合仅消费 stock_flow 中实际存在的果蔬流水类型，对应 flow_type 当日无流水时该分量为 0
-     * （优雅降级，不抛、不阻塞）。客户在毛菜处理间录入后数据自然完整。</p>
+     * <p>口径约束：本聚合仅消费 stock_flow 中实际存在的果蔬流水类型，对应 flow_type 当日无流水时该分量为 0
+     * （优雅降级，不抛、不阻塞）。{@code pick_out} 经 JOIN {@code product_info WHERE belong_type='vegetable'}
+     * 仅统计果蔬产品的领用——外购果蔬 pick 带 veg product_id；自产果蔬 pick 须带可解析的 veg product_id
+     * 才被计入（跨 findings 步11 领用地块维度改造，自产果蔬领用须落 resolvable veg product_id 流水）。</p>
      *
      * <p>{@code flowDate} 传 {@code null} 时按当天（{@code CURDATE()}）聚合。租户隔离：
      * 显式 {@code tenant_id='1001'}（V1 单租户，与 LocationStockMapper 同口径）。</p>
      *
-     * @param flowType 流水类型（veg_stock_in / pack_consume / return_in / loss）
+     * @param flowType 流水类型（pick_out / pack_in / return_in）
      * @param flowDate 自然日（{@code null}=当天）
      * @return 该自然日该 flow_type 果蔬流水 change_quantity 合计（无记录返 0，永不 null）
      */

@@ -7,6 +7,7 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.common.core.exception.ServiceException;
+import org.dromara.common.core.service.DictService;
 import org.dromara.common.core.service.OssService;
 import org.dromara.common.core.utils.StringUtils;
 import org.dromara.common.mybatis.core.page.PageQuery;
@@ -30,10 +31,15 @@ import org.dromara.djs.breed.farm.mapper.PenMapper;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.temporal.ChronoUnit;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 
 /**
@@ -60,6 +66,7 @@ public class DieServiceImpl implements IDieService {
     private final PenMapper penMapper;
     private final IPigCoreService pigCoreService;
     private final OssService ossService;
+    private final DictService dictService;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -134,7 +141,65 @@ public class DieServiceImpl implements IDieService {
         Page<PigDeathVo> page = deathMapper.selectVoPage(pageQuery.build(), w);
         // 死亡照片 ossIds → 可访问 URL 列表（mp <image> 无法携 Bearer token 取鉴权下载端点，故后端预解析）
         page.getRecords().forEach(v -> v.setImageUrls(resolveImageUrls(v.getOssIds())));
+        enrichPigInfo(page.getRecords());
         return TableDataInfo.build(page);
+    }
+
+    /**
+     * 批量回填死亡猪只性别 + 死亡时日龄 + 品系/品种中文名（避免 N+1：去重 pigId 一次性批查 t_farm_pig_info）。
+     *
+     * <p>日龄按「事件时」口径 = {@code deathDate - birth_date}（死亡当时日龄）；birth_date 缺时回落
+     * introduce_date，两者均空 → null。品系/品种名走主数据 t_farm_breed_info 优先 → 字典回落
+     * （{@link IPigCoreService#loadBreedStrainNameMap} 预载一次）。猪只可能已物理删/无 birth_date → 对应字段降级 null。</p>
+     */
+    private void enrichPigInfo(List<PigDeathVo> rows) {
+        if (rows == null || rows.isEmpty()) {
+            return;
+        }
+        Set<Long> pigIds = rows.stream().map(PigDeathVo::getPigId)
+            .filter(Objects::nonNull).collect(Collectors.toSet());
+        if (pigIds.isEmpty()) {
+            return;
+        }
+        Map<Long, Pig> pigById = pigMapper.selectBatchIds(pigIds).stream()
+            .filter(p -> p.getId() != null)
+            .collect(Collectors.toMap(Pig::getId, Function.identity(), (a, b) -> a));
+        Map<String, String> breedNameMap = pigCoreService.loadBreedStrainNameMap(1);
+        Map<String, String> strainNameMap = pigCoreService.loadBreedStrainNameMap(2);
+        for (PigDeathVo vo : rows) {
+            Pig p = pigById.get(vo.getPigId());
+            if (p == null) {
+                continue;
+            }
+            vo.setPigSex(p.getPigSex());
+            // 事件时日龄：死亡当时日龄 = deathDate - birth_date（deathDate 缺时回落 NOW）
+            LocalDate eventDate = vo.getDeathDate() != null ? vo.getDeathDate().toLocalDate() : LocalDate.now();
+            vo.setAgeDays(calcAgeDays(p, eventDate));
+            vo.setPigStrainName(resolveBreedStrainName(strainNameMap, "djs_pig_strain", p.getPigStrainCode()));
+            vo.setPigBreedName(resolveBreedStrainName(breedNameMap, "djs_pig_breed", p.getPigBreedCode()));
+        }
+    }
+
+    /** 日龄（天）= eventDate - birth_date（缺 birth_date 回落 introduce_date）；两者均空 → null。 */
+    private Integer calcAgeDays(Pig p, LocalDate eventDate) {
+        LocalDate base = p.getBirthDate() != null ? p.getBirthDate() : p.getIntroduceDate();
+        if (base == null || eventDate == null) {
+            return null;
+        }
+        return (int) Math.max(ChronoUnit.DAYS.between(base, eventDate), 0L);
+    }
+
+    /** 品种/品系 code→中文名：主数据 t_farm_breed_info 优先 → 字典回落 → 原始 code 回落（缺 code 返 null）。 */
+    private String resolveBreedStrainName(Map<String, String> infoNameMap, String dictType, String code) {
+        if (StringUtils.isBlank(code)) {
+            return null;
+        }
+        String name = infoNameMap.get(code);
+        if (StringUtils.isNotBlank(name)) {
+            return name;
+        }
+        String label = dictService.getDictLabel(dictType, code);
+        return StringUtils.isNotBlank(label) ? label : code;
     }
 
     /**

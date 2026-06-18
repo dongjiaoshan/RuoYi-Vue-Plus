@@ -85,6 +85,21 @@ public class AppletMatFlowController extends BaseController {
         return R.ok(matFlowService.issueItems(belongType, locationId));
     }
 
+    /**
+     * 自产果蔬「按地块维度」可领用列表（步11 偏差修复 · 决策 a；蔬菜 tab 自产果蔬数据源）。
+     *
+     * <p>自产果蔬库存按 {@code (plot_id, location)} 建账（无 product_id），常规 {@link #issueItems}
+     * 按 product_id join 列不到。本端点以 plot 维度列出，VO 回填 {@code plotId} / {@code plotCode}
+     * （productId 为 null），前端点卡进领用表单时把 plotId 回填到 {@code MatPickBo.plotId}。</p>
+     *
+     * @param locationId 库位 ID（可空，chip 选中态过滤；snowflake string 防截断，service 内 parse）
+     */
+    @SaCheckLogin
+    @GetMapping("/selfVegIssueItems")
+    public R<List<MatIssueItemVo>> selfVegIssueItems(@RequestParam(required = false) String locationId) {
+        return R.ok(matFlowService.selfVegIssueItems(locationId));
+    }
+
     @SaCheckLogin
     @PostMapping("/pick")
     public R<Long> pick(@Valid @RequestBody MatPickBo bo) {

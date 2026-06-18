@@ -36,6 +36,23 @@ public class PigDeathVo implements Serializable {
     private LocalDateTime deathDate;
 
     private String deathPigType;
+
+    /** 死亡猪只性别原始码 F/M（enrich 批查 t_farm_pig_info 取；前端 F→母 M→公）。 */
+    private String pigSex;
+
+    /**
+     * 死亡时日龄（天，事件时口径 = deathDate - birth_date）。
+     * <p>service enrich 批查 t_farm_pig_info 取 birth_date 算；缺 birth_date 回落 introduce_date；
+     * 两者均空 → null（mp 卡片该格不渲染）。</p>
+     */
+    private Integer ageDays;
+
+    /** 猪只品系中文名（t_farm_pig_info.pig_strain_code → 主数据/字典翻译；缺则 null）。 */
+    private String pigStrainName;
+
+    /** 猪只品种中文名（t_farm_pig_info.pig_breed_code → 主数据/字典翻译；缺则 null）。 */
+    private String pigBreedName;
+
     private String deathKind;
     private String deathReason;
     private String deathDest;

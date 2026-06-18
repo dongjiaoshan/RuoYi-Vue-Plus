@@ -186,6 +186,8 @@ public class PigEarTagServiceImpl implements IPigEarTagService {
             piglet.setFatherEar(fatherEar);
             piglet.setMotherEar(mother.getEarNo());
             piglet.setBirthDate(birthDate);
+            // 出生重按头录入（PigletEarTagItem.birthWeight），同步落主表供详情展示
+            piglet.setBirthWeight(item.getBirthWeight());
             piglet.setParity(0);
             piglet.setBarnId(mother.getBarnId());
             piglet.setPenId(mother.getPenId());

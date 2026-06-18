@@ -282,6 +282,8 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
         buildBase(r, "harvest_activity", bo.getPlotId(), bo.getCropId(), bo.getPlantId(), bo.getFarmBy(),
             bo.getFarmDate(), bo.getProofOssIds(), bo.getRemark());
         r.setHarvestWeight(bo.getHarvestWeight());
+        // 采摘人员（先选班组后从该班组成员中选）落 operator_user_id，与 farm_by(班组) 并存
+        r.setOperatorUserId(bo.getOperatorUserId());
         baseMapper.insert(r);
         // 2. 副作用：累加对应 plant_details.actual_yield（#3=a 采摘重量唯一录入口，采收 tab 已去重量）
         accumulateActualYield(bo.getPlantId(), bo.getPlotId(), bo.getCropId(), bo.getHarvestWeight());
@@ -584,6 +586,8 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
         buildBase(trace, "harvest_activity", bo.getPlotId(), bo.getCropId(), cropPlantId,
             bo.getTeamId(), bo.getAdjustDate(), null,
             "采摘状态调整为" + (toCompleted ? "采摘完成" : "采摘中"));
+        // 采摘人员（先选班组后从该班组成员中选）落 operator_user_id，与 farm_by(班组) 并存
+        trace.setOperatorUserId(bo.getOperatorUserId());
         baseMapper.insert(trace);
         return affected;
     }

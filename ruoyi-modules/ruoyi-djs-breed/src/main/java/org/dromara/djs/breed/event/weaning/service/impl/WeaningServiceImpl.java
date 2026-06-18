@@ -10,6 +10,7 @@ import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.core.utils.StringUtils;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
+import org.dromara.common.core.service.DictService;
 import org.dromara.djs.breed.core.domain.Pig;
 import org.dromara.djs.breed.core.domain.bo.PigEventBo;
 import org.dromara.djs.breed.core.enums.PigLifecycle;
@@ -23,6 +24,10 @@ import org.dromara.djs.breed.event.farrow.domain.PigFarrow;
 import org.dromara.djs.breed.event.farrow.mapper.PigFarrowMapper;
 import org.dromara.djs.breed.event.transfer.domain.bo.TransferBo;
 import org.dromara.djs.breed.event.transfer.service.ITransferService;
+import org.dromara.djs.breed.farm.domain.Barn;
+import org.dromara.djs.breed.farm.domain.Pen;
+import org.dromara.djs.breed.farm.mapper.BarnMapper;
+import org.dromara.djs.breed.farm.mapper.PenMapper;
 import org.dromara.djs.breed.event.weaning.domain.PigWeaning;
 import org.dromara.djs.breed.event.weaning.domain.PigWeaningDetail;
 import org.dromara.djs.breed.event.weaning.domain.bo.WeaningBo;
@@ -39,11 +44,17 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 /**
  * 断奶事件 Service 实现（BRD-EVENT-002 WEAN）。
@@ -70,6 +81,9 @@ public class WeaningServiceImpl implements IWeaningService {
     private final PigPigletnoMapper pigletnoMapper;
     private final IPigCoreService pigCoreService;
     private final ITransferService transferService;
+    private final BarnMapper barnMapper;
+    private final PenMapper penMapper;
+    private final DictService dictService;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -149,9 +163,10 @@ public class WeaningServiceImpl implements IWeaningService {
         pigCoreService.fireEvent(eventBo);
 
         // 4. 断奶后转移（FIX-WEAN-001 #32a 决策 a：断奶时内联填转移，一步到位）
-        //    给了目标栋舍 → 同事务复用 ITransferService 把母猪 + 该分娩已贴标仔猪转到同目标 barn/pen
-        //    （写转移历史 + 更新 pig 位置）。复用转移事件而非加断奶表列：转移历史 + pig 位置更新原子落地，无需 DDL。
-        //    决策 G4(a)：母猪与仔猪转移到「同目标」（独立目标作 follow-up，避免 BO 字段膨胀）。
+        //    同事务复用 ITransferService 把母猪 + 该分娩已贴标仔猪转到目标 barn/pen（写转移历史 + 更新 pig 位置）。
+        //    复用转移事件而非加断奶表列：转移历史 + pig 位置更新原子落地，无需 DDL。
+        //    row22（客户 0618）：母猪与仔猪转移目标「独立」，可不同栋舍——反转既有决策 G4(a)「母猪仔猪同目标」。
+        //    仔猪目标取 bo.pigletTransfer*，缺省回退母猪目标（向后兼容老调用方 / admin 端）。
         maybeTransferAfterWean(pig.getId(), farrow.getId(), bo);
 
         // 5. 断奶即把该窝已贴标仔猪翻成育肥猪（FIX-BRD-PIGTYPE-001，原型「仔猪断奶操作→生成育肥猪档案」）。
@@ -166,23 +181,51 @@ public class WeaningServiceImpl implements IWeaningService {
 
     /**
      * 断奶后内联转移母猪 + 该分娩已贴标仔猪（FIX-WEAN-001 #32a / FIX-BRD-MP-WEAN-FORM-001 K071）。
-     * 给了目标栋舍才触发；与断奶主记录同事务，任一失败整体回滚。
-     * 转移目标二选一：{@code transferBarnCode}（mp）/ {@code transferBarnId}（admin）。
-     * 决策 G4(a)：母猪与仔猪转移到「同目标」barn/pen。仔猪取自 {@code t_farm_pig_pigletno}
-     * 中该分娩 farrowId 下已落 pig_id（已建 pig_info 行）的仔猪，逐头复用 {@link ITransferService}。
+     * 与断奶主记录同事务，任一失败整体回滚。母猪转移目标二选一：{@code transferBarnCode}（mp）/
+     * {@code transferBarnId}（admin）；仔猪转移目标独立：{@code pigletTransferBarnCode/pigletTransferBarnId}
+     * （row22 客户 0618：母猪仔猪可转到不同栋舍，反转决策 G4(a)），仔猪目标缺省时回退母猪目标（向后兼容）。
+     * 各自给了目标栋舍才触发对应转移；仔猪取自 {@code t_farm_pig_pigletno} 中该分娩 farrowId 下已落
+     * pig_id（已建 pig_info 行）的仔猪，逐头复用 {@link ITransferService}。
      */
     private void maybeTransferAfterWean(Long sowPigId, Long farrowId, WeaningBo bo) {
+        transferSow(sowPigId, bo);
+        transferPiglets(farrowId, bo);
+    }
+
+    /**
+     * 母猪转移：给了母猪目标栋舍（{@code transferBarnId}/{@code transferBarnCode}）才触发，
+     * 转到 {@code transferBarnCode/transferPenCode}（或 admin 端的 id 版）。
+     */
+    private void transferSow(Long sowPigId, WeaningBo bo) {
         boolean hasTarget = bo.getTransferBarnId() != null
             || (bo.getTransferBarnCode() != null && !bo.getTransferBarnCode().isBlank());
         if (!hasTarget) {
             return;
         }
-        // 母猪转移
-        transferOne(sowPigId, bo);
-        log.info("[FIX-WEAN-001] inline transfer after wean sowPigId={} → barnCode={} barnId={} penCode={} penId={}",
+        transferOne(sowPigId, bo.getTransferBarnId(), bo.getTransferBarnCode(),
+            bo.getTransferPenId(), bo.getTransferPenCode(), bo.getWeaningDate());
+        log.info("[FIX-WEAN-001] inline transfer sow after wean sowPigId={} → barnCode={} barnId={} penCode={} penId={}",
             sowPigId, bo.getTransferBarnCode(), bo.getTransferBarnId(), bo.getTransferPenCode(), bo.getTransferPenId());
+    }
 
-        // 仔猪转移（K071）：取该分娩已贴标且已建 pig_info 行的仔猪，逐头转到同目标
+    /**
+     * 仔猪转移（K071 + row22 独立目标）：取该分娩已贴标且已建 pig_info 行的仔猪，逐头转到
+     * 仔猪专用目标 {@code pigletTransferBarnCode/pigletTransferPenCode}（或 id 版）；仔猪目标缺省
+     * 时回退母猪目标 {@code transferBarnCode/transferPenCode}（向后兼容老调用方）。两者皆空则不转。
+     */
+    private void transferPiglets(Long farrowId, WeaningBo bo) {
+        // 仔猪目标优先 piglet 专用；缺则回退母猪目标（向后兼容）
+        boolean hasPigletTarget = bo.getPigletTransferBarnId() != null
+            || (bo.getPigletTransferBarnCode() != null && !bo.getPigletTransferBarnCode().isBlank());
+        Long barnId = hasPigletTarget ? bo.getPigletTransferBarnId() : bo.getTransferBarnId();
+        String barnCode = hasPigletTarget ? bo.getPigletTransferBarnCode() : bo.getTransferBarnCode();
+        Long penId = hasPigletTarget ? bo.getPigletTransferPenId() : bo.getTransferPenId();
+        String penCode = hasPigletTarget ? bo.getPigletTransferPenCode() : bo.getTransferPenCode();
+
+        boolean hasTarget = barnId != null || (barnCode != null && !barnCode.isBlank());
+        if (!hasTarget) {
+            return;
+        }
         List<PigPigletno> piglets = pigletnoMapper.selectList(
             Wrappers.<PigPigletno>lambdaQuery()
                 .eq(PigPigletno::getFarrowId, farrowId)
@@ -192,11 +235,11 @@ public class WeaningServiceImpl implements IWeaningService {
             if (piglet.getPigId() == null) {
                 continue;
             }
-            transferOne(piglet.getPigId(), bo);
+            transferOne(piglet.getPigId(), barnId, barnCode, penId, penCode, bo.getWeaningDate());
             transferred++;
         }
-        log.info("[FIX-BRD-MP-WEAN-FORM-001] K071 piglet transfer after wean farrowId={} pigletCount={}",
-            farrowId, transferred);
+        log.info("[row22] piglet transfer after wean farrowId={} pigletCount={} independentTarget={} → barnCode={} barnId={} penCode={} penId={}",
+            farrowId, transferred, hasPigletTarget, barnCode, barnId, penCode, penId);
     }
 
     /**
@@ -225,15 +268,16 @@ public class WeaningServiceImpl implements IWeaningService {
             farrowId, pigletPigIds.size(), flipped);
     }
 
-    /** 把单头猪转移到 bo 指定目标 barn/pen（复用 ITransferService，断奶事务内联）。 */
-    private void transferOne(Long pigId, WeaningBo bo) {
+    /** 把单头猪转移到指定目标 barn/pen（复用 ITransferService，断奶事务内联）。 */
+    private void transferOne(Long pigId, Long barnId, String barnCode,
+                             Long penId, String penCode, LocalDateTime transferDate) {
         TransferBo transfer = new TransferBo();
         transfer.setPigId(pigId);
-        transfer.setTransferDate(bo.getWeaningDate());
-        transfer.setNewBarnId(bo.getTransferBarnId());
-        transfer.setNewBarnCode(bo.getTransferBarnCode());
-        transfer.setNewPenId(bo.getTransferPenId());
-        transfer.setNewPenCode(bo.getTransferPenCode());
+        transfer.setTransferDate(transferDate);
+        transfer.setNewBarnId(barnId);
+        transfer.setNewBarnCode(barnCode);
+        transfer.setNewPenId(penId);
+        transfer.setNewPenCode(penCode);
         transfer.setTransferReason("weaning");
         transferService.recordTransfer(transfer);
     }
@@ -274,7 +318,104 @@ public class WeaningServiceImpl implements IWeaningService {
             .lt(endBefore != null, PigWeaning::getWeaningDate, endBefore)
             .orderByDesc(PigWeaning::getWeaningDate, PigWeaning::getId);
         Page<PigWeaningVo> page = weaningMapper.selectVoPage(pageQuery.build(), w);
+        enrichRows(page.getRecords());
         return TableDataInfo.build(page);
+    }
+
+    /**
+     * 断奶记录列表 enrich（row24，mp 记录卡第 2/3 行）：母猪断奶时日龄/胎次/栋舍栏位、仔猪品系品种中文名。
+     *
+     * <p>批查去重 pigId / farrowId / barnId / penId 各一次避免 N+1；operatorName 由 VO 上
+     * {@code @Translation} 按 operatorId 序列化时翻译，本方法不处理。</p>
+     *
+     * <p>口径（断奶表 {@code t_farm_pig_weaning} 无日龄/胎次/位置快照列，无法精确还原断奶当时值）：
+     * 日龄 = weaningDate - 母猪 birth_date（按断奶日反算，历史快照口径）；胎次优先取关联分娩
+     * {@code farrow.parity}（当时快照），缺分娩回退母猪当前 parity；栋舍栏位退化取母猪「当前」位置
+     * （断奶后若已转移则与断奶当时不符）；仔猪品系品种 = 同窝母猪 pig_strain_code / pig_breed_code
+     * 经 t_farm_breed_info 主表名解析（同窝仔猪品系一致），缺则字典回落。</p>
+     */
+    private void enrichRows(List<PigWeaningVo> rows) {
+        if (rows == null || rows.isEmpty()) {
+            return;
+        }
+        Set<Long> pigIds = rows.stream().map(PigWeaningVo::getPigId).filter(Objects::nonNull)
+            .collect(Collectors.toSet());
+        Set<Long> farrowIds = rows.stream().map(PigWeaningVo::getFarrowId).filter(Objects::nonNull)
+            .collect(Collectors.toSet());
+        if (pigIds.isEmpty()) {
+            return;
+        }
+        Map<Long, Pig> pigById = pigMapper.selectByIds(pigIds).stream()
+            .collect(Collectors.toMap(Pig::getId, Function.identity(), (a, b) -> a));
+        Map<Long, PigFarrow> farrowById = farrowIds.isEmpty() ? Map.of()
+            : farrowMapper.selectByIds(farrowIds).stream()
+                .collect(Collectors.toMap(PigFarrow::getId, Function.identity(), (a, b) -> a));
+
+        // 批查栋舍/栏位（母猪当前位置）
+        Set<Long> barnIds = pigById.values().stream().map(Pig::getBarnId).filter(Objects::nonNull)
+            .collect(Collectors.toSet());
+        Set<Long> penIds = pigById.values().stream().map(Pig::getPenId).filter(Objects::nonNull)
+            .collect(Collectors.toSet());
+        Map<Long, Barn> barnById = barnIds.isEmpty() ? Map.of()
+            : barnMapper.selectBatchIds(barnIds).stream()
+                .collect(Collectors.toMap(Barn::getId, Function.identity(), (a, b) -> a));
+        Map<Long, Pen> penById = penIds.isEmpty() ? Map.of()
+            : penMapper.selectBatchIds(penIds).stream()
+                .collect(Collectors.toMap(Pen::getId, Function.identity(), (a, b) -> a));
+
+        // 品种/品系主数据 code→中文名（一次预载，避免逐头查 N+1；缺回落字典）
+        Map<String, String> breedNameMap = pigCoreService.loadBreedStrainNameMap(1);
+        Map<String, String> strainNameMap = pigCoreService.loadBreedStrainNameMap(2);
+
+        LocalDate today = LocalDate.now();
+        for (PigWeaningVo vo : rows) {
+            Pig pig = vo.getPigId() == null ? null : pigById.get(vo.getPigId());
+            if (pig == null) {
+                continue;
+            }
+            // 日龄 = 断奶日期 - 母猪出生日期（缺出生日期 → null）
+            LocalDate weanDay = vo.getWeaningDate() != null ? vo.getWeaningDate().toLocalDate() : today;
+            if (pig.getBirthDate() != null) {
+                vo.setAgeDaysAtWean((int) Math.max(ChronoUnit.DAYS.between(pig.getBirthDate(), weanDay), 0L));
+            }
+            // 胎次：优先关联分娩快照，缺则母猪当前 parity
+            PigFarrow farrow = vo.getFarrowId() == null ? null : farrowById.get(vo.getFarrowId());
+            vo.setParityAtWean(farrow != null && farrow.getParity() != null
+                ? farrow.getParity() : pig.getParity());
+            // 栋舍栏位（母猪当前位置，退化口径）
+            if (pig.getBarnId() != null) {
+                Barn barn = barnById.get(pig.getBarnId());
+                if (barn != null) {
+                    vo.setBarnName(barn.getBarnName());
+                }
+            }
+            if (pig.getPenId() != null) {
+                Pen pen = penById.get(pig.getPenId());
+                if (pen != null) {
+                    vo.setPenName(pen.getPenName());
+                }
+            }
+            // 仔猪品系品种（同窝取母猪 strain/breed code，主表名解析回落字典）
+            vo.setPigStrainName(resolveBreedStrainName(strainNameMap, "djs_pig_strain", pig.getPigStrainCode()));
+            vo.setPigBreedName(resolveBreedStrainName(breedNameMap, "djs_pig_breed", pig.getPigBreedCode()));
+        }
+    }
+
+    /**
+     * 品种/品系 code→中文名解析：主数据权威源 = t_farm_breed_info（{@code infoNameMap}）；
+     * 缺则回落字典（{@code dictType}）；再缺回落原始 code；code 空 → null。
+     * 与 PigCoreServiceImpl.resolveBreedStrainName 同口径（#13 mp 选猪卡品系显中文不显码）。
+     */
+    private String resolveBreedStrainName(Map<String, String> infoNameMap, String dictType, String code) {
+        if (StringUtils.isBlank(code)) {
+            return null;
+        }
+        String name = infoNameMap.get(code);
+        if (StringUtils.isNotBlank(name)) {
+            return name;
+        }
+        String label = dictService.getDictLabel(dictType, code);
+        return StringUtils.isNotBlank(label) ? label : code;
     }
 
     @Override

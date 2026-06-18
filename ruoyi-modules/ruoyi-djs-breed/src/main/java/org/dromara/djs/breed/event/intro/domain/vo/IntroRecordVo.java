@@ -40,6 +40,9 @@ public class IntroRecordVo implements Serializable {
     /** 引入头数。 */
     private Integer pigCount;
 
+    /** 性别中文（F→母 / M→公；引种台账 t_farm_pig_introduce.pig_sex 直翻；无值 null）。 */
+    private String pigSexLabel;
+
     /** 品种 label（djs_pig_breed 翻译；翻不到回落 code）。 */
     private String pigBreedLabel;
 

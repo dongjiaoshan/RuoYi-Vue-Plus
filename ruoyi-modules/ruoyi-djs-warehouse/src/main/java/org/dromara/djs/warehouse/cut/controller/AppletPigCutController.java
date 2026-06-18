@@ -13,6 +13,7 @@ import org.dromara.djs.warehouse.cut.domain.bo.PigCutOutBo;
 import org.dromara.djs.warehouse.cut.domain.bo.PigCutPickupBo;
 import org.dromara.djs.warehouse.cut.domain.query.PigCutRecordQuery;
 import org.dromara.djs.warehouse.cut.domain.vo.BarInfoVo;
+import org.dromara.djs.warehouse.cut.domain.vo.CutProductTypeVo;
 import org.dromara.djs.warehouse.cut.domain.vo.PigCutRecordVo;
 import org.dromara.djs.warehouse.cut.service.IPigCutRecordService;
 import org.springframework.validation.annotation.Validated;
@@ -95,6 +96,18 @@ public class AppletPigCutController extends BaseController {
     @GetMapping("/availableBars")
     public R<List<BarInfoVo>> availableBars() {
         return R.ok(service.queryAvailableBars());
+    }
+
+    /**
+     * 分割车间产品类型列表（标准分割成品 5 类：精瘦肉 / 部位肉 / 骨类 / 猪皮 / 碎料）。
+     *
+     * <p>出库录入页打开时调用：动态加载 {@code product_workshop=2} 分割车间产品卡，
+     * 替代写死的 5 部位枚举。提交时 partItems.productId 指向所选产品。</p>
+     */
+    @SaCheckLogin
+    @GetMapping("/productTypes")
+    public R<List<CutProductTypeVo>> productTypes() {
+        return R.ok(service.queryCutProductTypes());
     }
 
 }

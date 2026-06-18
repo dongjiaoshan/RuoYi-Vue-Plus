@@ -75,6 +75,10 @@ public class PigVo implements Serializable {
     @ExcelProperty(value = "出生日期")
     private LocalDate birthDate;
 
+    /** 出生重 kg（仔猪耳标登记时按头录入回写；详情卡显示「N kg」）。 */
+    @ExcelProperty(value = "出生重")
+    private java.math.BigDecimal birthWeight;
+
     @ExcelProperty(value = "引种日期")
     private LocalDate introduceDate;
 

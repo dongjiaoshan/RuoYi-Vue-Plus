@@ -33,6 +33,9 @@ public class PedigreeVo implements Serializable {
     /** 母系品种 label（djs_pig_breed 翻译；缺 → null）。 */
     private String damBreed;
 
+    /** 母系品系 label（djs_pig_strain 翻译；缺 → null）。 */
+    private String damStrain;
+
     /** 母系日龄（天，NOW − 母猪 birthDate；缺 → null）。 */
     private Integer damAgeDays;
 
@@ -47,6 +50,9 @@ public class PedigreeVo implements Serializable {
 
     /** 父系品种 label（缺 → null）。 */
     private String sireBreed;
+
+    /** 父系品系 label（djs_pig_strain 翻译；缺 → null）。 */
+    private String sireStrain;
 
     /** 父系日龄（天；缺 → null）。 */
     private Integer sireAgeDays;

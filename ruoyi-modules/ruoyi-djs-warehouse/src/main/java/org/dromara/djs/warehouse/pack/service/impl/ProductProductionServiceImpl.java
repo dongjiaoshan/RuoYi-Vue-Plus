@@ -135,10 +135,21 @@ public class ProductProductionServiceImpl
     /** 果蔬业态（V4 果蔬打包 product_material 校验 + 日损耗聚合）。 */
     private static final String BELONG_TYPE_VEGETABLE = "vegetable";
 
-    /** V4 果蔬日损耗聚合 flow_type（领用入库 / 打包消耗 / 退回 / 饲喂）。 */
-    private static final String FLOW_TYPE_VEG_STOCK_IN = "veg_stock_in";
+    /**
+     * V4 果蔬日损耗聚合 flow_type（领用 / 打包 / 退回 / 饲喂）。
+     *
+     * <p>口径校正（findings 步14 决策 a）：日损耗 = 领用 − 打包 − 退回 − 饲喂。</p>
+     * <ul>
+     *   <li>领用 = {@code pick_out}（物资领用模块 {@code MatFlowServiceImpl.pick} 写的领用出库流水）；
+     *       原 {@code veg_stock_in}（毛菜处理间入库）口径错误，已弃用。</li>
+     *   <li>打包 = {@code pack_in}（果蔬打包 {@code submitVegPack} 写 pack_in 入库；不写 pack_consume，
+     *       原取 {@code pack_consume} 恒 0）。</li>
+     *   <li>退回 = {@code return_in}（物资领用退回，口径不变）。</li>
+     *   <li>饲喂：物资领用 V1 无果蔬饲喂操作，该项恒 0（见 {@link #queryVegDailyLoss}）。</li>
+     * </ul>
+     */
+    private static final String FLOW_TYPE_PICK_OUT = "pick_out";
     private static final String FLOW_TYPE_RETURN_IN = "return_in";
-    private static final String FLOW_TYPE_LOSS = "loss";
 
     private final ProductInhouseMapper productInhouseMapper;
     private final ProductInfoMapper productInfoMapper;
@@ -668,16 +679,20 @@ public class ProductProductionServiceImpl
             ? LocalDate.now()
             : statDate.toInstant().atZone(java.time.ZoneId.systemDefault()).toLocalDate();
 
+        // 领用 = pick_out（物资领用出库，MatFlowServiceImpl.pick 写）
         BigDecimal picked = nullSafeStock(
-            stockFlowMapper.sumVegFlowByTypeAndDate(FLOW_TYPE_VEG_STOCK_IN, statDate));
+            stockFlowMapper.sumVegFlowByTypeAndDate(FLOW_TYPE_PICK_OUT, statDate));
+        // 打包 = pack_in（果蔬打包 submitVegPack 写入库流水，不写 pack_consume）
         BigDecimal packed = nullSafeStock(
-            stockFlowMapper.sumVegFlowByTypeAndDate(FLOW_TYPE_PACK_CONSUME, statDate));
+            stockFlowMapper.sumVegFlowByTypeAndDate(FLOW_TYPE_PACK_IN, statDate));
+        // 退回 = return_in（物资领用退回）
         BigDecimal returned = nullSafeStock(
             stockFlowMapper.sumVegFlowByTypeAndDate(FLOW_TYPE_RETURN_IN, statDate));
-        BigDecimal feed = nullSafeStock(
-            stockFlowMapper.sumVegFlowByTypeAndDate(FLOW_TYPE_LOSS, statDate));
+        // 饲喂：物资领用 V1 无果蔬饲喂操作，该项恒 0（毛菜处理间饲喂是步9 另一阶段，不在步14 重复扣）；
+        // 待客户确认是否需新增物资领用饲喂来源（findings 步14）。
+        BigDecimal feed = BigDecimal.ZERO;
 
-        // 日损耗 = 领用入库 − 打包消耗 − 退回 − 饲喂；负值（录入未配齐）归零（与毛菜处理间 recomputeLoss 同口径）
+        // 日损耗 = 领用 − 打包 − 退回 − 饲喂；负值（录入未配齐）归零
         BigDecimal loss = picked.subtract(packed).subtract(returned).subtract(feed);
         if (loss.signum() < 0) {
             loss = BigDecimal.ZERO;
@@ -967,6 +982,24 @@ public class ProductProductionServiceImpl
      */
     private static BigDecimal nullSafeStock(BigDecimal v) {
         return v == null ? BigDecimal.ZERO : v;
+    }
+
+    @Override
+    public Map<String, BigDecimal> listMaterialStock(List<Long> productIds) {
+        Map<String, BigDecimal> result = new HashMap<>();
+        if (productIds == null || productIds.isEmpty()) {
+            return result;
+        }
+        // 去重防重复查；逐成品取 product_material 指向的原材料库存合计（口径同打包校验/扣减）
+        for (Long productId : productIds.stream().filter(Objects::nonNull).collect(Collectors.toSet())) {
+            ProductInfo product = productInfoMapper.selectById(productId);
+            // 未配 product_material 的成品不进 Map（前端展示 '—'，不参与校验）；产品库为空时整体返空 Map
+            if (product == null || product.getProductMaterial() == null) {
+                continue;
+            }
+            result.put(String.valueOf(productId), sumProductStock(product.getProductMaterial()));
+        }
+        return result;
     }
 
     /**

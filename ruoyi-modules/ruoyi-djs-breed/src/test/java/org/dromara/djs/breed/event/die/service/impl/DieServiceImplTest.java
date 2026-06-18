@@ -1,6 +1,7 @@
 package org.dromara.djs.breed.event.die.service.impl;
 
 import org.dromara.common.core.exception.ServiceException;
+import org.dromara.common.core.service.DictService;
 import org.dromara.common.core.service.OssService;
 import org.dromara.djs.breed.core.domain.Pig;
 import org.dromara.djs.breed.core.domain.bo.PigEventBo;
@@ -68,12 +69,14 @@ class DieServiceImplTest {
     private IPigCoreService pigCoreService;
     @Mock
     private OssService ossService;
+    @Mock
+    private DictService dictService;
 
     private DieServiceImpl service;
 
     @BeforeEach
     void setup() {
-        service = new DieServiceImpl(deathMapper, pigMapper, barnMapper, penMapper, pigCoreService, ossService);
+        service = new DieServiceImpl(deathMapper, pigMapper, barnMapper, penMapper, pigCoreService, ossService, dictService);
     }
 
     private Pig mkPig(Long id, PigLifecycle status, String sex, String pigType) {

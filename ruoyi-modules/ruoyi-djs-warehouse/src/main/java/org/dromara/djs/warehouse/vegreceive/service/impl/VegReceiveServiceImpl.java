@@ -11,6 +11,8 @@ import org.dromara.djs.common.supplier.domain.Supplier;
 import org.dromara.djs.common.supplier.mapper.SupplierMapper;
 import org.dromara.djs.warehouse.flow.domain.StockFlow;
 import org.dromara.djs.warehouse.flow.mapper.StockFlowMapper;
+import org.dromara.djs.warehouse.location.domain.LocationInfo;
+import org.dromara.djs.warehouse.location.mapper.LocationInfoMapper;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
 import org.dromara.djs.warehouse.stock.domain.LocationStock;
@@ -30,6 +32,7 @@ import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * 果蔬月台收货 Service 实现（FIX-WMS-VEGRECEIVE-001）。
@@ -91,8 +94,17 @@ public class VegReceiveServiceImpl implements IVegReceiveService {
      */
     private static final String CROP_BELONG_TYPE = "vegetable";
 
+    /**
+     * 自产月台入库允许的库位业务码白名单（spec 步10：仅蔬菜保鲜库 / 重口味蔬菜库）。
+     *
+     * <p>按 {@code location_code} 校验（不硬编码 snowflake id；staging 验证：L0003 id=…676306 /
+     * L0004 id=…676307）。{@link #inbound} 入库前查库位 code 是否命中，否则拒绝。</p>
+     */
+    private static final Set<String> INBOUND_ALLOWED_LOCATION_CODES = Set.of("L0003", "L0004");
+
     private final VegReceiveMapper vegReceiveMapper;
     private final LocationStockMapper locationStockMapper;
+    private final LocationInfoMapper locationInfoMapper;
     private final StockFlowMapper stockFlowMapper;
     private final ProductInfoMapper productInfoMapper;
     private final SupplierMapper supplierMapper;
@@ -101,6 +113,7 @@ public class VegReceiveServiceImpl implements IVegReceiveService {
 
     public VegReceiveServiceImpl(VegReceiveMapper vegReceiveMapper,
                                  LocationStockMapper locationStockMapper,
+                                 LocationInfoMapper locationInfoMapper,
                                  StockFlowMapper stockFlowMapper,
                                  ProductInfoMapper productInfoMapper,
                                  SupplierMapper supplierMapper,
@@ -108,6 +121,7 @@ public class VegReceiveServiceImpl implements IVegReceiveService {
                                  ImageUrlResolver imageUrlResolver) {
         this.vegReceiveMapper = vegReceiveMapper;
         this.locationStockMapper = locationStockMapper;
+        this.locationInfoMapper = locationInfoMapper;
         this.stockFlowMapper = stockFlowMapper;
         this.productInfoMapper = productInfoMapper;
         this.supplierMapper = supplierMapper;
@@ -157,6 +171,9 @@ public class VegReceiveServiceImpl implements IVegReceiveService {
     @Transactional(rollbackFor = Exception.class)
     public Long inbound(VegInboundBo bo) {
         Long userId = resolveOperator(bo.getOperatorId());
+
+        // 0. 校验入库库位口径（spec 步10：自产月台入库仅限蔬菜保鲜库 L0003 / 重口味蔬菜库 L0004）
+        requireInboundLocation(bo.getLocationId());
 
         // 1. 校验剩余可入量（月台量 − 已入 self 量），超量拒绝（不凭空入库）
         BigDecimal remain = vegReceiveMapper.selectRemainInboundWeight(bo.getCropId(), bo.getPlotId());
@@ -271,6 +288,24 @@ public class VegReceiveServiceImpl implements IVegReceiveService {
      */
     protected Long resolveOperator(Long operatorId) {
         return operatorId != null ? operatorId : LoginHelper.getUserId();
+    }
+
+    /**
+     * 校验自产月台入库库位口径：按 {@code location_code} 命中白名单
+     * {@link #INBOUND_ALLOWED_LOCATION_CODES}（L0003 蔬菜保鲜库 / L0004 重口味蔬菜库），否则拒绝。
+     *
+     * <p>按 code 校验（不硬编码 snowflake id）；库位不存在 / 已软删 / code 不在白名单均抛
+     * {@link ServiceException}。protected 便于单测 stub。</p>
+     */
+    protected void requireInboundLocation(Long locationId) {
+        if (locationId == null) {
+            throw new ServiceException("月台入库库位只能是蔬菜保鲜库(L0003)或重口味蔬菜库(L0004)");
+        }
+        LocationInfo location = locationInfoMapper.selectById(locationId);
+        if (location == null
+            || !INBOUND_ALLOWED_LOCATION_CODES.contains(location.getLocationCode())) {
+            throw new ServiceException("月台入库库位只能是蔬菜保鲜库(L0003)或重口味蔬菜库(L0004)");
+        }
     }
 
     /**

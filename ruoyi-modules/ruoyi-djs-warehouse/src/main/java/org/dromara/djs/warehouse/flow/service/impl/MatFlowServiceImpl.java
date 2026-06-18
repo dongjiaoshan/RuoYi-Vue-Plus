@@ -17,6 +17,8 @@ import org.dromara.djs.warehouse.flow.domain.vo.MatIssueLocationVo;
 import org.dromara.djs.warehouse.flow.domain.vo.MatTodaySummaryVo;
 import org.dromara.djs.warehouse.flow.mapper.StockFlowMapper;
 import org.dromara.djs.warehouse.flow.service.IMatFlowService;
+import org.dromara.djs.plant.crop.domain.CropInfo;
+import org.dromara.djs.plant.crop.mapper.CropInfoMapper;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
 import org.dromara.djs.warehouse.stock.mapper.LocationStockMapper;
@@ -69,6 +71,7 @@ public class MatFlowServiceImpl implements IMatFlowService {
     private final StockFlowMapper stockFlowMapper;
     private final LocationStockMapper locationStockMapper;
     private final ProductInfoMapper productInfoMapper;
+    private final CropInfoMapper cropInfoMapper;
     private final IBizCodeGenerator bizCodeGenerator;
     private final IStockCheckService stockCheckService;
     private final ImageUrlResolver imageUrlResolver;
@@ -76,12 +79,14 @@ public class MatFlowServiceImpl implements IMatFlowService {
     public MatFlowServiceImpl(StockFlowMapper stockFlowMapper,
                               LocationStockMapper locationStockMapper,
                               ProductInfoMapper productInfoMapper,
+                              CropInfoMapper cropInfoMapper,
                               IBizCodeGenerator bizCodeGenerator,
                               IStockCheckService stockCheckService,
                               ImageUrlResolver imageUrlResolver) {
         this.stockFlowMapper = stockFlowMapper;
         this.locationStockMapper = locationStockMapper;
         this.productInfoMapper = productInfoMapper;
+        this.cropInfoMapper = cropInfoMapper;
         this.bizCodeGenerator = bizCodeGenerator;
         this.stockCheckService = stockCheckService;
         this.imageUrlResolver = imageUrlResolver;
@@ -90,6 +95,22 @@ public class MatFlowServiceImpl implements IMatFlowService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public Long pick(MatPickBo bo) {
+        // 自产果蔬「按地块维度」领用（步11 偏差修复 · 决策 a）：plotId 非空时走 plot 维度扣减分支。
+        // 自产果蔬入库时库存按 (plot_id, location) 建账（无 product_id），故领用也按 plot 扣减；
+        // pick_out 流水带 plot_id，且 product_id 走 crop.related_product 解析（与 admin 打包统计契约）。
+        if (bo.getPlotId() != null) {
+            return pickSelfVeg(bo);
+        }
+        return pickByProduct(bo);
+    }
+
+    /**
+     * 外购 / 包材等 product 维度领用（现有路径，plotId 为空时走此分支，行为不变）。
+     */
+    private Long pickByProduct(MatPickBo bo) {
+        if (bo.getProductId() == null) {
+            throw new ServiceException("产品 ID 不能为空（外购果蔬 / 包材按产品维度领用必填）");
+        }
         ProductInfo product = requireProduct(bo.getProductId());
         // 库位可空（饲料子页不让工人选库位）：为空时按 productId 解析默认库位
         Long locId = resolveLocationId(bo.getLocationId(), bo.getProductId(), "领用");
@@ -127,9 +148,102 @@ public class MatFlowServiceImpl implements IMatFlowService {
         return flow.getId();
     }
 
+    /**
+     * 自产果蔬「按地块维度」领用（步11 偏差修复 · 决策 a）。
+     *
+     * <p>三步同事务：</p>
+     * <ol>
+     *   <li>解析库位（bo 传了用 bo 的；为空按 plot 取库存最多库位）+ 盘点锁校验；</li>
+     *   <li>INSERT pick_out 流水：<b>setPlotId(plotId)</b>（贯穿地块编号）+ product_id 走
+     *       plot→crop→{@code crop.related_product} 解析（让 admin 打包 {@code belong_type='vegetable'}
+     *       的 join 能计入；解析不到兜底 0 + warn，不阻塞领用）；</li>
+     *   <li>UPDATE location_stock 按 (plot, location) 行锁扣减 + 数量校验。</li>
+     * </ol>
+     */
+    private Long pickSelfVeg(MatPickBo bo) {
+        Long plotId = bo.getPlotId();
+        // 库位：bo 传了用 bo 的；为空按 plot 取库存最多库位（自产果蔬常落 L0003/L0004/L0006）
+        Long locId = bo.getLocationId();
+        if (locId == null) {
+            locId = locationStockMapper.selectDefaultLocationByPlot(plotId);
+            if (locId == null) {
+                throw new ServiceException("该地块暂无可领用的自产果蔬库存，无法领用（plotId=" + plotId + "）");
+            }
+        }
+        // 库位级业务锁（WMS-STOCK-001）：盘点进行中的库位禁出入库（后端双保险）
+        stockCheckService.assertLocationUnlocked(locId);
+        Long userId = LoginHelper.getUserId();
+
+        // product_id：plot→crop→crop.related_product 解析果蔬成品（与 admin 打包统计 join 契约）；
+        // 解析不到兜底 0 + warn（作物未配 related_product，与步5/步6 数据治理同源，不阻塞领用）
+        Long resolvedProductId = resolveVegProductId(plotId);
+
+        // 1. INSERT stock_flow（pick_out 出库，带 plot_id + 解析出的果蔬成品 product_id）
+        StockFlow flow = new StockFlow();
+        flow.setFlowNo(generateFlowNo(INOUT_OUT));
+        flow.setFlowDate(new Date());
+        flow.setProductId(resolvedProductId);
+        flow.setPlotId(plotId);
+        flow.setWarehouseId(locId);
+        flow.setInoutType(INOUT_OUT);
+        flow.setFlowType(FLOW_PICK_OUT);
+        flow.setStockOutDest(bo.getStockOutDest());
+        flow.setChangeNum(bo.getQuantity().negate());
+        flow.setChangeQuantity(bo.getQuantity());
+        flow.setOperatorId(userId);
+        flow.setRemark(bo.getRemark());
+        flow.setProofOssIds(bo.getProofOssIds());
+        stockFlowMapper.insert(flow);
+
+        // 2. UPDATE location_stock 按 (plot, location) 行锁扣减 + 数量校验
+        int affected = locationStockMapper.deductByPlotLocation(
+            locId, plotId, bo.getQuantity(), userId);
+        if (affected == 0) {
+            // 抛异常 → @Transactional 回滚 step 1
+            throw new ServiceException(
+                "自产果蔬库存不足或地块/库位不匹配（plotId=" + plotId
+                    + " / location=" + locId + " / 申请=" + bo.getQuantity() + "kg）");
+        }
+
+        return flow.getId();
+    }
+
+    /**
+     * 自产果蔬 plot→crop→{@code crop.related_product} 解析果蔬成品 product_id。
+     *
+     * <p>自产果蔬 plot 维度库存行不存 crop_id，先按 plot 反查最近一条自产收货的 crop_id，再取
+     * {@code crop.related_product}（作物↔果蔬成品映射，与 {@code VegetableHandleServiceImpl.resolveProductIdByCrop}
+     * 同规则）。任一环节缺失（无收货记录 / 作物已删 / 未配 related_product）→ 返 0 + warn，不阻塞领用
+     * （与步5/步6 数据治理同源；product_id=0 不影响领用本身，只是 admin 打包 vegetable 统计 join 不命中）。</p>
+     *
+     * <p>protected 便于单测 stub。</p>
+     *
+     * @param plotId 地块 ID
+     * @return 解析出的果蔬成品 product_id；无法解析返 0
+     */
+    protected Long resolveVegProductId(Long plotId) {
+        Long cropId = locationStockMapper.selectCropIdByPlot(plotId);
+        if (cropId == null) {
+            log.warn("自产果蔬领用：plot 无自产收货记录，无法反查作物，product_id 兜底 0 — plotId={}", plotId);
+            return 0L;
+        }
+        CropInfo crop = cropInfoMapper.selectById(cropId);
+        if (crop == null || crop.getRelatedProduct() == null) {
+            log.warn("自产果蔬领用：作物 related_product 未配置，product_id 兜底 0 — plotId={} cropId={}"
+                + "（请在 admin 作物录入页填写「关联产品」建立作物↔果蔬成品映射）", plotId, cropId);
+            return 0L;
+        }
+        return crop.getRelatedProduct();
+    }
+
     @Override
     @Transactional(rollbackFor = Exception.class)
     public Long returnBack(MatReturnBo bo) {
+        // 自产果蔬按地块领用（pick_out product_id 兜底 0）暂不支持退回（库存按 plot 维度建账、无 product_id 行）。
+        // V1 显式拦截给清晰提示，避免走 product 维度 addByProductLocation(productId=0) 命中 0 行后报"库存记录不存在"。
+        if (bo.getProductId() != null && bo.getProductId() == 0L) {
+            throw new ServiceException("自产果蔬（按地块领用）V1 暂不支持退回，如需请联系管理员");
+        }
         ProductInfo product = requireProduct(bo.getProductId());
         // 库位可空（饲料子页不让工人选库位）：为空时按 productId 解析默认库位
         Long locId = resolveLocationId(bo.getLocationId(), bo.getProductId(), "退回");
@@ -172,6 +286,10 @@ public class MatFlowServiceImpl implements IMatFlowService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public Long loss(MatLossBo bo) {
+        // 自产果蔬按地块领用（pick_out product_id 兜底 0）暂不支持损耗登记（库存按 plot 维度建账、无 product_id 行）。
+        if (bo.getProductId() != null && bo.getProductId() == 0L) {
+            throw new ServiceException("自产果蔬（按地块领用）V1 暂不支持损耗登记，如需请联系管理员");
+        }
         ProductInfo product = requireProduct(bo.getProductId());
         // 库位级业务锁（WMS-STOCK-001）：盘点进行中的库位禁出入库（后端双保险）
         stockCheckService.assertLocationUnlocked(bo.getLocationId());
@@ -250,6 +368,25 @@ public class MatFlowServiceImpl implements IMatFlowService {
     @Override
     public List<MatIssueLocationVo> issueLocations(String belongType) {
         return locationStockMapper.selectMatIssueLocations(parseBelongTypes(belongType));
+    }
+
+    @Override
+    public List<MatIssueItemVo> selfVegIssueItems(String locationId) {
+        Long locId = parseLocationId(locationId);
+        List<MatIssueItemVo> items = locationStockMapper.selectSelfVegIssueItems(locId);
+        // IMG-LIB-001：productThumb 走 4 层 resolver（L1 crop.image_oss_id → L2 belong_type 默认图 → L3 全局），批量禁 N+1
+        if (items != null && !items.isEmpty()) {
+            List<ImageUrlResolver.Item> resolveItems = items.stream()
+                .map(v -> new ImageUrlResolver.Item(v.getProductThumb(), v.getBelongType()))
+                .toList();
+            List<String> urls = imageUrlResolver.resolveList(resolveItems);
+            if (urls.size() == items.size()) {
+                for (int i = 0; i < items.size(); i++) {
+                    items.get(i).setProductThumb(urls.get(i));
+                }
+            }
+        }
+        return items;
     }
 
     @Override

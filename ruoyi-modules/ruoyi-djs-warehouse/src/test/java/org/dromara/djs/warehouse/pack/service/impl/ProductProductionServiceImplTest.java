@@ -631,16 +631,18 @@ class ProductProductionServiceImplTest {
     // ============================================================
 
     @Test
-    @DisplayName("queryVegDailyLoss: 公式 = 领用入库 − 打包消耗 − 退回 − 饲喂；分量缺失兜 0")
+    @DisplayName("queryVegDailyLoss: 公式 = 领用(pick_out) − 打包(pack_in) − 退回(return_in) − 饲喂(=0)")
     void testVegDailyLoss_Formula() {
-        when(stockFlowMapper.sumVegFlowByTypeAndDate(eq("veg_stock_in"), any()))
+        // 领用 = pick_out（物资领用出库）
+        when(stockFlowMapper.sumVegFlowByTypeAndDate(eq("pick_out"), any()))
             .thenReturn(new BigDecimal("100.000"));
-        when(stockFlowMapper.sumVegFlowByTypeAndDate(eq("pack_consume"), any()))
+        // 打包 = pack_in（果蔬打包入库，submitVegPack 写）
+        when(stockFlowMapper.sumVegFlowByTypeAndDate(eq("pack_in"), any()))
             .thenReturn(new BigDecimal("70.000"));
+        // 退回 = return_in
         when(stockFlowMapper.sumVegFlowByTypeAndDate(eq("return_in"), any()))
             .thenReturn(new BigDecimal("5.000"));
-        // loss(饲喂) 当日无流水 → mapper 返 null，service 兜 0
-        when(stockFlowMapper.sumVegFlowByTypeAndDate(eq("loss"), any())).thenReturn(null);
+        // 饲喂：物资领用 V1 无果蔬饲喂操作 → service 端置 0，不查 mapper（故不 mock，校验 never 调用）
 
         org.dromara.djs.warehouse.pack.domain.vo.VegDailyLossVo vo = service.queryVegDailyLoss(null);
 
@@ -651,17 +653,20 @@ class ProductProductionServiceImplTest {
         // 100 - 70 - 5 - 0 = 25
         assertThat(vo.getLossWeight()).isEqualByComparingTo("25.000");
         assertThat(vo.getStatDate()).isNotBlank();
+        // 饲喂不查任何 flow_type（旧 veg_stock_in / pack_consume / loss 口径已弃用）
+        verify(stockFlowMapper, never()).sumVegFlowByTypeAndDate(eq("loss"), any());
+        verify(stockFlowMapper, never()).sumVegFlowByTypeAndDate(eq("veg_stock_in"), any());
+        verify(stockFlowMapper, never()).sumVegFlowByTypeAndDate(eq("pack_consume"), any());
     }
 
     @Test
-    @DisplayName("queryVegDailyLoss: 负损耗（打包+退回 > 领用，录入未配齐）→ 归零")
+    @DisplayName("queryVegDailyLoss: 负损耗（打包 > 领用，录入未配齐）→ 归零")
     void testVegDailyLoss_NegativeClampedToZero() {
-        when(stockFlowMapper.sumVegFlowByTypeAndDate(eq("veg_stock_in"), any()))
+        when(stockFlowMapper.sumVegFlowByTypeAndDate(eq("pick_out"), any()))
             .thenReturn(new BigDecimal("10.000"));
-        when(stockFlowMapper.sumVegFlowByTypeAndDate(eq("pack_consume"), any()))
+        when(stockFlowMapper.sumVegFlowByTypeAndDate(eq("pack_in"), any()))
             .thenReturn(new BigDecimal("50.000"));
         when(stockFlowMapper.sumVegFlowByTypeAndDate(eq("return_in"), any())).thenReturn(BigDecimal.ZERO);
-        when(stockFlowMapper.sumVegFlowByTypeAndDate(eq("loss"), any())).thenReturn(BigDecimal.ZERO);
 
         org.dromara.djs.warehouse.pack.domain.vo.VegDailyLossVo vo = service.queryVegDailyLoss(null);
 

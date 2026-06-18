@@ -11,6 +11,7 @@ import org.dromara.common.satoken.utils.LoginHelper;
 import org.dromara.djs.common.base.DjsBaseServiceImpl;
 import org.dromara.djs.common.encoder.BizCodeType;
 import org.dromara.djs.common.encoder.IBizCodeGenerator;
+import org.dromara.djs.common.image.service.ImageUrlResolver;
 import org.dromara.djs.common.supplier.domain.Supplier;
 import org.dromara.djs.common.supplier.mapper.SupplierMapper;
 import org.dromara.djs.warehouse.cross.domain.BarInfo;
@@ -21,6 +22,7 @@ import org.dromara.djs.warehouse.cut.domain.bo.PigCutOutBo;
 import org.dromara.djs.warehouse.cut.domain.bo.PigCutPickupBo;
 import org.dromara.djs.warehouse.cut.domain.query.PigCutRecordQuery;
 import org.dromara.djs.warehouse.cut.domain.vo.BarInfoVo;
+import org.dromara.djs.warehouse.cut.domain.vo.CutProductTypeVo;
 import org.dromara.djs.warehouse.cut.domain.vo.PigCutRecordVo;
 import org.dromara.djs.warehouse.cut.mapper.PigCutRecordMapper;
 import org.dromara.djs.warehouse.flow.domain.StockFlow;
@@ -40,6 +42,7 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Duration;
 import java.time.LocalDate;
+import java.util.ArrayList;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
@@ -91,6 +94,21 @@ public class PigCutRecordServiceImpl
     private static final String WHITE_BAR_PRODUCT_BIZ_CODE = "PROD-WHITE-BAR-01";
 
     /**
+     * 分割车间车间码（{@code t_warehouse_product_info.product_workshop}，字典 djs_product_workshop = 2）。
+     */
+    private static final Integer PRODUCT_WORKSHOP_CUT = 2;
+
+    /**
+     * 分割成品 belong_type（猪肉）。
+     */
+    private static final String CUT_PRODUCT_BELONG_TYPE = "pork";
+
+    /**
+     * 标准分割成品业务码前缀（PROD-PIG-LEAN-01 等），排除 D0001 / DEMO / 测试数据。
+     */
+    private static final String CUT_PRODUCT_CODE_PREFIX = "PROD-PIG-";
+
+    /**
      * stock_flow.flow_type 分割品入冻品库流水。
      */
     private static final String FLOW_TYPE_CUT_OUT_IN = "cut_out_in";
@@ -129,6 +147,7 @@ public class PigCutRecordServiceImpl
     private final SupplierMapper supplierMapper;
     private final IBizCodeGenerator bizCodeGenerator;
     private final ITraceService traceService;
+    private final ImageUrlResolver imageUrlResolver;
 
     public PigCutRecordServiceImpl(PigCutRecordMapper baseMapper,
                                    BarInfoMapper barInfoMapper,
@@ -138,7 +157,8 @@ public class PigCutRecordServiceImpl
                                    LocationInfoMapper locationInfoMapper,
                                    SupplierMapper supplierMapper,
                                    IBizCodeGenerator bizCodeGenerator,
-                                   ITraceService traceService) {
+                                   ITraceService traceService,
+                                   ImageUrlResolver imageUrlResolver) {
         super(baseMapper);
         this.barInfoMapper = barInfoMapper;
         this.productInhouseMapper = productInhouseMapper;
@@ -148,6 +168,7 @@ public class PigCutRecordServiceImpl
         this.supplierMapper = supplierMapper;
         this.bizCodeGenerator = bizCodeGenerator;
         this.traceService = traceService;
+        this.imageUrlResolver = imageUrlResolver;
     }
 
     /**
@@ -426,6 +447,38 @@ public class PigCutRecordServiceImpl
             vo.setStatus(b.getStatus());
             return vo;
         }).toList();
+    }
+
+    @Override
+    public List<CutProductTypeVo> queryCutProductTypes() {
+        // 分割车间标准成品：product_workshop=2 + belong_type='pork' + product_id 前缀 PROD-PIG-
+        // 双条件（排除 D0001 商品 / DEMO / 测试数据），按业务码升序，仅显 5 个标准分割 SKU。
+        List<ProductInfo> types = productInfoMapper.selectList(
+            new LambdaQueryWrapper<ProductInfo>()
+                .eq(ProductInfo::getProductWorkshop, PRODUCT_WORKSHOP_CUT)
+                .eq(ProductInfo::getBelongType, CUT_PRODUCT_BELONG_TYPE)
+                .likeRight(ProductInfo::getProductId, CUT_PRODUCT_CODE_PREFIX)
+                .orderByAsc(ProductInfo::getProductId));
+
+        // IMG-LIB-001：批量解析产品图（L1 image_oss_id → L2 pork 默认图 → L3 全局），禁 N+1
+        List<ImageUrlResolver.Item> items = types.stream()
+            .map(p -> new ImageUrlResolver.Item(p.getImageOssId(), CUT_PRODUCT_BELONG_TYPE))
+            .toList();
+        List<String> urls = imageUrlResolver.resolveList(items);
+        boolean urlsAligned = urls.size() == types.size();
+
+        List<CutProductTypeVo> result = new ArrayList<>(types.size());
+        for (int i = 0; i < types.size(); i++) {
+            ProductInfo p = types.get(i);
+            CutProductTypeVo vo = new CutProductTypeVo();
+            vo.setProductId(p.getId());
+            vo.setProductCode(p.getProductId());
+            vo.setProductName(p.getProductName());
+            vo.setProductUnit(StringUtils.isNotBlank(p.getProductUnit()) ? p.getProductUnit() : "kg");
+            vo.setImageUrl(urlsAligned ? urls.get(i) : null);
+            result.add(vo);
+        }
+        return result;
     }
 
     /**

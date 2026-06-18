@@ -7,6 +7,7 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.common.core.exception.ServiceException;
+import org.dromara.common.core.service.DictService;
 import org.dromara.common.core.utils.StringUtils;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
@@ -43,7 +44,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.TreeMap;
+import java.util.stream.Collectors;
 
 /**
  * 分娩事件 Service 实现（BRD-EVENT-002 FARROW）。
@@ -76,6 +79,7 @@ public class FarrowServiceImpl implements IFarrowService {
     private final PenMapper penMapper;
     private final PigPigletnoMapper pigletnoMapper;
     private final IPigCoreService pigCoreService;
+    private final DictService dictService;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -168,6 +172,7 @@ public class FarrowServiceImpl implements IFarrowService {
             .orderByDesc(PigFarrow::getFarrowDate, PigFarrow::getId);
         Page<PigFarrowVo> page = farrowMapper.selectVoPage(pageQuery.build(), w);
         enrichTaggedCounts(page.getRecords());
+        enrichPigInfo(page.getRecords());
         return TableDataInfo.build(page);
     }
 
@@ -181,6 +186,7 @@ public class FarrowServiceImpl implements IFarrowService {
             .last("LIMIT " + effective);
         List<PigFarrowVo> rows = farrowMapper.selectVoList(w);
         enrichTaggedCounts(rows);
+        enrichPigInfo(rows);
         return rows;
     }
 
@@ -246,6 +252,63 @@ public class FarrowServiceImpl implements IFarrowService {
             int live = Optional.ofNullable(vo.getLiveBorn()).orElse(0);
             vo.setRemaining(Math.max(0, live - tagged));
         }
+    }
+
+    /**
+     * 批量回填母猪日龄 + 仔猪品系/品种中文名（避免 N+1：去重 pigId 一次性批查 t_farm_pig_info）。
+     *
+     * <p>日龄按「事件时」口径 = {@code farrowDate - birth_date}（分娩当时母猪日龄）；
+     * birth_date 缺时回落 introduce_date，两者均空 → null。品系/品种名走主数据 t_farm_breed_info
+     * 优先 → 字典回落（{@link IPigCoreService#loadBreedStrainNameMap} 预载一次）。
+     * 分娩记录人员姓名由 {@code @Translation(USER_ID_TO_NICKNAME, mapper="operatorId")} 序列化时翻译，此处不处理。</p>
+     */
+    private void enrichPigInfo(List<PigFarrowVo> rows) {
+        if (rows == null || rows.isEmpty()) {
+            return;
+        }
+        Set<Long> pigIds = rows.stream().map(PigFarrowVo::getPigId)
+            .filter(Objects::nonNull).collect(Collectors.toSet());
+        if (pigIds.isEmpty()) {
+            return;
+        }
+        Map<Long, Pig> pigById = pigMapper.selectBatchIds(pigIds).stream()
+            .filter(p -> p.getId() != null)
+            .collect(Collectors.toMap(Pig::getId, java.util.function.Function.identity(), (a, b) -> a));
+        Map<String, String> breedNameMap = pigCoreService.loadBreedStrainNameMap(1);
+        Map<String, String> strainNameMap = pigCoreService.loadBreedStrainNameMap(2);
+        for (PigFarrowVo vo : rows) {
+            Pig p = pigById.get(vo.getPigId());
+            if (p == null) {
+                continue;
+            }
+            // 事件时日龄：分娩当时母猪日龄 = farrowDate - birth_date（farrowDate 缺时回落 NOW）
+            LocalDate eventDate = vo.getFarrowDate() != null ? vo.getFarrowDate().toLocalDate() : LocalDate.now();
+            vo.setAgeDays(calcAgeDays(p, eventDate));
+            vo.setPigStrainName(resolveBreedStrainName(strainNameMap, "djs_pig_strain", p.getPigStrainCode()));
+            vo.setPigBreedName(resolveBreedStrainName(breedNameMap, "djs_pig_breed", p.getPigBreedCode()));
+        }
+    }
+
+    /** 日龄（天）= eventDate - birth_date（缺 birth_date 回落 introduce_date）；两者均空 → null。 */
+    private Integer calcAgeDays(Pig p, LocalDate eventDate) {
+        LocalDate base = p.getBirthDate() != null ? p.getBirthDate() : p.getIntroduceDate();
+        if (base == null || eventDate == null) {
+            return null;
+        }
+        return (int) Math.max(ChronoUnit.DAYS.between(base, eventDate), 0L);
+    }
+
+    /** 品种/品系 code→中文名：主数据 t_farm_breed_info 优先 → 字典回落 → 原始 code 回落（缺 code 返 null）。 */
+    private String resolveBreedStrainName(Map<String, String> infoNameMap, String dictType, String code) {
+        if (StringUtils.isBlank(code)) {
+            return null;
+        }
+        String name = infoNameMap.get(code);
+        if (StringUtils.isNotBlank(name)) {
+            return name;
+        }
+        String label = dictService.getDictLabel(dictType, code);
+        return StringUtils.isNotBlank(label) ? label : code;
     }
 
     @Override

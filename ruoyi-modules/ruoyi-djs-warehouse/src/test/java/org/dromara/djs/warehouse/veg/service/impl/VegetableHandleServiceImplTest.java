@@ -82,6 +82,8 @@ class VegetableHandleServiceImplTest {
     private org.dromara.djs.common.image.service.ImageUrlResolver imageUrlResolver;
     @Mock
     private CropInfoMapper cropInfoMapper;
+    @Mock
+    private org.dromara.djs.warehouse.veg.mapper.FeedLogMapper feedLogMapper;
 
     private VegetableHandleServiceImpl service;
 
@@ -91,7 +93,7 @@ class VegetableHandleServiceImplTest {
     void setup() {
         service = new VegetableHandleServiceImpl(
             handleMapper, recordMapper, plantingRecordMapper, stockFlowMapper,
-            locationInfoMapper, bizCodeGenerator, imageUrlResolver, cropInfoMapper);
+            locationInfoMapper, bizCodeGenerator, imageUrlResolver, cropInfoMapper, feedLogMapper);
         loginHelperMock = Mockito.mockStatic(LoginHelper.class);
         loginHelperMock.when(LoginHelper::getUserId).thenReturn(9001L);
     }
@@ -274,6 +276,8 @@ class VegetableHandleServiceImplTest {
 
         // 没有 stock_flow
         verify(stockFlowMapper, never()).insert(any(StockFlow.class));
+        // submitHandleRecord（admin 路径）feed 只累加聚合字段，不写 feed_log（feed_log 由 mp 录入路径写）
+        verify(feedLogMapper, never()).insert(any(org.dromara.djs.warehouse.veg.domain.FeedLog.class));
     }
 
     // -------- error path --------

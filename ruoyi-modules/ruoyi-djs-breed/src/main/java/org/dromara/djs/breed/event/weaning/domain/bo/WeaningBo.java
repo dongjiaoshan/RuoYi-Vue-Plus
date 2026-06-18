@@ -84,4 +84,20 @@ public class WeaningBo implements Serializable {
 
     /** 断奶后转移目标栏位 ID（admin 端可直传；与 {@link #transferPenCode} 二选一）。 */
     private Long transferPenId;
+
+    /**
+     * 仔猪转移目标栋舍编码（row22 客户 0618：母猪仔猪转移目标「独立」，可不同栋舍——反转决策 G4(a)）。
+     * <p>非空 → service 把该分娩已贴标仔猪转到此目标；缺省 → 回退母猪目标 {@link #transferBarnCode}
+     * （向后兼容老调用方 / admin 端）。与 {@link #pigletTransferBarnId} 二选一（mp 端传 code）。</p>
+     */
+    private String pigletTransferBarnCode;
+
+    /** 仔猪转移目标栋舍 ID（admin 端可直传；与 {@link #pigletTransferBarnCode} 二选一；缺省回退母猪目标）。 */
+    private Long pigletTransferBarnId;
+
+    /** 仔猪转移目标栏位编码（可空，未细分到栏位时仅切栋舍；与 {@link #pigletTransferPenId} 二选一；缺省回退母猪目标）。 */
+    private String pigletTransferPenCode;
+
+    /** 仔猪转移目标栏位 ID（admin 端可直传；与 {@link #pigletTransferPenCode} 二选一；缺省回退母猪目标）。 */
+    private Long pigletTransferPenId;
 }

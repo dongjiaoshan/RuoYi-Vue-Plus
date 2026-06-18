@@ -12,7 +12,7 @@ import java.math.BigDecimal;
  * <p>按自然日（{@code statDate}）对 {@code belong_type='vegetable'} 的出入库流水聚合，
  * 不建汇总表。公式：</p>
  * <pre>
- *   日损耗 = 领用入库总重(pickedWeight) − 打包消耗总重(packedWeight) − 退回(returnedWeight) − 饲喂(feedWeight)
+ *   日损耗 = 领用出库总重(pickedWeight, pick_out) − 打包入库总重(packedWeight, pack_in) − 退回(returnedWeight, return_in) − 饲喂(feedWeight, V1 恒 0)
  * </pre>
  *
  * <p>各分量按 stock_flow 中实际存在的果蔬流水类型聚合；对应类型当日无流水则该分量为 0
@@ -31,16 +31,16 @@ public class VegDailyLossVo implements Serializable {
     /** 统计自然日（yyyy-MM-dd）。 */
     private String statDate;
 
-    /** 领用入库总重 kg（毛菜处理入库流水 veg_stock_in）。 */
+    /** 领用出库总重 kg（物资领用出库流水 pick_out，MatFlowServiceImpl.pick 写）。 */
     private BigDecimal pickedWeight;
 
-    /** 打包消耗总重 kg（果蔬打包消耗流水 pack_consume）。 */
+    /** 打包入库总重 kg（果蔬打包入库流水 pack_in，submitVegPack 写）。 */
     private BigDecimal packedWeight;
 
     /** 退回总重 kg（退回流水 return_in）。 */
     private BigDecimal returnedWeight;
 
-    /** 饲喂总重 kg（饲喂流水 loss；当前毛菜饲喂多只更新汇总表不写 stock_flow → 常为 0）。 */
+    /** 饲喂总重 kg（物资领用 V1 无果蔬饲喂操作，该项恒 0；毛菜处理间饲喂属步9 另一阶段，不在此口径重复扣）。 */
     private BigDecimal feedWeight;
 
     /** 日损耗 kg（= picked − packed − returned − feed；负值归零）。 */

@@ -4,6 +4,8 @@ import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.satoken.utils.LoginHelper;
 import org.dromara.djs.common.encoder.IBizCodeGenerator;
 import org.dromara.djs.common.image.service.ImageUrlResolver;
+import org.dromara.djs.plant.crop.domain.CropInfo;
+import org.dromara.djs.plant.crop.mapper.CropInfoMapper;
 import org.dromara.djs.warehouse.check.service.IStockCheckService;
 import org.dromara.djs.warehouse.flow.domain.StockFlow;
 import org.dromara.djs.warehouse.flow.domain.bo.MatLossBo;
@@ -71,6 +73,7 @@ class MatFlowServiceImplTest {
     @Mock private StockFlowMapper stockFlowMapper;
     @Mock private LocationStockMapper locationStockMapper;
     @Mock private ProductInfoMapper productInfoMapper;
+    @Mock private CropInfoMapper cropInfoMapper;
     @Mock private IBizCodeGenerator bizCodeGenerator;
     @Mock private IStockCheckService stockCheckService;
     @Mock private ImageUrlResolver imageUrlResolver;
@@ -81,10 +84,13 @@ class MatFlowServiceImplTest {
     private static final Long USER_ID = 9001L;
     private static final Long PRODUCT_ID = 8001L;
     private static final Long LOCATION_ID = 7001L;
+    private static final Long PLOT_ID = 6001L;
+    private static final Long CROP_ID = 5001L;
+    private static final Long RELATED_PRODUCT_ID = 8002L;
 
     @BeforeEach
     void setup() {
-        service = new MatFlowServiceImpl(stockFlowMapper, locationStockMapper, productInfoMapper, bizCodeGenerator, stockCheckService, imageUrlResolver);
+        service = new MatFlowServiceImpl(stockFlowMapper, locationStockMapper, productInfoMapper, cropInfoMapper, bizCodeGenerator, stockCheckService, imageUrlResolver);
         loginHelperMock = Mockito.mockStatic(LoginHelper.class);
         loginHelperMock.when(LoginHelper::getUserId).thenReturn(USER_ID);
 
@@ -171,6 +177,86 @@ class MatFlowServiceImplTest {
 
         // INSERT 已发生（Spring @Transactional 集成测试覆盖回滚行为；单测只验异常抛出 + service 中断）
         verify(stockFlowMapper, times(1)).insert(any(StockFlow.class));
+    }
+
+    private MatPickBo plotPickBo(BigDecimal qty) {
+        MatPickBo bo = new MatPickBo();
+        bo.setPlotId(PLOT_ID);
+        bo.setLocationId(LOCATION_ID);
+        bo.setQuantity(qty);
+        bo.setStockOutDest("内部消耗");
+        bo.setRemark("ut-veg");
+        return bo;
+    }
+
+    @Test
+    @DisplayName("自产果蔬 pick happy：plotId 非空 → 走 plot 维度扣减 + 流水带 plot_id + product_id=related_product")
+    void testPickSelfVeg_Happy() {
+        when(locationStockMapper.selectCropIdByPlot(eq(PLOT_ID))).thenReturn(CROP_ID);
+        CropInfo crop = new CropInfo();
+        crop.setId(CROP_ID);
+        crop.setRelatedProduct(RELATED_PRODUCT_ID);
+        when(cropInfoMapper.selectById(eq(CROP_ID))).thenReturn(crop);
+        when(locationStockMapper.deductByPlotLocation(eq(LOCATION_ID), eq(PLOT_ID), any(BigDecimal.class), eq(USER_ID)))
+            .thenReturn(1);
+
+        service.pick(plotPickBo(new BigDecimal("12")));
+
+        ArgumentCaptor<StockFlow> cap = ArgumentCaptor.forClass(StockFlow.class);
+        verify(stockFlowMapper, times(1)).insert(cap.capture());
+        StockFlow f = cap.getValue();
+        assertThat(f.getFlowType()).isEqualTo("pick_out");
+        assertThat(f.getInoutType()).isEqualTo("OT");
+        assertThat(f.getPlotId()).isEqualTo(PLOT_ID);
+        assertThat(f.getProductId()).isEqualTo(RELATED_PRODUCT_ID);
+        assertThat(f.getChangeNum()).isEqualByComparingTo("-12");
+        assertThat(f.getChangeQuantity()).isEqualByComparingTo("12");
+        // plot 维度领用不应走 product 维度扣减
+        verify(locationStockMapper, never()).deductByProductLocation(any(), any(), any(), any());
+        verify(locationStockMapper, times(1))
+            .deductByPlotLocation(eq(LOCATION_ID), eq(PLOT_ID), any(BigDecimal.class), eq(USER_ID));
+    }
+
+    @Test
+    @DisplayName("自产果蔬 pick：作物未配 related_product → product_id 兜底 0，不阻塞领用")
+    void testPickSelfVeg_FallbackProductZero() {
+        when(locationStockMapper.selectCropIdByPlot(eq(PLOT_ID))).thenReturn(CROP_ID);
+        CropInfo crop = new CropInfo();
+        crop.setId(CROP_ID);
+        crop.setRelatedProduct(null);
+        when(cropInfoMapper.selectById(eq(CROP_ID))).thenReturn(crop);
+        when(locationStockMapper.deductByPlotLocation(eq(LOCATION_ID), eq(PLOT_ID), any(BigDecimal.class), eq(USER_ID)))
+            .thenReturn(1);
+
+        service.pick(plotPickBo(new BigDecimal("5")));
+
+        ArgumentCaptor<StockFlow> cap = ArgumentCaptor.forClass(StockFlow.class);
+        verify(stockFlowMapper, times(1)).insert(cap.capture());
+        assertThat(cap.getValue().getProductId()).isEqualTo(0L);
+        assertThat(cap.getValue().getPlotId()).isEqualTo(PLOT_ID);
+    }
+
+    @Test
+    @DisplayName("自产果蔬 pick 库存不足：deductByPlotLocation 返 0 → 抛 ServiceException")
+    void testPickSelfVeg_StockInsufficient() {
+        when(locationStockMapper.selectCropIdByPlot(eq(PLOT_ID))).thenReturn(null);
+        when(locationStockMapper.deductByPlotLocation(any(), any(), any(), any())).thenReturn(0);
+
+        assertThatThrownBy(() -> service.pick(plotPickBo(new BigDecimal("999"))))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("自产果蔬库存不足");
+    }
+
+    @Test
+    @DisplayName("pick 产品 + 地块均空：抛 ServiceException 产品 ID 不能为空")
+    void testPick_NoProductNoPlot() {
+        MatPickBo bo = new MatPickBo();
+        bo.setQuantity(new BigDecimal("1"));
+        bo.setStockOutDest("内部消耗");
+
+        assertThatThrownBy(() -> service.pick(bo))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("产品 ID 不能为空");
     }
 
     @Test

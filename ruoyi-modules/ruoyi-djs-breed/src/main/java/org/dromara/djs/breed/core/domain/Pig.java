@@ -9,6 +9,7 @@ import lombok.EqualsAndHashCode;
 import org.dromara.common.tenant.core.TenantEntity;
 
 import java.io.Serial;
+import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 
@@ -86,6 +87,9 @@ public class Pig extends TenantEntity {
 
     /** 出生日期。 */
     private LocalDate birthDate;
+
+    /** 出生重 kg（仔猪耳标登记时按头录入回写）。 */
+    private BigDecimal birthWeight;
 
     /** 引种日期。 */
     private LocalDate introduceDate;
