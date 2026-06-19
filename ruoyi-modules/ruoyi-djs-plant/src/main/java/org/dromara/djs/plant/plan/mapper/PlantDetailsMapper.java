@@ -48,10 +48,11 @@ public interface PlantDetailsMapper extends BaseMapperPlus<PlantDetails, PlantDe
             z.zone_name     AS zoneName,
             d.crop_id       AS cropId,
             c.crop_name     AS cropName,
-            c.image_oss_id  AS cropImg,
+            COALESCE(NULLIF(SUBSTRING_INDEX(c.crop_image_url, ',', 1), ''), c.image_oss_id) AS cropImg,
             d.plot_area     AS area,
             d.plant_month   AS plantMonth,
             d.begin_actualdate AS beginActualdate,
+            d.end_actualdate AS endActualdate,
             d.plant_period  AS plantPeriod,
             p.plant_date    AS planDate,
             d.expected_yield AS expectedYield,
@@ -100,7 +101,7 @@ public interface PlantDetailsMapper extends BaseMapperPlus<PlantDetails, PlantDe
         SELECT
             d.crop_id                       AS cropId,
             MAX(c.crop_name)                AS cropName,
-            MAX(c.crop_image_preview)       AS cropImg,
+            MAX(COALESCE(NULLIF(SUBSTRING_INDEX(c.crop_image_url, ',', 1), ''), c.image_oss_id)) AS cropImg,
             GROUP_CONCAT(DISTINCT z.zone_name ORDER BY z.zone_name SEPARATOR '、') AS zoneName,
             COALESCE(SUM(d.plot_area), 0)   AS totalArea,
             COUNT(*)                        AS plotCount,
@@ -135,10 +136,11 @@ public interface PlantDetailsMapper extends BaseMapperPlus<PlantDetails, PlantDe
      *
      * <p>口径：</p>
      * <ul>
-     *   <li>{@code monthCompletionRate} = ROUND(当月已开工明细数 / 当月明细总数 × 100)，
-     *       当月无明细时 COALESCE 兜底返 0（不除零）；"当月" = {@code plant_month=#{month}}。</li>
-     *   <li>{@code todayCropKindCount} = {@code begin_actualdate=#{today}} 明细 distinct crop_id 数。</li>
-     *   <li>{@code todayPlotCount} = {@code begin_actualdate=#{today}} 明细 distinct plot_id 数。</li>
+     *   <li>{@code monthCompletionRate} = ROUND(当月已完成种植明细数 / 当月明细总数 × 100)，
+     *       当月无明细时 COALESCE 兜底返 0（不除零）；"当月" = {@code plant_month=#{month}}。
+     *       完成口径 = {@code plant_status='completed'}（取消开工分步后只有「待种植 / 已完成种植」两态）。</li>
+     *   <li>{@code todayCropKindCount} = {@code begin_actualdate=#{today}} 明细 distinct crop_id 数（种植日期=今日）。</li>
+     *   <li>{@code todayPlotCount} = {@code begin_actualdate=#{today}} 明细 distinct plot_id 数（种植日期=今日）。</li>
      * </ul>
      *
      * <p>只读聚合，显式 {@code tenant_id='1001'} + {@code del_flag='0'}（对齐 {@link #selectMonthTasks}）。</p>
@@ -150,7 +152,7 @@ public interface PlantDetailsMapper extends BaseMapperPlus<PlantDetails, PlantDe
     @Select("""
         SELECT
             COALESCE(ROUND(
-                SUM(CASE WHEN plant_month = #{month} AND begin_actualdate IS NOT NULL THEN 1 ELSE 0 END)
+                SUM(CASE WHEN plant_month = #{month} AND plant_status = 'completed' THEN 1 ELSE 0 END)
                 / NULLIF(SUM(CASE WHEN plant_month = #{month} THEN 1 ELSE 0 END), 0) * 100
             ), 0) AS monthCompletionRate,
             COALESCE(COUNT(DISTINCT CASE WHEN begin_actualdate = #{today} THEN crop_id END), 0) AS todayCropKindCount,

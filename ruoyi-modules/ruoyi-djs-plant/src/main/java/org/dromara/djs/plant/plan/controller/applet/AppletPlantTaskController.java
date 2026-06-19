@@ -22,6 +22,9 @@ import org.springframework.web.bind.annotation.RestController;
 
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * mp 端「播种任务」Controller（FIX-PLANT-SEED-001 + FIX-PLT-MP-SEED-001）。
@@ -63,7 +66,20 @@ public class AppletPlantTaskController {
     @GetMapping("/cropTasks")
     public R<List<PlantCropTaskVo>> cropTasks(@RequestParam(required = false) Integer month) {
         int m = (month == null || month < 1 || month > 12) ? LocalDate.now().getMonthValue() : month;
-        return R.ok(plantDetailsMapper.selectCropTasks(m));
+        List<PlantCropTaskVo> rows = plantDetailsMapper.selectCropTasks(m);
+        // cropImg = 有效 ossId（优先用户上传 crop_image_url 首图，其次自动匹配 image_oss_id）。
+        // 仅把真实 ossId 解析成 URL（batchUrl 不走 L2/L3 默认图兜底）；无图保持 null，前端落「暂无图」占位。
+        if (rows != null && !rows.isEmpty()) {
+            Set<String> ossIds = rows.stream()
+                .map(PlantCropTaskVo::getCropImg)
+                .filter(s -> s != null && !s.isEmpty())
+                .collect(Collectors.toSet());
+            Map<String, String> urlMap = imageUrlResolver.batchUrl(ossIds);
+            for (PlantCropTaskVo v : rows) {
+                v.setCropImg(v.getCropImg() == null ? null : urlMap.get(v.getCropImg()));
+            }
+        }
+        return R.ok(rows);
     }
 
     /**

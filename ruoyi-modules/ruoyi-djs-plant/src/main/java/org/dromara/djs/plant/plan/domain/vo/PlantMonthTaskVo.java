@@ -65,8 +65,11 @@ public class PlantMonthTaskVo implements Serializable {
     /** 计划月份 1-12。 */
     private Integer plantMonth;
 
-    /** 实际开始种植日期（FIX-PLT-MP-SEED-001：详情页计划地块 list 显示「实际开始时间」；未开工为 null）。 */
+    /** 种植日期（取消开工分步后 = 种植完成日期，单日期口径回填 begin；未种植为 null）。 */
     private LocalDate beginActualdate;
+
+    /** 种植完成日期（plant_status='completed' 时非空；详情页「实际完成时间」展示）。 */
+    private LocalDate endActualdate;
 
     /**
      * 计划阶段 CHAR(2)（字典 {@code djs_plant_period}：05=上旬 / 15=中旬 / 25=下旬）。

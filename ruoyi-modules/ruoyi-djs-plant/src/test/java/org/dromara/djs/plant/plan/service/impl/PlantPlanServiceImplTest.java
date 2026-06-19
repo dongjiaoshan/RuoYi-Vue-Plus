@@ -14,6 +14,7 @@ import org.dromara.djs.plant.plan.domain.PlantDetails;
 import org.dromara.djs.plant.plan.domain.PlantPlan;
 import org.dromara.djs.plant.plan.domain.bo.PlantDetailInputBo;
 import org.dromara.djs.plant.plan.domain.bo.PlantPlanCreateBo;
+import org.dromara.djs.plant.plan.domain.bo.PlantFinishBo;
 import org.dromara.djs.plant.plan.domain.bo.PlantPlanUpdateBo;
 import org.dromara.djs.plant.plan.domain.bo.PlantStartBo;
 import org.dromara.djs.plant.plan.mapper.PlantDetailsMapper;
@@ -266,6 +267,36 @@ class PlantPlanServiceImplTest {
             .isInstanceOf(ServiceException.class)
             .hasMessageContaining("不存在");
         verify(detailsMapper, never()).update(isNull(), any(Wrapper.class));
+    }
+
+    @Test
+    @DisplayName("finishPlant 一步落地：待种植(begin 空)直接完成 + 补班组/采摘窗口 + plot_status=2，已完成跳过")
+    void finishPlantOneStep() {
+        PlantDetails d1 = new PlantDetails();   // 待种植：begin 空 → 一步完成时补 begin/班组/窗口/plot_status
+        d1.setId(11L);
+        d1.setPlotId(101L);
+        d1.setCropId(30L);
+        d1.setBeginActualdate(null);
+        d1.setEndActualdate(null);
+        d1.setPlantStatus("pending");
+        PlantDetails d2 = new PlantDetails();   // 已完成 → 跳过
+        d2.setId(12L);
+        d2.setPlotId(102L);
+        d2.setPlantStatus("completed");
+        when(detailsMapper.selectList(any())).thenReturn(List.of(d1, d2));
+        when(detailsMapper.update(isNull(), any(Wrapper.class))).thenReturn(1);
+        when(plotMapper.update(isNull(), any(Wrapper.class))).thenReturn(1);
+        when(cropMapper.selectByIds(any())).thenReturn(List.of(mockCrop(30L, 60, 90, new BigDecimal("2000.000"))));
+
+        PlantFinishBo bo = new PlantFinishBo();
+        bo.setDetailIds(List.of(11L, 12L));
+        bo.setEndActualdate(LocalDate.of(2026, 6, 18));
+        bo.setPlantBy(7L);
+
+        int affected = service.finishPlant(bo);
+
+        assertThat(affected).isEqualTo(1);   // 仅 d1 完成（d2 已完成跳过）
+        verify(plotMapper).update(isNull(), any(Wrapper.class));   // 待种植地块一步落地补 plot_status=2
     }
 
     // ============================================================

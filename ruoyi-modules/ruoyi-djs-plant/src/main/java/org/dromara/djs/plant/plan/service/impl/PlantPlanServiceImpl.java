@@ -886,31 +886,78 @@ public class PlantPlanServiceImpl extends DjsBaseServiceImpl<PlantPlanMapper, Pl
         if (details.size() != new java.util.HashSet<>(bo.getDetailIds()).size()) {
             throw new ServiceException("部分计划地块不存在或无权操作，请刷新后重试");
         }
-        // 仅保留进行中（plant_status='ongoing' + 已开工 + 未完成）的明细可被完成
-        List<Long> finishableDetailIds = details.stream()
-            .filter(d -> "ongoing".equals(d.getPlantStatus())
-                && d.getBeginActualdate() != null
-                && d.getEndActualdate() == null)
-            .map(PlantDetails::getId)
+        // 一步落地：可完成 = 尚未完成（plant_status != 'completed' 且 end_actualdate IS NULL）。
+        // 取消开工分步后，待种植(begin 空)直接置完成；历史「进行中」(begin 已有)也可完成。
+        List<PlantDetails> finishables = details.stream()
+            .filter(d -> !"completed".equals(d.getPlantStatus()) && d.getEndActualdate() == null)
             .toList();
-        if (finishableDetailIds.isEmpty()) {
-            // 所选明细均非进行中 / 已完成：幂等返 0（非错误，前端按 0 行提示"已完成"）
+        if (finishables.isEmpty()) {
+            // 所选明细均已完成：幂等返 0（非错误，前端按 0 行提示"已完成"）
             return 0;
         }
-
-        // 批量回写明细：plant_status='completed' + end_actualdate；不动地块 plot_status（保持 2 种植）
         Long updateBy = currentUserIdSafe();
+        LocalDate completeDate = bo.getEndActualdate();
+
+        // 对尚未开工(begin 空)的明细：补 begin_actualdate=完成日期(单日期口径) + plant_by，
+        // 并按 begin 重算采摘窗口 + 关联地块 plot_status=2（复用 startPlant 同一套逻辑）
+        List<PlantDetails> needBackfill = finishables.stream()
+            .filter(d -> d.getBeginActualdate() == null)
+            .toList();
+        if (!needBackfill.isEmpty()) {
+            List<Long> backfillIds = needBackfill.stream().map(PlantDetails::getId).toList();
+            detailsMapper.update(null,
+                new com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<PlantDetails>()
+                    .in(PlantDetails::getId, backfillIds)
+                    .set(PlantDetails::getBeginActualdate, completeDate)
+                    .set(PlantDetails::getPlantBy, bo.getPlantBy())
+                    .set(PlantDetails::getUpdateBy, updateBy));
+
+            // 采摘区间按种植(完成)日期重算：earliest = date + crop.minCycle，last = date + crop.maxCycle。
+            Set<Long> cropIds = needBackfill.stream()
+                .map(PlantDetails::getCropId).filter(Objects::nonNull).collect(Collectors.toSet());
+            Map<Long, CropInfo> cropMap = cropIds.isEmpty()
+                ? Map.of()
+                : cropMapper.selectByIds(cropIds).stream()
+                    .collect(Collectors.toMap(CropInfo::getId, c -> c, (a, b) -> a));
+            for (PlantDetails d : needBackfill) {
+                CropInfo crop = d.getCropId() == null ? null : cropMap.get(d.getCropId());
+                if (crop == null || crop.getMinCycle() == null || crop.getMaxCycle() == null) {
+                    // cycle 未配置：跳过重算，保留创建时按计划旬别算出的原值
+                    continue;
+                }
+                LocalDate earliest = completeDate.plusDays(crop.getMinCycle());
+                LocalDate last = completeDate.plusDays(crop.getMaxCycle());
+                detailsMapper.update(null,
+                    new com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<PlantDetails>()
+                        .eq(PlantDetails::getId, d.getId())
+                        .set(PlantDetails::getEarliestHarvestdate, earliest)
+                        .set(PlantDetails::getLastHarvestdate, last)
+                        .set(PlantDetails::getUpdateBy, updateBy));
+            }
+
+            // 同步关联地块 plot_status=2（种植中）
+            Set<Long> plotIds = needBackfill.stream()
+                .map(PlantDetails::getPlotId).filter(Objects::nonNull).collect(Collectors.toSet());
+            if (!plotIds.isEmpty()) {
+                plotMapper.update(null,
+                    new com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<PlotInfo>()
+                        .in(PlotInfo::getId, plotIds)
+                        .set(PlotInfo::getPlotStatus, 2)
+                        .set(PlotInfo::getUpdateBy, updateBy));
+            }
+        }
+
+        // 批量回写明细：plant_status='completed' + end_actualdate
+        List<Long> finishableDetailIds = finishables.stream().map(PlantDetails::getId).toList();
         detailsMapper.update(null,
             new com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<PlantDetails>()
                 .in(PlantDetails::getId, finishableDetailIds)
                 .set(PlantDetails::getPlantStatus, "completed")
-                .set(PlantDetails::getEndActualdate, bo.getEndActualdate())
+                .set(PlantDetails::getEndActualdate, completeDate)
                 .set(PlantDetails::getUpdateBy, updateBy));
 
         // 派生重算受影响计划主表 plant_status（任一完成→ongoing / 全部完成→completed）
-        Set<Long> finishableSet = new java.util.HashSet<>(finishableDetailIds);
-        Set<Long> affectedPlanIds = details.stream()
-            .filter(d -> finishableSet.contains(d.getId()))
+        Set<Long> affectedPlanIds = finishables.stream()
             .map(PlantDetails::getPlantId).filter(Objects::nonNull).collect(Collectors.toSet());
         for (Long pid : affectedPlanIds) {
             baseMapper.recalcPlanStatus(pid);
