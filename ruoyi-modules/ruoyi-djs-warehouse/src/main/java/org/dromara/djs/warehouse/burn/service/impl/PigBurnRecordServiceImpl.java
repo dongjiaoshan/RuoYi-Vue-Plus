@@ -94,11 +94,23 @@ public class PigBurnRecordServiceImpl
     private static final String INOUT_IN = "IN";
 
     /**
-     * 白条标准产品类型业务码前缀（{@code t_warehouse_product_info.product_id}）。
-     * 入库产品类型 list = 该前缀 + belong_type='white_bar'，排除测试数据。
+     * 白条归属类型（{@code t_warehouse_product_info.belong_type}，字典 djs_belong_type）。
+     * 燎毛入库产品类型由 admin 产品配置驱动 = belong_type='white_bar' + 燎毛间车间 + 正常态 + 原材料属性。
      */
     private static final String WHITE_BAR_BELONG_TYPE = "white_bar";
-    private static final String WHITE_BAR_CODE_PREFIX = "PROD-WHITE-BAR-";
+
+    /**
+     * 产品状态（{@code t_warehouse_product_info.product_status}，字典 sys_normal_disable）：0=正常 / 1=停用。
+     * 入库类型只取正常态，停用产品不可入库。
+     */
+    private static final Integer PRODUCT_STATUS_NORMAL = 0;
+
+    /**
+     * 产品属性（{@code t_warehouse_product_info.product_attr}，字典 djs_product_attr）：1=生产产品 / 2=原材料。
+     * 燎毛产出的白条（整只/半只/猪头/猪蹄）是下游分割/打包的原材料，故燎毛入库只取原材料属性；
+     * 生产产品 = 对外打包后的成品（belong_type=pork/gift_box 等），不在燎毛这一步入库。
+     */
+    private static final Integer PRODUCT_ATTR_RAW_MATERIAL = 2;
 
     /**
      * 白条产品类别枚举（FIX-WMS-MP-BURN-001 录入约束 + 去前缀用），按 product_id 业务码后缀映射。
@@ -113,11 +125,6 @@ public class PigBurnRecordServiceImpl
      */
     private static final String BAR_STATUS_PENDING_SINGE = "pending_singe";
     private static final String BAR_STATUS_SINGING = "singing";
-
-    /**
-     * 燎毛白条入库限定库位类型：冻品库（字典 {@code djs_location_type}）。
-     */
-    private static final String LOCATION_TYPE_FROZEN = "frozen";
 
     /**
      * 库位启用态（{@code t_warehouse_location_info.location_status}）。
@@ -176,7 +183,7 @@ public class PigBurnRecordServiceImpl
         // 校验入库库位存在 + 各产品类型为标准白条类型，并计算入库重量合计
         LocationInfo location = locationInfoMapper.selectById(bo.getLocationId());
         if (location == null) {
-            throw new ServiceException("入冻品库位不存在：" + bo.getLocationId());
+            throw new ServiceException("入库库位不存在：" + bo.getLocationId());
         }
         Map<Long, ProductInfo> typeMap = loadWhiteBarTypeMap();
         // 单品上限兜底（MP-BURN 决策 #4）：单个产品入库重量不能超过头皮肉重量（到场重 arrive_weight，防直连 API 绕过前端拦截）。
@@ -326,9 +333,11 @@ public class PigBurnRecordServiceImpl
     @Override
     public List<BurnProductTypeVo> queryProductTypes() {
         List<ProductInfo> types = loadWhiteBarTypes();
-        // IMG-LIB-001：批量解析产品图（L1 image_oss_id → L2 white_bar 默认图 → L3 全局），禁 N+1
+        // IMG-LIB-001：批量解析产品图，禁 N+1。
+        // L1 优先用户上传的缩略图 product_thumb（admin 产品表单唯一图片入口），退回自动匹配的 image_oss_id；
+        // 再 L2 white_bar 默认图 → L3 全局兜底。
         List<ImageUrlResolver.Item> items = types.stream()
-            .map(p -> new ImageUrlResolver.Item(p.getImageOssId(), WHITE_BAR_BELONG_TYPE))
+            .map(p -> new ImageUrlResolver.Item(resolveProductImageOssId(p), WHITE_BAR_BELONG_TYPE))
             .toList();
         List<String> urls = imageUrlResolver.resolveList(items);
         boolean urlsAligned = urls.size() == types.size();
@@ -353,7 +362,7 @@ public class PigBurnRecordServiceImpl
         }
         ProductInfo product = productInfoMapper.selectById(productId);
         if (product == null || StringUtils.isBlank(product.getStoreLocationId())) {
-            // 该产品未配置入库库位 → 返回空，前端回落全量冻品库可选
+            // 该产品未配置存储仓库 → 返回空，前端回落自由选库位
             return List.of();
         }
         // store_location_id 逗号分隔库位 ID 列表（doc/11 §2.5；V2 改关联表）
@@ -371,12 +380,11 @@ public class PigBurnRecordServiceImpl
         if (locationIds.isEmpty()) {
             return List.of();
         }
-        // 仅返启用 + 冻品库（与燎毛入库 frozen 约束一致），保持配置顺序
+        // 仅返启用库位（不限库位类型 —— 入库库位由产品「存储仓库」配置驱动，白条库/冻品库等都可），保持配置顺序
         List<LocationInfo> rows = locationInfoMapper.selectList(
             new LambdaQueryWrapper<LocationInfo>()
                 .in(LocationInfo::getId, locationIds)
-                .eq(LocationInfo::getLocationStatus, LOCATION_STATUS_ENABLED)
-                .eq(LocationInfo::getLocationType, LOCATION_TYPE_FROZEN));
+                .eq(LocationInfo::getLocationStatus, LOCATION_STATUS_ENABLED));
         Map<Long, LocationInfo> rowMap = rows.stream()
             .collect(Collectors.toMap(LocationInfo::getId, l -> l, (a, b) -> a));
         List<LocationPickerVo> result = new ArrayList<>(locationIds.size());
@@ -513,20 +521,38 @@ public class PigBurnRecordServiceImpl
     }
 
     /**
+     * 产品卡展示用 ossId 优先级：用户在 admin 上传的缩略图 {@code product_thumb} 优先，
+     * 退回 IMG-LIB-001 自动匹配的主图 {@code image_oss_id}（两者都空交 resolver 走 L2/L3 默认图兜底）。
+     *
+     * <p>admin 产品表单唯一图片入口写 {@code product_thumb}，{@code image_oss_id} 仅在创建时按产品名
+     * 自动命中图库才有值；故展示必须优先取用户显式上传的缩略图，否则自建产品的图在 mp 全不显示。</p>
+     */
+    private static String resolveProductImageOssId(ProductInfo p) {
+        return StringUtils.isNotBlank(p.getProductThumb()) ? p.getProductThumb() : p.getImageOssId();
+    }
+
+    /**
      * 燎毛间车间码（{@code t_warehouse_product_info.product_workshop}，字典 djs_product_workshop = 1）。
      */
     private static final Integer PRODUCT_WORKSHOP_BURN = 1;
 
     /**
-     * 标准白条产品类型列表（product_workshop=1 燎毛间 + belong_type='white_bar' + product_id 前缀
-     * PROD-WHITE-BAR- 双条件，排除非燎毛车间 / 测试数据）。
+     * 燎毛入库产品类型列表（admin 产品配置驱动）：product_workshop=1 燎毛间 + belong_type='white_bar'
+     * + product_status=0 正常（排除停用）+ product_attr=2 原材料，按业务码升序。
+     *
+     * <p>口径（Kevin 2026-06-19 拍板）：燎毛产出的白条是下游分割/打包的<b>原材料</b>，只取
+     * {@code product_attr=2}；{@code product_attr=1} 生产产品 = 对外打包后的成品，不在燎毛入库。
+     * 标准 4 类型（整只/半只/猪头/猪蹄，业务码前缀 PROD-WHITE-BAR-）经 seed 修正为原材料后命中本条件；
+     * 用户在 admin 自建的白条须配「产品属性=原材料」才进此列表，{@link #resolveProductType} 对非标准码返 null，
+     * 前端回落按名称判类别。</p>
      */
     private List<ProductInfo> loadWhiteBarTypes() {
         return productInfoMapper.selectList(
             new LambdaQueryWrapper<ProductInfo>()
                 .eq(ProductInfo::getProductWorkshop, PRODUCT_WORKSHOP_BURN)
                 .eq(ProductInfo::getBelongType, WHITE_BAR_BELONG_TYPE)
-                .likeRight(ProductInfo::getProductId, WHITE_BAR_CODE_PREFIX)
+                .eq(ProductInfo::getProductStatus, PRODUCT_STATUS_NORMAL)
+                .eq(ProductInfo::getProductAttr, PRODUCT_ATTR_RAW_MATERIAL)
                 .orderByAsc(ProductInfo::getProductId));
     }
 

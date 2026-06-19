@@ -22,8 +22,6 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
-import java.util.Arrays;
-
 /**
  * 生长记录 Controller（BRD-EVENT-005 GROWTH）。
  *
@@ -31,7 +29,7 @@ import java.util.Arrays;
  *   <li>{@code GET    /djs/breed/event/growth/list}     列表（分页 + 按 pigId / 耳号 / 日期过滤）</li>
  *   <li>{@code GET    /djs/breed/event/growth/{id}}     详情</li>
  *   <li>{@code POST   /djs/breed/event/growth}          新增（mp + admin 共用，BO 字段决定来源）</li>
- *   <li>{@code DELETE /djs/breed/event/growth/{ids}}    批量删除（service 层 3 天内可删校验）</li>
+ *   <li>{@code DELETE /djs/breed/event/growth/{id}}     删除（hard delete；单 id 或逗号分隔批量，逐条物理删，{@code R<Void>}）</li>
  * </ul>
  *
  * <p><strong>不触发状态机</strong>。仅 INSERT t_farm_pig_growth。</p>
@@ -67,11 +65,20 @@ public class PigGrowthController extends BaseController {
         return R.ok(growthService.addGrowthRecord(bo));
     }
 
+    /**
+     * 删除生长记录（fe-growth row54）。
+     *
+     * <p>hard delete：单 id（{@code /{id}}）或逗号分隔多 id（admin 批量），逐条物理删
+     * {@code t_farm_pig_growth}（tenant_id 由 MP 拦截器自动注入）。返回 {@code R<Void>}。
+     * mp 记录列表卡 / admin 列表行删除共用本端点。</p>
+     */
     @SaCheckPermission("djs:breed:event:growth:remove")
     @Log(title = "生长记录删除", businessType = BusinessType.DELETE)
     @DeleteMapping("/{ids}")
     public R<Void> remove(@PathVariable Long[] ids) {
-        growthService.deleteByIds(Arrays.asList(ids));
+        for (Long id : ids) {
+            growthService.deleteById(id);
+        }
         return R.ok();
     }
 }

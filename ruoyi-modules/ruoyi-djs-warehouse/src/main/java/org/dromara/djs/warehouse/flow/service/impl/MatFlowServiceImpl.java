@@ -8,6 +8,8 @@ import org.dromara.djs.common.encoder.BizCodeType;
 import org.dromara.djs.common.encoder.IBizCodeGenerator;
 import org.dromara.djs.common.image.service.ImageUrlResolver;
 import org.dromara.djs.warehouse.check.service.IStockCheckService;
+import org.dromara.djs.warehouse.cross.domain.vo.TodayBarVo;
+import org.dromara.djs.warehouse.cross.mapper.BarInfoMapper;
 import org.dromara.djs.warehouse.flow.domain.StockFlow;
 import org.dromara.djs.warehouse.flow.domain.bo.MatLossBo;
 import org.dromara.djs.warehouse.flow.domain.bo.MatPickBo;
@@ -15,6 +17,7 @@ import org.dromara.djs.warehouse.flow.domain.bo.MatReturnBo;
 import org.dromara.djs.warehouse.flow.domain.vo.MatIssueItemVo;
 import org.dromara.djs.warehouse.flow.domain.vo.MatIssueLocationVo;
 import org.dromara.djs.warehouse.flow.domain.vo.MatTodaySummaryVo;
+import org.dromara.djs.warehouse.flow.domain.vo.MatWhiteBarBatchVo;
 import org.dromara.djs.warehouse.flow.mapper.StockFlowMapper;
 import org.dromara.djs.warehouse.flow.service.IMatFlowService;
 import org.dromara.djs.plant.crop.domain.CropInfo;
@@ -26,6 +29,11 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Date;
 import java.util.HashMap;
@@ -68,10 +76,31 @@ public class MatFlowServiceImpl implements IMatFlowService {
     private static final String FLOW_RETURN_IN = "return_in";
     private static final String FLOW_LOSS = "loss";
 
+    /**
+     * 「白条·整只」canonical SKU id（bar_info 无 product_id FK，本 service 回填给领用 BO 用）。
+     */
+    private static final String WHITE_BAR_WHOLE_PRODUCT_ID = "100000000000000001";
+
+    /**
+     * 「白条·整只」产品名称（mp 白条批次卡主标题）。
+     */
+    private static final String WHITE_BAR_WHOLE_PRODUCT_NAME = "白条·整只";
+
+    /**
+     * 白条计数单位（按头计）。
+     */
+    private static final String WHITE_BAR_WHOLE_PRODUCT_UNIT = "头";
+
+    /**
+     * 入库时间展示格式 {@code MM-dd HH:mm}（mp 白条批次卡）。
+     */
+    private static final DateTimeFormatter INBOUND_TIME_FORMATTER = DateTimeFormatter.ofPattern("MM-dd HH:mm");
+
     private final StockFlowMapper stockFlowMapper;
     private final LocationStockMapper locationStockMapper;
     private final ProductInfoMapper productInfoMapper;
     private final CropInfoMapper cropInfoMapper;
+    private final BarInfoMapper barInfoMapper;
     private final IBizCodeGenerator bizCodeGenerator;
     private final IStockCheckService stockCheckService;
     private final ImageUrlResolver imageUrlResolver;
@@ -80,6 +109,7 @@ public class MatFlowServiceImpl implements IMatFlowService {
                               LocationStockMapper locationStockMapper,
                               ProductInfoMapper productInfoMapper,
                               CropInfoMapper cropInfoMapper,
+                              BarInfoMapper barInfoMapper,
                               IBizCodeGenerator bizCodeGenerator,
                               IStockCheckService stockCheckService,
                               ImageUrlResolver imageUrlResolver) {
@@ -87,6 +117,7 @@ public class MatFlowServiceImpl implements IMatFlowService {
         this.locationStockMapper = locationStockMapper;
         this.productInfoMapper = productInfoMapper;
         this.cropInfoMapper = cropInfoMapper;
+        this.barInfoMapper = barInfoMapper;
         this.bizCodeGenerator = bizCodeGenerator;
         this.stockCheckService = stockCheckService;
         this.imageUrlResolver = imageUrlResolver;
@@ -408,6 +439,73 @@ public class MatFlowServiceImpl implements IMatFlowService {
             }
         }
         return items;
+    }
+
+    @Override
+    public List<MatWhiteBarBatchVo> issueWhiteBarBatches(String belongType, String locationId) {
+        // 权威源 = bar_info status='in_stock'（一行 = 一条实物白条整只），不走 location_stock（白条 SKU 无库存行）。
+        // belongType / locationId 仅为与 issueItems / selfVegIssueItems 端点签名对称接收，bar_info 不据此过滤。
+        List<TodayBarVo> bars = barInfoMapper.selectInStockBars();
+        List<MatWhiteBarBatchVo> result = new ArrayList<>();
+        if (bars == null || bars.isEmpty()) {
+            return result;
+        }
+        for (TodayBarVo bar : bars) {
+            MatWhiteBarBatchVo vo = new MatWhiteBarBatchVo();
+            // batchId：白条主键转 String 防 jackson Long 截断（snowflake 19 位）。
+            vo.setBatchId(bar.getId() == null ? null : String.valueOf(bar.getId()));
+            // batchCode：业务码 bar_id 优先，为空回退 ear_no（外购白条可能无 bar_id）。
+            String code = bar.getBarId();
+            if (code == null || code.isBlank()) {
+                code = bar.getEarNo();
+            }
+            vo.setBatchCode(code);
+            // bar_info 无 product_id FK：回填「白条·整只」canonical SKU，给 mp 领用 BO 一个 productId。
+            vo.setProductId(WHITE_BAR_WHOLE_PRODUCT_ID);
+            vo.setProductName(WHITE_BAR_WHOLE_PRODUCT_NAME);
+            vo.setProductUnit(WHITE_BAR_WHOLE_PRODUCT_UNIT);
+            vo.setInboundTime(formatInboundTime(bar.getInTime()));
+            // in_stock 白条尚未绑定门店（门店在领用时选）→ storeName 恒 null。
+            vo.setStoreName(null);
+            // 预冷时长按 in_time 实时计算（acid_remove_time 在 cut_done 前恒 NULL，不读）。
+            vo.setPrecoolDuration(computePrecoolDuration(bar.getInTime()));
+            vo.setInboundWeight(bar.getInWeight());
+            // 本端点只返 in_stock 行 → 恒可领。
+            vo.setBatchStatus("pickable");
+            // 白条 SKU 无库存行 / 库位绑定 → 恒 null。
+            vo.setLocationId(null);
+            result.add(vo);
+        }
+        return result;
+    }
+
+    /**
+     * 入库时间格式化为 {@code MM-dd HH:mm}（mp 白条批次卡）；为空 → 空串。
+     */
+    private static String formatInboundTime(Date inTime) {
+        if (inTime == null) {
+            return "";
+        }
+        return INBOUND_TIME_FORMATTER.format(inTime.toInstant().atZone(ZoneId.systemDefault()));
+    }
+
+    /**
+     * 预冷时长 = {@code now - in_time} 向下取整到分钟，文案 {@code {h}小时{m}分钟}。
+     *
+     * <p>实时计算（不读 acid_remove_time，该字段在 cut_done 前恒 NULL）；in_time 为空 → 空串。
+     * 负值（in_time 在未来，理论不应出现）按 0 处理。</p>
+     */
+    private static String computePrecoolDuration(Date inTime) {
+        if (inTime == null) {
+            return "";
+        }
+        long totalMinutes = Duration.between(inTime.toInstant(), Instant.now()).toMinutes();
+        if (totalMinutes < 0) {
+            totalMinutes = 0;
+        }
+        long hours = totalMinutes / 60;
+        long minutes = totalMinutes % 60;
+        return hours + "小时" + minutes + "分钟";
     }
 
     /**

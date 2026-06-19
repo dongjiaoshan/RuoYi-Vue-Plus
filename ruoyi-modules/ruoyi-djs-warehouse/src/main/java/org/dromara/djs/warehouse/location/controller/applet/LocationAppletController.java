@@ -51,7 +51,8 @@ public class LocationAppletController {
      * <p>语义：</p>
      * <ul>
      *   <li>仅返 {@code location_status = 1}（启用）；停用库位不允许工人选</li>
-     *   <li>{@code locationType} 精确匹配（业务页面常锁某类，如燎毛白条入库位走 {@code frozen}）</li>
+     *   <li>{@code locationType} 精确匹配（业务页面常锁某类，如燎毛白条入库位走 {@code frozen}）；
+     *       多类型筛选（如白条库 + 冻品库）由前端 LocationPicker 逐类型查询后合并，本端点只接单值</li>
      *   <li>{@code keyword} 同时 LIKE locationName / locationCode</li>
      *   <li>结果按 ID 倒序，最多 200 条（picker 不分页）</li>
      * </ul>

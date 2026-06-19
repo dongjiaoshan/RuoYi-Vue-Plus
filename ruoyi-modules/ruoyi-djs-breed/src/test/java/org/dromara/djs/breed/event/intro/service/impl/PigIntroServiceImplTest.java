@@ -102,6 +102,7 @@ class PigIntroServiceImplTest {
     private org.dromara.common.core.service.DictService dictService;
     private org.dromara.common.core.service.OssService ossService;
     private org.dromara.djs.breed.event.transfer.service.ITransferService transferService;
+    private org.dromara.djs.breed.farm.service.PenCapacityChecker penCapacityChecker;
 
     @BeforeEach
     void setup() {
@@ -109,6 +110,7 @@ class PigIntroServiceImplTest {
         dictService = org.mockito.Mockito.mock(org.dromara.common.core.service.DictService.class);
         ossService = org.mockito.Mockito.mock(org.dromara.common.core.service.OssService.class);
         transferService = org.mockito.Mockito.mock(org.dromara.djs.breed.event.transfer.service.ITransferService.class);
+        penCapacityChecker = org.mockito.Mockito.mock(org.dromara.djs.breed.farm.service.PenCapacityChecker.class);
         service = new PigIntroServiceImpl(
             introduceMapper, pigCoreService, bizCodeGenerator,
             supplierMapper, barnMapper, penMapper, bizReferenceChecker,
@@ -116,7 +118,8 @@ class PigIntroServiceImplTest {
             dictService,
             earNoAllocator,
             ossService,
-            transferService);
+            transferService,
+            penCapacityChecker);
         // 用户填首号路径默认无撞号（existsEarNo 返 null 放行）
         when(innerPigMapper.existsEarNo(org.mockito.ArgumentMatchers.anyString())).thenReturn(null);
         // 通用 stubs
@@ -246,23 +249,25 @@ class PigIntroServiceImplTest {
     }
 
     @Test
-    @DisplayName("pen 容量不足 → 抛 intro.pen_capacity_exceeded")
+    @DisplayName("pen 容量不足 → PenCapacityChecker 抛「容量已超限」")
     void pen_capacity_exceeded() {
         Pen pen = new Pen();
         pen.setId(PEN_ID);
         pen.setBarnId(BARN_ID);
-        pen.setCapacity(11);
-        pen.setCurrentCount(10);
+        pen.setPenType("stall");  // 限位栏容量=1
         when(penMapper.selectById(PEN_ID)).thenReturn(pen);
+        // row59：超容由 PenCapacityChecker 推导容量 + 实时 usedCount 判定，落栏前校验抛业务异常
+        org.mockito.Mockito.doThrow(new ServiceException("容量已超限"))
+            .when(penCapacityChecker).checkCapacity(eq(PEN_ID), eq(5));
 
         PigIntroBatchBo bo = new PigIntroBatchBo();
         copyFromSingle(mkSingleBo("external", "F"), bo);
-        bo.setPigCount(5);  // 剩余 1，请求 5 → 失败
+        bo.setPigCount(5);  // 限位栏容量 1，请求 5 → 超容
         bo.setStartEarNo("BATCH-A001");
 
         assertThatThrownBy(() -> service.introduceBatch(bo))
             .isInstanceOf(ServiceException.class)
-            .hasMessageContaining("intro.pen_capacity_exceeded");
+            .hasMessageContaining("容量已超限");
     }
 
     @Test

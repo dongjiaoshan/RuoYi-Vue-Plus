@@ -46,4 +46,15 @@ public interface IPigGrowthService {
     PigGrowthVo getById(Long id);
 
     int deleteByIds(Collection<Long> ids);
+
+    /**
+     * 物理删除单条生长记录（fe-growth row54：mp 记录列表卡「删除」）。
+     *
+     * <p>与 {@link #deleteByIds}（admin 端 3 天内逻辑删）不同：mp 端删除即 hard delete
+     * （{@code DELETE FROM t_farm_pig_growth WHERE id=?}，tenant_id 由 MP 拦截器自动注入），删后 reload 列表。</p>
+     *
+     * @param id 生长记录 id（snowflake；controller PathVariable）
+     * @return 受影响行数
+     */
+    int deleteById(Long id);
 }

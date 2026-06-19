@@ -129,6 +129,8 @@ public interface IPigCoreService {
      *                     按出栏配置 {@code slaughter_age_days} 限到龄肥猪）。日龄 = NOW − birth_date
      *                     （缺 birth_date 时回落 introduce_date）；两者均空的猪不满足该过滤、被剔除。
      *                     {@code null}/≤0 → 不做日龄过滤（向后兼容所有现有调用方）。
+     * @param isCastrated  是否阉割过滤（{@code 1}=否 / {@code 2}=是）：阉割选猪传 {@code 1}（仅未阉割猪可选）。
+     *                     {@code null} → 不过滤（向后兼容所有现有调用方）。
      * @return 轻量 PigSearchVo 列表（含 ageDays/parity/lastEventDays）
      */
     List<PigSearchVo> searchByEarKeyword(String earNoKeyword,
@@ -139,7 +141,8 @@ public interface IPigCoreService {
                                          Integer limit,
                                          String dueType,
                                          Boolean excludeNullBarn,
-                                         Integer minAgeDays);
+                                         Integer minAgeDays,
+                                         Integer isCastrated);
 
     /**
      * 加载 t_farm_breed_info 主表 code→中文名 映射（breedStrain 1=品种 / 2=品系）。
@@ -155,13 +158,14 @@ public interface IPigCoreService {
      * 栋舍 × 头数聚合（BRD-FIX-MP-PIGSELECT-001）——mp 端 PigSelectPanel 顶部「栋舍 chip」数据源。
      *
      * <p>语义：在 {@code statusFilter}（CSV，默认排除 END） + {@code sexFilter} + {@code pigTypeFilter}
-     * 过滤维度下，按 {@code barn_id} 分组 count，再 enrich barnCode/barnName 返回。barn_id 为 null
-     * 的猪只不计入（无栋舍归属）。结果按 barnCode 升序，count 为 0 的栋舍不返回。</p>
+     * + {@code earNoKeyword} 过滤维度下，按 {@code barn_id} 分组 count，再 enrich barnCode/barnName 返回。
+     * barn_id 为 null 的猪只不计入（无栋舍归属）。结果按 barnCode 升序，count 为 0 的栋舍不返回。</p>
      *
      * @param statusFilter  状态白名单 CSV（与 search 同语义；含 END 时放行终态）
      * @param sexFilter     性别过滤（{@code "M"} / {@code "F"} / null）
      * @param pigTypeFilter 类型过滤（{@code "sow"/"boar"/"piglet"/"fattening"} / null）
+     * @param earNoKeyword  耳号关键字 LIKE 过滤（row60：使各栋舍头数随搜索结果缩减，与 search 同口径）；null/空 → 不过滤
      * @return 栋舍头数聚合列表
      */
-    List<PigBarnCountVo> countByBarn(String statusFilter, String sexFilter, String pigTypeFilter);
+    List<PigBarnCountVo> countByBarn(String statusFilter, String sexFilter, String pigTypeFilter, String earNoKeyword);
 }

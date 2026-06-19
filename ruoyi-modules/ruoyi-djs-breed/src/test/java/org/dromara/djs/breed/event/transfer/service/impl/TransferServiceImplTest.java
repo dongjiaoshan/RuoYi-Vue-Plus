@@ -61,12 +61,14 @@ class TransferServiceImplTest {
     private PenMapper penMapper;
     @Mock
     private IPigCoreService pigCoreService;
+    @Mock
+    private org.dromara.djs.breed.farm.service.PenCapacityChecker penCapacityChecker;
 
     private TransferServiceImpl service;
 
     @BeforeEach
     void setup() {
-        service = new TransferServiceImpl(transferMapper, pigMapper, barnMapper, penMapper, pigCoreService);
+        service = new TransferServiceImpl(transferMapper, pigMapper, barnMapper, penMapper, pigCoreService, penCapacityChecker);
     }
 
     private Pig mkPig(Long id, String pigType, PigLifecycle status, Long oldBarnId) {

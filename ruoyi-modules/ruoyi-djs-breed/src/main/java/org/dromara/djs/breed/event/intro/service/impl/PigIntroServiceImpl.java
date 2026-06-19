@@ -33,6 +33,7 @@ import org.dromara.djs.breed.farm.domain.Barn;
 import org.dromara.djs.breed.farm.domain.Pen;
 import org.dromara.djs.breed.farm.mapper.BarnMapper;
 import org.dromara.djs.breed.farm.mapper.PenMapper;
+import org.dromara.djs.breed.farm.service.PenCapacityChecker;
 import org.dromara.djs.common.encoder.BizCodeType;
 import org.dromara.djs.common.encoder.IBizCodeGenerator;
 import org.dromara.djs.common.supplier.domain.Supplier;
@@ -62,7 +63,7 @@ import java.util.stream.Collectors;
  *   <li>外部引种 supplier + proof 必填</li>
  *   <li>supplier 存在且 supplier_type='breed'</li>
  *   <li>barn / pen 存在 + pen.barn_id 对齐传入 barn_id</li>
- *   <li>pen.capacity - pen.current_count >= pigCount（capacity 为 NULL 时不限制）</li>
+ *   <li>落栏前超容校验（PenCapacityChecker）：容量按 pen_type 推导，usedCount + pigCount &gt; capacity → 抛「容量已超限」</li>
  *   <li>生成引种单号 INTRO_NO</li>
  *   <li>INSERT t_farm_pig_introduce</li>
  *   <li>循环 / 批量分配耳号 EAR_NO + pigCoreService.createPig 每头</li>
@@ -91,6 +92,7 @@ public class PigIntroServiceImpl implements IPigIntroService {
     private final EarNoAllocator earNoAllocator;
     private final OssService ossService;
     private final ITransferService transferService;
+    private final PenCapacityChecker penCapacityChecker;
 
     public PigIntroServiceImpl(PigIntroduceMapper introduceMapper,
                                IPigCoreService pigCoreService,
@@ -103,7 +105,8 @@ public class PigIntroServiceImpl implements IPigIntroService {
                                DictService dictService,
                                EarNoAllocator earNoAllocator,
                                OssService ossService,
-                               ITransferService transferService) {
+                               ITransferService transferService,
+                               PenCapacityChecker penCapacityChecker) {
         this.introduceMapper = introduceMapper;
         this.pigCoreService = pigCoreService;
         this.bizCodeGenerator = bizCodeGenerator;
@@ -116,6 +119,7 @@ public class PigIntroServiceImpl implements IPigIntroService {
         this.earNoAllocator = earNoAllocator;
         this.ossService = ossService;
         this.transferService = transferService;
+        this.penCapacityChecker = penCapacityChecker;
     }
 
     @PostConstruct
@@ -462,15 +466,9 @@ public class PigIntroServiceImpl implements IPigIntroService {
         if (!bo.getBarnId().equals(pen.getBarnId())) {
             throw new ServiceException(I18nMessages.t("intro.pen_barn_mismatch", bo.getPenId(), bo.getBarnId()));
         }
-        Integer capacity = pen.getCapacity();
-        if (capacity != null && capacity > 0) {
-            int current = Optional.ofNullable(pen.getCurrentCount()).orElse(0);
-            int remaining = capacity - current;
-            if (remaining < count) {
-                throw new ServiceException(
-                    I18nMessages.t("intro.pen_capacity_exceeded", bo.getPenId(), remaining, count));
-            }
-        }
+        // row59：落栏前超容校验，容量按 pen_type 推导（非 DB capacity 列）；
+        // 外部引种新建的是种猪（sow/boar），全部计入容量（无仔猪）。usedCount + count > capacity → 抛「容量已超限」。
+        penCapacityChecker.checkCapacity(bo.getPenId(), count);
     }
 
     /**

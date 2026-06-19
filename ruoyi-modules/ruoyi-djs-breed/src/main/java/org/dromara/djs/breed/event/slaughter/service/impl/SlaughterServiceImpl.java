@@ -7,6 +7,7 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.common.core.exception.ServiceException;
+import org.dromara.common.core.service.OssService;
 import org.dromara.common.core.utils.StringUtils;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
@@ -28,7 +29,10 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
+import java.util.Arrays;
+import java.util.List;
 import java.util.Objects;
+import java.util.stream.Collectors;
 
 /**
  * 出栏事件 Service 实现（BRD-EVENT-004 SLAUGHTER）。
@@ -52,6 +56,7 @@ public class SlaughterServiceImpl implements ISlaughterService {
     private final PigMapper pigMapper;
     private final IPigCoreService pigCoreService;
     private final ApplicationEventPublisher eventPublisher;
+    private final OssService ossService;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -122,7 +127,28 @@ public class SlaughterServiceImpl implements ISlaughterService {
             .lt(endBefore != null, PigMarketing::getMarketingDate, endBefore)
             .orderByDesc(PigMarketing::getMarketingDate, PigMarketing::getId);
         Page<PigMarketingVo> page = marketingMapper.selectVoPage(pageQuery.build(), w);
+        // 出栏照片 ossIds → 可访问 URL 列表（mp <image> 无法携 Bearer token 取鉴权下载端点，故后端预解析）
+        page.getRecords().forEach(v -> v.setImageUrls(resolveImageUrls(v.getOssIds())));
         return TableDataInfo.build(page);
+    }
+
+    /**
+     * 出栏照片 ossId（逗号分隔）→ 可访问 URL 列表（无照片返空 list）。
+     * <p>参照 {@code DieServiceImpl.resolveImageUrls}：{@link OssService#selectUrlByIds}
+     * 返逗号拼接 URL 串，按 {@code ,} 拆成 list 供 mp {@code <image>} 直接渲染。</p>
+     */
+    private List<String> resolveImageUrls(String ossIds) {
+        if (StringUtils.isBlank(ossIds)) {
+            return List.of();
+        }
+        String urls = ossService.selectUrlByIds(ossIds);
+        if (StringUtils.isBlank(urls)) {
+            return List.of();
+        }
+        return Arrays.stream(urls.split(","))
+            .map(String::trim)
+            .filter(StringUtils::isNotBlank)
+            .collect(Collectors.toList());
     }
 
     private PigMarketingVo toVo(PigMarketing e) {
@@ -136,6 +162,7 @@ public class SlaughterServiceImpl implements ISlaughterService {
         v.setStoreId(e.getStoreId());
         v.setIsRoom(e.getIsRoom());
         v.setOssIds(e.getOssIds());
+        v.setImageUrls(resolveImageUrls(e.getOssIds()));
         v.setOperatorId(e.getOperatorId());
         v.setOperator(e.getOperator());
         v.setRemark(e.getRemark());

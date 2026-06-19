@@ -72,8 +72,8 @@ public class AppletPigBurnRecordController extends BaseController {
     /**
      * mp 按产品取已配置的入库库位列表（MP-PRODIN 决策 #2）。
      *
-     * <p>产品入库弹层打开时调用：返回该产品 {@code store_location_id} 配置的入库库位（启用 + 冻品库）。
-     * 单库位 → 前端只读预填；多库位 → 可选随机默认其一；空 → 前端回落全量冻品库可选。</p>
+     * <p>产品入库弹层打开时调用：返回该产品 {@code store_location_id} 配置的入库库位（启用态，不限库位类型）。
+     * 单库位 → 前端只读预填；多库位 → 可选随机默认其一；空 → 前端回落自由选库位。</p>
      */
     @SaCheckLogin
     @GetMapping("/product/{productId}/inboundLocations")

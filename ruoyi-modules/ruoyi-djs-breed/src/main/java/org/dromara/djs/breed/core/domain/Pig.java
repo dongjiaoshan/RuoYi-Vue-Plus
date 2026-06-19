@@ -61,6 +61,9 @@ public class Pig extends TenantEntity {
     /** 猪只类型（字典 pig_type：sow/boar/piglet/fattening）。 */
     private String pigType;
 
+    /** 是否阉割（1=否 2=是）：阉割选猪 picker 仅列 is_castrated=1（否）；recordCastrate 成功后置 2。 */
+    private Integer isCastrated;
+
     /** 品种编码（引用 t_farm_breed_info）。 */
     private String pigBreedCode;
 

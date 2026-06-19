@@ -65,4 +65,10 @@ public class FarrowLitterVo implements Serializable {
 
     /** 分娩舍栏名（概况卡"…11栏"后段；冗余自 farrow.pen_name）。 */
     private String penName;
+
+    /** 仔猪品系中文名（继承母猪品系；母猪 pig_strain_code → 主数据/字典翻译）。 */
+    private String pigletStrainName;
+
+    /** 仔猪品种中文名（继承母猪品种；母猪 pig_breed_code → 主数据/字典翻译）。 */
+    private String pigletBreedName;
 }

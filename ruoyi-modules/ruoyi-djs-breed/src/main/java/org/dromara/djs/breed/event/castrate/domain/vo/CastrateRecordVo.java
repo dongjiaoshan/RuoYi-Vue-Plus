@@ -48,6 +48,13 @@ public class CastrateRecordVo implements Serializable {
     /** 阉割人员姓名（castrater userId → sys_user nickname；翻不到回落 null）。 */
     private String castraterName;
 
+    /** 猪只类型中文名（djs_pig_type 翻译：种母猪/种公猪/育肥猪/仔猪；翻不到回落 code）。 */
+    private String pigTypeName;
+    /** 猪只品系中文名（t_farm_breed_info 主表优先 → djs_pig_strain 字典回落 → code 回落）。 */
+    private String pigStrainName;
+    /** 猪只品种中文名（t_farm_breed_info 主表优先 → djs_pig_breed 字典回落 → code 回落）。 */
+    private String pigBreedName;
+
     @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")
     private LocalDateTime createTime;
 }

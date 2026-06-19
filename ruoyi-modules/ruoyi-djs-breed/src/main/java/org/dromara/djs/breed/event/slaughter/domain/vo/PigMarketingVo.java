@@ -12,6 +12,7 @@ import java.io.Serial;
 import java.io.Serializable;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.util.List;
 
 /**
  * 出栏记录视图（BRD-EVENT-004 SLAUGHTER）。
@@ -39,6 +40,10 @@ public class PigMarketingVo implements Serializable {
     private Long storeId;
     private Integer isRoom;
     private String ossIds;
+
+    /** 出栏照片可访问 URL 列表（后端 JOIN sys_oss resolve，mp 直接渲染）。无照片→空 list。 */
+    private List<String> imageUrls;
+
     private Long operatorId;
 
     /** 出栏操作员 userId（EmployeePicker 所选；snowflake string，出栏记录 tab 回显）。 */

@@ -180,4 +180,31 @@ class PigGrowthServiceImplTest {
             .isInstanceOf(ServiceException.class)
             .hasMessageContaining("growth.not_found");
     }
+
+    @Test
+    @DisplayName("row54 hard delete: deleteById → mapper.deleteById 调一次（不走 3 天校验）")
+    void deleteById_hardDelete() {
+        when(growthMapper.deleteById(20L)).thenReturn(1);
+        int affected = service.deleteById(20L);
+        assertThat(affected).isEqualTo(1);
+        verify(growthMapper, times(1)).deleteById(20L);
+        // hard delete 不读 createTime / 不走 3 天窗口校验
+        verify(growthMapper, never()).selectById(any());
+    }
+
+    @Test
+    @DisplayName("row52 operatorId: BO 显式传记录人 → 落库 operator_id")
+    void recordGrowth_setsOperatorIdFromBo() {
+        Pig pig = mkPig(100L);
+        when(pigMapper.selectById(100L)).thenReturn(pig);
+
+        GrowthBo bo = mkBo(100L, new BigDecimal("85.50"));
+        bo.setOperatorId("1899000000000000001");
+
+        service.addGrowthRecord(bo);
+
+        ArgumentCaptor<PigGrowth> cap = ArgumentCaptor.forClass(PigGrowth.class);
+        verify(growthMapper, times(1)).insert(cap.capture());
+        assertThat(cap.getValue().getOperatorId()).isEqualTo(1899000000000000001L);
+    }
 }

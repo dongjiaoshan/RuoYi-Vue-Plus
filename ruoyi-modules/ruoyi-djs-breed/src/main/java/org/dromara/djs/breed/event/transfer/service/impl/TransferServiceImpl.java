@@ -27,6 +27,7 @@ import org.dromara.djs.breed.farm.domain.Barn;
 import org.dromara.djs.breed.farm.domain.Pen;
 import org.dromara.djs.breed.farm.mapper.BarnMapper;
 import org.dromara.djs.breed.farm.mapper.PenMapper;
+import org.dromara.djs.breed.farm.service.PenCapacityChecker;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -58,6 +59,7 @@ public class TransferServiceImpl implements ITransferService {
     private final BarnMapper barnMapper;
     private final PenMapper penMapper;
     private final IPigCoreService pigCoreService;
+    private final PenCapacityChecker penCapacityChecker;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -111,6 +113,14 @@ public class TransferServiceImpl implements ITransferService {
         Pen newPen = bo.getNewPenId() == null ? null : penMapper.selectById(bo.getNewPenId());
         if (bo.getNewPenId() != null && newPen == null) {
             throw new ServiceException(I18nMessages.t("transfer.new_pen.not_found", bo.getNewPenId()), 400);
+        }
+
+        // row59：落栏前超容校验（仔猪入栏不计容量、不校验；本次转移 1 头）。
+        // 若目标栏为转出前所在栏（原地转移）不会净增占用，usedCount 已含本猪，跳过避免自撞。
+        if (bo.getNewPenId() != null
+            && !"piglet".equals(pig.getPigType())
+            && !bo.getNewPenId().equals(pig.getPenId())) {
+            penCapacityChecker.checkCapacity(bo.getNewPenId(), 1);
         }
 
         // 1. 记录转移历史

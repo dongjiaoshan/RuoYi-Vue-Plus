@@ -139,4 +139,27 @@ public interface BarInfoMapper extends BaseMapperPlus<BarInfo, BarInfo> {
         """)
     IPage<TodayBarVo> selectTodayInStockBarPage(IPage<TodayBarVo> page);
 
+    /**
+     * 查全部「在库」白条（mp 物资领用·白条批次卡列表 issueWhiteBarBatches）。
+     *
+     * <p>口径 = {@code status='in_stock'}（已入库 / 可领，一行 = 一条实物白条整只），不限当天（与
+     * {@link #selectTodayInStockBarPage} 的区别 = 去掉 {@code DATE(in_time)=CURDATE()} 过滤）。
+     * 复用 {@link TodayBarVo} 作行类型（id / barId / earNo / inWeight / inTime / status）；
+     * 预冷时长由 service 按 {@code in_time} 实时计算，不读 {@code acid_remove_time}（cut_done 前恒 NULL）。
+     * 按 in_time DESC, id DESC 排序（最新入库排前）。无在库白条 → 空 list（前端 graceful empty）。</p>
+     *
+     * <p>显式 {@code tenant_id='1001' AND del_flag='0'}（V1 单租户，原生 SQL 不自动注入）。</p>
+     *
+     * @return 在库白条 minimal 行（id / barId / earNo / inWeight / inTime / status）
+     */
+    @Select("""
+        SELECT id, bar_id AS barId, ear_no AS earNo, in_weight AS inWeight, in_time AS inTime, status
+          FROM t_warehouse_bar_info
+         WHERE tenant_id = '1001'
+           AND del_flag = '0'
+           AND status = 'in_stock'
+         ORDER BY in_time DESC, id DESC
+        """)
+    java.util.List<TodayBarVo> selectInStockBars();
+
 }

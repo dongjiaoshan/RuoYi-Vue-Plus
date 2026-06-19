@@ -8,6 +8,7 @@ import org.dromara.djs.warehouse.product.domain.query.ProductInfoQuery;
 import org.dromara.djs.warehouse.product.domain.vo.ProductFlowRecordVo;
 import org.dromara.djs.warehouse.product.domain.vo.ProductInfoVo;
 import org.dromara.djs.warehouse.product.domain.vo.ProductProductionRecordVo;
+import org.dromara.djs.warehouse.location.domain.vo.LocationPickerVo;
 
 import java.util.Collection;
 import java.util.Date;
@@ -109,5 +110,24 @@ public interface IProductInfoService {
      * @return 入库流水 ID
      */
     Long inbound(ProductStockInBo bo);
+
+    /**
+     * 按产品取其「存储仓库」配置的启用库位（mp picker 通用）。
+     *
+     * <p>读 {@code product.store_location_id}（逗号分隔库位 ID 串）→ {@code IN(ids)}
+     * 且 {@code location_status=1} 查 {@link LocationInfo} → 按配置顺序回 {@link LocationPickerVo}。
+     * 与 burn 的 {@code queryProductInboundLocations} 逻辑等同，额外支持可选 {@code locationType} 过滤。</p>
+     *
+     * <ul>
+     *   <li>{@code store_location_id} 空 / 解析后无有效 ID → 返回 {@code Collections.emptyList()}</li>
+     *   <li>脏数据（非数字 ID）try/catch 跳过，不拖垮整体取数</li>
+     *   <li>{@code locationType} 非空时按类型精确过滤</li>
+     * </ul>
+     *
+     * @param productId    产品 ID
+     * @param locationType 字典 {@code djs_location_type}（可空，非空时精确过滤）
+     * @return 库位 picker 列表（按 store_location_id 配置顺序）
+     */
+    List<LocationPickerVo> queryStoreLocations(Long productId, String locationType);
 
 }

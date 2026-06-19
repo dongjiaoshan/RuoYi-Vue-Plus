@@ -72,7 +72,7 @@ public class PigBurnRecordBo extends BaseEntity {
     private BigDecimal arriveWeight;
 
     /**
-     * 入白条库的库位 ID（限冻品库；必填）。
+     * 入库库位 ID（由产品「存储仓库」配置驱动，不限库位类型；必填）。
      */
     @NotNull(message = "{burn.location_id.required}")
     private Long locationId;

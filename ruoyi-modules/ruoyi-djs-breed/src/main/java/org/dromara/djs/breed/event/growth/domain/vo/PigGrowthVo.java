@@ -69,6 +69,14 @@ public class PigGrowthVo implements Serializable {
      */
     private Integer ageDays;
 
+    /**
+     * 猪只类型中文（种母猪 / 种公猪 / 育肥猪 / 仔猪）；缺基准类型 → null。
+     * <p>fe-growth row54：mp 记录列表卡第二行展示「猪只类型 / 日龄 / 背膘厚度 / 记录人员」。
+     * service 层 {@code queryPage} 按 pig_type 批量 enrich（与 ageDays 同批查 pig 防 N+1）；
+     * 新增 / 详情接口不填。</p>
+     */
+    private String pigTypeName;
+
     @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")
     private LocalDateTime createTime;
 }

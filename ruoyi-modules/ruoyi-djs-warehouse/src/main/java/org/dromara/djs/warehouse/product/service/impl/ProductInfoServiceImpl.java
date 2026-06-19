@@ -22,6 +22,7 @@ import org.dromara.djs.warehouse.check.service.IStockCheckService;
 import org.dromara.djs.warehouse.flow.domain.StockFlow;
 import org.dromara.djs.warehouse.flow.mapper.StockFlowMapper;
 import org.dromara.djs.warehouse.location.domain.LocationInfo;
+import org.dromara.djs.warehouse.location.domain.vo.LocationPickerVo;
 import org.dromara.djs.warehouse.location.mapper.LocationInfoMapper;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.domain.bo.GiftBoxBo;
@@ -44,6 +45,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
@@ -557,6 +559,55 @@ public class ProductInfoServiceImpl extends DjsBaseServiceImpl<ProductInfoMapper
         if (!matched) {
             throw new ServiceException("该产品已配置专属存储库位，只能入库到配置库位");
         }
+    }
+
+    @Override
+    public List<LocationPickerVo> queryStoreLocations(Long productId, String locationType) {
+        if (productId == null) {
+            return Collections.emptyList();
+        }
+        ProductInfo product = baseMapper.selectById(productId);
+        if (product == null || StringUtils.isBlank(product.getStoreLocationId())) {
+            // 该产品未配置存储仓库 → 返回空，前端回落自由选库位
+            return Collections.emptyList();
+        }
+        // store_location_id 逗号分隔库位 ID 列表（doc/11 §2.5；V2 改关联表）
+        List<Long> locationIds = new ArrayList<>();
+        for (String token : product.getStoreLocationId().split(",")) {
+            String trimmed = token.trim();
+            if (StringUtils.isNotBlank(trimmed)) {
+                try {
+                    locationIds.add(Long.valueOf(trimmed));
+                } catch (NumberFormatException ignore) {
+                    // 脏数据（非数字 ID）跳过，不拖垮整体取数
+                }
+            }
+        }
+        if (locationIds.isEmpty()) {
+            return Collections.emptyList();
+        }
+        // 仅返启用库位（location_status=1），可选 locationType 过滤，保持配置顺序
+        List<LocationInfo> rows = locationInfoMapper.selectList(
+            new LambdaQueryWrapper<LocationInfo>()
+                .in(LocationInfo::getId, locationIds)
+                .eq(LocationInfo::getLocationStatus, 1)
+                .eq(StringUtils.isNotBlank(locationType), LocationInfo::getLocationType, locationType));
+        Map<Long, LocationInfo> rowMap = rows.stream()
+            .collect(Collectors.toMap(LocationInfo::getId, l -> l, (a, b) -> a));
+        List<LocationPickerVo> result = new ArrayList<>(locationIds.size());
+        for (Long id : locationIds) {
+            LocationInfo l = rowMap.get(id);
+            if (l == null) {
+                continue;
+            }
+            LocationPickerVo vo = new LocationPickerVo();
+            vo.setId(l.getId());
+            vo.setLocationCode(l.getLocationCode());
+            vo.setLocationName(l.getLocationName());
+            vo.setLocationType(l.getLocationType());
+            result.add(vo);
+        }
+        return result;
     }
 
     /**

@@ -75,6 +75,8 @@ public class PigAppletController {
      *                        其余调用方不传（默认 false）行为不变。
      * @param minAgeDays    最小日龄过滤（天）：仅返回 {@code 日龄 >= minAgeDays} 的猪只（出栏选猪传出栏
      *                      配置 {@code slaughter_age_days}，只列到龄肥猪）。{@code null}/≤0 → 不过滤。
+     * @param isCastrated   是否阉割过滤（{@code 1}=否 / {@code 2}=是）：阉割选猪传 {@code 1}（仅未阉割猪可选）。
+     *                      {@code null} → 不过滤（向后兼容所有现有调用方）。
      */
     @SaCheckLogin
     @SaCheckPermission("djs:applet:pig:search")
@@ -88,9 +90,10 @@ public class PigAppletController {
         @RequestParam(required = false, defaultValue = "20") Integer limit,
         @RequestParam(required = false) String dueType,
         @RequestParam(required = false) Boolean excludeNullBarn,
-        @RequestParam(required = false) Integer minAgeDays
+        @RequestParam(required = false) Integer minAgeDays,
+        @RequestParam(required = false) Integer isCastrated
     ) {
-        return R.ok(pigCoreService.searchByEarKeyword(earNoKeyword, statusFilter, sexFilter, pigTypeFilter, barnCode, limit, dueType, excludeNullBarn, minAgeDays));
+        return R.ok(pigCoreService.searchByEarKeyword(earNoKeyword, statusFilter, sexFilter, pigTypeFilter, barnCode, limit, dueType, excludeNullBarn, minAgeDays, isCastrated));
     }
 
     /**
@@ -120,6 +123,7 @@ public class PigAppletController {
      * @param statusFilter  状态 CSV（与 search 同语义；含 END 放行终态）
      * @param sexFilter     {@code "M"} / {@code "F"}
      * @param pigTypeFilter {@code "sow"/"boar"/"piglet"/"fattening"}
+     * @param earNoKeyword  耳号关键字（row60：栋舍 chip 头数随搜索缩减，与 search 同 LIKE 口径）；空 → 不过滤
      */
     @SaCheckLogin
     @SaCheckPermission("djs:applet:pig:search")
@@ -127,9 +131,10 @@ public class PigAppletController {
     public R<List<PigBarnCountVo>> barnCount(
         @RequestParam(required = false) String statusFilter,
         @RequestParam(required = false) String sexFilter,
-        @RequestParam(required = false) String pigTypeFilter
+        @RequestParam(required = false) String pigTypeFilter,
+        @RequestParam(required = false) String earNoKeyword
     ) {
-        return R.ok(pigCoreService.countByBarn(statusFilter, sexFilter, pigTypeFilter));
+        return R.ok(pigCoreService.countByBarn(statusFilter, sexFilter, pigTypeFilter, earNoKeyword));
     }
 
     /**

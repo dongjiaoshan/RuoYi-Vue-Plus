@@ -7,6 +7,7 @@ import org.dromara.djs.breed.farm.domain.bo.PenBo;
 import org.dromara.djs.breed.farm.mapper.FarmStatMapper;
 import org.dromara.djs.breed.farm.mapper.PenMapper;
 import org.dromara.djs.breed.farm.mapper.PigReferenceCheckMapper;
+import org.dromara.djs.breed.farm.service.PenCapacityChecker;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
@@ -57,11 +58,14 @@ class PenServiceImplTest {
     @Mock
     private FarmStatMapper farmStatMapper;
 
+    @Mock
+    private PenCapacityChecker penCapacityChecker;
+
     private TestablePenServiceImpl service;
 
     static class TestablePenServiceImpl extends PenServiceImpl {
-        TestablePenServiceImpl(PenMapper m, PigReferenceCheckMapper p, FarmStatMapper stat) {
-            super(m, p, stat);
+        TestablePenServiceImpl(PenMapper m, PigReferenceCheckMapper p, FarmStatMapper stat, PenCapacityChecker cap) {
+            super(m, p, stat, cap);
         }
 
         @Override
@@ -82,7 +86,7 @@ class PenServiceImplTest {
 
     @BeforeEach
     void setup() {
-        service = new TestablePenServiceImpl(penMapper, pigReferenceCheckMapper, farmStatMapper);
+        service = new TestablePenServiceImpl(penMapper, pigReferenceCheckMapper, farmStatMapper, penCapacityChecker);
     }
 
     private PenBo sampleBo() {

@@ -23,4 +23,10 @@ public class PigDetailVo extends PigVo {
 
     /** 最近状态变更记录（默认按 change_time DESC 截前 20 条）。 */
     private List<PigStatusRecordVo> recentHistory;
+
+    /**
+     * 该猪最新生长记录主图 OSS ID（{@code t_farm_pig_growth} 按 measure_date DESC 取首条的 photo_oss_ids 第一张）。
+     * <p>详情顶卡无主图时回退用此图；无生长记录 / 该记录无照片 → null。</p>
+     */
+    private String growthPhotoOssId;
 }

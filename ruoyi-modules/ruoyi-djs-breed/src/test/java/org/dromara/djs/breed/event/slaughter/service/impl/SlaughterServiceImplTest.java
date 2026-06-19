@@ -1,6 +1,7 @@
 package org.dromara.djs.breed.event.slaughter.service.impl;
 
 import org.dromara.common.core.exception.ServiceException;
+import org.dromara.common.core.service.OssService;
 import org.dromara.djs.breed.core.domain.Pig;
 import org.dromara.djs.breed.core.domain.bo.PigEventBo;
 import org.dromara.djs.breed.core.enums.PigLifecycle;
@@ -57,12 +58,14 @@ class SlaughterServiceImplTest {
     private IPigCoreService pigCoreService;
     @Mock
     private ApplicationEventPublisher eventPublisher;
+    @Mock
+    private OssService ossService;
 
     private SlaughterServiceImpl service;
 
     @BeforeEach
     void setup() {
-        service = new SlaughterServiceImpl(marketingMapper, pigMapper, pigCoreService, eventPublisher);
+        service = new SlaughterServiceImpl(marketingMapper, pigMapper, pigCoreService, eventPublisher, ossService);
     }
 
     private Pig mkFatteningPig() {

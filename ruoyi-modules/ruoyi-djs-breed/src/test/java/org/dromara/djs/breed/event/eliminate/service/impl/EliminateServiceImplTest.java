@@ -1,6 +1,7 @@
 package org.dromara.djs.breed.event.eliminate.service.impl;
 
 import org.dromara.common.core.exception.ServiceException;
+import org.dromara.common.core.service.DictService;
 import org.dromara.common.core.service.OssService;
 import org.dromara.djs.breed.core.domain.Pig;
 import org.dromara.djs.breed.core.domain.bo.PigEventBo;
@@ -11,6 +12,8 @@ import org.dromara.djs.breed.core.service.IPigCoreService;
 import org.dromara.djs.breed.event.eliminate.domain.PigCulling;
 import org.dromara.djs.breed.event.eliminate.domain.bo.EliminateBo;
 import org.dromara.djs.breed.event.eliminate.mapper.PigCullingMapper;
+import org.dromara.djs.breed.farm.mapper.BarnMapper;
+import org.dromara.djs.breed.farm.mapper.PenMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
@@ -50,15 +53,21 @@ class EliminateServiceImplTest {
     @Mock
     private PigMapper pigMapper;
     @Mock
+    private BarnMapper barnMapper;
+    @Mock
+    private PenMapper penMapper;
+    @Mock
     private IPigCoreService pigCoreService;
     @Mock
     private OssService ossService;
+    @Mock
+    private DictService dictService;
 
     private EliminateServiceImpl service;
 
     @BeforeEach
     void setup() {
-        service = new EliminateServiceImpl(cullingMapper, pigMapper, pigCoreService, ossService);
+        service = new EliminateServiceImpl(cullingMapper, pigMapper, barnMapper, penMapper, pigCoreService, ossService, dictService);
     }
 
     private Pig mkPig(Long id, PigLifecycle status) {

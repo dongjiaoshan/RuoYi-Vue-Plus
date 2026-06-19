@@ -17,6 +17,7 @@ import org.dromara.djs.breed.farm.mapper.FarmStatMapper;
 import org.dromara.djs.breed.farm.mapper.PenMapper;
 import org.dromara.djs.breed.farm.mapper.PigReferenceCheckMapper;
 import org.dromara.djs.breed.farm.service.IPenService;
+import org.dromara.djs.breed.farm.service.PenCapacityChecker;
 import org.dromara.djs.common.base.DjsBaseServiceImpl;
 import org.springframework.stereotype.Service;
 
@@ -42,13 +43,16 @@ public class PenServiceImpl extends DjsBaseServiceImpl<PenMapper, Pen> implement
 
     private final PigReferenceCheckMapper pigReferenceCheckMapper;
     private final FarmStatMapper farmStatMapper;
+    private final PenCapacityChecker penCapacityChecker;
 
     public PenServiceImpl(PenMapper baseMapper,
                           PigReferenceCheckMapper pigReferenceCheckMapper,
-                          FarmStatMapper farmStatMapper) {
+                          FarmStatMapper farmStatMapper,
+                          PenCapacityChecker penCapacityChecker) {
         super(baseMapper);
         this.pigReferenceCheckMapper = pigReferenceCheckMapper;
         this.farmStatMapper = farmStatMapper;
+        this.penCapacityChecker = penCapacityChecker;
     }
 
     @Override
@@ -63,17 +67,38 @@ public class PenServiceImpl extends DjsBaseServiceImpl<PenMapper, Pen> implement
     public TableDataInfo<PenVo> queryPageList(PenQuery query, PageQuery pageQuery) {
         LambdaQueryWrapper<Pen> wrapper = buildQueryWrapper(query);
         Page<PenVo> page = baseMapper.selectVoPage(pageQuery.build(), wrapper);
+        enrichCapacity(page.getRecords());
         return TableDataInfo.build(page);
     }
 
     @Override
     public List<PenVo> queryList(PenQuery query) {
-        return baseMapper.selectVoList(buildQueryWrapper(query));
+        List<PenVo> rows = baseMapper.selectVoList(buildQueryWrapper(query));
+        enrichCapacity(rows);
+        return rows;
     }
 
     @Override
     public PenVo queryById(Long id) {
-        return baseMapper.selectVoById(id);
+        PenVo vo = baseMapper.selectVoById(id);
+        if (vo != null) {
+            enrichCapacity(List.of(vo));
+        }
+        return vo;
+    }
+
+    /**
+     * 列表/详情 VO 填容量口径字段（row59）：capacity 按 pen_type 推导（覆盖 DB capacity 列），
+     * usedCount 实时统计该栏在栏头数（非终止态 + 排除仔猪）。
+     */
+    private void enrichCapacity(List<PenVo> rows) {
+        if (rows == null || rows.isEmpty()) {
+            return;
+        }
+        for (PenVo vo : rows) {
+            vo.setCapacity(penCapacityChecker.capacityOf(vo.getPenType()));
+            vo.setUsedCount(penCapacityChecker.usedCount(vo.getId()));
+        }
     }
 
     @Override

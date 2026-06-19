@@ -70,6 +70,22 @@ public class PigSearchVo implements Serializable {
     private String pigStrainName;
 
     /**
+     * 猪只类型中文（种母猪 / 种公猪 / 育肥猪 / 仔猪）；缺基准类型 → null。
+     * <p>fe-growth row50/51：mp 生长记录「育肥待办」/「其他猪只」卡片「猪只类型」格用。
+     * service 按 pig_type 映射；缺位时 mp 卡片该格不渲染。仅生长记录选猪场景 enrich，
+     * 其余 picker 调用方不填（保持 VO 轻量）。</p>
+     */
+    private String pigTypeName;
+
+    /**
+     * 该猪上次生长记录日期（yyyy-MM-dd）= {@code t_farm_pig_growth} 该猪 MAX(measure_date)；无记录 → null。
+     * <p>fe-growth row50/51：mp 生长记录「育肥待办」/「其他猪只」卡片「上次测量」格用，提示距上次体测多久。
+     * service 按 pig_id 分组取最近一条 enrich（批量防 N+1）；缺位时 mp 卡片该格显「—」。仅生长记录选猪场景 enrich。</p>
+     */
+    @JsonFormat(pattern = "yyyy-MM-dd")
+    private LocalDate lastMeasureDate;
+
+    /**
      * 终止原因（{@code djs_pig_end_reason} 字典：{@code DEAD/CULL/MARKET}）。
      *
      * <p>仅在 {@code currentStatus=END} 时非空（MP-UX-002 给 mp PigPicker 列表

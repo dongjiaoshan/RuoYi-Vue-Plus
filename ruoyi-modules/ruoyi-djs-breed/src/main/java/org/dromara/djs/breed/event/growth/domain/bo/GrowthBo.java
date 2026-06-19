@@ -2,6 +2,7 @@ package org.dromara.djs.breed.event.growth.domain.bo;
 
 import jakarta.validation.constraints.DecimalMax;
 import jakarta.validation.constraints.DecimalMin;
+import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
 import lombok.Data;
@@ -56,6 +57,14 @@ public class GrowthBo implements Serializable {
     /** 测量照片 OSS IDs（逗号分隔；bizType=grow_photo）。 */
     @Size(max = 500, message = "growth.photo.size")
     private String photoOssIds;
+
+    /**
+     * 记录人 / 测量人 userId（snowflake string，EmployeePicker 选；必填）。
+     * <p>fe-growth row52：mp 录入由现场操作人显式选「记录人员」，落库 {@code t_farm_pig_growth.operator_id}；
+     * 全链路 string 防 Long 截断，service 入口 parse 成 Long。</p>
+     */
+    @NotBlank(message = "growth.operator.required")
+    private String operatorId;
 
     /** 备注。 */
     @Size(max = 500, message = "growth.remark.size")

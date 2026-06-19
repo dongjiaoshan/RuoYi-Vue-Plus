@@ -44,4 +44,18 @@ public interface PigReferenceCheckMapper {
     @Select("SELECT COUNT(*) FROM t_farm_pig_info WHERE pen_id = #{penId} AND del_flag = '0'")
     long countActiveByPenId(@Param("penId") Long penId);
 
+    /**
+     * 按 pen_id 统计当前在栏头数（容量口径）：未删除 + 非终止态（current_status != 'END'）+ 排除仔猪（pig_type='piglet'）。
+     *
+     * <p>用于栏位容量占用计算（{@code usedCount}）与超容校验。仔猪入栏不计容量、不占名额。</p>
+     *
+     * @param penId 栏位 ID
+     * @return 计入容量的在栏头数
+     */
+    @Select("SELECT COUNT(*) FROM t_farm_pig_info "
+        + "WHERE pen_id = #{penId} AND del_flag = '0' "
+        + "AND (current_status IS NULL OR current_status <> 'END') "
+        + "AND pig_type <> 'piglet'")
+    long countCapacityUsedByPenId(@Param("penId") Long penId);
+
 }

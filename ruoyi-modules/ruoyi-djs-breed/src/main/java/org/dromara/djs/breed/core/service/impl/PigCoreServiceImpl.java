@@ -6,6 +6,7 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.core.service.DictService;
+import org.dromara.common.core.service.OssService;
 import org.dromara.common.core.utils.StringUtils;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
@@ -40,7 +41,10 @@ import org.dromara.djs.breed.farm.domain.Barn;
 import org.dromara.djs.breed.farm.domain.Pen;
 import org.dromara.djs.breed.farm.mapper.BarnMapper;
 import org.dromara.djs.breed.farm.mapper.PenMapper;
+import org.dromara.djs.breed.event.growth.domain.PigGrowth;
+import org.dromara.djs.breed.event.growth.mapper.PigGrowthMapper;
 import org.dromara.djs.breed.production.service.IProductionCycleConfigService;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -98,6 +102,21 @@ public class PigCoreServiceImpl implements IPigCoreService {
     private final DictService dictService;
     private final IProductionCycleConfigService productionCycleConfigService;
     private final BreedInfoMapper breedInfoMapper;
+
+    /**
+     * 生长记录 mapper（详情顶卡主图回退 + search「上次测量」enrich 用）。字段注入而非构造注入：保持
+     * {@link PigCoreServiceImpl} 9 参构造器签名不变（{@code PigCoreServiceImplTest} 直接 {@code new} 构造，
+     * 改签名会连带改单测）；本字段仅 {@link #queryDetail} / {@link #searchByEarKeyword} 用，单测不覆盖该路径，注入与否不影响既有用例。
+     */
+    @Autowired
+    private PigGrowthMapper pigGrowthMapper;
+
+    /**
+     * OSS 解析服务（详情顶卡生长照片 ossId → 可访问 URL）。字段注入理由同 {@link #pigGrowthMapper}：
+     * 保持构造器签名不变；mp {@code <image>} 带不了 Bearer token，必须后端把 ossId 预解析成 URL。
+     */
+    @Autowired
+    private OssService ossService;
 
     public PigCoreServiceImpl(PigMapper pigMapper,
                               PigStatusRecordMapper statusRecordMapper,
@@ -313,7 +332,36 @@ public class PigCoreServiceImpl implements IPigCoreService {
             .orderByDesc(PigStatusRecord::getChangeTime, PigStatusRecord::getId)
             .last("LIMIT " + RECENT_HISTORY_LIMIT);
         detail.setRecentHistory(statusRecordMapper.selectVoList(w));
+        // row61：字段名沿用 growthPhotoOssId（FE 已按 <image src> 消费），但存的是 OSS 解析后的**可访问 URL**
+        // （非裸 ossId）；mp <image> 带不了 Bearer token，必须后端预解析。无生长记录 / 无照片 → null。
+        detail.setGrowthPhotoOssId(resolveLatestGrowthPhotoUrl(pigId));
         return detail;
+    }
+
+    /**
+     * 该猪最新生长记录主图「可访问 URL」（row61）：{@code t_farm_pig_growth} 按 measure_date DESC（同日按 id DESC）
+     * 取首条，取其 {@code photo_oss_ids}（逗号分隔多图）第一张 ossId，再经 {@link OssService#selectUrlByIds}
+     * 解析成可直接给 mp {@code <image>} 渲染的 URL。无生长记录 / 该记录无照片 / 解析失败 → null。
+     */
+    private String resolveLatestGrowthPhotoUrl(Long pigId) {
+        PigGrowth latest = pigGrowthMapper.selectOne(new LambdaQueryWrapper<PigGrowth>()
+            .eq(PigGrowth::getPigId, pigId)
+            .orderByDesc(PigGrowth::getMeasureDate, PigGrowth::getId)
+            .last("LIMIT 1"));
+        if (latest == null || StringUtils.isBlank(latest.getPhotoOssIds())) {
+            return null;
+        }
+        String firstOssId = latest.getPhotoOssIds().split(",")[0].trim();
+        if (StringUtils.isBlank(firstOssId)) {
+            return null;
+        }
+        String url = ossService.selectUrlByIds(firstOssId);
+        if (StringUtils.isBlank(url)) {
+            return null;
+        }
+        // selectUrlByIds 多 id 时逗号拼接；单 id 取首段即可，trim 去空白
+        String first = url.split(",")[0].trim();
+        return StringUtils.isNotBlank(first) ? first : null;
     }
 
     @Override
@@ -564,7 +612,8 @@ public class PigCoreServiceImpl implements IPigCoreService {
                                                 Integer limit,
                                                 String dueType,
                                                 Boolean excludeNullBarn,
-                                                Integer minAgeDays) {
+                                                Integer minAgeDays,
+                                                Integer isCastrated) {
         int effectiveLimit = clampLimit(limit);
         // 出栏选猪：仅返回到龄肥猪（日龄 >= slaughter_age_days）。日龄 = NOW − birth_date（缺则 introduce_date）；
         // 两者均空 → DATEDIFF 为 NULL，比较结果非真 → 自动剔除（无生日的猪不算到龄）。minAgeDays ≤0/null 不过滤。
@@ -604,6 +653,8 @@ public class PigCoreServiceImpl implements IPigCoreService {
             .eq(pigTypes.size() == 1, Pig::getPigType, pigTypes.isEmpty() ? null : pigTypes.get(0))
             .in(pigTypes.size() > 1, Pig::getPigType, pigTypes)
             .eq(barnIdFilter != null, Pig::getBarnId, barnIdFilter)
+            // FIX-BRD-CASTRATE-ISCASTRATED-001：阉割选猪传 isCastrated=1（仅未阉割猪可选）；null → 不过滤。
+            .eq(isCastrated != null, Pig::getIsCastrated, isCastrated)
             // #23a：opt-in 排除无栋舍归属猪只，与 countByBarn 的 .isNotNull(barn_id) 口径一致
             .isNotNull(dropNullBarn, Pig::getBarnId)
             // 出栏选猪：日龄 >= minAgeDays（到龄肥猪）。{0} 占位 + apply 防注入；
@@ -650,6 +701,9 @@ public class PigCoreServiceImpl implements IPigCoreService {
         // 如 04=国寿黑）；字典 djs_pig_breed(04=杜洛克) / djs_pig_strain 仅作回落。批量预载一次防 N+1。
         Map<String, String> breedNameMap = loadBreedStrainNameMap(1);
         Map<String, String> strainNameMap = loadBreedStrainNameMap(2);
+        // row51「其他猪只」卡：批量取本页各猪上次生长记录日期 MAX(measure_date)（一次 IN 查防 N+1）。
+        Set<Long> pageIds = pigs.stream().map(Pig::getId).filter(Objects::nonNull).collect(Collectors.toSet());
+        Map<Long, LocalDate> lastMeasureMap = loadLastMeasureDateMap(pageIds);
         List<PigSearchVo> result = new ArrayList<>(pigs.size());
         for (Pig p : pigs) {
             PigSearchVo vo = new PigSearchVo();
@@ -657,6 +711,9 @@ public class PigCoreServiceImpl implements IPigCoreService {
             vo.setEarNo(p.getEarNo());
             vo.setPigSex(p.getPigSex());
             vo.setPigType(p.getPigType());
+            // row51「其他猪只」卡：猪只类型中文（与 be-growth PigGrowthServiceImpl.toPigTypeName 同口径）+ 上次测量日期。
+            vo.setPigTypeName(toPigTypeName(p.getPigType()));
+            vo.setLastMeasureDate(lastMeasureMap.get(p.getId()));
             vo.setCurrentStatus(p.getCurrentStatus());
             // 品种/品系编码 + 中文名（mp 选猪弹层「品种/品系」标签）
             vo.setPigBreedCode(p.getPigBreedCode());
@@ -776,7 +833,7 @@ public class PigCoreServiceImpl implements IPigCoreService {
     }
 
     @Override
-    public List<PigBarnCountVo> countByBarn(String statusFilter, String sexFilter, String pigTypeFilter) {
+    public List<PigBarnCountVo> countByBarn(String statusFilter, String sexFilter, String pigTypeFilter, String earNoKeyword) {
         List<String> statuses = parseStatusFilter(statusFilter);
         boolean callerWantsEnd = statuses.contains(PigLifecycle.END.name());
 
@@ -788,6 +845,8 @@ public class PigCoreServiceImpl implements IPigCoreService {
 
         LambdaQueryWrapper<Pig> w = new LambdaQueryWrapper<Pig>()
             .ne(!callerWantsEnd, Pig::getCurrentStatus, PigLifecycle.END.name())
+            // row60：栋舍 chip 头数随耳号搜索缩减，与 searchByEarKeyword 同口径（earNoKeyword LIKE）；空 → 不过滤
+            .like(StringUtils.isNotBlank(earNoKeyword), Pig::getEarNo, earNoKeyword)
             .eq(StringUtils.isNotBlank(sexFilter), Pig::getPigSex, sexFilter)
             .eq(pigTypes.size() == 1, Pig::getPigType, pigTypes.isEmpty() ? null : pigTypes.get(0))
             .in(pigTypes.size() > 1, Pig::getPigType, pigTypes)
@@ -834,6 +893,48 @@ public class PigCoreServiceImpl implements IPigCoreService {
                 .eq(Barn::getBarnCode, barnCode)
                 .last("LIMIT 1"));
         return barn == null ? null : barn.getId();
+    }
+
+    /**
+     * 猪只类型 code → 中文（种母猪 / 种公猪 / 育肥猪 / 仔猪）。row51「其他猪只」卡用，
+     * 与 be-growth {@code PigGrowthServiceImpl.toPigTypeName} 显式映射口径一致（带「种」前缀，
+     * 不走字典 djs_pig_type 的「母猪 / 公猪」标签）；未知 code → null。
+     */
+    private String toPigTypeName(String pigType) {
+        if (StringUtils.isBlank(pigType)) {
+            return null;
+        }
+        return switch (pigType) {
+            case "sow" -> "种母猪";
+            case "boar" -> "种公猪";
+            case "fattening" -> "育肥猪";
+            case "piglet" -> "仔猪";
+            default -> null;
+        };
+    }
+
+    /**
+     * 批量取各猪「上次生长记录日期」MAX(measure_date)（row51 search 卡「上次测量」格用）。
+     * <p>一次 IN 查全部目标猪的生长记录，内存按 pigId 归约取最大 measure_date，避免逐猪查（N+1）。
+     * 无记录的猪不入 map（调用方 get 得 null）。参 be-growth {@code loadLastMeasureDateMap}。</p>
+     */
+    private Map<Long, LocalDate> loadLastMeasureDateMap(Set<Long> pigIds) {
+        if (pigIds == null || pigIds.isEmpty()) {
+            return Map.of();
+        }
+        List<PigGrowth> records = pigGrowthMapper.selectList(new LambdaQueryWrapper<PigGrowth>()
+            .select(PigGrowth::getPigId, PigGrowth::getMeasureDate)
+            .in(PigGrowth::getPigId, pigIds)
+            .isNotNull(PigGrowth::getMeasureDate));
+        Map<Long, LocalDate> map = new HashMap<>();
+        for (PigGrowth r : records) {
+            if (r.getPigId() == null || r.getMeasureDate() == null) {
+                continue;
+            }
+            map.merge(r.getPigId(), r.getMeasureDate(),
+                (existing, candidate) -> candidate.isAfter(existing) ? candidate : existing);
+        }
+        return map;
     }
 
     /**

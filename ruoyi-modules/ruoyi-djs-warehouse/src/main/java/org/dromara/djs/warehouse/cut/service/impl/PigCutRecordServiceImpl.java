@@ -460,9 +460,12 @@ public class PigCutRecordServiceImpl
                 .likeRight(ProductInfo::getProductId, CUT_PRODUCT_CODE_PREFIX)
                 .orderByAsc(ProductInfo::getProductId));
 
-        // IMG-LIB-001：批量解析产品图（L1 image_oss_id → L2 pork 默认图 → L3 全局），禁 N+1
+        // IMG-LIB-001：批量解析产品图，禁 N+1。L1 优先用户上传缩略图 product_thumb，退回自动匹配 image_oss_id，
+        // 再 L2 pork 默认图 → L3 全局兜底（admin 产品表单唯一图片入口写 product_thumb，须优先取）。
         List<ImageUrlResolver.Item> items = types.stream()
-            .map(p -> new ImageUrlResolver.Item(p.getImageOssId(), CUT_PRODUCT_BELONG_TYPE))
+            .map(p -> new ImageUrlResolver.Item(
+                StringUtils.isNotBlank(p.getProductThumb()) ? p.getProductThumb() : p.getImageOssId(),
+                CUT_PRODUCT_BELONG_TYPE))
             .toList();
         List<String> urls = imageUrlResolver.resolveList(items);
         boolean urlsAligned = urls.size() == types.size();

@@ -11,6 +11,7 @@ import org.dromara.djs.breed.farm.domain.Pen;
 import org.dromara.djs.breed.farm.domain.vo.PenPickerVo;
 import org.dromara.djs.breed.farm.mapper.BarnMapper;
 import org.dromara.djs.breed.farm.mapper.PenMapper;
+import org.dromara.djs.breed.farm.service.PenCapacityChecker;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -47,6 +48,7 @@ public class PenAppletController {
 
     private final PenMapper penMapper;
     private final BarnMapper barnMapper;
+    private final PenCapacityChecker penCapacityChecker;
 
     /**
      * 栏位 picker 列表（依赖 barnCode 过滤，必传）。
@@ -85,8 +87,9 @@ public class PenAppletController {
             vo.setPenCode(p.getPenCode());
             vo.setPenName(p.getPenName());
             vo.setPenType(p.getPenType());
-            vo.setCapacity(p.getCapacity());
-            vo.setUsedCount(p.getCurrentCount());
+            // 容量按 pen_type 推导（row59，非 DB capacity 列）；usedCount 实时统计在栏头数（非终止态 + 排除仔猪）
+            vo.setCapacity(penCapacityChecker.capacityOf(p.getPenType()));
+            vo.setUsedCount(penCapacityChecker.usedCount(p.getId()));
             return vo;
         }).collect(Collectors.toList());
         return R.ok(vos);

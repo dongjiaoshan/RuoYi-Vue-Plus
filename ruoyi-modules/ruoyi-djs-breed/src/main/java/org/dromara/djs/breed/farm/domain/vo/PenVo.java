@@ -47,14 +47,21 @@ public class PenVo implements Serializable {
     private String penType;
 
     /**
-     * 容量。
+     * 容量（由 {@code penType} 推导：产床 farrow=1 / 限位栏 stall=1 / 大栏 big=100 /
+     * 散栏 scatter=100 / 保育栏 nursery_pen=100；非 DB capacity 列，row59）。
      */
     private Integer capacity;
 
     /**
-     * 当前存栏。
+     * 当前存栏（DB current_count 列，业务事件维护）。
      */
     private Integer currentCount;
+
+    /**
+     * 当前在栏头数（容量口径，row59）：未删 + 非终止态（current_status&lt;&gt;'END'）+ 排除仔猪（pig_type='piglet'）。
+     * 用于超容判断（与按 pen_type 推导的 {@link #capacity} 对照），仔猪不计入。
+     */
+    private Integer usedCount;
 
     /**
      * 状态（1=启用 / 0=停用）。

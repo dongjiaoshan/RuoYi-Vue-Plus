@@ -6,11 +6,14 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import lombok.RequiredArgsConstructor;
 import org.dromara.common.core.domain.R;
 import org.dromara.common.core.utils.StringUtils;
+import org.dromara.djs.warehouse.location.domain.vo.LocationPickerVo;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.domain.vo.ProductPickerVo;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
+import org.dromara.djs.warehouse.product.service.IProductInfoService;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -44,6 +47,7 @@ import java.util.stream.Collectors;
 public class ProductAppletController {
 
     private final ProductInfoMapper productInfoMapper;
+    private final IProductInfoService productInfoService;
 
     /**
      * 产品 picker 列表。
@@ -92,6 +96,26 @@ public class ProductAppletController {
             return vo;
         }).collect(Collectors.toList());
         return R.ok(vos);
+    }
+
+    /**
+     * 按产品取其「存储仓库」配置的启用库位（mp LocationPicker 通用）。
+     *
+     * <p>读 {@code product.store_location_id}（逗号分隔库位 ID 串）→ {@code IN(ids)} 且
+     * {@code location_status=1} 查启用库位，按配置顺序返回。可选 {@code locationType} 精确过滤。
+     * 产品未配置存储仓库（store_location_id 空）→ 返回空列表（前端回落自由选库位）。</p>
+     *
+     * @param productId    产品 ID
+     * @param locationType 字典 {@code djs_location_type}（可空，非空时精确过滤）
+     */
+    @SaCheckLogin
+    @SaCheckPermission("djs:applet:warehouse:product:list")
+    @GetMapping("/{productId}/storeLocations")
+    public R<List<LocationPickerVo>> storeLocations(
+        @PathVariable Long productId,
+        @RequestParam(required = false) String locationType
+    ) {
+        return R.ok(productInfoService.queryStoreLocations(productId, locationType));
     }
 
 }

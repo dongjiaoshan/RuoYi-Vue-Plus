@@ -324,6 +324,15 @@ public class FarrowServiceImpl implements IFarrowService {
             return List.of();
         }
         enrichTaggedCounts(rows);
+        // 批查母猪：仔猪品系/品种继承母猪（避免 N+1：去重 pigId 一次性查 t_farm_pig_info）
+        Set<Long> pigIds = rows.stream().map(PigFarrowVo::getPigId)
+            .filter(Objects::nonNull).collect(Collectors.toSet());
+        Map<Long, Pig> motherById = pigIds.isEmpty() ? Map.of()
+            : pigMapper.selectBatchIds(pigIds).stream()
+                .filter(p -> p.getId() != null)
+                .collect(Collectors.toMap(Pig::getId, java.util.function.Function.identity(), (a, b) -> a));
+        Map<String, String> breedNameMap = pigCoreService.loadBreedStrainNameMap(1);
+        Map<String, String> strainNameMap = pigCoreService.loadBreedStrainNameMap(2);
         LocalDate today = LocalDate.now();
         List<FarrowLitterVo> result = new ArrayList<>();
         for (PigFarrowVo r : rows) {
@@ -344,6 +353,12 @@ public class FarrowServiceImpl implements IFarrowService {
             vo.setFemaleCount(r.getFemaleCount());
             vo.setBarnName(r.getBarnName());
             vo.setPenName(r.getPenName());
+            // 仔猪品系/品种继承母猪（母猪 pig_strain_code / pig_breed_code → 主数据/字典翻译）
+            Pig mother = motherById.get(r.getPigId());
+            if (mother != null) {
+                vo.setPigletStrainName(resolveBreedStrainName(strainNameMap, "djs_pig_strain", mother.getPigStrainCode()));
+                vo.setPigletBreedName(resolveBreedStrainName(breedNameMap, "djs_pig_breed", mother.getPigBreedCode()));
+            }
             // 日龄 = NOW - farrowDate（仔猪日龄）；farrowDate 缺时 null（mp 端该格不渲染）
             if (r.getFarrowDate() != null) {
                 vo.setAgeDays((int) ChronoUnit.DAYS.between(r.getFarrowDate().toLocalDate(), today));

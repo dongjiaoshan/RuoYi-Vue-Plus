@@ -56,7 +56,8 @@ import java.util.stream.Collectors;
  *   <li>pig 必须存在（否则 ServiceException）</li>
  *   <li>weight / backfatThickness 均可选（各端按需前端校验，> 0 且 ≤ 999.99 由 @Valid 兜底）；
  *       mp 端主录 backfatThickness，admin 端可录 weight</li>
- *   <li>删除：3 天内（含当天）可删，超过抛 growth.delete.expired</li>
+ *   <li>删除：{@code deleteById} hard delete（mp / admin 列表删除即物理删，fe-growth row54）；
+ *       {@code deleteByIds} 保留 3 天内逻辑删（admin 批量历史 API）</li>
  * </ul>
  *
  * @author djs
@@ -109,7 +110,9 @@ public class PigGrowthServiceImpl implements IPigGrowthService {
         entity.setBarnName(resolveBarnName(pig.getBarnId()));
         entity.setPenName(resolvePenName(pig.getPenId()));
         entity.setRemark(bo.getRemark());
-        entity.setOperatorId(LoginHelper.getUserId());
+        // row52：记录人 = BO 显式传的 operatorId（EmployeePicker 选的现场记录人，snowflake string → Long）；
+        // 兜底回落登录态（理论上 @NotBlank 已挡空，防御性 fallback 避免 NPE）。
+        entity.setOperatorId(resolveOperatorId(bo.getOperatorId()));
         entity.setDelFlag("0");
         growthMapper.insert(entity);
 
@@ -179,6 +182,9 @@ public class PigGrowthServiceImpl implements IPigGrowthService {
             : barnMapper.selectBatchIds(barnIds).stream().collect(Collectors.toMap(Barn::getId, b -> b, (a, b) -> a));
         Map<Long, Pen> penMap = penIds.isEmpty() ? Map.of()
             : penMapper.selectBatchIds(penIds).stream().collect(Collectors.toMap(Pen::getId, p -> p, (a, b) -> a));
+        // row50：批量取各猪「上次生长记录日期」MAX(measure_date)，给 mp 卡片「上次测量」格用（防 N+1）
+        Map<Long, LocalDate> lastMeasureMap = loadLastMeasureDateMap(
+            todoPigs.stream().map(Pig::getId).collect(Collectors.toList()));
 
         List<PigSearchVo> result = new ArrayList<>(todoPigs.size());
         for (Pig p : todoPigs) {
@@ -187,7 +193,11 @@ public class PigGrowthServiceImpl implements IPigGrowthService {
             vo.setEarNo(p.getEarNo());
             vo.setPigSex(p.getPigSex());
             vo.setPigType(p.getPigType());
+            // row50：猪只类型中文（育肥待办全是 fattening → 育肥猪）
+            vo.setPigTypeName(toPigTypeName(p.getPigType()));
             vo.setCurrentStatus(p.getCurrentStatus());
+            // row50：上次生长记录日期（无记录 → null，mp 卡片该格显「—」）
+            vo.setLastMeasureDate(lastMeasureMap.get(p.getId()));
             LocalDate base = p.getBirthDate() != null ? p.getBirthDate() : p.getIntroduceDate();
             if (base != null) {
                 vo.setAgeDays((int) Math.max(ChronoUnit.DAYS.between(base, today), 0L));
@@ -247,7 +257,12 @@ public class PigGrowthServiceImpl implements IPigGrowthService {
         }
         for (PigGrowthVo vo : rows) {
             Pig p = vo.getPigId() == null ? null : pigById.get(vo.getPigId());
-            if (p == null || vo.getMeasureDate() == null) {
+            if (p == null) {
+                continue;
+            }
+            // row54：猪只类型中文（记录列表卡第二行「猪只类型」格）
+            vo.setPigTypeName(toPigTypeName(p.getPigType()));
+            if (vo.getMeasureDate() == null) {
                 continue;
             }
             LocalDate base = p.getBirthDate() != null ? p.getBirthDate() : p.getIntroduceDate();
@@ -321,6 +336,74 @@ public class PigGrowthServiceImpl implements IPigGrowthService {
             }
         }
         return growthMapper.deleteByIds(ids);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public int deleteById(Long id) {
+        if (id == null) {
+            throw new ServiceException(I18nMessages.t("growth.id.required"));
+        }
+        // row54：hard delete——直接 DELETE FROM t_farm_pig_growth WHERE id=?（tenant_id 由 MP 拦截器自动注入）。
+        // 与 deleteByIds 的「3 天内逻辑删」不同：mp 记录列表卡删除即物理删，删后 reload 列表。
+        return growthMapper.deleteById(id);
+    }
+
+    /**
+     * 解析记录人 userId（BO 传 snowflake string → Long）。
+     * 空 / 非法回落登录态（@NotBlank 已挡空，本兜底防御 controller 外的内部调用）。
+     */
+    private Long resolveOperatorId(String operatorId) {
+        if (StringUtils.isBlank(operatorId)) {
+            return LoginHelper.getUserId();
+        }
+        try {
+            return Long.valueOf(operatorId.trim());
+        }
+        catch (NumberFormatException e) {
+            throw new ServiceException(I18nMessages.t("growth.operator.required"), 400);
+        }
+    }
+
+    /**
+     * 猪只类型 code → 中文（种母猪 / 种公猪 / 育肥猪 / 仔猪，跨层契约 fe-growth row50/51/54）。
+     * 字典 djs_pig_type 标签为「母猪 / 公猪」，契约要求带「种」前缀，故显式映射保证一致；未知 code → null。
+     */
+    private String toPigTypeName(String pigType) {
+        if (StringUtils.isBlank(pigType)) {
+            return null;
+        }
+        return switch (pigType) {
+            case "sow" -> "种母猪";
+            case "boar" -> "种公猪";
+            case "fattening" -> "育肥猪";
+            case "piglet" -> "仔猪";
+            default -> null;
+        };
+    }
+
+    /**
+     * 批量取各猪「上次生长记录日期」MAX(measure_date)（row50/51 mp 卡片「上次测量」格用）。
+     * <p>一次 IN 查全部目标猪的生长记录，内存按 pigId 归约取最大 measure_date，避免逐猪查（N+1）。
+     * 无记录的猪不入 map（调用方 get 得 null）。</p>
+     */
+    private Map<Long, LocalDate> loadLastMeasureDateMap(List<Long> pigIds) {
+        if (pigIds == null || pigIds.isEmpty()) {
+            return Map.of();
+        }
+        List<PigGrowth> records = growthMapper.selectList(Wrappers.<PigGrowth>lambdaQuery()
+            .select(PigGrowth::getPigId, PigGrowth::getMeasureDate)
+            .in(PigGrowth::getPigId, pigIds)
+            .isNotNull(PigGrowth::getMeasureDate));
+        Map<Long, LocalDate> map = new java.util.HashMap<>();
+        for (PigGrowth r : records) {
+            if (r.getPigId() == null || r.getMeasureDate() == null) {
+                continue;
+            }
+            map.merge(r.getPigId(), r.getMeasureDate(),
+                (existing, candidate) -> candidate.isAfter(existing) ? candidate : existing);
+        }
+        return map;
     }
 
     private String resolveBarnName(Long barnId) {

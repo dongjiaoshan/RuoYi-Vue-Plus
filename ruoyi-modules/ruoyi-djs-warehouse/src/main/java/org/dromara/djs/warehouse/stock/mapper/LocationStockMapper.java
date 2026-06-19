@@ -545,7 +545,7 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
                p.product_id                      AS productCode,
                p.product_name                    AS productName,
                p.product_unit                    AS productUnit,
-               p.image_oss_id                    AS productThumb,
+               COALESCE(p.product_thumb, p.image_oss_id) AS productThumb,
                p.belong_type                     AS belongType,
                COALESCE(SUM(s.product_stock), 0) AS currentStock,
                (SELECT s2.location_id

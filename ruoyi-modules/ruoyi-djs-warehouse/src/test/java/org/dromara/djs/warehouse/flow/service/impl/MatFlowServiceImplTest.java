@@ -7,6 +7,7 @@ import org.dromara.djs.common.image.service.ImageUrlResolver;
 import org.dromara.djs.plant.crop.domain.CropInfo;
 import org.dromara.djs.plant.crop.mapper.CropInfoMapper;
 import org.dromara.djs.warehouse.check.service.IStockCheckService;
+import org.dromara.djs.warehouse.cross.mapper.BarInfoMapper;
 import org.dromara.djs.warehouse.flow.domain.StockFlow;
 import org.dromara.djs.warehouse.flow.domain.bo.MatLossBo;
 import org.dromara.djs.warehouse.flow.domain.bo.MatPickBo;
@@ -74,6 +75,7 @@ class MatFlowServiceImplTest {
     @Mock private LocationStockMapper locationStockMapper;
     @Mock private ProductInfoMapper productInfoMapper;
     @Mock private CropInfoMapper cropInfoMapper;
+    @Mock private BarInfoMapper barInfoMapper;
     @Mock private IBizCodeGenerator bizCodeGenerator;
     @Mock private IStockCheckService stockCheckService;
     @Mock private ImageUrlResolver imageUrlResolver;
@@ -90,7 +92,7 @@ class MatFlowServiceImplTest {
 
     @BeforeEach
     void setup() {
-        service = new MatFlowServiceImpl(stockFlowMapper, locationStockMapper, productInfoMapper, cropInfoMapper, bizCodeGenerator, stockCheckService, imageUrlResolver);
+        service = new MatFlowServiceImpl(stockFlowMapper, locationStockMapper, productInfoMapper, cropInfoMapper, barInfoMapper, bizCodeGenerator, stockCheckService, imageUrlResolver);
         loginHelperMock = Mockito.mockStatic(LoginHelper.class);
         loginHelperMock.when(LoginHelper::getUserId).thenReturn(USER_ID);
 

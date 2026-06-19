@@ -15,6 +15,7 @@ import org.dromara.djs.warehouse.flow.domain.query.StockFlowQuery;
 import org.dromara.djs.warehouse.flow.domain.vo.MatIssueItemVo;
 import org.dromara.djs.warehouse.flow.domain.vo.MatIssueLocationVo;
 import org.dromara.djs.warehouse.flow.domain.vo.MatTodaySummaryVo;
+import org.dromara.djs.warehouse.flow.domain.vo.MatWhiteBarBatchVo;
 import org.dromara.djs.warehouse.flow.domain.vo.StockFlowVo;
 import org.dromara.djs.warehouse.flow.service.IMatFlowService;
 import org.dromara.djs.warehouse.flow.service.IStockFlowService;
@@ -98,6 +99,25 @@ public class AppletMatFlowController extends BaseController {
     @GetMapping("/selfVegIssueItems")
     public R<List<MatIssueItemVo>> selfVegIssueItems(@RequestParam(required = false) String locationId) {
         return R.ok(matFlowService.selfVegIssueItems(locationId));
+    }
+
+    /**
+     * 白条「在库批次卡」列表（录入形态②·白条库）。
+     *
+     * <p>权威源 = {@code t_warehouse_bar_info WHERE status='in_stock'}（一行 = 一条实物白条整只），
+     * 不走 location_stock（白条 SKU 无库存行）。每条在库白条 = 一张可领批次卡：batchCode 取业务码
+     * bar_id（为空回退 ear_no），productId 回填「白条·整只」canonical SKU，precoolDuration 按
+     * {@code in_time} 实时计算（{@code now - in_time}），storeName / locationId 恒 null，
+     * batchStatus 恒 {@code pickable}。无在库白条 → 空 list（前端 graceful empty）。</p>
+     *
+     * @param belongType 字典 {@code djs_belong_type}（white_bar / pork；为对称接收，不据此过滤 bar_info）
+     * @param locationId 库位 ID（可空，为对称接收；bar_info 不绑库位）
+     */
+    @SaCheckLogin
+    @GetMapping("/issueWhiteBarBatches")
+    public R<List<MatWhiteBarBatchVo>> issueWhiteBarBatches(@RequestParam String belongType,
+                                                            @RequestParam(required = false) String locationId) {
+        return R.ok(matFlowService.issueWhiteBarBatches(belongType, locationId));
     }
 
     @SaCheckLogin

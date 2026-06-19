@@ -101,6 +101,13 @@ public class CastrateServiceImpl implements ICastrateService {
         eventBo.setEventAt(bo.getCastrateDate());
         pigCoreService.fireEvent(eventBo);
 
+        // FIX-BRD-CASTRATE-ISCASTRATED-001：阉割成功后置 is_castrated=2（是），该猪不再出现在阉割选猪 picker。
+        // wrapper-only update（不走实体乐观锁）：fireEvent 已动过该 pig 行的 version，实体更新会撞乐观锁；
+        // 此处仅写 is_castrated 一列，与 matingCount 的 wrapper-only update 同范式（防 race）。
+        pigMapper.update(null, Wrappers.<Pig>lambdaUpdate()
+            .set(Pig::getIsCastrated, 2)
+            .eq(Pig::getId, pig.getId()));
+
         log.info("[BRD-EVENT-004] recordCastrate pigId={} earNo={} castrateId={}",
             pig.getId(), pig.getEarNo(), entity.getId());
 
@@ -142,17 +149,33 @@ public class CastrateServiceImpl implements ICastrateService {
                 .collect(Collectors.toMap(Pig::getId, p -> p, (a, b) -> a));
         // 2. 翻译员工名（castrater 存 userId；去重后逐 id 查回，userId→nickname 映射）
         Map<String, String> nicknameMap = resolveCastraterNames(records);
+        // 3. 品种/品系中文名：t_farm_breed_info 主表（客户在「品种品系表」配的权威名）优先，批量预载一次防 N+1；
+        //    取不到回落字典（djs_pig_breed / djs_pig_strain）再回落 code，与 PigSearchVo 同口径。
+        Map<String, String> breedNameMap = pigCoreService.loadBreedStrainNameMap(1);
+        Map<String, String> strainNameMap = pigCoreService.loadBreedStrainNameMap(2);
         for (CastrateRecordVo v : records) {
             Pig pig = v.getPigId() != null ? pigMap.get(v.getPigId()) : null;
             if (pig != null) {
                 v.setPigSexLabel(translateDict("djs_pig_sex", pig.getPigSex()));
                 v.setPigBreedLabel(translateDict("djs_pig_breed", pig.getPigBreedCode()));
                 v.setAgeDays(calcAgeDays(pig.getBirthDate()));
+                v.setPigTypeName(translateDict("djs_pig_type", pig.getPigType()));
+                v.setPigBreedName(resolveBreedStrainName(breedNameMap, "djs_pig_breed", pig.getPigBreedCode()));
+                v.setPigStrainName(resolveBreedStrainName(strainNameMap, "djs_pig_strain", pig.getPigStrainCode()));
             }
             if (StringUtils.isNotBlank(v.getCastrater())) {
                 v.setCastraterName(nicknameMap.get(v.getCastrater().trim()));
             }
         }
+    }
+
+    /** 品种/品系中文名解析：主表 name 优先 → 字典回落 → code 回落（与 PigSearchVo 同口径）。 */
+    private String resolveBreedStrainName(Map<String, String> infoNameMap, String dictType, String code) {
+        if (StringUtils.isBlank(code)) {
+            return null;
+        }
+        String name = infoNameMap != null ? infoNameMap.get(code) : null;
+        return StringUtils.isNotBlank(name) ? name : translateDict(dictType, code);
     }
 
     /** 字典翻译；翻不到回落 code。 */
