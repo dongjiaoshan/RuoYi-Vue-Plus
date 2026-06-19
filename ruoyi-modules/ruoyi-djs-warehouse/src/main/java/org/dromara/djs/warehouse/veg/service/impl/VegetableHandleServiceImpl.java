@@ -1,6 +1,7 @@
 package org.dromara.djs.warehouse.veg.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.common.core.exception.ServiceException;
@@ -13,10 +14,16 @@ import org.dromara.djs.common.encoder.IBizCodeGenerator;
 import org.dromara.djs.common.image.service.ImageUrlResolver;
 import org.dromara.djs.plant.crop.domain.CropInfo;
 import org.dromara.djs.plant.crop.mapper.CropInfoMapper;
+import org.dromara.djs.plant.plan.domain.PlantDetails;
+import org.dromara.djs.plant.plan.mapper.PlantDetailsMapper;
 import org.dromara.djs.warehouse.flow.domain.StockFlow;
 import org.dromara.djs.warehouse.flow.mapper.StockFlowMapper;
 import org.dromara.djs.warehouse.location.domain.LocationInfo;
 import org.dromara.djs.warehouse.location.mapper.LocationInfoMapper;
+import org.dromara.djs.warehouse.product.domain.ProductInfo;
+import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
+import org.dromara.djs.warehouse.stock.domain.LocationStock;
+import org.dromara.djs.warehouse.stock.mapper.LocationStockMapper;
 import org.dromara.djs.warehouse.veg.domain.FeedLog;
 import org.dromara.djs.warehouse.veg.domain.HandleRecord;
 import org.dromara.djs.warehouse.veg.domain.PlantingRecord;
@@ -122,6 +129,12 @@ public class VegetableHandleServiceImpl
     private final ImageUrlResolver imageUrlResolver;
     private final CropInfoMapper cropInfoMapper;
     private final FeedLogMapper feedLogMapper;
+    /** 种植明细 mapper：毛菜处理称重回写 actual_yield，让种植「采摘详情·已摘」反映仓库真实称重。 */
+    private final PlantDetailsMapper plantDetailsMapper;
+    /** 库位库存 mapper：毛菜处理入库回写 location_stock 余额（物资领用读余额表）。 */
+    private final LocationStockMapper locationStockMapper;
+    /** 产品 mapper：入库前校验解析出的 product_id 真实存在（不存在则跳过余额、不建孤儿行）。 */
+    private final ProductInfoMapper productInfoMapper;
 
     /**
      * 作物图 L2 兜底分类键（作物无 belong_type，统一走"蔬菜默认图"）。
@@ -136,7 +149,10 @@ public class VegetableHandleServiceImpl
                                       IBizCodeGenerator bizCodeGenerator,
                                       ImageUrlResolver imageUrlResolver,
                                       CropInfoMapper cropInfoMapper,
-                                      FeedLogMapper feedLogMapper) {
+                                      FeedLogMapper feedLogMapper,
+                                      PlantDetailsMapper plantDetailsMapper,
+                                      LocationStockMapper locationStockMapper,
+                                      ProductInfoMapper productInfoMapper) {
         super(baseMapper);
         this.handleRecordMapper = handleRecordMapper;
         this.plantingRecordMapper = plantingRecordMapper;
@@ -146,6 +162,9 @@ public class VegetableHandleServiceImpl
         this.imageUrlResolver = imageUrlResolver;
         this.cropInfoMapper = cropInfoMapper;
         this.feedLogMapper = feedLogMapper;
+        this.plantDetailsMapper = plantDetailsMapper;
+        this.locationStockMapper = locationStockMapper;
+        this.productInfoMapper = productInfoMapper;
     }
 
     /**
@@ -294,6 +313,11 @@ public class VegetableHandleServiceImpl
         }
         baseMapper.updateById(delta);
 
+        // 采收记录回写种植 actual_yield（与 submitHarvest 同口径，仓库称重 = 实际采摘产量）
+        if (recordType == RECORD_TYPE_PICK) {
+            syncActualYieldToPlant(planting.getPlotId(), planting.getCropId(), picked);
+        }
+
         // Step 7：条件 INSERT stock_flow（仅入库）
         if (recordType == RECORD_TYPE_HANDLE && handleTarget == HANDLE_TARGET_STOCK_IN) {
             insertVegStockInFlow(handle, planting, bo.getLocationId(), weight, userId, now);
@@ -340,6 +364,30 @@ public class VegetableHandleServiceImpl
         flow.setOperatorId(userId);
         flow.setRemark("蔬菜处理入库 plantingRecordId=" + planting.getId() + " crop=" + planting.getCropName());
         stockFlowMapper.insert(flow);
+
+        // 余额回写（对齐采购/打包入库的 product 维度 UPSERT，WarehousePurchaseInServiceImpl.inbound 范式）：
+        // 毛菜处理入库后把 weight 累加进 t_warehouse_location_stock，物资领用·蔬菜 tab（以 product_info 为主表
+        // JOIN location_stock）才看得到可领用库存。原仅写 stock_flow 流水、不写余额，是入库对物资领用不可见的主因。
+        // resolvedProductId 必须真实存在于 product_info；作物 related_product 未正确关联果蔬成品时（配置缺失/占位值）
+        // 跳过余额写入 + warn，不建挂空 product 的孤儿余额行、不阻断入库。
+        ProductInfo product = productInfoMapper.selectById(resolvedProductId);
+        if (product == null) {
+            log.warn("毛菜处理入库余额未回写：product_id={} 在 product_info 不存在（作物未正确关联果蔬成品产品）"
+                + " — plantingRecordId={} crop={}", resolvedProductId, planting.getId(), planting.getCropName());
+            return;
+        }
+        int updated = locationStockMapper.addByProductLocation(locationId, resolvedProductId, weight, userId);
+        if (updated == 0) {
+            LocationStock fresh = new LocationStock();
+            fresh.setLocationId(locationId);
+            fresh.setProductId(resolvedProductId);
+            fresh.setProductName(product.getProductName());
+            fresh.setProductUnit(product.getProductUnit());
+            fresh.setProductStock(weight);
+            fresh.setIsEnd(0);
+            fresh.setOperatorId(userId);
+            locationStockMapper.insert(fresh);
+        }
     }
 
     private static BigDecimal nullSafe(BigDecimal v) {
@@ -389,6 +437,41 @@ public class VegetableHandleServiceImpl
             loss = BigDecimal.ZERO;
         }
         return loss.setScale(3, RoundingMode.HALF_UP);
+    }
+
+    /**
+     * 毛菜处理称重回写种植产量：仓库称重 = 实际采摘产量，把累计 picked 写回 {@code t_plant_plant_details.actual_yield}，
+     * 让种植「采摘详情·已摘」反映仓库真实称重（#3=a 后采收 tab 不录重量，actual_yield 在种植侧无来源，唯一来源在此）。
+     *
+     * <p>定位：{@code planting_record} 不存 detail_id，按 (plot_id, crop_id) 匹配，优先已完成采摘（{@code harvest_status='completed'}）
+     * 的明细（V1 plot+crop 基本 1:1）。方向为 warehouse→plant 写，与本类已有 {@link CropInfoMapper} 依赖同向、不成环
+     * （plant 不反向依赖 warehouse）。</p>
+     *
+     * @param plotId      地块 id
+     * @param cropId      作物 id
+     * @param pickedTotal 该地块该作物累计采摘重量（vegetable_handle.picked_weight）
+     */
+    private void syncActualYieldToPlant(Long plotId, Long cropId, BigDecimal pickedTotal) {
+        if (plotId == null || cropId == null || pickedTotal == null) {
+            return;
+        }
+        List<PlantDetails> matches = plantDetailsMapper.selectList(
+            new LambdaQueryWrapper<PlantDetails>()
+                .eq(PlantDetails::getPlotId, plotId)
+                .eq(PlantDetails::getCropId, cropId)
+                .orderByDesc(PlantDetails::getId));
+        if (matches == null || matches.isEmpty()) {
+            log.warn("毛菜处理回写采摘产量：未找到 plant_details plotId={} cropId={}，跳过", plotId, cropId);
+            return;
+        }
+        PlantDetails target = matches.stream()
+            .filter(d -> "completed".equals(d.getHarvestStatus()))
+            .findFirst().orElse(matches.get(0));
+        plantDetailsMapper.update(null,
+            new LambdaUpdateWrapper<PlantDetails>()
+                .eq(PlantDetails::getId, target.getId())
+                .set(PlantDetails::getActualYield, pickedTotal)
+                .set(PlantDetails::getUpdateBy, LoginHelper.getUserId()));
     }
 
     @Override
@@ -485,6 +568,9 @@ public class VegetableHandleServiceImpl
             delta.setIsWeighed(1);
         }
         baseMapper.updateById(delta);
+
+        // Step 4.1：回写种植 actual_yield（仓库称重 = 实际采摘产量），让种植「采摘详情·已摘」反映真实称重
+        syncActualYieldToPlant(planting.getPlotId(), planting.getCropId(), picked);
 
         // Step 5：同步 planting_record.handle_status pending → processing
         if (STATUS_PENDING.equals(planting.getHandleStatus())) {

@@ -10,6 +10,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.transaction.event.TransactionPhase;
 import org.springframework.transaction.event.TransactionalEventListener;
 
+import java.math.BigDecimal;
 import java.time.LocalDate;
 
 /**
@@ -74,8 +75,12 @@ public class PlantPickedEventListener {
             record.setPlotName(p.getPlotName());
             record.setCropName(p.getCropName());
             record.setPlantDate(toSqlDate(p.getPlantDate()));
-            record.setHarvestDate(toSqlDate(p.getHarvestDate()));
-            record.setHarvestWeight(p.getHarvestWeight());
+            // harvest_date NOT NULL：完成采摘必带 end_harvestdate，防御性兜今天（payload 缺失也不让 INSERT 失败）
+            LocalDate harvestDate = p.getHarvestDate() != null ? p.getHarvestDate() : LocalDate.now();
+            record.setHarvestDate(java.sql.Date.valueOf(harvestDate));
+            // harvest_weight NOT NULL：采收 tab 去重量后（#3=a）actualYield 恒为 null，兜 0（真实采摘重量由毛菜处理录入）。
+            // 不兜 0 则 INSERT 撞 NOT NULL → AFTER_COMMIT 吞异常 → 毛菜处理待办凭空丢失。
+            record.setHarvestWeight(p.getHarvestWeight() != null ? p.getHarvestWeight() : BigDecimal.ZERO);
             record.setTeamId(p.getTeamId());
             record.setTeamName(p.getTeamName());
             record.setDataDate(new java.util.Date());

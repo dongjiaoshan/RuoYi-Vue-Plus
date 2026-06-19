@@ -100,11 +100,12 @@ class PlantPickedEventListenerTest {
     }
 
     @Test
-    @DisplayName("plantDate 为 null → toSqlDate 返 null，不 NPE，仍正常 INSERT")
-    void onPlantPicked_nullDates_insertsWithNullSqlDates() {
+    @DisplayName("采收无重量(#3=a)：harvestWeight=null 兜 0 + harvestDate=null 兜今天，仍成功 INSERT（不撞 NOT NULL 丢待办）")
+    void onPlantPicked_nullWeightAndHarvestDate_fallsBackInsteadOfDroppingRecord() {
         PlantPickedPayload payload = buildPayload();
-        payload.setPlantDate(null);
-        payload.setHarvestDate(null);
+        payload.setPlantDate(null);          // 种植日期可空 → 仍允许 null
+        payload.setHarvestDate(null);        // harvest_date NOT NULL → 防御兜今天
+        payload.setHarvestWeight(null);      // 采收 tab 去重量后 actualYield 恒 null → 兜 0
         PlantPickedEvent event = new PlantPickedEvent(this, payload);
 
         listener.onPlantPicked(event);
@@ -112,8 +113,9 @@ class PlantPickedEventListenerTest {
         ArgumentCaptor<PlantingRecord> captor = ArgumentCaptor.forClass(PlantingRecord.class);
         verify(plantingRecordMapper, times(1)).insert(captor.capture());
         PlantingRecord record = captor.getValue();
-        assertThat(record.getPlantDate()).isNull();
-        assertThat(record.getHarvestDate()).isNull();
+        assertThat(record.getPlantDate()).isNull();                                   // 仍可空
+        assertThat(record.getHarvestDate()).isEqualTo(java.sql.Date.valueOf(LocalDate.now()));  // 兜今天
+        assertThat(record.getHarvestWeight()).isEqualByComparingTo(BigDecimal.ZERO);  // 兜 0，不丢待办
         assertThat(record.getHandleStatus()).isEqualTo("pending");
     }
 
