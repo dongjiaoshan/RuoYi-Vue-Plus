@@ -145,6 +145,16 @@ public interface IProductProductionService {
     Map<String, BigDecimal> listMaterialStock(List<Long> productIds);
 
     /**
+     * 批量查目标成品「今天已打包份数」（每条 {@code product_production} = 一份）。
+     *
+     * <p>打包台用：某成品今天已打包份数 ≥ 门店需求份数 → 卡片标「打包完成」、禁选，避免超量打包。</p>
+     *
+     * @param productIds 目标成品 id 列表
+     * @return 成品雪花 id 字符串 → 今天已打包份数（无今天记录的成品不在 Map，前端按 0 处理）
+     */
+    Map<String, Integer> listPackedCount(List<Long> productIds);
+
+    /**
      * 果蔬日损耗 compute-on-read 查询（V4，果疏产品全流程处理.docx）。
      *
      * <p>按自然日聚合果蔬（{@code belong_type='vegetable'}）流水，

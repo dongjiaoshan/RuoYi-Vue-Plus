@@ -10,6 +10,7 @@ import org.dromara.djs.warehouse.pack.domain.vo.ProductProductionVo;
 
 import java.util.Date;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 发货产品生产记录 Mapper（WMS-PACK-001 + WMS-SHIP-001 合并版）。
@@ -36,6 +37,23 @@ public interface ProductProductionMapper extends BaseMapperPlus<ProductProductio
     @Select("SELECT MAX(produce_no) FROM t_warehouse_product_production "
         + "WHERE produce_no LIKE CONCAT(#{prefix}, '%') AND del_flag = '0'")
     String selectMaxProduceNoByPrefix(@Param("prefix") String prefix);
+
+    /**
+     * 批量统计「今天已打包份数」（每条 product_production = 一份）：按 product_id 分组 COUNT 今天的生产记录。
+     *
+     * <p>打包台用——某成品今天已打包份数 ≥ 门店需求份数 → 卡片标「打包完成」、不可再选（避免超量打包）。</p>
+     *
+     * @param productIds 目标成品 id 列表（非空）
+     * @return 行 {@code {productId, cnt}}；无今天记录的成品不在结果里
+     */
+    @Select("<script>"
+        + "SELECT product_id AS productId, COUNT(*) AS cnt "
+        + "  FROM t_warehouse_product_production "
+        + " WHERE del_flag = '0' AND tenant_id = '1001' AND DATE(produce_date) = CURDATE() "
+        + "   AND product_id IN <foreach collection='productIds' item='id' open='(' separator=',' close=')'>#{id}</foreach> "
+        + " GROUP BY product_id"
+        + "</script>")
+    List<Map<String, Object>> selectTodayPackedCount(@Param("productIds") List<Long> productIds);
 
     /**
      * 批量将一组 product_production 行从 {@code is_delivery_check=0} 推进到 1，

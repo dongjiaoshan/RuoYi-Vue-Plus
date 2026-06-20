@@ -1053,6 +1053,26 @@ public class ProductProductionServiceImpl
         return result;
     }
 
+    @Override
+    public Map<String, Integer> listPackedCount(List<Long> productIds) {
+        Map<String, Integer> result = new HashMap<>();
+        if (productIds == null || productIds.isEmpty()) {
+            return result;
+        }
+        List<Long> ids = productIds.stream().filter(Objects::nonNull).distinct().collect(Collectors.toList());
+        if (ids.isEmpty()) {
+            return result;
+        }
+        for (Map<String, Object> row : baseMapper.selectTodayPackedCount(ids)) {
+            Object pid = row.get("productId");
+            Object cnt = row.get("cnt");
+            if (pid != null && cnt != null) {
+                result.put(String.valueOf(pid), ((Number) cnt).intValue());
+            }
+        }
+        return result;
+    }
+
     /**
      * 聚合某产品当前库存合计（未软删行 SUM(product_stock)；无行返 BigDecimal.ZERO）。
      */

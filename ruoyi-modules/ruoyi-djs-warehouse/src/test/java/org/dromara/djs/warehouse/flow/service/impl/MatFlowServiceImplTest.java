@@ -215,6 +215,49 @@ class MatFlowServiceImplTest {
     }
 
     @Test
+    @DisplayName("pick 自产果蔬原料 happy：按地块篮子(plot_id) FIFO 领用 50 → 跨 2 地块(40+10) → 2 行 inhouse(带 plot_id) + 2 次 deductStockById；不走 product 维度")
+    void testPick_VegBasketFifo() {
+        ProductInfo veg = new ProductInfo();
+        veg.setId(PRODUCT_ID);
+        veg.setProductName("黄秋葵");
+        veg.setProductUnit("kg");
+        veg.setProductType(1);
+        veg.setProductAttr(2);
+        veg.setBelongType("vegetable");
+        when(productInfoMapper.selectOne(any())).thenReturn(veg);
+
+        LocationStock b1 = new LocationStock();
+        b1.setId(8001L);
+        b1.setProductId(PRODUCT_ID);
+        b1.setPlotId(7001L);
+        b1.setProductStock(new BigDecimal("40"));
+        LocationStock b2 = new LocationStock();
+        b2.setId(8002L);
+        b2.setProductId(PRODUCT_ID);
+        b2.setPlotId(7002L);
+        b2.setProductStock(new BigDecimal("30"));
+        when(locationStockMapper.selectList(any())).thenReturn(List.of(b1, b2));
+        when(locationStockMapper.deductStockById(anyLong(), any(BigDecimal.class), eq(USER_ID))).thenReturn(1);
+
+        service.pick(pickBo(new BigDecimal("50")));
+
+        // 1 行 pick_out 流水
+        verify(stockFlowMapper, times(1)).insert(any(StockFlow.class));
+        // FIFO：地块篮1(plot 7001) 扣 40（全），地块篮2(plot 7002) 扣 10（凑够 50）；不走 product 维度扣减
+        verify(locationStockMapper, times(1)).deductStockById(eq(8001L), eq(new BigDecimal("40")), eq(USER_ID));
+        verify(locationStockMapper, times(1)).deductStockById(eq(8002L), eq(new BigDecimal("10")), eq(USER_ID));
+        verify(locationStockMapper, never()).deductByProductLocation(any(), any(), any(), any());
+        // 2 行 product_inhouse（带 plot_id = 地块篮标签 → 果蔬打包右台显地块）
+        ArgumentCaptor<ProductInhouse> ihCap = ArgumentCaptor.forClass(ProductInhouse.class);
+        verify(productInhouseMapper, times(2)).insert(ihCap.capture());
+        List<ProductInhouse> ihs = ihCap.getAllValues();
+        assertThat(ihs).extracting(ProductInhouse::getPlotId).containsExactly(7001L, 7002L);
+        assertThat(ihs.get(0).getProductWeight()).isEqualByComparingTo("40");
+        assertThat(ihs.get(1).getProductWeight()).isEqualByComparingTo("10");
+        assertThat(ihs).extracting(ProductInhouse::getProductId).allMatch(v -> v.equals(PRODUCT_ID));
+    }
+
+    @Test
     @DisplayName("pick 库存不足：deductByProductLocation 返 0 → 抛 ServiceException 库存不足")
     void testPick_StockInsufficient() {
         when(locationStockMapper.deductByProductLocation(any(), any(), any(), any())).thenReturn(0);

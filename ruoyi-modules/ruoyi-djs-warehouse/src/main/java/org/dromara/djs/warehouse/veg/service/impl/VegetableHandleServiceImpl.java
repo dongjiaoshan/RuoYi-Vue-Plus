@@ -376,6 +376,24 @@ public class VegetableHandleServiceImpl
                 + " — plantingRecordId={} crop={}", resolvedProductId, planting.getId(), planting.getCropName());
             return;
         }
+        Long plotId = planting.getPlotId();
+        if (plotId != null) {
+            // 自产果蔬原料按「地块篮子」入冷库（plot_id = 篮子标签，对齐猪肉分割 ear_no 篮子，doc/14 §1）：
+            // 每次毛菜处理入库建一篮（带 plot_id）。领用按篮 FIFO 把 plot 带到 product_inhouse → 果蔬打包
+            // 右台显「对应地块」（而非领用记录）。同 plot 多次入库 = 多篮，打包页 plotToggle 按 plot 去重。
+            LocationStock basket = new LocationStock();
+            basket.setLocationId(locationId);
+            basket.setProductId(resolvedProductId);
+            basket.setPlotId(plotId);            // 篮子标签 = 地块 → 打包追溯键
+            basket.setProductName(product.getProductName());
+            basket.setProductUnit(product.getProductUnit());
+            basket.setProductStock(weight);
+            basket.setIsEnd(0);
+            basket.setOperatorId(userId);
+            locationStockMapper.insert(basket);
+            return;
+        }
+        // 兜底（毛菜处理来源 planting 理论必有 plot）：无地块 → product 维度 UPSERT（旧行为）
         int updated = locationStockMapper.addByProductLocation(locationId, resolvedProductId, weight, userId);
         if (updated == 0) {
             LocationStock fresh = new LocationStock();

@@ -120,7 +120,7 @@ class AppletPickServiceImplTest {
         bo.setDetailId(100L);
         bo.setHarvestDate(LocalDate.of(2026, 6, 1));
         bo.setFinish(false);
-        bo.setPickerUserId(55L);
+        bo.setTeamId(55L);
 
         service.submitPick(bo);
 
@@ -204,23 +204,23 @@ class AppletPickServiceImplTest {
     }
 
     @Test
-    @DisplayName("采收提交传 pickerUserId → operator_user_id 落采摘人员，farm_by 不落班组（0618 口径）")
-    void submitPick_picker_to_operatorUserId() {
+    @DisplayName("采收提交传 teamId → farm_by 落采收班组，operator_user_id 留空（采收按班组记录）")
+    void submitPick_team_to_farmBy() {
         PlantDetails d = detailFixture();   // harvestBy=40
         when(detailsMapper.selectById(100L)).thenReturn(d);
 
         PickSubmitBo bo = new PickSubmitBo();
         bo.setDetailId(100L);
         bo.setHarvestDate(LocalDate.now());
-        bo.setPickerUserId(88L);
+        bo.setTeamId(88L);
 
         service.submitPick(bo);
 
         ArgumentCaptor<GrowRecordBo> grow = ArgumentCaptor.forClass(GrowRecordBo.class);
         verify(farmRecordsService).submitGrow(grow.capture());
-        // 采收按人记录：所选采摘人员落 operator_user_id；不记班组
-        assertThat(grow.getValue().getOperatorUserId()).isEqualTo(88L);
-        assertThat(grow.getValue().getFarmBy()).isNull();
+        // 采收按班组记录：所选采收班组落 farm_by；operator_user_id 留空
+        assertThat(grow.getValue().getFarmBy()).isEqualTo(88L);
+        assertThat(grow.getValue().getOperatorUserId()).isNull();
     }
 
     // ============================================================

@@ -146,13 +146,14 @@ public class AppletPickServiceImpl implements IAppletPickService {
 
         // 5. INSERT 一行 t_plant_farm_records（farm_type='harvest_activity'，可追溯）
         //    复用 IFarmRecordsService.submitGrow（内含 record_no 生成 + plot_type/crop_name 冗余）。
-        //    采收按人记录：所选「采摘人员」落 operator_user_id；不记班组（farm_by 留空，0618 客户口径）。
+        //    采收按班组记录：所选「采收班组」落 farm_by；operator_user_id 留空，
+        //    且不覆盖 admin 采摘计划已分配的 detail.harvest_by（仅记录本次采收班组）。
         GrowRecordBo grow = new GrowRecordBo();
         grow.setFarmType(HARVEST_FARM_TYPE);
         grow.setPlantId(detail.getPlantId());
         grow.setPlotId(detail.getPlotId());
         grow.setCropId(detail.getCropId());
-        grow.setOperatorUserId(bo.getPickerUserId());   // 采摘人员落 operator_user_id
+        grow.setFarmBy(bo.getTeamId());   // 采收班组落 farm_by
         grow.setFarmDate(bo.getHarvestDate());
         grow.setProofOssIds(joinOssIds(bo.getProofOssIds()));
         grow.setRemark(bo.getRemark());

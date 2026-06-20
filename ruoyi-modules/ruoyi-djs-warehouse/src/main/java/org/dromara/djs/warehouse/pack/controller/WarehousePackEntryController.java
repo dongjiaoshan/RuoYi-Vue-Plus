@@ -146,6 +146,19 @@ public class WarehousePackEntryController extends BaseController {
     }
 
     /**
+     * 批量查目标成品「今天已打包份数」（每条 {@code product_production} = 一份）。
+     *
+     * <p>打包录入卡片用：某成品今天已打包份数 ≥ 门店需求份数 → 卡片标「打包完成」、禁选，避免超量打包。</p>
+     *
+     * @param productIds 目标成品 id 列表（逗号分隔；{@code t_warehouse_product_info.id}）
+     */
+    @SaCheckPermission("djs:warehouse:packEntry:dry")
+    @GetMapping("/packedCount")
+    public R<Map<String, Integer>> packedCount(@RequestParam List<Long> productIds) {
+        return R.ok(productionService.listPackedCount(productIds));
+    }
+
+    /**
      * 果蔬日损耗（V4，果疏产品全流程处理.docx）：按自然日聚合果蔬流水计算
      * {@code 日损耗 = 领用入库 − 打包消耗 − 退回 − 饲喂}。compute-on-read 只读，不建汇总表。
      *

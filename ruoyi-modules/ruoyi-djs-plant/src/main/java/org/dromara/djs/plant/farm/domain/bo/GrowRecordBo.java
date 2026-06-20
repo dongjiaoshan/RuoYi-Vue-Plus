@@ -41,7 +41,7 @@ public class GrowRecordBo {
     @NotNull(message = "{plant.farm.team.required}")
     private Long farmBy;
 
-    /** 操作人（采摘人员）sys_user.user_id（FIX-PLT-MP-PICK-001，可空；采收链路从 PickSubmitBo.pickerUserId 透传）。 */
+    /** 操作人 sys_user.user_id（可空；采收链路已改按班组记录走 farm_by，本字段保留兼容其他农事/历史数据）。 */
     private Long operatorUserId;
 
     /** 农事日期。 */

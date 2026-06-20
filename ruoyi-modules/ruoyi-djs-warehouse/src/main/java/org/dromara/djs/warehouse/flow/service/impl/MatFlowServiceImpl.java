@@ -177,8 +177,13 @@ public class MatFlowServiceImpl implements IMatFlowService {
             // 猪肉原材料按「篮子(ear_no)」FIFO 领用：分割入冷库的篮子逐个扣，每扣一篮产一行 product_inhouse
             //（带该篮 ear_no、produce_date=今天）→ 肉品打包来源。耳号随篮子自动带到打包，追溯链路不断。
             consumePorkBaskets(bo.getProductId(), bo.getQuantity(), locId, product, userId);
+        } else if (isVegSelfMaterial(product)) {
+            // 自产果蔬原料按「地块篮子(plot_id)」FIFO 领用（对齐猪肉 ear_no 篮子，doc/14 §1/§3）：毛菜处理入冷库的
+            // 篮子（带 plot_id）逐个扣，每扣一篮产一行 product_inhouse（带该篮 plot_id、produce_date=今天）→
+            // 果蔬打包右台显「对应地块」。地块随篮子自动带到打包；申请量可跨多地块篮子拼够。
+            consumeVegBaskets(bo.getProductId(), bo.getQuantity(), locId, product, userId);
         } else {
-            // 果蔬/包材/外购：product 维度行锁扣减 + 数量校验
+            // 包材/外购等：product 维度行锁扣减 + 数量校验
             int affected = locationStockMapper.deductByProductLocation(
                 locId, bo.getProductId(), bo.getQuantity(), userId);
             if (affected == 0) {
@@ -188,8 +193,8 @@ public class MatFlowServiceImpl implements IMatFlowService {
                         + " / location=" + locId + " / 申请=" + bo.getQuantity()
                         + product.getProductUnit() + "）");
             }
-            // 桥接果蔬打包来源：领用的果蔬原材料 → 写一条 product_inhouse（produce_date=当天），
-            // admin 果蔬打包来源（sourceVeg）读它。仅 belong_type=vegetable + 原材料触发，包材/外购不写。
+            // 桥接果蔬打包来源（外购果蔬原材料）：写一条 product_inhouse（produce_date=当天），
+            // admin 果蔬打包来源（sourceVeg）读它。仅 belong_type=vegetable + 原材料触发，包材不写。
             bridgeVegInhouse(bo.getProductId(), bo.getQuantity(), bo.getPlotId(), locId);
         }
 
@@ -238,6 +243,73 @@ public class MatFlowServiceImpl implements IMatFlowService {
             inhouse.setEarNo(basket.getEarNo());     // 篮子标签 = 猪只耳号 → 打包追溯键
             inhouse.setLocationId(locId);
             inhouse.setMaterialId(productId);         // 原材料 = 自身（成品打包侧经 product_material 反查共享池）
+            inhouse.setMaterialConsume(take);
+            productInhouseMapper.insert(inhouse);
+            remaining = remaining.subtract(take);
+        }
+        if (remaining.compareTo(BigDecimal.ZERO) > 0) {
+            throw new ServiceException(
+                "库存不足：" + product.getProductName() + " 可领 "
+                    + quantity.subtract(remaining).stripTrailingZeros().toPlainString()
+                    + product.getProductUnit() + "，申请 "
+                    + quantity.stripTrailingZeros().toPlainString() + product.getProductUnit());
+        }
+    }
+
+    /**
+     * 是否「自产果蔬原料」（type=1 自产 + belong_type=vegetable + attr=2 原料）。
+     *
+     * <p>仅此类走「地块篮子」FIFO 领用（毛菜处理入冷库时已按 plot 建篮）；外购果蔬(type=2)/包材/果蔬成品
+     * 走 product 维度旧路径。type 为 null 视为自产（历史 seed 未显式置 type=1 的果蔬原料兼容）。</p>
+     */
+    private boolean isVegSelfMaterial(ProductInfo product) {
+        return "vegetable".equals(product.getBelongType())
+            && product.getProductAttr() != null && product.getProductAttr() == 2
+            && (product.getProductType() == null || product.getProductType() == 1);
+    }
+
+    /**
+     * 自产果蔬原料按「地块篮子(plot_id)」FIFO 领用（doc/14 §1/§3，对齐 {@link #consumePorkBaskets}）。
+     *
+     * <p>毛菜处理入冷库时每次入库 = 一篮 {@code location_stock}（带 plot_id 标签）。据门店需求领用某果蔬原料
+     * N kg 时，按 id 升序（先进先出）逐篮扣减 location_stock，每扣一篮产一行 {@code product_inhouse}
+     * （带该篮 plot_id、{@code produce_date=今天}）→ 果蔬打包来源。地块随篮子自动带到打包（右台显「对应地块」）；
+     * 申请量可跨多地块篮子拼够。历史无 plot 的 product 维度行（plot_id=null）也一并 FIFO 消耗（inhouse plot 为 null
+     * → 打包页显「无地块信息」，与旧数据兼容）。</p>
+     *
+     * @throws ServiceException 篮子总量不足申请量（{@code @Transactional} 回滚领用流水）
+     */
+    private void consumeVegBaskets(Long productId, BigDecimal quantity, Long locId, ProductInfo product, Long userId) {
+        List<LocationStock> baskets = locationStockMapper.selectList(
+            new LambdaQueryWrapper<LocationStock>()
+                .eq(LocationStock::getProductId, productId)
+                .eq(LocationStock::getLocationId, locId)
+                .gt(LocationStock::getProductStock, BigDecimal.ZERO)
+                .orderByAsc(LocationStock::getId));
+        BigDecimal remaining = quantity;
+        LocalDate today = LocalDate.now();
+        Date now = new Date();
+        for (LocationStock basket : baskets) {
+            if (remaining.compareTo(BigDecimal.ZERO) <= 0) {
+                break;
+            }
+            BigDecimal take = basket.getProductStock().min(remaining);
+            int affected = locationStockMapper.deductStockById(basket.getId(), take, userId);
+            if (affected == 0) {
+                // 并发抢占：该篮已被他人领走，跳过（不计入已领）
+                continue;
+            }
+            ProductInhouse inhouse = new ProductInhouse();
+            inhouse.setProduceDate(java.sql.Date.valueOf(today));
+            inhouse.setProduceTime(now);
+            inhouse.setProductId(productId);
+            inhouse.setProductName(product.getProductName());
+            inhouse.setProductType(product.getProductType() == null ? 1 : product.getProductType());
+            inhouse.setProductUnit(product.getProductUnit());
+            inhouse.setProductWeight(take);
+            inhouse.setPlotId(basket.getPlotId());   // 篮子标签 = 地块 → 打包追溯键（历史 product 维度篮为 null）
+            inhouse.setLocationId(locId);
+            inhouse.setMaterialId(productId);          // 原材料 = 自身（成品打包侧经 product_material 反查共享池）
             inhouse.setMaterialConsume(take);
             productInhouseMapper.insert(inhouse);
             remaining = remaining.subtract(take);
@@ -426,9 +498,11 @@ public class MatFlowServiceImpl implements IMatFlowService {
      * 维度兜底；果蔬 / 包材按 product 维度回补。退回量超今天待打包量（差额已打包、无可退）→ 流水已记，打 warn 不阻断。</p>
      */
     private void returnToStock(ProductInfo product, BigDecimal quantity, Long fallbackLocId, Long userId) {
+        // 篮子型库存（猪肉 ear_no 篮 / 自产果蔬 plot_id 篮）：退回时减待打包 inhouse + 按篮回补原冷库篮。
         boolean isPork = "pork".equals(product.getBelongType());
+        boolean isBasket = isPork || isVegSelfMaterial(product);
         // (a) 减「今天待打包」inhouse（让打包页不再显示已退量），LIFO 退最近领用的。
-        //     猪肉按篮子（product_id+ear_no+location 匹配原篮）回补对应冷库篮；非猪肉的冷库回补在 (b) 统一做。
+        //     篮子型按原篮（product_id + ear_no/plot_id + location 匹配）回补对应冷库篮；其余的冷库回补在 (b) 统一做。
         List<ProductInhouse> wips = productInhouseMapper.selectList(
             new LambdaQueryWrapper<ProductInhouse>()
                 .eq(ProductInhouse::getProductId, product.getId())
@@ -445,14 +519,19 @@ public class MatFlowServiceImpl implements IMatFlowService {
             if (productInhouseMapper.deductWeightById(wip.getId(), back) == 0) {
                 continue;
             }
-            if (isPork) {
+            if (isBasket) {
                 Long locId = wip.getLocationId() != null ? wip.getLocationId() : fallbackLocId;
-                LocationStock basket = locationStockMapper.selectOne(
-                    new LambdaQueryWrapper<LocationStock>()
-                        .eq(LocationStock::getProductId, product.getId())
-                        .eq(LocationStock::getEarNo, wip.getEarNo())
-                        .eq(LocationStock::getLocationId, locId)
-                        .last("LIMIT 1"));
+                LambdaQueryWrapper<LocationStock> bw = new LambdaQueryWrapper<LocationStock>()
+                    .eq(LocationStock::getProductId, product.getId())
+                    .eq(LocationStock::getLocationId, locId);
+                if (isPork) {
+                    bw.eq(LocationStock::getEarNo, wip.getEarNo());
+                } else if (wip.getPlotId() != null) {
+                    bw.eq(LocationStock::getPlotId, wip.getPlotId());   // 自产果蔬按地块篮回补
+                } else {
+                    bw.isNull(LocationStock::getPlotId);                // 历史无地块 inhouse → product 维度篮
+                }
+                LocationStock basket = locationStockMapper.selectOne(bw.last("LIMIT 1"));
                 if (basket != null) {
                     locationStockMapper.addStockById(basket.getId(), back, userId);
                 } else {
@@ -461,7 +540,7 @@ public class MatFlowServiceImpl implements IMatFlowService {
             }
             remaining = remaining.subtract(back);
         }
-        if (isPork) {
+        if (isBasket) {
             if (remaining.compareTo(BigDecimal.ZERO) > 0) {
                 // 退回量超今天待打包量（差额已打包、无待打包可减）——流水已记录，打 warn 不阻断
                 log.warn("退回量超今天待打包量：product={} 申请退 {} 实退 {}（差额已打包）",
@@ -469,7 +548,7 @@ public class MatFlowServiceImpl implements IMatFlowService {
             }
             return;
         }
-        // (b) 非猪肉：product 维度把全部退回量加回冷库（package/外购 veg 无 inhouse，仅此一步；
+        // (b) 非篮子型：product 维度把全部退回量加回冷库（package/外购 veg 无 inhouse，仅此一步；
         //     与原 returnBack 行为一致：命中 0 行 → 抛，防御库位/产品已删）。
         int affected = locationStockMapper.addByProductLocation(fallbackLocId, product.getId(), quantity, userId);
         if (affected == 0) {
