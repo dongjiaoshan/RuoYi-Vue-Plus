@@ -16,6 +16,8 @@ import org.dromara.djs.warehouse.flow.domain.vo.MatIssueItemVo;
 import org.dromara.djs.warehouse.flow.domain.vo.MatIssueLocationVo;
 import org.dromara.djs.warehouse.flow.mapper.StockFlowMapper;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
+import org.dromara.djs.warehouse.product.domain.ProductInhouse;
+import org.dromara.djs.warehouse.stock.domain.LocationStock;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
 import org.dromara.djs.warehouse.stock.mapper.LocationStockMapper;
 import org.junit.jupiter.api.AfterEach;
@@ -39,6 +41,7 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -74,6 +77,7 @@ class MatFlowServiceImplTest {
     @Mock private StockFlowMapper stockFlowMapper;
     @Mock private LocationStockMapper locationStockMapper;
     @Mock private ProductInfoMapper productInfoMapper;
+    @Mock private org.dromara.djs.warehouse.product.mapper.ProductInhouseMapper productInhouseMapper;
     @Mock private CropInfoMapper cropInfoMapper;
     @Mock private BarInfoMapper barInfoMapper;
     @Mock private IBizCodeGenerator bizCodeGenerator;
@@ -92,7 +96,7 @@ class MatFlowServiceImplTest {
 
     @BeforeEach
     void setup() {
-        service = new MatFlowServiceImpl(stockFlowMapper, locationStockMapper, productInfoMapper, cropInfoMapper, barInfoMapper, bizCodeGenerator, stockCheckService, imageUrlResolver);
+        service = new MatFlowServiceImpl(stockFlowMapper, locationStockMapper, productInfoMapper, productInhouseMapper, cropInfoMapper, barInfoMapper, bizCodeGenerator, stockCheckService, imageUrlResolver);
         loginHelperMock = Mockito.mockStatic(LoginHelper.class);
         loginHelperMock.when(LoginHelper::getUserId).thenReturn(USER_ID);
 
@@ -166,6 +170,48 @@ class MatFlowServiceImplTest {
         assertThat(f.getOperatorId()).isEqualTo(USER_ID);
         verify(locationStockMapper, times(1))
             .deductByProductLocation(eq(LOCATION_ID), eq(PRODUCT_ID), any(BigDecimal.class), eq(USER_ID));
+    }
+
+    @Test
+    @DisplayName("pick 猪肉原材料 happy：按篮子(ear_no) FIFO 领用 50 → 跨 2 头猪(41.4+8.6) → 2 行 inhouse(带 ear_no) + 2 次 deductStockById；不走 product 维度")
+    void testPick_PorkBasketFifo() {
+        ProductInfo pork = new ProductInfo();
+        pork.setId(PRODUCT_ID);
+        pork.setProductName("猪肉·精瘦肉");
+        pork.setProductUnit("kg");
+        pork.setProductType(1);
+        pork.setBelongType("pork");
+        when(productInfoMapper.selectOne(any())).thenReturn(pork);
+
+        LocationStock b1 = new LocationStock();
+        b1.setId(9001L);
+        b1.setProductId(PRODUCT_ID);
+        b1.setEarNo("EAR-A");
+        b1.setProductStock(new BigDecimal("41.4"));
+        LocationStock b2 = new LocationStock();
+        b2.setId(9002L);
+        b2.setProductId(PRODUCT_ID);
+        b2.setEarNo("EAR-B");
+        b2.setProductStock(new BigDecimal("20"));
+        when(locationStockMapper.selectList(any())).thenReturn(List.of(b1, b2));
+        when(locationStockMapper.deductStockById(anyLong(), any(BigDecimal.class), eq(USER_ID))).thenReturn(1);
+
+        service.pick(pickBo(new BigDecimal("50")));
+
+        // 1 行 pick_out 流水
+        verify(stockFlowMapper, times(1)).insert(any(StockFlow.class));
+        // FIFO：篮1(EAR-A) 扣 41.4（全），篮2(EAR-B) 扣 8.6（凑够 50）；不走 product 维度扣减
+        verify(locationStockMapper, times(1)).deductStockById(eq(9001L), eq(new BigDecimal("41.4")), eq(USER_ID));
+        verify(locationStockMapper, times(1)).deductStockById(eq(9002L), eq(new BigDecimal("8.6")), eq(USER_ID));
+        verify(locationStockMapper, never()).deductByProductLocation(any(), any(), any(), any());
+        // 2 行 product_inhouse（带 ear_no = 篮子标签 → 打包追溯键）
+        ArgumentCaptor<ProductInhouse> ihCap = ArgumentCaptor.forClass(ProductInhouse.class);
+        verify(productInhouseMapper, times(2)).insert(ihCap.capture());
+        List<ProductInhouse> ihs = ihCap.getAllValues();
+        assertThat(ihs).extracting(ProductInhouse::getEarNo).containsExactly("EAR-A", "EAR-B");
+        assertThat(ihs.get(0).getProductWeight()).isEqualByComparingTo("41.4");
+        assertThat(ihs.get(1).getProductWeight()).isEqualByComparingTo("8.6");
+        assertThat(ihs).extracting(ProductInhouse::getProductId).allMatch(v -> v.equals(PRODUCT_ID));
     }
 
     @Test

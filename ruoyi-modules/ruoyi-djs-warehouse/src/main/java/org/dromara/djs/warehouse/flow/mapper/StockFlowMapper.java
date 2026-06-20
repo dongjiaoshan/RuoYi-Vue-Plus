@@ -104,6 +104,40 @@ public interface StockFlowMapper extends BaseMapperPlus<StockFlow, StockFlowVo> 
                                          @Param("belongType") String belongType);
 
     /**
+     * 分割产出总重（按 {@code ear_no} 聚合 {@code cut_out_in} 流水的 change_quantity）。
+     *
+     * <p>白条分割统计源（doc/14 §1：分割→入冷库后，产出在 location_stock 篮子里会随领用/打包消耗，
+     * 故「分割品总重 / 剩余可分割」改读不可变的 {@code cut_out_in} 流水——总产出量恒定，不随下游变动）。
+     * ear_no 与白条 1:1（一头猪一白条），按 ear_no 聚合即该白条的分割总产出。</p>
+     *
+     * @param earNo 猪只耳号（= 白条标签）
+     * @return 该耳号的分割产出总重（无记录返 0）
+     */
+    @Select("SELECT COALESCE(SUM(change_quantity), 0) "
+        + "  FROM t_warehouse_stock_flow "
+        + " WHERE flow_type = 'cut_out_in' "
+        + "   AND ear_no    = #{earNo} "
+        + "   AND del_flag  = '0'")
+    BigDecimal sumCutOutByEarNo(@Param("earNo") String earNo);
+
+    /**
+     * 批量分割产出总重（按 {@code ear_no} IN 聚合 {@code cut_out_in} 流水），避免 N+1。
+     *
+     * @param earNos 猪只耳号集合（service 已去重 + 非空过滤）
+     * @return 每行 {@code {earNo, totalWeight}}；无产出的耳号不在结果中
+     */
+    @Select("<script>"
+        + "SELECT ear_no AS earNo, COALESCE(SUM(change_quantity), 0) AS totalWeight "
+        + "  FROM t_warehouse_stock_flow "
+        + " WHERE flow_type = 'cut_out_in' "
+        + "   AND del_flag  = '0' "
+        + "   AND ear_no IN "
+        + "   <foreach collection='earNos' item='e' open='(' separator=',' close=')'>#{e}</foreach> "
+        + " GROUP BY ear_no"
+        + "</script>")
+    java.util.List<java.util.Map<String, Object>> sumCutOutGroupByEarNo(@Param("earNos") java.util.Collection<String> earNos);
+
+    /**
      * 按供应商聚合物资入库流水（DJS-FIX-ADMIN-W22-005 供应商交易明细 facade，read-only）。
      *
      * <p>只取入库方向（{@code inout_type='IN'}）且带供应商的流水（外购入库才写 {@code supplier_id}；

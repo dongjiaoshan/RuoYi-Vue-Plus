@@ -90,6 +90,39 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
                                 @Param("userId") Long userId);
 
     /**
+     * 按主键原子扣减库存（猪肉原材料按篮子 FIFO 领用：一篮 = 一头猪某部位，doc/14 §3）。
+     *
+     * <p>{@code WHERE product_stock >= deductQty} 行锁 + 余量校验同步，并发只一次成功。</p>
+     *
+     * @return affectedRows（1=成功，0=余量不足 / 已被并发占用 / 已软删）
+     */
+    @Update("UPDATE t_warehouse_location_stock "
+        + "   SET product_stock = product_stock - #{deductQty},"
+        + "       update_by = #{userId},"
+        + "       update_time = NOW() "
+        + " WHERE id = #{id} "
+        + "   AND product_stock >= #{deductQty} "
+        + "   AND del_flag = '0'")
+    int deductStockById(@Param("id") Long id,
+                        @Param("deductQty") BigDecimal deductQty,
+                        @Param("userId") Long userId);
+
+    /**
+     * 按主键原子回补库存（猪肉原材料按篮子退回：把领用走的篮子重量加回原篮，doc/14 §6）。
+     *
+     * @return affectedRows（1=成功，0=篮子不存在 / 已软删）
+     */
+    @Update("UPDATE t_warehouse_location_stock "
+        + "   SET product_stock = product_stock + #{addQty},"
+        + "       update_by = #{userId},"
+        + "       update_time = NOW() "
+        + " WHERE id = #{id} "
+        + "   AND del_flag = '0'")
+    int addStockById(@Param("id") Long id,
+                     @Param("addQty") BigDecimal addQty,
+                     @Param("userId") Long userId);
+
+    /**
      * 按 {@code plot_id} + {@code location_id} 原子扣减自产果蔬库存（步11 偏差修复 · 决策 a：
      * 自产果蔬「按地块维度」领用）。
      *
@@ -576,6 +609,7 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
          WHERE p.del_flag      = '0'
            AND p.tenant_id     = '1001'
            AND p.product_status = 0
+           AND (COALESCE(p.product_attr, 0) != 1 OR COALESCE(p.product_type, 0) != 1)
            AND p.belong_type IN
            <foreach collection="belongTypes" item="bt" open="(" separator="," close=")">#{bt}</foreach>
            <if test="locationId != null">

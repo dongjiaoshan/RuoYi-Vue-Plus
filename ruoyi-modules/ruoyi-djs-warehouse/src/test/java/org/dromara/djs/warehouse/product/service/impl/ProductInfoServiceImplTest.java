@@ -267,6 +267,31 @@ class ProductInfoServiceImplTest {
     }
 
     @Test
+    @DisplayName("新增生产产品(attr=1) 缺规格 → 抛 product.spec.required，不打 DB（doc/14 §4）")
+    void testInsertProduction_MissingSpec() {
+        ProductInfoBo bo = selfBo();
+        bo.setProductAttr(1);   // 生产产品
+        bo.setProductSpec(null);
+
+        assertThatThrownBy(() -> service.insertByBo(bo))
+            .isInstanceOf(ServiceException.class);
+        verify(productInfoMapper, never()).insert(any(ProductInfo.class));
+    }
+
+    @Test
+    @DisplayName("新增原材料(attr=2) 不强制规格 → 通过校验（spec 可空）")
+    void testInsertRawMaterial_SpecOptional() {
+        ProductInfoBo bo = selfBo();
+        bo.setProductAttr(2);   // 原材料
+        bo.setProductSpec(null);
+        when(productInfoMapper.insert(any(ProductInfo.class))).thenReturn(1);
+
+        service.insertByBo(bo);
+
+        verify(productInfoMapper, times(1)).insert(any(ProductInfo.class));
+    }
+
+    @Test
     @DisplayName("新增外购缺 supplierId → 抛 product.supplier.required")
     void testInsertPurchase_MissingSupplier() {
         ProductInfoBo bo = purchaseBo();

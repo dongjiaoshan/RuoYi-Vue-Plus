@@ -54,8 +54,7 @@ public class EliminateBo implements Serializable {
     @Size(max = 1024, message = "eliminate.photo.size")
     private String ossIds;
 
-    /** 备注（row140：所有数据必填）。 */
-    @NotBlank(message = "eliminate.remark.required")
+    /** 备注（可选，mp 端已移除备注输入框；admin 端可填，对齐同域 DieBo.remark 写法）。 */
     @Size(max = 500, message = "eliminate.remark.size")
     private String remark;
 }

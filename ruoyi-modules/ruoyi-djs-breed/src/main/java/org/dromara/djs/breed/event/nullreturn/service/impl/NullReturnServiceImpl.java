@@ -167,8 +167,10 @@ public class NullReturnServiceImpl implements INullReturnService {
     }
 
     /**
-     * 单条 enrich：从 pig 取 parity/current_status，按 birthDate(fallback introduceDate) 算日龄，
-     * 按 abnormalDate 至今算持续天数。基准/异常日期缺失时对应字段留 null。
+     * 单条 enrich：从 pig 取 parity/current_status，按「异常发生时」快照算派生字段。
+     * <p>日龄 = 异常日期 - birthDate(fallback introduceDate)（异常发生时日龄，非今天，避免返空后状态机流转污染）；
+     * 配怀持续天数 matingDays = 异常日期 - lastMatingDate（缺 lastMatingDate 留 null）；
+     * 持续天数 durationDays = 异常日期至今。基准/异常日期缺失时对应字段留 null。</p>
      */
     private void enrichFromPig(PigAbnormalVo vo, Pig pig) {
         if (pig == null) {
@@ -177,13 +179,16 @@ public class NullReturnServiceImpl implements INullReturnService {
         vo.setParity(pig.getParity());
         vo.setCurrentStatus(pig.getCurrentStatus());
         LocalDate today = LocalDate.now();
+        LocalDate abnormalDay = vo.getAbnormalDate() != null ? vo.getAbnormalDate().toLocalDate() : null;
         LocalDate base = pig.getBirthDate() != null ? pig.getBirthDate() : pig.getIntroduceDate();
-        if (base != null) {
-            vo.setDayAge((int) Math.max(ChronoUnit.DAYS.between(base, today), 0L));
+        if (base != null && abnormalDay != null) {
+            vo.setDayAge((int) Math.max(ChronoUnit.DAYS.between(base, abnormalDay), 0L));
         }
-        if (vo.getAbnormalDate() != null) {
-            vo.setDurationDays((int) Math.max(
-                ChronoUnit.DAYS.between(vo.getAbnormalDate().toLocalDate(), today), 0L));
+        if (pig.getLastMatingDate() != null && abnormalDay != null) {
+            vo.setMatingDays((int) Math.max(ChronoUnit.DAYS.between(pig.getLastMatingDate(), abnormalDay), 0L));
+        }
+        if (abnormalDay != null) {
+            vo.setDurationDays((int) Math.max(ChronoUnit.DAYS.between(abnormalDay, today), 0L));
         }
     }
 

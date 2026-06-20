@@ -211,7 +211,7 @@ public class CropInfoServiceImpl extends DjsBaseServiceImpl<CropInfoMapper, Crop
     private LambdaQueryWrapper<CropInfo> buildQueryWrapper(CropInfoQuery query) {
         LambdaQueryWrapper<CropInfo> wrapper = new LambdaQueryWrapper<>();
         if (query == null) {
-            return wrapper.orderByDesc(CropInfo::getId);
+            return wrapper.orderByDesc(CropInfo::getUpdateTime).orderByDesc(CropInfo::getId);
         }
         Map<String, Object> params = query.getParams();
         Object beginTime = params == null ? null : params.get("beginTime");
@@ -223,8 +223,24 @@ public class CropInfoServiceImpl extends DjsBaseServiceImpl<CropInfoMapper, Crop
             .eq(StringUtils.isNotBlank(query.getCropFamily()), CropInfo::getCropFamily, query.getCropFamily())
             .like(StringUtils.isNotBlank(query.getPlantingSeason()), CropInfo::getPlantingSeason, query.getPlantingSeason())
             .eq(query.getUpdateBy() != null, CropInfo::getUpdateBy, query.getUpdateBy())
-            .between(beginTime != null && endTime != null, CropInfo::getUpdateTime, beginTime, endTime)
-            .orderByDesc(CropInfo::getId);
+            .between(beginTime != null && endTime != null, CropInfo::getUpdateTime, beginTime, endTime);
+        if (query.getHasOrganic() != null) {
+            String existsSql = "EXISTS (SELECT 1 FROM t_plant_crop_organic_rel rel JOIN t_plant_crop_organic o ON o.id = rel.organic_id AND o.del_flag = '0' WHERE rel.crop_id = t_plant_crop_info.id AND rel.del_flag = '0')";
+            if (query.getHasOrganic().intValue() == 1) {
+                wrapper.apply(existsSql);
+            } else if (query.getHasOrganic().intValue() == 2) {
+                wrapper.apply("NOT " + existsSql);
+            }
+        }
+        if (query.getOrganicWarning() != null) {
+            String warnSql = "EXISTS (SELECT 1 FROM t_plant_crop_organic_rel rel JOIN t_plant_crop_organic o ON o.id = rel.organic_id AND o.del_flag = '0' AND o.is_warning = 1 WHERE rel.crop_id = t_plant_crop_info.id AND rel.del_flag = '0')";
+            if (query.getOrganicWarning().intValue() == 1) {
+                wrapper.apply(warnSql);
+            } else if (query.getOrganicWarning().intValue() == 2) {
+                wrapper.apply("NOT " + warnSql);
+            }
+        }
+        wrapper.orderByDesc(CropInfo::getUpdateTime).orderByDesc(CropInfo::getId);
         return wrapper;
     }
 }

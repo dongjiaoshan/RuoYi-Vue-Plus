@@ -314,6 +314,11 @@ public class ProductInfoServiceImpl extends DjsBaseServiceImpl<ProductInfoMapper
                 if (StrUtil.isBlank(bo.getBelongType())) {
                     throw new ServiceException(I18nMessages.t("product.belong_type.required"));
                 }
+                // 生产产品(product_attr=1) 必填规格（doc/14 §4；打包卡按规格展示，「按重量/散装」非空即合规）
+                if (bo.getProductAttr() != null && bo.getProductAttr() == 1
+                    && StrUtil.isBlank(bo.getProductSpec())) {
+                    throw new ServiceException(I18nMessages.t("product.spec.required"));
+                }
             }
             case PRODUCT_TYPE_PURCHASE -> {
                 if (bo.getSupplierId() == null) {

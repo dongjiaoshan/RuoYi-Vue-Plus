@@ -32,6 +32,12 @@ public class CropInfoQuery extends BaseEntity {
     /** 种植季节（包含匹配，逗号字段中含某季）。 */
     private String plantingSeason;
 
+    /** 有机证书（1=有 / 2=无，按 t_plant_crop_organic_rel EXISTS 过滤）。 */
+    private Integer hasOrganic;
+
+    /** 证书是否预警（1=预警 / 2=正常，按关联证书 is_warning 过滤）。 */
+    private Integer organicWarning;
+
     /** 更新人 ID（精确，对齐原型「更新人员」筛选）。 */
     private Long updateBy;
 }

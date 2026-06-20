@@ -47,6 +47,9 @@ public class PigAbnormalVo implements Serializable {
     /** 母猪胎次（来自 pig.parity，queryPage enrich）。 */
     private Integer parity;
 
+    /** 配怀持续天数（天）= 异常日期 - pig.lastMatingDate；缺 lastMatingDate 留 null（queryPage enrich）。 */
+    private Integer matingDays;
+
     /** 当前状态持续天数（异常日期至今）；queryPage enrich。 */
     private Integer durationDays;
 

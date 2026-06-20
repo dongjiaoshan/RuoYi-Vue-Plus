@@ -131,6 +131,9 @@ class ProductProductionServiceImplTest {
             Object prefix = ctx.get("prefix");
             return "260628" + prefix + "0001";
         });
+
+        // consumeInhouse 部分扣减（来源余量 > 打包实重 → deductWeightById 行锁扣减，非整行软删）默认成功
+        when(inhouseMapper.deductWeightById(anyLong(), any())).thenReturn(1);
     }
 
     @AfterEach
@@ -220,8 +223,8 @@ class ProductProductionServiceImplTest {
         // 验证 location_stock += weight
         verify(locationStockMapper, times(1)).addByProductLocation(
             eq(90001L), eq(60010L), any(), eq(9001L));
-        // 验证 inhouse 软删
-        verify(inhouseMapper, times(1)).deleteById(eq(70001L));
+        // 验证 inhouse 按实重部分扣减（来源 50 > 打包 30.5，非整行软删）
+        verify(inhouseMapper, times(1)).deductWeightById(eq(70001L), any());
     }
 
     @Test
@@ -556,7 +559,7 @@ class ProductProductionServiceImplTest {
         assertThat(saved.getStoreId()).isEqualTo(9L);
         assertThat(saved.getEarNo()).isEqualTo("010126050101");
         assertThat(saved.getProductWeight()).isEqualByComparingTo("12.000");
-        verify(inhouseMapper, times(1)).deleteById(70001L); // consumeInhouse
+        verify(inhouseMapper, times(1)).deductWeightById(eq(70001L), any()); // consumeInhouse 部分扣减
     }
 
     // ============================================================
@@ -564,19 +567,17 @@ class ProductProductionServiceImplTest {
     // ============================================================
 
     @Test
-    @DisplayName("submitVegPack: 配 product_material 且原材料库存 < 打包重量 → 抛「原材料库存不足」+ production 不 INSERT")
-    void testVegPack_MaterialStockInsufficient() {
-        when(inhouseMapper.selectById(70001L)).thenReturn(sampleVegSource());
-        ProductInfo p = sampleVegProduct();
-        p.setProductMaterial(60001L); // 关联来源原材料果蔬产品
-        when(productInfoMapper.selectById(60010L)).thenReturn(p);
-        // 原材料 60001 当前库存合计 10kg（< 打包重量 30.5kg）
-        when(locationStockMapper.selectList(any())).thenReturn(List.of(stockRow(new BigDecimal("10.000"))));
-        when(productInfoMapper.selectById(60001L)).thenReturn(sampleVegProduct()); // 原材料名回显
+    @DisplayName("submitVegPack: 来源 inhouse 余量 < 打包实重 → 抛「来源待打包库存不足」+ production 不 INSERT（fail-fast，doc/14 §1）")
+    void testVegPack_SourceInhouseInsufficient() {
+        // 领用已把原材料从冷库转入 inhouse；打包的真正闸 = 来源 inhouse 余量（非冷库 location_stock）
+        ProductInhouse src = sampleVegSource();
+        src.setProductWeight(new BigDecimal("10.000")); // 来源余量 10 < 打包 30.5
+        when(inhouseMapper.selectById(70001L)).thenReturn(src);
+        when(productInfoMapper.selectById(60010L)).thenReturn(sampleVegProduct());
 
         assertThatThrownBy(() -> service.submitVegPack(sampleVegBo()))
             .isInstanceOf(ServiceException.class)
-            .hasMessageContaining("原材料库存不足");
+            .hasMessageContaining("来源待打包库存不足");
 
         verify(productionMapper, never()).insert(any(ProductProduction.class));
     }
@@ -601,8 +602,8 @@ class ProductProductionServiceImplTest {
         Long id = service.submitVegPack(sampleVegBo());
 
         assertThat(id).isEqualTo(80011L);
-        // 果蔬只校验不扣减：来源消耗走 consumeInhouse（deleteById），不调原材料 deductByProductLocation
-        verify(inhouseMapper, times(1)).deleteById(70001L);
+        // 果蔬不扣原材料 location_stock：来源消耗走 consumeInhouse（按实重部分扣减），不调 deductByProductLocation
+        verify(inhouseMapper, times(1)).deductWeightById(eq(70001L), any());
         verify(locationStockMapper, never()).deductByProductLocation(any(), any(), any(), any());
     }
 

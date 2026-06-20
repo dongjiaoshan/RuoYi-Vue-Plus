@@ -171,22 +171,6 @@ class FarmRecordsServiceImplTest {
     }
 
     @Test
-    @DisplayName("整地子类型缺 tillage_type 抛 ServiceException")
-    void submitEmpty_tillage_prepare_missing_fields() {
-        EmptyRecordBo bo = new EmptyRecordBo();
-        bo.setFarmType("tillage_prepare");
-        bo.setPlotId(1L);
-        bo.setFarmBy(10L);
-        bo.setFarmDate(LocalDate.now());
-        // 未设 tillageType
-
-        assertThatThrownBy(() -> service.submitEmpty(bo))
-            .isInstanceOf(ServiceException.class)
-            .hasMessageContaining("整地类型");
-        verify(baseMapper, never()).insert(any(FarmRecords.class));
-    }
-
-    @Test
     @DisplayName("非法 farmType 提交空地接口抛错")
     void submitEmpty_invalid_type() {
         EmptyRecordBo bo = new EmptyRecordBo();

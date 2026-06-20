@@ -138,15 +138,6 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
         if (!isEmptyFarmType(bo.getFarmType())) {
             throw new ServiceException("不支持的空地农事类型: " + bo.getFarmType());
         }
-        // 整地子类型强校验：tillage_prepare 必须带 tillage_type + tillage_method
-        if ("tillage_prepare".equals(bo.getFarmType())) {
-            if (StringUtils.isBlank(bo.getTillageType())) {
-                throw new ServiceException("整地农事必须选择整地类型");
-            }
-            if (StringUtils.isBlank(bo.getTillageMethod())) {
-                throw new ServiceException("整地农事必须选择整地方式");
-            }
-        }
         FarmRecords r = new FarmRecords();
         buildBase(r, bo.getFarmType(), bo.getPlotId(), null, null, bo.getFarmBy(), bo.getFarmDate(),
             bo.getProofOssIds(), bo.getRemark());
@@ -282,8 +273,6 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
         buildBase(r, "harvest_activity", bo.getPlotId(), bo.getCropId(), bo.getPlantId(), bo.getFarmBy(),
             bo.getFarmDate(), bo.getProofOssIds(), bo.getRemark());
         r.setHarvestWeight(bo.getHarvestWeight());
-        // 采摘人员（先选班组后从该班组成员中选）落 operator_user_id，与 farm_by(班组) 并存
-        r.setOperatorUserId(bo.getOperatorUserId());
         baseMapper.insert(r);
         // 2. 副作用：累加对应 plant_details.actual_yield（#3=a 采摘重量唯一录入口，采收 tab 已去重量）
         accumulateActualYield(bo.getPlantId(), bo.getPlotId(), bo.getCropId(), bo.getHarvestWeight());

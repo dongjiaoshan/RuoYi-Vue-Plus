@@ -9,6 +9,7 @@ import org.dromara.common.core.utils.StringUtils;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.common.base.DjsBaseServiceImpl;
+import org.dromara.djs.plant.plot.domain.PlotInfo;
 import org.dromara.djs.plant.plot.mapper.PlotInfoMapper;
 import org.dromara.djs.plant.zone.domain.PlotZone;
 import org.dromara.djs.plant.zone.domain.bo.PlotZoneBo;
@@ -17,6 +18,7 @@ import org.dromara.djs.plant.zone.domain.vo.PlotZoneVo;
 import org.dromara.djs.plant.zone.mapper.PlotZoneMapper;
 import org.dromara.djs.plant.zone.service.IPlotZoneService;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.Collection;
 import java.util.HashMap;
@@ -115,22 +117,34 @@ public class PlotZoneServiceImpl extends DjsBaseServiceImpl<PlotZoneMapper, Plot
     }
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public int deleteWithValidByIds(Collection<Long> ids) {
         if (ids == null || ids.isEmpty()) {
             return 0;
         }
-        // 删除前校验：每个片区下都不能有未删除地块
+        // 删除前校验：片区下不能有种植/采摘状态(plot_status 2/3)的地块；全为空地(1)时放行
         for (Long id : ids) {
             long activePlots = plotInfoMapper.selectCount(
-                new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<org.dromara.djs.plant.plot.domain.PlotInfo>()
-                    .eq(org.dromara.djs.plant.plot.domain.PlotInfo::getZoneId, id)
-                    .eq(org.dromara.djs.plant.plot.domain.PlotInfo::getDelFlag, "0")
+                new LambdaQueryWrapper<PlotInfo>()
+                    .eq(PlotInfo::getZoneId, id)
+                    .eq(PlotInfo::getDelFlag, "0")
+                    .in(PlotInfo::getPlotStatus, 2, 3)
             );
             if (activePlots > 0) {
                 PlotZone zone = baseMapper.selectById(id);
                 String name = zone != null ? zone.getZoneName() : String.valueOf(id);
-                throw new ServiceException("片区 [" + name + "] 仍有关联地块，不允许删除");
+                throw new ServiceException("片区 [" + name + "] 下存在种植/采摘状态的地块，不允许删除");
             }
+        }
+        // 校验通过：先级联软删各片区下的全部地块（此时均为空闲态），再软删片区本身
+        List<Long> plotIds = plotInfoMapper.selectList(
+                new LambdaQueryWrapper<PlotInfo>()
+                    .select(PlotInfo::getId)
+                    .in(PlotInfo::getZoneId, ids)
+                    .eq(PlotInfo::getDelFlag, "0"))
+            .stream().map(PlotInfo::getId).toList();
+        if (!plotIds.isEmpty()) {
+            plotInfoMapper.deleteByIds(plotIds);
         }
         return softDelete(ids);
     }
@@ -176,6 +190,7 @@ public class PlotZoneServiceImpl extends DjsBaseServiceImpl<PlotZoneMapper, Plot
         }
         wrapper.eq(StringUtils.isNotBlank(query.getZoneCode()), PlotZone::getZoneCode, query.getZoneCode())
             .like(StringUtils.isNotBlank(query.getZoneName()), PlotZone::getZoneName, query.getZoneName())
+            .eq(StringUtils.isNotBlank(query.getZoneBelong()), PlotZone::getZoneBelong, query.getZoneBelong())
             .eq(query.getZoneStatus() != null, PlotZone::getZoneStatus, query.getZoneStatus())
             .eq(query.getUpdateBy() != null, PlotZone::getUpdateBy, query.getUpdateBy())
             .ge(StringUtils.isNotBlank(query.getUpdateTimeStart()), PlotZone::getUpdateTime, query.getUpdateTimeStart())

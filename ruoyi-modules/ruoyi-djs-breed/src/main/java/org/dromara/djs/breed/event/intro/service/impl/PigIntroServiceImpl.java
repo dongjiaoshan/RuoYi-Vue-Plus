@@ -537,12 +537,14 @@ public class PigIntroServiceImpl implements IPigIntroService {
 
     /**
      * 以用户给定首号为起点连号（首号校格式 + UNIQUE；后续 N-1 头序号 +1，逐头探测 UNIQUE 撞则报错）。
-     * <p>前缀 = 末段 {@code -} 之前（品系-品种2-yyMMdd6，6/15 起不再编码性别），序号 = 末段；与 {@link EarNoAllocator}
-     * 同口径只看末段，不按定长截位（根除旧位长不一致导致解析出 &gt;999 的自相矛盾）。格式校验须与 allocator 输出
-     * 一致：{@code 品系{1,2}-品种2-yyMMdd6-序号3}（品系位宽 1~2 兼容历史 1 位 + 当前 2 位字典码）。</p>
+     * <p>前缀 = 末段 {@code -} 之前（品系{1,2}-品种2-[性别1]-yyMMdd6，性别段 2026-06-18 起编入），序号 = 末段；
+     * 与 {@link EarNoAllocator} 同口径只看末段，不按定长截位（根除旧位长不一致导致解析出 &gt;999 的自相矛盾）。
+     * 格式校验须与 allocator buildPrefix 双格式输出一致：性别非空 5 段 {@code 01-01-2-260319-022} / 性别空 4 段
+     * {@code 01-01-260609-001} 兼容旧仔猪耳标批量数据（{@code (-\d)?} = 可选性别段；品系位宽 1~2 兼容历史
+     * 1 位 + 当前 2 位字典码）。注：dateSeg 取前缀末段，对 5 段 prefix {@code 01-01-2-260319} 仍正确解析出 260319。</p>
      */
     private List<String> allocateFromUserStart(String startEarNo, int count) {
-        if (!startEarNo.matches("^\\d{1,2}-\\d{2}-\\d{6}-\\d{3}$")) {
+        if (!startEarNo.matches("^\\d{1,2}-\\d{2}(-\\d)?-\\d{6}-\\d{3}$")) {
             throw new ServiceException(I18nMessages.t("intro.start_ear_no.pattern"));
         }
         int sepIdx = startEarNo.lastIndexOf('-');

@@ -25,6 +25,11 @@ public class PlotZoneQuery extends BaseEntity {
     private String zoneName;
 
     /**
+     * 所属大区（字典 djs_zone_belong 值，精确匹配）。
+     */
+    private String zoneBelong;
+
+    /**
      * 状态（1 正常 / 2 停用）。
      */
     private Integer zoneStatus;

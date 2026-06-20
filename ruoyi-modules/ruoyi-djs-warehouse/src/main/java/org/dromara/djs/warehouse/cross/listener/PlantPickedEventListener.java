@@ -14,12 +14,13 @@ import java.math.BigDecimal;
 import java.time.LocalDate;
 
 /**
- * 跨域事件 listener：PLT-PICK-001 采摘完成 → 自动创建毛菜处理待办（CROSS-FLOW-002）。
+ * 跨域事件 listener：PLT-PICK-001 地块开始采摘 → 自动创建毛菜处理待办（CROSS-FLOW-002）。
  *
  * <p>消费 {@link PlantPickedEvent}（{@code AFTER_COMMIT} 阶段），同步向
  * {@code t_warehouse_planting_record} INSERT 一行 {@code handle_status='pending'} 待办，
  * 让毛菜处理小程序待处理列表（WMS-VEG-001 {@code selectPendingList}）自动出现该批次。
- * V1 阶段一次采摘完成对应 1 行（doc/10 §2.F-WMS-02 + doc/11 §2.14 业务规则）。</p>
+ * 0619 客户口径：地块「开始采摘」（进入采摘中）即应在仓库可见，故事件在首次进入活跃采摘态时发，
+ * 一地块首次开始采摘对应 1 行（doc/10 §2.F-WMS-02 + doc/11 §2.14 业务规则）。</p>
  *
  * <h3>事件 phase</h3>
  * <p>{@link TransactionPhase#AFTER_COMMIT} —— 仅采摘事务（{@code updateById(detail)} + 农事记录
@@ -61,9 +62,9 @@ public class PlantPickedEventListener {
     private final PlantingRecordMapper plantingRecordMapper;
 
     /**
-     * 监听采摘完成事件 → INSERT planting_record（handle_status='pending'）。
+     * 监听采摘激活事件（开始 / 完成采摘首次流转）→ INSERT planting_record（handle_status='pending'）。
      *
-     * @param event 采摘完成事件，载荷 {@link PlantPickedPayload}（plant 域已组装全部冗余字段）
+     * @param event 采摘激活事件，载荷 {@link PlantPickedPayload}（plant 域已组装全部冗余字段）
      */
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
     public void onPlantPicked(PlantPickedEvent event) {

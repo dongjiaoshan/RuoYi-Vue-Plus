@@ -26,11 +26,11 @@ import org.dromara.djs.warehouse.cut.domain.vo.CutProductTypeVo;
 import org.dromara.djs.warehouse.cut.domain.vo.PigCutRecordVo;
 import org.dromara.djs.warehouse.cut.mapper.PigCutRecordMapper;
 import org.dromara.djs.warehouse.flow.domain.StockFlow;
-import org.dromara.djs.warehouse.product.domain.ProductInhouse;
-import org.dromara.djs.warehouse.product.mapper.ProductInhouseMapper;
 import org.dromara.djs.warehouse.flow.mapper.StockFlowMapper;
 import org.dromara.djs.warehouse.location.domain.LocationInfo;
 import org.dromara.djs.warehouse.location.mapper.LocationInfoMapper;
+import org.dromara.djs.warehouse.stock.domain.LocationStock;
+import org.dromara.djs.warehouse.stock.mapper.LocationStockMapper;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
 import org.dromara.djs.warehouse.trace.domain.TraceContentConst;
@@ -104,9 +104,9 @@ public class PigCutRecordServiceImpl
     private static final String CUT_PRODUCT_BELONG_TYPE = "pork";
 
     /**
-     * 标准分割成品业务码前缀（PROD-PIG-LEAN-01 等），排除 D0001 / DEMO / 测试数据。
+     * 产品属性=原材料（djs_product_attr：1=生产产品 / 2=原材料）。分割车间只产出/可选原材料（doc/14 §3）。
      */
-    private static final String CUT_PRODUCT_CODE_PREFIX = "PROD-PIG-";
+    private static final Integer PRODUCT_ATTR_MATERIAL = 2;
 
     /**
      * stock_flow.flow_type 分割品入冻品库流水。
@@ -140,10 +140,10 @@ public class PigCutRecordServiceImpl
     private static final String BAR_STATUS_CUTTING = "cutting";
 
     private final BarInfoMapper barInfoMapper;
-    private final ProductInhouseMapper productInhouseMapper;
     private final StockFlowMapper stockFlowMapper;
     private final ProductInfoMapper productInfoMapper;
     private final LocationInfoMapper locationInfoMapper;
+    private final LocationStockMapper locationStockMapper;
     private final SupplierMapper supplierMapper;
     private final IBizCodeGenerator bizCodeGenerator;
     private final ITraceService traceService;
@@ -151,20 +151,20 @@ public class PigCutRecordServiceImpl
 
     public PigCutRecordServiceImpl(PigCutRecordMapper baseMapper,
                                    BarInfoMapper barInfoMapper,
-                                   ProductInhouseMapper productInhouseMapper,
                                    StockFlowMapper stockFlowMapper,
                                    ProductInfoMapper productInfoMapper,
                                    LocationInfoMapper locationInfoMapper,
+                                   LocationStockMapper locationStockMapper,
                                    SupplierMapper supplierMapper,
                                    IBizCodeGenerator bizCodeGenerator,
                                    ITraceService traceService,
                                    ImageUrlResolver imageUrlResolver) {
         super(baseMapper);
         this.barInfoMapper = barInfoMapper;
-        this.productInhouseMapper = productInhouseMapper;
         this.stockFlowMapper = stockFlowMapper;
         this.productInfoMapper = productInfoMapper;
         this.locationInfoMapper = locationInfoMapper;
+        this.locationStockMapper = locationStockMapper;
         this.supplierMapper = supplierMapper;
         this.bizCodeGenerator = bizCodeGenerator;
         this.traceService = traceService;
@@ -262,9 +262,8 @@ public class PigCutRecordServiceImpl
             throw new ServiceException("入冻品库位不存在：" + effectiveLocationId);
         }
 
-        // Step 3：for each part → INSERT product_inhouse + INSERT stock_flow IN
+        // Step 3：for each part → INSERT location_stock 篮子(入冷库) + INSERT stock_flow IN(cut_out_in 不可变审计)
         BigDecimal totalWeight = BigDecimal.ZERO;
-        LocalDate today = LocalDate.now();
         for (PigCutOutBo.PartItem part : bo.getPartItems()) {
             // 按具体产品对齐原型（Kevin 定）：productId 非空 → 直接用该分割成品落库；
             // 否则回落 cutPart 5 部位枚举解析标准 SKU（向后兼容 mp 旧端 + 成品主数据未 seed）。
@@ -287,20 +286,19 @@ public class PigCutRecordServiceImpl
                 throw new ServiceException("分割明细须指定具体产品(productId) 或部位(cutPart) 之一");
             }
 
-            ProductInhouse inhouse = new ProductInhouse();
-            inhouse.setProduceDate(java.sql.Date.valueOf(today));
-            inhouse.setProductId(productId);
-            inhouse.setProductName(productName);
-            inhouse.setProductType(1); // 自产
-            inhouse.setProductUnit(productUnit);
-            inhouse.setProductSpec(part.getProductSpec());
-            inhouse.setEarNo(record.getEarNo());
-            inhouse.setProductWeight(part.getProductWeight());
-            inhouse.setProduceTime(now);
-            inhouse.setWhiteBarId(record.getWhiteBarId());
-            inhouse.setCutPart(part.getCutPart());
-            inhouse.setLocationId(effectiveLocationId);
-            productInhouseMapper.insert(inhouse);
+            // 分割部位入冷库 = 一个「篮子」（doc/14 §1：分割→入库，不直接产待打包 WIP）：
+            // 每头猪每部位一行 location_stock，ear_no 作篮子标签（追溯键）。mp 物资领用按产品聚合展示这些篮子；
+            // 据门店需求领用时按篮子 FIFO 扣减并产出 product_inhouse（带 ear_no）→ 肉品打包来源。
+            LocationStock basket = new LocationStock();
+            basket.setLocationId(effectiveLocationId);
+            basket.setProductId(productId);
+            basket.setEarNo(record.getEarNo());
+            basket.setProductName(productName);
+            basket.setProductUnit(productUnit);
+            basket.setProductStock(part.getProductWeight());
+            basket.setIsEnd(0);
+            basket.setOperatorId(userId);
+            locationStockMapper.insert(basket);
 
             // 分割品入冻品库流水
             StockFlow flowIn = new StockFlow();
@@ -451,13 +449,14 @@ public class PigCutRecordServiceImpl
 
     @Override
     public List<CutProductTypeVo> queryCutProductTypes() {
-        // 分割车间标准成品：product_workshop=2 + belong_type='pork' + product_id 前缀 PROD-PIG-
-        // 双条件（排除 D0001 商品 / DEMO / 测试数据），按业务码升序，仅显 5 个标准分割 SKU。
+        // 分割车间产出 = 原材料(product_attr=2)（doc/14 §3：分割产「原料」入 WIP，打包按 product_material
+        // 反查原料聚合；故分割只能选原料，不选生产产品）。belong_type='pork' + workshop=2 + attr=2，
+        // 排除生产产品(attr=1)/商品/测试数据，按业务码升序。
         List<ProductInfo> types = productInfoMapper.selectList(
             new LambdaQueryWrapper<ProductInfo>()
                 .eq(ProductInfo::getProductWorkshop, PRODUCT_WORKSHOP_CUT)
                 .eq(ProductInfo::getBelongType, CUT_PRODUCT_BELONG_TYPE)
-                .likeRight(ProductInfo::getProductId, CUT_PRODUCT_CODE_PREFIX)
+                .eq(ProductInfo::getProductAttr, PRODUCT_ATTR_MATERIAL)
                 .orderByAsc(ProductInfo::getProductId));
 
         // IMG-LIB-001：批量解析产品图，禁 N+1。L1 优先用户上传缩略图 product_thumb，退回自动匹配 image_oss_id，
@@ -572,10 +571,11 @@ public class PigCutRecordServiceImpl
             return;
         }
         for (PigCutRecordVo vo : records) {
-            if (vo.getPickupWeight() == null || vo.getWhiteBarId() == null) {
+            if (vo.getPickupWeight() == null || StringUtils.isBlank(vo.getEarNo())) {
                 continue;
             }
-            BigDecimal used = productInhouseMapper.sumProductWeightByWhiteBarId(vo.getWhiteBarId());
+            // 已分割重量 = Σ cut_out_in 流水（不可变，doc/14 §1）；剩余可分割 = 领用白条重 − 已分割
+            BigDecimal used = stockFlowMapper.sumCutOutByEarNo(vo.getEarNo());
             BigDecimal remaining = vo.getPickupWeight().subtract(used == null ? BigDecimal.ZERO : used);
             vo.setRemainingWeight(remaining.max(BigDecimal.ZERO));
         }
@@ -594,7 +594,7 @@ public class PigCutRecordServiceImpl
      *   <li>按 white_bar_id 批量查 bar_info（取 supplier_id / arrive_weight / marketing_weight /
      *       in_weight / out_weight / in_time / out_time）；</li>
      *   <li>按出现的 supplier_id 批量查 supplier 名（参 {@code OutsourcePigServiceImpl#fillSupplierName} 范式）；</li>
-     *   <li>按 white_bar_id 批量查分割品总重（{@code PigCutRecordMapper#sumCutProductWeightByWhiteBarIds}）。</li>
+     *   <li>按 ear_no 批量查分割品总重（{@code StockFlowMapper#sumCutOutGroupByEarNo}，读不可变 cut_out_in 流水）。</li>
      * </ol>
      *
      * <p>外购判定：{@code bar.supplierId != null}（已核实判据，外购优先 supplier_id）。
@@ -633,15 +633,23 @@ public class PigCutRecordServiceImpl
             }
         }
 
-        // ③ 批量查分割品总重（white_bar_id 匹配且 cut_part 非空）
-        Map<Long, BigDecimal> cutWeightMap = new HashMap<>(whiteBarIds.size());
-        List<Map<String, Object>> sums = baseMapper.sumCutProductWeightByWhiteBarIds(whiteBarIds);
-        if (sums != null) {
-            for (Map<String, Object> row : sums) {
-                Object idObj = row.get("whiteBarId");
-                Object weightObj = row.get("totalWeight");
-                if (idObj != null && weightObj != null) {
-                    cutWeightMap.put(((Number) idObj).longValue(), toBigDecimal(weightObj));
+        // ③ 批量查分割品总重（doc/14 §1：改读不可变 cut_out_in 流水 by ear_no——总产出量恒定，
+        //    不随下游领用/打包消耗变动；分割产出已入 location_stock 篮子、不再写 product_inhouse）
+        List<String> earNos = records.stream()
+            .map(PigCutRecordVo::getEarNo)
+            .filter(StringUtils::isNotBlank)
+            .distinct()
+            .toList();
+        Map<String, BigDecimal> cutWeightMap = new HashMap<>(earNos.size());
+        if (!earNos.isEmpty()) {
+            List<Map<String, Object>> sums = stockFlowMapper.sumCutOutGroupByEarNo(earNos);
+            if (sums != null) {
+                for (Map<String, Object> row : sums) {
+                    Object earObj = row.get("earNo");
+                    Object weightObj = row.get("totalWeight");
+                    if (earObj != null && weightObj != null) {
+                        cutWeightMap.put(earObj.toString(), toBigDecimal(weightObj));
+                    }
                 }
             }
         }
@@ -673,8 +681,8 @@ public class PigCutRecordServiceImpl
                 vo.setColdStorageMinutes(Duration.between(
                     bar.getInTime().toInstant(), bar.getOutTime().toInstant()).toMinutes());
             }
-            // 分割品总重 = Σ product_inhouse.product_weight（white_bar_id 匹配且 cut_part 非空）
-            BigDecimal cutTotal = cutWeightMap.get(vo.getWhiteBarId());
+            // 分割品总重 = Σ cut_out_in 流水 change_quantity（按 ear_no，doc/14 §1）
+            BigDecimal cutTotal = cutWeightMap.get(vo.getEarNo());
             vo.setCutProductTotalWeight(cutTotal);
             // 分割损耗 = outWeight - 分割品总重
             if (bar.getOutWeight() != null && cutTotal != null) {

@@ -15,9 +15,9 @@ import org.dromara.djs.warehouse.flow.domain.StockFlow;
 import org.dromara.djs.warehouse.flow.mapper.StockFlowMapper;
 import org.dromara.djs.warehouse.location.domain.LocationInfo;
 import org.dromara.djs.warehouse.location.mapper.LocationInfoMapper;
-import org.dromara.djs.warehouse.product.domain.ProductInhouse;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
-import org.dromara.djs.warehouse.product.mapper.ProductInhouseMapper;
+import org.dromara.djs.warehouse.stock.domain.LocationStock;
+import org.dromara.djs.warehouse.stock.mapper.LocationStockMapper;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -54,7 +54,7 @@ import static org.mockito.Mockito.when;
  * <ol>
  *   <li>pickup happy：bar_info status='in_stock' → cut_record INSERT + bar_info UPDATE pending_cut</li>
  *   <li>pickup 状态冲突：bar_info.status='cut_done' → 抛 + 不变更任何表</li>
- *   <li>cutOut happy 多部位：3 部位 → 3 product_inhouse INSERT + 4 stock_flow INSERT（3 入 + 1 出）+ status 推进</li>
+ *   <li>cutOut happy 多部位：3 部位 → 3 location_stock 篮子 INSERT（入冷库）+ 4 stock_flow INSERT（3 入 + 1 出）+ status 推进</li>
  *   <li>cutOut 状态不符：cut_status='done' → 抛 + 任何 mapper 不调用</li>
  *   <li>cutDone happy：cutting → done + bar_info cut_done + acidRemoveMinutes 计算 + outWeight 正确</li>
  * </ol>
@@ -74,7 +74,7 @@ class PigCutRecordServiceImplTest {
     @Mock
     private BarInfoMapper barInfoMapper;
     @Mock
-    private ProductInhouseMapper inhouseMapper;
+    private LocationStockMapper locationStockMapper;
     @Mock
     private StockFlowMapper flowMapper;
     @Mock
@@ -98,13 +98,14 @@ class PigCutRecordServiceImplTest {
      * 子类化：stub generateCutId / resolveProductIdByCutPart / resolveWhiteBarProductId 避开真实 product_info 查询。
      */
     static class TestablePigCutRecordServiceImpl extends PigCutRecordServiceImpl {
-        TestablePigCutRecordServiceImpl(PigCutRecordMapper c, BarInfoMapper b, ProductInhouseMapper i,
+        TestablePigCutRecordServiceImpl(PigCutRecordMapper c, BarInfoMapper b,
                                         StockFlowMapper f, ProductInfoMapper p, LocationInfoMapper l,
+                                        LocationStockMapper ls,
                                         org.dromara.djs.common.supplier.mapper.SupplierMapper s,
                                         IBizCodeGenerator g,
                                         org.dromara.djs.warehouse.trace.service.ITraceService ts,
                                         org.dromara.djs.common.image.service.ImageUrlResolver ir) {
-            super(c, b, i, f, p, l, s, g, ts, ir);
+            super(c, b, f, p, l, ls, s, g, ts, ir);
         }
 
         @Override
@@ -133,7 +134,7 @@ class PigCutRecordServiceImplTest {
     @BeforeEach
     void setup() {
         service = new TestablePigCutRecordServiceImpl(
-            cutMapper, barInfoMapper, inhouseMapper, flowMapper, productInfoMapper, locationInfoMapper, supplierMapper, bizCodeGenerator, traceService, imageUrlResolver);
+            cutMapper, barInfoMapper, flowMapper, productInfoMapper, locationInfoMapper, locationStockMapper, supplierMapper, bizCodeGenerator, traceService, imageUrlResolver);
         loginHelperMock = Mockito.mockStatic(LoginHelper.class);
         loginHelperMock.when(LoginHelper::getUserId).thenReturn(9001L);
     }
@@ -258,7 +259,7 @@ class PigCutRecordServiceImplTest {
     }
 
     @Test
-    @DisplayName("submitCutOut: 3 部位 happy → 3 product_inhouse + 4 stock_flow（3 入冻品 + 1 白条出）+ status 推进")
+    @DisplayName("submitCutOut: 3 部位 happy → 3 location_stock 篮子(入冷库) + 4 stock_flow（3 入冻品 + 1 白条出）+ status 推进")
     void testCutOut_Happy() {
         when(cutMapper.selectById(80001L)).thenReturn(sampleRecord("picked"));
         when(cutMapper.updateStatusToCutting(eq(80001L), any(Date.class), eq(9001L))).thenReturn(1);
@@ -272,21 +273,20 @@ class PigCutRecordServiceImplTest {
 
         service.submitCutOut(sampleCutOutBo());
 
-        // 3 行 product_inhouse
-        ArgumentCaptor<ProductInhouse> inhouseCap = ArgumentCaptor.forClass(ProductInhouse.class);
-        verify(inhouseMapper, times(3)).insert(inhouseCap.capture());
-        List<ProductInhouse> inhouses = inhouseCap.getAllValues();
-        assertThat(inhouses).extracting(ProductInhouse::getCutPart)
-            .containsExactly("lean", "bone", "skin");
-        assertThat(inhouses).extracting(ProductInhouse::getWhiteBarId)
-            .allMatch(v -> v.equals(70001L));
-        assertThat(inhouses).extracting(ProductInhouse::getLocationId)
+        // 3 行 location_stock 篮子（入冷库，doc/14 §1：分割→入库，ear_no 作篮子标签）
+        ArgumentCaptor<LocationStock> basketCap = ArgumentCaptor.forClass(LocationStock.class);
+        verify(locationStockMapper, times(3)).insert(basketCap.capture());
+        List<LocationStock> baskets = basketCap.getAllValues();
+        assertThat(baskets).extracting(LocationStock::getEarNo)
+            .allMatch(v -> v.equals("TEST-EAR-001"));
+        assertThat(baskets).extracting(LocationStock::getLocationId)
             .allMatch(v -> v.equals(90002L));
-        assertThat(inhouses).extracting(ProductInhouse::getProductType)
-            .allMatch(v -> v.equals(1));
-        assertThat(inhouses.get(0).getProductId()).isEqualTo(100000000000000101L);
-        assertThat(inhouses.get(1).getProductId()).isEqualTo(100000000000000103L);
-        assertThat(inhouses.get(2).getProductId()).isEqualTo(100000000000000104L);
+        assertThat(baskets.get(0).getProductId()).isEqualTo(100000000000000101L);
+        assertThat(baskets.get(1).getProductId()).isEqualTo(100000000000000103L);
+        assertThat(baskets.get(2).getProductId()).isEqualTo(100000000000000104L);
+        assertThat(baskets.get(0).getProductStock()).isEqualByComparingTo("30.000");
+        assertThat(baskets.get(1).getProductStock()).isEqualByComparingTo("15.000");
+        assertThat(baskets.get(2).getProductStock()).isEqualByComparingTo("5.000");
 
         // 4 行 stock_flow（3 IN + 1 OT）
         ArgumentCaptor<StockFlow> flowCap = ArgumentCaptor.forClass(StockFlow.class);
@@ -315,7 +315,7 @@ class PigCutRecordServiceImplTest {
             .isInstanceOf(ServiceException.class)
             .hasMessageContaining("分割单状态不符");
 
-        verify(inhouseMapper, never()).insert(any(ProductInhouse.class));
+        verify(locationStockMapper, never()).insert(any(LocationStock.class));
         verify(flowMapper, never()).insert(any(StockFlow.class));
         verify(cutMapper, never()).updateStatusToCutting(anyLong(), any(Date.class), anyLong());
     }

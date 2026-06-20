@@ -48,6 +48,11 @@ public class PlotInfoVo implements Serializable {
     @ExcelProperty(value = "所属片区")
     private String zoneName;
 
+    /** 所属大区（service 层 enrich，取自所属片区 zone.zoneBelong；字典 djs_zone_belong）。 */
+    @ExcelProperty(value = "所属大区", converter = ExcelDictConvert.class)
+    @ExcelDictFormat(dictType = "djs_zone_belong")
+    private String zoneBelong;
+
     @ExcelProperty(value = "类型", converter = ExcelDictConvert.class)
     @ExcelDictFormat(dictType = "djs_plot_type")
     private String plotType;
@@ -122,4 +127,13 @@ public class PlotInfoVo implements Serializable {
      * <p>D8 阶段 {@code t_plant_plant_details} 0 行，返回 null；D9+ PLT-PLAN-001 上线后启用 JOIN。</p>
      */
     private String currentCropName;
+
+    /** 历史种植次数（service enrich，按 plot_id COUNT t_plant_plant_details）。 */
+    private Long historyPlantCount;
+
+    /** 最高亩产作物名（service enrich，取该地块 average_yield 最大行 crop_name）。 */
+    private String maxYieldCropName;
+
+    /** 最高亩作物产量 kg/亩（service enrich，MAX average_yield）。 */
+    private BigDecimal maxYieldPerMu;
 }

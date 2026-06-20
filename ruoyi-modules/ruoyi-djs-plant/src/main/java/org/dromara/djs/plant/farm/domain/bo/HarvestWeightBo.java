@@ -38,10 +38,6 @@ public class HarvestWeightBo {
     @NotNull(message = "{plant.farm.team.required}")
     private Long farmBy;
 
-    /** 采摘人员 user_id（{@code sys_user.user_id}）：先选班组、再从该班组成员中选采摘人，落 operator_user_id。 */
-    @NotNull(message = "请选择采摘人员")
-    private Long operatorUserId;
-
     /** 采摘日期。 */
     @NotNull(message = "{plant.farm.date.required}")
     private LocalDate farmDate;

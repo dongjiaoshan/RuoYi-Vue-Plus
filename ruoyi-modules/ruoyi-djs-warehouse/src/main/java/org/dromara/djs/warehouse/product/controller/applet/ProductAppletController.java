@@ -61,9 +61,12 @@ public class ProductAppletController {
      *   <li>结果按 ID 倒序，最多 200 条（picker 不分页）</li>
      * </ul>
      *
-     * @param belongType  字典 {@code djs_belong_type} 精确匹配
-     * @param productType 字典 {@code djs_product_type}：1=自产 / 2=外购 / 3=礼盒
-     * @param keyword     关键字（同时 LIKE productName / productId）
+     * @param belongType      字典 {@code djs_belong_type} 精确匹配
+     * @param productType     字典 {@code djs_product_type}：1=自产 / 2=外购 / 3=礼盒
+     * @param keyword         关键字（同时 LIKE productName / productId）
+     * @param excludeMaterial {@code true} 排除自产原料（{@code product_type=1 且 product_attr=2}），
+     *                        门店下单 picker 用——门店只订可售产品（成品/外购/礼盒），原料是仓库内部流转、不可下单（doc/14 §5）。
+     *                        默认 {@code false}（不排除，其余 picker 如打包/盘点不受影响）。
      */
     @SaCheckLogin
     @SaCheckPermission("djs:applet:warehouse:product:list")
@@ -71,12 +74,21 @@ public class ProductAppletController {
     public R<List<ProductPickerVo>> list(
         @RequestParam(required = false) String belongType,
         @RequestParam(required = false) Integer productType,
-        @RequestParam(required = false) String keyword
+        @RequestParam(required = false) String keyword,
+        @RequestParam(required = false) Boolean excludeMaterial
     ) {
+        boolean exMat = Boolean.TRUE.equals(excludeMaterial);
         LambdaQueryWrapper<ProductInfo> wrapper = new LambdaQueryWrapper<ProductInfo>()
             .eq(ProductInfo::getProductStatus, 0)
             .eq(StringUtils.isNotBlank(belongType), ProductInfo::getBelongType, belongType)
             .eq(productType != null, ProductInfo::getProductType, productType)
+            // 排除自产原料：保留「非自产 或 非原料 或 attr 未设」，即仅剔除 type=1 且 attr=2 的原料
+            .and(exMat, w -> w
+                .ne(ProductInfo::getProductType, 1)
+                .or()
+                .ne(ProductInfo::getProductAttr, 2)
+                .or()
+                .isNull(ProductInfo::getProductAttr))
             .and(StringUtils.isNotBlank(keyword), w -> w
                 .like(ProductInfo::getProductName, keyword)
                 .or()

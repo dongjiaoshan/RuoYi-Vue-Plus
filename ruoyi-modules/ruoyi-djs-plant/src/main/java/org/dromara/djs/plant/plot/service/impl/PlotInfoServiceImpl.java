@@ -16,6 +16,7 @@ import org.dromara.djs.plant.plot.domain.vo.PlotFarmworkRecordVo;
 import org.dromara.djs.plant.plot.domain.vo.PlotInfoVo;
 import org.dromara.djs.plant.plot.domain.vo.PlotOrganicRefVo;
 import org.dromara.djs.plant.plot.domain.vo.PlotPlantingRecordVo;
+import org.dromara.djs.plant.plot.domain.vo.PlotPlantingStatVo;
 import org.dromara.djs.plant.plot.mapper.PlotInfoMapper;
 import org.dromara.djs.plant.plot.service.IPlotInfoService;
 import org.dromara.djs.plant.zone.domain.PlotZone;
@@ -33,11 +34,10 @@ import java.util.stream.Collectors;
  * 地块 Service 实现（PLT-MD-001）。
  *
  * <p>列表查询时 service 层批量取 zone 名字 enrich 到 VO（一次额外 query，避免 N+1）；
- * V1 数据量小（&lt; 100 地块）够用，V2 改 LEFT JOIN。</p>
+ * V1 数据量小（&lt; 100 地块）够用，V2 改 LEFT JOIN。分页列表额外批量回填派生统计
+ * （历史种植次数 / 最高亩产作物 / 最高亩作物产量，按 plot_id 聚合 t_plant_plant_details）。</p>
  *
- * <p>删除前校验：D8 阶段 stub。t_plant_plant_plan / t_plant_farm_records /
- * t_plant_plant_details 在 D9+ PLT-PLAN-001 / PLT-WORK-001 / PLT-PICK-001 落地，
- * 届时 service 加 count + throw plant.plot.has_business_data。</p>
+ * <p>删除前校验：仅空闲态地块可删，种植/采摘态拦截。</p>
  *
  * @author djs
  * @since PLT-MD-001
@@ -58,6 +58,7 @@ public class PlotInfoServiceImpl extends DjsBaseServiceImpl<PlotInfoMapper, Plot
         LambdaQueryWrapper<PlotInfo> wrapper = buildQueryWrapper(query);
         Page<PlotInfoVo> page = baseMapper.selectVoPage(pageQuery.build(), wrapper);
         enrichZoneNames(page.getRecords());
+        fillPlantingStats(page.getRecords());
         return TableDataInfo.build(page);
     }
 
@@ -75,6 +76,7 @@ public class PlotInfoServiceImpl extends DjsBaseServiceImpl<PlotInfoMapper, Plot
             PlotZone zone = plotZoneMapper.selectById(vo.getZoneId());
             if (zone != null) {
                 vo.setZoneName(zone.getZoneName());
+                vo.setZoneBelong(zone.getZoneBelong());
             }
         }
         // 当前作物（D8 阶段 t_plant_plant_details 0 行，先返回 null）
@@ -132,12 +134,14 @@ public class PlotInfoServiceImpl extends DjsBaseServiceImpl<PlotInfoMapper, Plot
         if (ids == null || ids.isEmpty()) {
             return 0;
         }
-        // D8 阶段 stub：t_plant_plant_plan / t_plant_farm_records / t_plant_plant_details 0 行，
-        // D9+ PLT-PLAN-001 / PLT-WORK-001 / PLT-PICK-001 落地后启用：
-        //   long active = planMapper.selectCount(... plot_id IN(ids) AND del_flag=0)
-        //                + recordMapper.selectCount(...)
-        //                + detailMapper.selectCount(...);
-        //   if (active > 0) throw new ServiceException("plant.plot.has_business_data");
+        List<PlotInfo> plots = baseMapper.selectByIds(ids);
+        for (PlotInfo plot : plots) {
+            Integer status = plot.getPlotStatus();
+            if (status != null && (status.equals(2) || status.equals(3))) {
+                String name = StringUtils.isNotBlank(plot.getPlotName()) ? plot.getPlotName() : plot.getPlotCode();
+                throw new ServiceException("地块 [" + name + "] 处于种植/采摘状态，不允许删除");
+            }
+        }
         return softDelete(ids);
     }
 
@@ -178,13 +182,46 @@ public class PlotInfoServiceImpl extends DjsBaseServiceImpl<PlotInfoMapper, Plot
             return;
         }
         List<PlotZone> zones = plotZoneMapper.selectByIds(zoneIds);
-        Map<Long, String> zoneNameMap = new HashMap<>();
+        Map<Long, PlotZone> zoneMap = new HashMap<>();
         for (PlotZone z : zones) {
-            zoneNameMap.put(z.getId(), z.getZoneName());
+            zoneMap.put(z.getId(), z);
         }
         for (PlotInfoVo vo : list) {
-            if (vo.getZoneId() != null) {
-                vo.setZoneName(zoneNameMap.get(vo.getZoneId()));
+            PlotZone zone = vo.getZoneId() != null ? zoneMap.get(vo.getZoneId()) : null;
+            if (zone != null) {
+                vo.setZoneName(zone.getZoneName());
+                vo.setZoneBelong(zone.getZoneBelong());
+            }
+        }
+    }
+
+    /**
+     * 批量回填地块派生统计（历史种植次数 / 最高亩产作物 / 最高亩作物产量，按 plot_id 聚合
+     * {@code t_plant_plant_details}）。一次性 IN 查询所有 plotId 的聚合行（禁 N+1）；
+     * 无种植记录的地块兜底 historyPlantCount=0、其余 null。
+     */
+    private void fillPlantingStats(List<PlotInfoVo> records) {
+        if (records == null || records.isEmpty()) {
+            return;
+        }
+        List<Long> plotIds = records.stream()
+            .map(PlotInfoVo::getId)
+            .filter(java.util.Objects::nonNull)
+            .distinct()
+            .collect(Collectors.toList());
+        if (plotIds.isEmpty()) {
+            return;
+        }
+        Map<Long, PlotPlantingStatVo> statMap = baseMapper.selectPlantingStats(plotIds).stream()
+            .collect(Collectors.toMap(PlotPlantingStatVo::getPlotId, java.util.function.Function.identity(), (a, b) -> a));
+        for (PlotInfoVo vo : records) {
+            PlotPlantingStatVo stat = statMap.get(vo.getId());
+            if (stat != null) {
+                vo.setHistoryPlantCount(stat.getHistoryPlantCount());
+                vo.setMaxYieldPerMu(stat.getMaxYieldPerMu());
+                vo.setMaxYieldCropName(stat.getMaxYieldCropName());
+            } else {
+                vo.setHistoryPlantCount(0L);
             }
         }
     }
@@ -196,7 +233,7 @@ public class PlotInfoServiceImpl extends DjsBaseServiceImpl<PlotInfoMapper, Plot
     private LambdaQueryWrapper<PlotInfo> buildQueryWrapper(PlotInfoQuery query) {
         LambdaQueryWrapper<PlotInfo> wrapper = new LambdaQueryWrapper<>();
         if (query == null) {
-            return wrapper.orderByDesc(PlotInfo::getId);
+            return wrapper.orderByDesc(PlotInfo::getUpdateTime).orderByDesc(PlotInfo::getId);
         }
         wrapper.eq(query.getZoneId() != null, PlotInfo::getZoneId, query.getZoneId())
             .like(StringUtils.isNotBlank(query.getPlotCode()), PlotInfo::getPlotCode, query.getPlotCode())
@@ -204,7 +241,7 @@ public class PlotInfoServiceImpl extends DjsBaseServiceImpl<PlotInfoMapper, Plot
             .eq(StringUtils.isNotBlank(query.getPlotType()), PlotInfo::getPlotType, query.getPlotType())
             .eq(query.getPlotStatus() != null, PlotInfo::getPlotStatus, query.getPlotStatus())
             .eq(query.getIsLease() != null, PlotInfo::getIsLease, query.getIsLease())
-            .orderByDesc(PlotInfo::getId);
+            .orderByDesc(PlotInfo::getUpdateTime).orderByDesc(PlotInfo::getId);
         return wrapper;
     }
 }

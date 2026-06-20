@@ -209,7 +209,8 @@ public class ProductProductionServiceImpl
         // 目标果蔬成品若配了 product_material（关联来源原材料果蔬产品），则按 doc 规则
         // "领用果蔬重量（来源原材料库存）< 打包成品重量 → 拦截禁止"。
         // fail-fast 放在任何写操作之前；未配 product_material → 降级跳过校验 + warn（不阻塞）。
-        // 注意：果蔬不在此扣减原材料库存（来源消耗沿用 consumeInhouse 整 row 软删，避免重复扣）。
+        // 注意：果蔬不在此扣减原材料库存（来源消耗 = consumeInhouse 按实重部分扣减）。
+        requireInhouseEnough(src, bo.getProductWeight());
         checkVegMaterialIfConfigured(product, bo.getProductWeight());
         // Step 3：入库库位（前端收银台不采集，可空 → 默认取产品配置库位/首个可用库位兜底）
         Long locationId = resolveLocationId(bo.getLocationId(), product);
@@ -249,7 +250,7 @@ public class ProductProductionServiceImpl
         upsertLocationStock(locationId, p, bo.getProductWeight(), userId);
 
         // Step 7：软删来源 inhouse（V1 整 row 消耗）
-        consumeInhouse(src);
+        consumeInhouse(src, bo.getProductWeight());
 
         // Step 8：生成追溯码回填 + 写 in_stock 事件（TRC-CORE-001）
         fillTraceCode(p, src.getEarNo(), src.getPlotId());
@@ -353,6 +354,7 @@ public class ProductProductionServiceImpl
 
         ProductInhouse src = requireActiveInhouse(bo.getSourceInhouseId());
         ProductInfo product = requireDeliveryProduct(bo.getProductId());
+        requireInhouseEnough(src, bo.getProductWeight());
         // 入库库位（前端收银台不采集，可空 → 默认取产品配置库位/首个可用库位兜底）
         Long locationId = resolveLocationId(bo.getLocationId(), product);
 
@@ -383,7 +385,7 @@ public class ProductProductionServiceImpl
         insertPackInFlow(product.getId(), locationId, bo.getProductWeight(),
             src.getEarNo(), src.getPlotId(), p.getProduceNo(), userId, now);
         upsertLocationStock(locationId, p, bo.getProductWeight(), userId);
-        consumeInhouse(src);
+        consumeInhouse(src, bo.getProductWeight());
 
         // 肉品打包原材料库存校验 + 扣减（猪肉全闭环 Part I P8）：
         // 仅 belong_type=pork 且目标产品配了 product_material（关联原材料）时校验，
@@ -410,6 +412,7 @@ public class ProductProductionServiceImpl
 
         ProductInhouse src = requireActiveInhouse(bo.getSourceInhouseId());
         ProductInfo product = requireDeliveryProduct(bo.getProductId());
+        requireInhouseEnough(src, bo.getProductWeight());
         requireLocation(bo.getLocationId());
 
         ProductProduction p = new ProductProduction();
@@ -438,7 +441,7 @@ public class ProductProductionServiceImpl
         insertPackInFlow(product.getId(), bo.getLocationId(), bo.getProductWeight(),
             null, src.getPlotId(), p.getProduceNo(), userId, now);
         upsertLocationStock(bo.getLocationId(), p, bo.getProductWeight(), userId);
-        consumeInhouse(src);
+        consumeInhouse(src, bo.getProductWeight());
 
         // 生成追溯码回填 + 写 in_stock 事件（TRC-CORE-001）；芹菜无 earNo
         fillTraceCode(p, null, src.getPlotId());
@@ -477,6 +480,7 @@ public class ProductProductionServiceImpl
         if (store == null) {
             throw new ServiceException("发货门店不存在或已删除：" + bo.getStoreId());
         }
+        requireInhouseEnough(src, bo.getProductWeight());
 
         ProductProduction p = new ProductProduction();
         p.setProduceDate(java.sql.Date.valueOf(LocalDate.now()));
@@ -506,7 +510,7 @@ public class ProductProductionServiceImpl
                 src.getEarNo(), src.getPlotId(), p.getProduceNo(), userId, now);
             upsertLocationStock(locationId, p, bo.getProductWeight(), userId);
         }
-        consumeInhouse(src);
+        consumeInhouse(src, bo.getProductWeight());
 
         // 发货月台领用回写 bar 出库基础数据（猪肉全闭环 Part I P6）：来源为燎毛白条整只（whiteBarId 非空）时，
         // 同事务把对应 t_warehouse_bar_info 推进到 cut_done + out_method=1 + out_time/out_weight。
@@ -599,9 +603,22 @@ public class ProductProductionServiceImpl
 
     @Override
     public List<ProductInhouse> listSourceForVeg() {
+        // 果蔬打包来源 = belong_type='vegetable' 的「今天领用」活动 inhouse（doc/14 §5：只显今天领用待打包）。
+        // 物资领用果蔬原材料经 MatFlowServiceImpl.bridgeVegInhouse 桥接产生（produce_date=今天）；product 维度
+        // plot_id 可空、为冗余追溯字段。与 listSourceForMeat（belong_type='pork'）同范式。
+        List<Long> productIds = productInfoMapper.selectList(
+                new LambdaQueryWrapper<ProductInfo>()
+                    .select(ProductInfo::getId)
+                    .eq(ProductInfo::getBelongType, BELONG_TYPE_VEGETABLE))
+            .stream().map(ProductInfo::getId).toList();
+        if (productIds.isEmpty()) {
+            return List.of();
+        }
         return productInhouseMapper.selectList(
             new LambdaQueryWrapper<ProductInhouse>()
-                .isNotNull(ProductInhouse::getPlotId)
+                .in(ProductInhouse::getProductId, productIds)
+                .gt(ProductInhouse::getProductWeight, BigDecimal.ZERO)
+                .apply("DATE(produce_date) = CURDATE()")
                 .orderByDesc(ProductInhouse::getId)
                 .last("LIMIT 50"));
     }
@@ -617,8 +634,8 @@ public class ProductProductionServiceImpl
 
     @Override
     public List<ProductInhouse> listSourceForMeat() {
-        // 肉品打包来源 = belong_type='pork' 的活动 inhouse（已领用出库猪肉的过程产品，ear_no = 来源猪只耳号）；
-        // 排除白条/蔬菜，避免混入肉品耳号去重条。
+        // 肉品打包来源 = belong_type='pork' 的「今天领用」活动 inhouse（doc/14 §5：只显今天领用待打包，
+        // ear_no = 篮子标签 = 来源猪只耳号）；排除白条/蔬菜，避免混入肉品耳号去重条。今天没领用 → 空（须先 mp 领用）。
         List<Long> productIds = productInfoMapper.selectList(
                 new LambdaQueryWrapper<ProductInfo>()
                     .select(ProductInfo::getId)
@@ -631,15 +648,28 @@ public class ProductProductionServiceImpl
             new LambdaQueryWrapper<ProductInhouse>()
                 .in(ProductInhouse::getProductId, productIds)
                 .gt(ProductInhouse::getProductWeight, BigDecimal.ZERO)
+                .apply("DATE(produce_date) = CURDATE()")
                 .orderByDesc(ProductInhouse::getId)
                 .last("LIMIT 50"));
     }
 
     @Override
     public List<ProductInhouse> listSourceForCelery() {
+        // 同 listSourceForVeg：belong_type='vegetable' 维度（plot_id 不作过滤主键）+「今天领用」过滤（doc/14 §5）。
+        // 重口味/保鲜库差异在库位，不在 belong_type。
+        List<Long> productIds = productInfoMapper.selectList(
+                new LambdaQueryWrapper<ProductInfo>()
+                    .select(ProductInfo::getId)
+                    .eq(ProductInfo::getBelongType, BELONG_TYPE_VEGETABLE))
+            .stream().map(ProductInfo::getId).toList();
+        if (productIds.isEmpty()) {
+            return List.of();
+        }
         return productInhouseMapper.selectList(
             new LambdaQueryWrapper<ProductInhouse>()
-                .isNotNull(ProductInhouse::getPlotId)
+                .in(ProductInhouse::getProductId, productIds)
+                .gt(ProductInhouse::getProductWeight, BigDecimal.ZERO)
+                .apply("DATE(produce_date) = CURDATE()")
                 .orderByDesc(ProductInhouse::getId)
                 .last("LIMIT 50"));
     }
@@ -864,13 +894,48 @@ public class ProductProductionServiceImpl
     }
 
     /**
-     * 软删来源 inhouse（V1 整 row 消耗，分次打包需多次 mp 提交）。
+     * 打包前置 fail-fast：选中来源 inhouse 余量 ≥ 本次打包实重，否则抛（在任何写操作前拦截，
+     * 避免超扣产生 orphan production；与 {@link #consumeInhouse} 的行锁原子扣减互为内外两道闸）。
      */
-    protected void consumeInhouse(ProductInhouse src) {
-        // 走 BaseMapperPlus 的 deleteById（会触发 @TableLogic 软删 + tenant 拦截器）。
-        // del_unique 同步走 DjsBaseServiceImpl 模型——本场景简化，直接 deleteById 让 MP
-        // 写 del_flag='1'，del_unique 保留 0（inhouse 表无 UNIQUE 约束依赖 del_unique，可安全）。
-        productInhouseMapper.deleteById(src.getId());
+    private void requireInhouseEnough(ProductInhouse src, BigDecimal packWeight) {
+        BigDecimal remain = src.getProductWeight() == null ? BigDecimal.ZERO : src.getProductWeight();
+        if (packWeight != null && remain.compareTo(packWeight) < 0) {
+            throw new ServiceException("来源待打包库存不足：当前 " + remain.stripTrailingZeros().toPlainString()
+                + "，本次打包 " + packWeight.stripTrailingZeros().toPlainString());
+        }
+    }
+
+    /**
+     * 消耗来源 inhouse：按本次打包实重 {@code consumeWeight} 从该行待打包重量中部分扣减。
+     *
+     * <p>支持「一行领用 WIP 分多次打包」，让打包卡「原材料库存 = Σ 活动 inhouse」随打包逐份递减
+     * （doc/14 §1 不变式 5）。规则：</p>
+     * <ul>
+     *   <li>{@code consumeWeight} 缺失/≤0 → 兜底整行软删（旧全量语义）</li>
+     *   <li>打包量 &gt; 来源余量 → 抛 {@link ServiceException} 拒绝（防超扣；事务回滚）</li>
+     *   <li>正好用尽 → 整行软删</li>
+     *   <li>未用尽 → {@link ProductInhouseMapper#deductWeightById} 行锁原子扣减（affected=0=并发抢占→回滚）</li>
+     * </ul>
+     */
+    protected void consumeInhouse(ProductInhouse src, BigDecimal consumeWeight) {
+        BigDecimal current = src.getProductWeight() == null ? BigDecimal.ZERO : src.getProductWeight();
+        if (consumeWeight == null || consumeWeight.signum() <= 0) {
+            productInhouseMapper.deleteById(src.getId());
+            return;
+        }
+        int cmp = current.compareTo(consumeWeight);
+        if (cmp < 0) {
+            throw new ServiceException("来源待打包库存不足：当前 " + current.stripTrailingZeros().toPlainString()
+                + "，本次打包 " + consumeWeight.stripTrailingZeros().toPlainString());
+        }
+        if (cmp == 0) {
+            productInhouseMapper.deleteById(src.getId());
+            return;
+        }
+        int affected = productInhouseMapper.deductWeightById(src.getId(), consumeWeight);
+        if (affected == 0) {
+            throw new ServiceException("来源待打包库存不足或已被占用，请刷新后重试");
+        }
     }
 
     /**
@@ -918,26 +983,11 @@ public class ProductProductionServiceImpl
         if (!BELONG_TYPE_PORK.equals(product.getBelongType()) || product.getProductMaterial() == null) {
             return;
         }
-        Long materialProductId = product.getProductMaterial();
-        // 取原材料库存最多的库位（V1 单库位常态唯一）；无任何库存行 → 库存视为 0，下面校验直接拦下
-        Long materialLocationId = locationStockMapper.selectDefaultLocationByProduct(materialProductId);
-        BigDecimal materialStock = sumProductStock(materialProductId);
-        if (materialLocationId == null || materialStock.compareTo(produceWeight) < 0) {
-            ProductInfo materialProduct = productInfoMapper.selectById(materialProductId);
-            String materialName = materialProduct != null ? materialProduct.getProductName() : ("#" + materialProductId);
-            throw new ServiceException("原材料库存不足：" + materialName
-                + " 当前库存 " + materialStock.stripTrailingZeros().toPlainString()
-                + "，本次需消耗 " + produceWeight.stripTrailingZeros().toPlainString());
-        }
-        int affected = locationStockMapper.deductByProductLocation(
-            materialLocationId, materialProductId, produceWeight, userId);
-        if (affected == 0) {
-            // 行锁未命中：并发抢扣 / 默认库位单库位余量不足 → 回滚整事务
-            throw new ServiceException("原材料库存扣减失败（库存不足或已被占用），请刷新后重试");
-        }
-        // 原材料消耗流水（pack_consume / OT）
-        insertMaterialConsumeFlow(materialProductId, materialLocationId, produceWeight,
-            product.getId(), userId, now);
+        // doc/14 §1：肉品打包消耗 = 来源 inhouse（consumeInhouse 按实重部分扣减，与果蔬同口径），
+        // 不再二次扣原材料 location_stock——原材料经分割/领用进 inhouse，本就不在 location_stock，
+        // 旧的 location_stock 扣减对「成品配 product_material」的肉品会双扣或误拦。仅留观测性 warn。
+        log.warn("[PORK-PACK] 肉品成品配了 product_material，消耗走来源 inhouse（不扣原材料 location_stock）productId={} material={}",
+            product.getId(), product.getProductMaterial());
     }
 
     /**
@@ -966,14 +1016,15 @@ public class ProductProductionServiceImpl
             }
             return;
         }
+        // doc/14 §1：领用已把原材料从冷库(location_stock)转入待打包(inhouse)，故此处不再以冷库余额硬拦截
+        // （否则会错误拦下"已领用但冷库已扣减"的合法打包）。真正的防超扣口径 = 来源 inhouse 余量，
+        // 由 consumeInhouse 的 deductWeightById 行锁原子保证；此处仅留观测性 warn。
         Long materialProductId = product.getProductMaterial();
         BigDecimal materialStock = sumProductStock(materialProductId);
         if (materialStock.compareTo(produceWeight) < 0) {
-            ProductInfo materialProduct = productInfoMapper.selectById(materialProductId);
-            String materialName = materialProduct != null ? materialProduct.getProductName() : ("#" + materialProductId);
-            throw new ServiceException("原材料库存不足：" + materialName
-                + " 当前库存 " + materialStock.stripTrailingZeros().toPlainString()
-                + "kg，本次打包成品重量 " + produceWeight.stripTrailingZeros().toPlainString() + "kg");
+            log.warn("[VEG-PACK] 原材料冷库余额({}) < 打包成品重量({})，按 inhouse 余量口径继续（doc/14 §1）materialProductId={}",
+                materialStock.stripTrailingZeros().toPlainString(),
+                produceWeight.stripTrailingZeros().toPlainString(), materialProductId);
         }
     }
 
@@ -1014,27 +1065,6 @@ public class ProductProductionServiceImpl
             .map(LocationStock::getProductStock)
             .filter(Objects::nonNull)
             .reduce(BigDecimal.ZERO, BigDecimal::add);
-    }
-
-    /**
-     * INSERT 肉品打包原材料消耗流水（pack_consume / OT，猪肉全闭环 Part I P8）。
-     */
-    protected void insertMaterialConsumeFlow(Long materialProductId, Long locationId, BigDecimal qty,
-                                             Long targetProductId, Long userId, Date now) {
-        StockFlow flow = new StockFlow();
-        Map<String, Object> ctx = new HashMap<>(2);
-        ctx.put("ioCode", INOUT_OUT);
-        flow.setFlowNo(bizCodeGenerator.generate(BizCodeType.STOCK_FLOW_NO, ctx));
-        flow.setFlowDate(now);
-        flow.setProductId(materialProductId);
-        flow.setWarehouseId(locationId);
-        flow.setInoutType(INOUT_OUT);
-        flow.setFlowType(FLOW_TYPE_PACK_CONSUME);
-        flow.setChangeNum(qty);
-        flow.setChangeQuantity(qty);
-        flow.setOperatorId(userId);
-        flow.setRemark("肉品打包原材料消耗 target_product_id=" + targetProductId);
-        stockFlowMapper.insert(flow);
     }
 
     /**

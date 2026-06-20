@@ -9,7 +9,9 @@ import org.dromara.djs.plant.plot.domain.vo.PlotFarmworkRecordVo;
 import org.dromara.djs.plant.plot.domain.vo.PlotInfoVo;
 import org.dromara.djs.plant.plot.domain.vo.PlotOrganicRefVo;
 import org.dromara.djs.plant.plot.domain.vo.PlotPlantingRecordVo;
+import org.dromara.djs.plant.plot.domain.vo.PlotPlantingStatVo;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 
@@ -201,4 +203,34 @@ public interface PlotInfoMapper extends BaseMapperPlus<PlotInfo, PlotInfoVo> {
          ORDER BY o.organic_valid ASC, o.id DESC
         """)
     List<PlotOrganicRefVo> selectOrganicByPlot(@Param("plotId") Long plotId);
+
+    /**
+     * 按 plot_id 批量聚合种植记录派生统计（历史种植次数 / 最高亩作物产量 / 最高亩产作物名）。
+     *
+     * <p>聚合源 {@code t_plant_plant_details.average_yield}（平均亩产 kg/亩）：COUNT(*) →
+     * historyPlantCount；MAX(average_yield) → maxYieldPerMu；最高亩产作物名取该地块 average_yield
+     * 最大行的 crop_name（相关子查询 JOIN {@code t_plant_crop_info}）。</p>
+     *
+     * <p>显式手写 {@code tenant_id='1001'} + {@code del_flag='0'}，用
+     * {@code @InterceptorIgnore(tenantLine = "true")} 关 MP 租户拦截器对手写子查询 JOIN 的二次注入。
+     * 仅作用于本方法。</p>
+     *
+     * @param plotIds 地块 id 集合（已 dedupe，非空）
+     * @return 聚合行（无种植记录的 plotId 不出现，service 兜底 0/null）
+     */
+    @InterceptorIgnore(tenantLine = "true")
+    @Select("""
+        <script>
+        SELECT d.plot_id AS plotId, COUNT(*) AS historyPlantCount, MAX(d.average_yield) AS maxYieldPerMu,
+          (SELECT c.crop_name FROM t_plant_plant_details d2
+             JOIN t_plant_crop_info c ON c.id = d2.crop_id AND c.del_flag = '0' AND c.tenant_id = '1001'
+            WHERE d2.plot_id = d.plot_id AND d2.del_flag = '0' AND d2.tenant_id = '1001' AND d2.average_yield IS NOT NULL
+            ORDER BY d2.average_yield DESC, d2.id DESC LIMIT 1) AS maxYieldCropName
+        FROM t_plant_plant_details d
+        WHERE d.tenant_id = '1001' AND d.del_flag = '0' AND d.plot_id IN
+        <foreach collection='plotIds' item='pid' open='(' separator=',' close=')'>#{pid}</foreach>
+        GROUP BY d.plot_id
+        </script>
+        """)
+    List<PlotPlantingStatVo> selectPlantingStats(@Param("plotIds") Collection<Long> plotIds);
 }

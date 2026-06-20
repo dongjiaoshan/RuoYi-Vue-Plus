@@ -1,8 +1,10 @@
 package org.dromara.djs.plant.pick.controller;
 
 import cn.dev33.satoken.annotation.SaCheckPermission;
+import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
 import org.dromara.common.core.domain.R;
+import org.dromara.common.excel.utils.ExcelUtil;
 import org.dromara.common.idempotent.annotation.RepeatSubmit;
 import org.dromara.common.log.annotation.Log;
 import org.dromara.common.log.enums.BusinessType;
@@ -17,9 +19,11 @@ import org.dromara.djs.plant.plan.domain.vo.PlantDetailsVo;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
@@ -52,6 +56,14 @@ public class PickPlanController extends BaseController {
     @GetMapping("/list")
     public R<List<PickPlanGroupVo>> list(PickPlanQuery query) {
         return R.ok(pickPlanService.listByCrop(query));
+    }
+
+    @SaCheckPermission("djs:plant:pick:export")
+    @Log(title = "种植-采摘计划", businessType = BusinessType.EXPORT)
+    @PostMapping("/export")
+    public void export(PickPlanQuery query, HttpServletResponse response) {
+        List<PickPlanGroupVo> list = pickPlanService.listByCrop(query);
+        ExcelUtil.exportExcel(list, "采摘计划", PickPlanGroupVo.class, response);
     }
 
     @SaCheckPermission("djs:plant:pick:list")
@@ -102,5 +114,13 @@ public class PickPlanController extends BaseController {
     @PutMapping("/toggleActivity")
     public R<Integer> toggleActivity(@Validated @RequestBody PickToggleActivityBo bo) {
         return R.ok(pickPlanService.toggleActivity(bo));
+    }
+
+    @SaCheckPermission("djs:plant:pick:export")
+    @Log(title = "种植-采摘计划-明细导出", businessType = BusinessType.EXPORT)
+    @PostMapping("/details/export")
+    public void exportDetails(@RequestParam(required = false) Long cropId, HttpServletResponse response) {
+        List<PlantDetailsVo> list = cropId == null ? java.util.Collections.emptyList() : pickPlanService.listDetailsByCrop(cropId);
+        ExcelUtil.exportExcel(list, "采摘计划明细", PlantDetailsVo.class, response);
     }
 }

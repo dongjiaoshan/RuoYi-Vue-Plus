@@ -31,10 +31,7 @@ public interface IPlotInfoService {
     int updateByBo(PlotInfoBo bo);
 
     /**
-     * 软删（支持批量）。
-     *
-     * <p>删除前校验：D8 阶段 stub（t_plant_plant_plan / t_plant_farm_records / t_plant_plant_details
-     * 均 0 行）；D9+ PLT-PLAN-001 上线后启用真校验。</p>
+     * 软删（支持批量）。删除前校验：仅空闲态地块可删，种植/采摘态拦截。
      */
     int deleteWithValidByIds(Collection<Long> ids);
 

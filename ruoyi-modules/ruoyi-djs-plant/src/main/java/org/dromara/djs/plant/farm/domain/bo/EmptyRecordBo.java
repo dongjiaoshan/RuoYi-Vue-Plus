@@ -12,8 +12,6 @@ import java.time.LocalDate;
  *
  * <p>覆盖 3 类：{@code tillage_break}（翻耕） / {@code tillage_prepare}（整地） / {@code fertilize}（施肥）。</p>
  *
- * <p>整地子类型必须同时带 {@code tillageType} + {@code tillageMethod}；其他子类型这两个字段忽略。</p>
- *
  * @author djs
  * @since PLT-WORK-001
  */
@@ -37,11 +35,11 @@ public class EmptyRecordBo {
     @NotNull(message = "{plant.farm.date.required}")
     private LocalDate farmDate;
 
-    /** 整地类型（仅 tillage_prepare 必填）。 */
+    /** 整地类型（可选；mp 已取消该录入项，保留字段兼容历史数据/Excel 导出列）。 */
     @Size(max = 32)
     private String tillageType;
 
-    /** 整地方式（仅 tillage_prepare 必填）。 */
+    /** 整地方式（可选；mp 已取消该录入项，保留字段兼容历史数据/Excel 导出列）。 */
     @Size(max = 32)
     private String tillageMethod;
 

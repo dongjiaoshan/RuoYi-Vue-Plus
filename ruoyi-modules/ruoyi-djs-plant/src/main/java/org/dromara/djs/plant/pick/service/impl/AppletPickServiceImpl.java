@@ -105,8 +105,12 @@ public class AppletPickServiceImpl implements IAppletPickService {
         boolean finish = Boolean.TRUE.equals(bo.getFinish());
         // FIX-PLT-MP-PICK-001（#3=a 按原型）：采收 tab 只走"开始/完成采摘"流程（采摘人员 + 日期），
         // 不录重量。采摘重量改由农事「采摘活动管理」submitHarvestWeight 累加 actual_yield。
-        // 捕获更新前的旧态：仅"非 completed → completed"首次流转才发跨域事件（幂等，防重复点完成产生多行待办）
-        boolean alreadyCompleted = "completed".equals(detail.getHarvestStatus());
+        // 捕获更新前的旧态：仅"非活跃(待采摘) → 活跃(采摘中/已完成)"首次流转才发跨域事件。
+        // 0619 客户口径：地块「开始采摘」即应在仓库毛菜处理出现待办（原仅采摘完成才发，采摘中地块在仓库不可见）。
+        // 用 wasActive（picking|completed）而非 alreadyCompleted 判定：保证每地块只发一次——
+        // 开始采摘(pending→picking)时发过，后续完成采摘(picking→completed)不重发，避免同 plot+crop 多行重复待办。
+        boolean wasActive = "picking".equals(detail.getHarvestStatus())
+            || "completed".equals(detail.getHarvestStatus());
 
         // 1. 首次采收回填 begin_harvestdate
         if (detail.getBeginHarvestdate() == null) {
@@ -154,18 +158,22 @@ public class AppletPickServiceImpl implements IAppletPickService {
         grow.setRemark(bo.getRemark());
         farmRecordsService.submitGrow(grow);
 
-        // 6. CROSS-FLOW-002：仅"非 completed → completed"首次流转时发 PlantPickedEvent，
-        //    warehouse 域 listener 在 AFTER_COMMIT 写 1 行 t_warehouse_planting_record(handle_status='pending') 待办。
-        //    逐次采收(finish=false)与重复点完成均不发，避免同 plot+crop 产生多行重复待办。
-        if (finish && !alreadyCompleted) {
+        // 6. CROSS-FLOW-002：地块首次进入活跃采摘态（待采摘 → 采摘中/已完成）时发 PlantPickedEvent，
+        //    warehouse 域 listener 在 AFTER_COMMIT 写 1 行 t_warehouse_planting_record(handle_status='pending') 待办，
+        //    使「开始采摘」即在仓库毛菜处理出现该批次（0619 客户口径）。
+        //    !wasActive 保证只发一次：后续逐次采收 / 完成采摘均不重发，避免同 plot+crop 多行重复待办。
+        //    （submitPick 后 harvest_status 必为 picking 或 completed，故 !wasActive 即「本次首次激活」。）
+        if (!wasActive) {
             PlantPickedPayload payload = new PlantPickedPayload();
             payload.setPlotId(detail.getPlotId());
             payload.setCropId(detail.getCropId());
             payload.setPlotName(resolvePlotName(detail.getPlotId()));
             payload.setCropName(resolveCropName(detail.getCropId()));
             payload.setPlantDate(detail.getBeginActualdate());
-            payload.setHarvestDate(detail.getEndHarvestdate());
-            payload.setHarvestWeight(detail.getActualYield());   // 累计采摘权威值
+            // 采摘日期：完成采摘取 end_harvestdate；开始采摘(尚未完成)取 begin_harvestdate；皆空由 listener 兜今天
+            payload.setHarvestDate(detail.getEndHarvestdate() != null
+                ? detail.getEndHarvestdate() : detail.getBeginHarvestdate());
+            payload.setHarvestWeight(detail.getActualYield());   // 累计采摘权威值（开始采摘时多为 null，listener 兜 0，真实重量由毛菜处理称重录入）
             payload.setTeamId(detail.getHarvestBy());
             payload.setTeamName(resolveTeamName(detail.getHarvestBy()));
             eventPublisher.publishEvent(new PlantPickedEvent(this, payload));
@@ -281,16 +289,12 @@ public class AppletPickServiceImpl implements IAppletPickService {
             vo.setExpectedYield(rows.stream()
                 .map(d -> d.getExpectedYield() == null ? BigDecimal.ZERO : d.getExpectedYield())
                 .reduce(BigDecimal.ZERO, BigDecimal::add));
-            // actualYield（已采重量）改取 t_plant_plant_activity.daily_weight（235 客户权威口径），
-            // 循环外批量按 (cropId, activityDate) 聚合后回填；此处先置 0。
-            vo.setActualYield(BigDecimal.ZERO);
+            // 已采重量 = SUM(t_plant_details.actual_yield)，与作物详情头同源同口径（采摘重量录入累加进同一列）
+            vo.setActualYield(rows.stream()
+                .map(d -> d.getActualYield() == null ? BigDecimal.ZERO : d.getActualYield())
+                .reduce(BigDecimal.ZERO, BigDecimal::add));
             result.add(vo);
         }
-
-        // 235：已采重量 = SUM(t_plant_plant_activity.daily_weight)，按 crop_id 关联、activity_date 落在该作物
-        // 采摘窗口 [startDate, lastDate] 内。一次 IN(cropIds) + GROUP BY 取按日明细（各作物窗口不同），
-        // Java 端按各作物窗口过滤累加，避免 N+1。
-        fillActualYieldFromActivity(result);
 
         // IMG-LIB-001：cropImg 走 4 层 resolver（L1 image_oss_id → L2 vegetable → L3 全局），批量禁 N+1
         if (!result.isEmpty()) {
@@ -349,89 +353,6 @@ public class AppletPickServiceImpl implements IAppletPickService {
     // ============================================================
     // 内部
     // ============================================================
-
-    /**
-     * 235：按 t_plant_plant_activity.daily_weight 回填各作物卡「已采重量」（actualYield）。
-     *
-     * <p>口径：SUM(daily_weight) WHERE crop_id=该作物 AND activity_date ∈ [vo.startDate, vo.lastDate]（该作物采摘窗口）。
-     * 一次 IN(cropIds) + 全局窗口 [minStart, maxLast] 取按 (cropId, activityDate) 日聚合行（避免 N+1），
-     * Java 端按各作物自身窗口过滤累加。无 startDate/lastDate（窗口未知）的作物 actualYield 保持 0。</p>
-     */
-    private void fillActualYieldFromActivity(List<PickCropTaskVo> vos) {
-        if (CollUtil.isEmpty(vos)) {
-            return;
-        }
-        Set<Long> cropIds = vos.stream().map(PickCropTaskVo::getCropId)
-            .filter(Objects::nonNull).collect(Collectors.toSet());
-        if (cropIds.isEmpty()) {
-            return;
-        }
-        // 全局窗口 = 各作物窗口并集（缩小扫描）。任一作物缺窗口端点则跳过聚合（无法界定区间）。
-        LocalDate minStart = vos.stream().map(PickCropTaskVo::getStartDate)
-            .filter(Objects::nonNull).min(Comparator.naturalOrder()).orElse(null);
-        LocalDate maxLast = vos.stream().map(PickCropTaskVo::getLastDate)
-            .filter(Objects::nonNull).max(Comparator.naturalOrder()).orElse(null);
-        if (minStart == null || maxLast == null) {
-            return;
-        }
-
-        List<Map<String, Object>> rows = plantActivityMapper.selectDailyWeightByCropInRange(cropIds, minStart, maxLast);
-        if (CollUtil.isEmpty(rows)) {
-            return;
-        }
-        // cropId → (activityDate → daySum) 明细，供按各作物窗口精确聚合
-        Map<Long, Map<LocalDate, BigDecimal>> byCropDate = new LinkedHashMap<>();
-        for (Map<String, Object> row : rows) {
-            Object cidObj = row.get("cropId");
-            LocalDate date = toLocalDate(row.get("activityDate"));
-            if (cidObj == null || date == null) {
-                continue;
-            }
-            Long cid = ((Number) cidObj).longValue();
-            BigDecimal sum = toBigDecimal(row.get("daySum"));
-            byCropDate.computeIfAbsent(cid, k -> new LinkedHashMap<>()).merge(date, sum, BigDecimal::add);
-        }
-
-        for (PickCropTaskVo vo : vos) {
-            Map<LocalDate, BigDecimal> dayMap = byCropDate.get(vo.getCropId());
-            if (dayMap == null || vo.getStartDate() == null || vo.getLastDate() == null) {
-                continue;
-            }
-            BigDecimal total = BigDecimal.ZERO;
-            for (Map.Entry<LocalDate, BigDecimal> de : dayMap.entrySet()) {
-                LocalDate d = de.getKey();
-                if (!d.isBefore(vo.getStartDate()) && !d.isAfter(vo.getLastDate())) {
-                    total = total.add(de.getValue());
-                }
-            }
-            vo.setActualYield(total);
-        }
-    }
-
-    /** 把 mapper 返回的日期值（java.sql.Date / LocalDate）归一为 LocalDate（其它类型返 null）。 */
-    private LocalDate toLocalDate(Object v) {
-        if (v instanceof java.sql.Date sqlDate) {
-            return sqlDate.toLocalDate();
-        }
-        if (v instanceof LocalDate ld) {
-            return ld;
-        }
-        return null;
-    }
-
-    /** 把 mapper 返回的数值归一为 BigDecimal（null 当 0）。 */
-    private BigDecimal toBigDecimal(Object v) {
-        if (v == null) {
-            return BigDecimal.ZERO;
-        }
-        if (v instanceof BigDecimal bd) {
-            return bd;
-        }
-        if (v instanceof Number n) {
-            return BigDecimal.valueOf(n.doubleValue());
-        }
-        return BigDecimal.ZERO;
-    }
 
     /** 凭证图 OSS id 列表拼成逗号分隔 string（与 t_plant_farm_records.proof_oss_ids 存法一致）。 */
     private String joinOssIds(List<Long> ids) {
