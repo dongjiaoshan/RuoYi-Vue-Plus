@@ -20,6 +20,7 @@ import org.dromara.djs.plant.farm.domain.bo.DisasterBatchBo;
 import org.dromara.djs.plant.farm.domain.bo.DisasterRecordBo;
 import org.dromara.djs.plant.farm.domain.bo.EmptyRecordBo;
 import org.dromara.djs.plant.farm.domain.bo.GrowBatchBo;
+import org.dromara.djs.plant.farm.domain.bo.GrowRecordBo;
 import org.dromara.djs.plant.farm.domain.bo.HarvestWeightBo;
 import org.dromara.djs.plant.farm.domain.bo.RotationRecordBo;
 import org.dromara.djs.plant.farm.domain.bo.TransplantRecordBo;
@@ -379,6 +380,32 @@ class FarmRecordsServiceImplTest {
             .isInstanceOf(ServiceException.class)
             .hasMessageContaining("批量农事类型");
         verify(baseMapper, never()).insert(any(FarmRecords.class));
+    }
+
+    @Test
+    @DisplayName("submitGrow: 普通采收 farmType='harvest' 被接受并 INSERT（FIX-PLT-AD-PICK-FARMTYPE-001 回归守门）")
+    void submitGrow_harvest_accepted() {
+        // 背景：AppletPickServiceImpl.submitPick 对普通采收(is_pick=2)写 farm_type='harvest' 经此入库。
+        // 旧 isPlainGrowFarmType 漏列 'harvest' → mp「开始采摘」报「不支持的生长阶段农事类型: harvest」。
+        GrowRecordBo bo = new GrowRecordBo();
+        bo.setFarmType("harvest");
+        bo.setPlantId(7L);
+        bo.setPlotId(1L);
+        bo.setCropId(2L);
+        bo.setFarmBy(10L);
+        bo.setFarmDate(LocalDate.now());
+
+        when(baseMapper.insert(any(FarmRecords.class))).thenAnswer(inv -> {
+            ((FarmRecords) inv.getArgument(0)).setId(400L);
+            return 1;
+        });
+
+        Long id = service.submitGrow(bo);
+        assertThat(id).isEqualTo(400L);
+
+        ArgumentCaptor<FarmRecords> cap = ArgumentCaptor.forClass(FarmRecords.class);
+        verify(baseMapper, times(1)).insert(cap.capture());
+        assertThat(cap.getValue().getFarmType()).isEqualTo("harvest");
     }
 
     @Test

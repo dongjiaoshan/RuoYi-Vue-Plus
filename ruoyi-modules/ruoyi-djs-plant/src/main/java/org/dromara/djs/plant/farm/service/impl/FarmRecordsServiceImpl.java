@@ -1020,9 +1020,12 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
     }
 
     private boolean isPlainGrowFarmType(String type) {
-        // 生长阶段 7 类剔除 rotation / transplant / disaster（独立路径）
+        // 生长阶段类剔除 rotation / transplant / disaster（独立路径）。
+        // harvest_activity = 游客采摘活动(is_pick=1)；harvest = 普通采收(is_pick=2)：
+        // 两者都由 AppletPickServiceImpl.submitPick 经 submitGrow 写一行可追溯农事记录（FIX-PLT-AD-PICK-FARMTYPE-001）。
         return "water_fertilize".equals(type) || "irrigation".equals(type) || "weed".equals(type)
-            || "pest_control".equals(type) || "pruning".equals(type) || "harvest_activity".equals(type);
+            || "pest_control".equals(type) || "pruning".equals(type)
+            || "harvest_activity".equals(type) || "harvest".equals(type);
     }
 
     /** 仅供测试 inspect。 */
