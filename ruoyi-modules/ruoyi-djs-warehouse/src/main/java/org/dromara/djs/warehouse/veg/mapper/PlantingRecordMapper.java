@@ -56,14 +56,18 @@ public interface PlantingRecordMapper extends BaseMapperPlus<PlantingRecord, Pla
      * 纯 SQL 跨表 JOIN t_plant_plot_info，不引 plant 模块依赖。按 data_date DESC 排序。</p>
      */
     @Select("SELECT p.id AS plantingRecordId, p.plot_id AS plotId, pl.plot_code AS plotCode, pl.plot_area AS plotArea,"
-        + "       COALESCE(h.stock_in_weight,0) AS stockInWeight,"
-        + "       COALESCE(h.send_platform_weight,0) AS stockOutWeight,"
+        + "       COALESCE(h.picked_weight,0) AS harvestWeight,"
+        + "       COALESCE(h.handled_weight,0) AS handledWeight,"
+        + "       (COALESCE(h.picked_weight,0) - COALESCE(h.handled_weight,0)) AS remainWeight,"
+        + "       COALESCE(p.expect_yield,0) AS expectYield,"
+        + "       CASE WHEN c.related_product IS NOT NULL THEN 1 ELSE 0 END AS hasRelatedProduct,"
         + "       CASE WHEN h.is_weighed=1 THEN 'done' ELSE 'pending' END AS weighStatus,"
         + "       CASE WHEN h.is_finish=1 THEN 'done' ELSE 'pending' END AS processStatus,"
         + "       h.id AS handleId"
         + "  FROM t_warehouse_planting_record p"
         + "  LEFT JOIN t_warehouse_vegetable_handle h ON h.planting_record_id=p.id AND h.del_flag='0'"
         + "  LEFT JOIN t_plant_plot_info pl ON pl.id=p.plot_id AND pl.del_flag='0'"
+        + "  LEFT JOIN t_plant_crop_info c ON c.id=p.crop_id AND c.del_flag='0'"
         + " WHERE p.tenant_id='1001' AND p.del_flag='0' AND p.crop_id=#{cropId}"
         + " ORDER BY p.data_date DESC, p.id DESC")
     List<VegPlotDetailVo> selectPlotDetailByCrop(@Param("cropId") Long cropId);

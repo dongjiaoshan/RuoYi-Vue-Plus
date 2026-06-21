@@ -72,7 +72,7 @@ import static org.mockito.Mockito.when;
  *   <li>整地强校验：tillageType / tillageMethod 缺失抛 ServiceException</li>
  *   <li>灾害副作用：plant_details.loss_yield 累加（mapper.update 被 invoke）</li>
  *   <li>退茬副作用：plot_info.plot_status=1 + plant_details completed</li>
- *   <li>移栽校验：transplantPercent > 60 抛 ServiceException（前端 @Max 兜底服务端）</li>
+ *   <li>移栽校验：多次累计 > 100% 抛 ServiceException；累计达 100% 触发状态机（采摘完成 + 地块置空）</li>
  *   <li>中央分发台：12 类 key 全在 + count 正确</li>
  * </ul>
  *
@@ -226,7 +226,7 @@ class FarmRecordsServiceImplTest {
     }
 
     @Test
-    @DisplayName("退茬触发 plot_info.plot_status=1 + plant_details completed")
+    @DisplayName("退茬触发 plot_info.plot_status=1（plant_details completed 归种植完成 finishPlant，退茬不重复写）")
     void submitRotation_resets_plot_and_completes_details() {
         RotationRecordBo bo = new RotationRecordBo();
         bo.setPlantId(7L);
@@ -235,13 +235,18 @@ class FarmRecordsServiceImplTest {
         bo.setFarmBy(10L);
         bo.setFarmDate(LocalDate.now());
 
+        // 退茬幂等 guard 要求地块处于采摘态(plot_status=3)；共享 fixture 是空地(1)，本测试局部覆盖为采摘态。
+        PlotInfo activePlot = new PlotInfo();
+        activePlot.setId(1L);
+        activePlot.setPlotStatus(3);
+        when(plotInfoMapper.selectById(1L)).thenReturn(activePlot);
+
         when(baseMapper.insert(any(FarmRecords.class))).thenAnswer(inv -> {
             FarmRecords r = inv.getArgument(0);
             r.setId(202L);
             return 1;
         });
         when(plotInfoMapper.updateById(any(PlotInfo.class))).thenReturn(1);
-        when(plantDetailsMapper.update(isNull(), any(Wrapper.class))).thenReturn(1);
 
         Long id = service.submitRotation(bo);
         assertThat(id).isEqualTo(202L);
@@ -249,13 +254,11 @@ class FarmRecordsServiceImplTest {
         ArgumentCaptor<PlotInfo> plotCap = ArgumentCaptor.forClass(PlotInfo.class);
         verify(plotInfoMapper).updateById(plotCap.capture());
         assertThat(plotCap.getValue().getPlotStatus()).isEqualTo(1);
-
-        verify(plantDetailsMapper).update(isNull(), any(Wrapper.class));
     }
 
     @Test
-    @DisplayName("移栽 transplantPercent > 60 抛 ServiceException 兜底前端 @Max")
-    void submitTransplant_percent_exceeds_60() {
+    @DisplayName("移栽：历史累计 + 本次 > 100% 抛 ServiceException，不 INSERT（row12 多次累计校验）")
+    void submitTransplant_cumulative_exceeds_100() {
         TransplantRecordBo bo = new TransplantRecordBo();
         bo.setPlantId(7L);
         bo.setPlotId(1L);
@@ -263,12 +266,68 @@ class FarmRecordsServiceImplTest {
         bo.setFarmBy(10L);
         bo.setFarmDate(LocalDate.now());
         bo.setTransplantPlot(3L);
-        bo.setTransplantPercent(65);
+        bo.setTransplantPercent(50);
+        // 历史已移 60%，本次 50% → 110 > 100 拒绝
+        when(baseMapper.sumTransplantedPercent(2L, 1L)).thenReturn(60);
 
         assertThatThrownBy(() -> service.submitTransplant(bo))
             .isInstanceOf(ServiceException.class)
-            .hasMessageContaining("60%");
+            .hasMessageContaining("剩余可移 40%");
         verify(baseMapper, never()).insert(any(FarmRecords.class));
+    }
+
+    @Test
+    @DisplayName("移栽：累计未满 100% 正常 INSERT，不触发状态机（row12/row13）")
+    void submitTransplant_under_100_inserts_no_sideEffect() {
+        TransplantRecordBo bo = new TransplantRecordBo();
+        bo.setPlantId(7L);
+        bo.setPlotId(1L);
+        bo.setCropId(2L);
+        bo.setFarmBy(10L);
+        bo.setFarmDate(LocalDate.now());
+        bo.setTransplantPlot(3L);
+        bo.setTransplantPercent(30);
+        // 提交前累计 50（50+30=80 ≤ 100 放行），提交后重查仍 80（< 100 不触发状态机）
+        when(baseMapper.sumTransplantedPercent(2L, 1L)).thenReturn(50, 80);
+        when(baseMapper.insert(any(FarmRecords.class))).thenAnswer(inv -> {
+            ((FarmRecords) inv.getArgument(0)).setId(210L);
+            return 1;
+        });
+
+        Long id = service.submitTransplant(bo);
+        assertThat(id).isEqualTo(210L);
+        verify(baseMapper).insert(any(FarmRecords.class));
+        // 未跨 100% → 不置采摘完成、不置空地
+        verify(plantDetailsMapper, never()).update(isNull(), any(Wrapper.class));
+        verify(plotInfoMapper, never()).update(isNull(), any(Wrapper.class));
+    }
+
+    @Test
+    @DisplayName("移栽：累计刚好跨过 100% → 自动状态机（采摘完成 + 地块置空，row13）")
+    void submitTransplant_reaches_100_triggers_stateMachine() {
+        TransplantRecordBo bo = new TransplantRecordBo();
+        bo.setPlantId(7L);
+        bo.setPlotId(1L);
+        bo.setCropId(2L);
+        bo.setFarmBy(10L);
+        bo.setFarmDate(LocalDate.now());
+        bo.setTransplantPlot(3L);
+        bo.setTransplantPercent(40);
+        // 提交前累计 60（60+40=100 ≤ 100 放行），提交后重查 100（跨过 → 触发状态机）
+        when(baseMapper.sumTransplantedPercent(2L, 1L)).thenReturn(60, 100);
+        when(baseMapper.insert(any(FarmRecords.class))).thenAnswer(inv -> {
+            ((FarmRecords) inv.getArgument(0)).setId(211L);
+            return 1;
+        });
+        when(plantDetailsMapper.update(isNull(), any(Wrapper.class))).thenReturn(1);
+        when(plotInfoMapper.update(isNull(), any(Wrapper.class))).thenReturn(1);
+
+        Long id = service.submitTransplant(bo);
+        assertThat(id).isEqualTo(211L);
+        verify(baseMapper).insert(any(FarmRecords.class));
+        // 副作用：plant_details 采摘完成 + plot_info 置空地各 1 次
+        verify(plantDetailsMapper).update(isNull(), any(Wrapper.class));
+        verify(plotInfoMapper).update(isNull(), any(Wrapper.class));
     }
 
     @Test
@@ -558,6 +617,11 @@ class FarmRecordsServiceImplTest {
     @DisplayName("listCropPlots: rotation 改判 harvest_status='completed'（T3 与 listCropTargetCards 退茬口径一致）")
     @SuppressWarnings("unchecked")
     void listCropPlots_rotationUsesHarvestStatusCompleted() {
+        // 退茬分支先查 plot_status=3 活跃地块；mock 一个非空，否则空集合提前 return、plantDetailsMapper.selectList 不被调用。
+        PlotInfo activePlot = new PlotInfo();
+        activePlot.setId(99L);
+        activePlot.setPlotStatus(3);
+        when(plotInfoMapper.selectList(any(Wrapper.class))).thenReturn(List.of(activePlot));
         when(plantDetailsMapper.selectList(any(Wrapper.class))).thenReturn(List.of());
 
         service.listCropPlots(2L, "rotation");
@@ -573,7 +637,7 @@ class FarmRecordsServiceImplTest {
     }
 
     @Test
-    @DisplayName("listCropPlots: 生长工种仍判 plant_status='ongoing'")
+    @DisplayName("listCropPlots: 生长工种判 plant_status='completed' AND harvest_status<>'completed'（产出期口径）")
     @SuppressWarnings("unchecked")
     void listCropPlots_growUsesPlantStatusOngoing() {
         when(plantDetailsMapper.selectList(any(Wrapper.class))).thenReturn(List.of());
@@ -584,8 +648,9 @@ class FarmRecordsServiceImplTest {
         verify(plantDetailsMapper).selectList(cap.capture());
         LambdaQueryWrapper<PlantDetails> w = (LambdaQueryWrapper<PlantDetails>) cap.getValue();
         String sql = w.getCustomSqlSegment();
+        // 产出期口径：plant_status='completed' AND harvest_status<>'completed'（种植完成但未采完）
         assertThat(sql).contains("plant_status");
-        assertThat(sql).doesNotContain("harvest_status");
-        assertThat(w.getParamNameValuePairs().values()).contains("ongoing", 2L);
+        assertThat(sql).contains("harvest_status");
+        assertThat(w.getParamNameValuePairs().values()).contains("completed", 2L);
     }
 }

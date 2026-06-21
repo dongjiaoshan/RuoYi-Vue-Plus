@@ -28,6 +28,16 @@ public class MatLossBo {
     @NotNull(message = "{mat.product_id.required}")
     private Long productId;
 
+    /**
+     * 选中篮子 ID（可空；= {@code location_stock.id}，snowflake，前端按 string 传）。
+     *
+     * <p>非空 = 「按源手选」损耗（对齐领用，原型「仓库&gt;分拣发货&gt;物资领用」）：从用户选中的那一篮
+     * （猪肉耳号篮 / 自产果蔬地块篮）扣损耗量。service 走 by-batch 分支：今日额度仍按 product 校验，
+     * 扣减走 {@code deductStockById(batchId)}（affected==0 打 warn 不抛，与现状 loss 语义一致）。
+     * 为空 = 现状路径，不回归。</p>
+     */
+    private Long batchId;
+
     @NotNull(message = "{mat.location_id.required}")
     private Long locationId;
 

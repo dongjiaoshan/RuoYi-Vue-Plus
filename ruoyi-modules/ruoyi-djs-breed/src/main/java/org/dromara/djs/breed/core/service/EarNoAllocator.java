@@ -20,22 +20,23 @@ import java.util.concurrent.TimeUnit;
  * 耳号（EAR_NO）连号分配器（ADR-0011 客户权威带分隔符格式）。
  *
  * <h3>格式</h3>
- * <p>各段以 {@code -} 分隔 = {@code {品系}-{品种2}-{出生yyMMdd6}-{当天序号3}}（客户权威编码表，6/15 起耳号不再编码性别）：</p>
+ * <p>各段以 {@code -} 分隔 = {@code {品系}-{品种2}-{性别1}-{出生yyMMdd6}-{当天序号3}}（客户权威编码表）：</p>
  * <ul>
  *   <li>品系码 = {@code djs_pig_strain} 字典 dict_value（原样取，支持 1-2 位）；</li>
  *   <li>品种码 = {@code djs_pig_breed} 字典 dict_value（定长 2 位，01-06）；</li>
+ *   <li>性别码 = 客户权威表 {@code 1=公(M) / 2=母(F)}（外部引种、仔猪打耳标均编入）；</li>
  *   <li>出生年月日 = {@code yyMMdd}（猪只出生日，非系统当前日）；</li>
- *   <li>序号 = 3 位补零，<b>当天级全场 max+1（不分品系品种）</b>——同一天所有猪不分品系品种统一从 001 顺序递增，
- *       每天从 001 起重新编号（全号仍是 品系-品种2-yyMMdd-序号3，只是序号在全天范围内连续唯一）。</li>
+ *   <li>序号 = 3 位补零，<b>当天级全场 max+1（不分品系品种性别）</b>——同一天所有猪统一从 001 顺序递增，
+ *       每天从 001 起重新编号（序号在全天范围内连续唯一）。</li>
  * </ul>
- * <p>前缀 = {@code 品系-品种2-yyMMdd6}（如 {@code 1-01-260609}）→ 拼上 {@code -序号3}（如 {@code 1-01-260609-001}）。
- * 性别不再入耳号（公母仔猪同序列连号），{@code pigSex} 参数保留仅为兼容老调用方，前缀组装不再使用。
- * 序号桶不再按前缀（品系×品种×日）切分，而是按<b>出生日</b>全场共享一个连号序列。</p>
+ * <p>前缀 = {@code 品系-品种2-性别1-yyMMdd6}（如 {@code 1-01-1-260609}）→ 拼上 {@code -序号3}
+ * （如 {@code 1-01-1-260609-001}）。序号桶不按前缀切分，而是按<b>出生日</b>全场共享一个连号序列——所以同批公母
+ * 仔猪（前缀因性别段不同而分裂）仍共享同一全场起点连续编号，由 {@link #allocateBatchByPrefixes} 在单锁内整批分配。</p>
  *
  * <h3>序号源 = DB max（权威源，按出生日段全场聚合）</h3>
  * <p>在 Redisson 锁内 {@code SELECT MAX(序号)} 同<b>出生日段</b>现存耳号（{@code ear_no REGEXP '-yyMMdd-数字结尾'}，
- * 倒数第二段 = 出生日），取末段序号 + 1 作为下一可用号，N 头连号一次性算出。出生日段精确匹配（日期段是倒数第二段），
- * 旧 12 位无分隔历史号天然不匹配，新旧隔离无撞号（ADR-0011 §2.7）。</p>
+ * 倒数第二段 = 出生日），取末段序号 + 1 作为下一可用号，N 头连号一次性算出。出生日段精确匹配（日期段是倒数第二段，
+ * 对带/不带性别段两种格式都匹配），旧 12 位无分隔历史号天然不匹配，新旧隔离无撞号（ADR-0011 §2.7）。</p>
  *
  * <h3>并发安全</h3>
  * <ol>
@@ -124,13 +125,92 @@ public class EarNoAllocator {
     }
 
     /**
-     * 组装耳号前缀（ADR-0011 2026-06-18 修订：外部引种重新编入性别段）。
+     * 整批分配连号耳号——每头可带<b>不同前缀</b>，但共享当天全场同一连续序号空间。
+     *
+     * <p>仔猪打耳标（{@code PigEarTagServiceImpl}）专用：同批公母混合时，公组/母组前缀因性别段不同而分裂，
+     * 但<b>序号必须从同一当天全场起点连续往后排</b>——不能对两组各调一次 {@link #allocate}（各读同一 max
+     * 拿到相同起点造成重号）。本方法在同一出生日 Redisson 锁内一次性算连续序号 {@code nextSeq..nextSeq+N-1}，
+     * 第 i 头套 {@code prefixes.get(i)} 拼号，返回与入参等长、索引一一对齐的耳号列表（调用方负责按业务顺序
+     * 准备 {@code prefixes}）。</p>
+     *
+     * <p>所有前缀必须属于同一出生日（{@code birthDate}）——序号桶按出生日段聚合（{@code yyMMdd} 恒在前缀末段），
+     * 锁键、{@code selectMaxSeqByDateSegment}、UNIQUE 兜底全与 {@link #allocate} 同口径，无撞号。</p>
+     *
+     * @param prefixes  每头的耳号前缀（如 {@code 4-04-1-260510} / {@code 4-04-2-260510}），按业务索引顺序；不可空
+     * @param birthDate 出生日期（决定序号桶 + 锁键），与所有前缀的 yyMMdd 段一致；不可空
+     * @return 与 {@code prefixes} 等长、索引对齐的耳号列表，序号在当天全场范围内连续递增
+     */
+    public List<String> allocateBatchByPrefixes(List<String> prefixes, LocalDate birthDate) {
+        if (prefixes == null || prefixes.isEmpty()) {
+            throw new ServiceException("耳号分配数量必须大于 0，实际：" + (prefixes == null ? "null" : 0));
+        }
+        if (birthDate == null) {
+            throw new ServiceException("耳号生成失败：出生日期不能为空");
+        }
+        for (String prefix : prefixes) {
+            if (StringUtils.isBlank(prefix)) {
+                throw new ServiceException("耳号生成失败：前缀不能为空");
+            }
+        }
+        String dateSeg = birthDate.format(BIRTH_FMT);
+
+        // 锁按出生日（同一天全场串行），避免跨前缀并发各读到同一 max 拿到重号
+        String lockKey = String.format(DjsRedisKey.BIZ_CODE_LOCK, "ear_no:" + dateSeg);
+        RLock lock = redissonClient.getLock(lockKey);
+
+        boolean locked = false;
+        try {
+            locked = lock.tryLock(LOCK_WAIT_SECONDS, LOCK_LEASE_SECONDS, TimeUnit.SECONDS);
+            if (!locked) {
+                throw new ServiceException("耳号分配抢锁超时：" + lockKey);
+            }
+            return allocateBatchLocked(prefixes, dateSeg);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ServiceException("耳号分配被中断：batch@" + dateSeg);
+        } finally {
+            if (locked && lock.isHeldByCurrentThread()) {
+                lock.unlock();
+            }
+        }
+    }
+
+    /**
+     * 锁内：DB max + 1 推算整批连号（每头套各自前缀），含 UNIQUE 兜底重试。
+     * <p>序号源按<b>出生日段</b>全场 max（不分品系品种性别），整批 N 头共享一个连续序号空间
+     * {@code nextSeq..nextSeq+N-1}，第 i 头拼 {@code prefixes.get(i) + '-' + seq}。任一候选已被占用
+     * （脱锁写入 / 历史脏数据）→ 整批重算（保证序号始终连续无空洞、各组不交叉撞号）。</p>
+     */
+    private List<String> allocateBatchLocked(List<String> prefixes, String dateSeg) {
+        int count = prefixes.size();
+        for (int attempt = 1; attempt <= MAX_RETRY; attempt++) {
+            long nextSeq = resolveNextSeqByDate(dateSeg);
+            List<String> candidates = new ArrayList<>(count);
+            boolean conflict = false;
+            for (int i = 0; i < count; i++) {
+                String earNo = prefixes.get(i) + SEG_SEP + pad(nextSeq + i);
+                if (pigMapper.existsEarNo(earNo) != null) {
+                    log.warn("[ADR-0011] 耳号候选已占用，整批重新解析 max：earNo={} attempt={}", earNo, attempt);
+                    conflict = true;
+                    break;
+                }
+                candidates.add(earNo);
+            }
+            if (!conflict) {
+                return candidates;
+            }
+        }
+        throw new ServiceException("ear_no.generate_conflict");
+    }
+
+    /**
+     * 组装耳号前缀（ADR-0011 客户权威格式：品系-品种2-性别1-yyMMdd6）。
      * <p>位码取自字典 dict_value（前端选品种/品系直接传 dict_value，即位码本身，ADR-0011 §2.2）。</p>
      * <ul>
-     *   <li>{@code pigSex} 非空（外部引种，单批同性别）→ {@code 品系-品种2-性别1-yyMMdd6}（如 {@code 12-01-2-260618}）；
-     *       性别码客户权威表：{@code 1=公(M) / 2=母(F)}。拼上 {@code -序号3} 即完整耳号（如 {@code 12-01-2-260618-001}）。</li>
-     *   <li>{@code pigSex} 空（仔猪耳标批量，同批可混公母，走全场连号不编性别）→ 保持 {@code 品系-品种2-yyMMdd6} 旧格式，
-     *       向后兼容、不影响未报问题的仔猪耳标特性。</li>
+     *   <li>{@code pigSex} 非空（外部引种 / 仔猪打耳标，性别已知）→ {@code 品系-品种2-性别1-yyMMdd6}
+     *       （如 {@code 12-01-2-260618}）；性别码客户权威表：{@code 1=公(M) / 2=母(F)}。拼上 {@code -序号3}
+     *       即完整耳号（如 {@code 12-01-2-260618-001}）。</li>
+     *   <li>{@code pigSex} 空 → {@code 品系-品种2-yyMMdd6}（无性别段）。仅技术兜底，正常业务调用方均传具体性别。</li>
      * </ul>
      * <p>两种格式 yyMMdd 段都在倒数第二段、序号在末段，{@link PigMapper#selectMaxSeqByDateSegment} 的
      * {@code REGEXP '-yyMMdd-[0-9]+$'} 对两者都匹配，当天全场连号序列不受格式差异影响、无撞号。</p>

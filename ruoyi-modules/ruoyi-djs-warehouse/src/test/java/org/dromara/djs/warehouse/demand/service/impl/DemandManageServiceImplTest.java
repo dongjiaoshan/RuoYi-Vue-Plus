@@ -41,10 +41,10 @@ import static org.mockito.Mockito.when;
  *
  * <p>覆盖：</p>
  * <ul>
- *   <li>新增 happy 白条/蔬菜/礼盒/其他 → 调 BizCodeGenerator.generate(DEMAND_NO) + 初始 status=DRAFT</li>
+ *   <li>新增 happy 白条/蔬菜/礼盒/其他 → 调 BizCodeGenerator.generate(DEMAND_NO) + 初始 status=SUBMITTED</li>
  *   <li>新增非法业态 → throws</li>
  *   <li>编辑 DRAFT → 全字段允许</li>
- *   <li>编辑 IN_PRODUCTION → 仅 remark 允许</li>
+ *   <li>编辑 IN_PRODUCTION → 禁止（仅 DRAFT/SUBMITTED 可改）</li>
  *   <li>删除 DRAFT → ok / 删除 IN_PRODUCTION → throws</li>
  *   <li>assignPigs 非白条业态 → throws / IN_PRODUCTION → throws</li>
  * </ul>
@@ -110,7 +110,7 @@ class DemandManageServiceImplTest {
     }
 
     @Test
-    @DisplayName("新增白条 happy → DRAFT + WMS-DEMAND 码 + bizCode=WB")
+    @DisplayName("新增白条 happy → SUBMITTED + WMS-DEMAND 码 + bizCode=WB")
     void insertWhiteBarHappy() {
         DemandManageBo bo = baseBo("white_bar");
         when(demandMapper.insert(any(DemandManage.class))).thenAnswer(inv -> {
@@ -129,7 +129,7 @@ class DemandManageServiceImplTest {
         verify(demandMapper).insert(entityCaptor.capture());
         DemandManage saved = entityCaptor.getValue();
         assertThat(saved.getDemandNo()).isEqualTo("D260601WB0001");
-        assertThat(saved.getDemandStatus()).isEqualTo("DRAFT");
+        assertThat(saved.getDemandStatus()).isEqualTo("SUBMITTED");
         assertThat(saved.getProductType()).isEqualTo("white_bar");
         assertThat(saved.getShippedCount()).isEqualByComparingTo(BigDecimal.ZERO);
         assertThat(saved.getConfirmedCount()).isEqualByComparingTo(BigDecimal.ZERO);
@@ -199,29 +199,27 @@ class DemandManageServiceImplTest {
     }
 
     @Test
-    @DisplayName("编辑 IN_PRODUCTION → 仅 remark 允许，其他字段被丢弃")
+    @DisplayName("编辑 IN_PRODUCTION → 禁止编辑（仅 DRAFT/SUBMITTED 可改）")
     void updateInProductionOnlyRemark() {
         DemandManage exists = new DemandManage();
         exists.setId(101L);
+        exists.setDemandNo("D260601WB0001");
         exists.setDemandStatus("IN_PRODUCTION");
         exists.setProductType("white_bar");
         exists.setDemandQuantity(new BigDecimal("10"));
         exists.setRemark("原备注");
         when(demandMapper.selectById(101L)).thenReturn(exists);
-        when(demandMapper.updateById(any(DemandManage.class))).thenReturn(1);
 
         DemandManageBo bo = baseBo("white_bar");
         bo.setId(101L);
         bo.setDemandQuantity(new BigDecimal("99"));  // 试图改
         bo.setRemark("改了备注");
 
-        service.updateByBo(bo);
+        assertThatThrownBy(() -> service.updateByBo(bo))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("status_forbidden");
 
-        ArgumentCaptor<DemandManage> captor = ArgumentCaptor.forClass(DemandManage.class);
-        verify(demandMapper).updateById(captor.capture());
-        DemandManage updated = captor.getValue();
-        assertThat(updated.getDemandQuantity()).isEqualByComparingTo(new BigDecimal("10"));  // 未改
-        assertThat(updated.getRemark()).isEqualTo("改了备注");  // 仅 remark 改
+        verify(demandMapper, never()).updateById(any(DemandManage.class));
     }
 
     @Test

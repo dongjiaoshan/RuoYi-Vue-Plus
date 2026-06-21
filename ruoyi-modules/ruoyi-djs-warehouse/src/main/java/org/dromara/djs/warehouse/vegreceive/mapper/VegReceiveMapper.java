@@ -97,13 +97,15 @@ public interface VegReceiveMapper extends BaseMapperPlus<VegReceive, VegReceive>
      * 某作物下、按地块的果蔬间入库行。
      *
      * <p>地块月台量 = {@code SUM(send_platform_weight) by plot}；实际入库 = 本表 self 该 (crop, plot) 已入量；
-     * 待入库 = 月台量 − 实际入库（取 0 兜底负值）。状态：actual=0→pending / actual&lt;月台量→processing /
-     * actual≥月台量→done。仅返月台量 &gt; 0 的地块。</p>
+     * 待入库 = 月台量 − 实际入库（取 0 兜底负值）。状态：已标记入库完成（{@code is_finish=1} 存在）→ done（步10
+     * Part1 锁定，优先于数量支，避免毛菜处理回灌月台量把 done 翻回 processing）/ actual=0→pending /
+     * actual&lt;月台量→processing / actual≥月台量→done。仅返月台量 &gt; 0 的地块。</p>
      */
     @Select("""
         SELECT t.plot_id     AS plotId,
                pl.plot_code  AS plotCode,
                CASE
+                 WHEN t.finished > 0 THEN 'done'
                  WHEN t.actual <= 0 THEN 'pending'
                  WHEN t.actual >= t.platform THEN 'done'
                  ELSE 'processing'
@@ -121,7 +123,17 @@ public interface VegReceiveMapper extends BaseMapperPlus<VegReceive, VegReceive>
                           AND vr.plot_id = vh.plot_id
                           AND vr.del_flag = '0'
                           AND vr.tenant_id = '1001'
-                     ), 0) AS actual
+                     ), 0) AS actual,
+                   (
+                       SELECT COUNT(1)
+                         FROM t_warehouse_veg_receive vrf
+                        WHERE vrf.receive_type = 1
+                          AND vrf.crop_id = #{cropId}
+                          AND vrf.plot_id = vh.plot_id
+                          AND vrf.is_finish = 1
+                          AND vrf.del_flag = '0'
+                          AND vrf.tenant_id = '1001'
+                   ) AS finished
               FROM t_warehouse_vegetable_handle vh
              WHERE vh.del_flag = '0'
                AND vh.tenant_id = '1001'
@@ -163,6 +175,32 @@ public interface VegReceiveMapper extends BaseMapperPlus<VegReceive, VegReceive>
           ) r
         """)
     BigDecimal selectRemainInboundWeight(@Param("cropId") Long cropId, @Param("plotId") Long plotId);
+
+    /**
+     * 统计某 (crop, plot) 自产入库是否已标记完成（{@code is_finish=1}）的收货行数。
+     *
+     * <p>步10 Part1 锁定守门：果蔬间入库一旦标记「入库完成」，该地块即锁定不可再次入库。
+     * service 在 {@link org.dromara.djs.warehouse.vegreceive.service.impl.VegReceiveServiceImpl#inbound}
+     * 开头调用，&gt; 0 即拒绝。</p>
+     *
+     * <p>仅统计自产（{@code receive_type=1}）+ 未软删（{@code del_flag='0'}）行；
+     * {@code tenant_id} V1 单租户显式 {@code '1001'}（与本 mapper 其他聚合 SQL 同范式）。</p>
+     *
+     * @param cropId 作物 id
+     * @param plotId 地块 id
+     * @return 已标记入库完成的收货行数（0 = 未锁定，可入库）
+     */
+    @Select("""
+        SELECT COUNT(1)
+          FROM t_warehouse_veg_receive
+         WHERE receive_type = 1
+           AND crop_id   = #{cropId}
+           AND plot_id   = #{plotId}
+           AND is_finish = 1
+           AND del_flag  = '0'
+           AND tenant_id = '1001'
+        """)
+    long countFinishedByPlot(@Param("cropId") Long cropId, @Param("plotId") Long plotId);
 
     /**
      * 取作物名称（VegInbound 提交时冗余写入 receive 记录；自产无 product，从 vegetable_handle 冗余取）。

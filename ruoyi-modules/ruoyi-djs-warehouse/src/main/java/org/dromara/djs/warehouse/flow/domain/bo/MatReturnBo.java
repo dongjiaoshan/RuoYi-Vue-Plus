@@ -27,6 +27,15 @@ public class MatReturnBo {
     private Long productId;
 
     /**
+     * 选中篮子 ID（可空；= {@code location_stock.id}，snowflake，前端按 string 传）。
+     *
+     * <p>非空 = 「按源手选」退回（对齐领用，原型「仓库&gt;分拣发货&gt;物资领用」）：把退回量回补到用户选中的
+     * 那一篮（猪肉耳号篮 / 自产果蔬地块篮）。service 走 by-batch 分支：今日额度仍按 product 校验，
+     * 回补走 {@code addStockById(batchId)} + LIFO 减今天该篮 inhouse。为空 = 现状路径，不回归。</p>
+     */
+    private Long batchId;
+
+    /**
      * 库位 ID（可空）。
      *
      * <p>为空时 service 按 {@code productId} 解析默认库位（投喂等无库位语义场景，工人不选库位）；

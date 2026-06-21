@@ -77,6 +77,7 @@ public class PigGrowthServiceImpl implements IPigGrowthService {
     private final PenMapper penMapper;
     private final IFattenAgeStageService fattenAgeStageService;
     private final OssService ossService;
+    private final org.dromara.djs.breed.core.service.IPigCoreService pigCoreService;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -185,6 +186,10 @@ public class PigGrowthServiceImpl implements IPigGrowthService {
         // row50：批量取各猪「上次生长记录日期」MAX(measure_date)，给 mp 卡片「上次测量」格用（防 N+1）
         Map<Long, LocalDate> lastMeasureMap = loadLastMeasureDateMap(
             todoPigs.stream().map(Pig::getId).collect(Collectors.toList()));
+        // row12：育肥生长记录录入弹框「品系/品种」此前恒空——本路径漏 enrich。与 searchByEarKeyword 同口径
+        // 预载 breed_info 名映射（1=品种 / 2=品系）防 N+1，主数据优先 → 字典回落 → code 回落。
+        Map<String, String> breedNameMap = pigCoreService.loadBreedStrainNameMap(1);
+        Map<String, String> strainNameMap = pigCoreService.loadBreedStrainNameMap(2);
 
         List<PigSearchVo> result = new ArrayList<>(todoPigs.size());
         for (Pig p : todoPigs) {
@@ -198,6 +203,11 @@ public class PigGrowthServiceImpl implements IPigGrowthService {
             vo.setCurrentStatus(p.getCurrentStatus());
             // row50：上次生长记录日期（无记录 → null，mp 卡片该格显「—」）
             vo.setLastMeasureDate(lastMeasureMap.get(p.getId()));
+            // row12：品种/品系编码 + 中文名（育肥生长录入弹框「品系/品种」格用），与 searchByEarKeyword 同口径
+            vo.setPigBreedCode(p.getPigBreedCode());
+            vo.setPigBreedName(pigCoreService.resolveBreedStrainName(breedNameMap, "djs_pig_breed", p.getPigBreedCode()));
+            vo.setPigStrainCode(p.getPigStrainCode());
+            vo.setPigStrainName(pigCoreService.resolveBreedStrainName(strainNameMap, "djs_pig_strain", p.getPigStrainCode()));
             LocalDate base = p.getBirthDate() != null ? p.getBirthDate() : p.getIntroduceDate();
             if (base != null) {
                 vo.setAgeDays((int) Math.max(ChronoUnit.DAYS.between(base, today), 0L));

@@ -24,6 +24,8 @@ import org.dromara.djs.breed.event.die.domain.query.DieQuery;
 import org.dromara.djs.breed.event.die.domain.vo.PigDeathVo;
 import org.dromara.djs.breed.event.die.mapper.PigDeathMapper;
 import org.dromara.djs.breed.event.die.service.IDieService;
+import org.dromara.djs.breed.event.eartag.domain.PigPigletno;
+import org.dromara.djs.breed.event.eartag.mapper.PigPigletnoMapper;
 import org.dromara.djs.breed.farm.domain.Barn;
 import org.dromara.djs.breed.farm.domain.Pen;
 import org.dromara.djs.breed.farm.mapper.BarnMapper;
@@ -67,6 +69,7 @@ public class DieServiceImpl implements IDieService {
     private final IPigCoreService pigCoreService;
     private final OssService ossService;
     private final DictService dictService;
+    private final PigPigletnoMapper pigPigletnoMapper;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -120,10 +123,33 @@ public class DieServiceImpl implements IDieService {
         eventBo.setEventAt(bo.getDeathDate());
         pigCoreService.fireEvent(eventBo);
 
+        // 3. 仔猪死亡同事务软删其耳号日志行（t_farm_pig_pigletno），非仔猪不动
+        softDeletePigletnoIfPiglet(pig);
+
         log.info("[BRD-EVENT-004] recordDie pigId={} earNo={} deathId={} kind={} reason={}",
             pig.getId(), pig.getEarNo(), entity.getId(), bo.getDeathKind(), bo.getDeathReason());
 
         return toVo(entity);
+    }
+
+    /**
+     * 仔猪死亡时软删其在 {@code t_farm_pig_pigletno} 的耳号日志行（按 pig_id 精确匹配）。
+     *
+     * <p>仔猪在系统里是「pig 主表行(pig_type='piglet') + pigletno 日志行」两份，pigletno 行通过
+     * {@link PigPigletno#getPigId} 反向指向 {@code t_farm_pig_info.id}。死亡只软删 pig 主表会让
+     * pigletno 视图残留耳号，故同事务一并软删。{@code del_flag} 标 {@code @TableLogic}，{@code delete}
+     * 经逻辑删除拦截器自动转为 {@code update set del_flag='1'}，不物理删行。</p>
+     *
+     * <p>幂等：非 piglet 类型不执行；该 pigId 无对应 pigletno 行时 delete 影响 0 行，不报错。</p>
+     */
+    private void softDeletePigletnoIfPiglet(Pig pig) {
+        if (!"piglet".equals(pig.getPigType())) {
+            return;
+        }
+        int deleted = pigPigletnoMapper.delete(
+            Wrappers.<PigPigletno>lambdaQuery().eq(PigPigletno::getPigId, pig.getId()));
+        log.info("[BRD-EVENT-004] piglet die soft-delete pigletno pigId={} earNo={} deletedRows={}",
+            pig.getId(), pig.getEarNo(), deleted);
     }
 
     @Override

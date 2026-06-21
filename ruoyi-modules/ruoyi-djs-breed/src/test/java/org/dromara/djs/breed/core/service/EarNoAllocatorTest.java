@@ -255,4 +255,102 @@ class EarNoAllocatorTest {
             .isInstanceOf(ServiceException.class)
             .hasMessageContaining("出生日期");
     }
+
+    // ───────────────────── allocateBatchByPrefixes（仔猪公母混批，ADR-0011 §2.5 核心）─────────────────────
+
+    /**
+     * 仔猪打耳标核心场景：一批公母混合，公前缀 -1- / 母前缀 -2- 不同，但<b>共享当天全场同一连续序号空间</b>。
+     * 验证整批一次性从同一 max+1 起点连号、公母交叉不撞号、按入参索引一一对齐。
+     */
+    @Test
+    @DisplayName("混批公母前缀 [公,母,公] 共享全场起点 max=3 → 004/005/006 连号、性别段正确、索引对齐")
+    void allocateBatchByPrefixes_mixedSex_sharedSeq_consecutive() {
+        when(pigMapper.selectMaxSeqByDateSegment(YYMMDD)).thenReturn(3L);
+        String male = "4-04-1-" + YYMMDD;
+        String female = "4-04-2-" + YYMMDD;
+
+        List<String> earNos = allocator.allocateBatchByPrefixes(
+            List.of(male, female, male), BIRTH);
+
+        // 按入参索引对齐：公(004) / 母(005) / 公(006)，序号在全场连续唯一不交叉
+        assertThat(earNos).containsExactly(
+            male + "-004", female + "-005", male + "-006");
+        // 性别段：第 0/2 头公=1，第 1 头母=2
+        assertThat(earNos.get(0).split("-")[2]).isEqualTo("1");
+        assertThat(earNos.get(1).split("-")[2]).isEqualTo("2");
+        assertThat(earNos.get(2).split("-")[2]).isEqualTo("1");
+        // 全批序号互不相同（不撞号）
+        assertThat(earNos.stream().map(s -> s.substring(s.lastIndexOf('-') + 1)).distinct().count())
+            .isEqualTo(3L);
+        // 只读一次 max（单锁单起点）→ 公母不会各自读 max 拿到相同起点
+        verify(pigMapper, times(1)).selectMaxSeqByDateSegment(YYMMDD);
+    }
+
+    @Test
+    @DisplayName("混批当天无现存号 → 整批从 001 起连号（公001/母002）")
+    void allocateBatchByPrefixes_emptyDate_startsAt1() {
+        when(pigMapper.selectMaxSeqByDateSegment(YYMMDD)).thenReturn(null);
+        String male = "4-04-1-" + YYMMDD;
+        String female = "4-04-2-" + YYMMDD;
+
+        List<String> earNos = allocator.allocateBatchByPrefixes(List.of(male, female), BIRTH);
+
+        assertThat(earNos).containsExactly(male + "-001", female + "-002");
+    }
+
+    @Test
+    @DisplayName("混批 UNIQUE 兜底：某候选已占用 → 整批重算（max 已涨）后成功，序号仍连续不撞")
+    void allocateBatchByPrefixes_uniqueFallback_retrySucceeds() {
+        // 首轮 max=3 → 候选 004/005；005 已被占用 → 整批重算；次轮 max=5 → 006/007 全空
+        when(pigMapper.selectMaxSeqByDateSegment(YYMMDD)).thenReturn(3L, 5L);
+        String male = "4-04-1-" + YYMMDD;
+        String female = "4-04-2-" + YYMMDD;
+        when(pigMapper.existsEarNo(female + "-005")).thenReturn(555L);
+
+        List<String> earNos = allocator.allocateBatchByPrefixes(List.of(male, female), BIRTH);
+
+        assertThat(earNos).containsExactly(male + "-006", female + "-007");
+        verify(pigMapper, times(2)).selectMaxSeqByDateSegment(YYMMDD);
+    }
+
+    @Test
+    @DisplayName("混批重试耗尽（候选一直被占用）→ 抛 ear_no.generate_conflict")
+    void allocateBatchByPrefixes_exhausted_throws() {
+        when(pigMapper.selectMaxSeqByDateSegment(YYMMDD)).thenReturn(3L);
+        when(pigMapper.existsEarNo(anyString())).thenReturn(999L);
+
+        assertThatThrownBy(() -> allocator.allocateBatchByPrefixes(
+            List.of("4-04-1-" + YYMMDD), BIRTH))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("ear_no.generate_conflict");
+    }
+
+    @Test
+    @DisplayName("混批空列表 / null → 抛参数异常，不抢锁不读 DB")
+    void allocateBatchByPrefixes_emptyOrNull_throws() {
+        assertThatThrownBy(() -> allocator.allocateBatchByPrefixes(List.of(), BIRTH))
+            .isInstanceOf(ServiceException.class);
+        assertThatThrownBy(() -> allocator.allocateBatchByPrefixes(null, BIRTH))
+            .isInstanceOf(ServiceException.class);
+        verify(pigMapper, times(0)).selectMaxSeqByDateSegment(anyString());
+    }
+
+    @Test
+    @DisplayName("混批前缀含空白 → 抛参数异常")
+    void allocateBatchByPrefixes_blankPrefix_throws() {
+        assertThatThrownBy(() -> allocator.allocateBatchByPrefixes(
+            java.util.Arrays.asList("4-04-1-" + YYMMDD, "  "), BIRTH))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("前缀");
+    }
+
+    @Test
+    @DisplayName("混批出生日空 → 抛参数异常，不读 DB")
+    void allocateBatchByPrefixes_nullBirthDate_throws() {
+        assertThatThrownBy(() -> allocator.allocateBatchByPrefixes(
+            List.of("4-04-1-" + YYMMDD), null))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("出生日期");
+        verify(pigMapper, times(0)).selectMaxSeqByDateSegment(anyString());
+    }
 }

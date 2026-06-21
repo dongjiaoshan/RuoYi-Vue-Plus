@@ -131,6 +131,9 @@ public interface IPigCoreService {
      *                     {@code null}/≤0 → 不做日龄过滤（向后兼容所有现有调用方）。
      * @param isCastrated  是否阉割过滤（{@code 1}=否 / {@code 2}=是）：阉割选猪传 {@code 1}（仅未阉割猪可选）。
      *                     {@code null} → 不过滤（向后兼容所有现有调用方）。
+     * @param breedReady   配种选猪「待配种列表」过滤（row13）：{@code true} 时按「母猪生产配置」最小在场天数
+     *                     （断奶/返情/空怀/流产 → 配种）剔除未达天数的母猪；后备 HB 无阈值全显。
+     *                     {@code null}/false → 不过滤（向后兼容所有现有调用方）。
      * @return 轻量 PigSearchVo 列表（含 ageDays/parity/lastEventDays）
      */
     List<PigSearchVo> searchByEarKeyword(String earNoKeyword,
@@ -142,7 +145,8 @@ public interface IPigCoreService {
                                          String dueType,
                                          Boolean excludeNullBarn,
                                          Integer minAgeDays,
-                                         Integer isCastrated);
+                                         Integer isCastrated,
+                                         Boolean breedReady);
 
     /**
      * 加载 t_farm_breed_info 主表 code→中文名 映射（breedStrain 1=品种 / 2=品系）。
@@ -155,6 +159,19 @@ public interface IPigCoreService {
     Map<String, String> loadBreedStrainNameMap(Integer breedStrain);
 
     /**
+     * 品种/品系 code → 中文名解析：主数据 t_farm_breed_info（{@code infoNameMap}）优先 → 字典 {@code dictType} 回落 → 原始 code 回落。
+     *
+     * <p>供跨服务（如生长记录 listGrowthTodo）复用同一套解析口径，避免各处重复 dict 回落逻辑。
+     * {@code infoNameMap} 由 {@link #loadBreedStrainNameMap} 预载（1=品种 / 2=品系），批量调用前载一次防 N+1。</p>
+     *
+     * @param infoNameMap breed_info code→名映射（loadBreedStrainNameMap 结果）
+     * @param dictType    回落字典类型（{@code djs_pig_breed} / {@code djs_pig_strain}）
+     * @param code        品种/品系 code（空 → 返 null）
+     * @return 中文名（主数据 → 字典 → code 三级回落；code 空返 null）
+     */
+    String resolveBreedStrainName(Map<String, String> infoNameMap, String dictType, String code);
+
+    /**
      * 栋舍 × 头数聚合（BRD-FIX-MP-PIGSELECT-001）——mp 端 PigSelectPanel 顶部「栋舍 chip」数据源。
      *
      * <p>语义：在 {@code statusFilter}（CSV，默认排除 END） + {@code sexFilter} + {@code pigTypeFilter}
@@ -165,7 +182,9 @@ public interface IPigCoreService {
      * @param sexFilter     性别过滤（{@code "M"} / {@code "F"} / null）
      * @param pigTypeFilter 类型过滤（{@code "sow"/"boar"/"piglet"/"fattening"} / null）
      * @param earNoKeyword  耳号关键字 LIKE 过滤（row60：使各栋舍头数随搜索结果缩减，与 search 同口径）；null/空 → 不过滤
+     * @param breedReady    配种选猪过滤（row13）：{@code true} 时按最小在场天数剔除未达天数母猪，与 search 同口径
+     *                      （否则栋舍 chip 头数之和与列表条数对不上）；{@code null}/false → 不过滤
      * @return 栋舍头数聚合列表
      */
-    List<PigBarnCountVo> countByBarn(String statusFilter, String sexFilter, String pigTypeFilter, String earNoKeyword);
+    List<PigBarnCountVo> countByBarn(String statusFilter, String sexFilter, String pigTypeFilter, String earNoKeyword, Boolean breedReady);
 }

@@ -4,6 +4,7 @@ import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 import org.dromara.common.mybatis.core.mapper.BaseMapperPlus;
+import org.dromara.djs.warehouse.flow.domain.vo.MatIssueBasketVo;
 import org.dromara.djs.warehouse.flow.domain.vo.MatIssueItemVo;
 import org.dromara.djs.warehouse.flow.domain.vo.MatIssueLocationVo;
 import org.dromara.djs.warehouse.flow.domain.vo.PackingItemVo;
@@ -624,5 +625,97 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
     List<MatIssueItemVo> selectMatIssueItems(@Param("belongTypes") List<String> belongTypes,
                                              @Param("locationId") Long locationId,
                                              @Param("userId") Long userId);
+
+    /**
+     * mp 物资领用「按耳号源篮子」列表（「按源手选」领用，猪肉(分割)按耳号）。
+     *
+     * <p>口径：该 pork 原料产品（{@code product_id=#{productId}}）的 {@code location_stock} 篮子，
+     * {@code ear_no} 非空 + {@code product_stock > 0}，一行一篮（{@code batchCode = ear_no} 耳号）。
+     * 只返有库存的篮（用完的篮自动不出现 → 「用完不可选」）。{@code locationId} 可空（chip 选中态过滤）。</p>
+     *
+     * <p>每篮今日已领 best-effort = 今天 {@code product_inhouse} SUM(product_weight)
+     * WHERE {@code product_id + ear_no}（inhouse 带 ear_no 源标签）；今日退/损按篮维度不细分 → 0
+     * （{@code stock_flow} 无 ear_no 篮维度，不为此加 DDL）。{@code batchId} / {@code productId} /
+     * {@code locationId} 物理列是 BIGINT，VO 字段为 String，由 MyBatis 自动转字符串（snowflake 防截断）。
+     * 租户单租户显式 {@code tenant_id='1001'}（V1）。</p>
+     *
+     * @param productId  pork 原料产品 ID（必填）
+     * @param locationId 库位 ID（可空，chip 选中态过滤）
+     * @return 该产品的耳号源篮子列表（按 id 升序 = 入库先后）；无则空 list
+     */
+    @Select("""
+        <script>
+        SELECT s.id                          AS batchId,
+               s.ear_no                       AS batchCode,
+               s.product_id                   AS productId,
+               s.product_name                 AS productName,
+               COALESCE(s.product_unit, 'kg') AS productUnit,
+               s.product_stock                AS currentStock,
+               COALESCE((SELECT SUM(ih.product_weight) FROM t_warehouse_product_inhouse ih
+                          WHERE ih.product_id = s.product_id AND ih.ear_no = s.ear_no
+                            AND DATE(ih.produce_date) = CURDATE()
+                            AND ih.del_flag = '0' AND ih.tenant_id = '1001'), 0) AS todayPicked,
+               0                              AS todayReturned,
+               0                              AS todayLoss,
+               s.location_id                  AS locationId
+          FROM t_warehouse_location_stock s
+         WHERE s.del_flag      = '0'
+           AND s.tenant_id     = '1001'
+           AND s.product_id    = #{productId}
+           AND s.ear_no IS NOT NULL
+           AND s.product_stock > 0
+           <if test="locationId != null"> AND s.location_id = #{locationId} </if>
+         ORDER BY s.id ASC
+        </script>
+        """)
+    List<MatIssueBasketVo> selectPorkIssueByEar(@Param("productId") Long productId,
+                                                @Param("locationId") Long locationId);
+
+    /**
+     * mp 物资领用「按地块源篮子」列表（「按源手选」领用，蔬菜(自产)按地块）。
+     *
+     * <p>口径：该自产果蔬原料产品（{@code product_id=#{productId}}）的 {@code location_stock} 篮子，
+     * {@code plot_id} 非空 + {@code product_stock > 0}，一行一篮，LEFT JOIN {@code t_plant_plot_info}
+     * 取地块编号（{@code batchCode = plot_code}）。只返有库存的篮（用完的篮自动不出现）。
+     * {@code locationId} 可空（chip 选中态过滤）。</p>
+     *
+     * <p>每篮今日已领 best-effort = 今天 {@code product_inhouse} SUM(product_weight)
+     * WHERE {@code product_id + plot_id}（inhouse 带 plot_id 源标签）；今日退/损按篮维度不细分 → 0。
+     * 字段 String 转换 / 租户同 {@link #selectPorkIssueByEar}。</p>
+     *
+     * @param productId  自产果蔬原料产品 ID（必填）
+     * @param locationId 库位 ID（可空，chip 选中态过滤）
+     * @return 该产品的地块源篮子列表（按 id 升序）；无则空 list
+     */
+    @Select("""
+        <script>
+        SELECT s.id                          AS batchId,
+               pl.plot_code                   AS batchCode,
+               s.product_id                   AS productId,
+               s.product_name                 AS productName,
+               COALESCE(s.product_unit, 'kg') AS productUnit,
+               s.product_stock                AS currentStock,
+               COALESCE((SELECT SUM(ih.product_weight) FROM t_warehouse_product_inhouse ih
+                          WHERE ih.product_id = s.product_id AND ih.plot_id = s.plot_id
+                            AND DATE(ih.produce_date) = CURDATE()
+                            AND ih.del_flag = '0' AND ih.tenant_id = '1001'), 0) AS todayPicked,
+               0                              AS todayReturned,
+               0                              AS todayLoss,
+               s.location_id                  AS locationId
+          FROM t_warehouse_location_stock s
+          LEFT JOIN t_plant_plot_info pl
+            ON pl.id = s.plot_id
+           AND pl.del_flag = '0'
+         WHERE s.del_flag      = '0'
+           AND s.tenant_id     = '1001'
+           AND s.product_id    = #{productId}
+           AND s.plot_id IS NOT NULL
+           AND s.product_stock > 0
+           <if test="locationId != null"> AND s.location_id = #{locationId} </if>
+         ORDER BY s.id ASC
+        </script>
+        """)
+    List<MatIssueBasketVo> selectVegIssueByPlot(@Param("productId") Long productId,
+                                                @Param("locationId") Long locationId);
 
 }

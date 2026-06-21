@@ -136,10 +136,11 @@ class AppletPickServiceImplTest {
 
         ArgumentCaptor<GrowRecordBo> grow = ArgumentCaptor.forClass(GrowRecordBo.class);
         verify(farmRecordsService).submitGrow(grow.capture());
-        assertThat(grow.getValue().getFarmType()).isEqualTo("harvest_activity");
-        // 0618 口径：采收按人记录 → operator_user_id 落采摘人员；不记班组 farm_by 留空
-        assertThat(grow.getValue().getOperatorUserId()).isEqualTo(55L);
-        assertThat(grow.getValue().getFarmBy()).isNull();
+        // is_pick=2 普通采收 → farm_type='harvest'（采收）；is_pick=1 才是 harvest_activity（FIX-PLT-AD-PICK-FARMTYPE-001）
+        assertThat(grow.getValue().getFarmType()).isEqualTo("harvest");
+        // 采收按班组记录 → farm_by 落采收班组；operator_user_id 留空
+        assertThat(grow.getValue().getFarmBy()).isEqualTo(55L);
+        assertThat(grow.getValue().getOperatorUserId()).isNull();
     }
 
     @Test
@@ -166,7 +167,7 @@ class AppletPickServiceImplTest {
     }
 
     @Test
-    @DisplayName("完成采收(finish=true)：completed + end_actualdate=今日 + average_yield=actual/plot_area（actual 由采摘活动管理累加）")
+    @DisplayName("完成采收(finish=true)：completed + end_harvestdate=采收日 + average_yield=actual/plot_area（end_actualdate 归种植完成 finishPlant，采摘完成不写）")
     void submitPick_finish() {
         PlantDetails d = detailFixture();
         d.setActualYield(new BigDecimal("100"));   // 已由采摘活动管理累加
@@ -183,7 +184,8 @@ class AppletPickServiceImplTest {
         verify(detailsMapper).updateById(cap.capture());
         PlantDetails saved = cap.getValue();
         assertThat(saved.getHarvestStatus()).isEqualTo("completed");
-        assertThat(saved.getEndActualdate()).isEqualTo(LocalDate.now());
+        // end_actualdate（种植实际结束）归种植完成 finishPlant 独占；采摘完成只写 end_harvestdate
+        assertThat(saved.getEndActualdate()).isNull();
         assertThat(saved.getEndHarvestdate()).isEqualTo(LocalDate.of(2026, 6, 1));
         // 100 / 10.00 = 10.000
         assertThat(saved.getAverageYield()).isEqualByComparingTo("10.000");
@@ -244,9 +246,11 @@ class AppletPickServiceImplTest {
     }
 
     @Test
-    @DisplayName("CROSS-FLOW-002 finish=false → 不发布事件（逐次采收不产生待办）")
+    @DisplayName("CROSS-FLOW-002 已活跃(picking)再采收 finish=false → 不重复发布事件（逐次采收不产生重复待办）")
     void submitPick_continue_doesNotPublishEvent() {
         PlantDetails d = detailFixture();
+        // 已处于采摘中（wasActive=true）：开始采摘时已发过事件，继续采收不再重发
+        d.setHarvestStatus("picking");
         when(detailsMapper.selectById(100L)).thenReturn(d);
 
         PickSubmitBo bo = new PickSubmitBo();

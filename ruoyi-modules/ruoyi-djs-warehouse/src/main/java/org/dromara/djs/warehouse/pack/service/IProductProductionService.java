@@ -91,12 +91,15 @@ public interface IProductProductionService {
     ProductProductionVo queryById(Long id);
 
     /**
-     * mp 端 - 蔬菜可打包来源（{@code product_inhouse where plot_id IS NOT NULL AND del_flag='0'}）。
+     * mp 端 - 蔬菜可打包来源（{@code belong_type='vegetable'} 且 {@code product_attr=2}(原料)
+     * 的今天领用活动 inhouse）。G8：只把原料 inhouse 当来源，防成品混入。
      */
     List<ProductInhouse> listSourceForVeg();
 
     /**
-     * mp 端 - 干货可打包来源（来源 inhouse 按 product_workshop 过滤；V1 简化返全部活动 inhouse）。
+     * mp 端 - 其他产品可打包来源（{@code belong_type ∈ {egg,dry_good,other}} 且
+     * {@code product_attr=2}(原料) 的今天领用活动 inhouse）。G5：按业态白名单 + 今天过滤，
+     * 不再裸捞全表（避免跨业态污染）。
      */
     List<ProductInhouse> listSourceForDry();
 

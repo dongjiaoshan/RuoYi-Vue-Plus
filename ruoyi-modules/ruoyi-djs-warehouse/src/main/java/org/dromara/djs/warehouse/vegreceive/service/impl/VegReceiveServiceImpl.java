@@ -9,6 +9,8 @@ import org.dromara.djs.common.encoder.IBizCodeGenerator;
 import org.dromara.djs.common.image.service.ImageUrlResolver;
 import org.dromara.djs.common.supplier.domain.Supplier;
 import org.dromara.djs.common.supplier.mapper.SupplierMapper;
+import org.dromara.djs.plant.crop.domain.CropInfo;
+import org.dromara.djs.plant.crop.mapper.CropInfoMapper;
 import org.dromara.djs.warehouse.flow.domain.StockFlow;
 import org.dromara.djs.warehouse.flow.mapper.StockFlowMapper;
 import org.dromara.djs.warehouse.location.domain.LocationInfo;
@@ -110,6 +112,8 @@ public class VegReceiveServiceImpl implements IVegReceiveService {
     private final SupplierMapper supplierMapper;
     private final IBizCodeGenerator bizCodeGenerator;
     private final ImageUrlResolver imageUrlResolver;
+    /** 作物 mapper：自产月台入库解析 {@code crop.related_product} → 果蔬原料 product_id（双键篮，G2）。 */
+    private final CropInfoMapper cropInfoMapper;
 
     public VegReceiveServiceImpl(VegReceiveMapper vegReceiveMapper,
                                  LocationStockMapper locationStockMapper,
@@ -118,7 +122,8 @@ public class VegReceiveServiceImpl implements IVegReceiveService {
                                  ProductInfoMapper productInfoMapper,
                                  SupplierMapper supplierMapper,
                                  IBizCodeGenerator bizCodeGenerator,
-                                 ImageUrlResolver imageUrlResolver) {
+                                 ImageUrlResolver imageUrlResolver,
+                                 CropInfoMapper cropInfoMapper) {
         this.vegReceiveMapper = vegReceiveMapper;
         this.locationStockMapper = locationStockMapper;
         this.locationInfoMapper = locationInfoMapper;
@@ -127,6 +132,7 @@ public class VegReceiveServiceImpl implements IVegReceiveService {
         this.supplierMapper = supplierMapper;
         this.bizCodeGenerator = bizCodeGenerator;
         this.imageUrlResolver = imageUrlResolver;
+        this.cropInfoMapper = cropInfoMapper;
     }
 
     @Override
@@ -172,7 +178,12 @@ public class VegReceiveServiceImpl implements IVegReceiveService {
     public Long inbound(VegInboundBo bo) {
         Long userId = resolveOperator(bo.getOperatorId());
 
-        // 0. 校验入库库位口径（spec 步10：自产月台入库仅限蔬菜保鲜库 L0003 / 重口味蔬菜库 L0004）
+        // 0a. 锁定守门（步10 Part1）：该地块已标记入库完成（is_finish=1）即锁定，不可再次入库
+        if (vegReceiveMapper.countFinishedByPlot(bo.getCropId(), bo.getPlotId()) > 0) {
+            throw new ServiceException("该地块已标记入库完成，不能再次入库");
+        }
+
+        // 0b. 校验入库库位口径（spec 步10：自产月台入库仅限蔬菜保鲜库 L0003 / 重口味蔬菜库 L0004）
         requireInboundLocation(bo.getLocationId());
 
         // 1. 校验剩余可入量（月台量 − 已入 self 量），超量拒绝（不凭空入库）
@@ -186,6 +197,9 @@ public class VegReceiveServiceImpl implements IVegReceiveService {
 
         boolean finished = bo.getIsFinish() != null && bo.getIsFinish() == FINISH_YES;
         String cropName = vegReceiveMapper.selectCropName(bo.getCropId());
+        // 解析果蔬原料 product_id（作物 related_product 双键篮，G2）：篮子（step3）+ 流水（step4）都带它。
+        // 解析不到（作物未配 related_product，现网多为 NULL）→ 保持 null，不阻塞入库（与篮子兜底一致）。
+        Long materialProductId = resolveProductIdByCrop(bo.getCropId());
 
         // 2. INSERT 收货记录（自产）
         String flowNo = generateFlowNo();
@@ -203,17 +217,20 @@ public class VegReceiveServiceImpl implements IVegReceiveService {
         receive.setReceiveTime(new Date());
         vegReceiveMapper.insert(receive);
 
-        // 3. UPSERT location_stock（plot 维度行锁增量；无行兜底 INSERT 建账）
+        // 3. UPSERT location_stock（plot 维度行锁增量；无行兜底 INSERT 建账，含 product_id 双键篮）
         int affected = vegReceiveMapper.addStockByPlotLocation(
             bo.getLocationId(), bo.getPlotId(), bo.getWeight(), userId);
         if (affected == 0) {
-            insertPlotStockRow(bo.getLocationId(), bo.getPlotId(), cropName, bo.getWeight(), userId);
+            insertPlotStockRow(bo.getLocationId(), bo.getCropId(), bo.getPlotId(), cropName, bo.getWeight(), userId);
         }
 
-        // 4. INSERT stock_flow（veg_receive_in / IN，plot 关联）
+        // 4. INSERT stock_flow（veg_receive_in / IN，plot + product 关联）。
+        //    带 product_id（果蔬原料）让 admin「果蔬月台入库」入库记录的「产品」列能显示原材料名（#3 修复：
+        //    StockFlowServiceImpl.fillNames 按 product_id JOIN product_info 回填 productName，此前漏 set 故列空）。
         StockFlow flow = new StockFlow();
         flow.setFlowNo(flowNo);
         flow.setFlowDate(new Date());
+        flow.setProductId(materialProductId);
         flow.setWarehouseId(bo.getLocationId());
         flow.setPlotId(bo.getPlotId());
         flow.setInoutType(INOUT_IN);
@@ -341,12 +358,24 @@ public class VegReceiveServiceImpl implements IVegReceiveService {
     }
 
     /**
-     * plot 维度无库存行时 INSERT 新行（自产果蔬首次入某库位 / 地块）。
+     * plot 维度无库存行时 INSERT 新行（自产果蔬月台中转再入库首次入某库位 / 地块）。
+     *
+     * <p><b>G2 双键篮</b>：与直接入库（{@link org.dromara.djs.warehouse.veg.service.impl.VegetableHandleServiceImpl}
+     * 的 {@code insertVegStockInFlow}）口径对齐——同时 set {@code product_id}（经
+     * {@link #resolveProductIdByCrop} 解析作物 related_product 得到的果蔬原料 product_id）+ {@code plot_id}
+     * （篮子标签）。这样月台中转篮也是 {@code product_id+plot_id} 双键篮，下游
+     * {@code consumeVegBaskets(WHERE product_id=#{id})} 能领到月台中转入库的库存，两池合一（G3 随之解决）。</p>
+     *
+     * <p>解析不到 product_id（作物未配 related_product，现网多为 NULL）时保持 {@code product_id=NULL} 兜底
+     * （{@link #resolveProductIdByCrop} 内已 warn），仅 plot 单键篮——不抛、不阻塞入库。</p>
      */
-    private void insertPlotStockRow(Long locationId, Long plotId, String cropName,
+    private void insertPlotStockRow(Long locationId, Long cropId, Long plotId, String cropName,
                                     BigDecimal stockQty, Long userId) {
         LocationStock stock = new LocationStock();
         stock.setLocationId(locationId);
+        // G2：双键篮 = product_id（作物→果蔬原料映射）+ plot_id（篮子标签）。解析不到则保持 NULL 单键篮兜底。
+        Long productId = resolveProductIdByCrop(cropId);
+        stock.setProductId(productId);
         stock.setPlotId(plotId);
         stock.setProductName(cropName);
         stock.setProductStock(stockQty);
@@ -354,6 +383,46 @@ public class VegReceiveServiceImpl implements IVegReceiveService {
         stock.setIsEnd(0);
         stock.setOperatorId(userId);
         locationStockMapper.insert(stock);
+    }
+
+    /**
+     * 按作物 {@code crop.related_product}（FK → {@code t_warehouse_product_info.id}）解析果蔬原料 product_id。
+     *
+     * <p>与 {@link org.dromara.djs.warehouse.veg.service.impl.VegetableHandleServiceImpl#resolveProductIdByCrop}
+     * 同规则：作物→产品转换走 {@code t_plant_crop_info.related_product}，重量不变。客户未在 admin 作物录入页填
+     * related_product（现网多为 NULL）时返 {@code null} 并 {@code log.warn}，不抛、不阻塞入库（月台中转篮退化为
+     * plot 单键篮兜底）。protected 便于单测 stub。</p>
+     *
+     * <p>守门：解析出的产品必须是「果蔬原料」（{@code product_attr=2 且 belong_type='vegetable'}）。
+     * {@code crop.related_product} 仅逻辑关联、无 DB FK 约束，可能脏值（指向不存在产品 / 误配成品 attr=1）。
+     * 非果蔬原料一律返 {@code null}（流水 product_id 兜底空、入库记录「产品」列空），与下游
+     * {@code MatFlowServiceImpl.bridgeMaterialInhouse / isVegSelfMaterial}（同 attr=2 门）行为一致，
+     * 避免成品 id 漏到 {@code veg_receive_in} 流水。</p>
+     *
+     * @param cropId 作物 id（veg_receive.crop_id）
+     * @return 解析出的果蔬原料 product_id；无映射 / 非果蔬原料时返 null
+     */
+    protected Long resolveProductIdByCrop(Long cropId) {
+        if (cropId == null) {
+            return null;
+        }
+        CropInfo crop = cropInfoMapper.selectById(cropId);
+        if (crop == null || crop.getRelatedProduct() == null) {
+            log.warn("月台中转入库：作物 related_product 未配置，库存篮退化为 plot 单键 — cropId={}（请在 admin 作物录入页"
+                + "填写「关联产品」建立作物↔果蔬原料映射，使月台中转篮与直接入库篮 product_id 对齐、领用两池合一）", cropId);
+            return null;
+        }
+        Long relatedProductId = crop.getRelatedProduct();
+        ProductInfo product = productInfoMapper.selectById(relatedProductId);
+        if (product == null
+            || product.getProductAttr() == null
+            || product.getProductAttr() != 2
+            || !CROP_BELONG_TYPE.equals(product.getBelongType())) {
+            log.warn("月台中转入库：作物 related_product={} 非果蔬原料（脏值 / 误配成品 / 产品已删），流水 product_id 兜底 null"
+                + " — cropId={}（请在 admin 作物录入页把「关联产品」改为 attr=2 的果蔬原料 SKU）", relatedProductId, cropId);
+            return null;
+        }
+        return relatedProductId;
     }
 
     /**

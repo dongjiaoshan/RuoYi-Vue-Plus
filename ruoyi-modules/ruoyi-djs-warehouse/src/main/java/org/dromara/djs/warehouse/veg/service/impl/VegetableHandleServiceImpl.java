@@ -75,7 +75,8 @@ import java.util.stream.Collectors;
  * 由 {@link VegetableHandleMapper#selectByPlantingRecordId} + 事务隔离保证。</p>
  *
  * <h3>损耗计算</h3>
- * <p>{@code loss = picked - handled - feed}（doc/11 §2.12 R15 业务规则）。负值取 0 并 WARN log。</p>
+ * <p>{@code loss = picked - handled}（客户 2026-06-20 口径：损耗 = 采摘 − 处理，饲料去向③不算「已处理」、计入损耗）。
+ * 仅在「处理完成」(is_finish=1) 时结算，未完成损耗恒 0。负值取 0 并 WARN log。</p>
  *
  * @author djs
  * @since WMS-VEG-001
@@ -293,7 +294,9 @@ public class VegetableHandleServiceImpl
             }
         }
 
-        BigDecimal loss = recomputeLoss(picked, handled, feed, handle.getId());
+        // 序号9-Req1：仅「处理完成」(is_finish=1) 才结算损耗，未完成损耗恒 0（客户 2026-06-20）
+        boolean recordDone = bo.getIsFinish() != null && bo.getIsFinish() == 1;
+        BigDecimal loss = recordDone ? recomputeLoss(picked, handled, handle.getId()) : BigDecimal.ZERO;
 
         delta.setId(handle.getId());
         delta.setPickedWeight(picked);
@@ -445,13 +448,15 @@ public class VegetableHandleServiceImpl
     }
 
     /**
-     * 重算损耗 {@code loss = picked - handled - feed}（doc/11 §2.12 R15）。负值归零并 WARN，结果保留 3 位。
+     * 重算损耗 {@code loss = picked - handled}（客户 2026-06-20 口径：损耗 = 采摘录入重量之和 − 果蔬处理重量之和，
+     * 饲料去向不算「已处理」，故饲料量计入损耗）。仅在「处理完成」时由调用方决定是否结算（未完成损耗恒 0）。
+     * 负值归零并 WARN，结果保留 3 位。
      */
-    private BigDecimal recomputeLoss(BigDecimal picked, BigDecimal handled, BigDecimal feed, Long handleId) {
-        BigDecimal loss = picked.subtract(handled).subtract(feed);
+    private BigDecimal recomputeLoss(BigDecimal picked, BigDecimal handled, Long handleId) {
+        BigDecimal loss = picked.subtract(handled);
         if (loss.signum() < 0) {
-            log.warn("loss_weight 负值（picked={} handled={} feed={}），归零处理 handleId={}",
-                picked, handled, feed, handleId);
+            log.warn("loss_weight 负值（picked={} handled={}），归零处理 handleId={}",
+                picked, handled, handleId);
             loss = BigDecimal.ZERO;
         }
         return loss.setScale(3, RoundingMode.HALF_UP);
@@ -568,16 +573,14 @@ public class VegetableHandleServiceImpl
         record.setHandleTime(now);
         handleRecordMapper.insert(record);
 
-        // Step 4：聚合 UPDATE vegetable_handle（picked_weight += weight；重算 loss）
+        // Step 4：聚合 UPDATE vegetable_handle（picked_weight += weight）
+        // 序号9-Req1：采摘阶段 is_finish 恒为 2（未处理完成）→ 损耗恒置 0，不在采摘时结算损耗（客户 2026-06-20）
         BigDecimal picked = nullSafe(handle.getPickedWeight()).add(weight);
-        BigDecimal handled = nullSafe(handle.getHandledWeight());
-        BigDecimal feed = nullSafe(handle.getFeedWeight());
-        BigDecimal loss = recomputeLoss(picked, handled, feed, handle.getId());
 
         VegetableHandle delta = new VegetableHandle();
         delta.setId(handle.getId());
         delta.setPickedWeight(picked);
-        delta.setLossWeight(loss);
+        delta.setLossWeight(BigDecimal.ZERO);
         if (STATUS_PENDING.equals(handle.getHandleStatus())) {
             delta.setHandleStatus(STATUS_PROCESSING);
         }
@@ -632,6 +635,20 @@ public class VegetableHandleServiceImpl
             throw new ServiceException("请先录入采摘重量");
         }
 
+        // Step 3.0a 序号6-Req2：果蔬处理（入库 + 月台）累计不得超过采摘累计（客户 2026-06-20）。
+        // 饲料去向③不受此限（饲料不算「已处理」，计入损耗）。
+        if (handleTarget == HANDLE_TARGET_STOCK_IN || handleTarget == HANDLE_TARGET_PLATFORM) {
+            BigDecimal projectedHandled = nullSafe(handle.getHandledWeight()).add(weight);
+            if (projectedHandled.compareTo(nullSafe(handle.getPickedWeight())) > 0) {
+                throw new ServiceException("果蔬处理重量不得大于果蔬采摘录入重量");
+            }
+        }
+
+        // Step 3.0b 序号9-Req2：未「称重完成」(is_weighed=1) 不得标记「处理完成」（客户 2026-06-20）
+        if (processDone && (handle.getIsWeighed() == null || handle.getIsWeighed() != 1)) {
+            throw new ServiceException("请先完成地块称重，再标记处理完成");
+        }
+
         // Step 3.1：去向①入库默认落毛菜鲜品库（L0006），按 location_code 查 id（不硬编码 id）
         Long stockInLocationId = null;
         if (handleTarget == HANDLE_TARGET_STOCK_IN) {
@@ -683,7 +700,8 @@ public class VegetableHandleServiceImpl
             feed = feed.add(weight);
         }
 
-        BigDecimal loss = recomputeLoss(picked, handled, feed, handle.getId());
+        // 序号9-Req1：仅「处理完成」(is_finish=1) 才结算损耗（= 采摘 − 处理），未完成损耗恒 0（客户 2026-06-20）
+        BigDecimal loss = processDone ? recomputeLoss(picked, handled, handle.getId()) : BigDecimal.ZERO;
 
         VegetableHandle delta = new VegetableHandle();
         delta.setId(handle.getId());

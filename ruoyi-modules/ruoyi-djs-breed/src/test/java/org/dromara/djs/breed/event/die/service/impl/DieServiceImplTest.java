@@ -12,8 +12,14 @@ import org.dromara.djs.breed.core.service.IPigCoreService;
 import org.dromara.djs.breed.event.die.domain.PigDeath;
 import org.dromara.djs.breed.event.die.domain.bo.DieBo;
 import org.dromara.djs.breed.event.die.mapper.PigDeathMapper;
+import org.dromara.djs.breed.event.eartag.domain.PigPigletno;
+import org.dromara.djs.breed.event.eartag.mapper.PigPigletnoMapper;
 import org.dromara.djs.breed.farm.mapper.BarnMapper;
 import org.dromara.djs.breed.farm.mapper.PenMapper;
+import com.baomidou.mybatisplus.core.MybatisConfiguration;
+import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
+import org.apache.ibatis.builder.MapperBuilderAssistant;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
@@ -71,12 +77,26 @@ class DieServiceImplTest {
     private OssService ossService;
     @Mock
     private DictService dictService;
+    @Mock
+    private PigPigletnoMapper pigPigletnoMapper;
 
     private DieServiceImpl service;
 
+    /**
+     * MyBatis-Plus 单测 entity cache 预热：{@code softDeletePigletnoIfPiglet} 用 LambdaQueryWrapper
+     * 在 mock 路径下也会触发 TableInfoHelper 解析 lambda 列名，必须先注册 PigPigletno。
+     */
+    @BeforeAll
+    static void initMpEntityCache() {
+        MybatisConfiguration cfg = new MybatisConfiguration();
+        MapperBuilderAssistant assistant = new MapperBuilderAssistant(cfg, "");
+        assistant.setCurrentNamespace("test");
+        TableInfoHelper.initTableInfo(assistant, PigPigletno.class);
+    }
+
     @BeforeEach
     void setup() {
-        service = new DieServiceImpl(deathMapper, pigMapper, barnMapper, penMapper, pigCoreService, ossService, dictService);
+        service = new DieServiceImpl(deathMapper, pigMapper, barnMapper, penMapper, pigCoreService, ossService, dictService, pigPigletnoMapper);
     }
 
     private Pig mkPig(Long id, PigLifecycle status, String sex, String pigType) {
@@ -119,6 +139,41 @@ class DieServiceImplTest {
         assertThat(ev.getValue().getEventType()).isEqualTo(PigStatusEvent.DIE);
         assertThat(ev.getValue().getPigId()).isEqualTo(100L);
         assertThat(ev.getValue().getEventAt()).isEqualTo(bo.getDeathDate());
+
+        // 非仔猪：不软删 pigletno
+        verify(pigPigletnoMapper, never()).delete(any());
+    }
+
+    @Test
+    @DisplayName("piglet die: 同事务软删 t_farm_pig_pigletno 对应耳号行（del_flag→'1'，按 pig_id 精确匹配）")
+    void pigletDie_softDeletePigletno() {
+        Pig piglet = mkPig(200L, PigLifecycle.HB, "F", "piglet");
+        when(pigMapper.selectById(200L)).thenReturn(piglet);
+        when(pigPigletnoMapper.delete(any())).thenReturn(1);
+
+        DieBo bo = mkBo(200L, "1001");
+        service.recordDie(bo);
+
+        // 仍走正常死亡主流程
+        verify(deathMapper, times(1)).insert(any(PigDeath.class));
+        verify(pigCoreService, times(1)).fireEvent(any());
+        // 额外：按 pigId 软删 pigletno 一次（@TableLogic 下 delete = update del_flag='1'）
+        verify(pigPigletnoMapper, times(1)).delete(any());
+    }
+
+    @Test
+    @DisplayName("piglet die: pigletno 无对应行（delete 0 行）不报错，死亡主流程照常")
+    void pigletDie_noPigletnoRow_noError() {
+        Pig piglet = mkPig(201L, PigLifecycle.HB, "M", "piglet");
+        when(pigMapper.selectById(201L)).thenReturn(piglet);
+        when(pigPigletnoMapper.delete(any())).thenReturn(0);
+
+        DieBo bo = mkBo(201L, "1001");
+        service.recordDie(bo);
+
+        verify(deathMapper, times(1)).insert(any(PigDeath.class));
+        verify(pigCoreService, times(1)).fireEvent(any());
+        verify(pigPigletnoMapper, times(1)).delete(any());
     }
 
     @Test

@@ -427,7 +427,8 @@ public class PigCoreServiceImpl implements IPigCoreService {
      * 主数据权威源 = t_farm_breed_info（外部引种 BreedInfoPicker 写入的 2 位码如 "01"）；
      * 缺则回落字典（djs_pig_breed / djs_pig_strain，历史单位码如 "1"）；再缺回落原始 code。
      */
-    private String resolveBreedStrainName(Map<String, String> infoNameMap, String dictType, String code) {
+    @Override
+    public String resolveBreedStrainName(Map<String, String> infoNameMap, String dictType, String code) {
         if (StringUtils.isBlank(code)) {
             return null;
         }
@@ -613,7 +614,8 @@ public class PigCoreServiceImpl implements IPigCoreService {
                                                 String dueType,
                                                 Boolean excludeNullBarn,
                                                 Integer minAgeDays,
-                                                Integer isCastrated) {
+                                                Integer isCastrated,
+                                                Boolean breedReady) {
         int effectiveLimit = clampLimit(limit);
         // 出栏选猪：仅返回到龄肥猪（日龄 >= slaughter_age_days）。日龄 = NOW − birth_date（缺则 introduce_date）；
         // 两者均空 → DATEDIFF 为 NULL，比较结果非真 → 自动剔除（无生日的猪不算到龄）。minAgeDays ≤0/null 不过滤。
@@ -670,6 +672,15 @@ public class PigCoreServiceImpl implements IPigCoreService {
         List<Pig> pigs = pigMapper.selectList(w);
         if (pigs.isEmpty()) {
             return Collections.emptyList();
+        }
+
+        // row13：配种选猪场景（breedReady=true）按后台「母猪生产配置」最小在场天数过滤——
+        // 未达对应天数（断奶/返情/空怀/流产→配种）的母猪不进待配种列表；后备 HB 无阈值全显。
+        if (Boolean.TRUE.equals(breedReady)) {
+            pigs = filterBreedReady(pigs, LocalDateTime.now());
+            if (pigs.isEmpty()) {
+                return Collections.emptyList();
+            }
         }
 
         // D12X-MP-FARROW-WEANING-001：到期"软提示"（分娩 / 断奶选猪）。
@@ -833,7 +844,7 @@ public class PigCoreServiceImpl implements IPigCoreService {
     }
 
     @Override
-    public List<PigBarnCountVo> countByBarn(String statusFilter, String sexFilter, String pigTypeFilter, String earNoKeyword) {
+    public List<PigBarnCountVo> countByBarn(String statusFilter, String sexFilter, String pigTypeFilter, String earNoKeyword, Boolean breedReady) {
         List<String> statuses = parseStatusFilter(statusFilter);
         boolean callerWantsEnd = statuses.contains(PigLifecycle.END.name());
 
@@ -859,6 +870,14 @@ public class PigCoreServiceImpl implements IPigCoreService {
         List<Pig> pigs = pigMapper.selectList(w);
         if (pigs.isEmpty()) {
             return Collections.emptyList();
+        }
+
+        // row13：与 searchByEarKeyword 同口径——配种选猪时按最小在场天数过滤，否则栋舍 chip 头数之和对不上列表条数
+        if (Boolean.TRUE.equals(breedReady)) {
+            pigs = filterBreedReady(pigs, LocalDateTime.now());
+            if (pigs.isEmpty()) {
+                return Collections.emptyList();
+            }
         }
 
         // barnId → count
@@ -956,6 +975,41 @@ public class PigCoreServiceImpl implements IPigCoreService {
         }
         long days = Duration.between(since, now).toDays();
         return (int) Math.max(days, 0L);
+    }
+
+    /**
+     * row13：配种选猪「待配种列表」按后台「母猪生产配置」的最小在场天数过滤——
+     * 仅当母猪在当前状态的在场天数 ≥ 对应配置阈值才显示（断奶/返情/空怀/流产 → 配种各有独立天数）。
+     * 后备（HB）无对应配置项 → 不过滤、全显；阈值未配置（getValue 返 null）→ 该状态不过滤（不误删候选）；
+     * 无在场起始日（status_started_at 为 null）→ 无法判定，保留。天数口径与卡片「N天」一致 = today − status_started_at。
+     *
+     * @param pigs 状态白名单过滤后的候选母猪
+     * @param now  当前时刻（与卡片 lastEventDays 同口径）
+     * @return 满足最小在场天数的母猪子集
+     */
+    private List<Pig> filterBreedReady(List<Pig> pigs, LocalDateTime now) {
+        if (pigs.isEmpty()) {
+            return pigs;
+        }
+        // 状态 → 母猪生产配置 key（后备 HB 无对应项，不参与过滤）
+        Map<String, String> statusKey = Map.of(
+            PigLifecycle.DN.name(), "sow_wean_to_breed_days",
+            PigLifecycle.FQ.name(), "sow_return_to_breed_days",
+            PigLifecycle.KH.name(), "sow_empty_to_breed_days",
+            PigLifecycle.LC.name(), "sow_abort_to_breed_days");
+        Map<String, Integer> thresholds = productionCycleConfigService.getValuesByKeys(statusKey.values());
+        return pigs.stream().filter(p -> {
+            String key = statusKey.get(p.getCurrentStatus());
+            if (key == null) {
+                return true;
+            }
+            Integer minDays = thresholds.get(key);
+            if (minDays == null) {
+                return true;
+            }
+            Integer days = calcDaysSince(p.getStatusStartedAt(), now);
+            return days == null || days >= minDays;
+        }).collect(Collectors.toList());
     }
 
     private int clampLimit(Integer raw) {

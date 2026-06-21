@@ -78,8 +78,10 @@ public class AppletPickServiceImpl implements IAppletPickService {
      * 排除 is_pick=1 的游客采摘活动。
      */
     private static final int IS_PICK_NORMAL = 2;
-    /** harvest_activity：农事记录采收类型（与 t_plant_farm_records.farm_type 字典 djs_farm_work_type 对齐）。 */
+    /** harvest_activity：采摘计划设为「采摘活动」(is_pick=1) 的采摘行为农事类型（djs_farm_work_type）。 */
     private static final String HARVEST_FARM_TYPE = "harvest_activity";
+    /** harvest：普通采收 (is_pick=2) 农事类型，区别于游客采摘活动（FIX-PLT-AD-PICK-FARMTYPE-001）。 */
+    private static final String HARVEST_NORMAL_FARM_TYPE = "harvest";
 
     @Override
     public List<PickTaskVo> listMyTasks(String status) {
@@ -149,7 +151,9 @@ public class AppletPickServiceImpl implements IAppletPickService {
         //    采收按班组记录：所选「采收班组」落 farm_by；operator_user_id 留空，
         //    且不覆盖 admin 采摘计划已分配的 detail.harvest_by（仅记录本次采收班组）。
         GrowRecordBo grow = new GrowRecordBo();
-        grow.setFarmType(HARVEST_FARM_TYPE);
+        // 口径（FIX-PLT-AD-PICK-FARMTYPE-001）：is_pick=1 设为采摘活动 → harvest_activity；其余普通采收 → harvest（采收）。
+        grow.setFarmType(detail.getIsPick() != null && detail.getIsPick() == 1
+            ? HARVEST_FARM_TYPE : HARVEST_NORMAL_FARM_TYPE);
         grow.setPlantId(detail.getPlantId());
         grow.setPlotId(detail.getPlotId());
         grow.setCropId(detail.getCropId());

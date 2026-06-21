@@ -53,6 +53,18 @@ public class MatPickBo {
     private Long plotId;
 
     /**
+     * 选中篮子 ID（可空；= {@code location_stock.id}，snowflake，前端按 string 传）。
+     *
+     * <p>非空 = 「按源手选」领用（对齐客户最新原型「仓库&gt;分拣发货&gt;物资领用」）：猪肉(分割)按【耳号】、
+     * 蔬菜(自产)按【地块】，用户在源篮子列表（{@code issuePorkBatches} / {@code issueVegBatches}）里手选
+     * 某一篮领用。service 走 {@code pickByBatch}：按本 id 行锁扣减选中篮 + 产一行 {@code product_inhouse}
+     * （带篮的 {@code ear_no} / {@code plot_id} / {@code product_id} 源标签）→ 打包链照常显示对应耳号/地块。</p>
+     *
+     * <p>为空 = 现状路径（{@code plotId} 非空走 plot 维度 FIFO，否则 product 维度 FIFO / 兜底），不回归。</p>
+     */
+    private Long batchId;
+
+    /**
      * 库位 ID（可空）。
      *
      * <p>为空时 service 按 {@code productId} 解析默认库位（投喂等无库位语义场景，工人不选库位）；

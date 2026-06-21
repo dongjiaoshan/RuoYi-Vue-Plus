@@ -161,7 +161,7 @@ class VegetableHandleServiceImplTest {
         assertThat(rec.getHandleUser()).isEqualTo(9001L);
         assertThat(rec.getHandleId()).isEqualTo(70001L);
 
-        // 聚合 UPDATE：picked=50, handled=feed=stock_in=0; loss=picked-handled-feed=50（尚未处理）
+        // 聚合 UPDATE：picked=50, handled=feed=stock_in=0；loss=0（未处理完成不结算损耗，序号9-Req1 客户 2026-06-20）
         ArgumentCaptor<VegetableHandle> updCap = ArgumentCaptor.forClass(VegetableHandle.class);
         verify(handleMapper, times(1)).updateById(updCap.capture());
         VegetableHandle upd = updCap.getValue();
@@ -169,7 +169,7 @@ class VegetableHandleServiceImplTest {
         assertThat(upd.getHandledWeight()).isEqualByComparingTo("0");
         assertThat(upd.getFeedWeight()).isEqualByComparingTo("0");
         assertThat(upd.getStockInWeight()).isEqualByComparingTo("0");
-        assertThat(upd.getLossWeight()).isEqualByComparingTo("50.000");
+        assertThat(upd.getLossWeight()).isEqualByComparingTo("0");
 
         // 没有 stock_flow
         verify(stockFlowMapper, never()).insert(any(StockFlow.class));
@@ -225,14 +225,14 @@ class VegetableHandleServiceImplTest {
         assertThat(recCap.getValue().getHandleTarget()).isEqualTo(1);
         assertThat(recCap.getValue().getLocationId()).isEqualTo(90001L);
 
-        // 聚合 UPDATE：stockIn=30, handled=30, picked=50, loss=20
+        // 聚合 UPDATE：stockIn=30, handled=30, picked=50；loss=0（未处理完成不结算损耗，序号9-Req1）
         ArgumentCaptor<VegetableHandle> updCap = ArgumentCaptor.forClass(VegetableHandle.class);
         verify(handleMapper, times(1)).updateById(updCap.capture());
         VegetableHandle upd = updCap.getValue();
         assertThat(upd.getStockInWeight()).isEqualByComparingTo("30.000");
         assertThat(upd.getHandledWeight()).isEqualByComparingTo("30.000");
         assertThat(upd.getPickedWeight()).isEqualByComparingTo("50.000");
-        assertThat(upd.getLossWeight()).isEqualByComparingTo("20.000");
+        assertThat(upd.getLossWeight()).isEqualByComparingTo("0");
 
         // 1 行 stock_flow IN
         ArgumentCaptor<StockFlow> flowCap = ArgumentCaptor.forClass(StockFlow.class);
@@ -273,13 +273,13 @@ class VegetableHandleServiceImplTest {
 
         service.submitHandleRecord(bo);
 
-        // 聚合 UPDATE：feed=10, handled=30 不变, loss=50-30-10=10
+        // 聚合 UPDATE：feed=10, handled=30 不变；loss=0（未处理完成不结算损耗，序号9-Req1；饲料不算已处理）
         ArgumentCaptor<VegetableHandle> updCap = ArgumentCaptor.forClass(VegetableHandle.class);
         verify(handleMapper, times(1)).updateById(updCap.capture());
         VegetableHandle upd = updCap.getValue();
         assertThat(upd.getFeedWeight()).isEqualByComparingTo("10.000");
         assertThat(upd.getHandledWeight()).isEqualByComparingTo("30.000");
-        assertThat(upd.getLossWeight()).isEqualByComparingTo("10.000");
+        assertThat(upd.getLossWeight()).isEqualByComparingTo("0");
 
         // 没有 stock_flow
         verify(stockFlowMapper, never()).insert(any(StockFlow.class));
@@ -561,6 +561,86 @@ class VegetableHandleServiceImplTest {
 
         // planting_record 推 processing → done
         verify(plantingRecordMapper).advanceHandleStatus(eq(60001L), eq("processing"), eq("done"), eq(9001L));
+    }
+
+    // -------- submitProcess 新守门 + 损耗结算（客户 2026-06-20 序号6/9） --------
+
+    private VegetableHandle sampleHandle(String picked, String handled, int isWeighed) {
+        VegetableHandle h = new VegetableHandle();
+        h.setId(70001L);
+        h.setPlantingRecordId(60001L);
+        h.setPlotId(11001L);
+        h.setCropId(12001L);
+        h.setPickedWeight(new BigDecimal(picked));
+        h.setHandledWeight(new BigDecimal(handled));
+        h.setFeedWeight(BigDecimal.ZERO);
+        h.setSendPlatformWeight(BigDecimal.ZERO);
+        h.setStockInWeight(BigDecimal.ZERO);
+        h.setLossWeight(BigDecimal.ZERO);
+        h.setIsWeighed(isWeighed);
+        h.setHandleStatus("processing");
+        return h;
+    }
+
+    private org.dromara.djs.warehouse.veg.domain.bo.ProcessSubmitBo processBo(
+        int target, String weight, int finish) {
+        org.dromara.djs.warehouse.veg.domain.bo.ProcessSubmitBo bo =
+            new org.dromara.djs.warehouse.veg.domain.bo.ProcessSubmitBo();
+        bo.setPlantingRecordId(60001L);
+        bo.setHandleTarget(target);
+        bo.setProcessWeight(new BigDecimal(weight));
+        bo.setProcessFinish(finish);
+        bo.setProcessUserId(9001L);
+        return bo;
+    }
+
+    @Test
+    @DisplayName("序号6-Req2：果蔬处理累计 > 采摘 → 抛「不得大于采摘」，不落库")
+    void testProcess_OverHarvest_Rejected() {
+        when(plantingRecordMapper.selectById(60001L)).thenReturn(samplePlanting("processing"));
+        // picked=50, 已处理 handled=40，本次月台再处理 20 → 60 > 50 → 拦
+        when(handleMapper.selectByPlantingRecordId(60001L)).thenReturn(sampleHandle("50.000", "40.000", 1));
+
+        assertThatThrownBy(() -> service.submitProcess(processBo(2, "20.000", 0)))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("果蔬处理重量不得大于果蔬采摘录入重量");
+
+        verify(recordMapper, never()).insert(any(HandleRecord.class));
+        verify(handleMapper, never()).updateById(any(VegetableHandle.class));
+    }
+
+    @Test
+    @DisplayName("序号9-Req2：未称重完成却勾处理完成 → 抛「请先完成地块称重」，不落库")
+    void testProcess_FinishWithoutWeigh_Rejected() {
+        when(plantingRecordMapper.selectById(60001L)).thenReturn(samplePlanting("processing"));
+        // picked=50, handled=10, 本次 10（不超采摘）；但 is_weighed=2 未称重完成 + processFinish=1 → 拦
+        when(handleMapper.selectByPlantingRecordId(60001L)).thenReturn(sampleHandle("50.000", "10.000", 2));
+
+        assertThatThrownBy(() -> service.submitProcess(processBo(2, "10.000", 1)))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("请先完成地块称重");
+
+        verify(recordMapper, never()).insert(any(HandleRecord.class));
+        verify(handleMapper, never()).updateById(any(VegetableHandle.class));
+    }
+
+    @Test
+    @DisplayName("序号9-Req1：处理完成才结算损耗 loss=采摘−处理（饲料不算已处理）")
+    void testProcess_Finish_SettlesLoss() {
+        when(plantingRecordMapper.selectById(60001L)).thenReturn(samplePlanting("processing"));
+        // picked=50, handled=30, 本次月台 10 → handled=40；is_weighed=1 + finish=1 → 结算 loss=50-40=10
+        when(handleMapper.selectByPlantingRecordId(60001L)).thenReturn(sampleHandle("50.000", "30.000", 1));
+        when(plantingRecordMapper.advanceHandleStatus(anyLong(), any(), any(), anyLong())).thenReturn(1);
+
+        service.submitProcess(processBo(2, "10.000", 1));
+
+        ArgumentCaptor<VegetableHandle> updCap = ArgumentCaptor.forClass(VegetableHandle.class);
+        verify(handleMapper, times(1)).updateById(updCap.capture());
+        VegetableHandle upd = updCap.getValue();
+        assertThat(upd.getHandledWeight()).isEqualByComparingTo("40.000");
+        assertThat(upd.getLossWeight()).isEqualByComparingTo("10.000");
+        assertThat(upd.getIsFinish()).isEqualTo(1);
+        assertThat(upd.getHandleStatus()).isEqualTo("done");
     }
 
 }

@@ -44,14 +44,30 @@ public class VegPlotDetailVo implements Serializable {
     private BigDecimal plotArea;
 
     /**
-     * 入库重量(kg)（= vegetable_handle.stock_in_weight）。
+     * 采摘录入重量(kg)（= vegetable_handle.picked_weight，多次采摘录入之和）。
      */
-    private BigDecimal stockInWeight;
+    private BigDecimal harvestWeight;
 
     /**
-     * 出库重量(kg)（= vegetable_handle.send_platform_weight）。
+     * 果蔬处理重量(kg)（= vegetable_handle.handled_weight = 入库 + 月台，多次处理录入之和；饲料去向不计入）。
      */
-    private BigDecimal stockOutWeight;
+    private BigDecimal handledWeight;
+
+    /**
+     * 剩余重量(kg)（= 采摘录入 − 果蔬处理 = picked − handled）。
+     */
+    private BigDecimal remainWeight;
+
+    /**
+     * 预计产量(kg)（= t_warehouse_planting_record.expect_yield）。
+     */
+    private BigDecimal expectYield;
+
+    /**
+     * 该作物是否已配置「关联产品」：1=已配 / 0=未配（= t_plant_crop_info.related_product 是否非空）。
+     * 0 时 mp 录入软提示「该作物未配置关联产品，建议先在后台作物录入页填写」，不阻断（客户 2026-06-20）。
+     */
+    private Integer hasRelatedProduct;
 
     /**
      * 称重(采摘录入)状态：pending=待办 / done=已完成（由 vegetable_handle.is_weighed 派生）。
@@ -64,7 +80,7 @@ public class VegPlotDetailVo implements Serializable {
     private String processStatus;
 
     /**
-     * 关联汇总 ID（= vegetable_handle.id，如已部分录入则非空）。
+     * 关联汇总 ID（= vegetable_handle.id，如已部分录入则非空；未录采摘时为 null，mp 据此置灰「果蔬处理录入」）。
      */
     private Long handleId;
 

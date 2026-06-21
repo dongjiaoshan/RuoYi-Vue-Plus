@@ -70,12 +70,14 @@ class PigGrowthServiceImplTest {
     private IFattenAgeStageService fattenAgeStageService;
     @Mock
     private OssService ossService;
+    @Mock
+    private org.dromara.djs.breed.core.service.IPigCoreService pigCoreService;
 
     private PigGrowthServiceImpl service;
 
     @BeforeEach
     void setup() {
-        service = new PigGrowthServiceImpl(growthMapper, pigMapper, barnMapper, penMapper, fattenAgeStageService, ossService);
+        service = new PigGrowthServiceImpl(growthMapper, pigMapper, barnMapper, penMapper, fattenAgeStageService, ossService, pigCoreService);
     }
 
     private Pig mkPig(Long id) {

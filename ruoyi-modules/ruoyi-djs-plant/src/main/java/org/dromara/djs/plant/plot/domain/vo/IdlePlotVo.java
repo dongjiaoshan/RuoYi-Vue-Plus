@@ -45,4 +45,10 @@ public class IdlePlotVo implements Serializable {
      * 空地日期（= 该地块最近一条 rotation farm_date，派生；无退茬记录留空）。
      */
     private LocalDate idleDate;
+
+    /**
+     * 30 天内上次同工种（翻耕/整地/施肥）农事日期（row14；按 idlePlots 入参 farmType 回填；
+     * 无 farmType 或近 30 天无该工种记录时留空）。
+     */
+    private LocalDate lastFarmDate;
 }

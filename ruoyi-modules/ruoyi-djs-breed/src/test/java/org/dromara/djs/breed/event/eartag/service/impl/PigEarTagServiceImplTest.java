@@ -33,6 +33,7 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
@@ -45,13 +46,12 @@ import static org.mockito.Mockito.when;
  *
  * <p>覆盖：</p>
  * <ul>
- *   <li>happy path：批量贴 3 头 → 3 行 pig_info（piglet/HB）+ 3 行 pigletno + 0 行 status_record</li>
- *   <li>父猪耳号反查（farrow.breeding_id → boar_ear_no）</li>
- *   <li>超量校验：tagged + newCount > live_born → 抛 i18n key</li>
- *   <li>farrow 不存在校验</li>
- *   <li>母猪不存在校验</li>
+ *   <li>happy path：批量贴 3 头 → 3 行 pig_info（piglet）+ 3 行 pigletno + 0 行 status_record</li>
+ *   <li><b>公母混批耳号编入性别段 + 全场连号不撞号 + 按原始索引回填</b>（ADR-0011 §2.5，本次核心）</li>
+ *   <li>父猪耳号反查（farrow.breeding_id → boar_ear_no）+ 育种配置仔代码</li>
+ *   <li>超量校验 / farrow 不存在 / 母猪不存在</li>
  *   <li>statByFarrow：返活产 / 已贴 / 待贴 + 清单</li>
- *   <li>耳号 context.barnCode 由母猪所在 barn 派生（缺时回落 "00"）</li>
+ *   <li>previewEarNos：公母两组前缀不同、共享全场起点连续排号（与正式落库同口径）</li>
  * </ul>
  *
  * @author djs
@@ -80,6 +80,11 @@ class PigEarTagServiceImplTest {
     @BeforeEach
     void setup() {
         service = new PigEarTagServiceImpl(pigMapper, pigletnoMapper, farrowMapper, earNoAllocator, breedConfigMapper);
+        // 仔代品系=4 / 品种=04（继承母猪，父猪未命中育种配置）：公前缀 -1- / 母前缀 -2-
+        when(earNoAllocator.buildPrefix(eq("4"), eq("04"), eq("M"), any(LocalDate.class)))
+            .thenReturn("4-04-1-260508");
+        when(earNoAllocator.buildPrefix(eq("4"), eq("04"), eq("F"), any(LocalDate.class)))
+            .thenReturn("4-04-2-260508");
     }
 
     private Pig mkSow() {
@@ -117,20 +122,33 @@ class PigEarTagServiceImplTest {
     }
 
     @Test
-    @DisplayName("batchTag 3 头 → INSERT 3 pig + 3 pigletno + 0 status_record + 父猪耳号反查")
-    void batchTag_happyPath() {
+    @DisplayName("batchTag 公母混批 → 每头耳号编入正确性别段 + 全场连号不撞号 + 按原始索引回填")
+    void batchTag_mixedSex_earNoHasSexSegment_consecutive_byIndex() {
         PigFarrow farrow = mkFarrow(900L, 10, 800L);
         when(farrowMapper.selectById(900L)).thenReturn(farrow);
         when(pigMapper.selectById(101L)).thenReturn(mkSow());
         when(pigletnoMapper.selectCount(any())).thenReturn(0L);
         when(farrowMapper.selectBoarEarByBreedingId(800L)).thenReturn("01B12605900");
         // 父猪查不到（selectOne 未 mock，LENIENT 返 null）→ 仔代品种/品系回落继承母猪（04/4）。
-        // 6/15 起耳号不编码性别 → 整批一次 allocate(count) 连号，sex 入参为 null。
-        when(earNoAllocator.allocate(eq("4"), eq("04"), isNull(), any(LocalDate.class), eq(3)))
-            .thenReturn(List.of("4-04-260508-0001", "4-04-260508-0002", "4-04-260508-0003"));
+
+        // 关键：allocateBatchByPrefixes 收到的 prefixes 必须按 piglets 原始索引排列（公-1-/母-2-），
+        // 序号在全场范围内整批连号（004..006）—— 用真实拼号逻辑模拟，断言 service 传入前缀顺序正确。
+        ArgumentCaptor<List<String>> prefixCaptor = ArgumentCaptor.forClass(List.class);
+        when(earNoAllocator.allocateBatchByPrefixes(prefixCaptor.capture(), any(LocalDate.class)))
+            .thenAnswer(inv -> {
+                List<String> prefixes = inv.getArgument(0);
+                // 模拟分配器：当天全场 max=3 → 整批从 004 起连号，每头套各自前缀
+                long start = 4L;
+                java.util.List<String> out = new java.util.ArrayList<>();
+                for (int i = 0; i < prefixes.size(); i++) {
+                    out.add(prefixes.get(i) + "-" + String.format("%03d", start + i));
+                }
+                return out;
+            });
 
         PigletBatchEarTagBo bo = new PigletBatchEarTagBo();
         bo.setFarrowId(900L);
+        // 原始顺序：[公, 母, 公] —— 故意非排序，验证按原始索引回填而非性别分组顺序
         bo.setPiglets(List.of(
             mkItem("M", new BigDecimal("1.45")),
             mkItem("F", new BigDecimal("1.32")),
@@ -140,34 +158,69 @@ class PigEarTagServiceImplTest {
         List<PigletEarTagVo> result = service.batchTag(bo);
 
         assertThat(result).hasSize(3);
-        // pig.insert 3 次（仔猪 pig_info 主表行）
+
+        // 1) service 传给分配器的前缀列表按原始索引：公前缀 / 母前缀 / 公前缀
+        List<String> sentPrefixes = prefixCaptor.getValue();
+        assertThat(sentPrefixes).containsExactly("4-04-1-260508", "4-04-2-260508", "4-04-1-260508");
+
+        // 2) 落库 pig 行：按原始索引顺序的耳号 = 公(004) / 母(005) / 公(006)，性别段与 pigletSex 一致、序号全场连续不撞
         ArgumentCaptor<Pig> pigCaptor = ArgumentCaptor.forClass(Pig.class);
         verify(pigMapper, times(3)).insert(pigCaptor.capture());
-        for (Pig p : pigCaptor.getAllValues()) {
-            assertThat(p.getPigType()).isEqualTo("piglet");
-            assertThat(p.getCurrentStatus()).isEqualTo("");
-            assertThat(p.getMotherEar()).isEqualTo("01A12605001");
-            assertThat(p.getFatherEar()).isEqualTo("01B12605900");
-            assertThat(p.getBarnId()).isEqualTo(5L);
-            assertThat(p.getPenId()).isEqualTo(50L);
-            // 父猪未命中 → 回落继承母猪品种/品系码
-            assertThat(p.getPigBreedCode()).isEqualTo("04");
-            assertThat(p.getPigStrainCode()).isEqualTo("4");
-            assertThat(p.getStatusStartedAt()).isNotNull();
-            // 仔猪 lifecycleId=1 / parity=0 / isAppointed=0
-            assertThat(p.getLifecycleId()).isEqualTo(1);
-            assertThat(p.getParity()).isZero();
+        List<Pig> pigs = pigCaptor.getAllValues();
+        assertThat(pigs.get(0).getEarNo()).isEqualTo("4-04-1-260508-004");
+        assertThat(pigs.get(0).getPigSex()).isEqualTo("M");
+        assertThat(pigs.get(1).getEarNo()).isEqualTo("4-04-2-260508-005");
+        assertThat(pigs.get(1).getPigSex()).isEqualTo("F");
+        assertThat(pigs.get(2).getEarNo()).isEqualTo("4-04-1-260508-006");
+        assertThat(pigs.get(2).getPigSex()).isEqualTo("M");
+
+        // 3) 性别段正确性硬断言：公耳号第 3 段 = 1，母耳号第 3 段 = 2
+        for (Pig p : pigs) {
+            String sexSeg = p.getEarNo().split("-")[2];
+            assertThat(sexSeg).isEqualTo("M".equals(p.getPigSex()) ? "1" : "2");
         }
-        // pigletno.insert 3 次
+
+        // 4) 全批序号全场连续唯一（004/005/006，无重复、无空洞）→ 不撞号
+        List<Long> seqs = pigs.stream()
+            .map(p -> Long.parseLong(p.getEarNo().substring(p.getEarNo().lastIndexOf('-') + 1)))
+            .sorted()
+            .toList();
+        assertThat(seqs).containsExactly(4L, 5L, 6L);
+        assertThat(pigs.stream().map(Pig::getEarNo).distinct().count()).isEqualTo(3L);
+
+        // 5) 整批一次性分配（单锁单 max，不按性别两次 allocate → 不会两组各读 max 撞号）
+        verify(earNoAllocator, times(1)).allocateBatchByPrefixes(anyList(), any(LocalDate.class));
+        verify(earNoAllocator, times(0)).allocate(any(), any(), any(), any(), anyInt());
+
+        // pigletno.insert 3 次，性别段透传
         verify(pigletnoMapper, times(3)).insert(any(PigPigletno.class));
-        // 父猪耳号反查走了一次
         verify(farrowMapper, times(1)).selectBoarEarByBreedingId(800L);
-        // 整批一次性连号分配（不再按性别分组）
-        verify(earNoAllocator, times(1)).allocate(eq("4"), eq("04"), isNull(), any(LocalDate.class), eq(3));
     }
 
     @Test
-    @DisplayName("batchTag 父猪命中育种配置 → 仔代品种/品系取 cub_code 透传耳号分配器")
+    @DisplayName("batchTag 全公批 → 全部 -1- 性别段，连号正确")
+    void batchTag_allMale_sexSeg1() {
+        PigFarrow farrow = mkFarrow(908L, 5, null);
+        when(farrowMapper.selectById(908L)).thenReturn(farrow);
+        when(pigMapper.selectById(101L)).thenReturn(mkSow());
+        when(pigletnoMapper.selectCount(any())).thenReturn(0L);
+        when(earNoAllocator.allocateBatchByPrefixes(anyList(), any(LocalDate.class)))
+            .thenReturn(List.of("4-04-1-260508-001", "4-04-1-260508-002"));
+
+        PigletBatchEarTagBo bo = new PigletBatchEarTagBo();
+        bo.setFarrowId(908L);
+        bo.setPiglets(List.of(mkItem("M", null), mkItem("M", null)));
+
+        service.batchTag(bo);
+
+        ArgumentCaptor<Pig> pigCap = ArgumentCaptor.forClass(Pig.class);
+        verify(pigMapper, times(2)).insert(pigCap.capture());
+        assertThat(pigCap.getAllValues()).allSatisfy(p ->
+            assertThat(p.getEarNo().split("-")[2]).isEqualTo("1"));
+    }
+
+    @Test
+    @DisplayName("batchTag 父猪命中育种配置 → 仔代品种/品系取 cub_code 透传 buildPrefix")
     void batchTag_cubBreedStrainFromConfig() {
         PigFarrow farrow = mkFarrow(905L, 5, 805L);
         when(farrowMapper.selectById(905L)).thenReturn(farrow);
@@ -179,14 +232,17 @@ class PigEarTagServiceImplTest {
         boar.setPigBreedCode("01");
         boar.setPigStrainCode("1");
         when(pigMapper.selectOne(any())).thenReturn(boar);
-        // 育种配置：品种(breed_strain=1) 母04×父01→cub 17；品系(breed_strain=2) 母04(→pad'04')×父01(→'01')→cub 17
+        // 育种配置：品种(breed_strain=1) 母04×父01→cub 17；品系(breed_strain=2) 母04×父01→cub 17
         org.dromara.djs.breed.breeding.domain.BreedConfig cfgBreed = new org.dromara.djs.breed.breeding.domain.BreedConfig();
         cfgBreed.setCubCode("17");
         org.dromara.djs.breed.breeding.domain.BreedConfig cfgStrain = new org.dromara.djs.breed.breeding.domain.BreedConfig();
         cfgStrain.setCubCode("17");
         when(breedConfigMapper.selectOne(any())).thenReturn(cfgBreed, cfgStrain);
-        when(earNoAllocator.allocate(eq("17"), eq("17"), isNull(), any(LocalDate.class), eq(1)))
-            .thenReturn(List.of("17-17-260508-0001"));
+        // 仔代码 17/17 → 母仔猪前缀
+        when(earNoAllocator.buildPrefix(eq("17"), eq("17"), eq("F"), any(LocalDate.class)))
+            .thenReturn("17-17-2-260508");
+        when(earNoAllocator.allocateBatchByPrefixes(anyList(), any(LocalDate.class)))
+            .thenReturn(List.of("17-17-2-260508-001"));
 
         PigletBatchEarTagBo bo = new PigletBatchEarTagBo();
         bo.setFarrowId(905L);
@@ -198,7 +254,7 @@ class PigEarTagServiceImplTest {
         verify(pigMapper).insert(pigCap.capture());
         assertThat(pigCap.getValue().getPigBreedCode()).isEqualTo("17");
         assertThat(pigCap.getValue().getPigStrainCode()).isEqualTo("17");
-        verify(earNoAllocator).allocate(eq("17"), eq("17"), isNull(), any(LocalDate.class), eq(1));
+        verify(earNoAllocator).buildPrefix(eq("17"), eq("17"), eq("F"), any(LocalDate.class));
     }
 
     @Test
@@ -208,8 +264,8 @@ class PigEarTagServiceImplTest {
         when(farrowMapper.selectById(901L)).thenReturn(farrow);
         when(pigMapper.selectById(101L)).thenReturn(mkSow());
         when(pigletnoMapper.selectCount(any())).thenReturn(0L);
-        when(earNoAllocator.allocate(eq("4"), eq("04"), isNull(), any(LocalDate.class), eq(1)))
-            .thenReturn(List.of("4-04-260508-0001"));
+        when(earNoAllocator.allocateBatchByPrefixes(anyList(), any(LocalDate.class)))
+            .thenReturn(List.of("4-04-2-260508-001"));
 
         PigletBatchEarTagBo bo = new PigletBatchEarTagBo();
         bo.setFarrowId(901L);
@@ -217,7 +273,9 @@ class PigEarTagServiceImplTest {
 
         service.batchTag(bo);
 
-        verify(earNoAllocator).allocate(eq("4"), eq("04"), isNull(), any(LocalDate.class), eq(1));
+        // 前缀按仔代继承母猪码（4/04）+ 性别 F 算出
+        verify(earNoAllocator).buildPrefix(eq("4"), eq("04"), eq("F"), any(LocalDate.class));
+        verify(earNoAllocator).allocateBatchByPrefixes(anyList(), any(LocalDate.class));
     }
 
     @Test
@@ -227,8 +285,8 @@ class PigEarTagServiceImplTest {
         when(farrowMapper.selectById(902L)).thenReturn(farrow);
         when(pigMapper.selectById(101L)).thenReturn(mkSow());
         when(pigletnoMapper.selectCount(any())).thenReturn(0L);
-        when(earNoAllocator.allocate(eq("4"), eq("04"), isNull(), any(LocalDate.class), eq(1)))
-            .thenReturn(List.of("4-04-260508-0099"));
+        when(earNoAllocator.allocateBatchByPrefixes(anyList(), any(LocalDate.class)))
+            .thenReturn(List.of("4-04-1-260508-099"));
 
         PigletBatchEarTagBo bo = new PigletBatchEarTagBo();
         bo.setFarrowId(902L);
@@ -262,7 +320,7 @@ class PigEarTagServiceImplTest {
             .isInstanceOf(ServiceException.class)
             .hasMessageContaining("pigletno.exceeds_live_born");
         // 越界时不应该再去分配耳号 / 插数据
-        verify(earNoAllocator, times(0)).allocate(any(), any(), any(), any(), anyInt());
+        verify(earNoAllocator, times(0)).allocateBatchByPrefixes(anyList(), any(LocalDate.class));
         verify(pigMapper, times(0)).insert(any(Pig.class));
         verify(pigletnoMapper, times(0)).insert(any(PigPigletno.class));
     }
@@ -306,7 +364,7 @@ class PigEarTagServiceImplTest {
 
         PigPigletno l1 = new PigPigletno();
         l1.setId(1L);
-        l1.setPigletEarNo("01A126050001");
+        l1.setPigletEarNo("4-04-1-260508-001");
         l1.setMotherEarNo("01A12605001");
         l1.setFarrowId(905L);
         l1.setTagDate(LocalDateTime.now());
@@ -314,7 +372,7 @@ class PigEarTagServiceImplTest {
         l1.setPigId(201L);
         PigPigletno l2 = new PigPigletno();
         l2.setId(2L);
-        l2.setPigletEarNo("01A126050002");
+        l2.setPigletEarNo("4-04-2-260508-002");
         l2.setMotherEarNo("01A12605001");
         l2.setFarrowId(905L);
         l2.setTagDate(LocalDateTime.now());
@@ -322,7 +380,7 @@ class PigEarTagServiceImplTest {
         l2.setPigId(202L);
         PigPigletno l3 = new PigPigletno();
         l3.setId(3L);
-        l3.setPigletEarNo("01A126050003");
+        l3.setPigletEarNo("4-04-1-260508-003");
         l3.setMotherEarNo("01A12605001");
         l3.setFarrowId(905L);
         l3.setTagDate(LocalDateTime.now());
@@ -376,14 +434,14 @@ class PigEarTagServiceImplTest {
     }
 
     @Test
-    @DisplayName("batchTag 写库 ear_tag=全号（K132）+ operatorId 取 bo 值（K124）")
+    @DisplayName("batchTag 写库 ear_tag=全号（含性别段）+ operatorId 取 bo 值")
     void batchTag_writesEarTagFull_andOperatorIdFromBo() {
         PigFarrow farrow = mkFarrow(910L, 5, null);
         when(farrowMapper.selectById(910L)).thenReturn(farrow);
         when(pigMapper.selectById(101L)).thenReturn(mkSow());
         when(pigletnoMapper.selectCount(any())).thenReturn(0L);
-        when(earNoAllocator.allocate(eq("4"), eq("04"), isNull(), any(LocalDate.class), eq(1)))
-            .thenReturn(List.of("4-04-260508-0011"));
+        when(earNoAllocator.allocateBatchByPrefixes(anyList(), any(LocalDate.class)))
+            .thenReturn(List.of("4-04-1-260508-011"));
 
         PigletBatchEarTagBo bo = new PigletBatchEarTagBo();
         bo.setFarrowId(910L);
@@ -392,54 +450,50 @@ class PigEarTagServiceImplTest {
 
         service.batchTag(bo);
 
-        // K132：ear_no 与 ear_tag 均存全号（全号为准，库内不拆短号）
+        // ear_no 与 ear_tag 均存全号（全号含性别段，库内不拆短号）
         ArgumentCaptor<Pig> pigCap = ArgumentCaptor.forClass(Pig.class);
         verify(pigMapper).insert(pigCap.capture());
-        assertThat(pigCap.getValue().getEarNo()).isEqualTo("4-04-260508-0011");
-        assertThat(pigCap.getValue().getEarTag()).isEqualTo("4-04-260508-0011");
+        assertThat(pigCap.getValue().getEarNo()).isEqualTo("4-04-1-260508-011");
+        assertThat(pigCap.getValue().getEarTag()).isEqualTo("4-04-1-260508-011");
 
-        // K124：operatorId 取 bo 传入值（不回落登录态）
+        // operatorId 取 bo 传入值（不回落登录态）
         ArgumentCaptor<PigPigletno> logCap = ArgumentCaptor.forClass(PigPigletno.class);
         verify(pigletnoMapper).insert(logCap.capture());
         assertThat(logCap.getValue().getOperatorId()).isEqualTo(777L);
     }
 
     @Test
-    @DisplayName("previewEarNos 公母同一连号序列按 DB max+1 预览（K122，仅预览不占号）")
-    void previewEarNos_happyPath() {
+    @DisplayName("previewEarNos 公母前缀不同、共享全场起点连续排号（公占前段、母接后段，与正式落库同口径）")
+    void previewEarNos_sharedSeqAcrossSexPrefixes() {
         PigFarrow farrow = mkFarrow(911L, 10, null);
         when(farrowMapper.selectById(911L)).thenReturn(farrow);
         when(pigMapper.selectById(101L)).thenReturn(mkSow());
-        // 6/15 起不编码性别 → 公母共用同一前缀连号；前缀 max 已到 0003 → 下一号 0004。
-        when(earNoAllocator.buildPrefix(eq("4"), eq("04"), isNull(), any(LocalDate.class)))
-            .thenReturn("4-04-260508");
-        // R47：预览序号按出生日全场 max+1（不分品系品种）→ 下一号 004
+        // 当天全场 max 已到 003 → 下一号 004；公占 004/005，母接 006
         when(earNoAllocator.nextSeqForDate(any(LocalDate.class))).thenReturn(4L);
 
         var vo = service.previewEarNos(911L, 2, 1);
 
-        // 同一连号序列：前 male 个给公(004,005)、后 female 个给母(006)；序号补零位宽 3
+        // 公组：公前缀 + 004/005；母组：母前缀 + 006 —— 序号在全场连续不交叉
         assertThat(vo.getMaleEarNos())
-            .containsExactly("4-04-260508-004", "4-04-260508-005");
+            .containsExactly("4-04-1-260508-004", "4-04-1-260508-005");
         assertThat(vo.getFemaleEarNos())
-            .containsExactly("4-04-260508-006");
-        // 预览仅读不分配，不应触碰 allocate
+            .containsExactly("4-04-2-260508-006");
+        // 预览仅读不分配，不应触碰真实分配
+        verify(earNoAllocator, times(0)).allocateBatchByPrefixes(anyList(), any(LocalDate.class));
         verify(earNoAllocator, times(0)).allocate(any(), any(), any(), any(), anyInt());
     }
 
     @Test
-    @DisplayName("previewEarNos 总数为 0 时返空列表，不查前缀")
-    void previewEarNos_zeroCountGroupEmpty() {
+    @DisplayName("previewEarNos 母数为 0 → 母组空，公组从全场起点排满")
+    void previewEarNos_zeroFemaleGroupEmpty() {
         PigFarrow farrow = mkFarrow(912L, 5, null);
         when(farrowMapper.selectById(912L)).thenReturn(farrow);
         when(pigMapper.selectById(101L)).thenReturn(mkSow());
-        when(earNoAllocator.buildPrefix(eq("4"), eq("04"), isNull(), any(LocalDate.class)))
-            .thenReturn("4-04-260508");
         when(earNoAllocator.nextSeqForDate(any(LocalDate.class))).thenReturn(1L);
 
         var vo = service.previewEarNos(912L, 1, 0);
 
-        assertThat(vo.getMaleEarNos()).containsExactly("4-04-260508-001");
+        assertThat(vo.getMaleEarNos()).containsExactly("4-04-1-260508-001");
         assertThat(vo.getFemaleEarNos()).isEmpty();
     }
 

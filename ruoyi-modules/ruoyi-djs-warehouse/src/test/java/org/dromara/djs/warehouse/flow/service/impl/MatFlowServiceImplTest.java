@@ -270,6 +270,106 @@ class MatFlowServiceImplTest {
         verify(stockFlowMapper, times(1)).insert(any(StockFlow.class));
     }
 
+    @Test
+    @DisplayName("pick 其他业态原料(egg, attr=2) happy：product 维度扣减成功 → 桥接 1 行 product_inhouse(productId=materialId=自身, plotId/earNo=null)")
+    void testPick_OtherMaterialBridgesInhouse() {
+        ProductInfo egg = new ProductInfo();
+        egg.setId(PRODUCT_ID);
+        egg.setProductName("土鸡蛋·原料");
+        egg.setProductUnit("kg");
+        egg.setProductType(1);
+        egg.setProductAttr(2);            // 原料
+        egg.setBelongType("egg");
+        // requireProduct 走 selectOne；bridge 走 selectById —— 两路都返这只 egg
+        when(productInfoMapper.selectOne(any())).thenReturn(egg);
+        when(productInfoMapper.selectById(PRODUCT_ID)).thenReturn(egg);
+        when(locationStockMapper.deductByProductLocation(eq(LOCATION_ID), eq(PRODUCT_ID), any(BigDecimal.class), eq(USER_ID)))
+            .thenReturn(1);
+
+        service.pick(pickBo(new BigDecimal("12")));
+
+        // 走 product 维度扣减（非篮子路径）
+        verify(locationStockMapper, times(1))
+            .deductByProductLocation(eq(LOCATION_ID), eq(PRODUCT_ID), any(BigDecimal.class), eq(USER_ID));
+        // 桥接 1 行 inhouse：productId=materialId=自身原料，weight=领用量，plotId/earNo 为 null（product 维度，无篮标签）
+        ArgumentCaptor<ProductInhouse> ihCap = ArgumentCaptor.forClass(ProductInhouse.class);
+        verify(productInhouseMapper, times(1)).insert(ihCap.capture());
+        ProductInhouse ih = ihCap.getValue();
+        assertThat(ih.getProductId()).isEqualTo(PRODUCT_ID);
+        assertThat(ih.getMaterialId()).isEqualTo(PRODUCT_ID);
+        assertThat(ih.getProductWeight()).isEqualByComparingTo("12");
+        assertThat(ih.getPlotId()).isNull();
+        assertThat(ih.getEarNo()).isNull();
+        assertThat(ih.getLocationId()).isEqualTo(LOCATION_ID);
+    }
+
+    @Test
+    @DisplayName("pick 干货原料(dry_good, attr=2) happy：桥接 1 行 product_inhouse(其他业态食品原料同构)")
+    void testPick_DryGoodMaterialBridgesInhouse() {
+        ProductInfo dry = new ProductInfo();
+        dry.setId(PRODUCT_ID);
+        dry.setProductName("笋干·原料");
+        dry.setProductUnit("kg");
+        dry.setProductType(1);
+        dry.setProductAttr(2);
+        dry.setBelongType("dry_good");
+        when(productInfoMapper.selectOne(any())).thenReturn(dry);
+        when(productInfoMapper.selectById(PRODUCT_ID)).thenReturn(dry);
+        when(locationStockMapper.deductByProductLocation(eq(LOCATION_ID), eq(PRODUCT_ID), any(BigDecimal.class), eq(USER_ID)))
+            .thenReturn(1);
+
+        service.pick(pickBo(new BigDecimal("7.5")));
+
+        ArgumentCaptor<ProductInhouse> ihCap = ArgumentCaptor.forClass(ProductInhouse.class);
+        verify(productInhouseMapper, times(1)).insert(ihCap.capture());
+        assertThat(ihCap.getValue().getProductWeight()).isEqualByComparingTo("7.5");
+        assertThat(ihCap.getValue().getProductId()).isEqualTo(PRODUCT_ID);
+    }
+
+    @Test
+    @DisplayName("pick 包材(package, attr=2) happy：product 维度扣减成功，但桥接门槛不满足 → 不产 product_inhouse")
+    void testPick_PackageMaterialNoBridge() {
+        // 默认 setup() 的 product = belongType=package（非可打包食品业态）；显式置 attr=2 也不产 inhouse
+        ProductInfo pkg = new ProductInfo();
+        pkg.setId(PRODUCT_ID);
+        pkg.setProductName("塑料袋");
+        pkg.setProductUnit("个");
+        pkg.setProductType(1);
+        pkg.setProductAttr(2);            // 即使标原料，包材也不是可打包食品 → 不产 inhouse
+        pkg.setBelongType("package");
+        when(productInfoMapper.selectOne(any())).thenReturn(pkg);
+        when(productInfoMapper.selectById(PRODUCT_ID)).thenReturn(pkg);
+        when(locationStockMapper.deductByProductLocation(eq(LOCATION_ID), eq(PRODUCT_ID), any(BigDecimal.class), eq(USER_ID)))
+            .thenReturn(1);
+
+        service.pick(pickBo(new BigDecimal("100")));
+
+        verify(locationStockMapper, times(1))
+            .deductByProductLocation(eq(LOCATION_ID), eq(PRODUCT_ID), any(BigDecimal.class), eq(USER_ID));
+        // 包材不在 PACKABLE_FOOD_BELONG_TYPES → bridgeMaterialInhouse 跳过，无 inhouse
+        verify(productInhouseMapper, never()).insert(any(ProductInhouse.class));
+    }
+
+    @Test
+    @DisplayName("pick 其他业态成品(other, attr=1) happy：attr 非原料 → 桥接门槛不满足 → 不产 product_inhouse（防成品当来源循环）")
+    void testPick_OtherFinishedNoBridge() {
+        ProductInfo finished = new ProductInfo();
+        finished.setId(PRODUCT_ID);
+        finished.setProductName("综合礼包·成品");
+        finished.setProductUnit("盒");
+        finished.setProductType(1);
+        finished.setProductAttr(1);       // 成品（非原料）
+        finished.setBelongType("other");
+        when(productInfoMapper.selectOne(any())).thenReturn(finished);
+        when(productInfoMapper.selectById(PRODUCT_ID)).thenReturn(finished);
+        when(locationStockMapper.deductByProductLocation(eq(LOCATION_ID), eq(PRODUCT_ID), any(BigDecimal.class), eq(USER_ID)))
+            .thenReturn(1);
+
+        service.pick(pickBo(new BigDecimal("3")));
+
+        verify(productInhouseMapper, never()).insert(any(ProductInhouse.class));
+    }
+
     private MatPickBo plotPickBo(BigDecimal qty) {
         MatPickBo bo = new MatPickBo();
         bo.setPlotId(PLOT_ID);
@@ -555,6 +655,72 @@ class MatFlowServiceImplTest {
             .hasMessageContaining("库位 ID 非法");
 
         verify(locationStockMapper, never()).selectMatIssueItems(any(), any(), any());
+    }
+
+    @Test
+    @DisplayName("pickByBatch happy：batchId 非空 → 扣选中篮(deductStockById) + 1 行 pick_out 流水(带 product_id/ear_no/plot_id 源标签) + 1 行 inhouse(带源标签)")
+    void testPickByBatch_Happy() {
+        Long batchId = 90011L;
+        Long locId = 7003L;
+        LocationStock basket = new LocationStock();
+        basket.setId(batchId);
+        basket.setLocationId(locId);
+        basket.setProductId(PRODUCT_ID);
+        basket.setEarNo("EAR-X");
+        basket.setPlotId(6010L);
+        basket.setProductName("猪肉·精瘦肉");
+        basket.setProductUnit("kg");
+        basket.setProductStock(new BigDecimal("41.4"));
+        basket.setDelFlag("0");
+        when(locationStockMapper.selectById(batchId)).thenReturn(basket);
+
+        ProductInfo product = new ProductInfo();
+        product.setId(PRODUCT_ID);
+        product.setProductName("猪肉·精瘦肉");
+        product.setProductUnit("kg");
+        product.setProductType(1);
+        product.setBelongType("pork");
+        when(productInfoMapper.selectById(PRODUCT_ID)).thenReturn(product);
+
+        when(locationStockMapper.deductStockById(eq(batchId), any(BigDecimal.class), eq(USER_ID))).thenReturn(1);
+
+        MatPickBo bo = new MatPickBo();
+        bo.setBatchId(batchId);
+        bo.setProductId(PRODUCT_ID);
+        bo.setQuantity(new BigDecimal("10"));
+        bo.setStockOutDest("门店发货");
+        bo.setRemark("ut-batch");
+        service.pick(bo);
+
+        // 1 行 pick_out 流水：带篮的 product_id / ear_no / plot_id 源标签
+        ArgumentCaptor<StockFlow> fCap = ArgumentCaptor.forClass(StockFlow.class);
+        verify(stockFlowMapper, times(1)).insert(fCap.capture());
+        StockFlow f = fCap.getValue();
+        assertThat(f.getFlowType()).isEqualTo("pick_out");
+        assertThat(f.getInoutType()).isEqualTo("OT");
+        assertThat(f.getProductId()).isEqualTo(PRODUCT_ID);
+        assertThat(f.getEarNo()).isEqualTo("EAR-X");
+        assertThat(f.getPlotId()).isEqualTo(6010L);
+        assertThat(f.getWarehouseId()).isEqualTo(locId);
+        assertThat(f.getChangeNum()).isEqualByComparingTo("-10");
+        assertThat(f.getChangeQuantity()).isEqualByComparingTo("10");
+
+        // 扣选中篮（by id），不走 product / plot 维度兜底
+        verify(locationStockMapper, times(1)).deductStockById(eq(batchId), eq(new BigDecimal("10")), eq(USER_ID));
+        verify(locationStockMapper, never()).deductByProductLocation(any(), any(), any(), any());
+        verify(locationStockMapper, never()).deductByPlotLocation(any(), any(), any(), any());
+
+        // 1 行 product_inhouse：带篮的 ear_no + plot_id 源标签 → 打包链追溯
+        ArgumentCaptor<ProductInhouse> ihCap = ArgumentCaptor.forClass(ProductInhouse.class);
+        verify(productInhouseMapper, times(1)).insert(ihCap.capture());
+        ProductInhouse ih = ihCap.getValue();
+        assertThat(ih.getProductId()).isEqualTo(PRODUCT_ID);
+        assertThat(ih.getEarNo()).isEqualTo("EAR-X");
+        assertThat(ih.getPlotId()).isEqualTo(6010L);
+        assertThat(ih.getProductWeight()).isEqualByComparingTo("10");
+        assertThat(ih.getMaterialId()).isEqualTo(PRODUCT_ID);
+        assertThat(ih.getMaterialConsume()).isEqualByComparingTo("10");
+        assertThat(ih.getLocationId()).isEqualTo(locId);
     }
 
 }

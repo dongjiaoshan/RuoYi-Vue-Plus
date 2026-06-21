@@ -15,6 +15,7 @@ import org.dromara.djs.warehouse.demand.mapper.DemandManageMapper;
 import org.dromara.djs.warehouse.flow.domain.StockFlow;
 import org.dromara.djs.warehouse.flow.mapper.StockFlowMapper;
 import org.dromara.djs.warehouse.location.mapper.LocationInfoMapper;
+import org.dromara.djs.warehouse.stock.mapper.LocationStockMapper;
 import org.dromara.djs.warehouse.pack.domain.ProductProduction;
 import org.dromara.djs.warehouse.pack.mapper.ProductProductionMapper;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
@@ -90,6 +91,8 @@ class ShipmentServiceImplTest {
     @Mock
     private LocationInfoMapper locationInfoMapper;
     @Mock
+    private LocationStockMapper locationStockMapper;
+    @Mock
     private StoreMapper storeMapper;
     @Mock
     private IBizCodeGenerator bizCodeGenerator;
@@ -121,7 +124,8 @@ class ShipmentServiceImplTest {
         loginHelperMock.when(LoginHelper::getUserId).thenReturn(1L);
 
         service = new ShipmentServiceImpl(shipmentMapper, productProductionMapper, stockFlowMapper,
-            demandMapper, productInfoMapper, locationInfoMapper, storeMapper, bizCodeGenerator, eventPublisher);
+            demandMapper, productInfoMapper, locationInfoMapper, locationStockMapper, storeMapper,
+            bizCodeGenerator, eventPublisher);
 
         // 业务码 stub
         when(bizCodeGenerator.generate(eq(BizCodeType.SHIP_NO), anyMap())).thenReturn("S260610TEST0001");
@@ -147,12 +151,17 @@ class ShipmentServiceImplTest {
         when(demandMapper.selectById(demandId)).thenReturn(demand);
 
         List<Long> productionIds = List.of(11L, 12L);
-        List<ProductProduction> productions = List.of(
-            newProduction(11L, demandId, "PROD-001", new BigDecimal("3.000")),
-            newProduction(12L, demandId, "PROD-002", new BigDecimal("4.500"))
-        );
+        // 两行成品各带 product_id + produce_location（发货扣成品冷库 G6 走 product+location 维度）
+        ProductProduction p1 = newProduction(11L, demandId, "PROD-001", new BigDecimal("3.000"));
+        p1.setProductId(501L);
+        p1.setProduceLocation(7001L);
+        ProductProduction p2 = newProduction(12L, demandId, "PROD-002", new BigDecimal("4.500"));
+        p2.setProductId(502L);
+        p2.setProduceLocation(7002L);
+        List<ProductProduction> productions = List.of(p1, p2);
         when(productProductionMapper.selectList(any())).thenReturn(productions);
         when(productProductionMapper.markDeliveryChecked(any(), any(), any())).thenReturn(2);
+        when(locationStockMapper.deductByProductLocation(any(), any(), any(), any())).thenReturn(1);
 
         ShipmentCheckBo bo = new ShipmentCheckBo();
         bo.setDemandId(demandId);
@@ -175,12 +184,84 @@ class ShipmentServiceImplTest {
         assertThat(captured.getCheckerId()).isEqualTo(1L);
         // 3. INSERT stock_flow 2 次（按 production 逐条）
         verify(stockFlowMapper, times(2)).insert(any(StockFlow.class));
+        // 3b. G6：逐 production 扣成品冷库 location_stock（按各自 produce_location + product_id + 实重）
+        verify(locationStockMapper, times(1))
+            .deductByProductLocation(eq(7001L), eq(501L), eq(new BigDecimal("3.000")), eq(1L));
+        verify(locationStockMapper, times(1))
+            .deductByProductLocation(eq(7002L), eq(502L), eq(new BigDecimal("4.500")), eq(1L));
+        // produce_location 非空 → 不走默认库位兜底
+        verify(locationStockMapper, never()).selectDefaultLocationByProduct(any());
         // 4. publishEvent 1 次
         ArgumentCaptor<ShipmentConfirmedEvent> eventCap =
             ArgumentCaptor.forClass(ShipmentConfirmedEvent.class);
         verify(eventPublisher, times(1)).publishEvent(eventCap.capture());
         assertThat(eventCap.getValue().getDemandId()).isEqualTo(demandId);
         assertThat(eventCap.getValue().getShippedQuantity()).isEqualByComparingTo("7.500");
+    }
+
+    // ============== G6：发货扣成品冷库 location_stock ==============
+
+    @Test
+    @DisplayName("G6: produce_location 为空 → 按 product_id 兜底解析默认库位扣减；affected==0 只 warn 不阻断发货")
+    void confirmCheck_deductStock_fallbackLocation_affectedZero_doesNotBlock() {
+        Long demandId = 100L;
+        DemandManage demand = newDemand(demandId, 9L, DemandStatus.CONFIRMED);
+        when(demandMapper.selectById(demandId)).thenReturn(demand);
+
+        // production 无 produce_location（打包未落位）→ 走默认库位兜底
+        ProductProduction p = newProduction(11L, demandId, "PROD-001", new BigDecimal("2.500"));
+        p.setProductId(501L);
+        p.setProduceLocation(null);
+        when(productProductionMapper.selectList(any())).thenReturn(List.of(p));
+        when(productProductionMapper.markDeliveryChecked(any(), any(), any())).thenReturn(1);
+        when(locationStockMapper.selectDefaultLocationByProduct(501L)).thenReturn(8888L);
+        // 账面已不足 → affected==0（loss 同范式：只 warn，不抛）
+        when(locationStockMapper.deductByProductLocation(any(), any(), any(), any())).thenReturn(0);
+
+        ShipmentCheckBo bo = new ShipmentCheckBo();
+        bo.setDemandId(demandId);
+        bo.setProductionIds(List.of(11L));
+        bo.setTotalQuantity(new BigDecimal("2.500"));
+        bo.setShipUnit("kg");
+        bo.setDeliverType(1);
+
+        Long shipmentId = service.confirmCheck(bo);
+
+        // 默认库位兜底被调用 + 用兜底库位扣减
+        verify(locationStockMapper, times(1)).selectDefaultLocationByProduct(501L);
+        verify(locationStockMapper, times(1))
+            .deductByProductLocation(eq(8888L), eq(501L), eq(new BigDecimal("2.500")), eq(1L));
+        // affected==0 不阻断：shipment 仍写、事件仍发
+        verify(shipmentMapper, times(1)).insert(any(Shipment.class));
+        verify(eventPublisher, times(1)).publishEvent(any(ShipmentConfirmedEvent.class));
+    }
+
+    @Test
+    @DisplayName("G6: production 无 product_id 且无默认库位 → 跳过扣减不抛；发货照常完成")
+    void confirmCheck_deductStock_noProductId_skips() {
+        Long demandId = 100L;
+        DemandManage demand = newDemand(demandId, 9L, DemandStatus.CONFIRMED);
+        when(demandMapper.selectById(demandId)).thenReturn(demand);
+
+        // product_id 为空（理论脏数据）→ 跳过扣减，绝不解析库位、绝不调扣减
+        ProductProduction p = newProduction(11L, demandId, "PROD-001", new BigDecimal("1.000"));
+        p.setProductId(null);
+        p.setProduceLocation(null);
+        when(productProductionMapper.selectList(any())).thenReturn(List.of(p));
+        when(productProductionMapper.markDeliveryChecked(any(), any(), any())).thenReturn(1);
+
+        ShipmentCheckBo bo = new ShipmentCheckBo();
+        bo.setDemandId(demandId);
+        bo.setProductionIds(List.of(11L));
+        bo.setTotalQuantity(new BigDecimal("1.000"));
+        bo.setShipUnit("kg");
+        bo.setDeliverType(1);
+
+        service.confirmCheck(bo);
+
+        verify(locationStockMapper, never()).selectDefaultLocationByProduct(any());
+        verify(locationStockMapper, never()).deductByProductLocation(any(), any(), any(), any());
+        verify(shipmentMapper, times(1)).insert(any(Shipment.class));
     }
 
     // ============== demand 状态非法 ==============

@@ -303,6 +303,9 @@ class PigBurnRecordServiceImplTest {
     private BarInfo sampleBarWithMarketWeight(String status, String marketWeight) {
         BarInfo bar = sampleBar(status);
         bar.setMarketingWeight(new BigDecimal(marketWeight));
+        // finishBurn 累计校验现以「头皮肉重量」= 称重落的到场重 arrive_weight 为上限（非出栏重）。
+        // happy / 互斥用例给足量上限避免误拦；超量用例单独覆写更小的 arrive_weight。
+        bar.setArriveWeight(new BigDecimal(marketWeight));
         return bar;
     }
 
@@ -332,7 +335,7 @@ class PigBurnRecordServiceImplTest {
 
     @SuppressWarnings("unchecked")
     @Test
-    @DisplayName("finishBurn: 累计总重 > 出栏重量 → 抛 不能超过出栏重量 + 不推进")
+    @DisplayName("finishBurn: 累计总重 > 头皮肉重量 → 抛 不能超过头皮肉重量 + 不推进")
     void testFinish_TotalExceedsMarketing() {
         when(barInfoMapper.selectById(BAR_ID)).thenReturn(sampleBarWithMarketWeight("singing", "100.000"));
         when(productInhouseMapper.selectList(any(LambdaQueryWrapper.class)))
@@ -341,7 +344,7 @@ class PigBurnRecordServiceImplTest {
 
         assertThatThrownBy(() -> service.finishBurn(BAR_ID, OPERATOR_ID))
             .isInstanceOf(ServiceException.class)
-            .hasMessageContaining("不能超过出栏重量");
+            .hasMessageContaining("不能超过头皮肉重量");
 
         verify(barInfoMapper, never()).updateStatusToInStock(any(), any(), any(), any());
     }

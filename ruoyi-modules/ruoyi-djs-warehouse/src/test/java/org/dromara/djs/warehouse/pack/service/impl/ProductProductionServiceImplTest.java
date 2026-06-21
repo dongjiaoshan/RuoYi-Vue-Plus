@@ -103,11 +103,14 @@ class ProductProductionServiceImplTest {
     static void initMpEntityCache() {
         // MyBatis-Plus 单测 entity cache 预热（coder-mp-entity-cache-test）：
         // checkVegMaterialIfConfigured/deductPorkMaterialIfConfigured → sumProductStock 用
-        // LambdaQueryWrapper<LocationStock>，无 Spring 上下文时 TableInfoHelper 解析不到 → 预热。
+        // LambdaQueryWrapper<LocationStock>；listSourceForVeg/Dry 用 LambdaQueryWrapper<ProductInfo>/<ProductInhouse>。
+        // 无 Spring 上下文时 TableInfoHelper 解析不到 lambda 列名 → 预热三类实体。
         MybatisConfiguration cfg = new MybatisConfiguration();
         MapperBuilderAssistant assistant = new MapperBuilderAssistant(cfg, "");
         assistant.setCurrentNamespace("test");
         TableInfoHelper.initTableInfo(assistant, LocationStock.class);
+        TableInfoHelper.initTableInfo(assistant, ProductInfo.class);
+        TableInfoHelper.initTableInfo(assistant, ProductInhouse.class);
     }
 
     @BeforeEach
@@ -678,6 +681,90 @@ class ProductProductionServiceImplTest {
         LocationStock s = new LocationStock();
         s.setProductStock(stock);
         return s;
+    }
+
+    // ============================================================
+    // listSourceForVeg (G8: belong_type='vegetable' + product_attr=2)
+    // ============================================================
+
+    @Test
+    @DisplayName("listSourceForVeg: 解析 belong_type='vegetable' + product_attr=2 的 product_id 集 → inhouse WHERE product_id IN + 今天 + weight>0")
+    void testListSourceForVeg_FiltersByVegAndAttrMaterial() {
+        ProductInfo material = sampleVegProduct();
+        material.setId(60001L);
+        material.setProductAttr(2);
+        when(productInfoMapper.selectList(any())).thenReturn(List.of(material));
+        when(inhouseMapper.selectList(any())).thenReturn(List.of(sampleVegSource()));
+
+        List<ProductInhouse> rows = service.listSourceForVeg();
+
+        assertThat(rows).hasSize(1);
+        // product_info 查询带 belong_type='vegetable' + product_attr=2 双条件（G8 守门）
+        ArgumentCaptor<com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<ProductInfo>> piCap =
+            ArgumentCaptor.forClass(com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper.class);
+        verify(productInfoMapper).selectList(piCap.capture());
+        String piSql = piCap.getValue().getTargetSql();
+        assertThat(piSql).contains("belong_type").contains("product_attr");
+        // inhouse 查询带「今天」过滤（DATE(produce_date)=CURDATE()）+ product_weight
+        ArgumentCaptor<com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<ProductInhouse>> ihCap =
+            ArgumentCaptor.forClass(com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper.class);
+        verify(inhouseMapper).selectList(ihCap.capture());
+        assertThat(ihCap.getValue().getTargetSql()).contains("CURDATE()").contains("product_weight");
+    }
+
+    @Test
+    @DisplayName("listSourceForVeg: 无 vegetable 原料 product → 直接返空，不查 inhouse")
+    void testListSourceForVeg_NoVegMaterialProduct_ReturnsEmpty() {
+        when(productInfoMapper.selectList(any())).thenReturn(List.of());
+
+        List<ProductInhouse> rows = service.listSourceForVeg();
+
+        assertThat(rows).isEmpty();
+        verify(inhouseMapper, never()).selectList(any());
+    }
+
+    // ============================================================
+    // listSourceForDry (G5: belong_type IN(egg,dry_good,other) + product_attr=2 + 今天，去裸捞)
+    // ============================================================
+
+    @Test
+    @DisplayName("listSourceForDry: 解析 belong_type∈{egg,dry_good,other} + product_attr=2 的 product_id 集 → inhouse WHERE product_id IN + 今天 + weight>0（不再裸捞全表）")
+    void testListSourceForDry_FiltersByOtherBelongTypesAndAttrMaterial() {
+        ProductInfo eggMaterial = sampleVegProduct();
+        eggMaterial.setId(60050L);
+        eggMaterial.setBelongType("egg");
+        eggMaterial.setProductAttr(2);
+        when(productInfoMapper.selectList(any())).thenReturn(List.of(eggMaterial));
+        ProductInhouse src = sampleVegSource();
+        src.setProductId(60050L);
+        when(inhouseMapper.selectList(any())).thenReturn(List.of(src));
+
+        List<ProductInhouse> rows = service.listSourceForDry();
+
+        assertThat(rows).hasSize(1);
+        // product_info 查询带业态白名单 IN + product_attr=2（G5：去裸捞，按白名单过滤）
+        ArgumentCaptor<com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<ProductInfo>> piCap =
+            ArgumentCaptor.forClass(com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper.class);
+        verify(productInfoMapper).selectList(piCap.capture());
+        String piSql = piCap.getValue().getTargetSql();
+        assertThat(piSql).contains("belong_type").contains("IN").contains("product_attr");
+        // inhouse 查询按 product_id IN + 今天 + weight>0（不再裸捞）
+        ArgumentCaptor<com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<ProductInhouse>> ihCap =
+            ArgumentCaptor.forClass(com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper.class);
+        verify(inhouseMapper).selectList(ihCap.capture());
+        String ihSql = ihCap.getValue().getTargetSql();
+        assertThat(ihSql).contains("product_id").contains("CURDATE()").contains("product_weight");
+    }
+
+    @Test
+    @DisplayName("listSourceForDry: 无 egg/dry_good/other 原料 product → 直接返空，不查 inhouse（去裸捞验证）")
+    void testListSourceForDry_NoOtherMaterialProduct_ReturnsEmpty() {
+        when(productInfoMapper.selectList(any())).thenReturn(List.of());
+
+        List<ProductInhouse> rows = service.listSourceForDry();
+
+        assertThat(rows).isEmpty();
+        verify(inhouseMapper, never()).selectList(any());
     }
 
     @Test

@@ -11,8 +11,8 @@ import java.time.LocalDate;
 /**
  * 移栽农事录入 BO（PLT-WORK-001 独立画布）。
  *
- * <p>{@code farmType} 服务端强制 {@code "transplant"}。{@code transplantPercent} 业务规则 ≤60
- * （xlsx 笔录 + doc/06 实现思路 #3），后端兜底校验。</p>
+ * <p>{@code farmType} 服务端强制 {@code "transplant"}。{@code transplantPercent} 单次区间 1-100，
+ * 且同 (作物, 源地块) 多次移栽累计不超过 100%（service 层读历史累计兜底校验）。</p>
  *
  * @author djs
  * @since PLT-WORK-001
@@ -44,10 +44,10 @@ public class TransplantRecordBo {
     @NotNull(message = "{plant.farm.transplant_plot.required}")
     private Long transplantPlot;
 
-    /** 移栽百分比 0-100（业务规则 ≤60）。 */
+    /** 移栽百分比 1-100（单次；多次累计 ≤100% 由 service 层校验）。 */
     @NotNull(message = "{plant.farm.transplant_percent.required}")
-    @Min(value = 0, message = "{plant.farm.transplant_percent.range}")
-    @Max(value = 60, message = "{plant.farm.transplant_percent.max}")
+    @Min(value = 1, message = "{plant.farm.transplant_percent.range}")
+    @Max(value = 100, message = "{plant.farm.transplant_percent.max}")
     private Integer transplantPercent;
 
     @Size(max = 500)

@@ -44,6 +44,25 @@ public interface ProductInfoMapper extends BaseMapperPlus<ProductInfo, ProductIn
     long countReferencedAsMaterial(@Param("productMaterialId") Long productMaterialId);
 
     /**
+     * 该原材料是否存在「对应的生产产品」（mp 物资领用软校验，doc/14 §5）。
+     *
+     * <p>成品经 {@code product_material} 反查原料：存在一行
+     * {@code product_attr=1（生产产品）且 product_material=#{materialId}} 即视为有对应产品。
+     * 用于 mp 领用前轻量提示（无对应产品 → 弹「确定仍要领用」软拦截，不阻断提交）。
+     * MyBatis 把 {@code EXISTS} 返的 1/0 自动映射成 boolean。租户单租户显式 {@code tenant_id='1001'}（V1）。</p>
+     *
+     * @param materialId 原材料产品 id
+     * @return true=存在对应生产产品 / false=无
+     */
+    @org.apache.ibatis.annotations.Select(
+        "SELECT EXISTS(SELECT 1 FROM t_warehouse_product_info "
+            + "WHERE product_material = #{materialId} "
+            + "  AND product_attr = 1 "
+            + "  AND del_flag = '0' "
+            + "  AND tenant_id = '1001')")
+    boolean existsFinishedProductByMaterial(@Param("materialId") Long materialId);
+
+    /**
      * 产品详情「生产记录」子表（DJS-FIX-WMS-RALN-B）：按 productId 查 {@code t_warehouse_product_production}
      * 生产行 + {@code t_warehouse_stock_flow} 退货行（{@code flow_type=return_in}），UNION 后按日期倒序。
      *

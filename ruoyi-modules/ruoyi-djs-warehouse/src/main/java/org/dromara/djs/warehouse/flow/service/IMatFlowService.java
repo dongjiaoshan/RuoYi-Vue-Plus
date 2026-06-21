@@ -3,6 +3,7 @@ package org.dromara.djs.warehouse.flow.service;
 import org.dromara.djs.warehouse.flow.domain.bo.MatLossBo;
 import org.dromara.djs.warehouse.flow.domain.bo.MatPickBo;
 import org.dromara.djs.warehouse.flow.domain.bo.MatReturnBo;
+import org.dromara.djs.warehouse.flow.domain.vo.MatIssueBasketVo;
 import org.dromara.djs.warehouse.flow.domain.vo.MatIssueItemVo;
 import org.dromara.djs.warehouse.flow.domain.vo.MatIssueLocationVo;
 import org.dromara.djs.warehouse.flow.domain.vo.MatTodaySummaryVo;
@@ -87,6 +88,25 @@ public interface IMatFlowService {
     List<MatIssueItemVo> issueItems(String belongType, String locationId);
 
     /**
+     * 领用前置校验：该原材料是否允许领用（mp 物资领用硬拦截）。
+     *
+     * <p>规则（Kevin 2026-06-21）：打包业态（果蔬/猪肉/鸡蛋/干货/其他）的原材料(attr=2) **必须**有对应成品
+     * （领用 → 打包成成品，无成品则领了也打不出来）→ 无成品时前端弹「原材料没有对应的生产产品，请先创建」并**禁止领用**。
+     * 包材/饲料/种子/白条等不打包成产品（领用去消耗/投喂/播种/分割）→ 不受此约束，恒允许。</p>
+     * <ul>
+     *   <li>{@code productId} 非空（外购/包材 tab0、按篮 batch）→ 解析成 Long 作原料 id。</li>
+     *   <li>否则 {@code plotId} 非空（自产果蔬 tab1）→ plot→crop→{@code crop.related_product} 解析出果蔬原料 id。</li>
+     *   <li>解析不到原料 / 非原材料(attr!=2) / 非打包业态 → 返 {@code true}（不拦，允许领用）。</li>
+     *   <li>打包业态原材料 → 返 EXISTS 成品（{@code product_attr=1 且 product_material=该原料 id}）。</li>
+     * </ul>
+     *
+     * @param productId 原材料产品 id（snowflake String，可空）
+     * @param plotId    地块 id（snowflake String，可空；自产果蔬走 plot→crop→related_product 解析）
+     * @return true=允许领用；false=打包业态原材料但无对应成品 → 禁止领用
+     */
+    boolean canIssueMaterial(String productId, String plotId);
+
+    /**
      * mp 物资领用「自产果蔬可领用」列表（步11 偏差修复 · 决策 a；蔬菜 tab 自产果蔬数据源）。
      *
      * <p>自产果蔬库存按 {@code (plot_id, location)} 维度建账（无 product_id），常规
@@ -115,5 +135,33 @@ public interface IMatFlowService {
      * @return 在库白条批次卡列表（按 in_time DESC 排序）；无则空 list
      */
     List<MatWhiteBarBatchVo> issueWhiteBarBatches(String belongType, String locationId);
+
+    /**
+     * mp 物资领用「按耳号源篮子」列表（「按源手选」领用，猪肉(分割)按耳号）。
+     *
+     * <p>对齐客户最新原型「仓库&gt;分拣发货&gt;物资领用」：用户在源篮子列表里手选某一篮领用（不再 FIFO
+     * 系统选篮）。返该 pork 原料产品的 {@code location_stock} 篮子（{@code ear_no} 非空、库存&gt;0），
+     * {@code batchCode = ear_no}。只返有库存的篮（用完不出现 → 「用完不可选」）。前端选中后把
+     * {@code batchId} 回填 {@code MatPickBo.batchId} → service 走 {@code pickByBatch}。</p>
+     *
+     * @param productId  pork 原料产品 ID（snowflake string，必填，service 内 parse）
+     * @param locationId 库位 ID（可空，chip 选中态过滤；snowflake string 防截断）
+     * @return 耳号源篮子列表；无则空 list
+     */
+    List<MatIssueBasketVo> issuePorkBatches(String productId, String locationId);
+
+    /**
+     * mp 物资领用「按地块源篮子」列表（「按源手选」领用，蔬菜(自产)按地块）。
+     *
+     * <p>对齐客户最新原型「仓库&gt;分拣发货&gt;物资领用」：用户在源篮子列表里手选某一篮领用。返该自产果蔬
+     * 原料产品的 {@code location_stock} 篮子（{@code plot_id} 非空、库存&gt;0），{@code batchCode = 地块编号}。
+     * 只返有库存的篮。前端选中后把 {@code batchId} 回填 {@code MatPickBo.batchId} → service 走
+     * {@code pickByBatch}。</p>
+     *
+     * @param productId  自产果蔬原料产品 ID（snowflake string，必填，service 内 parse）
+     * @param locationId 库位 ID（可空，chip 选中态过滤；snowflake string 防截断）
+     * @return 地块源篮子列表；无则空 list
+     */
+    List<MatIssueBasketVo> issueVegBatches(String productId, String locationId);
 
 }

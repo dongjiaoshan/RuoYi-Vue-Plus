@@ -25,7 +25,8 @@ import java.time.LocalDate;
  *
  * <p>独立画布：</p>
  * <ul>
- *   <li>移栽（farm_type=transplant）：transplant_plot + transplant_percent（≤60）</li>
+ *   <li>移栽（farm_type=transplant）：transplant_plot + transplant_percent（单次 1-100，多次累计 ≤100%）；
+ *       累计达 100% 触发 plant_details.harvest_status=completed + plot_info.plot_status=1</li>
  *   <li>灾害（farm_type=disaster）：disaster_type + loss_rate + loss_yield；触发 plant_details.loss_yield 累加</li>
  *   <li>退茬（farm_type=rotation）：触发 plot_info.plot_status=1（空闲）+ plant_details.plant_status=completed</li>
  * </ul>
@@ -83,7 +84,7 @@ public class FarmRecords extends TenantEntity {
     /** 转移地块 FK → {@code t_plant_plot_info.id}；仅 farm_type=transplant。 */
     private Long transplantPlot;
 
-    /** 移栽百分比 0-100（业务规则 ≤60）；仅 farm_type=transplant。 */
+    /** 移栽百分比（单次 1-100，同地块同作物多次累计 ≤100%）；仅 farm_type=transplant。 */
     private Integer transplantPercent;
 
     /** 灾害类型（字典 {@code djs_disaster_type}）；仅 farm_type=disaster。 */

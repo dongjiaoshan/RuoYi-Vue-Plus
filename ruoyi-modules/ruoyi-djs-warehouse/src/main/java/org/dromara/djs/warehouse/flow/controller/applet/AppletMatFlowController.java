@@ -12,6 +12,7 @@ import org.dromara.djs.warehouse.flow.domain.bo.MatLossBo;
 import org.dromara.djs.warehouse.flow.domain.bo.MatPickBo;
 import org.dromara.djs.warehouse.flow.domain.bo.MatReturnBo;
 import org.dromara.djs.warehouse.flow.domain.query.StockFlowQuery;
+import org.dromara.djs.warehouse.flow.domain.vo.MatIssueBasketVo;
 import org.dromara.djs.warehouse.flow.domain.vo.MatIssueItemVo;
 import org.dromara.djs.warehouse.flow.domain.vo.MatIssueLocationVo;
 import org.dromara.djs.warehouse.flow.domain.vo.MatTodaySummaryVo;
@@ -118,6 +119,56 @@ public class AppletMatFlowController extends BaseController {
     public R<List<MatWhiteBarBatchVo>> issueWhiteBarBatches(@RequestParam String belongType,
                                                             @RequestParam(required = false) String locationId) {
         return R.ok(matFlowService.issueWhiteBarBatches(belongType, locationId));
+    }
+
+    /**
+     * 「按耳号源篮子」列表（「按源手选」领用，猪肉(分割)按耳号；对齐客户最新原型「仓库&gt;分拣发货&gt;物资领用」）。
+     *
+     * <p>返该 pork 原料产品的 {@code location_stock} 篮子（{@code ear_no} 非空、库存&gt;0），用户手选某一篮领用。
+     * 前端选中后把 {@code batchId} 回填 {@code MatPickBo.batchId} → service 走 {@code pickByBatch}。</p>
+     *
+     * @param productId  pork 原料产品 ID（必填，snowflake string 防截断，service 内 parse）
+     * @param locationId 库位 ID（可空，chip 选中态过滤）
+     */
+    @SaCheckLogin
+    @GetMapping("/issuePorkBatches")
+    public R<List<MatIssueBasketVo>> issuePorkBatches(@RequestParam String productId,
+                                                      @RequestParam(required = false) String locationId) {
+        return R.ok(matFlowService.issuePorkBatches(productId, locationId));
+    }
+
+    /**
+     * 「按地块源篮子」列表（「按源手选」领用，蔬菜(自产)按地块；对齐客户最新原型「仓库&gt;分拣发货&gt;物资领用」）。
+     *
+     * <p>返该自产果蔬原料产品的 {@code location_stock} 篮子（{@code plot_id} 非空、库存&gt;0），用户手选某一篮领用。
+     * 前端选中后把 {@code batchId} 回填 {@code MatPickBo.batchId} → service 走 {@code pickByBatch}。</p>
+     *
+     * @param productId  自产果蔬原料产品 ID（必填，snowflake string 防截断，service 内 parse）
+     * @param locationId 库位 ID（可空，chip 选中态过滤）
+     */
+    @SaCheckLogin
+    @GetMapping("/issueVegBatches")
+    public R<List<MatIssueBasketVo>> issueVegBatches(@RequestParam String productId,
+                                                     @RequestParam(required = false) String locationId) {
+        return R.ok(matFlowService.issueVegBatches(productId, locationId));
+    }
+
+    /**
+     * 领用前置校验：该原材料是否允许领用（mp 物资领用硬拦截）。
+     *
+     * <p>打包业态（果蔬/猪肉/鸡蛋/干货/其他）的原材料(attr=2) 必须有对应成品（{@code product_material} 反查，
+     * {@code product_attr=1}），无则前端弹「原材料没有对应的生产产品，请先创建」并禁止领用。包材/饲料/种子/白条
+     * 等非打包业态恒允许。{@code productId} 非空走产品直查；否则 {@code plotId} 走 plot→crop→{@code related_product}
+     * 解析（自产果蔬）。解析不到原料 / 非原材料 / 非打包业态 → 返 {@code true}（允许领用）。</p>
+     *
+     * @param productId 原材料产品 id（snowflake string，可空；外购/包材、按篮领用传）
+     * @param plotId    地块 id（snowflake string，可空；自产果蔬领用传，无 productId）
+     */
+    @SaCheckLogin
+    @GetMapping("/canIssueMaterial")
+    public R<Boolean> canIssueMaterial(@RequestParam(required = false) String productId,
+                                       @RequestParam(required = false) String plotId) {
+        return R.ok(matFlowService.canIssueMaterial(productId, plotId));
     }
 
     @SaCheckLogin

@@ -183,8 +183,13 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
     @Override
     @Transactional(rollbackFor = Exception.class)
     public Long submitTransplant(TransplantRecordBo bo) {
-        if (bo.getTransplantPercent() != null && bo.getTransplantPercent() > 60) {
-            throw new ServiceException("移栽百分比不能超过 60%");
+        // 多次累计校验（row12）：历史累计 + 本次 不得超过 100%；本次上限 = 100 − 历史累计。
+        // 历史累计与 INSERT 后状态机判定共用 sumTransplantedPercent，避免两处口径漂移。
+        int moved = sumTransplantedPercent(bo.getCropId(), bo.getPlotId());
+        int percent = bo.getTransplantPercent() == null ? 0 : bo.getTransplantPercent();
+        if (moved + percent > 100) {
+            throw new ServiceException(
+                "本次移栽百分比超出剩余可移 " + (100 - moved) + "%（已累计 " + moved + "%）");
         }
         FarmRecords r = new FarmRecords();
         buildBase(r, "transplant", bo.getPlotId(), bo.getCropId(), bo.getPlantId(), bo.getFarmBy(),
@@ -192,7 +197,50 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
         r.setTransplantPlot(bo.getTransplantPlot());
         r.setTransplantPercent(bo.getTransplantPercent());
         baseMapper.insert(r);
+
+        // 累计达 100% → 自动状态机（row13）。本次已 INSERT，重查含本次累计；
+        // 仅在「刚好跨过 100%」时触发（previousMoved < 100 ≤ now），幂等：本就 ≥100 应已被 row12 拦掉。
+        int now = sumTransplantedPercent(bo.getCropId(), bo.getPlotId());
+        if (moved < 100 && now >= 100) {
+            applyTransplantCompleteSideEffect(bo.getCropId(), bo.getPlotId(), bo.getFarmDate());
+        }
         return r.getId();
+    }
+
+    /**
+     * 取某 (作物, 源地块) 的累计移栽百分比（移栽校验 + 状态机判定共用，一处定义）。
+     *
+     * @return 累计已移百分比（无移栽记录返 0）
+     */
+    private int sumTransplantedPercent(Long cropId, Long plotId) {
+        if (cropId == null || plotId == null) {
+            return 0;
+        }
+        return baseMapper.sumTransplantedPercent(cropId, plotId);
+    }
+
+    /**
+     * 移栽累计达 100% 副作用（row13，与 {@link #submitRotation} 退茬置空写法风格一致）：
+     * <ul>
+     *   <li>① {@code plant_details.harvest_status='completed'}（采摘完成）+ {@code end_harvestdate=farmDate}，
+     *       where crop_id + plot_id（该地块该作物全部明细）</li>
+     *   <li>② {@code plot_info.plot_status=1}（空地），where id=plotId</li>
+     * </ul>
+     */
+    private void applyTransplantCompleteSideEffect(Long cropId, Long plotId, LocalDate farmDate) {
+        Long updateBy = currentUserSafe();
+        plantDetailsMapper.update(null,
+            new LambdaUpdateWrapper<PlantDetails>()
+                .eq(PlantDetails::getCropId, cropId)
+                .eq(PlantDetails::getPlotId, plotId)
+                .set(PlantDetails::getHarvestStatus, "completed")
+                .set(PlantDetails::getEndHarvestdate, farmDate)
+                .set(PlantDetails::getUpdateBy, updateBy));
+        plotInfoMapper.update(null,
+            new LambdaUpdateWrapper<PlotInfo>()
+                .eq(PlotInfo::getId, plotId)
+                .set(PlotInfo::getPlotStatus, 1)
+                .set(PlotInfo::getUpdateBy, updateBy));
     }
 
     @Override
@@ -327,6 +375,16 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
         } else {
             dw.eq(PlantDetails::getPlantStatus, filter.plantStatus())
                 .ne(PlantDetails::getHarvestStatus, filter.harvestStatus());
+            // 移栽（row16）：追加「保育地块（plot_type='nursery'）且累计移栽未满（<100%）」过滤——
+            // 与列表卡 selectCropTargetCardsForTransplant 同候选口径（一处定义 selectTransplantCandidatePlotIds），
+            // 保证列表卡数字与点进去逐行行数一致。候选为空 → 直接返空，不查明细。
+            if ("transplant".equals(farmType)) {
+                List<Long> candidatePlotIds = baseMapper.selectTransplantCandidatePlotIds(cropId);
+                if (CollUtil.isEmpty(candidatePlotIds)) {
+                    return List.of();
+                }
+                dw.in(PlantDetails::getPlotId, candidatePlotIds);
+            }
         }
         List<PlantDetails> details = plantDetailsMapper.selectList(
             dw.orderByAsc(PlantDetails::getPlotId)
@@ -494,7 +552,12 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
     /**
      * 批量回填作物卡图 public URL（IMG-LIB-001 4 层 resolver）。
      *
-     * <p>一次 {@code selectByIds} 取 image_oss_id，再一次 {@code resolveList} 转 public URL，禁 N+1。</p>
+     * <p>一次 {@code selectByIds} 取图 ossId，再一次 {@code resolveList} 转 public URL，禁 N+1。</p>
+     *
+     * <p>取图 ossId 多字段兜底 {@code COALESCE(image_oss_id, crop_image_preview, crop_image_url 首段)}：
+     * admin 端用户上传作物图实际落 {@code crop_image_preview}/{@code crop_image_url}（存 ossId），
+     * 而 {@code image_oss_id} 仅图库自动匹配/手选时写入，常为空——只读 image_oss_id 会漏掉用户传的图
+     * （表现为移栽作物卡「暂无图」）。与「产品双图片字段」同款修法。</p>
      */
     private void fillCropImg(List<FarmCropTargetCardVo> cards, List<Long> cropIds) {
         if (CollUtil.isEmpty(cards) || CollUtil.isEmpty(cropIds)) {
@@ -502,7 +565,7 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
         }
         Map<Long, String> ossIdMap = cropInfoMapper.selectByIds(cropIds).stream()
             .filter(c -> c.getId() != null)
-            .collect(Collectors.toMap(CropInfo::getId, c -> c.getImageOssId() == null ? "" : c.getImageOssId(), (a, b) -> a));
+            .collect(Collectors.toMap(CropInfo::getId, this::resolveCropImageOssId, (a, b) -> a));
         List<ImageUrlResolver.Item> items = new ArrayList<>(cards.size());
         for (FarmCropTargetCardVo card : cards) {
             String ossId = card.getId() == null ? null : ossIdMap.get(card.getId());
@@ -515,6 +578,24 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
         for (int i = 0; i < cards.size(); i++) {
             cards.get(i).setCropImg(urls.get(i));
         }
+    }
+
+    /**
+     * 取作物图 ossId（row15①）：{@code image_oss_id → crop_image_preview → crop_image_url 首段} 兜底。
+     * 全空返 null（交 resolver 走默认图/无图）。{@code crop_image_url} 逗号分隔多张，取第一张。
+     */
+    private String resolveCropImageOssId(CropInfo c) {
+        if (StringUtils.isNotBlank(c.getImageOssId())) {
+            return c.getImageOssId();
+        }
+        if (StringUtils.isNotBlank(c.getCropImagePreview())) {
+            return c.getCropImagePreview();
+        }
+        if (StringUtils.isNotBlank(c.getCropImageUrl())) {
+            String first = c.getCropImageUrl().split(",")[0].trim();
+            return StringUtils.isBlank(first) ? null : first;
+        }
+        return null;
     }
 
     /**
@@ -882,10 +963,10 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
     }
 
     /**
-     * VO 批量 enrich：plotName / plotCode / teamName / transplantPlotName。
+     * VO 批量 enrich：plotName / plotCode / teamName / transplantPlotName + 转移前后片区名（row17）。
      *
      * <p>cropName 已落表，farmType / disasterType / tillageType 走 ruoyi Excel/前端字典翻译，
-     * service 不再额外翻译。</p>
+     * service 不再额外翻译。片区名按 zone_id 批量取（仿 listCropPlots 的 zoneMap，禁 N+1）。</p>
      */
     private void enrichRefs(List<FarmRecordsVo> list) {
         if (CollUtil.isEmpty(list)) {
@@ -903,15 +984,28 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
             : teamMapper.selectByIds(teamIds).stream()
             .collect(Collectors.toMap(PlantWorkTeam::getId, PlantWorkTeam::getTeamName, (a, b) -> a));
 
+        // 片区名（row17 移栽记录卡转移前/后片区）：收集源 + 转移地块的 zoneId 批量取，禁 N+1。
+        Set<Long> zoneIds = plotMap.values().stream()
+            .map(PlotInfo::getZoneId).filter(Objects::nonNull).collect(Collectors.toSet());
+        Map<Long, String> zoneMap = zoneIds.isEmpty() ? Map.of()
+            : plotZoneMapper.selectByIds(zoneIds).stream()
+            .collect(Collectors.toMap(PlotZone::getId, PlotZone::getZoneName, (a, b) -> a));
+
         for (FarmRecordsVo vo : list) {
             PlotInfo plot = plotMap.get(vo.getPlotId());
             if (plot != null) {
                 vo.setPlotName(plot.getPlotName());
                 vo.setPlotCode(plot.getPlotCode());
+                if (plot.getZoneId() != null) {
+                    vo.setPlotZoneName(zoneMap.get(plot.getZoneId()));
+                }
             }
             PlotInfo transplant = vo.getTransplantPlot() == null ? null : plotMap.get(vo.getTransplantPlot());
             if (transplant != null) {
                 vo.setTransplantPlotName(transplant.getPlotName());
+                if (transplant.getZoneId() != null) {
+                    vo.setTransplantPlotZoneName(zoneMap.get(transplant.getZoneId()));
+                }
             }
             vo.setTeamName(vo.getFarmBy() == null ? null : teamMap.get(vo.getFarmBy()));
         }

@@ -72,6 +72,90 @@ public interface FarmRecordsMapper extends BaseMapperPlus<FarmRecords, FarmRecor
     List<Map<String, Object>> selectTransplantedPercentByCrop(@Param("cropId") Long cropId);
 
     /**
+     * 取某 (作物, 地块) 的累计移栽百分比（移栽校验 + 状态机判定共用，避免口径漂移）。
+     *
+     * <p>= {@code SUM(transplant_percent) WHERE farm_type='transplant'}。空（无移栽记录）返 0。
+     * {@code submitTransplant} 提交前用此校验「历史累计 + 本次 ≤ 100」，INSERT 后用此重查判定是否跨过
+     * 100% 触发自动状态机（采摘完成 + 地块置空）。</p>
+     *
+     * @param cropId 作物 id
+     * @param plotId 源地块 id
+     * @return 累计移栽百分比（0-N，可能 >100 仅在历史脏数据下）
+     */
+    @Select("""
+        SELECT COALESCE(SUM(transplant_percent), 0)
+          FROM t_plant_farm_records
+         WHERE del_flag = '0'
+           AND tenant_id = '1001'
+           AND farm_type = 'transplant'
+           AND crop_id = #{cropId}
+           AND plot_id = #{plotId}
+        """)
+    int sumTransplantedPercent(@Param("cropId") Long cropId, @Param("plotId") Long plotId);
+
+    /**
+     * 按地块 + 农事类型聚合「30 天内上次同工种日期」（row14 空地类列表卡用）。
+     *
+     * <p>只读聚合，显式 {@code tenant_id='1001'} + {@code del_flag='0'}。仅取近 30 天内
+     * （{@code farm_date >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)}）该工种最近一次日期。
+     * 返回 (plotId, lastDate)，无近 30 天记录的地块不在结果中（service 兜底 null）。</p>
+     *
+     * @param plotIds  地块 id 集合（非空）
+     * @param farmType 农事类型（翻耕/整地/施肥）
+     * @return 每行 {@code {plotId, lastDate}}
+     */
+    @Select("""
+        <script>
+        SELECT plot_id AS plotId, MAX(farm_date) AS lastDate
+          FROM t_plant_farm_records
+         WHERE del_flag = '0'
+           AND tenant_id = '1001'
+           AND farm_type = #{farmType}
+           AND farm_date &gt;= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+           AND plot_id IN
+           <foreach collection="plotIds" item="pid" open="(" separator="," close=")">#{pid}</foreach>
+         GROUP BY plot_id
+        </script>
+        """)
+    List<Map<String, Object>> selectLastFarmDateByPlotType(@Param("plotIds") List<Long> plotIds,
+                                                            @Param("farmType") String farmType);
+
+    /**
+     * 取保育（{@code plot_type='nursery'}）且累计移栽未满（{@code SUM(transplant_percent) < 100}）的地块 id 集合
+     * （row15②/row16 移栽候选地块判定·一处定义）。
+     *
+     * <p>从已种植明细（产出期 {@code plant_status='completed' AND harvest_status<>'completed'}）出发，
+     * JOIN 保育地块，LEFT JOIN 移栽累计，过滤掉累计已满 100% 的地块。
+     * 列表卡 COUNT 与详情逐行同此候选集，保证数字与点进去行数一致。
+     * 显式 {@code tenant_id='1001'} + {@code del_flag='0'}（V1 单农场硬编码）。</p>
+     *
+     * @param cropId 作物 id
+     * @return 候选地块 id 列表（按 plot_id 升序）
+     */
+    @Select("""
+        SELECT d.plot_id
+          FROM t_plant_plant_details d
+          JOIN t_plant_plot_info p ON p.id = d.plot_id AND p.del_flag = '0' AND p.tenant_id = '1001'
+          LEFT JOIN (
+                SELECT plot_id, COALESCE(SUM(transplant_percent), 0) AS moved
+                  FROM t_plant_farm_records
+                 WHERE del_flag = '0' AND tenant_id = '1001' AND farm_type = 'transplant'
+                   AND crop_id = #{cropId}
+                 GROUP BY plot_id
+          ) tp ON tp.plot_id = d.plot_id
+         WHERE d.del_flag = '0'
+           AND d.tenant_id = '1001'
+           AND d.crop_id = #{cropId}
+           AND d.plant_status = 'completed'
+           AND d.harvest_status <> 'completed'
+           AND p.plot_type = 'nursery'
+           AND COALESCE(tp.moved, 0) < 100
+         GROUP BY d.plot_id
+         ORDER BY d.plot_id ASC
+        """)
+    List<Long> selectTransplantCandidatePlotIds(@Param("cropId") Long cropId);
+
+    /**
      * 按 farm_type 聚合「当日已处理地块去重数」（FIX-PLT-MP-TILL-001 P7 dispatchSummary）。
      *
      * <p>{@code COUNT(DISTINCT plot_id) WHERE farm_date=今日 GROUP BY farm_type}——同地块当日多次记录
@@ -147,11 +231,18 @@ public interface FarmRecordsMapper extends BaseMapperPlus<FarmRecords, FarmRecor
           LEFT JOIN t_plant_farm_records fr
                  ON fr.crop_id = d.crop_id AND fr.farm_type = #{farmType}
                 AND fr.del_flag = '0' AND fr.tenant_id = '1001'
+          LEFT JOIN (
+                SELECT crop_id, plot_id, COALESCE(SUM(transplant_percent), 0) AS moved
+                  FROM t_plant_farm_records
+                 WHERE del_flag = '0' AND tenant_id = '1001' AND farm_type = 'transplant'
+                 GROUP BY crop_id, plot_id
+          ) tp ON tp.crop_id = d.crop_id AND tp.plot_id = d.plot_id
          WHERE d.del_flag = '0'
            AND d.tenant_id = '1001'
            AND d.plant_status = 'completed'
            AND d.harvest_status <> 'completed'
            AND p.plot_type = 'nursery'
+           AND COALESCE(tp.moved, 0) < 100
            AND (#{zoneId} IS NULL OR p.zone_id = #{zoneId})
            AND (#{plotCode} IS NULL OR p.plot_code = #{plotCode})
          GROUP BY d.crop_id, c.crop_name, c.crop_code
@@ -240,7 +331,14 @@ public interface FarmRecordsMapper extends BaseMapperPlus<FarmRecords, FarmRecor
           LEFT JOIN t_plant_plant_details d
             ON d.plot_id = p.id AND d.del_flag = '0' AND d.tenant_id = '1001'
            AND d.plant_status = 'completed' AND d.harvest_status <> 'completed'
+          LEFT JOIN (
+                SELECT crop_id, plot_id, COALESCE(SUM(transplant_percent), 0) AS moved
+                  FROM t_plant_farm_records
+                 WHERE del_flag = '0' AND tenant_id = '1001' AND farm_type = 'transplant'
+                 GROUP BY crop_id, plot_id
+          ) tp ON tp.crop_id = d.crop_id AND tp.plot_id = d.plot_id
          WHERE z.del_flag = '0' AND z.tenant_id = '1001' AND z.zone_status = 1
+           AND (d.plot_id IS NULL OR COALESCE(tp.moved, 0) < 100)
          GROUP BY z.id, z.zone_name
          ORDER BY z.zone_name ASC
         """)

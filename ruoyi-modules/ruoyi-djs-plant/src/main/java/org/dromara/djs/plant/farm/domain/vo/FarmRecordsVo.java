@@ -51,6 +51,10 @@ public class FarmRecordsVo implements Serializable {
     @ExcelProperty(value = "地块编码")
     private String plotCode;
 
+    /** service enrich：转移前地块所属片区名（移栽记录卡展示，PlotZone.zoneName）。 */
+    @ExcelProperty(value = "转移前片区")
+    private String plotZoneName;
+
     @ExcelProperty(value = "地块类型", converter = ExcelDictConvert.class)
     @ExcelDictFormat(dictType = "djs_plot_status")
     private Integer plotType;
@@ -89,6 +93,10 @@ public class FarmRecordsVo implements Serializable {
     /** service enrich：转移地块名（仅 transplant 类型）。 */
     @ExcelProperty(value = "转移地块")
     private String transplantPlotName;
+
+    /** service enrich：转移后地块所属片区名（移栽记录卡展示，PlotZone.zoneName）。 */
+    @ExcelProperty(value = "转移后片区")
+    private String transplantPlotZoneName;
 
     @ExcelProperty(value = "移栽百分比")
     private Integer transplantPercent;

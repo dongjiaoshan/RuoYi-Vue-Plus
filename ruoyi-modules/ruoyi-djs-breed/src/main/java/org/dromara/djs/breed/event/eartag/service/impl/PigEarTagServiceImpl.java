@@ -52,9 +52,10 @@ import java.util.stream.Collectors;
  * 同生共死，任一失败回滚（含耳号分配器内部异常，已由 redisson lease 兜底）。</p>
  *
  * <h3>耳号生成</h3>
- * <p>EAR_NO 规则 {@code {品系}-{品种2}-{出生yyMMdd6}-{当天序号3}}（如 {@code 4-04-260508-001}，ADR-0011，
- * 6/15 起耳号不再编码性别）。本 service 走 {@link EarNoAllocator} 整批一次性拿连续 N 号（序号源 = DB max
- * 同前缀 + 1，当天同前缀连续耳标不撞 UNIQUE）。出生日取分娩日；性别仅存 pig.pig_sex 列。</p>
+ * <p>EAR_NO 规则 {@code {品系}-{品种2}-{性别1}-{出生yyMMdd6}-{当天序号3}}（如 {@code 4-04-1-260508-001}，ADR-0011，
+ * 性别码 {@code 1=公(M) / 2=母(F)}，与外部引种同格式）。同批公母混合时，公组/母组因性别段不同而前缀分裂，但<b>共享
+ * 当天全场同一连续序号空间</b>——由 {@link EarNoAllocator#allocateBatchByPrefixes} 在单锁内整批一次性算连续 N 号
+ * （序号源 = DB max 同出生日段 + 1，公母交叉不撞 UNIQUE），按原始 {@code piglets} 索引回填。出生日取分娩日。</p>
  *
  * <p>仔猪品种/品系码取育种配置表 {@code t_farm_breed_config} 按【母本码 × 父本码】查仔代码
  * （品种 breed_strain=1 / 品系 breed_strain=2 各查一次，母父码 2 位零填充对齐配置表存码）。
@@ -159,10 +160,10 @@ public class PigEarTagServiceImpl implements IPigEarTagService {
         String cubBreedCode = cub[0];
         String cubStrainCode = cub[1];
 
-        // 3. 生成 N 个耳号（仔代品系/品种码 + 出生日 = 分娩日；6/15 起耳号不编码性别 → 整批连号按原序）
+        // 3. 生成 N 个耳号（仔代品系/品种码 + 每头性别 + 出生日 = 分娩日；公母混批共享当天全场连号，按原序回填）
         LocalDateTime tagAt = LocalDateTime.now();
         LocalDate birthDate = farrow.getFarrowDate() == null ? tagAt.toLocalDate() : farrow.getFarrowDate().toLocalDate();
-        List<String> earNos = allocatePigletEarNos(cubStrainCode, cubBreedCode, bo.getPiglets().size(), birthDate);
+        List<String> earNos = allocatePigletEarNos(cubStrainCode, cubBreedCode, bo.getPiglets(), birthDate);
 
         // 4. 同事务循环 INSERT pig + pigletno
         List<PigletEarTagVo> result = new ArrayList<>(newCount);
@@ -255,44 +256,54 @@ public class PigEarTagServiceImpl implements IPigEarTagService {
         String[] cub = resolveCubBreedStrain(mother, fatherEar);
 
         EarNoPreviewVo vo = new EarNoPreviewVo();
-        // 6/15 起耳号不再编码性别 → 公母共用同一连号序列：前 maleCount 个给公、后 femaleCount 个给母（按预览顺序）。
+        // 耳号编入性别段：公母前缀不同（公 -1- / 母 -2-），但共享当天全场同一连号起点（与正式 batchTag 落库同口径）。
+        // 公组占 nextSeq..nextSeq+male-1，母组接着占 nextSeq+male..nextSeq+male+female-1 —— 序号在全场连续不交叉。
         int male = Math.max(0, maleCount);
         int female = Math.max(0, femaleCount);
-        List<String> all = previewSeq(cub[1], cub[0], birthDate, male + female);
-        vo.setMaleEarNos(new ArrayList<>(all.subList(0, male)));
-        vo.setFemaleEarNos(new ArrayList<>(all.subList(male, male + female)));
+        // R47：序号按出生日全场递增（不分品系品种性别），预览与正式打标同口径，仅读不占号
+        long nextSeq = earNoAllocator.nextSeqForDate(birthDate);
+        String malePrefix = earNoAllocator.buildPrefix(cub[1], cub[0], "M", birthDate);
+        String femalePrefix = earNoAllocator.buildPrefix(cub[1], cub[0], "F", birthDate);
+        vo.setMaleEarNos(buildPreviewSeq(malePrefix, nextSeq, male));
+        vo.setFemaleEarNos(buildPreviewSeq(femalePrefix, nextSeq + male, female));
         return vo;
     }
 
     /**
-     * 预览整批下一批连号：{@code 前缀 + (DB max 同前缀 + 1 .. +count)}。性别不再入前缀，公母同序列。
-     * 仅读不锁不占号；count ≤ 0 返空列表。前缀用解析后的仔代品系/品种码。
+     * 预览拼号：{@code prefix-startSeq .. prefix-(startSeq+count-1)}（仅展示，不读 DB、不占号）。
+     * 起点序号由调用方按「全场起点 + 已分配偏移」算好传入，保证公母两组在全场范围内连续不交叉。
      */
-    private List<String> previewSeq(String cubStrainCode, String cubBreedCode, LocalDate birthDate, int count) {
+    private List<String> buildPreviewSeq(String prefix, long startSeq, int count) {
         if (count <= 0) {
             return Collections.emptyList();
         }
-        String prefix = earNoAllocator.buildPrefix(cubStrainCode, cubBreedCode, null, birthDate);
-        // R47：序号按出生日全场递增（不分品系品种），预览与正式打标同口径
-        long nextSeq = earNoAllocator.nextSeqForDate(birthDate);
         List<String> earNos = new ArrayList<>(count);
         for (int i = 0; i < count; i++) {
-            earNos.add(prefix + PREVIEW_SEG_SEP + String.format("%0" + PREVIEW_SEQ_WIDTH + "d", nextSeq + i));
+            earNos.add(prefix + PREVIEW_SEG_SEP + String.format("%0" + PREVIEW_SEQ_WIDTH + "d", startSeq + i));
         }
         return earNos;
     }
 
     /**
-     * 为一批仔猪分配耳号：用解析后的仔代品系/品种码 + 出生日 = 分娩日。
+     * 为一批仔猪分配耳号：用解析后的仔代品系/品种码 + 每头性别 + 出生日 = 分娩日。
      *
-     * <p>6/15 起耳号不再编码性别 → 同批公母仔猪同前缀，一次 {@code allocate(count)} 连号即可，
-     * 按原始索引顺序对齐返回（不再按性别分组）。</p>
+     * <p>耳号编入性别段（{@code 品系-品种2-性别1-yyMMdd6-序号3}），同批公母混合时公组/母组前缀因性别段不同而分裂。
+     * 按原始 {@code piglets} 索引顺序为每头算各自 5 段前缀（公 {@code -1-} / 母 {@code -2-}），交 {@link
+     * EarNoAllocator#allocateBatchByPrefixes} 在单锁内整批一次性分配——<b>公母两组共享当天全场同一连续序号空间</b>
+     * （不会因两组各读 max 而撞号），返回与 {@code piglets} 等长、索引对齐的耳号列表（第 i 头耳号即 {@code result.get(i)}，
+     * 性别段与 {@code piglets.get(i).getPigletSex()} 一致）。</p>
      */
-    private List<String> allocatePigletEarNos(String cubStrainCode, String cubBreedCode, int count, LocalDate birthDate) {
-        if (count <= 0) {
+    private List<String> allocatePigletEarNos(
+        String cubStrainCode, String cubBreedCode, List<PigletEarTagItem> piglets, LocalDate birthDate) {
+        if (piglets == null || piglets.isEmpty()) {
             return new ArrayList<>();
         }
-        return earNoAllocator.allocate(cubStrainCode, cubBreedCode, null, birthDate, count);
+        // 按原始索引顺序为每头算 5 段前缀（公 -1- / 母 -2-），保证与 piglets 索引一一对齐
+        List<String> prefixes = new ArrayList<>(piglets.size());
+        for (PigletEarTagItem item : piglets) {
+            prefixes.add(earNoAllocator.buildPrefix(cubStrainCode, cubBreedCode, item.getPigletSex(), birthDate));
+        }
+        return earNoAllocator.allocateBatchByPrefixes(prefixes, birthDate);
     }
 
     /**

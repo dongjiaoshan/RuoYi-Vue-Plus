@@ -136,6 +136,19 @@ public class ProductProductionServiceImpl
     private static final String BELONG_TYPE_VEGETABLE = "vegetable";
 
     /**
+     * 其他产品（egg/dry_good/other）打包来源业态白名单（统一目标模型 G5）。
+     *
+     * <p>这三类「其他业态食品」走与果蔬/肉品同构的「领用产 inhouse → dry 打包」路径：
+     * 物资领用其原料（{@code product_attr=2}）经 {@code MatFlowServiceImpl.bridgeMaterialInhouse}
+     * 产 inhouse（{@code produce_date=今天}），{@code listSourceForDry} 只读这三类今天领用的原料
+     * inhouse 当来源（不再裸捞全表，避免跨业态污染）。pork/white_bar/vegetable 走各自来源接口。</p>
+     */
+    private static final List<String> BELONG_TYPES_OTHER_PACK = List.of("egg", "dry_good", "other");
+
+    /** djs_product_attr 字典码值：2=原材料（打包来源只认原料 inhouse，不混成品）。 */
+    private static final Integer PRODUCT_ATTR_MATERIAL = 2;
+
+    /**
      * V4 果蔬日损耗聚合 flow_type（领用 / 打包 / 退回 / 饲喂）。
      *
      * <p>口径校正（findings 步14 决策 a）：日损耗 = 领用 − 打包 − 退回 − 饲喂。</p>
@@ -603,13 +616,16 @@ public class ProductProductionServiceImpl
 
     @Override
     public List<ProductInhouse> listSourceForVeg() {
-        // 果蔬打包来源 = belong_type='vegetable' 的「今天领用」活动 inhouse（doc/14 §5：只显今天领用待打包）。
-        // 物资领用果蔬原材料经 MatFlowServiceImpl.bridgeVegInhouse 桥接产生（produce_date=今天）；product 维度
-        // plot_id 可空、为冗余追溯字段。与 listSourceForMeat（belong_type='pork'）同范式。
+        // 果蔬打包来源 = belong_type='vegetable' 且 product_attr=2(原料) 的「今天领用」活动 inhouse
+        // （doc/14 §5：只显今天领用待打包）。物资领用果蔬原材料经 MatFlowServiceImpl.bridgeMaterialInhouse
+        // 桥接产生（produce_date=今天）；product 维度 plot_id 可空、为冗余追溯字段。
+        // G8：补 product_attr=2 守门——只把原料 inhouse 当来源，防成品（attr=1）误混入打包来源。
+        // 与 listSourceForMeat（belong_type='pork'）同范式。
         List<Long> productIds = productInfoMapper.selectList(
                 new LambdaQueryWrapper<ProductInfo>()
                     .select(ProductInfo::getId)
-                    .eq(ProductInfo::getBelongType, BELONG_TYPE_VEGETABLE))
+                    .eq(ProductInfo::getBelongType, BELONG_TYPE_VEGETABLE)
+                    .eq(ProductInfo::getProductAttr, PRODUCT_ATTR_MATERIAL))
             .stream().map(ProductInfo::getId).toList();
         if (productIds.isEmpty()) {
             return List.of();
@@ -625,9 +641,25 @@ public class ProductProductionServiceImpl
 
     @Override
     public List<ProductInhouse> listSourceForDry() {
-        // V1 简化：所有活动 inhouse（cutPart 非空 = 分割品；plot_id 非空 = 蔬菜采收）
+        // 其他产品（egg/dry_good/other）打包来源 = belong_type ∈ {egg,dry_good,other} 且 product_attr=2(原料)
+        // 的「今天领用」活动 inhouse（统一目标模型 G5）。镜像 listSourceForMeat/Veg：先按业态白名单 + attr=2
+        // 解析 product_info id 集，再 inhouse WHERE product_id IN(...) AND DATE(produce_date)=今天 AND weight>0。
+        // 修复旧实现「裸捞全表 inhouse」= 跨业态污染源（把猪肉/果蔬/白条 inhouse 也混进其他产品打包来源）。
+        // 今天没领用对应原料 → 空（须先 mp 领用）。
+        List<Long> productIds = productInfoMapper.selectList(
+                new LambdaQueryWrapper<ProductInfo>()
+                    .select(ProductInfo::getId)
+                    .in(ProductInfo::getBelongType, BELONG_TYPES_OTHER_PACK)
+                    .eq(ProductInfo::getProductAttr, PRODUCT_ATTR_MATERIAL))
+            .stream().map(ProductInfo::getId).toList();
+        if (productIds.isEmpty()) {
+            return List.of();
+        }
         return productInhouseMapper.selectList(
             new LambdaQueryWrapper<ProductInhouse>()
+                .in(ProductInhouse::getProductId, productIds)
+                .gt(ProductInhouse::getProductWeight, BigDecimal.ZERO)
+                .apply("DATE(produce_date) = CURDATE()")
                 .orderByDesc(ProductInhouse::getId)
                 .last("LIMIT 50"));
     }
@@ -655,12 +687,13 @@ public class ProductProductionServiceImpl
 
     @Override
     public List<ProductInhouse> listSourceForCelery() {
-        // 同 listSourceForVeg：belong_type='vegetable' 维度（plot_id 不作过滤主键）+「今天领用」过滤（doc/14 §5）。
+        // 同 listSourceForVeg：belong_type='vegetable' + attr=2 原料维度（G8 同守门，防成品混入）+「今天领用」过滤（doc/14 §5）。
         // 重口味/保鲜库差异在库位，不在 belong_type。
         List<Long> productIds = productInfoMapper.selectList(
                 new LambdaQueryWrapper<ProductInfo>()
                     .select(ProductInfo::getId)
-                    .eq(ProductInfo::getBelongType, BELONG_TYPE_VEGETABLE))
+                    .eq(ProductInfo::getBelongType, BELONG_TYPE_VEGETABLE)
+                    .eq(ProductInfo::getProductAttr, PRODUCT_ATTR_MATERIAL))
             .stream().map(ProductInfo::getId).toList();
         if (productIds.isEmpty()) {
             return List.of();

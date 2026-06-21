@@ -91,9 +91,10 @@ public class PigAppletController {
         @RequestParam(required = false) String dueType,
         @RequestParam(required = false) Boolean excludeNullBarn,
         @RequestParam(required = false) Integer minAgeDays,
-        @RequestParam(required = false) Integer isCastrated
+        @RequestParam(required = false) Integer isCastrated,
+        @RequestParam(required = false) Boolean breedReady
     ) {
-        return R.ok(pigCoreService.searchByEarKeyword(earNoKeyword, statusFilter, sexFilter, pigTypeFilter, barnCode, limit, dueType, excludeNullBarn, minAgeDays, isCastrated));
+        return R.ok(pigCoreService.searchByEarKeyword(earNoKeyword, statusFilter, sexFilter, pigTypeFilter, barnCode, limit, dueType, excludeNullBarn, minAgeDays, isCastrated, breedReady));
     }
 
     /**
@@ -124,6 +125,7 @@ public class PigAppletController {
      * @param sexFilter     {@code "M"} / {@code "F"}
      * @param pigTypeFilter {@code "sow"/"boar"/"piglet"/"fattening"}
      * @param earNoKeyword  耳号关键字（row60：栋舍 chip 头数随搜索缩减，与 search 同 LIKE 口径）；空 → 不过滤
+     * @param breedReady    配种选猪过滤（row13）：{@code true} 时与 search 同口径按最小在场天数剔除未达天数母猪；空 → 不过滤
      */
     @SaCheckLogin
     @SaCheckPermission("djs:applet:pig:search")
@@ -132,9 +134,10 @@ public class PigAppletController {
         @RequestParam(required = false) String statusFilter,
         @RequestParam(required = false) String sexFilter,
         @RequestParam(required = false) String pigTypeFilter,
-        @RequestParam(required = false) String earNoKeyword
+        @RequestParam(required = false) String earNoKeyword,
+        @RequestParam(required = false) Boolean breedReady
     ) {
-        return R.ok(pigCoreService.countByBarn(statusFilter, sexFilter, pigTypeFilter, earNoKeyword));
+        return R.ok(pigCoreService.countByBarn(statusFilter, sexFilter, pigTypeFilter, earNoKeyword, breedReady));
     }
 
     /**
