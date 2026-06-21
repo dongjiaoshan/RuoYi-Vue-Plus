@@ -37,6 +37,9 @@ public class PigBreeding extends TenantEntity {
     /** 母猪耳号。 */
     private String earNo;
 
+    /** 操作当时猪只日龄(事件日-出生日/引种日,落库冻结快照,ADR-0017) */
+    private Integer ageDays;
+
     /** 配种日期。 */
     private LocalDateTime breedingDate;
 

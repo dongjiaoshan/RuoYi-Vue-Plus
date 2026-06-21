@@ -12,6 +12,7 @@ import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.breed.core.domain.Pig;
 import org.dromara.djs.breed.core.domain.bo.PigEventBo;
+import org.dromara.djs.breed.core.util.PigAgeUtil;
 import org.dromara.djs.breed.core.enums.PigStatusEvent;
 import org.dromara.djs.breed.core.mapper.PigMapper;
 import org.dromara.djs.breed.core.service.I18nMessages;
@@ -99,6 +100,9 @@ public class HeatServiceImpl implements IHeatService {
         }
         entity.setOperatorId(operatorId);
         entity.setDelFlag("0");
+        // 落库冻结操作当时日龄快照（ADR-0017）
+        LocalDate _evt = entity.getHeatDate() != null ? entity.getHeatDate().toLocalDate() : null;
+        entity.setAgeDays(PigAgeUtil.ageDaysAt(pig, _evt));
         heatMapper.insert(entity);
 
         // 2. confirmed=true → 触发 OESTRUS（状态保持 PZ，仅落审计，见 ADR-0010）；false → 不调（仅写记录）

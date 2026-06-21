@@ -17,6 +17,7 @@ import org.dromara.djs.breed.core.enums.PigStatusEvent;
 import org.dromara.djs.breed.core.mapper.PigMapper;
 import org.dromara.djs.breed.core.service.I18nMessages;
 import org.dromara.djs.breed.core.service.IPigCoreService;
+import org.dromara.djs.breed.core.util.PigAgeUtil;
 import org.dromara.djs.breed.event.nullreturn.domain.PigAbnormal;
 import org.dromara.djs.breed.event.nullreturn.domain.bo.NullReturnBo;
 import org.dromara.djs.breed.event.nullreturn.domain.query.NullReturnQuery;
@@ -98,6 +99,9 @@ public class NullReturnServiceImpl implements INullReturnService {
         // 录入人员：优先 BO.operatorId（mp EmployeePicker 选）；空则回落登录态
         entity.setOperatorId(bo.getOperatorId() != null ? bo.getOperatorId() : LoginHelper.getUserId());
         entity.setDelFlag("0");
+        // 操作当时日龄冻结快照（ADR-0017）：事件日 - 出生日/引种日
+        LocalDate _evt = entity.getAbnormalDate() != null ? entity.getAbnormalDate().toLocalDate() : null;
+        entity.setAgeDays(PigAgeUtil.ageDaysAt(pig, _evt));
         abnormalMapper.insert(entity);
 
         // 2. 触发状态机：payload.abnormalType 透传 BO 原值（abort/return/idle）

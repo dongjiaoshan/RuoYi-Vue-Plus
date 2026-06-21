@@ -18,6 +18,7 @@ import org.dromara.djs.breed.core.enums.PigStatusEvent;
 import org.dromara.djs.breed.core.mapper.PigMapper;
 import org.dromara.djs.breed.core.service.I18nMessages;
 import org.dromara.djs.breed.core.service.IPigCoreService;
+import org.dromara.djs.breed.core.util.PigAgeUtil;
 import org.dromara.djs.breed.event.eartag.domain.PigPigletno;
 import org.dromara.djs.breed.event.eartag.mapper.PigPigletnoMapper;
 import org.dromara.djs.breed.event.farrow.domain.PigFarrow;
@@ -149,6 +150,8 @@ public class WeaningServiceImpl implements IWeaningService {
         entity.setRemark(bo.getRemark());
         entity.setOperatorId(bo.getOperatorId() != null ? bo.getOperatorId() : LoginHelper.getUserId());
         entity.setDelFlag("0");
+        LocalDate _evt = entity.getWeaningDate() != null ? entity.getWeaningDate().toLocalDate() : null;
+        entity.setAgeDays(PigAgeUtil.ageDaysAt(pig, _evt));
         weaningMapper.insert(entity);
 
         // 2. 逐头录重明细（BRD-FIX-MP-EVENT-BREED-IA-001）：同事务批量 INSERT；details 空 → 退化仅汇总

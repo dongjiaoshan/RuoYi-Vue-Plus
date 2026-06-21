@@ -13,6 +13,7 @@ import org.dromara.djs.breed.core.domain.bo.PigEventBo;
 import org.dromara.djs.breed.core.enums.PigStatusEvent;
 import org.dromara.djs.breed.core.mapper.PigMapper;
 import org.dromara.djs.breed.core.service.I18nMessages;
+import org.dromara.djs.breed.core.util.PigAgeUtil;
 import org.dromara.djs.breed.core.service.IPigCoreService;
 import org.dromara.djs.breed.event.breeding.domain.PigBreeding;
 import org.dromara.djs.breed.event.breeding.domain.bo.BreedingBo;
@@ -27,6 +28,7 @@ import org.dromara.djs.breed.farm.mapper.PenMapper;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.HashMap;
 import java.util.Map;
@@ -98,6 +100,8 @@ public class BreedingServiceImpl implements IBreedingService {
         // #20：优先用录入选中的配种人员（EmployeePicker），未选回落当前登录态
         entity.setOperatorId(bo.getOperatorId() != null ? bo.getOperatorId() : LoginHelper.getUserId());
         entity.setDelFlag("0");
+        LocalDate _evt = entity.getBreedingDate() != null ? entity.getBreedingDate().toLocalDate() : null;
+        entity.setAgeDays(PigAgeUtil.ageDaysAt(pig, _evt));
         breedingMapper.insert(entity);
 
         // 2. 触发状态机（HB/DN/LC/KH/FQ → PZ）+ side effects（mating_id + counters）

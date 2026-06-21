@@ -17,6 +17,7 @@ import org.dromara.djs.breed.core.enums.PigStatusEvent;
 import org.dromara.djs.breed.core.mapper.PigMapper;
 import org.dromara.djs.breed.core.service.I18nMessages;
 import org.dromara.djs.breed.core.service.IPigCoreService;
+import org.dromara.djs.breed.core.util.PigAgeUtil;
 import org.dromara.djs.breed.event.eartag.domain.PigPigletno;
 import org.dromara.djs.breed.event.eartag.mapper.PigPigletnoMapper;
 import org.dromara.djs.breed.event.farrow.domain.PigFarrow;
@@ -142,6 +143,9 @@ public class FarrowServiceImpl implements IFarrowService {
         farrow.setRemark(bo.getRemark());
         farrow.setOperatorId(bo.getOperatorId() != null ? bo.getOperatorId() : LoginHelper.getUserId());
         farrow.setDelFlag("0");
+        // 落库冻结操作当时母猪日龄（ADR-0017），事件日 = farrowDate
+        LocalDate _evt = farrow.getFarrowDate() != null ? farrow.getFarrowDate().toLocalDate() : null;
+        farrow.setAgeDays(PigAgeUtil.ageDaysAt(pig, _evt));
         farrowMapper.insert(farrow);
 
         // 2. 触发状态机（PZ → FM），同事务；非法 transition 由状态机抛

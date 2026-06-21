@@ -36,6 +36,9 @@ public class PigTransfer extends TenantEntity {
 
     private String earNo;
 
+    /** 操作当时猪只日龄(事件日-出生日/引种日,落库冻结快照,ADR-0017) */
+    private Integer ageDays;
+
     private LocalDateTime transferDate;
 
     private Long oldBarnId;

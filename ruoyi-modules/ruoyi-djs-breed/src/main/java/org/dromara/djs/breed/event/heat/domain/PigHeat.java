@@ -35,6 +35,10 @@ public class PigHeat extends TenantEntity {
 
     private Long pigId;
     private String earNo;
+
+    /** 操作当时猪只日龄(事件日-出生日/引种日,落库冻结快照,ADR-0017) */
+    private Integer ageDays;
+
     private LocalDateTime heatDate;
 
     /** 查情结果（字典 djs_heat_result：例 1=有发情迹象 2=无 3=确认妊娠）。 */

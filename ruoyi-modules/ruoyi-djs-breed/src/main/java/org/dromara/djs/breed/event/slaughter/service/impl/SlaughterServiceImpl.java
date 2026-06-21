@@ -18,6 +18,7 @@ import org.dromara.djs.breed.core.event.PigMarketingEvent;
 import org.dromara.djs.breed.core.mapper.PigMapper;
 import org.dromara.djs.breed.core.service.I18nMessages;
 import org.dromara.djs.breed.core.service.IPigCoreService;
+import org.dromara.djs.breed.core.util.PigAgeUtil;
 import org.dromara.djs.breed.event.slaughter.domain.PigMarketing;
 import org.dromara.djs.breed.event.slaughter.domain.bo.SlaughterBo;
 import org.dromara.djs.breed.event.slaughter.domain.query.SlaughterQuery;
@@ -28,6 +29,7 @@ import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.Arrays;
 import java.util.List;
@@ -96,6 +98,9 @@ public class SlaughterServiceImpl implements ISlaughterService {
         entity.setOperator(bo.getOperator());            // EmployeePicker 所选 userId（可空）
         entity.setOperatorId(LoginHelper.getUserId());   // 登录态审计（不动）
         entity.setDelFlag("0");
+        // 落库冻结操作当时日龄快照（ADR-0017）
+        LocalDate _evt = entity.getMarketingDate() != null ? entity.getMarketingDate().toLocalDate() : null;
+        entity.setAgeDays(PigAgeUtil.ageDaysAt(pig, _evt));
         marketingMapper.insert(entity);
 
         // 触发状态机 (非 END) → END，end_reason=MARKET

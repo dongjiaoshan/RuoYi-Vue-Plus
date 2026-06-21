@@ -13,6 +13,7 @@ import org.dromara.common.core.utils.StringUtils;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.breed.core.domain.Pig;
+import org.dromara.djs.breed.core.util.PigAgeUtil;
 import org.dromara.djs.breed.core.domain.bo.PigEventBo;
 import org.dromara.djs.breed.core.enums.PigStatusEvent;
 import org.dromara.djs.breed.core.mapper.PigMapper;
@@ -113,6 +114,8 @@ public class DieServiceImpl implements IDieService {
         entity.setOperatorId(LoginHelper.getUserId());
         entity.setRecorderId(bo.getRecorderId());
         entity.setDelFlag("0");
+        LocalDate _evt = entity.getDeathDate() != null ? entity.getDeathDate().toLocalDate() : null;
+        entity.setAgeDays(PigAgeUtil.ageDaysAt(pig, _evt));
         deathMapper.insert(entity);
 
         // 2. 触发状态机 (非 END) → END，end_reason=DEAD

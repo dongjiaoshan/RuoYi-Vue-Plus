@@ -17,6 +17,7 @@ import org.dromara.djs.breed.core.domain.bo.PigEventBo;
 import org.dromara.djs.breed.core.enums.PigStatusEvent;
 import org.dromara.djs.breed.core.mapper.PigMapper;
 import org.dromara.djs.breed.core.service.I18nMessages;
+import org.dromara.djs.breed.core.util.PigAgeUtil;
 import org.dromara.djs.breed.core.service.IPigCoreService;
 import org.dromara.djs.breed.event.eliminate.domain.PigCulling;
 import org.dromara.djs.breed.event.eliminate.domain.bo.EliminateBo;
@@ -98,6 +99,8 @@ public class EliminateServiceImpl implements IEliminateService {
         entity.setOperatorId(LoginHelper.getUserId());
         entity.setCullingRecorderId(bo.getCullingRecorderId());
         entity.setDelFlag("0");
+        LocalDate _evt = entity.getCullingDate() != null ? entity.getCullingDate().toLocalDate() : null;
+        entity.setAgeDays(PigAgeUtil.ageDaysAt(pig, _evt));
         cullingMapper.insert(entity);
 
         PigEventBo eventBo = new PigEventBo();

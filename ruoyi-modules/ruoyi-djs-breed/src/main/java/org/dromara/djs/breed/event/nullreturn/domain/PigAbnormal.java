@@ -38,6 +38,10 @@ public class PigAbnormal extends TenantEntity {
 
     private Long pigId;
     private String earNo;
+
+    /** 操作当时猪只日龄(事件日-出生日/引种日,落库冻结快照,ADR-0017) */
+    private Integer ageDays;
+
     private LocalDateTime abnormalDate;
 
     /** xlsx 字典码：R=返情 / A=流产 / N=空怀（VARCHAR(16)，留 schema 余量）。 */

@@ -12,6 +12,7 @@ import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.breed.core.domain.Pig;
 import org.dromara.djs.breed.core.domain.bo.PigEventBo;
+import org.dromara.djs.breed.core.util.PigAgeUtil;
 import org.dromara.djs.breed.core.enums.PigStatusEvent;
 import org.dromara.djs.breed.core.mapper.PigMapper;
 import org.dromara.djs.breed.core.service.I18nMessages;
@@ -31,6 +32,7 @@ import org.dromara.djs.breed.farm.service.PenCapacityChecker;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -141,6 +143,9 @@ public class TransferServiceImpl implements ITransferService {
         // 转移人员：优先 EmployeePicker 所选 userId（bo.operator 数字串），未选 / 非数字回落登录用户
         entity.setOperatorId(resolveOperatorId(bo.getOperator()));
         entity.setDelFlag("0");
+        // ADR-0017：落库冻结操作当时日龄快照（事件日-出生日/引种日）
+        LocalDate _evt = entity.getTransferDate() != null ? entity.getTransferDate().toLocalDate() : null;
+        entity.setAgeDays(PigAgeUtil.ageDaysAt(pig, _evt));
         transferMapper.insert(entity);
 
         // 2. payload：newBarnId/newPenId 必传；piglet → fattening 切 pig_type
