@@ -366,7 +366,11 @@ public class StoreReturnServiceImpl
 
     /**
      * 退回入库目标产品 id：果蔬成品退回入库用其原材料 product_material（docx：不以成品入库，用原材料 ID）；
-     * 原材料未配 → 回退成品 id + warn（现网 product_material 多为 NULL 的降级）。猪肉/其他用成品 id 本身。
+     * 猪肉/其他用成品 id 本身。
+     *
+     * <p>果蔬成品未配 {@code product_material} → <b>阻断</b>退回入库（抛 {@link ServiceException}），
+     * 不再静默回退用成品 id（成品不应有 return_in 加成品行、污染 location_stock 成品账；成品只由打包产出/发货扣减）。
+     * 缺料属数据未配置，提示运营先在产品主数据补「果蔬成品→原材料」FK。</p>
      */
     private Long resolveInboundProductId(Long productId) {
         if (productId == null) {
@@ -378,10 +382,11 @@ public class StoreReturnServiceImpl
         }
         if (BELONG_TYPE_VEGETABLE.equals(p.getBelongType())) {
             Long material = p.getProductMaterial();
-            if (material != null) {
-                return material;
+            if (material == null) {
+                throw new ServiceException(
+                    "果蔬成品「" + p.getProductName() + "」未配原材料(product_material)，无法退回入库；请先在产品主数据配置后再确认退回", 400);
             }
-            log.warn("[STORE-RETURN] 果蔬成品 {} 未配 product_material，退回入库回退用成品 id", productId);
+            return material;
         }
         return productId;
     }

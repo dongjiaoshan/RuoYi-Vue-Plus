@@ -11,6 +11,7 @@ import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.web.core.BaseController;
 import org.dromara.djs.store.trace.domain.bo.StoreTraceOnsiteBo;
+import org.dromara.djs.store.trace.domain.vo.StorePackProductVo;
 import org.dromara.djs.store.trace.domain.vo.TraceablePigVo;
 import org.dromara.djs.store.trace.service.IStoreTraceService;
 import org.dromara.djs.warehouse.trace.domain.query.TraceCodeQuery;
@@ -60,7 +61,17 @@ public class StoreTraceController extends BaseController {
     }
 
     /**
-     * 现场按需生码（猪只 + 部位 + 重量 → 生成 pork 追溯码，返回 produce_code 供前端打印）。
+     * 门店猪肉打包可选产品列表（docx 取数：workshop=门店打包间(5) 且 product_material ∈ 字典
+     * {@code djs_pork_return_product}）。前端 PorkTracePanel 产品卡数据源；空则前端回退部位字典。
+     */
+    @SaCheckPermission("djs:store:trace:gen")
+    @GetMapping("/products")
+    public R<List<StorePackProductVo>> packProducts() {
+        return R.ok(storeTraceService.listPackProducts());
+    }
+
+    /**
+     * 现场按需生码（猪只 + 部位/产品 + 重量 → 生成 pork 追溯码，返回 produce_code 供前端打印）。
      */
     @SaCheckPermission("djs:store:trace:gen")
     @Log(title = "门店现场生码", businessType = BusinessType.INSERT)

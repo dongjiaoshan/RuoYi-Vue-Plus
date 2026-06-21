@@ -3,6 +3,7 @@ package org.dromara.djs.store.trace.service;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.store.trace.domain.bo.StoreTraceOnsiteBo;
+import org.dromara.djs.store.trace.domain.vo.StorePackProductVo;
 import org.dromara.djs.store.trace.domain.vo.TraceablePigVo;
 import org.dromara.djs.warehouse.trace.domain.query.TraceCodeQuery;
 import org.dromara.djs.warehouse.trace.domain.vo.TraceCodeDetailVo;
@@ -34,6 +35,17 @@ public interface IStoreTraceService {
      * @return 分页 VO（耳号 / 性别 / 品种 / 日龄）
      */
     TableDataInfo<TraceablePigVo> listTraceablePigs(PageQuery pageQuery);
+
+    /**
+     * 门店猪肉打包可选产品列表（docx「门店猪肉打包」产品取数）。
+     *
+     * <p>两步取数：① 字典 {@code djs_pork_return_product} 的 value（产品业务码）resolve 出产品 id 集；
+     * ② 查 {@code t_warehouse_product_info}，取 {@code product_workshop=5（门店打包间）} 且
+     * {@code product_material ∈ 上述 id 集} 的猪肉产品。空 → 空 List（前端按部位字典兜底）。</p>
+     *
+     * @return 可打包产品列表（产品卡数据源）
+     */
+    List<StorePackProductVo> listPackProducts();
 
     /**
      * 门店现场按需生码（猪只 + 部位 + 重量 → 生成 pork 追溯码）。

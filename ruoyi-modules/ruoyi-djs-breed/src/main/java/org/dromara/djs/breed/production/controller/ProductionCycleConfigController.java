@@ -54,17 +54,18 @@ public class ProductionCycleConfigController extends BaseController {
     private final IProductionCycleConfigService cycleConfigService;
 
     /**
-     * 母猪生产配置 6 项业务键 → 业内默认值（首次落库填 default_value 用）。
+     * 母猪生产配置 7 项业务键 → 业内默认值（首次落库填 default_value 用）。
      * <p>注意：与旧 6 周期 key（gestation_days 等）独立，不替换、不删；新增。</p>
      */
     private static final Map<String, Integer> SOW_DEFAULTS = new LinkedHashMap<>();
-    /** 母猪生产配置 6 项业务键 → 说明（首次落库填 description 用）。 */
+    /** 母猪生产配置 7 项业务键 → 说明（首次落库填 description 用）。 */
     private static final Map<String, String> SOW_DESCRIPTIONS = new LinkedHashMap<>();
     /** 出栏配置业务键。 */
     private static final String SLAUGHTER_AGE_KEY = "slaughter_age_days";
     private static final int SLAUGHTER_AGE_DEFAULT = 175;
 
     static {
+        SOW_DEFAULTS.put("sow_reserve_to_breed_days", 7);
         SOW_DEFAULTS.put("sow_wean_to_breed_days", 6);
         SOW_DEFAULTS.put("sow_return_to_breed_days", 5);
         SOW_DEFAULTS.put("sow_empty_to_breed_days", 5);
@@ -72,6 +73,7 @@ public class ProductionCycleConfigController extends BaseController {
         SOW_DEFAULTS.put("sow_breed_to_farrow_days", 141);
         SOW_DEFAULTS.put("sow_farrow_to_wean_days", 25);
 
+        SOW_DESCRIPTIONS.put("sow_reserve_to_breed_days", "后备到配种天数");
         SOW_DESCRIPTIONS.put("sow_wean_to_breed_days", "断奶到配种天数");
         SOW_DESCRIPTIONS.put("sow_return_to_breed_days", "返情到配种天数");
         SOW_DESCRIPTIONS.put("sow_empty_to_breed_days", "空怀到配种天数");

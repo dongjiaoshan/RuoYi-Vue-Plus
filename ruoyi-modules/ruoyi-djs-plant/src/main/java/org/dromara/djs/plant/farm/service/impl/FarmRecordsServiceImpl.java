@@ -563,9 +563,15 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
         if (CollUtil.isEmpty(cards) || CollUtil.isEmpty(cropIds)) {
             return;
         }
-        Map<Long, String> ossIdMap = cropInfoMapper.selectByIds(cropIds).stream()
-            .filter(c -> c.getId() != null)
-            .collect(Collectors.toMap(CropInfo::getId, this::resolveCropImageOssId, (a, b) -> a));
+        // 手工建 map：resolveCropImageOssId 对无图作物返 null，Collectors.toMap 遇 null value 会抛 NPE
+        // （HashMap.merge 不接受 null）→ 凡作物卡含一个无图作物即 500。HashMap.put + putIfAbsent 容忍 null value，
+        // 保留首条优先（与原 (a,b)->a 同义；无图作物 → map 值 null，下游按「无 ossId」走默认图）。
+        Map<Long, String> ossIdMap = new HashMap<>();
+        for (CropInfo c : cropInfoMapper.selectByIds(cropIds)) {
+            if (c.getId() != null) {
+                ossIdMap.putIfAbsent(c.getId(), resolveCropImageOssId(c));
+            }
+        }
         List<ImageUrlResolver.Item> items = new ArrayList<>(cards.size());
         for (FarmCropTargetCardVo card : cards) {
             String ossId = card.getId() == null ? null : ossIdMap.get(card.getId());

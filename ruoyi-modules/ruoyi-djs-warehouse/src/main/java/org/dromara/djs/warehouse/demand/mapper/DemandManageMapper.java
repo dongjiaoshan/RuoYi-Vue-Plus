@@ -208,9 +208,12 @@ public interface DemandManageMapper extends BaseMapperPlus<DemandManage, DemandM
      * 门店「当天已确认到店」的果蔬需求产品去重清单（STORE-RETURN-VEG-CANDIDATE 退回操作果蔬 tab 数据源）。
      *
      * <p>口径：指定门店、{@code demand_date=#{day}}、果蔬业态（{@code product_type='vegetable'}）、
-     * 已确认（{@code demand_status='CONFIRMED'}）且已门店收货（{@code received_time IS NOT NULL}），
+     * 已门店收货（{@code received_time IS NOT NULL}，即已发货到店），未取消（{@code demand_status<>'CANCELLED'}），
      * 按 {@code product_id} 去重，取冗余 {@code product_name / product_unit}（同 product 多单时取任一，
      * {@code MAX} 仅为分组兜底，名称冗余通常一致）。</p>
+     *
+     * <p>⚠️ 不限定 {@code demand_status='CONFIRMED'}：收货后需求会推进到 PARTIAL_SHIPPED/COMPLETED，
+     * 若限定 CONFIRMED 会漏掉这些已到店的正常态需求（{@code received_time} 是「已到店」的权威信号）。</p>
      *
      * <p>租户隔离：未启全局 MP 拦截器，显式 {@code tenant_id='1001'}（V1 单租户，与本 mapper
      * 既有聚合 SQL 范式一致）；{@code del_flag='0'}（CHAR(1) 未删）。</p>
@@ -227,7 +230,7 @@ public interface DemandManageMapper extends BaseMapperPlus<DemandManage, DemandM
         WHERE store_id = #{storeId}
           AND demand_date = #{day}
           AND product_type = 'vegetable'
-          AND demand_status = 'CONFIRMED'
+          AND demand_status <> 'CANCELLED'
           AND received_time IS NOT NULL
           AND product_id IS NOT NULL
           AND del_flag = '0'

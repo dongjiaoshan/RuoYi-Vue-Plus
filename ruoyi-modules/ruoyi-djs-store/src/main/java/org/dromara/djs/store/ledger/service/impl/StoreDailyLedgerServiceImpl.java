@@ -208,9 +208,12 @@ public class StoreDailyLedgerServiceImpl implements IStoreDailyLedgerService {
                     .eq(StoreDailyLedger::getLedgerDate, date))
             .stream().collect(Collectors.toMap(StoreDailyLedger::getProductId, e -> e, (a, b) -> a));
 
-        // 猪肉入库上限 = 当日白条发货重量（一次取，所有猪肉行共用同一上限校验本行 inbound）。
+        // 猪肉入库上限 = 当日白条发货重量（一次取，所有猪肉行共用同一上限）。
+        // 按本批所有猪肉行【累计】校验：多个猪肉成品行各自的 inbound 之和不得超白条总重，
+        // 否则逐行各比完整上限可被多行绕过（5 行各录满 limit → 累计 5×limit 全过）。
         Set<Long> porkProductIdSet = new LinkedHashSet<>(resolvePorkReturnProductIds());
         BigDecimal whiteBarLimit = sumTodayWhiteBarShipWeight(bo.getStoreId(), date);
+        BigDecimal porkInboundSum = BigDecimal.ZERO;
 
         int saved = 0;
         for (StoreDailyLedgerBatchBo.Item item : bo.getItems()) {
@@ -225,10 +228,14 @@ public class StoreDailyLedgerServiceImpl implements IStoreDailyLedgerService {
             BigDecimal returnWh = nz(item.getReturnWhQty());
             BigDecimal closing = nz(item.getClosingQty());
 
-            // 猪肉行入库上限校验。
-            if (porkProductIdSet.contains(item.getProductId()) && inbound.compareTo(whiteBarLimit) > 0) {
-                throw new ServiceException(
-                    "猪肉入库量(" + inbound.toPlainString() + ")不能超过当日白条发货重量(" + whiteBarLimit.toPlainString() + ")", 400);
+            // 猪肉行入库上限校验（累计本批所有猪肉行，不逐行各比完整上限）。
+            if (porkProductIdSet.contains(item.getProductId())) {
+                porkInboundSum = porkInboundSum.add(inbound);
+                if (porkInboundSum.compareTo(whiteBarLimit) > 0) {
+                    throw new ServiceException(
+                        "本批猪肉到货合计(" + porkInboundSum.toPlainString() + ")不能超过当日白条发货重量("
+                            + whiteBarLimit.toPlainString() + ")", 400);
+                }
             }
 
             // 损耗按 docx 字面反算：loss = 期初 + 入库 − 销售 − 赠送 + 退货 − 退回 − 期末。

@@ -581,6 +581,24 @@ class FarmRecordsServiceImplTest {
     }
 
     @Test
+    @DisplayName("listCropTargetCards: 含无图作物（resolveCropImageOssId 返 null）不抛 NPE（fillCropImg toMap null-value 修复）")
+    void listCropTargetCards_cropWithoutImage_noNpe() {
+        // 真机 500 复现：浇灌等生长工种的作物卡里含一个无图作物（西兰苔，image_oss_id/preview/url 全空）
+        // → resolveCropImageOssId 返 null → 旧 Collectors.toMap 遇 null value 抛 NPE → cropTargetCards 500。
+        when(baseMapper.selectCropTargetCardsForGrow(any(), any(), any())).thenReturn(List.of(
+            Map.of("cropId", 2L, "cropName", "西兰苔", "cropCode", "C009", "plotCount", 1)));
+        CropInfo noImg = new CropInfo();
+        noImg.setId(2L);   // 全部图字段为 null → resolveCropImageOssId 返 null
+        when(cropInfoMapper.selectByIds(any())).thenReturn(List.of(noImg));
+        when(imageUrlResolver.resolveList(any())).thenReturn(List.of("http://img/default.png"));
+
+        List<FarmCropTargetCardVo> cards = service.listCropTargetCards("irrigation", null, null);
+
+        assertThat(cards).hasSize(1);
+        assertThat(cards.get(0).getCropName()).isEqualTo("西兰苔");
+    }
+
+    @Test
     @DisplayName("listCropTargetCards: 移栽走 ForTransplant @Select（叠 plot_type='nursery' 保育地块）")
     void listCropTargetCards_transplantStatusRule() {
         when(baseMapper.selectCropTargetCardsForTransplant(any(), any(), any())).thenReturn(List.of(
