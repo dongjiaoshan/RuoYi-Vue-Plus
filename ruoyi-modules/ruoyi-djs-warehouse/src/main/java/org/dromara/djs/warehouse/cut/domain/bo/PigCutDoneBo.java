@@ -1,11 +1,8 @@
 package org.dromara.djs.warehouse.cut.domain.bo;
 
-import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
 import lombok.Data;
-
-import java.math.BigDecimal;
 
 /**
  * 阶段 3 出库完成 BO（WMS-PIG-002）。
@@ -14,9 +11,12 @@ import java.math.BigDecimal;
  * <ol>
  *   <li>SELECT cut_record，校验 cut_status='cutting'</li>
  *   <li>UPDATE cut_record SET cut_status='done' / cut_done_time / drip_loss / acid_remove_minutes</li>
- *   <li>UPDATE bar_info SET status='cut_done' / out_time / out_weight=in_weight-drip_loss /
- *       out_method=2 / acid_remove_time / acid_remove_loss</li>
+ *   <li>UPDATE bar_info SET status='cut_done' / out_time / out_weight=pickup_weight /
+ *       out_method=2 / acid_remove_time / acid_remove_loss=drip_loss</li>
  * </ol>
+ *
+ * <p>滴水损耗由 service 自动计算（白条入库重量 in_weight − 出库重量 pickup_weight），
+ * 前端不再录入，故本 BO 不含 dripLoss 字段。</p>
  *
  * @author djs
  * @since WMS-PIG-002
@@ -29,13 +29,6 @@ public class PigCutDoneBo {
      */
     @NotNull(message = "{cut.cut_record_id.required}")
     private Long cutRecordId;
-
-    /**
-     * 滴水损失 kg（&gt;= 0）。
-     */
-    @NotNull(message = "{cut.drip_loss.required}")
-    @DecimalMin(value = "0.000", message = "{cut.drip_loss.non_negative}")
-    private BigDecimal dripLoss;
 
     /**
      * 凭证图 OSS IDs CSV（可选）。

@@ -28,6 +28,7 @@ import org.dromara.djs.warehouse.product.domain.ProductInhouse;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
 import org.dromara.djs.warehouse.product.mapper.ProductInhouseMapper;
 import org.dromara.djs.warehouse.stock.domain.LocationStock;
+import org.dromara.djs.warehouse.location.mapper.LocationInfoMapper;
 import org.dromara.djs.warehouse.stock.mapper.LocationStockMapper;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -113,6 +114,7 @@ public class MatFlowServiceImpl implements IMatFlowService {
 
     private final StockFlowMapper stockFlowMapper;
     private final LocationStockMapper locationStockMapper;
+    private final LocationInfoMapper locationInfoMapper;
     private final ProductInfoMapper productInfoMapper;
     private final ProductInhouseMapper productInhouseMapper;
     private final CropInfoMapper cropInfoMapper;
@@ -123,6 +125,7 @@ public class MatFlowServiceImpl implements IMatFlowService {
 
     public MatFlowServiceImpl(StockFlowMapper stockFlowMapper,
                               LocationStockMapper locationStockMapper,
+                              LocationInfoMapper locationInfoMapper,
                               ProductInfoMapper productInfoMapper,
                               ProductInhouseMapper productInhouseMapper,
                               CropInfoMapper cropInfoMapper,
@@ -132,6 +135,7 @@ public class MatFlowServiceImpl implements IMatFlowService {
                               ImageUrlResolver imageUrlResolver) {
         this.stockFlowMapper = stockFlowMapper;
         this.locationStockMapper = locationStockMapper;
+        this.locationInfoMapper = locationInfoMapper;
         this.productInfoMapper = productInfoMapper;
         this.productInhouseMapper = productInhouseMapper;
         this.cropInfoMapper = cropInfoMapper;
@@ -1018,6 +1022,32 @@ public class MatFlowServiceImpl implements IMatFlowService {
     }
 
     @Override
+    public List<MatIssueLocationVo> issueLocationsByType(String locationType) {
+        return locationInfoMapper.selectMatIssueLocationsByType(requireLocationType(locationType));
+    }
+
+    @Override
+    public List<MatIssueItemVo> issueItemsByType(String locationType, String locationId) {
+        String type = requireLocationType(locationType);
+        Long locId = parseLocationId(locationId);
+        Long userId = LoginHelper.getUserId();
+        List<MatIssueItemVo> items = locationStockMapper.selectMatIssueItemsByType(type, locId, userId);
+        // IMG-LIB-001：productThumb 走 4 层 resolver（L1 image_oss_id → L2 belong_type 默认图 → L3 全局），批量禁 N+1
+        if (items != null && !items.isEmpty()) {
+            List<ImageUrlResolver.Item> resolveItems = items.stream()
+                .map(v -> new ImageUrlResolver.Item(v.getProductThumb(), v.getBelongType()))
+                .toList();
+            List<String> urls = imageUrlResolver.resolveList(resolveItems);
+            if (urls.size() == items.size()) {
+                for (int i = 0; i < items.size(); i++) {
+                    items.get(i).setProductThumb(urls.get(i));
+                }
+            }
+        }
+        return items;
+    }
+
+    @Override
     public List<MatWhiteBarBatchVo> issueWhiteBarBatches(String belongType, String locationId) {
         // 权威源 = bar_info status='in_stock'（一行 = 一条实物白条整只），不走 location_stock（白条 SKU 无库存行）。
         // belongType / locationId 仅为与 issueItems / selfVegIssueItems 端点签名对称接收，bar_info 不据此过滤。
@@ -1132,6 +1162,19 @@ public class MatFlowServiceImpl implements IMatFlowService {
             throw new ServiceException("业态类型不能为空");
         }
         return list;
+    }
+
+    /**
+     * 库位类型参数校验（WMS-OUTSOURCE-001 物资领用 by-type）：去空白后非空。
+     *
+     * <p>by-type 列表 / chip 必须带库位类型（crop_loc 种植库 / farm_loc 养殖库），空会扫全表无意义 → 抛
+     * ServiceException。值不校验是否在字典内（前端从 farmType→locationType 固定映射，非法值 SQL 自然返空）。</p>
+     */
+    private static String requireLocationType(String locationType) {
+        if (locationType == null || locationType.isBlank()) {
+            throw new ServiceException("库位类型不能为空");
+        }
+        return locationType.trim();
     }
 
     /**

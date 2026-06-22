@@ -158,6 +158,21 @@ public interface IProductProductionService {
     Map<String, Integer> listPackedCount(List<Long> productIds);
 
     /**
+     * 批量查目标成品「已打包累计总重量(kg)」（admin 果蔬打包页按此算剩余可打包量）。
+     *
+     * <p>数据源同 {@link #listPackedCount}（{@code t_warehouse_product_production} 打包记录），
+     * 但聚合 {@code SUM(product_weight)} 而非 COUNT。已完成打包 = 全部未软删生产记录（不限当日）。</p>
+     *
+     * <p>返回 Map：key = 成品雪花 id 字符串（避免 JS Number 精度丢失），
+     * value = 已打包累计重量 kg 字符串（BigDecimal 原文，前端按字符串解析避免 double 误差）。
+     * 无生产记录的成品不在 Map（前端按 0 处理）；空入参 → 空 Map。</p>
+     *
+     * @param productIds 目标成品 id 列表（{@code t_warehouse_product_info.id}）
+     * @return 成品 id 字符串 → 已打包累计重量 kg 字符串（无记录/空入参 → 空 Map）
+     */
+    Map<String, String> listPackedWeight(List<Long> productIds);
+
+    /**
      * 果蔬日损耗 compute-on-read 查询（V4，果疏产品全流程处理.docx）。
      *
      * <p>按自然日聚合果蔬（{@code belong_type='vegetable'}）流水，

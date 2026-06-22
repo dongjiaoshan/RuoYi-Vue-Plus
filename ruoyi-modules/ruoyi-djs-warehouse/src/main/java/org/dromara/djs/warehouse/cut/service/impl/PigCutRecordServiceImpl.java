@@ -374,25 +374,36 @@ public class PigCutRecordServiceImpl
         int acidMinutes = (int) Duration.between(
             record.getPickupTime().toInstant(), now.toInstant()).toMinutes();
 
+        // 滴水损耗由系统自动计算（前端不再录入）：白条入库重量 − 白条出库重量。
+        // 白条入库重量 = bar_info.in_weight（燎毛入库快照）；白条出库重量 = 领用称重 pickup_weight。
+        // 入库重量缺失（外购 / 旧数据 in_weight=NULL）或差值为负（脏数据 pickup>in）时钳到 0（损耗不可为负）。
+        BigDecimal pickupWeight = record.getPickupWeight();
+        BarInfo bar = barInfoMapper.selectById(record.getWhiteBarId());
+        BigDecimal inWeight = bar == null ? null : bar.getInWeight();
+        BigDecimal dripLoss = inWeight == null
+            ? BigDecimal.ZERO
+            : inWeight.subtract(pickupWeight).max(BigDecimal.ZERO);
+        // 白条出库重量 = 领用称重（滴水损耗已作为独立损耗项，不再从出库重量二次扣减）
+        BigDecimal outWeight = pickupWeight;
+
         // Step 2：UPDATE cut_record cutting → done
         int affected = baseMapper.updateStatusToDone(
-            record.getId(), now, bo.getDripLoss(), acidMinutes,
+            record.getId(), now, dripLoss, acidMinutes,
             bo.getRemark(), bo.getProofOssIds(), userId);
         if (affected == 0) {
             throw new ServiceException("分割单状态已变更，请刷新重试");
         }
 
         // Step 3：UPDATE bar_info cutting → cut_done
-        BigDecimal outWeight = record.getPickupWeight().subtract(bo.getDripLoss());
         int barAffected = barInfoMapper.updateStatusToCutDone(
-            record.getWhiteBarId(), now, outWeight, acidMinutes, bo.getDripLoss(), userId);
+            record.getWhiteBarId(), now, outWeight, acidMinutes, dripLoss, userId);
         if (barAffected == 0) {
             throw new ServiceException("白条状态不符或已被并发更新，请刷新重试");
         }
 
         // TRC-CORE-001：屠宰分割 + 排酸追溯事件（分割完成同时记两条；按耳号反查 trace_code，
         // 猪肉链当前无生成入口 → warn 跳过，不拖垮分割事务）
-        // 追溯时间轴每节点重量：分割 / 排酸节点重量 = 白条重量 outWeight（pickupWeight − dripLoss）
+        // 追溯时间轴每节点重量：分割 / 排酸节点重量 = 白条出库重量 outWeight（= pickupWeight）
         traceService.recordEventByEarNo(record.getEarNo(), TraceContentConst.SLAUGHTER, outWeight);
         traceService.recordEventByEarNo(record.getEarNo(), TraceContentConst.ACID, outWeight);
     }

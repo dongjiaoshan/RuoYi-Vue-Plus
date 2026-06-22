@@ -59,7 +59,7 @@ public interface PlantingRecordMapper extends BaseMapperPlus<PlantingRecord, Pla
         + "       COALESCE(h.picked_weight,0) AS harvestWeight,"
         + "       COALESCE(h.handled_weight,0) AS handledWeight,"
         + "       (COALESCE(h.picked_weight,0) - COALESCE(h.handled_weight,0)) AS remainWeight,"
-        + "       COALESCE(p.expect_yield,0) AS expectYield,"
+        + "       COALESCE(pl.plot_area * c.predicted_per,0) AS expectYield,"
         + "       CASE WHEN c.related_product IS NOT NULL THEN 1 ELSE 0 END AS hasRelatedProduct,"
         + "       CASE WHEN h.is_weighed=1 THEN 'done' ELSE 'pending' END AS weighStatus,"
         + "       CASE WHEN h.is_finish=1 THEN 'done' ELSE 'pending' END AS processStatus,"

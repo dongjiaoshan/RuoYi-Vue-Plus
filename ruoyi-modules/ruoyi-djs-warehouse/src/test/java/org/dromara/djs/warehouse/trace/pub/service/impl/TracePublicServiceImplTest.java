@@ -31,6 +31,8 @@ import org.dromara.djs.plant.plot.domain.PlotInfo;
 import org.dromara.djs.plant.plot.mapper.PlotInfoMapper;
 import org.dromara.djs.plant.zone.domain.PlotZone;
 import org.dromara.djs.plant.zone.mapper.PlotZoneMapper;
+import org.dromara.djs.warehouse.pack.domain.ProductProduction;
+import org.dromara.djs.warehouse.pack.mapper.ProductProductionMapper;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
 import org.dromara.djs.warehouse.trace.domain.TraceCode;
@@ -40,6 +42,10 @@ import org.dromara.djs.warehouse.trace.mapper.TraceEventMapper;
 import org.dromara.djs.warehouse.trace.mapper.TraceFarmNameMapper;
 import org.dromara.djs.warehouse.trace.pub.domain.vo.PublicTraceVo;
 import org.dromara.djs.warehouse.trace.pub.mapper.TraceUserNameMapper;
+import org.dromara.djs.warehouse.veg.domain.PlantingRecord;
+import org.dromara.djs.warehouse.veg.domain.VegetableHandle;
+import org.dromara.djs.warehouse.veg.mapper.PlantingRecordMapper;
+import org.dromara.djs.warehouse.veg.mapper.VegetableHandleMapper;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -115,6 +121,9 @@ class TracePublicServiceImplTest {
     @Mock private PlotOrganicMapper plotOrganicMapper;
     @Mock private PlantDetailsMapper plantDetailsMapper;
     @Mock private CropInfoMapper cropInfoMapper;
+    @Mock private PlantingRecordMapper plantingRecordMapper;
+    @Mock private VegetableHandleMapper vegetableHandleMapper;
+    @Mock private ProductProductionMapper productProductionMapper;
 
     private TracePublicServiceImpl service;
     private MockedStatic<TenantHelper> tenantHelperMock;
@@ -147,6 +156,9 @@ class TracePublicServiceImplTest {
         TableInfoHelper.initTableInfo(assistant, MedRecord.class);
         TableInfoHelper.initTableInfo(assistant, FarmRecords.class);
         TableInfoHelper.initTableInfo(assistant, PlantDetails.class);
+        TableInfoHelper.initTableInfo(assistant, PlantingRecord.class);
+        TableInfoHelper.initTableInfo(assistant, VegetableHandle.class);
+        TableInfoHelper.initTableInfo(assistant, ProductProduction.class);
     }
 
     @BeforeEach
@@ -157,7 +169,8 @@ class TracePublicServiceImplTest {
             traceFarmNameMapper, traceUserNameMapper, ossService,
             pigMapper, pigGrowthMapper, medRecordMapper, medicineMapper, sowDetailService,
             plotInfoMapper, plotZoneMapper, farmRecordsMapper, cropOrganicMapper, plotOrganicMapper,
-            plantDetailsMapper, cropInfoMapper));
+            plantDetailsMapper, cropInfoMapper,
+            plantingRecordMapper, vegetableHandleMapper, productProductionMapper));
         doReturn(null).when(service).readCache(anyString());       // 缓存恒未命中 → 每次走聚合
         doNothing().when(service).writeCache(anyString(), any());  // 写缓存 no-op
         // TenantHelper.ignore(Supplier) → 直接执行 supplier
@@ -409,6 +422,89 @@ class TracePublicServiceImplTest {
         assertThat(vo.getGrowthRecords()).isNull();
         assertThat(vo.getPedigree()).isNull();
         assertThat(vo.getStore()).isNull();
+    }
+
+    @Test
+    @DisplayName("veg 码：图取缩略图优先 / 重量取打包实重 / 所属大区 / 时间轴补 4 工序节点并升序")
+    void getByProduceCode_veg_processNodesAndWeightAndZone() {
+        TraceCode code = new TraceCode();
+        code.setProduceCode(VEG_CODE);
+        code.setCodeType("veg");
+        code.setProductId(PRODUCT_ID);
+        code.setPlotId(PLOT_ID);
+        code.setPlantDays(75);
+        code.setHarvestDate(LocalDate.of(2026, 6, 1));
+        when(traceCodeMapper.selectOne(any(Wrapper.class))).thenReturn(code);
+
+        ProductInfo product = new ProductInfo();
+        product.setId(PRODUCT_ID);
+        product.setProductName("有机番茄");
+        product.setProductSpec("1kg/盒");
+        product.setProductThumb("7777");   // ① 缩略图优先
+        product.setProductImg("9999");
+        when(productInfoMapper.selectById(PRODUCT_ID)).thenReturn(product);
+        when(ossService.selectUrlByIds("7777")).thenReturn("http://oss/thumb-7777.jpg");
+
+        // 时间轴本身只有 1 条入库事件（6/4），后补 4 工序节点
+        TraceEvent inStock = event("in_stock", LocalDateTime.of(2026, 6, 4, 8, 0), 9103L);
+        when(traceEventMapper.selectList(any(Wrapper.class))).thenReturn(List.of(inStock));
+        when(traceUserNameMapper.selectUserNames(anyList())).thenReturn(List.of(
+            Map.of("userId", 9103L, "nickName", "王五")));
+
+        PlotInfo plot = new PlotInfo();
+        plot.setId(PLOT_ID);
+        plot.setPlotName("东区3号地块");
+        plot.setPlotArea(new BigDecimal("2.50"));
+        plot.setZoneId(ZONE_ID);
+        when(plotInfoMapper.selectById(PLOT_ID)).thenReturn(plot);
+
+        PlotZone zone = new PlotZone();
+        zone.setId(ZONE_ID);
+        zone.setZoneName("东片区");
+        zone.setZoneBelong("东部");        // ③ 所属大区
+        when(plotZoneMapper.selectById(ZONE_ID)).thenReturn(zone);
+
+        // ④ 播种：种植记录 plant_date 3/15；采收 harvest_date（用 code.havest_date 6/1）
+        PlantingRecord planting = new PlantingRecord();
+        planting.setPlotId(PLOT_ID);
+        planting.setProductId(PRODUCT_ID);
+        planting.setPlantDate(java.sql.Date.valueOf(LocalDate.of(2026, 3, 15)));
+        planting.setHarvestDate(java.sql.Date.valueOf(LocalDate.of(2026, 6, 1)));
+        when(plantingRecordMapper.selectOne(any(Wrapper.class))).thenReturn(planting);
+
+        // ④ 毛菜处理：pick_end_time 6/2
+        VegetableHandle handle = new VegetableHandle();
+        handle.setPlotId(PLOT_ID);
+        handle.setProductId(PRODUCT_ID);
+        handle.setPickEndTime(java.sql.Timestamp.valueOf(LocalDateTime.of(2026, 6, 2, 14, 0)));
+        when(vegetableHandleMapper.selectOne(any(Wrapper.class))).thenReturn(handle);
+
+        // ② + ④ 打包：实重 0.98kg / 打包时间 6/3
+        ProductProduction pack = new ProductProduction();
+        pack.setTraceCode(VEG_CODE);
+        pack.setProductWeight(new BigDecimal("0.98"));
+        pack.setProduceTime(java.sql.Timestamp.valueOf(LocalDateTime.of(2026, 6, 3, 9, 0)));
+        when(productProductionMapper.selectOne(any(Wrapper.class))).thenReturn(pack);
+
+        PublicTraceVo vo = service.getByProduceCode(VEG_CODE);
+
+        assertThat(vo).isNotNull();
+        // ① 图：缩略图优先
+        assertThat(vo.getProduct().getImageUrl()).isEqualTo("http://oss/thumb-7777.jpg");
+        // ② 重量：打包实重覆盖规格
+        assertThat(vo.getProduct().getWeight()).isEqualTo("0.98");
+        assertThat(vo.getProduct().getSpec()).isEqualTo("1kg/盒");
+        // ③ 所属大区
+        assertThat(vo.getPlot().getZoneBelong()).isEqualTo("东部");
+        // ④ 时间轴：1 入库 + 4 工序节点 = 5，升序，工序节点齐全
+        assertThat(vo.getTimeline()).hasSize(5);
+        assertThat(vo.getTimeline()).extracting(PublicTraceVo.TimelineNode::getTraceContent)
+            .containsExactly("sowing", "harvest", "veg_handle", "pack", "in_stock");
+        // 升序：相邻节点时间非降
+        for (int i = 1; i < vo.getTimeline().size(); i++) {
+            assertThat(vo.getTimeline().get(i).getTraceTime())
+                .isAfterOrEqualTo(vo.getTimeline().get(i - 1).getTraceTime());
+        }
     }
 
     // ============================ 不存在 ============================

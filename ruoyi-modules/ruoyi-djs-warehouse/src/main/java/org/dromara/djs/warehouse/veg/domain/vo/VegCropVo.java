@@ -63,7 +63,7 @@ public class VegCropVo implements Serializable {
     private BigDecimal lossWeight;
 
     /**
-     * 预计产量(kg) 合计（= SUM(t_warehouse_planting_record.expect_yield)）。
+     * 预计产量(kg) 合计（= SUM(地块面积 plot_area × 作物预计亩产 crop.predicted_per)）。
      */
     private BigDecimal expectedYield;
 

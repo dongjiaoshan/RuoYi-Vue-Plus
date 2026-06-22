@@ -1,6 +1,7 @@
 package org.dromara.djs.warehouse.purchase.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.common.core.exception.ServiceException;
@@ -9,6 +10,7 @@ import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.satoken.utils.LoginHelper;
 import org.dromara.djs.common.encoder.BizCodeType;
 import org.dromara.djs.common.encoder.IBizCodeGenerator;
+import org.dromara.djs.common.image.service.ImageUrlResolver;
 import org.dromara.djs.warehouse.flow.domain.StockFlow;
 import org.dromara.djs.warehouse.flow.domain.vo.StockFlowVo;
 import org.dromara.djs.warehouse.flow.mapper.StockFlowMapper;
@@ -17,7 +19,9 @@ import org.dromara.djs.warehouse.location.mapper.LocationInfoMapper;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
 import org.dromara.djs.warehouse.purchase.domain.bo.PurchaseInBo;
+import org.dromara.djs.warehouse.purchase.domain.query.PurchaseInProductQuery;
 import org.dromara.djs.warehouse.purchase.domain.query.PurchaseInQuery;
+import org.dromara.djs.warehouse.purchase.domain.vo.PurchaseInProductVo;
 import org.dromara.djs.warehouse.purchase.domain.vo.PurchaseInRecordVo;
 import org.dromara.djs.warehouse.purchase.service.IWarehousePurchaseInService;
 import org.dromara.djs.warehouse.stock.domain.LocationStock;
@@ -26,11 +30,15 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Date;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
@@ -67,17 +75,20 @@ public class WarehousePurchaseInServiceImpl implements IWarehousePurchaseInServi
     private final ProductInfoMapper productInfoMapper;
     private final LocationInfoMapper locationInfoMapper;
     private final IBizCodeGenerator bizCodeGenerator;
+    private final ImageUrlResolver imageUrlResolver;
 
     public WarehousePurchaseInServiceImpl(StockFlowMapper stockFlowMapper,
                                           LocationStockMapper locationStockMapper,
                                           ProductInfoMapper productInfoMapper,
                                           LocationInfoMapper locationInfoMapper,
-                                          IBizCodeGenerator bizCodeGenerator) {
+                                          IBizCodeGenerator bizCodeGenerator,
+                                          ImageUrlResolver imageUrlResolver) {
         this.stockFlowMapper = stockFlowMapper;
         this.locationStockMapper = locationStockMapper;
         this.productInfoMapper = productInfoMapper;
         this.locationInfoMapper = locationInfoMapper;
         this.bizCodeGenerator = bizCodeGenerator;
+        this.imageUrlResolver = imageUrlResolver;
     }
 
     @Override
@@ -147,6 +158,80 @@ public class WarehousePurchaseInServiceImpl implements IWarehousePurchaseInServi
         List<PurchaseInRecordVo> rows = list.stream().map(this::toRecordVo).toList();
         fillJoinNames(rows);
         return rows;
+    }
+
+    @Override
+    public TableDataInfo<PurchaseInProductVo> queryProductPageList(PurchaseInProductQuery query, PageQuery pageQuery) {
+        PurchaseInProductQuery q = query == null ? new PurchaseInProductQuery() : query;
+        Page<PurchaseInProductVo> page = pageQuery.build();
+        IPage<PurchaseInProductVo> result = productInfoMapper.selectPurchaseInProductPage(page, q);
+        List<PurchaseInProductVo> rows = result.getRecords();
+        fillProductExtras(rows);
+        return TableDataInfo.build(result);
+    }
+
+    /**
+     * 批量回填 imageUrl（resolver 4 层，禁 N+1）+ storeLocationName（多库位「、」拼接，单次 IN 查）。
+     *
+     * <p>外购商品 belongType 恒 null（外购无业态），resolver L2 兜底走 null → 全局默认图。</p>
+     */
+    private void fillProductExtras(List<PurchaseInProductVo> rows) {
+        if (rows == null || rows.isEmpty()) {
+            return;
+        }
+        // 1. imageUrl 批量回填（resolver L1 取 imageOssId；外购无 belongType → null）
+        List<ImageUrlResolver.Item> resolveItems = rows.stream()
+            .map(v -> new ImageUrlResolver.Item(v.getImageOssId(), null))
+            .toList();
+        List<String> urls = imageUrlResolver.resolveList(resolveItems);
+        if (urls.size() == rows.size()) {
+            for (int i = 0; i < rows.size(); i++) {
+                rows.get(i).setImageUrl(urls.get(i));
+            }
+        }
+
+        // 2. storeLocationName 批量回填（store_location_id 为 CSV 多库位，收集全部 id 单次 IN 查）
+        Set<Long> locIds = new LinkedHashSet<>();
+        for (PurchaseInProductVo vo : rows) {
+            locIds.addAll(parseCsvIds(vo.getStoreLocationId()));
+        }
+        if (locIds.isEmpty()) {
+            return;
+        }
+        Map<Long, String> nameMap = locationInfoMapper
+            .selectList(new LambdaQueryWrapper<LocationInfo>().in(LocationInfo::getId, locIds))
+            .stream()
+            .collect(Collectors.toMap(LocationInfo::getId, LocationInfo::getLocationName, (a, b) -> a));
+        for (PurchaseInProductVo vo : rows) {
+            List<Long> ids = parseCsvIds(vo.getStoreLocationId());
+            if (ids.isEmpty()) {
+                continue;
+            }
+            String joined = ids.stream()
+                .map(nameMap::get)
+                .filter(Objects::nonNull)
+                .collect(Collectors.joining("、"));
+            vo.setStoreLocationName(joined.isEmpty() ? null : joined);
+        }
+    }
+
+    /**
+     * CSV 库位 id 串 → Long 列表（去空白 / 去空项 / 跳过非法值）。
+     */
+    private static List<Long> parseCsvIds(String csv) {
+        if (csv == null || csv.isBlank()) {
+            return List.of();
+        }
+        List<Long> ids = new ArrayList<>();
+        for (String part : Arrays.stream(csv.split(",")).map(String::trim).filter(s -> !s.isEmpty()).toList()) {
+            try {
+                ids.add(Long.valueOf(part));
+            }
+            catch (NumberFormatException ignore) {
+                // 非法库位 id 串跳过，不阻塞列表回填
+            }
+        }
+        return ids;
     }
 
     /**

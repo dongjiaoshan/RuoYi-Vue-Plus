@@ -35,6 +35,7 @@ public interface VegReceiveMapper extends BaseMapperPlus<VegReceive, VegReceive>
         SELECT t.crop_id      AS cropId,
                cr.crop_name   AS cropName,
                cr.image_oss_id AS imageOssId,
+               COALESCE(rp.product_id, cr.crop_code) AS productCode,
                t.pending      AS pendingWeight
           FROM (
             SELECT vh.crop_id,
@@ -54,6 +55,10 @@ public interface VegReceiveMapper extends BaseMapperPlus<VegReceive, VegReceive>
              GROUP BY vh.crop_id
           ) t
           LEFT JOIN t_plant_crop_info cr ON cr.id = t.crop_id
+          LEFT JOIN t_warehouse_product_info rp
+                 ON rp.id = cr.related_product
+                AND rp.del_flag = '0'
+                AND rp.tenant_id = '1001'
          WHERE t.pending > 0
          ORDER BY t.crop_id
         """)
@@ -78,6 +83,7 @@ public interface VegReceiveMapper extends BaseMapperPlus<VegReceive, VegReceive>
         SELECT p.id            AS cropId,
                p.product_name  AS cropName,
                p.image_oss_id  AS imageOssId,
+               p.product_id    AS productCode,
                '果蔬产品'       AS productType,
                0               AS pendingWeight
           FROM t_warehouse_product_info p

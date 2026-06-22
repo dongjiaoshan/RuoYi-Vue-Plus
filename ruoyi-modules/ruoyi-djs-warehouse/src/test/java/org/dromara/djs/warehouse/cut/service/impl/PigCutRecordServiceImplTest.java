@@ -323,9 +323,13 @@ class PigCutRecordServiceImplTest {
     // -------- cutDone --------
 
     @Test
-    @DisplayName("submitCutDone: happy → cut_record done + bar_info cut_done + acidRemoveMinutes 合理 + outWeight=pickup-drip")
+    @DisplayName("submitCutDone: happy → done + bar cut_done + acidMinutes 合理 + dripLoss=in−pickup 自动算 + outWeight=pickup")
     void testCutDone_Happy() {
-        when(cutMapper.selectById(80001L)).thenReturn(sampleRecord("cutting"));
+        when(cutMapper.selectById(80001L)).thenReturn(sampleRecord("cutting")); // pickupWeight 80.000
+        // 入库重量 81.5 → 滴水损耗自动 = 81.5 − 80 = 1.5；出库重量 = pickupWeight = 80
+        BarInfo bar = sampleBar();
+        bar.setInWeight(new BigDecimal("81.500"));
+        when(barInfoMapper.selectById(70001L)).thenReturn(bar);
         when(cutMapper.updateStatusToDone(eq(80001L), any(Date.class), any(BigDecimal.class),
             any(Integer.class), any(), any(), eq(9001L))).thenReturn(1);
         when(barInfoMapper.updateStatusToCutDone(eq(70001L), any(Date.class), any(BigDecimal.class),
@@ -333,19 +337,23 @@ class PigCutRecordServiceImplTest {
 
         PigCutDoneBo bo = new PigCutDoneBo();
         bo.setCutRecordId(80001L);
-        bo.setDripLoss(new BigDecimal("1.500"));
         bo.setRemark("e2e done");
 
         service.submitCutDone(bo);
 
-        // 验证 bar_info update 的 outWeight = 80 - 1.5 = 78.5
+        // bar_info update：outWeight = pickupWeight = 80；dripLoss = in − pickup = 1.5（系统自动）
         ArgumentCaptor<BigDecimal> outWeightCap = ArgumentCaptor.forClass(BigDecimal.class);
         ArgumentCaptor<BigDecimal> dripCap = ArgumentCaptor.forClass(BigDecimal.class);
         ArgumentCaptor<Integer> minutesCap = ArgumentCaptor.forClass(Integer.class);
         verify(barInfoMapper).updateStatusToCutDone(eq(70001L), any(Date.class), outWeightCap.capture(),
             minutesCap.capture(), dripCap.capture(), eq(9001L));
-        assertThat(outWeightCap.getValue()).isEqualByComparingTo("78.500");
+        assertThat(outWeightCap.getValue()).isEqualByComparingTo("80.000");
         assertThat(dripCap.getValue()).isEqualByComparingTo("1.500");
+        // cut_record done 也应写入同一自动算的 dripLoss
+        ArgumentCaptor<BigDecimal> doneDripCap = ArgumentCaptor.forClass(BigDecimal.class);
+        verify(cutMapper).updateStatusToDone(eq(80001L), any(Date.class), doneDripCap.capture(),
+            any(Integer.class), any(), any(), eq(9001L));
+        assertThat(doneDripCap.getValue()).isEqualByComparingTo("1.500");
         // 排酸时长 ≈ 60 分钟（sample record pickupTime 是 1h ago）
         assertThat(minutesCap.getValue()).isBetween(59, 61);
     }
@@ -357,7 +365,6 @@ class PigCutRecordServiceImplTest {
 
         PigCutDoneBo bo = new PigCutDoneBo();
         bo.setCutRecordId(80001L);
-        bo.setDripLoss(new BigDecimal("1.500"));
 
         assertThatThrownBy(() -> service.submitCutDone(bo))
             .isInstanceOf(ServiceException.class)

@@ -3,7 +3,9 @@ package org.dromara.djs.warehouse.purchase.service;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.warehouse.purchase.domain.bo.PurchaseInBo;
+import org.dromara.djs.warehouse.purchase.domain.query.PurchaseInProductQuery;
 import org.dromara.djs.warehouse.purchase.domain.query.PurchaseInQuery;
+import org.dromara.djs.warehouse.purchase.domain.vo.PurchaseInProductVo;
 import org.dromara.djs.warehouse.purchase.domain.vo.PurchaseInRecordVo;
 
 import java.math.BigDecimal;
@@ -53,5 +55,14 @@ public interface IWarehousePurchaseInService {
      * 不分页查询（导出用）。
      */
     List<PurchaseInRecordVo> queryList(PurchaseInQuery query);
+
+    /**
+     * 采购入库「商品维度」分页查询（WMS-OUTSOURCE-001 需求1）。
+     *
+     * <p>以外购商品（{@code product_type=2}）为粒度，聚合 currentStock / lastInTime / lastPurchaserId /
+     * monthInTotal，并 service 层批量回填 storeLocationName + imageUrl（禁 N+1）。lastPurchaserName 走
+     * VO 上 {@code @Translation(USER_ID_TO_NICKNAME)} 序列化时翻译。</p>
+     */
+    TableDataInfo<PurchaseInProductVo> queryProductPageList(PurchaseInProductQuery query, PageQuery pageQuery);
 
 }

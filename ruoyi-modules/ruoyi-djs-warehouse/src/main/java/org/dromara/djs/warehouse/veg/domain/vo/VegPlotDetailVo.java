@@ -59,7 +59,7 @@ public class VegPlotDetailVo implements Serializable {
     private BigDecimal remainWeight;
 
     /**
-     * 预计产量(kg)（= t_warehouse_planting_record.expect_yield）。
+     * 预计产量(kg)（= 地块面积 plot_area × 作物预计亩产 crop.predicted_per）。
      */
     private BigDecimal expectYield;
 

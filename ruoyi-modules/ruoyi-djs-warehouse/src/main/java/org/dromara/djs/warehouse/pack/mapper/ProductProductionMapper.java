@@ -56,6 +56,28 @@ public interface ProductProductionMapper extends BaseMapperPlus<ProductProductio
     List<Map<String, Object>> selectTodayPackedCount(@Param("productIds") List<Long> productIds);
 
     /**
+     * 批量统计「已完成打包累计重量」（按 product_id 分组 SUM {@code product_weight}）。
+     *
+     * <p>打包台用——admin 果蔬打包页按「目标成品已打包总重量」算剩余可打包量。数据源同
+     * {@link #selectTodayPackedCount}（{@code t_warehouse_product_production} 打包记录），
+     * 但聚合 {@code SUM(product_weight)} 而非 COUNT。已完成打包 = 全部未软删生产记录
+     * （口径同主列表 {@code selectProductionGroupList} 的 {@code SUM(pp.product_weight)}，不限当日）。</p>
+     *
+     * <p>租户隔离 V1 单租户显式 {@code tenant_id='1001'}（与本 Mapper 其他聚合 SQL 一致）。</p>
+     *
+     * @param productIds 目标成品 id 列表（非空）
+     * @return 行 {@code {productId, weight}}；无生产记录的成品不在结果里
+     */
+    @Select("<script>"
+        + "SELECT product_id AS productId, COALESCE(SUM(product_weight), 0) AS weight "
+        + "  FROM t_warehouse_product_production "
+        + " WHERE del_flag = '0' AND tenant_id = '1001' "
+        + "   AND product_id IN <foreach collection='productIds' item='id' open='(' separator=',' close=')'>#{id}</foreach> "
+        + " GROUP BY product_id"
+        + "</script>")
+    List<Map<String, Object>> selectPackedWeight(@Param("productIds") List<Long> productIds);
+
+    /**
      * 批量将一组 product_production 行从 {@code is_delivery_check=0} 推进到 1，
      * 同时写入 {@code delivery_check_time} 与 {@code demand_id}（WMS-SHIP-001 ShipmentService 调用）。
      *

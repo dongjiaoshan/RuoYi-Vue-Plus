@@ -34,6 +34,20 @@ public final class TraceContentConst {
     /** 到店（门店签收工序）。 */
     public static final String ARRIVAL = "arrival";
 
+    // ===== 果蔬链合成工序节点（非 trace_event 落地，veg 聚合时按上游业务表时间补造，见 fillVeg）=====
+
+    /** 播种（果蔬链：种植起始）。 */
+    public static final String SOWING = "sowing";
+
+    /** 采收（果蔬链：采摘起始）。 */
+    public static final String HARVEST = "harvest";
+
+    /** 毛菜处理（果蔬链：毛菜处理工序）。 */
+    public static final String VEG_HANDLE = "veg_handle";
+
+    /** 打包（果蔬链：成品打包工序）。 */
+    public static final String PACK = "pack";
+
     private TraceContentConst() {
     }
 }

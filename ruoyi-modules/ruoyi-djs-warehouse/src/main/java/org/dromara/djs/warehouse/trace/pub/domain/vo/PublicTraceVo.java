@@ -274,6 +274,8 @@ public class PublicTraceVo implements Serializable {
         private String plotName;
         /** 片区名。 */
         private String zoneName;
+        /** 所属大区（源 {@code t_plant_plot_zone.zone_belong}，例「东部」；无则 null）。 */
+        private String zoneBelong;
         /** 面积。 */
         private String area;
     }

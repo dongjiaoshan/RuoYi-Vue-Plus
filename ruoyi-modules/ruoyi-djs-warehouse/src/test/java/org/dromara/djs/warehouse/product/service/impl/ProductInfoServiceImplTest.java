@@ -502,6 +502,85 @@ class ProductInfoServiceImplTest {
     }
 
     @Test
+    @DisplayName("采购入库 autoConfig=true + 商品未配库位 → 回写 store_location_id=入库库位")
+    void testInbound_AutoConfigLocation_WritesBack() {
+        ProductInfo product = new ProductInfo();
+        product.setId(20002L);
+        product.setProductName("外购包材");
+        product.setProductUnit("个");
+        product.setStoreLocationId(null);   // 未配存储库位
+        when(productInfoMapper.selectById(eq(20002L))).thenReturn(product);
+        when(bizCodeGenerator.generate(any(), any())).thenReturn("F20260622IN0001");
+        when(locationStockMapper.addByProductLocation(eq(40001L), eq(20002L), any(BigDecimal.class), any()))
+            .thenReturn(1);
+
+        org.dromara.djs.warehouse.product.domain.bo.ProductStockInBo bo =
+            new org.dromara.djs.warehouse.product.domain.bo.ProductStockInBo();
+        bo.setProductId(20002L);
+        bo.setLocationId(40001L);
+        bo.setQuantity(new BigDecimal("10"));
+        bo.setAutoConfigLocation(true);
+
+        service.inbound(bo);
+
+        ArgumentCaptor<ProductInfo> captor = ArgumentCaptor.forClass(ProductInfo.class);
+        verify(productInfoMapper).updateById(captor.capture());
+        ProductInfo updated = captor.getValue();
+        assertThat(updated.getId()).isEqualTo(20002L);
+        assertThat(updated.getStoreLocationId()).as("回写本次入库库位").isEqualTo("40001");
+    }
+
+    @Test
+    @DisplayName("采购入库 autoConfig=null（商品配置入库）→ 不回写，行为零变化")
+    void testInbound_AutoConfigNull_NoWriteBack() {
+        ProductInfo product = new ProductInfo();
+        product.setId(20003L);
+        product.setProductName("外购包材");
+        product.setProductUnit("个");
+        product.setStoreLocationId(null);
+        when(productInfoMapper.selectById(eq(20003L))).thenReturn(product);
+        when(bizCodeGenerator.generate(any(), any())).thenReturn("F20260622IN0002");
+        when(locationStockMapper.addByProductLocation(eq(40001L), eq(20003L), any(BigDecimal.class), any()))
+            .thenReturn(1);
+
+        org.dromara.djs.warehouse.product.domain.bo.ProductStockInBo bo =
+            new org.dromara.djs.warehouse.product.domain.bo.ProductStockInBo();
+        bo.setProductId(20003L);
+        bo.setLocationId(40001L);
+        bo.setQuantity(new BigDecimal("10"));
+        // autoConfigLocation 不设 → null
+
+        service.inbound(bo);
+
+        verify(productInfoMapper, never()).updateById(any(ProductInfo.class));
+    }
+
+    @Test
+    @DisplayName("采购入库 autoConfig=true 但商品已配库位 → 不覆盖，不回写")
+    void testInbound_AutoConfigTrue_AlreadyConfigured_NoWriteBack() {
+        ProductInfo product = new ProductInfo();
+        product.setId(20004L);
+        product.setProductName("外购包材");
+        product.setProductUnit("个");
+        product.setStoreLocationId("50001");   // 已配存储库位（命中校验放行）
+        when(productInfoMapper.selectById(eq(20004L))).thenReturn(product);
+        when(bizCodeGenerator.generate(any(), any())).thenReturn("F20260622IN0003");
+        when(locationStockMapper.addByProductLocation(eq(50001L), eq(20004L), any(BigDecimal.class), any()))
+            .thenReturn(1);
+
+        org.dromara.djs.warehouse.product.domain.bo.ProductStockInBo bo =
+            new org.dromara.djs.warehouse.product.domain.bo.ProductStockInBo();
+        bo.setProductId(20004L);
+        bo.setLocationId(50001L);
+        bo.setQuantity(new BigDecimal("10"));
+        bo.setAutoConfigLocation(true);
+
+        service.inbound(bo);
+
+        verify(productInfoMapper, never()).updateById(any(ProductInfo.class));
+    }
+
+    @Test
     @DisplayName("产品入库：产品不存在 → ServiceException")
     void testInbound_ProductNotFound() {
         when(productInfoMapper.selectById(eq(99999L))).thenReturn(null);

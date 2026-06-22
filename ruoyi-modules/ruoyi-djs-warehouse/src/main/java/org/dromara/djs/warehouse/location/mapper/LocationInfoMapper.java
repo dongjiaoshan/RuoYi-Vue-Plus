@@ -3,6 +3,7 @@ package org.dromara.djs.warehouse.location.mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 import org.dromara.common.mybatis.core.mapper.BaseMapperPlus;
+import org.dromara.djs.warehouse.flow.domain.vo.MatIssueLocationVo;
 import org.dromara.djs.warehouse.location.domain.LocationInfo;
 import org.dromara.djs.warehouse.location.domain.vo.LocationCardSummaryVo;
 import org.dromara.djs.warehouse.location.domain.vo.LocationInfoVo;
@@ -89,6 +90,28 @@ public interface LocationInfoMapper extends BaseMapperPlus<LocationInfo, Locatio
           )
         """)
     List<LocationCardSummaryVo> selectLastCheckByType(@Param("tenantId") String tenantId);
+
+    /**
+     * mp 物资领用「按库位类型列库位 chip」列表（WMS-OUTSOURCE-001：crop_loc 种植库 / farm_loc 养殖库）。
+     *
+     * <p>与按 belong_type 组织的 {@code selectMatIssueLocations} 对称，本方法直接按 {@code location_type}
+     * 列出该类型下全部未软删库位，按 {@code location_sort} 升序（对齐原型「库位 chip 按排序码」）。
+     * 租户单租户显式 {@code tenant_id='1001'}（V1）。</p>
+     *
+     * @param locationType 字典 {@code djs_location_type} 的 value（{@code crop_loc} / {@code farm_loc}）
+     * @return 该类型库位 chip 列表（按 location_sort、id 升序）；无则空 list
+     */
+    @Select("""
+        SELECT id            AS locationId,
+               location_code AS locationCode,
+               location_name AS locationName
+          FROM t_warehouse_location_info
+         WHERE location_type = #{locationType}
+           AND del_flag      = '0'
+           AND tenant_id     = '1001'
+         ORDER BY location_sort ASC, id ASC
+        """)
+    List<MatIssueLocationVo> selectMatIssueLocationsByType(@Param("locationType") String locationType);
 
 }
 

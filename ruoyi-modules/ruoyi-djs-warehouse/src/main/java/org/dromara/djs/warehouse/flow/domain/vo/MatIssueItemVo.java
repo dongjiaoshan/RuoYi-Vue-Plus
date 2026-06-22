@@ -61,6 +61,15 @@ public class MatIssueItemVo implements Serializable {
     private String belongType;
 
     /**
+     * 商品分类（字典 {@code djs_buy_class} 的 value；仅 {@code issueItemsByType}（按库位类型列外购商品）
+     * 端点回填，其余按 {@code belongType} 组织的端点不回填即 null）。
+     *
+     * <p>mp 拿到列表后 {@code [...new Set(items.map(i => i.buyClass).filter(Boolean))]} 去重成商品分类
+     * 筛选 chip/下拉；label 走 mp 字典 store（{@code djs_buy_class}）显中文。前端按 string 处理。</p>
+     */
+    private String buyClass;
+
+    /**
      * 当前库存（跨库位 SUM；指定 locationId 时为该库位库存；无库存行为 0）。
      */
     private BigDecimal currentStock;

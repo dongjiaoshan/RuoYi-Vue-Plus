@@ -88,6 +88,30 @@ public interface IMatFlowService {
     List<MatIssueItemVo> issueItems(String belongType, String locationId);
 
     /**
+     * mp 物资领用「按库位类型列库位 chip」列表（WMS-OUTSOURCE-001：种植库 crop_loc / 养殖库 farm_loc）。
+     *
+     * <p>与 {@link #issueLocations(String)}（按业态组织）对称：本方法按 {@code location_type} 列出该类型
+     * 下全部库位，按 location_sort 排序。前端首项「全部」+ 各库位 chip。</p>
+     *
+     * @param locationType 字典 {@code djs_location_type} 的 value（{@code crop_loc} / {@code farm_loc}）
+     * @return 库位 chip 列表（按 location_sort 排序）；无则空 list
+     */
+    List<MatIssueLocationVo> issueLocationsByType(String locationType);
+
+    /**
+     * mp 物资领用「按库位类型列待领外购商品卡」列表（WMS-OUTSOURCE-001）。
+     *
+     * <p>与 {@link #issueItems(String, String)}（按业态组织）对称：本方法按 {@code location_type} 列出该类型
+     * 库位下有库存的外购商品（{@code product_type=2 + product_status=0 + 库存>0}），VO 额外回填
+     * {@code buyClass}（商品分类，前端去重成分类筛选 chip）。productThumb 走 resolver 批量回填禁 N+1。</p>
+     *
+     * @param locationType 字典 {@code djs_location_type} 的 value（{@code crop_loc} / {@code farm_loc}）
+     * @param locationId   库位 ID（可空，chip 选中态过滤；为空则该类型全库位聚合）
+     * @return 待领外购商品卡列表（库存升序）；无则空 list
+     */
+    List<MatIssueItemVo> issueItemsByType(String locationType, String locationId);
+
+    /**
      * 领用前置校验：该原材料是否允许领用（mp 物资领用硬拦截）。
      *
      * <p>规则（Kevin 2026-06-21）：打包业态（果蔬/猪肉/鸡蛋/干货/其他）的原材料(attr=2) **必须**有对应成品

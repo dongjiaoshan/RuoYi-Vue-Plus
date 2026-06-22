@@ -1,5 +1,6 @@
 package org.dromara.djs.warehouse.product.mapper;
 
+import com.baomidou.mybatisplus.core.metadata.IPage;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 import org.dromara.common.mybatis.core.mapper.BaseMapperPlus;
@@ -7,6 +8,8 @@ import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.domain.vo.ProductFlowRecordVo;
 import org.dromara.djs.warehouse.product.domain.vo.ProductProductionRecordVo;
 import org.dromara.djs.warehouse.product.domain.vo.ProductInfoVo;
+import org.dromara.djs.warehouse.purchase.domain.query.PurchaseInProductQuery;
+import org.dromara.djs.warehouse.purchase.domain.vo.PurchaseInProductVo;
 
 import java.util.Date;
 import java.util.List;
@@ -150,5 +153,73 @@ public interface ProductInfoMapper extends BaseMapperPlus<ProductInfo, ProductIn
         """)
     List<ProductFlowRecordVo> selectFlowRecords(@Param("productId") Long productId,
                                                 @Param("bizDate") Date bizDate);
+
+    /**
+     * 采购入库「商品维度」分页聚合查询（WMS-OUTSOURCE-001 需求1）。
+     *
+     * <p>以 {@code product_type=2}（外购商品）为分页骨架，子查询聚合：</p>
+     * <ul>
+     *   <li>{@code currentStock} = SUM(location_stock.product_stock)；</li>
+     *   <li>{@code lastInTime} = MAX(stock_flow.flow_date) WHERE flow_type='purchase_in'；</li>
+     *   <li>{@code lastPurchaserId} = 最近一笔 purchase_in 流水的 operator_id（service 经 @Translation 转中文名）；</li>
+     *   <li>{@code monthInTotal} = SUM(change_quantity) WHERE flow_type='purchase_in' AND 当月
+     *       [本月 1 号 ≤ flow_date < 下月 1 号]。</li>
+     * </ul>
+     *
+     * <p>{@code storeLocationName} / {@code imageUrl} 走 service 层批量回填（禁 N+1，不在 SQL JOIN）。
+     * 多库位 {@code store_location_id} 为 CSV，{@code storeLocationId} 入参用 FIND_IN_SET 命中。
+     * 租户单租户显式 {@code tenant_id='1001'}（V1）。</p>
+     *
+     * @param page  分页对象
+     * @param query 查询条件（productName / buyClass / supplierId / storeLocationId）
+     * @return 商品维度聚合分页结果
+     */
+    @Select("""
+        <script>
+        SELECT p.id                AS productId,
+               p.product_id         AS productCode,
+               p.product_name       AS productName,
+               p.product_unit       AS productUnit,
+               p.product_spec       AS productSpec,
+               p.product_thumb      AS productThumb,
+               p.image_oss_id       AS imageOssId,
+               p.buy_class          AS buyClass,
+               p.store_location_id  AS storeLocationId,
+               p.supplier_id        AS supplierId,
+               COALESCE((SELECT SUM(s.product_stock) FROM t_warehouse_location_stock s
+                          WHERE s.product_id = p.id AND s.del_flag = '0' AND s.tenant_id = '1001'), 0) AS currentStock,
+               (SELECT MAX(f.flow_date) FROM t_warehouse_stock_flow f
+                 WHERE f.product_id = p.id AND f.flow_type = 'purchase_in' AND f.del_flag = '0'
+                   AND f.tenant_id = '1001') AS lastInTime,
+               (SELECT f.operator_id FROM t_warehouse_stock_flow f
+                 WHERE f.product_id = p.id AND f.flow_type = 'purchase_in' AND f.del_flag = '0'
+                   AND f.tenant_id = '1001'
+                 ORDER BY f.flow_date DESC, f.id DESC LIMIT 1) AS lastPurchaserId,
+               COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
+                          WHERE f.product_id = p.id AND f.flow_type = 'purchase_in' AND f.del_flag = '0'
+                            AND f.tenant_id = '1001'
+                            AND f.flow_date >= DATE_FORMAT(NOW(), '%Y-%m-01')
+                            AND f.flow_date &lt; DATE_FORMAT(DATE_ADD(NOW(), INTERVAL 1 MONTH), '%Y-%m-01')), 0) AS monthInTotal
+          FROM t_warehouse_product_info p
+         WHERE p.del_flag     = '0'
+           AND p.tenant_id    = '1001'
+           AND p.product_type = 2
+           <if test="query.productName != null and query.productName != ''">
+             AND p.product_name LIKE CONCAT('%', #{query.productName}, '%')
+           </if>
+           <if test="query.buyClass != null and query.buyClass != ''">
+             AND p.buy_class = #{query.buyClass}
+           </if>
+           <if test="query.supplierId != null">
+             AND p.supplier_id = #{query.supplierId}
+           </if>
+           <if test="query.storeLocationId != null">
+             AND FIND_IN_SET(#{query.storeLocationId}, p.store_location_id)
+           </if>
+         ORDER BY p.product_name ASC
+        </script>
+        """)
+    IPage<PurchaseInProductVo> selectPurchaseInProductPage(@Param("page") IPage<PurchaseInProductVo> page,
+                                                           @Param("query") PurchaseInProductQuery query);
 
 }

@@ -41,6 +41,20 @@ public class VegReceiveItemVo implements Serializable {
     private String cropName;
 
     /**
+     * 产品业务编码（mp dock + inbound 页展示「产品编码」列；缺则前端显「-」）。
+     *
+     * <ul>
+     *   <li>自产（{@code /self}）：优先取作物「关联产品」的业务码
+     *       （{@code t_warehouse_product_info.product_id}，经 {@code crop.related_product} 解析）；
+     *       作物未配关联产品时回退作物业务码 {@code t_plant_crop_info.crop_code}。</li>
+     *   <li>外购（{@code /purchased}）：取产品业务码 {@code t_warehouse_product_info.product_id}。</li>
+     * </ul>
+     *
+     * <p>这里是<b>业务码</b>（VARCHAR），不是 snowflake 主键，可直接展示。</p>
+     */
+    private String productCode;
+
+    /**
      * 产品类型文案（仅外购列表填，如「果蔬产品」）。
      */
     private String productType;

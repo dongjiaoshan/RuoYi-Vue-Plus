@@ -159,6 +159,22 @@ public class WarehousePackEntryController extends BaseController {
     }
 
     /**
+     * 批量查目标成品「已打包累计总重量(kg)」（admin 果蔬打包页按此算剩余可打包量）。
+     *
+     * <p>数据源同 {@link #packedCount}（{@code t_warehouse_product_production} 打包记录），
+     * 但聚合 {@code SUM(product_weight)} 而非 COUNT。返回 {@code Map<成品雪花id字符串, 重量kg字符串>}
+     * （key/value 均字符串：id 防 JS Number 精度丢失、重量保留 BigDecimal 原文精度）。
+     * 无生产记录的成品不在 Map（前端按 0 处理）。</p>
+     *
+     * @param productIds 目标成品 id 列表（逗号分隔；{@code t_warehouse_product_info.id}）
+     */
+    @SaCheckPermission("djs:warehouse:packEntry:veg")
+    @GetMapping("/packedWeight")
+    public R<Map<String, String>> packedWeight(@RequestParam List<Long> productIds) {
+        return R.ok(productionService.listPackedWeight(productIds));
+    }
+
+    /**
      * 果蔬日损耗（V4，果疏产品全流程处理.docx）：按自然日聚合果蔬流水计算
      * {@code 日损耗 = 领用入库 − 打包消耗 − 退回 − 饲喂}。compute-on-read 只读，不建汇总表。
      *

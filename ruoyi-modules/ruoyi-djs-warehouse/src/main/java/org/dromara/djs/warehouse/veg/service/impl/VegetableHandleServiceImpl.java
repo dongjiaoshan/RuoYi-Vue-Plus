@@ -101,6 +101,11 @@ public class VegetableHandleServiceImpl
     private static final int RECORD_TYPE_HANDLE = 2;
 
     /**
+     * djs_pick_status「已完成」value（种植端采摘完成信号；{@code t_plant_plant_details.harvest_status}）。
+     */
+    private static final String PICK_STATUS_COMPLETED = "completed";
+
+    /**
      * djs_handle_target 取值。
      */
     private static final int HANDLE_TARGET_STOCK_IN = 1;
@@ -497,6 +502,33 @@ public class VegetableHandleServiceImpl
                 .set(PlantDetails::getUpdateBy, LoginHelper.getUserId()));
     }
 
+    /**
+     * 采摘「地块称重完成」前置门：校验该地块该作物的种植采摘已完成
+     * （{@code t_plant_plant_details.harvest_status='completed'}，dict {@code djs_pick_status}「已完成」）。
+     *
+     * <p>口径：{@code planting_record} 不存 detail_id，按 (plot_id, crop_id) 匹配 plant_details（V1 plot+crop
+     * 基本 1:1，与 {@link #syncActualYieldToPlant} 同定位规则）；只要存在一条 {@code harvest_status='completed'}
+     * 即视为该地块采摘完成，放行。无任何匹配明细 / 全部未完成 → 抛 {@link ServiceException}「请先完成地块采收操作」。</p>
+     *
+     * <p>方向 warehouse→plant 只读查询，与本类已有 plant 依赖同向不成环。</p>
+     *
+     * @param plotId 地块 id
+     * @param cropId 作物 id
+     */
+    private void requirePlantHarvestCompleted(Long plotId, Long cropId) {
+        if (plotId == null || cropId == null) {
+            throw new ServiceException("请先完成地块采收操作");
+        }
+        Long completedCount = plantDetailsMapper.selectCount(
+            new LambdaQueryWrapper<PlantDetails>()
+                .eq(PlantDetails::getPlotId, plotId)
+                .eq(PlantDetails::getCropId, cropId)
+                .eq(PlantDetails::getHarvestStatus, PICK_STATUS_COMPLETED));
+        if (completedCount == null || completedCount == 0L) {
+            throw new ServiceException("请先完成地块采收操作");
+        }
+    }
+
     @Override
     public List<PendingPlantingRecordVo> listPending() {
         return plantingRecordMapper.selectPendingList();
@@ -545,6 +577,13 @@ public class VegetableHandleServiceImpl
 
         BigDecimal weight = bo.getHarvestWeight();
         boolean weighDone = bo.getWeighFinish() != null && bo.getWeighFinish() == 1;
+
+        // Step 1.1：勾「地块称重完成」(weighFinish=1) 才能提交的前置门——该地块对应种植采摘必须已完成
+        // （种植端 t_plant_plant_details.harvest_status='completed'，dict djs_pick_status「已完成」）。
+        // 未完成不允许在仓库侧标记称重完成（避免采摘未结束就锁死地块）。未勾完成（仅追加重量）不校验。
+        if (weighDone) {
+            requirePlantHarvestCompleted(planting.getPlotId(), planting.getCropId());
+        }
 
         // Step 2：找到 / 创建 vegetable_handle 汇总
         VegetableHandle handle = baseMapper.selectByPlantingRecordId(planting.getId());

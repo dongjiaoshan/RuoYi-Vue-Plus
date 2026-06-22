@@ -47,4 +47,15 @@ public class ProductStockInBo {
      */
     private String remark;
 
+    /**
+     * 首次采购入库自配置存储库位开关。
+     *
+     * <p>采购入库（商品维度）上下文置 {@code true}：若该商品尚未配置 {@code store_location_id}，
+     * 则把本次入库库位回写为该商品的存储库位（首次入库 = 认领家库位），之后入库锁定到它。
+     * 已配置存储库位的商品不覆盖。</p>
+     *
+     * <p>商品配置入库（product 维度）不传 / 传 {@code null}/{@code false} → 不回写，行为零变化。</p>
+     */
+    private Boolean autoConfigLocation;
+
 }

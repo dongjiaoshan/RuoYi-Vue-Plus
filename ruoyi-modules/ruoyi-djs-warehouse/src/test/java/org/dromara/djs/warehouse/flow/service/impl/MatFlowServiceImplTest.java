@@ -76,6 +76,7 @@ class MatFlowServiceImplTest {
 
     @Mock private StockFlowMapper stockFlowMapper;
     @Mock private LocationStockMapper locationStockMapper;
+    @Mock private org.dromara.djs.warehouse.location.mapper.LocationInfoMapper locationInfoMapper;
     @Mock private ProductInfoMapper productInfoMapper;
     @Mock private org.dromara.djs.warehouse.product.mapper.ProductInhouseMapper productInhouseMapper;
     @Mock private CropInfoMapper cropInfoMapper;
@@ -96,7 +97,7 @@ class MatFlowServiceImplTest {
 
     @BeforeEach
     void setup() {
-        service = new MatFlowServiceImpl(stockFlowMapper, locationStockMapper, productInfoMapper, productInhouseMapper, cropInfoMapper, barInfoMapper, bizCodeGenerator, stockCheckService, imageUrlResolver);
+        service = new MatFlowServiceImpl(stockFlowMapper, locationStockMapper, locationInfoMapper, productInfoMapper, productInhouseMapper, cropInfoMapper, barInfoMapper, bizCodeGenerator, stockCheckService, imageUrlResolver);
         loginHelperMock = Mockito.mockStatic(LoginHelper.class);
         loginHelperMock.when(LoginHelper::getUserId).thenReturn(USER_ID);
 
@@ -655,6 +656,68 @@ class MatFlowServiceImplTest {
             .hasMessageContaining("库位 ID 非法");
 
         verify(locationStockMapper, never()).selectMatIssueItems(any(), any(), any());
+    }
+
+    // ===== WMS-OUTSOURCE-001：物资领用 by-locationType 端点 =====
+
+    @Test
+    @DisplayName("issueLocationsByType happy：locationType 透传 LocationInfoMapper 返 chip 列表")
+    void testIssueLocationsByType_Happy() {
+        MatIssueLocationVo loc = new MatIssueLocationVo();
+        loc.setLocationId(LOCATION_ID);
+        loc.setLocationName("种植主库");
+        when(locationInfoMapper.selectMatIssueLocationsByType("crop_loc")).thenReturn(List.of(loc));
+
+        List<MatIssueLocationVo> result = service.issueLocationsByType("crop_loc");
+
+        assertThat(result).hasSize(1);
+        assertThat(result.get(0).getLocationName()).isEqualTo("种植主库");
+        verify(locationInfoMapper, times(1)).selectMatIssueLocationsByType("crop_loc");
+    }
+
+    @Test
+    @DisplayName("issueLocationsByType 空 locationType → 抛 ServiceException + 不调 mapper")
+    void testIssueLocationsByType_Blank() {
+        assertThatThrownBy(() -> service.issueLocationsByType("  "))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("库位类型不能为空");
+        verify(locationInfoMapper, never()).selectMatIssueLocationsByType(any());
+    }
+
+    @Test
+    @DisplayName("issueItemsByType happy：buyClass 透传 + locationId snowflake string parse 不截断 + resolver 回填 thumb")
+    void testIssueItemsByType_Happy() {
+        String locStr = "2058525064717926401"; // 19 位 snowflake，验证 parse 不截断
+        MatIssueItemVo item = new MatIssueItemVo();
+        item.setProductId(PRODUCT_ID);
+        item.setProductName("外购饲料A");
+        item.setBuyClass("feed");
+        item.setBelongType(null);
+        item.setProductThumb("oss-raw-id");
+        item.setCurrentStock(new BigDecimal("120.50"));
+        when(locationStockMapper.selectMatIssueItemsByType(eq("farm_loc"), eq(Long.valueOf(locStr)), eq(USER_ID)))
+            .thenReturn(new java.util.ArrayList<>(List.of(item)));
+        when(imageUrlResolver.resolveList(any())).thenReturn(List.of("https://oss/url-feed.png"));
+
+        List<MatIssueItemVo> result = service.issueItemsByType("farm_loc", locStr);
+
+        assertThat(result).hasSize(1);
+        // buyClass 透传（mp 去重成分类 chip 的数据源）
+        assertThat(result.get(0).getBuyClass()).isEqualTo("feed");
+        // thumb 经 resolver 回填成 public url
+        assertThat(result.get(0).getProductThumb()).isEqualTo("https://oss/url-feed.png");
+        verify(locationStockMapper, times(1))
+            .selectMatIssueItemsByType("farm_loc", Long.valueOf(locStr), USER_ID);
+        verify(imageUrlResolver, times(1)).resolveList(any());
+    }
+
+    @Test
+    @DisplayName("issueItemsByType 空 locationType → 抛 ServiceException + 不调 mapper")
+    void testIssueItemsByType_Blank() {
+        assertThatThrownBy(() -> service.issueItemsByType("", "100"))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("库位类型不能为空");
+        verify(locationStockMapper, never()).selectMatIssueItemsByType(any(), any(), any());
     }
 
     @Test

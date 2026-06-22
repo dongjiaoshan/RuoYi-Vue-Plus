@@ -88,6 +88,36 @@ public class AppletMatFlowController extends BaseController {
     }
 
     /**
+     * 按库位类型列库位 chip（WMS-OUTSOURCE-001：种植库 crop_loc / 养殖库 farm_loc 物资领用）。
+     *
+     * <p>与 {@link #issueLocations(String)}（按业态组织）对称。前端 farmType（plant/breed）映射到
+     * locationType（crop_loc/farm_loc）后调用，渲染库位 chip 行（首项「全部」+ 各库位，按排序码）。</p>
+     *
+     * @param locationType 字典 {@code djs_location_type} 的 value（{@code crop_loc} / {@code farm_loc}）
+     */
+    @SaCheckLogin
+    @GetMapping("/issueLocationsByType")
+    public R<List<MatIssueLocationVo>> issueLocationsByType(@RequestParam String locationType) {
+        return R.ok(matFlowService.issueLocationsByType(locationType));
+    }
+
+    /**
+     * 按库位类型 + 库位列待领外购商品卡（WMS-OUTSOURCE-001）。
+     *
+     * <p>只列 {@code product_type=2}（外购）+ {@code product_status=0}（启用）+ 在该 location_type 库位下有库存
+     * 的商品。VO 额外回填 {@code buyClass}（商品分类，前端去重成分类筛选 chip）。</p>
+     *
+     * @param locationType 字典 {@code djs_location_type} 的 value（{@code crop_loc} / {@code farm_loc}）
+     * @param locationId   库位 ID（可空，chip 选中态过滤；snowflake string 防截断，service 内 parse）
+     */
+    @SaCheckLogin
+    @GetMapping("/issueItemsByType")
+    public R<List<MatIssueItemVo>> issueItemsByType(@RequestParam String locationType,
+                                                    @RequestParam(required = false) String locationId) {
+        return R.ok(matFlowService.issueItemsByType(locationType, locationId));
+    }
+
+    /**
      * 自产果蔬「按地块维度」可领用列表（步11 偏差修复 · 决策 a；蔬菜 tab 自产果蔬数据源）。
      *
      * <p>自产果蔬库存按 {@code (plot_id, location)} 建账（无 product_id），常规 {@link #issueItems}

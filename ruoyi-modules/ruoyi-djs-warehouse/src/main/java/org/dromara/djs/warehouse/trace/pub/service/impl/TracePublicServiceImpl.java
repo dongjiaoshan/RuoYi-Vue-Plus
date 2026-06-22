@@ -34,6 +34,8 @@ import org.dromara.djs.plant.plot.domain.PlotInfo;
 import org.dromara.djs.plant.plot.mapper.PlotInfoMapper;
 import org.dromara.djs.plant.zone.domain.PlotZone;
 import org.dromara.djs.plant.zone.mapper.PlotZoneMapper;
+import org.dromara.djs.warehouse.pack.domain.ProductProduction;
+import org.dromara.djs.warehouse.pack.mapper.ProductProductionMapper;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
 import org.dromara.djs.warehouse.trace.domain.TraceCode;
@@ -46,15 +48,22 @@ import org.dromara.djs.warehouse.trace.mapper.TraceFarmNameMapper;
 import org.dromara.djs.warehouse.trace.pub.domain.vo.PublicTraceVo;
 import org.dromara.djs.warehouse.trace.pub.mapper.TraceUserNameMapper;
 import org.dromara.djs.warehouse.trace.pub.service.ITracePublicService;
+import org.dromara.djs.warehouse.veg.domain.PlantingRecord;
+import org.dromara.djs.warehouse.veg.domain.VegetableHandle;
+import org.dromara.djs.warehouse.veg.mapper.PlantingRecordMapper;
+import org.dromara.djs.warehouse.veg.mapper.VegetableHandleMapper;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
 import java.time.Duration;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
+import java.util.Date;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -122,6 +131,13 @@ public class TracePublicServiceImpl
     /** 地块作物史：按 plot_id 查种植明细 + 作物名/图。 */
     private final PlantDetailsMapper plantDetailsMapper;
     private final CropInfoMapper cropInfoMapper;
+    // veg 工序时间轴源（同 warehouse 模块内）
+    /** 仓库视角种植记录：播种 / 采收节点时间源。 */
+    private final PlantingRecordMapper plantingRecordMapper;
+    /** 毛菜处理汇总：毛菜处理节点时间源。 */
+    private final VegetableHandleMapper vegetableHandleMapper;
+    /** 发货产品生产记录：打包节点时间 + 果蔬成品实际称重（按 trace_code 关联）。 */
+    private final ProductProductionMapper productProductionMapper;
 
     public TracePublicServiceImpl(TraceCodeMapper baseMapper,
                                   TraceEventMapper traceEventMapper,
@@ -141,7 +157,10 @@ public class TracePublicServiceImpl
                                   CropOrganicMapper cropOrganicMapper,
                                   PlotOrganicMapper plotOrganicMapper,
                                   PlantDetailsMapper plantDetailsMapper,
-                                  CropInfoMapper cropInfoMapper) {
+                                  CropInfoMapper cropInfoMapper,
+                                  PlantingRecordMapper plantingRecordMapper,
+                                  VegetableHandleMapper vegetableHandleMapper,
+                                  ProductProductionMapper productProductionMapper) {
         super(baseMapper);
         this.traceEventMapper = traceEventMapper;
         this.productInfoMapper = productInfoMapper;
@@ -161,6 +180,9 @@ public class TracePublicServiceImpl
         this.plotOrganicMapper = plotOrganicMapper;
         this.plantDetailsMapper = plantDetailsMapper;
         this.cropInfoMapper = cropInfoMapper;
+        this.plantingRecordMapper = plantingRecordMapper;
+        this.vegetableHandleMapper = vegetableHandleMapper;
+        this.productProductionMapper = productProductionMapper;
     }
 
     @Override
@@ -215,7 +237,7 @@ public class TracePublicServiceImpl
         if (TraceCodeTypeConst.PORK.equals(type)) {
             fillPork(vo, code, timeline);
         } else if (TraceCodeTypeConst.VEG.equals(type)) {
-            fillVeg(vo, code);
+            fillVeg(vo, code, timeline);
         } else if (TraceCodeTypeConst.GIFT.equals(type)) {
             fillGift(vo, code);
         }
@@ -234,10 +256,13 @@ public class TracePublicServiceImpl
             if (p != null) {
                 block.setName(p.getProductName());
                 block.setSpec(p.getProductSpec());
-                // 净重 V1 无独立列，用规格兜底（推断字段，见 _open-issues）
+                // 净重默认用规格兜底；veg 分支会用打包实际称重覆盖（见 fillVeg）
                 block.setWeight(p.getProductSpec());
                 block.setDescription(p.getProductDesc());
-                block.setImageUrl(resolveOssUrl(p.getProductImg()));
+                // 图优先产品配置缩略图 product_thumb，缺失才用原图 product_img（参「产品双图片字段坑」）
+                String imgOssId = StringUtils.isNotBlank(p.getProductThumb())
+                    ? p.getProductThumb() : p.getProductImg();
+                block.setImageUrl(resolveOssUrl(imgOssId));
             }
         }
         return block;
@@ -433,7 +458,7 @@ public class TracePublicServiceImpl
 
     // ============================ veg 分支 ============================
 
-    private void fillVeg(PublicTraceVo vo, TraceCode code) {
+    private void fillVeg(PublicTraceVo vo, TraceCode code, List<PublicTraceVo.TimelineNode> timeline) {
         // 作物：trace_code 无 crop_id，name 用产品名兜底；variety 无关联返 null
         PublicTraceVo.CropBlock cropBlock = new PublicTraceVo.CropBlock();
         if (vo.getProduct() != null) {
@@ -447,6 +472,12 @@ public class TracePublicServiceImpl
             vo.getProduct().setHarvestDate(code.getHarvestDate());
         }
 
+        // ② 重量改取打包实际称重：本追溯码对应的发货生产记录（trace_code 关联）product_weight；缺则保留规格兜底
+        ProductProduction pack = findPackProduction(code.getProduceCode());
+        if (pack != null && pack.getProductWeight() != null && vo.getProduct() != null) {
+            vo.getProduct().setWeight(toStr(pack.getProductWeight()));
+        }
+
         // 地块 + 片区
         if (code.getPlotId() != null) {
             PlotInfo plot = plotInfoMapper.selectById(code.getPlotId());
@@ -458,6 +489,8 @@ public class TracePublicServiceImpl
                     PlotZone zone = plotZoneMapper.selectById(plot.getZoneId());
                     if (zone != null) {
                         plotBlock.setZoneName(zone.getZoneName());
+                        // ③ 所属大区（片区 zone_belong）
+                        plotBlock.setZoneBelong(zone.getZoneBelong());
                     }
                 }
                 vo.setPlot(plotBlock);
@@ -479,11 +512,151 @@ public class TracePublicServiceImpl
             vo.setPlotCropHistory(new ArrayList<>());
         }
 
+        // ④ 时间轴补 4 个果蔬工序节点：播种 / 采收 / 毛菜处理 / 打包（有源才加，缺源不造空节点），完后按时间排序
+        appendVegProcessNodes(timeline, code, pack);
+
         // 有机证书（作物认证 + 地块认证，图 ossId 解析 url）
         vo.setOrganicCerts(buildOrganicCerts(code));
 
         // 销售门店（veg 也挂 store_id；与 pork 共用 fillStore，原型果蔬主页含「销售信息」块）
         fillStore(vo, code);
+    }
+
+    /**
+     * 本追溯码对应的发货生产记录（{@code t_warehouse_product_production.trace_code = produceCode}）。
+     * 打包入库时 {@code TraceService.genCode} 回填 trace_code，故一条 veg 追溯码唯一对应一条生产记录。
+     * 提供打包工序的实际称重（{@code product_weight}）与打包时间（{@code produce_time/produce_date}）。
+     * 无（历史数据或未打包）→ null，调用方各自兜底。
+     */
+    private ProductProduction findPackProduction(String produceCode) {
+        if (StringUtils.isBlank(produceCode)) {
+            return null;
+        }
+        return productProductionMapper.selectOne(
+            new LambdaQueryWrapper<ProductProduction>()
+                .eq(ProductProduction::getTraceCode, produceCode)
+                .orderByDesc(ProductProduction::getId)
+                .last("limit 1"));
+    }
+
+    /**
+     * 果蔬工序时间轴补节点（播种 / 采收 / 毛菜处理 / 打包）。
+     *
+     * <p>来源（按工序）：</p>
+     * <ul>
+     *   <li>播种：仓库种植记录 {@code planting_record.plant_date}；缺则用 {@code 采收日 − 生长天数} 反推。</li>
+     *   <li>采收：{@code trace_code.havest_date}；缺则种植记录 {@code harvest_date}。</li>
+     *   <li>毛菜处理：毛菜处理汇总 {@code vegetable_handle.pick_end_time}（无则 {@code update_time}）。</li>
+     *   <li>打包：发货生产记录 {@code product_production.produce_time}（无则 {@code produce_date}）。</li>
+     * </ul>
+     *
+     * <p>某工序时间无源 → 不造该节点（不显空节点）。合成节点 operatorName 为 null（上游表无统一记录人映射，
+     * C 端工序节点只展示「工序名 + 时间」即可）。补完按 traceTime 升序排（果蔬工序自然时序）。</p>
+     */
+    private void appendVegProcessNodes(List<PublicTraceVo.TimelineNode> timeline,
+                                       TraceCode code, ProductProduction pack) {
+        if (timeline == null) {
+            return;
+        }
+        // 仓库种植记录（播种 / 采收兜底时间源）：按 plot_id + product_id 取一条
+        PlantingRecord planting = findPlantingRecord(code.getPlotId(), code.getProductId());
+
+        // 播种
+        LocalDate sowDate = planting != null ? toLocalDate(planting.getPlantDate()) : null;
+        if (sowDate == null && code.getHarvestDate() != null && code.getPlantDays() != null) {
+            sowDate = code.getHarvestDate().minusDays(code.getPlantDays());
+        }
+        addProcessNode(timeline, TraceContentConst.SOWING, atDayStart(sowDate));
+
+        // 采收
+        LocalDate harvestDate = code.getHarvestDate() != null
+            ? code.getHarvestDate()
+            : (planting != null ? toLocalDate(planting.getHarvestDate()) : null);
+        addProcessNode(timeline, TraceContentConst.HARVEST, atDayStart(harvestDate));
+
+        // 毛菜处理
+        VegetableHandle handle = findVegetableHandle(code.getPlotId(), code.getProductId());
+        if (handle != null) {
+            Date handleTime = handle.getPickEndTime() != null
+                ? handle.getPickEndTime() : handle.getUpdateTime();
+            addProcessNode(timeline, TraceContentConst.VEG_HANDLE, toLocalDateTime(handleTime));
+        }
+
+        // 打包
+        if (pack != null) {
+            Date packTime = pack.getProduceTime() != null
+                ? pack.getProduceTime() : pack.getProduceDate();
+            addProcessNode(timeline, TraceContentConst.PACK, toLocalDateTime(packTime));
+        }
+
+        // 按时间升序排（null 时间排末尾，保持工序节点可见但不打乱有时间节点的顺序）
+        timeline.sort(Comparator.comparing(PublicTraceVo.TimelineNode::getTraceTime,
+            Comparator.nullsLast(Comparator.naturalOrder())));
+    }
+
+    /** 仓库种植记录：按 plot_id + product_id 取最近一条（无 product_id 退化为仅按 plot_id）。 */
+    private PlantingRecord findPlantingRecord(Long plotId, Long productId) {
+        if (plotId == null) {
+            return null;
+        }
+        return plantingRecordMapper.selectOne(
+            new LambdaQueryWrapper<PlantingRecord>()
+                .eq(PlantingRecord::getPlotId, plotId)
+                .eq(productId != null, PlantingRecord::getProductId, productId)
+                .orderByDesc(PlantingRecord::getHarvestDate)
+                .orderByDesc(PlantingRecord::getId)
+                .last("limit 1"));
+    }
+
+    /** 毛菜处理汇总：按 plot_id + product_id 取最近一条（无 product_id 退化为仅按 plot_id）。 */
+    private VegetableHandle findVegetableHandle(Long plotId, Long productId) {
+        if (plotId == null) {
+            return null;
+        }
+        return vegetableHandleMapper.selectOne(
+            new LambdaQueryWrapper<VegetableHandle>()
+                .eq(VegetableHandle::getPlotId, plotId)
+                .eq(productId != null, VegetableHandle::getProductId, productId)
+                .orderByDesc(VegetableHandle::getId)
+                .last("limit 1"));
+    }
+
+    /** 时间非空才补节点（避免显示无意义空时间工序行）。 */
+    private void addProcessNode(List<PublicTraceVo.TimelineNode> timeline,
+                                String traceContent, LocalDateTime time) {
+        if (time == null) {
+            return;
+        }
+        PublicTraceVo.TimelineNode node = new PublicTraceVo.TimelineNode();
+        node.setTraceContent(traceContent);
+        node.setTraceTime(time);
+        timeline.add(node);
+    }
+
+    /** {@code java.util.Date} / {@code java.sql.Date} → LocalDate（sql.Date.toInstant 会抛 UOE，单独走 toLocalDate）。 */
+    private LocalDate toLocalDate(Date date) {
+        if (date == null) {
+            return null;
+        }
+        if (date instanceof java.sql.Date sqlDate) {
+            return sqlDate.toLocalDate();
+        }
+        return date.toInstant().atZone(ZoneId.systemDefault()).toLocalDate();
+    }
+
+    /** {@code java.util.Date} / {@code java.sql.Date} → LocalDateTime（sql.Date 无时分秒，取当日 0 点）。 */
+    private LocalDateTime toLocalDateTime(Date date) {
+        if (date == null) {
+            return null;
+        }
+        if (date instanceof java.sql.Date sqlDate) {
+            return sqlDate.toLocalDate().atStartOfDay();
+        }
+        return date.toInstant().atZone(ZoneId.systemDefault()).toLocalDateTime();
+    }
+
+    private LocalDateTime atDayStart(LocalDate date) {
+        return date == null ? null : date.atStartOfDay();
     }
 
     /** 门店信息块（pork/veg 共用）：trace_code.store_id → Store name/address；无 store_id → 不 set（前端隐藏）。 */

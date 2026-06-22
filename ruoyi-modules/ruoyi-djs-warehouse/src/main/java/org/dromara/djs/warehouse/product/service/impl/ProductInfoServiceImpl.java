@@ -533,6 +533,14 @@ public class ProductInfoServiceImpl extends DjsBaseServiceImpl<ProductInfoMapper
             stock.setOperatorId(userId);
             locationStockMapper.insert(stock);
         }
+
+        // 路B 首次采购入库自配置：采购入库上下文 + 商品未配存储库位 → 回写本次库位为该商品存储库位
+        if (Boolean.TRUE.equals(bo.getAutoConfigLocation()) && StringUtils.isBlank(product.getStoreLocationId())) {
+            ProductInfo upd = new ProductInfo();
+            upd.setId(product.getId());
+            upd.setStoreLocationId(String.valueOf(bo.getLocationId()));
+            baseMapper.updateById(upd);
+        }
         return flow.getId();
     }
 

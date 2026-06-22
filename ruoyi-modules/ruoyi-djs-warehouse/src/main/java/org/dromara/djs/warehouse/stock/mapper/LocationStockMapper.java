@@ -592,15 +592,15 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
                COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
                           WHERE f.operator_id = #{userId} AND f.product_id = p.id
                             AND f.flow_type = 'pick_out' AND DATE(f.flow_date) = CURDATE()
-                            AND f.del_flag = '0'), 0) AS todayPicked,
+                            AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayPicked,
                COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
                           WHERE f.operator_id = #{userId} AND f.product_id = p.id
                             AND f.flow_type = 'return_in' AND DATE(f.flow_date) = CURDATE()
-                            AND f.del_flag = '0'), 0) AS todayReturned,
+                            AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayReturned,
                COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
                           WHERE f.operator_id = #{userId} AND f.product_id = p.id
                             AND f.flow_type = 'loss' AND DATE(f.flow_date) = CURDATE()
-                            AND f.del_flag = '0'), 0) AS todayLoss
+                            AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayLoss
           FROM t_warehouse_product_info p
           LEFT JOIN t_warehouse_location_stock s
             ON s.product_id = p.id
@@ -717,5 +717,87 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
         """)
     List<MatIssueBasketVo> selectVegIssueByPlot(@Param("productId") Long productId,
                                                 @Param("locationId") Long locationId);
+
+    /**
+     * mp 物资领用「按库位类型列待领外购商品卡」列表（WMS-OUTSOURCE-001：种植库 crop_loc / 养殖库 farm_loc）。
+     *
+     * <p>与 {@link #selectMatIssueItems}（按 belong_type 组织）对称，本方法按 {@code location_type} 组织：
+     * 只列 {@code product_type=2}（外购）+ {@code product_status=0}（启用）+ 在该 location_type 库位下有库存
+     * 的商品。用 {@code JOIN}（非 LEFT JOIN）+ {@code HAVING currentStock>0} 保证只返有货外购商品。</p>
+     *
+     * <p>口径：</p>
+     * <ul>
+     *   <li>{@code currentStock} = 该商品在该 location_type 全部库位（或指定 locationId）的 SUM(product_stock)。</li>
+     *   <li>{@code defaultLocationId} = 该商品在该 location_type 下库存最多的库位（点卡进表单作默认 locationId）。</li>
+     *   <li>{@code buyClass} = 商品分类（字典 djs_buy_class），前端去重成分类筛选 chip。</li>
+     *   <li>今日三量子查询沿用 {@link #selectMatIssueItems} 写法（{@code operator_id=#{userId}}），与提交时
+     *       额度校验同源。</li>
+     * </ul>
+     *
+     * <p>租户单租户显式 {@code tenant_id='1001'}（V1）。{@code userId} 为空时三量子查询返 0。</p>
+     *
+     * @param locationType 字典 {@code djs_location_type} 的 value（{@code crop_loc} / {@code farm_loc}）
+     * @param locationId   库位 ID（可空，chip 选中态过滤；为空则该类型全库位聚合）
+     * @param userId       当前登录人 user_id（今日三量按人统计）
+     * @return 待领外购商品卡列表（库存升序，再按商品名）；无则空 list
+     */
+    @Select("""
+        <script>
+        SELECT p.id                              AS productId,
+               p.product_id                      AS productCode,
+               p.product_name                    AS productName,
+               p.product_unit                    AS productUnit,
+               COALESCE(p.product_thumb, p.image_oss_id) AS productThumb,
+               p.belong_type                     AS belongType,
+               p.buy_class                       AS buyClass,
+               COALESCE(SUM(s.product_stock), 0) AS currentStock,
+               (SELECT s2.location_id
+                  FROM t_warehouse_location_stock s2
+                  JOIN t_warehouse_location_info l2
+                    ON l2.id = s2.location_id
+                   AND l2.location_type = #{locationType}
+                   AND l2.del_flag = '0'
+                   AND l2.tenant_id = '1001'
+                 WHERE s2.product_id = p.id
+                   AND s2.del_flag = '0'
+                   AND s2.tenant_id = '1001'
+                 ORDER BY s2.product_stock DESC, s2.location_id ASC
+                 LIMIT 1)                         AS defaultLocationId,
+               COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
+                          WHERE f.operator_id = #{userId} AND f.product_id = p.id
+                            AND f.flow_type = 'pick_out' AND DATE(f.flow_date) = CURDATE()
+                            AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayPicked,
+               COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
+                          WHERE f.operator_id = #{userId} AND f.product_id = p.id
+                            AND f.flow_type = 'return_in' AND DATE(f.flow_date) = CURDATE()
+                            AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayReturned,
+               COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
+                          WHERE f.operator_id = #{userId} AND f.product_id = p.id
+                            AND f.flow_type = 'loss' AND DATE(f.flow_date) = CURDATE()
+                            AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayLoss
+          FROM t_warehouse_product_info p
+          JOIN t_warehouse_location_stock s
+            ON s.product_id = p.id
+           AND s.del_flag   = '0'
+           AND s.tenant_id  = p.tenant_id
+          JOIN t_warehouse_location_info l
+            ON l.id = s.location_id
+           AND l.del_flag = '0'
+           AND l.tenant_id = s.tenant_id
+           AND l.location_type = #{locationType}
+           <if test="locationId != null"> AND s.location_id = #{locationId} </if>
+         WHERE p.del_flag       = '0'
+           AND p.tenant_id      = '1001'
+           AND p.product_status = 0
+           AND p.product_type   = 2
+         GROUP BY p.id, p.product_id, p.product_name, p.product_unit, p.product_thumb,
+                  p.image_oss_id, p.belong_type, p.buy_class
+        HAVING currentStock > 0
+         ORDER BY currentStock ASC, p.product_name ASC
+        </script>
+        """)
+    List<MatIssueItemVo> selectMatIssueItemsByType(@Param("locationType") String locationType,
+                                                   @Param("locationId") Long locationId,
+                                                   @Param("userId") Long userId);
 
 }

@@ -10,7 +10,9 @@ import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.web.core.BaseController;
 import org.dromara.djs.warehouse.purchase.domain.bo.PurchaseInBo;
+import org.dromara.djs.warehouse.purchase.domain.query.PurchaseInProductQuery;
 import org.dromara.djs.warehouse.purchase.domain.query.PurchaseInQuery;
+import org.dromara.djs.warehouse.purchase.domain.vo.PurchaseInProductVo;
 import org.dromara.djs.warehouse.purchase.domain.vo.PurchaseInRecordVo;
 import org.dromara.djs.warehouse.purchase.service.IWarehousePurchaseInService;
 import org.springframework.validation.annotation.Validated;
@@ -55,6 +57,18 @@ public class WarehousePurchaseInController extends BaseController {
     @GetMapping("/list")
     public TableDataInfo<PurchaseInRecordVo> list(PurchaseInQuery query, PageQuery pageQuery) {
         return service.queryPageList(query, pageQuery);
+    }
+
+    /**
+     * 采购入库「商品维度」分页列表（WMS-OUTSOURCE-001 需求1）。
+     *
+     * <p>以外购商品（{@code product_type=2}）为粒度，聚合当前库存 / 最后入库时间 / 采购人 /
+     * 当月累计采购量。区别于 {@link #list}（流水维度，保留不动）。</p>
+     */
+    @SaCheckPermission("djs:warehouse:purchaseIn:list")
+    @GetMapping("/productList")
+    public TableDataInfo<PurchaseInProductVo> productList(PurchaseInProductQuery query, PageQuery pageQuery) {
+        return service.queryProductPageList(query, pageQuery);
     }
 
     /**

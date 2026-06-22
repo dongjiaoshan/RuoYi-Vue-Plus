@@ -1106,6 +1106,29 @@ public class ProductProductionServiceImpl
         return result;
     }
 
+    @Override
+    public Map<String, String> listPackedWeight(List<Long> productIds) {
+        Map<String, String> result = new HashMap<>();
+        if (productIds == null || productIds.isEmpty()) {
+            return result;
+        }
+        List<Long> ids = productIds.stream().filter(Objects::nonNull).distinct().collect(Collectors.toList());
+        if (ids.isEmpty()) {
+            return result;
+        }
+        for (Map<String, Object> row : baseMapper.selectPackedWeight(ids)) {
+            Object pid = row.get("productId");
+            Object weight = row.get("weight");
+            if (pid == null || weight == null) {
+                continue;
+            }
+            // SUM(product_weight) DECIMAL → BigDecimal；以字符串透传保留精度（key 雪花 id 也用 String 防丢精度）
+            BigDecimal w = weight instanceof BigDecimal bd ? bd : new BigDecimal(weight.toString());
+            result.put(String.valueOf(pid), w.stripTrailingZeros().toPlainString());
+        }
+        return result;
+    }
+
     /**
      * 聚合某产品当前库存合计（未软删行 SUM(product_stock)；无行返 BigDecimal.ZERO）。
      */
