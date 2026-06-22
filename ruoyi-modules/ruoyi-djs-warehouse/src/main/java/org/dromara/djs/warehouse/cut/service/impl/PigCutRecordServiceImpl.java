@@ -14,6 +14,7 @@ import org.dromara.djs.common.encoder.IBizCodeGenerator;
 import org.dromara.djs.common.image.service.ImageUrlResolver;
 import org.dromara.djs.common.supplier.domain.Supplier;
 import org.dromara.djs.common.supplier.mapper.SupplierMapper;
+import org.dromara.djs.warehouse.check.service.IStockCheckService;
 import org.dromara.djs.warehouse.cross.domain.BarInfo;
 import org.dromara.djs.warehouse.cross.mapper.BarInfoMapper;
 import org.dromara.djs.warehouse.cut.domain.PigCutRecord;
@@ -148,6 +149,7 @@ public class PigCutRecordServiceImpl
     private final IBizCodeGenerator bizCodeGenerator;
     private final ITraceService traceService;
     private final ImageUrlResolver imageUrlResolver;
+    private final IStockCheckService stockCheckService;
 
     public PigCutRecordServiceImpl(PigCutRecordMapper baseMapper,
                                    BarInfoMapper barInfoMapper,
@@ -158,7 +160,8 @@ public class PigCutRecordServiceImpl
                                    SupplierMapper supplierMapper,
                                    IBizCodeGenerator bizCodeGenerator,
                                    ITraceService traceService,
-                                   ImageUrlResolver imageUrlResolver) {
+                                   ImageUrlResolver imageUrlResolver,
+                                   IStockCheckService stockCheckService) {
         super(baseMapper);
         this.barInfoMapper = barInfoMapper;
         this.stockFlowMapper = stockFlowMapper;
@@ -169,6 +172,7 @@ public class PigCutRecordServiceImpl
         this.bizCodeGenerator = bizCodeGenerator;
         this.traceService = traceService;
         this.imageUrlResolver = imageUrlResolver;
+        this.stockCheckService = stockCheckService;
     }
 
     /**
@@ -261,6 +265,9 @@ public class PigCutRecordServiceImpl
         if (location == null) {
             throw new ServiceException("入冻品库位不存在：" + effectiveLocationId);
         }
+
+        // 库位级业务锁（WMS-STOCK-001）：盘点进行中的冻品库禁出入库（后端双保险，写 location_stock 篮子前置）
+        stockCheckService.assertLocationUnlocked(effectiveLocationId);
 
         // Step 3：for each part → INSERT location_stock 篮子(入冷库) + INSERT stock_flow IN(cut_out_in 不可变审计)
         BigDecimal totalWeight = BigDecimal.ZERO;

@@ -22,7 +22,7 @@ import java.time.LocalDateTime;
  *
  * <p><b>关键字段</b>：</p>
  * <ul>
- *   <li>{@link #currentStatus} 当前 lifecycle（{@code djs_pig_lifecycle} 10 枚举）；</li>
+ *   <li>{@link #currentStatus} 当前 lifecycle（{@code djs_pig_lifecycle} 8 枚举 HB/PZ/FM/DN/LC/KH/FQ/END）；</li>
  *   <li>{@link #statusStartedAt} 进入当前状态时间，小程序"按 X 天提醒"基准；</li>
  *   <li>{@link #endReason} 仅 currentStatus=END 时填 DEAD/CULL/MARKET；</li>
  *   <li>{@link #version} MyBatis-Plus 乐观锁；</li>

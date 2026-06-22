@@ -27,7 +27,6 @@ import org.springframework.web.bind.annotation.RestController;
  *
  * <ul>
  *   <li>{@code GET    /djs/breed/event/growth/list}     列表（分页 + 按 pigId / 耳号 / 日期过滤）</li>
- *   <li>{@code GET    /djs/breed/event/growth/{id}}     详情</li>
  *   <li>{@code POST   /djs/breed/event/growth}          新增（mp + admin 共用，BO 字段决定来源）</li>
  *   <li>{@code DELETE /djs/breed/event/growth/{id}}     删除（hard delete；单 id 或逗号分隔批量，逐条物理删，{@code R<Void>}）</li>
  * </ul>
@@ -49,12 +48,6 @@ public class PigGrowthController extends BaseController {
     @GetMapping("/list")
     public TableDataInfo<PigGrowthVo> list(GrowthQuery query, PageQuery pageQuery) {
         return growthService.queryPage(query, pageQuery);
-    }
-
-    @SaCheckPermission("djs:breed:event:growth:query")
-    @GetMapping("/{id}")
-    public R<PigGrowthVo> getInfo(@PathVariable Long id) {
-        return R.ok(growthService.getById(id));
     }
 
     @SaCheckPermission("djs:breed:event:growth:add")

@@ -1,8 +1,10 @@
 package org.dromara.djs.store.demand.service.impl;
 
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.common.core.exception.ServiceException;
+import org.dromara.common.core.utils.StringUtils;
 import org.dromara.common.satoken.utils.LoginHelper;
 import org.dromara.djs.store.demand.domain.bo.StoreDemandBatchBo;
 import org.dromara.djs.store.demand.service.IStoreDemandService;
@@ -11,13 +13,18 @@ import org.dromara.djs.warehouse.demand.domain.DemandManage;
 import org.dromara.djs.warehouse.demand.domain.bo.DemandManageBo;
 import org.dromara.djs.warehouse.demand.mapper.DemandManageMapper;
 import org.dromara.djs.warehouse.demand.service.IDemandManageService;
+import org.dromara.djs.warehouse.pack.domain.ProductProduction;
+import org.dromara.djs.warehouse.pack.mapper.ProductProductionMapper;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
+import org.dromara.djs.warehouse.trace.domain.TraceContentConst;
+import org.dromara.djs.warehouse.trace.service.ITraceService;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.List;
 
 /**
  * 门店端需求服务实现（STR-DEMAND-001 + STORE-DEMAND-REALIGN-001，薄封装复用 WMS demand）。
@@ -26,7 +33,8 @@ import java.time.LocalDateTime;
  * <ul>
  *   <li>{@link #createStoreDemand} 单产品「门店发起」= insertByBo（warehouse 侧已直接落 SUBMITTED，不再二次 transition）</li>
  *   <li>{@link #batchCreate} 购物车整单：逐项补产品冗余字段后循环 createStoreDemand</li>
- *   <li>{@link #receive} 门店收货确认：patch received_time / received_by（不触碰仓库状态机）</li>
+ *   <li>{@link #receive} 门店收货确认：patch received_time / received_by（不触碰仓库状态机）+ 写
+ *       追溯链「到店」(arrival) 节点（按 demand_id 反查已发货产品 trace_code 逐条 recordEvent）</li>
  * </ul>
  *
  * @author djs
@@ -48,6 +56,10 @@ public class StoreDemandServiceImpl implements IStoreDemandService {
     private final ProductInfoMapper productInfoMapper;
 
     private final DemandManageMapper demandManageMapper;
+
+    private final ProductProductionMapper productProductionMapper;
+
+    private final ITraceService traceService;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -116,5 +128,42 @@ public class StoreDemandServiceImpl implements IStoreDemandService {
         demandManageMapper.updateById(patch);
         log.info("[STORE-DEMAND-REALIGN-001] receive demand id={} no={} by={}",
             id, demand.getDemandNo(), LoginHelper.getUserId());
+
+        // 追溯链「到店」节点（7 节点闭环最后一节）：本次收货 demand 下已发货产品逐条写 arrival 事件。
+        recordArrivalTrace(id);
+    }
+
+    /**
+     * 给本次收货 demand 下已发货产品写 {@code arrival} 追溯事件（追溯链 7 节点最后一节）。
+     *
+     * <p>关联结构：{@code t_warehouse_product_production.demand_id} = 本次发货确认时由
+     * {@link org.dromara.djs.warehouse.pack.mapper.ProductProductionMapper#markDeliveryChecked} 绑定，
+     * 故按 {@code demand_id} 反查该需求下 {@code trace_code} 非空的 production 即为到店产品集
+     * （与 {@link org.dromara.djs.warehouse.trace.listener.ShipTraceEventListener} 反查 ship 节点同口径，
+     * 仅事件类型从 ship 改 arrival）。</p>
+     *
+     * <p>追溯写失败不影响收货确认（收货事务已经 patch 完成）：整体 try-catch swallow + log，
+     * 单条 produce_code 重量取 {@code productWeight}（同 ship 节点）。trace_code 为空
+     * （如猪肉链当前无生成入口）的 production 跳过。</p>
+     */
+    private void recordArrivalTrace(Long demandId) {
+        try {
+            List<ProductProduction> productions = productProductionMapper.selectList(
+                new LambdaQueryWrapper<ProductProduction>()
+                    .eq(ProductProduction::getDemandId, demandId)
+                    .isNotNull(ProductProduction::getTraceCode));
+            int recorded = 0;
+            for (ProductProduction p : productions) {
+                if (StringUtils.isNotBlank(p.getTraceCode())) {
+                    traceService.recordEvent(p.getTraceCode(), TraceContentConst.ARRIVAL, p.getProductWeight());
+                    recorded++;
+                }
+            }
+            log.info("[STORE-DEMAND-REALIGN-001] arrival trace events recorded demandId={} count={}",
+                demandId, recorded);
+        } catch (Exception e) {
+            log.warn("[STORE-DEMAND-REALIGN-001] arrival trace event failed (skipped) demandId={}: {}",
+                demandId, e.getMessage());
+        }
     }
 }

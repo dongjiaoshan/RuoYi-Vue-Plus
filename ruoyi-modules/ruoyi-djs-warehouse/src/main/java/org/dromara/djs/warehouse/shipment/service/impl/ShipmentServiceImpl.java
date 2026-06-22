@@ -14,6 +14,7 @@ import org.dromara.djs.common.encoder.IBizCodeGenerator;
 import org.dromara.djs.common.store.domain.Store;
 import org.dromara.djs.common.store.mapper.StoreMapper;
 import org.dromara.djs.common.util.I18nMessages;
+import org.dromara.djs.warehouse.check.service.IStockCheckService;
 import org.dromara.djs.warehouse.demand.core.enums.DemandStatus;
 import org.dromara.djs.warehouse.demand.domain.DemandManage;
 import org.dromara.djs.warehouse.demand.mapper.DemandManageMapper;
@@ -150,6 +151,7 @@ public class ShipmentServiceImpl
     private final StoreMapper storeMapper;
     private final IBizCodeGenerator bizCodeGenerator;
     private final ApplicationEventPublisher eventPublisher;
+    private final IStockCheckService stockCheckService;
 
     public ShipmentServiceImpl(ShipmentMapper baseMapper,
                                ProductProductionMapper productProductionMapper,
@@ -160,7 +162,8 @@ public class ShipmentServiceImpl
                                LocationStockMapper locationStockMapper,
                                StoreMapper storeMapper,
                                IBizCodeGenerator bizCodeGenerator,
-                               ApplicationEventPublisher eventPublisher) {
+                               ApplicationEventPublisher eventPublisher,
+                               IStockCheckService stockCheckService) {
         super(baseMapper);
         this.productProductionMapper = productProductionMapper;
         this.stockFlowMapper = stockFlowMapper;
@@ -171,6 +174,7 @@ public class ShipmentServiceImpl
         this.storeMapper = storeMapper;
         this.bizCodeGenerator = bizCodeGenerator;
         this.eventPublisher = eventPublisher;
+        this.stockCheckService = stockCheckService;
     }
 
     @Override
@@ -423,6 +427,8 @@ public class ShipmentServiceImpl
                 p.getProduceNo(), p.getProductId());
             return;
         }
+        // 库位级业务锁（WMS-STOCK-001）：盘点进行中的成品冷库禁出库（后端双保险，扣 location_stock 前置）
+        stockCheckService.assertLocationUnlocked(location);
         int affected = locationStockMapper.deductByProductLocation(
             location, p.getProductId(), p.getProduceQuantity(), userId);
         if (affected == 0) {
@@ -476,6 +482,7 @@ public class ShipmentServiceImpl
             return List.of();
         }
         Map<Long, String> productNameMap = loadProductNameMap(productions);
+        Map<Long, String> belongTypeMap = loadProductBelongTypeMap(productions);
         Map<Long, String> locationNameMap = loadLocationNameMap(productions);
         return productions.stream().map(p -> {
             AvailableProductionVo vo = new AvailableProductionVo();
@@ -484,6 +491,7 @@ public class ShipmentServiceImpl
             vo.setProduceDate(p.getProduceDate());
             vo.setProductId(p.getProductId());
             vo.setProductName(productNameMap.get(p.getProductId()));
+            vo.setBelongType(belongTypeMap.get(p.getProductId()));
             vo.setProduceQuantity(p.getProduceQuantity());
             vo.setProduceLocation(p.getProduceLocation());
             vo.setProduceLocationName(p.getProduceLocation() == null
@@ -577,6 +585,21 @@ public class ShipmentServiceImpl
             new LambdaQueryWrapper<ProductInfo>().in(ProductInfo::getId, productIds));
         return infos.stream().collect(
             Collectors.toMap(ProductInfo::getId, ProductInfo::getProductName, (a, b) -> a));
+    }
+
+    /** 产品 id → belong_type 业态（mp 发货清单据此定数量单位 头/份）。 */
+    private Map<Long, String> loadProductBelongTypeMap(List<ProductProduction> productions) {
+        List<Long> productIds = productions.stream()
+            .map(ProductProduction::getProductId).filter(Objects::nonNull).distinct().toList();
+        if (productIds.isEmpty()) {
+            return Map.of();
+        }
+        List<ProductInfo> infos = productInfoMapper.selectList(
+            new LambdaQueryWrapper<ProductInfo>().in(ProductInfo::getId, productIds)
+                .select(ProductInfo::getId, ProductInfo::getBelongType));
+        return infos.stream()
+            .filter(i -> i.getBelongType() != null)
+            .collect(Collectors.toMap(ProductInfo::getId, ProductInfo::getBelongType, (a, b) -> a));
     }
 
     private Map<Long, String> loadLocationNameMap(List<ProductProduction> productions) {

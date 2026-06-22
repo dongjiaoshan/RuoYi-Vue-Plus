@@ -28,7 +28,9 @@ import static org.dromara.djs.warehouse.demand.core.enums.DemandStatus.SUBMITTED
  * <p>手写 FSM，不引 spring-statemachine / Flowable。{@link #nextStatus} 为纯函数，
  * 不访问 DB，方便单测覆盖转移矩阵（参 BRD-CORE-001 {@code PigStateMachine} 范式）。</p>
  *
- * <p>主链路：{@code DRAFT → SUBMITTED → CONFIRMED → (PARTIAL_SHIPPED) → COMPLETED}。
+ * <p>主链路：{@code SUBMITTED → CONFIRMED → (PARTIAL_SHIPPED) → COMPLETED}。起点为 {@code SUBMITTED}
+ * ——V1 无「存草稿」录入入口，需求一经录入即提交，故 {@code DRAFT} 态在 V1 不可达；{@code DRAFT}
+ * 相关转移边（{@code DRAFT→SUBMIT / DRAFT→CANCEL}）为兼容 / V2 预留，保留在转移表里不删。
  * 无「开始排产」环节——CONFIRMED 是用户侧最终态，确认后由发货链路（CROSS-FLOW-003 listener）
  * 自动推进 PARTIAL_SHIP / COMPLETE。{@code IN_PRODUCTION} 态已废弃（新流程不再产生），仅保留
  * 兼容转移供存量数据走完发货。</p>

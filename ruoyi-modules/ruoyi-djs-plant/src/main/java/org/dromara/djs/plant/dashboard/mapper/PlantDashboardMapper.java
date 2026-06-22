@@ -15,8 +15,7 @@ import java.util.List;
  * <p>本 mapper 不绑定单表实体；只提供 dashboard service 调用的原始聚合 SQL。
  * 数据源：{@code t_plant_plot_info}（土地总览）+ {@code t_plant_farm_records}（今日空地/种植管理/灾害）
  * + {@code t_plant_plant_details}（当月完成率 + 今日种植/采摘 + 双甘特）
- * + {@code t_plant_pick_activity}（今日采摘活动）+ {@code t_plant_crop_organic}（果蔬有机证书）
- * + {@code t_plant_crop_info}（作物名）。</p>
+ * + {@code t_plant_crop_organic}（果蔬有机证书）+ {@code t_plant_crop_info}（作物名）。</p>
  *
  * <p>dashboard 聚合不走 BaseMapperPlus（不绑实体），故所有 SQL 显式
  * {@code WHERE tenant_id = #{tenantId} AND del_flag = '0'}（参照
@@ -187,20 +186,6 @@ public interface PlantDashboardMapper {
         + "   AND farm_date = CURDATE() "
         + "   AND farm_type = 'disaster'")
     Integer countTodayDisaster(@Param("tenantId") String tenantId);
-
-    /**
-     * 今日工作 - 采摘活动：今日采摘活动（{@code t_plant_pick_activity.activity_date = CURDATE()}）
-     * 的采摘量合计 kg（{@code SUM(total_yield)}）。
-     *
-     * @param tenantId 租户
-     * @return 今日采摘量 kg，无则 0
-     */
-    @Select("SELECT COALESCE(SUM(total_yield), 0) "
-        + "  FROM t_plant_pick_activity "
-        + " WHERE tenant_id = #{tenantId} "
-        + "   AND del_flag = '0' "
-        + "   AND activity_date = CURDATE()")
-    BigDecimal selectTodayPickActivityWeight(@Param("tenantId") String tenantId);
 
     // ============================ 块 ② 当月完成率 ============================
 

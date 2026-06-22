@@ -134,12 +134,5 @@ public enum BizCodeType {
      * 例：{@code C2026061300001}（WMS-STOCK-001 admin 新建盘点单时使用）。
      * 与 BURN_NO / CUT_NO / BAR_NO 范式一致，统一走 BizCodeService Redisson 锁 + 序号表 UNIQUE 双保护。
      */
-    CHECK_NO,
-
-    /**
-     * 门店盘点单业务码（每日重置），格式 {@code SC{yyyyMMdd}{seq5}}。
-     * 例：{@code SC2026061400001}（STR-STOCK-001 admin 新建门店盘点单时使用）。
-     * 与仓库盘点 {@link #CHECK_NO}（{@code C...}）分号避免冲突；走 BizCodeService Redisson 锁 + 序号表 UNIQUE 双保护。
-     */
-    STORE_CHECK_NO
+    CHECK_NO
 }

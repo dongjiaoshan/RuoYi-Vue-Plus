@@ -47,5 +47,8 @@ public class PigWeaningDetail extends TenantEntity {
     @TableLogic
     private String delFlag;
 
+    /** 软删唯一性辅助列：未删时 0；软删时写入 id，保证 UNIQUE 约束不阻塞同键复用。 */
+    private Long delUnique;
+
     private String remark;
 }

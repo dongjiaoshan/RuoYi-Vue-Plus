@@ -72,7 +72,6 @@ class PlantDashboardServiceImplTest {
         when(dashboardMapper.countTodayIdleMgmt(anyString())).thenReturn(1);
         when(dashboardMapper.countTodayPlantMgmt(anyString())).thenReturn(4);
         when(dashboardMapper.countTodayDisaster(anyString())).thenReturn(0);
-        when(dashboardMapper.selectTodayPickActivityWeight(anyString())).thenReturn(new BigDecimal("88.50"));
 
         // Arrange — 当月完成率
         MonthCompletionItemVo mc = new MonthCompletionItemVo();
@@ -115,7 +114,8 @@ class PlantDashboardServiceImplTest {
         assertThat(vo.getTodayIdleMgmtPlotCount()).isEqualTo(1);
         assertThat(vo.getTodayPlantMgmtPlotCount()).isEqualTo(4);
         assertThat(vo.getTodayDisasterPlotCount()).isEqualTo(0);
-        assertThat(vo.getTodayPickActivityWeight()).isEqualByComparingTo("88.50");
+        // 采摘活动量 V1 恒 0（数据源 t_plant_pick_activity 已废弃，service 直接置 ZERO，不再查 mapper）
+        assertThat(vo.getTodayPickActivityWeight()).isEqualByComparingTo(BigDecimal.ZERO);
 
         // Assert — 当月完成率
         assertThat(vo.getMonthCompletion()).hasSize(1);
@@ -146,7 +146,6 @@ class PlantDashboardServiceImplTest {
         when(dashboardMapper.countTodayIdleMgmt(anyString())).thenReturn(null);
         when(dashboardMapper.countTodayPlantMgmt(anyString())).thenReturn(null);
         when(dashboardMapper.countTodayDisaster(anyString())).thenReturn(null);
-        when(dashboardMapper.selectTodayPickActivityWeight(anyString())).thenReturn(null);
         when(dashboardMapper.selectMonthCompletion(anyString())).thenReturn(null);
         when(dashboardMapper.selectCropPlantStat(anyString())).thenReturn(null);
         when(dashboardMapper.selectLatestCropCert(anyString())).thenReturn(null);

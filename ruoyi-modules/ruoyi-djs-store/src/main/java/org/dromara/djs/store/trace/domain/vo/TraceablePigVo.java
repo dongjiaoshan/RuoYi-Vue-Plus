@@ -4,6 +4,7 @@ import lombok.Data;
 
 import java.io.Serial;
 import java.io.Serializable;
+import java.math.BigDecimal;
 
 /**
  * 门店现场生码「可追溯猪只」picker 出参（STORE-TRACE-ONSITE-001）。
@@ -31,4 +32,10 @@ public class TraceablePigVo implements Serializable {
 
     /** 日龄（天；空生日返 null）。 */
     private Integer ageDays;
+
+    /** 白条到货重量 kg（= 该耳号已发货到店的白条 production.produce_quantity 合计）。 */
+    private BigDecimal arrivedWeight;
+
+    /** 剩余可打包重量 kg（= 到货重量 − 已现场打包重量；≤0 时前端禁选）。 */
+    private BigDecimal remainingWeight;
 }

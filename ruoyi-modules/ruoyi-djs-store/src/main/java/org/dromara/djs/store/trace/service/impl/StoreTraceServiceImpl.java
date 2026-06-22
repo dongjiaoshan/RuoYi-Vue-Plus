@@ -13,11 +13,16 @@ import org.dromara.djs.breed.core.service.IPigQueryService;
 import org.dromara.djs.store.trace.domain.bo.StoreTraceOnsiteBo;
 import org.dromara.djs.store.trace.domain.vo.StorePackProductVo;
 import org.dromara.djs.store.trace.domain.vo.TraceablePigVo;
+import org.dromara.djs.warehouse.demand.domain.DemandManage;
+import org.dromara.djs.warehouse.demand.mapper.DemandManageMapper;
+import org.dromara.djs.warehouse.pack.domain.ProductProduction;
+import org.dromara.djs.warehouse.pack.mapper.ProductProductionMapper;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
 import org.dromara.djs.store.trace.service.IStoreTraceService;
-import org.dromara.djs.warehouse.cross.domain.vo.TodayBarVo;
 import org.dromara.djs.warehouse.cross.mapper.BarInfoMapper;
+import org.dromara.djs.warehouse.trace.domain.TraceCode;
+import org.dromara.djs.warehouse.trace.mapper.TraceCodeMapper;
 import org.dromara.djs.warehouse.trace.domain.query.TraceCodeQuery;
 import org.dromara.djs.warehouse.trace.domain.vo.TraceCodeDetailVo;
 import org.dromara.djs.warehouse.trace.domain.vo.TraceCodeListVo;
@@ -25,6 +30,11 @@ import org.dromara.djs.warehouse.trace.service.ITraceCodeAdminService;
 import org.dromara.djs.warehouse.trace.service.ITraceService;
 import org.springframework.stereotype.Service;
 
+import java.math.BigDecimal;
+import java.time.LocalDate;
+import java.time.ZoneId;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -56,12 +66,25 @@ public class StoreTraceServiceImpl implements IStoreTraceService {
     private static final Integer WORKSHOP_STORE_PACK = 5;
     /** 猪肉业态。 */
     private static final String BELONG_TYPE_PORK = "pork";
+    /** 白条业态（现场分割 picker 取白条 production 用）。 */
+    private static final String BELONG_TYPE_WHITE_BAR = "white_bar";
+    /** product_production.is_delivery_check=1：已发货清点。 */
+    private static final Integer DELIVERY_CHECKED = 1;
+    /** TraceCodeListVo.source 值：门店现场生码（与 warehouse TraceCodeAdminServiceImpl 口径一致）。 */
+    private static final String SOURCE_STORE = "store";
+    /** 门店现场生码 remark 前缀（已打包重量按耳号合计时筛此前缀的 pork 码）。 */
+    private static final String ONSITE_REMARK_PREFIX = "现场生码";
+    /** 「今天」时区（与发货月台一致，避免非 UTC+8 实例跨日偏移）。 */
+    private static final ZoneId TODAY_ZONE = ZoneId.of("Asia/Shanghai");
 
     private final IPigQueryService pigQueryService;
     private final ITraceService traceService;
     private final ITraceCodeAdminService traceCodeAdminService;
     private final BarInfoMapper barInfoMapper;
     private final ProductInfoMapper productInfoMapper;
+    private final DemandManageMapper demandManageMapper;
+    private final ProductProductionMapper productProductionMapper;
+    private final TraceCodeMapper traceCodeMapper;
     private final DictService dictService;
 
     /**
@@ -88,46 +111,138 @@ public class StoreTraceServiceImpl implements IStoreTraceService {
     @Override
     public TableDataInfo<TraceablePigVo> listTraceablePigs(PageQuery pageQuery) {
         PageQuery pq = pageQuery != null ? pageQuery : new PageQuery(1, 10);
-        IPage<TodayBarVo> barPage = barInfoMapper.selectTodayInStockBarPage(pq.build());
-        List<TodayBarVo> bars = barPage.getRecords();
-        if (bars == null || bars.isEmpty()) {
-            TableDataInfo<TraceablePigVo> empty = TableDataInfo.build();
-            empty.setRows(List.of());
-            empty.setTotal(barPage.getTotal());
-            return empty;
+        // 口径 = 门店「当天确认收货」的白条（邓博：白条领到门店后现场分割）。链路：
+        //   demand.received_time=今天 → 其已发货(is_delivery_check=1)的 white_bar 业态 production → ear_no。
+        // 不再用「仓库当天在库白条(in_stock)」——那是仓库视角，与门店确认收货无关（旧 bug：确认收货后白条不显示）。
+        LocalDate today = LocalDate.now(TODAY_ZONE);
+        List<Long> receivedDemandIds = demandManageMapper.selectList(
+                new LambdaQueryWrapper<DemandManage>()
+                    .ge(DemandManage::getReceivedTime, today.atStartOfDay())
+                    .lt(DemandManage::getReceivedTime, today.plusDays(1).atStartOfDay())
+                    .select(DemandManage::getId))
+            .stream().map(DemandManage::getId).filter(Objects::nonNull).distinct().toList();
+        if (receivedDemandIds.isEmpty()) {
+            return emptyPigPage();
+        }
+        List<Long> whiteBarProductIds = productInfoMapper.selectList(
+                new LambdaQueryWrapper<ProductInfo>()
+                    .eq(ProductInfo::getBelongType, BELONG_TYPE_WHITE_BAR)
+                    .select(ProductInfo::getId))
+            .stream().map(ProductInfo::getId).filter(Objects::nonNull).toList();
+        if (whiteBarProductIds.isEmpty()) {
+            return emptyPigPage();
+        }
+        // 已发货到门店的白条 production（取耳号 + 到货重量；耳号去重保序，同耳号多 production 累加到货重量）
+        List<ProductProduction> barProds = productProductionMapper.selectList(
+            new LambdaQueryWrapper<ProductProduction>()
+                .in(ProductProduction::getDemandId, receivedDemandIds)
+                .in(ProductProduction::getProductId, whiteBarProductIds)
+                .eq(ProductProduction::getIsDeliveryCheck, DELIVERY_CHECKED)
+                .isNotNull(ProductProduction::getEarNo)
+                .orderByDesc(ProductProduction::getId)
+                .select(ProductProduction::getEarNo, ProductProduction::getProduceQuantity));
+        List<String> earNoList = new ArrayList<>();
+        Map<String, BigDecimal> arrivedByEar = new LinkedHashMap<>();
+        for (ProductProduction p : barProds) {
+            String e = p.getEarNo();
+            if (StringUtils.isBlank(e)) {
+                continue;
+            }
+            if (!arrivedByEar.containsKey(e)) {
+                earNoList.add(e);
+            }
+            arrivedByEar.merge(e, p.getProduceQuantity() == null ? BigDecimal.ZERO : p.getProduceQuantity(), BigDecimal::add);
+        }
+        if (earNoList.isEmpty()) {
+            return emptyPigPage();
         }
 
-        // 按白条耳号批量 enrich 猪只信息（earNo → PigAvailableVo），additive 跨域只读
-        Set<String> earNos = bars.stream()
-            .map(TodayBarVo::getEarNo)
-            .filter(StringUtils::isNotBlank)
-            .collect(Collectors.toCollection(LinkedHashSet::new));
-        Map<String, PigAvailableVo> pigByEarNo = earNos.isEmpty() ? Map.of()
-            : pigQueryService.listPigInfoByEarNos(earNos).stream()
-                .filter(p -> StringUtils.isNotBlank(p.getEarNo()))
-                .collect(Collectors.toMap(PigAvailableVo::getEarNo, Function.identity(), (a, b) -> a));
+        // 已现场打包重量（门店 pork 码 remark「重量=Ykg」按耳号合计）→ 剩余可打包 = 到货 − 已打包
+        Map<String, BigDecimal> usedByEar = sumOnsiteUsedWeightByEarNo(earNoList);
 
-        List<TraceablePigVo> rows = bars.stream()
-            .filter(Objects::nonNull)
-            .map(bar -> {
-                TraceablePigVo v = new TraceablePigVo();
-                // chip 主键：耳号优先，外购无耳号时回退白条编号，保证选择器有可点值
-                String chipKey = StringUtils.isNotBlank(bar.getEarNo()) ? bar.getEarNo() : bar.getBarId();
-                v.setEarNo(chipKey);
-                PigAvailableVo pig = pigByEarNo.get(bar.getEarNo());
-                if (pig != null) {
-                    v.setPigSex(pig.getPigSex());
-                    v.setPigBreedLabel(pig.getPigBreedLabel());
-                    v.setAgeDays(pig.getAgeDays());
-                }
-                return v;
-            })
-            .toList();
+        // 按耳号批量 enrich 猪只信息（earNo → PigAvailableVo），additive 跨域只读
+        Set<String> earNos = new LinkedHashSet<>(earNoList);
+        Map<String, PigAvailableVo> pigByEarNo = pigQueryService.listPigInfoByEarNos(earNos).stream()
+            .filter(p -> StringUtils.isNotBlank(p.getEarNo()))
+            .collect(Collectors.toMap(PigAvailableVo::getEarNo, Function.identity(), (a, b) -> a));
 
+        List<TraceablePigVo> all = earNoList.stream().map(earNo -> {
+            TraceablePigVo v = new TraceablePigVo();
+            v.setEarNo(earNo);
+            PigAvailableVo pig = pigByEarNo.get(earNo);
+            if (pig != null) {
+                v.setPigSex(pig.getPigSex());
+                v.setPigBreedLabel(pig.getPigBreedLabel());
+                v.setAgeDays(pig.getAgeDays());
+            }
+            BigDecimal arrived = arrivedByEar.getOrDefault(earNo, BigDecimal.ZERO);
+            BigDecimal used = usedByEar.getOrDefault(earNo, BigDecimal.ZERO);
+            v.setArrivedWeight(arrived);
+            v.setRemainingWeight(arrived.subtract(used));
+            return v;
+        }).toList();
+
+        // 内存分页（门店当天收货白条量级小）
+        int pageNum = pq.getPageNum() == null ? 1 : pq.getPageNum();
+        int pageSize = pq.getPageSize() == null ? 10 : pq.getPageSize();
+        int from = Math.min(Math.max(pageNum - 1, 0) * pageSize, all.size());
+        int to = (int) Math.min((long) from + pageSize, all.size());
         TableDataInfo<TraceablePigVo> out = TableDataInfo.build();
-        out.setRows(rows);
-        out.setTotal(barPage.getTotal());
+        out.setRows(new ArrayList<>(all.subList(from, to)));
+        out.setTotal((long) all.size());
         return out;
+    }
+
+    /** 空 picker 分页（无当天确认收货白条 → 前端显「暂无当天确认收货白条」）。 */
+    private TableDataInfo<TraceablePigVo> emptyPigPage() {
+        TableDataInfo<TraceablePigVo> empty = TableDataInfo.build();
+        empty.setRows(List.of());
+        empty.setTotal(0L);
+        return empty;
+    }
+
+    /**
+     * 按耳号合计「已现场打包重量」：门店 pork 码（{@code code_type=pork} + remark「现场生码」前缀）的
+     * remark「重量=Ykg」之和。用于 picker 算每根白条的剩余可打包重量（到货 − 已打包）。
+     */
+    private Map<String, BigDecimal> sumOnsiteUsedWeightByEarNo(List<String> earNos) {
+        Map<String, BigDecimal> used = new LinkedHashMap<>();
+        if (earNos == null || earNos.isEmpty()) {
+            return used;
+        }
+        List<TraceCode> codes = traceCodeMapper.selectList(
+            new LambdaQueryWrapper<TraceCode>()
+                .eq(TraceCode::getCodeType, CODE_TYPE_PORK)
+                .in(TraceCode::getPigEarNo, earNos)
+                .likeRight(TraceCode::getRemark, ONSITE_REMARK_PREFIX)
+                .select(TraceCode::getPigEarNo, TraceCode::getRemark));
+        for (TraceCode c : codes) {
+            BigDecimal w = parseWeightFromRemark(c.getRemark());
+            if (w != null && StringUtils.isNotBlank(c.getPigEarNo())) {
+                used.merge(c.getPigEarNo(), w, BigDecimal::add);
+            }
+        }
+        return used;
+    }
+
+    /** 从现场生码 remark「…重量=Ykg」解析重量（剥非数字字符）；无则 null。 */
+    private BigDecimal parseWeightFromRemark(String remark) {
+        if (remark == null) {
+            return null;
+        }
+        int wi = remark.indexOf("重量=");
+        if (wi < 0) {
+            return null;
+        }
+        String num = remark.substring(wi + 3).replaceAll("[^0-9.]", "");
+        if (num.isEmpty()) {
+            return null;
+        }
+        try {
+            return new BigDecimal(num);
+        } catch (NumberFormatException e) {
+            return null;
+        }
     }
 
     /**
@@ -193,7 +308,73 @@ public class StoreTraceServiceImpl implements IStoreTraceService {
         TraceCodeQuery q = query == null ? new TraceCodeQuery() : query;
         // 门店端恒 pork，忽略前端可能传入的其它 codeType
         q.setCodeType(CODE_TYPE_PORK);
-        return traceCodeAdminService.queryPage(q, pageQuery);
+        TableDataInfo<TraceCodeListVo> page = traceCodeAdminService.queryPage(q, pageQuery);
+        fillStoreArrivalDate(page.getRows());
+        return page;
+    }
+
+    /**
+     * 门店现场生码行（{@code source=store}）「到店日期」回填 = 该白条耳号对应需求的门店确认收货时间。
+     *
+     * <p>门店猪肉打包用的白条是「门店确认收货」的，故现场生码的到店日期 = 白条所在需求 {@code received_time}。
+     * 链路：{@code trace_code.pig_ear_no → white_bar 业态 production(is_delivery_check=1) → demand_id → received_time}。
+     * 仓库发货流的「到店事件」对店内现做码取不到，故按耳号反查收货时间填（best-effort，查不到留空）。</p>
+     */
+    private void fillStoreArrivalDate(List<TraceCodeListVo> rows) {
+        if (rows == null || rows.isEmpty()) {
+            return;
+        }
+        // 1. 缺到店日期、有耳号的门店行
+        List<String> earNos = rows.stream()
+            .filter(r -> SOURCE_STORE.equals(r.getSource()) && r.getArrivalDate() == null && StringUtils.isNotBlank(r.getPigEarNo()))
+            .map(TraceCodeListVo::getPigEarNo).distinct().toList();
+        if (earNos.isEmpty()) {
+            return;
+        }
+        // 2. white_bar 产品 id
+        List<Long> whiteBarProductIds = productInfoMapper.selectList(
+                new LambdaQueryWrapper<ProductInfo>()
+                    .eq(ProductInfo::getBelongType, BELONG_TYPE_WHITE_BAR).select(ProductInfo::getId))
+            .stream().map(ProductInfo::getId).filter(Objects::nonNull).toList();
+        if (whiteBarProductIds.isEmpty()) {
+            return;
+        }
+        // 3. 耳号 → demand_id（已发货 white_bar production，最新 id 优先）
+        Map<String, Long> earToDemand = new java.util.LinkedHashMap<>();
+        productProductionMapper.selectList(
+                new LambdaQueryWrapper<ProductProduction>()
+                    .in(ProductProduction::getEarNo, earNos)
+                    .in(ProductProduction::getProductId, whiteBarProductIds)
+                    .eq(ProductProduction::getIsDeliveryCheck, DELIVERY_CHECKED)
+                    .isNotNull(ProductProduction::getDemandId)
+                    .orderByDesc(ProductProduction::getId)
+                    .select(ProductProduction::getEarNo, ProductProduction::getDemandId))
+            .forEach(p -> {
+                if (StringUtils.isNotBlank(p.getEarNo())) {
+                    earToDemand.putIfAbsent(p.getEarNo(), p.getDemandId());
+                }
+            });
+        if (earToDemand.isEmpty()) {
+            return;
+        }
+        // 4. demand → received_time
+        List<Long> demandIds = earToDemand.values().stream().filter(Objects::nonNull).distinct().toList();
+        Map<Long, java.time.LocalDateTime> demandRecv = demandManageMapper.selectList(
+                new LambdaQueryWrapper<DemandManage>()
+                    .in(DemandManage::getId, demandIds).select(DemandManage::getId, DemandManage::getReceivedTime))
+            .stream().filter(d -> d.getReceivedTime() != null)
+            .collect(Collectors.toMap(DemandManage::getId, DemandManage::getReceivedTime, (a, b) -> a));
+        // 5. 回填到店日期 = received_time 当天
+        for (TraceCodeListVo r : rows) {
+            if (!SOURCE_STORE.equals(r.getSource()) || r.getArrivalDate() != null || StringUtils.isBlank(r.getPigEarNo())) {
+                continue;
+            }
+            Long demandId = earToDemand.get(r.getPigEarNo());
+            java.time.LocalDateTime recv = demandId == null ? null : demandRecv.get(demandId);
+            if (recv != null) {
+                r.setArrivalDate(recv.toLocalDate());
+            }
+        }
     }
 
     @Override

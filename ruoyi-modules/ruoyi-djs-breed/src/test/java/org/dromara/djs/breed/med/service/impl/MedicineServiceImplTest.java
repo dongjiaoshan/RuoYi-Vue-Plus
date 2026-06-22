@@ -12,6 +12,7 @@ import org.dromara.djs.breed.med.domain.query.MedicineQuery;
 import org.dromara.djs.breed.med.domain.vo.MedicineVo;
 import org.dromara.djs.breed.med.mapper.MedicineMapper;
 import org.dromara.djs.common.medicine.api.MedicineStockProvider;
+import org.dromara.djs.common.validate.BizReferenceChecker;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
@@ -60,6 +61,8 @@ class MedicineServiceImplTest {
     private MedicineMapper medicineMapper;
     @Mock
     private MedicineStockProvider medicineStockProvider;
+    @Mock
+    private BizReferenceChecker bizReferenceChecker;
 
     private TestableMedicineServiceImpl service;
 
@@ -67,8 +70,8 @@ class MedicineServiceImplTest {
      * 子类覆盖 toEntity 钩子，避开 SpringUtils.getBean(Converter.class)。
      */
     static class TestableMedicineServiceImpl extends MedicineServiceImpl {
-        TestableMedicineServiceImpl(MedicineMapper mapper, MedicineStockProvider sp) {
-            super(mapper, sp);
+        TestableMedicineServiceImpl(MedicineMapper mapper, MedicineStockProvider sp, BizReferenceChecker brc) {
+            super(mapper, sp, brc);
         }
 
         @Override
@@ -99,7 +102,7 @@ class MedicineServiceImplTest {
 
     @BeforeEach
     void setup() {
-        service = new TestableMedicineServiceImpl(medicineMapper, medicineStockProvider);
+        service = new TestableMedicineServiceImpl(medicineMapper, medicineStockProvider, bizReferenceChecker);
     }
 
     private MedicineBo sampleBo() {

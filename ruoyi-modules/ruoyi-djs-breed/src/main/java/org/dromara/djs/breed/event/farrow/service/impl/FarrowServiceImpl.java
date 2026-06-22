@@ -69,11 +69,6 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class FarrowServiceImpl implements IFarrowService {
 
-    /** mp 端 picker 默认上限：单页 50 条防爆。 */
-    private static final int RECENT_LIMIT_MAX = 50;
-    /** mp 端 picker 默认窗口：最近 7 天。 */
-    private static final int RECENT_DAYS = 7;
-
     private final PigFarrowMapper farrowMapper;
     private final PigMapper pigMapper;
     private final BarnMapper barnMapper;
@@ -178,20 +173,6 @@ public class FarrowServiceImpl implements IFarrowService {
         enrichTaggedCounts(page.getRecords());
         enrichPigInfo(page.getRecords());
         return TableDataInfo.build(page);
-    }
-
-    @Override
-    public List<PigFarrowVo> queryRecent(Long operatorId, int limit) {
-        int effective = Math.min(limit <= 0 ? RECENT_LIMIT_MAX : limit, RECENT_LIMIT_MAX);
-        LocalDateTime cutoff = LocalDateTime.now().minusDays(RECENT_DAYS);
-        LambdaQueryWrapper<PigFarrow> w = Wrappers.<PigFarrow>lambdaQuery()
-            .ge(PigFarrow::getFarrowDate, cutoff)
-            .orderByDesc(PigFarrow::getFarrowDate, PigFarrow::getId)
-            .last("LIMIT " + effective);
-        List<PigFarrowVo> rows = farrowMapper.selectVoList(w);
-        enrichTaggedCounts(rows);
-        enrichPigInfo(rows);
-        return rows;
     }
 
     /**

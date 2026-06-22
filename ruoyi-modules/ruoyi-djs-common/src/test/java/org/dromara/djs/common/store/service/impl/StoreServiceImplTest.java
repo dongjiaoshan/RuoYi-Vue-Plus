@@ -14,6 +14,7 @@ import org.dromara.djs.common.store.domain.bo.StoreBo;
 import org.dromara.djs.common.store.domain.query.StoreQuery;
 import org.dromara.djs.common.store.domain.vo.StoreVo;
 import org.dromara.djs.common.store.mapper.StoreMapper;
+import org.dromara.djs.common.validate.BizReferenceChecker;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
@@ -63,6 +64,9 @@ class StoreServiceImplTest {
     @Mock
     private UserService userService;
 
+    @Mock
+    private BizReferenceChecker bizReferenceChecker;
+
     private TestableStoreServiceImpl service;
 
     /**
@@ -70,8 +74,9 @@ class StoreServiceImplTest {
      * 直接把 BO 的字段手动拷到 Entity，模拟 MapStruct 生成的 mapper。
      */
     static class TestableStoreServiceImpl extends StoreServiceImpl {
-        TestableStoreServiceImpl(StoreMapper storeMapper, IBizCodeGenerator bizCodeGenerator, UserService userService) {
-            super(storeMapper, bizCodeGenerator, userService);
+        TestableStoreServiceImpl(StoreMapper storeMapper, IBizCodeGenerator bizCodeGenerator, UserService userService,
+                                 BizReferenceChecker bizReferenceChecker) {
+            super(storeMapper, bizCodeGenerator, userService, bizReferenceChecker);
         }
 
         @Override
@@ -98,7 +103,7 @@ class StoreServiceImplTest {
 
     @BeforeEach
     void setup() {
-        service = new TestableStoreServiceImpl(storeMapper, bizCodeGenerator, userService);
+        service = new TestableStoreServiceImpl(storeMapper, bizCodeGenerator, userService, bizReferenceChecker);
         when(bizCodeGenerator.generate(eq(BizCodeType.STORE_CODE), any())).thenReturn("ST0001");
     }
 

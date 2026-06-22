@@ -2,6 +2,7 @@ package org.dromara.djs.plant.pick.service.impl;
 
 import cn.hutool.core.collection.CollUtil;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.common.core.exception.ServiceException;
@@ -107,21 +108,32 @@ public class AppletPickServiceImpl implements IAppletPickService {
         boolean finish = Boolean.TRUE.equals(bo.getFinish());
         // FIX-PLT-MP-PICK-001（#3=a 按原型）：采收 tab 只走"开始/完成采摘"流程（采摘人员 + 日期），
         // 不录重量。采摘重量改由农事「采摘活动管理」submitHarvestWeight 累加 actual_yield。
-        // 捕获更新前的旧态：仅"非活跃(待采摘) → 活跃(采摘中/已完成)"首次流转才发跨域事件。
-        // 0619 客户口径：地块「开始采摘」即应在仓库毛菜处理出现待办（原仅采摘完成才发，采摘中地块在仓库不可见）。
-        // 用 wasActive（picking|completed）而非 alreadyCompleted 判定：保证每地块只发一次——
-        // 开始采摘(pending→picking)时发过，后续完成采摘(picking→completed)不重发，避免同 plot+crop 多行重复待办。
-        boolean wasActive = "picking".equals(detail.getHarvestStatus())
-            || "completed".equals(detail.getHarvestStatus());
+        String targetStatus = finish ? "completed" : "picking";
+
+        // SM-4 并发加固：地块「首次离开 pending（待采摘）」是发 PlantPickedEvent 的唯一闸门。
+        // 用带条件乐观 UPDATE（SET harvest_status=target WHERE id=? AND harvest_status='pending'）原子推进，
+        // affected>0 才是「本次调用赢得首次激活」——两并发请求只有一个 affected=1，另一个 affected=0，
+        // 从而 CROSS-FLOW-002 待办事件保证只发一次（杜绝 read-modify-write 下并发重复发）。
+        // wonActivation 同时覆盖 pending→picking（开始采摘）与 pending→completed（未开始直接完成）两路：
+        // 谁把行从 pending 推走谁负责发事件。
+        int affected = detailsMapper.update(null,
+            new LambdaUpdateWrapper<PlantDetails>()
+                .set(PlantDetails::getHarvestStatus, targetStatus)
+                .eq(PlantDetails::getId, detail.getId())
+                .eq(PlantDetails::getHarvestStatus, "pending"));
+        boolean wonActivation = affected > 0;
 
         // 1. 首次采收回填 begin_harvestdate
         if (detail.getBeginHarvestdate() == null) {
             detail.setBeginHarvestdate(bo.getHarvestDate());
         }
 
-        // 2. harvest_status 流转：pending → picking；finish 时 → completed
+        // 2. harvest_status 流转：pending → picking；finish 时 → completed。
+        //    pending→target 已由上面乐观 UPDATE 原子完成；这里 entity 同步成 target，
+        //    并补齐 picking→completed（行已 picking 时再完成）的状态推进——该路 wonActivation=false（CAS 命不中 pending），
+        //    不重发事件但仍正确落 completed。
+        detail.setHarvestStatus(targetStatus);
         if (finish) {
-            detail.setHarvestStatus("completed");
             // end_actualdate 归「种植完成」finishPlant 独占，采摘完成不再写
             detail.setEndHarvestdate(bo.getHarvestDate());
             // 3. average_yield = actual_yield / plot_area（actual_yield 由采摘活动管理累加；为空 / area 为 0 时跳过，不抛）
@@ -130,11 +142,9 @@ public class AppletPickServiceImpl implements IAppletPickService {
             if (yield != null && area != null && area.compareTo(BigDecimal.ZERO) > 0) {
                 detail.setAverageYield(yield.divide(area, 3, RoundingMode.HALF_UP));
             }
-        } else if (!"picking".equals(detail.getHarvestStatus())
-            && !"completed".equals(detail.getHarvestStatus())) {
-            // 「开始采摘」：harvest_status 非 picking/completed 首次转 picking
-            detail.setHarvestStatus("picking");
-            // 同步把关联地块 plot_status 从 2（种植）置 3（采摘），字典 djs_plot_status：1=空闲/2=种植/3=采摘
+        } else if (wonActivation) {
+            // 「开始采摘」首次 pending→picking（赢得乐观推进）：把关联地块 plot_status 从 2（种植）置 3（采摘），
+            // 字典 djs_plot_status：1=空闲/2=种植/3=采摘。只在首次激活时翻一次，避免并发重复翻。
             if (detail.getPlotId() != null) {
                 PlotInfo plot = plotMapper.selectById(detail.getPlotId());
                 if (plot != null) {
@@ -166,9 +176,9 @@ public class AppletPickServiceImpl implements IAppletPickService {
         // 6. CROSS-FLOW-002：地块首次进入活跃采摘态（待采摘 → 采摘中/已完成）时发 PlantPickedEvent，
         //    warehouse 域 listener 在 AFTER_COMMIT 写 1 行 t_warehouse_planting_record(handle_status='pending') 待办，
         //    使「开始采摘」即在仓库毛菜处理出现该批次（0619 客户口径）。
-        //    !wasActive 保证只发一次：后续逐次采收 / 完成采摘均不重发，避免同 plot+crop 多行重复待办。
-        //    （submitPick 后 harvest_status 必为 picking 或 completed，故 !wasActive 即「本次首次激活」。）
-        if (!wasActive) {
+        //    wonActivation（上面乐观 UPDATE affected>0，即本次调用真把行从 pending 推走）保证只发一次：
+        //    后续逐次采收 / 完成采摘 affected=0 不重发，避免同 plot+crop 多行重复待办，并发也只有一个赢家。
+        if (wonActivation) {
             PlantPickedPayload payload = new PlantPickedPayload();
             payload.setPlotId(detail.getPlotId());
             payload.setCropId(detail.getCropId());

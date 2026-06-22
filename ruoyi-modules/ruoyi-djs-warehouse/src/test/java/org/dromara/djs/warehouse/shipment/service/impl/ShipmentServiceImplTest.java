@@ -98,6 +98,8 @@ class ShipmentServiceImplTest {
     private IBizCodeGenerator bizCodeGenerator;
     @Mock
     private ApplicationEventPublisher eventPublisher;
+    @Mock
+    private org.dromara.djs.warehouse.check.service.IStockCheckService stockCheckService;
 
     private ShipmentServiceImpl service;
 
@@ -125,7 +127,7 @@ class ShipmentServiceImplTest {
 
         service = new ShipmentServiceImpl(shipmentMapper, productProductionMapper, stockFlowMapper,
             demandMapper, productInfoMapper, locationInfoMapper, locationStockMapper, storeMapper,
-            bizCodeGenerator, eventPublisher);
+            bizCodeGenerator, eventPublisher, stockCheckService);
 
         // 业务码 stub
         when(bizCodeGenerator.generate(eq(BizCodeType.SHIP_NO), anyMap())).thenReturn("S260610TEST0001");

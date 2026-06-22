@@ -36,6 +36,7 @@ import java.time.LocalDate;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -115,6 +116,8 @@ class AppletPickServiceImplTest {
     void submitPick_continue_happy() {
         PlantDetails d = detailFixture();
         when(detailsMapper.selectById(100L)).thenReturn(d);
+        // SM-4：pending→picking 乐观 UPDATE 成功（affected=1 = 本次赢得首次激活）
+        when(detailsMapper.update(isNull(), any())).thenReturn(1);
 
         PickSubmitBo bo = new PickSubmitBo();
         bo.setDetailId(100L);
@@ -151,6 +154,8 @@ class AppletPickServiceImplTest {
         d.setHarvestStatus("picking");
         d.setBeginHarvestdate(LocalDate.of(2026, 5, 30));
         when(detailsMapper.selectById(100L)).thenReturn(d);
+        // SM-4：行已 picking，pending→target 乐观 UPDATE 命不中（affected=0，非首次激活）
+        when(detailsMapper.update(isNull(), any())).thenReturn(0);
 
         PickSubmitBo bo = new PickSubmitBo();
         bo.setDetailId(100L);
@@ -172,6 +177,8 @@ class AppletPickServiceImplTest {
         PlantDetails d = detailFixture();
         d.setActualYield(new BigDecimal("100"));   // 已由采摘活动管理累加
         when(detailsMapper.selectById(100L)).thenReturn(d);
+        // SM-4：pending→completed（未开始直接完成）乐观 UPDATE 成功（affected=1 = 本次赢得首次激活）
+        when(detailsMapper.update(isNull(), any())).thenReturn(1);
 
         PickSubmitBo bo = new PickSubmitBo();
         bo.setDetailId(100L);
@@ -210,6 +217,8 @@ class AppletPickServiceImplTest {
     void submitPick_team_to_farmBy() {
         PlantDetails d = detailFixture();   // harvestBy=40
         when(detailsMapper.selectById(100L)).thenReturn(d);
+        // SM-4：pending→picking 乐观 UPDATE 成功
+        when(detailsMapper.update(isNull(), any())).thenReturn(1);
 
         PickSubmitBo bo = new PickSubmitBo();
         bo.setDetailId(100L);
@@ -234,6 +243,8 @@ class AppletPickServiceImplTest {
     void submitPick_finish_publishesEvent() {
         PlantDetails d = detailFixture();   // harvestStatus=pending
         when(detailsMapper.selectById(100L)).thenReturn(d);
+        // SM-4：pending→completed 乐观 UPDATE 成功（affected=1 = 本次赢得首次激活）→ 发事件
+        when(detailsMapper.update(isNull(), any())).thenReturn(1);
 
         PickSubmitBo bo = new PickSubmitBo();
         bo.setDetailId(100L);
@@ -249,9 +260,10 @@ class AppletPickServiceImplTest {
     @DisplayName("CROSS-FLOW-002 已活跃(picking)再采收 finish=false → 不重复发布事件（逐次采收不产生重复待办）")
     void submitPick_continue_doesNotPublishEvent() {
         PlantDetails d = detailFixture();
-        // 已处于采摘中（wasActive=true）：开始采摘时已发过事件，继续采收不再重发
+        // 已处于采摘中：开始采摘时已发过事件，继续采收 pending→target 乐观 UPDATE 命不中（affected=0）不重发
         d.setHarvestStatus("picking");
         when(detailsMapper.selectById(100L)).thenReturn(d);
+        when(detailsMapper.update(isNull(), any())).thenReturn(0);
 
         PickSubmitBo bo = new PickSubmitBo();
         bo.setDetailId(100L);
@@ -270,6 +282,8 @@ class AppletPickServiceImplTest {
         d.setHarvestStatus("completed");   // 重复点完成，旧态已 completed
         d.setActualYield(new BigDecimal("80"));
         when(detailsMapper.selectById(100L)).thenReturn(d);
+        // 行已 completed，pending→target 乐观 UPDATE 命不中（affected=0）→ 幂等不发事件
+        when(detailsMapper.update(isNull(), any())).thenReturn(0);
 
         PickSubmitBo bo = new PickSubmitBo();
         bo.setDetailId(100L);

@@ -13,6 +13,7 @@ import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.breed.core.domain.Pig;
 import org.dromara.djs.breed.core.domain.bo.PigEventBo;
 import org.dromara.djs.breed.core.util.PigAgeUtil;
+import org.dromara.djs.breed.core.enums.PigLifecycle;
 import org.dromara.djs.breed.core.enums.PigStatusEvent;
 import org.dromara.djs.breed.core.mapper.PigMapper;
 import org.dromara.djs.breed.core.service.I18nMessages;
@@ -77,6 +78,15 @@ public class HeatServiceImpl implements IHeatService {
         Pig pig = pigMapper.selectById(bo.getPigId());
         if (pig == null) {
             throw new ServiceException(I18nMessages.t("pig.not_found", bo.getPigId()));
+        }
+
+        // 终态守卫：currentStatus 为终态（END）的母猪已终止（DIE/CULL/MARKET），不应再有查情记录。
+        // 空串 currentStatus（非种母猪/未进繁殖态）不算终态，放行；confirmed=false 分支也走此校验。
+        if (StringUtils.isNotBlank(pig.getCurrentStatus())) {
+            PigLifecycle lifecycle = parseLifecycle(pig.getCurrentStatus());
+            if (lifecycle != null && lifecycle.isTerminal()) {
+                throw new ServiceException(I18nMessages.t("pig.state.terminal", lifecycle.getLabel()), 400);
+            }
         }
 
         boolean confirmed = Boolean.TRUE.equals(bo.getIsPregnantConfirmed());
@@ -217,6 +227,17 @@ public class HeatServiceImpl implements IHeatService {
                     row.setStatusDays((int) statusDays);
                 }
             }
+        }
+    }
+
+    /**
+     * 把 DB 存的 lifecycle 字符串解析为枚举；未知值（脏数据 / 未来扩展）返 null，由调用方按"非终态放行"处理。
+     */
+    private static PigLifecycle parseLifecycle(String status) {
+        try {
+            return PigLifecycle.valueOf(status);
+        } catch (IllegalArgumentException ex) {
+            return null;
         }
     }
 

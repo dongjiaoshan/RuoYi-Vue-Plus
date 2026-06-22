@@ -8,13 +8,17 @@ import org.dromara.common.core.utils.MapstructUtils;
 import org.dromara.common.core.utils.StringUtils;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
+import org.dromara.djs.breed.breeding.domain.BreedConfig;
 import org.dromara.djs.breed.breeding.domain.BreedInfo;
 import org.dromara.djs.breed.breeding.domain.bo.BreedInfoBo;
 import org.dromara.djs.breed.breeding.domain.query.BreedInfoQuery;
 import org.dromara.djs.breed.breeding.domain.vo.BreedInfoOptionVo;
 import org.dromara.djs.breed.breeding.domain.vo.BreedInfoVo;
+import org.dromara.djs.breed.breeding.mapper.BreedConfigMapper;
 import org.dromara.djs.breed.breeding.mapper.BreedInfoMapper;
 import org.dromara.djs.breed.breeding.service.IBreedInfoService;
+import org.dromara.djs.breed.core.domain.Pig;
+import org.dromara.djs.breed.core.mapper.PigMapper;
 import org.dromara.djs.common.base.DjsBaseServiceImpl;
 import org.springframework.stereotype.Service;
 
@@ -29,8 +33,11 @@ import java.util.stream.Collectors;
  * <p>软删走基类 {@link DjsBaseServiceImpl#softDelete}（{@code update(entity, wrapper)} +
  * {@code setSql("del_flag = '1'")} 绕过 {@code @TableLogic} 剥离，D03 _open-issues #18 教训）。</p>
  *
- * <p>下游业务表 wire 后需在 {@link #deleteWithValidByIds(Collection)} 前置校验
- * "是否被 {@code t_farm_pig_info} / {@code t_farm_breed_config} 引用"。</p>
+ * <p>{@link #deleteWithValidByIds(Collection)} 软删前按 {@code breedStrainCode} 反查
+ * "是否被 {@code t_farm_pig_info.{pig_breed_code, pig_strain_code}} /
+ * {@code t_farm_breed_config.{mother_code, father_code, cub_code}} 引用"（配种关系走字符串编码引用，
+ * 非 FK ID，故用 {@code selectCount} 按 code 校验而非 {@code BizReferenceChecker} 按 id），命中则抛
+ * {@code ServiceException} 阻止软删，避免悬空引用。</p>
  *
  * @author djs
  * @since BRD-MD-001
@@ -39,8 +46,14 @@ import java.util.stream.Collectors;
 @Service
 public class BreedInfoServiceImpl extends DjsBaseServiceImpl<BreedInfoMapper, BreedInfo> implements IBreedInfoService {
 
-    public BreedInfoServiceImpl(BreedInfoMapper baseMapper) {
+    private final PigMapper pigMapper;
+    private final BreedConfigMapper breedConfigMapper;
+
+    public BreedInfoServiceImpl(BreedInfoMapper baseMapper, PigMapper pigMapper,
+                                BreedConfigMapper breedConfigMapper) {
         super(baseMapper);
+        this.pigMapper = pigMapper;
+        this.breedConfigMapper = breedConfigMapper;
     }
 
     @Override
@@ -133,10 +146,31 @@ public class BreedInfoServiceImpl extends DjsBaseServiceImpl<BreedInfoMapper, Br
 
     @Override
     public int deleteWithValidByIds(Collection<Long> ids) {
-        // TODO BRD-MD-001 → D05 BRD-CORE-001：业务表 wire 后，删除前需校验
-        // (1) 是否被 t_farm_pig_info.{pig_breed_code, pig_strain_code} 引用 → 有则抛 BizException
-        // (2) 是否被 t_farm_breed_config.{mother_code, father_code, cub_code} 引用 → 有则抛 BizException
-        // D05 BRD-EVENT-001 抽 BizReferenceChecker 后，本处统一改为声明式注册。
+        if (ids == null || ids.isEmpty()) {
+            return 0;
+        }
+        // 软删前按 breedStrainCode 反查猪只 / 配种关系引用（编码引用，非 FK ID），命中则阻止删除
+        for (Long id : ids) {
+            BreedInfo entity = baseMapper.selectById(id);
+            if (entity == null || StringUtils.isBlank(entity.getBreedStrainCode())) {
+                continue;
+            }
+            String code = entity.getBreedStrainCode();
+
+            long pigRefs = pigMapper.selectCount(new LambdaQueryWrapper<Pig>()
+                .and(w -> w.eq(Pig::getPigBreedCode, code).or().eq(Pig::getPigStrainCode, code)));
+            if (pigRefs > 0) {
+                throw new ServiceException("品种/品系 [" + code + "] 被猪只档案引用，无法删除");
+            }
+
+            long configRefs = breedConfigMapper.selectCount(new LambdaQueryWrapper<BreedConfig>()
+                .and(w -> w.eq(BreedConfig::getMotherCode, code)
+                    .or().eq(BreedConfig::getFatherCode, code)
+                    .or().eq(BreedConfig::getCubCode, code)));
+            if (configRefs > 0) {
+                throw new ServiceException("品种/品系 [" + code + "] 被配种关系引用，无法删除");
+            }
+        }
         return softDelete(ids);
     }
 

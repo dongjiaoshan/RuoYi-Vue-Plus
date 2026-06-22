@@ -33,6 +33,12 @@ public class AvailableProductionVo implements Serializable {
     /** 产品名称（service 层 JOIN product_info 填充）。 */
     private String productName;
 
+    /**
+     * 产品业态（service 层 JOIN product_info.belong_type 填充）。
+     * mp 发货清单据此定数量单位：white_bar=头（整只/半扇按头计），其余（pork 分割品/vegetable/gift_box/other）=份。
+     */
+    private String belongType;
+
     private BigDecimal produceQuantity;
 
     private Long produceLocation;

@@ -68,7 +68,9 @@ public class PlantDashboardServiceImpl implements IPlantDashboardService {
         vo.setTodayIdleMgmtPlotCount(nz(dashboardMapper.countTodayIdleMgmt(tenantId)));
         vo.setTodayPlantMgmtPlotCount(nz(dashboardMapper.countTodayPlantMgmt(tenantId)));
         vo.setTodayDisasterPlotCount(nz(dashboardMapper.countTodayDisaster(tenantId)));
-        vo.setTodayPickActivityWeight(nzBd(dashboardMapper.selectTodayPickActivityWeight(tenantId)));
+        // 今日采摘活动量 V1 恒 0：原口径取 t_plant_pick_activity SUM(total_yield)，该表已废弃（采摘活动改只读报表，
+        // 不再写采摘量明细）；VO 字段保留（前端仍读），直接置 0 避免查废表。
+        vo.setTodayPickActivityWeight(BigDecimal.ZERO);
 
         // 块 ② 当月完成率
         List<MonthCompletionItemVo> monthCompletion = dashboardMapper.selectMonthCompletion(tenantId);

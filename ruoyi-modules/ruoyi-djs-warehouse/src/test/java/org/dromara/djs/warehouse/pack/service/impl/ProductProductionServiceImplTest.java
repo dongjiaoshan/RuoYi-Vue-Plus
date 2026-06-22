@@ -95,6 +95,7 @@ class ProductProductionServiceImplTest {
     @Mock private org.dromara.djs.warehouse.cross.mapper.BarInfoMapper barInfoMapper;
     @Mock private IBizCodeGenerator bizCodeGenerator;
     @Mock private org.dromara.djs.warehouse.trace.service.ITraceService traceService;
+    @Mock private org.dromara.djs.warehouse.check.service.IStockCheckService stockCheckService;
 
     private ProductProductionServiceImpl service;
     private MockedStatic<LoginHelper> loginHelperMock;
@@ -118,7 +119,7 @@ class ProductProductionServiceImplTest {
         service = new ProductProductionServiceImpl(
             productionMapper, inhouseMapper, productInfoMapper, giftBoxMapper,
             locationInfoMapper, locationStockMapper, stockFlowMapper, storeMapper, plotInfoMapper,
-            demandManageMapper, barInfoMapper, bizCodeGenerator, traceService);
+            demandManageMapper, barInfoMapper, bizCodeGenerator, traceService, stockCheckService);
 
         loginHelperMock = Mockito.mockStatic(LoginHelper.class);
         loginHelperMock.when(LoginHelper::getUserId).thenReturn(9001L);

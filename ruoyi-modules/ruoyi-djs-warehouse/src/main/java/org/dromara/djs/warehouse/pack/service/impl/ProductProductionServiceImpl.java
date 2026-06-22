@@ -15,6 +15,7 @@ import org.dromara.djs.common.store.domain.Store;
 import org.dromara.djs.common.store.mapper.StoreMapper;
 import org.dromara.djs.plant.plot.domain.PlotInfo;
 import org.dromara.djs.plant.plot.mapper.PlotInfoMapper;
+import org.dromara.djs.warehouse.check.service.IStockCheckService;
 import org.dromara.djs.warehouse.cross.mapper.BarInfoMapper;
 import org.dromara.djs.warehouse.demand.mapper.DemandManageMapper;
 import org.dromara.djs.warehouse.flow.domain.StockFlow;
@@ -102,12 +103,12 @@ public class ProductProductionServiceImpl
     private static final String PACK_STATUS_PACKED = "packed";
 
     /**
-     * 生产位置默认值（NULL — PACK 业态本身不指定具体 location_info，由后续打包入库流程填）。
+     * product_inhouse.source 值：warehouse=仓库分割产（WMS-PIG-002 / WMS-VEG-001）。
      *
-     * <p>D10 P0 hotfix：原为 Integer 字典 1=仓库，本 hotfix 因 SHIP 用法约束改为 Long FK；
-     * PACK 端不写实际 location，统一 NULL。字典语义降级为 follow-up。</p>
+     * <p>5 个打包/出库来源 picker 与 {@link #requireActiveInhouse} 只认 warehouse 来源 inhouse，
+     * 排除门店现场分割（source='store'，STR-SPLIT-001），实现跨域库存隔离。</p>
      */
-    private static final Long PRODUCE_LOCATION_WAREHOUSE = null;
+    private static final String SOURCE_WAREHOUSE = "warehouse";
 
     /** djs_yes_no 字典码值。 */
     private static final Integer YN_NO = 0;
@@ -176,6 +177,7 @@ public class ProductProductionServiceImpl
     private final BarInfoMapper barInfoMapper;
     private final IBizCodeGenerator bizCodeGenerator;
     private final ITraceService traceService;
+    private final IStockCheckService stockCheckService;
 
     public ProductProductionServiceImpl(ProductProductionMapper baseMapper,
                                         ProductInhouseMapper productInhouseMapper,
@@ -189,7 +191,8 @@ public class ProductProductionServiceImpl
                                         DemandManageMapper demandManageMapper,
                                         BarInfoMapper barInfoMapper,
                                         IBizCodeGenerator bizCodeGenerator,
-                                        ITraceService traceService) {
+                                        ITraceService traceService,
+                                        IStockCheckService stockCheckService) {
         super(baseMapper);
         this.productInhouseMapper = productInhouseMapper;
         this.productInfoMapper = productInfoMapper;
@@ -203,6 +206,7 @@ public class ProductProductionServiceImpl
         this.barInfoMapper = barInfoMapper;
         this.bizCodeGenerator = bizCodeGenerator;
         this.traceService = traceService;
+        this.stockCheckService = stockCheckService;
     }
 
     /**
@@ -227,6 +231,8 @@ public class ProductProductionServiceImpl
         checkVegMaterialIfConfigured(product, bo.getProductWeight());
         // Step 3：入库库位（前端收银台不采集，可空 → 默认取产品配置库位/首个可用库位兜底）
         Long locationId = resolveLocationId(bo.getLocationId(), product);
+        // D-2：目标库位盘点锁定中 → 拒绝入库（与 burn/mat-flow 同范式后端双保险）
+        stockCheckService.assertLocationUnlocked(locationId);
 
         // Step 4：INSERT product_production
         ProductProduction p = new ProductProduction();
@@ -248,7 +254,7 @@ public class ProductProductionServiceImpl
         p.setIsArrivalConfirm(YN_NO);
         p.setMaterialId(bo.getMaterialId());
         p.setMaterialConsume(bo.getMaterialConsume());
-        p.setProduceLocation(PRODUCE_LOCATION_WAREHOUSE);
+        p.setProduceLocation(locationId);
         p.setPackStatus(PACK_STATUS_PACKED);
         p.setDeliverDest(bo.getDeliverDest());
         p.setProofOssIds(bo.getProofOssIds());
@@ -289,6 +295,8 @@ public class ProductProductionServiceImpl
         }
         // 入库库位（前端收银台不采集，可空 → 默认取礼盒产品配置库位/首个可用库位兜底）
         Long locationId = resolveLocationId(bo.getLocationId(), giftBoxProduct);
+        // D-2：目标库位盘点锁定中 → 拒绝出入库（组件扣减 + 礼盒入库均落此库位）
+        stockCheckService.assertLocationUnlocked(locationId);
 
         // Step 2：查 D8 gift_box 拿组件清单
         List<GiftBox> components = giftBoxMapper.selectList(
@@ -336,7 +344,7 @@ public class ProductProductionServiceImpl
         p.setProduceTime(now);
         p.setIsDeliveryCheck(YN_NO);
         p.setIsArrivalConfirm(YN_NO);
-        p.setProduceLocation(PRODUCE_LOCATION_WAREHOUSE);
+        p.setProduceLocation(locationId);
         p.setPackStatus(PACK_STATUS_PACKED);
         p.setDeliverDest(bo.getDeliverDest());
         p.setProofOssIds(bo.getProofOssIds());
@@ -370,6 +378,8 @@ public class ProductProductionServiceImpl
         requireInhouseEnough(src, bo.getProductWeight());
         // 入库库位（前端收银台不采集，可空 → 默认取产品配置库位/首个可用库位兜底）
         Long locationId = resolveLocationId(bo.getLocationId(), product);
+        // D-2：目标库位盘点锁定中 → 拒绝入库
+        stockCheckService.assertLocationUnlocked(locationId);
 
         ProductProduction p = new ProductProduction();
         p.setProduceDate(java.sql.Date.valueOf(LocalDate.now()));
@@ -388,7 +398,7 @@ public class ProductProductionServiceImpl
         p.setProduceTime(now);
         p.setIsDeliveryCheck(YN_NO);
         p.setIsArrivalConfirm(YN_NO);
-        p.setProduceLocation(PRODUCE_LOCATION_WAREHOUSE);
+        p.setProduceLocation(locationId);
         p.setPackStatus(PACK_STATUS_PACKED);
         p.setDeliverDest(bo.getDeliverDest());
         p.setProofOssIds(bo.getProofOssIds());
@@ -427,6 +437,8 @@ public class ProductProductionServiceImpl
         ProductInfo product = requireDeliveryProduct(bo.getProductId());
         requireInhouseEnough(src, bo.getProductWeight());
         requireLocation(bo.getLocationId());
+        // D-2：目标库位盘点锁定中 → 拒绝入库
+        stockCheckService.assertLocationUnlocked(bo.getLocationId());
 
         ProductProduction p = new ProductProduction();
         p.setProduceDate(java.sql.Date.valueOf(LocalDate.now()));
@@ -445,7 +457,7 @@ public class ProductProductionServiceImpl
         p.setProduceTime(now);
         p.setIsDeliveryCheck(YN_NO);
         p.setIsArrivalConfirm(YN_NO);
-        p.setProduceLocation(PRODUCE_LOCATION_WAREHOUSE);
+        p.setProduceLocation(bo.getLocationId());
         p.setPackStatus(PACK_STATUS_PACKED);
         p.setProofOssIds(bo.getProofOssIds());
         p.setRemark(bo.getRemark());
@@ -494,6 +506,9 @@ public class ProductProductionServiceImpl
             throw new ServiceException("发货门店不存在或已删除：" + bo.getStoreId());
         }
         requireInhouseEnough(src, bo.getProductWeight());
+        // D-2：来源 inhouse 所在库位盘点锁定中 → 拒绝出库（白条整只 inhouse 常无 locationId，
+        // assertLocationUnlocked 对 null 安全跳过）
+        stockCheckService.assertLocationUnlocked(src.getLocationId());
 
         ProductProduction p = new ProductProduction();
         p.setProduceDate(java.sql.Date.valueOf(LocalDate.now()));
@@ -511,7 +526,7 @@ public class ProductProductionServiceImpl
         p.setProduceTime(now);
         p.setIsDeliveryCheck(YN_NO);
         p.setIsArrivalConfirm(YN_NO);
-        p.setProduceLocation(PRODUCE_LOCATION_WAREHOUSE);
+        p.setProduceLocation(src.getLocationId());
         p.setPackStatus(PACK_STATUS_PACKED);
         p.setProofOssIds(bo.getProofOssIds());
         p.setRemark(bo.getRemark());
@@ -633,6 +648,7 @@ public class ProductProductionServiceImpl
         return productInhouseMapper.selectList(
             new LambdaQueryWrapper<ProductInhouse>()
                 .in(ProductInhouse::getProductId, productIds)
+                .eq(ProductInhouse::getSource, SOURCE_WAREHOUSE)
                 .gt(ProductInhouse::getProductWeight, BigDecimal.ZERO)
                 .apply("DATE(produce_date) = CURDATE()")
                 .orderByDesc(ProductInhouse::getId)
@@ -658,6 +674,7 @@ public class ProductProductionServiceImpl
         return productInhouseMapper.selectList(
             new LambdaQueryWrapper<ProductInhouse>()
                 .in(ProductInhouse::getProductId, productIds)
+                .eq(ProductInhouse::getSource, SOURCE_WAREHOUSE)
                 .gt(ProductInhouse::getProductWeight, BigDecimal.ZERO)
                 .apply("DATE(produce_date) = CURDATE()")
                 .orderByDesc(ProductInhouse::getId)
@@ -679,6 +696,7 @@ public class ProductProductionServiceImpl
         return productInhouseMapper.selectList(
             new LambdaQueryWrapper<ProductInhouse>()
                 .in(ProductInhouse::getProductId, productIds)
+                .eq(ProductInhouse::getSource, SOURCE_WAREHOUSE)
                 .gt(ProductInhouse::getProductWeight, BigDecimal.ZERO)
                 .apply("DATE(produce_date) = CURDATE()")
                 .orderByDesc(ProductInhouse::getId)
@@ -701,6 +719,7 @@ public class ProductProductionServiceImpl
         return productInhouseMapper.selectList(
             new LambdaQueryWrapper<ProductInhouse>()
                 .in(ProductInhouse::getProductId, productIds)
+                .eq(ProductInhouse::getSource, SOURCE_WAREHOUSE)
                 .gt(ProductInhouse::getProductWeight, BigDecimal.ZERO)
                 .apply("DATE(produce_date) = CURDATE()")
                 .orderByDesc(ProductInhouse::getId)
@@ -722,7 +741,10 @@ public class ProductProductionServiceImpl
         return productInhouseMapper.selectList(
             new LambdaQueryWrapper<ProductInhouse>()
                 .in(ProductInhouse::getProductId, productIds)
+                .eq(ProductInhouse::getSource, SOURCE_WAREHOUSE)
                 .gt(ProductInhouse::getProductWeight, BigDecimal.ZERO)
+                // P3-21：白条排酸后可跨天出库，故不限今天（区别于果蔬/肉品当天处理——其余 4 个 picker 带
+                // DATE(produce_date)=CURDATE()）。此处刻意省略今日过滤，非漏写。
                 .orderByDesc(ProductInhouse::getId)
                 .last("LIMIT 50"));
     }
@@ -795,12 +817,18 @@ public class ProductProductionServiceImpl
     }
 
     /**
-     * 校验来源 inhouse 存在 + 未被消耗（V1 软删模型：del_flag='1' 视为已消耗）。
+     * 校验来源 inhouse 存在 + 未被消耗（V1 软删模型：del_flag='1' 视为已消耗）+ 跨域隔离。
+     *
+     * <p>P1-2：仓库打包/出库只认仓库分割产（{@code source='warehouse'}），拒绝门店现场分割
+     * （{@code source='store'}，STR-SPLIT-001）；防前端绕过 picker 直接传 store 行 id 跨域取库存。</p>
      */
     protected ProductInhouse requireActiveInhouse(Long inhouseId) {
         ProductInhouse src = productInhouseMapper.selectById(inhouseId);
         if (src == null) {
             throw new ServiceException("来源过程产品不存在或已消耗：" + inhouseId);
+        }
+        if (!SOURCE_WAREHOUSE.equals(src.getSource())) {
+            throw new ServiceException("来源不是仓库分割产，不可在仓库打包/出库（来源=" + src.getSource() + "）：" + inhouseId);
         }
         return src;
     }

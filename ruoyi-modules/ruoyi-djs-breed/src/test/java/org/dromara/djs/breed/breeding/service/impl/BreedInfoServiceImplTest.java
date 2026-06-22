@@ -10,7 +10,9 @@ import org.dromara.djs.breed.breeding.domain.BreedInfo;
 import org.dromara.djs.breed.breeding.domain.bo.BreedInfoBo;
 import org.dromara.djs.breed.breeding.domain.query.BreedInfoQuery;
 import org.dromara.djs.breed.breeding.domain.vo.BreedInfoVo;
+import org.dromara.djs.breed.breeding.mapper.BreedConfigMapper;
 import org.dromara.djs.breed.breeding.mapper.BreedInfoMapper;
+import org.dromara.djs.breed.core.mapper.PigMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
@@ -53,14 +55,20 @@ class BreedInfoServiceImplTest {
     @Mock
     private BreedInfoMapper breedInfoMapper;
 
+    @Mock
+    private PigMapper pigMapper;
+
+    @Mock
+    private BreedConfigMapper breedConfigMapper;
+
     private TestableBreedInfoServiceImpl service;
 
     /**
      * 子类覆盖 toEntity 钩子，避开 SpringUtils.getBean(Converter.class)。
      */
     static class TestableBreedInfoServiceImpl extends BreedInfoServiceImpl {
-        TestableBreedInfoServiceImpl(BreedInfoMapper mapper) {
-            super(mapper);
+        TestableBreedInfoServiceImpl(BreedInfoMapper mapper, PigMapper pigMapper, BreedConfigMapper breedConfigMapper) {
+            super(mapper, pigMapper, breedConfigMapper);
         }
 
         @Override
@@ -82,7 +90,7 @@ class BreedInfoServiceImplTest {
 
     @BeforeEach
     void setup() {
-        service = new TestableBreedInfoServiceImpl(breedInfoMapper);
+        service = new TestableBreedInfoServiceImpl(breedInfoMapper, pigMapper, breedConfigMapper);
     }
 
     private BreedInfoBo sampleBreedBo() {

@@ -3,6 +3,7 @@ package org.dromara.djs.common.store.service.impl;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import jakarta.annotation.PostConstruct;
 import java.util.Date;
 import java.util.Objects;
 import lombok.extern.slf4j.Slf4j;
@@ -21,6 +22,7 @@ import org.dromara.djs.common.store.domain.query.StoreQuery;
 import org.dromara.djs.common.store.domain.vo.StoreVo;
 import org.dromara.djs.common.store.mapper.StoreMapper;
 import org.dromara.djs.common.store.service.IStoreService;
+import org.dromara.djs.common.validate.BizReferenceChecker;
 import org.springframework.stereotype.Service;
 
 import java.util.Collection;
@@ -48,11 +50,30 @@ public class StoreServiceImpl extends DjsBaseServiceImpl<StoreMapper, Store> imp
 
     private final IBizCodeGenerator bizCodeGenerator;
     private final UserService userService;
+    private final BizReferenceChecker bizReferenceChecker;
 
-    public StoreServiceImpl(StoreMapper baseMapper, IBizCodeGenerator bizCodeGenerator, UserService userService) {
+    public StoreServiceImpl(StoreMapper baseMapper,
+                            IBizCodeGenerator bizCodeGenerator,
+                            UserService userService,
+                            BizReferenceChecker bizReferenceChecker) {
         super(baseMapper);
         this.bizCodeGenerator = bizCodeGenerator;
         this.userService = userService;
+        this.bizReferenceChecker = bizReferenceChecker;
+    }
+
+    /**
+     * 启动时注册门店引用关系给 {@link BizReferenceChecker}，让 {@link #deleteWithValidByIds} 的
+     * {@code isReferenced} 反查真正生效（未注册时 isReferenced 恒 false → 软删空校验）。
+     *
+     * <p>门店被以下三类业务记录引用即不允许软删：门店产品关联（在卖哪些 SKU）/ 门店销售流水 / 门店盘点。
+     * 三表均有 {@code store_id} + {@code del_flag}，符合 {@code BizReferenceCheckerImpl} 的反查口径。</p>
+     */
+    @PostConstruct
+    public void registerReferences() {
+        bizReferenceChecker.register("t_md_store", "t_store_product_relation", "store_id");
+        bizReferenceChecker.register("t_md_store", "t_store_sale_record", "store_id");
+        bizReferenceChecker.register("t_md_store", "t_store_check_record", "store_id");
     }
 
     @Override
@@ -160,8 +181,14 @@ public class StoreServiceImpl extends DjsBaseServiceImpl<StoreMapper, Store> imp
 
     @Override
     public int deleteWithValidByIds(Collection<Long> ids) {
-        // TODO SYS-MD-002 → D05+：业务表 wire 后，删除前需校验"是否被 t_store_product_relation /
-        // t_store_sale_record / t_store_member 等引用"，引用存在则提示先解绑。
+        if (ids == null || ids.isEmpty()) {
+            return 0;
+        }
+        for (Long id : ids) {
+            if (bizReferenceChecker.isReferenced("t_md_store", id)) {
+                throw new ServiceException("门店被业务记录引用，无法删除：id=" + id);
+            }
+        }
         return softDelete(ids);
     }
 

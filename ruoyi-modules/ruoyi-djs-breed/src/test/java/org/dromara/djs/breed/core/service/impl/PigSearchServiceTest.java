@@ -353,6 +353,62 @@ class PigSearchServiceTest {
     }
 
     @Test
+    @DisplayName("breedReady=true 后备(HB) 按日龄过滤：日龄 ≥ sow_reserve_to_breed_days 才返回（row35）")
+    void breedReady_reserve_filters_by_age_days() {
+        // 后备到配种最小日龄阈值 = 90 天（后备看日龄，不看在后备状态的天数）
+        when(productionCycleConfigService.getValuesByKeys(anyCollection()))
+            .thenReturn(java.util.Map.of("sow_reserve_to_breed_days", 90));
+
+        // 老后备：日龄 120 ≥ 90 → 保留
+        Pig oldGilt = mkPig(1L, "260301-001", "HB", "F", "sow", 11L, null);
+        oldGilt.setBirthDate(LocalDate.now().minusDays(120));
+        // 嫩后备：日龄 30 < 90 → 剔除
+        Pig youngGilt = mkPig(2L, "260520-002", "HB", "F", "sow", 11L, null);
+        youngGilt.setBirthDate(LocalDate.now().minusDays(30));
+        // 无生日/无引种日后备：日龄不可判 → 保留（不误删候选）
+        Pig noBirth = mkPig(3L, "260101-003", "HB", "F", "sow", 11L, null);
+        when(pigMapper.selectList(any(LambdaQueryWrapper.class)))
+            .thenReturn(Arrays.asList(oldGilt, youngGilt, noBirth));
+
+        Barn barn = new Barn();
+        barn.setId(11L);
+        barn.setBarnCode("B01");
+        when(barnMapper.selectBatchIds(anyCollection())).thenReturn(List.of(barn));
+
+        List<PigSearchVo> result = service.searchByEarKeyword(null, "HB", "F", "sow", null, 60, null, null, null, null, true);
+        // 老后备(120日龄) + 无生日后备 保留；嫩后备(30日龄<90) 剔除
+        assertThat(result).extracting(PigSearchVo::getEarNo)
+            .containsExactlyInAnyOrder("260301-001", "260101-003");
+    }
+
+    @Test
+    @DisplayName("breedReady=true 全局日龄门槛：日龄 < 后备-配种天数 的已配种态(断奶等)猪也一律剔除（row35 Kevin 2026-06-22）")
+    void breedReady_global_age_floor_excludes_young_nonHB() {
+        // 全局最小配种日龄 = 90；断奶恢复期阈值 = 3
+        when(productionCycleConfigService.getValuesByKeys(anyCollection()))
+            .thenReturn(java.util.Map.of("sow_reserve_to_breed_days", 90, "sow_wean_to_breed_days", 3));
+
+        // 断奶老母猪：日龄 250 ≥ 90 且断奶 5 天 ≥ 3 → 保留
+        Pig adultWean = mkPig(1L, "OK-001", "DN", "F", "sow", 11L, null);
+        adultWean.setBirthDate(LocalDate.now().minusDays(250));
+        adultWean.setStatusStartedAt(java.time.LocalDateTime.now().minusDays(5));
+        // 断奶但日龄仅 3（测试态异常）：日龄 3 < 90 → 即使断奶在场天数够也剔除
+        Pig youngWean = mkPig(2L, "YOUNG-002", "DN", "F", "sow", 11L, null);
+        youngWean.setBirthDate(LocalDate.now().minusDays(3));
+        youngWean.setStatusStartedAt(java.time.LocalDateTime.now().minusDays(3));
+        when(pigMapper.selectList(any(LambdaQueryWrapper.class)))
+            .thenReturn(Arrays.asList(adultWean, youngWean));
+
+        Barn barn = new Barn();
+        barn.setId(11L);
+        barn.setBarnCode("B01");
+        when(barnMapper.selectBatchIds(anyCollection())).thenReturn(List.of(barn));
+
+        List<PigSearchVo> result = service.searchByEarKeyword(null, "DN", "F", "sow", null, 60, null, null, null, null, true);
+        assertThat(result).extracting(PigSearchVo::getEarNo).containsExactly("OK-001");
+    }
+
+    @Test
     @DisplayName("countByBarn：按 barnId 分组 count + enrich barnName/barnCode + 按 barnCode 升序")
     void countByBarn_groups_and_enriches() {
         // 5 头：barn11 × 3, barn12 × 2

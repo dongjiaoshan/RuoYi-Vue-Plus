@@ -40,6 +40,14 @@ public class TraceCodeQuery {
     private String pigEarNo;
 
     /**
+     * 生成来源筛选：{@code warehouse}=仓库生码（打包/发货产出）/ {@code store}=门店现场分割打包生码。
+     *
+     * <p>按 {@code remark}「现场生码」前缀区分：门店 {@code genPorkOnsiteCode} 写 remark="现场生码 部位=… 重量=…kg"，
+     * 仓库生码 remark 为空/非此前缀。空 = 全部（仓库 + 门店都列）。猪肉追溯码管理用此维度筛选。</p>
+     */
+    private String source;
+
+    /**
      * 生成时间起（按主表 create_time 过滤）。
      */
     @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")

@@ -87,8 +87,10 @@ public class PlantDashboardSummaryVo implements Serializable {
     private Integer todayDisasterPlotCount;
 
     /**
-     * 今日工作 - 采摘活动（今日 {@code t_plant_pick_activity.activity_date = CURDATE()}
-     * 的采摘量合计 kg）。
+     * 今日工作 - 采摘活动量 kg（V1 恒 0）。
+     *
+     * <p>采摘活动已改只读报表，原数据源 {@code t_plant_pick_activity} 已废弃，故该指标 V1 恒返 0；
+     * 字段保留供前端继续读取，不删。</p>
      */
     private BigDecimal todayPickActivityWeight;
 

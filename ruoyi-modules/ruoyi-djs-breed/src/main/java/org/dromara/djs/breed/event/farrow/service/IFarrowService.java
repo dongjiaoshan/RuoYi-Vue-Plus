@@ -29,12 +29,6 @@ public interface IFarrowService {
     TableDataInfo<PigFarrowVo> queryPage(FarrowQuery query, PageQuery pageQuery);
 
     /**
-     * mp 端"分娩 picker"用：近 7 天 + 本人录入的分娩，按 farrow_date 倒序，含 tagged / remaining。
-     * 上限 50 条。
-     */
-    List<PigFarrowVo> queryRecent(Long operatorId, int limit);
-
-    /**
      * mp 端 D9 FarrowPicker 用：先选母猪 earNo → 反查该母猪最近 N 次未贴满标的分娩记录。
      *
      * <p>过滤逻辑：</p>

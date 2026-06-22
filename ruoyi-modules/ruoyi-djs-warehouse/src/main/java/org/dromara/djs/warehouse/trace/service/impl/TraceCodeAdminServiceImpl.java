@@ -104,6 +104,7 @@ public class TraceCodeAdminServiceImpl
         Page<TraceCode> page = baseMapper.selectPage(pageQuery.build(), w);
         List<TraceCodeListVo> vos = page.getRecords().stream().map(this::toListVo).toList();
         fillRelations(vos);
+        fillOnsiteDerivedFields(vos);
 
         // productName 模糊筛选（主表无该列，JOIN 后内存过滤）
         List<TraceCodeListVo> filtered = filterByProductName(vos, query);
@@ -189,6 +190,13 @@ public class TraceCodeAdminServiceImpl
 
     // ============================ 内部辅助 ============================
 
+    /** 门店现场生码 remark 前缀（{@code TraceServiceImpl.buildOnsiteRemark} 写入），区分仓库/门店生成来源。 */
+    private static final String ONSITE_REMARK_PREFIX = "现场生码";
+    /** 生成来源：仓库（打包/发货产出）。 */
+    private static final String SOURCE_WAREHOUSE = "warehouse";
+    /** 生成来源：门店现场分割打包。 */
+    private static final String SOURCE_STORE = "store";
+
     private LambdaQueryWrapper<TraceCode> buildWrapper(TraceCodeQuery query) {
         LambdaQueryWrapper<TraceCode> w = new LambdaQueryWrapper<>();
         if (query != null) {
@@ -200,10 +208,76 @@ public class TraceCodeAdminServiceImpl
                     TraceCode::getPigEarNo, query.getPigEarNo())
                 .ge(query.getBeginDate() != null, TraceCode::getCreateTime, query.getBeginDate())
                 .le(query.getEndDate() != null, TraceCode::getCreateTime, query.getEndDate());
+            applySourceFilter(w, query);
             applyArrivalDateFilter(w, query);
         }
         w.orderByDesc(TraceCode::getCreateTime).orderByDesc(TraceCode::getId);
         return w;
+    }
+
+    /**
+     * 生成来源过滤：{@code store}=门店现场生码（remark LIKE '现场生码%'）；
+     * {@code warehouse}=仓库生码（remark 为空或非「现场生码」前缀）。空 = 不过滤（仓库 + 门店都列）。
+     */
+    private void applySourceFilter(LambdaQueryWrapper<TraceCode> w, TraceCodeQuery query) {
+        String src = query.getSource();
+        if (src == null || src.isBlank()) {
+            return;
+        }
+        if (SOURCE_STORE.equals(src)) {
+            w.likeRight(TraceCode::getRemark, ONSITE_REMARK_PREFIX);
+        } else if (SOURCE_WAREHOUSE.equals(src)) {
+            w.and(qw -> qw.isNull(TraceCode::getRemark).or().notLikeRight(TraceCode::getRemark, ONSITE_REMARK_PREFIX));
+        }
+    }
+
+    /**
+     * 门店现场生码行（{@code source=store}）产品名 + 实际重量回填（列表展示）。
+     *
+     * <p>门店现场生码「纯生码不联动库存」——不建 {@code product_production}（否则会被仓库打包来源
+     * {@code listSourceForMeat} 等误捞），故 product_id / 产出记录均空，{@code 产品 / 产品规格 / 实际重量 /
+     * 生产编号} 列在仓库流口径下取不到值。但产品名 + 重量已落在 remark「现场生码 部位=X 重量=Ykg」，
+     * 这里从 remark 回填 {@code productName + actualWeight}，避免门店行这两列空白（备注里有、列里却空的割裂感）。
+     * 到店日期 / 生产编号 / 产品规格 是仓库发货流字段，门店现做码本无，按现状留空。</p>
+     */
+    private void fillOnsiteDerivedFields(List<? extends TraceCodeListVo> vos) {
+        if (vos == null) {
+            return;
+        }
+        for (TraceCodeListVo vo : vos) {
+            if (!SOURCE_STORE.equals(vo.getSource())) {
+                continue;
+            }
+            String remark = vo.getRemark();
+            if (remark == null || remark.isBlank()) {
+                continue;
+            }
+            // 产品名 ← remark「部位=X」（截到「重量=」前）
+            if (vo.getProductName() == null || vo.getProductName().isBlank()) {
+                int pi = remark.indexOf("部位=");
+                if (pi >= 0) {
+                    int wi = remark.indexOf("重量=", pi);
+                    String part = (wi > pi ? remark.substring(pi + 3, wi) : remark.substring(pi + 3)).trim();
+                    if (!part.isEmpty()) {
+                        vo.setProductName(part);
+                    }
+                }
+            }
+            // 实际重量 ← remark「重量=Ykg」（剥非数字字符）
+            if (vo.getActualWeight() == null) {
+                int wi = remark.indexOf("重量=");
+                if (wi >= 0) {
+                    String num = remark.substring(wi + 3).replaceAll("[^0-9.]", "");
+                    if (!num.isEmpty()) {
+                        try {
+                            vo.setActualWeight(new java.math.BigDecimal(num));
+                        } catch (NumberFormatException ignore) {
+                            // 非法重量串忽略，保持空
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /**
@@ -255,6 +329,9 @@ public class TraceCodeAdminServiceImpl
         vo.setId(c.getId());
         vo.setProduceCode(c.getProduceCode());
         vo.setCodeType(c.getCodeType());
+        // 生成来源：remark「现场生码」前缀 = 门店现场分割打包；否则 = 仓库（打包/发货产出）
+        vo.setSource(c.getRemark() != null && c.getRemark().startsWith(ONSITE_REMARK_PREFIX)
+            ? SOURCE_STORE : SOURCE_WAREHOUSE);
         vo.setProductId(c.getProductId());
         vo.setPigEarNo(c.getPigEarNo());
         vo.setPlotId(c.getPlotId());

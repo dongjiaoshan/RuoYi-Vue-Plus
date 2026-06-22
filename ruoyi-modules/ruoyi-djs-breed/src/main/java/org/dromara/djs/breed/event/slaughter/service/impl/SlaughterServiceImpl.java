@@ -111,7 +111,7 @@ public class SlaughterServiceImpl implements ISlaughterService {
         eventBo.setEventAt(bo.getMarketingDate());
         pigCoreService.fireEvent(eventBo);
 
-        // publish 跨域事件给燎毛接收（CROSS-FLOW-001 监听）；V1 消费者未实现
+        // publish 跨域事件给燎毛接收（CROSS-FLOW-001 监听）
         eventPublisher.publishEvent(new PigMarketingEvent(this, entity));
 
         log.info("[BRD-EVENT-004] recordSlaughter pigId={} earNo={} marketingId={} weight={} dest={}",
