@@ -28,15 +28,18 @@ public interface VegReceiveMapper extends BaseMapperPlus<VegReceive, VegReceive>
     /**
      * 自产果蔬待收货列表（按作物聚合）。
      *
-     * <p>待入库 = {@code SUM(vegetable_handle.send_platform_weight)} − {@code SUM(已入库 self weight)}，
-     * 仅保留待入库 &gt; 0 的作物。</p>
+     * <p>待入库 = {@code SUM(vegetable_handle.send_platform_weight)} − {@code SUM(已入库 self weight)}
+     * − {@code SUM(已标记入库完成行的 loss_weight)}（row21：地块标记入库完成后剩余量结算为损耗、不再正数挂着，
+     * 故聚合待入库扣掉损耗自然归 0）。损耗 {@code lossWeight} = 该作物已完成行的 loss 合计。
+     * 仅保留待入库 &gt; 0 的作物（全完成作物 pending 归 0 后从列表消失）。</p>
      */
     @Select("""
         SELECT t.crop_id      AS cropId,
                cr.crop_name   AS cropName,
                cr.image_oss_id AS imageOssId,
                COALESCE(rp.product_id, cr.crop_code) AS productCode,
-               t.pending      AS pendingWeight
+               t.pending      AS pendingWeight,
+               t.loss         AS lossWeight
           FROM (
             SELECT vh.crop_id,
                    COALESCE(SUM(vh.send_platform_weight), 0)
@@ -47,7 +50,25 @@ public interface VegReceiveMapper extends BaseMapperPlus<VegReceive, VegReceive>
                             AND vr.crop_id = vh.crop_id
                             AND vr.del_flag = '0'
                             AND vr.tenant_id = '1001'
-                       ), 0) AS pending
+                       ), 0)
+                     - COALESCE((
+                         SELECT SUM(vrl.loss_weight)
+                           FROM t_warehouse_veg_receive vrl
+                          WHERE vrl.receive_type = 1
+                            AND vrl.crop_id = vh.crop_id
+                            AND vrl.is_finish = 1
+                            AND vrl.del_flag = '0'
+                            AND vrl.tenant_id = '1001'
+                       ), 0) AS pending,
+                   COALESCE((
+                         SELECT SUM(vrl2.loss_weight)
+                           FROM t_warehouse_veg_receive vrl2
+                          WHERE vrl2.receive_type = 1
+                            AND vrl2.crop_id = vh.crop_id
+                            AND vrl2.is_finish = 1
+                            AND vrl2.del_flag = '0'
+                            AND vrl2.tenant_id = '1001'
+                       ), 0) AS loss
               FROM t_warehouse_vegetable_handle vh
              WHERE vh.del_flag = '0'
                AND vh.tenant_id = '1001'
@@ -116,7 +137,11 @@ public interface VegReceiveMapper extends BaseMapperPlus<VegReceive, VegReceive>
                  WHEN t.actual >= t.platform THEN 'done'
                  ELSE 'processing'
                END           AS inboundStatus,
-               CASE WHEN t.platform - t.actual > 0 THEN t.platform - t.actual ELSE 0 END AS pendingWeight,
+               CASE
+                 WHEN t.finished > 0 THEN 0
+                 WHEN t.platform - t.actual > 0 THEN t.platform - t.actual
+                 ELSE 0
+               END           AS pendingWeight,
                t.actual      AS actualWeight
           FROM (
             SELECT vh.plot_id,

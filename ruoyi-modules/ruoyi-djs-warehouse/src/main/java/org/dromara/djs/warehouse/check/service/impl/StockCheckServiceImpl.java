@@ -1,6 +1,7 @@
 package org.dromara.djs.warehouse.check.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.common.core.exception.ServiceException;
@@ -192,7 +193,7 @@ public class StockCheckServiceImpl
 
     @Override
     public TableDataInfo<StockCheckHeaderVo> queryHeaderPage(StockCheckQuery query, PageQuery pageQuery) {
-        // header 维度分页（只查 is_header=1）
+        // header 维度分页（只查 is_header=1）—— mp overview「进行中盘点单」走此路（check_record 模型，保留）
         LambdaQueryWrapper<StockCheckRecord> w = new LambdaQueryWrapper<StockCheckRecord>()
             .eq(StockCheckRecord::getIsHeader, 1);
         if (query != null) {
@@ -203,7 +204,6 @@ public class StockCheckServiceImpl
                     StockCheckRecord::getCheckStatus, query.getCheckStatus())
                 .ge(query.getCheckDateFrom() != null, StockCheckRecord::getCheckDate, query.getCheckDateFrom())
                 .le(query.getCheckDateTo() != null, StockCheckRecord::getCheckDate, query.getCheckDateTo());
-            // 盘点人筛选：姓名 → 发起人 user_id 反查（命中为空时返回空集，避免漏过滤）
             if (query.getCheckByName() != null && !query.getCheckByName().isBlank()) {
                 List<Long> userIds = baseMapper.selectUserIdsByNickName(query.getCheckByName().trim());
                 if (userIds.isEmpty()) {
@@ -227,20 +227,78 @@ public class StockCheckServiceImpl
     }
 
     @Override
-    public List<StockCheckRecordVo> queryLineList(StockCheckQuery query) {
-        LambdaQueryWrapper<StockCheckRecord> w = new LambdaQueryWrapper<StockCheckRecord>()
-            .eq(StockCheckRecord::getIsHeader, 0);
-        if (query != null) {
-            w.eq(query.getCheckId() != null && !query.getCheckId().isBlank(),
-                    StockCheckRecord::getCheckId, query.getCheckId())
-                .eq(query.getLocationId() != null, StockCheckRecord::getLocationId, query.getLocationId());
+    public TableDataInfo<StockCheckHeaderVo> queryFlowCheckRecordPage(StockCheckQuery query, PageQuery pageQuery) {
+        // admin 盘点记录页只读：统一从 stock_flow 盘点流水聚合（覆盖 mp 工人自助盘点 + admin 完成盘点
+        // 两路来源，修「mp 提交的盘点在 admin 列表查不到」）。盘点单 = 日期 + 库位 + 盘点人 聚合行。
+        Long locationId = query != null ? query.getLocationId() : null;
+        String fromStr = query != null ? formatDateTime(query.getCheckDateFrom()) : null;
+        String toStr = query != null ? formatDateTime(query.getCheckDateTo()) : null;
+
+        // 盘点人筛选：姓名 → user_id 反查（命中为空时返回空集，避免漏过滤）
+        List<Long> operatorIds = null;
+        if (query != null && query.getCheckByName() != null && !query.getCheckByName().isBlank()) {
+            operatorIds = baseMapper.selectUserIdsByNickName(query.getCheckByName().trim());
+            if (operatorIds.isEmpty()) {
+                Page<StockCheckHeaderVo> empty = pageQuery.build();
+                empty.setTotal(0);
+                return TableDataInfo.build(empty);
+            }
         }
-        w.orderByDesc(StockCheckRecord::getId);
-        List<StockCheckRecordVo> list = baseMapper.selectVoList(w);
+
+        IPage<StockCheckHeaderVo> page = baseMapper.selectFlowCheckHeaderPage(
+            pageQuery.build(), locationId, fromStr, toStr, operatorIds);
+        List<StockCheckHeaderVo> vos = page.getRecords();
+        // 聚合行无 check_record 单状态，统一置 completed（只读、已落账）
+        vos.forEach(v -> v.setCheckStatus(STATUS_DONE));
+        fillHeaderLocationNames(vos);
+        return TableDataInfo.build(page);
+    }
+
+    @Override
+    public List<StockCheckRecordVo> queryLineList(StockCheckQuery query) {
+        // admin 盘点记录详情钻取：checkId = 合成业务码 yyyyMMdd-locationId-operatorId → 拆解后读该组盘点流水
+        if (query == null || query.getCheckId() == null || query.getCheckId().isBlank()) {
+            return List.of();
+        }
+        String[] parts = query.getCheckId().split("-");
+        if (parts.length != 3) {
+            return List.of();
+        }
+        Long lineLocationId;
+        Long operatorId;
+        try {
+            lineLocationId = Long.valueOf(parts[1]);
+            operatorId = Long.valueOf(parts[2]);
+        } catch (NumberFormatException e) {
+            return List.of();
+        }
+        List<StockCheckRecordVo> list = baseMapper.selectFlowCheckLines(parts[0], lineLocationId, operatorId);
         fillLineLocationNames(list);
-        fillLineProductCodes(list);
         fillLineLossWeight(list);
         return list;
+    }
+
+    @Override
+    public List<StockCheckHeaderVo> exportHeaderList(StockCheckQuery query) {
+        Long locationId = query != null ? query.getLocationId() : null;
+        String fromStr = query != null ? formatDateTime(query.getCheckDateFrom()) : null;
+        String toStr = query != null ? formatDateTime(query.getCheckDateTo()) : null;
+
+        List<Long> operatorIds = null;
+        if (query != null && query.getCheckByName() != null && !query.getCheckByName().isBlank()) {
+            operatorIds = baseMapper.selectUserIdsByNickName(query.getCheckByName().trim());
+            if (operatorIds.isEmpty()) {
+                return List.of();
+            }
+        }
+
+        // 不分页导出：单页装下全部命中行
+        IPage<StockCheckHeaderVo> page = baseMapper.selectFlowCheckHeaderPage(
+            new Page<>(1, Integer.MAX_VALUE), locationId, fromStr, toStr, operatorIds);
+        List<StockCheckHeaderVo> vos = page.getRecords();
+        vos.forEach(v -> v.setCheckStatus(STATUS_DONE));
+        fillHeaderLocationNames(vos);
+        return vos;
     }
 
     // ============================ mp 实盘录入 ============================
@@ -426,6 +484,13 @@ public class StockCheckServiceImpl
         return header;
     }
 
+    /**
+     * 日期 → {@code yyyy-MM-dd HH:mm:ss} 字符串（聚合 SQL 的 BETWEEN 边界用）；null 返 null。
+     */
+    private static String formatDateTime(Date date) {
+        return date == null ? null : new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(date);
+    }
+
     private StockCheckHeaderVo toHeaderVo(StockCheckRecord r) {
         StockCheckHeaderVo vo = new StockCheckHeaderVo();
         vo.setId(r.getId());
@@ -440,7 +505,7 @@ public class StockCheckServiceImpl
     }
 
     /**
-     * 批量填 header 的 lineCount + diffSum（一次性查全部相关 line 内存聚合，避免 N+1）。
+     * 批量填 header 的 lineCount + abnormalCount + diffSum（一次性查全部相关 line 内存聚合，避免 N+1）。
      */
     private void fillHeaderAggregates(List<StockCheckHeaderVo> headers) {
         if (headers == null || headers.isEmpty()) {
@@ -459,9 +524,7 @@ public class StockCheckServiceImpl
             .collect(Collectors.groupingBy(StockCheckRecord::getCheckId));
         for (StockCheckHeaderVo h : headers) {
             List<StockCheckRecord> ls = byCheckId.getOrDefault(h.getCheckId(), List.of());
-            // 盘点商品数 = 明细 line 数
             h.setLineCount(ls.size());
-            // 盘点异常数 = 结果为异常（djs_check_result=2）的 line 数
             long abnormal = ls.stream()
                 .filter(l -> l.getCheckResultType() != null && l.getCheckResultType() == RESULT_ABNORMAL)
                 .count();

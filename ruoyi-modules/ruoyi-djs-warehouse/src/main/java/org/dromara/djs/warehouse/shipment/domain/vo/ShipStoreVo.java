@@ -5,6 +5,7 @@ import lombok.Data;
 import java.io.Serial;
 import java.io.Serializable;
 import java.math.BigDecimal;
+import java.time.LocalDate;
 
 /**
  * 门店维度待发货聚合 VO（{@code GET /applet/warehouse/ship/store-list}）。
@@ -43,4 +44,7 @@ public class ShipStoreVo implements Serializable {
 
     /** 发货状态（V1 恒 "待发货" —— 门店列表只列还有待发 demand 的门店）。 */
     private String shipStatus;
+
+    /** 发货日期（该门店当天 demand 的业务日期 demand_date —— 门店列表只取当天，故即当天发货日，客户主诉求字段 #201）。 */
+    private LocalDate shipDate;
 }

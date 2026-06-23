@@ -5,6 +5,7 @@ import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
+import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.common.encoder.BizCodeType;
@@ -34,6 +35,7 @@ import java.util.Date;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyCollection;
 import static org.mockito.ArgumentMatchers.anyMap;
@@ -175,14 +177,35 @@ class OutsourcePigServiceImplTest {
     }
 
     @Test
-    @DisplayName("deleteWithValidByIds: 空集合短路返 0；有值走基类软删（update + del_flag）")
+    @DisplayName("deleteWithValidByIds: 空集合短路返 0；白条仍待燎毛(pending_singe)走基类软删")
     void testDelete() {
         assertThat(service.deleteWithValidByIds(List.of())).isZero();
 
+        OutsourcePig pig = new OutsourcePig();
+        pig.setId(1L);
+        pig.setBarId("BAR2606130001");
+        when(baseMapper.selectByIds(anyCollection())).thenReturn(List.of(pig));
+        when(barInfoMapper.selectStatusByBarId("BAR2606130001")).thenReturn("pending_singe");
         when(baseMapper.update(any(), any(Wrapper.class))).thenReturn(1);
+
         int affected = service.deleteWithValidByIds(List.of(1L));
         assertThat(affected).isEqualTo(1);
         verify(baseMapper, times(1)).update(any(), any(Wrapper.class));
+    }
+
+    @Test
+    @DisplayName("deleteWithValidByIds: 白条已进入下游处理流程(非 pending_singe)→ 抛 ServiceException 拦截")
+    void testDelete_BlockedWhenDownstream() {
+        OutsourcePig pig = new OutsourcePig();
+        pig.setId(2L);
+        pig.setBarId("BAR2606220001");
+        when(baseMapper.selectByIds(anyCollection())).thenReturn(List.of(pig));
+        when(barInfoMapper.selectStatusByBarId("BAR2606220001")).thenReturn("cut_done");
+
+        assertThatThrownBy(() -> service.deleteWithValidByIds(List.of(2L)))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("下游处理流程");
+        verify(baseMapper, times(0)).update(any(), any(Wrapper.class));
     }
 
 }

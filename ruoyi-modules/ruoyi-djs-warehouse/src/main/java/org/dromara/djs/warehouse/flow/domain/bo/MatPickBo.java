@@ -99,4 +99,13 @@ public class MatPickBo {
     @Size(max = 500, message = "{mat.remark.size}")
     private String remark;
 
+    /**
+     * 领用人 user_id（可空）。
+     *
+     * <p>mp 领用弹层「领用人」字段：默认当前登录人、可改选仓库人员（EmployeePicker，role=warehouse_worker）。
+     * 非空 = 代他人领用，写入 {@code stock_flow.operator_id}（管理者审计该领用归属谁）；为空 = service 取
+     * 当前登录人（{@code LoginHelper.getUserId()}）兜底（现状行为，老调用方不传不回归）。snowflake，前端按 string 传。</p>
+     */
+    private Long operatorId;
+
 }

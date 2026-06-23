@@ -53,9 +53,19 @@ public class VegCropVo implements Serializable {
     private BigDecimal feedWeight;
 
     /**
-     * 处理后重量(kg) 合计。
+     * 处理后重量(kg) 合计（= 入库 + 月台；保留兼容旧消费方，列表卡已拆显两项）。
      */
     private BigDecimal handledWeight;
+
+    /**
+     * 毛菜保鲜室重量(kg) 合计（= 入库量 SUM(stock_in_weight)，毛菜列表「毛菜保鲜室重量」）。
+     */
+    private BigDecimal stockInWeight;
+
+    /**
+     * 送往月台重量(kg) 合计（= SUM(send_platform_weight)，毛菜列表「送往月台重量」）。
+     */
+    private BigDecimal sendPlatformWeight;
 
     /**
      * 损耗重量(kg) 合计。

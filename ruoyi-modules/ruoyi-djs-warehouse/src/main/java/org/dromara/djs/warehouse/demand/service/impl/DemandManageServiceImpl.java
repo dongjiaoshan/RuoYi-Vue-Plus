@@ -240,10 +240,11 @@ public class DemandManageServiceImpl extends DjsBaseServiceImpl<DemandManageMapp
         String productName = query == null ? null : query.getProductName();
         String productType = query == null ? null : query.getProductType();
         String demandStatus = query == null ? null : query.getDemandStatus();
+        Long storeId = query == null ? null : query.getStoreId();
         LocalDate begin = query == null ? null : query.getBeginDate();
         LocalDate end = query == null ? null : query.getEndDate();
-        // productType（业态）组内同值，下推到 mapper WHERE 过滤
-        List<DemandGroupVo> all = baseMapper.selectDemandGroupList(productName, productType, begin, end);
+        // productType（业态）+ storeId（需求门店）组内/行级过滤，均下推到 mapper WHERE
+        List<DemandGroupVo> all = baseMapper.selectDemandGroupList(productName, productType, storeId, begin, end);
         // 三态需求状态 + 确认率（按 storeCount / confirmedStoreCount 算）
         for (DemandGroupVo vo : all) {
             int storeCount = vo.getStoreCount() == null ? 0 : vo.getStoreCount();

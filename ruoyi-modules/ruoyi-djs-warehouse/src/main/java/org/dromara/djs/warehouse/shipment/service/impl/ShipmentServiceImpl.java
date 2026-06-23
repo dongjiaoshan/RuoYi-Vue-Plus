@@ -363,6 +363,10 @@ public class ShipmentServiceImpl
             vo.setPendingQuantity(storeDemands.stream()
                 .map(DemandManage::getDemandQuantity).filter(Objects::nonNull)
                 .reduce(BigDecimal.ZERO, BigDecimal::add));
+            // 发货日期 = 该门店当天 demand 的业务日期（列表已过滤 demand_date=今天，取 max 兜底，客户主诉求字段 #201）。
+            vo.setShipDate(storeDemands.stream()
+                .map(DemandManage::getDemandDate).filter(Objects::nonNull)
+                .max(LocalDate::compareTo).orElse(null));
             // 门店当天 demand 全 COMPLETED → 已发货；否则仍有可发 → 待发货（#201）。
             boolean allShipped = storeDemands.stream()
                 .allMatch(d -> DemandStatus.COMPLETED.name().equals(d.getDemandStatus()));

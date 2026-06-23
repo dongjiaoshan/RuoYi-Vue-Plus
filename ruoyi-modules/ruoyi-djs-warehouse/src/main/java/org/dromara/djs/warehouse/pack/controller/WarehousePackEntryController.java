@@ -218,11 +218,15 @@ public class WarehousePackEntryController extends BaseController {
     }
 
     /**
-     * 提交结果包装：按新建 production id 反查 traceCode，组装 {@code {id, traceCode}}。
+     * 提交结果包装：按新建 production id 反查 traceCode + produceNo，组装 {@code {id, traceCode, produceNo}}。
+     *
+     * <p>{@code produceNo}（生产编号业务码）供「确认并打印追溯码」弹框的「生产序号」字段展示（不能为空）。</p>
      */
     private PackSubmitResultVo toResult(Long id) {
         ProductProductionVo vo = id == null ? null : productionService.queryById(id);
-        return new PackSubmitResultVo(id, vo == null ? null : vo.getTraceCode());
+        return new PackSubmitResultVo(id,
+            vo == null ? null : vo.getTraceCode(),
+            vo == null ? null : vo.getProduceNo());
     }
 
     /**

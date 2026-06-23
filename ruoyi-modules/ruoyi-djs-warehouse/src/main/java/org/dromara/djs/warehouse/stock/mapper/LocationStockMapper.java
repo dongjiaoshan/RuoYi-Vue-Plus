@@ -600,7 +600,11 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
                COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
                           WHERE f.operator_id = #{userId} AND f.product_id = p.id
                             AND f.flow_type = 'loss' AND DATE(f.flow_date) = CURDATE()
-                            AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayLoss
+                            AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayLoss,
+               (SELECT MAX(f.flow_date) FROM t_warehouse_stock_flow f
+                  WHERE f.operator_id = #{userId} AND f.product_id = p.id
+                    AND f.flow_type = 'pick_out' AND DATE(f.flow_date) = CURDATE()
+                    AND f.del_flag = '0' AND f.tenant_id = '1001') AS lastPickTime
           FROM t_warehouse_product_info p
           LEFT JOIN t_warehouse_location_stock s
             ON s.product_id = p.id
@@ -619,7 +623,7 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
                             AND s3.del_flag = '0' AND s3.tenant_id = '1001')
            </if>
          GROUP BY p.id, p.product_id, p.product_name, p.product_unit, p.image_oss_id, p.belong_type
-         ORDER BY currentStock ASC, p.product_name ASC
+         ORDER BY (lastPickTime IS NOT NULL) DESC, lastPickTime DESC, currentStock ASC, p.product_name ASC
         </script>
         """)
     List<MatIssueItemVo> selectMatIssueItems(@Param("belongTypes") List<String> belongTypes,
@@ -634,8 +638,10 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
      * 只返有库存的篮（用完的篮自动不出现 → 「用完不可选」）。{@code locationId} 可空（chip 选中态过滤）。</p>
      *
      * <p>每篮今日已领 best-effort = 今天 {@code product_inhouse} SUM(product_weight)
-     * WHERE {@code product_id + ear_no}（inhouse 带 ear_no 源标签）；今日退/损按篮维度不细分 → 0
-     * （{@code stock_flow} 无 ear_no 篮维度，不为此加 DDL）。{@code batchId} / {@code productId} /
+     * WHERE {@code product_id + ear_no}（inhouse 带 ear_no 源标签）；今日退/损按耳号聚合
+     * {@code stock_flow}（{@code returnByBatch} / {@code lossByBatch} 已把 {@code ear_no} 写入流水），
+     * 一个耳号可能跨多个库位篮 → 退/损是耳号级总量，只贴到该耳号 {@code MIN(id)} 首篮、其余篮置 0
+     * 避免每篮重复显示（同耳号各篮之和 = 真实总量）。{@code batchId} / {@code productId} /
      * {@code locationId} 物理列是 BIGINT，VO 字段为 String，由 MyBatis 自动转字符串（snowflake 防截断）。
      * 租户单租户显式 {@code tenant_id='1001'}（V1）。</p>
      *
@@ -655,8 +661,22 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
                           WHERE ih.product_id = s.product_id AND ih.ear_no = s.ear_no
                             AND DATE(ih.produce_date) = CURDATE()
                             AND ih.del_flag = '0' AND ih.tenant_id = '1001'), 0) AS todayPicked,
-               0                              AS todayReturned,
-               0                              AS todayLoss,
+               CASE WHEN s.id = (SELECT MIN(s2.id) FROM t_warehouse_location_stock s2
+                                  WHERE s2.product_id = s.product_id AND s2.ear_no = s.ear_no
+                                    AND s2.product_stock > 0 AND s2.del_flag = '0' AND s2.tenant_id = '1001')
+                    THEN COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
+                                    WHERE f.ear_no = s.ear_no AND f.flow_type = 'return_in'
+                                      AND DATE(f.flow_date) = CURDATE()
+                                      AND f.del_flag = '0' AND f.tenant_id = '1001'), 0)
+                    ELSE 0 END             AS todayReturned,
+               CASE WHEN s.id = (SELECT MIN(s2.id) FROM t_warehouse_location_stock s2
+                                  WHERE s2.product_id = s.product_id AND s2.ear_no = s.ear_no
+                                    AND s2.product_stock > 0 AND s2.del_flag = '0' AND s2.tenant_id = '1001')
+                    THEN COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
+                                    WHERE f.ear_no = s.ear_no AND f.flow_type = 'loss'
+                                      AND DATE(f.flow_date) = CURDATE()
+                                      AND f.del_flag = '0' AND f.tenant_id = '1001'), 0)
+                    ELSE 0 END             AS todayLoss,
                s.location_id                  AS locationId
           FROM t_warehouse_location_stock s
          WHERE s.del_flag      = '0'
@@ -672,36 +692,54 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
                                                 @Param("locationId") Long locationId);
 
     /**
-     * mp 物资领用「按地块源篮子」列表（「按源手选」领用，蔬菜(自产)按地块）。
+     * mp 物资领用「按地块源卡」列表（「按源手选」领用，蔬菜(自产)按地块）。
      *
      * <p>口径：该自产果蔬原料产品（{@code product_id=#{productId}}）的 {@code location_stock} 篮子，
-     * {@code plot_id} 非空 + {@code product_stock > 0}，一行一篮，LEFT JOIN {@code t_plant_plot_info}
-     * 取地块编号（{@code batchCode = plot_code}）。只返有库存的篮（用完的篮自动不出现）。
-     * {@code locationId} 可空（chip 选中态过滤）。</p>
+     * {@code plot_id} 非空 + {@code product_stock > 0}，<b>按地块（{@code plot_id}）聚合，一行一地块</b>
+     * （一个地块在小程序里就是一张卡，多库位是线下实际、mp 不体现 —— Kevin 拍板）。LEFT JOIN
+     * {@code t_plant_plot_info} 取地块编号（{@code batchCode = plot_code}）。只返仍有库存的地块。
+     * {@code locationId} 可空（chip 选中态过滤；过滤后聚合只剩该库位篮，currentStock 仍是过滤后之和）。</p>
      *
-     * <p>每篮今日已领 best-effort = 今天 {@code product_inhouse} SUM(product_weight)
-     * WHERE {@code product_id + plot_id}（inhouse 带 plot_id 源标签）；今日退/损按篮维度不细分 → 0。
-     * 字段 String 转换 / 租户同 {@link #selectPorkIssueByEar}。</p>
+     * <ul>
+     *   <li>{@code batchId} = 该地块各库位篮的 {@code MIN(s.id)}（FIFO 首篮的真实 {@code location_stock.id}）
+     *       —— 领用提交回传它，service {@code pickByBatch} 据该篮的 {@code plot_id} 识别为自产果蔬地块卡 →
+     *       按 {@code (productId, plotId)} 跨库位 FIFO 扣减（不只扣首篮），故聚合后 batchId 仍能正确扣账；</li>
+     *   <li>{@code currentStock} = 该地块各库位篮 {@code SUM(product_stock)}（地块级总量）；</li>
+     *   <li>{@code todayPicked} = 该地块今日 {@code product_inhouse} SUM(product_weight)（已是 plot 维，无库位维重复）；</li>
+     *   <li>{@code todayReturned} / {@code todayLoss} = 该地块今日 {@code stock_flow}(return_in / loss) SUM
+     *       （{@code plot_id} 维度直接 SUM，无需贴首篮 hack —— 聚合后一行一地块本就不重复）；</li>
+     *   <li>{@code locationId} = 该地块 FIFO 首篮所在库位（{@code MIN(s.id)} 对应行），mp 卡片回传作 BO locationId
+     *       兜底（service 走地块 FIFO 跨库位扣减，该 locationId 仅 UX 占位、不限制扣减范围）。</li>
+     * </ul>
+     *
+     * <p>字段 String 转换 / 租户同 {@link #selectPorkIssueByEar}。</p>
      *
      * @param productId  自产果蔬原料产品 ID（必填）
      * @param locationId 库位 ID（可空，chip 选中态过滤）
-     * @return 该产品的地块源篮子列表（按 id 升序）；无则空 list
+     * @return 该产品的地块源卡列表（按 batchId 升序，即各地块 FIFO 首篮 id）；无则空 list
      */
     @Select("""
         <script>
-        SELECT s.id                          AS batchId,
-               pl.plot_code                   AS batchCode,
-               s.product_id                   AS productId,
-               s.product_name                 AS productName,
-               COALESCE(s.product_unit, 'kg') AS productUnit,
-               s.product_stock                AS currentStock,
+        SELECT MIN(s.id)                     AS batchId,
+               MAX(pl.plot_code)             AS batchCode,
+               s.product_id                  AS productId,
+               MAX(s.product_name)           AS productName,
+               COALESCE(MAX(s.product_unit), 'kg') AS productUnit,
+               SUM(s.product_stock)          AS currentStock,
                COALESCE((SELECT SUM(ih.product_weight) FROM t_warehouse_product_inhouse ih
                           WHERE ih.product_id = s.product_id AND ih.plot_id = s.plot_id
                             AND DATE(ih.produce_date) = CURDATE()
                             AND ih.del_flag = '0' AND ih.tenant_id = '1001'), 0) AS todayPicked,
-               0                              AS todayReturned,
-               0                              AS todayLoss,
-               s.location_id                  AS locationId
+               COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
+                          WHERE f.plot_id = s.plot_id AND f.flow_type = 'return_in'
+                            AND DATE(f.flow_date) = CURDATE()
+                            AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayReturned,
+               COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
+                          WHERE f.plot_id = s.plot_id AND f.flow_type = 'loss'
+                            AND DATE(f.flow_date) = CURDATE()
+                            AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayLoss,
+               (SELECT s3.location_id FROM t_warehouse_location_stock s3
+                 WHERE s3.id = MIN(s.id))     AS locationId
           FROM t_warehouse_location_stock s
           LEFT JOIN t_plant_plot_info pl
             ON pl.id = s.plot_id
@@ -712,7 +750,8 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
            AND s.plot_id IS NOT NULL
            AND s.product_stock > 0
            <if test="locationId != null"> AND s.location_id = #{locationId} </if>
-         ORDER BY s.id ASC
+         GROUP BY s.product_id, s.plot_id
+         ORDER BY batchId ASC
         </script>
         """)
     List<MatIssueBasketVo> selectVegIssueByPlot(@Param("productId") Long productId,
@@ -774,7 +813,11 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
                COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
                           WHERE f.operator_id = #{userId} AND f.product_id = p.id
                             AND f.flow_type = 'loss' AND DATE(f.flow_date) = CURDATE()
-                            AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayLoss
+                            AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayLoss,
+               (SELECT MAX(f.flow_date) FROM t_warehouse_stock_flow f
+                  WHERE f.operator_id = #{userId} AND f.product_id = p.id
+                    AND f.flow_type = 'pick_out' AND DATE(f.flow_date) = CURDATE()
+                    AND f.del_flag = '0' AND f.tenant_id = '1001') AS lastPickTime
           FROM t_warehouse_product_info p
           JOIN t_warehouse_location_stock s
             ON s.product_id = p.id
@@ -793,7 +836,7 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
          GROUP BY p.id, p.product_id, p.product_name, p.product_unit, p.product_thumb,
                   p.image_oss_id, p.belong_type, p.buy_class
         HAVING currentStock > 0
-         ORDER BY currentStock ASC, p.product_name ASC
+         ORDER BY (lastPickTime IS NOT NULL) DESC, lastPickTime DESC, currentStock ASC, p.product_name ASC
         </script>
         """)
     List<MatIssueItemVo> selectMatIssueItemsByType(@Param("locationType") String locationType,

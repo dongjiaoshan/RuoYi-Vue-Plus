@@ -60,9 +60,14 @@ public class VegReceiveItemVo implements Serializable {
     private String productType;
 
     /**
-     * 待入库重量(kg)。
+     * 待入库重量(kg)。地块标记入库完成后，该地块的待入库量结算为损耗并清零（聚合不再正数挂着）。
      */
     private BigDecimal pendingWeight;
+
+    /**
+     * 损耗重量(kg)：仅自产列表填，= 该作物已标记入库完成行的损耗合计（row21）。
+     */
+    private BigDecimal lossWeight;
 
     /**
      * 作物 / 产品主图 ossId（= image_oss_id；IMG-LIB-001 L1，内部解析用，回填 thumbUrl 后前端不直接读）。

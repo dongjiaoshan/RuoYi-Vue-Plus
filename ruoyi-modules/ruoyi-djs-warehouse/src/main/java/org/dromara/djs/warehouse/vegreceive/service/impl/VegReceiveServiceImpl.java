@@ -196,6 +196,14 @@ public class VegReceiveServiceImpl implements IVegReceiveService {
         }
 
         boolean finished = bo.getIsFinish() != null && bo.getIsFinish() == FINISH_YES;
+        // row21：标记入库完成时，把本次入库后该地块剩余待入库量结算为损耗、待入库归 0；未完成损耗恒 0。
+        BigDecimal loss = BigDecimal.ZERO;
+        if (finished) {
+            loss = remainSafe.subtract(bo.getWeight());
+            if (loss.signum() < 0) {
+                loss = BigDecimal.ZERO;
+            }
+        }
         String cropName = vegReceiveMapper.selectCropName(bo.getCropId());
         // 解析果蔬原料 product_id（作物 related_product 双键篮，G2）：篮子（step3）+ 流水（step4）都带它。
         // 解析不到（作物未配 related_product，现网多为 NULL）→ 保持 null，不阻塞入库（与篮子兜底一致）。
@@ -210,6 +218,7 @@ public class VegReceiveServiceImpl implements IVegReceiveService {
         receive.setCropName(cropName);
         receive.setPlotId(bo.getPlotId());
         receive.setWeight(bo.getWeight());
+        receive.setLossWeight(loss);
         receive.setLocationId(bo.getLocationId());
         receive.setIsFinish(finished ? FINISH_YES : FINISH_NO);
         receive.setReceiveStatus(finished ? STATUS_DONE : STATUS_PROCESSING);

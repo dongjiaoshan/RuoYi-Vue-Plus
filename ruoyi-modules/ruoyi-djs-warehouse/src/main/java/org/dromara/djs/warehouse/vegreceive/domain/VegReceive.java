@@ -85,6 +85,12 @@ public class VegReceive extends TenantEntity {
     private BigDecimal weight;
 
     /**
+     * 损耗重量(kg)：仅自产用。地块标记「入库完成」(is_finish=1) 时，把当前剩余待入库重量
+     * 结算为损耗写到该完成行；其余收货行恒 0。
+     */
+    private BigDecimal lossWeight;
+
+    /**
      * 供应商 ID（仅外购 FK → {@code t_md_supplier.id}）。
      */
     private Long supplierId;

@@ -50,6 +50,15 @@ public class BarPendingVo implements Serializable {
     private Date marketingTime;
 
     /**
+     * 接收时间（= 录入头皮肉重量那一刻，bar_info.in_time）。
+     *
+     * <p>称重落库（weighBurn）时 updateStatusToSinging 写 in_time = 录入头皮肉重量当下；
+     * pending_singe 白条尚未称重 → in_time 为 null，前端 graceful 占位「—」。</p>
+     */
+    @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")
+    private Date receiveTime;
+
+    /**
      * 出栏重量 kg。
      */
     private BigDecimal marketingWeight;

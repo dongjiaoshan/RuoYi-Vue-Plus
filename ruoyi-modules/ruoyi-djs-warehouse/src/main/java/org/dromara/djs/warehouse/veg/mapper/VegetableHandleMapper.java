@@ -42,13 +42,18 @@ public interface VegetableHandleMapper extends BaseMapperPlus<VegetableHandle, V
      * 重量 SUM 含已 done 批次（口径不变，累计展示）。</p>
      *
      * <p>菜名取 {@code t_warehouse_planting_record.crop_name} 冗余快照（与 selectPendingList /
-     * fillPlantingNames 同源）；缩略图左联 t_plant_crop_info 尽力取（取不到走前端默认图兜底）。
+     * fillPlantingNames 同源）；缩略图取「产品配置中原材料的图」——按 {@code crop.related_product}
+     * 关联 {@code t_warehouse_product_info(attr=2 果蔬原料)} 取其 {@code image_oss_id}，作物自身图作兜底
+     * （{@code COALESCE(prod.image_oss_id, c.image_oss_id)}）；都取不到走前端默认图兜底。
      * 按最近 {@code data_date} 倒序，让"刚采摘完"的菜品排前面。</p>
      */
-    @Select("SELECT p.crop_id AS cropId, MAX(p.crop_name) AS cropName, MAX(c.image_oss_id) AS imageOssId,"
+    @Select("SELECT p.crop_id AS cropId, MAX(p.crop_name) AS cropName,"
+        + "       MAX(COALESCE(prod.image_oss_id, c.image_oss_id)) AS imageOssId,"
         + "       COALESCE(SUM(h.picked_weight),0) AS harvestWeight,"
         + "       COALESCE(SUM(h.feed_weight),0) AS feedWeight,"
         + "       COALESCE(SUM(h.handled_weight),0) AS handledWeight,"
+        + "       COALESCE(SUM(h.stock_in_weight),0) AS stockInWeight,"
+        + "       COALESCE(SUM(h.send_platform_weight),0) AS sendPlatformWeight,"
         + "       COALESCE(SUM(h.loss_weight),0) AS lossWeight,"
         + "       COALESCE(SUM(pl.plot_area * c.predicted_per),0) AS expectedYield"
         + "  FROM t_warehouse_planting_record p"
@@ -56,10 +61,14 @@ public interface VegetableHandleMapper extends BaseMapperPlus<VegetableHandle, V
         // 父表表达式 SUM(plot_area*predicted_per) 被扇出重复计数（expectedYield 虚高）。
         + "  LEFT JOIN (SELECT planting_record_id,"
         + "                    SUM(picked_weight) AS picked_weight, SUM(feed_weight) AS feed_weight,"
-        + "                    SUM(handled_weight) AS handled_weight, SUM(loss_weight) AS loss_weight"
+        + "                    SUM(handled_weight) AS handled_weight, SUM(loss_weight) AS loss_weight,"
+        + "                    SUM(stock_in_weight) AS stock_in_weight, SUM(send_platform_weight) AS send_platform_weight"
         + "               FROM t_warehouse_vegetable_handle WHERE del_flag='0'"
         + "               GROUP BY planting_record_id) h ON h.planting_record_id=p.id"
         + "  LEFT JOIN t_plant_crop_info c ON c.id=p.crop_id AND c.del_flag='0'"
+        // 图取「产品配置中原材料」：作物 related_product → 果蔬原料 product(attr=2) 的 image_oss_id（row18 口径）
+        + "  LEFT JOIN t_warehouse_product_info prod ON prod.id=c.related_product"
+        + "                AND prod.del_flag='0' AND prod.product_attr=2"
         + "  LEFT JOIN t_plant_plot_info pl ON pl.id=p.plot_id AND pl.del_flag='0'"
         + " WHERE p.tenant_id='1001' AND p.del_flag='0'"
         + " GROUP BY p.crop_id"

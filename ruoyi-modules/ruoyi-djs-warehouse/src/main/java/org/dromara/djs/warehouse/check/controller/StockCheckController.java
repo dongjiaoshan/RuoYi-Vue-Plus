@@ -45,12 +45,13 @@ public class StockCheckController extends BaseController {
     private final IStockCheckService checkService;
 
     /**
-     * 盘点单列表（盘点单维度，header 聚合 + 盈亏计）。
+     * 盘点记录列表（只读，盘点单维度）：统一读 stock_flow 盘点流水聚合，
+     * 覆盖小程序端工人提交的盘点 + admin 完成盘点两路来源。
      */
     @SaCheckPermission("djs:warehouse:check:list")
     @GetMapping("/list")
     public TableDataInfo<StockCheckHeaderVo> list(StockCheckQuery query, PageQuery pageQuery) {
-        return checkService.queryHeaderPage(query, pageQuery);
+        return checkService.queryFlowCheckRecordPage(query, pageQuery);
     }
 
     /**
@@ -95,14 +96,14 @@ public class StockCheckController extends BaseController {
     }
 
     /**
-     * 导出盘点明细（不分页）。
+     * 导出盘点记录列表（不分页，盘点单维度，与列表同数据源 stock_flow 聚合）。
      */
     @SaCheckPermission("djs:warehouse:check:export")
     @Log(title = "库存盘点", businessType = BusinessType.EXPORT)
     @PostMapping("/export")
     public void export(StockCheckQuery query, HttpServletResponse response) {
-        List<StockCheckRecordVo> list = checkService.queryLineList(query);
-        ExcelUtil.exportExcel(list, "盘点明细", StockCheckRecordVo.class, response);
+        List<StockCheckHeaderVo> list = checkService.exportHeaderList(query);
+        ExcelUtil.exportExcel(list, "盘点记录", StockCheckHeaderVo.class, response);
     }
 
 }

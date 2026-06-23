@@ -119,7 +119,10 @@ public interface DemandManageMapper extends BaseMapperPlus<DemandManage, DemandM
      *
      * <p>按 {@code product_id} 取各门店未发货需求量
      * {@code SUM(demand_quantity - COALESCE(shipped_count,0))}，仅保留剩余 &gt; 0 的门店，
-     * 排除已取消单（{@code demand_status <> 'CANCELLED'}）。JOIN {@code t_md_store} 取门店名。</p>
+     * 仅统计「已确认及之后」需求（{@code demand_status IN
+     * ('CONFIRMED','IN_PRODUCTION','PARTIAL_SHIPPED','COMPLETED')}）——草稿（DRAFT）/ 待确认
+     * （SUBMITTED）/ 已取消（CANCELLED）/ 已删除（DELETED）均不计入打包需求统计（与本 mapper
+     * line 54/278「已确认及之后」口径一致）。JOIN {@code t_md_store} 取门店名。</p>
      *
      * <p>租户隔离：未启全局 MP 拦截器，显式 {@code tenant_id='1001'}（V1 单租户，与本 mapper
      * 既有聚合 SQL 范式一致）；{@code del_flag='0'}（CHAR(1) 未删）。</p>
@@ -137,7 +140,7 @@ public interface DemandManageMapper extends BaseMapperPlus<DemandManage, DemandM
              AND s.tenant_id = dm.tenant_id
         WHERE dm.product_id = #{productId}
           AND dm.store_id IS NOT NULL
-          AND dm.demand_status <> 'CANCELLED'
+          AND dm.demand_status IN ('CONFIRMED','IN_PRODUCTION','PARTIAL_SHIPPED','COMPLETED')
           AND dm.del_flag = '0'
           AND dm.tenant_id = '1001'
         GROUP BY dm.store_id, s.store_name
@@ -252,13 +255,16 @@ public interface DemandManageMapper extends BaseMapperPlus<DemandManage, DemandM
      * 在 service 层按 storeCount/confirmedStoreCount 算（避免 SQL 重复 CASE）。</p>
      *
      * <p>产品冗余字段（productName/productSpec/productType/rawMaterial/productUnit）取 {@code MAX}
-     * 分组兜底（同 product 冗余通常一致）。可选过滤：产品名 LIKE / 需求日期区间。</p>
+     * 分组兜底（同 product 冗余通常一致）。可选过滤：产品名 LIKE / 需求门店 / 需求日期区间。
+     * 门店过滤（{@code store_id = #{storeId}}）下推 WHERE：分组前先按门店收敛行集，故汇总行的
+     * 需求量 / 门店数随门店变化（仅含该门店对该日该产品的需求）。</p>
      *
      * <p>租户隔离：未启全局 MP 拦截器，显式 {@code tenant_id='1001'}（V1 单租户，与本 mapper
      * 既有聚合 SQL 范式一致）；{@code del_flag='0'}（CHAR(1) 未删）。</p>
      *
      * @param productName 产品名 LIKE 过滤（空则不过滤，由 @if 控制）
      * @param productType 需求产品类型过滤（业态，空则不过滤；同 product_id 组内 product_type 同值，可放 WHERE）
+     * @param storeId     需求门店过滤（空则不过滤；下推 WHERE store_id）
      * @param beginDate   需求日期起（空则不过滤）
      * @param endDate     需求日期止（空则不过滤）
      * @return 分组聚合行（按需求日期倒序 + 产品名升序；三态/确认率待 service 回填）
@@ -291,6 +297,9 @@ public interface DemandManageMapper extends BaseMapperPlus<DemandManage, DemandM
           <if test="productType != null and productType != ''">
             AND product_type = #{productType}
           </if>
+          <if test="storeId != null">
+            AND store_id = #{storeId}
+          </if>
           <if test="beginDate != null">
             AND demand_date &gt;= #{beginDate}
           </if>
@@ -303,6 +312,7 @@ public interface DemandManageMapper extends BaseMapperPlus<DemandManage, DemandM
         """)
     List<DemandGroupVo> selectDemandGroupList(@Param("productName") String productName,
                                               @Param("productType") String productType,
+                                              @Param("storeId") Long storeId,
                                               @Param("beginDate") LocalDate beginDate,
                                               @Param("endDate") LocalDate endDate);
 

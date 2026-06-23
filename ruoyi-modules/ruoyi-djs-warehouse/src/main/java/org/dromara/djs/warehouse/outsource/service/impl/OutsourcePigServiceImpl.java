@@ -105,7 +105,8 @@ public class OutsourcePigServiceImpl extends DjsBaseServiceImpl<OutsourcePigMapp
         int rows = baseMapper.insert(entity);
         // 外购猪走燎毛：镜像 PigMarketingEventListener 补写一行外购 bar_info（status=pending_singe），
         // 否则 mp 待燎毛列表（queryPendingBars 唯一数据源是 bar_info）查不到外购猪。
-        createOutsourceBar(bo);
+        // 回写 bar_id 到外购台账，建立单头精确关联（删除拦截据此反查白条状态）。
+        createOutsourceBar(bo, entity.getId());
         return rows;
     }
 
@@ -118,9 +119,13 @@ public class OutsourcePigServiceImpl extends DjsBaseServiceImpl<OutsourcePigMapp
      * 外购无耳号，{@code earNo} 留空（NULL）；{@code pigMarkNo}（猪只标识号）仅填 {@code markId}，
      * 外购白条靠 {@code supplierId} 非空区分通用白条。</p>
      *
-     * <p>补 bar 失败不应阻塞外购登记主流程（外购台账已写成功），故 swallow + log（同 listener 失败策略）。</p>
+     * <p>补 bar 失败不应阻塞外购登记主流程（外购台账已写成功），故 swallow + log（同 listener 失败策略）。
+     * 成功时把生成的 barId 回写到外购台账 {@code outsource_pig.bar_id}（删除拦截据此反查白条状态）。</p>
+     *
+     * @param bo            外购入参
+     * @param outsourcePigId 已插入的外购台账主键（回写 bar_id 用）
      */
-    private void createOutsourceBar(OutsourcePigBo bo) {
+    private void createOutsourceBar(OutsourcePigBo bo, Long outsourcePigId) {
         try {
             BarInfo bar = new BarInfo();
             bar.setBarId(bizCodeGenerator.generate(BizCodeType.BAR_NO, Map.of()));
@@ -134,6 +139,11 @@ public class OutsourcePigServiceImpl extends DjsBaseServiceImpl<OutsourcePigMapp
             bar.setBuyWeight(bo.getPigWeight());
             // tenant_id / 6 个审计字段由 MetaObjectHandler 自动 fill；del_unique=0 由 DDL DEFAULT
             barInfoMapper.insert(bar);
+            // 回写 bar_id 到外购台账，建立单头精确关联
+            OutsourcePig upd = new OutsourcePig();
+            upd.setId(outsourcePigId);
+            upd.setBarId(bar.getBarId());
+            baseMapper.updateById(upd);
             log.info("[DJS-FIX-WMS-RALN] 外购猪 bar_info 创建成功 barId={} pigMarkNo={} supplierId={}",
                 bar.getBarId(), bo.getPigMarkNo(), bo.getSupplierId());
         } catch (Exception e) {
@@ -146,6 +156,20 @@ public class OutsourcePigServiceImpl extends DjsBaseServiceImpl<OutsourcePigMapp
     public int deleteWithValidByIds(Collection<Long> ids) {
         if (ids == null || ids.isEmpty()) {
             return 0;
+        }
+        // 删除拦截：外购猪只录入后已镜像一条白条（bar_info），若该白条已进入下游处理流程
+        // （燎毛/分割/入库等，status != pending_singe），禁止删除外购台账（避免下游链路悬空）。
+        List<OutsourcePig> pigs = baseMapper.selectByIds(ids);
+        if (pigs != null) {
+            for (OutsourcePig pig : pigs) {
+                if (StringUtils.isBlank(pig.getBarId())) {
+                    continue;
+                }
+                String barStatus = barInfoMapper.selectStatusByBarId(pig.getBarId());
+                if (barStatus != null && !BAR_STATUS_PENDING_SINGE.equals(barStatus)) {
+                    throw new ServiceException("该外购猪只已进入下游处理流程（燎毛/分割），不允许删除");
+                }
+            }
         }
         return softDelete(ids);
     }

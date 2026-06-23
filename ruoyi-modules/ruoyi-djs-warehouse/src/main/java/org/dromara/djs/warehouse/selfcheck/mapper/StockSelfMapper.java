@@ -119,8 +119,10 @@ public interface StockSelfMapper {
      * 待盘点产品列表（库存盘点 tab）：location_stock 该库位 {@code product_stock > 0}，
      * 按 {@code latest_check_time ASC}（久未盘排前，NULL 视作最久）。
      *
-     * <p>{@code plotOrEarNo = COALESCE(ear_no...)}（plot 维本期不 JOIN 种植域，直接取 ear_no）。
-     * {@code lastCheckResult} 由 check_result CASE 转中文。</p>
+     * <p>{@code plotOrEarNo = COALESCE(ear_no, plot_code)}：猪肉走 {@code ear_no} 耳号，
+     * 果蔬 LEFT JOIN {@code t_plant_plot_info} 解出 {@code plot_code} 地块编号
+     * （少数脏数据 plot_id 在 plot_info 无匹配行 → 仍 NULL，可接受）。
+     * {@code lastCheckResult} 由 check_result CASE 转中文；{@code inboundDate} 取库存行建账 create_time。</p>
      */
     @Select("""
         <script>
@@ -128,15 +130,20 @@ public interface StockSelfMapper {
                s.product_name                        AS productName,
                s.product_stock                       AS stock,
                s.product_unit                        AS productUnit,
-               s.ear_no                              AS plotOrEarNo,
+               COALESCE(s.ear_no, pl.plot_code)      AS plotOrEarNo,
                CASE s.check_result
                    WHEN 1 THEN '正常'
                    WHEN 2 THEN '异常'
                    WHEN 3 THEN '计损'
                    ELSE NULL
                END                                   AS lastCheckResult,
-               DATE_FORMAT(s.latest_check_time, '%Y-%m-%d %H:%i:%s') AS lastCheckTime
+               DATE_FORMAT(s.latest_check_time, '%Y-%m-%d %H:%i:%s') AS lastCheckTime,
+               DATE_FORMAT(s.create_time, '%Y-%m-%d') AS inboundDate
           FROM t_warehouse_location_stock s
+          LEFT JOIN t_plant_plot_info pl
+            ON pl.id        = s.plot_id
+           AND pl.del_flag  = '0'
+           AND pl.tenant_id = '1001'
          WHERE s.location_id  = #{locationId}
            AND s.del_flag     = '0'
            AND s.tenant_id    = '1001'

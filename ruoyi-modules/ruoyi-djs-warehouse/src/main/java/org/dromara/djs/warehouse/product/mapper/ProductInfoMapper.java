@@ -203,7 +203,10 @@ public interface ProductInfoMapper extends BaseMapperPlus<ProductInfo, ProductIn
           FROM t_warehouse_product_info p
          WHERE p.del_flag     = '0'
            AND p.tenant_id    = '1001'
-           AND p.product_type = 2
+           AND (p.product_type = 2
+                OR EXISTS (SELECT 1 FROM t_warehouse_stock_flow f2
+                            WHERE f2.product_id = p.id AND f2.flow_type = 'purchase_in'
+                              AND f2.del_flag = '0' AND f2.tenant_id = '1001'))
            <if test="query.productName != null and query.productName != ''">
              AND p.product_name LIKE CONCAT('%', #{query.productName}, '%')
            </if>

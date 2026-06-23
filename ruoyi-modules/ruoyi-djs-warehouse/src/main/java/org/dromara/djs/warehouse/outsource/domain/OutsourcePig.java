@@ -68,6 +68,12 @@ public class OutsourcePig extends TenantEntity {
     private Long supplierId;
 
     /**
+     * 镜像白条业务码（= {@code t_warehouse_bar_info.bar_id}）。录入时由 createOutsourceBar 回写，
+     * 删除前据此反查白条状态做下游拦截（白条已燎毛/分割/入库等下游态则禁止删除外购台账）。
+     */
+    private String barId;
+
+    /**
      * 购买人（{@code sys_user.user_id}，可空，VO 走 @Translation 翻译成姓名）。
      */
     private String buyer;

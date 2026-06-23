@@ -57,4 +57,9 @@ public class PendingCheckVo implements Serializable {
      */
     private String lastCheckTime;
 
+    /**
+     * 入库日期 yyyy-MM-dd（取 location_stock 该库存行建账时间 create_time）。
+     */
+    private String inboundDate;
+
 }

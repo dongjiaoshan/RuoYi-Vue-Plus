@@ -104,21 +104,21 @@ public interface StockFlowMapper extends BaseMapperPlus<StockFlow, StockFlowVo> 
                                          @Param("belongType") String belongType);
 
     /**
-     * 分割产出总重（按 {@code ear_no} 聚合 {@code cut_out_in} 流水的 change_quantity）。
+     * 分割产出总重（按 {@code white_bar_id} 聚合 {@code cut_out_in} 流水的 change_quantity）。
      *
-     * <p>白条分割统计源（doc/14 §1：分割→入冷库后，产出在 location_stock 篮子里会随领用/打包消耗，
-     * 故「分割品总重 / 剩余可分割」改读不可变的 {@code cut_out_in} 流水——总产出量恒定，不随下游变动）。
-     * ear_no 与白条 1:1（一头猪一白条），按 ear_no 聚合即该白条的分割总产出。</p>
+     * <p>白条分割「剩余可分割重量 / 超量校验」统一口径：自养（有耳号）/ 外购（{@code ear_no=NULL}）都按
+     * {@code white_bar_id}（= bar_info.id = cut_record.white_bar_id）聚合，不依赖 ear_no，
+     * 修复外购白条剩余重量恒 null 的问题。white_bar_id 与白条 1:1，按 white_bar_id 聚合即该白条的分割总产出。</p>
      *
-     * @param earNo 猪只耳号（= 白条标签）
-     * @return 该耳号的分割产出总重（无记录返 0）
+     * @param whiteBarId 白条 ID（= {@code t_warehouse_bar_info.id}）
+     * @return 该白条的分割产出总重（无记录返 0）
      */
     @Select("SELECT COALESCE(SUM(change_quantity), 0) "
         + "  FROM t_warehouse_stock_flow "
-        + " WHERE flow_type = 'cut_out_in' "
-        + "   AND ear_no    = #{earNo} "
-        + "   AND del_flag  = '0'")
-    BigDecimal sumCutOutByEarNo(@Param("earNo") String earNo);
+        + " WHERE flow_type    = 'cut_out_in' "
+        + "   AND white_bar_id = #{whiteBarId} "
+        + "   AND del_flag     = '0'")
+    BigDecimal sumCutOutByWhiteBarId(@Param("whiteBarId") Long whiteBarId);
 
     /**
      * 批量分割产出总重（按 {@code ear_no} IN 聚合 {@code cut_out_in} 流水），避免 N+1。

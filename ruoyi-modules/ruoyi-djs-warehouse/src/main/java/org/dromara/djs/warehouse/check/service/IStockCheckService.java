@@ -48,14 +48,32 @@ public interface IStockCheckService {
     void cancelCheck(Long id);
 
     /**
-     * admin 盘点单列表（盘点单维度，header 聚合 + 盈亏计）。
+     * 盘点单 header 列表（check_record 模型，header 聚合 + 盈亏计）。
+     *
+     * <p>供 mp overview「进行中盘点单」入口用（{@code checkStatus='in_progress'} 过滤）。
+     * admin 盘点记录页改走 {@link #queryFlowCheckRecordPage}。</p>
      */
     TableDataInfo<StockCheckHeaderVo> queryHeaderPage(StockCheckQuery query, PageQuery pageQuery);
 
     /**
-     * 盘点明细 line 列表（导出 / 详情用，不分页）。
+     * admin 盘点记录列表（只读）：统一从 {@code t_warehouse_stock_flow} 盘点流水
+     * （{@code flow_type IN ('check_in','check_out')}）按「日期 + 库位 + 盘点人」聚合成盘点单行。
+     *
+     * <p>覆盖 mp 工人自助盘点 + admin 完成盘点两路来源，修「mp 提交的盘点在 admin 列表查不到」。</p>
+     */
+    TableDataInfo<StockCheckHeaderVo> queryFlowCheckRecordPage(StockCheckQuery query, PageQuery pageQuery);
+
+    /**
+     * admin 盘点记录明细 line 列表（详情钻取，不分页）：按合成 {@code checkId}
+     * （{@code yyyyMMdd-locationId-operatorId}）读该组盘点流水。
      */
     List<StockCheckRecordVo> queryLineList(StockCheckQuery query);
+
+    /**
+     * 盘点记录列表导出（不分页，盘点单维度）：同 {@link #queryHeaderPage} 数据源
+     * （stock_flow 盘点流水聚合），导出全部命中行。
+     */
+    List<StockCheckHeaderVo> exportHeaderList(StockCheckQuery query);
 
     // ---------- mp 实盘录入 ----------
 

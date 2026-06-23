@@ -246,6 +246,28 @@ public class PigCutRecordServiceImpl
                 + "，需 picked 或 cutting）");
         }
 
+        // Step 1.5：超量校验（本次提交合计 + 该白条已分割产出 ≤ 领用白条重 pickup_weight）。
+        // 口径与 fillRemainingWeight 一致：已分割量按 white_bar_id 聚合 cut_out_in 流水
+        // （外购白条 ear_no=NULL 也能稳定关联，避免按 ear_no 校验对外购失效）。
+        BigDecimal pickupWeight = record.getPickupWeight();
+        if (pickupWeight != null) {
+            BigDecimal requestedTotal = BigDecimal.ZERO;
+            for (PigCutOutBo.PartItem part : bo.getPartItems()) {
+                if (part.getProductWeight() != null) {
+                    requestedTotal = requestedTotal.add(part.getProductWeight());
+                }
+            }
+            BigDecimal alreadyCut = stockFlowMapper.sumCutOutByWhiteBarId(record.getWhiteBarId());
+            BigDecimal afterTotal = requestedTotal.add(alreadyCut == null ? BigDecimal.ZERO : alreadyCut);
+            if (afterTotal.compareTo(pickupWeight) > 0) {
+                BigDecimal remaining = pickupWeight
+                    .subtract(alreadyCut == null ? BigDecimal.ZERO : alreadyCut)
+                    .max(BigDecimal.ZERO);
+                throw new ServiceException("分割产品重量超出剩余可分割重量（本次 " + requestedTotal
+                    + "kg，剩余 " + remaining + "kg）");
+            }
+        }
+
         // Step 2：首次提交 → cut_record picked → cutting + bar_info pending_cut → cutting
         Date now = new Date();
         if (CUT_STATUS_PICKED.equals(record.getCutStatus())) {
@@ -320,6 +342,8 @@ public class PigCutRecordServiceImpl
             flowIn.setChangeNum(part.getProductWeight());
             flowIn.setChangeQuantity(part.getProductWeight());
             flowIn.setEarNo(record.getEarNo());
+            // 分割产出按 white_bar_id 关联白条（外购无耳号也稳定可聚合，剩余重量/超量校验统一口径）
+            flowIn.setWhiteBarId(record.getWhiteBarId());
             flowIn.setOperatorId(userId);
             flowIn.setRemark("分割产出入冻品库 cut_id=" + record.getCutId() + " part=" + part.getCutPart());
             stockFlowMapper.insert(flowIn);
@@ -589,11 +613,12 @@ public class PigCutRecordServiceImpl
             return;
         }
         for (PigCutRecordVo vo : records) {
-            if (vo.getPickupWeight() == null || StringUtils.isBlank(vo.getEarNo())) {
+            // 按 white_bar_id 聚合（不依赖 ear_no）：外购白条无耳号也能算剩余重量（修复外购恒 null 不显示）
+            if (vo.getPickupWeight() == null || vo.getWhiteBarId() == null) {
                 continue;
             }
             // 已分割重量 = Σ cut_out_in 流水（不可变，doc/14 §1）；剩余可分割 = 领用白条重 − 已分割
-            BigDecimal used = stockFlowMapper.sumCutOutByEarNo(vo.getEarNo());
+            BigDecimal used = stockFlowMapper.sumCutOutByWhiteBarId(vo.getWhiteBarId());
             BigDecimal remaining = vo.getPickupWeight().subtract(used == null ? BigDecimal.ZERO : used);
             vo.setRemainingWeight(remaining.max(BigDecimal.ZERO));
         }

@@ -295,6 +295,8 @@ public class PigBurnRecordServiceImpl
             vo.setMarketingWeight(bar.getMarketingWeight());
             vo.setStatus(bar.getStatus());
             vo.setArriveWeight(bar.getArriveWeight());
+            // 接收时间 = 录入头皮肉重量那一刻（weighBurn 写 in_time）；未称重 pending_singe 为 null
+            vo.setReceiveTime(bar.getInTime());
             // pending_singe 尚未入库任何产品 → 0；singing 取聚合值（无则 0）
             vo.setInboundedWeight(inboundedMap.getOrDefault(bar.getId(), BigDecimal.ZERO));
             list.add(vo);

@@ -129,7 +129,8 @@ public interface ProductProductionMapper extends BaseMapperPlus<ProductProductio
      *
      * <p>「需求门店数」{@code storeDemandCount} 经相关子查询统计该 product_id 当前有未发货需求的
      * 门店去重家数（口径同打包台 {@link org.dromara.djs.warehouse.demand.mapper.DemandManageMapper#selectStoreDemandCopies}：
-     * 非取消单 + 有门店 + 该门店剩余需求量 {@code SUM(demand_quantity - shipped_count) > 0}）。
+     * 「已确认及之后」需求 {@code demand_status IN ('CONFIRMED','IN_PRODUCTION','PARTIAL_SHIPPED','COMPLETED')}
+     * + 有门店 + 该门店剩余需求量 {@code SUM(demand_quantity - shipped_count) > 0}；草稿 / 待确认不计入）。
      * 无需求 → 0。</p>
      *
      * @param produceNo   生产编号 LIKE 过滤（空则不过滤）
@@ -156,7 +157,7 @@ public interface ProductProductionMapper extends BaseMapperPlus<ProductProductio
         "            FROM t_warehouse_demand_manage dm",
         "           WHERE dm.product_id = pp.product_id",
         "             AND dm.store_id IS NOT NULL",
-        "             AND dm.demand_status &lt;&gt; 'CANCELLED'",
+        "             AND dm.demand_status IN ('CONFIRMED','IN_PRODUCTION','PARTIAL_SHIPPED','COMPLETED')",
         "             AND dm.del_flag = '0'",
         "             AND dm.tenant_id = pp.tenant_id",
         "           GROUP BY dm.store_id",

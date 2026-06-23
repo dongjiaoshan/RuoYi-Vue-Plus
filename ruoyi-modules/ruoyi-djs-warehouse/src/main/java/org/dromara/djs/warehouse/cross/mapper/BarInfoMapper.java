@@ -140,6 +140,26 @@ public interface BarInfoMapper extends BaseMapperPlus<BarInfo, BarInfo> {
     IPage<TodayBarVo> selectTodayInStockBarPage(IPage<TodayBarVo> page);
 
     /**
+     * 按白条业务码查白条状态（外购猪只删除拦截用：录入回写的 bar_id 反查镜像白条当前态）。
+     *
+     * <p>外购猪只台账删除前据此判断关联白条是否已进入下游处理流程（非 {@code pending_singe}）。
+     * 显式 {@code tenant_id='1001' AND del_flag='0'}（V1 单租户，原生 SQL 不自动注入）。
+     * bar_id 与白条 1:1（业务码 UNIQUE），返回单值；白条不存在 → null。</p>
+     *
+     * @param barId 白条业务码（= {@code t_warehouse_bar_info.bar_id}）
+     * @return 白条状态（{@code djs_bar_status}）；无匹配白条返 null
+     */
+    @Select("""
+        SELECT status
+          FROM t_warehouse_bar_info
+         WHERE tenant_id = '1001'
+           AND del_flag = '0'
+           AND bar_id = #{barId}
+         LIMIT 1
+        """)
+    String selectStatusByBarId(@Param("barId") String barId);
+
+    /**
      * 查全部「在库」白条（mp 物资领用·白条批次卡列表 issueWhiteBarBatches）。
      *
      * <p>口径 = {@code status='in_stock'}（已入库 / 可领，一行 = 一条实物白条整只），不限当天（与

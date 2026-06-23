@@ -5,6 +5,7 @@ import lombok.Data;
 import java.io.Serial;
 import java.io.Serializable;
 import java.math.BigDecimal;
+import java.util.Date;
 
 /**
  * mp 物资领用「待领产品卡」VO（FIX-WMS-MATISSUE-001）。
@@ -93,6 +94,14 @@ public class MatIssueItemVo implements Serializable {
      * 当前登录人今日损耗（loss SUM）。
      */
     private BigDecimal todayLoss;
+
+    /**
+     * 当前登录人今日最近一次领用时间（{@code MAX(flow_date)} WHERE pick_out + 今天 + 本产品 + 本人）。
+     *
+     * <p>用于列表排序：「有今日领用的数据优先 + 按领用时间降序」。无今日领用 → null（排在已领项之后，
+     * 再按库存升序 + 产品名兜底）。前端 {@code mergeIssueItems} 跨库合并时取一次、不累加（同产品跨库同值）。</p>
+     */
+    private Date lastPickTime;
 
     /**
      * 地块 ID（步11 偏差修复 · 决策 a：自产果蔬「按地块维度」领用专用）。

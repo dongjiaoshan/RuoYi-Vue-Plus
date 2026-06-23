@@ -116,6 +116,12 @@ public class StockFlow extends TenantEntity {
     private String earNo;
 
     /**
+     * 白条 ID（= {@code t_warehouse_bar_info.id}）。仅分割产出 {@code cut_out_in} 流水写值，
+     * 分割「剩余可分割重量 / 超量校验」按此聚合——外购白条无耳号（{@code ear_no=NULL}）也能稳定关联。
+     */
+    private Long whiteBarId;
+
+    /**
      * 地块 ID（蔬菜流水用，本 ticket 不用）。
      */
     private Long plotId;

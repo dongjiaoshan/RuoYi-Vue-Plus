@@ -27,11 +27,15 @@ public class PackSubmitResultVo implements Serializable {
     /** 追溯码（打包入库时生成；猪肉链当前无生成入口时可能为 null）。 */
     private String traceCode;
 
+    /** 生产编号（{@code produce_no} 业务码，yyMMdd + 前缀 + 4 位序号）：追溯码打印弹框「生产序号」展示。 */
+    private String produceNo;
+
     public PackSubmitResultVo() {
     }
 
-    public PackSubmitResultVo(Long id, String traceCode) {
+    public PackSubmitResultVo(Long id, String traceCode, String produceNo) {
         this.id = id;
         this.traceCode = traceCode;
+        this.produceNo = produceNo;
     }
 }

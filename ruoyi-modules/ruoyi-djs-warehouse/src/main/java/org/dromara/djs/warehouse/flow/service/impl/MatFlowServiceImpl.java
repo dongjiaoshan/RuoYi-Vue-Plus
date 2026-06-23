@@ -244,6 +244,12 @@ public class MatFlowServiceImpl implements IMatFlowService {
         if (basket == null || !"0".equals(basket.getDelFlag())) {
             throw new ServiceException("选中的篮子不存在或已删除（batchId=" + bo.getBatchId() + "）");
         }
+        // 自产果蔬「地块卡」（issueVegBatches 已按地块聚合，一卡一地块）：batchId = 该地块 FIFO 首篮 id，
+        // 篮带 plot_id（且无 ear_no = 非猪肉篮）→ 按 (productId, plotId) 跨库位 FIFO 扣减整个地块，
+        // 不只扣首篮（地块可能跨多库位，只扣首篮会在申请量 > 首篮余量时误报库存不足）。
+        if (isVegPlotBasket(basket)) {
+            return pickVegPlot(bo, basket);
+        }
         if (basket.getProductStock() == null || basket.getProductStock().signum() <= 0) {
             throw new ServiceException("选中的篮子已无库存，无法领用（batchId=" + bo.getBatchId() + "）");
         }
@@ -256,7 +262,8 @@ public class MatFlowServiceImpl implements IMatFlowService {
         Long locId = basket.getLocationId();
         // 库位级业务锁（WMS-STOCK-001）：盘点进行中的库位禁出入库（后端双保险）
         stockCheckService.assertLocationUnlocked(locId);
-        Long userId = LoginHelper.getUserId();
+        // 领用人：mp 弹层选了用所选（代他人领用），否则取当前登录人兜底
+        Long userId = resolveOperatorId(bo.getOperatorId());
 
         Long productId = basket.getProductId();
         // product 主数据可空（篮子 product_id 缺失或 product 已删时，名称 / 单位回退篮子冗余字段）
@@ -309,6 +316,133 @@ public class MatFlowServiceImpl implements IMatFlowService {
     }
 
     /**
+     * 是否「自产果蔬地块卡篮」：篮带 {@code plot_id}（地块标签）且 {@code product_id} 非空（双键篮）
+     * 且 {@code ear_no} 为空（区别于猪肉耳号篮）。
+     *
+     * <p>{@code issueVegBatches}（{@link LocationStockMapper#selectVegIssueByPlot}）已按地块聚合，一卡一地块，
+     * 卡片回传的 {@code batchId} = 该地块 FIFO 首篮 id。service 据此判别为地块卡 → 领/退/损按
+     * {@code (productId, plotId)} 跨库位整地块操作（一个地块多库位是线下实际，mp 只当一张卡）。</p>
+     */
+    private boolean isVegPlotBasket(LocationStock basket) {
+        return basket.getPlotId() != null
+            && basket.getProductId() != null
+            && (basket.getEarNo() == null || basket.getEarNo().isBlank());
+    }
+
+    /**
+     * 自产果蔬「地块卡」领用：mp 地块卡 batchId = 该地块 FIFO 首篮 id，但一个地块可能跨多库位
+     * （线下实际，mp 只当一张卡）。故按 {@code (productId, plotId)} 跨库位 FIFO 扣减整个地块，
+     * 不只扣首篮——否则申请量 &gt; 首篮余量时会误报库存不足。
+     *
+     * <p>两步同事务：</p>
+     * <ol>
+     *   <li>写一条 {@code pick_out} 流水（带 {@code product_id} + {@code plot_id} 源标签；
+     *       {@code warehouse_id} = 首篮库位、{@code change_quantity} = 总申请量），与 {@link #pickSelfVeg}
+     *       一条流水范式一致；</li>
+     *   <li>{@link #consumeVegPlotBaskets} 跨库位按 id 升序 FIFO 逐篮扣减 {@code location_stock} + 每扣一篮
+     *       产一行 {@code product_inhouse}（带该篮 {@code plot_id} / 库位标签）→ 打包来源。
+     *       篮总量不足申请量 → 抛 {@link ServiceException} 回滚整笔（流水 + 已扣篮全回滚）。</li>
+     * </ol>
+     */
+    private Long pickVegPlot(MatPickBo bo, LocationStock firstBasket) {
+        Long productId = firstBasket.getProductId();
+        Long plotId = firstBasket.getPlotId();
+        // 一致性校验：BO 带的 productId 与首篮 product_id 须一致（前端从地块卡选源，两者应同源）
+        if (bo.getProductId() != null && !bo.getProductId().equals(productId)) {
+            throw new ServiceException("选中地块卡与产品不匹配（card.productId=" + productId
+                + " / bo.productId=" + bo.getProductId() + "）");
+        }
+        Long firstLocId = firstBasket.getLocationId();
+        // 库位级业务锁（WMS-STOCK-001）：盘点进行中的首篮库位禁出入库（后端双保险）
+        stockCheckService.assertLocationUnlocked(firstLocId);
+        // 领用人：mp 弹层选了用所选（代他人领用），否则取当前登录人兜底
+        Long userId = resolveOperatorId(bo.getOperatorId());
+
+        ProductInfo product = productInfoMapper.selectById(productId);
+
+        // 1. 写一条 pick_out 流水（带 plot_id + product_id 源标签；warehouse_id=首篮库位、量=总申请量）
+        StockFlow flow = new StockFlow();
+        flow.setFlowNo(generateFlowNo(INOUT_OUT));
+        flow.setFlowDate(new Date());
+        flow.setProductId(productId);
+        flow.setPlotId(plotId);
+        flow.setWarehouseId(firstLocId);
+        flow.setInoutType(INOUT_OUT);
+        flow.setFlowType(FLOW_PICK_OUT);
+        flow.setStockOutDest(bo.getStockOutDest());
+        flow.setChangeNum(bo.getQuantity().negate());
+        flow.setChangeQuantity(bo.getQuantity());
+        flow.setOperatorId(userId);
+        flow.setRemark(bo.getRemark());
+        flow.setProofOssIds(bo.getProofOssIds());
+        stockFlowMapper.insert(flow);
+
+        // 2. 跨库位 FIFO 扣减整个地块 + 每篮产 product_inhouse（带篮 plot_id / 库位标签）
+        consumeVegPlotBaskets(productId, plotId, bo.getQuantity(), product, firstBasket, userId);
+
+        return flow.getId();
+    }
+
+    /**
+     * 自产果蔬按「{@code (product_id, plot_id)} 地块」跨库位 FIFO 扣减（{@link #pickVegPlot} 用）。
+     *
+     * <p>该地块各库位篮按 id 升序（先进先出）逐篮扣减 {@code location_stock}，每扣一篮产一行
+     * {@code product_inhouse}（带该篮 {@code plot_id}、库位、{@code produce_date=今天}）→ 果蔬打包来源
+     * （地块随篮自动带到打包）。与 {@link #consumeVegBaskets} 同范式，区别：本方法按 {@code plot_id} 过滤
+     * （不限库位，跨库位拼够），{@code consumeVegBaskets} 按 {@code product_id + location} 过滤（单库位）。</p>
+     *
+     * @param firstBasket 地块 FIFO 首篮（已查得，名称/单位兜底用；product 主数据可空时回退它）
+     * @throws ServiceException 该地块各库位篮总量不足申请量（{@code @Transactional} 回滚领用流水 + 已扣篮）
+     */
+    private void consumeVegPlotBaskets(Long productId, Long plotId, BigDecimal quantity,
+                                       ProductInfo product, LocationStock firstBasket, Long userId) {
+        List<LocationStock> baskets = locationStockMapper.selectList(
+            new LambdaQueryWrapper<LocationStock>()
+                .eq(LocationStock::getProductId, productId)
+                .eq(LocationStock::getPlotId, plotId)
+                .gt(LocationStock::getProductStock, BigDecimal.ZERO)
+                .orderByAsc(LocationStock::getId));
+        String productName = product != null ? product.getProductName() : firstBasket.getProductName();
+        Integer productType = product != null && product.getProductType() != null ? product.getProductType() : 1;
+        String productUnit = product != null ? product.getProductUnit() : firstBasket.getProductUnit();
+        BigDecimal remaining = quantity;
+        LocalDate today = LocalDate.now();
+        Date now = new Date();
+        for (LocationStock basket : baskets) {
+            if (remaining.compareTo(BigDecimal.ZERO) <= 0) {
+                break;
+            }
+            BigDecimal take = basket.getProductStock().min(remaining);
+            int affected = locationStockMapper.deductStockById(basket.getId(), take, userId);
+            if (affected == 0) {
+                // 并发抢占：该篮已被他人领走，跳过（不计入已领）
+                continue;
+            }
+            ProductInhouse inhouse = new ProductInhouse();
+            inhouse.setProduceDate(java.sql.Date.valueOf(today));
+            inhouse.setProduceTime(now);
+            inhouse.setProductId(productId);
+            inhouse.setProductName(productName);
+            inhouse.setProductType(productType);
+            inhouse.setProductUnit(productUnit);
+            inhouse.setProductWeight(take);
+            inhouse.setPlotId(basket.getPlotId());   // 篮子标签 = 地块 → 打包追溯键
+            inhouse.setLocationId(basket.getLocationId());
+            inhouse.setMaterialId(productId);          // 原材料 = 自身（成品打包侧经 product_material 反查共享池）
+            inhouse.setMaterialConsume(take);
+            productInhouseMapper.insert(inhouse);
+            remaining = remaining.subtract(take);
+        }
+        if (remaining.compareTo(BigDecimal.ZERO) > 0) {
+            throw new ServiceException(
+                "库存不足：" + productName + " 该地块可领 "
+                    + quantity.subtract(remaining).stripTrailingZeros().toPlainString()
+                    + (productUnit == null ? "" : productUnit) + "，申请 "
+                    + quantity.stripTrailingZeros().toPlainString() + (productUnit == null ? "" : productUnit));
+        }
+    }
+
+    /**
      * 外购 / 包材等 product 维度领用（现有路径，plotId 为空时走此分支，行为不变）。
      */
     private Long pickByProduct(MatPickBo bo) {
@@ -320,7 +454,8 @@ public class MatFlowServiceImpl implements IMatFlowService {
         Long locId = resolveLocationId(bo.getLocationId(), bo.getProductId(), "领用");
         // 库位级业务锁（WMS-STOCK-001）：盘点进行中的库位禁出入库（后端双保险）
         stockCheckService.assertLocationUnlocked(locId);
-        Long userId = LoginHelper.getUserId();
+        // 领用人：mp 弹层选了用所选（代他人领用），否则取当前登录人兜底
+        Long userId = resolveOperatorId(bo.getOperatorId());
 
         // 1. INSERT stock_flow（pick_out 出库）
         StockFlow flow = new StockFlow();
@@ -526,7 +661,8 @@ public class MatFlowServiceImpl implements IMatFlowService {
         }
         // 库位级业务锁（WMS-STOCK-001）：盘点进行中的库位禁出入库（后端双保险）
         stockCheckService.assertLocationUnlocked(locId);
-        Long userId = LoginHelper.getUserId();
+        // 领用人：mp 弹层选了用所选（代他人领用），否则取当前登录人兜底
+        Long userId = resolveOperatorId(bo.getOperatorId());
 
         // product_id：plot→crop→crop.related_product 解析果蔬成品（与 admin 打包统计 join 契约）；
         // 解析不到兜底 0 + warn（作物未配 related_product，与步5/步6 数据治理同源，不阻塞领用）
@@ -687,6 +823,11 @@ public class MatFlowServiceImpl implements IMatFlowService {
         if (basket == null || !"0".equals(basket.getDelFlag())) {
             throw new ServiceException("选中的篮子不存在或已删除（batchId=" + bo.getBatchId() + "）");
         }
+        // 自产果蔬地块卡（batchId = 地块 FIFO 首篮 id）：退回量按 (productId, plotId) 整地块回补，
+        // 不只回补首篮（与领用跨库位 FIFO 对称）。
+        if (isVegPlotBasket(basket)) {
+            return returnVegPlot(bo, basket);
+        }
         Long locId = basket.getLocationId();
         // 库位级业务锁（WMS-STOCK-001）：盘点进行中的库位禁出入库（后端双保险）
         stockCheckService.assertLocationUnlocked(locId);
@@ -723,6 +864,57 @@ public class MatFlowServiceImpl implements IMatFlowService {
         // 3. 回补选中篮 + 减今天该篮的待打包 inhouse（让打包页不再显示已退量）
         locationStockMapper.addStockById(basket.getId(), bo.getQuantity(), userId);
         reduceTodayInhouseForBasket(productId, basket.getEarNo(), basket.getPlotId(), bo.getQuantity());
+
+        return flow.getId();
+    }
+
+    /**
+     * 自产果蔬「地块卡」退回（{@link #returnByBatch} 识别地块卡后走此）：退回量回补整个地块、不只首篮。
+     *
+     * <p>三步同事务：</p>
+     * <ol>
+     *   <li>校验今日额度（按 {@code (user, product)} 统计，与现状一致）；</li>
+     *   <li>INSERT {@code return_in} 流水（带 {@code product_id} + {@code plot_id} 源标签，
+     *       {@code warehouse_id} = 首篮库位）；</li>
+     *   <li>回补该地块 FIFO 首篮库存（地块级总量守恒，mp 当一张卡，多库位是线下实际）+ 减今天该地块
+     *       待打包 {@code product_inhouse}（{@link #reduceTodayInhouseForBasket} 按 {@code plot_id} 匹配，
+     *       让打包页不再显示已退量）。</li>
+     * </ol>
+     */
+    private Long returnVegPlot(MatReturnBo bo, LocationStock firstBasket) {
+        Long productId = firstBasket.getProductId();
+        Long plotId = firstBasket.getPlotId();
+        Long firstLocId = firstBasket.getLocationId();
+        // 库位级业务锁（WMS-STOCK-001）：盘点进行中的首篮库位禁出入库（后端双保险）
+        stockCheckService.assertLocationUnlocked(firstLocId);
+        Long userId = LoginHelper.getUserId();
+
+        ProductInfo product = productInfoMapper.selectById(productId);
+        String productName = product != null ? product.getProductName() : firstBasket.getProductName();
+        String productUnit = product != null ? product.getProductUnit() : firstBasket.getProductUnit();
+
+        // 1. 校验今日额度（按 user+product 统计，与现状一致）
+        ensureTodayCapacity(userId, productId, bo.getQuantity(), productName, productUnit);
+
+        // 2. INSERT return_in 流水（带 product_id + plot_id 源标签，warehouse_id=首篮库位）
+        StockFlow flow = new StockFlow();
+        flow.setFlowNo(generateFlowNo(INOUT_IN));
+        flow.setFlowDate(new Date());
+        flow.setProductId(productId);
+        flow.setPlotId(plotId);
+        flow.setWarehouseId(firstLocId);
+        flow.setInoutType(INOUT_IN);
+        flow.setFlowType(FLOW_RETURN_IN);
+        flow.setChangeNum(bo.getQuantity());
+        flow.setChangeQuantity(bo.getQuantity());
+        flow.setOperatorId(userId);
+        flow.setRemark(bo.getRemark());
+        flow.setProofOssIds(bo.getProofOssIds());
+        stockFlowMapper.insert(flow);
+
+        // 3. 回补地块 FIFO 首篮（地块级总量守恒，mp 当一张卡）+ 减今天该地块待打包 inhouse
+        locationStockMapper.addStockById(firstBasket.getId(), bo.getQuantity(), userId);
+        reduceTodayInhouseForBasket(productId, null, plotId, bo.getQuantity());
 
         return flow.getId();
     }
@@ -897,6 +1089,11 @@ public class MatFlowServiceImpl implements IMatFlowService {
         if (basket == null || !"0".equals(basket.getDelFlag())) {
             throw new ServiceException("选中的篮子不存在或已删除（batchId=" + bo.getBatchId() + "）");
         }
+        // 自产果蔬地块卡（batchId = 地块 FIFO 首篮 id）：损耗量按 (productId, plotId) 跨库位 FIFO 扣减整地块，
+        // 不只扣首篮（与领用对称）。
+        if (isVegPlotBasket(basket)) {
+            return lossVegPlot(bo, basket);
+        }
         Long locId = basket.getLocationId();
         // 库位级业务锁（WMS-STOCK-001）：盘点进行中的库位禁出入库（后端双保险）
         stockCheckService.assertLocationUnlocked(locId);
@@ -934,6 +1131,79 @@ public class MatFlowServiceImpl implements IMatFlowService {
         if (affected == 0) {
             log.warn("按篮 loss 流水已记，但选中篮扣减失败（账面已不足）：user={}, batchId={}, qty={}",
                 userId, basket.getId(), bo.getQuantity());
+        }
+
+        return flow.getId();
+    }
+
+    /**
+     * 自产果蔬「地块卡」损耗（{@link #lossByBatch} 识别地块卡后走此）：损耗量按 {@code (productId, plotId)}
+     * 跨库位 FIFO 扣减整个地块、不只首篮（与领用对称）。损耗 = 不可逆消耗、不产 inhouse；
+     * 扣不够（账面已不足）打 warn 不抛（与现状 loss 语义一致，账实倒挂留痕审计）。
+     *
+     * <p>三步同事务：</p>
+     * <ol>
+     *   <li>校验今日额度（按 {@code (user, product)} 统计，与现状一致）；</li>
+     *   <li>INSERT {@code loss} 流水（带 {@code product_id} + {@code plot_id} 源标签，
+     *       {@code warehouse_id} = 首篮库位、{@code change_quantity} = 总损耗量）；</li>
+     *   <li>该地块各库位篮按 id 升序 FIFO 逐篮扣减，扣够即止；扣不够剩余量打 warn 不抛。</li>
+     * </ol>
+     */
+    private Long lossVegPlot(MatLossBo bo, LocationStock firstBasket) {
+        Long productId = firstBasket.getProductId();
+        Long plotId = firstBasket.getPlotId();
+        Long firstLocId = firstBasket.getLocationId();
+        // 库位级业务锁（WMS-STOCK-001）：盘点进行中的首篮库位禁出入库（后端双保险）
+        stockCheckService.assertLocationUnlocked(firstLocId);
+        Long userId = LoginHelper.getUserId();
+
+        ProductInfo product = productInfoMapper.selectById(productId);
+        String productName = product != null ? product.getProductName() : firstBasket.getProductName();
+        String productUnit = product != null ? product.getProductUnit() : firstBasket.getProductUnit();
+
+        // 1. 校验今日额度（按 user+product 统计，与现状一致）
+        ensureTodayCapacity(userId, productId, bo.getQuantity(), productName, productUnit);
+
+        // 2. INSERT loss 流水（带 product_id + plot_id 源标签，warehouse_id=首篮库位、量=总损耗量）
+        StockFlow flow = new StockFlow();
+        flow.setFlowNo(generateFlowNo(INOUT_OUT));
+        flow.setFlowDate(new Date());
+        flow.setProductId(productId);
+        flow.setPlotId(plotId);
+        flow.setWarehouseId(firstLocId);
+        flow.setInoutType(INOUT_OUT);
+        flow.setFlowType(FLOW_LOSS);
+        flow.setChangeNum(bo.getQuantity().negate());
+        flow.setChangeQuantity(bo.getQuantity());
+        flow.setOperatorId(userId);
+        flow.setRemark(bo.getRemark());
+        flow.setProofOssIds(bo.getProofOssIds());
+        stockFlowMapper.insert(flow);
+
+        // 3. 跨库位 FIFO 逐篮扣减（损耗不产 inhouse；扣不够剩余量打 warn 不抛，账实倒挂留痕）
+        List<LocationStock> baskets = locationStockMapper.selectList(
+            new LambdaQueryWrapper<LocationStock>()
+                .eq(LocationStock::getProductId, productId)
+                .eq(LocationStock::getPlotId, plotId)
+                .gt(LocationStock::getProductStock, BigDecimal.ZERO)
+                .orderByAsc(LocationStock::getId));
+        BigDecimal remaining = bo.getQuantity();
+        for (LocationStock b : baskets) {
+            if (remaining.compareTo(BigDecimal.ZERO) <= 0) {
+                break;
+            }
+            BigDecimal take = b.getProductStock().min(remaining);
+            int affected = locationStockMapper.deductStockById(b.getId(), take, userId);
+            if (affected == 0) {
+                // 并发抢占：该篮已被领走 → 跳过该篮
+                continue;
+            }
+            remaining = remaining.subtract(take);
+        }
+        if (remaining.compareTo(BigDecimal.ZERO) > 0) {
+            log.warn("地块卡 loss 流水已记，但库存扣减不足（账面已不足）：user={}, productId={}, plotId={}, "
+                    + "申请损耗 {}, 实扣 {}（差额账面已不足）",
+                userId, productId, plotId, bo.getQuantity(), bo.getQuantity().subtract(remaining));
         }
 
         return flow.getId();
@@ -1192,6 +1462,20 @@ public class MatFlowServiceImpl implements IMatFlowService {
         catch (NumberFormatException e) {
             throw new ServiceException("库位 ID 非法：" + locationId);
         }
+    }
+
+    /**
+     * 解析领用人 user_id：mp 领用弹层选了「领用人」则用所选（代他人领用），否则取当前登录人兜底。
+     *
+     * <p>仅领用（pick）链路用——退回 / 损耗 / 盘点的 operator 仍恒为登录人（无「领用人」字段）。
+     * 写入 {@code stock_flow.operator_id}（审计该领用归属谁），同时也作今日额度统计、库存 update_by 的口径，
+     * 保证「卡上今日已领」「最大可领/退/损」与提交端一致（按选定领用人统计）。</p>
+     *
+     * @param boOperatorId mp 传的领用人 user_id（可空）
+     * @return 领用人 user_id（非空 → 所选；为空 → 当前登录人）
+     */
+    private Long resolveOperatorId(Long boOperatorId) {
+        return boOperatorId != null ? boOperatorId : LoginHelper.getUserId();
     }
 
     /**
