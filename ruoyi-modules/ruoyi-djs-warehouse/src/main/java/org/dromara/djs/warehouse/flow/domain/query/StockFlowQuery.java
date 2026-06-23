@@ -62,6 +62,12 @@ public class StockFlowQuery {
     private String productName;
 
     /**
+     * 商品分类 djs_buy_class 精确匹配（mp 领用记录页「商品分类」筛选；
+     * service 内部并入 product.id 反查集合后作为 productId IN 下推）。
+     */
+    private String buyClass;
+
+    /**
      * 耳号精确匹配。
      */
     private String earNo;

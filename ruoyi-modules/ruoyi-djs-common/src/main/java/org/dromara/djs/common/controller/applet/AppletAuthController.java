@@ -10,6 +10,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.dromara.common.core.domain.R;
 import org.dromara.common.core.domain.model.LoginUser;
 import org.dromara.common.core.exception.ServiceException;
+import org.dromara.common.core.service.PermissionService;
 import org.dromara.common.satoken.utils.LoginHelper;
 import org.dromara.djs.common.constant.DjsAuthConstants;
 import org.dromara.djs.common.domain.bo.WechatBindPhoneBo;
@@ -71,6 +72,15 @@ import java.util.Set;
 public class AppletAuthController {
 
     private final IWechatLoginService wechatLoginService;
+
+    /**
+     * 菜单权限装配（与 ruoyi SysLoginService / WechatLoginServiceImpl 一致）。
+     *
+     * <p>mock 登录也走真 PermissionService 按 userId 读 DB 菜单权限，替代历史 {@code *:*:*} 通配——
+     * 通配会掩盖按板块差异化授权（DJS-PERM-BOARD-001），导致 dev 账号测不出越权 403。mock 账号
+     * userId（9001 / 9100-9109 / 1）均已 seed sys_user + sys_user_role，能解析到真实角色权限。</p>
+     */
+    private final PermissionService permissionService;
 
     /**
      * 是否启用 mock 账号密码登录。
@@ -186,8 +196,10 @@ public class AppletAuthController {
     /**
      * 构造 mock LoginUser（loginId / tenantId / userType / roles 与 ruoyi sys_user 对齐）。
      *
-     * <p>菜单权限给 {@code *:*:*} 全通过，便于联调时所有 /djs/* 端点不被 @SaCheckPermission 拦。
-     * 生产模式下 mock 路径自动失效（authMockEnabled=false），不会走到此方法。</p>
+     * <p>菜单权限走真 {@link PermissionService#getMenuPermission(Long)} 按 userId 读 DB，与真微信登录
+     * （{@code WechatLoginServiceImpl.issueToken}）一致，使 dev mock 账号也受按板块差异化授权约束、能在
+     * dev 测出越权 403。rolePermission 仍用 MOCK_ACCOUNTS 显式 roles（板块映射 UserBoardController 读它，
+     * 保持既有行为）。生产模式下 mock 路径自动失效（authMockEnabled=false），不会走到此方法。</p>
      */
     private LoginUser buildMockLoginUser(Long userId, String username, String nickname, Set<String> roles) {
         LoginUser u = new LoginUser();
@@ -197,7 +209,7 @@ public class AppletAuthController {
         u.setTenantId(DjsAuthConstants.DEFAULT_FARM_ID);
         u.setUserType("sys_user");
         u.setRolePermission(roles);
-        u.setMenuPermission(Set.of("*:*:*"));
+        u.setMenuPermission(permissionService.getMenuPermission(userId));
         u.setDeptId(100L);
         u.setDeptName("东角山农场");
         return u;

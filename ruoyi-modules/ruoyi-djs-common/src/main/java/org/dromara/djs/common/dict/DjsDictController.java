@@ -20,7 +20,7 @@ import org.springframework.web.bind.annotation.RestController;
  * 本 controller 不重新实现 CRUD。</p>
  *
  * <p>授权：{@link SaIgnore} 免登录。dict 是公开元数据（小程序 App.vue onLaunch 在用户登录前就需要同步），
- * 与 {@code WechatLoginController} / {@code AppletAuthController#wxLogin} 同属"启动期 / 登录前"端点。</p>
+ * 与 {@code AppletAuthController#wxLogin} 同属"启动期 / 登录前"端点。</p>
  *
  * @author djs
  * @since SYS-INFRA-005

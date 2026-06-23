@@ -169,10 +169,13 @@ public class StockFlowServiceImpl
         if (query == null) {
             return w.orderByDesc(StockFlow::getId);
         }
-        // matType / productName → 反查 product.id 集合（两者取交集下推 productId IN）
-        if (StringUtils.isNotBlank(query.getMatType()) || StringUtils.isNotBlank(query.getProductName())) {
+        // matType / productName / buyClass → 反查 product.id 集合（三者取交集下推 productId IN）
+        if (StringUtils.isNotBlank(query.getMatType())
+            || StringUtils.isNotBlank(query.getProductName())
+            || StringUtils.isNotBlank(query.getBuyClass())) {
             LambdaQueryWrapper<ProductInfo> pw = new LambdaQueryWrapper<>();
             pw.eq(StringUtils.isNotBlank(query.getMatType()), ProductInfo::getBelongType, query.getMatType())
+                .eq(StringUtils.isNotBlank(query.getBuyClass()), ProductInfo::getBuyClass, query.getBuyClass())
                 .like(StringUtils.isNotBlank(query.getProductName()), ProductInfo::getProductName, query.getProductName());
             List<ProductInfo> products = productInfoMapper.selectList(pw);
             if (products.isEmpty()) {
@@ -240,6 +243,7 @@ public class StockFlowServiceImpl
                 vo.setProductCode(p.getProductId());  // 业务码
                 vo.setBelongType(p.getBelongType());
                 vo.setProductUnit(p.getProductUnit());
+                vo.setBuyClass(p.getBuyClass());      // 商品分类（mp 领用记录卡展示 + 筛选）
             }
         }
         // 2. locations

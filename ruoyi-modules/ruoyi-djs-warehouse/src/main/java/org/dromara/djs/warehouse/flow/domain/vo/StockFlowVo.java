@@ -71,6 +71,12 @@ public class StockFlowVo implements Serializable {
     private String productUnit;
 
     /**
+     * 商品分类 djs_buy_class（service JOIN 回填，mp 领用记录卡展示「商品分类」+ 商品分类筛选）。
+     */
+    @ExcelProperty(value = "商品分类")
+    private String buyClass;
+
+    /**
      * 库位 ID（DDL 列名 warehouse_id，实为 location FK；详 {@link StockFlow#warehouseId}）。
      */
     private Long warehouseId;

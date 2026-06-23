@@ -7,7 +7,7 @@ import org.dromara.djs.common.domain.vo.WechatLoginVo;
 /**
  * 微信小程序登录服务。
  *
- * <p>本接口暴露 2 个端点的核心业务能力，由 {@link org.dromara.djs.common.controller.WechatLoginController}
+ * <p>本接口暴露 2 个端点的核心业务能力，由 {@link org.dromara.djs.common.controller.applet.AppletAuthController}
  * 调用：</p>
  * <ol>
  *   <li>{@link #wechatLogin(WechatLoginBo)} — 凭 code 拿 openid，命中 sys_user.wx_openid 则颁 token；

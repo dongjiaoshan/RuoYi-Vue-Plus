@@ -539,20 +539,21 @@ public class PigBurnRecordServiceImpl
     private static final Integer PRODUCT_WORKSHOP_BURN = 1;
 
     /**
-     * 燎毛入库产品类型列表（admin 产品配置驱动）：product_workshop=1 燎毛间 + belong_type='white_bar'
-     * + product_status=0 正常（排除停用）+ product_attr=2 原材料，按业务码升序。
+     * 燎毛入库产品类型列表（admin 产品配置驱动）：product_workshop=1 燎毛间 + product_status=0 正常
+     * （排除停用）+ product_attr=2 原材料，按业务码升序。
      *
-     * <p>口径（Kevin 2026-06-19 拍板）：燎毛产出的白条是下游分割/打包的<b>原材料</b>，只取
-     * {@code product_attr=2}；{@code product_attr=1} 生产产品 = 对外打包后的成品，不在燎毛入库。
-     * 标准 4 类型（整只/半只/猪头/猪蹄，业务码前缀 PROD-WHITE-BAR-）经 seed 修正为原材料后命中本条件；
-     * 用户在 admin 自建的白条须配「产品属性=原材料」才进此列表，{@link #resolveProductType} 对非标准码返 null，
-     * 前端回落按名称判类别。</p>
+     * <p>口径（Kevin 2026-06-23 拍板）：燎毛间入库 = admin 产品配置里「生产车间=燎毛间 + 产品属性=原材料
+     * + 状态=正常」的所有产品，<b>不再额外限 belong_type='white_bar'</b>——否则会漏掉配在燎毛间的非白条
+     * 原材料（如 GF0002 五花肉 belong_type='pork'，是燎毛间原材料但被 white_bar 过滤误挡）。</p>
+     *
+     * <p>只取 {@code product_attr=2}（原材料）；{@code product_attr=1} 生产产品 = 对外打包后的成品，
+     * 不在燎毛入库。标准白条（整只/半只，业务码前缀 PROD-WHITE-BAR-）+ 其它配在燎毛间的原材料都进；
+     * {@link #resolveProductType} 对非标准码返 null，前端回落按名称判类别。</p>
      */
     private List<ProductInfo> loadWhiteBarTypes() {
         return productInfoMapper.selectList(
             new LambdaQueryWrapper<ProductInfo>()
                 .eq(ProductInfo::getProductWorkshop, PRODUCT_WORKSHOP_BURN)
-                .eq(ProductInfo::getBelongType, WHITE_BAR_BELONG_TYPE)
                 .eq(ProductInfo::getProductStatus, PRODUCT_STATUS_NORMAL)
                 .eq(ProductInfo::getProductAttr, PRODUCT_ATTR_RAW_MATERIAL)
                 .orderByAsc(ProductInfo::getProductId));

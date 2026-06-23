@@ -14,7 +14,7 @@ import java.io.Serializable;
  *   2) 未命中 → 返 BIZ_CODE_WECHAT_NEED_BIND（40001）+ 携 openid 给前端走 bind-phone 流程。
  *
  * @author djs
- * @see org.dromara.djs.common.controller.WechatLoginController#login
+ * @see org.dromara.djs.common.controller.applet.AppletAuthController#wxLogin
  */
 @Data
 public class WechatLoginBo implements Serializable {
