@@ -5,6 +5,7 @@ import org.apache.ibatis.annotations.Select;
 import org.dromara.common.mybatis.core.mapper.BaseMapperPlus;
 import org.dromara.djs.warehouse.veg.domain.FeedLog;
 import org.dromara.djs.warehouse.veg.domain.vo.FeedDailyStatVo;
+import org.dromara.djs.warehouse.veg.domain.vo.FeedLogVo;
 
 import java.util.Date;
 import java.util.List;
@@ -46,5 +47,36 @@ public interface FeedLogMapper extends BaseMapperPlus<FeedLog, FeedLog> {
     List<FeedDailyStatVo> selectDailyStat(@Param("tenantId") String tenantId,
                                           @Param("startDate") Date startDate,
                                           @Param("endDate") Date endDate);
+
+    /**
+     * 按产品取饲喂明细（库存查询详情「饲料饲喂记录」tab，行57；仅果蔬原材料产品显示该 tab）。
+     *
+     * <p>LEFT JOIN {@code t_warehouse_location_info} 回填库位名（饲喂位置）；自定义 @Select 的
+     * WHERE 显式带 {@code tenant_id}（拦截器对自定义 SQL 不保证注入）。按饲喂时间倒序。</p>
+     *
+     * @param tenantId  租户（V1 固定 '1001'）
+     * @param productId 产品 ID（FK → product_info.id）
+     * @param dateFrom  起始时间（含，可空）
+     * @param dateTo    截止时间（含，可空）
+     * @return 该产品饲喂明细（按饲喂时间倒序）
+     */
+    @Select("""
+        <script>
+        SELECT fl.id, fl.feed_date AS feedDate, fl.product_id AS productId,
+               fl.location_id AS locationId, l.location_name AS locationName,
+               fl.feed_weight AS feedWeight, fl.operator_id AS operatorId, fl.remark
+        FROM t_warehouse_feed_log fl
+        LEFT JOIN t_warehouse_location_info l
+          ON l.id = fl.location_id AND l.del_flag = '0'
+        WHERE fl.del_flag = '0' AND fl.tenant_id = #{tenantId} AND fl.product_id = #{productId}
+        <if test="dateFrom != null"> AND fl.feed_date &gt;= #{dateFrom} </if>
+        <if test="dateTo != null"> AND fl.feed_date &lt;= #{dateTo} </if>
+        ORDER BY fl.feed_date DESC, fl.id DESC
+        </script>
+        """)
+    List<FeedLogVo> selectByProduct(@Param("tenantId") String tenantId,
+                                    @Param("productId") Long productId,
+                                    @Param("dateFrom") Date dateFrom,
+                                    @Param("dateTo") Date dateTo);
 
 }

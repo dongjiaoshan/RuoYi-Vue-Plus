@@ -121,4 +121,30 @@ public class MatIssueItemVo implements Serializable {
      */
     private String plotCode;
 
+    /**
+     * 库位名称（admin「生产物资领用」WMS-MATPICK-ADMIN-001 回填；mp 端点不回填即 null）。
+     *
+     * <p>admin 列表以 {@code location_stock} 行粒度展示（产品编码 / 库位 / 产品名 / 当前库存 / 单位 / 耳号 /
+     * 地块编号 / 今日四量），故需库位名列。{@code selectAdminMatIssueRows} LEFT JOIN
+     * {@code t_warehouse_location_info} 取 {@code location_name} 回填。</p>
+     */
+    private String locationName;
+
+    /**
+     * 耳号（admin「生产物资领用」WMS-MATPICK-ADMIN-001 回填；猪肉分割原料按耳号建账时非空，其余 null）。
+     *
+     * <p>additive 字段：mp 既有端点（{@code selectMatIssueItems} 等按 product 聚合）不回填本字段，
+     * 仅 admin 行粒度列表 {@code selectAdminMatIssueRows} 回填。前端按 string 处理（无截断风险，业务码）。</p>
+     */
+    private String earNo;
+
+    /**
+     * 当前登录人（admin 全人）今日饲喂（feed_out SUM；行55 果蔬产品「饲料饲喂」操作驱动）。
+     *
+     * <p>additive 字段：mp 既有端点不回填（默认 null / 0）；admin 行粒度列表
+     * {@code selectAdminMatIssueRows} 子查询今日 {@code stock_flow flow_type='feed_out'} 当日 SUM
+     * （不按 operator 过滤，admin 看全部人）。果蔬业态才有饲喂操作，其余业态恒 0。</p>
+     */
+    private BigDecimal todayFeed;
+
 }

@@ -93,6 +93,8 @@ class PigCutRecordServiceImplTest {
     private org.dromara.djs.common.image.service.ImageUrlResolver imageUrlResolver;
     @Mock
     private org.dromara.djs.warehouse.check.service.IStockCheckService stockCheckService;
+    @Mock
+    private org.dromara.djs.warehouse.loss.service.ILossFlowService lossFlowService;
 
     private TestablePigCutRecordServiceImpl service;
 
@@ -111,8 +113,9 @@ class PigCutRecordServiceImplTest {
                                         IBizCodeGenerator g,
                                         org.dromara.djs.warehouse.trace.service.ITraceService ts,
                                         org.dromara.djs.common.image.service.ImageUrlResolver ir,
-                                        org.dromara.djs.warehouse.check.service.IStockCheckService scs) {
-            super(c, b, f, p, ph, l, ls, s, g, ts, ir, scs);
+                                        org.dromara.djs.warehouse.check.service.IStockCheckService scs,
+                                        org.dromara.djs.warehouse.loss.service.ILossFlowService lf) {
+            super(c, b, f, p, ph, l, ls, s, g, ts, ir, scs, lf);
         }
 
         @Override
@@ -141,7 +144,7 @@ class PigCutRecordServiceImplTest {
     @BeforeEach
     void setup() {
         service = new TestablePigCutRecordServiceImpl(
-            cutMapper, barInfoMapper, flowMapper, productInfoMapper, productInhouseMapper, locationInfoMapper, locationStockMapper, supplierMapper, bizCodeGenerator, traceService, imageUrlResolver, stockCheckService);
+            cutMapper, barInfoMapper, flowMapper, productInfoMapper, productInhouseMapper, locationInfoMapper, locationStockMapper, supplierMapper, bizCodeGenerator, traceService, imageUrlResolver, stockCheckService, lossFlowService);
         loginHelperMock = Mockito.mockStatic(LoginHelper.class);
         loginHelperMock.when(LoginHelper::getUserId).thenReturn(9001L);
     }

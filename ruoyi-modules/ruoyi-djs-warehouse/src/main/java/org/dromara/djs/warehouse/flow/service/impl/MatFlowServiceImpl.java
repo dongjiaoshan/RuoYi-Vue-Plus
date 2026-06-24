@@ -11,6 +11,7 @@ import org.dromara.djs.warehouse.check.service.IStockCheckService;
 import org.dromara.djs.warehouse.cross.domain.vo.TodayBarVo;
 import org.dromara.djs.warehouse.cross.mapper.BarInfoMapper;
 import org.dromara.djs.warehouse.flow.domain.StockFlow;
+import org.dromara.djs.warehouse.flow.domain.bo.MatFeedBo;
 import org.dromara.djs.warehouse.flow.domain.bo.MatLossBo;
 import org.dromara.djs.warehouse.flow.domain.bo.MatPickBo;
 import org.dromara.djs.warehouse.flow.domain.bo.MatReturnBo;
@@ -21,6 +22,9 @@ import org.dromara.djs.warehouse.flow.domain.vo.MatTodaySummaryVo;
 import org.dromara.djs.warehouse.flow.domain.vo.MatWhiteBarBatchVo;
 import org.dromara.djs.warehouse.flow.mapper.StockFlowMapper;
 import org.dromara.djs.warehouse.flow.service.IMatFlowService;
+import org.dromara.djs.warehouse.loss.service.ILossFlowService;
+import org.dromara.djs.warehouse.veg.domain.FeedLog;
+import org.dromara.djs.warehouse.veg.mapper.FeedLogMapper;
 import org.dromara.djs.plant.crop.domain.CropInfo;
 import org.dromara.djs.plant.crop.mapper.CropInfoMapper;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
@@ -132,6 +136,16 @@ public class MatFlowServiceImpl implements IMatFlowService {
     private static final String FLOW_LOSS = "loss";
 
     /**
+     * 仓库饲喂出库 flow_type（djs_flow_type 现有值 V202607240800；行64 来源②仓库领用饲喂 / 行55 果蔬饲喂操作）。
+     */
+    private static final String FLOW_FEED_OUT = "feed_out";
+
+    /**
+     * 仓库饲喂来源（feed_log.feed_type 字典 djs_feed_type）：仓库领用饲喂。
+     */
+    private static final String FEED_TYPE_WAREHOUSE = "warehouse";
+
+    /**
      * 可打包食品原料业态（统一目标模型 2026-06-20）：领用其 attr=2 原料时产 product_inhouse 当打包来源。
      *
      * <p>pork / white_bar 走各自篮子路径（ear_no）已产 inhouse、不经 {@link #bridgeMaterialInhouse}；
@@ -170,6 +184,8 @@ public class MatFlowServiceImpl implements IMatFlowService {
     private final IBizCodeGenerator bizCodeGenerator;
     private final IStockCheckService stockCheckService;
     private final ImageUrlResolver imageUrlResolver;
+    private final ILossFlowService lossFlowService;
+    private final FeedLogMapper feedLogMapper;
 
     public MatFlowServiceImpl(StockFlowMapper stockFlowMapper,
                               LocationStockMapper locationStockMapper,
@@ -180,7 +196,9 @@ public class MatFlowServiceImpl implements IMatFlowService {
                               BarInfoMapper barInfoMapper,
                               IBizCodeGenerator bizCodeGenerator,
                               IStockCheckService stockCheckService,
-                              ImageUrlResolver imageUrlResolver) {
+                              ImageUrlResolver imageUrlResolver,
+                              ILossFlowService lossFlowService,
+                              FeedLogMapper feedLogMapper) {
         this.stockFlowMapper = stockFlowMapper;
         this.locationStockMapper = locationStockMapper;
         this.locationInfoMapper = locationInfoMapper;
@@ -191,6 +209,8 @@ public class MatFlowServiceImpl implements IMatFlowService {
         this.bizCodeGenerator = bizCodeGenerator;
         this.stockCheckService = stockCheckService;
         this.imageUrlResolver = imageUrlResolver;
+        this.lossFlowService = lossFlowService;
+        this.feedLogMapper = feedLogMapper;
     }
 
     @Override
@@ -1173,6 +1193,57 @@ public class MatFlowServiceImpl implements IMatFlowService {
                 userId, bo.getProductId(), bo.getLocationId(), bo.getQuantity());
         }
 
+        // 4. 统一损耗台账双写（WMS-LOSS-001，行59 录入损耗）：原 stock_flow 留痕不动，仅追加一条 loss_flow 明细。
+        lossFlowService.record("manual_loss", bo.getProductId(), bo.getQuantity(),
+            bo.getLocationId(), userId, "mat", null, flow.getId());
+
+        return flow.getId();
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public Long feed(MatFeedBo bo) {
+        ProductInfo product = requireProduct(bo.getProductId());
+        // 库位级业务锁（WMS-STOCK-001）：盘点进行中的库位禁出入库（后端双保险）
+        stockCheckService.assertLocationUnlocked(bo.getLocationId());
+        Long userId = LoginHelper.getUserId();
+
+        // 1. INSERT stock_flow（feed_out 出库）
+        StockFlow flow = new StockFlow();
+        flow.setFlowNo(generateFlowNo(INOUT_OUT));
+        flow.setFlowDate(new Date());
+        flow.setProductId(bo.getProductId());
+        flow.setWarehouseId(bo.getLocationId());
+        flow.setInoutType(INOUT_OUT);
+        flow.setFlowType(FLOW_FEED_OUT);
+        flow.setChangeNum(bo.getQuantity().negate());
+        flow.setChangeQuantity(bo.getQuantity());
+        flow.setOperatorId(userId);
+        flow.setRemark(bo.getRemark());
+        flow.setProofOssIds(bo.getProofOssIds());
+        stockFlowMapper.insert(flow);
+
+        // 2. 扣库存（饲喂 = 不可逆消耗，同 loss 语义）：affected==0 打 warn 不抛（账实倒挂留痕，
+        //    工人可能消耗完才补登，与 loss() 一致）。
+        int affected = locationStockMapper.deductByProductLocation(
+            bo.getLocationId(), bo.getProductId(), bo.getQuantity(), userId);
+        if (affected == 0) {
+            log.warn("warehouse feed 流水已记，但 location_stock 扣减失败（账面已不足）："
+                    + "user={}, product={}, location={}, qty={}",
+                userId, bo.getProductId(), bo.getLocationId(), bo.getQuantity());
+        }
+
+        // 3. 写饲喂台账 feed_log（feed_type='warehouse'，行64 来源②）：crop_id/cropName 仓库领用饲喂无作物维度，留空。
+        FeedLog feedLog = new FeedLog();
+        feedLog.setFeedDate(java.sql.Date.valueOf(LocalDate.now()));
+        feedLog.setFeedType(FEED_TYPE_WAREHOUSE);
+        feedLog.setProductId(bo.getProductId());
+        feedLog.setLocationId(bo.getLocationId());
+        feedLog.setOperatorId(userId);
+        feedLog.setFeedWeight(bo.getQuantity());
+        feedLog.setRemark(bo.getRemark());
+        feedLogMapper.insert(feedLog);
+
         return flow.getId();
     }
 
@@ -1235,6 +1306,9 @@ public class MatFlowServiceImpl implements IMatFlowService {
             log.warn("按篮 loss 流水已记，但选中篮扣减失败（账面已不足）：user={}, batchId={}, qty={}",
                 userId, basket.getId(), bo.getQuantity());
         }
+
+        // 统一损耗台账双写（WMS-LOSS-001，行59 录入损耗）：productId 走篮的 product_id、locationId 走篮的库位。
+        lossFlowService.record("manual_loss", productId, bo.getQuantity(), locId, userId, "mat", null, flow.getId());
 
         return flow.getId();
     }
@@ -1308,6 +1382,9 @@ public class MatFlowServiceImpl implements IMatFlowService {
                     + "申请损耗 {}, 实扣 {}（差额账面已不足）",
                 userId, productId, plotId, bo.getQuantity(), bo.getQuantity().subtract(remaining));
         }
+
+        // 统一损耗台账双写（WMS-LOSS-001，行59 录入损耗）：productId 走地块卡 product_id、locationId 走首篮库位。
+        lossFlowService.record("manual_loss", productId, bo.getQuantity(), firstLocId, userId, "mat", null, flow.getId());
 
         return flow.getId();
     }

@@ -20,6 +20,8 @@ import org.dromara.djs.warehouse.flow.domain.StockFlow;
 import org.dromara.djs.warehouse.flow.mapper.StockFlowMapper;
 import org.dromara.djs.warehouse.location.domain.LocationInfo;
 import org.dromara.djs.warehouse.location.mapper.LocationInfoMapper;
+import org.dromara.djs.warehouse.loss.domain.LossFlow;
+import org.dromara.djs.warehouse.loss.service.ILossFlowService;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
 import org.dromara.djs.warehouse.stock.domain.LocationStock;
@@ -75,8 +77,10 @@ import java.util.stream.Collectors;
  * 由 {@link VegetableHandleMapper#selectByPlantingRecordId} + 事务隔离保证。</p>
  *
  * <h3>损耗计算</h3>
- * <p>{@code loss = picked - handled}（客户 2026-06-20 口径：损耗 = 采摘 − 处理，饲料去向③不算「已处理」、计入损耗）。
- * 仅在「处理完成」(is_finish=1) 时结算，未完成损耗恒 0。负值取 0 并 WARN log。</p>
+ * <p>{@code loss = picked - stockIn - sendPlatform - feed}（行59 口径：毛菜处理损耗 = 毛菜间称重总重 −
+ * 鲜品库入库重 − 发往月台重 − 饲料饲喂重）。仅在「处理完成」(is_finish=1) 时结算，未完成损耗恒 0；
+ * 负值取 0 并 WARN log。结算时在 {@code loss_weight} 列之上双写一条统一损耗台账
+ * {@code t_warehouse_loss_flow}（loss_type=veg_handle_loss，WMS-LOSS-001）。</p>
  *
  * @author djs
  * @since WMS-VEG-001
@@ -141,6 +145,8 @@ public class VegetableHandleServiceImpl
     private final LocationStockMapper locationStockMapper;
     /** 产品 mapper：入库前校验解析出的 product_id 真实存在（不存在则跳过余额、不建孤儿行）。 */
     private final ProductInfoMapper productInfoMapper;
+    /** 统一损耗门面：处理完成结算损耗时在原 loss_weight 列之上双写一条 t_warehouse_loss_flow 明细。 */
+    private final ILossFlowService lossFlowService;
 
     /**
      * 作物图 L2 兜底分类键（作物无 belong_type，统一走"蔬菜默认图"）。
@@ -158,7 +164,8 @@ public class VegetableHandleServiceImpl
                                       FeedLogMapper feedLogMapper,
                                       PlantDetailsMapper plantDetailsMapper,
                                       LocationStockMapper locationStockMapper,
-                                      ProductInfoMapper productInfoMapper) {
+                                      ProductInfoMapper productInfoMapper,
+                                      ILossFlowService lossFlowService) {
         super(baseMapper);
         this.handleRecordMapper = handleRecordMapper;
         this.plantingRecordMapper = plantingRecordMapper;
@@ -171,6 +178,7 @@ public class VegetableHandleServiceImpl
         this.plantDetailsMapper = plantDetailsMapper;
         this.locationStockMapper = locationStockMapper;
         this.productInfoMapper = productInfoMapper;
+        this.lossFlowService = lossFlowService;
     }
 
     /**
@@ -300,8 +308,11 @@ public class VegetableHandleServiceImpl
         }
 
         // 序号9-Req1：仅「处理完成」(is_finish=1) 才结算损耗，未完成损耗恒 0（客户 2026-06-20）
+        // 行59 新口径：损耗 = 称重总重 − 入库 − 月台 − 饲料
         boolean recordDone = bo.getIsFinish() != null && bo.getIsFinish() == 1;
-        BigDecimal loss = recordDone ? recomputeLoss(picked, handled, handle.getId()) : BigDecimal.ZERO;
+        BigDecimal loss = recordDone
+            ? recomputeLoss(picked, stockIn, sendPlatform, feed, handle.getId())
+            : BigDecimal.ZERO;
 
         delta.setId(handle.getId());
         delta.setPickedWeight(picked);
@@ -453,15 +464,19 @@ public class VegetableHandleServiceImpl
     }
 
     /**
-     * 重算损耗 {@code loss = picked - handled}（客户 2026-06-20 口径：损耗 = 采摘录入重量之和 − 果蔬处理重量之和，
-     * 饲料去向不算「已处理」，故饲料量计入损耗）。仅在「处理完成」时由调用方决定是否结算（未完成损耗恒 0）。
-     * 负值归零并 WARN，结果保留 3 位。
+     * 重算损耗 {@code loss = picked - stockIn - sendPlatform - feed}（行59 新口径：
+     * 毛菜处理损耗 = 毛菜间称重总重 − 鲜品库入库重 − 发往月台重 − 饲料饲喂重）。
+     * 仅在「处理完成」时由调用方决定是否结算（未完成损耗恒 0）。负值归零并 WARN，结果保留 3 位。
      */
-    private BigDecimal recomputeLoss(BigDecimal picked, BigDecimal handled, Long handleId) {
-        BigDecimal loss = picked.subtract(handled);
+    private BigDecimal recomputeLoss(BigDecimal picked, BigDecimal stockIn,
+                                     BigDecimal sendPlatform, BigDecimal feed, Long handleId) {
+        BigDecimal loss = nullSafe(picked)
+            .subtract(nullSafe(stockIn))
+            .subtract(nullSafe(sendPlatform))
+            .subtract(nullSafe(feed));
         if (loss.signum() < 0) {
-            log.warn("loss_weight 负值（picked={} handled={}），归零处理 handleId={}",
-                picked, handled, handleId);
+            log.warn("loss_weight 负值（picked={} stockIn={} sendPlatform={} feed={}），归零处理 handleId={}",
+                picked, stockIn, sendPlatform, feed, handleId);
             loss = BigDecimal.ZERO;
         }
         return loss.setScale(3, RoundingMode.HALF_UP);
@@ -739,8 +754,11 @@ public class VegetableHandleServiceImpl
             feed = feed.add(weight);
         }
 
-        // 序号9-Req1：仅「处理完成」(is_finish=1) 才结算损耗（= 采摘 − 处理），未完成损耗恒 0（客户 2026-06-20）
-        BigDecimal loss = processDone ? recomputeLoss(picked, handled, handle.getId()) : BigDecimal.ZERO;
+        // 序号9-Req1：仅「处理完成」(is_finish=1) 才结算损耗，未完成损耗恒 0（客户 2026-06-20）
+        // 行59 新口径：损耗 = 称重总重 − 入库 − 月台 − 饲料
+        BigDecimal loss = processDone
+            ? recomputeLoss(picked, stockIn, sendPlatform, feed, handle.getId())
+            : BigDecimal.ZERO;
 
         VegetableHandle delta = new VegetableHandle();
         delta.setId(handle.getId());
@@ -762,7 +780,23 @@ public class VegetableHandleServiceImpl
         if (handleTarget == HANDLE_TARGET_STOCK_IN) {
             insertVegStockInFlow(handle, planting, stockInLocationId, weight, userId, now);
         } else if (handleTarget == HANDLE_TARGET_FEED) {
-            insertFeedLog(planting, weight, now);
+            insertFeedLog(planting, weight, userId, now);
+        }
+
+        // Step 6.1：处理完成结算时在 loss_weight 列之上双写统一损耗台账（行59 WMS-LOSS-001）。
+        // productId 经 crop→related_product 反解（拿不到传 null）；门面对 loss<=0 自动跳过。
+        if (processDone && loss.signum() > 0) {
+            LossFlow lossFlow = new LossFlow();
+            lossFlow.setLossType("veg_handle_loss");
+            lossFlow.setLossWeight(loss);
+            lossFlow.setProductId(resolveProductIdByCrop(
+                planting.getCropId(), firstNonNull(handle.getProductId(), planting.getProductId())));
+            lossFlow.setPlotId(planting.getPlotId());
+            lossFlow.setBelongType(CROP_BELONG_TYPE);
+            lossFlow.setSourceBizType("veg_handle");
+            lossFlow.setSourceBizId(handle.getId());
+            lossFlow.setOperatorId(userId);
+            lossFlowService.record(lossFlow);
         }
 
         // Step 7：同步 planting_record.handle_status
@@ -782,12 +816,18 @@ public class VegetableHandleServiceImpl
      * 去向③饲料饲喂 → 插入饲料台账（{@code t_warehouse_feed_log}，spec 步8）。
      *
      * <p>按自然日 × 作物品类记录重量，{@code 不记录地块编号}（无 plot_id）。tenant_id 走 MP 自动 fill。</p>
+     *
+     * <p>行64 来源①「毛菜间」：feed_type=veg_handle；productId 经 crop→related_product 反解（可空）；
+     * operatorId = 当前处理操作人。</p>
      */
-    private void insertFeedLog(PlantingRecord planting, BigDecimal weight, Date now) {
+    private void insertFeedLog(PlantingRecord planting, BigDecimal weight, Long operatorId, Date now) {
         FeedLog feedLog = new FeedLog();
         feedLog.setFeedDate(now);
         feedLog.setCropId(planting.getCropId());
         feedLog.setCropName(planting.getCropName());
+        feedLog.setFeedType("veg_handle");
+        feedLog.setProductId(resolveProductIdByCrop(planting.getCropId(), planting.getProductId()));
+        feedLog.setOperatorId(operatorId);
         feedLog.setFeedWeight(weight);
         feedLogMapper.insert(feedLog);
     }

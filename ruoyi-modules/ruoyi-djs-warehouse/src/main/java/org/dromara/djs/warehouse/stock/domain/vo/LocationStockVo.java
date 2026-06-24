@@ -89,6 +89,19 @@ public class LocationStockVo implements Serializable {
     private Long medicineId;
 
     /**
+     * 业态归属（字典 {@code djs_belong_type}；service JOIN product_info 回填）。
+     * 库存详情「饲料饲喂记录」tab 仅当 {@code belongType='vegetable' && productAttr==2} 显示。
+     */
+    @ExcelProperty(value = "产品类别")
+    private String belongType;
+
+    /**
+     * 产品属性（{@code 1 生产产品 / 2 原材料}；service JOIN product_info 回填）。
+     */
+    @ExcelProperty(value = "产品属性")
+    private Integer productAttr;
+
+    /**
      * 产品名称。
      */
     @ExcelProperty(value = "产品名称")

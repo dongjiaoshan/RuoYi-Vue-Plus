@@ -1,5 +1,6 @@
 package org.dromara.djs.warehouse.flow.service;
 
+import org.dromara.djs.warehouse.flow.domain.bo.MatFeedBo;
 import org.dromara.djs.warehouse.flow.domain.bo.MatLossBo;
 import org.dromara.djs.warehouse.flow.domain.bo.MatPickBo;
 import org.dromara.djs.warehouse.flow.domain.bo.MatReturnBo;
@@ -43,6 +44,16 @@ public interface IMatFlowService {
      * @return 新增 stock_flow 主键 id
      */
     Long loss(MatLossBo bo);
+
+    /**
+     * 仓库饲料饲喂（出库，行64 来源②仓库领用饲喂 / 行55 果蔬产品「饲料饲喂」操作）。
+     *
+     * <p>同事务：INSERT stock_flow(flow_type='feed_out') + 扣 location_stock（不可逆消耗，账面不足打 warn 不抛）
+     * + INSERT t_warehouse_feed_log(feed_type='warehouse')。</p>
+     *
+     * @return 新增 stock_flow 主键 id
+     */
+    Long feed(MatFeedBo bo);
 
     /**
      * 当前登录人今日已领 / 已退 / 已损汇总。

@@ -843,4 +843,95 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
                                                    @Param("locationId") Long locationId,
                                                    @Param("userId") Long userId);
 
+    /**
+     * admin「生产物资领用」行粒度列表（WMS-MATPICK-ADMIN-001，行55 admin 镜像）。
+     *
+     * <p>与 mp {@link #selectMatIssueItems}（按 product 聚合成卡 + 当前登录人今日三量）口径不同：</p>
+     * <ul>
+     *   <li><b>行粒度</b> = {@code location_stock} 行（一个产品在多库位 / 多耳号 / 多地块 → 各出一行），
+     *       admin 列表列「产品编码 / 库位 / 产品名 / 当前库存 / 单位 / 耳号 / 地块编号 / 今日四量」，需库位 + 耳号
+     *       + 地块编号到行，故不聚合到 product；</li>
+     *   <li><b>今日四量按全部人</b>（admin 看全部人记录，不按 {@code operator_id} 过滤）：今日已领 / 退 / 损 / 饲喂
+     *       = 该 {@code product_id} 当日 {@code stock_flow} 各 flow_type SUM（与 mp 卡片同口径但去掉 operator 条件）。
+     *       领用覆盖 {@code prod_pick_out / dept_pick_out / pick_out}（三键，FIX-WMS-FLOWDICT-003 拆分）；
+     *       退回覆盖 {@code prod_return_in / pick_return_in}；损耗 {@code loss}；饲喂 {@code feed_out}。</li>
+     * </ul>
+     *
+     * <p>口径细节：</p>
+     * <ul>
+     *   <li>{@code belong_type IN (...)}（tab 业态过滤，后端强制，不在前端 filter）；只列启用产品
+     *       （{@code product_status=0}）+ 仍有库存（{@code product_stock > 0}）的 location_stock 行。</li>
+     *   <li>{@code keyword} 可空：非空时模糊匹配产品名 / 库位名 / 耳号 / 地块编号（admin 搜索栏 4 字段合一）。</li>
+     *   <li>{@code defaultLocationId} = 该行库位（admin 点行进操作弹窗直接用，不再解析默认库位）。</li>
+     *   <li>productThumb 取 {@code COALESCE(product_thumb, image_oss_id)}（service 层 resolver 再回填 url）。</li>
+     * </ul>
+     *
+     * <p>租户单租户显式 {@code tenant_id='1001'}（V1）；snowflake id 由 MyBatis 自动转字符串防截断（VO Long → JSON）。</p>
+     *
+     * @param belongTypes 字典 {@code djs_belong_type} 值列表（如 [pork] / [vegetable] / [package]）
+     * @param keyword     模糊关键字（可空；匹配产品名 / 库位名 / 耳号 / 地块编号）
+     * @return 行粒度待领产品行（按库存升序、产品名）；无则空 list
+     */
+    @Select("""
+        <script>
+        SELECT p.id                              AS productId,
+               p.product_id                      AS productCode,
+               p.product_name                    AS productName,
+               p.product_unit                    AS productUnit,
+               COALESCE(p.product_thumb, p.image_oss_id) AS productThumb,
+               p.belong_type                     AS belongType,
+               s.product_stock                   AS currentStock,
+               s.location_id                     AS defaultLocationId,
+               l.location_name                   AS locationName,
+               s.ear_no                          AS earNo,
+               s.plot_id                         AS plotId,
+               pl.plot_code                      AS plotCode,
+               COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
+                          WHERE f.product_id = p.id
+                            AND f.flow_type IN ('prod_pick_out','dept_pick_out','pick_out')
+                            AND DATE(f.flow_date) = CURDATE()
+                            AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayPicked,
+               COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
+                          WHERE f.product_id = p.id
+                            AND f.flow_type IN ('prod_return_in','pick_return_in')
+                            AND DATE(f.flow_date) = CURDATE()
+                            AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayReturned,
+               COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
+                          WHERE f.product_id = p.id
+                            AND f.flow_type = 'loss' AND DATE(f.flow_date) = CURDATE()
+                            AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayLoss,
+               COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
+                          WHERE f.product_id = p.id
+                            AND f.flow_type = 'feed_out' AND DATE(f.flow_date) = CURDATE()
+                            AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayFeed
+          FROM t_warehouse_location_stock s
+          JOIN t_warehouse_product_info p
+            ON p.id = s.product_id
+           AND p.del_flag = '0'
+           AND p.tenant_id = s.tenant_id
+          LEFT JOIN t_warehouse_location_info l
+            ON l.id = s.location_id
+           AND l.del_flag = '0'
+           AND l.tenant_id = s.tenant_id
+          LEFT JOIN t_plant_plot_info pl
+            ON pl.id = s.plot_id
+           AND pl.del_flag = '0'
+         WHERE s.del_flag       = '0'
+           AND s.tenant_id      = '1001'
+           AND s.product_stock  > 0
+           AND p.product_status = 0
+           AND p.belong_type IN
+           <foreach collection="belongTypes" item="bt" open="(" separator="," close=")">#{bt}</foreach>
+           <if test="keyword != null and keyword != ''">
+             AND (p.product_name LIKE CONCAT('%', #{keyword}, '%')
+               OR l.location_name LIKE CONCAT('%', #{keyword}, '%')
+               OR s.ear_no LIKE CONCAT('%', #{keyword}, '%')
+               OR pl.plot_code LIKE CONCAT('%', #{keyword}, '%'))
+           </if>
+         ORDER BY s.product_stock ASC, p.product_name ASC, s.location_id ASC
+        </script>
+        """)
+    List<MatIssueItemVo> selectAdminMatIssueRows(@Param("belongTypes") List<String> belongTypes,
+                                                 @Param("keyword") String keyword);
+
 }

@@ -13,6 +13,7 @@ import org.dromara.djs.warehouse.location.domain.LocationInfo;
 import org.dromara.djs.warehouse.location.mapper.LocationInfoMapper;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
+import org.dromara.djs.warehouse.loss.service.ILossFlowService;
 import org.dromara.djs.warehouse.stock.domain.LocationStock;
 import org.dromara.djs.warehouse.stock.mapper.LocationStockMapper;
 import org.dromara.djs.warehouse.vegreceive.domain.VegReceive;
@@ -84,6 +85,8 @@ class VegReceiveServiceImplTest {
     private ImageUrlResolver imageUrlResolver;
     @Mock
     private CropInfoMapper cropInfoMapper;
+    @Mock
+    private ILossFlowService lossFlowService;
 
     private VegReceiveServiceImpl service;
 
@@ -93,7 +96,7 @@ class VegReceiveServiceImplTest {
     void setup() {
         service = new VegReceiveServiceImpl(
             vegReceiveMapper, locationStockMapper, locationInfoMapper, stockFlowMapper,
-            productInfoMapper, supplierMapper, bizCodeGenerator, imageUrlResolver, cropInfoMapper);
+            productInfoMapper, supplierMapper, bizCodeGenerator, imageUrlResolver, cropInfoMapper, lossFlowService);
         loginHelperMock = Mockito.mockStatic(LoginHelper.class);
         loginHelperMock.when(LoginHelper::getUserId).thenReturn(9001L);
     }

@@ -305,10 +305,12 @@ public class LocationStockServiceImpl extends DjsBaseServiceImpl<LocationStockMa
     }
 
     /**
-     * 批量回填 {@code productCode}（产品代码 = {@code ProductInfo.productId} 业务码，如 P10002）。
+     * 批量回填 {@code productCode} + {@code belongType} + {@code productAttr}
+     * （均取自产品主数据 {@code t_warehouse_product_info}）。
      *
-     * <p>库存表只存 {@code product_id} FK（Long），产品代码在产品主数据表的业务码列。
-     * 单次 IN 查产品表回填，避免 N+1。库存行 {@code productId} 为空（按耳号 / 地块入库的行）→ productCode 保持 null。</p>
+     * <p>库存表只存 {@code product_id} FK（Long），产品代码/业态/属性在产品主数据表。
+     * 单次 IN 查产品表回填，避免 N+1。库存行 {@code productId} 为空（按耳号 / 地块入库的行）→ 三者保持 null。
+     * {@code belongType + productAttr} 供库存详情「饲料饲喂记录」tab 判定（果蔬原材料才显示）。</p>
      */
     private void fillProductCodes(List<LocationStockVo> records) {
         if (records == null || records.isEmpty()) {
@@ -322,14 +324,18 @@ public class LocationStockServiceImpl extends DjsBaseServiceImpl<LocationStockMa
         if (productIds.isEmpty()) {
             return;
         }
-        Map<Long, String> codeMap = productInfoMapper.selectList(
+        Map<Long, ProductInfo> productMap = productInfoMapper.selectList(
                 new LambdaQueryWrapper<ProductInfo>().in(ProductInfo::getId, productIds))
             .stream()
-            .filter(p -> p.getProductId() != null)
-            .collect(Collectors.toMap(ProductInfo::getId, ProductInfo::getProductId, (a, b) -> a));
+            .collect(Collectors.toMap(ProductInfo::getId, p -> p, (a, b) -> a));
         for (LocationStockVo vo : records) {
             if (vo.getProductId() != null) {
-                vo.setProductCode(codeMap.get(vo.getProductId()));
+                ProductInfo product = productMap.get(vo.getProductId());
+                if (product != null) {
+                    vo.setProductCode(product.getProductId());
+                    vo.setBelongType(product.getBelongType());
+                    vo.setProductAttr(product.getProductAttr());
+                }
             }
         }
     }

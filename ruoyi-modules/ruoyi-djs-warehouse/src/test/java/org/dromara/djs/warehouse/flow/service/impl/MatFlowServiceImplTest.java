@@ -15,6 +15,8 @@ import org.dromara.djs.warehouse.flow.domain.bo.MatReturnBo;
 import org.dromara.djs.warehouse.flow.domain.vo.MatIssueItemVo;
 import org.dromara.djs.warehouse.flow.domain.vo.MatIssueLocationVo;
 import org.dromara.djs.warehouse.flow.mapper.StockFlowMapper;
+import org.dromara.djs.warehouse.loss.service.ILossFlowService;
+import org.dromara.djs.warehouse.veg.mapper.FeedLogMapper;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.domain.ProductInhouse;
 import org.dromara.djs.warehouse.stock.domain.LocationStock;
@@ -85,6 +87,8 @@ class MatFlowServiceImplTest {
     @Mock private IBizCodeGenerator bizCodeGenerator;
     @Mock private IStockCheckService stockCheckService;
     @Mock private ImageUrlResolver imageUrlResolver;
+    @Mock private ILossFlowService lossFlowService;
+    @Mock private FeedLogMapper feedLogMapper;
 
     private MatFlowServiceImpl service;
     private MockedStatic<LoginHelper> loginHelperMock;
@@ -98,7 +102,7 @@ class MatFlowServiceImplTest {
 
     @BeforeEach
     void setup() {
-        service = new MatFlowServiceImpl(stockFlowMapper, locationStockMapper, locationInfoMapper, productInfoMapper, productInhouseMapper, cropInfoMapper, barInfoMapper, bizCodeGenerator, stockCheckService, imageUrlResolver);
+        service = new MatFlowServiceImpl(stockFlowMapper, locationStockMapper, locationInfoMapper, productInfoMapper, productInhouseMapper, cropInfoMapper, barInfoMapper, bizCodeGenerator, stockCheckService, imageUrlResolver, lossFlowService, feedLogMapper);
         loginHelperMock = Mockito.mockStatic(LoginHelper.class);
         loginHelperMock.when(LoginHelper::getUserId).thenReturn(USER_ID);
 

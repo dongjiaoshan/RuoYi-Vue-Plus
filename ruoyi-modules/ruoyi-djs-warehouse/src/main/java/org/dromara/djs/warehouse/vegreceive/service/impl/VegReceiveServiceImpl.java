@@ -15,6 +15,8 @@ import org.dromara.djs.warehouse.flow.domain.StockFlow;
 import org.dromara.djs.warehouse.flow.mapper.StockFlowMapper;
 import org.dromara.djs.warehouse.location.domain.LocationInfo;
 import org.dromara.djs.warehouse.location.mapper.LocationInfoMapper;
+import org.dromara.djs.warehouse.loss.domain.LossFlow;
+import org.dromara.djs.warehouse.loss.service.ILossFlowService;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
 import org.dromara.djs.warehouse.stock.domain.LocationStock;
@@ -114,6 +116,8 @@ public class VegReceiveServiceImpl implements IVegReceiveService {
     private final ImageUrlResolver imageUrlResolver;
     /** 作物 mapper：自产月台入库解析 {@code crop.related_product} → 果蔬原料 product_id（双键篮，G2）。 */
     private final CropInfoMapper cropInfoMapper;
+    /** 统一损耗门面（WMS-LOSS-001，行59）：地块入库完成时双写一条 {@code transport_loss} 运输损耗。 */
+    private final ILossFlowService lossFlowService;
 
     public VegReceiveServiceImpl(VegReceiveMapper vegReceiveMapper,
                                  LocationStockMapper locationStockMapper,
@@ -123,7 +127,8 @@ public class VegReceiveServiceImpl implements IVegReceiveService {
                                  SupplierMapper supplierMapper,
                                  IBizCodeGenerator bizCodeGenerator,
                                  ImageUrlResolver imageUrlResolver,
-                                 CropInfoMapper cropInfoMapper) {
+                                 CropInfoMapper cropInfoMapper,
+                                 ILossFlowService lossFlowService) {
         this.vegReceiveMapper = vegReceiveMapper;
         this.locationStockMapper = locationStockMapper;
         this.locationInfoMapper = locationInfoMapper;
@@ -133,6 +138,7 @@ public class VegReceiveServiceImpl implements IVegReceiveService {
         this.bizCodeGenerator = bizCodeGenerator;
         this.imageUrlResolver = imageUrlResolver;
         this.cropInfoMapper = cropInfoMapper;
+        this.lossFlowService = lossFlowService;
     }
 
     @Override
@@ -248,6 +254,29 @@ public class VegReceiveServiceImpl implements IVegReceiveService {
         flow.setChangeQuantity(bo.getWeight());
         flow.setOperatorId(userId);
         stockFlowMapper.insert(flow);
+
+        // 5. 双写运输损耗（行59）：仅在地块标记入库完成（is_finish=1）时结算一次。
+        //    运输损耗 = Σ该地块发往月台重(send_platform_weight) − Σ该地块已接收重(veg_receive.weight)。
+        //    loss 变量上面已按 remainSafe(=月台量−已入量) − 本次入量 算出 = 本次终结后的剩余 = 运输损耗。
+        //    正值才记（record 内部对 <=0 已跳过，此处再守一层显式表达意图）。
+        if (finished && loss.signum() > 0) {
+            LossFlow lossFlow = new LossFlow();
+            lossFlow.setLossType("transport_loss");
+            lossFlow.setLossWeight(loss);
+            lossFlow.setProductId(materialProductId);   // 解析出果蔬原料才回填快照；为 null 时门面跳过回填，属可空
+            lossFlow.setLocationId(bo.getLocationId());
+            lossFlow.setPlotId(bo.getPlotId());
+            lossFlow.setBelongType(CROP_BELONG_TYPE);
+            lossFlow.setOperatorId(userId);
+            lossFlow.setSourceBizType("transport");
+            lossFlow.setSourceBizId(receive.getId());
+            lossFlow.setSourceFlowId(flow.getId());
+            // 产品未配 related_product 时 productCode/Name 留空，用作物名兜底标识来源
+            if (materialProductId == null) {
+                lossFlow.setProductName(cropName);
+            }
+            lossFlowService.record(lossFlow);
+        }
 
         return receive.getId();
     }

@@ -23,6 +23,7 @@ import org.dromara.djs.warehouse.flow.domain.StockFlow;
 import org.dromara.djs.warehouse.flow.mapper.StockFlowMapper;
 import org.dromara.djs.warehouse.location.domain.LocationInfo;
 import org.dromara.djs.warehouse.location.mapper.LocationInfoMapper;
+import org.dromara.djs.warehouse.loss.service.ILossFlowService;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
 import org.dromara.djs.warehouse.stock.domain.LocationStock;
@@ -99,19 +100,22 @@ public class StockCheckServiceImpl
     private final LocationInfoMapper locationInfoMapper;
     private final ProductInfoMapper productInfoMapper;
     private final IBizCodeGenerator bizCodeGenerator;
+    private final ILossFlowService lossFlowService;
 
     public StockCheckServiceImpl(StockCheckRecordMapper baseMapper,
                                  LocationStockMapper locationStockMapper,
                                  StockFlowMapper stockFlowMapper,
                                  LocationInfoMapper locationInfoMapper,
                                  ProductInfoMapper productInfoMapper,
-                                 IBizCodeGenerator bizCodeGenerator) {
+                                 IBizCodeGenerator bizCodeGenerator,
+                                 ILossFlowService lossFlowService) {
         super(baseMapper);
         this.locationStockMapper = locationStockMapper;
         this.stockFlowMapper = stockFlowMapper;
         this.locationInfoMapper = locationInfoMapper;
         this.productInfoMapper = productInfoMapper;
         this.bizCodeGenerator = bizCodeGenerator;
+        this.lossFlowService = lossFlowService;
     }
 
     // ============================ admin 盘点单管理 ============================
@@ -466,6 +470,19 @@ public class StockCheckServiceImpl
         flow.setOperatorId(userId);
         flow.setRemark("盘点差异 check_id=" + header.getCheckId());
         stockFlowMapper.insert(flow);
+
+        // 盘亏（diff<0）双写统一损耗表：损耗量取 |diff_stock|，来源指向本盘点明细行 + 刚写入的盘点流水
+        if (!surplus) {
+            lossFlowService.record(
+                "check_loss",
+                line.getProductId(),
+                diff.abs(),
+                line.getLocationId(),
+                userId,
+                "check",
+                line.getId(),
+                flow.getId());
+        }
     }
 
     /**

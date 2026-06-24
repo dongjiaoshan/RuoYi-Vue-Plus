@@ -14,6 +14,7 @@ import org.dromara.djs.warehouse.flow.domain.StockFlow;
 import org.dromara.djs.warehouse.flow.mapper.StockFlowMapper;
 import org.dromara.djs.warehouse.location.domain.LocationInfo;
 import org.dromara.djs.warehouse.location.mapper.LocationInfoMapper;
+import org.dromara.djs.warehouse.loss.service.ILossFlowService;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
 import org.dromara.djs.warehouse.stock.domain.LocationStock;
@@ -74,6 +75,7 @@ class StockCheckServiceImplTest {
     @Mock private LocationInfoMapper locationInfoMapper;
     @Mock private ProductInfoMapper productInfoMapper;
     @Mock private IBizCodeGenerator bizCodeGenerator;
+    @Mock private ILossFlowService lossFlowService;
 
     private TestableStockCheckServiceImpl service;
     private MockedStatic<LoginHelper> loginHelperMock;
@@ -105,8 +107,9 @@ class StockCheckServiceImplTest {
         BigDecimal stubSysStock = BigDecimal.ZERO;
 
         TestableStockCheckServiceImpl(StockCheckRecordMapper b, LocationStockMapper ls, StockFlowMapper sf,
-                                      LocationInfoMapper li, ProductInfoMapper pm, IBizCodeGenerator g) {
-            super(b, ls, sf, li, pm, g);
+                                      LocationInfoMapper li, ProductInfoMapper pm, IBizCodeGenerator g,
+                                      ILossFlowService lf) {
+            super(b, ls, sf, li, pm, g, lf);
         }
 
         @Override
@@ -123,7 +126,7 @@ class StockCheckServiceImplTest {
     @BeforeEach
     void setup() {
         service = new TestableStockCheckServiceImpl(
-            baseMapper, locationStockMapper, stockFlowMapper, locationInfoMapper, productInfoMapper, bizCodeGenerator);
+            baseMapper, locationStockMapper, stockFlowMapper, locationInfoMapper, productInfoMapper, bizCodeGenerator, lossFlowService);
         loginHelperMock = Mockito.mockStatic(LoginHelper.class);
         loginHelperMock.when(LoginHelper::getUserId).thenReturn(USER_ID);
         when(bizCodeGenerator.generate(any(), any())).thenReturn("FAKE_FLOW_NO");

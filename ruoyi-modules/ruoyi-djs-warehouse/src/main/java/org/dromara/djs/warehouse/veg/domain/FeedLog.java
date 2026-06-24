@@ -48,6 +48,27 @@ public class FeedLog extends TenantEntity {
     private String cropName;
 
     /**
+     * 饲喂来源（字典 {@code djs_feed_type}：veg_handle 毛菜间 / warehouse 仓库；行64）。
+     */
+    private String feedType;
+
+    /**
+     * 产品 ID（FK → {@code t_warehouse_product_info.id}；按产品归集饲喂量用，
+     * 毛菜间来源经 crop→related_product 反解可空）。
+     */
+    private Long productId;
+
+    /**
+     * 饲喂位置（库位 FK；仓库领用饲喂来源有值）。
+     */
+    private Long locationId;
+
+    /**
+     * 操作人 user_id。
+     */
+    private Long operatorId;
+
+    /**
      * 饲喂重量(kg)。
      */
     private BigDecimal feedWeight;

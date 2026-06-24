@@ -8,6 +8,7 @@ import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.satoken.utils.LoginHelper;
 import org.dromara.common.web.core.BaseController;
+import org.dromara.djs.warehouse.flow.domain.bo.MatFeedBo;
 import org.dromara.djs.warehouse.flow.domain.bo.MatLossBo;
 import org.dromara.djs.warehouse.flow.domain.bo.MatPickBo;
 import org.dromara.djs.warehouse.flow.domain.bo.MatReturnBo;
@@ -217,6 +218,17 @@ public class AppletMatFlowController extends BaseController {
     @PostMapping("/loss")
     public R<Long> loss(@Valid @RequestBody MatLossBo bo) {
         return R.ok(matFlowService.loss(bo));
+    }
+
+    /**
+     * 仓库饲料饲喂（行64 来源②仓库领用饲喂 / 行55 果蔬产品「饲料饲喂」操作）。
+     *
+     * <p>同事务：写 feed_out 出库流水 + 扣 location_stock（不可逆消耗）+ 写 feed_log(feed_type='warehouse')。</p>
+     */
+    @SaCheckLogin
+    @PostMapping("/feed")
+    public R<Long> feed(@Valid @RequestBody MatFeedBo bo) {
+        return R.ok(matFlowService.feed(bo));
     }
 
     @SaCheckLogin

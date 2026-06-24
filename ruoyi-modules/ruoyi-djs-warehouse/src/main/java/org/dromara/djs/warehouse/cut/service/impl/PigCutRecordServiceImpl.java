@@ -30,6 +30,8 @@ import org.dromara.djs.warehouse.flow.domain.StockFlow;
 import org.dromara.djs.warehouse.flow.mapper.StockFlowMapper;
 import org.dromara.djs.warehouse.location.domain.LocationInfo;
 import org.dromara.djs.warehouse.location.mapper.LocationInfoMapper;
+import org.dromara.djs.warehouse.loss.domain.LossFlow;
+import org.dromara.djs.warehouse.loss.service.ILossFlowService;
 import org.dromara.djs.warehouse.stock.domain.LocationStock;
 import org.dromara.djs.warehouse.stock.mapper.LocationStockMapper;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
@@ -123,6 +125,13 @@ public class PigCutRecordServiceImpl
     /** 出库去向：白条分割（FIX-WMS-FLOWDICT-001，白条出库固定去分割间）。 */
     private static final String STOCK_OUT_DEST_BAR_CUT = "bar_cut";
 
+    /** 损耗类型（字典 djs_loss_type）：预冷损耗 = 白条入库重 − 出库重（= dripLoss）。 */
+    private static final String LOSS_TYPE_PRECOOL = "precool_loss";
+    /** 损耗类型（字典 djs_loss_type）：分割损耗 = 白条出库重 − 分割产品重量之和。 */
+    private static final String LOSS_TYPE_CUT = "cut_loss";
+    /** loss_flow.source_biz_type 来源标识：分割。 */
+    private static final String LOSS_SOURCE_BIZ_CUT = "cut";
+
     /**
      * stock_flow.inout_type CHAR(3) IN=入库 / OT=出库。
      */
@@ -155,6 +164,7 @@ public class PigCutRecordServiceImpl
     private final ITraceService traceService;
     private final ImageUrlResolver imageUrlResolver;
     private final IStockCheckService stockCheckService;
+    private final ILossFlowService lossFlowService;
 
     public PigCutRecordServiceImpl(PigCutRecordMapper baseMapper,
                                    BarInfoMapper barInfoMapper,
@@ -167,7 +177,8 @@ public class PigCutRecordServiceImpl
                                    IBizCodeGenerator bizCodeGenerator,
                                    ITraceService traceService,
                                    ImageUrlResolver imageUrlResolver,
-                                   IStockCheckService stockCheckService) {
+                                   IStockCheckService stockCheckService,
+                                   ILossFlowService lossFlowService) {
         super(baseMapper);
         this.barInfoMapper = barInfoMapper;
         this.stockFlowMapper = stockFlowMapper;
@@ -180,6 +191,7 @@ public class PigCutRecordServiceImpl
         this.traceService = traceService;
         this.imageUrlResolver = imageUrlResolver;
         this.stockCheckService = stockCheckService;
+        this.lossFlowService = lossFlowService;
     }
 
     /**
@@ -446,6 +458,50 @@ public class PigCutRecordServiceImpl
         // 追溯时间轴每节点重量：分割 / 排酸节点重量 = 白条出库重量 outWeight（= pickupWeight）
         traceService.recordEventByEarNo(record.getEarNo(), TraceContentConst.SLAUGHTER, outWeight);
         traceService.recordEventByEarNo(record.getEarNo(), TraceContentConst.ACID, outWeight);
+
+        // WMS-LOSS-001 行62：分割完成结算点统一损耗双写（在原 cut_record.drip_loss / bar_info.drip_loss
+        // 之上追加 loss_flow 两条明细，作损耗总览数据源）。负值/0 由门面自动跳过。
+        // 该判定点由 cutting→done 乐观锁保证只走一次，故只在此写一次，不重复。
+        writeCutLossFlows(record, dripLoss, outWeight, userId);
+    }
+
+    /**
+     * 分割完成结算双写损耗（WMS-LOSS-001 行62）。
+     *
+     * <ul>
+     *   <li>预冷损耗 {@code precool_loss} = 白条入库重 − 出库重（= 已算好的 {@code dripLoss}，公式同义，不重算）；
+     *       关联白条产品 id。</li>
+     *   <li>分割损耗 {@code cut_loss} = 白条出库重 − 该白条所有分割产品重量之和
+     *       （Σ {@code cut_out_in} 不可变流水 by white_bar_id，与 {@code fillRemainingWeight} 口径一致）。</li>
+     * </ul>
+     *
+     * <p>负值/0 由 {@link ILossFlowService#record} 自动跳过，无需调用方判断。</p>
+     */
+    private void writeCutLossFlows(PigCutRecord record, BigDecimal dripLoss,
+                                   BigDecimal outWeight, Long userId) {
+        // ① 预冷损耗（= dripLoss，复用已算量，不重算）
+        LossFlow precool = new LossFlow();
+        precool.setLossType(LOSS_TYPE_PRECOOL);
+        precool.setLossWeight(dripLoss);
+        precool.setProductId(resolveWhiteBarProductId());
+        precool.setEarNo(record.getEarNo());
+        precool.setOperatorId(userId);
+        precool.setSourceBizType(LOSS_SOURCE_BIZ_CUT);
+        precool.setSourceBizId(record.getId());
+        lossFlowService.record(precool);
+
+        // ② 分割损耗 = 出库重 − 分割产品重量之和（Σ cut_out_in by white_bar_id）
+        BigDecimal cutTotal = stockFlowMapper.sumCutOutByWhiteBarId(record.getWhiteBarId());
+        BigDecimal cutLoss = outWeight.subtract(cutTotal == null ? BigDecimal.ZERO : cutTotal);
+        LossFlow cut = new LossFlow();
+        cut.setLossType(LOSS_TYPE_CUT);
+        cut.setLossWeight(cutLoss);
+        cut.setProductId(resolveWhiteBarProductId());
+        cut.setEarNo(record.getEarNo());
+        cut.setOperatorId(userId);
+        cut.setSourceBizType(LOSS_SOURCE_BIZ_CUT);
+        cut.setSourceBizId(record.getId());
+        lossFlowService.record(cut);
     }
 
     @Override
