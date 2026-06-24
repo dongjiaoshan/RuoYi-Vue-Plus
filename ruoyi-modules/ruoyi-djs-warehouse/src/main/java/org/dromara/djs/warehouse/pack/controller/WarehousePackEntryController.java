@@ -159,6 +159,21 @@ public class WarehousePackEntryController extends BaseController {
     }
 
     /**
+     * 批量判定目标成品「是否打包完成（按门店分别判）」（FIX-WMS-PACKDEMAND-001 行52）。
+     *
+     * <p>肉品/果蔬/其他产品打包卡「打包完成」角标改按门店分别判：同一产品多门店需求时，
+     * 把份数全打给同一门店不会让另一门店的需求也算完成。返回已完成（每个有需求门店都打满）的
+     * 成品 id 字符串集合（雪花 id 防 JS 精度丢失）。</p>
+     *
+     * @param productIds 目标成品 id 列表（逗号分隔；{@code t_warehouse_product_info.id}）
+     */
+    @SaCheckPermission("djs:warehouse:packEntry:dry")
+    @GetMapping("/packedDone")
+    public R<java.util.Set<String>> packedDone(@RequestParam List<Long> productIds) {
+        return R.ok(productionService.listPackedDoneProductIds(productIds));
+    }
+
+    /**
      * 批量查目标成品「已打包累计总重量(kg)」（admin 果蔬打包页按此算剩余可打包量）。
      *
      * <p>数据源同 {@link #packedCount}（{@code t_warehouse_product_production} 打包记录），

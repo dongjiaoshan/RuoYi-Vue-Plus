@@ -42,7 +42,7 @@ public class ShipStoreVo implements Serializable {
     /** 待发货需求总量（该门店待发 demand 的 demand_quantity 累加，便于子页预期）。 */
     private BigDecimal pendingQuantity;
 
-    /** 发货状态（V1 恒 "待发货" —— 门店列表只列还有待发 demand 的门店）。 */
+    /** 发货状态三态：当天 demand 全 COMPLETED → "已发货"；部分已发(COMPLETED/PARTIAL_SHIPPED) → "部分发货"；都未发 → "待发货"（允许多次发货 #50）。 */
     private String shipStatus;
 
     /** 发货日期（该门店当天 demand 的业务日期 demand_date —— 门店列表只取当天，故即当天发货日，客户主诉求字段 #201）。 */

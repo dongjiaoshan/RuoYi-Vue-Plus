@@ -8,6 +8,7 @@ import org.dromara.common.core.utils.StringUtils;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.common.base.DjsBaseServiceImpl;
+import org.dromara.djs.common.store.context.StoreContext;
 import org.dromara.djs.store.split.domain.bo.StoreSplitBo;
 import org.dromara.djs.store.split.domain.query.StoreSplitQuery;
 import org.dromara.djs.store.split.domain.vo.StoreSplitVo;
@@ -94,10 +95,13 @@ public class StoreSplitServiceImpl
     @Override
     @Transactional(rollbackFor = Exception.class)
     public Long addSplit(StoreSplitBo bo) {
+        // 门店拆单必须在已选门店上下文下进行（写绑当前门店，防跨门店写）
+        Long storeId = currentStoreIdOrThrow();
         ProductInfo sku = resolveSkuByCutPart(bo.getCutPart());
 
         ProductInhouse e = new ProductInhouse();
         e.setSource(SOURCE_STORE);
+        e.setStoreId(storeId);
         e.setCutPart(bo.getCutPart());
         e.setProductId(sku.getId());
         e.setProductName(sku.getProductName());
@@ -119,6 +123,22 @@ public class StoreSplitServiceImpl
     }
 
     // ============================ 内部辅助 ============================
+
+    /**
+     * 取当前门店上下文 ID，未选门店则抛业务异常（门店拆单必须在已选门店下进行）。
+     * 超管 / 租管走 {@link StoreContext#isIgnore()} 也无 storeId 时，要求显式选店再操作。
+     */
+    private Long currentStoreIdOrThrow() {
+        String storeId = StoreContext.getStoreId();
+        if (StringUtils.isBlank(storeId)) {
+            throw new ServiceException("未选择门店，无法门店拆单（请先在顶部选择门店）");
+        }
+        try {
+            return Long.valueOf(storeId);
+        } catch (NumberFormatException ex) {
+            throw new ServiceException("门店上下文非法：" + storeId);
+        }
+    }
 
     /**
      * 构造列表 / 导出共用 wrapper：固定 {@code source='store'} + 按 query 条件筛选，按生产时间倒序。

@@ -83,6 +83,10 @@ public class StockCheckServiceImpl
      */
     private static final String FLOW_CHECK_IN = "check_in";
     private static final String FLOW_CHECK_OUT = "check_out";
+    /** 盘点异常出库（FIX-WMS-FLOWDICT-001，盘亏且 check_result=异常(2)）。 */
+    private static final String FLOW_CHECK_ABNORMAL_OUT = "check_abnormal_out";
+    /** 出库去向：盘点计损（FIX-WMS-FLOWDICT-001，盘点计损 / 异常出库回填）。 */
+    private static final String STOCK_OUT_DEST_CHECK_LOSS = "check_loss";
 
     /**
      * 盘点结果字典 {@code djs_check_result}：1=正常 / 2=异常 / 3=计损。
@@ -447,7 +451,15 @@ public class StockCheckServiceImpl
         flow.setProductId(line.getProductId());
         flow.setWarehouseId(line.getLocationId());
         flow.setInoutType(surplus ? INOUT_IN : INOUT_OUT);
-        flow.setFlowType(surplus ? FLOW_CHECK_IN : FLOW_CHECK_OUT);
+        // 盘盈 → check_in；盘亏按结果类型拆：异常(2) → check_abnormal_out，正常计损 → check_out（FIX-WMS-FLOWDICT-001）
+        if (surplus) {
+            flow.setFlowType(FLOW_CHECK_IN);
+        } else {
+            boolean abnormal = line.getCheckResultType() != null && line.getCheckResultType() == RESULT_ABNORMAL;
+            flow.setFlowType(abnormal ? FLOW_CHECK_ABNORMAL_OUT : FLOW_CHECK_OUT);
+            // 盘点计损 / 异常出库去向固定为盘点计损（前端只读不可改）
+            flow.setStockOutDest(STOCK_OUT_DEST_CHECK_LOSS);
+        }
         // 盘盈正、盘亏负；changeQuantity 取绝对值
         flow.setChangeNum(diff);
         flow.setChangeQuantity(diff.abs());

@@ -53,15 +53,13 @@ public enum BizCodeType {
     PACK_NO,
 
     /**
-     * 产品生产编号（每日重置 + 按业态前缀分桶），格式 {@code {yyMMdd}{prefix}{seq4}}。
-     * 例：{@code 260613Z0001}（猪肉）/ {@code 260613G0001}（果蔬）。
+     * 产品生产编号（每日重置），格式 {@code {yyMMdd}{seq4}}。
+     * 例：{@code 2605120001}。
      *
-     * <p>业态前缀由 {@code context.prefix} 传入：Z=猪肉 / G=果蔬 / B=白条 / H=干货 / D=鸡蛋 / L=礼盒。
-     * 底层 1 条规则配 {@code daily_reset=3}（每日重置 + 复合分桶），序号按
-     * {@code seqDate = yyMMdd + prefix} 复合键独立递增，使每业态当日各自从 0001 起算。</p>
+     * <p>全部打包/出库生码共用一个每日计数器（{@code daily_reset=1}，当日从 0001 起算），
+     * 不分业态前缀。追溯标签「生产编码」即取此值。</p>
      *
-     * <p>D11 closing 统一治理：替代原 WMS-PACK-001 inline {@code selectMaxProduceNoByPrefix + 应用层自增}，
-     * 走 {@link IBizCodeGenerator} 的 Redisson 锁 + 序号表 UNIQUE 双保护。</p>
+     * <p>走 {@link IBizCodeGenerator} 的 Redisson 锁 + 序号表 UNIQUE 双保护。</p>
      */
     PRODUCE_NO,
 

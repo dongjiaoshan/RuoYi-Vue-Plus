@@ -118,6 +118,12 @@ public class ProductInhouse extends TenantEntity {
     private String source;
 
     /**
+     * 门店 ID（STORE-PERM-001）：仅 {@code source='store'} 的门店拆单行有值，用于门店行级隔离
+     * （{@code store.includes} 白名单含本表）；仓库分割行 / 历史行为 NULL。
+     */
+    private Long storeId;
+
+    /**
      * 原材料 ID。
      */
     private Long materialId;

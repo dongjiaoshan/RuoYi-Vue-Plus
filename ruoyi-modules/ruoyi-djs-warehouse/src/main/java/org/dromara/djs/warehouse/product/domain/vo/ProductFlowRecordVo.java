@@ -56,4 +56,14 @@ public class ProductFlowRecordVo implements Serializable {
      */
     private String bizUnit;
 
+    /**
+     * 供应商名称（row25：单位列后展示；按 stock_flow.supplier_id JOIN t_md_supplier 回填，无则 null）。
+     */
+    private String supplierName;
+
+    /**
+     * 操作人名称（row25：供应商列后展示；按 stock_flow.operator_id JOIN sys_user.nick_name 回填）。
+     */
+    private String operatorName;
+
 }

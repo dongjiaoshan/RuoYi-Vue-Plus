@@ -14,7 +14,6 @@ import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.satoken.utils.LoginHelper;
 import org.dromara.common.web.core.BaseController;
 import org.dromara.djs.breed.core.domain.vo.PigAvailableVo;
-import org.dromara.djs.breed.core.service.IPigQueryService;
 import org.dromara.djs.warehouse.demand.core.enums.DemandEvent;
 import org.dromara.djs.warehouse.demand.domain.bo.AssignPigBo;
 import org.dromara.djs.warehouse.demand.domain.bo.DemandManageBo;
@@ -63,8 +62,6 @@ public class DemandManageController extends BaseController {
     private final IDemandManageService demandService;
 
     private final IDemandStatusService statusService;
-
-    private final IPigQueryService pigQueryService;
 
     // =============== CRUD ===============
 
@@ -187,17 +184,19 @@ public class DemandManageController extends BaseController {
     }
 
     /**
-     * 「可出栏」育肥猪分页列表（DJS-FIX-ADMIN-W22-001）。
+     * 「可出栏」育肥猪分页列表（DJS-FIX-ADMIN-W22-001 / test row48）。
      *
      * <p>用于「指定猪只」对话框：列出 {@code pig_type='fattening'} AND {@code current_status != 'END'}
-     * AND 未被其它非取消态需求占用的活体猪。VO 含耳号 / 性别 / 品种品系 label / 日龄 / 最新背膘。</p>
+     * AND 未被其它非取消态需求占用、<b>且满足养殖出栏日龄配置</b>（{@code slaughter_age_days}）的到龄活体猪。
+     * VO 含耳号 / 性别 / 品种品系 label / 日龄 / 最新背膘。日龄阈值过滤在需求域 service 内部按配置取，
+     * 与 mp 出栏选猪口径一致（row48）。</p>
      *
      * <p>权限：复用 {@code djs:warehouse:demand:list}（同入口同角色）。</p>
      */
     @SaCheckPermission("djs:warehouse:demand:list")
     @GetMapping("/pigs/available")
     public TableDataInfo<PigAvailableVo> listAvailablePigs(PageQuery pageQuery) {
-        return pigQueryService.listAvailableForOutbound(pageQuery);
+        return demandService.listAvailablePigsForOutbound(pageQuery);
     }
 
     // =============== 产品门店需求明细（D-FIX-24 决策 #8）===============

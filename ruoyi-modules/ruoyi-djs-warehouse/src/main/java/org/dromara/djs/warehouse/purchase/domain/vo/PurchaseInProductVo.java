@@ -90,6 +90,11 @@ public class PurchaseInProductVo implements Serializable {
     private Long supplierId;
 
     /**
+     * 供应商名称（row23：列表「供应商」列 + 入库弹框只读展示；SQL JOIN t_md_supplier 回填，无则 null）。
+     */
+    private String supplierName;
+
+    /**
      * 当前库存（跨库位 SUM(location_stock.product_stock)；无库存行为 0）。
      */
     private BigDecimal currentStock;

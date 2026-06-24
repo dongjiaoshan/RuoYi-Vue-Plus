@@ -77,6 +77,10 @@ public class StockSelfServiceImpl implements IStockSelfService {
      */
     private static final String FLOW_CHECK_IN = "check_in";
     private static final String FLOW_CHECK_OUT = "check_out";
+    /** 盘点异常出库（FIX-WMS-FLOWDICT-001，盘亏且 check_result=异常(2)）。 */
+    private static final String FLOW_CHECK_ABNORMAL_OUT = "check_abnormal_out";
+    /** 出库去向：盘点计损（FIX-WMS-FLOWDICT-001，盘点计损 / 异常出库回填）。 */
+    private static final String STOCK_OUT_DEST_CHECK_LOSS = "check_loss";
 
     /**
      * 盘点结果字典 {@code djs_check_result}：1=正常 / 2=异常 / 3=计损。
@@ -260,6 +264,9 @@ public class StockSelfServiceImpl implements IStockSelfService {
         BigDecimal diff = bo.getCheckStock().subtract(sysStock);
         boolean surplus = diff.compareTo(BigDecimal.ZERO) >= 0;
 
+        // 盘点结果 code（normal=1 / abnormal=2 / loss=3），用于拆盘亏 flow_type + 回写 location_stock
+        int resultCode = mapCheckResultCode(bo.getCheckResult());
+
         // 2. INSERT 盘点流水留痕（方案 A：每次盘点都写 flow）
         StockFlow flow = new StockFlow();
         flow.setFlowNo(generateFlowNo(surplus ? INOUT_IN : INOUT_OUT));
@@ -267,7 +274,14 @@ public class StockSelfServiceImpl implements IStockSelfService {
         flow.setProductId(productId);
         flow.setWarehouseId(locId);
         flow.setInoutType(surplus ? INOUT_IN : INOUT_OUT);
-        flow.setFlowType(surplus ? FLOW_CHECK_IN : FLOW_CHECK_OUT);
+        // 盘盈 → check_in；盘亏按结果类型拆：异常(2) → check_abnormal_out，正常计损 → check_out（FIX-WMS-FLOWDICT-001）
+        if (surplus) {
+            flow.setFlowType(FLOW_CHECK_IN);
+        } else {
+            flow.setFlowType(resultCode == RESULT_ABNORMAL ? FLOW_CHECK_ABNORMAL_OUT : FLOW_CHECK_OUT);
+            // 盘点计损 / 异常出库去向固定为盘点计损（前端只读不可改）
+            flow.setStockOutDest(STOCK_OUT_DEST_CHECK_LOSS);
+        }
         flow.setChangeNum(diff);
         // changeQuantity 存实盘量（与盘点记录 tab 的 stock 列口径一致）
         flow.setChangeQuantity(bo.getCheckStock());
@@ -276,7 +290,6 @@ public class StockSelfServiceImpl implements IStockSelfService {
         stockFlowMapper.insert(flow);
 
         // 3. 回写 location_stock 至实盘绝对值 + check_result；无行 → 兜底 INSERT
-        int resultCode = mapCheckResultCode(bo.getCheckResult());
         int affected = locationStockMapper.setStockAfterCheck(locId, productId, bo.getCheckStock(), resultCode, userId);
         if (affected == 0) {
             LocationStock stock = newStockRow(locId, productId, product, bo.getCheckStock(), userId);
@@ -301,7 +314,8 @@ public class StockSelfServiceImpl implements IStockSelfService {
             case "receive" -> "veg_receive_in";
             case "white_bar_buy" -> "supplier_in";
             case "pack_return" -> "pack_in";
-            case "sale_return" -> "return_in";
+            // 销售退货入库归门店退回（FIX-WMS-FLOWDICT-001）
+            case "sale_return" -> "store_return_in";
             default -> "purchase_in";
         };
     }
@@ -314,7 +328,8 @@ public class StockSelfServiceImpl implements IStockSelfService {
             return "pick_out";
         }
         return switch (inoutType) {
-            case "dept_pick" -> "pick_out";
+            // 来源明确（admin 录入显式选「部门领用」）→ 拆 dept_pick_out（FIX-WMS-FLOWDICT-001）
+            case "dept_pick" -> "dept_pick_out";
             case "split_out" -> "cut_out";
             case "sale_out" -> "ship_out";
             case "loss_out" -> "loss";

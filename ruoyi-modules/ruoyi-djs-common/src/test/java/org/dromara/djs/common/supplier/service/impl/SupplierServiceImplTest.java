@@ -12,6 +12,7 @@ import org.dromara.djs.common.supplier.domain.Supplier;
 import org.dromara.djs.common.supplier.domain.bo.SupplierBo;
 import org.dromara.djs.common.supplier.domain.query.SupplierQuery;
 import org.dromara.djs.common.supplier.domain.vo.SupplierVo;
+import org.dromara.djs.common.supplier.api.SupplierDealProvider;
 import org.dromara.djs.common.supplier.mapper.SupplierMapper;
 import org.dromara.djs.common.validate.BizReferenceChecker;
 import org.junit.jupiter.api.BeforeEach;
@@ -24,6 +25,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
+import org.springframework.beans.factory.ObjectProvider;
 
 import java.math.BigDecimal;
 import java.util.Collections;
@@ -60,13 +62,17 @@ class SupplierServiceImplTest {
     @Mock
     private BizReferenceChecker bizReferenceChecker;
 
+    @Mock
+    private ObjectProvider<SupplierDealProvider> dealProviders;
+
     private TestableSupplierServiceImpl service;
 
     static class TestableSupplierServiceImpl extends SupplierServiceImpl {
         TestableSupplierServiceImpl(SupplierMapper supplierMapper,
                                     IBizCodeGenerator bizCodeGenerator,
-                                    BizReferenceChecker bizReferenceChecker) {
-            super(supplierMapper, bizCodeGenerator, bizReferenceChecker);
+                                    BizReferenceChecker bizReferenceChecker,
+                                    ObjectProvider<SupplierDealProvider> dealProviders) {
+            super(supplierMapper, bizCodeGenerator, bizReferenceChecker, dealProviders);
         }
 
         @Override
@@ -96,7 +102,8 @@ class SupplierServiceImplTest {
 
     @BeforeEach
     void setup() {
-        service = new TestableSupplierServiceImpl(supplierMapper, bizCodeGenerator, bizReferenceChecker);
+        when(dealProviders.iterator()).thenReturn(Collections.emptyIterator());
+        service = new TestableSupplierServiceImpl(supplierMapper, bizCodeGenerator, bizReferenceChecker, dealProviders);
         when(bizCodeGenerator.generate(eq(BizCodeType.SUPPLIER_CODE), any())).thenReturn("G0001");
     }
 

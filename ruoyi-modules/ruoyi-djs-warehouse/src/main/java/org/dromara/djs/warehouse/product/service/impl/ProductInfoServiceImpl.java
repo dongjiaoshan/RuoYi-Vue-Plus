@@ -165,6 +165,13 @@ public class ProductInfoServiceImpl extends DjsBaseServiceImpl<ProductInfoMapper
             List<GiftBoxVo> components = giftBoxService.queryByBoxId(id);
             vo.setGiftComponents(components);
         }
+        // row31：详情「原材料产品」展示关联原材料的产品名称（productMaterial 自引用 FK → product_info.id）
+        if (vo.getProductMaterial() != null) {
+            ProductInfo material = baseMapper.selectById(vo.getProductMaterial());
+            if (material != null) {
+                vo.setProductMaterialName(material.getProductName());
+            }
+        }
         return vo;
     }
 
@@ -395,6 +402,8 @@ public class ProductInfoServiceImpl extends DjsBaseServiceImpl<ProductInfoMapper
             // belongTypes 集合（其他产品打包入口 {egg, dry_good, other}）落 belong_type IN (...)
             .in(CollUtil.isNotEmpty(query.getBelongTypes()), ProductInfo::getBelongType, query.getBelongTypes())
             .eq(StringUtils.isNotBlank(query.getBuyClass()), ProductInfo::getBuyClass, query.getBuyClass())
+            // 是否支持外购（原型「是否支持外购」筛选项）
+            .eq(query.getIsBuyOut() != null, ProductInfo::getIsBuyOut, query.getIsBuyOut())
             .eq(query.getProductWorkshop() != null, ProductInfo::getProductWorkshop, query.getProductWorkshop())
             // 产品属性（打包目标成品 product_attr=1 / 原材料=2，取数逻辑 doc#13）
             .eq(query.getProductAttr() != null, ProductInfo::getProductAttr, query.getProductAttr())

@@ -117,9 +117,14 @@ public interface DemandManageMapper extends BaseMapperPlus<DemandManage, DemandM
     /**
      * 某产品各门店未发货需求量聚合（DJS-FIX-WMS-PACK 打包录入「门店(N份)」标签条）。
      *
-     * <p>按 {@code product_id} 取各门店未发货需求量
-     * {@code SUM(demand_quantity - COALESCE(shipped_count,0))}，仅保留剩余 &gt; 0 的门店，
-     * 仅统计「已确认及之后」需求（{@code demand_status IN
+     * <p>按 {@code product_id} 取各门店未发货需求量。<b>每条需求行的未发货量按
+     * {@code GREATEST(demand_quantity - shipped_count, 0)} 单独钳 ≥ 0 后再 SUM</b>：同门店有
+     * 历史超发行（{@code shipped_count > demand_quantity}，如演示数据需求 5 发货 88）时，该行剩余
+     * 为负，若不钳零会把同门店其它「确实未发货」行的剩余抵消成负值、{@code HAVING > 0} 整门店漏掉，
+     * 表现为「需求量 0 份 / 无未发货门店需求」（FIX-WMS-PACKDEMAND-001 行42/43）。逐行钳零后，
+     * 超发行只贡献 0，不再吃掉同门店其它需求。</p>
+     *
+     * <p>仅统计「已确认及之后」需求（{@code demand_status IN
      * ('CONFIRMED','IN_PRODUCTION','PARTIAL_SHIPPED','COMPLETED')}）——草稿（DRAFT）/ 待确认
      * （SUBMITTED）/ 已取消（CANCELLED）/ 已删除（DELETED）均不计入打包需求统计（与本 mapper
      * line 54/278「已确认及之后」口径一致）。JOIN {@code t_md_store} 取门店名。</p>
@@ -133,7 +138,7 @@ public interface DemandManageMapper extends BaseMapperPlus<DemandManage, DemandM
     @Select("""
         SELECT dm.store_id AS storeId,
                s.store_name AS storeName,
-               SUM(dm.demand_quantity - COALESCE(dm.shipped_count, 0)) AS copies
+               SUM(GREATEST(dm.demand_quantity - COALESCE(dm.shipped_count, 0), 0)) AS copies
         FROM t_warehouse_demand_manage dm
         JOIN t_md_store s ON s.id = dm.store_id
              AND s.del_flag = '0'
@@ -254,8 +259,11 @@ public interface DemandManageMapper extends BaseMapperPlus<DemandManage, DemandM
      * 排除已取消（CANCELLED）/ 已删除（del_flag=1）单；三态 demandStatus + 确认率 confirmRate
      * 在 service 层按 storeCount/confirmedStoreCount 算（避免 SQL 重复 CASE）。</p>
      *
-     * <p>产品冗余字段（productName/productSpec/productType/rawMaterial/productUnit）取 {@code MAX}
-     * 分组兜底（同 product 冗余通常一致）。可选过滤：产品名 LIKE / 需求门店 / 需求日期区间。
+     * <p>产品冗余字段（productName/productSpec/productType/productUnit）取 {@code MAX}
+     * 分组兜底（同 product 冗余通常一致）。{@code rawMaterial} 列存的是原材料产品的雪花 ID 字符串，
+     * 外层 LEFT JOIN {@code t_warehouse_product_info} 反查成中文产品名（纯数字 ID 才关联，REGEXP 守门；
+     * 取不到名 / 历史自由文本 → COALESCE 回退原值），列表直接显示原材料名称而非 ID。
+     * 可选过滤：产品名 LIKE / 需求门店 / 需求日期区间。
      * 门店过滤（{@code store_id = #{storeId}}）下推 WHERE：分组前先按门店收敛行集，故汇总行的
      * 需求量 / 门店数随门店变化（仅含该门店对该日该产品的需求）。</p>
      *
@@ -271,43 +279,62 @@ public interface DemandManageMapper extends BaseMapperPlus<DemandManage, DemandM
      */
     @Select("""
         <script>
-        SELECT demand_date              AS demandDate,
-               product_id               AS productId,
-               MAX(product_name)        AS productName,
-               MAX(product_spec)        AS productSpec,
-               MAX(product_type)        AS productType,
-               MAX(raw_material)        AS rawMaterial,
-               MAX(product_unit)        AS productUnit,
-               SUM(demand_quantity)     AS demandQuantity,
-               SUM(COALESCE(material_qty, 0)) AS materialQty,
-               COUNT(DISTINCT store_id) AS storeCount,
-               COUNT(DISTINCT CASE WHEN demand_status IN ('CONFIRMED','IN_PRODUCTION','PARTIAL_SHIPPED','COMPLETED')
-                     THEN store_id END) AS confirmedStoreCount,
-               MAX(confirmer_time)      AS lastConfirmTime
-        FROM t_warehouse_demand_manage
-        WHERE product_id IS NOT NULL
-          AND store_id IS NOT NULL
-          AND demand_status &lt;&gt; 'CANCELLED'
-          AND demand_status &lt;&gt; 'DELETED'
-          AND del_flag = '0'
-          AND tenant_id = '1001'
-          <if test="productName != null and productName != ''">
-            AND product_name LIKE CONCAT('%', #{productName}, '%')
-          </if>
-          <if test="productType != null and productType != ''">
-            AND product_type = #{productType}
-          </if>
-          <if test="storeId != null">
-            AND store_id = #{storeId}
-          </if>
-          <if test="beginDate != null">
-            AND demand_date &gt;= #{beginDate}
-          </if>
-          <if test="endDate != null">
-            AND demand_date &lt;= #{endDate}
-          </if>
-        GROUP BY demand_date, product_id
-        ORDER BY demand_date DESC, MAX(product_name) ASC
+        SELECT g.demandDate          AS demandDate,
+               g.productId           AS productId,
+               g.productName         AS productName,
+               g.productSpec         AS productSpec,
+               g.productType         AS productType,
+               COALESCE(pm.product_name, g.rawMaterial) AS rawMaterial,
+               g.productUnit         AS productUnit,
+               g.demandQuantity      AS demandQuantity,
+               g.materialQty         AS materialQty,
+               g.storeCount          AS storeCount,
+               g.confirmedStoreCount AS confirmedStoreCount,
+               g.lastConfirmTime     AS lastConfirmTime
+        FROM (
+            SELECT demand_date              AS demandDate,
+                   product_id               AS productId,
+                   MAX(product_name)        AS productName,
+                   MAX(product_spec)        AS productSpec,
+                   MAX(product_type)        AS productType,
+                   MAX(raw_material)        AS rawMaterial,
+                   MAX(product_unit)        AS productUnit,
+                   SUM(demand_quantity)     AS demandQuantity,
+                   SUM(COALESCE(material_qty, 0)) AS materialQty,
+                   COUNT(DISTINCT store_id) AS storeCount,
+                   COUNT(DISTINCT CASE WHEN demand_status IN ('CONFIRMED','IN_PRODUCTION','PARTIAL_SHIPPED','COMPLETED')
+                         THEN store_id END) AS confirmedStoreCount,
+                   MAX(confirmer_time)      AS lastConfirmTime
+            FROM t_warehouse_demand_manage
+            WHERE product_id IS NOT NULL
+              AND store_id IS NOT NULL
+              AND demand_status &lt;&gt; 'CANCELLED'
+              AND demand_status &lt;&gt; 'DELETED'
+              AND del_flag = '0'
+              AND tenant_id = '1001'
+              <if test="productName != null and productName != ''">
+                AND product_name LIKE CONCAT('%', #{productName}, '%')
+              </if>
+              <if test="productType != null and productType != ''">
+                AND product_type = #{productType}
+              </if>
+              <if test="storeId != null">
+                AND store_id = #{storeId}
+              </if>
+              <if test="beginDate != null">
+                AND demand_date &gt;= #{beginDate}
+              </if>
+              <if test="endDate != null">
+                AND demand_date &lt;= #{endDate}
+              </if>
+            GROUP BY demand_date, product_id
+        ) g
+        LEFT JOIN t_warehouse_product_info pm
+               ON g.rawMaterial REGEXP '^[0-9]+$'
+              AND pm.id = CAST(g.rawMaterial AS UNSIGNED)
+              AND pm.del_flag = '0'
+              AND pm.tenant_id = '1001'
+        ORDER BY g.demandDate DESC, g.productName ASC
         </script>
         """)
     List<DemandGroupVo> selectDemandGroupList(@Param("productName") String productName,

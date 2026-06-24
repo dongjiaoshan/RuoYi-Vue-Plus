@@ -101,6 +101,11 @@ public class ProductInfoVo implements Serializable {
     @ExcelProperty(value = "原材料 ID")
     private Long productMaterial;
 
+    /**
+     * 关联原材料产品名称（row31：详情「原材料产品」列；service 按 {@link #productMaterial} 回查 product_name 回填）。
+     */
+    private String productMaterialName;
+
     @ExcelProperty(value = "描述")
     private String productDesc;
 

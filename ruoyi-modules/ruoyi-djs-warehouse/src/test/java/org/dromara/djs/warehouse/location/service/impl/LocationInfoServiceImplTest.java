@@ -269,55 +269,60 @@ class LocationInfoServiceImplTest {
     }
 
     @Test
-    @DisplayName("getCardSummary: happy path → 以字典 8 类为 base，部分聚合 merge，无数据类补 0")
+    @DisplayName("getCardSummary: happy path → 按库位逐行 base，flow/check 按 locationId merge，无流水库位补 0")
     void testGetCardSummary_HappyPath() {
-        // 字典 8 类（有序）作为 base
+        // 库位类型字典 value→label（回填副标签）
         Map<String, String> dict = new LinkedHashMap<>();
-        dict.put("white_bar", "白条");
         dict.put("frozen", "冻品");
         dict.put("veg_fresh", "蔬菜鲜品");
-        dict.put("veg_heavy", "重口蔬菜");
-        dict.put("packaging", "包材");
-        dict.put("medicine", "药品");
-        dict.put("dry_goods", "干货");
-        dict.put("raw_material", "原材料");
 
-        // 库存聚合仅 frozen 有数据
-        LocationCardSummaryVo stockFrozen = new LocationCardSummaryVo();
-        stockFrozen.setLocationType("frozen");
-        stockFrozen.setLocationCount(2);
-        stockFrozen.setProductCount(3);
-        stockFrozen.setCurrentStock(new BigDecimal("120.500"));
-        // 今日流水仅 frozen 有数据
+        // 按库位 base：两个库位（冻品库有库存，蔬菜库无库存）
+        LocationCardSummaryVo locFrozen = new LocationCardSummaryVo();
+        locFrozen.setLocationId(90001L);
+        locFrozen.setLocationCode("FRZ-001");
+        locFrozen.setLocationName("演示冻品库");
+        locFrozen.setLocationType("frozen");
+        locFrozen.setProductCount(3);
+        locFrozen.setCurrentStock(new BigDecimal("120.500"));
+
+        LocationCardSummaryVo locVeg = new LocationCardSummaryVo();
+        locVeg.setLocationId(90002L);
+        locVeg.setLocationCode("VEG-001");
+        locVeg.setLocationName("演示蔬菜库");
+        locVeg.setLocationType("veg_fresh");
+        // 无库存：productCount/currentStock 为 null（service 应补 0）
+
+        // 今日流水仅冻品库有数据
         LocationCardSummaryVo flowFrozen = new LocationCardSummaryVo();
-        flowFrozen.setLocationType("frozen");
+        flowFrozen.setLocationId(90001L);
         flowFrozen.setTodayInQty(new BigDecimal("10.00"));
         flowFrozen.setTodayOutQty(new BigDecimal("4.00"));
 
         try (MockedStatic<TenantHelper> mocked = mockStatic(TenantHelper.class)) {
             mocked.when(TenantHelper::getTenantId).thenReturn("1001");
             when(dictService.getAllDictByDictType("djs_location_type")).thenReturn(dict);
-            when(locationInfoMapper.selectStockSummaryByType(eq("1001"))).thenReturn(List.of(stockFrozen));
-            when(locationInfoMapper.selectTodayFlowByType(eq("1001"))).thenReturn(List.of(flowFrozen));
-            when(locationInfoMapper.selectLastCheckByType(eq("1001"))).thenReturn(List.of());
+            when(locationInfoMapper.selectStockSummaryByLocation(eq("1001"))).thenReturn(List.of(locFrozen, locVeg));
+            when(locationInfoMapper.selectTodayFlowByLocation(eq("1001"))).thenReturn(List.of(flowFrozen));
+            when(locationInfoMapper.selectLastCheckByLocation(eq("1001"))).thenReturn(List.of());
 
             List<LocationCardSummaryVo> cards = service.getCardSummary();
 
-            // 固定 8 行，顺序按字典
-            assertThat(cards).hasSize(8);
-            assertThat(cards.get(0).getLocationType()).isEqualTo("white_bar");
-            assertThat(cards.get(0).getLocationTypeLabel()).isEqualTo("白条");
-            // white_bar 无数据 → 补 0
-            assertThat(cards.get(0).getLocationCount()).isZero();
-            assertThat(cards.get(0).getCurrentStock()).isEqualByComparingTo(BigDecimal.ZERO);
-            assertThat(cards.get(0).getTodayInQty()).isEqualByComparingTo(BigDecimal.ZERO);
-            // frozen 有数据 → 正确 merge
-            LocationCardSummaryVo frozen = cards.stream().filter(c -> "frozen".equals(c.getLocationType())).findFirst().orElseThrow();
-            assertThat(frozen.getLocationCount()).isEqualTo(2);
+            // 逐库位：2 张卡，顺序按 base
+            assertThat(cards).hasSize(2);
+            LocationCardSummaryVo frozen = cards.stream().filter(c -> Long.valueOf(90001L).equals(c.getLocationId())).findFirst().orElseThrow();
+            assertThat(frozen.getLocationName()).isEqualTo("演示冻品库");
+            assertThat(frozen.getLocationTypeLabel()).isEqualTo("冻品");
             assertThat(frozen.getProductCount()).isEqualTo(3);
             assertThat(frozen.getCurrentStock()).isEqualByComparingTo("120.500");
             assertThat(frozen.getTodayInQty()).isEqualByComparingTo("10.00");
             assertThat(frozen.getTodayOutQty()).isEqualByComparingTo("4.00");
+
+            // 蔬菜库：无库存/无流水 → 补 0
+            LocationCardSummaryVo veg = cards.stream().filter(c -> Long.valueOf(90002L).equals(c.getLocationId())).findFirst().orElseThrow();
+            assertThat(veg.getProductCount()).isZero();
+            assertThat(veg.getCurrentStock()).isEqualByComparingTo(BigDecimal.ZERO);
+            assertThat(veg.getTodayInQty()).isEqualByComparingTo(BigDecimal.ZERO);
+            assertThat(veg.getTodayOutQty()).isEqualByComparingTo(BigDecimal.ZERO);
         }
     }
 

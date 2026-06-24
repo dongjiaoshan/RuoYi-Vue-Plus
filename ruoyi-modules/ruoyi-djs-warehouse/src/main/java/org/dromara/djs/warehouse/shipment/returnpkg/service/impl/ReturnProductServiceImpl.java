@@ -70,7 +70,8 @@ public class ReturnProductServiceImpl
 
     private static final String DIRECTION_STORE_TO_WAREHOUSE = "store_to_warehouse";
 
-    private static final String FLOW_TYPE_RETURN_IN = "return_in";
+    /** 门店退回入库：FIX-WMS-FLOWDICT-001 起从通用 return_in 拆为 store_return_in（来源 = 门店退货确认）。 */
+    private static final String FLOW_TYPE_RETURN_IN = "store_return_in";
 
     private static final String INOUT_IN = "IN";
 

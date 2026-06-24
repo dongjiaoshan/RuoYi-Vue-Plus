@@ -81,7 +81,8 @@ class DemandManageServiceImplTest {
      */
     static class TestableDemandManageServiceImpl extends DemandManageServiceImpl {
         TestableDemandManageServiceImpl(DemandManageMapper m, DemandPigMapper dpm, IBizCodeGenerator g) {
-            super(m, dpm, g, null, null, null);
+            // 新增依赖（DemandPigAvailableMapper 出栏日龄过滤 + 周期配置 + 计划 + 库存）本套用例不直接覆盖，传 null 让构造器存字段即可
+            super(m, dpm, g, null, null, null, null);
         }
 
         @Override

@@ -47,6 +47,13 @@ public class StockFlowVo implements Serializable {
     private Long productId;
 
     /**
+     * 产品类型 djs_product_type（1 自产 / 2 外购 / 3 礼盒，service JOIN 回填，
+     * 与「归属/产品类别」belongType 是两个不同维度）。
+     */
+    @ExcelProperty(value = "产品类型")
+    private Integer productType;
+
+    /**
      * 产品名（service 层 JOIN 回填）。
      */
     @ExcelProperty(value = "产品")

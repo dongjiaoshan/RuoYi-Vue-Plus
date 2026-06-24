@@ -77,6 +77,15 @@ public class PigCutRecordVo implements Serializable {
     @ExcelProperty(value = "供应商")
     private String supplierName;
 
+    /**
+     * 外购猪只标识号（{@code bar_info.mark_id}，仅外购回填；FIX-WMS-OUTSOURCE-001 行53）。
+     *
+     * <p>外购无耳号（{@code ear_no=NULL}），分割单 chip 原回退显 CUT 业务码（{@code cutId}）。
+     * 改为优先显该外购猪只的白条编号 {@code barId} / 标识号 {@code markId}，让外购记录用
+     * 「外购白条编号」而非 CUT 码标识。前端 chip 显示优先级：{@code earNo ?? markId ?? barId ?? cutId}。</p>
+     */
+    private String markId;
+
     // ===== P7 统计指标（compute-on-read，按 white_bar_id 关联 bar_info + product_inhouse 派生，无持久列）=====
 
     /**

@@ -14,6 +14,7 @@ import org.dromara.djs.common.store.domain.bo.StoreBo;
 import org.dromara.djs.common.store.domain.query.StoreQuery;
 import org.dromara.djs.common.store.domain.vo.StoreVo;
 import org.dromara.djs.common.store.mapper.StoreMapper;
+import org.dromara.djs.common.store.service.IStoreUserRelationService;
 import org.dromara.djs.common.validate.BizReferenceChecker;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -67,6 +68,9 @@ class StoreServiceImplTest {
     @Mock
     private BizReferenceChecker bizReferenceChecker;
 
+    @Mock
+    private IStoreUserRelationService storeUserRelationService;
+
     private TestableStoreServiceImpl service;
 
     /**
@@ -75,8 +79,9 @@ class StoreServiceImplTest {
      */
     static class TestableStoreServiceImpl extends StoreServiceImpl {
         TestableStoreServiceImpl(StoreMapper storeMapper, IBizCodeGenerator bizCodeGenerator, UserService userService,
-                                 BizReferenceChecker bizReferenceChecker) {
-            super(storeMapper, bizCodeGenerator, userService, bizReferenceChecker);
+                                 BizReferenceChecker bizReferenceChecker,
+                                 IStoreUserRelationService storeUserRelationService) {
+            super(storeMapper, bizCodeGenerator, userService, bizReferenceChecker, storeUserRelationService);
         }
 
         @Override
@@ -103,8 +108,12 @@ class StoreServiceImplTest {
 
     @BeforeEach
     void setup() {
-        service = new TestableStoreServiceImpl(storeMapper, bizCodeGenerator, userService, bizReferenceChecker);
+        service = new TestableStoreServiceImpl(storeMapper, bizCodeGenerator, userService, bizReferenceChecker,
+            storeUserRelationService);
         when(bizCodeGenerator.generate(eq(BizCodeType.STORE_CODE), any())).thenReturn("ST0001");
+        // 员工数批量回填：默认返空 map（按 0 兜底），避免 fillEmployeeCounts NPE
+        when(storeUserRelationService.countUsersByStores(any())).thenReturn(Collections.emptyMap());
+        when(storeUserRelationService.countUsersByStore(any())).thenReturn(0);
     }
 
     private StoreBo sampleBo() {

@@ -98,6 +98,8 @@ public class ProductProductionServiceImpl
     /** stock_flow.flow_type 业务类型。 */
     private static final String FLOW_TYPE_PACK_IN = "pack_in";
     private static final String FLOW_TYPE_PACK_CONSUME = "pack_consume";
+    /** 出库去向：生产领用（FIX-WMS-FLOWDICT-001，礼盒组件消耗回填）。 */
+    private static final String STOCK_OUT_DEST_PROD_PICK = "prod_pick";
 
     /** djs_pack_status 字典码值。 */
     private static final String PACK_STATUS_PACKED = "packed";
@@ -115,19 +117,6 @@ public class ProductProductionServiceImpl
 
     /** djs_product_type 字典码值（礼盒）。 */
     private static final Integer PRODUCT_TYPE_GIFT = 3;
-
-    /** produce_no 前缀映射（按 product_info.belong_type）。 */
-    private static final Map<String, String> BELONG_TYPE_TO_PRODUCE_PREFIX = Map.of(
-        "pork",      "Z",
-        "vegetable", "G",
-        "white_bar", "B",
-        "dry_good",  "H",
-        "egg",       "D",
-        "gift_box",  "L"
-    );
-
-    /** 业务码默认前缀（belong_type 缺失时兜底）。 */
-    private static final String DEFAULT_PRODUCE_PREFIX = "G";
 
     /** 白条/猪肉业态（WMS-WHITEBAR-SHIP-001 出库发货来源校验）。 */
     private static final String BELONG_TYPE_WHITE_BAR = "white_bar";
@@ -163,7 +152,8 @@ public class ProductProductionServiceImpl
      * </ul>
      */
     private static final String FLOW_TYPE_PICK_OUT = "pick_out";
-    private static final String FLOW_TYPE_RETURN_IN = "return_in";
+    /** 领用退回入库（统计口径，与 MatFlowServiceImpl.returnBack 写入对齐：FIX-WMS-FLOWDICT-001 起 pick_return_in）。 */
+    private static final String FLOW_TYPE_RETURN_IN = "pick_return_in";
 
     private final ProductInhouseMapper productInhouseMapper;
     private final ProductInfoMapper productInfoMapper;
@@ -947,6 +937,8 @@ public class ProductProductionServiceImpl
         flow.setWarehouseId(locationId);
         flow.setInoutType(INOUT_OUT);
         flow.setFlowType(FLOW_TYPE_PACK_CONSUME);
+        // 生产领用去向（FIX-WMS-FLOWDICT-001）：礼盒打包组件消耗 = 仓库内部生产消耗，自动回填 prod_pick
+        flow.setStockOutDest(STOCK_OUT_DEST_PROD_PICK);
         flow.setChangeNum(qty);
         flow.setChangeQuantity(qty);
         flow.setOperatorId(userId);
@@ -1135,6 +1127,59 @@ public class ProductProductionServiceImpl
     }
 
     @Override
+    public Set<String> listPackedDoneProductIds(List<Long> productIds) {
+        Set<String> done = new java.util.HashSet<>();
+        if (productIds == null || productIds.isEmpty()) {
+            return done;
+        }
+        List<Long> ids = productIds.stream().filter(Objects::nonNull).distinct().collect(Collectors.toList());
+        if (ids.isEmpty()) {
+            return done;
+        }
+        // 今天「按门店已打包份数」：productId -> (storeId -> packedCnt)
+        Map<Long, Map<Long, Integer>> packedByStore = new HashMap<>();
+        for (Map<String, Object> row : baseMapper.selectTodayPackedCountByStore(ids)) {
+            Object pid = row.get("productId");
+            Object sid = row.get("storeId");
+            Object cnt = row.get("cnt");
+            if (pid == null || sid == null || cnt == null) {
+                continue;
+            }
+            packedByStore
+                .computeIfAbsent(((Number) pid).longValue(), k -> new HashMap<>())
+                .put(((Number) sid).longValue(), ((Number) cnt).intValue());
+        }
+        // 逐产品判定：每个「未发货需求份数>0」的门店都被打满 → 完成；无未发货门店需求 → 不完成
+        for (Long productId : ids) {
+            List<StoreDemandCopiesVo> demands = demandManageMapper.selectStoreDemandCopies(productId);
+            if (demands == null || demands.isEmpty()) {
+                continue;
+            }
+            Map<Long, Integer> packed = packedByStore.getOrDefault(productId, Map.of());
+            boolean allStoresDone = true;
+            for (StoreDemandCopiesVo d : demands) {
+                if (d.getStoreId() == null || d.getCopies() == null) {
+                    continue;
+                }
+                // 需求份数：份数为份（整数语义），向上取整防 2.0001 类边界把整门店判漏（与前端 Math.round 展示口径对齐）
+                int needCopies = (int) Math.ceil(d.getCopies().doubleValue());
+                if (needCopies <= 0) {
+                    continue;
+                }
+                int packedToStore = packed.getOrDefault(d.getStoreId(), 0);
+                if (packedToStore < needCopies) {
+                    allStoresDone = false;
+                    break;
+                }
+            }
+            if (allStoresDone) {
+                done.add(String.valueOf(productId));
+            }
+        }
+        return done;
+    }
+
+    @Override
     public Map<String, String> listPackedWeight(List<Long> productIds) {
         Map<String, String> result = new HashMap<>();
         if (productIds == null || productIds.isEmpty()) {
@@ -1172,17 +1217,14 @@ public class ProductProductionServiceImpl
     }
 
     /**
-     * 生成 produce_no：{@code yyMMdd + 业态前缀 + 4 位序号}（doc/11 §2.6 R7）。
+     * 生成 produce_no：{@code yyMMdd + 4 位每日序号}（生产编码规则，例 2605120001）。
      *
-     * <p>业态前缀按 product_info.belong_type 映射（缺省走默认 G），交给
-     * {@link IBizCodeGenerator} 的 {@link BizCodeType#PRODUCE_NO} 规则生成：
-     * 序号按 {@code yyMMdd + prefix} 复合键独立递增（每业态当日各自从 0001 起算），
+     * <p>全部打包/出库生码共用一个每日计数器（{@link BizCodeType#PRODUCE_NO} 规则 daily_reset=1，
+     * 当日从 0001 起算），不再按业态前缀分桶。{@code belongType} 参数保留兼容各调用方，当前不参与编码。
      * Redisson 锁 + 序号表 UNIQUE 双保护。</p>
      */
     protected String generateProduceNo(String belongType) {
-        String prefix = BELONG_TYPE_TO_PRODUCE_PREFIX.getOrDefault(
-            belongType, DEFAULT_PRODUCE_PREFIX);
-        return bizCodeGenerator.generate(BizCodeType.PRODUCE_NO, Map.of("prefix", prefix));
+        return bizCodeGenerator.generate(BizCodeType.PRODUCE_NO, Map.of());
     }
 
     /**

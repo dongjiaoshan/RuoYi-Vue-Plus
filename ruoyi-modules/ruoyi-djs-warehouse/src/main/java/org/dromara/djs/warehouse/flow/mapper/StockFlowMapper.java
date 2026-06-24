@@ -211,4 +211,67 @@ public interface StockFlowMapper extends BaseMapperPlus<StockFlow, StockFlowVo> 
     BigDecimal sumVegFlowByTypeAndDate(@Param("flowType") String flowType,
                                        @Param("flowDate") java.util.Date flowDate);
 
+    /**
+     * 按当前用户 + 产品 + 今日 + 流水类型集合（IN）SUM change_quantity（FIX-WMS-FLOWDICT-003）。
+     *
+     * <p>领用 / 退回 flow_type 按来源拆分（prod_pick_out / dept_pick_out / prod_return_in / pick_return_in）后，
+     * 今日额度统计「已领 / 已退」须跨多键聚合，单键版 {@link #sumTodayByUserProductType} 会漏算。
+     * flowTypes 空集合不会出现（service 端常量非空），mapper 不做空集兜底。</p>
+     *
+     * @param userId    当前操作人 user_id
+     * @param productId 产品 ID
+     * @param flowTypes 流水类型集合（如领用两键 + 历史 pick_out，或退回两键）
+     * @return 当日这些类型该产品 change_quantity 总和（无记录返 0）
+     */
+    @Select("<script>"
+        + "SELECT COALESCE(SUM(change_quantity), 0) "
+        + "  FROM t_warehouse_stock_flow "
+        + " WHERE operator_id = #{userId} "
+        + "   AND product_id  = #{productId} "
+        + "   AND DATE(flow_date) = CURDATE() "
+        + "   AND del_flag    = '0' "
+        + "   AND flow_type IN "
+        + "   <foreach collection='flowTypes' item='t' open='(' separator=',' close=')'>#{t}</foreach> "
+        + "</script>")
+    BigDecimal sumTodayByUserProductTypes(@Param("userId") Long userId,
+                                          @Param("productId") Long productId,
+                                          @Param("flowTypes") java.util.Collection<String> flowTypes);
+
+    /**
+     * 按当前用户 + 今日 + 流水类型集合（IN）SUM（不限定 productId；全产品「今日数据」卡片用）。
+     *
+     * @see #sumTodayByUserProductTypes 多键聚合背景
+     */
+    @Select("<script>"
+        + "SELECT COALESCE(SUM(change_quantity), 0) "
+        + "  FROM t_warehouse_stock_flow "
+        + " WHERE operator_id = #{userId} "
+        + "   AND DATE(flow_date) = CURDATE() "
+        + "   AND del_flag    = '0' "
+        + "   AND flow_type IN "
+        + "   <foreach collection='flowTypes' item='t' open='(' separator=',' close=')'>#{t}</foreach> "
+        + "</script>")
+    BigDecimal sumTodayByUserTypes(@Param("userId") Long userId,
+                                   @Param("flowTypes") java.util.Collection<String> flowTypes);
+
+    /**
+     * 按当前用户 + 今日 + 物资 belongType（JOIN product_info）+ 流水类型集合（IN）SUM。
+     *
+     * @see #sumTodayByUserProductTypes 多键聚合背景
+     */
+    @Select("<script>"
+        + "SELECT COALESCE(SUM(f.change_quantity), 0) "
+        + "  FROM t_warehouse_stock_flow f "
+        + "  JOIN t_warehouse_product_info p ON p.id = f.product_id AND p.del_flag = '0' "
+        + " WHERE f.operator_id = #{userId} "
+        + "   AND DATE(f.flow_date) = CURDATE() "
+        + "   AND p.belong_type = #{belongType} "
+        + "   AND f.del_flag    = '0' "
+        + "   AND f.flow_type IN "
+        + "   <foreach collection='flowTypes' item='t' open='(' separator=',' close=')'>#{t}</foreach> "
+        + "</script>")
+    BigDecimal sumTodayByUserMatTypes(@Param("userId") Long userId,
+                                      @Param("flowTypes") java.util.Collection<String> flowTypes,
+                                      @Param("belongType") String belongType);
+
 }

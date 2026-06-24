@@ -1,6 +1,7 @@
 package org.dromara.djs.warehouse.cross.mapper;
 
 import com.baomidou.mybatisplus.core.metadata.IPage;
+import org.apache.ibatis.annotations.MapKey;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
@@ -9,7 +10,9 @@ import org.dromara.djs.warehouse.cross.domain.BarInfo;
 import org.dromara.djs.warehouse.cross.domain.vo.TodayBarVo;
 
 import java.math.BigDecimal;
+import java.util.Collection;
 import java.util.Date;
+import java.util.Map;
 
 /**
  * 白条 Mapper minimal（跨域共享 / D9 closing Group B 从 cut/mapper 挪入 cross/mapper）。
@@ -158,6 +161,40 @@ public interface BarInfoMapper extends BaseMapperPlus<BarInfo, BarInfo> {
          LIMIT 1
         """)
     String selectStatusByBarId(@Param("barId") String barId);
+
+    /**
+     * 级联软删某外购猪只镜像出的待燎毛白条（仅 pending_singe 未进下游的才删）。
+     * 显式 tenant_id='1001' AND del_flag='0'（V1 单租户，原生 SQL 不自动注入）；
+     * del_unique=id 对齐软删唯一约束规范。
+     */
+    @Update("UPDATE t_warehouse_bar_info SET del_flag='1', del_unique=id, update_by=#{userId}, update_time=NOW()"
+        + " WHERE tenant_id='1001' AND del_flag='0' AND bar_id=#{barId} AND status='pending_singe'")
+    int softDeleteByBarIdIfPending(@Param("barId") String barId, @Param("userId") Long userId);
+
+    /**
+     * 按白条业务码批量查燎毛称重时刻（{@code in_time}）。外购猪只列表「到场时间」据此回填
+     * （FIX-WMS-OUTSOURCE-001 行38：外购到场时间 = 燎毛间称重完成时刻，精确到时分秒，
+     * 取代新增表单手填日期导致整列 00:00:00）。
+     *
+     * <p>显式 {@code tenant_id='1001' AND del_flag='0'}（V1 单租户，原生 SQL 不自动注入）。
+     * 返回 Map：barId → in_time（{@code NULL} 的白条 MyBatis 默认不放入 Map，调用方按缺失处理）。</p>
+     *
+     * @param barIds 白条业务码集合（{@code t_warehouse_bar_info.bar_id}）
+     * @return barId → in_time（仅含 in_time 非空的白条；空集合传入由调用方前置短路）
+     */
+    @MapKey("barId")
+    @Select("""
+        <script>
+        SELECT bar_id AS barId, in_time AS inTime
+          FROM t_warehouse_bar_info
+         WHERE tenant_id = '1001'
+           AND del_flag = '0'
+           AND in_time IS NOT NULL
+           AND bar_id IN
+           <foreach collection="barIds" item="bid" open="(" separator="," close=")">#{bid}</foreach>
+        </script>
+        """)
+    Map<String, Map<String, Object>> selectInTimeByBarIds(@Param("barIds") Collection<String> barIds);
 
     /**
      * 查全部「在库」白条（mp 物资领用·白条批次卡列表 issueWhiteBarBatches）。

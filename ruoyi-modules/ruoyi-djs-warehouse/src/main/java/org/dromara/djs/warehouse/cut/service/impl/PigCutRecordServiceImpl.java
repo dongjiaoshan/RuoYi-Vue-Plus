@@ -33,7 +33,9 @@ import org.dromara.djs.warehouse.location.mapper.LocationInfoMapper;
 import org.dromara.djs.warehouse.stock.domain.LocationStock;
 import org.dromara.djs.warehouse.stock.mapper.LocationStockMapper;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
+import org.dromara.djs.warehouse.product.domain.ProductInhouse;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
+import org.dromara.djs.warehouse.product.mapper.ProductInhouseMapper;
 import org.dromara.djs.warehouse.trace.domain.TraceContentConst;
 import org.dromara.djs.warehouse.trace.service.ITraceService;
 import org.springframework.stereotype.Service;
@@ -118,6 +120,8 @@ public class PigCutRecordServiceImpl
      * stock_flow.flow_type 白条分割出库流水。
      */
     private static final String FLOW_TYPE_CUT_OUT = "cut_out";
+    /** 出库去向：白条分割（FIX-WMS-FLOWDICT-001，白条出库固定去分割间）。 */
+    private static final String STOCK_OUT_DEST_BAR_CUT = "bar_cut";
 
     /**
      * stock_flow.inout_type CHAR(3) IN=入库 / OT=出库。
@@ -143,6 +147,7 @@ public class PigCutRecordServiceImpl
     private final BarInfoMapper barInfoMapper;
     private final StockFlowMapper stockFlowMapper;
     private final ProductInfoMapper productInfoMapper;
+    private final ProductInhouseMapper productInhouseMapper;
     private final LocationInfoMapper locationInfoMapper;
     private final LocationStockMapper locationStockMapper;
     private final SupplierMapper supplierMapper;
@@ -155,6 +160,7 @@ public class PigCutRecordServiceImpl
                                    BarInfoMapper barInfoMapper,
                                    StockFlowMapper stockFlowMapper,
                                    ProductInfoMapper productInfoMapper,
+                                   ProductInhouseMapper productInhouseMapper,
                                    LocationInfoMapper locationInfoMapper,
                                    LocationStockMapper locationStockMapper,
                                    SupplierMapper supplierMapper,
@@ -166,6 +172,7 @@ public class PigCutRecordServiceImpl
         this.barInfoMapper = barInfoMapper;
         this.stockFlowMapper = stockFlowMapper;
         this.productInfoMapper = productInfoMapper;
+        this.productInhouseMapper = productInhouseMapper;
         this.locationInfoMapper = locationInfoMapper;
         this.locationStockMapper = locationStockMapper;
         this.supplierMapper = supplierMapper;
@@ -361,6 +368,8 @@ public class PigCutRecordServiceImpl
         flowOut.setWarehouseId(record.getLocationId());
         flowOut.setInoutType(INOUT_OUT);
         flowOut.setFlowType(FLOW_TYPE_CUT_OUT);
+        // 白条出库去向固定为分割间（FIX-WMS-FLOWDICT-001，前端只读不可改）
+        flowOut.setStockOutDest(STOCK_OUT_DEST_BAR_CUT);
         flowOut.setChangeNum(totalWeight);
         flowOut.setChangeQuantity(totalWeight);
         flowOut.setEarNo(record.getEarNo());
@@ -476,6 +485,9 @@ public class PigCutRecordServiceImpl
                 .eq(BarInfo::getStatus, BAR_STATUS_IN_STOCK)
                 .orderByDesc(BarInfo::getInTime)
                 .last("LIMIT 50"));
+        // FIX-WMS-OUTSOURCE-001 行51：批量取各白条燎毛实际产出的分产品（半只/五花肉/整只 等），
+        // 白条领用卡片据此展示「燎毛产出明细 + 各自重量」，取代仅显「白条(整只)+整猪重量」。
+        Map<Long, List<BarInfoVo.BurnProduct>> burnProductMap = loadBurnProducts(bars);
         return bars.stream().map(b -> {
             BarInfoVo vo = new BarInfoVo();
             vo.setId(b.getId());
@@ -485,8 +497,42 @@ public class PigCutRecordServiceImpl
             vo.setInWeight(b.getInWeight());
             vo.setInTime(b.getInTime());
             vo.setStatus(b.getStatus());
+            vo.setBurnProducts(burnProductMap.getOrDefault(b.getId(), List.of()));
             return vo;
         }).toList();
+    }
+
+    /**
+     * 批量取白条燎毛产出分产品（{@code product_inhouse WHERE white_bar_id IN}，避免 N+1）。
+     *
+     * @return white_bar_id → 该白条燎毛产出分产品列表（产品名 + 重量 + 单位，按 id 升序保留入库顺序）
+     */
+    private Map<Long, List<BarInfoVo.BurnProduct>> loadBurnProducts(List<BarInfo> bars) {
+        if (bars == null || bars.isEmpty()) {
+            return Map.of();
+        }
+        List<Long> barIds = bars.stream().map(BarInfo::getId).filter(Objects::nonNull).toList();
+        if (barIds.isEmpty()) {
+            return Map.of();
+        }
+        List<ProductInhouse> inhouses = productInhouseMapper.selectList(
+            new LambdaQueryWrapper<ProductInhouse>()
+                .select(ProductInhouse::getWhiteBarId, ProductInhouse::getProductName,
+                    ProductInhouse::getProductWeight, ProductInhouse::getProductUnit, ProductInhouse::getId)
+                .in(ProductInhouse::getWhiteBarId, barIds)
+                .orderByAsc(ProductInhouse::getId));
+        Map<Long, List<BarInfoVo.BurnProduct>> map = new HashMap<>();
+        for (ProductInhouse ih : inhouses) {
+            if (ih.getWhiteBarId() == null) {
+                continue;
+            }
+            BarInfoVo.BurnProduct bp = new BarInfoVo.BurnProduct();
+            bp.setProductName(ih.getProductName());
+            bp.setProductWeight(ih.getProductWeight());
+            bp.setProductUnit(StringUtils.isNotBlank(ih.getProductUnit()) ? ih.getProductUnit() : "kg");
+            map.computeIfAbsent(ih.getWhiteBarId(), k -> new ArrayList<>()).add(bp);
+        }
+        return map;
     }
 
     @Override
@@ -706,6 +752,9 @@ public class PigCutRecordServiceImpl
             boolean outsource = bar.getSupplierId() != null;
             vo.setIsOutsource(outsource);
             vo.setSupplierName(outsource ? supplierNameMap.get(bar.getSupplierId()) : null);
+            // FIX-WMS-OUTSOURCE-001 行53：外购无耳号，回填白条标识号 mark_id（分割单 chip 显示用，
+            // 前端优先级 earNo ?? markId ?? barId ?? cutId，让外购记录显外购白条标识而非 CUT 业务码）
+            vo.setMarkId(outsource ? bar.getMarkId() : null);
 
             // P7 统计指标（compute-on-read，防除零）
             // 头皮肉出品率 = arriveWeight / marketingWeight

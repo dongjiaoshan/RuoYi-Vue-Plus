@@ -22,6 +22,7 @@ import org.dromara.djs.common.store.domain.query.StoreQuery;
 import org.dromara.djs.common.store.domain.vo.StoreVo;
 import org.dromara.djs.common.store.mapper.StoreMapper;
 import org.dromara.djs.common.store.service.IStoreService;
+import org.dromara.djs.common.store.service.IStoreUserRelationService;
 import org.dromara.djs.common.validate.BizReferenceChecker;
 import org.springframework.stereotype.Service;
 
@@ -51,15 +52,18 @@ public class StoreServiceImpl extends DjsBaseServiceImpl<StoreMapper, Store> imp
     private final IBizCodeGenerator bizCodeGenerator;
     private final UserService userService;
     private final BizReferenceChecker bizReferenceChecker;
+    private final IStoreUserRelationService storeUserRelationService;
 
     public StoreServiceImpl(StoreMapper baseMapper,
                             IBizCodeGenerator bizCodeGenerator,
                             UserService userService,
-                            BizReferenceChecker bizReferenceChecker) {
+                            BizReferenceChecker bizReferenceChecker,
+                            IStoreUserRelationService storeUserRelationService) {
         super(baseMapper);
         this.bizCodeGenerator = bizCodeGenerator;
         this.userService = userService;
         this.bizReferenceChecker = bizReferenceChecker;
+        this.storeUserRelationService = storeUserRelationService;
     }
 
     /**
@@ -80,14 +84,14 @@ public class StoreServiceImpl extends DjsBaseServiceImpl<StoreMapper, Store> imp
     public TableDataInfo<StoreVo> queryPageList(StoreQuery query, PageQuery pageQuery) {
         LambdaQueryWrapper<Store> wrapper = buildQueryWrapper(query);
         Page<StoreVo> page = baseMapper.selectVoPage(pageQuery.build(), wrapper);
-        page.getRecords().forEach(this::fillEmployeeCount);
+        fillEmployeeCounts(page.getRecords());
         return TableDataInfo.build(page);
     }
 
     @Override
     public List<StoreVo> queryList(StoreQuery query) {
         List<StoreVo> list = baseMapper.selectVoList(buildQueryWrapper(query));
-        list.forEach(this::fillEmployeeCount);
+        fillEmployeeCounts(list);
         return list;
     }
 
@@ -95,17 +99,24 @@ public class StoreServiceImpl extends DjsBaseServiceImpl<StoreMapper, Store> imp
     public StoreVo queryById(Long id) {
         StoreVo vo = baseMapper.selectVoById(id);
         if (vo != null) {
-            fillEmployeeCount(vo);
+            vo.setEmployeeCount(storeUserRelationService.countUsersByStore(vo.getId()));
         }
         return vo;
     }
 
     /**
-     * 员工数量回填。当前 t_md_store 与 sys_user 关联模型仅有 manager_user_id（单店长），
-     * 无法直接统计员工数；hotfix 先置 0，待 Kevin 定义关联规则（store_user_relation / sys_dept 复用）后改实统计。
+     * 批量回填员工数（门店-人员绑定有效行数，STORE-PERM-001）。一次 GROUP BY 防分页 N+1，
+     * 无绑定的门店按 0 兜底。
      */
-    private void fillEmployeeCount(StoreVo vo) {
-        vo.setEmployeeCount(0);
+    private void fillEmployeeCounts(List<StoreVo> list) {
+        if (list == null || list.isEmpty()) {
+            return;
+        }
+        List<Long> storeIds = list.stream().map(StoreVo::getId).filter(java.util.Objects::nonNull).distinct().toList();
+        Map<Long, Integer> countMap = storeUserRelationService.countUsersByStores(storeIds);
+        for (StoreVo vo : list) {
+            vo.setEmployeeCount(countMap.getOrDefault(vo.getId(), 0));
+        }
     }
 
     @Override
@@ -155,17 +166,26 @@ public class StoreServiceImpl extends DjsBaseServiceImpl<StoreMapper, Store> imp
         if (exists == null) {
             throw new ServiceException("门店不存在或已删除：" + storeId);
         }
+        String managerName = null;
+        String managerPhone = null;
         if (userId != null) {
             // 校验 sys_user 存在性（已软删 / 不存在 → userName 返 null）
             String userName = userService.selectUserNameById(userId);
             if (StringUtils.isBlank(userName)) {
                 throw new ServiceException("店长用户不存在或已停用：" + userId);
             }
+            // 把所选人员的姓名/电话快照回写到门店文本列，列表「店长姓名/电话」直接展示
+            String nickName = userService.selectNicknameById(userId);
+            managerName = StringUtils.isNotBlank(nickName) ? nickName : userName;
+            managerPhone = userService.selectPhonenumberById(userId);
         }
-        // 仅 update manager_user_id 列（wrapper-only update **不**走 MetaObjectHandler.updateFill —
-        // 需显式 set update_by / update_time，与 DjsBaseServiceImpl#softDelete 同范式）
+        // update manager_user_id + 同步快照 manager_name / manager_phone（清空店长时一并置 NULL）
+        // wrapper-only update **不**走 MetaObjectHandler.updateFill —
+        // 需显式 set update_by / update_time，与 DjsBaseServiceImpl#softDelete 同范式
         UpdateWrapper<Store> wrapper = new UpdateWrapper<Store>()
             .set("manager_user_id", userId)
+            .set("manager_name", managerName)
+            .set("manager_phone", managerPhone)
             .set("update_by", currentUserIdSafe())
             .set("update_time", new Date())
             .eq("id", storeId);

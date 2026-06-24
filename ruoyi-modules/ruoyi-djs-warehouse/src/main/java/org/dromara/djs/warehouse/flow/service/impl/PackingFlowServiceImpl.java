@@ -60,9 +60,13 @@ public class PackingFlowServiceImpl implements IPackingFlowService {
 
     /**
      * djs_flow_type 字典 value（均已 seed，无需新 DDL）。
+     *
+     * <p>包材库 per 项出库 = 仓库生产消耗，归生产领用（FIX-WMS-FLOWDICT-003）：flow_type={@code prod_pick_out}、
+     * 强制 dest={@code prod_pick}（包材库唯一来源是仓库，无歧义，硬编码不经 scene 推断）。</p>
      */
     private static final String FLOW_PURCHASE_IN = "purchase_in";
-    private static final String FLOW_PICK_OUT = "pick_out";
+    private static final String FLOW_PROD_PICK_OUT = "prod_pick_out";
+    private static final String DEST_PROD_PICK = "prod_pick";
     private static final String FLOW_CHECK_IN = "check_in";
     private static final String FLOW_CHECK_OUT = "check_out";
 
@@ -138,8 +142,9 @@ public class PackingFlowServiceImpl implements IPackingFlowService {
         flow.setProductId(bo.getProductId());
         flow.setWarehouseId(locId);
         flow.setInoutType(INOUT_OUT);
-        flow.setFlowType(FLOW_PICK_OUT);
-        flow.setStockOutDest(bo.getStockOutDest());
+        // 包材库出库 = 仓库生产消耗：强制生产领用，dest 不信 mp 传值（FIX-WMS-FLOWDICT-003）
+        flow.setFlowType(FLOW_PROD_PICK_OUT);
+        flow.setStockOutDest(DEST_PROD_PICK);
         flow.setChangeNum(bo.getQuantity().negate());
         flow.setChangeQuantity(bo.getQuantity());
         flow.setOperatorId(userId);

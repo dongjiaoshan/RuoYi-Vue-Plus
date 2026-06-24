@@ -7,7 +7,9 @@ import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.common.core.exception.ServiceException;
+import org.dromara.common.core.utils.StringUtils;
 import org.dromara.common.satoken.utils.LoginHelper;
+import org.dromara.djs.common.store.context.StoreContext;
 import org.dromara.djs.store.member.domain.StoreMember;
 import org.dromara.djs.store.member.domain.StoreMemberConsumption;
 import org.dromara.djs.store.member.domain.bo.StoreMemberConsumptionBo;
@@ -68,10 +70,32 @@ public class StoreMemberConsumptionServiceImpl implements IStoreMemberConsumptio
 
     @Override
     public List<StoreMemberConsumptionVo> listByMember(Long memberId) {
+        // 门店行级隔离（STORE-PERM-001）：除多租户/门店拦截器自动加 store_id 外，
+        // 显式补一道 store_id 过滤（上下文存在且非放行时），不依赖拦截器是否覆盖此自定义 wrapper。
+        Long storeId = currentStoreIdForFilter();
         return baseMapper.selectVoList(new LambdaQueryWrapper<StoreMemberConsumption>()
             .eq(StoreMemberConsumption::getMemberId, memberId)
+            .eq(storeId != null, StoreMemberConsumption::getStoreId, storeId)
             .orderByDesc(StoreMemberConsumption::getConsumeDate)
             .orderByDesc(StoreMemberConsumption::getId));
+    }
+
+    /**
+     * 取用于显式过滤的当前门店 ID：放行（超管 / 租管 / ignore）或无上下文返 null（不加额外过滤）。
+     */
+    private Long currentStoreIdForFilter() {
+        if (StoreContext.isIgnore()) {
+            return null;
+        }
+        String storeId = StoreContext.getStoreId();
+        if (StringUtils.isBlank(storeId)) {
+            return null;
+        }
+        try {
+            return Long.valueOf(storeId);
+        } catch (NumberFormatException e) {
+            return null;
+        }
     }
 
     /**

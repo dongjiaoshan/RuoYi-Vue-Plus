@@ -56,6 +56,30 @@ public interface ProductProductionMapper extends BaseMapperPlus<ProductProductio
     List<Map<String, Object>> selectTodayPackedCount(@Param("productIds") List<Long> productIds);
 
     /**
+     * 批量统计「今天按门店已打包份数」（每条 product_production = 一份）：按 {@code (product_id, store_id)}
+     * 分组 COUNT 今天的生产记录。
+     *
+     * <p>FIX-WMS-PACKDEMAND-001 行52：同产品多门店需求时，「打包完成」必须<b>按门店分别判</b>——
+     * 把 3 份全打给同一门店，不能让另一个门店的需求也算完成。本方法给出「productId → 各门店今天已打包份数」，
+     * service 端与各门店未发货需求逐店比对，全部门店都打满才算该产品完成。</p>
+     *
+     * <p>只统计绑定了门店（{@code store_id IS NOT NULL}）的生产记录；未绑门店的打包（直接入库不指定门店）
+     * 不计入任何门店的完成度。租户隔离 V1 单租户显式 {@code tenant_id='1001'}。</p>
+     *
+     * @param productIds 目标成品 id 列表（非空）
+     * @return 行 {@code {productId, storeId, cnt}}；无今天记录的组合不在结果里
+     */
+    @Select("<script>"
+        + "SELECT product_id AS productId, store_id AS storeId, COUNT(*) AS cnt "
+        + "  FROM t_warehouse_product_production "
+        + " WHERE del_flag = '0' AND tenant_id = '1001' AND DATE(produce_date) = CURDATE() "
+        + "   AND store_id IS NOT NULL "
+        + "   AND product_id IN <foreach collection='productIds' item='id' open='(' separator=',' close=')'>#{id}</foreach> "
+        + " GROUP BY product_id, store_id"
+        + "</script>")
+    List<Map<String, Object>> selectTodayPackedCountByStore(@Param("productIds") List<Long> productIds);
+
+    /**
      * 批量统计「已完成打包累计重量」（按 product_id 分组 SUM {@code product_weight}）。
      *
      * <p>打包台用——admin 果蔬打包页按「目标成品已打包总重量」算剩余可打包量。数据源同
@@ -161,7 +185,7 @@ public interface ProductProductionMapper extends BaseMapperPlus<ProductProductio
         "             AND dm.del_flag = '0'",
         "             AND dm.tenant_id = pp.tenant_id",
         "           GROUP BY dm.store_id",
-        "          HAVING SUM(dm.demand_quantity - COALESCE(dm.shipped_count, 0)) &gt; 0",
+        "          HAVING SUM(GREATEST(dm.demand_quantity - COALESCE(dm.shipped_count, 0), 0)) &gt; 0",
         "       ) sd) AS storeDemandCount",
         "  FROM t_warehouse_product_production pp",
         "  LEFT JOIN t_warehouse_product_info pi",

@@ -76,6 +76,12 @@ public class OutsourcePigVo implements Serializable {
     private Long supplierId;
 
     /**
+     * 镜像白条业务码（= {@code t_warehouse_bar_info.bar_id}）。供 service 层据此回填
+     * {@link #arriveTime}（外购到场时间 = 关联白条燎毛称重时刻 {@code in_time}）。
+     */
+    private String barId;
+
+    /**
      * 供应商名称（service 层按 supplierId 批量回填）。
      */
     @ExcelProperty(value = "供应商")

@@ -59,4 +59,19 @@ public class MatReturnBo {
     @Size(max = 500, message = "{mat.remark.size}")
     private String remark;
 
+    /**
+     * 退回来源场景（可空；{@code warehouse} / {@code breed} / {@code plant}，FIX-WMS-FLOWDICT-003）。
+     *
+     * <p>与 {@code MatPickBo.sourceScene} 同语义：mp 各页按自己模块显式传，service 据此强制赋退回
+     * {@code flow_type}：</p>
+     * <ul>
+     *   <li>{@code warehouse}（仓库打包领用退回，{@code matPack/*}）→ flow_type={@code prod_return_in}（生产退回）；</li>
+     *   <li>{@code breed} / {@code plant}（养殖 / 种植领用退回，{@code matIssue/*}）→
+     *       flow_type={@code pick_return_in}（领用退回）。</li>
+     * </ul>
+     *
+     * <p>为空（存量 mp 调用未传）→ service 兜底 {@code pick_return_in}（领用退回，保持前一轮行为不回归）。</p>
+     */
+    private String sourceScene;
+
 }

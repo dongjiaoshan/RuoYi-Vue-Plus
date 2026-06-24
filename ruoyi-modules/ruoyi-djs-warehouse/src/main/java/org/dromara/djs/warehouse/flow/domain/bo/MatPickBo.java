@@ -108,4 +108,22 @@ public class MatPickBo {
      */
     private Long operatorId;
 
+    /**
+     * 领用来源场景（可空；{@code warehouse} / {@code breed} / {@code plant}，FIX-WMS-FLOWDICT-003）。
+     *
+     * <p>同一 endpoint {@code /applet/warehouse/mat/pick} 服务三类来源（仓库打包领用 / 养殖物资领用 /
+     * 种植物资领用），controller 层无法区分。本字段由 mp 各页按自己所属模块显式传，service 据此强制赋
+     * {@code flow_type} + 覆盖 {@code stock_out_dest}（见 {@code MatSourceScene}）：</p>
+     * <ul>
+     *   <li>{@code warehouse}（仓库打包领用，{@code matPack/*}）→ flow_type={@code prod_pick_out}、
+     *       dest={@code prod_pick}（生产领用）；</li>
+     *   <li>{@code breed} / {@code plant}（养殖 / 种植物资领用，{@code matIssue/*}）→
+     *       flow_type={@code dept_pick_out}、dest={@code dept_pick}（部门领用）。</li>
+     * </ul>
+     *
+     * <p>为空（存量 mp 调用未传）→ service 按 {@link #stockOutDest} 旧值兜底推断（{@code kitchen}=仓库生产、
+     * 其它=部门），保证老调用也正确归类。<b>service 一律强制覆盖 dest，不信 mp 传的具体 dest 值。</b></p>
+     */
+    private String sourceScene;
+
 }

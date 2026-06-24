@@ -13,8 +13,11 @@ import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.web.core.BaseController;
 import org.dromara.djs.common.store.domain.bo.StoreBo;
 import org.dromara.djs.common.store.domain.query.StoreQuery;
+import org.dromara.djs.common.store.domain.vo.StorePickerVo;
+import org.dromara.djs.common.store.domain.vo.StoreUserVo;
 import org.dromara.djs.common.store.domain.vo.StoreVo;
 import org.dromara.djs.common.store.service.IStoreService;
+import org.dromara.djs.common.store.service.IStoreUserRelationService;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -51,6 +54,7 @@ import java.util.List;
 public class StoreController extends BaseController {
 
     private final IStoreService storeService;
+    private final IStoreUserRelationService storeUserRelationService;
 
     /**
      * 分页查询门店列表。
@@ -127,6 +131,47 @@ public class StoreController extends BaseController {
         // userId == 0 → 视为清空
         Long realUserId = (userId == null || userId == 0L) ? null : userId;
         return toAjax(storeService.setManager(storeId, realUserId));
+    }
+
+    /**
+     * 查询门店已绑人员列表（STORE-PERM-001）。
+     */
+    @SaCheckPermission("djs:common:store:bindUser")
+    @GetMapping("/{storeId}/users")
+    public R<List<StoreUserVo>> listStoreUsers(@PathVariable Long storeId) {
+        return R.ok(storeUserRelationService.listUsersByStore(storeId));
+    }
+
+    /**
+     * 绑定人员到门店（全量幂等：已绑跳过 / 软删复活 / 新增）。
+     */
+    @SaCheckPermission("djs:common:store:bindUser")
+    @Log(title = "门店人员绑定", businessType = BusinessType.GRANT)
+    @RepeatSubmit
+    @PutMapping("/{storeId}/users")
+    public R<Void> bindStoreUsers(@PathVariable Long storeId, @RequestBody List<Long> userIds) {
+        storeUserRelationService.bindUsers(storeId, userIds);
+        return R.ok();
+    }
+
+    /**
+     * 解绑门店人员（软删，该员工视角隐藏；管理员仍可查）。
+     */
+    @SaCheckPermission("djs:common:store:bindUser")
+    @Log(title = "门店人员绑定", businessType = BusinessType.GRANT)
+    @DeleteMapping("/{storeId}/users/{userId}")
+    public R<Void> unbindStoreUser(@PathVariable Long storeId, @PathVariable Long userId) {
+        storeUserRelationService.unbind(storeId, userId);
+        return R.ok();
+    }
+
+    /**
+     * 查当前登录人有权限的门店精简列表（驱动全局门店选择器）。超管 / 租管返全部门店。
+     */
+    @SaCheckPermission("djs:common:store:list")
+    @GetMapping("/my-stores")
+    public R<List<StorePickerVo>> myStores() {
+        return R.ok(storeUserRelationService.listMyStores());
     }
 
 }

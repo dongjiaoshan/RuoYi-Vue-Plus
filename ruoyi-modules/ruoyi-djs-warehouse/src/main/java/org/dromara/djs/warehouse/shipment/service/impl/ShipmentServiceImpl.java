@@ -94,6 +94,8 @@ public class ShipmentServiceImpl
      * stock_flow.flow_type — 发货出库（dict djs_flow_type 已 D9 seed）。
      */
     private static final String FLOW_TYPE_SHIP_OUT = "ship_out";
+    /** 出库去向：发货月台（FIX-WMS-FLOWDICT-001，发货出库固定去向）。 */
+    private static final String STOCK_OUT_DEST_SHIP_DOCK = "ship_dock";
 
     /**
      * stock_flow.inout_type — OT=出库（CHAR(3)）。
@@ -266,6 +268,8 @@ public class ShipmentServiceImpl
             flow.setDemandId(bo.getDemandId());
             flow.setInoutType(INOUT_OUT);
             flow.setFlowType(FLOW_TYPE_SHIP_OUT);
+            // 发货出库去向固定为发货月台（FIX-WMS-FLOWDICT-001，前端只读不可改）
+            flow.setStockOutDest(STOCK_OUT_DEST_SHIP_DOCK);
             flow.setChangeNum(p.getProduceQuantity());
             flow.setChangeQuantity(p.getProduceQuantity());
             flow.setEarNo(p.getEarNo());
@@ -367,10 +371,14 @@ public class ShipmentServiceImpl
             vo.setShipDate(storeDemands.stream()
                 .map(DemandManage::getDemandDate).filter(Objects::nonNull)
                 .max(LocalDate::compareTo).orElse(null));
-            // 门店当天 demand 全 COMPLETED → 已发货；否则仍有可发 → 待发货（#201）。
+            // 门店当天发货状态三态（允许多次发货 #50）：全 COMPLETED → 已发货；
+            // 有 demand 已 COMPLETED/PARTIAL_SHIPPED 但未全发 → 部分发货；都未发 → 待发货。
             boolean allShipped = storeDemands.stream()
                 .allMatch(d -> DemandStatus.COMPLETED.name().equals(d.getDemandStatus()));
-            vo.setShipStatus(allShipped ? "已发货" : "待发货");
+            boolean anyShipped = storeDemands.stream()
+                .anyMatch(d -> DemandStatus.COMPLETED.name().equals(d.getDemandStatus())
+                    || DemandStatus.PARTIAL_SHIPPED.name().equals(d.getDemandStatus()));
+            vo.setShipStatus(allShipped ? "已发货" : (anyShipped ? "部分发货" : "待发货"));
             list.add(vo);
         });
         // 5. 稳定排序：待发需求多的门店在前，其次按门店名。

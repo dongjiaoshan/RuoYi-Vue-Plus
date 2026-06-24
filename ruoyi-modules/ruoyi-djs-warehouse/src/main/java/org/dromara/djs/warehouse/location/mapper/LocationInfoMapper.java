@@ -19,39 +19,41 @@ import java.util.List;
 public interface LocationInfoMapper extends BaseMapperPlus<LocationInfo, LocationInfoVo> {
 
     /**
-     * 按库位类型聚合 [库位数] + [在库产品数] + [当前库存总量]。
+     * 按单个库位聚合 [在库产品数] + [当前库存总量]（每库位一行）。
      *
      * <p>左联 location_stock：location 无库存时 productCount=0 / currentStock=0。
      * 多租户拦截器对自定义 {@code @Select} 含 JOIN 的聚合不保证注入 tenant_id，
-     * 故 WHERE 显式带 {@code tenant_id = #{tenantId}}（DJS-FIX-ADMIN-W22-008 §0.5）。</p>
+     * 故 WHERE 显式带 {@code tenant_id = #{tenantId}}（§0.5）。返回库位身份字段供前端逐库位展示。</p>
      *
      * @param tenantId 租户（V1 固定 '1001'）
-     * @return 仅含 locationType / locationCount / productCount / currentStock 的部分聚合行
+     * @return 按库位聚合行（locationId / locationCode / locationName / locationType / productCount / currentStock）
      */
     @Select("""
-        SELECT l.location_type AS locationType,
-               COUNT(DISTINCT l.id) AS locationCount,
+        SELECT l.id AS locationId,
+               l.location_code AS locationCode,
+               l.location_name AS locationName,
+               l.location_type AS locationType,
                COUNT(DISTINCT ls.product_id) AS productCount,
                COALESCE(SUM(ls.product_stock), 0) AS currentStock
         FROM t_warehouse_location_info l
         LEFT JOIN t_warehouse_location_stock ls
                ON ls.location_id = l.id AND ls.del_flag = '0' AND ls.tenant_id = #{tenantId}
         WHERE l.del_flag = '0' AND l.tenant_id = #{tenantId}
-        GROUP BY l.location_type
+        GROUP BY l.id, l.location_code, l.location_name, l.location_type
         """)
-    List<LocationCardSummaryVo> selectStockSummaryByType(@Param("tenantId") String tenantId);
+    List<LocationCardSummaryVo> selectStockSummaryByLocation(@Param("tenantId") String tenantId);
 
     /**
-     * 按库位类型聚合今日 [入库量] + [出库量]（stock_flow.flow_date = 今天）。
+     * 按单个库位聚合今日 [入库量] + [出库量]（stock_flow.flow_date = 今天）。
      *
      * <p>stock_flow.warehouse_id 物理列名实为 location FK（doc/11 §2.3 命名遗留）。
      * inout_type: IN 入 / OT 出。WHERE 显式带 tenant_id（§0.5）。</p>
      *
      * @param tenantId 租户
-     * @return 仅含 locationType / todayInQty / todayOutQty 的部分聚合行
+     * @return 仅含 locationId / todayInQty / todayOutQty 的部分聚合行
      */
     @Select("""
-        SELECT l.location_type AS locationType,
+        SELECT l.id AS locationId,
                COALESCE(SUM(CASE WHEN f.inout_type = 'IN' THEN ABS(f.change_quantity) ELSE 0 END), 0) AS todayInQty,
                COALESCE(SUM(CASE WHEN f.inout_type = 'OT' THEN ABS(f.change_quantity) ELSE 0 END), 0) AS todayOutQty
         FROM t_warehouse_stock_flow f
@@ -59,20 +61,20 @@ public interface LocationInfoMapper extends BaseMapperPlus<LocationInfo, Locatio
           ON f.warehouse_id = l.id AND l.del_flag = '0' AND l.tenant_id = #{tenantId}
         WHERE f.del_flag = '0' AND f.tenant_id = #{tenantId}
           AND DATE(f.flow_date) = CURDATE()
-        GROUP BY l.location_type
+        GROUP BY l.id
         """)
-    List<LocationCardSummaryVo> selectTodayFlowByType(@Param("tenantId") String tenantId);
+    List<LocationCardSummaryVo> selectTodayFlowByLocation(@Param("tenantId") String tenantId);
 
     /**
-     * 按库位类型取最近一次盘点的 [盘点日] + [盘点结果]（每类取 latest_check_time 最大的库存行）。
+     * 按单个库位取最近一次盘点的 [盘点日] + [盘点结果]（每库位取 latest_check_time 最大的库存行）。
      *
-     * <p>用 NOT EXISTS 子查询取每类最近一条；WHERE 显式带 tenant_id（§0.5）。</p>
+     * <p>用 NOT EXISTS 子查询取每库位最近一条；WHERE 显式带 tenant_id（§0.5）。</p>
      *
      * @param tenantId 租户
-     * @return 仅含 locationType / lastCheckDate / lastCheckResult 的部分聚合行
+     * @return 仅含 locationId / lastCheckDate / lastCheckResult 的部分聚合行
      */
     @Select("""
-        SELECT l.location_type AS locationType,
+        SELECT ls.location_id AS locationId,
                ls.latest_check_time AS lastCheckDate,
                ls.check_result AS lastCheckResult
         FROM t_warehouse_location_stock ls
@@ -82,14 +84,13 @@ public interface LocationInfoMapper extends BaseMapperPlus<LocationInfo, Locatio
           AND ls.latest_check_time IS NOT NULL
           AND NOT EXISTS (
               SELECT 1 FROM t_warehouse_location_stock ls2
-              JOIN t_warehouse_location_info l2 ON ls2.location_id = l2.id
-              WHERE l2.location_type = l.location_type
+              WHERE ls2.location_id = ls.location_id
                 AND ls2.del_flag = '0' AND ls2.tenant_id = #{tenantId}
                 AND ls2.latest_check_time IS NOT NULL
                 AND ls2.latest_check_time > ls.latest_check_time
           )
         """)
-    List<LocationCardSummaryVo> selectLastCheckByType(@Param("tenantId") String tenantId);
+    List<LocationCardSummaryVo> selectLastCheckByLocation(@Param("tenantId") String tenantId);
 
     /**
      * mp 物资领用「按库位类型列库位 chip」列表（WMS-OUTSOURCE-001：crop_loc 种植库 / farm_loc 养殖库）。

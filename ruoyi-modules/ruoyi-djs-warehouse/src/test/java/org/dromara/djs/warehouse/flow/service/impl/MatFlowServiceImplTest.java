@@ -42,6 +42,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -153,7 +154,7 @@ class MatFlowServiceImplTest {
     }
 
     @Test
-    @DisplayName("pick happy：扣库存成功 → 流水 INSERT(pick_out / OT / change_num=-20 / change_quantity=20)")
+    @DisplayName("pick happy：扣库存成功 → 流水 INSERT(dept_pick_out / OT / change_num=-20 / change_quantity=20)；无 sourceScene 兜底部门领用 + dest 强制 dept_pick（FIX-WMS-FLOWDICT-003）")
     void testPick_Happy() {
         when(locationStockMapper.deductByProductLocation(eq(LOCATION_ID), eq(PRODUCT_ID), any(BigDecimal.class), eq(USER_ID)))
             .thenReturn(1);
@@ -163,11 +164,12 @@ class MatFlowServiceImplTest {
         ArgumentCaptor<StockFlow> cap = ArgumentCaptor.forClass(StockFlow.class);
         verify(stockFlowMapper, times(1)).insert(cap.capture());
         StockFlow f = cap.getValue();
-        assertThat(f.getFlowType()).isEqualTo("pick_out");
+        // 无 sourceScene + dest 非 kitchen → 兜底部门来源：flow_type=dept_pick_out、dest 强制覆盖 dept_pick
+        assertThat(f.getFlowType()).isEqualTo("dept_pick_out");
         assertThat(f.getInoutType()).isEqualTo("OT");
         assertThat(f.getChangeNum()).isEqualByComparingTo("-20");
         assertThat(f.getChangeQuantity()).isEqualByComparingTo("20");
-        assertThat(f.getStockOutDest()).isEqualTo("内部消耗");
+        assertThat(f.getStockOutDest()).isEqualTo("dept_pick");
         assertThat(f.getOperatorId()).isEqualTo(USER_ID);
         verify(locationStockMapper, times(1))
             .deductByProductLocation(eq(LOCATION_ID), eq(PRODUCT_ID), any(BigDecimal.class), eq(USER_ID));
@@ -397,7 +399,8 @@ class MatFlowServiceImplTest {
         ArgumentCaptor<StockFlow> cap = ArgumentCaptor.forClass(StockFlow.class);
         verify(stockFlowMapper, times(1)).insert(cap.capture());
         StockFlow f = cap.getValue();
-        assertThat(f.getFlowType()).isEqualTo("pick_out");
+        // 无 sourceScene + dest 非 kitchen → 兜底部门领用 dept_pick_out（FIX-WMS-FLOWDICT-003）
+        assertThat(f.getFlowType()).isEqualTo("dept_pick_out");
         assertThat(f.getInoutType()).isEqualTo("OT");
         assertThat(f.getPlotId()).isEqualTo(PLOT_ID);
         assertThat(f.getProductId()).isEqualTo(RELATED_PRODUCT_ID);
@@ -452,10 +455,11 @@ class MatFlowServiceImplTest {
     }
 
     @Test
-    @DisplayName("return happy：今日已领 20 / 已退 5 / 已损 3 → 退 8 通过；INSERT(return_in / IN / +8)")
+    @DisplayName("return happy：今日已领 20 / 已退 5 / 已损 3 → 退 8 通过；INSERT(pick_return_in / IN / +8)")
     void testReturn_Happy() {
-        when(stockFlowMapper.sumTodayByUserProductType(USER_ID, PRODUCT_ID, "pick_out")).thenReturn(new BigDecimal("20"));
-        when(stockFlowMapper.sumTodayByUserProductType(USER_ID, PRODUCT_ID, "return_in")).thenReturn(new BigDecimal("5"));
+        // 额度统计按来源拆分后走 IN-list 版（领用两键 + 历史 pick_out / 退回两键），loss 仍单键
+        when(stockFlowMapper.sumTodayByUserProductTypes(eq(USER_ID), eq(PRODUCT_ID), argThat(l -> l != null && l.contains("dept_pick_out")))).thenReturn(new BigDecimal("20"));
+        when(stockFlowMapper.sumTodayByUserProductTypes(eq(USER_ID), eq(PRODUCT_ID), argThat(l -> l != null && l.contains("pick_return_in")))).thenReturn(new BigDecimal("5"));
         when(stockFlowMapper.sumTodayByUserProductType(USER_ID, PRODUCT_ID, "loss")).thenReturn(new BigDecimal("3"));
         when(locationStockMapper.addByProductLocation(eq(LOCATION_ID), eq(PRODUCT_ID), any(), eq(USER_ID))).thenReturn(1);
 
@@ -464,7 +468,7 @@ class MatFlowServiceImplTest {
         ArgumentCaptor<StockFlow> cap = ArgumentCaptor.forClass(StockFlow.class);
         verify(stockFlowMapper, times(1)).insert(cap.capture());
         StockFlow f = cap.getValue();
-        assertThat(f.getFlowType()).isEqualTo("return_in");
+        assertThat(f.getFlowType()).isEqualTo("pick_return_in");
         assertThat(f.getInoutType()).isEqualTo("IN");
         assertThat(f.getChangeNum()).isEqualByComparingTo("8");
         assertThat(f.getChangeQuantity()).isEqualByComparingTo("8");
@@ -473,8 +477,8 @@ class MatFlowServiceImplTest {
     @Test
     @DisplayName("return 超额：今日已领 20 / 已退 10 / 已损 0 → 剩 10，申请 15 → 抛今日额度不足 + 无 INSERT")
     void testReturn_OverQuota() {
-        when(stockFlowMapper.sumTodayByUserProductType(USER_ID, PRODUCT_ID, "pick_out")).thenReturn(new BigDecimal("20"));
-        when(stockFlowMapper.sumTodayByUserProductType(USER_ID, PRODUCT_ID, "return_in")).thenReturn(new BigDecimal("10"));
+        when(stockFlowMapper.sumTodayByUserProductTypes(eq(USER_ID), eq(PRODUCT_ID), argThat(l -> l != null && l.contains("dept_pick_out")))).thenReturn(new BigDecimal("20"));
+        when(stockFlowMapper.sumTodayByUserProductTypes(eq(USER_ID), eq(PRODUCT_ID), argThat(l -> l != null && l.contains("pick_return_in")))).thenReturn(new BigDecimal("10"));
         when(stockFlowMapper.sumTodayByUserProductType(USER_ID, PRODUCT_ID, "loss")).thenReturn(BigDecimal.ZERO);
 
         assertThatThrownBy(() -> service.returnBack(returnBo(new BigDecimal("15"))))
@@ -488,8 +492,8 @@ class MatFlowServiceImplTest {
     @Test
     @DisplayName("loss happy：额度内损 3 → INSERT(loss / OT / -3) + 扣库存（影响行 0 不抛）")
     void testLoss_Happy() {
-        when(stockFlowMapper.sumTodayByUserProductType(USER_ID, PRODUCT_ID, "pick_out")).thenReturn(new BigDecimal("20"));
-        when(stockFlowMapper.sumTodayByUserProductType(USER_ID, PRODUCT_ID, "return_in")).thenReturn(BigDecimal.ZERO);
+        when(stockFlowMapper.sumTodayByUserProductTypes(eq(USER_ID), eq(PRODUCT_ID), argThat(l -> l != null && l.contains("dept_pick_out")))).thenReturn(new BigDecimal("20"));
+        when(stockFlowMapper.sumTodayByUserProductTypes(eq(USER_ID), eq(PRODUCT_ID), argThat(l -> l != null && l.contains("pick_return_in")))).thenReturn(BigDecimal.ZERO);
         when(stockFlowMapper.sumTodayByUserProductType(USER_ID, PRODUCT_ID, "loss")).thenReturn(BigDecimal.ZERO);
         when(locationStockMapper.deductByProductLocation(any(), any(), any(), any())).thenReturn(0);
 
@@ -562,8 +566,8 @@ class MatFlowServiceImplTest {
     void testReturn_NullLocation_ResolveDefault() {
         Long defaultLoc = 7099L;
         when(locationStockMapper.selectDefaultLocationByProduct(PRODUCT_ID)).thenReturn(defaultLoc);
-        when(stockFlowMapper.sumTodayByUserProductType(USER_ID, PRODUCT_ID, "pick_out")).thenReturn(new BigDecimal("20"));
-        when(stockFlowMapper.sumTodayByUserProductType(USER_ID, PRODUCT_ID, "return_in")).thenReturn(BigDecimal.ZERO);
+        when(stockFlowMapper.sumTodayByUserProductTypes(eq(USER_ID), eq(PRODUCT_ID), argThat(l -> l != null && l.contains("dept_pick_out")))).thenReturn(new BigDecimal("20"));
+        when(stockFlowMapper.sumTodayByUserProductTypes(eq(USER_ID), eq(PRODUCT_ID), argThat(l -> l != null && l.contains("pick_return_in")))).thenReturn(BigDecimal.ZERO);
         when(stockFlowMapper.sumTodayByUserProductType(USER_ID, PRODUCT_ID, "loss")).thenReturn(BigDecimal.ZERO);
         when(locationStockMapper.addByProductLocation(eq(defaultLoc), eq(PRODUCT_ID), any(), eq(USER_ID))).thenReturn(1);
 
@@ -721,7 +725,7 @@ class MatFlowServiceImplTest {
     }
 
     @Test
-    @DisplayName("pickByBatch happy：batchId 非空 → 扣选中篮(deductStockById) + 1 行 pick_out 流水(带 product_id/ear_no/plot_id 源标签) + 1 行 inhouse(带源标签)")
+    @DisplayName("pickByBatch happy：batchId 非空 → 扣选中篮(deductStockById) + 1 行 dept_pick_out 流水(带 product_id/ear_no/plot_id 源标签) + 1 行 inhouse(带源标签)")
     void testPickByBatch_Happy() {
         Long batchId = 90011L;
         Long locId = 7003L;
@@ -755,11 +759,11 @@ class MatFlowServiceImplTest {
         bo.setRemark("ut-batch");
         service.pick(bo);
 
-        // 1 行 pick_out 流水：带篮的 product_id / ear_no / plot_id 源标签
+        // 1 行 dept_pick_out 流水：带篮的 product_id / ear_no / plot_id 源标签（无 sourceScene 兜底部门领用）
         ArgumentCaptor<StockFlow> fCap = ArgumentCaptor.forClass(StockFlow.class);
         verify(stockFlowMapper, times(1)).insert(fCap.capture());
         StockFlow f = fCap.getValue();
-        assertThat(f.getFlowType()).isEqualTo("pick_out");
+        assertThat(f.getFlowType()).isEqualTo("dept_pick_out");
         assertThat(f.getInoutType()).isEqualTo("OT");
         assertThat(f.getProductId()).isEqualTo(PRODUCT_ID);
         assertThat(f.getEarNo()).isEqualTo("EAR-X");

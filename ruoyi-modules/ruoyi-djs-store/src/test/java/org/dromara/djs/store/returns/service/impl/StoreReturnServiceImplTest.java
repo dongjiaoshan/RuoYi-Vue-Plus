@@ -85,7 +85,7 @@ class StoreReturnServiceImplTest {
     private static final Long LOCATION_ID = 3001L;
     private static final Long MEMBER_ID = 7001L;
     private static final String RETURN_NO = "RET2026060200001";
-    private static final String FLOW_RETURN_IN = "return_in";
+    private static final String FLOW_RETURN_IN = "store_return_in";
 
     /**
      * MyBatis-Plus 单测 entity cache 预热（skill coder-mp-entity-cache-test）：

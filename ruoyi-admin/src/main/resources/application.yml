@@ -155,6 +155,20 @@ tenant:
     - sys_farm
     - mp_subscribe_record
 
+# 门店行级数据隔离（STORE-PERM-001）—— 白名单（opt-in）：仅以下表会被注入 WHERE store_id=?
+# 空上下文 / 非白名单表 / 超管租管 一律不过滤，详见 StoreLineHandler。
+store:
+  includes:
+    - t_store_daily_ledger
+    - t_store_inventory
+    - t_store_member
+    - t_store_member_consumption
+    - t_store_product_relation
+    - t_store_return
+    - t_store_sale_record
+    - t_warehouse_demand_manage
+    - t_warehouse_product_inhouse
+
 # MyBatisPlus配置
 # https://baomidou.com/config/
 mybatis-plus:

@@ -71,8 +71,8 @@ public class StoreReturnServiceImpl
     /** 门店主场景默认方向（K4 简化后只此一态）。 */
     private static final String DIRECTION_CUSTOMER_TO_STORE = "customer_to_store";
 
-    /** 退回入库流水类型 djs_flow_type（与材料退回 / 仓库退货一致，不污染采购入库列表）。 */
-    private static final String FLOW_TYPE_RETURN_IN = "return_in";
+    /** 门店退回入库流水类型 djs_flow_type（FIX-WMS-FLOWDICT-001：门店退货走 store_return_in，与领用退回 pick_return_in 区分来源）。 */
+    private static final String FLOW_TYPE_RETURN_IN = "store_return_in";
 
     /** 退货状态 djs_store_return_status：待仓库确认。 */
     private static final String STATUS_PENDING = "pending";

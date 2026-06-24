@@ -298,6 +298,40 @@ class StockCheckServiceImplTest {
         assertThat(flow.getInoutType()).isEqualTo("OT");
         assertThat(flow.getChangeNum()).isEqualByComparingTo("-5");
         assertThat(flow.getChangeQuantity()).isEqualByComparingTo("5");
+        // FIX-WMS-FLOWDICT-001：盘亏出库去向回填盘点计损
+        assertThat(flow.getStockOutDest()).isEqualTo("check_loss");
+    }
+
+    @Test
+    @DisplayName("completeCheck：line diff=-5 盘亏且 result=异常(2) → 写 check_abnormal_out/OT + dest=check_loss")
+    void testCompleteCheck_DeficitAbnormal() {
+        StockCheckRecord header = new StockCheckRecord();
+        header.setId(2L);
+        header.setCheckId(CHECK_ID);
+        header.setLocationId(LOCATION_ID);
+        header.setCheckStatus("in_progress");
+        header.setIsHeader(1);
+        when(baseMapper.selectById(2L)).thenReturn(header);
+
+        StockCheckRecord line = new StockCheckRecord();
+        line.setCheckId(CHECK_ID);
+        line.setLocationId(LOCATION_ID);
+        line.setProductId(PRODUCT_ID);
+        line.setCheckStock(new BigDecimal("5"));
+        line.setDiffStock(new BigDecimal("-5"));
+        line.setCheckResultType(2); // 异常
+        line.setIsHeader(0);
+        when(baseMapper.selectList(any())).thenReturn(List.of(line));
+        when(locationStockMapper.setStockAfterCheck(any(), any(), any(), any(), any())).thenReturn(1);
+
+        service.completeCheck(2L);
+
+        ArgumentCaptor<StockFlow> flowCap = ArgumentCaptor.forClass(StockFlow.class);
+        verify(stockFlowMapper, times(1)).insert(flowCap.capture());
+        StockFlow flow = flowCap.getValue();
+        assertThat(flow.getFlowType()).isEqualTo("check_abnormal_out");
+        assertThat(flow.getInoutType()).isEqualTo("OT");
+        assertThat(flow.getStockOutDest()).isEqualTo("check_loss");
     }
 
     @Test

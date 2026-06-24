@@ -80,6 +80,8 @@ class PigCutRecordServiceImplTest {
     @Mock
     private ProductInfoMapper productInfoMapper;
     @Mock
+    private org.dromara.djs.warehouse.product.mapper.ProductInhouseMapper productInhouseMapper;
+    @Mock
     private LocationInfoMapper locationInfoMapper;
     @Mock
     private org.dromara.djs.common.supplier.mapper.SupplierMapper supplierMapper;
@@ -101,14 +103,16 @@ class PigCutRecordServiceImplTest {
      */
     static class TestablePigCutRecordServiceImpl extends PigCutRecordServiceImpl {
         TestablePigCutRecordServiceImpl(PigCutRecordMapper c, BarInfoMapper b,
-                                        StockFlowMapper f, ProductInfoMapper p, LocationInfoMapper l,
+                                        StockFlowMapper f, ProductInfoMapper p,
+                                        org.dromara.djs.warehouse.product.mapper.ProductInhouseMapper ph,
+                                        LocationInfoMapper l,
                                         LocationStockMapper ls,
                                         org.dromara.djs.common.supplier.mapper.SupplierMapper s,
                                         IBizCodeGenerator g,
                                         org.dromara.djs.warehouse.trace.service.ITraceService ts,
                                         org.dromara.djs.common.image.service.ImageUrlResolver ir,
                                         org.dromara.djs.warehouse.check.service.IStockCheckService scs) {
-            super(c, b, f, p, l, ls, s, g, ts, ir, scs);
+            super(c, b, f, p, ph, l, ls, s, g, ts, ir, scs);
         }
 
         @Override
@@ -137,7 +141,7 @@ class PigCutRecordServiceImplTest {
     @BeforeEach
     void setup() {
         service = new TestablePigCutRecordServiceImpl(
-            cutMapper, barInfoMapper, flowMapper, productInfoMapper, locationInfoMapper, locationStockMapper, supplierMapper, bizCodeGenerator, traceService, imageUrlResolver, stockCheckService);
+            cutMapper, barInfoMapper, flowMapper, productInfoMapper, productInhouseMapper, locationInfoMapper, locationStockMapper, supplierMapper, bizCodeGenerator, traceService, imageUrlResolver, stockCheckService);
         loginHelperMock = Mockito.mockStatic(LoginHelper.class);
         loginHelperMock.when(LoginHelper::getUserId).thenReturn(9001L);
     }

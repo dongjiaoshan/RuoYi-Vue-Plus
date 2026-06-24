@@ -158,6 +158,22 @@ public interface IProductProductionService {
     Map<String, Integer> listPackedCount(List<Long> productIds);
 
     /**
+     * 批量判定目标成品「是否打包完成（按门店分别判）」（FIX-WMS-PACKDEMAND-001 行52）。
+     *
+     * <p>同一产品多门店需求时，「打包完成」必须<b>按门店分别判</b>：把 3 份全打给同一门店，
+     * 另一个门店的需求实际还没打包，不能整产品算完成。判定口径——某成品有 ≥1 个未发货需求门店，
+     * 且<b>每个</b>「该门店未发货需求份数 &gt; 0」的门店其「今天按门店已打包份数」均 ≥ 该门店未发货需求份数
+     * → 完成。任一门店未打满 / 无任何未发货门店需求 → 不完成。</p>
+     *
+     * <p>需求份数口径同 {@link #listStoreDemandCopies}（逐行 {@code GREATEST(demand_quantity-shipped_count,0)}
+     * 钳零后 SUM、已确认及之后）；已打包按门店份数来自 {@code product_production} 今天绑定该门店的记录数。</p>
+     *
+     * @param productIds 目标成品 id 列表
+     * @return 已打包完成（每个有需求门店都打满）的成品雪花 id 字符串集合（无则空 Set）
+     */
+    java.util.Set<String> listPackedDoneProductIds(List<Long> productIds);
+
+    /**
      * 批量查目标成品「已打包累计总重量(kg)」（admin 果蔬打包页按此算剩余可打包量）。
      *
      * <p>数据源同 {@link #listPackedCount}（{@code t_warehouse_product_production} 打包记录），

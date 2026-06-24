@@ -31,10 +31,12 @@ import org.dromara.djs.warehouse.demand.domain.vo.DemandProductStoreDetailVo;
 import org.dromara.djs.warehouse.demand.domain.vo.DemandSummaryVo;
 import org.dromara.djs.warehouse.demand.domain.vo.DemandTodayKpiVo;
 import org.dromara.djs.warehouse.demand.mapper.DemandManageMapper;
+import org.dromara.djs.warehouse.demand.mapper.DemandPigAvailableMapper;
 import org.dromara.djs.warehouse.demand.mapper.DemandPigMapper;
 import org.dromara.djs.warehouse.demand.service.IDemandManageService;
 import org.dromara.djs.warehouse.stock.mapper.LocationStockMapper;
-import org.dromara.djs.breed.core.service.IPigQueryService;
+import org.dromara.djs.breed.core.domain.vo.PigAvailableVo;
+import org.dromara.djs.breed.production.service.IProductionCycleConfigService;
 import org.dromara.djs.plant.plan.domain.vo.PlantPlanSummaryVo;
 import org.dromara.djs.plant.plan.service.IPlantPlanService;
 import org.springframework.dao.DuplicateKeyException;
@@ -105,8 +107,11 @@ public class DemandManageServiceImpl extends DjsBaseServiceImpl<DemandManageMapp
 
     private final IBizCodeGenerator bizCodeGenerator;
 
-    /** SummaryBar 用：跨域薄壳查可出栏猪只头数（DJS-FIX-ADMIN-W22-003）。 */
-    private final IPigQueryService pigQueryService;
+    /** 指定猪只「按出栏日龄过滤」可出栏查询（test row48；需求域自有 mapper，不改 breed）。 */
+    private final DemandPigAvailableMapper demandPigAvailableMapper;
+
+    /** 取养殖出栏日龄阈值 {@code slaughter_age_days}（test row48 指定猪只过滤用）。 */
+    private final IProductionCycleConfigService productionCycleConfigService;
 
     /** SummaryBar 用：跨域薄壳查"进行中"种植计划聚合（DJS-FIX-ADMIN-W22-003）。 */
     private final IPlantPlanService plantPlanService;
@@ -117,15 +122,33 @@ public class DemandManageServiceImpl extends DjsBaseServiceImpl<DemandManageMapp
     public DemandManageServiceImpl(DemandManageMapper baseMapper,
                                    DemandPigMapper demandPigMapper,
                                    IBizCodeGenerator bizCodeGenerator,
-                                   IPigQueryService pigQueryService,
+                                   DemandPigAvailableMapper demandPigAvailableMapper,
+                                   IProductionCycleConfigService productionCycleConfigService,
                                    IPlantPlanService plantPlanService,
                                    LocationStockMapper locationStockMapper) {
         super(baseMapper);
         this.demandPigMapper = demandPigMapper;
         this.bizCodeGenerator = bizCodeGenerator;
-        this.pigQueryService = pigQueryService;
+        this.demandPigAvailableMapper = demandPigAvailableMapper;
+        this.productionCycleConfigService = productionCycleConfigService;
         this.plantPlanService = plantPlanService;
         this.locationStockMapper = locationStockMapper;
+    }
+
+    /** 出栏日龄阈值兜底（配置缺失时，与 mp PigAppletController.slaughterAge 一致）。 */
+    private static final int DEFAULT_SLAUGHTER_AGE_DAYS = 175;
+
+    /** 取生效出栏日龄阈值（custom 优先 → default → 175 兜底）。 */
+    private int resolveSlaughterAgeDays() {
+        Integer v = productionCycleConfigService.getValue("slaughter_age_days");
+        return v != null && v > 0 ? v : DEFAULT_SLAUGHTER_AGE_DAYS;
+    }
+
+    @Override
+    public TableDataInfo<PigAvailableVo> listAvailablePigsForOutbound(PageQuery pageQuery) {
+        PageQuery pq = pageQuery != null ? pageQuery : new PageQuery(1, 10);
+        int minAgeDays = resolveSlaughterAgeDays();
+        return TableDataInfo.build(demandPigAvailableMapper.selectAvailableForOutboundPage(pq.build(), minAgeDays));
     }
 
     @Override
@@ -518,8 +541,9 @@ public class DemandManageServiceImpl extends DjsBaseServiceImpl<DemandManageMapp
         DemandSummaryVo vo = new DemandSummaryVo();
         vo.setProductType(productType);
         switch (productType) {
-            // 白条 / 猪：可出栏育肥猪头数（原型「可出栏猪只头数」）
-            case "white_bar", "pig" -> vo.setAvailablePigs(pigQueryService.countAvailableForOutbound());
+            // 白条 / 猪：可出栏育肥猪头数（原型「可出栏猪只头数」）。
+            // row48：与「指定猪只」列表口径一致，按出栏日龄阈值过滤（只数到龄肥猪）。
+            case "white_bar", "pig" -> vo.setAvailablePigs(demandPigAvailableMapper.countAvailableForOutbound(resolveSlaughterAgeDays()));
             case "vegetable" -> {
                 PlantPlanSummaryVo agg = plantPlanService.aggregateForDemandSummary();
                 vo.setPlotCount(agg.getPlotCount());

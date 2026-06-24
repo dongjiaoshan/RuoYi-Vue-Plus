@@ -14,13 +14,17 @@ import org.dromara.djs.common.encoder.IBizCodeGenerator;
 import org.dromara.djs.common.supplier.domain.Supplier;
 import org.dromara.djs.common.supplier.domain.bo.SupplierBo;
 import org.dromara.djs.common.supplier.domain.query.SupplierQuery;
+import org.dromara.djs.common.supplier.api.SupplierDealProvider;
+import org.dromara.djs.common.supplier.api.SupplierDealVo;
 import org.dromara.djs.common.supplier.domain.vo.SupplierVo;
 import org.dromara.djs.common.supplier.mapper.SupplierMapper;
 import org.dromara.djs.common.supplier.service.ISupplierService;
 import org.dromara.djs.common.validate.BizReferenceChecker;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
@@ -46,20 +50,42 @@ public class SupplierServiceImpl extends DjsBaseServiceImpl<SupplierMapper, Supp
 
     private final IBizCodeGenerator bizCodeGenerator;
     private final BizReferenceChecker bizReferenceChecker;
+    /** 跨模块交易明细提供方（药品入库 + 物资采购入库），compute-on-read 算交易次数/购入量。 */
+    private final ObjectProvider<SupplierDealProvider> dealProviders;
 
     public SupplierServiceImpl(SupplierMapper baseMapper,
                                IBizCodeGenerator bizCodeGenerator,
-                               BizReferenceChecker bizReferenceChecker) {
+                               BizReferenceChecker bizReferenceChecker,
+                               ObjectProvider<SupplierDealProvider> dealProviders) {
         super(baseMapper);
         this.bizCodeGenerator = bizCodeGenerator;
         this.bizReferenceChecker = bizReferenceChecker;
+        this.dealProviders = dealProviders;
     }
 
     @Override
     public TableDataInfo<SupplierVo> queryPageList(SupplierQuery query, PageQuery pageQuery) {
         LambdaQueryWrapper<Supplier> wrapper = buildQueryWrapper(query);
         Page<SupplierVo> page = baseMapper.selectVoPage(pageQuery.build(), wrapper);
+        // 交易次数 = 该供应商采购入库记录数；购入量 = 采购入库数量合计
+        // （口径同详情「交易明细」tab：药品入库 + 物资采购入库 UNION，read-only compute-on-read 不持久化）
+        page.getRecords().forEach(this::fillDealStat);
         return TableDataInfo.build(page);
+    }
+
+    /** compute-on-read 回填交易次数/购入量（不持久化，避免冗余字段不一致）。 */
+    private void fillDealStat(SupplierVo vo) {
+        if (vo == null || vo.getId() == null) {
+            return;
+        }
+        List<SupplierDealVo> deals = new ArrayList<>();
+        dealProviders.forEach(p -> deals.addAll(p.aggregateBySupplier(vo.getId())));
+        vo.setDealCount(deals.size());
+        BigDecimal sum = deals.stream()
+            .map(SupplierDealVo::getDealQuantity)
+            .filter(Objects::nonNull)
+            .reduce(BigDecimal.ZERO, BigDecimal::add);
+        vo.setPurchaseQty(sum);
     }
 
     @Override
@@ -69,7 +95,9 @@ public class SupplierServiceImpl extends DjsBaseServiceImpl<SupplierMapper, Supp
 
     @Override
     public SupplierVo queryById(Long id) {
-        return baseMapper.selectVoById(id);
+        SupplierVo vo = baseMapper.selectVoById(id);
+        fillDealStat(vo);
+        return vo;
     }
 
     @Override

@@ -138,31 +138,30 @@ public class LocationInfoServiceImpl extends DjsBaseServiceImpl<LocationInfoMapp
     @Override
     public List<LocationCardSummaryVo> getCardSummary() {
         String tenantId = TenantHelper.getTenantId();
-        // 8 类字典 value→label（LinkedHashMap 按 dict_sort 有序），作为固定 base
+        // 库位类型字典 value→label，回填卡片副标签
         Map<String, String> typeLabels = dictService.getAllDictByDictType(DICT_LOCATION_TYPE);
 
-        // 3 路聚合（每路 WHERE 显式带 tenant_id，§0.5）→ 按 locationType 索引
-        Map<String, LocationCardSummaryVo> stockMap = indexByType(baseMapper.selectStockSummaryByType(tenantId));
-        Map<String, LocationCardSummaryVo> flowMap = indexByType(baseMapper.selectTodayFlowByType(tenantId));
-        Map<String, LocationCardSummaryVo> checkMap = indexByType(baseMapper.selectLastCheckByType(tenantId));
+        // 3 路按库位聚合（每路 WHERE 显式带 tenant_id，§0.5）→ 按 locationId 索引
+        // selectStockSummaryByLocation 含全部未软删库位（LEFT JOIN），作为逐库位 base
+        List<LocationCardSummaryVo> base = baseMapper.selectStockSummaryByLocation(tenantId);
+        Map<Long, LocationCardSummaryVo> flowMap = indexById(baseMapper.selectTodayFlowByLocation(tenantId));
+        Map<Long, LocationCardSummaryVo> checkMap = indexById(baseMapper.selectLastCheckByLocation(tenantId));
 
-        List<LocationCardSummaryVo> cards = new ArrayList<>(typeLabels.size());
-        for (Map.Entry<String, String> e : typeLabels.entrySet()) {
-            String type = e.getKey();
-            LocationCardSummaryVo vo = new LocationCardSummaryVo();
-            vo.setLocationType(type);
-            vo.setLocationTypeLabel(e.getValue());
+        List<LocationCardSummaryVo> cards = new ArrayList<>(base.size());
+        for (LocationCardSummaryVo vo : base) {
+            vo.setLocationTypeLabel(typeLabels.get(vo.getLocationType()));
+            if (vo.getProductCount() == null) {
+                vo.setProductCount(0);
+            }
+            if (vo.getCurrentStock() == null) {
+                vo.setCurrentStock(BigDecimal.ZERO);
+            }
 
-            LocationCardSummaryVo stock = stockMap.get(type);
-            vo.setLocationCount(stock != null && stock.getLocationCount() != null ? stock.getLocationCount() : 0);
-            vo.setProductCount(stock != null && stock.getProductCount() != null ? stock.getProductCount() : 0);
-            vo.setCurrentStock(stock != null && stock.getCurrentStock() != null ? stock.getCurrentStock() : BigDecimal.ZERO);
-
-            LocationCardSummaryVo flow = flowMap.get(type);
+            LocationCardSummaryVo flow = flowMap.get(vo.getLocationId());
             vo.setTodayInQty(flow != null && flow.getTodayInQty() != null ? flow.getTodayInQty() : BigDecimal.ZERO);
             vo.setTodayOutQty(flow != null && flow.getTodayOutQty() != null ? flow.getTodayOutQty() : BigDecimal.ZERO);
 
-            LocationCardSummaryVo check = checkMap.get(type);
+            LocationCardSummaryVo check = checkMap.get(vo.getLocationId());
             if (check != null) {
                 vo.setLastCheckDate(check.getLastCheckDate());
                 vo.setLastCheckResult(check.getLastCheckResult());
@@ -173,16 +172,16 @@ public class LocationInfoServiceImpl extends DjsBaseServiceImpl<LocationInfoMapp
     }
 
     /**
-     * 部分聚合结果按 locationType 建索引（locationType 在每类唯一）。
+     * 部分聚合结果按 locationId 建索引（每库位唯一）。
      */
-    private Map<String, LocationCardSummaryVo> indexByType(List<LocationCardSummaryVo> rows) {
-        Map<String, LocationCardSummaryVo> map = new LinkedHashMap<>();
+    private Map<Long, LocationCardSummaryVo> indexById(List<LocationCardSummaryVo> rows) {
+        Map<Long, LocationCardSummaryVo> map = new LinkedHashMap<>();
         if (rows == null) {
             return map;
         }
         for (LocationCardSummaryVo row : rows) {
-            if (row.getLocationType() != null) {
-                map.put(row.getLocationType(), row);
+            if (row.getLocationId() != null) {
+                map.put(row.getLocationId(), row);
             }
         }
         return map;

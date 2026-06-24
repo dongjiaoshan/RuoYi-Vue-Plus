@@ -8,6 +8,7 @@ import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
+import org.dromara.djs.common.store.context.StoreContext;
 import org.dromara.djs.store.split.domain.bo.StoreSplitBo;
 import org.dromara.djs.store.split.domain.query.StoreSplitQuery;
 import org.dromara.djs.store.split.domain.vo.StoreSplitVo;
@@ -15,6 +16,7 @@ import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.domain.ProductInhouse;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
 import org.dromara.djs.warehouse.product.mapper.ProductInhouseMapper;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -23,6 +25,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
+import org.mockito.MockedStatic;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
@@ -33,6 +36,7 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -64,6 +68,11 @@ class StoreSplitServiceImplTest {
     @Mock private ProductInfoMapper productInfoMapper;
 
     private TestableStoreSplitServiceImpl service;
+
+    /**
+     * 门店上下文 static mock：addSplit 要求已选门店（STORE-PERM-001），单测固定注入 storeId=100。
+     */
+    private MockedStatic<StoreContext> storeContextMock;
 
     private static final Long SKU_ID = 100000000000000101L;
     private static final String SKU_NAME = "猪肉·精瘦肉";
@@ -114,6 +123,16 @@ class StoreSplitServiceImplTest {
             e.setId(70000L + (long) (Math.random() * 1000));
             return 1;
         });
+        // 门店上下文：addSplit 要求已选门店，固定 storeId=100
+        storeContextMock = mockStatic(StoreContext.class);
+        storeContextMock.when(StoreContext::getStoreId).thenReturn("100");
+    }
+
+    @AfterEach
+    void tearDown() {
+        if (storeContextMock != null) {
+            storeContextMock.close();
+        }
     }
 
     private StoreSplitBo splitBo() {
@@ -144,6 +163,20 @@ class StoreSplitServiceImplTest {
         assertThat(e.getLocationId()).isEqualTo(9001L);
         assertThat(e.getProduceDate()).isNotNull();
         assertThat(e.getProduceTime()).isNotNull();
+        // 门店行级隔离（STORE-PERM-001）：写入绑当前门店上下文
+        assertThat(e.getStoreId()).isEqualTo(100L);
+    }
+
+    @Test
+    @DisplayName("addSplit 拒绝：未选门店上下文 → 抛 ServiceException + 不 INSERT")
+    void testAddSplit_NoStoreContext() {
+        storeContextMock.when(StoreContext::getStoreId).thenReturn(null);
+
+        assertThatThrownBy(() -> service.addSplit(splitBo()))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("未选择门店");
+
+        verify(baseMapper, never()).insert(any(ProductInhouse.class));
     }
 
     @Test

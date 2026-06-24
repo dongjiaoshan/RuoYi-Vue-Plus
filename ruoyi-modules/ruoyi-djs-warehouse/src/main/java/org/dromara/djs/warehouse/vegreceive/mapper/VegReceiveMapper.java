@@ -86,7 +86,11 @@ public interface VegReceiveMapper extends BaseMapperPlus<VegReceive, VegReceive>
     List<VegReceiveItemVo> selectSelfPending();
 
     /**
-     * 外购果蔬待收货列表（{@code t_warehouse_product_info.product_type=2} 外购产品）。
+     * 外购果蔬待收货列表（自产可外购的果蔬产品：{@code product_type=1} 自产 + {@code is_buy_out=1} 可外购 +
+     * {@code belong_type='vegetable'} 归属果蔬）。
+     *
+     * <p>果蔬月台专用列表：仅返「自产 且 可外购」的果蔬产品，{@code belong_type='vegetable'} 限定防止
+     * 自产猪肉/蛋等其他可外购品泄漏进果蔬月台。</p>
      *
      * <p>外购无"上游月台量"概念（不来自毛菜处理），V1 收货前无预设待收量 → {@code pendingWeight=0}；
      * 工人在 mp 外购入库子页直接录入实收重量。{@code productType} 列回填固定文案「果蔬产品」（外购果蔬语义，
@@ -110,7 +114,9 @@ public interface VegReceiveMapper extends BaseMapperPlus<VegReceive, VegReceive>
           FROM t_warehouse_product_info p
          WHERE p.del_flag      = '0'
            AND p.tenant_id     = '1001'
-           AND p.product_type  = 2
+           AND p.product_type  = 1
+           AND p.is_buy_out    = 1
+           AND p.belong_type   = 'vegetable'
            AND p.product_status = 0
            <if test="productName != null and productName != ''">
              AND p.product_name LIKE CONCAT('%', #{productName}, '%')

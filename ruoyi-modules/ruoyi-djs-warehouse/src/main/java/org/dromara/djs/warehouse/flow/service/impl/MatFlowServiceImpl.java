@@ -78,9 +78,57 @@ public class MatFlowServiceImpl implements IMatFlowService {
 
     /**
      * djs_flow_type 字典 value。
+     *
+     * <p>领用出库按来源拆分（FIX-WMS-FLOWDICT-003）：</p>
+     * <ul>
+     *   <li>{@link #FLOW_PROD_PICK_OUT}（生产领用）= 仓库打包领用（{@code sourceScene=warehouse}，matPack/*）；</li>
+     *   <li>{@link #FLOW_DEPT_PICK_OUT}（部门领用）= 养殖 / 种植物资领用（{@code sourceScene=breed|plant}，matIssue/*）；</li>
+     *   <li>{@code pick_out}（通用领用出库）= 来源无法区分时的中性兜底（理论不再命中，保留兼容历史记录渲染）。</li>
+     * </ul>
      */
-    private static final String FLOW_PICK_OUT = "pick_out";
-    private static final String FLOW_RETURN_IN = "return_in";
+    private static final String FLOW_PROD_PICK_OUT = "prod_pick_out";
+    private static final String FLOW_DEPT_PICK_OUT = "dept_pick_out";
+    /**
+     * 退回入库按来源拆分（FIX-WMS-FLOWDICT-003）：
+     * <ul>
+     *   <li>{@link #FLOW_PROD_RETURN_IN}（生产退回）= 仓库打包领用退回（{@code sourceScene=warehouse}）；</li>
+     *   <li>{@link #FLOW_PICK_RETURN_IN}（领用退回）= 养殖 / 种植领用退回 + 来源未知兜底
+     *       （FIX-WMS-FLOWDICT-001 起从通用 return_in 拆出）。</li>
+     * </ul>
+     *
+     * <p>写（returnBack 三分支）与读（{@link #ensureTodayCapacity} 等今日额度统计 SUM）必须覆盖两个退回键，
+     * 否则仓库退回（prod_return_in）不计入额度统计，闭环漏算。见 {@link #RETURN_IN_FLOW_TYPES}。</p>
+     */
+    private static final String FLOW_PROD_RETURN_IN = "prod_return_in";
+    private static final String FLOW_PICK_RETURN_IN = "pick_return_in";
+    /**
+     * 出库去向 djs_stock_out_dest 字典 value（service 按来源强制覆盖，不信 mp 传值）。
+     */
+    private static final String DEST_PROD_PICK = "prod_pick";
+    private static final String DEST_DEPT_PICK = "dept_pick";
+    /**
+     * 退回额度统计 SUM 需覆盖的全部退回 flow_type（两来源退回都算「已退」额度）。
+     */
+    private static final List<String> RETURN_IN_FLOW_TYPES = List.of(FLOW_PROD_RETURN_IN, FLOW_PICK_RETURN_IN);
+
+    /**
+     * 领用「今日已领」额度统计 SUM 需覆盖的全部领用 flow_type（两来源领用都算「已领」额度）。
+     *
+     * <p>含历史中性键 {@code pick_out}：拆分前（FIX-WMS-FLOWDICT-003 之前）的存量领用流水写的是 pick_out，
+     * 同一工人当日跨拆分前后的领用都要计入「已领」额度，否则退回 / 损耗额度校验会因「已领」少算而误拒。</p>
+     */
+    private static final List<String> PICK_OUT_FLOW_TYPES = List.of(FLOW_PROD_PICK_OUT, FLOW_DEPT_PICK_OUT, "pick_out");
+
+    /**
+     * 领用来源场景（MatPickBo / MatReturnBo.sourceScene）：仓库打包领用 vs 养殖 / 种植物资领用。
+     */
+    private static final String SCENE_WAREHOUSE = "warehouse";
+    /**
+     * mp 物资领用统一页（养殖 / 种植）历史固定传的出库去向旧值（{@code dept}）；仓库打包页历史传 {@code kitchen}。
+     * sourceScene 缺省时据此兜底推断来源（kitchen → 仓库生产、其它 → 部门）。
+     */
+    private static final String LEGACY_DEST_KITCHEN = "kitchen";
+
     private static final String FLOW_LOSS = "loss";
 
     /**
@@ -148,6 +196,10 @@ public class MatFlowServiceImpl implements IMatFlowService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public Long pick(MatPickBo bo) {
+        // 来源归一（FIX-WMS-FLOWDICT-003）：按 sourceScene（mp 各页显式传）/ 旧 dest 兜底推断来源，
+        // 强制覆盖出库去向 dest（不信 mp 传的具体值）。flow_type 由各分支统一调 resolvePickFlowType(bo) 取。
+        // 仓库打包领用（warehouse）→ 生产领用(prod_pick)；养殖 / 种植物资领用（breed/plant）→ 部门领用(dept_pick)。
+        bo.setStockOutDest(resolvePickDest(bo));
         // 「按源手选」领用（对齐客户最新原型「仓库>分拣发货>物资领用」）：batchId 非空 = 用户在源篮子列表
         // 里手选了某一篮（猪肉耳号篮 / 自产果蔬地块篮），按该篮 id 行锁扣减 + 产带源标签的 inhouse。
         // 优先于 plot / product 维度兜底（兜底保留给无 batchId 的旧调用）。
@@ -169,6 +221,57 @@ public class MatFlowServiceImpl implements IMatFlowService {
      * 除这几类外，mp 物资领用本质是「打包前工序」，所有原材料都必须先有对应生产产品领用才有意义（Kevin 2026-06-21）。
      */
     private static final Set<String> NON_PACK_BELONG_TYPES = Set.of("package", "white_bar", "feed", "seed");
+
+    /**
+     * 本次领用是否「仓库来源」（仓库打包领用，对应 flow_type=prod_pick_out / dest=prod_pick）。
+     *
+     * <p>判定（FIX-WMS-FLOWDICT-003）：</p>
+     * <ol>
+     *   <li>{@code sourceScene} 非空且 = {@code warehouse} → 仓库来源；非空且 = {@code breed}/{@code plant} → 部门来源；</li>
+     *   <li>{@code sourceScene} 为空（存量 mp 调用未传）→ 按旧 dest 兜底：{@code kitchen}（仓库打包页历史值）
+     *       → 仓库来源；其它（{@code dept} 等，养殖 / 种植统一页历史值）→ 部门来源。</li>
+     * </ol>
+     */
+    private boolean isWarehouseSource(String sourceScene, String legacyDest) {
+        if (sourceScene != null && !sourceScene.isBlank()) {
+            return SCENE_WAREHOUSE.equalsIgnoreCase(sourceScene.trim());
+        }
+        // scene 缺省兜底：仓库打包页历史固定传 kitchen；养殖 / 种植统一页历史传 dept
+        return LEGACY_DEST_KITCHEN.equalsIgnoreCase(legacyDest);
+    }
+
+    /**
+     * 解析领用出库去向 dest（service 强制覆盖，不信 mp 传的具体值）：仓库来源 → {@code prod_pick}、
+     * 养殖 / 种植来源 → {@code dept_pick}。在 {@link #pick} 入口调一次回填 {@code bo.stockOutDest}，
+     * 下游所有分支统一读覆盖后的值。
+     */
+    private String resolvePickDest(MatPickBo bo) {
+        return isWarehouseSource(bo.getSourceScene(), bo.getStockOutDest())
+            ? DEST_PROD_PICK : DEST_DEPT_PICK;
+    }
+
+    /**
+     * 解析领用出库 flow_type：仓库来源 → {@code prod_pick_out}（生产领用）、养殖 / 种植来源 →
+     * {@code dept_pick_out}（部门领用）。各 pick 分支写流水时调用（{@link #pick} 入口已把 dest 覆盖成
+     * 规范值，故此处可直接用 {@code bo.stockOutDest} 反推，与 scene 判定结果一致）。
+     */
+    private String resolvePickFlowType(MatPickBo bo) {
+        return isWarehouseSource(bo.getSourceScene(), bo.getStockOutDest())
+            ? FLOW_PROD_PICK_OUT : FLOW_DEPT_PICK_OUT;
+    }
+
+    /**
+     * 解析退回入库 flow_type：仓库来源 → {@code prod_return_in}（生产退回）、养殖 / 种植来源 + 来源未知兜底
+     * → {@code pick_return_in}（领用退回）。退回 BO 无 dest 字段，故 scene 缺省时一律归 pick_return_in
+     * （保持前一轮行为不回归）。
+     */
+    private String resolveReturnFlowType(MatReturnBo bo) {
+        String scene = bo.getSourceScene();
+        if (scene != null && SCENE_WAREHOUSE.equalsIgnoreCase(scene.trim())) {
+            return FLOW_PROD_RETURN_IN;
+        }
+        return FLOW_PICK_RETURN_IN;
+    }
 
     @Override
     public boolean canIssueMaterial(String productId, String plotId) {
@@ -278,7 +381,7 @@ public class MatFlowServiceImpl implements IMatFlowService {
         flow.setEarNo(basket.getEarNo());
         flow.setWarehouseId(locId);
         flow.setInoutType(INOUT_OUT);
-        flow.setFlowType(FLOW_PICK_OUT);
+        flow.setFlowType(resolvePickFlowType(bo));
         flow.setStockOutDest(bo.getStockOutDest());
         flow.setChangeNum(bo.getQuantity().negate());
         flow.setChangeQuantity(bo.getQuantity());
@@ -368,7 +471,7 @@ public class MatFlowServiceImpl implements IMatFlowService {
         flow.setPlotId(plotId);
         flow.setWarehouseId(firstLocId);
         flow.setInoutType(INOUT_OUT);
-        flow.setFlowType(FLOW_PICK_OUT);
+        flow.setFlowType(resolvePickFlowType(bo));
         flow.setStockOutDest(bo.getStockOutDest());
         flow.setChangeNum(bo.getQuantity().negate());
         flow.setChangeQuantity(bo.getQuantity());
@@ -464,7 +567,7 @@ public class MatFlowServiceImpl implements IMatFlowService {
         flow.setProductId(bo.getProductId());
         flow.setWarehouseId(locId);
         flow.setInoutType(INOUT_OUT);
-        flow.setFlowType(FLOW_PICK_OUT);
+        flow.setFlowType(resolvePickFlowType(bo));
         flow.setStockOutDest(bo.getStockOutDest());
         flow.setChangeNum(bo.getQuantity().negate());
         flow.setChangeQuantity(bo.getQuantity());
@@ -676,7 +779,7 @@ public class MatFlowServiceImpl implements IMatFlowService {
         flow.setPlotId(plotId);
         flow.setWarehouseId(locId);
         flow.setInoutType(INOUT_OUT);
-        flow.setFlowType(FLOW_PICK_OUT);
+        flow.setFlowType(resolvePickFlowType(bo));
         flow.setStockOutDest(bo.getStockOutDest());
         flow.setChangeNum(bo.getQuantity().negate());
         flow.setChangeQuantity(bo.getQuantity());
@@ -792,7 +895,7 @@ public class MatFlowServiceImpl implements IMatFlowService {
         flow.setProductId(bo.getProductId());
         flow.setWarehouseId(locId);
         flow.setInoutType(INOUT_IN);
-        flow.setFlowType(FLOW_RETURN_IN);
+        flow.setFlowType(resolveReturnFlowType(bo));
         flow.setChangeNum(bo.getQuantity());
         flow.setChangeQuantity(bo.getQuantity());
         flow.setOperatorId(userId);
@@ -853,7 +956,7 @@ public class MatFlowServiceImpl implements IMatFlowService {
         flow.setEarNo(basket.getEarNo());
         flow.setWarehouseId(locId);
         flow.setInoutType(INOUT_IN);
-        flow.setFlowType(FLOW_RETURN_IN);
+        flow.setFlowType(resolveReturnFlowType(bo));
         flow.setChangeNum(bo.getQuantity());
         flow.setChangeQuantity(bo.getQuantity());
         flow.setOperatorId(userId);
@@ -904,7 +1007,7 @@ public class MatFlowServiceImpl implements IMatFlowService {
         flow.setPlotId(plotId);
         flow.setWarehouseId(firstLocId);
         flow.setInoutType(INOUT_IN);
-        flow.setFlowType(FLOW_RETURN_IN);
+        flow.setFlowType(resolveReturnFlowType(bo));
         flow.setChangeNum(bo.getQuantity());
         flow.setChangeQuantity(bo.getQuantity());
         flow.setOperatorId(userId);
@@ -1230,17 +1333,17 @@ public class MatFlowServiceImpl implements IMatFlowService {
             catch (NumberFormatException e) {
                 throw new ServiceException("产品 ID 非法：" + productId);
             }
-            vo.setPickedQuantity(safe(stockFlowMapper.sumTodayByUserProductType(userId, pid, FLOW_PICK_OUT)));
-            vo.setReturnedQuantity(safe(stockFlowMapper.sumTodayByUserProductType(userId, pid, FLOW_RETURN_IN)));
+            vo.setPickedQuantity(safe(stockFlowMapper.sumTodayByUserProductTypes(userId, pid, PICK_OUT_FLOW_TYPES)));
+            vo.setReturnedQuantity(safe(stockFlowMapper.sumTodayByUserProductTypes(userId, pid, RETURN_IN_FLOW_TYPES)));
             vo.setLossQuantity(safe(stockFlowMapper.sumTodayByUserProductType(userId, pid, FLOW_LOSS)));
         } else if (matType == null || matType.isBlank()) {
-            vo.setPickedQuantity(safe(stockFlowMapper.sumTodayByUserType(userId, FLOW_PICK_OUT)));
-            vo.setReturnedQuantity(safe(stockFlowMapper.sumTodayByUserType(userId, FLOW_RETURN_IN)));
+            vo.setPickedQuantity(safe(stockFlowMapper.sumTodayByUserTypes(userId, PICK_OUT_FLOW_TYPES)));
+            vo.setReturnedQuantity(safe(stockFlowMapper.sumTodayByUserTypes(userId, RETURN_IN_FLOW_TYPES)));
             vo.setLossQuantity(safe(stockFlowMapper.sumTodayByUserType(userId, FLOW_LOSS)));
         } else {
             // matType（djs_mat_type）与 belong_type 取值同名映射（package/feed/seed/white_bar 等同）
-            vo.setPickedQuantity(safe(stockFlowMapper.sumTodayByUserMatType(userId, FLOW_PICK_OUT, matType)));
-            vo.setReturnedQuantity(safe(stockFlowMapper.sumTodayByUserMatType(userId, FLOW_RETURN_IN, matType)));
+            vo.setPickedQuantity(safe(stockFlowMapper.sumTodayByUserMatTypes(userId, PICK_OUT_FLOW_TYPES, matType)));
+            vo.setReturnedQuantity(safe(stockFlowMapper.sumTodayByUserMatTypes(userId, RETURN_IN_FLOW_TYPES, matType)));
             vo.setLossQuantity(safe(stockFlowMapper.sumTodayByUserMatType(userId, FLOW_LOSS, matType)));
         }
         return vo;
@@ -1526,8 +1629,8 @@ public class MatFlowServiceImpl implements IMatFlowService {
      */
     protected void ensureTodayCapacity(Long userId, Long productId, BigDecimal applying,
                                        String productName, String productUnit) {
-        BigDecimal picked = safe(stockFlowMapper.sumTodayByUserProductType(userId, productId, FLOW_PICK_OUT));
-        BigDecimal returned = safe(stockFlowMapper.sumTodayByUserProductType(userId, productId, FLOW_RETURN_IN));
+        BigDecimal picked = safe(stockFlowMapper.sumTodayByUserProductTypes(userId, productId, PICK_OUT_FLOW_TYPES));
+        BigDecimal returned = safe(stockFlowMapper.sumTodayByUserProductTypes(userId, productId, RETURN_IN_FLOW_TYPES));
         BigDecimal lost = safe(stockFlowMapper.sumTodayByUserProductType(userId, productId, FLOW_LOSS));
         BigDecimal remaining = picked.subtract(returned).subtract(lost);
         if (remaining.compareTo(applying) < 0) {

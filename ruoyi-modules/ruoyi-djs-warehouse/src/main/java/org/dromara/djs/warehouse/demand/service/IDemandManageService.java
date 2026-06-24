@@ -2,6 +2,7 @@ package org.dromara.djs.warehouse.demand.service;
 
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
+import org.dromara.djs.breed.core.domain.vo.PigAvailableVo;
 import org.dromara.djs.warehouse.demand.domain.bo.AssignPigBo;
 import org.dromara.djs.warehouse.demand.domain.bo.DemandManageBo;
 import org.dromara.djs.warehouse.demand.domain.query.DemandManageQuery;
@@ -70,6 +71,13 @@ public interface IDemandManageService {
 
     /** 白条业态：查询已指定的猪只列表。 */
     List<DemandPigVo> listAssignedPigs(Long demandId);
+
+    /**
+     * 「指定猪只」弹框：可出栏育肥猪分页（按养殖出栏日龄配置 {@code slaughter_age_days} 过滤）。
+     *
+     * <p>仅列出到龄（日龄 ≥ 阈值）的待派单育肥活体猪，口径与 mp 出栏选猪一致；阈值缺省 175（test row48）。</p>
+     */
+    TableDataInfo<PigAvailableVo> listAvailablePigsForOutbound(PageQuery pageQuery);
 
     /**
      * 改需求说明 {@code demand_explain}（WMS-DEMAND-002 mp 调度员自由备注）。

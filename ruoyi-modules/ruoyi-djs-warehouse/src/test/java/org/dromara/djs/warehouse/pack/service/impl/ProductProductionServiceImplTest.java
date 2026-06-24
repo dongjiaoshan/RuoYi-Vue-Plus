@@ -645,7 +645,7 @@ class ProductProductionServiceImplTest {
         when(stockFlowMapper.sumVegFlowByTypeAndDate(eq("pack_in"), any()))
             .thenReturn(new BigDecimal("70.000"));
         // 退回 = return_in
-        when(stockFlowMapper.sumVegFlowByTypeAndDate(eq("return_in"), any()))
+        when(stockFlowMapper.sumVegFlowByTypeAndDate(eq("pick_return_in"), any()))
             .thenReturn(new BigDecimal("5.000"));
         // 饲喂：物资领用 V1 无果蔬饲喂操作 → service 端置 0，不查 mapper（故不 mock，校验 never 调用）
 
@@ -671,7 +671,7 @@ class ProductProductionServiceImplTest {
             .thenReturn(new BigDecimal("10.000"));
         when(stockFlowMapper.sumVegFlowByTypeAndDate(eq("pack_in"), any()))
             .thenReturn(new BigDecimal("50.000"));
-        when(stockFlowMapper.sumVegFlowByTypeAndDate(eq("return_in"), any())).thenReturn(BigDecimal.ZERO);
+        when(stockFlowMapper.sumVegFlowByTypeAndDate(eq("pick_return_in"), any())).thenReturn(BigDecimal.ZERO);
 
         org.dromara.djs.warehouse.pack.domain.vo.VegDailyLossVo vo = service.queryVegDailyLoss(null);
 

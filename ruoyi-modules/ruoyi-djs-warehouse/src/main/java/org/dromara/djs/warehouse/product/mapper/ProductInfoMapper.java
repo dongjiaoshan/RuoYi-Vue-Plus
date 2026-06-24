@@ -140,10 +140,16 @@ public interface ProductInfoMapper extends BaseMapperPlus<ProductInfo, ProductIn
                  ELSE 'backend_out'
                END             AS bizType,
                sf.change_quantity AS bizNum,
-               pi.product_unit AS bizUnit
+               pi.product_unit AS bizUnit,
+               sp.supplier_name AS supplierName,
+               su.nick_name     AS operatorName
           FROM t_warehouse_stock_flow sf
           LEFT JOIN t_warehouse_product_info pi
             ON pi.id = sf.product_id AND pi.del_flag = '0' AND pi.tenant_id = sf.tenant_id
+          LEFT JOIN t_md_supplier sp
+            ON sp.id = sf.supplier_id AND sp.del_flag = '0'
+          LEFT JOIN sys_user su
+            ON su.user_id = sf.operator_id AND su.del_flag = '0'
          WHERE sf.product_id = #{productId}
            AND sf.del_flag   = '0'
            AND sf.tenant_id  = '1001'
@@ -186,6 +192,7 @@ public interface ProductInfoMapper extends BaseMapperPlus<ProductInfo, ProductIn
                p.buy_class          AS buyClass,
                p.store_location_id  AS storeLocationId,
                p.supplier_id        AS supplierId,
+               sp.supplier_name     AS supplierName,
                COALESCE((SELECT SUM(s.product_stock) FROM t_warehouse_location_stock s
                           WHERE s.product_id = p.id AND s.del_flag = '0' AND s.tenant_id = '1001'), 0) AS currentStock,
                (SELECT MAX(f.flow_date) FROM t_warehouse_stock_flow f
@@ -201,6 +208,8 @@ public interface ProductInfoMapper extends BaseMapperPlus<ProductInfo, ProductIn
                             AND f.flow_date >= DATE_FORMAT(NOW(), '%Y-%m-01')
                             AND f.flow_date &lt; DATE_FORMAT(DATE_ADD(NOW(), INTERVAL 1 MONTH), '%Y-%m-01')), 0) AS monthInTotal
           FROM t_warehouse_product_info p
+          LEFT JOIN t_md_supplier sp
+            ON sp.id = p.supplier_id AND sp.del_flag = '0'
          WHERE p.del_flag     = '0'
            AND p.tenant_id    = '1001'
            AND (p.product_type = 2

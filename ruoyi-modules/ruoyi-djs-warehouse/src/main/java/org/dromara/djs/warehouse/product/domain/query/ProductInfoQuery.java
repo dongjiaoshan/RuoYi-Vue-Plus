@@ -58,6 +58,11 @@ public class ProductInfoQuery extends BaseEntity {
     private String buyClass;
 
     /**
+     * 是否支持外购（字典 djs_yes_no：1=是 / 0=否；原型「是否支持外购」筛选项，精确匹配 is_buy_out）。
+     */
+    private Integer isBuyOut;
+
+    /**
      * 字典 djs_product_workshop：生产车间（原型筛选项）。
      */
     private Integer productWorkshop;

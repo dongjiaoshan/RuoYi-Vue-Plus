@@ -169,13 +169,15 @@ public class StockFlowServiceImpl
         if (query == null) {
             return w.orderByDesc(StockFlow::getId);
         }
-        // matType / productName / buyClass → 反查 product.id 集合（三者取交集下推 productId IN）
+        // matType / productName / buyClass / productType → 反查 product.id 集合（取交集下推 productId IN）
         if (StringUtils.isNotBlank(query.getMatType())
             || StringUtils.isNotBlank(query.getProductName())
-            || StringUtils.isNotBlank(query.getBuyClass())) {
+            || StringUtils.isNotBlank(query.getBuyClass())
+            || query.getProductType() != null) {
             LambdaQueryWrapper<ProductInfo> pw = new LambdaQueryWrapper<>();
             pw.eq(StringUtils.isNotBlank(query.getMatType()), ProductInfo::getBelongType, query.getMatType())
                 .eq(StringUtils.isNotBlank(query.getBuyClass()), ProductInfo::getBuyClass, query.getBuyClass())
+                .eq(query.getProductType() != null, ProductInfo::getProductType, query.getProductType())
                 .like(StringUtils.isNotBlank(query.getProductName()), ProductInfo::getProductName, query.getProductName());
             List<ProductInfo> products = productInfoMapper.selectList(pw);
             if (products.isEmpty()) {
@@ -239,6 +241,7 @@ public class StockFlowServiceImpl
         for (StockFlowVo vo : rows) {
             ProductInfo p = pm.get(vo.getProductId());
             if (p != null) {
+                vo.setProductType(p.getProductType());  // 产品类型（自产/外购/礼盒，与 belongType 不同维度）
                 vo.setProductName(p.getProductName());
                 vo.setProductCode(p.getProductId());  // 业务码
                 vo.setBelongType(p.getBelongType());
