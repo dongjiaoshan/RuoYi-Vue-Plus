@@ -4,8 +4,6 @@ import cn.idev.excel.annotation.ExcelIgnoreUnannotated;
 import cn.idev.excel.annotation.ExcelProperty;
 import io.github.linpeilie.annotations.AutoMapper;
 import lombok.Data;
-import org.dromara.common.excel.annotation.ExcelDictFormat;
-import org.dromara.common.excel.convert.ExcelDictConvert;
 import org.dromara.common.translation.annotation.Translation;
 import org.dromara.common.translation.constant.TransConstant;
 import org.dromara.djs.plant.crop.domain.CropInfo;
@@ -47,12 +45,19 @@ public class CropInfoVo implements Serializable {
     @ExcelProperty(value = "品种来源")
     private String varietyOrigin;
 
-    @ExcelProperty(value = "科属", converter = ExcelDictConvert.class)
-    @ExcelDictFormat(dictType = "djs_crop_family")
+    @ExcelProperty(value = "科属")
     private String cropFamily;
 
     @ExcelProperty(value = "关联产品ID")
     private Long relatedProduct;
+
+    /**
+     * 关联产品名称（派生，按 relatedProduct → t_warehouse_product_info.product_name 批量 enrich）。
+     *
+     * <p>service 层批量回填，避免 N+1；列表 / 详情展示用，替代直接显示雪花 id。</p>
+     */
+    @ExcelProperty(value = "关联产品")
+    private String relatedProductName;
 
     @ExcelProperty(value = "种植季节")
     private String plantingSeason;

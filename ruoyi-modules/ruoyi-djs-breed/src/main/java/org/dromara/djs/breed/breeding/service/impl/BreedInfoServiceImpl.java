@@ -175,7 +175,7 @@ public class BreedInfoServiceImpl extends DjsBaseServiceImpl<BreedInfoMapper, Br
     }
 
     /**
-     * 构造查询条件：breedStrain eq / code eq / name like / parentCode eq。
+     * 构造查询条件：breedStrain eq / code like（编码模糊）/ name like / parentCode eq。
      */
     private LambdaQueryWrapper<BreedInfo> buildQueryWrapper(BreedInfoQuery query) {
         LambdaQueryWrapper<BreedInfo> wrapper = new LambdaQueryWrapper<>();
@@ -183,7 +183,7 @@ public class BreedInfoServiceImpl extends DjsBaseServiceImpl<BreedInfoMapper, Br
             return wrapper.orderByDesc(BreedInfo::getId);
         }
         wrapper.eq(Objects.nonNull(query.getBreedStrain()), BreedInfo::getBreedStrain, query.getBreedStrain())
-            .eq(StringUtils.isNotBlank(query.getBreedStrainCode()), BreedInfo::getBreedStrainCode, query.getBreedStrainCode())
+            .like(StringUtils.isNotBlank(query.getBreedStrainCode()), BreedInfo::getBreedStrainCode, query.getBreedStrainCode())
             .like(StringUtils.isNotBlank(query.getBreedStrainName()), BreedInfo::getBreedStrainName, query.getBreedStrainName())
             .eq(StringUtils.isNotBlank(query.getParentCode()), BreedInfo::getParentCode, query.getParentCode())
             .ge(Objects.nonNull(query.getCreateTimeBegin()), BreedInfo::getCreateTime, query.getCreateTimeBegin())

@@ -259,43 +259,53 @@ public interface PlantDashboardMapper {
     CropCertLatestRow selectLatestCropCert(@Param("tenantId") String tenantId);
 
     /**
-     * 在种作物中「在」最新一张果蔬证书覆盖品类（{@code crop_id}）里的不重复作物数。
+     * 果蔬有机证书品类数 = 最新一张果蔬证书在关联表里覆盖的不重复作物（{@code crop_id}）数。
      *
-     * <p>在种作物 = {@code t_plant_plant_details} 进行中（{@code plant_status <> 'completed'}）的
-     * 不重复 {@code crop_id}；最新证书 = {@code crop_cert_valid} 最晚的一张，其 {@code crop_id}
-     * 为覆盖品类（一证一作物）。</p>
+     * <p>一证多作物后关联落在 {@code t_plant_crop_organic_rel}（{@code organic_id} → {@code crop_id}）。
+     * 最新证书 = {@code crop_cert_valid} 最晚（同期取 {@code id} 最大）的一张，统计其在 rel 表里关联的
+     * {@code DISTINCT crop_id} 数——<b>不限种植状态</b>（按测试口径只看「证书内关联的作物数量」）。</p>
      *
      * @param tenantId 租户
-     * @return 在最新证书覆盖品类里的在种作物数，无则 0
+     * @return 最新证书关联作物品类数，无证书 / 无关联时 0
+     */
+    @Select("SELECT COUNT(DISTINCT r.crop_id) "
+        + "  FROM t_plant_crop_organic_rel r "
+        + " WHERE r.tenant_id = #{tenantId} "
+        + "   AND r.del_flag = '0' "
+        + "   AND r.organic_id = ( "
+        + "       SELECT o.id FROM t_plant_crop_organic o "
+        + "        WHERE o.tenant_id = #{tenantId} "
+        + "          AND o.del_flag = '0' "
+        + "        ORDER BY o.crop_cert_valid DESC, o.id DESC "
+        + "        LIMIT 1)")
+    Integer selectLatestCertCropCount(@Param("tenantId") String tenantId);
+
+    /**
+     * 作物无证书品类数 = 在种作物中「不在」最新果蔬证书覆盖品类里的不重复作物（{@code crop_id}）数。
+     *
+     * <p>在种作物 = {@code t_plant_plant_details} 进行中（{@code plant_status <> 'completed'}）的
+     * 不重复 {@code crop_id}；覆盖品类 = 最新证书在 {@code t_plant_crop_organic_rel} 里关联的
+     * {@code crop_id} 集合。无证书 / 无关联时退化为全部在种作物数（子查询返回空集，{@code NOT IN} 恒真）。</p>
+     *
+     * @param tenantId 租户
+     * @return 在种作物中不在最新证书覆盖品类里的品类数，无则 0
      */
     @Select("SELECT COUNT(DISTINCT d.crop_id) "
         + "  FROM t_plant_plant_details d "
         + " WHERE d.tenant_id = #{tenantId} "
         + "   AND d.del_flag = '0' "
         + "   AND d.plant_status <> 'completed' "
-        + "   AND d.crop_id = ( "
-        + "       SELECT o.crop_id FROM t_plant_crop_organic o "
-        + "        WHERE o.tenant_id = #{tenantId} "
-        + "          AND o.del_flag = '0' "
-        + "        ORDER BY o.crop_cert_valid DESC, o.id DESC "
-        + "        LIMIT 1)")
-    Integer selectInLatestCertCropCount(@Param("tenantId") String tenantId);
-
-    /**
-     * 在种作物（{@code plant_status <> 'completed'}）的不重复 {@code crop_id} 数。
-     *
-     * <p>「不在」最新证书覆盖品类的在种作物数 = 本总数 − {@link #selectInLatestCertCropCount}
-     * （service 层相减；无证书时 inCert=0 → 全部计入无证书品类）。</p>
-     *
-     * @param tenantId 租户
-     * @return 在种作物不重复品类数，无则 0
-     */
-    @Select("SELECT COUNT(DISTINCT d.crop_id) "
-        + "  FROM t_plant_plant_details d "
-        + " WHERE d.tenant_id = #{tenantId} "
-        + "   AND d.del_flag = '0' "
-        + "   AND d.plant_status <> 'completed'")
-    Integer selectActiveCropCount(@Param("tenantId") String tenantId);
+        + "   AND d.crop_id NOT IN ( "
+        + "       SELECT r.crop_id FROM t_plant_crop_organic_rel r "
+        + "        WHERE r.tenant_id = #{tenantId} "
+        + "          AND r.del_flag = '0' "
+        + "          AND r.organic_id = ( "
+        + "              SELECT o.id FROM t_plant_crop_organic o "
+        + "               WHERE o.tenant_id = #{tenantId} "
+        + "                 AND o.del_flag = '0' "
+        + "               ORDER BY o.crop_cert_valid DESC, o.id DESC "
+        + "               LIMIT 1))")
+    Integer selectNoCertCropCount(@Param("tenantId") String tenantId);
 
     // ============================ 块 ⑤ 种植甘特（按 作物 维度聚合） ============================
 

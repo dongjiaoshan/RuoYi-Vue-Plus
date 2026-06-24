@@ -28,6 +28,7 @@ import org.dromara.djs.plant.plan.domain.vo.PlantPlanStatsVo;
 import org.dromara.djs.plant.plan.domain.vo.PlantPlanSummaryVo;
 import org.dromara.djs.plant.plan.domain.vo.PlantPlanVo;
 import org.dromara.djs.plant.plan.domain.vo.PlotByZoneVo;
+import org.dromara.djs.plant.plan.domain.vo.PlotYearPlanRowVo;
 import org.dromara.djs.plant.plan.mapper.PlantDetailsMapper;
 import org.dromara.djs.plant.plan.mapper.PlantPlanMapper;
 import org.dromara.djs.plant.plan.service.IPlantPlanService;
@@ -168,6 +169,13 @@ public class PlantPlanServiceImpl extends DjsBaseServiceImpl<PlantPlanMapper, Pl
                 "%" + query.getQueryCreateByName().trim() + "%");
         }
         applyPlanDateRange(wrapper, query.getBeginPlanDate(), query.getEndPlanDate());
+        // 计划月份：该计划存在 plant_month=指定月份 的种植明细（年份维度由上面 planYear 等值过滤）
+        if (query.getPlanMonth() != null) {
+            wrapper.apply(
+                "EXISTS (SELECT 1 FROM t_plant_plant_details d "
+                    + "WHERE d.plant_id = t_plant_plant_plan.id AND d.del_flag = '0' AND d.plant_month = {0})",
+                query.getPlanMonth());
+        }
         wrapper.orderByDesc(PlantPlan::getId);
         return wrapper;
     }
@@ -263,6 +271,8 @@ public class PlantPlanServiceImpl extends DjsBaseServiceImpl<PlantPlanMapper, Pl
             vo.setFinishedPlot(finished);
             vo.setEarliestBegindate(row == null ? null : toLocalDate(row.get("earliestBegindate")));
             vo.setLastBegindate(row == null ? null : toLocalDate(row.get("lastBegindate")));
+            vo.setPlantMonth(row == null ? null : toIntOrNull(row.get("plantMonth")));
+            vo.setPlantPeriod(row == null ? null : (row.get("plantPeriod") == null ? null : row.get("plantPeriod").toString()));
 
             int total = vo.getTotalPlot() == null ? 0 : vo.getTotalPlot();
             if (total > 0) {
@@ -287,6 +297,10 @@ public class PlantPlanServiceImpl extends DjsBaseServiceImpl<PlantPlanMapper, Pl
 
     private int toInt(Object v) {
         return v == null ? 0 : ((Number) v).intValue();
+    }
+
+    private Integer toIntOrNull(Object v) {
+        return v == null ? null : ((Number) v).intValue();
     }
 
     private LocalDate toLocalDate(Object v) {
@@ -726,7 +740,7 @@ public class PlantPlanServiceImpl extends DjsBaseServiceImpl<PlantPlanMapper, Pl
     // ============================================================
 
     @Override
-    public List<PlotByZoneVo> listAvailablePlots() {
+    public List<PlotByZoneVo> listAvailablePlots(Integer planYear) {
         List<PlotZone> zones = zoneMapper.selectList(
             new LambdaQueryWrapper<PlotZone>().orderByAsc(PlotZone::getZoneCode));
         List<PlotInfo> plots = plotMapper.selectList(
@@ -756,7 +770,47 @@ public class PlantPlanServiceImpl extends DjsBaseServiceImpl<PlantPlanMapper, Pl
             vo.setPlots(toPlotVoList(orphan));
             result.add(vo);
         }
+        // planYear 非空：批量回填每块地的「当年轮作次数」（row27 子项1）
+        fillRotationCount(result, planYear);
         return result;
+    }
+
+    /**
+     * 批量回填各地块 rotationCount（当年该地块计划种植次数 = 当年种植明细行数）。
+     * planYear 为空时不回填（保持 null，前端不渲染标签）；一次 GROUP BY 批量查避免 N+1。
+     */
+    private void fillRotationCount(List<PlotByZoneVo> zones, Integer planYear) {
+        if (planYear == null || CollUtil.isEmpty(zones)) {
+            return;
+        }
+        List<Long> plotIds = zones.stream()
+            .flatMap(z -> z.getPlots() == null ? java.util.stream.Stream.empty() : z.getPlots().stream())
+            .map(PlotByZoneVo.Plot::getPlotId).filter(Objects::nonNull).distinct().collect(Collectors.toList());
+        if (plotIds.isEmpty()) {
+            return;
+        }
+        Map<Long, Integer> countMap = detailsMapper.selectRotationCountByYear(plotIds, planYear).stream()
+            .filter(row -> row.get("plotId") != null)
+            .collect(Collectors.toMap(
+                row -> ((Number) row.get("plotId")).longValue(),
+                row -> toInt(row.get("rotationCount")),
+                (a, b) -> a));
+        for (PlotByZoneVo z : zones) {
+            if (z.getPlots() == null) {
+                continue;
+            }
+            for (PlotByZoneVo.Plot p : z.getPlots()) {
+                p.setRotationCount(countMap.getOrDefault(p.getPlotId(), 0));
+            }
+        }
+    }
+
+    @Override
+    public List<PlotYearPlanRowVo> getPlotYearPlanRows(Long plotId, Integer planYear) {
+        if (plotId == null || planYear == null) {
+            return Collections.emptyList();
+        }
+        return detailsMapper.selectPlotYearPlanRows(plotId, planYear);
     }
 
     private List<PlotByZoneVo.Plot> toPlotVoList(List<PlotInfo> plots) {

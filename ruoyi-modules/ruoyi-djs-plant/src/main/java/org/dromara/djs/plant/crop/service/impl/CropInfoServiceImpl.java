@@ -64,6 +64,7 @@ public class CropInfoServiceImpl extends DjsBaseServiceImpl<CropInfoMapper, Crop
         Page<CropInfoVo> page = baseMapper.selectVoPage(pageQuery.build(), wrapper);
         fillImageUrls(page.getRecords());
         fillPlantingStats(page.getRecords());
+        fillRelatedProductNames(page.getRecords());
         return TableDataInfo.build(page);
     }
 
@@ -71,6 +72,7 @@ public class CropInfoServiceImpl extends DjsBaseServiceImpl<CropInfoMapper, Crop
     public List<CropInfoVo> queryList(CropInfoQuery query) {
         List<CropInfoVo> list = baseMapper.selectVoList(buildQueryWrapper(query));
         fillImageUrls(list);
+        fillRelatedProductNames(list);
         return list;
     }
 
@@ -79,6 +81,7 @@ public class CropInfoServiceImpl extends DjsBaseServiceImpl<CropInfoMapper, Crop
         CropInfoVo vo = baseMapper.selectVoById(id);
         if (vo != null) {
             fillImageUrls(List.of(vo));
+            fillRelatedProductNames(List.of(vo));
         }
         return vo;
     }
@@ -192,6 +195,39 @@ public class CropInfoServiceImpl extends DjsBaseServiceImpl<CropInfoMapper, Crop
         }
     }
 
+    /**
+     * 批量回填关联产品名称（relatedProduct → t_warehouse_product_info.product_name，禁 N+1）。
+     *
+     * <p>收集非空 relatedProduct 去重 IN 查产品名，回填 relatedProductName；查不到留 null。</p>
+     */
+    private void fillRelatedProductNames(List<CropInfoVo> records) {
+        if (records == null || records.isEmpty()) {
+            return;
+        }
+        List<Long> productIds = records.stream()
+            .map(CropInfoVo::getRelatedProduct)
+            .filter(java.util.Objects::nonNull)
+            .distinct()
+            .collect(Collectors.toList());
+        if (productIds.isEmpty()) {
+            return;
+        }
+        List<Map<String, Object>> rows = baseMapper.selectProductNames(productIds);
+        Map<Long, String> nameMap = new java.util.HashMap<>(rows.size());
+        for (Map<String, Object> row : rows) {
+            Object idObj = row.get("id");
+            Object nameObj = row.get("productName");
+            if (idObj != null && nameObj != null) {
+                nameMap.put(Long.valueOf(idObj.toString()), nameObj.toString());
+            }
+        }
+        for (CropInfoVo vo : records) {
+            if (vo.getRelatedProduct() != null) {
+                vo.setRelatedProductName(nameMap.get(vo.getRelatedProduct()));
+            }
+        }
+    }
+
     @Override
     public List<CropPlantingRecordVo> listPlantingByCrop(Long cropId) {
         if (cropId == null) {
@@ -220,7 +256,7 @@ public class CropInfoServiceImpl extends DjsBaseServiceImpl<CropInfoMapper, Crop
             .like(StringUtils.isNotBlank(query.getCropName()), CropInfo::getCropName, query.getCropName())
             .like(StringUtils.isNotBlank(query.getVarietyName()), CropInfo::getVarietyName, query.getVarietyName())
             .like(StringUtils.isNotBlank(query.getVarietyOrigin()), CropInfo::getVarietyOrigin, query.getVarietyOrigin())
-            .eq(StringUtils.isNotBlank(query.getCropFamily()), CropInfo::getCropFamily, query.getCropFamily())
+            .like(StringUtils.isNotBlank(query.getCropFamily()), CropInfo::getCropFamily, query.getCropFamily())
             .like(StringUtils.isNotBlank(query.getPlantingSeason()), CropInfo::getPlantingSeason, query.getPlantingSeason())
             .eq(query.getUpdateBy() != null, CropInfo::getUpdateBy, query.getUpdateBy())
             .between(beginTime != null && endTime != null, CropInfo::getUpdateTime, beginTime, endTime);

@@ -92,8 +92,8 @@ public class PlantDashboardServiceImpl implements IPlantDashboardService {
      * <ul>
      *   <li>子项1 果蔬有机证到期日 = 最新一张果蔬证书到期日（{@code MAX(crop_cert_valid)}）。</li>
      *   <li>子项2 果蔬有机证书到期天数 = {@code DATEDIFF(MAX(crop_cert_valid), CURDATE())}。</li>
-     *   <li>子项3 作物无证书品类数 = 在种作物总数 − 在最新证书覆盖品类里的在种作物数。</li>
-     *   <li>子项4 果蔬有机证书品类数 = 在种作物中在最新证书覆盖品类里的数量。</li>
+     *   <li>子项3 果蔬有机证书品类数 = 最新一张果蔬证书在关联表里覆盖的不重复作物数（不限种植状态）。</li>
+     *   <li>子项4 作物无证书品类数 = 在种作物中不在最新证书覆盖品类里的不重复作物数。</li>
      * </ul>
      *
      * @param tenantId 租户
@@ -111,10 +111,8 @@ public class PlantDashboardServiceImpl implements IPlantDashboardService {
             cert.setCropCertDaysToExpiry(latest.getDaysToExpiry());
         }
 
-        int inCert = nz(dashboardMapper.selectInLatestCertCropCount(tenantId));
-        int activeTotal = nz(dashboardMapper.selectActiveCropCount(tenantId));
-        cert.setCropCertCategoryCount(inCert);
-        cert.setCropNoCertCount(Math.max(activeTotal - inCert, 0));
+        cert.setCropCertCategoryCount(nz(dashboardMapper.selectLatestCertCropCount(tenantId)));
+        cert.setCropNoCertCount(nz(dashboardMapper.selectNoCertCropCount(tenantId)));
 
         return cert;
     }

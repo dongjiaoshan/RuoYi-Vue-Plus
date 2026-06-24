@@ -30,9 +30,10 @@ public interface CropInfoMapper extends BaseMapperPlus<CropInfo, CropInfoVo> {
     /**
      * 按 crop_id 批量聚合种植记录派生统计（历史种植次数 / 平均亩产 / 最大亩产）。
      *
-     * <p>聚合源 {@code t_plant_plant_details.average_yield}（平均亩产 kg/亩）：
-     * COUNT(*) → historyPlantCount；AVG(average_yield) → avgYield；MAX(average_yield) → maxYield。
-     * 仅 {@code average_yield IS NOT NULL} 行参与 AVG/MAX，COUNT 计全部明细行。</p>
+     * <p>历史种植次数 historyPlantCount = COUNT(*) 全部明细行。
+     * 平均亩产 avgYield / 最大亩产 maxYield 取「采摘完成状态」({@code harvest_status='completed'})
+     * 明细的已摘重量 {@code actual_yield}（实际采收量）：AVG → avgYield；MAX → maxYield。
+     * 仅采摘完成行参与 AVG/MAX，无采摘完成行时返 null。</p>
      *
      * @param cropIds 作物 id 集合（已 dedupe，非空）
      * @return 聚合行（无种植记录的 cropId 不出现，service 兜底 0/null）
@@ -42,8 +43,8 @@ public interface CropInfoMapper extends BaseMapperPlus<CropInfo, CropInfoVo> {
         SELECT
             crop_id AS cropId,
             COUNT(*) AS historyPlantCount,
-            AVG(average_yield) AS avgYield,
-            MAX(average_yield) AS maxYield
+            AVG(CASE WHEN harvest_status = 'completed' THEN actual_yield END) AS avgYield,
+            MAX(CASE WHEN harvest_status = 'completed' THEN actual_yield END) AS maxYield
           FROM t_plant_plant_details
          WHERE tenant_id = '1001'
            AND del_flag = '0'
@@ -55,10 +56,31 @@ public interface CropInfoMapper extends BaseMapperPlus<CropInfo, CropInfoVo> {
     List<CropPlantingStatVo> selectPlantingStats(@Param("cropIds") Collection<Long> cropIds);
 
     /**
+     * 按 relatedProduct id 批量查关联产品名称（避免 N+1）。
+     *
+     * <p>逻辑关联 {@code t_warehouse_product_info.id → product_name}；显式手写
+     * {@code tenant_id='1001' AND del_flag='0'}（V1 未启全局多租户拦截器）。</p>
+     *
+     * @param productIds 关联产品 id 集合（已 dedupe，非空）
+     * @return 产品行（id + productName），service 收 Map 回填 relatedProductName
+     */
+    @Select("""
+        <script>
+        SELECT id, product_name AS productName
+          FROM t_warehouse_product_info
+         WHERE tenant_id = '1001'
+           AND del_flag = '0'
+           AND id IN
+           <foreach collection='productIds' item='pid' open='(' separator=',' close=')'>#{pid}</foreach>
+        </script>
+        """)
+    List<java.util.Map<String, Object>> selectProductNames(@Param("productIds") Collection<Long> productIds);
+
+    /**
      * 按 cropId 查种植记录子表（作物详情 9 列）。
      *
      * <p>JOIN 地块名 + 种植班组(plant_by) / 采摘班组(harvest_by)；亩产按 kg 返（决策#7 明细用 kg）。
-     * 预计亩产取作物 {@code predicted_per}；实际亩产取 {@code average_yield}。按种植日期倒序。</p>
+     * 预计亩产取作物 {@code predicted_per}；实际采收量取明细 {@code actual_yield}。按种植日期倒序。</p>
      *
      * @param cropId 作物 id
      * @return 种植记录子表行；无记录返空 list
@@ -72,7 +94,7 @@ public interface CropInfoMapper extends BaseMapperPlus<CropInfo, CropInfoVo> {
             pt.team_name AS plantTeamName,
             c.predicted_per AS predictedPer,
             d.earliest_harvestdate AS earliestHarvestDate,
-            d.average_yield AS actualPer,
+            d.actual_yield AS actualPer,
             d.begin_harvestdate AS pickStartDate,
             d.end_harvestdate AS pickEndDate,
             ht.team_name AS pickTeamName

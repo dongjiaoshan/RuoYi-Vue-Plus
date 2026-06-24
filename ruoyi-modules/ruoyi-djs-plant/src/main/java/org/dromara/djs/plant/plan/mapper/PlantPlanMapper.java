@@ -131,7 +131,12 @@ public interface PlantPlanMapper extends BaseMapperPlus<PlantPlan, PlantPlanVo> 
      *
      * <p>每行 key=planId(Long) / expectedYield(BigDecimal SUM) / actualYield(BigDecimal SUM)
      * / finishedPlot(Long COUNT plant_status='completed')
-     * / earliestBegindate(DATE MIN) / lastBegindate(DATE MAX)。</p>
+     * / earliestBegindate(DATE MIN) / lastBegindate(DATE MAX)
+     * / plantMonth(Integer，最早开始那条明细的种植月份)
+     * / plantPeriod(String，最早开始那条明细的上中下旬 05/15/25)。</p>
+     *
+     * <p>plantMonth/plantPeriod 取"最早开始日期"对应明细：对 {@code CONCAT(LPAD(plant_month,2,'0'), plant_period)}
+     * 取 MIN（月份补零后拼旬别，字典序 == 时间序），再拆出月份与旬别，供列表"计划种植日期"列展示如「6月中旬」。</p>
      *
      * <p>finishedPlot 语义：实施 finishPlant（pending→ongoing→completed 状态机的"种植完成"动作）后，
      * plant_status='completed' 即表示该地块种植已完成，故 {@code COUNT(plant_status='completed')}
@@ -151,7 +156,9 @@ public interface PlantPlanMapper extends BaseMapperPlus<PlantPlan, PlantPlanVo> 
             COALESCE(SUM(d.actual_yield), 0) AS actualYield,
             SUM(CASE WHEN d.plant_status = 'completed' THEN 1 ELSE 0 END) AS finishedPlot,
             MIN(DATE(CONCAT(p.plan_year, '-', LPAD(d.plant_month, 2, '0'), '-', d.plant_period))) AS earliestBegindate,
-            MAX(DATE(CONCAT(p.plan_year, '-', LPAD(d.plant_month, 2, '0'), '-', d.plant_period))) AS lastBegindate
+            MAX(DATE(CONCAT(p.plan_year, '-', LPAD(d.plant_month, 2, '0'), '-', d.plant_period))) AS lastBegindate,
+            CAST(SUBSTRING(MIN(CONCAT(LPAD(d.plant_month, 2, '0'), d.plant_period)), 1, 2) AS UNSIGNED) AS plantMonth,
+            SUBSTRING(MIN(CONCAT(LPAD(d.plant_month, 2, '0'), d.plant_period)), 3, 2) AS plantPeriod
           FROM t_plant_plant_details d
           JOIN t_plant_plant_plan p
             ON p.id = d.plant_id

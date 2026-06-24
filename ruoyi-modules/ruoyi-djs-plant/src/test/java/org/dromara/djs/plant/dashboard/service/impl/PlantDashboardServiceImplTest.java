@@ -92,8 +92,10 @@ class PlantDashboardServiceImplTest {
         certRow.setCertDate(LocalDate.of(2027, 6, 30));
         certRow.setDaysToExpiry(380);
         when(dashboardMapper.selectLatestCropCert(anyString())).thenReturn(certRow);
-        when(dashboardMapper.selectInLatestCertCropCount(anyString())).thenReturn(5);
-        when(dashboardMapper.selectActiveCropCount(anyString())).thenReturn(8);
+        // 子项3 果蔬有机证书品类数 = 最新证书在 rel 表覆盖品类数（不限种植状态）
+        when(dashboardMapper.selectLatestCertCropCount(anyString())).thenReturn(5);
+        // 子项4 作物无证书品类数 = 在种作物中不在最新证书覆盖品类里的数（mapper 直接返）
+        when(dashboardMapper.selectNoCertCropCount(anyString())).thenReturn(3);
 
         // Act
         PlantDashboardSummaryVo vo = service.getSummary();
@@ -128,7 +130,7 @@ class PlantDashboardServiceImplTest {
         // Assert — 证书一览
         assertThat(vo.getOrganicCertOverview().getCropCertExpiryDate()).isEqualTo("2027-06-30");
         assertThat(vo.getOrganicCertOverview().getCropCertDaysToExpiry()).isEqualTo(380);
-        // inCert=5，activeTotal=8 → noCert=max(8-5,0)=3，certCategory=5
+        // 证书品类数=5（最新证书 rel 覆盖品类）、无证书品类数=3（在种不在覆盖品类，mapper 直接返）
         assertThat(vo.getOrganicCertOverview().getCropNoCertCount()).isEqualTo(3);
         assertThat(vo.getOrganicCertOverview().getCropCertCategoryCount()).isEqualTo(5);
     }
@@ -149,8 +151,8 @@ class PlantDashboardServiceImplTest {
         when(dashboardMapper.selectMonthCompletion(anyString())).thenReturn(null);
         when(dashboardMapper.selectCropPlantStat(anyString())).thenReturn(null);
         when(dashboardMapper.selectLatestCropCert(anyString())).thenReturn(null);
-        when(dashboardMapper.selectInLatestCertCropCount(anyString())).thenReturn(null);
-        when(dashboardMapper.selectActiveCropCount(anyString())).thenReturn(null);
+        when(dashboardMapper.selectLatestCertCropCount(anyString())).thenReturn(null);
+        when(dashboardMapper.selectNoCertCropCount(anyString())).thenReturn(null);
 
         // Act
         PlantDashboardSummaryVo vo = service.getSummary();

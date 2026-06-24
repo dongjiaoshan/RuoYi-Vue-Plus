@@ -19,6 +19,7 @@ import org.dromara.djs.plant.plan.domain.vo.PlantPlanGanttVo;
 import org.dromara.djs.plant.plan.domain.vo.PlantPlanStatsVo;
 import org.dromara.djs.plant.plan.domain.vo.PlantPlanVo;
 import org.dromara.djs.plant.plan.domain.vo.PlotByZoneVo;
+import org.dromara.djs.plant.plan.domain.vo.PlotYearPlanRowVo;
 import org.dromara.djs.plant.plan.service.IPlantPlanService;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -28,6 +29,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.Arrays;
@@ -123,7 +125,18 @@ public class PlantPlanController extends BaseController {
 
     @SaCheckPermission("djs:plant:plan:wizard")
     @GetMapping("/availablePlots")
-    public R<List<PlotByZoneVo>> availablePlots() {
-        return R.ok(plantPlanService.listAvailablePlots());
+    public R<List<PlotByZoneVo>> availablePlots(@RequestParam(required = false) Integer planYear) {
+        return R.ok(plantPlanService.listAvailablePlots(planYear));
+    }
+
+    /**
+     * 向导 step3「查看」：某地块在某年份的计划实际数据列表（测试反馈 row27）。
+     * 列：计划种植时间 / 计划种植作物 / 最早采摘日期 / 最晚采摘日期 / 种植状态 / 采摘状态。
+     */
+    @SaCheckPermission("djs:plant:plan:wizard")
+    @GetMapping("/plotPlanDetails")
+    public R<List<PlotYearPlanRowVo>> plotPlanDetails(@RequestParam Long plotId,
+                                                      @RequestParam Integer planYear) {
+        return R.ok(plantPlanService.getPlotYearPlanRows(plotId, planYear));
     }
 }

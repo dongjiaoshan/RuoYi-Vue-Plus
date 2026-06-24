@@ -35,5 +35,13 @@ public class PlotByZoneVo implements Serializable {
         private String plotCode;
         private BigDecimal plotArea;
         private Integer plotStatus;
+
+        /**
+         * 当年该地块计划种植次数（轮作次数）= 该地块在所选 planYear 下的种植明细行数。
+         *
+         * <p>{@code listAvailablePlots(planYear)} 传 planYear 时由 service 批量回填；
+         * planYear 为空时不回填（保持 null，前端不渲染「N次轮作计划」标签）。</p>
+         */
+        private Integer rotationCount;
     }
 }

@@ -48,7 +48,12 @@ public class CropDetailVo implements Serializable {
     @ExcelProperty(value = "种植地块")
     private String plotName;
 
-    /** 3 采摘状态（字典 djs_pick_status）。 */
+    /** 3 种植状态（字典 djs_plant_plan_status：pending/ongoing/completed）。 */
+    @ExcelProperty(value = "种植状态", converter = ExcelDictConvert.class)
+    @ExcelDictFormat(dictType = "djs_plant_plan_status")
+    private String plantStatus;
+
+    /** 4 采摘状态（字典 djs_pick_status）。 */
     @ExcelProperty(value = "采摘状态", converter = ExcelDictConvert.class)
     @ExcelDictFormat(dictType = "djs_pick_status")
     private String harvestStatus;

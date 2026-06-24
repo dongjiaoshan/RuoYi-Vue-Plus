@@ -7,9 +7,11 @@ import org.dromara.djs.plant.plan.domain.PlantDetails;
 import org.dromara.djs.plant.plan.domain.vo.PlantCropTaskVo;
 import org.dromara.djs.plant.plan.domain.vo.PlantDetailsVo;
 import org.dromara.djs.plant.plan.domain.vo.PlantMonthTaskVo;
+import org.dromara.djs.plant.plan.domain.vo.PlotYearPlanRowVo;
 import org.dromara.djs.plant.plan.domain.vo.SeedSummaryVo;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * 种植计划明细 Mapper（PLT-PLAN-001）。
@@ -162,4 +164,78 @@ public interface PlantDetailsMapper extends BaseMapperPlus<PlantDetails, PlantDe
            AND tenant_id = '1001'
         """)
     SeedSummaryVo selectSeedSummary(@Param("month") Integer month, @Param("today") java.time.LocalDate today);
+
+    /**
+     * 向导 step3：批量统计某年份各地块的计划种植次数（轮作次数）（测试反馈 row27 子项1）。
+     *
+     * <p>"当年该地块计划种植次数" = 该地块在 planYear 下的种植明细行数
+     * （JOIN 主表按 {@code p.plan_year=#{planYear}} 过滤）。一次 GROUP BY plot_id 批量返回，避免 N+1。
+     * 仅统计入参 plotIds 内的地块；plotIds 为空时外层不调。</p>
+     *
+     * <p>租户隔离：V1 单租户显式 {@code tenant_id='1001'}，del_flag='0'。
+     * 返回 Map 行：{@code plotId(Long) / rotationCount(Long)}，未命中的地块由 service 兜 0。</p>
+     *
+     * @param plotIds  本次返回的地块 id 列表
+     * @param planYear 计划年份
+     * @return 每行 plotId → rotationCount（无明细的地块不出现在结果里）
+     */
+    @Select("""
+        <script>
+        SELECT
+            d.plot_id AS plotId,
+            COUNT(*)  AS rotationCount
+          FROM t_plant_plant_details d
+          JOIN t_plant_plant_plan p
+            ON p.id = d.plant_id
+           AND p.del_flag = '0'
+           AND p.tenant_id = d.tenant_id
+           AND p.plan_year = #{planYear}
+         WHERE d.del_flag = '0'
+           AND d.tenant_id = '1001'
+           AND d.plot_id IN
+           <foreach collection="plotIds" item="pid" open="(" separator="," close=")">#{pid}</foreach>
+         GROUP BY d.plot_id
+        </script>
+        """)
+    List<Map<String, Object>> selectRotationCountByYear(@Param("plotIds") List<Long> plotIds,
+                                                         @Param("planYear") Integer planYear);
+
+    /**
+     * 向导 step3「查看」弹框：某地块在某年份的计划实际数据列表（测试反馈 row27 子项2）。
+     *
+     * <p>列：计划种植时间（plant_month + plant_period）/ 计划种植作物（crop_name）/
+     * 最早采摘日期 / 最晚采摘日期 / 种植状态 / 采摘状态。按月份 + 旬别升序。</p>
+     *
+     * <p>租户隔离：V1 单租户显式 {@code tenant_id='1001'}，del_flag='0'。</p>
+     *
+     * @param plotId   地块 id
+     * @param planYear 计划年份
+     * @return 该地块当年种植明细行列表（无数据返空列表）
+     */
+    @Select("""
+        SELECT
+            d.id                  AS detailId,
+            d.plant_month         AS plantMonth,
+            d.plant_period        AS plantPeriod,
+            c.crop_name           AS cropName,
+            d.earliest_harvestdate AS earliestHarvestdate,
+            d.last_harvestdate    AS lastHarvestdate,
+            d.plant_status        AS plantStatus,
+            d.harvest_status      AS harvestStatus
+          FROM t_plant_plant_details d
+          JOIN t_plant_plant_plan p
+            ON p.id = d.plant_id
+           AND p.del_flag = '0'
+           AND p.tenant_id = d.tenant_id
+           AND p.plan_year = #{planYear}
+          LEFT JOIN t_plant_crop_info c
+            ON c.id = d.crop_id
+           AND c.del_flag = '0'
+         WHERE d.del_flag = '0'
+           AND d.tenant_id = '1001'
+           AND d.plot_id = #{plotId}
+         ORDER BY d.plant_month ASC, d.plant_period ASC, d.id ASC
+        """)
+    List<PlotYearPlanRowVo> selectPlotYearPlanRows(@Param("plotId") Long plotId,
+                                                   @Param("planYear") Integer planYear);
 }

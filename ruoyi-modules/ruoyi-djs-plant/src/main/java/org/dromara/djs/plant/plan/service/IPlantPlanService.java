@@ -13,6 +13,7 @@ import org.dromara.djs.plant.plan.domain.vo.PlantPlanStatsVo;
 import org.dromara.djs.plant.plan.domain.vo.PlantPlanSummaryVo;
 import org.dromara.djs.plant.plan.domain.vo.PlantPlanVo;
 import org.dromara.djs.plant.plan.domain.vo.PlotByZoneVo;
+import org.dromara.djs.plant.plan.domain.vo.PlotYearPlanRowVo;
 
 import java.util.Collection;
 import java.util.List;
@@ -61,8 +62,19 @@ public interface IPlantPlanService {
 
     /**
      * 向导 step3 用：按片区分组返回所有地块。
+     *
+     * @param planYear 计划年份（非空时回填每块地的「当年轮作次数」rotationCount；为空则不回填）
      */
-    List<PlotByZoneVo> listAvailablePlots();
+    List<PlotByZoneVo> listAvailablePlots(Integer planYear);
+
+    /**
+     * 向导 step3「查看」弹框：某地块在某年份的计划实际数据列表（测试反馈 row27）。
+     *
+     * @param plotId   地块 id
+     * @param planYear 计划年份
+     * @return 该地块当年种植明细行列表（无数据返空列表）
+     */
+    List<PlotYearPlanRowVo> getPlotYearPlanRows(Long plotId, Integer planYear);
 
     /**
      * mp 播种「开始种植」开工（FIX-PLT-MP-SEED-001 #5）。

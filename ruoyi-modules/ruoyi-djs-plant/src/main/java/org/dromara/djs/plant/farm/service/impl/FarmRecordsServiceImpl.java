@@ -947,6 +947,14 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
                 .like(PlotInfo::getPlotCode, query.getPlotCode()))
             .stream().map(PlotInfo::getId).collect(Collectors.toList())
             : null;
+        // 地块片区筛选：zone_id 不在主表，经 plot_info.zone_id eq 反查 plotId 列表再 IN（与 plotName/plotCode IN 叠加为 AND）
+        boolean filterByZone = query.getZoneId() != null;
+        List<Long> plotIdsByZone = filterByZone
+            ? plotInfoMapper.selectList(new LambdaQueryWrapper<PlotInfo>()
+                .select(PlotInfo::getId)
+                .eq(PlotInfo::getZoneId, query.getZoneId()))
+            .stream().map(PlotInfo::getId).collect(Collectors.toList())
+            : null;
         w.like(StringUtils.isNotBlank(query.getRecordNo()), FarmRecords::getRecordNo, query.getRecordNo())
             .in(hasWorkTypes, FarmRecords::getFarmType, query.getFarmWorkTypes())
             .eq(!hasWorkTypes && StringUtils.isNotBlank(query.getFarmType()), FarmRecords::getFarmType, query.getFarmType())
@@ -955,6 +963,8 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
             .in(filterByPlotName, FarmRecords::getPlotId, CollUtil.isEmpty(plotIdsByName) ? List.of(-1L) : plotIdsByName)
             // 地块编号命中 → IN plotIds；命中为空 → IN (-1) 哨兵 id，确保返回空结果
             .in(filterByPlotCode, FarmRecords::getPlotId, CollUtil.isEmpty(plotIdsByCode) ? List.of(-1L) : plotIdsByCode)
+            // 地块片区命中 → IN plotIds；命中为空 → IN (-1) 哨兵 id，确保返回空结果
+            .in(filterByZone, FarmRecords::getPlotId, CollUtil.isEmpty(plotIdsByZone) ? List.of(-1L) : plotIdsByZone)
             .eq(query.getCropId() != null, FarmRecords::getCropId, query.getCropId())
             .like(StringUtils.isNotBlank(query.getCropName()), FarmRecords::getCropName, query.getCropName())
             .eq(query.getFarmBy() != null, FarmRecords::getFarmBy, query.getFarmBy())

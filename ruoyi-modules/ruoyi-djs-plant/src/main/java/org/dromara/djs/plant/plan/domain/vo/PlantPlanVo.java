@@ -71,6 +71,15 @@ public class PlantPlanVo implements Serializable {
     @ExcelProperty(value = "最晚开始")
     private LocalDate lastBegindate;
 
+    /** 计划种植月份（最早开始那条明细的 plant_month，service enrich）；列表"计划种植日期"列用。 */
+    @ExcelProperty(value = "计划种植月份")
+    private Integer plantMonth;
+
+    /** 计划种植旬别（最早开始那条明细的 plant_period 05/15/25，service enrich，dict djs_plant_period）。 */
+    @ExcelProperty(value = "计划种植旬别", converter = ExcelDictConvert.class)
+    @ExcelDictFormat(dictType = "djs_plant_period")
+    private String plantPeriod;
+
     @ExcelProperty(value = "最早采摘")
     private LocalDate earliestHarvestdate;
 
