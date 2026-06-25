@@ -1,6 +1,7 @@
 package org.dromara.djs.store.returns.controller;
 
 import cn.dev33.satoken.annotation.SaCheckPermission;
+import cn.dev33.satoken.annotation.SaMode;
 import jakarta.servlet.http.HttpServletResponse;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -18,6 +19,7 @@ import org.dromara.djs.store.returns.domain.bo.StoreReturnConfirmBo;
 import org.dromara.djs.store.returns.domain.query.StoreReturnQuery;
 import org.dromara.djs.store.returns.domain.vo.StoreReturnVo;
 import org.dromara.djs.store.returns.domain.vo.StoreReturnPorkCandidateVo;
+import org.dromara.djs.store.returns.domain.vo.StoreReturnStoreDailyVo;
 import org.dromara.djs.store.returns.domain.vo.StoreReturnVegCandidateVo;
 import org.dromara.djs.store.returns.service.IStoreReturnService;
 import org.springframework.validation.annotation.Validated;
@@ -48,11 +50,21 @@ public class StoreReturnController extends BaseController {
 
     private final IStoreReturnService service;
 
-    /** 列表（分页）。 */
-    @SaCheckPermission("djs:store:return:list")
+    /** 列表（分页）。门店端 + 仓库端（退货记录下钻明细）共用 → OR 权限。 */
+    @SaCheckPermission(value = {"djs:store:return:list", "djs:warehouse:return:list"}, mode = SaMode.OR)
     @GetMapping("/list")
     public TableDataInfo<StoreReturnVo> list(StoreReturnQuery query, PageQuery pageQuery) {
         return service.queryPageList(query, pageQuery);
+    }
+
+    /**
+     * 仓库「退货记录」外层「门店 + 当日」汇总（仅 store_to_warehouse 方向）。
+     * 仓库角色经 {@code djs:warehouse:return:list} 命中（与门店 list 权限 OR），无需补授门店权限。
+     */
+    @SaCheckPermission(value = {"djs:store:return:list", "djs:warehouse:return:list"}, mode = SaMode.OR)
+    @GetMapping("/store-daily")
+    public TableDataInfo<StoreReturnStoreDailyVo> storeDaily(StoreReturnQuery query, PageQuery pageQuery) {
+        return service.queryStoreDailyPage(query, pageQuery);
     }
 
     /** 详情。 */

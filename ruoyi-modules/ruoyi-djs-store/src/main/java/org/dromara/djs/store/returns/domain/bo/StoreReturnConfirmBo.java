@@ -22,8 +22,10 @@ public class StoreReturnConfirmBo {
     @NotNull(message = "退回记录 ID 不能为空")
     private Long id;
 
-    /** 入库库位 FK → {@code t_warehouse_location_info.id}（确认实收时选）。 */
-    @NotNull(message = "入库库位不能为空")
+    /**
+     * 入库库位 FK → {@code t_warehouse_location_info.id}（确认实收时可选）。
+     * 为空时由 service 按入库产品的预设库位 / 库存最多库位自动兜底（mp 确认页只填实收量、不选库位）。
+     */
     private Long locationId;
 
     /** 仓库实收量（入库到 location_stock 的数量）。 */

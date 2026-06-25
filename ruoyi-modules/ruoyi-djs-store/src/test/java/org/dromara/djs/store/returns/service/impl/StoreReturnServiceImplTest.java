@@ -16,6 +16,7 @@ import org.dromara.djs.warehouse.location.mapper.LocationInfoMapper;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
 import org.dromara.djs.warehouse.purchase.service.IWarehousePurchaseInService;
+import org.dromara.djs.warehouse.stock.mapper.LocationStockMapper;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -71,6 +72,7 @@ class StoreReturnServiceImplTest {
     @Mock private StoreMapper storeMapper;
     @Mock private ProductInfoMapper productInfoMapper;
     @Mock private LocationInfoMapper locationInfoMapper;
+    @Mock private LocationStockMapper locationStockMapper;
     @Mock private IBizCodeGenerator bizCodeGenerator;
     @Mock private IWarehousePurchaseInService purchaseInService;
     @Mock private DemandManageMapper demandManageMapper;
@@ -107,9 +109,10 @@ class StoreReturnServiceImplTest {
     static class TestableStoreReturnServiceImpl extends StoreReturnServiceImpl {
         TestableStoreReturnServiceImpl(StoreReturnMapper b, StoreMapper sm,
                                        ProductInfoMapper pm, LocationInfoMapper lm,
+                                       LocationStockMapper lsm,
                                        IBizCodeGenerator g, IWarehousePurchaseInService pis,
                                        DemandManageMapper dm, org.dromara.common.core.service.DictService ds) {
-            super(b, sm, pm, lm, g, pis, dm, ds);
+            super(b, sm, pm, lm, lsm, g, pis, dm, ds);
         }
 
         @Override
@@ -121,7 +124,7 @@ class StoreReturnServiceImplTest {
     @BeforeEach
     void setup() {
         service = new TestableStoreReturnServiceImpl(baseMapper, storeMapper, productInfoMapper,
-            locationInfoMapper, bizCodeGenerator, purchaseInService, demandManageMapper, dictService);
+            locationInfoMapper, locationStockMapper, bizCodeGenerator, purchaseInService, demandManageMapper, dictService);
         loginHelperMock = Mockito.mockStatic(LoginHelper.class);
         loginHelperMock.when(LoginHelper::getUserId).thenReturn(USER_ID);
         when(baseMapper.insert(any(StoreReturn.class))).thenAnswer(inv -> {

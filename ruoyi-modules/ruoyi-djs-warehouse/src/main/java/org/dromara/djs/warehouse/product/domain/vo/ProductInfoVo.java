@@ -14,15 +14,12 @@ import java.io.Serial;
 import java.io.Serializable;
 import java.math.BigDecimal;
 import java.util.Date;
-import java.util.List;
 
 /**
  * 产品视图对象（WMS-MD-002）。
  *
  * <p>字典翻译走 admin 端 {@code <dict-tag>} 自渲染（ADR-0004 §2.3 范式），后端 VO 不主动 JOIN
  * {@code sys_dict_data}，保持瘦 VO。</p>
- *
- * <p>{@code giftComponents} 仅 {@code productType=3} 详情接口注入；列表查询不带（避免 N+1）。</p>
  *
  * @author djs
  * @since WMS-MD-002
@@ -146,10 +143,5 @@ public class ProductInfoVo implements Serializable {
     @ExcelProperty(value = "更新人")
     @Translation(type = TransConstant.USER_ID_TO_NICKNAME, mapper = "updateBy")
     private String updateByName;
-
-    /**
-     * 礼盒组件清单（详情接口注入；{@code productType=3} 时非空）。
-     */
-    private List<GiftBoxVo> giftComponents;
 
 }

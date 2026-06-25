@@ -144,15 +144,6 @@ public interface IProductProductionService {
     Map<String, List<StoreDemandCopiesVo>> listStoreDemandCopiesBatch(List<Long> productIds);
 
     /**
-     * 礼盒打包页顶部「可用礼盒组件」池：肉品/果蔬/其他打包时「发送礼盒」产出、未被礼盒消耗的生产产品
-     * （{@code deliver_dest='gift' AND produce_quantity>0}），按 product_id 聚合可用量。
-     * 礼盒打包消耗后相应减少（前端 @submitted 重拉）。
-     *
-     * @return 各生产产品的可用礼盒组件量（按产品名排序；无则空 List）
-     */
-    List<org.dromara.djs.warehouse.pack.domain.vo.GiftComponentStockVo> listGiftComponentStock();
-
-    /**
      * 批量查目标成品的「原材料实时库存」（打包录入卡片库存口径统一，取数逻辑 doc#13）。
      *
      * <p>对每个目标成品取其 {@code product_material}（自引用 FK → 原材料产品 id），调

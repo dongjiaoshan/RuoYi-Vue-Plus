@@ -195,6 +195,17 @@ public class ShipmentServiceImpl
                 I18nMessages.t("shipment.demand.status_invalid", demand.getDemandStatus()), 400);
         }
 
+        // 1b. 出车发货「全有或全无」：需求未全部满足（已打包 shipped_count < demand_quantity）禁止出车，
+        //     杜绝部分发货（Kevin 2026-06-25）。需求扣减在打包时完成，shipped_count = 已备货量。
+        BigDecimal shipped = demand.getShippedCount() == null ? BigDecimal.ZERO : demand.getShippedCount();
+        BigDecimal need = demand.getDemandQuantity() == null ? BigDecimal.ZERO : demand.getDemandQuantity();
+        if (need.signum() > 0 && shipped.compareTo(need) < 0) {
+            throw new ServiceException(I18nMessages.t("shipment.demand.not_fully_satisfied",
+                demand.getDemandNo(),
+                shipped.stripTrailingZeros().toPlainString(),
+                need.stripTrailingZeros().toPlainString()), 400);
+        }
+
         // 2. 校验 product_production 行存在 + 未清点
         List<ProductProduction> productions = productProductionMapper.selectList(
             new LambdaQueryWrapper<ProductProduction>()
@@ -375,14 +386,11 @@ public class ShipmentServiceImpl
             vo.setShipDate(storeDemands.stream()
                 .map(DemandManage::getDemandDate).filter(Objects::nonNull)
                 .max(LocalDate::compareTo).orElse(null));
-            // 门店当天发货状态三态（允许多次发货 #50）：全 COMPLETED → 已发货；
-            // 有 demand 已 COMPLETED/PARTIAL_SHIPPED 但未全发 → 部分发货；都未发 → 待发货。
+            // 门店当天发货状态二态：出车发货「全有或全无」，无部分发货中间态。
+            // 全部 demand COMPLETED → 已发货；否则 → 待发货。
             boolean allShipped = storeDemands.stream()
                 .allMatch(d -> DemandStatus.COMPLETED.name().equals(d.getDemandStatus()));
-            boolean anyShipped = storeDemands.stream()
-                .anyMatch(d -> DemandStatus.COMPLETED.name().equals(d.getDemandStatus())
-                    || DemandStatus.PARTIAL_SHIPPED.name().equals(d.getDemandStatus()));
-            vo.setShipStatus(allShipped ? "已发货" : (anyShipped ? "部分发货" : "待发货"));
+            vo.setShipStatus(allShipped ? "已发货" : "待发货");
             list.add(vo);
         });
         // 5. 稳定排序：待发需求多的门店在前，其次按门店名。

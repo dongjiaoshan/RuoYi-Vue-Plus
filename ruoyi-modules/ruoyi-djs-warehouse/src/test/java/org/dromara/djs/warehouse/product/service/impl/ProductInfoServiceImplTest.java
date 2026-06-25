@@ -6,13 +6,10 @@ import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
-import org.dromara.djs.warehouse.product.domain.bo.GiftBoxBo;
 import org.dromara.djs.warehouse.product.domain.bo.ProductInfoBo;
 import org.dromara.djs.warehouse.product.domain.query.ProductInfoQuery;
-import org.dromara.djs.warehouse.product.domain.vo.GiftBoxVo;
 import org.dromara.djs.warehouse.product.domain.vo.ProductInfoVo;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
-import org.dromara.djs.warehouse.product.service.IGiftBoxService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
@@ -27,14 +24,11 @@ import org.mockito.quality.Strictness;
 import org.springframework.dao.DuplicateKeyException;
 
 import java.math.BigDecimal;
-import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -48,11 +42,9 @@ import static org.mockito.Mockito.when;
  * <ul>
  *   <li>新增自产 happy / 缺归属类型 → error</li>
  *   <li>新增外购 happy / 缺供应商 → error</li>
- *   <li>新增礼盒 happy（自动 set belong_type=gift_box + 子表 insert）/ 空组件 → error / 嵌套礼盒 → error</li>
+ *   <li>新增礼盒 happy（独立成品，自动 set belong_type=gift_box）</li>
  *   <li>重复编码 DuplicateKeyException → product.code_duplicate</li>
- *   <li>编辑礼盒：覆盖式 replace 组件（softDeleteByBoxId + insertBatch）</li>
- *   <li>删除：有库存 → error / 被原材料引用 → error / happy + 级联软删组件</li>
- *   <li>查询详情：礼盒附带组件</li>
+ *   <li>删除：有库存 → error / 被原材料引用 → error / happy</li>
  *   <li>分页 happy</li>
  * </ul>
  *
@@ -68,9 +60,6 @@ class ProductInfoServiceImplTest {
 
     @Mock
     private ProductInfoMapper productInfoMapper;
-
-    @Mock
-    private IGiftBoxService giftBoxService;
 
     @Mock
     private org.dromara.djs.common.image.service.IImageLibraryService imageLibraryService;
@@ -99,7 +88,7 @@ class ProductInfoServiceImplTest {
      * 子类覆盖 toEntity 钩子，避开 SpringUtils.getBean(Converter.class)（MapStruct-Plus 容器）。
      */
     static class TestableProductInfoServiceImpl extends ProductInfoServiceImpl {
-        TestableProductInfoServiceImpl(ProductInfoMapper baseMapper, IGiftBoxService giftBoxService,
+        TestableProductInfoServiceImpl(ProductInfoMapper baseMapper,
                                        org.dromara.djs.common.image.service.IImageLibraryService imageLibraryService,
                                        org.dromara.djs.common.image.service.ImageUrlResolver imageUrlResolver,
                                        org.dromara.djs.warehouse.location.mapper.LocationInfoMapper locationInfoMapper,
@@ -107,7 +96,7 @@ class ProductInfoServiceImplTest {
                                        org.dromara.djs.warehouse.stock.mapper.LocationStockMapper locationStockMapper,
                                        org.dromara.djs.common.encoder.IBizCodeGenerator bizCodeGenerator,
                                        org.dromara.djs.warehouse.check.service.IStockCheckService stockCheckService) {
-            super(baseMapper, giftBoxService, imageLibraryService, imageUrlResolver,
+            super(baseMapper, imageLibraryService, imageUrlResolver,
                 locationInfoMapper, stockFlowMapper, locationStockMapper, bizCodeGenerator, stockCheckService);
         }
 
@@ -143,7 +132,7 @@ class ProductInfoServiceImplTest {
 
     @BeforeEach
     void setup() {
-        service = new TestableProductInfoServiceImpl(productInfoMapper, giftBoxService, imageLibraryService, imageUrlResolver,
+        service = new TestableProductInfoServiceImpl(productInfoMapper, imageLibraryService, imageUrlResolver,
             locationInfoMapper, stockFlowMapper, locationStockMapper, bizCodeGenerator, stockCheckService);
     }
 
@@ -167,23 +156,13 @@ class ProductInfoServiceImplTest {
         return bo;
     }
 
-    private ProductInfoBo giftBoxBo(List<GiftBoxBo> components) {
+    private ProductInfoBo giftBoxBo() {
         ProductInfoBo bo = new ProductInfoBo();
         bo.setProductId("GIFT001");
         bo.setProductName("中秋礼盒");
         bo.setProductType(3);
         bo.setProductUnit("盒");
-        bo.setGiftComponents(components);
         return bo;
-    }
-
-    private GiftBoxBo componentBo(Long componentProductId, BigDecimal count) {
-        GiftBoxBo c = new GiftBoxBo();
-        c.setComponentProductId(componentProductId);
-        c.setComponentCount(count);
-        c.setComponentUnit("kg");
-        c.setComponentSort(0);
-        return c;
     }
 
     // ---------- 新增 happy paths ----------
@@ -207,7 +186,6 @@ class ProductInfoServiceImplTest {
         assertThat(saved.getBelongType()).isEqualTo("pork");
         assertThat(saved.getProductStatus()).as("默认 productStatus=0").isEqualTo(0);
         assertThat(saved.getIsDelivery()).as("默认 isDelivery=1").isEqualTo(1);
-        verify(giftBoxService, never()).insertBatch(any(), anyList());
     }
 
     @Test
@@ -219,38 +197,23 @@ class ProductInfoServiceImplTest {
 
         assertThat(rows).isEqualTo(1);
         verify(productInfoMapper).insert(any(ProductInfo.class));
-        verify(giftBoxService, never()).insertBatch(any(), anyList());
     }
 
     @Test
-    @DisplayName("新增礼盒 happy → 自动 set belong_type=gift_box + 子表 insertBatch 1 次")
+    @DisplayName("新增礼盒 happy → 独立成品，自动 set belong_type=gift_box，insert 1 次")
     void testInsertGiftBox_HappyPath() {
-        // 组件 SKU = P0001 / P0002（非礼盒）
-        ProductInfo p1 = new ProductInfo();
-        p1.setId(101L);
-        p1.setProductType(1);
-        ProductInfo p2 = new ProductInfo();
-        p2.setId(102L);
-        p2.setProductType(2);
-        when(productInfoMapper.selectBatchIds(anyList())).thenReturn(List.of(p1, p2));
         when(productInfoMapper.insert(any(ProductInfo.class))).thenAnswer(inv -> {
             ProductInfo e = inv.getArgument(0);
             e.setId(30001L);
             return 1;
         });
-        when(giftBoxService.insertBatch(eq(30001L), anyList())).thenReturn(2);
 
-        List<GiftBoxBo> components = List.of(
-            componentBo(101L, new BigDecimal("1.0")),
-            componentBo(102L, new BigDecimal("2.0"))
-        );
-        int rows = service.insertByBo(giftBoxBo(components));
+        int rows = service.insertByBo(giftBoxBo());
 
         assertThat(rows).isEqualTo(1);
         ArgumentCaptor<ProductInfo> captor = ArgumentCaptor.forClass(ProductInfo.class);
         verify(productInfoMapper).insert(captor.capture());
         assertThat(captor.getValue().getBelongType()).as("礼盒应自动 set belong_type=gift_box").isEqualTo("gift_box");
-        verify(giftBoxService, times(1)).insertBatch(eq(30001L), anyList());
     }
 
     // ---------- 校验失败 ----------
@@ -303,36 +266,6 @@ class ProductInfoServiceImplTest {
     }
 
     @Test
-    @DisplayName("新增礼盒组件为空 → 抛 product.gift_components.required")
-    void testInsertGiftBox_EmptyComponents() {
-        ProductInfoBo bo = giftBoxBo(Collections.emptyList());
-
-        assertThatThrownBy(() -> service.insertByBo(bo))
-            .isInstanceOf(ServiceException.class);
-        verify(productInfoMapper, never()).insert(any(ProductInfo.class));
-    }
-
-    @Test
-    @DisplayName("新增礼盒嵌套礼盒 → 抛 product.gift_component.nested")
-    void testInsertGiftBox_NestedRejected() {
-        // 组件指向 productType=3 的礼盒，应拒绝
-        ProductInfo nested = new ProductInfo();
-        nested.setId(999L);
-        nested.setProductName("已存在礼盒 X");
-        nested.setProductType(3);
-        when(productInfoMapper.selectBatchIds(anyList())).thenReturn(List.of(nested));
-
-        List<GiftBoxBo> components = new ArrayList<>();
-        components.add(componentBo(999L, new BigDecimal("1.0")));
-        ProductInfoBo bo = giftBoxBo(components);
-
-        assertThatThrownBy(() -> service.insertByBo(bo))
-            .isInstanceOf(ServiceException.class);
-        verify(productInfoMapper, never()).insert(any(ProductInfo.class));
-        verify(giftBoxService, never()).insertBatch(any(), anyList());
-    }
-
-    @Test
     @DisplayName("重复编码 DuplicateKeyException → 转译 product.code_duplicate")
     void testInsert_DuplicateCode() {
         when(productInfoMapper.insert(any(ProductInfo.class)))
@@ -340,35 +273,6 @@ class ProductInfoServiceImplTest {
 
         assertThatThrownBy(() -> service.insertByBo(selfBo()))
             .isInstanceOf(ServiceException.class);
-    }
-
-    // ---------- 编辑 ----------
-
-    @Test
-    @DisplayName("编辑礼盒：覆盖式 replace 组件（softDeleteByBoxId + insertBatch）")
-    void testUpdateGiftBox_ReplaceComponents() {
-        ProductInfo existing = new ProductInfo();
-        existing.setId(30001L);
-        existing.setProductId("GIFT001");
-        existing.setProductType(3);
-        when(productInfoMapper.selectById(30001L)).thenReturn(existing);
-        ProductInfo p101 = new ProductInfo();
-        p101.setId(101L);
-        p101.setProductType(1);
-        when(productInfoMapper.selectBatchIds(anyList())).thenReturn(List.of(p101));
-        when(productInfoMapper.updateById(any(ProductInfo.class))).thenReturn(1);
-
-        List<GiftBoxBo> newComponents = new ArrayList<>();
-        newComponents.add(componentBo(101L, new BigDecimal("3.0")));
-        ProductInfoBo bo = giftBoxBo(newComponents);
-        bo.setId(30001L);
-        bo.setProductType(null);  // 模拟前端不传，看 service 是否能从 exists 拉回
-
-        int rows = service.updateByBo(bo);
-
-        assertThat(rows).isEqualTo(1);
-        verify(giftBoxService, times(1)).softDeleteByBoxId(30001L);
-        verify(giftBoxService, times(1)).insertBatch(eq(30001L), anyList());
     }
 
     // ---------- 删除校验 ----------
@@ -384,7 +288,7 @@ class ProductInfoServiceImplTest {
 
         assertThatThrownBy(() -> service.deleteWithValidByIds(List.of(20001L)))
             .isInstanceOf(ServiceException.class);
-        verify(giftBoxService, never()).softDeleteByBoxId(any());
+        verify(productInfoMapper, never()).update(any(), any());
     }
 
     @Test
@@ -399,12 +303,12 @@ class ProductInfoServiceImplTest {
 
         assertThatThrownBy(() -> service.deleteWithValidByIds(List.of(20001L)))
             .isInstanceOf(ServiceException.class);
-        verify(giftBoxService, never()).softDeleteByBoxId(any());
+        verify(productInfoMapper, never()).update(any(), any());
     }
 
     @Test
-    @DisplayName("删除 happy → 校验通过 + 级联软删礼盒组件")
-    void testDelete_HappyCascade() {
+    @DisplayName("删除 happy → 校验通过 + 软删")
+    void testDelete_Happy() {
         when(productInfoMapper.countActiveStockByProduct(30001L)).thenReturn(0L);
         when(productInfoMapper.countReferencedAsMaterial(30001L)).thenReturn(0L);
         when(productInfoMapper.update(any(), any())).thenReturn(1);
@@ -412,38 +316,9 @@ class ProductInfoServiceImplTest {
         int rows = service.deleteWithValidByIds(List.of(30001L));
 
         assertThat(rows).isEqualTo(1);
-        verify(giftBoxService, times(1)).softDeleteByBoxId(30001L);
     }
 
     // ---------- 查询 ----------
-
-    @Test
-    @DisplayName("查询礼盒详情 → 附带 giftComponents")
-    void testQueryById_GiftBoxWithComponents() {
-        ProductInfoVo vo = new ProductInfoVo();
-        vo.setId(30001L);
-        vo.setProductType(3);
-        when(productInfoMapper.selectVoById(30001L)).thenReturn(vo);
-        GiftBoxVo c = new GiftBoxVo();
-        c.setComponentProductId(101L);
-        when(giftBoxService.queryByBoxId(30001L)).thenReturn(List.of(c));
-
-        ProductInfoVo result = service.queryById(30001L);
-        assertThat(result.getGiftComponents()).hasSize(1);
-    }
-
-    @Test
-    @DisplayName("查询非礼盒详情 → 不调 giftBoxService")
-    void testQueryById_NonGiftBox() {
-        ProductInfoVo vo = new ProductInfoVo();
-        vo.setId(20001L);
-        vo.setProductType(1);
-        when(productInfoMapper.selectVoById(20001L)).thenReturn(vo);
-
-        ProductInfoVo result = service.queryById(20001L);
-        assertThat(result.getGiftComponents()).isNull();
-        verify(giftBoxService, never()).queryByBoxId(any());
-    }
 
     @Test
     @DisplayName("分页查询 happy → mapper.selectVoPage 返 TableDataInfo")

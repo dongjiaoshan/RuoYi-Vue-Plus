@@ -198,7 +198,8 @@ class ShipmentServiceImplTest {
             ArgumentCaptor.forClass(ShipmentConfirmedEvent.class);
         verify(eventPublisher, times(1)).publishEvent(eventCap.capture());
         assertThat(eventCap.getValue().getDemandId()).isEqualTo(demandId);
-        assertThat(eventCap.getValue().getShippedQuantity()).isEqualByComparingTo("7.500");
+        // 事件携带履约「份数」(= 本次清点 production 件数 2)，非 kg —— 需求按份履约，与 demand_quantity 同量纲
+        assertThat(eventCap.getValue().getShippedQuantity()).isEqualByComparingTo("2");
     }
 
     // ============== G6：发货扣成品冷库 location_stock ==============
@@ -289,6 +290,62 @@ class ShipmentServiceImplTest {
         verify(shipmentMapper, never()).insert(any(Shipment.class));
         verify(stockFlowMapper, never()).insert(any(StockFlow.class));
         verify(eventPublisher, never()).publishEvent(any(ShipmentConfirmedEvent.class));
+    }
+
+    // ============== 出车发货全有或全无：需求未满足拒绝 ==============
+
+    @Test
+    @DisplayName("error: 需求未全部满足（shipped_count < demand_quantity）→ 抛 not_fully_satisfied + 不写任何表")
+    void confirmCheck_demandNotFullySatisfied_rejected() {
+        Long demandId = 100L;
+        DemandManage demand = newDemand(demandId, 9L, DemandStatus.CONFIRMED);
+        demand.setDemandNo("XQ260625001");
+        demand.setDemandQuantity(new BigDecimal("10"));
+        demand.setShippedCount(new BigDecimal("3"));  // 仅备 3 / 需求 10 → 未满足
+        when(demandMapper.selectById(demandId)).thenReturn(demand);
+
+        ShipmentCheckBo bo = new ShipmentCheckBo();
+        bo.setDemandId(demandId);
+        bo.setProductionIds(List.of(11L));
+        bo.setTotalQuantity(new BigDecimal("3.0"));
+        bo.setShipUnit("份");
+        bo.setDeliverType(1);
+
+        assertThatThrownBy(() -> service.confirmCheck(bo))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("not_fully_satisfied");
+
+        // 拒绝出车：production 不查不标、shipment / flow / event 全不写
+        verify(productProductionMapper, never()).markDeliveryChecked(anyList(), any(), any());
+        verify(shipmentMapper, never()).insert(any(Shipment.class));
+        verify(stockFlowMapper, never()).insert(any(StockFlow.class));
+        verify(eventPublisher, never()).publishEvent(any(ShipmentConfirmedEvent.class));
+    }
+
+    @Test
+    @DisplayName("happy: 需求全部满足（shipped_count >= demand_quantity）→ 放行出车")
+    void confirmCheck_demandFullySatisfied_proceeds() {
+        Long demandId = 100L;
+        DemandManage demand = newDemand(demandId, 9L, DemandStatus.CONFIRMED);
+        demand.setDemandQuantity(new BigDecimal("3"));
+        demand.setShippedCount(new BigDecimal("3"));  // 已备齐
+        when(demandMapper.selectById(demandId)).thenReturn(demand);
+
+        ProductProduction p = newProduction(11L, demandId, "PROD-001", new BigDecimal("3.0"));
+        when(productProductionMapper.selectList(any())).thenReturn(List.of(p));
+        when(productProductionMapper.markDeliveryChecked(any(), any(), any())).thenReturn(1);
+
+        ShipmentCheckBo bo = new ShipmentCheckBo();
+        bo.setDemandId(demandId);
+        bo.setProductionIds(List.of(11L));
+        bo.setTotalQuantity(new BigDecimal("3.0"));
+        bo.setShipUnit("份");
+        bo.setDeliverType(1);
+
+        service.confirmCheck(bo);
+
+        verify(shipmentMapper, times(1)).insert(any(Shipment.class));
+        verify(eventPublisher, times(1)).publishEvent(any(ShipmentConfirmedEvent.class));
     }
 
     // ============== 并发清点冲突 ==============

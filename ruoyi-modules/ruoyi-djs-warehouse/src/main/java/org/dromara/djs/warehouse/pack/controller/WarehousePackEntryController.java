@@ -23,9 +23,7 @@ import org.dromara.djs.warehouse.pack.domain.vo.VegDailyLossVo;
 import org.dromara.djs.warehouse.pack.service.IProductProductionService;
 import org.dromara.djs.warehouse.product.domain.ProductInhouse;
 import org.dromara.djs.warehouse.product.domain.query.ProductInfoQuery;
-import org.dromara.djs.warehouse.product.domain.vo.GiftBoxVo;
 import org.dromara.djs.warehouse.product.domain.vo.ProductInfoVo;
-import org.dromara.djs.warehouse.product.service.IGiftBoxService;
 import org.dromara.djs.warehouse.product.service.IProductInfoService;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.validation.annotation.Validated;
@@ -76,7 +74,6 @@ public class WarehousePackEntryController extends BaseController {
     private final IProductProductionService productionService;
     private final IPigCutRecordService pigCutService;
     private final IProductInfoService productInfoService;
-    private final IGiftBoxService giftBoxService;
 
     /** 果蔬业态（按领用原料反查命中成品时叠加，避免混入猪肉/干货成品）。 */
     private static final String BELONG_TYPE_VEGETABLE = "vegetable";
@@ -162,33 +159,6 @@ public class WarehousePackEntryController extends BaseController {
     @GetMapping("/materialStock")
     public R<Map<String, BigDecimal>> materialStock(@RequestParam List<Long> productIds) {
         return R.ok(productionService.listMaterialStock(productIds));
-    }
-
-    /**
-     * 批量查礼盒组件清单（礼盒打包卡片「需要什么产品、需要多少」展示用）。
-     *
-     * <p>返回 {@code Map<礼盒产品雪花id字符串, 组件清单>}；组件含 componentProductName / componentCount /
-     * componentUnit（= 每盒用量）。无组件的礼盒不在 Map 中（前端展示「未配组件」）。key 转 String 防雪花 JSON 截断。</p>
-     *
-     * @param productIds 礼盒产品 id 列表（逗号分隔；{@code t_warehouse_product_info.id}，product_type=3）
-     */
-    @SaCheckPermission("djs:warehouse:packEntry:gift")
-    @GetMapping("/giftComponents")
-    public R<Map<String, List<GiftBoxVo>>> giftComponents(@RequestParam List<Long> productIds) {
-        Map<Long, List<GiftBoxVo>> map = giftBoxService.queryByBoxIds(productIds);
-        Map<String, List<GiftBoxVo>> out = new java.util.HashMap<>();
-        map.forEach((k, v) -> out.put(String.valueOf(k), v));
-        return R.ok(out);
-    }
-
-    /**
-     * 礼盒打包页顶部「可用礼盒组件」池：肉品/果蔬/其他打包时「发送礼盒」产出、尚未被礼盒消耗的生产产品
-     * （按 product_id 聚合可用量）。礼盒打包成功后前端重拉刷新，对应产品可用量相应减少。
-     */
-    @SaCheckPermission("djs:warehouse:packEntry:gift")
-    @GetMapping("/giftComponentStock")
-    public R<List<org.dromara.djs.warehouse.pack.domain.vo.GiftComponentStockVo>> giftComponentStock() {
-        return R.ok(productionService.listGiftComponentStock());
     }
 
     /**

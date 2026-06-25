@@ -25,16 +25,13 @@ import org.dromara.djs.warehouse.location.domain.LocationInfo;
 import org.dromara.djs.warehouse.location.domain.vo.LocationPickerVo;
 import org.dromara.djs.warehouse.location.mapper.LocationInfoMapper;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
-import org.dromara.djs.warehouse.product.domain.bo.GiftBoxBo;
 import org.dromara.djs.warehouse.product.domain.bo.ProductStockInBo;
 import org.dromara.djs.warehouse.product.domain.bo.ProductInfoBo;
 import org.dromara.djs.warehouse.product.domain.query.ProductInfoQuery;
-import org.dromara.djs.warehouse.product.domain.vo.GiftBoxVo;
 import org.dromara.djs.warehouse.product.domain.vo.ProductFlowRecordVo;
 import org.dromara.djs.warehouse.product.domain.vo.ProductInfoVo;
 import org.dromara.djs.warehouse.product.domain.vo.ProductProductionRecordVo;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
-import org.dromara.djs.warehouse.product.service.IGiftBoxService;
 import org.dromara.djs.warehouse.product.service.IProductInfoService;
 import org.dromara.djs.warehouse.stock.domain.LocationStock;
 import org.dromara.djs.warehouse.stock.mapper.LocationStockMapper;
@@ -60,11 +57,10 @@ import java.util.stream.Collectors;
  * <ul>
  *   <li>{@code productType=1 自产} → belongType 必填校验</li>
  *   <li>{@code productType=2 外购} → supplierId 必填校验（buyClass 客户字典空时可空）</li>
- *   <li>{@code productType=3 礼盒} → giftComponents.size ≥ 1；自动 set belongType=gift_box；
- *       组件 SKU 校验"不是另一个礼盒"（不嵌套）；编辑时覆盖式 replace 组件</li>
+ *   <li>{@code productType=3 礼盒} → 独立成品，自动 set belongType=gift_box（无组件清单/BOM）</li>
  * </ul>
  *
- * <p>软删走基类 {@link DjsBaseServiceImpl#softDelete}；同步级联软删该礼盒所有组件。</p>
+ * <p>软删走基类 {@link DjsBaseServiceImpl#softDelete}。</p>
  *
  * <p>{@code productId} 业务码 DB UNIQUE(tenant_id, product_id, del_unique) 兜底；
  * 重复时捕获 {@link DuplicateKeyException} 转译为 {@code product.code_duplicate}。</p>
@@ -88,7 +84,6 @@ public class ProductInfoServiceImpl extends DjsBaseServiceImpl<ProductInfoMapper
     /** 产品入库 flow_type（djs_flow_type）。 */
     private static final String FLOW_TYPE_PURCHASE_IN = "purchase_in";
 
-    private final IGiftBoxService giftBoxService;
     private final IImageLibraryService imageLibraryService;
     private final ImageUrlResolver imageUrlResolver;
     private final LocationInfoMapper locationInfoMapper;
@@ -98,7 +93,6 @@ public class ProductInfoServiceImpl extends DjsBaseServiceImpl<ProductInfoMapper
     private final IStockCheckService stockCheckService;
 
     public ProductInfoServiceImpl(ProductInfoMapper baseMapper,
-                                  IGiftBoxService giftBoxService,
                                   IImageLibraryService imageLibraryService,
                                   ImageUrlResolver imageUrlResolver,
                                   LocationInfoMapper locationInfoMapper,
@@ -107,7 +101,6 @@ public class ProductInfoServiceImpl extends DjsBaseServiceImpl<ProductInfoMapper
                                   IBizCodeGenerator bizCodeGenerator,
                                   IStockCheckService stockCheckService) {
         super(baseMapper);
-        this.giftBoxService = giftBoxService;
         this.imageLibraryService = imageLibraryService;
         this.imageUrlResolver = imageUrlResolver;
         this.locationInfoMapper = locationInfoMapper;
@@ -160,11 +153,6 @@ public class ProductInfoServiceImpl extends DjsBaseServiceImpl<ProductInfoMapper
         if (vo == null) {
             return null;
         }
-        // 礼盒详情附带组件清单
-        if (vo.getProductType() != null && vo.getProductType() == PRODUCT_TYPE_GIFT_BOX) {
-            List<GiftBoxVo> components = giftBoxService.queryByBoxId(id);
-            vo.setGiftComponents(components);
-        }
         // row31：详情「原材料产品」展示关联原材料的产品名称（productMaterial 自引用 FK → product_info.id）
         if (vo.getProductMaterial() != null) {
             ProductInfo material = baseMapper.selectById(vo.getProductMaterial());
@@ -179,13 +167,9 @@ public class ProductInfoServiceImpl extends DjsBaseServiceImpl<ProductInfoMapper
     @Transactional(rollbackFor = Exception.class)
     public int insertByBo(ProductInfoBo bo) {
         validateBoBeforeWrite(bo);
-        // 礼盒自动设置 belongType
+        // 礼盒自动设置 belongType（礼盒为独立成品，无组件清单）
         if (bo.getProductType() != null && bo.getProductType() == PRODUCT_TYPE_GIFT_BOX) {
             bo.setBelongType(BELONG_TYPE_GIFT_BOX);
-        }
-        // 礼盒组件不允许嵌套礼盒
-        if (bo.getProductType() != null && bo.getProductType() == PRODUCT_TYPE_GIFT_BOX) {
-            validateGiftComponentsNotNested(bo.getGiftComponents());
         }
         ProductInfo entity = toEntity(bo);
         if (entity == null) {
@@ -209,11 +193,6 @@ public class ProductInfoServiceImpl extends DjsBaseServiceImpl<ProductInfoMapper
         } catch (DuplicateKeyException e) {
             throw new ServiceException(I18nMessages.t("product.code_duplicate", bo.getProductId()));
         }
-
-        // 礼盒组件落库
-        if (bo.getProductType() != null && bo.getProductType() == PRODUCT_TYPE_GIFT_BOX) {
-            giftBoxService.insertBatch(entity.getId(), bo.getGiftComponents());
-        }
         return rows;
     }
 
@@ -232,7 +211,6 @@ public class ProductInfoServiceImpl extends DjsBaseServiceImpl<ProductInfoMapper
         validateBoBeforeWrite(bo);
         if (exists.getProductType() != null && exists.getProductType() == PRODUCT_TYPE_GIFT_BOX) {
             bo.setBelongType(BELONG_TYPE_GIFT_BOX);
-            validateGiftComponentsNotNested(bo.getGiftComponents());
         }
 
         ProductInfo entity = toEntity(bo);
@@ -247,14 +225,7 @@ public class ProductInfoServiceImpl extends DjsBaseServiceImpl<ProductInfoMapper
             && !entity.getImageOssId().equals(exists.getImageOssId())) {
             entity.setImageSource(1);
         }
-        int rows = baseMapper.updateById(entity);
-
-        // 礼盒组件"覆盖式 replace"
-        if (exists.getProductType() != null && exists.getProductType() == PRODUCT_TYPE_GIFT_BOX) {
-            giftBoxService.softDeleteByBoxId(entity.getId());
-            giftBoxService.insertBatch(entity.getId(), bo.getGiftComponents());
-        }
-        return rows;
+        return baseMapper.updateById(entity);
     }
 
     @Override
@@ -291,12 +262,7 @@ public class ProductInfoServiceImpl extends DjsBaseServiceImpl<ProductInfoMapper
                 throw new ServiceException(I18nMessages.t("product.referenced_as_material", name));
             }
         }
-        int rows = softDelete(ids);
-        // 同步级联软删礼盒组件（仅 productType=3 命中行，其他无副作用）
-        for (Long id : ids) {
-            giftBoxService.softDeleteByBoxId(id);
-        }
-        return rows;
+        return softDelete(ids);
     }
 
     // ---------- 内部辅助 ----------
@@ -333,34 +299,9 @@ public class ProductInfoServiceImpl extends DjsBaseServiceImpl<ProductInfoMapper
                 }
             }
             case PRODUCT_TYPE_GIFT_BOX -> {
-                if (CollUtil.isEmpty(bo.getGiftComponents())) {
-                    throw new ServiceException(I18nMessages.t("product.gift_components.required"));
-                }
+                // 礼盒为独立成品，无额外必填（belongType 由 service 自动 set=gift_box）
             }
             default -> throw new ServiceException("不支持的产品类型：" + type);
-        }
-    }
-
-    /**
-     * 礼盒组件不允许嵌套礼盒（productType=3 禁止指向另一个 productType=3）。
-     */
-    private void validateGiftComponentsNotNested(List<GiftBoxBo> components) {
-        if (CollUtil.isEmpty(components)) {
-            return;
-        }
-        List<Long> ids = components.stream()
-            .map(GiftBoxBo::getComponentProductId)
-            .filter(java.util.Objects::nonNull)
-            .distinct()
-            .collect(Collectors.toList());
-        if (ids.isEmpty()) {
-            return;
-        }
-        List<ProductInfo> products = baseMapper.selectBatchIds(ids);
-        for (ProductInfo p : products) {
-            if (p.getProductType() != null && p.getProductType() == PRODUCT_TYPE_GIFT_BOX) {
-                throw new ServiceException(I18nMessages.t("product.gift_component.nested", p.getProductName()));
-            }
         }
     }
 

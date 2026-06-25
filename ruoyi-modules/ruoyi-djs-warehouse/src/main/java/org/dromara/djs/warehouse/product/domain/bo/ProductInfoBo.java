@@ -1,7 +1,6 @@
 package org.dromara.djs.warehouse.product.domain.bo;
 
 import io.github.linpeilie.annotations.AutoMapper;
-import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.PositiveOrZero;
@@ -12,7 +11,6 @@ import org.dromara.common.mybatis.core.domain.BaseEntity;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
 
 import java.math.BigDecimal;
-import java.util.List;
 
 /**
  * 产品 / 商品 / 礼盒入参 BO（WMS-MD-002）。
@@ -22,7 +20,7 @@ import java.util.List;
  * <ul>
  *   <li>{@code productType=1}：{@code belongType} 必填</li>
  *   <li>{@code productType=2}：{@code supplierId} 必填（{@code buyClass} 客户字典未给可空）</li>
- *   <li>{@code productType=3}：{@code giftComponents.size >= 1}，service 自动 set {@code belongType=gift_box}</li>
+ *   <li>{@code productType=3}：礼盒为独立成品，service 自动 set {@code belongType=gift_box}</li>
  * </ul>
  *
  * <p>{@code productId} 由前端用户手填（doc/11 §2.5 R6 业务码）；编辑时后端强制锁回旧值。</p>
@@ -167,14 +165,6 @@ public class ProductInfoBo extends BaseEntity {
      */
     @Size(max = 500, message = "{product.remark.size}")
     private String remark;
-
-    /**
-     * 礼盒组件清单（仅 {@code productType=3} 时必填、>=1 条）。
-     *
-     * <p>编辑时 service 走"覆盖式 replace"：先 softDelete 旧组件再批量 insert 新组件。</p>
-     */
-    @Valid
-    private List<GiftBoxBo> giftComponents;
 
     /**
      * 新增校验组（仅 productId 等创建时必填字段使用；编辑时忽略）。

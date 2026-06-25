@@ -7,7 +7,10 @@ import org.dromara.djs.store.returns.domain.bo.StoreReturnBo;
 import org.dromara.djs.store.returns.domain.bo.StoreReturnConfirmBo;
 import org.dromara.djs.store.returns.domain.query.StoreReturnQuery;
 import org.dromara.djs.store.returns.domain.vo.StoreReturnVo;
+import org.dromara.djs.store.returns.domain.vo.StoreReturnAppletItemVo;
+import org.dromara.djs.store.returns.domain.vo.StoreReturnGroupVo;
 import org.dromara.djs.store.returns.domain.vo.StoreReturnPorkCandidateVo;
+import org.dromara.djs.store.returns.domain.vo.StoreReturnStoreDailyVo;
 import org.dromara.djs.store.returns.domain.vo.StoreReturnVegCandidateVo;
 
 import java.util.Collection;
@@ -83,6 +86,25 @@ public interface IStoreReturnService {
      * @return 受影响行数
      */
     int confirm(StoreReturnConfirmBo bo);
+
+    /**
+     * 仓库「退货记录」外层「门店 + 当日」汇总分页（仅 {@code store_to_warehouse} 方向）。
+     * 供 admin 仓库退货页主视图，点行下钻明细复用 {@link #queryPageList}（带 storeId + 日期）。
+     */
+    TableDataInfo<StoreReturnStoreDailyVo> queryStoreDailyPage(StoreReturnQuery query, PageQuery pageQuery);
+
+    /**
+     * mp 退货管理：当天门店→仓库退回按门店分组卡（状态派生 pending/confirmed，mp 词表）。
+     */
+    List<StoreReturnGroupVo> listPendingGroups();
+
+    /**
+     * mp 退货确认详情：某门店某状态（mp 词表 pending/confirmed）下的退回清单（字段对齐 mp ReturnItem）。
+     *
+     * @param storeId  门店 ID（必填）
+     * @param mpStatus mp 词表状态 pending / confirmed
+     */
+    List<StoreReturnAppletItemVo> listAppletItemsByStoreAndStatus(Long storeId, String mpStatus);
 
     /** 软删除（DjsBaseServiceImpl#softDelete 范式）。 */
     int deleteByIds(Collection<Long> ids);

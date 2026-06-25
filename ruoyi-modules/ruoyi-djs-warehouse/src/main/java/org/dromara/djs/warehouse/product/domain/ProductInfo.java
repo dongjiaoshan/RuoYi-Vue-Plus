@@ -19,8 +19,7 @@ import java.math.BigDecimal;
  *   <li>{@code productType=1} 自产：{@code belongType} 必填、{@code productAttr} / {@code productWorkshop} 可填、
  *       {@code buyClass} / {@code supplierId} 应为 NULL</li>
  *   <li>{@code productType=2} 外购：{@code buyClass} / {@code supplierId} 应填、{@code belongType} 应为 NULL</li>
- *   <li>{@code productType=3} 礼盒：{@code belongType='gift_box'} 自动设置、组件清单走独立表
- *       {@link GiftBox}（外键 {@code box_product_id → product_info.id}）</li>
+ *   <li>{@code productType=3} 礼盒：独立成品，{@code belongType='gift_box'} 自动设置（无组件清单/BOM）</li>
  * </ul>
  *
  * <p>软删走 {@code del_flag} + {@code del_unique}（{@code DjsMetaObjectHandler} 在

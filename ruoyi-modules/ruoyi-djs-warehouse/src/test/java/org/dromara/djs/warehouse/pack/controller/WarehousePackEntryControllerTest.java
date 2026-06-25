@@ -62,13 +62,12 @@ class WarehousePackEntryControllerTest {
     @Mock private IProductProductionService productionService;
     @Mock private IPigCutRecordService pigCutService;
     @Mock private IProductInfoService productInfoService;
-    @Mock private org.dromara.djs.warehouse.product.service.IGiftBoxService giftBoxService;
 
     private WarehousePackEntryController controller;
 
     @BeforeEach
     void setup() {
-        controller = new WarehousePackEntryController(productionService, pigCutService, productInfoService, giftBoxService);
+        controller = new WarehousePackEntryController(productionService, pigCutService, productInfoService);
     }
 
     @Test

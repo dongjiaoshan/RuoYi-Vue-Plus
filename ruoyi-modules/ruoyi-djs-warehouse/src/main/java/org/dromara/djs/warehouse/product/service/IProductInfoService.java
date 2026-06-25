@@ -33,7 +33,7 @@ public interface IProductInfoService {
     List<ProductInfoVo> queryList(ProductInfoQuery query);
 
     /**
-     * 查询单条详情（{@code productType=3} 时自动附加 {@code giftComponents}）。
+     * 查询单条详情。
      */
     ProductInfoVo queryById(Long id);
 
@@ -44,8 +44,7 @@ public interface IProductInfoService {
      * <ul>
      *   <li>productType=1 自产 → belongType 必填</li>
      *   <li>productType=2 外购 → supplierId 必填</li>
-     *   <li>productType=3 礼盒 → giftComponents 至少 1 条；service 自动 set belongType=gift_box；
-     *       组件 SKU 不允许指向另一个礼盒（不嵌套）</li>
+     *   <li>productType=3 礼盒 → 独立成品，service 自动 set belongType=gift_box</li>
      * </ul>
      *
      * @return 受影响行数（成功 1）
@@ -54,8 +53,6 @@ public interface IProductInfoService {
 
     /**
      * 修改产品（{@code productId} / {@code productType} 不允许修改）。
-     *
-     * <p>礼盒组件"覆盖式 replace"：先 softDelete 老组件再批量 insert 新组件，V1 不做 diff。</p>
      *
      * @return 受影响行数（成功 1）
      */
@@ -79,10 +76,10 @@ public interface IProductInfoService {
      *   <li>被其他产品 {@code product_material} 引用 → 抛 {@code product.referenced_as_material}</li>
      * </ul>
      *
-     * <p>校验通过 → softDelete 主体 + 同步软删 {@code t_warehouse_gift_box.box_product_id=?} 的所有组件。</p>
+     * <p>校验通过 → softDelete 主体。</p>
      *
      * @param ids 主键集合
-     * @return 受影响行数（仅主表，组件软删不计）
+     * @return 受影响行数
      */
     int deleteWithValidByIds(Collection<Long> ids);
 

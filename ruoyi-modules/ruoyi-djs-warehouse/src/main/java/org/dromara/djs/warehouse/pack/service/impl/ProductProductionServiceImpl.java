@@ -36,10 +36,8 @@ import org.dromara.djs.warehouse.pack.domain.vo.StoreDemandCopiesVo;
 import org.dromara.djs.warehouse.pack.domain.vo.VegDailyLossVo;
 import org.dromara.djs.warehouse.pack.mapper.ProductProductionMapper;
 import org.dromara.djs.warehouse.pack.service.IProductProductionService;
-import org.dromara.djs.warehouse.product.domain.GiftBox;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.domain.ProductInhouse;
-import org.dromara.djs.warehouse.product.mapper.GiftBoxMapper;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
 import org.dromara.djs.warehouse.product.mapper.ProductInhouseMapper;
 import org.dromara.djs.warehouse.stock.domain.LocationStock;
@@ -73,10 +71,9 @@ import java.util.stream.Collectors;
  *   <li>{@code traceService.genCode} 生成追溯码回填 {@code trace_code} + recordEvent(in_stock)（TRC-CORE-001）</li>
  * </ol>
  *
- * <h3>礼盒打包特殊事务（Kevin override 决策 b）</h3>
- * <p>礼盒走 D8 落表 {@code t_warehouse_gift_box}（box_product_id + component_product_id 关联），
- * service 端按 giftBoxProductId 查 gift_box 拿组件清单 N 行，按 packBoxCount 倍数扣减
- * 每个 component 的 location_stock，写主 production 1 行 + N+1 行 stock_flow。</p>
+ * <h3>礼盒打包（礼盒为独立成品）</h3>
+ * <p>礼盒不再有组件清单（BOM）：打 N 盒只产出 N 盒礼盒成品（{@code product_production} 1 行 +
+ * 入库 stock_flow 1 行 + location_stock += N）并扣减门店礼盒需求，不查/不消耗任何组件库存。</p>
  *
  * <h3>produce_no 业务码生成</h3>
  * <p>{@code yyMMdd + 前缀 + 4 位序号}，前缀 Z=猪肉 / G=果蔬 / B=白条 / H=干货 / D=鸡蛋 / L=礼盒。
@@ -92,15 +89,11 @@ public class ProductProductionServiceImpl
     extends DjsBaseServiceImpl<ProductProductionMapper, ProductProduction>
     implements IProductProductionService {
 
-    /** stock_flow.inout_type CHAR(3) IN=入库 / OT=出库（沿 PigCutRecordServiceImpl 范式）。 */
+    /** stock_flow.inout_type CHAR(3) IN=入库（沿 PigCutRecordServiceImpl 范式）。 */
     private static final String INOUT_IN = "IN";
-    private static final String INOUT_OUT = "OT";
 
     /** stock_flow.flow_type 业务类型。 */
     private static final String FLOW_TYPE_PACK_IN = "pack_in";
-    private static final String FLOW_TYPE_PACK_CONSUME = "pack_consume";
-    /** 出库去向：生产领用（FIX-WMS-FLOWDICT-001，礼盒组件消耗回填）。 */
-    private static final String STOCK_OUT_DEST_PROD_PICK = "prod_pick";
 
     /** djs_pack_status 字典码值。 */
     private static final String PACK_STATUS_PACKED = "packed";
@@ -164,7 +157,6 @@ public class ProductProductionServiceImpl
 
     private final ProductInhouseMapper productInhouseMapper;
     private final ProductInfoMapper productInfoMapper;
-    private final GiftBoxMapper giftBoxMapper;
     private final LocationInfoMapper locationInfoMapper;
     private final LocationStockMapper locationStockMapper;
     private final StockFlowMapper stockFlowMapper;
@@ -179,7 +171,6 @@ public class ProductProductionServiceImpl
     public ProductProductionServiceImpl(ProductProductionMapper baseMapper,
                                         ProductInhouseMapper productInhouseMapper,
                                         ProductInfoMapper productInfoMapper,
-                                        GiftBoxMapper giftBoxMapper,
                                         LocationInfoMapper locationInfoMapper,
                                         LocationStockMapper locationStockMapper,
                                         StockFlowMapper stockFlowMapper,
@@ -193,7 +184,6 @@ public class ProductProductionServiceImpl
         super(baseMapper);
         this.productInhouseMapper = productInhouseMapper;
         this.productInfoMapper = productInfoMapper;
-        this.giftBoxMapper = giftBoxMapper;
         this.locationInfoMapper = locationInfoMapper;
         this.locationStockMapper = locationStockMapper;
         this.stockFlowMapper = stockFlowMapper;
@@ -283,7 +273,7 @@ public class ProductProductionServiceImpl
     }
 
     /**
-     * 礼盒打包（按 D8 gift_box 关联表组件清单）。
+     * 礼盒打包（礼盒为独立成品）：打 N 盒只产出 N 盒礼盒成品 + 扣门店礼盒需求，不查/不消耗任何组件（BOM）。
      */
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -298,30 +288,10 @@ public class ProductProductionServiceImpl
         }
         // 入库库位（前端收银台不采集，可空 → 默认取礼盒产品配置库位/首个可用库位兜底）
         Long locationId = resolveLocationId(bo.getLocationId(), giftBoxProduct);
-        // D-2：目标库位盘点锁定中 → 拒绝出入库（组件扣减 + 礼盒入库均落此库位）
+        // D-2：目标库位盘点锁定中 → 拒绝入库
         stockCheckService.assertLocationUnlocked(locationId);
 
-        // Step 2：查 D8 gift_box 拿组件清单
-        List<GiftBox> components = giftBoxMapper.selectList(
-            new LambdaQueryWrapper<GiftBox>()
-                .eq(GiftBox::getBoxProductId, bo.getGiftBoxProductId())
-                .orderByAsc(GiftBox::getComponentSort));
-        if (components.isEmpty()) {
-            throw new ServiceException(
-                "礼盒未配置组件清单（t_warehouse_gift_box 无 box_product_id=" + bo.getGiftBoxProductId() + " 记录）"
-                + "请先在 admin 产品库 → 礼盒详情维护组件");
-        }
-
-        // Step 3：for each component → 扣「发送礼盒的生产产品」(deliver_dest='gift') FIFO + 写消耗流水。
-        // 礼盒组件 = 肉品/果蔬/其他打包时「发送位置=礼盒」产出的生产产品，不是原料/成品的 location_stock
-        // （Kevin 2026-06-25：礼盒按对应生产产品判，不按实际库存）。
-        BigDecimal packCount = new BigDecimal(bo.getPackBoxCount());
-        for (GiftBox c : components) {
-            BigDecimal needQty = c.getComponentCount().multiply(packCount);
-            consumeGiftComponent(giftBoxProduct, c, needQty, packCount, locationId, userId, now);
-        }
-
-        // Step 4：INSERT product_production（礼盒主记录）
+        // Step 2：INSERT product_production（礼盒主记录）
         BigDecimal giftWeight = new BigDecimal(bo.getPackBoxCount());
         ProductProduction p = new ProductProduction();
         p.setProduceDate(java.sql.Date.valueOf(LocalDate.now()));
@@ -346,7 +316,7 @@ public class ProductProductionServiceImpl
         p.setRemark(bo.getRemark());
         baseMapper.insert(p);
 
-        // Step 5：INSERT stock_flow 礼盒入库 + UPSERT location_stock += packBoxCount（WMS-PACK-UPSERT-001）
+        // Step 3：INSERT stock_flow 礼盒入库 + UPSERT location_stock += packBoxCount（WMS-PACK-UPSERT-001）
         insertPackInFlow(giftBoxProduct.getId(), locationId, giftWeight,
             null, null, p.getProduceNo(), userId, now);
         upsertLocationStock(locationId, p, giftWeight, userId);
@@ -357,8 +327,8 @@ public class ProductProductionServiceImpl
         // 打包即扣需求（需求 C）——礼盒 storeId 可空，helper 内对 null 安全跳过
         deductDemandOnPack(giftBoxProduct.getId(), bo.getStoreId(), giftWeight);
 
-        log.info("[WMS-PACK-001] gift pack done id={} produceNo={} packBoxCount={} components={} traceCode={}",
-            p.getId(), p.getProduceNo(), bo.getPackBoxCount(), components.size(), p.getTraceCode());
+        log.info("[WMS-PACK-001] gift pack done id={} produceNo={} packBoxCount={} traceCode={}",
+            p.getId(), p.getProduceNo(), bo.getPackBoxCount(), p.getTraceCode());
         return p.getId();
     }
 
@@ -790,50 +760,6 @@ public class ProductProductionServiceImpl
     }
 
     @Override
-    public List<org.dromara.djs.warehouse.pack.domain.vo.GiftComponentStockVo> listGiftComponentStock() {
-        // 全部「发送礼盒」未消耗生产产品（deliver_dest='gift' AND produce_quantity>0），按 product_id 聚合
-        List<ProductProduction> rows = baseMapper.selectList(
-            new LambdaQueryWrapper<ProductProduction>()
-                .eq(ProductProduction::getDeliverDest, DELIVER_DEST_GIFT)
-                .gt(ProductProduction::getProduceQuantity, BigDecimal.ZERO));
-        if (rows.isEmpty()) {
-            return List.of();
-        }
-        // 批量拉 ProductInfo（算份值需 unit + material_num）
-        java.util.Set<Long> pids = rows.stream()
-            .map(ProductProduction::getProductId).filter(Objects::nonNull).collect(Collectors.toSet());
-        Map<Long, ProductInfo> productMap = productInfoMapper.selectBatchIds(pids).stream()
-            .collect(Collectors.toMap(ProductInfo::getId, p -> p, (a, b) -> a));
-        // 按「份」口径聚合：每条生产产品份值 = giftComponentShare（1 次打包=1 份，重量类不看 kg），
-        // 不直接求 produce_quantity（那是重量，精瘦肉 2 条 8kg 会被算成 8 而非 2 份）
-        Map<Long, BigDecimal> shareByProduct = new java.util.LinkedHashMap<>();
-        for (ProductProduction p : rows) {
-            if (p.getProductId() == null) {
-                continue;
-            }
-            ProductInfo pi = productMap.get(p.getProductId());
-            shareByProduct.merge(p.getProductId(),
-                giftComponentShare(pi, p.getProduceQuantity()), BigDecimal::add);
-        }
-        List<org.dromara.djs.warehouse.pack.domain.vo.GiftComponentStockVo> result = new java.util.ArrayList<>();
-        shareByProduct.forEach((pid, share) -> {
-            ProductInfo pi = productMap.get(pid);
-            org.dromara.djs.warehouse.pack.domain.vo.GiftComponentStockVo vo =
-                new org.dromara.djs.warehouse.pack.domain.vo.GiftComponentStockVo();
-            vo.setProductId(pid);
-            vo.setProductName(pi != null && StringUtils.isNotBlank(pi.getProductName())
-                ? pi.getProductName() : String.valueOf(pid));
-            // 单位统一「份」（礼盒口径全部按份，精瘦肉显「2 份」而非「8kg」、黄秋葵「1 份」）
-            vo.setProductUnit("份");
-            vo.setAvailableQty(share);
-            result.add(vo);
-        });
-        result.sort(java.util.Comparator.comparing(
-            v -> v.getProductName() == null ? "" : v.getProductName()));
-        return result;
-    }
-
-    @Override
     public VegDailyLossVo queryVegDailyLoss(Date statDate) {
         // statDate 为空 → 当天；mapper 用 COALESCE(DATE(#{flowDate}), CURDATE()) 兜底，这里仅算回显日期
         LocalDate day = statDate == null
@@ -1011,29 +937,6 @@ public class ProductProductionServiceImpl
     }
 
     /**
-     * INSERT 礼盒组件消耗流水。
-     */
-    protected void insertPackConsumeFlow(Long componentProductId, Long locationId, BigDecimal qty,
-                                         Long giftBoxProductId, Long userId, Date now) {
-        StockFlow flow = new StockFlow();
-        Map<String, Object> ctx = new HashMap<>(2);
-        ctx.put("ioCode", INOUT_OUT);
-        flow.setFlowNo(bizCodeGenerator.generate(BizCodeType.STOCK_FLOW_NO, ctx));
-        flow.setFlowDate(now);
-        flow.setProductId(componentProductId);
-        flow.setWarehouseId(locationId);
-        flow.setInoutType(INOUT_OUT);
-        flow.setFlowType(FLOW_TYPE_PACK_CONSUME);
-        // 生产领用去向（FIX-WMS-FLOWDICT-001）：礼盒打包组件消耗 = 仓库内部生产消耗，自动回填 prod_pick
-        flow.setStockOutDest(STOCK_OUT_DEST_PROD_PICK);
-        flow.setChangeNum(qty);
-        flow.setChangeQuantity(qty);
-        flow.setOperatorId(userId);
-        flow.setRemark("礼盒打包组件消耗 gift_box_product_id=" + giftBoxProductId);
-        stockFlowMapper.insert(flow);
-    }
-
-    /**
      * 打包前置 fail-fast：选中来源 inhouse 余量 ≥ 本次打包实重，否则抛（在任何写操作前拦截，
      * 避免超扣产生 orphan production；与 {@link #consumeInhouse} 的行锁原子扣减互为内外两道闸）。
      */
@@ -1155,27 +1058,6 @@ public class ProductProductionServiceImpl
             return packWeightKg.divide(materialNum, 3, java.math.RoundingMode.HALF_UP);
         }
         return BigDecimal.ONE; // 计数单位无计量规则：1 次打包 = 1 份/只
-    }
-
-    /**
-     * 礼盒组件「份值」：1 条「发送礼盒」生产产品记录占多少「份」
-     * （Kevin 2026-06-25：礼盒按份判，1 次打包 = 1 份，和重量无关）。
-     *
-     * <p>与 {@link #resolveDemandDeductQty} 的区别——后者用于<b>门店直接需求</b>履约，重量单位产品按
-     * 实重扣（门店按 kg 下单）；礼盒口径<b>不看重量</b>，所有组件统一以「份」计：</p>
-     * <ul>
-     *   <li>计数单位 + 配了计量规则（份数模式，如鸡蛋一盒 N 个，{@code material_num>0}）：1 次打包产出
-     *       份数 = {@code produce_quantity / material_num}（前端把份数×material_num 发为 produce_quantity）。</li>
-     *   <li>其余（重量单位 kg / 计数单位无计量规则 份·袋·只…）：<b>1 次打包 = 1 份</b>，与重量无关
-     *       （精瘦肉 2 条记录共 8kg → 2 份，不是 8）。</li>
-     * </ul>
-     */
-    private BigDecimal giftComponentShare(ProductInfo comp, BigDecimal produceQuantity) {
-        BigDecimal materialNum = comp == null ? null : comp.getMaterialNum();
-        if (materialNum != null && materialNum.signum() > 0 && produceQuantity != null) {
-            return produceQuantity.divide(materialNum, 3, java.math.RoundingMode.HALF_UP);
-        }
-        return BigDecimal.ONE;
     }
 
     protected void fulfillDirectDemandOnPack(Long productId, Long storeId, BigDecimal packQty, String deliverDest) {
@@ -1407,81 +1289,6 @@ public class ProductProductionServiceImpl
             .map(LocationStock::getProductStock)
             .filter(Objects::nonNull)
             .reduce(BigDecimal.ZERO, BigDecimal::add);
-    }
-
-    /** BigDecimal 去尾零纯文本（提示文案用，避免 10.000 之类）。 */
-    protected static String plainNum(BigDecimal v) {
-        return v == null ? "0" : v.stripTrailingZeros().toPlainString();
-    }
-
-    /**
-     * 消耗一个礼盒组件（Kevin 2026-06-25：礼盒按「对应的生产产品」判，不按原料/成品实际库存；
-     * 且按「份」口径——打包 1 次 = 1 份，和重量无关）。
-     *
-     * <p>礼盒组件 = 在肉品/果蔬/其他产品打包时「发送位置=礼盒」产出的生产产品
-     * （{@code product_production.deliver_dest='gift'}，预留给礼盒打包消耗、不进发货月台、不扣门店需求）。
-     * 可用量按<b>份口径</b>聚合，每条生产产品的「份值」用 {@link #giftComponentShare} 换算：
-     * 1 次打包 = 1 份（重量单位 kg / 计数无计量规则 份·袋·只均 1 份，与重量无关）；
-     * 份数模式（material_num&gt;0）→ 份数(=produce_quantity/material_num)。
-     * <b>不按 produce_quantity 直接求和</b>（那是重量，会把精瘦肉 2 次×4kg 算成 8 而不是 2 份）。</p>
-     *
-     * <ul>
-     *   <li>可用份 &lt; 需求份 → 抛精确 {@link ServiceException}（哪个组件 / 每盒×盒数=共需 / 当前发送礼盒可用 /
-     *       提示需先把该组件打包发送礼盒），事务回滚。</li>
-     *   <li>够 → 按 {@code id} 升序 FIFO 消耗：整条份值 ≤ 剩余需求 → 软删该条；否则按比例部分扣减
-     *       {@code produce_quantity}/{@code product_weight}（重量组件可部分；计数组件份值=1 整数、不会落部分）。</li>
-     * </ul>
-     */
-    protected void consumeGiftComponent(ProductInfo giftBox, GiftBox c, BigDecimal needQty,
-                                        BigDecimal packCount, Long locationId, Long userId, Date now) {
-        Long compId = c.getComponentProductId();
-        ProductInfo comp = productInfoMapper.selectById(compId);
-        String compName = comp != null && StringUtils.isNotBlank(comp.getProductName())
-            ? comp.getProductName() : String.valueOf(compId);
-        List<ProductProduction> pool = baseMapper.selectList(
-            new LambdaQueryWrapper<ProductProduction>()
-                .eq(ProductProduction::getProductId, compId)
-                .eq(ProductProduction::getDeliverDest, DELIVER_DEST_GIFT)
-                .gt(ProductProduction::getProduceQuantity, BigDecimal.ZERO)
-                .orderByAsc(ProductProduction::getId));
-        // 可用「份」= 各条份值之和（giftComponentShare 口径：1 次打包=1 份，重量类不看 kg）
-        BigDecimal available = pool.stream()
-            .map(p -> giftComponentShare(comp, p.getProduceQuantity()))
-            .reduce(BigDecimal.ZERO, BigDecimal::add);
-        if (available.compareTo(needQty) < 0) {
-            throw new ServiceException(String.format(
-                "礼盒【%s】组件不足：【%s】每盒需 %s 份 × 打包 %s 盒 = 共需 %s 份；"
-                + "当前「已打包发送到礼盒」的【%s】仅 %s 份——请先在肉品/果蔬/其他产品打包时把【%s】的发送位置选「礼盒」。",
-                giftBox.getProductName(), compName, plainNum(c.getComponentCount()),
-                plainNum(packCount), plainNum(needQty),
-                compName, plainNum(available), compName));
-        }
-        // FIFO 按份值消耗：整条份值 ≤ 剩余 → 软删；否则按 剩余/份值 比例部分扣减 produce_quantity + product_weight
-        BigDecimal remainShare = needQty;
-        for (ProductProduction p : pool) {
-            if (remainShare.signum() <= 0) {
-                break;
-            }
-            BigDecimal recShare = giftComponentShare(comp, p.getProduceQuantity());
-            if (recShare.signum() <= 0) {
-                continue;
-            }
-            if (recShare.compareTo(remainShare) <= 0) {
-                baseMapper.deleteById(p.getId());
-                remainShare = remainShare.subtract(recShare);
-            } else {
-                BigDecimal ratio = remainShare.divide(recShare, 6, java.math.RoundingMode.HALF_UP);
-                BigDecimal newQ = p.getProduceQuantity().multiply(BigDecimal.ONE.subtract(ratio));
-                ProductProduction patch = new ProductProduction();
-                patch.setId(p.getId());
-                patch.setProduceQuantity(newQ);
-                patch.setProductWeight(newQ);
-                baseMapper.updateById(patch);
-                remainShare = BigDecimal.ZERO;
-            }
-        }
-        // 组件消耗流水（locationId 取礼盒入库库位作记录库位；qty = 本次消耗份数）
-        insertPackConsumeFlow(compId, locationId, needQty, giftBox.getId(), userId, now);
     }
 
     /**

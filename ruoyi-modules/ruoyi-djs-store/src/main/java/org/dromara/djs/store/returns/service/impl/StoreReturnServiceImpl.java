@@ -20,7 +20,10 @@ import org.dromara.djs.store.returns.domain.bo.StoreReturnBo;
 import org.dromara.djs.store.returns.domain.bo.StoreReturnConfirmBo;
 import org.dromara.djs.store.returns.domain.query.StoreReturnQuery;
 import org.dromara.djs.store.returns.domain.vo.StoreReturnVo;
+import org.dromara.djs.store.returns.domain.vo.StoreReturnAppletItemVo;
+import org.dromara.djs.store.returns.domain.vo.StoreReturnGroupVo;
 import org.dromara.djs.store.returns.domain.vo.StoreReturnPorkCandidateVo;
+import org.dromara.djs.store.returns.domain.vo.StoreReturnStoreDailyVo;
 import org.dromara.djs.store.returns.domain.vo.StoreReturnVegCandidateVo;
 import org.dromara.djs.store.returns.mapper.StoreReturnMapper;
 import org.dromara.djs.store.returns.service.IStoreReturnService;
@@ -30,16 +33,22 @@ import org.dromara.djs.warehouse.location.mapper.LocationInfoMapper;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
 import org.dromara.djs.warehouse.purchase.service.IWarehousePurchaseInService;
+import org.dromara.djs.warehouse.stock.mapper.LocationStockMapper;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
+import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
@@ -68,8 +77,11 @@ public class StoreReturnServiceImpl
     extends DjsBaseServiceImpl<StoreReturnMapper, StoreReturn>
     implements IStoreReturnService {
 
-    /** 门店主场景默认方向（K4 简化后只此一态）。 */
+    /** 顾客退回门店方向（insertByBo 单条直登的历史默认；与门店退仓库是两件事）。 */
     private static final String DIRECTION_CUSTOMER_TO_STORE = "customer_to_store";
+
+    /** 门店退回仓库方向（退回操作 batchCreate 走此态：门店发起 → 仓库确认入库）。 */
+    private static final String DIRECTION_STORE_TO_WAREHOUSE = "store_to_warehouse";
 
     /** 门店退回入库流水类型 djs_flow_type（FIX-WMS-FLOWDICT-001：门店退货走 store_return_in，与领用退回 pick_return_in 区分来源）。 */
     private static final String FLOW_TYPE_RETURN_IN = "store_return_in";
@@ -79,6 +91,12 @@ public class StoreReturnServiceImpl
 
     /** 退货状态 djs_store_return_status：已入库（仓库确认实收后）。 */
     private static final String STATUS_RECEIVED = "received";
+
+    /** mp 词表（djs_return_status）：待确认。store 的 pending 直接对应。 */
+    private static final String MP_STATUS_PENDING = "pending";
+
+    /** mp 词表（djs_return_status）：已确认。映射 store 的 received（mp 页用 confirmed，避免改 mp UI）。 */
+    private static final String MP_STATUS_CONFIRMED = "confirmed";
 
     /**
      * 「猪肉产品」tab 归属类型（字典 djs_belong_type）：猪肉 + 白条。
@@ -98,6 +116,7 @@ public class StoreReturnServiceImpl
     private final StoreMapper storeMapper;
     private final ProductInfoMapper productInfoMapper;
     private final LocationInfoMapper locationInfoMapper;
+    private final LocationStockMapper locationStockMapper;
     private final IBizCodeGenerator bizCodeGenerator;
     private final IWarehousePurchaseInService purchaseInService;
     private final DemandManageMapper demandManageMapper;
@@ -107,6 +126,7 @@ public class StoreReturnServiceImpl
                                   StoreMapper storeMapper,
                                   ProductInfoMapper productInfoMapper,
                                   LocationInfoMapper locationInfoMapper,
+                                  LocationStockMapper locationStockMapper,
                                   IBizCodeGenerator bizCodeGenerator,
                                   IWarehousePurchaseInService purchaseInService,
                                   DemandManageMapper demandManageMapper,
@@ -115,6 +135,7 @@ public class StoreReturnServiceImpl
         this.storeMapper = storeMapper;
         this.productInfoMapper = productInfoMapper;
         this.locationInfoMapper = locationInfoMapper;
+        this.locationStockMapper = locationStockMapper;
         this.bizCodeGenerator = bizCodeGenerator;
         this.purchaseInService = purchaseInService;
         this.demandManageMapper = demandManageMapper;
@@ -233,7 +254,8 @@ public class StoreReturnServiceImpl
             }
             StoreReturn entity = new StoreReturn();
             entity.setReturnNo(generateReturnNo());
-            entity.setReturnDirection(DIRECTION_CUSTOMER_TO_STORE);
+            // 退回操作 = 门店退货给仓库 → 方向 store_to_warehouse（仓库侧据此过滤可见、门店盘点退回量据此聚合）。
+            entity.setReturnDirection(DIRECTION_STORE_TO_WAREHOUSE);
             entity.setStoreId(bo.getStoreId());
             entity.setProductId(item.getProductId());
             // 退回重量(KG) 始终落 goods_weight；退回量（果蔬份数/把/盒）落 return_quantity，
@@ -335,9 +357,18 @@ public class StoreReturnServiceImpl
             throw new ServiceException("该退回记录已确认入库，请勿重复确认", 400);
         }
 
+        // 入库目标产品：果蔬成品→原材料 product_material（docx，缺料阻断），猪肉/其他→成品本身。
+        Long inboundProductId = resolveInboundProductId(existing.getProductId());
+        // 入库库位：前端显式选优先；mp 确认页只填实收量不选库位 → 按入库产品预设库位 / 库存最多库位兜底；
+        // 仍无 → 阻断（不做「只写流水不增库存」的库存黑洞，提示运营先补库位）。
+        Long locationId = bo.getLocationId() != null ? bo.getLocationId() : resolveDefaultLocation(inboundProductId);
+        if (locationId == null) {
+            throw new ServiceException("未指定入库库位且无法自动定位（产品无预设库位/无历史库存），请选择库位后再确认", 400);
+        }
+
         StoreReturn entity = new StoreReturn();
         entity.setId(bo.getId());
-        entity.setLocationId(bo.getLocationId());
+        entity.setLocationId(locationId);
         entity.setReceivedQty(bo.getReceivedQty());
         // 实收重量缺省按实收量计（V1：果蔬/猪肉退回多按重量计量）
         entity.setReceivedWeight(bo.getReceivedWeight() == null ? bo.getReceivedQty() : bo.getReceivedWeight());
@@ -346,14 +377,158 @@ public class StoreReturnServiceImpl
         entity.setReturnStatus(STATUS_RECEIVED);
         int rows = baseMapper.updateById(entity);
 
-        // 确认实收时才联动外购入库：同事务 UPSERT location_stock + stock_flow(return_in)，
+        // 确认实收时才联动外购入库：同事务 UPSERT location_stock + stock_flow(store_return_in)，
         // inbound 内部校验库位 / 数量，失败抛 → 整体回滚（确认与入库一致，不留半态）。
-        purchaseInService.inbound(resolveInboundProductId(existing.getProductId()), bo.getLocationId(), bo.getReceivedQty(),
+        purchaseInService.inbound(inboundProductId, locationId, bo.getReceivedQty(),
             FLOW_TYPE_RETURN_IN, "门店退回仓库确认入库：" + existing.getReturnNo());
 
-        log.info("[STORE-RETURN-REALIGN-001] confirm id={} no={} location={} receivedQty={} → received 联动入库",
-            bo.getId(), existing.getReturnNo(), bo.getLocationId(), bo.getReceivedQty());
+        log.info("[STORE-RETURN-UNIFY-001] confirm id={} no={} location={} receivedQty={} inboundProduct={} → received 联动入库",
+            bo.getId(), existing.getReturnNo(), locationId, bo.getReceivedQty(), inboundProductId);
         return rows;
+    }
+
+    @Override
+    public TableDataInfo<StoreReturnStoreDailyVo> queryStoreDailyPage(StoreReturnQuery query, PageQuery pageQuery) {
+        // 仓库「退货记录」外层主从视图：仅门店→仓库方向（不含 customer_to_store），按 退回日期(截到天)+门店 聚合。
+        StoreReturnQuery q = query == null ? new StoreReturnQuery() : query;
+        q.setReturnDirection(DIRECTION_STORE_TO_WAREHOUSE);
+        List<StoreReturn> rows = baseMapper.selectList(buildQueryWrapper(q));
+        if (rows.isEmpty()) {
+            return TableDataInfo.build(new ArrayList<>());
+        }
+        Map<String, List<StoreReturn>> byGroup = rows.stream()
+            .filter(r -> r.getReturnDate() != null && r.getStoreId() != null)
+            .collect(Collectors.groupingBy(
+                r -> r.getReturnDate().toLocalDate() + "|" + r.getStoreId(),
+                LinkedHashMap::new, Collectors.toList()));
+        if (byGroup.isEmpty()) {
+            return TableDataInfo.build(new ArrayList<>());
+        }
+        Set<Long> storeIds = byGroup.values().stream()
+            .map(g -> g.get(0).getStoreId()).filter(Objects::nonNull).collect(Collectors.toSet());
+        Map<Long, String> storeNames = storeNameMap(new ArrayList<>(storeIds));
+        List<StoreReturnStoreDailyVo> all = new ArrayList<>(byGroup.size());
+        for (List<StoreReturn> group : byGroup.values()) {
+            StoreReturn any = group.get(0);
+            StoreReturnStoreDailyVo vo = new StoreReturnStoreDailyVo();
+            vo.setReturnDate(any.getReturnDate().toLocalDate());
+            vo.setStoreId(any.getStoreId());
+            vo.setStoreName(storeNames.get(any.getStoreId()));
+            vo.setProductKindCount((int) group.stream()
+                .map(StoreReturn::getProductId).filter(Objects::nonNull).distinct().count());
+            BigDecimal returnTotal = group.stream().map(StoreReturn::getGoodsWeight).filter(Objects::nonNull)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+            BigDecimal confirmTotal = group.stream().map(StoreReturn::getReceivedWeight).filter(Objects::nonNull)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+            vo.setReturnWeightTotal(returnTotal);
+            vo.setConfirmWeightTotal(confirmTotal);
+            vo.setWeightDiffTotal(returnTotal.subtract(confirmTotal));
+            group.stream().filter(r -> r.getConfirmTime() != null)
+                .max(Comparator.comparing(StoreReturn::getConfirmTime))
+                .ifPresent(latest -> {
+                    vo.setConfirmTime(latest.getConfirmTime());
+                    vo.setConfirmUser(latest.getConfirmUserId());
+                });
+            all.add(vo);
+        }
+        all.sort(Comparator
+            .comparing(StoreReturnStoreDailyVo::getReturnDate, Comparator.reverseOrder())
+            .thenComparing(StoreReturnStoreDailyVo::getStoreId, Comparator.reverseOrder()));
+        int total = all.size();
+        int pageNum = Math.max(pageQuery == null || pageQuery.getPageNum() == null ? 1 : pageQuery.getPageNum(), 1);
+        int pageSize = pageQuery == null || pageQuery.getPageSize() == null ? 10 : pageQuery.getPageSize();
+        int from = Math.min((pageNum - 1) * pageSize, total);
+        int to = Math.min(from + pageSize, total);
+        TableDataInfo<StoreReturnStoreDailyVo> dataInfo = new TableDataInfo<>();
+        dataInfo.setCode(200);
+        dataInfo.setRows(new ArrayList<>(all.subList(from, to)));
+        dataInfo.setTotal(total);
+        return dataInfo;
+    }
+
+    @Override
+    public List<StoreReturnGroupVo> listPendingGroups() {
+        // mp 退货管理分组卡：当天（Asia/Shanghai）门店→仓库退回，按门店分组，状态派生（全 received→confirmed 否则 pending）。
+        LocalDate today = LocalDate.now(ZONE_SHANGHAI);
+        LocalDateTime todayStart = today.atStartOfDay();
+        LocalDateTime tomorrowStart = today.plusDays(1).atStartOfDay();
+        List<StoreReturn> rows = baseMapper.selectList(new LambdaQueryWrapper<StoreReturn>()
+            .eq(StoreReturn::getReturnDirection, DIRECTION_STORE_TO_WAREHOUSE)
+            .isNotNull(StoreReturn::getStoreId)
+            .in(StoreReturn::getReturnStatus, List.of(STATUS_PENDING, STATUS_RECEIVED))
+            .ge(StoreReturn::getReturnDate, todayStart)
+            .lt(StoreReturn::getReturnDate, tomorrowStart));
+        if (rows.isEmpty()) {
+            return List.of();
+        }
+        Map<Long, List<StoreReturn>> byStore = rows.stream()
+            .collect(Collectors.groupingBy(StoreReturn::getStoreId));
+        Map<Long, String> storeNames = storeNameMap(new ArrayList<>(byStore.keySet()));
+        List<StoreReturnGroupVo> list = new ArrayList<>(byStore.size());
+        byStore.forEach((storeId, group) -> {
+            StoreReturnGroupVo vo = new StoreReturnGroupVo();
+            vo.setStoreId(storeId);
+            vo.setStoreName(storeNames.get(storeId));
+            boolean allReceived = group.stream().allMatch(r -> STATUS_RECEIVED.equals(r.getReturnStatus()));
+            vo.setReturnStatus(allReceived ? MP_STATUS_CONFIRMED : MP_STATUS_PENDING);
+            vo.setProductKindCount((int) group.stream()
+                .map(StoreReturn::getProductId).filter(Objects::nonNull).distinct().count());
+            vo.setReturnTime(group.stream().map(StoreReturn::getReturnDate).filter(Objects::nonNull)
+                .max(Comparator.naturalOrder()).orElse(null));
+            list.add(vo);
+        });
+        list.sort(Comparator
+            .comparing((StoreReturnGroupVo v) -> MP_STATUS_PENDING.equals(v.getReturnStatus()) ? 0 : 1)
+            .thenComparing(v -> v.getReturnTime() == null ? LocalDateTime.MIN : v.getReturnTime(),
+                Comparator.reverseOrder()));
+        return list;
+    }
+
+    @Override
+    public List<StoreReturnAppletItemVo> listAppletItemsByStoreAndStatus(Long storeId, String mpStatus) {
+        if (storeId == null) {
+            throw new ServiceException("门店 ID 不能为空", 400);
+        }
+        if (StringUtils.isBlank(mpStatus)) {
+            throw new ServiceException("退货状态不能为空", 400);
+        }
+        // mp 词表 → store 词表：confirmed→received，其余按 pending。
+        String storeStatus = MP_STATUS_CONFIRMED.equals(mpStatus) ? STATUS_RECEIVED : STATUS_PENDING;
+        List<StoreReturn> rows = baseMapper.selectList(new LambdaQueryWrapper<StoreReturn>()
+            .eq(StoreReturn::getReturnDirection, DIRECTION_STORE_TO_WAREHOUSE)
+            .eq(StoreReturn::getStoreId, storeId)
+            .eq(StoreReturn::getReturnStatus, storeStatus)
+            .orderByDesc(StoreReturn::getReturnDate));
+        if (rows.isEmpty()) {
+            return List.of();
+        }
+        List<Long> productIds = rows.stream().map(StoreReturn::getProductId)
+            .filter(Objects::nonNull).distinct().toList();
+        Map<Long, ProductInfo> productMap = productIds.isEmpty() ? Map.of()
+            : productInfoMapper.selectList(new LambdaQueryWrapper<ProductInfo>()
+                    .select(ProductInfo::getId, ProductInfo::getProductName, ProductInfo::getBelongType)
+                    .in(ProductInfo::getId, productIds))
+                .stream().collect(Collectors.toMap(ProductInfo::getId, p -> p, (a, b) -> a));
+        boolean received = STATUS_RECEIVED.equals(storeStatus);
+        return rows.stream().map(r -> {
+            StoreReturnAppletItemVo vo = new StoreReturnAppletItemVo();
+            vo.setId(r.getId());
+            vo.setReturnNo(r.getReturnNo());
+            vo.setStoreId(r.getStoreId());
+            vo.setApplyTime(r.getReturnDate());
+            vo.setProductId(r.getProductId());
+            ProductInfo p = r.getProductId() == null ? null : productMap.get(r.getProductId());
+            vo.setProductName(p == null ? null : p.getProductName());
+            vo.setProductCategory(p == null ? null : p.getBelongType());
+            vo.setReturnWeight(r.getGoodsWeight());
+            vo.setConfirmWeight(r.getReceivedWeight());
+            vo.setIsConfirm(received ? 1 : 0);
+            vo.setReturnReason(r.getReturnReason());
+            vo.setReturnDirection(r.getReturnDirection());
+            vo.setReturnStatus(received ? MP_STATUS_CONFIRMED : MP_STATUS_PENDING);
+            vo.setRemark(r.getRemark());
+            return vo;
+        }).collect(Collectors.toList());
     }
 
     @Override
@@ -389,6 +564,40 @@ public class StoreReturnServiceImpl
             return material;
         }
         return productId;
+    }
+
+    /**
+     * 退回入库默认库位兜底（确认未显式选库位时，如 mp 确认页只填实收量）：
+     * <ol>
+     *   <li>入库产品预设库位 {@code store_location_id}（逗号分隔，取首个存在的有效项）；</li>
+     *   <li>否则取该产品当前库存最多的库位（{@code selectDefaultLocationByProduct}，V1 单库位常态唯一）；</li>
+     *   <li>都无 → 返 {@code null}（调用方阻断确认，提示运营补库位）。</li>
+     * </ol>
+     * 非数字 / 空 token 跳过继续，不抛。入参为已解析的入库产品 id（果蔬已转原材料）。
+     */
+    private Long resolveDefaultLocation(Long inboundProductId) {
+        if (inboundProductId == null) {
+            return null;
+        }
+        ProductInfo p = productInfoMapper.selectById(inboundProductId);
+        if (p != null && StringUtils.isNotBlank(p.getStoreLocationId())) {
+            for (String token : p.getStoreLocationId().split(",")) {
+                String trimmed = token.trim();
+                if (trimmed.isEmpty()) {
+                    continue;
+                }
+                Long candidate;
+                try {
+                    candidate = Long.valueOf(trimmed);
+                } catch (NumberFormatException ex) {
+                    continue;
+                }
+                if (locationInfoMapper.selectById(candidate) != null) {
+                    return candidate;
+                }
+            }
+        }
+        return locationStockMapper.selectDefaultLocationByProduct(inboundProductId);
     }
 
     private LambdaQueryWrapper<StoreReturn> buildQueryWrapper(StoreReturnQuery q) {

@@ -15,10 +15,8 @@ import org.dromara.djs.warehouse.pack.domain.bo.GiftPackBo;
 import org.dromara.djs.warehouse.pack.domain.bo.VegPackBo;
 import org.dromara.djs.warehouse.pack.domain.bo.WhiteBarOutBo;
 import org.dromara.djs.warehouse.pack.mapper.ProductProductionMapper;
-import org.dromara.djs.warehouse.product.domain.GiftBox;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.domain.ProductInhouse;
-import org.dromara.djs.warehouse.product.mapper.GiftBoxMapper;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
 import org.dromara.djs.warehouse.product.mapper.ProductInhouseMapper;
 import org.dromara.djs.warehouse.stock.domain.LocationStock;
@@ -51,7 +49,6 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyMap;
 import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -65,9 +62,8 @@ import static org.mockito.Mockito.when;
  *   <li>vegPack happy：来源 inhouse 存在 + 目标 product 是发货品 → INSERT production + stock_flow + location_stock += + softDelete inhouse</li>
  *   <li>vegPack 来源不存在 → 抛 + 不动 production</li>
  *   <li>vegPack 目标产品非发货品 → 抛 + 不动 production</li>
- *   <li>giftPack happy：礼盒 SKU 存在 + gift_box 配置 2 组件 → N+1 stock_flow + location_stock 多次扣减</li>
- *   <li>giftPack 组件未配 → 抛友好提示</li>
- *   <li>giftPack 组件库存不足 → 抛 + 事务回滚</li>
+ *   <li>giftPack happy：礼盒为独立成品 → 只产出 N 盒 production + 扣门店礼盒需求，不查/不消耗组件</li>
+ *   <li>giftPack 产品非礼盒类型 → 抛</li>
  *   <li>dryPack happy：写 produce_no H 前缀 + 自定义单位</li>
  *   <li>celeryPack happy：自动写 productSpec='按重量'</li>
  *   <li>produceNo 委托 IBizCodeGenerator PRODUCE_NO（按 belong_type 传业态前缀）</li>
@@ -86,7 +82,6 @@ class ProductProductionServiceImplTest {
     @Mock private ProductProductionMapper productionMapper;
     @Mock private ProductInhouseMapper inhouseMapper;
     @Mock private ProductInfoMapper productInfoMapper;
-    @Mock private GiftBoxMapper giftBoxMapper;
     @Mock private LocationInfoMapper locationInfoMapper;
     @Mock private LocationStockMapper locationStockMapper;
     @Mock private StockFlowMapper stockFlowMapper;
@@ -118,7 +113,7 @@ class ProductProductionServiceImplTest {
     @BeforeEach
     void setup() {
         service = new ProductProductionServiceImpl(
-            productionMapper, inhouseMapper, productInfoMapper, giftBoxMapper,
+            productionMapper, inhouseMapper, productInfoMapper,
             locationInfoMapper, locationStockMapper, stockFlowMapper, storeMapper, plotInfoMapper,
             demandManageMapper, barInfoMapper, bizCodeGenerator, traceService, stockCheckService);
 
@@ -323,128 +318,54 @@ class ProductProductionServiceImplTest {
         return p;
     }
 
-    private GiftBox sampleComponent(Long componentProductId, BigDecimal count, String unit) {
-        GiftBox c = new GiftBox();
-        c.setBoxProductId(60100L);
-        c.setComponentProductId(componentProductId);
-        c.setComponentCount(count);
-        c.setComponentUnit(unit);
-        return c;
-    }
-
-    /**
-     * 组件产品主数据：material_num=1（份数模式）让 {@code giftComponentShare} 返回 produce_quantity 本身，
-     * 便于一份测试同时覆盖 FIFO 两分支（整条份值用尽→软删 / 份值大于剩余→按比例部分扣）。
-     */
-    private ProductInfo componentInfo(Long id) {
-        ProductInfo p = new ProductInfo();
-        p.setId(id);
-        p.setProductName("组件" + id);
-        p.setProductUnit("份");
-        p.setMaterialNum(new BigDecimal("1"));
-        return p;
-    }
-
     private GiftPackBo sampleGiftBo() {
         GiftPackBo bo = new GiftPackBo();
         bo.setGiftBoxProductId(60100L);
         bo.setPackBoxCount(5);
         bo.setLocationId(90100L);
+        bo.setStoreId(7L);
         return bo;
     }
 
-    /** 一条「发送礼盒」生产产品（deliver_dest='gift'），作礼盒组件可用池。 */
-    private ProductProduction giftBoundProduction(Long id, Long productId, String qty) {
-        ProductProduction p = new ProductProduction();
-        p.setId(id);
-        p.setProductId(productId);
-        p.setDeliverDest("gift");
-        p.setProduceQuantity(new BigDecimal(qty));
-        p.setProductWeight(new BigDecimal(qty));
-        return p;
-    }
-
     @Test
-    @DisplayName("submitGiftPack: happy 2 组件 → 扣「发送礼盒生产产品」(FIFO 软删/部分扣) + stock_flow 3 行 + production INSERT；不扣 location_stock")
+    @DisplayName("submitGiftPack: 礼盒为独立成品 → 只产出 N 盒 production + 扣门店礼盒需求；不查/不消耗任何组件")
     void testGiftPack_Happy() {
         when(productInfoMapper.selectById(60100L)).thenReturn(sampleGiftProduct());
         when(locationInfoMapper.selectById(90100L)).thenReturn(sampleLocation());
-        when(giftBoxMapper.selectList(any())).thenReturn(List.of(
-            sampleComponent(60001L, new BigDecimal("2.000"), "kg"),
-            sampleComponent(60002L, new BigDecimal("1.000"), "包")
-        ));
-        // 组件主数据 material_num=1（份数模式）→ giftComponentShare 返回 produce_quantity 本身
-        when(productInfoMapper.selectById(60001L)).thenReturn(componentInfo(60001L));
-        when(productInfoMapper.selectById(60002L)).thenReturn(componentInfo(60002L));
-        // 组件 60001 需 2×5=10：gift-bound 生产产品池正好 10 份（整条用尽 → 软删）；
-        // 组件 60002 需 1×5=5：池 8 份（部分扣 → updateById，剩 3）。selectList 按组件顺序消费。
-        when(productionMapper.selectList(any())).thenReturn(
-            List.of(giftBoundProduction(80001L, 60001L, "10")),
-            List.of(giftBoundProduction(80002L, 60002L, "8"))
-        );
         when(productionMapper.insert(any(ProductProduction.class))).thenAnswer(inv -> {
             ProductProduction p = inv.getArgument(0);
             p.setId(80100L);
             return 1;
         });
         when(locationStockMapper.addByProductLocation(eq(90100L), eq(60100L), any(), eq(9001L))).thenReturn(1);
+        // 门店有未完成礼盒需求 → 打包即扣 shipped_count
+        org.dromara.djs.warehouse.demand.domain.DemandManage demand =
+            new org.dromara.djs.warehouse.demand.domain.DemandManage();
+        demand.setId(50001L);
+        when(demandManageMapper.selectOldestUncompletedDemand(eq(60100L), eq(7L))).thenReturn(demand);
 
         Long id = service.submitGiftPack(sampleGiftBo());
 
         assertThat(id).isEqualTo(80100L);
-        // 不再扣原料/成品 location_stock（按对应生产产品判，Kevin 2026-06-25）
+        // 不查/不消耗任何组件：无组件 production 软删、无组件库存扣减、无组件消耗流水
+        verify(productionMapper, never()).deleteById(anyLong());
         verify(locationStockMapper, never()).deductByProductLocation(anyLong(), anyLong(), any(), anyLong());
-        // 60001 整条用尽 → 软删（证明消耗的是「发送礼盒生产产品」而非 location_stock）
-        verify(productionMapper, times(1)).deleteById(80001L);
-        // 60002 部分扣 → updateById 把 80002 剩量改为 3（updateById 还含 fillTraceCode 对礼盒主记录回填，故 captor 校验任一命中）
-        ArgumentCaptor<ProductProduction> upd = ArgumentCaptor.forClass(ProductProduction.class);
-        verify(productionMapper, atLeastOnce()).updateById(upd.capture());
-        assertThat(upd.getAllValues()).anySatisfy(pp -> {
-            assertThat(pp.getId()).isEqualTo(80002L);
-            assertThat(pp.getProduceQuantity()).isEqualByComparingTo("3");
-        });
-        verify(stockFlowMapper, times(3)).insert(any(StockFlow.class)); // 2 consume + 1 in
-        verify(locationStockMapper, times(1)).addByProductLocation(
-            eq(90100L), eq(60100L), any(), eq(9001L));
+        // 只产出 N 盒礼盒成品：1 行 production insert + 1 行入库流水 + 1 次 location_stock 入库
         ArgumentCaptor<ProductProduction> cap = ArgumentCaptor.forClass(ProductProduction.class);
-        verify(productionMapper).insert(cap.capture());
+        verify(productionMapper, times(1)).insert(cap.capture());
         ProductProduction saved = cap.getValue();
         assertThat(saved.getProductId()).isEqualTo(60100L);
         assertThat(saved.getProductType()).isEqualTo(3);
-        assertThat(saved.getProductWeight()).isEqualByComparingTo("5"); // packBoxCount
-        assertThat(saved.getProduceNo()).isNotBlank(); // 生产序号非空（PRODUCE_NO 编码不再按业态前缀分桶）
-    }
-
-    @Test
-    @DisplayName("submitGiftPack: gift_box 组件未配 → 抛友好提示")
-    void testGiftPack_NoComponents() {
-        when(productInfoMapper.selectById(60100L)).thenReturn(sampleGiftProduct());
-        when(locationInfoMapper.selectById(90100L)).thenReturn(sampleLocation());
-        when(giftBoxMapper.selectList(any())).thenReturn(List.of());
-
-        assertThatThrownBy(() -> service.submitGiftPack(sampleGiftBo()))
-            .isInstanceOf(ServiceException.class)
-            .hasMessageContaining("礼盒未配置组件清单");
-
-        verify(productionMapper, never()).insert(any(ProductProduction.class));
-    }
-
-    @Test
-    @DisplayName("submitGiftPack: 组件「发送礼盒生产产品」不足 → 抛 + 事务回滚（production 不 insert）")
-    void testGiftPack_ComponentStockInsufficient() {
-        when(productInfoMapper.selectById(60100L)).thenReturn(sampleGiftProduct());
-        when(locationInfoMapper.selectById(90100L)).thenReturn(sampleLocation());
-        when(giftBoxMapper.selectList(any())).thenReturn(List.of(
-            sampleComponent(60001L, new BigDecimal("2.000"), "kg")
-        ));
-        // 该组件没有「发送礼盒」生产产品（池空）→ 可用 0 < 需 10
-        when(productionMapper.selectList(any())).thenReturn(List.of());
-
-        assertThatThrownBy(() -> service.submitGiftPack(sampleGiftBo()))
-            .isInstanceOf(ServiceException.class)
-            .hasMessageContaining("组件不足");
-
-        verify(productionMapper, never()).insert(any(ProductProduction.class));
+        assertThat(saved.getProductWeight()).isEqualByComparingTo("5"); // packBoxCount=5 盒
+        assertThat(saved.getProduceQuantity()).isEqualByComparingTo("5");
+        assertThat(saved.getProductUnit()).isEqualTo("盒");
+        assertThat(saved.getPackStatus()).isEqualTo("packed");
+        assertThat(saved.getProduceNo()).isNotBlank();
+        verify(stockFlowMapper, times(1)).insert(any(StockFlow.class)); // 仅 1 行入库流水（无组件消耗流水）
+        verify(locationStockMapper, times(1)).addByProductLocation(
+            eq(90100L), eq(60100L), any(), eq(9001L));
+        // 扣门店礼盒需求（deductDemandOnPack）：按盒数累加 shipped_count
+        verify(demandManageMapper, times(1)).incrementShipped(eq(50001L), any(), any());
     }
 
     @Test

@@ -75,7 +75,7 @@ public class ProductInfoController extends BaseController {
     }
 
     /**
-     * 查询单条详情（productType=3 时附带 giftComponents）。
+     * 查询单条详情。
      */
     @SaCheckPermission("djs:warehouse:product:list")
     @GetMapping("/getInfo/{id}")
