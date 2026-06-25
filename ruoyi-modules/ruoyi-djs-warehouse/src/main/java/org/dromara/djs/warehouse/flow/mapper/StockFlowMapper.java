@@ -164,6 +164,33 @@ public interface StockFlowMapper extends BaseMapperPlus<StockFlow, StockFlowVo> 
     List<SupplierDealVo> selectSupplierDeals(@Param("supplierId") Long supplierId);
 
     /**
+     * 批量按供应商聚合物资入库流水统计（次数 + 入库量），供供应商列表页一次性回填，避免 N+1。
+     *
+     * <p>严格镜像 {@link #selectSupplierDeals} 的 FROM / LEFT JOIN / WHERE（含 {@code p.del_flag='0'} JOIN 条件、
+     * {@code f.inout_type='IN'}、{@code f.del_flag='0'}、{@code f.tenant_id='1001'}），仅把投影换成 {@code COUNT(*)} /
+     * {@code COALESCE(SUM(f.change_quantity),0)}、按 {@code f.supplier_id} GROUP BY、去掉 ORDER BY，并把单值
+     * {@code = #{supplierId}} 改成 {@code IN (...)}。product_info 走 LEFT JOIN 且 id 为 PK（1:1），不影响 COUNT/SUM
+     * 行数，口径与逐个查询完全一致。</p>
+     *
+     * @param ids 供应商 ID 集合（service 端保证非空非 null）
+     * @return 每行 {@code {supplierId, dealCount, purchaseQty}}；无入库的供应商不在结果中
+     */
+    @Select("<script>"
+        + "SELECT f.supplier_id AS supplierId, "
+        + "       COUNT(*) AS dealCount, "
+        + "       COALESCE(SUM(f.change_quantity), 0) AS purchaseQty "
+        + "  FROM t_warehouse_stock_flow f "
+        + "  LEFT JOIN t_warehouse_product_info p ON p.id = f.product_id AND p.del_flag = '0' "
+        + " WHERE f.inout_type  = 'IN' "
+        + "   AND f.del_flag    = '0' "
+        + "   AND f.tenant_id   = '1001' "
+        + "   AND f.supplier_id IN "
+        + "   <foreach collection='ids' item='id' open='(' separator=',' close=')'>#{id}</foreach> "
+        + " GROUP BY f.supplier_id"
+        + "</script>")
+    List<java.util.Map<String, Object>> selectSupplierDealStats(@Param("ids") java.util.Collection<Long> ids);
+
+    /**
      * 按入/出库人姓名模糊查 user_id（admin 入库 / 出库记录页「入库人 / 出库人」筛选用，姓名 → ID 反查）。
      *
      * <p>{@code sys_user} 是 ruoyi 全局表，注解 SQL 不走 MP 多租户拦截器；仅按 {@code nick_name}

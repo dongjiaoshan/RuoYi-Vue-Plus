@@ -41,6 +41,9 @@ public class AvailableProductionVo implements Serializable {
 
     private BigDecimal produceQuantity;
 
+    /** 生产产品规格（打包时快照 product_production.product_spec）：mp 发货清单「规格」行展示此值，非库位名。 */
+    private String productSpec;
+
     private Long produceLocation;
 
     /** 库位名称（service 层 JOIN location_info 填充）。 */

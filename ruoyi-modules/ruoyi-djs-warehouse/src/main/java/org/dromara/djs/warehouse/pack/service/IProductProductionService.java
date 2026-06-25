@@ -132,6 +132,18 @@ public interface IProductProductionService {
     List<StoreDemandCopiesVo> listStoreDemandCopies(Long productId);
 
     /**
+     * 批量版「各产品各门店未发货需求份数」（打包录入卡片网格「需求量」批量聚合，去前端 N+1）。
+     *
+     * <p>口径与 {@link #listStoreDemandCopies} 完全一致，仅 product_id 由 {@code =} 改 {@code IN}，
+     * 结果按 productId 分组。返回 Map：key = 产品雪花 id 字符串（避免 JS Number 精度丢失），
+     * value = 该产品各门店未发货份数列表。{@code productIds} 空 → 返空 Map，不查。</p>
+     *
+     * @param productIds 目标产品 id 列表（{@code t_warehouse_product_info.id}）
+     * @return 产品 id 字符串 → 各门店未发货份数列表（空入参 → 空 Map）
+     */
+    Map<String, List<StoreDemandCopiesVo>> listStoreDemandCopiesBatch(List<Long> productIds);
+
+    /**
      * 礼盒打包页顶部「可用礼盒组件」池：肉品/果蔬/其他打包时「发送礼盒」产出、未被礼盒消耗的生产产品
      * （{@code deliver_dest='gift' AND produce_quantity>0}），按 product_id 聚合可用量。
      * 礼盒打包消耗后相应减少（前端 @submitted 重拉）。

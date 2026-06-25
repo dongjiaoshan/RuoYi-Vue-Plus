@@ -134,6 +134,22 @@ public class WarehousePackEntryController extends BaseController {
     }
 
     /**
+     * 批量版「各产品各门店未发货需求份数」（打包录入卡片网格「需求量」批量聚合，去前端 N+1）。
+     *
+     * <p>口径与单产品 {@link #storeDemand} 完全一致，product_id 由 {@code =} 改 {@code IN}，按 productId 分组。
+     * 卡片网格 onMounted / 每次打包提交成功后批量刷新「需求量」用此端点，从 N 请求降为 1 请求；
+     * 卡片选中看分门店份数仍用单产品端点。返回 {@code Map<产品雪花id字符串, 各门店份数列表>}，
+     * key 转 String 防雪花 JSON 截断；productIds 空 → 返空 Map。</p>
+     *
+     * @param productIds 目标产品 id 列表（逗号分隔；{@code t_warehouse_product_info.id}）
+     */
+    @SaCheckPermission("djs:warehouse:packEntry:dry")
+    @GetMapping("/storeDemand/batch")
+    public R<Map<String, List<StoreDemandCopiesVo>>> storeDemandBatch(@RequestParam List<Long> productIds) {
+        return R.ok(productionService.listStoreDemandCopiesBatch(productIds));
+    }
+
+    /**
      * 批量查目标成品的「原材料实时库存」（打包录入卡片库存口径统一，取数逻辑 doc#13）。
      *
      * <p>卡片展示库存改用此口径：对每个成品取其 {@code product_material} 指向的原材料 {@code location_stock} 合计，

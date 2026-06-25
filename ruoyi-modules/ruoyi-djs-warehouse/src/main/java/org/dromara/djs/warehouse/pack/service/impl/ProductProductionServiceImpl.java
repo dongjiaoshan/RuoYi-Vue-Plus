@@ -772,6 +772,24 @@ public class ProductProductionServiceImpl
     }
 
     @Override
+    public Map<String, List<StoreDemandCopiesVo>> listStoreDemandCopiesBatch(List<Long> productIds) {
+        if (productIds == null || productIds.isEmpty()) {
+            return Map.of();
+        }
+        List<org.dromara.djs.warehouse.pack.domain.vo.StoreDemandCopiesRowVo> rows =
+            demandManageMapper.selectStoreDemandCopiesBatch(productIds);
+        Map<String, List<StoreDemandCopiesVo>> out = new HashMap<>();
+        for (org.dromara.djs.warehouse.pack.domain.vo.StoreDemandCopiesRowVo r : rows) {
+            StoreDemandCopiesVo vo = new StoreDemandCopiesVo();
+            vo.setStoreId(r.getStoreId());
+            vo.setStoreName(r.getStoreName());
+            vo.setCopies(r.getCopies());
+            out.computeIfAbsent(String.valueOf(r.getProductId()), k -> new java.util.ArrayList<>()).add(vo);
+        }
+        return out;
+    }
+
+    @Override
     public List<org.dromara.djs.warehouse.pack.domain.vo.GiftComponentStockVo> listGiftComponentStock() {
         // 全部「发送礼盒」未消耗生产产品（deliver_dest='gift' AND produce_quantity>0），按 product_id 聚合
         List<ProductProduction> rows = baseMapper.selectList(
@@ -786,7 +804,8 @@ public class ProductProductionServiceImpl
             .map(ProductProduction::getProductId).filter(Objects::nonNull).collect(Collectors.toSet());
         Map<Long, ProductInfo> productMap = productInfoMapper.selectBatchIds(pids).stream()
             .collect(Collectors.toMap(ProductInfo::getId, p -> p, (a, b) -> a));
-        // 按「份」口径聚合：每条生产产品份值 = resolveDemandDeductQty（1 次打包=1 份/重量/份数），不直接求 produce_quantity（重量）
+        // 按「份」口径聚合：每条生产产品份值 = giftComponentShare（1 次打包=1 份，重量类不看 kg），
+        // 不直接求 produce_quantity（那是重量，精瘦肉 2 条 8kg 会被算成 8 而非 2 份）
         Map<Long, BigDecimal> shareByProduct = new java.util.LinkedHashMap<>();
         for (ProductProduction p : rows) {
             if (p.getProductId() == null) {
@@ -794,7 +813,7 @@ public class ProductProductionServiceImpl
             }
             ProductInfo pi = productMap.get(p.getProductId());
             shareByProduct.merge(p.getProductId(),
-                resolveDemandDeductQty(pi, p.getProduceQuantity()), BigDecimal::add);
+                giftComponentShare(pi, p.getProduceQuantity()), BigDecimal::add);
         }
         List<org.dromara.djs.warehouse.pack.domain.vo.GiftComponentStockVo> result = new java.util.ArrayList<>();
         shareByProduct.forEach((pid, share) -> {
@@ -804,8 +823,8 @@ public class ProductProductionServiceImpl
             vo.setProductId(pid);
             vo.setProductName(pi != null && StringUtils.isNotBlank(pi.getProductName())
                 ? pi.getProductName() : String.valueOf(pid));
-            // 单位用产品自身单位（份/个/kg…），与份值口径一致（黄秋葵显「3 份」而非「1.5」）
-            vo.setProductUnit(pi != null ? pi.getProductUnit() : null);
+            // 单位统一「份」（礼盒口径全部按份，精瘦肉显「2 份」而非「8kg」、黄秋葵「1 份」）
+            vo.setProductUnit("份");
             vo.setAvailableQty(share);
             result.add(vo);
         });
@@ -1138,6 +1157,27 @@ public class ProductProductionServiceImpl
         return BigDecimal.ONE; // 计数单位无计量规则：1 次打包 = 1 份/只
     }
 
+    /**
+     * 礼盒组件「份值」：1 条「发送礼盒」生产产品记录占多少「份」
+     * （Kevin 2026-06-25：礼盒按份判，1 次打包 = 1 份，和重量无关）。
+     *
+     * <p>与 {@link #resolveDemandDeductQty} 的区别——后者用于<b>门店直接需求</b>履约，重量单位产品按
+     * 实重扣（门店按 kg 下单）；礼盒口径<b>不看重量</b>，所有组件统一以「份」计：</p>
+     * <ul>
+     *   <li>计数单位 + 配了计量规则（份数模式，如鸡蛋一盒 N 个，{@code material_num>0}）：1 次打包产出
+     *       份数 = {@code produce_quantity / material_num}（前端把份数×material_num 发为 produce_quantity）。</li>
+     *   <li>其余（重量单位 kg / 计数单位无计量规则 份·袋·只…）：<b>1 次打包 = 1 份</b>，与重量无关
+     *       （精瘦肉 2 条记录共 8kg → 2 份，不是 8）。</li>
+     * </ul>
+     */
+    private BigDecimal giftComponentShare(ProductInfo comp, BigDecimal produceQuantity) {
+        BigDecimal materialNum = comp == null ? null : comp.getMaterialNum();
+        if (materialNum != null && materialNum.signum() > 0 && produceQuantity != null) {
+            return produceQuantity.divide(materialNum, 3, java.math.RoundingMode.HALF_UP);
+        }
+        return BigDecimal.ONE;
+    }
+
     protected void fulfillDirectDemandOnPack(Long productId, Long storeId, BigDecimal packQty, String deliverDest) {
         if (DELIVER_DEST_GIFT.equals(deliverDest)) {
             // 礼盒组件：不绑门店、不扣直接需求（履约在礼盒打包环节）
@@ -1380,9 +1420,10 @@ public class ProductProductionServiceImpl
      *
      * <p>礼盒组件 = 在肉品/果蔬/其他产品打包时「发送位置=礼盒」产出的生产产品
      * （{@code product_production.deliver_dest='gift'}，预留给礼盒打包消耗、不进发货月台、不扣门店需求）。
-     * 可用量按<b>份口径</b>聚合，每条生产产品的「份值」用 {@link #resolveDemandDeductQty} 同口径换算：
-     * 计数单位无计量规则 → 1 份/次（与重量无关）；重量单位 → 重量(kg)；计数+计量 → 份数(=重量/计量)。
-     * <b>不再按 produce_quantity 直接求和</b>（那是重量，会把 3 次×0.5kg 的黄秋葵算成 1.5 而不是 3 份）。</p>
+     * 可用量按<b>份口径</b>聚合，每条生产产品的「份值」用 {@link #giftComponentShare} 换算：
+     * 1 次打包 = 1 份（重量单位 kg / 计数无计量规则 份·袋·只均 1 份，与重量无关）；
+     * 份数模式（material_num&gt;0）→ 份数(=produce_quantity/material_num)。
+     * <b>不按 produce_quantity 直接求和</b>（那是重量，会把精瘦肉 2 次×4kg 算成 8 而不是 2 份）。</p>
      *
      * <ul>
      *   <li>可用份 &lt; 需求份 → 抛精确 {@link ServiceException}（哪个组件 / 每盒×盒数=共需 / 当前发送礼盒可用 /
@@ -1397,25 +1438,23 @@ public class ProductProductionServiceImpl
         ProductInfo comp = productInfoMapper.selectById(compId);
         String compName = comp != null && StringUtils.isNotBlank(comp.getProductName())
             ? comp.getProductName() : String.valueOf(compId);
-        String needUnit = StringUtils.isNotBlank(c.getComponentUnit()) ? c.getComponentUnit() : "";
-        String haveUnit = comp != null && StringUtils.isNotBlank(comp.getProductUnit()) ? comp.getProductUnit() : needUnit;
         List<ProductProduction> pool = baseMapper.selectList(
             new LambdaQueryWrapper<ProductProduction>()
                 .eq(ProductProduction::getProductId, compId)
                 .eq(ProductProduction::getDeliverDest, DELIVER_DEST_GIFT)
                 .gt(ProductProduction::getProduceQuantity, BigDecimal.ZERO)
                 .orderByAsc(ProductProduction::getId));
-        // 可用「份」= 各条份值之和（resolveDemandDeductQty 口径：1 次打包=1 份 / 重量 / 份数）
+        // 可用「份」= 各条份值之和（giftComponentShare 口径：1 次打包=1 份，重量类不看 kg）
         BigDecimal available = pool.stream()
-            .map(p -> resolveDemandDeductQty(comp, p.getProduceQuantity()))
+            .map(p -> giftComponentShare(comp, p.getProduceQuantity()))
             .reduce(BigDecimal.ZERO, BigDecimal::add);
         if (available.compareTo(needQty) < 0) {
             throw new ServiceException(String.format(
-                "礼盒【%s】组件不足：【%s】每盒需 %s%s × 打包 %s 盒 = 共需 %s%s；"
-                + "当前「已打包发送到礼盒」的%s仅 %s%s——请先在肉品/果蔬/其他产品打包时把【%s】的发送位置选「礼盒」。",
-                giftBox.getProductName(), compName, plainNum(c.getComponentCount()), needUnit,
-                plainNum(packCount), plainNum(needQty), needUnit,
-                compName, plainNum(available), haveUnit, compName));
+                "礼盒【%s】组件不足：【%s】每盒需 %s 份 × 打包 %s 盒 = 共需 %s 份；"
+                + "当前「已打包发送到礼盒」的【%s】仅 %s 份——请先在肉品/果蔬/其他产品打包时把【%s】的发送位置选「礼盒」。",
+                giftBox.getProductName(), compName, plainNum(c.getComponentCount()),
+                plainNum(packCount), plainNum(needQty),
+                compName, plainNum(available), compName));
         }
         // FIFO 按份值消耗：整条份值 ≤ 剩余 → 软删；否则按 剩余/份值 比例部分扣减 produce_quantity + product_weight
         BigDecimal remainShare = needQty;
@@ -1423,7 +1462,7 @@ public class ProductProductionServiceImpl
             if (remainShare.signum() <= 0) {
                 break;
             }
-            BigDecimal recShare = resolveDemandDeductQty(comp, p.getProduceQuantity());
+            BigDecimal recShare = giftComponentShare(comp, p.getProduceQuantity());
             if (recShare.signum() <= 0) {
                 continue;
             }

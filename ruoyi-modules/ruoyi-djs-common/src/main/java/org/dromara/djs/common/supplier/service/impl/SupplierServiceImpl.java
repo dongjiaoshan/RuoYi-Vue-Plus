@@ -15,6 +15,7 @@ import org.dromara.djs.common.supplier.domain.Supplier;
 import org.dromara.djs.common.supplier.domain.bo.SupplierBo;
 import org.dromara.djs.common.supplier.domain.query.SupplierQuery;
 import org.dromara.djs.common.supplier.api.SupplierDealProvider;
+import org.dromara.djs.common.supplier.api.SupplierDealStat;
 import org.dromara.djs.common.supplier.api.SupplierDealVo;
 import org.dromara.djs.common.supplier.domain.vo.SupplierVo;
 import org.dromara.djs.common.supplier.mapper.SupplierMapper;
@@ -26,6 +27,7 @@ import org.springframework.stereotype.Service;
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -68,12 +70,41 @@ public class SupplierServiceImpl extends DjsBaseServiceImpl<SupplierMapper, Supp
         LambdaQueryWrapper<Supplier> wrapper = buildQueryWrapper(query);
         Page<SupplierVo> page = baseMapper.selectVoPage(pageQuery.build(), wrapper);
         // 交易次数 = 该供应商采购入库记录数；购入量 = 采购入库数量合计
-        // （口径同详情「交易明细」tab：药品入库 + 物资采购入库 UNION，read-only compute-on-read 不持久化）
-        page.getRecords().forEach(this::fillDealStat);
+        // （口径同详情「交易明细」tab：药品入库 + 物资采购入库，read-only compute-on-read 不持久化）
+        // 批量聚合避免 N+1：取本页非空 id 列表 → 每个 provider 一条 GROUP BY → 合并回填。
+        List<Long> ids = page.getRecords().stream()
+            .map(SupplierVo::getId)
+            .filter(Objects::nonNull)
+            .toList();
+        if (!ids.isEmpty()) {
+            Map<Long, SupplierDealStat> statMap = aggregateStats(ids);
+            page.getRecords().forEach(vo -> {
+                if (vo.getId() == null) {
+                    return;
+                }
+                SupplierDealStat stat = statMap.getOrDefault(vo.getId(), SupplierDealStat.ZERO);
+                vo.setDealCount(stat.dealCount());
+                vo.setPurchaseQty(stat.purchaseQty());
+            });
+        }
         return TableDataInfo.build(page);
     }
 
-    /** compute-on-read 回填交易次数/购入量（不持久化，避免冗余字段不一致）。 */
+    /**
+     * 跨所有 provider 批量聚合本页供应商的交易统计（每 provider 一条查询），合并成 {@code id → stat}。
+     *
+     * @param ids 本页非空供应商 ID（调用方保证非空）
+     * @return 合并后的统计 Map（无交易的 id 不在结果中）
+     */
+    private Map<Long, SupplierDealStat> aggregateStats(Collection<Long> ids) {
+        Map<Long, SupplierDealStat> merged = new HashMap<>();
+        dealProviders.forEach(p ->
+            p.aggregateStatsBySupplierIds(ids).forEach((id, stat) ->
+                merged.merge(id, stat, SupplierDealStat::plus)));
+        return merged;
+    }
+
+    /** compute-on-read 回填交易次数/购入量（详情单条用；不持久化，避免冗余字段不一致）。 */
     private void fillDealStat(SupplierVo vo) {
         if (vo == null || vo.getId() == null) {
             return;

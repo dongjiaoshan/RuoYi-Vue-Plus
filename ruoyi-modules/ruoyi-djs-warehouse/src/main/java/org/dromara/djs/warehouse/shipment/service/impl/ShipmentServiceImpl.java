@@ -513,6 +513,7 @@ public class ShipmentServiceImpl
             vo.setProductName(productNameMap.get(p.getProductId()));
             vo.setBelongType(belongTypeMap.get(p.getProductId()));
             vo.setProduceQuantity(p.getProduceQuantity());
+            vo.setProductSpec(p.getProductSpec());
             vo.setProduceLocation(p.getProduceLocation());
             vo.setProduceLocationName(p.getProduceLocation() == null
                 ? null : locationNameMap.get(p.getProduceLocation()));

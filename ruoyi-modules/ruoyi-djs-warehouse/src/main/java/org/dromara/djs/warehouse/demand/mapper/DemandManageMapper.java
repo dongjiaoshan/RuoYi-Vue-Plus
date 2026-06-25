@@ -8,6 +8,7 @@ import org.dromara.djs.warehouse.demand.domain.DemandManage;
 import org.dromara.djs.warehouse.demand.domain.vo.DemandGroupVo;
 import org.dromara.djs.warehouse.demand.domain.vo.DemandManageVo;
 import org.dromara.djs.warehouse.demand.domain.vo.DemandProductStoreDetailVo;
+import org.dromara.djs.warehouse.pack.domain.vo.StoreDemandCopiesRowVo;
 import org.dromara.djs.warehouse.pack.domain.vo.StoreDemandCopiesVo;
 
 import java.math.BigDecimal;
@@ -188,6 +189,42 @@ public interface DemandManageMapper extends BaseMapperPlus<DemandManage, DemandM
         ORDER BY copies DESC
         """)
     List<StoreDemandCopiesVo> selectStoreDemandCopies(@Param("productId") Long productId);
+
+    /**
+     * 批量版「各产品各门店未发货需求份数」（打包录入卡片网格「需求量」批量聚合，去前端 N+1）。
+     *
+     * <p>口径与 {@link #selectStoreDemandCopies} <b>逐字一致</b>：每条需求行
+     * {@code GREATEST(demand_quantity - shipped_count, 0)} 单独钳 ≥ 0 后再 SUM；仅统计「已确认及之后」
+     * 需求（{@code demand_status IN ('CONFIRMED','IN_PRODUCTION','PARTIAL_SHIPPED','COMPLETED')}）；
+     * JOIN {@code t_md_store} 取门店名；显式 {@code tenant_id='1001'} + {@code del_flag='0'}。
+     * 唯一差异：{@code product_id} 由 {@code =} 改 {@code IN(foreach)}，SELECT/GROUP BY 增加
+     * {@code dm.product_id} 维度，结果扁平行带 productId 供 service 分组。</p>
+     *
+     * @param productIds 产品 FK 列表（{@code t_warehouse_product_info.id}）；调用方保证非空
+     * @return 各（产品,门店）未发货份数扁平行（按 product_id、copies 降序；无则空 List）
+     */
+    @Select("""
+        <script>
+        SELECT dm.product_id AS productId,
+               dm.store_id AS storeId,
+               s.store_name AS storeName,
+               SUM(GREATEST(dm.demand_quantity - COALESCE(dm.shipped_count, 0), 0)) AS copies
+        FROM t_warehouse_demand_manage dm
+        JOIN t_md_store s ON s.id = dm.store_id
+             AND s.del_flag = '0'
+             AND s.tenant_id = dm.tenant_id
+        WHERE dm.product_id IN
+              <foreach collection="productIds" item="pid" open="(" separator="," close=")">#{pid}</foreach>
+          AND dm.store_id IS NOT NULL
+          AND dm.demand_status IN ('CONFIRMED','IN_PRODUCTION','PARTIAL_SHIPPED','COMPLETED')
+          AND dm.del_flag = '0'
+          AND dm.tenant_id = '1001'
+        GROUP BY dm.product_id, dm.store_id, s.store_name
+        HAVING copies > 0
+        ORDER BY dm.product_id, copies DESC
+        </script>
+        """)
+    List<StoreDemandCopiesRowVo> selectStoreDemandCopiesBatch(@Param("productIds") Collection<Long> productIds);
 
     /**
      * 按 product_id 聚合「有该产品需求的去重门店数」（D-FIX-24 决策 #8 列表 storeCount）。

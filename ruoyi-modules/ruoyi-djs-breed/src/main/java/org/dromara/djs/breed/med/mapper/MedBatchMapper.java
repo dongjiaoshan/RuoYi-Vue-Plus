@@ -9,7 +9,9 @@ import org.dromara.djs.breed.med.domain.vo.MedBatchVo;
 import org.dromara.djs.common.supplier.api.SupplierDealVo;
 
 import java.math.BigDecimal;
+import java.util.Collection;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 药品批次 Mapper（BRD-MED-001）。
@@ -75,5 +77,30 @@ public interface MedBatchMapper extends BaseMapperPlus<MedBatch, MedBatchVo> {
         + "   AND b.tenant_id = '1001' "
         + " ORDER BY b.production_date DESC")
     List<SupplierDealVo> selectSupplierDeals(@Param("supplierId") Long supplierId);
+
+    /**
+     * 批量按供应商聚合药品入库批次统计（次数 + 入库量），供供应商列表页一次性回填，避免 N+1。
+     *
+     * <p>严格镜像 {@link #selectSupplierDeals} 的 FROM / JOIN / WHERE（含 {@code i.del_flag='0'} JOIN 条件、
+     * {@code b.del_flag='0'}、{@code b.tenant_id='1001'}），仅把投影换成 {@code COUNT(*)} / {@code COALESCE(SUM(b.quantity),0)}、
+     * 按 {@code i.supplier_id} GROUP BY、去掉 ORDER BY，并把单值 {@code = #{supplierId}} 改成 {@code IN (...)}。
+     * 口径与逐个查询完全一致：dealCount = 批次行数，purchaseQty = 批次 {@code quantity} 合计。</p>
+     *
+     * @param ids 供应商 ID 集合（service 端保证非空非 null）
+     * @return 每行 {@code {supplierId, dealCount, purchaseQty}}；无入库的供应商不在结果中
+     */
+    @Select("<script>"
+        + "SELECT i.supplier_id AS supplierId, "
+        + "       COUNT(*) AS dealCount, "
+        + "       COALESCE(SUM(b.quantity), 0) AS purchaseQty "
+        + "  FROM t_breed_medicine_batch b "
+        + "  JOIN t_breed_medicine_info i ON i.id = b.medicine_id AND i.del_flag = '0' "
+        + " WHERE b.del_flag = '0' "
+        + "   AND b.tenant_id = '1001' "
+        + "   AND i.supplier_id IN "
+        + "   <foreach collection='ids' item='id' open='(' separator=',' close=')'>#{id}</foreach> "
+        + " GROUP BY i.supplier_id"
+        + "</script>")
+    List<Map<String, Object>> selectSupplierDealStats(@Param("ids") Collection<Long> ids);
 
 }

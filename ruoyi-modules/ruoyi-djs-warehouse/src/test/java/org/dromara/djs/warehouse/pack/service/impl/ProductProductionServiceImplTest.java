@@ -332,6 +332,19 @@ class ProductProductionServiceImplTest {
         return c;
     }
 
+    /**
+     * 组件产品主数据：material_num=1（份数模式）让 {@code giftComponentShare} 返回 produce_quantity 本身，
+     * 便于一份测试同时覆盖 FIFO 两分支（整条份值用尽→软删 / 份值大于剩余→按比例部分扣）。
+     */
+    private ProductInfo componentInfo(Long id) {
+        ProductInfo p = new ProductInfo();
+        p.setId(id);
+        p.setProductName("组件" + id);
+        p.setProductUnit("份");
+        p.setMaterialNum(new BigDecimal("1"));
+        return p;
+    }
+
     private GiftPackBo sampleGiftBo() {
         GiftPackBo bo = new GiftPackBo();
         bo.setGiftBoxProductId(60100L);
@@ -360,8 +373,11 @@ class ProductProductionServiceImplTest {
             sampleComponent(60001L, new BigDecimal("2.000"), "kg"),
             sampleComponent(60002L, new BigDecimal("1.000"), "包")
         ));
-        // 组件 60001 需 2×5=10：gift-bound 生产产品池正好 10（整条用尽 → 软删）；
-        // 组件 60002 需 1×5=5：池 8（部分扣 → updateById，剩 3）。selectList 按组件顺序消费。
+        // 组件主数据 material_num=1（份数模式）→ giftComponentShare 返回 produce_quantity 本身
+        when(productInfoMapper.selectById(60001L)).thenReturn(componentInfo(60001L));
+        when(productInfoMapper.selectById(60002L)).thenReturn(componentInfo(60002L));
+        // 组件 60001 需 2×5=10：gift-bound 生产产品池正好 10 份（整条用尽 → 软删）；
+        // 组件 60002 需 1×5=5：池 8 份（部分扣 → updateById，剩 3）。selectList 按组件顺序消费。
         when(productionMapper.selectList(any())).thenReturn(
             List.of(giftBoundProduction(80001L, 60001L, "10")),
             List.of(giftBoundProduction(80002L, 60002L, "8"))
