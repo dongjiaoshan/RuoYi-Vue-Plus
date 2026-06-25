@@ -123,7 +123,7 @@ class TraceServiceImplTest {
         // 本测专注 trace_code 装配；耳号事件回填另有专测 → 此处 stub bar 反查为空，跳过回填
         doReturn(null).when(service).findBarByEarNo("01A12605001");
 
-        String code = service.genCode(1001L, "01A12605001", null);
+        String code = service.genCode(1001L, "01A12605001", null, null);
 
         assertThat(code).isEqualTo("T20260615PG000001");
         ArgumentCaptor<TraceCode> captor = ArgumentCaptor.forClass(TraceCode.class);
@@ -148,7 +148,7 @@ class TraceServiceImplTest {
         when(bizCodeGenerator.generate(eq(BizCodeType.TRACE_CODE), anyMap())).thenReturn("T20260615VG000001");
         doNothing().when(service).insertTraceCode(any(TraceCode.class));
 
-        String code = service.genCode(1002L, null, 5050L);
+        String code = service.genCode(1002L, null, 5050L, 7001L);
 
         assertThat(code).isEqualTo("T20260615VG000001");
         ArgumentCaptor<TraceCode> captor = ArgumentCaptor.forClass(TraceCode.class);
@@ -157,6 +157,8 @@ class TraceServiceImplTest {
         assertThat(tc.getCodeType()).isEqualTo(TraceCodeTypeConst.VEG);
         assertThat(tc.getPlotId()).isEqualTo(5050L);
         assertThat(tc.getPigEarNo()).isNull();
+        // 需求 C：追溯码归属门店随入参写入 trace_code.store_id
+        assertThat(tc.getStoreId()).isEqualTo(7001L);
     }
 
     @Test
@@ -166,7 +168,7 @@ class TraceServiceImplTest {
         when(bizCodeGenerator.generate(eq(BizCodeType.TRACE_CODE), anyMap())).thenReturn("T20260615GF000001");
         doNothing().when(service).insertTraceCode(any(TraceCode.class));
 
-        String code = service.genCode(1003L, null, null);
+        String code = service.genCode(1003L, null, null, null);
 
         assertThat(code).isEqualTo("T20260615GF000001");
         ArgumentCaptor<TraceCode> captor = ArgumentCaptor.forClass(TraceCode.class);
@@ -268,7 +270,7 @@ class TraceServiceImplTest {
         doReturn(java.util.Collections.<String>emptySet())
             .when(service).findExistingContents(eq("T20260615PG000001"), any());
 
-        service.genCode(1001L, "01A12605001", null);
+        service.genCode(1001L, "01A12605001", null, null);
 
         ArgumentCaptor<TraceEvent> captor = ArgumentCaptor.forClass(TraceEvent.class);
         verify(service, times(4)).insertTraceEvent(captor.capture());

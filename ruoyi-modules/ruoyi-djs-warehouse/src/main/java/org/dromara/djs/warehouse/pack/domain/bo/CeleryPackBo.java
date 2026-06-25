@@ -45,8 +45,12 @@ public class CeleryPackBo {
     private Long locationId;
 
     /**
-     * 需求门店 ID（可选）。
+     * 需求门店 ID（必选，需求 C）。芹菜打包无礼盒发送位置、恒直接履约 → 始终必选门店。
+     *
+     * <p>打包必须选中对应门店：打包即按该门店最早未完成需求扣减 shipped_count（替代原发货扣减，防双扣），
+     * 追溯码也按此门店归属（{@code trace_code.store_id}）。</p>
      */
+    @NotNull(message = "{pack.store_id.required}")
     private Long storeId;
 
     /**

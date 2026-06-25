@@ -54,8 +54,12 @@ public class GiftPackBo {
     private Long locationId;
 
     /**
-     * 需求门店 ID（可选）。
+     * 需求门店 ID（必选，需求 C / 礼盒澄清 2026-06-25）。
+     *
+     * <p>礼盒是门店下单的生产产品：门店下单礼盒 → 仓库看需求打包 → 礼盒打包即按该门店最早未完成的礼盒
+     * 需求扣减盒数（{@code shipped_count}）。故礼盒打包必须选门店。</p>
      */
+    @NotNull(message = "{pack.store_id.required}")
     private Long storeId;
 
     /**

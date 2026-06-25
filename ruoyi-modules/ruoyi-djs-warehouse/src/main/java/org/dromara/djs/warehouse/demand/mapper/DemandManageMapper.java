@@ -115,6 +115,41 @@ public interface DemandManageMapper extends BaseMapperPlus<DemandManage, DemandM
                          @Param("delta") BigDecimal delta);
 
     /**
+     * 某产品 + 某门店「最早一条未完成需求」（需求 C：打包即扣需求）。
+     *
+     * <p>打包时按此查到的最早未完成需求行，对其 {@code shipped_count} 累加本次打包量（{@link #incrementShipped}），
+     * 把需求扣减从「发货确认」前移到「打包」，避免发货再扣造成双扣（{@code ShipmentConfirmedEventListener}
+     * 已停用发货扣减）。</p>
+     *
+     * <p>口径：指定 {@code product_id + store_id}，状态属「已确认且未完成」（{@code demand_status IN
+     * ('CONFIRMED','IN_PRODUCTION','PARTIAL_SHIPPED')}——COMPLETED 已满足不再扣，DRAFT/SUBMITTED
+     * 未确认不计入，CANCELLED/DELETED 排除），且仍有未发货余量
+     * （{@code shipped_count < demand_quantity}）。取最早（{@code demand_date ASC, id ASC}）一条 LIMIT 1，
+     * 让打包优先填补最早门店需求。无匹配返 null（service 端 log.warn 跳过，不报错）。</p>
+     *
+     * <p>租户隔离：未启全局 MP 拦截器，显式 {@code tenant_id='1001'}（V1 单租户，与本 mapper 既有聚合 SQL
+     * 范式一致）；{@code del_flag='0'}（CHAR(1) 未删）。</p>
+     *
+     * @param productId 产品 FK（{@code t_warehouse_product_info.id}）
+     * @param storeId   门店 FK（{@code t_md_store.id}）
+     * @return 最早未完成需求实体（无则 null）
+     */
+    @Select("""
+        SELECT *
+        FROM t_warehouse_demand_manage
+        WHERE product_id = #{productId}
+          AND store_id = #{storeId}
+          AND demand_status IN ('CONFIRMED','IN_PRODUCTION','PARTIAL_SHIPPED')
+          AND COALESCE(shipped_count, 0) < demand_quantity
+          AND del_flag = '0'
+          AND tenant_id = '1001'
+        ORDER BY demand_date ASC, id ASC
+        LIMIT 1
+        """)
+    DemandManage selectOldestUncompletedDemand(@Param("productId") Long productId,
+                                               @Param("storeId") Long storeId);
+
+    /**
      * 某产品各门店未发货需求量聚合（DJS-FIX-WMS-PACK 打包录入「门店(N份)」标签条）。
      *
      * <p>按 {@code product_id} 取各门店未发货需求量。<b>每条需求行的未发货量按

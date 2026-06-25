@@ -35,7 +35,10 @@ public class ShipmentConfirmedEvent extends ApplicationEvent {
     /** 关联需求 ID。 */
     private final Long demandId;
 
-    /** 本次发货数量（CROSS-FLOW-003 用于累加 demand.shipped_count）。 */
+    /**
+     * 本次发货「份数」= 清点成品件数（每件打包=1 份；CROSS-FLOW-003 累加 demand.shipped_count）。
+     * 量纲必须是份（与 demand_quantity 一致），不是 kg —— 否则需求量算碎值且状态机误判完成。
+     */
     private final BigDecimal shippedQuantity;
 
     /**

@@ -72,6 +72,21 @@ public class GiftBoxServiceImpl extends DjsBaseServiceImpl<GiftBoxMapper, GiftBo
     }
 
     @Override
+    public Map<Long, List<GiftBoxVo>> queryByBoxIds(Collection<Long> boxProductIds) {
+        Map<Long, List<GiftBoxVo>> result = new HashMap<>();
+        if (CollUtil.isEmpty(boxProductIds)) {
+            return result;
+        }
+        for (Long boxId : boxProductIds.stream().filter(java.util.Objects::nonNull).distinct().collect(Collectors.toList())) {
+            List<GiftBoxVo> comps = queryByBoxId(boxId);
+            if (!comps.isEmpty()) {
+                result.put(boxId, comps);
+            }
+        }
+        return result;
+    }
+
+    @Override
     public int insertBatch(Long boxProductId, List<GiftBoxBo> components) {
         if (boxProductId == null || CollUtil.isEmpty(components)) {
             return 0;

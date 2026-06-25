@@ -86,22 +86,23 @@ public interface VegReceiveMapper extends BaseMapperPlus<VegReceive, VegReceive>
     List<VegReceiveItemVo> selectSelfPending();
 
     /**
-     * 外购果蔬待收货列表（自产可外购的果蔬产品：{@code product_type=1} 自产 + {@code is_buy_out=1} 可外购 +
-     * {@code belong_type='vegetable'} 归属果蔬）。
+     * 外购原材料待收货列表（蔬菜月台「外购产品收货」分段，Kevin 2026-06-25）：返**所有可外购的原材料**
+     * （{@code is_buy_out=1 可外购 + product_attr=2 原材料}，不限 belong_type）。
      *
-     * <p>果蔬月台专用列表：仅返「自产 且 可外购」的果蔬产品，{@code belong_type='vegetable'} 限定防止
-     * 自产猪肉/蛋等其他可外购品泄漏进果蔬月台。</p>
+     * <p>与采购入库口径互补、按 {@code product_attr} 二分：可采购的<b>商品</b>（attr≠2，外购商品 + 自产可外购商品）
+     * → admin 采购入库；可外购的<b>原材料</b>（attr=2，如自产果蔬/猪肉/蛋/白条标了可外购的）→ 本蔬菜月台收货。
+     * 故不再限 {@code belong_type='vegetable'}：番茄/苤蓝(果蔬) + 五花肉(猪肉) + 土鸡蛋(蛋) + 白条(半只) 等
+     * 可外购原材料都在此收货。</p>
      *
      * <p>外购无"上游月台量"概念（不来自毛菜处理），V1 收货前无预设待收量 → {@code pendingWeight=0}；
-     * 工人在 mp 外购入库子页直接录入实收重量。{@code productType} 列回填固定文案「果蔬产品」（外购果蔬语义，
-     * 便于 dock 卡片次标签展示）。{@code cropId} 承载产品 {@code id}（snowflake，非业务码 product_id）。</p>
+     * 工人在 mp 外购入库子页直接录入实收重量。{@code productType} 列按 {@code belong_type} 回填业态文案
+     * （果蔬/猪肉/蛋等），便于 dock 卡片次标签展示。{@code cropId} 承载产品 {@code id}（snowflake，非业务码）。</p>
      *
-     * <p>筛选：{@code productName} 非空时按产品名模糊匹配（mp dock 外购搜索框）；
-     * {@code productType} 入参在 V1 不参与 SQL 过滤（外购果蔬恒为「果蔬产品」文案，预留扩展）。
+     * <p>筛选：{@code productName} 非空时按产品名模糊匹配（mp dock 外购搜索框）。
      * 仅返启用产品（{@code product_status=0}）。租户单租户显式 {@code tenant_id='1001'}。</p>
      *
      * @param productName 产品名称模糊关键字（可空）
-     * @return 外购待收货列表项（pendingWeight 恒 0，productType 恒「果蔬产品」）
+     * @return 外购待收货列表项（pendingWeight 恒 0）
      */
     @Select("""
         <script>
@@ -109,14 +110,21 @@ public interface VegReceiveMapper extends BaseMapperPlus<VegReceive, VegReceive>
                p.product_name  AS cropName,
                p.image_oss_id  AS imageOssId,
                p.product_id    AS productCode,
-               '果蔬产品'       AS productType,
+               CASE p.belong_type
+                 WHEN 'vegetable' THEN '果蔬产品'
+                 WHEN 'pork'      THEN '猪肉产品'
+                 WHEN 'egg'       THEN '鸡蛋产品'
+                 WHEN 'white_bar' THEN '白条产品'
+                 WHEN 'dry_good'  THEN '干货产品'
+                 ELSE '外购原材料'
+               END             AS productType,
+               p.product_unit  AS productUnit,
                0               AS pendingWeight
           FROM t_warehouse_product_info p
          WHERE p.del_flag      = '0'
            AND p.tenant_id     = '1001'
-           AND p.product_type  = 1
            AND p.is_buy_out    = 1
-           AND p.belong_type   = 'vegetable'
+           AND p.product_attr  = 2
            AND p.product_status = 0
            <if test="productName != null and productName != ''">
              AND p.product_name LIKE CONCAT('%', #{productName}, '%')

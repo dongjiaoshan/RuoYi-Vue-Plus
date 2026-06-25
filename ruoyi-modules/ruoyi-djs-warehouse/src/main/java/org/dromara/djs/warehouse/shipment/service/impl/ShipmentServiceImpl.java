@@ -224,10 +224,9 @@ public class ShipmentServiceImpl
         }
 
         // 4. INSERT shipment 主表
-        //    发货量以服务端权威量为准 = Σ 本次清点 production 的实际成品量（与下面逐 production 扣成品
-        //    location_stock、回写 shipped_count 同一口径）。bo.totalQuantity 是前端自报值，仅作展示/单位
-        //    校验，不作记账依据——否则「库存扣 ΣproduceQuantity、shipped_count 加 totalQuantity」账实分叉，
-        //    据错误 shipped_count 误推需求状态机（COMPLETED/PARTIAL_SHIP）。
+        //    发货重量 serverTotal = Σ 本次清点 production 的实际成品量(kg)，仅用于发货记录 ship_quantity +
+        //    下面逐 production 扣成品 location_stock（库存口径=kg）。bo.totalQuantity 是前端自报值，仅作
+        //    展示/单位校验，不作记账依据。
         BigDecimal serverTotal = productions.stream()
             .map(p -> p.getProduceQuantity() == null ? BigDecimal.ZERO : p.getProduceQuantity())
             .reduce(BigDecimal.ZERO, BigDecimal::add);
@@ -235,6 +234,10 @@ public class ShipmentServiceImpl
             log.warn("[WMS-SHIP-001] confirmCheck 前端自报量 {} 与服务端清点合计 {} 不一致，按服务端量记账",
                 bo.getTotalQuantity().toPlainString(), serverTotal.toPlainString());
         }
+        // 需求履约份数 = 本次清点的成品「件数」（每件打包=1 份，对齐门店按份下单）。demand.shipped_count
+        // 累加这个份数（整数），与 demand_quantity 同量纲——绝不能用 serverTotal(kg)：份与 kg 串味会让
+        // 需求量(=demand_quantity-shipped_count) 算出碎值（如 3.292），且 kg≥份 时状态机误判「完成」。
+        BigDecimal shippedCopies = BigDecimal.valueOf(productions.size());
         Shipment shipment = new Shipment();
         shipment.setShipmentNo(bizCodeGenerator.generate(BizCodeType.SHIP_NO, Map.of()));
         shipment.setDemandId(demand.getId());
@@ -283,10 +286,11 @@ public class ShipmentServiceImpl
         }
 
         // 6. publishEvent — D14 CROSS-FLOW-003 listener 消费触发 demand.shipped_count 累加 + transition
+        //    传 shippedCopies（份数，非 kg）：demand 按份履约，shipped_count 与 demand_quantity 同量纲。
         //    带 userId（=checkerId 发货确认人）：AFTER_COMMIT 阶段 listener 无 sa-token 上下文，
         //    需显式传 operator 给 demand transition 做审计，否则 resolveOperator(null) 抛 demand.operator.required
         eventPublisher.publishEvent(new ShipmentConfirmedEvent(
-            this, shipment.getId(), demand.getId(), serverTotal, userId));
+            this, shipment.getId(), demand.getId(), shippedCopies, userId));
 
         log.info("[WMS-SHIP-001] confirmCheck shipmentId={} demandId={} productionCount={} qty={}",
             shipment.getId(), demand.getId(), productions.size(), serverTotal.toPlainString());
@@ -458,7 +462,11 @@ public class ShipmentServiceImpl
     private List<ProductProduction> findAvailableProductionsForDemand(DemandManage demand) {
         LambdaQueryWrapper<ProductProduction> wrapper = new LambdaQueryWrapper<ProductProduction>()
             .isNull(ProductProduction::getDemandId)
-            .eq(ProductProduction::getIsDeliveryCheck, 0);
+            .eq(ProductProduction::getIsDeliveryCheck, 0)
+            // 发送位置=礼盒的成品是礼盒组件（预留给礼盒打包消耗），不出现在发货月台（礼盒澄清 2026-06-25）。
+            // deliver_dest 为 NULL（默认发货月台）或非 'gift' 才可直接发货。
+            .and(w -> w.isNull(ProductProduction::getDeliverDest)
+                       .or().ne(ProductProduction::getDeliverDest, "gift"));
 
         // store_id 收窄：取同门店 + 未绑门店(store_id IS NULL)的库存（WMS-SHIP-STOREID-001）。
         // 打包时 store_id 可选，production.store_id 为 NULL 的库存不应被门店 demand 漏掉（§3.2「无待清点产品」根因之一）

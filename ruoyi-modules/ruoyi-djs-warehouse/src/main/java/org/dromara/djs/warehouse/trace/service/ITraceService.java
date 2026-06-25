@@ -22,9 +22,10 @@ public interface ITraceService {
      * @param productId 产品 FK（{@code t_warehouse_product_info.id}，用于判业态 belong_type）
      * @param pigEarNo  猪只耳号（猪肉链填，果蔬 / 礼盒传 null）
      * @param plotId    来源地块 FK（果蔬链填，猪肉 / 礼盒传 null）
+     * @param storeId   归属门店 FK（{@code t_md_store.id}，打印追溯码归属对应门店；无门店传 null）
      * @return 生成的追溯码 produce_code
      */
-    String genCode(Long productId, String pigEarNo, Long plotId);
+    String genCode(Long productId, String pigEarNo, Long plotId, Long storeId);
 
     /**
      * 门店现场按需生码（猪肉零售按部位临时生码，STORE-TRACE-ONSITE-001）。

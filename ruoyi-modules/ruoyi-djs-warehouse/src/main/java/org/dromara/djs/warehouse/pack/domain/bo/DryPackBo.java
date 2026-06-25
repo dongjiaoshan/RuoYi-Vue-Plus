@@ -55,7 +55,13 @@ public class DryPackBo {
     private Long locationId;
 
     /**
-     * 需求门店 ID（可选）。
+     * 需求门店 ID（条件必选，需求 C）。
+     *
+     * <p>打包须选中对应门店：打包即按该门店最早未完成需求扣减 shipped_count（替代原发货扣减，防双扣），
+     * 追溯码也按此门店归属（{@code trace_code.store_id}）。</p>
+     *
+     * <p>必选性按发送位置条件化（service 层 {@code fulfillDirectDemandOnPack} 校验）：发货月台=必选；
+     * 礼盒（{@code deliver_dest='gift'}，成品作礼盒组件、门店在礼盒打包环节绑定）=可空。</p>
      */
     private Long storeId;
 

@@ -213,6 +213,7 @@ public interface ProductInfoMapper extends BaseMapperPlus<ProductInfo, ProductIn
          WHERE p.del_flag     = '0'
            AND p.tenant_id    = '1001'
            AND (p.product_type = 2
+                OR (p.is_buy_out = 1 AND (p.product_attr IS NULL OR p.product_attr &lt;&gt; 2))
                 OR EXISTS (SELECT 1 FROM t_warehouse_stock_flow f2
                             WHERE f2.product_id = p.id AND f2.flow_type = 'purchase_in'
                               AND f2.del_flag = '0' AND f2.tenant_id = '1001'))

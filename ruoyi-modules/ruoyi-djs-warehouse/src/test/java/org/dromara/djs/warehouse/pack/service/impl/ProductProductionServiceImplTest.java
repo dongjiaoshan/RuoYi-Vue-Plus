@@ -51,6 +51,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyMap;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -339,8 +340,19 @@ class ProductProductionServiceImplTest {
         return bo;
     }
 
+    /** 一条「发送礼盒」生产产品（deliver_dest='gift'），作礼盒组件可用池。 */
+    private ProductProduction giftBoundProduction(Long id, Long productId, String qty) {
+        ProductProduction p = new ProductProduction();
+        p.setId(id);
+        p.setProductId(productId);
+        p.setDeliverDest("gift");
+        p.setProduceQuantity(new BigDecimal(qty));
+        p.setProductWeight(new BigDecimal(qty));
+        return p;
+    }
+
     @Test
-    @DisplayName("submitGiftPack: happy 2 组件 → location_stock 扣 2 次 + stock_flow 写 3 行（2 出 + 1 入）+ production INSERT")
+    @DisplayName("submitGiftPack: happy 2 组件 → 扣「发送礼盒生产产品」(FIFO 软删/部分扣) + stock_flow 3 行 + production INSERT；不扣 location_stock")
     void testGiftPack_Happy() {
         when(productInfoMapper.selectById(60100L)).thenReturn(sampleGiftProduct());
         when(locationInfoMapper.selectById(90100L)).thenReturn(sampleLocation());
@@ -348,8 +360,12 @@ class ProductProductionServiceImplTest {
             sampleComponent(60001L, new BigDecimal("2.000"), "kg"),
             sampleComponent(60002L, new BigDecimal("1.000"), "包")
         ));
-        when(locationStockMapper.deductByProductLocation(eq(90100L), eq(60001L), any(), eq(9001L))).thenReturn(1);
-        when(locationStockMapper.deductByProductLocation(eq(90100L), eq(60002L), any(), eq(9001L))).thenReturn(1);
+        // 组件 60001 需 2×5=10：gift-bound 生产产品池正好 10（整条用尽 → 软删）；
+        // 组件 60002 需 1×5=5：池 8（部分扣 → updateById，剩 3）。selectList 按组件顺序消费。
+        when(productionMapper.selectList(any())).thenReturn(
+            List.of(giftBoundProduction(80001L, 60001L, "10")),
+            List.of(giftBoundProduction(80002L, 60002L, "8"))
+        );
         when(productionMapper.insert(any(ProductProduction.class))).thenAnswer(inv -> {
             ProductProduction p = inv.getArgument(0);
             p.setId(80100L);
@@ -360,8 +376,17 @@ class ProductProductionServiceImplTest {
         Long id = service.submitGiftPack(sampleGiftBo());
 
         assertThat(id).isEqualTo(80100L);
-        verify(locationStockMapper, times(2)).deductByProductLocation(
-            anyLong(), anyLong(), any(), anyLong());
+        // 不再扣原料/成品 location_stock（按对应生产产品判，Kevin 2026-06-25）
+        verify(locationStockMapper, never()).deductByProductLocation(anyLong(), anyLong(), any(), anyLong());
+        // 60001 整条用尽 → 软删（证明消耗的是「发送礼盒生产产品」而非 location_stock）
+        verify(productionMapper, times(1)).deleteById(80001L);
+        // 60002 部分扣 → updateById 把 80002 剩量改为 3（updateById 还含 fillTraceCode 对礼盒主记录回填，故 captor 校验任一命中）
+        ArgumentCaptor<ProductProduction> upd = ArgumentCaptor.forClass(ProductProduction.class);
+        verify(productionMapper, atLeastOnce()).updateById(upd.capture());
+        assertThat(upd.getAllValues()).anySatisfy(pp -> {
+            assertThat(pp.getId()).isEqualTo(80002L);
+            assertThat(pp.getProduceQuantity()).isEqualByComparingTo("3");
+        });
         verify(stockFlowMapper, times(3)).insert(any(StockFlow.class)); // 2 consume + 1 in
         verify(locationStockMapper, times(1)).addByProductLocation(
             eq(90100L), eq(60100L), any(), eq(9001L));
@@ -371,7 +396,7 @@ class ProductProductionServiceImplTest {
         assertThat(saved.getProductId()).isEqualTo(60100L);
         assertThat(saved.getProductType()).isEqualTo(3);
         assertThat(saved.getProductWeight()).isEqualByComparingTo("5"); // packBoxCount
-        assertThat(saved.getProduceNo()).contains("L"); // 礼盒前缀
+        assertThat(saved.getProduceNo()).isNotBlank(); // 生产序号非空（PRODUCE_NO 编码不再按业态前缀分桶）
     }
 
     @Test
@@ -389,18 +414,19 @@ class ProductProductionServiceImplTest {
     }
 
     @Test
-    @DisplayName("submitGiftPack: 组件库存不足 → 抛 + 事务回滚（production 不 insert）")
+    @DisplayName("submitGiftPack: 组件「发送礼盒生产产品」不足 → 抛 + 事务回滚（production 不 insert）")
     void testGiftPack_ComponentStockInsufficient() {
         when(productInfoMapper.selectById(60100L)).thenReturn(sampleGiftProduct());
         when(locationInfoMapper.selectById(90100L)).thenReturn(sampleLocation());
         when(giftBoxMapper.selectList(any())).thenReturn(List.of(
             sampleComponent(60001L, new BigDecimal("2.000"), "kg")
         ));
-        when(locationStockMapper.deductByProductLocation(eq(90100L), eq(60001L), any(), eq(9001L))).thenReturn(0);
+        // 该组件没有「发送礼盒」生产产品（池空）→ 可用 0 < 需 10
+        when(productionMapper.selectList(any())).thenReturn(List.of());
 
         assertThatThrownBy(() -> service.submitGiftPack(sampleGiftBo()))
             .isInstanceOf(ServiceException.class)
-            .hasMessageContaining("组件库存不足");
+            .hasMessageContaining("组件不足");
 
         verify(productionMapper, never()).insert(any(ProductProduction.class));
     }

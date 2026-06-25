@@ -251,8 +251,12 @@ public class AppletAuthController {
      * <p>响应：</p>
      * <pre>
      * { "userId": 9001, "username": "dev", "nickname": "dev 员工",
-     *   "roles": ["breed_admin", "store_clerk"] }
+     *   "roles": ["breed_admin", "store_clerk"],
+     *   "permissions": ["djs:applet:warehouse:vegHandle:handle", "djs:applet:warehouse:mat:pick"] }
      * </pre>
+     *
+     * <p>{@code permissions} = 该用户经 sys_role_menu 聚合的菜单 perms 集（含 djs:applet:* 等），
+     * 小程序据此按权限隐藏 tab / 卡片。</p>
      */
     @GetMapping("/getInfo")
     public R<Map<String, Object>> getInfo() {
@@ -266,6 +270,8 @@ public class AppletAuthController {
         info.put("nickname", loginUser.getNickname());
         Set<String> roleKeys = loginUser.getRolePermission();
         info.put("roles", roleKeys != null ? roleKeys : Collections.emptySet());
+        Set<String> menuPerms = loginUser.getMenuPermission();
+        info.put("permissions", menuPerms != null ? menuPerms : Collections.emptySet());
         return R.ok(info);
     }
 

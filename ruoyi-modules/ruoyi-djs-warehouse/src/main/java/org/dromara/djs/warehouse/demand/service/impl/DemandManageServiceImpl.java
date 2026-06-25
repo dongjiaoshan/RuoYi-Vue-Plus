@@ -34,6 +34,8 @@ import org.dromara.djs.warehouse.demand.mapper.DemandManageMapper;
 import org.dromara.djs.warehouse.demand.mapper.DemandPigAvailableMapper;
 import org.dromara.djs.warehouse.demand.mapper.DemandPigMapper;
 import org.dromara.djs.warehouse.demand.service.IDemandManageService;
+import org.dromara.djs.warehouse.product.domain.ProductInfo;
+import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
 import org.dromara.djs.warehouse.stock.mapper.LocationStockMapper;
 import org.dromara.djs.breed.core.domain.vo.PigAvailableVo;
 import org.dromara.djs.breed.production.service.IProductionCycleConfigService;
@@ -87,6 +89,19 @@ public class DemandManageServiceImpl extends DjsBaseServiceImpl<DemandManageMapp
     /** 业态白名单（service 端硬校验，避免下游靠字典维护）。 */
     private static final Set<String> ALLOWED_PRODUCT_TYPES = PRODUCT_TYPE_TO_BIZ_CODE.keySet();
 
+    /** 自产产品(product_type=1) 属性 djs_product_attr：1=生产产品（成品）/ 2=原材料。 */
+    private static final int PRODUCT_TYPE_SELF = 1;
+    private static final int PRODUCT_ATTR_MATERIAL = 2;
+
+    /**
+     * 「门店不能下单原材料」守门生效的业态（egg/dry_good/other/vegetable）：这些域里原料(attr=2)
+     * 领用后须打包成成品(attr=1)才可售（蛋/干货/其他 → 其他产品打包；毛菜 → 果蔬打包），
+     * 原料本身不可被门店下单（doc/14 §5）。
+     * 白条(white_bar) 整只/半只虽也是 attr=2，但属门店现卖单位（活跃下单流程），故豁免不纳入守门
+     * （Kevin 2026-06-25 拍板）。范围如需调整在此集合增删业态即可。
+     */
+    private static final Set<String> RAW_MATERIAL_FORBIDDEN_BELONG_TYPES = Set.of("egg", "dry_good", "other", "vegetable");
+
     /** 允许删除的状态（删除 = 置 DELETED 终态 + 软删；待确认 SUBMITTED 亦可删）。 */
     private static final Set<String> DELETABLE_STATUSES = Set.of(
         DemandStatus.DRAFT.name(), DemandStatus.SUBMITTED.name(), DemandStatus.CANCELLED.name()
@@ -119,13 +134,17 @@ public class DemandManageServiceImpl extends DjsBaseServiceImpl<DemandManageMapp
     /** SummaryBar 用：按 belong_type / product_attr 聚合 location_stock（DJS-FIX-ADMIN-W22-003）。 */
     private final LocationStockMapper locationStockMapper;
 
+    /** 下单守门：校验目标产品不是原材料（attr=2），门店只能下单生产产品。 */
+    private final ProductInfoMapper productInfoMapper;
+
     public DemandManageServiceImpl(DemandManageMapper baseMapper,
                                    DemandPigMapper demandPigMapper,
                                    IBizCodeGenerator bizCodeGenerator,
                                    DemandPigAvailableMapper demandPigAvailableMapper,
                                    IProductionCycleConfigService productionCycleConfigService,
                                    IPlantPlanService plantPlanService,
-                                   LocationStockMapper locationStockMapper) {
+                                   LocationStockMapper locationStockMapper,
+                                   ProductInfoMapper productInfoMapper) {
         super(baseMapper);
         this.demandPigMapper = demandPigMapper;
         this.bizCodeGenerator = bizCodeGenerator;
@@ -133,6 +152,7 @@ public class DemandManageServiceImpl extends DjsBaseServiceImpl<DemandManageMapp
         this.productionCycleConfigService = productionCycleConfigService;
         this.plantPlanService = plantPlanService;
         this.locationStockMapper = locationStockMapper;
+        this.productInfoMapper = productInfoMapper;
     }
 
     /** 出栏日龄阈值兜底（配置缺失时，与 mp PigAppletController.slaughterAge 一致）。 */
@@ -333,6 +353,10 @@ public class DemandManageServiceImpl extends DjsBaseServiceImpl<DemandManageMapp
     @Transactional(rollbackFor = Exception.class)
     public Long insertByBo(DemandManageBo bo) {
         validateProductType(bo.getProductType());
+        // 门店只能下单生产产品（成品 / 外购 / 礼盒），不能下单原材料（type=1 & attr=2）：
+        // admin + mp 下单都收口到此 insertByBo，故服务端在此硬守门（客户端过滤只是 UX，可被旧缓存/直连绕过）。
+        // 原料是仓库内部流转物（领用 → 打包成成品），由打包成品反查原料履约，不应直接挂门店需求（doc/14 §5）。
+        validateNotRawMaterial(bo.getProductId(), bo.getProductName());
         DemandManage entity = toEntity(bo);
         if (entity == null) {
             throw new ServiceException(I18nMessages.t("demand.bo.convert_failed"));
@@ -670,6 +694,30 @@ public class DemandManageServiceImpl extends DjsBaseServiceImpl<DemandManageMapp
     private void validateProductType(String type) {
         if (StrUtil.isBlank(type) || !ALLOWED_PRODUCT_TYPES.contains(type)) {
             throw new ServiceException(I18nMessages.t("demand.field.productType.invalid", type));
+        }
+    }
+
+    /**
+     * 守门：其他产品打包域（egg/dry_good/other）的目标产品不能是原材料（自产 type=1 且 attr=2）。
+     * 门店只能下单生产产品（成品），原料由打包成成品后反查履约。
+     * 产品不存在不在此拦（交由 productId.required + 后续业务），仅对「确为原料」的产品抛业务异常。
+     * 白条 carcass / 蔬菜暂不纳入（见 {@link #RAW_MATERIAL_FORBIDDEN_BELONG_TYPES}）。
+     */
+    private void validateNotRawMaterial(Long productId, String productName) {
+        if (productId == null) {
+            return;
+        }
+        ProductInfo product = productInfoMapper.selectById(productId);
+        if (product == null) {
+            return;
+        }
+        boolean isRawMaterial = product.getProductType() != null && product.getProductType() == PRODUCT_TYPE_SELF
+            && product.getProductAttr() != null && product.getProductAttr() == PRODUCT_ATTR_MATERIAL
+            && RAW_MATERIAL_FORBIDDEN_BELONG_TYPES.contains(product.getBelongType());
+        if (isRawMaterial) {
+            String name = StrUtil.isNotBlank(product.getProductName()) ? product.getProductName()
+                : StrUtil.isNotBlank(productName) ? productName : String.valueOf(productId);
+            throw new ServiceException(I18nMessages.t("demand.field.product.raw_material_forbidden", name));
         }
     }
 

@@ -55,9 +55,15 @@ public class VegReceiveItemVo implements Serializable {
     private String productCode;
 
     /**
-     * 产品类型文案（仅外购列表填，如「果蔬产品」）。
+     * 产品类型文案（仅外购列表填，按 belong_type：果蔬/猪肉/蛋/白条/干货产品）。
      */
     private String productType;
+
+    /**
+     * 产品单位（{@code t_warehouse_product_info.product_unit}，如 kg/枚/份）。外购入库录入量按此单位
+     * 展示（不一定是 kg，如鸡蛋=枚）；mp 外购入库 sheet 的数量单位用它。
+     */
+    private String productUnit;
 
     /**
      * 待入库重量(kg)。地块标记入库完成后，该地块的待入库量结算为损耗并清零（聚合不再正数挂着）。

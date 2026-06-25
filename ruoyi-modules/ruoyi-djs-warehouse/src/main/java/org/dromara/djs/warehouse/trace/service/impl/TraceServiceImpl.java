@@ -108,7 +108,7 @@ public class TraceServiceImpl
     }
 
     @Override
-    public String genCode(Long productId, String pigEarNo, Long plotId) {
+    public String genCode(Long productId, String pigEarNo, Long plotId, Long storeId) {
         if (productId == null) {
             throw new ServiceException("生成追溯码失败：productId 为空");
         }
@@ -132,6 +132,8 @@ public class TraceServiceImpl
         traceCode.setProduceCode(produceCode);
         traceCode.setCodeType(codeType);
         traceCode.setProductId(productId);
+        // 追溯码归属门店（需求 C：打印追溯码记门店；无门店传 null 即留空）
+        traceCode.setStoreId(storeId);
         if (TraceCodeTypeConst.PORK.equals(codeType)) {
             traceCode.setPigEarNo(pigEarNo);
         } else if (TraceCodeTypeConst.VEG.equals(codeType)) {
