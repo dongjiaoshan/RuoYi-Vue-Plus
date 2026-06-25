@@ -33,7 +33,6 @@ import org.dromara.djs.warehouse.location.mapper.LocationInfoMapper;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
 import org.dromara.djs.warehouse.purchase.service.IWarehousePurchaseInService;
-import org.dromara.djs.warehouse.stock.mapper.LocationStockMapper;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -116,7 +115,6 @@ public class StoreReturnServiceImpl
     private final StoreMapper storeMapper;
     private final ProductInfoMapper productInfoMapper;
     private final LocationInfoMapper locationInfoMapper;
-    private final LocationStockMapper locationStockMapper;
     private final IBizCodeGenerator bizCodeGenerator;
     private final IWarehousePurchaseInService purchaseInService;
     private final DemandManageMapper demandManageMapper;
@@ -126,7 +124,6 @@ public class StoreReturnServiceImpl
                                   StoreMapper storeMapper,
                                   ProductInfoMapper productInfoMapper,
                                   LocationInfoMapper locationInfoMapper,
-                                  LocationStockMapper locationStockMapper,
                                   IBizCodeGenerator bizCodeGenerator,
                                   IWarehousePurchaseInService purchaseInService,
                                   DemandManageMapper demandManageMapper,
@@ -135,7 +132,6 @@ public class StoreReturnServiceImpl
         this.storeMapper = storeMapper;
         this.productInfoMapper = productInfoMapper;
         this.locationInfoMapper = locationInfoMapper;
-        this.locationStockMapper = locationStockMapper;
         this.bizCodeGenerator = bizCodeGenerator;
         this.purchaseInService = purchaseInService;
         this.demandManageMapper = demandManageMapper;
@@ -597,7 +593,9 @@ public class StoreReturnServiceImpl
                 }
             }
         }
-        return locationStockMapper.selectDefaultLocationByProduct(inboundProductId);
+        // 取库存最多的「有效」库位（JOIN location_info 过滤已删库位的幽灵 stock 行，
+        // 避免选中已删库位致 inbound 报「库位不存在或已删除」）。
+        return baseMapper.selectStockMostValidLocation(inboundProductId);
     }
 
     private LambdaQueryWrapper<StoreReturn> buildQueryWrapper(StoreReturnQuery q) {
