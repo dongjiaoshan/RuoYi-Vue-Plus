@@ -49,6 +49,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.time.ZoneId;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
@@ -124,6 +125,9 @@ public class ProductProductionServiceImpl
 
     /** 果蔬业态（V4 果蔬打包 product_material 校验 + 日损耗聚合）。 */
     private static final String BELONG_TYPE_VEGETABLE = "vegetable";
+
+    /** 打包台「当天」时区：与发货月台 {@code SHIP_TODAY_ZONE} 一致，避免非 UTC+8 实例跨日归错天。 */
+    private static final ZoneId PACK_TODAY_ZONE = ZoneId.of("Asia/Shanghai");
 
     /**
      * 其他产品（egg/dry_good/other）打包来源业态白名单（统一目标模型 G5）。
@@ -738,7 +742,8 @@ public class ProductProductionServiceImpl
         if (productId == null) {
             return List.of();
         }
-        return demandManageMapper.selectStoreDemandCopies(productId);
+        // 打包台只显示「当天」已确认门店需求（与发货月台 demand_date=today 一致，Kevin 2026-06-26）。
+        return demandManageMapper.selectStoreDemandCopies(productId, LocalDate.now(PACK_TODAY_ZONE));
     }
 
     @Override
@@ -747,7 +752,7 @@ public class ProductProductionServiceImpl
             return Map.of();
         }
         List<org.dromara.djs.warehouse.pack.domain.vo.StoreDemandCopiesRowVo> rows =
-            demandManageMapper.selectStoreDemandCopiesBatch(productIds);
+            demandManageMapper.selectStoreDemandCopiesBatch(productIds, LocalDate.now(PACK_TODAY_ZONE));
         Map<String, List<StoreDemandCopiesVo>> out = new HashMap<>();
         for (org.dromara.djs.warehouse.pack.domain.vo.StoreDemandCopiesRowVo r : rows) {
             StoreDemandCopiesVo vo = new StoreDemandCopiesVo();
@@ -811,6 +816,15 @@ public class ProductProductionServiceImpl
      * @param plotId 来源地块（果蔬链；猪肉 / 礼盒传 null）
      */
     protected void fillTraceCode(ProductProduction p, String earNo, Long plotId) {
+        // 追溯码仅猪肉链（pork/white_bar）+ 果蔬（vegetable）生成；礼盒 / 干货 / 鸡蛋 / 其他产品不需要追溯码
+        // （Kevin 2026-06-26）。非追溯业态直接 return：不生码、不回填 trace_code、不写 in_stock 追溯事件。
+        ProductInfo product = productInfoMapper.selectById(p.getProductId());
+        String belongType = product == null ? null : product.getBelongType();
+        if (!BELONG_TYPE_PORK.equals(belongType)
+            && !BELONG_TYPE_WHITE_BAR.equals(belongType)
+            && !BELONG_TYPE_VEGETABLE.equals(belongType)) {
+            return;
+        }
         // 追溯码归属门店 = 该生产记录 store_id（需求 C：打印追溯码记门店）
         String produceCode = traceService.genCode(p.getProductId(), earNo, plotId, p.getStoreId());
         p.setTraceCode(produceCode);
@@ -1030,34 +1044,28 @@ public class ProductProductionServiceImpl
      *       打包即扣门店最早未完成需求（发货确认不再扣，防双扣）。</li>
      * </ul>
      */
-    /** 需求单位为重量（按重量需求）的产品单位集合；其余（份/个/盒/枚/只…）按计数需求。 */
-    private static final java.util.Set<String> WEIGHT_UNITS =
-        java.util.Set.of("kg", "KG", "Kg", "g", "G", "克", "千克", "斤");
-
     /**
-     * 本次打包/出库应扣的「门店需求量」，按需求单位（= 产品单位）口径换算（需求量与扣减口径必须同单位）。
+     * 本次打包应扣的「门店需求量」。门店需求一律按「份/盒/只/枚」等<b>计数</b>口径下单（无按重量需求），
+     * 故打包扣减也按份计：
      *
      * <ul>
-     *   <li><b>重量单位</b>（kg/g…）：需求按重量计 → 按打包重量(kg)扣（如按重量猪肉/果蔬）。</li>
-     *   <li><b>计数单位 + 配了计量规则</b> {@code material_num>0}（份数模式，如鸡蛋一盒30个）：前端已把
-     *       份数×material_num 发为重量 → 还原份数 = 重量 ÷ material_num，按份数扣。</li>
-     *   <li><b>计数单位 + 无计量规则</b>（果蔬份-单位/白条整只等）：1 次打包成功 = 1 份/只，与重量无关
-     *       （Kevin 2026-06-25：「打包成功就是打包了一份，和重量没关系」）。</li>
+     *   <li><b>按份数</b>（配了计量规则 {@code material_num>0}，如鸡蛋一盒 30 枚）：前端把 份数×material_num
+     *       发为重量 → 还原份数 = 重量 ÷ material_num，按份数扣（1 次打包 = N 份）。</li>
+     *   <li><b>按重量</b>（每份重量，如腊肉 {@code unit=kg} 无计量规则）+ 计数单位无计量（果蔬份-单位/白条整只）：
+     *       1 次打包成功 = 1 份/只，与录入重量无关（Kevin 2026-06-26：腊肉录入的是「每份重量」，仍按份扣；
+     *       「打包成功就是打包了一份」）。</li>
      * </ul>
      *
      * <p>礼盒打包不走此口（{@code submitGiftPack} 直接按盒数 packBoxCount 扣）。</p>
      */
     protected BigDecimal resolveDemandDeductQty(ProductInfo product, BigDecimal packWeightKg) {
-        String unit = product == null ? null : product.getProductUnit();
-        if (unit == null || WEIGHT_UNITS.contains(unit.trim())) {
-            return packWeightKg; // 按重量需求
-        }
-        BigDecimal materialNum = product.getMaterialNum();
+        BigDecimal materialNum = product == null ? null : product.getMaterialNum();
         if (materialNum != null && materialNum.signum() > 0 && packWeightKg != null) {
-            // 份数模式：重量 = 份数 × material_num（前端换算），还原份数
+            // 按份数模式：重量 = 份数 × material_num（前端换算），还原份数
             return packWeightKg.divide(materialNum, 3, java.math.RoundingMode.HALF_UP);
         }
-        return BigDecimal.ONE; // 计数单位无计量规则：1 次打包 = 1 份/只
+        // 按重量（每份重量）/ 计数单位无计量：1 次打包 = 1 份/只，与重量无关
+        return BigDecimal.ONE;
     }
 
     protected void fulfillDirectDemandOnPack(Long productId, Long storeId, BigDecimal packQty, String deliverDest) {
@@ -1225,8 +1233,10 @@ public class ProductProductionServiceImpl
                 .put(((Number) sid).longValue(), ((Number) cnt).intValue());
         }
         // 逐产品判定：每个「未发货需求份数>0」的门店都被打满 → 完成；无未发货门店需求 → 不完成
+        LocalDate today = LocalDate.now(PACK_TODAY_ZONE);
         for (Long productId : ids) {
-            List<StoreDemandCopiesVo> demands = demandManageMapper.selectStoreDemandCopies(productId);
+            // 与上方「今天已打包份数」同口径：只比当天确认门店需求（packedDone 判定整门店是否打满）。
+            List<StoreDemandCopiesVo> demands = demandManageMapper.selectStoreDemandCopies(productId, today);
             if (demands == null || demands.isEmpty()) {
                 continue;
             }

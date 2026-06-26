@@ -1077,7 +1077,8 @@ public class MatFlowServiceImpl implements IMatFlowService {
             remaining = remaining.subtract(back);
         }
         if (remaining.compareTo(BigDecimal.ZERO) > 0) {
-            log.warn("按篮退回量超今天待打包量：productId={} earNo={} plotId={} 申请退 {} 实退 {}（差额已打包）",
+            // 退回 / 损耗共用：本次扣减量超今天待打包 inhouse 余量（差额已打包）→ 流水/库存已处理，打 warn 不阻断
+            log.warn("待打包量不足本次扣减：productId={} earNo={} plotId={} 申请 {} 实扣 {}（差额已打包）",
                 productId, earNo, plotId, quantity, quantity.subtract(remaining));
         }
     }
@@ -1181,16 +1182,23 @@ public class MatFlowServiceImpl implements IMatFlowService {
         flow.setProofOssIds(bo.getProofOssIds());
         stockFlowMapper.insert(flow);
 
-        // 3. 损耗"扣减"库存（注：损耗 = 不可逆消耗，从账面剥离；与"退回"语义相反）。
-        //    若工人领用后已经把物理物品消耗完才补登损耗，则库存可能已扣过 0 —— 这种情况下损耗只
-        //    在流水留痕，不再走 update。affectedRows==0 时不抛异常（流水仍记录管理者审计用），
-        //    打 warn 让 admin 流水查询页能看到这种"账实倒挂"明细。
-        int affected = locationStockMapper.deductByProductLocation(
-            bo.getLocationId(), bo.getProductId(), bo.getQuantity(), userId);
-        if (affected == 0) {
-            log.warn("WMS-MAT-001 loss 流水已记，但 location_stock 扣减失败（账面已不足）："
-                    + "user={}, product={}, location={}, qty={}",
-                userId, bo.getProductId(), bo.getLocationId(), bo.getQuantity());
+        // 3. 损耗"扣减"（注：损耗 = 不可逆消耗，从账面剥离；与"退回"减 inhouse 同源、但不回补货架）。
+        //    可打包食品原料（vegetable/egg/dry_good/other）：领用时已离 location_stock 进「待打包」
+        //    product_inhouse，损耗剥离的是这部分 WIP（与"退回"对称，让 admin 打包来源「领用剩余重量」归零），
+        //    不再二次扣 location_stock。其余物资（包材/饲料/种子/药品）无 WIP → 从 location_stock 扣减（原行为）。
+        if (PACKABLE_FOOD_BELONG_TYPES.contains(product.getBelongType())) {
+            reduceTodayInhouseForBasket(bo.getProductId(), null, null, bo.getQuantity());
+        } else {
+            // 若工人领用后已把物理物品消耗完才补登损耗，则库存可能已扣到 0 —— 这种情况下损耗只在流水留痕，
+            // 不再走 update。affectedRows==0 时不抛异常（流水仍记录管理者审计用），打 warn 让 admin 流水查询页
+            // 能看到这种"账实倒挂"明细。
+            int affected = locationStockMapper.deductByProductLocation(
+                bo.getLocationId(), bo.getProductId(), bo.getQuantity(), userId);
+            if (affected == 0) {
+                log.warn("WMS-MAT-001 loss 流水已记，但 location_stock 扣减失败（账面已不足）："
+                        + "user={}, product={}, location={}, qty={}",
+                    userId, bo.getProductId(), bo.getLocationId(), bo.getQuantity());
+            }
         }
 
         // 4. 统一损耗台账双写（WMS-LOSS-001，行59 录入损耗）：原 stock_flow 留痕不动，仅追加一条 loss_flow 明细。

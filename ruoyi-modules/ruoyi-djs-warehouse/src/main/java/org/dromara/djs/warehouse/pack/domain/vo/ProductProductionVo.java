@@ -104,6 +104,9 @@ public class ProductProductionVo implements Serializable {
     @ExcelProperty(value = "发货方式 1=发货/2=邮寄/3=销售")
     private Integer deliverType;
 
+    @ExcelProperty(value = "去向 platform=发货月台/gift=礼盒")
+    private String deliverDest;
+
     @ExcelProperty(value = "打包状态")
     private String packStatus;
 

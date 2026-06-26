@@ -101,6 +101,19 @@ public final class StoreContext {
     }
 
     /**
+     * 是否处于「编程式」忽略门店过滤状态（仅 {@link #ignore} 块，<b>不含</b>超管 / 租管自动放行）。
+     *
+     * <p>{@link StoreLineHandler} 的行级过滤用本方法而非 {@link #isIgnore()}：超管 / 租管不再自动
+     * 跳过过滤——「显式选了门店（Current-Store-Id）即按该店过滤」优先于身份，未选门店时才看全部
+     * （门店板块统一口径）。聚合 / 跨店视图仍可用 {@link #ignore} 主动放行。</p>
+     *
+     * @return true=当前处于显式 {@link #ignore} 块内
+     */
+    public static boolean isProgrammaticIgnore() {
+        return Boolean.TRUE.equals(IGNORE_STORE.get());
+    }
+
+    /**
      * 在忽略门店过滤的上下文中执行（无返回值）。聚合 / 管理后台跨门店视图用。
      *
      * @param handle 执行体

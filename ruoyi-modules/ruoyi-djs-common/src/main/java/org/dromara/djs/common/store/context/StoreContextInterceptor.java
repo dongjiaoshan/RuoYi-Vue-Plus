@@ -19,7 +19,8 @@ import org.springframework.web.servlet.HandlerInterceptor;
  * <h3>跨门店访问拦截（spec：绕过前端校验后端拦截返回权限错误）</h3>
  * <p>非超管账号请求头携带的门店必须在「当前登录人有权限门店」集合内
  * （{@link IStoreUserRelationService#listStoreIdsByUser}，仅取未软删绑定，对齐"移除绑定→视角隐藏"），
- * 否则抛 {@link ServiceException}(403) 拒绝。超管 / 租管（{@link StoreContext#isIgnore()}）直接放行看全部。
+ * 否则抛 {@link ServiceException}(403) 拒绝。超管 / 租管（{@link StoreContext#isIgnore()}）免绑定校验，
+ * 但仍按所选门店写入上下文（option B：显式选店即按该店过滤；未选门店才看全部）。
  * 校验走实时 DB（移除绑定即时生效，强于"重登后生效"）。</p>
  *
  * <p>注册见 {@code DjsStoreWebConfig}：在 SaInterceptor 之后注册，拦 {@code /**}。</p>
@@ -42,30 +43,32 @@ public class StoreContextInterceptor implements HandlerInterceptor {
 
     @Override
     public boolean preHandle(HttpServletRequest request, HttpServletResponse response, Object handler) {
+        // 门店上下文只作用于门店业务域 /djs/store/**：其余域（仓库 /djs/warehouse/** 等跨门店查共享表
+        // t_warehouse_demand_manage / t_warehouse_product_inhouse）不注入上下文 → storeId 恒空 →
+        // StoreLineHandler 不按门店过滤 → 照常看全部门店（option B：门店切换器不误伤仓库聚合视图）。
+        if (!request.getRequestURI().startsWith(STORE_DOMAIN_PREFIX)) {
+            return true;
+        }
         String storeId = request.getHeader(StoreContext.HEADER_STORE_ID);
-        boolean ignore = StoreContext.isIgnore();           // 超管 / 租管 bypass
+        boolean ignore = StoreContext.isIgnore();           // 超管 / 租管：免绑定校验（仍按所选门店过滤）
         Long userId = currentUserId();
-        boolean storeDomain = request.getRequestURI().startsWith(STORE_DOMAIN_PREFIX);
 
         if (StringUtils.isBlank(storeId)) {
-            // gap#2：登录的非超管访问门店业务域却未选门店 → 拒绝（不允许空上下文读门店表返全部）
-            if (storeDomain && !ignore && userId != null) {
+            // 登录的非超管访问门店业务域却未选门店 → 拒绝（不允许空上下文读门店表返全部）；
+            // 超管 / 租管未选门店 → 放行看全部门店。
+            if (!ignore && userId != null) {
                 throw new ServiceException("请先选择门店后再操作", 403);
             }
             return true;
         }
-        // 超管 / 租管：看全部门店，无需校验绑定
-        if (ignore) {
-            StoreContext.setStoreId(storeId);
-            return true;
-        }
         // 非超管：请求头门店必须在当前登录人有权限门店内，否则拒绝（防绕过前端校验跨门店读写）
-        if (userId != null) {
+        if (!ignore && userId != null) {
             Long sid = parseStoreId(storeId);
             if (sid == null || !storeUserRelationService.listStoreIdsByUser(userId).contains(sid)) {
                 throw new ServiceException("无该门店操作权限，请重新选择门店", 403);
             }
         }
+        // 写入上下文（含超管 / 租管）：StoreLineHandler 据此按所选门店过滤（option B）
         StoreContext.setStoreId(storeId);
         return true;
     }

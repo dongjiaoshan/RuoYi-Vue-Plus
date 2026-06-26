@@ -21,10 +21,14 @@ import org.dromara.common.core.utils.StringUtils;
  * <ol>
  *   <li><b>非白名单表 → 不过滤</b>：仅 {@link StoreProperties#getIncludes()} 中的表参与；
  *       其余所有表（ruoyi 自带 / 其他业务域 / sys_*）一律放行，绝不误伤全 app SQL。</li>
+ *   <li><b>编程式 ignore() → 不过滤</b>：{@link StoreContext#isProgrammaticIgnore()} 为 true 时放行
+ *       （聚合 / 跨门店视图主动 {@link StoreContext#ignore} 包裹）。</li>
  *   <li><b>空上下文 → 不过滤</b>：{@link StoreContext#getStoreId()} 为空（非门店请求 /
- *       未选门店）时，即便是白名单表也不加 WHERE，否则会错误清空数据。</li>
- *   <li><b>ignore / 超管 / 租管 → 不过滤</b>：{@link StoreContext#isIgnore()} 为 true 时放行
- *       （聚合视图 / 管理后台看全部门店）。</li>
+ *       未选门店 / 非 /djs/store/** 域）时，即便是白名单表也不加 WHERE，否则会错误清空数据。</li>
+ *   <li><b>显式选店 → 按店过滤（含超管 / 租管）</b>：{@link StoreContext#getStoreId()} 非空时一律
+ *       拼 {@code WHERE store_id=?}，超管 / 租管不再自动放行——「选了哪家店就只看哪家」优先于身份
+ *       （门店板块统一口径，option B）。门店上下文仅由 {@link StoreContextInterceptor} 对 /djs/store/**
+ *       域注入，故仓库 /djs/warehouse/** 等跨门店共享表读取时 storeId 恒空 → 看全部，不受影响。</li>
  * </ol>
  *
  * @author djs
@@ -66,11 +70,12 @@ public class StoreLineHandler implements TenantLineHandler {
         if (!isStoreTable(tableName)) {
             return true;
         }
-        // 铁律 3：ignore / 超管 / 租管放行
-        if (StoreContext.isIgnore()) {
+        // 铁律 2：编程式 ignore() 块放行（聚合 / 跨门店视图主动跨店）。
+        // 注意：超管 / 租管不再在此自动放行——见铁律 4（option B：显式选店优先于身份）。
+        if (StoreContext.isProgrammaticIgnore()) {
             return true;
         }
-        // 铁律 2：空上下文不过滤
+        // 铁律 3：空上下文不过滤（未选门店 / 非门店请求 / 非 /djs/store/** 域，含仓库跨门店共享表读取）
         String storeId = StoreContext.getStoreId();
         if (StringUtils.isBlank(storeId)) {
             return true;
@@ -80,6 +85,7 @@ public class StoreLineHandler implements TenantLineHandler {
             log.warn("[djs-store] Current-Store-Id 非法（非数字），跳过门店过滤：{}", storeId);
             return true;
         }
+        // 铁律 4（option B）：显式选了门店即按该店过滤，超管 / 租管也不例外
         return false;
     }
 

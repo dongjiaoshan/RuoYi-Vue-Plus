@@ -160,10 +160,10 @@ public interface DemandManageMapper extends BaseMapperPlus<DemandManage, DemandM
      * 表现为「需求量 0 份 / 无未发货门店需求」（FIX-WMS-PACKDEMAND-001 行42/43）。逐行钳零后，
      * 超发行只贡献 0，不再吃掉同门店其它需求。</p>
      *
-     * <p>仅统计「已确认及之后」需求（{@code demand_status IN
+     * <p>仅统计「<b>当天</b>（{@code demand_date = today}）+ 已确认及之后」需求（{@code demand_status IN
      * ('CONFIRMED','IN_PRODUCTION','PARTIAL_SHIPPED','COMPLETED')}）——草稿（DRAFT）/ 待确认
-     * （SUBMITTED）/ 已取消（CANCELLED）/ 已删除（DELETED）均不计入打包需求统计（与本 mapper
-     * line 54/278「已确认及之后」口径一致）。JOIN {@code t_md_store} 取门店名。</p>
+     * （SUBMITTED）/ 已取消（CANCELLED）/ 已删除（DELETED）/ 非当天 均不计入打包需求统计。打包台只处理
+     * 当天确认需求（与发货月台 {@code demand_date=today} 口径一致，Kevin 2026-06-26）。JOIN {@code t_md_store} 取门店名。</p>
      *
      * <p>租户隔离：未启全局 MP 拦截器，显式 {@code tenant_id='1001'}（V1 单租户，与本 mapper
      * 既有聚合 SQL 范式一致）；{@code del_flag='0'}（CHAR(1) 未删）。</p>
@@ -181,6 +181,7 @@ public interface DemandManageMapper extends BaseMapperPlus<DemandManage, DemandM
              AND s.tenant_id = dm.tenant_id
         WHERE dm.product_id = #{productId}
           AND dm.store_id IS NOT NULL
+          AND dm.demand_date = #{today}
           AND dm.demand_status IN ('CONFIRMED','IN_PRODUCTION','PARTIAL_SHIPPED','COMPLETED')
           AND dm.del_flag = '0'
           AND dm.tenant_id = '1001'
@@ -188,7 +189,8 @@ public interface DemandManageMapper extends BaseMapperPlus<DemandManage, DemandM
         HAVING copies > 0
         ORDER BY copies DESC
         """)
-    List<StoreDemandCopiesVo> selectStoreDemandCopies(@Param("productId") Long productId);
+    List<StoreDemandCopiesVo> selectStoreDemandCopies(@Param("productId") Long productId,
+                                                      @Param("today") LocalDate today);
 
     /**
      * 批量版「各产品各门店未发货需求份数」（打包录入卡片网格「需求量」批量聚合，去前端 N+1）。
@@ -216,6 +218,7 @@ public interface DemandManageMapper extends BaseMapperPlus<DemandManage, DemandM
         WHERE dm.product_id IN
               <foreach collection="productIds" item="pid" open="(" separator="," close=")">#{pid}</foreach>
           AND dm.store_id IS NOT NULL
+          AND dm.demand_date = #{today}
           AND dm.demand_status IN ('CONFIRMED','IN_PRODUCTION','PARTIAL_SHIPPED','COMPLETED')
           AND dm.del_flag = '0'
           AND dm.tenant_id = '1001'
@@ -224,7 +227,8 @@ public interface DemandManageMapper extends BaseMapperPlus<DemandManage, DemandM
         ORDER BY dm.product_id, copies DESC
         </script>
         """)
-    List<StoreDemandCopiesRowVo> selectStoreDemandCopiesBatch(@Param("productIds") Collection<Long> productIds);
+    List<StoreDemandCopiesRowVo> selectStoreDemandCopiesBatch(@Param("productIds") Collection<Long> productIds,
+                                                              @Param("today") LocalDate today);
 
     /**
      * 按 product_id 聚合「有该产品需求的去重门店数」（D-FIX-24 决策 #8 列表 storeCount）。

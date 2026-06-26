@@ -151,11 +151,9 @@ public interface ProductProductionMapper extends BaseMapperPlus<ProductProductio
      * <p>租户隔离：未启全局 MP 拦截器，显式 {@code pp.tenant_id='1001'}（V1 单租户，与本模块既有
      * 聚合 SQL 范式一致）；{@code pp.del_flag='0'}（CHAR(1) 未删）。</p>
      *
-     * <p>「需求门店数」{@code storeDemandCount} 经相关子查询统计该 product_id 当前有未发货需求的
-     * 门店去重家数（口径同打包台 {@link org.dromara.djs.warehouse.demand.mapper.DemandManageMapper#selectStoreDemandCopies}：
-     * 「已确认及之后」需求 {@code demand_status IN ('CONFIRMED','IN_PRODUCTION','PARTIAL_SHIPPED','COMPLETED')}
-     * + 有门店 + 该门店剩余需求量 {@code SUM(demand_quantity - shipped_count) > 0}；草稿 / 待确认不计入）。
-     * 无需求 → 0。</p>
+     * <p>「需求门店数」{@code storeDemandCount} = 该组（同产品同生产日）生产记录去向的去重门店家数
+     * {@code COUNT(DISTINCT pp.store_id)}（与子页「产品明细」每行「需求门店」一致）。未绑门店（{@code store_id IS NULL}，
+     * 如发送位置=礼盒的组件）不计入。无门店 → 0。</p>
      *
      * @param produceNo   生产编号 LIKE 过滤（空则不过滤）
      * @param productName 产品名称 LIKE 过滤（空则不过滤）
@@ -176,17 +174,7 @@ public interface ProductProductionMapper extends BaseMapperPlus<ProductProductio
         "       MAX(pp.product_type)   AS productType,",
         "       SUM(pp.product_weight) AS produceQty,",
         "       COUNT(*)               AS itemCount,",
-        "       (SELECT COUNT(*) FROM (",
-        "          SELECT dm.store_id",
-        "            FROM t_warehouse_demand_manage dm",
-        "           WHERE dm.product_id = pp.product_id",
-        "             AND dm.store_id IS NOT NULL",
-        "             AND dm.demand_status IN ('CONFIRMED','IN_PRODUCTION','PARTIAL_SHIPPED','COMPLETED')",
-        "             AND dm.del_flag = '0'",
-        "             AND dm.tenant_id = pp.tenant_id",
-        "           GROUP BY dm.store_id",
-        "          HAVING SUM(GREATEST(dm.demand_quantity - COALESCE(dm.shipped_count, 0), 0)) &gt; 0",
-        "       ) sd) AS storeDemandCount",
+        "       COUNT(DISTINCT pp.store_id) AS storeDemandCount",
         "  FROM t_warehouse_product_production pp",
         "  LEFT JOIN t_warehouse_product_info pi",
         "         ON pi.id = pp.product_id",
