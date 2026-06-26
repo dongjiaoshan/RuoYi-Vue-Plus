@@ -7,6 +7,7 @@ import org.dromara.djs.warehouse.cut.domain.bo.PigCutOutBo;
 import org.dromara.djs.warehouse.cut.domain.bo.PigCutPickupBo;
 import org.dromara.djs.warehouse.cut.domain.query.PigCutRecordQuery;
 import org.dromara.djs.warehouse.cut.domain.vo.BarInfoVo;
+import org.dromara.djs.warehouse.cut.domain.vo.BarPickupItemVo;
 import org.dromara.djs.warehouse.cut.domain.vo.CutProductTypeVo;
 import org.dromara.djs.warehouse.cut.domain.vo.PigCutRecordVo;
 
@@ -63,6 +64,14 @@ public interface IPigCutRecordService {
      * mp 端"待领用白条"列表（status='in_stock'，按入库时间倒序）。
      */
     List<BarInfoVo> queryAvailableBars();
+
+    /**
+     * admin 白条领用「按燎毛产出行」卡片列表（FIX-WMS-CUTPICKUP-SPLIT-001）。
+     *
+     * <p>在库白条（{@code status='in_stock'}）的每个未领燎毛产出行 = 一张卡，可单独领用进分割车间；
+     * 燎毛无产出行的白条回落一张「整只」兜底卡（{@code inhouseId=null}）。实现「两个半只→两条记录→分两次领用」。</p>
+     */
+    List<BarPickupItemVo> queryPickupItems();
 
     /**
      * mp 分割车间产品类型列表（标准分割成品 5 类：精瘦肉 / 部位肉 / 骨类 / 猪皮 / 碎料）。

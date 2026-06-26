@@ -1,6 +1,7 @@
 package org.dromara.djs.warehouse.cut.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.common.core.exception.ServiceException;
@@ -23,6 +24,7 @@ import org.dromara.djs.warehouse.cut.domain.bo.PigCutOutBo;
 import org.dromara.djs.warehouse.cut.domain.bo.PigCutPickupBo;
 import org.dromara.djs.warehouse.cut.domain.query.PigCutRecordQuery;
 import org.dromara.djs.warehouse.cut.domain.vo.BarInfoVo;
+import org.dromara.djs.warehouse.cut.domain.vo.BarPickupItemVo;
 import org.dromara.djs.warehouse.cut.domain.vo.CutProductTypeVo;
 import org.dromara.djs.warehouse.cut.domain.vo.PigCutRecordVo;
 import org.dromara.djs.warehouse.cut.mapper.PigCutRecordMapper;
@@ -211,6 +213,18 @@ public class PigCutRecordServiceImpl
             throw new ServiceException("白条状态不符（当前：" + bar.getStatus() + "，需 in_stock）");
         }
 
+        // FIX-WMS-CUTPICKUP-SPLIT-001：admin 按燎毛产出行逐条领用（inhouseId 非空）→ 拆条路径；
+        // mp 旧端 / 整只兜底（inhouseId 空）→ 整猪路径（行为同旧）。
+        if (bo.getInhouseId() != null) {
+            return pickupByInhouseRow(bo, bar, userId);
+        }
+        return pickupWholeBar(bo, bar, userId);
+    }
+
+    /**
+     * 整猪领用（mp 旧端 / 白条无燎毛产出行兜底）：推 bar in_stock→pending_cut + 建一个整猪 cut_record。
+     */
+    private Long pickupWholeBar(PigCutPickupBo bo, BarInfo bar, Long userId) {
         // 领用称重：现场录入优先，未录入回落 in_weight 快照（兼容 mp 旧端 / 不录重场景）
         BigDecimal pickupWeight = bo.getPickupWeight() != null ? bo.getPickupWeight() : bar.getInWeight();
         // 校验：领用称重不应大于该白条出栏重量（marketing_weight）
@@ -219,14 +233,96 @@ public class PigCutRecordServiceImpl
             throw new ServiceException("领用称重（" + pickupWeight + "kg）不应大于该白条出栏重量（"
                 + bar.getMarketingWeight() + "kg）");
         }
-
-        // Step 2：UPDATE bar_info status → pending_cut（乐观锁）
+        // UPDATE bar_info status → pending_cut（乐观锁）
         int affected = barInfoMapper.updateStatusToPendingCut(bar.getId(), userId);
         if (affected == 0) {
             throw new ServiceException("白条已被并发领用，请刷新重试");
         }
+        return insertCutRecord(bar, pickupWeight, bo.getLocationId(), bo.getTargetStoreId(),
+            bo.getTargetDemandId(), bo.getIsHalf() == null ? 2 : bo.getIsHalf(), bo.getRemark(), userId);
+    }
 
-        // Step 3：INSERT cut_record
+    /**
+     * 按燎毛产出行领用（admin 拆条，FIX-WMS-CUTPICKUP-SPLIT-001）：
+     * 置该行 {@code pickup_status=1} + 记 {@code pickup_weight}；该白条所有产出行领满 →
+     * 推 bar in_stock→pending_cut + 建一个整猪 cut_record（pickup_weight = 各行之和）。下游分割/损耗/追溯仍按整猪聚合。
+     *
+     * @return 领满 → 新 cut_record id；未领满（还有其他半只待领）→ {@code null}
+     */
+    private Long pickupByInhouseRow(PigCutPickupBo bo, BarInfo bar, Long userId) {
+        ProductInhouse row = productInhouseMapper.selectById(bo.getInhouseId());
+        if (row == null || !bar.getId().equals(row.getWhiteBarId())) {
+            throw new ServiceException("燎毛产出行不存在或不属于该白条：" + bo.getInhouseId());
+        }
+        if (row.getPickupStatus() != null && row.getPickupStatus() == 1) {
+            throw new ServiceException("该产出行已领用，请刷新重试");
+        }
+        // 本行领用过磅：现场录入优先，未录入回落该产出行燎毛入库重量
+        BigDecimal rowWeight = bo.getPickupWeight() != null ? bo.getPickupWeight() : row.getProductWeight();
+        if (rowWeight == null || rowWeight.compareTo(BigDecimal.ZERO) <= 0) {
+            throw new ServiceException("领用过磅重量须大于 0");
+        }
+        // 校验：该白条「已领行之和 + 本次」不应大于出栏重量（整猪上界，累计口径）
+        BigDecimal alreadyPicked = sumPickedRowWeight(bar.getId());
+        if (bar.getMarketingWeight() != null
+            && alreadyPicked.add(rowWeight).compareTo(bar.getMarketingWeight()) > 0) {
+            throw new ServiceException("该白条累计领用（" + alreadyPicked.add(rowWeight)
+                + "kg）不应大于出栏重量（" + bar.getMarketingWeight() + "kg）");
+        }
+        // 乐观锁置该行已领（WHERE pickup_status=0/NULL 防并发重复领）
+        int marked = productInhouseMapper.update(null,
+            new LambdaUpdateWrapper<ProductInhouse>()
+                .eq(ProductInhouse::getId, row.getId())
+                .and(w -> w.eq(ProductInhouse::getPickupStatus, 0).or().isNull(ProductInhouse::getPickupStatus))
+                .set(ProductInhouse::getPickupStatus, 1)
+                .set(ProductInhouse::getPickupWeight, rowWeight));
+        if (marked == 0) {
+            throw new ServiceException("该产出行已被并发领用，请刷新重试");
+        }
+        // 该白条还有未领产出行 → 不推 bar、不建 cut_record（分两次领，剩余行继续显示）
+        Long remaining = productInhouseMapper.selectCount(
+            new LambdaQueryWrapper<ProductInhouse>()
+                .eq(ProductInhouse::getWhiteBarId, bar.getId())
+                .and(w -> w.eq(ProductInhouse::getPickupStatus, 0).or().isNull(ProductInhouse::getPickupStatus)));
+        if (remaining != null && remaining > 0) {
+            return null;
+        }
+        // 全部领满 → 推 bar in_stock→pending_cut + 建一个整猪 cut_record（pickup_weight = 各行之和）
+        int affected = barInfoMapper.updateStatusToPendingCut(bar.getId(), userId);
+        if (affected == 0) {
+            throw new ServiceException("白条已被并发领用，请刷新重试");
+        }
+        BigDecimal totalPicked = sumPickedRowWeight(bar.getId());
+        // 多产出行（被拆半只领的）→ isHalf=1（半扇分割）；单行 → 2（整只）
+        Long pickedRows = productInhouseMapper.selectCount(
+            new LambdaQueryWrapper<ProductInhouse>()
+                .eq(ProductInhouse::getWhiteBarId, bar.getId())
+                .eq(ProductInhouse::getPickupStatus, 1));
+        int isHalf = pickedRows != null && pickedRows > 1 ? 1 : 2;
+        return insertCutRecord(bar, totalPicked, bo.getLocationId(), bo.getTargetStoreId(),
+            bo.getTargetDemandId(), isHalf, bo.getRemark(), userId);
+    }
+
+    /** 该白条已领产出行 pickup_weight 之和（pickup_status=1）。 */
+    private BigDecimal sumPickedRowWeight(Long whiteBarId) {
+        List<ProductInhouse> picked = productInhouseMapper.selectList(
+            new LambdaQueryWrapper<ProductInhouse>()
+                .select(ProductInhouse::getPickupWeight)
+                .eq(ProductInhouse::getWhiteBarId, whiteBarId)
+                .eq(ProductInhouse::getPickupStatus, 1));
+        BigDecimal sum = BigDecimal.ZERO;
+        for (ProductInhouse r : picked) {
+            if (r.getPickupWeight() != null) {
+                sum = sum.add(r.getPickupWeight());
+            }
+        }
+        return sum;
+    }
+
+    /** 建整猪 cut_record（cut_status=picked），整猪 / 拆条领满两路径共用。 */
+    private Long insertCutRecord(BarInfo bar, BigDecimal pickupWeight, Long locationId,
+                                 Long targetStoreId, Long targetDemandId, int isHalf,
+                                 String remark, Long userId) {
         PigCutRecord record = new PigCutRecord();
         record.setCutId(generateCutId());
         record.setWhiteBarId(bar.getId());
@@ -235,14 +331,13 @@ public class PigCutRecordServiceImpl
         record.setPickupTime(new Date());
         record.setPickupWeight(pickupWeight);
         record.setOperatorId(userId);
-        record.setLocationId(bo.getLocationId());
-        record.setTargetStoreId(bo.getTargetStoreId());
-        record.setTargetDemandId(bo.getTargetDemandId());
-        record.setIsHalf(bo.getIsHalf() == null ? 2 : bo.getIsHalf());
+        record.setLocationId(locationId);
+        record.setTargetStoreId(targetStoreId);
+        record.setTargetDemandId(targetDemandId);
+        record.setIsHalf(isHalf);
         record.setCutStatus(CUT_STATUS_PICKED);
-        record.setRemark(bo.getRemark());
+        record.setRemark(remark);
         baseMapper.insert(record);
-
         return record.getId();
     }
 
@@ -556,6 +651,70 @@ public class PigCutRecordServiceImpl
             vo.setBurnProducts(burnProductMap.getOrDefault(b.getId(), List.of()));
             return vo;
         }).toList();
+    }
+
+    @Override
+    public List<BarPickupItemVo> queryPickupItems() {
+        List<BarInfo> bars = barInfoMapper.selectList(
+            new LambdaQueryWrapper<BarInfo>()
+                .eq(BarInfo::getStatus, BAR_STATUS_IN_STOCK)
+                .orderByDesc(BarInfo::getInTime)
+                .last("LIMIT 50"));
+        if (bars.isEmpty()) {
+            return List.of();
+        }
+        List<Long> barIds = bars.stream().map(BarInfo::getId).filter(Objects::nonNull).toList();
+        // 各白条「未领」燎毛产出行（pickup_status=0/NULL），按 id 升序保留燎毛入库顺序
+        List<ProductInhouse> rows = barIds.isEmpty() ? List.of() : productInhouseMapper.selectList(
+            new LambdaQueryWrapper<ProductInhouse>()
+                .in(ProductInhouse::getWhiteBarId, barIds)
+                .and(w -> w.eq(ProductInhouse::getPickupStatus, 0).or().isNull(ProductInhouse::getPickupStatus))
+                .orderByAsc(ProductInhouse::getId));
+        Map<Long, List<ProductInhouse>> rowsByBar = new HashMap<>();
+        for (ProductInhouse r : rows) {
+            if (r.getWhiteBarId() != null) {
+                rowsByBar.computeIfAbsent(r.getWhiteBarId(), k -> new ArrayList<>()).add(r);
+            }
+        }
+        List<BarPickupItemVo> result = new ArrayList<>();
+        for (BarInfo bar : bars) {
+            List<ProductInhouse> rs = rowsByBar.get(bar.getId());
+            if (rs != null && !rs.isEmpty()) {
+                // 燎毛多产出行 → 每行一张可单独领用的卡（半只 / 半扇 各一张）
+                for (ProductInhouse r : rs) {
+                    result.add(toPickupItem(bar, r));
+                }
+            } else {
+                // 燎毛无产出行 → 整只兜底卡（inhouseId=null，领用走整猪路径），向后兼容旧数据
+                result.add(toPickupItem(bar, null));
+            }
+        }
+        return result;
+    }
+
+    /** 组装单张白条领用卡（row 非空 = 按产出行；row 空 = 整只兜底）。 */
+    private BarPickupItemVo toPickupItem(BarInfo bar, ProductInhouse row) {
+        BarPickupItemVo vo = new BarPickupItemVo();
+        vo.setBarInfoId(bar.getId());
+        vo.setBarId(bar.getBarId());
+        vo.setEarNo(bar.getEarNo());
+        // 外购无耳号 → chip 显白条标识号 mark_id（与 fillOutsourceAndStatistics 同口径）
+        vo.setMarkId(bar.getSupplierId() != null ? bar.getMarkId() : null);
+        vo.setMarketingWeight(bar.getMarketingWeight());
+        vo.setInWeight(bar.getInWeight());
+        vo.setInTime(bar.getInTime());
+        if (row != null) {
+            vo.setInhouseId(row.getId());
+            vo.setProductName(row.getProductName());
+            vo.setProductWeight(row.getProductWeight());
+            vo.setProductUnit(StringUtils.isNotBlank(row.getProductUnit()) ? row.getProductUnit() : "kg");
+        } else {
+            vo.setInhouseId(null);
+            vo.setProductName("白条（整只）");
+            vo.setProductWeight(bar.getMarketingWeight() != null ? bar.getMarketingWeight() : bar.getInWeight());
+            vo.setProductUnit("kg");
+        }
+        return vo;
     }
 
     /**

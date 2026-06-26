@@ -176,7 +176,64 @@ public class VegReceiveServiceImpl implements IVegReceiveService {
         if (cropId == null) {
             throw new ServiceException("作物 ID 不能为空");
         }
-        return vegReceiveMapper.selectInboundPlots(cropId);
+        List<VegInboundPlotVo> plots = vegReceiveMapper.selectInboundPlots(cropId);
+        // row3 方案B：按作物解析「默认入库库位」（同作物所有地块行一致），有值则回填给每行，mp 打开弹层预填、仍可改
+        if (!plots.isEmpty()) {
+            DefaultLocation def = resolveDefaultLocationByCrop(cropId);
+            if (def != null) {
+                for (VegInboundPlotVo p : plots) {
+                    p.setDefaultLocationId(def.id());
+                    p.setDefaultLocationName(def.name());
+                }
+            }
+        }
+        return plots;
+    }
+
+    /**
+     * 默认入库库位解析结果（row3 方案B）：id + 名称。
+     */
+    private record DefaultLocation(Long id, String name) {
+    }
+
+    /**
+     * 按作物解析「默认存储库位」（row3 方案B）：{@code crop.related_product} → 果蔬原料 product →
+     * {@code product_info.store_location_id}（逗号分隔取第一个）→ {@code location_info.location_name}。
+     *
+     * <p>容错（任一缺失返 null，前端留空退回手选，不抛、不阻塞列表）：
+     * 作物未配 related_product / 产品非果蔬原料（复用 {@link #resolveProductIdByCrop} 守门）/
+     * {@code store_location_id} 为空 / 拆出的库位 id 非法 / 库位记录不存在或已软删。</p>
+     */
+    private DefaultLocation resolveDefaultLocationByCrop(Long cropId) {
+        Long productId = resolveProductIdByCrop(cropId);
+        if (productId == null) {
+            return null;
+        }
+        ProductInfo product = productInfoMapper.selectById(productId);
+        if (product == null) {
+            return null;
+        }
+        String storeLocationId = product.getStoreLocationId();
+        if (storeLocationId == null || storeLocationId.isBlank()) {
+            return null;
+        }
+        // store_location_id 逗号分隔多值，取第一个非空段
+        String first = storeLocationId.split(",")[0].trim();
+        if (first.isEmpty()) {
+            return null;
+        }
+        Long locationId;
+        try {
+            locationId = Long.valueOf(first);
+        } catch (NumberFormatException e) {
+            log.warn("月台入库默认库位：产品 store_location_id 首段非法 — productId={} raw={}", productId, storeLocationId);
+            return null;
+        }
+        LocationInfo location = locationInfoMapper.selectById(locationId);
+        if (location == null) {
+            return null;
+        }
+        return new DefaultLocation(locationId, location.getLocationName());
     }
 
     @Override

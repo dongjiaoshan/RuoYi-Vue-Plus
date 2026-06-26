@@ -689,13 +689,13 @@ public class VegetableHandleServiceImpl
             throw new ServiceException("请先录入采摘重量");
         }
 
-        // Step 3.0a 序号6-Req2：果蔬处理（入库 + 月台）累计不得超过采摘累计（客户 2026-06-20）。
-        // 饲料去向③不受此限（饲料不算「已处理」，计入损耗）。
-        if (handleTarget == HANDLE_TARGET_STOCK_IN || handleTarget == HANDLE_TARGET_PLATFORM) {
-            BigDecimal projectedHandled = nullSafe(handle.getHandledWeight()).add(weight);
-            if (projectedHandled.compareTo(nullSafe(handle.getPickedWeight())) > 0) {
-                throw new ServiceException("果蔬处理重量不得大于果蔬采摘录入重量");
-            }
+        // Step 3.0a 行2：去向（入库 + 月台 + 饲料）累计不得超过采摘累计（客户 2026-06-20，默认 a）。
+        // 三去向均纳入封顶：projected = 已入库 + 已月台 + 已饲料 + 本次 > picked → 拦截（饲料不再豁免）。
+        BigDecimal projectedHandled = nullSafe(handle.getHandledWeight())
+            .add(nullSafe(handle.getFeedWeight()))
+            .add(weight);
+        if (projectedHandled.compareTo(nullSafe(handle.getPickedWeight())) > 0) {
+            throw new ServiceException("果蔬处理重量不得大于果蔬采摘录入重量");
         }
 
         // Step 3.0b 序号9-Req2：未「称重完成」(is_weighed=1) 不得标记「处理完成」（客户 2026-06-20）

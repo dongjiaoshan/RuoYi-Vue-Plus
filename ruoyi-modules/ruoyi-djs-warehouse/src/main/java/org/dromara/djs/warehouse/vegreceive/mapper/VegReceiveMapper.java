@@ -139,8 +139,9 @@ public interface VegReceiveMapper extends BaseMapperPlus<VegReceive, VegReceive>
      *
      * <p>地块月台量 = {@code SUM(send_platform_weight) by plot}；实际入库 = 本表 self 该 (crop, plot) 已入量；
      * 待入库 = 月台量 − 实际入库（取 0 兜底负值）。状态：已标记入库完成（{@code is_finish=1} 存在）→ done（步10
-     * Part1 锁定，优先于数量支，避免毛菜处理回灌月台量把 done 翻回 processing）/ actual=0→pending /
-     * actual&lt;月台量→processing / actual≥月台量→done。仅返月台量 &gt; 0 的地块。</p>
+     * Part1 锁定，唯一 done 判据）/ actual=0→pending / 其余→processing。<b>数量打满（actual≥月台量）但未勾
+     * 「入库完成」仍是 processing</b>（row4：量满不自动 done，否则未勾完成就被锁死无法收尾），地块卡仍可点进去
+     * 打开「是否入库完成」开关收尾。仅返月台量 &gt; 0 的地块。</p>
      */
     @Select("""
         SELECT t.plot_id     AS plotId,
@@ -148,7 +149,6 @@ public interface VegReceiveMapper extends BaseMapperPlus<VegReceive, VegReceive>
                CASE
                  WHEN t.finished > 0 THEN 'done'
                  WHEN t.actual <= 0 THEN 'pending'
-                 WHEN t.actual >= t.platform THEN 'done'
                  ELSE 'processing'
                END           AS inboundStatus,
                CASE

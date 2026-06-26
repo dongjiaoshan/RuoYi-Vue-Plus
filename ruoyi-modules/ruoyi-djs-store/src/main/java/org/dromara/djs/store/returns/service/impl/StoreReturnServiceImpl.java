@@ -444,16 +444,17 @@ public class StoreReturnServiceImpl
 
     @Override
     public List<StoreReturnGroupVo> listPendingGroups() {
-        // mp 退货管理分组卡：当天（Asia/Shanghai）门店→仓库退回，按门店分组，状态派生（全 received→confirmed 否则 pending）。
-        LocalDate today = LocalDate.now(ZONE_SHANGHAI);
-        LocalDateTime todayStart = today.atStartOfDay();
-        LocalDateTime tomorrowStart = today.plusDays(1).atStartOfDay();
+        // mp 退货管理分组卡：门店→仓库退回，按门店分组，状态派生（全 received→confirmed 否则 pending）。
+        // 收件箱语义：pending（待确认）不限日期全列出，含历史未确认；received（已确认）只取近 7 天防无限堆积。
+        LocalDateTime receivedFloor = LocalDate.now(ZONE_SHANGHAI).minusDays(7).atStartOfDay();
         List<StoreReturn> rows = baseMapper.selectList(new LambdaQueryWrapper<StoreReturn>()
             .eq(StoreReturn::getReturnDirection, DIRECTION_STORE_TO_WAREHOUSE)
             .isNotNull(StoreReturn::getStoreId)
-            .in(StoreReturn::getReturnStatus, List.of(STATUS_PENDING, STATUS_RECEIVED))
-            .ge(StoreReturn::getReturnDate, todayStart)
-            .lt(StoreReturn::getReturnDate, tomorrowStart));
+            .and(w -> w
+                .eq(StoreReturn::getReturnStatus, STATUS_PENDING)
+                .or(o -> o
+                    .eq(StoreReturn::getReturnStatus, STATUS_RECEIVED)
+                    .ge(StoreReturn::getReturnDate, receivedFloor))));
         if (rows.isEmpty()) {
             return List.of();
         }

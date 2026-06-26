@@ -54,7 +54,12 @@ public class VegPlotDetailVo implements Serializable {
     private BigDecimal handledWeight;
 
     /**
-     * 剩余重量(kg)（= 采摘录入 − 果蔬处理 = picked − handled）。
+     * 饲料重量(kg)（= vegetable_handle.feed_weight，去向③有机饲料累计）。
+     */
+    private BigDecimal feedWeight;
+
+    /**
+     * 剩余重量(kg)（= 采摘录入 − 果蔬处理 − 饲料 = picked − handled − feed）。
      */
     private BigDecimal remainWeight;
 

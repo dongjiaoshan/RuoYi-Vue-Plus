@@ -54,4 +54,17 @@ public class VegInboundPlotVo implements Serializable {
      */
     private BigDecimal actualWeight;
 
+    /**
+     * 默认入库库位 ID（row3 方案B）：该作物关联产品（{@code crop.related_product} → 果蔬原料）配置的存储库位
+     * （{@code t_warehouse_product_info.store_location_id} 逗号分隔取第一个）解析所得。mp 打开自产入库弹层时预填、
+     * 仍可改。产品/库位查不到 → 留空（前端不预填，退回手选）。同一作物的所有地块行此值一致（按作物解析）。
+     */
+    private Long defaultLocationId;
+
+    /**
+     * 默认入库库位名称（row3 方案B）：{@link #defaultLocationId} 经 {@code t_warehouse_location_info.location_name}
+     * 回填，mp 预填弹层库位文案。无默认库位时留空。
+     */
+    private String defaultLocationName;
+
 }

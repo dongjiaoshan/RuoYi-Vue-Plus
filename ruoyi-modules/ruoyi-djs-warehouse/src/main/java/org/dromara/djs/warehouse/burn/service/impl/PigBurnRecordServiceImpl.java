@@ -201,6 +201,27 @@ public class PigBurnRecordServiceImpl
             inWeightTotal = inWeightTotal.add(item.getWeight());
         }
 
+        // 累计入库总重校验（FIX-WMS-CUTPICKUP-SPLIT-001 配套）：已入库（DB 现有 product_inhouse by
+        // white_bar_id）+ 本次提交 ≤ 头皮肉重量（arrive_weight）。INSERT 前拦，防 reentry / 前端 baseline
+        // 失准（如多次燎毛产出行逐项录入）导致 DB 真实超录，避免产生超重 orphan 行、finish 时才暴雷。
+        // 与 finishPigBurn 同口径；arrive 为 null（未称重）时跳过（向后兼容）。
+        if (headSkinWeight != null) {
+            BigDecimal existing = BigDecimal.ZERO;
+            List<ProductInhouse> existingRows = productInhouseMapper.selectList(
+                new LambdaQueryWrapper<ProductInhouse>()
+                    .select(ProductInhouse::getProductWeight)
+                    .eq(ProductInhouse::getWhiteBarId, bar.getId()));
+            for (ProductInhouse ih : existingRows) {
+                if (ih.getProductWeight() != null) {
+                    existing = existing.add(ih.getProductWeight());
+                }
+            }
+            if (existing.add(inWeightTotal).compareTo(headSkinWeight) > 0) {
+                BigDecimal remain = headSkinWeight.subtract(existing).max(BigDecimal.ZERO);
+                throw new ServiceException("已录入产品总重不能超过头皮肉重量（剩余可入库 " + remain + "kg）");
+            }
+        }
+
         // ---------- Step 2：生成 burn_id + 计算 loss + INSERT 燎毛记录 ----------
         BigDecimal arriveWeight = bo.getArriveWeight();
         BigDecimal lossWeight = null;

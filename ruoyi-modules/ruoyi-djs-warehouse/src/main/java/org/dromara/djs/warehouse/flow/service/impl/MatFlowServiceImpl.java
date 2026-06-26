@@ -453,18 +453,18 @@ public class MatFlowServiceImpl implements IMatFlowService {
     }
 
     /**
-     * 自产果蔬「地块卡」领用：mp 地块卡 batchId = 该地块 FIFO 首篮 id，但一个地块可能跨多库位
-     * （线下实际，mp 只当一张卡）。故按 {@code (productId, plotId)} 跨库位 FIFO 扣减整个地块，
-     * 不只扣首篮——否则申请量 &gt; 首篮余量时会误报库存不足。
+     * 自产果蔬「地块卡」领用：mp 地块卡 batchId = 该地块在选中库位的 FIFO 首篮 id。按
+     * {@code (productId, plotId, 首篮库位)} 在<b>选中库位内</b>按 id 升序 FIFO 扣减该地块多篮，
+     * 不跨库位借——避免「选蔬菜保鲜库却扣到毛菜库最旧篮」（行5 ①）。
      *
      * <p>两步同事务：</p>
      * <ol>
      *   <li>写一条 {@code pick_out} 流水（带 {@code product_id} + {@code plot_id} 源标签；
      *       {@code warehouse_id} = 首篮库位、{@code change_quantity} = 总申请量），与 {@link #pickSelfVeg}
      *       一条流水范式一致；</li>
-     *   <li>{@link #consumeVegPlotBaskets} 跨库位按 id 升序 FIFO 逐篮扣减 {@code location_stock} + 每扣一篮
+     *   <li>{@link #consumeVegPlotBaskets} 在首篮库位内按 id 升序 FIFO 逐篮扣减 {@code location_stock} + 每扣一篮
      *       产一行 {@code product_inhouse}（带该篮 {@code plot_id} / 库位标签）→ 打包来源。
-     *       篮总量不足申请量 → 抛 {@link ServiceException} 回滚整笔（流水 + 已扣篮全回滚）。</li>
+     *       该库位该地块篮总量不足申请量 → 抛 {@link ServiceException} 回滚整笔（流水 + 已扣篮全回滚）。</li>
      * </ol>
      */
     private Long pickVegPlot(MatPickBo bo, LocationStock firstBasket) {
@@ -500,29 +500,34 @@ public class MatFlowServiceImpl implements IMatFlowService {
         flow.setProofOssIds(bo.getProofOssIds());
         stockFlowMapper.insert(flow);
 
-        // 2. 跨库位 FIFO 扣减整个地块 + 每篮产 product_inhouse（带篮 plot_id / 库位标签）
-        consumeVegPlotBaskets(productId, plotId, bo.getQuantity(), product, firstBasket, userId);
+        // 2. 同库位同地块 FIFO 扣减 + 每篮产 product_inhouse（带篮 plot_id / 库位标签）
+        //    只扣用户选中那行的库位（firstBasket.locationId），不跨库位借（防「选蔬菜保鲜库却扣毛菜库」）。
+        consumeVegPlotBaskets(productId, plotId, firstLocId, bo.getQuantity(), product, firstBasket, userId);
 
         return flow.getId();
     }
 
     /**
-     * 自产果蔬按「{@code (product_id, plot_id)} 地块」跨库位 FIFO 扣减（{@link #pickVegPlot} 用）。
+     * 自产果蔬按「{@code (product_id, plot_id, location_id)}」FIFO 扣减（{@link #pickVegPlot} 用）。
      *
-     * <p>该地块各库位篮按 id 升序（先进先出）逐篮扣减 {@code location_stock}，每扣一篮产一行
-     * {@code product_inhouse}（带该篮 {@code plot_id}、库位、{@code produce_date=今天}）→ 果蔬打包来源
-     * （地块随篮自动带到打包）。与 {@link #consumeVegBaskets} 同范式，区别：本方法按 {@code plot_id} 过滤
-     * （不限库位，跨库位拼够），{@code consumeVegBaskets} 按 {@code product_id + location} 过滤（单库位）。</p>
+     * <p>只扣用户选中那行的库位（{@code locId} = 选中篮库位）的该地块篮，按 id 升序（先进先出）逐篮扣减
+     * {@code location_stock}，每扣一篮产一行 {@code product_inhouse}（带该篮 {@code plot_id}、库位、
+     * {@code produce_date=今天}）→ 果蔬打包来源（地块随篮自动带到打包）。FIFO 仅在「同库位同地块多篮」间，
+     * <b>不跨库位借</b>——避免「选蔬菜保鲜库却扣到毛菜库最旧篮」（行5 ①）。该库位该地块余量不足 →
+     * 抛 {@link ServiceException}（保留原库存不足语义，不跨库位拼凑）。与 {@link #consumeVegBaskets} 同范式，
+     * 区别：本方法 product_id + plot_id + location 三键过滤，{@code consumeVegBaskets} 按 product_id + location。</p>
      *
+     * @param locId       用户选中篮所在库位（扣减约束到此库位，不跨库位）
      * @param firstBasket 地块 FIFO 首篮（已查得，名称/单位兜底用；product 主数据可空时回退它）
-     * @throws ServiceException 该地块各库位篮总量不足申请量（{@code @Transactional} 回滚领用流水 + 已扣篮）
+     * @throws ServiceException 该库位该地块篮总量不足申请量（{@code @Transactional} 回滚领用流水 + 已扣篮）
      */
-    private void consumeVegPlotBaskets(Long productId, Long plotId, BigDecimal quantity,
+    private void consumeVegPlotBaskets(Long productId, Long plotId, Long locId, BigDecimal quantity,
                                        ProductInfo product, LocationStock firstBasket, Long userId) {
         List<LocationStock> baskets = locationStockMapper.selectList(
             new LambdaQueryWrapper<LocationStock>()
                 .eq(LocationStock::getProductId, productId)
                 .eq(LocationStock::getPlotId, plotId)
+                .eq(LocationStock::getLocationId, locId)
                 .gt(LocationStock::getProductStock, BigDecimal.ZERO)
                 .orderByAsc(LocationStock::getId));
         String productName = product != null ? product.getProductName() : firstBasket.getProductName();
@@ -558,7 +563,7 @@ public class MatFlowServiceImpl implements IMatFlowService {
         }
         if (remaining.compareTo(BigDecimal.ZERO) > 0) {
             throw new ServiceException(
-                "库存不足：" + productName + " 该地块可领 "
+                "库存不足：" + productName + " 该库位该地块可领 "
                     + quantity.subtract(remaining).stripTrailingZeros().toPlainString()
                     + (productUnit == null ? "" : productUnit) + "，申请 "
                     + quantity.stripTrailingZeros().toPlainString() + (productUnit == null ? "" : productUnit));

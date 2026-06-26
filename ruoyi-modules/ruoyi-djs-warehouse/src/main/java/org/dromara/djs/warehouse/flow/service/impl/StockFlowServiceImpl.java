@@ -56,6 +56,14 @@ public class StockFlowServiceImpl
      */
     private static final String BELONG_TYPE_PACKAGE = "package";
 
+    /**
+     * 打包入库流水类型（djs_flow_type）。
+     * 打包是「出库到发货月台」语义，不应出现在 admin 入库记录页/入库方式下拉里；
+     * 仅在入库记录两页（queryInList / queryInExport）排除展示，pack_in 流水写入保留
+     * （库存余额 / 日损耗 / 盘点依赖）。
+     */
+    private static final String FLOW_TYPE_PACK_IN = "pack_in";
+
     private final LocationInfoMapper locationInfoMapper;
     private final ProductInfoMapper productInfoMapper;
     private final LocationStockMapper locationStockMapper;
@@ -99,7 +107,12 @@ public class StockFlowServiceImpl
 
     @Override
     public TableDataInfo<StockFlowVo> queryInList(StockFlowQuery query, PageQuery pageQuery) {
-        return queryPageList(lockInout(query, INOUT_IN), pageQuery);
+        // 入库记录页：排除打包入库（pack_in），其余入库流水照常展示
+        LambdaQueryWrapper<StockFlow> wrapper = buildWrapper(lockInout(query, INOUT_IN))
+            .ne(StockFlow::getFlowType, FLOW_TYPE_PACK_IN);
+        Page<StockFlowVo> page = baseMapper.selectVoPage(pageQuery.build(), wrapper);
+        fillJoinNames(page.getRecords());
+        return TableDataInfo.build(page);
     }
 
     @Override
@@ -109,7 +122,12 @@ public class StockFlowServiceImpl
 
     @Override
     public List<StockFlowVo> queryInExport(StockFlowQuery query) {
-        return queryList(lockInout(query, INOUT_IN));
+        // 入库记录导出：与列表口径一致，排除打包入库（pack_in）
+        LambdaQueryWrapper<StockFlow> wrapper = buildWrapper(lockInout(query, INOUT_IN))
+            .ne(StockFlow::getFlowType, FLOW_TYPE_PACK_IN);
+        List<StockFlowVo> list = baseMapper.selectVoList(wrapper);
+        fillJoinNames(list);
+        return list;
     }
 
     @Override

@@ -10,6 +10,7 @@ import org.dromara.djs.warehouse.cut.domain.bo.PigCutOutBo;
 import org.dromara.djs.warehouse.cut.domain.bo.PigCutPickupBo;
 import org.dromara.djs.warehouse.cut.domain.query.PigCutRecordQuery;
 import org.dromara.djs.warehouse.cut.domain.vo.BarInfoVo;
+import org.dromara.djs.warehouse.cut.domain.vo.BarPickupItemVo;
 import org.dromara.djs.warehouse.cut.domain.vo.PigCutRecordVo;
 import org.dromara.djs.warehouse.cut.service.IPigCutRecordService;
 import org.dromara.djs.warehouse.pack.domain.bo.DryPackBo;
@@ -373,6 +374,18 @@ public class WarehousePackEntryController extends BaseController {
     @GetMapping("/availableBars")
     public R<List<BarInfoVo>> availableBars() {
         return R.ok(pigCutService.queryAvailableBars());
+    }
+
+    /**
+     * 白条领用「按燎毛产出行」卡片列表（FIX-WMS-CUTPICKUP-SPLIT-001，admin 白条领用页）。
+     *
+     * <p>在库白条每个未领燎毛产出行（半只/半扇）= 一张卡，可单独领用进分割车间；燎毛无产出行的白条
+     * 回落「整只」兜底卡。实现测试诉求「录入两个半只→展示两条记录→可分两次领用」。</p>
+     */
+    @SaCheckPermission("djs:warehouse:packEntry:pickup")
+    @GetMapping("/pickupItems")
+    public R<List<BarPickupItemVo>> pickupItems() {
+        return R.ok(pigCutService.queryPickupItems());
     }
 
 }

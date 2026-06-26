@@ -129,19 +129,18 @@ public class ShipmentServiceImpl
     );
 
     /**
-     * demand.product_type（dict {@code djs_demand_product_type}：white_bar/vegetable/gift_box/other）
-     * → production 关联 {@code ProductInfo.belong_type}（dict {@code djs_belong_type}）集合的映射。
+     * 发货「按业态匹配可用库存」的 belong_type 扩展映射。<b>键 = demand 所属产品的真实 belong_type</b>
+     * （权威，取自 {@code product_info}，经 {@link #resolveDemandBelongType} 解析），非 demand.product_type。
      *
-     * <p>SHIP-DEMANDID-001：发货"按业态匹配可用库存"。production 的真业态取自所属产品的
-     * {@code belong_type}（pack 生成 produce_no 前缀即据此），<b>不是</b> production.product_type
-     * 的 numeric 码（1 自产/2 外购/3 礼盒，语义不同，不能直接比较）。</p>
+     * <p>白条 demand 跨产品（白条整只 + 分割猪肉）→ 匹配 {@code {white_bar, pork}}；其余业态不在表里 →
+     * {@code getOrDefault} 默认只匹配自身 belong_type（egg→{egg} / vegetable→{vegetable} / gift_box→{gift_box} …）。</p>
      *
-     * <p>{@code other} 业态不入表 → 走兜底放宽（不按业态收窄，仅 store_id + demand_id IS NULL）。</p>
+     * <p>为何不按 demand.product_type 匹配：下单分类（product_type）可能与产品真实 belong_type 不一致
+     * （如 30 枚鸡蛋礼盒 belong_type=egg 但下单归 vegetable 类），用 product_type 会把 egg production 漏匹配、
+     * 打好的货进不了发货月台（Kevin 2026-06-26）。</p>
      */
-    private static final Map<String, Set<String>> DEMAND_TYPE_TO_BELONG_TYPES = Map.of(
-        "white_bar", Set.of("white_bar", "pork"),
-        "vegetable", Set.of("vegetable"),
-        "gift_box", Set.of("gift_box")
+    private static final Map<String, Set<String>> BELONG_TYPE_SHIP_EXPAND = Map.of(
+        "white_bar", Set.of("white_bar", "pork")
     );
 
     private final ProductProductionMapper productProductionMapper;
@@ -484,9 +483,12 @@ public class ShipmentServiceImpl
                               .or().isNull(ProductProduction::getStoreId));
         }
 
-        // 业态收窄：命中映射 → 仅取所属产品 belong_type ∈ 集合 的 production；
-        // 未命中（other/空）→ 兜底放宽，不按业态过滤（仅 store_id + demand_id IS NULL）。
-        Set<String> belongTypes = DEMAND_TYPE_TO_BELONG_TYPES.get(demand.getProductType());
+        // 业态收窄：按「demand 所属产品的真实 belong_type」(权威，取自 product_info) 收窄，命中扩展映射则放大
+        // （白条→白条+猪肉），其余默认只匹配自身 belong_type。产品缺失/无 product_id → null → 兜底放宽
+        // （不按业态过滤，仅 store_id + demand_id IS NULL）。
+        String demandBelongType = resolveDemandBelongType(demand);
+        Set<String> belongTypes = demandBelongType == null ? null
+            : BELONG_TYPE_SHIP_EXPAND.getOrDefault(demandBelongType, Set.of(demandBelongType));
         if (belongTypes != null) {
             List<Long> productIds = productInfoMapper.selectList(
                     new LambdaQueryWrapper<ProductInfo>()
@@ -500,6 +502,18 @@ public class ShipmentServiceImpl
         }
 
         return productProductionMapper.selectList(wrapper.orderByDesc(ProductProduction::getProduceDate));
+    }
+
+    /**
+     * demand 的发货匹配业态 = 其所属产品的 {@code belong_type}（权威，取自 {@code product_info}）。
+     * 无 {@code product_id} / 产品已删 → 返 {@code null}（调用方据此走兜底放宽，不按业态收窄）。
+     */
+    private String resolveDemandBelongType(DemandManage demand) {
+        if (demand.getProductId() == null) {
+            return null;
+        }
+        ProductInfo p = productInfoMapper.selectById(demand.getProductId());
+        return p == null ? null : p.getBelongType();
     }
 
     /**

@@ -105,6 +105,22 @@ public class ProductInhouse extends TenantEntity {
     private Long whiteBarId;
 
     /**
+     * 燎毛产出行白条领用状态（FIX-WMS-CUTPICKUP-SPLIT-001）：0=未领 / 1=已领。
+     *
+     * <p>仅 {@code white_bar_id} 非空的燎毛产出行（半只/半扇/整只）用：白条领用页按行出条，
+     * 领用一行置 1；一头白条所有行领满 → 推 bar pending_cut + 建整猪 cut_record。
+     * 门店拆单 / 蔬菜处理等其余写入路径不 set，靠 DB DEFAULT 0 兜底、恒无意义。</p>
+     */
+    private Integer pickupStatus;
+
+    /**
+     * 该产出行白条领用过磅重量 kg（FIX-WMS-CUTPICKUP-SPLIT-001）。
+     *
+     * <p>领用进分割车间时现场过磅；整猪 {@code cut_record.pickup_weight} = 该白条各产出行 pickup_weight 之和。</p>
+     */
+    private BigDecimal pickupWeight;
+
+    /**
      * 分割部位字典 {@code djs_pig_cut_part}：lean/part/bone/skin/scrap。
      */
     private String cutPart;

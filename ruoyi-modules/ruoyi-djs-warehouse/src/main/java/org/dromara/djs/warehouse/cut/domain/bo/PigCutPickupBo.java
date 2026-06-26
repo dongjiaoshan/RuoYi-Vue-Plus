@@ -30,6 +30,16 @@ public class PigCutPickupBo {
     private Long barInfoId;
 
     /**
+     * 燎毛产出行 ID（FK → {@code t_warehouse_product_inhouse.id}，FIX-WMS-CUTPICKUP-SPLIT-001）。
+     *
+     * <p>admin 白条领用页按燎毛产出行（半只/半扇）逐条领用时回传：service 按此行消耗（置 pickup_status=1
+     * + 记 pickup_weight），该白条所有产出行领满才推 bar pending_cut + 建整猪 cut_record。</p>
+     *
+     * <p>{@code null} = 整猪兜底路径（mp 旧端 / 白条无燎毛产出行）：直接推 bar + 建 cut_record，行为同旧。</p>
+     */
+    private Long inhouseId;
+
+    /**
      * 入冻品库库位（FK → {@code t_warehouse_location_info.id}，领用阶段可空）。
      *
      * <p>FIX-WMS-PACK-CASHIER：白条领用收银台不再在领用阶段采集库位（仅领用进分割车间，
