@@ -591,11 +591,11 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
                  LIMIT 1)                         AS defaultLocationId,
                COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
                           WHERE f.operator_id = #{userId} AND f.product_id = p.id
-                            AND f.flow_type = 'pick_out' AND DATE(f.flow_date) = CURDATE()
+                            AND f.flow_type IN ('prod_pick_out','dept_pick_out','pick_out') AND DATE(f.flow_date) = CURDATE()
                             AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayPicked,
                COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
                           WHERE f.operator_id = #{userId} AND f.product_id = p.id
-                            AND f.flow_type = 'return_in' AND DATE(f.flow_date) = CURDATE()
+                            AND f.flow_type IN ('prod_return_in','pick_return_in') AND DATE(f.flow_date) = CURDATE()
                             AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayReturned,
                COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
                           WHERE f.operator_id = #{userId} AND f.product_id = p.id
@@ -603,7 +603,7 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
                             AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayLoss,
                (SELECT MAX(f.flow_date) FROM t_warehouse_stock_flow f
                   WHERE f.operator_id = #{userId} AND f.product_id = p.id
-                    AND f.flow_type = 'pick_out' AND DATE(f.flow_date) = CURDATE()
+                    AND f.flow_type IN ('prod_pick_out','dept_pick_out','pick_out') AND DATE(f.flow_date) = CURDATE()
                     AND f.del_flag = '0' AND f.tenant_id = '1001') AS lastPickTime
           FROM t_warehouse_product_info p
           LEFT JOIN t_warehouse_location_stock s
@@ -804,11 +804,11 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
                  LIMIT 1)                         AS defaultLocationId,
                COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
                           WHERE f.operator_id = #{userId} AND f.product_id = p.id
-                            AND f.flow_type = 'pick_out' AND DATE(f.flow_date) = CURDATE()
+                            AND f.flow_type IN ('prod_pick_out','dept_pick_out','pick_out') AND DATE(f.flow_date) = CURDATE()
                             AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayPicked,
                COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
                           WHERE f.operator_id = #{userId} AND f.product_id = p.id
-                            AND f.flow_type = 'return_in' AND DATE(f.flow_date) = CURDATE()
+                            AND f.flow_type IN ('prod_return_in','pick_return_in') AND DATE(f.flow_date) = CURDATE()
                             AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayReturned,
                COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
                           WHERE f.operator_id = #{userId} AND f.product_id = p.id
@@ -816,7 +816,7 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
                             AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayLoss,
                (SELECT MAX(f.flow_date) FROM t_warehouse_stock_flow f
                   WHERE f.operator_id = #{userId} AND f.product_id = p.id
-                    AND f.flow_type = 'pick_out' AND DATE(f.flow_date) = CURDATE()
+                    AND f.flow_type IN ('prod_pick_out','dept_pick_out','pick_out') AND DATE(f.flow_date) = CURDATE()
                     AND f.del_flag = '0' AND f.tenant_id = '1001') AS lastPickTime
           FROM t_warehouse_product_info p
           JOIN t_warehouse_location_stock s
