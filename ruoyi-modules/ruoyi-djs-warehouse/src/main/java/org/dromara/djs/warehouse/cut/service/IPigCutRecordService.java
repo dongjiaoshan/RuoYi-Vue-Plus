@@ -74,6 +74,17 @@ public interface IPigCutRecordService {
     List<BarPickupItemVo> queryPickupItems();
 
     /**
+     * 白条所有燎毛产出行都已处理（分割领用 / 发货软删）后收口（FIX-WMS-CUTPICKUP-SPLIT-001）。
+     *
+     * <p>由分割领用路径（{@link #submitPickup}）和发货路径（whiteBarOut）共同调用：还有未领产出行 → 不动；
+     * 全部处理完且有分割领用行 → 推 bar {@code in_stock→pending_cut} + 建一个整猪 cut_record（pickup_weight=各分割行之和）；
+     * 全部发货（无分割行）→ 返 {@code null} 交发货路径转 {@code ship_out}。幂等：bar 不在 in_stock 或并发已转 → 返 {@code null}。</p>
+     *
+     * @return 收口建的 cut_record id；未收口 / 全发货 / 并发已转 → {@code null}
+     */
+    Long finalizeBarPickupIfComplete(Long barInfoId, Long userId);
+
+    /**
      * mp 分割车间产品类型列表（标准分割成品 5 类：精瘦肉 / 部位肉 / 骨类 / 猪皮 / 碎料）。
      *
      * <p>口径：{@code product_workshop=2}（分割车间）+ {@code belong_type='pork'} +

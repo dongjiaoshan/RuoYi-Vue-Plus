@@ -421,11 +421,12 @@ public class VegReceiveServiceImpl implements IVegReceiveService {
     }
 
     /**
-     * 校验「可外购原材料」（{@code is_buy_out=1 且 product_attr=2}）存在，否则抛异常。
+     * 校验「自产食材标了可外购的原材料」（{@code product_type=1 且 is_buy_out=1 且 product_attr=2}）存在，否则抛异常。
      *
      * <p>口径与蔬菜月台外购列表 {@link VegReceiveMapper#selectPurchasedPending} 一致：现场外购收货只认
-     * 可外购的原材料（自产果蔬/猪肉/蛋/白条标了可外购的）；纯外购商品（{@code product_type=2}）走 admin
-     * 采购入库、不在此现场收货。protected 便于单测 stub。</p>
+     * 自产食材里标了可外购的原料（果蔬/猪肉/蛋/白条/干货里 is_buy_out=1 的）；纯外购商品
+     * （{@code product_type=2}，饲料/药品/肥料/农药/包材等生产资料）走 admin 采购入库、不在此现场收货。
+     * protected 便于单测 stub。</p>
      */
     protected ProductInfo requirePurchaseProduct(Long productId) {
         ProductInfo p = productInfoMapper.selectOne(
@@ -433,9 +434,10 @@ public class VegReceiveServiceImpl implements IVegReceiveService {
         if (p == null) {
             throw new ServiceException("外购产品不存在或已删除：" + productId);
         }
-        boolean buyOutMaterial = p.getIsBuyOut() != null && p.getIsBuyOut() == 1
+        boolean selfBuyOutMaterial = p.getProductType() != null && p.getProductType() == 1
+            && p.getIsBuyOut() != null && p.getIsBuyOut() == 1
             && p.getProductAttr() != null && p.getProductAttr() == 2;
-        if (!buyOutMaterial) {
+        if (!selfBuyOutMaterial) {
             throw new ServiceException("该产品非可外购原材料，不能走蔬菜月台外购收货：" + p.getProductName());
         }
         return p;

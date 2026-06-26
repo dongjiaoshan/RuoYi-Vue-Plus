@@ -86,13 +86,14 @@ public interface VegReceiveMapper extends BaseMapperPlus<VegReceive, VegReceive>
     List<VegReceiveItemVo> selectSelfPending();
 
     /**
-     * 外购原材料待收货列表（蔬菜月台「外购产品收货」分段，Kevin 2026-06-25）：返**所有可外购的原材料**
-     * （{@code is_buy_out=1 可外购 + product_attr=2 原材料}，不限 belong_type）。
+     * 蔬菜月台「外购产品收货」待收货列表（Kevin 2026-06-26）：返**自产食材 SKU 里标了可外购的原材料**
+     * （{@code product_type=1 自产 + is_buy_out=1 可外购 + product_attr=2 原材料}）。
      *
-     * <p>与采购入库口径互补、按 {@code product_attr} 二分：可采购的<b>商品</b>（attr≠2，外购商品 + 自产可外购商品）
-     * → admin 采购入库；可外购的<b>原材料</b>（attr=2，如自产果蔬/猪肉/蛋/白条标了可外购的）→ 本蔬菜月台收货。
-     * 故不再限 {@code belong_type='vegetable'}：番茄/苤蓝(果蔬) + 五花肉(猪肉) + 土鸡蛋(蛋) + 白条(半只) 等
-     * 可外购原材料都在此收货。</p>
+     * <p>口径：现场外购收货只认「自产食材标了可外购」的原料（果蔬/猪肉/蛋/白条/干货里 {@code is_buy_out=1} 的）——
+     * 农场自产不够时外购同款食材、回到蔬菜月台收货入库，复用同一个自产 SKU。纯外购商品
+     * （{@code product_type=2}，如饲料/药品/肥料/农药/包材，按 {@code buy_class} 分类）是生产资料、不是要在月台
+     * 收的食材，走 admin 采购入库、不在此现场收货。故必须限 {@code product_type=1}：否则 295 条外购生产资料
+     * （belong_type 全空、CASE 落 ELSE 显「外购原材料」）会污染列表。</p>
      *
      * <p>外购无"上游月台量"概念（不来自毛菜处理），V1 收货前无预设待收量 → {@code pendingWeight=0}；
      * 工人在 mp 外购入库子页直接录入实收重量。{@code productType} 列按 {@code belong_type} 回填业态文案
@@ -123,6 +124,7 @@ public interface VegReceiveMapper extends BaseMapperPlus<VegReceive, VegReceive>
           FROM t_warehouse_product_info p
          WHERE p.del_flag      = '0'
            AND p.tenant_id     = '1001'
+           AND p.product_type  = 1
            AND p.is_buy_out    = 1
            AND p.product_attr  = 2
            AND p.product_status = 0

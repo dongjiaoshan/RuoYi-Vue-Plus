@@ -279,28 +279,43 @@ public class PigCutRecordServiceImpl
         if (marked == 0) {
             throw new ServiceException("该产出行已被并发领用，请刷新重试");
         }
-        // 该白条还有未领产出行 → 不推 bar、不建 cut_record（分两次领，剩余行继续显示）
+        // 该白条所有产出行处理完（分割领用 / 发货软删）才收口推 bar + 建整猪 cut_record；
+        // 还有未领行 → 返 null（分两次领，剩余行继续显示）。统一走 finalizeBarPickupIfComplete。
+        return finalizeBarPickupIfComplete(bar.getId(), userId);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public Long finalizeBarPickupIfComplete(Long barInfoId, Long userId) {
+        BarInfo bar = barInfoMapper.selectById(barInfoId);
+        if (bar == null || !BAR_STATUS_IN_STOCK.equals(bar.getStatus())) {
+            return null;  // 已转态 / 不存在，幂等
+        }
+        // 还有未领产出行（pickup_status=0/NULL；发货满发的行已 consumeInhouse 软删、不计）→ 不收口，留 in_stock
         Long remaining = productInhouseMapper.selectCount(
             new LambdaQueryWrapper<ProductInhouse>()
-                .eq(ProductInhouse::getWhiteBarId, bar.getId())
+                .eq(ProductInhouse::getWhiteBarId, barInfoId)
                 .and(w -> w.eq(ProductInhouse::getPickupStatus, 0).or().isNull(ProductInhouse::getPickupStatus)));
         if (remaining != null && remaining > 0) {
             return null;
         }
-        // 全部领满 → 推 bar in_stock→pending_cut + 建一个整猪 cut_record（pickup_weight = 各行之和）
-        int affected = barInfoMapper.updateStatusToPendingCut(bar.getId(), userId);
-        if (affected == 0) {
-            throw new ServiceException("白条已被并发领用，请刷新重试");
-        }
-        BigDecimal totalPicked = sumPickedRowWeight(bar.getId());
-        // 多产出行（被拆半只领的）→ isHalf=1（半扇分割）；单行 → 2（整只）
-        Long pickedRows = productInhouseMapper.selectCount(
+        // 全部处理完：分割领用行 = 仍在的 pickup_status=1 行（发货行已软删，不在此列）
+        Long cutRows = productInhouseMapper.selectCount(
             new LambdaQueryWrapper<ProductInhouse>()
-                .eq(ProductInhouse::getWhiteBarId, bar.getId())
+                .eq(ProductInhouse::getWhiteBarId, barInfoId)
                 .eq(ProductInhouse::getPickupStatus, 1));
-        int isHalf = pickedRows != null && pickedRows > 1 ? 1 : 2;
-        return insertCutRecord(bar, totalPicked, bo.getLocationId(), bo.getTargetStoreId(),
-            bo.getTargetDemandId(), isHalf, bo.getRemark(), userId);
+        if (cutRows == null || cutRows == 0) {
+            return null;  // 全发货（无分割行）→ 交发货路径转 ship_out
+        }
+        // 有分割领用行 → 推 bar in_stock→pending_cut + 建一个整猪 cut_record（pickup_weight = 各分割行之和）
+        int affected = barInfoMapper.updateStatusToPendingCut(barInfoId, userId);
+        if (affected == 0) {
+            return null;  // 并发已转，幂等
+        }
+        BigDecimal totalPicked = sumPickedRowWeight(barInfoId);
+        // 多产出行（被拆半只领的）→ isHalf=1（半扇分割）；单行 → 2（整只）
+        int isHalf = cutRows > 1 ? 1 : 2;
+        return insertCutRecord(bar, totalPicked, null, null, null, isHalf, null, userId);
     }
 
     /** 该白条已领产出行 pickup_weight 之和（pickup_status=1）。 */

@@ -172,6 +172,15 @@ public class ProductProductionServiceImpl
     private final ITraceService traceService;
     private final IStockCheckService stockCheckService;
 
+    /**
+     * 白条领用收口（FIX-WMS-CUTPICKUP-SPLIT-001）：发货掉一个燎毛产出行后，若该白条所有行已处理完且有
+     * 分割领用行，委托 cut service 推 pending_cut + 建整猪 cut_record。@Lazy 字段注入（非构造器）——
+     * 避免改构造器签名破坏既有单测 + 防潜在初始化次序问题；仅 whiteBarOut 用，按需触发。
+     */
+    @org.springframework.beans.factory.annotation.Autowired
+    @org.springframework.context.annotation.Lazy
+    private org.dromara.djs.warehouse.cut.service.IPigCutRecordService pigCutService;
+
     public ProductProductionServiceImpl(ProductProductionMapper baseMapper,
                                         ProductInhouseMapper productInhouseMapper,
                                         ProductInfoMapper productInfoMapper,
@@ -522,15 +531,35 @@ public class ProductProductionServiceImpl
         }
         consumeInhouse(src, bo.getProductWeight());
 
-        // 发货月台领用回写 bar 出库基础数据（猪肉全闭环 Part I P6）：来源为燎毛白条整只（whiteBarId 非空）时，
-        // 同事务把对应 t_warehouse_bar_info 推进到 cut_done + out_method=1 + out_time/out_weight。
-        // 独立于上方 inhouse 是否有 location（白条整只 inhouse 常无 locationId，但 bar 出库基础数据仍需补齐）。
-        // affectedRows==0（bar 不在 in_stock 态：已被领用/出库）→ 静默跳过（基础数据补写，非主链路硬阻塞）。
+        // 发货月台领用回写 bar 出库基础数据（猪肉全闭环 Part I P6 + FIX-WMS-CUTPICKUP-SPLIT-001 按产出行）：
+        // 本行已 consumeInhouse（满发=软删 / 部分=扣减）。白条按燎毛产出行处理——**发货一个半只不连坐整 bar**：
+        //   · 该白条还有未领产出行 → 不转态，留 in_stock 让剩余半只继续可领/可分割（修「另一半凭空消失」）；
+        //   · 全部处理完 + 有分割领用行 → 委托 cut service 推 pending_cut + 建整猪 cut_record；
+        //   · 全部处理完 + 全发货（无分割行）→ 整 bar 转 ship_out（沿用原写回）。
+        // affectedRows==0（bar 已不在 in_stock）→ 静默跳过，幂等。
         Long whiteBarId = src.getWhiteBarId();
         if (whiteBarId != null) {
-            int barAffected = barInfoMapper.updateStatusToShipOut(whiteBarId, now, bo.getProductWeight(), userId);
-            log.info("[WHITEBAR-SHIP-P6] bar ship-out writeback barId={} affected={} (0=不在in_stock态,跳过)",
-                whiteBarId, barAffected);
+            Long remaining = productInhouseMapper.selectCount(
+                new LambdaQueryWrapper<ProductInhouse>()
+                    .eq(ProductInhouse::getWhiteBarId, whiteBarId)
+                    .and(w -> w.eq(ProductInhouse::getPickupStatus, 0).or().isNull(ProductInhouse::getPickupStatus)));
+            if (remaining == null || remaining == 0) {
+                Long cutRows = productInhouseMapper.selectCount(
+                    new LambdaQueryWrapper<ProductInhouse>()
+                        .eq(ProductInhouse::getWhiteBarId, whiteBarId)
+                        .eq(ProductInhouse::getPickupStatus, 1));
+                if (cutRows != null && cutRows > 0) {
+                    // 尚有分割领用行 → cut service 收口（pending_cut + cut_record），不转 ship_out
+                    Long cutRecordId = pigCutService.finalizeBarPickupIfComplete(whiteBarId, userId);
+                    log.info("[WHITEBAR-SHIP-P6] bar 含分割领用行，发货后委托收口 barId={} cutRecordId={}", whiteBarId, cutRecordId);
+                } else {
+                    int barAffected = barInfoMapper.updateStatusToShipOut(whiteBarId, now, bo.getProductWeight(), userId);
+                    log.info("[WHITEBAR-SHIP-P6] bar ship-out writeback barId={} affected={} (0=不在in_stock态,跳过)",
+                        whiteBarId, barAffected);
+                }
+            } else {
+                log.info("[WHITEBAR-SHIP-P6] bar 尚有未领产出行({})，发货不连坐整 bar，留 in_stock barId={}", remaining, whiteBarId);
+            }
         }
 
         // 生成追溯码回填 + 写 in_stock 事件（TRC-CORE-001 pork 链首个 genCode 入口）
