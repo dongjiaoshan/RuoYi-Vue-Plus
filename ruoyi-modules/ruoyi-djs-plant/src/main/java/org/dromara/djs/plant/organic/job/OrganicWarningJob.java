@@ -3,6 +3,7 @@ package org.dromara.djs.plant.organic.job;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.common.core.service.ConfigService;
+import org.dromara.djs.common.job.DjsJobRunner;
 import org.dromara.djs.plant.organic.mapper.CropOrganicMapper;
 import org.dromara.djs.plant.organic.mapper.PlotOrganicMapper;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -36,13 +37,23 @@ public class OrganicWarningJob {
     private final ConfigService configService;
 
     /**
-     * 扫描入口：每天 0 点 0 分 0 秒触发。
+     * 定时扫描入口：每天 0 点触发。
+     *
+     * <p>经 {@link DjsJobRunner} 跑以注入 tenant_id —— 裸 {@code @Scheduled} 线程无上下文，
+     *    否则 {@code markWarning} 的 UPDATE 条件 tenant_id 为 null 会匹配不到业务数据（静默 no-op）。</p>
+     */
+    @Scheduled(cron = "${djs.schedule.organic-warning-cron:0 0 0 * * ?}")
+    public void scanWarning() {
+        DjsJobRunner.run("organic-warning", this::doScan);
+    }
+
+    /**
+     * 实际扫描逻辑（供定时任务 + 管理员手动端点复用；手动端点走 HTTP 有租户上下文，直接调本方法）。
      *
      * <p>幂等：扫描条件 {@code is_warning=2 AND DATEDIFF(valid, CURRENT_DATE) <= days}，
      *    已置 1 的不重复更新；同一日多次跑也只首次写入。</p>
      */
-    @Scheduled(cron = "0 0 0 * * ?")
-    public void scanWarning() {
+    public void doScan() {
         int days = resolveWarningDays();
         log.info("[OrganicWarningJob] 扫描有机证书到期预警，阈值 {} 天", days);
 

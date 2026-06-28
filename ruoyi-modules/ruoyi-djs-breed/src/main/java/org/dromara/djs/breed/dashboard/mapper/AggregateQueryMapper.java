@@ -442,4 +442,351 @@ public interface AggregateQueryMapper {
     List<Map<String, Object>> countMarketingByMonth(@Param("tenantId") String tenantId,
                                                     @Param("from") java.time.LocalDateTime from,
                                                     @Param("to") java.time.LocalDateTime to);
+
+    // ============================================================
+    //  日表落盘 row10 缺的指标（BRD-STAT-001）
+    //  全部区间右开 [from, to)；DATE 列传 LocalDate，DATETIME 列传 LocalDateTime。
+    // ============================================================
+
+    /** 业务事件表 DATE 区间内 SUM(valueColumn)（如当日总产仔 total_born）。区间右开。 */
+    @Select("<script>"
+        + "SELECT COALESCE(SUM(${valueColumn}),0) FROM ${table} "
+        + " WHERE tenant_id = #{tenantId} "
+        + "   AND del_flag = '0' "
+        + "   AND ${dateColumn} &gt;= #{from} "
+        + "   AND ${dateColumn} &lt;  #{to} "
+        + "</script>")
+    int sumEventInDayDate(@Param("table") String table,
+                          @Param("dateColumn") String dateColumn,
+                          @Param("valueColumn") String valueColumn,
+                          @Param("tenantId") String tenantId,
+                          @Param("from") java.time.LocalDate from,
+                          @Param("to") java.time.LocalDate to);
+
+    /**
+     * 业务事件表区间内 COUNT(DISTINCT 列)（如分娩/配种/断奶的母猪数，去重一头多记录）。
+     * dateColumn / table / distinctColumn 全部白名单内部传入。
+     */
+    @Select("<script>"
+        + "SELECT COUNT(DISTINCT ${distinctColumn}) FROM ${table} "
+        + " WHERE tenant_id = #{tenantId} "
+        + "   AND del_flag = '0' "
+        + "   AND ${dateColumn} &gt;= #{from} "
+        + "   AND ${dateColumn} &lt;  #{to} "
+        + "</script>")
+    int countDistinctEventInDay(@Param("table") String table,
+                                @Param("dateColumn") String dateColumn,
+                                @Param("distinctColumn") String distinctColumn,
+                                @Param("tenantId") String tenantId,
+                                @Param("from") java.time.LocalDate from,
+                                @Param("to") java.time.LocalDate to);
+
+    /**
+     * 查情不配种数（当日）：当日有 heat 记录、且该母猪在 [heat_date, heat_date+3天] 内无 breeding 记录的母猪数。
+     * 以 heat 为锚，去重母猪；NOT EXISTS 关联 3 日窗口内的 breeding。
+     */
+    @Select("SELECT COUNT(DISTINCT h.pig_id) "
+        + " FROM t_farm_pig_heat h "
+        + " WHERE h.tenant_id = #{tenantId} "
+        + "   AND h.del_flag = '0' "
+        + "   AND h.heat_date >= #{from} "
+        + "   AND h.heat_date <  #{to} "
+        + "   AND NOT EXISTS ( "
+        + "     SELECT 1 FROM t_farm_pig_breeding b "
+        + "      WHERE b.tenant_id = #{tenantId} AND b.del_flag = '0' "
+        + "        AND b.pig_id = h.pig_id "
+        + "        AND b.breeding_date >= h.heat_date "
+        + "        AND b.breeding_date <  DATE_ADD(h.heat_date, INTERVAL 3 DAY) )")
+    int countHeatNoBreedInDay(@Param("tenantId") String tenantId,
+                              @Param("from") java.time.LocalDate from,
+                              @Param("to") java.time.LocalDate to);
+
+    /**
+     * 按猪只类型统计当日 DIE 死亡头数（JOIN pig_info 取 pig_type）。
+     * 用于「死亡肥猪/死亡种母猪/死亡仔猪」三项（pigType = fattening/sow/piglet）。
+     * change_time 区间右开。
+     */
+    @Select("SELECT COUNT(*) "
+        + " FROM t_farm_status_record s "
+        + " JOIN t_farm_pig_info p ON p.id = s.pig_id AND p.tenant_id = s.tenant_id "
+        + " WHERE s.tenant_id = #{tenantId} "
+        + "   AND s.event_type = 'DIE' "
+        + "   AND p.pig_type = #{pigType} "
+        + "   AND s.change_time >= #{from} "
+        + "   AND s.change_time <  #{to}")
+    int countDeathByPigTypeInDay(@Param("tenantId") String tenantId,
+                                 @Param("pigType") String pigType,
+                                 @Param("from") java.time.LocalDateTime from,
+                                 @Param("to") java.time.LocalDateTime to);
+
+    /**
+     * 当日出栏聚合：头数 + 出栏总重 + 平均背膘厚（取该出栏猪最新一条背膘的平均）。
+     * 出栏总重 = SUM(out_weight)；背膘 = 每头出栏猪用相关标量子查询取其最新 backfat_thickness（非空），
+     * 再对非空值 SUM/COUNT。标量子查询每行一值，无 JOIN 行放大；兼容 MySQL 5.7（不用 LATERAL）。
+     *
+     * @return {cnt:Long, weight:BigDecimal, backfatSum:BigDecimal, backfatCnt:Long}
+     */
+    @Select("SELECT COUNT(*) AS cnt, COALESCE(SUM(m.out_weight),0) AS weight, "
+        + "       COALESCE(SUM( ( "
+        + "         SELECT g.backfat_thickness FROM t_farm_pig_growth g "
+        + "          WHERE g.tenant_id = m.tenant_id AND g.del_flag = '0' "
+        + "            AND g.pig_id = m.pig_id AND g.backfat_thickness IS NOT NULL "
+        + "          ORDER BY g.measure_date DESC LIMIT 1 ) ),0) AS backfatSum, "
+        + "       SUM( CASE WHEN ( "
+        + "         SELECT g.backfat_thickness FROM t_farm_pig_growth g "
+        + "          WHERE g.tenant_id = m.tenant_id AND g.del_flag = '0' "
+        + "            AND g.pig_id = m.pig_id AND g.backfat_thickness IS NOT NULL "
+        + "          ORDER BY g.measure_date DESC LIMIT 1 ) IS NOT NULL THEN 1 ELSE 0 END ) AS backfatCnt "
+        + " FROM t_farm_pig_marketing m "
+        + " WHERE m.tenant_id = #{tenantId} "
+        + "   AND m.del_flag = '0' "
+        + "   AND m.marketing_date >= #{from} "
+        + "   AND m.marketing_date <  #{to}")
+    Map<String, Object> aggregateMarketingForDay(@Param("tenantId") String tenantId,
+                                                 @Param("from") java.time.LocalDateTime from,
+                                                 @Param("to") java.time.LocalDateTime to);
+
+    /**
+     * 当日出栏猪只的「断奶总重 + 生长总天数」。
+     * 对每头当日出栏猪：取其最近一条断奶记录（关联 t_farm_pig_weaning.pig_id）的断奶总重 weaned_weight，
+     * 及 DATEDIFF(出栏日, 断奶日) 天数；无断奶记录的猪跳过（不计入，null-safe）。
+     *
+     * @return {weanWeightSum:BigDecimal, growthDaysSum:Long}
+     */
+    @Select("SELECT COALESCE(SUM(w.weaned_weight),0) AS weanWeightSum, "
+        + "       COALESCE(SUM(DATEDIFF(m.marketing_date, w.weaning_date)),0) AS growthDaysSum "
+        + " FROM t_farm_pig_marketing m "
+        + " JOIN ( "
+        + "   SELECT w1.pig_id, w1.weaned_weight, w1.weaning_date "
+        + "     FROM t_farm_pig_weaning w1 "
+        + "    WHERE w1.tenant_id = #{tenantId} AND w1.del_flag = '0' "
+        + "      AND w1.weaning_date = ( "
+        + "        SELECT MAX(w2.weaning_date) FROM t_farm_pig_weaning w2 "
+        + "         WHERE w2.tenant_id = #{tenantId} AND w2.del_flag = '0' "
+        + "           AND w2.pig_id = w1.pig_id ) "
+        + " ) w ON w.pig_id = m.pig_id "
+        + " WHERE m.tenant_id = #{tenantId} "
+        + "   AND m.del_flag = '0' "
+        + "   AND m.marketing_date >= #{from} "
+        + "   AND m.marketing_date <  #{to}")
+    Map<String, Object> aggregateMarketingWeanForDay(@Param("tenantId") String tenantId,
+                                                     @Param("from") java.time.LocalDateTime from,
+                                                     @Param("to") java.time.LocalDateTime to);
+
+    /**
+     * 期末存栏快照：按 pig_type + current_status 维度 COUNT（T-1 当日 current_status 当前快照）。
+     * 一次查回全部分组，service 端按口径汇总各期末项。
+     *
+     * @return 形如 [{pigType:'sow', cs:'PZ', cnt:5}, {pigType:'fattening', cs:'', cnt:30}, ...]
+     */
+    @Select("SELECT pig_type AS pigType, current_status AS cs, COUNT(*) AS cnt "
+        + " FROM t_farm_pig_info "
+        + " WHERE tenant_id = #{tenantId} "
+        + "   AND del_flag = '0' "
+        + "   AND current_status <> 'END' "
+        + " GROUP BY pig_type, current_status")
+    List<Map<String, Object>> snapshotByTypeStatus(@Param("tenantId") String tenantId);
+
+    /**
+     * 期末 230 日龄以上后备母猪头数（pig_type='sow' 且 current_status='HB' 且 日龄≥230）。
+     * 日龄基准 = asOf（T-1）；birth_date 非空。
+     */
+    @Select("SELECT COUNT(*) FROM t_farm_pig_info "
+        + " WHERE tenant_id = #{tenantId} "
+        + "   AND del_flag = '0' "
+        + "   AND pig_type = 'sow' "
+        + "   AND current_status = 'HB' "
+        + "   AND birth_date IS NOT NULL "
+        + "   AND DATEDIFF(#{asOf}, birth_date) >= 230")
+    int countReserve230(@Param("tenantId") String tenantId,
+                        @Param("asOf") java.time.LocalDate asOf);
+
+    /**
+     * 当年配种批次分娩头数（落 statDate 当年）：当日分娩记录中，分娩日−114 天（≈配种日）落在 statDate 当年的活仔头数之和。
+     * 邓博 row10：分娩日−114 后日期是当年则累加（按配种批次归年）。这里统计单日 statDate 内符合的 SUM(live_born)。
+     */
+    @Select("SELECT COALESCE(SUM(live_born),0) FROM t_farm_pig_farrow "
+        + " WHERE tenant_id = #{tenantId} "
+        + "   AND del_flag = '0' "
+        + "   AND farrow_date >= #{from} "
+        + "   AND farrow_date <  #{to} "
+        + "   AND YEAR(DATE_SUB(farrow_date, INTERVAL 114 DAY)) = #{batchYear}")
+    int sumYearBatchFarrowForDay(@Param("tenantId") String tenantId,
+                                 @Param("from") java.time.LocalDate from,
+                                 @Param("to") java.time.LocalDate to,
+                                 @Param("batchYear") int batchYear);
+
+    // ============================================================
+    //  日表回读聚合 → 月/年（BRD-STAT-001）
+    //  月/年高级指标从 t_farm_indicator_record 日表 Σ 回读，避免重复扫底表。
+    //  区间右开 [from, to) 按 stat_date。
+    // ============================================================
+
+    /**
+     * 区间内日表指标列 Σ 汇总（月/年高级指标的 Σ日 来源）。
+     * 返回各列 SUM，缺数据补 0。service 端按 row13/row14 公式二次计算率/窝均。
+     *
+     * @return 各 SUM 列：sumFarrowSow / sumBreedingSow / sumWeaningSow / sumAbnormal / sumTotalBorn /
+     *         sumLiveBorn / sumWeanedPiglet / sumDeathPiglet / sumMarketingCount / sumMarketingWeight /
+     *         sumEndProductionSow / sumEndReserve230 / sumEndNonprodSow / sumYearBatchFarrow / sumGrowthDays
+     */
+    @Select("SELECT "
+        + "  COALESCE(SUM(farrow_sow_count),0)         AS sumFarrowSow, "
+        + "  COALESCE(SUM(breeding_sow_count),0)       AS sumBreedingSow, "
+        + "  COALESCE(SUM(weaning_sow_count),0)        AS sumWeaningSow, "
+        + "  COALESCE(SUM(abnormal_sow_count),0)       AS sumAbnormal, "
+        + "  COALESCE(SUM(total_born_count),0)         AS sumTotalBorn, "
+        + "  COALESCE(SUM(live_born_count),0)          AS sumLiveBorn, "
+        + "  COALESCE(SUM(weaned_piglet_count),0)      AS sumWeanedPiglet, "
+        + "  COALESCE(SUM(death_piglet_count),0)       AS sumDeathPiglet, "
+        + "  COALESCE(SUM(marketing_pig_count),0)      AS sumMarketingCount, "
+        + "  COALESCE(SUM(marketing_weight),0)         AS sumMarketingWeight, "
+        + "  COALESCE(SUM(end_production_sow_count),0) AS sumEndProductionSow, "
+        + "  COALESCE(SUM(end_reserve_230_count),0)    AS sumEndReserve230, "
+        + "  COALESCE(SUM(end_nonprod_sow_count),0)    AS sumEndNonprodSow, "
+        + "  COALESCE(SUM(year_batch_farrow_count),0)  AS sumYearBatchFarrow, "
+        + "  COALESCE(SUM(growth_total_days),0)        AS sumGrowthDays "
+        + " FROM t_farm_indicator_record "
+        + " WHERE tenant_id = #{tenantId} "
+        + "   AND del_flag = '0' "
+        + "   AND stat_date >= #{from} "
+        + "   AND stat_date <  #{to}")
+    Map<String, Object> sumIndicatorRange(@Param("tenantId") String tenantId,
+                                          @Param("from") java.time.LocalDate from,
+                                          @Param("to") java.time.LocalDate to);
+
+    /**
+     * 累计匹配配种窝数（row13）：「每日用当天−114 在对应日期的配种母猪数累加」
+     * 等价于 [from−114, to−114) 偏移区间的配种母猪数 COUNT(DISTINCT pig_id)。
+     * from/to 传当月自然边界，方法内偏移 114 天。
+     */
+    @Select("SELECT COUNT(DISTINCT pig_id) FROM t_farm_pig_breeding "
+        + " WHERE tenant_id = #{tenantId} "
+        + "   AND del_flag = '0' "
+        + "   AND breeding_date >= DATE_SUB(#{from}, INTERVAL 114 DAY) "
+        + "   AND breeding_date <  DATE_SUB(#{to}, INTERVAL 114 DAY)")
+    int countMateLitterShifted(@Param("tenantId") String tenantId,
+                               @Param("from") java.time.LocalDateTime from,
+                               @Param("to") java.time.LocalDateTime to);
+
+    /** 区间内日表行数（= 已落盘天数，年均能繁存栏的「已历天数」分母）。 */
+    @Select("SELECT COUNT(*) FROM t_farm_indicator_record "
+        + " WHERE tenant_id = #{tenantId} "
+        + "   AND del_flag = '0' "
+        + "   AND stat_date >= #{from} "
+        + "   AND stat_date <  #{to}")
+    int countIndicatorDays(@Param("tenantId") String tenantId,
+                           @Param("from") java.time.LocalDate from,
+                           @Param("to") java.time.LocalDate to);
+
+    /**
+     * 区间内「断配间隔」总天数 + 总记录数（断奶→配种配对，DATETIME 区间右开按配种日）。
+     * 复用 avgWeanMateIntervalDays 同套配对逻辑，但返回 SUM + COUNT 供月/年累计。
+     *
+     * @return {totalDays:Long, totalCount:Long}
+     */
+    @Select("SELECT COALESCE(SUM(DATEDIFF(b.breeding_date, w.weaning_date)),0) AS totalDays, "
+        + "       COUNT(*) AS totalCount "
+        + " FROM t_farm_pig_breeding b "
+        + " JOIN ( "
+        + "   SELECT w1.pig_id, w1.weaning_date "
+        + "     FROM t_farm_pig_weaning w1 "
+        + "    WHERE w1.tenant_id = #{tenantId} AND w1.del_flag = '0' "
+        + " ) w ON w.pig_id = b.pig_id AND w.weaning_date <= b.breeding_date "
+        + " WHERE b.tenant_id = #{tenantId} "
+        + "   AND b.del_flag = '0' "
+        + "   AND b.breeding_date >= #{from} "
+        + "   AND b.breeding_date <  #{to} "
+        + "   AND w.weaning_date = ( "
+        + "     SELECT MAX(w2.weaning_date) FROM t_farm_pig_weaning w2 "
+        + "      WHERE w2.tenant_id = #{tenantId} AND w2.del_flag = '0' "
+        + "        AND w2.pig_id = b.pig_id AND w2.weaning_date <= b.breeding_date )")
+    Map<String, Object> sumWeanMateIntervalRange(@Param("tenantId") String tenantId,
+                                                 @Param("from") java.time.LocalDateTime from,
+                                                 @Param("to") java.time.LocalDateTime to);
+
+    // ============================================================
+    //  母猪性能 per-pig 聚合（BRD-STAT-001，upsertSowPerformance 用）
+    // ============================================================
+
+    /**
+     * 全部活母猪（pig_type='sow' 且 current_status&lt;&gt;'END'）的 id + ear_no + parity，
+     * 供按 pig_id 逐头聚合 sow_performance。
+     */
+    @Select("SELECT id, ear_no AS earNo, parity "
+        + " FROM t_farm_pig_info "
+        + " WHERE tenant_id = #{tenantId} "
+        + "   AND del_flag = '0' "
+        + "   AND pig_type = 'sow' "
+        + "   AND current_status <> 'END'")
+    List<Map<String, Object>> selectAliveSows(@Param("tenantId") String tenantId);
+
+    /**
+     * 单头母猪分娩累计：总产仔 / 总活仔 / 分娩窝数 / Σ平均出生重 / Σ平均怀孕天数（分娩−配种）。
+     *
+     * @return {totalBorn, totalLiveBorn, litterCount, sumAvgBornWeight, gestSum, gestCount}
+     */
+    @Select("SELECT COALESCE(SUM(f.total_born),0) AS totalBorn, "
+        + "       COALESCE(SUM(f.live_born),0) AS totalLiveBorn, "
+        + "       COUNT(*) AS litterCount, "
+        + "       COALESCE(SUM(f.avg_weight),0) AS sumAvgBornWeight, "
+        + "       COALESCE(SUM(CASE WHEN bd.breeding_date IS NOT NULL "
+        + "                          AND DATEDIFF(f.farrow_date, bd.breeding_date) BETWEEN 0 AND 200 "
+        + "                         THEN DATEDIFF(f.farrow_date, bd.breeding_date) END),0) AS gestSum, "
+        + "       SUM(CASE WHEN bd.breeding_date IS NOT NULL "
+        + "                 AND DATEDIFF(f.farrow_date, bd.breeding_date) BETWEEN 0 AND 200 "
+        + "                THEN 1 ELSE 0 END) AS gestCount "
+        + " FROM t_farm_pig_farrow f "
+        + " LEFT JOIN t_farm_pig_breeding bd "
+        + "        ON bd.id = f.breeding_id AND bd.tenant_id = f.tenant_id AND bd.del_flag = '0' "
+        + " WHERE f.tenant_id = #{tenantId} "
+        + "   AND f.del_flag = '0' "
+        + "   AND f.pig_id = #{pigId}")
+    Map<String, Object> sowFarrowAgg(@Param("tenantId") String tenantId,
+                                     @Param("pigId") Long pigId);
+
+    /**
+     * 单头母猪断奶累计：总断奶头数 / 断奶批数 / Σ平均断奶重。
+     *
+     * @return {totalWeaned, weanCount, sumAvgWeanedWeight}
+     */
+    @Select("SELECT COALESCE(SUM(weaned_count),0) AS totalWeaned, "
+        + "       COUNT(*) AS weanCount, "
+        + "       COALESCE(SUM(avg_weaned_weight),0) AS sumAvgWeanedWeight "
+        + " FROM t_farm_pig_weaning "
+        + " WHERE tenant_id = #{tenantId} "
+        + "   AND del_flag = '0' "
+        + "   AND pig_id = #{pigId}")
+    Map<String, Object> sowWeanAgg(@Param("tenantId") String tenantId,
+                                   @Param("pigId") Long pigId);
+
+    /** 单头母猪返空流总次数（t_farm_pig_abnormal）。 */
+    @Select("SELECT COUNT(*) FROM t_farm_pig_abnormal "
+        + " WHERE tenant_id = #{tenantId} "
+        + "   AND del_flag = '0' "
+        + "   AND pig_id = #{pigId}")
+    int sowAbnormalCount(@Param("tenantId") String tenantId,
+                         @Param("pigId") Long pigId);
+
+    /**
+     * 单头母猪「断奶→配种」配对天数（NPD 的分娩至断奶用，及断配天数）。
+     * 返回 Σ(配种日−上次断奶日) + 配对数。
+     *
+     * @return {sumDays:Long, cnt:Long}
+     */
+    @Select("SELECT COALESCE(SUM(DATEDIFF(b.breeding_date, w.weaning_date)),0) AS sumDays, "
+        + "       COUNT(*) AS cnt "
+        + " FROM t_farm_pig_breeding b "
+        + " JOIN ( "
+        + "   SELECT w1.pig_id, w1.weaning_date "
+        + "     FROM t_farm_pig_weaning w1 "
+        + "    WHERE w1.tenant_id = #{tenantId} AND w1.del_flag = '0' AND w1.pig_id = #{pigId} "
+        + " ) w ON w.pig_id = b.pig_id AND w.weaning_date <= b.breeding_date "
+        + " WHERE b.tenant_id = #{tenantId} AND b.del_flag = '0' AND b.pig_id = #{pigId} "
+        + "   AND w.weaning_date = ( "
+        + "     SELECT MAX(w2.weaning_date) FROM t_farm_pig_weaning w2 "
+        + "      WHERE w2.tenant_id = #{tenantId} AND w2.del_flag = '0' "
+        + "        AND w2.pig_id = #{pigId} AND w2.weaning_date <= b.breeding_date )")
+    Map<String, Object> sowWeanBreedAgg(@Param("tenantId") String tenantId,
+                                        @Param("pigId") Long pigId);
 }

@@ -46,6 +46,46 @@ public class AnnualIndicator extends TenantEntity {
     /** 死亡率（DEATH / (DEATH + ALIVE_END_OF_YEAR)，4 位小数）。 */
     private BigDecimal mortalityRate;
 
+    // ---- row14 高级指标（BRD-STAT-001 扩列） ----
+    /** 年均能繁母猪存栏数（(Σ日生产母猪+Σ日230后备)/已历天数）。 */
+    private BigDecimal avgBreedingSowStock;
+    /** 年配种头数（当年总配种次数）。 */
+    private Integer breedingCount;
+    /** 年配种率（Σ日配种次数/年均能繁母猪存栏）。 */
+    private BigDecimal breedRate;
+    /** 总产仔数（当年 Σ日总产仔）。 */
+    private Integer totalBornCount;
+    /** 年分娩次数（当年 Σ日分娩头数）。 */
+    private Integer farrowCount;
+    /** 总活仔数（当年 Σ日总活仔）。 */
+    private Integer totalLiveBorn;
+    /** 窝均活仔数（总活仔/年分娩次数）。 */
+    private BigDecimal avgLiveBornPerLitter;
+    /** 总断奶仔猪数（当年 Σ日断奶仔猪头数）。 */
+    private Integer totalWeanedPiglet;
+    /** 总断奶母猪头数（当年 Σ日断奶母猪头数）。 */
+    private Integer totalWeanedSow;
+    /** 窝均断奶数（总断奶仔猪/总断奶母猪）。 */
+    private BigDecimal avgWeanedPerLitter;
+    /** 当年断配间隔总天数。 */
+    private Integer weanBreedTotalDays;
+    /** 当年断配间隔总记录数。 */
+    private Integer weanBreedTotalCount;
+    /** 断配间隔（总天数/总记录数）。 */
+    private BigDecimal weanBreedInterval;
+    /** 全年总NPD天数（Σ日230后备+Σ日非生产母猪）。 */
+    private Integer totalNpdDays;
+    /** 年均NPD天数（总NPD/年均能繁存栏）。 */
+    private BigDecimal avgNpdDays;
+    /** 年分娩头数（Σ日当年配种批次分娩头数）。 */
+    private Integer yearBatchFarrowCount;
+    /** 年分娩率%（年分娩头数/年配种头数×100）。 */
+    private BigDecimal yearFarrowRate;
+    /** 平均出栏重（Σ日出栏总重/Σ日出栏头数）。 */
+    private BigDecimal avgMarketingWeight;
+    /** 分娩舍损失率（当年死亡仔猪数/总活仔数）。 */
+    private BigDecimal farrowLossRate;
+
     @TableLogic
     private String delFlag;
     private Long delUnique;

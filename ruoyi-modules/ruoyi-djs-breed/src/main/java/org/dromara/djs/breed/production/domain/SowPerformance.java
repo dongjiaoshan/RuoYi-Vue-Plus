@@ -1,5 +1,7 @@
 package org.dromara.djs.breed.production.domain;
 
+import com.baomidou.mybatisplus.annotation.FieldStrategy;
+import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableLogic;
 import com.baomidou.mybatisplus.annotation.TableName;
@@ -46,9 +48,35 @@ public class SowPerformance extends TenantEntity {
     private Integer totalBorn;
     private Integer totalLiveBorn;
     private Integer totalWeaned;
+    // 无源数据时这些指标置 null（不瞎编）；定时任务每次重算用 updateById，
+    // 必须 FieldStrategy.ALWAYS 才能把旧值覆盖成 null，否则 MP 默认跳过 null 字段（旧脏值残留）。
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
     private BigDecimal avgBornWeight;
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
     private BigDecimal avgWeanedWeight;
     private LocalDate lastUpdateDate;
+
+    // ---- row11 指标算法列（BRD-STAT-001 扩列；可空 → 同样 ALWAYS） ----
+    /** 平均怀孕天数（配种到分娩天数之和/状态变化次数）。 */
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
+    private BigDecimal avgGestationDays;
+    /** 断奶-配种天数（断奶到配种天数之和/状态变化次数）。 */
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
+    private BigDecimal weanBreedDays;
+    /** 返空流总次数。 */
+    private Integer abnormalTotal;
+    /** 窝均产仔数（总产仔之和/胎次）。 */
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
+    private BigDecimal avgBornPerLitter;
+    /** 窝均活仔数（活产之和/胎次）。 */
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
+    private BigDecimal avgLiveBornPerLitter;
+    /** 窝均断奶数（断奶头数之和/胎次）。 */
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
+    private BigDecimal avgWeanedPerLitter;
+    /** NPD（365−配种至分娩天数−分娩至断奶天数）。 */
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
+    private BigDecimal npd;
 
     /** 软删标志（BRD-DASH-001 ALTER 补字段）。 */
     @TableLogic

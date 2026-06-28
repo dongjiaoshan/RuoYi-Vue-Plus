@@ -1,6 +1,7 @@
 package org.dromara.djs.warehouse.product.mapper;
 
 import org.apache.ibatis.annotations.Param;
+import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 import org.dromara.common.mybatis.core.mapper.BaseMapperPlus;
 import org.dromara.djs.warehouse.product.domain.ProductInhouse;
@@ -31,4 +32,15 @@ public interface ProductInhouseMapper extends BaseMapperPlus<ProductInhouse, Pro
     @Update("UPDATE t_warehouse_product_inhouse SET product_weight = product_weight - #{qty} "
         + "WHERE id = #{id} AND del_flag = '0' AND product_weight >= #{qty}")
     int deductWeightById(@Param("id") Long id, @Param("qty") BigDecimal qty);
+
+    /**
+     * 邓博 row44 + A5：某产品「今日待打包余额」= SUM(product_weight) of 今日 product_inhouse（未消耗，全部人）。
+     *
+     * <p>该余额 = 今日领用 − 生产耗用 − 已退 − 已损（领用产 inhouse；打包 consumeInhouse / 退回 / 损耗都减
+     * inhouse），故 = 可打包食品原料当前还能退/损的最大量 —— 自动净掉「产品生产耗用」（row44 核心：原 cap
+     * 漏减生产耗用导致可超额），免重复计。仅今日（DATE(produce_date)=CURDATE()），与 today 额度语义一致。</p>
+     */
+    @Select("SELECT COALESCE(SUM(product_weight), 0) FROM t_warehouse_product_inhouse "
+        + " WHERE product_id = #{productId} AND DATE(produce_date) = CURDATE() AND del_flag = '0'")
+    BigDecimal sumTodayRemaining(@Param("productId") Long productId);
 }

@@ -213,6 +213,11 @@ public class PigCutRecordServiceImpl
             throw new ServiceException("白条状态不符（当前：" + bar.getStatus() + "，需 in_stock）");
         }
 
+        // TRC 白条出库（领用）事件（邓博 row19 拆出独立事件）：白条被领用出库进入分割的时刻按耳号写追溯流水。
+        // 重量取领用称重（未录回落白条入库重 in_weight）。recordEventByEarNo 全程容错（无生码白条 warn 跳过）。
+        traceService.recordEventByEarNo(bar.getEarNo(), TraceContentConst.WHITE_BAR_PICK,
+            bo.getPickupWeight() != null ? bo.getPickupWeight() : bar.getInWeight());
+
         // FIX-WMS-CUTPICKUP-SPLIT-001：admin 按燎毛产出行逐条领用（inhouseId 非空）→ 拆条路径；
         // mp 旧端 / 整只兜底（inhouseId 空）→ 整猪路径（行为同旧）。
         if (bo.getInhouseId() != null) {
@@ -602,7 +607,10 @@ public class PigCutRecordServiceImpl
 
         // ② 分割损耗 = 出库重 − 分割产品重量之和（Σ cut_out_in by white_bar_id）
         BigDecimal cutTotal = stockFlowMapper.sumCutOutByWhiteBarId(record.getWhiteBarId());
-        BigDecimal cutLoss = outWeight.subtract(cutTotal == null ? BigDecimal.ZERO : cutTotal);
+        BigDecimal cutProductWeight = cutTotal == null ? BigDecimal.ZERO : cutTotal;
+        BigDecimal cutLoss = outWeight.subtract(cutProductWeight);
+        // row8（邓博）：把分割产品重量 + 分割损耗落到白条表（原仅 compute-on-read，口径同此处 loss_flow）
+        barInfoMapper.updateCutResult(record.getWhiteBarId(), cutProductWeight, cutLoss, userId);
         LossFlow cut = new LossFlow();
         cut.setLossType(LOSS_TYPE_CUT);
         cut.setLossWeight(cutLoss);

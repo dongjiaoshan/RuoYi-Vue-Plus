@@ -5,6 +5,7 @@ import org.dromara.djs.breed.dashboard.domain.vo.AgeBucketVo;
 import org.dromara.djs.breed.dashboard.domain.vo.AnnualIndicatorVo;
 import org.dromara.djs.breed.dashboard.domain.vo.BreedingAnnualVo;
 import org.dromara.djs.breed.dashboard.domain.vo.DailyOverviewVo;
+import org.dromara.djs.breed.dashboard.domain.vo.FarmIndicatorRecordVo;
 import org.dromara.djs.breed.dashboard.domain.vo.FatteningTrendVo;
 import org.dromara.djs.breed.dashboard.domain.vo.InventoryVo;
 import org.dromara.djs.breed.dashboard.domain.vo.MonthActivityVo;
@@ -93,6 +94,18 @@ public interface IDashboardService {
      * @param year 年份；null → 当前年
      */
     AnnualIndicatorVo getAnnualIndicator(Integer year);
+
+    /**
+     * 按 stat_date 范围查养殖农场日数据记录 t_farm_indicator_record（BRD-STAT-001，只读，历史日表）。
+     *
+     * <p>mp/admin 看历史日表用；不影响实时端点。from/to 任一为 null 时默认查近 30 天。
+     * 结果按 stat_date 升序。</p>
+     *
+     * @param from 起始日期（含），null → to 前推 29 天 / 今日前推 29 天
+     * @param to   结束日期（含），null → 今日
+     * @return 区间内的日指标记录列表（无数据返空列表，不抛）
+     */
+    List<FarmIndicatorRecordVo> listIndicatorRecords(LocalDate from, LocalDate to);
 
     /**
      * 手动触发聚合（dev 调试用 / prod 由 SnailJob 调度）。

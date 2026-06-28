@@ -265,6 +265,29 @@ public interface StockFlowMapper extends BaseMapperPlus<StockFlow, StockFlowVo> 
                                           @Param("flowTypes") java.util.Collection<String> flowTypes);
 
     /**
+     * 全部人版（不按 operator 过滤）：某产品今日多键流水 SUM（邓博 row44 + Q3：物资额度按全部人全量，
+     * admin/mp 同一池，PC 录入也计入）。多键聚合，与 {@link #sumTodayByUserProductTypes} 同口径仅去掉 operator。
+     */
+    @Select("<script>"
+        + "SELECT COALESCE(SUM(change_quantity), 0) "
+        + "  FROM t_warehouse_stock_flow "
+        + " WHERE product_id  = #{productId} "
+        + "   AND DATE(flow_date) = CURDATE() "
+        + "   AND del_flag    = '0' "
+        + "   AND flow_type IN "
+        + "   <foreach collection='flowTypes' item='t' open='(' separator=',' close=')'>#{t}</foreach> "
+        + "</script>")
+    BigDecimal sumTodayByProductTypes(@Param("productId") Long productId,
+                                      @Param("flowTypes") java.util.Collection<String> flowTypes);
+
+    /** 全部人版单键：某产品今日某 flow_type SUM（不按 operator 过滤，row44/Q3）。 */
+    @Select("SELECT COALESCE(SUM(change_quantity), 0) FROM t_warehouse_stock_flow "
+        + " WHERE product_id = #{productId} AND DATE(flow_date) = CURDATE() AND del_flag = '0' "
+        + "   AND flow_type = #{flowType}")
+    BigDecimal sumTodayByProductType(@Param("productId") Long productId,
+                                     @Param("flowType") String flowType);
+
+    /**
      * 按当前用户 + 今日 + 流水类型集合（IN）SUM（不限定 productId；全产品「今日数据」卡片用）。
      *
      * @see #sumTodayByUserProductTypes 多键聚合背景

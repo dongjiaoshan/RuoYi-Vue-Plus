@@ -55,6 +55,30 @@ public class MonthlyProduction extends TenantEntity {
     /** 月度出栏总重（kg）。 */
     private BigDecimal marketingWeight;
 
+    // ---- row13 高级指标（BRD-STAT-001 扩列） ----
+    /** 当月累计匹配配种窝数（每日 当天−114 配种母猪数累加）。 */
+    private Integer mateLitterCount;
+    /** 分娩率%（当月分娩头数/累计匹配配种窝数×100）。 */
+    private BigDecimal farrowRate;
+    /** 配种率%（当月配种母猪数/((Σ日生产母猪+Σ日230后备)/当月天数)×100）。 */
+    private BigDecimal breedRate;
+    /** 断配间隔（当月断到配天数之和/完成断到配母猪头数）。 */
+    private BigDecimal weanBreedInterval;
+    /** 返空流头数（当月返空流母猪头数）。 */
+    private Integer abnormalCount;
+    /** 月均NPD天数。 */
+    private BigDecimal npdDays;
+    /** 总产仔数（当月 SUM total_born）。 */
+    private Integer totalBornCount;
+    /** 窝均总产仔数（总产仔/分娩母猪头数）。 */
+    private BigDecimal avgBornPerLitter;
+    /** 窝均活仔（总活仔/分娩母猪头数）。 */
+    private BigDecimal avgLiveBornPerLitter;
+    /** 窝均断奶（断奶仔猪数/断奶母头数）。 */
+    private BigDecimal avgWeanedPerLitter;
+    /** 分娩舍损失率（当月死亡仔猪数/当月总活仔数）。 */
+    private BigDecimal farrowLossRate;
+
     @TableLogic
     private String delFlag;
     private Long delUnique;

@@ -112,6 +112,16 @@ public class BarInfo extends TenantEntity {
     private BigDecimal acidRemoveLoss;
 
     /**
+     * 分割产品重量 kg（白条分割成产品后总重 = Σ cut_out_in by white_bar_id，cutDone 阶段落库，邓博 row8）。
+     */
+    private BigDecimal cutProductWeight;
+
+    /**
+     * 分割损耗 kg（= 出库重量 − 分割产品重量，cutDone 阶段落库，邓博 row8）。
+     */
+    private BigDecimal cutLoss;
+
+    /**
      * 采购日期（仅外购）。
      */
     private Date buyDate;

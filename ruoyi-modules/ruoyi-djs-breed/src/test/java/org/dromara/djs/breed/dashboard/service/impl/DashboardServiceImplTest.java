@@ -1,6 +1,7 @@
 package org.dromara.djs.breed.dashboard.service.impl;
 
 import org.dromara.djs.breed.dashboard.domain.AnnualIndicator;
+import org.dromara.djs.breed.dashboard.domain.FarmIndicatorRecord;
 import org.dromara.djs.breed.dashboard.domain.MonthlyProduction;
 import org.dromara.djs.breed.dashboard.domain.SowRecord;
 import org.dromara.djs.breed.dashboard.domain.vo.Activity7dVo;
@@ -9,11 +10,14 @@ import org.dromara.djs.breed.dashboard.domain.vo.AnnualIndicatorVo;
 import org.dromara.djs.breed.dashboard.domain.vo.BreedingAnnualVo;
 import org.dromara.djs.breed.dashboard.domain.vo.DailyOverviewVo;
 import org.dromara.djs.breed.dashboard.domain.vo.InventoryVo;
+import org.dromara.djs.breed.dashboard.domain.vo.FarmIndicatorRecordVo;
 import org.dromara.djs.breed.dashboard.domain.vo.MonthlyComparisonVo;
 import org.dromara.djs.breed.dashboard.mapper.AggregateQueryMapper;
 import org.dromara.djs.breed.dashboard.mapper.AnnualIndicatorMapper;
+import org.dromara.djs.breed.dashboard.mapper.FarmIndicatorRecordMapper;
 import org.dromara.djs.breed.dashboard.mapper.MonthlyProductionMapper;
 import org.dromara.djs.breed.dashboard.mapper.SowRecordMapper;
+import org.dromara.djs.breed.production.mapper.SowPerformanceMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
@@ -75,13 +79,18 @@ class DashboardServiceImplTest {
     private AnnualIndicatorMapper annualIndicatorMapper;
     @Mock
     private AggregateQueryMapper aggregateQueryMapper;
+    @Mock
+    private FarmIndicatorRecordMapper farmIndicatorRecordMapper;
+    @Mock
+    private SowPerformanceMapper sowPerformanceMapper;
 
     private DashboardServiceImpl service;
 
     @BeforeEach
     void setup() {
         service = new DashboardServiceImpl(
-            sowRecordMapper, monthlyProductionMapper, annualIndicatorMapper, aggregateQueryMapper);
+            sowRecordMapper, monthlyProductionMapper, annualIndicatorMapper, aggregateQueryMapper,
+            farmIndicatorRecordMapper, sowPerformanceMapper);
     }
 
     @Test
@@ -259,9 +268,13 @@ class DashboardServiceImplTest {
         mk.put("weight", BigDecimal.ZERO);
         when(aggregateQueryMapper.aggregateMarketingInRange(anyString(), any(), any())).thenReturn(mk);
         when(aggregateQueryMapper.countAliveSows(anyString())).thenReturn(20);
+        // BRD-STAT-001 新增链路 stub（无母猪 → sow_performance 不写；日表 existing null → insert）
+        when(aggregateQueryMapper.selectAliveSows(anyString())).thenReturn(new ArrayList<>());
+        when(aggregateQueryMapper.snapshotByTypeStatus(anyString())).thenReturn(new ArrayList<>());
         when(sowRecordMapper.selectOne(any())).thenReturn(null);
         when(monthlyProductionMapper.selectOne(any())).thenReturn(null);
         when(annualIndicatorMapper.selectOne(any())).thenReturn(null);
+        when(farmIndicatorRecordMapper.selectOne(any())).thenReturn(null);
 
         String result = service.triggerAggregate(LocalDate.of(2026, 5, 25));
 
@@ -271,12 +284,13 @@ class DashboardServiceImplTest {
         verify(aggregateQueryMapper, atLeastOnce())
             .countStatusEventInRange(anyString(), eq("ELIMINATE"), any(), any());
 
-        // 三表全 INSERT（existing 都返 null → 走 insert 分支）
+        // 5 表全 INSERT（existing 都返 null → 走 insert 分支；sow_performance 无母猪故不写）
+        verify(farmIndicatorRecordMapper).insert(any(FarmIndicatorRecord.class));
         verify(sowRecordMapper).insert(any(SowRecord.class));
         verify(monthlyProductionMapper).insert(any(MonthlyProduction.class));
         verify(annualIndicatorMapper).insert(any(AnnualIndicator.class));
 
-        assertThat(result).contains("ok").contains("2026-05-25");
+        assertThat(result).contains("ok").contains("2026-05-25").contains("indicator_record");
     }
 
     @Test
@@ -419,8 +433,146 @@ class DashboardServiceImplTest {
     }
 
     // ============================================================
+    //  BRD-STAT-001 — 日表落盘 / 母猪性能 / 历史读端点
+    // ============================================================
+
+    @Test
+    @DisplayName("upsertFarmIndicator: 期末存栏快照按 pig_type+current_status 正确归类（生产/后备/非生产母猪 + 公/肥/仔）")
+    void testUpsertFarmIndicatorEndStock() {
+        // 期末快照：sow PZ=3(生产) / sow HB=2(后备) / sow KH=1(生产且非生产) / boar=4 / fattening=30 / piglet=20
+        when(aggregateQueryMapper.snapshotByTypeStatus(anyString())).thenReturn(List.of(
+            snap("sow", "PZ", 3),
+            snap("sow", "HB", 2),
+            snap("sow", "KH", 1),
+            snap("boar", "", 4),
+            snap("fattening", "", 30),
+            snap("piglet", "", 20)
+        ));
+        when(aggregateQueryMapper.countReserve230(anyString(), any())).thenReturn(1);
+        // 出栏聚合 stub：2 头 / 200kg / 背膘 90mm 共 2 头有背膘
+        Map<String, Object> mkt = new LinkedHashMap<>();
+        mkt.put("cnt", 2L);
+        mkt.put("weight", new BigDecimal("200"));
+        mkt.put("backfatSum", new BigDecimal("90"));
+        mkt.put("backfatCnt", 2L);
+        when(aggregateQueryMapper.aggregateMarketingForDay(anyString(), any(), any())).thenReturn(mkt);
+        // 断奶总重 / 生长天数 stub
+        Map<String, Object> wean = new LinkedHashMap<>();
+        wean.put("weanWeightSum", new BigDecimal("40"));
+        wean.put("growthDaysSum", 320L);
+        when(aggregateQueryMapper.aggregateMarketingWeanForDay(anyString(), any(), any())).thenReturn(wean);
+        // 不写月/年路径的 sow_performance（无母猪）
+        when(aggregateQueryMapper.selectAliveSows(anyString())).thenReturn(new ArrayList<>());
+        when(farmIndicatorRecordMapper.selectOne(any())).thenReturn(null);
+
+        service.triggerAggregate(LocalDate.of(2026, 6, 25));
+
+        org.mockito.ArgumentCaptor<FarmIndicatorRecord> cap = org.mockito.ArgumentCaptor.forClass(FarmIndicatorRecord.class);
+        verify(farmIndicatorRecordMapper).insert(cap.capture());
+        FarmIndicatorRecord r = cap.getValue();
+        // 生产母猪 = 非后备非终止非空 = PZ(3) + KH(1) = 4
+        assertThat(r.getEndProductionSowCount()).isEqualTo(4);
+        // 后备 = HB = 2；非生产 = KH = 1
+        assertThat(r.getEndReserveCount()).isEqualTo(2);
+        assertThat(r.getEndNonprodSowCount()).isEqualTo(1);
+        // 公/肥/仔
+        assertThat(r.getEndBoarCount()).isEqualTo(4);
+        assertThat(r.getEndFatteningCount()).isEqualTo(30);
+        assertThat(r.getEndPigletCount()).isEqualTo(20);
+        assertThat(r.getEndReserve230Count()).isEqualTo(1);
+        // 出栏聚合：平均出栏重 = 200/2 = 100.000；平均背膘 = 90/2 = 45.000
+        assertThat(r.getMarketingPigCount()).isEqualTo(2);
+        assertThat(r.getAvgMarketingWeight()).isEqualByComparingTo(new BigDecimal("100.000"));
+        assertThat(r.getAvgBackfatThickness()).isEqualByComparingTo(new BigDecimal("45.000"));
+        // 净增重 = 出栏总重 200 - 断奶总重 40 = 160.000；日增重 = 160/320 = 0.500
+        assertThat(r.getNetGainWeight()).isEqualByComparingTo(new BigDecimal("160.000"));
+        assertThat(r.getGrowthTotalDays()).isEqualTo(320);
+        assertThat(r.getDailyGainWeight()).isEqualByComparingTo(new BigDecimal("0.500"));
+    }
+
+    @Test
+    @DisplayName("upsertSowPerformance: 单头母猪累计 + 窝均 + 平均怀孕天数 + NPD 公式")
+    void testUpsertSowPerformance() {
+        // 1 头活母猪 parity=4
+        Map<String, Object> sow = new LinkedHashMap<>();
+        sow.put("id", 1001L);
+        sow.put("earNo", "0625-001");
+        sow.put("parity", 4);
+        when(aggregateQueryMapper.selectAliveSows(anyString())).thenReturn(List.of(sow));
+        // 分娩累计：总产仔 48 / 总活仔 44 / 4 窝 / Σavg出生重 5.6 / 怀孕天数和 456 / 怀孕配对 4
+        Map<String, Object> fa = new LinkedHashMap<>();
+        fa.put("totalBorn", 48);
+        fa.put("totalLiveBorn", 44);
+        fa.put("litterCount", 4);
+        fa.put("sumAvgBornWeight", new BigDecimal("5.6"));
+        fa.put("gestSum", 456);
+        fa.put("gestCount", 4);
+        when(aggregateQueryMapper.sowFarrowAgg(anyString(), eq(1001L))).thenReturn(fa);
+        // 断奶累计：总断奶 40 / 4 批 / Σavg断奶重 26.0
+        Map<String, Object> we = new LinkedHashMap<>();
+        we.put("totalWeaned", 40);
+        we.put("weanCount", 4);
+        we.put("sumAvgWeanedWeight", new BigDecimal("26.0"));
+        when(aggregateQueryMapper.sowWeanAgg(anyString(), eq(1001L))).thenReturn(we);
+        when(aggregateQueryMapper.sowAbnormalCount(anyString(), eq(1001L))).thenReturn(2);
+        // 断配：和 24 / 3 次
+        Map<String, Object> wb = new LinkedHashMap<>();
+        wb.put("sumDays", 24);
+        wb.put("cnt", 3);
+        when(aggregateQueryMapper.sowWeanBreedAgg(anyString(), eq(1001L))).thenReturn(wb);
+        when(sowPerformanceMapper.selectOne(any())).thenReturn(null);
+        // 让 trigger 其余路径不炸
+        when(aggregateQueryMapper.snapshotByTypeStatus(anyString())).thenReturn(new ArrayList<>());
+        when(farmIndicatorRecordMapper.selectOne(any())).thenReturn(null);
+
+        service.triggerAggregate(LocalDate.of(2026, 6, 25));
+
+        org.mockito.ArgumentCaptor<org.dromara.djs.breed.production.domain.SowPerformance> cap =
+            org.mockito.ArgumentCaptor.forClass(org.dromara.djs.breed.production.domain.SowPerformance.class);
+        verify(sowPerformanceMapper).insert(cap.capture());
+        org.dromara.djs.breed.production.domain.SowPerformance sp = cap.getValue();
+        assertThat(sp.getPigId()).isEqualTo(1001L);
+        assertThat(sp.getTotalBorn()).isEqualTo(48);
+        assertThat(sp.getTotalLiveBorn()).isEqualTo(44);
+        assertThat(sp.getTotalWeaned()).isEqualTo(40);
+        assertThat(sp.getAbnormalTotal()).isEqualTo(2);
+        // 平均出生重 = 5.6/4 = 1.400；平均断奶重 = 26.0/4 = 6.500
+        assertThat(sp.getAvgBornWeight()).isEqualByComparingTo(new BigDecimal("1.400"));
+        assertThat(sp.getAvgWeanedWeight()).isEqualByComparingTo(new BigDecimal("6.500"));
+        // 平均怀孕天数 = 456/4 = 114.00（2 位）
+        assertThat(sp.getAvgGestationDays()).isEqualByComparingTo(new BigDecimal("114.00"));
+        // 断奶-配种天数 = 24/3 = 8.00
+        assertThat(sp.getWeanBreedDays()).isEqualByComparingTo(new BigDecimal("8.00"));
+        // 窝均（按 parity=4）：产仔 48/4=12.000，活仔 44/4=11.000，断奶 40/4=10.000
+        assertThat(sp.getAvgBornPerLitter()).isEqualByComparingTo(new BigDecimal("12.000"));
+        assertThat(sp.getAvgLiveBornPerLitter()).isEqualByComparingTo(new BigDecimal("11.000"));
+        assertThat(sp.getAvgWeanedPerLitter()).isEqualByComparingTo(new BigDecimal("10.000"));
+        // NPD = 365 - 114 - 8 = 243.00
+        assertThat(sp.getNpd()).isEqualByComparingTo(new BigDecimal("243.00"));
+    }
+
+    @Test
+    @DisplayName("listIndicatorRecords: from/to 缺省查近 30 天 + 升序传递")
+    void testListIndicatorRecords() {
+        when(farmIndicatorRecordMapper.selectVoList(any())).thenReturn(new ArrayList<>());
+        List<FarmIndicatorRecordVo> list = service.listIndicatorRecords(null, null);
+        assertThat(list).isNotNull().isEmpty();
+        // from 晚于 to → 空列表（不打 DB）
+        List<FarmIndicatorRecordVo> bad = service.listIndicatorRecords(LocalDate.of(2026, 6, 30), LocalDate.of(2026, 6, 1));
+        assertThat(bad).isEmpty();
+    }
+
+    // ============================================================
     //  test helpers
     // ============================================================
+
+    private static Map<String, Object> snap(String pigType, String cs, int cnt) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("pigType", pigType);
+        m.put("cs", cs);
+        m.put("cnt", cnt);
+        return m;
+    }
 
     private static Map<String, Object> ageRow(int age) {
         Map<String, Object> m = new LinkedHashMap<>();

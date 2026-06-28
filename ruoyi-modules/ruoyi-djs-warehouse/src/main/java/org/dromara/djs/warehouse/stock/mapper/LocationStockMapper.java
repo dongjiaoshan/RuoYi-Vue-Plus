@@ -550,7 +550,7 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
 
     /**
      * mp 物资领用「待领产品卡」列表（FIX-WMS-MATISSUE-001）：以某业态（{@code belong_type} 一或多值）产品为粒度，
-     * LEFT JOIN location_stock 聚合当前库存 + 默认库位，并子查询当前登录人今日已领 / 已退 / 已损。
+     * LEFT JOIN location_stock 聚合当前库存 + 默认库位，并子查询今日已领 / 已退 / 已损（全部人，与 admin 同口径）。
      *
      * <p>口径：</p>
      * <ul>
@@ -560,13 +560,13 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
      *       为空则跨库位 SUM 全业态产品（tab 默认态）。</li>
      *   <li>{@code currentStock} = 跨库位（或指定库位）SUM(product_stock)；产品无 location_stock 行 → 0。</li>
      *   <li>{@code defaultLocationId} = 该产品库存最多的库位（点卡进表单时作默认 locationId）。</li>
-     *   <li>今日三量 = 子查询 {@code stock_flow WHERE operator_id=#{userId} AND product_id=p.id
-     *       AND flow_type=? AND DATE(flow_date)=CURDATE()}，与 {@code MatFlowServiceImpl.ensureTodayCapacity}
-     *       同源（保证卡上「最大可领 / 退 / 损」与提交时后端额度校验一致）。</li>
+     *   <li>今日三量 = 子查询 {@code stock_flow WHERE product_id=p.id AND flow_type=? AND DATE(flow_date)=CURDATE()}
+     *       （<b>全部人</b>，不按 operator 过滤——PC/admin 录入也计入，与 {@code MatFlowServiceImpl.ensureTodayCapacity}
+     *       的全量额度口径一致；问题来源邓博测试 row3：PC 录入的领用/退回/损耗在 mp 不显示）。</li>
      * </ul>
      *
      * <p>仅返启用产品（{@code product_status=0}）。排序：库存升序（缺货优先）再按产品名。
-     * 租户单租户显式 {@code tenant_id='1001'}。{@code userId} 为空（理论不会，端点已 SaCheckLogin）时三量子查询返 0。</p>
+     * 租户单租户显式 {@code tenant_id='1001'}。{@code lastPickTime}（排序用）取该产品全部人今日最近一次领用时间。</p>
      *
      * @param belongTypes 字典 {@code djs_belong_type} 值列表（如 [pork, white_bar] / [vegetable]）
      * @param locationId  库位 ID（可空，chip 选中态）
@@ -590,19 +590,19 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
                  ORDER BY s2.product_stock DESC, s2.location_id ASC
                  LIMIT 1)                         AS defaultLocationId,
                COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
-                          WHERE f.operator_id = #{userId} AND f.product_id = p.id
+                          WHERE f.product_id = p.id
                             AND f.flow_type IN ('prod_pick_out','dept_pick_out','pick_out') AND DATE(f.flow_date) = CURDATE()
                             AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayPicked,
                COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
-                          WHERE f.operator_id = #{userId} AND f.product_id = p.id
+                          WHERE f.product_id = p.id
                             AND f.flow_type IN ('prod_return_in','pick_return_in') AND DATE(f.flow_date) = CURDATE()
                             AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayReturned,
                COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
-                          WHERE f.operator_id = #{userId} AND f.product_id = p.id
+                          WHERE f.product_id = p.id
                             AND f.flow_type = 'loss' AND DATE(f.flow_date) = CURDATE()
                             AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayLoss,
                (SELECT MAX(f.flow_date) FROM t_warehouse_stock_flow f
-                  WHERE f.operator_id = #{userId} AND f.product_id = p.id
+                  WHERE f.product_id = p.id
                     AND f.flow_type IN ('prod_pick_out','dept_pick_out','pick_out') AND DATE(f.flow_date) = CURDATE()
                     AND f.del_flag = '0' AND f.tenant_id = '1001') AS lastPickTime
           FROM t_warehouse_product_info p
@@ -769,11 +769,11 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
      *   <li>{@code currentStock} = 该商品在该 location_type 全部库位（或指定 locationId）的 SUM(product_stock)。</li>
      *   <li>{@code defaultLocationId} = 该商品在该 location_type 下库存最多的库位（点卡进表单作默认 locationId）。</li>
      *   <li>{@code buyClass} = 商品分类（字典 djs_buy_class），前端去重成分类筛选 chip。</li>
-     *   <li>今日三量子查询沿用 {@link #selectMatIssueItems} 写法（{@code operator_id=#{userId}}），与提交时
+     *   <li>今日三量子查询沿用 {@link #selectMatIssueItems} 写法（<b>全部人</b>，不按 operator 过滤），与提交时
      *       额度校验同源。</li>
      * </ul>
      *
-     * <p>租户单租户显式 {@code tenant_id='1001'}（V1）。{@code userId} 为空时三量子查询返 0。</p>
+     * <p>租户单租户显式 {@code tenant_id='1001'}（V1）。</p>
      *
      * @param locationType 字典 {@code djs_location_type} 的 value（{@code crop_loc} / {@code farm_loc}）
      * @param locationId   库位 ID（可空，chip 选中态过滤；为空则该类型全库位聚合）
@@ -803,19 +803,19 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
                  ORDER BY s2.product_stock DESC, s2.location_id ASC
                  LIMIT 1)                         AS defaultLocationId,
                COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
-                          WHERE f.operator_id = #{userId} AND f.product_id = p.id
+                          WHERE f.product_id = p.id
                             AND f.flow_type IN ('prod_pick_out','dept_pick_out','pick_out') AND DATE(f.flow_date) = CURDATE()
                             AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayPicked,
                COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
-                          WHERE f.operator_id = #{userId} AND f.product_id = p.id
+                          WHERE f.product_id = p.id
                             AND f.flow_type IN ('prod_return_in','pick_return_in') AND DATE(f.flow_date) = CURDATE()
                             AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayReturned,
                COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
-                          WHERE f.operator_id = #{userId} AND f.product_id = p.id
+                          WHERE f.product_id = p.id
                             AND f.flow_type = 'loss' AND DATE(f.flow_date) = CURDATE()
                             AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayLoss,
                (SELECT MAX(f.flow_date) FROM t_warehouse_stock_flow f
-                  WHERE f.operator_id = #{userId} AND f.product_id = p.id
+                  WHERE f.product_id = p.id
                     AND f.flow_type IN ('prod_pick_out','dept_pick_out','pick_out') AND DATE(f.flow_date) = CURDATE()
                     AND f.del_flag = '0' AND f.tenant_id = '1001') AS lastPickTime
           FROM t_warehouse_product_info p

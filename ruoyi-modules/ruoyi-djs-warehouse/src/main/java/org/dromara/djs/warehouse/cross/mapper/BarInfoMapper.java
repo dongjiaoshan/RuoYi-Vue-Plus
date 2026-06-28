@@ -93,6 +93,29 @@ public interface BarInfoMapper extends BaseMapperPlus<BarInfo, BarInfo> {
                               @Param("userId") Long userId);
 
     /**
+     * 分割完成结算点回写「分割产品重量 + 分割损耗」到白条表（邓博 row8：白条表加这两字段落库）。
+     *
+     * <p>原仅 compute-on-read（PigCutRecordVo 上算）；现在 cutDone 时持久化，口径与 loss_flow 双写一致：
+     * {@code cut_product_weight = Σ cut_out_in by white_bar_id}（分割产品重量之和），
+     * {@code cut_loss = 出库重量 − 分割产品重量}。无状态条件（cutDone 后白条已是 cut_done 终态），
+     * 由调用点的 cutting→cut_done 乐观锁保证只走一次。</p>
+     *
+     * @param id               白条主键
+     * @param cutProductWeight 分割产品重量（kg）
+     * @param cutLoss          分割损耗（kg，= 出库重 − 分割产品重量）
+     * @param userId           操作人
+     * @return affectedRows
+     */
+    @Update("UPDATE t_warehouse_bar_info "
+        + "   SET cut_product_weight=#{cutProductWeight}, cut_loss=#{cutLoss},"
+        + "       update_by=#{userId}, update_time=NOW() "
+        + " WHERE id = #{id} AND del_flag = '0'")
+    int updateCutResult(@Param("id") Long id,
+                        @Param("cutProductWeight") BigDecimal cutProductWeight,
+                        @Param("cutLoss") BigDecimal cutLoss,
+                        @Param("userId") Long userId);
+
+    /**
      * 发货月台领用出库乐观锁：bar_info.status in_stock → cut_done + 写出库字段（猪肉全闭环 Part I P6）。
      *
      * <p>发货月台领用（{@code submitWhiteBarOut} 来源走燎毛白条整只时）回写 bar 出库基础数据，

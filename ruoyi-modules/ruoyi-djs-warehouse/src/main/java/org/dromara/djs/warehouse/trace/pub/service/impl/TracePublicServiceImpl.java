@@ -561,18 +561,21 @@ public class TracePublicServiceImpl
         // 仓库种植记录（播种 / 采收兜底时间源）：按 plot_id + product_id 取一条
         PlantingRecord planting = findPlantingRecord(code.getPlotId(), code.getProductId());
 
+        // 邓博 row19：种植 / 采摘节点写班组名（非人员名）；取仓库种植记录的 team_name，无则 null。
+        String teamName = planting != null ? planting.getTeamName() : null;
+
         // 播种
         LocalDate sowDate = planting != null ? toLocalDate(planting.getPlantDate()) : null;
         if (sowDate == null && code.getHarvestDate() != null && code.getPlantDays() != null) {
             sowDate = code.getHarvestDate().minusDays(code.getPlantDays());
         }
-        addProcessNode(timeline, TraceContentConst.SOWING, atDayStart(sowDate));
+        addProcessNode(timeline, TraceContentConst.SOWING, atDayStart(sowDate), teamName);
 
         // 采收
         LocalDate harvestDate = code.getHarvestDate() != null
             ? code.getHarvestDate()
             : (planting != null ? toLocalDate(planting.getHarvestDate()) : null);
-        addProcessNode(timeline, TraceContentConst.HARVEST, atDayStart(harvestDate));
+        addProcessNode(timeline, TraceContentConst.HARVEST, atDayStart(harvestDate), teamName);
 
         // 毛菜处理
         VegetableHandle handle = findVegetableHandle(code.getPlotId(), code.getProductId());
@@ -624,12 +627,19 @@ public class TracePublicServiceImpl
     /** 时间非空才补节点（避免显示无意义空时间工序行）。 */
     private void addProcessNode(List<PublicTraceVo.TimelineNode> timeline,
                                 String traceContent, LocalDateTime time) {
+        addProcessNode(timeline, traceContent, time, null);
+    }
+
+    /** 时间非空才补节点；operatorName 可空（种植/采摘传班组名，邓博 row19）。 */
+    private void addProcessNode(List<PublicTraceVo.TimelineNode> timeline,
+                                String traceContent, LocalDateTime time, String operatorName) {
         if (time == null) {
             return;
         }
         PublicTraceVo.TimelineNode node = new PublicTraceVo.TimelineNode();
         node.setTraceContent(traceContent);
         node.setTraceTime(time);
+        node.setOperatorName(operatorName);
         timeline.add(node);
     }
 

@@ -7,13 +7,16 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.common.tenant.helper.TenantHelper;
 import org.dromara.djs.breed.dashboard.domain.AnnualIndicator;
+import org.dromara.djs.breed.dashboard.domain.FarmIndicatorRecord;
 import org.dromara.djs.breed.dashboard.domain.MonthlyProduction;
 import org.dromara.djs.breed.dashboard.domain.SowRecord;
+import org.dromara.djs.breed.production.domain.SowPerformance;
 import org.dromara.djs.breed.dashboard.domain.vo.Activity7dVo;
 import org.dromara.djs.breed.dashboard.domain.vo.AgeBucketVo;
 import org.dromara.djs.breed.dashboard.domain.vo.AnnualIndicatorVo;
 import org.dromara.djs.breed.dashboard.domain.vo.BreedingAnnualVo;
 import org.dromara.djs.breed.dashboard.domain.vo.DailyOverviewVo;
+import org.dromara.djs.breed.dashboard.domain.vo.FarmIndicatorRecordVo;
 import org.dromara.djs.breed.dashboard.domain.vo.FatteningTrendVo;
 import org.dromara.djs.breed.dashboard.domain.vo.InventoryVo;
 import org.dromara.djs.breed.dashboard.domain.vo.MonthActivityVo;
@@ -21,9 +24,11 @@ import org.dromara.djs.breed.dashboard.domain.vo.MonthlyComparisonVo;
 import org.dromara.djs.breed.dashboard.domain.vo.MonthlyProductionStatVo;
 import org.dromara.djs.breed.dashboard.mapper.AggregateQueryMapper;
 import org.dromara.djs.breed.dashboard.mapper.AnnualIndicatorMapper;
+import org.dromara.djs.breed.dashboard.mapper.FarmIndicatorRecordMapper;
 import org.dromara.djs.breed.dashboard.mapper.MonthlyProductionMapper;
 import org.dromara.djs.breed.dashboard.mapper.SowRecordMapper;
 import org.dromara.djs.breed.dashboard.service.IDashboardService;
+import org.dromara.djs.breed.production.mapper.SowPerformanceMapper;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -83,6 +88,8 @@ public class DashboardServiceImpl implements IDashboardService {
     private final MonthlyProductionMapper monthlyProductionMapper;
     private final AnnualIndicatorMapper annualIndicatorMapper;
     private final AggregateQueryMapper aggregateQueryMapper;
+    private final FarmIndicatorRecordMapper farmIndicatorRecordMapper;
+    private final SowPerformanceMapper sowPerformanceMapper;
 
     // ============================================================
     //  Read endpoints
@@ -627,6 +634,78 @@ public class DashboardServiceImpl implements IDashboardService {
     }
 
     // ============================================================
+    //  BRD-STAT-001 落盘用 helpers（Map 取值 / 除法 / 精度）
+    // ============================================================
+
+    /** Map 取整型值（缺省 0）。 */
+    private static int mapInt(Map<String, Object> m, String key) {
+        if (m == null) {
+            return 0;
+        }
+        Object v = m.get(key);
+        return v instanceof Number n ? n.intValue() : 0;
+    }
+
+    /** Map 取 BigDecimal 值（缺省 0）。 */
+    private static BigDecimal mapBd(Map<String, Object> m, String key) {
+        if (m == null) {
+            return BigDecimal.ZERO;
+        }
+        Object v = m.get(key);
+        if (v == null) {
+            return BigDecimal.ZERO;
+        }
+        if (v instanceof BigDecimal b) {
+            return b;
+        }
+        if (v instanceof Number n) {
+            return new BigDecimal(n.toString());
+        }
+        return BigDecimal.ZERO;
+    }
+
+    /** 安全除：denom&lt;=0 返 0；保留 6 位中间精度，外层再 setScale。 */
+    private static BigDecimal divide(BigDecimal num, int denom) {
+        if (num == null || denom <= 0) {
+            return BigDecimal.ZERO;
+        }
+        return num.divide(new BigDecimal(denom), 6, RoundingMode.HALF_UP);
+    }
+
+    /** 3 位小数（重量 / 率 / 天数落库统一精度）。 */
+    private static BigDecimal scale3(BigDecimal v) {
+        return v == null ? BigDecimal.ZERO : v.setScale(3, RoundingMode.HALF_UP);
+    }
+
+    /** 2 位小数（母猪性能怀孕天数 / 断配天数 / NPD，邓博 row11 要求保留两位）。 */
+    private static BigDecimal scale2(BigDecimal v) {
+        return v == null ? null : v.setScale(2, RoundingMode.HALF_UP);
+    }
+
+    /** 存在则复用（保留 id + del 字段，updateById 走 UPDATE）；否则 new（id=null，走 insert）。 */
+    private static <T> T existingOrNew(T existing, java.util.function.Supplier<T> factory) {
+        return existing != null ? existing : factory.get();
+    }
+
+    // ============================================================
+    //  历史日表只读端点（BRD-STAT-001）
+    // ============================================================
+
+    @Override
+    public List<FarmIndicatorRecordVo> listIndicatorRecords(LocalDate from, LocalDate to) {
+        LocalDate end = to == null ? LocalDate.now() : to;
+        LocalDate start = from == null ? end.minusDays(29) : from;
+        if (start.isAfter(end)) {
+            return new ArrayList<>();
+        }
+        LambdaQueryWrapper<FarmIndicatorRecord> q = new LambdaQueryWrapper<FarmIndicatorRecord>()
+            .ge(FarmIndicatorRecord::getStatDate, start)
+            .le(FarmIndicatorRecord::getStatDate, end)
+            .orderByAsc(FarmIndicatorRecord::getStatDate);
+        return farmIndicatorRecordMapper.selectVoList(q);
+    }
+
+    // ============================================================
     //  Write end — aggregate job
     // ============================================================
 
@@ -639,13 +718,225 @@ public class DashboardServiceImpl implements IDashboardService {
         String tenantId = currentTenant();
         log.info("[DashboardAggregate] start tenant={} date={}", tenantId, targetDate);
 
+        // 顺序：日表（farm_indicator + sow_record）→ 母猪性能 → 月 → 年。
+        // 月/年高级指标从已落盘的 farm_indicator 日表 Σ 回读，故日表必须先写。
+        upsertFarmIndicator(tenantId, targetDate);
         upsertSowRecord(tenantId, targetDate);
+        upsertSowPerformance(tenantId, targetDate);
         upsertMonthlyProduction(tenantId, YearMonth.from(targetDate));
         upsertAnnualIndicator(tenantId, (short) targetDate.getYear());
 
         log.info("[DashboardAggregate] done tenant={} date={}", tenantId, targetDate);
-        return String.format("ok | tenant=%s | date=%s | tables=[sow_record, monthly_production, annual_indicator]",
+        return String.format("ok | tenant=%s | date=%s | tables=[indicator_record, sow_record, sow_performance, monthly_production, annual_indicator]",
             tenantId, targetDate);
+    }
+
+    /**
+     * 落盘养殖农场日数据 t_farm_indicator_record（BRD-STAT-001，row10 全 30+ 列）。
+     *
+     * <p>事件类按 statDate 自然日 [00:00, 次日 00:00) 区间聚合；期末存栏取 T-1 当日 current_status 快照
+     * （A#4：不做历史回算，直接读 t_farm_pig_info 当前态）。BigDecimal 全部 setScale(3) 控精度。</p>
+     */
+    private void upsertFarmIndicator(String tenantId, LocalDate statDate) {
+        LocalDate dayFrom = statDate;
+        LocalDate dayTo = statDate.plusDays(1);
+        LocalDateTime dtFrom = statDate.atStartOfDay();
+        LocalDateTime dtTo = statDate.plusDays(1).atStartOfDay();
+        int batchYear = statDate.getYear();
+
+        FarmIndicatorRecord r = new FarmIndicatorRecord();
+        r.setStatDate(statDate);
+
+        // ---- 当日事件类（头数） ----
+        r.setFarrowSowCount(aggregateQueryMapper.countDistinctEventInDay("t_farm_pig_farrow", "farrow_date", "pig_id", tenantId, dayFrom, dayTo));
+        r.setBreedingSowCount(aggregateQueryMapper.countDistinctEventInDay("t_farm_pig_breeding", "breeding_date", "pig_id", tenantId, dayFrom, dayTo));
+        r.setWeaningSowCount(aggregateQueryMapper.countDistinctEventInDay("t_farm_pig_weaning", "weaning_date", "pig_id", tenantId, dayFrom, dayTo));
+        r.setAbnormalSowCount(aggregateQueryMapper.countAbnormalInRange(tenantId, dtFrom, dtTo));
+        r.setIntroduceSowCount(aggregateQueryMapper.sumIntroducedInRange(tenantId, dayFrom, dayTo));
+        r.setHeatNoBreedCount(aggregateQueryMapper.countHeatNoBreedInDay(tenantId, dayFrom, dayTo));
+        r.setDeathPigCount(aggregateQueryMapper.countStatusEventInRange(tenantId, "DIE", dtFrom, dtTo));
+        r.setCullingPigCount(aggregateQueryMapper.countStatusEventInRange(tenantId, "ELIMINATE", dtFrom, dtTo));
+        r.setTotalBornCount(aggregateQueryMapper.sumEventInDayDate("t_farm_pig_farrow", "farrow_date", "total_born", tenantId, dayFrom, dayTo));
+        r.setLiveBornCount(aggregateQueryMapper.sumLiveBornInRange(tenantId, dayFrom, dayTo));
+        r.setPigletTagCount(aggregateQueryMapper.countDistinctEventInDay("t_farm_pig_pigletno", "tag_date", "id", tenantId, dayFrom, dayTo));
+        r.setWeanedPigletCount(aggregateQueryMapper.sumWeanedInRange(tenantId, dayFrom, dayTo));
+        r.setGrowthRecordCount(aggregateQueryMapper.countDistinctEventInDay("t_farm_pig_growth", "measure_date", "id", tenantId, dayFrom, dayTo));
+        r.setCastratePigCount(aggregateQueryMapper.countStatusEventInRange(tenantId, "CASTRATE", dtFrom, dtTo));
+        r.setMedicatedPigCount(aggregateQueryMapper.countMedicatedPigInDay(tenantId, dtFrom, dtTo));
+
+        // ---- 当日出栏聚合（头数 / 总重 / 背膘） ----
+        Map<String, Object> mkt = aggregateQueryMapper.aggregateMarketingForDay(tenantId, dtFrom, dtTo);
+        int marketingCount = mapInt(mkt, "cnt");
+        BigDecimal marketingWeight = mapBd(mkt, "weight");
+        BigDecimal backfatSum = mapBd(mkt, "backfatSum");
+        int backfatCnt = mapInt(mkt, "backfatCnt");
+        r.setMarketingPigCount(marketingCount);
+        r.setMarketingWeight(scale3(marketingWeight));
+        r.setAvgMarketingWeight(scale3(divide(marketingWeight, marketingCount)));
+        r.setAvgBackfatThickness(scale3(divide(backfatSum, backfatCnt)));
+
+        // ---- 当日出栏猪断奶总重 + 生长总天数 → 净增重 / 日增重 ----
+        Map<String, Object> weanAgg = aggregateQueryMapper.aggregateMarketingWeanForDay(tenantId, dtFrom, dtTo);
+        BigDecimal weanTotalWeight = mapBd(weanAgg, "weanWeightSum");
+        int growthDays = mapInt(weanAgg, "growthDaysSum");
+        BigDecimal netGain = marketingWeight.subtract(weanTotalWeight);
+        r.setWeanTotalWeight(scale3(weanTotalWeight));
+        r.setGrowthTotalDays(growthDays);
+        r.setNetGainWeight(scale3(netGain));
+        r.setDailyGainWeight(scale3(divide(netGain, growthDays)));
+
+        // ---- 死亡分类（按 pig_type） ----
+        r.setDeathFatteningCount(aggregateQueryMapper.countDeathByPigTypeInDay(tenantId, "fattening", dtFrom, dtTo));
+        r.setDeathSowCount(aggregateQueryMapper.countDeathByPigTypeInDay(tenantId, "sow", dtFrom, dtTo));
+        r.setDeathPigletCount(aggregateQueryMapper.countDeathByPigTypeInDay(tenantId, "piglet", dtFrom, dtTo));
+
+        // ---- 期末存栏快照（T-1 当日 current_status 当前快照，A#4 不回算） ----
+        fillEndStock(r, tenantId, statDate);
+
+        // ---- 当年配种批次分娩头数 ----
+        r.setYearBatchFarrowCount(aggregateQueryMapper.sumYearBatchFarrowForDay(tenantId, dayFrom, dayTo, batchYear));
+
+        // UPSERT
+        FarmIndicatorRecord existing = farmIndicatorRecordMapper.selectOne(
+            new LambdaQueryWrapper<FarmIndicatorRecord>().eq(FarmIndicatorRecord::getStatDate, statDate));
+        if (existing == null) {
+            r.setDelFlag("0");
+            r.setDelUnique(0L);
+            farmIndicatorRecordMapper.insert(r);
+        } else {
+            r.setId(existing.getId());
+            farmIndicatorRecordMapper.updateById(r);
+        }
+    }
+
+    /**
+     * 填期末存栏 7 项快照（按 pig_type + current_status 一次分组查回，service 端汇总）。
+     *
+     * <p>口径（ADR-0016 解耦：current_status 是种母猪繁殖态轴，非种母猪平时空串）：</p>
+     * <ul>
+     *   <li>生产母猪头数 = sow 且 status ∈ {PZ,FM,DN,LC,KH,FQ}（非后备 HB、非终止 END、非空串）；</li>
+     *   <li>后备母猪 = sow 且 status='HB'；非生产母猪 = sow 且 status ∈ {KH,FQ,LC,DN}；</li>
+     *   <li>种公猪 = boar、肥猪 = fattening、仔猪 = piglet（status&lt;&gt;'END' 已在查询过滤）。</li>
+     * </ul>
+     */
+    private void fillEndStock(FarmIndicatorRecord r, String tenantId, LocalDate asOf) {
+        int prodSow = 0, reserveSow = 0, nonprodSow = 0, boar = 0, fattening = 0, piglet = 0;
+        for (Map<String, Object> row : aggregateQueryMapper.snapshotByTypeStatus(tenantId)) {
+            String type = Objects.toString(row.get("pigType"), "");
+            String cs = Objects.toString(row.get("cs"), "");
+            int cnt = mapInt(row, "cnt");
+            switch (type) {
+                case "sow" -> {
+                    if ("HB".equals(cs)) {
+                        reserveSow += cnt;
+                    } else if (!cs.isEmpty()) {
+                        // PZ/FM/DN/LC/KH/FQ 均算「生产母猪」（非后备非终止非空）
+                        prodSow += cnt;
+                        if ("KH".equals(cs) || "FQ".equals(cs) || "LC".equals(cs) || "DN".equals(cs)) {
+                            nonprodSow += cnt;
+                        }
+                    }
+                }
+                case "boar" -> boar += cnt;
+                case "fattening" -> fattening += cnt;
+                case "piglet" -> piglet += cnt;
+                default -> {
+                    // 未知 pig_type 不计入任何期末项
+                }
+            }
+        }
+        r.setEndProductionSowCount(prodSow);
+        r.setEndReserveCount(reserveSow);
+        r.setEndNonprodSowCount(nonprodSow);
+        r.setEndBoarCount(boar);
+        r.setEndFatteningCount(fattening);
+        r.setEndPigletCount(piglet);
+        r.setEndReserve230Count(aggregateQueryMapper.countReserve230(tenantId, asOf));
+    }
+
+    /**
+     * 刷新母猪性能 t_farm_sow_performance（BRD-DASH-002 落地，邓博 row11）。
+     *
+     * <p>扫全部活母猪（pig_type='sow' 且未终止），每头按 farrow / weaning / abnormal / breeding 记录
+     * 聚合一行（每头一行，parity 写当前胎次）。累计 + 窝均 + 平均怀孕/断配/NPD。
+     * 无源数据的指标置 null（不瞎编），不让整体变 null。</p>
+     */
+    private void upsertSowPerformance(String tenantId, LocalDate statDate) {
+        List<Map<String, Object>> sows = aggregateQueryMapper.selectAliveSows(tenantId);
+        for (Map<String, Object> sow : sows) {
+            Long pigId = ((Number) sow.get("id")).longValue();
+            String earNo = Objects.toString(sow.get("earNo"), "");
+            Integer parity = sow.get("parity") == null ? 0 : ((Number) sow.get("parity")).intValue();
+
+            Map<String, Object> fa = aggregateQueryMapper.sowFarrowAgg(tenantId, pigId);
+            int totalBorn = mapInt(fa, "totalBorn");
+            int totalLiveBorn = mapInt(fa, "totalLiveBorn");
+            int litterCount = mapInt(fa, "litterCount");
+            BigDecimal sumAvgBornWeight = mapBd(fa, "sumAvgBornWeight");
+            int gestSum = mapInt(fa, "gestSum");
+            int gestCount = mapInt(fa, "gestCount");
+
+            Map<String, Object> we = aggregateQueryMapper.sowWeanAgg(tenantId, pigId);
+            int totalWeaned = mapInt(we, "totalWeaned");
+            int weanCount = mapInt(we, "weanCount");
+            BigDecimal sumAvgWeanedWeight = mapBd(we, "sumAvgWeanedWeight");
+
+            int abnormalTotal = aggregateQueryMapper.sowAbnormalCount(tenantId, pigId);
+
+            Map<String, Object> wb = aggregateQueryMapper.sowWeanBreedAgg(tenantId, pigId);
+            int wbSum = mapInt(wb, "sumDays");
+            int wbCnt = mapInt(wb, "cnt");
+
+            SowPerformance sp = new SowPerformance();
+            sp.setPigId(pigId);
+            sp.setEarNo(earNo);
+            sp.setParity(parity);
+            sp.setTotalBorn(totalBorn);
+            sp.setTotalLiveBorn(totalLiveBorn);
+            sp.setTotalWeaned(totalWeaned);
+            // 平均出生重 = Σ分娩 avg_weight / 分娩窝数；平均断奶重 = Σ断奶 avg_weaned_weight / 断奶批数
+            sp.setAvgBornWeight(litterCount > 0 ? scale3(divide(sumAvgBornWeight, litterCount)) : null);
+            sp.setAvgWeanedWeight(weanCount > 0 ? scale3(divide(sumAvgWeanedWeight, weanCount)) : null);
+            sp.setLastUpdateDate(statDate);
+
+            // row11 指标算法列
+            sp.setAvgGestationDays(gestCount > 0 ? scale2(divide(new BigDecimal(gestSum), gestCount)) : null);
+            sp.setWeanBreedDays(wbCnt > 0 ? scale2(divide(new BigDecimal(wbSum), wbCnt)) : null);
+            sp.setAbnormalTotal(abnormalTotal);
+            // 窝均按胎次（parity）；parity=0 时退化用窝数兜底，避免除 0
+            int litterDenom = parity != null && parity > 0 ? parity : litterCount;
+            sp.setAvgBornPerLitter(litterDenom > 0 ? scale3(divide(new BigDecimal(totalBorn), litterDenom)) : null);
+            sp.setAvgLiveBornPerLitter(litterDenom > 0 ? scale3(divide(new BigDecimal(totalLiveBorn), litterDenom)) : null);
+            int weanDenom = parity != null && parity > 0 ? parity : weanCount;
+            sp.setAvgWeanedPerLitter(weanDenom > 0 ? scale3(divide(new BigDecimal(totalWeaned), weanDenom)) : null);
+            // NPD = 365 − 配种至分娩天数 − 分娩至断奶天数（均取该母猪平均）；缺基准 → null
+            sp.setNpd(computeSowNpd(gestSum, gestCount, wbSum, wbCnt));
+
+            SowPerformance existing = sowPerformanceMapper.selectOne(
+                new LambdaQueryWrapper<SowPerformance>().eq(SowPerformance::getPigId, pigId));
+            if (existing == null) {
+                sp.setDelFlag("0");
+                sp.setDelUnique(0L);
+                sowPerformanceMapper.insert(sp);
+            } else {
+                sp.setId(existing.getId());
+                sowPerformanceMapper.updateById(sp);
+            }
+        }
+    }
+
+    /**
+     * NPD = 365 − 平均怀孕天数 − 平均(断奶→配种)天数（邓博 row11：365−配种至分娩−分娩至断奶）。
+     * 注：「分娩至断奶」缺直接源，用「断奶→下次配种」配对天数近似空怀占用；缺配对则用 0。
+     * 怀孕天数缺（无配种-分娩配对）→ 整体 null（无基准不瞎编）。
+     */
+    private BigDecimal computeSowNpd(int gestSum, int gestCount, int wbSum, int wbCnt) {
+        if (gestCount <= 0) {
+            return null;
+        }
+        BigDecimal avgGest = divide(new BigDecimal(gestSum), gestCount);
+        BigDecimal avgWeanBreed = wbCnt > 0 ? divide(new BigDecimal(wbSum), wbCnt) : BigDecimal.ZERO;
+        return scale2(new BigDecimal(365).subtract(avgGest).subtract(avgWeanBreed));
     }
 
     /**
@@ -734,32 +1025,75 @@ public class DashboardServiceImpl implements IDashboardService {
             ? BigDecimal.ZERO
             : Optional.ofNullable((BigDecimal) marketing.get("weight")).orElse(BigDecimal.ZERO);
 
-        MonthlyProduction existing = selectMonth(tenantId, month);
-        if (existing == null) {
-            MonthlyProduction m = new MonthlyProduction();
-            m.setStatMonth(month.toString());
-            m.setIntroduceCount(introduceCount);
-            m.setBornCount(bornCount);
-            m.setWeanedCount(weanedCount);
-            m.setDeathCount(deathCount);
-            m.setCullingCount(cullingCount);
-            m.setMarketingCount(marketingCount);
-            m.setMarketingWeight(marketingWeight);
+        // ---- row13 高级指标（从已落盘 farm_indicator 日表 Σ 回读 + 部分实时算） ----
+        Map<String, Object> sum = aggregateQueryMapper.sumIndicatorRange(tenantId, from, to);
+        int sumFarrowSow = mapInt(sum, "sumFarrowSow");
+        int sumWeaningSow = mapInt(sum, "sumWeaningSow");
+        int sumTotalBorn = mapInt(sum, "sumTotalBorn");
+        int sumLiveBorn = mapInt(sum, "sumLiveBorn");
+        int sumWeanedPiglet = mapInt(sum, "sumWeanedPiglet");
+        int sumAbnormal = mapInt(sum, "sumAbnormal");
+        int sumDeathPiglet = mapInt(sum, "sumDeathPiglet");
+        int sumEndProdSow = mapInt(sum, "sumEndProductionSow");
+        int sumEndReserve230 = mapInt(sum, "sumEndReserve230");
+        int sumEndNonprodSow = mapInt(sum, "sumEndNonprodSow");
+
+        int daysInMonth = month.lengthOfMonth();
+        // 累计匹配配种窝数 = [from-114, to-114) 配种母猪数
+        int mateLitter = aggregateQueryMapper.countMateLitterShifted(tenantId, dtFrom, dtTo);
+        // 当月配种母猪数（实时）
+        int breedingSowCount = aggregateQueryMapper.countBreedingInRange(tenantId, dtFrom, dtTo);
+
+        // 分娩率% = 当月分娩头数 / 累计匹配配种窝数 × 100
+        BigDecimal farrowRate = pct(ratio(sumFarrowSow, mateLitter));
+        // 配种率% = 当月配种母猪数 / ((Σ日生产母猪 + Σ日230后备)/当月天数) × 100
+        BigDecimal breedDenom = divide(new BigDecimal(sumEndProdSow + sumEndReserve230), daysInMonth);
+        BigDecimal breedRate = breedDenom.signum() == 0
+            ? BigDecimal.ZERO
+            : scale3(new BigDecimal(breedingSowCount).divide(breedDenom, 6, RoundingMode.HALF_UP).multiply(new BigDecimal("100")));
+        // 断配间隔（实时配对）
+        Map<String, Object> wbMonth = aggregateQueryMapper.sumWeanMateIntervalRange(tenantId, dtFrom, dtTo);
+        int wbDays = mapInt(wbMonth, "totalDays");
+        int wbCnt = mapInt(wbMonth, "totalCount");
+        BigDecimal weanBreedInterval = wbCnt > 0 ? scale3(divide(new BigDecimal(wbDays), wbCnt)) : BigDecimal.ZERO;
+        // 月均NPD天数 = (Σ日230后备 + Σ日非生产母猪) / ((Σ日生产母猪+Σ日230后备)/当月天数)
+        BigDecimal npdDenom = divide(new BigDecimal(sumEndProdSow + sumEndReserve230), daysInMonth);
+        BigDecimal npdDays = npdDenom.signum() == 0
+            ? BigDecimal.ZERO
+            : scale3(new BigDecimal(sumEndReserve230 + sumEndNonprodSow).divide(npdDenom, 6, RoundingMode.HALF_UP));
+        // 窝均
+        BigDecimal avgBornPerLitter = scale3(divide(new BigDecimal(sumTotalBorn), sumFarrowSow));
+        BigDecimal avgLiveBornPerLitter = scale3(divide(new BigDecimal(sumLiveBorn), sumFarrowSow));
+        BigDecimal avgWeanedPerLitter = scale3(divide(new BigDecimal(sumWeanedPiglet), sumWeaningSow));
+        // 分娩舍损失率% = 当月死亡仔猪 / 当月总活仔
+        BigDecimal farrowLossRate = pct(ratio(sumDeathPiglet, sumLiveBorn));
+
+        MonthlyProduction m = existingOrNew(selectMonth(tenantId, month), MonthlyProduction::new);
+        m.setStatMonth(month.toString());
+        m.setIntroduceCount(introduceCount);
+        m.setBornCount(bornCount);
+        m.setWeanedCount(weanedCount);
+        m.setDeathCount(deathCount);
+        m.setCullingCount(cullingCount);
+        m.setMarketingCount(marketingCount);
+        m.setMarketingWeight(marketingWeight);
+        m.setMateLitterCount(mateLitter);
+        m.setFarrowRate(farrowRate);
+        m.setBreedRate(breedRate);
+        m.setWeanBreedInterval(weanBreedInterval);
+        m.setAbnormalCount(sumAbnormal);
+        m.setNpdDays(npdDays);
+        m.setTotalBornCount(sumTotalBorn);
+        m.setAvgBornPerLitter(avgBornPerLitter);
+        m.setAvgLiveBornPerLitter(avgLiveBornPerLitter);
+        m.setAvgWeanedPerLitter(avgWeanedPerLitter);
+        m.setFarrowLossRate(farrowLossRate);
+        if (m.getId() == null) {
             m.setDelFlag("0");
             m.setDelUnique(0L);
             monthlyProductionMapper.insert(m);
         } else {
-            UpdateWrapper<MonthlyProduction> up = Wrappers.<MonthlyProduction>update()
-                .eq("id", existing.getId())
-                .set("introduce_count", introduceCount)
-                .set("born_count", bornCount)
-                .set("weaned_count", weanedCount)
-                .set("death_count", deathCount)
-                .set("culling_count", cullingCount)
-                .set("marketing_count", marketingCount)
-                .set("marketing_weight", marketingWeight)
-                .set("update_time", LocalDateTime.now());
-            monthlyProductionMapper.update(null, up);
+            monthlyProductionMapper.updateById(m);
         }
     }
 
@@ -780,48 +1114,105 @@ public class DashboardServiceImpl implements IDashboardService {
             ? BigDecimal.ZERO
             : Optional.ofNullable((BigDecimal) marketing.get("weight")).orElse(BigDecimal.ZERO);
 
-        // PSY = annual weaned / current alive sows（4 位小数）
-        int aliveSows = aggregateQueryMapper.countAliveSows(tenantId);
-        BigDecimal psy = aliveSows == 0
-            ? BigDecimal.ZERO
-            : new BigDecimal(weanedCount).divide(new BigDecimal(aliveSows), 4, RoundingMode.HALF_UP);
-
         // 死亡率 = DEATH / (DEATH + alive sows)（4 位小数）
+        int aliveSows = aggregateQueryMapper.countAliveSows(tenantId);
         int denom = deathCount + aliveSows;
         BigDecimal mortalityRate = denom == 0
             ? BigDecimal.ZERO
             : new BigDecimal(deathCount).divide(new BigDecimal(denom), 4, RoundingMode.HALF_UP);
 
-        AnnualIndicator existing = selectYear(tenantId, year);
-        if (existing == null) {
-            AnnualIndicator a = new AnnualIndicator();
-            a.setStatYear(year);
-            a.setIntroduceCount(introduceCount);
-            a.setBornCount(bornCount);
-            a.setWeanedCount(weanedCount);
-            a.setDeathCount(deathCount);
-            a.setCullingCount(cullingCount);
-            a.setMarketingCount(marketingCount);
-            a.setMarketingWeight(marketingWeight);
-            a.setPsy(psy);
-            a.setMortalityRate(mortalityRate);
+        // ---- row14 高级指标（从当年已落盘 farm_indicator 日表 Σ 回读 + 部分实时算） ----
+        Map<String, Object> sum = aggregateQueryMapper.sumIndicatorRange(tenantId, from, to);
+        int sumFarrowSow = mapInt(sum, "sumFarrowSow");
+        int sumTotalBorn = mapInt(sum, "sumTotalBorn");
+        int sumLiveBorn = mapInt(sum, "sumLiveBorn");
+        int sumWeaningSow = mapInt(sum, "sumWeaningSow");
+        int sumWeanedPiglet = mapInt(sum, "sumWeanedPiglet");
+        int sumDeathPiglet = mapInt(sum, "sumDeathPiglet");
+        int sumMarketingCount = mapInt(sum, "sumMarketingCount");
+        BigDecimal sumMarketingWeight = mapBd(sum, "sumMarketingWeight");
+        int sumEndProdSow = mapInt(sum, "sumEndProductionSow");
+        int sumEndReserve230 = mapInt(sum, "sumEndReserve230");
+        int sumEndNonprodSow = mapInt(sum, "sumEndNonprodSow");
+        int sumYearBatchFarrow = mapInt(sum, "sumYearBatchFarrow");
+
+        // 已历天数 = 当年日表已落盘行数（年初到 T-1）；为 0 时分母兜底为 1 避免除 0
+        int daysElapsed = aggregateQueryMapper.countIndicatorDays(tenantId, from, to);
+        // 年均能繁母猪存栏 = (Σ日生产母猪 + Σ日230后备) / 已历天数
+        BigDecimal avgBreedingSowStock = scale3(divide(new BigDecimal(sumEndProdSow + sumEndReserve230), daysElapsed));
+
+        // 年配种头数（实时）
+        int breedingCount = aggregateQueryMapper.countBreedingInRange(tenantId, dtFrom, dtTo);
+        // 年配种率 = 年配种头数 / 年均能繁母猪存栏
+        BigDecimal breedRate = avgBreedingSowStock.signum() == 0
+            ? BigDecimal.ZERO
+            : scale3(new BigDecimal(breedingCount).divide(avgBreedingSowStock, 6, RoundingMode.HALF_UP));
+
+        // 窝均活仔 = 总活仔 / 年分娩次数；窝均断奶 = 总断奶仔猪 / 总断奶母猪
+        BigDecimal avgLiveBornPerLitter = scale3(divide(new BigDecimal(sumLiveBorn), sumFarrowSow));
+        BigDecimal avgWeanedPerLitter = scale3(divide(new BigDecimal(sumWeanedPiglet), sumWeaningSow));
+
+        // 断配间隔（实时配对）
+        Map<String, Object> wbYear = aggregateQueryMapper.sumWeanMateIntervalRange(tenantId, dtFrom, dtTo);
+        int wbDays = mapInt(wbYear, "totalDays");
+        int wbCnt = mapInt(wbYear, "totalCount");
+        BigDecimal weanBreedInterval = wbCnt > 0 ? scale3(divide(new BigDecimal(wbDays), wbCnt)) : BigDecimal.ZERO;
+
+        // 全年总NPD天数 = Σ日230后备 + Σ日非生产母猪；年均NPD = 总NPD / 年均能繁存栏
+        int totalNpdDays = sumEndReserve230 + sumEndNonprodSow;
+        BigDecimal avgNpdDays = avgBreedingSowStock.signum() == 0
+            ? BigDecimal.ZERO
+            : scale3(new BigDecimal(totalNpdDays).divide(avgBreedingSowStock, 6, RoundingMode.HALF_UP));
+
+        // 年分娩率% = 年分娩头数 / 年配种头数 × 100
+        BigDecimal yearFarrowRate = pct(ratio(sumYearBatchFarrow, breedingCount));
+        // 平均出栏重 = Σ日出栏总重 / Σ日出栏头数
+        BigDecimal avgMarketingWeight = scale3(divide(sumMarketingWeight, sumMarketingCount));
+        // 分娩舍损失率% = 当年死亡仔猪 / 总活仔
+        BigDecimal farrowLossRate = pct(ratio(sumDeathPiglet, sumLiveBorn));
+        // PSY = (年分娩头数 / 年均能繁母存栏) × 窝均断奶数（邓博 row14 新口径）
+        BigDecimal psy = avgBreedingSowStock.signum() == 0
+            ? BigDecimal.ZERO
+            : scale3(new BigDecimal(sumYearBatchFarrow)
+                .divide(avgBreedingSowStock, 6, RoundingMode.HALF_UP)
+                .multiply(avgWeanedPerLitter));
+
+        AnnualIndicator a = existingOrNew(selectYear(tenantId, year), AnnualIndicator::new);
+        a.setStatYear(year);
+        a.setIntroduceCount(introduceCount);
+        a.setBornCount(bornCount);
+        a.setWeanedCount(weanedCount);
+        a.setDeathCount(deathCount);
+        a.setCullingCount(cullingCount);
+        a.setMarketingCount(marketingCount);
+        a.setMarketingWeight(marketingWeight);
+        a.setPsy(psy);
+        a.setMortalityRate(mortalityRate);
+        a.setAvgBreedingSowStock(avgBreedingSowStock);
+        a.setBreedingCount(breedingCount);
+        a.setBreedRate(breedRate);
+        a.setTotalBornCount(sumTotalBorn);
+        a.setFarrowCount(sumFarrowSow);
+        a.setTotalLiveBorn(sumLiveBorn);
+        a.setAvgLiveBornPerLitter(avgLiveBornPerLitter);
+        a.setTotalWeanedPiglet(sumWeanedPiglet);
+        a.setTotalWeanedSow(sumWeaningSow);
+        a.setAvgWeanedPerLitter(avgWeanedPerLitter);
+        a.setWeanBreedTotalDays(wbDays);
+        a.setWeanBreedTotalCount(wbCnt);
+        a.setWeanBreedInterval(weanBreedInterval);
+        a.setTotalNpdDays(totalNpdDays);
+        a.setAvgNpdDays(avgNpdDays);
+        a.setYearBatchFarrowCount(sumYearBatchFarrow);
+        a.setYearFarrowRate(yearFarrowRate);
+        a.setAvgMarketingWeight(avgMarketingWeight);
+        a.setFarrowLossRate(farrowLossRate);
+        if (a.getId() == null) {
             a.setDelFlag("0");
             a.setDelUnique(0L);
             annualIndicatorMapper.insert(a);
         } else {
-            UpdateWrapper<AnnualIndicator> up = Wrappers.<AnnualIndicator>update()
-                .eq("id", existing.getId())
-                .set("introduce_count", introduceCount)
-                .set("born_count", bornCount)
-                .set("weaned_count", weanedCount)
-                .set("death_count", deathCount)
-                .set("culling_count", cullingCount)
-                .set("marketing_count", marketingCount)
-                .set("marketing_weight", marketingWeight)
-                .set("psy", psy)
-                .set("mortality_rate", mortalityRate)
-                .set("update_time", LocalDateTime.now());
-            annualIndicatorMapper.update(null, up);
+            annualIndicatorMapper.updateById(a);
         }
     }
 

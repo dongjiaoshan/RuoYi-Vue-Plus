@@ -911,7 +911,7 @@ public class MatFlowServiceImpl implements IMatFlowService {
         Long userId = LoginHelper.getUserId();
 
         // 1. 校验今日额度：已领 ≥ 已退 + 已损 + 当次退回量
-        ensureTodayCapacity(userId, bo.getProductId(), bo.getQuantity(), product.getProductName(), product.getProductUnit());
+        ensureTodayCapacity(bo.getProductId(), bo.getQuantity(), product.getProductName(), product.getProductUnit(), product.getBelongType());
 
         // 2. INSERT stock_flow（return_in 入库）
         StockFlow flow = new StockFlow();
@@ -969,7 +969,7 @@ public class MatFlowServiceImpl implements IMatFlowService {
         // 1. 校验今日额度（仍按 user+product 统计，与现状 ensureTodayCapacity 一致）；productId 缺失（理论不该
         //    出现，源篮子均带 product_id）→ 跳过额度校验，仅回补（不阻塞）
         if (productId != null) {
-            ensureTodayCapacity(userId, productId, bo.getQuantity(), productName, productUnit);
+            ensureTodayCapacity(productId, bo.getQuantity(), productName, productUnit, product == null ? null : product.getBelongType());
         }
 
         // 2. INSERT stock_flow（return_in 入库，带篮的 product_id + plot_id + ear_no 源标签）
@@ -1022,7 +1022,7 @@ public class MatFlowServiceImpl implements IMatFlowService {
         String productUnit = product != null ? product.getProductUnit() : firstBasket.getProductUnit();
 
         // 1. 校验今日额度（按 user+product 统计，与现状一致）
-        ensureTodayCapacity(userId, productId, bo.getQuantity(), productName, productUnit);
+        ensureTodayCapacity(productId, bo.getQuantity(), productName, productUnit, product == null ? null : product.getBelongType());
 
         // 2. INSERT return_in 流水（带 product_id + plot_id 源标签，warehouse_id=首篮库位）
         StockFlow flow = new StockFlow();
@@ -1170,7 +1170,7 @@ public class MatFlowServiceImpl implements IMatFlowService {
         Long userId = LoginHelper.getUserId();
 
         // 1. 校验今日额度（同退回）
-        ensureTodayCapacity(userId, bo.getProductId(), bo.getQuantity(), product.getProductName(), product.getProductUnit());
+        ensureTodayCapacity(bo.getProductId(), bo.getQuantity(), product.getProductName(), product.getProductUnit(), product.getBelongType());
 
         // 2. INSERT stock_flow（loss 出库）
         StockFlow flow = new StockFlow();
@@ -1247,8 +1247,9 @@ public class MatFlowServiceImpl implements IMatFlowService {
         }
 
         // 3. 写饲喂台账 feed_log（feed_type='warehouse'，行64 来源②）：crop_id/cropName 仓库领用饲喂无作物维度，留空。
+        // feed_date 用含时分秒的 now()（DATETIME），与毛菜处理间来源对齐，admin「有机饲喂记录」精确到时分秒。
         FeedLog feedLog = new FeedLog();
-        feedLog.setFeedDate(java.sql.Date.valueOf(LocalDate.now()));
+        feedLog.setFeedDate(new Date());
         feedLog.setFeedType(FEED_TYPE_WAREHOUSE);
         feedLog.setProductId(bo.getProductId());
         feedLog.setLocationId(bo.getLocationId());
@@ -1293,7 +1294,7 @@ public class MatFlowServiceImpl implements IMatFlowService {
 
         // 1. 校验今日额度（仍按 user+product 统计，与现状一致）；productId 缺失 → 跳过（不阻塞）
         if (productId != null) {
-            ensureTodayCapacity(userId, productId, bo.getQuantity(), productName, productUnit);
+            ensureTodayCapacity(productId, bo.getQuantity(), productName, productUnit, product == null ? null : product.getBelongType());
         }
 
         // 2. INSERT stock_flow（loss 出库，带篮的 product_id + plot_id + ear_no 源标签）
@@ -1352,7 +1353,7 @@ public class MatFlowServiceImpl implements IMatFlowService {
         String productUnit = product != null ? product.getProductUnit() : firstBasket.getProductUnit();
 
         // 1. 校验今日额度（按 user+product 统计，与现状一致）
-        ensureTodayCapacity(userId, productId, bo.getQuantity(), productName, productUnit);
+        ensureTodayCapacity(productId, bo.getQuantity(), productName, productUnit, product == null ? null : product.getBelongType());
 
         // 2. INSERT loss 流水（带 product_id + plot_id 源标签，warehouse_id=首篮库位、量=总损耗量）
         StockFlow flow = new StockFlow();
@@ -1713,21 +1714,33 @@ public class MatFlowServiceImpl implements IMatFlowService {
     }
 
     /**
-     * 校验今日额度：已领 ≥ 已退 + 已损 + 当次申请量。
+     * 校验今日额度：退回 / 损耗不能超过当前可操作余量（邓博 row44）。
      *
-     * <p>protected 方便单测 stub。</p>
+     * <p>口径分两类（全部人 / Q3：admin+mp 同一池，不按 operator 过滤）：</p>
+     * <ul>
+     *   <li><b>可打包食品原料</b>（veg/egg/dry/other）：领用即进 product_inhouse 待打包，生产打包 /
+     *       退回 / 损耗都减 inhouse → 「今日待打包余额」= 还能退/损的最大量，<b>已自动净掉产品生产耗用</b>
+     *       （row44 核心：原 cap=今日已领−已退−已损 漏减生产耗用，打包后仍可按全部已领超额退/损）。</li>
+     *   <li><b>非可打包物资</b>（包材/饲料/种子/药品）：无生产打包 → 沿用 今日已领 − 已退 − 已损。</li>
+     * </ul>
+     *
+     * <p>注：饲喂（feed）不调本校验（A6 维持「账实倒挂留痕不阻断」）。protected 方便单测 stub。</p>
      */
-    protected void ensureTodayCapacity(Long userId, Long productId, BigDecimal applying,
-                                       String productName, String productUnit) {
-        BigDecimal picked = safe(stockFlowMapper.sumTodayByUserProductTypes(userId, productId, PICK_OUT_FLOW_TYPES));
-        BigDecimal returned = safe(stockFlowMapper.sumTodayByUserProductTypes(userId, productId, RETURN_IN_FLOW_TYPES));
-        BigDecimal lost = safe(stockFlowMapper.sumTodayByUserProductType(userId, productId, FLOW_LOSS));
-        BigDecimal remaining = picked.subtract(returned).subtract(lost);
+    protected void ensureTodayCapacity(Long productId, BigDecimal applying,
+                                       String productName, String productUnit, String belongType) {
+        BigDecimal remaining;
+        if (PACKABLE_FOOD_BELONG_TYPES.contains(belongType)) {
+            remaining = safe(productInhouseMapper.sumTodayRemaining(productId));
+        } else {
+            BigDecimal picked = safe(stockFlowMapper.sumTodayByProductTypes(productId, PICK_OUT_FLOW_TYPES));
+            BigDecimal returned = safe(stockFlowMapper.sumTodayByProductTypes(productId, RETURN_IN_FLOW_TYPES));
+            BigDecimal lost = safe(stockFlowMapper.sumTodayByProductType(productId, FLOW_LOSS));
+            remaining = picked.subtract(returned).subtract(lost);
+        }
         if (remaining.compareTo(applying) < 0) {
             throw new ServiceException(
-                "今日额度不足（product=" + productName + " / 今日已领=" + picked + productUnit
-                    + " / 已退=" + returned + " / 已损=" + lost
-                    + " / 剩余可操作=" + remaining + " / 当次申请=" + applying + "）");
+                "今日额度不足（product=" + productName + " / 剩余可操作=" + remaining + productUnit
+                    + " / 当次申请=" + applying + "；可打包原料已扣减产品生产耗用）");
         }
     }
 

@@ -28,6 +28,12 @@ public final class TraceContentConst {
     /** 入库（打包入库工序）。 */
     public static final String IN_STOCK = "in_stock";
 
+    /** 白条入库（燎毛处理完成、白条称重入库时刻；邓博 row19 拆出的独立事件）。 */
+    public static final String WHITE_BAR_IN = "white_bar_in";
+
+    /** 白条出库（领用）（白条被领用出库进入分割时刻；邓博 row19 拆出的独立事件）。 */
+    public static final String WHITE_BAR_PICK = "white_bar_pick";
+
     /** 发货（发货确认工序）。 */
     public static final String SHIP = "ship";
 

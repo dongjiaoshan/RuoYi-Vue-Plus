@@ -8,6 +8,7 @@ import org.dromara.djs.breed.dashboard.domain.vo.AgeBucketVo;
 import org.dromara.djs.breed.dashboard.domain.vo.AnnualIndicatorVo;
 import org.dromara.djs.breed.dashboard.domain.vo.BreedingAnnualVo;
 import org.dromara.djs.breed.dashboard.domain.vo.DailyOverviewVo;
+import org.dromara.djs.breed.dashboard.domain.vo.FarmIndicatorRecordVo;
 import org.dromara.djs.breed.dashboard.domain.vo.FatteningTrendVo;
 import org.dromara.djs.breed.dashboard.domain.vo.InventoryVo;
 import org.dromara.djs.breed.dashboard.domain.vo.MonthActivityVo;
@@ -147,6 +148,25 @@ public class DashboardController {
             ? null
             : YearMonth.parse(yearMonth, DateTimeFormatter.ofPattern("yyyy-MM"));
         return R.ok(dashboardService.getMonthlyProductionStats(ym));
+    }
+
+    /**
+     * 养殖农场日数据记录历史查询（BRD-STAT-001，row10 落盘日表，按 stat_date 范围）。
+     *
+     * <p>mp「种猪场活动统计」看历史 / admin 查历史日表用。from/to 缺省查近 30 天。
+     * 今日实时仍走 {@code /daily-overview}，本端点专供历史落盘数据。</p>
+     *
+     * @param from yyyy-MM-dd，缺省 to 前推 29 天
+     * @param to   yyyy-MM-dd，缺省今日
+     */
+    @SaCheckPermission("djs:breed:dashboard:activity")
+    @GetMapping("/indicator-records")
+    public R<List<FarmIndicatorRecordVo>> listIndicatorRecords(
+        @RequestParam(value = "from", required = false)
+        @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate from,
+        @RequestParam(value = "to", required = false)
+        @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate to) {
+        return R.ok(dashboardService.listIndicatorRecords(from, to));
     }
 
     /**

@@ -33,7 +33,7 @@ public class FeedLog extends TenantEntity {
     private Long id;
 
     /**
-     * 饲喂日期（自然日，统计维度）。
+     * 饲喂时间（DATETIME，精确到时分秒）。按自然日统计时在 SQL 层 DATE(feed_date) 截断。
      */
     private Date feedDate;
 

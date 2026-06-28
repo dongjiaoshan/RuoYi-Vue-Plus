@@ -32,4 +32,20 @@ public class SowPerformanceVo implements Serializable {
     private BigDecimal avgBornWeight;
     private BigDecimal avgWeanedWeight;
     private LocalDate lastUpdateDate;
+
+    // ---- row11 指标算法列（BRD-STAT-001） ----
+    /** 平均怀孕天数。 */
+    private BigDecimal avgGestationDays;
+    /** 断奶-配种天数。 */
+    private BigDecimal weanBreedDays;
+    /** 返空流总次数。 */
+    private Integer abnormalTotal;
+    /** 窝均产仔数。 */
+    private BigDecimal avgBornPerLitter;
+    /** 窝均活仔数。 */
+    private BigDecimal avgLiveBornPerLitter;
+    /** 窝均断奶数。 */
+    private BigDecimal avgWeanedPerLitter;
+    /** NPD。 */
+    private BigDecimal npd;
 }

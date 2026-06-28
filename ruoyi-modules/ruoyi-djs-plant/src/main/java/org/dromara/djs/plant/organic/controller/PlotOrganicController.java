@@ -106,7 +106,8 @@ public class PlotOrganicController extends BaseController {
     @Log(title = "种植-土地有机证书-触发预警扫描", businessType = BusinessType.OTHER)
     @PostMapping("/scanWarning")
     public R<Void> scanWarning() {
-        organicWarningJob.scanWarning();
+        // 手动端点走 HTTP，已有租户上下文 → 直接调 doScan（不经 DjsJobRunner 包裹，保留异常上抛）
+        organicWarningJob.doScan();
         return R.ok();
     }
 }

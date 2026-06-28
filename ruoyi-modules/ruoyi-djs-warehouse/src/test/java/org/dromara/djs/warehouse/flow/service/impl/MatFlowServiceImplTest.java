@@ -462,9 +462,9 @@ class MatFlowServiceImplTest {
     @DisplayName("return happy：今日已领 20 / 已退 5 / 已损 3 → 退 8 通过；INSERT(pick_return_in / IN / +8)")
     void testReturn_Happy() {
         // 额度统计按来源拆分后走 IN-list 版（领用两键 + 历史 pick_out / 退回两键），loss 仍单键
-        when(stockFlowMapper.sumTodayByUserProductTypes(eq(USER_ID), eq(PRODUCT_ID), argThat(l -> l != null && l.contains("dept_pick_out")))).thenReturn(new BigDecimal("20"));
-        when(stockFlowMapper.sumTodayByUserProductTypes(eq(USER_ID), eq(PRODUCT_ID), argThat(l -> l != null && l.contains("pick_return_in")))).thenReturn(new BigDecimal("5"));
-        when(stockFlowMapper.sumTodayByUserProductType(USER_ID, PRODUCT_ID, "loss")).thenReturn(new BigDecimal("3"));
+        when(stockFlowMapper.sumTodayByProductTypes(eq(PRODUCT_ID), argThat(l -> l != null && l.contains("dept_pick_out")))).thenReturn(new BigDecimal("20"));
+        when(stockFlowMapper.sumTodayByProductTypes(eq(PRODUCT_ID), argThat(l -> l != null && l.contains("pick_return_in")))).thenReturn(new BigDecimal("5"));
+        when(stockFlowMapper.sumTodayByProductType(PRODUCT_ID, "loss")).thenReturn(new BigDecimal("3"));
         when(locationStockMapper.addByProductLocation(eq(LOCATION_ID), eq(PRODUCT_ID), any(), eq(USER_ID))).thenReturn(1);
 
         service.returnBack(returnBo(new BigDecimal("8")));
@@ -481,9 +481,9 @@ class MatFlowServiceImplTest {
     @Test
     @DisplayName("return 超额：今日已领 20 / 已退 10 / 已损 0 → 剩 10，申请 15 → 抛今日额度不足 + 无 INSERT")
     void testReturn_OverQuota() {
-        when(stockFlowMapper.sumTodayByUserProductTypes(eq(USER_ID), eq(PRODUCT_ID), argThat(l -> l != null && l.contains("dept_pick_out")))).thenReturn(new BigDecimal("20"));
-        when(stockFlowMapper.sumTodayByUserProductTypes(eq(USER_ID), eq(PRODUCT_ID), argThat(l -> l != null && l.contains("pick_return_in")))).thenReturn(new BigDecimal("10"));
-        when(stockFlowMapper.sumTodayByUserProductType(USER_ID, PRODUCT_ID, "loss")).thenReturn(BigDecimal.ZERO);
+        when(stockFlowMapper.sumTodayByProductTypes(eq(PRODUCT_ID), argThat(l -> l != null && l.contains("dept_pick_out")))).thenReturn(new BigDecimal("20"));
+        when(stockFlowMapper.sumTodayByProductTypes(eq(PRODUCT_ID), argThat(l -> l != null && l.contains("pick_return_in")))).thenReturn(new BigDecimal("10"));
+        when(stockFlowMapper.sumTodayByProductType(PRODUCT_ID, "loss")).thenReturn(BigDecimal.ZERO);
 
         assertThatThrownBy(() -> service.returnBack(returnBo(new BigDecimal("15"))))
             .isInstanceOf(ServiceException.class)
@@ -496,9 +496,9 @@ class MatFlowServiceImplTest {
     @Test
     @DisplayName("loss happy：额度内损 3 → INSERT(loss / OT / -3) + 扣库存（影响行 0 不抛）")
     void testLoss_Happy() {
-        when(stockFlowMapper.sumTodayByUserProductTypes(eq(USER_ID), eq(PRODUCT_ID), argThat(l -> l != null && l.contains("dept_pick_out")))).thenReturn(new BigDecimal("20"));
-        when(stockFlowMapper.sumTodayByUserProductTypes(eq(USER_ID), eq(PRODUCT_ID), argThat(l -> l != null && l.contains("pick_return_in")))).thenReturn(BigDecimal.ZERO);
-        when(stockFlowMapper.sumTodayByUserProductType(USER_ID, PRODUCT_ID, "loss")).thenReturn(BigDecimal.ZERO);
+        when(stockFlowMapper.sumTodayByProductTypes(eq(PRODUCT_ID), argThat(l -> l != null && l.contains("dept_pick_out")))).thenReturn(new BigDecimal("20"));
+        when(stockFlowMapper.sumTodayByProductTypes(eq(PRODUCT_ID), argThat(l -> l != null && l.contains("pick_return_in")))).thenReturn(BigDecimal.ZERO);
+        when(stockFlowMapper.sumTodayByProductType(PRODUCT_ID, "loss")).thenReturn(BigDecimal.ZERO);
         when(locationStockMapper.deductByProductLocation(any(), any(), any(), any())).thenReturn(0);
 
         Long id = service.loss(lossBo(new BigDecimal("3")));
@@ -570,9 +570,9 @@ class MatFlowServiceImplTest {
     void testReturn_NullLocation_ResolveDefault() {
         Long defaultLoc = 7099L;
         when(locationStockMapper.selectDefaultLocationByProduct(PRODUCT_ID)).thenReturn(defaultLoc);
-        when(stockFlowMapper.sumTodayByUserProductTypes(eq(USER_ID), eq(PRODUCT_ID), argThat(l -> l != null && l.contains("dept_pick_out")))).thenReturn(new BigDecimal("20"));
-        when(stockFlowMapper.sumTodayByUserProductTypes(eq(USER_ID), eq(PRODUCT_ID), argThat(l -> l != null && l.contains("pick_return_in")))).thenReturn(BigDecimal.ZERO);
-        when(stockFlowMapper.sumTodayByUserProductType(USER_ID, PRODUCT_ID, "loss")).thenReturn(BigDecimal.ZERO);
+        when(stockFlowMapper.sumTodayByProductTypes(eq(PRODUCT_ID), argThat(l -> l != null && l.contains("dept_pick_out")))).thenReturn(new BigDecimal("20"));
+        when(stockFlowMapper.sumTodayByProductTypes(eq(PRODUCT_ID), argThat(l -> l != null && l.contains("pick_return_in")))).thenReturn(BigDecimal.ZERO);
+        when(stockFlowMapper.sumTodayByProductType(PRODUCT_ID, "loss")).thenReturn(BigDecimal.ZERO);
         when(locationStockMapper.addByProductLocation(eq(defaultLoc), eq(PRODUCT_ID), any(), eq(USER_ID))).thenReturn(1);
 
         MatReturnBo bo = returnBo(new BigDecimal("3"));

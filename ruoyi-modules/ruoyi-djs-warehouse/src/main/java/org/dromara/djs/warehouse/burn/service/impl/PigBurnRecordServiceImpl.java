@@ -522,6 +522,10 @@ public class PigBurnRecordServiceImpl
         if (affected == 0) {
             throw new ServiceException("白条状态不符（已处理完成或不在燎毛中态），请刷新列表");
         }
+
+        // TRC 白条入库事件（邓博 row19 拆出独立事件）：燎毛处理完成、白条称重入库时刻按耳号写追溯流水。
+        // 重量 = 本次入库总重 inWeightTotal。recordEventByEarNo 全程容错（无生码白条 warn 跳过，不拖垮燎毛事务）。
+        traceService.recordEventByEarNo(bar.getEarNo(), TraceContentConst.WHITE_BAR_IN, inWeightTotal);
     }
 
     /**
