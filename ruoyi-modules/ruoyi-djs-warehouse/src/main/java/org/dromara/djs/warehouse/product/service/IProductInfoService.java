@@ -40,11 +40,10 @@ public interface IProductInfoService {
     /**
      * 新增产品。
      *
-     * <p>差异校验：</p>
+     * <p>差异校验（djs_product_type 已废弃 3 礼盒）：</p>
      * <ul>
-     *   <li>productType=1 自产 → belongType 必填</li>
+     *   <li>productType=1 自产 → belongType 必填；礼盒 = 自产 + belongType=gift_box（独立成品、跳过规格必填）</li>
      *   <li>productType=2 外购 → supplierId 必填</li>
-     *   <li>productType=3 礼盒 → 独立成品，service 自动 set belongType=gift_box</li>
      * </ul>
      *
      * @return 受影响行数（成功 1）

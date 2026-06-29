@@ -23,8 +23,7 @@ import java.util.Map;
  * 发货产品生产记录 Service（WMS-PACK-001）。
  *
  * <p>4 业态打包入口（蔬菜 / 礼盒 / 干货 / 芹菜）+ admin 只读查询。
- * 礼盒打包按 Kevin override 决策 b 走 D8 落的 {@code t_warehouse_gift_box} 关联表，
- * 不暴露"组件清单"参数，service 自动按 box_product_id 查 gift_box 拿明细。</p>
+ * 礼盒（belong_type=gift_box）为独立成品：打 N 盒只产出 N 盒礼盒成品，不查/不消耗任何组件（BOM）。</p>
  *
  * @author djs
  * @since WMS-PACK-001

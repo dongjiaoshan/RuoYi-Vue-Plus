@@ -23,7 +23,7 @@ import java.util.Date;
  * <p><b>4 业态打包入口</b>（{@code product_type / belong_type} 区分）：</p>
  * <ul>
  *   <li>蔬菜打包：plot_id 来源 + product_weight + material_consume</li>
- *   <li>礼盒打包：product_id 礼盒 SKU，组件清单查 {@code t_warehouse_gift_box}（D8 落表）</li>
+ *   <li>礼盒打包：product_id 礼盒 SKU（belong_type=gift_box），独立成品打 N 盒，不查/不消耗组件</li>
  *   <li>干货打包：product_unit（个/kg）+ product_weight + product_spec</li>
  *   <li>芹菜打包：按重量 product_weight + product_spec='按重量'</li>
  * </ul>
@@ -67,7 +67,7 @@ public class ProductProduction extends TenantEntity {
     private String productName;
 
     /**
-     * 产品类型字典 {@code djs_product_type}：1=自产 / 2=外购 / 3=礼盒。
+     * 产品类型字典 {@code djs_product_type}：1=自产 / 2=外购（已废弃 3 礼盒；礼盒 = 自产 + belongType=gift_box）。
      */
     private Integer productType;
 

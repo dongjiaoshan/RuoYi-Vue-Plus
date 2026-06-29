@@ -11,15 +11,14 @@ import java.io.Serial;
 import java.math.BigDecimal;
 
 /**
- * 产品 / 商品 / 礼盒共表实体（WMS-MD-002）。
+ * 产品 / 商品共表实体（WMS-MD-002）。
  *
  * <p>对应表 {@code t_warehouse_product_info}（V202605311100 建）。
- * 三态 {@code productType=1 自产 / 2 外购 / 3 礼盒} 走单表共表 + 应用层校验：</p>
+ * 两态 {@code productType=1 自产 / 2 外购} 走单表共表 + 应用层校验（djs_product_type 已废弃 3 礼盒）：</p>
  * <ul>
  *   <li>{@code productType=1} 自产：{@code belongType} 必填、{@code productAttr} / {@code productWorkshop} 可填、
- *       {@code buyClass} / {@code supplierId} 应为 NULL</li>
+ *       {@code buyClass} / {@code supplierId} 应为 NULL；礼盒 = 自产 + {@code belongType='gift_box'}（独立成品、无组件清单/BOM）</li>
  *   <li>{@code productType=2} 外购：{@code buyClass} / {@code supplierId} 应填、{@code belongType} 应为 NULL</li>
- *   <li>{@code productType=3} 礼盒：独立成品，{@code belongType='gift_box'} 自动设置（无组件清单/BOM）</li>
  * </ul>
  *
  * <p>软删走 {@code del_flag} + {@code del_unique}（{@code DjsMetaObjectHandler} 在
@@ -58,7 +57,7 @@ public class ProductInfo extends TenantEntity {
     private String productName;
 
     /**
-     * 字典 {@code djs_product_type}：1=自产 / 2=外购 / 3=礼盒。
+     * 字典 {@code djs_product_type}：1=自产 / 2=外购（已废弃 3 礼盒；礼盒 = 自产 + belongType=gift_box）。
      */
     private Integer productType;
 
@@ -76,7 +75,7 @@ public class ProductInfo extends TenantEntity {
      * 字典 {@code djs_belong_type}：自产归属类型
      * （pork / vegetable / white_bar / dry_good / egg / gift_box）。
      *
-     * <p>{@code productType=1} 时必填；{@code productType=3} 时由 service 自动设为 {@code gift_box}。</p>
+     * <p>{@code productType=1} 时必填；礼盒 = 自产 + {@code belongType='gift_box'}（用户选产品类别确定）。</p>
      */
     private String belongType;
 

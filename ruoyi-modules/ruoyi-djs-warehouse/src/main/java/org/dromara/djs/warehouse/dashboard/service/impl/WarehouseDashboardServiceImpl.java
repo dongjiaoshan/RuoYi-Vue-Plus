@@ -8,17 +8,27 @@ import org.dromara.djs.warehouse.dashboard.domain.vo.ChartTrendPointVo;
 import org.dromara.djs.warehouse.dashboard.domain.vo.LocationOverviewItemVo;
 import org.dromara.djs.warehouse.dashboard.domain.vo.WarehouseDashboardChartsVo;
 import org.dromara.djs.warehouse.dashboard.domain.vo.WarehouseDashboardSummaryVo;
+import org.dromara.djs.warehouse.dashboard.domain.vo.WarehousePorkEfficiencyVo;
+import org.dromara.djs.warehouse.dashboard.domain.vo.WarehouseVegEfficiencyVo;
 import org.dromara.djs.warehouse.dashboard.mapper.WarehouseDashboardMapper;
+import org.dromara.djs.warehouse.dashboard.mapper.WarehouseProductionDashboardMapper;
 import org.dromara.djs.warehouse.dashboard.service.IWarehouseDashboardService;
+import org.dromara.djs.warehouse.stat.domain.WarehouseCroppRecord;
+import org.dromara.djs.warehouse.stat.domain.WarehouseIndicatorRecord;
+import org.dromara.djs.warehouse.stat.domain.WarehouseMonthlyRecord;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.LocalDate;
+import java.time.YearMonth;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Function;
 
 /**
  * 仓库看板聚合实现。
@@ -49,7 +59,17 @@ public class WarehouseDashboardServiceImpl implements IWarehouseDashboardService
         CHECK_RESULT_LABELS.put("3", "计损");
     }
 
+    /** 月份格式（yyyy-MM）。 */
+    private static final DateTimeFormatter MONTH_FMT = DateTimeFormatter.ofPattern("yyyy-MM");
+    /** 矩阵日期列格式（MM-dd）。 */
+    private static final DateTimeFormatter MD_FMT = DateTimeFormatter.ofPattern("MM-dd");
+    /** TOP10 取前几项。 */
+    private static final int TOP_N = 10;
+    /** kg → 吨。 */
+    private static final BigDecimal KG_PER_TON = BigDecimal.valueOf(1000);
+
     private final WarehouseDashboardMapper dashboardMapper;
+    private final WarehouseProductionDashboardMapper productionMapper;
 
     @Override
     public WarehouseDashboardSummaryVo getSummary() {
@@ -130,6 +150,397 @@ public class WarehouseDashboardServiceImpl implements IWarehouseDashboardService
         vo.setTodayLossQuantity(nzd(dashboardMapper.sumTodayLoss(tenantId)));
 
         return vo;
+    }
+
+    // ============================================================
+    //  mp 仓库管理看板 tab1：猪只分割效能管理（WMS-DASH-MP-001）
+    // ============================================================
+
+    @Override
+    public WarehousePorkEfficiencyVo getPorkEfficiency(Integer year, String month) {
+        String tenantId = currentTenant();
+        int y = year == null ? LocalDate.now().getYear() : year;
+        YearMonth ym = parseMonthOrNow(month);
+
+        WarehousePorkEfficiencyVo vo = new WarehousePorkEfficiencyVo();
+        vo.setYear(y);
+
+        // ---- 年度屠宰 / 分割 8 KPI：当年日表 Σ ----
+        List<WarehouseIndicatorRecord> yearRows = productionMapper.selectIndicatorRecordsInRange(
+            tenantId, LocalDate.of(y, 1, 1), LocalDate.of(y, 12, 31));
+
+        int slaughterCount = sumInt(yearRows, WarehouseIndicatorRecord::getSlaughterCount);
+        BigDecimal slaughterWeight = sumDec(yearRows, WarehouseIndicatorRecord::getSlaughterWeight);
+        BigDecimal arriveWeight = sumDec(yearRows, WarehouseIndicatorRecord::getArriveWeight);
+        BigDecimal barTotalWeight = sumDec(yearRows, WarehouseIndicatorRecord::getBarTotalWeight);
+        int cutBarCount = sumInt(yearRows, WarehouseIndicatorRecord::getCutBarCount);
+        BigDecimal cutBarWeight = sumDec(yearRows, WarehouseIndicatorRecord::getCutBarWeight);
+        BigDecimal cutProductWeight = sumDec(yearRows, WarehouseIndicatorRecord::getCutProductWeight);
+
+        vo.setSlaughterCount(slaughterCount);
+        vo.setAvgSlaughterWeight(rate(slaughterWeight, BigDecimal.valueOf(slaughterCount), 2));
+        vo.setSlaughterRate(pct(arriveWeight, slaughterWeight));
+        vo.setBarYieldRate(pct(barTotalWeight, slaughterWeight));
+        vo.setCutBarCount(cutBarCount);
+        vo.setCutBarWeightTon(toTon(cutBarWeight));
+        vo.setCutProductWeightTon(toTon(cutProductWeight));
+        vo.setCutRate(pct(cutProductWeight, cutBarWeight));
+
+        // ---- 月度屠宰效能趋势：当年月表（柱=屠宰头数 + 3 折线出品率）----
+        List<WarehouseMonthlyRecord> monthlyRows = productionMapper.selectMonthlyRecordsByYear(tenantId, y + "-%");
+        for (WarehouseMonthlyRecord m : monthlyRows) {
+            vo.getTrendMonths().add(m.getStatMonth());
+            vo.getTrendSlaughterCount().add(nz(m.getSlaughterCount()));
+            vo.getTrendSlaughterRate().add(nzd(m.getSlaughterRate()));
+            vo.getTrendBarYieldRate().add(nzd(m.getBarYieldRate()));
+            vo.getTrendCutYieldRate().add(nzd(m.getCutYieldRate()));
+        }
+
+        // ---- 日猪肉处理数据矩阵：所选月份昨日→月初倒序的日表行 ----
+        List<LocalDate> matrixDates = matrixDates(ym);
+        List<String> dayLabels = new ArrayList<>();
+        for (LocalDate d : matrixDates) {
+            dayLabels.add(d.format(MD_FMT));
+        }
+        vo.setMatrixDays(dayLabels);
+
+        // 该月日表行按 stat_date 索引
+        LocalDate mFirst = ym.atDay(1);
+        LocalDate mLast = ym.atEndOfMonth();
+        Map<LocalDate, WarehouseIndicatorRecord> byDate = new LinkedHashMap<>();
+        for (WarehouseIndicatorRecord r : productionMapper.selectIndicatorRecordsInRange(tenantId, mFirst, mLast)) {
+            if (r.getStatDate() != null) {
+                byDate.put(r.getStatDate(), r);
+            }
+        }
+        vo.setMatrixRows(buildPorkMatrix(matrixDates, byDate));
+
+        return vo;
+    }
+
+    /** 日猪肉处理矩阵指标定义（中文文案 + 取值器 + 是否率/均值类[累计留空]）。 */
+    private record PorkMetric(String label,
+                              Function<WarehouseIndicatorRecord, Object> getter,
+                              boolean rateOrAvg) {
+    }
+
+    /** 日猪肉处理矩阵 12 指标行（对齐原型「日猪肉处理数据统计」）。 */
+    private static final List<PorkMetric> PORK_METRICS = List.of(
+        new PorkMetric("屠宰头数", WarehouseIndicatorRecord::getSlaughterCount, false),
+        new PorkMetric("送宰均重", WarehouseIndicatorRecord::getAvgSlaughterWeight, true),
+        new PorkMetric("接收均重", WarehouseIndicatorRecord::getArriveWeight, false),
+        new PorkMetric("屠宰率", WarehouseIndicatorRecord::getSlaughterRate, true),
+        new PorkMetric("白条均重", WarehouseIndicatorRecord::getAvgBarWeight, true),
+        new PorkMetric("白条出品率", WarehouseIndicatorRecord::getBarYieldRate, true),
+        new PorkMetric("分割白条数", WarehouseIndicatorRecord::getCutBarCount, false),
+        new PorkMetric("预冷损耗", WarehouseIndicatorRecord::getPrecoolLoss, false),
+        new PorkMetric("分割总重", WarehouseIndicatorRecord::getCutBarWeight, false),
+        new PorkMetric("分割产品重", WarehouseIndicatorRecord::getCutProductWeight, false),
+        new PorkMetric("分割率", WarehouseIndicatorRecord::getCutRate, true),
+        new PorkMetric("分割损耗重", WarehouseIndicatorRecord::getCutLoss, false)
+    );
+
+    /**
+     * 组装日猪肉处理矩阵行（逐日取值 + 累计；率/均值类累计留空）。
+     *
+     * @param dates  日期列（与 VO matrixDays 同序）
+     * @param byDate 该月日表行按日索引
+     * @return 12 指标行
+     */
+    private List<WarehousePorkEfficiencyVo.MatrixRow> buildPorkMatrix(
+        List<LocalDate> dates, Map<LocalDate, WarehouseIndicatorRecord> byDate) {
+        List<WarehousePorkEfficiencyVo.MatrixRow> rows = new ArrayList<>();
+        for (PorkMetric m : PORK_METRICS) {
+            WarehousePorkEfficiencyVo.MatrixRow row = new WarehousePorkEfficiencyVo.MatrixRow();
+            row.setMetric(m.label());
+            List<String> daily = new ArrayList<>();
+            BigDecimal sum = BigDecimal.ZERO;
+            boolean hasAny = false;
+            for (LocalDate d : dates) {
+                WarehouseIndicatorRecord r = byDate.get(d);
+                Object raw = r == null ? null : m.getter().apply(r);
+                daily.add(fmtCell(raw));
+                if (raw instanceof Number n) {
+                    sum = sum.add(new BigDecimal(n.toString()));
+                    hasAny = true;
+                }
+            }
+            row.setDailyValues(daily);
+            // 率 / 均值类不汇总（累计无意义），整数 / 重量类汇总
+            row.setTotal(m.rateOrAvg() || !hasAny ? "" : fmtCell(sum));
+            rows.add(row);
+        }
+        return rows;
+    }
+
+    // ============================================================
+    //  mp 仓库管理看板 tab2：果蔬处理效能管理（WMS-DASH-MP-001）
+    // ============================================================
+
+    @Override
+    public WarehouseVegEfficiencyVo getVegEfficiency(Integer year, String month) {
+        String tenantId = currentTenant();
+        int y = year == null ? LocalDate.now().getYear() : year;
+        YearMonth ym = parseMonthOrNow(month);
+
+        WarehouseVegEfficiencyVo vo = new WarehouseVegEfficiencyVo();
+        vo.setYear(y);
+
+        Map<String, String> cropNames = cropNameMap(tenantId);
+
+        // ---- 年度蔬菜 6 KPI：品类数 + TOP/率从作物日表；率/总重口径从日表汇总 ----
+        List<WarehouseCroppRecord> yearCropRows = productionMapper.selectCroppRecordsInRange(
+            tenantId, LocalDate.of(y, 1, 1), LocalDate.of(y, 12, 31));
+        List<WarehouseIndicatorRecord> yearDayRows = productionMapper.selectIndicatorRecordsInRange(
+            tenantId, LocalDate.of(y, 1, 1), LocalDate.of(y, 12, 31));
+
+        // 收获品类 = 当年作物日表去重作物数
+        long kinds = yearCropRows.stream()
+            .map(WarehouseCroppRecord::getCropId)
+            .filter(java.util.Objects::nonNull)
+            .distinct()
+            .count();
+        vo.setHarvestCropKinds((int) kinds);
+        // 收获蔬菜总重(吨) = 当年作物采摘量之和；鲜菜总重(吨) = 当年发往月台量之和
+        vo.setHarvestWeightTon(toTon(sumDec(yearCropRows, WarehouseCroppRecord::getPickWeight)));
+        vo.setFreshWeightTon(toTon(sumDec(yearCropRows, WarehouseCroppRecord::getSendPlatformWeight)));
+        // 蔬菜处理率 = (毛菜称量−毛菜损耗)/毛菜称量；路损率 = (发往−接收)/发往；净菜损耗率 = (生产+录入损耗)/(领用−退回)
+        BigDecimal vegWeigh = sumDec(yearDayRows, WarehouseIndicatorRecord::getVegWeighWeight);
+        BigDecimal vegLoss = sumDec(yearDayRows, WarehouseIndicatorRecord::getVegLoss);
+        BigDecimal sendPlatform = sumDec(yearDayRows, WarehouseIndicatorRecord::getSendPlatformWeight);
+        BigDecimal receivePlatform = sumDec(yearDayRows, WarehouseIndicatorRecord::getReceivePlatformWeight);
+        BigDecimal prodLoss = sumDec(yearDayRows, WarehouseIndicatorRecord::getProdLossWeight);
+        BigDecimal prodPick = sumDec(yearDayRows, WarehouseIndicatorRecord::getProdPickWeight);
+        vo.setVegHandleRate(pct(vegWeigh.subtract(vegLoss), vegWeigh));
+        vo.setTransportLossRate(pct(sendPlatform.subtract(receivePlatform), sendPlatform));
+        vo.setNetVegLossRate(pct(prodLoss, prodPick));
+
+        // ---- TOP10：所选月份作物日表，按作物聚合 ----
+        LocalDate mFirst = ym.atDay(1);
+        LocalDate mLast = ym.atEndOfMonth();
+        List<WarehouseCroppRecord> monthCropRows = productionMapper.selectCroppRecordsInRange(tenantId, mFirst, mLast);
+
+        // 收获量 TOP10：Σ pick_weight 按作物
+        Map<Long, BigDecimal> harvestByCrop = new LinkedHashMap<>();
+        // 损耗率 TOP10：综合损耗率 = 毛菜处理率反推损耗 + 路损率 + 净菜损耗率，逐作物取月内均值
+        Map<Long, BigDecimal> lossRateSum = new LinkedHashMap<>();
+        Map<Long, Integer> lossRateCnt = new LinkedHashMap<>();
+        for (WarehouseCroppRecord r : monthCropRows) {
+            Long cid = r.getCropId();
+            if (cid == null) {
+                continue;
+            }
+            harvestByCrop.merge(cid, nzd(r.getPickWeight()), BigDecimal::add);
+            // 综合损耗率：毛菜间损耗率(=100−毛菜处理率) + 路损率 + 净菜间损失率
+            BigDecimal vegHandleLoss = r.getVegHandleRate() == null
+                ? BigDecimal.ZERO
+                : BigDecimal.valueOf(100).subtract(r.getVegHandleRate());
+            BigDecimal combined = nzd(vegHandleLoss).add(nzd(r.getTransportLossRate())).add(nzd(r.getNetVegLossRate()));
+            lossRateSum.merge(cid, combined, BigDecimal::add);
+            lossRateCnt.merge(cid, 1, Integer::sum);
+        }
+        vo.setHarvestTop10(topN(harvestByCrop, cropNames, TOP_N));
+        Map<Long, BigDecimal> lossRateAvg = new LinkedHashMap<>();
+        for (Map.Entry<Long, BigDecimal> e : lossRateSum.entrySet()) {
+            int cnt = lossRateCnt.getOrDefault(e.getKey(), 1);
+            lossRateAvg.put(e.getKey(), rate(e.getValue(), BigDecimal.valueOf(cnt), 2));
+        }
+        vo.setLossRateTop10(topN(lossRateAvg, cropNames, TOP_N));
+
+        // ---- 日蔬菜处理矩阵：所选月份最近一日（昨日 / 月末）的作物行 ----
+        LocalDate matrixDay = latestMatrixDay(ym);
+        if (matrixDay != null) {
+            List<WarehouseCroppRecord> dayRows = productionMapper.selectCroppRecordsInRange(tenantId, matrixDay, matrixDay);
+            for (WarehouseCroppRecord r : dayRows) {
+                WarehouseVegEfficiencyVo.VegDailyRow row = new WarehouseVegEfficiencyVo.VegDailyRow();
+                row.setCropName(cropNames.getOrDefault(String.valueOf(r.getCropId()), "未知作物"));
+                row.setPickWeight(fmtCell(r.getPickWeight()));
+                row.setFreshWeight(fmtCell(r.getSendPlatformWeight()));
+                row.setFeedWeight(fmtCell(r.getFeedWeight()));
+                row.setVegHandleRate(fmtCell(r.getVegHandleRate()));
+                vo.getDailyRows().add(row);
+            }
+        }
+
+        return vo;
+    }
+
+    /**
+     * Map(cropId → 值) 取 TOP N 降序，映射作物名。
+     *
+     * @param byCrop    cropId → 聚合值
+     * @param cropNames cropId(字符串) → 作物名
+     * @param n         取前几项
+     * @return TOP N name+value 横条项（降序）
+     */
+    private List<WarehouseVegEfficiencyVo.NameValue> topN(Map<Long, BigDecimal> byCrop,
+        Map<String, String> cropNames, int n) {
+        return byCrop.entrySet().stream()
+            .sorted(Comparator.comparing((Map.Entry<Long, BigDecimal> e) -> nzd(e.getValue())).reversed())
+            .limit(n)
+            .map(e -> {
+                WarehouseVegEfficiencyVo.NameValue nv = new WarehouseVegEfficiencyVo.NameValue();
+                nv.setName(cropNames.getOrDefault(String.valueOf(e.getKey()), "未知作物"));
+                nv.setValue(nzd(e.getValue()));
+                return nv;
+            })
+            .toList();
+    }
+
+    /**
+     * 作物名映射（cropId 字符串 → cropName）。
+     *
+     * @param tenantId 租户
+     * @return cropId(字符串) → 作物名
+     */
+    private Map<String, String> cropNameMap(String tenantId) {
+        Map<String, String> map = new LinkedHashMap<>();
+        for (WarehouseProductionDashboardMapper.CropNameRow row : productionMapper.selectCropNames(tenantId)) {
+            if (row.getIdStr() != null) {
+                map.put(row.getIdStr(), row.getCropName());
+            }
+        }
+        return map;
+    }
+
+    // ============================================================
+    //  生产效能看板共享 helper
+    // ============================================================
+
+    /**
+     * 解析月份 yyyy-MM；空 / 非法 → 当月（不打断查询）。
+     *
+     * @param month yyyy-MM 字符串（可空）
+     * @return YearMonth
+     */
+    private YearMonth parseMonthOrNow(String month) {
+        if (month == null || month.isBlank()) {
+            return YearMonth.now();
+        }
+        try {
+            return YearMonth.parse(month, MONTH_FMT);
+        } catch (Exception e) {
+            log.warn("[WarehouseDashboard] 月份入参非法 {}，回退当月", month);
+            return YearMonth.now();
+        }
+    }
+
+    /**
+     * 矩阵日期列：从 min(昨日, 月末) 倒排到月初（昨日 → 月初降序，只到已发生日）。
+     *
+     * <p>对齐养殖活动统计：今天 1 号查本月时昨日落上月 → 区间空 → 返回空列表。</p>
+     *
+     * @param ym 目标月份
+     * @return 日期列（降序，昨日在前）
+     */
+    private List<LocalDate> matrixDates(YearMonth ym) {
+        LocalDate first = ym.atDay(1);
+        LocalDate yesterday = LocalDate.now().minusDays(1);
+        LocalDate last = ym.atEndOfMonth().isAfter(yesterday) ? yesterday : ym.atEndOfMonth();
+        List<LocalDate> dates = new ArrayList<>();
+        for (LocalDate d = last; !d.isBefore(first); d = d.minusDays(1)) {
+            dates.add(d);
+        }
+        return dates;
+    }
+
+    /**
+     * 矩阵最近一日（= min(昨日, 月末)）；查本月而昨日落上月时返 null。
+     *
+     * @param ym 目标月份
+     * @return 最近一个已发生统计日，无则 null
+     */
+    private LocalDate latestMatrixDay(YearMonth ym) {
+        List<LocalDate> dates = matrixDates(ym);
+        return dates.isEmpty() ? null : dates.get(0);
+    }
+
+    /**
+     * 整数列求和（null 当 0）。
+     *
+     * @param rows   行集
+     * @param getter 取值器
+     * @param <T>    行类型
+     * @return 求和
+     */
+    private <T> int sumInt(List<T> rows, Function<T, Integer> getter) {
+        int sum = 0;
+        for (T r : rows) {
+            sum += nz(getter.apply(r));
+        }
+        return sum;
+    }
+
+    /**
+     * BigDecimal 列求和（null 当 0）。
+     *
+     * @param rows   行集
+     * @param getter 取值器
+     * @param <T>    行类型
+     * @return 求和
+     */
+    private <T> BigDecimal sumDec(List<T> rows, Function<T, BigDecimal> getter) {
+        BigDecimal sum = BigDecimal.ZERO;
+        for (T r : rows) {
+            sum = sum.add(nzd(getter.apply(r)));
+        }
+        return sum;
+    }
+
+    /**
+     * 占比% = 分子/分母×100，2 位小数；分母≤0 → null（无意义不造假，前端显 —）。
+     *
+     * @param numerator   分子
+     * @param denominator 分母
+     * @return 百分比或 null
+     */
+    private BigDecimal pct(BigDecimal numerator, BigDecimal denominator) {
+        if (denominator == null || denominator.signum() <= 0) {
+            return null;
+        }
+        return numerator.multiply(BigDecimal.valueOf(100))
+            .divide(denominator, 2, RoundingMode.HALF_UP);
+    }
+
+    /**
+     * 比值 = 分子/分母，指定小数位；分母≤0 → null。
+     *
+     * @param numerator   分子
+     * @param denominator 分母
+     * @param scale       小数位
+     * @return 比值或 null
+     */
+    private BigDecimal rate(BigDecimal numerator, BigDecimal denominator, int scale) {
+        if (denominator == null || denominator.signum() <= 0) {
+            return null;
+        }
+        return numerator.divide(denominator, scale, RoundingMode.HALF_UP);
+    }
+
+    /**
+     * kg → 吨（÷1000），3 位小数。
+     *
+     * @param kg 千克值
+     * @return 吨
+     */
+    private BigDecimal toTon(BigDecimal kg) {
+        return nzd(kg).divide(KG_PER_TON, 3, RoundingMode.HALF_UP);
+    }
+
+    /**
+     * 矩阵单元格格式化：整数原样、BigDecimal 2 位小数、null 空串。
+     *
+     * @param raw 原始值
+     * @return 格式化字符串
+     */
+    private String fmtCell(Object raw) {
+        if (raw == null) {
+            return "";
+        }
+        if (raw instanceof BigDecimal bd) {
+            return bd.setScale(2, RoundingMode.HALF_UP).toPlainString();
+        }
+        return raw.toString();
     }
 
     /**

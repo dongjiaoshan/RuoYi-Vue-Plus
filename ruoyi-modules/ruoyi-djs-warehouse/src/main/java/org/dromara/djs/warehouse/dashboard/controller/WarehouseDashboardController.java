@@ -6,9 +6,12 @@ import org.dromara.common.core.domain.R;
 import org.dromara.common.web.core.BaseController;
 import org.dromara.djs.warehouse.dashboard.domain.vo.WarehouseDashboardChartsVo;
 import org.dromara.djs.warehouse.dashboard.domain.vo.WarehouseDashboardSummaryVo;
+import org.dromara.djs.warehouse.dashboard.domain.vo.WarehousePorkEfficiencyVo;
+import org.dromara.djs.warehouse.dashboard.domain.vo.WarehouseVegEfficiencyVo;
 import org.dromara.djs.warehouse.dashboard.service.IWarehouseDashboardService;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
@@ -52,6 +55,36 @@ public class WarehouseDashboardController extends BaseController {
     @GetMapping("/charts")
     public R<WarehouseDashboardChartsVo> charts() {
         return R.ok(dashboardService.getCharts());
+    }
+
+    /**
+     * 猪只分割效能管理（消费 WMS-STAT-001 落盘表，admin 端与 mp 复用同 service）。
+     *
+     * @param year  统计年份（可空，缺省当年）
+     * @param month 统计月份 yyyy-MM（可空，缺省当月）
+     * @return 猪只分割效能 VO
+     */
+    @SaCheckPermission("djs:warehouse:dashboard:view")
+    @GetMapping("/pork")
+    public R<WarehousePorkEfficiencyVo> pork(
+        @RequestParam(value = "year", required = false) Integer year,
+        @RequestParam(value = "month", required = false) String month) {
+        return R.ok(dashboardService.getPorkEfficiency(year, month));
+    }
+
+    /**
+     * 果蔬处理效能管理（消费 WMS-STAT-001 落盘表，admin 端与 mp 复用同 service）。
+     *
+     * @param year  统计年份（可空，缺省当年）
+     * @param month 统计月份 yyyy-MM（可空，缺省当月）
+     * @return 果蔬处理效能 VO
+     */
+    @SaCheckPermission("djs:warehouse:dashboard:view")
+    @GetMapping("/veg")
+    public R<WarehouseVegEfficiencyVo> veg(
+        @RequestParam(value = "year", required = false) Integer year,
+        @RequestParam(value = "month", required = false) String month) {
+        return R.ok(dashboardService.getVegEfficiency(year, month));
     }
 
 }

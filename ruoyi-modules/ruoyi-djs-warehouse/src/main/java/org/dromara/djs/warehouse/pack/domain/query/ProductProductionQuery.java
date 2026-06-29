@@ -43,7 +43,7 @@ public class ProductProductionQuery {
     private String productSort;
 
     /**
-     * 产品类型字典 {@code djs_product_type}：1=自产 / 2=外购 / 3=礼盒。
+     * 产品类型字典 {@code djs_product_type}：1=自产 / 2=外购（已废弃 3 礼盒；礼盒 = 自产 + belongType=gift_box）。
      */
     private Integer productType;
 

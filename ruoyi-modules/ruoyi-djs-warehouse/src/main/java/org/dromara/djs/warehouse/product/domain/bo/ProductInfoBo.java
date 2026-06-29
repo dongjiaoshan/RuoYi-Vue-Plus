@@ -13,14 +13,13 @@ import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import java.math.BigDecimal;
 
 /**
- * 产品 / 商品 / 礼盒入参 BO（WMS-MD-002）。
+ * 产品 / 商品入参 BO（WMS-MD-002）。
  *
- * <p>共表 3 形态：{@code productType=1 自产 / 2 外购 / 3 礼盒}。差异字段由 service 端按
+ * <p>共表 2 形态：{@code productType=1 自产 / 2 外购}（djs_product_type 已废弃 3 礼盒）。差异字段由 service 端按
  * {@code productType} 做应用层校验（DDL 不写 CHECK 约束）：</p>
  * <ul>
- *   <li>{@code productType=1}：{@code belongType} 必填</li>
+ *   <li>{@code productType=1}：{@code belongType} 必填；礼盒 = 自产 + {@code belongType=gift_box}（独立成品、跳过规格必填）</li>
  *   <li>{@code productType=2}：{@code supplierId} 必填（{@code buyClass} 客户字典未给可空）</li>
- *   <li>{@code productType=3}：礼盒为独立成品，service 自动 set {@code belongType=gift_box}</li>
  * </ul>
  *
  * <p>{@code productId} 由前端用户手填（doc/11 §2.5 R6 业务码）；编辑时后端强制锁回旧值。</p>
@@ -53,7 +52,7 @@ public class ProductInfoBo extends BaseEntity {
     private String productName;
 
     /**
-     * 字典 {@code djs_product_type}：1=自产 / 2=外购 / 3=礼盒。
+     * 字典 {@code djs_product_type}：1=自产 / 2=外购（已废弃 3 礼盒；礼盒 = 自产 + belongType=gift_box）。
      */
     @NotNull(message = "{product.type.required}")
     private Integer productType;
@@ -73,7 +72,7 @@ public class ProductInfoBo extends BaseEntity {
 
     /**
      * 字典 {@code djs_belong_type}：自产归属类型。
-     * <p>productType=1 时 service 强校验必填；productType=3 时 service 自动 set 'gift_box'。</p>
+     * <p>productType=1 时 service 强校验必填；礼盒 = 自产 + belongType='gift_box'（用户选产品类别确定）。</p>
      */
     @Size(max = 32, message = "{product.belong_type.size}")
     private String belongType;

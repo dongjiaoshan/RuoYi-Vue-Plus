@@ -4,6 +4,7 @@ import org.dromara.common.tenant.helper.TenantHelper;
 import org.dromara.djs.warehouse.dashboard.domain.vo.LocationOverviewItemVo;
 import org.dromara.djs.warehouse.dashboard.domain.vo.WarehouseDashboardSummaryVo;
 import org.dromara.djs.warehouse.dashboard.mapper.WarehouseDashboardMapper;
+import org.dromara.djs.warehouse.dashboard.mapper.WarehouseProductionDashboardMapper;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -49,13 +50,16 @@ class WarehouseDashboardServiceImplTest {
     @Mock
     private WarehouseDashboardMapper dashboardMapper;
 
+    @Mock
+    private WarehouseProductionDashboardMapper productionDashboardMapper;
+
     private WarehouseDashboardServiceImpl service;
 
     private MockedStatic<TenantHelper> tenantHelperMock;
 
     @BeforeEach
     void setUp() {
-        service = new WarehouseDashboardServiceImpl(dashboardMapper);
+        service = new WarehouseDashboardServiceImpl(dashboardMapper, productionDashboardMapper);
         tenantHelperMock = Mockito.mockStatic(TenantHelper.class);
         tenantHelperMock.when(TenantHelper::getTenantId).thenReturn("1001");
     }

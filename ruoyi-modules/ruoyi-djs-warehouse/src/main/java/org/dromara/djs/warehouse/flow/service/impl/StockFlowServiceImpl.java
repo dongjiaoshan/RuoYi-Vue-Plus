@@ -259,7 +259,7 @@ public class StockFlowServiceImpl
         for (StockFlowVo vo : rows) {
             ProductInfo p = pm.get(vo.getProductId());
             if (p != null) {
-                vo.setProductType(p.getProductType());  // 产品类型（自产/外购/礼盒，与 belongType 不同维度）
+                vo.setProductType(p.getProductType());  // 产品类型（自产/外购，与 belongType 不同维度；礼盒 = 自产 + belongType=gift_box）
                 vo.setProductName(p.getProductName());
                 vo.setProductCode(p.getProductId());  // 业务码
                 vo.setBelongType(p.getBelongType());

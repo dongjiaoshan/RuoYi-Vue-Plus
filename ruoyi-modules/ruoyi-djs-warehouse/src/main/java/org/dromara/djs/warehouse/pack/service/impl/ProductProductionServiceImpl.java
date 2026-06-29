@@ -113,8 +113,8 @@ public class ProductProductionServiceImpl
     /** djs_yes_no 字典码值。 */
     private static final Integer YN_NO = 0;
 
-    /** djs_product_type 字典码值（礼盒）。 */
-    private static final Integer PRODUCT_TYPE_GIFT = 3;
+    /** 礼盒归属类型（belong_type）：礼盒 = product_type=1 自产 + belong_type=gift_box（djs_product_type 已废弃 3）。 */
+    private static final String BELONG_TYPE_GIFT_BOX = "gift_box";
 
     /** 发送位置=礼盒：该打包成品是礼盒组件，预留给礼盒打包消耗，不进发货月台、不扣门店直接需求。 */
     private static final String DELIVER_DEST_GIFT = "gift";
@@ -294,10 +294,10 @@ public class ProductProductionServiceImpl
         Long userId = currentUserIdSafe();
         Date now = new Date();
 
-        // Step 1：校验礼盒 SKU 存在 + 是礼盒类型
+        // Step 1：校验礼盒 SKU 存在 + 是礼盒（belong_type=gift_box；djs_product_type 已废弃 3，礼盒走 type=1 自产）
         ProductInfo giftBoxProduct = requireDeliveryProduct(bo.getGiftBoxProductId());
-        if (!PRODUCT_TYPE_GIFT.equals(giftBoxProduct.getProductType())) {
-            throw new ServiceException("产品不是礼盒类型（product_type != 3）：" + bo.getGiftBoxProductId());
+        if (!BELONG_TYPE_GIFT_BOX.equals(giftBoxProduct.getBelongType())) {
+            throw new ServiceException("产品不是礼盒类型（belong_type != gift_box）：" + bo.getGiftBoxProductId());
         }
         // 入库库位（前端收银台不采集，可空 → 默认取礼盒产品配置库位/首个可用库位兜底）
         Long locationId = resolveLocationId(bo.getLocationId(), giftBoxProduct);
@@ -311,7 +311,8 @@ public class ProductProductionServiceImpl
         p.setProduceNo(generateProduceNo(giftBoxProduct.getBelongType()));
         p.setProductId(giftBoxProduct.getId());
         p.setProductName(giftBoxProduct.getProductName());
-        p.setProductType(PRODUCT_TYPE_GIFT);
+        // 产出记录沿用礼盒源产品的 product_type（礼盒走 type=1 自产；djs_product_type 已废弃 3）
+        p.setProductType(giftBoxProduct.getProductType() != null ? giftBoxProduct.getProductType() : 1);
         p.setProductUnit(StringUtils.isNotBlank(giftBoxProduct.getProductUnit())
             ? giftBoxProduct.getProductUnit() : "盒");
         p.setProductSpec(giftBoxProduct.getProductSpec());

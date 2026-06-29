@@ -4,9 +4,12 @@ import cn.dev33.satoken.annotation.SaCheckLogin;
 import lombok.RequiredArgsConstructor;
 import org.dromara.common.core.domain.R;
 import org.dromara.djs.warehouse.dashboard.domain.vo.WarehouseDashboardSummaryVo;
+import org.dromara.djs.warehouse.dashboard.domain.vo.WarehousePorkEfficiencyVo;
+import org.dromara.djs.warehouse.dashboard.domain.vo.WarehouseVegEfficiencyVo;
 import org.dromara.djs.warehouse.dashboard.service.IWarehouseDashboardService;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
@@ -37,6 +40,36 @@ public class WarehouseDashboardAppletController {
     @GetMapping("/summary")
     public R<WarehouseDashboardSummaryVo> summary() {
         return R.ok(dashboardService.getSummary());
+    }
+
+    /**
+     * mp 仓库管理看板 tab1：猪只分割效能管理（年度屠宰/分割 8 KPI + 月度屠宰效能趋势 + 日猪肉处理矩阵）。
+     *
+     * @param year  统计年份（可空，缺省当年）
+     * @param month 统计月份 yyyy-MM（可空，缺省当月；日矩阵区间锚点）
+     * @return 猪只分割效能 VO
+     */
+    @SaCheckLogin
+    @GetMapping("/pork")
+    public R<WarehousePorkEfficiencyVo> pork(
+        @RequestParam(value = "year", required = false) Integer year,
+        @RequestParam(value = "month", required = false) String month) {
+        return R.ok(dashboardService.getPorkEfficiency(year, month));
+    }
+
+    /**
+     * mp 仓库管理看板 tab2：果蔬处理效能管理（年度蔬菜 6 KPI + 收获量 TOP10 + 损耗率 TOP10 + 日蔬菜处理矩阵）。
+     *
+     * @param year  统计年份（可空，缺省当年）
+     * @param month 统计月份 yyyy-MM（可空，缺省当月；TOP10 + 日矩阵区间）
+     * @return 果蔬处理效能 VO
+     */
+    @SaCheckLogin
+    @GetMapping("/veg")
+    public R<WarehouseVegEfficiencyVo> veg(
+        @RequestParam(value = "year", required = false) Integer year,
+        @RequestParam(value = "month", required = false) String month) {
+        return R.ok(dashboardService.getVegEfficiency(year, month));
     }
 
 }

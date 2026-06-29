@@ -51,13 +51,12 @@ import java.util.Objects;
 import java.util.stream.Collectors;
 
 /**
- * 产品 / 商品 / 礼盒 Service 实现（WMS-MD-002）。
+ * 产品 / 商品 Service 实现（WMS-MD-002）。
  *
- * <p>差异化处理（共表 3 形态）：</p>
+ * <p>差异化处理（共表 2 形态）：</p>
  * <ul>
- *   <li>{@code productType=1 自产} → belongType 必填校验</li>
+ *   <li>{@code productType=1 自产} → belongType 必填校验（礼盒 = 自产 + belongType=gift_box，由用户选产品类别确定）</li>
  *   <li>{@code productType=2 外购} → supplierId 必填校验（buyClass 客户字典空时可空）</li>
- *   <li>{@code productType=3 礼盒} → 独立成品，自动 set belongType=gift_box（无组件清单/BOM）</li>
  * </ul>
  *
  * <p>软删走基类 {@link DjsBaseServiceImpl#softDelete}。</p>
@@ -72,12 +71,11 @@ import java.util.stream.Collectors;
 @Service
 public class ProductInfoServiceImpl extends DjsBaseServiceImpl<ProductInfoMapper, ProductInfo> implements IProductInfoService {
 
-    /** 礼盒归属类型固定值。 */
+    /** 礼盒归属类型固定值（belong_type）：礼盒 = 自产 + belongType=gift_box。 */
     private static final String BELONG_TYPE_GIFT_BOX = "gift_box";
-    /** productType 三态。 */
+    /** productType 两态（djs_product_type 已废弃 3 礼盒；礼盒 = 自产 + belongType=gift_box）。 */
     private static final int PRODUCT_TYPE_SELF = 1;
     private static final int PRODUCT_TYPE_PURCHASE = 2;
-    private static final int PRODUCT_TYPE_GIFT_BOX = 3;
 
     /** 出入库方向（stock_flow.inout_type CHAR(3)）。 */
     private static final String INOUT_IN = "IN";
@@ -167,10 +165,6 @@ public class ProductInfoServiceImpl extends DjsBaseServiceImpl<ProductInfoMapper
     @Transactional(rollbackFor = Exception.class)
     public int insertByBo(ProductInfoBo bo) {
         validateBoBeforeWrite(bo);
-        // 礼盒自动设置 belongType（礼盒为独立成品，无组件清单）
-        if (bo.getProductType() != null && bo.getProductType() == PRODUCT_TYPE_GIFT_BOX) {
-            bo.setBelongType(BELONG_TYPE_GIFT_BOX);
-        }
         ProductInfo entity = toEntity(bo);
         if (entity == null) {
             throw new ServiceException("产品入参转换失败");
@@ -209,9 +203,6 @@ public class ProductInfoServiceImpl extends DjsBaseServiceImpl<ProductInfoMapper
         // 编辑路径下 productType + productId 双锁（拉回旧值）
         bo.setProductType(exists.getProductType());
         validateBoBeforeWrite(bo);
-        if (exists.getProductType() != null && exists.getProductType() == PRODUCT_TYPE_GIFT_BOX) {
-            bo.setBelongType(BELONG_TYPE_GIFT_BOX);
-        }
 
         ProductInfo entity = toEntity(bo);
         if (entity == null) {
@@ -287,8 +278,10 @@ public class ProductInfoServiceImpl extends DjsBaseServiceImpl<ProductInfoMapper
                 if (StrUtil.isBlank(bo.getBelongType())) {
                     throw new ServiceException(I18nMessages.t("product.belong_type.required"));
                 }
-                // 生产产品(product_attr=1) 必填规格（doc/14 §4；打包卡按规格展示，「按重量/散装」非空即合规）
-                if (bo.getProductAttr() != null && bo.getProductAttr() == 1
+                // 礼盒（belongType=gift_box）= 独立成品，无组件清单/BOM，跳过生产产品规格必填。
+                // 其余自产生产产品(product_attr=1) 必填规格（doc/14 §4；打包卡按规格展示，「按重量/散装」非空即合规）。
+                if (!BELONG_TYPE_GIFT_BOX.equals(bo.getBelongType())
+                    && bo.getProductAttr() != null && bo.getProductAttr() == 1
                     && StrUtil.isBlank(bo.getProductSpec())) {
                     throw new ServiceException(I18nMessages.t("product.spec.required"));
                 }
@@ -297,9 +290,6 @@ public class ProductInfoServiceImpl extends DjsBaseServiceImpl<ProductInfoMapper
                 if (bo.getSupplierId() == null) {
                     throw new ServiceException(I18nMessages.t("product.supplier.required"));
                 }
-            }
-            case PRODUCT_TYPE_GIFT_BOX -> {
-                // 礼盒为独立成品，无额外必填（belongType 由 service 自动 set=gift_box）
             }
             default -> throw new ServiceException("不支持的产品类型：" + type);
         }
@@ -336,7 +326,7 @@ public class ProductInfoServiceImpl extends DjsBaseServiceImpl<ProductInfoMapper
         boolean hasTypeSet = query.getProductTypes() != null && !query.getProductTypes().isEmpty();
         wrapper.eq(StringUtils.isNotBlank(query.getProductId()), ProductInfo::getProductId, query.getProductId())
             .like(StringUtils.isNotBlank(query.getProductName()), ProductInfo::getProductName, query.getProductName())
-            // productTypes 集合优先（产品配置入口 {1,3}）；否则退回单值 productType
+            // productTypes 集合优先（产品配置入口 {1}=自产含礼盒）；否则退回单值 productType
             .in(hasTypeSet, ProductInfo::getProductType, query.getProductTypes())
             .eq(!hasTypeSet && query.getProductType() != null, ProductInfo::getProductType, query.getProductType())
             .eq(StringUtils.isNotBlank(query.getBelongType()), ProductInfo::getBelongType, query.getBelongType())

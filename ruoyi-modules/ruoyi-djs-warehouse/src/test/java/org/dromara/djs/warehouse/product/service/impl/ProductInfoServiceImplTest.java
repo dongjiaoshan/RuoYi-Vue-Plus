@@ -157,10 +157,12 @@ class ProductInfoServiceImplTest {
     }
 
     private ProductInfoBo giftBoxBo() {
+        // 礼盒 = 自产（productType=1）+ 产品类别 belongType=gift_box（djs_product_type 已废弃 3）
         ProductInfoBo bo = new ProductInfoBo();
         bo.setProductId("GIFT001");
         bo.setProductName("中秋礼盒");
-        bo.setProductType(3);
+        bo.setProductType(1);
+        bo.setBelongType("gift_box");
         bo.setProductUnit("盒");
         return bo;
     }
@@ -200,7 +202,7 @@ class ProductInfoServiceImplTest {
     }
 
     @Test
-    @DisplayName("新增礼盒 happy → 独立成品，自动 set belong_type=gift_box，insert 1 次")
+    @DisplayName("新增礼盒 happy → 自产 + belong_type=gift_box（用户选产品类别），insert 1 次")
     void testInsertGiftBox_HappyPath() {
         when(productInfoMapper.insert(any(ProductInfo.class))).thenAnswer(inv -> {
             ProductInfo e = inv.getArgument(0);
@@ -213,7 +215,9 @@ class ProductInfoServiceImplTest {
         assertThat(rows).isEqualTo(1);
         ArgumentCaptor<ProductInfo> captor = ArgumentCaptor.forClass(ProductInfo.class);
         verify(productInfoMapper).insert(captor.capture());
-        assertThat(captor.getValue().getBelongType()).as("礼盒应自动 set belong_type=gift_box").isEqualTo("gift_box");
+        ProductInfo saved = captor.getValue();
+        assertThat(saved.getProductType()).as("礼盒走自产 productType=1").isEqualTo(1);
+        assertThat(saved.getBelongType()).as("礼盒 belong_type=gift_box").isEqualTo("gift_box");
     }
 
     // ---------- 校验失败 ----------

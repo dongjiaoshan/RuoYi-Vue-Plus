@@ -55,14 +55,14 @@ public class ProductAppletController {
      * <p>语义：</p>
      * <ul>
      *   <li>仅返 {@code product_status = 0}（启用；与 sys_normal_disable 字典对齐）</li>
-     *   <li>{@code belongType} 精确匹配（业务页常锁某归属，如毛菜处理锁 {@code vegetable_raw}）</li>
-     *   <li>{@code productType} 精确匹配（如礼盒装箱锁 {@code productType=3}）</li>
+     *   <li>{@code belongType} 精确匹配（业务页常锁某归属，如毛菜处理锁 {@code vegetable_raw}、礼盒打包锁 {@code gift_box}）</li>
+     *   <li>{@code productType} 精确匹配（1=自产 / 2=外购）</li>
      *   <li>{@code keyword} 同时 LIKE productName / productId</li>
      *   <li>结果按 ID 倒序，最多 200 条（picker 不分页）</li>
      * </ul>
      *
-     * @param belongType      字典 {@code djs_belong_type} 精确匹配
-     * @param productType     字典 {@code djs_product_type}：1=自产 / 2=外购 / 3=礼盒
+     * @param belongType      字典 {@code djs_belong_type} 精确匹配（礼盒 = {@code gift_box}）
+     * @param productType     字典 {@code djs_product_type}：1=自产 / 2=外购（已废弃 3 礼盒）
      * @param keyword         关键字（同时 LIKE productName / productId）
      * @param excludeMaterial {@code true} 排除自产原料（{@code product_type=1 且 product_attr=2}），
      *                        门店下单 picker 用——门店只订可售产品（成品/外购/礼盒），原料是仓库内部流转、不可下单（doc/14 §5）。

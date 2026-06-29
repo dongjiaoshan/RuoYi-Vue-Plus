@@ -47,7 +47,7 @@ public class ProductProductionGroupVo implements Serializable {
     /** 产品品类（字典 {@code djs_belong_type}；JOIN product_info 取 belong_type，前端 dict-tag 渲染）。 */
     private String belongType;
 
-    /** 产品类型（字典 {@code djs_product_type}：1=自产/2=外购/3=礼盒；保留兼容，主列表不展示）。 */
+    /** 产品类型（字典 {@code djs_product_type}：1=自产/2=外购，已废弃 3 礼盒；保留兼容，主列表不展示）。 */
     private Integer productType;
 
     /** 生产量（组内 product_weight SUM；前端 Math.round 取整展示，后端保留小数不丢精度）。 */

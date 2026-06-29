@@ -307,11 +307,12 @@ class ProductProductionServiceImplTest {
     // ============================================================
 
     private ProductInfo sampleGiftProduct() {
+        // 礼盒 = 自产（productType=1）+ belong_type=gift_box（djs_product_type 已废弃 3）
         ProductInfo p = new ProductInfo();
         p.setId(60100L);
         p.setProductId("PROD-GIFT-A-01");
         p.setProductName("精品礼盒 A");
-        p.setProductType(3); // 礼盒
+        p.setProductType(1);
         p.setProductUnit("盒");
         p.setBelongType("gift_box");
         p.setIsDelivery(1);
@@ -355,7 +356,7 @@ class ProductProductionServiceImplTest {
         verify(productionMapper, times(1)).insert(cap.capture());
         ProductProduction saved = cap.getValue();
         assertThat(saved.getProductId()).isEqualTo(60100L);
-        assertThat(saved.getProductType()).isEqualTo(3);
+        assertThat(saved.getProductType()).isEqualTo(1); // 产出沿用礼盒源产品 type=1（djs_product_type 已废弃 3）
         assertThat(saved.getProductWeight()).isEqualByComparingTo("5"); // packBoxCount=5 盒
         assertThat(saved.getProduceQuantity()).isEqualByComparingTo("5");
         assertThat(saved.getProductUnit()).isEqualTo("盒");
@@ -369,10 +370,10 @@ class ProductProductionServiceImplTest {
     }
 
     @Test
-    @DisplayName("submitGiftPack: 产品 product_type != 3 → 抛")
+    @DisplayName("submitGiftPack: 产品 belong_type != gift_box → 抛")
     void testGiftPack_NotGiftType() {
         ProductInfo p = sampleGiftProduct();
-        p.setProductType(1); // 自产，不是礼盒
+        p.setBelongType("pork"); // 非礼盒（belong_type != gift_box）
         when(productInfoMapper.selectById(60100L)).thenReturn(p);
 
         assertThatThrownBy(() -> service.submitGiftPack(sampleGiftBo()))

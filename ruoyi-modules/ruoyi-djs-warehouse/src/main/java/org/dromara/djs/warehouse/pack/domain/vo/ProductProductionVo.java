@@ -43,7 +43,7 @@ public class ProductProductionVo implements Serializable {
     @ExcelProperty(value = "产品名称")
     private String productName;
 
-    @ExcelProperty(value = "产品类型 1=自产/2=外购/3=礼盒")
+    @ExcelProperty(value = "产品类型 1=自产/2=外购")
     private Integer productType;
 
     @ExcelProperty(value = "单位")

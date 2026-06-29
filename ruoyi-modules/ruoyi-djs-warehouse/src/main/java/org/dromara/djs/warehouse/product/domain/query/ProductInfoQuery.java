@@ -29,12 +29,12 @@ public class ProductInfoQuery extends BaseEntity {
     private String productName;
 
     /**
-     * 字典 djs_product_type：1=自产 / 2=外购 / 3=礼盒。
+     * 字典 djs_product_type：1=自产 / 2=外购（已废弃 3 礼盒；礼盒 = 自产 + belongType=gift_box）。
      */
     private Integer productType;
 
     /**
-     * 产品类型集合（多入口预过滤用）：产品配置入口同时显示自产+礼盒 {1,3}，商品配置入口 {2}。
+     * 产品类型集合（多入口预过滤用）：产品配置入口 {1}=自产（含礼盒），商品配置入口 {2}=外购。
      *
      * <p>非空时优先于 {@link #productType} 单值，落 {@code product_type IN (...)}。</p>
      */
