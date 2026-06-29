@@ -45,7 +45,7 @@ public final class TraceContentConst {
     /** 播种（果蔬链：种植起始）。 */
     public static final String SOWING = "sowing";
 
-    /** 采收（果蔬链：采摘起始）。 */
+    /** 采摘（果蔬链：采摘起始；字典 label「采摘」，邓博 row19）。 */
     public static final String HARVEST = "harvest";
 
     /** 毛菜处理（果蔬链：毛菜处理工序）。 */

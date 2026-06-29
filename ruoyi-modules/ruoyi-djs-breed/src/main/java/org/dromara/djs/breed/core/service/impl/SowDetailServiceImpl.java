@@ -6,6 +6,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.core.service.DictService;
 import org.dromara.common.core.utils.StringUtils;
+import org.dromara.common.tenant.helper.TenantHelper;
 import org.dromara.djs.breed.core.domain.Pig;
 import org.dromara.djs.breed.core.domain.vo.FarrowByParityVo;
 import org.dromara.djs.breed.core.domain.vo.FarrowRecordMpVo;
@@ -19,6 +20,8 @@ import org.dromara.djs.breed.core.mapper.PigMapper;
 import org.dromara.djs.breed.core.mapper.SowDetailAggMapper;
 import org.dromara.djs.breed.core.service.I18nMessages;
 import org.dromara.djs.breed.core.service.ISowDetailService;
+import org.dromara.djs.breed.production.domain.SowPerformance;
+import org.dromara.djs.breed.production.mapper.SowPerformanceMapper;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
@@ -55,28 +58,67 @@ public class SowDetailServiceImpl implements ISowDetailService {
     /** 字典：用药方式（用药记录 way label）。 */
     private static final String DICT_MED_WAY = "djs_medicine_way";
 
+    /** 默认租户/农场 ID（V1 全 '1001'，取不到 tenant 时兜底）。 */
+    private static final String DEFAULT_TENANT = "1001";
+
     private final SowDetailAggMapper aggMapper;
     private final PigMapper pigMapper;
     private final DictService dictService;
     private final BreedInfoMapper breedInfoMapper;
+    private final SowPerformanceMapper sowPerformanceMapper;
 
     @Override
     public SowPerformanceMpVo querySowPerformance(Long pigId) {
         requirePig(pigId);
 
+        // 优先读 t_farm_sow_performance（定时任务填的 row11 12 项指标，含修过的 NPD）。
+        SowPerformance row = sowPerformanceMapper.selectLatestByPigId(pigId, currentTenant());
+        if (row != null) {
+            return fromPerformanceRow(row);
+        }
+
+        // 行不存在（该母猪还没被定时任务覆盖到）→ fallback 当场实时聚合，保证不空白。
+        return calcSowPerformanceOnTheFly(pigId);
+    }
+
+    /** t_farm_sow_performance 一行 → 出参 VO（字段直映；缺值 null 透传，mp 显 —）。 */
+    private SowPerformanceMpVo fromPerformanceRow(SowPerformance row) {
+        SowPerformanceMpVo vo = new SowPerformanceMpVo();
+        vo.setAvgGestationDays(row.getAvgGestationDays());
+        vo.setWeanBreedDays(row.getWeanBreedDays());
+        vo.setNpd(row.getNpd());
+        vo.setAbnormalTotal(row.getAbnormalTotal());
+        vo.setAvgBornPerLitter(row.getAvgBornPerLitter());
+        vo.setAvgLiveBornPerLitter(row.getAvgLiveBornPerLitter());
+        vo.setAvgWeanedPerLitter(row.getAvgWeanedPerLitter());
+        vo.setTotalBorn(row.getTotalBorn());
+        vo.setTotalLiveBorn(row.getTotalLiveBorn());
+        vo.setTotalWeaned(row.getTotalWeaned());
+        vo.setAvgBornWeight(row.getAvgBornWeight());
+        vo.setAvgWeanedWeight(row.getAvgWeanedWeight());
+        return vo;
+    }
+
+    /**
+     * fallback：从本母猪分娩 / 断奶 / 配种 / 异常记录当场实时聚合（V1 粗口径）。
+     * 仅 t_farm_sow_performance 行不存在时走此路径。无对应聚合源的指标（窝均活仔 / 累计头数 /
+     * 平均出生重 / 平均断奶重）保持 null → mp 显 —，不瞎编。
+     */
+    private SowPerformanceMpVo calcSowPerformanceOnTheFly(Long pigId) {
         SowPerformanceMpVo vo = new SowPerformanceMpVo();
 
         // 平均怀孕天数 = avg(分娩 − 配种)；无配对 → null
         vo.setAvgGestationDays(scale2(aggMapper.avgGestationDays(pigId)));
 
         // 断奶-配种天数 = avg(下次配种 − 上次断奶)；无配对 → null
-        vo.setWeanToBreedDays(scale2(aggMapper.avgWeanToBreedDays(pigId)));
+        vo.setWeanBreedDays(scale2(aggMapper.avgWeanToBreedDays(pigId)));
 
-        // NPD 总天数（V1 粗口径）：今天 − 最近配种 / 分娩较晚者；均缺 → null
-        vo.setNpdTotalDays(calcNpd(pigId));
+        // NPD（V1 粗口径）：今天 − 最近配种 / 分娩较晚者；均缺 → null
+        Integer npdDays = calcNpd(pigId);
+        vo.setNpd(npdDays != null ? new BigDecimal(npdDays) : null);
 
         // 返空流总数（返情 + 流产 + 空怀累计次数）；无 → 0
-        vo.setNullReturnTotal(nz(aggMapper.countNullReturn(pigId)));
+        vo.setAbnormalTotal(nz(aggMapper.countNullReturn(pigId)));
 
         // 窝均产仔数；无分娩 → null
         vo.setAvgBornPerLitter(scale2(aggMapper.avgBornPerLitter(pigId)));
@@ -85,6 +127,16 @@ public class SowDetailServiceImpl implements ISowDetailService {
         vo.setAvgWeanedPerLitter(scale2(aggMapper.avgWeanedPerLitter(pigId)));
 
         return vo;
+    }
+
+    /** 当前租户/农场 ID（V1 全 '1001'）；取不到 → 默认 '1001'。 */
+    private String currentTenant() {
+        try {
+            String t = TenantHelper.getTenantId();
+            return StringUtils.isNotBlank(t) ? t : DEFAULT_TENANT;
+        } catch (Exception e) {
+            return DEFAULT_TENANT;
+        }
     }
 
     @Override

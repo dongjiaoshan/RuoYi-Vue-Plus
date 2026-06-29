@@ -190,6 +190,7 @@ public class DashboardServiceImpl implements IDashboardService {
             vo.setMarketingWeight(BigDecimal.ZERO);
             vo.setPsy(BigDecimal.ZERO);
             vo.setMortalityRate(BigDecimal.ZERO);
+            vo.setTotalFatteningDeath(0);
             return vo;
         }
         vo.setIntroduceCount(zeroIfNull(ai.getIntroduceCount()));
@@ -201,6 +202,7 @@ public class DashboardServiceImpl implements IDashboardService {
         vo.setMarketingWeight(Optional.ofNullable(ai.getMarketingWeight()).orElse(BigDecimal.ZERO));
         vo.setPsy(Optional.ofNullable(ai.getPsy()).orElse(BigDecimal.ZERO));
         vo.setMortalityRate(Optional.ofNullable(ai.getMortalityRate()).orElse(BigDecimal.ZERO));
+        vo.setTotalFatteningDeath(zeroIfNull(ai.getTotalFatteningDeath()));
         return vo;
     }
 
@@ -238,70 +240,160 @@ public class DashboardServiceImpl implements IDashboardService {
 
         MonthActivityVo vo = new MonthActivityVo();
         vo.setDays(days);
+
+        // 邓博 row10：活动统计统一改读日表 t_farm_indicator_record（不再实时聚合 event 表），并扩到日表全指标集。
+        // 拉当月日表行 → 按 stat_date(MM-dd) 索引 → 每指标按 days 顺序逐日取该列值。
+        Map<String, FarmIndicatorRecord> byDate = new LinkedHashMap<>();
+        // 区间 [first, toExclusive) 与 days 同源（days 倒排，这里只用作索引 Map，顺序不影响）
+        for (FarmIndicatorRecord r : aggregateQueryMapper.selectIndicatorRecordsInRange(tenantId, first, toExclusive)) {
+            if (r.getStatDate() != null) {
+                byDate.put(r.getStatDate().format(md), r);
+            }
+        }
+
         List<MonthActivityVo.MonthRow> rows = new ArrayList<>();
-        // 15 行，顺序 / 文案与日情况概览 15 格严格一致（原型 4f113e00）。数据源缺失返 0（不抛）。
-        // 真实表名 / 列名见 SYS-INIT-001 DDL。死亡 / 淘汰按原型作"猪只数"。
-        rows.add(buildRow("分娩母猪数", days, byDayCount("t_farm_pig_farrow", "farrow_date", tenantId, first, toExclusive)));
-        rows.add(buildRow("配种母猪数", days, byDayCount("t_farm_pig_breeding", "breeding_date", tenantId, first, toExclusive)));
-        rows.add(buildRow("断奶母猪数", days, byDayCount("t_farm_pig_weaning", "weaning_date", tenantId, first, toExclusive)));
-        rows.add(buildRow("返空流母猪数", days, byDayCount("t_farm_pig_abnormal", "abnormal_date", tenantId, first, toExclusive)));
-        rows.add(buildRow("引种母猪数", days, byDaySum("t_farm_pig_introduce", "introduce_date", "pig_count", tenantId, first, toExclusive)));
-        rows.add(buildRow("查情不配种数", days, byDayCount("t_farm_pig_heat", "heat_date", tenantId, first, toExclusive)));
-        rows.add(buildRow("死亡猪只数", days, byDayStatus(tenantId, "DIE", dtFrom, dtTo)));
-        rows.add(buildRow("淘汰猪只数", days, byDayStatus(tenantId, "ELIMINATE", dtFrom, dtTo)));
-        rows.add(buildRow("产仔数", days, byDaySum("t_farm_pig_farrow", "farrow_date", "total_born", tenantId, first, toExclusive)));
-        rows.add(buildRow("活仔数", days, byDaySum("t_farm_pig_farrow", "farrow_date", "live_born", tenantId, first, toExclusive)));
-        rows.add(buildRow("仔猪打标数", days, byDayCount("t_farm_pig_pigletno", "tag_date", tenantId, first, toExclusive)));
-        rows.add(buildRow("断奶仔猪数", days, byDaySum("t_farm_pig_weaning", "weaning_date", "weaned_count", tenantId, first, toExclusive)));
-        rows.add(buildRow("生长记录数", days, byDayCount("t_farm_pig_growth", "measure_date", tenantId, first, toExclusive)));
-        rows.add(buildRow("阉割猪只数", days, byDayStatus(tenantId, "CASTRATE", dtFrom, dtTo)));
-        rows.add(buildRow("用药猪只数", days, byDayMedicated(tenantId, dtFrom, dtTo)));
+        for (ActivityMetric m : ACTIVITY_METRICS) {
+            rows.add(buildIndicatorRow(m, days, byDate));
+        }
         vo.setRows(rows);
         return vo;
     }
 
-    private Map<String, Integer> byDayCount(String table, String dateColumn, String tenantId, LocalDate from, LocalDate to) {
-        return toDayMap(aggregateQueryMapper.countEventByDay(table, dateColumn, tenantId, from, to));
+    /** row10 活动统计指标累计聚合方式。 */
+    private enum ActivityAgg {
+        /** 整数列按日累加。 */
+        SUM_INT,
+        /** DECIMAL 列按日累加。 */
+        SUM_DEC,
+        /** 期末快照类：累计取 days 里最后一个有值日的值。 */
+        LAST,
+        /** 均值类：逐日展示，累计留空串（不汇总）。 */
+        NONE
     }
 
-    private Map<String, Integer> byDaySum(String table, String dateColumn, String valueColumn, String tenantId, LocalDate from, LocalDate to) {
-        return toDayMap(aggregateQueryMapper.sumEventByDay(table, dateColumn, valueColumn, tenantId, from, to));
+    /** row10 活动统计单指标定义（中文文案 + 取值器 + 累计聚合方式）。 */
+    private record ActivityMetric(String label,
+                                  java.util.function.Function<FarmIndicatorRecord, Object> getter,
+                                  ActivityAgg agg) {
     }
 
-    private Map<String, Integer> byDayStatus(String tenantId, String eventType, LocalDateTime from, LocalDateTime to) {
-        return toDayMap(aggregateQueryMapper.countStatusEventByDay(tenantId, eventType, from, to));
-    }
+    /**
+     * row10 活动统计指标行集（按表列、邓博 row10 中文文案，顺序分组）。
+     * 整数列 SUM_INT；DECIMAL 列 SUM_DEC；期末存栏 LAST（累计=当月最后一天值）；均值类 NONE（累计留空）。
+     */
+    private static final List<ActivityMetric> ACTIVITY_METRICS = List.of(
+        // 母猪活动（SUM）
+        new ActivityMetric("分娩母猪数", FarmIndicatorRecord::getFarrowSowCount, ActivityAgg.SUM_INT),
+        new ActivityMetric("配种母猪数", FarmIndicatorRecord::getBreedingSowCount, ActivityAgg.SUM_INT),
+        new ActivityMetric("断奶母猪数", FarmIndicatorRecord::getWeaningSowCount, ActivityAgg.SUM_INT),
+        new ActivityMetric("返空流母猪数", FarmIndicatorRecord::getAbnormalSowCount, ActivityAgg.SUM_INT),
+        new ActivityMetric("引种母猪数", FarmIndicatorRecord::getIntroduceSowCount, ActivityAgg.SUM_INT),
+        new ActivityMetric("查情不配种数", FarmIndicatorRecord::getHeatNoBreedCount, ActivityAgg.SUM_INT),
+        // 仔猪（SUM）
+        new ActivityMetric("产仔数", FarmIndicatorRecord::getTotalBornCount, ActivityAgg.SUM_INT),
+        new ActivityMetric("活仔数", FarmIndicatorRecord::getLiveBornCount, ActivityAgg.SUM_INT),
+        new ActivityMetric("仔猪打标数", FarmIndicatorRecord::getPigletTagCount, ActivityAgg.SUM_INT),
+        new ActivityMetric("断奶仔猪数", FarmIndicatorRecord::getWeanedPigletCount, ActivityAgg.SUM_INT),
+        // 事件（SUM）
+        new ActivityMetric("生长记录数", FarmIndicatorRecord::getGrowthRecordCount, ActivityAgg.SUM_INT),
+        new ActivityMetric("阉割猪只数", FarmIndicatorRecord::getCastratePigCount, ActivityAgg.SUM_INT),
+        new ActivityMetric("用药猪只数", FarmIndicatorRecord::getMedicatedPigCount, ActivityAgg.SUM_INT),
+        // 死淘（SUM）
+        new ActivityMetric("死亡猪只数", FarmIndicatorRecord::getDeathPigCount, ActivityAgg.SUM_INT),
+        new ActivityMetric("淘汰猪只数", FarmIndicatorRecord::getCullingPigCount, ActivityAgg.SUM_INT),
+        new ActivityMetric("死亡肥猪数", FarmIndicatorRecord::getDeathFatteningCount, ActivityAgg.SUM_INT),
+        new ActivityMetric("死亡种母猪数", FarmIndicatorRecord::getDeathSowCount, ActivityAgg.SUM_INT),
+        new ActivityMetric("死亡仔猪数", FarmIndicatorRecord::getDeathPigletCount, ActivityAgg.SUM_INT),
+        // 出栏 / 生长（SUM 重/天 · NONE 均值）
+        new ActivityMetric("出栏猪只数量", FarmIndicatorRecord::getMarketingPigCount, ActivityAgg.SUM_INT),
+        new ActivityMetric("出栏总重", FarmIndicatorRecord::getMarketingWeight, ActivityAgg.SUM_DEC),
+        new ActivityMetric("平均出栏重", FarmIndicatorRecord::getAvgMarketingWeight, ActivityAgg.NONE),
+        new ActivityMetric("猪只断奶总重", FarmIndicatorRecord::getWeanTotalWeight, ActivityAgg.SUM_DEC),
+        new ActivityMetric("生长总天数", FarmIndicatorRecord::getGrowthTotalDays, ActivityAgg.SUM_INT),
+        new ActivityMetric("净增重", FarmIndicatorRecord::getNetGainWeight, ActivityAgg.SUM_DEC),
+        new ActivityMetric("日增重", FarmIndicatorRecord::getDailyGainWeight, ActivityAgg.NONE),
+        new ActivityMetric("平均背膘厚", FarmIndicatorRecord::getAvgBackfatThickness, ActivityAgg.NONE),
+        // 期末存栏（LAST：累计列 = 当月最后一天值）
+        new ActivityMetric("期末生产母猪头数", FarmIndicatorRecord::getEndProductionSowCount, ActivityAgg.LAST),
+        new ActivityMetric("期末种公猪数", FarmIndicatorRecord::getEndBoarCount, ActivityAgg.LAST),
+        new ActivityMetric("肥猪头数", FarmIndicatorRecord::getEndFatteningCount, ActivityAgg.LAST),
+        new ActivityMetric("仔猪头数", FarmIndicatorRecord::getEndPigletCount, ActivityAgg.LAST),
+        new ActivityMetric("后备猪头数", FarmIndicatorRecord::getEndReserveCount, ActivityAgg.LAST),
+        new ActivityMetric("230日龄以上后备猪头数", FarmIndicatorRecord::getEndReserve230Count, ActivityAgg.LAST),
+        new ActivityMetric("非生产状态母猪头数", FarmIndicatorRecord::getEndNonprodSowCount, ActivityAgg.LAST),
+        // 其他（SUM）
+        new ActivityMetric("当年配种批次分娩头数", FarmIndicatorRecord::getYearBatchFarrowCount, ActivityAgg.SUM_INT)
+    );
 
-    private Map<String, Integer> byDayMedicated(String tenantId, LocalDateTime from, LocalDateTime to) {
-        return toDayMap(aggregateQueryMapper.countMedicatedPigByDay(tenantId, from, to));
-    }
-
-    private Map<String, Integer> toDayMap(List<Map<String, Object>> raw) {
-        Map<String, Integer> m = new LinkedHashMap<>();
-        for (Map<String, Object> r : raw) {
-            Object d = r.get("d");
-            Object v = r.get("v");
-            if (d == null) {
-                continue;
-            }
-            m.put(Objects.toString(d, ""), v instanceof Number n ? n.intValue() : 0);
-        }
-        return m;
-    }
-
-    private MonthActivityVo.MonthRow buildRow(String metric, List<String> days, Map<String, Integer> byDay) {
-        List<Integer> daily = new ArrayList<>(days.size());
-        int total = 0;
+    /**
+     * 按指标定义 + 当月日表索引构造一行：daily 逐日格式化字符串，total 按聚合方式格式化。
+     * days 为「昨日→月初」降序，故 days[0] = 当月时间最大日（昨日/月末）。
+     * SUM 按日累加；LAST（期末存栏）取当月时间最大日的有值（= days 顺序里第一个非空格）；NONE（均值）累计留空串。
+     */
+    private MonthActivityVo.MonthRow buildIndicatorRow(ActivityMetric m, List<String> days,
+                                                       Map<String, FarmIndicatorRecord> byDate) {
+        List<String> daily = new ArrayList<>(days.size());
+        BigDecimal sum = BigDecimal.ZERO;
+        boolean anySum = false;
+        String lastVal = "";          // 当月最后一天（时间最大）值：days 降序 → 第一个有值日即时间最大
         for (String day : days) {
-            int v = byDay.getOrDefault(day, 0);
-            daily.add(v);
-            total += v;
+            FarmIndicatorRecord r = byDate.get(day);
+            Object raw = r == null ? null : m.getter().apply(r);
+            String cell = formatCell(raw, m.agg());
+            daily.add(cell);
+            if ((m.agg() == ActivityAgg.SUM_INT || m.agg() == ActivityAgg.SUM_DEC) && raw instanceof Number n) {
+                sum = sum.add(new BigDecimal(n.toString()));
+                anySum = true;
+            }
+            if (m.agg() == ActivityAgg.LAST && lastVal.isEmpty() && !cell.isEmpty()) {
+                // days 降序，第一个非空 = 当月时间最大日（昨日/月末）的值
+                lastVal = cell;
+            }
         }
+
+        String total;
+        switch (m.agg()) {
+            case SUM_INT -> total = anySum ? formatInt(sum) : "";
+            case SUM_DEC -> total = anySum ? formatDec(sum) : "";
+            case LAST -> total = lastVal;
+            default -> total = ""; // NONE 均值类累计留空串
+        }
+
         MonthActivityVo.MonthRow row = new MonthActivityVo.MonthRow();
-        row.setMetric(metric);
+        row.setMetric(m.label());
         row.setDaily(daily);
         row.setTotal(total);
         return row;
+    }
+
+    /** 单元格格式化：整数列原样（"23"），DECIMAL 列 2 位小数（"12.50"），null → 空串。 */
+    private String formatCell(Object raw, ActivityAgg agg) {
+        if (raw == null) {
+            return "";
+        }
+        if (agg == ActivityAgg.SUM_DEC || agg == ActivityAgg.NONE) {
+            // DECIMAL 与均值类统一 2 位小数；整数型（生长总天数走 SUM_INT 不入此分支）
+            if (raw instanceof BigDecimal bd) {
+                return formatDec(bd);
+            }
+            if (raw instanceof Number n) {
+                return formatDec(new BigDecimal(n.toString()));
+            }
+            return "";
+        }
+        // SUM_INT / LAST 整数列原样
+        if (raw instanceof Number n) {
+            return String.valueOf(n.longValue());
+        }
+        return Objects.toString(raw, "");
+    }
+
+    private String formatInt(BigDecimal v) {
+        return String.valueOf(v.setScale(0, RoundingMode.HALF_UP).longValueExact());
+    }
+
+    private String formatDec(BigDecimal v) {
+        return v.setScale(2, RoundingMode.HALF_UP).toPlainString();
     }
 
     // ============================================================
@@ -751,8 +843,8 @@ public class DashboardServiceImpl implements IDashboardService {
         r.setFarrowSowCount(aggregateQueryMapper.countDistinctEventInDay("t_farm_pig_farrow", "farrow_date", "pig_id", tenantId, dayFrom, dayTo));
         r.setBreedingSowCount(aggregateQueryMapper.countDistinctEventInDay("t_farm_pig_breeding", "breeding_date", "pig_id", tenantId, dayFrom, dayTo));
         r.setWeaningSowCount(aggregateQueryMapper.countDistinctEventInDay("t_farm_pig_weaning", "weaning_date", "pig_id", tenantId, dayFrom, dayTo));
-        r.setAbnormalSowCount(aggregateQueryMapper.countAbnormalInRange(tenantId, dtFrom, dtTo));
-        r.setIntroduceSowCount(aggregateQueryMapper.sumIntroducedInRange(tenantId, dayFrom, dayTo));
+        r.setAbnormalSowCount(aggregateQueryMapper.countDistinctAbnormalSowInRange(tenantId, dtFrom, dtTo));
+        r.setIntroduceSowCount(aggregateQueryMapper.sumIntroducedSowInRange(tenantId, dayFrom, dayTo));
         r.setHeatNoBreedCount(aggregateQueryMapper.countHeatNoBreedInDay(tenantId, dayFrom, dayTo));
         r.setDeathPigCount(aggregateQueryMapper.countStatusEventInRange(tenantId, "DIE", dtFrom, dtTo));
         r.setCullingPigCount(aggregateQueryMapper.countStatusEventInRange(tenantId, "ELIMINATE", dtFrom, dtTo));
@@ -776,10 +868,14 @@ public class DashboardServiceImpl implements IDashboardService {
         r.setAvgBackfatThickness(scale3(divide(backfatSum, backfatCnt)));
 
         // ---- 当日出栏猪断奶总重 + 生长总天数 → 净增重 / 日增重 ----
+        // 净增重 = Σ(出栏重 − 断奶重) 仅对「有断奶快照的出栏育肥猪」同一集合，
+        // 故被减数用同集合的出栏重 marketingWeightWeaned（非全部出栏 marketingWeight，
+        // 后者含淘汰母猪/种猪出栏会让净增重虚高）。出栏总重列仍取全量 marketingWeight。
         Map<String, Object> weanAgg = aggregateQueryMapper.aggregateMarketingWeanForDay(tenantId, dtFrom, dtTo);
         BigDecimal weanTotalWeight = mapBd(weanAgg, "weanWeightSum");
         int growthDays = mapInt(weanAgg, "growthDaysSum");
-        BigDecimal netGain = marketingWeight.subtract(weanTotalWeight);
+        BigDecimal marketingWeightWeaned = mapBd(weanAgg, "marketingWeightWeaned");
+        BigDecimal netGain = marketingWeightWeaned.subtract(weanTotalWeight);
         r.setWeanTotalWeight(scale3(weanTotalWeight));
         r.setGrowthTotalDays(growthDays);
         r.setNetGainWeight(scale3(netGain));
@@ -910,7 +1006,8 @@ public class DashboardServiceImpl implements IDashboardService {
             int weanDenom = parity != null && parity > 0 ? parity : weanCount;
             sp.setAvgWeanedPerLitter(weanDenom > 0 ? scale3(divide(new BigDecimal(totalWeaned), weanDenom)) : null);
             // NPD = 365 − 配种至分娩天数 − 分娩至断奶天数（均取该母猪平均）；缺基准 → null
-            sp.setNpd(computeSowNpd(gestSum, gestCount, wbSum, wbCnt));
+            BigDecimal avgFarrowWean = aggregateQueryMapper.avgFarrowWeanDays(tenantId, pigId);
+            sp.setNpd(computeSowNpd(gestSum, gestCount, avgFarrowWean));
 
             SowPerformance existing = sowPerformanceMapper.selectOne(
                 new LambdaQueryWrapper<SowPerformance>().eq(SowPerformance::getPigId, pigId));
@@ -926,17 +1023,18 @@ public class DashboardServiceImpl implements IDashboardService {
     }
 
     /**
-     * NPD = 365 − 平均怀孕天数 − 平均(断奶→配种)天数（邓博 row11：365−配种至分娩−分娩至断奶）。
-     * 注：「分娩至断奶」缺直接源，用「断奶→下次配种」配对天数近似空怀占用；缺配对则用 0。
+     * NPD = 365 − 平均怀孕天数 − 平均(分娩→断奶)天数（邓博 row11：365−配种至分娩−分娩至断奶）。
+     * 第三项「分娩至断奶天数」= 该母猪 farrow→weaning 配对的 AVG(DATEDIFF(weaning_date, farrow_date))；
+     * 无断奶配对（哺乳未结束）则该项用 0。
      * 怀孕天数缺（无配种-分娩配对）→ 整体 null（无基准不瞎编）。
      */
-    private BigDecimal computeSowNpd(int gestSum, int gestCount, int wbSum, int wbCnt) {
+    private BigDecimal computeSowNpd(int gestSum, int gestCount, BigDecimal avgFarrowWeanDays) {
         if (gestCount <= 0) {
             return null;
         }
         BigDecimal avgGest = divide(new BigDecimal(gestSum), gestCount);
-        BigDecimal avgWeanBreed = wbCnt > 0 ? divide(new BigDecimal(wbSum), wbCnt) : BigDecimal.ZERO;
-        return scale2(new BigDecimal(365).subtract(avgGest).subtract(avgWeanBreed));
+        BigDecimal avgLactation = avgFarrowWeanDays != null ? avgFarrowWeanDays : BigDecimal.ZERO;
+        return scale2(new BigDecimal(365).subtract(avgGest).subtract(avgLactation));
     }
 
     /**
@@ -1036,17 +1134,19 @@ public class DashboardServiceImpl implements IDashboardService {
         int sumDeathPiglet = mapInt(sum, "sumDeathPiglet");
         int sumEndProdSow = mapInt(sum, "sumEndProductionSow");
         int sumEndReserve230 = mapInt(sum, "sumEndReserve230");
+        int sumEndReserve = mapInt(sum, "sumEndReserve"); // 全量后备（含未满 230 日龄）
         int sumEndNonprodSow = mapInt(sum, "sumEndNonprodSow");
 
         int daysInMonth = month.lengthOfMonth();
-        // 累计匹配配种窝数 = [from-114, to-114) 配种母猪数
+        // 累计匹配配种窝数 = [from-114, to-114) 配种记录数（Σ日配种母猪数，不去重）
         int mateLitter = aggregateQueryMapper.countMateLitterShifted(tenantId, dtFrom, dtTo);
-        // 当月配种母猪数（实时）
-        int breedingSowCount = aggregateQueryMapper.countBreedingInRange(tenantId, dtFrom, dtTo);
+        // 当月配种母猪头数（实时，COUNT(DISTINCT pig_id) —— spec「配种母猪头数」按头去重）
+        int breedingSowCount = aggregateQueryMapper.countDistinctBreedingSowInRange(tenantId, dtFrom, dtTo);
 
         // 分娩率% = 当月分娩头数 / 累计匹配配种窝数 × 100
         BigDecimal farrowRate = pct(ratio(sumFarrowSow, mateLitter));
-        // 配种率% = 当月配种母猪数 / ((Σ日生产母猪 + Σ日230后备)/当月天数) × 100
+        // 配种率% = 当月配种母猪头数 / ((Σ日生产母猪 + Σ日230后备)/当月天数) × 100
+        //   配种率分母用 230 后备（与 NPD 分母「全后备」不同口径，两公式后备口径不共用变量）
         BigDecimal breedDenom = divide(new BigDecimal(sumEndProdSow + sumEndReserve230), daysInMonth);
         BigDecimal breedRate = breedDenom.signum() == 0
             ? BigDecimal.ZERO
@@ -1056,8 +1156,9 @@ public class DashboardServiceImpl implements IDashboardService {
         int wbDays = mapInt(wbMonth, "totalDays");
         int wbCnt = mapInt(wbMonth, "totalCount");
         BigDecimal weanBreedInterval = wbCnt > 0 ? scale3(divide(new BigDecimal(wbDays), wbCnt)) : BigDecimal.ZERO;
-        // 月均NPD天数 = (Σ日230后备 + Σ日非生产母猪) / ((Σ日生产母猪+Σ日230后备)/当月天数)
-        BigDecimal npdDenom = divide(new BigDecimal(sumEndProdSow + sumEndReserve230), daysInMonth);
+        // 月均NPD天数 = (Σ日230后备 + Σ日非生产母猪) / ((Σ日生产母猪+Σ日全后备)/当月天数)
+        //   NPD 分母后备口径 = 全部后备（end_reserve_count），不是 230 后备（spec row13 T6）
+        BigDecimal npdDenom = divide(new BigDecimal(sumEndProdSow + sumEndReserve), daysInMonth);
         BigDecimal npdDays = npdDenom.signum() == 0
             ? BigDecimal.ZERO
             : scale3(new BigDecimal(sumEndReserve230 + sumEndNonprodSow).divide(npdDenom, 6, RoundingMode.HALF_UP));
@@ -1129,6 +1230,7 @@ public class DashboardServiceImpl implements IDashboardService {
         int sumWeaningSow = mapInt(sum, "sumWeaningSow");
         int sumWeanedPiglet = mapInt(sum, "sumWeanedPiglet");
         int sumDeathPiglet = mapInt(sum, "sumDeathPiglet");
+        int sumDeathFattening = mapInt(sum, "sumDeathFattening"); // T7 肥猪死亡数
         int sumMarketingCount = mapInt(sum, "sumMarketingCount");
         BigDecimal sumMarketingWeight = mapBd(sum, "sumMarketingWeight");
         int sumEndProdSow = mapInt(sum, "sumEndProductionSow");
@@ -1207,6 +1309,7 @@ public class DashboardServiceImpl implements IDashboardService {
         a.setYearFarrowRate(yearFarrowRate);
         a.setAvgMarketingWeight(avgMarketingWeight);
         a.setFarrowLossRate(farrowLossRate);
+        a.setTotalFatteningDeath(sumDeathFattening);
         if (a.getId() == null) {
             a.setDelFlag("0");
             a.setDelUnique(0L);

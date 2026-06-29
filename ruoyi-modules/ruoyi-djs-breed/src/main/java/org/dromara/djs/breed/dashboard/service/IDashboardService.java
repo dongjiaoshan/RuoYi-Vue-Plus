@@ -89,7 +89,7 @@ public interface IDashboardService {
     MonthlyProductionStatVo getMonthlyProductionStats(YearMonth yearMonth);
 
     /**
-     * 年度指标（从 t_farm_annual_indicator）。
+     * 年度指标（从 t_farm_year_production）。
      *
      * @param year 年份；null → 当前年
      */

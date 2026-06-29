@@ -11,7 +11,7 @@ import java.io.Serial;
 import java.math.BigDecimal;
 
 /**
- * 年度指标实体（BRD-DASH-001，表 {@code t_farm_annual_indicator}）。
+ * 年生产指标实体（BRD-DASH-001，表 {@code t_farm_year_production}）。
  *
  * <p>每个 tenant_id + stat_year 一行；由聚合 job 每天 00:30 重算当年。
  * 用于 admin dashboard 顶部"年度指标"区域。</p>
@@ -21,7 +21,7 @@ import java.math.BigDecimal;
  */
 @Data
 @EqualsAndHashCode(callSuper = true)
-@TableName("t_farm_annual_indicator")
+@TableName("t_farm_year_production")
 public class AnnualIndicator extends TenantEntity {
 
     @Serial
@@ -85,6 +85,8 @@ public class AnnualIndicator extends TenantEntity {
     private BigDecimal avgMarketingWeight;
     /** 分娩舍损失率（当年死亡仔猪数/总活仔数）。 */
     private BigDecimal farrowLossRate;
+    /** 肥猪死亡数（当年 Σ日 death_fattening_count）。 */
+    private Integer totalFatteningDeath;
 
     @TableLogic
     private String delFlag;

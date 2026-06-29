@@ -665,7 +665,8 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
                                   WHERE s2.product_id = s.product_id AND s2.ear_no = s.ear_no
                                     AND s2.product_stock > 0 AND s2.del_flag = '0' AND s2.tenant_id = '1001')
                     THEN COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
-                                    WHERE f.ear_no = s.ear_no AND f.flow_type = 'return_in'
+                                    WHERE f.ear_no = s.ear_no
+                                      AND f.flow_type IN ('prod_return_in','pick_return_in')
                                       AND DATE(f.flow_date) = CURDATE()
                                       AND f.del_flag = '0' AND f.tenant_id = '1001'), 0)
                     ELSE 0 END             AS todayReturned,

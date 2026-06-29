@@ -306,8 +306,10 @@ djs:
     # djs 业务统计定时任务总开关（Spring @Scheduled 单机跑，独立于 snail-job 调度中心）。
     # 默认 true；置 false 整体停掉养殖/仓库统计聚合 + 有机证书预警 job。详见 DjsSchedulingConfig。
     enabled: ${DJS_SCHEDULE_ENABLED:true}
-    # 养殖统计聚合 cron（日→月→年 UPSERT），每日 0:30 跑 T-1，错峰避开 0:00。
-    breed-aggregate-cron: 0 30 0 * * ?
+    # 养殖统计聚合 cron（日→月→年 UPSERT），每日 0:00 跑 T-1（邓博 row9：每晚12点）。
+    breed-aggregate-cron: 0 0 0 * * ?
+    # 仓库统计聚合 cron（日/作物日/月 UPSERT），每日 0:00 跑 T-1。
+    warehouse-stat-cron: 0 0 0 * * ?
     # 有机证书到期预警扫描 cron（PLT-MD-003），每日 0:00。
     organic-warning-cron: 0 0 0 * * ?
   applet:

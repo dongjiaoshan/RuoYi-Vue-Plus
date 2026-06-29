@@ -1221,7 +1221,11 @@ public class MatFlowServiceImpl implements IMatFlowService {
         stockCheckService.assertLocationUnlocked(bo.getLocationId());
         Long userId = LoginHelper.getUserId();
 
-        // 1. INSERT stock_flow（feed_out 出库）
+        // 1. 校验今日额度（与退回/损耗同口径）：饲喂量纳入额度，不能超出当日可操作余量
+        //    （非可打包物资 = 已领−已退−已损−已饲喂；可打包食品原料 = 今日待打包余额）。
+        ensureTodayCapacity(bo.getProductId(), bo.getQuantity(), product.getProductName(), product.getProductUnit(), product.getBelongType());
+
+        // 2. INSERT stock_flow（feed_out 出库）
         StockFlow flow = new StockFlow();
         flow.setFlowNo(generateFlowNo(INOUT_OUT));
         flow.setFlowDate(new Date());
@@ -1236,7 +1240,7 @@ public class MatFlowServiceImpl implements IMatFlowService {
         flow.setProofOssIds(bo.getProofOssIds());
         stockFlowMapper.insert(flow);
 
-        // 2. 扣库存（饲喂 = 不可逆消耗，同 loss 语义）：affected==0 打 warn 不抛（账实倒挂留痕，
+        // 3. 扣库存（饲喂 = 不可逆消耗，同 loss 语义）：affected==0 打 warn 不抛（账实倒挂留痕，
         //    工人可能消耗完才补登，与 loss() 一致）。
         int affected = locationStockMapper.deductByProductLocation(
             bo.getLocationId(), bo.getProductId(), bo.getQuantity(), userId);
@@ -1246,7 +1250,7 @@ public class MatFlowServiceImpl implements IMatFlowService {
                 userId, bo.getProductId(), bo.getLocationId(), bo.getQuantity());
         }
 
-        // 3. 写饲喂台账 feed_log（feed_type='warehouse'，行64 来源②）：crop_id/cropName 仓库领用饲喂无作物维度，留空。
+        // 4. 写饲喂台账 feed_log（feed_type='warehouse'，行64 来源②）：crop_id/cropName 仓库领用饲喂无作物维度，留空。
         // feed_date 用含时分秒的 now()（DATETIME），与毛菜处理间来源对齐，admin「有机饲喂记录」精确到时分秒。
         FeedLog feedLog = new FeedLog();
         feedLog.setFeedDate(new Date());
@@ -1721,10 +1725,11 @@ public class MatFlowServiceImpl implements IMatFlowService {
      *   <li><b>可打包食品原料</b>（veg/egg/dry/other）：领用即进 product_inhouse 待打包，生产打包 /
      *       退回 / 损耗都减 inhouse → 「今日待打包余额」= 还能退/损的最大量，<b>已自动净掉产品生产耗用</b>
      *       （row44 核心：原 cap=今日已领−已退−已损 漏减生产耗用，打包后仍可按全部已领超额退/损）。</li>
-     *   <li><b>非可打包物资</b>（包材/饲料/种子/药品）：无生产打包 → 沿用 今日已领 − 已退 − 已损。</li>
+     *   <li><b>非可打包物资</b>（包材/饲料/种子/药品）：无生产打包 → 今日已领 − 已退 − 已损 − 已饲喂。
+     *       饲喂（feed_out）与退/损同为出库消耗，必须从额度扣减，否则同一批料可被「领 N → 喂 N → 又退/损 N」超额操作。</li>
      * </ul>
      *
-     * <p>注：饲喂（feed）不调本校验（A6 维持「账实倒挂留痕不阻断」）。protected 方便单测 stub。</p>
+     * <p>注：饲喂（feed）领用前也调本校验（饲喂量纳入额度，不能超出当日可操作余量）。protected 方便单测 stub。</p>
      */
     protected void ensureTodayCapacity(Long productId, BigDecimal applying,
                                        String productName, String productUnit, String belongType) {
@@ -1735,7 +1740,8 @@ public class MatFlowServiceImpl implements IMatFlowService {
             BigDecimal picked = safe(stockFlowMapper.sumTodayByProductTypes(productId, PICK_OUT_FLOW_TYPES));
             BigDecimal returned = safe(stockFlowMapper.sumTodayByProductTypes(productId, RETURN_IN_FLOW_TYPES));
             BigDecimal lost = safe(stockFlowMapper.sumTodayByProductType(productId, FLOW_LOSS));
-            remaining = picked.subtract(returned).subtract(lost);
+            BigDecimal fed = safe(stockFlowMapper.sumTodayByProductType(productId, FLOW_FEED_OUT));
+            remaining = picked.subtract(returned).subtract(lost).subtract(fed);
         }
         if (remaining.compareTo(applying) < 0) {
             throw new ServiceException(

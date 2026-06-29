@@ -23,9 +23,11 @@ import java.util.Map;
  *   <li>{@code t_warehouse_product_inhouse}：分割产品总重（white_bar_id 非空 = 猪肉，produce_date）</li>
  *   <li>{@code t_warehouse_loss_flow}：所有损耗按 loss_type 取（防重复计，loss_date）</li>
  *   <li>{@code t_warehouse_vegetable_handle}：毛菜称量 / 发往月台（picked / send_platform，pick_start_time）</li>
- *   <li>{@code t_warehouse_handle_record}：作物维度采摘 / 饲喂 / 发往月台（按 crop_id GROUP，handle_time）</li>
+ *   <li>{@code t_warehouse_handle_record}：作物维度采摘 / 发往月台（按 crop_id GROUP，handle_time）</li>
+ *   <li>{@code t_warehouse_feed_log}：作物维度饲喂量（权威台账，毛菜间 + 仓库领用两路径，按 crop_id GROUP，feed_date）</li>
  *   <li>{@code t_warehouse_veg_receive}：月台接收（receive_type=1 自产，receive_time）</li>
  *   <li>{@code t_warehouse_stock_flow}：生产领用 / 生产退回（prod_pick_out / prod_return_in，flow_date）</li>
+ *   <li>{@code t_warehouse_loss_flow}：作物维度损耗（veg_handle_loss 经 plot→crop；production_loss/manual_loss 经 product_id→crop.related_product）</li>
  * </ul>
  *
  * @author djs
@@ -74,9 +76,15 @@ public interface WarehouseStatAggregateMapper {
         """)
     BigDecimal sumOutsourceWeight(@Param("tenantId") String tenantId, @Param("statDate") String statDate);
 
-    /** 分割白条数：当日转入分割车间的白条数量 = 当日领用 cut_record 数（pickup_time）。 */
+    /**
+     * 分割白条数：当日转入分割车间的【整白条】数量（按 white_bar_id 去重）。
+     *
+     * <p>邓博 B2 口径（2026-06-29）：一个白条分割成 2 个半只仍记 1 条。cut_record 一行 = 一次领用
+     * （整猪可拆 2 半只分次领用 → 多行同 white_bar_id），故用 {@code COUNT(DISTINCT white_bar_id)}
+     * 而非 {@code COUNT(*)}（领用行数）。white_bar_id 为 NULL 的行不计入（非整白条）。</p>
+     */
     @Select("""
-        SELECT COUNT(*) FROM t_warehouse_pig_cut_record
+        SELECT COUNT(DISTINCT white_bar_id) FROM t_warehouse_pig_cut_record
         WHERE del_flag = '0' AND tenant_id = #{tenantId} AND DATE(pickup_time) = #{statDate}
         """)
     int countCutBar(@Param("tenantId") String tenantId, @Param("statDate") String statDate);
@@ -148,7 +156,7 @@ public interface WarehouseStatAggregateMapper {
 
     /**
      * 当日有任意处理记录的作物 ID 列表（不区分地块，只按作物，A#9）。
-     * 取并集：毛菜处理（handle_record）/ 月台接收（veg_receive 自产）。
+     * 取并集：毛菜处理（handle_record）/ 月台接收（veg_receive 自产）/ 饲喂台账（feed_log，仅有饲喂的作物也落盘）。
      */
     @Select("""
         <script>
@@ -159,6 +167,9 @@ public interface WarehouseStatAggregateMapper {
           SELECT crop_id FROM t_warehouse_veg_receive
           WHERE del_flag = '0' AND tenant_id = #{tenantId} AND DATE(receive_time) = #{statDate}
             AND receive_type = 1 AND crop_id IS NOT NULL
+          UNION
+          SELECT crop_id FROM t_warehouse_feed_log
+          WHERE del_flag = '0' AND tenant_id = #{tenantId} AND DATE(feed_date) = #{statDate} AND crop_id IS NOT NULL
         ) t
         </script>
         """)
@@ -166,13 +177,15 @@ public interface WarehouseStatAggregateMapper {
 
     /**
      * 作物维度毛菜处理聚合（按 crop_id GROUP，handle_record）：
-     * 采摘量 = Σ record_type=1 record_weight；饲喂量 = Σ handle_target=3 record_weight；
-     * 发往月台量 = Σ handle_target=2 record_weight。返 Map(cropId, pickWeight, feedWeight, sendWeight)。
+     * 采摘量 = Σ record_type=1 record_weight；发往月台量 = Σ handle_target=2 record_weight。
+     * 返 Map(cropId, pickWeight, sendWeight)。
+     *
+     * <p>饲喂量不在此查：饲喂走权威台账 t_warehouse_feed_log（含毛菜间 + 仓库领用两路径），
+     * 由 {@link #selectCropFeedAgg} 单独聚合，避免与采摘/发往月台口径混。</p>
      */
     @Select("""
         SELECT crop_id AS cropId,
                COALESCE(SUM(CASE WHEN record_type = 1 THEN record_weight ELSE 0 END), 0) AS pickWeight,
-               COALESCE(SUM(CASE WHEN handle_target = 3 THEN record_weight ELSE 0 END), 0) AS feedWeight,
                COALESCE(SUM(CASE WHEN handle_target = 2 THEN record_weight ELSE 0 END), 0) AS sendWeight
         FROM t_warehouse_handle_record
         WHERE del_flag = '0' AND tenant_id = #{tenantId}
@@ -180,6 +193,20 @@ public interface WarehouseStatAggregateMapper {
         GROUP BY crop_id
         """)
     List<Map<String, Object>> selectCropHandleAgg(@Param("tenantId") String tenantId, @Param("statDate") String statDate);
+
+    /**
+     * 作物维度饲喂量（按 crop_id GROUP，权威台账 t_warehouse_feed_log）。
+     * feed_log 含 crop_id × feed_date × feed_weight 直列（毛菜间 + 仓库领用饲喂两路径都落本表），
+     * 故直接 SUM(feed_weight)，无需经 handle_record / plot 桥接。返 Map(cropId, feedWeight)。
+     */
+    @Select("""
+        SELECT crop_id AS cropId, COALESCE(SUM(feed_weight), 0) AS feedWeight
+        FROM t_warehouse_feed_log
+        WHERE del_flag = '0' AND tenant_id = #{tenantId}
+          AND DATE(feed_date) = #{statDate} AND crop_id IS NOT NULL
+        GROUP BY crop_id
+        """)
+    List<Map<String, Object>> selectCropFeedAgg(@Param("tenantId") String tenantId, @Param("statDate") String statDate);
 
     /** 作物维度月台接收量（按 crop_id GROUP，veg_receive 自产 receive_type=1）。返 Map(cropId, receiveWeight)。 */
     @Select("""
@@ -217,27 +244,52 @@ public interface WarehouseStatAggregateMapper {
     List<Map<String, Object>> selectCropFlowAgg(@Param("tenantId") String tenantId, @Param("statDate") String statDate);
 
     /**
-     * 作物维度损耗（loss_flow 只有 plot_id 无 crop_id；经 t_warehouse_planting_record 的 plot_id→crop_id 桥接）。
-     * 毛菜损耗 / 生产损耗 / 录入损耗按 loss_type 分桶。返 Map(cropId, vegHandleLoss, productionLoss, manualLoss)。
-     * 桥接取 statDate 当日有效的最近一条种植记录，避免轮作多记录行膨胀。
+     * 作物维度损耗（loss_flow 按损耗类型用不同归集键 → crop_id）。返 Map(cropId, vegHandleLoss, productionLoss, manualLoss)。
+     *
+     * <p><b>归集键按 loss_type 分两路</b>：</p>
+     * <ul>
+     *   <li>毛菜损耗 veg_handle_loss：毛菜间产生、带 plot_id → 经 t_warehouse_planting_record
+     *       的 plot_id→crop_id 桥接（取 statDate 当日有效的最近一条种植记录，避免轮作多记录行膨胀）。</li>
+     *   <li>生产损耗 production_loss / 录入损耗 manual_loss：product 维度产生、plot_id 多为 NULL，
+     *       经 product_id → t_plant_crop_info.related_product 反解到 crop_id（crop.related_product = lf.product_id）。
+     *       原 plot 桥接会因 plot_id NULL 整条漏量，改 product 归集补全。</li>
+     * </ul>
+     * <p>两路按 crop_id UNION ALL 后外层再 GROUP，service 端按 crop 取三损耗值。</p>
      */
     @Select("""
-        SELECT pr.crop_id AS cropId,
-               COALESCE(SUM(CASE WHEN lf.loss_type = 'veg_handle_loss' THEN lf.loss_weight ELSE 0 END), 0) AS vegHandleLoss,
-               COALESCE(SUM(CASE WHEN lf.loss_type = 'production_loss' THEN lf.loss_weight ELSE 0 END), 0) AS productionLoss,
-               COALESCE(SUM(CASE WHEN lf.loss_type = 'manual_loss' THEN lf.loss_weight ELSE 0 END), 0) AS manualLoss
-        FROM t_warehouse_loss_flow lf
-        JOIN t_warehouse_planting_record pr ON pr.plot_id = lf.plot_id AND pr.del_flag = '0' AND pr.tenant_id = #{tenantId}
-          AND pr.id = (SELECT p2.id FROM t_warehouse_planting_record p2
-                        WHERE p2.plot_id = lf.plot_id AND p2.del_flag = '0' AND p2.tenant_id = #{tenantId}
-                          AND (p2.plant_date IS NULL OR p2.plant_date <= #{statDate})
-                          AND (p2.harvest_date IS NULL OR p2.harvest_date >= #{statDate})
-                        ORDER BY p2.plant_date DESC, p2.id DESC LIMIT 1)
-        WHERE lf.del_flag = '0' AND lf.tenant_id = #{tenantId}
-          AND DATE(lf.loss_date) = #{statDate}
-          AND lf.loss_type IN ('veg_handle_loss', 'production_loss', 'manual_loss')
-          AND lf.plot_id IS NOT NULL
-        GROUP BY pr.crop_id
+        SELECT cropId,
+               COALESCE(SUM(vegHandleLoss), 0) AS vegHandleLoss,
+               COALESCE(SUM(productionLoss), 0) AS productionLoss,
+               COALESCE(SUM(manualLoss), 0) AS manualLoss
+        FROM (
+          SELECT pr.crop_id AS cropId,
+                 lf.loss_weight AS vegHandleLoss,
+                 0 AS productionLoss,
+                 0 AS manualLoss
+          FROM t_warehouse_loss_flow lf
+          JOIN t_warehouse_planting_record pr ON pr.plot_id = lf.plot_id AND pr.del_flag = '0' AND pr.tenant_id = #{tenantId}
+            AND pr.id = (SELECT p2.id FROM t_warehouse_planting_record p2
+                          WHERE p2.plot_id = lf.plot_id AND p2.del_flag = '0' AND p2.tenant_id = #{tenantId}
+                            AND (p2.plant_date IS NULL OR p2.plant_date <= #{statDate})
+                            AND (p2.harvest_date IS NULL OR p2.harvest_date >= #{statDate})
+                          ORDER BY p2.plant_date DESC, p2.id DESC LIMIT 1)
+          WHERE lf.del_flag = '0' AND lf.tenant_id = #{tenantId}
+            AND DATE(lf.loss_date) = #{statDate}
+            AND lf.loss_type = 'veg_handle_loss'
+            AND lf.plot_id IS NOT NULL
+          UNION ALL
+          SELECT c.id AS cropId,
+                 0 AS vegHandleLoss,
+                 CASE WHEN lf.loss_type = 'production_loss' THEN lf.loss_weight ELSE 0 END AS productionLoss,
+                 CASE WHEN lf.loss_type = 'manual_loss'     THEN lf.loss_weight ELSE 0 END AS manualLoss
+          FROM t_warehouse_loss_flow lf
+          JOIN t_plant_crop_info c ON c.related_product = lf.product_id AND c.del_flag = '0' AND c.tenant_id = #{tenantId}
+          WHERE lf.del_flag = '0' AND lf.tenant_id = #{tenantId}
+            AND DATE(lf.loss_date) = #{statDate}
+            AND lf.loss_type IN ('production_loss', 'manual_loss')
+            AND lf.product_id IS NOT NULL
+        ) u
+        GROUP BY cropId
         """)
     List<Map<String, Object>> selectCropLossAgg(@Param("tenantId") String tenantId, @Param("statDate") String statDate);
 

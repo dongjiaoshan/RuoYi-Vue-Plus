@@ -7,22 +7,14 @@ import java.io.Serializable;
 import java.math.BigDecimal;
 
 /**
- * 母猪详情「母猪性能」6 KPI 出参（BRD-FIX-MP-DETAIL-SPLIT-001 / DJS-FIX-6-14，原型 母猪详情）。
+ * 母猪详情「母猪性能」KPI 出参（BRD-FIX-MP-DETAIL-SPLIT-001 / 邓博 row11，原型 母猪详情）。
  *
- * <p>mp 端母猪详情页顶部 6 格 KPI 网格用。**从零按本母猪分娩 / 断奶 / 配种记录实时聚合**
- * （Kevin 2026-05-30 D2 拍板：本期 BE 从零建聚合，非读统计预聚合表）。</p>
+ * <p>mp 端母猪详情页「母猪性能」KPI 网格用。字段对齐 {@code t_farm_sow_performance}（定时任务填的
+ * row11 12 项指标）。{@link org.dromara.djs.breed.core.service.impl.SowDetailServiceImpl#querySowPerformance}
+ * **优先读** {@code t_farm_sow_performance} 最新一行映射；该母猪还没被定时任务覆盖到（行不存在）时
+ * fallback 到当场实时聚合，保证不空白。</p>
  *
  * <p>每个指标都可空——数据源缺失时该字段返 {@code null}，mp 端对应格子显 {@code —}（不渲染 NaN）。不抛异常。</p>
- *
- * <p>口径（V1 粗算，客户验收 sense check 用；对齐原型 6 指标）：</p>
- * <ul>
- *   <li>{@link #avgGestationDays} 平均怀孕天数 = avg(分娩日期 − 关联配种日期)；无配种-分娩配对 → null；</li>
- *   <li>{@link #weanToBreedDays} 断奶-配种天数 = avg(配种日期 − 上一次断奶日期)；无配对 → null；</li>
- *   <li>{@link #npdTotalDays} NPD 总天数 = 累计非生产天数（今天 − 最近配种/分娩较晚者，V1 粗口径）；缺基准 → null；</li>
- *   <li>{@link #nullReturnTotal} 返空流总数 = 该母猪返情 + 空怀 + 流产事件累计次数（t_farm_pig_abnormal）；</li>
- *   <li>{@link #avgBornPerLitter} 窝均产仔数 = Σ total_born / 分娩窝数；无分娩 → null；</li>
- *   <li>{@link #avgWeanedPerLitter} 窝均断奶数 = Σ weaning.weaned_count / 断奶批数；无断奶 → null。</li>
- * </ul>
  *
  * @author djs
  * @since BRD-FIX-MP-DETAIL-SPLIT-001
@@ -33,21 +25,39 @@ public class SowPerformanceMpVo implements Serializable {
     @Serial
     private static final long serialVersionUID = 1L;
 
-    /** 平均怀孕天数（avg 分娩−配种）；无配对 → null。 */
+    /** 平均怀孕天数（{@code avg_gestation_days}）；无 → null。 */
     private BigDecimal avgGestationDays;
 
-    /** 断奶-配种天数（avg 配种−上次断奶）；无配对 → null。 */
-    private BigDecimal weanToBreedDays;
+    /** 断奶-配种天数（{@code wean_breed_days}）；无 → null。 */
+    private BigDecimal weanBreedDays;
 
-    /** NPD 总天数（累计非生产天数，V1 粗口径）；缺基准 → null。 */
-    private Integer npdTotalDays;
+    /** NPD（{@code npd}，列类型 DECIMAL）；无 → null。 */
+    private BigDecimal npd;
 
-    /** 返空流总数（返情 + 空怀 + 流产累计次数）；无异常事件 → 0。 */
-    private Integer nullReturnTotal;
+    /** 返空流总次数（{@code abnormal_total}）；无 → 0。 */
+    private Integer abnormalTotal;
 
-    /** 窝均产仔数（Σ total_born / 分娩窝数）；无分娩 → null。 */
+    /** 窝均产仔数（{@code avg_born_per_litter}）；无 → null。 */
     private BigDecimal avgBornPerLitter;
 
-    /** 窝均断奶数（Σ weaned_count / 断奶批数）；无断奶 → null。 */
+    /** 窝均活仔数（{@code avg_live_born_per_litter}）；无 → null。 */
+    private BigDecimal avgLiveBornPerLitter;
+
+    /** 窝均断奶数（{@code avg_weaned_per_litter}）；无 → null。 */
     private BigDecimal avgWeanedPerLitter;
+
+    /** 累计产仔数（{@code total_born}）；无 → null。 */
+    private Integer totalBorn;
+
+    /** 累计活仔数（{@code total_live_born}）；无 → null。 */
+    private Integer totalLiveBorn;
+
+    /** 累计断奶数（{@code total_weaned}）；无 → null。 */
+    private Integer totalWeaned;
+
+    /** 平均出生重 kg（{@code avg_born_weight}）；无 → null。 */
+    private BigDecimal avgBornWeight;
+
+    /** 平均断奶重 kg（{@code avg_weaned_weight}）；无 → null。 */
+    private BigDecimal avgWeanedWeight;
 }

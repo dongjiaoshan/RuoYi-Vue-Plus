@@ -7,6 +7,8 @@ import org.dromara.djs.common.encoder.BizCodeType;
 import org.dromara.djs.common.encoder.IBizCodeGenerator;
 import org.dromara.djs.warehouse.cross.domain.BarInfo;
 import org.dromara.djs.warehouse.cross.mapper.BarInfoMapper;
+import org.dromara.djs.warehouse.cut.domain.PigCutRecord;
+import org.dromara.djs.warehouse.cut.mapper.PigCutRecordMapper;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
 import org.dromara.djs.warehouse.trace.domain.TraceCode;
@@ -84,6 +86,9 @@ class TraceServiceImplTest {
     private BarInfoMapper barInfoMapper;
 
     @Mock
+    private PigCutRecordMapper pigCutRecordMapper;
+
+    @Mock
     private IBizCodeGenerator bizCodeGenerator;
 
     private TraceServiceImpl service;
@@ -97,13 +102,15 @@ class TraceServiceImplTest {
         TableInfoHelper.initTableInfo(assistant, TraceEvent.class);
         TableInfoHelper.initTableInfo(assistant, ProductInfo.class);
         TableInfoHelper.initTableInfo(assistant, BarInfo.class);
+        TableInfoHelper.initTableInfo(assistant, PigCutRecord.class);
     }
 
     @BeforeEach
     void setUp() {
         // spy 以便 stub protected insertTraceCode / insertTraceEvent / findBarByEarNo（避开真实 baseMapper.insert）
         service = spy(new TraceServiceImpl(
-            traceCodeMapper, traceEventMapper, productInfoMapper, barInfoMapper, bizCodeGenerator));
+            traceCodeMapper, traceEventMapper, productInfoMapper, barInfoMapper,
+            pigCutRecordMapper, bizCodeGenerator));
     }
 
     private ProductInfo product(Long id, String belongType) {
@@ -259,33 +266,39 @@ class TraceServiceImplTest {
     }
 
     @Test
-    @DisplayName("genCode pork：出生时按耳号回填 4 上游事件（marketing/singe/slaughter/acid，真实时间戳）")
-    void genCode_pork_backfillsFourEarNoEvents() {
+    @DisplayName("genCode pork：出生时按耳号回填 6 上游事件（marketing/singe/white_bar_in/white_bar_pick/slaughter/acid，真实时间戳）")
+    void genCode_pork_backfillsSixEarNoEvents() {
         when(productInfoMapper.selectById(1001L)).thenReturn(product(1001L, "pork"));
         when(bizCodeGenerator.generate(eq(BizCodeType.TRACE_CODE), anyMap())).thenReturn("T20260615PG000001");
         doNothing().when(service).insertTraceCode(any(TraceCode.class));
         doNothing().when(service).insertTraceEvent(any(TraceEvent.class));
-        // bar_info 沉淀全生命周期时间戳；尚无任何事件 → 4 个全回填
+        // bar_info 沉淀全生命周期时间戳；尚无任何事件 → 6 个全回填
         doReturn(barWithLifecycle("01A12605001")).when(service).findBarByEarNo("01A12605001");
+        // 白条领用时刻在 cut_record（按 white_bar_id=9001 反查）
+        doReturn(date(2026, 6, 3, 7, 0)).when(service).findPickupTime(9001L);
         doReturn(java.util.Collections.<String>emptySet())
             .when(service).findExistingContents(eq("T20260615PG000001"), any());
 
         service.genCode(1001L, "01A12605001", null, null);
 
         ArgumentCaptor<TraceEvent> captor = ArgumentCaptor.forClass(TraceEvent.class);
-        verify(service, times(4)).insertTraceEvent(captor.capture());
+        verify(service, times(6)).insertTraceEvent(captor.capture());
         List<TraceEvent> events = captor.getAllValues();
-        // 4 事件 trace_content 齐全
+        // 6 事件 trace_content 齐全（含白条入库 / 白条出库领用）
         assertThat(events).extracting(TraceEvent::getTraceContent)
             .containsExactly(TraceContentConst.MARKETING, TraceContentConst.SINGE,
+                TraceContentConst.WHITE_BAR_IN, TraceContentConst.WHITE_BAR_PICK,
                 TraceContentConst.SLAUGHTER, TraceContentConst.ACID);
         // 全部挂在新生成的 pork 码上
         assertThat(events).allMatch(e -> "T20260615PG000001".equals(e.getProduceCode()));
-        // 用 bar_info 真实时间戳（非 now）：marketing=6/1，singe=6/2，slaughter/acid=6/3
+        // 用真实时间戳（非 now）：marketing=6/1 8:00，singe / white_bar_in=6/2 9:00（同入库时点），
+        // white_bar_pick=6/3 7:00（领用时刻，cut_record），slaughter/acid=6/3 10:00（出库 / 排酸完成）
         assertThat(events.get(0).getTraceTime()).isEqualTo(java.time.LocalDateTime.of(2026, 6, 1, 8, 0));
         assertThat(events.get(1).getTraceTime()).isEqualTo(java.time.LocalDateTime.of(2026, 6, 2, 9, 0));
-        assertThat(events.get(2).getTraceTime()).isEqualTo(java.time.LocalDateTime.of(2026, 6, 3, 10, 0));
-        assertThat(events.get(3).getTraceTime()).isEqualTo(java.time.LocalDateTime.of(2026, 6, 3, 10, 0));
+        assertThat(events.get(2).getTraceTime()).isEqualTo(java.time.LocalDateTime.of(2026, 6, 2, 9, 0));
+        assertThat(events.get(3).getTraceTime()).isEqualTo(java.time.LocalDateTime.of(2026, 6, 3, 7, 0));
+        assertThat(events.get(4).getTraceTime()).isEqualTo(java.time.LocalDateTime.of(2026, 6, 3, 10, 0));
+        assertThat(events.get(5).getTraceTime()).isEqualTo(java.time.LocalDateTime.of(2026, 6, 3, 10, 0));
     }
 
     @Test
@@ -293,16 +306,18 @@ class TraceServiceImplTest {
     void backfill_idempotent_skipsExisting() {
         doNothing().when(service).insertTraceEvent(any(TraceEvent.class));
         doReturn(barWithLifecycle("01A12605001")).when(service).findBarByEarNo("01A12605001");
-        // marketing + singe 已存在 → 只补 slaughter + acid
+        doReturn(date(2026, 6, 3, 7, 0)).when(service).findPickupTime(9001L);
+        // marketing + singe 已存在 → 只补 white_bar_in / white_bar_pick / slaughter / acid
         doReturn(java.util.Set.of(TraceContentConst.MARKETING, TraceContentConst.SINGE))
             .when(service).findExistingContents(eq("T20260615PG000001"), any());
 
         service.backfillEarNoEvents("T20260615PG000001", "01A12605001");
 
         ArgumentCaptor<TraceEvent> captor = ArgumentCaptor.forClass(TraceEvent.class);
-        verify(service, times(2)).insertTraceEvent(captor.capture());
+        verify(service, times(4)).insertTraceEvent(captor.capture());
         assertThat(captor.getAllValues()).extracting(TraceEvent::getTraceContent)
-            .containsExactly(TraceContentConst.SLAUGHTER, TraceContentConst.ACID);
+            .containsExactly(TraceContentConst.WHITE_BAR_IN, TraceContentConst.WHITE_BAR_PICK,
+                TraceContentConst.SLAUGHTER, TraceContentConst.ACID);
     }
 
     @Test
@@ -312,15 +327,19 @@ class TraceServiceImplTest {
         BarInfo bar = barWithLifecycle("01A12605001");
         bar.setOutTime(null); // 尚未分割 → slaughter/acid 无时间戳
         doReturn(bar).when(service).findBarByEarNo("01A12605001");
+        // 尚未领用 → cut_record 无 pickup_time → white_bar_pick 跳过
+        doReturn(null).when(service).findPickupTime(9001L);
         doReturn(java.util.Collections.<String>emptySet())
             .when(service).findExistingContents(eq("T20260615PG000001"), any());
 
         service.backfillEarNoEvents("T20260615PG000001", "01A12605001");
 
+        // in_time 在（marketing/singe/white_bar_in 写）；out_time + pickup_time 缺（slaughter/acid/white_bar_pick 跳过）
         ArgumentCaptor<TraceEvent> captor = ArgumentCaptor.forClass(TraceEvent.class);
-        verify(service, times(2)).insertTraceEvent(captor.capture());
+        verify(service, times(3)).insertTraceEvent(captor.capture());
         assertThat(captor.getAllValues()).extracting(TraceEvent::getTraceContent)
-            .containsExactly(TraceContentConst.MARKETING, TraceContentConst.SINGE);
+            .containsExactly(TraceContentConst.MARKETING, TraceContentConst.SINGE,
+                TraceContentConst.WHITE_BAR_IN);
     }
 
     @Test

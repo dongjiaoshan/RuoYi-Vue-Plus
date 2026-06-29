@@ -3,6 +3,7 @@ package org.dromara.djs.breed.core.mapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
+import org.apache.ibatis.annotations.Update;
 import org.dromara.common.mybatis.core.mapper.BaseMapperPlus;
 import org.dromara.djs.breed.core.domain.Pig;
 import org.dromara.djs.breed.core.domain.vo.BoarMatingCountVo;
@@ -395,4 +396,35 @@ public interface PigMapper extends BaseMapperPlus<Pig, PigVo> {
         </script>
         """)
     List<PigEarTagMapVo> selectEarTagByEarNos(@Param("earNos") Collection<String> earNos);
+
+    /**
+     * 断奶称重 hook：把某次断奶逐头明细的个体断奶重 + 断奶日回写到对应育肥猪 pig_info 快照
+     * （BRD-STAT-FIX-001，育肥猪出栏净增重溯源）。
+     *
+     * <p>溯源：断奶逐头明细 {@code t_farm_pig_weaning_detail.ear_no}（仔猪耳号）→ 仔猪打标
+     * {@code t_farm_pig_pigletno.piglet_ear_no} → {@code pigletno.pig_id}（贴标后翻成的育肥猪 pig_info.id）。
+     * 把 detail.weight 写入 pig_info.wean_weight，断奶主表 weaning_date 写入 wean_date。
+     * 显式带 {@code tenant_id} JOIN 条件保证租户隔离；仅未软删行。
+     * 断奶事务内联调用，与断奶主记录同生共死。该窝仔猪尚未建 pig_info 行（pig_id 为空）的不在更新集。</p>
+     *
+     * @param tenantId  租户
+     * @param weaningId 断奶记录 id
+     * @return 实际更新的育肥猪行数
+     */
+    @Update("""
+        UPDATE t_farm_pig_info p
+          JOIN t_farm_pig_pigletno pl
+            ON pl.pig_id = p.id AND pl.del_flag = '0' AND pl.tenant_id = p.tenant_id
+          JOIN t_farm_pig_weaning_detail wd
+            ON wd.ear_no = pl.piglet_ear_no AND wd.del_flag = '0' AND wd.tenant_id = p.tenant_id
+          JOIN t_farm_pig_weaning w
+            ON w.id = wd.weaning_id AND w.del_flag = '0' AND w.tenant_id = p.tenant_id
+           SET p.wean_weight = wd.weight,
+               p.wean_date   = DATE(w.weaning_date)
+         WHERE p.del_flag = '0'
+           AND p.tenant_id = #{tenantId}
+           AND wd.weaning_id = #{weaningId}
+        """)
+    int updateWeanSnapshotByWeaningId(@Param("tenantId") String tenantId,
+                                      @Param("weaningId") Long weaningId);
 }

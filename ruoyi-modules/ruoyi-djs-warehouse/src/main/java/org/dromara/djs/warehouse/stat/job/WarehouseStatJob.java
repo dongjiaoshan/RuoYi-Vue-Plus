@@ -30,8 +30,8 @@ public class WarehouseStatJob {
 
     private final IWarehouseStatService warehouseStatService;
 
-    /** 每日 0:45 触发，重算昨天 T-1（错峰养殖 0:30）。 */
-    @Scheduled(cron = "${djs.schedule.warehouse-stat-cron:0 45 0 * * ?}")
+    /** 每日 0:00 触发，重算昨天 T-1（邓博 row9：每晚 12 点；养殖/仓库独立域，并发安全）。 */
+    @Scheduled(cron = "${djs.schedule.warehouse-stat-cron:0 0 0 * * ?}")
     public void aggregate() {
         DjsJobRunner.run("warehouse-stat", () -> warehouseStatService.aggregate(null));
     }

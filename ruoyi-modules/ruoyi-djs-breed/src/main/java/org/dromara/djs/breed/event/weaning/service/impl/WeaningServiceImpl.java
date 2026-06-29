@@ -2,6 +2,7 @@ package org.dromara.djs.breed.event.weaning.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import org.dromara.common.satoken.utils.LoginHelper;
+import org.dromara.common.tenant.helper.TenantHelper;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import lombok.RequiredArgsConstructor;
@@ -175,6 +176,16 @@ public class WeaningServiceImpl implements IWeaningService {
         // 5. 断奶即把该窝已贴标仔猪翻成育肥猪（FIX-BRD-PIGTYPE-001，原型「仔猪断奶操作→生成育肥猪档案」）。
         //    断奶为主触发；转栏 newPigType 翻转保留作幂等兜底。仅改类型不动状态（最小改）。
         flipWeanedPigletsToFattening(farrow.getId());
+
+        // 6. 断奶称重 hook（BRD-STAT-FIX-001）：把逐头明细个体断奶重 + 断奶日回写到对应育肥猪 pig_info
+        //    快照（wean_weight/wean_date），供出栏净增重 / 日增重溯源（育肥猪是断奶仔猪翻成的不同实体，
+        //    出栏统计读自己的快照而非母猪断奶记录）。仅在有逐头明细时回写；同事务。
+        if (!savedDetails.isEmpty()) {
+            String tenantId = TenantHelper.getTenantId();
+            int snap = pigMapper.updateWeanSnapshotByWeaningId(tenantId, entity.getId());
+            log.info("[BRD-STAT-FIX-001] wean snapshot back-fill weaningId={} updatedFatteningPigs={}",
+                entity.getId(), snap);
+        }
 
         log.info("[BRD-EVENT-002] recordWeaning pigId={} earNo={} weaningId={} count={} detailRows={}",
             pig.getId(), pig.getEarNo(), entity.getId(), bo.getWeanedCount(), savedDetails.size());

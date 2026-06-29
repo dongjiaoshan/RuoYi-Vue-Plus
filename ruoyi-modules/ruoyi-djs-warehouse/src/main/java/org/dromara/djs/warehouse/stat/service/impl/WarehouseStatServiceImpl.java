@@ -32,15 +32,17 @@ import java.util.Map;
  * <p>聚合顺序：日表 + 作物日表 UPSERT → 月表汇总当月日表。月率从已落盘日表 Σ 回读，
  * 故日表必须先写。所有源表按自然日 {@code DATE(col)=statDate} 聚合，BigDecimal 统一 setScale(3)。</p>
  *
- * <h3>7 个已拍口径</h3>
+ * <h3>已拍口径</h3>
  * <ol>
- *   <li>白条出品率 = 白条总重/送宰总重×100（row16 笔误统一对齐 row18）</li>
- *   <li>路损率 = (发往月台−月台接收)/发往月台×100（日表）；作物表按 row17 (发往−接收)/接收×100</li>
+ *   <li>白条出品率 = 白条总重/送宰总重×100（A1：row16 ÷屠宰头数疑笔误，统一对齐 row18 ÷送宰总重，待邓博知会）</li>
+ *   <li>路损率 = (发往月台−月台接收)/发往月台×100（A2 日表，分母用发往=损耗占发出量）；作物表按 row17 (发往−接收)/接收×100</li>
  *   <li>所有损耗一律从 loss_flow 按 loss_type 取（防重复计）</li>
  *   <li>月台接收只算自产 receive_type=1</li>
  *   <li>作物日表维度 = crop_id</li>
- *   <li>分割率 = 分割产品总重/分割白条总重</li>
+ *   <li>分割率 = 分割产品总重/分割白条总重（B1：分母 = 分割白条总重 cut_record.pickup_weight，Kevin 确认）</li>
  *   <li>送宰总重 = 自产出栏送宰 + 外购毛重；屠宰头数 = burn 记录数</li>
+ *   <li>作物净菜损耗（row17）生产/录入损耗按 product_id→crop(related_product) 归集（B5：plot 桥接漏 product 维损耗）</li>
+ *   <li>作物饲喂量（row17）取权威台账 feed_log（毛菜间 + 仓库领用两路径），不取 handle_record handle_target=3</li>
  * </ol>
  *
  * @author djs
@@ -106,7 +108,10 @@ public class WarehouseStatServiceImpl implements IWarehouseStatService {
         BigDecimal barTotal = scale3(aggregateMapper.sumBarTotalWeight(tenantId, statDate));
         r.setBarTotalWeight(barTotal);
         r.setAvgBarWeight(divideOrNull(barTotal, new BigDecimal(slaughterCount)));
-        r.setBarYieldRate(pctOrNull(barTotal, slaughterWeight)); // 口径#1：÷送宰总重
+        // 口径#1（A1）：白条出品率 = 白条总重 ÷ 送宰总重 × 100。
+        // spec 日表 row16 写「÷屠宰头数」疑笔误（白条总重÷头数 = 白条均重，再×100 量纲重复、与上面 avgBarWeight 同义）；
+        // 对齐邓博自己的 row18 月表「÷送宰总重」+ 行业标准（出品率 = 产出重/投入重），此处取 ÷送宰总重，待邓博知会确认。
+        r.setBarYieldRate(pctOrNull(barTotal, slaughterWeight));
 
         // 分割段
         BigDecimal cutProduct = scale3(aggregateMapper.sumCutProductWeight(tenantId, statDate));
@@ -115,7 +120,9 @@ public class WarehouseStatServiceImpl implements IWarehouseStatService {
         r.setPrecoolLoss(scale3(aggregateMapper.sumLossByType(tenantId, statDate, "precool_loss")));
         r.setCutProductWeight(cutProduct);
         r.setCutBarWeight(cutBar);
-        r.setCutRate(pctOrNull(cutProduct, cutBar)); // 口径#6
+        // 口径#6（B1）：分割率 = 分割产品总重 ÷ 分割白条总重 × 100。
+        // 分母用 cutBarWeight(分割白条总重 = Σ cut_record.pickup_weight) = Kevin 确认口径（非分割产品总重自身），固化不改。
+        r.setCutRate(pctOrNull(cutProduct, cutBar));
         r.setCutLoss(scale3(aggregateMapper.sumLossByType(tenantId, statDate, "cut_loss")));
 
         // 毛菜段
@@ -130,12 +137,17 @@ public class WarehouseStatServiceImpl implements IWarehouseStatService {
         BigDecimal receivePlatform = scale3(aggregateMapper.sumReceivePlatformWeight(tenantId, statDate));
         r.setSendPlatformWeight(sendPlatform);
         r.setReceivePlatformWeight(receivePlatform);
-        // 口径#2 日表：(发往−接收)/发往×100
+        // 口径#2（A2）日表 row16：路损率 = (发往月台−月台接收)/发往月台×100，分母统一用「发往」（损耗占发出量语义）。
+        // spec row16 文字写「接收/发往」漏了减法（那是接收占比不是损耗率）；按损耗率口径取 (发往−接收)/发往。
+        // 注：作物表 row17 分母用「接收」（见 upsertCropp），与本日表 row16 各自跟对应 spec 行，刻意不一致。
         r.setTransportLossRate(pctOrNull(sendPlatform.subtract(receivePlatform), sendPlatform));
 
         // 净菜生产段
         BigDecimal prodPick = scale3(aggregateMapper.sumProdPickWeight(tenantId, statDate));
         BigDecimal prodReturn = scale3(aggregateMapper.sumProdReturnWeight(tenantId, statDate));
+        // B5 row16 净菜损耗分子：production_loss / manual_loss 全量按 loss_type 取（loss_flow 全表 Σ，非 plot 桥接，
+        // 故 product 维度（plot_id 多为 NULL）的损耗不会漏；production_loss 字典定义即「仅原材料」= 果蔬产品生产损耗）。
+        // crop 维度（row17）才需 product_id→crop 归集补全（见 mapper selectCropLossAgg），日表 row16 全量 Σ 本就完整。
         BigDecimal prodLoss = scale3(aggregateMapper.sumLossByType(tenantId, statDate, "production_loss"));
         BigDecimal manualLoss = scale3(aggregateMapper.sumLossByType(tenantId, statDate, "manual_loss"));
         r.setProdPickWeight(prodPick);
@@ -176,6 +188,7 @@ public class WarehouseStatServiceImpl implements IWarehouseStatService {
             return 0;
         }
         Map<Long, Map<String, Object>> handleAgg = indexByCropId(aggregateMapper.selectCropHandleAgg(tenantId, statDate));
+        Map<Long, Map<String, Object>> feedAgg = indexByCropId(aggregateMapper.selectCropFeedAgg(tenantId, statDate));
         Map<Long, Map<String, Object>> receiveAgg = indexByCropId(aggregateMapper.selectCropReceiveAgg(tenantId, statDate));
         Map<Long, Map<String, Object>> flowAgg = indexByCropId(aggregateMapper.selectCropFlowAgg(tenantId, statDate));
         Map<Long, Map<String, Object>> lossAgg = indexByCropId(aggregateMapper.selectCropLossAgg(tenantId, statDate));
@@ -183,12 +196,14 @@ public class WarehouseStatServiceImpl implements IWarehouseStatService {
         int rows = 0;
         for (Long cropId : cropIds) {
             Map<String, Object> h = handleAgg.get(cropId);
+            Map<String, Object> fd = feedAgg.get(cropId);
             Map<String, Object> rc = receiveAgg.get(cropId);
             Map<String, Object> f = flowAgg.get(cropId);
             Map<String, Object> l = lossAgg.get(cropId);
 
             BigDecimal pick = scale3(mapBd(h, "pickWeight"));
-            BigDecimal feed = scale3(mapBd(h, "feedWeight"));
+            // 饲喂量取权威台账 feed_log（毛菜间 + 仓库领用两路径），不再取 handle_record handle_target=3
+            BigDecimal feed = scale3(mapBd(fd, "feedWeight"));
             BigDecimal sendPlatform = scale3(mapBd(h, "sendWeight"));
             BigDecimal receive = scale3(mapBd(rc, "receiveWeight"));
             BigDecimal prodPick = scale3(mapBd(f, "pickWeight"));

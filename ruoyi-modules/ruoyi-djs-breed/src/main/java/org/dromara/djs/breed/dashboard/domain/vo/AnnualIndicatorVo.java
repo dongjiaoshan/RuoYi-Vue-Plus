@@ -33,4 +33,6 @@ public class AnnualIndicatorVo implements Serializable {
     private BigDecimal psy;
     /** 死亡率（DEATH / (DEATH + ALIVE)，4 位小数）。 */
     private BigDecimal mortalityRate;
+    /** 肥猪死亡数（当年 Σ日 death_fattening_count）。 */
+    private Integer totalFatteningDeath;
 }

@@ -11,6 +11,8 @@ import org.dromara.djs.common.encoder.BizCodeType;
 import org.dromara.djs.common.encoder.IBizCodeGenerator;
 import org.dromara.djs.warehouse.cross.domain.BarInfo;
 import org.dromara.djs.warehouse.cross.mapper.BarInfoMapper;
+import org.dromara.djs.warehouse.cut.domain.PigCutRecord;
+import org.dromara.djs.warehouse.cut.mapper.PigCutRecordMapper;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
 import org.dromara.djs.warehouse.trace.domain.TraceCode;
@@ -78,10 +80,14 @@ public class TraceServiceImpl
     private static final String GIFT_BELONG_TYPE = "gift_box";
 
     /**
-     * 回填的 4 个上游耳号事件（按真实业务先后顺序）。{@link #backfillEarNoEvents} 据此查 bar_info 时间戳重建。
+     * 回填的上游耳号事件（按真实业务先后顺序）。{@link #backfillEarNoEvents} 据此查 bar_info / cut_record
+     * 时间戳重建。pork trace_code 在打包出库（IN_STOCK）才生成，而出栏 / 燎毛 / 白条入库 / 白条出库(领用) /
+     * 屠宰 / 排酸 全部早于此发生——它们实时 {@link #recordEventByEarNo} 那时 code 尚未出生，反查落空跳过，
+     * 必须全部纳入回填集，否则 C 端追溯页永远查不到这些节点。
      */
     private static final Set<String> EAR_NO_BACKFILL_CONTENTS = Set.of(
         TraceContentConst.MARKETING, TraceContentConst.SINGE,
+        TraceContentConst.WHITE_BAR_IN, TraceContentConst.WHITE_BAR_PICK,
         TraceContentConst.SLAUGHTER, TraceContentConst.ACID);
 
     /**
@@ -93,17 +99,20 @@ public class TraceServiceImpl
     private final TraceEventMapper traceEventMapper;
     private final ProductInfoMapper productInfoMapper;
     private final BarInfoMapper barInfoMapper;
+    private final PigCutRecordMapper pigCutRecordMapper;
     private final IBizCodeGenerator bizCodeGenerator;
 
     public TraceServiceImpl(TraceCodeMapper baseMapper,
                             TraceEventMapper traceEventMapper,
                             ProductInfoMapper productInfoMapper,
                             BarInfoMapper barInfoMapper,
+                            PigCutRecordMapper pigCutRecordMapper,
                             IBizCodeGenerator bizCodeGenerator) {
         super(baseMapper);
         this.traceEventMapper = traceEventMapper;
         this.productInfoMapper = productInfoMapper;
         this.barInfoMapper = barInfoMapper;
+        this.pigCutRecordMapper = pigCutRecordMapper;
         this.bizCodeGenerator = bizCodeGenerator;
     }
 
@@ -262,14 +271,19 @@ public class TraceServiceImpl
 
     /**
      * 猪肉链耳号事件回填：pork trace_code 出生时，按耳号查 {@code t_warehouse_bar_info}（一头猪一行，
-     * 沉淀出栏/燎毛/分割全生命周期时间戳）重建 4 个上游事件（marketing/singe/slaughter/acid），用各阶段
-     * 真实时刻而非当前时间写入 trace_event，补齐 code 出生前丢失的链路。
+     * 沉淀出栏/燎毛/分割全生命周期时间戳）+ {@code t_warehouse_pig_cut_record}（领用时刻），重建 6 个上游
+     * 事件（marketing/singe/white_bar_in/white_bar_pick/slaughter/acid），用各阶段真实时刻而非当前时间
+     * 写入 trace_event，补齐 code 出生前丢失的链路。
      *
-     * <h3>时间戳来源（bar_info 列）</h3>
+     * <h3>时间戳来源</h3>
      * <ul>
-     *   <li>marketing → {@code marketing_time}（出栏时刻）</li>
-     *   <li>singe → {@code in_time}（燎毛入库时刻，cutDone 前置）</li>
-     *   <li>slaughter / acid → {@code out_time}（分割出库即排酸完成时刻，二者同 cutDone 触发，
+     *   <li>marketing → bar_info.{@code marketing_time}（出栏时刻）</li>
+     *   <li>singe → bar_info.{@code in_time}（燎毛入库时刻，cutDone 前置）</li>
+     *   <li>white_bar_in → bar_info.{@code in_time}（白条称重入库时刻，同 singe 入库时点；
+     *       邓博 row19 拆出的独立事件）</li>
+     *   <li>white_bar_pick → cut_record.{@code pickup_time}（白条被领用出库进入分割时刻；
+     *       该列在 cut_record 而非 bar_info，按 white_bar_id = bar.id 反查）</li>
+     *   <li>slaughter / acid → bar_info.{@code out_time}（分割出库即排酸完成时刻，二者同 cutDone 触发，
      *       slaughter 先于 acid 以 id 递增稳定排序）</li>
      * </ul>
      *
@@ -288,10 +302,14 @@ public class TraceServiceImpl
                     earNo, produceCode);
                 return;
             }
+            // 白条领用时刻在 cut_record（按 white_bar_id = bar.id 反查），bar_info 不存该列
+            Date pickupTime = findPickupTime(bar.getId());
             Set<String> existing = findExistingContents(produceCode, EAR_NO_BACKFILL_CONTENTS);
             int written = 0;
             written += backfillOne(produceCode, TraceContentConst.MARKETING, bar.getMarketingTime(), existing);
             written += backfillOne(produceCode, TraceContentConst.SINGE, bar.getInTime(), existing);
+            written += backfillOne(produceCode, TraceContentConst.WHITE_BAR_IN, bar.getInTime(), existing);
+            written += backfillOne(produceCode, TraceContentConst.WHITE_BAR_PICK, pickupTime, existing);
             written += backfillOne(produceCode, TraceContentConst.SLAUGHTER, bar.getOutTime(), existing);
             written += backfillOne(produceCode, TraceContentConst.ACID, bar.getOutTime(), existing);
             log.info("[TRC-CORE-001] backfill ear-no events produceCode={} earNo={} written={}",
@@ -328,6 +346,25 @@ public class TraceServiceImpl
                 .eq(BarInfo::getEarNo, earNo)
                 .orderByDesc(BarInfo::getId)
                 .last("LIMIT 1"));
+    }
+
+    /**
+     * 按白条 id 查领用时刻 cut_record.{@code pickup_time}（白条出库进入分割时点；该列在 cut_record 而非
+     * bar_info）。一条白条领用产生一条 cut_record（picked），多行取最新。查不到 / 未领用 → null（回填跳过）。
+     * protected 方便单测 stub。
+     */
+    protected Date findPickupTime(Long whiteBarId) {
+        if (whiteBarId == null) {
+            return null;
+        }
+        PigCutRecord cut = pigCutRecordMapper.selectOne(
+            new LambdaQueryWrapper<PigCutRecord>()
+                .select(PigCutRecord::getPickupTime)
+                .eq(PigCutRecord::getWhiteBarId, whiteBarId)
+                .isNotNull(PigCutRecord::getPickupTime)
+                .orderByDesc(PigCutRecord::getId)
+                .last("LIMIT 1"));
+        return cut == null ? null : cut.getPickupTime();
     }
 
     /**
