@@ -460,21 +460,18 @@ public interface AggregateQueryMapper {
                                 @Param("to") java.time.LocalDate to);
 
     /**
-     * 查情不配种数（当日）：当日有 heat 记录、且该母猪在 [heat_date, heat_date+3天] 内无 breeding 记录的母猪数。
-     * 以 heat 为锚，去重母猪；NOT EXISTS 关联 3 日窗口内的 breeding。
+     * 查情不配种数（当日）：当日有 heat 记录的母猪数 COUNT(DISTINCT pig_id)。
+     *
+     * <p>按邓博字面口径直查 heat 表，<b>不</b>关联 breeding——t_farm_pig_heat 无「配种/不配种」
+     * 标记（仅 heat_result 阳性/阴性/待复查 + is_pregnant_confirmed），无法判定是否后续配种，
+     * 故已去掉原 NOT EXISTS breeding 3 日窗关联。当前实质等同「查情数」。</p>
      */
-    @Select("SELECT COUNT(DISTINCT h.pig_id) "
-        + " FROM t_farm_pig_heat h "
-        + " WHERE h.tenant_id = #{tenantId} "
-        + "   AND h.del_flag = '0' "
-        + "   AND h.heat_date >= #{from} "
-        + "   AND h.heat_date <  #{to} "
-        + "   AND NOT EXISTS ( "
-        + "     SELECT 1 FROM t_farm_pig_breeding b "
-        + "      WHERE b.tenant_id = #{tenantId} AND b.del_flag = '0' "
-        + "        AND b.pig_id = h.pig_id "
-        + "        AND b.breeding_date >= h.heat_date "
-        + "        AND b.breeding_date <  DATE_ADD(h.heat_date, INTERVAL 3 DAY) )")
+    @Select("SELECT COUNT(DISTINCT pig_id) "
+        + " FROM t_farm_pig_heat "
+        + " WHERE tenant_id = #{tenantId} "
+        + "   AND del_flag = '0' "
+        + "   AND heat_date >= #{from} "
+        + "   AND heat_date <  #{to}")
     int countHeatNoBreedInDay(@Param("tenantId") String tenantId,
                               @Param("from") java.time.LocalDate from,
                               @Param("to") java.time.LocalDate to);
@@ -506,6 +503,10 @@ public interface AggregateQueryMapper {
      * {@code pig_type='fattening'} 的出栏猪（用相关子查询取 pig_info.pig_type 判定），种猪 / 仔猪出栏
      * 不计入背膘分母。cnt / weight 仍覆盖全部出栏（口径不变）。</p>
      *
+     * <p>背膘 30 天窗（row182）：相关子查询只取出栏日前 30 天内（{@code measure_date >=
+     * marketing_date − 30 天}）的最近一条背膘——30 天外的陈旧背膘不代表出栏体况，不计入。
+     * 分子 = 符合窗口的背膘累加；分母 = 符合窗口（有近 30 天背膘）的出栏肥猪头数。</p>
+     *
      * @return {cnt:Long, weight:BigDecimal, backfatSum:BigDecimal, backfatCnt:Long}
      */
     @Select("SELECT COUNT(*) AS cnt, COALESCE(SUM(m.out_weight),0) AS weight, "
@@ -516,6 +517,7 @@ public interface AggregateQueryMapper {
         + "           SELECT g.backfat_thickness FROM t_farm_pig_growth g "
         + "            WHERE g.tenant_id = m.tenant_id AND g.del_flag = '0' "
         + "              AND g.pig_id = m.pig_id AND g.backfat_thickness IS NOT NULL "
+        + "              AND g.measure_date >= DATE_SUB(m.marketing_date, INTERVAL 30 DAY) "
         + "            ORDER BY g.measure_date DESC LIMIT 1 ) END ),0) AS backfatSum, "
         + "       SUM( CASE WHEN ( "
         + "           SELECT pi.pig_type FROM t_farm_pig_info pi "
@@ -524,6 +526,7 @@ public interface AggregateQueryMapper {
         + "           SELECT g.backfat_thickness FROM t_farm_pig_growth g "
         + "            WHERE g.tenant_id = m.tenant_id AND g.del_flag = '0' "
         + "              AND g.pig_id = m.pig_id AND g.backfat_thickness IS NOT NULL "
+        + "              AND g.measure_date >= DATE_SUB(m.marketing_date, INTERVAL 30 DAY) "
         + "            ORDER BY g.measure_date DESC LIMIT 1 ) IS NOT NULL THEN 1 ELSE 0 END ) AS backfatCnt "
         + " FROM t_farm_pig_marketing m "
         + " WHERE m.tenant_id = #{tenantId} "
@@ -596,17 +599,21 @@ public interface AggregateQueryMapper {
      * <p>口径修正（row14 B3）：分娩头数 = 母猪头数（窝数），一行 farrow = 一窝 = 一头母猪分娩，
      * 故用 COUNT(*) 不是 SUM(live_born)（仔猪数）。这会同时修正 year_farrow_rate（年分娩率）与 PSY
      * （二者都用 year_batch_farrow_count）。</p>
+     *
+     * <p>配种→分娩天数偏移读配置（row183）：{@code breedToFarrowDays} 来自配置键
+     * {@code sow_breed_to_farrow_days}（缺省 114），不再写死 114。</p>
      */
     @Select("SELECT COUNT(*) FROM t_farm_pig_farrow "
         + " WHERE tenant_id = #{tenantId} "
         + "   AND del_flag = '0' "
         + "   AND farrow_date >= #{from} "
         + "   AND farrow_date <  #{to} "
-        + "   AND YEAR(DATE_SUB(farrow_date, INTERVAL 114 DAY)) = #{batchYear}")
+        + "   AND YEAR(DATE_SUB(farrow_date, INTERVAL #{breedToFarrowDays} DAY)) = #{batchYear}")
     int sumYearBatchFarrowForDay(@Param("tenantId") String tenantId,
                                  @Param("from") java.time.LocalDate from,
                                  @Param("to") java.time.LocalDate to,
-                                 @Param("batchYear") int batchYear);
+                                 @Param("batchYear") int batchYear,
+                                 @Param("breedToFarrowDays") int breedToFarrowDays);
 
     // ============================================================
     //  日表回读聚合 → 月/年（BRD-STAT-001）
@@ -669,17 +676,21 @@ public interface AggregateQueryMapper {
      * 累计匹配配种窝数（row13 T4）：「每日用当天−114 在对应日期的配种母猪数累加」
      * = Σ日配种母猪数。同一母猪在偏移窗内不同日各计一次，故用 COUNT(*) 不去重
      * （去 DISTINCT 会把同母猪多日配种压成 1，与「Σ日」口径不符）。
-     * 等价于 [from−114, to−114) 偏移区间的配种记录数 COUNT(*)。
-     * from/to 传当月自然边界，方法内偏移 114 天。
+     * 等价于 [from−N, to−N) 偏移区间的配种记录数 COUNT(*)，N = breedToFarrowDays。
+     * from/to 传当月自然边界，方法内偏移 N 天。
+     *
+     * <p>配种→分娩天数偏移读配置（row183）：{@code breedToFarrowDays} 来自配置键
+     * {@code sow_breed_to_farrow_days}（缺省 114），不再写死 114。</p>
      */
     @Select("SELECT COUNT(*) FROM t_farm_pig_breeding "
         + " WHERE tenant_id = #{tenantId} "
         + "   AND del_flag = '0' "
-        + "   AND breeding_date >= DATE_SUB(#{from}, INTERVAL 114 DAY) "
-        + "   AND breeding_date <  DATE_SUB(#{to}, INTERVAL 114 DAY)")
+        + "   AND breeding_date >= DATE_SUB(#{from}, INTERVAL #{breedToFarrowDays} DAY) "
+        + "   AND breeding_date <  DATE_SUB(#{to}, INTERVAL #{breedToFarrowDays} DAY)")
     int countMateLitterShifted(@Param("tenantId") String tenantId,
                                @Param("from") java.time.LocalDateTime from,
-                               @Param("to") java.time.LocalDateTime to);
+                               @Param("to") java.time.LocalDateTime to,
+                               @Param("breedToFarrowDays") int breedToFarrowDays);
 
     /** 区间内日表行数（= 已落盘天数，年均能繁存栏的「已历天数」分母）。 */
     @Select("SELECT COUNT(*) FROM t_farm_indicator_record "

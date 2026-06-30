@@ -163,6 +163,15 @@ public class LocationStockServiceImpl extends DjsBaseServiceImpl<LocationStockMa
         }
         // 库位级业务锁（WMS-STOCK-001）：盘点进行中的库位禁出入库（后端双保险）
         stockCheckService.assertLocationUnlocked(locationId);
+        // row186-BE：出库量不得超过当前库存（前端软拦 + 此处后端 fail-fast 硬拦，写流水前拦截防绕过/并发超扣；
+        // 与 step3 的 deductByProductLocation 行锁原子校验互为内外两道闸）。
+        BigDecimal currentStock = stock.getProductStock() == null ? BigDecimal.ZERO : stock.getProductStock();
+        if (bo.getQuantity().compareTo(currentStock) > 0) {
+            throw new ServiceException(
+                "出库量超过当前库存（product=" + product.getProductName()
+                    + " / 当前库存=" + currentStock.stripTrailingZeros().toPlainString() + product.getProductUnit()
+                    + " / 申请=" + bo.getQuantity().stripTrailingZeros().toPlainString() + product.getProductUnit() + "）");
+        }
         Long userId = LoginHelper.getUserId();
 
         // 2. INSERT 出库流水（flow_type=backstage_out → 出库记录显示「后台出库」）

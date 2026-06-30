@@ -328,7 +328,8 @@ public class ProductInfoServiceImpl extends DjsBaseServiceImpl<ProductInfoMapper
     private LambdaQueryWrapper<ProductInfo> buildQueryWrapper(ProductInfoQuery query) {
         LambdaQueryWrapper<ProductInfo> wrapper = new LambdaQueryWrapper<>();
         if (query == null) {
-            return wrapper.orderByDesc(ProductInfo::getId);
+            // row22：产品配置列表按更新时间倒序（id 兜底，update_time 相同时稳定排序）
+            return wrapper.orderByDesc(ProductInfo::getUpdateTime).orderByDesc(ProductInfo::getId);
         }
         boolean hasTypeSet = query.getProductTypes() != null && !query.getProductTypes().isEmpty();
         wrapper.eq(StringUtils.isNotBlank(query.getProductId()), ProductInfo::getProductId, query.getProductId())
@@ -358,7 +359,8 @@ public class ProductInfoServiceImpl extends DjsBaseServiceImpl<ProductInfoMapper
             .eq(query.getUpdateBy() != null, ProductInfo::getUpdateBy, query.getUpdateBy())
             .ge(query.getUpdateBeginTime() != null, ProductInfo::getUpdateTime, query.getUpdateBeginTime())
             .le(query.getUpdateEndTime() != null, ProductInfo::getUpdateTime, query.getUpdateEndTime())
-            .orderByDesc(ProductInfo::getId);
+            // row22：产品配置列表按更新时间倒序（id 兜底）
+            .orderByDesc(ProductInfo::getUpdateTime).orderByDesc(ProductInfo::getId);
         return wrapper;
     }
 

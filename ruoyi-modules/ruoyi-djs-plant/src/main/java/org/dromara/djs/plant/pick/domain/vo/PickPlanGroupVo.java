@@ -75,9 +75,18 @@ public class PickPlanGroupVo implements Serializable {
     @ExcelIgnore
     private BigDecimal demandQty;
 
-    /** 预计产量（SUM expected_yield，kg）。 */
+    /** 预计产量（SUM expected_yield，kg；未扣灾害的理论标准产量）。 */
     @ExcelProperty(value = "预计产量(kg)")
     private BigDecimal expectedYield;
+
+    /**
+     * 预计净产量（kg）= max(0, 预计产量 − 预计灾害损失量)。
+     *
+     * <p>row185：发生灾害时「预计产量」需扣除该作物灾害损失（按 crop_id 聚合的灾害 SUM），钳 0 防负。
+     * 前端列表「预计产量」列展示此净值；原始 {@link #expectedYield} / {@link #disasterLoss} 仍保留供核对。</p>
+     */
+    @ExcelProperty(value = "预计净产量(kg)")
+    private BigDecimal netExpectedYield;
 
     /** 当年已采摘量（当年累计实采 SUM actual_yield，kg）。 */
     @ExcelProperty(value = "当年已采摘量(kg)")

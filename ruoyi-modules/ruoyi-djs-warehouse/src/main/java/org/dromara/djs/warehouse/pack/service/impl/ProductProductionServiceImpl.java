@@ -1144,6 +1144,19 @@ public class ProductProductionServiceImpl
                 productId, storeId, packQty);
             return;
         }
+        // row53-BE：打包份数硬拦——本次打包量不得超过该需求剩余份数（剩余 = demand_quantity − 已发货）。
+        // 前端「剩余可打包份数」只是软提示，后端在写入前 fail-fast 防绕过/并发超打。
+        BigDecimal demandQty = demand.getDemandQuantity() == null ? BigDecimal.ZERO : demand.getDemandQuantity();
+        BigDecimal shipped = demand.getShippedCount() == null ? BigDecimal.ZERO : demand.getShippedCount();
+        BigDecimal remain = demandQty.subtract(shipped);
+        if (remain.signum() < 0) {
+            remain = BigDecimal.ZERO;
+        }
+        if (packQty.compareTo(remain) > 0) {
+            throw new ServiceException("打包份数超过该需求剩余份数：剩余 "
+                + remain.stripTrailingZeros().toPlainString()
+                + "，本次 " + packQty.stripTrailingZeros().toPlainString());
+        }
         int rows = demandManageMapper.incrementShipped(demand.getId(), TENANT_V1, packQty);
         log.info("[PACK-DEMAND-DEDUCT] 打包即扣需求 demandId={} productId={} storeId={} packQty={} affected={}",
             demand.getId(), productId, storeId, packQty, rows);

@@ -29,6 +29,7 @@ import org.dromara.djs.breed.dashboard.mapper.MonthlyProductionMapper;
 import org.dromara.djs.breed.dashboard.mapper.SowRecordMapper;
 import org.dromara.djs.breed.dashboard.service.IDashboardService;
 import org.dromara.djs.breed.production.mapper.SowPerformanceMapper;
+import org.dromara.djs.breed.production.service.IProductionCycleConfigService;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -90,6 +91,18 @@ public class DashboardServiceImpl implements IDashboardService {
     private final AggregateQueryMapper aggregateQueryMapper;
     private final FarmIndicatorRecordMapper farmIndicatorRecordMapper;
     private final SowPerformanceMapper sowPerformanceMapper;
+    private final IProductionCycleConfigService productionCycleConfigService;
+
+    /** 配种→分娩天数配置键（row183）：缺省 114 天。 */
+    private static final String CONFIG_KEY_BREED_TO_FARROW = "sow_breed_to_farrow_days";
+    /** 配种→分娩天数缺省值（配置 key 缺失时 fallback）。 */
+    private static final int DEFAULT_BREED_TO_FARROW_DAYS = 114;
+
+    /** 取配种→分娩天数：读 {@code sow_breed_to_farrow_days}，缺则回退 114。 */
+    private int breedToFarrowDays() {
+        Integer d = productionCycleConfigService.getValue(CONFIG_KEY_BREED_TO_FARROW);
+        return d != null ? d : DEFAULT_BREED_TO_FARROW_DAYS;
+    }
 
     // ============================================================
     //  Read endpoints
@@ -890,7 +903,8 @@ public class DashboardServiceImpl implements IDashboardService {
         fillEndStock(r, tenantId, statDate);
 
         // ---- 当年配种批次分娩头数 ----
-        r.setYearBatchFarrowCount(aggregateQueryMapper.sumYearBatchFarrowForDay(tenantId, dayFrom, dayTo, batchYear));
+        // 配种→分娩天数读 sow_breed_to_farrow_days，缺省 114
+        r.setYearBatchFarrowCount(aggregateQueryMapper.sumYearBatchFarrowForDay(tenantId, dayFrom, dayTo, batchYear, breedToFarrowDays()));
 
         // UPSERT
         FarmIndicatorRecord existing = farmIndicatorRecordMapper.selectOne(
@@ -1138,8 +1152,9 @@ public class DashboardServiceImpl implements IDashboardService {
         int sumEndNonprodSow = mapInt(sum, "sumEndNonprodSow");
 
         int daysInMonth = month.lengthOfMonth();
-        // 累计匹配配种窝数 = [from-114, to-114) 配种记录数（Σ日配种母猪数，不去重）
-        int mateLitter = aggregateQueryMapper.countMateLitterShifted(tenantId, dtFrom, dtTo);
+        // 累计匹配配种窝数 = [from-N, to-N) 配种记录数（Σ日配种母猪数，不去重）
+        //   N = 配种→分娩天数，读 sow_breed_to_farrow_days，缺省 114
+        int mateLitter = aggregateQueryMapper.countMateLitterShifted(tenantId, dtFrom, dtTo, breedToFarrowDays());
         // 当月配种母猪头数（实时，COUNT(DISTINCT pig_id) —— spec「配种母猪头数」按头去重）
         int breedingSowCount = aggregateQueryMapper.countDistinctBreedingSowInRange(tenantId, dtFrom, dtTo);
 

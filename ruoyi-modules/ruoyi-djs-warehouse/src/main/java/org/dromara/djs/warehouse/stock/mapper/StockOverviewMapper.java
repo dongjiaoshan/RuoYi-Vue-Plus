@@ -56,7 +56,9 @@ public interface StockOverviewMapper {
                          AND s.product_id IS NOT NULL
                          AND s.flow_date &lt; DATE_ADD(d.statDate, INTERVAL 1 DAY)
                        GROUP BY s.product_id
-                       HAVING SUM(s.change_num) &lt;&gt; 0
+                       HAVING SUM(CASE WHEN s.inout_type = 'IN' THEN s.change_quantity
+                                       WHEN s.inout_type = 'OT' THEN -s.change_quantity
+                                       ELSE 0 END) &lt;&gt; 0
                    ) bal_t
                ) AS productCount
         FROM (
@@ -78,10 +80,12 @@ public interface StockOverviewMapper {
      *
      * <p>主体来自当日及之前有流水的 (product_id, warehouse_id) 组合：</p>
      * <ul>
-     *   <li>beginStock = Σ change_num WHERE flow_date &lt; 当日 0 点；</li>
+     *   <li>beginStock = 昨日期末结存 = Σ(按 inout_type 带符号的 change_quantity) WHERE flow_date &lt; 当日 0 点；
+     *       即 IN 计 +change_quantity、OT 计 −change_quantity。
+     *       <b>不</b>用 change_num 带符号求和（部分写入方 ship_out 写成了正号，会导致期初 ≠ 昨日期末）。</li>
      *   <li>inboundQty = Σ change_quantity WHERE inout_type='IN' AND DATE(flow_date)=当日；</li>
      *   <li>outboundQty = Σ change_quantity WHERE inout_type='OT' AND DATE(flow_date)=当日；</li>
-     *   <li>endStock = beginStock + inboundQty − outboundQty；</li>
+     *   <li>endStock = beginStock + inboundQty − outboundQty；故昨日 endStock 恒等于今日 beginStock。</li>
      *   <li>仅保留「期初或入库或出库任一 ≠ 0」即当日相关的行（剔除当日及历史均为 0 的噪声）。</li>
      * </ul>
      *
@@ -114,7 +118,9 @@ public interface StockOverviewMapper {
         FROM (
             SELECT f.product_id,
                    f.warehouse_id,
-                   COALESCE(SUM(CASE WHEN f.flow_date &lt; #{date} THEN f.change_num ELSE 0 END), 0) AS beginStock,
+                   COALESCE(SUM(CASE WHEN f.flow_date &lt; #{date} AND f.inout_type = 'IN' THEN f.change_quantity
+                                     WHEN f.flow_date &lt; #{date} AND f.inout_type = 'OT' THEN -f.change_quantity
+                                     ELSE 0 END), 0) AS beginStock,
                    COALESCE(SUM(CASE WHEN DATE(f.flow_date) = #{date} AND f.inout_type = 'IN' THEN f.change_quantity ELSE 0 END), 0) AS inboundQty,
                    COALESCE(SUM(CASE WHEN DATE(f.flow_date) = #{date} AND f.inout_type = 'OT' THEN f.change_quantity ELSE 0 END), 0) AS outboundQty
             FROM t_warehouse_stock_flow f

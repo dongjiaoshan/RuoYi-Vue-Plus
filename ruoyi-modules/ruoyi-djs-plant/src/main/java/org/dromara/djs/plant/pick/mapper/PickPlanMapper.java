@@ -29,6 +29,7 @@ public interface PickPlanMapper {
      *   <li>{@code actualYield} = 当年 SUM(actual_yield)（当年已采摘量，按 earliest_harvestdate 年份过滤）</li>
      *   <li>{@code disasterLoss} = 灾害农事记录 t_plant_farm_records(farm_type='disaster') 按作物 SUM(loss_yield)
      *       （预计灾害损失量，直接取灾害源头，不依赖 plant_details.loss_yield 累加副作用）</li>
+     *   <li>{@code netExpectedYield} = max(0, expectedYield − disasterLoss)（预计净产量，row185 灾害扣减后钳 0）</li>
      *   <li>{@code plotTotalCount} = 当年 COUNT(DISTINCT plot_id)（当年种植地块总数）</li>
      *   <li>{@code activityPlotCount} = SUM(is_pick=1)</li>
      * </ul>
@@ -59,6 +60,8 @@ public interface PickPlanMapper {
             COALESCE(SUM(d.expected_yield), 0) AS expectedYield,
             COALESCE(SUM(CASE WHEN YEAR(d.earliest_harvestdate) = #{currentYear} THEN d.actual_yield ELSE 0 END), 0) AS actualYield,
             COALESCE(MAX(dl.disasterLoss), 0) AS disasterLoss,
+            -- row185：预计净产量 = max(0, 预计产量 − 预计灾害损失量)，钳 0 防灾害>预计时出负
+            GREATEST(COALESCE(SUM(d.expected_yield), 0) - COALESCE(MAX(dl.disasterLoss), 0), 0) AS netExpectedYield,
             COUNT(DISTINCT CASE WHEN YEAR(d.earliest_harvestdate) = #{currentYear} THEN d.plot_id END) AS plotTotalCount,
             SUM(CASE WHEN d.is_pick = 1 THEN 1 ELSE 0 END) AS activityPlotCount
           FROM t_plant_plant_details d

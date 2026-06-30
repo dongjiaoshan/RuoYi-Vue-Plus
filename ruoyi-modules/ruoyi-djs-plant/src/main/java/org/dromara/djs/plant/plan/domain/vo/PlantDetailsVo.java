@@ -64,6 +64,15 @@ public class PlantDetailsVo implements Serializable {
     private BigDecimal expectedYield;
     @ExcelProperty(value = "损耗(kg)")
     private BigDecimal lossYield;
+
+    /**
+     * 预计净产量（kg）= max(0, 标准产量 expectedYield − 灾害损失 lossYield)。
+     *
+     * <p>row185：采摘计划调整弹窗「标准产量」需扣除本地块灾害损失（per-plot {@code loss_yield} 累计灾害损失），
+     * 钳 0 防负。由 PickPlanServiceImpl.enrich 计算回填；原始 {@link #expectedYield} / {@link #lossYield} 仍保留。</p>
+     */
+    @ExcelProperty(value = "预计净产量(kg)")
+    private BigDecimal netExpectedYield;
     @ExcelProperty(value = "实际产量(kg)")
     private BigDecimal actualYield;
     @ExcelIgnore

@@ -975,6 +975,13 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
            AND s.tenant_id      = '1001'
            AND (s.product_stock > 0 OR DATE(s.update_time) = CURDATE())
            AND p.product_status = 0
+           <!-- row2：与 mp selectMatIssueItems 同口径——排除自产成品（product_attr=1 且 product_type=1），
+                领用列表只列可领原料/物资；防 admin 多显成品行导致与 mp 卡数不一致。 -->
+           AND (COALESCE(p.product_attr, 0) != 1 OR COALESCE(p.product_type, 0) != 1)
+           <!-- row2：包材/物资类无耳号、无地块的库存行若 location_id 为空 = 无意义的孤儿库存行
+                （mp 按 product 聚合时已折叠进总库存），admin 行视图剔除，避免多出"库位空"重复行使两端行数不一致。
+                有耳号(猪肉篮)/有地块(自产果蔬篮)的行保留——它们靠 ear_no/plot_id 而非 location 成行。 -->
+           AND NOT (s.location_id IS NULL AND s.ear_no IS NULL AND s.plot_id IS NULL)
            AND p.belong_type IN
            <foreach collection="belongTypes" item="bt" open="(" separator="," close=")">#{bt}</foreach>
            <if test="keyword != null and keyword != ''">

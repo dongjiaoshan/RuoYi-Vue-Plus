@@ -28,6 +28,7 @@ import org.dromara.djs.plant.team.mapper.PlantWorkTeamMapper;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.Date;
 import java.util.HashSet;
@@ -324,7 +325,21 @@ public class PickPlanServiceImpl implements IPickPlanService {
             d.setHarvestTeamName(d.getHarvestBy() == null ? null : teamMap.get(d.getHarvestBy()));
             // 种植日期 = 实际开始种植日期（采摘计划详情列展示用）
             d.setPlantDate(d.getBeginActualdate());
+            // row185：预计净产量 = max(0, 标准产量 − 灾害损失)，钳 0 防负（per-plot loss_yield 为本地块累计灾害损失）
+            d.setNetExpectedYield(netExpectedYield(d.getExpectedYield(), d.getLossYield()));
         }
+    }
+
+    /**
+     * 预计净产量口径（row185）：{@code max(0, expectedYield − lossYield)}。
+     *
+     * <p>expectedYield 缺失视为 0；lossYield 缺失视为 0；差值钳 0 防灾害>预计时出负。</p>
+     */
+    private BigDecimal netExpectedYield(BigDecimal expectedYield, BigDecimal lossYield) {
+        BigDecimal exp = expectedYield == null ? BigDecimal.ZERO : expectedYield;
+        BigDecimal loss = lossYield == null ? BigDecimal.ZERO : lossYield;
+        BigDecimal net = exp.subtract(loss);
+        return net.compareTo(BigDecimal.ZERO) < 0 ? BigDecimal.ZERO : net;
     }
 
     private String currentTenantSafe() {
