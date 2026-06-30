@@ -70,6 +70,9 @@ class StoreDemandServiceImplTest {
     @Mock
     private DemandManageMapper demandManageMapper;
 
+    @Mock
+    private org.dromara.djs.warehouse.pack.service.IProductProductionService productProductionService;
+
     @InjectMocks
     private StoreDemandServiceImpl service;
 

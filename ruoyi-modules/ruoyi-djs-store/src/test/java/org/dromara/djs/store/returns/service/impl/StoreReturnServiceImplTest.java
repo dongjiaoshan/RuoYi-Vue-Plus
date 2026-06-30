@@ -75,6 +75,7 @@ class StoreReturnServiceImplTest {
     @Mock private IWarehousePurchaseInService purchaseInService;
     @Mock private DemandManageMapper demandManageMapper;
     @Mock private org.dromara.common.core.service.DictService dictService;
+    @Mock private org.dromara.djs.store.ledger.mapper.StoreDailyLedgerMapper storeDailyLedgerMapper;
 
     private TestableStoreReturnServiceImpl service;
     private MockedStatic<LoginHelper> loginHelperMock;
@@ -108,8 +109,9 @@ class StoreReturnServiceImplTest {
         TestableStoreReturnServiceImpl(StoreReturnMapper b, StoreMapper sm,
                                        ProductInfoMapper pm, LocationInfoMapper lm,
                                        IBizCodeGenerator g, IWarehousePurchaseInService pis,
-                                       DemandManageMapper dm, org.dromara.common.core.service.DictService ds) {
-            super(b, sm, pm, lm, g, pis, dm, ds);
+                                       DemandManageMapper dm, org.dromara.common.core.service.DictService ds,
+                                       org.dromara.djs.store.ledger.mapper.StoreDailyLedgerMapper ldm) {
+            super(b, sm, pm, lm, g, pis, dm, ds, ldm);
         }
 
         @Override
@@ -121,7 +123,8 @@ class StoreReturnServiceImplTest {
     @BeforeEach
     void setup() {
         service = new TestableStoreReturnServiceImpl(baseMapper, storeMapper, productInfoMapper,
-            locationInfoMapper, bizCodeGenerator, purchaseInService, demandManageMapper, dictService);
+            locationInfoMapper, bizCodeGenerator, purchaseInService, demandManageMapper, dictService,
+            storeDailyLedgerMapper);
         loginHelperMock = Mockito.mockStatic(LoginHelper.class);
         loginHelperMock.when(LoginHelper::getUserId).thenReturn(USER_ID);
         when(baseMapper.insert(any(StoreReturn.class))).thenAnswer(inv -> {

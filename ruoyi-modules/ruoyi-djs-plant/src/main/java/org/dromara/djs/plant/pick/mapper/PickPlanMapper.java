@@ -27,7 +27,8 @@ public interface PickPlanMapper {
      *   <li>{@code currentPlantedArea} = SUM(plot_area WHERE begin_actualdate IS NOT NULL)（当前已种植亩数，亩）</li>
      *   <li>{@code expectedYield} = SUM(expected_yield)（预计产量）</li>
      *   <li>{@code actualYield} = 当年 SUM(actual_yield)（当年已采摘量，按 earliest_harvestdate 年份过滤）</li>
-     *   <li>{@code disasterLoss} = SUM(loss_yield)（预计灾害损失量）</li>
+     *   <li>{@code disasterLoss} = 灾害农事记录 t_plant_farm_records(farm_type='disaster') 按作物 SUM(loss_yield)
+     *       （预计灾害损失量，直接取灾害源头，不依赖 plant_details.loss_yield 累加副作用）</li>
      *   <li>{@code plotTotalCount} = 当年 COUNT(DISTINCT plot_id)（当年种植地块总数）</li>
      *   <li>{@code activityPlotCount} = SUM(is_pick=1)</li>
      * </ul>
@@ -57,11 +58,23 @@ public interface PickPlanMapper {
             COALESCE(SUM(CASE WHEN d.begin_actualdate IS NOT NULL THEN d.plot_area ELSE 0 END), 0) AS currentPlantedArea,
             COALESCE(SUM(d.expected_yield), 0) AS expectedYield,
             COALESCE(SUM(CASE WHEN YEAR(d.earliest_harvestdate) = #{currentYear} THEN d.actual_yield ELSE 0 END), 0) AS actualYield,
-            COALESCE(SUM(d.loss_yield),     0) AS disasterLoss,
+            COALESCE(MAX(dl.disasterLoss), 0) AS disasterLoss,
             COUNT(DISTINCT CASE WHEN YEAR(d.earliest_harvestdate) = #{currentYear} THEN d.plot_id END) AS plotTotalCount,
             SUM(CASE WHEN d.is_pick = 1 THEN 1 ELSE 0 END) AS activityPlotCount
           FROM t_plant_plant_details d
           LEFT JOIN t_plant_crop_info c ON c.id = d.crop_id AND c.del_flag = '0'
+          LEFT JOIN (
+            -- 预计灾害损失量：直接取灾害农事记录（t_plant_farm_records farm_type='disaster'）
+            -- 按作物聚合的 SUM(loss_yield)，不依赖 plant_details.loss_yield 累加副作用
+            -- （历史/导入数据未触发累加时该字段恒 0，故改取灾害源头）。
+            SELECT fr.crop_id AS crop_id, SUM(fr.loss_yield) AS disasterLoss
+              FROM t_plant_farm_records fr
+             WHERE fr.del_flag = '0'
+               AND fr.tenant_id = #{tenantId}
+               AND fr.farm_type = 'disaster'
+               AND fr.crop_id IS NOT NULL
+             GROUP BY fr.crop_id
+          ) dl ON dl.crop_id = d.crop_id
          WHERE d.del_flag = '0'
            AND d.tenant_id = #{tenantId}
            <if test='cropId != null'>        AND d.crop_id = #{cropId}                </if>

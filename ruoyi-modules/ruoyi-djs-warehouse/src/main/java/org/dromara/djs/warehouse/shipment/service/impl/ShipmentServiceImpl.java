@@ -291,8 +291,7 @@ public class ShipmentServiceImpl
                 + " shipment_no=" + shipment.getShipmentNo()
                 + " produce_no=" + p.getProduceNo());
             stockFlowMapper.insert(flow);
-
-            deductProductionStock(p, userId);
+            // row42：生产产品不入库 → 无成品 location_stock 可扣（发货走 product_production，不动库存）。
         }
 
         // 6. publishEvent — D14 CROSS-FLOW-003 listener 消费触发 demand.shipped_count 累加 + transition

@@ -174,15 +174,19 @@ public interface PlantPlanMapper extends BaseMapperPlus<PlantPlan, PlantPlanVo> 
     List<Map<String, Object>> selectListAggregates(@Param("planIds") List<Long> planIds);
 
     /**
-     * KPI 卡：地块维度统计（FIX-PLT-AD-PLAN-001）。
+     * KPI 卡：地块维度统计（FIX-PLT-AD-PLAN-001 · row37）。
      *
-     * <p>每行单条：idlePlot(plot_status=1) / plantedPlot(plot_status IN (2,3))。
-     * tenant_id='1001'（V1 单租户），del_flag='0'。</p>
+     * <p>每行单条：</p>
+     * <ul>
+     *   <li>{@code idlePlot} = 当前空闲地块数（plot_status=1，当前状态，不受计划年份影响）。</li>
+     *   <li>{@code totalPlot} = 地块总数（算「计划地块使用频次」分母用）。</li>
+     * </ul>
+     * <p>tenant_id='1001'（V1 单租户），del_flag='0'。</p>
      */
     @Select("""
         SELECT
             COALESCE(SUM(CASE WHEN plot_status = 1 THEN 1 ELSE 0 END), 0) AS idlePlot,
-            COALESCE(SUM(CASE WHEN plot_status IN (2, 3) THEN 1 ELSE 0 END), 0) AS plantedPlot
+            COUNT(*) AS totalPlot
           FROM t_plant_plot_info
          WHERE del_flag = '0'
            AND tenant_id = '1001'
@@ -190,17 +194,25 @@ public interface PlantPlanMapper extends BaseMapperPlus<PlantPlan, PlantPlanVo> 
     Map<String, Object> selectPlotStatusStats();
 
     /**
-     * KPI 卡：计划维度统计（FIX-PLT-AD-PLAN-001）。
+     * KPI 卡：计划/种植维度统计（FIX-PLT-AD-PLAN-001 · row37，按计划年份过滤）。
      *
-     * <p>仅进行中计划（plant_status IN ('pending','ongoing')）。每行单条：
-     * plannedPlot(COUNT DISTINCT details.plot_id) / detailRows(明细总行数，算频次用)
-     * / cropVarietyCount(COUNT DISTINCT plan.crop_id)。
-     * tenant_id='1001'（V1 单租户），del_flag='0'。</p>
+     * <p>年份锚定计划主表 {@code plan_year = #{planYear}}（默认当年由 service 兜底）。每行单条：</p>
+     * <ul>
+     *   <li>{@code plantedPlot} = 当年已种植地块数 = 当年种植行为次数之和（COUNT(*) 非 DISTINCT），
+     *       即当年所属计划下已实际开始种植（begin_actualdate IS NOT NULL）的明细行数。</li>
+     *   <li>{@code plannedPlot} = 当年计划种植地块数 = Σ计划地块 = 当年所属计划明细行数
+     *       （COUNT(*) 非 DISTINCT，每条明细 = 一个计划地块占用）。</li>
+     *   <li>{@code cropVarietyCount} = 当年计划种植作物品种数 = COUNT(DISTINCT plan.crop_id)。</li>
+     * </ul>
+     * <p>tenant_id='1001'（V1 单租户），del_flag='0'。「计划地块使用频次」由 service 用
+     * {@code plannedPlot / totalPlot} 算（2 位小数）。</p>
+     *
+     * @param planYear 计划年份（service 已兜底当年）
      */
     @Select("""
         SELECT
-            COUNT(DISTINCT d.plot_id) AS plannedPlot,
-            COUNT(d.id) AS detailRows,
+            COALESCE(SUM(CASE WHEN d.begin_actualdate IS NOT NULL THEN 1 ELSE 0 END), 0) AS plantedPlot,
+            COUNT(d.id) AS plannedPlot,
             COUNT(DISTINCT p.crop_id) AS cropVarietyCount
           FROM t_plant_plant_plan p
           JOIN t_plant_plant_details d
@@ -209,7 +221,7 @@ public interface PlantPlanMapper extends BaseMapperPlus<PlantPlan, PlantPlanVo> 
            AND d.tenant_id = p.tenant_id
          WHERE p.del_flag = '0'
            AND p.tenant_id = '1001'
-           AND p.plant_status IN ('pending', 'ongoing')
+           AND p.plan_year = #{planYear}
         """)
-    Map<String, Object> selectPlanDetailStats();
+    Map<String, Object> selectPlanDetailStats(@Param("planYear") int planYear);
 }

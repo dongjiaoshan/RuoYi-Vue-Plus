@@ -150,6 +150,15 @@ public class DemandManageVo implements Serializable {
      */
     private Boolean pigAssigned;
 
+    /**
+     * 损坏数量（门店端列表「损坏数量」列，row48）。
+     *
+     * <p>门店视角派生字段（非 entity 列）：对「已发货」(SHIPPED) 行，由 store 服务层调
+     * {@code IProductProductionService#countDamagedByDemand} 按 demand_id 统计 {@code is_damaged=1} 的产品件数回填；
+     * 非已发货行保持 {@code null}（前端 '—'）。仓库列表不回填本字段。</p>
+     */
+    private Integer damagedCount;
+
     @ExcelProperty(value = "创建时间")
     private Date createTime;
 

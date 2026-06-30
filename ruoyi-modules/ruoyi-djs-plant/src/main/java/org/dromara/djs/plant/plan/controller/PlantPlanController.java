@@ -69,13 +69,16 @@ public class PlantPlanController extends BaseController {
     }
 
     /**
-     * 列表顶部 5 KPI 统计卡（FIX-PLT-AD-PLAN-001）：空地块数 / 已种植地块数 /
-     * 计划种植地块数 / 计划地块使用频次 / 计划种植作物品种数。
+     * 列表顶部 5 KPI 统计卡（FIX-PLT-AD-PLAN-001 · row37，按计划年份过滤）：
+     * 当前空地块数 / 当年已种植地块数 / 当年计划种植地块数 / 当年计划地块使用频次 /
+     * 当年计划种植作物品种数。
+     *
+     * @param planYear 计划年份（可选，不传则后端兜底当年）
      */
     @SaCheckPermission("djs:plant:plan:list")
     @GetMapping("/stats")
-    public R<PlantPlanStatsVo> stats() {
-        return R.ok(plantPlanService.getPlanStats());
+    public R<PlantPlanStatsVo> stats(@RequestParam(required = false) Integer planYear) {
+        return R.ok(plantPlanService.getPlanStats(planYear));
     }
 
     @SaCheckPermission("djs:plant:plan:export")

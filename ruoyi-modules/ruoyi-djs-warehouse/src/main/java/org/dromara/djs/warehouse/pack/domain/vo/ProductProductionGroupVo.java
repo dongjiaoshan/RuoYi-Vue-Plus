@@ -64,4 +64,11 @@ public class ProductProductionGroupVo implements Serializable {
      * 需求量 {@code SUM(demand_quantity - shipped_count) > 0} 的去重门店家数。无需求则 0。</p>
      */
     private Integer storeDemandCount;
+
+    /**
+     * 损坏量：该组（同产品同生产日）已标损坏的件数 {@code SUM(is_damaged)}（DENGBO-DAMAGE-001）。
+     *
+     * <p>前端 row50「件数」后展示，&gt;0 红色提示。无标损则 0。</p>
+     */
+    private Integer damageCount;
 }

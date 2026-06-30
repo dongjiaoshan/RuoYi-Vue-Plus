@@ -1,7 +1,11 @@
 package org.dromara.djs.store.demand.service;
 
+import org.dromara.common.mybatis.core.page.PageQuery;
+import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.store.demand.domain.bo.StoreDemandBatchBo;
 import org.dromara.djs.warehouse.demand.domain.bo.DemandManageBo;
+import org.dromara.djs.warehouse.demand.domain.query.DemandManageQuery;
+import org.dromara.djs.warehouse.demand.domain.vo.DemandManageVo;
 
 /**
  * 门店端需求服务（STR-DEMAND-001）。
@@ -17,6 +21,22 @@ import org.dromara.djs.warehouse.demand.domain.bo.DemandManageBo;
  * @since STR-DEMAND-001
  */
 public interface IStoreDemandService {
+
+    /**
+     * 门店端需求列表（薄封装复用 warehouse {@code queryPageList}，再回填门店专属
+     * {@code damagedCount} 损坏数量列，row48）。
+     *
+     * <p>列表主体（含门店派生状态 {@code storeDemandStatus}）100% 复用 warehouse
+     * {@link org.dromara.djs.warehouse.demand.service.IDemandManageService#queryPageList}；
+     * 本方法在其结果上对「已发货」(SHIPPED) 行调
+     * {@link org.dromara.djs.warehouse.pack.service.IProductProductionService#countDamagedByDemand}
+     * 逐行回填损坏件数。非已发货行 {@code damagedCount} 置 {@code null}。</p>
+     *
+     * @param query     需求查询（复用 warehouse {@link DemandManageQuery}）
+     * @param pageQuery 分页参数
+     * @return 门店端需求分页（含 {@code damagedCount}）
+     */
+    TableDataInfo<DemandManageVo> queryStoreList(DemandManageQuery query, PageQuery pageQuery);
 
     /**
      * 门店发起需求：新增即提交。

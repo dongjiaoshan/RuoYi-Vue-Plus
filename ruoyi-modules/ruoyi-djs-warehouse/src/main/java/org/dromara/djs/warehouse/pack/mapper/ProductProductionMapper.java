@@ -155,12 +155,17 @@ public interface ProductProductionMapper extends BaseMapperPlus<ProductProductio
      * {@code COUNT(DISTINCT pp.store_id)}（与子页「产品明细」每行「需求门店」一致）。未绑门店（{@code store_id IS NULL}，
      * 如发送位置=礼盒的组件）不计入。无门店 → 0。</p>
      *
+     * <p>「损坏量」{@code damageCount} = 该组已标损坏件数 {@code SUM(is_damaged)}（DENGBO-DAMAGE-001，
+     * row50「件数」后展示，&gt;0 红色）。{@code hasDamage} 作用于组维度，经 HAVING 过滤：1=组内有损坏
+     * （{@code SUM(is_damaged)>0}）/ 0=组内无损坏；空则不过滤。</p>
+     *
      * @param produceNo   生产编号 LIKE 过滤（空则不过滤）
      * @param productName 产品名称 LIKE 过滤（空则不过滤）
      * @param belongType  产品品类过滤（字典 djs_belong_type，空则不过滤；下推 product_info WHERE）
      * @param productType 产品类型过滤（空则不过滤；同 product_id 组内同值，放 WHERE）
      * @param beginDate   生产日期起（空则不过滤）
      * @param endDate     生产日期止（空则不过滤）
+     * @param hasDamage   是否存在损坏（组维度 HAVING：1=有 / 0=无；空则不过滤）
      * @return 分组聚合行（按生产日期倒序 + 组内最大生产时间倒序）
      */
     @Select({
@@ -174,7 +179,8 @@ public interface ProductProductionMapper extends BaseMapperPlus<ProductProductio
         "       MAX(pp.product_type)   AS productType,",
         "       SUM(pp.product_weight) AS produceQty,",
         "       COUNT(*)               AS itemCount,",
-        "       COUNT(DISTINCT pp.store_id) AS storeDemandCount",
+        "       COUNT(DISTINCT pp.store_id) AS storeDemandCount,",
+        "       COALESCE(SUM(pp.is_damaged), 0) AS damageCount",
         "  FROM t_warehouse_product_production pp",
         "  LEFT JOIN t_warehouse_product_info pi",
         "         ON pi.id = pp.product_id",
@@ -201,6 +207,12 @@ public interface ProductProductionMapper extends BaseMapperPlus<ProductProductio
         "     AND DATE(pp.produce_date) &lt;= DATE(#{endDate})",
         "   </if>",
         " GROUP BY pp.product_id, DATE(pp.produce_date)",
+        "   <if test='hasDamage != null'>",
+        "     <choose>",
+        "       <when test='hasDamage == 1'>HAVING COALESCE(SUM(pp.is_damaged), 0) &gt; 0</when>",
+        "       <otherwise>HAVING COALESCE(SUM(pp.is_damaged), 0) = 0</otherwise>",
+        "     </choose>",
+        "   </if>",
         " ORDER BY produceDate DESC, MAX(pp.produce_time) DESC",
         "</script>"
     })
@@ -209,6 +221,50 @@ public interface ProductProductionMapper extends BaseMapperPlus<ProductProductio
                                                              @Param("belongType") String belongType,
                                                              @Param("productType") Integer productType,
                                                              @Param("beginDate") Date beginDate,
-                                                             @Param("endDate") Date endDate);
+                                                             @Param("endDate") Date endDate,
+                                                             @Param("hasDamage") Integer hasDamage);
+
+    /**
+     * 标损/修改：把一条生产记录置为损坏（{@code is_damaged=1}）并写损坏凭证图 / 备注 / 标损时间（契约 b）。
+     *
+     * <p>幂等可重复调用（修改损坏信息时再调一次覆盖凭证图 / 备注 / 标损时间）。租户隔离 V1 单租户
+     * 显式 {@code tenant_id='1001'}（与本 Mapper 其他原生 SQL 一致）；{@code del_flag='0'} 防改已删行。</p>
+     *
+     * @param id              生产记录 id
+     * @param evidenceOssIds  损坏凭证图 OSS IDs CSV（可空）
+     * @param remark          损坏备注（可空）
+     * @param damageTime      标损时间
+     * @return 实际更新行数（0=记录不存在/已删）
+     */
+    @Update({
+        "<script>",
+        "UPDATE t_warehouse_product_production",
+        "   SET is_damaged = 1,",
+        "       damage_evidence_oss_ids = #{evidenceOssIds},",
+        "       damage_remark = #{remark},",
+        "       damage_time = #{damageTime}",
+        " WHERE id = #{id}",
+        "   AND tenant_id = '1001'",
+        "   AND del_flag = '0'",
+        "</script>"
+    })
+    int updateDamage(@Param("id") Long id,
+                     @Param("evidenceOssIds") String evidenceOssIds,
+                     @Param("remark") String remark,
+                     @Param("damageTime") Date damageTime);
+
+    /**
+     * 统计某需求下已标损坏的生产记录件数（契约 c，store 侧调用）。
+     *
+     * <p>{@code COUNT WHERE demand_id=? AND is_damaged=1 AND del_flag='0'}。租户隔离 V1 单租户显式
+     * {@code tenant_id='1001'}。{@code demandId} 为空 → 返 0（service 端兜底）。</p>
+     *
+     * @param demandId 需求 FK（{@code t_warehouse_demand_manage.id}）
+     * @return 该需求已标损坏件数
+     */
+    @Select("SELECT COUNT(*) FROM t_warehouse_product_production "
+        + "WHERE demand_id = #{demandId} AND is_damaged = 1 "
+        + "AND del_flag = '0' AND tenant_id = '1001'")
+    long countDamagedByDemand(@Param("demandId") Long demandId);
 
 }

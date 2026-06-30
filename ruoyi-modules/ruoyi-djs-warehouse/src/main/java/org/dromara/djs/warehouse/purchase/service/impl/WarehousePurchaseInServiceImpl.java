@@ -136,6 +136,12 @@ public class WarehousePurchaseInServiceImpl implements IWarehousePurchaseInServi
         flow.setChangeQuantity(quantity);
         flow.setOperatorId(userId);
         flow.setRemark(remark);
+        // row34：采购入库（外购商品 productType=2）落供应商到流水，商品「查看」业务流水按当次入库记录的 supplier 显示。
+        // 外购商品供应商在商品主数据（product_info.supplier_id 应填），入库时快照写入本条流水；
+        // 仅 purchase_in 入库 + 外购商品才写（return_in 门店退回等不来自供应商，留空）。
+        if (FLOW_PURCHASE_IN.equals(flowType) && Integer.valueOf(2).equals(product.getProductType())) {
+            flow.setSupplierId(product.getSupplierId());
+        }
         stockFlowMapper.insert(flow);
 
         return flow.getId();

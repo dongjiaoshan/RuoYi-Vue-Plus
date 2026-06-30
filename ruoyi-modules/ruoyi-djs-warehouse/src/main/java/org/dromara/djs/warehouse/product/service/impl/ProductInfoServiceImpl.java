@@ -458,6 +458,11 @@ public class ProductInfoServiceImpl extends DjsBaseServiceImpl<ProductInfoMapper
         flow.setChangeQuantity(bo.getQuantity());
         flow.setOperatorId(userId);
         flow.setRemark(bo.getRemark());
+        // row34：外购商品（productType=2）入库落供应商到流水，商品「查看」业务流水按当次入库记录的 supplier 显示。
+        // 供应商取商品主数据快照（product_info.supplier_id 应填）；自产产品无供应商，留空。
+        if (Integer.valueOf(2).equals(product.getProductType())) {
+            flow.setSupplierId(product.getSupplierId());
+        }
         stockFlowMapper.insert(flow);
 
         // 2. UPDATE location_stock 加库存；无对应行 → 兜底 INSERT 新库存行

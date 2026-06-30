@@ -5,6 +5,7 @@ import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.warehouse.pack.domain.bo.CeleryPackBo;
 import org.dromara.djs.warehouse.pack.domain.bo.DryPackBo;
 import org.dromara.djs.warehouse.pack.domain.bo.GiftPackBo;
+import org.dromara.djs.warehouse.pack.domain.bo.MarkDamageBo;
 import org.dromara.djs.warehouse.pack.domain.bo.VegPackBo;
 import org.dromara.djs.warehouse.pack.domain.bo.WhiteBarOutBo;
 import org.dromara.djs.warehouse.pack.domain.query.ProductProductionQuery;
@@ -88,6 +89,24 @@ public interface IProductProductionService {
      * admin 详情。
      */
     ProductProductionVo queryById(Long id);
+
+    /**
+     * 标损 / 修改损坏信息（DENGBO-DAMAGE-001，契约 b）：把一条生产记录置 {@code is_damaged=1}，
+     * 写损坏凭证图（CSV）+ 损坏备注 + 标损时间（now）。记录不存在 / 已删 → 抛 ServiceException。
+     *
+     * @param bo 标损入参（id 必填）
+     */
+    void markDamage(MarkDamageBo bo);
+
+    /**
+     * 统计某需求下已标损坏的生产记录件数（DENGBO-DAMAGE-001，契约 c，store 侧调用）。
+     *
+     * <p>{@code COUNT WHERE demand_id=? AND is_damaged=1 AND del_flag='0'}。{@code demandId} 为空 → 0。</p>
+     *
+     * @param demandId 需求 FK（{@code t_warehouse_demand_manage.id}）
+     * @return 该需求已标损坏件数
+     */
+    long countDamagedByDemand(Long demandId);
 
     /**
      * mp 端 - 蔬菜可打包来源（{@code belong_type='vegetable'} 且 {@code product_attr=2}(原料)

@@ -67,6 +67,7 @@ public class OssStsServiceImpl implements IOssStsService {
         "warehouse_pack_proof", // 仓库 打包工序凭证图（WMS-PACK-001）
         "warehouse_shipment_proof", // 仓库 发货月台清点凭证图（WMS-SHIP-001）
         "warehouse_return_proof", // 仓库 退货凭证图（WMS-SHIP-001）
+        "warehouse_damage_evidence", // 产品损坏凭证图（门店需求页「产品明细」标损，row47/48）
         "warehouse_location",   // 库位主数据图片（缩略图 + 原图，WMS-MD-001）
         "product_image",    // 产品 / 商品 / 礼盒图片（WMS-MD-002）
         "plant_plot",       // 地块照片（PLT-MD-001）

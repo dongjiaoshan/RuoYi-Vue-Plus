@@ -90,6 +90,55 @@ public interface PlantDashboardMapper {
     BigDecimal selectCurrentExpectedYield(@Param("tenantId") String tenantId);
 
     /**
+     * 当年预计产量（kg）：当年（{@code plan.plan_year = YEAR(CURDATE())}）所属计划明细的
+     * {@code SUM(expected_yield)}。
+     *
+     * <p>区块 ① 第 3 卡「当年预计产量(吨)」。年份按计划主表 {@code plan_year} 锚定（计划归属年份），
+     * 前端按 kg → 吨换算（{@code kg / 1000}）。</p>
+     *
+     * @param tenantId 租户
+     * @return 当年预计产量（kg），无则 0
+     */
+    @Select("SELECT COALESCE(SUM(d.expected_yield), 0) "
+        + "  FROM t_plant_plant_details d "
+        + "  JOIN t_plant_plant_plan p ON p.id = d.plant_id "
+        + "                           AND p.tenant_id = #{tenantId} "
+        + "                           AND p.del_flag = '0' "
+        + " WHERE d.tenant_id = #{tenantId} "
+        + "   AND d.del_flag = '0' "
+        + "   AND p.plan_year = YEAR(CURDATE())")
+    BigDecimal selectAnnualExpectedYield(@Param("tenantId") String tenantId);
+
+    /**
+     * 当月待种植地块数：当月有计划（{@code plant_month = MONTH(CURDATE())} 且所属计划
+     * {@code plan_year = YEAR(CURDATE())}）但尚未实际开始种植（{@code begin_actualdate IS NULL}）
+     * 的不重复地块数。
+     *
+     * <p>区块 ① 第 2 卡「当月待种植地块数」。仅统计有效片区（{@code zone_status = 1}）下地块。</p>
+     *
+     * @param tenantId 租户
+     * @return 当月待种植不重复地块数，无则 0
+     */
+    @Select("SELECT COUNT(DISTINCT d.plot_id) "
+        + "  FROM t_plant_plant_details d "
+        + "  JOIN t_plant_plant_plan p ON p.id = d.plant_id "
+        + "                           AND p.tenant_id = #{tenantId} "
+        + "                           AND p.del_flag = '0' "
+        + "  JOIN t_plant_plot_info pi ON pi.id = d.plot_id "
+        + "                           AND pi.tenant_id = #{tenantId} "
+        + "                           AND pi.del_flag = '0' "
+        + "  JOIN t_plant_plot_zone z ON z.id = pi.zone_id "
+        + "                          AND z.tenant_id = #{tenantId} "
+        + "                          AND z.del_flag = '0' "
+        + "                          AND z.zone_status = 1 "
+        + " WHERE d.tenant_id = #{tenantId} "
+        + "   AND d.del_flag = '0' "
+        + "   AND p.plan_year = YEAR(CURDATE()) "
+        + "   AND d.plant_month = MONTH(CURDATE()) "
+        + "   AND d.begin_actualdate IS NULL")
+    Integer countMonthPendingPlot(@Param("tenantId") String tenantId);
+
+    /**
      * 待种地块数（存在 {@code plant_status='pending'} 且 {@code begin_actualdate IS NULL}
      * 明细的不重复地块数）。
      *

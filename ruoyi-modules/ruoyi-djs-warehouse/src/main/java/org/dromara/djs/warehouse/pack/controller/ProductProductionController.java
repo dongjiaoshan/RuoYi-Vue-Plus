@@ -9,6 +9,7 @@ import org.dromara.common.excel.utils.ExcelUtil;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.web.core.BaseController;
+import org.dromara.djs.warehouse.pack.domain.bo.MarkDamageBo;
 import org.dromara.djs.warehouse.pack.domain.query.ProductProductionQuery;
 import org.dromara.djs.warehouse.pack.domain.vo.ProductProductionGroupVo;
 import org.dromara.djs.warehouse.pack.domain.vo.ProductProductionVo;
@@ -17,6 +18,7 @@ import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -70,6 +72,18 @@ public class ProductProductionController extends BaseController {
     @GetMapping("/{id}")
     public R<ProductProductionVo> getInfo(@NotNull @PathVariable Long id) {
         return R.ok(service.queryById(id));
+    }
+
+    /**
+     * 标损 / 修改损坏信息（DENGBO-DAMAGE-001，契约 b）。
+     *
+     * <p>把一条生产记录置 {@code is_damaged=1} + 写损坏凭证图 / 备注 / 标损时间。可重复提交修改。</p>
+     */
+    @SaCheckPermission("djs:warehouse:production:edit")
+    @PostMapping("/mark-damage")
+    public R<Void> markDamage(@Validated @RequestBody MarkDamageBo bo) {
+        service.markDamage(bo);
+        return R.ok();
     }
 
     /**

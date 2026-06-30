@@ -113,12 +113,15 @@ public interface IPlantPlanService {
     PlantPlanSummaryVo aggregateForDemandSummary();
 
     /**
-     * 列表顶部 5 KPI 卡（FIX-PLT-AD-PLAN-001）：空地块数 / 已种植地块数 /
-     * 计划种植地块数 / 计划地块使用频次 / 计划种植作物品种数。
+     * 列表顶部 5 KPI 卡（FIX-PLT-AD-PLAN-001 · row37，按计划年份过滤）：
+     * 当前空地块数 / 当年已种植地块数 / 当年计划种植地块数 / 当年计划地块使用频次 /
+     * 当年计划种植作物品种数。
      *
-     * <p>地块维度取 plot_info；计划维度取 pending/ongoing 计划聚合明细，V1 单租户 '1001'。</p>
+     * <p>① 空地块数取 plot_info 当前状态（不受年份影响）；②③⑤ 取 {@code plan_year=planYear}
+     * 计划聚合明细；④ = ③ / 地块总数（2 位小数）。V1 单租户 '1001'。</p>
      *
+     * @param planYear 计划年份（null 时 service 兜底当年）
      * @return KPI 聚合 VO（无数据返零值，永不返 null）
      */
-    PlantPlanStatsVo getPlanStats();
+    PlantPlanStatsVo getPlanStats(Integer planYear);
 }

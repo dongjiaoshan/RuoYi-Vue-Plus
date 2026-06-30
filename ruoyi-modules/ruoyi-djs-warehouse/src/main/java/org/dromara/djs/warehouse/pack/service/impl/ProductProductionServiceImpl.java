@@ -27,6 +27,7 @@ import org.dromara.djs.warehouse.pack.domain.ProductProduction;
 import org.dromara.djs.warehouse.pack.domain.bo.CeleryPackBo;
 import org.dromara.djs.warehouse.pack.domain.bo.DryPackBo;
 import org.dromara.djs.warehouse.pack.domain.bo.GiftPackBo;
+import org.dromara.djs.warehouse.pack.domain.bo.MarkDamageBo;
 import org.dromara.djs.warehouse.pack.domain.bo.VegPackBo;
 import org.dromara.djs.warehouse.pack.domain.bo.WhiteBarOutBo;
 import org.dromara.djs.warehouse.pack.domain.query.ProductProductionQuery;
@@ -261,14 +262,8 @@ public class ProductProductionServiceImpl
         p.setRemark(bo.getRemark());
         baseMapper.insert(p);
 
-        // Step 5：INSERT stock_flow 入库
-        insertPackInFlow(product.getId(), locationId, bo.getProductWeight(),
-            src.getEarNo(), src.getPlotId(), p.getProduceNo(), userId, now);
-
-        // Step 6：UPSERT location_stock += weight（不存在则建新行，WMS-PACK-UPSERT-001）
-        upsertLocationStock(locationId, p, bo.getProductWeight(), userId);
-
-        // Step 7：软删来源 inhouse（V1 整 row 消耗）
+        // row42：生产产品不入库（仓库按门店需求打包 → 直送发货月台 → 门店，不进 location_stock / 不写 pack_in 入库流水）。
+        // 来源原材料仍消耗（软删 inhouse 整 row）。
         consumeInhouse(src, bo.getProductWeight());
 
         // Step 8：生成追溯码回填 + 写 in_stock 事件（TRC-CORE-001）
@@ -330,10 +325,7 @@ public class ProductProductionServiceImpl
         p.setRemark(bo.getRemark());
         baseMapper.insert(p);
 
-        // Step 3：INSERT stock_flow 礼盒入库 + UPSERT location_stock += packBoxCount（WMS-PACK-UPSERT-001）
-        insertPackInFlow(giftBoxProduct.getId(), locationId, giftWeight,
-            null, null, p.getProduceNo(), userId, now);
-        upsertLocationStock(locationId, p, giftWeight, userId);
+        // row42：生产产品不入库（礼盒打包成品直送发货月台，不进 location_stock / 不写入库流水）。
 
         // 生成追溯码回填 + 写 in_stock 事件（TRC-CORE-001）；礼盒无 earNo / plotId
         fillTraceCode(p, null, null);
@@ -387,9 +379,7 @@ public class ProductProductionServiceImpl
         p.setRemark(bo.getRemark());
         baseMapper.insert(p);
 
-        insertPackInFlow(product.getId(), locationId, bo.getProductWeight(),
-            src.getEarNo(), src.getPlotId(), p.getProduceNo(), userId, now);
-        upsertLocationStock(locationId, p, bo.getProductWeight(), userId);
+        // row42：生产产品不入库（直送发货月台，不进 location_stock / 不写入库流水）。
         consumeInhouse(src, bo.getProductWeight());
 
         // 肉品打包原材料库存校验 + 扣减（猪肉全闭环 Part I P8）：
@@ -451,9 +441,7 @@ public class ProductProductionServiceImpl
         p.setRemark(bo.getRemark());
         baseMapper.insert(p);
 
-        insertPackInFlow(product.getId(), bo.getLocationId(), bo.getProductWeight(),
-            null, src.getPlotId(), p.getProduceNo(), userId, now);
-        upsertLocationStock(bo.getLocationId(), p, bo.getProductWeight(), userId);
+        // row42：生产产品不入库（直送发货月台，不进 location_stock / 不写入库流水）。
         consumeInhouse(src, bo.getProductWeight());
 
         // 生成追溯码回填 + 写 in_stock 事件（TRC-CORE-001）；芹菜无 earNo
@@ -524,12 +512,7 @@ public class ProductProductionServiceImpl
         p.setRemark(bo.getRemark());
         baseMapper.insert(p);
 
-        Long locationId = src.getLocationId();
-        if (locationId != null) {
-            insertPackInFlow(product.getId(), locationId, bo.getProductWeight(),
-                src.getEarNo(), src.getPlotId(), p.getProduceNo(), userId, now);
-            upsertLocationStock(locationId, p, bo.getProductWeight(), userId);
-        }
+        // row42：生产产品不入库（直送发货月台，不进 location_stock / 不写入库流水）。
         consumeInhouse(src, bo.getProductWeight());
 
         // 发货月台领用回写 bar 出库基础数据（猪肉全闭环 Part I P6 + FIX-WMS-CUTPICKUP-SPLIT-001 按产出行）：
@@ -585,9 +568,11 @@ public class ProductProductionServiceImpl
         Integer productType = query == null ? null : query.getProductType();
         Date from = query == null ? null : query.getProduceDateFrom();
         Date to = query == null ? null : query.getProduceDateTo();
-        // belongType（产品品类，product_info 维度）/ productType（组内同值）/ productName(LIKE) 均下推 mapper WHERE 过滤
+        Integer hasDamage = query == null ? null : query.getHasDamage();
+        // belongType（产品品类，product_info 维度）/ productType（组内同值）/ productName(LIKE) 下推 mapper WHERE；
+        // hasDamage（是否存在损坏）作用于组维度，下推 mapper HAVING（row50）
         List<ProductProductionGroupVo> all =
-            baseMapper.selectProductionGroupList(produceNo, productName, belongType, productType, from, to);
+            baseMapper.selectProductionGroupList(produceNo, productName, belongType, productType, from, to, hasDamage);
         // 聚合后内存分页（分组行数小，范式同 DemandManageServiceImpl.queryGroupList）
         int total = all.size();
         int pageNum = pageQuery == null || pageQuery.getPageNum() == null ? 1 : pageQuery.getPageNum();
@@ -620,13 +605,20 @@ public class ProductProductionServiceImpl
 
     @Override
     public TableDataInfo<ProductProductionVo> queryItemPageList(ProductProductionQuery query, PageQuery pageQuery) {
-        // 下钻必须锁定一个生产批次（生产日期 + 产品），缺则返回空（避免误拉全表逐件）
-        if (query == null || query.getProductId() == null || query.getProduceDate() == null) {
+        // 锁定范围二选一：① 主列表下钻 = 生产批次（生产日期 + 产品）；② 门店损耗页 = 某需求（demandId，契约 a）。
+        // 两者全缺 → 返回空（避免误拉全表逐件）。
+        boolean byBatch = query != null && query.getProductId() != null && query.getProduceDate() != null;
+        boolean byDemand = query != null && query.getDemandId() != null;
+        if (!byBatch && !byDemand) {
             return TableDataInfo.build(List.of());
         }
         LambdaQueryWrapper<ProductProduction> wrapper = new LambdaQueryWrapper<>();
-        wrapper.eq(ProductProduction::getProductId, query.getProductId())
-            .apply("DATE(produce_date) = DATE({0})", query.getProduceDate())
+        wrapper.eq(byBatch, ProductProduction::getProductId, query.getProductId())
+            .apply(byBatch, "DATE(produce_date) = DATE({0})", query.getProduceDate())
+            // 门店损耗页：按需求过滤逐件（契约 a）
+            .eq(byDemand, ProductProduction::getDemandId, query.getDemandId())
+            // 是否损坏过滤（契约 a；空=全部）
+            .eq(query.getIsDamaged() != null, ProductProduction::getIsDamaged, query.getIsDamaged())
             // 产品序号模糊搜索（int 列 CAST 成字符串 LIKE %kw%；row115-n1）
             .apply(StringUtils.isNotBlank(query.getProductSort()),
                 "CAST(product_sort AS CHAR) LIKE CONCAT('%', {0}, '%')", query.getProductSort())
@@ -645,6 +637,29 @@ public class ProductProductionServiceImpl
             fillJoinNames(List.of(vo));
         }
         return vo;
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void markDamage(MarkDamageBo bo) {
+        if (bo == null || bo.getId() == null) {
+            throw new ServiceException("缺少生产记录 id");
+        }
+        // 标损时间由后端取 now（前端不传，避免客户端时钟漂移）
+        int affected = baseMapper.updateDamage(bo.getId(), bo.getEvidenceOssIds(), bo.getRemark(), new Date());
+        if (affected == 0) {
+            throw new ServiceException("生产记录不存在或已删除：" + bo.getId());
+        }
+        log.info("[DENGBO-DAMAGE-001] mark damage id={} evidenceOssIds={} remark={}",
+            bo.getId(), bo.getEvidenceOssIds(), bo.getRemark());
+    }
+
+    @Override
+    public long countDamagedByDemand(Long demandId) {
+        if (demandId == null) {
+            return 0L;
+        }
+        return baseMapper.countDamagedByDemand(demandId);
     }
 
     @Override
@@ -1368,11 +1383,12 @@ public class ProductProductionServiceImpl
     }
 
     /**
-     * 批量回填 plotName / storeName（按 store_id / plot_id 跨域 IN 查，无 N+1）。
+     * 批量回填 plotName / storeName / materialUnit（按 store_id / plot_id / material_id 跨域 IN 查，无 N+1）。
      *
      * <p>所属门店 / 来源地块列把 ID 显示成名称：store_id → {@code t_md_store.store_name}
      * （StoreMapper 在 ruoyi-djs-common），plot_id → {@code t_plant_plot_info.plot_name}
-     * （PlotInfoMapper 在 ruoyi-djs-plant，warehouse 模块已依赖）。</p>
+     * （PlotInfoMapper 在 ruoyi-djs-plant，warehouse 模块已依赖）。原材料单位：material_id →
+     * {@code t_warehouse_product_info.product_unit}（同模块 ProductInfoMapper）。</p>
      */
     private void fillJoinNames(List<ProductProductionVo> rows) {
         if (rows == null || rows.isEmpty()) {
@@ -1386,6 +1402,10 @@ public class ProductProductionServiceImpl
             .map(ProductProductionVo::getPlotId)
             .filter(Objects::nonNull)
             .collect(Collectors.toSet());
+        Set<Long> materialIds = rows.stream()
+            .map(ProductProductionVo::getMaterialId)
+            .filter(Objects::nonNull)
+            .collect(Collectors.toSet());
 
         Map<Long, String> storeNameMap = storeIds.isEmpty() ? Map.of()
             : storeMapper.selectList(new LambdaQueryWrapper<Store>()
@@ -1397,6 +1417,14 @@ public class ProductProductionServiceImpl
                     .select(PlotInfo::getId, PlotInfo::getPlotName)
                     .in(PlotInfo::getId, plotIds))
                 .stream().collect(Collectors.toMap(PlotInfo::getId, PlotInfo::getPlotName, (a, b) -> a));
+        // 原材料单位：material_id → product_info.product_unit（同模块表，仅取有值行进 Map）
+        Map<Long, String> materialUnitMap = materialIds.isEmpty() ? Map.of()
+            : productInfoMapper.selectList(new LambdaQueryWrapper<ProductInfo>()
+                    .select(ProductInfo::getId, ProductInfo::getProductUnit)
+                    .in(ProductInfo::getId, materialIds))
+                .stream()
+                .filter(pi -> pi.getProductUnit() != null)
+                .collect(Collectors.toMap(ProductInfo::getId, ProductInfo::getProductUnit, (a, b) -> a));
 
         for (ProductProductionVo vo : rows) {
             if (vo.getStoreId() != null) {
@@ -1404,6 +1432,9 @@ public class ProductProductionServiceImpl
             }
             if (vo.getPlotId() != null) {
                 vo.setPlotName(plotNameMap.get(vo.getPlotId()));
+            }
+            if (vo.getMaterialId() != null) {
+                vo.setMaterialUnit(materialUnitMap.get(vo.getMaterialId()));
             }
         }
     }

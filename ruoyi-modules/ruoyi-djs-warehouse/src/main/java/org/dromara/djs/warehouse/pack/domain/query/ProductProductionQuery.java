@@ -71,6 +71,21 @@ public class ProductProductionQuery {
     private String packStatus;
 
     /**
+     * 需求 FK → {@code t_warehouse_demand_manage.id}（门店损耗页按需求过滤逐件，契约 a）。
+     */
+    private Long demandId;
+
+    /**
+     * 是否损坏字典 {@code djs_yes_no}：1=是 / 0=否（逐件子页「是否损坏」筛选，契约 a；空=全部）。
+     */
+    private Integer isDamaged;
+
+    /**
+     * 是否存在损坏（聚合主列表 row50 筛选，作用于组维度）：1=该组 {@code SUM(is_damaged)>0} / 0==0；空=全部。
+     */
+    private Integer hasDamage;
+
+    /**
      * 来源耳号精确匹配（猪肉）。
      */
     private String earNo;

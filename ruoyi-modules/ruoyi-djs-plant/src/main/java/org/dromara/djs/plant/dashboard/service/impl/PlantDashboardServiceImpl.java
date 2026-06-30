@@ -59,8 +59,10 @@ public class PlantDashboardServiceImpl implements IPlantDashboardService {
             vo.setTotalPlotArea(nzBd(overview.getTotalArea()));
         }
         vo.setPendingPlotCount(nz(dashboardMapper.countPendingPlot(tenantId)));
+        vo.setMonthPendingPlotCount(nz(dashboardMapper.countMonthPendingPlot(tenantId)));
         vo.setCurrentPlantingArea(nzBd(dashboardMapper.selectCurrentPlantingArea(tenantId)));
         vo.setCurrentExpectedYield(nzBd(dashboardMapper.selectCurrentExpectedYield(tenantId)));
+        vo.setAnnualExpectedYield(nzBd(dashboardMapper.selectAnnualExpectedYield(tenantId)));
 
         // 块 ① 今日工作（固定 6 格：种植 / 采摘 / 空地管理 / 种植管理 / 灾害损失 / 采摘活动）
         vo.setTodayPlantingPlotCount(nz(dashboardMapper.countTodayPlanting(tenantId)));

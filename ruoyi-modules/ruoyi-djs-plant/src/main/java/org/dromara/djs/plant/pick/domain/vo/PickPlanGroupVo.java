@@ -22,7 +22,7 @@ import java.time.LocalDate;
  *          SUM(plot_area)                 AS total_acreage,   -- 当前种植亩数
  *          SUM(expected_yield)            AS expected_yield,
  *          SUM(actual_yield WHERE 当年)   AS actual_yield,     -- 当年已采摘量
- *          SUM(loss_yield)                AS disaster_loss,    -- 预计灾害损失量
+ *          (灾害农事记录 farm_type='disaster' 按作物 SUM(loss_yield)) AS disaster_loss,  -- 预计灾害损失量
  *          COUNT(DISTINCT plot_id WHERE 当年) AS plot_total_count,
  *          SUM(is_pick=1)                 AS activity_plot_count
  *   GROUP BY crop_id;
@@ -83,7 +83,7 @@ public class PickPlanGroupVo implements Serializable {
     @ExcelProperty(value = "当年已采摘量(kg)")
     private BigDecimal actualYield;
 
-    /** 预计灾害损失量（SUM loss_yield，kg）。 */
+    /** 预计灾害损失量（灾害农事记录 farm_type='disaster' 按作物 SUM(loss_yield)，kg）。 */
     @ExcelProperty(value = "预计灾害损失量(kg)")
     private BigDecimal disasterLoss;
 

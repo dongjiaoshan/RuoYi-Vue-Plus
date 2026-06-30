@@ -202,6 +202,26 @@ public class ProductProduction extends TenantEntity {
     private String proofOssIds;
 
     /**
+     * 是否损坏字典 {@code djs_yes_no}：1=是 / 0=否（DENGBO-DAMAGE-001 门店「到店损耗」标损，默认 0）。
+     */
+    private Integer isDamaged;
+
+    /**
+     * 损坏凭证图 OSS IDs CSV（biz_type=warehouse_damage_evidence）。
+     */
+    private String damageEvidenceOssIds;
+
+    /**
+     * 损坏备注。
+     */
+    private String damageRemark;
+
+    /**
+     * 标损时间（门店标记损坏时写）。
+     */
+    private Date damageTime;
+
+    /**
      * 追溯码（{@code TraceService.genCode} 打包入库时回填，TRC-CORE-001）。
      */
     private String traceCode;

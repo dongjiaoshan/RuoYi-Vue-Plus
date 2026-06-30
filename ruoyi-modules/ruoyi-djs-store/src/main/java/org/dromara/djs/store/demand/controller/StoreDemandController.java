@@ -67,11 +67,16 @@ public class StoreDemandController extends BaseController {
 
     private final IPigQueryService pigQueryService;
 
-    /** 分页查询（门店视角：query.storeId 由 admin UI 门店下拉显式传）。 */
+    /**
+     * 分页查询（门店视角：query.storeId 由 admin UI 门店下拉显式传）。
+     *
+     * <p>走门店专属 {@link IStoreDemandService#queryStoreList}：列表主体复用 warehouse
+     * {@code queryPageList}，并对「已发货」行回填门店专属 {@code damagedCount} 损坏数量列（row48）。</p>
+     */
     @SaCheckPermission("djs:store:demand:list")
     @GetMapping("/list")
     public TableDataInfo<DemandManageVo> list(DemandManageQuery query, PageQuery pageQuery) {
-        return demandManageService.queryPageList(query, pageQuery);
+        return storeDemandService.queryStoreList(query, pageQuery);
     }
 
     /** 详情。 */

@@ -5,16 +5,21 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.core.utils.StringUtils;
+import org.dromara.common.mybatis.core.page.PageQuery;
+import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.satoken.utils.LoginHelper;
 import org.dromara.djs.store.demand.domain.bo.StoreDemandBatchBo;
 import org.dromara.djs.store.demand.service.IStoreDemandService;
 import org.dromara.djs.warehouse.demand.core.enums.DemandStatus;
 import org.dromara.djs.warehouse.demand.domain.DemandManage;
 import org.dromara.djs.warehouse.demand.domain.bo.DemandManageBo;
+import org.dromara.djs.warehouse.demand.domain.query.DemandManageQuery;
+import org.dromara.djs.warehouse.demand.domain.vo.DemandManageVo;
 import org.dromara.djs.warehouse.demand.mapper.DemandManageMapper;
 import org.dromara.djs.warehouse.demand.service.IDemandManageService;
 import org.dromara.djs.warehouse.pack.domain.ProductProduction;
 import org.dromara.djs.warehouse.pack.mapper.ProductProductionMapper;
+import org.dromara.djs.warehouse.pack.service.IProductProductionService;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
 import org.dromara.djs.warehouse.trace.domain.TraceContentConst;
@@ -59,7 +64,38 @@ public class StoreDemandServiceImpl implements IStoreDemandService {
 
     private final ProductProductionMapper productProductionMapper;
 
+    private final IProductProductionService productProductionService;
+
     private final ITraceService traceService;
+
+    /** 门店视角派生状态：已发货（{@code djs_store_demand_status} 之一）。 */
+    private static final String STORE_STATUS_SHIPPED = "SHIPPED";
+
+    @Override
+    public TableDataInfo<DemandManageVo> queryStoreList(DemandManageQuery query, PageQuery pageQuery) {
+        TableDataInfo<DemandManageVo> page = demandManageService.queryPageList(query, pageQuery);
+        fillDamagedCount(page.getRows());
+        return page;
+    }
+
+    /**
+     * 回填「损坏数量」{@code damagedCount}（row48）：仅对门店派生状态为「已发货」(SHIPPED) 的行，
+     * 调 warehouse {@link IProductProductionService#countDamagedByDemand} 按 demand_id 统计损坏件数；
+     * 其余行保持 {@code null}（前端展示 '—'）。
+     *
+     * <p>当前逐行查询（门店端单店分页数据量小，契约 c 为 COUNT 单点查询）。若后续单店需求行数显著增大，
+     * 可在 warehouse 侧加批量 {@code countDamagedByDemandBatch(demandIds)} 一次聚合替代，去 N+1。</p>
+     */
+    private void fillDamagedCount(List<DemandManageVo> rows) {
+        if (rows == null || rows.isEmpty()) {
+            return;
+        }
+        for (DemandManageVo vo : rows) {
+            if (vo.getId() != null && STORE_STATUS_SHIPPED.equals(vo.getStoreDemandStatus())) {
+                vo.setDamagedCount((int) productProductionService.countDamagedByDemand(vo.getId()));
+            }
+        }
+    }
 
     @Override
     @Transactional(rollbackFor = Exception.class)

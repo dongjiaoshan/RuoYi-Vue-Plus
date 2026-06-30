@@ -50,6 +50,13 @@ public class PlantDashboardSummaryVo implements Serializable {
     private Integer pendingPlotCount;
 
     /**
+     * 当月待种植地块数（区块 ① 第 2 卡）：当月有计划但尚未实际开始种植
+     * （{@code plant_month = MONTH(CURDATE())} 且所属计划 {@code plan_year = YEAR(CURDATE())}
+     * 且 {@code begin_actualdate IS NULL}）的不重复地块数。
+     */
+    private Integer monthPendingPlotCount;
+
+    /**
      * 地块总数（全部未删地块）。
      */
     private Integer totalPlotCount;
@@ -109,6 +116,13 @@ public class PlantDashboardSummaryVo implements Serializable {
     private BigDecimal currentExpectedYield;
 
     /**
+     * 当年预计产量（kg，{@code SUM(expected_yield)} WHERE 所属计划 {@code plan_year = YEAR(CURDATE())}）。
+     *
+     * <p>区块 ① 第 3 卡「当年预计产量(吨)」。前端按 kg → 吨（{@code kg / 1000}）换算展示。无数据返 ZERO。</p>
+     */
+    private BigDecimal annualExpectedYield;
+
+    /**
      * 当月种植任务完成率列表（按作物分组，前端按 actual/expected 算柱高）。
      */
     private List<MonthCompletionItemVo> monthCompletion;
@@ -134,10 +148,12 @@ public class PlantDashboardSummaryVo implements Serializable {
         vo.setPlantingPlotCount(0);
         vo.setHarvestingPlotCount(0);
         vo.setPendingPlotCount(0);
+        vo.setMonthPendingPlotCount(0);
         vo.setTotalPlotCount(0);
         vo.setTotalPlotArea(BigDecimal.ZERO);
         vo.setCurrentPlantingArea(BigDecimal.ZERO);
         vo.setCurrentExpectedYield(BigDecimal.ZERO);
+        vo.setAnnualExpectedYield(BigDecimal.ZERO);
         vo.setTodayPlantingPlotCount(0);
         vo.setTodayHarvestPlotCount(0);
         vo.setTodayIdleMgmtPlotCount(0);

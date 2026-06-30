@@ -1039,22 +1039,29 @@ public class PlantPlanServiceImpl extends DjsBaseServiceImpl<PlantPlanMapper, Pl
     // ============================================================
 
     @Override
-    public PlantPlanStatsVo getPlanStats() {
+    public PlantPlanStatsVo getPlanStats(Integer planYear) {
+        // 计划年份默认当年（前端筛选默认当年；不传 / 传 null 时兜底）
+        int year = planYear != null ? planYear : LocalDate.now().getYear();
         PlantPlanStatsVo vo = new PlantPlanStatsVo();
 
+        // ① 当前空地块数（plot_status=1，当前状态，不随年份变）+ 地块总数（频次分母）
         Map<String, Object> plotStats = baseMapper.selectPlotStatusStats();
         vo.setIdlePlot(plotStats == null ? 0 : toInt(plotStats.get("idlePlot")));
-        vo.setPlantedPlot(plotStats == null ? 0 : toInt(plotStats.get("plantedPlot")));
+        int totalPlot = plotStats == null ? 0 : toInt(plotStats.get("totalPlot"));
 
-        Map<String, Object> planStats = baseMapper.selectPlanDetailStats();
-        int plannedPlot = planStats == null ? 0 : toInt(planStats.get("plannedPlot"));
-        int detailRows = planStats == null ? 0 : toInt(planStats.get("detailRows"));
-        int cropVariety = planStats == null ? 0 : toInt(planStats.get("cropVarietyCount"));
+        // ②③⑤ 当年计划/种植维度聚合（plan_year = year）
+        Map<String, Object> planStats = baseMapper.selectPlanDetailStats(year);
+        int plantedPlot = planStats == null ? 0 : toInt(planStats.get("plantedPlot"));   // ② 当年已种植地块数 = 当年种植行为次数之和 COUNT(*)
+        int plannedPlot = planStats == null ? 0 : toInt(planStats.get("plannedPlot"));   // ③ 当年计划种植地块数 = Σ计划地块 COUNT(*)
+        int cropVariety = planStats == null ? 0 : toInt(planStats.get("cropVarietyCount")); // ⑤ 当年计划种植作物品种数 DISTINCT crop_id
+        vo.setPlantedPlot(plantedPlot);
         vo.setPlannedPlot(plannedPlot);
         vo.setCropVarietyCount(cropVariety);
-        if (plannedPlot > 0) {
-            vo.setPlotUsageFreq(BigDecimal.valueOf(detailRows)
-                .divide(BigDecimal.valueOf(plannedPlot), 1, RoundingMode.HALF_UP));
+
+        // ④ 当年计划地块使用频次 = 当年计划种植地块数 / 地块总数（2 位小数；地块总数 0 时 0）
+        if (totalPlot > 0) {
+            vo.setPlotUsageFreq(BigDecimal.valueOf(plannedPlot)
+                .divide(BigDecimal.valueOf(totalPlot), 2, RoundingMode.HALF_UP));
         } else {
             vo.setPlotUsageFreq(BigDecimal.ZERO);
         }

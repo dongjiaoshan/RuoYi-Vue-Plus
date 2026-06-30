@@ -96,6 +96,12 @@ public class ProductProductionVo implements Serializable {
     @ExcelProperty(value = "原材料耗用(kg)")
     private BigDecimal materialConsume;
 
+    /**
+     * 原材料单位（= materialId 对应 {@code product_info.product_unit}，service 端 JOIN 回填；无 materialId 则空）。
+     */
+    @ExcelProperty(value = "原材料单位")
+    private String materialUnit;
+
     private Long supplierId;
 
     @ExcelProperty(value = "生产位置 location_info FK")
@@ -115,6 +121,31 @@ public class ProductProductionVo implements Serializable {
 
     @ExcelProperty(value = "追溯码")
     private String traceCode;
+
+    /**
+     * 是否损坏字典 {@code djs_yes_no}：1=是 / 0=否（门店「到店损耗」标损，默认 0）。
+     */
+    @ExcelProperty(value = "是否损坏 1=是/0=否")
+    private Integer isDamaged;
+
+    /**
+     * 损坏凭证图 OSS IDs CSV。
+     */
+    @ExcelProperty(value = "损坏凭证图IDs")
+    private String damageEvidenceOssIds;
+
+    /**
+     * 损坏备注。
+     */
+    @ExcelProperty(value = "损坏备注")
+    private String damageRemark;
+
+    /**
+     * 标损时间。
+     */
+    @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")
+    @ExcelProperty(value = "标损时间")
+    private Date damageTime;
 
     @ExcelProperty(value = "备注")
     private String remark;
