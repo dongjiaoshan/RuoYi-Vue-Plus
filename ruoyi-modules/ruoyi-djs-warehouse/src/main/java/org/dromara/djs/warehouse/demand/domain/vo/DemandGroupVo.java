@@ -45,8 +45,11 @@ public class DemandGroupVo implements Serializable {
     /** 产品规格。 */
     private String productSpec;
 
-    /** 需求产品类型（字典 djs_demand_product_type；前端 dict-tag 渲染）。 */
+    /** 需求产品类型（内部业态 white_bar/vegetable/gift_box/other，驱动状态机分支；列表展示已改用 belongType）。 */
     private String productType;
+
+    /** 产品类别（字典 djs_belong_type，取自产品主数据 belong_type；列表「需求产品类型」列 + 筛选统一按产品配置产品类别展示）。 */
+    private String belongType;
 
     /** 原材料描述。 */
     private String rawMaterial;

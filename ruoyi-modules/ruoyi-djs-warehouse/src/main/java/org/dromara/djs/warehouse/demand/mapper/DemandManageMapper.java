@@ -360,6 +360,7 @@ public interface DemandManageMapper extends BaseMapperPlus<DemandManage, DemandM
                g.productName         AS productName,
                g.productSpec         AS productSpec,
                g.productType         AS productType,
+               g.belongType          AS belongType,
                COALESCE(pm.product_name, g.rawMaterial) AS rawMaterial,
                g.productUnit         AS productUnit,
                g.demandQuantity      AS demandQuantity,
@@ -368,50 +369,55 @@ public interface DemandManageMapper extends BaseMapperPlus<DemandManage, DemandM
                g.confirmedStoreCount AS confirmedStoreCount,
                g.lastConfirmTime     AS lastConfirmTime
         FROM (
-            SELECT demand_date              AS demandDate,
-                   product_id               AS productId,
-                   MAX(product_name)        AS productName,
-                   MAX(product_spec)        AS productSpec,
-                   MAX(product_type)        AS productType,
-                   MAX(raw_material)        AS rawMaterial,
-                   MAX(product_unit)        AS productUnit,
-                   SUM(demand_quantity)     AS demandQuantity,
-                   SUM(COALESCE(material_qty, 0)) AS materialQty,
-                   COUNT(DISTINCT store_id) AS storeCount,
-                   COUNT(DISTINCT CASE WHEN demand_status IN ('CONFIRMED','IN_PRODUCTION','PARTIAL_SHIPPED','COMPLETED')
-                         THEN store_id END) AS confirmedStoreCount,
-                   MAX(confirmer_time)      AS lastConfirmTime
-            FROM t_warehouse_demand_manage
-            WHERE product_id IS NOT NULL
-              AND store_id IS NOT NULL
-              AND demand_status &lt;&gt; 'CANCELLED'
-              AND demand_status &lt;&gt; 'DELETED'
-              AND del_flag = '0'
-              AND tenant_id = '1001'
+            SELECT dm.demand_date              AS demandDate,
+                   dm.product_id               AS productId,
+                   MAX(dm.product_name)        AS productName,
+                   MAX(dm.product_spec)        AS productSpec,
+                   MAX(dm.product_type)        AS productType,
+                   MAX(pi.belong_type)         AS belongType,
+                   MAX(dm.raw_material)        AS rawMaterial,
+                   MAX(dm.product_unit)        AS productUnit,
+                   SUM(dm.demand_quantity)     AS demandQuantity,
+                   SUM(COALESCE(dm.material_qty, 0)) AS materialQty,
+                   COUNT(DISTINCT dm.store_id) AS storeCount,
+                   COUNT(DISTINCT CASE WHEN dm.demand_status IN ('CONFIRMED','IN_PRODUCTION','PARTIAL_SHIPPED','COMPLETED')
+                         THEN dm.store_id END) AS confirmedStoreCount,
+                   MAX(dm.confirmer_time)      AS lastConfirmTime
+            FROM t_warehouse_demand_manage dm
+            LEFT JOIN t_warehouse_product_info pi
+                   ON pi.id = dm.product_id AND pi.del_flag = '0' AND pi.tenant_id = '1001'
+            WHERE dm.product_id IS NOT NULL
+              AND dm.store_id IS NOT NULL
+              AND dm.demand_status &lt;&gt; 'CANCELLED'
+              AND dm.demand_status &lt;&gt; 'DELETED'
+              AND dm.del_flag = '0'
+              AND dm.tenant_id = '1001'
               <if test="productName != null and productName != ''">
-                AND product_name LIKE CONCAT('%', #{productName}, '%')
+                AND dm.product_name LIKE CONCAT('%', #{productName}, '%')
               </if>
+              <!-- 「需求产品类型」筛选统一按产品配置「产品类别」(产品 belong_type)，非内部业态 product_type；
+                   param 仍叫 productTypes/productType，但承载 djs_belong_type 字典值（pork/vegetable/...）。 -->
               <if test="productTypes != null and productTypes.size() > 0">
-                AND product_type IN
+                AND pi.belong_type IN
                 <foreach collection="productTypes" item="pt" open="(" separator="," close=")">#{pt}</foreach>
               </if>
               <if test="(productTypes == null or productTypes.size() == 0) and productType != null and productType != ''">
-                AND product_type = #{productType}
+                AND pi.belong_type = #{productType}
               </if>
               <if test="storeIds != null and storeIds.size() > 0">
-                AND store_id IN
+                AND dm.store_id IN
                 <foreach collection="storeIds" item="sid" open="(" separator="," close=")">#{sid}</foreach>
               </if>
               <if test="(storeIds == null or storeIds.size() == 0) and storeId != null">
-                AND store_id = #{storeId}
+                AND dm.store_id = #{storeId}
               </if>
               <if test="beginDate != null">
-                AND demand_date &gt;= #{beginDate}
+                AND dm.demand_date &gt;= #{beginDate}
               </if>
               <if test="endDate != null">
-                AND demand_date &lt;= #{endDate}
+                AND dm.demand_date &lt;= #{endDate}
               </if>
-            GROUP BY demand_date, product_id
+            GROUP BY dm.demand_date, dm.product_id
         ) g
         LEFT JOIN t_warehouse_product_info pm
                ON g.rawMaterial REGEXP '^[0-9]+$'
