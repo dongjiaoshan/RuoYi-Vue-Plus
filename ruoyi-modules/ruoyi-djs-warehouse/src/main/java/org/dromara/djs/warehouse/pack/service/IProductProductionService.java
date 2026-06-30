@@ -16,6 +16,7 @@ import org.dromara.djs.warehouse.pack.domain.vo.VegDailyLossVo;
 import org.dromara.djs.warehouse.product.domain.ProductInhouse;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.util.Date;
 import java.util.List;
 import java.util.Map;
@@ -107,6 +108,19 @@ public interface IProductProductionService {
      * @return 该需求已标损坏件数
      */
     long countDamagedByDemand(Long demandId);
+
+    /**
+     * row52：当日送达该店该产品的成品总重量（门店退回上限按重量比对，store 侧调用）。
+     *
+     * <p>「送达该店」= 该产品当日发货清点的成品，门店归属经 {@code demand_id → demand.store_id} 关联。
+     * 聚合 {@code SUM(product_weight)}；无 → 0。</p>
+     *
+     * @param storeId   门店 FK
+     * @param productId 产品 FK
+     * @param date      业务日（按 delivery_check_time 当天过滤）
+     * @return 当日送达该店该产品的成品总重量
+     */
+    BigDecimal sumDeliveredWeightToStore(Long storeId, Long productId, LocalDate date);
 
     /**
      * mp 端 - 蔬菜可打包来源（{@code belong_type='vegetable'} 且 {@code product_attr=2}(原料)

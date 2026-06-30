@@ -18,8 +18,6 @@ import org.dromara.djs.store.returns.domain.StoreReturn;
 import org.dromara.djs.store.returns.domain.bo.StoreReturnBatchBo;
 import org.dromara.djs.store.returns.domain.bo.StoreReturnBo;
 import org.dromara.djs.store.returns.domain.bo.StoreReturnConfirmBo;
-import org.dromara.djs.store.ledger.domain.StoreDailyLedger;
-import org.dromara.djs.store.ledger.mapper.StoreDailyLedgerMapper;
 import org.dromara.djs.store.returns.domain.query.StoreReturnQuery;
 import org.dromara.djs.store.returns.domain.vo.StoreReturnVo;
 import org.dromara.djs.store.returns.domain.vo.StoreReturnAppletItemVo;
@@ -34,6 +32,7 @@ import org.dromara.djs.warehouse.location.domain.LocationInfo;
 import org.dromara.djs.warehouse.location.mapper.LocationInfoMapper;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
+import org.dromara.djs.warehouse.pack.service.IProductProductionService;
 import org.dromara.djs.warehouse.purchase.service.IWarehousePurchaseInService;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -121,7 +120,7 @@ public class StoreReturnServiceImpl
     private final IWarehousePurchaseInService purchaseInService;
     private final DemandManageMapper demandManageMapper;
     private final DictService dictService;
-    private final StoreDailyLedgerMapper storeDailyLedgerMapper;
+    private final IProductProductionService productProductionService;
 
     public StoreReturnServiceImpl(StoreReturnMapper baseMapper,
                                   StoreMapper storeMapper,
@@ -131,7 +130,7 @@ public class StoreReturnServiceImpl
                                   IWarehousePurchaseInService purchaseInService,
                                   DemandManageMapper demandManageMapper,
                                   DictService dictService,
-                                  StoreDailyLedgerMapper storeDailyLedgerMapper) {
+                                  IProductProductionService productProductionService) {
         super(baseMapper);
         this.storeMapper = storeMapper;
         this.productInfoMapper = productInfoMapper;
@@ -140,7 +139,7 @@ public class StoreReturnServiceImpl
         this.purchaseInService = purchaseInService;
         this.demandManageMapper = demandManageMapper;
         this.dictService = dictService;
-        this.storeDailyLedgerMapper = storeDailyLedgerMapper;
+        this.productProductionService = productProductionService;
     }
 
     @Override
@@ -257,8 +256,8 @@ public class StoreReturnServiceImpl
             // 退回量度量：果蔬行用退回量（份/把/盒），猪肉行无退回量时回退退回重量（kg）——与下方落库口径一致。
             BigDecimal returnMetric = item.getReturnQuantity() != null
                 ? item.getReturnQuantity() : item.getReturnWeight();
-            // 上限校验：退回量 ≤ 该产品当日台账「期初库存 + 当日到货」。
-            validateReturnWithinLedger(bo.getStoreId(), item.getProductId(), today, returnMetric, product.getProductName());
+            // row52 上限校验：退回重量 ≤ 当日送达该店该产品的总重量（果蔬每份有对应重量，按重量封顶）。
+            validateReturnWithinDelivered(bo.getStoreId(), item.getProductId(), today, item.getReturnWeight(), product.getProductName());
 
             StoreReturn entity = new StoreReturn();
             entity.setReturnNo(generateReturnNo());
@@ -611,46 +610,29 @@ public class StoreReturnServiceImpl
     }
 
     /**
-     * 退回上限校验（row52）：退回量不得超过该产品当日台账 {@code t_store_daily_ledger} 的
-     * 「期初库存 {@code opening_qty} + 当日到货 {@code inbound_qty}」之和。
+     * 退回上限校验（row52，Kevin 2026-06-30 定重量口径）：退回重量不得超过该产品
+     * <b>当日送达该店的总重量</b>（果蔬每份产品都有对应重量，按重量封顶）。
      *
-     * <p><b>度量单位口径</b>：台账每行只有一个 opening/inbound 数值，按产品计量单位记
-     * （果蔬=份/把/盒，猪肉=kg 按重量）；本校验用的 {@code returnMetric} 同口径——果蔬取退回量、
-     * 猪肉取退回重量（与 {@link #batchCreate} 落 {@code return_quantity} 完全一致），故无需单重换算。</p>
+     * <p>「送达该店」= 当日发货清点（{@code is_delivery_check=1}、{@code delivery_check_time} 当天）
+     * 送达该店的成品 {@code product_weight} 之和；门店归属经 {@code demand_id → demand.store_id} 关联
+     * （pack 链不写 production.store_id）。仅按「当日送达」，不含往日期初库存。</p>
      *
-     * <p><b>无台账行时跳过</b>：门店盘点（建台账行）与退回操作是两个独立动作，退回时当日台账行
-     * 常未建。此时无「期初/到货」记录可作上限，<b>不阻断</b>（仅 warn），避免误拦正常退回。
-     * 台账行已存在时才以 opening+inbound 为硬上限。</p>
-     *
-     * @param storeId     门店
-     * @param productId   产品（雪花主键）
-     * @param ledgerDate  台账日期（当日，Asia/Shanghai）
-     * @param returnMetric 本次退回量（与台账同口径；null 视为 0 不校验）
-     * @param productName 产品名（提示用）
+     * @param storeId      门店
+     * @param productId    产品（雪花主键）
+     * @param date         业务日（当日，Asia/Shanghai）
+     * @param returnWeight 本次退回重量 kg（null/≤0 → 不校验）
+     * @param productName  产品名（提示用）
      */
-    private void validateReturnWithinLedger(Long storeId, Long productId, LocalDate ledgerDate,
-                                            BigDecimal returnMetric, String productName) {
-        if (returnMetric == null || returnMetric.signum() <= 0) {
+    private void validateReturnWithinDelivered(Long storeId, Long productId, LocalDate date,
+                                               BigDecimal returnWeight, String productName) {
+        if (returnWeight == null || returnWeight.signum() <= 0) {
             return;
         }
-        StoreDailyLedger ledger = storeDailyLedgerMapper.selectOne(
-            new LambdaQueryWrapper<StoreDailyLedger>()
-                .eq(StoreDailyLedger::getStoreId, storeId)
-                .eq(StoreDailyLedger::getProductId, productId)
-                .eq(StoreDailyLedger::getLedgerDate, ledgerDate)
-                .last("LIMIT 1"));
-        if (ledger == null) {
-            log.warn("[STORE-RETURN] 产品 {}(store={}, date={}) 当日无台账行，跳过退回上限校验",
-                productId, storeId, ledgerDate);
-            return;
-        }
-        BigDecimal opening = ledger.getOpeningQty() == null ? BigDecimal.ZERO : ledger.getOpeningQty();
-        BigDecimal inbound = ledger.getInboundQty() == null ? BigDecimal.ZERO : ledger.getInboundQty();
-        BigDecimal limit = opening.add(inbound);
-        if (returnMetric.compareTo(limit) > 0) {
+        BigDecimal limit = productProductionService.sumDeliveredWeightToStore(storeId, productId, date);
+        if (returnWeight.compareTo(limit) > 0) {
             throw new ServiceException(
-                "产品「" + productName + "」退回量(" + returnMetric.toPlainString()
-                    + ")不能超过当日期初库存与到货之和(" + limit.toPlainString() + ")", 400);
+                "产品「" + productName + "」退回重量(" + returnWeight.toPlainString()
+                    + ")不能超过当日送达该店的总重量(" + limit.toPlainString() + ")", 400);
         }
     }
 

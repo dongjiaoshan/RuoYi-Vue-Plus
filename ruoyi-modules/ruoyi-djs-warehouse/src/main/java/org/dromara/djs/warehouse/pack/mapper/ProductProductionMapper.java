@@ -8,6 +8,8 @@ import org.dromara.djs.warehouse.pack.domain.ProductProduction;
 import org.dromara.djs.warehouse.pack.domain.vo.ProductProductionGroupVo;
 import org.dromara.djs.warehouse.pack.domain.vo.ProductProductionVo;
 
+import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.util.Date;
 import java.util.List;
 import java.util.Map;
@@ -266,5 +268,27 @@ public interface ProductProductionMapper extends BaseMapperPlus<ProductProductio
         + "WHERE demand_id = #{demandId} AND is_damaged = 1 "
         + "AND del_flag = '0' AND tenant_id = '1001'")
     long countDamagedByDemand(@Param("demandId") Long demandId);
+
+    /**
+     * row52：当日送达该店该产品的成品总重量（门店退回上限按重量比对）。
+     *
+     * <p>「送达该店」= 该产品当日发货清点（{@code is_delivery_check=1}、{@code delivery_check_time} 当天）
+     * 的成品；门店归属经 {@code demand_id → demand.store_id} 关联（pack 链不写 production.store_id）。
+     * 聚合 {@code SUM(product_weight)}。租户隔离 V1 单租户显式 {@code tenant_id='1001'}。</p>
+     *
+     * @param storeId   门店 FK
+     * @param productId 产品 FK
+     * @param date      业务日（按 delivery_check_time 当天过滤）
+     * @return 当日送达该店该产品的成品总重量（无 → 0）
+     */
+    @Select("SELECT COALESCE(SUM(pp.product_weight), 0) "
+        + "FROM t_warehouse_product_production pp "
+        + "JOIN t_warehouse_demand_manage dm ON dm.id = pp.demand_id AND dm.del_flag = '0' "
+        + "WHERE pp.product_id = #{productId} AND dm.store_id = #{storeId} "
+        + "AND pp.is_delivery_check = 1 AND DATE(pp.delivery_check_time) = #{date} "
+        + "AND pp.del_flag = '0' AND pp.tenant_id = '1001'")
+    BigDecimal sumDeliveredWeightToStore(@Param("storeId") Long storeId,
+                                         @Param("productId") Long productId,
+                                         @Param("date") LocalDate date);
 
 }

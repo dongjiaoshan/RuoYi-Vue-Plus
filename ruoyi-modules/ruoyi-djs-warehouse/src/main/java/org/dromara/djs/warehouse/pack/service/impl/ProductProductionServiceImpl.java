@@ -663,6 +663,15 @@ public class ProductProductionServiceImpl
     }
 
     @Override
+    public BigDecimal sumDeliveredWeightToStore(Long storeId, Long productId, LocalDate date) {
+        if (storeId == null || productId == null || date == null) {
+            return BigDecimal.ZERO;
+        }
+        BigDecimal weight = baseMapper.sumDeliveredWeightToStore(storeId, productId, date);
+        return weight == null ? BigDecimal.ZERO : weight;
+    }
+
+    @Override
     public List<ProductInhouse> listSourceForVeg() {
         // 果蔬打包来源 = belong_type='vegetable' 且 product_attr=2(原料) 的「今天领用」活动 inhouse
         // （doc/14 §5：只显今天领用待打包）。物资领用果蔬原材料经 MatFlowServiceImpl.bridgeMaterialInhouse
