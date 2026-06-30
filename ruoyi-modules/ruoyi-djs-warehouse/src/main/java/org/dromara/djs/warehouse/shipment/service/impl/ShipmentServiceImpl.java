@@ -532,17 +532,19 @@ public class ShipmentServiceImpl
         if (productions.isEmpty()) {
             return List.of();
         }
-        Map<Long, String> productNameMap = loadProductNameMap(productions);
-        Map<Long, String> belongTypeMap = loadProductBelongTypeMap(productions);
+        Map<Long, ProductInfo> productMap = loadProductInfoMap(productions);
         Map<Long, String> locationNameMap = loadLocationNameMap(productions);
         return productions.stream().map(p -> {
+            ProductInfo info = p.getProductId() == null ? null : productMap.get(p.getProductId());
             AvailableProductionVo vo = new AvailableProductionVo();
             vo.setId(p.getId());
             vo.setProduceNo(p.getProduceNo());
             vo.setProduceDate(p.getProduceDate());
             vo.setProductId(p.getProductId());
-            vo.setProductName(productNameMap.get(p.getProductId()));
-            vo.setBelongType(belongTypeMap.get(p.getProductId()));
+            vo.setProductName(info == null ? null : info.getProductName());
+            vo.setBelongType(info == null ? null : info.getBelongType());
+            vo.setProductUnit(info == null ? null : info.getProductUnit());
+            vo.setMaterialNum(info == null ? null : info.getMaterialNum());
             vo.setProduceQuantity(p.getProduceQuantity());
             vo.setProductSpec(p.getProductSpec());
             vo.setProduceLocation(p.getProduceLocation());
@@ -631,7 +633,11 @@ public class ShipmentServiceImpl
         // 无操作：storeName 由 admin 端列表渲染时 lookup picker，避免跨域 mapper 依赖。
     }
 
-    private Map<Long, String> loadProductNameMap(List<ProductProduction> productions) {
+    /**
+     * 批量取产品主数据（一次查 product_info，VO 填 productName / belongType / productUnit / materialNum）。
+     * mp 发货清单据此定数量单位（头/份/枚）+ 还原计量产品份数（份数 = produceQuantity ÷ material_num）。
+     */
+    private Map<Long, ProductInfo> loadProductInfoMap(List<ProductProduction> productions) {
         List<Long> productIds = productions.stream()
             .map(ProductProduction::getProductId).filter(Objects::nonNull).distinct().toList();
         if (productIds.isEmpty()) {
@@ -640,22 +646,7 @@ public class ShipmentServiceImpl
         List<ProductInfo> infos = productInfoMapper.selectList(
             new LambdaQueryWrapper<ProductInfo>().in(ProductInfo::getId, productIds));
         return infos.stream().collect(
-            Collectors.toMap(ProductInfo::getId, ProductInfo::getProductName, (a, b) -> a));
-    }
-
-    /** 产品 id → belong_type 业态（mp 发货清单据此定数量单位 头/份）。 */
-    private Map<Long, String> loadProductBelongTypeMap(List<ProductProduction> productions) {
-        List<Long> productIds = productions.stream()
-            .map(ProductProduction::getProductId).filter(Objects::nonNull).distinct().toList();
-        if (productIds.isEmpty()) {
-            return Map.of();
-        }
-        List<ProductInfo> infos = productInfoMapper.selectList(
-            new LambdaQueryWrapper<ProductInfo>().in(ProductInfo::getId, productIds)
-                .select(ProductInfo::getId, ProductInfo::getBelongType));
-        return infos.stream()
-            .filter(i -> i.getBelongType() != null)
-            .collect(Collectors.toMap(ProductInfo::getId, ProductInfo::getBelongType, (a, b) -> a));
+            Collectors.toMap(ProductInfo::getId, i -> i, (a, b) -> a));
     }
 
     private Map<Long, String> loadLocationNameMap(List<ProductProduction> productions) {

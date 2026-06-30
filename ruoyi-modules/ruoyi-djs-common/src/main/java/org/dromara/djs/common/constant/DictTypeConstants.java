@@ -175,6 +175,9 @@ public final class DictTypeConstants {
     /** 有机饲喂提供位置类型（WMS-FEED-RECORD-001：veg_handle=毛菜间 / warehouse=仓库；t_warehouse_feed_log.feed_type）。 */
     public static final String FEED_TYPE = "djs_feed_type";
 
+    /** 物资/商品分类（feed/medicine/fertilizer/pesticide/packaging/seed/equipment/raw/other；t_warehouse_product_info.buy_class，mp 物资领用「商品分类」展示+筛选码→中文）。 */
+    public static final String BUY_CLASS = "djs_buy_class";
+
     // ---------------- E. 门店域（4 类） ----------------
 
     /** 会员等级。 */

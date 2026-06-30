@@ -44,6 +44,18 @@ public class AvailableProductionVo implements Serializable {
     /** 生产产品规格（打包时快照 product_production.product_spec）：mp 发货清单「规格」行展示此值，非库位名。 */
     private String productSpec;
 
+    /**
+     * 产品计量单位（service 层 JOIN product_info.product_unit 填充）：kg / 份 / 个 / 盒 等。
+     * mp 发货清单据此渲染数量单位与重量行——非 kg 单位产品（如鸡蛋 unit='份'）不显「210kg」。
+     */
+    private String productUnit;
+
+    /**
+     * 原材料计量量（service 层 JOIN product_info.material_num 填充）：如鸡蛋一份=42 枚则 material_num=42。
+     * material_num>0 的产品 produceQuantity 存的是「份数×material_num」的重量，mp 还原份数 = produceQuantity ÷ material_num。
+     */
+    private BigDecimal materialNum;
+
     private Long produceLocation;
 
     /** 库位名称（service 层 JOIN location_info 填充）。 */

@@ -392,7 +392,7 @@ class ShipmentServiceImplTest {
         demand.setProductType("vegetable");
         when(demandMapper.selectById(demandId)).thenReturn(demand);
 
-        // belong_type=vegetable 的产品 → id 集（product_name 业务必填，loadProductNameMap toMap 不容 null）
+        // belong_type=vegetable 的产品 → id 集（product_name 业务必填，loadProductInfoMap toMap 不容 null key）
         ProductInfo veg = new ProductInfo();
         veg.setId(501L);
         veg.setBelongType("vegetable");

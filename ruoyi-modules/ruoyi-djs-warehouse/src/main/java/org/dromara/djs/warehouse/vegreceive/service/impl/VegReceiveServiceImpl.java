@@ -343,7 +343,7 @@ public class VegReceiveServiceImpl implements IVegReceiveService {
     public Long purchase(VegPurchaseBo bo) {
         Long userId = resolveOperator(bo.getOperatorId());
 
-        // 1. 校验可外购原材料（is_buy_out=1 且 product_attr=2）存在
+        // 1. 校验自产食材原料（product_type=1 且 product_attr=2）存在
         ProductInfo product = requirePurchaseProduct(bo.getCropId());
 
         // 2. resolve supplier（业务短码 → id+name；查不到只存名称、id 置 null，不阻塞入库）
@@ -421,11 +421,13 @@ public class VegReceiveServiceImpl implements IVegReceiveService {
     }
 
     /**
-     * 校验「自产食材标了可外购的原材料」（{@code product_type=1 且 is_buy_out=1 且 product_attr=2}）存在，否则抛异常。
+     * 校验「自产食材原料」（{@code product_type=1 且 product_attr=2}）存在，否则抛异常。
      *
-     * <p>口径与蔬菜月台外购列表 {@link VegReceiveMapper#selectPurchasedPending} 一致：现场外购收货只认
-     * 自产食材里标了可外购的原料（果蔬/猪肉/蛋/白条/干货里 is_buy_out=1 的）；纯外购商品
+     * <p>口径与蔬菜月台外购列表 {@link VegReceiveMapper#selectPurchasedPending} 一致：现场外购收货认
+     * 自产食材原料（果蔬/猪肉/蛋/白条/干货里 {@code product_attr=2} 的原料）；纯外购商品
      * （{@code product_type=2}，饲料/药品/肥料/农药/包材等生产资料）走 admin 采购入库、不在此现场收货。
+     * 不再用 {@code is_buy_out=1} 收口：现网自产食材普遍 {@code is_buy_out=0}（果蔬全为 0），加该条件会和列表
+     * 矛盾——列表给出的果蔬（如香蒜 Y00059）提交时被这里拒绝。任何自产食材都可临时外购补货，外购属性不固有。
      * protected 便于单测 stub。</p>
      */
     protected ProductInfo requirePurchaseProduct(Long productId) {
@@ -434,11 +436,10 @@ public class VegReceiveServiceImpl implements IVegReceiveService {
         if (p == null) {
             throw new ServiceException("外购产品不存在或已删除：" + productId);
         }
-        boolean selfBuyOutMaterial = p.getProductType() != null && p.getProductType() == 1
-            && p.getIsBuyOut() != null && p.getIsBuyOut() == 1
+        boolean selfMaterial = p.getProductType() != null && p.getProductType() == 1
             && p.getProductAttr() != null && p.getProductAttr() == 2;
-        if (!selfBuyOutMaterial) {
-            throw new ServiceException("该产品非可外购原材料，不能走蔬菜月台外购收货：" + p.getProductName());
+        if (!selfMaterial) {
+            throw new ServiceException("该产品非自产食材原料，不能走蔬菜月台外购收货：" + p.getProductName());
         }
         return p;
     }
