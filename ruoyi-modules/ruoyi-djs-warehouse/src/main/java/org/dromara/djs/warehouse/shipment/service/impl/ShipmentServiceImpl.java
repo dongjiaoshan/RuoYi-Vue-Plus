@@ -116,6 +116,10 @@ public class ShipmentServiceImpl
         DemandStatus.PARTIAL_SHIPPED
     );
 
+    /** SHIPPABLE 状态的 demand_status 字符串码（demand.demandStatus 存的是枚举名）—— 门店列表种类口径对齐详情用。 */
+    private static final Set<String> SHIPPABLE_STATUS_CODES = SHIPPABLE_DEMAND_STATUSES.stream()
+        .map(DemandStatus::name).collect(Collectors.toUnmodifiableSet());
+
     /**
      * 发货月台门店列表展示状态集：在可发货白名单基础上 + COMPLETED（当天已发货完成），
      * 让「当天有需求且已发货」的门店也进列表（状态显「已发货」）。仅用于 listPendingStores 展示，
@@ -375,8 +379,14 @@ public class ShipmentServiceImpl
             vo.setStoreId(storeId);
             vo.setStoreName(storeNameMap.get(storeId));
             vo.setPendingDemandCount(storeDemands.size());
+            // 产品种类数与详情页（mp displayGoods）对齐：详情按各 SHIPPABLE demand 的「可发 production」
+            // 实际聚合后 distinct(production.product_id) 计卡片数，而非按 demand.product_id 计。
+            // 故此处同口径——展开各 SHIPPABLE demand 的 findAvailableProductionsForDemand，对 production.product_id
+            // 去重计数（COMPLETED 已发货 demand 不计入，与详情 loadShippableDemands 一致 → 已发完门店显 0 种）。
             vo.setProductKindCount((int) storeDemands.stream()
-                .map(DemandManage::getProductId).filter(Objects::nonNull).distinct().count());
+                .filter(d -> SHIPPABLE_STATUS_CODES.contains(d.getDemandStatus()))
+                .flatMap(d -> findAvailableProductionsForDemand(d).stream())
+                .map(ProductProduction::getProductId).distinct().count());
             vo.setPendingQuantity(storeDemands.stream()
                 .map(DemandManage::getDemandQuantity).filter(Objects::nonNull)
                 .reduce(BigDecimal.ZERO, BigDecimal::add));

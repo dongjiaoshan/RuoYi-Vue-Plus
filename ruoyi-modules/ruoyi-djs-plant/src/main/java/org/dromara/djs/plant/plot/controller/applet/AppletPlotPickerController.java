@@ -4,7 +4,9 @@ import cn.dev33.satoken.annotation.SaCheckLogin;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import lombok.RequiredArgsConstructor;
 import org.dromara.common.core.domain.R;
+import org.dromara.common.core.service.DictService;
 import org.dromara.common.core.utils.StringUtils;
+import org.dromara.djs.plant.farm.domain.FarmRecords;
 import org.dromara.djs.plant.farm.mapper.FarmRecordsMapper;
 import org.dromara.djs.plant.plot.domain.PlotInfo;
 import org.dromara.djs.plant.plot.domain.vo.IdlePlotVo;
@@ -18,6 +20,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.time.LocalDate;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
@@ -51,8 +54,15 @@ import java.util.stream.Collectors;
 @RequestMapping("/djs/applet/plant/plot")
 public class AppletPlotPickerController {
 
+    /** 灾害类型字典（地块卡多行灾害展示，服务端译 label）。 */
+    private static final String DICT_DISASTER_TYPE = "djs_disaster_type";
+
+    /** 地块卡最多展示的灾害条数（r18：最近 3 条，按 farm_date 倒序）。 */
+    private static final int MAX_DISASTER_PER_PLOT = 3;
+
     private final PlotInfoMapper plotInfoMapper;
     private final FarmRecordsMapper farmRecordsMapper;
+    private final DictService dictService;
 
     /**
      * 地块 picker 列表。
@@ -135,6 +145,8 @@ public class AppletPlotPickerController {
                 .collect(Collectors.toMap(
                     m -> Long.valueOf(m.get("plotId").toString()),
                     m -> LocalDate.parse(m.get("lastDate").toString().substring(0, 10))));
+        // r18：地块灾害记录（farm_type='disaster'）一次性批量拉，farm_date 倒序，按 plot 取最近 3 条（Java 端裁剪，禁 N+1）
+        Map<Long, List<IdlePlotVo.DisasterRecord>> disasterByPlot = buildDisasterRecords(plotIds);
         List<IdlePlotVo> vos = rows.stream().map(p -> {
             IdlePlotVo vo = new IdlePlotVo();
             vo.setId(p.getId());
@@ -143,9 +155,56 @@ public class AppletPlotPickerController {
             vo.setPlotStatusLabel("空闲");
             vo.setIdleDate(idleDateByPlot.get(p.getId()));
             vo.setLastFarmDate(lastFarmDateByPlot.get(p.getId()));
+            vo.setDisasterRecords(disasterByPlot.getOrDefault(p.getId(), List.of()));
             return vo;
         }).collect(Collectors.toList());
         return R.ok(vos);
+    }
+
+    /**
+     * 按地块批量构建「最近 3 条灾害记录」（r18，按 farm_date 倒序 + id 倒序）。
+     *
+     * <p>一次 {@code IN (plotIds)} 全量拉 {@code farm_type='disaster'} 记录（DB 端
+     * {@code farm_date DESC} 排序），Java 端按 plotId 分组 + 取前 {@value #MAX_DISASTER_PER_PLOT} 条，
+     * 避免按地块逐条单查（远程 RDS 下 N+1 拖慢）。{@code disasterType} 经
+     * {@code djs_disaster_type} 字典翻译为 label（mp 卡无字典上下文）。</p>
+     *
+     * @param plotIds 地块 id 集合（可空/空时返空 Map）
+     * @return {@code plotId -> 最近 3 条灾害记录（farm_date 倒序）}
+     */
+    private Map<Long, List<IdlePlotVo.DisasterRecord>> buildDisasterRecords(List<Long> plotIds) {
+        if (plotIds == null || plotIds.isEmpty()) {
+            return Map.of();
+        }
+        List<FarmRecords> disasterRows = farmRecordsMapper.selectList(
+            new LambdaQueryWrapper<FarmRecords>()
+                .eq(FarmRecords::getFarmType, "disaster")
+                .in(FarmRecords::getPlotId, plotIds)
+                .orderByDesc(FarmRecords::getFarmDate)
+                .orderByDesc(FarmRecords::getId));
+        Map<Long, List<IdlePlotVo.DisasterRecord>> byPlot = new java.util.HashMap<>();
+        for (FarmRecords r : disasterRows) {
+            Long plotId = r.getPlotId();
+            if (plotId == null) {
+                continue;
+            }
+            List<IdlePlotVo.DisasterRecord> list = byPlot.computeIfAbsent(plotId, k -> new ArrayList<>());
+            // 已排序：DB 端 farm_date/id 倒序，按 plot 累计到上限即跳过余下（保留最近 3 条）
+            if (list.size() >= MAX_DISASTER_PER_PLOT) {
+                continue;
+            }
+            IdlePlotVo.DisasterRecord vo = new IdlePlotVo.DisasterRecord();
+            vo.setDisasterType(r.getDisasterType());
+            String label = StringUtils.isBlank(r.getDisasterType())
+                ? null
+                : dictService.getDictLabel(DICT_DISASTER_TYPE, r.getDisasterType());
+            // 字典缺失/未翻译时回落原始值，避免卡片空白
+            vo.setDisasterTypeLabel(StringUtils.isBlank(label) ? r.getDisasterType() : label);
+            vo.setLossRate(r.getLossRate());
+            vo.setFarmDate(r.getFarmDate());
+            list.add(vo);
+        }
+        return byPlot;
     }
 
     /**

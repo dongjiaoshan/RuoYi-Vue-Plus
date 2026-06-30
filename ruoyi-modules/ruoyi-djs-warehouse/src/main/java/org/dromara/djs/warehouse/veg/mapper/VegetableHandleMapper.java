@@ -46,6 +46,13 @@ public interface VegetableHandleMapper extends BaseMapperPlus<VegetableHandle, V
      * 关联 {@code t_warehouse_product_info(attr=2 果蔬原料)} 取其 {@code image_oss_id}，作物自身图作兜底
      * （{@code COALESCE(prod.image_oss_id, c.image_oss_id)}）；都取不到走前端默认图兜底。
      * 按最近 {@code data_date} 倒序，让"刚采摘完"的菜品排前面。</p>
+     *
+     * <p><b>预计产量扣灾害损失</b>（毛菜处理预计产量 = 可处理地块预计产量之和 − 灾害损失）：左联灾害农事记录
+     * {@code t_plant_farm_records(farm_type='disaster')} 按 {@code crop_id} 预聚合的 {@code SUM(loss_yield)}
+     * （子查询先按作物聚合成 1 行再左联，避免与父表多 planting_record 行扇出重复计数；与 expectedYield 同口径按
+     * 作物维度展示）。{@code expectedYield = SUM(plot_area*predicted_per) − disasterLoss}，单列另透
+     * {@code disasterLoss} 供 mp 展示扣减明细。底层灾害损失已按 plot_id+date 存于 loss_yield，按作物聚合即
+     * 该作物所辖可处理地块的灾害损失之和。</p>
      */
     @Select("SELECT p.crop_id AS cropId, MAX(p.crop_name) AS cropName,"
         + "       MAX(COALESCE(prod.image_oss_id, c.image_oss_id)) AS imageOssId,"
@@ -55,7 +62,8 @@ public interface VegetableHandleMapper extends BaseMapperPlus<VegetableHandle, V
         + "       COALESCE(SUM(h.stock_in_weight),0) AS stockInWeight,"
         + "       COALESCE(SUM(h.send_platform_weight),0) AS sendPlatformWeight,"
         + "       COALESCE(SUM(h.loss_weight),0) AS lossWeight,"
-        + "       COALESCE(SUM(pl.plot_area * c.predicted_per),0) AS expectedYield"
+        + "       COALESCE(MAX(dl.disaster_loss),0) AS disasterLoss,"
+        + "       COALESCE(SUM(pl.plot_area * c.predicted_per),0) - COALESCE(MAX(dl.disaster_loss),0) AS expectedYield"
         + "  FROM t_warehouse_planting_record p"
         // vegetable_handle 先按 planting_record_id 预聚合成 1 行再左联，避免某 record 有多条 handle 时
         // 父表表达式 SUM(plot_area*predicted_per) 被扇出重复计数（expectedYield 虚高）。
@@ -70,6 +78,12 @@ public interface VegetableHandleMapper extends BaseMapperPlus<VegetableHandle, V
         + "  LEFT JOIN t_warehouse_product_info prod ON prod.id=c.related_product"
         + "                AND prod.del_flag='0' AND prod.product_attr=2"
         + "  LEFT JOIN t_plant_plot_info pl ON pl.id=p.plot_id AND pl.del_flag='0'"
+        // 灾害损失：灾害农事记录(farm_type='disaster') 按 crop_id 预聚合 SUM(loss_yield)，先聚合再左联避免扇出
+        + "  LEFT JOIN (SELECT fr.crop_id AS crop_id, SUM(fr.loss_yield) AS disaster_loss"
+        + "               FROM t_plant_farm_records fr"
+        + "              WHERE fr.del_flag='0' AND fr.tenant_id='1001'"
+        + "                AND fr.farm_type='disaster' AND fr.crop_id IS NOT NULL"
+        + "              GROUP BY fr.crop_id) dl ON dl.crop_id=p.crop_id"
         + " WHERE p.tenant_id='1001' AND p.del_flag='0'"
         + " GROUP BY p.crop_id"
         + " HAVING SUM(CASE WHEN p.handle_status <> 'done' THEN 1 ELSE 0 END) > 0"

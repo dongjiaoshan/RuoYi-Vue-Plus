@@ -73,8 +73,15 @@ public class VegCropVo implements Serializable {
     private BigDecimal lossWeight;
 
     /**
-     * 预计产量(kg) 合计（= SUM(地块面积 plot_area × 作物预计亩产 crop.predicted_per)）。
+     * 预计产量(kg) 合计（= SUM(地块面积 plot_area × 作物预计亩产 crop.predicted_per) − 灾害损失 disasterLoss；
+     * 可处理地块预计产量之和扣减灾害损失后的净预计产量）。
      */
     private BigDecimal expectedYield;
+
+    /**
+     * 灾害损失(kg) 合计（= 灾害农事记录 t_plant_farm_records(farm_type='disaster') 按 plot_id SUM(loss_yield)，
+     * 已从 expectedYield 中扣除；单列透出供 mp 展示扣减明细）。
+     */
+    private BigDecimal disasterLoss;
 
 }

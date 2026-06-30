@@ -260,6 +260,17 @@ public class AppletPickServiceImpl implements IAppletPickService {
                 .collect(Collectors.toMap(PlotInfo::getId, p -> p, (a, b) -> a));
 
         List<PlantDetails> filtered = all.stream()
+            // r19：只展示地块 plot_status IN(2 种植,3 采摘)，排除 1 空闲（字典 djs_plot_status）。
+            //   plot 查无视为不在采摘态，排除。
+            .filter(d -> {
+                PlotInfo plot = plotMap.get(d.getPlotId());
+                return plot != null && plot.getPlotStatus() != null
+                    && (plot.getPlotStatus() == 2 || plot.getPlotStatus() == 3);
+            })
+            // r21：采摘完成（harvest_status='completed'）的地块只在「完成当天」展示，
+            //   end_harvestdate != 今天则次日起消失；非 completed 不受此限。
+            .filter(d -> !"completed".equals(d.getHarvestStatus())
+                || today.equals(d.getEndHarvestdate()))
             .filter(d -> {
                 if (zoneId == null) {
                     return true;
@@ -349,6 +360,22 @@ public class AppletPickServiceImpl implements IAppletPickService {
                 .ge(PlantDetails::getLastHarvestdate, firstDay)
                 .orderByAsc(PlantDetails::getEarliestHarvestdate)
                 .orderByAsc(PlantDetails::getId));
+        // r19：与列表卡（listCropTasks）同口径，只展示地块 plot_status IN(2 种植,3 采摘)，排除 1 空闲。
+        //   plot 查无视为不在采摘态，排除。
+        if (!entities.isEmpty()) {
+            Set<Long> detailPlotIds = entities.stream()
+                .map(PlantDetails::getPlotId).filter(Objects::nonNull).collect(Collectors.toSet());
+            Map<Long, PlotInfo> detailPlotMap = detailPlotIds.isEmpty() ? Map.of()
+                : plotMapper.selectByIds(detailPlotIds).stream()
+                    .collect(Collectors.toMap(PlotInfo::getId, p -> p, (a, b) -> a));
+            entities = entities.stream()
+                .filter(d -> {
+                    PlotInfo plot = detailPlotMap.get(d.getPlotId());
+                    return plot != null && plot.getPlotStatus() != null
+                        && (plot.getPlotStatus() == 2 || plot.getPlotStatus() == 3);
+                })
+                .toList();
+        }
         return enrichToVoList(entities);
     }
 

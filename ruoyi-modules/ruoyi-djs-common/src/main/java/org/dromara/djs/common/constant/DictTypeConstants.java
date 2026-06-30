@@ -108,6 +108,9 @@ public final class DictTypeConstants {
     /** 药品领用动作（BRD-MED-002：use=领用 / return=退回 / loss=损耗；与用药类型 MEDICINE_USE_TYPE 语义分离）。 */
     public static final String MED_PICK_ACTION = "djs_med_pick_action";
 
+    /** 用药量单位（mp 用药领用：ml/L/mg/g/kg/片，默认 ml）。 */
+    public static final String MEDICINE_UNIT = "djs_medicine_unit";
+
     /** 引种类型（BRD-EVENT-001：external 外部引种 / internal 内部引种；对齐 t_farm_pig_introduce.introduce_type）。 */
     public static final String INTRODUCE_TYPE = "djs_introduce_type";
 
@@ -168,6 +171,9 @@ public final class DictTypeConstants {
 
     /** 蔬菜处理去向（WMS-VEG-001：1=入库 / 2=月台 / 3=有机饲料；对齐 t_warehouse_handle_record.handle_target TINYINT）。 */
     public static final String HANDLE_TARGET = "djs_handle_target";
+
+    /** 有机饲喂提供位置类型（WMS-FEED-RECORD-001：veg_handle=毛菜间 / warehouse=仓库；t_warehouse_feed_log.feed_type）。 */
+    public static final String FEED_TYPE = "djs_feed_type";
 
     // ---------------- E. 门店域（4 类） ----------------
 
