@@ -87,9 +87,9 @@ public interface FeedLogMapper extends BaseMapperPlus<FeedLog, FeedLog> {
      * 有机饲喂记录分页列表（WMS-FEED-RECORD-001，仓库-admin 行21「有机饲喂记录」只读菜单）。
      *
      * <p>over {@code t_warehouse_feed_log} 全量，覆盖两类来源（毛菜处理间 veg_handle + 仓库领用 warehouse）。
-     * LEFT JOIN {@code t_plant_crop_info} 取作物名（feed_log.crop_name 优先，空则 crop.crop_name）+ 作物图 ossId
-     * （用户上传 crop_image_url 首图 → 自动匹配 image_oss_id 兜底）；LEFT JOIN {@code t_warehouse_location_info}
-     * 取饲喂位置名。仓库来源行 crop_id 恒空 → 作物名/图列留空（前端占位兜底）。
+     * 「作物名称」三级兜底：{@code feed_log.crop_name} 优先 → {@code crop.crop_name} → {@code product.product_name}
+     * （仓库领用饲喂来源 crop_id 恒空、product_id 有值，取领用原材料名展示，row92）。作物图 ossId 仅作物来源有
+     * （crop_image_url 首图 → image_oss_id 兜底，仓库来源留空占位）。LEFT JOIN {@code t_warehouse_location_info} 取饲喂位置名。
      * 自定义 @Select 含 JOIN，WHERE 显式带 {@code tenant_id}（拦截器对自定义 SQL 不保证注入）。按饲喂时间倒序。</p>
      *
      * @param page     分页对象
@@ -101,7 +101,7 @@ public interface FeedLogMapper extends BaseMapperPlus<FeedLog, FeedLog> {
         <script>
         SELECT fl.feed_date AS feedDate,
                fl.crop_id AS cropId,
-               COALESCE(NULLIF(fl.crop_name, ''), c.crop_name) AS cropName,
+               COALESCE(NULLIF(fl.crop_name, ''), c.crop_name, p.product_name) AS cropName,
                COALESCE(NULLIF(SUBSTRING_INDEX(c.crop_image_url, ',', 1), ''), c.image_oss_id) AS cropImageOssId,
                fl.feed_weight AS feedWeight,
                fl.feed_type AS feedType,
@@ -111,11 +111,13 @@ public interface FeedLogMapper extends BaseMapperPlus<FeedLog, FeedLog> {
         FROM t_warehouse_feed_log fl
         LEFT JOIN t_plant_crop_info c
           ON c.id = fl.crop_id AND c.del_flag = '0'
+        LEFT JOIN t_warehouse_product_info p
+          ON p.id = fl.product_id AND p.del_flag = '0'
         LEFT JOIN t_warehouse_location_info l
           ON l.id = fl.location_id AND l.del_flag = '0'
         WHERE fl.del_flag = '0' AND fl.tenant_id = #{tenantId}
         <if test="query.cropName != null and query.cropName != ''">
-            AND COALESCE(NULLIF(fl.crop_name, ''), c.crop_name) LIKE CONCAT('%', #{query.cropName}, '%')
+            AND COALESCE(NULLIF(fl.crop_name, ''), c.crop_name, p.product_name) LIKE CONCAT('%', #{query.cropName}, '%')
         </if>
         <if test="query.feedType != null and query.feedType != ''">
             AND fl.feed_type = #{query.feedType}
@@ -143,7 +145,7 @@ public interface FeedLogMapper extends BaseMapperPlus<FeedLog, FeedLog> {
         <script>
         SELECT fl.feed_date AS feedDate,
                fl.crop_id AS cropId,
-               COALESCE(NULLIF(fl.crop_name, ''), c.crop_name) AS cropName,
+               COALESCE(NULLIF(fl.crop_name, ''), c.crop_name, p.product_name) AS cropName,
                COALESCE(NULLIF(SUBSTRING_INDEX(c.crop_image_url, ',', 1), ''), c.image_oss_id) AS cropImageOssId,
                fl.feed_weight AS feedWeight,
                fl.feed_type AS feedType,
@@ -153,11 +155,13 @@ public interface FeedLogMapper extends BaseMapperPlus<FeedLog, FeedLog> {
         FROM t_warehouse_feed_log fl
         LEFT JOIN t_plant_crop_info c
           ON c.id = fl.crop_id AND c.del_flag = '0'
+        LEFT JOIN t_warehouse_product_info p
+          ON p.id = fl.product_id AND p.del_flag = '0'
         LEFT JOIN t_warehouse_location_info l
           ON l.id = fl.location_id AND l.del_flag = '0'
         WHERE fl.del_flag = '0' AND fl.tenant_id = #{tenantId}
         <if test="query.cropName != null and query.cropName != ''">
-            AND COALESCE(NULLIF(fl.crop_name, ''), c.crop_name) LIKE CONCAT('%', #{query.cropName}, '%')
+            AND COALESCE(NULLIF(fl.crop_name, ''), c.crop_name, p.product_name) LIKE CONCAT('%', #{query.cropName}, '%')
         </if>
         <if test="query.feedType != null and query.feedType != ''">
             AND fl.feed_type = #{query.feedType}

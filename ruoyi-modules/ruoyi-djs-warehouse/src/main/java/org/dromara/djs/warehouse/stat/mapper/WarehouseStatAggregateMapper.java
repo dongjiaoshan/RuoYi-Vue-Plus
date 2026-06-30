@@ -40,17 +40,31 @@ public interface WarehouseStatAggregateMapper {
     //  仓库日表（row16）源聚合
     // ============================================================
 
-    /** 屠宰头数：当日燎毛间接收的猪只头数 = 当日 burn 记录数。 */
+    /**
+     * 屠宰头数：当日燎毛间接收的猪只头数 = 当日 burn 记录按耳号去重数（row93）。
+     *
+     * <p>一头猪燎毛入库可拆「两个半只」→ 同 ear_no 多条 burn 记录（不同 burn_id），故用
+     * {@code COUNT(DISTINCT ear_no)} 而非 {@code COUNT(*)}（行数），否则把半只当整只翻倍计。</p>
+     */
     @Select("""
-        SELECT COUNT(*) FROM t_warehouse_pig_burn_record
+        SELECT COUNT(DISTINCT ear_no) FROM t_warehouse_pig_burn_record
         WHERE del_flag = '0' AND tenant_id = #{tenantId} AND DATE(burn_time) = #{statDate}
         """)
     int countSlaughter(@Param("tenantId") String tenantId, @Param("statDate") String statDate);
 
-    /** 接收重量：当日燎毛间称重总重 = Σ burn.arrive_weight。 */
+    /**
+     * 接收重量：当日燎毛间称重总重 = Σ 每猪到场重（row93）。
+     *
+     * <p>{@code arrive_weight}（到场过磅，整猪重）在同一 ear_no 的多条 burn 行里冗余复制 → 直接
+     * {@code SUM(arrive_weight)} 会按行重复累加偏大。按 ear_no 取每猪一次（{@code MAX} 取唯一值）后再 Σ。
+     * 注意：{@code burn_weight}（白条入库重）是每半只独立值，{@code sumBarTotalWeight} 仍按行 SUM 不去重。</p>
+     */
     @Select("""
-        SELECT COALESCE(SUM(arrive_weight), 0) FROM t_warehouse_pig_burn_record
-        WHERE del_flag = '0' AND tenant_id = #{tenantId} AND DATE(burn_time) = #{statDate}
+        SELECT COALESCE(SUM(aw), 0) FROM (
+          SELECT MAX(arrive_weight) AS aw FROM t_warehouse_pig_burn_record
+          WHERE del_flag = '0' AND tenant_id = #{tenantId} AND DATE(burn_time) = #{statDate}
+          GROUP BY ear_no
+        ) t
         """)
     BigDecimal sumArriveWeight(@Param("tenantId") String tenantId, @Param("statDate") String statDate);
 
