@@ -4,7 +4,9 @@ import lombok.Data;
 
 import java.io.Serial;
 import java.io.Serializable;
+import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.util.List;
 
 /**
  * 农事多选页「作物 → 种植地块」候选卡 VO（FIX-PLT-MP-WORK-BATCH-001，#2）。
@@ -73,4 +75,26 @@ public class FarmCropPlotVo implements Serializable {
 
     /** 实际结束采摘日期（采摘完成时间，退茬多选页「完成时间」列）。 */
     private LocalDate endHarvestdate;
+
+    /**
+     * 灾害记录（r56，仅 farmType=disaster 返回）：同一地块可多次灾害录入，按 farm_date 倒序取最近 3 条，
+     * mp 灾害选地块页在地块名下逐行展示「灾害 损失率% 录入时间」。
+     */
+    private List<DisasterRecord> disasterRecords;
+
+    /** 单条灾害记录（r56）。disasterType 原始码值，前端按 {@code djs_disaster_type} 字典翻译展示。 */
+    @Data
+    public static class DisasterRecord implements Serializable {
+        @Serial
+        private static final long serialVersionUID = 1L;
+
+        /** 灾害类型（字典 {@code djs_disaster_type} 码值；前端翻译，缺则展示「灾害」）。 */
+        private String disasterType;
+
+        /** 损失率 0-100。 */
+        private BigDecimal lossRate;
+
+        /** 录入时间（farm_date）。 */
+        private LocalDate farmDate;
+    }
 }

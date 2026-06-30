@@ -142,6 +142,24 @@ class MedUsageServiceImplTest {
     }
 
     @Test
+    @DisplayName("insertByBo[use·去批次 r51]: batchId 为空 → 不查批次，按 medicineId 扣减 + INSERT")
+    void testInsertUse_NoBatch() {
+        when(medUsageMapper.insert(any(MedUsage.class))).thenReturn(1);
+        MedUsageBo bo = sampleBo("use", "5.000");
+        bo.setBatchId(null);   // r51 去批次：药品使用无批次说法
+
+        int rows = service.insertByBo(bo);
+
+        assertThat(rows).isEqualTo(1);
+        // 不带批次 → 不应触碰批次查询
+        verify(medBatchMapper, never()).selectById(any());
+        // 按 bo.medicineId 直接扣减仓库库存
+        verify(medicineStockProvider, times(1)).deduct(eq(MEDICINE_ID), any(BigDecimal.class), any());
+        verify(medicineStockProvider, never()).add(any(), any(), any());
+        verify(medUsageMapper, times(1)).insert(any(MedUsage.class));
+    }
+
+    @Test
     @DisplayName("insertByBo[use]: 库存不足 → provider.deduct 抛 ServiceException，不 INSERT 台账")
     void testInsertUse_InsufficientStock() {
         when(medBatchMapper.selectById(50001L)).thenReturn(existingBatch(new BigDecimal("3.000")));

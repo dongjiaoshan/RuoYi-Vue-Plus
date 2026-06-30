@@ -152,21 +152,24 @@ public class MedUsageServiceImpl extends DjsBaseServiceImpl<MedUsageMapper, MedU
     @Override
     @Transactional(rollbackFor = Exception.class)
     public int insertByBo(MedUsageBo bo) {
-        // 1. 批次存在 & 未软删
-        MedBatch batch = medBatchMapper.selectById(bo.getBatchId());
-        if (batch == null || "1".equals(batch.getDelFlag())) {
-            throw new ServiceException("批次不存在或已删除：" + bo.getBatchId());
-        }
-        // 批次药品归属强校验：前端传错也按 batch 实际归属落账
-        if (!Objects.equals(batch.getMedicineId(), bo.getMedicineId())) {
-            throw new ServiceException("药品 ID 与批次归属不一致：batch.medicineId=" + batch.getMedicineId());
+        // r51 去批次：batchId 可选。传了则校验批次归属（兼容旧链路 + 写台账作溯源），
+        //   没传则直接按 bo.medicineId 落账。库存扣减始终按 medicineId（真值在仓库 location_stock）。
+        Long medicineId = bo.getMedicineId();
+        if (bo.getBatchId() != null) {
+            MedBatch batch = medBatchMapper.selectById(bo.getBatchId());
+            if (batch == null || "1".equals(batch.getDelFlag())) {
+                throw new ServiceException("批次不存在或已删除：" + bo.getBatchId());
+            }
+            // 批次药品归属强校验：前端传错也按 batch 实际归属落账
+            if (!Objects.equals(batch.getMedicineId(), bo.getMedicineId())) {
+                throw new ServiceException("药品 ID 与批次归属不一致：batch.medicineId=" + batch.getMedicineId());
+            }
+            medicineId = batch.getMedicineId();
         }
 
-        // 2. 按 usageType 扣减或归还仓库库存（ADR-0012：库存真值在仓库 location_stock，
-        //    medicineId 取已校验归属的 batch.getMedicineId()；batchId 仍写台账行作溯源但不扣 batch.quantity）
+        // 2. 按 usageType 扣减或归还仓库库存（ADR-0012：库存真值在仓库 location_stock，按 medicineId）
         String type = StringUtils.isBlank(bo.getUsageType()) ? TYPE_USE : bo.getUsageType();
         BigDecimal qty = bo.getUsageQty();
-        Long medicineId = batch.getMedicineId();
         Long operatorId = LoginHelper.getUserId();
         switch (type) {
             // deduct 库存不足自抛 ServiceException → @Transactional 自然回滚（不 catch 吞）

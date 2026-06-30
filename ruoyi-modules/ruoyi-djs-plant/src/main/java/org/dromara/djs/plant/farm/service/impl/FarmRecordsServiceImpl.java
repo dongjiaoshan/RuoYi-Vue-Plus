@@ -433,6 +433,35 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
             }
         }
 
+        // r56：灾害选地块页——按 plot 聚合最近 3 条灾害记录（farm_type='disaster'，farm_date 倒序 + id 倒序），
+        // 地块名下逐行展示「灾害 损失率% 录入时间」。仅 disaster 工种聚合，避免其他工种多余查询。
+        Map<Long, List<FarmCropPlotVo.DisasterRecord>> disasterByPlot = new HashMap<>();
+        if ("disaster".equals(farmType) && !plotIds.isEmpty()) {
+            int maxPerPlot = 3;
+            List<FarmRecords> disasterRows = baseMapper.selectList(
+                new LambdaQueryWrapper<FarmRecords>()
+                    .eq(FarmRecords::getFarmType, "disaster")
+                    .in(FarmRecords::getPlotId, plotIds)
+                    .orderByDesc(FarmRecords::getFarmDate)
+                    .orderByDesc(FarmRecords::getId));
+            for (FarmRecords r : disasterRows) {
+                Long pid = r.getPlotId();
+                if (pid == null) {
+                    continue;
+                }
+                List<FarmCropPlotVo.DisasterRecord> recs = disasterByPlot.computeIfAbsent(pid, k -> new ArrayList<>());
+                // DB 端已倒序，按 plot 累计到上限即跳过余下（保留最近 3 条）
+                if (recs.size() >= maxPerPlot) {
+                    continue;
+                }
+                FarmCropPlotVo.DisasterRecord rec = new FarmCropPlotVo.DisasterRecord();
+                rec.setDisasterType(r.getDisasterType());
+                rec.setLossRate(r.getLossRate());
+                rec.setFarmDate(r.getFarmDate());
+                recs.add(rec);
+            }
+        }
+
         LocalDate today = LocalDate.now();
         List<FarmCropPlotVo> result = new ArrayList<>(details.size());
         for (PlantDetails d : details) {
@@ -464,6 +493,9 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
             }
             if ("transplant".equals(farmType)) {
                 vo.setTransplantedPercent(transplantedMap.getOrDefault(d.getPlotId(), 0));
+            }
+            if ("disaster".equals(farmType)) {
+                vo.setDisasterRecords(disasterByPlot.getOrDefault(d.getPlotId(), List.of()));
             }
             result.add(vo);
         }

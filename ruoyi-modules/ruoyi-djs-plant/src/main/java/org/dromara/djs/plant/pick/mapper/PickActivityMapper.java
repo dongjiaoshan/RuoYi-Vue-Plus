@@ -41,42 +41,28 @@ public interface PickActivityMapper {
         <script>
         SELECT
             t.crop_id        AS cropId,
-            t.crop_name      AS cropName,
+            c.crop_name      AS cropName,
             t.activity_date  AS activityDate,
-            t.plot_count     AS plotCount,
-            t.today_pick_weight AS todayPickWeight,
-            t.expected_yield AS expectedYield,
+            COALESCE(p.plot_count, 0)     AS plotCount,
+            t.today_pick_weight           AS todayPickWeight,
+            COALESCE(p.expected_yield, 0) AS expectedYield,
             SUM(t.today_pick_weight) OVER (
                 PARTITION BY t.crop_id ORDER BY t.activity_date
                 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
             ) AS cumulativePickWeight,
-            COALESCE(a.sale_weight, 0)      AS saleWeight,
-            COALESCE(a.veg_fresh_weight, 0) AS vegFreshWeight,
-            COALESCE(a.platform_weight, 0)  AS platformWeight,
-            COALESCE(a.loss_weight, 0)      AS lossWeight,
-            COALESCE(a.feed_weight, 0)      AS feedWeight
+            t.sale_weight      AS saleWeight,
+            t.veg_fresh_weight AS vegFreshWeight,
+            t.platform_weight  AS platformWeight,
+            t.loss_weight      AS lossWeight,
+            t.feed_weight      AS feedWeight
           FROM (
-            SELECT
-                d.crop_id          AS crop_id,
-                MAX(c.crop_name)   AS crop_name,
-                d.end_harvestdate  AS activity_date,
-                COUNT(DISTINCT d.plot_id)          AS plot_count,
-                COALESCE(SUM(d.actual_yield), 0)   AS today_pick_weight,
-                COALESCE(SUM(d.expected_yield), 0) AS expected_yield
-              FROM t_plant_plant_details d
-              LEFT JOIN t_plant_crop_info c ON c.id = d.crop_id AND c.del_flag = '0'
-             WHERE d.del_flag = '0'
-               AND d.tenant_id = #{tenantId}
-               AND d.end_harvestdate IS NOT NULL
-               <if test='cropName != null and cropName != ""'> AND c.crop_name LIKE CONCAT('%', #{cropName}, '%') </if>
-             GROUP BY d.crop_id, d.end_harvestdate
-          ) t
-          LEFT JOIN (
-            -- DENGBO-R4 采摘去向 5 列：按 (crop_id, activity_date) 聚合 t_plant_plant_activity.pick_dest
-            -- 销售口径 = 显式 sale + 历史 NULL 行（旧采摘录入无去向，视作销售）
+            -- DENGBO-R4：以采摘活动 t_plant_plant_activity 按 (crop_id, activity_date) 为驱动行，
+            -- 今日采摘重量 + 去向 5 列同源聚合（天然对齐，5 列之和 = 今日采摘重量）。
+            -- 销售口径 = 显式 sale + 历史 NULL 去向（旧采摘录入无去向，视作销售）。
             SELECT
                 pa.crop_id       AS crop_id,
                 pa.activity_date AS activity_date,
+                SUM(COALESCE(pa.pick_weight, pa.daily_weight)) AS today_pick_weight,
                 COALESCE(SUM(CASE WHEN pa.pick_dest = 'sale' OR pa.pick_dest IS NULL THEN COALESCE(pa.pick_weight, pa.daily_weight) ELSE 0 END), 0) AS sale_weight,
                 COALESCE(SUM(CASE WHEN pa.pick_dest = 'veg_fresh' THEN COALESCE(pa.pick_weight, pa.daily_weight) ELSE 0 END), 0) AS veg_fresh_weight,
                 COALESCE(SUM(CASE WHEN pa.pick_dest = 'platform'  THEN COALESCE(pa.pick_weight, pa.daily_weight) ELSE 0 END), 0) AS platform_weight,
@@ -86,8 +72,19 @@ public interface PickActivityMapper {
              WHERE pa.del_flag = '0'
                AND pa.tenant_id = #{tenantId}
              GROUP BY pa.crop_id, pa.activity_date
-          ) a ON a.crop_id = t.crop_id AND a.activity_date = t.activity_date
+          ) t
+          LEFT JOIN t_plant_crop_info c ON c.id = t.crop_id AND c.del_flag = '0'
+          LEFT JOIN (
+            -- 作物级（非按日）：活动地块数 + 预计总产量（取该作物全部地块，逐日行复用）
+            SELECT d.crop_id AS crop_id,
+                   COUNT(DISTINCT d.plot_id)          AS plot_count,
+                   COALESCE(SUM(d.expected_yield), 0) AS expected_yield
+              FROM t_plant_plant_details d
+             WHERE d.del_flag = '0' AND d.tenant_id = #{tenantId}
+             GROUP BY d.crop_id
+          ) p ON p.crop_id = t.crop_id
          <where>
+            <if test='cropName != null and cropName != ""'> AND c.crop_name LIKE CONCAT('%', #{cropName}, '%') </if>
             <if test='beginDate != null'>        AND t.activity_date &gt;= #{beginDate}  </if>
             <if test='endDate != null'>          AND t.activity_date &lt;= #{endDate}    </if>
          </where>

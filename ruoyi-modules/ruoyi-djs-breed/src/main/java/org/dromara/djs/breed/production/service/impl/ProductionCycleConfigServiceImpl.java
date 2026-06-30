@@ -105,7 +105,19 @@ public class ProductionCycleConfigServiceImpl
         if (row == null) {
             return null;
         }
-        return row.getCustomValue() != null ? row.getCustomValue() : row.getDefaultValue();
+        return effectiveValue(row);
+    }
+
+    /**
+     * 生效值 = custom_value 优先，无则 default_value。
+     *
+     * <p>r53/r54：本表全为「天数」周期配置（妊娠/哺乳/各类到配种间隔），{@code custom_value <= 0}
+     * 无业务含义（admin 母猪生产配置表单未填时会落 0），视为「未定制」回退 default_value——
+     * 否则妊娠期被当成 0 天 → 预产期 = 配种日（漏加 +114）、断奶期 = 分娩日（漏加 +25）。</p>
+     */
+    private Integer effectiveValue(ProductionCycleConfig row) {
+        Integer custom = row.getCustomValue();
+        return (custom != null && custom > 0) ? custom : row.getDefaultValue();
     }
 
     @Override
@@ -117,8 +129,7 @@ public class ProductionCycleConfigServiceImpl
             .in(ProductionCycleConfig::getConfigKey, configKeys));
         Map<String, Integer> result = new HashMap<>(rows.size());
         for (ProductionCycleConfig row : rows) {
-            Integer val = row.getCustomValue() != null ? row.getCustomValue() : row.getDefaultValue();
-            result.put(row.getConfigKey(), val);
+            result.put(row.getConfigKey(), effectiveValue(row));
         }
         return result;
     }

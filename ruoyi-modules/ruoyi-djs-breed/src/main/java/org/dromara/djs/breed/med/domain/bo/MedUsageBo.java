@@ -36,13 +36,13 @@ public class MedUsageBo extends BaseEntity {
     private Long id;
 
     /**
-     * 药品批次 ID（必填）。
+     * 药品批次 ID（可选 · r51 去批次：药品使用无批次说法）。传了则按批次校验归属 + 写台账作溯源；
+     * 不传则直接按 {@code medicineId} 落账 + 扣药品库实时库存。
      */
-    @NotNull(message = "批次 ID 不能为空")
     private Long batchId;
 
     /**
-     * 药品 ID（必填，新增时与 batchId 一并由前端传；service 端会再次按 batchId 校验归属）。
+     * 药品 ID（必填）。库存扣减真值在仓库 location_stock，按本字段扣减。
      */
     @NotNull(message = "药品 ID 不能为空")
     private Long medicineId;
