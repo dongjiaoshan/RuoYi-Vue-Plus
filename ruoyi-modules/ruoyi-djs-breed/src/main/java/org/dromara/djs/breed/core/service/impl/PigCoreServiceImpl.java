@@ -683,11 +683,27 @@ public class PigCoreServiceImpl implements IPigCoreService {
             }
         }
 
-        // D12X-MP-FARROW-WEANING-001：到期"软提示"（分娩 / 断奶选猪）。
-        // 不再硬过滤——列出全部配种(PZ)/哺乳(FM)母猪，算 dueDate（预产期/到断奶期）+ due 标记，
-        // 末尾按「临产排前」排序。早产能录、能浏览全部（原始需求 expectedFarrowDate 本是提示非门槛）。
         // dueType 为空 → dueDateMap 为空，所有 VO dueDate/due 为 null（向后兼容所有现有调用方）。
         Map<Long, LocalDate> dueDateMap = computeDueDateMap(pigs, dueType);
+
+        // r52/r53（邓博 2026-06-30）：分娩/断奶板块按「后台生产配置天数」**硬筛**——只显示已满足对应天数的母猪，
+        // 反转 D12X-MP-FARROW-WEANING-001 的「软提示列全部」做法（Kevin 2026-07-01：严格按邓博描述执行）。
+        //   FARROW（分娩板块）：配种日 + sow_breed_to_farrow_days ≤ 今天 才显示（满足配怀天数）。
+        //   WEANING（断奶板块）：分娩日 + sow_farrow_to_wean_days ≤ 今天 才显示（满足哺乳天数）。
+        //   = dueDate ≤ 今天（dueDate 即「基准日 + 对应配置天数」）。无 dueDate（缺配种/分娩基准日）的母猪不进板块。
+        //   配置缺失时 computeDueDateMap 返空 map → 不过滤（degrade 不卡空板块，与 filterBreedReady 同款防御）。
+        if (StringUtils.isNotBlank(dueType) && !dueDateMap.isEmpty()) {
+            LocalDate dueToday = LocalDate.now();
+            pigs = pigs.stream()
+                .filter(p -> {
+                    LocalDate due = dueDateMap.get(p.getId());
+                    return due != null && !due.isAfter(dueToday);
+                })
+                .toList();
+            if (pigs.isEmpty()) {
+                return Collections.emptyList();
+            }
+        }
 
         // 批量 enrich barnCode/penCode + barnName/penName（与 queryPage 一致，避免 N+1）
         // FIX-INTRO-001 P1：同批查出 Barn/Pen 全对象，供 mp 选猪卡「位置」格显「栋舍名+栏位名」
@@ -783,7 +799,8 @@ public class PigCoreServiceImpl implements IPigCoreService {
     }
 
     /**
-     * 到期日期计算（D12X-MP-FARROW-WEANING-001 软提示，原硬过滤已废弃）：算每头母猪的预产期 / 到断奶期。
+     * 到期日期计算：算每头母猪的预产期 / 到断奶期。dueDate 同时驱动 r52/r53 板块**硬筛**（dueDate ≤ 今天才进
+     * 分娩/断奶板块，邓博 2026-06-30 + Kevin 2026-07-01）与 mp 排序「临产排前」+ badge。
      *
      * <p>两个 dueType 共用「基准日期 + 生产周期配置天数」一套判定：</p>
      * <ul>

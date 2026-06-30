@@ -180,11 +180,11 @@ public class StockSelfServiceImpl implements IStockSelfService {
 
     @Override
     public TableDataInfo<InoutFlowVo> pageInoutFlows(String direction, String locationId,
-                                                     String flowDate, String keyword, PageQuery pageQuery) {
+                                                     String startDate, String endDate, String keyword, PageQuery pageQuery) {
         Long locId = requireLocationId(locationId);
         String inoutType = "in".equalsIgnoreCase(direction) ? INOUT_IN : INOUT_OUT;
         IPage<InoutFlowVo> page = stockSelfMapper.selectInoutFlowsPage(
-            pageQuery.build(), locId, inoutType, trimToNull(flowDate), trimToNull(keyword));
+            pageQuery.build(), locId, inoutType, trimToNull(startDate), trimToNull(endDate), trimToNull(keyword));
         return TableDataInfo.build(page);
     }
 

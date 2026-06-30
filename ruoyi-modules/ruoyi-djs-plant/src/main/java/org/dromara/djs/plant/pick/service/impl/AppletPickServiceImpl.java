@@ -380,6 +380,10 @@ public class AppletPickServiceImpl implements IAppletPickService {
                     return plot != null && plot.getPlotStatus() != null
                         && (plot.getPlotStatus() == 2 || plot.getPlotStatus() == 3);
                 })
+                // r21：采摘完成（harvest_status='completed'）的地块只在「完成当天」展示，end_harvestdate != 今天
+                //   则次日起消失；与列表卡 listCropTasks 同口径，保证列表卡 plotCount = 点进详情地块数。
+                .filter(d -> !"completed".equals(d.getHarvestStatus())
+                    || today.equals(d.getEndHarvestdate()))
                 .toList();
         }
         return enrichToVoList(entities);

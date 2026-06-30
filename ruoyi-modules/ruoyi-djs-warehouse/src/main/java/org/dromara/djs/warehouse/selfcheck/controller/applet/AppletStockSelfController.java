@@ -124,10 +124,11 @@ public class AppletStockSelfController extends BaseController {
     @GetMapping("/inoutFlows")
     public TableDataInfo<InoutFlowVo> inoutFlows(@RequestParam String direction,
                                                  @RequestParam String locationId,
-                                                 @RequestParam(required = false) String flowDate,
+                                                 @RequestParam(required = false) String startDate,
+                                                 @RequestParam(required = false) String endDate,
                                                  @RequestParam(required = false) String keyword,
                                                  PageQuery pageQuery) {
-        return stockSelfService.pageInoutFlows(direction, locationId, flowDate, keyword, pageQuery);
+        return stockSelfService.pageInoutFlows(direction, locationId, startDate, endDate, keyword, pageQuery);
     }
 
     /**

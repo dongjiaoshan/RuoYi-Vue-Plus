@@ -733,7 +733,10 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
      *       —— 领用提交回传它，service {@code pickByBatch} 据该篮的 {@code plot_id} 识别为自产果蔬地块卡 →
      *       按 {@code (productId, plotId)} 跨库位 FIFO 扣减（不只扣首篮），故聚合后 batchId 仍能正确扣账；</li>
      *   <li>{@code currentStock} = 该地块各库位篮 {@code SUM(product_stock)}（地块级总量）；</li>
-     *   <li>{@code todayPicked} = 该地块今日 {@code product_inhouse} SUM(product_weight)（已是 plot 维，无库位维重复）；</li>
+     *   <li>{@code todayPicked} = 该地块今日 {@code stock_flow}(pick_out 三键) SUM(change_quantity)（已是 plot 维，
+     *       无库位维重复）—— 当日「已领用」毛量，与产品卡 {@link #selectMatIssueItems} 同源（pick_out 流水）。
+     *       <b>不取 {@code product_inhouse}</b>：inhouse 会被退回/损耗/饲喂/打包扣减成「剩余待打包」，拿来当「已领」
+     *       会比真实领用量小、且可能小于已退回量（退回>已领的假象）；</li>
      *   <li>{@code todayReturned} / {@code todayLoss} = 该地块今日 {@code stock_flow}(return_in / loss) SUM
      *       （{@code plot_id} 维度直接 SUM，无需贴首篮 hack —— 聚合后一行一地块本就不重复）；</li>
      *   <li>{@code locationId} = 该地块 FIFO 首篮所在库位（{@code MIN(s.id)} 对应行），mp 卡片回传作 BO locationId
@@ -754,10 +757,11 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
                MAX(s.product_name)           AS productName,
                COALESCE(MAX(s.product_unit), 'kg') AS productUnit,
                SUM(s.product_stock)          AS currentStock,
-               COALESCE((SELECT SUM(ih.product_weight) FROM t_warehouse_product_inhouse ih
-                          WHERE ih.product_id = s.product_id AND ih.plot_id = s.plot_id
-                            AND DATE(ih.produce_date) = CURDATE()
-                            AND ih.del_flag = '0' AND ih.tenant_id = '1001'), 0) AS todayPicked,
+               COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
+                          WHERE f.product_id = s.product_id AND f.plot_id = s.plot_id
+                            AND f.flow_type IN ('prod_pick_out','dept_pick_out','pick_out')
+                            AND DATE(f.flow_date) = CURDATE()
+                            AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayPicked,
                COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
                           WHERE f.plot_id = s.plot_id AND f.flow_type IN ('prod_return_in','pick_return_in')
                             AND DATE(f.flow_date) = CURDATE()

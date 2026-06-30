@@ -257,8 +257,11 @@ public interface StockSelfMapper {
            AND f.flow_type    NOT IN ('check_in', 'check_out', 'check_abnormal_out')
            AND f.del_flag     = '0'
            AND f.tenant_id    = '1001'
-           <if test="flowDate != null and flowDate != ''">
-             AND DATE(f.flow_date) = #{flowDate}
+           <if test="startDate != null and startDate != ''">
+             AND DATE(f.flow_date) >= #{startDate}
+           </if>
+           <if test="endDate != null and endDate != ''">
+             AND #{endDate} >= DATE(f.flow_date)
            </if>
            <if test="keyword != null and keyword != ''">
              AND p.product_name LIKE CONCAT('%', #{keyword}, '%')
@@ -269,7 +272,8 @@ public interface StockSelfMapper {
     IPage<InoutFlowVo> selectInoutFlowsPage(IPage<InoutFlowVo> page,
                                             @Param("locationId") Long locationId,
                                             @Param("inoutType") String inoutType,
-                                            @Param("flowDate") String flowDate,
+                                            @Param("startDate") String startDate,
+                                            @Param("endDate") String endDate,
                                             @Param("keyword") String keyword);
 
 }

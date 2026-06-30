@@ -66,7 +66,7 @@ public interface IStockSelfService {
      * @param direction in 入库 / out 出库
      */
     TableDataInfo<InoutFlowVo> pageInoutFlows(String direction, String locationId,
-                                              String flowDate, String keyword, PageQuery pageQuery);
+                                              String startDate, String endDate, String keyword, PageQuery pageQuery);
 
     /**
      * 产品入库：写 stock_flow（IN）+ 加库存。
