@@ -603,6 +603,29 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
                           WHERE f.product_id = p.id
                             AND f.flow_type = 'loss' AND DATE(f.flow_date) = CURDATE()
                             AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayLoss,
+               COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
+                          WHERE f.product_id = p.id
+                            AND f.flow_type = 'feed_out' AND DATE(f.flow_date) = CURDATE()
+                            AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayFeed,
+               CASE WHEN p.belong_type IN ('vegetable','egg','dry_good','other')
+                    THEN COALESCE((SELECT SUM(ih.product_weight) FROM t_warehouse_product_inhouse ih
+                                    WHERE ih.product_id = p.id AND DATE(ih.produce_date) = CURDATE()
+                                      AND ih.del_flag = '0' AND ih.tenant_id = '1001'), 0)
+                    ELSE COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
+                                    WHERE f.product_id = p.id
+                                      AND f.flow_type IN ('prod_pick_out','dept_pick_out','pick_out')
+                                      AND DATE(f.flow_date) = CURDATE() AND f.del_flag = '0' AND f.tenant_id = '1001'), 0)
+                       - COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
+                                    WHERE f.product_id = p.id
+                                      AND f.flow_type IN ('prod_return_in','pick_return_in')
+                                      AND DATE(f.flow_date) = CURDATE() AND f.del_flag = '0' AND f.tenant_id = '1001'), 0)
+                       - COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
+                                    WHERE f.product_id = p.id AND f.flow_type = 'loss'
+                                      AND DATE(f.flow_date) = CURDATE() AND f.del_flag = '0' AND f.tenant_id = '1001'), 0)
+                       - COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
+                                    WHERE f.product_id = p.id AND f.flow_type = 'feed_out'
+                                      AND DATE(f.flow_date) = CURDATE() AND f.del_flag = '0' AND f.tenant_id = '1001'), 0)
+                    END                              AS remainReturnable,
                (SELECT MAX(f.flow_date) FROM t_warehouse_stock_flow f
                   WHERE f.product_id = p.id
                     AND f.flow_type IN ('prod_pick_out','dept_pick_out','pick_out') AND DATE(f.flow_date) = CURDATE()
@@ -819,6 +842,29 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
                           WHERE f.product_id = p.id
                             AND f.flow_type = 'loss' AND DATE(f.flow_date) = CURDATE()
                             AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayLoss,
+               COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
+                          WHERE f.product_id = p.id
+                            AND f.flow_type = 'feed_out' AND DATE(f.flow_date) = CURDATE()
+                            AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayFeed,
+               CASE WHEN p.belong_type IN ('vegetable','egg','dry_good','other')
+                    THEN COALESCE((SELECT SUM(ih.product_weight) FROM t_warehouse_product_inhouse ih
+                                    WHERE ih.product_id = p.id AND DATE(ih.produce_date) = CURDATE()
+                                      AND ih.del_flag = '0' AND ih.tenant_id = '1001'), 0)
+                    ELSE COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
+                                    WHERE f.product_id = p.id
+                                      AND f.flow_type IN ('prod_pick_out','dept_pick_out','pick_out')
+                                      AND DATE(f.flow_date) = CURDATE() AND f.del_flag = '0' AND f.tenant_id = '1001'), 0)
+                       - COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
+                                    WHERE f.product_id = p.id
+                                      AND f.flow_type IN ('prod_return_in','pick_return_in')
+                                      AND DATE(f.flow_date) = CURDATE() AND f.del_flag = '0' AND f.tenant_id = '1001'), 0)
+                       - COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
+                                    WHERE f.product_id = p.id AND f.flow_type = 'loss'
+                                      AND DATE(f.flow_date) = CURDATE() AND f.del_flag = '0' AND f.tenant_id = '1001'), 0)
+                       - COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
+                                    WHERE f.product_id = p.id AND f.flow_type = 'feed_out'
+                                      AND DATE(f.flow_date) = CURDATE() AND f.del_flag = '0' AND f.tenant_id = '1001'), 0)
+                    END                              AS remainReturnable,
                (SELECT MAX(f.flow_date) FROM t_warehouse_stock_flow f
                   WHERE f.product_id = p.id
                     AND f.flow_type IN ('prod_pick_out','dept_pick_out','pick_out') AND DATE(f.flow_date) = CURDATE()

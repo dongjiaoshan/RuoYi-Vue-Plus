@@ -49,7 +49,12 @@ public interface PickActivityMapper {
             SUM(t.today_pick_weight) OVER (
                 PARTITION BY t.crop_id ORDER BY t.activity_date
                 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
-            ) AS cumulativePickWeight
+            ) AS cumulativePickWeight,
+            COALESCE(a.sale_weight, 0)      AS saleWeight,
+            COALESCE(a.veg_fresh_weight, 0) AS vegFreshWeight,
+            COALESCE(a.platform_weight, 0)  AS platformWeight,
+            COALESCE(a.loss_weight, 0)      AS lossWeight,
+            COALESCE(a.feed_weight, 0)      AS feedWeight
           FROM (
             SELECT
                 d.crop_id          AS crop_id,
@@ -66,6 +71,22 @@ public interface PickActivityMapper {
                <if test='cropName != null and cropName != ""'> AND c.crop_name LIKE CONCAT('%', #{cropName}, '%') </if>
              GROUP BY d.crop_id, d.end_harvestdate
           ) t
+          LEFT JOIN (
+            -- DENGBO-R4 采摘去向 5 列：按 (crop_id, activity_date) 聚合 t_plant_plant_activity.pick_dest
+            -- 销售口径 = 显式 sale + 历史 NULL 行（旧采摘录入无去向，视作销售）
+            SELECT
+                pa.crop_id       AS crop_id,
+                pa.activity_date AS activity_date,
+                COALESCE(SUM(CASE WHEN pa.pick_dest = 'sale' OR pa.pick_dest IS NULL THEN COALESCE(pa.pick_weight, pa.daily_weight) ELSE 0 END), 0) AS sale_weight,
+                COALESCE(SUM(CASE WHEN pa.pick_dest = 'veg_fresh' THEN COALESCE(pa.pick_weight, pa.daily_weight) ELSE 0 END), 0) AS veg_fresh_weight,
+                COALESCE(SUM(CASE WHEN pa.pick_dest = 'platform'  THEN COALESCE(pa.pick_weight, pa.daily_weight) ELSE 0 END), 0) AS platform_weight,
+                COALESCE(SUM(CASE WHEN pa.pick_dest = 'loss'      THEN COALESCE(pa.pick_weight, pa.daily_weight) ELSE 0 END), 0) AS loss_weight,
+                COALESCE(SUM(CASE WHEN pa.pick_dest = 'feed'      THEN COALESCE(pa.pick_weight, pa.daily_weight) ELSE 0 END), 0) AS feed_weight
+              FROM t_plant_plant_activity pa
+             WHERE pa.del_flag = '0'
+               AND pa.tenant_id = #{tenantId}
+             GROUP BY pa.crop_id, pa.activity_date
+          ) a ON a.crop_id = t.crop_id AND a.activity_date = t.activity_date
          <where>
             <if test='beginDate != null'>        AND t.activity_date &gt;= #{beginDate}  </if>
             <if test='endDate != null'>          AND t.activity_date &lt;= #{endDate}    </if>

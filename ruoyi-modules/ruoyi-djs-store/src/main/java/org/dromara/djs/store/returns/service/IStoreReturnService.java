@@ -94,6 +94,11 @@ public interface IStoreReturnService {
     TableDataInfo<StoreReturnStoreDailyVo> queryStoreDailyPage(StoreReturnQuery query, PageQuery pageQuery);
 
     /**
+     * 仓库「退货记录」外层「门店 + 当日」汇总列表（不分页，导出用，与 {@link #queryStoreDailyPage} 同口径）。
+     */
+    List<StoreReturnStoreDailyVo> queryStoreDailyList(StoreReturnQuery query);
+
+    /**
      * mp 退货管理：当天门店→仓库退回按门店分组卡（状态派生 pending/confirmed，mp 词表）。
      */
     List<StoreReturnGroupVo> listPendingGroups();

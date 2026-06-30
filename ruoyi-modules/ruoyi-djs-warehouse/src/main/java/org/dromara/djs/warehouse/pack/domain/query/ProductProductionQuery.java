@@ -4,6 +4,7 @@ import com.fasterxml.jackson.annotation.JsonFormat;
 import lombok.Data;
 
 import java.util.Date;
+import java.util.List;
 
 /**
  * 发货产品生产记录查询（WMS-PACK-001）。
@@ -52,6 +53,12 @@ public class ProductProductionQuery {
      * （聚合主列表「产品品类」筛选，经 product_info JOIN 过滤）。
      */
     private String belongType;
+
+    /**
+     * 产品品类多选（R70 产品品类下拉多选）。非空时按 IN 过滤（下推 product_info.belong_type），
+     * 优先于单值 belongType。
+     */
+    private List<String> belongTypes;
 
     /**
      * 生产日期起（聚合主列表区间筛选，截到天）。

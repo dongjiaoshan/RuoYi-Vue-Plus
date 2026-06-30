@@ -12,6 +12,8 @@ import org.dromara.djs.common.base.DjsBaseServiceImpl;
 import org.dromara.djs.common.encoder.BizCodeType;
 import org.dromara.djs.common.encoder.IBizCodeGenerator;
 import org.dromara.djs.common.image.service.ImageUrlResolver;
+import org.dromara.djs.plant.activity.domain.bo.PickActivityRecordBo;
+import org.dromara.djs.plant.activity.service.IPlantActivityService;
 import org.dromara.djs.plant.crop.domain.CropInfo;
 import org.dromara.djs.plant.crop.mapper.CropInfoMapper;
 import org.dromara.djs.plant.plan.domain.PlantDetails;
@@ -32,6 +34,8 @@ import org.dromara.djs.warehouse.veg.domain.PlantingRecord;
 import org.dromara.djs.warehouse.veg.domain.VegetableHandle;
 import org.dromara.djs.warehouse.veg.domain.bo.HandleRecordSubmitBo;
 import org.dromara.djs.warehouse.veg.domain.bo.HarvestSubmitBo;
+import org.dromara.djs.warehouse.veg.domain.bo.PickActivitySubmitBo;
+import org.dromara.djs.warehouse.veg.domain.bo.PickDestSubmitBo;
 import org.dromara.djs.warehouse.veg.domain.bo.ProcessSubmitBo;
 import org.dromara.djs.warehouse.veg.domain.query.VegHandleQuery;
 import org.dromara.djs.warehouse.veg.domain.vo.HandleRecordVo;
@@ -131,6 +135,15 @@ public class VegetableHandleServiceImpl
      */
     private static final String INOUT_IN = "IN";
 
+    /**
+     * djs_pick_dest 采摘去向（DENGBO-R4 决策 A，非销售去向映射到毛菜处理写入机制）。
+     * sale（销售）不写仓库、不进本类，故无常量。
+     */
+    private static final String PICK_DEST_VEG_FRESH = "veg_fresh";
+    private static final String PICK_DEST_PLATFORM = "platform";
+    private static final String PICK_DEST_LOSS = "loss";
+    private static final String PICK_DEST_FEED = "feed";
+
     private final HandleRecordMapper handleRecordMapper;
     private final PlantingRecordMapper plantingRecordMapper;
     private final StockFlowMapper stockFlowMapper;
@@ -147,6 +160,8 @@ public class VegetableHandleServiceImpl
     private final ProductInfoMapper productInfoMapper;
     /** 统一损耗门面：处理完成结算损耗时在原 loss_weight 列之上双写一条 t_warehouse_loss_flow 明细。 */
     private final ILossFlowService lossFlowService;
+    /** 采摘活动 service（DENGBO-R4 采摘去向编排：先写 plant activity 行 + 产量分摊，再写仓库台账）。 */
+    private final IPlantActivityService plantActivityService;
 
     /**
      * 作物图 L2 兜底分类键（作物无 belong_type，统一走"蔬菜默认图"）。
@@ -165,7 +180,8 @@ public class VegetableHandleServiceImpl
                                       PlantDetailsMapper plantDetailsMapper,
                                       LocationStockMapper locationStockMapper,
                                       ProductInfoMapper productInfoMapper,
-                                      ILossFlowService lossFlowService) {
+                                      ILossFlowService lossFlowService,
+                                      IPlantActivityService plantActivityService) {
         super(baseMapper);
         this.handleRecordMapper = handleRecordMapper;
         this.plantingRecordMapper = plantingRecordMapper;
@@ -179,6 +195,7 @@ public class VegetableHandleServiceImpl
         this.locationStockMapper = locationStockMapper;
         this.productInfoMapper = productInfoMapper;
         this.lossFlowService = lossFlowService;
+        this.plantActivityService = plantActivityService;
     }
 
     /**
@@ -812,6 +829,182 @@ public class VegetableHandleServiceImpl
         return handle.getId();
     }
 
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public Long submitPickActivity(PickActivitySubmitBo bo) {
+        if (bo == null) {
+            throw new ServiceException("采摘去向录入参数为空");
+        }
+        boolean sale = "sale".equals(bo.getPickDest());
+
+        // 1. plant 侧：写 activity per-event 行 + 非销售去向累加所选地块产量（plant 自管 plant_details）
+        PickActivityRecordBo plantBo = new PickActivityRecordBo();
+        plantBo.setCropId(bo.getCropId());
+        plantBo.setActivityDate(bo.getActivityDate());
+        plantBo.setPickWeight(bo.getPickWeight());
+        plantBo.setPickDest(bo.getPickDest());
+        plantBo.setPlotId(bo.getPlotId());
+        plantBo.setRecorderId(bo.getRecorderId());
+        Long activityId = plantActivityService.recordPickActivity(plantBo);
+
+        // 2. 非销售去向：写仓库台账（销售不写仓库库存、只进产量分摊，已在 step1 plant 侧完成行写入）
+        if (!sale) {
+            String cropName = bo.getCropName();
+            if (cropName == null || cropName.isBlank()) {
+                CropInfo crop = cropInfoMapper.selectById(bo.getCropId());
+                cropName = crop != null ? crop.getCropName() : null;
+            }
+            PickDestSubmitBo destBo = new PickDestSubmitBo();
+            destBo.setCropId(bo.getCropId());
+            destBo.setCropName(cropName);
+            destBo.setPlotId(bo.getPlotId());
+            destBo.setProductId(resolveProductIdByCrop(bo.getCropId(), null));
+            destBo.setPickDest(bo.getPickDest());
+            destBo.setWeight(bo.getPickWeight());
+            destBo.setRecorderId(bo.getRecorderId());
+            recordPickDestination(destBo);
+        }
+        return activityId;
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void recordPickDestination(PickDestSubmitBo bo) {
+        if (bo == null) {
+            throw new ServiceException("采摘去向入账参数为空");
+        }
+        String dest = bo.getPickDest();
+        BigDecimal weight = bo.getWeight();
+        if (dest == null || dest.isBlank()) {
+            throw new ServiceException("采摘去向不能为空");
+        }
+        if (weight == null || weight.signum() <= 0) {
+            throw new ServiceException("采摘重量必须大于 0");
+        }
+        Long userId = bo.getRecorderId() != null ? bo.getRecorderId() : LoginHelper.getUserId();
+        Date now = new Date();
+
+        switch (dest) {
+            case PICK_DEST_VEG_FRESH ->
+                // 毛菜保鲜室 = 复用毛菜处理入库（stock_flow veg_stock_in + location_stock 按 plot 篮，落 L0006）
+                insertPickStockIn(bo, weight, userId, now);
+            case PICK_DEST_PLATFORM ->
+                // 果蔬月台 = 暂存态：毛菜处理月台亦仅汇总 send_platform、无独立库存/流水表，采摘去向月台同口径不写库存表。
+                // 月台量由 t_plant_plant_activity(pick_dest=platform) 自身承载（行5 admin 列 + mp 记录），此处无副作用台账。
+                log.info("采摘去向[果蔬月台]入账：暂存态不写仓库库存，量由采摘活动行承载 cropId={} plotId={} weight={}",
+                    bo.getCropId(), bo.getPlotId(), weight);
+            case PICK_DEST_LOSS ->
+                // 损耗 = 复用统一损耗台账 loss_flow（loss_type=veg_handle_loss）
+                insertPickLoss(bo, weight, userId);
+            case PICK_DEST_FEED ->
+                // 饲料饲喂 = 复用饲料台账 feed_log（feed_type=veg_handle）
+                insertPickFeed(bo, weight, userId, now);
+            default -> throw new ServiceException("非法/不入仓库的采摘去向：" + dest
+                + "（销售去向不应调用本入账方法）");
+        }
+    }
+
+    /**
+     * 采摘去向[毛菜保鲜室]入库：落毛菜鲜品库 L0006，写 stock_flow(veg_stock_in) + location_stock(按 plot 篮)。
+     * 复用 {@link #insertVegStockInFlow} 的库存写入口径，但不依赖 PlantingRecord/VegetableHandle 上下文。
+     */
+    private void insertPickStockIn(PickDestSubmitBo bo, BigDecimal weight, Long userId, Date now) {
+        LocationInfo freshVegLoc = locationInfoMapper.selectOne(
+            new LambdaQueryWrapper<LocationInfo>()
+                .eq(LocationInfo::getLocationCode, LOCATION_CODE_FRESH_VEG)
+                .last("LIMIT 1"));
+        if (freshVegLoc == null) {
+            throw new ServiceException("毛菜鲜品库（库位编码 " + LOCATION_CODE_FRESH_VEG + "）不存在，请先在库位管理维护");
+        }
+        Long locationId = freshVegLoc.getId();
+        Long productId = resolveProductIdByCrop(bo.getCropId(), bo.getProductId());
+
+        // stock_flow（与 insertVegStockInFlow 同口径：veg_stock_in / IN / 带 plot）
+        StockFlow flow = new StockFlow();
+        Map<String, Object> ctx = new HashMap<>(2);
+        ctx.put("ioCode", INOUT_IN);
+        flow.setFlowNo(bizCodeGenerator.generate(BizCodeType.STOCK_FLOW_NO, ctx));
+        flow.setFlowDate(now);
+        if (productId == null) {
+            log.warn("采摘去向入库 stock_flow.product_id 兜底为 0 — cropId={} crop={}（请在 admin 作物录入页填写「关联产品」）",
+                bo.getCropId(), bo.getCropName());
+            productId = 0L;
+        }
+        flow.setProductId(productId);
+        flow.setWarehouseId(locationId);
+        flow.setInoutType(INOUT_IN);
+        flow.setFlowType(FLOW_TYPE_VEG_STOCK_IN);
+        flow.setChangeNum(weight);
+        flow.setChangeQuantity(weight);
+        flow.setPlotId(bo.getPlotId());
+        flow.setOperatorId(userId);
+        flow.setRemark("采摘去向[毛菜保鲜室]入库 crop=" + bo.getCropName());
+        stockFlowMapper.insert(flow);
+
+        // location_stock 余额（与 insertVegStockInFlow 同：product 真实存在才写，按 plot 建篮）
+        ProductInfo product = productInfoMapper.selectById(productId);
+        if (product == null) {
+            log.warn("采摘去向入库余额未回写：product_id={} 在 product_info 不存在（作物未正确关联果蔬成品）"
+                + " — cropId={} crop={}", productId, bo.getCropId(), bo.getCropName());
+            return;
+        }
+        if (bo.getPlotId() != null) {
+            LocationStock basket = new LocationStock();
+            basket.setLocationId(locationId);
+            basket.setProductId(productId);
+            basket.setPlotId(bo.getPlotId());
+            basket.setProductName(product.getProductName());
+            basket.setProductUnit(product.getProductUnit());
+            basket.setProductStock(weight);
+            basket.setIsEnd(0);
+            basket.setOperatorId(userId);
+            locationStockMapper.insert(basket);
+            return;
+        }
+        int updated = locationStockMapper.addByProductLocation(locationId, productId, weight, userId);
+        if (updated == 0) {
+            LocationStock fresh = new LocationStock();
+            fresh.setLocationId(locationId);
+            fresh.setProductId(productId);
+            fresh.setProductName(product.getProductName());
+            fresh.setProductUnit(product.getProductUnit());
+            fresh.setProductStock(weight);
+            fresh.setIsEnd(0);
+            fresh.setOperatorId(userId);
+            locationStockMapper.insert(fresh);
+        }
+    }
+
+    /**
+     * 采摘去向[损耗]：写统一损耗台账 loss_flow（loss_type=veg_handle_loss，与毛菜处理损耗同类型）。
+     */
+    private void insertPickLoss(PickDestSubmitBo bo, BigDecimal weight, Long userId) {
+        LossFlow lossFlow = new LossFlow();
+        lossFlow.setLossType("veg_handle_loss");
+        lossFlow.setLossWeight(weight);
+        lossFlow.setProductId(resolveProductIdByCrop(bo.getCropId(), bo.getProductId()));
+        lossFlow.setPlotId(bo.getPlotId());
+        lossFlow.setBelongType(CROP_BELONG_TYPE);
+        lossFlow.setSourceBizType("pick_dest");
+        lossFlow.setOperatorId(userId);
+        lossFlowService.record(lossFlow);
+    }
+
+    /**
+     * 采摘去向[饲料饲喂]：写饲料台账 feed_log（feed_type=veg_handle，不记地块）。
+     */
+    private void insertPickFeed(PickDestSubmitBo bo, BigDecimal weight, Long userId, Date now) {
+        FeedLog feedLog = new FeedLog();
+        feedLog.setFeedDate(now);
+        feedLog.setCropId(bo.getCropId());
+        feedLog.setCropName(bo.getCropName());
+        feedLog.setFeedType("veg_handle");
+        feedLog.setProductId(resolveProductIdByCrop(bo.getCropId(), bo.getProductId()));
+        feedLog.setOperatorId(userId);
+        feedLog.setFeedWeight(weight);
+        feedLogMapper.insert(feedLog);
+    }
+
     /**
      * 去向③饲料饲喂 → 插入饲料台账（{@code t_warehouse_feed_log}，spec 步8）。
      *
@@ -908,10 +1101,12 @@ public class VegetableHandleServiceImpl
         if (query == null) {
             return wrapper.orderByDesc(VegetableHandle::getId);
         }
+        boolean hasHandleStatuses = query.getHandleStatuses() != null && !query.getHandleStatuses().isEmpty();
         wrapper.eq(query.getPlotId() != null, VegetableHandle::getPlotId, query.getPlotId())
             .eq(query.getCropId() != null, VegetableHandle::getCropId, query.getCropId())
             .eq(query.getPlantingRecordId() != null, VegetableHandle::getPlantingRecordId, query.getPlantingRecordId())
-            .eq(query.getHandleStatus() != null && !query.getHandleStatus().isBlank(),
+            .in(hasHandleStatuses, VegetableHandle::getHandleStatus, query.getHandleStatuses())
+            .eq(!hasHandleStatuses && query.getHandleStatus() != null && !query.getHandleStatus().isBlank(),
                 VegetableHandle::getHandleStatus, query.getHandleStatus())
             .ge(query.getPickStartTimeFrom() != null, VegetableHandle::getPickStartTime, query.getPickStartTimeFrom())
             .le(query.getPickStartTimeTo() != null, VegetableHandle::getPickStartTime, query.getPickStartTimeTo())

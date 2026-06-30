@@ -1,5 +1,6 @@
 package org.dromara.djs.store.returns.domain.vo;
 
+import cn.idev.excel.annotation.ExcelProperty;
 import com.fasterxml.jackson.annotation.JsonFormat;
 import lombok.Data;
 import org.dromara.common.translation.annotation.Translation;
@@ -30,6 +31,7 @@ public class StoreReturnStoreDailyVo implements Serializable {
     private static final long serialVersionUID = 1L;
 
     /** 退回日期（return_date 截到天）。 */
+    @ExcelProperty("退货日期")
     @JsonFormat(pattern = "yyyy-MM-dd")
     private LocalDate returnDate;
 
@@ -37,21 +39,27 @@ public class StoreReturnStoreDailyVo implements Serializable {
     private Long storeId;
 
     /** 门店名称（StoreMapper 批量回填，避免 N+1）。 */
+    @ExcelProperty("退货门店")
     private String storeName;
 
     /** 退回品种数（该组 distinct product_id 计数）。 */
+    @ExcelProperty("退货品种数")
     private int productKindCount;
 
     /** 退回重量合计（Σ goods_weight）。 */
+    @ExcelProperty("退货重量")
     private BigDecimal returnWeightTotal;
 
     /** 确认重量合计（Σ received_weight，未确认行不计入）。 */
+    @ExcelProperty("确认重量")
     private BigDecimal confirmWeightTotal;
 
     /** 重量差异合计（returnWeightTotal - confirmWeightTotal）。 */
+    @ExcelProperty("重量差异")
     private BigDecimal weightDiffTotal;
 
     /** 确认时间（该组最近一条已确认行 confirm_time，无已确认行则为空）。 */
+    @ExcelProperty("确认时间")
     @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")
     private LocalDateTime confirmTime;
 
@@ -59,6 +67,7 @@ public class StoreReturnStoreDailyVo implements Serializable {
     private Long confirmUser;
 
     /** 确认人姓名（USER_ID_TO_NICKNAME 翻译，契约 4.5）。 */
+    @ExcelProperty("确认人")
     @Translation(type = TransConstant.USER_ID_TO_NICKNAME, mapper = "confirmUser")
     private String confirmUserName;
 }

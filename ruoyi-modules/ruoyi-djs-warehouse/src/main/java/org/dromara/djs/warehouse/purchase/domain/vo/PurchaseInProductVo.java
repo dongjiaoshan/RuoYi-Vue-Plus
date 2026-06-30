@@ -1,7 +1,11 @@
 package org.dromara.djs.warehouse.purchase.domain.vo;
 
+import cn.idev.excel.annotation.ExcelIgnoreUnannotated;
+import cn.idev.excel.annotation.ExcelProperty;
 import com.fasterxml.jackson.annotation.JsonFormat;
 import lombok.Data;
+import org.dromara.common.excel.annotation.ExcelDictFormat;
+import org.dromara.common.excel.convert.ExcelDictConvert;
 import org.dromara.common.translation.annotation.Translation;
 import org.dromara.common.translation.constant.TransConstant;
 
@@ -24,6 +28,7 @@ import java.util.Date;
  * @since WMS-OUTSOURCE-001
  */
 @Data
+@ExcelIgnoreUnannotated
 public class PurchaseInProductVo implements Serializable {
 
     @Serial
@@ -37,21 +42,25 @@ public class PurchaseInProductVo implements Serializable {
     /**
      * 商品业务码（如 PROD001）。
      */
+    @ExcelProperty(value = "商品编码")
     private String productCode;
 
     /**
      * 商品名称。
      */
+    @ExcelProperty(value = "商品名称")
     private String productName;
 
     /**
      * 单位（个 / 头 / Kg 等）。
      */
+    @ExcelProperty(value = "单位")
     private String productUnit;
 
     /**
      * 规格。
      */
+    @ExcelProperty(value = "规格")
     private String productSpec;
 
     /**
@@ -70,8 +79,10 @@ public class PurchaseInProductVo implements Serializable {
     private String imageUrl;
 
     /**
-     * 商品分类（字典 {@code djs_buy_class} 的 value；前端经字典转中文展示）。
+     * 商品类别（字典 {@code djs_buy_class} 的 value；前端经字典转中文展示）。
      */
+    @ExcelProperty(value = "商品类别", converter = ExcelDictConvert.class)
+    @ExcelDictFormat(dictType = "djs_buy_class")
     private String buyClass;
 
     /**
@@ -82,6 +93,7 @@ public class PurchaseInProductVo implements Serializable {
     /**
      * 存储库位名称（service 批量 JOIN 回填；多库位「、」拼接）。
      */
+    @ExcelProperty(value = "存储仓库")
     private String storeLocationName;
 
     /**
@@ -92,16 +104,19 @@ public class PurchaseInProductVo implements Serializable {
     /**
      * 供应商名称（row23：列表「供应商」列 + 入库弹框只读展示；SQL JOIN t_md_supplier 回填，无则 null）。
      */
+    @ExcelProperty(value = "供应商")
     private String supplierName;
 
     /**
      * 当前库存（跨库位 SUM(location_stock.product_stock)；无库存行为 0）。
      */
+    @ExcelProperty(value = "当前库存")
     private BigDecimal currentStock;
 
     /**
      * 最后一次采购入库时间（MAX(stock_flow.flow_date) WHERE flow_type='purchase_in'；无则 null）。
      */
+    @ExcelProperty(value = "最后入库时间")
     @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")
     private Date lastInTime;
 
@@ -113,6 +128,7 @@ public class PurchaseInProductVo implements Serializable {
     /**
      * 最后一次采购入库的采购人中文姓名（{@code USER_ID_TO_NICKNAME} 翻译；显 nick_name 非登录账号）。
      */
+    @ExcelProperty(value = "采购人")
     @Translation(type = TransConstant.USER_ID_TO_NICKNAME, mapper = "lastPurchaserId")
     private String lastPurchaserName;
 
@@ -120,6 +136,7 @@ public class PurchaseInProductVo implements Serializable {
      * 当月累计采购入库总量（SUM(stock_flow.change_quantity) WHERE flow_type='purchase_in' AND 当月；
      * BigDecimal，JSON 字符串）。
      */
+    @ExcelProperty(value = "当月累计采购量")
     private BigDecimal monthInTotal;
 
 }

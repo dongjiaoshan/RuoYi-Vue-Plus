@@ -11,6 +11,8 @@ import org.dromara.djs.warehouse.veg.mapper.FeedLogMapper;
 import org.dromara.djs.warehouse.veg.service.IFeedRecordService;
 import org.springframework.stereotype.Service;
 
+import java.util.List;
+
 /**
  * 有机饲喂记录 Service 实现（WMS-FEED-RECORD-001，仓库-admin 行21）。
  *
@@ -31,5 +33,12 @@ public class FeedRecordServiceImpl implements IFeedRecordService {
         String tenantId = TenantHelper.getTenantId();
         IPage<FeedRecordVo> page = feedLogMapper.selectRecordPage(pageQuery.build(), tenantId, q);
         return TableDataInfo.build(page);
+    }
+
+    @Override
+    public List<FeedRecordVo> queryList(FeedRecordQuery query) {
+        FeedRecordQuery q = query != null ? query : new FeedRecordQuery();
+        String tenantId = TenantHelper.getTenantId();
+        return feedLogMapper.selectRecordList(tenantId, q);
     }
 }

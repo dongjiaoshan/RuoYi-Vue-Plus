@@ -368,6 +368,18 @@ public class LocationStockServiceImpl extends DjsBaseServiceImpl<LocationStockMa
     }
 
     /**
+     * 按归属类型多选（{@code djs_belong_type} 字典值集合，IN）解析匹配的 productId 集合；无匹配返空 list
+     * （R70 产品品类多选，调用方据此让查询恒空）。
+     */
+    private List<Long> resolveProductIdsByBelongTypes(List<String> belongTypes) {
+        List<ProductInfo> products = productInfoMapper.selectList(
+            new LambdaQueryWrapper<ProductInfo>()
+                .in(ProductInfo::getBelongType, belongTypes)
+                .select(ProductInfo::getId));
+        return products.stream().map(ProductInfo::getId).toList();
+    }
+
+    /**
      * 构造查询条件。
      */
     private LambdaQueryWrapper<LocationStock> buildQueryWrapper(LocationStockQuery query) {
@@ -375,7 +387,10 @@ public class LocationStockServiceImpl extends DjsBaseServiceImpl<LocationStockMa
         if (query == null) {
             return wrapper.orderByDesc(LocationStock::getId);
         }
-        wrapper.eq(query.getLocationId() != null, LocationStock::getLocationId, query.getLocationId())
+        // 库位多选（R70）：locationIds 非空 → IN；否则 fallback 单值 locationId .eq（mp / 其他单值调用方）
+        boolean hasLocationIds = query.getLocationIds() != null && !query.getLocationIds().isEmpty();
+        wrapper.in(hasLocationIds, LocationStock::getLocationId, query.getLocationIds())
+            .eq(!hasLocationIds && query.getLocationId() != null, LocationStock::getLocationId, query.getLocationId())
             .eq(query.getProductId() != null, LocationStock::getProductId, query.getProductId())
             .like(StringUtils.isNotBlank(query.getProductName()), LocationStock::getProductName, query.getProductName())
             .like(StringUtils.isNotBlank(query.getEarNo()), LocationStock::getEarNo, query.getEarNo())
@@ -392,8 +407,17 @@ public class LocationStockServiceImpl extends DjsBaseServiceImpl<LocationStockMa
                 wrapper.in(LocationStock::getPlotId, plotIds);
             }
         }
-        // 归属类型过滤：belong_type 不在库存表，先按产品主数据 belong_type 解析 productId 集合再 IN 过滤；无匹配则恒空
-        if (StringUtils.isNotBlank(query.getBelongType())) {
+        // 归属类型过滤：belong_type 不在库存表，先按产品主数据 belong_type 解析 productId 集合再 IN 过滤；无匹配则恒空。
+        // R70 多选：belongTypes 非空 → 按集合 IN 反查；否则 fallback 单值 belongType（mp / 其他单值调用方）。
+        boolean hasBelongTypes = query.getBelongTypes() != null && !query.getBelongTypes().isEmpty();
+        if (hasBelongTypes) {
+            List<Long> productIds = resolveProductIdsByBelongTypes(query.getBelongTypes());
+            if (productIds.isEmpty()) {
+                wrapper.eq(LocationStock::getId, -1L);
+            } else {
+                wrapper.in(LocationStock::getProductId, productIds);
+            }
+        } else if (StringUtils.isNotBlank(query.getBelongType())) {
             List<Long> productIds = resolveProductIdsByBelongType(query.getBelongType());
             if (productIds.isEmpty()) {
                 wrapper.eq(LocationStock::getId, -1L);

@@ -266,12 +266,51 @@ public class OutsourcePigServiceImpl extends DjsBaseServiceImpl<OutsourcePigMapp
         if (query == null) {
             return wrapper.orderByDesc(OutsourcePig::getId);
         }
-        wrapper.eq(query.getSupplierId() != null, OutsourcePig::getSupplierId, query.getSupplierId())
-            .eq(StringUtils.isNotBlank(query.getBuyer()), OutsourcePig::getBuyer, query.getBuyer());
-        applyDayEq(wrapper, OutsourcePig::getPurchaseDate, query.getPurchaseDate());
+        boolean hasSupplierIds = query.getSupplierIds() != null && !query.getSupplierIds().isEmpty();
+        boolean hasBuyers = query.getBuyers() != null && !query.getBuyers().isEmpty();
+        wrapper.in(hasSupplierIds, OutsourcePig::getSupplierId, query.getSupplierIds())
+            .eq(!hasSupplierIds && query.getSupplierId() != null, OutsourcePig::getSupplierId, query.getSupplierId())
+            .in(hasBuyers, OutsourcePig::getBuyer, query.getBuyers())
+            .eq(!hasBuyers && StringUtils.isNotBlank(query.getBuyer()), OutsourcePig::getBuyer, query.getBuyer());
+        applyDateRange(wrapper, OutsourcePig::getPurchaseDate,
+            query.getPurchaseDateFrom(), query.getPurchaseDateTo());
         applyDayEq(wrapper, OutsourcePig::getArriveTime, query.getArriveTime());
         wrapper.orderByDesc(OutsourcePig::getId);
         return wrapper;
+    }
+
+    /**
+     * 采购日期范围匹配：[From 00:00:00, To 次日 00:00:00)（兼容 date / datetime 列）。
+     * 入参为 yyyy-MM-dd 字符串，空白边界单侧开放。
+     */
+    private void applyDateRange(LambdaQueryWrapper<OutsourcePig> wrapper,
+                                SFunction<OutsourcePig, ?> column,
+                                String from, String to) {
+        Date start = parseDayStart(from);
+        Date end = parseDayStart(to);
+        if (end != null) {
+            Calendar c = Calendar.getInstance();
+            c.setTime(end);
+            c.add(Calendar.DAY_OF_MONTH, 1);
+            end = c.getTime();
+        }
+        wrapper.ge(start != null, column, start)
+            .lt(end != null, column, end);
+    }
+
+    /**
+     * yyyy-MM-dd → 当天 00:00:00 的 {@link Date}；空白 / 非法格式返回 null（边界开放）。
+     */
+    private Date parseDayStart(String day) {
+        if (StringUtils.isBlank(day)) {
+            return null;
+        }
+        try {
+            return new java.text.SimpleDateFormat("yyyy-MM-dd").parse(day.trim());
+        } catch (java.text.ParseException ex) {
+            log.warn("[DJS-FIX-WMS-RALN] 外购猪只采购日期范围非法 day=[{}]，忽略该边界", day);
+            return null;
+        }
     }
 
     /**

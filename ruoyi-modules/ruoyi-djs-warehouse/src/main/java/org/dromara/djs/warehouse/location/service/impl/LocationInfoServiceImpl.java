@@ -201,9 +201,11 @@ public class LocationInfoServiceImpl extends DjsBaseServiceImpl<LocationInfoMapp
         if (query == null) {
             return wrapper.orderByAsc(LocationInfo::getLocationSort).orderByDesc(LocationInfo::getId);
         }
+        boolean hasLocationTypes = query.getLocationTypes() != null && !query.getLocationTypes().isEmpty();
         wrapper.eq(StringUtils.isNotBlank(query.getLocationCode()), LocationInfo::getLocationCode, query.getLocationCode())
             .like(StringUtils.isNotBlank(query.getLocationName()), LocationInfo::getLocationName, query.getLocationName())
-            .eq(StringUtils.isNotBlank(query.getLocationType()), LocationInfo::getLocationType, query.getLocationType())
+            .in(hasLocationTypes, LocationInfo::getLocationType, query.getLocationTypes())
+            .eq(!hasLocationTypes && StringUtils.isNotBlank(query.getLocationType()), LocationInfo::getLocationType, query.getLocationType())
             .eq(query.getLocationStatus() != null, LocationInfo::getLocationStatus, query.getLocationStatus())
             // 库位排序升序优先（越小越靠前），同序按 id 倒序
             .orderByAsc(LocationInfo::getLocationSort)

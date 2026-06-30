@@ -68,6 +68,11 @@ public class ProductInfoQuery extends BaseEntity {
     private Integer productWorkshop;
 
     /**
+     * 生产车间集合（R70 多选）：非空时落 {@code product_workshop IN (...)}，叠加在 {@link #productWorkshop} 单值之上。
+     */
+    private List<Integer> productWorkshops;
+
+    /**
      * 产品属性 djs_product_attr：1=生产产品（打包目标成品） / 2=原材料。
      *
      * <p>肉品/果蔬打包目标成品按 {@code product_attr=1} 过滤（取数逻辑 doc#13）。</p>
@@ -93,6 +98,11 @@ public class ProductInfoQuery extends BaseEntity {
      * 存储库位 ID（原型「存储仓库」筛选项；精确匹配 store_location_id）。
      */
     private String storeLocationId;
+
+    /**
+     * 存储库位集合（R70 多选）：非空时落 {@code store_location_id IN (...)}，叠加在 {@link #storeLocationId} 单值之上。
+     */
+    private List<String> storeLocationIds;
 
     /**
      * 字典 sys_normal_disable：0=正常 / 1=停用。

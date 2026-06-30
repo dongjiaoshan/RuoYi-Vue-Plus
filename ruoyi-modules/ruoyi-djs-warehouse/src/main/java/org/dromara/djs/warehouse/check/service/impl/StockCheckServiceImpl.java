@@ -205,9 +205,12 @@ public class StockCheckServiceImpl
         LambdaQueryWrapper<StockCheckRecord> w = new LambdaQueryWrapper<StockCheckRecord>()
             .eq(StockCheckRecord::getIsHeader, 1);
         if (query != null) {
+            // R70 库位多选：locationIds 非空 → IN；否则 fallback 单值 locationId .eq
+            boolean hasLocationIds = query.getLocationIds() != null && !query.getLocationIds().isEmpty();
             w.eq(query.getCheckId() != null && !query.getCheckId().isBlank(),
                     StockCheckRecord::getCheckId, query.getCheckId())
-                .eq(query.getLocationId() != null, StockCheckRecord::getLocationId, query.getLocationId())
+                .in(hasLocationIds, StockCheckRecord::getLocationId, query.getLocationIds())
+                .eq(!hasLocationIds && query.getLocationId() != null, StockCheckRecord::getLocationId, query.getLocationId())
                 .eq(query.getCheckStatus() != null && !query.getCheckStatus().isBlank(),
                     StockCheckRecord::getCheckStatus, query.getCheckStatus())
                 .ge(query.getCheckDateFrom() != null, StockCheckRecord::getCheckDate, query.getCheckDateFrom())
@@ -239,6 +242,8 @@ public class StockCheckServiceImpl
         // admin 盘点记录页只读：统一从 stock_flow 盘点流水聚合（覆盖 mp 工人自助盘点 + admin 完成盘点
         // 两路来源，修「mp 提交的盘点在 admin 列表查不到」）。盘点单 = 日期 + 库位 + 盘点人 聚合行。
         Long locationId = query != null ? query.getLocationId() : null;
+        // R70 库位多选：locationIds 非空时 mapper 走 IN，优先于单值 locationId
+        List<Long> locationIds = query != null ? query.getLocationIds() : null;
         String fromStr = query != null ? formatDateTime(query.getCheckDateFrom()) : null;
         String toStr = query != null ? formatDateTime(query.getCheckDateTo()) : null;
 
@@ -254,7 +259,7 @@ public class StockCheckServiceImpl
         }
 
         IPage<StockCheckHeaderVo> page = baseMapper.selectFlowCheckHeaderPage(
-            pageQuery.build(), locationId, fromStr, toStr, operatorIds);
+            pageQuery.build(), locationId, locationIds, fromStr, toStr, operatorIds);
         List<StockCheckHeaderVo> vos = page.getRecords();
         // 聚合行无 check_record 单状态，统一置 completed（只读、已落账）
         vos.forEach(v -> v.setCheckStatus(STATUS_DONE));
@@ -289,6 +294,8 @@ public class StockCheckServiceImpl
     @Override
     public List<StockCheckHeaderVo> exportHeaderList(StockCheckQuery query) {
         Long locationId = query != null ? query.getLocationId() : null;
+        // R70 库位多选：导出走同一 mapper，locationIds 非空时 IN
+        List<Long> locationIds = query != null ? query.getLocationIds() : null;
         String fromStr = query != null ? formatDateTime(query.getCheckDateFrom()) : null;
         String toStr = query != null ? formatDateTime(query.getCheckDateTo()) : null;
 
@@ -302,7 +309,7 @@ public class StockCheckServiceImpl
 
         // 不分页导出：单页装下全部命中行
         IPage<StockCheckHeaderVo> page = baseMapper.selectFlowCheckHeaderPage(
-            new Page<>(1, Integer.MAX_VALUE), locationId, fromStr, toStr, operatorIds);
+            new Page<>(1, Integer.MAX_VALUE), locationId, locationIds, fromStr, toStr, operatorIds);
         List<StockCheckHeaderVo> vos = page.getRecords();
         vos.forEach(v -> v.setCheckStatus(STATUS_DONE));
         fillHeaderLocationNames(vos);

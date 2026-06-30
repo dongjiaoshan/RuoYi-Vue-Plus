@@ -4,6 +4,8 @@ import lombok.Data;
 import lombok.EqualsAndHashCode;
 import org.dromara.common.mybatis.core.domain.BaseEntity;
 
+import java.util.List;
+
 /**
  * 库位列表查询入参（WMS-MD-001）。
  *
@@ -25,9 +27,14 @@ public class LocationInfoQuery extends BaseEntity {
     private String locationName;
 
     /**
-     * 库位类型（字典 djs_location_type）。
+     * 库位类型（字典 djs_location_type；多选时走 {@link #locationTypes}）。
      */
     private String locationType;
+
+    /**
+     * 库位类型多选（字典 djs_location_type，IN 匹配）。
+     */
+    private List<String> locationTypes;
 
     /**
      * 状态（1 启用 / 2 停用）。

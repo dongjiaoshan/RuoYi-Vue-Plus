@@ -125,10 +125,11 @@ public interface ProductInfoMapper extends BaseMapperPlus<ProductInfo, ProductIn
      * 商品详情「业务流水」子表（DJS-FIX-WMS-RALN-B）：按 productId 查 {@code t_warehouse_stock_flow}，
      * 派生 bizType（入库 / 领用出库 / 后台出库），回填 product_unit 作业务单位。
      *
-     * <p>可选筛选 bizDate（DATE 精确）。租户单租户显式 {@code tenant_id='1001'}。</p>
+     * <p>可选筛选 bizDate 区间 [bizDateFrom, bizDateTo]（DATE，含端点）。租户单租户显式 {@code tenant_id='1001'}。</p>
      *
-     * @param productId 产品 ID
-     * @param bizDate   业务日期（DATE 精确匹配；可空）
+     * @param productId   产品 ID
+     * @param bizDateFrom 业务日期区间起（DATE，含当天；可空）
+     * @param bizDateTo   业务日期区间止（DATE，含当天；可空）
      */
     @Select("""
         <script>
@@ -153,12 +154,14 @@ public interface ProductInfoMapper extends BaseMapperPlus<ProductInfo, ProductIn
          WHERE sf.product_id = #{productId}
            AND sf.del_flag   = '0'
            AND sf.tenant_id  = '1001'
-         <if test="bizDate != null"> AND DATE(sf.flow_date) = DATE(#{bizDate}) </if>
+         <if test="bizDateFrom != null"> AND DATE(sf.flow_date) &gt;= DATE(#{bizDateFrom}) </if>
+         <if test="bizDateTo != null"> AND DATE(sf.flow_date) &lt;= DATE(#{bizDateTo}) </if>
          ORDER BY sf.flow_date DESC, sf.id DESC
         </script>
         """)
     List<ProductFlowRecordVo> selectFlowRecords(@Param("productId") Long productId,
-                                                @Param("bizDate") Date bizDate);
+                                                @Param("bizDateFrom") Date bizDateFrom,
+                                                @Param("bizDateTo") Date bizDateTo);
 
     /**
      * 采购入库「商品维度」分页聚合查询（WMS-OUTSOURCE-001 需求1）。
@@ -220,13 +223,25 @@ public interface ProductInfoMapper extends BaseMapperPlus<ProductInfo, ProductIn
            <if test="query.productName != null and query.productName != ''">
              AND p.product_name LIKE CONCAT('%', #{query.productName}, '%')
            </if>
-           <if test="query.buyClass != null and query.buyClass != ''">
+           <if test="query.buyClasses != null and query.buyClasses.size() > 0">
+             AND p.buy_class IN
+             <foreach collection="query.buyClasses" item="bc" open="(" separator="," close=")">#{bc}</foreach>
+           </if>
+           <if test="(query.buyClasses == null or query.buyClasses.size() == 0) and query.buyClass != null and query.buyClass != ''">
              AND p.buy_class = #{query.buyClass}
            </if>
-           <if test="query.supplierId != null">
+           <if test="query.supplierIds != null and query.supplierIds.size() > 0">
+             AND p.supplier_id IN
+             <foreach collection="query.supplierIds" item="sid" open="(" separator="," close=")">#{sid}</foreach>
+           </if>
+           <if test="(query.supplierIds == null or query.supplierIds.size() == 0) and query.supplierId != null">
              AND p.supplier_id = #{query.supplierId}
            </if>
-           <if test="query.storeLocationId != null">
+           <if test="query.storeLocationIds != null and query.storeLocationIds.size() > 0">
+             AND
+             <foreach collection="query.storeLocationIds" item="lid" open="(" separator=" OR " close=")">FIND_IN_SET(#{lid}, p.store_location_id)</foreach>
+           </if>
+           <if test="(query.storeLocationIds == null or query.storeLocationIds.size() == 0) and query.storeLocationId != null">
              AND FIND_IN_SET(#{query.storeLocationId}, p.store_location_id)
            </if>
          ORDER BY p.product_name ASC

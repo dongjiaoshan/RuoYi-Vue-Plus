@@ -157,13 +157,18 @@ public interface ProductProductionMapper extends BaseMapperPlus<ProductProductio
      * {@code COUNT(DISTINCT pp.store_id)}（与子页「产品明细」每行「需求门店」一致）。未绑门店（{@code store_id IS NULL}，
      * 如发送位置=礼盒的组件）不计入。无门店 → 0。</p>
      *
+     * <p>「原材料消耗量」{@code materialConsume} = 该组 {@code SUM(material_consume)}（同产品当日累计消耗的
+     * 来源原材料重量；无配料行 NULL 跳过）。「原材料单位」{@code materialUnit} = {@code material_id} 经第二个
+     * LEFT JOIN（{@code pmi}）取 {@code product_info.product_unit} 的 {@code MAX} 兜底（组内通常同一原料）。</p>
+     *
      * <p>「损坏量」{@code damageCount} = 该组已标损坏件数 {@code SUM(is_damaged)}（DENGBO-DAMAGE-001，
      * row50「件数」后展示，&gt;0 红色）。{@code hasDamage} 作用于组维度，经 HAVING 过滤：1=组内有损坏
      * （{@code SUM(is_damaged)>0}）/ 0=组内无损坏；空则不过滤。</p>
      *
      * @param produceNo   生产编号 LIKE 过滤（空则不过滤）
      * @param productName 产品名称 LIKE 过滤（空则不过滤）
-     * @param belongType  产品品类过滤（字典 djs_belong_type，空则不过滤；下推 product_info WHERE）
+     * @param belongType  产品品类过滤（字典 djs_belong_type，空则不过滤；下推 product_info WHERE，belongTypes 为空时 fallback）
+     * @param belongTypes 产品品类多选过滤（非空时按 IN 下推 product_info.belong_type，优先于单值 belongType）
      * @param productType 产品类型过滤（空则不过滤；同 product_id 组内同值，放 WHERE）
      * @param beginDate   生产日期起（空则不过滤）
      * @param endDate     生产日期止（空则不过滤）
@@ -181,6 +186,8 @@ public interface ProductProductionMapper extends BaseMapperPlus<ProductProductio
         "       MAX(pp.product_type)   AS productType,",
         "       SUM(pp.product_weight) AS produceQty,",
         "       COUNT(*)               AS itemCount,",
+        "       SUM(pp.material_consume) AS materialConsume,",
+        "       MAX(pmi.product_unit)  AS materialUnit,",
         "       COUNT(DISTINCT pp.store_id) AS storeDemandCount,",
         "       COALESCE(SUM(pp.is_damaged), 0) AS damageCount",
         "  FROM t_warehouse_product_production pp",
@@ -188,6 +195,10 @@ public interface ProductProductionMapper extends BaseMapperPlus<ProductProductio
         "         ON pi.id = pp.product_id",
         "        AND pi.del_flag = '0'",
         "        AND pi.tenant_id = pp.tenant_id",
+        "  LEFT JOIN t_warehouse_product_info pmi",
+        "         ON pmi.id = pp.material_id",
+        "        AND pmi.del_flag = '0'",
+        "        AND pmi.tenant_id = pp.tenant_id",
         " WHERE pp.del_flag = '0'",
         "   AND pp.tenant_id = '1001'",
         "   <if test='produceNo != null and produceNo != \"\"'>",
@@ -196,7 +207,10 @@ public interface ProductProductionMapper extends BaseMapperPlus<ProductProductio
         "   <if test='productName != null and productName != \"\"'>",
         "     AND pp.product_name LIKE CONCAT('%', #{productName}, '%')",
         "   </if>",
-        "   <if test='belongType != null and belongType != \"\"'>",
+        "   <if test='belongTypes != null and belongTypes.size() > 0'>",
+        "     AND pi.belong_type IN <foreach collection='belongTypes' item='bt' open='(' separator=',' close=')'>#{bt}</foreach>",
+        "   </if>",
+        "   <if test='(belongTypes == null or belongTypes.size() == 0) and belongType != null and belongType != \"\"'>",
         "     AND pi.belong_type = #{belongType}",
         "   </if>",
         "   <if test='productType != null'>",
@@ -221,6 +235,7 @@ public interface ProductProductionMapper extends BaseMapperPlus<ProductProductio
     List<ProductProductionGroupVo> selectProductionGroupList(@Param("produceNo") String produceNo,
                                                              @Param("productName") String productName,
                                                              @Param("belongType") String belongType,
+                                                             @Param("belongTypes") List<String> belongTypes,
                                                              @Param("productType") Integer productType,
                                                              @Param("beginDate") Date beginDate,
                                                              @Param("endDate") Date endDate,

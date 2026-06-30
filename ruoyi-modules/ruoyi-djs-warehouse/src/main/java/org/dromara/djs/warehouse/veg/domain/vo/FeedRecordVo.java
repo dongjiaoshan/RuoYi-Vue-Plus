@@ -1,7 +1,11 @@
 package org.dromara.djs.warehouse.veg.domain.vo;
 
+import cn.idev.excel.annotation.ExcelIgnoreUnannotated;
+import cn.idev.excel.annotation.ExcelProperty;
 import com.fasterxml.jackson.annotation.JsonFormat;
 import lombok.Data;
+import org.dromara.common.excel.annotation.ExcelDictFormat;
+import org.dromara.common.excel.convert.ExcelDictConvert;
 import org.dromara.common.translation.annotation.Translation;
 import org.dromara.common.translation.constant.TransConstant;
 
@@ -27,6 +31,7 @@ import java.util.Date;
  * @since WMS-FEED-RECORD-001
  */
 @Data
+@ExcelIgnoreUnannotated
 public class FeedRecordVo implements Serializable {
 
     @Serial
@@ -35,6 +40,7 @@ public class FeedRecordVo implements Serializable {
     /**
      * 饲喂时间（精确到时分秒）。
      */
+    @ExcelProperty(value = "日期")
     @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")
     private Date feedDate;
 
@@ -46,6 +52,7 @@ public class FeedRecordVo implements Serializable {
     /**
      * 作物名称（仓库来源行恒空）。
      */
+    @ExcelProperty(value = "作物名称")
     private String cropName;
 
     /**
@@ -56,11 +63,14 @@ public class FeedRecordVo implements Serializable {
     /**
      * 饲喂饲料量(kg)。
      */
+    @ExcelProperty(value = "饲喂饲料量")
     private BigDecimal feedWeight;
 
     /**
      * 饲喂来源原始值（字典 djs_feed_type：veg_handle 毛菜间 / warehouse 仓库）。
      */
+    @ExcelProperty(value = "提供位置", converter = ExcelDictConvert.class)
+    @ExcelDictFormat(dictType = "djs_feed_type")
     private String feedType;
 
     /**
@@ -81,6 +91,7 @@ public class FeedRecordVo implements Serializable {
     /**
      * 操作人姓名（注解翻译 sys_user.nick_name）。
      */
+    @ExcelProperty(value = "操作人")
     @Translation(type = TransConstant.USER_ID_TO_NICKNAME, mapper = "operatorId")
     private String operatorName;
 }

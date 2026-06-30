@@ -604,11 +604,15 @@ public class ShipmentServiceImpl
         if (query == null) {
             return w.orderByDesc(Shipment::getId);
         }
+        boolean hasProductTypes = query.getProductTypes() != null && !query.getProductTypes().isEmpty();
+        boolean hasShipmentStatuses = query.getShipmentStatuses() != null && !query.getShipmentStatuses().isEmpty();
         w.like(StringUtils.isNotBlank(query.getShipmentNo()), Shipment::getShipmentNo, query.getShipmentNo())
             .eq(query.getDemandId() != null, Shipment::getDemandId, query.getDemandId())
-            .eq(StringUtils.isNotBlank(query.getProductType()), Shipment::getProductType, query.getProductType())
+            .in(hasProductTypes, Shipment::getProductType, query.getProductTypes())
+            .eq(!hasProductTypes && StringUtils.isNotBlank(query.getProductType()), Shipment::getProductType, query.getProductType())
             .eq(query.getStoreId() != null, Shipment::getStoreId, query.getStoreId())
-            .eq(StringUtils.isNotBlank(query.getShipmentStatus()),
+            .in(hasShipmentStatuses, Shipment::getShipmentStatus, query.getShipmentStatuses())
+            .eq(!hasShipmentStatuses && StringUtils.isNotBlank(query.getShipmentStatus()),
                 Shipment::getShipmentStatus, query.getShipmentStatus())
             .ge(query.getShipDateFrom() != null, Shipment::getShipDate, query.getShipDateFrom())
             .le(query.getShipDateTo() != null, Shipment::getShipDate, query.getShipDateTo())

@@ -3,6 +3,7 @@ package org.dromara.djs.warehouse.shipment.domain.query;
 import lombok.Data;
 
 import java.time.LocalDate;
+import java.util.List;
 
 /**
  * 发货流水查询 query（admin 列表用）。
@@ -22,11 +23,17 @@ public class ShipmentQuery {
     /** 业态精确匹配（white_bar/vegetable/gift_box/other）。 */
     private String productType;
 
+    /** 业态多选（R70 产品类型下拉多选）。非空时按 IN 过滤，优先于单值 productType。 */
+    private List<String> productTypes;
+
     /** 目的门店精确匹配。 */
     private Long storeId;
 
     /** 发货状态精确匹配。 */
     private String shipmentStatus;
+
+    /** 发货状态多选（R70 发货状态下拉多选）。非空时按 IN 过滤，优先于单值 shipmentStatus。 */
+    private List<String> shipmentStatuses;
 
     /** 发货日期下界（含）。 */
     private LocalDate shipDateFrom;

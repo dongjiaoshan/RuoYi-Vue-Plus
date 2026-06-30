@@ -17,6 +17,8 @@ import org.dromara.djs.common.encoder.BizCodeType;
 import org.dromara.djs.common.encoder.IBizCodeGenerator;
 import org.dromara.djs.common.image.service.IImageLibraryService;
 import org.dromara.djs.common.image.service.ImageUrlResolver;
+import org.dromara.djs.common.supplier.domain.Supplier;
+import org.dromara.djs.common.supplier.mapper.SupplierMapper;
 import org.dromara.djs.common.util.I18nMessages;
 import org.dromara.djs.warehouse.check.service.IStockCheckService;
 import org.dromara.djs.warehouse.flow.domain.StockFlow;
@@ -89,6 +91,7 @@ public class ProductInfoServiceImpl extends DjsBaseServiceImpl<ProductInfoMapper
     private final LocationStockMapper locationStockMapper;
     private final IBizCodeGenerator bizCodeGenerator;
     private final IStockCheckService stockCheckService;
+    private final SupplierMapper supplierMapper;
 
     public ProductInfoServiceImpl(ProductInfoMapper baseMapper,
                                   IImageLibraryService imageLibraryService,
@@ -97,7 +100,8 @@ public class ProductInfoServiceImpl extends DjsBaseServiceImpl<ProductInfoMapper
                                   StockFlowMapper stockFlowMapper,
                                   LocationStockMapper locationStockMapper,
                                   IBizCodeGenerator bizCodeGenerator,
-                                  IStockCheckService stockCheckService) {
+                                  IStockCheckService stockCheckService,
+                                  SupplierMapper supplierMapper) {
         super(baseMapper);
         this.imageLibraryService = imageLibraryService;
         this.imageUrlResolver = imageUrlResolver;
@@ -106,6 +110,7 @@ public class ProductInfoServiceImpl extends DjsBaseServiceImpl<ProductInfoMapper
         this.locationStockMapper = locationStockMapper;
         this.bizCodeGenerator = bizCodeGenerator;
         this.stockCheckService = stockCheckService;
+        this.supplierMapper = supplierMapper;
     }
 
     @Override
@@ -114,6 +119,7 @@ public class ProductInfoServiceImpl extends DjsBaseServiceImpl<ProductInfoMapper
         Page<ProductInfoVo> page = baseMapper.selectVoPage(pageQuery.build(), wrapper);
         fillImageUrls(page.getRecords());
         fillStoreLocationNames(page.getRecords());
+        fillSupplierNames(page.getRecords());
         return TableDataInfo.build(page);
     }
 
@@ -122,6 +128,7 @@ public class ProductInfoServiceImpl extends DjsBaseServiceImpl<ProductInfoMapper
         List<ProductInfoVo> list = baseMapper.selectVoList(buildQueryWrapper(query));
         fillImageUrls(list);
         fillStoreLocationNames(list);
+        fillSupplierNames(list);
         return list;
     }
 
@@ -335,14 +342,18 @@ public class ProductInfoServiceImpl extends DjsBaseServiceImpl<ProductInfoMapper
             .eq(StringUtils.isNotBlank(query.getBuyClass()), ProductInfo::getBuyClass, query.getBuyClass())
             // 是否支持外购（原型「是否支持外购」筛选项）
             .eq(query.getIsBuyOut() != null, ProductInfo::getIsBuyOut, query.getIsBuyOut())
-            .eq(query.getProductWorkshop() != null, ProductInfo::getProductWorkshop, query.getProductWorkshop())
+            // 生产车间：R70 多选 productWorkshops 落 IN（...）；否则退回单值 productWorkshop
+            .in(CollUtil.isNotEmpty(query.getProductWorkshops()), ProductInfo::getProductWorkshop, query.getProductWorkshops())
+            .eq(CollUtil.isEmpty(query.getProductWorkshops()) && query.getProductWorkshop() != null, ProductInfo::getProductWorkshop, query.getProductWorkshop())
             // 产品属性（打包目标成品 product_attr=1 / 原材料=2，取数逻辑 doc#13）
             .eq(query.getProductAttr() != null, ProductInfo::getProductAttr, query.getProductAttr())
             // 关联原材料（自引用 FK → product_info.id 雪花 id）
             .eq(query.getProductMaterial() != null, ProductInfo::getProductMaterial, query.getProductMaterial())
             // 关联原材料集合（findings 步12：果蔬打包按「本次领用原料产品 ID」反查命中成品）
             .in(CollUtil.isNotEmpty(query.getProductMaterials()), ProductInfo::getProductMaterial, query.getProductMaterials())
-            .eq(StringUtils.isNotBlank(query.getStoreLocationId()), ProductInfo::getStoreLocationId, query.getStoreLocationId())
+            // 存储库位：R70 多选 storeLocationIds 落 IN（...）；否则退回单值 storeLocationId
+            .in(CollUtil.isNotEmpty(query.getStoreLocationIds()), ProductInfo::getStoreLocationId, query.getStoreLocationIds())
+            .eq(CollUtil.isEmpty(query.getStoreLocationIds()) && StringUtils.isNotBlank(query.getStoreLocationId()), ProductInfo::getStoreLocationId, query.getStoreLocationId())
             .eq(query.getProductStatus() != null, ProductInfo::getProductStatus, query.getProductStatus())
             .eq(query.getUpdateBy() != null, ProductInfo::getUpdateBy, query.getUpdateBy())
             .ge(query.getUpdateBeginTime() != null, ProductInfo::getUpdateTime, query.getUpdateBeginTime())
@@ -402,6 +413,33 @@ public class ProductInfoServiceImpl extends DjsBaseServiceImpl<ProductInfoMapper
         }
     }
 
+    /**
+     * 批量回填 {@code supplierName}（row81：商品配置列表「供应商」列；按 supplier_id 关联 t_md_supplier，禁 N+1）。
+     * 商品的供应商来自商品主数据 {@code product_info.supplier_id}（外购商品建档时所选供应商）。
+     */
+    private void fillSupplierNames(List<ProductInfoVo> records) {
+        if (records == null || records.isEmpty()) {
+            return;
+        }
+        List<Long> supplierIds = records.stream()
+            .map(ProductInfoVo::getSupplierId)
+            .filter(Objects::nonNull)
+            .distinct()
+            .toList();
+        if (supplierIds.isEmpty()) {
+            return;
+        }
+        List<Supplier> suppliers = supplierMapper.selectList(
+            new LambdaQueryWrapper<Supplier>().in(Supplier::getId, supplierIds));
+        Map<Long, String> nameMap = suppliers.stream()
+            .collect(Collectors.toMap(Supplier::getId, Supplier::getSupplierName, (a, b) -> a));
+        for (ProductInfoVo vo : records) {
+            if (vo.getSupplierId() != null) {
+                vo.setSupplierName(nameMap.get(vo.getSupplierId()));
+            }
+        }
+    }
+
     @Override
     public List<ProductProductionRecordVo> queryProductionRecords(Long productId, Date produceDate, String produceType) {
         if (productId == null) {
@@ -421,11 +459,11 @@ public class ProductInfoServiceImpl extends DjsBaseServiceImpl<ProductInfoMapper
     }
 
     @Override
-    public List<ProductFlowRecordVo> queryFlowRecords(Long productId, Date bizDate) {
+    public List<ProductFlowRecordVo> queryFlowRecords(Long productId, Date bizDateFrom, Date bizDateTo) {
         if (productId == null) {
             throw new ServiceException("产品 ID 不能为空");
         }
-        return baseMapper.selectFlowRecords(productId, bizDate);
+        return baseMapper.selectFlowRecords(productId, bizDateFrom, bizDateTo);
     }
 
     @Override

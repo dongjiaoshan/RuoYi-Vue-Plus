@@ -138,7 +138,7 @@ public class StoreReturnController extends BaseController {
         return toAjax(service.deleteByIds(Arrays.asList(ids)));
     }
 
-    /** 导出。 */
+    /** 导出（逐条明细）。 */
     @SaCheckPermission("djs:store:return:export")
     @Log(title = "门店退回管理", businessType = BusinessType.EXPORT)
     @GetMapping("/export")
@@ -146,5 +146,18 @@ public class StoreReturnController extends BaseController {
         List<StoreReturnVo> list = service.queryList(query);
         ExcelUtil.exportExcel(list == null ? new ArrayList<>() : list,
             "门店退回管理", StoreReturnVo.class, response);
+    }
+
+    /**
+     * 仓库「退货记录」外层「门店 + 当日」汇总导出（与 {@code /store-daily} 列表同口径）。
+     * 仓库角色经 {@code djs:warehouse:return:export} 命中（与门店 export 权限 OR），无需补授门店权限。
+     */
+    @SaCheckPermission(value = {"djs:store:return:export", "djs:warehouse:return:export"}, mode = SaMode.OR)
+    @Log(title = "门店退回汇总", businessType = BusinessType.EXPORT)
+    @GetMapping("/store-daily/export")
+    public void storeDailyExport(StoreReturnQuery query, HttpServletResponse response) {
+        List<StoreReturnStoreDailyVo> list = service.queryStoreDailyList(query);
+        ExcelUtil.exportExcel(list == null ? new ArrayList<>() : list,
+            "退货记录", StoreReturnStoreDailyVo.class, response);
     }
 }

@@ -82,6 +82,9 @@ class ProductInfoServiceImplTest {
     @Mock
     private org.dromara.djs.warehouse.check.service.IStockCheckService stockCheckService;
 
+    @Mock
+    private org.dromara.djs.common.supplier.mapper.SupplierMapper supplierMapper;
+
     private TestableProductInfoServiceImpl service;
 
     /**
@@ -95,9 +98,10 @@ class ProductInfoServiceImplTest {
                                        org.dromara.djs.warehouse.flow.mapper.StockFlowMapper stockFlowMapper,
                                        org.dromara.djs.warehouse.stock.mapper.LocationStockMapper locationStockMapper,
                                        org.dromara.djs.common.encoder.IBizCodeGenerator bizCodeGenerator,
-                                       org.dromara.djs.warehouse.check.service.IStockCheckService stockCheckService) {
+                                       org.dromara.djs.warehouse.check.service.IStockCheckService stockCheckService,
+                                       org.dromara.djs.common.supplier.mapper.SupplierMapper supplierMapper) {
             super(baseMapper, imageLibraryService, imageUrlResolver,
-                locationInfoMapper, stockFlowMapper, locationStockMapper, bizCodeGenerator, stockCheckService);
+                locationInfoMapper, stockFlowMapper, locationStockMapper, bizCodeGenerator, stockCheckService, supplierMapper);
         }
 
         @Override
@@ -133,7 +137,7 @@ class ProductInfoServiceImplTest {
     @BeforeEach
     void setup() {
         service = new TestableProductInfoServiceImpl(productInfoMapper, imageLibraryService, imageUrlResolver,
-            locationInfoMapper, stockFlowMapper, locationStockMapper, bizCodeGenerator, stockCheckService);
+            locationInfoMapper, stockFlowMapper, locationStockMapper, bizCodeGenerator, stockCheckService, supplierMapper);
     }
 
     private ProductInfoBo selfBo() {

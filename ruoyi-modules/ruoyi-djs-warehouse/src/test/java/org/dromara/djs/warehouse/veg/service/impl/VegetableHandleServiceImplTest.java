@@ -92,6 +92,8 @@ class VegetableHandleServiceImplTest {
     private org.dromara.djs.warehouse.product.mapper.ProductInfoMapper productInfoMapper;
     @Mock
     private org.dromara.djs.warehouse.loss.service.ILossFlowService lossFlowService;
+    @Mock
+    private org.dromara.djs.plant.activity.service.IPlantActivityService plantActivityService;
 
     private VegetableHandleServiceImpl service;
 
@@ -102,7 +104,7 @@ class VegetableHandleServiceImplTest {
         service = new VegetableHandleServiceImpl(
             handleMapper, recordMapper, plantingRecordMapper, stockFlowMapper,
             locationInfoMapper, bizCodeGenerator, imageUrlResolver, cropInfoMapper, feedLogMapper,
-            plantDetailsMapper, locationStockMapper, productInfoMapper, lossFlowService);
+            plantDetailsMapper, locationStockMapper, productInfoMapper, lossFlowService, plantActivityService);
         loginHelperMock = Mockito.mockStatic(LoginHelper.class);
         loginHelperMock.when(LoginHelper::getUserId).thenReturn(9001L);
     }

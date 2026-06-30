@@ -145,15 +145,17 @@ public class ProductInfoController extends BaseController {
     /**
      * 商品详情「业务流水」子表（DJS-FIX-WMS-RALN-B）：按 productId 查 stock_flow（入库 / 领用出库 / 后台出库）。
      *
-     * @param productId 产品 ID
-     * @param bizDate   业务日期（可空，{@code yyyy-MM-dd}）
+     * @param productId   产品 ID
+     * @param bizDateFrom 业务日期区间起（可空，{@code yyyy-MM-dd}，含当天）
+     * @param bizDateTo   业务日期区间止（可空，{@code yyyy-MM-dd}，含当天）
      */
     @SaCheckPermission("djs:warehouse:product:list")
     @GetMapping("/flow/{productId}")
     public R<List<ProductFlowRecordVo>> flowRecords(
         @PathVariable Long productId,
-        @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd") Date bizDate) {
-        return R.ok(productInfoService.queryFlowRecords(productId, bizDate));
+        @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd") Date bizDateFrom,
+        @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd") Date bizDateTo) {
+        return R.ok(productInfoService.queryFlowRecords(productId, bizDateFrom, bizDateTo));
     }
 
     /**

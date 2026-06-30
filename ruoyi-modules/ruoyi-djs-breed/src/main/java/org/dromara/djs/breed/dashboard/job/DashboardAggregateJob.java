@@ -1,8 +1,10 @@
 package org.dromara.djs.breed.dashboard.job;
 
+import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.djs.breed.dashboard.service.IDashboardService;
+import org.dromara.djs.common.job.DjsJobRegistry;
 import org.dromara.djs.common.job.DjsJobRunner;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
@@ -28,6 +30,19 @@ import org.springframework.stereotype.Component;
 public class DashboardAggregateJob {
 
     private final IDashboardService dashboardService;
+    private final DjsJobRegistry jobRegistry;
+
+    /** job 名（注册表 key + 日志名 + admin 重跑下拉项）。 */
+    public static final String JOB_NAME = "breed-aggregate";
+
+    /**
+     * 注册重算逻辑到 {@link DjsJobRegistry}，供 admin 手动重跑（按目标日）调用。
+     * 与 {@link #aggregate()} 定时触发同源（共用 {@link IDashboardService#triggerAggregate}）。
+     */
+    @PostConstruct
+    public void register() {
+        jobRegistry.register(JOB_NAME, dashboardService::triggerAggregate);
+    }
 
     /**
      * 每日 0:00 触发，重算昨天 T-1（邓博 row9：每晚 12 点更新，日→月→年顺序由 triggerAggregate 内部保证）。
@@ -35,6 +50,6 @@ public class DashboardAggregateJob {
      */
     @Scheduled(cron = "${djs.schedule.breed-aggregate-cron:0 0 0 * * ?}")
     public void aggregate() {
-        DjsJobRunner.run("breed-aggregate", () -> dashboardService.triggerAggregate(null));
+        DjsJobRunner.run(JOB_NAME, () -> dashboardService.triggerAggregate(null));
     }
 }

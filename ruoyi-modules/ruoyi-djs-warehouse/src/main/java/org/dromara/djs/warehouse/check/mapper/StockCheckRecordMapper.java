@@ -88,7 +88,11 @@ public interface StockCheckRecordMapper extends BaseMapperPlus<StockCheckRecord,
              WHERE f.flow_type IN ('check_in', 'check_out')
                AND f.del_flag  = '0'
                AND f.tenant_id = '1001'
-               <if test="locationId != null">
+               <if test="locationIds != null and locationIds.size() > 0">
+                 AND f.warehouse_id IN
+                 <foreach collection="locationIds" item="lid" open="(" separator="," close=")">#{lid}</foreach>
+               </if>
+               <if test="(locationIds == null or locationIds.size() == 0) and locationId != null">
                  AND f.warehouse_id = #{locationId}
                </if>
                <if test="checkDateFrom != null">
@@ -108,6 +112,7 @@ public interface StockCheckRecordMapper extends BaseMapperPlus<StockCheckRecord,
         """)
     IPage<StockCheckHeaderVo> selectFlowCheckHeaderPage(IPage<StockCheckHeaderVo> page,
                                                         @Param("locationId") Long locationId,
+                                                        @Param("locationIds") List<Long> locationIds,
                                                         @Param("checkDateFrom") String checkDateFrom,
                                                         @Param("checkDateTo") String checkDateTo,
                                                         @Param("operatorIds") List<Long> operatorIds);

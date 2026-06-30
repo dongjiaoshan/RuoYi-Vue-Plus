@@ -282,12 +282,15 @@ public class DemandManageServiceImpl extends DjsBaseServiceImpl<DemandManageMapp
     public TableDataInfo<DemandGroupVo> queryGroupList(DemandManageQuery query, PageQuery pageQuery) {
         String productName = query == null ? null : query.getProductName();
         String productType = query == null ? null : query.getProductType();
+        List<String> productTypes = query == null ? null : query.getProductTypes();
         String demandStatus = query == null ? null : query.getDemandStatus();
+        List<String> demandStatuses = query == null ? null : query.getDemandStatuses();
         Long storeId = query == null ? null : query.getStoreId();
+        List<Long> storeIds = query == null ? null : query.getStoreIds();
         LocalDate begin = query == null ? null : query.getBeginDate();
         LocalDate end = query == null ? null : query.getEndDate();
-        // productType（业态）+ storeId（需求门店）组内/行级过滤，均下推到 mapper WHERE
-        List<DemandGroupVo> all = baseMapper.selectDemandGroupList(productName, productType, storeId, begin, end);
+        // productType（业态）+ storeId（需求门店）组内/行级过滤，均下推到 mapper WHERE（复数优先 IN，单值 fallback）
+        List<DemandGroupVo> all = baseMapper.selectDemandGroupList(productName, productType, productTypes, storeId, storeIds, begin, end);
         // 三态需求状态 + 确认率（按 storeCount / confirmedStoreCount 算）
         for (DemandGroupVo vo : all) {
             int storeCount = vo.getStoreCount() == null ? 0 : vo.getStoreCount();
@@ -298,7 +301,12 @@ public class DemandManageServiceImpl extends DjsBaseServiceImpl<DemandManageMapp
                 : BigDecimal.valueOf(confirmed).divide(BigDecimal.valueOf(storeCount), 4, java.math.RoundingMode.HALF_UP));
         }
         // 需求状态是聚合三态（PENDING/ALL_CONFIRMED/PARTIAL），算完后再内存过滤（不能下推 mapper WHERE）
-        if (StringUtils.isNotBlank(demandStatus)) {
+        // 复数 demandStatuses 优先 IN 过滤，单值 demandStatus 作 fallback
+        if (demandStatuses != null && !demandStatuses.isEmpty()) {
+            all = all.stream()
+                .filter(vo -> demandStatuses.contains(vo.getDemandStatus()))
+                .toList();
+        } else if (StringUtils.isNotBlank(demandStatus)) {
             all = all.stream()
                 .filter(vo -> demandStatus.equals(vo.getDemandStatus()))
                 .toList();
@@ -774,11 +782,17 @@ public class DemandManageServiceImpl extends DjsBaseServiceImpl<DemandManageMapp
         if (query == null) {
             return wrapper.orderByDesc(DemandManage::getDemandDate).orderByDesc(DemandManage::getId);
         }
+        boolean hasProductTypes = query.getProductTypes() != null && !query.getProductTypes().isEmpty();
+        boolean hasDemandStatuses = query.getDemandStatuses() != null && !query.getDemandStatuses().isEmpty();
+        boolean hasStoreIds = query.getStoreIds() != null && !query.getStoreIds().isEmpty();
         wrapper.like(StringUtils.isNotBlank(query.getDemandNo()), DemandManage::getDemandNo, query.getDemandNo())
             .like(StringUtils.isNotBlank(query.getProductName()), DemandManage::getProductName, query.getProductName())
-            .eq(StringUtils.isNotBlank(query.getProductType()), DemandManage::getProductType, query.getProductType())
-            .eq(StringUtils.isNotBlank(query.getDemandStatus()), DemandManage::getDemandStatus, query.getDemandStatus())
-            .eq(query.getStoreId() != null, DemandManage::getStoreId, query.getStoreId())
+            .in(hasProductTypes, DemandManage::getProductType, query.getProductTypes())
+            .eq(!hasProductTypes && StringUtils.isNotBlank(query.getProductType()), DemandManage::getProductType, query.getProductType())
+            .in(hasDemandStatuses, DemandManage::getDemandStatus, query.getDemandStatuses())
+            .eq(!hasDemandStatuses && StringUtils.isNotBlank(query.getDemandStatus()), DemandManage::getDemandStatus, query.getDemandStatus())
+            .in(hasStoreIds, DemandManage::getStoreId, query.getStoreIds())
+            .eq(!hasStoreIds && query.getStoreId() != null, DemandManage::getStoreId, query.getStoreId())
             .eq(query.getProductId() != null, DemandManage::getProductId, query.getProductId())
             .eq(query.getDemandDate() != null, DemandManage::getDemandDate, query.getDemandDate())
             .ge(query.getBeginDate() != null, DemandManage::getDemandDate, query.getBeginDate())

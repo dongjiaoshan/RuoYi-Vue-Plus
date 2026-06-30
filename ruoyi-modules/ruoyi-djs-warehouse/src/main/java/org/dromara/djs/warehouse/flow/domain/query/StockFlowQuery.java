@@ -4,6 +4,7 @@ import com.fasterxml.jackson.annotation.JsonFormat;
 import lombok.Data;
 
 import java.util.Date;
+import java.util.List;
 
 /**
  * 出入库流水查询参数（admin 流水查询页 + admin 包材领用页隐式过滤 + mp 我的领用查询）。
@@ -37,6 +38,11 @@ public class StockFlowQuery {
     private String flowType;
 
     /**
+     * 流水类型多选（R70 入/出库方式下拉多选）。非空时按 IN 过滤，优先于单值 flowType。
+     */
+    private List<String> flowTypes;
+
+    /**
      * 出入类型（IN 入 / OT 出）。
      */
     private String inoutType;
@@ -45,6 +51,11 @@ public class StockFlowQuery {
      * 物资类型（djs_mat_type 字典，service 内部映射到 product.belong_type）。
      */
     private String matType;
+
+    /**
+     * 物资类型多选（R70 物资类型下拉多选）。非空时反查 product_info.belong_type 按 IN 过滤，优先于单值 matType。
+     */
+    private List<String> matTypes;
 
     /**
      * 产品 ID 精确匹配。
@@ -74,6 +85,11 @@ public class StockFlowQuery {
     private Integer productType;
 
     /**
+     * 产品类型多选（R70 产品类型下拉多选，Kevin 点名）。非空时反查 product_info.product_type 按 IN 过滤，优先于单值 productType。
+     */
+    private List<Integer> productTypes;
+
+    /**
      * 耳号精确匹配。
      */
     private String earNo;
@@ -95,6 +111,11 @@ public class StockFlowQuery {
     private Long warehouseId;
 
     /**
+     * 库位 ID 多选（R70 库位/仓库下拉多选）。非空时按 IN 过滤，优先于单值 warehouseId。
+     */
+    private List<Long> warehouseIds;
+
+    /**
      * 关联需求单 ID 精确匹配（D14 CROSS-FLOW-003 按本字段聚合 ship_out 流水）。
      */
     private Long demandId;
@@ -103,6 +124,11 @@ public class StockFlowQuery {
      * 出库去向（djs_stock_out_dest）。
      */
     private String stockOutDest;
+
+    /**
+     * 出库去向多选（R70 出库去向下拉多选）。非空时按 IN 过滤，优先于单值 stockOutDest。
+     */
+    private List<String> stockOutDests;
 
     /**
      * 操作人（mp 我的查询自动填）。

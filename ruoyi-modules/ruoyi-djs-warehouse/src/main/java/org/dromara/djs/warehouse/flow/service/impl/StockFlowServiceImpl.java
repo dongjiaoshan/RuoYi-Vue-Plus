@@ -64,6 +64,14 @@ public class StockFlowServiceImpl
      */
     private static final String FLOW_TYPE_PACK_IN = "pack_in";
 
+    /**
+     * 领用后损耗流水类型（djs_flow_type）。
+     * 损耗是「物资领用之后才产生的损耗」，不属于真正的出库；出库记录页 / 导出（queryOutList /
+     * queryOutExport）排除展示，只保留盘点计损（check_out）/ 盘点异常出库（check_abnormal_out）等
+     * 真出库口径。loss 流水本身仍写入（库存余额 / 损耗总览依赖）。
+     */
+    private static final String FLOW_TYPE_LOSS = "loss";
+
     private final LocationInfoMapper locationInfoMapper;
     private final ProductInfoMapper productInfoMapper;
     private final LocationStockMapper locationStockMapper;
@@ -117,7 +125,12 @@ public class StockFlowServiceImpl
 
     @Override
     public TableDataInfo<StockFlowVo> queryOutList(StockFlowQuery query, PageQuery pageQuery) {
-        return queryPageList(lockInout(query, INOUT_OUT), pageQuery);
+        // 出库记录页：排除领用后损耗（loss），只保留盘点计损 / 异常等真出库口径
+        LambdaQueryWrapper<StockFlow> wrapper = buildWrapper(lockInout(query, INOUT_OUT))
+            .ne(StockFlow::getFlowType, FLOW_TYPE_LOSS);
+        Page<StockFlowVo> page = baseMapper.selectVoPage(pageQuery.build(), wrapper);
+        fillJoinNames(page.getRecords());
+        return TableDataInfo.build(page);
     }
 
     @Override
@@ -132,7 +145,12 @@ public class StockFlowServiceImpl
 
     @Override
     public List<StockFlowVo> queryOutExport(StockFlowQuery query) {
-        return queryList(lockInout(query, INOUT_OUT));
+        // 出库记录导出：与列表口径一致，排除领用后损耗（loss）
+        LambdaQueryWrapper<StockFlow> wrapper = buildWrapper(lockInout(query, INOUT_OUT))
+            .ne(StockFlow::getFlowType, FLOW_TYPE_LOSS);
+        List<StockFlowVo> list = baseMapper.selectVoList(wrapper);
+        fillJoinNames(list);
+        return list;
     }
 
     @Override
@@ -187,15 +205,19 @@ public class StockFlowServiceImpl
         if (query == null) {
             return w.orderByDesc(StockFlow::getId);
         }
+        boolean hasMatTypes = query.getMatTypes() != null && !query.getMatTypes().isEmpty();
+        boolean hasProductTypes = query.getProductTypes() != null && !query.getProductTypes().isEmpty();
         // matType / productName / buyClass / productType → 反查 product.id 集合（取交集下推 productId IN）
-        if (StringUtils.isNotBlank(query.getMatType())
+        if (hasMatTypes || StringUtils.isNotBlank(query.getMatType())
             || StringUtils.isNotBlank(query.getProductName())
             || StringUtils.isNotBlank(query.getBuyClass())
-            || query.getProductType() != null) {
+            || hasProductTypes || query.getProductType() != null) {
             LambdaQueryWrapper<ProductInfo> pw = new LambdaQueryWrapper<>();
-            pw.eq(StringUtils.isNotBlank(query.getMatType()), ProductInfo::getBelongType, query.getMatType())
+            pw.in(hasMatTypes, ProductInfo::getBelongType, query.getMatTypes())
+                .eq(!hasMatTypes && StringUtils.isNotBlank(query.getMatType()), ProductInfo::getBelongType, query.getMatType())
                 .eq(StringUtils.isNotBlank(query.getBuyClass()), ProductInfo::getBuyClass, query.getBuyClass())
-                .eq(query.getProductType() != null, ProductInfo::getProductType, query.getProductType())
+                .in(hasProductTypes, ProductInfo::getProductType, query.getProductTypes())
+                .eq(!hasProductTypes && query.getProductType() != null, ProductInfo::getProductType, query.getProductType())
                 .like(StringUtils.isNotBlank(query.getProductName()), ProductInfo::getProductName, query.getProductName());
             List<ProductInfo> products = productInfoMapper.selectList(pw);
             if (products.isEmpty()) {
@@ -221,13 +243,19 @@ public class StockFlowServiceImpl
             }
             w.in(StockFlow::getOperatorId, userIds);
         }
+        boolean hasFlowTypes = query.getFlowTypes() != null && !query.getFlowTypes().isEmpty();
+        boolean hasStockOutDests = query.getStockOutDests() != null && !query.getStockOutDests().isEmpty();
+        boolean hasWarehouseIds = query.getWarehouseIds() != null && !query.getWarehouseIds().isEmpty();
         w.eq(StringUtils.isNotBlank(query.getFlowNo()),      StockFlow::getFlowNo, query.getFlowNo())
-            .eq(StringUtils.isNotBlank(query.getFlowType()),  StockFlow::getFlowType, query.getFlowType())
+            .in(hasFlowTypes, StockFlow::getFlowType, query.getFlowTypes())
+            .eq(!hasFlowTypes && StringUtils.isNotBlank(query.getFlowType()),  StockFlow::getFlowType, query.getFlowType())
             .eq(StringUtils.isNotBlank(query.getInoutType()), StockFlow::getInoutType, query.getInoutType())
-            .eq(StringUtils.isNotBlank(query.getStockOutDest()), StockFlow::getStockOutDest, query.getStockOutDest())
+            .in(hasStockOutDests, StockFlow::getStockOutDest, query.getStockOutDests())
+            .eq(!hasStockOutDests && StringUtils.isNotBlank(query.getStockOutDest()), StockFlow::getStockOutDest, query.getStockOutDest())
             .eq(query.getProductId() != null,    StockFlow::getProductId,   query.getProductId())
             .eq(query.getOperatorId() != null,   StockFlow::getOperatorId,  query.getOperatorId())
-            .eq(query.getWarehouseId() != null,  StockFlow::getWarehouseId, query.getWarehouseId())
+            .in(hasWarehouseIds, StockFlow::getWarehouseId, query.getWarehouseIds())
+            .eq(!hasWarehouseIds && query.getWarehouseId() != null,  StockFlow::getWarehouseId, query.getWarehouseId())
             .like(StringUtils.isNotBlank(query.getEarNo()), StockFlow::getEarNo, query.getEarNo())
             .eq(query.getPlotId() != null, StockFlow::getPlotId, query.getPlotId())
             .ge(query.getDateFrom() != null, StockFlow::getFlowDate, query.getDateFrom())

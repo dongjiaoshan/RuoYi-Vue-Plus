@@ -4,6 +4,7 @@ import com.fasterxml.jackson.annotation.JsonFormat;
 import lombok.Data;
 
 import java.util.Date;
+import java.util.List;
 
 /**
  * 盘点查询参数（admin 盘点单列表筛选 + mp 明细 line 查询）。
@@ -23,6 +24,11 @@ public class StockCheckQuery {
      * 库位 ID 精确匹配。
      */
     private Long locationId;
+
+    /**
+     * 库位 ID 多选（R70 盘点仓库实体下拉多选）。非空时按 IN 过滤，优先于单值 locationId。
+     */
+    private List<Long> locationIds;
 
     /**
      * 盘点单状态字典 {@code djs_check_status}（draft / in_progress / completed）。

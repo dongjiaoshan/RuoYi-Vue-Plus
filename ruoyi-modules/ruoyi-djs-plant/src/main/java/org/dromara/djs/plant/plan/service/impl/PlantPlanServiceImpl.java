@@ -741,8 +741,11 @@ public class PlantPlanServiceImpl extends DjsBaseServiceImpl<PlantPlanMapper, Pl
 
     @Override
     public List<PlotByZoneVo> listAvailablePlots(Integer planYear) {
+        // 仅下发启用片区（zone_status=0，字典 sys_normal_disable：0=正常/启用，1=停用），停用片区不参与种植计划地块选择
         List<PlotZone> zones = zoneMapper.selectList(
-            new LambdaQueryWrapper<PlotZone>().orderByAsc(PlotZone::getZoneCode));
+            new LambdaQueryWrapper<PlotZone>()
+                .eq(PlotZone::getZoneStatus, 0)
+                .orderByAsc(PlotZone::getZoneCode));
         List<PlotInfo> plots = plotMapper.selectList(
             new LambdaQueryWrapper<PlotInfo>().orderByAsc(PlotInfo::getPlotCode));
 

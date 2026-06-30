@@ -143,8 +143,35 @@ public class MatIssueItemVo implements Serializable {
      *
      * <p>additive 字段：mp 既有端点不回填（默认 null / 0）；admin 行粒度列表
      * {@code selectAdminMatIssueRows} 子查询今日 {@code stock_flow flow_type='feed_out'} 当日 SUM
-     * （不按 operator 过滤，admin 看全部人）。果蔬业态才有饲喂操作，其余业态恒 0。</p>
+     * （不按 operator 过滤，admin 看全部人）。果蔬业态才有饲喂操作，其余业态恒 0。
+     * mp 卡片端点（{@code selectMatIssueItems} / {@code selectMatIssueItemsByType}）也回填本字段，
+     * 驱动「今日已饲喂」展示 + 退回上限扣减（行3.3：已饲喂的不许退回）。</p>
      */
     private BigDecimal todayFeed;
+
+    /**
+     * 今日生产消耗（行3.3：已生产消耗的重量不许退回）。
+     *
+     * <p>可打包食品原料（vegetable/egg/dry_good/other）领用即进 {@code product_inhouse} 待打包，
+     * 生产打包 {@code consumeInhouse} 扣减 inhouse 但<b>不写 stock_flow</b>，故无独立 flow_type 可 SUM。
+     * 本字段 = {@code 今日已领 − 已退 − 已损 − 已饲 − 今日 inhouse 剩余}（派生量，仅可打包食品有意义、展示用）；
+     * 非可打包物资无生产消耗概念，恒 0。前端「今日已生产」展示用，退回上限以 {@link #remainReturnable} 为准。</p>
+     */
+    private BigDecimal todayProduction;
+
+    /**
+     * 今日剩余可退量（行3.3 退回上限权威值）= 领用 − 退回 − 损耗 − 饲喂 − 生产消耗。
+     *
+     * <p>口径与 {@code MatFlowServiceImpl.ensureTodayCapacity} 写侧额度同源，前端退回 / 损耗上限直接用本值：</p>
+     * <ul>
+     *   <li><b>可打包食品原料</b>（vegetable/egg/dry_good/other）：= 今日 {@code product_inhouse} 剩余
+     *       （{@code sumTodayRemaining}）—— 领用产 inhouse，退回 / 损耗 / 饲喂 / 生产打包都减 inhouse，
+     *       天然净掉一切消耗（最准，无需逐项相减）。</li>
+     *   <li><b>非可打包物资</b>（package/feed/seed/medicine）：= 今领 − 已退 − 已损 − 已饲。</li>
+     * </ul>
+     *
+     * <p>mp 卡片端点回填；admin 行粒度端点 {@code selectAdminMatIssueRows} 不回填即 null。</p>
+     */
+    private BigDecimal remainReturnable;
 
 }

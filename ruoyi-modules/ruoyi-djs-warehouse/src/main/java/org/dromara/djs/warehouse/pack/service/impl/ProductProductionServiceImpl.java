@@ -565,14 +565,15 @@ public class ProductProductionServiceImpl
         String produceNo = query == null ? null : query.getProduceNo();
         String productName = query == null ? null : query.getProductName();
         String belongType = query == null ? null : query.getBelongType();
+        List<String> belongTypes = query == null ? null : query.getBelongTypes();
         Integer productType = query == null ? null : query.getProductType();
         Date from = query == null ? null : query.getProduceDateFrom();
         Date to = query == null ? null : query.getProduceDateTo();
         Integer hasDamage = query == null ? null : query.getHasDamage();
-        // belongType（产品品类，product_info 维度）/ productType（组内同值）/ productName(LIKE) 下推 mapper WHERE；
-        // hasDamage（是否存在损坏）作用于组维度，下推 mapper HAVING（row50）
+        // belongType / belongTypes（产品品类多选，R70 优先 IN，product_info 维度）/ productType（组内同值）/
+        // productName(LIKE) 下推 mapper WHERE；hasDamage（是否存在损坏）作用于组维度，下推 mapper HAVING（row50）
         List<ProductProductionGroupVo> all =
-            baseMapper.selectProductionGroupList(produceNo, productName, belongType, productType, from, to, hasDamage);
+            baseMapper.selectProductionGroupList(produceNo, productName, belongType, belongTypes, productType, from, to, hasDamage);
         // 聚合后内存分页（分组行数小，范式同 DemandManageServiceImpl.queryGroupList）
         int total = all.size();
         int pageNum = pageQuery == null || pageQuery.getPageNum() == null ? 1 : pageQuery.getPageNum();
@@ -1375,6 +1376,7 @@ public class ProductProductionServiceImpl
             return w.orderByDesc(ProductProduction::getId);
         }
         w.eq(StringUtils.isNotBlank(query.getProduceNo()),  ProductProduction::getProduceNo, query.getProduceNo())
+            .like(StringUtils.isNotBlank(query.getProductName()), ProductProduction::getProductName, query.getProductName())
             .eq(query.getProductId() != null,    ProductProduction::getProductId, query.getProductId())
             .eq(query.getProductType() != null,  ProductProduction::getProductType, query.getProductType())
             .apply(StringUtils.isNotBlank(query.getProductSort()),
@@ -1382,8 +1384,31 @@ public class ProductProductionServiceImpl
             .eq(StringUtils.isNotBlank(query.getPackStatus()), ProductProduction::getPackStatus, query.getPackStatus())
             .eq(StringUtils.isNotBlank(query.getEarNo()), ProductProduction::getEarNo, query.getEarNo())
             .eq(query.getPlotId() != null, ProductProduction::getPlotId, query.getPlotId())
-            .eq(query.getStoreId() != null, ProductProduction::getStoreId, query.getStoreId())
+            .eq(query.getStoreId() != null, ProductProduction::getStoreId, query.getStoreId());
+        // 产品品类（belong_type）不在 product_production 列上，经 product_id 子查询过滤 product_info 维度。
+        // R70 多选：belongTypes 非空 → 子查询 IN；否则 fallback 单值 belongType = ...（mp / 其他单值调用方）。
+        boolean hasBelongTypes = query.getBelongTypes() != null && !query.getBelongTypes().isEmpty();
+        if (hasBelongTypes) {
+            // 用 MP 占位符 {0},{1}... 防注入（与本文件其他 .apply 同范式，参数化下推）
+            List<String> bts = query.getBelongTypes();
+            String placeholders = java.util.stream.IntStream.range(0, bts.size())
+                .mapToObj(i -> "{" + i + "}")
+                .collect(Collectors.joining(","));
+            w.apply("product_id IN (SELECT id FROM t_warehouse_product_info WHERE belong_type IN ("
+                + placeholders + ") AND del_flag = '0')", bts.toArray());
+        } else {
+            w.apply(StringUtils.isNotBlank(query.getBelongType()),
+                "product_id IN (SELECT id FROM t_warehouse_product_info WHERE belong_type = {0} AND del_flag = '0')",
+                query.getBelongType());
+        }
+        w
+            // 是否存在损坏（导出沿用主列表 hasDamage 口径：作用到逐件 is_damaged）
+            .eq(query.getHasDamage() != null, ProductProduction::getIsDamaged, query.getHasDamage())
+            .eq(query.getIsDamaged() != null, ProductProduction::getIsDamaged, query.getIsDamaged())
             .apply(query.getProduceDate() != null, "DATE(produce_date) = DATE({0})", query.getProduceDate())
+            // 生产日期范围（主列表导出按 produceDateFrom/To 过滤逐件，与列表可见行口径一致）
+            .apply(query.getProduceDateFrom() != null, "DATE(produce_date) >= DATE({0})", query.getProduceDateFrom())
+            .apply(query.getProduceDateTo() != null, "DATE(produce_date) <= DATE({0})", query.getProduceDateTo())
             .ge(query.getProduceTimeFrom() != null, ProductProduction::getProduceTime, query.getProduceTimeFrom())
             .le(query.getProduceTimeTo() != null,   ProductProduction::getProduceTime, query.getProduceTimeTo())
             .orderByDesc(ProductProduction::getProduceTime)

@@ -1,5 +1,7 @@
 package org.dromara.djs.warehouse.stock.domain.vo;
 
+import cn.idev.excel.annotation.ExcelIgnoreUnannotated;
+import cn.idev.excel.annotation.ExcelProperty;
 import lombok.Data;
 
 import java.io.Serial;
@@ -28,6 +30,7 @@ import java.math.BigDecimal;
  * @since WMS-STOCK-OVERVIEW-001
  */
 @Data
+@ExcelIgnoreUnannotated
 public class StockOverviewDetailVo implements Serializable {
 
     @Serial
@@ -40,35 +43,45 @@ public class StockOverviewDetailVo implements Serializable {
     private String imageOssId;
 
     /** 产品编码（业务码）。 */
+    @ExcelProperty(value = "产品编码")
     private String productCode;
 
     /** 产品名称。 */
+    @ExcelProperty(value = "产品名称")
     private String productName;
 
     /** 单位。 */
+    @ExcelProperty(value = "单位")
     private String productUnit;
 
     /** 库位 id（String 防精度丢失；按库位维度展示库存）。 */
     private String locationId;
 
     /** 库位名称。 */
+    @ExcelProperty(value = "存储库位")
     private String locationName;
 
     /** 期初库存（= 昨日期末，回放 stock_flow 累计到昨日末）。 */
+    @ExcelProperty(value = "期初库存")
     private BigDecimal beginStock;
 
     /** 入库量（当日 IN 流水绝对值合计）。 */
+    @ExcelProperty(value = "入库量")
     private BigDecimal inboundQty;
 
     /** 出库量（当日 OT 流水绝对值合计；含损耗流水）。 */
+    @ExcelProperty(value = "出库量")
     private BigDecimal outboundQty;
 
     /** 损耗量（当日 loss_flow 合计，信息列，期末不二次扣）。 */
+    @ExcelProperty(value = "损耗量")
     private BigDecimal lossQty;
 
     /** 饲料饲喂量（当日 feed_log 合计，仅果蔬原材料有值）。 */
+    @ExcelProperty(value = "饲料饲喂量")
     private BigDecimal feedQty;
 
     /** 期末库存（= 期初 + 入库 − 出库）。 */
+    @ExcelProperty(value = "期末库存")
     private BigDecimal endStock;
 }

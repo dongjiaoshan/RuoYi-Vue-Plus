@@ -391,10 +391,18 @@ public interface DemandManageMapper extends BaseMapperPlus<DemandManage, DemandM
               <if test="productName != null and productName != ''">
                 AND product_name LIKE CONCAT('%', #{productName}, '%')
               </if>
-              <if test="productType != null and productType != ''">
+              <if test="productTypes != null and productTypes.size() > 0">
+                AND product_type IN
+                <foreach collection="productTypes" item="pt" open="(" separator="," close=")">#{pt}</foreach>
+              </if>
+              <if test="(productTypes == null or productTypes.size() == 0) and productType != null and productType != ''">
                 AND product_type = #{productType}
               </if>
-              <if test="storeId != null">
+              <if test="storeIds != null and storeIds.size() > 0">
+                AND store_id IN
+                <foreach collection="storeIds" item="sid" open="(" separator="," close=")">#{sid}</foreach>
+              </if>
+              <if test="(storeIds == null or storeIds.size() == 0) and storeId != null">
                 AND store_id = #{storeId}
               </if>
               <if test="beginDate != null">
@@ -415,7 +423,9 @@ public interface DemandManageMapper extends BaseMapperPlus<DemandManage, DemandM
         """)
     List<DemandGroupVo> selectDemandGroupList(@Param("productName") String productName,
                                               @Param("productType") String productType,
+                                              @Param("productTypes") List<String> productTypes,
                                               @Param("storeId") Long storeId,
+                                              @Param("storeIds") List<Long> storeIds,
                                               @Param("beginDate") LocalDate beginDate,
                                               @Param("endDate") LocalDate endDate);
 

@@ -1,7 +1,11 @@
 package org.dromara.djs.warehouse.veg.controller;
 
 import cn.dev33.satoken.annotation.SaCheckPermission;
+import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
+import org.dromara.common.excel.utils.ExcelUtil;
+import org.dromara.common.log.annotation.Log;
+import org.dromara.common.log.enums.BusinessType;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.web.core.BaseController;
@@ -9,8 +13,11 @@ import org.dromara.djs.warehouse.veg.domain.bo.FeedRecordQuery;
 import org.dromara.djs.warehouse.veg.domain.vo.FeedRecordVo;
 import org.dromara.djs.warehouse.veg.service.IFeedRecordService;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+
+import java.util.List;
 
 /**
  * 有机饲喂记录 Controller（WMS-FEED-RECORD-001，仓库-admin 行21「有机饲喂记录」只读菜单）。
@@ -41,5 +48,19 @@ public class FeedRecordController extends BaseController {
     @GetMapping("/list")
     public TableDataInfo<FeedRecordVo> list(FeedRecordQuery query, PageQuery pageQuery) {
         return feedRecordService.queryPage(query, pageQuery);
+    }
+
+    /**
+     * 有机饲喂记录导出（行21）：按当前搜索条件（作物名 / 提供位置 / 日期范围）导出全量。
+     *
+     * @param query    查询条件
+     * @param response HTTP 响应
+     */
+    @SaCheckPermission("djs:warehouse:feed:record:list")
+    @Log(title = "有机饲喂记录", businessType = BusinessType.EXPORT)
+    @PostMapping("/export")
+    public void export(FeedRecordQuery query, HttpServletResponse response) {
+        List<FeedRecordVo> list = feedRecordService.queryList(query);
+        ExcelUtil.exportExcel(list, "有机饲喂记录", FeedRecordVo.class, response);
     }
 }

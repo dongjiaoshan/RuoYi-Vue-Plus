@@ -176,6 +176,17 @@ public class WarehousePurchaseInServiceImpl implements IWarehousePurchaseInServi
         return TableDataInfo.build(result);
     }
 
+    @Override
+    public List<PurchaseInProductVo> queryProductList(PurchaseInProductQuery query) {
+        PurchaseInProductQuery q = query == null ? new PurchaseInProductQuery() : query;
+        // 导出走同一聚合 SQL，单页足量取全量（外购商品行数有限）
+        Page<PurchaseInProductVo> page = new Page<>(1, 100000);
+        IPage<PurchaseInProductVo> result = productInfoMapper.selectPurchaseInProductPage(page, q);
+        List<PurchaseInProductVo> rows = result.getRecords();
+        fillProductExtras(rows);
+        return rows;
+    }
+
     /**
      * 批量回填 imageUrl（resolver 4 层，禁 N+1）+ storeLocationName（多库位「、」拼接，单次 IN 查）。
      *

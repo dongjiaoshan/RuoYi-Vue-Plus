@@ -46,4 +46,26 @@ public class PickActivityVo implements Serializable {
     /** 累计已采重量（截至该日累计 SUM actual_yield，kg）。 */
     @ExcelProperty(value = "累计已采重量(kg)")
     private BigDecimal cumulativePickWeight;
+
+    // ===== DENGBO-R4 采摘去向 5 列（按 crop_id + activity_date 聚合 t_plant_plant_activity.pick_dest）=====
+
+    /** 销售重量（pick_dest='sale' 或历史 NULL 行的 pick_weight 之和，kg）。 */
+    @ExcelProperty(value = "销售重量(kg)")
+    private BigDecimal saleWeight;
+
+    /** 毛菜处理间量（pick_dest='veg_fresh'，kg）。 */
+    @ExcelProperty(value = "毛菜处理间量(kg)")
+    private BigDecimal vegFreshWeight;
+
+    /** 果蔬月台量（pick_dest='platform'，kg）。 */
+    @ExcelProperty(value = "果蔬月台量(kg)")
+    private BigDecimal platformWeight;
+
+    /** 损耗量（pick_dest='loss'，kg）。 */
+    @ExcelProperty(value = "损耗量(kg)")
+    private BigDecimal lossWeight;
+
+    /** 饲料饲喂量（pick_dest='feed'，kg）。 */
+    @ExcelProperty(value = "饲料饲喂量(kg)")
+    private BigDecimal feedWeight;
 }

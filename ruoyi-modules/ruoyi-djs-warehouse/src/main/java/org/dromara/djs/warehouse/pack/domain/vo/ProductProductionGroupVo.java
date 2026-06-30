@@ -57,6 +57,21 @@ public class ProductProductionGroupVo implements Serializable {
     private Integer itemCount;
 
     /**
+     * 原材料消耗量：该组（同产品同生产日）所有生产记录的 {@code SUM(material_consume)}。
+     *
+     * <p>每条打包记录的 {@code material_consume} = 本次打包消耗的来源原材料重量；组内求和即该产品当日
+     * 累计原材料消耗。无配料（{@code material_id} 空）的记录 material_consume 为 NULL，SUM 跳过 → 该组可能为 0。</p>
+     */
+    private BigDecimal materialConsume;
+
+    /**
+     * 原材料单位：组内 {@code material_id} 对应 {@code product_info.product_unit}（同组通常同一原料，取任一）。
+     *
+     * <p>SQL 经 {@code material_id} LEFT JOIN product_info 取 {@code MAX(unit)} 兜底；无配料则空。</p>
+     */
+    private String materialUnit;
+
+    /**
      * 需求门店数：该产品当前有未发货需求的门店去重家数。
      *
      * <p>口径对齐打包台「门店(N份)」标签（{@code DemandManageMapper.selectStoreDemandCopies}）：

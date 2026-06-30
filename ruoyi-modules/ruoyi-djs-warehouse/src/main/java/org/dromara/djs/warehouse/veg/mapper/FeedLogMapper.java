@@ -66,7 +66,8 @@ public interface FeedLogMapper extends BaseMapperPlus<FeedLog, FeedLog> {
     @Select("""
         <script>
         SELECT fl.id, fl.feed_date AS feedDate, fl.product_id AS productId,
-               fl.location_id AS locationId, l.location_name AS locationName,
+               fl.location_id AS locationId,
+               COALESCE(l.location_name, CASE fl.feed_type WHEN 'veg_handle' THEN '毛菜间' END) AS locationName,
                fl.feed_weight AS feedWeight, fl.operator_id AS operatorId, fl.remark
         FROM t_warehouse_feed_log fl
         LEFT JOIN t_warehouse_location_info l
@@ -127,5 +128,46 @@ public interface FeedLogMapper extends BaseMapperPlus<FeedLog, FeedLog> {
     IPage<FeedRecordVo> selectRecordPage(IPage<FeedRecordVo> page,
                                          @Param("tenantId") String tenantId,
                                          @Param("query") FeedRecordQuery query);
+
+    /**
+     * 有机饲喂记录不分页列表（导出用，行21 导出）。
+     *
+     * <p>同 {@link #selectRecordPage} 口径，仅不分页。自定义 @Select 含 JOIN，WHERE 显式带
+     * {@code tenant_id}。按饲喂时间倒序。</p>
+     *
+     * @param tenantId 租户（V1 固定 '1001'）
+     * @param query    查询条件（作物名模糊 / 提供位置精确 / 日期范围）
+     * @return 有机饲喂记录全量列表（按 feed_date 倒序）
+     */
+    @Select("""
+        <script>
+        SELECT fl.feed_date AS feedDate,
+               fl.crop_id AS cropId,
+               COALESCE(NULLIF(fl.crop_name, ''), c.crop_name) AS cropName,
+               COALESCE(NULLIF(SUBSTRING_INDEX(c.crop_image_url, ',', 1), ''), c.image_oss_id) AS cropImageOssId,
+               fl.feed_weight AS feedWeight,
+               fl.feed_type AS feedType,
+               fl.location_id AS locationId,
+               l.location_name AS locationName,
+               fl.operator_id AS operatorId
+        FROM t_warehouse_feed_log fl
+        LEFT JOIN t_plant_crop_info c
+          ON c.id = fl.crop_id AND c.del_flag = '0'
+        LEFT JOIN t_warehouse_location_info l
+          ON l.id = fl.location_id AND l.del_flag = '0'
+        WHERE fl.del_flag = '0' AND fl.tenant_id = #{tenantId}
+        <if test="query.cropName != null and query.cropName != ''">
+            AND COALESCE(NULLIF(fl.crop_name, ''), c.crop_name) LIKE CONCAT('%', #{query.cropName}, '%')
+        </if>
+        <if test="query.feedType != null and query.feedType != ''">
+            AND fl.feed_type = #{query.feedType}
+        </if>
+        <if test="query.dateFrom != null"> AND fl.feed_date &gt;= #{query.dateFrom} </if>
+        <if test="query.dateTo != null"> AND fl.feed_date &lt; DATE_ADD(#{query.dateTo}, INTERVAL 1 DAY) </if>
+        ORDER BY fl.feed_date DESC, fl.id DESC
+        </script>
+        """)
+    List<FeedRecordVo> selectRecordList(@Param("tenantId") String tenantId,
+                                        @Param("query") FeedRecordQuery query);
 
 }

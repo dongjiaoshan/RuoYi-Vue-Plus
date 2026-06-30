@@ -10,6 +10,7 @@ import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.web.core.BaseController;
 import org.dromara.djs.warehouse.veg.domain.bo.HandleRecordSubmitBo;
 import org.dromara.djs.warehouse.veg.domain.bo.HarvestSubmitBo;
+import org.dromara.djs.warehouse.veg.domain.bo.PickActivitySubmitBo;
 import org.dromara.djs.warehouse.veg.domain.bo.ProcessSubmitBo;
 import org.dromara.djs.warehouse.veg.domain.vo.HandleRecordVo;
 import org.dromara.djs.warehouse.veg.domain.vo.PendingPlantingRecordVo;
@@ -114,6 +115,18 @@ public class AppletVegHandleController extends BaseController {
     @PostMapping("/process")
     public R<Long> process(@Valid @RequestBody ProcessSubmitBo bo) {
         return R.ok(service.submitProcess(bo));
+    }
+
+    /**
+     * 采摘去向录入（DENGBO-R4 决策 A，mp 采摘活动录入弹窗）。
+     *
+     * <p>编排：plant 写 activity per-event 行 + 非销售累加地块产量；非销售去向写仓库台账。
+     * 销售去向不写仓库库存（只进产量分摊）。warehouse → plant 单向依赖，编排放本模块。</p>
+     */
+    @SaCheckLogin
+    @PostMapping("/pickActivity")
+    public R<Long> pickActivity(@Valid @RequestBody PickActivitySubmitBo bo) {
+        return R.ok(service.submitPickActivity(bo));
     }
 
 }

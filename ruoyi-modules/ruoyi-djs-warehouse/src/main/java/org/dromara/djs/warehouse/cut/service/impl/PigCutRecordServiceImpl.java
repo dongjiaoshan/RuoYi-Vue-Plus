@@ -1103,10 +1103,12 @@ public class PigCutRecordServiceImpl
         if (query == null) {
             return wrapper.orderByDesc(PigCutRecord::getId);
         }
+        boolean hasCutStatuses = query.getCutStatuses() != null && !query.getCutStatuses().isEmpty();
         wrapper.eq(StringUtils.isNotBlank(query.getCutId()), PigCutRecord::getCutId, query.getCutId())
             .eq(StringUtils.isNotBlank(query.getBarId()), PigCutRecord::getBarId, query.getBarId())
             .eq(StringUtils.isNotBlank(query.getEarNo()), PigCutRecord::getEarNo, query.getEarNo())
-            .eq(StringUtils.isNotBlank(query.getCutStatus()), PigCutRecord::getCutStatus, query.getCutStatus())
+            .in(hasCutStatuses, PigCutRecord::getCutStatus, query.getCutStatuses())
+            .eq(!hasCutStatuses && StringUtils.isNotBlank(query.getCutStatus()), PigCutRecord::getCutStatus, query.getCutStatus())
             .eq(query.getOperatorId() != null, PigCutRecord::getOperatorId, query.getOperatorId())
             .ge(query.getPickupTimeFrom() != null, PigCutRecord::getPickupTime, query.getPickupTimeFrom())
             .le(query.getPickupTimeTo() != null, PigCutRecord::getPickupTime, query.getPickupTimeTo())

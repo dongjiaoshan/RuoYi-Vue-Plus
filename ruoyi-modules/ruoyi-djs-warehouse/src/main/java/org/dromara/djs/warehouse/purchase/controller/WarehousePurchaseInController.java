@@ -72,13 +72,23 @@ public class WarehousePurchaseInController extends BaseController {
     }
 
     /**
-     * 导出。
+     * 导出（流水维度）。
      */
     @SaCheckPermission("djs:warehouse:purchaseIn:export")
     @PostMapping("/export")
     public void export(PurchaseInQuery query, HttpServletResponse response) {
         List<PurchaseInRecordVo> list = service.queryList(query);
         ExcelUtil.exportExcel(list, "采购入库", PurchaseInRecordVo.class, response);
+    }
+
+    /**
+     * 导出（商品维度，row66 列表导出）。
+     */
+    @SaCheckPermission("djs:warehouse:purchaseIn:export")
+    @PostMapping("/productExport")
+    public void productExport(PurchaseInProductQuery query, HttpServletResponse response) {
+        List<PurchaseInProductVo> list = service.queryProductList(query);
+        ExcelUtil.exportExcel(list, "采购入库", PurchaseInProductVo.class, response);
     }
 
 }

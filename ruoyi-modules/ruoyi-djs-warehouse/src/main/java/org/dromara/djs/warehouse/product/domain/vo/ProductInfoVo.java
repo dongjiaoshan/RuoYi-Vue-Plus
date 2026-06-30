@@ -116,6 +116,12 @@ public class ProductInfoVo implements Serializable {
     @ExcelProperty(value = "供应商 ID")
     private Long supplierId;
 
+    /**
+     * 供应商名称（row81：商品配置列表「供应商」列；service 按 {@link #supplierId} 关联 t_md_supplier.supplier_name 批量回填）。
+     */
+    @ExcelProperty(value = "供应商")
+    private String supplierName;
+
     @ExcelProperty(value = "是否可外购", converter = ExcelDictConvert.class)
     @ExcelDictFormat(dictType = "djs_yes_no")
     private Integer isBuyOut;

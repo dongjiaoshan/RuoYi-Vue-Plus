@@ -395,12 +395,34 @@ public class StoreReturnServiceImpl
 
     @Override
     public TableDataInfo<StoreReturnStoreDailyVo> queryStoreDailyPage(StoreReturnQuery query, PageQuery pageQuery) {
-        // 仓库「退货记录」外层主从视图：仅门店→仓库方向（不含 customer_to_store），按 退回日期(截到天)+门店 聚合。
+        List<StoreReturnStoreDailyVo> all = buildStoreDailyList(query);
+        int total = all.size();
+        int pageNum = Math.max(pageQuery == null || pageQuery.getPageNum() == null ? 1 : pageQuery.getPageNum(), 1);
+        int pageSize = pageQuery == null || pageQuery.getPageSize() == null ? 10 : pageQuery.getPageSize();
+        int from = Math.min((pageNum - 1) * pageSize, total);
+        int to = Math.min(from + pageSize, total);
+        TableDataInfo<StoreReturnStoreDailyVo> dataInfo = new TableDataInfo<>();
+        dataInfo.setCode(200);
+        dataInfo.setRows(new ArrayList<>(all.subList(from, to)));
+        dataInfo.setTotal(total);
+        return dataInfo;
+    }
+
+    @Override
+    public List<StoreReturnStoreDailyVo> queryStoreDailyList(StoreReturnQuery query) {
+        return buildStoreDailyList(query);
+    }
+
+    /**
+     * 仓库「退货记录」外层主从视图聚合（仅门店→仓库方向，不含 customer_to_store），
+     * 按 退回日期(截到天)+门店 聚合，退货日期倒序、再门店倒序的稳定排序。分页 / 导出共用。
+     */
+    private List<StoreReturnStoreDailyVo> buildStoreDailyList(StoreReturnQuery query) {
         StoreReturnQuery q = query == null ? new StoreReturnQuery() : query;
         q.setReturnDirection(DIRECTION_STORE_TO_WAREHOUSE);
         List<StoreReturn> rows = baseMapper.selectList(buildQueryWrapper(q));
         if (rows.isEmpty()) {
-            return TableDataInfo.build(new ArrayList<>());
+            return new ArrayList<>();
         }
         Map<String, List<StoreReturn>> byGroup = rows.stream()
             .filter(r -> r.getReturnDate() != null && r.getStoreId() != null)
@@ -408,7 +430,7 @@ public class StoreReturnServiceImpl
                 r -> r.getReturnDate().toLocalDate() + "|" + r.getStoreId(),
                 LinkedHashMap::new, Collectors.toList()));
         if (byGroup.isEmpty()) {
-            return TableDataInfo.build(new ArrayList<>());
+            return new ArrayList<>();
         }
         Set<Long> storeIds = byGroup.values().stream()
             .map(g -> g.get(0).getStoreId()).filter(Objects::nonNull).collect(Collectors.toSet());
@@ -440,16 +462,7 @@ public class StoreReturnServiceImpl
         all.sort(Comparator
             .comparing(StoreReturnStoreDailyVo::getReturnDate, Comparator.reverseOrder())
             .thenComparing(StoreReturnStoreDailyVo::getStoreId, Comparator.reverseOrder()));
-        int total = all.size();
-        int pageNum = Math.max(pageQuery == null || pageQuery.getPageNum() == null ? 1 : pageQuery.getPageNum(), 1);
-        int pageSize = pageQuery == null || pageQuery.getPageSize() == null ? 10 : pageQuery.getPageSize();
-        int from = Math.min((pageNum - 1) * pageSize, total);
-        int to = Math.min(from + pageSize, total);
-        TableDataInfo<StoreReturnStoreDailyVo> dataInfo = new TableDataInfo<>();
-        dataInfo.setCode(200);
-        dataInfo.setRows(new ArrayList<>(all.subList(from, to)));
-        dataInfo.setTotal(total);
-        return dataInfo;
+        return all;
     }
 
     @Override
@@ -641,9 +654,13 @@ public class StoreReturnServiceImpl
         if (q == null) {
             return w.orderByDesc(StoreReturn::getReturnDate).orderByDesc(StoreReturn::getId);
         }
+        boolean hasStoreIds = q.getStoreIds() != null && !q.getStoreIds().isEmpty();
+        boolean hasProductIds = q.getProductIds() != null && !q.getProductIds().isEmpty();
         w.like(StringUtils.isNotBlank(q.getReturnNo()), StoreReturn::getReturnNo, q.getReturnNo())
-            .eq(q.getStoreId() != null, StoreReturn::getStoreId, q.getStoreId())
-            .eq(q.getProductId() != null, StoreReturn::getProductId, q.getProductId())
+            .in(hasStoreIds, StoreReturn::getStoreId, q.getStoreIds())
+            .eq(!hasStoreIds && q.getStoreId() != null, StoreReturn::getStoreId, q.getStoreId())
+            .in(hasProductIds, StoreReturn::getProductId, q.getProductIds())
+            .eq(!hasProductIds && q.getProductId() != null, StoreReturn::getProductId, q.getProductId())
             .eq(StringUtils.isNotBlank(q.getReturnStatus()),
                 StoreReturn::getReturnStatus, q.getReturnStatus())
             .eq(StringUtils.isNotBlank(q.getReturnDirection()),

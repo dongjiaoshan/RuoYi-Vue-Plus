@@ -65,4 +65,15 @@ public interface IWarehousePurchaseInService {
      */
     TableDataInfo<PurchaseInProductVo> queryProductPageList(PurchaseInProductQuery query, PageQuery pageQuery);
 
+    /**
+     * 采购入库「商品维度」不分页查询（导出用，row66）。
+     *
+     * <p>与 {@link #queryProductPageList} 同口径聚合 + 同 service 层批量回填（storeLocationName / imageUrl），
+     * 仅不分页，供 Excel 导出。</p>
+     *
+     * @param query 查询条件
+     * @return 商品维度聚合全量列表
+     */
+    List<PurchaseInProductVo> queryProductList(PurchaseInProductQuery query);
+
 }

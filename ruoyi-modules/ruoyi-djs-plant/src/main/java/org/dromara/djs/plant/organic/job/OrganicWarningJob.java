@@ -1,8 +1,10 @@
 package org.dromara.djs.plant.organic.job;
 
+import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.common.core.service.ConfigService;
+import org.dromara.djs.common.job.DjsJobRegistry;
 import org.dromara.djs.common.job.DjsJobRunner;
 import org.dromara.djs.plant.organic.mapper.CropOrganicMapper;
 import org.dromara.djs.plant.organic.mapper.PlotOrganicMapper;
@@ -35,6 +37,19 @@ public class OrganicWarningJob {
     private final PlotOrganicMapper plotOrganicMapper;
     private final CropOrganicMapper cropOrganicMapper;
     private final ConfigService configService;
+    private final DjsJobRegistry jobRegistry;
+
+    /** job 名（注册表 key + 日志名 + admin 重跑下拉项）。 */
+    public static final String JOB_NAME = "organic-warning";
+
+    /**
+     * 注册重扫逻辑到 {@link DjsJobRegistry}，供 admin 手动重跑调用。
+     * 无日期参数：扫描以「当前日期」为基准（忽略 targetDate），重跑即重扫一次。
+     */
+    @PostConstruct
+    public void register() {
+        jobRegistry.register(JOB_NAME, date -> doScan());
+    }
 
     /**
      * 定时扫描入口：每天 0 点触发。
@@ -44,7 +59,7 @@ public class OrganicWarningJob {
      */
     @Scheduled(cron = "${djs.schedule.organic-warning-cron:0 0 0 * * ?}")
     public void scanWarning() {
-        DjsJobRunner.run("organic-warning", this::doScan);
+        DjsJobRunner.run(JOB_NAME, this::doScan);
     }
 
     /**

@@ -94,10 +94,11 @@ public interface IProductInfoService {
     /**
      * 商品详情「业务流水」子表（DJS-FIX-WMS-RALN-B）：按 productId 查 stock_flow（入库 / 领用出库 / 后台出库）。
      *
-     * @param productId 产品 ID
-     * @param bizDate   业务日期（可空，DATE 精确）
+     * @param productId    产品 ID
+     * @param bizDateFrom  业务日期区间起（可空，DATE，含当天）
+     * @param bizDateTo    业务日期区间止（可空，DATE，含当天）
      */
-    List<ProductFlowRecordVo> queryFlowRecords(Long productId, Date bizDate);
+    List<ProductFlowRecordVo> queryFlowRecords(Long productId, Date bizDateFrom, Date bizDateTo);
 
     /**
      * 商品配置「产品入库」（DJS-FIX-WMS-RALN-B）：录入 产品 / 库位 / 数量 → 写入库 stock_flow + 增 location_stock。
