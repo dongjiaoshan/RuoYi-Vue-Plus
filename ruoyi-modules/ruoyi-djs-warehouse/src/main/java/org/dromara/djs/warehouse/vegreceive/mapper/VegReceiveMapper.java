@@ -141,10 +141,16 @@ public interface VegReceiveMapper extends BaseMapperPlus<VegReceive, VegReceive>
      * 某作物下、按地块的果蔬间入库行。
      *
      * <p>地块月台量 = {@code SUM(send_platform_weight) by plot}；实际入库 = 本表 self 该 (crop, plot) 已入量；
-     * 待入库 = 月台量 − 实际入库（取 0 兜底负值）。状态：已标记入库完成（{@code is_finish=1} 存在）→ done（步10
+     * 待入库 = 月台量 − 实际入库（取 0 兜底负值）。损耗 = 该地块已标记入库完成行的 {@code loss_weight} 合计
+     * （r72：头卡汇总损耗量 = Σ各地块 lossWeight）。状态：已标记入库完成（{@code is_finish=1} 存在）→ done（步10
      * Part1 锁定，唯一 done 判据）/ actual=0→pending / 其余→processing。<b>数量打满（actual≥月台量）但未勾
      * 「入库完成」仍是 processing</b>（row4：量满不自动 done，否则未勾完成就被锁死无法收尾），地块卡仍可点进去
      * 打开「是否入库完成」开关收尾。仅返月台量 &gt; 0 的地块。</p>
+     *
+     * <p><b>当天过滤（r73 ②）</b>：地块仅显当天「入库完成 + 未完成」，次日不再显示昨天及更早已完成的地块。
+     * 实现 = 排除「已标记入库完成且最后一次完成日期早于今天」的地块（{@code finishedBefore = 0}）；
+     * 未完成地块（{@code finished=0}）恒显示，当天完成地块（{@code DATE(receive_time)=CURDATE()}）仍显示为 done。
+     * 完成日期取该 (crop, plot) is_finish=1 行的最大 {@code receive_time}（收货入库时间，即勾选完成那一刻）。</p>
      */
     @Select("""
         SELECT t.plot_id     AS plotId,
@@ -159,7 +165,8 @@ public interface VegReceiveMapper extends BaseMapperPlus<VegReceive, VegReceive>
                  WHEN t.platform - t.actual > 0 THEN t.platform - t.actual
                  ELSE 0
                END           AS pendingWeight,
-               t.actual      AS actualWeight
+               t.actual      AS actualWeight,
+               t.loss        AS lossWeight
           FROM (
             SELECT vh.plot_id,
                    COALESCE(SUM(vh.send_platform_weight), 0) AS platform,
@@ -172,6 +179,16 @@ public interface VegReceiveMapper extends BaseMapperPlus<VegReceive, VegReceive>
                           AND vr.del_flag = '0'
                           AND vr.tenant_id = '1001'
                      ), 0) AS actual,
+                   COALESCE((
+                       SELECT SUM(vrl.loss_weight)
+                         FROM t_warehouse_veg_receive vrl
+                        WHERE vrl.receive_type = 1
+                          AND vrl.crop_id = #{cropId}
+                          AND vrl.plot_id = vh.plot_id
+                          AND vrl.is_finish = 1
+                          AND vrl.del_flag = '0'
+                          AND vrl.tenant_id = '1001'
+                     ), 0) AS loss,
                    (
                        SELECT COUNT(1)
                          FROM t_warehouse_veg_receive vrf
@@ -181,7 +198,18 @@ public interface VegReceiveMapper extends BaseMapperPlus<VegReceive, VegReceive>
                           AND vrf.is_finish = 1
                           AND vrf.del_flag = '0'
                           AND vrf.tenant_id = '1001'
-                   ) AS finished
+                   ) AS finished,
+                   (
+                       SELECT COUNT(1)
+                         FROM t_warehouse_veg_receive vrb
+                        WHERE vrb.receive_type = 1
+                          AND vrb.crop_id = #{cropId}
+                          AND vrb.plot_id = vh.plot_id
+                          AND vrb.is_finish = 1
+                          AND vrb.del_flag = '0'
+                          AND vrb.tenant_id = '1001'
+                          AND DATE(vrb.receive_time) < CURDATE()
+                   ) AS finishedBefore
               FROM t_warehouse_vegetable_handle vh
              WHERE vh.del_flag = '0'
                AND vh.tenant_id = '1001'
@@ -193,6 +221,7 @@ public interface VegReceiveMapper extends BaseMapperPlus<VegReceive, VegReceive>
                  ON pl.id = t.plot_id
                 AND pl.del_flag = '0'
          WHERE t.platform > 0
+           AND t.finishedBefore = 0
          ORDER BY pl.plot_code, t.plot_id
         """)
     List<VegInboundPlotVo> selectInboundPlots(@Param("cropId") Long cropId);

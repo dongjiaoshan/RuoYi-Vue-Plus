@@ -247,6 +247,9 @@ public class AppletPickServiceImpl implements IAppletPickService {
         List<PlantDetails> all = detailsMapper.selectList(
             new LambdaQueryWrapper<PlantDetails>()
                 .eq(PlantDetails::getIsPick, pickFlag)
+                // r55：采摘只显「种植完成」地块——与详情页 listCropPlots 同口径（plant_status='completed'），
+                // 保证列表卡 plotCount 与点进详情看到的地块数一致。
+                .eq(PlantDetails::getPlantStatus, "completed")
                 .le(PlantDetails::getEarliestHarvestdate, lastDay)
                 .ge(PlantDetails::getLastHarvestdate, firstDay));
         if (CollUtil.isEmpty(all)) {
@@ -356,6 +359,9 @@ public class AppletPickServiceImpl implements IAppletPickService {
                 .eq(PlantDetails::getIsPick, pickFlag)
                 .eq(PlantDetails::getCropId, cropId)
                 .eq(planId != null, PlantDetails::getPlantId, planId)
+                // r55：采摘只显「种植完成」地块——明细 plant_status='completed'（种植阶段已结束才可采摘）。
+                // 未完成种植（plant_status!='completed'）的明细不进采摘详情地块列表（邓博定：种植完成=completed）。
+                .eq(PlantDetails::getPlantStatus, "completed")
                 .le(PlantDetails::getEarliestHarvestdate, lastDay)
                 .ge(PlantDetails::getLastHarvestdate, firstDay)
                 .orderByAsc(PlantDetails::getEarliestHarvestdate)

@@ -18,6 +18,7 @@ import org.dromara.djs.warehouse.cross.domain.BarInfo;
 import org.dromara.djs.warehouse.cross.mapper.BarInfoMapper;
 import org.dromara.djs.warehouse.flow.domain.StockFlow;
 import org.dromara.djs.warehouse.flow.mapper.StockFlowMapper;
+import org.dromara.djs.warehouse.loss.service.ILossFlowService;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
 import org.dromara.djs.warehouse.selfcheck.domain.bo.ProductInboundBo;
@@ -81,6 +82,8 @@ public class StockSelfServiceImpl implements IStockSelfService {
     private static final String FLOW_CHECK_ABNORMAL_OUT = "check_abnormal_out";
     /** 出库去向：盘点计损（FIX-WMS-FLOWDICT-001，盘点计损 / 异常出库回填）。 */
     private static final String STOCK_OUT_DEST_CHECK_LOSS = "check_loss";
+    /** 统一损耗台账类型：盘点损耗（{@code djs_loss_type} 已 seed「盘点损耗」）。 */
+    private static final String LOSS_TYPE_CHECK = "check_loss";
 
     /**
      * 盘点结果字典 {@code djs_check_result}：1=正常 / 2=异常 / 3=计损。
@@ -102,6 +105,7 @@ public class StockSelfServiceImpl implements IStockSelfService {
     private final SupplierMapper supplierMapper;
     private final IBizCodeGenerator bizCodeGenerator;
     private final IStockCheckService stockCheckService;
+    private final ILossFlowService lossFlowService;
 
     public StockSelfServiceImpl(StockSelfMapper stockSelfMapper,
                                 LocationStockMapper locationStockMapper,
@@ -110,7 +114,8 @@ public class StockSelfServiceImpl implements IStockSelfService {
                                 BarInfoMapper barInfoMapper,
                                 SupplierMapper supplierMapper,
                                 IBizCodeGenerator bizCodeGenerator,
-                                IStockCheckService stockCheckService) {
+                                IStockCheckService stockCheckService,
+                                ILossFlowService lossFlowService) {
         this.stockSelfMapper = stockSelfMapper;
         this.locationStockMapper = locationStockMapper;
         this.stockFlowMapper = stockFlowMapper;
@@ -119,6 +124,7 @@ public class StockSelfServiceImpl implements IStockSelfService {
         this.supplierMapper = supplierMapper;
         this.bizCodeGenerator = bizCodeGenerator;
         this.stockCheckService = stockCheckService;
+        this.lossFlowService = lossFlowService;
     }
 
     // ============================ 读端点 ============================
@@ -259,22 +265,45 @@ public class StockSelfServiceImpl implements IStockSelfService {
         stockCheckService.assertLocationUnlocked(locId);
         Long userId = resolveOperatorId(bo.getOperatorId());
 
-        // 1. 系统量 + 差异（实盘 - 系统）
+        // 盘点结果 code（normal=1 / abnormal=2 / loss=3），决定库存校准口径 + 拆 flow_type
+        int resultCode = mapCheckResultCode(bo.getCheckResult());
         BigDecimal sysStock = currentStock(locId, productId);
-        BigDecimal diff = bo.getCheckStock().subtract(sysStock);
+
+        // ❓ 口径（R80/R81，按此实现）：计损 / 异常 = 真实库存损失。
+        //   - 正常：以实盘量校准账面（targetStock = checkStock，diff = checkStock - sysStock，盘盈/盘亏均留痕）。
+        //   - 计损 / 异常：以「计损量 / 异常量」(diffQuantity) 为权威损失量，从系统量扣减
+        //     （targetStock = sysStock - lossQty），写出库流水 + 统一损耗台账。
+        //   旧实现只用 checkStock - sysStock 算差异、丢弃 diffQuantity：用户保持实盘量默认值（=当前库存）
+        //   单独填计损量时 diff=0 → 不扣库存、误记为正常（R80/R82 根因）。
+        BigDecimal targetStock;
+        BigDecimal diff;
+        if (resultCode == RESULT_NORMAL) {
+            targetStock = bo.getCheckStock();
+            diff = bo.getCheckStock().subtract(sysStock);
+        } else {
+            BigDecimal lossQty = bo.getDiffQuantity();
+            if (lossQty == null || lossQty.compareTo(BigDecimal.ZERO) <= 0) {
+                throw new ServiceException((resultCode == RESULT_ABNORMAL ? "异常量" : "计损量") + "必须大于 0");
+            }
+            targetStock = sysStock.subtract(lossQty);
+            if (targetStock.compareTo(BigDecimal.ZERO) < 0) {
+                throw new ServiceException((resultCode == RESULT_ABNORMAL ? "异常量" : "计损量")
+                    + "（" + lossQty + product.getProductUnit() + "）超过系统库存量（"
+                    + sysStock + product.getProductUnit() + "）");
+            }
+            // 损失出库 → diff 取负（|diff| = 损失量，与盘点记录卡「计损/异常量」口径一致）
+            diff = lossQty.negate();
+        }
         boolean surplus = diff.compareTo(BigDecimal.ZERO) >= 0;
 
-        // 盘点结果 code（normal=1 / abnormal=2 / loss=3），用于拆盘亏 flow_type + 回写 location_stock
-        int resultCode = mapCheckResultCode(bo.getCheckResult());
-
-        // 2. INSERT 盘点流水留痕（方案 A：每次盘点都写 flow）
+        // 1. INSERT 盘点流水留痕（方案 A：每次盘点都写 flow）
         StockFlow flow = new StockFlow();
         flow.setFlowNo(generateFlowNo(surplus ? INOUT_IN : INOUT_OUT));
         flow.setFlowDate(parseDateOrNow(bo.getCheckDate()));
         flow.setProductId(productId);
         flow.setWarehouseId(locId);
         flow.setInoutType(surplus ? INOUT_IN : INOUT_OUT);
-        // 盘盈 → check_in；盘亏按结果类型拆：异常(2) → check_abnormal_out，正常计损 → check_out（FIX-WMS-FLOWDICT-001）
+        // 盘盈 → check_in；盘亏按结果类型拆：异常(2) → check_abnormal_out，计损(3) → check_out（FIX-WMS-FLOWDICT-001）
         if (surplus) {
             flow.setFlowType(FLOW_CHECK_IN);
         } else {
@@ -283,19 +312,33 @@ public class StockSelfServiceImpl implements IStockSelfService {
             flow.setStockOutDest(STOCK_OUT_DEST_CHECK_LOSS);
         }
         flow.setChangeNum(diff);
-        // changeQuantity 存实盘量（与盘点记录 tab 的 stock 列口径一致）
-        flow.setChangeQuantity(bo.getCheckStock());
+        // changeQuantity 存变动绝对值：正常盘点 = 实盘量；计损/异常 = 损失量（ABS(diff)）。
+        // 盘点记录卡按结果取量（正常→stock=实盘量；计损/异常→diffQuantity=ABS(change_num)）。
+        flow.setChangeQuantity(resultCode == RESULT_NORMAL ? bo.getCheckStock() : diff.abs());
         flow.setOperatorId(userId);
         flow.setRemark(bo.getDiffReason());
         stockFlowMapper.insert(flow);
 
-        // 3. 回写 location_stock 至实盘绝对值 + check_result；无行 → 兜底 INSERT
-        int affected = locationStockMapper.setStockAfterCheck(locId, productId, bo.getCheckStock(), resultCode, userId);
+        // 2. 回写 location_stock 至目标绝对值 + check_result；无行 → 兜底 INSERT
+        int affected = locationStockMapper.setStockAfterCheck(locId, productId, targetStock, resultCode, userId);
         if (affected == 0) {
-            LocationStock stock = newStockRow(locId, productId, product, bo.getCheckStock(), userId);
+            LocationStock stock = newStockRow(locId, productId, product, targetStock, userId);
             stock.setLatestCheckTime(new Date());
             stock.setCheckResult(resultCode);
             locationStockMapper.insert(stock);
+        }
+
+        // 3. 计损 / 异常（盘亏）→ 双写统一损耗台账：损耗量 = ABS(diff)，关联本盘点流水
+        if (resultCode != RESULT_NORMAL) {
+            lossFlowService.record(
+                LOSS_TYPE_CHECK,
+                productId,
+                diff.abs(),
+                locId,
+                userId,
+                "self_check",
+                null,
+                flow.getId());
         }
         return flow.getId();
     }

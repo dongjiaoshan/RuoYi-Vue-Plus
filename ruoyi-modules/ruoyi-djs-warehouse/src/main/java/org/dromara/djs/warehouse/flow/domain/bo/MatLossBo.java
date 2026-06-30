@@ -51,4 +51,14 @@ public class MatLossBo {
     @Size(max = 500, message = "{mat.remark.size}")
     private String remark;
 
+    /**
+     * 记录人 user_id（可空）。
+     *
+     * <p>mp 损耗弹层「记录人」字段：默认当前登录人、可改选仓库部门人员（EmployeePicker）。
+     * 非空 = 代他人登记损耗，写入 {@code stock_flow.operator_id} + {@code loss_flow.operator_id}
+     * （管理者审计该损耗归属谁）；为空 = service 取当前登录人（{@code LoginHelper.getUserId()}）兜底
+     * （现状行为，老调用方不传不回归）。snowflake，前端按 string 传。</p>
+     */
+    private Long operatorId;
+
 }

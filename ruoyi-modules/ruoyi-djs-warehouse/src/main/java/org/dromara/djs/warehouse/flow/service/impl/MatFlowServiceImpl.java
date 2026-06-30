@@ -304,7 +304,7 @@ public class MatFlowServiceImpl implements IMatFlowService {
         // 查不到 / 非原材料(attr!=2) / 非打包消耗类业态（包材·白条·饲料·种子）→ 不在本约束内，允许领用。
         if (material == null
             || !Integer.valueOf(2).equals(material.getProductAttr())
-            || NON_PACK_BELONG_TYPES.contains(material.getBelongType())) {
+            || isNonPackBelong(material.getBelongType())) {
             return true;
         }
         // 其余原材料（果蔬/猪肉/鸡蛋/干货/其他…）：必须存在对应成品(attr=1 且 product_material 指向它)，
@@ -849,7 +849,7 @@ public class MatFlowServiceImpl implements IMatFlowService {
         if (product == null
             || product.getProductAttr() == null
             || product.getProductAttr() != 2
-            || !PACKABLE_FOOD_BELONG_TYPES.contains(product.getBelongType())) {
+            || !isPackableFood(product.getBelongType())) {
             return;
         }
         ProductInhouse inhouse = new ProductInhouse();
@@ -908,7 +908,8 @@ public class MatFlowServiceImpl implements IMatFlowService {
         Long locId = resolveLocationId(bo.getLocationId(), bo.getProductId(), "退回");
         // 库位级业务锁（WMS-STOCK-001）：盘点进行中的库位禁出入库（后端双保险）
         stockCheckService.assertLocationUnlocked(locId);
-        Long userId = LoginHelper.getUserId();
+        // 退回人：mp 弹层选了用所选（代他人退回），否则取当前登录人兜底
+        Long userId = resolveOperatorId(bo.getOperatorId());
 
         // 1. 校验今日额度：已领 ≥ 已退 + 已损 + 当次退回量
         ensureTodayCapacity(bo.getProductId(), bo.getQuantity(), product.getProductName(), product.getProductUnit(), product.getBelongType());
@@ -959,7 +960,8 @@ public class MatFlowServiceImpl implements IMatFlowService {
         Long locId = basket.getLocationId();
         // 库位级业务锁（WMS-STOCK-001）：盘点进行中的库位禁出入库（后端双保险）
         stockCheckService.assertLocationUnlocked(locId);
-        Long userId = LoginHelper.getUserId();
+        // 退回人：mp 弹层选了用所选（代他人退回），否则取当前登录人兜底
+        Long userId = resolveOperatorId(bo.getOperatorId());
 
         Long productId = basket.getProductId();
         ProductInfo product = productId == null ? null : productInfoMapper.selectById(productId);
@@ -1015,7 +1017,8 @@ public class MatFlowServiceImpl implements IMatFlowService {
         Long firstLocId = firstBasket.getLocationId();
         // 库位级业务锁（WMS-STOCK-001）：盘点进行中的首篮库位禁出入库（后端双保险）
         stockCheckService.assertLocationUnlocked(firstLocId);
-        Long userId = LoginHelper.getUserId();
+        // 退回人：mp 弹层选了用所选（代他人退回），否则取当前登录人兜底
+        Long userId = resolveOperatorId(bo.getOperatorId());
 
         ProductInfo product = productInfoMapper.selectById(productId);
         String productName = product != null ? product.getProductName() : firstBasket.getProductName();
@@ -1167,7 +1170,8 @@ public class MatFlowServiceImpl implements IMatFlowService {
         ProductInfo product = requireProduct(bo.getProductId());
         // 库位级业务锁（WMS-STOCK-001）：盘点进行中的库位禁出入库（后端双保险）
         stockCheckService.assertLocationUnlocked(bo.getLocationId());
-        Long userId = LoginHelper.getUserId();
+        // 记录人：mp 弹层选了用所选（代他人登记损耗），否则取当前登录人兜底
+        Long userId = resolveOperatorId(bo.getOperatorId());
 
         // 1. 校验今日额度（同退回）
         ensureTodayCapacity(bo.getProductId(), bo.getQuantity(), product.getProductName(), product.getProductUnit(), product.getBelongType());
@@ -1191,7 +1195,7 @@ public class MatFlowServiceImpl implements IMatFlowService {
         //    可打包食品原料（vegetable/egg/dry_good/other）：领用时已离 location_stock 进「待打包」
         //    product_inhouse，损耗剥离的是这部分 WIP（与"退回"对称，让 admin 打包来源「领用剩余重量」归零），
         //    不再二次扣 location_stock。其余物资（包材/饲料/种子/药品）无 WIP → 从 location_stock 扣减（原行为）。
-        if (PACKABLE_FOOD_BELONG_TYPES.contains(product.getBelongType())) {
+        if (isPackableFood(product.getBelongType())) {
             reduceTodayInhouseForBasket(bo.getProductId(), null, null, bo.getQuantity());
         } else {
             // 若工人领用后已把物理物品消耗完才补登损耗，则库存可能已扣到 0 —— 这种情况下损耗只在流水留痕，
@@ -1289,7 +1293,8 @@ public class MatFlowServiceImpl implements IMatFlowService {
         Long locId = basket.getLocationId();
         // 库位级业务锁（WMS-STOCK-001）：盘点进行中的库位禁出入库（后端双保险）
         stockCheckService.assertLocationUnlocked(locId);
-        Long userId = LoginHelper.getUserId();
+        // 记录人：mp 弹层选了用所选（代他人登记损耗），否则取当前登录人兜底
+        Long userId = resolveOperatorId(bo.getOperatorId());
 
         Long productId = basket.getProductId();
         ProductInfo product = productId == null ? null : productInfoMapper.selectById(productId);
@@ -1350,7 +1355,8 @@ public class MatFlowServiceImpl implements IMatFlowService {
         Long firstLocId = firstBasket.getLocationId();
         // 库位级业务锁（WMS-STOCK-001）：盘点进行中的首篮库位禁出入库（后端双保险）
         stockCheckService.assertLocationUnlocked(firstLocId);
-        Long userId = LoginHelper.getUserId();
+        // 记录人：mp 弹层选了用所选（代他人登记损耗），否则取当前登录人兜底
+        Long userId = resolveOperatorId(bo.getOperatorId());
 
         ProductInfo product = productInfoMapper.selectById(productId);
         String productName = product != null ? product.getProductName() : firstBasket.getProductName();
@@ -1734,7 +1740,7 @@ public class MatFlowServiceImpl implements IMatFlowService {
     protected void ensureTodayCapacity(Long productId, BigDecimal applying,
                                        String productName, String productUnit, String belongType) {
         BigDecimal remaining;
-        if (PACKABLE_FOOD_BELONG_TYPES.contains(belongType)) {
+        if (isPackableFood(belongType)) {
             remaining = safe(productInhouseMapper.sumTodayRemaining(productId));
         } else {
             BigDecimal picked = safe(stockFlowMapper.sumTodayByProductTypes(productId, PICK_OUT_FLOW_TYPES));
@@ -1763,6 +1769,28 @@ public class MatFlowServiceImpl implements IMatFlowService {
 
     private static BigDecimal safe(BigDecimal v) {
         return v == null ? BigDecimal.ZERO : v;
+    }
+
+    /**
+     * 是否「可打包食品原料」业态（{@code belong_type ∈ {vegetable, egg, dry_good, other}}）。
+     *
+     * <p>null-safe 包装 {@link #PACKABLE_FOOD_BELONG_TYPES}：{@code belongType} 为 null（product.belong_type
+     * 列可空，外购物资 / 饲料 / 药品等 belong_type 普遍为 NULL）时返 false。不可直接 {@code Set.of(...).contains(null)}
+     * —— JDK 不可变集合（{@code ImmutableCollections.SetN}）查 null 抛 {@link NullPointerException}，会被
+     * {@code GlobalExceptionHandler} 兜成「发生未知异常」（领用 / 损耗中招）。</p>
+     */
+    private static boolean isPackableFood(String belongType) {
+        return belongType != null && PACKABLE_FOOD_BELONG_TYPES.contains(belongType);
+    }
+
+    /**
+     * 是否「不需对应生产产品」的业态（{@code belong_type ∈ {package, white_bar, feed, seed}}）。
+     *
+     * <p>null-safe 包装 {@link #NON_PACK_BELONG_TYPES}（同 {@link #isPackableFood} 的 null 防御理由）：
+     * {@code belongType} 为 null 时返 false（不属于该豁免集，交由后续逻辑判定）。</p>
+     */
+    private static boolean isNonPackBelong(String belongType) {
+        return belongType != null && NON_PACK_BELONG_TYPES.contains(belongType);
     }
 
 }

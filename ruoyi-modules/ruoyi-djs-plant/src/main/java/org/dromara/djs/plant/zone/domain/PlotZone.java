@@ -59,10 +59,12 @@ public class PlotZone extends TenantEntity {
     private String zoneBelong;
 
     /**
-     * 状态（字典 {@code sys_normal_disable}：0=正常（启用）/ 1=停用）。
+     * 状态：{@code 1}=启用 / {@code 0}=停用（**不走** {@code sys_normal_disable}；与片区数据实态一致：
+     * 真实在用片区存 1）。
      *
-     * <p>全模块统一口径：mp 片区/地块 picker、{@code idleZoneCounts} 胶囊、admin toggle 均按
-     * {@code zone_status=0} 视为启用过滤；新建片区默认 0。停用片区不出现在 mp 农事筛选下拉里。</p>
+     * <p>全模块统一口径：mp 片区/地块 picker、{@code idleZoneCounts} 胶囊、种植计划地块下发、
+     * admin 列表 toggle / 状态列均按 {@code zone_status=1} 视为启用过滤；新建片区默认 1。
+     * 停用片区不出现在 mp 农事筛选下拉里。</p>
      */
     private Integer zoneStatus;
 

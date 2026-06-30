@@ -414,6 +414,16 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
             : plotInfoMapper.selectByIds(plotIds).stream()
             .collect(Collectors.toMap(PlotInfo::getId, p -> p, (a, b) -> a));
 
+        // r65：每地块「上次农事记录的班组」（批量录入弹框默认班组），一次 GROUP BY 批量取，禁 N+1
+        Map<Long, Long> lastTeamByPlot = plotIds.isEmpty()
+            ? Map.of()
+            : baseMapper.selectLastFarmTeamByPlot(new ArrayList<>(plotIds)).stream()
+                .filter(m -> m.get("plotId") != null && m.get("lastTeamId") != null)
+                .collect(Collectors.toMap(
+                    m -> ((Number) m.get("plotId")).longValue(),
+                    m -> ((Number) m.get("lastTeamId")).longValue(),
+                    (a, b) -> a));
+
         // enrich 片区（FIX-PLT-MP-ROTATION-ZONE-001）：批量按 zone_id 取 zoneCode/zoneName，禁 N+1。
         Set<Long> zoneIds = plotMap.values().stream()
             .map(PlotInfo::getZoneId).filter(Objects::nonNull).collect(Collectors.toSet());
@@ -491,6 +501,8 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
                 vo.setLastFarmDate(last);
                 vo.setIntervalDays((int) ChronoUnit.DAYS.between(last, today));
             }
+            // r65：上次农事班组（批量录入弹框默认班组回填）
+            vo.setLastTeamId(lastTeamByPlot.get(d.getPlotId()));
             if ("transplant".equals(farmType)) {
                 vo.setTransplantedPercent(transplantedMap.getOrDefault(d.getPlotId(), 0));
             }

@@ -60,6 +60,15 @@ public class MatReturnBo {
     private String remark;
 
     /**
+     * 退回人 user_id（可空）。
+     *
+     * <p>mp 退回弹层「退回人」字段：默认当前登录人、可改选仓库部门人员（EmployeePicker）。
+     * 非空 = 代他人退回，写入 {@code stock_flow.operator_id}（管理者审计该退回归属谁）；为空 = service 取
+     * 当前登录人（{@code LoginHelper.getUserId()}）兜底（现状行为，老调用方不传不回归）。snowflake，前端按 string 传。</p>
+     */
+    private Long operatorId;
+
+    /**
      * 退回来源场景（可空；{@code warehouse} / {@code breed} / {@code plant}，FIX-WMS-FLOWDICT-003）。
      *
      * <p>与 {@code MatPickBo.sourceScene} 同语义：mp 各页按自己模块显式传，service 据此强制赋退回

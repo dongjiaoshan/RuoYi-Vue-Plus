@@ -44,6 +44,22 @@ public class IdlePlotVo implements Serializable {
     private String plotStatusLabel;
 
     /**
+     * 所属大区文案（r63②：地块卡第二行左侧。= 片区 {@code zone_belong} 经 {@code djs_zone_belong}
+     * 字典翻译；为空时留空，前端不渲染）。
+     */
+    private String zoneBelongLabel;
+
+    /**
+     * 地块所属片区名（r63②：地块卡第二行右侧。= {@code t_plant_plot_zone.zone_name}；为空时留空）。
+     */
+    private String zoneName;
+
+    /**
+     * 上次农事记录的班组 id（r65：录入弹框「班组」默认值回填；无农事记录留空）。
+     */
+    private Long lastTeamId;
+
+    /**
      * 空地日期（= 该地块最近一条 rotation farm_date，派生；无退茬记录留空）。
      */
     private LocalDate idleDate;

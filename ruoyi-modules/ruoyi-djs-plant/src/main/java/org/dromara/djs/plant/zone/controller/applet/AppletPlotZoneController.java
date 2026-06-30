@@ -68,10 +68,12 @@ public class AppletPlotZoneController {
     @SaCheckLogin
     @GetMapping("/listAll")
     public R<List<ZonePickerVo>> listAll(@RequestParam(required = false) String keyword) {
-        // zone_status 走字典 sys_normal_disable：0=正常（启用）/ 1=停用（与 admin 列表 toggle 同口径）。
-        // mp picker 只列启用片区 → eq 0。
+        // 启用语义：admin plus-ui 片区列表 / 表单 / 有机认证 picker 均以 zone_status=1 为「启用」
+        //（zone/index.vue toggle 0↔1 且 1=enable；plotOrganic 表单 filter zoneStatus===1），
+        // 实测数据 31 个真实在用片区全部 zone_status=1。mp 采收片区 chip 只列启用片区 → eq 1
+        //（测试 r57①：此前误用 eq 0 把所有真实片区滤掉，chip 只剩"全部"）。
         LambdaQueryWrapper<PlotZone> wrapper = new LambdaQueryWrapper<PlotZone>()
-            .eq(PlotZone::getZoneStatus, 0)
+            .eq(PlotZone::getZoneStatus, 1)
             .and(StringUtils.isNotBlank(keyword), w -> w
                 .like(PlotZone::getZoneName, keyword)
                 .or()
@@ -95,8 +97,16 @@ public class AppletPlotZoneController {
     /**
      * 回填各片区当月采摘任务数。
      *
-     * <p>口径：is_pick=2（非游客）且采摘窗口 [earliest, last] 与当月 [firstDay, lastDay] 相交的明细，
-     * 取明细所属地块的 zone_id 计数。无任务的片区保持 0。</p>
+     * <p>口径与 {@code AppletPickServiceImpl#listCropTasks}（采收列表卡）严格对齐，
+     * 保证片区 chip 角标数 = 该片区点进去实际可见的采收明细数（mp 端 {@code visibleZones} 只显
+     * {@code pickTaskCount>0} 的片区；若角标按更宽口径算会出现「chip 在但点进去空」，测试 r57①）：</p>
+     * <ul>
+     *   <li>is_pick=2（非游客）；</li>
+     *   <li>采摘窗口 [earliest, last] 与当月 [firstDay, lastDay] 相交；</li>
+     *   <li>所属地块 {@code plot_status IN (2 种植, 3 采摘)}，排除 1 空闲；</li>
+     *   <li>采摘完成（completed）的明细只在 {@code end_harvestdate=今天} 当天计入，次日起不计。</li>
+     * </ul>
+     * <p>取符合上述条件的明细所属地块 zone_id 计数。无任务的片区保持 0。</p>
      */
     private void fillPickTaskCount(List<ZonePickerVo> vos) {
         if (vos == null || vos.isEmpty()) {
@@ -112,29 +122,39 @@ public class AppletPlotZoneController {
                 .eq(PlantDetails::getIsPick, IS_PICK_NORMAL)
                 .le(PlantDetails::getEarliestHarvestdate, lastDay)
                 .ge(PlantDetails::getLastHarvestdate, firstDay)
-                .select(PlantDetails::getPlotId));
+                .select(PlantDetails::getPlotId, PlantDetails::getHarvestStatus,
+                    PlantDetails::getEndHarvestdate));
         if (monthly.isEmpty()) {
             return;
         }
 
-        // 地块 → 片区映射。
+        // 地块 → 片区 / 状态映射（一次查回 zone_id + plot_status）。
         Set<Long> plotIds = monthly.stream().map(PlantDetails::getPlotId)
             .filter(Objects::nonNull).collect(Collectors.toSet());
         if (plotIds.isEmpty()) {
             return;
         }
-        Map<Long, Long> plotToZone = plotInfoMapper.selectList(
+        Map<Long, PlotInfo> plotMap = plotInfoMapper.selectList(
                 new LambdaQueryWrapper<PlotInfo>()
                     .in(PlotInfo::getId, plotIds)
-                    .select(PlotInfo::getId, PlotInfo::getZoneId))
+                    .select(PlotInfo::getId, PlotInfo::getZoneId, PlotInfo::getPlotStatus))
             .stream()
-            .filter(p -> p.getZoneId() != null)
-            .collect(Collectors.toMap(PlotInfo::getId, PlotInfo::getZoneId, (a, b) -> a));
+            .collect(Collectors.toMap(PlotInfo::getId, p -> p, (a, b) -> a));
 
-        // 按 zoneId 统计当月明细数。
+        // 与 listCropTasks 同口径过滤后，按 zoneId 统计当月可见明细数。
         Map<Long, Long> zoneCount = monthly.stream()
-            .map(PlantDetails::getPlotId)
-            .map(plotToZone::get)
+            .filter(d -> {
+                PlotInfo plot = plotMap.get(d.getPlotId());
+                // 地块必须在采摘态（2 种植 / 3 采摘）
+                if (plot == null || plot.getPlotStatus() == null
+                    || (plot.getPlotStatus() != 2 && plot.getPlotStatus() != 3)) {
+                    return false;
+                }
+                // 已完成采摘只在完成当天计入
+                return !"completed".equals(d.getHarvestStatus())
+                    || today.equals(d.getEndHarvestdate());
+            })
+            .map(d -> plotMap.get(d.getPlotId()).getZoneId())
             .filter(Objects::nonNull)
             .collect(Collectors.groupingBy(z -> z, Collectors.counting()));
 

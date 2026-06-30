@@ -109,16 +109,22 @@ public class AppletPlantTaskController {
     }
 
     /**
-     * 播种首页 3 KPI（FIX-PLT-MP-SEED-001 #6.5，种植口径）：当月完成率 / 当日种植品种数 / 当日种植地块数。
+     * 播种首页 3 KPI（FIX-PLT-MP-SEED-001 #6.5，种植口径）：当月完成率 / 当月种植品种数 / 当月完成种植地块数。
      *
-     * @param month 月份 1-12，不传默认当前系统月（用于当月完成率）
+     * <p>口径由「当日」改「当月」（测试 r58）：品种数 = 当月 {@code begin_actualdate} 区间内 distinct crop_id；
+     * 地块数 = 当月 {@code begin_actualdate} 区间内且 {@code plant_status='completed'} 的 distinct plot_id。
+     * 月窗口固定取当前系统月（与 month 参数解耦：month 仅控完成率分母，KPI 区间始终为系统当月）。</p>
+     *
+     * @param month 月份 1-12，不传默认当前系统月（用于当月完成率分母）
      */
     @SaCheckLogin
     @GetMapping("/seedSummary")
     public R<SeedSummaryVo> seedSummary(@RequestParam(required = false) Integer month) {
         LocalDate today = LocalDate.now();
         int m = (month == null || month < 1 || month > 12) ? today.getMonthValue() : month;
-        return R.ok(plantDetailsMapper.selectSeedSummary(m, today));
+        LocalDate monthStart = today.withDayOfMonth(1);
+        LocalDate monthEnd = today.with(java.time.temporal.TemporalAdjusters.lastDayOfMonth());
+        return R.ok(plantDetailsMapper.selectSeedSummary(m, monthStart, monthEnd));
     }
 
     /**

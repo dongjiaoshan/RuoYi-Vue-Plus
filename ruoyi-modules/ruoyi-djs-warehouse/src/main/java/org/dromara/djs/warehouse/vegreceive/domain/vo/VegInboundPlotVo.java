@@ -55,6 +55,12 @@ public class VegInboundPlotVo implements Serializable {
     private BigDecimal actualWeight;
 
     /**
+     * 损耗量(kg)：该地块已标记入库完成行的 {@code loss_weight} 合计（r72 头卡汇总损耗量 = Σ各地块 lossWeight；
+     * r73 ① 损耗 = 确认完成时「待入库量 − 实际入库量」，入库提交时已结算写入 is_finish 行）。未完成地块恒 0。
+     */
+    private BigDecimal lossWeight;
+
+    /**
      * 默认入库库位 ID（row3 方案B）：该作物关联产品（{@code crop.related_product} → 果蔬原料）配置的存储库位
      * （{@code t_warehouse_product_info.store_location_id} 逗号分隔取第一个）解析所得。mp 打开自产入库弹层时预填、
      * 仍可改。产品/库位查不到 → 留空（前端不预填，退回手选）。同一作物的所有地块行此值一致（按作物解析）。

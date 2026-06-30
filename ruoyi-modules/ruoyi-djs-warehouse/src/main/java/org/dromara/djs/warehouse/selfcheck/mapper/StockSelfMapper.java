@@ -158,12 +158,13 @@ public interface StockSelfMapper {
                                              @Param("keyword") String keyword);
 
     /**
-     * 盘点记录分页（盘点记录 tab）：stock_flow 中 {@code flow_type IN ('check_in','check_out')}。
+     * 盘点记录分页（盘点记录 tab）：stock_flow 中 {@code flow_type IN ('check_in','check_out','check_abnormal_out')}。
      *
      * <ul>
-     *   <li>{@code checkResult}：{@code check_out} → loss；{@code check_in && change_num=0} → normal；
-     *       {@code check_in && change_num≠0} → abnormal。</li>
-     *   <li>{@code stock} = change_quantity（实盘量）；{@code diffQuantity} = ABS(change_num)。</li>
+     *   <li>{@code checkResult} 直接按 flow_type 三分：{@code check_in} → normal（盘盈/无差异）；
+     *       {@code check_out} → loss（计损出库）；{@code check_abnormal_out} → abnormal（异常出库）。
+     *       异常走独立 flow_type（FIX-WMS-FLOWDICT-001），旧实现漏过滤 + 用 change_num 推断导致计损/异常恒判正常（R82）。</li>
+     *   <li>{@code stock} = change_quantity（正常=实盘量；计损/异常=损失量）；{@code diffQuantity} = ABS(change_num)（计损/异常量）。</li>
      *   <li>{@code checkResultLabel} 同步 SQL CASE 出中文（正常/计损/异常）。</li>
      *   <li>产品名 / 单位 LEFT JOIN product_info；{@code plotOrEarNo} 取 ear_no。</li>
      * </ul>
@@ -175,15 +176,15 @@ public interface StockSelfMapper {
                p.product_name                        AS productName,
                f.change_quantity                     AS stock,
                p.product_unit                        AS productUnit,
-               CASE
-                   WHEN f.flow_type = 'check_out' THEN 'loss'
-                   WHEN f.change_num = 0 THEN 'normal'
-                   ELSE 'abnormal'
+               CASE f.flow_type
+                   WHEN 'check_out'          THEN 'loss'
+                   WHEN 'check_abnormal_out' THEN 'abnormal'
+                   ELSE 'normal'
                END                                   AS checkResult,
-               CASE
-                   WHEN f.flow_type = 'check_out' THEN '计损'
-                   WHEN f.change_num = 0 THEN '正常'
-                   ELSE '异常'
+               CASE f.flow_type
+                   WHEN 'check_out'          THEN '计损'
+                   WHEN 'check_abnormal_out' THEN '异常'
+                   ELSE '正常'
                END                                   AS checkResultLabel,
                ABS(f.change_num)                     AS diffQuantity,
                f.ear_no                              AS plotOrEarNo,
@@ -195,7 +196,7 @@ public interface StockSelfMapper {
            AND p.del_flag = '0'
            AND p.tenant_id = f.tenant_id
          WHERE f.warehouse_id = #{locationId}
-           AND f.flow_type    IN ('check_in', 'check_out')
+           AND f.flow_type    IN ('check_in', 'check_out', 'check_abnormal_out')
            AND f.del_flag     = '0'
            AND f.tenant_id    = '1001'
            <if test="checkDate != null and checkDate != ''">
@@ -208,10 +209,10 @@ public interface StockSelfMapper {
              AND f.flow_type = 'check_out'
            </if>
            <if test="checkResult == 'normal'">
-             AND f.flow_type = 'check_in' AND f.change_num = 0
+             AND f.flow_type = 'check_in'
            </if>
            <if test="checkResult == 'abnormal'">
-             AND f.flow_type = 'check_in' AND f.change_num != 0
+             AND f.flow_type = 'check_abnormal_out'
            </if>
          ORDER BY f.flow_date DESC, f.id DESC
         </script>
@@ -224,7 +225,7 @@ public interface StockSelfMapper {
 
     /**
      * 进出库流水分页（入库记录 / 出库记录 tab）：stock_flow 中 {@code inout_type=#{inoutType}}
-     * 且 {@code flow_type NOT IN ('check_in','check_out')}（盘点流水归盘点记录 tab）。
+     * 且 {@code flow_type NOT IN ('check_in','check_out','check_abnormal_out')}（盘点流水归盘点记录 tab）。
      *
      * <p>产品名 / 单位 LEFT JOIN product_info；供应商名 LEFT JOIN {@code t_md_supplier}；
      * {@code flowType} 原值出给 VO，由注解翻译为 {@code inoutTypeLabel}。mp 传的业务子类型 inoutType
@@ -240,6 +241,7 @@ public interface StockSelfMapper {
                p.product_unit                        AS productUnit,
                f.flow_type                           AS flowType,
                f.operator_id                         AS operatorId,
+               f.stock_out_dest                      AS stockOutDest,
                sup.supplier_name                     AS supplierName
           FROM t_warehouse_stock_flow f
           LEFT JOIN t_warehouse_product_info p
@@ -252,7 +254,7 @@ public interface StockSelfMapper {
            AND sup.tenant_id = f.tenant_id
          WHERE f.warehouse_id = #{locationId}
            AND f.inout_type   = #{inoutType}
-           AND f.flow_type    NOT IN ('check_in', 'check_out')
+           AND f.flow_type    NOT IN ('check_in', 'check_out', 'check_abnormal_out')
            AND f.del_flag     = '0'
            AND f.tenant_id    = '1001'
            <if test="flowDate != null and flowDate != ''">

@@ -156,6 +156,34 @@ public interface FarmRecordsMapper extends BaseMapperPlus<FarmRecords, FarmRecor
     List<Long> selectTransplantCandidatePlotIds(@Param("cropId") Long cropId);
 
     /**
+     * 批量取多地块「上次农事记录的班组」（r65 默认班组回填）。
+     *
+     * <p>每个地块取其最近一条农事记录（{@code farm_date DESC, id DESC}）的 {@code farm_by}（班组 id）。
+     * 用窗口子查询取每地块 farm_by 不为空的最新一条。显式 {@code tenant_id='1001'} + {@code del_flag='0'}
+     * （V1 单农场硬编码，不依赖租户拦截器）。返回 {@code {plotId, lastTeamId}}，无农事记录的地块不出行。</p>
+     *
+     * @param plotIds 地块 id 集合（非空）
+     * @return 每行 {@code {plotId, lastTeamId}}
+     */
+    @Select("""
+        <script>
+        SELECT t.plot_id AS plotId, t.farm_by AS lastTeamId
+          FROM (
+            SELECT plot_id, farm_by,
+                   ROW_NUMBER() OVER (PARTITION BY plot_id ORDER BY farm_date DESC, id DESC) AS rn
+              FROM t_plant_farm_records
+             WHERE del_flag = '0'
+               AND tenant_id = '1001'
+               AND farm_by IS NOT NULL
+               AND plot_id IN
+               <foreach collection="plotIds" item="pid" open="(" separator="," close=")">#{pid}</foreach>
+          ) t
+         WHERE t.rn = 1
+        </script>
+        """)
+    List<Map<String, Object>> selectLastFarmTeamByPlot(@Param("plotIds") List<Long> plotIds);
+
+    /**
      * 按 farm_type 聚合「当日已处理地块去重数」（FIX-PLT-MP-TILL-001 P7 dispatchSummary）。
      *
      * <p>{@code COUNT(DISTINCT plot_id) WHERE farm_date=今日 GROUP BY farm_type}——同地块当日多次记录
@@ -197,6 +225,7 @@ public interface FarmRecordsMapper extends BaseMapperPlus<FarmRecords, FarmRecor
           LEFT JOIN t_plant_farm_records fr
                  ON fr.crop_id = d.crop_id AND fr.farm_type = #{farmType}
                 AND fr.del_flag = '0' AND fr.tenant_id = '1001'
+                AND fr.farm_date >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
          WHERE d.del_flag = '0'
            AND d.tenant_id = '1001'
            AND d.plant_status = 'completed'
@@ -231,6 +260,7 @@ public interface FarmRecordsMapper extends BaseMapperPlus<FarmRecords, FarmRecor
           LEFT JOIN t_plant_farm_records fr
                  ON fr.crop_id = d.crop_id AND fr.farm_type = #{farmType}
                 AND fr.del_flag = '0' AND fr.tenant_id = '1001'
+                AND fr.farm_date >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
           LEFT JOIN (
                 SELECT crop_id, plot_id, COALESCE(SUM(transplant_percent), 0) AS moved
                   FROM t_plant_farm_records
@@ -274,6 +304,7 @@ public interface FarmRecordsMapper extends BaseMapperPlus<FarmRecords, FarmRecor
           LEFT JOIN t_plant_farm_records fr
                  ON fr.crop_id = d.crop_id AND fr.farm_type = #{farmType}
                 AND fr.del_flag = '0' AND fr.tenant_id = '1001'
+                AND fr.farm_date >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
          WHERE d.del_flag = '0'
            AND d.tenant_id = '1001'
            AND d.harvest_status = 'completed'

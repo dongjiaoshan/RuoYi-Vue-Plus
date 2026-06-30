@@ -86,4 +86,17 @@ public class InoutFlowVo implements Serializable {
      */
     private String supplierName;
 
+    /**
+     * 出库去向字典 value（{@code stock_out_dest}；注解翻译用 mapper，前端只用 stockOutDestLabel）。
+     * 入库流水恒空。
+     */
+    private String stockOutDest;
+
+    /**
+     * 出库去向文案（厨房 / 矿山 / 门店 / 盘点计损 …；字典 {@code stock_out_dest} 翻译）。
+     * 出库记录卡（r84）原「调整人」位显示此文案；入库记录卡此字段空。
+     */
+    @Translation(type = TransConstant.DICT_TYPE_TO_LABEL, mapper = "stockOutDest", other = "stock_out_dest")
+    private String stockOutDestLabel;
+
 }

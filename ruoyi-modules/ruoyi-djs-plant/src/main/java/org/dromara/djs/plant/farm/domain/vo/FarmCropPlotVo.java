@@ -53,6 +53,9 @@ public class FarmCropPlotVo implements Serializable {
     /** 距上次同类农事的间隔天数（lastFarmDate 为空时 null）。 */
     private Integer intervalDays;
 
+    /** 上次农事记录的班组 id（r65：批量录入弹框「班组」默认值回填；无农事记录留空）。 */
+    private Long lastTeamId;
+
     /** 种植状态（字典 {@code djs_plant_plan_status}：pending/ongoing/completed）。 */
     private String plantStatus;
 

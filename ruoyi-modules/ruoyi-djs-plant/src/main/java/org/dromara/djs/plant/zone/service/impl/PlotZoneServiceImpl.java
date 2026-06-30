@@ -76,9 +76,9 @@ public class PlotZoneServiceImpl extends DjsBaseServiceImpl<PlotZoneMapper, Plot
         if (entity == null) {
             throw new ServiceException("片区入参转换失败");
         }
-        // 未传状态默认启用：字典 sys_normal_disable 0=正常/启用，1=停用（与 admin 列表 toggle 同口径）。
+        // 未传状态默认启用：zone_status 1=启用 / 0=停用（与片区数据实态 + admin 列表 toggle 同口径；不走 sys_normal_disable）。
         if (entity.getZoneStatus() == null) {
-            entity.setZoneStatus(0);
+            entity.setZoneStatus(1);
         }
         return baseMapper.insert(entity);
     }

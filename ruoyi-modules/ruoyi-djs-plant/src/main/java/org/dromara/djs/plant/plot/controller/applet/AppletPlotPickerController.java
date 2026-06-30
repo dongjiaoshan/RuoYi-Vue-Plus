@@ -13,6 +13,8 @@ import org.dromara.djs.plant.plot.domain.vo.IdlePlotVo;
 import org.dromara.djs.plant.plot.domain.vo.IdleZoneCountVo;
 import org.dromara.djs.plant.plot.domain.vo.PlotPickerVo;
 import org.dromara.djs.plant.plot.mapper.PlotInfoMapper;
+import org.dromara.djs.plant.zone.domain.PlotZone;
+import org.dromara.djs.plant.zone.mapper.PlotZoneMapper;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -23,6 +25,7 @@ import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
@@ -57,10 +60,14 @@ public class AppletPlotPickerController {
     /** 灾害类型字典（地块卡多行灾害展示，服务端译 label）。 */
     private static final String DICT_DISASTER_TYPE = "djs_disaster_type";
 
+    /** 所属大区字典（r63②：地块卡第二行左侧大区文案，服务端译 label）。 */
+    private static final String DICT_ZONE_BELONG = "djs_zone_belong";
+
     /** 地块卡最多展示的灾害条数（r18：最近 3 条，按 farm_date 倒序）。 */
     private static final int MAX_DISASTER_PER_PLOT = 3;
 
     private final PlotInfoMapper plotInfoMapper;
+    private final PlotZoneMapper plotZoneMapper;
     private final FarmRecordsMapper farmRecordsMapper;
     private final DictService dictService;
 
@@ -147,6 +154,22 @@ public class AppletPlotPickerController {
                     m -> LocalDate.parse(m.get("lastDate").toString().substring(0, 10))));
         // r18：地块灾害记录（farm_type='disaster'）一次性批量拉，farm_date 倒序，按 plot 取最近 3 条（Java 端裁剪，禁 N+1）
         Map<Long, List<IdlePlotVo.DisasterRecord>> disasterByPlot = buildDisasterRecords(plotIds);
+        // r63②：地块卡第二行 左=所属大区（zone_belong 译 label）/ 右=所属片区（zone_name）。
+        // 批量按 zone_id 取片区，禁 N+1；plotId → zone 映射。
+        Set<Long> zoneIds = rows.stream().map(PlotInfo::getZoneId)
+            .filter(java.util.Objects::nonNull).collect(Collectors.toSet());
+        Map<Long, PlotZone> zoneMap = zoneIds.isEmpty() ? Map.of()
+            : plotZoneMapper.selectByIds(zoneIds).stream()
+                .collect(Collectors.toMap(PlotZone::getId, z -> z, (a, b) -> a));
+        // r65：上次农事记录的班组（录入弹框「班组」默认值），一次 GROUP BY 批量取，禁 N+1
+        Map<Long, Long> lastTeamByPlot = rows.isEmpty()
+            ? Map.of()
+            : farmRecordsMapper.selectLastFarmTeamByPlot(plotIds)
+                .stream()
+                .filter(m -> m.get("plotId") != null && m.get("lastTeamId") != null)
+                .collect(Collectors.toMap(
+                    m -> Long.valueOf(m.get("plotId").toString()),
+                    m -> Long.valueOf(m.get("lastTeamId").toString())));
         List<IdlePlotVo> vos = rows.stream().map(p -> {
             IdlePlotVo vo = new IdlePlotVo();
             vo.setId(p.getId());
@@ -156,6 +179,17 @@ public class AppletPlotPickerController {
             vo.setIdleDate(idleDateByPlot.get(p.getId()));
             vo.setLastFarmDate(lastFarmDateByPlot.get(p.getId()));
             vo.setDisasterRecords(disasterByPlot.getOrDefault(p.getId(), List.of()));
+            PlotZone zone = p.getZoneId() == null ? null : zoneMap.get(p.getZoneId());
+            if (zone != null) {
+                vo.setZoneName(zone.getZoneName());
+                // 所属大区：zone_belong 经字典翻译（缺字典/空值留空，前端不渲染该侧）
+                String belong = zone.getZoneBelong();
+                if (StringUtils.isNotBlank(belong)) {
+                    String label = dictService.getDictLabel(DICT_ZONE_BELONG, belong);
+                    vo.setZoneBelongLabel(StringUtils.isBlank(label) ? belong : label);
+                }
+            }
+            vo.setLastTeamId(lastTeamByPlot.get(p.getId()));
             return vo;
         }).collect(Collectors.toList());
         return R.ok(vos);
