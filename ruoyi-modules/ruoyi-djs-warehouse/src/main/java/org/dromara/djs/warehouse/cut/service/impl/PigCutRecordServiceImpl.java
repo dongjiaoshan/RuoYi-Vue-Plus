@@ -243,6 +243,16 @@ public class PigCutRecordServiceImpl
         if (affected == 0) {
             throw new ServiceException("白条已被并发领用，请刷新重试");
         }
+        // P3.c'（邓博 row13）：整只 / mp 白条领用 = 白条出白条库。逐白条产出行扣半只库存(by white_bar_no) +
+        // 写白条出库流水（去向=白条分割）。修「白条库出库记录缺失」；结算仍按 white_bar_id(整猪) 不变。
+        List<ProductInhouse> barRows = productInhouseMapper.selectList(
+            new LambdaQueryWrapper<ProductInhouse>()
+                .eq(ProductInhouse::getWhiteBarId, bar.getId())
+                .isNotNull(ProductInhouse::getWhiteBarNo)
+                .gt(ProductInhouse::getProductWeight, BigDecimal.ZERO));
+        for (ProductInhouse r : barRows) {
+            writeBarCutOutFlow(r, r.getProductWeight(), userId);
+        }
         return insertCutRecord(bar, pickupWeight, bo.getLocationId(), bo.getTargetStoreId(),
             bo.getTargetDemandId(), bo.getIsHalf() == null ? 2 : bo.getIsHalf(), bo.getRemark(), userId);
     }
@@ -284,9 +294,51 @@ public class PigCutRecordServiceImpl
         if (marked == 0) {
             throw new ServiceException("该产出行已被并发领用，请刷新重试");
         }
+        // P4'（邓博 row13）：白条领用到分割间 = 白条出白条库。扣该半只白条库存行(by white_bar_no) +
+        // 写白条出库流水（去向=白条分割）。修「白条库出库记录缺失致库存不准」。
+        // 结算/超量/剩余/损耗仍按 white_bar_id(整猪) 聚合不变；white_bar_no 仅半只标识/领用/追溯。
+        writeBarCutOutFlow(row, rowWeight, userId);
         // 该白条所有产出行处理完（分割领用 / 发货软删）才收口推 bar + 建整猪 cut_record；
         // 还有未领行 → 返 null（分两次领，剩余行继续显示）。统一走 finalizeBarPickupIfComplete。
         return finalizeBarPickupIfComplete(bar.getId(), userId);
+    }
+
+    /**
+     * 白条领用到分割间 = 白条出白条库：扣该半只白条库存行（P2 燎毛按 white_bar_no 建）+ 写「白条出库」流水（去向=白条分割）。
+     *
+     * <p>邓博 row13：白条去分割车间时从白条库正常出库（修出库记录缺失致库存不准）。white_bar_no 空（外购 /
+     * 旧数据）→ 跳过库存行扣减、流水仍按 ear_no 写（优雅降级，不阻断领用）。分割结算/超量/剩余/损耗仍按
+     * white_bar_id(整猪)，cut_out 流水不参与结算（结算用 cut_out_in），故此处补写不影响分割口径。</p>
+     */
+    private void writeBarCutOutFlow(ProductInhouse row, BigDecimal weight, Long userId) {
+        if (StringUtils.isNotBlank(row.getWhiteBarNo())) {
+            LocationStock barStock = locationStockMapper.selectOne(
+                new LambdaQueryWrapper<LocationStock>()
+                    .eq(LocationStock::getProductId, row.getProductId())
+                    .eq(LocationStock::getWhiteBarNo, row.getWhiteBarNo())
+                    .gt(LocationStock::getProductStock, BigDecimal.ZERO)
+                    .last("LIMIT 1"));
+            if (barStock != null) {
+                locationStockMapper.deductStockById(barStock.getId(), weight, userId);
+            }
+        }
+        StockFlow out = new StockFlow();
+        Map<String, Object> ctx = new HashMap<>(2);
+        ctx.put("ioCode", INOUT_OUT);
+        out.setFlowNo(bizCodeGenerator.generate(BizCodeType.STOCK_FLOW_NO, ctx));
+        out.setFlowDate(new Date());
+        out.setProductId(row.getProductId());
+        out.setWarehouseId(row.getLocationId());
+        out.setInoutType(INOUT_OUT);
+        out.setFlowType(FLOW_TYPE_CUT_OUT);
+        out.setStockOutDest(STOCK_OUT_DEST_BAR_CUT);
+        out.setChangeNum(weight);
+        out.setChangeQuantity(weight);
+        out.setEarNo(row.getEarNo());
+        out.setWhiteBarNo(row.getWhiteBarNo());
+        out.setWhiteBarId(row.getWhiteBarId());
+        out.setOperatorId(userId);
+        stockFlowMapper.insert(out);
     }
 
     @Override
@@ -728,6 +780,7 @@ public class PigCutRecordServiceImpl
         vo.setInTime(bar.getInTime());
         if (row != null) {
             vo.setInhouseId(row.getId());
+            vo.setWhiteBarNo(row.getWhiteBarNo());
             vo.setProductName(row.getProductName());
             vo.setProductWeight(row.getProductWeight());
             vo.setProductUnit(StringUtils.isNotBlank(row.getProductUnit()) ? row.getProductUnit() : "kg");

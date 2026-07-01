@@ -137,6 +137,12 @@ public class ProductProduction extends TenantEntity {
     private Long whiteBarId;
 
     /**
+     * 白条流水号（半只/整只白条唯一标识）。白条整只/半只出库发货时带上，
+     * 门店按 white_bar_no 精确识别到货的是哪个半只（不再靠重量猜）。
+     */
+    private String whiteBarNo;
+
+    /**
      * 原材料 ID。
      */
     private Long materialId;

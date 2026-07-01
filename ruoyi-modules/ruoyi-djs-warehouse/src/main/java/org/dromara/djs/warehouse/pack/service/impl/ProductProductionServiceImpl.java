@@ -93,6 +93,12 @@ public class ProductProductionServiceImpl
 
     /** stock_flow.inout_type CHAR(3) IN=入库（沿 PigCutRecordServiceImpl 范式）。 */
     private static final String INOUT_IN = "IN";
+    /** stock_flow.inout_type OUT=出库。 */
+    private static final String INOUT_OUT = "OUT";
+    /** 白条出库 flow_type（邓博 row13：白条离白条库统一「白条出库」，去向区分白条分割 / 发货月台）。 */
+    private static final String FLOW_TYPE_CUT_OUT = "cut_out";
+    /** 出库去向：发货月台。 */
+    private static final String STOCK_OUT_DEST_SHIP_DOCK = "ship_dock";
 
     /** stock_flow.flow_type 业务类型。 */
     private static final String FLOW_TYPE_PACK_IN = "pack_in";
@@ -499,6 +505,7 @@ public class ProductProductionServiceImpl
         p.setProductUnit(StringUtils.isNotBlank(product.getProductUnit()) ? product.getProductUnit() : "kg");
         p.setProductSpec(product.getProductSpec());
         p.setEarNo(src.getEarNo());
+        p.setWhiteBarNo(src.getWhiteBarNo());
         p.setProductSort(1);
         p.setProductWeight(bo.getProductWeight());
         p.setProduceQuantity(bo.getProductWeight()); // D10 hotfix: SHIP 流水 changeNum 用
@@ -514,6 +521,10 @@ public class ProductProductionServiceImpl
 
         // row42：生产产品不入库（直送发货月台，不进 location_stock / 不写入库流水）。
         consumeInhouse(src, bo.getProductWeight());
+
+        // P3（邓博 row13）：白条离白条库 = 白条出库。补白条库出库流水（去向=发货月台）+ 扣白条库存行
+        // （P2 燎毛按 product_id+ear_no+burn_id 建的白条行）。修「白条库出库记录缺失致库存不准」。
+        writeWhiteBarOutFlow(src, bo.getProductWeight(), STOCK_OUT_DEST_SHIP_DOCK, userId);
 
         // 发货月台领用回写 bar 出库基础数据（猪肉全闭环 Part I P6 + FIX-WMS-CUTPICKUP-SPLIT-001 按产出行）：
         // 本行已 consumeInhouse（满发=软删 / 部分=扣减）。白条按燎毛产出行处理——**发货一个半只不连坐整 bar**：
@@ -558,6 +569,44 @@ public class ProductProductionServiceImpl
         log.info("[WMS-WHITEBAR-SHIP-001] white_bar/pork out done id={} produceNo={} belongType={} weight={} store={} traceCode={}",
             p.getId(), p.getProduceNo(), belongType, bo.getProductWeight(), bo.getStoreId(), p.getTraceCode());
         return p.getId();
+    }
+
+    /**
+     * 白条离白条库 → 写「白条出库」流水 + 扣 P2 燎毛按 {@code (product_id, ear_no, burn_id)} 建的白条库存行。
+     *
+     * <p>邓博 row13：白条无论去分割间还是发货月台，都要从白条库正常出库（修「白条库出库记录缺失致库存不准」）。
+     * {@code dest} 区分去向（{@code ship_dock} 发货月台 / {@code bar_cut} 白条分割）。
+     * {@code burn_id} 为空（外购 / 旧数据）→ 跳过库存行扣减、流水仍按 ear_no 写（优雅降级，不阻断领用）。</p>
+     */
+    private void writeWhiteBarOutFlow(ProductInhouse src, BigDecimal weight, String dest, Long userId) {
+        if (StringUtils.isNotBlank(src.getWhiteBarNo())) {
+            LocationStock barStock = locationStockMapper.selectOne(
+                new LambdaQueryWrapper<LocationStock>()
+                    .eq(LocationStock::getProductId, src.getProductId())
+                    .eq(LocationStock::getWhiteBarNo, src.getWhiteBarNo())
+                    .gt(LocationStock::getProductStock, BigDecimal.ZERO)
+                    .last("LIMIT 1"));
+            if (barStock != null) {
+                locationStockMapper.deductStockById(barStock.getId(), weight, userId);
+            }
+        }
+        StockFlow out = new StockFlow();
+        Map<String, Object> ctx = new HashMap<>(2);
+        ctx.put("ioCode", INOUT_OUT);
+        out.setFlowNo(bizCodeGenerator.generate(BizCodeType.STOCK_FLOW_NO, ctx));
+        out.setFlowDate(new Date());
+        out.setProductId(src.getProductId());
+        out.setWarehouseId(src.getLocationId());
+        out.setInoutType(INOUT_OUT);
+        out.setFlowType(FLOW_TYPE_CUT_OUT);
+        out.setStockOutDest(dest);
+        out.setChangeNum(weight);
+        out.setChangeQuantity(weight);
+        out.setEarNo(src.getEarNo());
+        out.setWhiteBarNo(src.getWhiteBarNo());
+        out.setWhiteBarId(src.getWhiteBarId());
+        out.setOperatorId(userId);
+        stockFlowMapper.insert(out);
     }
 
     @Override

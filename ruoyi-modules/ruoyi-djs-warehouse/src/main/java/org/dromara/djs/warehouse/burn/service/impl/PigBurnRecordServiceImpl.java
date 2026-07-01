@@ -34,6 +34,8 @@ import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.domain.ProductInhouse;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
 import org.dromara.djs.warehouse.product.mapper.ProductInhouseMapper;
+import org.dromara.djs.warehouse.stock.domain.LocationStock;
+import org.dromara.djs.warehouse.stock.mapper.LocationStockMapper;
 import org.dromara.djs.warehouse.trace.domain.TraceContentConst;
 import org.dromara.djs.warehouse.trace.service.ITraceService;
 import org.springframework.stereotype.Service;
@@ -134,6 +136,7 @@ public class PigBurnRecordServiceImpl
     private final StockFlowMapper stockFlowMapper;
     private final BarInfoMapper barInfoMapper;
     private final ProductInhouseMapper productInhouseMapper;
+    private final LocationStockMapper locationStockMapper;
     private final LocationInfoMapper locationInfoMapper;
     private final ProductInfoMapper productInfoMapper;
     private final IBizCodeGenerator bizCodeGenerator;
@@ -145,6 +148,7 @@ public class PigBurnRecordServiceImpl
                                     StockFlowMapper stockFlowMapper,
                                     BarInfoMapper barInfoMapper,
                                     ProductInhouseMapper productInhouseMapper,
+                                    LocationStockMapper locationStockMapper,
                                     LocationInfoMapper locationInfoMapper,
                                     ProductInfoMapper productInfoMapper,
                                     IBizCodeGenerator bizCodeGenerator,
@@ -155,6 +159,7 @@ public class PigBurnRecordServiceImpl
         this.stockFlowMapper = stockFlowMapper;
         this.barInfoMapper = barInfoMapper;
         this.productInhouseMapper = productInhouseMapper;
+        this.locationStockMapper = locationStockMapper;
         this.locationInfoMapper = locationInfoMapper;
         this.productInfoMapper = productInfoMapper;
         this.bizCodeGenerator = bizCodeGenerator;
@@ -251,6 +256,11 @@ public class PigBurnRecordServiceImpl
         for (PigBurnRecordBo.ProductTypeItem item : bo.getProductTypeItems()) {
             ProductInfo type = typeMap.get(item.getProductId());
 
+            // 白条流水号：每个白条产出行（半只/整只/猪头/猪蹄）生成一个唯一号（方案 A，邓博/Kevin 定）。
+            // 这是「区分同一耳号两个半只」的半只标识（burn_id 是燎毛批次、区分不了同批两半只，故不用）；
+            // 贯穿库存 / 领用 / 分割 / 发货，结算/聚合仍按 white_bar_id(整猪)。
+            String whiteBarNo = bizCodeGenerator.generate(BizCodeType.BAR_NO, Map.of());
+
             ProductInhouse inhouse = new ProductInhouse();
             inhouse.setProduceDate(java.sql.Date.valueOf(today));
             inhouse.setProductId(type.getId());
@@ -261,8 +271,23 @@ public class PigBurnRecordServiceImpl
             inhouse.setProductWeight(item.getWeight());
             inhouse.setProduceTime(burnTime);
             inhouse.setWhiteBarId(bar.getId());
+            inhouse.setWhiteBarNo(whiteBarNo);
             inhouse.setLocationId(bo.getLocationId());
             productInhouseMapper.insert(inhouse);
+
+            // 白条进白条库：每白条产出行按 (product_id, ear_no, white_bar_no) 建一条独立库存行
+            // （邓博 row13：半只白条在库存维度成一条、库位查询按半只展示；耳号空显 white_bar_no）。
+            // location_stock 无唯一约束，per-half 各成一行；领用时按 white_bar_no 扣减 + 写出库流水（P3）。
+            LocationStock barStock = new LocationStock();
+            barStock.setLocationId(bo.getLocationId());
+            barStock.setProductId(type.getId());
+            barStock.setProductName(type.getProductName());
+            barStock.setEarNo(earNo);
+            barStock.setWhiteBarNo(whiteBarNo);
+            barStock.setProductStock(item.getWeight());
+            barStock.setProductUnit(StringUtils.isNotBlank(type.getProductUnit()) ? type.getProductUnit() : "kg");
+            barStock.setOperatorId(bo.getOperatorId());
+            locationStockMapper.insert(barStock);
 
             StockFlow flowIn = new StockFlow();
             Map<String, Object> flowCtx = new HashMap<>(2);
@@ -276,8 +301,9 @@ public class PigBurnRecordServiceImpl
             flowIn.setChangeNum(item.getWeight());
             flowIn.setChangeQuantity(item.getWeight());
             flowIn.setEarNo(earNo);
+            flowIn.setWhiteBarNo(whiteBarNo);
             flowIn.setOperatorId(bo.getOperatorId());
-            flowIn.setRemark("燎毛入库 burn_id=" + record.getBurnId() + " type=" + type.getProductId());
+            flowIn.setRemark("燎毛入库 burn_id=" + record.getBurnId() + " whiteBarNo=" + whiteBarNo + " type=" + type.getProductId());
             stockFlowMapper.insert(flowIn);
         }
 

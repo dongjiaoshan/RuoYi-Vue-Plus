@@ -105,6 +105,14 @@ public class ProductInhouse extends TenantEntity {
     private Long whiteBarId;
 
     /**
+     * 白条流水号（半只/整只白条唯一标识，燎毛按白条生成 {@code BizCodeType.BAR_NO}）。
+     *
+     * <p>区分同一 ear_no 的两个半只（燎毛每白条一个号），贯穿库存 / 领用 / 分割 / 发货，
+     * 使半只白条在数据维度成一条可单独处理 / 追溯。外购 / 旧数据可空。结算聚合仍按 white_bar_id(整猪)。</p>
+     */
+    private String whiteBarNo;
+
+    /**
      * 燎毛产出行白条领用状态（FIX-WMS-CUTPICKUP-SPLIT-001）：0=未领 / 1=已领。
      *
      * <p>仅 {@code white_bar_id} 非空的燎毛产出行（半只/半扇/整只）用：白条领用页按行出条，

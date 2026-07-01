@@ -122,6 +122,12 @@ public class StockFlow extends TenantEntity {
     private Long whiteBarId;
 
     /**
+     * 白条流水号（半只/整只白条唯一标识）。燎毛入库 / 白条出库流水写值，
+     * 白条库存对账按 white_bar_no 半只维度关联。外购 / 旧数据可空。
+     */
+    private String whiteBarNo;
+
+    /**
      * 地块 ID（蔬菜流水用，本 ticket 不用）。
      */
     private Long plotId;

@@ -24,6 +24,12 @@ public class TraceablePigVo implements Serializable {
     /** 猪只ID（= 耳号简版，picker chip 主显 + 选中后 emit 值）。 */
     private String earNo;
 
+    /**
+     * 白条流水号（半只/整只白条唯一标识）。门店到货白条按半只一条（邓博 row13：门店按 white_bar_no
+     * 识别哪个半只到货、现场分割）；耳号为空(外购)时以此作主标识。
+     */
+    private String whiteBarNo;
+
     /** 性别（字典 {@code djs_pig_sex}：F/M）。 */
     private String pigSex;
 

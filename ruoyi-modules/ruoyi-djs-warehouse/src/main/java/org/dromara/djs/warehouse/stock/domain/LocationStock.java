@@ -56,6 +56,12 @@ public class LocationStock extends TenantEntity {
     private String earNo;
 
     /**
+     * 白条流水号（半只/整只白条唯一标识，燎毛按白条生成）。
+     * 白条库存按 white_bar_no 半只一行（区分同一耳号的两个半只）；耳号空(外购)时按 white_bar_no 区分。
+     */
+    private String whiteBarNo;
+
+    /**
      * 地块 ID（蔬菜采摘入库按地块关联；与 productId/earNo 三选一）。
      */
     private Long plotId;

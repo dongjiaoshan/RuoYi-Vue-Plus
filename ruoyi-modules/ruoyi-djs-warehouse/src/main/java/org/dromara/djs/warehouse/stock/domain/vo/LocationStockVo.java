@@ -71,6 +71,12 @@ public class LocationStockVo implements Serializable {
     private String earNo;
 
     /**
+     * 白条流水号（半只/整只白条唯一标识）。白条库存按 white_bar_no 半只展示；耳号为空(外购)时以此作白条标识列。
+     */
+    @ExcelProperty(value = "白条流水号")
+    private String whiteBarNo;
+
+    /**
      * 地块 ID。
      */
     @ExcelProperty(value = "地块ID")

@@ -49,6 +49,11 @@ public class BarPickupItemVo implements Serializable {
     private String markId;
 
     /**
+     * 白条流水号（半只/整只白条唯一标识，PC 领用界面「白条流水号」列显示；燎毛按白条生成）。
+     */
+    private String whiteBarNo;
+
+    /**
      * 出栏重量 kg（领用过磅校验上界：该白条累计领用不应大于该值）。
      */
     private BigDecimal marketingWeight;

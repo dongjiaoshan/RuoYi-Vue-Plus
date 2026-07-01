@@ -140,24 +140,35 @@ public class StoreTraceServiceImpl implements IStoreTraceService {
                 .eq(ProductProduction::getIsDeliveryCheck, DELIVERY_CHECKED)
                 .isNotNull(ProductProduction::getEarNo)
                 .orderByDesc(ProductProduction::getId)
-                .select(ProductProduction::getEarNo, ProductProduction::getProduceQuantity));
-        List<String> earNoList = new ArrayList<>();
-        Map<String, BigDecimal> arrivedByEar = new LinkedHashMap<>();
+                .select(ProductProduction::getEarNo, ProductProduction::getWhiteBarNo, ProductProduction::getProduceQuantity));
+        // 门店到货白条按【半只】一条（邓博 row13：white_bar_no 区分同一耳号的两个半只，门店按半只识别 / 现场分割）。
+        // key = white_bar_no；为空（旧发货数据）回落 "EAR:<耳号>" 按整猪聚合，兼容历史。
+        List<String> keyOrder = new ArrayList<>();
+        Map<String, BigDecimal> arrivedByKey = new LinkedHashMap<>();
+        Map<String, String> keyToEar = new LinkedHashMap<>();
+        Map<String, String> keyToWhiteBarNo = new LinkedHashMap<>();
+        Map<String, Integer> barCountByEar = new LinkedHashMap<>();
         for (ProductProduction p : barProds) {
-            String e = p.getEarNo();
-            if (StringUtils.isBlank(e)) {
+            String ear = p.getEarNo();
+            if (StringUtils.isBlank(ear)) {
                 continue;
             }
-            if (!arrivedByEar.containsKey(e)) {
-                earNoList.add(e);
+            String wbNo = p.getWhiteBarNo();
+            String key = StringUtils.isNotBlank(wbNo) ? wbNo : ("EAR:" + ear);
+            if (!arrivedByKey.containsKey(key)) {
+                keyOrder.add(key);
+                keyToEar.put(key, ear);
+                keyToWhiteBarNo.put(key, StringUtils.isNotBlank(wbNo) ? wbNo : null);
+                barCountByEar.merge(ear, 1, Integer::sum);
             }
-            arrivedByEar.merge(e, p.getProduceQuantity() == null ? BigDecimal.ZERO : p.getProduceQuantity(), BigDecimal::add);
+            arrivedByKey.merge(key, p.getProduceQuantity() == null ? BigDecimal.ZERO : p.getProduceQuantity(), BigDecimal::add);
         }
-        if (earNoList.isEmpty()) {
+        if (keyOrder.isEmpty()) {
             return emptyPigPage();
         }
 
-        // 已现场打包重量（门店 pork 码 remark「重量=Ykg」按耳号合计）→ 剩余可打包 = 到货 − 已打包
+        // 已现场打包重量按耳号合计（门店 pork 追溯码 remark「重量=Ykg」，追溯码按耳号、暂无半只维度）。
+        List<String> earNoList = keyToEar.values().stream().distinct().toList();
         Map<String, BigDecimal> usedByEar = sumOnsiteUsedWeightByEarNo(earNoList);
 
         // 按耳号批量 enrich 猪只信息（earNo → PigAvailableVo），additive 跨域只读
@@ -166,17 +177,22 @@ public class StoreTraceServiceImpl implements IStoreTraceService {
             .filter(p -> StringUtils.isNotBlank(p.getEarNo()))
             .collect(Collectors.toMap(PigAvailableVo::getEarNo, Function.identity(), (a, b) -> a));
 
-        List<TraceablePigVo> all = earNoList.stream().map(earNo -> {
+        List<TraceablePigVo> all = keyOrder.stream().map(key -> {
+            String earNo = keyToEar.get(key);
             TraceablePigVo v = new TraceablePigVo();
             v.setEarNo(earNo);
+            v.setWhiteBarNo(keyToWhiteBarNo.get(key));
             PigAvailableVo pig = pigByEarNo.get(earNo);
             if (pig != null) {
                 v.setPigSex(pig.getPigSex());
                 v.setPigBreedLabel(pig.getPigBreedLabel());
                 v.setAgeDays(pig.getAgeDays());
             }
-            BigDecimal arrived = arrivedByEar.getOrDefault(earNo, BigDecimal.ZERO);
-            BigDecimal used = usedByEar.getOrDefault(earNo, BigDecimal.ZERO);
+            BigDecimal arrived = arrivedByKey.getOrDefault(key, BigDecimal.ZERO);
+            // 已打包扣减：该耳号仅一条白条（整只）时按耳号 used 精确扣；一耳多半只时追溯码无半只维度，
+            // 不把整猪 used 逐半只重复扣（防双扣），剩余 = 到货（半只级已打包扣减待门店生码带 white_bar_no）。
+            BigDecimal used = barCountByEar.getOrDefault(earNo, 1) <= 1
+                ? usedByEar.getOrDefault(earNo, BigDecimal.ZERO) : BigDecimal.ZERO;
             v.setArrivedWeight(arrived);
             v.setRemainingWeight(arrived.subtract(used));
             return v;
