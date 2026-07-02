@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.common.core.exception.ServiceException;
+import org.dromara.common.core.utils.StringUtils;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.tenant.helper.TenantHelper;
@@ -333,6 +334,9 @@ public class TraceCodeAdminServiceImpl
         vo.setSource(c.getRemark() != null && c.getRemark().startsWith(ONSITE_REMARK_PREFIX)
             ? SOURCE_STORE : SOURCE_WAREHOUSE);
         vo.setProductId(c.getProductId());
+        // DENGBO-R16：优先展示生码时定格的展示名（果蔬按有机证书取产品名 / 别名）。旧码该列为 NULL，
+        // 由 fillProducts 兜底 JOIN 产品当前名。
+        vo.setProductName(c.getTraceDisplayName());
         vo.setPigEarNo(c.getPigEarNo());
         vo.setPlotId(c.getPlotId());
         vo.setPlantDays(c.getPlantDays());
@@ -478,7 +482,11 @@ public class TraceCodeAdminServiceImpl
         for (TraceCodeListVo vo : vos) {
             ProductInfo p = vo.getProductId() == null ? null : map.get(vo.getProductId());
             if (p != null) {
-                vo.setProductName(p.getProductName());
+                // DENGBO-R16：仅在 copyCodeFields 未从 trace_display_name 定格出名（旧码 NULL）时兜底当前产品名，
+                // 不覆盖已定格的快照名。
+                if (StringUtils.isBlank(vo.getProductName())) {
+                    vo.setProductName(p.getProductName());
+                }
                 vo.setProductSpec(p.getProductSpec());
                 vo.setProductImg(p.getProductImg());
             }

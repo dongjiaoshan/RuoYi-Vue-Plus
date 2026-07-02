@@ -143,6 +143,24 @@ public interface BarInfoMapper extends BaseMapperPlus<BarInfo, BarInfo> {
                               @Param("userId") Long userId);
 
     /**
+     * 仓库出库（后台出库）领用出库乐观锁：bar_info.status in_stock → cut_done + 写出库字段（邓博 row17）。
+     *
+     * <p>「后台出库」= 矿山/厨房等直接来仓库拿货、拿走即终结（不发货、不走门店逻辑，邓博 2026-07-02 澄清）。
+     * 终态沿用既有约定复用 {@code cut_done}（不动 7 态状态机/字典）；用 {@code out_method=3}（后台出库）
+     * 区分于发货领用 {@code out_method=1} / 分割间 {@code out_method=2}。出库去向（矿山/厨房…）记在
+     * stock_flow.stock_out_dest + product_production.remark，bar 表只标 out_method。
+     * WHERE status='in_stock' 保证并发只有一个成功；affectedRows==0 → 调用方静默跳过。</p>
+     */
+    @Update("UPDATE t_warehouse_bar_info "
+        + "   SET status='cut_done', out_time=#{outTime}, out_weight=#{outWeight}, out_method=3,"
+        + "       update_by=#{userId}, update_time=NOW() "
+        + " WHERE id = #{id} AND status = 'in_stock' AND del_flag = '0'")
+    int updateStatusToWarehouseOut(@Param("id") Long id,
+                                   @Param("outTime") Date outTime,
+                                   @Param("outWeight") BigDecimal outWeight,
+                                   @Param("userId") Long userId);
+
+    /**
      * 分页查「当天确认收货白条」（FIX-STORE-TRACE-BAR-001 门店猪肉追溯 picker 口径）。
      *
      * <p>口径：{@code status='in_stock'}（已入库 / 确认收货）且 {@code DATE(in_time)=CURDATE()} 的白条，

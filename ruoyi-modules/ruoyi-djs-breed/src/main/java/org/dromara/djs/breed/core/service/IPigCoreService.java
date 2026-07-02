@@ -184,7 +184,9 @@ public interface IPigCoreService {
      * @param earNoKeyword  耳号关键字 LIKE 过滤（row60：使各栋舍头数随搜索结果缩减，与 search 同口径）；null/空 → 不过滤
      * @param breedReady    配种选猪过滤（row13）：{@code true} 时按最小在场天数剔除未达天数母猪，与 search 同口径
      *                      （否则栋舍 chip 头数之和与列表条数对不上）；{@code null}/false → 不过滤
+     * @param dueType       到期窗口过滤（{@code "FARROW"}=已到产期 / {@code "WEANING"}=已到断奶期 / null=不过滤）：
+     *                      与 {@code searchByEarKeyword} 同口径按生产配置天数硬筛（dueDate ≤ 今天），使 chip 头数=列表条数（r120）
      * @return 栋舍头数聚合列表
      */
-    List<PigBarnCountVo> countByBarn(String statusFilter, String sexFilter, String pigTypeFilter, String earNoKeyword, Boolean breedReady);
+    List<PigBarnCountVo> countByBarn(String statusFilter, String sexFilter, String pigTypeFilter, String earNoKeyword, Boolean breedReady, String dueType);
 }

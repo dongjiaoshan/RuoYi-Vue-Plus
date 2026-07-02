@@ -72,6 +72,11 @@ public class ProductInfo extends TenantEntity {
     private String productSpec;
 
     /**
+     * 产品别名（非必填）。
+     */
+    private String productAlias;
+
+    /**
      * 字典 {@code djs_belong_type}：自产归属类型
      * （pork / vegetable / white_bar / dry_good / egg / gift_box）。
      *

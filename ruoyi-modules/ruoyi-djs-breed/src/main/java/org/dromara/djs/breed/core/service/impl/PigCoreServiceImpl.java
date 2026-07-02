@@ -861,7 +861,7 @@ public class PigCoreServiceImpl implements IPigCoreService {
     }
 
     @Override
-    public List<PigBarnCountVo> countByBarn(String statusFilter, String sexFilter, String pigTypeFilter, String earNoKeyword, Boolean breedReady) {
+    public List<PigBarnCountVo> countByBarn(String statusFilter, String sexFilter, String pigTypeFilter, String earNoKeyword, Boolean breedReady, String dueType) {
         List<String> statuses = parseStatusFilter(statusFilter);
         boolean callerWantsEnd = statuses.contains(PigLifecycle.END.name());
 
@@ -894,6 +894,25 @@ public class PigCoreServiceImpl implements IPigCoreService {
             pigs = filterBreedReady(pigs, LocalDateTime.now());
             if (pigs.isEmpty()) {
                 return Collections.emptyList();
+            }
+        }
+
+        // r120：与 searchByEarKeyword 同口径——分娩/断奶板块按生产配置天数硬筛（dueDate ≤ 今天）。
+        // 不加此过滤则栋舍 chip 计未到期母猪、列表只列到期母猪 → chip 显 1 而列表空（测试 r120）。
+        // 与列表侧 filter（上方 695-706）逻辑一致：配置缺失 → computeDueDateMap 返空 → 不过滤（degrade）。
+        if (StringUtils.isNotBlank(dueType)) {
+            Map<Long, LocalDate> dueDateMap = computeDueDateMap(pigs, dueType);
+            if (!dueDateMap.isEmpty()) {
+                LocalDate dueToday = LocalDate.now();
+                pigs = pigs.stream()
+                    .filter(p -> {
+                        LocalDate due = dueDateMap.get(p.getId());
+                        return due != null && !due.isAfter(dueToday);
+                    })
+                    .toList();
+                if (pigs.isEmpty()) {
+                    return Collections.emptyList();
+                }
             }
         }
 

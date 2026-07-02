@@ -344,9 +344,9 @@ public class FarrowServiceImpl implements IFarrowService {
                 vo.setPigletStrainName(resolveBreedStrainName(strainNameMap, "djs_pig_strain", mother.getPigStrainCode()));
                 vo.setPigletBreedName(resolveBreedStrainName(breedNameMap, "djs_pig_breed", mother.getPigBreedCode()));
             }
-            // 日龄 = NOW - farrowDate（仔猪日龄）；farrowDate 缺时 null（mp 端该格不渲染）
+            // 日龄 = NOW - farrowDate + 1（仔猪日龄，出生当天算 1 日龄 · 畜牧惯例）；farrowDate 缺时 null（mp 端该格不渲染）
             if (r.getFarrowDate() != null) {
-                vo.setAgeDays((int) ChronoUnit.DAYS.between(r.getFarrowDate().toLocalDate(), today));
+                vo.setAgeDays((int) ChronoUnit.DAYS.between(r.getFarrowDate().toLocalDate(), today) + 1);
             }
             result.add(vo);
             if (result.size() >= 60) {

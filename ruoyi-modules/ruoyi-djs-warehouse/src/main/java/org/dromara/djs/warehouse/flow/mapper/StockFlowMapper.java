@@ -121,6 +121,23 @@ public interface StockFlowMapper extends BaseMapperPlus<StockFlow, StockFlowVo> 
     BigDecimal sumCutOutByWhiteBarId(@Param("whiteBarId") Long whiteBarId);
 
     /**
+     * 分割产出总重（按半只 {@code white_bar_no} 聚合 {@code cut_out_in} 流水的 change_quantity）。
+     *
+     * <p>邓博 row13/row14 按半只 surface 后，剩余可分割 / 超量校验按半只 white_bar_no 聚合
+     * （一头猪多半只各自独立分割，避免按 white_bar_id 整猪聚合互相串扣）。white_bar_no 空的旧记录
+     * 仍走 {@link #sumCutOutByWhiteBarId}（整猪，向后兼容）。</p>
+     *
+     * @param whiteBarNo 半只白条流水号（cut_record.white_bar_no）
+     * @return 该半只的分割产出总重（无记录返 0）
+     */
+    @Select("SELECT COALESCE(SUM(change_quantity), 0) "
+        + "  FROM t_warehouse_stock_flow "
+        + " WHERE flow_type     = 'cut_out_in' "
+        + "   AND white_bar_no  = #{whiteBarNo} "
+        + "   AND del_flag      = '0'")
+    BigDecimal sumCutOutByWhiteBarNo(@Param("whiteBarNo") String whiteBarNo);
+
+    /**
      * 批量分割产出总重（按 {@code ear_no} IN 聚合 {@code cut_out_in} 流水），避免 N+1。
      *
      * @param earNos 猪只耳号集合（service 已去重 + 非空过滤）

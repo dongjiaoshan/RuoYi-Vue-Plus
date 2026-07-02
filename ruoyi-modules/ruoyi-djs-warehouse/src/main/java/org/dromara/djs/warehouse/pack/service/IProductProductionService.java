@@ -7,6 +7,7 @@ import org.dromara.djs.warehouse.pack.domain.bo.DryPackBo;
 import org.dromara.djs.warehouse.pack.domain.bo.GiftPackBo;
 import org.dromara.djs.warehouse.pack.domain.bo.MarkDamageBo;
 import org.dromara.djs.warehouse.pack.domain.bo.VegPackBo;
+import org.dromara.djs.warehouse.pack.domain.bo.WarehouseOutBo;
 import org.dromara.djs.warehouse.pack.domain.bo.WhiteBarOutBo;
 import org.dromara.djs.warehouse.pack.domain.query.ProductProductionQuery;
 import org.dromara.djs.warehouse.pack.domain.vo.ProductProductionGroupVo;
@@ -57,6 +58,12 @@ public interface IProductProductionService {
      * 解锁白条/猪肉发货链（WMS-WHITEBAR-SHIP-001）。返新建 production.id。
      */
     Long submitWhiteBarOut(WhiteBarOutBo bo);
+
+    /**
+     * 白条/猪肉「仓库出库」（row17）：inhouse → product_production（前缀 B/Z），出库不发往门店，
+     * 记出库去向（字典 {@code djs_bar_out_dest}）+ 出库方式=后台出库，补记预冷损耗。返新建 production.id。
+     */
+    Long submitWarehouseOut(WarehouseOutBo bo);
 
     /**
      * admin 产品维度聚合分页查询（主列表「产品生产」概览）。

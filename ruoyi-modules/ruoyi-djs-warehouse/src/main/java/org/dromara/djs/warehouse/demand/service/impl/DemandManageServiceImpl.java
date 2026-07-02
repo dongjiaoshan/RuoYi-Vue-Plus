@@ -36,6 +36,7 @@ import org.dromara.djs.warehouse.demand.mapper.DemandPigMapper;
 import org.dromara.djs.warehouse.demand.service.IDemandManageService;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
+import org.dromara.djs.warehouse.product.service.IProductDisplayNameResolver;
 import org.dromara.djs.warehouse.stock.mapper.LocationStockMapper;
 import org.dromara.djs.breed.core.domain.vo.PigAvailableVo;
 import org.dromara.djs.breed.production.service.IProductionCycleConfigService;
@@ -137,6 +138,9 @@ public class DemandManageServiceImpl extends DjsBaseServiceImpl<DemandManageMapp
     /** 下单守门：校验目标产品不是原材料（attr=2），门店只能下单生产产品。 */
     private final ProductInfoMapper productInfoMapper;
 
+    /** DENGBO-R16：下单定格展示名（果蔬按原材料作物有机证书取产品名 / 别名）。 */
+    private final IProductDisplayNameResolver displayNameResolver;
+
     public DemandManageServiceImpl(DemandManageMapper baseMapper,
                                    DemandPigMapper demandPigMapper,
                                    IBizCodeGenerator bizCodeGenerator,
@@ -144,7 +148,8 @@ public class DemandManageServiceImpl extends DjsBaseServiceImpl<DemandManageMapp
                                    IProductionCycleConfigService productionCycleConfigService,
                                    IPlantPlanService plantPlanService,
                                    LocationStockMapper locationStockMapper,
-                                   ProductInfoMapper productInfoMapper) {
+                                   ProductInfoMapper productInfoMapper,
+                                   IProductDisplayNameResolver displayNameResolver) {
         super(baseMapper);
         this.demandPigMapper = demandPigMapper;
         this.bizCodeGenerator = bizCodeGenerator;
@@ -153,6 +158,7 @@ public class DemandManageServiceImpl extends DjsBaseServiceImpl<DemandManageMapp
         this.plantPlanService = plantPlanService;
         this.locationStockMapper = locationStockMapper;
         this.productInfoMapper = productInfoMapper;
+        this.displayNameResolver = displayNameResolver;
     }
 
     /** 出栏日龄阈值兜底（配置缺失时，与 mp PigAppletController.slaughterAge 一致）。 */
@@ -368,6 +374,12 @@ public class DemandManageServiceImpl extends DjsBaseServiceImpl<DemandManageMapp
         DemandManage entity = toEntity(bo);
         if (entity == null) {
             throw new ServiceException(I18nMessages.t("demand.bo.convert_failed"));
+        }
+        // DENGBO-R16：下单时定格展示名（果蔬按原材料作物是否有有效有机证书取产品名 / 别名，其余业态产品名）。
+        // 冗余列 product_name 一次定格，列表读该冗余列（不再 JOIN 产品当前名），单据成立时的名字后续不随产品改名 / 证书过期而变。
+        // admin 仓库侧下单 + mp 门店下单都收口本方法，一处覆盖两落点。resolver 为 null（单测直接 new）时保留原名。
+        if (displayNameResolver != null) {
+            entity.setProductName(displayNameResolver.resolveDisplayName(entity.getProductId(), entity.getProductName()));
         }
         // 生成需求单号
         Map<String, Object> ctx = new HashMap<>();

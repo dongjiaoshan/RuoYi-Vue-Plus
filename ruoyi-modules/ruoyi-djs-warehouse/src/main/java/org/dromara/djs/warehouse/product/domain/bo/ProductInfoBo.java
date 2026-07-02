@@ -71,6 +71,12 @@ public class ProductInfoBo extends BaseEntity {
     private String productSpec;
 
     /**
+     * 产品别名（非必填）。
+     */
+    @Size(max = 128, message = "{product.alias.size}")
+    private String productAlias;
+
+    /**
      * 字典 {@code djs_belong_type}：自产归属类型。
      * <p>productType=1 时 service 强校验必填；礼盒 = 自产 + belongType='gift_box'（用户选产品类别确定）。</p>
      */

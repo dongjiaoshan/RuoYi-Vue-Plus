@@ -39,6 +39,10 @@ public class PigCutRecordVo implements Serializable {
 
     private Long whiteBarId;
 
+    /** 半只白条流水号（分割按半只展示；空=整猪旧记录）。 */
+    @ExcelProperty(value = "白条流水号")
+    private String whiteBarNo;
+
     @ExcelProperty(value = "猪只耳号")
     private String earNo;
 

@@ -16,6 +16,7 @@ import org.dromara.djs.warehouse.cut.service.IPigCutRecordService;
 import org.dromara.djs.warehouse.pack.domain.bo.DryPackBo;
 import org.dromara.djs.warehouse.pack.domain.bo.GiftPackBo;
 import org.dromara.djs.warehouse.pack.domain.bo.VegPackBo;
+import org.dromara.djs.warehouse.pack.domain.bo.WarehouseOutBo;
 import org.dromara.djs.warehouse.pack.domain.bo.WhiteBarOutBo;
 import org.dromara.djs.warehouse.pack.domain.vo.PackSubmitResultVo;
 import org.dromara.djs.warehouse.pack.domain.vo.ProductProductionVo;
@@ -356,6 +357,18 @@ public class WarehousePackEntryController extends BaseController {
     @PostMapping("/whiteBarOut")
     public R<Long> whiteBarOut(@Valid @RequestBody WhiteBarOutBo bo) {
         return R.ok(productionService.submitWhiteBarOut(bo));
+    }
+
+    /**
+     * 白条/猪肉「仓库出库」（row17，出库位置=仓库出库，复用 warehouseOut）。
+     *
+     * <p>原型「白条领用」新增出库位置=仓库出库：inhouse → product_production（前缀 B/Z），出库不发往门店，
+     * 记出库去向（字典 {@code djs_bar_out_dest}）+ 出库方式=后台出库，补记预冷损耗。</p>
+     */
+    @SaCheckPermission("djs:warehouse:packEntry:pickup")
+    @PostMapping("/warehouseOut")
+    public R<Long> warehouseOut(@Valid @RequestBody WarehouseOutBo bo) {
+        return R.ok(productionService.submitWarehouseOut(bo));
     }
 
     /**

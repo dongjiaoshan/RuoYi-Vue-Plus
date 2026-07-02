@@ -56,6 +56,12 @@ public class PigCutRecord extends TenantEntity {
     private Long whiteBarId;
 
     /**
+     * 半只白条流水号（BizCodeType.BAR_NO；燎毛按半只生成，外购/旧数据领用时补生成）。
+     * 分割按半只 surface + 剩余可分割/超量校验按 white_bar_no 聚合；空回落 white_bar_id（整猪，兼容旧记录）。
+     */
+    private String whiteBarNo;
+
+    /**
      * 冗余 {@code bar_info.bar_id} 便于查询展示。
      */
     private String barId;

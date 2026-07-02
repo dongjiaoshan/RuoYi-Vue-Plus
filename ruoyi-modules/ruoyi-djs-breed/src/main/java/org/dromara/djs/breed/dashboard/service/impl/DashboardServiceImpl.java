@@ -415,37 +415,57 @@ public class DashboardServiceImpl implements IDashboardService {
 
     @Override
     public DailyOverviewVo getDailyOverview(LocalDate date) {
-        if (date == null) {
-            date = LocalDate.now();
-        }
-        String tenantId = currentTenant();
-        LocalDateTime from = date.atStartOfDay();
-        LocalDateTime to = date.plusDays(1).atStartOfDay();
+        // r124（Kevin 2026-07-02 定）：养殖场日概览「这里都读表、显示昨日的指标」——
+        // 改读 t_farm_indicator_record（DashboardAggregateJob 每晚落盘 T-1 全量日指标），不再实时聚合。
+        // 默认目标 = 昨日（T-1，= 该表 statDate 语义）；传了 date 则读该日。
+        LocalDate target = (date != null) ? date : LocalDate.now().minusDays(1);
 
-        DailyOverviewVo vo = new DailyOverviewVo(date);
+        // 读该日整行（tenant 由 MP 拦截器 + del_flag 逻辑删自动加，与 triggerAggregate UPSERT 读法一致）。
+        FarmIndicatorRecord rec = farmIndicatorRecordMapper.selectOne(
+            new LambdaQueryWrapper<FarmIndicatorRecord>().eq(FarmIndicatorRecord::getStatDate, target));
+        // 该日尚无落盘（今日 job 未跑 / 该日无数据）→ 回退最近一条已落盘，避免空板块。
+        if (rec == null) {
+            rec = farmIndicatorRecordMapper.selectOne(
+                new LambdaQueryWrapper<FarmIndicatorRecord>()
+                    .orderByDesc(FarmIndicatorRecord::getStatDate)
+                    .last("LIMIT 1"));
+        }
+        // VO.date 回填实际展示的统计日（回退时=最近落盘日；整表空时仍=target，前端可显日期）。
+        LocalDate shownDate = (rec != null && rec.getStatDate() != null) ? rec.getStatDate() : target;
+
+        DailyOverviewVo vo = new DailyOverviewVo(shownDate);
         List<DailyOverviewVo.OverviewCell> cells = vo.getCells();
         // 15 格，顺序 / 文案严格对齐原型（4f113e00 养殖场日情况概览，4+4+4+3 末行=生长记录/阉割/用药）。
-        // 与 by-month 15 行同序同文案。死亡 / 淘汰按原型作"猪只数"（非母猪数）。无出栏格。
-        cells.add(cell("分娩母猪数", aggregateQueryMapper.countEventInDay("t_farm_pig_farrow", "farrow_date", tenantId, from, to)));
-        cells.add(cell("配种母猪数", aggregateQueryMapper.countEventInDay("t_farm_pig_breeding", "breeding_date", tenantId, from, to)));
-        cells.add(cell("断奶母猪数", aggregateQueryMapper.countEventInDay("t_farm_pig_weaning", "weaning_date", tenantId, from, to)));
-        cells.add(cell("返空流母猪数", aggregateQueryMapper.countAbnormalInRange(tenantId, from, to)));
-        cells.add(cell("引种母猪数", aggregateQueryMapper.sumEventInDay("t_farm_pig_introduce", "introduce_date", "pig_count", tenantId, from, to)));
-        cells.add(cell("查情不配种数", aggregateQueryMapper.countEventInDay("t_farm_pig_heat", "heat_date", tenantId, from, to)));
-        cells.add(cell("死亡猪只数", aggregateQueryMapper.countStatusEventInDay(tenantId, "DIE", from, to)));
-        cells.add(cell("淘汰猪只数", aggregateQueryMapper.countStatusEventInDay(tenantId, "ELIMINATE", from, to)));
-        cells.add(cell("产仔数", aggregateQueryMapper.sumEventInDay("t_farm_pig_farrow", "farrow_date", "total_born", tenantId, from, to)));
-        cells.add(cell("活仔数", aggregateQueryMapper.sumEventInDay("t_farm_pig_farrow", "farrow_date", "live_born", tenantId, from, to)));
-        cells.add(cell("仔猪打标数", aggregateQueryMapper.countEventInDay("t_farm_pig_pigletno", "tag_date", tenantId, from, to)));
-        cells.add(cell("断奶仔猪数", aggregateQueryMapper.sumEventInDay("t_farm_pig_weaning", "weaning_date", "weaned_count", tenantId, from, to)));
-        cells.add(cell("生长记录数", aggregateQueryMapper.countEventInDay("t_farm_pig_growth", "measure_date", tenantId, from, to)));
-        cells.add(cell("阉割猪只数", aggregateQueryMapper.countStatusEventInDay(tenantId, "CASTRATE", from, to)));
-        cells.add(cell("用药猪只数", aggregateQueryMapper.countMedicatedPigInDay(tenantId, from, to)));
+        // 与 by-month 15 行同序同文案；逐字段读 t_farm_indicator_record 落盘值；整表空 → 全 0（不硬造）。
+        cells.add(cell("分娩母猪数", n(rec, FarmIndicatorRecord::getFarrowSowCount)));
+        cells.add(cell("配种母猪数", n(rec, FarmIndicatorRecord::getBreedingSowCount)));
+        cells.add(cell("断奶母猪数", n(rec, FarmIndicatorRecord::getWeaningSowCount)));
+        cells.add(cell("返空流母猪数", n(rec, FarmIndicatorRecord::getAbnormalSowCount)));
+        cells.add(cell("引种母猪数", n(rec, FarmIndicatorRecord::getIntroduceSowCount)));
+        cells.add(cell("查情不配种数", n(rec, FarmIndicatorRecord::getHeatNoBreedCount)));
+        cells.add(cell("死亡猪只数", n(rec, FarmIndicatorRecord::getDeathPigCount)));
+        cells.add(cell("淘汰猪只数", n(rec, FarmIndicatorRecord::getCullingPigCount)));
+        cells.add(cell("产仔数", n(rec, FarmIndicatorRecord::getTotalBornCount)));
+        cells.add(cell("活仔数", n(rec, FarmIndicatorRecord::getLiveBornCount)));
+        cells.add(cell("仔猪打标数", n(rec, FarmIndicatorRecord::getPigletTagCount)));
+        cells.add(cell("断奶仔猪数", n(rec, FarmIndicatorRecord::getWeanedPigletCount)));
+        cells.add(cell("生长记录数", n(rec, FarmIndicatorRecord::getGrowthRecordCount)));
+        cells.add(cell("阉割猪只数", n(rec, FarmIndicatorRecord::getCastratePigCount)));
+        cells.add(cell("用药猪只数", n(rec, FarmIndicatorRecord::getMedicatedPigCount)));
         return vo;
     }
 
     private DailyOverviewVo.OverviewCell cell(String metric, int value) {
         return new DailyOverviewVo.OverviewCell(metric, value);
+    }
+
+    /** 从落盘记录取某指标列，rec 为空或列为 null → 0（空表/未落盘不硬造，显 0）。 */
+    private int n(FarmIndicatorRecord rec, java.util.function.Function<FarmIndicatorRecord, Integer> getter) {
+        if (rec == null) {
+            return 0;
+        }
+        Integer v = getter.apply(rec);
+        return v == null ? 0 : v;
     }
 
     // ============================================================

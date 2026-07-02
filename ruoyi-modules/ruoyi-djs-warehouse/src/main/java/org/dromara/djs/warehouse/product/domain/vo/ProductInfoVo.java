@@ -51,6 +51,9 @@ public class ProductInfoVo implements Serializable {
     @ExcelProperty(value = "规格")
     private String productSpec;
 
+    @ExcelProperty(value = "产品别名")
+    private String productAlias;
+
     @ExcelProperty(value = "归属类型", converter = ExcelDictConvert.class)
     @ExcelDictFormat(dictType = "djs_belong_type")
     private String belongType;

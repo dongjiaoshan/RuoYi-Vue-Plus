@@ -11,6 +11,7 @@ import org.dromara.djs.warehouse.cut.domain.PigCutRecord;
 import org.dromara.djs.warehouse.cut.mapper.PigCutRecordMapper;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
+import org.dromara.djs.warehouse.product.service.IProductDisplayNameResolver;
 import org.dromara.djs.warehouse.trace.domain.TraceCode;
 import org.dromara.djs.warehouse.trace.domain.TraceCodeTypeConst;
 import org.dromara.djs.warehouse.trace.domain.TraceContentConst;
@@ -91,6 +92,9 @@ class TraceServiceImplTest {
     @Mock
     private IBizCodeGenerator bizCodeGenerator;
 
+    @Mock
+    private IProductDisplayNameResolver displayNameResolver;
+
     private TraceServiceImpl service;
 
     @BeforeAll
@@ -110,7 +114,7 @@ class TraceServiceImplTest {
         // spy 以便 stub protected insertTraceCode / insertTraceEvent / findBarByEarNo（避开真实 baseMapper.insert）
         service = spy(new TraceServiceImpl(
             traceCodeMapper, traceEventMapper, productInfoMapper, barInfoMapper,
-            pigCutRecordMapper, bizCodeGenerator));
+            pigCutRecordMapper, bizCodeGenerator, displayNameResolver));
     }
 
     private ProductInfo product(Long id, String belongType) {

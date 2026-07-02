@@ -23,12 +23,14 @@ import org.dromara.djs.warehouse.flow.domain.StockFlow;
 import org.dromara.djs.warehouse.flow.mapper.StockFlowMapper;
 import org.dromara.djs.warehouse.location.domain.LocationInfo;
 import org.dromara.djs.warehouse.location.mapper.LocationInfoMapper;
+import org.dromara.djs.warehouse.loss.domain.LossFlow;
 import org.dromara.djs.warehouse.pack.domain.ProductProduction;
 import org.dromara.djs.warehouse.pack.domain.bo.CeleryPackBo;
 import org.dromara.djs.warehouse.pack.domain.bo.DryPackBo;
 import org.dromara.djs.warehouse.pack.domain.bo.GiftPackBo;
 import org.dromara.djs.warehouse.pack.domain.bo.MarkDamageBo;
 import org.dromara.djs.warehouse.pack.domain.bo.VegPackBo;
+import org.dromara.djs.warehouse.pack.domain.bo.WarehouseOutBo;
 import org.dromara.djs.warehouse.pack.domain.bo.WhiteBarOutBo;
 import org.dromara.djs.warehouse.pack.domain.query.ProductProductionQuery;
 import org.dromara.djs.warehouse.pack.domain.vo.ProductProductionGroupVo;
@@ -95,10 +97,18 @@ public class ProductProductionServiceImpl
     private static final String INOUT_IN = "IN";
     /** stock_flow.inout_type OUT=出库。 */
     private static final String INOUT_OUT = "OUT";
-    /** 白条出库 flow_type（邓博 row13：白条离白条库统一「白条出库」，去向区分白条分割 / 发货月台）。 */
+    /** 白条出库 flow_type（邓博 row13：白条离白条库统一「白条出库」，去向区分白条分割 / 发货月台 / 仓库出库）。 */
     private static final String FLOW_TYPE_CUT_OUT = "cut_out";
     /** 出库去向：发货月台。 */
     private static final String STOCK_OUT_DEST_SHIP_DOCK = "ship_dock";
+
+    /**
+     * 预冷损耗类型（字典 {@code djs_loss_type}）：白条入白条库重 − 出白条库重（口径同 cut 模块
+     * {@code PigCutRecordServiceImpl.LOSS_TYPE_PRECOOL}）。发货月台 / 仓库出库离白条库时补记。
+     */
+    private static final String LOSS_TYPE_PRECOOL = "precool_loss";
+    /** 白条出库损耗来源业务标识（loss_flow.source_biz_type）。 */
+    private static final String LOSS_SOURCE_BIZ_WHITEBAR_OUT = "whitebar_out";
 
     /** stock_flow.flow_type 业务类型。 */
     private static final String FLOW_TYPE_PACK_IN = "pack_in";
@@ -188,6 +198,37 @@ public class ProductProductionServiceImpl
     @org.springframework.context.annotation.Lazy
     private org.dromara.djs.warehouse.cut.service.IPigCutRecordService pigCutService;
 
+    /**
+     * 白条离白条库补记预冷损耗（bug5：发货月台 / 仓库出库漏记预冷损耗）。@Lazy 字段注入（非构造器）——
+     * 同 pigCutService，避免改构造器签名破坏既有单测。{@code record} 内部对 lossWeight&lt;=0 自动跳过。
+     */
+    @org.springframework.beans.factory.annotation.Autowired
+    @org.springframework.context.annotation.Lazy
+    private org.dromara.djs.warehouse.loss.service.ILossFlowService lossFlowService;
+
+    /**
+     * DENGBO-R16：打包 / 生产定格展示名（果蔬按原材料作物有机证书取产品名 / 别名）。字段注入（非构造器）——
+     * 同 pigCutService / lossFlowService，避免改构造器签名破坏既有单测。
+     */
+    @org.springframework.beans.factory.annotation.Autowired
+    @org.springframework.context.annotation.Lazy
+    private org.dromara.djs.warehouse.product.service.IProductDisplayNameResolver displayNameResolver;
+
+    /**
+     * DENGBO-R16：产出记录定格展示名 = 果蔬按原材料作物有机证书取产品名 / 别名，其余业态产品名。
+     * 冗余列 {@code product_production.product_name} 一次定格（生产列表 / 果蔬打包间读该冗余列 MAX(product_name)），
+     * 产品事后改名 / 证书过期不影响历史产出记录。resolver 内部兜底 productName，绝不返回空。
+     *
+     * <p>{@code displayNameResolver} 为 {@code @Lazy} 字段注入；无 Spring 上下文（单测直接 new）时为 null，
+     * 此时兜底产品当前名（不 NPE，等价旧行为）。</p>
+     */
+    private String resolveProductionName(ProductInfo product) {
+        if (displayNameResolver == null) {
+            return product.getProductName();
+        }
+        return displayNameResolver.resolveDisplayName(product.getId(), product.getProductName());
+    }
+
     public ProductProductionServiceImpl(ProductProductionMapper baseMapper,
                                         ProductInhouseMapper productInhouseMapper,
                                         ProductInfoMapper productInfoMapper,
@@ -246,7 +287,7 @@ public class ProductProductionServiceImpl
         p.setProduceDate(java.sql.Date.valueOf(LocalDate.now()));
         p.setProduceNo(generateProduceNo(product.getBelongType()));
         p.setProductId(product.getId());
-        p.setProductName(product.getProductName());
+        p.setProductName(resolveProductionName(product));
         p.setProductType(product.getProductType() != null ? product.getProductType() : 1);
         p.setProductUnit(product.getProductUnit());
         p.setProductSpec(StringUtils.isNotBlank(bo.getProductSpec())
@@ -311,7 +352,7 @@ public class ProductProductionServiceImpl
         p.setProduceDate(java.sql.Date.valueOf(LocalDate.now()));
         p.setProduceNo(generateProduceNo(giftBoxProduct.getBelongType()));
         p.setProductId(giftBoxProduct.getId());
-        p.setProductName(giftBoxProduct.getProductName());
+        p.setProductName(resolveProductionName(giftBoxProduct));
         // 产出记录沿用礼盒源产品的 product_type（礼盒走 type=1 自产；djs_product_type 已废弃 3）
         p.setProductType(giftBoxProduct.getProductType() != null ? giftBoxProduct.getProductType() : 1);
         p.setProductUnit(StringUtils.isNotBlank(giftBoxProduct.getProductUnit())
@@ -365,7 +406,7 @@ public class ProductProductionServiceImpl
         p.setProduceDate(java.sql.Date.valueOf(LocalDate.now()));
         p.setProduceNo(generateProduceNo(product.getBelongType()));
         p.setProductId(product.getId());
-        p.setProductName(product.getProductName());
+        p.setProductName(resolveProductionName(product));
         p.setProductType(product.getProductType() != null ? product.getProductType() : 1);
         p.setProductUnit(bo.getProductUnit());
         p.setProductSpec(StringUtils.isNotBlank(bo.getProductSpec())
@@ -428,7 +469,7 @@ public class ProductProductionServiceImpl
         p.setProduceDate(java.sql.Date.valueOf(LocalDate.now()));
         p.setProduceNo(generateProduceNo(product.getBelongType()));
         p.setProductId(product.getId());
-        p.setProductName(product.getProductName());
+        p.setProductName(resolveProductionName(product));
         p.setProductType(product.getProductType() != null ? product.getProductType() : 1);
         p.setProductUnit(StringUtils.isNotBlank(product.getProductUnit())
             ? product.getProductUnit() : "kg");
@@ -500,7 +541,7 @@ public class ProductProductionServiceImpl
         p.setProduceDate(java.sql.Date.valueOf(LocalDate.now()));
         p.setProduceNo(generateProduceNo(belongType));
         p.setProductId(product.getId());
-        p.setProductName(product.getProductName());
+        p.setProductName(resolveProductionName(product));
         p.setProductType(product.getProductType() != null ? product.getProductType() : 1);
         p.setProductUnit(StringUtils.isNotBlank(product.getProductUnit()) ? product.getProductUnit() : "kg");
         p.setProductSpec(product.getProductSpec());
@@ -525,6 +566,9 @@ public class ProductProductionServiceImpl
         // P3（邓博 row13）：白条离白条库 = 白条出库。补白条库出库流水（去向=发货月台）+ 扣白条库存行
         // （P2 燎毛按 product_id+ear_no+burn_id 建的白条行）。修「白条库出库记录缺失致库存不准」。
         writeWhiteBarOutFlow(src, bo.getProductWeight(), STOCK_OUT_DEST_SHIP_DOCK, userId);
+
+        // bug5：发货月台出库漏记预冷损耗。补记预冷损耗（入白条库重 − 本次出库重，非负；为 0 时 record 自动跳过）。
+        writePrecoolLossOnBarOut(src, bo.getProductWeight(), p.getId(), userId);
 
         // 发货月台领用回写 bar 出库基础数据（猪肉全闭环 Part I P6 + FIX-WMS-CUTPICKUP-SPLIT-001 按产出行）：
         // 本行已 consumeInhouse（满发=软删 / 部分=扣减）。白条按燎毛产出行处理——**发货一个半只不连坐整 bar**：
@@ -572,6 +616,113 @@ public class ProductProductionServiceImpl
     }
 
     /**
+     * 白条/猪肉「仓库出库」（row17）。
+     *
+     * <p>白条领用页第 3 个出库位置「仓库出库」：把白条整只(燎毛产)/猪肉部位(分割产)的 inhouse 出库，
+     * 但 <b>不发往门店</b>（区别于发货月台）、<b>不进分割</b>（区别于分割车间）。出库去向记
+     * {@code bo.outDest}（字典 {@code djs_bar_out_dest}），出库方式=后台出库（记流水 remark）。
+     * 复用 {@link #submitWhiteBarOut} 收尾范式（insertProduction + consumeInhouse + writeWhiteBarOutFlow +
+     * 补预冷损耗 + fillTraceCode），但 <b>不校验门店、不扣门店需求、不回写 bar 状态机</b>
+     * （bar 状态机转态口径待邓博确认，见 report 待确认项③）。</p>
+     */
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public Long submitWarehouseOut(WarehouseOutBo bo) {
+        Long userId = currentUserIdSafe();
+        Date now = new Date();
+
+        ProductInhouse src = requireActiveInhouse(bo.getSourceInhouseId());
+        ProductInfo product = productInfoMapper.selectById(src.getProductId());
+        if (product == null) {
+            throw new ServiceException("来源产品主数据不存在：" + src.getProductId());
+        }
+        String belongType = product.getBelongType();
+        if (!BELONG_TYPE_WHITE_BAR.equals(belongType) && !BELONG_TYPE_PORK.equals(belongType)) {
+            throw new ServiceException("仓库出库仅限白条/猪肉，当前来源业态=" + belongType);
+        }
+        requireInhouseEnough(src, bo.getProductWeight());
+        // D-2：来源 inhouse 所在库位盘点锁定中 → 拒绝出库（白条整只 inhouse 常无 locationId，对 null 安全跳过）
+        stockCheckService.assertLocationUnlocked(src.getLocationId());
+
+        ProductProduction p = new ProductProduction();
+        p.setProduceDate(java.sql.Date.valueOf(LocalDate.now()));
+        p.setProduceNo(generateProduceNo(belongType));
+        p.setProductId(product.getId());
+        p.setProductName(resolveProductionName(product));
+        p.setProductType(product.getProductType() != null ? product.getProductType() : 1);
+        p.setProductUnit(StringUtils.isNotBlank(product.getProductUnit()) ? product.getProductUnit() : "kg");
+        p.setProductSpec(product.getProductSpec());
+        p.setEarNo(src.getEarNo());
+        p.setWhiteBarNo(src.getWhiteBarNo());
+        p.setProductSort(1);
+        p.setProductWeight(bo.getProductWeight());
+        p.setProduceQuantity(bo.getProductWeight());
+        p.setProduceTime(now);
+        p.setIsDeliveryCheck(YN_NO);
+        p.setIsArrivalConfirm(YN_NO);
+        p.setProduceLocation(src.getLocationId());
+        p.setPackStatus(PACK_STATUS_PACKED);
+        p.setProofOssIds(bo.getProofOssIds());
+        // 出库方式=后台出库 + 出库去向记入备注（双语义落库口径待邓博确认，见 report 待确认项①）
+        p.setRemark(buildWarehouseOutRemark(bo.getOutDest(), bo.getRemark()));
+        baseMapper.insert(p);
+
+        // 消耗来源 inhouse（满出=软删 / 部分=扣减）
+        consumeInhouse(src, bo.getProductWeight());
+
+        // 白条离白条库 = 白条出库：写「白条出库」流水（去向=用户选的 outDest）+ 扣白条库存行（与发货月台同范式）
+        writeWhiteBarOutFlow(src, bo.getProductWeight(), bo.getOutDest(), userId);
+
+        // bug5 同因：仓库出库同样补记预冷损耗（入白条库重 − 本次出库重，非负；为 0 时 record 自动跳过）
+        writePrecoolLossOnBarOut(src, bo.getProductWeight(), p.getId(), userId);
+
+        // 生成追溯码回填 + 写 in_stock 事件（与发货月台同）
+        fillTraceCode(p, src.getEarNo(), null);
+
+        // 仓库出库不发往门店，不扣门店需求（区别于发货月台的 deductDemandOnPack）。
+        // 后台出库 = 终态（邓博 2026-07-02：矿山/厨房直接来仓库拿走，拿走即终结，不发货、不走门店逻辑）。
+        // 沿发货月台同款收口（本行已 consumeInhouse）：该白条所有产出行处理完 → 有分割领用行则 cut 路径接管、
+        // 不转终态；否则整 bar 转终态 cut_done + out_method=3（后台出库）。尚有未领行 → 不连坐整 bar，留 in_stock。
+        Long whiteBarId = src.getWhiteBarId();
+        if (whiteBarId != null) {
+            Long remaining = productInhouseMapper.selectCount(
+                new LambdaQueryWrapper<ProductInhouse>()
+                    .eq(ProductInhouse::getWhiteBarId, whiteBarId)
+                    .and(w -> w.eq(ProductInhouse::getPickupStatus, 0).or().isNull(ProductInhouse::getPickupStatus)));
+            if (remaining == null || remaining == 0) {
+                Long cutRows = productInhouseMapper.selectCount(
+                    new LambdaQueryWrapper<ProductInhouse>()
+                        .eq(ProductInhouse::getWhiteBarId, whiteBarId)
+                        .eq(ProductInhouse::getPickupStatus, 1));
+                if (cutRows != null && cutRows > 0) {
+                    Long cutRecordId = pigCutService.finalizeBarPickupIfComplete(whiteBarId, userId);
+                    log.info("[DENGBO-R17] warehouse-out bar 含分割领用行，交 cut 路径收口 barId={} cutRecordId={}", whiteBarId, cutRecordId);
+                } else {
+                    int barAffected = barInfoMapper.updateStatusToWarehouseOut(whiteBarId, now, bo.getProductWeight(), userId);
+                    log.info("[DENGBO-R17] warehouse-out bar 转终态 cut_done(out_method=3) barId={} affected={}", whiteBarId, barAffected);
+                }
+            } else {
+                log.info("[DENGBO-R17] warehouse-out bar 尚有未领产出行({})，不连坐整 bar，留 in_stock barId={}", remaining, whiteBarId);
+            }
+        }
+
+        log.info("[DENGBO-R17] warehouse out done id={} produceNo={} belongType={} weight={} outDest={} traceCode={}",
+            p.getId(), p.getProduceNo(), belongType, bo.getProductWeight(), bo.getOutDest(), p.getTraceCode());
+        return p.getId();
+    }
+
+    /**
+     * 拼「后台出库」+ 出库去向 + 用户备注 → product_production.remark（双语义落库口径待邓博确认）。
+     */
+    private String buildWarehouseOutRemark(String outDest, String userRemark) {
+        StringBuilder sb = new StringBuilder("后台出库 去向=").append(StringUtils.isBlank(outDest) ? "-" : outDest);
+        if (StringUtils.isNotBlank(userRemark)) {
+            sb.append(" ").append(userRemark);
+        }
+        return sb.toString();
+    }
+
+    /**
      * 白条离白条库 → 写「白条出库」流水 + 扣 P2 燎毛按 {@code (product_id, ear_no, burn_id)} 建的白条库存行。
      *
      * <p>邓博 row13：白条无论去分割间还是发货月台，都要从白条库正常出库（修「白条库出库记录缺失致库存不准」）。
@@ -607,6 +758,32 @@ public class ProductProductionServiceImpl
         out.setWhiteBarId(src.getWhiteBarId());
         out.setOperatorId(userId);
         stockFlowMapper.insert(out);
+    }
+
+    /**
+     * 白条离白条库补记「预冷损耗」（bug5：发货月台 / 仓库出库出库时漏记预冷损耗）。
+     *
+     * <p>口径同 cut 模块 {@code PigCutRecordServiceImpl.writeCutLossFlows} 的 precool：
+     * 预冷损耗 = 白条入白条库重（{@code src.productWeight}，该半只燎毛入库重）− 本次出库重（{@code outWeight}），
+     * 非负钳制。{@code lossFlowService.record} 内部对 {@code lossWeight<=0} 自动跳过（无需调用方判断）。</p>
+     *
+     * @param src           来源白条 inhouse（含 productId / earNo / productWeight 入库重）
+     * @param outWeight     本次出库重量
+     * @param sourceBizId   来源单据 id（发货 / 仓库出库对应的 product_production.id）
+     * @param userId        操作人
+     */
+    private void writePrecoolLossOnBarOut(ProductInhouse src, BigDecimal outWeight, Long sourceBizId, Long userId) {
+        BigDecimal inWeight = src.getProductWeight() == null ? BigDecimal.ZERO : src.getProductWeight();
+        BigDecimal precool = inWeight.subtract(outWeight == null ? BigDecimal.ZERO : outWeight).max(BigDecimal.ZERO);
+        LossFlow loss = new LossFlow();
+        loss.setLossType(LOSS_TYPE_PRECOOL);
+        loss.setLossWeight(precool);
+        loss.setProductId(src.getProductId());
+        loss.setEarNo(src.getEarNo());
+        loss.setOperatorId(userId);
+        loss.setSourceBizType(LOSS_SOURCE_BIZ_WHITEBAR_OUT);
+        loss.setSourceBizId(sourceBizId);
+        lossFlowService.record(loss);
     }
 
     @Override

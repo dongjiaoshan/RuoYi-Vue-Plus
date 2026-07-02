@@ -15,6 +15,7 @@ import org.dromara.djs.warehouse.cut.domain.PigCutRecord;
 import org.dromara.djs.warehouse.cut.mapper.PigCutRecordMapper;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
+import org.dromara.djs.warehouse.product.service.IProductDisplayNameResolver;
 import org.dromara.djs.warehouse.trace.domain.TraceCode;
 import org.dromara.djs.warehouse.trace.domain.TraceCodeTypeConst;
 import org.dromara.djs.warehouse.trace.domain.TraceContentConst;
@@ -101,19 +102,22 @@ public class TraceServiceImpl
     private final BarInfoMapper barInfoMapper;
     private final PigCutRecordMapper pigCutRecordMapper;
     private final IBizCodeGenerator bizCodeGenerator;
+    private final IProductDisplayNameResolver displayNameResolver;
 
     public TraceServiceImpl(TraceCodeMapper baseMapper,
                             TraceEventMapper traceEventMapper,
                             ProductInfoMapper productInfoMapper,
                             BarInfoMapper barInfoMapper,
                             PigCutRecordMapper pigCutRecordMapper,
-                            IBizCodeGenerator bizCodeGenerator) {
+                            IBizCodeGenerator bizCodeGenerator,
+                            IProductDisplayNameResolver displayNameResolver) {
         super(baseMapper);
         this.traceEventMapper = traceEventMapper;
         this.productInfoMapper = productInfoMapper;
         this.barInfoMapper = barInfoMapper;
         this.pigCutRecordMapper = pigCutRecordMapper;
         this.bizCodeGenerator = bizCodeGenerator;
+        this.displayNameResolver = displayNameResolver;
     }
 
     @Override
@@ -141,6 +145,9 @@ public class TraceServiceImpl
         traceCode.setProduceCode(produceCode);
         traceCode.setCodeType(codeType);
         traceCode.setProductId(productId);
+        // 定格展示名（DENGBO-R16）：果蔬按原材料作物有机证书取产品名 / 别名，其余业态直接产品名。
+        // 快照进表，后续显示读本列不受产品事后改名 / 证书事后过期影响。
+        traceCode.setTraceDisplayName(displayNameResolver.resolveDisplayName(productId, product.getProductName()));
         // 追溯码归属门店（需求 C：打印追溯码记门店；无门店传 null 即留空）
         traceCode.setStoreId(storeId);
         if (TraceCodeTypeConst.PORK.equals(codeType)) {

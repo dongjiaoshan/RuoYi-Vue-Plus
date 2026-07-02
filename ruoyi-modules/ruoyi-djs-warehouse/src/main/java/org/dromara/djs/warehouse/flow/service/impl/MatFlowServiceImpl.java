@@ -1245,14 +1245,22 @@ public class MatFlowServiceImpl implements IMatFlowService {
         flow.setProofOssIds(bo.getProofOssIds());
         stockFlowMapper.insert(flow);
 
-        // 3. 扣库存（饲喂 = 不可逆消耗，同 loss 语义）：affected==0 打 warn 不抛（账实倒挂留痕，
-        //    工人可能消耗完才补登，与 loss() 一致）。
-        int affected = locationStockMapper.deductByProductLocation(
-            bo.getLocationId(), bo.getProductId(), bo.getQuantity(), userId);
-        if (affected == 0) {
-            log.warn("warehouse feed 流水已记，但 location_stock 扣减失败（账面已不足）："
-                    + "user={}, product={}, location={}, qty={}",
-                userId, bo.getProductId(), bo.getLocationId(), bo.getQuantity());
+        // 3. 饲喂"扣减"（与 loss() 同源：不可逆消耗，从账面剥离）。
+        //    可打包食品原料（vegetable/egg/dry_good/other）：领用时已离 location_stock 进「待打包」
+        //    product_inhouse，饲喂剥离的是这部分 WIP（与"退回/损耗"对称，让 admin 打包来源「领用剩余重量」归零），
+        //    不再二次扣 location_stock。其余物资（包材/饲料/种子/药品）无 WIP → 从 location_stock 扣减。
+        //    饲料/种子等非可打包物资仍走 location_stock（本改动只影响可打包食品，不误伤养殖/种植饲喂）。
+        if (isPackableFood(product.getBelongType())) {
+            reduceTodayInhouseForBasket(bo.getProductId(), null, null, bo.getQuantity());
+        } else {
+            // affected==0 打 warn 不抛（账实倒挂留痕，工人可能消耗完才补登，与 loss() 一致）。
+            int affected = locationStockMapper.deductByProductLocation(
+                bo.getLocationId(), bo.getProductId(), bo.getQuantity(), userId);
+            if (affected == 0) {
+                log.warn("warehouse feed 流水已记，但 location_stock 扣减失败（账面已不足）："
+                        + "user={}, product={}, location={}, qty={}",
+                    userId, bo.getProductId(), bo.getLocationId(), bo.getQuantity());
+            }
         }
 
         // 4. 写饲喂台账 feed_log（feed_type='warehouse'，行64 来源②）：crop_id/cropName 仓库领用饲喂无作物维度，留空。

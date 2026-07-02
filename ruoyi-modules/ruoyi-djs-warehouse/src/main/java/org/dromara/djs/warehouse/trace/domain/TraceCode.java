@@ -66,6 +66,14 @@ public class TraceCode extends TenantEntity {
     private Long productId;
 
     /**
+     * 生码时定格的展示名（DENGBO-R16）。
+     *
+     * <p>果蔬按「原材料对应作物是否有有效有机证书」取产品名 / 别名，其余业态直接产品名。快照语义：
+     * 证书事后过期 / 产品事后改名，历史追溯码显示不变。显示层优先读本列，NULL（旧码）时兜底 JOIN product 当前名。</p>
+     */
+    private String traceDisplayName;
+
+    /**
      * 猪肉链：耳号（果蔬 / 礼盒为 NULL）。
      */
     private String pigEarNo;

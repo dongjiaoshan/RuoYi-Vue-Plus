@@ -204,13 +204,17 @@ public class PigCutRecordServiceImpl
     public Long submitPickup(PigCutPickupBo bo) {
         Long userId = LoginHelper.getUserId();
 
-        // Step 1：SELECT bar_info，校验 status='in_stock'
+        // Step 1：SELECT bar_info。邓博 row14 按半只领用：一头猪可分多次领（领一个半只后 bar 已转
+        // pending_cut/cutting），故允许从 in_stock / pending_cut / cutting 继续领剩余产出行；
+        // 仅拒已收尾（cut_done/ship_out）或未入库（pending_singe/singing）。
         BarInfo bar = barInfoMapper.selectById(bo.getBarInfoId());
         if (bar == null) {
             throw new ServiceException("白条不存在：" + bo.getBarInfoId());
         }
-        if (!BAR_STATUS_IN_STOCK.equals(bar.getStatus())) {
-            throw new ServiceException("白条状态不符（当前：" + bar.getStatus() + "，需 in_stock）");
+        if (!BAR_STATUS_IN_STOCK.equals(bar.getStatus())
+            && !BAR_STATUS_PENDING_CUT.equals(bar.getStatus())
+            && !BAR_STATUS_CUTTING.equals(bar.getStatus())) {
+            throw new ServiceException("白条状态不符（当前：" + bar.getStatus() + "，需在库/待分割/分割中）");
         }
 
         // TRC 白条出库（领用）事件（邓博 row19 拆出独立事件）：白条被领用出库进入分割的时刻按耳号写追溯流水。
@@ -253,8 +257,9 @@ public class PigCutRecordServiceImpl
         for (ProductInhouse r : barRows) {
             writeBarCutOutFlow(r, r.getProductWeight(), userId);
         }
+        // mp 整只兜底路径：无逐产出行拆分，建整猪 cut_record（whiteBarNo=null → 剩余/超量回落 white_bar_id）。
         return insertCutRecord(bar, pickupWeight, bo.getLocationId(), bo.getTargetStoreId(),
-            bo.getTargetDemandId(), bo.getIsHalf() == null ? 2 : bo.getIsHalf(), bo.getRemark(), userId);
+            bo.getTargetDemandId(), bo.getIsHalf() == null ? 2 : bo.getIsHalf(), bo.getRemark(), userId, null);
     }
 
     /**
@@ -294,13 +299,27 @@ public class PigCutRecordServiceImpl
         if (marked == 0) {
             throw new ServiceException("该产出行已被并发领用，请刷新重试");
         }
-        // P4'（邓博 row13）：白条领用到分割间 = 白条出白条库。扣该半只白条库存行(by white_bar_no) +
-        // 写白条出库流水（去向=白条分割）。修「白条库出库记录缺失致库存不准」。
-        // 结算/超量/剩余/损耗仍按 white_bar_id(整猪) 聚合不变；white_bar_no 仅半只标识/领用/追溯。
+        // 半只维度贯穿（邓博 row13/row14）：外购 / 旧数据行 white_bar_no 空 → 领用时补生成一个 BAR_NO 落到该产出行，
+        // 使这半只在 库存/流水/分割/剩余/超量 全链有稳定半只键（cut_out_in 按 white_bar_no 聚合，互不串扣）。
+        String whiteBarNo = row.getWhiteBarNo();
+        if (StringUtils.isBlank(whiteBarNo)) {
+            whiteBarNo = bizCodeGenerator.generate(BizCodeType.BAR_NO, Map.of());
+            productInhouseMapper.update(null, new LambdaUpdateWrapper<ProductInhouse>()
+                .eq(ProductInhouse::getId, row.getId())
+                .set(ProductInhouse::getWhiteBarNo, whiteBarNo));
+            row.setWhiteBarNo(whiteBarNo);
+        }
+        // 白条领用到分割间 = 白条出白条库：扣该半只库存行(by white_bar_no) + 写白条出库流水（去向=白条分割）。
         writeBarCutOutFlow(row, rowWeight, userId);
-        // 该白条所有产出行处理完（分割领用 / 发货软删）才收口推 bar + 建整猪 cut_record；
-        // 还有未领行 → 返 null（分两次领，剩余行继续显示）。统一走 finalizeBarPickupIfComplete。
-        return finalizeBarPickupIfComplete(bar.getId(), userId);
+        // 邓博 row14 修复：按半只 surface —— 每领一个产出行即建独立 cut_record（picked）+ 推 bar pending_cut，
+        // 立即在白条分割车间可见可分割，不再等整头猪所有产出行领完才建 cut_record（原 finalize 逻辑=「领半只后分割车间看不到」根因）。
+        // bar → pending_cut 幂等（已 pending_cut/cutting → affected=0 不抛）；剩余未领行仍可继续领（picker 含 pending_cut/cutting）。
+        barInfoMapper.updateStatusToPendingCut(bar.getId(), userId);
+        int isHalf = bo.getIsHalf() != null ? bo.getIsHalf()
+            : (row.getProductName() != null && row.getProductName().contains("半") ? 1 : 2);
+        // 结算/超量/剩余/损耗仍按整猪 white_bar_id 汇总（dashboards 读 by white_bar_id 不变，Kevin 定）。
+        return insertCutRecord(bar, rowWeight, bo.getLocationId(), bo.getTargetStoreId(),
+            bo.getTargetDemandId(), isHalf, bo.getRemark(), userId, whiteBarNo);
     }
 
     /**
@@ -344,35 +363,25 @@ public class PigCutRecordServiceImpl
     @Override
     @Transactional(rollbackFor = Exception.class)
     public Long finalizeBarPickupIfComplete(Long barInfoId, Long userId) {
+        // 邓博 row14 按半只 surface 后：cut_record 已在 pickupByInhouseRow 按产出行建好、bar 已 pending_cut。
+        // 本方法保留给发货路径（ProductProductionServiceImpl.submitWhiteBarOut）幂等收口用：不再建整猪
+        // cut_record（避免与领用时的按半只 cut_record 重复），仅在有分割领用行时确保 bar 处于 pending_cut，
+        // 返非空信号（调用方仅日志用，据自身 cutRows 分支决定不转 ship_out）。
         BarInfo bar = barInfoMapper.selectById(barInfoId);
-        if (bar == null || !BAR_STATUS_IN_STOCK.equals(bar.getStatus())) {
-            return null;  // 已转态 / 不存在，幂等
-        }
-        // 还有未领产出行（pickup_status=0/NULL；发货满发的行已 consumeInhouse 软删、不计）→ 不收口，留 in_stock
-        Long remaining = productInhouseMapper.selectCount(
-            new LambdaQueryWrapper<ProductInhouse>()
-                .eq(ProductInhouse::getWhiteBarId, barInfoId)
-                .and(w -> w.eq(ProductInhouse::getPickupStatus, 0).or().isNull(ProductInhouse::getPickupStatus)));
-        if (remaining != null && remaining > 0) {
+        if (bar == null) {
             return null;
         }
-        // 全部处理完：分割领用行 = 仍在的 pickup_status=1 行（发货行已软删，不在此列）
         Long cutRows = productInhouseMapper.selectCount(
             new LambdaQueryWrapper<ProductInhouse>()
                 .eq(ProductInhouse::getWhiteBarId, barInfoId)
                 .eq(ProductInhouse::getPickupStatus, 1));
         if (cutRows == null || cutRows == 0) {
-            return null;  // 全发货（无分割行）→ 交发货路径转 ship_out
+            return null;  // 无分割领用行 → 全发货 → 调用方转 ship_out
         }
-        // 有分割领用行 → 推 bar in_stock→pending_cut + 建一个整猪 cut_record（pickup_weight = 各分割行之和）
-        int affected = barInfoMapper.updateStatusToPendingCut(barInfoId, userId);
-        if (affected == 0) {
-            return null;  // 并发已转，幂等
+        if (BAR_STATUS_IN_STOCK.equals(bar.getStatus())) {
+            barInfoMapper.updateStatusToPendingCut(barInfoId, userId);
         }
-        BigDecimal totalPicked = sumPickedRowWeight(barInfoId);
-        // 多产出行（被拆半只领的）→ isHalf=1（半扇分割）；单行 → 2（整只）
-        int isHalf = cutRows > 1 ? 1 : 2;
-        return insertCutRecord(bar, totalPicked, null, null, null, isHalf, null, userId);
+        return barInfoId;  // 非空信号（分割路径接管此 bar，调用方不转 ship_out）
     }
 
     /** 该白条已领产出行 pickup_weight 之和（pickup_status=1）。 */
@@ -391,13 +400,17 @@ public class PigCutRecordServiceImpl
         return sum;
     }
 
-    /** 建整猪 cut_record（cut_status=picked），整猪 / 拆条领满两路径共用。 */
+    /**
+     * 建 cut_record（cut_status=picked）。
+     * whiteBarNo 非空 = 按半只（admin 逐产出行领用，邓博 row13/row14）；空 = 整猪（mp 整只兜底路径）。
+     */
     private Long insertCutRecord(BarInfo bar, BigDecimal pickupWeight, Long locationId,
                                  Long targetStoreId, Long targetDemandId, int isHalf,
-                                 String remark, Long userId) {
+                                 String remark, Long userId, String whiteBarNo) {
         PigCutRecord record = new PigCutRecord();
         record.setCutId(generateCutId());
         record.setWhiteBarId(bar.getId());
+        record.setWhiteBarNo(whiteBarNo);
         record.setBarId(bar.getBarId());
         record.setEarNo(bar.getEarNo());
         record.setPickupTime(new Date());
@@ -443,7 +456,10 @@ public class PigCutRecordServiceImpl
                     requestedTotal = requestedTotal.add(part.getProductWeight());
                 }
             }
-            BigDecimal alreadyCut = stockFlowMapper.sumCutOutByWhiteBarId(record.getWhiteBarId());
+            // 按半只（white_bar_no）聚合已分割量与 record.pickupWeight（半只领用重）对齐；空回落整猪 white_bar_id（旧记录）
+            BigDecimal alreadyCut = StringUtils.isNotBlank(record.getWhiteBarNo())
+                ? stockFlowMapper.sumCutOutByWhiteBarNo(record.getWhiteBarNo())
+                : stockFlowMapper.sumCutOutByWhiteBarId(record.getWhiteBarId());
             BigDecimal afterTotal = requestedTotal.add(alreadyCut == null ? BigDecimal.ZERO : alreadyCut);
             if (afterTotal.compareTo(pickupWeight) > 0) {
                 BigDecimal remaining = pickupWeight
@@ -528,8 +544,10 @@ public class PigCutRecordServiceImpl
             flowIn.setChangeNum(part.getProductWeight());
             flowIn.setChangeQuantity(part.getProductWeight());
             flowIn.setEarNo(record.getEarNo());
-            // 分割产出按 white_bar_id 关联白条（外购无耳号也稳定可聚合，剩余重量/超量校验统一口径）
+            // 分割产出按 white_bar_id 关联白条（外购无耳号也稳定可聚合）+ 按 white_bar_no 关联半只
+            // （邓博 row14：剩余可分割/超量校验按半只聚合，一头猪多半只互不串扣；旧记录 white_bar_no 空回落整猪）
             flowIn.setWhiteBarId(record.getWhiteBarId());
+            flowIn.setWhiteBarNo(record.getWhiteBarNo());
             flowIn.setOperatorId(userId);
             flowIn.setRemark("分割产出入冻品库 cut_id=" + record.getCutId() + " part=" + part.getCutPart());
             stockFlowMapper.insert(flowIn);
@@ -593,42 +611,52 @@ public class PigCutRecordServiceImpl
         int acidMinutes = (int) Duration.between(
             record.getPickupTime().toInstant(), now.toInstant()).toMinutes();
 
-        // 滴水损耗由系统自动计算（前端不再录入）：白条入库重量 − 白条出库重量。
-        // 白条入库重量 = bar_info.in_weight（燎毛入库快照）；白条出库重量 = 领用称重 pickup_weight。
-        // 入库重量缺失（外购 / 旧数据 in_weight=NULL）或差值为负（脏数据 pickup>in）时钳到 0（损耗不可为负）。
-        BigDecimal pickupWeight = record.getPickupWeight();
-        BarInfo bar = barInfoMapper.selectById(record.getWhiteBarId());
-        BigDecimal inWeight = bar == null ? null : bar.getInWeight();
-        BigDecimal dripLoss = inWeight == null
-            ? BigDecimal.ZERO
-            : inWeight.subtract(pickupWeight).max(BigDecimal.ZERO);
-        // 白条出库重量 = 领用称重（滴水损耗已作为独立损耗项，不再从出库重量二次扣减）
-        BigDecimal outWeight = pickupWeight;
-
-        // Step 2：UPDATE cut_record cutting → done
+        // 邓博 row14 按半只 surface：先把本 cut_record（本半只）置 done。滴水/分割损耗 + bar 转 cut_done
+        // 统一在「该白条所有 cut_record 都 done 且无未领产出行」时按整猪结算一次（Kevin 定：结算按整猪 white_bar_id），
+        // 故本半只 cut_record.drip_loss 先记 0，整猪滴水损耗落 bar_info + loss_flow（收口时一次，不重复双写）。
         int affected = baseMapper.updateStatusToDone(
-            record.getId(), now, dripLoss, acidMinutes,
+            record.getId(), now, BigDecimal.ZERO, acidMinutes,
             bo.getRemark(), bo.getProofOssIds(), userId);
         if (affected == 0) {
             throw new ServiceException("分割单状态已变更，请刷新重试");
         }
 
-        // Step 3：UPDATE bar_info cutting → cut_done
+        // 该白条是否全部半只都分割完（无 cut_status!=done 的 cut_record）且无未领产出行 → 才整猪收口
+        Long pendingCuts = baseMapper.selectCount(
+            new LambdaQueryWrapper<PigCutRecord>()
+                .eq(PigCutRecord::getWhiteBarId, record.getWhiteBarId())
+                .ne(PigCutRecord::getCutStatus, CUT_STATUS_DONE));
+        Long pendingRows = productInhouseMapper.selectCount(
+            new LambdaQueryWrapper<ProductInhouse>()
+                .eq(ProductInhouse::getWhiteBarId, record.getWhiteBarId())
+                .and(w -> w.eq(ProductInhouse::getPickupStatus, 0).or().isNull(ProductInhouse::getPickupStatus)));
+        if ((pendingCuts != null && pendingCuts > 0) || (pendingRows != null && pendingRows > 0)) {
+            return;  // 还有半只未分割完 / 未领产出行 → 不整猪收口，bar 留 cutting
+        }
+
+        // 整猪收口：滴水损耗 = 白条入库重 − 领用总重（Σ pickup_weight = 各半只之和）；结算按整猪 white_bar_id。
+        // 入库重缺失（外购/旧数据 in_weight=NULL）或差值为负钳到 0（损耗不可为负）。
+        BarInfo bar = barInfoMapper.selectById(record.getWhiteBarId());
+        BigDecimal inWeight = bar == null ? null : bar.getInWeight();
+        BigDecimal totalPicked = sumPickedRowWeight(record.getWhiteBarId());
+        BigDecimal dripLoss = inWeight == null
+            ? BigDecimal.ZERO
+            : inWeight.subtract(totalPicked).max(BigDecimal.ZERO);
+        BigDecimal outWeight = totalPicked;
+
+        // bar_info cutting → cut_done（整猪出库重 / 滴水损耗回写）。并发已收口 → affected=0 幂等跳过，不抛。
         int barAffected = barInfoMapper.updateStatusToCutDone(
             record.getWhiteBarId(), now, outWeight, acidMinutes, dripLoss, userId);
         if (barAffected == 0) {
-            throw new ServiceException("白条状态不符或已被并发更新，请刷新重试");
+            return;  // bar 已被并发的另一半只收口，幂等
         }
 
-        // TRC-CORE-001：屠宰分割 + 排酸追溯事件（分割完成同时记两条；按耳号反查 trace_code，
-        // 猪肉链当前无生成入口 → warn 跳过，不拖垮分割事务）
-        // 追溯时间轴每节点重量：分割 / 排酸节点重量 = 白条出库重量 outWeight（= pickupWeight）
+        // TRC-CORE-001：屠宰分割 + 排酸追溯事件（整猪出库重；按耳号反查 trace_code，无生码 → warn 跳过）
         traceService.recordEventByEarNo(record.getEarNo(), TraceContentConst.SLAUGHTER, outWeight);
         traceService.recordEventByEarNo(record.getEarNo(), TraceContentConst.ACID, outWeight);
 
-        // WMS-LOSS-001 行62：分割完成结算点统一损耗双写（在原 cut_record.drip_loss / bar_info.drip_loss
-        // 之上追加 loss_flow 两条明细，作损耗总览数据源）。负值/0 由门面自动跳过。
-        // 该判定点由 cutting→done 乐观锁保证只走一次，故只在此写一次，不重复。
+        // WMS-LOSS-001：整猪损耗双写 loss_flow（预冷=dripLoss；分割=出库重−Σcut_out_in by white_bar_id）。
+        // 由 bar cutting→cut_done 乐观锁保证整猪只走一次，不重复。
         writeCutLossFlows(record, dripLoss, outWeight, userId);
     }
 
@@ -730,9 +758,11 @@ public class PigCutRecordServiceImpl
 
     @Override
     public List<BarPickupItemVo> queryPickupItems() {
+        // 邓博 row14 按半只 surface：一头猪部分半只已领(bar 转 pending_cut/cutting) 后，剩余未领半只仍要能继续领——
+        // 故 picker 含 in_stock/pending_cut/cutting 三态（仅展示各 bar 的未领产出行；无未领行的不出卡）。
         List<BarInfo> bars = barInfoMapper.selectList(
             new LambdaQueryWrapper<BarInfo>()
-                .eq(BarInfo::getStatus, BAR_STATUS_IN_STOCK)
+                .in(BarInfo::getStatus, BAR_STATUS_IN_STOCK, BAR_STATUS_PENDING_CUT, BAR_STATUS_CUTTING)
                 .orderByDesc(BarInfo::getInTime)
                 .last("LIMIT 50"));
         if (bars.isEmpty()) {
@@ -759,8 +789,9 @@ public class PigCutRecordServiceImpl
                 for (ProductInhouse r : rs) {
                     result.add(toPickupItem(bar, r));
                 }
-            } else {
-                // 燎毛无产出行 → 整只兜底卡（inhouseId=null，领用走整猪路径），向后兼容旧数据
+            } else if (BAR_STATUS_IN_STOCK.equals(bar.getStatus())) {
+                // 燎毛无产出行 + 全新 in_stock → 整只兜底卡（inhouseId=null，领用走整猪路径），向后兼容旧数据。
+                // pending_cut/cutting 且无未领行 = 已全部领完 → 不再出卡（避免全领 bar 冒出空整只卡）。
                 result.add(toPickupItem(bar, null));
             }
         }
@@ -954,8 +985,11 @@ public class PigCutRecordServiceImpl
             if (vo.getPickupWeight() == null || vo.getWhiteBarId() == null) {
                 continue;
             }
-            // 已分割重量 = Σ cut_out_in 流水（不可变，doc/14 §1）；剩余可分割 = 领用白条重 − 已分割
-            BigDecimal used = stockFlowMapper.sumCutOutByWhiteBarId(vo.getWhiteBarId());
+            // 已分割重量 = Σ cut_out_in 流水；剩余可分割 = 领用白条重 − 已分割。
+            // 按半只（white_bar_no）聚合与 pickupWeight（半只领用重）对齐；空回落整猪 white_bar_id（旧记录）。
+            BigDecimal used = StringUtils.isNotBlank(vo.getWhiteBarNo())
+                ? stockFlowMapper.sumCutOutByWhiteBarNo(vo.getWhiteBarNo())
+                : stockFlowMapper.sumCutOutByWhiteBarId(vo.getWhiteBarId());
             BigDecimal remaining = vo.getPickupWeight().subtract(used == null ? BigDecimal.ZERO : used);
             vo.setRemainingWeight(remaining.max(BigDecimal.ZERO));
         }

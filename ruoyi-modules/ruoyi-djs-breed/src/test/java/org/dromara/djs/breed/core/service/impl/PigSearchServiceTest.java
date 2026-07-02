@@ -317,18 +317,18 @@ class PigSearchServiceTest {
     }
 
     @Test
-    @DisplayName("dueType=FARROW：软提示——全部返回 + 临产排前 + due/dueDate 标记（D12X-MP-FARROW-WEANING-001 改软提示）")
-    void dueType_farrow_annotates_and_sorts_keeps_all() {
+    @DisplayName("dueType=FARROW：硬筛只留已到产期母猪（r52/r53 反转软提示；未到期/无配种基准日剔除）")
+    void dueType_farrow_hard_filters_only_due() {
         // 配种到分娩天数 sow_breed_to_farrow_days = 114（computeDueDateMap FARROW 分支读此 key）
         when(productionCycleConfigService.getValue("sow_breed_to_farrow_days")).thenReturn(114);
 
-        // 已到产期：115 天前配种（预产期 = 配种+114 = 昨天 ≤ today），due=true
+        // 已到产期：115 天前配种（预产期 = 配种+114 = 昨天 ≤ today），due=true → 保留
         Pig due = mkPig(1L, "260520-001", "PZ", "F", "sow", 11L, null);
         due.setLastMatingDate(LocalDate.now().minusDays(115));
-        // 刚配种 10 天，未到产期（预产期在未来），due=false，但仍返回（早产可录 / 可浏览）
+        // 刚配种 10 天，未到产期（预产期在未来）→ 硬筛剔除
         Pig notDue = mkPig(2L, "260520-002", "PZ", "F", "sow", 11L, null);
         notDue.setLastMatingDate(LocalDate.now().minusDays(10));
-        // 无配种记录（lastMatingDate null）：dueDate=null、due=null，仍返回、排最后
+        // 无配种记录（lastMatingDate null）：dueDate=null → 硬筛剔除
         Pig noMating = mkPig(3L, "260520-003", "PZ", "F", "sow", 11L, null);
         when(pigMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(Arrays.asList(due, notDue, noMating));
 
@@ -338,18 +338,12 @@ class PigSearchServiceTest {
         when(barnMapper.selectBatchIds(anyCollection())).thenReturn(List.of(barn));
 
         List<PigSearchVo> result = service.searchByEarKeyword(null, "PZ", "F", "sow", null, 60, "FARROW", null, null, null, null);
-        // 不再剔除——三头全返回
-        assertThat(result).hasSize(3);
-        // 临产排前：due(001) → 未到期(002) → 无基准日期(003)
+        // r52/r53 硬筛：只留已到产期母猪（未到期 002 / 无配种基准日 003 全剔除）——
+        // 与 countByBarn(dueType) 同口径，chip 头数 = 列表条数（r120）。
+        assertThat(result).hasSize(1);
         assertThat(result.get(0).getEarNo()).isEqualTo("260520-001");
         assertThat(result.get(0).getDue()).isTrue();
         assertThat(result.get(0).getDueDate()).isEqualTo(LocalDate.now().minusDays(115).plusDays(114));
-        assertThat(result.get(1).getEarNo()).isEqualTo("260520-002");
-        assertThat(result.get(1).getDue()).isFalse();
-        assertThat(result.get(1).getDueDate()).isEqualTo(LocalDate.now().minusDays(10).plusDays(114));
-        assertThat(result.get(2).getEarNo()).isEqualTo("260520-003");
-        assertThat(result.get(2).getDueDate()).isNull();
-        assertThat(result.get(2).getDue()).isNull();
     }
 
     @Test
@@ -430,7 +424,7 @@ class PigSearchServiceTest {
         when(barnMapper.selectBatchIds(anyCollection())).thenReturn(Arrays.asList(b11, b12));
 
         List<org.dromara.djs.breed.core.domain.vo.PigBarnCountVo> result =
-            service.countByBarn(null, "F", "sow", null, null);
+            service.countByBarn(null, "F", "sow", null, null, null);
         assertThat(result).hasSize(2);
         // 升序：B01 在前
         assertThat(result.get(0).getBarnCode()).isEqualTo("B01");
@@ -446,7 +440,7 @@ class PigSearchServiceTest {
         when(pigMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(Collections.emptyList());
 
         List<org.dromara.djs.breed.core.domain.vo.PigBarnCountVo> result =
-            service.countByBarn(null, null, null, null, null);
+            service.countByBarn(null, null, null, null, null, null);
         assertThat(result).isEmpty();
         org.mockito.Mockito.verify(barnMapper, org.mockito.Mockito.never()).selectBatchIds(anyCollection());
     }

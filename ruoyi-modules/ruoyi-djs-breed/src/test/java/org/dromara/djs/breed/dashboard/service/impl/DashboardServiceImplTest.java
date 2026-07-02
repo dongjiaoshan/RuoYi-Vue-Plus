@@ -322,15 +322,27 @@ class DashboardServiceImplTest {
     // ============================================================
 
     @Test
-    @DisplayName("getDailyOverview: 15 格 metric 中文 + 当日值映射（末格=用药猪只数，对齐原型 4f113e00）")
+    @DisplayName("getDailyOverview: 15 格读 t_farm_indicator_record 落盘值（r124 · 显示昨日/指定日指标）")
     void testGetDailyOverview() {
-        // count 类（farrow/breeding/weaning/heat/pigletno/growth）默认 0，挑几个非 0 验证映射
-        when(aggregateQueryMapper.countEventInDay(eq("t_farm_pig_farrow"), eq("farrow_date"), anyString(), any(), any())).thenReturn(2);
-        when(aggregateQueryMapper.countEventInDay(eq("t_farm_pig_breeding"), eq("breeding_date"), anyString(), any(), any())).thenReturn(3);
-        when(aggregateQueryMapper.countEventInDay(eq("t_farm_pig_growth"), eq("measure_date"), anyString(), any(), any())).thenReturn(7);
-        when(aggregateQueryMapper.sumEventInDay(eq("t_farm_pig_weaning"), eq("weaning_date"), eq("weaned_count"), anyString(), any(), any())).thenReturn(11);
-        when(aggregateQueryMapper.countStatusEventInDay(anyString(), eq("CASTRATE"), any(), any())).thenReturn(4);
-        when(aggregateQueryMapper.countMedicatedPigInDay(anyString(), any(), any())).thenReturn(9);
+        // r124：养殖场日概览改读 t_farm_indicator_record（不再实时聚合）；mock 该日整行落盘值
+        FarmIndicatorRecord rec = new FarmIndicatorRecord();
+        rec.setStatDate(LocalDate.of(2026, 6, 9));
+        rec.setFarrowSowCount(2);
+        rec.setBreedingSowCount(3);
+        rec.setWeaningSowCount(1);
+        rec.setAbnormalSowCount(1);
+        rec.setIntroduceSowCount(5);
+        rec.setHeatNoBreedCount(6);
+        rec.setDeathPigCount(0);
+        rec.setCullingPigCount(0);
+        rec.setTotalBornCount(15);
+        rec.setLiveBornCount(12);
+        rec.setPigletTagCount(45);
+        rec.setWeanedPigletCount(11);
+        rec.setGrowthRecordCount(7);
+        rec.setCastratePigCount(4);
+        rec.setMedicatedPigCount(9);
+        when(farmIndicatorRecordMapper.selectOne(any())).thenReturn(rec);
 
         DailyOverviewVo vo = service.getDailyOverview(LocalDate.of(2026, 6, 9));
 
@@ -341,10 +353,13 @@ class DashboardServiceImplTest {
         assertThat(vo.getCells().get(0).getValue()).isEqualTo(2);
         assertThat(vo.getCells().get(1).getMetric()).isEqualTo("配种母猪数");
         assertThat(vo.getCells().get(1).getValue()).isEqualTo(3);
+        // r124 焦点：查情不配种数（第 6 格）读 heat_no_breed_count 列
+        assertThat(vo.getCells().get(5).getMetric()).isEqualTo("查情不配种数");
+        assertThat(vo.getCells().get(5).getValue()).isEqualTo(6);
         // 死亡 / 淘汰按原型作"猪只数"（第 7/8 格）
         assertThat(vo.getCells().get(6).getMetric()).isEqualTo("死亡猪只数");
         assertThat(vo.getCells().get(7).getMetric()).isEqualTo("淘汰猪只数");
-        // 断奶仔猪数（第 12 格，weaned_count SUM）
+        // 断奶仔猪数（第 12 格）
         assertThat(vo.getCells().get(11).getMetric()).isEqualTo("断奶仔猪数");
         assertThat(vo.getCells().get(11).getValue()).isEqualTo(11);
         // 末行 3 格 = 生长记录数 / 阉割猪只数 / 用药猪只数（13/14/15）
