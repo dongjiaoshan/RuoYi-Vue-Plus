@@ -41,13 +41,14 @@ public interface WarehouseStatAggregateMapper {
     // ============================================================
 
     /**
-     * 屠宰头数：当日燎毛间接收的猪只头数 = 当日 burn 记录按耳号去重数（row93）。
+     * 屠宰头数：当日燎毛间接收的猪只头数 = 当日 burn 记录按「每猪」去重数。
      *
-     * <p>一头猪燎毛入库可拆「两个半只」→ 同 ear_no 多条 burn 记录（不同 burn_id），故用
-     * {@code COUNT(DISTINCT ear_no)} 而非 {@code COUNT(*)}（行数），否则把半只当整只翻倍计。</p>
+     * <p>去重键 = {@code COALESCE(ear_no, burn_id)}：自养猪有 ear_no（同猪拆两半只 → 同 ear_no
+     * 多条 burn 记录，按 ear_no 收成一头）；外购猪无 ear_no（NULL），退用 burn_id（NOT NULL 唯一/头）
+     * 单独计一头。旧写法 {@code COUNT(DISTINCT ear_no)} 会静默丢掉全部 NULL ear_no 的外购猪。</p>
      */
     @Select("""
-        SELECT COUNT(DISTINCT ear_no) FROM t_warehouse_pig_burn_record
+        SELECT COUNT(DISTINCT COALESCE(ear_no, burn_id)) FROM t_warehouse_pig_burn_record
         WHERE del_flag = '0' AND tenant_id = #{tenantId} AND DATE(burn_time) = #{statDate}
         """)
     int countSlaughter(@Param("tenantId") String tenantId, @Param("statDate") String statDate);
@@ -55,15 +56,17 @@ public interface WarehouseStatAggregateMapper {
     /**
      * 接收重量：当日燎毛间称重总重 = Σ 每猪到场重（row93）。
      *
-     * <p>{@code arrive_weight}（到场过磅，整猪重）在同一 ear_no 的多条 burn 行里冗余复制 → 直接
-     * {@code SUM(arrive_weight)} 会按行重复累加偏大。按 ear_no 取每猪一次（{@code MAX} 取唯一值）后再 Σ。
+     * <p>{@code arrive_weight}（到场过磅，整猪重）在同一头猪的多条 burn 行里冗余复制 → 直接
+     * {@code SUM(arrive_weight)} 会按行重复累加偏大。按「每猪」{@code COALESCE(ear_no, burn_id)}
+     * 取每猪一次（{@code MAX} 取唯一值）后再 Σ。外购猪 ear_no=NULL 退 burn_id，避免多头外购被
+     * {@code GROUP BY ear_no} 并成单个 NULL 组只取 MAX（漏计）。
      * 注意：{@code burn_weight}（白条入库重）是每半只独立值，{@code sumBarTotalWeight} 仍按行 SUM 不去重。</p>
      */
     @Select("""
         SELECT COALESCE(SUM(aw), 0) FROM (
           SELECT MAX(arrive_weight) AS aw FROM t_warehouse_pig_burn_record
           WHERE del_flag = '0' AND tenant_id = #{tenantId} AND DATE(burn_time) = #{statDate}
-          GROUP BY ear_no
+          GROUP BY COALESCE(ear_no, burn_id)
         ) t
         """)
     BigDecimal sumArriveWeight(@Param("tenantId") String tenantId, @Param("statDate") String statDate);
@@ -110,10 +113,17 @@ public interface WarehouseStatAggregateMapper {
         """)
     BigDecimal sumCutBarWeight(@Param("tenantId") String tenantId, @Param("statDate") String statDate);
 
-    /** 分割产品总重：当日分割车间产出产品重之和 = Σ product_inhouse.product_weight（white_bar_id 非空 = 猪肉，produce_date）。 */
+    /**
+     * 分割产品总重：当日分割车间白条分割成产品后入库的总重 = Σ product_inhouse.product_weight
+     * （white_bar_id 非空 = 猪肉，produce_date）。
+     *
+     * <p><b>不过滤 del_flag</b>：这是「当日产出」历史指标，只累加、任何后续操作（发货月台会把
+     * product_inhouse 行软删 del_flag='1'）都不应让它变小。按 produce_date + product_weight
+     * 计当日产出，软删行的原始重量仍保留、照计。</p>
+     */
     @Select("""
         SELECT COALESCE(SUM(product_weight), 0) FROM t_warehouse_product_inhouse
-        WHERE del_flag = '0' AND tenant_id = #{tenantId}
+        WHERE tenant_id = #{tenantId}
           AND DATE(produce_date) = #{statDate} AND white_bar_id IS NOT NULL
         """)
     BigDecimal sumCutProductWeight(@Param("tenantId") String tenantId, @Param("statDate") String statDate);
@@ -126,17 +136,29 @@ public interface WarehouseStatAggregateMapper {
         """)
     BigDecimal sumLossByType(@Param("tenantId") String tenantId, @Param("statDate") String statDate, @Param("lossType") String lossType);
 
-    /** 毛菜称量总重：当日采摘称重之和 = Σ vegetable_handle.picked_weight（pick_start_time）。 */
+    /**
+     * 毛菜称量总重：当日毛菜处理间「处理完成」地块的毛菜总重 = Σ picked_weight
+     * （口径 r103：只计当日处理完成的地块，按 is_finish=1 + 完成日 DATE(pick_end_time) 锚定，
+     * 不再按采摘开始 pick_start_time）。
+     */
     @Select("""
         SELECT COALESCE(SUM(picked_weight), 0) FROM t_warehouse_vegetable_handle
-        WHERE del_flag = '0' AND tenant_id = #{tenantId} AND DATE(pick_start_time) = #{statDate}
+        WHERE del_flag = '0' AND tenant_id = #{tenantId}
+          AND is_finish = 1 AND DATE(pick_end_time) = #{statDate}
         """)
     BigDecimal sumVegWeighWeight(@Param("tenantId") String tenantId, @Param("statDate") String statDate);
 
-    /** 发往月台果蔬总重：当日 Σ vegetable_handle.send_platform_weight（pick_start_time）。 */
+    /**
+     * 发往月台果蔬总重：当日实际发往月台重 = Σ handle_record.record_weight（handle_target=2，
+     * 按发往动作时间 handle_time 锚定，与作物维 {@link #selectCropHandleAgg} 的发往口径一致）。
+     *
+     * <p>旧写法读 vegetable_handle.send_platform_weight 按 pick_start_time：地块「早日采摘、当日才
+     * 发往月台」时，发往重挂在采摘日、当日漏计（row103#3）。改从 handle_record 按 handle_time 归当日。</p>
+     */
     @Select("""
-        SELECT COALESCE(SUM(send_platform_weight), 0) FROM t_warehouse_vegetable_handle
-        WHERE del_flag = '0' AND tenant_id = #{tenantId} AND DATE(pick_start_time) = #{statDate}
+        SELECT COALESCE(SUM(record_weight), 0) FROM t_warehouse_handle_record
+        WHERE del_flag = '0' AND tenant_id = #{tenantId}
+          AND DATE(handle_time) = #{statDate} AND handle_target = 2
         """)
     BigDecimal sumSendPlatformWeight(@Param("tenantId") String tenantId, @Param("statDate") String statDate);
 

@@ -40,4 +40,9 @@ public class MatFeedBo {
     @Size(max = 500, message = "{mat.remark.size}")
     private String remark;
 
+    /**
+     * 记录人 user_id（mp 饲喂弹层「记录人」选了用所选、代他人登记，否则取当前登录人兜底）。
+     */
+    private Long operatorId;
+
 }

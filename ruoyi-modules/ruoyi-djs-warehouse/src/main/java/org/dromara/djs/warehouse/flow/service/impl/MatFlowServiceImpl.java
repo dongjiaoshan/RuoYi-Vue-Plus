@@ -1223,7 +1223,8 @@ public class MatFlowServiceImpl implements IMatFlowService {
         ProductInfo product = requireProduct(bo.getProductId());
         // 库位级业务锁（WMS-STOCK-001）：盘点进行中的库位禁出入库（后端双保险）
         stockCheckService.assertLocationUnlocked(bo.getLocationId());
-        Long userId = LoginHelper.getUserId();
+        // 记录人：mp 饲喂弹层选了「记录人」用所选（代他人饲喂），否则取当前登录人兜底（与领用/退回/损耗同口径）
+        Long userId = resolveOperatorId(bo.getOperatorId());
 
         // 1. 校验今日额度（与退回/损耗同口径）：饲喂量纳入额度，不能超出当日可操作余量
         //    （非可打包物资 = 已领−已退−已损−已饲喂；可打包食品原料 = 今日待打包余额）。

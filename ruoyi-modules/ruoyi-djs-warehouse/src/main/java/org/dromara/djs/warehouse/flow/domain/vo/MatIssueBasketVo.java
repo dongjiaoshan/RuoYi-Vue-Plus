@@ -78,6 +78,12 @@ public class MatIssueBasketVo implements Serializable {
     private BigDecimal todayLoss;
 
     /**
+     * 今日饲喂（仅自产果蔬地块卡）：今天 {@code stock_flow}(feed_out) SUM(change_quantity) WHERE {@code plot_id}
+     * （地块级总量）；猪肉/白条篮无饲喂，恒 0/null。
+     */
+    private BigDecimal todayFeed;
+
+    /**
      * 所属库位 ID（String；领用 BO 回传作 locationId）：猪肉篮 = 该篮 {@code location_id}；自产果蔬地块卡
      * = 该地块 FIFO 首篮库位（service 走地块 FIFO 跨库位扣减，此 locationId 仅 UX 占位、不限扣减范围）。
      */

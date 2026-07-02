@@ -770,6 +770,10 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
                           WHERE f.plot_id = s.plot_id AND f.flow_type = 'loss'
                             AND DATE(f.flow_date) = CURDATE()
                             AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayLoss,
+               COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
+                          WHERE f.plot_id = s.plot_id AND f.flow_type = 'feed_out'
+                            AND DATE(f.flow_date) = CURDATE()
+                            AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayFeed,
                (SELECT s3.location_id FROM t_warehouse_location_stock s3
                  WHERE s3.id = MIN(s.id))     AS locationId
           FROM t_warehouse_location_stock s

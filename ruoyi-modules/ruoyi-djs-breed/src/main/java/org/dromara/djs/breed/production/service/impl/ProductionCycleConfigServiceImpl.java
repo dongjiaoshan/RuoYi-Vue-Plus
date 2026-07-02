@@ -109,15 +109,14 @@ public class ProductionCycleConfigServiceImpl
     }
 
     /**
-     * 生效值 = custom_value 优先，无则 default_value。
+     * 生效值 = custom_value（客户自定义，含显式 0）优先；custom_value 为 null（未定制）时回退 default_value。
      *
-     * <p>r53/r54：本表全为「天数」周期配置（妊娠/哺乳/各类到配种间隔），{@code custom_value <= 0}
-     * 无业务含义（admin 母猪生产配置表单未填时会落 0），视为「未定制」回退 default_value——
-     * 否则妊娠期被当成 0 天 → 预产期 = 配种日（漏加 +114）、断奶期 = 分娩日（漏加 +25）。</p>
+     * <p>各「天数」周期配置（各类到配种间隔 / 妊娠 / 哺乳）允许客户显式配 0（如后备可立即配种），
+     * 0 是有效自定义值、按 0 生效；只有 null 才表示「未定制、用行业默认」。</p>
      */
     private Integer effectiveValue(ProductionCycleConfig row) {
         Integer custom = row.getCustomValue();
-        return (custom != null && custom > 0) ? custom : row.getDefaultValue();
+        return custom != null ? custom : row.getDefaultValue();
     }
 
     @Override
