@@ -4,7 +4,6 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.dromara.common.core.service.DictService;
 import org.dromara.common.core.utils.StringUtils;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
@@ -60,10 +59,8 @@ public class StoreTraceServiceImpl implements IStoreTraceService {
 
     /** 门店追溯码恒为猪肉业态（已生码列表 / 详情口径固定 pork）。 */
     private static final String CODE_TYPE_PORK = "pork";
-    /** 门店猪肉打包字典：value=产品业务码，命中产品作为打包产品的原材料（docx 取数第①步）。 */
-    private static final String DICT_PORK_RETURN_PRODUCT = "djs_pork_return_product";
-    /** 生产车间「门店打包间」值（docx 取数第②步：product_workshop=5）。 */
-    private static final Integer WORKSHOP_STORE_PACK = 5;
+    /** 产品属性=生产产品（字典 djs_product_attr：1=生产产品 / 2=原材料）。 */
+    private static final Integer PRODUCT_ATTR_PRODUCE = 1;
     /** 猪肉业态。 */
     private static final String BELONG_TYPE_PORK = "pork";
     /** 白条业态（现场分割 picker 取白条 production 用）。 */
@@ -85,7 +82,6 @@ public class StoreTraceServiceImpl implements IStoreTraceService {
     private final DemandManageMapper demandManageMapper;
     private final ProductProductionMapper productProductionMapper;
     private final TraceCodeMapper traceCodeMapper;
-    private final DictService dictService;
 
     /**
      * 可追溯 picker = 当天入库白条（FIX-STORE-TRACE-BAR-001 测试问题 158）。
@@ -273,32 +269,15 @@ public class StoreTraceServiceImpl implements IStoreTraceService {
      * 本轮仅保留 djs_pork_cut_product 字典驱动 + {@code genPorkOnsiteCode} 现状，不改 product 驱动。</p>
      */
     /**
-     * 门店猪肉打包可选产品（docx 两步取数）：① 字典 {@code djs_pork_return_product} value(业务码) → 产品 id 集；
-     * ② {@code product_workshop=5（门店打包间）} 且 {@code product_material ∈ id 集} 的猪肉产品。
+     * 门店猪肉打包可选产品：产品属性=生产产品（{@code product_attr=1}）且业态=猪肉（{@code belong_type=pork}）。
      *
-     * <p>空字典 / 无 workshop=5 产品 → 空 List（前端 PorkTracePanel 回退用部位字典 {@code djs_pork_cut_product}）。</p>
+     * <p>无匹配产品 → 空 List（前端 PorkTracePanel 回退用部位字典 {@code djs_pork_cut_product}）。</p>
      */
     @Override
     public List<StorePackProductVo> listPackProducts() {
-        // ① 字典业务码 → 产品 id 集（原材料/白条 id，门店打包产品 product_material 指向它们）
-        Map<String, String> dict = dictService.getAllDictByDictType(DICT_PORK_RETURN_PRODUCT);
-        if (dict == null || dict.isEmpty()) {
-            log.warn("[STORE-TRACE-PACK] 字典 {} 为空，门店打包产品回退为空", DICT_PORK_RETURN_PRODUCT);
-            return List.of();
-        }
-        List<String> codes = dict.keySet().stream().filter(StringUtils::isNotBlank).distinct().toList();
-        List<Long> materialIds = codes.isEmpty() ? List.of()
-            : productInfoMapper.selectList(new LambdaQueryWrapper<ProductInfo>()
-                    .in(ProductInfo::getProductId, codes).select(ProductInfo::getId))
-                .stream().map(ProductInfo::getId).filter(Objects::nonNull).distinct().toList();
-        if (materialIds.isEmpty()) {
-            return List.of();
-        }
-        // ② workshop=5 + belong_type=pork + product_material ∈ id 集 的猪肉产品
         return productInfoMapper.selectList(new LambdaQueryWrapper<ProductInfo>()
-                .eq(ProductInfo::getProductWorkshop, WORKSHOP_STORE_PACK)
-                .eq(ProductInfo::getBelongType, BELONG_TYPE_PORK)
-                .in(ProductInfo::getProductMaterial, materialIds))
+                .eq(ProductInfo::getProductAttr, PRODUCT_ATTR_PRODUCE)
+                .eq(ProductInfo::getBelongType, BELONG_TYPE_PORK))
             .stream().map(p -> {
                 StorePackProductVo vo = new StorePackProductVo();
                 vo.setProductId(p.getId());

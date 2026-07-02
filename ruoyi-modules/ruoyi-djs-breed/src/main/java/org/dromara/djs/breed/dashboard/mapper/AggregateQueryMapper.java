@@ -538,19 +538,25 @@ public interface AggregateQueryMapper {
                                                  @Param("to") java.time.LocalDateTime to);
 
     /**
-     * 当日出栏育肥猪的「个体断奶总重 + 生长总天数」。
+     * 当日出栏育肥猪的「个体断奶总重 + 饲养总天数 + 生长总天数」（row112 NPD 口径重构）。
      *
-     * <p>育肥猪是仔猪贴标后翻成的 pig_info 行，与母猪断奶记录是不同实体——旧版按
-     * weaning.pig_id = marketing.pig_id 关联恒空（母猪 vs 育肥猪 id 不同体）。改为直接读出栏育肥猪
-     * 自己的 pig_info 断奶溯源快照（{@code wean_weight} 个体断奶重 / {@code wean_date} 断奶日，
-     * 由 BRD-STAT-FIX-001 迁移回填 + 断奶 hook 续写）：
-     * weanTotalWeight = Σ pi.wean_weight；growthTotalDays = Σ DATEDIFF(出栏日, 断奶日)。
-     * 仅计入有断奶快照的出栏猪（wean_date 非空）。netGain / dailyGain 公式不变。</p>
+     * <p>育肥猪是仔猪贴标后翻成的 pig_info 行，与母猪断奶记录是不同实体——直接读出栏育肥猪
+     * 自己的 pig_info 断奶溯源快照（{@code wean_weight} 个体断奶重 / {@code wean_date} 断奶日 /
+     * {@code birth_date} 出生日）：
+     * <ul>
+     *   <li>weanTotalWeight = Σ pi.wean_weight；marketingWeightWeaned = Σ m.out_weight（同集合）。</li>
+     *   <li>feedDaysSum（饲养总天数）= Σ (DATEDIFF(出栏日, 断奶日) + 1)（含头含尾，每头 +1）；日增重分母。</li>
+     *   <li>growthDaysSum（生长总天数）= Σ (DATEDIFF(出栏日, 出生日) + 1)（含头含尾，每头 +1）；
+     *       <b>依赖出生日期</b>：外购猪无 birth_date（CASE WHEN 判空跳过累加），不因它 NULL 报错、不计入。</li>
+     * </ul>
+     * 集合口径：仅计入有断奶快照的出栏猪（wean_date 非空，与净增重同集合）。net_gain/daily_gain 公式在 service 层。</p>
      *
-     * @return {weanWeightSum:BigDecimal, growthDaysSum:Long, marketingWeightWeaned:BigDecimal}
+     * @return {weanWeightSum:BigDecimal, feedDaysSum:Long, growthDaysSum:Long, marketingWeightWeaned:BigDecimal}
      */
     @Select("SELECT COALESCE(SUM(pi.wean_weight),0) AS weanWeightSum, "
-        + "       COALESCE(SUM(DATEDIFF(m.marketing_date, pi.wean_date)),0) AS growthDaysSum, "
+        + "       COALESCE(SUM(DATEDIFF(m.marketing_date, pi.wean_date) + 1),0) AS feedDaysSum, "
+        + "       COALESCE(SUM(CASE WHEN pi.birth_date IS NOT NULL "
+        + "                         THEN DATEDIFF(m.marketing_date, pi.birth_date) + 1 END),0) AS growthDaysSum, "
         + "       COALESCE(SUM(m.out_weight),0) AS marketingWeightWeaned "
         + " FROM t_farm_pig_marketing m "
         + " JOIN t_farm_pig_info pi "
@@ -794,24 +800,6 @@ public interface AggregateQueryMapper {
                          @Param("pigId") Long pigId);
 
     /**
-     * 单头母猪「分娩→断奶」配对天数（NPD 第三项「分娩至断奶天数」用）。
-     * 断奶记录按 farrow_id 关联同一窝分娩，AVG(DATEDIFF(weaning_date, farrow_date))。
-     * 仅算 0~60 天合理区间（防脏数据 / 跨窝误配）；无配对返回 null。
-     *
-     * @return AVG(断奶日 − 分娩日)；无配对则 null
-     */
-    @Select("SELECT AVG(DATEDIFF(w.weaning_date, f.farrow_date)) "
-        + " FROM t_farm_pig_weaning w "
-        + " JOIN t_farm_pig_farrow f "
-        + "   ON f.id = w.farrow_id AND f.tenant_id = w.tenant_id AND f.del_flag = '0' "
-        + " WHERE w.tenant_id = #{tenantId} "
-        + "   AND w.del_flag = '0' "
-        + "   AND w.pig_id = #{pigId} "
-        + "   AND DATEDIFF(w.weaning_date, f.farrow_date) BETWEEN 0 AND 60")
-    BigDecimal avgFarrowWeanDays(@Param("tenantId") String tenantId,
-                                 @Param("pigId") Long pigId);
-
-    /**
      * 单头母猪「断奶→配种」配对天数（NPD 的分娩至断奶用，及断配天数）。
      * 返回 Σ(配种日−上次断奶日) + 配对数。
      *
@@ -832,4 +820,25 @@ public interface AggregateQueryMapper {
         + "        AND w2.pig_id = #{pigId} AND w2.weaning_date <= b.breeding_date )")
     Map<String, Object> sowWeanBreedAgg(@Param("tenantId") String tenantId,
                                         @Param("pigId") Long pigId);
+
+    /**
+     * 单头母猪的状态变更明细（row113 NPD 区间求和用），按变更日升序。
+     *
+     * <p>{@code t_farm_status_record} 无 del_flag（append-only 流水，不软删），故不拼 del_flag 过滤。
+     * 返回每条 transition 的 {@code new_status}（进入的新状态）/ {@code event_type}（触发事件）/
+     * {@code change_date}（变更日 DATE 化，便于 service 端 DATEDIFF 累加非生产区间天数）。</p>
+     *
+     * <p>service 端据此识别每一段【非生产起点(new_status∈{LC,KH,FQ,DN}) → 下一个配种(new_status=PZ)/
+     * 死淘(event∈{DIE,ELIMINATE})】区间，累加 DATEDIFF(终点日,起点日)（起点含、终点不含）为该母猪 NPD。</p>
+     *
+     * @return 形如 [{newStatus:'DN', eventType:'WEAN', changeDate:2026-01-05}, ...] 升序
+     */
+    @Select("SELECT new_status AS newStatus, event_type AS eventType, DATE(change_time) AS changeDate "
+        + " FROM t_farm_status_record "
+        + " WHERE tenant_id = #{tenantId} "
+        + "   AND pig_id = #{pigId} "
+        + "   AND change_time IS NOT NULL "
+        + " ORDER BY change_time ASC")
+    List<Map<String, Object>> selectSowStatusTimeline(@Param("tenantId") String tenantId,
+                                                       @Param("pigId") Long pigId);
 }

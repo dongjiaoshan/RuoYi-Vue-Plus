@@ -1,5 +1,7 @@
 package org.dromara.djs.breed.dashboard.domain;
 
+import com.baomidou.mybatisplus.annotation.FieldStrategy;
+import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableLogic;
 import com.baomidou.mybatisplus.annotation.TableName;
@@ -47,12 +49,11 @@ public class AnnualIndicator extends TenantEntity {
     private BigDecimal mortalityRate;
 
     // ---- row14 高级指标（BRD-STAT-001 扩列） ----
-    /** 年均能繁母猪存栏数（(Σ日生产母猪+Σ日230后备)/已历天数）。 */
-    private BigDecimal avgBreedingSowStock;
+    /** 年均生产母猪存栏数（Σ日期末生产母猪头数/已历天数）。定时重算，ALWAYS 覆盖旧值。 */
+    @TableField(value = "avg_prod_sow_stock", updateStrategy = FieldStrategy.ALWAYS)
+    private BigDecimal avgProdSowStock;
     /** 年配种头数（当年总配种次数）。 */
     private Integer breedingCount;
-    /** 年配种率（Σ日配种次数/年均能繁母猪存栏）。 */
-    private BigDecimal breedRate;
     /** 总产仔数（当年 Σ日总产仔）。 */
     private Integer totalBornCount;
     /** 年分娩次数（当年 Σ日分娩头数）。 */
@@ -73,9 +74,11 @@ public class AnnualIndicator extends TenantEntity {
     private Integer weanBreedTotalCount;
     /** 断配间隔（总天数/总记录数）。 */
     private BigDecimal weanBreedInterval;
-    /** 全年总NPD天数（Σ日230后备+Σ日非生产母猪）。 */
+    /** 全年总NPD天数（Σ日非生产母猪）。定时重算，ALWAYS 覆盖旧值。 */
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
     private Integer totalNpdDays;
-    /** 年均NPD天数（总NPD/年均能繁存栏）。 */
+    /** 年均NPD天数（总NPD/年均生产母猪存栏）。定时重算，ALWAYS 覆盖旧值。 */
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
     private BigDecimal avgNpdDays;
     /** 年分娩头数（Σ日当年配种批次分娩头数）。 */
     private Integer yearBatchFarrowCount;

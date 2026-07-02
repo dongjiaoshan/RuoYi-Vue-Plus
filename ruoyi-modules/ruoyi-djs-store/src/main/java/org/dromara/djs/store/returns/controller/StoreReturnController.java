@@ -102,13 +102,12 @@ public class StoreReturnController extends BaseController {
     }
 
     /**
-     * 退回操作「猪肉产品」tab 固定候选（对齐原型「可退回商品列表配置在字典项中，固定展示」）：
-     * 取 belong_type IN ('pork','white_bar') 的产品，与门店关联无关。
+     * 退回操作「猪肉产品」tab 候选：仅当该门店当日有白条产品到店时才返回配置的猪肉退回字典项，否则返空。
      */
     @SaCheckPermission("djs:store:return:list")
     @GetMapping("/operation/pork-candidates")
-    public R<List<StoreReturnPorkCandidateVo>> porkCandidates() {
-        return R.ok(service.listPorkCandidates());
+    public R<List<StoreReturnPorkCandidateVo>> porkCandidates(Long storeId) {
+        return R.ok(service.listPorkCandidates(storeId));
     }
 
     /**

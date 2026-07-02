@@ -1,5 +1,6 @@
 package org.dromara.djs.breed.dashboard.domain;
 
+import com.baomidou.mybatisplus.annotation.FieldStrategy;
 import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableLogic;
@@ -87,11 +88,14 @@ public class FarmIndicatorRecord extends TenantEntity {
     private BigDecimal marketingWeight;
     /** 猪只断奶总重（当日出栏猪只断奶时总重）。 */
     private BigDecimal weanTotalWeight;
-    /** 生长总天数（Σ 当日出栏猪 出栏日−断奶日）。 */
+    /** 生长总天数（Σ 当日出栏猪 出栏日−出生日+1；出生日为空的外购猪跳过累加）。 */
     private Integer growthTotalDays;
+    /** 饲养总天数（Σ 当日出栏猪 出栏日−断奶日+1）；日增重分母。 */
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
+    private Integer feedTotalDays;
     /** 净增重（出栏总重−断奶总重）。 */
     private BigDecimal netGainWeight;
-    /** 日增重（净增重/生长总天数）。 */
+    /** 日增重（净增重/饲养总天数）。 */
     private BigDecimal dailyGainWeight;
     /** 平均背膘厚（当日出栏猪背膘厚之和/有背膘的肥猪数）。 */
     private BigDecimal avgBackfatThickness;
@@ -116,6 +120,11 @@ public class FarmIndicatorRecord extends TenantEntity {
     // ---- 配种批次回溯 ----
     /** 当年配种批次分娩头数（分娩日−114 天落当年则累加）。 */
     private Integer yearBatchFarrowCount;
+
+    // ---- NPD（row112） ----
+    /** 日NPD天数（当日非生产状态母猪头数 = endNonprodSowCount 同值）。 */
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
+    private Integer npdDays;
 
     /** 软删标志（业务表必含）。 */
     @TableLogic

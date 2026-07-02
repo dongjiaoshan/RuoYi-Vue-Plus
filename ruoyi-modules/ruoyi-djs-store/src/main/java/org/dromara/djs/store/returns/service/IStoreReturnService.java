@@ -55,15 +55,17 @@ public interface IStoreReturnService {
     int batchCreate(StoreReturnBatchBo bo);
 
     /**
-     * 退回操作「猪肉产品」tab 固定候选列表（对齐原型「可退回商品列表配置在字典项中，固定展示」）。
+     * 退回操作「猪肉产品」tab 候选列表：仅当该门店<b>当日有白条产品到店</b>时才返回配置的猪肉退回字典项，否则返空。
      *
-     * <p>取 {@code t_warehouse_product_info} 中 {@code belong_type IN ('pork','white_bar')} 的产品，
-     * 与门店关联无关——猪肉为中央生产、各门店共用同一可退回清单，故不按门店过滤。每行带真实
+     * <p>候选清单本体取字典 {@code djs_pork_return_product}（空则回退 {@code belong_type IN ('pork','white_bar')}）。
+     * 「当日有白条到店」= 该店当日确认收货（{@code received_time}=今天）的需求下存在已发货清点
+     * （{@code is_delivery_check=1}）的 white_bar 业态成品，口径与门店猪肉打包可追溯白条一致。每行带真实
      * 产品雪花 {@code productId} 供 {@link #batchCreate} 提交（提交时仍走产品 FK 校验）。</p>
      *
+     * @param storeId 门店 ID（必填；空 / 当日无白条到店 → 空列表）
      * @return 猪肉/白条产品候选（productId + productName + productUnit）
      */
-    List<StoreReturnPorkCandidateVo> listPorkCandidates();
+    List<StoreReturnPorkCandidateVo> listPorkCandidates(Long storeId);
 
     /**
      * 退回操作「果蔬产品」tab 候选列表（对齐原型「可退回 = 当天已确认到店的需求产品」）。

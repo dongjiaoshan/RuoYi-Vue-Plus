@@ -27,11 +27,14 @@ import org.dromara.djs.store.returns.domain.vo.StoreReturnStoreDailyVo;
 import org.dromara.djs.store.returns.domain.vo.StoreReturnVegCandidateVo;
 import org.dromara.djs.store.returns.mapper.StoreReturnMapper;
 import org.dromara.djs.store.returns.service.IStoreReturnService;
+import org.dromara.djs.warehouse.demand.domain.DemandManage;
 import org.dromara.djs.warehouse.demand.mapper.DemandManageMapper;
 import org.dromara.djs.warehouse.location.domain.LocationInfo;
 import org.dromara.djs.warehouse.location.mapper.LocationInfoMapper;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
+import org.dromara.djs.warehouse.pack.domain.ProductProduction;
+import org.dromara.djs.warehouse.pack.mapper.ProductProductionMapper;
 import org.dromara.djs.warehouse.pack.service.IProductProductionService;
 import org.dromara.djs.warehouse.purchase.service.IWarehousePurchaseInService;
 import org.springframework.stereotype.Service;
@@ -110,6 +113,12 @@ public class StoreReturnServiceImpl
     /** 果蔬归属类型（字典 djs_belong_type）：退回入库回退到原材料 product_material 的判定。 */
     private static final String BELONG_TYPE_VEGETABLE = "vegetable";
 
+    /** 白条归属类型（字典 djs_belong_type）：门店当日白条到店判定。 */
+    private static final String BELONG_TYPE_WHITE_BAR = "white_bar";
+
+    /** product_production.is_delivery_check=1：已发货清点（到店白条口径与门店猪肉打包一致）。 */
+    private static final Integer DELIVERY_CHECKED = 1;
+
     /** 业务日时区（与项目其余「今日」口径一致，避免 DB CURDATE() 时区雷）。 */
     private static final ZoneId ZONE_SHANGHAI = ZoneId.of("Asia/Shanghai");
 
@@ -121,6 +130,7 @@ public class StoreReturnServiceImpl
     private final DemandManageMapper demandManageMapper;
     private final DictService dictService;
     private final IProductProductionService productProductionService;
+    private final ProductProductionMapper productProductionMapper;
 
     public StoreReturnServiceImpl(StoreReturnMapper baseMapper,
                                   StoreMapper storeMapper,
@@ -130,7 +140,8 @@ public class StoreReturnServiceImpl
                                   IWarehousePurchaseInService purchaseInService,
                                   DemandManageMapper demandManageMapper,
                                   DictService dictService,
-                                  IProductProductionService productProductionService) {
+                                  IProductProductionService productProductionService,
+                                  ProductProductionMapper productProductionMapper) {
         super(baseMapper);
         this.storeMapper = storeMapper;
         this.productInfoMapper = productInfoMapper;
@@ -140,6 +151,7 @@ public class StoreReturnServiceImpl
         this.demandManageMapper = demandManageMapper;
         this.dictService = dictService;
         this.productProductionService = productProductionService;
+        this.productProductionMapper = productProductionMapper;
     }
 
     @Override
@@ -283,7 +295,11 @@ public class StoreReturnServiceImpl
     }
 
     @Override
-    public List<StoreReturnPorkCandidateVo> listPorkCandidates() {
+    public List<StoreReturnPorkCandidateVo> listPorkCandidates(Long storeId) {
+        // 仅当该门店「当日有白条到店」才展示猪肉退回字典项，否则返空（前端显示空态）。
+        if (!hasWhiteBarArrivedToday(storeId)) {
+            return List.of();
+        }
         List<Long> dictIds = resolvePorkReturnProductIds();
         LambdaQueryWrapper<ProductInfo> w = new LambdaQueryWrapper<>();
         if (!dictIds.isEmpty()) {
@@ -320,6 +336,39 @@ public class StoreReturnServiceImpl
         return productInfoMapper.selectList(new LambdaQueryWrapper<ProductInfo>()
                 .in(ProductInfo::getProductId, codes).select(ProductInfo::getId))
             .stream().map(ProductInfo::getId).filter(Objects::nonNull).distinct().collect(Collectors.toList());
+    }
+
+    /**
+     * 该门店「当日是否有白条产品到店」：该店当日确认收货（{@code received_time}=今天）的需求下，
+     * 存在已发货清点（{@code is_delivery_check=1}）的 white_bar 业态成品。口径与门店猪肉打包可追溯白条一致
+     * （门店确认收货后现场分割）。{@code storeId} 为空 → false。
+     */
+    private boolean hasWhiteBarArrivedToday(Long storeId) {
+        if (storeId == null) {
+            return false;
+        }
+        LocalDate today = LocalDate.now(ZONE_SHANGHAI);
+        List<Long> demandIds = demandManageMapper.selectList(new LambdaQueryWrapper<DemandManage>()
+                .eq(DemandManage::getStoreId, storeId)
+                .ge(DemandManage::getReceivedTime, today.atStartOfDay())
+                .lt(DemandManage::getReceivedTime, today.plusDays(1).atStartOfDay())
+                .select(DemandManage::getId))
+            .stream().map(DemandManage::getId).filter(Objects::nonNull).distinct().collect(Collectors.toList());
+        if (demandIds.isEmpty()) {
+            return false;
+        }
+        List<Long> whiteBarProductIds = productInfoMapper.selectList(new LambdaQueryWrapper<ProductInfo>()
+                .eq(ProductInfo::getBelongType, BELONG_TYPE_WHITE_BAR)
+                .select(ProductInfo::getId))
+            .stream().map(ProductInfo::getId).filter(Objects::nonNull).collect(Collectors.toList());
+        if (whiteBarProductIds.isEmpty()) {
+            return false;
+        }
+        Long cnt = productProductionMapper.selectCount(new LambdaQueryWrapper<ProductProduction>()
+            .in(ProductProduction::getDemandId, demandIds)
+            .in(ProductProduction::getProductId, whiteBarProductIds)
+            .eq(ProductProduction::getIsDeliveryCheck, DELIVERY_CHECKED));
+        return cnt != null && cnt > 0;
     }
 
     @Override
