@@ -685,10 +685,11 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
                s.product_name                 AS productName,
                COALESCE(s.product_unit, 'kg') AS productUnit,
                s.product_stock                AS currentStock,
-               COALESCE((SELECT SUM(ih.product_weight) FROM t_warehouse_product_inhouse ih
-                          WHERE ih.product_id = s.product_id AND ih.ear_no = s.ear_no
-                            AND DATE(ih.produce_date) = CURDATE()
-                            AND ih.del_flag = '0' AND ih.tenant_id = '1001'), 0) AS todayPicked,
+               COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
+                          WHERE f.ear_no = s.ear_no
+                            AND f.flow_type IN ('prod_pick_out','dept_pick_out','pick_out')
+                            AND DATE(f.flow_date) = CURDATE()
+                            AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayPicked,
                CASE WHEN s.id = (SELECT MIN(s2.id) FROM t_warehouse_location_stock s2
                                   WHERE s2.product_id = s.product_id AND s2.ear_no = s.ear_no
                                     AND s2.product_stock > 0 AND s2.del_flag = '0' AND s2.tenant_id = '1001')

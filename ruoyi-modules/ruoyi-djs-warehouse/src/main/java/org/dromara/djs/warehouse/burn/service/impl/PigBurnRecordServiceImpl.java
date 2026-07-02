@@ -227,16 +227,12 @@ public class PigBurnRecordServiceImpl
             }
         }
 
-        // ---------- Step 2：生成 burn_id + 计算 loss + INSERT 燎毛记录 ----------
-        BigDecimal arriveWeight = bo.getArriveWeight();
-        BigDecimal lossWeight = null;
-        if (arriveWeight != null) {
-            lossWeight = arriveWeight.subtract(inWeightTotal);
-            if (lossWeight.compareTo(BigDecimal.ZERO) < 0) {
-                throw new ServiceException("入库重量合计不能大于到场重量");
-            }
-        }
-
+        // ---------- Step 2：生成 burn_id + INSERT 燎毛记录 ----------
+        // r134：burn_record 是「产出行」粒度（一头白条可多个半只/多次产出行入库）。损耗 = 到场(整只) − 入库(整只)，
+        // 是「整只白条」概念，不能挂在单条产出行上——半只入库时 arrive(整只) − 该半只入库量 会把另一半重量误算成损耗
+        // （偏大，客户 r134）。故 burn_record 不再存损耗；整只损耗 = bar_info.arrive_weight − bar_info.in_weight
+        // （in_weight 由 finishBurn 累加两半，是整只口径，Kevin 拍板记在 bar_info 整只级），需要时按 bar_info 派生。
+        // 入库超到场重量的防护由上方「累计入库总重校验」（existing + 本次 ≤ arrive_weight）承担，非此处。
         PigBurnRecord record = toEntity(bo);
         if (record == null) {
             throw new ServiceException("燎毛记录入参转换失败");
@@ -244,7 +240,7 @@ public class PigBurnRecordServiceImpl
         record.setEarNo(earNo);
         record.setBurnId(generateBurnId());
         record.setBurnWeight(inWeightTotal);
-        record.setLossWeight(lossWeight);
+        record.setLossWeight(null);
         record.setBurnStatus(STATUS_DONE);
         // 入库人由 EmployeePicker 指定（可与登录态不同），非 LoginHelper
         record.setOperatorId(bo.getOperatorId());
