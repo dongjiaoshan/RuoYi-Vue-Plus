@@ -254,7 +254,10 @@ public class TracePublicServiceImpl
         if (code.getProductId() != null) {
             ProductInfo p = productInfoMapper.selectById(code.getProductId());
             if (p != null) {
-                block.setName(p.getProductName());
+                // 展示名用生码时定格的 trace_display_name（DENGBO-R16：果蔬按有机证书取名/别名，与 admin 追溯列表一致）；
+                // 旧码无定格值时回落产品当前名，绝不显空。
+                block.setName(StringUtils.isNotBlank(code.getTraceDisplayName())
+                    ? code.getTraceDisplayName() : p.getProductName());
                 block.setSpec(p.getProductSpec());
                 // 净重默认用规格兜底；veg 分支会用打包实际称重覆盖（见 fillVeg）
                 block.setWeight(p.getProductSpec());
