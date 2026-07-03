@@ -259,6 +259,10 @@ public class StoreReturnServiceImpl
         }
         Long operatorId = LoginHelper.getUserId();
         LocalDate today = LocalDate.now(ZONE_SHANGHAI);
+        // row142 退回上限按 belong_type 分流：白条产品按「当日到店白条总重」累计封顶（懒算一次 + 逐条累加）；
+        //   其他生产产品按各自「当日到店重」逐产品封顶（validateReturnWithinDelivered 现状）。
+        BigDecimal whiteBarDeliveredTotal = null;
+        BigDecimal whiteBarReturnedAccum = BigDecimal.ZERO;
         int created = 0;
         for (StoreReturnBatchBo.Item item : bo.getItems()) {
             ProductInfo product = productInfoMapper.selectById(item.getProductId());
@@ -268,8 +272,22 @@ public class StoreReturnServiceImpl
             // 退回量度量：果蔬行用退回量（份/把/盒），猪肉行无退回量时回退退回重量（kg）——与下方落库口径一致。
             BigDecimal returnMetric = item.getReturnQuantity() != null
                 ? item.getReturnQuantity() : item.getReturnWeight();
-            // row52 上限校验：退回重量 ≤ 当日送达该店该产品的总重量（果蔬每份有对应重量，按重量封顶）。
-            validateReturnWithinDelivered(bo.getStoreId(), item.getProductId(), today, item.getReturnWeight(), product.getProductName());
+            if (BELONG_TYPE_WHITE_BAR.equals(product.getBelongType())) {
+                // 白条：累计已退 + 本次 ≤ 当日到店白条总重（不按单个白条产品分别封顶）。
+                BigDecimal rw = item.getReturnWeight() == null ? BigDecimal.ZERO : item.getReturnWeight();
+                if (whiteBarDeliveredTotal == null) {
+                    whiteBarDeliveredTotal = sumWhiteBarDeliveredToStore(bo.getStoreId(), today);
+                }
+                BigDecimal projected = whiteBarReturnedAccum.add(rw);
+                if (projected.compareTo(whiteBarDeliveredTotal) > 0) {
+                    throw new ServiceException("白条产品退回重量累计(" + projected.toPlainString()
+                        + ")不能超过当日到店白条总重(" + whiteBarDeliveredTotal.toPlainString() + ")", 400);
+                }
+                whiteBarReturnedAccum = projected;
+            } else {
+                // 其他生产产品：退回重量 ≤ 当日送达该店该产品的总重量（逐产品封顶）。
+                validateReturnWithinDelivered(bo.getStoreId(), item.getProductId(), today, item.getReturnWeight(), product.getProductName());
+            }
 
             StoreReturn entity = new StoreReturn();
             entity.setReturnNo(generateReturnNo());
@@ -369,6 +387,26 @@ public class StoreReturnServiceImpl
             .in(ProductProduction::getProductId, whiteBarProductIds)
             .eq(ProductProduction::getIsDeliveryCheck, DELIVERY_CHECKED));
         return cnt != null && cnt > 0;
+    }
+
+    /**
+     * row142：当日该店「到店白条总重」= 所有 white_bar 业态产品当日送达该店重量之和。
+     * 复用逐产品口径 {@link IProductProductionService#sumDeliveredWeightToStore}（按 delivery_check 当天、
+     * demand.store_id 关联）对每个白条产品求和；与「其他产品逐产品封顶」同一到店口径，仅白条合并成总重封顶。
+     */
+    private BigDecimal sumWhiteBarDeliveredToStore(Long storeId, LocalDate date) {
+        List<Long> whiteBarProductIds = productInfoMapper.selectList(new LambdaQueryWrapper<ProductInfo>()
+                .eq(ProductInfo::getBelongType, BELONG_TYPE_WHITE_BAR)
+                .select(ProductInfo::getId))
+            .stream().map(ProductInfo::getId).filter(Objects::nonNull).collect(Collectors.toList());
+        BigDecimal total = BigDecimal.ZERO;
+        for (Long pid : whiteBarProductIds) {
+            BigDecimal w = productProductionService.sumDeliveredWeightToStore(storeId, pid, date);
+            if (w != null) {
+                total = total.add(w);
+            }
+        }
+        return total;
     }
 
     @Override

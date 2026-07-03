@@ -13,6 +13,7 @@ import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.web.core.BaseController;
 import org.dromara.djs.warehouse.stock.domain.bo.StockOutBo;
+import org.dromara.djs.warehouse.stock.domain.bo.StockTransferBo;
 import org.dromara.djs.warehouse.stock.domain.query.LocationStockQuery;
 import org.dromara.djs.warehouse.stock.domain.vo.LocationStockVo;
 import org.dromara.djs.warehouse.stock.service.ILocationStockService;
@@ -95,6 +96,21 @@ public class LocationStockController extends BaseController {
     @PostMapping("/out")
     public R<Void> productOut(@Valid @RequestBody StockOutBo bo) {
         stockService.productOut(bo);
+        return R.ok();
+    }
+
+    /**
+     * 库存查询行「猪肉转移」（WS13 / row143）：猪肉鲜品库 → 冻品库。
+     *
+     * <p>按源库存行 ID 转移：同事务扣源库存 + 写转移出库流水 + 加冻品库库存 + 写转移入库流水。
+     * 复用库存出库权限 {@code djs:warehouse:stock:out}（同为库存查询页的库存变更操作，不新增菜单/权限）。</p>
+     */
+    @SaCheckPermission("djs:warehouse:stock:out")
+    @Log(title = "库存查询", businessType = BusinessType.UPDATE)
+    @RepeatSubmit
+    @PostMapping("/pigTransfer")
+    public R<Void> pigTransfer(@Valid @RequestBody StockTransferBo bo) {
+        stockService.pigTransfer(bo);
         return R.ok();
     }
 

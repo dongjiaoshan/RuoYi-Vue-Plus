@@ -33,10 +33,12 @@ import org.dromara.djs.warehouse.pack.domain.bo.VegPackBo;
 import org.dromara.djs.warehouse.pack.domain.bo.WarehouseOutBo;
 import org.dromara.djs.warehouse.pack.domain.bo.WhiteBarOutBo;
 import org.dromara.djs.warehouse.pack.domain.query.ProductProductionQuery;
+import org.dromara.djs.warehouse.pack.domain.query.WhiteBarShipmentQuery;
 import org.dromara.djs.warehouse.pack.domain.vo.ProductProductionGroupVo;
 import org.dromara.djs.warehouse.pack.domain.vo.ProductProductionVo;
 import org.dromara.djs.warehouse.pack.domain.vo.StoreDemandCopiesVo;
 import org.dromara.djs.warehouse.pack.domain.vo.VegDailyLossVo;
+import org.dromara.djs.warehouse.pack.domain.vo.WhiteBarShipmentVo;
 import org.dromara.djs.warehouse.pack.mapper.ProductProductionMapper;
 import org.dromara.djs.warehouse.pack.service.IProductProductionService;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
@@ -813,6 +815,34 @@ public class ProductProductionServiceImpl
         rsp.setCode(200);
         rsp.setMsg("查询成功");
         return rsp;
+    }
+
+    @Override
+    public TableDataInfo<WhiteBarShipmentVo> queryWhiteBarShipmentList(WhiteBarShipmentQuery query, PageQuery pageQuery) {
+        List<WhiteBarShipmentVo> all = queryWhiteBarShipmentList(query);
+        // 全量查 + 内存分页（白条出库记录行数小，范式同 queryGroupPageList）
+        int total = all.size();
+        int pageNum = pageQuery == null || pageQuery.getPageNum() == null ? 1 : pageQuery.getPageNum();
+        int pageSize = pageQuery == null || pageQuery.getPageSize() == null ? 10 : pageQuery.getPageSize();
+        int fromIdx = Math.max(0, (pageNum - 1) * pageSize);
+        int toIdx = Math.min(total, fromIdx + pageSize);
+        List<WhiteBarShipmentVo> pageRows = fromIdx >= total ? List.of() : all.subList(fromIdx, toIdx);
+        TableDataInfo<WhiteBarShipmentVo> rsp = new TableDataInfo<>();
+        rsp.setRows(pageRows);
+        rsp.setTotal(total);
+        rsp.setCode(200);
+        rsp.setMsg("查询成功");
+        return rsp;
+    }
+
+    @Override
+    public List<WhiteBarShipmentVo> queryWhiteBarShipmentList(WhiteBarShipmentQuery query) {
+        Date beginDate = query == null ? null : query.getBeginDate();
+        Date endDate = query == null ? null : query.getEndDate();
+        String earNo = query == null ? null : query.getEarNo();
+        List<String> outMethods = query == null ? null : query.getOutMethods();
+        List<String> outDests = query == null ? null : query.getOutDests();
+        return baseMapper.selectWhiteBarShipmentList(beginDate, endDate, earNo, outMethods, outDests);
     }
 
     @Override

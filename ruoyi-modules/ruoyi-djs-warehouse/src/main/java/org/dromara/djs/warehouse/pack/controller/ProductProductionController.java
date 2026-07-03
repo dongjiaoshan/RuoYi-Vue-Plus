@@ -11,8 +11,10 @@ import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.web.core.BaseController;
 import org.dromara.djs.warehouse.pack.domain.bo.MarkDamageBo;
 import org.dromara.djs.warehouse.pack.domain.query.ProductProductionQuery;
+import org.dromara.djs.warehouse.pack.domain.query.WhiteBarShipmentQuery;
 import org.dromara.djs.warehouse.pack.domain.vo.ProductProductionGroupVo;
 import org.dromara.djs.warehouse.pack.domain.vo.ProductProductionVo;
+import org.dromara.djs.warehouse.pack.domain.vo.WhiteBarShipmentVo;
 import org.dromara.djs.warehouse.pack.service.IProductProductionService;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -94,6 +96,28 @@ public class ProductProductionController extends BaseController {
     public void export(ProductProductionQuery query, HttpServletResponse response) {
         List<ProductProductionVo> list = service.queryList(query);
         ExcelUtil.exportExcel(list, "发货产品生产记录", ProductProductionVo.class, response);
+    }
+
+    /**
+     * 白条发货记录列表（WS12 row133，「产品生产记录」下「白条发货记录」页）。
+     *
+     * <p>统计每日白条到发货月台 / 仓库出库情况。数据源 = {@code product_production} 中
+     * {@code belong_type='white_bar'} 的出库记录；搜索发货日期区间 / 猪只耳号 / 出库方式 / 出库去向。</p>
+     */
+    @SaCheckPermission("djs:warehouse:whiteBarShipment:list")
+    @GetMapping("/whiteBarShipment/list")
+    public TableDataInfo<WhiteBarShipmentVo> whiteBarShipmentList(WhiteBarShipmentQuery query, PageQuery pageQuery) {
+        return service.queryWhiteBarShipmentList(query, pageQuery);
+    }
+
+    /**
+     * 白条发货记录导出 Excel（WS12 row133）。
+     */
+    @SaCheckPermission("djs:warehouse:whiteBarShipment:export")
+    @PostMapping("/whiteBarShipment/export")
+    public void whiteBarShipmentExport(WhiteBarShipmentQuery query, HttpServletResponse response) {
+        List<WhiteBarShipmentVo> list = service.queryWhiteBarShipmentList(query);
+        ExcelUtil.exportExcel(list, "白条发货记录", WhiteBarShipmentVo.class, response);
     }
 
 }

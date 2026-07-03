@@ -24,6 +24,7 @@ import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
 import org.dromara.djs.warehouse.stock.domain.LocationStock;
 import org.dromara.djs.warehouse.stock.domain.bo.LocationStockBo;
 import org.dromara.djs.warehouse.stock.domain.bo.StockOutBo;
+import org.dromara.djs.warehouse.stock.domain.bo.StockTransferBo;
 import org.dromara.djs.warehouse.stock.domain.query.LocationStockQuery;
 import org.dromara.djs.warehouse.stock.domain.vo.LocationStockVo;
 import org.dromara.djs.warehouse.stock.mapper.LocationStockMapper;
@@ -70,6 +71,36 @@ public class LocationStockServiceImpl extends DjsBaseServiceImpl<LocationStockMa
      * 出库方向（DDL CHAR(3)）。
      */
     private static final String INOUT_OUT = "OT";
+
+    /**
+     * 入库方向（DDL CHAR(3)）。
+     */
+    private static final String INOUT_IN = "IN";
+
+    /**
+     * 转移出库流水类型：{@code transfer_out}（猪肉鲜品库转出侧，WS13 seed 102450027）。
+     */
+    private static final String FLOW_TRANSFER_OUT = "transfer_out";
+
+    /**
+     * 转移入库流水类型：{@code transfer_in}（冻品库转入侧，WS13 seed 102450028）。
+     */
+    private static final String FLOW_TRANSFER_IN = "transfer_in";
+
+    /**
+     * 猪肉转移源库位名称（唯一定位「猪肉鲜品库」；location_type=veg_fresh 被 4 个鲜品库共用，故按名精确判定）。
+     */
+    private static final String LOC_NAME_PORK_FRESH = "猪肉鲜品库";
+
+    /**
+     * 猪肉转移目标库位类型（{@code djs_location_type}=frozen，「冻品库」唯一）。
+     */
+    private static final String LOC_TYPE_FROZEN = "frozen";
+
+    /**
+     * 猪肉业态（{@code djs_belong_type}=pork），猪肉转移前置校验用。
+     */
+    private static final String BELONG_TYPE_PORK = "pork";
 
     private final LocationInfoMapper locationInfoMapper;
     private final PlotInfoMapper plotInfoMapper;
@@ -200,6 +231,125 @@ public class LocationStockServiceImpl extends DjsBaseServiceImpl<LocationStockMa
                     + " / 申请=" + bo.getQuantity() + product.getProductUnit() + "）");
         }
         return flow.getId();
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public Long pigTransfer(StockTransferBo bo) {
+        // 1. 取源库存行（猪肉鲜品库某产品/耳号篮），解析 locationId + productId + 当前库存
+        LocationStock stock = baseMapper.selectById(bo.getId());
+        if (stock == null) {
+            throw new ServiceException("库存记录不存在或已删除：" + bo.getId());
+        }
+        Long productId = stock.getProductId();
+        Long srcLocationId = stock.getLocationId();
+        if (productId == null || srcLocationId == null) {
+            throw new ServiceException("该库存行非产品库存（缺产品 / 库位），不支持猪肉转移");
+        }
+        // 前置校验源库位必须为「猪肉鲜品库」（防前端绕过 —— 按钮只在该库位 + pork 行显示）
+        LocationInfo srcLocation = locationInfoMapper.selectById(srcLocationId);
+        if (srcLocation == null || !LOC_NAME_PORK_FRESH.equals(srcLocation.getLocationName())) {
+            throw new ServiceException("猪肉转移仅支持从「" + LOC_NAME_PORK_FRESH + "」转出");
+        }
+        ProductInfo product = productInfoMapper.selectById(productId);
+        if (product == null) {
+            throw new ServiceException("产品不存在或已删除：" + productId);
+        }
+        // 前置校验产品业态必须为 pork（与按钮显示条件一致，双保险）
+        if (!BELONG_TYPE_PORK.equals(product.getBelongType())) {
+            throw new ServiceException("猪肉转移仅支持猪肉产品：" + product.getProductName());
+        }
+        // 源库位盘点锁定校验
+        stockCheckService.assertLocationUnlocked(srcLocationId);
+
+        // 2. 解析目标冻品库（location_type=frozen，唯一）
+        LocationInfo frozen = locationInfoMapper.selectOne(
+            new LambdaQueryWrapper<LocationInfo>()
+                .eq(LocationInfo::getLocationType, LOC_TYPE_FROZEN)
+                .orderByAsc(LocationInfo::getId)
+                .last("LIMIT 1"));
+        if (frozen == null) {
+            throw new ServiceException("未配置冻品库（location_type=" + LOC_TYPE_FROZEN + "），无法转移");
+        }
+        Long frozenLocationId = frozen.getId();
+        // 目标库位盘点锁定校验
+        stockCheckService.assertLocationUnlocked(frozenLocationId);
+
+        // 转移量不得超过源库存行当前库存（前端软拦 + 此处后端硬拦；与 step3 按行 id 行锁互为内外两道闸）
+        BigDecimal currentStock = stock.getProductStock() == null ? BigDecimal.ZERO : stock.getProductStock();
+        if (bo.getQuantity().compareTo(currentStock) > 0) {
+            throw new ServiceException(
+                "转移量超过当前库存（product=" + product.getProductName()
+                    + " / 当前库存=" + currentStock.stripTrailingZeros().toPlainString() + product.getProductUnit()
+                    + " / 申请=" + bo.getQuantity().stripTrailingZeros().toPlainString() + product.getProductUnit() + "）");
+        }
+        BigDecimal qty = bo.getQuantity();
+        Long userId = LoginHelper.getUserId();
+
+        // 3. 源侧（猪肉鲜品库）：按行 id 原子扣减（精确扣本篮，避免同产品多耳号篮串扣）
+        int deducted = locationStockMapper().deductStockById(stock.getId(), qty, userId);
+        if (deducted == 0) {
+            throw new ServiceException(
+                "库存不足或已被并发占用，无法转移（product=" + product.getProductName()
+                    + " / 当前库存=" + currentStock.stripTrailingZeros().toPlainString() + product.getProductUnit()
+                    + " / 申请=" + qty.stripTrailingZeros().toPlainString() + product.getProductUnit() + "）");
+        }
+        // INSERT 转移出库流水（flow_type=transfer_out，去向记冻品库）
+        StockFlow outFlow = new StockFlow();
+        outFlow.setFlowNo(generateFlowNo(INOUT_OUT));
+        outFlow.setFlowDate(new Date());
+        outFlow.setProductId(productId);
+        outFlow.setWarehouseId(srcLocationId);
+        outFlow.setInoutType(INOUT_OUT);
+        outFlow.setFlowType(FLOW_TRANSFER_OUT);
+        outFlow.setChangeNum(qty.negate());
+        outFlow.setChangeQuantity(qty);
+        outFlow.setEarNo(stock.getEarNo());
+        outFlow.setWhiteBarNo(stock.getWhiteBarNo());
+        outFlow.setOperatorId(userId);
+        outFlow.setRemark(buildTransferRemark("转移至 " + frozen.getLocationName(), bo.getRemark()));
+        stockFlowMapper.insert(outFlow);
+
+        // 4. 目标侧（冻品库）：同产品 UPSERT 加库存（product 维度；冻品库无耳号篮）
+        int added = locationStockMapper().addByProductLocation(frozenLocationId, productId, qty, userId);
+        if (added == 0) {
+            LocationStock fresh = new LocationStock();
+            fresh.setLocationId(frozenLocationId);
+            fresh.setProductId(productId);
+            fresh.setProductName(product.getProductName());
+            fresh.setProductUnit(product.getProductUnit());
+            fresh.setProductStock(qty);
+            fresh.setIsEnd(0);
+            fresh.setOperatorId(userId);
+            baseMapper.insert(fresh);
+        }
+        // INSERT 转移入库流水（flow_type=transfer_in，来源记猪肉鲜品库）
+        StockFlow inFlow = new StockFlow();
+        inFlow.setFlowNo(generateFlowNo(INOUT_IN));
+        inFlow.setFlowDate(new Date());
+        inFlow.setProductId(productId);
+        inFlow.setWarehouseId(frozenLocationId);
+        inFlow.setInoutType(INOUT_IN);
+        inFlow.setFlowType(FLOW_TRANSFER_IN);
+        inFlow.setChangeNum(qty);
+        inFlow.setChangeQuantity(qty);
+        inFlow.setEarNo(stock.getEarNo());
+        inFlow.setWhiteBarNo(stock.getWhiteBarNo());
+        inFlow.setOperatorId(userId);
+        inFlow.setRemark(buildTransferRemark("转移自 " + srcLocation.getLocationName(), bo.getRemark()));
+        stockFlowMapper.insert(inFlow);
+
+        return outFlow.getId();
+    }
+
+    /**
+     * 拼转移流水备注：方向前缀（如「转移至 冻品库」）+ 用户备注（有则追加）。
+     */
+    private String buildTransferRemark(String directionPrefix, String userRemark) {
+        if (StringUtils.isBlank(userRemark)) {
+            return directionPrefix;
+        }
+        return directionPrefix + "；" + userRemark;
     }
 
     @Override

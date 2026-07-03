@@ -4,6 +4,7 @@ import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.warehouse.stock.domain.bo.LocationStockBo;
 import org.dromara.djs.warehouse.stock.domain.bo.StockOutBo;
+import org.dromara.djs.warehouse.stock.domain.bo.StockTransferBo;
 import org.dromara.djs.warehouse.stock.domain.query.LocationStockQuery;
 import org.dromara.djs.warehouse.stock.domain.vo.LocationStockVo;
 
@@ -61,6 +62,22 @@ public interface ILocationStockService {
      * @return 新增流水行主键
      */
     Long productOut(StockOutBo bo);
+
+    /**
+     * 库存查询行「猪肉转移」：猪肉鲜品库 → 冻品库（WS13 / row143）。
+     *
+     * <p>按 {@link StockTransferBo#getId()} 取源库存行的 {@code locationId + productId + 当前库存}，
+     * 校验源库位为「猪肉鲜品库」、产品业态为 pork、转移量 ≤ 当前库存；同一 {@code @Transactional}：</p>
+     * <ol>
+     *   <li>源侧（猪肉鲜品库）：按行 id 原子扣减 + INSERT 转移出库流水（{@code flow_type=transfer_out}）；</li>
+     *   <li>目标侧（冻品库）：同产品 UPSERT 加库存 + INSERT 转移入库流水（{@code flow_type=transfer_in}）。</li>
+     * </ol>
+     *
+     * <p>库存不足 / 库位被盘点锁定 / 目标冻品库未配置 → 抛 ServiceException 回滚。</p>
+     *
+     * @return 转移出库流水行主键
+     */
+    Long pigTransfer(StockTransferBo bo);
 
     /**
      * 查询当前库存中实际存在的猪只耳号（去重，供库存查询页耳号下拉用，row152-2）。

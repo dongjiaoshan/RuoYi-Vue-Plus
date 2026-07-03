@@ -1023,9 +1023,9 @@ public class PigCoreServiceImpl implements IPigCoreService {
      *       （NOW − birth_date，缺则 introduce_date）须 ≥ {@code sow_reserve_to_breed_days}。
      *       后台「后备-配种天数」既是后备的配种龄阈值，也作整张待配种列表的最小配种日龄——
      *       日龄不到的（如测试态 2/4 日龄异常猪）一律不显。</li>
-     *   <li><b>在场天数门槛</b>（row13）：已配种过的母猪（断奶/返情/空怀/流产）在过日龄门槛后，
-     *       再按在当前状态的<b>在场天数</b> ≥ 对应阈值过滤（断奶/返情/空怀/流产各自独立天数，
-     *       表示再配种前的恢复期）。后备（HB）及无对应配置项的状态 → 仅受日龄门槛约束。</li>
+     *   <li><b>在场天数门槛</b>（row13）：母猪在过日龄门槛后，再按在当前状态的<b>在场天数</b>
+     *       ≥ 对应阈值过滤——后备按「后备-配种天数」（刚进后备不足天数不显），断奶/返情/空怀/流产
+     *       各自独立天数（再配种前的恢复期）。无对应配置项的状态 → 仅受日龄门槛约束。</li>
      * </ol>
      * 阈值未配置（getValue 返 null）→ 该门槛不过滤（不误删候选）；日龄 / 在场起始日无法判定（null）→ 保留。
      * 日龄口径与列表「N日龄」一致；在场天数口径与卡片「N天」一致 = today − status_started_at。
@@ -1038,8 +1038,10 @@ public class PigCoreServiceImpl implements IPigCoreService {
         if (pigs.isEmpty()) {
             return pigs;
         }
-        // 状态 → 母猪生产配置 key（再配种恢复期：按「在当前状态的在场天数」过滤）
+        // 状态 → 母猪生产配置 key（配种前观察期/恢复期：按「在当前状态的在场天数」过滤）
+        // 后备（HB）按在后备的在场天数 ≥「后备-配种天数」过滤：刚进后备不足天数的不进可配种列表。
         Map<String, String> statusKey = Map.of(
+            PigLifecycle.HB.name(), RESERVE_BREED_DAYS_KEY,
             PigLifecycle.DN.name(), "sow_wean_to_breed_days",
             PigLifecycle.FQ.name(), "sow_return_to_breed_days",
             PigLifecycle.KH.name(), "sow_empty_to_breed_days",

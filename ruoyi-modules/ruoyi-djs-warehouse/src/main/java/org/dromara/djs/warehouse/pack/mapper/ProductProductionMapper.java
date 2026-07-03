@@ -7,6 +7,7 @@ import org.dromara.common.mybatis.core.mapper.BaseMapperPlus;
 import org.dromara.djs.warehouse.pack.domain.ProductProduction;
 import org.dromara.djs.warehouse.pack.domain.vo.ProductProductionGroupVo;
 import org.dromara.djs.warehouse.pack.domain.vo.ProductProductionVo;
+import org.dromara.djs.warehouse.pack.domain.vo.WhiteBarShipmentVo;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
@@ -315,5 +316,81 @@ public interface ProductProductionMapper extends BaseMapperPlus<ProductProductio
     BigDecimal sumDeliveredWeightToStore(@Param("storeId") Long storeId,
                                          @Param("productId") Long productId,
                                          @Param("date") LocalDate date);
+
+    /**
+     * 白条发货记录列表（WS12 row133，「产品生产记录」下「白条发货记录」页）。
+     *
+     * <p>数据源 = {@code t_warehouse_product_production} 中 {@code belong_type='white_bar'} 的出库记录
+     * （白条整只/半只出库到发货月台 或 仓库出库），每行 = 一次白条出库事件。产品品类经 product_id FK
+     * LEFT JOIN {@code product_info.belong_type} 取（白条产品固定挂 white_bar）。</p>
+     *
+     * <p>「出库方式」/「出库去向」派生自 {@code remark}（口径同 service {@code buildWarehouseOutRemark}
+     * 落库格式「后台出库 去向=xxx [用户备注]」）：</p>
+     * <ul>
+     *   <li>{@code remark LIKE '后台出库%'} → outMethod='3'（仓库出库，djs_bar_out_method），
+     *       outDest = remark「去向=」段解析出的字典码（djs_stock_out_dest，如 mine/kitchen）</li>
+     *   <li>否则 → outMethod='1'（发货月台/发货领用，djs_bar_out_method），outDest='ship_dock'</li>
+     * </ul>
+     *
+     * <p>过滤：{@code beginDate}/{@code endDate} 按 {@code produce_date} 区间；{@code earNo} 模糊；
+     * {@code outMethods}/{@code outDests} 对派生列 IN（下推 HAVING 前用派生别名不便，改用等价 CASE 表达式
+     * 在 WHERE 内直接比较）。租户隔离 V1 单租户显式 {@code tenant_id='1001'}（与本 Mapper 其他原生 SQL 一致）。</p>
+     *
+     * @param beginDate  发货日期起（空则不过滤）
+     * @param endDate    发货日期止（空则不过滤）
+     * @param earNo      猪只耳号模糊（空则不过滤）
+     * @param outMethods 出库方式多选（派生 djs_bar_out_method 值 1/3；空则不过滤）
+     * @param outDests   出库去向多选（djs_stock_out_dest 值；空则不过滤）
+     * @return 白条发货记录行（按生产时间倒序）
+     */
+    @Select({
+        "<script>",
+        "SELECT pp.id                    AS id,",
+        "       pp.produce_time          AS produceTime,",
+        "       pi.product_id            AS productCode,",
+        "       pp.product_name          AS productName,",
+        "       pp.ear_no                AS earNo,",
+        "       CASE WHEN pp.remark LIKE '后台出库%' THEN '3' ELSE '1' END AS outMethod,",
+        "       CASE WHEN pp.remark LIKE '后台出库%'",
+        "            THEN SUBSTRING_INDEX(SUBSTRING_INDEX(pp.remark, '去向=', -1), ' ', 1)",
+        "            ELSE 'ship_dock' END AS outDest,",
+        "       pp.product_weight        AS productWeight,",
+        "       pp.product_unit          AS productUnit,",
+        "       pp.create_by             AS createBy",
+        "  FROM t_warehouse_product_production pp",
+        "  LEFT JOIN t_warehouse_product_info pi",
+        "         ON pi.id = pp.product_id",
+        "        AND pi.del_flag = '0'",
+        "        AND pi.tenant_id = pp.tenant_id",
+        " WHERE pp.del_flag = '0'",
+        "   AND pp.tenant_id = '1001'",
+        "   AND pi.belong_type = 'white_bar'",
+        "   <if test='beginDate != null'>",
+        "     AND DATE(pp.produce_date) &gt;= DATE(#{beginDate})",
+        "   </if>",
+        "   <if test='endDate != null'>",
+        "     AND DATE(pp.produce_date) &lt;= DATE(#{endDate})",
+        "   </if>",
+        "   <if test='earNo != null and earNo != \"\"'>",
+        "     AND pp.ear_no LIKE CONCAT('%', #{earNo}, '%')",
+        "   </if>",
+        "   <if test='outMethods != null and outMethods.size() > 0'>",
+        "     AND (CASE WHEN pp.remark LIKE '后台出库%' THEN '3' ELSE '1' END)",
+        "         IN <foreach collection='outMethods' item='m' open='(' separator=',' close=')'>#{m}</foreach>",
+        "   </if>",
+        "   <if test='outDests != null and outDests.size() > 0'>",
+        "     AND (CASE WHEN pp.remark LIKE '后台出库%'",
+        "               THEN SUBSTRING_INDEX(SUBSTRING_INDEX(pp.remark, '去向=', -1), ' ', 1)",
+        "               ELSE 'ship_dock' END)",
+        "         IN <foreach collection='outDests' item='d' open='(' separator=',' close=')'>#{d}</foreach>",
+        "   </if>",
+        " ORDER BY pp.produce_time DESC, pp.id DESC",
+        "</script>"
+    })
+    List<WhiteBarShipmentVo> selectWhiteBarShipmentList(@Param("beginDate") Date beginDate,
+                                                        @Param("endDate") Date endDate,
+                                                        @Param("earNo") String earNo,
+                                                        @Param("outMethods") List<String> outMethods,
+                                                        @Param("outDests") List<String> outDests);
 
 }

@@ -258,7 +258,8 @@ public class PigCutRecordServiceImpl
             writeBarCutOutFlow(r, r.getProductWeight(), userId);
         }
         // mp 整只兜底路径：无逐产出行拆分，建整猪 cut_record（whiteBarNo=null → 剩余/超量回落 white_bar_id）。
-        return insertCutRecord(bar, pickupWeight, bo.getLocationId(), bo.getTargetStoreId(),
+        // 预冷按整只：inWeight = bar.in_weight（整猪入库重）。
+        return insertCutRecord(bar, pickupWeight, bar.getInWeight(), bo.getLocationId(), bo.getTargetStoreId(),
             bo.getTargetDemandId(), bo.getIsHalf() == null ? 2 : bo.getIsHalf(), bo.getRemark(), userId, null);
     }
 
@@ -318,7 +319,8 @@ public class PigCutRecordServiceImpl
         int isHalf = bo.getIsHalf() != null ? bo.getIsHalf()
             : (row.getProductName() != null && row.getProductName().contains("半") ? 1 : 2);
         // 结算/超量/剩余/损耗仍按整猪 white_bar_id 汇总（dashboards 读 by white_bar_id 不变，Kevin 定）。
-        return insertCutRecord(bar, rowWeight, bo.getLocationId(), bo.getTargetStoreId(),
+        // 预冷按半只：inWeight = 该燎毛产出行半只入库重（row.product_weight），减本行领用重 rowWeight。
+        return insertCutRecord(bar, rowWeight, row.getProductWeight(), bo.getLocationId(), bo.getTargetStoreId(),
             bo.getTargetDemandId(), isHalf, bo.getRemark(), userId, whiteBarNo);
     }
 
@@ -404,7 +406,7 @@ public class PigCutRecordServiceImpl
      * 建 cut_record（cut_status=picked）。
      * whiteBarNo 非空 = 按半只（admin 逐产出行领用，邓博 row13/row14）；空 = 整猪（mp 整只兜底路径）。
      */
-    private Long insertCutRecord(BarInfo bar, BigDecimal pickupWeight, Long locationId,
+    private Long insertCutRecord(BarInfo bar, BigDecimal pickupWeight, BigDecimal inWeight, Long locationId,
                                  Long targetStoreId, Long targetDemandId, int isHalf,
                                  String remark, Long userId, String whiteBarNo) {
         PigCutRecord record = new PigCutRecord();
@@ -415,6 +417,12 @@ public class PigCutRecordServiceImpl
         record.setEarNo(bar.getEarNo());
         record.setPickupTime(new Date());
         record.setPickupWeight(pickupWeight);
+        // row118：领用即记录本行预冷损耗 = 该白条入库重 − 本次领用重（钳 0）。半只(whiteBarNo 非空)走燎毛产出行
+        //   半只入库重、整只走 bar.in_weight（Kevin 2026-07-03：半只按半只、整只按整只算预冷）。入库重/领用重任一
+        //   缺失 → 不写（保持 NULL，不瞎编）。整猪收口 submitCutDone 另按整猪 white_bar_id 结算 loss_flow（口径待测试确认）。
+        if (inWeight != null && pickupWeight != null) {
+            record.setDripLoss(inWeight.subtract(pickupWeight).max(BigDecimal.ZERO));
+        }
         record.setOperatorId(userId);
         record.setLocationId(locationId);
         record.setTargetStoreId(targetStoreId);
@@ -611,11 +619,11 @@ public class PigCutRecordServiceImpl
         int acidMinutes = (int) Duration.between(
             record.getPickupTime().toInstant(), now.toInstant()).toMinutes();
 
-        // 邓博 row14 按半只 surface：先把本 cut_record（本半只）置 done。滴水/分割损耗 + bar 转 cut_done
-        // 统一在「该白条所有 cut_record 都 done 且无未领产出行」时按整猪结算一次（Kevin 定：结算按整猪 white_bar_id），
-        // 故本半只 cut_record.drip_loss 先记 0，整猪滴水损耗落 bar_info + loss_flow（收口时一次，不重复双写）。
+        // 邓博 row14 按半只 surface：把本 cut_record（本半只）置 done；分割损耗 + bar 转 cut_done 在整猪收口时结算。
+        // row118（Kevin 2026-07-03：预冷按燎毛入库单位——半只按半只、整只按整只）：本 cut_record.drip_loss 保留
+        // 领用时已写的 per-半只/整只 预冷值（不再覆盖为 0）；整猪滴水损耗另落 bar_info + loss_flow（收口时一次，聚合口径）。
         int affected = baseMapper.updateStatusToDone(
-            record.getId(), now, BigDecimal.ZERO, acidMinutes,
+            record.getId(), now, record.getDripLoss(), acidMinutes,
             bo.getRemark(), bo.getProofOssIds(), userId);
         if (affected == 0) {
             throw new ServiceException("分割单状态已变更，请刷新重试");

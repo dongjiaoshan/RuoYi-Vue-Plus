@@ -399,6 +399,7 @@ public class MatFlowServiceImpl implements IMatFlowService {
         flow.setProductId(productId);
         flow.setPlotId(basket.getPlotId());
         flow.setEarNo(basket.getEarNo());
+        flow.setWhiteBarNo(basket.getWhiteBarNo());   // 猪肉篮 = 白条号源标签（同耳号多半只按 white_bar_no 区分）
         flow.setWarehouseId(locId);
         flow.setInoutType(INOUT_OUT);
         flow.setFlowType(resolvePickFlowType(bo));
@@ -429,6 +430,7 @@ public class MatFlowServiceImpl implements IMatFlowService {
         inhouse.setProductUnit(product != null ? product.getProductUnit() : basket.getProductUnit());
         inhouse.setProductWeight(bo.getQuantity());
         inhouse.setEarNo(basket.getEarNo());     // 猪肉篮 = 耳号源标签
+        inhouse.setWhiteBarNo(basket.getWhiteBarNo());   // 猪肉篮 = 白条号源标签（同耳号多半只区分，贯穿打包/追溯）
         inhouse.setPlotId(basket.getPlotId());   // 自产果蔬篮 = 地块源标签
         inhouse.setLocationId(locId);
         inhouse.setMaterialId(productId);         // 原材料 = 自身（成品打包侧经 product_material 反查共享池）
@@ -974,13 +976,14 @@ public class MatFlowServiceImpl implements IMatFlowService {
             ensureTodayCapacity(productId, bo.getQuantity(), productName, productUnit, product == null ? null : product.getBelongType());
         }
 
-        // 2. INSERT stock_flow（return_in 入库，带篮的 product_id + plot_id + ear_no 源标签）
+        // 2. INSERT stock_flow（return_in 入库，带篮的 product_id + plot_id + ear_no + white_bar_no 源标签）
         StockFlow flow = new StockFlow();
         flow.setFlowNo(generateFlowNo(INOUT_IN));
         flow.setFlowDate(new Date());
         flow.setProductId(productId);
         flow.setPlotId(basket.getPlotId());
         flow.setEarNo(basket.getEarNo());
+        flow.setWhiteBarNo(basket.getWhiteBarNo());   // 猪肉篮 = 白条号源标签（同耳号多半只按 white_bar_no 区分）
         flow.setWarehouseId(locId);
         flow.setInoutType(INOUT_IN);
         flow.setFlowType(resolveReturnFlowType(bo));
@@ -1315,13 +1318,14 @@ public class MatFlowServiceImpl implements IMatFlowService {
             ensureTodayCapacity(productId, bo.getQuantity(), productName, productUnit, product == null ? null : product.getBelongType());
         }
 
-        // 2. INSERT stock_flow（loss 出库，带篮的 product_id + plot_id + ear_no 源标签）
+        // 2. INSERT stock_flow（loss 出库，带篮的 product_id + plot_id + ear_no + white_bar_no 源标签）
         StockFlow flow = new StockFlow();
         flow.setFlowNo(generateFlowNo(INOUT_OUT));
         flow.setFlowDate(new Date());
         flow.setProductId(productId);
         flow.setPlotId(basket.getPlotId());
         flow.setEarNo(basket.getEarNo());
+        flow.setWhiteBarNo(basket.getWhiteBarNo());   // 猪肉篮 = 白条号源标签（同耳号多半只按 white_bar_no 区分）
         flow.setWarehouseId(locId);
         flow.setInoutType(INOUT_OUT);
         flow.setFlowType(FLOW_LOSS);
@@ -1390,31 +1394,11 @@ public class MatFlowServiceImpl implements IMatFlowService {
         flow.setProofOssIds(bo.getProofOssIds());
         stockFlowMapper.insert(flow);
 
-        // 3. 跨库位 FIFO 逐篮扣减（损耗不产 inhouse；扣不够剩余量打 warn 不抛，账实倒挂留痕）
-        List<LocationStock> baskets = locationStockMapper.selectList(
-            new LambdaQueryWrapper<LocationStock>()
-                .eq(LocationStock::getProductId, productId)
-                .eq(LocationStock::getPlotId, plotId)
-                .gt(LocationStock::getProductStock, BigDecimal.ZERO)
-                .orderByAsc(LocationStock::getId));
-        BigDecimal remaining = bo.getQuantity();
-        for (LocationStock b : baskets) {
-            if (remaining.compareTo(BigDecimal.ZERO) <= 0) {
-                break;
-            }
-            BigDecimal take = b.getProductStock().min(remaining);
-            int affected = locationStockMapper.deductStockById(b.getId(), take, userId);
-            if (affected == 0) {
-                // 并发抢占：该篮已被领走 → 跳过该篮
-                continue;
-            }
-            remaining = remaining.subtract(take);
-        }
-        if (remaining.compareTo(BigDecimal.ZERO) > 0) {
-            log.warn("地块卡 loss 流水已记，但库存扣减不足（账面已不足）：user={}, productId={}, plotId={}, "
-                    + "申请损耗 {}, 实扣 {}（差额账面已不足）",
-                userId, productId, plotId, bo.getQuantity(), bo.getQuantity().subtract(remaining));
-        }
+        // 3. 损耗 = 消耗「今天待打包」inhouse：自产果蔬领用时 location_stock 已 −、product_inhouse +，
+        //    损耗剥离的是这部分待打包 WIP（与 returnVegPlot / loss() 可打包食品分支对称），让 admin 果蔬打包
+        //    「领用剩余重量」相应扣减；不再二次扣 location_stock（否则货架双扣 + inhouse 幽灵残留、领用剩余不减损耗）。
+        //    扣不够（差额已打包）→ reduceTodayInhouseForBasket 内部打 warn 不抛，账实倒挂留痕审计。
+        reduceTodayInhouseForBasket(productId, null, plotId, bo.getQuantity());
 
         // 统一损耗台账双写（WMS-LOSS-001，行59 录入损耗）：productId 走地块卡 product_id、locationId 走首篮库位。
         lossFlowService.record("manual_loss", productId, bo.getQuantity(), firstLocId, userId, "mat", null, flow.getId());

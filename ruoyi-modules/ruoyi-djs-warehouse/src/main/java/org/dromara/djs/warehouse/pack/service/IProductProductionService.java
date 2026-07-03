@@ -10,10 +10,12 @@ import org.dromara.djs.warehouse.pack.domain.bo.VegPackBo;
 import org.dromara.djs.warehouse.pack.domain.bo.WarehouseOutBo;
 import org.dromara.djs.warehouse.pack.domain.bo.WhiteBarOutBo;
 import org.dromara.djs.warehouse.pack.domain.query.ProductProductionQuery;
+import org.dromara.djs.warehouse.pack.domain.query.WhiteBarShipmentQuery;
 import org.dromara.djs.warehouse.pack.domain.vo.ProductProductionGroupVo;
 import org.dromara.djs.warehouse.pack.domain.vo.ProductProductionVo;
 import org.dromara.djs.warehouse.pack.domain.vo.StoreDemandCopiesVo;
 import org.dromara.djs.warehouse.pack.domain.vo.VegDailyLossVo;
+import org.dromara.djs.warehouse.pack.domain.vo.WhiteBarShipmentVo;
 import org.dromara.djs.warehouse.product.domain.ProductInhouse;
 
 import java.math.BigDecimal;
@@ -73,6 +75,21 @@ public interface IProductProductionService {
      * {@link #queryItemPageList} 子页。范式同 DemandManage 聚合（全量查 + 内存分页）。</p>
      */
     TableDataInfo<ProductProductionGroupVo> queryGroupPageList(ProductProductionQuery query, PageQuery pageQuery);
+
+    /**
+     * 白条发货记录分页列表（WS12 row133）。
+     *
+     * <p>数据源 = {@code product_production} 中 {@code belong_type='white_bar'} 的出库记录（白条整只/半只
+     * 出库到发货月台 或 仓库出库）。列：发货日期(时分秒) / 产品编码 / 产品名称 / 猪只耳号 / 出库方式 /
+     * 出库去向 / 出库量 / 单位 / 操作人。搜索：发货日期区间 / 耳号模糊 / 出库方式多选 / 出库去向多选。
+     * 范式同 {@link #queryGroupPageList}（全量查 + 内存分页；白条出库记录行数小）。</p>
+     */
+    TableDataInfo<WhiteBarShipmentVo> queryWhiteBarShipmentList(WhiteBarShipmentQuery query, PageQuery pageQuery);
+
+    /**
+     * 白条发货记录导出（同 query 不分页）。
+     */
+    List<WhiteBarShipmentVo> queryWhiteBarShipmentList(WhiteBarShipmentQuery query);
 
     /**
      * admin 逐件分页查询（按 produce_no / product_id / product_type / pack_status / 时间区间）。
