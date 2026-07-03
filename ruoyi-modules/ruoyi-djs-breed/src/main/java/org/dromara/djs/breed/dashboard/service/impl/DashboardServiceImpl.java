@@ -904,9 +904,8 @@ public class DashboardServiceImpl implements IDashboardService {
         // 净增重 = Σ(出栏重 − 断奶重) 仅对「有断奶快照的出栏育肥猪」同一集合，
         // 故被减数用同集合的出栏重 marketingWeightWeaned（非全部出栏 marketingWeight，
         // 后者含淘汰母猪/种猪出栏会让净增重虚高）。出栏总重列仍取全量 marketingWeight。
-        //   饲养总天数 feedTotalDays = Σ(出栏日−断奶日+1)；生长总天数 growthTotalDays = Σ(出栏日−出生日+1)，
-        //   出生日为空的外购猪在 SQL CASE WHEN 已跳过（不计入 growthDays，不报错）。
-        //   日增重分母 = 饲养总天数（原用生长总天数，本次改）；分母 0 → 日增重 0。
+        //   饲养总天数 feedTotalDays = Σ(出栏日−断奶日+1)；生长总天数 growthTotalDays（row183）= Σ(出栏日−断奶日+1)。
+        //   日增重分母 = 生长总天数（row184 口径）；分母 0 → 日增重 0。
         Map<String, Object> weanAgg = aggregateQueryMapper.aggregateMarketingWeanForDay(tenantId, dtFrom, dtTo);
         BigDecimal weanTotalWeight = mapBd(weanAgg, "weanWeightSum");
         int feedDays = mapInt(weanAgg, "feedDaysSum");
@@ -917,7 +916,7 @@ public class DashboardServiceImpl implements IDashboardService {
         r.setFeedTotalDays(feedDays);
         r.setGrowthTotalDays(growthDays);
         r.setNetGainWeight(scale3(netGain));
-        r.setDailyGainWeight(scale3(divide(netGain, feedDays)));
+        r.setDailyGainWeight(scale3(divide(netGain, growthDays)));
 
         // ---- 死亡分类（按 pig_type） ----
         r.setDeathFatteningCount(aggregateQueryMapper.countDeathByPigTypeInDay(tenantId, "fattening", dtFrom, dtTo));
@@ -1013,8 +1012,10 @@ public class DashboardServiceImpl implements IDashboardService {
             int totalLiveBorn = mapInt(fa, "totalLiveBorn");
             int litterCount = mapInt(fa, "litterCount");
             BigDecimal sumAvgBornWeight = mapBd(fa, "sumAvgBornWeight");
-            int gestSum = mapInt(fa, "gestSum");
-            int gestCount = mapInt(fa, "gestCount");
+            // 平均怀孕天数（row94）：状态记录表 配种(PZ)→分娩(FM) 的 Σduration_days/条数
+            Map<String, Object> gestAgg = aggregateQueryMapper.sowGestationByStatus(tenantId, pigId);
+            int gestSum = mapInt(gestAgg, "sumDays");
+            int gestCount = mapInt(gestAgg, "cnt");
 
             Map<String, Object> we = aggregateQueryMapper.sowWeanAgg(tenantId, pigId);
             int totalWeaned = mapInt(we, "totalWeaned");
@@ -1023,7 +1024,8 @@ public class DashboardServiceImpl implements IDashboardService {
 
             int abnormalTotal = aggregateQueryMapper.sowAbnormalCount(tenantId, pigId);
 
-            Map<String, Object> wb = aggregateQueryMapper.sowWeanBreedAgg(tenantId, pigId);
+            // 断奶-配种天数（row97/183）：状态记录表 断奶(DN)→配种(PZ) 的 Σduration_days/条数
+            Map<String, Object> wb = aggregateQueryMapper.sowWeanBreedByStatus(tenantId, pigId);
             int wbSum = mapInt(wb, "sumDays");
             int wbCnt = mapInt(wb, "cnt");
 

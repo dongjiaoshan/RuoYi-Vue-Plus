@@ -145,11 +145,16 @@ public class WarehouseStatServiceImpl implements IWarehouseStatService {
         // 净菜生产段
         BigDecimal prodPick = scale3(aggregateMapper.sumProdPickWeight(tenantId, statDate));
         BigDecimal prodReturn = scale3(aggregateMapper.sumProdReturnWeight(tenantId, statDate));
-        // B5 row16 净菜损耗分子：production_loss / manual_loss 全量按 loss_type 取（loss_flow 全表 Σ，非 plot 桥接，
-        // 故 product 维度（plot_id 多为 NULL）的损耗不会漏；production_loss 字典定义即「仅原材料」= 果蔬产品生产损耗）。
-        // crop 维度（row17）才需 product_id→crop 归集补全（见 mapper selectCropLossAgg），日表 row16 全量 Σ 本就完整。
-        BigDecimal prodLoss = scale3(aggregateMapper.sumLossByType(tenantId, statDate, "production_loss"));
         BigDecimal manualLoss = scale3(aggregateMapper.sumLossByType(tenantId, statDate, "manual_loss"));
+        BigDecimal feedTotal = scale3(aggregateMapper.sumFeedWeightTotal(tenantId, statDate));
+        // 果蔬生产损耗（row16）= 残差口径（Kevin 拍板）：
+        // prodLoss = max(0, 当日领用 − 退回 − 录入损耗 − 饲喂总重)。
+        // production_loss 这个 loss_type 无数据（恒 0），生产损耗改由物料平衡残差反推：
+        // 领用出去的原料，扣掉退回、扣掉人工录入损耗、扣掉转去饲喂的，剩下没入成品的差额即为生产损耗；
+        // 领用<（退回+录入+饲喂）时残差为负，无业务意义，置 0。
+        BigDecimal prodLoss = scale3(
+            prodPick.subtract(prodReturn).subtract(manualLoss).subtract(feedTotal)
+                .max(BigDecimal.ZERO));
         r.setProdPickWeight(prodPick);
         r.setProdLossWeight(prodLoss);
         // 净菜损耗率 = (生产损耗+录入损耗)/(生产领用−生产退回)×100（日表口径）

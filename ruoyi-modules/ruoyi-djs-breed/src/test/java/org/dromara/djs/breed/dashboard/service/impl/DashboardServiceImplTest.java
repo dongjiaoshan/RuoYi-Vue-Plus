@@ -476,6 +476,7 @@ class DashboardServiceImplTest {
         // 断奶总重 / 生长天数 stub
         Map<String, Object> wean = new LinkedHashMap<>();
         wean.put("weanWeightSum", new BigDecimal("40"));
+        wean.put("marketingWeightWeaned", new BigDecimal("200"));
         wean.put("growthDaysSum", 320L);
         when(aggregateQueryMapper.aggregateMarketingWeanForDay(anyString(), any(), any())).thenReturn(wean);
         // 不写月/年路径的 sow_performance（无母猪）
@@ -522,9 +523,12 @@ class DashboardServiceImplTest {
         fa.put("totalLiveBorn", 44);
         fa.put("litterCount", 4);
         fa.put("sumAvgBornWeight", new BigDecimal("5.6"));
-        fa.put("gestSum", 456);
-        fa.put("gestCount", 4);
         when(aggregateQueryMapper.sowFarrowAgg(anyString(), eq(1001L))).thenReturn(fa);
+        // 平均怀孕天数（状态记录表 PZ→FM）：Σduration_days 456 / 4 条 → 114.00
+        Map<String, Object> gest = new LinkedHashMap<>();
+        gest.put("sumDays", 456);
+        gest.put("cnt", 4);
+        when(aggregateQueryMapper.sowGestationByStatus(anyString(), eq(1001L))).thenReturn(gest);
         // 断奶累计：总断奶 40 / 4 批 / Σavg断奶重 26.0
         Map<String, Object> we = new LinkedHashMap<>();
         we.put("totalWeaned", 40);
@@ -532,11 +536,22 @@ class DashboardServiceImplTest {
         we.put("sumAvgWeanedWeight", new BigDecimal("26.0"));
         when(aggregateQueryMapper.sowWeanAgg(anyString(), eq(1001L))).thenReturn(we);
         when(aggregateQueryMapper.sowAbnormalCount(anyString(), eq(1001L))).thenReturn(2);
-        // 断配：和 24 / 3 次
+        // 断奶-配种天数（状态记录表 DN→PZ）：Σduration_days 24 / 3 条 → 8.00
         Map<String, Object> wb = new LinkedHashMap<>();
         wb.put("sumDays", 24);
         wb.put("cnt", 3);
-        when(aggregateQueryMapper.sowWeanBreedAgg(anyString(), eq(1001L))).thenReturn(wb);
+        when(aggregateQueryMapper.sowWeanBreedByStatus(anyString(), eq(1001L))).thenReturn(wb);
+        // NPD 时间线：断奶(DN,6/1) 起非生产 → 配种(PZ,6/9) 结束，区间 8 天
+        Map<String, Object> npd1 = new LinkedHashMap<>();
+        npd1.put("newStatus", "DN");
+        npd1.put("eventType", "WEAN");
+        npd1.put("changeDate", java.sql.Date.valueOf("2026-06-01"));
+        Map<String, Object> npd2 = new LinkedHashMap<>();
+        npd2.put("newStatus", "PZ");
+        npd2.put("eventType", "BREED");
+        npd2.put("changeDate", java.sql.Date.valueOf("2026-06-09"));
+        when(aggregateQueryMapper.selectSowStatusTimeline(anyString(), eq(1001L)))
+            .thenReturn(List.of(npd1, npd2));
         when(sowPerformanceMapper.selectOne(any())).thenReturn(null);
         // 让 trigger 其余路径不炸
         when(aggregateQueryMapper.snapshotByTypeStatus(anyString())).thenReturn(new ArrayList<>());
@@ -564,8 +579,8 @@ class DashboardServiceImplTest {
         assertThat(sp.getAvgBornPerLitter()).isEqualByComparingTo(new BigDecimal("12.000"));
         assertThat(sp.getAvgLiveBornPerLitter()).isEqualByComparingTo(new BigDecimal("11.000"));
         assertThat(sp.getAvgWeanedPerLitter()).isEqualByComparingTo(new BigDecimal("10.000"));
-        // NPD = 365 - 114 - 8 = 243.00
-        assertThat(sp.getNpd()).isEqualByComparingTo(new BigDecimal("243.00"));
+        // NPD（row113 区间求和）= DATEDIFF(6/9, 6/1) = 8.00
+        assertThat(sp.getNpd()).isEqualByComparingTo(new BigDecimal("8.00"));
     }
 
     @Test

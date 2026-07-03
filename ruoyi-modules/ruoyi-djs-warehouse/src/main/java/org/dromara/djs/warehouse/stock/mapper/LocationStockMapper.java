@@ -287,6 +287,33 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
                              @Param("userId") Long userId);
 
     /**
+     * 按 {@code (location_id, product_id, ear_no)} 且 {@code white_bar_no IS NULL} + {@code is_end=0} 原子累加
+     * 分割产出库存（row157：分割原材料入库按耳号合并——同一耳号整猪两半只产出同一部位不再各建一行篮子）。
+     *
+     * <p>与 row150 结算不冲突：结算读 {@code cut_out_in} 流水（不读 location_stock 篮），本 UPSERT 只影响
+     * 篮子行数（同耳号同产品聚合成一行）。{@code white_bar_no IS NULL} 收口到分割产出篮（燎毛白条库存篮
+     * white_bar_no 非空，两者不串）。{@code tenant_id} 由 MP 拦截器注入；不走 MetaObjectHandler.updateFill，
+     * 手工 set {@code update_by} / {@code update_time}。</p>
+     *
+     * @return affectedRows（0 = 无同键篮子行 → 调用方 insert 新篮）
+     */
+    @Update("UPDATE t_warehouse_location_stock "
+        + "   SET product_stock = product_stock + #{addQty},"
+        + "       update_by = #{userId},"
+        + "       update_time = NOW() "
+        + " WHERE location_id = #{locationId} "
+        + "   AND product_id  = #{productId} "
+        + "   AND ear_no      = #{earNo} "
+        + "   AND white_bar_no IS NULL "
+        + "   AND is_end = 0 "
+        + "   AND del_flag = '0'")
+    int addByProductLocationEarNo(@Param("locationId") Long locationId,
+                                  @Param("productId") Long productId,
+                                  @Param("earNo") String earNo,
+                                  @Param("addQty") BigDecimal addQty,
+                                  @Param("userId") Long userId);
+
+    /**
      * 按 {@code medicine_id} + {@code location_id} 原子扣减药品库存（ADR-0012 药品归仓库库位统一，
      * FIX-MED-MODEL-004/005 领用 / 损耗 / 治疗用药）。
      *

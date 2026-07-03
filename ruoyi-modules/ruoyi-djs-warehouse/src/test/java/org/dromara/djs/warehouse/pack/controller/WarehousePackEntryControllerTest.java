@@ -13,6 +13,7 @@ import org.dromara.djs.warehouse.pack.domain.bo.GiftPackBo;
 import org.dromara.djs.warehouse.pack.domain.bo.VegPackBo;
 import org.dromara.djs.warehouse.pack.domain.bo.WhiteBarOutBo;
 import org.dromara.djs.warehouse.pack.domain.vo.PackSubmitResultVo;
+import org.dromara.djs.warehouse.pack.mapper.ProductProductionMapper;
 import org.dromara.djs.warehouse.pack.service.IProductProductionService;
 import org.dromara.djs.warehouse.product.domain.ProductInhouse;
 import org.dromara.djs.warehouse.product.domain.query.ProductInfoQuery;
@@ -62,12 +63,14 @@ class WarehousePackEntryControllerTest {
     @Mock private IProductProductionService productionService;
     @Mock private IPigCutRecordService pigCutService;
     @Mock private IProductInfoService productInfoService;
+    @Mock private ProductProductionMapper productProductionMapper;
 
     private WarehousePackEntryController controller;
 
     @BeforeEach
     void setup() {
-        controller = new WarehousePackEntryController(productionService, pigCutService, productInfoService);
+        controller = new WarehousePackEntryController(productionService, pigCutService, productInfoService,
+            productProductionMapper);
     }
 
     @Test

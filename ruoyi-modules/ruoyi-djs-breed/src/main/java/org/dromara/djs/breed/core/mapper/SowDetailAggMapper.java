@@ -28,33 +28,24 @@ public interface SowDetailAggMapper {
     // ── 6 KPI 聚合 ──────────────────────────────────────────────────────────
 
     /**
-     * 平均怀孕天数 = avg(分娩日期 − 关联配种日期)，单位天；无可配对的配种-分娩 → null。
+     * 平均怀孕天数（row94 口径）= AVG(duration_days)，取状态变更记录表
+     * 配种(old_status='PZ') → 分娩(new_status='FM') 的流转记录；无记录 → null。
      */
     @Select("""
-        SELECT AVG(DATEDIFF(f.farrow_date, b.breeding_date))
-        FROM t_farm_pig_farrow f
-            INNER JOIN t_farm_pig_breeding b ON b.id = f.breeding_id AND b.del_flag = '0'
-        WHERE f.pig_id = #{pigId} AND f.del_flag = '0'
-          AND f.breeding_id IS NOT NULL AND b.breeding_date IS NOT NULL AND f.farrow_date IS NOT NULL
+        SELECT AVG(duration_days)
+        FROM t_farm_status_record
+        WHERE pig_id = #{pigId} AND old_status = 'PZ' AND new_status = 'FM'
         """)
     BigDecimal avgGestationDays(@Param("pigId") Long pigId);
 
     /**
-     * 断奶-配种天数 = avg(下一次配种日期 − 上一次断奶日期)，单位天；无可配对 → null。
-     * 对每条断奶记录取其后最近一次配种，DATEDIFF 后取均值。
+     * 断奶-配种天数（row97/183 口径）= AVG(duration_days)，取状态变更记录表
+     * 断奶(old_status='DN') → 配种(new_status='PZ') 的流转记录；无记录 → null。
      */
     @Select("""
-        SELECT AVG(gap) FROM (
-            SELECT (
-                SELECT MIN(DATEDIFF(b.breeding_date, w.weaning_date))
-                FROM t_farm_pig_breeding b
-                WHERE b.pig_id = #{pigId} AND b.del_flag = '0'
-                  AND b.breeding_date > w.weaning_date
-            ) AS gap
-            FROM t_farm_pig_weaning w
-            WHERE w.pig_id = #{pigId} AND w.del_flag = '0' AND w.weaning_date IS NOT NULL
-        ) t
-        WHERE gap IS NOT NULL
+        SELECT AVG(duration_days)
+        FROM t_farm_status_record
+        WHERE pig_id = #{pigId} AND old_status = 'DN' AND new_status = 'PZ'
         """)
     BigDecimal avgWeanToBreedDays(@Param("pigId") Long pigId);
 

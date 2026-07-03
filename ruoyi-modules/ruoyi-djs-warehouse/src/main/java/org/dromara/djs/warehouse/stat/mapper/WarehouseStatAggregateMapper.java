@@ -186,6 +186,18 @@ public interface WarehouseStatAggregateMapper {
         """)
     BigDecimal sumProdReturnWeight(@Param("tenantId") String tenantId, @Param("statDate") String statDate);
 
+    /**
+     * 当日饲喂总重（全量 Σ feed_log.feed_weight，不按 crop 过滤，日表 row16 生产损耗残差用）。
+     * 与作物维 {@link #selectCropFeedAgg}（按 crop_id GROUP + 要求 crop_id 非空）区分：本方法计
+     * 当日全部饲喂路径（毛菜间 + 仓库领用）总重，含 crop_id 为 NULL 的行，供日表残差公式减去。
+     */
+    @Select("""
+        SELECT COALESCE(SUM(feed_weight), 0) FROM t_warehouse_feed_log
+        WHERE del_flag = '0' AND tenant_id = #{tenantId}
+          AND DATE(feed_date) = #{statDate}
+        """)
+    BigDecimal sumFeedWeightTotal(@Param("tenantId") String tenantId, @Param("statDate") String statDate);
+
     // ============================================================
     //  作物日表（row17）源聚合 —— 按 crop_id 一次性 GROUP，service 端组装
     // ============================================================

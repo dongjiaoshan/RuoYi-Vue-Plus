@@ -141,6 +141,39 @@ public interface ProductProductionMapper extends BaseMapperPlus<ProductProductio
                             @Param("demandId") Long demandId);
 
     /**
+     * 白条领用「发货月台」门店下拉数据（row153）：当天有<b>已确认白条需求</b>的门店 + 各门店白条需求数。
+     *
+     * <p>白条领用页出库位置=发货月台时，门店下拉不再全量列 4 店，只列「当天该门店确有白条需求」的门店，
+     * 并在门店名后带上该店当天白条需求份数。口径与打包台需求门店标签一致：需求业态
+     * {@code dm.product_type='white_bar'}、需求日 {@code demand_date=CURDATE()}、状态已确认及之后
+     * （{@code demand_status IN ('CONFIRMED','IN_PRODUCTION','PARTIAL_SHIPPED','COMPLETED')}）；
+     * 草稿 / 待确认 / 已取消 / 已删除均不计。JOIN {@code t_md_store} 取门店名。</p>
+     *
+     * <p>{@code demandQty = SUM(demand_quantity)} 该店当天白条需求总份数（HAVING &gt; 0 过滤掉全零门店）。
+     * {@code storeId} 用 {@code CAST(... AS CHAR)} 返字符串防雪花门店 id 前端 JS Number 精度截断。
+     * 租户隔离 V1 单租户显式 {@code tenant_id='1001'}（与本 mapper 其他原生 SQL 一致）；{@code del_flag='0'}。</p>
+     *
+     * @return 行 {@code {storeId(字符串), storeName, demandQty}}（按 demandQty 降序）；当天无白条需求 → 空 List
+     */
+    @Select("SELECT CAST(dm.store_id AS CHAR) AS storeId, "
+        + "       s.store_name AS storeName, "
+        + "       SUM(dm.demand_quantity) AS demandQty "
+        + "  FROM t_warehouse_demand_manage dm "
+        + "  JOIN t_md_store s ON s.id = dm.store_id "
+        + "       AND s.del_flag = '0' "
+        + "       AND s.tenant_id = dm.tenant_id "
+        + " WHERE dm.del_flag = '0' "
+        + "   AND dm.tenant_id = '1001' "
+        + "   AND dm.product_type = 'white_bar' "
+        + "   AND dm.store_id IS NOT NULL "
+        + "   AND dm.demand_date = CURDATE() "
+        + "   AND dm.demand_status IN ('CONFIRMED','IN_PRODUCTION','PARTIAL_SHIPPED','COMPLETED') "
+        + " GROUP BY dm.store_id, s.store_name "
+        + "HAVING demandQty > 0 "
+        + "ORDER BY demandQty DESC")
+    List<Map<String, Object>> selectWhiteBarShipStores();
+
+    /**
      * 产品维度聚合查询（主列表「产品生产」概览）。
      *
      * <p>按 {@code (product_id, DATE(produce_date))} 分组：同一产品同一天的 N 件生产记录合并成一行。

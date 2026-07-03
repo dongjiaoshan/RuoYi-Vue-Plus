@@ -545,9 +545,9 @@ public interface AggregateQueryMapper {
      * {@code birth_date} 出生日）：
      * <ul>
      *   <li>weanTotalWeight = Σ pi.wean_weight；marketingWeightWeaned = Σ m.out_weight（同集合）。</li>
-     *   <li>feedDaysSum（饲养总天数）= Σ (DATEDIFF(出栏日, 断奶日) + 1)（含头含尾，每头 +1）；日增重分母。</li>
-     *   <li>growthDaysSum（生长总天数）= Σ (DATEDIFF(出栏日, 出生日) + 1)（含头含尾，每头 +1）；
-     *       <b>依赖出生日期</b>：外购猪无 birth_date（CASE WHEN 判空跳过累加），不因它 NULL 报错、不计入。</li>
+     *   <li>feedDaysSum（饲养总天数）= Σ (DATEDIFF(出栏日, 断奶日) + 1)（含头含尾，每头 +1）。</li>
+     *   <li>growthDaysSum（生长总天数，row184 口径）= Σ (DATEDIFF(出栏日, 断奶日) + 1)；日增重分母。
+     *       wean_date 已在 WHERE 保证非空，无需 CASE 判空。</li>
      * </ul>
      * 集合口径：仅计入有断奶快照的出栏猪（wean_date 非空，与净增重同集合）。net_gain/daily_gain 公式在 service 层。</p>
      *
@@ -555,8 +555,7 @@ public interface AggregateQueryMapper {
      */
     @Select("SELECT COALESCE(SUM(pi.wean_weight),0) AS weanWeightSum, "
         + "       COALESCE(SUM(DATEDIFF(m.marketing_date, pi.wean_date) + 1),0) AS feedDaysSum, "
-        + "       COALESCE(SUM(CASE WHEN pi.birth_date IS NOT NULL "
-        + "                         THEN DATEDIFF(m.marketing_date, pi.birth_date) + 1 END),0) AS growthDaysSum, "
+        + "       COALESCE(SUM(DATEDIFF(m.marketing_date, pi.wean_date) + 1),0) AS growthDaysSum, "
         + "       COALESCE(SUM(m.out_weight),0) AS marketingWeightWeaned "
         + " FROM t_farm_pig_marketing m "
         + " JOIN t_farm_pig_info pi "
@@ -753,23 +752,15 @@ public interface AggregateQueryMapper {
     List<Map<String, Object>> selectAliveSows(@Param("tenantId") String tenantId);
 
     /**
-     * 单头母猪分娩累计：总产仔 / 总活仔 / 分娩窝数 / Σ平均出生重 / Σ平均怀孕天数（分娩−配种）。
+     * 单头母猪分娩累计：总产仔 / 总活仔 / 分娩窝数 / Σ平均出生重。
      *
-     * @return {totalBorn, totalLiveBorn, litterCount, sumAvgBornWeight, gestSum, gestCount}
+     * @return {totalBorn, totalLiveBorn, litterCount, sumAvgBornWeight}
      */
     @Select("SELECT COALESCE(SUM(f.total_born),0) AS totalBorn, "
         + "       COALESCE(SUM(f.live_born),0) AS totalLiveBorn, "
         + "       COUNT(*) AS litterCount, "
-        + "       COALESCE(SUM(f.avg_weight),0) AS sumAvgBornWeight, "
-        + "       COALESCE(SUM(CASE WHEN bd.breeding_date IS NOT NULL "
-        + "                          AND DATEDIFF(f.farrow_date, bd.breeding_date) BETWEEN 0 AND 200 "
-        + "                         THEN DATEDIFF(f.farrow_date, bd.breeding_date) END),0) AS gestSum, "
-        + "       SUM(CASE WHEN bd.breeding_date IS NOT NULL "
-        + "                 AND DATEDIFF(f.farrow_date, bd.breeding_date) BETWEEN 0 AND 200 "
-        + "                THEN 1 ELSE 0 END) AS gestCount "
+        + "       COALESCE(SUM(f.avg_weight),0) AS sumAvgBornWeight "
         + " FROM t_farm_pig_farrow f "
-        + " LEFT JOIN t_farm_pig_breeding bd "
-        + "        ON bd.id = f.breeding_id AND bd.tenant_id = f.tenant_id AND bd.del_flag = '0' "
         + " WHERE f.tenant_id = #{tenantId} "
         + "   AND f.del_flag = '0' "
         + "   AND f.pig_id = #{pigId}")
@@ -800,26 +791,30 @@ public interface AggregateQueryMapper {
                          @Param("pigId") Long pigId);
 
     /**
-     * 单头母猪「断奶→配种」配对天数（NPD 的分娩至断奶用，及断配天数）。
-     * 返回 Σ(配种日−上次断奶日) + 配对数。
+     * 单头母猪「平均怀孕天数」（row94 口径）：状态变更记录表 t_farm_status_record 中
+     * 配种(old_status='PZ') → 分娩(new_status='FM') 的流转记录，Σ(duration_days) 与条数。
      *
-     * @return {sumDays:Long, cnt:Long}
+     * @return {sumDays, cnt}
      */
-    @Select("SELECT COALESCE(SUM(DATEDIFF(b.breeding_date, w.weaning_date)),0) AS sumDays, "
-        + "       COUNT(*) AS cnt "
-        + " FROM t_farm_pig_breeding b "
-        + " JOIN ( "
-        + "   SELECT w1.pig_id, w1.weaning_date "
-        + "     FROM t_farm_pig_weaning w1 "
-        + "    WHERE w1.tenant_id = #{tenantId} AND w1.del_flag = '0' AND w1.pig_id = #{pigId} "
-        + " ) w ON w.pig_id = b.pig_id AND w.weaning_date <= b.breeding_date "
-        + " WHERE b.tenant_id = #{tenantId} AND b.del_flag = '0' AND b.pig_id = #{pigId} "
-        + "   AND w.weaning_date = ( "
-        + "     SELECT MAX(w2.weaning_date) FROM t_farm_pig_weaning w2 "
-        + "      WHERE w2.tenant_id = #{tenantId} AND w2.del_flag = '0' "
-        + "        AND w2.pig_id = #{pigId} AND w2.weaning_date <= b.breeding_date )")
-    Map<String, Object> sowWeanBreedAgg(@Param("tenantId") String tenantId,
-                                        @Param("pigId") Long pigId);
+    @Select("SELECT COALESCE(SUM(duration_days),0) AS sumDays, COUNT(*) AS cnt "
+        + " FROM t_farm_status_record "
+        + " WHERE tenant_id = #{tenantId} AND pig_id = #{pigId} "
+        + "   AND old_status = 'PZ' AND new_status = 'FM'")
+    Map<String, Object> sowGestationByStatus(@Param("tenantId") String tenantId,
+                                             @Param("pigId") Long pigId);
+
+    /**
+     * 单头母猪「断奶-配种天数」（row97/183 口径）：状态变更记录表 t_farm_status_record 中
+     * 断奶(old_status='DN') → 配种(new_status='PZ') 的流转记录，Σ(duration_days) 与条数。
+     *
+     * @return {sumDays, cnt}
+     */
+    @Select("SELECT COALESCE(SUM(duration_days),0) AS sumDays, COUNT(*) AS cnt "
+        + " FROM t_farm_status_record "
+        + " WHERE tenant_id = #{tenantId} AND pig_id = #{pigId} "
+        + "   AND old_status = 'DN' AND new_status = 'PZ'")
+    Map<String, Object> sowWeanBreedByStatus(@Param("tenantId") String tenantId,
+                                             @Param("pigId") Long pigId);
 
     /**
      * 单头母猪的状态变更明细（row113 NPD 区间求和用），按变更日升序。

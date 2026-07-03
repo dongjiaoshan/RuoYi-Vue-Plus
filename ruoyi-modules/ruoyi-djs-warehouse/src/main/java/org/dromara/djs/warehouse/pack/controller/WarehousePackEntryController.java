@@ -22,6 +22,7 @@ import org.dromara.djs.warehouse.pack.domain.vo.PackSubmitResultVo;
 import org.dromara.djs.warehouse.pack.domain.vo.ProductProductionVo;
 import org.dromara.djs.warehouse.pack.domain.vo.StoreDemandCopiesVo;
 import org.dromara.djs.warehouse.pack.domain.vo.VegDailyLossVo;
+import org.dromara.djs.warehouse.pack.mapper.ProductProductionMapper;
 import org.dromara.djs.warehouse.pack.service.IProductProductionService;
 import org.dromara.djs.warehouse.product.domain.ProductInhouse;
 import org.dromara.djs.warehouse.product.domain.query.ProductInfoQuery;
@@ -76,6 +77,7 @@ public class WarehousePackEntryController extends BaseController {
     private final IProductProductionService productionService;
     private final IPigCutRecordService pigCutService;
     private final IProductInfoService productInfoService;
+    private final ProductProductionMapper productProductionMapper;
 
     /** 果蔬业态（按领用原料反查命中成品时叠加，避免混入猪肉/干货成品）。 */
     private static final String BELONG_TYPE_VEGETABLE = "vegetable";
@@ -378,6 +380,20 @@ public class WarehousePackEntryController extends BaseController {
     @GetMapping("/sourceWhiteBar")
     public R<List<ProductInhouse>> sourceWhiteBar() {
         return R.ok(productionService.listSourceForWhiteBar());
+    }
+
+    /**
+     * 白条领用「发货月台」门店下拉（row153）：当天有已确认白条需求的门店 + 各门店白条需求数。
+     *
+     * <p>白条领用页选出库位置=发货月台时，门店下拉只列「当天该门店确有白条需求」的门店，并在门店名后
+     * 带该店当天白条需求份数（前端 label = 门店名(demandQty)）。非发货月台分支门店下拉不受影响。
+     * 数据源见 {@link ProductProductionMapper#selectWhiteBarShipStores()}，返回
+     * {@code [{storeId(字符串), storeName, demandQty}]}。</p>
+     */
+    @SaCheckPermission("djs:warehouse:packEntry:pickup")
+    @GetMapping("/whiteBarShipStores")
+    public R<List<Map<String, Object>>> whiteBarShipStores() {
+        return R.ok(productProductionMapper.selectWhiteBarShipStores());
     }
 
     /**

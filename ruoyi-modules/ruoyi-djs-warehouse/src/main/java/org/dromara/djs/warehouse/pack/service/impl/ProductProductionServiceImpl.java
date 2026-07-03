@@ -302,8 +302,9 @@ public class ProductProductionServiceImpl
         p.setProduceTime(now);
         p.setIsDeliveryCheck(YN_NO);
         p.setIsArrivalConfirm(YN_NO);
-        p.setMaterialId(bo.getMaterialId());
-        p.setMaterialConsume(bo.getMaterialConsume());
+        // row161/162：原材料溯源列后端自动回填（前端 bo 从不传 material_id/material_consume，旧写法恒 NULL）。
+        // material_id = 来源 inhouse 产品 id（=领用进 inhouse 的原料 productId）；material_consume = 本次消耗重量（=打包重量）。
+        fillMaterialTrace(p, src, bo.getProductWeight());
         p.setProduceLocation(locationId);
         p.setPackStatus(PACK_STATUS_PACKED);
         p.setDeliverDest(bo.getDeliverDest());
@@ -421,6 +422,8 @@ public class ProductProductionServiceImpl
         p.setProduceTime(now);
         p.setIsDeliveryCheck(YN_NO);
         p.setIsArrivalConfirm(YN_NO);
+        // row161/162：原材料溯源列后端自动回填（来源 inhouse 产品 id + 本次消耗重量）。
+        fillMaterialTrace(p, src, bo.getProductWeight());
         p.setProduceLocation(locationId);
         p.setPackStatus(PACK_STATUS_PACKED);
         p.setDeliverDest(bo.getDeliverDest());
@@ -484,6 +487,8 @@ public class ProductProductionServiceImpl
         p.setProduceTime(now);
         p.setIsDeliveryCheck(YN_NO);
         p.setIsArrivalConfirm(YN_NO);
+        // row161/162：原材料溯源列后端自动回填（来源 inhouse 产品 id + 本次消耗重量）。
+        fillMaterialTrace(p, src, bo.getProductWeight());
         p.setProduceLocation(bo.getLocationId());
         p.setPackStatus(PACK_STATUS_PACKED);
         p.setProofOssIds(bo.getProofOssIds());
@@ -1304,6 +1309,29 @@ public class ProductProductionServiceImpl
         if (affected == 0) {
             throw new ServiceException("来源待打包库存不足或已被占用，请刷新后重试");
         }
+    }
+
+    /**
+     * 回填打包产出记录的原材料溯源列（row161/162 修复：material_id/material_consume 打包时从未落库）。
+     *
+     * <p>读侧 mapper（{@link #fillJoinNames} 按 material_id 关联原料名/单位）与前端列早已就绪，
+     * 但写侧此前从 {@code bo.getMaterialId()/getMaterialConsume()} 取值 —— 前端打包提交体从不传这两字段 →
+     * 全表恒 NULL。改由后端自动算：</p>
+     * <ul>
+     *   <li>{@code material_id} = 来源 {@code product_inhouse} 的 {@code product_id}
+     *       （= 物资领用 {@code bridgeMaterialInhouse} 时那个进 inhouse 的原料 productId，与 consumeInhouse 扣减的同一行）。</li>
+     *   <li>{@code material_consume} = 本次从该来源实际消耗的重量 kg（= 打包重量，与 {@link #consumeInhouse}
+     *       的扣减量同口径）。</li>
+     * </ul>
+     *
+     * <p>仅果蔬/干货/芹菜等「领用原料 → 打包成品」路径调用（源 inhouse ≠ 成品）。礼盒打包无来源原料
+     * （独立成品、不消耗任何 inhouse），故不调用、两列保持 NULL 为正确语义。</p>
+     */
+    private void fillMaterialTrace(ProductProduction p, ProductInhouse src, BigDecimal consumeWeight) {
+        if (src != null) {
+            p.setMaterialId(src.getProductId());
+        }
+        p.setMaterialConsume(consumeWeight);
     }
 
     /**

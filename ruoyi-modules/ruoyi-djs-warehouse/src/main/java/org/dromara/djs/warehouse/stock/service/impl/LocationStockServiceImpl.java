@@ -98,6 +98,13 @@ public class LocationStockServiceImpl extends DjsBaseServiceImpl<LocationStockMa
     private static final String LOC_TYPE_FROZEN = "frozen";
 
     /**
+     * 猪肉转移出库去向：{@code frozen_store}（{@code djs_stock_out_dest}=「冻品库」，
+     * FIX-WMS-TRANSFER-DEST seed 1006411）。转移出库流水 stock_out_dest 记此值，
+     * 出库记录页去向列据此渲染。
+     */
+    private static final String STOCK_OUT_DEST_FROZEN = "frozen_store";
+
+    /**
      * 猪肉业态（{@code djs_belong_type}=pork），猪肉转移前置校验用。
      */
     private static final String BELONG_TYPE_PORK = "pork";
@@ -302,6 +309,8 @@ public class LocationStockServiceImpl extends DjsBaseServiceImpl<LocationStockMa
         outFlow.setWarehouseId(srcLocationId);
         outFlow.setInoutType(INOUT_OUT);
         outFlow.setFlowType(FLOW_TRANSFER_OUT);
+        // 出库去向记冻品库（djs_stock_out_dest=frozen_store），出库记录页去向列据此渲染（与 remark 并存）
+        outFlow.setStockOutDest(STOCK_OUT_DEST_FROZEN);
         outFlow.setChangeNum(qty.negate());
         outFlow.setChangeQuantity(qty);
         outFlow.setEarNo(stock.getEarNo());
