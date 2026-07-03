@@ -393,6 +393,63 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
     List<Map<String, Object>> selectMedicineStocks(@Param("ids") Collection<Long> ids);
 
     /**
+     * 批量取药品商品当前库存合计（药品即仓库商品 · 按 {@code product_id} 聚合），供养殖端药品领用列表回显。
+     *
+     * <p>只统计 {@code is_end=0}（未用完）且未软删的行；按 {@code product_id} 聚合 SUM(product_stock)。
+     * 调用方对空集合直接跳过（不进 SQL）。返 {@code List<Map>}，key = {@code product_id} / {@code stock}。</p>
+     *
+     * @param ids 药品商品 id 集合（非空）
+     * @return 每个 product_id 的库存合计行（无库存行的药品不出）
+     */
+    @Select("""
+        <script>
+        SELECT product_id AS product_id, SUM(product_stock) AS stock
+          FROM t_warehouse_location_stock
+         WHERE product_id IN
+         <foreach collection="ids" item="id" open="(" separator="," close=")">#{id}</foreach>
+           AND is_end = 0
+           AND del_flag = '0'
+           AND tenant_id = '1001'
+         GROUP BY product_id
+        </script>
+        """)
+    List<Map<String, Object>> selectProductStocks(@Param("ids") Collection<Long> ids);
+
+    /**
+     * 列出全部药品商品（{@code t_warehouse_product_info.buy_class='medicine'}）+ 跨库位库存合计。
+     *
+     * <p>药品归仓库统一管理，养殖端「药品领用」列表消费本查询（取代已弃用的 {@code t_breed_medicine_info}）。
+     * LEFT JOIN 库存子查询（按 {@code product_id} 聚合 {@code is_end=0} 库存），无库存行按 0。
+     * 单租户显式 {@code tenant_id='1001'}，未软删。keyword 非空时按 product_name 模糊过滤。</p>
+     *
+     * @param keyword 药品名模糊过滤（可空）
+     * @return 药品商品行（id / name / unit / spec / stock），按药品名排序
+     */
+    @Select("""
+        <script>
+        SELECT p.id           AS id,
+               p.product_name AS name,
+               p.product_unit AS unit,
+               p.product_spec AS spec,
+               COALESCE(st.stock, 0) AS stock
+          FROM t_warehouse_product_info p
+          LEFT JOIN (SELECT product_id, SUM(product_stock) AS stock
+                       FROM t_warehouse_location_stock
+                      WHERE is_end = 0 AND del_flag = '0' AND tenant_id = '1001'
+                      GROUP BY product_id) st
+            ON st.product_id = p.id
+         WHERE p.buy_class = 'medicine'
+           AND p.del_flag  = '0'
+           AND p.tenant_id = '1001'
+         <if test="keyword != null and keyword != ''">
+           AND p.product_name LIKE CONCAT('%', #{keyword}, '%')
+         </if>
+         ORDER BY p.product_name
+        </script>
+        """)
+    List<Map<String, Object>> selectMedicineProducts(@Param("keyword") String keyword);
+
+    /**
      * 按 {@code product_info.belong_type} 聚合活跃库存总量（DJS-FIX-ADMIN-W22-003 SummaryBar）。
      *
      * <p>JOIN {@code t_warehouse_product_info} 取 belong_type；只统计 {@code product_stock > 0} 且未软删的行。

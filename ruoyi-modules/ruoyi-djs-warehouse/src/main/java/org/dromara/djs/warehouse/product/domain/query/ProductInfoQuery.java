@@ -126,4 +126,13 @@ public class ProductInfoQuery extends BaseEntity {
     @JsonFormat(pattern = "yyyy-MM-dd")
     private Date updateEndTime;
 
+    /**
+     * 是否解析展示名（DENGBO-R16）：{@code true} 时列表结果按「果蔬产品原材料作物是否有有效有机证书」
+     * 批量回填 {@link org.dromara.djs.warehouse.product.domain.vo.ProductInfoVo#getDisplayName()}
+     * （有证=产品名 / 无证=别名）。默认 {@code null/false}：不解析、不加查询，产品配置等原有列表零影响。
+     *
+     * <p>门店需求下单选择器传 {@code true}，使候选产品显示与下单后定格一致的展示名。</p>
+     */
+    private Boolean withDisplayName;
+
 }

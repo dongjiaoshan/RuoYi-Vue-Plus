@@ -1,12 +1,9 @@
 package org.dromara.djs.breed.med.service.impl;
 
-import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
-import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.core.utils.MapstructUtils;
-import org.dromara.common.core.utils.StringUtils;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.breed.med.domain.Medicine;
@@ -16,16 +13,13 @@ import org.dromara.djs.breed.med.domain.vo.MedicineVo;
 import org.dromara.djs.breed.med.mapper.MedicineMapper;
 import org.dromara.djs.breed.med.service.IMedicineService;
 import org.dromara.djs.common.base.DjsBaseServiceImpl;
+import org.dromara.djs.common.medicine.api.MedicineProductDto;
 import org.dromara.djs.common.medicine.api.MedicineStockProvider;
 import org.dromara.djs.common.validate.BizReferenceChecker;
 import org.springframework.stereotype.Service;
 
-import java.math.BigDecimal;
 import java.util.Collection;
 import java.util.List;
-import java.util.Map;
-import java.util.Objects;
-import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
@@ -67,35 +61,29 @@ public class MedicineServiceImpl extends DjsBaseServiceImpl<MedicineMapper, Medi
 
     @Override
     public TableDataInfo<MedicineVo> queryPageList(MedicineQuery query, PageQuery pageQuery) {
-        LambdaQueryWrapper<Medicine> wrapper = buildQueryWrapper(query);
-        Page<MedicineVo> page = baseMapper.selectVoPage(pageQuery.build(), wrapper);
-        fillStockFromWarehouse(page.getRecords());
-        return TableDataInfo.build(page);
-    }
-
-    /**
-     * 用仓库 location_stock 聚合回填 {@code currentStock}（ADR-0012：库存真值在仓库，
-     * VO.currentStock 语义从"主数据 current_stock"改为"仓库药品库位库存合计"）。
-     * 无库存行的药品缺省按 {@link BigDecimal#ZERO}。空列表跳过。
-     */
-    private void fillStockFromWarehouse(List<MedicineVo> rows) {
-        if (rows == null || rows.isEmpty()) {
-            return;
-        }
-        Set<Long> medicineIds = rows.stream().map(MedicineVo::getId)
-            .filter(Objects::nonNull).collect(Collectors.toSet());
-        if (medicineIds.isEmpty()) {
-            return;
-        }
-        Map<Long, BigDecimal> stocks = medicineStockProvider.getStocks(medicineIds);
-        for (MedicineVo vo : rows) {
-            vo.setCurrentStock(stocks.getOrDefault(vo.getId(), BigDecimal.ZERO));
-        }
+        // 药品归仓库：列表读仓库药品商品（buy_class='medicine'）+ 实时库存，取代已弃用的 t_breed_medicine_info。
+        // 药品目录规模小（百级），一次性返回全部匹配行（total = 全量），mp「药品领用」列表直接渲染。
+        return TableDataInfo.build(queryList(query));
     }
 
     @Override
     public List<MedicineVo> queryList(MedicineQuery query) {
-        return baseMapper.selectVoList(buildQueryWrapper(query));
+        String keyword = query == null ? null : query.getMedicineName();
+        return medicineStockProvider.listMedicineProducts(keyword).stream()
+            .map(this::toVo)
+            .collect(Collectors.toList());
+    }
+
+    /** {@link MedicineProductDto}（仓库药品商品）→ {@link MedicineVo}（养殖端「药品领用」契约）。 */
+    private MedicineVo toVo(MedicineProductDto dto) {
+        MedicineVo vo = new MedicineVo();
+        vo.setId(dto.getId());
+        vo.setMedicineName(dto.getName());
+        vo.setUnit(dto.getUnit());
+        vo.setSpec(dto.getSpec());
+        vo.setCurrentStock(dto.getStock());
+        vo.setMedStatus(1);
+        return vo;
     }
 
     @Override
@@ -154,23 +142,6 @@ public class MedicineServiceImpl extends DjsBaseServiceImpl<MedicineMapper, Medi
             }
         }
         return softDelete(ids);
-    }
-
-    /**
-     * 构造查询条件：medicineName like / medicineCode eq / medicineType eq / supplierId eq / medStatus eq。
-     */
-    private LambdaQueryWrapper<Medicine> buildQueryWrapper(MedicineQuery query) {
-        LambdaQueryWrapper<Medicine> wrapper = new LambdaQueryWrapper<>();
-        if (query == null) {
-            return wrapper.orderByDesc(Medicine::getId);
-        }
-        wrapper.like(StringUtils.isNotBlank(query.getMedicineName()), Medicine::getMedicineName, query.getMedicineName())
-            .eq(StringUtils.isNotBlank(query.getMedicineCode()), Medicine::getMedicineCode, query.getMedicineCode())
-            .eq(StringUtils.isNotBlank(query.getMedicineType()), Medicine::getMedicineType, query.getMedicineType())
-            .eq(Objects.nonNull(query.getSupplierId()), Medicine::getSupplierId, query.getSupplierId())
-            .eq(Objects.nonNull(query.getMedStatus()), Medicine::getMedStatus, query.getMedStatus())
-            .orderByDesc(Medicine::getId);
-        return wrapper;
     }
 
 }

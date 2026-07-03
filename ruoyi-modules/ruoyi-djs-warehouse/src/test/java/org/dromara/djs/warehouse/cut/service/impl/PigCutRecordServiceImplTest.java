@@ -4,7 +4,12 @@ import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.satoken.utils.LoginHelper;
 import org.dromara.djs.common.encoder.BizCodeType;
 import org.dromara.djs.common.encoder.IBizCodeGenerator;
+import com.baomidou.mybatisplus.core.MybatisConfiguration;
+import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
+import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.dromara.djs.warehouse.cross.domain.BarInfo;
+import org.dromara.djs.warehouse.product.domain.ProductInfo;
+import org.dromara.djs.warehouse.product.domain.ProductInhouse;
 import org.dromara.djs.warehouse.cross.mapper.BarInfoMapper;
 import org.dromara.djs.warehouse.cut.domain.PigCutRecord;
 import org.dromara.djs.warehouse.cut.domain.bo.PigCutDoneBo;
@@ -19,6 +24,7 @@ import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
 import org.dromara.djs.warehouse.stock.domain.LocationStock;
 import org.dromara.djs.warehouse.stock.mapper.LocationStockMapper;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
@@ -141,6 +147,21 @@ class PigCutRecordServiceImplTest {
         }
     }
 
+    @BeforeAll
+    static void initMpEntityCache() {
+        // MyBatis-Plus 单测 entity cache 预热（coder-mp-entity-cache-test）：submitPickup/submitCutOut/submitCutDone
+        // 用 LambdaQueryWrapper<PigCutRecord>/<ProductInhouse>/<LocationStock> 等；无 Spring 上下文时 TableInfoHelper
+        // 解析不到 lambda 列名 → 预热相关实体。r148 后 submitCutDone 能走到 pendingRows 的 ProductInhouse lambda。
+        MybatisConfiguration cfg = new MybatisConfiguration();
+        MapperBuilderAssistant assistant = new MapperBuilderAssistant(cfg, "");
+        assistant.setCurrentNamespace("test");
+        TableInfoHelper.initTableInfo(assistant, PigCutRecord.class);
+        TableInfoHelper.initTableInfo(assistant, ProductInhouse.class);
+        TableInfoHelper.initTableInfo(assistant, LocationStock.class);
+        TableInfoHelper.initTableInfo(assistant, ProductInfo.class);
+        TableInfoHelper.initTableInfo(assistant, BarInfo.class);
+    }
+
     @BeforeEach
     void setup() {
         service = new TestablePigCutRecordServiceImpl(
@@ -242,6 +263,9 @@ class PigCutRecordServiceImplTest {
         r.setEarNo("TEST-EAR-001");
         r.setPickupTime(new Date(System.currentTimeMillis() - 60 * 60 * 1000L)); // 1h ago
         r.setPickupWeight(new BigDecimal("80.000"));
+        // r148：记录从 DB 载入时 drip_loss 已在领用时按白条写好（= 入库重 − 领用重），非 null。
+        // 单半只场景与整猪收口口径一致（81.5 − 80 = 1.5），submitCutDone 透传给 updateStatusToDone。
+        r.setDripLoss(new BigDecimal("1.500"));
         r.setLocationId(90002L);
         r.setCutStatus(status);
         return r;
@@ -344,6 +368,11 @@ class PigCutRecordServiceImplTest {
             any(Integer.class), any(), any(), eq(9001L))).thenReturn(1);
         when(barInfoMapper.updateStatusToCutDone(eq(70001L), any(Date.class), any(BigDecimal.class),
             any(Integer.class), any(BigDecimal.class), eq(9001L))).thenReturn(1);
+        // row150 后整猪收口 outWeight = Σ已领产出行 pickup_weight（sumPickedRowWeight）；mock 一条已领行 80.000
+        // → outWeight=80、整猪 dripLoss = in(81.5) − 80 = 1.5。
+        ProductInhouse pickedRow = new ProductInhouse();
+        pickedRow.setPickupWeight(new BigDecimal("80.000"));
+        when(productInhouseMapper.selectList(any())).thenReturn(java.util.List.of(pickedRow));
 
         PigCutDoneBo bo = new PigCutDoneBo();
         bo.setCutRecordId(80001L);

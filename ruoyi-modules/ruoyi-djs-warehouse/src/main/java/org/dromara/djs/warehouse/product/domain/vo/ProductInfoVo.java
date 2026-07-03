@@ -54,6 +54,13 @@ public class ProductInfoVo implements Serializable {
     @ExcelProperty(value = "产品别名")
     private String productAlias;
 
+    /**
+     * 展示名（DENGBO-R16）：果蔬产品按「原材料作物是否有有效有机证书」解析（有证=产品名 / 无证=别名，别名空回落产品名），
+     * 非果蔬=产品名。<b>仅当查询 {@code withDisplayName=true} 时填充</b>（下单选择器等展示端用），
+     * 其余场景为 null（产品配置等读 {@code productName} 原始名，不受影响）。
+     */
+    private String displayName;
+
     @ExcelProperty(value = "归属类型", converter = ExcelDictConvert.class)
     @ExcelDictFormat(dictType = "djs_belong_type")
     private String belongType;

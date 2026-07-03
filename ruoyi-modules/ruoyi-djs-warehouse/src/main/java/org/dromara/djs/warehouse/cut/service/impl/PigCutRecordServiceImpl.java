@@ -258,9 +258,10 @@ public class PigCutRecordServiceImpl
             writeBarCutOutFlow(r, r.getProductWeight(), userId);
         }
         // mp 整只兜底路径：无逐产出行拆分，建整猪 cut_record（whiteBarNo=null → 剩余/超量回落 white_bar_id）。
-        // 预冷按整只：inWeight = bar.in_weight（整猪入库重）。
+        // 预冷按整只：inWeight = bar.in_weight（整猪入库重）；产品维度走通用白条产品 id（无逐行产品）。
         return insertCutRecord(bar, pickupWeight, bar.getInWeight(), bo.getLocationId(), bo.getTargetStoreId(),
-            bo.getTargetDemandId(), bo.getIsHalf() == null ? 2 : bo.getIsHalf(), bo.getRemark(), userId, null);
+            bo.getTargetDemandId(), bo.getIsHalf() == null ? 2 : bo.getIsHalf(), bo.getRemark(), userId, null,
+            resolveWhiteBarProductId());
     }
 
     /**
@@ -319,9 +320,9 @@ public class PigCutRecordServiceImpl
         int isHalf = bo.getIsHalf() != null ? bo.getIsHalf()
             : (row.getProductName() != null && row.getProductName().contains("半") ? 1 : 2);
         // 结算/超量/剩余/损耗仍按整猪 white_bar_id 汇总（dashboards 读 by white_bar_id 不变，Kevin 定）。
-        // 预冷按半只：inWeight = 该燎毛产出行半只入库重（row.product_weight），减本行领用重 rowWeight。
+        // 预冷按白条：inWeight = 该燎毛产出行半只入库重（row.product_weight）减本行领用重 rowWeight；产品维度=该产出行产品。
         return insertCutRecord(bar, rowWeight, row.getProductWeight(), bo.getLocationId(), bo.getTargetStoreId(),
-            bo.getTargetDemandId(), isHalf, bo.getRemark(), userId, whiteBarNo);
+            bo.getTargetDemandId(), isHalf, bo.getRemark(), userId, whiteBarNo, row.getProductId());
     }
 
     /**
@@ -408,7 +409,7 @@ public class PigCutRecordServiceImpl
      */
     private Long insertCutRecord(BarInfo bar, BigDecimal pickupWeight, BigDecimal inWeight, Long locationId,
                                  Long targetStoreId, Long targetDemandId, int isHalf,
-                                 String remark, Long userId, String whiteBarNo) {
+                                 String remark, Long userId, String whiteBarNo, Long productId) {
         PigCutRecord record = new PigCutRecord();
         record.setCutId(generateCutId());
         record.setWhiteBarId(bar.getId());
@@ -417,9 +418,9 @@ public class PigCutRecordServiceImpl
         record.setEarNo(bar.getEarNo());
         record.setPickupTime(new Date());
         record.setPickupWeight(pickupWeight);
-        // row118：领用即记录本行预冷损耗 = 该白条入库重 − 本次领用重（钳 0）。半只(whiteBarNo 非空)走燎毛产出行
-        //   半只入库重、整只走 bar.in_weight（Kevin 2026-07-03：半只按半只、整只按整只算预冷）。入库重/领用重任一
-        //   缺失 → 不写（保持 NULL，不瞎编）。整猪收口 submitCutDone 另按整猪 white_bar_id 结算 loss_flow（口径待测试确认）。
+        // r148：领用即按「白条产品」记录本行预冷损耗 = 该白条入库重 − 本次领用重（钳 0）。半只(whiteBarNo 非空)走
+        //   燎毛产出行半只入库重、整只走 bar.in_weight。预冷按白条不按猪——一头猪分割成 N 张白条 = N 笔预冷。
+        //   入库重/领用重任一缺失 → 不写（保持 NULL，不瞎编）。
         if (inWeight != null && pickupWeight != null) {
             record.setDripLoss(inWeight.subtract(pickupWeight).max(BigDecimal.ZERO));
         }
@@ -431,7 +432,32 @@ public class PigCutRecordServiceImpl
         record.setCutStatus(CUT_STATUS_PICKED);
         record.setRemark(remark);
         baseMapper.insert(record);
+
+        // r148：预冷损耗按白条即时结算 loss_flow（loss_date=领用当天），与分割损耗 writeHalfCutLossFlow 对称。
+        // 整猪收口不再写聚合，避免「混合出库双算 / 跨天错配 / 未收口漏计」。为 0 / 缺入库重时 record() 自动跳过。
+        writePickupPrecoolLoss(record, productId, userId);
         return record.getId();
+    }
+
+    /**
+     * r148：白条领用时按白条产品即时写「预冷损耗」loss_flow。
+     *
+     * <p>预冷物理上发生在「入白条库 → 领用出库」之间，故领用即结算（不再推迟到整猪分割收口一次性聚合）。
+     * 粒度 = 白条产品（{@code productId} = 该燎毛产出行产品；mp 整只兜底走通用白条产品 id），
+     * {@code loss_date} = 该白条领用时刻，与 {@link #writeHalfCutLossFlow} 分割损耗完全对称。
+     * {@code lossWeight<=0}（无预冷 / 缺入库重）由 {@link ILossFlowService#record} 自动跳过。</p>
+     */
+    private void writePickupPrecoolLoss(PigCutRecord record, Long productId, Long userId) {
+        LossFlow precool = new LossFlow();
+        precool.setLossType(LOSS_TYPE_PRECOOL);
+        precool.setLossWeight(record.getDripLoss());
+        precool.setLossDate(record.getPickupTime());
+        precool.setProductId(productId);
+        precool.setEarNo(record.getEarNo());
+        precool.setOperatorId(userId);
+        precool.setSourceBizType(LOSS_SOURCE_BIZ_CUT);
+        precool.setSourceBizId(record.getId());
+        lossFlowService.record(precool);
     }
 
     /**
@@ -631,8 +657,8 @@ public class PigCutRecordServiceImpl
             record.getPickupTime().toInstant(), now.toInstant()).toMinutes();
 
         // 邓博 row14 按半只 surface：把本 cut_record（本半只）置 done；分割损耗 + bar 转 cut_done 在整猪收口时结算。
-        // row118（Kevin 2026-07-03：预冷按燎毛入库单位——半只按半只、整只按整只）：本 cut_record.drip_loss 保留
-        // 领用时已写的 per-半只/整只 预冷值（不再覆盖为 0）；整猪滴水损耗另落 bar_info + loss_flow（收口时一次，聚合口径）。
+        // r148：本 cut_record.drip_loss 保留领用时已按白条写的预冷值（不覆盖）；预冷 loss_flow 已在领用时按白条写、
+        // 收口不再写。整猪滴水损耗仍回写 bar_info（整只级 bar 字段，供列表 compute-on-read），不进 loss_flow。
         int affected = baseMapper.updateStatusToDone(
             record.getId(), now, record.getDripLoss(), acidMinutes,
             bo.getRemark(), bo.getProofOssIds(), userId);
@@ -681,11 +707,11 @@ public class PigCutRecordServiceImpl
         traceService.recordEventByEarNo(record.getEarNo(), TraceContentConst.SLAUGHTER, outWeight);
         traceService.recordEventByEarNo(record.getEarNo(), TraceContentConst.ACID, outWeight);
 
-        // WMS-LOSS-001：整猪收口只写预冷损耗 loss_flow（=dripLoss=整猪入库重−领用总重）+ 整猪分割结果
-        // rollup 到白条表（cut_product_weight / cut_loss 按整猪聚合）。分割损耗 loss_flow 已在各半只 done
-        // 时按半只即时结算（writeHalfCutLossFlow，row150），此处不再写以免双算。
+        // WMS-LOSS-001：整猪收口只做分割结果 rollup 到白条表（cut_product_weight / cut_loss 按整猪聚合）。
+        // 预冷损耗 loss_flow 已在各白条领用时按白条即时写（writePickupPrecoolLoss，r148）、分割损耗已在各半只
+        // done 时即时写（writeHalfCutLossFlow，row150），此处都不再写以免双算 / 跨天错配。
         // 由 bar cutting→cut_done 乐观锁保证整猪收口只走一次，不重复。
-        writePrecoolLossAndCutRollup(record, dripLoss, outWeight, userId);
+        writeCutRollup(record, outWeight, userId);
     }
 
     /**
@@ -725,31 +751,15 @@ public class PigCutRecordServiceImpl
     }
 
     /**
-     * 整猪收口：写预冷损耗 loss_flow + 分割结果 rollup 到白条表（WMS-LOSS-001 行62 / 邓博 row8）。
+     * 整猪收口：分割结果 rollup 到白条表（WMS-LOSS-001 行62 / 邓博 row8）。
      *
-     * <ul>
-     *   <li>预冷损耗 {@code precool_loss} = 白条入库重 − 出库重（= 已算好的 {@code dripLoss}，公式同义，不重算）；
-     *       关联白条产品 id。</li>
-     *   <li>白条表 {@code cut_product_weight} = Σ {@code cut_out_in} by white_bar_id（整猪分割产品重量之和）；
-     *       {@code cut_loss} = 出库重 − 分割产品重量（整猪聚合口径，落库供列表 compute-on-read 对齐）。</li>
-     * </ul>
+     * <p>白条表 {@code cut_product_weight} = Σ {@code cut_out_in} by white_bar_id（整猪分割产品重量之和）；
+     * {@code cut_loss} = 出库重 − 分割产品重量（整猪聚合口径，落库供列表 compute-on-read 对齐）。</p>
      *
-     * <p>分割损耗 loss_flow 已在各半只 done 时即时写（{@link #writeHalfCutLossFlow}），此处不再写，避免双算。</p>
+     * <p>预冷损耗 loss_flow 已在各白条领用时按白条即时写（{@link #writePickupPrecoolLoss}，r148）、分割损耗已在
+     * 各半只 done 时即时写（{@link #writeHalfCutLossFlow}，row150），此处都不再写，避免双算 / 跨天错配。</p>
      */
-    private void writePrecoolLossAndCutRollup(PigCutRecord record, BigDecimal dripLoss,
-                                              BigDecimal outWeight, Long userId) {
-        // ① 预冷损耗（= dripLoss，复用已算量，不重算）
-        LossFlow precool = new LossFlow();
-        precool.setLossType(LOSS_TYPE_PRECOOL);
-        precool.setLossWeight(dripLoss);
-        precool.setProductId(resolveWhiteBarProductId());
-        precool.setEarNo(record.getEarNo());
-        precool.setOperatorId(userId);
-        precool.setSourceBizType(LOSS_SOURCE_BIZ_CUT);
-        precool.setSourceBizId(record.getId());
-        lossFlowService.record(precool);
-
-        // ② 整猪分割结果 rollup 到白条表（row8：分割产品重量 + 分割损耗落库；按整猪 white_bar_id 聚合）
+    private void writeCutRollup(PigCutRecord record, BigDecimal outWeight, Long userId) {
         BigDecimal cutTotal = stockFlowMapper.sumCutOutByWhiteBarId(record.getWhiteBarId());
         BigDecimal cutProductWeight = cutTotal == null ? BigDecimal.ZERO : cutTotal;
         BigDecimal cutLoss = outWeight.subtract(cutProductWeight);

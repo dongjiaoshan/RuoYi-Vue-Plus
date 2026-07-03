@@ -34,6 +34,7 @@ import org.dromara.djs.warehouse.product.domain.vo.ProductFlowRecordVo;
 import org.dromara.djs.warehouse.product.domain.vo.ProductInfoVo;
 import org.dromara.djs.warehouse.product.domain.vo.ProductProductionRecordVo;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
+import org.dromara.djs.warehouse.product.service.IProductDisplayNameResolver;
 import org.dromara.djs.warehouse.product.service.IProductInfoService;
 import org.dromara.djs.warehouse.stock.domain.LocationStock;
 import org.dromara.djs.warehouse.stock.mapper.LocationStockMapper;
@@ -92,6 +93,7 @@ public class ProductInfoServiceImpl extends DjsBaseServiceImpl<ProductInfoMapper
     private final IBizCodeGenerator bizCodeGenerator;
     private final IStockCheckService stockCheckService;
     private final SupplierMapper supplierMapper;
+    private final IProductDisplayNameResolver displayNameResolver;
 
     public ProductInfoServiceImpl(ProductInfoMapper baseMapper,
                                   IImageLibraryService imageLibraryService,
@@ -101,7 +103,8 @@ public class ProductInfoServiceImpl extends DjsBaseServiceImpl<ProductInfoMapper
                                   LocationStockMapper locationStockMapper,
                                   IBizCodeGenerator bizCodeGenerator,
                                   IStockCheckService stockCheckService,
-                                  SupplierMapper supplierMapper) {
+                                  SupplierMapper supplierMapper,
+                                  IProductDisplayNameResolver displayNameResolver) {
         super(baseMapper);
         this.imageLibraryService = imageLibraryService;
         this.imageUrlResolver = imageUrlResolver;
@@ -111,6 +114,7 @@ public class ProductInfoServiceImpl extends DjsBaseServiceImpl<ProductInfoMapper
         this.bizCodeGenerator = bizCodeGenerator;
         this.stockCheckService = stockCheckService;
         this.supplierMapper = supplierMapper;
+        this.displayNameResolver = displayNameResolver;
     }
 
     @Override
@@ -120,6 +124,7 @@ public class ProductInfoServiceImpl extends DjsBaseServiceImpl<ProductInfoMapper
         fillImageUrls(page.getRecords());
         fillStoreLocationNames(page.getRecords());
         fillSupplierNames(page.getRecords());
+        fillDisplayNames(page.getRecords(), query);
         return TableDataInfo.build(page);
     }
 
@@ -129,7 +134,28 @@ public class ProductInfoServiceImpl extends DjsBaseServiceImpl<ProductInfoMapper
         fillImageUrls(list);
         fillStoreLocationNames(list);
         fillSupplierNames(list);
+        fillDisplayNames(list, query);
         return list;
+    }
+
+    /**
+     * 批量回填展示名 {@code displayName}（DENGBO-R16，仅 {@code query.withDisplayName=true} 时）。
+     *
+     * <p>果蔬产品按「原材料作物是否有有效有机证书」解析（有证=产品名 / 无证=别名，别名空回落产品名），
+     * 非果蔬=产品名；批量一次 IN 查询防 N+1，解析器内部异常一律兜底（不设即回落 {@code productName}）。
+     * flag 未开 → 直接返回，产品配置等原有列表零额外查询、零影响。</p>
+     */
+    private void fillDisplayNames(List<ProductInfoVo> records, ProductInfoQuery query) {
+        if (query == null || !Boolean.TRUE.equals(query.getWithDisplayName())
+            || CollUtil.isEmpty(records) || displayNameResolver == null) {
+            return;
+        }
+        List<Long> ids = records.stream().map(ProductInfoVo::getId).filter(Objects::nonNull).collect(Collectors.toList());
+        Map<Long, String> nameMap = displayNameResolver.resolveDisplayNames(ids);
+        for (ProductInfoVo vo : records) {
+            String resolved = nameMap.get(vo.getId());
+            vo.setDisplayName(StringUtils.isNotBlank(resolved) ? resolved : vo.getProductName());
+        }
     }
 
     /**
