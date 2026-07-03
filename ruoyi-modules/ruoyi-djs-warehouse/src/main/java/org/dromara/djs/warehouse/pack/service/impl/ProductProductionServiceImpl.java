@@ -1656,12 +1656,12 @@ public class ProductProductionServiceImpl
     }
 
     /**
-     * 批量回填 plotName / storeName / materialUnit（按 store_id / plot_id / material_id 跨域 IN 查，无 N+1）。
+     * 批量回填 plotName / storeName / materialName / materialUnit（按 store_id / plot_id / material_id 跨域 IN 查，无 N+1）。
      *
      * <p>所属门店 / 来源地块列把 ID 显示成名称：store_id → {@code t_md_store.store_name}
      * （StoreMapper 在 ruoyi-djs-common），plot_id → {@code t_plant_plot_info.plot_name}
-     * （PlotInfoMapper 在 ruoyi-djs-plant，warehouse 模块已依赖）。原材料单位：material_id →
-     * {@code t_warehouse_product_info.product_unit}（同模块 ProductInfoMapper）。</p>
+     * （PlotInfoMapper 在 ruoyi-djs-plant，warehouse 模块已依赖）。原材料名称 / 单位：material_id →
+     * {@code t_warehouse_product_info.product_name / product_unit}（同模块 ProductInfoMapper，一次 IN 查回填两列）。</p>
      */
     private void fillJoinNames(List<ProductProductionVo> rows) {
         if (rows == null || rows.isEmpty()) {
@@ -1690,14 +1690,17 @@ public class ProductProductionServiceImpl
                     .select(PlotInfo::getId, PlotInfo::getPlotName)
                     .in(PlotInfo::getId, plotIds))
                 .stream().collect(Collectors.toMap(PlotInfo::getId, PlotInfo::getPlotName, (a, b) -> a));
-        // 原材料单位：material_id → product_info.product_unit（同模块表，仅取有值行进 Map）
-        Map<Long, String> materialUnitMap = materialIds.isEmpty() ? Map.of()
+        // 原材料名称 + 单位：material_id → product_info.product_name / product_unit（同模块表，一次 IN 查回填两列）
+        List<ProductInfo> materialInfos = materialIds.isEmpty() ? List.of()
             : productInfoMapper.selectList(new LambdaQueryWrapper<ProductInfo>()
-                    .select(ProductInfo::getId, ProductInfo::getProductUnit)
-                    .in(ProductInfo::getId, materialIds))
-                .stream()
-                .filter(pi -> pi.getProductUnit() != null)
-                .collect(Collectors.toMap(ProductInfo::getId, ProductInfo::getProductUnit, (a, b) -> a));
+                    .select(ProductInfo::getId, ProductInfo::getProductName, ProductInfo::getProductUnit)
+                    .in(ProductInfo::getId, materialIds));
+        Map<Long, String> materialNameMap = materialInfos.stream()
+            .filter(pi -> pi.getProductName() != null)
+            .collect(Collectors.toMap(ProductInfo::getId, ProductInfo::getProductName, (a, b) -> a));
+        Map<Long, String> materialUnitMap = materialInfos.stream()
+            .filter(pi -> pi.getProductUnit() != null)
+            .collect(Collectors.toMap(ProductInfo::getId, ProductInfo::getProductUnit, (a, b) -> a));
 
         for (ProductProductionVo vo : rows) {
             if (vo.getStoreId() != null) {
@@ -1707,6 +1710,7 @@ public class ProductProductionServiceImpl
                 vo.setPlotName(plotNameMap.get(vo.getPlotId()));
             }
             if (vo.getMaterialId() != null) {
+                vo.setMaterialName(materialNameMap.get(vo.getMaterialId()));
                 vo.setMaterialUnit(materialUnitMap.get(vo.getMaterialId()));
             }
         }

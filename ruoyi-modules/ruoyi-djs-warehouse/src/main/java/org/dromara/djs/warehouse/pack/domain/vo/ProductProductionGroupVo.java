@@ -50,7 +50,10 @@ public class ProductProductionGroupVo implements Serializable {
     /** 产品类型（字典 {@code djs_product_type}：1=自产/2=外购，已废弃 3 礼盒；保留兼容，主列表不展示）。 */
     private Integer productType;
 
-    /** 生产量（组内 product_weight SUM；前端 Math.round 取整展示，后端保留小数不丢精度）。 */
+    /**
+     * 生产量（组内生产记录条数 {@code COUNT(*)}；一次打包/出库确认 = 一份，全业态统一按条数计量，
+     * 与子页「产品明细」逐件条数一致；不再按重量 SUM 算，避免份计量产品重量取整后显 0）。
+     */
     private BigDecimal produceQty;
 
     /** 件数（组内行数 COUNT(*)）。 */
@@ -63,6 +66,13 @@ public class ProductProductionGroupVo implements Serializable {
      * 累计原材料消耗。无配料（{@code material_id} 空）的记录 material_consume 为 NULL，SUM 跳过 → 该组可能为 0。</p>
      */
     private BigDecimal materialConsume;
+
+    /**
+     * 原材料名称：组内 {@code material_id} 对应 {@code product_info.product_name}（同组通常同一原料，取任一）。
+     *
+     * <p>SQL 经 {@code material_id} LEFT JOIN product_info 取 {@code MAX(product_name)} 兜底；无配料则空，前端展示 -。</p>
+     */
+    private String materialName;
 
     /**
      * 原材料单位：组内 {@code material_id} 对应 {@code product_info.product_unit}（同组通常同一原料，取任一）。

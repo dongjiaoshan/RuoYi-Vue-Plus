@@ -329,17 +329,26 @@ public interface DemandManageMapper extends BaseMapperPlus<DemandManage, DemandM
      * 需求汇总分组聚合（0613-10 需求管理列表重做）。
      *
      * <p>按 {@code (demand_date, product_id)} 分组，同日同产品 N 门店需求合并成一行：
-     * {@code SUM(demand_quantity)} 需求量 / {@code SUM(material_qty)} 原材料计算量 /
-     * {@code COUNT(DISTINCT store_id)} 需求门店数 / 已确认门店数（demand_status IN
-     * CONFIRMED/IN_PRODUCTION/PARTIAL_SHIPPED/COMPLETED）/ {@code MAX(confirmer_time)} 最终确认时间。
-     * 排除已取消（CANCELLED）/ 已删除（del_flag=1）单；三态 demandStatus + 确认率 confirmRate
-     * 在 service 层按 storeCount/confirmedStoreCount 算（避免 SQL 重复 CASE）。</p>
+     * {@code SUM(demand_quantity)} 需求量 / {@code COUNT(DISTINCT store_id)} 需求门店数 /
+     * 已确认门店数（demand_status IN CONFIRMED/IN_PRODUCTION/PARTIAL_SHIPPED/COMPLETED）/
+     * {@code MAX(confirmer_time)} 最终确认时间。排除已取消（CANCELLED）/ 已删除（del_flag=1）单；
+     * 三态 demandStatus + 确认率 confirmRate 在 service 层按 storeCount/confirmedStoreCount 算
+     * （避免 SQL 重复 CASE）。</p>
      *
      * <p>产品冗余字段（productName/productSpec/productType/productUnit）取 {@code MAX}
-     * 分组兜底（同 product 冗余通常一致）。{@code rawMaterial} 列存的是原材料产品的雪花 ID 字符串，
-     * 外层 LEFT JOIN {@code t_warehouse_product_info} 反查成中文产品名（纯数字 ID 才关联，REGEXP 守门；
-     * 取不到名 / 历史自由文本 → COALESCE 回退原值），列表直接显示原材料名称而非 ID。
-     * 可选过滤：产品名 LIKE / 需求门店 / 需求日期区间。
+     * 分组兜底（同 product 冗余通常一致）。业态 {@code belongType} 取需求产品自身
+     * {@code product_info.belong_type}（字典 {@code djs_belong_type}）。</p>
+     *
+     * <p><b>原材料列（rawMaterialName / materialCalcQty / materialUnit）源自需求产品配置的自引用原材料</b>
+     * （row127）：需求产品 {@code pi.product_material} 自引用到原材料产品 {@code pm}，取其
+     * {@code pm.product_name}（原材料名称）+ {@code pm.product_unit}（原材料单位）。
+     * 兼容别名：{@code rawMaterial}=原材料名称、{@code materialQty}=原材料计算量（前端旧列绑定）。
+     * <b>原材料计算量 = 需求量 × 单份用量</b>（{@code pi.material_num}，产品配置「原材料计算量」/单份用量，
+     * 主要鸡蛋按枚数配比）：{@code SUM(dm.demand_quantity) * MAX(pi.material_num)}。产品未配 material_num
+     * （果蔬 / 猪肉当前多为 NULL）时计算量为 NULL（前端显空，不误显 0）；未配 product_material 时原材料名/单位为 NULL。
+     * 不再读需求行冗余 {@code dm.raw_material / dm.material_qty}（历史留空列，恒 NULL / 0）。</p>
+     *
+     * <p>可选过滤：产品名 LIKE / 需求门店 / 需求日期区间。
      * 门店过滤（{@code store_id = #{storeId}}）下推 WHERE：分组前先按门店收敛行集，故汇总行的
      * 需求量 / 门店数随门店变化（仅含该门店对该日该产品的需求）。</p>
      *
@@ -355,76 +364,59 @@ public interface DemandManageMapper extends BaseMapperPlus<DemandManage, DemandM
      */
     @Select("""
         <script>
-        SELECT g.demandDate          AS demandDate,
-               g.productId           AS productId,
-               g.productName         AS productName,
-               g.productSpec         AS productSpec,
-               g.productType         AS productType,
-               g.belongType          AS belongType,
-               COALESCE(pm.product_name, g.rawMaterial) AS rawMaterial,
-               g.productUnit         AS productUnit,
-               g.demandQuantity      AS demandQuantity,
-               g.materialQty         AS materialQty,
-               g.storeCount          AS storeCount,
-               g.confirmedStoreCount AS confirmedStoreCount,
-               g.lastConfirmTime     AS lastConfirmTime
-        FROM (
-            SELECT dm.demand_date              AS demandDate,
-                   dm.product_id               AS productId,
-                   MAX(dm.product_name)        AS productName,
-                   MAX(dm.product_spec)        AS productSpec,
-                   MAX(dm.product_type)        AS productType,
-                   MAX(pi.belong_type)         AS belongType,
-                   MAX(dm.raw_material)        AS rawMaterial,
-                   MAX(dm.product_unit)        AS productUnit,
-                   SUM(dm.demand_quantity)     AS demandQuantity,
-                   SUM(COALESCE(dm.material_qty, 0)) AS materialQty,
-                   COUNT(DISTINCT dm.store_id) AS storeCount,
-                   COUNT(DISTINCT CASE WHEN dm.demand_status IN ('CONFIRMED','IN_PRODUCTION','PARTIAL_SHIPPED','COMPLETED')
-                         THEN dm.store_id END) AS confirmedStoreCount,
-                   MAX(dm.confirmer_time)      AS lastConfirmTime
-            FROM t_warehouse_demand_manage dm
-            LEFT JOIN t_warehouse_product_info pi
-                   ON pi.id = dm.product_id AND pi.del_flag = '0' AND pi.tenant_id = '1001'
-            WHERE dm.product_id IS NOT NULL
-              AND dm.store_id IS NOT NULL
-              AND dm.demand_status &lt;&gt; 'CANCELLED'
-              AND dm.demand_status &lt;&gt; 'DELETED'
-              AND dm.del_flag = '0'
-              AND dm.tenant_id = '1001'
-              <if test="productName != null and productName != ''">
-                AND dm.product_name LIKE CONCAT('%', #{productName}, '%')
-              </if>
-              <!-- 「需求产品类型」筛选统一按产品配置「产品类别」(产品 belong_type)，非内部业态 product_type；
-                   param 仍叫 productTypes/productType，但承载 djs_belong_type 字典值（pork/vegetable/...）。 -->
-              <if test="productTypes != null and productTypes.size() > 0">
-                AND pi.belong_type IN
-                <foreach collection="productTypes" item="pt" open="(" separator="," close=")">#{pt}</foreach>
-              </if>
-              <if test="(productTypes == null or productTypes.size() == 0) and productType != null and productType != ''">
-                AND pi.belong_type = #{productType}
-              </if>
-              <if test="storeIds != null and storeIds.size() > 0">
-                AND dm.store_id IN
-                <foreach collection="storeIds" item="sid" open="(" separator="," close=")">#{sid}</foreach>
-              </if>
-              <if test="(storeIds == null or storeIds.size() == 0) and storeId != null">
-                AND dm.store_id = #{storeId}
-              </if>
-              <if test="beginDate != null">
-                AND dm.demand_date &gt;= #{beginDate}
-              </if>
-              <if test="endDate != null">
-                AND dm.demand_date &lt;= #{endDate}
-              </if>
-            GROUP BY dm.demand_date, dm.product_id
-        ) g
+        SELECT dm.demand_date              AS demandDate,
+               dm.product_id               AS productId,
+               MAX(dm.product_name)        AS productName,
+               MAX(dm.product_spec)        AS productSpec,
+               MAX(dm.product_type)        AS productType,
+               MAX(pi.belong_type)         AS belongType,
+               MAX(pm.product_name)        AS rawMaterialName,
+               MAX(pm.product_unit)        AS materialUnit,
+               SUM(dm.demand_quantity)     AS demandQuantity,
+               CASE WHEN MAX(pi.material_num) IS NULL THEN NULL
+                    ELSE SUM(dm.demand_quantity) * MAX(pi.material_num) END AS materialCalcQty,
+               COUNT(DISTINCT dm.store_id) AS storeCount,
+               COUNT(DISTINCT CASE WHEN dm.demand_status IN ('CONFIRMED','IN_PRODUCTION','PARTIAL_SHIPPED','COMPLETED')
+                     THEN dm.store_id END) AS confirmedStoreCount,
+               MAX(dm.confirmer_time)      AS lastConfirmTime
+        FROM t_warehouse_demand_manage dm
+        LEFT JOIN t_warehouse_product_info pi
+               ON pi.id = dm.product_id AND pi.del_flag = '0' AND pi.tenant_id = '1001'
         LEFT JOIN t_warehouse_product_info pm
-               ON g.rawMaterial REGEXP '^[0-9]+$'
-              AND pm.id = CAST(g.rawMaterial AS UNSIGNED)
-              AND pm.del_flag = '0'
-              AND pm.tenant_id = '1001'
-        ORDER BY g.demandDate DESC, g.productName ASC
+               ON pm.id = pi.product_material AND pm.del_flag = '0' AND pm.tenant_id = '1001'
+        WHERE dm.product_id IS NOT NULL
+          AND dm.store_id IS NOT NULL
+          AND dm.demand_status &lt;&gt; 'CANCELLED'
+          AND dm.demand_status &lt;&gt; 'DELETED'
+          AND dm.del_flag = '0'
+          AND dm.tenant_id = '1001'
+          <if test="productName != null and productName != ''">
+            AND dm.product_name LIKE CONCAT('%', #{productName}, '%')
+          </if>
+          <!-- 「需求产品类型」筛选统一按产品配置「产品类别」(产品 belong_type)，非内部业态 product_type；
+               param 仍叫 productTypes/productType，但承载 djs_belong_type 字典值（pork/vegetable/...）。 -->
+          <if test="productTypes != null and productTypes.size() > 0">
+            AND pi.belong_type IN
+            <foreach collection="productTypes" item="pt" open="(" separator="," close=")">#{pt}</foreach>
+          </if>
+          <if test="(productTypes == null or productTypes.size() == 0) and productType != null and productType != ''">
+            AND pi.belong_type = #{productType}
+          </if>
+          <if test="storeIds != null and storeIds.size() > 0">
+            AND dm.store_id IN
+            <foreach collection="storeIds" item="sid" open="(" separator="," close=")">#{sid}</foreach>
+          </if>
+          <if test="(storeIds == null or storeIds.size() == 0) and storeId != null">
+            AND dm.store_id = #{storeId}
+          </if>
+          <if test="beginDate != null">
+            AND dm.demand_date &gt;= #{beginDate}
+          </if>
+          <if test="endDate != null">
+            AND dm.demand_date &lt;= #{endDate}
+          </if>
+        GROUP BY dm.demand_date, dm.product_id
+        ORDER BY dm.demand_date DESC, MAX(dm.product_name) ASC
         </script>
         """)
     List<DemandGroupVo> selectDemandGroupList(@Param("productName") String productName,

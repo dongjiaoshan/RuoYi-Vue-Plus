@@ -30,6 +30,21 @@ public class MatIssueItemVo implements Serializable {
     private static final long serialVersionUID = 1L;
 
     /**
+     * 领用篮子 ID（= {@code location_stock.id}，snowflake；前端按 string 处理）。
+     *
+     * <p>admin「生产物资领用」行粒度端点 {@code selectAdminMatIssueRows} 回填：一行 = 一个
+     * {@code location_stock} 篮子（同产品在多库位 / 多耳号 / 多白条 → 各出一行），本字段是该行篮子的
+     * 唯一主键。猪肉分割原料按【耳号 + 白条号】建篮（同一产品同一库位可有多条不同耳号 / 白条号的篮），
+     * 故 admin 领用 / 退回 / 损耗必须回传本 {@code batchId} 走 service {@code pickByBatch} /
+     * {@code returnByBatch} / {@code lossByBatch}（按该篮 id 行锁精确扣减 + 写该篮 {@code ear_no} /
+     * {@code white_bar_no} 源标签），而非按 {@code (productId, locationId)} FIFO 跨耳号扣减——否则会出现
+     * 「点耳号 A 的行却扣到耳号 B 篮」的串扣（row126）。</p>
+     *
+     * <p>mp 端 product 聚合端点（{@code selectMatIssueItems} 等）不回填即 null，走原 product 维度路径。</p>
+     */
+    private Long batchId;
+
+    /**
      * 产品主键（snowflake；前端按 string 处理，点卡进表单时作 productId）。
      */
     private Long productId;
@@ -137,6 +152,16 @@ public class MatIssueItemVo implements Serializable {
      * 仅 admin 行粒度列表 {@code selectAdminMatIssueRows} 回填。前端按 string 处理（无截断风险，业务码）。</p>
      */
     private String earNo;
+
+    /**
+     * 白条号（admin「生产物资领用」WMS-MATPICK-ADMIN-001 回填；猪肉分割白条建账时非空，其余 null）。
+     *
+     * <p>additive 字段：mp 既有端点（{@code selectMatIssueItems} 等按 product 聚合）不回填本字段，仅 admin
+     * 行粒度列表 {@code selectAdminMatIssueRows} 回填。与 {@link #earNo} 一起构成猪肉篮的复合业务标识
+     * （同一产品同一库位可有多条不同耳号 / 白条号的篮），列表展示 barID + 领用走 {@link #batchId} 精确扣该篮。
+     * 前端按 string 处理（业务码无截断风险）。</p>
+     */
+    private String whiteBarNo;
 
     /**
      * 当前登录人（admin 全人）今日饲喂（feed_out SUM；行55 果蔬产品「饲料饲喂」操作驱动）。

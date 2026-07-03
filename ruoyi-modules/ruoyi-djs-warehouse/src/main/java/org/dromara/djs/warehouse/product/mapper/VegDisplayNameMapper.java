@@ -15,16 +15,25 @@ import java.util.Map;
  * 有证 → 产品名（{@code product_name}）；无证 → 产品别名（{@code product_alias}，别名空则兜底产品名，避免显示空）。
  * 非果蔬产品一律显示产品名。</p>
  *
- * <h3>映射链（已用真实数据核实）</h3>
+ * <h3>映射链（已用 staging 真实数据核实）</h3>
  * <pre>
- * 成品 product.product_material(= 原材料 product 的 id 字符串)
- *   → t_plant_crop_info WHERE related_product = 该原材料 id → 得作物 crop
- *   → t_plant_crop_organic WHERE crop_id = crop.id 且 crop_cert_valid >= CURDATE() 且 del_flag='0'
+ * 原材料 id = COALESCE(NULLIF(product_material,''), product.id)
+ *   —— 加工成品（如「有机上海青250g」）走 product_material 指向的基础菜；
+ *      基础果蔬（如「上海青」attr=2，product_material 为 NULL）即自身为原材料，回落 product.id。
+ *   → t_plant_crop_info WHERE related_product = 原材料 id → 得作物 crop
+ *      （crop_info.related_product 直接指向基础果蔬 product 的 id）
+ *   → t_plant_crop_organic_rel（一证多作物关联表）WHERE crop_id = crop.id 且 del_flag='0'
+ *   → t_plant_crop_organic WHERE id = rel.organic_id 且 crop_cert_valid >= CURDATE() 且 del_flag='0'
  *     存在即「有有效有机证书」。
  * </pre>
  *
- * <p>{@code product_material} 为 VARCHAR(64) 存原材料 id，与 {@code crop_info.related_product}(BIGINT)
- * 比较时 MySQL 隐式转换；纯数字守门（{@code REGEXP '^[0-9]+$'}）避免脏值触发全表隐式转换。</p>
+ * <p><b>作物↔证书走关联表</b>：{@code t_plant_crop_organic} 的 {@code crop_id} 列是「一证多作物」重构前的
+ * 旧单值链，已废弃置 NULL，当前关联全在 {@code t_plant_crop_organic_rel}（organic_id ↔ crop_id）。
+ * 直 JOIN {@code crop_organic.crop_id} 会恒查空 → 果蔬永远显示别名（本次「顽固」根因）。</p>
+ *
+ * <p><b>雪花 id 整数比较</b>：{@code related_product}/{@code product.id} 均 &gt; 2^53，JOIN key 用
+ * {@code CAST(... AS SIGNED)}；若与 VARCHAR {@code product_material} 直接比较，MySQL 隐式转 DOUBLE，
+ * 相邻雪花 id 浮点精度丢失而误命中相邻作物（实测 {@code 9303000000000003 = '9303000000000005'} 返 TRUE）。</p>
  *
  * <p>跨表 {@code @Select} 显式 {@code tenant_id='1001'}（单租户 V1；多租户拦截器在跨表原生 SQL 不保证注入）。</p>
  *
@@ -50,15 +59,18 @@ public interface VegDisplayNameMapper {
                  WHEN EXISTS (
                         SELECT 1
                         FROM t_plant_crop_info c
+                        JOIN t_plant_crop_organic_rel rel
+                          ON rel.crop_id = c.id
+                         AND rel.del_flag = '0'
+                         AND rel.tenant_id = '1001'
                         JOIN t_plant_crop_organic o
-                          ON o.crop_id = c.id
+                          ON o.id = rel.organic_id
                          AND o.del_flag = '0'
                          AND o.tenant_id = '1001'
                          AND o.crop_cert_valid &gt;= CURDATE()
                         WHERE c.del_flag = '0'
                           AND c.tenant_id = '1001'
-                          AND p.product_material REGEXP '^[0-9]+$'
-                          AND c.related_product = p.product_material
+                          AND c.related_product = CAST(COALESCE(NULLIF(p.product_material, ''), CAST(p.id AS CHAR)) AS SIGNED)
                       ) THEN p.product_name
                  ELSE COALESCE(NULLIF(p.product_alias, ''), p.product_name)
                END
@@ -86,15 +98,18 @@ public interface VegDisplayNameMapper {
                  WHEN EXISTS (
                         SELECT 1
                         FROM t_plant_crop_info c
+                        JOIN t_plant_crop_organic_rel rel
+                          ON rel.crop_id = c.id
+                         AND rel.del_flag = '0'
+                         AND rel.tenant_id = '1001'
                         JOIN t_plant_crop_organic o
-                          ON o.crop_id = c.id
+                          ON o.id = rel.organic_id
                          AND o.del_flag = '0'
                          AND o.tenant_id = '1001'
                          AND o.crop_cert_valid &gt;= CURDATE()
                         WHERE c.del_flag = '0'
                           AND c.tenant_id = '1001'
-                          AND p.product_material REGEXP '^[0-9]+$'
-                          AND c.related_product = p.product_material
+                          AND c.related_product = CAST(COALESCE(NULLIF(p.product_material, ''), CAST(p.id AS CHAR)) AS SIGNED)
                       ) THEN p.product_name
                  ELSE COALESCE(NULLIF(p.product_alias, ''), p.product_name)
                END AS displayName

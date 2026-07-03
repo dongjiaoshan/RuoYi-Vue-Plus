@@ -18,6 +18,7 @@ import org.dromara.djs.warehouse.pack.mapper.ProductProductionMapper;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
 import org.dromara.djs.warehouse.trace.domain.TraceCode;
+import org.dromara.djs.warehouse.trace.domain.TraceCodeTypeConst;
 import org.dromara.djs.warehouse.trace.domain.TraceContentConst;
 import org.dromara.djs.warehouse.trace.domain.TraceEvent;
 import org.dromara.djs.warehouse.trace.domain.query.TraceCodeQuery;
@@ -197,6 +198,8 @@ public class TraceCodeAdminServiceImpl
     private static final String SOURCE_WAREHOUSE = "warehouse";
     /** 生成来源：门店现场分割打包。 */
     private static final String SOURCE_STORE = "store";
+    /** 白条产品业态（{@code t_warehouse_product_info.belong_type}，字典 djs_belong_type）；猪肉追溯列表排除。 */
+    private static final String WHITE_BAR_BELONG_TYPE = "white_bar";
 
     private LambdaQueryWrapper<TraceCode> buildWrapper(TraceCodeQuery query) {
         LambdaQueryWrapper<TraceCode> w = new LambdaQueryWrapper<>();
@@ -211,9 +214,64 @@ public class TraceCodeAdminServiceImpl
                 .le(query.getEndDate() != null, TraceCode::getCreateTime, query.getEndDate());
             applySourceFilter(w, query);
             applyArrivalDateFilter(w, query);
+            applyVegShipFilter(w, query);
+            applyPorkExcludeWhiteBarFilter(w, query);
         }
         w.orderByDesc(TraceCode::getCreateTime).orderByDesc(TraceCode::getId);
         return w;
+    }
+
+    /**
+     * 果蔬追溯码管理：只显示「已发货」的追溯码（DENGBO row139）。
+     *
+     * <p>发货时间 = trace_event 的 {@code ship} 事件时间（列表 {@code shipTime} 列同源，
+     * 见 {@link #fillTraceTimes}），主表无发货时间列。仅在果蔬 tab（{@code codeType=veg}）生效——
+     * 果蔬追溯码走仓库发货月台确认发货后才应展示，未发货的中间态码不列。猪肉 / 礼盒 tab 不加此约束。</p>
+     *
+     * <p>先查有 ship 事件的 produce_code 集合再 in 主表（DB 层过滤，不破坏分页 total）；无任何 ship 事件
+     * 时强制空结果（{@code 1 = 0}），不退化成全量。</p>
+     */
+    private void applyVegShipFilter(LambdaQueryWrapper<TraceCode> w, TraceCodeQuery query) {
+        if (!TraceCodeTypeConst.VEG.equals(query.getCodeType())) {
+            return;
+        }
+        List<TraceEvent> shipEvents = traceEventMapper.selectList(
+            new LambdaQueryWrapper<TraceEvent>()
+                .select(TraceEvent::getProduceCode)
+                .eq(TraceEvent::getTraceContent, TraceContentConst.SHIP));
+        List<String> shippedCodes = (shipEvents == null ? Collections.<TraceEvent>emptyList() : shipEvents).stream()
+            .map(TraceEvent::getProduceCode).filter(Objects::nonNull).distinct().toList();
+        if (shippedCodes.isEmpty()) {
+            w.apply("1 = 0");
+            return;
+        }
+        w.in(TraceCode::getProduceCode, shippedCodes);
+    }
+
+    /**
+     * 猪肉追溯码管理：列表不显示白条产品（DENGBO row140）。
+     *
+     * <p>白条 = 产品主数据 {@code t_warehouse_product_info.belong_type='white_bar'}（追溯码主表无 belong_type 列，
+     * 按 {@code product_id} 反查产品业态）。仅在猪肉 tab（{@code codeType=pork}）生效——白条是猪肉链的中间产物，
+     * 追溯码列表只展示最终肉品，白条产品码不列。果蔬 / 礼盒 tab 不加此约束。</p>
+     *
+     * <p>查 belong_type='white_bar' 的产品 id 集合，主表 {@code notIn(product_id)} 排除；无白条产品时不加条件
+     * （全量放行，不误伤）。product_id 为 NULL 的码不受 notIn 影响（本就非白条产品）。</p>
+     */
+    private void applyPorkExcludeWhiteBarFilter(LambdaQueryWrapper<TraceCode> w, TraceCodeQuery query) {
+        if (!TraceCodeTypeConst.PORK.equals(query.getCodeType())) {
+            return;
+        }
+        List<ProductInfo> whiteBarProducts = productInfoMapper.selectList(
+            new LambdaQueryWrapper<ProductInfo>()
+                .select(ProductInfo::getId)
+                .eq(ProductInfo::getBelongType, WHITE_BAR_BELONG_TYPE));
+        List<Long> whiteBarProductIds = (whiteBarProducts == null ? Collections.<ProductInfo>emptyList() : whiteBarProducts).stream()
+            .map(ProductInfo::getId).filter(Objects::nonNull).distinct().toList();
+        if (whiteBarProductIds.isEmpty()) {
+            return;
+        }
+        w.notIn(TraceCode::getProductId, whiteBarProductIds);
     }
 
     /**

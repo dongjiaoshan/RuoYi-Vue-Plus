@@ -51,17 +51,43 @@ public class DemandGroupVo implements Serializable {
     /** 产品类别（字典 djs_belong_type，取自产品主数据 belong_type；列表「需求产品类型」列 + 筛选统一按产品配置产品类别展示）。 */
     private String belongType;
 
-    /** 原材料描述。 */
-    private String rawMaterial;
+    /**
+     * 原材料名称（需求产品 {@code product_info.product_material} 自引用到原材料产品的 {@code product_name}；
+     * 未配原材料时为 null）。row127。
+     */
+    private String rawMaterialName;
+
+    /**
+     * 原材料计算量 = 需求量 × 单份用量（{@code product_info.material_num}）。row127。
+     *
+     * <p>产品未配 {@code material_num}（果蔬 / 猪肉当前多为 NULL）时为 null，前端显空不误显 0。</p>
+     */
+    private BigDecimal materialCalcQty;
+
+    /**
+     * 原材料单位（原材料产品 {@code product_info.product_unit}；未配原材料时为 null）。row127。
+     */
+    private String materialUnit;
 
     /** 需求量合计（组内 demand_quantity SUM）。 */
     private BigDecimal demandQuantity;
 
-    /** 原材料计算量合计（组内 material_qty SUM）。 */
-    private BigDecimal materialQty;
-
-    /** 单位（组内取任一，冗余字段同组通常一致）。 */
+    /** 产品单位（组内取任一，冗余字段同组通常一致；非原材料单位，原材料单位见 {@link #materialUnit}）。 */
     private String productUnit;
+
+    /**
+     * 原材料名称别名（前端旧列 {@code rawMaterial} 绑定，透出 {@link #rawMaterialName}）。row127。
+     */
+    public String getRawMaterial() {
+        return rawMaterialName;
+    }
+
+    /**
+     * 原材料计算量别名（前端旧列 {@code materialQty} 绑定，透出 {@link #materialCalcQty}）。row127。
+     */
+    public BigDecimal getMaterialQty() {
+        return materialCalcQty;
+    }
 
     /** 需求门店数量（组内去重 store_id 计数，非取消/删除单）。 */
     private Integer storeCount;

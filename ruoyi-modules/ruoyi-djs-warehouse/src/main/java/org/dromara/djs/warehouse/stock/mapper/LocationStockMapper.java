@@ -912,9 +912,15 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
      *
      * <p>与 mp {@link #selectMatIssueItems}（按 product 聚合成卡 + 当前登录人今日三量）口径不同：</p>
      * <ul>
-     *   <li><b>行粒度</b> = {@code location_stock} 行（一个产品在多库位 / 多耳号 / 多地块 → 各出一行），
-     *       admin 列表列「产品编码 / 库位 / 产品名 / 当前库存 / 单位 / 耳号 / 地块编号 / 今日四量」，需库位 + 耳号
-     *       + 地块编号到行，故不聚合到 product；</li>
+     *   <li><b>行粒度</b> = {@code location_stock} 行（一个产品在多库位 / 多耳号 / 多白条 / 多地块 → 各出一行），
+     *       admin 列表列「产品编码 / 库位 / 产品名 / 当前库存 / 单位 / 耳号 / 白条号 / 地块编号 / 今日四量」，需库位 +
+     *       耳号 + 白条号 + 地块编号到行，故不聚合到 product；</li>
+     *   <li><b>{@code batchId} = 该行 {@code location_stock.id}</b>（复合业务键 {@code (product_id, location_id,
+     *       ear_no, white_bar_no, plot_id)} 的物理主键代理）：admin 领用 / 退回 / 损耗提交时回传本 {@code batchId}，
+     *       service 走 {@code pickByBatch} / {@code returnByBatch} / {@code lossByBatch} 按该篮 id 行锁精确扣减 +
+     *       写该篮 {@code ear_no} / {@code white_bar_no} 源标签。<b>防串扣</b>：不回传 batchId 而只按
+     *       {@code (productId, locationId)} 会走 {@code consumePorkBaskets} 的 FIFO 跨耳号扣减（点耳号 A 行却扣到
+     *       耳号 B 篮，row126），故猪肉行必须带 batchId 走精确篮；</li>
      *   <li><b>今日四量按全部人 + 按本行库位</b>（admin 看全部人记录，不按 {@code operator_id} 过滤；但
      *       <b>按 {@code f.warehouse_id = s.location_id} 限定到本行库位</b>，多库位同产品各行只统计本库位流水，
      *       不再把某库位的领/退/损泄漏到该产品所有库位行 —— row41）：今日已领 / 退 / 损 / 饲喂
@@ -942,7 +948,8 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
      */
     @Select("""
         <script>
-        SELECT p.id                              AS productId,
+        SELECT s.id                              AS batchId,
+               p.id                              AS productId,
                p.product_id                      AS productCode,
                p.product_name                    AS productName,
                p.product_unit                    AS productUnit,
@@ -952,6 +959,7 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
                s.location_id                     AS defaultLocationId,
                l.location_name                   AS locationName,
                s.ear_no                          AS earNo,
+               s.white_bar_no                    AS whiteBarNo,
                s.plot_id                         AS plotId,
                pl.plot_code                      AS plotCode,
                COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
@@ -1001,6 +1009,7 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
              AND (p.product_name LIKE CONCAT('%', #{keyword}, '%')
                OR l.location_name LIKE CONCAT('%', #{keyword}, '%')
                OR s.ear_no LIKE CONCAT('%', #{keyword}, '%')
+               OR s.white_bar_no LIKE CONCAT('%', #{keyword}, '%')
                OR pl.plot_code LIKE CONCAT('%', #{keyword}, '%'))
            </if>
          ORDER BY s.product_stock ASC, p.product_name ASC, s.location_id ASC

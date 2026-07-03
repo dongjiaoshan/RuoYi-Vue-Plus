@@ -93,6 +93,12 @@ public class ProductProductionVo implements Serializable {
 
     private Long materialId;
 
+    /**
+     * 原材料名称（= materialId 对应 {@code product_info.product_name}，service 端 JOIN 回填；无 materialId 则空）。
+     */
+    @ExcelProperty(value = "原材料名称")
+    private String materialName;
+
     @ExcelProperty(value = "原材料耗用(kg)")
     private BigDecimal materialConsume;
 

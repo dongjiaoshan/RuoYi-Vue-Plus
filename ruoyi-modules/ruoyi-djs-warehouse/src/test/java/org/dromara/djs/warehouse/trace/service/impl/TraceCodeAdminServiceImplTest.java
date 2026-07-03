@@ -142,6 +142,8 @@ class TraceCodeAdminServiceImplTest {
         page.setRecords(List.of(porkCode()));
         when(traceCodeMapper.selectPage(any(), any(Wrapper.class))).thenReturn(page);
         when(productInfoMapper.selectByIds(any())).thenReturn(List.of(product()));
+        // 猪肉 tab 白条排除过滤会先查 belong_type='white_bar' 产品集（buildWrapper 阶段）；本例无白条产品
+        when(productInfoMapper.selectList(any())).thenReturn(List.of());
 
         TraceCodeQuery q = new TraceCodeQuery();
         q.setCodeType("pork");
@@ -198,6 +200,52 @@ class TraceCodeAdminServiceImplTest {
     void testGetEvents_BlankProduceCode() {
         assertThat(service.getEvents("")).isEmpty();
         assertThat(service.getEvents(null)).isEmpty();
+    }
+
+    @Test
+    @DisplayName("queryPage veg tab（row139）：先查 ship 事件集做「只显示已发货」过滤")
+    @SuppressWarnings("unchecked")
+    void testQueryPage_VegTab_ShipFilterQueriesShipEvents() {
+        Page<TraceCode> page = new Page<>(1, 10, 0);
+        page.setRecords(List.of());
+        when(traceCodeMapper.selectPage(any(), any(Wrapper.class))).thenReturn(page);
+
+        org.dromara.djs.warehouse.trace.domain.TraceEvent ship = new org.dromara.djs.warehouse.trace.domain.TraceEvent();
+        ship.setProduceCode("T20260701VG000001");
+        ship.setTraceContent("ship");
+        when(traceEventMapper.selectList(any())).thenReturn(List.of(ship));
+
+        TraceCodeQuery q = new TraceCodeQuery();
+        q.setCodeType("veg");
+        service.queryPage(q, new PageQuery(1, 10));
+
+        // veg tab 必须查一次 ship 事件集（row139：只显示有发货时间的数据）
+        Mockito.verify(traceEventMapper).selectList(any());
+        // veg tab 不触发白条排除（那是 pork tab 专属）
+        Mockito.verify(productInfoMapper, Mockito.never()).selectList(any());
+    }
+
+    @Test
+    @DisplayName("queryPage pork tab（row140）：查 white_bar 产品集做「不显示白条产品」排除")
+    @SuppressWarnings("unchecked")
+    void testQueryPage_PorkTab_ExcludesWhiteBarProducts() {
+        Page<TraceCode> page = new Page<>(1, 10, 0);
+        page.setRecords(List.of());
+        when(traceCodeMapper.selectPage(any(), any(Wrapper.class))).thenReturn(page);
+
+        ProductInfo whiteBar = new ProductInfo();
+        whiteBar.setId(9901L);
+        whiteBar.setBelongType("white_bar");
+        when(productInfoMapper.selectList(any())).thenReturn(List.of(whiteBar));
+
+        TraceCodeQuery q = new TraceCodeQuery();
+        q.setCodeType("pork");
+        service.queryPage(q, new PageQuery(1, 10));
+
+        // pork tab 必须查一次 white_bar 产品集（row140：列表不显示白条产品）
+        Mockito.verify(productInfoMapper).selectList(any());
+        // pork tab 不触发 veg 发货过滤（那是 veg tab 专属）
+        Mockito.verify(traceEventMapper, Mockito.never()).selectList(any());
     }
 
 }

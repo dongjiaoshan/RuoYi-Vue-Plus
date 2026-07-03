@@ -150,6 +150,13 @@ public interface ProductProductionMapper extends BaseMapperPlus<ProductProductio
      * LEFT JOIN 取（组内同 product_id 必同值，放 MAX 兜底；按品类过滤时下推 WHERE pi.belong_type）。
      * 少数历史行 product_id 找不到 product_info → LEFT JOIN 后 belongType 为 NULL，前端 dict-tag 容错。</p>
      *
+     * <p>「生产量」{@code produceQty} = 该组生产记录条数 {@code COUNT(*)}（一次打包/出库确认 = 一份，
+     * 全业态统一按条数计量，与子页「产品明细」逐件条数一致；不再按 {@code SUM(product_weight)} 重量算，
+     * 避免份计量产品重量取整后显 0）。</p>
+     *
+     * <p>白条业态（{@code belong_type='white_bar'}）在本主列表隐藏（WHERE {@code pi.belong_type &lt;&gt; 'white_bar'}，
+     * NULL-safe 保留历史无品类行）：白条是燎毛过程态、经白条领用页管理，不进产品生产概览；详情/其它页照常。</p>
+     *
      * <p>租户隔离：未启全局 MP 拦截器，显式 {@code pp.tenant_id='1001'}（V1 单租户，与本模块既有
      * 聚合 SQL 范式一致）；{@code pp.del_flag='0'}（CHAR(1) 未删）。</p>
      *
@@ -158,8 +165,9 @@ public interface ProductProductionMapper extends BaseMapperPlus<ProductProductio
      * 如发送位置=礼盒的组件）不计入。无门店 → 0。</p>
      *
      * <p>「原材料消耗量」{@code materialConsume} = 该组 {@code SUM(material_consume)}（同产品当日累计消耗的
-     * 来源原材料重量；无配料行 NULL 跳过）。「原材料单位」{@code materialUnit} = {@code material_id} 经第二个
-     * LEFT JOIN（{@code pmi}）取 {@code product_info.product_unit} 的 {@code MAX} 兜底（组内通常同一原料）。</p>
+     * 来源原材料重量；无配料行 NULL 跳过）。「原材料名称」{@code materialName} 与「原材料单位」{@code materialUnit}
+     * = {@code material_id} 经第二个 LEFT JOIN（{@code pmi}）取 {@code product_info.product_name / product_unit}
+     * 的 {@code MAX} 兜底（组内通常同一原料）；无配料则 NULL，前端展示 -。</p>
      *
      * <p>「损坏量」{@code damageCount} = 该组已标损坏件数 {@code SUM(is_damaged)}（DENGBO-DAMAGE-001，
      * row50「件数」后展示，&gt;0 红色）。{@code hasDamage} 作用于组维度，经 HAVING 过滤：1=组内有损坏
@@ -184,9 +192,10 @@ public interface ProductProductionMapper extends BaseMapperPlus<ProductProductio
         "       MAX(pp.product_spec)   AS productSpec,",
         "       MAX(pi.belong_type)    AS belongType,",
         "       MAX(pp.product_type)   AS productType,",
-        "       SUM(pp.product_weight) AS produceQty,",
+        "       COUNT(*)               AS produceQty,",
         "       COUNT(*)               AS itemCount,",
         "       SUM(pp.material_consume) AS materialConsume,",
+        "       MAX(pmi.product_name)  AS materialName,",
         "       MAX(pmi.product_unit)  AS materialUnit,",
         "       COUNT(DISTINCT pp.store_id) AS storeDemandCount,",
         "       COALESCE(SUM(pp.is_damaged), 0) AS damageCount",
@@ -201,6 +210,7 @@ public interface ProductProductionMapper extends BaseMapperPlus<ProductProductio
         "        AND pmi.tenant_id = pp.tenant_id",
         " WHERE pp.del_flag = '0'",
         "   AND pp.tenant_id = '1001'",
+        "   AND (pi.belong_type IS NULL OR pi.belong_type &lt;&gt; 'white_bar')",
         "   <if test='produceNo != null and produceNo != \"\"'>",
         "     AND pp.produce_no LIKE CONCAT('%', #{produceNo}, '%')",
         "   </if>",
