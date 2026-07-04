@@ -23,6 +23,12 @@ public class StoreReturnAppletConfirmBo {
     @Positive(message = "确认重量必须大于 0")
     private BigDecimal confirmWeight;
 
+    /**
+     * 猪肉退货入库库位类型（row145.3）：{@code fresh}=猪肉鲜品库 / {@code frozen}=冻品库。
+     * 整单一次选、mp 仅对 pork 产品传；非 pork 传 null（由 service 走默认库位兜底）。
+     */
+    private String targetLocationType;
+
     /** 备注（V1 mp 不持久化，留待 V2）。 */
     private String remark;
 }

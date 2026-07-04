@@ -114,17 +114,23 @@ public interface WarehouseStatAggregateMapper {
     BigDecimal sumCutBarWeight(@Param("tenantId") String tenantId, @Param("statDate") String statDate);
 
     /**
-     * 分割产品总重：当日分割车间白条分割成产品后入库的总重 = Σ product_inhouse.product_weight
-     * （white_bar_id 非空 = 猪肉，produce_date）。
+     * 分割产品总重：当日「对白条分割产出的猪肉产品」总重
+     * = Σ stock_flow.change_quantity（flow_type='cut_out_in'，flow_date）。
      *
-     * <p><b>不过滤 del_flag</b>：这是「当日产出」历史指标，只累加、任何后续操作（发货月台会把
-     * product_inhouse 行软删 del_flag='1'）都不应让它变小。按 produce_date + product_weight
-     * 计当日产出，软删行的原始重量仍保留、照计。</p>
+     * <p>口径（测试 row188）：「后管白条分割管理菜单对白条进行分割，产生的猪肉产品总重量」。
+     * 分割产出（cut_out_in）是 {@code submitCutOut} 每部位入冻品库时写的不可变审计流水，与
+     * {@code bar_info.cut_product_weight}（{@link org.dromara.djs.warehouse.flow.mapper.StockFlowMapper#sumCutOutByWhiteBarId}
+     * 按 white_bar_id 聚合）同源，本方法按 flow_date 做日维度聚合。</p>
+     *
+     * <p><b>不读 product_inhouse</b>：product_inhouse 是燎毛入库产出行（整只/半只/猪头/猪蹄 raw 白条重，
+     * 含 belong_type='pork' 的猪头/猪蹄副产），是分割的「原料」不是「产出」。按它聚合会把整白条燎毛重
+     * （且含副产）当成分割产品，数值远大于领用重（物理不可能，如 07-03：燎毛口径 601 &gt; 领用 303.8），
+     * 故改读 cut_out_in 分割产出流水（07-03 = 159，≤ 领用重，符合口径）。</p>
      */
     @Select("""
-        SELECT COALESCE(SUM(product_weight), 0) FROM t_warehouse_product_inhouse
-        WHERE tenant_id = #{tenantId}
-          AND DATE(produce_date) = #{statDate} AND white_bar_id IS NOT NULL
+        SELECT COALESCE(SUM(change_quantity), 0) FROM t_warehouse_stock_flow
+        WHERE del_flag = '0' AND tenant_id = #{tenantId}
+          AND DATE(flow_date) = #{statDate} AND flow_type = 'cut_out_in'
         """)
     BigDecimal sumCutProductWeight(@Param("tenantId") String tenantId, @Param("statDate") String statDate);
 

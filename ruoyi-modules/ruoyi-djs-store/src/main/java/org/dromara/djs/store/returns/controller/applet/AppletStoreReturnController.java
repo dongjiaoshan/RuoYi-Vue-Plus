@@ -96,6 +96,8 @@ public class AppletStoreReturnController extends BaseController {
         confirmBo.setLocationId(null);
         confirmBo.setReceivedQty(bo.getConfirmWeight());
         confirmBo.setReceivedWeight(bo.getConfirmWeight());
+        // row145.3：猪肉退货指定鲜/冻库（mp 仅对 pork 传，service 内再按产品 belong_type 二次守卫）
+        confirmBo.setTargetLocationType(bo.getTargetLocationType());
         service.confirm(confirmBo);
         return R.ok();
     }

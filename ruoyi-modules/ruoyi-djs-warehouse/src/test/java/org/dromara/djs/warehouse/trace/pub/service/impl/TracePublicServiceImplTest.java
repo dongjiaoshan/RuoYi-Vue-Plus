@@ -35,6 +35,7 @@ import org.dromara.djs.warehouse.pack.domain.ProductProduction;
 import org.dromara.djs.warehouse.pack.mapper.ProductProductionMapper;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
+import org.dromara.djs.warehouse.product.mapper.VegDisplayNameMapper;
 import org.dromara.djs.warehouse.trace.domain.TraceCode;
 import org.dromara.djs.warehouse.trace.domain.TraceEvent;
 import org.dromara.djs.warehouse.trace.mapper.TraceCodeMapper;
@@ -124,6 +125,7 @@ class TracePublicServiceImplTest {
     @Mock private PlantingRecordMapper plantingRecordMapper;
     @Mock private VegetableHandleMapper vegetableHandleMapper;
     @Mock private ProductProductionMapper productProductionMapper;
+    @Mock private VegDisplayNameMapper vegDisplayNameMapper;
 
     private TracePublicServiceImpl service;
     private MockedStatic<TenantHelper> tenantHelperMock;
@@ -170,7 +172,7 @@ class TracePublicServiceImplTest {
             pigMapper, pigGrowthMapper, medRecordMapper, medicineMapper, sowDetailService,
             plotInfoMapper, plotZoneMapper, farmRecordsMapper, cropOrganicMapper, plotOrganicMapper,
             plantDetailsMapper, cropInfoMapper,
-            plantingRecordMapper, vegetableHandleMapper, productProductionMapper));
+            plantingRecordMapper, vegetableHandleMapper, productProductionMapper, vegDisplayNameMapper));
         doReturn(null).when(service).readCache(anyString());       // 缓存恒未命中 → 每次走聚合
         doNothing().when(service).writeCache(anyString(), any());  // 写缓存 no-op
         // TenantHelper.ignore(Supplier) → 直接执行 supplier

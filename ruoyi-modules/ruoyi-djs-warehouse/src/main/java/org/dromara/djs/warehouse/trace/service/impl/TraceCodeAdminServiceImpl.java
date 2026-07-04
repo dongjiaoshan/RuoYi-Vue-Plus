@@ -17,6 +17,7 @@ import org.dromara.djs.warehouse.pack.domain.ProductProduction;
 import org.dromara.djs.warehouse.pack.mapper.ProductProductionMapper;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
+import org.dromara.djs.warehouse.product.service.IProductDisplayNameResolver;
 import org.dromara.djs.warehouse.trace.domain.TraceCode;
 import org.dromara.djs.warehouse.trace.domain.TraceCodeTypeConst;
 import org.dromara.djs.warehouse.trace.domain.TraceContentConst;
@@ -81,6 +82,7 @@ public class TraceCodeAdminServiceImpl
     private final PlotInfoMapper plotInfoMapper;
     private final TraceFarmNameMapper traceFarmNameMapper;
     private final ProductProductionMapper productProductionMapper;
+    private final IProductDisplayNameResolver displayNameResolver;
 
     public TraceCodeAdminServiceImpl(TraceCodeMapper baseMapper,
                                      TraceEventMapper traceEventMapper,
@@ -88,7 +90,8 @@ public class TraceCodeAdminServiceImpl
                                      StoreMapper storeMapper,
                                      PlotInfoMapper plotInfoMapper,
                                      TraceFarmNameMapper traceFarmNameMapper,
-                                     ProductProductionMapper productProductionMapper) {
+                                     ProductProductionMapper productProductionMapper,
+                                     IProductDisplayNameResolver displayNameResolver) {
         super(baseMapper);
         this.traceEventMapper = traceEventMapper;
         this.productInfoMapper = productInfoMapper;
@@ -96,6 +99,7 @@ public class TraceCodeAdminServiceImpl
         this.plotInfoMapper = plotInfoMapper;
         this.traceFarmNameMapper = traceFarmNameMapper;
         this.productProductionMapper = productProductionMapper;
+        this.displayNameResolver = displayNameResolver;
     }
 
     // ============================ 列表 ============================
@@ -537,13 +541,16 @@ public class TraceCodeAdminServiceImpl
         }
         Map<Long, ProductInfo> map = productInfoMapper.selectByIds(ids).stream()
             .collect(Collectors.toMap(ProductInfo::getId, p -> p, (a, b) -> a));
+        // DENGBO-R16 / row26：旧码 trace_display_name 为 NULL 时的兜底名，也要按「有机证书有效性」解析
+        //（果蔬无有效有机证书 → 取产品别名），与生码时定格口径一致，避免旧码在追溯列表/追溯码打印显裸产品名。
+        Map<Long, String> resolvedNames = displayNameResolver.resolveDisplayNames(ids);
         for (TraceCodeListVo vo : vos) {
             ProductInfo p = vo.getProductId() == null ? null : map.get(vo.getProductId());
             if (p != null) {
-                // DENGBO-R16：仅在 copyCodeFields 未从 trace_display_name 定格出名（旧码 NULL）时兜底当前产品名，
-                // 不覆盖已定格的快照名。
+                // 仅在 copyCodeFields 未从 trace_display_name 定格出名（旧码 NULL）时兜底，不覆盖已定格的快照名。
                 if (StringUtils.isBlank(vo.getProductName())) {
-                    vo.setProductName(p.getProductName());
+                    String resolved = resolvedNames.get(vo.getProductId());
+                    vo.setProductName(StringUtils.isNotBlank(resolved) ? resolved : p.getProductName());
                 }
                 vo.setProductSpec(p.getProductSpec());
                 vo.setProductImg(p.getProductImg());

@@ -416,14 +416,18 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
     List<Map<String, Object>> selectProductStocks(@Param("ids") Collection<Long> ids);
 
     /**
-     * 列出全部药品商品（{@code t_warehouse_product_info.buy_class='medicine'}）+ 跨库位库存合计。
+     * 列出「药品库」库位下的药品商品（{@code buy_class='medicine'} 且 {@code store_location_id} 归属药品库）
+     * + 跨库位库存合计。
      *
      * <p>药品归仓库统一管理，养殖端「药品领用」列表消费本查询（取代已弃用的 {@code t_breed_medicine_info}）。
+     * 仅列存储库位归属「药品库」的药品：{@code store_location_id} 指向 {@code location_name='药品库'} 的库位
+     * —— 生物农药库（种植生物农药）/ 生产物资库里的 medicine 商品不进养殖药品领用（row150：只展示药品库数据）。
      * LEFT JOIN 库存子查询（按 {@code product_id} 聚合 {@code is_end=0} 库存），无库存行按 0。
-     * 单租户显式 {@code tenant_id='1001'}，未软删。keyword 非空时按 product_name 模糊过滤。</p>
+     * 单租户显式 {@code tenant_id='1001'}，未软删。keyword 非空时按 product_name 模糊过滤。
+     * 排序：有库存（{@code stock>0}）优先，再按药品名（row150：有库存优先展示）。</p>
      *
      * @param keyword 药品名模糊过滤（可空）
-     * @return 药品商品行（id / name / unit / spec / stock），按药品名排序
+     * @return 药品商品行（id / name / unit / spec / stock），有库存优先、再按药品名排序
      */
     @Select("""
         <script>
@@ -441,10 +445,13 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
          WHERE p.buy_class = 'medicine'
            AND p.del_flag  = '0'
            AND p.tenant_id = '1001'
+           AND p.store_location_id IN (
+                 SELECT id FROM t_warehouse_location_info
+                  WHERE location_name = '药品库' AND del_flag = '0' AND tenant_id = '1001')
          <if test="keyword != null and keyword != ''">
            AND p.product_name LIKE CONCAT('%', #{keyword}, '%')
          </if>
-         ORDER BY p.product_name
+         ORDER BY (COALESCE(st.stock, 0) > 0) DESC, p.product_name
         </script>
         """)
     List<Map<String, Object>> selectMedicineProducts(@Param("keyword") String keyword);
@@ -1048,20 +1055,24 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
                pl.plot_code                      AS plotCode,
                COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
                           WHERE f.product_id = p.id AND f.warehouse_id = s.location_id
+                            AND (s.ear_no IS NULL OR f.ear_no = s.ear_no)
                             AND f.flow_type IN ('prod_pick_out','dept_pick_out','pick_out')
                             AND DATE(f.flow_date) = CURDATE()
                             AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayPicked,
                COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
                           WHERE f.product_id = p.id AND f.warehouse_id = s.location_id
+                            AND (s.ear_no IS NULL OR f.ear_no = s.ear_no)
                             AND f.flow_type IN ('prod_return_in','pick_return_in')
                             AND DATE(f.flow_date) = CURDATE()
                             AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayReturned,
                COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
                           WHERE f.product_id = p.id AND f.warehouse_id = s.location_id
+                            AND (s.ear_no IS NULL OR f.ear_no = s.ear_no)
                             AND f.flow_type = 'loss' AND DATE(f.flow_date) = CURDATE()
                             AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayLoss,
                COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
                           WHERE f.product_id = p.id AND f.warehouse_id = s.location_id
+                            AND (s.ear_no IS NULL OR f.ear_no = s.ear_no)
                             AND f.flow_type = 'feed_out' AND DATE(f.flow_date) = CURDATE()
                             AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayFeed
           FROM t_warehouse_location_stock s

@@ -122,4 +122,41 @@ public interface VegDisplayNameMapper {
         """)
     List<Map<String, Object>> resolveDisplayNameBatch(@Param("productIds") Collection<Long> productIds);
 
+    /**
+     * 果蔬产品「当前有效」有机证书清单（追溯页有机证书块 · row149）。
+     *
+     * <p>走与 {@link #resolveDisplayName} 同一条映射链（原材料 → 作物 {@code related_product} →
+     * 关联表 {@code t_plant_crop_organic_rel} → 证书 {@code t_plant_crop_organic}），只取
+     * {@code crop_cert_valid >= CURDATE()}（有效期内）的证书。追溯码只存 {@code product_id}（无 crop_id、
+     * 且 {@code crop_cert_id} 在一证多作物重构后废弃置 NULL），故追溯页有机证书必须在读时按产品→作物→关联表
+     * 解析，不能读 {@code trace_code.crop_cert_id}（恒 NULL → 有机证书永不显示，本条根因）。</p>
+     *
+     * <p>雪花 id 用 {@code CAST(... AS SIGNED)} 整数比较（避免与 VARCHAR 隐式转 DOUBLE 精度丢失误命中相邻作物）；
+     * 单租户显式 {@code tenant_id='1001'}。返每行 {@code certNo / issuer / validTo / imagePreview}；无证返空 list。</p>
+     *
+     * @param productId 果蔬产品主键 {@code t_warehouse_product_info.id}
+     * @return 该产品对应作物的当前有效有机证书 id（{@code t_plant_crop_organic.id}，可多张 · 一证多作物）；无则空 list
+     */
+    @Select("""
+        SELECT DISTINCT o.id
+        FROM t_warehouse_product_info p
+        JOIN t_plant_crop_info c
+          ON c.related_product = CAST(COALESCE(NULLIF(p.product_material, ''), CAST(p.id AS CHAR)) AS SIGNED)
+         AND c.del_flag = '0'
+         AND c.tenant_id = '1001'
+        JOIN t_plant_crop_organic_rel rel
+          ON rel.crop_id = c.id
+         AND rel.del_flag = '0'
+         AND rel.tenant_id = '1001'
+        JOIN t_plant_crop_organic o
+          ON o.id = rel.organic_id
+         AND o.del_flag = '0'
+         AND o.tenant_id = '1001'
+         AND o.crop_cert_valid >= CURDATE()
+        WHERE p.id = #{productId}
+          AND p.del_flag = '0'
+          AND p.tenant_id = '1001'
+        """)
+    List<Long> selectVegOrganicCertIds(@Param("productId") Long productId);
+
 }

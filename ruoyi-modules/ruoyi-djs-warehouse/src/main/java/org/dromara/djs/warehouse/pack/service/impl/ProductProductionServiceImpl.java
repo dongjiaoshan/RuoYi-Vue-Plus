@@ -568,7 +568,10 @@ public class ProductProductionServiceImpl
         baseMapper.insert(p);
 
         // row42：生产产品不入库（直送发货月台，不进 location_stock / 不写入库流水）。
-        consumeInhouse(src, bo.getProductWeight());
+        // DENGBO row28：发货月台出库 = 整条产出行离库——称重出库 + 差额（产出重−称重）= 预冷损耗（下方
+        // writePrecoolLossOnBarOut 已记）。按「整行重量」消耗软删，不留零头残行在「分割白条领用」列表
+        //（原按称重量 bo.getProductWeight() 消耗，产出 80kg 称 78kg 会残 2kg pickup_status=0 卡）。
+        consumeInhouse(src, src.getProductWeight());
 
         // P3（邓博 row13）：白条离白条库 = 白条出库。补白条库出库流水（去向=发货月台）+ 扣白条库存行
         // （P2 燎毛按 product_id+ear_no+burn_id 建的白条行）。修「白条库出库记录缺失致库存不准」。
@@ -674,8 +677,9 @@ public class ProductProductionServiceImpl
         p.setRemark(buildWarehouseOutRemark(bo.getOutDest(), bo.getRemark()));
         baseMapper.insert(p);
 
-        // 消耗来源 inhouse（满出=软删 / 部分=扣减）
-        consumeInhouse(src, bo.getProductWeight());
+        // 消耗来源 inhouse。DENGBO row28：仓库出库同发货月台——整条产出行离库（称重出 + 差额=预冷损耗），
+        // 按「整行重量」消耗软删，不留「产出重−称重」零头残行在「分割白条领用」列表。
+        consumeInhouse(src, src.getProductWeight());
 
         // 白条离白条库 = 白条出库：写「白条出库」流水（去向=用户选的 outDest）+ 扣白条库存行（与发货月台同范式）
         writeWhiteBarOutFlow(src, bo.getProductWeight(), bo.getOutDest(), userId);

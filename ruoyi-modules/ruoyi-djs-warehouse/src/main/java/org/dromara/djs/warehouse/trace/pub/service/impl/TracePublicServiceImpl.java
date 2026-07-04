@@ -38,6 +38,7 @@ import org.dromara.djs.warehouse.pack.domain.ProductProduction;
 import org.dromara.djs.warehouse.pack.mapper.ProductProductionMapper;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
+import org.dromara.djs.warehouse.product.mapper.VegDisplayNameMapper;
 import org.dromara.djs.warehouse.trace.domain.TraceCode;
 import org.dromara.djs.warehouse.trace.domain.TraceCodeTypeConst;
 import org.dromara.djs.warehouse.trace.domain.TraceContentConst;
@@ -64,9 +65,11 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.Date;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
@@ -138,6 +141,7 @@ public class TracePublicServiceImpl
     private final VegetableHandleMapper vegetableHandleMapper;
     /** 发货产品生产记录：打包节点时间 + 果蔬成品实际称重（按 trace_code 关联）。 */
     private final ProductProductionMapper productProductionMapper;
+    private final VegDisplayNameMapper vegDisplayNameMapper;
 
     public TracePublicServiceImpl(TraceCodeMapper baseMapper,
                                   TraceEventMapper traceEventMapper,
@@ -160,7 +164,8 @@ public class TracePublicServiceImpl
                                   CropInfoMapper cropInfoMapper,
                                   PlantingRecordMapper plantingRecordMapper,
                                   VegetableHandleMapper vegetableHandleMapper,
-                                  ProductProductionMapper productProductionMapper) {
+                                  ProductProductionMapper productProductionMapper,
+                                  VegDisplayNameMapper vegDisplayNameMapper) {
         super(baseMapper);
         this.traceEventMapper = traceEventMapper;
         this.productInfoMapper = productInfoMapper;
@@ -183,6 +188,7 @@ public class TracePublicServiceImpl
         this.plantingRecordMapper = plantingRecordMapper;
         this.vegetableHandleMapper = vegetableHandleMapper;
         this.productProductionMapper = productProductionMapper;
+        this.vegDisplayNameMapper = vegDisplayNameMapper;
     }
 
     @Override
@@ -682,6 +688,9 @@ public class TracePublicServiceImpl
             PublicTraceVo.StoreBlock storeBlock = new PublicTraceVo.StoreBlock();
             storeBlock.setName(s.getStoreName());
             storeBlock.setAddress(s.getAddress());
+            // 门店配图（row146）：image_oss_id 解析 URL，无图为 null（前端默认图兜底）
+            storeBlock.setImageUrl(s.getImageOssId() == null
+                ? null : resolveOssUrl(String.valueOf(s.getImageOssId())));
             vo.setStore(storeBlock);
         }
     }
@@ -757,7 +766,25 @@ public class TracePublicServiceImpl
 
     private List<PublicTraceVo.OrganicCertRow> buildOrganicCerts(TraceCode code) {
         List<PublicTraceVo.OrganicCertRow> certs = new ArrayList<>();
-        if (code.getCropCertId() != null) {
+        Set<Long> seenCertIds = new HashSet<>();
+        // 作物有机证书（row149）：追溯码 crop_cert_id 在「一证多作物」重构后废弃恒 NULL，改按
+        // 产品 → 作物（related_product）→ 关联表 t_plant_crop_organic_rel 解析当前有效证书（可多张）。
+        if (code.getProductId() != null) {
+            for (Long certId : vegDisplayNameMapper.selectVegOrganicCertIds(code.getProductId())) {
+                CropOrganic c = certId == null ? null : cropOrganicMapper.selectById(certId);
+                if (c != null && seenCertIds.add(certId)) {
+                    PublicTraceVo.OrganicCertRow row = new PublicTraceVo.OrganicCertRow();
+                    row.setCertType("crop");
+                    row.setImageUrl(resolveOssUrl(c.getCropImagePreview()));
+                    row.setIssuer(c.getCropCertCompany());
+                    row.setCertNo(c.getCropCertNo());
+                    row.setValidTo(c.getCropCertValid());
+                    certs.add(row);
+                }
+            }
+        }
+        // 兼容旧单值 crop_cert_id（一证多作物重构前生成的码；当前恒 NULL，保留避免历史码有机证书回归）
+        if (code.getCropCertId() != null && seenCertIds.add(code.getCropCertId())) {
             CropOrganic c = cropOrganicMapper.selectById(code.getCropCertId());
             if (c != null) {
                 PublicTraceVo.OrganicCertRow row = new PublicTraceVo.OrganicCertRow();

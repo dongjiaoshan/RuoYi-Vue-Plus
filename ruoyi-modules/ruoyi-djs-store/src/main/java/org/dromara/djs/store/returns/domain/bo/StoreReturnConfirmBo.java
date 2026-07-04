@@ -35,4 +35,10 @@ public class StoreReturnConfirmBo {
 
     /** 仓库实收重量(kg)（原型「仓库实收重量」，可空时按实收量计）。 */
     private BigDecimal receivedWeight;
+
+    /**
+     * 猪肉退货入库库位类型（row145.3）：{@code fresh}=猪肉鲜品库 / {@code frozen}=冻品库。
+     * 非空且退货产品为 pork 时，覆盖默认库位；否则忽略（走 locationId / 默认兜底）。
+     */
+    private String targetLocationType;
 }

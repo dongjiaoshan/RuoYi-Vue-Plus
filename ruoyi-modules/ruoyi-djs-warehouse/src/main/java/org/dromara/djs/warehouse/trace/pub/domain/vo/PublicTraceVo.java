@@ -252,6 +252,8 @@ public class PublicTraceVo implements Serializable {
         private String name;
         /** 门店地址。 */
         private String address;
+        /** 门店配图 URL（由 t_md_store.image_oss_id 解析；无图为 null，前端用默认图兜底 · row146）。 */
+        private String imageUrl;
     }
 
     /** 作物信息块（veg）。 */

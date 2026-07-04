@@ -382,6 +382,9 @@ public interface DemandManageMapper extends BaseMapperPlus<DemandManage, DemandM
                COUNT(DISTINCT dm.store_id) AS storeCount,
                COUNT(DISTINCT CASE WHEN dm.demand_status IN ('CONFIRMED','IN_PRODUCTION','PARTIAL_SHIPPED','COMPLETED')
                      THEN dm.store_id END) AS confirmedStoreCount,
+               COUNT(*)                    AS demandCount,
+               COUNT(CASE WHEN dm.demand_status IN ('CONFIRMED','IN_PRODUCTION','PARTIAL_SHIPPED','COMPLETED')
+                     THEN 1 END)           AS confirmedDemandCount,
                MAX(dm.confirmer_time)      AS lastConfirmTime
         FROM t_warehouse_demand_manage dm
         LEFT JOIN t_warehouse_product_info pi

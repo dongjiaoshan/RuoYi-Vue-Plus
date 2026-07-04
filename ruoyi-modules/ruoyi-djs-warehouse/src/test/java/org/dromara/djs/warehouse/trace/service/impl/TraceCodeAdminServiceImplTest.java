@@ -76,6 +76,7 @@ class TraceCodeAdminServiceImplTest {
     @Mock private PlotInfoMapper plotInfoMapper;
     @Mock private TraceFarmNameMapper traceFarmNameMapper;
     @Mock private org.dromara.djs.warehouse.pack.mapper.ProductProductionMapper productProductionMapper;
+    @Mock private org.dromara.djs.warehouse.product.service.IProductDisplayNameResolver displayNameResolver;
 
     private TraceCodeAdminServiceImpl service;
     private MockedStatic<TenantHelper> tenantHelperMock;
@@ -105,7 +106,7 @@ class TraceCodeAdminServiceImplTest {
     void setup() {
         service = new TraceCodeAdminServiceImpl(
             traceCodeMapper, traceEventMapper, productInfoMapper, storeMapper, plotInfoMapper, traceFarmNameMapper,
-            productProductionMapper);
+            productProductionMapper, displayNameResolver);
         tenantHelperMock = Mockito.mockStatic(TenantHelper.class);
         tenantHelperMock.when(TenantHelper::getTenantId).thenReturn(TENANT);
     }

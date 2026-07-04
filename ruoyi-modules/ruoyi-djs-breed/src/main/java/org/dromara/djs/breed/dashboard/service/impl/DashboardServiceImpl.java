@@ -280,14 +280,27 @@ public class DashboardServiceImpl implements IDashboardService {
         SUM_DEC,
         /** 期末快照类：累计取 days 里最后一个有值日的值。 */
         LAST,
-        /** 均值类：逐日展示，累计留空串（不汇总）。 */
-        NONE
+        /** 均值比率类：累计 = Σ分子 / Σ分母（逐日显示存表均值，累计重算真实加权均值，row143）。 */
+        AVG_RATIO,
+        /** 均值均分类：累计 = 有值日（{@code >0}）均值的简单平均（无分母可用时，如平均背膘厚，row143）。 */
+        AVG_MEAN
     }
 
-    /** row10 活动统计单指标定义（中文文案 + 取值器 + 累计聚合方式）。 */
+    /**
+     * row10 活动统计单指标定义（中文文案 + 取值器 + 累计聚合方式）。
+     * {@code numGetter}/{@code denGetter} 仅 {@link ActivityAgg#AVG_RATIO} 用（累计 = Σnum/Σden）。
+     */
     private record ActivityMetric(String label,
                                   java.util.function.Function<FarmIndicatorRecord, Object> getter,
-                                  ActivityAgg agg) {
+                                  ActivityAgg agg,
+                                  java.util.function.Function<FarmIndicatorRecord, Object> numGetter,
+                                  java.util.function.Function<FarmIndicatorRecord, Object> denGetter) {
+        /** 非 AVG_RATIO 指标便捷构造（无分子/分母）。 */
+        ActivityMetric(String label,
+                       java.util.function.Function<FarmIndicatorRecord, Object> getter,
+                       ActivityAgg agg) {
+            this(label, getter, agg, null, null);
+        }
     }
 
     /**
@@ -317,15 +330,22 @@ public class DashboardServiceImpl implements IDashboardService {
         new ActivityMetric("死亡肥猪数", FarmIndicatorRecord::getDeathFatteningCount, ActivityAgg.SUM_INT),
         new ActivityMetric("死亡种母猪数", FarmIndicatorRecord::getDeathSowCount, ActivityAgg.SUM_INT),
         new ActivityMetric("死亡仔猪数", FarmIndicatorRecord::getDeathPigletCount, ActivityAgg.SUM_INT),
-        // 出栏 / 生长（SUM 重/天 · NONE 均值）
+        // 出栏 / 生长（SUM 重/天 · AVG 均值：累计重算加权均值 row143）
         new ActivityMetric("出栏猪只数量", FarmIndicatorRecord::getMarketingPigCount, ActivityAgg.SUM_INT),
         new ActivityMetric("出栏总重", FarmIndicatorRecord::getMarketingWeight, ActivityAgg.SUM_DEC),
-        new ActivityMetric("平均出栏重", FarmIndicatorRecord::getAvgMarketingWeight, ActivityAgg.NONE),
+        // 累计平均出栏重 = Σ出栏总重 / Σ出栏头数
+        new ActivityMetric("平均出栏重", FarmIndicatorRecord::getAvgMarketingWeight, ActivityAgg.AVG_RATIO,
+            FarmIndicatorRecord::getMarketingWeight, FarmIndicatorRecord::getMarketingPigCount),
         new ActivityMetric("猪只断奶总重", FarmIndicatorRecord::getWeanTotalWeight, ActivityAgg.SUM_DEC),
         new ActivityMetric("生长总天数", FarmIndicatorRecord::getGrowthTotalDays, ActivityAgg.SUM_INT),
+        // 饲养总天数（row148 新增）= Σ日饲养总天数（每日为 Σ(出栏日−断奶日+1)），累计按日累加
+        new ActivityMetric("饲养总天数", FarmIndicatorRecord::getFeedTotalDays, ActivityAgg.SUM_INT),
         new ActivityMetric("净增重", FarmIndicatorRecord::getNetGainWeight, ActivityAgg.SUM_DEC),
-        new ActivityMetric("日增重", FarmIndicatorRecord::getDailyGainWeight, ActivityAgg.NONE),
-        new ActivityMetric("平均背膘厚", FarmIndicatorRecord::getAvgBackfatThickness, ActivityAgg.NONE),
+        // 累计日增重 = Σ净增重 / Σ生长总天数
+        new ActivityMetric("日增重", FarmIndicatorRecord::getDailyGainWeight, ActivityAgg.AVG_RATIO,
+            FarmIndicatorRecord::getNetGainWeight, FarmIndicatorRecord::getGrowthTotalDays),
+        // 累计平均背膘厚 = 有测量日（背膘>0）的简单均值（日表无背膘测量头数，无法加权）
+        new ActivityMetric("平均背膘厚", FarmIndicatorRecord::getAvgBackfatThickness, ActivityAgg.AVG_MEAN),
         // 期末存栏（LAST：累计列 = 当月最后一天值）
         new ActivityMetric("期末生产母猪头数", FarmIndicatorRecord::getEndProductionSowCount, ActivityAgg.LAST),
         new ActivityMetric("期末种公猪数", FarmIndicatorRecord::getEndBoarCount, ActivityAgg.LAST),
@@ -334,6 +354,8 @@ public class DashboardServiceImpl implements IDashboardService {
         new ActivityMetric("后备猪头数", FarmIndicatorRecord::getEndReserveCount, ActivityAgg.LAST),
         new ActivityMetric("230日龄以上后备猪头数", FarmIndicatorRecord::getEndReserve230Count, ActivityAgg.LAST),
         new ActivityMetric("非生产状态母猪头数", FarmIndicatorRecord::getEndNonprodSowCount, ActivityAgg.LAST),
+        // 日NPD天数（row148 新增）= 期末非生产母猪快照，累计取当月最后一天值（LAST）
+        new ActivityMetric("日NPD天数", FarmIndicatorRecord::getNpdDays, ActivityAgg.LAST),
         // 其他（SUM）
         new ActivityMetric("当年配种批次分娩头数", FarmIndicatorRecord::getYearBatchFarrowCount, ActivityAgg.SUM_INT)
     );
@@ -349,6 +371,10 @@ public class DashboardServiceImpl implements IDashboardService {
         BigDecimal sum = BigDecimal.ZERO;
         boolean anySum = false;
         String lastVal = "";          // 当月最后一天（时间最大）值：days 降序 → 第一个有值日即时间最大
+        BigDecimal sumNum = BigDecimal.ZERO;  // AVG_RATIO 分子累加
+        BigDecimal sumDen = BigDecimal.ZERO;  // AVG_RATIO 分母累加
+        BigDecimal sumMean = BigDecimal.ZERO; // AVG_MEAN 有值日累加
+        int meanCount = 0;                    // AVG_MEAN 有值日计数（>0 才计）
         for (String day : days) {
             FarmIndicatorRecord r = byDate.get(day);
             Object raw = r == null ? null : m.getter().apply(r);
@@ -362,15 +388,32 @@ public class DashboardServiceImpl implements IDashboardService {
                 // days 降序，第一个非空 = 当月时间最大日（昨日/月末）的值
                 lastVal = cell;
             }
+            if (m.agg() == ActivityAgg.AVG_RATIO && r != null) {
+                Object nv = m.numGetter().apply(r);
+                Object dv = m.denGetter().apply(r);
+                if (nv instanceof Number nn) {
+                    sumNum = sumNum.add(new BigDecimal(nn.toString()));
+                }
+                if (dv instanceof Number dn) {
+                    sumDen = sumDen.add(new BigDecimal(dn.toString()));
+                }
+            }
+            if (m.agg() == ActivityAgg.AVG_MEAN && raw instanceof Number mn) {
+                BigDecimal bv = new BigDecimal(mn.toString());
+                if (bv.signum() > 0) { // 背膘等测量类：0/空 = 当日未测量，不计入均值
+                    sumMean = sumMean.add(bv);
+                    meanCount++;
+                }
+            }
         }
 
-        String total;
-        switch (m.agg()) {
-            case SUM_INT -> total = anySum ? formatInt(sum) : "";
-            case SUM_DEC -> total = anySum ? formatDec(sum) : "";
-            case LAST -> total = lastVal;
-            default -> total = ""; // NONE 均值类累计留空串
-        }
+        String total = switch (m.agg()) {
+            case SUM_INT -> anySum ? formatInt(sum) : "";
+            case SUM_DEC -> anySum ? formatDec(sum) : "";
+            case LAST -> lastVal;
+            case AVG_RATIO -> sumDen.signum() == 0 ? "" : formatDec(sumNum.divide(sumDen, 2, RoundingMode.HALF_UP));
+            case AVG_MEAN -> meanCount == 0 ? "" : formatDec(sumMean.divide(BigDecimal.valueOf(meanCount), 2, RoundingMode.HALF_UP));
+        };
 
         MonthActivityVo.MonthRow row = new MonthActivityVo.MonthRow();
         row.setMetric(m.label());
@@ -384,7 +427,7 @@ public class DashboardServiceImpl implements IDashboardService {
         if (raw == null) {
             return "";
         }
-        if (agg == ActivityAgg.SUM_DEC || agg == ActivityAgg.NONE) {
+        if (agg == ActivityAgg.SUM_DEC || agg == ActivityAgg.AVG_RATIO || agg == ActivityAgg.AVG_MEAN) {
             // DECIMAL 与均值类统一 2 位小数；整数型（生长总天数走 SUM_INT 不入此分支）
             if (raw instanceof BigDecimal bd) {
                 return formatDec(bd);
@@ -904,8 +947,11 @@ public class DashboardServiceImpl implements IDashboardService {
         // 净增重 = Σ(出栏重 − 断奶重) 仅对「有断奶快照的出栏育肥猪」同一集合，
         // 故被减数用同集合的出栏重 marketingWeightWeaned（非全部出栏 marketingWeight，
         // 后者含淘汰母猪/种猪出栏会让净增重虚高）。出栏总重列仍取全量 marketingWeight。
-        //   饲养总天数 feedTotalDays = Σ(出栏日−断奶日+1)；生长总天数 growthTotalDays（row183）= Σ(出栏日−断奶日+1)。
+        //   饲养总天数 feedTotalDays = Σ(出栏日−断奶日+1)（从断奶起算）；
+        //   生长总天数 growthTotalDays（row186 口径）= Σ(出栏日−出生日+1)（从出生起算，整个生命周期）。
         //   日增重分母 = 生长总天数（row184 口径）；分母 0 → 日增重 0。
+        //   注：净增重按「断奶后」增重、生长总天数按「出生后」天数——分子分母起点不一致（row186 只改生长天数），
+        //   日增重语义如需对齐待邓博复核。
         Map<String, Object> weanAgg = aggregateQueryMapper.aggregateMarketingWeanForDay(tenantId, dtFrom, dtTo);
         BigDecimal weanTotalWeight = mapBd(weanAgg, "weanWeightSum");
         int feedDays = mapInt(weanAgg, "feedDaysSum");

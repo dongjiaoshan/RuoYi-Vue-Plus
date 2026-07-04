@@ -297,14 +297,14 @@ public class DemandManageServiceImpl extends DjsBaseServiceImpl<DemandManageMapp
         LocalDate end = query == null ? null : query.getEndDate();
         // productType（业态）+ storeId（需求门店）组内/行级过滤，均下推到 mapper WHERE（复数优先 IN，单值 fallback）
         List<DemandGroupVo> all = baseMapper.selectDemandGroupList(productName, productType, productTypes, storeId, storeIds, begin, end);
-        // 三态需求状态 + 确认率（按 storeCount / confirmedStoreCount 算）
+        // 三态需求状态 + 确认率（row166：按【需求单】而非【门店】——同店多条需求部分确认时应显 PARTIAL）
         for (DemandGroupVo vo : all) {
-            int storeCount = vo.getStoreCount() == null ? 0 : vo.getStoreCount();
-            int confirmed = vo.getConfirmedStoreCount() == null ? 0 : vo.getConfirmedStoreCount();
-            vo.setDemandStatus(groupStatus(storeCount, confirmed));
-            vo.setConfirmRate(storeCount == 0
+            int demandCount = vo.getDemandCount() == null ? 0 : vo.getDemandCount();
+            int confirmed = vo.getConfirmedDemandCount() == null ? 0 : vo.getConfirmedDemandCount();
+            vo.setDemandStatus(groupStatus(demandCount, confirmed));
+            vo.setConfirmRate(demandCount == 0
                 ? BigDecimal.ZERO
-                : BigDecimal.valueOf(confirmed).divide(BigDecimal.valueOf(storeCount), 4, java.math.RoundingMode.HALF_UP));
+                : BigDecimal.valueOf(confirmed).divide(BigDecimal.valueOf(demandCount), 4, java.math.RoundingMode.HALF_UP));
         }
         // 需求状态是聚合三态（PENDING/ALL_CONFIRMED/PARTIAL），算完后再内存过滤（不能下推 mapper WHERE）
         // 复数 demandStatuses 优先 IN 过滤，单值 demandStatus 作 fallback
@@ -333,13 +333,14 @@ public class DemandManageServiceImpl extends DjsBaseServiceImpl<DemandManageMapp
     }
 
     /**
-     * 分组三态（0613-10 点4）：无一已确认门店 → PENDING；全部确认 → ALL_CONFIRMED；否则 PARTIAL。
+     * 分组三态（row166 按【需求单】聚合）：无一已确认 → PENDING；全部确认 → ALL_CONFIRMED；否则 PARTIAL。
+     * 入参为组内需求单总数 / 已确认需求单数（非门店数）——同店多条需求部分确认时正确落 PARTIAL。
      */
-    private String groupStatus(int storeCount, int confirmedStoreCount) {
-        if (confirmedStoreCount <= 0) {
+    private String groupStatus(int demandCount, int confirmedDemandCount) {
+        if (confirmedDemandCount <= 0) {
             return "PENDING";
         }
-        if (confirmedStoreCount >= storeCount) {
+        if (confirmedDemandCount >= demandCount) {
             return "ALL_CONFIRMED";
         }
         return "PARTIAL";

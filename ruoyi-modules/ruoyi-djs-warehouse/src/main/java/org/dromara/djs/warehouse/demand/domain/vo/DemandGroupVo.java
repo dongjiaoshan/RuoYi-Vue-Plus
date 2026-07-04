@@ -95,9 +95,19 @@ public class DemandGroupVo implements Serializable {
     /** 已确认门店数（demand_status IN CONFIRMED/IN_PRODUCTION/PARTIAL_SHIPPED/COMPLETED）。 */
     private Integer confirmedStoreCount;
 
+    /** 组内需求单数（非取消/删除单；含待确认 SUBMITTED / 草稿 DRAFT）。row166 状态口径用。 */
+    private Integer demandCount;
+
+    /** 组内已确认需求单数（demand_status IN CONFIRMED/IN_PRODUCTION/PARTIAL_SHIPPED/COMPLETED）。row166。 */
+    private Integer confirmedDemandCount;
+
     /**
-     * 需求状态三态（前端 dict 文案；0613-10 点4）：
+     * 需求状态三态（前端 dict 文案）：
      * {@code PENDING 待确认（无一已确认）/ ALL_CONFIRMED 已全部确认 / PARTIAL 部分确认}。
+     *
+     * <p>row166 口径修正：按【需求单】而非【门店】聚合——同一门店可有多条需求（部分确认 + 部分待确认），
+     * 按门店会把「该店有任一已确认」误判成 ALL_CONFIRMED。改按 confirmedDemandCount / demandCount 判定：
+     * 只要有一条未确认（SUBMITTED/DRAFT）就是 PARTIAL（已部分确认）。</p>
      */
     private String demandStatus;
 

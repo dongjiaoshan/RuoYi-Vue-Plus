@@ -455,6 +455,13 @@ public class StoreReturnServiceImpl
         // 入库库位：前端显式选优先；mp 确认页只填实收量不选库位 → 按入库产品预设库位 / 库存最多库位兜底；
         // 仍无 → 阻断（不做「只写流水不增库存」的库存黑洞，提示运营先补库位）。
         Long locationId = bo.getLocationId() != null ? bo.getLocationId() : resolveDefaultLocation(inboundProductId);
+        // row145.3：猪肉退货指定入库库位（鲜品库/冻品库，整单一次选，仅 pork 生效——白条不分流，Kevin 口径）
+        if (StringUtils.isNotBlank(bo.getTargetLocationType()) && isPorkProduct(existing.getProductId())) {
+            Long porkLoc = resolveReturnLocationByType(bo.getTargetLocationType());
+            if (porkLoc != null) {
+                locationId = porkLoc;
+            }
+        }
         if (locationId == null) {
             throw new ServiceException("未指定入库库位且无法自动定位（产品无预设库位/无历史库存），请选择库位后再确认", 400);
         }
@@ -707,6 +714,35 @@ public class StoreReturnServiceImpl
         // 取库存最多的「有效」库位（JOIN location_info 过滤已删库位的幽灵 stock 行，
         // 避免选中已删库位致 inbound 报「库位不存在或已删除」）。
         return baseMapper.selectStockMostValidLocation(inboundProductId);
+    }
+
+    /**
+     * row145.3：猪肉退货入库库位类型 → 库位 id（{@code fresh}=猪肉鲜品库 / {@code frozen}=冻品库，按库位名解析）。
+     * 未匹配 / 无该库位返 null（调用方回落默认库位）。
+     */
+    private Long resolveReturnLocationByType(String type) {
+        String name = switch (type) {
+            case "fresh" -> "猪肉鲜品库";
+            case "frozen" -> "冻品库";
+            default -> null;
+        };
+        if (name == null) {
+            return null;
+        }
+        LocationInfo loc = locationInfoMapper.selectOne(
+            new LambdaQueryWrapper<LocationInfo>()
+                .eq(LocationInfo::getLocationName, name)
+                .last("LIMIT 1"));
+        return loc == null ? null : loc.getId();
+    }
+
+    /** 退货产品是否猪肉（{@code belong_type=pork}）——仅 pork 走鲜/冻库分流（白条不分流，Kevin 口径）。 */
+    private boolean isPorkProduct(Long productId) {
+        if (productId == null) {
+            return false;
+        }
+        ProductInfo p = productInfoMapper.selectById(productId);
+        return p != null && "pork".equals(p.getBelongType());
     }
 
     /**

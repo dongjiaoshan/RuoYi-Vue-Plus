@@ -833,12 +833,20 @@ public class PigCutRecordServiceImpl
             return List.of();
         }
         List<Long> barIds = bars.stream().map(BarInfo::getId).filter(Objects::nonNull).toList();
-        // 各白条「未领」燎毛产出行（pickup_status=0/NULL），按 id 升序保留燎毛入库顺序
+        // 各白条「未领」燎毛产出行（pickup_status=0/NULL），按 id 升序保留燎毛入库顺序（含副产，用于兜底判空）。
         List<ProductInhouse> rows = barIds.isEmpty() ? List.of() : productInhouseMapper.selectList(
             new LambdaQueryWrapper<ProductInhouse>()
                 .in(ProductInhouse::getWhiteBarId, barIds)
                 .and(w -> w.eq(ProductInhouse::getPickupStatus, 0).or().isNull(ProductInhouse::getPickupStatus))
                 .orderByAsc(ProductInhouse::getId));
+        // row187：分割白条领用只领「白条库的白条」（整只/半只，belong_type='white_bar'）。燎毛副产猪头/猪蹄
+        // （belong_type='pork'）虽同样写 product_inhouse 带 white_bar_id，但不入白条库、不参与白条分割 →
+        // 只展示白条产出行卡；但「该 bar 有无未领产出行」仍按全量 rows 判定，避免仅有副产行的 bar 误落整只兜底卡。
+        Set<Long> whiteBarProductIds = rows.isEmpty() ? Set.of() : productInfoMapper.selectList(
+                new LambdaQueryWrapper<ProductInfo>()
+                    .select(ProductInfo::getId)
+                    .eq(ProductInfo::getBelongType, "white_bar"))
+            .stream().map(ProductInfo::getId).filter(Objects::nonNull).collect(Collectors.toSet());
         Map<Long, List<ProductInhouse>> rowsByBar = new HashMap<>();
         for (ProductInhouse r : rows) {
             if (r.getWhiteBarId() != null) {
@@ -849,12 +857,15 @@ public class PigCutRecordServiceImpl
         for (BarInfo bar : bars) {
             List<ProductInhouse> rs = rowsByBar.get(bar.getId());
             if (rs != null && !rs.isEmpty()) {
-                // 燎毛多产出行 → 每行一张可单独领用的卡（半只 / 半扇 各一张）
+                // 燎毛多产出行 → 每白条产出行一张可单独领用的卡（半只 / 半扇 各一张）；跳过副产（猪头/猪蹄）。
                 for (ProductInhouse r : rs) {
-                    result.add(toPickupItem(bar, r));
+                    if (whiteBarProductIds.contains(r.getProductId())) {
+                        result.add(toPickupItem(bar, r));
+                    }
                 }
+                // 有未领产出行但全是副产 → 不出白条卡、也不落整只兜底（bar 是现代燎毛数据，仅无可领白条行）。
             } else if (BAR_STATUS_IN_STOCK.equals(bar.getStatus())) {
-                // 燎毛无产出行 + 全新 in_stock → 整只兜底卡（inhouseId=null，领用走整猪路径），向后兼容旧数据。
+                // 真·无任何未领产出行的旧数据白条 + in_stock → 整只兜底卡（inhouseId=null，领用走整猪路径），向后兼容。
                 // pending_cut/cutting 且无未领行 = 已全部领完 → 不再出卡（避免全领 bar 冒出空整只卡）。
                 result.add(toPickupItem(bar, null));
             }

@@ -27,6 +27,8 @@ import org.dromara.djs.warehouse.cross.domain.BarInfo;
 import org.dromara.djs.warehouse.cross.mapper.BarInfoMapper;
 import org.dromara.djs.warehouse.flow.domain.StockFlow;
 import org.dromara.djs.warehouse.flow.mapper.StockFlowMapper;
+import org.dromara.djs.warehouse.loss.domain.LossFlow;
+import org.dromara.djs.warehouse.loss.service.ILossFlowService;
 import org.dromara.djs.warehouse.location.domain.LocationInfo;
 import org.dromara.djs.warehouse.location.domain.vo.LocationPickerVo;
 import org.dromara.djs.warehouse.location.mapper.LocationInfoMapper;
@@ -133,6 +135,16 @@ public class PigBurnRecordServiceImpl
      */
     private static final Integer LOCATION_STATUS_ENABLED = 1;
 
+    /**
+     * 损耗类型（字典 {@code djs_loss_type}）：燎毛损耗（DENGBO row27）。
+     */
+    private static final String LOSS_TYPE_BURN = "burn_loss";
+
+    /**
+     * 损耗来源业务类型（{@code t_warehouse_loss_flow.source_biz_type}）：燎毛处理完成。
+     */
+    private static final String LOSS_SOURCE_BIZ_BURN = "burn";
+
     private final StockFlowMapper stockFlowMapper;
     private final BarInfoMapper barInfoMapper;
     private final ProductInhouseMapper productInhouseMapper;
@@ -143,6 +155,7 @@ public class PigBurnRecordServiceImpl
     private final IStockCheckService stockCheckService;
     private final ITraceService traceService;
     private final ImageUrlResolver imageUrlResolver;
+    private final ILossFlowService lossFlowService;
 
     public PigBurnRecordServiceImpl(PigBurnRecordMapper baseMapper,
                                     StockFlowMapper stockFlowMapper,
@@ -154,7 +167,8 @@ public class PigBurnRecordServiceImpl
                                     IBizCodeGenerator bizCodeGenerator,
                                     IStockCheckService stockCheckService,
                                     ITraceService traceService,
-                                    ImageUrlResolver imageUrlResolver) {
+                                    ImageUrlResolver imageUrlResolver,
+                                    ILossFlowService lossFlowService) {
         super(baseMapper);
         this.stockFlowMapper = stockFlowMapper;
         this.barInfoMapper = barInfoMapper;
@@ -166,6 +180,7 @@ public class PigBurnRecordServiceImpl
         this.stockCheckService = stockCheckService;
         this.traceService = traceService;
         this.imageUrlResolver = imageUrlResolver;
+        this.lossFlowService = lossFlowService;
     }
 
     @Override
@@ -548,6 +563,44 @@ public class PigBurnRecordServiceImpl
         // TRC 白条入库事件（邓博 row19 拆出独立事件）：燎毛处理完成、白条称重入库时刻按耳号写追溯流水。
         // 重量 = 本次入库总重 inWeightTotal。recordEventByEarNo 全程容错（无生码白条 warn 跳过，不拖垮燎毛事务）。
         traceService.recordEventByEarNo(bar.getEarNo(), TraceContentConst.WHITE_BAR_IN, inWeightTotal);
+
+        // ---------- Step 5：DENGBO row27 燎毛损耗 ----------
+        // 燎毛处理完成时，剩余未入库重量（= 头皮肉重量[到场重 arrive_weight] − 本次入库产品总重 inWeightTotal）
+        // 计入「燎毛损耗」统一损耗流水，进「损耗总览」。arrive 为 null（未称重）或剩余 ≤ 0 时不记
+        //（record 内部对 lossWeight ≤ 0 自动跳过）。归属产品取「猪只(整只)」白条主数据（整只级损耗口径，
+        // 与 bar_info 整只损耗一致），带耳号便于追溯。
+        if (headSkinWeight != null) {
+            BigDecimal burnLoss = headSkinWeight.subtract(inWeightTotal);
+            if (burnLoss.signum() > 0) {
+                LossFlow loss = new LossFlow();
+                loss.setLossType(LOSS_TYPE_BURN);
+                loss.setLossWeight(burnLoss);
+                loss.setLossDate(new Date());
+                loss.setProductId(resolveWholePigProductId(typeMap));
+                loss.setEarNo(bar.getEarNo());
+                loss.setOperatorId(operatorId);
+                loss.setSourceBizType(LOSS_SOURCE_BIZ_BURN);
+                loss.setSourceBizId(bar.getId());
+                lossFlowService.record(loss);
+            }
+        }
+    }
+
+    /**
+     * 从白条产品类型表取「猪只(整只)」产品主数据 id（PROD-WHITE-BAR-01），供燎毛损耗归属。
+     * 找不到整只（如仅半只入库）时回落任一白条产品 id；typeMap 为空时返 null（record 对 null productId 兜空、不阻断）。
+     */
+    private Long resolveWholePigProductId(Map<Long, ProductInfo> typeMap) {
+        Long fallback = null;
+        for (ProductInfo pi : typeMap.values()) {
+            if (fallback == null) {
+                fallback = pi.getId();
+            }
+            if (PRODUCT_TYPE_WHOLE.equals(resolveProductType(pi.getProductId()))) {
+                return pi.getId();
+            }
+        }
+        return fallback;
     }
 
     /**
