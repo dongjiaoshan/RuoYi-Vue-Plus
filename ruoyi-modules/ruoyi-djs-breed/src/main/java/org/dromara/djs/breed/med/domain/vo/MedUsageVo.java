@@ -69,6 +69,12 @@ public class MedUsageVo implements Serializable {
     @ExcelProperty(value = "用药计划")
     private Long scheduleId;
 
+    @ExcelProperty(value = "领用人ID")
+    private Long operatorId;
+
+    @ExcelProperty(value = "领用人")
+    private String operatorName;
+
     @ExcelProperty(value = "备注")
     private String remark;
 

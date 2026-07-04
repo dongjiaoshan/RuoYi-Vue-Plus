@@ -69,9 +69,8 @@ public class MedRecordBatchBo {
     private Long medicineId;
 
     /**
-     * 批次 ID（必填，共享）。
+     * 批次 ID（药品废弃批次后不再必填/不再传；保留兼容旧数据）。
      */
-    @NotNull(message = "批次 ID 不能为空")
     private Long batchId;
 
     /**

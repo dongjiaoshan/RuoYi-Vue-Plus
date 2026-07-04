@@ -86,6 +86,16 @@ public class MedUsage extends TenantEntity {
     private Long scheduleId;
 
     /**
+     * 领用人 user_id（默认当前登录人，可选其他员工；ADR-0007）。
+     */
+    private Long operatorId;
+
+    /**
+     * 领用人姓名快照（EmployeePicker 传入，免跨模块查 sys_user）。
+     */
+    private String operatorName;
+
+    /**
      * 备注。
      */
     private String remark;

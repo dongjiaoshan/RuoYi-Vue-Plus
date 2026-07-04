@@ -304,8 +304,8 @@ public class DashboardServiceImpl implements IDashboardService {
     }
 
     /**
-     * row10 活动统计指标行集（按表列、邓博 row10 中文文案，顺序分组）。
-     * 整数列 SUM_INT；DECIMAL 列 SUM_DEC；期末存栏 LAST（累计=当月最后一天值）；均值类 NONE（累计留空）。
+     * 种猪活动详情指标行集（row158：仅展示以下 15 个活动计数指标 + 累计，其他字段不展示）。
+     * 顺序按测试口径固定；均值/期末存栏/出栏生长/饲养总天数/日NPD 等不在此明细，故不列。
      */
     private static final List<ActivityMetric> ACTIVITY_METRICS = List.of(
         // 母猪活动（SUM）
@@ -326,38 +326,7 @@ public class DashboardServiceImpl implements IDashboardService {
         new ActivityMetric("用药猪只数", FarmIndicatorRecord::getMedicatedPigCount, ActivityAgg.SUM_INT),
         // 死淘（SUM）
         new ActivityMetric("死亡猪只数", FarmIndicatorRecord::getDeathPigCount, ActivityAgg.SUM_INT),
-        new ActivityMetric("淘汰猪只数", FarmIndicatorRecord::getCullingPigCount, ActivityAgg.SUM_INT),
-        new ActivityMetric("死亡肥猪数", FarmIndicatorRecord::getDeathFatteningCount, ActivityAgg.SUM_INT),
-        new ActivityMetric("死亡种母猪数", FarmIndicatorRecord::getDeathSowCount, ActivityAgg.SUM_INT),
-        new ActivityMetric("死亡仔猪数", FarmIndicatorRecord::getDeathPigletCount, ActivityAgg.SUM_INT),
-        // 出栏 / 生长（SUM 重/天 · AVG 均值：累计重算加权均值 row143）
-        new ActivityMetric("出栏猪只数量", FarmIndicatorRecord::getMarketingPigCount, ActivityAgg.SUM_INT),
-        new ActivityMetric("出栏总重", FarmIndicatorRecord::getMarketingWeight, ActivityAgg.SUM_DEC),
-        // 累计平均出栏重 = Σ出栏总重 / Σ出栏头数
-        new ActivityMetric("平均出栏重", FarmIndicatorRecord::getAvgMarketingWeight, ActivityAgg.AVG_RATIO,
-            FarmIndicatorRecord::getMarketingWeight, FarmIndicatorRecord::getMarketingPigCount),
-        new ActivityMetric("猪只断奶总重", FarmIndicatorRecord::getWeanTotalWeight, ActivityAgg.SUM_DEC),
-        new ActivityMetric("生长总天数", FarmIndicatorRecord::getGrowthTotalDays, ActivityAgg.SUM_INT),
-        // 饲养总天数（row148 新增）= Σ日饲养总天数（每日为 Σ(出栏日−断奶日+1)），累计按日累加
-        new ActivityMetric("饲养总天数", FarmIndicatorRecord::getFeedTotalDays, ActivityAgg.SUM_INT),
-        new ActivityMetric("净增重", FarmIndicatorRecord::getNetGainWeight, ActivityAgg.SUM_DEC),
-        // 累计日增重 = Σ净增重 / Σ生长总天数
-        new ActivityMetric("日增重", FarmIndicatorRecord::getDailyGainWeight, ActivityAgg.AVG_RATIO,
-            FarmIndicatorRecord::getNetGainWeight, FarmIndicatorRecord::getGrowthTotalDays),
-        // 累计平均背膘厚 = 有测量日（背膘>0）的简单均值（日表无背膘测量头数，无法加权）
-        new ActivityMetric("平均背膘厚", FarmIndicatorRecord::getAvgBackfatThickness, ActivityAgg.AVG_MEAN),
-        // 期末存栏（LAST：累计列 = 当月最后一天值）
-        new ActivityMetric("期末生产母猪头数", FarmIndicatorRecord::getEndProductionSowCount, ActivityAgg.LAST),
-        new ActivityMetric("期末种公猪数", FarmIndicatorRecord::getEndBoarCount, ActivityAgg.LAST),
-        new ActivityMetric("肥猪头数", FarmIndicatorRecord::getEndFatteningCount, ActivityAgg.LAST),
-        new ActivityMetric("仔猪头数", FarmIndicatorRecord::getEndPigletCount, ActivityAgg.LAST),
-        new ActivityMetric("后备猪头数", FarmIndicatorRecord::getEndReserveCount, ActivityAgg.LAST),
-        new ActivityMetric("230日龄以上后备猪头数", FarmIndicatorRecord::getEndReserve230Count, ActivityAgg.LAST),
-        new ActivityMetric("非生产状态母猪头数", FarmIndicatorRecord::getEndNonprodSowCount, ActivityAgg.LAST),
-        // 日NPD天数（row148 新增）= 期末非生产母猪快照，累计取当月最后一天值（LAST）
-        new ActivityMetric("日NPD天数", FarmIndicatorRecord::getNpdDays, ActivityAgg.LAST),
-        // 其他（SUM）
-        new ActivityMetric("当年配种批次分娩头数", FarmIndicatorRecord::getYearBatchFarrowCount, ActivityAgg.SUM_INT)
+        new ActivityMetric("淘汰猪只数", FarmIndicatorRecord::getCullingPigCount, ActivityAgg.SUM_INT)
     );
 
     /**

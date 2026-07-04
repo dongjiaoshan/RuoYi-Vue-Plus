@@ -83,6 +83,17 @@ public class MedUsageBo extends BaseEntity {
     private Long scheduleId;
 
     /**
+     * 领用人 user_id（可选，默认当前登录人）。
+     */
+    private Long operatorId;
+
+    /**
+     * 领用人姓名快照（EmployeePicker 传入）。
+     */
+    @Size(max = 64, message = "领用人姓名长度不能超过 {max} 个字符")
+    private String operatorName;
+
+    /**
      * 备注。
      */
     @Size(max = 500, message = "备注长度不能超过 {max} 个字符")

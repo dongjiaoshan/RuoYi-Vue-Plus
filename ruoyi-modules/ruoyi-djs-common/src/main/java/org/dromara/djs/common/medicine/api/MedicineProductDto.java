@@ -34,4 +34,7 @@ public class MedicineProductDto implements Serializable {
     /** 当前库存合计（跨库位 SUM(product_stock)，无库存行按 0） */
     private BigDecimal stock;
 
+    /** 展示图 public URL（{@code COALESCE(product_thumb, image_oss_id)}，mp 领用卡片展示） */
+    private String imageUrl;
+
 }

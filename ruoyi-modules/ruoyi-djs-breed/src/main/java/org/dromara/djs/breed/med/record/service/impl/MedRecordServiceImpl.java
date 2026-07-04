@@ -15,9 +15,7 @@ import org.dromara.djs.breed.core.domain.Pig;
 import org.dromara.djs.breed.core.enums.PigLifecycle;
 import org.dromara.djs.breed.core.mapper.PigMapper;
 import org.dromara.djs.breed.med.domain.MedBatch;
-import org.dromara.djs.breed.med.domain.Medicine;
 import org.dromara.djs.breed.med.mapper.MedBatchMapper;
-import org.dromara.djs.breed.med.mapper.MedicineMapper;
 import org.dromara.djs.breed.med.record.domain.MedRecord;
 import org.dromara.djs.breed.med.record.domain.bo.MedRecordBatchBo;
 import org.dromara.djs.breed.med.record.domain.bo.MedRecordBo;
@@ -27,6 +25,7 @@ import org.dromara.djs.breed.med.record.domain.vo.UsableBatchVo;
 import org.dromara.djs.breed.med.record.mapper.MedRecordMapper;
 import org.dromara.djs.breed.med.record.service.IMedRecordService;
 import org.dromara.djs.common.base.DjsBaseServiceImpl;
+import org.dromara.djs.common.medicine.api.MedicineProductDto;
 import org.dromara.djs.common.medicine.api.MedicineStockProvider;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -40,20 +39,19 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 
 /**
  * 用药治疗流水 Service 实现（BRD-MED-003）。
  *
- * <p>核心逻辑：</p>
+ * <p>核心逻辑（药品废弃批次 · 迁药品维度）：</p>
  * <ul>
- *   <li><b>3 天领用窗口校验</b>：addSingle / addBatch 入口校验 batchId 必须出现在
- *       {@link MedRecordMapper#selectUsableBatchesByPig} 返回集合中（按 operatorId 限定
- *       当前 mp 用户领过），否则 {@code medicine.batch.expired_for_use}。admin 端
- *       不限 operator，允许跨用户用药。</li>
- *   <li><b>批量扣减仓库库存</b>（ADR-0012）：addBatch 触发的扣减 = dosage × N，
- *       走 {@link MedicineStockProvider#deduct}（落仓库 location_stock，库存不足自抛业务异常）；
- *       批次 {@code quantity} 退化为入库快照不再扣。</li>
+ *   <li><b>使用药品下拉</b>：{@link MedRecordMapper#selectRecentUsedMedicineIds} 取近 3 天已领用的
+ *       distinct 药品（按 operatorId 限定 mp 当前用户），药品名/单位/规格/库存由仓库
+ *       {@link MedicineStockProvider#listMedicineProductsByIds} 解析。不再依赖批次/t_breed_medicine_info。</li>
+ *   <li><b>批量扣减仓库库存</b>（ADR-0012）：addBatch 触发的扣减 = dosage × N，按 medicineId
+ *       走 {@link MedicineStockProvider#deduct}（落仓库 location_stock，库存不足自抛业务异常）。</li>
  *   <li><b>事务包</b>：扣减库存 + INSERT master + N detail 单事务，
  *       任一步失败全回滚。N ≤ 200（DDL 已限定，BO {@code @Size(max=200)}）。</li>
  *   <li><b>operator_id 必填</b>：ADR-0007，所有 INSERT 取 LoginHelper.getUserId
@@ -72,18 +70,15 @@ public class MedRecordServiceImpl extends DjsBaseServiceImpl<MedRecordMapper, Me
     private static final int MAX_BATCH_SIZE = 200;
 
     private final MedBatchMapper medBatchMapper;
-    private final MedicineMapper medicineMapper;
     private final PigMapper pigMapper;
     private final MedicineStockProvider medicineStockProvider;
 
     public MedRecordServiceImpl(MedRecordMapper baseMapper,
                                 MedBatchMapper medBatchMapper,
-                                MedicineMapper medicineMapper,
                                 PigMapper pigMapper,
                                 MedicineStockProvider medicineStockProvider) {
         super(baseMapper);
         this.medBatchMapper = medBatchMapper;
-        this.medicineMapper = medicineMapper;
         this.pigMapper = pigMapper;
         this.medicineStockProvider = medicineStockProvider;
     }
@@ -95,9 +90,8 @@ public class MedRecordServiceImpl extends DjsBaseServiceImpl<MedRecordMapper, Me
     @Override
     @Transactional(rollbackFor = Exception.class)
     public int addSingle(MedRecordBo bo) {
-        // 1. 校验药品 / 批次 / 归属
-        Medicine medicine = checkMedicine(bo.getMedicineId());
-        MedBatch batch = checkBatch(bo.getBatchId(), bo.getMedicineId());
+        // 1. 解析药品（药品即仓库商品，废弃批次；名从仓库 provider 拿）
+        String medicineName = resolveMedicineName(bo.getMedicineId());
 
         // 2. 校验 pig 存在 + 非终态
         Pig pig = pigMapper.selectById(bo.getPigId());
@@ -108,22 +102,19 @@ public class MedRecordServiceImpl extends DjsBaseServiceImpl<MedRecordMapper, Me
             throw new ServiceException("猪只已处终态（END）不可用药：" + pig.getEarNo());
         }
 
-        // 3. 3 天领用窗口校验（仅 mp 调用走 LoginHelper；admin 跳过）
-        checkBatchUsableForCurrentUser(bo.getBatchId());
+        // 3. 按 medicineId 扣仓库库存（原子，库存不足自抛回滚）
+        deductByMedicine(bo.getMedicineId(), bo.getMedicineDosage());
 
-        // 4. 扣 batch.quantity（原子）
-        decrementBatch(batch, bo.getMedicineDosage());
-
-        // 5. INSERT 单只 record（drug_type=1）
+        // 4. INSERT 单只 record（drug_type=1）
         MedRecord entity = toEntity(bo);
         entity.setDrugType(1);
         entity.setEarNo(pig.getEarNo());
-        entity.setMedicineName(medicine.getMedicineName());
+        entity.setMedicineName(medicineName);
         fillOperator(entity, bo.getOperatorId(), bo.getOperatorName());
         baseMapper.insert(entity);
 
-        log.info("[BRD-MED-003] addSingle pigId={} earNo={} batchId={} dosage={} recordId={}",
-            pig.getId(), pig.getEarNo(), batch.getId(), bo.getMedicineDosage(), entity.getId());
+        log.info("[BRD-MED-003] addSingle pigId={} earNo={} medicineId={} dosage={} recordId={}",
+            pig.getId(), pig.getEarNo(), bo.getMedicineId(), bo.getMedicineDosage(), entity.getId());
         return 1;
     }
 
@@ -135,9 +126,8 @@ public class MedRecordServiceImpl extends DjsBaseServiceImpl<MedRecordMapper, Me
             throw new ServiceException("批量用药一次最多 " + MAX_BATCH_SIZE + " 头：当前 " + n);
         }
 
-        // 1. 校验药品 / 批次
-        Medicine medicine = checkMedicine(bo.getMedicineId());
-        MedBatch batch = checkBatch(bo.getBatchId(), bo.getMedicineId());
+        // 1. 解析药品（药品即仓库商品，废弃批次）
+        String medicineName = resolveMedicineName(bo.getMedicineId());
 
         // 2. 校验全部 pig 存在 + 非终态
         Set<Long> pigIdSet = new HashSet<>(bo.getPigIds());
@@ -154,14 +144,11 @@ public class MedRecordServiceImpl extends DjsBaseServiceImpl<MedRecordMapper, Me
             }
         }
 
-        // 3. 3 天领用窗口校验
-        checkBatchUsableForCurrentUser(bo.getBatchId());
-
-        // 4. 一次扣 dosage × N
+        // 3. 一次扣 dosage × N（按 medicineId）
         BigDecimal totalDosage = bo.getMedicineDosage().multiply(BigDecimal.valueOf(n));
-        decrementBatch(batch, totalDosage);
+        deductByMedicine(bo.getMedicineId(), totalDosage);
 
-        // 5. INSERT 1 条 master + N 条 detail
+        // 4. INSERT 1 条 master + N 条 detail
         MedRecord master = new MedRecord();
         master.setUseDate(bo.getUseDate());
         master.setDrugType(2);
@@ -170,7 +157,7 @@ public class MedRecordServiceImpl extends DjsBaseServiceImpl<MedRecordMapper, Me
         master.setMedicineReason(bo.getMedicineReason());
         master.setMedicineWay(bo.getMedicineWay());
         master.setMedicineId(bo.getMedicineId());
-        master.setMedicineName(medicine.getMedicineName());
+        master.setMedicineName(medicineName);
         master.setBatchId(bo.getBatchId());
         master.setUsageId(bo.getUsageId());
         master.setScheduleId(bo.getScheduleId());
@@ -193,7 +180,7 @@ public class MedRecordServiceImpl extends DjsBaseServiceImpl<MedRecordMapper, Me
             d.setMedicineReason(bo.getMedicineReason());
             d.setMedicineWay(bo.getMedicineWay());
             d.setMedicineId(bo.getMedicineId());
-            d.setMedicineName(medicine.getMedicineName());
+            d.setMedicineName(medicineName);
             d.setBatchId(bo.getBatchId());
             d.setUsageId(bo.getUsageId());
             d.setScheduleId(bo.getScheduleId());
@@ -204,8 +191,8 @@ public class MedRecordServiceImpl extends DjsBaseServiceImpl<MedRecordMapper, Me
         }
         baseMapper.insertBatch(details);
 
-        log.info("[BRD-MED-003] addBatch n={} batchId={} totalDosage={} masterId={}",
-            n, batch.getId(), totalDosage, master.getId());
+        log.info("[BRD-MED-003] addBatch n={} medicineId={} totalDosage={} masterId={}",
+            n, bo.getMedicineId(), totalDosage, master.getId());
         return master.getId();
     }
 
@@ -269,7 +256,28 @@ public class MedRecordServiceImpl extends DjsBaseServiceImpl<MedRecordMapper, Me
 
     @Override
     public List<UsableBatchVo> listUsableBatches(Long operatorId) {
-        return baseMapper.selectUsableBatchesByPig(operatorId);
+        // 药品废弃批次：取近 3 天已领用的 distinct 药品 id，再经仓库 provider 解析名/单位/规格/库存。
+        List<Long> ids = baseMapper.selectRecentUsedMedicineIds(operatorId);
+        if (ids.isEmpty()) {
+            return List.of();
+        }
+        Map<Long, MedicineProductDto> dtoMap = medicineStockProvider.listMedicineProductsByIds(ids).stream()
+            .collect(Collectors.toMap(MedicineProductDto::getId, Function.identity(), (a, b) -> a));
+        List<UsableBatchVo> list = new ArrayList<>(ids.size());
+        for (Long id : ids) { // 保持 mapper 的"最近领用倒序"
+            MedicineProductDto dto = dtoMap.get(id);
+            if (dto == null) {
+                continue; // 药品已软删/不在药品库 → 跳过
+            }
+            UsableBatchVo vo = new UsableBatchVo();
+            vo.setMedicineId(dto.getId());
+            vo.setMedicineName(dto.getName());
+            vo.setSpec(dto.getSpec());
+            vo.setUnit(dto.getUnit());
+            vo.setQuantity(dto.getStock());
+            list.add(vo);
+        }
+        return list;
     }
 
     @Override
@@ -293,54 +301,31 @@ public class MedRecordServiceImpl extends DjsBaseServiceImpl<MedRecordMapper, Me
         return entity;
     }
 
-    private Medicine checkMedicine(Long medicineId) {
-        Medicine medicine = medicineMapper.selectById(medicineId);
-        if (medicine == null || "1".equals(medicine.getDelFlag())) {
+    /**
+     * 解析药品名（药品即仓库商品，废弃 t_breed_medicine_info 目录）。
+     * 药品不存在（软删/非药品库）→ 抛业务异常。
+     */
+    private String resolveMedicineName(Long medicineId) {
+        if (medicineId == null) {
+            throw new ServiceException("药品 ID 不能为空");
+        }
+        List<MedicineProductDto> products =
+            medicineStockProvider.listMedicineProductsByIds(List.of(medicineId));
+        if (products.isEmpty()) {
             throw new ServiceException("药品不存在或已删除：" + medicineId);
         }
-        return medicine;
-    }
-
-    private MedBatch checkBatch(Long batchId, Long medicineId) {
-        MedBatch batch = medBatchMapper.selectById(batchId);
-        if (batch == null || "1".equals(batch.getDelFlag())) {
-            throw new ServiceException("批次不存在或已删除：" + batchId);
-        }
-        if (!Objects.equals(batch.getMedicineId(), medicineId)) {
-            throw new ServiceException("药品 ID 与批次归属不一致：batch.medicineId=" + batch.getMedicineId());
-        }
-        return batch;
+        return products.get(0).getName();
     }
 
     /**
-     * 校验"当前 mp 用户 3 天内领过该批次"。LoginHelper 取不到（admin 端直传）时跳过。
+     * 扣减仓库药品库存（ADR-0012：库存真值在仓库 location_stock，按 medicineId 扣减）。
+     * 库存不足由 provider 抛 ServiceException → 事务回滚。
      */
-    private void checkBatchUsableForCurrentUser(Long batchId) {
-        Long userId;
-        try {
-            userId = LoginHelper.getUserId();
-        } catch (Exception ignore) {
-            return; // admin 端 / 单测环境
-        }
-        if (userId == null) {
-            return;
-        }
-        List<UsableBatchVo> usable = baseMapper.selectUsableBatchesByPig(userId);
-        boolean ok = usable.stream().anyMatch(v -> Objects.equals(v.getBatchId(), batchId));
-        if (!ok) {
-            throw new ServiceException("批次不在 3 天内已领可用范围：batchId=" + batchId);
-        }
-    }
-
-    /**
-     * 扣减仓库药品库存（ADR-0012：库存真值在仓库 location_stock，按 batch.medicineId 扣减；
-     * 批次 quantity 退化为入库快照不再扣）。库存不足由 provider 抛 ServiceException → 事务回滚。
-     */
-    private void decrementBatch(MedBatch batch, BigDecimal qty) {
+    private void deductByMedicine(Long medicineId, BigDecimal qty) {
         if (qty == null || qty.signum() <= 0) {
             throw new ServiceException("用药剂量必须大于 0");
         }
-        medicineStockProvider.deduct(batch.getMedicineId(), qty, LoginHelper.getUserId());
+        medicineStockProvider.deduct(medicineId, qty, LoginHelper.getUserId());
     }
 
     /**

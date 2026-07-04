@@ -32,6 +32,15 @@ public interface MedicineStockProvider {
     List<MedicineProductDto> listMedicineProducts(String keyword);
 
     /**
+     * 按 id 集合列出药品商品（{@code buy_class='medicine'}）+ 当前库存合计，供「用药治疗 / 批量用药」
+     * 消费「近 3 天已领用药品」清单（id 来自 {@code t_breed_medicine_usage} 领用台账）。
+     *
+     * @param ids 药品商品 id 集合
+     * @return 药品商品行；无则空 list（入参空亦返空 list）
+     */
+    List<MedicineProductDto> listMedicineProductsByIds(Collection<Long> ids);
+
+    /**
      * 扣减药品库存（领用 / 损耗），落该药品商品库存所在库位（{@code selectDefaultLocationByProduct}）。
      * 库存不足抛业务异常（不吞）。
      *

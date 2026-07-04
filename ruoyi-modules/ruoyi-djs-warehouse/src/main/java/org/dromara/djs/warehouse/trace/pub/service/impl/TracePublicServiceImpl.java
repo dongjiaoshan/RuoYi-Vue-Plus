@@ -775,7 +775,7 @@ public class TracePublicServiceImpl
                 if (c != null && seenCertIds.add(certId)) {
                     PublicTraceVo.OrganicCertRow row = new PublicTraceVo.OrganicCertRow();
                     row.setCertType("crop");
-                    row.setImageUrl(resolveOssUrl(c.getCropImagePreview()));
+                    row.setImageUrl(resolveCertImage(c.getCropImagePreview(), c.getCropImageUrl()));
                     row.setIssuer(c.getCropCertCompany());
                     row.setCertNo(c.getCropCertNo());
                     row.setValidTo(c.getCropCertValid());
@@ -789,7 +789,7 @@ public class TracePublicServiceImpl
             if (c != null) {
                 PublicTraceVo.OrganicCertRow row = new PublicTraceVo.OrganicCertRow();
                 row.setCertType("crop");
-                row.setImageUrl(resolveOssUrl(c.getCropImagePreview()));
+                row.setImageUrl(resolveCertImage(c.getCropImagePreview(), c.getCropImageUrl()));
                 row.setIssuer(c.getCropCertCompany());
                 row.setCertNo(c.getCropCertNo());
                 row.setValidTo(c.getCropCertValid());
@@ -801,7 +801,7 @@ public class TracePublicServiceImpl
             if (p != null) {
                 PublicTraceVo.OrganicCertRow row = new PublicTraceVo.OrganicCertRow();
                 row.setCertType("plot");
-                row.setImageUrl(resolveOssUrl(p.getOrganicImagePreview()));
+                row.setImageUrl(resolveCertImage(p.getOrganicImagePreview(), p.getOrganicImageUrl()));
                 row.setIssuer(p.getOrganicCompany());
                 row.setCertNo(p.getOrganicNo());
                 row.setValidTo(p.getOrganicValid());
@@ -853,6 +853,16 @@ public class TracePublicServiceImpl
         // 多图取首张展示
         int comma = urls.indexOf(',');
         return comma >= 0 ? urls.substring(0, comma) : urls;
+    }
+
+    /**
+     * 有机证书图 URL（row157）：缩略图 ossId 优先，为空则回落原图 ossIds 首张。
+     * <p>admin 有机证书配置表单（cropOrganic / plotOrganic）只上传到原图列
+     * （{@code crop_image_url} / {@code organic_image_url}），缩略图列
+     * （{@code crop_image_preview} / {@code organic_image_preview}）恒空——只读缩略图列会导致追溯页有机认证无图。</p>
+     */
+    private String resolveCertImage(String previewOssId, String originOssIds) {
+        return resolveOssUrl(StringUtils.isNotBlank(previewOssId) ? previewOssId : originOssIds);
     }
 
     /** 农场名（sys_farm，无 djs 实体，走 admin farm-name mapper 自定义 SQL）。 */

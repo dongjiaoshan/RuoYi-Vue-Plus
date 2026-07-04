@@ -11,6 +11,7 @@ import org.dromara.djs.breed.med.domain.bo.MedicineBo;
 import org.dromara.djs.breed.med.domain.query.MedicineQuery;
 import org.dromara.djs.breed.med.domain.vo.MedicineVo;
 import org.dromara.djs.breed.med.mapper.MedicineMapper;
+import org.dromara.djs.common.medicine.api.MedicineProductDto;
 import org.dromara.djs.common.medicine.api.MedicineStockProvider;
 import org.dromara.djs.common.validate.BizReferenceChecker;
 import org.junit.jupiter.api.BeforeEach;
@@ -150,48 +151,46 @@ class MedicineServiceImplTest {
     }
 
     @Test
-    @DisplayName("queryPageList: 走 mapper.selectVoPage + provider.getStocks 回填 currentStock（ADR-0012）")
+    @DisplayName("queryPageList: 走 provider.listMedicineProducts → toVo 映射名/单位/规格/库存/图片")
     void testQueryPageList() {
         MedicineQuery query = new MedicineQuery();
-        query.setMedicineType("vaccine");
+        query.setMedicineName("疫苗");
         PageQuery pageQuery = new PageQuery(1, 10);
 
-        MedicineVo vo = new MedicineVo();
-        vo.setId(40001L);
-        vo.setMedicineCode("MED-001");
-        Page<MedicineVo> mockPage = new Page<>(1, 10);
-        mockPage.setRecords(List.of(vo));
-        mockPage.setTotal(1);
-        when(medicineMapper.selectVoPage(any(Page.class), any(Wrapper.class))).thenReturn(mockPage);
-        // ADR-0012：currentStock 由仓库 location_stock 聚合回填，不再取主数据字段
-        when(medicineStockProvider.getStocks(anyCollection()))
-            .thenReturn(Map.of(40001L, new BigDecimal("88.500")));
+        // 药品即仓库商品：列表由 provider 返（含库存/单位/规格/图片）
+        MedicineProductDto dto = new MedicineProductDto();
+        dto.setId(40001L);
+        dto.setName("猪瘟疫苗");
+        dto.setUnit("瓶");
+        dto.setSpec("10ml/瓶");
+        dto.setStock(new BigDecimal("88.500"));
+        dto.setImageUrl("2073262355778154497");
+        when(medicineStockProvider.listMedicineProducts(any())).thenReturn(List.of(dto));
 
         TableDataInfo<MedicineVo> result = service.queryPageList(query, pageQuery);
 
         assertThat(result.getTotal()).isEqualTo(1);
         assertThat(result.getRows()).hasSize(1);
-        assertThat(result.getRows().get(0).getMedicineCode()).isEqualTo("MED-001");
-        // 关键：currentStock 被仓库库存回填
-        assertThat(result.getRows().get(0).getCurrentStock()).isEqualByComparingTo("88.500");
-        verify(medicineStockProvider, times(1)).getStocks(anyCollection());
+        MedicineVo row = result.getRows().get(0);
+        assertThat(row.getMedicineName()).isEqualTo("猪瘟疫苗");
+        assertThat(row.getUnit()).isEqualTo("瓶");
+        assertThat(row.getSpec()).isEqualTo("10ml/瓶");
+        assertThat(row.getImageUrl()).isEqualTo("2073262355778154497");
+        assertThat(row.getCurrentStock()).isEqualByComparingTo("88.500");
+        verify(medicineStockProvider, times(1)).listMedicineProducts(any());
     }
 
     @Test
-    @DisplayName("queryPageList: 仓库无该药品库存行 → getStocks 空 Map → currentStock 缺省 0")
+    @DisplayName("queryPageList: 药品无库存 → provider 返 stock=0 → currentStock 0")
     void testQueryPageList_NoStock_DefaultZero() {
         MedicineQuery query = new MedicineQuery();
         PageQuery pageQuery = new PageQuery(1, 10);
 
-        MedicineVo vo = new MedicineVo();
-        vo.setId(40002L);
-        vo.setMedicineCode("MED-002");
-        Page<MedicineVo> mockPage = new Page<>(1, 10);
-        mockPage.setRecords(List.of(vo));
-        mockPage.setTotal(1);
-        when(medicineMapper.selectVoPage(any(Page.class), any(Wrapper.class))).thenReturn(mockPage);
-        // 空结果用 emptyMap → getOrDefault 回落 ZERO
-        when(medicineStockProvider.getStocks(anyCollection())).thenReturn(Collections.emptyMap());
+        MedicineProductDto dto = new MedicineProductDto();
+        dto.setId(40002L);
+        dto.setName("氟苯尼考");
+        dto.setStock(BigDecimal.ZERO);
+        when(medicineStockProvider.listMedicineProducts(any())).thenReturn(List.of(dto));
 
         TableDataInfo<MedicineVo> result = service.queryPageList(query, pageQuery);
 

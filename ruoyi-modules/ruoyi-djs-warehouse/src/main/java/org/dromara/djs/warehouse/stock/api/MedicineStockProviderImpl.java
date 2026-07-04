@@ -3,6 +3,7 @@ package org.dromara.djs.warehouse.stock.api;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.common.core.exception.ServiceException;
+import org.dromara.djs.common.image.service.ImageUrlResolver;
 import org.dromara.djs.common.medicine.api.MedicineProductDto;
 import org.dromara.djs.common.medicine.api.MedicineStockProvider;
 import org.dromara.djs.warehouse.stock.mapper.LocationStockMapper;
@@ -34,12 +35,33 @@ import java.util.Map;
 @RequiredArgsConstructor
 public class MedicineStockProviderImpl implements MedicineStockProvider {
 
+    /** 药品图 belong_type（IMG-LIB-001 resolver L2 分类默认图键；无配置则回落全局默认/空）。 */
+    private static final String MEDICINE_BELONG_TYPE = "medicine";
+
     private final LocationStockMapper locationStockMapper;
+    private final ImageUrlResolver imageUrlResolver;
 
     @Override
     public List<MedicineProductDto> listMedicineProducts(String keyword) {
-        List<Map<String, Object>> rows = locationStockMapper.selectMedicineProducts(keyword);
+        return toDtoList(locationStockMapper.selectMedicineProducts(keyword));
+    }
+
+    @Override
+    public List<MedicineProductDto> listMedicineProductsByIds(Collection<Long> ids) {
+        if (ids == null || ids.isEmpty()) {
+            return Collections.emptyList();
+        }
+        return toDtoList(locationStockMapper.selectMedicineProductsByIds(ids));
+    }
+
+    /**
+     * 药品商品行（id/name/unit/spec/imageId/stock）→ {@link MedicineProductDto}。
+     * imageId 原为 {@code COALESCE(product_thumb, image_oss_id)} 裸 ossId，经 IMG-LIB-001 resolver
+     * 批量转 OSS public URL（禁 N+1）供 mp {@code <image :src>} 直接渲染；无图返 null（mp 端占位兜底）。
+     */
+    private List<MedicineProductDto> toDtoList(List<Map<String, Object>> rows) {
         List<MedicineProductDto> result = new ArrayList<>(rows.size());
+        List<ImageUrlResolver.Item> imgItems = new ArrayList<>(rows.size());
         for (Map<String, Object> row : rows) {
             MedicineProductDto dto = new MedicineProductDto();
             dto.setId(toLong(row.get("id")));
@@ -48,6 +70,13 @@ public class MedicineStockProviderImpl implements MedicineStockProvider {
             dto.setSpec(toStr(row.get("spec")));
             dto.setStock(toBigDecimal(row.get("stock")));
             result.add(dto);
+            imgItems.add(new ImageUrlResolver.Item(toStr(row.get("imageId")), MEDICINE_BELONG_TYPE));
+        }
+        List<String> urls = imageUrlResolver.resolveList(imgItems);
+        if (urls.size() == result.size()) {
+            for (int i = 0; i < result.size(); i++) {
+                result.get(i).setImageUrl(urls.get(i));
+            }
         }
         return result;
     }

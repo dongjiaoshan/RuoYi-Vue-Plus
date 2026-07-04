@@ -8,6 +8,7 @@ import org.dromara.common.core.utils.MapstructUtils;
 import org.dromara.common.core.utils.StringUtils;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
+import org.dromara.common.core.domain.model.LoginUser;
 import org.dromara.common.satoken.utils.LoginHelper;
 import org.dromara.djs.breed.core.domain.Pig;
 import org.dromara.djs.breed.core.mapper.PigMapper;
@@ -184,7 +185,40 @@ public class MedUsageServiceImpl extends DjsBaseServiceImpl<MedUsageMapper, MedU
             throw new ServiceException("药品领用入参转换失败");
         }
         entity.setUsageType(type);
+        fillOperator(entity, bo.getOperatorId(), bo.getOperatorName());
         return baseMapper.insert(entity);
+    }
+
+    /**
+     * 填充领用人 operator_id + operator_name（ADR-0007）。前端选了领用人（默认当前登录人，
+     * 可改选其他员工）→ 用所选；EmployeePicker 一并传 name 快照，免跨模块查 sys_user。
+     * 未选 → 回落当前登录人。
+     */
+    private void fillOperator(MedUsage entity, Long boOperatorId, String boOperatorName) {
+        if (boOperatorId != null) {
+            entity.setOperatorId(boOperatorId);
+            if (StringUtils.isNotBlank(boOperatorName)) {
+                entity.setOperatorName(boOperatorName);
+            }
+            return;
+        }
+        Long userId;
+        LoginUser loginUser;
+        try {
+            userId = LoginHelper.getUserId();
+            loginUser = LoginHelper.getLoginUser();
+        } catch (Exception ignore) {
+            return; // 单测 / 后台任务场景，跳过
+        }
+        if (userId == null) {
+            return;
+        }
+        entity.setOperatorId(userId);
+        if (loginUser != null) {
+            String name = StringUtils.isNotBlank(loginUser.getNickname())
+                ? loginUser.getNickname() : loginUser.getUsername();
+            entity.setOperatorName(name);
+        }
     }
 
     /**
@@ -201,10 +235,11 @@ public class MedUsageServiceImpl extends DjsBaseServiceImpl<MedUsageMapper, MedU
     }
 
     @Override
-    public Map<String, BigDecimal> todayStat() {
+    public Map<String, BigDecimal> todayStat(Long medicineId) {
         LocalDate today = LocalDate.now();
         LambdaQueryWrapper<MedUsage> wrapper = new LambdaQueryWrapper<MedUsage>()
-            .eq(MedUsage::getUseDate, today);
+            .eq(MedUsage::getUseDate, today)
+            .eq(medicineId != null, MedUsage::getMedicineId, medicineId);
         List<MedUsageVo> todays = baseMapper.selectVoList(wrapper);
 
         Map<String, BigDecimal> stat = new LinkedHashMap<>();

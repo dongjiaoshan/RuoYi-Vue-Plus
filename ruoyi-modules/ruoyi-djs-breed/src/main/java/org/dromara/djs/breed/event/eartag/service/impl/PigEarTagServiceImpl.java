@@ -31,6 +31,7 @@ import org.dromara.djs.breed.event.farrow.mapper.PigFarrowMapper;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -218,6 +219,10 @@ public class PigEarTagServiceImpl implements IPigEarTagService {
             result.add(PigletEarTagVo.from(piglet, log));
         }
 
+        // R159：耳标提交后同步分娩表该窝的产仔总重 total_weight + 平均出生重 avg_weight
+        // （按本窝全部已标仔猪的出生重累计，含本批 + 历史批；同事务可见刚 INSERT 的行）。
+        syncFarrowWeights(bo.getFarrowId());
+
         log.info("[BRD-EVENT-003] batchTag farrowId={} motherEar={} count={} earNos=[{}..{}]",
             bo.getFarrowId(), mother.getEarNo(), newCount,
             earNos.get(0), earNos.get(newCount - 1));
@@ -225,6 +230,31 @@ public class PigEarTagServiceImpl implements IPigEarTagService {
         // VO 列表按耳号 asc 返回，便于前端展示连续序号
         result.sort(Comparator.comparing(PigletEarTagVo::getPigletEarNo));
         return result;
+    }
+
+    /**
+     * 回写分娩表该窝产仔总重 + 平均出生重（R159）：按本窝全部已标仔猪 {@code t_farm_pig_pigletno.birth_weight}
+     * 累计 total_weight = Σ出生重，avg_weight = total_weight / 有出生重头数（无则 0）。
+     * <p>仅 update 这两列（MP updateById 跳 null 字段），不动分娩表其余字段。</p>
+     */
+    private void syncFarrowWeights(Long farrowId) {
+        List<PigPigletno> all = pigletnoMapper.selectList(
+            Wrappers.<PigPigletno>lambdaQuery().eq(PigPigletno::getFarrowId, farrowId));
+        BigDecimal total = BigDecimal.ZERO;
+        int weighed = 0;
+        for (PigPigletno p : all) {
+            if (p.getBirthWeight() != null) {
+                total = total.add(p.getBirthWeight());
+                weighed++;
+            }
+        }
+        PigFarrow update = new PigFarrow();
+        update.setId(farrowId);
+        update.setTotalWeight(total);
+        update.setAvgWeight(weighed == 0
+            ? BigDecimal.ZERO
+            : total.divide(BigDecimal.valueOf(weighed), 2, java.math.RoundingMode.HALF_UP));
+        farrowMapper.updateById(update);
     }
 
     /** 预览序号补零位宽（与 EarNoAllocator SEQ_WIDTH 对齐，6/15 起 3 位）。 */

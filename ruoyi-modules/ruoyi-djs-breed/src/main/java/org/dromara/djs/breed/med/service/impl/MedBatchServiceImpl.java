@@ -45,9 +45,9 @@ import java.util.stream.Collectors;
 public class MedBatchServiceImpl extends DjsBaseServiceImpl<MedBatchMapper, MedBatch> implements IMedBatchService {
 
     /**
-     * mp 用药领用「近 N 天已出库批次」过滤窗口（含今天），与 BRD-MED-003
-     * {@link org.dromara.djs.breed.med.record.mapper.MedRecordMapper#selectUsableBatchesByPig}
-     * 的「3 天内已领可用批次」口径一致。
+     * mp 用药领用「近 N 天已出库药品」过滤窗口（含今天），与 BRD-MED-003
+     * {@link org.dromara.djs.breed.med.record.mapper.MedRecordMapper#selectRecentUsedMedicineIds}
+     * 的「3 天内已领用药品」口径一致。
      */
     private static final long RECENT_USED_DAYS = 3L;
 

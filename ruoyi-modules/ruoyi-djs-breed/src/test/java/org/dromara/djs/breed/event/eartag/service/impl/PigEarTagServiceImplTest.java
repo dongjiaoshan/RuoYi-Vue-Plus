@@ -85,6 +85,8 @@ class PigEarTagServiceImplTest {
             .thenReturn("4-04-1-260508");
         when(earNoAllocator.buildPrefix(eq("4"), eq("04"), eq("F"), any(LocalDate.class)))
             .thenReturn("4-04-2-260508");
+        // R159：batchTag 末尾 syncFarrowWeights 会 selectList 本窝 pigletno 累计出生重；默认空避免 NPE
+        when(pigletnoMapper.selectList(any())).thenReturn(java.util.List.of());
     }
 
     private Pig mkSow() {
@@ -276,6 +278,35 @@ class PigEarTagServiceImplTest {
         // 前缀按仔代继承母猪码（4/04）+ 性别 F 算出
         verify(earNoAllocator).buildPrefix(eq("4"), eq("04"), eq("F"), any(LocalDate.class));
         verify(earNoAllocator).allocateBatchByPrefixes(anyList(), any(LocalDate.class));
+    }
+
+    @Test
+    @DisplayName("batchTag → syncFarrowWeights 回写分娩表 total_weight=Σ出生重 / avg_weight=均值（R159）")
+    void batchTag_syncsFarrowWeights() {
+        PigFarrow farrow = mkFarrow(910L, 5, null);
+        when(farrowMapper.selectById(910L)).thenReturn(farrow);
+        when(pigMapper.selectById(101L)).thenReturn(mkSow());
+        when(pigletnoMapper.selectCount(any())).thenReturn(0L);
+        when(earNoAllocator.allocateBatchByPrefixes(anyList(), any(LocalDate.class)))
+            .thenReturn(List.of("4-04-2-260508-001", "4-04-2-260508-002"));
+        // syncFarrowWeights 读本窝全部 pigletno：2 头出生重 1.20 + 2.60 = 3.80，均值 1.90
+        PigPigletno p1 = new PigPigletno();
+        p1.setBirthWeight(new BigDecimal("1.20"));
+        PigPigletno p2 = new PigPigletno();
+        p2.setBirthWeight(new BigDecimal("2.60"));
+        when(pigletnoMapper.selectList(any())).thenReturn(List.of(p1, p2));
+
+        PigletBatchEarTagBo bo = new PigletBatchEarTagBo();
+        bo.setFarrowId(910L);
+        bo.setPiglets(List.of(mkItem("F", new BigDecimal("1.20")), mkItem("F", new BigDecimal("2.60"))));
+
+        service.batchTag(bo);
+
+        ArgumentCaptor<PigFarrow> cap = ArgumentCaptor.forClass(PigFarrow.class);
+        verify(farrowMapper).updateById(cap.capture());
+        assertThat(cap.getValue().getId()).isEqualTo(910L);
+        assertThat(cap.getValue().getTotalWeight()).isEqualByComparingTo("3.80");
+        assertThat(cap.getValue().getAvgWeight()).isEqualByComparingTo("1.90");
     }
 
     @Test

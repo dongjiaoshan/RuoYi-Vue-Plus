@@ -435,6 +435,7 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
                p.product_name AS name,
                p.product_unit AS unit,
                p.product_spec AS spec,
+               COALESCE(NULLIF(p.product_thumb, ''), p.image_oss_id) AS imageId,
                COALESCE(st.stock, 0) AS stock
           FROM t_warehouse_product_info p
           LEFT JOIN (SELECT product_id, SUM(product_stock) AS stock
@@ -455,6 +456,40 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
         </script>
         """)
     List<Map<String, Object>> selectMedicineProducts(@Param("keyword") String keyword);
+
+    /**
+     * 按 id 集合列出药品商品（{@code buy_class='medicine'}）+ 跨库位库存合计。
+     *
+     * <p>供「用药治疗 / 批量用药」消费「近 3 天已领用药品」清单（id 来自
+     * {@code t_breed_medicine_usage.medicine_id} 领用台账，已是药品库药品，不再加库位过滤）。
+     * 返回列与 {@link #selectMedicineProducts} 一致（id / name / unit / spec / imageId / stock）。</p>
+     *
+     * @param ids 药品商品 id 集合（非空）
+     * @return 药品商品行；按药品名排序
+     */
+    @Select("""
+        <script>
+        SELECT p.id           AS id,
+               p.product_name AS name,
+               p.product_unit AS unit,
+               p.product_spec AS spec,
+               COALESCE(NULLIF(p.product_thumb, ''), p.image_oss_id) AS imageId,
+               COALESCE(st.stock, 0) AS stock
+          FROM t_warehouse_product_info p
+          LEFT JOIN (SELECT product_id, SUM(product_stock) AS stock
+                       FROM t_warehouse_location_stock
+                      WHERE is_end = 0 AND del_flag = '0' AND tenant_id = '1001'
+                      GROUP BY product_id) st
+            ON st.product_id = p.id
+         WHERE p.buy_class = 'medicine'
+           AND p.del_flag  = '0'
+           AND p.tenant_id = '1001'
+           AND p.id IN
+           <foreach collection="ids" item="id" open="(" separator="," close=")">#{id}</foreach>
+         ORDER BY p.product_name
+        </script>
+        """)
+    List<Map<String, Object>> selectMedicineProductsByIds(@Param("ids") Collection<Long> ids);
 
     /**
      * 按 {@code product_info.belong_type} 聚合活跃库存总量（DJS-FIX-ADMIN-W22-003 SummaryBar）。

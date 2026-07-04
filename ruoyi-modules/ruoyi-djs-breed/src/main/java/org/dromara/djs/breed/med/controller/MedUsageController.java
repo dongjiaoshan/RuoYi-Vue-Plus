@@ -22,6 +22,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.math.BigDecimal;
@@ -99,12 +100,13 @@ public class MedUsageController extends BaseController {
     /**
      * 今日汇总（小程序顶部卡片）。
      *
-     * <p>返回 {@code {use, return, loss}} 三键的当日 usageQty 之和，缺省补 0。</p>
+     * <p>返回 {@code {use, return, loss}} 三键的当日 usageQty 之和，缺省补 0。
+     * {@code medicineId} 非空则按该药品分组（顶卡随选中药品显示自己的今日已领/退回/损耗）。</p>
      */
     @SaCheckPermission("djs:breed:med-usage:list")
     @GetMapping("/today-stat")
-    public R<Map<String, BigDecimal>> todayStat() {
-        return R.ok(medUsageService.todayStat());
+    public R<Map<String, BigDecimal>> todayStat(@RequestParam(required = false) Long medicineId) {
+        return R.ok(medUsageService.todayStat(medicineId));
     }
 
 }

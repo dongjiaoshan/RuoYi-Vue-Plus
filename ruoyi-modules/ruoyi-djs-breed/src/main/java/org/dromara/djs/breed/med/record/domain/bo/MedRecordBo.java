@@ -69,15 +69,14 @@ public class MedRecordBo extends BaseEntity {
     private String medicineWay;
 
     /**
-     * 药品 ID（必填，服务端会与 batchId 归属交叉校验）。
+     * 药品 ID（必填）。药品即仓库商品，废弃批次；库存按本字段扣减。
      */
     @NotNull(message = "药品 ID 不能为空")
     private Long medicineId;
 
     /**
-     * 批次 ID（必填，必须是当前用户 3 天内已领批次之一）。
+     * 批次 ID（药品废弃批次后不再必填/不再传；保留字段兼容旧数据 record.batch_id）。
      */
-    @NotNull(message = "批次 ID 不能为空")
     private Long batchId;
 
     /**

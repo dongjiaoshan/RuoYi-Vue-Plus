@@ -81,6 +81,7 @@ public class MedicineServiceImpl extends DjsBaseServiceImpl<MedicineMapper, Medi
         vo.setMedicineName(dto.getName());
         vo.setUnit(dto.getUnit());
         vo.setSpec(dto.getSpec());
+        vo.setImageUrl(dto.getImageUrl());
         vo.setCurrentStock(dto.getStock());
         vo.setMedStatus(1);
         return vo;

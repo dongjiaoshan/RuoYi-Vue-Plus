@@ -102,6 +102,11 @@ public class MedicineVo implements Serializable {
     private String spec;
 
     /**
+     * 展示图 public URL（IMG-LIB-001 resolver 回填，mp 领用卡片展示；不入 Excel）。
+     */
+    private String imageUrl;
+
+    /**
      * 生产厂家。
      */
     @ExcelProperty(value = "生产厂家")

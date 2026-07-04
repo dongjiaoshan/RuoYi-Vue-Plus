@@ -245,7 +245,7 @@ class MedUsageServiceImplTest {
 
         when(medUsageMapper.selectVoList(any())).thenReturn(List.of(u1, u2, r1));
 
-        Map<String, BigDecimal> stat = service.todayStat();
+        Map<String, BigDecimal> stat = service.todayStat(null);
         assertThat(stat).hasSize(3);
         assertThat(stat.get("use")).isEqualByComparingTo("12.500");
         assertThat(stat.get("return")).isEqualByComparingTo("1.000");

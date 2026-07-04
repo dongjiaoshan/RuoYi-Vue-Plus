@@ -57,7 +57,9 @@ public interface IMedUsageService {
      *
      * <p>小程序顶部"今日已领 / 今日退回 / 今日损耗"卡片用。返回 map：
      * {@code {use: 100.5, return: 0, loss: 2.0}}（缺省类型补 0）。</p>
+     *
+     * @param medicineId 药品 id（非空则按该药品分组统计；空则全局汇总）
      */
-    Map<String, BigDecimal> todayStat();
+    Map<String, BigDecimal> todayStat(Long medicineId);
 
 }

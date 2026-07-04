@@ -7,17 +7,11 @@ import java.io.Serializable;
 import java.math.BigDecimal;
 
 /**
- * mp 端"3 天内可用批次"下拉返回项（BRD-MED-003）。
+ * mp 端"3 天内已领用药品"下拉返回项（BRD-MED-003 · 药品维度，废弃批次）。
  *
- * <p>查询条件：</p>
- * <ul>
- *   <li>{@code t_breed_medicine_usage.usage_type = 'use'}</li>
- *   <li>{@code use_date >= NOW() - INTERVAL 3 DAY}</li>
- *   <li>{@code t_breed_medicine_batch.quantity > 0}</li>
- * </ul>
- *
- * <p>每个批次返回 1 行（按 batchId DISTINCT，合并多次领用同批次）。
- * mp picker 显示：药品名 + 批次号 + 剩余量。</p>
+ * <p>查询条件：{@code t_breed_medicine_usage.usage_type='use'} 且 {@code use_date >= NOW()-3 DAY}，
+ * 按 {@code medicine_id} DISTINCT（合并同药品多次领用）。药品详情由仓库 provider 解析。
+ * mp picker 显示：药品名 + 规格 + 剩余库存 + 单位。</p>
  *
  * @author djs
  * @since BRD-MED-003
@@ -29,12 +23,12 @@ public class UsableBatchVo implements Serializable {
     private static final long serialVersionUID = 1L;
 
     /**
-     * 批次 ID（mp picker 选中后写入 record.batch_id）。
+     * 批次 ID（药品废弃批次后恒 null；保留字段兼容旧数据 record.batch_id）。
      */
     private Long batchId;
 
     /**
-     * 药品 ID（联动写 record.medicine_id）。
+     * 药品 ID（选中后写 record.medicine_id）。
      */
     private Long medicineId;
 
@@ -44,9 +38,14 @@ public class UsableBatchVo implements Serializable {
     private String medicineName;
 
     /**
-     * 批次号（picker 展示）。
+     * 规格（picker 展示，取商品 product_spec）。
      */
-    private String batchNo;
+    private String spec;
+
+    /**
+     * 单位（取商品 product_unit）。
+     */
+    private String unit;
 
     /**
      * 当前剩余库存（picker 展示）。
@@ -54,12 +53,17 @@ public class UsableBatchVo implements Serializable {
     private BigDecimal quantity;
 
     /**
-     * 最近一次领用 ID（用于回填 record.usage_id 追溯领用源头）。
+     * 批次号（药品废弃批次后恒 null；保留兼容旧数据展示）。
+     */
+    private String batchNo;
+
+    /**
+     * 最近一次领用 ID（药品维度不再回填，恒 null）。
      */
     private Long usageId;
 
     /**
-     * 最近一次领用日期（便于 mp 判断"还在 3 天窗口里"）。
+     * 最近一次领用日期（药品维度不再回填，恒 null）。
      */
     private String lastUseDate;
 
