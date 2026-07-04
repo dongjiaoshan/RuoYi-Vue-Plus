@@ -25,6 +25,7 @@ import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 import org.springframework.context.ApplicationEventPublisher;
 
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -285,6 +286,27 @@ class PigCoreServiceImplTest {
         assertThat(pigCaptor.getValue().getCurrentStatus()).isEqualTo("HB");
     }
 
+    @Test
+    @DisplayName("createPig 引种母猪: 进入后备状态时间 + INTRO record 按引种日期(非提交时间)")
+    void createPig_statusStartedAt_uses_introduceDate() {
+        LocalDate introDate = LocalDate.now().minusDays(3);
+        PigCreateBo bo = new PigCreateBo();
+        bo.setEarNo("260520-002");
+        bo.setPigSex("F");
+        bo.setPigType("sow");
+        bo.setIntroduceDate(introDate);
+
+        service.createPig(bo);
+
+        ArgumentCaptor<Pig> pigCaptor = ArgumentCaptor.forClass(Pig.class);
+        verify(pigMapper).insert(pigCaptor.capture());
+        assertThat(pigCaptor.getValue().getStatusStartedAt()).isEqualTo(introDate.atStartOfDay());
+
+        ArgumentCaptor<PigStatusRecord> recCaptor = ArgumentCaptor.forClass(PigStatusRecord.class);
+        verify(statusRecordMapper).insert(recCaptor.capture());
+        assertThat(recCaptor.getValue().getChangeTime()).isEqualTo(introDate.atStartOfDay());
+    }
+
     // ===== internalIntroToReserve（内部留种：育肥猪→种猪类型变更，FIX-BRD-PIGTYPE-001）=====
 
     private Pig mkFattening(Long id, String sex, PigLifecycle status) {
@@ -306,7 +328,7 @@ class PigCoreServiceImplTest {
         when(pigMapper.selectById(200L)).thenReturn(pig);
         when(pigMapper.updateById(any(Pig.class))).thenReturn(1);
 
-        service.internalIntroToReserve(200L);
+        service.internalIntroToReserve(200L, LocalDate.now());
 
         ArgumentCaptor<Pig> captor = ArgumentCaptor.forClass(Pig.class);
         verify(pigMapper).updateById(captor.capture());
@@ -326,7 +348,7 @@ class PigCoreServiceImplTest {
         when(pigMapper.selectById(201L)).thenReturn(pig);
         when(pigMapper.updateById(any(Pig.class))).thenReturn(1);
 
-        service.internalIntroToReserve(201L);
+        service.internalIntroToReserve(201L, LocalDate.now());
 
         ArgumentCaptor<Pig> captor = ArgumentCaptor.forClass(Pig.class);
         verify(pigMapper).updateById(captor.capture());
@@ -340,7 +362,7 @@ class PigCoreServiceImplTest {
         Pig pig = mkSow(202L, PigLifecycle.HB);
         when(pigMapper.selectById(202L)).thenReturn(pig);
 
-        service.internalIntroToReserve(202L);
+        service.internalIntroToReserve(202L, LocalDate.now());
 
         verify(pigMapper, never()).updateById(any(Pig.class));
         verify(statusRecordMapper, never()).insert(any(PigStatusRecord.class));
@@ -352,7 +374,7 @@ class PigCoreServiceImplTest {
         Pig pig = mkFattening(203L, "F", PigLifecycle.END);
         when(pigMapper.selectById(203L)).thenReturn(pig);
 
-        service.internalIntroToReserve(203L);
+        service.internalIntroToReserve(203L, LocalDate.now());
 
         verify(pigMapper, never()).updateById(any(Pig.class));
     }

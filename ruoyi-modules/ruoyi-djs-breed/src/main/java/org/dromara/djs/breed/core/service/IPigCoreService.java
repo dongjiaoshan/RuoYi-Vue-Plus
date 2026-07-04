@@ -14,6 +14,7 @@ import org.dromara.djs.breed.core.domain.vo.PigSearchVo;
 import org.dromara.djs.breed.core.domain.vo.PigStatusRecordVo;
 import org.dromara.djs.breed.core.domain.vo.PigVo;
 
+import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
 
@@ -65,9 +66,10 @@ public interface IPigCoreService {
      * 不走 {@link #fireEvent}——INTRO 不是状态机合法事件，故手工写 record + update，与 createPig 初始
      * record 范式一致。</p>
      *
-     * @param pigId 已存在猪只 ID
+     * @param pigId         已存在猪只 ID
+     * @param introduceDate 内部引种日期（进后备状态时点按此日算，非提交时间；null 回落当天）
      */
-    void internalIntroToReserve(Long pigId);
+    void internalIntroToReserve(Long pigId, LocalDate introduceDate);
 
     /** 详情：基础字段 + 最近 20 条状态变更。 */
     PigDetailVo queryDetail(Long pigId);

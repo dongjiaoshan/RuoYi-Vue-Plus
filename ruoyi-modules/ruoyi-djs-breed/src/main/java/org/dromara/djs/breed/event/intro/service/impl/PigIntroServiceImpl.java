@@ -258,7 +258,8 @@ public class PigIntroServiceImpl implements IPigIntroService {
         introduceMapper.insert(intro);
 
         // FIX-INTRO-001 #1：fattening 来源猪触发 → HB（写 status_record + update current_status，同事务）
-        pigCoreService.internalIntroToReserve(pig.getId());
+        // 进后备时点按内部引种日期（与上面 intro.setIntroduceDate 同源），非提交时间。
+        pigCoreService.internalIntroToReserve(pig.getId(), intro.getIntroduceDate());
 
         // R45（李婷）：同一事务内完成猪只转移并落转移记录（写 t_farm_pig_transfer + 更新 pig.barn_id/pen_id）。
         // 复用 ITransferService.recordTransfer：传目标 barn/pen id + code，转移人员=引种人员，事由=内部引种。
