@@ -22,9 +22,8 @@ import java.time.LocalDateTime;
  *       回指本批次的 master 记录 id。</li>
  * </ul>
  *
- * <p>库存扣减：service 端单事务内对 {@code t_breed_medicine_batch.quantity} 做
- * 原子 {@code quantity -= dosage}（单只）或 {@code quantity -= dosage × N}（批量），
- * 同时校验 {@code 0 ≤ quantity ≤ stock_qty}（防退回累计污染）。</p>
+ * <p>用药 = 纯记录，不扣库存：库存扣减只在药品「领用/退回」（MedUsage）做，用药只落台账。
+ * {@code dosageUnit} 为纯记录/展示字段（g/mg/ml/L/kg/片 等），不参与扣减、不做规格换算。</p>
  *
  * <p>软删走基类 {@code DjsBaseServiceImpl#softDelete}（同 {@code MedUsage}）。</p>
  *
@@ -122,6 +121,11 @@ public class MedRecord extends TenantEntity {
      * 用药剂量。
      */
     private BigDecimal medicineDosage;
+
+    /**
+     * 剂量单位（记录/展示用，g/mg/ml/L/kg/片 等；不参与库存扣减）。
+     */
+    private String dosageUnit;
 
     /**
      * 操作人 user_id（FK → {@code sys_user.user_id}，ADR-0007）。

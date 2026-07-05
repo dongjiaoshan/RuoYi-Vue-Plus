@@ -10,6 +10,7 @@ import org.dromara.djs.warehouse.demand.domain.vo.AuditHistoryEntryVo;
 import org.dromara.djs.warehouse.demand.domain.vo.DemandGroupVo;
 import org.dromara.djs.warehouse.demand.domain.vo.DemandManageVo;
 import org.dromara.djs.warehouse.demand.domain.vo.DemandPigVo;
+import org.dromara.djs.warehouse.demand.domain.bo.DemandBatchConfirmBo;
 import org.dromara.djs.warehouse.demand.domain.vo.DemandProductStoreDetailVo;
 import org.dromara.djs.warehouse.demand.domain.vo.DemandSummaryVo;
 import org.dromara.djs.warehouse.demand.domain.vo.DemandTodayKpiVo;
@@ -125,4 +126,15 @@ public interface IDemandManageService {
      * @return 6 字段 KPI VO
      */
     DemandTodayKpiVo getTodayKpi();
+
+    /**
+     * 解析选中分组下所有 SUBMITTED 态需求 id（row41 批量确认用）。
+     *
+     * <p>每个分组键 =（需求日期，需求产品）；返回这些分组下当前处于 SUBMITTED（待确认）的需求单 id，
+     * 供批量确认逐条走确认状态机。分组之间互不重叠（一条需求只属一个日期+产品），不去重。</p>
+     *
+     * @param groups 需求日期 + 产品 分组键
+     * @return 待确认需求 id 列表（无匹配返回空列表）
+     */
+    List<Long> listSubmittedIdsByGroups(List<DemandBatchConfirmBo.GroupKey> groups);
 }

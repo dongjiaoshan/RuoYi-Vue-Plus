@@ -776,6 +776,7 @@ public class TracePublicServiceImpl
                     PublicTraceVo.OrganicCertRow row = new PublicTraceVo.OrganicCertRow();
                     row.setCertType("crop");
                     row.setImageUrl(resolveCertImage(c.getCropImagePreview(), c.getCropImageUrl()));
+                    row.setImageUrls(resolveCertImages(c.getCropImagePreview(), c.getCropImageUrl()));
                     row.setIssuer(c.getCropCertCompany());
                     row.setCertNo(c.getCropCertNo());
                     row.setValidTo(c.getCropCertValid());
@@ -790,6 +791,7 @@ public class TracePublicServiceImpl
                 PublicTraceVo.OrganicCertRow row = new PublicTraceVo.OrganicCertRow();
                 row.setCertType("crop");
                 row.setImageUrl(resolveCertImage(c.getCropImagePreview(), c.getCropImageUrl()));
+                row.setImageUrls(resolveCertImages(c.getCropImagePreview(), c.getCropImageUrl()));
                 row.setIssuer(c.getCropCertCompany());
                 row.setCertNo(c.getCropCertNo());
                 row.setValidTo(c.getCropCertValid());
@@ -802,6 +804,7 @@ public class TracePublicServiceImpl
                 PublicTraceVo.OrganicCertRow row = new PublicTraceVo.OrganicCertRow();
                 row.setCertType("plot");
                 row.setImageUrl(resolveCertImage(p.getOrganicImagePreview(), p.getOrganicImageUrl()));
+                row.setImageUrls(resolveCertImages(p.getOrganicImagePreview(), p.getOrganicImageUrl()));
                 row.setIssuer(p.getOrganicCompany());
                 row.setCertNo(p.getOrganicNo());
                 row.setValidTo(p.getOrganicValid());
@@ -863,6 +866,25 @@ public class TracePublicServiceImpl
      */
     private String resolveCertImage(String previewOssId, String originOssIds) {
         return resolveOssUrl(StringUtils.isNotBlank(previewOssId) ? previewOssId : originOssIds);
+    }
+
+    /**
+     * 有机证书全部图 URL（row162）：缩略图 ossId 优先、为空回落原图 ossIds；CSV 多图全解析
+     * （一证多图，追溯页自适应网格全部展示，不再只取首张）。无图返空 list。
+     */
+    private java.util.List<String> resolveCertImages(String previewOssId, String originOssIds) {
+        String ossIds = StringUtils.isNotBlank(previewOssId) ? previewOssId : originOssIds;
+        if (StringUtils.isBlank(ossIds)) {
+            return java.util.Collections.emptyList();
+        }
+        String urls = ossService.selectUrlByIds(ossIds);
+        if (StringUtils.isBlank(urls)) {
+            return java.util.Collections.emptyList();
+        }
+        return java.util.Arrays.stream(urls.split(","))
+            .map(String::trim)
+            .filter(StringUtils::isNotBlank)
+            .toList();
     }
 
     /** 农场名（sys_farm，无 djs 实体，走 admin farm-name mapper 自定义 SQL）。 */

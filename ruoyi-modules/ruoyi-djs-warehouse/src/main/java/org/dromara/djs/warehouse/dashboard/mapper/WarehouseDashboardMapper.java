@@ -207,15 +207,22 @@ public interface WarehouseDashboardMapper {
     BigDecimal sumTodayLoss(@Param("tenantId") String tenantId);
 
     /**
-     * 今日送宰猪只头数（燎毛记录 = 白条产出，按耳号计头）。
+     * 今日燎毛间入库称重的猪只头数（= 今日在燎毛间称重的整白条/整猪数，一头一计）。
+     *
+     * <p>与 {@code WarehouseStatAggregateMapper.countSlaughter} 同口径：源 {@code t_warehouse_bar_info}
+     * （一行 = 一头整猪），按「入库称重」{@code in_time} 落当天 + {@code in_method=1}（燎毛间）+
+     * {@code arrive_weight} 非空计。<b>不能</b>按 {@code COUNT(*) burn_record}：burn_record 是产出行粒度，
+     * 同一头拆多个半只/猪头/猪蹄各一条，会把一头整猪重复计（row198）。</p>
      *
      * @param tenantId 租户
-     * @return COUNT(*) t_warehouse_pig_burn_record WHERE DATE(burn_time)=CURDATE()，无记录返 0
+     * @return COUNT(*) t_warehouse_bar_info WHERE in_method=1 AND arrive_weight IS NOT NULL AND DATE(in_time)=CURDATE()，无记录返 0
      */
     @Select("SELECT COUNT(*) "
-        + "  FROM t_warehouse_pig_burn_record "
+        + "  FROM t_warehouse_bar_info "
         + " WHERE tenant_id = #{tenantId} "
-        + "   AND DATE(burn_time) = CURDATE() "
+        + "   AND in_method = 1 "
+        + "   AND arrive_weight IS NOT NULL "
+        + "   AND DATE(in_time) = CURDATE() "
         + "   AND del_flag = '0'")
     Integer countTodaySlaughterPigs(@Param("tenantId") String tenantId);
 

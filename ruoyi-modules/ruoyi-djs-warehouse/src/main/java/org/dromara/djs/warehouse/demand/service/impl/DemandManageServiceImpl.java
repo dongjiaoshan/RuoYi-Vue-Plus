@@ -21,6 +21,7 @@ import org.dromara.djs.common.util.I18nMessages;
 import org.dromara.djs.warehouse.demand.domain.DemandManage;
 import org.dromara.djs.warehouse.demand.domain.DemandPig;
 import org.dromara.djs.warehouse.demand.domain.bo.AssignPigBo;
+import org.dromara.djs.warehouse.demand.domain.bo.DemandBatchConfirmBo;
 import org.dromara.djs.warehouse.demand.domain.bo.DemandManageBo;
 import org.dromara.djs.warehouse.demand.domain.query.DemandManageQuery;
 import org.dromara.djs.warehouse.demand.domain.vo.AuditHistoryEntryVo;
@@ -634,6 +635,27 @@ public class DemandManageServiceImpl extends DjsBaseServiceImpl<DemandManageMapp
         vo.setTodayPigAssigned(pigAssigned == null ? 0 : pigAssigned);
 
         return vo;
+    }
+
+    @Override
+    public List<Long> listSubmittedIdsByGroups(List<DemandBatchConfirmBo.GroupKey> groups) {
+        List<Long> ids = new ArrayList<>();
+        if (CollUtil.isEmpty(groups)) {
+            return ids;
+        }
+        for (DemandBatchConfirmBo.GroupKey g : groups) {
+            if (g == null || g.getProductId() == null || StringUtils.isBlank(g.getDemandDate())) {
+                continue;
+            }
+            // 分组之间互不重叠（一条需求只属一个日期+产品），逐组取 SUBMITTED 态 id 累加即可，无需去重
+            List<DemandManage> rows = baseMapper.selectList(new LambdaQueryWrapper<DemandManage>()
+                .select(DemandManage::getId)
+                .eq(DemandManage::getProductId, g.getProductId())
+                .apply("DATE(demand_date) = DATE({0})", g.getDemandDate())
+                .eq(DemandManage::getDemandStatus, "SUBMITTED"));
+            rows.forEach(r -> ids.add(r.getId()));
+        }
+        return ids;
     }
 
     // ---------- 内部辅助 ----------

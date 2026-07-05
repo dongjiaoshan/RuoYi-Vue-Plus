@@ -118,9 +118,6 @@ public class CropOrganicServiceImpl extends DjsBaseServiceImpl<CropOrganicMapper
         if (exists == null) {
             throw new ServiceException("果蔬有机证书不存在或已删除：" + bo.getId());
         }
-        List<Long> cropIds = resolveCropIds(bo);
-        validateCropIds(cropIds);
-
         CropOrganic entity = toEntity(bo);
         if (entity == null) {
             throw new ServiceException("果蔬有机证书入参转换失败");
@@ -128,7 +125,14 @@ public class CropOrganicServiceImpl extends DjsBaseServiceImpl<CropOrganicMapper
         // crop_cert_no 不允许修改
         entity.setCropCertNo(exists.getCropCertNo());
         int rows = baseMapper.updateById(entity);
-        setRelatedCrops(bo.getId(), cropIds);
+        // 编辑证书基本字段/图片时绝不 touch 关联作物 junction —— 关联只由「关联作物」入口（relateCrops）维护。
+        // 仅当编辑请求显式带非空 cropIds 时才同步关联（admin 编辑表单不带 cropIds → 恒跳过，
+        // 不再把已配好的关联作物清空，row197 客户实证反复被清 73 条软删残骸）。
+        if (CollUtil.isNotEmpty(bo.getCropIds())) {
+            List<Long> cropIds = bo.getCropIds();
+            validateCropIds(cropIds);
+            setRelatedCrops(bo.getId(), cropIds);
+        }
         return rows;
     }
 

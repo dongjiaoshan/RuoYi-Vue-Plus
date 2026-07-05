@@ -5,6 +5,7 @@ import com.baomidou.mybatisplus.core.metadata.IPage;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.common.core.utils.StringUtils;
+import org.dromara.djs.common.store.context.StoreContext;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.breed.core.domain.vo.PigAvailableVo;
@@ -292,10 +293,25 @@ public class StoreTraceServiceImpl implements IStoreTraceService {
 
     @Override
     public String genOnsiteCode(StoreTraceOnsiteBo bo) {
-        String produceCode = traceService.genPorkOnsiteCode(bo.getEarNo(), bo.getCutLabel(), bo.getWeight());
-        log.info("[STORE-TRACE-ONSITE-001] store onsite gen produceCode={} earNo={} cut={}",
-            produceCode, bo.getEarNo(), bo.getCutLabel());
+        // row201：现场码归属当前门店（StoreContext 由 Current-Store-Id 头注入；未选门店/超管无上下文 → null 容错）
+        Long storeId = currentStoreId();
+        String produceCode = traceService.genPorkOnsiteCode(bo.getEarNo(), bo.getCutLabel(), bo.getWeight(), storeId);
+        log.info("[STORE-TRACE-ONSITE-001] store onsite gen produceCode={} earNo={} cut={} storeId={}",
+            produceCode, bo.getEarNo(), bo.getCutLabel(), storeId);
         return produceCode;
+    }
+
+    /** 当前所选门店 id（StoreContext 头值；空 / 非数字 → null，不阻断生码）。 */
+    private Long currentStoreId() {
+        String storeId = StoreContext.getStoreId();
+        if (StringUtils.isBlank(storeId)) {
+            return null;
+        }
+        try {
+            return Long.valueOf(storeId);
+        } catch (NumberFormatException e) {
+            return null;
+        }
     }
 
     @Override

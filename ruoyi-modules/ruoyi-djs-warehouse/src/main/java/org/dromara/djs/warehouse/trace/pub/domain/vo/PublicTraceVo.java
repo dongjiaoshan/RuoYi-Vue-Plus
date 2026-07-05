@@ -321,8 +321,10 @@ public class PublicTraceVo implements Serializable {
         private static final long serialVersionUID = 1L;
         /** 证书类型：{@code crop}（果蔬/作物有机证）| {@code plot}（地块有机证）（前端分组/分屏依据）。 */
         private String certType;
-        /** 证书图可访问 URL（ossId 后端解析；无图为 null）。 */
+        /** 证书图可访问 URL（ossId 后端解析；无图为 null）。首张，向后兼容旧前端；多图见 {@link #imageUrls}。 */
         private String imageUrl;
+        /** 证书全部图可访问 URL（row162：一证多图全解析，前端自适应网格展示；无图为空 list）。 */
+        private java.util.List<String> imageUrls;
         /** 颁发机构。 */
         private String issuer;
         /** 证书编号。 */

@@ -29,8 +29,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyCollection;
-import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -39,11 +37,10 @@ import static org.mockito.Mockito.when;
 /**
  * {@link MedRecordServiceImpl} 单测（BRD-MED-003 · 药品维度，废弃批次）。
  *
- * <p>覆盖：</p>
+ * <p>覆盖（用药 = 纯记录，不扣库存；库存扣减只在 MedUsage 领用/退回做）：</p>
  * <ul>
- *   <li>addSingle happy path：按 medicineId 扣仓库库存 + INSERT 1 条 drug_type=1；</li>
- *   <li>addBatch happy path：扣 dosage × N + 1 master + N detail；</li>
- *   <li>仓库库存不足（provider.deduct 抛）→ 不 INSERT；</li>
+ *   <li>addSingle happy path：INSERT 1 条 drug_type=1，且不调 provider.deduct；</li>
+ *   <li>addBatch happy path：1 master + N detail，且不调 provider.deduct；</li>
  *   <li>药品不存在（provider 返空）→ 拒绝；</li>
  *   <li>批量 N > 200 拒绝；pig 终态 END 拒绝；部分 pig 不存在拒绝；</li>
  *   <li>软删不回滚库存。</li>
@@ -91,6 +88,7 @@ class MedRecordServiceImplTest {
             r.setUsageId(bo.getUsageId());
             r.setScheduleId(bo.getScheduleId());
             r.setMedicineDosage(bo.getMedicineDosage());
+            r.setDosageUnit(bo.getDosageUnit());
             r.setRemark(bo.getRemark());
             return r;
         }
@@ -138,7 +136,7 @@ class MedRecordServiceImplTest {
     // ---------------- 单只用药 ----------------
 
     @Test
-    @DisplayName("addSingle: happy path → provider.deduct 扣库存 1 次 + INSERT 1 条 drug_type=1")
+    @DisplayName("addSingle: happy path → INSERT 1 条 drug_type=1，且不扣库存（用药纯记录）")
     void testAddSingle_HappyPath() {
         when(medicineStockProvider.listMedicineProductsByIds(anyCollection())).thenReturn(medicineProduct());
         when(pigMapper.selectById(100123L)).thenReturn(pig(100123L, "260501-001", "PZ"));
@@ -148,10 +146,8 @@ class MedRecordServiceImplTest {
 
         assertThat(rows).isEqualTo(1);
 
-        // 按 medicineId 扣仓库库存（operatorId 单测无登录上下文为 null）
-        ArgumentCaptor<BigDecimal> qty = ArgumentCaptor.forClass(BigDecimal.class);
-        verify(medicineStockProvider, times(1)).deduct(eq(MEDICINE_ID), qty.capture(), any());
-        assertThat(qty.getValue()).isEqualByComparingTo("3.500");
+        // 用药不扣库存（库存扣减只在领用/退回做，用药再扣会双扣）
+        verify(medicineStockProvider, never()).deduct(any(), any(), any());
 
         ArgumentCaptor<MedRecord> captor = ArgumentCaptor.forClass(MedRecord.class);
         verify(medRecordMapper, times(1)).insert(captor.capture());
@@ -159,21 +155,6 @@ class MedRecordServiceImplTest {
         assertThat(saved.getDrugType()).isEqualTo(1);
         assertThat(saved.getEarNo()).isEqualTo("260501-001");
         assertThat(saved.getMedicineName()).isEqualTo("青霉素");
-    }
-
-    @Test
-    @DisplayName("addSingle: 仓库库存不足 → provider.deduct 抛 ServiceException，不 INSERT")
-    void testAddSingle_Insufficient() {
-        when(medicineStockProvider.listMedicineProductsByIds(anyCollection())).thenReturn(medicineProduct());
-        when(pigMapper.selectById(100123L)).thenReturn(pig(100123L, "260501-001", "PZ"));
-        doThrow(new ServiceException("药品库存不足"))
-            .when(medicineStockProvider).deduct(eq(MEDICINE_ID), any(BigDecimal.class), any());
-
-        assertThatThrownBy(() -> service.addSingle(singleBo("10.000")))
-            .isInstanceOf(ServiceException.class)
-            .hasMessageContaining("库存不足");
-
-        verify(medRecordMapper, never()).insert(any(MedRecord.class));
     }
 
     @Test
@@ -219,7 +200,7 @@ class MedRecordServiceImplTest {
     }
 
     @Test
-    @DisplayName("addBatch: N=3 happy path → 扣 dosage×3 + 1 master + 3 detail")
+    @DisplayName("addBatch: N=3 happy path → 1 master + 3 detail，master 存合计用量，且不扣库存")
     void testAddBatch_HappyPath() {
         when(medicineStockProvider.listMedicineProductsByIds(anyCollection())).thenReturn(medicineProduct());
         when(pigMapper.selectByIds(anyCollection())).thenReturn(List.of(
@@ -232,12 +213,13 @@ class MedRecordServiceImplTest {
 
         Long masterId = service.addBatch(batchBo(3, "2.000"));
 
-        // 总扣减 2 × 3 = 6.000，按 medicineId 落仓库库存
-        ArgumentCaptor<BigDecimal> qty = ArgumentCaptor.forClass(BigDecimal.class);
-        verify(medicineStockProvider, times(1)).deduct(eq(MEDICINE_ID), qty.capture(), any());
-        assertThat(qty.getValue()).isEqualByComparingTo("6.000");
+        // 用药不扣库存（纯记录）
+        verify(medicineStockProvider, never()).deduct(any(), any(), any());
 
-        verify(medRecordMapper, times(1)).insert(any(MedRecord.class));
+        // master 行存合计用量 2 × 3 = 6.000
+        ArgumentCaptor<MedRecord> masterCaptor = ArgumentCaptor.forClass(MedRecord.class);
+        verify(medRecordMapper, times(1)).insert(masterCaptor.capture());
+        assertThat(masterCaptor.getValue().getMedicineDosage()).isEqualByComparingTo("6.000");
         verify(medRecordMapper, times(1)).insertBatch(any());
 
         assertThat(masterId).satisfiesAnyOf(
@@ -282,26 +264,6 @@ class MedRecordServiceImplTest {
         assertThatThrownBy(() -> service.addBatch(batchBo(3, "1.0")))
             .isInstanceOf(ServiceException.class)
             .hasMessageContaining("终态");
-    }
-
-    @Test
-    @DisplayName("addBatch: 库存不足 → 拒绝 + 不 INSERT")
-    void testAddBatch_Insufficient() {
-        when(medicineStockProvider.listMedicineProductsByIds(anyCollection())).thenReturn(medicineProduct());
-        when(pigMapper.selectByIds(anyCollection())).thenReturn(List.of(
-            pig(100000L, "A001", "PZ"),
-            pig(100001L, "A002", "PZ"),
-            pig(100002L, "A003", "PZ")
-        ));
-        doThrow(new ServiceException("药品库存不足"))
-            .when(medicineStockProvider).deduct(eq(MEDICINE_ID), any(BigDecimal.class), any());
-
-        assertThatThrownBy(() -> service.addBatch(batchBo(3, "10.0")))
-            .isInstanceOf(ServiceException.class)
-            .hasMessageContaining("库存不足");
-
-        verify(medRecordMapper, never()).insert(any(MedRecord.class));
-        verify(medRecordMapper, never()).insertBatch(any());
     }
 
     @Test

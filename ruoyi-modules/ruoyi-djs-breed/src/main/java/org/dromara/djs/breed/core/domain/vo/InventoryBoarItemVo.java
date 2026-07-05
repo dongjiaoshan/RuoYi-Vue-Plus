@@ -17,6 +17,15 @@ public class InventoryBoarItemVo {
     /** 品种 code（djs_pig_breed，前端字典翻译） */
     private String breedCode;
 
+    /** 品系 code（djs_pig_strain） */
+    private String strainCode;
+
+    /** 品种中文名（t_farm_breed_info 主表优先 → djs_pig_breed 字典 → code 回落） */
+    private String breedName;
+
+    /** 品系中文名（t_farm_breed_info 主表优先 → djs_pig_strain 字典 → code 回落） */
+    private String strainName;
+
     /** 栋舍名称 */
     private String barnName;
 

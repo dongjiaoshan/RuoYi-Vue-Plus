@@ -45,9 +45,10 @@ public interface ITraceService {
      * @param earNo    猪只耳号（必填，已出栏可追溯猪只）
      * @param cutLabel 零售部位中文名（如「前腿肉」，写入 remark；字典 {@code djs_pork_cut_product}）
      * @param weight   产品重量 kg（必填，写入 remark）
+     * @param storeId  归属门店 FK（{@code t_md_store.id}，现场生码归属当前门店；无门店传 null）
      * @return 生成的追溯码 produce_code
      */
-    String genPorkOnsiteCode(String earNo, String cutLabel, java.math.BigDecimal weight);
+    String genPorkOnsiteCode(String earNo, String cutLabel, java.math.BigDecimal weight, Long storeId);
 
     /**
      * 写一条事件流水：INSERT trace_event（trace_content + trace_time=now + operator_id）。immutable。

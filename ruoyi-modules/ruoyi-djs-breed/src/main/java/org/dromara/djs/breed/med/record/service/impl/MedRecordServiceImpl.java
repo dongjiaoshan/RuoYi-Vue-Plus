@@ -50,13 +50,14 @@ import java.util.stream.Collectors;
  *   <li><b>使用药品下拉</b>：{@link MedRecordMapper#selectRecentUsedMedicineIds} 取近 3 天已领用的
  *       distinct 药品（按 operatorId 限定 mp 当前用户），药品名/单位/规格/库存由仓库
  *       {@link MedicineStockProvider#listMedicineProductsByIds} 解析。不再依赖批次/t_breed_medicine_info。</li>
- *   <li><b>批量扣减仓库库存</b>（ADR-0012）：addBatch 触发的扣减 = dosage × N，按 medicineId
- *       走 {@link MedicineStockProvider#deduct}（落仓库 location_stock，库存不足自抛业务异常）。</li>
- *   <li><b>事务包</b>：扣减库存 + INSERT master + N detail 单事务，
- *       任一步失败全回滚。N ≤ 200（DDL 已限定，BO {@code @Size(max=200)}）。</li>
+ *   <li><b>用药 = 纯记录，不扣库存</b>：库存扣减只在药品「领用/退回」（MedUsage）做，用药只能选
+ *       3 天内已领药品（领用时已扣过库存），用药再扣会双扣，故用药仅落台账。{@code dosageUnit}
+ *       为纯记录/展示字段（g/mg/ml/L/kg/片等），不做规格换算、不参与扣减。</li>
+ *   <li><b>事务包</b>：INSERT master + N detail 单事务，任一步失败全回滚。
+ *       N ≤ 200（DDL 已限定，BO {@code @Size(max=200)}）。</li>
  *   <li><b>operator_id 必填</b>：ADR-0007，所有 INSERT 取 LoginHelper.getUserId
  *       + 同步快照 sys_user.nick_name 到 operator_name。</li>
- *   <li><b>软删不回滚库存</b>：与 MedUsage 同语义（用药历史不可逆）。</li>
+ *   <li><b>软删语义</b>：与 MedUsage 同（用药历史不可逆）。</li>
  * </ul>
  *
  * @author djs
@@ -102,10 +103,7 @@ public class MedRecordServiceImpl extends DjsBaseServiceImpl<MedRecordMapper, Me
             throw new ServiceException("猪只已处终态（END）不可用药：" + pig.getEarNo());
         }
 
-        // 3. 按 medicineId 扣仓库库存（原子，库存不足自抛回滚）
-        deductByMedicine(bo.getMedicineId(), bo.getMedicineDosage());
-
-        // 4. INSERT 单只 record（drug_type=1）
+        // 3. INSERT 单只 record（drug_type=1）
         MedRecord entity = toEntity(bo);
         entity.setDrugType(1);
         entity.setEarNo(pig.getEarNo());
@@ -144,9 +142,8 @@ public class MedRecordServiceImpl extends DjsBaseServiceImpl<MedRecordMapper, Me
             }
         }
 
-        // 3. 一次扣 dosage × N（按 medicineId）
+        // 3. 计算合计用量（仅记录用，不扣库存）
         BigDecimal totalDosage = bo.getMedicineDosage().multiply(BigDecimal.valueOf(n));
-        deductByMedicine(bo.getMedicineId(), totalDosage);
 
         // 4. INSERT 1 条 master + N 条 detail
         MedRecord master = new MedRecord();
@@ -162,6 +159,7 @@ public class MedRecordServiceImpl extends DjsBaseServiceImpl<MedRecordMapper, Me
         master.setUsageId(bo.getUsageId());
         master.setScheduleId(bo.getScheduleId());
         master.setMedicineDosage(totalDosage); // master 行存合计
+        master.setDosageUnit(bo.getDosageUnit());
         master.setRemark(bo.getRemark());
         fillOperator(master, bo.getOperatorId(), bo.getOperatorName());
         baseMapper.insert(master);
@@ -185,6 +183,7 @@ public class MedRecordServiceImpl extends DjsBaseServiceImpl<MedRecordMapper, Me
             d.setUsageId(bo.getUsageId());
             d.setScheduleId(bo.getScheduleId());
             d.setMedicineDosage(bo.getMedicineDosage());
+            d.setDosageUnit(bo.getDosageUnit());
             d.setRemark(bo.getRemark());
             fillOperator(d, bo.getOperatorId(), bo.getOperatorName());
             details.add(d);
@@ -315,17 +314,6 @@ public class MedRecordServiceImpl extends DjsBaseServiceImpl<MedRecordMapper, Me
             throw new ServiceException("药品不存在或已删除：" + medicineId);
         }
         return products.get(0).getName();
-    }
-
-    /**
-     * 扣减仓库药品库存（ADR-0012：库存真值在仓库 location_stock，按 medicineId 扣减）。
-     * 库存不足由 provider 抛 ServiceException → 事务回滚。
-     */
-    private void deductByMedicine(Long medicineId, BigDecimal qty) {
-        if (qty == null || qty.signum() <= 0) {
-            throw new ServiceException("用药剂量必须大于 0");
-        }
-        medicineStockProvider.deduct(medicineId, qty, LoginHelper.getUserId());
     }
 
     /**

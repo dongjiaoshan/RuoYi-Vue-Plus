@@ -1,6 +1,7 @@
 package org.dromara.djs.breed.event.breeding.service.impl;
 
 import org.dromara.common.satoken.utils.LoginHelper;
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -21,6 +22,8 @@ import org.dromara.djs.breed.event.breeding.domain.query.BreedingQuery;
 import org.dromara.djs.breed.event.breeding.domain.vo.PigBreedingVo;
 import org.dromara.djs.breed.event.breeding.mapper.PigBreedingMapper;
 import org.dromara.djs.breed.event.breeding.service.IBreedingService;
+import org.dromara.djs.breed.breeding.domain.BreedConfig;
+import org.dromara.djs.breed.breeding.mapper.BreedConfigMapper;
 import org.dromara.djs.breed.farm.domain.Barn;
 import org.dromara.djs.breed.farm.domain.Pen;
 import org.dromara.djs.breed.farm.mapper.BarnMapper;
@@ -60,6 +63,7 @@ public class BreedingServiceImpl implements IBreedingService {
     private final BarnMapper barnMapper;
     private final PenMapper penMapper;
     private final IPigCoreService pigCoreService;
+    private final BreedConfigMapper breedConfigMapper;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -83,6 +87,8 @@ public class BreedingServiceImpl implements IBreedingService {
         }
 
         validate(bo);
+        // r181：本场公猪配种时，校验母系×父系的品种组合 + 品系组合是否已在 t_farm_breed_config 登记；未配置 → 拦截
+        validateBreedConfig(pig, bo);
 
         // 1. 写 t_farm_pig_breeding
         PigBreeding entity = new PigBreeding();
@@ -151,6 +157,49 @@ public class BreedingServiceImpl implements IBreedingService {
         if (!"1".equals(bo.getBreedingType()) && StringUtils.isBlank(bo.getSemenCode())) {
             throw new ServiceException(I18nMessages.t("breeding.semen_code.required"));
         }
+    }
+
+    /**
+     * r181：本场公猪配种（breedingType=1）时，母系×父系的「品种组合」与「品系组合」须在 {@code t_farm_breed_config} 登记。
+     * 任一未登记（含母/父品种或品系码本身为空 → 无法组合）→ 抛「暂不支持这样配种，请检查数据」。
+     * 精液类配种（breedingType≠1）无父系猪只 → 跳过；公猪耳号查不到 pig_info → 不在此拦（交原流程）。
+     */
+    private void validateBreedConfig(Pig sow, BreedingBo bo) {
+        if (!"1".equals(bo.getBreedingType()) || StringUtils.isBlank(bo.getBoarEarNo())) {
+            return;
+        }
+        Pig boar = pigMapper.selectOne(new LambdaQueryWrapper<Pig>()
+            .eq(Pig::getEarNo, bo.getBoarEarNo())
+            .eq(Pig::getDelFlag, "0")
+            .orderByDesc(Pig::getId)
+            .last("LIMIT 1"));
+        if (boar == null) {
+            return;
+        }
+        boolean breedOk = existsBreedConfig(1, sow.getPigBreedCode(), boar.getPigBreedCode());
+        boolean strainOk = existsBreedConfig(2, sow.getPigStrainCode(), boar.getPigStrainCode());
+        if (!breedOk || !strainOk) {
+            throw new ServiceException("暂不支持这样配种，请检查数据");
+        }
+    }
+
+    /** 育种配置表存在性：{@code breedStrain + 母码 + 父码}（母/父码 2 位零填充对齐配置表）。母或父码为空 → false（视为未配置）。 */
+    private boolean existsBreedConfig(int breedStrain, String motherCode, String fatherCode) {
+        if (StringUtils.isBlank(motherCode) || StringUtils.isBlank(fatherCode)) {
+            return false;
+        }
+        Long cnt = breedConfigMapper.selectCount(new LambdaQueryWrapper<BreedConfig>()
+            .eq(BreedConfig::getBreedStrain, breedStrain)
+            .eq(BreedConfig::getMotherCode, pad2(motherCode))
+            .eq(BreedConfig::getFatherCode, pad2(fatherCode))
+            .eq(BreedConfig::getDelFlag, "0"));
+        return cnt != null && cnt > 0;
+    }
+
+    /** 品种/品系码 2 位零填充（{@code '1'→'01'}），对齐 t_farm_breed_config 存码格式。 */
+    private static String pad2(String code) {
+        String c = code == null ? "" : code.trim();
+        return c.length() == 1 ? "0" + c : c;
     }
 
     private String resolveBarnName(Long barnId) {

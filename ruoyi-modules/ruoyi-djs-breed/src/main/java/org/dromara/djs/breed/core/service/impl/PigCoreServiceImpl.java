@@ -94,6 +94,13 @@ public class PigCoreServiceImpl implements IPigCoreService {
 
     private static final int RECENT_HISTORY_LIMIT = 20;
     private static final int LIST_HISTORY_LIMIT = 200;
+    /**
+     * 预产期展示固定天数：配种日 + 114（猪妊娠期恒定，Kevin 2026-07-05）。
+     * <p>展示用的预产期/断奶期固定 114/25，不随 admin 生产周期配置漂移；生产周期配置仅用于板块「筛选」（哪些母猪进分娩/断奶列表）。</p>
+     */
+    private static final int GESTATION_DAYS_DISPLAY = 114;
+    /** 断奶期展示固定天数：分娩日 + 25。 */
+    private static final int LACTATION_DAYS_DISPLAY = 25;
 
     private final PigMapper pigMapper;
     private final PigStatusRecordMapper statusRecordMapper;
@@ -444,9 +451,13 @@ public class PigCoreServiceImpl implements IPigCoreService {
             ? Optional.ofNullable(penMapper.selectById(pig.getPenId())).map(Pen::getPenName).orElse(null) : null;
         vo.setBarnName(barnName);
         vo.setPenName(penName);
-        if (StringUtils.isNotBlank(barnName) || StringUtils.isNotBlank(penName)) {
-            vo.setCurrentLocation((StringUtils.isNotBlank(barnName) ? barnName : "")
-                + (StringUtils.isNotBlank(penName) ? penName : ""));
+        if (StringUtils.isNotBlank(penName)) {
+            // pen_name 已含完整栋舍名前缀（如「育肥舍1栋散栏01」），直接用 penName 避免与 barnName 拼出重复前缀「育肥舍1栋育肥舍1栋散栏01」
+            vo.setCurrentLocation(StringUtils.isNotBlank(barnName) && !penName.startsWith(barnName)
+                ? barnName + penName : penName);
+        }
+        else if (StringUtils.isNotBlank(barnName)) {
+            vo.setCurrentLocation(barnName);
         }
         return vo;
     }
@@ -736,7 +747,9 @@ public class PigCoreServiceImpl implements IPigCoreService {
         }
 
         // dueType 为空 → dueDateMap 为空，所有 VO dueDate/due 为 null（向后兼容所有现有调用方）。
+        // dueDateMap（配置驱动）只用于下方板块「硬筛」+ chip 计数；展示用 displayDueMap（固定 114/25，Kevin 2026-07-05）。
         Map<Long, LocalDate> dueDateMap = computeDueDateMap(pigs, dueType);
+        Map<Long, LocalDate> displayDueMap = computeDisplayDueMap(pigs, dueType);
 
         // r52/r53（邓博 2026-06-30）：分娩/断奶板块按「后台生产配置天数」**硬筛**——只显示已满足对应天数的母猪，
         // 反转 D12X-MP-FARROW-WEANING-001 的「软提示列全部」做法（Kevin 2026-07-01：严格按邓博描述执行）。
@@ -832,9 +845,9 @@ public class PigCoreServiceImpl implements IPigCoreService {
                 }
             }
             // 到期软提示：dueDate（预产期/到断奶期）+ due 标记；无基准日期 → 留 null（mp 该格不渲染）
+            // 展示值用 displayDueMap（固定 配种日+114 / 分娩日+25），与板块硬筛的 dueDateMap（配置驱动）解耦。
             // 临产/临断奶阈值 = dueDate ≤ today + dueWindowDays（临近窗口内或已过期）即标 due：分娩 5 天 / 断奶 3 天。
-            // 即"还有 ≤N 天到期 / 已到期"才打「到断奶期 / 临产」红标；远未到期（如还差 35 天）不标。
-            LocalDate dd = dueDateMap.get(p.getId());
+            LocalDate dd = displayDueMap.get(p.getId());
             if (dd != null) {
                 vo.setDueDate(dd);
                 vo.setDue(!dd.isAfter(today.plusDays(dueWindowDays)));
@@ -909,6 +922,41 @@ public class PigCoreServiceImpl implements IPigCoreService {
         }
 
         // 未知 dueType：不计算
+        return Map.of();
+    }
+
+    /**
+     * 展示用到期日期：预产期 = 配种日 + 114（固定）；断奶期 = 分娩日 + 25（固定）。
+     *
+     * <p>与 {@link #computeDueDateMap}（读生产周期配置、驱动板块硬筛 + chip 计数）解耦：
+     * mp 分娩/断奶选猪卡上的「预产期 / 到断奶期」红字恒为 配种日+114 / 分娩日+25，不随 admin 配置漂移
+     * （Kevin 2026-07-05：配置只管筛选，展示固定）。基准日期缺失 → 不入 map（该格不渲染）。</p>
+     *
+     * @param pigs    候选母猪
+     * @param dueType {@code FARROW} / {@code WEANING}；其他值或空 → 空 map
+     * @return {@code pigId → 展示到期日}
+     */
+    private Map<Long, LocalDate> computeDisplayDueMap(List<Pig> pigs, String dueType) {
+        if (StringUtils.isBlank(dueType) || pigs.isEmpty()) {
+            return Map.of();
+        }
+        if ("FARROW".equalsIgnoreCase(dueType)) {
+            return pigs.stream()
+                .filter(p -> p.getId() != null && p.getLastMatingDate() != null)
+                .collect(Collectors.toMap(Pig::getId, p -> p.getLastMatingDate().plusDays(GESTATION_DAYS_DISPLAY), (a, b) -> a));
+        }
+        if ("WEANING".equalsIgnoreCase(dueType)) {
+            Set<Long> pigIds = pigs.stream().map(Pig::getId).filter(Objects::nonNull).collect(Collectors.toSet());
+            if (pigIds.isEmpty()) {
+                return Map.of();
+            }
+            Map<Long, LocalDate> lastFarrowMap = pigMapper.selectLastFarrowDateByPigIds(pigIds).stream()
+                .filter(v -> v.getPigId() != null && v.getLastFarrowDate() != null)
+                .collect(Collectors.toMap(PigLastFarrowVo::getPigId, PigLastFarrowVo::getLastFarrowDate, (a, b) -> a));
+            Map<Long, LocalDate> dueMap = new HashMap<>(lastFarrowMap.size());
+            lastFarrowMap.forEach((pigId, lastFarrow) -> dueMap.put(pigId, lastFarrow.plusDays(LACTATION_DAYS_DISPLAY)));
+            return dueMap;
+        }
         return Map.of();
     }
 

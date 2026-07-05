@@ -16,9 +16,11 @@ import org.dromara.common.web.core.BaseController;
 import org.dromara.djs.breed.core.domain.vo.PigAvailableVo;
 import org.dromara.djs.warehouse.demand.core.enums.DemandEvent;
 import org.dromara.djs.warehouse.demand.domain.bo.AssignPigBo;
+import org.dromara.djs.warehouse.demand.domain.bo.DemandBatchConfirmBo;
 import org.dromara.djs.warehouse.demand.domain.bo.DemandManageBo;
 import org.dromara.djs.warehouse.demand.domain.query.DemandManageQuery;
 import org.dromara.djs.warehouse.demand.domain.vo.AuditHistoryEntryVo;
+import org.dromara.djs.warehouse.demand.domain.vo.DemandBatchConfirmResultVo;
 import org.dromara.djs.warehouse.demand.domain.vo.DemandGroupVo;
 import org.dromara.djs.warehouse.demand.domain.vo.DemandManageVo;
 import org.dromara.djs.warehouse.demand.domain.vo.DemandPigVo;
@@ -156,6 +158,31 @@ public class DemandManageController extends BaseController {
     public R<Void> cancel(@PathVariable Long id, @RequestParam(required = false) String remark) {
         statusService.transition(id, DemandEvent.CANCEL, LoginHelper.getUserId(), remark);
         return R.ok();
+    }
+
+    /**
+     * 批量确认需求（row41）：确认选中「需求日期+产品」分组下所有 SUBMITTED 态需求单，
+     * 逐条走确认状态机（逻辑与「查看需求」里的单条确认一致）。
+     *
+     * <p>逐条互不阻断：白条未指定猪只 / 状态不符等单条失败被捕获后计入结果，返回「成功 X 条 / 失败 Y 条」。</p>
+     */
+    @SaCheckPermission("djs:warehouse:demand:confirm")
+    @Log(title = "批量确认需求", businessType = BusinessType.UPDATE)
+    @PostMapping("/batch-confirm")
+    public R<DemandBatchConfirmResultVo> batchConfirm(@Validated @RequestBody DemandBatchConfirmBo bo) {
+        List<Long> ids = demandService.listSubmittedIdsByGroups(bo.getGroups());
+        DemandBatchConfirmResultVo result = new DemandBatchConfirmResultVo();
+        Long operator = LoginHelper.getUserId();
+        for (Long id : ids) {
+            try {
+                statusService.transition(id, DemandEvent.CONFIRM, operator, bo.getRemark());
+                result.setConfirmed(result.getConfirmed() + 1);
+            } catch (Exception e) {
+                result.setFailed(result.getFailed() + 1);
+                result.getFailReasons().add("需求 " + id + "：" + e.getMessage());
+            }
+        }
+        return R.ok(result);
     }
 
     // =============== 指定猪只（白条业态）===============

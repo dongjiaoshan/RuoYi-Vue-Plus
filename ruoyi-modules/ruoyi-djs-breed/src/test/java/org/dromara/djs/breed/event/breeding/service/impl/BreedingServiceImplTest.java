@@ -10,6 +10,7 @@ import org.dromara.djs.breed.core.service.IPigCoreService;
 import org.dromara.djs.breed.event.breeding.domain.PigBreeding;
 import org.dromara.djs.breed.event.breeding.domain.bo.BreedingBo;
 import org.dromara.djs.breed.event.breeding.mapper.PigBreedingMapper;
+import org.dromara.djs.breed.breeding.mapper.BreedConfigMapper;
 import org.dromara.djs.breed.farm.mapper.BarnMapper;
 import org.dromara.djs.breed.farm.mapper.PenMapper;
 import org.junit.jupiter.api.BeforeEach;
@@ -65,12 +66,14 @@ class BreedingServiceImplTest {
     private PenMapper penMapper;
     @Mock
     private IPigCoreService pigCoreService;
+    @Mock
+    private BreedConfigMapper breedConfigMapper;
 
     private BreedingServiceImpl service;
 
     @BeforeEach
     void setup() {
-        service = new BreedingServiceImpl(breedingMapper, pigMapper, barnMapper, penMapper, pigCoreService);
+        service = new BreedingServiceImpl(breedingMapper, pigMapper, barnMapper, penMapper, pigCoreService, breedConfigMapper);
     }
 
     private Pig mkSow(Long id, PigLifecycle status) {
@@ -161,6 +164,31 @@ class BreedingServiceImplTest {
         assertThatThrownBy(() -> service.recordBreeding(bo))
             .isInstanceOf(ServiceException.class)
             .hasMessageContaining("breeding.semen_code");
+    }
+
+    @Test
+    @DisplayName("r181: 本场公猪配种父母系组合未在 breed_config 登记 → 拦截「暂不支持这样配种」")
+    void validate_breedConfig_missing_combo_blocks() {
+        Pig sow = mkSow(103L, PigLifecycle.DN);
+        sow.setPigBreedCode("01");
+        sow.setPigStrainCode("01");
+        when(pigMapper.selectById(103L)).thenReturn(sow);
+
+        Pig boar = new Pig();
+        boar.setId(900L);
+        boar.setEarNo("B-001");
+        boar.setPigBreedCode("02");
+        boar.setPigStrainCode("02");
+        when(pigMapper.selectOne(any())).thenReturn(boar);
+        // breed_config 无该组合 → selectCount 返 0 → 拦截
+        when(breedConfigMapper.selectCount(any())).thenReturn(0L);
+
+        BreedingBo bo = mkBo(103L, "1", "B-001");
+        assertThatThrownBy(() -> service.recordBreeding(bo))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("暂不支持这样配种");
+        verify(breedingMapper, never()).insert(any(PigBreeding.class));
+        verify(pigCoreService, never()).fireEvent(any());
     }
 
     @Test

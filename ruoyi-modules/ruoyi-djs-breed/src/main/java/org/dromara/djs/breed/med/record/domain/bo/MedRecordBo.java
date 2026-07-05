@@ -97,6 +97,12 @@ public class MedRecordBo extends BaseEntity {
     private BigDecimal medicineDosage;
 
     /**
+     * 剂量单位（记录用，g/mg/ml/L/kg/片 等，选填，不参与库存扣减）。
+     */
+    @Size(max = 32)
+    private String dosageUnit;
+
+    /**
      * 备注。
      */
     @Size(max = 500, message = "备注长度不能超过 {max} 个字符")

@@ -75,6 +75,10 @@ public class MedRecordVo implements Serializable {
     @ExcelProperty(value = "用药剂量")
     private BigDecimal medicineDosage;
 
+    /** 剂量单位（记录/展示用）。 */
+    @ExcelProperty(value = "剂量单位")
+    private String dosageUnit;
+
     @ExcelProperty(value = "操作人ID")
     private Long operatorId;
 

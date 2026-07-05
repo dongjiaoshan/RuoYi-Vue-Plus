@@ -41,33 +41,35 @@ public interface WarehouseStatAggregateMapper {
     // ============================================================
 
     /**
-     * 屠宰头数：当日燎毛间接收的猪只头数 = 当日 burn 记录按「每猪」去重数。
+     * 屠宰头数：当日燎毛间入库称重的猪只头数 = 当日在燎毛间称重的整白条（整猪）数。
      *
-     * <p>去重键 = {@code COALESCE(ear_no, burn_id)}：自养猪有 ear_no（同猪拆两半只 → 同 ear_no
-     * 多条 burn 记录，按 ear_no 收成一头）；外购猪无 ear_no（NULL），退用 burn_id（NOT NULL 唯一/头）
-     * 单独计一头。旧写法 {@code COUNT(DISTINCT ear_no)} 会静默丢掉全部 NULL ear_no 的外购猪。</p>
+     * <p>源为 {@code t_warehouse_bar_info}（白条主表，一行 = 一头整猪/整白条），按「入库称重」时刻
+     * {@code in_time}（weighBurn 回填）落当天 + {@code in_method=1}（燎毛间）+ {@code arrive_weight}
+     * 非空（已称重）计。一头猪一行、天然去重——<b>不能</b>走 {@code t_warehouse_pig_burn_record}
+     * 按 {@code COALESCE(ear_no, burn_id)} 去重：burn_id 是「产出行」粒度（同一头在燎毛间拆两个半只/
+     * 猪头/猪蹄逐条录入 → 多条 burn 记录、各自 burn_id 不同），外购猪 ear_no 又为 NULL 退到 burn_id，
+     * 一头整猪被拆成 N 条重复计（row198 客户实证「一头计 4」）。</p>
      */
     @Select("""
-        SELECT COUNT(DISTINCT COALESCE(ear_no, burn_id)) FROM t_warehouse_pig_burn_record
-        WHERE del_flag = '0' AND tenant_id = #{tenantId} AND DATE(burn_time) = #{statDate}
+        SELECT COUNT(*) FROM t_warehouse_bar_info
+        WHERE del_flag = '0' AND tenant_id = #{tenantId}
+          AND in_method = 1 AND arrive_weight IS NOT NULL AND DATE(in_time) = #{statDate}
         """)
     int countSlaughter(@Param("tenantId") String tenantId, @Param("statDate") String statDate);
 
     /**
-     * 接收重量：当日燎毛间称重总重 = Σ 每猪到场重（row93）。
+     * 接收重量：当日燎毛间入库称重总重 = Σ 每头整猪到场重 {@code arrive_weight}（row93）。
      *
-     * <p>{@code arrive_weight}（到场过磅，整猪重）在同一头猪的多条 burn 行里冗余复制 → 直接
-     * {@code SUM(arrive_weight)} 会按行重复累加偏大。按「每猪」{@code COALESCE(ear_no, burn_id)}
-     * 取每猪一次（{@code MAX} 取唯一值）后再 Σ。外购猪 ear_no=NULL 退 burn_id，避免多头外购被
-     * {@code GROUP BY ear_no} 并成单个 NULL 组只取 MAX（漏计）。
-     * 注意：{@code burn_weight}（白条入库重）是每半只独立值，{@code sumBarTotalWeight} 仍按行 SUM 不去重。</p>
+     * <p>与 {@link #countSlaughter} 同源同口径：源 {@code t_warehouse_bar_info}（一行 = 一头整猪），
+     * 按「入库称重」{@code in_time} 落当天 + {@code in_method=1} + {@code arrive_weight} 非空求和。
+     * 一头一行、天然不重复。<b>不能</b>走 burn_record {@code GROUP BY COALESCE(ear_no, burn_id)}：
+     * 外购猪 ear_no 空退 burn_id、同一头拆多条产出行 → arrive_weight 被按产出行重复累加偏大
+     * （row199 客户实证）。</p>
      */
     @Select("""
-        SELECT COALESCE(SUM(aw), 0) FROM (
-          SELECT MAX(arrive_weight) AS aw FROM t_warehouse_pig_burn_record
-          WHERE del_flag = '0' AND tenant_id = #{tenantId} AND DATE(burn_time) = #{statDate}
-          GROUP BY COALESCE(ear_no, burn_id)
-        ) t
+        SELECT COALESCE(SUM(arrive_weight), 0) FROM t_warehouse_bar_info
+        WHERE del_flag = '0' AND tenant_id = #{tenantId}
+          AND in_method = 1 AND arrive_weight IS NOT NULL AND DATE(in_time) = #{statDate}
         """)
     BigDecimal sumArriveWeight(@Param("tenantId") String tenantId, @Param("statDate") String statDate);
 
