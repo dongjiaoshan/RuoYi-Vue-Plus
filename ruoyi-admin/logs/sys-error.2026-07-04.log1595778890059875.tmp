@@ -1,0 +1,12 @@
+2026-07-05 01:02:40 [XNIO-1 task-2] ERROR o.d.c.w.h.GlobalExceptionHandler - 请求地址'/djs'不存在.
+2026-07-05 01:03:03 [XNIO-1 task-2] ERROR o.d.c.w.h.GlobalExceptionHandler - 验证码错误
+2026-07-05 01:04:25 [XNIO-1 task-2] ERROR o.d.c.s.h.SaTokenExceptionHandler - 请求地址'/system/user/getInfo',认证失败'客户端ID与Token不匹配：eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJsb2dpblR5cGUiOiJsb2dpbiIsImxvZ2luSWQiOiJzeXNfdXNlcjoxIiwicm5TdHIiOiI5Q0drbmxtaVdLdXVaaENHZFk1VndrVE1UMUZyaWxBSyIsImNsaWVudGlkIjoibXAtYXBwbGV0LWRvbmdqaWFvc2hhbiIsInRlbmFudElkIjoiMTAwMSIsInVzZXJJZCI6MSwidXNlck5hbWUiOiJhZG1pbiIsImRlcHRJZCI6MTAwLCJkZXB0TmFtZSI6IuS4nOinkuWxseWGnOWcuiJ9.-vcHhrn9eaBnVurczkEDThpcPRqj4mgnLXWYU1M6caY',无法访问系统资源
+2026-07-05 01:05:15 [XNIO-1 task-2] ERROR o.d.c.w.h.GlobalExceptionHandler - 没有访问权限，请联系管理员授权
+2026-07-05 01:05:21 [XNIO-1 task-2] ERROR o.d.c.w.h.GlobalExceptionHandler - 没有访问权限，请联系管理员授权
+2026-07-05 01:08:02 [XNIO-1 task-3] ERROR o.d.c.w.h.GlobalExceptionHandler - 没有访问权限，请联系管理员授权
+2026-07-05 01:09:00 [XNIO-1 task-3] ERROR o.d.c.s.h.SaTokenExceptionHandler - 请求地址'/system/user/getInfo',认证失败'token 无效：eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJsb2dpblR5cGUiOiJsb2dpbiIsImxvZ2luSWQiOiJzeXNfdXNlcjoxIiwicm5TdHIiOiI5Q0drbmxtaVdLdXVaaENHZFk1VndrVE1UMUZyaWxBSyIsImNsaWVudGlkIjoibXAtYXBwbGV0LWRvbmdqaWFvc2hhbiIsInRlbmFudElkIjoiMTAwMSIsInVzZXJJZCI6MSwidXNlck5hbWUiOiJhZG1pbiIsImRlcHRJZCI6MTAwLCJkZXB0TmFtZSI6IuS4nOinkuWxseWGnOWcuiJ9.-vcHhrn9eaBnVurczkEDThpcPRqj4mgnLXWYU1M6caY',无法访问系统资源
+2026-07-05 01:09:00 [XNIO-1 task-3] ERROR o.d.c.w.h.GlobalExceptionHandler - 请求地址'/getInfo'不存在.
+2026-07-05 01:10:30 [XNIO-1 task-2] ERROR o.d.c.w.h.GlobalExceptionHandler - 没有访问权限，请联系管理员授权
+2026-07-05 01:11:19 [XNIO-1 task-3] ERROR o.d.c.w.h.GlobalExceptionHandler - 密码输入错误1次
+2026-07-05 01:12:32 [XNIO-1 task-3] ERROR o.d.c.w.h.GlobalExceptionHandler - 没有访问权限，请联系管理员授权
+2026-07-05 01:13:04 [XNIO-1 task-3] ERROR o.d.c.w.h.GlobalExceptionHandler - 没有访问权限，请联系管理员授权

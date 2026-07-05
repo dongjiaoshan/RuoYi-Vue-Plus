@@ -43,6 +43,8 @@ import org.dromara.djs.breed.farm.mapper.BarnMapper;
 import org.dromara.djs.breed.farm.mapper.PenMapper;
 import org.dromara.djs.breed.event.growth.domain.PigGrowth;
 import org.dromara.djs.breed.event.growth.mapper.PigGrowthMapper;
+import org.dromara.djs.breed.event.intro.domain.PigIntroduce;
+import org.dromara.djs.breed.event.intro.mapper.PigIntroduceMapper;
 import org.dromara.djs.breed.production.service.IProductionCycleConfigService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.ApplicationEventPublisher;
@@ -117,6 +119,13 @@ public class PigCoreServiceImpl implements IPigCoreService {
      */
     @Autowired
     private OssService ossService;
+
+    /**
+     * 引种登记 mapper（详情顶卡猪只照片取引种凭证图）。字段注入理由同 {@link #pigGrowthMapper}：
+     * 保持 9 参构造器签名不变（{@code PigCoreServiceImplTest} 直接 new 构造）；仅 {@link #queryDetail} 用，单测不覆盖该路径。
+     */
+    @Autowired
+    private PigIntroduceMapper pigIntroduceMapper;
 
     public PigCoreServiceImpl(PigMapper pigMapper,
                               PigStatusRecordMapper statusRecordMapper,
@@ -341,6 +350,8 @@ public class PigCoreServiceImpl implements IPigCoreService {
             .orderByDesc(PigStatusRecord::getChangeTime, PigStatusRecord::getId)
             .last("LIMIT " + RECENT_HISTORY_LIMIT);
         detail.setRecentHistory(statusRecordMapper.selectVoList(w));
+        // R160：猪只照片顶卡主图取引种登记凭证图（mp `image` 优先，无则回退生长记录图）。
+        detail.setImage(resolveIntroPhotoUrl(pigId, detail.getEarNo()));
         // row61：字段名沿用 growthPhotoOssId（FE 已按 <image src> 消费），但存的是 OSS 解析后的**可访问 URL**
         // （非裸 ossId）；mp <image> 带不了 Bearer token，必须后端预解析。无生长记录 / 无照片 → null。
         detail.setGrowthPhotoOssId(resolveLatestGrowthPhotoUrl(pigId));
@@ -369,6 +380,38 @@ public class PigCoreServiceImpl implements IPigCoreService {
             return null;
         }
         // selectUrlByIds 多 id 时逗号拼接；单 id 取首段即可，trim 去空白
+        String first = url.split(",")[0].trim();
+        return StringUtils.isNotBlank(first) ? first : null;
+    }
+
+    /**
+     * 猪只照片「可访问 URL」（R160）：取引种登记凭证图首张。
+     * <p>引种记录反查：内部引种 {@code pig_id} 直接命中；外部引种 {@code pig_id} 空、按 {@code start_ear_no} 命中该批首头。
+     * 取最近一条带凭证图的引种记录 {@code proof_oss_ids} 第一张 ossId → URL；无引种记录 / 无凭证图 / 解析失败 → null
+     * （前端回退生长记录图 {@code growthPhotoOssId}）。</p>
+     */
+    private String resolveIntroPhotoUrl(Long pigId, String earNo) {
+        if (pigId == null && StringUtils.isBlank(earNo)) {
+            return null;
+        }
+        PigIntroduce intro = pigIntroduceMapper.selectOne(new LambdaQueryWrapper<PigIntroduce>()
+            .and(q -> q.eq(pigId != null, PigIntroduce::getPigId, pigId)
+                .or(StringUtils.isNotBlank(earNo), o -> o.eq(PigIntroduce::getStartEarNo, earNo)))
+            .isNotNull(PigIntroduce::getProofOssIds)
+            .ne(PigIntroduce::getProofOssIds, "")
+            .orderByDesc(PigIntroduce::getId)
+            .last("LIMIT 1"));
+        if (intro == null || StringUtils.isBlank(intro.getProofOssIds())) {
+            return null;
+        }
+        String firstOssId = intro.getProofOssIds().split(",")[0].trim();
+        if (StringUtils.isBlank(firstOssId)) {
+            return null;
+        }
+        String url = ossService.selectUrlByIds(firstOssId);
+        if (StringUtils.isBlank(url)) {
+            return null;
+        }
         String first = url.split(",")[0].trim();
         return StringUtils.isNotBlank(first) ? first : null;
     }
