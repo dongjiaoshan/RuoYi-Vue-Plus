@@ -137,7 +137,7 @@ public class WarehouseDashboardServiceImpl implements IWarehouseDashboardService
         // 横条 2「今日生产」8 项（对齐原型）+ 兼容旧 5 项
         vo.setTodaySlaughterPigCount(nz(dashboardMapper.countTodaySlaughterPigs(tenantId)));
         vo.setTodayWhiteBarWeight(nzd(dashboardMapper.sumTodayWhiteBarWeight(tenantId)));
-        vo.setTodayCutBarCount(nz(dashboardMapper.countTodayCutBars(tenantId)));
+        vo.setTodayCutBarCount(nzd(dashboardMapper.countTodayCutBars(tenantId)));
         vo.setTodayCutProductWeight(nzd(dashboardMapper.sumTodayCutProductWeight(tenantId)));
         vo.setTodayVegReceiveKinds(nz(dashboardMapper.countTodayVegReceiveKinds(tenantId)));
         vo.setTodayVegReceiveWeight(nzd(dashboardMapper.sumTodayVegReceiveWeight(tenantId)));
@@ -173,7 +173,7 @@ public class WarehouseDashboardServiceImpl implements IWarehouseDashboardService
         BigDecimal slaughterWeight = sumDec(yearRows, WarehouseIndicatorRecord::getSlaughterWeight);
         BigDecimal arriveWeight = sumDec(yearRows, WarehouseIndicatorRecord::getArriveWeight);
         BigDecimal barTotalWeight = sumDec(yearRows, WarehouseIndicatorRecord::getBarTotalWeight);
-        int cutBarCount = sumInt(yearRows, WarehouseIndicatorRecord::getCutBarCount);
+        BigDecimal cutBarCount = sumDec(yearRows, WarehouseIndicatorRecord::getCutBarCount);
         BigDecimal cutBarWeight = sumDec(yearRows, WarehouseIndicatorRecord::getCutBarWeight);
         BigDecimal cutProductWeight = sumDec(yearRows, WarehouseIndicatorRecord::getCutProductWeight);
 

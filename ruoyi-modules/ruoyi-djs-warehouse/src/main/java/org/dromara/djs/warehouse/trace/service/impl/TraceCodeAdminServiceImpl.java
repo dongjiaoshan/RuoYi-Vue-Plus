@@ -259,8 +259,12 @@ public class TraceCodeAdminServiceImpl
      * 按 {@code product_id} 反查产品业态）。仅在猪肉 tab（{@code codeType=pork}）生效——白条是猪肉链的中间产物，
      * 追溯码列表只展示最终肉品，白条产品码不列。果蔬 / 礼盒 tab 不加此约束。</p>
      *
-     * <p>查 belong_type='white_bar' 的产品 id 集合，主表 {@code notIn(product_id)} 排除；无白条产品时不加条件
-     * （全量放行，不误伤）。product_id 为 NULL 的码不受 notIn 影响（本就非白条产品）。</p>
+     * <p>查 belong_type='white_bar' 的产品 id 集合，主表排除；无白条产品时不加条件（全量放行，不误伤）。</p>
+     *
+     * <p><b>门店现场码 product_id=NULL 必须显式放行</b>（DENGBO-R34）：门店现做码「纯生码不查 product_info」
+     * 故 {@code product_id} 为 NULL。SQL 里 {@code NULL NOT IN (...)} 结果为 NULL（WHERE 当假）→ 裸 notIn 会
+     * 把所有门店现场码一并排除，导致门店打包生码后在猪肉追溯码管理里恒不可见。故改为
+     * {@code (product_id IS NULL OR product_id NOT IN (...))}，仅排白条产品、放行 NULL。</p>
      */
     private void applyPorkExcludeWhiteBarFilter(LambdaQueryWrapper<TraceCode> w, TraceCodeQuery query) {
         if (!TraceCodeTypeConst.PORK.equals(query.getCodeType())) {
@@ -275,7 +279,8 @@ public class TraceCodeAdminServiceImpl
         if (whiteBarProductIds.isEmpty()) {
             return;
         }
-        w.notIn(TraceCode::getProductId, whiteBarProductIds);
+        w.and(sub -> sub.isNull(TraceCode::getProductId)
+            .or().notIn(TraceCode::getProductId, whiteBarProductIds));
     }
 
     /**

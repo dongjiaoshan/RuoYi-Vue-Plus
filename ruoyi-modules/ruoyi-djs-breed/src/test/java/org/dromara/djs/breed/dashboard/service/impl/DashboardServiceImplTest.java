@@ -473,10 +473,11 @@ class DashboardServiceImplTest {
         mkt.put("backfatSum", new BigDecimal("90"));
         mkt.put("backfatCnt", 2L);
         when(aggregateQueryMapper.aggregateMarketingForDay(anyString(), any(), any())).thenReturn(mkt);
-        // 断奶总重 / 生长天数 stub
+        // 断奶总重 / 饲养天数(日增重分母) / 生长天数(独立指标) stub
         Map<String, Object> wean = new LinkedHashMap<>();
         wean.put("weanWeightSum", new BigDecimal("40"));
         wean.put("marketingWeightWeaned", new BigDecimal("200"));
+        wean.put("feedDaysSum", 200L);
         wean.put("growthDaysSum", 320L);
         when(aggregateQueryMapper.aggregateMarketingWeanForDay(anyString(), any(), any())).thenReturn(wean);
         // 不写月/年路径的 sow_performance（无母猪）
@@ -502,10 +503,12 @@ class DashboardServiceImplTest {
         assertThat(r.getMarketingPigCount()).isEqualTo(2);
         assertThat(r.getAvgMarketingWeight()).isEqualByComparingTo(new BigDecimal("100.000"));
         assertThat(r.getAvgBackfatThickness()).isEqualByComparingTo(new BigDecimal("45.000"));
-        // 净增重 = 出栏总重 200 - 断奶总重 40 = 160.000；日增重 = 160/320 = 0.500
+        // 净增重 = 出栏总重 200 - 断奶总重 40 = 160.000；
+        // 日增重 = 净增重 160 / 饲养总天数 200 = 0.800（分母用饲养天数 feed，非生长天数 growth）
         assertThat(r.getNetGainWeight()).isEqualByComparingTo(new BigDecimal("160.000"));
+        assertThat(r.getFeedTotalDays()).isEqualTo(200);
         assertThat(r.getGrowthTotalDays()).isEqualTo(320);
-        assertThat(r.getDailyGainWeight()).isEqualByComparingTo(new BigDecimal("0.500"));
+        assertThat(r.getDailyGainWeight()).isEqualByComparingTo(new BigDecimal("0.800"));
     }
 
     @Test

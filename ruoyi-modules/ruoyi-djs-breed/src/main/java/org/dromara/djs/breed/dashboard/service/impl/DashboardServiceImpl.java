@@ -917,10 +917,8 @@ public class DashboardServiceImpl implements IDashboardService {
         // 故被减数用同集合的出栏重 marketingWeightWeaned（非全部出栏 marketingWeight，
         // 后者含淘汰母猪/种猪出栏会让净增重虚高）。出栏总重列仍取全量 marketingWeight。
         //   饲养总天数 feedTotalDays = Σ(出栏日−断奶日+1)（从断奶起算）；
-        //   生长总天数 growthTotalDays（row186 口径）= Σ(出栏日−出生日+1)（从出生起算，整个生命周期）。
-        //   日增重分母 = 生长总天数（row184 口径）；分母 0 → 日增重 0。
-        //   注：净增重按「断奶后」增重、生长总天数按「出生后」天数——分子分母起点不一致（row186 只改生长天数），
-        //   日增重语义如需对齐待邓博复核。
+        //   生长总天数 growthTotalDays（row186 口径）= Σ(出栏日−出生日+1)（从出生起算，整个生命周期，独立展示指标）。
+        //   日增重 = 净增重 / 饲养总天数（row189 最终确认）：净增重按「断奶后」增重、饲养天数按「断奶」起算，分子分母同起点；分母 0 → 日增重 0。
         Map<String, Object> weanAgg = aggregateQueryMapper.aggregateMarketingWeanForDay(tenantId, dtFrom, dtTo);
         BigDecimal weanTotalWeight = mapBd(weanAgg, "weanWeightSum");
         int feedDays = mapInt(weanAgg, "feedDaysSum");
@@ -931,7 +929,7 @@ public class DashboardServiceImpl implements IDashboardService {
         r.setFeedTotalDays(feedDays);
         r.setGrowthTotalDays(growthDays);
         r.setNetGainWeight(scale3(netGain));
-        r.setDailyGainWeight(scale3(divide(netGain, growthDays)));
+        r.setDailyGainWeight(scale3(divide(netGain, feedDays)));
 
         // ---- 死亡分类（按 pig_type） ----
         r.setDeathFatteningCount(aggregateQueryMapper.countDeathByPigTypeInDay(tenantId, "fattening", dtFrom, dtTo));

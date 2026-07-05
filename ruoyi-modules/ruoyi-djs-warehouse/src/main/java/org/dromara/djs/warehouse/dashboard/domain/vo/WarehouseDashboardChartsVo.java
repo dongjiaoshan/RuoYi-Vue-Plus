@@ -115,8 +115,8 @@ public class WarehouseDashboardChartsVo implements Serializable {
     /** 横条 2「今日生产」2：白条总重（kg，今日燎毛 burn_weight 合计）。 */
     private BigDecimal todayWhiteBarWeight;
 
-    /** 横条 2「今日生产」3：分割白条（头，今日分割记录数）。 */
-    private Integer todayCutBarCount;
+    /** 横条 2「今日生产」3：分割白条数（今日转入分割车间白条数；半只计 0.5、整只计 1，故为小数）。 */
+    private BigDecimal todayCutBarCount;
 
     /** 横条 2「今日生产」4：分割猪只产品总重（kg，今日 ear_no 来源生产记录重量）。 */
     private BigDecimal todayCutProductWeight;
@@ -184,7 +184,7 @@ public class WarehouseDashboardChartsVo implements Serializable {
         // 今日生产 8 项 + 兼容旧 5 项
         vo.setTodaySlaughterPigCount(0);
         vo.setTodayWhiteBarWeight(BigDecimal.ZERO);
-        vo.setTodayCutBarCount(0);
+        vo.setTodayCutBarCount(BigDecimal.ZERO);
         vo.setTodayCutProductWeight(BigDecimal.ZERO);
         vo.setTodayVegReceiveKinds(0);
         vo.setTodayVegReceiveWeight(BigDecimal.ZERO);

@@ -40,8 +40,8 @@ public class WarehousePorkEfficiencyVo implements Serializable {
 
     // ====== 年度分割指标统计 4 KPI（原型「年度分割指标统计」）======
 
-    /** 分割头数（当年日分割白条数之和）。 */
-    private Integer cutBarCount;
+    /** 分割白条数（当年日分割白条数之和；半只计 0.5、整只计 1，故为小数）。 */
+    private BigDecimal cutBarCount;
     /** 分割总重（吨，当年日分割白条总重之和 / 1000）。 */
     private BigDecimal cutBarWeightTon;
     /** 分割品总重（吨，当年日分割产品总重之和 / 1000）。 */

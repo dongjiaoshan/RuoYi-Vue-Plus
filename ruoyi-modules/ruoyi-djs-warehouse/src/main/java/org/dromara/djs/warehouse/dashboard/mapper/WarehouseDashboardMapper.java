@@ -233,17 +233,18 @@ public interface WarehouseDashboardMapper {
     BigDecimal sumTodayWhiteBarWeight(@Param("tenantId") String tenantId);
 
     /**
-     * 今日分割白条头数（分割记录 = 已分割白条，按 pickup_time 当天计）。
+     * 今日分割白条数（当日转入分割车间白条数；半只计 0.5、整只计 1，row195 客户口径，按 pickup_time 当天计）。
      *
      * @param tenantId 租户
-     * @return COUNT(*) t_warehouse_pig_cut_record WHERE DATE(pickup_time)=CURDATE()，无记录返 0
+     * @return Σ CASE is_half(1→0.5 / 2→1) WHERE DATE(pickup_time)=CURDATE() AND white_bar_id 非空，无记录返 0
      */
-    @Select("SELECT COUNT(*) "
+    @Select("SELECT COALESCE(SUM(CASE WHEN is_half = 1 THEN 0.5 WHEN is_half = 2 THEN 1 ELSE 1 END), 0) "
         + "  FROM t_warehouse_pig_cut_record "
         + " WHERE tenant_id = #{tenantId} "
         + "   AND DATE(pickup_time) = CURDATE() "
+        + "   AND white_bar_id IS NOT NULL "
         + "   AND del_flag = '0'")
-    Integer countTodayCutBars(@Param("tenantId") String tenantId);
+    BigDecimal countTodayCutBars(@Param("tenantId") String tenantId);
 
     /**
      * 今日分割猪只产品总重（来源耳号非空的生产记录重量合计 kg = 猪肉产品产出）。

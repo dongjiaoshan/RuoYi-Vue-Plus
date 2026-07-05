@@ -43,8 +43,8 @@ public class WarehouseIndicatorRecordVo implements Serializable {
     /** 白条出品率%。 */
     private BigDecimal barYieldRate;
 
-    /** 分割白条数。 */
-    private Integer cutBarCount;
+    /** 分割白条数（半只计 0.5、整只计 1）。 */
+    private BigDecimal cutBarCount;
     /** 预冷损耗。 */
     private BigDecimal precoolLoss;
     /** 分割产品总重。 */

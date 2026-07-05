@@ -65,8 +65,9 @@ public class WarehouseIndicatorRecord extends TenantEntity {
     private BigDecimal barYieldRate;
 
     // ---- 分割段 ----
-    /** 分割白条数（当日转入分割车间的白条数量 = 当日领用 cut_record 数）。 */
-    private Integer cutBarCount;
+    /** 分割白条数（当日转入分割车间的白条数量；半只计 0.5、整只计 1，故为小数）。 */
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
+    private BigDecimal cutBarCount;
     /** 预冷损耗（当日 loss_flow precool_loss 之和）。 */
     private BigDecimal precoolLoss;
     /** 分割产品总重（当日分割车间产出产品重之和）。 */

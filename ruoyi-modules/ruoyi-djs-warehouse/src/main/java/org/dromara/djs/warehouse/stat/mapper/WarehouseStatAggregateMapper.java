@@ -94,17 +94,19 @@ public interface WarehouseStatAggregateMapper {
     BigDecimal sumOutsourceWeight(@Param("tenantId") String tenantId, @Param("statDate") String statDate);
 
     /**
-     * 分割白条数：当日转入分割车间的【整白条】数量（按 white_bar_id 去重）。
+     * 分割白条数：当日转入分割车间的白条数量，半只计 0.5、整只计 1（row195 客户最新口径）。
      *
-     * <p>邓博 B2 口径（2026-06-29）：一个白条分割成 2 个半只仍记 1 条。cut_record 一行 = 一次领用
-     * （整猪可拆 2 半只分次领用 → 多行同 white_bar_id），故用 {@code COUNT(DISTINCT white_bar_id)}
-     * 而非 {@code COUNT(*)}（领用行数）。white_bar_id 为 NULL 的行不计入（非整白条）。</p>
+     * <p>cut_record 一行 = 一次领用；{@code is_half}=1 半扇（0.5）/ =2 整只（1）。按领用行逐行加权求和
+     * （整猪拆 2 半只分次领用 → 2 行各 0.5 = 1，与整只一致；只领 1 个半扇 → 0.5）。
+     * white_bar_id 为 NULL 的行不计入（非整白条）。</p>
      */
     @Select("""
-        SELECT COUNT(DISTINCT white_bar_id) FROM t_warehouse_pig_cut_record
+        SELECT COALESCE(SUM(CASE WHEN is_half = 1 THEN 0.5 WHEN is_half = 2 THEN 1 ELSE 1 END), 0)
+        FROM t_warehouse_pig_cut_record
         WHERE del_flag = '0' AND tenant_id = #{tenantId} AND DATE(pickup_time) = #{statDate}
+          AND white_bar_id IS NOT NULL
         """)
-    int countCutBar(@Param("tenantId") String tenantId, @Param("statDate") String statDate);
+    java.math.BigDecimal countCutBar(@Param("tenantId") String tenantId, @Param("statDate") String statDate);
 
     /** 分割白条总重：当日白条出库总重 = Σ cut_record.pickup_weight（pickup_time）。 */
     @Select("""

@@ -546,9 +546,9 @@ public interface AggregateQueryMapper {
      * <ul>
      *   <li>weanTotalWeight = Σ pi.wean_weight；marketingWeightWeaned = Σ m.out_weight（同集合）。</li>
      *   <li>feedDaysSum（饲养总天数）= Σ (DATEDIFF(出栏日, 断奶日) + 1)（含头含尾，每头 +1）——从断奶起算。</li>
-     *   <li>growthDaysSum（生长总天数，row186 口径）= Σ (DATEDIFF(出栏日, 出生日) + 1)；日增重分母。
+     *   <li>growthDaysSum（生长总天数，row186 口径）= Σ (DATEDIFF(出栏日, 出生日) + 1)；独立展示指标。
      *       生长按整个生命周期从出生起算（区别于饲养从断奶起算）；birth_date 为空的行 DATEDIFF 返 NULL，
-     *       SUM 自动跳过。</li>
+     *       SUM 自动跳过。日增重分母用 feedDaysSum（row189 最终确认，与净增重同起点）。</li>
      * </ul>
      * 集合口径：仅计入有断奶快照的出栏猪（wean_date 非空，与净增重同集合）。net_gain/daily_gain 公式在 service 层。</p>
      *

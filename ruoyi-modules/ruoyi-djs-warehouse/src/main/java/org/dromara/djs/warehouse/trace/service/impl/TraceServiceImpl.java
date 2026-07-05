@@ -192,7 +192,11 @@ public class TraceServiceImpl
         traceCode.setRemark(buildOnsiteRemark(cutLabel, weight));
         insertTraceCode(traceCode);
 
-        // c. 写一条 in_stock 事件锚定现场生码时刻（operator=当前门店操作员）
+        // c. 写 arrival(到店) + in_stock 事件锚定现场生码时刻（operator=当前门店操作员）。
+        //    arrival 必写：猪肉追溯码管理列表按「到店日期」= arrival 事件过滤，门店现做码若无 arrival 事件
+        //    永远被日期区间排除（DENGBO-R34：门店打包生码后应在猪肉追溯码管理可见，来源=门店）。
+        //    门店现做 = 白条已到店后现场分割，到店时刻即生码时刻。
+        recordEvent(produceCode, TraceContentConst.ARRIVAL);
         recordEvent(produceCode, TraceContentConst.IN_STOCK);
 
         // d. 按耳号回填上游 4 事件（marketing/singe/slaughter/acid，真实时间戳），补齐链路
