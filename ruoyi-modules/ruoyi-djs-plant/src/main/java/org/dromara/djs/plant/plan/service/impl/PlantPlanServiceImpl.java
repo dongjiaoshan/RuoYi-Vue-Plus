@@ -458,7 +458,11 @@ public class PlantPlanServiceImpl extends DjsBaseServiceImpl<PlantPlanMapper, Pl
         LambdaQueryWrapper<PlantDetails> lqw = new LambdaQueryWrapper<PlantDetails>()
             .in(PlantDetails::getPlotId, plotIds)
             .isNotNull(PlantDetails::getEarliestHarvestdate)
-            .isNotNull(PlantDetails::getLastHarvestdate);
+            .isNotNull(PlantDetails::getLastHarvestdate)
+            // 已采摘完成（含退茬）的历史茬口 = 地块已释放为空地，不再参与采摘期重叠校验，
+            // 允许在其上继续种下一茬（harvest_status='completed' 表示该茬采收结束、地块空闲）。
+            // 仍在种/采（pending / picking）的茬口保留冲突防护。
+            .ne(PlantDetails::getHarvestStatus, "completed");
         if (excludePlanId != null) {
             lqw.ne(PlantDetails::getPlantId, excludePlanId);
         }

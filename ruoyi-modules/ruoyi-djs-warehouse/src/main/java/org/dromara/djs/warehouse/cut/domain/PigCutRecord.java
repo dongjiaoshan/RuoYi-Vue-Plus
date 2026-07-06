@@ -132,6 +132,15 @@ public class PigCutRecord extends TenantEntity {
     private String cutStatus;
 
     /**
+     * 出库类型（字典 {@code djs_pig_cut_out_type}）：{@code cut}=分割车间 / {@code ship}=发货月台 / {@code warehouse}=仓库出库。
+     *
+     * <p>本表定位为「白条领用表」：白条领用页 3 个出库位置确认出库时都写一条记录。仅 {@code cut} 后续进分割
+     * （有分割品重量/损耗）；{@code ship/warehouse} 领用即终态（{@code cut_status='done'}）。分割统计
+     * （分割白条数/总重/率、trace 领用时点）只统计 {@code out_type='cut'}，ship/warehouse 不计入分割口径。</p>
+     */
+    private String outType;
+
+    /**
      * 凭证图 OSS IDs CSV（biz_type=warehouse_pig_cut）。
      */
     private String proofOssIds;

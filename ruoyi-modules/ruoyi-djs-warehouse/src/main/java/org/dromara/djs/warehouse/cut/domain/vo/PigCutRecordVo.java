@@ -165,6 +165,10 @@ public class PigCutRecordVo implements Serializable {
     @ExcelProperty(value = "状态")
     private String cutStatus;
 
+    /** 出库类型：cut=分割车间 / ship=发货月台 / warehouse=仓库出库（字典 djs_pig_cut_out_type）。 */
+    @ExcelProperty(value = "出库类型")
+    private String outType;
+
     @ExcelProperty(value = "凭证图IDs")
     private String proofOssIds;
 

@@ -26,6 +26,7 @@ import org.dromara.djs.breed.core.domain.vo.PigSearchVo;
 import org.dromara.djs.breed.core.domain.vo.PigStatusRecordVo;
 import org.dromara.djs.breed.core.domain.vo.PigVo;
 import org.dromara.djs.breed.core.enums.PigEndReason;
+import org.dromara.djs.breed.core.util.PigAgeUtil;
 import org.dromara.djs.breed.core.enums.PigLifecycle;
 import org.dromara.djs.breed.core.enums.PigStatusEvent;
 import org.dromara.djs.breed.core.event.PigStateChangedEvent;
@@ -508,6 +509,11 @@ public class PigCoreServiceImpl implements IPigCoreService {
         // 按 pigType 分支只在对应 tab 触发对应聚合（避免无谓查询）。
         enrichSowLitterStats(page.getRecords());
         enrichBoarMatingCount(page.getRecords());
+        // 回填日龄（今天 - birth_date，缺则 introduce_date），供 mp 猪只卡片显示
+        LocalDate today = LocalDate.now();
+        for (PigVo vo : page.getRecords()) {
+            vo.setAgeDays(PigAgeUtil.ageDaysAt(vo.getBirthDate(), vo.getIntroduceDate(), today));
+        }
         return TableDataInfo.build(page);
     }
 

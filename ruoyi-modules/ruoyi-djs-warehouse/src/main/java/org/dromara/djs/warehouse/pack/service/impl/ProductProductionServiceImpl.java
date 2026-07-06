@@ -16,6 +16,7 @@ import org.dromara.djs.common.store.mapper.StoreMapper;
 import org.dromara.djs.plant.plot.domain.PlotInfo;
 import org.dromara.djs.plant.plot.mapper.PlotInfoMapper;
 import org.dromara.djs.warehouse.check.service.IStockCheckService;
+import org.dromara.djs.warehouse.cross.domain.BarInfo;
 import org.dromara.djs.warehouse.cross.mapper.BarInfoMapper;
 import org.dromara.djs.warehouse.demand.domain.DemandManage;
 import org.dromara.djs.warehouse.demand.mapper.DemandManageMapper;
@@ -611,6 +612,17 @@ public class ProductProductionServiceImpl
             }
         }
 
+        // row205（邓博 2026-07-05）：发货月台出库补记「白条领用表」cut_record（out_type=ship，领用即终态）。
+        // 记出库位置 + 预冷损耗 + 排酸时长 + 目标门店/需求。target_demand_id 与门店下拉同口径（含已完成需求、优先未完成）
+        // ——门店因当天有该产品需求才可选，选中即回填该需求；无匹配需求 → null。分割统计只算 out_type='cut'，本行不计入。
+        BarInfo shipBar = whiteBarId != null ? barInfoMapper.selectById(whiteBarId) : null;
+        DemandManage shipDemand = demandManageMapper.selectShipTargetDemand(product.getId(), bo.getStoreId());
+        Long shipDemandId = shipDemand != null ? shipDemand.getId() : null;
+        Long shipCutRecordId = pigCutService.insertOutRecord("ship", shipBar, src, bo.getProductWeight(),
+            bo.getStoreId(), shipDemandId, userId);
+        log.info("[WHITEBAR-SHIP-OUT-RECORD] ship cut_record id={} storeId={} demandId={}",
+            shipCutRecordId, bo.getStoreId(), shipDemandId);
+
         // 生成追溯码回填 + 写 in_stock 事件（TRC-CORE-001 pork 链首个 genCode 入口）
         fillTraceCode(p, src.getEarNo(), null);
 
@@ -716,6 +728,13 @@ public class ProductProductionServiceImpl
                 log.info("[DENGBO-R17] warehouse-out bar 尚有未领产出行({})，不连坐整 bar，留 in_stock barId={}", remaining, whiteBarId);
             }
         }
+
+        // row205（邓博 2026-07-05）：仓库出库补记「白条领用表」cut_record（out_type=warehouse，领用即终态）。
+        // 记出库位置 + 预冷损耗 + 排酸时长；不发往门店（无 target_store_id/target_demand_id）。分割统计只算 out_type='cut'。
+        BarInfo whBar = whiteBarId != null ? barInfoMapper.selectById(whiteBarId) : null;
+        Long whCutRecordId = pigCutService.insertOutRecord("warehouse", whBar, src, bo.getProductWeight(),
+            null, null, userId);
+        log.info("[WAREHOUSE-OUT-RECORD] warehouse cut_record id={} outDest={}", whCutRecordId, bo.getOutDest());
 
         log.info("[DENGBO-R17] warehouse out done id={} produceNo={} belongType={} weight={} outDest={} traceCode={}",
             p.getId(), p.getProduceNo(), belongType, bo.getProductWeight(), bo.getOutDest(), p.getTraceCode());

@@ -107,13 +107,15 @@ public interface WarehouseStatAggregateMapper {
         FROM t_warehouse_pig_cut_record
         WHERE del_flag = '0' AND tenant_id = #{tenantId} AND DATE(pickup_time) = #{statDate}
           AND white_bar_id IS NOT NULL
+          AND out_type = 'cut'
         """)
     java.math.BigDecimal countCutBar(@Param("tenantId") String tenantId, @Param("statDate") String statDate);
 
-    /** 分割白条总重：当日白条出库总重 = Σ cut_record.pickup_weight（pickup_time）。 */
+    /** 分割白条总重：当日白条出库总重 = Σ cut_record.pickup_weight（pickup_time）。仅计分割领用（out_type='cut'）。 */
     @Select("""
         SELECT COALESCE(SUM(pickup_weight), 0) FROM t_warehouse_pig_cut_record
         WHERE del_flag = '0' AND tenant_id = #{tenantId} AND DATE(pickup_time) = #{statDate}
+          AND out_type = 'cut'
         """)
     BigDecimal sumCutBarWeight(@Param("tenantId") String tenantId, @Param("statDate") String statDate);
 

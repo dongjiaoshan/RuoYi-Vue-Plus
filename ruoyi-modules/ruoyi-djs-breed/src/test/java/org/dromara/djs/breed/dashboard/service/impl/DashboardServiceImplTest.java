@@ -544,17 +544,9 @@ class DashboardServiceImplTest {
         wb.put("sumDays", 24);
         wb.put("cnt", 3);
         when(aggregateQueryMapper.sowWeanBreedByStatus(anyString(), eq(1001L))).thenReturn(wb);
-        // NPD 时间线：断奶(DN,6/1) 起非生产 → 配种(PZ,6/9) 结束，区间 8 天
-        Map<String, Object> npd1 = new LinkedHashMap<>();
-        npd1.put("newStatus", "DN");
-        npd1.put("eventType", "WEAN");
-        npd1.put("changeDate", java.sql.Date.valueOf("2026-06-01"));
-        Map<String, Object> npd2 = new LinkedHashMap<>();
-        npd2.put("newStatus", "PZ");
-        npd2.put("eventType", "BREED");
-        npd2.put("changeDate", java.sql.Date.valueOf("2026-06-09"));
-        when(aggregateQueryMapper.selectSowStatusTimeline(anyString(), eq(1001L)))
-            .thenReturn(List.of(npd1, npd2));
+        // NPD（row113 邓博 2026-07-05 = admin row202）= Σduration_days where old∈{LC/KH/FQ/DN} 且 new=PZ 或 死淘
+        when(aggregateQueryMapper.sumSowNpdDurationDays(anyString(), eq(1001L)))
+            .thenReturn(new BigDecimal("62"));
         when(sowPerformanceMapper.selectOne(any())).thenReturn(null);
         // 让 trigger 其余路径不炸
         when(aggregateQueryMapper.snapshotByTypeStatus(anyString())).thenReturn(new ArrayList<>());
@@ -582,8 +574,8 @@ class DashboardServiceImplTest {
         assertThat(sp.getAvgBornPerLitter()).isEqualByComparingTo(new BigDecimal("12.000"));
         assertThat(sp.getAvgLiveBornPerLitter()).isEqualByComparingTo(new BigDecimal("11.000"));
         assertThat(sp.getAvgWeanedPerLitter()).isEqualByComparingTo(new BigDecimal("10.000"));
-        // NPD（row113 区间求和）= DATEDIFF(6/9, 6/1) = 8.00
-        assertThat(sp.getNpd()).isEqualByComparingTo(new BigDecimal("8.00"));
+        // NPD（row113 = Σduration_days）= 62 → scale2 62.00
+        assertThat(sp.getNpd()).isEqualByComparingTo(new BigDecimal("62.00"));
     }
 
     @Test

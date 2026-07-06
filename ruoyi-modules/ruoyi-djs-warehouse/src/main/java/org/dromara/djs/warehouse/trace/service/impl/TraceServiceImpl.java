@@ -374,6 +374,8 @@ public class TraceServiceImpl
             new LambdaQueryWrapper<PigCutRecord>()
                 .select(PigCutRecord::getPickupTime)
                 .eq(PigCutRecord::getWhiteBarId, whiteBarId)
+                // 白条领用表含 3 类出库；分割领用时点只取 out_type='cut'，防误读发货月台/仓库出库时刻
+                .eq(PigCutRecord::getOutType, "cut")
                 .isNotNull(PigCutRecord::getPickupTime)
                 .orderByDesc(PigCutRecord::getId)
                 .last("LIMIT 1"));

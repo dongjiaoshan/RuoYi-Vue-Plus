@@ -82,6 +82,9 @@ public class PigVo implements Serializable {
     @ExcelProperty(value = "引种日期")
     private LocalDate introduceDate;
 
+    /** 日龄（天）= 今天 - birth_date（缺则 introduce_date）；均缺 → null。列表 enrich 填充，供 mp 卡片显示。 */
+    private Integer ageDays;
+
     @ExcelProperty(value = "胎次")
     private Integer parity;
 

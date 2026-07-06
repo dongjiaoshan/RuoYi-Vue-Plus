@@ -66,7 +66,8 @@ public class AppletPlantManageDashboardServiceImpl implements IAppletPlantManage
             vo.setIdlePlotCount(0);
         } else {
             vo.setTotalPlotCount(nz(plot.getTotalPlotCount()));
-            vo.setPlantingPlotCount(nz(plot.getPlantingPlotCount()));
+            // 当前已种植地块数 = 总地块数 - 当前空地块数（非空地块即视为已种植）
+            vo.setPlantingPlotCount(nz(plot.getTotalPlotCount()) - nz(plot.getIdlePlotCount()));
             vo.setIdlePlotCount(nz(plot.getIdlePlotCount()));
         }
 

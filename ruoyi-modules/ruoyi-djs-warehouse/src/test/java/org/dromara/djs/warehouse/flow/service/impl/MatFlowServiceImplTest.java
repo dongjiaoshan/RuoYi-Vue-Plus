@@ -729,7 +729,7 @@ class MatFlowServiceImplTest {
     }
 
     @Test
-    @DisplayName("pickByBatch happy：batchId 非空 → 扣选中篮(deductStockById) + 1 行 dept_pick_out 流水(带 product_id/ear_no/plot_id 源标签) + 1 行 inhouse(带源标签)")
+    @DisplayName("pickByBatch happy(猪肉耳号卡 r164)：batchId 非空 → 按 (product,ear,库位) FIFO 扣该组篮(此处单篮 deductStockById) + 1 行 dept_pick_out 流水(带 product_id/ear_no 源标签) + 1 行 inhouse(带 ear_no 源标签)")
     void testPickByBatch_Happy() {
         Long batchId = 90011L;
         Long locId = 7003L;
@@ -738,12 +738,13 @@ class MatFlowServiceImplTest {
         basket.setLocationId(locId);
         basket.setProductId(PRODUCT_ID);
         basket.setEarNo("EAR-X");
-        basket.setPlotId(6010L);
         basket.setProductName("猪肉·精瘦肉");
         basket.setProductUnit("kg");
         basket.setProductStock(new BigDecimal("41.4"));
         basket.setDelFlag("0");
         when(locationStockMapper.selectById(batchId)).thenReturn(basket);
+        // r164：猪肉耳号卡走 consumePorkEarBaskets 的 (product,ear,库位) FIFO 查询
+        when(locationStockMapper.selectList(any())).thenReturn(java.util.List.of(basket));
 
         ProductInfo product = new ProductInfo();
         product.setId(PRODUCT_ID);
@@ -771,7 +772,7 @@ class MatFlowServiceImplTest {
         assertThat(f.getInoutType()).isEqualTo("OT");
         assertThat(f.getProductId()).isEqualTo(PRODUCT_ID);
         assertThat(f.getEarNo()).isEqualTo("EAR-X");
-        assertThat(f.getPlotId()).isEqualTo(6010L);
+        assertThat(f.getPlotId()).isNull();
         assertThat(f.getWarehouseId()).isEqualTo(locId);
         assertThat(f.getChangeNum()).isEqualByComparingTo("-10");
         assertThat(f.getChangeQuantity()).isEqualByComparingTo("10");
@@ -787,11 +788,59 @@ class MatFlowServiceImplTest {
         ProductInhouse ih = ihCap.getValue();
         assertThat(ih.getProductId()).isEqualTo(PRODUCT_ID);
         assertThat(ih.getEarNo()).isEqualTo("EAR-X");
-        assertThat(ih.getPlotId()).isEqualTo(6010L);
+        assertThat(ih.getPlotId()).isNull();
         assertThat(ih.getProductWeight()).isEqualByComparingTo("10");
         assertThat(ih.getMaterialId()).isEqualTo(PRODUCT_ID);
         assertThat(ih.getMaterialConsume()).isEqualByComparingTo("10");
         assertThat(ih.getLocationId()).isEqualTo(locId);
+    }
+
+    @Test
+    @DisplayName("pickByBatch 猪肉耳号卡跨篮 FIFO(r164)：同耳号同库位 2 篮(41.4+38) 领用 50 → FIFO 41.4+8.6 → 2 次 deductStockById + 2 行 inhouse")
+    void testPickByBatch_PorkEar_MultiBasket_FIFO() {
+        Long batchId = 90011L;
+        Long locId = 7003L;
+        LocationStock b1 = new LocationStock();
+        b1.setId(batchId);
+        b1.setLocationId(locId);
+        b1.setProductId(PRODUCT_ID);
+        b1.setEarNo("EAR-X");
+        b1.setProductName("猪肉·精瘦肉");
+        b1.setProductUnit("kg");
+        b1.setProductStock(new BigDecimal("41.4"));
+        b1.setDelFlag("0");
+        LocationStock b2 = new LocationStock();
+        b2.setId(90012L);
+        b2.setLocationId(locId);
+        b2.setProductId(PRODUCT_ID);
+        b2.setEarNo("EAR-X");
+        b2.setProductName("猪肉·精瘦肉");
+        b2.setProductUnit("kg");
+        b2.setProductStock(new BigDecimal("38"));
+        b2.setDelFlag("0");
+        when(locationStockMapper.selectById(batchId)).thenReturn(b1);
+        when(locationStockMapper.selectList(any())).thenReturn(java.util.List.of(b1, b2));
+        ProductInfo product = new ProductInfo();
+        product.setId(PRODUCT_ID);
+        product.setProductName("猪肉·精瘦肉");
+        product.setProductUnit("kg");
+        product.setProductType(1);
+        product.setBelongType("pork");
+        when(productInfoMapper.selectById(PRODUCT_ID)).thenReturn(product);
+        when(locationStockMapper.deductStockById(anyLong(), any(BigDecimal.class), eq(USER_ID))).thenReturn(1);
+
+        MatPickBo bo = new MatPickBo();
+        bo.setBatchId(batchId);
+        bo.setProductId(PRODUCT_ID);
+        bo.setQuantity(new BigDecimal("50"));
+        bo.setStockOutDest("门店发货");
+        service.pick(bo);
+
+        // FIFO：首篮扣满 41.4，次篮扣 8.6（跨篮，不只扣首篮）
+        verify(locationStockMapper, times(1)).deductStockById(eq(90011L), eq(new BigDecimal("41.4")), eq(USER_ID));
+        verify(locationStockMapper, times(1)).deductStockById(eq(90012L), eq(new BigDecimal("8.6")), eq(USER_ID));
+        // 2 行 inhouse（每扣一篮产一行，带 ear_no 源标签）
+        verify(productInhouseMapper, times(2)).insert(any(ProductInhouse.class));
     }
 
 }

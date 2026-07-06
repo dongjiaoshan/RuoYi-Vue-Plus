@@ -373,6 +373,12 @@ public class MatFlowServiceImpl implements IMatFlowService {
         if (isVegPlotBasket(basket)) {
             return pickVegPlot(bo, basket);
         }
+        // 猪肉「耳号卡」（r164：selectPorkIssueByEar 已按 (product_id, ear_no, location_id) 聚合，一卡一头猪同库位）：
+        // batchId = 该 (产品,耳号,库位) 组的 FIFO 首篮 id，篮带 ear_no（非蔬菜地块篮）→ 按 (productId, earNo, 首篮库位)
+        // 跨篮 FIFO 扣减整组（同耳号同库位可能多篮=多次入库），不只扣首篮（否则申请量 > 首篮余量误报库存不足）。
+        if (isPorkEarBasket(basket)) {
+            return pickPorkEar(bo, basket);
+        }
         if (basket.getProductStock() == null || basket.getProductStock().signum() <= 0) {
             throw new ServiceException("选中的篮子已无库存，无法领用（batchId=" + bo.getBatchId() + "）");
         }
@@ -566,6 +572,119 @@ public class MatFlowServiceImpl implements IMatFlowService {
         if (remaining.compareTo(BigDecimal.ZERO) > 0) {
             throw new ServiceException(
                 "库存不足：" + productName + " 该库位该地块可领 "
+                    + quantity.subtract(remaining).stripTrailingZeros().toPlainString()
+                    + (productUnit == null ? "" : productUnit) + "，申请 "
+                    + quantity.stripTrailingZeros().toPlainString() + (productUnit == null ? "" : productUnit));
+        }
+    }
+
+    /**
+     * 是否「猪肉耳号卡篮」：篮带 {@code ear_no}（耳号源标签）且 {@code product_id} 非空。
+     *
+     * <p>{@code selectPorkIssueByEar} 已按 {@code (product_id, ear_no, location_id)} 聚合，一卡 = 一头猪某产品在某库位
+     * （同耳号同库位多次入库=多篮聚合成一卡），卡片回传 {@code batchId} = 该组 FIFO 首篮 id。service 据此判别为耳号卡
+     * → 领/退/损按 {@code (productId, earNo, location)} 跨篮整组操作（不只扣首篮）。</p>
+     */
+    private boolean isPorkEarBasket(LocationStock basket) {
+        return basket.getEarNo() != null && !basket.getEarNo().isBlank()
+            && basket.getProductId() != null;
+    }
+
+    /**
+     * 猪肉「耳号卡」领用（r164）：mp 耳号卡 batchId = 该 {@code (产品, 耳号, 库位)} 组的 FIFO 首篮 id。按
+     * {@code (productId, earNo, 首篮库位)} 在<b>选中库位内</b>按 id 升序 FIFO 扣减该组多篮（同耳号同库位多次入库），
+     * 不跨库位借。与 {@link #pickVegPlot} 同范式（区别：耳号维度而非地块维度）。
+     */
+    private Long pickPorkEar(MatPickBo bo, LocationStock firstBasket) {
+        Long productId = firstBasket.getProductId();
+        String earNo = firstBasket.getEarNo();
+        // 一致性校验：BO 带的 productId 与首篮 product_id 须一致（前端从耳号卡选源，两者应同源）
+        if (bo.getProductId() != null && !bo.getProductId().equals(productId)) {
+            throw new ServiceException("选中猪肉卡与产品不匹配（card.productId=" + productId
+                + " / bo.productId=" + bo.getProductId() + "）");
+        }
+        Long firstLocId = firstBasket.getLocationId();
+        // 库位级业务锁（WMS-STOCK-001）：盘点进行中的库位禁出入库
+        stockCheckService.assertLocationUnlocked(firstLocId);
+        Long userId = resolveOperatorId(bo.getOperatorId());
+
+        ProductInfo product = productInfoMapper.selectById(productId);
+
+        // 1. 写一条 pick_out 流水（带 ear_no + product_id + white_bar 源标签；warehouse_id=首篮库位、量=总申请量）
+        StockFlow flow = new StockFlow();
+        flow.setFlowNo(generateFlowNo(INOUT_OUT));
+        flow.setFlowDate(new Date());
+        flow.setProductId(productId);
+        flow.setEarNo(earNo);
+        flow.setWhiteBarNo(firstBasket.getWhiteBarNo());
+        flow.setWarehouseId(firstLocId);
+        flow.setInoutType(INOUT_OUT);
+        flow.setFlowType(resolvePickFlowType(bo));
+        flow.setStockOutDest(bo.getStockOutDest());
+        flow.setChangeNum(bo.getQuantity().negate());
+        flow.setChangeQuantity(bo.getQuantity());
+        flow.setOperatorId(userId);
+        flow.setRemark(bo.getRemark());
+        flow.setProofOssIds(bo.getProofOssIds());
+        stockFlowMapper.insert(flow);
+
+        // 2. 同库位同耳号 FIFO 扣减 + 每篮产 product_inhouse（带篮 ear_no / white_bar / 库位标签 → 打包追溯）
+        consumePorkEarBaskets(productId, earNo, firstLocId, bo.getQuantity(), product, firstBasket, userId);
+
+        return flow.getId();
+    }
+
+    /**
+     * 猪肉按「{@code (product_id, ear_no, location_id)}」FIFO 扣减（{@link #pickPorkEar} 用，镜像 {@link #consumeVegPlotBaskets}）。
+     *
+     * <p>只扣选中库位内该耳号该产品的篮，按 id 升序 FIFO 逐篮扣减 {@code location_stock}，每扣一篮产一行
+     * {@code product_inhouse}（带该篮 {@code ear_no} / {@code white_bar_no} / 库位 → 猪肉打包追溯键）。该库位该耳号余量
+     * 不足 → 抛 {@link ServiceException} 回滚整笔（不跨库位拼凑）。</p>
+     */
+    private void consumePorkEarBaskets(Long productId, String earNo, Long locId, BigDecimal quantity,
+                                       ProductInfo product, LocationStock firstBasket, Long userId) {
+        List<LocationStock> baskets = locationStockMapper.selectList(
+            new LambdaQueryWrapper<LocationStock>()
+                .eq(LocationStock::getProductId, productId)
+                .eq(LocationStock::getEarNo, earNo)
+                .eq(LocationStock::getLocationId, locId)
+                .gt(LocationStock::getProductStock, BigDecimal.ZERO)
+                .orderByAsc(LocationStock::getId));
+        String productName = product != null ? product.getProductName() : firstBasket.getProductName();
+        Integer productType = product != null && product.getProductType() != null ? product.getProductType() : 1;
+        String productUnit = product != null ? product.getProductUnit() : firstBasket.getProductUnit();
+        BigDecimal remaining = quantity;
+        LocalDate today = LocalDate.now();
+        Date now = new Date();
+        for (LocationStock basket : baskets) {
+            if (remaining.compareTo(BigDecimal.ZERO) <= 0) {
+                break;
+            }
+            BigDecimal take = basket.getProductStock().min(remaining);
+            int affected = locationStockMapper.deductStockById(basket.getId(), take, userId);
+            if (affected == 0) {
+                // 并发抢占：该篮已被他人领走，跳过（不计入已领）
+                continue;
+            }
+            ProductInhouse inhouse = new ProductInhouse();
+            inhouse.setProduceDate(java.sql.Date.valueOf(today));
+            inhouse.setProduceTime(now);
+            inhouse.setProductId(productId);
+            inhouse.setProductName(productName);
+            inhouse.setProductType(productType);
+            inhouse.setProductUnit(productUnit);
+            inhouse.setProductWeight(take);
+            inhouse.setEarNo(basket.getEarNo());       // 篮子标签 = 耳号 → 打包追溯键
+            inhouse.setWhiteBarNo(basket.getWhiteBarNo());  // 白条号源标签（同耳号多半只区分，贯穿打包/追溯）
+            inhouse.setLocationId(basket.getLocationId());
+            inhouse.setMaterialId(productId);           // 原材料 = 自身
+            inhouse.setMaterialConsume(take);
+            productInhouseMapper.insert(inhouse);
+            remaining = remaining.subtract(take);
+        }
+        if (remaining.compareTo(BigDecimal.ZERO) > 0) {
+            throw new ServiceException(
+                "库存不足：" + productName + " 该库位该耳号可领 "
                     + quantity.subtract(remaining).stripTrailingZeros().toPlainString()
                     + (productUnit == null ? "" : productUnit) + "，申请 "
                     + quantity.stripTrailingZeros().toPlainString() + (productUnit == null ? "" : productUnit));
@@ -1302,6 +1421,10 @@ public class MatFlowServiceImpl implements IMatFlowService {
         if (isVegPlotBasket(basket)) {
             return lossVegPlot(bo, basket);
         }
+        // 猪肉耳号卡（r164）：损耗量按 (productId, earNo, location) FIFO 扣减整组多篮，不只扣首篮。
+        if (isPorkEarBasket(basket)) {
+            return lossPorkEar(bo, basket);
+        }
         Long locId = basket.getLocationId();
         // 库位级业务锁（WMS-STOCK-001）：盘点进行中的库位禁出入库（后端双保险）
         stockCheckService.assertLocationUnlocked(locId);
@@ -1401,6 +1524,75 @@ public class MatFlowServiceImpl implements IMatFlowService {
         reduceTodayInhouseForBasket(productId, null, plotId, bo.getQuantity());
 
         // 统一损耗台账双写（WMS-LOSS-001，行59 录入损耗）：productId 走地块卡 product_id、locationId 走首篮库位。
+        lossFlowService.record("manual_loss", productId, bo.getQuantity(), firstLocId, userId, "mat", null, flow.getId());
+
+        return flow.getId();
+    }
+
+    /**
+     * 猪肉「耳号卡」损耗（r164，{@link #lossByBatch} 识别耳号卡后走此）：损耗量按 {@code (productId, earNo, location)}
+     * 在选中库位内按 id 升序 FIFO 逐篮扣减 {@code location_stock}（同耳号同库位多篮 = 多次入库），不只扣首篮。
+     * 损耗 = 不可逆消耗、不产 inhouse；扣不够（账面已不足）剩余量打 warn 不抛（与现状 loss 语义一致，账实倒挂留痕）。
+     */
+    private Long lossPorkEar(MatLossBo bo, LocationStock firstBasket) {
+        Long productId = firstBasket.getProductId();
+        String earNo = firstBasket.getEarNo();
+        Long firstLocId = firstBasket.getLocationId();
+        stockCheckService.assertLocationUnlocked(firstLocId);
+        Long userId = resolveOperatorId(bo.getOperatorId());
+
+        ProductInfo product = productId == null ? null : productInfoMapper.selectById(productId);
+        String productName = product != null ? product.getProductName() : firstBasket.getProductName();
+        String productUnit = product != null ? product.getProductUnit() : firstBasket.getProductUnit();
+
+        // 1. 校验今日额度（按 user+product 统计，与现状一致）
+        if (productId != null) {
+            ensureTodayCapacity(productId, bo.getQuantity(), productName, productUnit, product == null ? null : product.getBelongType());
+        }
+
+        // 2. INSERT loss 流水（带 ear_no + product_id + white_bar_no 源标签，warehouse_id=首篮库位、量=总损耗量）
+        StockFlow flow = new StockFlow();
+        flow.setFlowNo(generateFlowNo(INOUT_OUT));
+        flow.setFlowDate(new Date());
+        flow.setProductId(productId);
+        flow.setEarNo(earNo);
+        flow.setWhiteBarNo(firstBasket.getWhiteBarNo());
+        flow.setWarehouseId(firstLocId);
+        flow.setInoutType(INOUT_OUT);
+        flow.setFlowType(FLOW_LOSS);
+        flow.setChangeNum(bo.getQuantity().negate());
+        flow.setChangeQuantity(bo.getQuantity());
+        flow.setOperatorId(userId);
+        flow.setRemark(bo.getRemark());
+        flow.setProofOssIds(bo.getProofOssIds());
+        stockFlowMapper.insert(flow);
+
+        // 3. 同库位同耳号各篮按 id 升序 FIFO 逐篮扣减 location_stock；扣不够剩余量打 warn 不抛（账实倒挂留痕）
+        List<LocationStock> baskets = locationStockMapper.selectList(
+            new LambdaQueryWrapper<LocationStock>()
+                .eq(LocationStock::getProductId, productId)
+                .eq(LocationStock::getEarNo, earNo)
+                .eq(LocationStock::getLocationId, firstLocId)
+                .gt(LocationStock::getProductStock, BigDecimal.ZERO)
+                .orderByAsc(LocationStock::getId));
+        BigDecimal remaining = bo.getQuantity();
+        for (LocationStock basket : baskets) {
+            if (remaining.compareTo(BigDecimal.ZERO) <= 0) {
+                break;
+            }
+            BigDecimal take = basket.getProductStock().min(remaining);
+            int affected = locationStockMapper.deductStockById(basket.getId(), take, userId);
+            if (affected == 0) {
+                continue;
+            }
+            remaining = remaining.subtract(take);
+        }
+        if (remaining.compareTo(BigDecimal.ZERO) > 0) {
+            log.warn("按耳号卡 loss 流水已记，但账面不足未扣尽：user={}, product={}, ear={}, loc={}, 剩余未扣={}",
+                userId, productId, earNo, firstLocId, remaining.stripTrailingZeros().toPlainString());
+        }
+
+        // 4. 统一损耗台账双写（WMS-LOSS-001）：productId 走耳号卡 product_id、locationId 走首篮库位。
         lossFlowService.record("manual_loss", productId, bo.getQuantity(), firstLocId, userId, "mat", null, flow.getId());
 
         return flow.getId();

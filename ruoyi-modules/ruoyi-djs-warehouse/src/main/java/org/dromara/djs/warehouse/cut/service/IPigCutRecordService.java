@@ -2,6 +2,7 @@ package org.dromara.djs.warehouse.cut.service;
 
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
+import org.dromara.djs.warehouse.cross.domain.BarInfo;
 import org.dromara.djs.warehouse.cut.domain.bo.PigCutDoneBo;
 import org.dromara.djs.warehouse.cut.domain.bo.PigCutOutBo;
 import org.dromara.djs.warehouse.cut.domain.bo.PigCutPickupBo;
@@ -10,7 +11,9 @@ import org.dromara.djs.warehouse.cut.domain.vo.BarInfoVo;
 import org.dromara.djs.warehouse.cut.domain.vo.BarPickupItemVo;
 import org.dromara.djs.warehouse.cut.domain.vo.CutProductTypeVo;
 import org.dromara.djs.warehouse.cut.domain.vo.PigCutRecordVo;
+import org.dromara.djs.warehouse.product.domain.ProductInhouse;
 
+import java.math.BigDecimal;
 import java.util.List;
 
 /**
@@ -91,5 +94,26 @@ public interface IPigCutRecordService {
      * {@code product_id LIKE 'PROD-PIG-%'}，按 product_id 升序，排除 D0001 / DEMO / 测试。</p>
      */
     List<CutProductTypeVo> queryCutProductTypes();
+
+    /**
+     * 白条领用表：发货月台 / 仓库出库分支领用即终态记录（row205，邓博 2026-07-05）。
+     *
+     * <p>白条领用页 3 个出库位置都写一条 cut_record 统一台账。ship/warehouse 领用即终态
+     * （{@code cut_status='done'}，无后续分割），记 {@code out_type} + 预冷损耗 + 排酸时长
+     * （= 领用出库 − 入库）+（发货月台）目标门店/需求。分割统计只算 {@code out_type='cut'}，本表 ship/warehouse 不计入。</p>
+     *
+     * <p>预冷损耗只写本表 drip_loss 列，不写 loss_flow（已由 whiteBarOut 侧 writePrecoolLossOnBarOut 记，防双算）。</p>
+     *
+     * @param outType        出库类型（ship / warehouse）
+     * @param bar            白条实体（可空；取 in_time 算排酸、bar_id）
+     * @param src            来源燎毛产出行（取 white_bar_no / ear_no / location_id / 半只入库重）
+     * @param outWeight      本次出库重
+     * @param targetStoreId  目标门店（发货月台有，仓库出库为 null）
+     * @param targetDemandId 目标需求（发货月台可选，仓库出库为 null）
+     * @param userId         操作人
+     * @return 新 cut_record id
+     */
+    Long insertOutRecord(String outType, BarInfo bar, ProductInhouse src, BigDecimal outWeight,
+                         Long targetStoreId, Long targetDemandId, Long userId);
 
 }

@@ -266,6 +266,8 @@ class PigCutRecordServiceImplTest {
         // r148：记录从 DB 载入时 drip_loss 已在领用时按白条写好（= 入库重 − 领用重），非 null。
         // 单半只场景与整猪收口口径一致（81.5 − 80 = 1.5），submitCutDone 透传给 updateStatusToDone。
         r.setDripLoss(new BigDecimal("1.500"));
+        // row204：排酸时长在领用时写定（= 领用出库 − 入库），cutDone 不重算；整猪收口 bar_info 透传本值。
+        r.setAcidRemoveMinutes(75);
         r.setLocationId(90002L);
         r.setCutStatus(status);
         return r;
@@ -365,7 +367,7 @@ class PigCutRecordServiceImplTest {
         bar.setInWeight(new BigDecimal("81.500"));
         when(barInfoMapper.selectById(70001L)).thenReturn(bar);
         when(cutMapper.updateStatusToDone(eq(80001L), any(Date.class), any(BigDecimal.class),
-            any(Integer.class), any(), any(), eq(9001L))).thenReturn(1);
+            any(), any(), eq(9001L))).thenReturn(1);
         when(barInfoMapper.updateStatusToCutDone(eq(70001L), any(Date.class), any(BigDecimal.class),
             any(Integer.class), any(BigDecimal.class), eq(9001L))).thenReturn(1);
         // row150 后整猪收口 outWeight = Σ已领产出行 pickup_weight（sumPickedRowWeight）；mock 一条已领行 80.000
@@ -388,13 +390,13 @@ class PigCutRecordServiceImplTest {
             minutesCap.capture(), dripCap.capture(), eq(9001L));
         assertThat(outWeightCap.getValue()).isEqualByComparingTo("80.000");
         assertThat(dripCap.getValue()).isEqualByComparingTo("1.500");
-        // cut_record done 也应写入同一自动算的 dripLoss
+        // cut_record done 也应写入同一自动算的 dripLoss（acid 领用时已写定，done 不再传）
         ArgumentCaptor<BigDecimal> doneDripCap = ArgumentCaptor.forClass(BigDecimal.class);
         verify(cutMapper).updateStatusToDone(eq(80001L), any(Date.class), doneDripCap.capture(),
-            any(Integer.class), any(), any(), eq(9001L));
+            any(), any(), eq(9001L));
         assertThat(doneDripCap.getValue()).isEqualByComparingTo("1.500");
-        // 排酸时长 ≈ 60 分钟（sample record pickupTime 是 1h ago）
-        assertThat(minutesCap.getValue()).isBetween(59, 61);
+        // row204：整猪收口 bar_info 排酸时长 = 本收口半只领用时已写定的 acid（75），非 done−pickup 重算
+        assertThat(minutesCap.getValue()).isEqualTo(75);
     }
 
     @Test
@@ -410,7 +412,7 @@ class PigCutRecordServiceImplTest {
             .hasMessageContaining("分割单状态不符");
 
         verify(cutMapper, never()).updateStatusToDone(anyLong(), any(Date.class), any(BigDecimal.class),
-            any(Integer.class), any(), any(), anyLong());
+            any(), any(), anyLong());
         verify(barInfoMapper, never()).updateStatusToCutDone(anyLong(), any(Date.class), any(BigDecimal.class),
             any(Integer.class), any(BigDecimal.class), anyLong());
     }

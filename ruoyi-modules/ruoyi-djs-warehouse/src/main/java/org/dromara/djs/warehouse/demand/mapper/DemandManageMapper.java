@@ -155,6 +155,31 @@ public interface DemandManageMapper extends BaseMapperPlus<DemandManage, DemandM
                                                @Param("storeId") Long storeId);
 
     /**
+     * 白条领用「发货月台」关联需求（row205，邓博 2026-07-05）：当天该门店该产品的需求，优先未完成、其次已完成。
+     *
+     * <p>用途：白条领用页发货月台出库时把关联需求记入 {@code cut_record.target_demand_id}。与门店下拉
+     * {@code selectWhiteBarShipStores} 同状态集（含 COMPLETED —— 门店因有需求才出现在下拉，用户选中即应回填该需求），
+     * 但按 {@code product_id} 精确匹配到具体需求单；无匹配需求 → null。仅作引用记录、不做扣减
+     * （扣减仍用 {@link #selectOldestUncompletedDemand}，只认未完成）。</p>
+     *
+     * @return 当天该门店该产品的需求（优先未完成、按 id 升序取最早；无则 null）
+     */
+    @Select("""
+        SELECT *
+        FROM t_warehouse_demand_manage
+        WHERE product_id = #{productId}
+          AND store_id = #{storeId}
+          AND demand_date = CURDATE()
+          AND demand_status IN ('CONFIRMED','IN_PRODUCTION','PARTIAL_SHIPPED','COMPLETED')
+          AND del_flag = '0'
+          AND tenant_id = '1001'
+        ORDER BY (demand_status = 'COMPLETED') ASC, id ASC
+        LIMIT 1
+        """)
+    DemandManage selectShipTargetDemand(@Param("productId") Long productId,
+                                        @Param("storeId") Long storeId);
+
+    /**
      * 某产品各门店未发货需求量聚合（DJS-FIX-WMS-PACK 打包录入「门店(N份)」标签条）。
      *
      * <p>按 {@code product_id} 取各门店未发货需求量。<b>每条需求行的未发货量按

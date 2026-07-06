@@ -250,6 +250,7 @@ public interface WarehouseDashboardMapper {
         + " WHERE tenant_id = #{tenantId} "
         + "   AND DATE(pickup_time) = CURDATE() "
         + "   AND white_bar_id IS NOT NULL "
+        + "   AND out_type = 'cut' "
         + "   AND del_flag = '0'")
     BigDecimal countTodayCutBars(@Param("tenantId") String tenantId);
 

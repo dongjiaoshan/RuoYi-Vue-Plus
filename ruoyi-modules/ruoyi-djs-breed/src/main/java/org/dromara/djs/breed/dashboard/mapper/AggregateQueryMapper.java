@@ -632,9 +632,9 @@ public interface AggregateQueryMapper {
      * 返回各列 SUM，缺数据补 0。service 端按 row13/row14 公式二次计算率/窝均。
      *
      * @return 各 SUM 列：sumFarrowSow / sumBreedingSow / sumWeaningSow / sumAbnormal / sumTotalBorn /
-     *         sumLiveBorn / sumWeanedPiglet / sumDeathPiglet / sumDeathFattening / sumMarketingCount /
-     *         sumMarketingWeight / sumEndProductionSow / sumEndReserve230 / sumEndReserve / sumEndNonprodSow /
-     *         sumYearBatchFarrow / sumGrowthDays
+     *         sumLiveBorn / sumWeanedPiglet / sumDeathPig / sumCullingPig / sumDeathPiglet / sumDeathFattening /
+     *         sumMarketingCount / sumMarketingWeight / sumEndProductionSow / sumEndReserve230 / sumEndReserve /
+     *         sumEndNonprodSow / sumYearBatchFarrow / sumGrowthDays
      */
     @Select("SELECT "
         + "  COALESCE(SUM(farrow_sow_count),0)         AS sumFarrowSow, "
@@ -644,6 +644,8 @@ public interface AggregateQueryMapper {
         + "  COALESCE(SUM(total_born_count),0)         AS sumTotalBorn, "
         + "  COALESCE(SUM(live_born_count),0)          AS sumLiveBorn, "
         + "  COALESCE(SUM(weaned_piglet_count),0)      AS sumWeanedPiglet, "
+        + "  COALESCE(SUM(death_pig_count),0)          AS sumDeathPig, "
+        + "  COALESCE(SUM(culling_pig_count),0)        AS sumCullingPig, "
         + "  COALESCE(SUM(death_piglet_count),0)       AS sumDeathPiglet, "
         + "  COALESCE(SUM(death_fattening_count),0)    AS sumDeathFattening, "
         + "  COALESCE(SUM(marketing_pig_count),0)      AS sumMarketingCount, "
@@ -662,6 +664,34 @@ public interface AggregateQueryMapper {
     Map<String, Object> sumIndicatorRange(@Param("tenantId") String tenantId,
                                           @Param("from") java.time.LocalDate from,
                                           @Param("to") java.time.LocalDate to);
+
+    /**
+     * 区间内月表基础指标 Σ 汇总（年表基础指标的「取月表汇总」来源，row44）。
+     * 年表按「已有单月统计的月直接取月表汇总」而非重扫业务表——月表各行本身已按日表 Σ
+     * 落盘（当月行为 T-1 口径），Σ 月即得 T-1 年度总量，与月表逐行一致。
+     * stat_month 闭区间 [fromMonth, toMonth]（'yyyy-MM' 字符串按字典序，等价月份序）。
+     * 缺数据补 0；返回 rowCnt=有效月行数（0 → service 回落业务表兜底）。
+     *
+     * @return introduceCount / bornCount / weanedCount / deathCount / cullingCount /
+     *         marketingCount / marketingWeight / rowCnt
+     */
+    @Select("SELECT "
+        + "  COALESCE(SUM(introduce_count),0)  AS introduceCount, "
+        + "  COALESCE(SUM(born_count),0)       AS bornCount, "
+        + "  COALESCE(SUM(weaned_count),0)     AS weanedCount, "
+        + "  COALESCE(SUM(death_count),0)      AS deathCount, "
+        + "  COALESCE(SUM(culling_count),0)    AS cullingCount, "
+        + "  COALESCE(SUM(marketing_count),0)  AS marketingCount, "
+        + "  COALESCE(SUM(marketing_weight),0) AS marketingWeight, "
+        + "  COUNT(*)                          AS rowCnt "
+        + " FROM t_farm_monthly_production "
+        + " WHERE tenant_id = #{tenantId} "
+        + "   AND del_flag = '0' "
+        + "   AND stat_month >= #{fromMonth} "
+        + "   AND stat_month <= #{toMonth}")
+    Map<String, Object> sumMonthlyProductionRange(@Param("tenantId") String tenantId,
+                                                  @Param("fromMonth") String fromMonth,
+                                                  @Param("toMonth") String toMonth);
 
     /**
      * 区间内日表整行明细（按 stat_date 升序），供 mp「种猪场活动统计」逐日逐指标展示。
@@ -818,23 +848,21 @@ public interface AggregateQueryMapper {
                                              @Param("pigId") Long pigId);
 
     /**
-     * 单头母猪的状态变更明细（row113 NPD 区间求和用），按变更日升序。
+     * 单头母猪 NPD 天数（row113 母猪性能，邓博 2026-07-05 口径 = admin 测试表 row202）。
      *
-     * <p>{@code t_farm_status_record} 无 del_flag（append-only 流水，不软删），故不拼 del_flag 过滤。
-     * 返回每条 transition 的 {@code new_status}（进入的新状态）/ {@code event_type}（触发事件）/
-     * {@code change_date}（变更日 DATE 化，便于 service 端 DATEDIFF 累加非生产区间天数）。</p>
+     * <p>数据源 {@code t_farm_status_record}：old_status ∈ {流产 LC / 空怀 KH / 返情 FQ / 断奶 DN}
+     * 且（new_status = 配种 PZ 或 event_type ∈ {死亡 DIE / 淘汰 ELIMINATE}）的记录，Σ(duration_days)。</p>
      *
-     * <p>service 端据此识别每一段【非生产起点(new_status∈{LC,KH,FQ,DN}) → 下一个配种(new_status=PZ)/
-     * 死淘(event∈{DIE,ELIMINATE})】区间，累加 DATEDIFF(终点日,起点日)（起点含、终点不含）为该母猪 NPD。</p>
+     * <p>语义：每一段「非生产状态（流产/空怀/返情/断奶）持续到再次配种 / 死淘」的天数（duration_days = 本次状态
+     * 持续天数）之和 = 该母猪总非生产天数 NPD。{@code t_farm_status_record} 无 del_flag（append-only 流水）。</p>
      *
-     * @return 形如 [{newStatus:'DN', eventType:'WEAN', changeDate:2026-01-05}, ...] 升序
+     * @return Σ duration_days（无匹配返 0）
      */
-    @Select("SELECT new_status AS newStatus, event_type AS eventType, DATE(change_time) AS changeDate "
+    @Select("SELECT COALESCE(SUM(duration_days),0) "
         + " FROM t_farm_status_record "
-        + " WHERE tenant_id = #{tenantId} "
-        + "   AND pig_id = #{pigId} "
-        + "   AND change_time IS NOT NULL "
-        + " ORDER BY change_time ASC")
-    List<Map<String, Object>> selectSowStatusTimeline(@Param("tenantId") String tenantId,
-                                                       @Param("pigId") Long pigId);
+        + " WHERE tenant_id = #{tenantId} AND pig_id = #{pigId} "
+        + "   AND old_status IN ('LC','KH','FQ','DN') "
+        + "   AND (new_status = 'PZ' OR event_type IN ('DIE','ELIMINATE'))")
+    java.math.BigDecimal sumSowNpdDurationDays(@Param("tenantId") String tenantId,
+                                               @Param("pigId") Long pigId);
 }

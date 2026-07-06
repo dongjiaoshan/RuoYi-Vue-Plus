@@ -44,13 +44,13 @@ public interface PigCutRecordMapper extends BaseMapperPlus<PigCutRecord, PigCutR
                               @Param("userId") Long userId);
 
     /**
-     * cutDone 提交时推进 cut_status：cutting → done + 写入 cut_done_time / drip_loss / acid_remove_minutes。
+     * cutDone 提交时推进 cut_status：cutting → done + 写入 cut_done_time / drip_loss。
      *
-     * <p>乐观锁：WHERE cut_status='cutting'。</p>
+     * <p>乐观锁：WHERE cut_status='cutting'。{@code acid_remove_minutes}（排酸时长 = 领用出库 − 入库）已在
+     * 领用时一次写定（row204），分割完成不再覆盖，故本 UPDATE 不 touch 该列。</p>
      */
     @Update("UPDATE t_warehouse_pig_cut_record "
         + "   SET cut_status='done', cut_done_time = #{cutDoneTime}, drip_loss = #{dripLoss},"
-        + "       acid_remove_minutes = #{acidRemoveMinutes},"
         + "       remark = COALESCE(#{remark}, remark),"
         + "       proof_oss_ids = COALESCE(#{proofOssIds}, proof_oss_ids),"
         + "       update_by = #{userId}, update_time = NOW() "
@@ -58,7 +58,6 @@ public interface PigCutRecordMapper extends BaseMapperPlus<PigCutRecord, PigCutR
     int updateStatusToDone(@Param("id") Long id,
                            @Param("cutDoneTime") Date cutDoneTime,
                            @Param("dripLoss") BigDecimal dripLoss,
-                           @Param("acidRemoveMinutes") Integer acidRemoveMinutes,
                            @Param("remark") String remark,
                            @Param("proofOssIds") String proofOssIds,
                            @Param("userId") Long userId);

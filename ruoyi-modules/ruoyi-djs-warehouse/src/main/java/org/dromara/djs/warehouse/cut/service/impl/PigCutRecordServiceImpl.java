@@ -149,6 +149,12 @@ public class PigCutRecordServiceImpl
     private static final String CUT_STATUS_DONE = "done";
 
     /**
+     * cut_record.out_type：白条领用表 3 个出库位置。仅 {@code cut} 后续进分割 + 计入分割统计；
+     * {@code ship/warehouse} 领用即终态、不计入分割白条数/总重/率与 trace 领用时点。
+     */
+    private static final String OUT_TYPE_CUT = "cut";
+
+    /**
      * bar_info.status 值。
      */
     private static final String BAR_STATUS_IN_STOCK = "in_stock";
@@ -416,8 +422,13 @@ public class PigCutRecordServiceImpl
         record.setWhiteBarNo(whiteBarNo);
         record.setBarId(bar.getBarId());
         record.setEarNo(bar.getEarNo());
-        record.setPickupTime(new Date());
+        Date pickupTime = new Date();
+        record.setPickupTime(pickupTime);
         record.setPickupWeight(pickupWeight);
+        // 白条领用表：分割车间领用 out_type=cut；排酸时长 = 领用出库时间 − 白条入库时间（row204，领用时一次写定，
+        // 分割完成不再覆盖）。bar.in_time 缺失 → acid 留 null 不瞎编。
+        record.setOutType(OUT_TYPE_CUT);
+        record.setAcidRemoveMinutes(computeAcidMinutes(bar.getInTime(), pickupTime));
         // r148：领用即按「白条产品」记录本行预冷损耗 = 该白条入库重 − 本次领用重（钳 0）。半只(whiteBarNo 非空)走
         //   燎毛产出行半只入库重、整只走 bar.in_weight。预冷按白条不按猪——一头猪分割成 N 张白条 = N 笔预冷。
         //   入库重/领用重任一缺失 → 不写（保持 NULL，不瞎编）。
@@ -458,6 +469,70 @@ public class PigCutRecordServiceImpl
         precool.setSourceBizType(LOSS_SOURCE_BIZ_CUT);
         precool.setSourceBizId(record.getId());
         lossFlowService.record(precool);
+    }
+
+    /**
+     * 排酸时长（分钟）= 领用出库时间 − 白条入库时间（in_time）。任一缺失返 {@code null}（不瞎编）；负值钳 0。
+     */
+    private static Integer computeAcidMinutes(Date inTime, Date pickupTime) {
+        if (inTime == null || pickupTime == null) {
+            return null;
+        }
+        long mins = Duration.between(inTime.toInstant(), pickupTime.toInstant()).toMinutes();
+        return (int) Math.max(0L, mins);
+    }
+
+    /**
+     * 白条领用表：发货月台 / 仓库出库分支领用即终态记录（row205，邓博 2026-07-05）。
+     *
+     * <p>白条领用页 3 个出库位置都写一条 cut_record 统一台账。ship/warehouse 领用即终态
+     * （{@code cut_status='done'}，无后续分割），记 {@code out_type} + 预冷损耗（drip_loss 列）+ 排酸时长
+     * （= 领用出库 − 入库）+（发货月台）目标门店/需求。分割统计只算 {@code out_type='cut'}，本表 ship/warehouse 行不计入。</p>
+     *
+     * <p>⚠️ 不写 loss_flow：预冷损耗 loss_flow 已由 {@code ProductProductionServiceImpl.writePrecoolLossOnBarOut}
+     * 记，此处只写本表 drip_loss 列供展示，避免双算。分割损耗同理不写（出库无分割产出）。</p>
+     *
+     * @param outType        出库类型（ship / warehouse）
+     * @param bar            白条实体（可空；取 in_time 算排酸、bar_id）
+     * @param src            来源燎毛产出行（取 white_bar_no / ear_no / location_id / 半只入库重算预冷损耗）
+     * @param outWeight      本次出库重（= pickup_weight）
+     * @param targetStoreId  目标门店（发货月台有，仓库出库为 null）
+     * @param targetDemandId 目标需求（发货月台可选，仓库出库为 null）
+     * @param userId         操作人
+     * @return 新 cut_record id
+     */
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public Long insertOutRecord(String outType, BarInfo bar, ProductInhouse src, BigDecimal outWeight,
+                                Long targetStoreId, Long targetDemandId, Long userId) {
+        PigCutRecord record = new PigCutRecord();
+        record.setCutId(generateCutId());
+        record.setOutType(outType);
+        Date pickupTime = new Date();
+        record.setPickupTime(pickupTime);
+        record.setPickupWeight(outWeight);
+        if (bar != null) {
+            record.setWhiteBarId(bar.getId());
+            record.setBarId(bar.getBarId());
+            record.setAcidRemoveMinutes(computeAcidMinutes(bar.getInTime(), pickupTime));
+        }
+        if (src != null) {
+            record.setWhiteBarNo(src.getWhiteBarNo());
+            record.setEarNo(src.getEarNo());
+            record.setLocationId(src.getLocationId());
+            // 预冷损耗 = 该半只燎毛入库重(product_weight) − 本次出库重（钳 0），与 writePrecoolLossOnBarOut 同口径
+            BigDecimal inWeight = src.getProductWeight();
+            if (inWeight != null && outWeight != null) {
+                record.setDripLoss(inWeight.subtract(outWeight).max(BigDecimal.ZERO));
+            }
+            record.setIsHalf(src.getProductName() != null && src.getProductName().contains("半") ? 1 : 2);
+        }
+        record.setTargetStoreId(targetStoreId);
+        record.setTargetDemandId(targetDemandId);
+        record.setOperatorId(userId);
+        record.setCutStatus(CUT_STATUS_DONE);
+        baseMapper.insert(record);
+        return record.getId();
     }
 
     /**
@@ -653,14 +728,13 @@ public class PigCutRecordServiceImpl
         }
 
         Date now = new Date();
-        int acidMinutes = (int) Duration.between(
-            record.getPickupTime().toInstant(), now.toInstant()).toMinutes();
 
         // 邓博 row14 按半只 surface：把本 cut_record（本半只）置 done；分割损耗 + bar 转 cut_done 在整猪收口时结算。
         // r148：本 cut_record.drip_loss 保留领用时已按白条写的预冷值（不覆盖）；预冷 loss_flow 已在领用时按白条写、
         // 收口不再写。整猪滴水损耗仍回写 bar_info（整只级 bar 字段，供列表 compute-on-read），不进 loss_flow。
+        // row204：acid_remove_minutes（排酸时长）已在领用时写定（= 领用出库 − 入库），本处不再覆盖。
         int affected = baseMapper.updateStatusToDone(
-            record.getId(), now, record.getDripLoss(), acidMinutes,
+            record.getId(), now, record.getDripLoss(),
             bo.getRemark(), bo.getProofOssIds(), userId);
         if (affected == 0) {
             throw new ServiceException("分割单状态已变更，请刷新重试");
@@ -697,8 +771,9 @@ public class PigCutRecordServiceImpl
         BigDecimal outWeight = totalPicked;
 
         // bar_info cutting → cut_done（整猪出库重 / 滴水损耗回写）。并发已收口 → affected=0 幂等跳过，不抛。
+        // row204：bar_info 排酸时长与 cut_record 同口径（领用出库 − 入库），取本收口半只领用时已写定的 acid。
         int barAffected = barInfoMapper.updateStatusToCutDone(
-            record.getWhiteBarId(), now, outWeight, acidMinutes, dripLoss, userId);
+            record.getWhiteBarId(), now, outWeight, record.getAcidRemoveMinutes(), dripLoss, userId);
         if (barAffected == 0) {
             return;  // bar 已被并发的另一半只收口，幂等
         }

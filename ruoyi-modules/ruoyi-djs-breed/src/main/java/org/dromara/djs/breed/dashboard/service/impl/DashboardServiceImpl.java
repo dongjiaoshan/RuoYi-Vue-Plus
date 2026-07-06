@@ -860,8 +860,8 @@ public class DashboardServiceImpl implements IDashboardService {
         upsertFarmIndicator(tenantId, targetDate);
         upsertSowRecord(tenantId, targetDate);
         upsertSowPerformance(tenantId, targetDate);
-        upsertMonthlyProduction(tenantId, YearMonth.from(targetDate));
-        upsertAnnualIndicator(tenantId, (short) targetDate.getYear());
+        upsertMonthlyProduction(tenantId, YearMonth.from(targetDate), targetDate);
+        upsertAnnualIndicator(tenantId, (short) targetDate.getYear(), targetDate);
 
         log.info("[DashboardAggregate] done tenant={} date={}", tenantId, targetDate);
         return String.format("ok | tenant=%s | date=%s | tables=[indicator_record, sow_record, sow_performance, monthly_production, annual_indicator]",
@@ -1013,7 +1013,6 @@ public class DashboardServiceImpl implements IDashboardService {
      * 无源数据的指标置 null（不瞎编），不让整体变 null。</p>
      */
     private void upsertSowPerformance(String tenantId, LocalDate statDate) {
-        LocalDate npdTargetDate = statDate; // NPD 进行中区间累计到聚合目标日
         List<Map<String, Object>> sows = aggregateQueryMapper.selectAliveSows(tenantId);
         for (Map<String, Object> sow : sows) {
             Long pigId = ((Number) sow.get("id")).longValue();
@@ -1064,9 +1063,10 @@ public class DashboardServiceImpl implements IDashboardService {
             sp.setAvgLiveBornPerLitter(litterDenom > 0 ? scale3(divide(new BigDecimal(totalLiveBorn), litterDenom)) : null);
             int weanDenom = parity != null && parity > 0 ? parity : weanCount;
             sp.setAvgWeanedPerLitter(weanDenom > 0 ? scale3(divide(new BigDecimal(totalWeaned), weanDenom)) : null);
-            // NPD（row113 重构）= 该母猪历史非生产区间天数总和（按 status_record 时间线求和），
-            // 不再用「365−配种至分娩−分娩至断奶」旧算法。
-            sp.setNpd(computeSowNpd(tenantId, pigId, npdTargetDate));
+            // NPD（row113 母猪性能，邓博 2026-07-05 = admin row202）= 状态变更记录表中 old_status ∈
+            // {LC/KH/FQ/DN} 且（new_status=PZ 或 event ∈ {DIE/ELIMINATE}）的 Σduration_days（每段非生产
+            // 状态持续到再配种/死淘的天数总和），保留 2 位小数。
+            sp.setNpd(scale2(aggregateQueryMapper.sumSowNpdDurationDays(tenantId, pigId)));
 
             SowPerformance existing = sowPerformanceMapper.selectOne(
                 new LambdaQueryWrapper<SowPerformance>().eq(SowPerformance::getPigId, pigId));
@@ -1079,83 +1079,6 @@ public class DashboardServiceImpl implements IDashboardService {
                 sowPerformanceMapper.updateById(sp);
             }
         }
-    }
-
-    /** row113 非生产起点状态（进入即开始一段非生产区间）。 */
-    private static final java.util.Set<String> NONPROD_STATUSES = java.util.Set.of("LC", "KH", "FQ", "DN");
-
-    /**
-     * 母猪 NPD（row113，邓博 2026-07-02 口径）= 该母猪历史「非生产区间天数」总和。
-     *
-     * <p>沿 {@code t_farm_status_record} 时间线（升序）识别每一段非生产区间：</p>
-     * <ul>
-     *   <li><b>起点</b>：进入非生产状态那天（new_status ∈ {LC,KH,FQ,DN}），起点当天<b>算</b> NPD；
-     *       连续非生产切换（如 断奶DN→空怀KH→…）只从<b>第一个</b>非生产起点起算，中间状态不重复开段（取舍B）。</li>
-     *   <li><b>终点</b>：变成配种（new_status=PZ / event=BREED）那天，或死淘（event ∈ {DIE,ELIMINATE}）那天，
-     *       终点当天<b>不算</b>（与配种一致，取舍A）。每段天数 = DATEDIFF(终点日, 起点日)（起点含、终点不含，不 +1）。</li>
-     *   <li><b>进行中</b>：末尾仍处于非生产（无后续配种/死淘）→ 累计到聚合目标日 targetDate（DATEDIFF(targetDate, 起点日)）。</li>
-     * </ul>
-     * 无任何非生产区间 → 返回 0（不返 null；有明确「0 天非生产」语义）。负值区间（脏数据）按 0 计不倒扣。
-     */
-    private BigDecimal computeSowNpd(String tenantId, Long pigId, LocalDate targetDate) {
-        List<Map<String, Object>> timeline = aggregateQueryMapper.selectSowStatusTimeline(tenantId, pigId);
-        long totalNpd = 0L;
-        LocalDate segStart = null; // 当前非生产区间起点日；null 表示未在非生产区间内
-        for (Map<String, Object> row : timeline) {
-            String newStatus = Objects.toString(row.get("newStatus"), "");
-            String eventType = Objects.toString(row.get("eventType"), "");
-            LocalDate changeDate = toLocalDate(row.get("changeDate"));
-            if (changeDate == null) {
-                continue;
-            }
-            boolean isBreed = "PZ".equals(newStatus) || "BREED".equals(eventType);
-            boolean isEnd = "DIE".equals(eventType) || "ELIMINATE".equals(eventType);
-            boolean isNonprodStart = NONPROD_STATUSES.contains(newStatus);
-
-            if (segStart == null) {
-                // 尚未进入非生产区间：遇非生产起点则开段（起点当天算）
-                if (isNonprodStart) {
-                    segStart = changeDate;
-                }
-                // 配种/死淘/其他状态在非区间内不产生 NPD
-            } else {
-                // 已在非生产区间内
-                if (isBreed || isEnd) {
-                    // 终点：结算该段（终点当天不算），闭合区间
-                    long days = java.time.temporal.ChronoUnit.DAYS.between(segStart, changeDate);
-                    if (days > 0) {
-                        totalNpd += days;
-                    }
-                    segStart = null;
-                }
-                // 连续非生产切换（isNonprodStart 或其他）：保持同一段，不重复开段、不结算
-            }
-        }
-        // 末尾仍处于非生产 → 进行中区间累计到 targetDate
-        if (segStart != null) {
-            long days = java.time.temporal.ChronoUnit.DAYS.between(segStart, targetDate);
-            if (days > 0) {
-                totalNpd += days;
-            }
-        }
-        return scale2(new BigDecimal(totalNpd));
-    }
-
-    /** 把 mapper 返回的日期列（java.sql.Date / LocalDate / java.util.Date）统一转 LocalDate；无法解析返回 null。 */
-    private static LocalDate toLocalDate(Object v) {
-        if (v == null) {
-            return null;
-        }
-        if (v instanceof LocalDate ld) {
-            return ld;
-        }
-        if (v instanceof java.sql.Date sd) {
-            return sd.toLocalDate();
-        }
-        if (v instanceof java.util.Date d) {
-            return d.toInstant().atZone(java.time.ZoneId.systemDefault()).toLocalDate();
-        }
-        return LocalDate.parse(v.toString());
     }
 
     /**
@@ -1227,25 +1150,51 @@ public class DashboardServiceImpl implements IDashboardService {
         }
     }
 
-    private void upsertMonthlyProduction(String tenantId, YearMonth month) {
+    private void upsertMonthlyProduction(String tenantId, YearMonth month, LocalDate statDate) {
         LocalDate from = month.atDay(1);
-        LocalDate to = month.plusMonths(1).atDay(1);
+        // row43②：月度只统计当月「T-1」（截至昨日 = statDate 当日，右开到 statDate+1），不含今天及以后。
+        //   statDate 恒在 month 内（caller 用 YearMonth.from(targetDate)）；当月完整走完时最后一次
+        //   月内 run 的 statDate=月末 → to=下月 1 日 = 全月，历史完整月不受影响。
+        LocalDate to = statDate.plusDays(1);
         LocalDateTime dtFrom = from.atStartOfDay();
         LocalDateTime dtTo = to.atStartOfDay();
 
+        // row43①：基础指标「日表有单日数据就取日表 Σ」，避免与日表口径分叉、且天然按 T-1 收口
+        //   （日表无未来行）；日表整段无行（历史未落盘）才回落业务表兜底。
+        boolean useDaily = aggregateQueryMapper.countIndicatorDays(tenantId, from, to) > 0;
+
+        // 引种数：日表仅记母猪引种（introduce_sow_count），无「全部引种头数」列 → 恒取业务表。
         int introduceCount = aggregateQueryMapper.sumIntroducedInRange(tenantId, from, to);
-        int bornCount = aggregateQueryMapper.sumLiveBornInRange(tenantId, from, to);
-        int weanedCount = aggregateQueryMapper.sumWeanedInRange(tenantId, from, to);
-        int deathCount = aggregateQueryMapper.countStatusEventInRange(tenantId, "DIE", dtFrom, dtTo);
-        int cullingCount = aggregateQueryMapper.countStatusEventInRange(tenantId, "ELIMINATE", dtFrom, dtTo);
-        Map<String, Object> marketing = aggregateQueryMapper.aggregateMarketingInRange(tenantId, from, to);
-        int marketingCount = marketing == null ? 0 : ((Number) marketing.getOrDefault("cnt", 0)).intValue();
-        BigDecimal marketingWeight = marketing == null
-            ? BigDecimal.ZERO
-            : Optional.ofNullable((BigDecimal) marketing.get("weight")).orElse(BigDecimal.ZERO);
 
         // ---- row13 高级指标（从已落盘 farm_indicator 日表 Σ 回读 + 部分实时算） ----
         Map<String, Object> sum = aggregateQueryMapper.sumIndicatorRange(tenantId, from, to);
+
+        int bornCount;
+        int weanedCount;
+        int deathCount;
+        int cullingCount;
+        int marketingCount;
+        BigDecimal marketingWeight;
+        if (useDaily) {
+            // 活仔/断奶/死亡/淘汰/出栏 = Σ日表列（born_count 口径 = 活仔 live_born_count，沿用既有语义）
+            bornCount = mapInt(sum, "sumLiveBorn");
+            weanedCount = mapInt(sum, "sumWeanedPiglet");
+            deathCount = mapInt(sum, "sumDeathPig");
+            cullingCount = mapInt(sum, "sumCullingPig");
+            marketingCount = mapInt(sum, "sumMarketingCount");
+            marketingWeight = mapBd(sum, "sumMarketingWeight");
+        } else {
+            // 兜底：日表整段无行 → 回落业务表实时聚合（保持历史未落盘月不丢数）
+            bornCount = aggregateQueryMapper.sumLiveBornInRange(tenantId, from, to);
+            weanedCount = aggregateQueryMapper.sumWeanedInRange(tenantId, from, to);
+            deathCount = aggregateQueryMapper.countStatusEventInRange(tenantId, "DIE", dtFrom, dtTo);
+            cullingCount = aggregateQueryMapper.countStatusEventInRange(tenantId, "ELIMINATE", dtFrom, dtTo);
+            Map<String, Object> marketing = aggregateQueryMapper.aggregateMarketingInRange(tenantId, from, to);
+            marketingCount = marketing == null ? 0 : ((Number) marketing.getOrDefault("cnt", 0)).intValue();
+            marketingWeight = marketing == null
+                ? BigDecimal.ZERO
+                : Optional.ofNullable((BigDecimal) marketing.get("weight")).orElse(BigDecimal.ZERO);
+        }
         int sumFarrowSow = mapInt(sum, "sumFarrowSow");
         int sumWeaningSow = mapInt(sum, "sumWeaningSow");
         int sumTotalBorn = mapInt(sum, "sumTotalBorn");
@@ -1324,22 +1273,27 @@ public class DashboardServiceImpl implements IDashboardService {
         }
     }
 
-    private void upsertAnnualIndicator(String tenantId, short year) {
+    private void upsertAnnualIndicator(String tenantId, short year, LocalDate statDate) {
         LocalDate from = LocalDate.of(year, 1, 1);
-        LocalDate to = LocalDate.of(year + 1, 1, 1);
+        // row44②：年度只统计当年「T-1」（截至昨日 = statDate，右开到 statDate+1），不含今天及以后。
+        LocalDate to = statDate.plusDays(1);
         LocalDateTime dtFrom = from.atStartOfDay();
         LocalDateTime dtTo = to.atStartOfDay();
 
-        int introduceCount = aggregateQueryMapper.sumIntroducedInRange(tenantId, from, to);
-        int bornCount = aggregateQueryMapper.sumLiveBornInRange(tenantId, from, to);
-        int weanedCount = aggregateQueryMapper.sumWeanedInRange(tenantId, from, to);
-        int deathCount = aggregateQueryMapper.countStatusEventInRange(tenantId, "DIE", dtFrom, dtTo);
-        int cullingCount = aggregateQueryMapper.countStatusEventInRange(tenantId, "ELIMINATE", dtFrom, dtTo);
-        Map<String, Object> marketing = aggregateQueryMapper.aggregateMarketingInRange(tenantId, from, to);
-        int marketingCount = marketing == null ? 0 : ((Number) marketing.getOrDefault("cnt", 0)).intValue();
-        BigDecimal marketingWeight = marketing == null
-            ? BigDecimal.ZERO
-            : Optional.ofNullable((BigDecimal) marketing.get("weight")).orElse(BigDecimal.ZERO);
+        // row44①（邓博 test 流程性问题 row44 明确要求）：基础指标**取月表 Σ，不直接扫业务表**。
+        //   月表各行已按日表 Σ 落盘（当月行为 T-1 口径，caller 先跑 upsertMonthlyProduction 刷新当月行），
+        //   Σ 月即得 T-1 年度总量，年↔月逐层可对账（年 = 其各月之和）。仅汇总有月行的月份；
+        //   无月行的月份（如日/月统计上线前）不计入——年表口径 = 月表已跟踪运营月之和。
+        String fromMonth = String.format("%04d-01", year);
+        String toMonth = YearMonth.from(statDate).toString();
+        Map<String, Object> mSum = aggregateQueryMapper.sumMonthlyProductionRange(tenantId, fromMonth, toMonth);
+        int introduceCount = mapInt(mSum, "introduceCount");
+        int bornCount = mapInt(mSum, "bornCount");
+        int weanedCount = mapInt(mSum, "weanedCount");
+        int deathCount = mapInt(mSum, "deathCount");
+        int cullingCount = mapInt(mSum, "cullingCount");
+        int marketingCount = mapInt(mSum, "marketingCount");
+        BigDecimal marketingWeight = mapBd(mSum, "marketingWeight");
 
         // 死亡率 = DEATH / (DEATH + alive sows)（4 位小数）
         int aliveSows = aggregateQueryMapper.countAliveSows(tenantId);

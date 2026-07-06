@@ -805,34 +805,27 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
      */
     @Select("""
         <script>
-        SELECT s.id                          AS batchId,
+        SELECT MIN(s.id)                     AS batchId,
                s.ear_no                       AS batchCode,
                s.product_id                   AS productId,
-               s.product_name                 AS productName,
-               COALESCE(s.product_unit, 'kg') AS productUnit,
-               s.product_stock                AS currentStock,
+               MAX(s.product_name)            AS productName,
+               COALESCE(MAX(s.product_unit), 'kg') AS productUnit,
+               SUM(s.product_stock)           AS currentStock,
                COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
-                          WHERE f.ear_no = s.ear_no AND f.product_id = s.product_id
+                          WHERE f.ear_no = s.ear_no AND f.product_id = s.product_id AND f.warehouse_id = s.location_id
                             AND f.flow_type IN ('prod_pick_out','dept_pick_out','pick_out')
                             AND DATE(f.flow_date) = CURDATE()
                             AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayPicked,
-               CASE WHEN s.id = (SELECT MIN(s2.id) FROM t_warehouse_location_stock s2
-                                  WHERE s2.product_id = s.product_id AND s2.ear_no = s.ear_no
-                                    AND s2.product_stock > 0 AND s2.del_flag = '0' AND s2.tenant_id = '1001')
-                    THEN COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
-                                    WHERE f.ear_no = s.ear_no AND f.product_id = s.product_id
-                                      AND f.flow_type IN ('prod_return_in','pick_return_in')
-                                      AND DATE(f.flow_date) = CURDATE()
-                                      AND f.del_flag = '0' AND f.tenant_id = '1001'), 0)
-                    ELSE 0 END             AS todayReturned,
-               CASE WHEN s.id = (SELECT MIN(s2.id) FROM t_warehouse_location_stock s2
-                                  WHERE s2.product_id = s.product_id AND s2.ear_no = s.ear_no
-                                    AND s2.product_stock > 0 AND s2.del_flag = '0' AND s2.tenant_id = '1001')
-                    THEN COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
-                                    WHERE f.ear_no = s.ear_no AND f.product_id = s.product_id AND f.flow_type = 'loss'
-                                      AND DATE(f.flow_date) = CURDATE()
-                                      AND f.del_flag = '0' AND f.tenant_id = '1001'), 0)
-                    ELSE 0 END             AS todayLoss,
+               COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
+                          WHERE f.ear_no = s.ear_no AND f.product_id = s.product_id AND f.warehouse_id = s.location_id
+                            AND f.flow_type IN ('prod_return_in','pick_return_in')
+                            AND DATE(f.flow_date) = CURDATE()
+                            AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayReturned,
+               COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
+                          WHERE f.ear_no = s.ear_no AND f.product_id = s.product_id AND f.warehouse_id = s.location_id
+                            AND f.flow_type = 'loss'
+                            AND DATE(f.flow_date) = CURDATE()
+                            AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayLoss,
                s.location_id                  AS locationId
           FROM t_warehouse_location_stock s
          WHERE s.del_flag      = '0'
@@ -841,7 +834,8 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
            AND s.ear_no IS NOT NULL
            AND (s.product_stock > 0 OR DATE(s.update_time) = CURDATE())
            <if test="locationId != null"> AND s.location_id = #{locationId} </if>
-         ORDER BY s.id ASC
+         GROUP BY s.product_id, s.ear_no, s.location_id
+         ORDER BY batchId ASC
         </script>
         """)
     List<MatIssueBasketVo> selectPorkIssueByEar(@Param("productId") Long productId,
