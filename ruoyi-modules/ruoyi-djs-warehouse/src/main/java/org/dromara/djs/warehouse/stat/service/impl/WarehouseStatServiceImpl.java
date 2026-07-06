@@ -161,6 +161,20 @@ public class WarehouseStatServiceImpl implements IWarehouseStatService {
         BigDecimal netDenom = prodPick.subtract(prodReturn);
         r.setNetVegLossRate(pctOrNull(prodLoss.add(manualLoss), netDenom));
 
+        // 果蔬生产消耗总重（row206，邓博）—— 独立指标，与上面「生产损耗」列各算各的、互不牵扯。
+        // = 果蔬产品领用 − 退回 − 录入损耗(manual_loss) − 饲喂，均按 belong_type='vegetable' 口径；
+        // 饲喂取 stock_flow feed_out（从生产领用池出库、天然 ≤ 领用），非 feed_log 的毛菜间/仓库饲喂。
+        // 残差 < 0（录入未配齐）无业务意义，置 0。
+        Map<String, Object> vegFlow = aggregateMapper.selectVegProdConsumeFlow(tenantId, statDate);
+        BigDecimal vegPick = scale3(mapBd(vegFlow, "pickOut"));
+        BigDecimal vegReturn = scale3(mapBd(vegFlow, "returnIn"));
+        BigDecimal vegFeedOut = scale3(mapBd(vegFlow, "feedOut"));
+        BigDecimal vegManualLoss = scale3(aggregateMapper.sumVegLossByType(tenantId, statDate, "manual_loss"));
+        BigDecimal prodConsume = scale3(
+            vegPick.subtract(vegReturn).subtract(vegManualLoss).subtract(vegFeedOut)
+                .max(BigDecimal.ZERO));
+        r.setProdConsumeWeight(prodConsume);
+
         upsertIndicatorRow(tenantId, statDate, r);
     }
 

@@ -1,6 +1,8 @@
 package org.dromara.djs.warehouse.stat.domain.vo;
 
+import io.github.linpeilie.annotations.AutoMapper;
 import lombok.Data;
+import org.dromara.djs.warehouse.stat.domain.WarehouseIndicatorRecord;
 
 import java.io.Serial;
 import java.io.Serializable;
@@ -17,6 +19,7 @@ import java.time.LocalDate;
  * @since WMS-STAT-001
  */
 @Data
+@AutoMapper(target = WarehouseIndicatorRecord.class)
 public class WarehouseIndicatorRecordVo implements Serializable {
 
     @Serial
@@ -74,6 +77,8 @@ public class WarehouseIndicatorRecordVo implements Serializable {
     private BigDecimal prodPickWeight;
     /** 果蔬产品生产损耗总重。 */
     private BigDecimal prodLossWeight;
+    /** 果蔬生产消耗总重（领用−退回−录入损耗−饲喂，≥0）。 */
+    private BigDecimal prodConsumeWeight;
     /** 净菜损耗率%。 */
     private BigDecimal netVegLossRate;
 }

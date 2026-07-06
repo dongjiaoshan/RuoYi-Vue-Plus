@@ -103,6 +103,8 @@ public class WarehouseIndicatorRecord extends TenantEntity {
     private BigDecimal prodPickWeight;
     /** 果蔬产品生产损耗总重（当日 loss_flow production_loss 之和）。 */
     private BigDecimal prodLossWeight;
+    /** 果蔬生产消耗总重（果蔬领用−退回−录入损耗−饲喂(feed_out)，≥0；row206，独立指标）。 */
+    private BigDecimal prodConsumeWeight;
     /** 净菜损耗率%（(生产损耗+录入损耗)/(生产领用−生产退回)×100；分母≤0 → null）。 */
     @TableField(updateStrategy = FieldStrategy.ALWAYS)
     private BigDecimal netVegLossRate;

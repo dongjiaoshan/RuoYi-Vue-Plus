@@ -149,6 +149,19 @@ public interface WarehouseStatAggregateMapper {
     BigDecimal sumLossByType(@Param("tenantId") String tenantId, @Param("statDate") String statDate, @Param("lossType") String lossType);
 
     /**
+     * 某损耗类型当日果蔬(belong_type='vegetable')总重（净菜段专用，row206）。
+     * 与全口径 {@link #sumLossByType} 区分：净菜段的生产损耗/录入损耗只算果蔬产品，
+     * 不把 pork 的 production_loss（如精瘦肉）计入果蔬指标。
+     */
+    @Select("""
+        SELECT COALESCE(SUM(loss_weight), 0) FROM t_warehouse_loss_flow
+        WHERE del_flag = '0' AND tenant_id = #{tenantId}
+          AND DATE(loss_date) = #{statDate} AND loss_type = #{lossType}
+          AND belong_type = 'vegetable'
+        """)
+    BigDecimal sumVegLossByType(@Param("tenantId") String tenantId, @Param("statDate") String statDate, @Param("lossType") String lossType);
+
+    /**
      * 毛菜称量总重：当日毛菜处理间「处理完成」地块的毛菜总重 = Σ picked_weight
      * （口径 r103：只计当日处理完成的地块，按 is_finish=1 + 完成日 DATE(pick_end_time) 锚定，
      * 不再按采摘开始 pick_start_time）。
@@ -209,6 +222,28 @@ public interface WarehouseStatAggregateMapper {
           AND DATE(feed_date) = #{statDate}
         """)
     BigDecimal sumFeedWeightTotal(@Param("tenantId") String tenantId, @Param("statDate") String statDate);
+
+    /**
+     * 果蔬生产消耗残差三项库存流水量（row206，独立指标，均按果蔬 belong_type='vegetable' 口径）：
+     * 领用 {@code prod_pick_out} / 退回 {@code prod_return_in} / 饲喂 {@code feed_out}（change_quantity, flow_date）。
+     * <p>饲喂取 {@code stock_flow.feed_out}（从生产领用池出库、天然 ≤ 领用），**不是** feed_log 的
+     * 毛菜间/仓库饲喂。stock_flow 无 belong_type 列，JOIN 商品主数据按 vegetable 过滤。与邓博 row38
+     * {@code ProductionLossAggregateMapper} 同源同口径，仅少了 GROUP BY（此处日维度整体聚合）。</p>
+     *
+     * @return 单行 {@code {pickOut, returnIn, feedOut}}
+     */
+    @Select("""
+        SELECT COALESCE(SUM(CASE WHEN sf.flow_type = 'prod_pick_out'  THEN sf.change_quantity ELSE 0 END), 0) AS pickOut,
+               COALESCE(SUM(CASE WHEN sf.flow_type = 'prod_return_in' THEN sf.change_quantity ELSE 0 END), 0) AS returnIn,
+               COALESCE(SUM(CASE WHEN sf.flow_type = 'feed_out'       THEN sf.change_quantity ELSE 0 END), 0) AS feedOut
+        FROM t_warehouse_stock_flow sf
+        JOIN t_warehouse_product_info p ON p.id = sf.product_id
+        WHERE sf.del_flag = '0' AND sf.tenant_id = #{tenantId}
+          AND DATE(sf.flow_date) = #{statDate}
+          AND p.belong_type = 'vegetable'
+          AND sf.flow_type IN ('prod_pick_out', 'prod_return_in', 'feed_out')
+        """)
+    Map<String, Object> selectVegProdConsumeFlow(@Param("tenantId") String tenantId, @Param("statDate") String statDate);
 
     // ============================================================
     //  作物日表（row17）源聚合 —— 按 crop_id 一次性 GROUP，service 端组装
