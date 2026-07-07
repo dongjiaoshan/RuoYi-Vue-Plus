@@ -367,6 +367,21 @@ public interface ProductProductionMapper extends BaseMapperPlus<ProductProductio
     List<Long> selectDeliveredProductIdsToStore(@Param("storeId") Long storeId, @Param("date") LocalDate date);
 
     /**
+     * admin row5：某白条需求「已发货白条实际重量之和」（kg）——供门店需求列表「预计到店重量」白条口径。
+     * = Σ 绑定到该 demand 的 white_bar 成品已发货清点(is_delivery_check=1)重量 product_weight。
+     * demand_id 门店级松散绑定，故 JOIN 商品主数据按 belong_type='white_bar' 过滤只算白条产出行。
+     *
+     * @param demandId 需求 FK
+     * @return 已发货白条总重（无 → 0）
+     */
+    @Select("SELECT COALESCE(SUM(pp.product_weight), 0) "
+        + "FROM t_warehouse_product_production pp "
+        + "JOIN t_warehouse_product_info pi ON pi.id = pp.product_id AND pi.belong_type = 'white_bar' "
+        + "WHERE pp.demand_id = #{demandId} AND pp.is_delivery_check = 1 "
+        + "AND pp.del_flag = '0' AND pp.tenant_id = '1001'")
+    BigDecimal sumShippedWhiteBarWeightByDemand(@Param("demandId") Long demandId);
+
+    /**
      * 白条发货记录列表（WS12 row133，「产品生产记录」下「白条发货记录」页）。
      *
      * <p>数据源 = {@code t_warehouse_product_production} 中 {@code belong_type='white_bar'} 的出库记录

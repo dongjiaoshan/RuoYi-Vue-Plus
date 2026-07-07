@@ -27,9 +27,16 @@ import org.dromara.djs.warehouse.trace.service.ITraceService;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 /**
  * 门店端需求服务实现（STR-DEMAND-001 + STORE-DEMAND-REALIGN-001，薄封装复用 WMS demand）。
@@ -74,11 +81,86 @@ public class StoreDemandServiceImpl implements IStoreDemandService {
     /** 门店视角派生状态：确认到店（{@code djs_store_demand_status} 之一，SHIPPED 收货后）。 */
     private static final String STORE_STATUS_ARRIVED = "ARRIVED";
 
+    /** 自产归属类型（djs_belong_type）：果蔬 / 猪肉 / 白条 —— 预计到店重量口径分流。 */
+    private static final String BELONG_VEGETABLE = "vegetable";
+    private static final String BELONG_PORK = "pork";
+    private static final String BELONG_WHITE_BAR = "white_bar";
+
+    /** 规格净重解析：取前导数字 + 重量单位（如 "500g/包" → 0.5kg，"1kg/包" → 1kg）；非重量规格（枚/个）→ 不匹配。 */
+    private static final Pattern SPEC_WEIGHT = Pattern.compile("^\\s*(\\d+(?:\\.\\d+)?)\\s*(kg|g|千克|公斤|克)", Pattern.CASE_INSENSITIVE);
+
     @Override
     public TableDataInfo<DemandManageVo> queryStoreList(DemandManageQuery query, PageQuery pageQuery) {
         TableDataInfo<DemandManageVo> page = demandManageService.queryPageList(query, pageQuery);
         fillDamagedCount(page.getRows());
+        fillExpectedWeight(page.getRows());
         return page;
+    }
+
+    /**
+     * 回填「预计到店重量」{@code expectedWeight}（admin row5，kg，前端按 productType 换单位展示）。
+     *
+     * <p>按产品自产归属类型（belong_type，经 product_id JOIN 商品主数据取）分流：</p>
+     * <ul>
+     *   <li>果蔬(vegetable) / 猪肉(pork)：{@code 需求量 × 规格净重(kg)}（规格如 500g/包 → 0.5kg）；前端 ×1000 展示 g。</li>
+     *   <li>白条(white_bar)：该需求已发货白条实际重量之和（kg，Kevin 2026-07-07 定 a 方案）；前端 kg 不换算。</li>
+     *   <li>其余（鸡蛋 / 物资 / 礼盒 / 规格非重量）：不回填（{@code null}），前端展示 '—'。</li>
+     * </ul>
+     * compute-on-read：不持久化（白条已发货重随发货变、果蔬量随需求量算），与 {@link #fillDamagedCount} 同批。
+     */
+    private void fillExpectedWeight(List<DemandManageVo> rows) {
+        if (rows == null || rows.isEmpty()) {
+            return;
+        }
+        List<Long> productIds = rows.stream().map(DemandManageVo::getProductId)
+            .filter(java.util.Objects::nonNull).distinct().collect(Collectors.toList());
+        Map<Long, String> belongByProduct = new HashMap<>();
+        if (!productIds.isEmpty()) {
+            List<ProductInfo> products = productInfoMapper.selectList(new LambdaQueryWrapper<ProductInfo>()
+                .in(ProductInfo::getId, productIds)
+                .select(ProductInfo::getId, ProductInfo::getBelongType));
+            for (ProductInfo p : products) {
+                belongByProduct.put(p.getId(), p.getBelongType());
+            }
+        }
+        for (DemandManageVo vo : rows) {
+            if (vo.getExpectedWeight() != null || vo.getProductId() == null) {
+                continue;
+            }
+            String belong = belongByProduct.get(vo.getProductId());
+            if (BELONG_WHITE_BAR.equals(belong)) {
+                BigDecimal w = productProductionMapper.sumShippedWhiteBarWeightByDemand(vo.getId());
+                if (w != null && w.signum() > 0) {
+                    vo.setExpectedWeight(w);
+                }
+            } else if (BELONG_VEGETABLE.equals(belong) || BELONG_PORK.equals(belong)) {
+                BigDecimal unitKg = parseSpecNetKg(vo.getProductSpec());
+                if (unitKg != null && vo.getDemandQuantity() != null) {
+                    vo.setExpectedWeight(unitKg.multiply(vo.getDemandQuantity()).setScale(3, RoundingMode.HALF_UP));
+                }
+            }
+            // 其余 belong（egg / dry_good / gift_box / 外购商品 / null）→ 不回填，前端 '—'
+        }
+    }
+
+    /**
+     * 规格 → 单件净重（kg）。取规格前导「数字+重量单位」；g/克 → ×0.001，kg/千克/公斤 → ×1；
+     * 非重量规格（如 "42枚/份" / "10个/包"）或空 → {@code null}（调用方不回填）。
+     */
+    private BigDecimal parseSpecNetKg(String spec) {
+        if (StringUtils.isBlank(spec)) {
+            return null;
+        }
+        Matcher m = SPEC_WEIGHT.matcher(spec);
+        if (!m.find()) {
+            return null;
+        }
+        BigDecimal num = new BigDecimal(m.group(1));
+        String unit = m.group(2).toLowerCase();
+        if ("kg".equals(unit) || "千克".equals(unit) || "公斤".equals(unit)) {
+            return num;
+        }
+        return num.multiply(new BigDecimal("0.001"));
     }
 
     /**
