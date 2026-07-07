@@ -149,15 +149,17 @@ public interface ProductProductionMapper extends BaseMapperPlus<ProductProductio
      * （{@code demand_status IN ('CONFIRMED','IN_PRODUCTION','PARTIAL_SHIPPED','COMPLETED')}）；
      * 草稿 / 待确认 / 已取消 / 已删除均不计。JOIN {@code t_md_store} 取门店名。</p>
      *
-     * <p>{@code demandQty = SUM(demand_quantity)} 该店当天白条需求总份数（HAVING &gt; 0 过滤掉全零门店）。
+     * <p>{@code demandQty = SUM(GREATEST(demand_quantity - shipped_count, 0))} 该店当天白条<b>剩余未发</b>份数。
+     * 每发一个白条到发货月台即 {@code shipped_count+1}（submitWhiteBarOut → deductDemandOnPack），故 demandQty
+     * 随发递减；{@code HAVING > 0} 过滤掉已发满/全零门店 —— 需求发满即从下拉消失（= 不允许继续往该门店发货）。
      * {@code storeId} 用 {@code CAST(... AS CHAR)} 返字符串防雪花门店 id 前端 JS Number 精度截断。
      * 租户隔离 V1 单租户显式 {@code tenant_id='1001'}（与本 mapper 其他原生 SQL 一致）；{@code del_flag='0'}。</p>
      *
-     * @return 行 {@code {storeId(字符串), storeName, demandQty}}（按 demandQty 降序）；当天无白条需求 → 空 List
+     * @return 行 {@code {storeId(字符串), storeName, demandQty}}（按 demandQty 降序）；当天无剩余白条需求 → 空 List
      */
     @Select("SELECT CAST(dm.store_id AS CHAR) AS storeId, "
         + "       s.store_name AS storeName, "
-        + "       SUM(dm.demand_quantity) AS demandQty "
+        + "       SUM(GREATEST(dm.demand_quantity - COALESCE(dm.shipped_count, 0), 0)) AS demandQty "
         + "  FROM t_warehouse_demand_manage dm "
         + "  JOIN t_md_store s ON s.id = dm.store_id "
         + "       AND s.del_flag = '0' "
@@ -167,7 +169,7 @@ public interface ProductProductionMapper extends BaseMapperPlus<ProductProductio
         + "   AND dm.product_type = 'white_bar' "
         + "   AND dm.store_id IS NOT NULL "
         + "   AND dm.demand_date = CURDATE() "
-        + "   AND dm.demand_status IN ('CONFIRMED','IN_PRODUCTION','PARTIAL_SHIPPED','COMPLETED') "
+        + "   AND dm.demand_status IN ('CONFIRMED','IN_PRODUCTION','PARTIAL_SHIPPED') "
         + " GROUP BY dm.store_id, s.store_name "
         + "HAVING demandQty > 0 "
         + "ORDER BY demandQty DESC")
