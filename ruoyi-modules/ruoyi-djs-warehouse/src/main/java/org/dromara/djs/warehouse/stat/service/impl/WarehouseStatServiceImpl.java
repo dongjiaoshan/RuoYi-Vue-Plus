@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.common.tenant.helper.TenantHelper;
+import org.dromara.djs.warehouse.loss.service.IProductionLossService;
 import org.dromara.djs.warehouse.stat.domain.WarehouseCroppRecord;
 import org.dromara.djs.warehouse.stat.domain.WarehouseIndicatorRecord;
 import org.dromara.djs.warehouse.stat.domain.WarehouseMonthlyRecord;
@@ -60,6 +61,7 @@ public class WarehouseStatServiceImpl implements IWarehouseStatService {
     private final WarehouseIndicatorRecordMapper indicatorMapper;
     private final WarehouseCroppRecordMapper croppMapper;
     private final WarehouseMonthlyRecordMapper monthlyMapper;
+    private final IProductionLossService productionLossService;
 
     // ============================================================
     //  Write end — aggregate
@@ -74,6 +76,11 @@ public class WarehouseStatServiceImpl implements IWarehouseStatService {
         String tenantId = currentTenant();
         String statDate = targetDate.toString();
         log.info("[WarehouseStat] start tenant={} date={}", tenantId, statDate);
+
+        // 果蔬生产损耗（per-product 残差）并入本任务：先写 loss_flow production_loss，再算 cropp
+        // （cropp 净菜损耗率读 production_loss，同一次跑先写后读 → 即时新鲜，不再依赖独立 job 时序）。
+        // 原独立 ProductionLossAggregateJob（0:50）已撤，改由本任务驱动。
+        productionLossService.aggregate(targetDate);
 
         upsertDaily(tenantId, statDate);
         int croppRows = upsertCropp(tenantId, statDate);
@@ -142,38 +149,26 @@ public class WarehouseStatServiceImpl implements IWarehouseStatService {
         // 注：作物表 row17 分母用「接收」（见 upsertCropp），与本日表 row16 各自跟对应 spec 行，刻意不一致。
         r.setTransportLossRate(pctOrNull(sendPlatform.subtract(receivePlatform), sendPlatform));
 
-        // 净菜生产段
-        BigDecimal prodPick = scale3(aggregateMapper.sumProdPickWeight(tenantId, statDate));
-        BigDecimal prodReturn = scale3(aggregateMapper.sumProdReturnWeight(tenantId, statDate));
-        BigDecimal manualLoss = scale3(aggregateMapper.sumLossByType(tenantId, statDate, "manual_loss"));
-        BigDecimal feedTotal = scale3(aggregateMapper.sumFeedWeightTotal(tenantId, statDate));
-        // 果蔬生产损耗（row16）= 残差口径（Kevin 拍板）：
-        // prodLoss = max(0, 当日领用 − 退回 − 录入损耗 − 饲喂总重)。
-        // production_loss 这个 loss_type 无数据（恒 0），生产损耗改由物料平衡残差反推：
-        // 领用出去的原料，扣掉退回、扣掉人工录入损耗、扣掉转去饲喂的，剩下没入成品的差额即为生产损耗；
-        // 领用<（退回+录入+饲喂）时残差为负，无业务意义，置 0。
-        BigDecimal prodLoss = scale3(
-            prodPick.subtract(prodReturn).subtract(manualLoss).subtract(feedTotal)
-                .max(BigDecimal.ZERO));
-        r.setProdPickWeight(prodPick);
-        r.setProdLossWeight(prodLoss);
-        // 净菜损耗率 = (生产损耗+录入损耗)/(生产领用−生产退回)×100（日表口径）
-        BigDecimal netDenom = prodPick.subtract(prodReturn);
-        r.setNetVegLossRate(pctOrNull(prodLoss.add(manualLoss), netDenom));
-
-        // 果蔬生产消耗总重（row206，邓博）—— 独立指标，与上面「生产损耗」列各算各的、互不牵扯。
-        // = 果蔬产品领用 − 退回 − 录入损耗(manual_loss) − 饲喂，均按 belong_type='vegetable' 口径；
-        // 饲喂取 stock_flow feed_out（从生产领用池出库、天然 ≤ 领用），非 feed_log 的毛菜间/仓库饲喂。
-        // 残差 < 0（录入未配齐）无业务意义，置 0。
-        Map<String, Object> vegFlow = aggregateMapper.selectVegProdConsumeFlow(tenantId, statDate);
+        // 净菜生产段（果蔬口径，row206 邓博最终口径）——仓库聚合日表只统计「果蔬生产损耗」。
+        // 果蔬生产损耗 = max(0, 果蔬领用 − 退回 − 录入损耗 − 饲喂 − 果蔬打包生产使用量)，全部 belong_type='vegetable'。
+        //   · belong_type='vegetable' = 自产果蔬（外购商品 belong_type 空、包材非 vegetable，天然排除 → 符合「只算产品的」）。
+        //   · 饲喂取 stock_flow feed_out（从生产领用池出库、天然 ≤ 领用），非 feed_log 的毛菜间/仓库饲喂。
+        //   · 打包生产使用量取 product_production.material_consume（缺省回退 product_weight，均 kg），仅自产果蔬产品。
+        //   · 「总生产损耗（全部产品）」按客户口径记在损耗总览表，不在本聚合日表展示；猪肉/其他产品损耗当前无展示需求。
+        Map<String, Object> vegFlow = aggregateMapper.selectVegProdFlow(tenantId, statDate);
         BigDecimal vegPick = scale3(mapBd(vegFlow, "pickOut"));
         BigDecimal vegReturn = scale3(mapBd(vegFlow, "returnIn"));
         BigDecimal vegFeedOut = scale3(mapBd(vegFlow, "feedOut"));
         BigDecimal vegManualLoss = scale3(aggregateMapper.sumVegLossByType(tenantId, statDate, "manual_loss"));
-        BigDecimal prodConsume = scale3(
-            vegPick.subtract(vegReturn).subtract(vegManualLoss).subtract(vegFeedOut)
+        BigDecimal vegPackUsage = scale3(aggregateMapper.sumVegProdPackUsage(tenantId, statDate));
+        BigDecimal prodLoss = scale3(
+            vegPick.subtract(vegReturn).subtract(vegManualLoss).subtract(vegFeedOut).subtract(vegPackUsage)
                 .max(BigDecimal.ZERO));
-        r.setProdConsumeWeight(prodConsume);
+        r.setProdPickWeight(vegPick);
+        r.setProdLossWeight(prodLoss);
+        // 净菜损耗率 = (生产损耗 + 录入损耗)/(生产领用 − 生产退回)×100（果蔬口径，分母≤0 → null）
+        BigDecimal netDenom = vegPick.subtract(vegReturn);
+        r.setNetVegLossRate(pctOrNull(prodLoss.add(vegManualLoss), netDenom));
 
         upsertIndicatorRow(tenantId, statDate, r);
     }

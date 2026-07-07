@@ -1,6 +1,8 @@
 package org.dromara.djs.plant.dashboard.applet.service.impl;
 
 import org.dromara.djs.common.image.service.ImageUrlResolver;
+import org.dromara.djs.plant.activity.mapper.PlantActivityMapper;
+import org.dromara.djs.plant.dashboard.applet.domain.vo.PlantAnnualPlanVo;
 import org.dromara.djs.plant.dashboard.applet.domain.vo.PlantManageOverviewVo;
 import org.dromara.djs.plant.dashboard.applet.mapper.AppletPlantManageDashboardMapper;
 import org.junit.jupiter.api.DisplayName;
@@ -16,6 +18,8 @@ import org.mockito.quality.Strictness;
 import java.math.BigDecimal;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.when;
 
@@ -40,6 +44,9 @@ class AppletPlantManageDashboardServiceImplTest {
     @Mock
     private ImageUrlResolver imageUrlResolver;
 
+    @Mock
+    private PlantActivityMapper plantActivityMapper;
+
     @InjectMocks
     private AppletPlantManageDashboardServiceImpl service;
 
@@ -58,7 +65,8 @@ class AppletPlantManageDashboardServiceImplTest {
         PlantManageOverviewVo vo = service.getOverview();
 
         assertThat(vo.getTotalPlotCount()).isEqualTo(20);
-        assertThat(vo.getPlantingPlotCount()).isEqualTo(8);
+        // 当前已种植地块数 = 总地块数 - 空地块数（非空即已种植）= 20 - 7 = 13
+        assertThat(vo.getPlantingPlotCount()).isEqualTo(13);
         assertThat(vo.getIdlePlotCount()).isEqualTo(7);
         assertThat(vo.getPlantedCropCount()).isEqualTo(5);
         assertThat(vo.getCurrentPlantArea()).isEqualByComparingTo("66.50");
@@ -81,6 +89,34 @@ class AppletPlantManageDashboardServiceImplTest {
         assertThat(vo.getPlantedCropCount()).isZero();
         assertThat(vo.getCurrentPlantArea()).isEqualByComparingTo(BigDecimal.ZERO);
         assertThat(vo.getHarvestableCropCount()).isZero();
+    }
+
+    @Test
+    @DisplayName("getAnnualPlan happy：计划走 plan_year、已种植走结束年+完成、已采摘走采摘活动表当年")
+    void getAnnualPlanHappyPath() {
+        // 计划维度（plan_year）
+        AppletPlantManageDashboardMapper.AnnualPlanRow plan = new AppletPlantManageDashboardMapper.AnnualPlanRow();
+        plan.setPlanArea(new BigDecimal("19.59"));
+        plan.setPlanCropCount(11);
+        plan.setExpectedYieldKg(new BigDecimal("15450.000"));
+        when(dashboardMapper.selectAnnualPlan(anyString(), anyInt())).thenReturn(plan);
+        // 执行维度：已种植（结束种植年 + 种植完成）
+        AppletPlantManageDashboardMapper.ExecutionRow exec = new AppletPlantManageDashboardMapper.ExecutionRow();
+        exec.setPlantedArea(new BigDecimal("15.44"));
+        exec.setPlantedCropCount(10);
+        when(dashboardMapper.selectExecutedByEndYear(anyString(), anyInt())).thenReturn(exec);
+        // 执行维度：已采摘（采摘活动表 daily_weight 当年合计，kg）→ 转吨
+        when(plantActivityMapper.selectTotalWeightInRange(any(), any())).thenReturn(new BigDecimal("18.000"));
+
+        PlantAnnualPlanVo vo = service.getAnnualPlan(2026);
+
+        assertThat(vo.getPlanArea()).isEqualByComparingTo("19.59");
+        assertThat(vo.getPlanCropCount()).isEqualTo(11);
+        assertThat(vo.getExpectedYieldTon()).isEqualByComparingTo("15.45");
+        assertThat(vo.getPlantedArea()).isEqualByComparingTo("15.44");
+        assertThat(vo.getPlantedCropCount()).isEqualTo(10);
+        // 18 kg / 1000 = 0.018 → HALF_UP 2 位 = 0.02 吨
+        assertThat(vo.getHarvestedYieldTon()).isEqualByComparingTo("0.02");
     }
 
 }

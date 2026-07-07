@@ -75,10 +75,8 @@ public class WarehouseIndicatorRecordVo implements Serializable {
 
     /** 果蔬生产领用总重。 */
     private BigDecimal prodPickWeight;
-    /** 果蔬产品生产损耗总重。 */
+    /** 果蔬生产损耗总重（果蔬领用−退回−录入损耗−饲喂−打包生产使用量，≥0）。 */
     private BigDecimal prodLossWeight;
-    /** 果蔬生产消耗总重（领用−退回−录入损耗−饲喂，≥0）。 */
-    private BigDecimal prodConsumeWeight;
     /** 净菜损耗率%。 */
     private BigDecimal netVegLossRate;
 }

@@ -22,7 +22,12 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 生产损耗日聚合实现（row38，邓博）。
+ * 果蔬生产损耗日聚合实现（邓博最终口径）。
+ *
+ * <p>按产品残差 = 果蔬领用 − 退回 − 录入损耗 − 饲喂 − 打包生产使用量（&gt;0 才落 {@code loss_type='production_loss'}），
+ * 全部按 {@code belong_type='vegetable'}（自产果蔬；外购商品/包材天然排除；猪肉/其他产品无生产损耗展示需求）。
+ * 由 {@code WarehouseStatServiceImpl#aggregate} 驱动（先于 cropp 聚合跑，production_loss 对 cropp 净菜损耗率即时新鲜），
+ * 原独立 ProductionLossAggregateJob 已撤。</p>
  *
  * @author djs
  */
@@ -51,7 +56,7 @@ public class ProductionLossServiceImpl implements IProductionLossService {
             .eq(LossFlow::getLossType, LOSS_TYPE_PRODUCTION)
             .apply("DATE(loss_date) = DATE({0})", statDate));
 
-        // 聚合四项量：[pickOut, returnIn, feedOut, manualLoss]
+        // 聚合五项量：[pickOut, returnIn, feedOut, manualLoss, packUsage]（均果蔬 belong_type='vegetable' 口径）
         Map<Long, BigDecimal[]> byProduct = new LinkedHashMap<>();
         for (Map<String, Object> r : aggregateMapper.selectProductFlowAgg(tenantId, statDate)) {
             Long pid = toLong(r.get("productId"));
@@ -70,14 +75,21 @@ public class ProductionLossServiceImpl implements IProductionLossService {
             }
             rowOf(byProduct, pid)[3] = toDec(r.get("manualLoss"));
         }
+        for (Map<String, Object> r : aggregateMapper.selectProductPackUsage(tenantId, statDate)) {
+            Long pid = toLong(r.get("productId"));
+            if (pid == null) {
+                continue;
+            }
+            rowOf(byProduct, pid)[4] = toDec(r.get("packUsage"));
+        }
 
         // 落库当日 00:00（损耗总览按 DATE(loss_date) 归日，取当日任意时刻即可）
         Date lossDate = Date.from(date.atStartOfDay(ZONE).toInstant());
         int written = 0;
         for (Map.Entry<Long, BigDecimal[]> e : byProduct.entrySet()) {
             BigDecimal[] a = e.getValue();
-            // 生产损耗 = 产品领用 − 产品退回 − 产品录入损耗 − 产品饲喂（邓博 row38 口径）
-            BigDecimal residual = a[0].subtract(a[1]).subtract(a[3]).subtract(a[2]);
+            // 果蔬生产损耗 = 领用 − 退回 − 录入损耗 − 饲喂 − 打包生产使用量（邓博最终口径，仅自产果蔬）
+            BigDecimal residual = a[0].subtract(a[1]).subtract(a[3]).subtract(a[2]).subtract(a[4]);
             if (residual.compareTo(BigDecimal.ZERO) <= 0) {
                 continue;
             }
@@ -100,7 +112,8 @@ public class ProductionLossServiceImpl implements IProductionLossService {
     }
 
     private BigDecimal[] rowOf(Map<Long, BigDecimal[]> m, Long pid) {
-        return m.computeIfAbsent(pid, k -> new BigDecimal[]{BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO});
+        return m.computeIfAbsent(pid, k -> new BigDecimal[]{
+            BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO});
     }
 
     private String currentTenant() {

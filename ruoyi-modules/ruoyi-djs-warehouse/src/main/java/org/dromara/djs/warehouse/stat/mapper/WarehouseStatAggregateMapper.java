@@ -195,40 +195,13 @@ public interface WarehouseStatAggregateMapper {
         """)
     BigDecimal sumReceivePlatformWeight(@Param("tenantId") String tenantId, @Param("statDate") String statDate);
 
-    /** 果蔬生产领用总重：当日 stock_flow flow_type=prod_pick_out 变更量绝对值之和（change_quantity，flow_date）。 */
-    @Select("""
-        SELECT COALESCE(SUM(change_quantity), 0) FROM t_warehouse_stock_flow
-        WHERE del_flag = '0' AND tenant_id = #{tenantId}
-          AND DATE(flow_date) = #{statDate} AND flow_type = 'prod_pick_out'
-        """)
-    BigDecimal sumProdPickWeight(@Param("tenantId") String tenantId, @Param("statDate") String statDate);
-
-    /** 生产退回总重：当日 stock_flow flow_type=prod_return_in 变更量绝对值之和（净菜损耗率分母用）。 */
-    @Select("""
-        SELECT COALESCE(SUM(change_quantity), 0) FROM t_warehouse_stock_flow
-        WHERE del_flag = '0' AND tenant_id = #{tenantId}
-          AND DATE(flow_date) = #{statDate} AND flow_type = 'prod_return_in'
-        """)
-    BigDecimal sumProdReturnWeight(@Param("tenantId") String tenantId, @Param("statDate") String statDate);
-
     /**
-     * 当日饲喂总重（全量 Σ feed_log.feed_weight，不按 crop 过滤，日表 row16 生产损耗残差用）。
-     * 与作物维 {@link #selectCropFeedAgg}（按 crop_id GROUP + 要求 crop_id 非空）区分：本方法计
-     * 当日全部饲喂路径（毛菜间 + 仓库领用）总重，含 crop_id 为 NULL 的行，供日表残差公式减去。
-     */
-    @Select("""
-        SELECT COALESCE(SUM(feed_weight), 0) FROM t_warehouse_feed_log
-        WHERE del_flag = '0' AND tenant_id = #{tenantId}
-          AND DATE(feed_date) = #{statDate}
-        """)
-    BigDecimal sumFeedWeightTotal(@Param("tenantId") String tenantId, @Param("statDate") String statDate);
-
-    /**
-     * 果蔬生产消耗残差三项库存流水量（row206，独立指标，均按果蔬 belong_type='vegetable' 口径）：
+     * 净菜生产段三项库存流水量（row206 果蔬生产损耗残差用，均按果蔬 belong_type='vegetable' 口径）：
      * 领用 {@code prod_pick_out} / 退回 {@code prod_return_in} / 饲喂 {@code feed_out}（change_quantity, flow_date）。
-     * <p>饲喂取 {@code stock_flow.feed_out}（从生产领用池出库、天然 ≤ 领用），**不是** feed_log 的
-     * 毛菜间/仓库饲喂。stock_flow 无 belong_type 列，JOIN 商品主数据按 vegetable 过滤。与邓博 row38
-     * {@code ProductionLossAggregateMapper} 同源同口径，仅少了 GROUP BY（此处日维度整体聚合）。</p>
+     * <p>饲喂取 {@code stock_flow.feed_out}（从生产领用池出库、天然 ≤ 领用），<b>不是</b> feed_log 的
+     * 毛菜间/仓库饲喂。{@code belong_type='vegetable'} = 自产果蔬（外购商品 belong_type 空、包材非 vegetable，
+     * 天然排除，符合「只算产品的」）；stock_flow 无 belong_type 列，JOIN 商品主数据按 vegetable 过滤。
+     * 与邓博 row38 {@code ProductionLossAggregateMapper} 同源同口径，仅少 GROUP BY（此处日维度整体聚合）。</p>
      *
      * @return 单行 {@code {pickOut, returnIn, feedOut}}
      */
@@ -243,7 +216,23 @@ public interface WarehouseStatAggregateMapper {
           AND p.belong_type = 'vegetable'
           AND sf.flow_type IN ('prod_pick_out', 'prod_return_in', 'feed_out')
         """)
-    Map<String, Object> selectVegProdConsumeFlow(@Param("tenantId") String tenantId, @Param("statDate") String statDate);
+    Map<String, Object> selectVegProdFlow(@Param("tenantId") String tenantId, @Param("statDate") String statDate);
+
+    /**
+     * 果蔬打包生产使用量：当日果蔬产品「打包生产」耗用的原料总重（row206，果蔬生产损耗残差减项）。
+     * = Σ {@code t_warehouse_product_production.material_consume}（原材料耗用 kg；缺省回退 {@code product_weight}，
+     * 二者对果蔬 1:1 相等且均为 kg），按 {@code produce_date} 归当日、JOIN 商品主数据按 {@code belong_type='vegetable'}
+     * 过滤（= 自产果蔬产品；外购商品/包材天然排除，符合「只算产品的」）。
+     */
+    @Select("""
+        SELECT COALESCE(SUM(COALESCE(pp.material_consume, pp.product_weight)), 0)
+        FROM t_warehouse_product_production pp
+        JOIN t_warehouse_product_info p ON p.id = pp.product_id
+        WHERE pp.del_flag = '0' AND pp.tenant_id = #{tenantId}
+          AND DATE(pp.produce_date) = #{statDate}
+          AND p.belong_type = 'vegetable'
+        """)
+    BigDecimal sumVegProdPackUsage(@Param("tenantId") String tenantId, @Param("statDate") String statDate);
 
     // ============================================================
     //  作物日表（row17）源聚合 —— 按 crop_id 一次性 GROUP，service 端组装

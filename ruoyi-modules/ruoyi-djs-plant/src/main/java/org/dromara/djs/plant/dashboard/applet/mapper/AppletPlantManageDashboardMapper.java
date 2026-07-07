@@ -79,43 +79,68 @@ public interface AppletPlantManageDashboardMapper {
     BigDecimal sumCurrentPlantArea(@Param("tenantId") String tenantId);
 
     /**
-     * 近一月可采摘品种数（计划最早采摘日 {@code earliest_harvestdate} 落 [今, 今+1 月] 的不重复 crop_id 数）。
+     * 当月可采摘品种数：作物采摘周期 {@code [earliest_harvestdate, last_harvestdate]} 与「当前自然月」
+     * {@code [当月1号, 当月月末]} 存在任意时间重叠的不重复 crop_id 数（甲方口径）。
+     *
+     * <p>区间重叠判定：{@code earliest_harvestdate <= 当月月末 AND last_harvestdate >= 当月1号}。
+     * 覆盖三类：周期部分落当月 / 周期完整覆盖当月 / 周期虽已结束但有日期落当月；
+     * 排除周期完全早于当月首日或完全晚于当月月末（无交集）。按采摘周期本身判定，
+     * 不看 plant_status / harvest_status（已采完但周期与当月有交集仍计入）。</p>
      *
      * @param tenantId 租户
-     * @return 可采摘品种数，无则 0
+     * @return 当月可采摘品种数，无则 0
      */
     @Select("SELECT COUNT(DISTINCT crop_id) "
         + "  FROM t_plant_plant_details "
         + " WHERE tenant_id = #{tenantId} "
         + "   AND del_flag = '0' "
-        + "   AND earliest_harvestdate >= CURDATE() "
-        + "   AND earliest_harvestdate < DATE_ADD(CURDATE(), INTERVAL 1 MONTH)")
+        + "   AND earliest_harvestdate IS NOT NULL "
+        + "   AND last_harvestdate IS NOT NULL "
+        + "   AND earliest_harvestdate <= LAST_DAY(CURDATE()) "
+        + "   AND last_harvestdate >= DATE_FORMAT(CURDATE(), '%Y-%m-01')")
     Integer countHarvestableCrop(@Param("tenantId") String tenantId);
 
     // ============================ 端点 2 annualPlan 年度果蔬规划与执行 ============================
 
     /**
-     * 年度规划与执行 6 KPI（一条聚合，按 {@code plant_id} JOIN plan 取 {@code plan_year}）。
+     * 年度「计划」3 KPI（一条聚合，按 {@code plant_id} JOIN plan 取 {@code plan_year}）。
      *
-     * <p>产量字段（expected_yield / actual_yield）单位 kg；service 层 /1000 转吨。
-     * 已种植 = {@code begin_actualdate IS NOT NULL}。</p>
+     * <p>计划口径按 {@code plan_year} 维度：总计划面积 / 计划品种数 / 预计总产量。
+     * expected_yield 单位 kg，service 层 /1000 转吨。执行口径（已种植 / 已采摘）另走
+     * {@link #selectExecutedByEndYear} + 采摘活动表，不再挂 plan_year（见 row5/row4 口径）。</p>
      *
      * @param tenantId 租户
      * @param year     计划年份
-     * @return 单行 6 值，无行各 0
+     * @return 单行 3 值，无行各 0
      */
-    @Select("SELECT COALESCE(SUM(d.plot_area), 0)                                                          AS planArea, "
-        + "       COUNT(DISTINCT d.crop_id)                                                              AS planCropCount, "
-        + "       COALESCE(SUM(d.expected_yield), 0)                                                     AS expectedYieldKg, "
-        + "       COALESCE(SUM(CASE WHEN d.begin_actualdate IS NOT NULL THEN d.plot_area ELSE 0 END), 0) AS plantedArea, "
-        + "       COUNT(DISTINCT CASE WHEN d.begin_actualdate IS NOT NULL THEN d.crop_id END)            AS plantedCropCount, "
-        + "       COALESCE(SUM(d.actual_yield), 0)                                                       AS harvestedYieldKg "
+    @Select("SELECT COALESCE(SUM(d.plot_area), 0)                  AS planArea, "
+        + "       COUNT(DISTINCT d.crop_id)                     AS planCropCount, "
+        + "       COALESCE(SUM(d.expected_yield), 0)            AS expectedYieldKg "
         + "  FROM t_plant_plant_details d "
         + "  JOIN t_plant_plant_plan pp ON pp.id = d.plant_id AND pp.del_flag = '0' "
         + " WHERE d.tenant_id = #{tenantId} "
         + "   AND d.del_flag = '0' "
         + "   AND pp.plan_year = #{year}")
     AnnualPlanRow selectAnnualPlan(@Param("tenantId") String tenantId, @Param("year") Integer year);
+
+    /**
+     * 年度「已种植」执行 2 KPI：实际结束种植日期在指定年 + 种植完成的明细，面积合计 + 品种数。
+     *
+     * <p>口径（row5）：{@code plant_status='completed' AND YEAR(end_actualdate)=year}，
+     * 按实际结束种植日期年份统计，不挂计划年份（{@code plan_year}），与「计划」维度解耦。</p>
+     *
+     * @param tenantId 租户
+     * @param year     实际结束种植年份
+     * @return 单行 {plantedArea, plantedCropCount}，无行各 0
+     */
+    @Select("SELECT COALESCE(SUM(plot_area), 0)   AS plantedArea, "
+        + "       COUNT(DISTINCT crop_id)      AS plantedCropCount "
+        + "  FROM t_plant_plant_details "
+        + " WHERE tenant_id = #{tenantId} "
+        + "   AND del_flag = '0' "
+        + "   AND plant_status = 'completed' "
+        + "   AND YEAR(end_actualdate) = #{year}")
+    ExecutionRow selectExecutedByEndYear(@Param("tenantId") String tenantId, @Param("year") Integer year);
 
     // ============================ 端点 3 cropAreaShare 果蔬分布饼图 ============================
 
@@ -141,7 +166,11 @@ public interface AppletPlantManageDashboardMapper {
     // ============================ 端点 4 yieldRank3m 后三月产量排行 ============================
 
     /**
-     * 后三月预计产量排行（{@code earliest_harvestdate} 落 [今, 今+3 月]，按作物+月分组求 expected_yield）。
+     * 后三月预计产量排行（{@code earliest_harvestdate} 落「当前月起连续 3 个自然月」，按作物+月分组求 expected_yield）。
+     *
+     * <p>窗口 = {@code [当月1号, 当月1号+3月)}，即当前月及其后两个自然月（如 7 月 → 7/8/9 月），
+     * 跨年由 {@code DATE_ADD} 自动处理。前端按当前月起连续 3 列固定展示（含无数据的空月），
+     * 并按当前月预计产量倒序排作物（row6）。</p>
      *
      * @param tenantId 租户
      * @return 每 作物×月 一格 {cropName, month, expectedYield}（kg），无则空列表
@@ -153,8 +182,8 @@ public interface AppletPlantManageDashboardMapper {
         + "  LEFT JOIN t_plant_crop_info c ON c.id = d.crop_id AND c.del_flag = '0' "
         + " WHERE d.tenant_id = #{tenantId} "
         + "   AND d.del_flag = '0' "
-        + "   AND d.earliest_harvestdate >= CURDATE() "
-        + "   AND d.earliest_harvestdate < DATE_ADD(CURDATE(), INTERVAL 3 MONTH) "
+        + "   AND d.earliest_harvestdate >= DATE_FORMAT(CURDATE(), '%Y-%m-01') "
+        + "   AND d.earliest_harvestdate < DATE_ADD(DATE_FORMAT(CURDATE(), '%Y-%m-01'), INTERVAL 3 MONTH) "
         + " GROUP BY d.crop_id, c.crop_name, MONTH(d.earliest_harvestdate) "
         + " ORDER BY month ASC, expectedYield DESC")
     List<MonthYieldRankVo> selectYieldRank3m(@Param("tenantId") String tenantId);
@@ -341,7 +370,7 @@ public interface AppletPlantManageDashboardMapper {
     }
 
     /**
-     * 年度规划与执行单行（产量为 kg，service /1000 转吨）。
+     * 年度「计划」单行（预计产量为 kg，service /1000 转吨）。
      */
     @lombok.Data
     class AnnualPlanRow {
@@ -355,14 +384,19 @@ public interface AppletPlantManageDashboardMapper {
         /** 预计总产量（kg）。 */
         private BigDecimal expectedYieldKg;
 
+    }
+
+    /**
+     * 年度「已种植」执行单行（实际结束种植年份 + 种植完成口径）。
+     */
+    @lombok.Data
+    class ExecutionRow {
+
         /** 已种植面积（亩）。 */
         private BigDecimal plantedArea;
 
         /** 已种植品种数。 */
         private Integer plantedCropCount;
-
-        /** 已采摘总产量（kg）。 */
-        private BigDecimal harvestedYieldKg;
 
     }
 

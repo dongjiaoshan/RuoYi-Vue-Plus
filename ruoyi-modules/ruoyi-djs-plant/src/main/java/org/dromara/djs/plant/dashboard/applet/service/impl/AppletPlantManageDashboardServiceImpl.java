@@ -14,6 +14,7 @@ import org.dromara.djs.plant.dashboard.applet.domain.vo.PlantManageOverviewVo;
 import org.dromara.djs.plant.dashboard.applet.domain.vo.PlantPlanTimelineVo;
 import org.dromara.djs.plant.dashboard.applet.domain.vo.PlantRecordVo;
 import org.dromara.djs.common.image.service.ImageUrlResolver;
+import org.dromara.djs.plant.activity.mapper.PlantActivityMapper;
 import org.dromara.djs.plant.dashboard.applet.mapper.AppletPlantManageDashboardMapper;
 import org.dromara.djs.plant.dashboard.applet.service.IAppletPlantManageDashboardService;
 import org.springframework.stereotype.Service;
@@ -53,6 +54,7 @@ public class AppletPlantManageDashboardServiceImpl implements IAppletPlantManage
 
     private final AppletPlantManageDashboardMapper dashboardMapper;
     private final ImageUrlResolver imageUrlResolver;
+    private final PlantActivityMapper plantActivityMapper;
 
     @Override
     public PlantManageOverviewVo getOverview() {
@@ -83,22 +85,33 @@ public class AppletPlantManageDashboardServiceImpl implements IAppletPlantManage
         int y = resolveYear(year);
         PlantAnnualPlanVo vo = new PlantAnnualPlanVo();
 
+        // 计划维度（按 plan_year）：总计划面积 / 计划品种数 / 预计总产量
         AppletPlantManageDashboardMapper.AnnualPlanRow row = dashboardMapper.selectAnnualPlan(tenantId, y);
         if (row == null) {
             vo.setPlanArea(BigDecimal.ZERO);
             vo.setPlanCropCount(0);
             vo.setExpectedYieldTon(BigDecimal.ZERO);
+        } else {
+            vo.setPlanArea(nzBd(row.getPlanArea()));
+            vo.setPlanCropCount(nz(row.getPlanCropCount()));
+            vo.setExpectedYieldTon(toTon(row.getExpectedYieldKg()));
+        }
+
+        // 执行维度（row5）：已种植 = 实际结束种植日期在今年 + 种植完成，按实际结束日解耦 plan_year
+        AppletPlantManageDashboardMapper.ExecutionRow exec = dashboardMapper.selectExecutedByEndYear(tenantId, y);
+        if (exec == null) {
             vo.setPlantedArea(BigDecimal.ZERO);
             vo.setPlantedCropCount(0);
-            vo.setHarvestedYieldTon(BigDecimal.ZERO);
-            return vo;
+        } else {
+            vo.setPlantedArea(nzBd(exec.getPlantedArea()));
+            vo.setPlantedCropCount(nz(exec.getPlantedCropCount()));
         }
-        vo.setPlanArea(nzBd(row.getPlanArea()));
-        vo.setPlanCropCount(nz(row.getPlanCropCount()));
-        vo.setExpectedYieldTon(toTon(row.getExpectedYieldKg()));
-        vo.setPlantedArea(nzBd(row.getPlantedArea()));
-        vo.setPlantedCropCount(nz(row.getPlantedCropCount()));
-        vo.setHarvestedYieldTon(toTon(row.getHarvestedYieldKg()));
+
+        // 执行维度（row4）：已采摘总产量 = 毛菜间采摘录入（t_plant_plant_activity.daily_weight）今年合计，
+        // 按采摘录入日期 activity_date 年份统计，非 plant_details.actual_yield / 非 plan_year。
+        BigDecimal harvestedKg = plantActivityMapper.selectTotalWeightInRange(
+            LocalDate.of(y, 1, 1), LocalDate.of(y, 12, 31));
+        vo.setHarvestedYieldTon(toTon(harvestedKg));
         return vo;
     }
 

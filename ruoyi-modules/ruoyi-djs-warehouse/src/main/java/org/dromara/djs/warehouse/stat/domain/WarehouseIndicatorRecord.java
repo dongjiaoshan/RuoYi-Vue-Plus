@@ -98,13 +98,11 @@ public class WarehouseIndicatorRecord extends TenantEntity {
     @TableField(updateStrategy = FieldStrategy.ALWAYS)
     private BigDecimal transportLossRate;
 
-    // ---- 净菜生产段 ----
-    /** 果蔬生产领用总重（当日 stock_flow prod_pick_out 之和）。 */
+    // ---- 净菜生产段（果蔬口径，row206 邓博最终口径）----
+    /** 果蔬生产领用总重（当日 stock_flow prod_pick_out，belong_type=vegetable 自产果蔬）。 */
     private BigDecimal prodPickWeight;
-    /** 果蔬产品生产损耗总重（当日 loss_flow production_loss 之和）。 */
+    /** 果蔬生产损耗总重（当日 果蔬领用−退回−录入损耗−饲喂(feed_out)−打包生产使用量，≥0；仅自产果蔬）。 */
     private BigDecimal prodLossWeight;
-    /** 果蔬生产消耗总重（果蔬领用−退回−录入损耗−饲喂(feed_out)，≥0；row206，独立指标）。 */
-    private BigDecimal prodConsumeWeight;
     /** 净菜损耗率%（(生产损耗+录入损耗)/(生产领用−生产退回)×100；分母≤0 → null）。 */
     @TableField(updateStrategy = FieldStrategy.ALWAYS)
     private BigDecimal netVegLossRate;
