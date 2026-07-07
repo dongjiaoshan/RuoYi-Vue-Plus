@@ -619,7 +619,7 @@ public class ProductProductionServiceImpl
         DemandManage shipDemand = demandManageMapper.selectShipTargetDemand(product.getId(), bo.getStoreId());
         Long shipDemandId = shipDemand != null ? shipDemand.getId() : null;
         Long shipCutRecordId = pigCutService.insertOutRecord("ship", shipBar, src, bo.getProductWeight(),
-            bo.getStoreId(), shipDemandId, userId);
+            bo.getStoreId(), shipDemandId, userId, null);
         log.info("[WHITEBAR-SHIP-OUT-RECORD] ship cut_record id={} storeId={} demandId={}",
             shipCutRecordId, bo.getStoreId(), shipDemandId);
 
@@ -731,9 +731,10 @@ public class ProductProductionServiceImpl
 
         // row205（邓博 2026-07-05）：仓库出库补记「白条领用表」cut_record（out_type=warehouse，领用即终态）。
         // 记出库位置 + 预冷损耗 + 排酸时长；不发往门店（无 target_store_id/target_demand_id）。分割统计只算 out_type='cut'。
+        // admin row2（邓博 2026-07-06）：把页面所选出库去向 bo.getOutDest() 落到 cut_record.out_dest。
         BarInfo whBar = whiteBarId != null ? barInfoMapper.selectById(whiteBarId) : null;
         Long whCutRecordId = pigCutService.insertOutRecord("warehouse", whBar, src, bo.getProductWeight(),
-            null, null, userId);
+            null, null, userId, bo.getOutDest());
         log.info("[WAREHOUSE-OUT-RECORD] warehouse cut_record id={} outDest={}", whCutRecordId, bo.getOutDest());
 
         log.info("[DENGBO-R17] warehouse out done id={} produceNo={} belongType={} weight={} outDest={} traceCode={}",

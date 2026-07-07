@@ -259,10 +259,18 @@ public class StoreReturnServiceImpl
         }
         Long operatorId = LoginHelper.getUserId();
         LocalDate today = LocalDate.now(ZONE_SHANGHAI);
-        // row142 退回上限按 belong_type 分流：白条产品按「当日到店白条总重」累计封顶（懒算一次 + 逐条累加）；
-        //   其他生产产品按各自「当日到店重」逐产品封顶（validateReturnWithinDelivered 现状）。
+        // 退回上限按 belong_type + admin row9 分流（懒算 + 逐条累加）：
+        //   · 白条产品本身：累计 ≤ 当日到店白条总重（row142，保留）。
+        //   · 案例①（admin row9）：当日到店猪肉成品配置的原材料产品 → ≤ 当日到店对应猪肉成品总重。
+        //   · 案例②（admin row9）：当日到店白条 + 该产品属字典 djs_pork_return_product → ≤ (当日到店白条总重 − 今日已退白条配置产品累计)。
+        //   · 其余：逐产品 ≤ 当日到店该产品重（现状回退）。
+        Map<Long, BigDecimal> arrivedPorkWeightByMaterial = buildArrivedPorkWeightByMaterial(bo.getStoreId(), today);
+        List<Long> dictReturnProductIds = resolvePorkReturnProductIds();
+        boolean whiteBarArrivedToday = hasWhiteBarArrivedToday(bo.getStoreId());
         BigDecimal whiteBarDeliveredTotal = null;
         BigDecimal whiteBarReturnedAccum = BigDecimal.ZERO;
+        BigDecimal dictReturnedBaselineToday = null;
+        BigDecimal dictReturnedAccum = BigDecimal.ZERO;
         int created = 0;
         for (StoreReturnBatchBo.Item item : bo.getItems()) {
             ProductInfo product = productInfoMapper.selectById(item.getProductId());
@@ -272,9 +280,10 @@ public class StoreReturnServiceImpl
             // 退回量度量：果蔬行用退回量（份/把/盒），猪肉行无退回量时回退退回重量（kg）——与下方落库口径一致。
             BigDecimal returnMetric = item.getReturnQuantity() != null
                 ? item.getReturnQuantity() : item.getReturnWeight();
+            BigDecimal rw = item.getReturnWeight() == null ? BigDecimal.ZERO : item.getReturnWeight();
+            BigDecimal materialLimit = arrivedPorkWeightByMaterial.get(item.getProductId());
             if (BELONG_TYPE_WHITE_BAR.equals(product.getBelongType())) {
                 // 白条：累计已退 + 本次 ≤ 当日到店白条总重（不按单个白条产品分别封顶）。
-                BigDecimal rw = item.getReturnWeight() == null ? BigDecimal.ZERO : item.getReturnWeight();
                 if (whiteBarDeliveredTotal == null) {
                     whiteBarDeliveredTotal = sumWhiteBarDeliveredToStore(bo.getStoreId(), today);
                 }
@@ -284,8 +293,29 @@ public class StoreReturnServiceImpl
                         + ")不能超过当日到店白条总重(" + whiteBarDeliveredTotal.toPlainString() + ")", 400);
                 }
                 whiteBarReturnedAccum = projected;
+            } else if (materialLimit != null) {
+                // 案例①：原材料产品 ≤ 当日到店对应猪肉成品总重。
+                if (rw.compareTo(materialLimit) > 0) {
+                    throw new ServiceException("产品「" + product.getProductName() + "」退回重量(" + rw.toPlainString()
+                        + ")不能超过当日到店对应猪肉产品总重(" + materialLimit.toPlainString() + ")", 400);
+                }
+            } else if (whiteBarArrivedToday && dictReturnProductIds.contains(item.getProductId())) {
+                // 案例②：白条配置产品 ≤ (当日到店白条总重 − 今日已退白条配置产品累计)。
+                if (whiteBarDeliveredTotal == null) {
+                    whiteBarDeliveredTotal = sumWhiteBarDeliveredToStore(bo.getStoreId(), today);
+                }
+                if (dictReturnedBaselineToday == null) {
+                    dictReturnedBaselineToday = sumDictReturnedToday(bo.getStoreId(), today, dictReturnProductIds);
+                }
+                BigDecimal projected = dictReturnedBaselineToday.add(dictReturnedAccum).add(rw);
+                if (projected.compareTo(whiteBarDeliveredTotal) > 0) {
+                    BigDecimal remain = whiteBarDeliveredTotal.subtract(dictReturnedBaselineToday).subtract(dictReturnedAccum).max(BigDecimal.ZERO);
+                    throw new ServiceException("产品「" + product.getProductName() + "」退回重量(" + rw.toPlainString()
+                        + ")不能超过当日到店白条总重扣除今日已退配置产品后的剩余(" + remain.toPlainString() + ")", 400);
+                }
+                dictReturnedAccum = dictReturnedAccum.add(rw);
             } else {
-                // 其他生产产品：退回重量 ≤ 当日送达该店该产品的总重量（逐产品封顶）。
+                // 其余生产产品：退回重量 ≤ 当日送达该店该产品的总重量（逐产品封顶，现状回退）。
                 validateReturnWithinDelivered(bo.getStoreId(), item.getProductId(), today, item.getReturnWeight(), product.getProductName());
             }
 
@@ -314,26 +344,105 @@ public class StoreReturnServiceImpl
 
     @Override
     public List<StoreReturnPorkCandidateVo> listPorkCandidates(Long storeId) {
-        // 仅当该门店「当日有白条到店」才展示猪肉退回字典项，否则返空（前端显示空态）。
-        if (!hasWhiteBarArrivedToday(storeId)) {
+        if (storeId == null) {
             return List.of();
         }
+        LocalDate today = LocalDate.now(ZONE_SHANGHAI);
+        // admin row8：退回候选 = 两来源并集（去重保序）
+        //   ① 当日到店猪肉成品 → 其配置的原材料产品（product_material）：如到店猪瘦肉(成品) → 展示原材料精瘦肉；
+        //   ② 当日到店白条 → 字典 djs_pork_return_product 配置产品（现状口径保留）。
+        LinkedHashMap<Long, ProductInfo> candidates = new LinkedHashMap<>();
+
+        for (ProductInfo material : resolveArrivedPorkMaterials(storeId, today)) {
+            candidates.putIfAbsent(material.getId(), material);
+        }
+        if (hasWhiteBarArrivedToday(storeId)) {
+            for (ProductInfo p : resolvePorkReturnDictProducts()) {
+                candidates.putIfAbsent(p.getId(), p);
+            }
+        }
+
+        return candidates.values().stream()
+            .sorted(Comparator.comparing(ProductInfo::getId))
+            .map(p -> {
+                StoreReturnPorkCandidateVo vo = new StoreReturnPorkCandidateVo();
+                vo.setProductId(p.getId());
+                vo.setProductName(p.getProductName());
+                vo.setProductUnit(p.getProductUnit());
+                return vo;
+            }).collect(Collectors.toList());
+    }
+
+    /**
+     * admin row8 案例①：当日到店猪肉成品（belong_type=pork 且配置了原材料 product_material）对应的原材料产品集。
+     * 如当日到店猪瘦肉(成品 product_material=精瘦肉) → 返回精瘦肉。无到店成品/无配置 → 空。
+     */
+    private List<ProductInfo> resolveArrivedPorkMaterials(Long storeId, LocalDate today) {
+        List<Long> materialIds = buildArrivedPorkWeightByMaterial(storeId, today).keySet()
+            .stream().filter(Objects::nonNull).collect(Collectors.toList());
+        if (materialIds.isEmpty()) {
+            return List.of();
+        }
+        return productInfoMapper.selectList(new LambdaQueryWrapper<ProductInfo>().in(ProductInfo::getId, materialIds));
+    }
+
+    /**
+     * admin row8 案例②：字典 djs_pork_return_product 配置的退回候选产品（字典空 → 回退 belong_type，向后兼容）。
+     */
+    private List<ProductInfo> resolvePorkReturnDictProducts() {
         List<Long> dictIds = resolvePorkReturnProductIds();
         LambdaQueryWrapper<ProductInfo> w = new LambdaQueryWrapper<>();
         if (!dictIds.isEmpty()) {
             w.in(ProductInfo::getId, dictIds);
         } else {
-            // 字典 djs_pork_return_product 为空 → 回退 belong_type 候选（向后兼容）
             w.in(ProductInfo::getBelongType, PORK_BELONG_TYPES);
         }
-        List<ProductInfo> products = productInfoMapper.selectList(w.orderByAsc(ProductInfo::getId));
-        return products.stream().map(p -> {
-            StoreReturnPorkCandidateVo vo = new StoreReturnPorkCandidateVo();
-            vo.setProductId(p.getId());
-            vo.setProductName(p.getProductName());
-            vo.setProductUnit(p.getProductUnit());
-            return vo;
-        }).collect(Collectors.toList());
+        return productInfoMapper.selectList(w.orderByAsc(ProductInfo::getId));
+    }
+
+    /**
+     * admin row8/row9：当日到店猪肉成品按「配置的原材料产品」聚合到店重量。
+     * key = product_material（原材料产品 id），value = 该原材料对应的当日到店猪肉成品总重（kg，SUM product_weight）。
+     * 供退回候选（案例①原材料）与退回校验（案例①上限）共用，一次查询避免 N+1。
+     */
+    private Map<Long, BigDecimal> buildArrivedPorkWeightByMaterial(Long storeId, LocalDate today) {
+        List<Long> deliveredIds = productProductionMapper.selectDeliveredProductIdsToStore(storeId, today);
+        if (deliveredIds == null || deliveredIds.isEmpty()) {
+            return Map.of();
+        }
+        List<ProductInfo> arrivedFinished = productInfoMapper.selectList(new LambdaQueryWrapper<ProductInfo>()
+            .in(ProductInfo::getId, deliveredIds)
+            .eq(ProductInfo::getBelongType, "pork")
+            .isNotNull(ProductInfo::getProductMaterial));
+        Map<Long, BigDecimal> byMaterial = new LinkedHashMap<>();
+        for (ProductInfo q : arrivedFinished) {
+            BigDecimal w = productProductionService.sumDeliveredWeightToStore(storeId, q.getId(), today);
+            byMaterial.merge(q.getProductMaterial(), w == null ? BigDecimal.ZERO : w, BigDecimal::add);
+        }
+        return byMaterial;
+    }
+
+    /**
+     * admin row9 案例②：今日该店已退回的「白条配置产品」（字典 djs_pork_return_product）退回重量之和（goods_weight，
+     * 方向 store_to_warehouse）。作为白条池校验的基线（本次批内累计另行叠加）。字典空 → 0。
+     */
+    private BigDecimal sumDictReturnedToday(Long storeId, LocalDate today, List<Long> dictProductIds) {
+        if (dictProductIds == null || dictProductIds.isEmpty()) {
+            return BigDecimal.ZERO;
+        }
+        List<StoreReturn> rows = baseMapper.selectList(new LambdaQueryWrapper<StoreReturn>()
+            .eq(StoreReturn::getStoreId, storeId)
+            .eq(StoreReturn::getReturnDirection, DIRECTION_STORE_TO_WAREHOUSE)
+            .in(StoreReturn::getProductId, dictProductIds)
+            .ge(StoreReturn::getReturnDate, today.atStartOfDay())
+            .lt(StoreReturn::getReturnDate, today.plusDays(1).atStartOfDay()));
+        BigDecimal total = BigDecimal.ZERO;
+        for (StoreReturn r : rows) {
+            if (r.getGoodsWeight() != null) {
+                total = total.add(r.getGoodsWeight());
+            }
+        }
+        return total;
     }
 
     /**

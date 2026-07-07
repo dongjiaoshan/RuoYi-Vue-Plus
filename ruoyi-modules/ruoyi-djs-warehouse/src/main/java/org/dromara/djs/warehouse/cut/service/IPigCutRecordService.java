@@ -111,9 +111,10 @@ public interface IPigCutRecordService {
      * @param targetStoreId  目标门店（发货月台有，仓库出库为 null）
      * @param targetDemandId 目标需求（发货月台可选，仓库出库为 null）
      * @param userId         操作人
+     * @param outDest        出库去向码值（admin row2，字典 djs_stock_out_dest；仅 warehouse 仓库出库有值，ship 传 null）
      * @return 新 cut_record id
      */
     Long insertOutRecord(String outType, BarInfo bar, ProductInhouse src, BigDecimal outWeight,
-                         Long targetStoreId, Long targetDemandId, Long userId);
+                         Long targetStoreId, Long targetDemandId, Long userId, String outDest);
 
 }

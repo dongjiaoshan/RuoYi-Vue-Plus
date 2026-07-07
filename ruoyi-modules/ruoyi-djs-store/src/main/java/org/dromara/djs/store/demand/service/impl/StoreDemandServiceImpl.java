@@ -71,6 +71,9 @@ public class StoreDemandServiceImpl implements IStoreDemandService {
     /** 门店视角派生状态：已发货（{@code djs_store_demand_status} 之一）。 */
     private static final String STORE_STATUS_SHIPPED = "SHIPPED";
 
+    /** 门店视角派生状态：确认到店（{@code djs_store_demand_status} 之一，SHIPPED 收货后）。 */
+    private static final String STORE_STATUS_ARRIVED = "ARRIVED";
+
     @Override
     public TableDataInfo<DemandManageVo> queryStoreList(DemandManageQuery query, PageQuery pageQuery) {
         TableDataInfo<DemandManageVo> page = demandManageService.queryPageList(query, pageQuery);
@@ -79,9 +82,12 @@ public class StoreDemandServiceImpl implements IStoreDemandService {
     }
 
     /**
-     * 回填「损坏数量」{@code damagedCount}（row48）：仅对门店派生状态为「已发货」(SHIPPED) 的行，
-     * 调 warehouse {@link IProductProductionService#countDamagedByDemand} 按 demand_id 统计损坏件数；
-     * 其余行保持 {@code null}（前端展示 '—'）。
+     * 回填「损坏数量」{@code damagedCount}（row48 + admin row6）：对门店派生状态为「已发货」(SHIPPED)
+     * 或「确认到店」(ARRIVED) 的行，调 warehouse {@link IProductProductionService#countDamagedByDemand}
+     * 按 demand_id 统计损坏件数；其余行保持 {@code null}（前端展示 '—'）。
+     *
+     * <p>admin row6：确认到店后行由 SHIPPED 派生成 ARRIVED，损坏数量不因收货而清零（损坏件是产品生产明细
+     * is_damaged=1 的固有属性，与收货无关），故收货后仍按同口径回填，不再漏算成 0。</p>
      *
      * <p>当前逐行查询（门店端单店分页数据量小，契约 c 为 COUNT 单点查询）。若后续单店需求行数显著增大，
      * 可在 warehouse 侧加批量 {@code countDamagedByDemandBatch(demandIds)} 一次聚合替代，去 N+1。</p>
@@ -91,7 +97,8 @@ public class StoreDemandServiceImpl implements IStoreDemandService {
             return;
         }
         for (DemandManageVo vo : rows) {
-            if (vo.getId() != null && STORE_STATUS_SHIPPED.equals(vo.getStoreDemandStatus())) {
+            String s = vo.getStoreDemandStatus();
+            if (vo.getId() != null && (STORE_STATUS_SHIPPED.equals(s) || STORE_STATUS_ARRIVED.equals(s))) {
                 vo.setDamagedCount((int) productProductionService.countDamagedByDemand(vo.getId()));
             }
         }

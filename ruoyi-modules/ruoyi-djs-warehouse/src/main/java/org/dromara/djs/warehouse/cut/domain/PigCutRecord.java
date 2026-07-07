@@ -141,6 +141,14 @@ public class PigCutRecord extends TenantEntity {
     private String outType;
 
     /**
+     * 出库去向码值（字典 {@code djs_stock_out_dest}：矿山/厨房/大冶门店/个人…）。
+     *
+     * <p>admin row2：仅 {@code out_type='warehouse'}（仓库出库）领用时记录页面所选出库去向；
+     * {@code cut}/{@code ship} 无出库去向概念，保持 {@code null}。</p>
+     */
+    private String outDest;
+
+    /**
      * 凭证图 OSS IDs CSV（biz_type=warehouse_pig_cut）。
      */
     private String proofOssIds;

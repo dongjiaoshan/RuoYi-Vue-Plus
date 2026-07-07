@@ -499,15 +499,18 @@ public class PigCutRecordServiceImpl
      * @param targetStoreId  目标门店（发货月台有，仓库出库为 null）
      * @param targetDemandId 目标需求（发货月台可选，仓库出库为 null）
      * @param userId         操作人
+     * @param outDest        出库去向码值（admin row2，字典 djs_stock_out_dest；仅 warehouse 仓库出库有值，ship 传 null）
      * @return 新 cut_record id
      */
     @Override
     @Transactional(rollbackFor = Exception.class)
     public Long insertOutRecord(String outType, BarInfo bar, ProductInhouse src, BigDecimal outWeight,
-                                Long targetStoreId, Long targetDemandId, Long userId) {
+                                Long targetStoreId, Long targetDemandId, Long userId, String outDest) {
         PigCutRecord record = new PigCutRecord();
         record.setCutId(generateCutId());
         record.setOutType(outType);
+        // admin row2：仓库出库记录出库去向码值（cut/ship 传 null）
+        record.setOutDest(outDest);
         Date pickupTime = new Date();
         record.setPickupTime(pickupTime);
         record.setPickupWeight(outWeight);

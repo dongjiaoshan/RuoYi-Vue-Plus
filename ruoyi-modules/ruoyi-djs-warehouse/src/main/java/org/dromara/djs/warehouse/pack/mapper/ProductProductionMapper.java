@@ -351,6 +351,22 @@ public interface ProductProductionMapper extends BaseMapperPlus<ProductProductio
                                          @Param("date") LocalDate date);
 
     /**
+     * admin row8：当日送达该店的产品 id 集（去重）。口径同 {@link #sumDeliveredWeightToStore}
+     * （{@code is_delivery_check=1}、{@code delivery_check_time} 当天、门店经 {@code demand_id → store_id} 关联）。
+     * 门店退回候选按此判「当日到店有哪些产品」（进而按 belong_type / product_material 分流）。
+     *
+     * @param storeId 门店 FK
+     * @param date    业务日（按 delivery_check_time 当天过滤）
+     * @return 当日送达该店的 distinct product_id 列表（无 → 空）
+     */
+    @Select("SELECT DISTINCT pp.product_id "
+        + "FROM t_warehouse_product_production pp "
+        + "JOIN t_warehouse_demand_manage dm ON dm.id = pp.demand_id AND dm.del_flag = '0' "
+        + "WHERE dm.store_id = #{storeId} AND pp.is_delivery_check = 1 "
+        + "AND DATE(pp.delivery_check_time) = #{date} AND pp.del_flag = '0' AND pp.tenant_id = '1001'")
+    List<Long> selectDeliveredProductIdsToStore(@Param("storeId") Long storeId, @Param("date") LocalDate date);
+
+    /**
      * 白条发货记录列表（WS12 row133，「产品生产记录」下「白条发货记录」页）。
      *
      * <p>数据源 = {@code t_warehouse_product_production} 中 {@code belong_type='white_bar'} 的出库记录
