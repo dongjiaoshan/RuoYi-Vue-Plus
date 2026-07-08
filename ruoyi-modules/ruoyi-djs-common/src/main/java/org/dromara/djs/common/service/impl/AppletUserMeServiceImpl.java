@@ -10,6 +10,7 @@ import org.dromara.djs.common.constant.DjsAuthConstants;
 import org.dromara.djs.common.domain.vo.ContactVo;
 import org.dromara.djs.common.domain.vo.UserMeVo;
 import org.dromara.djs.common.mapper.AppletUserQueryMapper;
+import org.dromara.djs.common.mapper.DjsUserExtMapper;
 import org.dromara.djs.common.service.IAppletUserMeService;
 import org.springframework.stereotype.Service;
 
@@ -42,6 +43,7 @@ import java.util.Set;
 public class AppletUserMeServiceImpl implements IAppletUserMeService {
 
     private final AppletUserQueryMapper appletUserQueryMapper;
+    private final DjsUserExtMapper djsUserExtMapper;
 
     @Override
     public UserMeVo queryMe(Long userId) {
@@ -53,6 +55,11 @@ public class AppletUserMeServiceImpl implements IAppletUserMeService {
             log.warn("[applet-user-me] user_id={} 查询为空（已删或禁用）", userId);
             return null;
         }
+
+        // 微信绑定状态（sys_user.wx_openid）：填 wxBound + 脱敏 openid，驱动「我的」页微信绑定卡片
+        String openid = djsUserExtMapper.selectWxOpenid(userId);
+        me.setWxBound(StrUtil.isNotBlank(openid));
+        me.setWxOpenidMask(maskOpenid(openid));
 
         // V1 单农场：current_farm_id 若为空（mock 用户 / 老数据）回填默认值，避免前端拿到 null
         if (StrUtil.isBlank(me.getCurrentFarmId())) {
@@ -116,6 +123,29 @@ public class AppletUserMeServiceImpl implements IAppletUserMeService {
             result.add(vo);
         }
         return result;
+    }
+
+    @Override
+    public void unbindWechat(Long userId) {
+        if (userId == null) {
+            return;
+        }
+        int rows = djsUserExtMapper.clearWxOpenid(userId);
+        log.info("[applet-user-me] 微信解绑 user_id={} affected={}", userId, rows);
+    }
+
+    /**
+     * openid 脱敏：{@code o…QvW98}（首 1 位 + 「…」+ 尾 5 位）。
+     * <p>短于 6 位或空返 null / 原值，只用于让用户识别绑的是哪个微信。</p>
+     */
+    private static String maskOpenid(String openid) {
+        if (StrUtil.isBlank(openid)) {
+            return null;
+        }
+        if (openid.length() <= 6) {
+            return openid;
+        }
+        return openid.charAt(0) + "…" + openid.substring(openid.length() - 5);
     }
 
     private static String toStr(Object v) {

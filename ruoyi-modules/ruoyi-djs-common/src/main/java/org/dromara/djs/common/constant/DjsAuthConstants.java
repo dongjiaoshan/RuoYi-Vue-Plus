@@ -31,6 +31,11 @@ public final class DjsAuthConstants {
     public static final int BIZ_CODE_PHONE_NOT_REGISTERED = 40002;
 
     /**
+     * 业务码：真实员工账号密码登录，账号不存在/停用或密码错误
+     */
+    public static final int BIZ_CODE_PASSWORD_ERROR = 40003;
+
+    /**
      * V1 默认农场 ID（与 djs 业务表 tenant_id DEFAULT '1001' 一致；
      * V2 多农场启用前，所有用户的 current_farm_id 都是这个值）
      */

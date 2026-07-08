@@ -7,7 +7,6 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.djs.common.image.service.ImageUrlResolver;
-import org.dromara.djs.plant.activity.mapper.PlantActivityMapper;
 import org.dromara.djs.plant.crop.domain.CropInfo;
 import org.dromara.djs.plant.crop.mapper.CropInfoMapper;
 import org.dromara.djs.plant.farm.domain.bo.GrowRecordBo;
@@ -65,7 +64,6 @@ public class AppletPickServiceImpl implements IAppletPickService {
     private final CropInfoMapper cropMapper;
     private final PlantWorkTeamMapper teamMapper;
     private final PlantWorkPeopleMapper peopleMapper;
-    private final PlantActivityMapper plantActivityMapper;
     private final IFarmRecordsService farmRecordsService;
     private final ApplicationEventPublisher eventPublisher;
     private final ImageUrlResolver imageUrlResolver;
@@ -197,9 +195,11 @@ public class AppletPickServiceImpl implements IAppletPickService {
 
     @Override
     public PickSummaryVo todaySummary() {
-        // FIX-PLT-MP-PICK-SUMMARY-001：KPI 口径由「今日」改「当月」，与采收列表（listCropTasks）当月窗口同口径。
-        //   完成率 = 当月完成地块数 / 当月总地块数；当月采摘品种数 = 当月明细 distinct crop；
-        //   当月采摘量 = 当月 t_plant_plant_activity.daily_weight 合计（235 客户权威口径）。
+        // FIX-PLT-MP-PICK-SUMMARY-001：KPI 口径「当月」。完成率 = 当月完成地块数 / 当月总地块数（采摘窗口与当月相交）。
+        //   当月采摘品种数 / 当月采摘量：只算「当月实际已采摘」明细（begin_harvestdate 落当月），排除仅计划采摘窗口
+        //   与当月相交、但尚未真正开采的作物（row10①：pending 作物混入致品种数虚高）。采摘量 = 这些明细 actual_yield
+        //   合计（actual_yield 是采摘量权威列；采摘流水表 t_plant_plant_activity 基地正常采收不写、恒空，故不以它为源，
+        //   否则恒 0，见 row10②）。品种数与采摘量取自同一「已采摘」集，二者互相对齐。
         // VO 字段名沿用（taskCompletionRate / todayCropKindCount / todayWeight），前端同步改文案。
         LocalDate today = LocalDate.now();
         LocalDate firstDay = today.withDayOfMonth(1);
@@ -211,20 +211,27 @@ public class AppletPickServiceImpl implements IAppletPickService {
                 .eq(PlantDetails::getIsPick, IS_PICK_NORMAL)
                 .le(PlantDetails::getEarliestHarvestdate, lastDay)
                 .ge(PlantDetails::getLastHarvestdate, firstDay)
-                .select(PlantDetails::getHarvestStatus, PlantDetails::getCropId));
+                .select(PlantDetails::getHarvestStatus, PlantDetails::getCropId,
+                    PlantDetails::getBeginHarvestdate, PlantDetails::getActualYield));
 
         long total = monthly.size();
         long completed = monthly.stream().filter(d -> "completed".equals(d.getHarvestStatus())).count();
         int rate = total == 0 ? 0 : (int) Math.round(completed * 100.0 / total);
 
-        int cropKindCount = (int) monthly.stream()
+        // 当月实际已采摘明细 = begin_harvestdate 落当月（真正开采过的，排除仅计划窗口相交的 pending 作物）。
+        List<PlantDetails> picked = monthly.stream()
+            .filter(d -> d.getBeginHarvestdate() != null
+                && !d.getBeginHarvestdate().isBefore(firstDay)
+                && !d.getBeginHarvestdate().isAfter(lastDay))
+            .toList();
+
+        int cropKindCount = (int) picked.stream()
             .map(PlantDetails::getCropId).filter(Objects::nonNull).distinct().count();
 
-        // 当月采摘量 = 当月活动 daily_weight 合计（与作物卡 actualYield 同口径，避免与 actual_yield 累计值口径漂移）。
-        BigDecimal monthWeight = plantActivityMapper.selectTotalWeightInRange(firstDay, lastDay);
-        if (monthWeight == null) {
-            monthWeight = BigDecimal.ZERO;
-        }
+        // 当月采摘量 = 当月实际已采摘明细的 actual_yield 合计（与作物卡 actualYield 同口径）。
+        BigDecimal monthWeight = picked.stream()
+            .map(d -> d.getActualYield() == null ? BigDecimal.ZERO : d.getActualYield())
+            .reduce(BigDecimal.ZERO, BigDecimal::add);
 
         PickSummaryVo vo = new PickSummaryVo();
         vo.setTaskCompletionRate(rate);

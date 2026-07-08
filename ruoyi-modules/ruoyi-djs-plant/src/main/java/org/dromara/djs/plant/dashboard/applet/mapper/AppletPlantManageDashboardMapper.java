@@ -142,6 +142,26 @@ public interface AppletPlantManageDashboardMapper {
         + "   AND YEAR(end_actualdate) = #{year}")
     ExecutionRow selectExecutedByEndYear(@Param("tenantId") String tenantId, @Param("year") Integer year);
 
+    /**
+     * 年度「已采摘总产量」（kg）：实际采摘开始日 {@code begin_harvestdate} 落指定年的明细，{@code actual_yield} 合计。
+     *
+     * <p>口径（row4/row18）：{@code actual_yield} 是全站采摘量权威列（毛菜处理称重回写 /「采摘活动管理·采摘重量
+     * 录入」都累加进它，且已有真实数据）。采摘流水表 {@code t_plant_plant_activity} 只在走「采摘重量录入」入口时
+     * 才有行，基地正常采收不写它，故不以它为采收量源（否则恒 0）。重量按 {@code begin_harvestdate}（实际采摘开始日）
+     * 年份归属，与 {@link #selectPickRecordsPage} 的重量口径一致。</p>
+     *
+     * @param tenantId 租户
+     * @param year     实际采摘开始年份
+     * @return 已采摘产量合计（kg），无则 0
+     */
+    @Select("SELECT COALESCE(SUM(actual_yield), 0) "
+        + "  FROM t_plant_plant_details "
+        + " WHERE tenant_id = #{tenantId} "
+        + "   AND del_flag = '0' "
+        + "   AND begin_harvestdate IS NOT NULL "
+        + "   AND YEAR(begin_harvestdate) = #{year}")
+    BigDecimal sumHarvestedYieldByYear(@Param("tenantId") String tenantId, @Param("year") Integer year);
+
     // ============================ 端点 3 cropAreaShare 果蔬分布饼图 ============================
 
     /**

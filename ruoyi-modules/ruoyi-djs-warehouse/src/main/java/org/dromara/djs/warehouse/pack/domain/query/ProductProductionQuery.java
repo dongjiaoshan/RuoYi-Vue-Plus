@@ -108,6 +108,15 @@ public class ProductProductionQuery {
     private Long storeId;
 
     /**
+     * 是否排除「礼盒组件」产出（{@code deliver_dest='gift'}）。
+     *
+     * <p>门店需求「产品明细」下钻置 true：礼盒组件（发送位置=礼盒）预留给礼盒打包消耗、不履约门店直接需求
+     * （{@code fulfillDirectDemandOnPack} 对 gift 早返回不扣需求），故不应出现在该需求的产品明细里，
+     * 否则「明细条数」比「需求量」多出礼盒组件行。生产记录概览下钻不置（默认 null）→ 仍展示全量产出。</p>
+     */
+    private Boolean excludeGiftDeliver;
+
+    /**
      * 生产时间起。
      */
     @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")

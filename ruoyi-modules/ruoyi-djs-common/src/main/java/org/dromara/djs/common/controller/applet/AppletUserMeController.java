@@ -9,6 +9,7 @@ import org.dromara.djs.common.domain.vo.ContactVo;
 import org.dromara.djs.common.domain.vo.UserMeVo;
 import org.dromara.djs.common.service.IAppletUserMeService;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -106,5 +107,18 @@ public class AppletUserMeController {
     public R<List<ContactVo>> contacts(@RequestParam(required = false) String keyword) {
         Long currentUserId = LoginHelper.getUserId();
         return R.ok(appletUserMeService.queryContacts(currentUserId, keyword));
+    }
+
+    /**
+     * 解绑当前账号的微信（清空 sys_user.wx_openid）。
+     *
+     * <p>「我的」页微信绑定卡片「解绑」调用。解绑后该微信可重新绑到别的员工、本账号也可重新绑定。
+     * 幂等；{@code userId} 走 {@code LoginHelper.getUserId()} 不从入参读。</p>
+     */
+    @SaCheckLogin
+    @PostMapping("/wechat/unbind")
+    public R<Void> unbindWechat() {
+        appletUserMeService.unbindWechat(LoginHelper.getUserId());
+        return R.ok();
     }
 }

@@ -901,6 +901,12 @@ public class ProductProductionServiceImpl
         LambdaQueryWrapper<ProductProduction> wrapper = new LambdaQueryWrapper<>();
         wrapper.eq(byBatch, ProductProduction::getProductId, query.getProductId())
             .apply(byBatch, "DATE(produce_date) = DATE({0})", query.getProduceDate())
+            // 门店需求「产品明细」：排除礼盒组件产出（deliver_dest='gift'，预留礼盒打包、不履约门店直接需求），
+            // 否则明细行数比需求量多出礼盒组件行。NULL-safe：白条/猪肉产出 deliver_dest 为 NULL，须保留
+            // （裸 <> 'gift' 会因三值逻辑把 NULL 行也排除，导致白条明细消失）。
+            .and(Boolean.TRUE.equals(query.getExcludeGiftDeliver()),
+                w -> w.isNull(ProductProduction::getDeliverDest)
+                    .or().ne(ProductProduction::getDeliverDest, DELIVER_DEST_GIFT))
             // 门店损耗页：按需求过滤逐件（契约 a）
             .eq(byDemand, ProductProduction::getDemandId, query.getDemandId())
             // 是否损坏过滤（契约 a；空=全部）

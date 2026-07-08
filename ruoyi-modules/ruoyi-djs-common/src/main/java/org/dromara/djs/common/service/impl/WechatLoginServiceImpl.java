@@ -6,6 +6,7 @@ import cn.binarywang.wx.miniapp.bean.WxMaPhoneNumberInfo;
 import cn.dev33.satoken.stp.StpUtil;
 import cn.dev33.satoken.stp.parameter.SaLoginParameter;
 import cn.hutool.core.util.StrUtil;
+import cn.hutool.crypto.digest.BCrypt;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import me.chanjar.weixin.common.error.WxErrorException;
@@ -22,6 +23,8 @@ import org.dromara.djs.common.mapper.DjsUserExtMapper;
 import org.dromara.djs.common.service.IWechatLoginService;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
+
+import java.util.Map;
 
 /**
  * 微信小程序登录服务实现。
@@ -102,6 +105,23 @@ public class WechatLoginServiceImpl implements IWechatLoginService {
 
         // 5. 颁发 token
         return issueToken(userId, openid, bo.getClientId());
+    }
+
+    @Override
+    public WechatLoginVo employeePasswordLogin(String username, String password, String clientId) {
+        if (StrUtil.isBlank(username) || StrUtil.isBlank(password)) {
+            throw new ServiceException("账号或密码不能为空", DjsAuthConstants.BIZ_CODE_PASSWORD_ERROR);
+        }
+        // 查 sys_user（启用未删）的 userId + BCrypt hash
+        Map<String, Object> auth = djsUserExtMapper.selectAuthByUsername(username);
+        String hash = auth == null ? null : (String) auth.get("password");
+        // 账号不存在与密码错误统一提示，避免账号枚举
+        if (hash == null || !BCrypt.checkpw(password, hash)) {
+            throw new ServiceException("账号或密码错误", DjsAuthConstants.BIZ_CODE_PASSWORD_ERROR);
+        }
+        Long userId = ((Number) auth.get("userId")).longValue();
+        // 真员工登录无 openid，颁真 token（issueToken 内按 userId 装配真菜单/角色权限）
+        return issueToken(userId, null, StrUtil.blankToDefault(clientId, DjsAuthConstants.MP_APPLET_CLIENT_ID));
     }
 
     // ---------------------- 内部辅助 ----------------------

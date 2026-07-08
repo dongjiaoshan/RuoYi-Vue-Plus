@@ -142,33 +142,40 @@ public class AppletAuthController {
      * <p>响应：</p>
      * <ul>
      *   <li>200 + {@link WechatLoginVo}（含 access_token、currentFarmId、userId）→ 登录成功</li>
-     *   <li>40003 + message → 账号密码错误</li>
-     *   <li>40004 + message → 生产模式（mock 关闭）禁用本端点，请改用 ruoyi 自带 {@code /auth/login}</li>
+     *   <li>40003 + message → 账号或密码错误</li>
      * </ul>
+     *
+     * <p>登录顺序：① dev mock 白名单（仅 {@code authMockEnabled} 时，dev/dev123 多角色快速登录）；
+     * ② 真实员工账号密码登录（走 sys_user + BCrypt，任何环境都可用——员工用登记账号 + 真实密码登录）。
+     * 白名单未命中即落到真实员工登录，二者互不干扰。</p>
      */
     @SaIgnore
     @PostMapping("/login")
     public R<WechatLoginVo> login(@Valid @RequestBody AppletPasswordLoginBo bo) {
-        if (!authMockEnabled) {
-            log.warn("生产模式下账号密码登录端点被调用，已拒绝。username={}", bo.getUsername());
-            return R.fail(40004, "Mock 登录已关闭，请使用微信登录或联系管理员");
+        // ① dev mock 白名单：dev/dev123 等多角色快速登录（仅 authMockEnabled 环境）
+        if (authMockEnabled) {
+            MockAccount acc = MOCK_ACCOUNTS.get(bo.getUsername());
+            if (acc != null && acc.password().equals(bo.getPassword())) {
+                return R.ok(issueMockToken(bo.getUsername(), acc));
+            }
         }
-
-        // V1 mock：白名单查找（MOCK_ACCOUNTS），命中后做密码常量时间比较
-        MockAccount acc = MOCK_ACCOUNTS.get(bo.getUsername());
-        if (acc == null || !acc.password().equals(bo.getPassword())) {
-            return R.fail(40003,
-                "账号或密码错误（V1 mock 仅接受 dev / admin / dev_boss / dev_breed_worker / dev_warehouse_worker / dev_store_clerk 等 dev seed 账号，密码 dev123 / admin123）");
+        // ② 真实员工账号密码登录（sys_user + BCrypt，任何环境可用）
+        try {
+            return R.ok(wechatLoginService.employeePasswordLogin(bo.getUsername(), bo.getPassword(), bo.getClientId()));
+        } catch (ServiceException e) {
+            int code = e.getCode() != null ? e.getCode() : DjsAuthConstants.BIZ_CODE_PASSWORD_ERROR;
+            return R.fail(code, e.getMessage());
         }
-        Long mockUserId = acc.userId();
-        String mockNickname = acc.nickname();
-        Set<String> mockRoles = acc.roles();
+    }
 
-        // 走真 sa-token 颁发：构造 LoginUser → LoginHelper.login → 拿真 JWT token。
-        // 所有后续 /djs/* 端点都能正常解析 token，不再有 "mock-token-xxx" 字符串特例。
-        // 单测环境 sa-token 上下文未初始化时（SaTokenContext 未就绪），fallback 到 mock-token-{userId}
-        // 字符串保持向后兼容（生产路径 sa-token 一定初始化，不走 catch）。
-        LoginUser loginUser = buildMockLoginUser(mockUserId, bo.getUsername(), mockNickname, mockRoles);
+    /**
+     * dev mock 账号颁发真 sa-token（多角色快速登录）。
+     *
+     * <p>构造 LoginUser → LoginHelper.login → 拿真 JWT token，后续 /djs/* 都能正常解析。
+     * 单测环境 sa-token 上下文未就绪时 fallback 到 {@code mock-token-{userId}} 字符串保持向后兼容。</p>
+     */
+    private WechatLoginVo issueMockToken(String username, MockAccount acc) {
+        LoginUser loginUser = buildMockLoginUser(acc.userId(), username, acc.nickname(), acc.roles());
         SaLoginParameter param = new SaLoginParameter()
             .setDeviceType("mp")
             .setExtra(LoginHelper.CLIENT_KEY, DjsAuthConstants.MP_APPLET_CLIENT_ID);
@@ -178,19 +185,18 @@ public class AppletAuthController {
             token = StpUtil.getTokenValue();
         } catch (Exception e) {
             log.warn("[applet-auth-mock] sa-token 上下文不可用，fallback 到字符串 token：{}", e.getMessage());
-            token = "mock-token-" + mockUserId;
+            token = "mock-token-" + acc.userId();
         }
-
         WechatLoginVo vo = new WechatLoginVo();
         vo.setAccessToken(token);
         vo.setExpireIn(7200L);
-        vo.setUserId(mockUserId);
-        vo.setNickName(mockNickname);
-        vo.setOpenid("mock-openid-" + mockUserId);
+        vo.setUserId(acc.userId());
+        vo.setNickName(acc.nickname());
+        vo.setOpenid("mock-openid-" + acc.userId());
         vo.setClientId(DjsAuthConstants.MP_APPLET_CLIENT_ID);
         vo.setCurrentFarmId(DjsAuthConstants.DEFAULT_FARM_ID);
-        log.info("[applet-auth-mock] password login ok username={} userId={} token={}", bo.getUsername(), mockUserId, token);
-        return R.ok(vo);
+        log.info("[applet-auth-mock] password login ok username={} userId={} token={}", username, acc.userId(), token);
+        return vo;
     }
 
     /**

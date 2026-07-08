@@ -31,8 +31,9 @@ import java.util.Set;
  *   <tr><td>plant     </td> <td>system_admin / boss / manager / plant_admin / plant_worker</td>     <td>/pages/plant/index</td></tr>
  *   <tr><td>warehouse </td> <td>system_admin / boss / manager / warehouse_admin / warehouse_worker</td><td>/pages/warehouse/index</td></tr>
  *   <tr><td>manage    </td> <td>system_admin / boss / manager（管理板块，BI dashboard 聚合）</td>    <td>/pages/breed/dashboard/index</td></tr>
- *   <tr><td>store     </td> <td>system_admin / boss / manager / store_admin / store_clerk</td>       <td>/pages/store/index</td></tr>
  * </table>
+ *
+ * <p>门店（store）板块 V1 小程序端整体下线（Kevin 2026-07-08），不再向 mp 下发门店入口。</p>
  *
  * <p>角色源数据：SYS-INIT-002 已 seed 的 12 个业务角色 + ruoyi 自带 superadmin（role_id=1）。
  * 多角色用户取并集（举例：分割师 + 包装工 → breed + warehouse）。superadmin / boss / manager
@@ -51,7 +52,6 @@ public class UserBoardController {
     private static final Set<String> BREED_ROLES = Set.of("breed_admin", "breed_worker", "vet");
     private static final Set<String> PLANT_ROLES = Set.of("plant_admin", "plant_worker");
     private static final Set<String> WAREHOUSE_ROLES = Set.of("warehouse_admin", "warehouse_worker");
-    private static final Set<String> STORE_ROLES = Set.of("store_admin", "store_clerk");
 
     /**
      * 拉取当前用户可见的板块清单。
@@ -86,7 +86,7 @@ public class UserBoardController {
         if (boards.contains("plant"))     result.add(new BoardVo("plant",     "种植", "i-carbon-tree",       "/pages/plant/index"));
         // 仓库板块 4 tab（燎毛间/蔬菜处理/分拣发货/我的），「燎毛间」tab 承担聚合首页角色（屠宰工序 / 蔬菜工序 / 物资 分组卡片）
         if (boards.contains("warehouse")) result.add(new BoardVo("warehouse", "仓库", "i-carbon-warehouse",  "/pages/warehouse/index"));
-        if (boards.contains("store"))     result.add(new BoardVo("store",     "门店", "i-carbon-store",      "/pages/store/index"));
+        // 门店板块 V1 mp 整体下线（Kevin 2026-07-08）：不再向小程序下发门店入口
         return R.ok(result);
     }
 
@@ -127,18 +127,17 @@ public class UserBoardController {
     /**
      * 将 role_key 集合映射为 board code 集合（多角色取并集）。
      *
-     * <p>admin 角色（system_admin / boss / manager / admin）→ 返全部业务板块（含 manage + store，监管全域）；
-     * 业务角色按其域映射；store_admin / store_clerk → store 板块。</p>
+     * <p>admin 角色（system_admin / boss / manager / admin）→ 返全部业务板块（manage + breed + plant + warehouse，监管全域）；
+     * 业务角色按其域映射。门店板块 V1 mp 已下线，不再映射。</p>
      */
     private Set<String> mapRolesToBoards(Set<String> roleKeys) {
         Set<String> boards = new HashSet<>();
         if (roleKeys.stream().anyMatch(ADMIN_ROLES::contains)) {
-            return Set.of("manage", "breed", "plant", "warehouse", "store");
+            return Set.of("manage", "breed", "plant", "warehouse");
         }
         if (roleKeys.stream().anyMatch(BREED_ROLES::contains))     boards.add("breed");
         if (roleKeys.stream().anyMatch(PLANT_ROLES::contains))     boards.add("plant");
         if (roleKeys.stream().anyMatch(WAREHOUSE_ROLES::contains)) boards.add("warehouse");
-        if (roleKeys.stream().anyMatch(STORE_ROLES::contains))     boards.add("store");
         return boards;
     }
 

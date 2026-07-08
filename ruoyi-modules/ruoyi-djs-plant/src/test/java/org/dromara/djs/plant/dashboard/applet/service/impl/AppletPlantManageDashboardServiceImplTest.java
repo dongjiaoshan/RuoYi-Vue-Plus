@@ -1,7 +1,6 @@
 package org.dromara.djs.plant.dashboard.applet.service.impl;
 
 import org.dromara.djs.common.image.service.ImageUrlResolver;
-import org.dromara.djs.plant.activity.mapper.PlantActivityMapper;
 import org.dromara.djs.plant.dashboard.applet.domain.vo.PlantAnnualPlanVo;
 import org.dromara.djs.plant.dashboard.applet.domain.vo.PlantManageOverviewVo;
 import org.dromara.djs.plant.dashboard.applet.mapper.AppletPlantManageDashboardMapper;
@@ -43,9 +42,6 @@ class AppletPlantManageDashboardServiceImplTest {
 
     @Mock
     private ImageUrlResolver imageUrlResolver;
-
-    @Mock
-    private PlantActivityMapper plantActivityMapper;
 
     @InjectMocks
     private AppletPlantManageDashboardServiceImpl service;
@@ -92,7 +88,7 @@ class AppletPlantManageDashboardServiceImplTest {
     }
 
     @Test
-    @DisplayName("getAnnualPlan happy：计划走 plan_year、已种植走结束年+完成、已采摘走采摘活动表当年")
+    @DisplayName("getAnnualPlan happy：计划走 plan_year、已种植走结束年+完成、已采摘走 actual_yield 按采摘开始年")
     void getAnnualPlanHappyPath() {
         // 计划维度（plan_year）
         AppletPlantManageDashboardMapper.AnnualPlanRow plan = new AppletPlantManageDashboardMapper.AnnualPlanRow();
@@ -105,8 +101,8 @@ class AppletPlantManageDashboardServiceImplTest {
         exec.setPlantedArea(new BigDecimal("15.44"));
         exec.setPlantedCropCount(10);
         when(dashboardMapper.selectExecutedByEndYear(anyString(), anyInt())).thenReturn(exec);
-        // 执行维度：已采摘（采摘活动表 daily_weight 当年合计，kg）→ 转吨
-        when(plantActivityMapper.selectTotalWeightInRange(any(), any())).thenReturn(new BigDecimal("18.000"));
+        // 执行维度：已采摘（actual_yield 按采摘开始年 begin_harvestdate 合计，kg）→ 转吨
+        when(dashboardMapper.sumHarvestedYieldByYear(anyString(), anyInt())).thenReturn(new BigDecimal("18.000"));
 
         PlantAnnualPlanVo vo = service.getAnnualPlan(2026);
 

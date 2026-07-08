@@ -676,63 +676,38 @@ public class DashboardServiceImpl implements IDashboardService {
         YearMonth prev = yearMonth.minusMonths(1);
         String tenantId = currentTenant();
 
-        MonthRates curr = computeMonthRates(tenantId, yearMonth);
-        MonthRates prevRates = computeMonthRates(tenantId, prev);
+        // 各指标以月表 t_farm_monthly_production 预算字段为权威源（甲方口径）：live 重算对「率」类有跨月
+        // 窗口伪影（分娩率/配怀率 >100%）、NPD 用年均公式算成数百天，均以月表 job 落盘值为准。
+        MonthlyProduction curr = selectMonth(tenantId, yearMonth);
+        MonthlyProduction prev0 = selectMonth(tenantId, prev);
 
         MonthlyProductionStatVo vo = new MonthlyProductionStatVo();
         vo.setCurrentMonth(yearMonth.toString());
         vo.setPreviousMonth(prev.toString());
         List<MonthlyProductionStatVo.StatRow> rows = vo.getRows();
-        rows.add(new MonthlyProductionStatVo.StatRow("分娩率", pct(curr.farrowRate), pct(prevRates.farrowRate), "%"));
-        rows.add(new MonthlyProductionStatVo.StatRow("配怀率", pct(curr.mateRate), pct(prevRates.mateRate), "%"));
-        rows.add(new MonthlyProductionStatVo.StatRow("断配间隔", curr.weanMateInterval, prevRates.weanMateInterval, "天"));
-        rows.add(new MonthlyProductionStatVo.StatRow("返空流头数", new BigDecimal(curr.abnormalCount), new BigDecimal(prevRates.abnormalCount), "头"));
-        rows.add(new MonthlyProductionStatVo.StatRow("平均非生产天数", curr.npd, prevRates.npd, "天"));
-        rows.add(new MonthlyProductionStatVo.StatRow("总产仔数", new BigDecimal(curr.totalBorn), new BigDecimal(prevRates.totalBorn), "头"));
-        rows.add(new MonthlyProductionStatVo.StatRow("窝均总产仔", avgPerLitter(curr.totalBorn, curr.farrowLitter), avgPerLitter(prevRates.totalBorn, prevRates.farrowLitter), "头/窝"));
-        rows.add(new MonthlyProductionStatVo.StatRow("窝均活仔", avgPerLitter(curr.liveBorn, curr.farrowLitter), avgPerLitter(prevRates.liveBorn, prevRates.farrowLitter), "头/窝"));
-        rows.add(new MonthlyProductionStatVo.StatRow("窝均断奶", avgPerLitter(curr.weanedCount, curr.weaningLitter), avgPerLitter(prevRates.weanedCount, prevRates.weaningLitter), "头/窝"));
-        rows.add(new MonthlyProductionStatVo.StatRow("产房损失率", pct(curr.farrowingLossRate), pct(prevRates.farrowingLossRate), "%"));
+        rows.add(new MonthlyProductionStatVo.StatRow("分娩率", mv(curr, MonthlyProduction::getFarrowRate), mv(prev0, MonthlyProduction::getFarrowRate), "%"));
+        rows.add(new MonthlyProductionStatVo.StatRow("配怀率", mv(curr, MonthlyProduction::getBreedRate), mv(prev0, MonthlyProduction::getBreedRate), "%"));
+        rows.add(new MonthlyProductionStatVo.StatRow("断配间隔", mv(curr, MonthlyProduction::getWeanBreedInterval), mv(prev0, MonthlyProduction::getWeanBreedInterval), "天"));
+        rows.add(new MonthlyProductionStatVo.StatRow("返空流头数", mvInt(curr, MonthlyProduction::getAbnormalCount), mvInt(prev0, MonthlyProduction::getAbnormalCount), "头"));
+        rows.add(new MonthlyProductionStatVo.StatRow("平均非生产天数", mv(curr, MonthlyProduction::getNpdDays), mv(prev0, MonthlyProduction::getNpdDays), "天"));
+        rows.add(new MonthlyProductionStatVo.StatRow("总产仔数", mvInt(curr, MonthlyProduction::getTotalBornCount), mvInt(prev0, MonthlyProduction::getTotalBornCount), "头"));
+        rows.add(new MonthlyProductionStatVo.StatRow("窝均总产仔", mv(curr, MonthlyProduction::getAvgBornPerLitter), mv(prev0, MonthlyProduction::getAvgBornPerLitter), "头/窝"));
+        rows.add(new MonthlyProductionStatVo.StatRow("窝均活仔", mv(curr, MonthlyProduction::getAvgLiveBornPerLitter), mv(prev0, MonthlyProduction::getAvgLiveBornPerLitter), "头/窝"));
+        rows.add(new MonthlyProductionStatVo.StatRow("窝均断奶", mv(curr, MonthlyProduction::getAvgWeanedPerLitter), mv(prev0, MonthlyProduction::getAvgWeanedPerLitter), "头/窝"));
+        rows.add(new MonthlyProductionStatVo.StatRow("产房损失率", mv(curr, MonthlyProduction::getFarrowLossRate), mv(prev0, MonthlyProduction::getFarrowLossRate), "%"));
         return vo;
     }
 
-    /** 某月底表实时聚合的中间结果（供 10 行表 + 复用 BreedingAnnual 同套公式）。 */
-    private static final class MonthRates {
-        int breedingCount;
-        int farrowLitter;
-        int totalBorn;
-        int liveBorn;
-        int weaningLitter;
-        int weanedCount;
-        int abnormalCount;
-        BigDecimal mateRate = BigDecimal.ZERO;
-        BigDecimal farrowRate = BigDecimal.ZERO;
-        BigDecimal weanMateInterval = BigDecimal.ZERO;
-        BigDecimal npd = BigDecimal.ZERO;
-        BigDecimal farrowingLossRate = BigDecimal.ZERO;
+    /** 月表 BigDecimal 字段取值：m 或值为 null → ZERO。 */
+    private static BigDecimal mv(MonthlyProduction m, java.util.function.Function<MonthlyProduction, BigDecimal> g) {
+        BigDecimal v = m == null ? null : g.apply(m);
+        return v == null ? BigDecimal.ZERO : v;
     }
 
-    private MonthRates computeMonthRates(String tenantId, YearMonth ym) {
-        LocalDateTime from = ym.atDay(1).atStartOfDay();
-        LocalDateTime to = ym.plusMonths(1).atDay(1).atStartOfDay();
-        MonthRates r = new MonthRates();
-        r.breedingCount = aggregateQueryMapper.countBreedingInRange(tenantId, from, to);
-        r.farrowLitter = aggregateQueryMapper.countFarrowLitterInRange(tenantId, from, to);
-        r.totalBorn = aggregateQueryMapper.sumTotalBornInRange(tenantId, from, to);
-        r.liveBorn = aggregateQueryMapper.sumLiveBornInDateTimeRange(tenantId, from, to);
-        r.weaningLitter = aggregateQueryMapper.countWeaningLitterInRange(tenantId, from, to);
-        r.weanedCount = aggregateQueryMapper.sumWeanedInDateTimeRange(tenantId, from, to);
-        r.abnormalCount = aggregateQueryMapper.countAbnormalInRange(tenantId, from, to);
-        r.mateRate = ratio(r.farrowLitter, r.breedingCount);
-        r.farrowRate = ratio(r.farrowLitter, r.breedingCount);
-        BigDecimal interval = aggregateQueryMapper.avgWeanMateIntervalDays(tenantId, from, to);
-        r.weanMateInterval = interval == null ? BigDecimal.ZERO : interval.setScale(1, RoundingMode.HALF_UP);
-        r.npd = estimateNpd(tenantId, ym.getYear(), r.farrowLitter, r.weaningLitter);
-        if (r.liveBorn > 0) {
-            int lost = Math.max(0, r.liveBorn - r.weanedCount);
-            r.farrowingLossRate = ratio(lost, r.liveBorn);
-        }
-        return r;
+    /** 月表整型字段 → BigDecimal：m 或值为 null → ZERO。 */
+    private static BigDecimal mvInt(MonthlyProduction m, java.util.function.Function<MonthlyProduction, Integer> g) {
+        Integer v = m == null ? null : g.apply(m);
+        return v == null ? BigDecimal.ZERO : new BigDecimal(v);
     }
 
     // ============================================================
@@ -890,6 +865,7 @@ public class DashboardServiceImpl implements IDashboardService {
         r.setWeaningSowCount(aggregateQueryMapper.countDistinctEventInDay("t_farm_pig_weaning", "weaning_date", "pig_id", tenantId, dayFrom, dayTo));
         r.setAbnormalSowCount(aggregateQueryMapper.countDistinctAbnormalSowInRange(tenantId, dtFrom, dtTo));
         r.setIntroduceSowCount(aggregateQueryMapper.sumIntroducedSowInRange(tenantId, dayFrom, dayTo));
+        r.setIntroduceBoarCount(aggregateQueryMapper.sumIntroducedBoarInRange(tenantId, dayFrom, dayTo));
         r.setHeatNoBreedCount(aggregateQueryMapper.countHeatNoBreedInDay(tenantId, dayFrom, dayTo));
         r.setDeathPigCount(aggregateQueryMapper.countStatusEventInRange(tenantId, "DIE", dtFrom, dtTo));
         r.setCullingPigCount(aggregateQueryMapper.countStatusEventInRange(tenantId, "ELIMINATE", dtFrom, dtTo));
@@ -1163,11 +1139,17 @@ public class DashboardServiceImpl implements IDashboardService {
         //   （日表无未来行）；日表整段无行（历史未落盘）才回落业务表兜底。
         boolean useDaily = aggregateQueryMapper.countIndicatorDays(tenantId, from, to) > 0;
 
-        // 引种数：日表仅记母猪引种（introduce_sow_count），无「全部引种头数」列 → 恒取业务表。
-        int introduceCount = aggregateQueryMapper.sumIntroducedInRange(tenantId, from, to);
-
         // ---- row13 高级指标（从已落盘 farm_indicator 日表 Σ 回读 + 部分实时算） ----
         Map<String, Object> sum = aggregateQueryMapper.sumIndicatorRange(tenantId, from, to);
+
+        // row14：引种母猪数 = Σ日表 introduce_sow_count；引种公猪数 = Σ日表 introduce_boar_count（当日外部引种公猪）。
+        //   日表无行则回落业务表按性别聚合（母=internal+external-F，公=external-M），与日表口径一致。
+        int introduceCount = useDaily
+            ? mapInt(sum, "sumIntroduceSow")
+            : aggregateQueryMapper.sumIntroducedSowInRange(tenantId, from, to);
+        int introduceBoarCount = useDaily
+            ? mapInt(sum, "sumIntroduceBoar")
+            : aggregateQueryMapper.sumIntroducedBoarInRange(tenantId, from, to);
 
         int bornCount;
         int weanedCount;
@@ -1240,12 +1222,13 @@ public class DashboardServiceImpl implements IDashboardService {
         BigDecimal avgBornPerLitter = scale3(divide(new BigDecimal(sumTotalBorn), sumFarrowSow));
         BigDecimal avgLiveBornPerLitter = scale3(divide(new BigDecimal(sumLiveBorn), sumFarrowSow));
         BigDecimal avgWeanedPerLitter = scale3(divide(new BigDecimal(sumWeanedPiglet), sumWeaningSow));
-        // 分娩舍损失率% = 当月死亡仔猪 / 当月总活仔
-        BigDecimal farrowLossRate = pct(ratio(sumDeathPiglet, sumLiveBorn));
+        // 分娩舍损失率%（row21）= Σ当月死亡仔猪 / 当月总活仔数 born_count（分母显式指向落盘的 bornCount）
+        BigDecimal farrowLossRate = pct(ratio(sumDeathPiglet, bornCount));
 
         MonthlyProduction m = existingOrNew(selectMonth(tenantId, month), MonthlyProduction::new);
         m.setStatMonth(month.toString());
         m.setIntroduceCount(introduceCount);
+        m.setIntroduceBoarCount(introduceBoarCount);
         m.setBornCount(bornCount);
         m.setWeanedCount(weanedCount);
         m.setDeathCount(deathCount);

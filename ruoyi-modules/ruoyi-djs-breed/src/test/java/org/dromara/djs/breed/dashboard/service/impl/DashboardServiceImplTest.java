@@ -262,7 +262,6 @@ class DashboardServiceImplTest {
             .thenReturn(1);
         when(aggregateQueryMapper.countStatusEventInRange(anyString(), eq("ELIMINATE"), any(LocalDateTime.class), any(LocalDateTime.class)))
             .thenReturn(0);
-        when(aggregateQueryMapper.sumIntroducedInRange(anyString(), any(), any())).thenReturn(0);
         when(aggregateQueryMapper.sumLiveBornInRange(anyString(), any(), any())).thenReturn(0);
         when(aggregateQueryMapper.sumWeanedInRange(anyString(), any(), any())).thenReturn(0);
         Map<String, Object> mk = new LinkedHashMap<>();
@@ -300,7 +299,6 @@ class DashboardServiceImplTest {
     void testTriggerAggregateDefaultsToYesterday() {
         when(aggregateQueryMapper.countByLifecycle(anyString(), any())).thenReturn(new ArrayList<>());
         when(aggregateQueryMapper.countStatusEventInRange(anyString(), any(), any(), any())).thenReturn(0);
-        when(aggregateQueryMapper.sumIntroducedInRange(anyString(), any(), any())).thenReturn(0);
         when(aggregateQueryMapper.sumLiveBornInRange(anyString(), any(), any())).thenReturn(0);
         when(aggregateQueryMapper.sumWeanedInRange(anyString(), any(), any())).thenReturn(0);
         Map<String, Object> mk = new LinkedHashMap<>();

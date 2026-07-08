@@ -42,9 +42,12 @@ public class MonthlyProduction extends TenantEntity {
     /** 统计月份（CHAR(7) YYYY-MM）。 */
     private String statMonth;
 
-    /** 月度引种头数（t_farm_pig_introduce COUNT）。 */
+    /** 当月引种母猪数（Σ当月T-1前日表 introduce_sow_count）。 */
     private Integer introduceCount;
-    /** 月度活产仔（t_farm_pig_farrow SUM(live_born)）。 */
+    /** 当月引种公猪数（Σ当月T-1前日表 introduce_boar_count）。定时重算，ALWAYS 覆盖旧值。 */
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
+    private Integer introduceBoarCount;
+    /** 当月总活仔数（Σ当月T-1前日表 live_born_count）。 */
     private Integer bornCount;
     /** 月度断奶头数（t_farm_pig_weaning SUM(weaned_count)）。 */
     private Integer weanedCount;
@@ -82,7 +85,7 @@ public class MonthlyProduction extends TenantEntity {
     private BigDecimal avgLiveBornPerLitter;
     /** 窝均断奶（断奶仔猪数/断奶母头数）。 */
     private BigDecimal avgWeanedPerLitter;
-    /** 分娩舍损失率（当月死亡仔猪数/当月总活仔数）。 */
+    /** 分娩舍损失率（Σ当月T-1前日死亡仔猪数/当月总活仔数 born_count）。 */
     private BigDecimal farrowLossRate;
 
     @TableLogic

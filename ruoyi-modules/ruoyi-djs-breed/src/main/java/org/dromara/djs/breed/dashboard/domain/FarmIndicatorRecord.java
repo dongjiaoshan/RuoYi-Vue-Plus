@@ -52,6 +52,9 @@ public class FarmIndicatorRecord extends TenantEntity {
     private Integer abnormalSowCount;
     /** 引种母猪数（当日内外部引种头数）。 */
     private Integer introduceSowCount;
+    /** 引种公猪数（当日外部引种公猪头数，external AND pig_sex='M'）。定时重算，ALWAYS 覆盖旧值。 */
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
+    private Integer introduceBoarCount;
     /** 查情不配种数（当日查情但 3 日内未配种的母猪数）。 */
     private Integer heatNoBreedCount;
     /** 死亡猪只数（当日 DIE 事件数）。 */

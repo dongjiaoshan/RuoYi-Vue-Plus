@@ -37,4 +37,14 @@ public interface IAppletUserMeService {
      * @return 通讯录列表（已按 dept_id, user_id 升序，前端按 deptName 分组渲染）
      */
     List<ContactVo> queryContacts(Long currentUserId, String keyword);
+
+    /**
+     * 解绑当前账号的微信（清空 sys_user.wx_openid）。
+     *
+     * <p>「我的」页微信绑定卡片「解绑」触发。解绑后该微信可重新走绑手机号流程绑到别的员工，
+     * 本账号也可重新微信登录后重新绑定。幂等（未绑定时清空 0 行也算成功）。</p>
+     *
+     * @param userId 当前登录用户 id（controller 从 {@code LoginHelper.getUserId()} 读，不允许入参传）
+     */
+    void unbindWechat(Long userId);
 }

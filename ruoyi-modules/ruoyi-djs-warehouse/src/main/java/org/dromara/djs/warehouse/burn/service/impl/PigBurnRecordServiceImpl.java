@@ -523,6 +523,7 @@ public class PigBurnRecordServiceImpl
         boolean hasWhole = false;
         boolean hasHalf = false;
         int headCount = 0;
+        int halfCount = 0;
         for (ProductInhouse ih : inhouses) {
             BigDecimal w = ih.getProductWeight();
             if (w != null) {
@@ -534,6 +535,7 @@ public class PigBurnRecordServiceImpl
                 hasWhole = true;
             } else if (PRODUCT_TYPE_HALF.equals(pt)) {
                 hasHalf = true;
+                halfCount++;
             } else if (PRODUCT_TYPE_HEAD.equals(pt)) {
                 headCount++;
             }
@@ -541,6 +543,10 @@ public class PigBurnRecordServiceImpl
         // 整只 / 半只互斥（一头白条不能既整只又半只）
         if (hasWhole && hasHalf) {
             throw new ServiceException("整只与半只不能同时入库");
+        }
+        // 半只必须集齐 2 个（一头整猪左右两扇）才能处理完成
+        if (hasHalf && halfCount != 2) {
+            throw new ServiceException("半只需录入 2 个才能处理完成，当前已录 " + halfCount + "/2");
         }
         // 猪头限 1 次
         if (headCount > 1) {
@@ -567,8 +573,9 @@ public class PigBurnRecordServiceImpl
         // ---------- Step 5：DENGBO row27 燎毛损耗 ----------
         // 燎毛处理完成时，剩余未入库重量（= 头皮肉重量[到场重 arrive_weight] − 本次入库产品总重 inWeightTotal）
         // 计入「燎毛损耗」统一损耗流水，进「损耗总览」。arrive 为 null（未称重）或剩余 ≤ 0 时不记
-        //（record 内部对 lossWeight ≤ 0 自动跳过）。归属产品取「猪只(整只)」白条主数据（整只级损耗口径，
-        // 与 bar_info 整只损耗一致），带耳号便于追溯。
+        //（record 内部对 lossWeight ≤ 0 自动跳过）。admin row15：燎毛损耗是整只级过程损耗、无具体产品，
+        // product_id 置 null（record 对 null productId 不回填 product_code/name，损耗总览 LEFT JOIN 显 '—'），
+        // 仅带耳号便于追溯。
         if (headSkinWeight != null) {
             BigDecimal burnLoss = headSkinWeight.subtract(inWeightTotal);
             if (burnLoss.signum() > 0) {
@@ -576,7 +583,7 @@ public class PigBurnRecordServiceImpl
                 loss.setLossType(LOSS_TYPE_BURN);
                 loss.setLossWeight(burnLoss);
                 loss.setLossDate(new Date());
-                loss.setProductId(resolveWholePigProductId(typeMap));
+                loss.setProductId(null);
                 loss.setEarNo(bar.getEarNo());
                 loss.setOperatorId(operatorId);
                 loss.setSourceBizType(LOSS_SOURCE_BIZ_BURN);
@@ -586,22 +593,6 @@ public class PigBurnRecordServiceImpl
         }
     }
 
-    /**
-     * 从白条产品类型表取「猪只(整只)」产品主数据 id（PROD-WHITE-BAR-01），供燎毛损耗归属。
-     * 找不到整只（如仅半只入库）时回落任一白条产品 id；typeMap 为空时返 null（record 对 null productId 兜空、不阻断）。
-     */
-    private Long resolveWholePigProductId(Map<Long, ProductInfo> typeMap) {
-        Long fallback = null;
-        for (ProductInfo pi : typeMap.values()) {
-            if (fallback == null) {
-                fallback = pi.getId();
-            }
-            if (PRODUCT_TYPE_WHOLE.equals(resolveProductType(pi.getProductId()))) {
-                return pi.getId();
-            }
-        }
-        return fallback;
-    }
 
     /**
      * 按 product_id 业务码后缀映射结构化产品类别（FIX-WMS-MP-BURN-001）。

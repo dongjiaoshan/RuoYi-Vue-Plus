@@ -14,7 +14,6 @@ import org.dromara.djs.plant.dashboard.applet.domain.vo.PlantManageOverviewVo;
 import org.dromara.djs.plant.dashboard.applet.domain.vo.PlantPlanTimelineVo;
 import org.dromara.djs.plant.dashboard.applet.domain.vo.PlantRecordVo;
 import org.dromara.djs.common.image.service.ImageUrlResolver;
-import org.dromara.djs.plant.activity.mapper.PlantActivityMapper;
 import org.dromara.djs.plant.dashboard.applet.mapper.AppletPlantManageDashboardMapper;
 import org.dromara.djs.plant.dashboard.applet.service.IAppletPlantManageDashboardService;
 import org.springframework.stereotype.Service;
@@ -54,7 +53,6 @@ public class AppletPlantManageDashboardServiceImpl implements IAppletPlantManage
 
     private final AppletPlantManageDashboardMapper dashboardMapper;
     private final ImageUrlResolver imageUrlResolver;
-    private final PlantActivityMapper plantActivityMapper;
 
     @Override
     public PlantManageOverviewVo getOverview() {
@@ -107,10 +105,11 @@ public class AppletPlantManageDashboardServiceImpl implements IAppletPlantManage
             vo.setPlantedCropCount(nz(exec.getPlantedCropCount()));
         }
 
-        // 执行维度（row4）：已采摘总产量 = 毛菜间采摘录入（t_plant_plant_activity.daily_weight）今年合计，
-        // 按采摘录入日期 activity_date 年份统计，非 plant_details.actual_yield / 非 plan_year。
-        BigDecimal harvestedKg = plantActivityMapper.selectTotalWeightInRange(
-            LocalDate.of(y, 1, 1), LocalDate.of(y, 12, 31));
+        // 执行维度（row4/row18）：已采摘总产量 = SUM(t_plant_plant_details.actual_yield)，按实际采摘开始日
+        // begin_harvestdate 年份统计。actual_yield 是全站采摘量权威列（毛菜处理称重回写 /「采摘活动管理·采摘
+        // 重量录入」都累加进它）；采摘流水表 t_plant_plant_activity 仅走「采摘重量录入」入口才有行、基地正常采收
+        // 不写它，故不以它为源（否则恒 0）。与采摘记录列表重量口径一致。
+        BigDecimal harvestedKg = dashboardMapper.sumHarvestedYieldByYear(tenantId, y);
         vo.setHarvestedYieldTon(toTon(harvestedKg));
         return vo;
     }

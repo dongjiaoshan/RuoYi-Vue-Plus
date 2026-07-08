@@ -52,4 +52,19 @@ public interface IWechatLoginService {
      *         当 phone 不在 sys_user 中时抛 code = 40002（{@code BIZ_CODE_PHONE_NOT_REGISTERED}）
      */
     WechatLoginVo bindPhone(WechatBindPhoneBo bo);
+
+    /**
+     * 真实员工账号密码登录（员工备用入口）。
+     *
+     * <p>查 sys_user.user_name + BCrypt 校验密码（与 ruoyi 自带 {@code /auth/login} 同口径），命中启用未删用户
+     * 后颁发真 token（带真实菜单/角色权限）。dev mock 快速登录仍在 {@code AppletAuthController} 白名单层处理，
+     * 白名单未命中才落到本方法。</p>
+     *
+     * @param username 员工账号（sys_user.user_name）
+     * @param password 明文密码
+     * @param clientId sys_client.client_id（mp-applet-dongjiaoshan）
+     * @return 已颁发 token 的 WechatLoginVo
+     * @throws org.dromara.common.core.exception.ServiceException 账号不存在/停用或密码错误时抛 code = 40003
+     */
+    WechatLoginVo employeePasswordLogin(String username, String password, String clientId);
 }

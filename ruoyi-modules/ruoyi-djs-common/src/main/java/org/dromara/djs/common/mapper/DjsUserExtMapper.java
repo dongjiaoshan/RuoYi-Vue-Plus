@@ -41,6 +41,22 @@ public interface DjsUserExtMapper {
     WechatLoginVo selectLoginVoByOpenid(@Param("openid") String openid);
 
     /**
+     * 通过 user_name 查登录鉴权信息（真实员工账号密码登录用）。
+     *
+     * <p>返回 {@code userId}(Long) + {@code password}(BCrypt hash)，仅命中启用未删用户；
+     * 调用方用 {@code BCrypt.checkpw} 校验密码。未命中返 null。</p>
+     */
+    @Select("""
+        SELECT user_id AS userId, password
+        FROM sys_user
+        WHERE user_name = #{username}
+          AND del_flag = '0'
+          AND status = '0'
+        LIMIT 1
+        """)
+    Map<String, Object> selectAuthByUsername(@Param("username") String username);
+
+    /**
      * 通过手机号查询 user_id（用于 bind-phone）。
      *
      * @return user_id；未命中返 null

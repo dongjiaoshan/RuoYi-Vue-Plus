@@ -62,4 +62,16 @@ public class UserMeVo {
      * <p>用于前端按角色显示不同入口，如 admin / boss / breed_admin 等。</p>
      */
     private Set<String> roles;
+
+    /**
+     * 当前账号是否已绑定微信（sys_user.wx_openid 非空）。
+     * <p>「我的」页微信绑定卡片据此显示「已绑定 / 未绑定」。</p>
+     */
+    private Boolean wxBound;
+
+    /**
+     * 已绑定微信 openid 的脱敏展示（如 {@code o…QvW98}，取前 1 位 + 后 5 位）。
+     * <p>未绑定为 null。仅用于让用户识别「绑的是哪个微信」，不回传完整 openid。</p>
+     */
+    private String wxOpenidMask;
 }

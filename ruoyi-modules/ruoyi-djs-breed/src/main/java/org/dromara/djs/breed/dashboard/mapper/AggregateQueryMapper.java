@@ -78,19 +78,6 @@ public interface AggregateQueryMapper {
                                 @Param("to") java.time.LocalDateTime to);
 
     /**
-     * t_farm_pig_introduce 在月份内的引种头数（外购 + 内部，全口径）。
-     * 月/年表「引种头数」用此（不区分性别）。
-     */
-    @Select("SELECT COALESCE(SUM(pig_count),0) FROM t_farm_pig_introduce "
-        + " WHERE tenant_id = #{tenantId} "
-        + "   AND del_flag = '0' "
-        + "   AND introduce_date >= #{from} "
-        + "   AND introduce_date <  #{to}")
-    int sumIntroducedInRange(@Param("tenantId") String tenantId,
-                             @Param("from") LocalDate from,
-                             @Param("to") LocalDate to);
-
-    /**
      * 区间内「引种母猪数」SUM(pig_count)（row10 日表 introduce_sow_count，B4）。
      *
      * <p>口径（spec B4）：内部引种全算（视为母猪群补充）+ 外部引种仅性别为母（pig_sex='F'）。
@@ -106,6 +93,22 @@ public interface AggregateQueryMapper {
     int sumIntroducedSowInRange(@Param("tenantId") String tenantId,
                                 @Param("from") LocalDate from,
                                 @Param("to") LocalDate to);
+
+    /**
+     * 区间内「引种公猪数」SUM(pig_count)（row14 日表 introduce_boar_count）。
+     *
+     * <p>口径（客户原文）：当日外部引种的公猪头数 = {@code introduce_type='external' AND pig_sex='M'}。
+     * 与母猪口径对称：内部引种全归母猪群补充（不计公猪）；外部混批 {@code pig_sex} 为 NULL 不计入。</p>
+     */
+    @Select("SELECT COALESCE(SUM(pig_count),0) FROM t_farm_pig_introduce "
+        + " WHERE tenant_id = #{tenantId} "
+        + "   AND del_flag = '0' "
+        + "   AND introduce_date >= #{from} "
+        + "   AND introduce_date <  #{to} "
+        + "   AND introduce_type = 'external' AND pig_sex = 'M'")
+    int sumIntroducedBoarInRange(@Param("tenantId") String tenantId,
+                                 @Param("from") LocalDate from,
+                                 @Param("to") LocalDate to);
 
     /**
      * t_farm_pig_farrow 在月份内的活产仔数（SUM live_born）。
@@ -641,6 +644,8 @@ public interface AggregateQueryMapper {
         + "  COALESCE(SUM(breeding_sow_count),0)       AS sumBreedingSow, "
         + "  COALESCE(SUM(weaning_sow_count),0)        AS sumWeaningSow, "
         + "  COALESCE(SUM(abnormal_sow_count),0)       AS sumAbnormal, "
+        + "  COALESCE(SUM(introduce_sow_count),0)      AS sumIntroduceSow, "
+        + "  COALESCE(SUM(introduce_boar_count),0)     AS sumIntroduceBoar, "
         + "  COALESCE(SUM(total_born_count),0)         AS sumTotalBorn, "
         + "  COALESCE(SUM(live_born_count),0)          AS sumLiveBorn, "
         + "  COALESCE(SUM(weaned_piglet_count),0)      AS sumWeanedPiglet, "

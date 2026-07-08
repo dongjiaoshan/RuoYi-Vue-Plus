@@ -118,7 +118,9 @@ public interface AppletUserQueryMapper {
      * <ul>
      *   <li>不排除当前登录用户（录入人和被记录的"实际执行人"常常是同一人，工人要能选自己）</li>
      *   <li>不查角色 / 手机 / 邮箱（选员工只需 id + 名字 + 部门），SQL 更轻无 GROUP_CONCAT</li>
-     *   <li>{@code role} 不为空时按 {@code sys_role.role_key} 过滤（如只要养殖工人）；为空则全员可选</li>
+     *   <li>{@code role} 不为空时按 {@code sys_role.role_key} 过滤（如只要养殖工人）；为空则全员可选。
+     *       支持逗号分隔多角色（{@code FIND_IN_SET}，如 {@code warehouse_worker,warehouse_admin}）——含其中任一
+     *       角色的用户即命中，覆盖跨岗多角色员工（单角色串时行为与等值过滤一致）</li>
      *   <li>{@code deptId} 不为空时按 {@code sys_user.dept_id} 等值过滤（如只列养殖部 dept_id=200）；
      *       养殖部是叶子部门，直接等值即可，不需按 ancestors 递归子部门</li>
      * </ul>
@@ -128,7 +130,7 @@ public interface AppletUserQueryMapper {
      * 层手工拷贝，显式可读。</p>
      *
      * @param keyword 可选关键字（按 nick_name / user_name 模糊；null 或空串不过滤）
-     * @param role    可选 role_key（按角色过滤；null 或空串不过滤）
+     * @param role    可选 role_key（按角色过滤；支持逗号分隔多角色取并集；null 或空串不过滤）
      * @param deptId  可选部门 id（按 sys_user.dept_id 等值过滤；null 不过滤）
      * @return 员工原始行（已按 dept_id, user_id 升序，硬上限 500 条）
      */
@@ -144,7 +146,7 @@ public interface AppletUserQueryMapper {
         <if test="role != null and role != ''">
           INNER JOIN sys_user_role ur ON u.user_id = ur.user_id
           INNER JOIN sys_role r ON ur.role_id = r.role_id AND r.del_flag = '0' AND r.status = '0'
-                                 AND r.role_key = #{role}
+                                 AND FIND_IN_SET(r.role_key, #{role}) > 0
         </if>
         WHERE u.del_flag = '0'
           AND u.status = '0'
