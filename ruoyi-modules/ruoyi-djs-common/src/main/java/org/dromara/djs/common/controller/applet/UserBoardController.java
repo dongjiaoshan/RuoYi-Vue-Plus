@@ -1,7 +1,6 @@
 package org.dromara.djs.common.controller.applet;
 
 import cn.dev33.satoken.annotation.SaIgnore;
-import cn.dev33.satoken.stp.StpUtil;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.common.core.domain.R;
@@ -47,12 +46,6 @@ import java.util.Set;
 @RequiredArgsConstructor
 public class UserBoardController {
 
-    /** ruoyi 超级管理员（sys_role.role_id=1, role_key 不固定，靠 isSuperAdmin 判定） */
-    private static final Set<String> ADMIN_ROLES = Set.of("system_admin", "boss", "manager", "admin");
-    private static final Set<String> BREED_ROLES = Set.of("breed_admin", "breed_worker", "vet");
-    private static final Set<String> PLANT_ROLES = Set.of("plant_admin", "plant_worker");
-    private static final Set<String> WAREHOUSE_ROLES = Set.of("warehouse_admin", "warehouse_worker");
-
     /**
      * 拉取当前用户可见的板块清单。
      *
@@ -77,8 +70,7 @@ public class UserBoardController {
     @SaIgnore
     @GetMapping("/role-tabs")
     public R<List<BoardVo>> getRoleTabs() {
-        Set<String> roleKeys = resolveRoleKeys();
-        Set<String> boards = mapRolesToBoards(roleKeys);
+        Set<String> boards = resolveBoards();
         List<BoardVo> result = new ArrayList<>();
         // manage 排首位（boss/manager 默认入口，前端按 list[0] 决定默认 board）
         if (boards.contains("manage"))    result.add(new BoardVo("manage",    "管理", "i-carbon-data-vis-4", "/pages/breed/dashboard/index"));
@@ -91,53 +83,60 @@ public class UserBoardController {
     }
 
     /**
-     * 解析当前用户的 role_key 集合，兼容三种来源：
-     * <ol>
-     *   <li>普通登录用户 → {@code LoginHelper.getLoginUser().rolePermission}</li>
-     *   <li>mock token（{@code mock-token-*}） → 按 token 后缀硬编码（与 AppletAuthController 对齐）</li>
-     *   <li>ruoyi 超管 → 注入 {@code "system_admin"} 让其能看到全部板块</li>
-     * </ol>
+     * 角色配置驱动：从当前用户的菜单权限（{@code sys_role_menu} 聚合，即角色管理里勾选的授权）推导可见板块，
+     * 不再硬编码 role_key。新增 / 改名角色无需改本类，只要在角色管理里授对应域的权限即可。
+     *
+     * <ul>
+     *   <li>超管（{@code *:*:*} / isSuperAdmin）→ 全板块</li>
+     *   <li>权限命名空间含对应域 → 该业务板块可见</li>
+     *   <li>拥有全部三业务板块 → 追加 manage（监管全域）</li>
+     * </ul>
      */
-    private Set<String> resolveRoleKeys() {
-        String token = StpUtil.getTokenValue();
-        if (token != null && token.startsWith("mock-token-")) {
-            if ("mock-token-9001".equals(token)) {
-                return Set.of("breed_admin", "plant_admin", "warehouse_admin", "store_admin");
-            }
-            if ("mock-token-1".equals(token)) {
-                return Set.of("system_admin");
-            }
-            return Set.of("breed_admin");
-        }
-
+    private Set<String> resolveBoards() {
         LoginUser loginUser = LoginHelper.getLoginUser();
         if (loginUser == null) {
             return Collections.emptySet();
         }
-        Set<String> keys = new HashSet<>();
-        if (loginUser.getRolePermission() != null) {
-            keys.addAll(loginUser.getRolePermission());
-        }
         if (LoginHelper.isSuperAdmin()) {
-            keys.add("system_admin");
+            return Set.of("manage", "breed", "plant", "warehouse");
         }
-        return keys;
+        return mapPermsToBoards(loginUser.getMenuPermission());
     }
 
     /**
-     * 将 role_key 集合映射为 board code 集合（多角色取并集）。
+     * 菜单权限串 → board code（角色配置驱动，多权限取并集）。
      *
-     * <p>admin 角色（system_admin / boss / manager / admin）→ 返全部业务板块（manage + breed + plant + warehouse，监管全域）；
-     * 业务角色按其域映射。门店板块 V1 mp 已下线，不再映射。</p>
+     * <p>只认小程序专属命名空间 {@code djs:applet:<域>:*} / {@code djs:mptab:<域>:*}
+     * （由 mp 权限子树 11020/11030/11040 授予），<b>不</b>用宽泛的 {@code :域:} 子串——
+     * 后者会把 admin 域权限（如 warehouse 里的 {@code djs:breed:*}、store 里的 {@code djs:...warehouse...}）
+     * 误判成 mp 板块。含全部三业务板块 → 追加 manage。门店板块 V1 mp 已下线，不映射。</p>
      */
-    private Set<String> mapRolesToBoards(Set<String> roleKeys) {
+    Set<String> mapPermsToBoards(Set<String> perms) {
         Set<String> boards = new HashSet<>();
-        if (roleKeys.stream().anyMatch(ADMIN_ROLES::contains)) {
-            return Set.of("manage", "breed", "plant", "warehouse");
+        if (perms == null) {
+            return boards;
         }
-        if (roleKeys.stream().anyMatch(BREED_ROLES::contains))     boards.add("breed");
-        if (roleKeys.stream().anyMatch(PLANT_ROLES::contains))     boards.add("plant");
-        if (roleKeys.stream().anyMatch(WAREHOUSE_ROLES::contains)) boards.add("warehouse");
+        for (String p : perms) {
+            if (p == null) {
+                continue;
+            }
+            if ("*:*:*".equals(p)) {
+                boards.addAll(Set.of("manage", "breed", "plant", "warehouse"));
+                return boards;
+            }
+            if (p.startsWith("djs:applet:breed") || p.startsWith("djs:mptab:breed")) {
+                boards.add("breed");
+            }
+            if (p.startsWith("djs:applet:plant") || p.startsWith("djs:mptab:plant")) {
+                boards.add("plant");
+            }
+            if (p.startsWith("djs:applet:warehouse") || p.startsWith("djs:mptab:warehouse")) {
+                boards.add("warehouse");
+            }
+        }
+        if (boards.contains("breed") && boards.contains("plant") && boards.contains("warehouse")) {
+            boards.add("manage");
+        }
         return boards;
     }
 

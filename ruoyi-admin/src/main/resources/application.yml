@@ -299,6 +299,13 @@ warm-flow:
 
 --- # 东角山业务配置（V1 多农场 disabled / OSS STS / 业务编码生成器 / 微信集成）
 djs:
+  security:
+    # API 鉴权全局开关（Kevin 2026-07-08 拍板）。V1 权限靠 admin 菜单 / mp tab 的显示隐藏控制，
+    # 后端 API 不做细粒度 @SaCheckPermission 校验。
+    #   false（默认）→ 所有 @SaCheckPermission 放行（仍需登录），权限只由前端菜单可见性控制
+    #   true  → 恢复 ruoyi 原生按菜单权限精确校验（可随时回退）
+    # 只影响服务端 API 拦截，不影响 getInfo 下发给前端的 permissions（mp tab / admin 按钮显隐不受影响）。
+    api-permission-check: ${DJS_API_PERM_CHECK:false}
   multi-farm:
     # V1 disabled，V2 启用拦截器后多农场生效（SYS-INFRA-007）
     enabled: false
