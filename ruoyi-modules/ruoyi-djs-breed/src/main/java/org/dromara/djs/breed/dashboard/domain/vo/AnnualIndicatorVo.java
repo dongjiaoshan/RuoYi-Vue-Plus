@@ -21,7 +21,10 @@ public class AnnualIndicatorVo implements Serializable {
     private static final long serialVersionUID = 1L;
 
     private Short statYear;
+    /** 年度引种母猪数（Σ当年月表 introduce_count）。 */
     private Integer introduceCount;
+    /** 年度引种公猪数（Σ当年月表 introduce_boar_count）。 */
+    private Integer introduceBoarCount;
     private Integer bornCount;
     private Integer weanedCount;
     private Integer deathCount;

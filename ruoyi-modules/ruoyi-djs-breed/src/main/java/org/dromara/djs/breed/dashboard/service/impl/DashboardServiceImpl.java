@@ -195,6 +195,7 @@ public class DashboardServiceImpl implements IDashboardService {
         vo.setStatYear(year.shortValue());
         if (ai == null) {
             vo.setIntroduceCount(0);
+            vo.setIntroduceBoarCount(0);
             vo.setBornCount(0);
             vo.setWeanedCount(0);
             vo.setDeathCount(0);
@@ -207,6 +208,7 @@ public class DashboardServiceImpl implements IDashboardService {
             return vo;
         }
         vo.setIntroduceCount(zeroIfNull(ai.getIntroduceCount()));
+        vo.setIntroduceBoarCount(zeroIfNull(ai.getIntroduceBoarCount()));
         vo.setBornCount(zeroIfNull(ai.getBornCount()));
         vo.setWeanedCount(zeroIfNull(ai.getWeanedCount()));
         vo.setDeathCount(zeroIfNull(ai.getDeathCount()));

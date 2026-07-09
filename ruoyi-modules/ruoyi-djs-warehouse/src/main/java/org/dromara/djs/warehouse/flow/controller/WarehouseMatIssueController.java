@@ -13,6 +13,7 @@ import org.dromara.djs.warehouse.flow.domain.bo.MatFeedBo;
 import org.dromara.djs.warehouse.flow.domain.bo.MatLossBo;
 import org.dromara.djs.warehouse.flow.domain.bo.MatPickBo;
 import org.dromara.djs.warehouse.flow.domain.bo.MatReturnBo;
+import org.dromara.djs.warehouse.flow.domain.vo.MatIssueBasketVo;
 import org.dromara.djs.warehouse.flow.domain.vo.MatIssueItemVo;
 import org.dromara.djs.warehouse.flow.service.IMatFlowService;
 import org.dromara.djs.warehouse.stock.mapper.LocationStockMapper;
@@ -112,7 +113,27 @@ public class WarehouseMatIssueController extends BaseController {
     }
 
     /**
-     * 导出当前业态行粒度列表（Excel）。
+     * 猪肉产品行「篮明细」（row24 弹框选源：产品行点领用 / 退回 / 损耗 → 列该产品全部篮供选）。
+     *
+     * <p>admin 猪肉列表已从「按篮行粒度」收敛成「一产品一行」（{@code selectAdminMatPorkProducts}），
+     * 篮级信息（耳号 / 白条号 / 库位 / 各篮余量）下沉到本端点：用户在弹框里手选某一篮 + 填数量 → 用该篮
+     * {@code batchId}（= {@code location_stock.id}）回传 {@code MatPickBo.batchId} 走既有 {@code pickByBatch}
+     * 精确扣该篮（防「点耳号 A 却 FIFO 扣到耳号 B」的串扣）。{@code ear_no IS NULL} 的白条整只篮也返回
+     * （放宽约束，保 admin 现在能领的 null-ear 篮，row24 回归点）。</p>
+     *
+     * @param productId pork 产品 ID（必填，snowflake string 防截断）
+     * @param keyword   模糊关键字（可空；匹配耳号 / 白条号）
+     */
+    @SaCheckPermission("djs:warehouse:matPick:list")
+    @GetMapping("/porkBaskets")
+    public R<List<MatIssueBasketVo>> porkBaskets(@RequestParam String productId,
+                                                 @RequestParam(required = false) String keyword) {
+        String kw = StringUtils.isBlank(keyword) ? null : keyword.trim();
+        return R.ok(locationStockMapper.selectAdminPorkBaskets(Long.valueOf(productId), kw));
+    }
+
+    /**
+     * 导出当前业态列表（Excel）。
      */
     @SaCheckPermission("djs:warehouse:matPick:export")
     @PostMapping("/export")
@@ -124,12 +145,18 @@ public class WarehouseMatIssueController extends BaseController {
     }
 
     /**
-     * 查询行粒度列表并批量回填 productThumb（list / export 共用）。
+     * 查询列表并批量回填 productThumb（list / export 共用）。
+     *
+     * <p>row24：猪肉（{@code pork}）tab 走产品聚合 {@code selectAdminMatPorkProducts}（一产品一行，篮明细进
+     * 弹框选源）；其余业态（包材 / 果蔬 / 鸡蛋 / 干货 / 其他）维持行粒度 {@code selectAdminMatIssueRows}
+     * （它们本就是产品 / 库位 / 地块粒度、不平铺猪肉篮，不受收敛影响）。</p>
      */
     private List<MatIssueItemVo> loadRows(String belongType, String keyword) {
         List<String> belongTypes = List.of(belongType);
         String kw = StringUtils.isBlank(keyword) ? null : keyword.trim();
-        List<MatIssueItemVo> items = locationStockMapper.selectAdminMatIssueRows(belongTypes, kw);
+        List<MatIssueItemVo> items = "pork".equals(belongType)
+            ? locationStockMapper.selectAdminMatPorkProducts(belongTypes, kw)
+            : locationStockMapper.selectAdminMatIssueRows(belongTypes, kw);
         if (items != null && !items.isEmpty()) {
             List<ImageUrlResolver.Item> resolveItems = items.stream()
                 .map(v -> new ImageUrlResolver.Item(v.getProductThumb(), v.getBelongType()))

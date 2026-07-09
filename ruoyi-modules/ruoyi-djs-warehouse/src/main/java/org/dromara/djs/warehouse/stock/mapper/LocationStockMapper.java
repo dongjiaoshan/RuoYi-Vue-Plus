@@ -1150,4 +1150,161 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
     List<MatIssueItemVo> selectAdminMatIssueRows(@Param("belongTypes") List<String> belongTypes,
                                                  @Param("keyword") String keyword);
 
+    /**
+     * admin「生产物资领用」<b>猪肉产品聚合</b>列表（row24：admin 猪肉从「按篮行粒度」收敛成「一产品一行」）。
+     *
+     * <p>问题背景（row24）：admin 猪肉 tab 原走行粒度 {@link #selectAdminMatIssueRows}，一篮（耳号 + 白条号 +
+     * 库位）一行 → 同一分割产品 5 篮就平铺 5 行，客户报「admin 比 mp 多显示产品」。mp 猪肉是
+     * {@link #selectMatIssueItems} 按 {@code product_id} 聚合成一卡、篮明细点卡下钻。本查询把 admin 猪肉
+     * 也聚合到产品维度，与 mp 卡口径一致（一产品一行、库存 = 该产品所有篮 SUM），篮明细进领用弹框选源
+     * （{@link #selectAdminPorkBaskets}），提交仍按篮 {@code batchId} 走 service {@code pickByBatch} 精确扣减。</p>
+     *
+     * <p>与 mp {@link #selectMatIssueItems} 的差异（务必保住 admin 现口径）：</p>
+     * <ul>
+     *   <li><b>今日四量按全部人</b>：与 mp 端点子查询同样<b>不按 operator 过滤</b>（mp 那侧 {@code userId} 入参
+     *       实际未在 SQL 使用，今日量本就是全部人 + 按 productId 全库位），admin 直接同口径全部人聚合，无 per-user
+     *       回归。领用覆盖 {@code prod_pick_out / dept_pick_out / pick_out}；退回 {@code prod_return_in /
+     *       pick_return_in}；损耗 {@code loss}；饲喂 {@code feed_out}（猪肉无饲喂恒 0）。</li>
+     *   <li><b>零库存维持只显有货</b>：{@code JOIN}（非 mp 的 LEFT JOIN）+ {@code HAVING} 保「该产品尚有库存
+     *       （SUM {@code product_stock} &gt; 0）或旗下任一篮当天动过（{@code MAX(update_time) = CURDATE()}）」
+     *       的产品才出行——与行粒度 {@link #selectAdminMatIssueRows} 的「有货或当天动过」门槛一致，
+     *       不引入 mp LEFT JOIN 全量的零库存产品行。</li>
+     *   <li><b>belong_type 维持 pork</b>：仅按传入 tab 业态过滤（不纳 white_bar 整只），排除自产成品
+     *       （{@code product_attr=1 且 product_type=1}）与孤儿库存行，与行粒度口径一致。</li>
+     * </ul>
+     *
+     * <p>产品聚合行的 {@code batchId} / {@code earNo} / {@code whiteBarNo} / {@code plotId} / {@code plotCode}
+     * 均为 null（篮级信息下沉到弹框选源）；{@code defaultLocationId} 取该产品库存最多的库位（弹框未选篮时兜底）。
+     * 租户单租户显式 {@code tenant_id='1001'}（V1）。</p>
+     *
+     * @param belongTypes 字典 {@code djs_belong_type} 值列表（猪肉 tab 传 [pork]）
+     * @param keyword     模糊关键字（可空；匹配产品名 / 产品编码）
+     * @return 产品聚合行（按库存升序、产品名）；无则空 list
+     */
+    @Select("""
+        <script>
+        SELECT p.id                              AS productId,
+               p.product_id                      AS productCode,
+               p.product_name                    AS productName,
+               p.product_unit                    AS productUnit,
+               COALESCE(p.product_thumb, p.image_oss_id) AS productThumb,
+               p.belong_type                     AS belongType,
+               COALESCE(SUM(s.product_stock), 0) AS currentStock,
+               (SELECT s2.location_id
+                  FROM t_warehouse_location_stock s2
+                 WHERE s2.product_id = p.id
+                   AND s2.del_flag = '0'
+                   AND s2.tenant_id = '1001'
+                 ORDER BY s2.product_stock DESC, s2.location_id ASC
+                 LIMIT 1)                         AS defaultLocationId,
+               COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
+                          WHERE f.product_id = p.id
+                            AND f.flow_type IN ('prod_pick_out','dept_pick_out','pick_out')
+                            AND DATE(f.flow_date) = CURDATE()
+                            AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayPicked,
+               COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
+                          WHERE f.product_id = p.id
+                            AND f.flow_type IN ('prod_return_in','pick_return_in')
+                            AND DATE(f.flow_date) = CURDATE()
+                            AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayReturned,
+               COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
+                          WHERE f.product_id = p.id
+                            AND f.flow_type = 'loss' AND DATE(f.flow_date) = CURDATE()
+                            AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayLoss,
+               COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
+                          WHERE f.product_id = p.id
+                            AND f.flow_type = 'feed_out' AND DATE(f.flow_date) = CURDATE()
+                            AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayFeed
+          FROM t_warehouse_product_info p
+          JOIN t_warehouse_location_stock s
+            ON s.product_id = p.id
+           AND s.del_flag   = '0'
+           AND s.tenant_id  = p.tenant_id
+           AND NOT (s.location_id IS NULL AND s.ear_no IS NULL AND s.plot_id IS NULL)
+         WHERE p.del_flag       = '0'
+           AND p.tenant_id      = '1001'
+           AND p.product_status = 0
+           AND (COALESCE(p.product_attr, 0) != 1 OR COALESCE(p.product_type, 0) != 1)
+           AND p.belong_type IN
+           <foreach collection="belongTypes" item="bt" open="(" separator="," close=")">#{bt}</foreach>
+           <if test="keyword != null and keyword != ''">
+             AND (p.product_name LIKE CONCAT('%', #{keyword}, '%')
+               OR p.product_id LIKE CONCAT('%', #{keyword}, '%'))
+           </if>
+         GROUP BY p.id, p.product_id, p.product_name, p.product_unit, p.product_thumb,
+                  p.image_oss_id, p.belong_type
+        HAVING SUM(s.product_stock) > 0 OR MAX(DATE(s.update_time)) = CURDATE()
+         ORDER BY currentStock ASC, p.product_name ASC
+        </script>
+        """)
+    List<MatIssueItemVo> selectAdminMatPorkProducts(@Param("belongTypes") List<String> belongTypes,
+                                                    @Param("keyword") String keyword);
+
+    /**
+     * admin「生产物资领用」<b>猪肉篮明细</b>（row24 弹框选源：产品行点领用 / 退回 / 损耗 → 列该产品全部篮供选）。
+     *
+     * <p>口径同行粒度 {@link #selectAdminMatIssueRows} 的猪肉篮（一行 = 一个 {@code (ear_no, white_bar_no,
+     * location)} 篮），但收敛到单产品：</p>
+     * <ul>
+     *   <li><b>放宽 null-ear</b>：admin 现在能领 {@code ear_no IS NULL} 的白条整只篮（分割前整只 white_bar），
+     *       故本查询<b>不加</b> mp {@link #selectPorkIssueByEar} 的 {@code ear_no IS NOT NULL} 约束——避免收敛后
+     *       admin 弹框丢掉现在能领的 null-ear 篮（row24 回归点）。{@code batchCode} = 耳号，无耳号则回退白条号，
+     *       仍无则该库位标识，保证每篮有可读次标题。</li>
+     *   <li><b>门槛一致</b>：{@code product_stock > 0} 或当天动过（{@code DATE(update_time) = CURDATE()}），
+     *       与行粒度一致（当天归零篮仍可选、便于当天退回 / 补登损耗）。</li>
+     *   <li>今日三量 = 该篮 {@code (product_id, warehouse_id, ear_no/white_bar_no)} 当日 {@code stock_flow} SUM
+     *       （全部人）；{@code batchId} = {@code MIN(location_stock.id)}（同 (ear_no, white_bar_no, location)
+     *       篮聚合，提交回传走 {@code pickByBatch} 精确扣该篮）。</li>
+     * </ul>
+     *
+     * @param productId pork 产品 ID（必填）
+     * @param keyword   模糊关键字（可空；匹配耳号 / 白条号）
+     * @return 该产品的篮明细（按 id 升序 = 入库先后）；无则空 list
+     */
+    @Select("""
+        <script>
+        SELECT MIN(s.id)                     AS batchId,
+               COALESCE(s.ear_no, s.white_bar_no, CONCAT('库位', s.location_id)) AS batchCode,
+               s.product_id                   AS productId,
+               MAX(s.product_name)            AS productName,
+               COALESCE(MAX(s.product_unit), 'kg') AS productUnit,
+               SUM(s.product_stock)           AS currentStock,
+               COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
+                          WHERE f.product_id = s.product_id AND f.warehouse_id = s.location_id
+                            AND (f.ear_no = s.ear_no OR (f.ear_no IS NULL AND s.ear_no IS NULL))
+                            AND (f.white_bar_no = s.white_bar_no OR (f.white_bar_no IS NULL AND s.white_bar_no IS NULL))
+                            AND f.flow_type IN ('prod_pick_out','dept_pick_out','pick_out')
+                            AND DATE(f.flow_date) = CURDATE()
+                            AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayPicked,
+               COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
+                          WHERE f.product_id = s.product_id AND f.warehouse_id = s.location_id
+                            AND (f.ear_no = s.ear_no OR (f.ear_no IS NULL AND s.ear_no IS NULL))
+                            AND (f.white_bar_no = s.white_bar_no OR (f.white_bar_no IS NULL AND s.white_bar_no IS NULL))
+                            AND f.flow_type IN ('prod_return_in','pick_return_in')
+                            AND DATE(f.flow_date) = CURDATE()
+                            AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayReturned,
+               COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
+                          WHERE f.product_id = s.product_id AND f.warehouse_id = s.location_id
+                            AND (f.ear_no = s.ear_no OR (f.ear_no IS NULL AND s.ear_no IS NULL))
+                            AND (f.white_bar_no = s.white_bar_no OR (f.white_bar_no IS NULL AND s.white_bar_no IS NULL))
+                            AND f.flow_type = 'loss'
+                            AND DATE(f.flow_date) = CURDATE()
+                            AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayLoss,
+               s.location_id                  AS locationId
+          FROM t_warehouse_location_stock s
+         WHERE s.del_flag      = '0'
+           AND s.tenant_id     = '1001'
+           AND s.product_id    = #{productId}
+           AND (s.product_stock > 0 OR DATE(s.update_time) = CURDATE())
+           <if test="keyword != null and keyword != ''">
+             AND (s.ear_no LIKE CONCAT('%', #{keyword}, '%')
+               OR s.white_bar_no LIKE CONCAT('%', #{keyword}, '%'))
+           </if>
+         GROUP BY s.product_id, s.ear_no, s.white_bar_no, s.location_id
+         ORDER BY batchId ASC
+        </script>
+        """)
+    List<MatIssueBasketVo> selectAdminPorkBaskets(@Param("productId") Long productId,
+                                                  @Param("keyword") String keyword);
+
 }
