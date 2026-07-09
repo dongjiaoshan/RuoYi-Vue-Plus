@@ -587,6 +587,50 @@ public interface AggregateQueryMapper {
         + " GROUP BY pig_type, current_status")
     List<Map<String, Object>> snapshotByTypeStatus(@Param("tenantId") String tenantId);
 
+    // ============================================================
+    //  猪只每日快照（流程性问题 row7）：期末存栏指标历史唯一可信源。
+    //  t_farm_pig_snapshot 是派生 append-only 快照表，无 MP 实体，全部走原生 SQL。
+    // ============================================================
+
+    /** 某日快照行数（>0 = 该日已固化，采集时跳过重采以保历史不变）。 */
+    @Select("SELECT COUNT(*) FROM t_farm_pig_snapshot "
+        + " WHERE tenant_id = #{tenantId} AND snap_date = #{snapDate}")
+    int countSnapshotOnDate(@Param("tenantId") String tenantId,
+                            @Param("snapDate") java.time.LocalDate snapDate);
+
+    /**
+     * 固化某日收盘时点「在群有效猪只」（current_status&lt;&gt;'END'）到快照表。
+     * 从 t_farm_pig_info 实时态 INSERT..SELECT；tenant_id / snap_date 显式写入。
+     * 由 service 端 count==0 门控只采一次（幂等 + 免历史刷新）。
+     */
+    @org.apache.ibatis.annotations.Insert(
+        "INSERT INTO t_farm_pig_snapshot "
+        + " (tenant_id, snap_date, pig_id, pig_type, current_status, birth_date) "
+        + "SELECT #{tenantId}, #{snapDate}, id, pig_type, current_status, birth_date "
+        + " FROM t_farm_pig_info "
+        + " WHERE tenant_id = #{tenantId} "
+        + "   AND del_flag = '0' "
+        + "   AND current_status <> 'END'")
+    int insertPigSnapshotFromLive(@Param("tenantId") String tenantId,
+                                  @Param("snapDate") java.time.LocalDate snapDate);
+
+    /** 某日快照按 pig_type + current_status 分组 COUNT（fillEndStock 绑此，替代实时主表口径）。 */
+    @Select("SELECT pig_type AS pigType, current_status AS cs, COUNT(*) AS cnt "
+        + " FROM t_farm_pig_snapshot "
+        + " WHERE tenant_id = #{tenantId} AND snap_date = #{snapDate} "
+        + " GROUP BY pig_type, current_status")
+    List<Map<String, Object>> snapshotByTypeStatusOnDate(@Param("tenantId") String tenantId,
+                                                         @Param("snapDate") java.time.LocalDate snapDate);
+
+    /** 某日快照内 230 日龄以上后备母猪头数（日龄基准 = snap_date；快照 birth_date）。 */
+    @Select("SELECT COUNT(*) FROM t_farm_pig_snapshot "
+        + " WHERE tenant_id = #{tenantId} AND snap_date = #{snapDate} "
+        + "   AND pig_type = 'sow' AND current_status = 'HB' "
+        + "   AND birth_date IS NOT NULL "
+        + "   AND DATEDIFF(#{snapDate}, birth_date) >= 230")
+    int countReserve230OnSnapshot(@Param("tenantId") String tenantId,
+                                  @Param("snapDate") java.time.LocalDate snapDate);
+
     /**
      * 期末 230 日龄以上后备母猪头数（pig_type='sow' 且 current_status='HB' 且 日龄≥230）。
      * 日龄基准 = asOf（T-1）；birth_date 非空。
@@ -677,11 +721,12 @@ public interface AggregateQueryMapper {
      * stat_month 闭区间 [fromMonth, toMonth]（'yyyy-MM' 字符串按字典序，等价月份序）。
      * 缺数据补 0；返回 rowCnt=有效月行数（0 → service 回落业务表兜底）。
      *
-     * @return introduceCount / bornCount / weanedCount / deathCount / cullingCount /
+     * @return introduceCount / introduceBoarCount / bornCount / weanedCount / deathCount / cullingCount /
      *         marketingCount / marketingWeight / rowCnt
      */
     @Select("SELECT "
-        + "  COALESCE(SUM(introduce_count),0)  AS introduceCount, "
+        + "  COALESCE(SUM(introduce_count),0)       AS introduceCount, "
+        + "  COALESCE(SUM(introduce_boar_count),0)  AS introduceBoarCount, "
         + "  COALESCE(SUM(born_count),0)       AS bornCount, "
         + "  COALESCE(SUM(weaned_count),0)     AS weanedCount, "
         + "  COALESCE(SUM(death_count),0)      AS deathCount, "

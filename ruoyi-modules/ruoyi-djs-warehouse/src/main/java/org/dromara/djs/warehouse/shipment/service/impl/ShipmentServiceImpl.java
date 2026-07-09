@@ -364,14 +364,13 @@ public class ShipmentServiceImpl
             vo.setStoreId(storeId);
             vo.setStoreName(storeNameMap.get(storeId));
             vo.setPendingDemandCount(storeDemands.size());
-            // 产品种类数与详情页（mp displayGoods）对齐：详情按各 SHIPPABLE demand 的「可发 production」
-            // 实际聚合后 distinct(production.product_id) 计卡片数，而非按 demand.product_id 计。
-            // 故此处同口径——展开各 SHIPPABLE demand 的 findAvailableProductionsForDemand，对 production.product_id
-            // 去重计数（COMPLETED 已发货 demand 不计入，与详情 loadShippableDemands 一致 → 已发完门店显 0 种）。
+            // 产品种类数 = 当日所有 SHIPPABLE 需求的产品种类（按 demand.product_id 去重），
+            // 含「已确认但未生产」的产品（流程性问题 row6：详情页 displayGoods 现也按需求全量展示，两处同口径）。
+            // COMPLETED 已发货 demand 不计入（与详情 loadShippableDemands 一致 → 已发完门店显 0 种）。
             vo.setProductKindCount((int) storeDemands.stream()
                 .filter(d -> SHIPPABLE_STATUS_CODES.contains(d.getDemandStatus()))
-                .flatMap(d -> findAvailableProductionsForDemand(d).stream())
-                .map(ProductProduction::getProductId).distinct().count());
+                .map(DemandManage::getProductId).filter(Objects::nonNull)
+                .distinct().count());
             vo.setPendingQuantity(storeDemands.stream()
                 .map(DemandManage::getDemandQuantity).filter(Objects::nonNull)
                 .reduce(BigDecimal.ZERO, BigDecimal::add));
@@ -411,6 +410,12 @@ public class ShipmentServiceImpl
             vo.setDemandStatus(d.getDemandStatus());
             vo.setDemandQuantity(d.getDemandQuantity());
             vo.setShippedCount(d.getShippedCount());
+            // 需求单自身产品身份：让「已确认需求但未生产（无可发 production）」的产品在门店货物里也成卡展示
+            // （流程性问题 row6：当日所有已确认需求的产品均要显示产品及需求量）。
+            vo.setProductId(d.getProductId());
+            vo.setProductName(d.getProductName());
+            vo.setProductSpec(d.getProductSpec());
+            vo.setProductUnit(d.getProductUnit());
             vo.setAvailableProductions(toAvailableProductionVos(findAvailableProductionsForDemand(d)));
             return vo;
         }).toList();

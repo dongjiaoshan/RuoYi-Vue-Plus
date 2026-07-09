@@ -9,19 +9,21 @@ import java.math.BigDecimal;
 /**
  * 年度繁殖与配种 + 产房仔猪质量指标 VO（FIX-MGMT-MP-BRD-001，原型"种猪 tab·年度繁殖与配种 / 年度产房与仔猪质量"）。
  *
- * <p>对应原型种猪 tab 的 ②年度繁殖与配种指标 + ③年度产房与仔猪质量两组 KPI。V1 数据量小，
- * 全部实时算（不依赖聚合表），底表 {@code t_farm_pig_breeding / farrow / weaning}。</p>
+ * <p>对应原型种猪 tab 的 ②年度繁殖与配种指标 + ③年度产房与仔猪质量两组 KPI。数据取年表
+ * {@code t_farm_year_production}（聚合 job 每日 00:30 重算落盘）为权威源，取代旧版 live 实时算
+ * （旧算法率类有跨月窗口伪影、NPD 摊算过大等偏差，甲方口径以年表为准）。</p>
  *
- * <p>口径默认（D-FIX-8 _open-issues #7.1-7.5，Kevin 兽医可改）：</p>
+ * <p>字段 ← 年表列映射：</p>
  * <ul>
- *   <li>{@link #mateRate} 配种率 = 分娩窝数 / 配种次数（#7.1）</li>
- *   <li>{@link #farrowRate} 分娩率 = 有效分娩窝数 / 配种次数（#7.2，V1 有效分娩 = 分娩记录数）</li>
- *   <li>{@link #weanMateInterval} 断配间隔 = AVG(下次配种日 − 上次断奶日) 天（#7.3）</li>
- *   <li>{@link #avgNonProductiveDays} 平均非生产天数 NPD（#7.4，标准式：(妊娠期外的天数)，V1 近似见 service）</li>
- *   <li>{@link #farrowingLossRate} 产房损失率 = (分娩活仔 − 断奶数) / 分娩活仔（#7.5）</li>
+ *   <li>{@link #mateRate} 配种率 / {@link #farrowRate} 分娩率 ← {@code year_farrow_rate}
+ *       （V1 有效分娩 = 分娩记录，配种率与分娩率同口径）</li>
+ *   <li>{@link #weanMateInterval} 断配间隔 ← {@code wean_breed_interval}（天）</li>
+ *   <li>{@link #avgNonProductiveDays} 平均非生产天数 NPD ← {@code avg_npd_days}（天）</li>
+ *   <li>{@link #totalBornCount} 总产仔数 ← {@code total_born_count} / {@link #totalLiveBorn} 总活仔 ← {@code total_live_born}</li>
+ *   <li>{@link #farrowingLossRate} 产房损失率 ← {@code farrow_loss_rate}</li>
  * </ul>
  *
- * <p>所有比率字段为 BigDecimal（4 位小数，0~1 区间，前端乘 100 显示百分比）。</p>
+ * <p>率类字段（配种率 / 分娩率 / 产房损失率）为年表已 ×100 的百分比数值（如 55.56），前端直接拼 "%"。</p>
  *
  * @author djs
  * @since FIX-MGMT-MP-BRD-001
@@ -37,10 +39,10 @@ public class BreedingAnnualVo implements Serializable {
 
     // ---- ②年度繁殖与配种 ----
 
-    /** 配种率 = 分娩窝数 / 配种次数（0~1，4 位小数）。 */
+    /** 配种率（年表 year_farrow_rate，百分比数值如 55.56；V1 与分娩率同口径）。 */
     private BigDecimal mateRate;
 
-    /** 分娩率 = 有效分娩窝数 / 配种次数（0~1，4 位小数）。 */
+    /** 分娩率（年表 year_farrow_rate，百分比数值如 55.56）。 */
     private BigDecimal farrowRate;
 
     /** 断配间隔（天）= AVG(下次配种日 − 上次断奶日)，1 位小数。 */
@@ -51,7 +53,10 @@ public class BreedingAnnualVo implements Serializable {
 
     // ---- ③年度产房与仔猪质量 ----
 
-    /** 年度分娩活仔总数（头）。 */
+    /** 年度总产仔数（头，含死胎；年表 total_born_count）。 */
+    private BigDecimal totalBornCount;
+
+    /** 年度分娩活仔总数（头；年表 total_live_born）。 */
     private BigDecimal totalLiveBorn;
 
     /** 窝均活仔数 = 年度活仔总数 / 分娩窝数（头/窝，2 位小数）。 */
@@ -60,6 +65,6 @@ public class BreedingAnnualVo implements Serializable {
     /** 窝均断奶数 = 年度断奶总数 / 断奶窝数（头/窝，2 位小数）。 */
     private BigDecimal avgWeanedPerLitter;
 
-    /** 产房损失率 = (分娩活仔 − 断奶数) / 分娩活仔（0~1，4 位小数）。 */
+    /** 产房损失率（年表 farrow_loss_rate，百分比数值如 9.52）。 */
     private BigDecimal farrowingLossRate;
 }

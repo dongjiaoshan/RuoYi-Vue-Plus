@@ -186,6 +186,7 @@ public class WechatLoginServiceImpl implements IWechatLoginService {
     private WechatLoginVo issueToken(Long userId, String openid, String clientId) {
         // 拉用户基本信息（用于 LoginUser 构造）
         String userName = djsUserExtMapper.selectUserName(userId);
+        String nickName = djsUserExtMapper.selectNickName(userId);
         String tenantId = djsUserExtMapper.selectTenantId(userId);
         String currentFarmId = djsUserExtMapper.selectCurrentFarmId(userId);
         if (StrUtil.isBlank(currentFarmId)) {
@@ -196,6 +197,9 @@ public class WechatLoginServiceImpl implements IWechatLoginService {
         loginUser.setUserId(userId);
         loginUser.setTenantId(tenantId);
         loginUser.setUsername(userName);
+        // 真员工登录必填 nickname（真实姓名）：getInfo 回传它驱动 mp 首屏 / 人员选择器默认回显，
+        // 不填则 mp EmployeePicker 兜底显「已选人员」占位（流程性问题 row5）。回落 userName 防空。
+        loginUser.setNickname(StrUtil.blankToDefault(nickName, userName));
         loginUser.setUserType(UserType.SYS_USER.getUserType());
         loginUser.setClientKey(DjsAuthConstants.MP_APPLET_CLIENT_KEY);
         loginUser.setDeviceType("mp");

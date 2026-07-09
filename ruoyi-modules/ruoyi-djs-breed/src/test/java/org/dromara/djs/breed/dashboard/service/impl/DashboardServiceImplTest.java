@@ -251,6 +251,45 @@ class DashboardServiceImplTest {
     }
 
     @Test
+    @DisplayName("getBreedingAnnual: 取年表（率类 ×100 百分比 / 总产仔=total_born_count 非活仔）")
+    void testGetBreedingAnnual() {
+        AnnualIndicator ai = new AnnualIndicator();
+        ai.setStatYear((short) 2026);
+        ai.setYearFarrowRate(new BigDecimal("55.560"));
+        ai.setWeanBreedInterval(new BigDecimal("35.000"));
+        ai.setAvgNpdDays(new BigDecimal("94.500"));
+        ai.setTotalBornCount(31);
+        ai.setTotalLiveBorn(21);
+        ai.setAvgLiveBornPerLitter(new BigDecimal("4.200"));
+        ai.setAvgWeanedPerLitter(new BigDecimal("10.333"));
+        ai.setFarrowLossRate(new BigDecimal("9.520"));
+        when(annualIndicatorMapper.selectOne(any())).thenReturn(ai);
+
+        BreedingAnnualVo vo = service.getBreedingAnnual(2026);
+
+        // 配种率 V1 口径同分娩率，均取 year_farrow_rate（已 ×100，前端直接拼 %）
+        assertThat(vo.getMateRate()).isEqualByComparingTo("55.560");
+        assertThat(vo.getFarrowRate()).isEqualByComparingTo("55.560");
+        assertThat(vo.getWeanMateInterval()).isEqualByComparingTo("35.000");
+        assertThat(vo.getAvgNonProductiveDays()).isEqualByComparingTo("94.500");
+        assertThat(vo.getTotalBornCount()).isEqualByComparingTo("31");   // 总产仔（含死胎），非活仔 21
+        assertThat(vo.getTotalLiveBorn()).isEqualByComparingTo("21");
+        assertThat(vo.getFarrowingLossRate()).isEqualByComparingTo("9.520");
+    }
+
+    @Test
+    @DisplayName("getBreedingAnnual: 该年无年表数据 → 全 0")
+    void testGetBreedingAnnualEmpty() {
+        when(annualIndicatorMapper.selectOne(any())).thenReturn(null);
+
+        BreedingAnnualVo vo = service.getBreedingAnnual(2025);
+
+        assertThat(vo.getFarrowRate()).isEqualByComparingTo("0");
+        assertThat(vo.getTotalBornCount()).isEqualByComparingTo("0");
+        assertThat(vo.getFarrowingLossRate()).isEqualByComparingTo("0");
+    }
+
+    @Test
     @DisplayName("triggerAggregate: 调用 status_record COUNT (DIE/ELIMINATE) — 不查 pig.end_date")
     void testTriggerAggregateUsesStatusRecord() {
         // 准备：sow / piglet lifecycle 分组 + DIE/ELIMINATE COUNT
@@ -367,58 +406,6 @@ class DashboardServiceImplTest {
         assertThat(vo.getCells().get(13).getValue()).isEqualTo(4);
         assertThat(vo.getCells().get(14).getMetric()).isEqualTo("用药猪只数");
         assertThat(vo.getCells().get(14).getValue()).isEqualTo(9);
-    }
-
-    @Test
-    @DisplayName("getBreedingAnnual: 配种率/分娩率/产房损失率/窝均 公式（#7.1-7.5）")
-    void testGetBreedingAnnual() {
-        // 配种 50 次 / 分娩 40 窝 / 活仔 480 / 断奶 35 窝 / 断奶 420
-        when(aggregateQueryMapper.countBreedingInRange(anyString(), any(), any())).thenReturn(50);
-        when(aggregateQueryMapper.countFarrowLitterInRange(anyString(), any(), any())).thenReturn(40);
-        when(aggregateQueryMapper.sumLiveBornInDateTimeRange(anyString(), any(), any())).thenReturn(480);
-        when(aggregateQueryMapper.countWeaningLitterInRange(anyString(), any(), any())).thenReturn(35);
-        when(aggregateQueryMapper.sumWeanedInDateTimeRange(anyString(), any(), any())).thenReturn(420);
-        when(aggregateQueryMapper.avgWeanMateIntervalDays(anyString(), any(), any())).thenReturn(new BigDecimal("6.3"));
-        when(aggregateQueryMapper.countAliveSows(anyString())).thenReturn(60);
-
-        BreedingAnnualVo vo = service.getBreedingAnnual(2026);
-
-        assertThat(vo.getYear()).isEqualTo(2026);
-        // 配种率 = 40/50 = 0.8000
-        assertThat(vo.getMateRate()).isEqualByComparingTo(new BigDecimal("0.8000"));
-        assertThat(vo.getFarrowRate()).isEqualByComparingTo(new BigDecimal("0.8000"));
-        // 断配间隔 6.3 天
-        assertThat(vo.getWeanMateInterval()).isEqualByComparingTo(new BigDecimal("6.3"));
-        // 活仔总数 480
-        assertThat(vo.getTotalLiveBorn()).isEqualByComparingTo(new BigDecimal("480"));
-        // 窝均活仔 = 480/40 = 12.00
-        assertThat(vo.getAvgLiveBornPerLitter()).isEqualByComparingTo(new BigDecimal("12.00"));
-        // 窝均断奶 = 420/35 = 12.00
-        assertThat(vo.getAvgWeanedPerLitter()).isEqualByComparingTo(new BigDecimal("12.00"));
-        // 产房损失率 = (480-420)/480 = 0.1250
-        assertThat(vo.getFarrowingLossRate()).isEqualByComparingTo(new BigDecimal("0.1250"));
-        // NPD 非负
-        assertThat(vo.getAvgNonProductiveDays()).isGreaterThanOrEqualTo(BigDecimal.ZERO);
-    }
-
-    @Test
-    @DisplayName("getBreedingAnnual: 配种次数 0 → 比率全 0（除零兜底）")
-    void testGetBreedingAnnualZeroBreeding() {
-        when(aggregateQueryMapper.countBreedingInRange(anyString(), any(), any())).thenReturn(0);
-        when(aggregateQueryMapper.countFarrowLitterInRange(anyString(), any(), any())).thenReturn(0);
-        when(aggregateQueryMapper.sumLiveBornInDateTimeRange(anyString(), any(), any())).thenReturn(0);
-        when(aggregateQueryMapper.countWeaningLitterInRange(anyString(), any(), any())).thenReturn(0);
-        when(aggregateQueryMapper.sumWeanedInDateTimeRange(anyString(), any(), any())).thenReturn(0);
-        when(aggregateQueryMapper.avgWeanMateIntervalDays(anyString(), any(), any())).thenReturn(null);
-        when(aggregateQueryMapper.countAliveSows(anyString())).thenReturn(0);
-
-        BreedingAnnualVo vo = service.getBreedingAnnual(2026);
-
-        assertThat(vo.getMateRate()).isEqualByComparingTo(BigDecimal.ZERO);
-        assertThat(vo.getFarrowRate()).isEqualByComparingTo(BigDecimal.ZERO);
-        assertThat(vo.getWeanMateInterval()).isEqualByComparingTo(BigDecimal.ZERO);
-        assertThat(vo.getFarrowingLossRate()).isEqualByComparingTo(BigDecimal.ZERO);
-        assertThat(vo.getAvgNonProductiveDays()).isEqualByComparingTo(BigDecimal.ZERO);
     }
 
     @Test

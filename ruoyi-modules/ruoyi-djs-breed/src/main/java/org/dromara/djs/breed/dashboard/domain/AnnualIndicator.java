@@ -35,7 +35,13 @@ public class AnnualIndicator extends TenantEntity {
     /** 统计年份。 */
     private Short statYear;
 
+    /** 年度引种母猪数（Σ当年T-1前月表 introduce_count）。 */
     private Integer introduceCount;
+
+    /** 年度引种公猪数（Σ当年T-1前月表 introduce_boar_count）。定时重算，ALWAYS 覆盖旧值。 */
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
+    private Integer introduceBoarCount;
+
     private Integer bornCount;
     private Integer weanedCount;
     private Integer deathCount;

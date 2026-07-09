@@ -22,10 +22,13 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 果蔬生产损耗日聚合实现（邓博最终口径）。
+ * 生产损耗日聚合实现（邓博最终口径，R25 全品类）。
  *
- * <p>按产品残差 = 果蔬领用 − 退回 − 录入损耗 − 饲喂 − 打包生产使用量（&gt;0 才落 {@code loss_type='production_loss'}），
- * 全部按 {@code belong_type='vegetable'}（自产果蔬；外购商品/包材天然排除；猪肉/其他产品无生产损耗展示需求）。
+ * <p>逐产品残差 = 领用 − 退回 − 录入损耗 − 饲喂 − 打包生产使用量（&gt;0 才逐产品落一条 {@code loss_type='production_loss'}
+ * 到损耗总览），覆盖 {@code belong_type IN ('vegetable','pork','egg','dry_good')}（自产果蔬 / 猪肉 / 鸡蛋 / 干货；
+ * 外购商品/包材天然排除；白条走预冷/分割损耗专口径、礼盒为组合品，均排除）。逐产品逐行、各带自己单位，无跨产品跨单位求和；
+ * 饲喂 feed_out 仅自产果蔬有值，非果蔬品类恒 0。<b>仅记损耗总览表（{@code t_warehouse_loss_flow}），不写聚合日表</b>
+ * （日表净菜损耗率仍单出果蔬，见 {@code WarehouseStatServiceImpl}）。
  * 由 {@code WarehouseStatServiceImpl#aggregate} 驱动（先于 cropp 聚合跑，production_loss 对 cropp 净菜损耗率即时新鲜），
  * 原独立 ProductionLossAggregateJob 已撤。</p>
  *
@@ -56,7 +59,7 @@ public class ProductionLossServiceImpl implements IProductionLossService {
             .eq(LossFlow::getLossType, LOSS_TYPE_PRODUCTION)
             .apply("DATE(loss_date) = DATE({0})", statDate));
 
-        // 聚合五项量：[pickOut, returnIn, feedOut, manualLoss, packUsage]（均果蔬 belong_type='vegetable' 口径）
+        // 聚合五项量：[pickOut, returnIn, feedOut, manualLoss, packUsage]（belong_type 果蔬/猪肉/鸡蛋/干货，逐产品）
         Map<Long, BigDecimal[]> byProduct = new LinkedHashMap<>();
         for (Map<String, Object> r : aggregateMapper.selectProductFlowAgg(tenantId, statDate)) {
             Long pid = toLong(r.get("productId"));
@@ -88,7 +91,7 @@ public class ProductionLossServiceImpl implements IProductionLossService {
         int written = 0;
         for (Map.Entry<Long, BigDecimal[]> e : byProduct.entrySet()) {
             BigDecimal[] a = e.getValue();
-            // 果蔬生产损耗 = 领用 − 退回 − 录入损耗 − 饲喂 − 打包生产使用量（邓博最终口径，仅自产果蔬）
+            // 生产损耗 = 领用 − 退回 − 录入损耗 − 饲喂 − 打包生产使用量（邓博最终口径，逐产品各带自己单位；非果蔬品类饲喂恒 0）
             BigDecimal residual = a[0].subtract(a[1]).subtract(a[3]).subtract(a[2]).subtract(a[4]);
             if (residual.compareTo(BigDecimal.ZERO) <= 0) {
                 continue;

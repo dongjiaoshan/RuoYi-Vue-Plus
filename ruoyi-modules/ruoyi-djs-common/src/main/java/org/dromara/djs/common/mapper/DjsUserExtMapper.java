@@ -116,6 +116,13 @@ public interface DjsUserExtMapper {
     String selectUserName(@Param("userId") Long userId);
 
     /**
+     * 读取昵称（真实姓名，用于颁发 token 时填充 LoginUser.nickname）。
+     * getInfo 回传该 nickname 驱动 mp 首屏 / 人员选择器默认回显；不填则 mp 退占位「已选人员」。
+     */
+    @Select("SELECT nick_name FROM sys_user WHERE user_id = #{userId}")
+    String selectNickName(@Param("userId") Long userId);
+
+    /**
      * 读取 tenant_id（用于 LoginUser 构造）。
      */
     @Select("SELECT tenant_id FROM sys_user WHERE user_id = #{userId}")
