@@ -62,9 +62,6 @@ class ProductInfoServiceImplTest {
     private ProductInfoMapper productInfoMapper;
 
     @Mock
-    private org.dromara.djs.common.image.service.IImageLibraryService imageLibraryService;
-
-    @Mock
     private org.dromara.djs.common.image.service.ImageUrlResolver imageUrlResolver;
 
     @Mock
@@ -95,7 +92,6 @@ class ProductInfoServiceImplTest {
      */
     static class TestableProductInfoServiceImpl extends ProductInfoServiceImpl {
         TestableProductInfoServiceImpl(ProductInfoMapper baseMapper,
-                                       org.dromara.djs.common.image.service.IImageLibraryService imageLibraryService,
                                        org.dromara.djs.common.image.service.ImageUrlResolver imageUrlResolver,
                                        org.dromara.djs.warehouse.location.mapper.LocationInfoMapper locationInfoMapper,
                                        org.dromara.djs.warehouse.flow.mapper.StockFlowMapper stockFlowMapper,
@@ -104,7 +100,7 @@ class ProductInfoServiceImplTest {
                                        org.dromara.djs.warehouse.check.service.IStockCheckService stockCheckService,
                                        org.dromara.djs.common.supplier.mapper.SupplierMapper supplierMapper,
                                        org.dromara.djs.warehouse.product.service.IProductDisplayNameResolver displayNameResolver) {
-            super(baseMapper, imageLibraryService, imageUrlResolver,
+            super(baseMapper, imageUrlResolver,
                 locationInfoMapper, stockFlowMapper, locationStockMapper, bizCodeGenerator, stockCheckService, supplierMapper, displayNameResolver);
         }
 
@@ -140,7 +136,7 @@ class ProductInfoServiceImplTest {
 
     @BeforeEach
     void setup() {
-        service = new TestableProductInfoServiceImpl(productInfoMapper, imageLibraryService, imageUrlResolver,
+        service = new TestableProductInfoServiceImpl(productInfoMapper, imageUrlResolver,
             locationInfoMapper, stockFlowMapper, locationStockMapper, bizCodeGenerator, stockCheckService, supplierMapper, displayNameResolver);
     }
 

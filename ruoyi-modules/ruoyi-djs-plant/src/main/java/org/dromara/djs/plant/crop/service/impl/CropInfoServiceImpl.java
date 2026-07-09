@@ -10,7 +10,6 @@ import cn.hutool.core.util.StrUtil;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.common.base.DjsBaseServiceImpl;
-import org.dromara.djs.common.image.service.IImageLibraryService;
 import org.dromara.djs.common.image.service.ImageUrlResolver;
 import org.dromara.djs.plant.crop.domain.CropInfo;
 import org.dromara.djs.plant.crop.domain.bo.CropInfoBo;
@@ -43,18 +42,15 @@ import java.util.stream.Collectors;
 public class CropInfoServiceImpl extends DjsBaseServiceImpl<CropInfoMapper, CropInfo> implements ICropInfoService {
 
     /**
-     * 作物图 L2 兜底分类键（作物无 belong_type，统一走"蔬菜默认图"）。
+     * 作物图分类键（作物无 belong_type，传固定值保持批量解析签名一致）。
      */
     private static final String CROP_BELONG_TYPE = "vegetable";
 
-    private final IImageLibraryService imageLibraryService;
     private final ImageUrlResolver imageUrlResolver;
 
     public CropInfoServiceImpl(CropInfoMapper baseMapper,
-                               IImageLibraryService imageLibraryService,
                                ImageUrlResolver imageUrlResolver) {
         super(baseMapper);
-        this.imageLibraryService = imageLibraryService;
         this.imageUrlResolver = imageUrlResolver;
     }
 
@@ -92,13 +88,8 @@ public class CropInfoServiceImpl extends DjsBaseServiceImpl<CropInfoMapper, Crop
         if (entity == null) {
             throw new ServiceException("作物入参转换失败");
         }
-        // IMG-LIB-001：image_oss_id 空且非手动 → 按 cropName 自动匹配图库（匹配不上留 null，走 resolver 兜底）
-        boolean manual = entity.getImageSource() != null && entity.getImageSource() == 1;
-        if (StrUtil.isBlank(entity.getImageOssId()) && !manual) {
-            String matched = imageLibraryService.match(entity.getCropName());
-            entity.setImageOssId(matched);
-            entity.setImageSource(0);
-        } else if (StrUtil.isNotBlank(entity.getImageOssId())) {
+        // 作物图只来自「作物配置」表单手动上传；上传了则标记手动，不传留空（前端占位兜底）
+        if (StrUtil.isNotBlank(entity.getImageOssId())) {
             entity.setImageSource(1);
         }
         return baseMapper.insert(entity);
@@ -119,7 +110,7 @@ public class CropInfoServiceImpl extends DjsBaseServiceImpl<CropInfoMapper, Crop
         }
         // crop_code 不允许修改
         entity.setCropCode(exists.getCropCode());
-        // IMG-LIB-001：用户在编辑里改了图 → 标记手动（image_source=1），后续 rematch 不覆盖
+        // 用户在编辑里改了图 → 标记手动（image_source=1）
         if (StrUtil.isNotBlank(entity.getImageOssId())
             && !entity.getImageOssId().equals(exists.getImageOssId())) {
             entity.setImageSource(1);

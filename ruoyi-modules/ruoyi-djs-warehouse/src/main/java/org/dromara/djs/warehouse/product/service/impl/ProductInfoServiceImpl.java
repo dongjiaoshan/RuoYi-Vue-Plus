@@ -15,7 +15,6 @@ import org.dromara.common.satoken.utils.LoginHelper;
 import org.dromara.djs.common.base.DjsBaseServiceImpl;
 import org.dromara.djs.common.encoder.BizCodeType;
 import org.dromara.djs.common.encoder.IBizCodeGenerator;
-import org.dromara.djs.common.image.service.IImageLibraryService;
 import org.dromara.djs.common.image.service.ImageUrlResolver;
 import org.dromara.djs.common.supplier.domain.Supplier;
 import org.dromara.djs.common.supplier.mapper.SupplierMapper;
@@ -85,7 +84,6 @@ public class ProductInfoServiceImpl extends DjsBaseServiceImpl<ProductInfoMapper
     /** 产品入库 flow_type（djs_flow_type）。 */
     private static final String FLOW_TYPE_PURCHASE_IN = "purchase_in";
 
-    private final IImageLibraryService imageLibraryService;
     private final ImageUrlResolver imageUrlResolver;
     private final LocationInfoMapper locationInfoMapper;
     private final StockFlowMapper stockFlowMapper;
@@ -96,7 +94,6 @@ public class ProductInfoServiceImpl extends DjsBaseServiceImpl<ProductInfoMapper
     private final IProductDisplayNameResolver displayNameResolver;
 
     public ProductInfoServiceImpl(ProductInfoMapper baseMapper,
-                                  IImageLibraryService imageLibraryService,
                                   ImageUrlResolver imageUrlResolver,
                                   LocationInfoMapper locationInfoMapper,
                                   StockFlowMapper stockFlowMapper,
@@ -106,7 +103,6 @@ public class ProductInfoServiceImpl extends DjsBaseServiceImpl<ProductInfoMapper
                                   SupplierMapper supplierMapper,
                                   IProductDisplayNameResolver displayNameResolver) {
         super(baseMapper);
-        this.imageLibraryService = imageLibraryService;
         this.imageUrlResolver = imageUrlResolver;
         this.locationInfoMapper = locationInfoMapper;
         this.stockFlowMapper = stockFlowMapper;
@@ -159,7 +155,8 @@ public class ProductInfoServiceImpl extends DjsBaseServiceImpl<ProductInfoMapper
     }
 
     /**
-     * 批量回填商品 imageUrl（IMG-LIB-001 4 层 resolver，禁 N+1）。L2 兜底用各自 belong_type。
+     * 批量回填商品 imageUrl（禁 N+1）。取图优先「商品配置」表单上传的缩略图 product_thumb，
+     * 缺失才退回历史 image_oss_id（COALESCE(product_thumb, image_oss_id)，与三端展示口径一致）。
      */
     private void fillImageUrls(List<ProductInfoVo> records) {
         if (records == null || records.isEmpty()) {
@@ -167,7 +164,8 @@ public class ProductInfoServiceImpl extends DjsBaseServiceImpl<ProductInfoMapper
         }
         List<ImageUrlResolver.Item> items = new ArrayList<>(records.size());
         for (ProductInfoVo vo : records) {
-            items.add(new ImageUrlResolver.Item(vo.getImageOssId(), vo.getBelongType()));
+            String ossId = StrUtil.isNotBlank(vo.getProductThumb()) ? vo.getProductThumb() : vo.getImageOssId();
+            items.add(new ImageUrlResolver.Item(ossId, vo.getBelongType()));
         }
         List<String> urls = imageUrlResolver.resolveList(items);
         if (urls.size() != records.size()) {
@@ -204,13 +202,8 @@ public class ProductInfoServiceImpl extends DjsBaseServiceImpl<ProductInfoMapper
         }
         applyDefaultsBeforeInsert(entity);
 
-        // IMG-LIB-001：image_oss_id 空且非手动 → 按 productName 自动匹配图库（匹配不上留 null，走 resolver 兜底）
-        boolean manual = entity.getImageSource() != null && entity.getImageSource() == 1;
-        if (StrUtil.isBlank(entity.getImageOssId()) && !manual) {
-            String matched = imageLibraryService.match(entity.getProductName());
-            entity.setImageOssId(matched);
-            entity.setImageSource(0);
-        } else if (StrUtil.isNotBlank(entity.getImageOssId())) {
+        // 商品图只来自「商品配置」表单手动上传（product_thumb / image_oss_id）；上传了则标记手动
+        if (StrUtil.isNotBlank(entity.getImageOssId())) {
             entity.setImageSource(1);
         }
 
@@ -244,7 +237,7 @@ public class ProductInfoServiceImpl extends DjsBaseServiceImpl<ProductInfoMapper
         // 编辑端点不允许改 productId / productType
         entity.setProductId(exists.getProductId());
         entity.setProductType(exists.getProductType());
-        // IMG-LIB-001：用户在编辑里改了图 → 标记手动（image_source=1），后续 rematch 不覆盖
+        // 用户在编辑里改了图 → 标记手动（image_source=1）
         if (StrUtil.isNotBlank(entity.getImageOssId())
             && !entity.getImageOssId().equals(exists.getImageOssId())) {
             entity.setImageSource(1);
