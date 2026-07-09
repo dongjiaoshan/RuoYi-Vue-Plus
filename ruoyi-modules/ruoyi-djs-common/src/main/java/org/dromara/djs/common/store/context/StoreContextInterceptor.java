@@ -64,7 +64,8 @@ public class StoreContextInterceptor implements HandlerInterceptor {
         // 非超管：请求头门店必须在当前登录人有权限门店内，否则拒绝（防绕过前端校验跨门店读写）
         if (!ignore && userId != null) {
             Long sid = parseStoreId(storeId);
-            if (sid == null || !storeUserRelationService.listStoreIdsByUser(userId).contains(sid)) {
+            // 门店墙感知：V1 关墙时任一门店放行（ADR-0018 全员可跨店），开墙则按绑定校验
+            if (!storeUserRelationService.isStoreAccessible(userId, sid)) {
                 throw new ServiceException("无该门店操作权限，请重新选择门店", 403);
             }
         }

@@ -58,6 +58,16 @@ public interface IStoreUserRelationService {
     List<StorePickerVo> listMyStores();
 
     /**
+     * 判断某人是否可操作某门店（门店墙 djs.store.wall-enabled 感知）。
+     * V1 关墙 → 任一门店可访问（ADR-0018 全员可跨店）；开墙 → 按 {@link #listStoreIdsByUser} 绑定校验。
+     *
+     * @param userId  人员 ID
+     * @param storeId 门店 ID
+     * @return 是否可访问
+     */
+    boolean isStoreAccessible(Long userId, Long storeId);
+
+    /**
      * 统计门店已绑有效人员数（用于 t_md_store 列表「员工数」列，防 N+1 批量场景见实现）。
      *
      * @param storeId 门店 ID

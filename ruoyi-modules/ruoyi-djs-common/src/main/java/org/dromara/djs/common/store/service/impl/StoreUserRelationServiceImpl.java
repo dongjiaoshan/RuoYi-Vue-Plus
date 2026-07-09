@@ -213,6 +213,18 @@ public class StoreUserRelationServiceImpl
     }
 
     @Override
+    public boolean isStoreAccessible(Long userId, Long storeId) {
+        if (storeId == null) {
+            return false;
+        }
+        // V1 门店墙关闭（ADR-0018 全员可跨店）→ 任一门店都可访问；开墙则按员工↔门店绑定校验。
+        if (!storeWallEnabled) {
+            return true;
+        }
+        return listStoreIdsByUser(userId).contains(storeId);
+    }
+
+    @Override
     public int countUsersByStore(Long storeId) {
         if (storeId == null) {
             return 0;
