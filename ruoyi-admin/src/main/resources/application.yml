@@ -306,6 +306,10 @@ djs:
     #   true  → 恢复 ruoyi 原生按菜单权限精确校验（可随时回退）
     # 只影响服务端 API 拦截，不影响 getInfo 下发给前端的 permissions（mp tab / admin 按钮显隐不受影响）。
     api-permission-check: ${DJS_API_PERM_CHECK:false}
+  store:
+    # 门店墙（员工↔门店绑定过滤 my-stores 下拉）。V1 默认 false = 关墙，全员返全部门店
+    # （ADR-0018 门店不做隔离、全员可跨店）；V2 接多加盟商时置 true 按绑定过滤。
+    wall-enabled: ${DJS_STORE_WALL:false}
   multi-farm:
     # V1 disabled，V2 启用拦截器后多农场生效（SYS-INFRA-007）
     enabled: false

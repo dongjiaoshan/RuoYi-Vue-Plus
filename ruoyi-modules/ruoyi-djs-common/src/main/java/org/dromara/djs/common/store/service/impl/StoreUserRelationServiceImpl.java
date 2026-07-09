@@ -19,6 +19,7 @@ import org.dromara.djs.common.store.domain.vo.StoreUserVo;
 import org.dromara.djs.common.store.mapper.StoreMapper;
 import org.dromara.djs.common.store.mapper.StoreUserRelationMapper;
 import org.dromara.djs.common.store.service.IStoreUserRelationService;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -50,6 +51,13 @@ public class StoreUserRelationServiceImpl
 
     private final UserService userService;
     private final StoreMapper storeMapper;
+
+    /**
+     * 门店墙开关（STORE-PERM-001 员工↔门店绑定过滤）。V1 默认 false = 关墙，
+     * my-stores 返全部门店（ADR-0018 门店不做隔离、全员可跨店）；V2 多加盟商时置 true 按绑定过滤。
+     */
+    @Value("${djs.store.wall-enabled:false}")
+    private boolean storeWallEnabled;
 
     public StoreUserRelationServiceImpl(StoreUserRelationMapper baseMapper,
                                         UserService userService,
@@ -174,12 +182,12 @@ public class StoreUserRelationServiceImpl
 
     @Override
     public List<StorePickerVo> listMyStores() {
-        // 超管 / 租管返全部门店（bypass 门店墙）
+        // 门店墙关闭（V1 默认）→ 全员返全部门店（ADR-0018 全员可跨店）；超管/租管始终 bypass。
         boolean ignoreWall;
         try {
-            ignoreWall = LoginHelper.isSuperAdmin() || LoginHelper.isTenantAdmin();
+            ignoreWall = !storeWallEnabled || LoginHelper.isSuperAdmin() || LoginHelper.isTenantAdmin();
         } catch (Exception e) {
-            ignoreWall = false;
+            ignoreWall = !storeWallEnabled;
         }
         List<Store> stores;
         if (ignoreWall) {
