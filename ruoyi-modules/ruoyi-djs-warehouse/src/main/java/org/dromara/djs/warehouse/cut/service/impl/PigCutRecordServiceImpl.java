@@ -335,10 +335,13 @@ public class PigCutRecordServiceImpl
      * 白条领用到分割间 = 白条出白条库：扣该半只白条库存行（P2 燎毛按 white_bar_no 建）+ 写「白条出库」流水（去向=白条分割）。
      *
      * <p>邓博 row13：白条去分割车间时从白条库正常出库（修出库记录缺失致库存不准）。white_bar_no 空（外购 /
-     * 旧数据）→ 跳过库存行扣减、流水仍按 ear_no 写（优雅降级，不阻断领用）。分割结算/超量/剩余/损耗仍按
+     * 旧数据）→ 跳过库存行扣减、流水仍按 ear_no 写（优雅降级，不阻断领用）；命中库存行但扣减 affected=0
+     * （余量不足 / 并发抢占）→ 抛异常回滚，防流水与货架单边分叉。流水库位取 inhouse.location_id，
+     * 空则回落白条库存行 location_id（doc/11 warehouse_id 必填）。分割结算/超量/剩余/损耗仍按
      * white_bar_id(整猪)，cut_out 流水不参与结算（结算用 cut_out_in），故此处补写不影响分割口径。</p>
      */
     private void writeBarCutOutFlow(ProductInhouse row, BigDecimal weight, Long userId) {
+        Long warehouseId = row.getLocationId();
         if (StringUtils.isNotBlank(row.getWhiteBarNo())) {
             LocationStock barStock = locationStockMapper.selectOne(
                 new LambdaQueryWrapper<LocationStock>()
@@ -347,8 +350,19 @@ public class PigCutRecordServiceImpl
                     .gt(LocationStock::getProductStock, BigDecimal.ZERO)
                     .last("LIMIT 1"));
             if (barStock != null) {
-                locationStockMapper.deductStockById(barStock.getId(), weight, userId);
+                int affected = locationStockMapper.deductStockById(barStock.getId(), weight, userId);
+                if (affected == 0) {
+                    throw new ServiceException("白条库存扣减失败（余量不足或已被并发领用）：white_bar_no="
+                        + row.getWhiteBarNo() + " 本次领用 " + weight.stripTrailingZeros().toPlainString() + "kg");
+                }
+                if (warehouseId == null) {
+                    warehouseId = barStock.getLocationId();
+                }
             }
+        }
+        if (warehouseId == null) {
+            log.warn("白条出库流水缺库位（inhouse 与白条库存行均无 location_id）— inhouseId={} whiteBarNo={} earNo={}",
+                row.getId(), row.getWhiteBarNo(), row.getEarNo());
         }
         StockFlow out = new StockFlow();
         Map<String, Object> ctx = new HashMap<>(2);
@@ -356,11 +370,11 @@ public class PigCutRecordServiceImpl
         out.setFlowNo(bizCodeGenerator.generate(BizCodeType.STOCK_FLOW_NO, ctx));
         out.setFlowDate(new Date());
         out.setProductId(row.getProductId());
-        out.setWarehouseId(row.getLocationId());
+        out.setWarehouseId(warehouseId);
         out.setInoutType(INOUT_OUT);
         out.setFlowType(FLOW_TYPE_CUT_OUT);
         out.setStockOutDest(STOCK_OUT_DEST_BAR_CUT);
-        out.setChangeNum(weight);
+        out.setChangeNum(weight.negate());
         out.setChangeQuantity(weight);
         out.setEarNo(row.getEarNo());
         out.setWhiteBarNo(row.getWhiteBarNo());
@@ -690,7 +704,7 @@ public class PigCutRecordServiceImpl
         flowOut.setFlowType(FLOW_TYPE_CUT_OUT);
         // 白条出库去向固定为分割间（FIX-WMS-FLOWDICT-001，前端只读不可改）
         flowOut.setStockOutDest(STOCK_OUT_DEST_BAR_CUT);
-        flowOut.setChangeNum(totalWeight);
+        flowOut.setChangeNum(totalWeight.negate());
         flowOut.setChangeQuantity(totalWeight);
         flowOut.setEarNo(record.getEarNo());
         flowOut.setOperatorId(userId);

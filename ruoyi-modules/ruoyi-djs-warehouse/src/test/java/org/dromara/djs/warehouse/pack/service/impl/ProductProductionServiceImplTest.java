@@ -92,6 +92,8 @@ class ProductProductionServiceImplTest {
     @Mock private IBizCodeGenerator bizCodeGenerator;
     @Mock private org.dromara.djs.warehouse.trace.service.ITraceService traceService;
     @Mock private org.dromara.djs.warehouse.check.service.IStockCheckService stockCheckService;
+    @Mock private org.dromara.djs.warehouse.loss.service.ILossFlowService lossFlowService;
+    @Mock private org.dromara.djs.warehouse.cut.service.IPigCutRecordService pigCutService;
 
     private ProductProductionServiceImpl service;
     private MockedStatic<LoginHelper> loginHelperMock;
@@ -117,6 +119,18 @@ class ProductProductionServiceImplTest {
             locationInfoMapper, locationStockMapper, stockFlowMapper, storeMapper, plotInfoMapper,
             demandManageMapper, barInfoMapper, bizCodeGenerator, traceService, stockCheckService);
 
+        // lossFlowService / pigCutService 走 @Autowired @Lazy 字段注入（非构造器），单测用反射塞 mock
+        try {
+            java.lang.reflect.Field f = ProductProductionServiceImpl.class.getDeclaredField("lossFlowService");
+            f.setAccessible(true);
+            f.set(service, lossFlowService);
+            java.lang.reflect.Field f2 = ProductProductionServiceImpl.class.getDeclaredField("pigCutService");
+            f2.setAccessible(true);
+            f2.set(service, pigCutService);
+        } catch (ReflectiveOperationException e) {
+            throw new IllegalStateException("注入 @Lazy 字段 mock 失败", e);
+        }
+
         loginHelperMock = Mockito.mockStatic(LoginHelper.class);
         loginHelperMock.when(LoginHelper::getUserId).thenReturn(9001L);
 
@@ -124,13 +138,10 @@ class ProductProductionServiceImplTest {
         when(bizCodeGenerator.generate(eq(BizCodeType.STOCK_FLOW_NO), anyMap()))
             .thenReturn("F2606280001");
 
-        // BizCodeType.PRODUCE_NO 默认 stub：回显 context.prefix，模拟 {yyMMdd}{prefix}0001
-        when(bizCodeGenerator.generate(eq(BizCodeType.PRODUCE_NO), anyMap())).thenAnswer(inv -> {
-            @SuppressWarnings("unchecked")
-            Map<String, Object> ctx = inv.getArgument(1);
-            Object prefix = ctx.get("prefix");
-            return "260628" + prefix + "0001";
-        });
+        // BizCodeType.PRODUCE_NO 默认 stub：全部打包/出库生码共用一个每日计数器
+        // （daily_reset=1，前缀由 code rule 决定、ctx 不再传业态 prefix）
+        when(bizCodeGenerator.generate(eq(BizCodeType.PRODUCE_NO), anyMap()))
+            .thenReturn("P2606280001");
 
         // consumeInhouse 部分扣减（来源余量 > 打包实重 → deductWeightById 行锁扣减，非整行软删）默认成功
         when(inhouseMapper.deductWeightById(anyLong(), any())).thenReturn(1);
@@ -154,6 +165,8 @@ class ProductProductionServiceImplTest {
         i.setProductUnit("kg");
         i.setProductWeight(new BigDecimal("50.000"));
         i.setPlotId(50001L);
+        // P1-2 跨域隔离：仓库打包/出库只认 source='warehouse' 的分割产
+        i.setSource("warehouse");
         return i;
     }
 
@@ -185,11 +198,13 @@ class ProductProductionServiceImplTest {
         bo.setLocationId(90001L);
         bo.setMaterialConsume(new BigDecimal("0.5"));
         bo.setRemark("e2e veg pack");
+        // 需求 C：发货月台打包须选门店（打包即扣需求）；无未完成需求时 warn 跳过扣减
+        bo.setStoreId(7L);
         return bo;
     }
 
     @Test
-    @DisplayName("submitVegPack: happy → INSERT production + stock_flow + location_stock += + softDelete inhouse")
+    @DisplayName("submitVegPack: happy → INSERT production + 消耗来源 inhouse；row42 不写入库流水/不动 location_stock")
     void testVegPack_Happy() {
         when(inhouseMapper.selectById(70001L)).thenReturn(sampleVegSource());
         when(productInfoMapper.selectById(60010L)).thenReturn(sampleVegProduct());
@@ -199,8 +214,6 @@ class ProductProductionServiceImplTest {
             p.setId(80001L);
             return 1;
         });
-        when(locationStockMapper.addByProductLocation(eq(90001L), eq(60010L), any(), eq(9001L))).thenReturn(1);
-        when(inhouseMapper.deleteById(eq(70001L))).thenReturn(1);
 
         Long id = service.submitVegPack(sampleVegBo());
 
@@ -214,15 +227,11 @@ class ProductProductionServiceImplTest {
         assertThat(saved.getProductWeight()).isEqualByComparingTo("30.500");
         assertThat(saved.getPlotId()).isEqualTo(50001L);
         assertThat(saved.getPackStatus()).isEqualTo("packed");
-        assertThat(saved.getProduceNo()).startsWith(""); // yyMMdd + G + 0001
-        assertThat(saved.getProduceNo()).endsWith("0001");
-        assertThat(saved.getProduceNo()).contains("G");
+        assertThat(saved.getProduceNo()).isEqualTo("P2606280001"); // PRODUCE_NO 共用每日计数器
         assertThat(saved.getIsDeliveryCheck()).isEqualTo(0);
-        // 验证 stock_flow 调一次入库
-        verify(stockFlowMapper, times(1)).insert(any(StockFlow.class));
-        // 验证 location_stock += weight
-        verify(locationStockMapper, times(1)).addByProductLocation(
-            eq(90001L), eq(60010L), any(), eq(9001L));
+        // row42：生产产品不入库 → 不写入库流水、不动 location_stock
+        verify(stockFlowMapper, never()).insert(any(StockFlow.class));
+        verify(locationStockMapper, never()).addByProductLocation(any(), any(), any(), any());
         // 验证 inhouse 按实重部分扣减（来源 50 > 打包 30.5，非整行软删）
         verify(inhouseMapper, times(1)).deductWeightById(eq(70001L), any());
     }
@@ -255,7 +264,7 @@ class ProductProductionServiceImplTest {
     }
 
     @Test
-    @DisplayName("submitVegPack: location_stock 无既有行（add 返 0）→ upsert 兜底 INSERT 新行（WMS-PACK-UPSERT-001）")
+    @DisplayName("submitVegPack: row42 生产产品不入库 → 全程不写 location_stock（无 UPDATE 增量、无兜底 INSERT）")
     void testVegPack_UpsertInsertsWhenNoStockRow() {
         when(inhouseMapper.selectById(70001L)).thenReturn(sampleVegSource());
         when(productInfoMapper.selectById(60010L)).thenReturn(sampleVegProduct());
@@ -265,40 +274,11 @@ class ProductProductionServiceImplTest {
             p.setId(80001L);
             return 1;
         });
-        // 关键：该 product+location 无既有库存行 → UPDATE affected=0
-        when(locationStockMapper.addByProductLocation(eq(90001L), eq(60010L), any(), eq(9001L))).thenReturn(0);
-        when(inhouseMapper.deleteById(eq(70001L))).thenReturn(1);
 
         service.submitVegPack(sampleVegBo());
 
-        // upsert 兜底 INSERT 新 LocationStock（字段取自 production）
-        ArgumentCaptor<LocationStock> cap = ArgumentCaptor.forClass(LocationStock.class);
-        verify(locationStockMapper, times(1)).insert(cap.capture());
-        LocationStock fresh = cap.getValue();
-        assertThat(fresh.getLocationId()).isEqualTo(90001L);
-        assertThat(fresh.getProductId()).isEqualTo(60010L);
-        assertThat(fresh.getProductName()).isEqualTo("番茄·小盒装");
-        assertThat(fresh.getProductStock()).isEqualByComparingTo("30.500");
-        assertThat(fresh.getIsEnd()).isEqualTo(0);
-        assertThat(fresh.getOperatorId()).isEqualTo(9001L);
-    }
-
-    @Test
-    @DisplayName("submitVegPack: location_stock 有既有行（add 返 1）→ 仅 UPDATE 增量，不 INSERT")
-    void testVegPack_UpsertSkipsInsertWhenRowExists() {
-        when(inhouseMapper.selectById(70001L)).thenReturn(sampleVegSource());
-        when(productInfoMapper.selectById(60010L)).thenReturn(sampleVegProduct());
-        when(locationInfoMapper.selectById(90001L)).thenReturn(sampleLocation());
-        when(productionMapper.insert(any(ProductProduction.class))).thenAnswer(inv -> {
-            ProductProduction p = inv.getArgument(0);
-            p.setId(80002L);
-            return 1;
-        });
-        when(locationStockMapper.addByProductLocation(eq(90001L), eq(60010L), any(), eq(9001L))).thenReturn(1);
-        when(inhouseMapper.deleteById(eq(70001L))).thenReturn(1);
-
-        service.submitVegPack(sampleVegBo());
-
+        // row42：打包成品直送发货月台，不进 location_stock（原 WMS-PACK-UPSERT-001 upsert 链路已随之移除）
+        verify(locationStockMapper, never()).addByProductLocation(any(), any(), any(), any());
         verify(locationStockMapper, never()).insert(any(LocationStock.class));
     }
 
@@ -338,11 +318,13 @@ class ProductProductionServiceImplTest {
             p.setId(80100L);
             return 1;
         });
-        when(locationStockMapper.addByProductLocation(eq(90100L), eq(60100L), any(), eq(9001L))).thenReturn(1);
         // 门店有未完成礼盒需求 → 打包即扣 shipped_count
         org.dromara.djs.warehouse.demand.domain.DemandManage demand =
             new org.dromara.djs.warehouse.demand.domain.DemandManage();
         demand.setId(50001L);
+        // row53-BE 硬拦：剩余份数（demand_quantity − shipped_count）须 ≥ 本次打包 5 盒
+        demand.setDemandQuantity(new BigDecimal("10"));
+        demand.setShippedCount(BigDecimal.ZERO);
         when(demandManageMapper.selectOldestUncompletedDemand(eq(60100L), eq(7L))).thenReturn(demand);
 
         Long id = service.submitGiftPack(sampleGiftBo());
@@ -351,7 +333,7 @@ class ProductProductionServiceImplTest {
         // 不查/不消耗任何组件：无组件 production 软删、无组件库存扣减、无组件消耗流水
         verify(productionMapper, never()).deleteById(anyLong());
         verify(locationStockMapper, never()).deductByProductLocation(anyLong(), anyLong(), any(), anyLong());
-        // 只产出 N 盒礼盒成品：1 行 production insert + 1 行入库流水 + 1 次 location_stock 入库
+        // 只产出 N 盒礼盒成品：1 行 production insert；row42 不写入库流水/不进 location_stock
         ArgumentCaptor<ProductProduction> cap = ArgumentCaptor.forClass(ProductProduction.class);
         verify(productionMapper, times(1)).insert(cap.capture());
         ProductProduction saved = cap.getValue();
@@ -362,9 +344,9 @@ class ProductProductionServiceImplTest {
         assertThat(saved.getProductUnit()).isEqualTo("盒");
         assertThat(saved.getPackStatus()).isEqualTo("packed");
         assertThat(saved.getProduceNo()).isNotBlank();
-        verify(stockFlowMapper, times(1)).insert(any(StockFlow.class)); // 仅 1 行入库流水（无组件消耗流水）
-        verify(locationStockMapper, times(1)).addByProductLocation(
-            eq(90100L), eq(60100L), any(), eq(9001L));
+        // row42：生产产品不入库 → 无入库流水、不动 location_stock
+        verify(stockFlowMapper, never()).insert(any(StockFlow.class));
+        verify(locationStockMapper, never()).addByProductLocation(any(), any(), any(), any());
         // 扣门店礼盒需求（deductDemandOnPack）：按盒数累加 shipped_count
         verify(demandManageMapper, times(1)).incrementShipped(eq(50001L), any(), any());
     }
@@ -410,6 +392,7 @@ class ProductProductionServiceImplTest {
         bo.setProductWeight(new BigDecimal("12.000"));
         bo.setProductUnit("个");
         bo.setLocationId(90001L);
+        bo.setStoreId(7L);
 
         Long id = service.submitDryPack(bo);
 
@@ -418,7 +401,8 @@ class ProductProductionServiceImplTest {
         verify(productionMapper).insert(cap.capture());
         ProductProduction saved = cap.getValue();
         assertThat(saved.getProductUnit()).isEqualTo("个");
-        assertThat(saved.getProduceNo()).contains("H");
+        // produce_no 全业态共用 PRODUCE_NO 每日计数器（前缀由 code rule 决定，非业态分桶）
+        assertThat(saved.getProduceNo()).isEqualTo("P2606280001");
     }
 
     // ============================================================
@@ -444,6 +428,7 @@ class ProductProductionServiceImplTest {
         bo.setProductId(60010L);
         bo.setProductWeight(new BigDecimal("20.500"));
         bo.setLocationId(90001L);
+        bo.setStoreId(7L);
 
         Long id = service.submitCeleryPack(bo);
 
@@ -452,7 +437,8 @@ class ProductProductionServiceImplTest {
         verify(productionMapper).insert(cap.capture());
         ProductProduction saved = cap.getValue();
         assertThat(saved.getProductSpec()).isEqualTo("按重量");
-        assertThat(saved.getProduceNo()).contains("G"); // 果蔬前缀
+        // produce_no 全业态共用 PRODUCE_NO 每日计数器（前缀由 code rule 决定，非业态分桶）
+        assertThat(saved.getProduceNo()).isEqualTo("P2606280001");
     }
 
     // ============================================================
@@ -460,7 +446,7 @@ class ProductProductionServiceImplTest {
     // ============================================================
 
     @Test
-    @DisplayName("produceNo: 委托 IBizCodeGenerator PRODUCE_NO，按 belong_type 传业态前缀")
+    @DisplayName("produceNo: 委托 IBizCodeGenerator PRODUCE_NO（全业态共用每日计数器，ctx 不传业态前缀）")
     void testProduceNo_DelegatesToBizCodeGenerator() {
         when(inhouseMapper.selectById(70001L)).thenReturn(sampleVegSource());
         when(productInfoMapper.selectById(60010L)).thenReturn(sampleVegProduct());
@@ -478,12 +464,10 @@ class ProductProductionServiceImplTest {
         assertThat(id).isEqualTo(80999L);
         ArgumentCaptor<ProductProduction> cap = ArgumentCaptor.forClass(ProductProduction.class);
         verify(productionMapper).insert(cap.capture());
-        // produceNo 由 generator 生成（mock 回显 vegetable→G 前缀）
-        assertThat(cap.getValue().getProduceNo()).contains("G").endsWith("0001");
-        // 校验确实走 PRODUCE_NO 规则且传了正确业态前缀
-        ArgumentCaptor<Map<String, Object>> ctxCap = ArgumentCaptor.forClass(Map.class);
-        verify(bizCodeGenerator).generate(eq(BizCodeType.PRODUCE_NO), ctxCap.capture());
-        assertThat(ctxCap.getValue()).containsEntry("prefix", "G");
+        // produceNo 由 generator 按 PRODUCE_NO 规则生成（daily_reset 共用计数器，前缀在 code rule 内）
+        assertThat(cap.getValue().getProduceNo()).isEqualTo("P2606280001");
+        // 校验确实走 PRODUCE_NO 规则（ctx 不再携带业态 prefix）
+        verify(bizCodeGenerator).generate(eq(BizCodeType.PRODUCE_NO), eq(Map.of()));
     }
 
     // ============================================================
@@ -522,12 +506,15 @@ class ProductProductionServiceImplTest {
         ArgumentCaptor<ProductProduction> cap = ArgumentCaptor.forClass(ProductProduction.class);
         verify(productionMapper).insert(cap.capture());
         ProductProduction saved = cap.getValue();
-        assertThat(saved.getProduceNo()).contains("B"); // 白条前缀 B（非 requireDeliveryProduct）
+        assertThat(saved.getProduceNo()).isEqualTo("P2606280001"); // PRODUCE_NO 共用计数器（非业态前缀分桶）
         assertThat(saved.getProductId()).isEqualTo(60001L); // 直接用来源 inhouse 的 product_id
         assertThat(saved.getStoreId()).isEqualTo(9L);
         assertThat(saved.getEarNo()).isEqualTo("010126050101");
         assertThat(saved.getProductWeight()).isEqualByComparingTo("12.000");
-        verify(inhouseMapper, times(1)).deductWeightById(eq(70001L), any()); // consumeInhouse 部分扣减
+        // DENGBO row28：发货月台出库按「整条产出行」消耗软删（产出重 50 全额 → deleteById），
+        // 差额(50−12)=预冷损耗由 lossFlowService 记，不留零头残行
+        verify(inhouseMapper, times(1)).deleteById(70001L);
+        verify(inhouseMapper, never()).deductWeightById(anyLong(), any());
     }
 
     // ============================================================

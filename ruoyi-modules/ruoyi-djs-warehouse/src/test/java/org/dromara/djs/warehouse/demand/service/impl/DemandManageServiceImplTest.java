@@ -67,12 +67,15 @@ class DemandManageServiceImplTest {
     @Mock
     IBizCodeGenerator bizCodeGenerator;
 
+    @Mock
+    org.dromara.djs.warehouse.product.mapper.ProductInfoMapper productInfoMapper;
+
     DemandManageServiceImpl service;
 
     @BeforeEach
     void setup() {
         // DJS-FIX-ADMIN-W22-003：SummaryBar 的 3 个新依赖在本套用例里不直接覆盖，传 null 让构造器存字段即可
-        service = new TestableDemandManageServiceImpl(demandMapper, demandPigMapper, bizCodeGenerator);
+        service = new TestableDemandManageServiceImpl(demandMapper, demandPigMapper, bizCodeGenerator, productInfoMapper);
         when(bizCodeGenerator.generate(eq(BizCodeType.DEMAND_NO), any())).thenReturn("D260601WB0001");
     }
 
@@ -80,11 +83,12 @@ class DemandManageServiceImplTest {
      * 子类覆盖 toEntity 钩子，避开 MapstructUtils 的 Spring 上下文依赖（参 ProductInfoServiceImplTest 范式）。
      */
     static class TestableDemandManageServiceImpl extends DemandManageServiceImpl {
-        TestableDemandManageServiceImpl(DemandManageMapper m, DemandPigMapper dpm, IBizCodeGenerator g) {
-            // 新增依赖（DemandPigAvailableMapper 出栏日龄过滤 + 周期配置 + 计划 + 库存 + ProductInfoMapper 原料下单守门
-            // + IProductDisplayNameResolver 下单定格展示名 DENGBO-R16）
-            // 本套用例不直接覆盖，传 null 让构造器存字段即可
-            super(m, dpm, g, null, null, null, null, null, null);
+        TestableDemandManageServiceImpl(DemandManageMapper m, DemandPigMapper dpm, IBizCodeGenerator g,
+                                        org.dromara.djs.warehouse.product.mapper.ProductInfoMapper pim) {
+            // 新增依赖（DemandPigAvailableMapper 出栏日龄过滤 + 周期配置 + 计划 + 库存
+            // + IProductDisplayNameResolver 下单定格展示名 DENGBO-R16）本套用例不直接覆盖，传 null 让构造器存字段即可；
+            // ProductInfoMapper 原料下单守门在 insertByBo 主链路必经，传 mock（未 stub 返回 null → 守门放行）
+            super(m, dpm, g, null, null, null, null, pim, null);
         }
 
         @Override

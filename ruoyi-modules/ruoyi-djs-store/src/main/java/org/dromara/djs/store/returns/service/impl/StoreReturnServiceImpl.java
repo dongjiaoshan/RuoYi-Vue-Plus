@@ -926,7 +926,7 @@ public class StoreReturnServiceImpl
         }
         Map<Long, String> storeNames = storeNameMap(list.stream()
             .map(StoreReturnVo::getStoreId).filter(Objects::nonNull).distinct().toList());
-        Map<Long, String> productNames = productNameMap(list.stream()
+        Map<Long, ProductInfo> products = productMap(list.stream()
             .map(StoreReturnVo::getProductId).filter(Objects::nonNull).distinct().toList());
         Map<Long, String> locationNames = locationNameMap(list.stream()
             .map(StoreReturnVo::getLocationId).filter(Objects::nonNull).distinct().toList());
@@ -935,7 +935,16 @@ public class StoreReturnServiceImpl
                 vo.setStoreName(storeNames.get(vo.getStoreId()));
             }
             if (vo.getProductId() != null) {
-                vo.setProductName(productNames.get(vo.getProductId()));
+                ProductInfo p = products.get(vo.getProductId());
+                if (p != null) {
+                    vo.setProductName(p.getProductName());
+                    // 归属类型 + 业务码 + 规格 + 单位后端一次性回填（前端退回记录猪肉/果蔬 tab 归属靠 belongType，
+                    // 不再靠前端 listProduct 分页 join —— 产品超分页容量时 join 丢失会把猪肉退回默认成果蔬 tab）。
+                    vo.setBelongType(p.getBelongType());
+                    vo.setProductCode(p.getProductId());
+                    vo.setProductSpec(p.getProductSpec());
+                    vo.setProductUnit(p.getProductUnit());
+                }
             }
             if (vo.getLocationId() != null) {
                 vo.setLocationName(locationNames.get(vo.getLocationId()));
@@ -953,14 +962,14 @@ public class StoreReturnServiceImpl
             .collect(Collectors.toMap(Store::getId, Store::getStoreName, (a, b) -> a));
     }
 
-    private Map<Long, String> productNameMap(List<Long> productIds) {
+    private Map<Long, ProductInfo> productMap(List<Long> productIds) {
         if (productIds.isEmpty()) {
             return Map.of();
         }
         return productInfoMapper.selectList(
                 new LambdaQueryWrapper<ProductInfo>().in(ProductInfo::getId, productIds))
             .stream()
-            .collect(Collectors.toMap(ProductInfo::getId, ProductInfo::getProductName, (a, b) -> a));
+            .collect(Collectors.toMap(ProductInfo::getId, p -> p, (a, b) -> a));
     }
 
     private Map<Long, String> locationNameMap(List<Long> locationIds) {

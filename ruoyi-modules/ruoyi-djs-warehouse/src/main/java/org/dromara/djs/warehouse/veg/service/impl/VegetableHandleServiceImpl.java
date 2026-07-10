@@ -206,7 +206,8 @@ public class VegetableHandleServiceImpl
      *
      * <p><b>优雅降级</b>：客户未在 admin 作物录入页填 related_product 时（现网全 NULL），返回
      * {@code fallback} 并 {@code log.warn}，不抛、不阻塞采摘/处理流程。fallback 通常是
-     * {@code planting.getProductId()}（旧来源，多为 null），由调用方再行 0 兜底。</p>
+     * {@code planting.getProductId()}（旧来源，多为 null）；写 stock_flow 的调用方对 null 结果
+     * 显式失败（product_id=0 兜底已废除，防库存总览无名幽灵行）。</p>
      *
      * @param cropId   作物 id（planting_record.crop_id）
      * @param fallback related_product 为空时的兜底 product_id（可为 null）
@@ -381,14 +382,12 @@ public class VegetableHandleServiceImpl
         flow.setFlowDate(now);
         // 甲方《果疏产品全流程处理.docx》：product_id 走作物 related_product（作物↔果蔬成品映射）解析；
         // fallback 链 crop.related_product → handle.product_id（建汇总行时已解析存入）→ planting.product_id（旧来源）；
-        // 全 null 则 0 + warning log（作物未配 related_product 时；V1 蔬菜业态产品 0 兜底不影响 admin 列表显示，
-        // 仅 product 维度聚合查询会漏，待客户在 admin 录入作物↔成品映射后自然消除）。
+        // 全 null → 显式失败（product_id=0 会在库存总览产生无名幽灵行，且 product 维度聚合全漏）。
         Long resolvedProductId = resolveProductIdByCrop(
             planting.getCropId(), firstNonNull(handle.getProductId(), planting.getProductId()));
         if (resolvedProductId == null) {
-            log.warn("stock_flow.product_id 兜底为 0 — plantingRecordId={} cropId={} crop={}（请在 admin 作物录入页"
-                + "填写「关联产品」建立作物↔果蔬成品映射）", planting.getId(), planting.getCropId(), planting.getCropName());
-            resolvedProductId = 0L;
+            throw new ServiceException("作物「" + planting.getCropName() + "」未关联果蔬成品，无法入库："
+                + "请先在 admin 作物录入页填写「关联产品」建立作物↔成品映射后再提交");
         }
         flow.setProductId(resolvedProductId);
         flow.setWarehouseId(locationId);
@@ -926,9 +925,8 @@ public class VegetableHandleServiceImpl
         flow.setFlowNo(bizCodeGenerator.generate(BizCodeType.STOCK_FLOW_NO, ctx));
         flow.setFlowDate(now);
         if (productId == null) {
-            log.warn("采摘去向入库 stock_flow.product_id 兜底为 0 — cropId={} crop={}（请在 admin 作物录入页填写「关联产品」）",
-                bo.getCropId(), bo.getCropName());
-            productId = 0L;
+            throw new ServiceException("作物「" + bo.getCropName() + "」未关联果蔬成品，无法入库："
+                + "请先在 admin 作物录入页填写「关联产品」建立作物↔成品映射后再提交");
         }
         flow.setProductId(productId);
         flow.setWarehouseId(locationId);

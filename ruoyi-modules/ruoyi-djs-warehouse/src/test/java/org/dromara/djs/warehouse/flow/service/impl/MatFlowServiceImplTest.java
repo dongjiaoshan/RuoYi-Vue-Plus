@@ -1,5 +1,8 @@
 package org.dromara.djs.warehouse.flow.service.impl;
 
+import com.baomidou.mybatisplus.core.MybatisConfiguration;
+import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
+import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.satoken.utils.LoginHelper;
 import org.dromara.djs.common.encoder.IBizCodeGenerator;
@@ -9,6 +12,7 @@ import org.dromara.djs.plant.crop.mapper.CropInfoMapper;
 import org.dromara.djs.warehouse.check.service.IStockCheckService;
 import org.dromara.djs.warehouse.cross.mapper.BarInfoMapper;
 import org.dromara.djs.warehouse.flow.domain.StockFlow;
+import org.dromara.djs.warehouse.flow.domain.bo.MatFeedBo;
 import org.dromara.djs.warehouse.flow.domain.bo.MatLossBo;
 import org.dromara.djs.warehouse.flow.domain.bo.MatPickBo;
 import org.dromara.djs.warehouse.flow.domain.bo.MatReturnBo;
@@ -16,6 +20,7 @@ import org.dromara.djs.warehouse.flow.domain.vo.MatIssueItemVo;
 import org.dromara.djs.warehouse.flow.domain.vo.MatIssueLocationVo;
 import org.dromara.djs.warehouse.flow.mapper.StockFlowMapper;
 import org.dromara.djs.warehouse.loss.service.ILossFlowService;
+import org.dromara.djs.warehouse.veg.domain.FeedLog;
 import org.dromara.djs.warehouse.veg.mapper.FeedLogMapper;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.domain.ProductInhouse;
@@ -23,6 +28,7 @@ import org.dromara.djs.warehouse.stock.domain.LocationStock;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
 import org.dromara.djs.warehouse.stock.mapper.LocationStockMapper;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
@@ -99,6 +105,21 @@ class MatFlowServiceImplTest {
     private static final Long PLOT_ID = 6001L;
     private static final Long CROP_ID = 5001L;
     private static final Long RELATED_PRODUCT_ID = 8002L;
+
+    /**
+     * MyBatis-Plus 单测 entity cache 预热（skill coder-mp-entity-cache-test）：
+     * pick/loss/feed 的篮子 FIFO / WIP 剥离用 LambdaQueryWrapper&lt;ProductInhouse&gt;/&lt;LocationStock&gt; 等。
+     */
+    @BeforeAll
+    static void initMpEntityCache() {
+        MybatisConfiguration cfg = new MybatisConfiguration();
+        MapperBuilderAssistant assistant = new MapperBuilderAssistant(cfg, "");
+        assistant.setCurrentNamespace("test");
+        TableInfoHelper.initTableInfo(assistant, ProductInfo.class);
+        TableInfoHelper.initTableInfo(assistant, ProductInhouse.class);
+        TableInfoHelper.initTableInfo(assistant, LocationStock.class);
+        TableInfoHelper.initTableInfo(assistant, CropInfo.class);
+    }
 
     @BeforeEach
     void setup() {
@@ -841,6 +862,114 @@ class MatFlowServiceImplTest {
         verify(locationStockMapper, times(1)).deductStockById(eq(90012L), eq(new BigDecimal("8.6")), eq(USER_ID));
         // 2 行 inhouse（每扣一篮产一行，带 ear_no 源标签）
         verify(productInhouseMapper, times(2)).insert(any(ProductInhouse.class));
+    }
+
+    // -------- feed（F0-8 验收门 · TEST-GAP-4：同文件 pick/return/loss 已覆盖，feed 此前裸奔） --------
+
+    private MatFeedBo feedBo(BigDecimal qty) {
+        MatFeedBo bo = new MatFeedBo();
+        bo.setProductId(PRODUCT_ID);
+        bo.setLocationId(LOCATION_ID);
+        bo.setQuantity(qty);
+        bo.setRemark("ut-feed");
+        return bo;
+    }
+
+    /** feed 用非可打包物资（饲料）product stub：belong_type=feed → 走 location_stock 扣减分支。 */
+    private void stubFeedProduct() {
+        ProductInfo product = new ProductInfo();
+        product.setId(PRODUCT_ID);
+        product.setProductName("育肥饲料");
+        product.setProductUnit("kg");
+        product.setBelongType("feed");
+        when(productInfoMapper.selectOne(any())).thenReturn(product);
+    }
+
+    @Test
+    @DisplayName("feed happy（饲料）：额度内喂 20 → 三写齐全：流水 feed_out/OT/-20 + location_stock 扣 20 + feed_log(feed_type=warehouse, weight=20)")
+    void testFeed_Happy_ThreeWrites() {
+        stubFeedProduct();
+        // 今日额度：已领 50 − 已退 0 − 已损 0 − 已饲喂 10 = 剩 40 ≥ 20
+        when(stockFlowMapper.sumTodayByProductTypes(eq(PRODUCT_ID), argThat(l -> l != null && l.contains("dept_pick_out")))).thenReturn(new BigDecimal("50"));
+        when(stockFlowMapper.sumTodayByProductTypes(eq(PRODUCT_ID), argThat(l -> l != null && l.contains("pick_return_in")))).thenReturn(BigDecimal.ZERO);
+        when(stockFlowMapper.sumTodayByProductType(PRODUCT_ID, "loss")).thenReturn(BigDecimal.ZERO);
+        when(stockFlowMapper.sumTodayByProductType(PRODUCT_ID, "feed_out")).thenReturn(new BigDecimal("10"));
+        when(locationStockMapper.deductByProductLocation(eq(LOCATION_ID), eq(PRODUCT_ID), any(), eq(USER_ID))).thenReturn(1);
+
+        Long flowId = service.feed(feedBo(new BigDecimal("20")));
+        assertThat(flowId).isNotNull();
+
+        // 写 1：流水 feed_out / OT / change_num=-20
+        ArgumentCaptor<StockFlow> flowCap = ArgumentCaptor.forClass(StockFlow.class);
+        verify(stockFlowMapper, times(1)).insert(flowCap.capture());
+        StockFlow f = flowCap.getValue();
+        assertThat(f.getFlowType()).isEqualTo("feed_out");
+        assertThat(f.getInoutType()).isEqualTo("OT");
+        assertThat(f.getChangeNum()).isEqualByComparingTo("-20");
+        assertThat(f.getChangeQuantity()).isEqualByComparingTo("20");
+        assertThat(f.getOperatorId()).isEqualTo(USER_ID);
+        // 写 2：货架扣减量 == 流水量（双账簿对账）
+        verify(locationStockMapper, times(1))
+            .deductByProductLocation(eq(LOCATION_ID), eq(PRODUCT_ID), eq(new BigDecimal("20")), eq(USER_ID));
+        // 写 3：饲喂台账 feed_log（feed_type=warehouse，行64 来源②；作物维度留空）
+        ArgumentCaptor<FeedLog> logCap = ArgumentCaptor.forClass(FeedLog.class);
+        verify(feedLogMapper, times(1)).insert(logCap.capture());
+        FeedLog log = logCap.getValue();
+        assertThat(log.getFeedType()).isEqualTo("warehouse");
+        assertThat(log.getProductId()).isEqualTo(PRODUCT_ID);
+        assertThat(log.getLocationId()).isEqualTo(LOCATION_ID);
+        assertThat(log.getFeedWeight()).isEqualByComparingTo("20");
+        assertThat(log.getOperatorId()).isEqualTo(USER_ID);
+        assertThat(log.getCropId()).isNull();
+    }
+
+    @Test
+    @DisplayName("feed 超量：今日剩余额度 5 < 申请 20 → 抛今日额度不足 + 三写全无（流水/货架/feed_log 零写入）")
+    void testFeed_OverQuota_NoWrites() {
+        stubFeedProduct();
+        // 已领 10 − 已退 0 − 已损 0 − 已饲喂 5 = 剩 5 < 20
+        when(stockFlowMapper.sumTodayByProductTypes(eq(PRODUCT_ID), argThat(l -> l != null && l.contains("dept_pick_out")))).thenReturn(new BigDecimal("10"));
+        when(stockFlowMapper.sumTodayByProductTypes(eq(PRODUCT_ID), argThat(l -> l != null && l.contains("pick_return_in")))).thenReturn(BigDecimal.ZERO);
+        when(stockFlowMapper.sumTodayByProductType(PRODUCT_ID, "loss")).thenReturn(BigDecimal.ZERO);
+        when(stockFlowMapper.sumTodayByProductType(PRODUCT_ID, "feed_out")).thenReturn(new BigDecimal("5"));
+
+        assertThatThrownBy(() -> service.feed(feedBo(new BigDecimal("20"))))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("今日额度不足");
+
+        // 三写全无：额度闸在任何写入之前
+        verify(stockFlowMapper, never()).insert(any(StockFlow.class));
+        verify(locationStockMapper, never()).deductByProductLocation(any(), any(), any(), any());
+        verify(feedLogMapper, never()).insert(any(FeedLog.class));
+    }
+
+    @Test
+    @DisplayName("feed 可打包果蔬原料：剥离今日待打包 inhouse WIP（deductWeightById），不二次扣 location_stock；feed_log 照写")
+    void testFeed_PackableFood_ReducesInhouseNotShelf() {
+        // 可打包食品原料（vegetable）：领用时已离货架进「待打包」product_inhouse
+        ProductInfo veg = new ProductInfo();
+        veg.setId(PRODUCT_ID);
+        veg.setProductName("鸡毛菜");
+        veg.setProductUnit("kg");
+        veg.setBelongType("vegetable");
+        when(productInfoMapper.selectOne(any())).thenReturn(veg);
+        // 额度走「今日待打包余额」口径
+        when(productInhouseMapper.sumTodayRemaining(PRODUCT_ID)).thenReturn(new BigDecimal("100"));
+        ProductInhouse wip = new ProductInhouse();
+        wip.setId(301L);
+        wip.setProductId(PRODUCT_ID);
+        wip.setProductWeight(new BigDecimal("50"));
+        when(productInhouseMapper.selectList(any())).thenReturn(List.of(wip));
+        when(productInhouseMapper.deductWeightById(eq(301L), any())).thenReturn(1);
+
+        service.feed(feedBo(new BigDecimal("20")));
+
+        // 剥离 WIP（只减 inhouse），不二次扣货架（否则货架双扣）
+        verify(productInhouseMapper, times(1)).deductWeightById(eq(301L), eq(new BigDecimal("20")));
+        verify(locationStockMapper, never()).deductByProductLocation(any(), any(), any(), any());
+        // 流水 + feed_log 照写
+        verify(stockFlowMapper, times(1)).insert(any(StockFlow.class));
+        verify(feedLogMapper, times(1)).insert(any(FeedLog.class));
     }
 
 }

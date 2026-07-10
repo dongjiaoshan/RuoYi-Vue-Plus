@@ -14,7 +14,7 @@ import java.util.List;
  * 仓库看板聚合查询 Mapper。
  *
  * <p>本 mapper 不绑定单表实体；只提供 dashboard service 调用的原始聚合 SQL。
- * 数据源：{@code t_warehouse_demand_manage} + {@code t_warehouse_return_product}
+ * 数据源：{@code t_warehouse_demand_manage} + {@code t_store_return}
  * + {@code t_warehouse_product_production} + {@code t_warehouse_stock_flow}
  * + {@code t_warehouse_check_record} + {@code t_warehouse_location_info} +
  * {@code t_warehouse_location_stock}。</p>
@@ -23,8 +23,9 @@ import java.util.List;
  * <ul>
  *   <li>需求表业态字段 {@code product_type} VARCHAR(32)，值 white_bar/vegetable/gift_box/other
  *       （字典 djs_demand_product_type）；需求量列 {@code demand_quantity}。</li>
- *   <li>退货表 {@code t_warehouse_return_product}：方向列 {@code return_direction}
- *       （store_to_warehouse / warehouse_to_supplier）；重量列 {@code return_weight}。</li>
+ *   <li>退货表 {@code t_store_return}（STORE-RETURN-UNIFY 后的退货单一真相源）：方向列
+ *       {@code return_direction}（customer_to_store / store_to_warehouse / warehouse_to_supplier，
+ *       字典 djs_return_direction）；数量列 {@code return_quantity}。</li>
  *   <li>生产表 {@code t_warehouse_product_production}：日期列 {@code produce_date} DATE，重量列
  *       {@code product_weight}（WMS-PACK-001 重建后；非旧稿 produce_quantity）。</li>
  *   <li>流水表 {@code t_warehouse_stock_flow}：方向列 {@code inout_type} CHAR(3) 取值
@@ -452,11 +453,14 @@ public interface WarehouseDashboardMapper {
     /**
      * 图②：近 30 日退货按方向构成（GROUP BY return_direction，COUNT）。
      *
+     * <p>方向值 customer_to_store（顾客退店，insertByBo 单条直登）/ store_to_warehouse（门店退仓，
+     * batchCreate 主链路）/ warehouse_to_supplier（占位）；不过滤确认态（pending 也计为退货事件）。</p>
+     *
      * @param tenantId 租户
      * @return 各方向 name(=return_direction) + value(=COUNT)
      */
-    @Select("SELECT COALESCE(return_direction, 'store_to_warehouse') AS name, COUNT(*) AS value "
-        + "  FROM t_warehouse_return_product "
+    @Select("SELECT return_direction AS name, COUNT(*) AS value "
+        + "  FROM t_store_return "
         + " WHERE tenant_id = #{tenantId} "
         + "   AND del_flag = '0' "
         + "   AND create_time >= DATE_SUB(NOW(), INTERVAL 30 DAY) "
@@ -496,7 +500,7 @@ public interface WarehouseDashboardMapper {
      * @return 各产品 name(=product_name) + value(=COUNT)
      */
     @Select("SELECT p.product_name AS name, COUNT(*) AS value "
-        + "  FROM t_warehouse_return_product r "
+        + "  FROM t_store_return r "
         + "  JOIN t_warehouse_product_info p ON p.id = r.product_id AND p.del_flag = '0' "
         + " WHERE r.tenant_id = #{tenantId} "
         + "   AND p.belong_type = #{belongType} "

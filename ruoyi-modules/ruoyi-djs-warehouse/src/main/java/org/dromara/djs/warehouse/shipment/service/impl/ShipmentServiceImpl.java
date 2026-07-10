@@ -14,7 +14,6 @@ import org.dromara.djs.common.encoder.IBizCodeGenerator;
 import org.dromara.djs.common.store.domain.Store;
 import org.dromara.djs.common.store.mapper.StoreMapper;
 import org.dromara.djs.common.util.I18nMessages;
-import org.dromara.djs.warehouse.check.service.IStockCheckService;
 import org.dromara.djs.warehouse.demand.core.enums.DemandStatus;
 import org.dromara.djs.warehouse.demand.domain.DemandManage;
 import org.dromara.djs.warehouse.demand.mapper.DemandManageMapper;
@@ -36,7 +35,6 @@ import org.dromara.djs.warehouse.shipment.domain.vo.ShipmentVo;
 import org.dromara.djs.warehouse.shipment.event.ShipmentConfirmedEvent;
 import org.dromara.djs.warehouse.shipment.mapper.ShipmentMapper;
 import org.dromara.djs.warehouse.shipment.service.IShipmentService;
-import org.dromara.djs.warehouse.stock.mapper.LocationStockMapper;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -137,11 +135,9 @@ public class ShipmentServiceImpl
     private final DemandManageMapper demandMapper;
     private final ProductInfoMapper productInfoMapper;
     private final LocationInfoMapper locationInfoMapper;
-    private final LocationStockMapper locationStockMapper;
     private final StoreMapper storeMapper;
     private final IBizCodeGenerator bizCodeGenerator;
     private final ApplicationEventPublisher eventPublisher;
-    private final IStockCheckService stockCheckService;
 
     public ShipmentServiceImpl(ShipmentMapper baseMapper,
                                ProductProductionMapper productProductionMapper,
@@ -149,22 +145,18 @@ public class ShipmentServiceImpl
                                DemandManageMapper demandMapper,
                                ProductInfoMapper productInfoMapper,
                                LocationInfoMapper locationInfoMapper,
-                               LocationStockMapper locationStockMapper,
                                StoreMapper storeMapper,
                                IBizCodeGenerator bizCodeGenerator,
-                               ApplicationEventPublisher eventPublisher,
-                               IStockCheckService stockCheckService) {
+                               ApplicationEventPublisher eventPublisher) {
         super(baseMapper);
         this.productProductionMapper = productProductionMapper;
         this.stockFlowMapper = stockFlowMapper;
         this.demandMapper = demandMapper;
         this.productInfoMapper = productInfoMapper;
         this.locationInfoMapper = locationInfoMapper;
-        this.locationStockMapper = locationStockMapper;
         this.storeMapper = storeMapper;
         this.bizCodeGenerator = bizCodeGenerator;
         this.eventPublisher = eventPublisher;
-        this.stockCheckService = stockCheckService;
     }
 
     @Override
@@ -223,9 +215,8 @@ public class ShipmentServiceImpl
         }
 
         // 4. INSERT shipment 主表
-        //    发货重量 serverTotal = Σ 本次清点 production 的实际成品量(kg)，仅用于发货记录 ship_quantity +
-        //    下面逐 production 扣成品 location_stock（库存口径=kg）。bo.totalQuantity 是前端自报值，仅作
-        //    展示/单位校验，不作记账依据。
+        //    发货重量 serverTotal = Σ 本次清点 production 的实际成品量(kg)，仅用于发货记录 ship_quantity。
+        //    bo.totalQuantity 是前端自报值，仅作展示/单位校验，不作记账依据。
         BigDecimal serverTotal = productions.stream()
             .map(p -> p.getProduceQuantity() == null ? BigDecimal.ZERO : p.getProduceQuantity())
             .reduce(BigDecimal.ZERO, BigDecimal::add);
@@ -256,10 +247,11 @@ public class ShipmentServiceImpl
         shipment.setRemark(bo.getRemark());
         baseMapper.insert(shipment);
 
-        // 5. INSERT stock_flow（出库流水，按 production 行逐条记 — 保留细颗粒追溯）
-        //    + 逐 production 扣成品冷库 location_stock（G6：发货是成品冷库账的唯一出口，
-        //    否则成品 location_stock 只增不减 → 账面虚高）。
+        // 5. INSERT stock_flow（出库流水，按 production 行逐条记 — 保留细颗粒追溯）。
+        //    row42：生产产品不入库 → 发货不扣 location_stock（成品账走 product_production），
+        //    库存总览回放对 ship_out 单列「已发货」、不计期初/出库/期末。
         for (ProductProduction p : productions) {
+            BigDecimal qty = p.getProduceQuantity() == null ? BigDecimal.ZERO : p.getProduceQuantity();
             StockFlow flow = new StockFlow();
             Map<String, Object> flowCtx = new HashMap<>(2);
             flowCtx.put("ioCode", INOUT_OUT);
@@ -272,15 +264,15 @@ public class ShipmentServiceImpl
             flow.setFlowType(FLOW_TYPE_SHIP_OUT);
             // 发货出库去向固定为发货月台（FIX-WMS-FLOWDICT-001，前端只读不可改）
             flow.setStockOutDest(STOCK_OUT_DEST_SHIP_DOCK);
-            flow.setChangeNum(p.getProduceQuantity());
-            flow.setChangeQuantity(p.getProduceQuantity());
+            // change_num 带符号（出库为负，doc/11 §2.3 R9）；change_quantity 恒正绝对值
+            flow.setChangeNum(qty.negate());
+            flow.setChangeQuantity(qty);
             flow.setEarNo(p.getEarNo());
             flow.setOperatorId(userId);
             flow.setRemark("发货 → store_id=" + demand.getStoreId()
                 + " shipment_no=" + shipment.getShipmentNo()
                 + " produce_no=" + p.getProduceNo());
             stockFlowMapper.insert(flow);
-            // row42：生产产品不入库 → 无成品 location_stock 可扣（发货走 product_production，不动库存）。
         }
 
         // 6. publishEvent — D14 CROSS-FLOW-003 listener 消费触发 demand.shipped_count 累加 + transition
@@ -422,43 +414,6 @@ public class ShipmentServiceImpl
     }
 
     // ---------- private helpers ----------
-
-    /**
-     * G6 发货扣成品冷库 location_stock（三链共有）：成品入冷库（pack 产 product_production 时入账）
-     * 后，发货月台清点确认即从冷库剥离成品余量，否则成品 location_stock 只增不减 → 账面虚高。
-     *
-     * <p>库位解析：优先用 production.produce_location（打包落位）；为空则按 product_id 解析该产品库存
-     * 最多的默认库位兜底（{@link LocationStockMapper#selectDefaultLocationByProduct}）。
-     * 两者都为空（产品无任何 location_stock 行）→ 无可扣库位，log.warn 不阻断。</p>
-     *
-     * <p>扣减口径与 loss 同范式：affectedRows==0（账面已不足 / 库位无该产品行）时 log.warn 留痕、
-     * <b>不抛异常</b>——账实倒挂是历史脏数据 / 跨日补登的常态，发货动作不应被库存账面阻断
-     * （shipped_count 回写 + 状态机由 publishEvent listener 保证，与扣减解耦）。</p>
-     */
-    private void deductProductionStock(ProductProduction p, Long userId) {
-        if (p.getProductId() == null) {
-            log.warn("[WMS-SHIP-001] 发货扣库存跳过：production 无 product_id — produceNo={}", p.getProduceNo());
-            return;
-        }
-        Long location = p.getProduceLocation();
-        if (location == null) {
-            location = locationStockMapper.selectDefaultLocationByProduct(p.getProductId());
-        }
-        if (location == null) {
-            log.warn("[WMS-SHIP-001] 发货扣库存跳过：product 无库存库位可扣 — produceNo={} productId={}",
-                p.getProduceNo(), p.getProductId());
-            return;
-        }
-        // 库位级业务锁（WMS-STOCK-001）：盘点进行中的成品冷库禁出库（后端双保险，扣 location_stock 前置）
-        stockCheckService.assertLocationUnlocked(location);
-        int affected = locationStockMapper.deductByProductLocation(
-            location, p.getProductId(), p.getProduceQuantity(), userId);
-        if (affected == 0) {
-            log.warn("[WMS-SHIP-001] 发货出库流水已记，但成品 location_stock 扣减失败（账面已不足）："
-                    + "produceNo={} productId={} location={} qty={}",
-                p.getProduceNo(), p.getProductId(), location, p.getProduceQuantity());
-        }
-    }
 
     /**
      * SHIP-DEMANDID-001 核心匹配：按 demand 的业态(belong_type) + store_id 筛出"可发的未分配库存"

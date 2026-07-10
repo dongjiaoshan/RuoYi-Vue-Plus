@@ -70,6 +70,9 @@ public class ReturnProductServiceImpl
 
     private static final String DIRECTION_STORE_TO_WAREHOUSE = "store_to_warehouse";
 
+    /** 产品业务分类 belong_type — 果蔬（成品退回入库须换算原材料）。 */
+    private static final String BELONG_TYPE_VEGETABLE = "vegetable";
+
     /** 门店退回入库：FIX-WMS-FLOWDICT-001 起从通用 return_in 拆为 store_return_in（来源 = 门店退货确认）。 */
     private static final String FLOW_TYPE_RETURN_IN = "store_return_in";
 
@@ -300,11 +303,17 @@ public class ReturnProductServiceImpl
     /**
      * 门店退回到仓库确认后真回库存（P9）。
      *
-     * <p>解析出有效入库库位 → 委托 {@link IWarehousePurchaseInService#inbound} 以 {@code flow_type='return_in'}
-     * 一次性完成「{@code location_stock += confirmWeight}」+「一条 return_in 流水」（避免重复写两条流水）。</p>
+     * <p>入库目标产品先按 {@link #resolveReturnInboundProductId} 换算：果蔬成品退回入库用其原材料
+     * {@code product_material}（不以成品入库，对齐 store 侧 StoreReturnServiceImpl 同规则）；
+     * 其余自产成品（row42「生产产品不入库」，货架无成品账）→ 不动 {@code location_stock} 也不写流水，
+     * 退货台账 {@code t_warehouse_return_product} 本身即记录，避免货架账变成只进不出的退货残堆。</p>
+     *
+     * <p>可入库产品解析出有效库位后 → 委托 {@link IWarehousePurchaseInService#inbound} 以
+     * {@code flow_type='store_return_in'} 一次性完成「{@code location_stock += confirmWeight}」+
+     * 「一条流水」（避免重复写两条流水）。</p>
      *
      * <p>容错：产品已删 / 系统未配置任何库位时无法定位入库目标 —— 不阻断确认流程（确认行已更新），
-     * 退而求其次只写一条 return_in 流水（不增库存）并记 warn，由仓管事后手工盘点纠偏。</p>
+     * 退而求其次只写一条 store_return_in 流水（不增库存）并记 warn，由仓管事后手工盘点纠偏。</p>
      *
      * @param entity        退货行
      * @param confirmWeight 确认实收重量（> 0，调用前已由确认表单约束）
@@ -317,25 +326,40 @@ public class ReturnProductServiceImpl
         ProductInfo product = productId == null ? null
             : productInfoMapper.selectOne(new LambdaQueryWrapper<ProductInfo>()
                 .eq(ProductInfo::getId, productId).last("LIMIT 1"));
-        Long locationId = product == null ? null : resolveReturnLocationId(product);
-
-        if (product != null && locationId != null) {
-            // 真回库存：inbound 内部 addByProductLocation（库存不存在则 INSERT 新行）+ 写一条 return_in 流水。
-            purchaseInService.inbound(productId, locationId, confirmWeight, FLOW_TYPE_RETURN_IN, remark);
-            log.info("[WMS-SHIP-001] confirmReturn returnId={} → 真回库存 productId={} locationId={} +{}（return_in）",
-                entity.getId(), productId, locationId, confirmWeight);
-            return;
+        // 兜底流水的记账产品：默认原产品；成品换算出原材料后取原材料（成品不应再产 IN 流水）。
+        Long fallbackProductId = productId;
+        if (product != null) {
+            Long inboundProductId = resolveReturnInboundProductId(product);
+            if (inboundProductId == null) {
+                // row42：不入库成品无货架账，也不写 IN 流水（写了会让总览回放期末虚增），台账即退货记录。
+                log.info("[WMS-SHIP-001] confirmReturn returnId={} productId={} 为不入库成品，"
+                    + "不回 location_stock / 不写流水（退货记录见退货台账）", entity.getId(), productId);
+                return;
+            }
+            fallbackProductId = inboundProductId;
+            ProductInfo inboundProduct = Objects.equals(inboundProductId, productId) ? product
+                : productInfoMapper.selectOne(new LambdaQueryWrapper<ProductInfo>()
+                    .eq(ProductInfo::getId, inboundProductId).last("LIMIT 1"));
+            Long locationId = inboundProduct == null ? null : resolveReturnLocationId(inboundProduct);
+            if (locationId != null) {
+                // 真回库存：inbound 内部 addByProductLocation（库存不存在则 INSERT 新行）+ 写一条流水。
+                purchaseInService.inbound(inboundProductId, locationId, confirmWeight, FLOW_TYPE_RETURN_IN, remark);
+                log.info("[WMS-SHIP-001] confirmReturn returnId={} → 真回库存 productId={} inboundProductId={} "
+                        + "locationId={} +{}（store_return_in）",
+                    entity.getId(), productId, inboundProductId, locationId, confirmWeight);
+                return;
+            }
         }
 
         // 兜底：无法定位入库库位（产品已删 / 无任何库位 / 产品无预设且无历史库存）→ 只写流水不增库存，不抛断流程。
         log.warn("[WMS-SHIP-001] confirmReturn returnId={} productId={} 无法解析入库库位，"
-                + "仅写 return_in 流水不增库存（需仓管手工盘点纠偏）", entity.getId(), productId);
+                + "仅写 store_return_in 流水不增库存（需仓管手工盘点纠偏）", entity.getId(), productId);
         StockFlow flow = new StockFlow();
         Map<String, Object> ctx = new HashMap<>(2);
         ctx.put("ioCode", INOUT_IN);
         flow.setFlowNo(bizCodeGenerator.generate(BizCodeType.STOCK_FLOW_NO, ctx));
         flow.setFlowDate(new Date());
-        flow.setProductId(productId);
+        flow.setProductId(fallbackProductId);
         flow.setInoutType(INOUT_IN);
         flow.setFlowType(FLOW_TYPE_RETURN_IN);
         flow.setChangeNum(confirmWeight);
@@ -343,6 +367,34 @@ public class ReturnProductServiceImpl
         flow.setOperatorId(userId);
         flow.setRemark(remark + "（未定位库位，未增库存）");
         stockFlowMapper.insert(flow);
+    }
+
+    /**
+     * 退回入库目标产品 id（对齐 store 侧 StoreReturnServiceImpl#resolveInboundProductId 规则）：
+     * <ol>
+     *   <li>原材料 / 外购商品（非「自产成品」）→ 用产品自身 id；</li>
+     *   <li>果蔬成品（自产成品 + belongType=vegetable）→ 用其原材料 {@code product_material}
+     *       （docx：不以成品入库，用原材料 ID）；</li>
+     *   <li>其余自产成品（productType=1 且 productAttr=1，row42「生产产品不入库」货架无成品账）
+     *       → 返 {@code null}，调用方跳过入库（成品只由打包产出/发货扣减，回货架会成退货残堆）。</li>
+     * </ol>
+     *
+     * <p>与 store 侧差异：果蔬成品未配 {@code product_material} 时不阻断确认（本链容错契约），
+     * 视同不入库成品返 {@code null}；运营补配 FK 后新退货自然走原材料入库。</p>
+     *
+     * @param product 退货产品
+     * @return 入库目标产品 id，或 {@code null}（不入库成品，跳过库存联动）
+     */
+    private Long resolveReturnInboundProductId(ProductInfo product) {
+        boolean selfMadeFinished = Integer.valueOf(1).equals(product.getProductType())
+            && Integer.valueOf(1).equals(product.getProductAttr());
+        if (!selfMadeFinished) {
+            return product.getId();
+        }
+        if (BELONG_TYPE_VEGETABLE.equals(product.getBelongType()) && product.getProductMaterial() != null) {
+            return product.getProductMaterial();
+        }
+        return null;
     }
 
     /**

@@ -331,7 +331,8 @@ class PigCutRecordServiceImplTest {
         assertThat(flows).extracting(StockFlow::getInoutType)
             .containsExactly("IN", "IN", "IN", "OT");
         assertThat(flows.get(3).getFlowType()).isEqualTo("cut_out");
-        assertThat(flows.get(3).getChangeNum()).isEqualByComparingTo("50.000");
+        // doc/11 R9：出库流水 change_num 记负（change_quantity 恒正）
+        assertThat(flows.get(3).getChangeNum()).isEqualByComparingTo("-50.000");
         assertThat(flows.get(3).getProductId()).isEqualTo(100000000000000001L);
         // 入冻品库的 productId 等于部位标准 SKU
         assertThat(flows.get(0).getProductId()).isEqualTo(100000000000000101L);
@@ -415,6 +416,138 @@ class PigCutRecordServiceImplTest {
             any(), any(), anyLong());
         verify(barInfoMapper, never()).updateStatusToCutDone(anyLong(), any(Date.class), any(BigDecimal.class),
             any(Integer.class), any(BigDecimal.class), anyLong());
+    }
+
+    // -------- 白条领用→分割 端到端（F0-8 验收门 · GIANT-02 测试半件：F0-1 篮子行过滤 + F0-2 流水修正） --------
+
+    /** 燎毛产出行 A（半只白条 WB-A，同产品同库位下可与行 B 并存 —— F0-1 场景基座）。 */
+    private ProductInhouse inhouseRowA() {
+        ProductInhouse row = new ProductInhouse();
+        row.setId(60001L);
+        row.setWhiteBarId(70001L);
+        row.setWhiteBarNo("WB-A");
+        row.setEarNo("TEST-EAR-001");
+        row.setProductId(100000000000000001L);
+        row.setProductWeight(new BigDecimal("42.000"));
+        row.setLocationId(90003L);
+        row.setPickupStatus(0);
+        return row;
+    }
+
+    private PigCutPickupBo pickupRowBo() {
+        PigCutPickupBo bo = new PigCutPickupBo();
+        bo.setBarInfoId(70001L);
+        bo.setInhouseId(60001L);
+        bo.setLocationId(90002L);
+        bo.setIsHalf(1);
+        bo.setRemark("e2e row pickup");
+        return bo;
+    }
+
+    /** 白条库存篮子行 A（white_bar_no=WB-A 命中行）。同组另有行 B(id=222, WB-B) 不该被碰。 */
+    private LocationStock barStockRowA() {
+        LocationStock stockA = new LocationStock();
+        stockA.setId(111L);
+        stockA.setLocationId(90003L);
+        stockA.setProductId(100000000000000001L);
+        stockA.setWhiteBarNo("WB-A");
+        stockA.setProductStock(new BigDecimal("42.000"));
+        return stockA;
+    }
+
+    @Test
+    @DisplayName("按产出行领用 happy（F0-1+F0-2）：只按行 id 扣所选白条篮（行 B 余量不变，绝不走组维度扣）+ cut_out 流水 change_num 为负 + 半只 cut_record 即建")
+    void testPickupByRow_DeductsSelectedRowOnly_FlowNegative() {
+        when(barInfoMapper.selectById(70001L)).thenReturn(sampleBar());
+        when(productInhouseMapper.selectById(60001L)).thenReturn(inhouseRowA());
+        when(productInhouseMapper.selectList(any())).thenReturn(List.of());   // 已领行合计 = 0
+        when(productInhouseMapper.update(any(), any())).thenReturn(1);        // 乐观锁置行已领
+        when(barInfoMapper.updateStatusToPendingCut(eq(70001L), eq(9001L))).thenReturn(1);
+        when(locationStockMapper.selectOne(any())).thenReturn(barStockRowA()); // 按 WB-A 命中篮子行 A
+        when(locationStockMapper.deductStockById(eq(111L), any(BigDecimal.class), eq(9001L))).thenReturn(1);
+        when(bizCodeGenerator.generate(any(), anyMap())).thenReturn("FAKE_FLOW_NO");
+        when(cutMapper.insert(any(PigCutRecord.class))).thenAnswer(inv -> {
+            PigCutRecord r = inv.getArgument(0);
+            r.setId(80002L);
+            return 1;
+        });
+
+        Long id = service.submitPickup(pickupRowBo());
+        assertThat(id).isEqualTo(80002L);
+
+        // F0-1 核心：只按行 id 精确扣所选篮（行 A id=111，且仅 1 次）——
+        // 同 (库位,产品) 组内其他白条行（行 B）余量不变：组维度 deductByProductLocation 绝不发生
+        verify(locationStockMapper, times(1)).deductStockById(eq(111L), eq(new BigDecimal("42.000")), eq(9001L));
+        verify(locationStockMapper, times(1)).deductStockById(anyLong(), any(BigDecimal.class), anyLong());
+        verify(locationStockMapper, never()).deductByProductLocation(any(), any(), any(), any());
+
+        // F0-2 核心：cut_out 出库流水 change_num 为负（doc/11 R9），change_quantity 恒正，半只源标签齐
+        ArgumentCaptor<StockFlow> flowCap = ArgumentCaptor.forClass(StockFlow.class);
+        verify(flowMapper, times(1)).insert(flowCap.capture());
+        StockFlow flow = flowCap.getValue();
+        assertThat(flow.getFlowType()).isEqualTo("cut_out");
+        assertThat(flow.getInoutType()).isEqualTo("OT");
+        assertThat(flow.getStockOutDest()).isEqualTo("bar_cut");
+        assertThat(flow.getChangeNum()).isEqualByComparingTo("-42.000");
+        assertThat(flow.getChangeQuantity()).isEqualByComparingTo("42.000");
+        assertThat(flow.getWhiteBarNo()).isEqualTo("WB-A");
+        assertThat(flow.getWarehouseId()).isEqualTo(90003L);   // 流水库位 = inhouse.location_id
+
+        // 邓博 row14：领一个产出行即建独立半只 cut_record（picked），whiteBarNo 贯穿
+        ArgumentCaptor<PigCutRecord> recCap = ArgumentCaptor.forClass(PigCutRecord.class);
+        verify(cutMapper, times(1)).insert(recCap.capture());
+        PigCutRecord rec = recCap.getValue();
+        assertThat(rec.getWhiteBarNo()).isEqualTo("WB-A");
+        assertThat(rec.getPickupWeight()).isEqualByComparingTo("42.000");
+        assertThat(rec.getCutStatus()).isEqualTo("picked");
+        assertThat(rec.getIsHalf()).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("按产出行领用（F0-2）：白条篮扣减 affected=0（并发抢占/余量不足）→ 抛异常回滚，流水与 cut_record 零写入（防单边分叉）")
+    void testPickupByRow_DeductLost_Throws_NoFlow() {
+        when(barInfoMapper.selectById(70001L)).thenReturn(sampleBar());
+        when(productInhouseMapper.selectById(60001L)).thenReturn(inhouseRowA());
+        when(productInhouseMapper.selectList(any())).thenReturn(List.of());
+        when(productInhouseMapper.update(any(), any())).thenReturn(1);
+        when(locationStockMapper.selectOne(any())).thenReturn(barStockRowA());
+        when(locationStockMapper.deductStockById(anyLong(), any(BigDecimal.class), anyLong())).thenReturn(0);
+
+        assertThatThrownBy(() -> service.submitPickup(pickupRowBo()))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("白条库存扣减失败");
+
+        // 扣减失败在写流水之前：流水 / cut_record 均零写入（@Transactional 连乐观锁置位一起回滚）
+        verify(flowMapper, never()).insert(any(StockFlow.class));
+        verify(cutMapper, never()).insert(any(PigCutRecord.class));
+    }
+
+    @Test
+    @DisplayName("按产出行领用（F0-2）：inhouse 无库位 → cut_out 流水库位回落白条库存行 location_id（doc/11 warehouse_id 必填）")
+    void testPickupByRow_WarehouseIdFallbackToBarStock() {
+        ProductInhouse row = inhouseRowA();
+        row.setLocationId(null);   // 旧数据：燎毛产出行缺库位
+        LocationStock stockA = barStockRowA();
+        stockA.setLocationId(90005L);
+        when(barInfoMapper.selectById(70001L)).thenReturn(sampleBar());
+        when(productInhouseMapper.selectById(60001L)).thenReturn(row);
+        when(productInhouseMapper.selectList(any())).thenReturn(List.of());
+        when(productInhouseMapper.update(any(), any())).thenReturn(1);
+        when(barInfoMapper.updateStatusToPendingCut(eq(70001L), eq(9001L))).thenReturn(1);
+        when(locationStockMapper.selectOne(any())).thenReturn(stockA);
+        when(locationStockMapper.deductStockById(eq(111L), any(BigDecimal.class), eq(9001L))).thenReturn(1);
+        when(bizCodeGenerator.generate(any(), anyMap())).thenReturn("FAKE_FLOW_NO");
+        when(cutMapper.insert(any(PigCutRecord.class))).thenAnswer(inv -> {
+            PigCutRecord r = inv.getArgument(0);
+            r.setId(80003L);
+            return 1;
+        });
+
+        service.submitPickup(pickupRowBo());
+
+        ArgumentCaptor<StockFlow> flowCap = ArgumentCaptor.forClass(StockFlow.class);
+        verify(flowMapper, times(1)).insert(flowCap.capture());
+        assertThat(flowCap.getValue().getWarehouseId()).isEqualTo(90005L);
     }
 
 }

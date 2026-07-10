@@ -72,15 +72,14 @@ import java.util.stream.Collectors;
  * <ol>
  *   <li>校验来源 {@code product_inhouse} 存在 + 未消耗（V1 软删模型）</li>
  *   <li>INSERT {@code product_production}（status='packed' / produceNo 业务码 / 凭证图）</li>
- *   <li>INSERT {@code stock_flow}（flow_type='pack_in', inout_type='IN', 入冻品 / 鲜品 / 礼盒库等待发货）</li>
- *   <li>UPDATE {@code location_stock} += quantity（addByProductLocation 兜底）</li>
+ *   <li>row42：生产产品不入库 —— 不写 pack_in 流水、不进 location_stock，发货 ship_out 才出账</li>
  *   <li>软删 inhouse row（V1 简化：一次打包消费整 row；分次打包需 mp 端多次提交）</li>
  *   <li>{@code traceService.genCode} 生成追溯码回填 {@code trace_code} + recordEvent(in_stock)（TRC-CORE-001）</li>
  * </ol>
  *
  * <h3>礼盒打包（礼盒为独立成品）</h3>
- * <p>礼盒不再有组件清单（BOM）：打 N 盒只产出 N 盒礼盒成品（{@code product_production} 1 行 +
- * 入库 stock_flow 1 行 + location_stock += N）并扣减门店礼盒需求，不查/不消耗任何组件库存。</p>
+ * <p>礼盒不再有组件清单（BOM）：打 N 盒只产出 N 盒礼盒成品（{@code product_production} 1 行）
+ * 并扣减门店礼盒需求，不查/不消耗任何组件库存。</p>
  *
  * <h3>produce_no 业务码生成</h3>
  * <p>{@code yyMMdd + 前缀 + 4 位序号}，前缀 Z=猪肉 / G=果蔬 / B=白条 / H=干货 / D=鸡蛋 / L=礼盒。
@@ -96,10 +95,8 @@ public class ProductProductionServiceImpl
     extends DjsBaseServiceImpl<ProductProductionMapper, ProductProduction>
     implements IProductProductionService {
 
-    /** stock_flow.inout_type CHAR(3) IN=入库（沿 PigCutRecordServiceImpl 范式）。 */
-    private static final String INOUT_IN = "IN";
-    /** stock_flow.inout_type OUT=出库。 */
-    private static final String INOUT_OUT = "OUT";
+    /** stock_flow.inout_type CHAR(3) OT=出库（doc/11 §2.3 R10 码值仅 IN/OT，沿 PigCutRecordServiceImpl 范式）。 */
+    private static final String INOUT_OUT = "OT";
     /** 白条出库 flow_type（邓博 row13：白条离白条库统一「白条出库」，去向区分白条分割 / 发货月台 / 仓库出库）。 */
     private static final String FLOW_TYPE_CUT_OUT = "cut_out";
     /** 出库去向：发货月台。 */
@@ -518,7 +515,8 @@ public class ProductProductionServiceImpl
      * 区别于 4 个打包口：<b>不选目标发货 SKU</b> —— 直接用来源 inhouse 自身 product_id（白条整只/半只
      * SKU is_delivery=0 是燎毛过程态，出库即发货，shipment 靠 product_info.belong_type 匹配非 is_delivery，
      * 故不走 requireDeliveryProduct）。store_id 工人指定（猪只指定门店），可空（清点时绑定）。
-     * 复用 submitDryPack 收尾范式：insertPackInFlow + upsertLocationStock + consumeInhouse + fillTraceCode。</p>
+     * 复用 submitDryPack 收尾范式：consumeInhouse + fillTraceCode（row42：生产产品不入库，不写 pack_in
+     * 流水、不进 location_stock，发货 ship_out 才出账）。</p>
      */
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -761,6 +759,7 @@ public class ProductProductionServiceImpl
      * {@code burn_id} 为空（外购 / 旧数据）→ 跳过库存行扣减、流水仍按 ear_no 写（优雅降级，不阻断领用）。</p>
      */
     private void writeWhiteBarOutFlow(ProductInhouse src, BigDecimal weight, String dest, Long userId) {
+        Long warehouseId = src.getLocationId();
         if (StringUtils.isNotBlank(src.getWhiteBarNo())) {
             LocationStock barStock = locationStockMapper.selectOne(
                 new LambdaQueryWrapper<LocationStock>()
@@ -769,8 +768,19 @@ public class ProductProductionServiceImpl
                     .gt(LocationStock::getProductStock, BigDecimal.ZERO)
                     .last("LIMIT 1"));
             if (barStock != null) {
-                locationStockMapper.deductStockById(barStock.getId(), weight, userId);
+                int affected = locationStockMapper.deductStockById(barStock.getId(), weight, userId);
+                if (affected == 0) {
+                    throw new ServiceException("白条库存扣减失败（余量不足或已被并发领用）：white_bar_no="
+                        + src.getWhiteBarNo() + " 本次出库 " + weight.stripTrailingZeros().toPlainString() + "kg");
+                }
+                if (warehouseId == null) {
+                    warehouseId = barStock.getLocationId();
+                }
             }
+        }
+        if (warehouseId == null) {
+            log.warn("白条出库流水缺库位（inhouse 与白条库存行均无 location_id）— inhouseId={} whiteBarNo={} earNo={}",
+                src.getId(), src.getWhiteBarNo(), src.getEarNo());
         }
         StockFlow out = new StockFlow();
         Map<String, Object> ctx = new HashMap<>(2);
@@ -778,11 +788,11 @@ public class ProductProductionServiceImpl
         out.setFlowNo(bizCodeGenerator.generate(BizCodeType.STOCK_FLOW_NO, ctx));
         out.setFlowDate(new Date());
         out.setProductId(src.getProductId());
-        out.setWarehouseId(src.getLocationId());
+        out.setWarehouseId(warehouseId);
         out.setInoutType(INOUT_OUT);
         out.setFlowType(FLOW_TYPE_CUT_OUT);
         out.setStockOutDest(dest);
-        out.setChangeNum(weight);
+        out.setChangeNum(weight.negate());
         out.setChangeQuantity(weight);
         out.setEarNo(src.getEarNo());
         out.setWhiteBarNo(src.getWhiteBarNo());
@@ -1266,34 +1276,6 @@ public class ProductProductionServiceImpl
             throw new ServiceException("系统未配置任何入库库位，无法打包入库（请先在仓库管理 → 库位维护新建库位）");
         }
         return first.getId();
-    }
-
-    /**
-     * INSERT 打包入库流水。
-     */
-    protected void insertPackInFlow(Long productId, Long locationId, BigDecimal qty,
-                                    String earNo, Long plotId, String produceNo,
-                                    Long userId, Date now) {
-        StockFlow flow = new StockFlow();
-        Map<String, Object> ctx = new HashMap<>(2);
-        ctx.put("ioCode", INOUT_IN);
-        flow.setFlowNo(bizCodeGenerator.generate(BizCodeType.STOCK_FLOW_NO, ctx));
-        flow.setFlowDate(now);
-        flow.setProductId(productId);
-        flow.setWarehouseId(locationId);
-        flow.setInoutType(INOUT_IN);
-        flow.setFlowType(FLOW_TYPE_PACK_IN);
-        flow.setChangeNum(qty);
-        flow.setChangeQuantity(qty);
-        if (StringUtils.isNotBlank(earNo)) {
-            flow.setEarNo(earNo);
-        }
-        if (plotId != null) {
-            flow.setPlotId(plotId);
-        }
-        flow.setOperatorId(userId);
-        flow.setRemark("打包入库 produce_no=" + produceNo);
-        stockFlowMapper.insert(flow);
     }
 
     /**

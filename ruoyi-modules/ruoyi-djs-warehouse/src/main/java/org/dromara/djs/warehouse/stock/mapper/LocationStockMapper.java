@@ -72,10 +72,15 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
     /**
      * 按 {@code product_id} + {@code location_id} 原子扣减库存（WMS-MAT-001 物资领用 / 损耗）。
      *
+     * <p>只命中<b>非篮子行</b>（{@code plot_id / ear_no / white_bar_no} 全 NULL）：同 (库位,产品) 的
+     * 耳号/地块/白条篮子各自成行，product 维度扣减绝不串扣篮子（篮子扣减走 {@link #deductStockById} /
+     * {@link #deductByEarNo} / {@link #deductByPlotLocation}）。同 (库位,产品) 多篮共存时若无行限定，
+     * 一条 UPDATE 会命中全部余量充足的行、每行各扣一次（扣减放大 N 倍）。</p>
+     *
      * <p>SQL 在 {@code WHERE} 加 {@code product_stock >= deductQty} —— MySQL 行锁 + 数量校验同步发生，
      * 并发提交（两个工人同时领同一 product+location）只有一次 affectedRows > 0。</p>
      *
-     * @return affectedRows（0 = 库存不足 / product/location 不匹配 / 已软删）
+     * @return affectedRows（0 = 库存不足 / product/location 无非篮子行 / 已软删）
      */
     @Update("UPDATE t_warehouse_location_stock "
         + "   SET product_stock = product_stock - #{deductQty},"
@@ -83,6 +88,9 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
         + "       update_time = NOW() "
         + " WHERE location_id = #{locationId} "
         + "   AND product_id  = #{productId} "
+        + "   AND plot_id IS NULL "
+        + "   AND ear_no IS NULL "
+        + "   AND white_bar_no IS NULL "
         + "   AND product_stock >= #{deductQty} "
         + "   AND del_flag = '0'")
     int deductByProductLocation(@Param("locationId") Long locationId,
@@ -267,12 +275,15 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
     Long selectDefaultLocationByProduct(@Param("productId") Long productId);
 
     /**
-     * 按 {@code product_id} + {@code location_id} 增加库存（WMS-MAT-001 物资退回）。
+     * 按 {@code product_id} + {@code location_id} 增加库存（WMS-MAT-001 物资退回 / 外购收货 / 各入库 UPSERT）。
      *
-     * <p>退回是"加回库存"，无需校验上限；但需要保证库存记录存在（不存在不允许凭空创建库存，service 层
-     * 走 update 失败兜底）。{@code update_time / update_by} 同步刷新。</p>
+     * <p>只累加<b>非篮子行</b>（{@code plot_id / ear_no / white_bar_no} 全 NULL）：product 维度加库存
+     * 绝不并进已有地块/耳号/白条篮子行（并进会污染追溯归属，且同 (库位,产品) 多篮共存时每篮各加一次、
+     * 库存虚增 N 倍）。组内尚无非篮子行（affectedRows=0）→ 调用方兜底 INSERT 一条三源标签全 NULL 的新行。</p>
      *
-     * @return affectedRows（0 = location_id / product_id 不匹配，service 兜底）
+     * <p>退回是"加回库存"，无需校验上限。{@code update_time / update_by} 同步刷新。</p>
+     *
+     * @return affectedRows（0 = location/product 无非篮子行，调用方兜底 INSERT）
      */
     @Update("UPDATE t_warehouse_location_stock "
         + "   SET product_stock = product_stock + #{addQty},"
@@ -280,6 +291,9 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
         + "       update_time = NOW() "
         + " WHERE location_id = #{locationId} "
         + "   AND product_id  = #{productId} "
+        + "   AND plot_id IS NULL "
+        + "   AND ear_no IS NULL "
+        + "   AND white_bar_no IS NULL "
         + "   AND del_flag = '0'")
     int addByProductLocation(@Param("locationId") Long locationId,
                              @Param("productId") Long productId,
@@ -318,8 +332,8 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
      * 门店退货入库到「退货专属篮」（row31：门店退回猪肉/果蔬成品无地块/耳号来源，客户拍板专设一个不带
      * 地块编号/耳号的退货篮承载；再领用/发货不带追溯——客户确认符合）。
      *
-     * <p>与 {@link #addByProductLocation}（不约束 plot/ear，会并进已有地块/耳号行→污染追溯归属）区分：
-     * 本方法只命中「退货篮」那一行，退货量累加进退货篮、绝不并进自产果蔬地块行或分割猪肉耳号行。
+     * <p>WHERE 与 {@link #addByProductLocation} 同构（均只命中 plot/ear/white_bar 全 NULL 的非篮子行），
+     * 独立方法名显式表达「退货篮」入库语义：退货量累加进退货篮、绝不并进自产果蔬地块行或分割猪肉耳号行。
      * {@code updated==0}（首次退货、退货篮不存在）→ 调用方 INSERT 一条 plot/ear/white_bar 全 NULL 的新退货篮。</p>
      *
      * @return affectedRows（0 = 该 (库位,产品) 尚无退货篮 → 调用方 INSERT 新退货篮）
@@ -636,7 +650,13 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
 
     /**
      * 盘点完成回写（WMS-STOCK-001 completeCheck）：按 {@code product_id} + {@code location_id}
-     * 把库存设为实盘绝对值，并刷新 {@code latest_check_time} / {@code check_result}。
+     * 把非篮子行库存设为目标绝对值，并刷新 {@code latest_check_time} / {@code check_result}。
+     *
+     * <p>只校准<b>非篮子行</b>（{@code plot_id / ear_no / white_bar_no} 全 NULL）——篮子行不参与盘点
+     * SET（耳号/地块/白条篮子的账随各自业务链走）。同 (库位,产品) 多篮共存时若无行限定，每篮都会被
+     * SET 成实盘量（组合计 = 实盘 × N）。调用方传入的 {@code checkStock} 必须是<b>非篮目标量 =
+     * 实盘量 − {@link #sumBasketStockByProductLocation} 篮子行合计</b>（直接传实盘组总量会使组合计
+     * 虚增一个篮子合计）；affectedRows=0 且非篮目标量 &gt; 0 才按该量新建产品维度行，差异以盘点流水留痕。</p>
      *
      * <p>与领用 / 退回的"增量"语义不同——盘点是"以实盘量校准账面"，直接 SET 绝对值。
      * {@code tenant_id} 由 MP 多租户拦截器在 final SQL 阶段注入；不走 MetaObjectHandler.updateFill，
@@ -644,10 +664,10 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
      *
      * @param locationId  库位 ID
      * @param productId   产品 ID
-     * @param checkStock  实盘量（设为新库存绝对值）
+     * @param checkStock  非篮目标量（设为非篮子行新库存绝对值）
      * @param checkResult 盘点结果（字典 {@code djs_check_result}）
      * @param userId      操作人
-     * @return affectedRows（0 = location/product 不匹配，service 兜底处理）
+     * @return affectedRows（0 = location/product 无非篮子行，service 兜底处理）
      */
     @Update("UPDATE t_warehouse_location_stock "
         + "   SET product_stock = #{checkStock},"
@@ -657,12 +677,56 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
         + "       update_time = NOW() "
         + " WHERE location_id = #{locationId} "
         + "   AND product_id  = #{productId} "
+        + "   AND plot_id IS NULL "
+        + "   AND ear_no IS NULL "
+        + "   AND white_bar_no IS NULL "
         + "   AND del_flag = '0'")
     int setStockAfterCheck(@Param("locationId") Long locationId,
                            @Param("productId") Long productId,
                            @Param("checkStock") BigDecimal checkStock,
                            @Param("checkResult") Integer checkResult,
                            @Param("userId") Long userId);
+
+    /**
+     * 按 {@code product_id} + {@code location_id} 聚合组内库存合计（盘点「系统现量」口径）。
+     *
+     * <p>同 (库位,产品) 可能存在多行（耳号/地块/白条篮子 + 非篮子行），系统现量必须取组合计 SUM ——
+     * 任取一行（LIMIT 1）在多篮组上会拿到任意一篮的余量、盘点差异随之失真。无任何行返 0。
+     * 租户单租户显式 {@code tenant_id='1001'}（V1）。</p>
+     *
+     * @param locationId 库位 ID
+     * @param productId  产品 ID
+     * @return 组内 SUM(product_stock)，无行返 0
+     */
+    @Select("SELECT COALESCE(SUM(product_stock), 0) FROM t_warehouse_location_stock "
+        + " WHERE location_id = #{locationId} "
+        + "   AND product_id  = #{productId} "
+        + "   AND del_flag = '0' "
+        + "   AND tenant_id = '1001'")
+    BigDecimal sumStockByProductLocation(@Param("locationId") Long locationId,
+                                         @Param("productId") Long productId);
+
+    /**
+     * 按 {@code product_id} + {@code location_id} 聚合组内<b>篮子行</b>库存合计
+     * （{@code plot_id / ear_no / white_bar_no} 任一非 NULL）。
+     *
+     * <p>盘点回写换算口径：实盘量是组物理总量（含篮子），而 {@link #setStockAfterCheck} 只校准非篮子行
+     * —— 非篮子行目标量 = 实盘量 − 篮子行合计。不减去篮子合计直接 SET 实盘量，组合计会虚增一个篮子
+     * 合计（篮子行的账随各自业务链走、不参与盘点 SET）。无篮子行返 0。
+     * 租户单租户显式 {@code tenant_id='1001'}（V1）。</p>
+     *
+     * @param locationId 库位 ID
+     * @param productId  产品 ID
+     * @return 组内篮子行 SUM(product_stock)，无篮子行返 0
+     */
+    @Select("SELECT COALESCE(SUM(product_stock), 0) FROM t_warehouse_location_stock "
+        + " WHERE location_id = #{locationId} "
+        + "   AND product_id  = #{productId} "
+        + "   AND (plot_id IS NOT NULL OR ear_no IS NOT NULL OR white_bar_no IS NOT NULL) "
+        + "   AND del_flag = '0' "
+        + "   AND tenant_id = '1001'")
+    BigDecimal sumBasketStockByProductLocation(@Param("locationId") Long locationId,
+                                               @Param("productId") Long productId);
 
     /**
      * mp 物资领用「二级库」chip（FIX-WMS-MATISSUE-001）：某业态（{@code belong_type} 一或多值）下的产品
@@ -749,7 +813,7 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
                             AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayPicked,
                COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
                           WHERE f.product_id = p.id <if test="locationId != null"> AND f.warehouse_id = #{locationId} </if>
-                            AND f.flow_type IN ('prod_return_in','pick_return_in') AND DATE(f.flow_date) = CURDATE()
+                            AND f.flow_type IN ('prod_return_in','pick_return_in','store_return_in') AND DATE(f.flow_date) = CURDATE()
                             AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayReturned,
                COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
                           WHERE f.product_id = p.id <if test="locationId != null"> AND f.warehouse_id = #{locationId} </if>
@@ -1049,7 +1113,7 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
                             AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayPicked,
                COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
                           WHERE f.product_id = p.id <if test="locationId != null"> AND f.warehouse_id = #{locationId} </if>
-                            AND f.flow_type IN ('prod_return_in','pick_return_in') AND DATE(f.flow_date) = CURDATE()
+                            AND f.flow_type IN ('prod_return_in','pick_return_in','store_return_in') AND DATE(f.flow_date) = CURDATE()
                             AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayReturned,
                COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
                           WHERE f.product_id = p.id <if test="locationId != null"> AND f.warehouse_id = #{locationId} </if>
@@ -1179,7 +1243,7 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
                           WHERE f.product_id = p.id AND f.warehouse_id = s.location_id
                             AND (f.ear_no = s.ear_no OR (f.ear_no IS NULL AND s.ear_no IS NULL))
                             AND (f.white_bar_no = s.white_bar_no OR (f.white_bar_no IS NULL AND s.white_bar_no IS NULL))
-                            AND f.flow_type IN ('prod_return_in','pick_return_in')
+                            AND f.flow_type IN ('prod_return_in','pick_return_in','store_return_in')
                             AND DATE(f.flow_date) = CURDATE()
                             AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayReturned,
                COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
@@ -1289,7 +1353,7 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
                             AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayPicked,
                COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
                           WHERE f.product_id = p.id
-                            AND f.flow_type IN ('prod_return_in','pick_return_in')
+                            AND f.flow_type IN ('prod_return_in','pick_return_in','store_return_in')
                             AND DATE(f.flow_date) = CURDATE()
                             AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayReturned,
                COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
@@ -1365,7 +1429,7 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
                           WHERE f.product_id = s.product_id AND f.warehouse_id = s.location_id
                             AND (f.ear_no = s.ear_no OR (f.ear_no IS NULL AND s.ear_no IS NULL))
                             AND (f.white_bar_no = s.white_bar_no OR (f.white_bar_no IS NULL AND s.white_bar_no IS NULL))
-                            AND f.flow_type IN ('prod_return_in','pick_return_in')
+                            AND f.flow_type IN ('prod_return_in','pick_return_in','store_return_in')
                             AND DATE(f.flow_date) = CURDATE()
                             AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayReturned,
                COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f

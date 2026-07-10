@@ -1,0 +1,323 @@
+2026-07-11 00:00:00 [schedule-pool-2] INFO  o.d.djs.common.job.DjsJobRunner - [DjsJob:warehouse-stat] start tenant=1001 targetDate=null trigger=schedule
+2026-07-11 00:00:00 [schedule-pool-1] INFO  o.d.djs.common.job.DjsJobRunner - [DjsJob:organic-warning] start tenant=1001 targetDate=null trigger=schedule
+2026-07-11 00:00:00 [schedule-pool-3] INFO  o.d.djs.common.job.DjsJobRunner - [DjsJob:breed-aggregate] start tenant=1001 targetDate=null trigger=schedule
+2026-07-11 00:00:00 [schedule-pool-6] INFO  o.d.djs.common.job.DjsJobRunner - [DjsJob:warehouse-stat] start tenant=1001 targetDate=null trigger=schedule
+2026-07-11 00:00:00 [schedule-pool-5] INFO  o.d.djs.common.job.DjsJobRunner - [DjsJob:organic-warning] start tenant=1001 targetDate=null trigger=schedule
+2026-07-11 00:00:00 [schedule-pool-3] INFO  o.d.djs.common.job.DjsJobRunner - [DjsJob:breed-aggregate] start tenant=1001 targetDate=null trigger=schedule
+2026-07-11 00:00:00 [schedule-pool-1] INFO  o.d.d.p.o.job.OrganicWarningJob - [OrganicWarningJob] 扫描有机证书到期预警，阈值 60 天
+2026-07-11 00:00:00 [schedule-pool-3] INFO  o.d.d.b.d.s.i.DashboardServiceImpl - [DashboardAggregate] start tenant=1001 date=2026-07-10
+2026-07-11 00:00:00 [schedule-pool-3] INFO  o.d.d.b.d.s.i.DashboardServiceImpl - [DashboardAggregate] start tenant=1001 date=2026-07-10
+2026-07-11 00:00:00 [schedule-pool-2] INFO  o.d.d.w.s.s.i.WarehouseStatServiceImpl - [WarehouseStat] start tenant=1001 date=2026-07-10
+2026-07-11 00:00:00 [schedule-pool-6] INFO  o.d.d.w.s.s.i.WarehouseStatServiceImpl - [WarehouseStat] start tenant=1001 date=2026-07-10
+2026-07-11 00:00:00 [schedule-pool-3] INFO  o.d.d.b.d.s.i.DashboardServiceImpl - [DashboardAggregate] pig snapshot already frozen tenant=1001 date=2026-07-10 (skip re-capture)
+2026-07-11 00:00:01 [schedule-pool-5] INFO  o.d.d.p.o.job.OrganicWarningJob - [OrganicWarningJob] 扫描有机证书到期预警，阈值 60 天
+2026-07-11 00:00:01 [schedule-pool-1] INFO  o.d.d.p.o.job.OrganicWarningJob - [OrganicWarningJob] 扫描完成：土地证书 0 条 / 作物证书 0 条 置预警
+2026-07-11 00:00:01 [schedule-pool-1] INFO  o.d.djs.common.job.DjsJobRunner - [DjsJob:organic-warning] done tenant=1001 cost=1203ms
+2026-07-11 00:00:01 [schedule-pool-3] INFO  o.d.d.b.d.s.i.DashboardServiceImpl - [DashboardAggregate] pig snapshot already frozen tenant=1001 date=2026-07-10 (skip re-capture)
+2026-07-11 00:00:01 [schedule-pool-5] INFO  o.d.d.p.o.job.OrganicWarningJob - [OrganicWarningJob] 扫描完成：土地证书 0 条 / 作物证书 0 条 置预警
+2026-07-11 00:00:01 [schedule-pool-5] INFO  o.d.djs.common.job.DjsJobRunner - [DjsJob:organic-warning] done tenant=1001 cost=1976ms
+2026-07-11 00:00:07 [schedule-pool-2] INFO  o.d.d.w.l.s.i.ProductionLossServiceImpl - [production-loss-aggregate] ok | tenant=1001 | date=2026-07-10 | products=5 | written=5
+2026-07-11 00:00:14 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /system/user/getInfo],无参数
+2026-07-11 00:00:15 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /system/user/getInfo],耗时:[945]毫秒
+2026-07-11 00:00:15 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /system/menu/getRouters],无参数
+2026-07-11 00:00:16 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /system/menu/getRouters],耗时:[725]毫秒
+2026-07-11 00:00:16 [XNIO-1 task-3] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /auth/tenant/list],无参数
+2026-07-11 00:00:16 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/user/farm/accessible],无参数
+2026-07-11 00:00:16 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/user/farm/accessible],耗时:[0]毫秒
+2026-07-11 00:00:16 [XNIO-1 task-5] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/store/return/operation/pork-candidates],参数类型[param],参数:[{"storeId":["9315000000000001"]}]
+2026-07-11 00:00:16 [XNIO-1 task-6] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/common/store/my-stores],无参数
+2026-07-11 00:00:16 [XNIO-1 task-3] INFO  o.d.c.r.aspectj.RateLimiterAspect - 限制令牌 => 20, 剩余令牌 => 19, 缓存key => 'global:rate_limit:/auth/tenant/list:0:0:0:0:0:0:0:1:'
+2026-07-11 00:00:16 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /resource/sse],参数类型[param],参数:[{"Authorization":["Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJsb2dpblR5cGUiOiJsb2dpbiIsImxvZ2luSWQiOiJzeXNfdXNlcjoxIiwicm5TdHIiOiJZRWNtNnB3ZThieWJIdTdYVG1LbzVoZlppYjlVTGsyWiIsImNsaWVudGlkIjoiZTVjZDdlNDg5MWJmOTVkMWQxOTIwNmNlMjRhN2IzMmUiLCJ0ZW5hbnRJZCI6IjEwMDEiLCJ1c2VySWQiOjEsInVzZXJOYW1lIjoiYWRtaW4iLCJkZXB0SWQiOjEwMCwiZGVwdE5hbWUiOiLkuJzop5LlsbHmmbrmhaflhpzlnLoiLCJkZXB0Q2F0ZWdvcnkiOiIifQ.8SyM-cqiKb4CmTEf8SX3_GCCw5UnzepXRGXwDKOLYYI"],"clientid":["e5cd7e4891bf95d1d19206ce24a7b32e"]}]
+2026-07-11 00:00:16 [XNIO-1 task-4] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /resource/sse],参数类型[param],参数:[{"Authorization":["Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJsb2dpblR5cGUiOiJsb2dpbiIsImxvZ2luSWQiOiJzeXNfdXNlcjoxIiwicm5TdHIiOiJZRWNtNnB3ZThieWJIdTdYVG1LbzVoZlppYjlVTGsyWiIsImNsaWVudGlkIjoiZTVjZDdlNDg5MWJmOTVkMWQxOTIwNmNlMjRhN2IzMmUiLCJ0ZW5hbnRJZCI6IjEwMDEiLCJ1c2VySWQiOjEsInVzZXJOYW1lIjoiYWRtaW4iLCJkZXB0SWQiOjEwMCwiZGVwdE5hbWUiOiLkuJzop5LlsbHmmbrmhaflhpzlnLoiLCJkZXB0Q2F0ZWdvcnkiOiIifQ.8SyM-cqiKb4CmTEf8SX3_GCCw5UnzepXRGXwDKOLYYI"],"clientid":["e5cd7e4891bf95d1d19206ce24a7b32e"]}]
+2026-07-11 00:00:16 [XNIO-1 task-4] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /resource/sse],耗时:[0]毫秒
+2026-07-11 00:00:16 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /resource/sse],参数类型[param],参数:[{"Authorization":["Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJsb2dpblR5cGUiOiJsb2dpbiIsImxvZ2luSWQiOiJzeXNfdXNlcjoxIiwicm5TdHIiOiJZRWNtNnB3ZThieWJIdTdYVG1LbzVoZlppYjlVTGsyWiIsImNsaWVudGlkIjoiZTVjZDdlNDg5MWJmOTVkMWQxOTIwNmNlMjRhN2IzMmUiLCJ0ZW5hbnRJZCI6IjEwMDEiLCJ1c2VySWQiOjEsInVzZXJOYW1lIjoiYWRtaW4iLCJkZXB0SWQiOjEwMCwiZGVwdE5hbWUiOiLkuJzop5LlsbHmmbrmhaflhpzlnLoiLCJkZXB0Q2F0ZWdvcnkiOiIifQ.8SyM-cqiKb4CmTEf8SX3_GCCw5UnzepXRGXwDKOLYYI"],"clientid":["e5cd7e4891bf95d1d19206ce24a7b32e"]}]
+2026-07-11 00:00:16 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /resource/sse],耗时:[0]毫秒
+2026-07-11 00:00:16 [XNIO-1 task-3] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /auth/tenant/list],耗时:[422]毫秒
+2026-07-11 00:00:17 [XNIO-1 task-6] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/common/store/my-stores],耗时:[642]毫秒
+2026-07-11 00:00:17 [XNIO-1 task-5] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/store/return/operation/pork-candidates],耗时:[973]毫秒
+2026-07-11 00:00:17 [XNIO-1 task-5] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/store/return/operation/veg-candidates],参数类型[param],参数:[{"storeId":["9315000000000001"]}]
+2026-07-11 00:00:18 [XNIO-1 task-5] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/store/return/operation/veg-candidates],耗时:[765]毫秒
+2026-07-11 00:00:19 [schedule-pool-2] INFO  o.d.d.w.s.s.i.WarehouseStatServiceImpl - [WarehouseStat] done tenant=1001 date=2026-07-10 croppRows=1
+2026-07-11 00:00:19 [XNIO-1 task-5] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /resource/sse],参数类型[param],参数:[{"Authorization":["Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJsb2dpblR5cGUiOiJsb2dpbiIsImxvZ2luSWQiOiJzeXNfdXNlcjoxIiwicm5TdHIiOiJZRWNtNnB3ZThieWJIdTdYVG1LbzVoZlppYjlVTGsyWiIsImNsaWVudGlkIjoiZTVjZDdlNDg5MWJmOTVkMWQxOTIwNmNlMjRhN2IzMmUiLCJ0ZW5hbnRJZCI6IjEwMDEiLCJ1c2VySWQiOjEsInVzZXJOYW1lIjoiYWRtaW4iLCJkZXB0SWQiOjEwMCwiZGVwdE5hbWUiOiLkuJzop5LlsbHmmbrmhaflhpzlnLoiLCJkZXB0Q2F0ZWdvcnkiOiIifQ.8SyM-cqiKb4CmTEf8SX3_GCCw5UnzepXRGXwDKOLYYI"],"clientid":["e5cd7e4891bf95d1d19206ce24a7b32e"]}]
+2026-07-11 00:00:19 [schedule-pool-2] INFO  o.d.djs.common.job.DjsJobRunner - [DjsJob:warehouse-stat] done tenant=1001 cost=19924ms
+2026-07-11 00:00:27 [schedule-pool-6] INFO  o.d.d.w.l.s.i.ProductionLossServiceImpl - [production-loss-aggregate] ok | tenant=1001 | date=2026-07-10 | products=5 | written=5
+2026-07-11 00:00:37 [schedule-pool-6] INFO  o.d.d.w.s.s.i.WarehouseStatServiceImpl - [WarehouseStat] done tenant=1001 date=2026-07-10 croppRows=1
+2026-07-11 00:00:37 [schedule-pool-6] INFO  o.d.djs.common.job.DjsJobRunner - [DjsJob:warehouse-stat] done tenant=1001 cost=37945ms
+2026-07-11 00:00:49 [schedule-pool-3] INFO  o.d.d.b.d.s.i.DashboardServiceImpl - [DashboardAggregate] done tenant=1001 date=2026-07-10
+2026-07-11 00:00:50 [schedule-pool-3] INFO  o.d.djs.common.job.DjsJobRunner - [DjsJob:breed-aggregate] done tenant=1001 cost=50383ms
+2026-07-11 00:01:33 [schedule-pool-3] INFO  o.d.d.b.d.s.i.DashboardServiceImpl - [DashboardAggregate] done tenant=1001 date=2026-07-10
+2026-07-11 00:01:33 [schedule-pool-3] INFO  o.d.djs.common.job.DjsJobRunner - [DjsJob:breed-aggregate] done tenant=1001 cost=93488ms
+2026-07-11 00:01:44 [XNIO-1 task-2] INFO  io.undertow.servlet - Initializing Spring DispatcherServlet 'dispatcherServlet'
+2026-07-11 00:01:44 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[POST /applet/auth/login],参数类型[json],参数:[{"username":"admin","clientId":"mp-applet-dongjiaoshan","grantType":"password"}]
+2026-07-11 00:01:44 [async-1] INFO  o.d.s.s.i.SysLogininforServiceImpl - [127.0.0.1]内网IP[admin][Success][Login successful]
+2026-07-11 00:01:44 [XNIO-1 task-2] INFO  o.d.web.listener.UserActionListener - user doLogin, userId:sys_user:1, token:***8Y89_d-U
+2026-07-11 00:01:44 [XNIO-1 task-2] INFO  o.d.web.listener.UserActionListener - user doLogout, userId:sys_user:1, token:***lhSeUAp4
+2026-07-11 00:01:44 [XNIO-1 task-2] INFO  o.d.d.c.c.a.AppletAuthController - [applet-auth-mock] password login ok username=admin userId=1 token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJsb2dpblR5cGUiOiJsb2dpbiIsImxvZ2luSWQiOiJzeXNfdXNlcjoxIiwicm5TdHIiOiJFSGlOMWZra1MzN2RDYnVZTGZiNFhQN0RnVWt3NHRaWiIsImNsaWVudGlkIjoibXAtYXBwbGV0LWRvbmdqaWFvc2hhbiIsInRlbmFudElkIjoiMTAwMSIsInVzZXJJZCI6MSwidXNlck5hbWUiOiJhZG1pbiIsImRlcHRJZCI6MTAwLCJkZXB0TmFtZSI6IuS4nOinkuWxseWGnOWcuiJ9.vFwO8qVUebpU83tJfayVEgsJdD-bzU6fApe8Y89_d-U
+2026-07-11 00:01:45 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[POST /applet/auth/login],耗时:[785]毫秒
+2026-07-11 00:01:56 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/breed/dashboard/inventory],无参数
+2026-07-11 00:01:57 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/breed/dashboard/inventory],耗时:[1100]毫秒
+2026-07-11 00:02:01 [XNIO-1 task-6] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/store/return/operation/veg-candidates],参数类型[param],参数:[{"storeId":["2074507706392731649"]}]
+2026-07-11 00:02:01 [XNIO-1 task-5] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/store/return/operation/pork-candidates],参数类型[param],参数:[{"storeId":["2074507706392731649"]}]
+2026-07-11 00:02:01 [XNIO-1 task-3] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/common/store/my-stores],无参数
+2026-07-11 00:02:02 [XNIO-1 task-3] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/common/store/my-stores],耗时:[433]毫秒
+2026-07-11 00:02:02 [XNIO-1 task-6] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/store/return/operation/veg-candidates],耗时:[575]毫秒
+2026-07-11 00:02:02 [XNIO-1 task-5] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/store/return/operation/pork-candidates],耗时:[583]毫秒
+2026-07-11 00:02:02 [XNIO-1 task-5] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/store/return/operation/pork-candidates],参数类型[param],参数:[{"storeId":["2074507706392731649"]}]
+2026-07-11 00:02:03 [XNIO-1 task-5] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/store/return/operation/pork-candidates],耗时:[1271]毫秒
+2026-07-11 00:02:03 [XNIO-1 task-5] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/store/return/operation/veg-candidates],参数类型[param],参数:[{"storeId":["2074507706392731649"]}]
+2026-07-11 00:02:03 [XNIO-1 task-5] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/store/return/operation/veg-candidates],耗时:[376]毫秒
+2026-07-11 00:02:22 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/applet/breed/growth/pending],无参数
+2026-07-11 00:02:23 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/applet/breed/growth/pending],耗时:[939]毫秒
+2026-07-11 00:03:05 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/applet/breed/growth/pending],参数类型[param],参数:[{"earNoKeyword":["TESTGROWTH"]}]
+2026-07-11 00:03:05 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/applet/breed/growth/pending],耗时:[847]毫秒
+2026-07-11 00:03:30 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/applet/breed/growth/pending],参数类型[param],参数:[{"earNoKeyword":["TESTGROWTH"]}]
+2026-07-11 00:03:32 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/applet/breed/growth/pending],耗时:[2648]毫秒
+2026-07-11 00:05:26 [XNIO-1 task-5] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /system/user/getInfo],无参数
+2026-07-11 00:05:28 [XNIO-1 task-5] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /system/user/getInfo],耗时:[1330]毫秒
+2026-07-11 00:05:28 [XNIO-1 task-5] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /system/menu/getRouters],无参数
+2026-07-11 00:05:28 [XNIO-1 task-5] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /system/menu/getRouters],耗时:[513]毫秒
+2026-07-11 00:05:29 [XNIO-1 task-3] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /auth/tenant/list],无参数
+2026-07-11 00:05:29 [XNIO-1 task-5] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/user/farm/accessible],无参数
+2026-07-11 00:05:29 [XNIO-1 task-6] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/common/store/list],参数类型[param],参数:[{"pageSize":["500"],"pageNum":["1"]}]
+2026-07-11 00:05:29 [XNIO-1 task-5] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/user/farm/accessible],耗时:[0]毫秒
+2026-07-11 00:05:29 [XNIO-1 task-3] INFO  o.d.c.r.aspectj.RateLimiterAspect - 限制令牌 => 20, 剩余令牌 => 19, 缓存key => 'global:rate_limit:/auth/tenant/list:0:0:0:0:0:0:0:1:'
+2026-07-11 00:05:29 [XNIO-1 task-5] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /resource/sse],参数类型[param],参数:[{"Authorization":["Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJsb2dpblR5cGUiOiJsb2dpbiIsImxvZ2luSWQiOiJzeXNfdXNlcjoxIiwicm5TdHIiOiJZRWNtNnB3ZThieWJIdTdYVG1LbzVoZlppYjlVTGsyWiIsImNsaWVudGlkIjoiZTVjZDdlNDg5MWJmOTVkMWQxOTIwNmNlMjRhN2IzMmUiLCJ0ZW5hbnRJZCI6IjEwMDEiLCJ1c2VySWQiOjEsInVzZXJOYW1lIjoiYWRtaW4iLCJkZXB0SWQiOjEwMCwiZGVwdE5hbWUiOiLkuJzop5LlsbHmmbrmhaflhpzlnLoiLCJkZXB0Q2F0ZWdvcnkiOiIifQ.8SyM-cqiKb4CmTEf8SX3_GCCw5UnzepXRGXwDKOLYYI"],"clientid":["e5cd7e4891bf95d1d19206ce24a7b32e"]}]
+2026-07-11 00:05:29 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /resource/sse],参数类型[param],参数:[{"Authorization":["Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJsb2dpblR5cGUiOiJsb2dpbiIsImxvZ2luSWQiOiJzeXNfdXNlcjoxIiwicm5TdHIiOiJZRWNtNnB3ZThieWJIdTdYVG1LbzVoZlppYjlVTGsyWiIsImNsaWVudGlkIjoiZTVjZDdlNDg5MWJmOTVkMWQxOTIwNmNlMjRhN2IzMmUiLCJ0ZW5hbnRJZCI6IjEwMDEiLCJ1c2VySWQiOjEsInVzZXJOYW1lIjoiYWRtaW4iLCJkZXB0SWQiOjEwMCwiZGVwdE5hbWUiOiLkuJzop5LlsbHmmbrmhaflhpzlnLoiLCJkZXB0Q2F0ZWdvcnkiOiIifQ.8SyM-cqiKb4CmTEf8SX3_GCCw5UnzepXRGXwDKOLYYI"],"clientid":["e5cd7e4891bf95d1d19206ce24a7b32e"]}]
+2026-07-11 00:05:29 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /resource/sse],耗时:[0]毫秒
+2026-07-11 00:05:29 [XNIO-1 task-5] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /resource/sse],参数类型[param],参数:[{"Authorization":["Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJsb2dpblR5cGUiOiJsb2dpbiIsImxvZ2luSWQiOiJzeXNfdXNlcjoxIiwicm5TdHIiOiJZRWNtNnB3ZThieWJIdTdYVG1LbzVoZlppYjlVTGsyWiIsImNsaWVudGlkIjoiZTVjZDdlNDg5MWJmOTVkMWQxOTIwNmNlMjRhN2IzMmUiLCJ0ZW5hbnRJZCI6IjEwMDEiLCJ1c2VySWQiOjEsInVzZXJOYW1lIjoiYWRtaW4iLCJkZXB0SWQiOjEwMCwiZGVwdE5hbWUiOiLkuJzop5LlsbHmmbrmhaflhpzlnLoiLCJkZXB0Q2F0ZWdvcnkiOiIifQ.8SyM-cqiKb4CmTEf8SX3_GCCw5UnzepXRGXwDKOLYYI"],"clientid":["e5cd7e4891bf95d1d19206ce24a7b32e"]}]
+2026-07-11 00:05:29 [XNIO-1 task-5] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /resource/sse],耗时:[0]毫秒
+2026-07-11 00:05:29 [XNIO-1 task-3] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /auth/tenant/list],耗时:[428]毫秒
+2026-07-11 00:05:31 [XNIO-1 task-6] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/common/store/list],耗时:[2235]毫秒
+2026-07-11 00:05:31 [XNIO-1 task-3] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/warehouse/packEntry/sourceVeg],无参数
+2026-07-11 00:05:31 [XNIO-1 task-6] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/plant/plot/list],参数类型[param],参数:[{"pageSize":["999"],"pageNum":["1"]}]
+2026-07-11 00:05:31 [XNIO-1 task-3] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/warehouse/packEntry/sourceVeg],耗时:[658]毫秒
+2026-07-11 00:05:32 [XNIO-1 task-3] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /resource/sse],参数类型[param],参数:[{"Authorization":["Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJsb2dpblR5cGUiOiJsb2dpbiIsImxvZ2luSWQiOiJzeXNfdXNlcjoxIiwicm5TdHIiOiJZRWNtNnB3ZThieWJIdTdYVG1LbzVoZlppYjlVTGsyWiIsImNsaWVudGlkIjoiZTVjZDdlNDg5MWJmOTVkMWQxOTIwNmNlMjRhN2IzMmUiLCJ0ZW5hbnRJZCI6IjEwMDEiLCJ1c2VySWQiOjEsInVzZXJOYW1lIjoiYWRtaW4iLCJkZXB0SWQiOjEwMCwiZGVwdE5hbWUiOiLkuJzop5LlsbHmmbrmhaflhpzlnLoiLCJkZXB0Q2F0ZWdvcnkiOiIifQ.8SyM-cqiKb4CmTEf8SX3_GCCw5UnzepXRGXwDKOLYYI"],"clientid":["e5cd7e4891bf95d1d19206ce24a7b32e"]}]
+2026-07-11 00:05:33 [XNIO-1 task-6] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/plant/plot/list],耗时:[2441]毫秒
+2026-07-11 00:05:33 [XNIO-1 task-6] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/warehouse/packEntry/vegProductsByMaterial],参数类型[param],参数:[{"materialIds":["9303000000000076"]}]
+2026-07-11 00:05:34 [XNIO-1 task-6] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/warehouse/packEntry/vegProductsByMaterial],耗时:[758]毫秒
+2026-07-11 00:05:34 [XNIO-1 task-6] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/warehouse/packEntry/materialStock],参数类型[param],参数:[{"productIds":["9304000000000053"]}]
+2026-07-11 00:05:34 [XNIO-1 task-3] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/warehouse/packEntry/storeDemand/batch],参数类型[param],参数:[{"productIds":["9304000000000053"]}]
+2026-07-11 00:05:34 [XNIO-1 task-6] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/warehouse/packEntry/materialStock],耗时:[381]毫秒
+2026-07-11 00:05:34 [XNIO-1 task-3] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/warehouse/packEntry/storeDemand/batch],耗时:[408]毫秒
+2026-07-11 00:07:58 [XNIO-1 task-3] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/warehouse/packEntry/sourceVeg],无参数
+2026-07-11 00:07:59 [XNIO-1 task-3] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/warehouse/packEntry/sourceVeg],耗时:[939]毫秒
+2026-07-11 00:08:00 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/public/trace/T20260710VG000327],无参数
+2026-07-11 00:08:00 [XNIO-1 task-2] INFO  o.d.common.oss.factory.OssFactory - 创建OSS实例 key => aliyun
+2026-07-11 00:08:05 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/public/trace/T20260710VG000327],耗时:[5320]毫秒
+2026-07-11 00:08:05 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/public/trace/T20260710VG000326],无参数
+2026-07-11 00:08:12 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/public/trace/T20260710VG000326],耗时:[7180]毫秒
+2026-07-11 00:08:12 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/public/trace/T20260710VG000320],无参数
+2026-07-11 00:08:19 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/public/trace/T20260710VG000320],耗时:[6418]毫秒
+2026-07-11 00:08:19 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/public/trace/T20260710VG000319],无参数
+2026-07-11 00:08:26 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/public/trace/T20260710VG000319],耗时:[7846]毫秒
+2026-07-11 00:08:26 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/public/trace/T20260709VG000315],无参数
+2026-07-11 00:08:32 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/public/trace/T20260709VG000315],耗时:[5719]毫秒
+2026-07-11 00:08:32 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/public/trace/T20260709VG000314],无参数
+2026-07-11 00:08:37 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/public/trace/T20260709VG000314],耗时:[5263]毫秒
+2026-07-11 00:08:37 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/public/trace/T20260709VG000313],无参数
+2026-07-11 00:08:43 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/public/trace/T20260709VG000313],耗时:[5289]毫秒
+2026-07-11 00:08:43 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/public/trace/T20260709VG000309],无参数
+2026-07-11 00:08:49 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/public/trace/T20260709VG000309],耗时:[6611]毫秒
+2026-07-11 00:08:49 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/public/trace/T20260709VG000308],无参数
+2026-07-11 00:08:55 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/public/trace/T20260709VG000308],耗时:[6054]毫秒
+2026-07-11 00:08:55 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/public/trace/T20260708VG000303],无参数
+2026-07-11 00:09:00 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/public/trace/T20260708VG000303],耗时:[4923]毫秒
+2026-07-11 00:09:00 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/public/trace/T20260708VG000302],无参数
+2026-07-11 00:09:04 [XNIO-1 task-3] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/common/store/list],参数类型[param],参数:[{"pageSize":["500"],"pageNum":["1"]}]
+2026-07-11 00:09:05 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/public/trace/T20260708VG000302],耗时:[4900]毫秒
+2026-07-11 00:09:05 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/public/trace/T20260708VG000299],无参数
+2026-07-11 00:09:06 [XNIO-1 task-3] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/common/store/list],耗时:[1462]毫秒
+2026-07-11 00:09:06 [XNIO-1 task-3] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/warehouse/packEntry/sourceVeg],无参数
+2026-07-11 00:09:06 [XNIO-1 task-6] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/plant/plot/list],参数类型[param],参数:[{"pageSize":["999"],"pageNum":["1"]}]
+2026-07-11 00:09:06 [XNIO-1 task-3] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/warehouse/packEntry/sourceVeg],耗时:[426]毫秒
+2026-07-11 00:09:09 [XNIO-1 task-6] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/plant/plot/list],耗时:[3256]毫秒
+2026-07-11 00:09:09 [XNIO-1 task-6] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/warehouse/packEntry/vegProductsByMaterial],参数类型[param],参数:[{"materialIds":["9303000000000076"]}]
+2026-07-11 00:09:10 [XNIO-1 task-6] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/warehouse/packEntry/vegProductsByMaterial],耗时:[414]毫秒
+2026-07-11 00:09:10 [XNIO-1 task-3] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/warehouse/packEntry/materialStock],参数类型[param],参数:[{"productIds":["9304000000000053"]}]
+2026-07-11 00:09:10 [XNIO-1 task-6] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/warehouse/packEntry/storeDemand/batch],参数类型[param],参数:[{"productIds":["9304000000000053"]}]
+2026-07-11 00:09:10 [XNIO-1 task-6] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/warehouse/packEntry/storeDemand/batch],耗时:[192]毫秒
+2026-07-11 00:09:10 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/public/trace/T20260708VG000299],耗时:[4767]毫秒
+2026-07-11 00:09:10 [XNIO-1 task-3] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/warehouse/packEntry/materialStock],耗时:[929]毫秒
+2026-07-11 00:09:19 [XNIO-1 task-3] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /system/user/getInfo],无参数
+2026-07-11 00:09:20 [XNIO-1 task-3] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /system/user/getInfo],耗时:[648]毫秒
+2026-07-11 00:09:20 [XNIO-1 task-3] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /system/menu/getRouters],无参数
+2026-07-11 00:09:20 [XNIO-1 task-3] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /system/menu/getRouters],耗时:[422]毫秒
+2026-07-11 00:09:20 [XNIO-1 task-5] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /auth/tenant/list],无参数
+2026-07-11 00:09:20 [XNIO-1 task-3] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/user/farm/accessible],无参数
+2026-07-11 00:09:20 [XNIO-1 task-3] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/user/farm/accessible],耗时:[0]毫秒
+2026-07-11 00:09:20 [XNIO-1 task-6] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/common/store/list],参数类型[param],参数:[{"pageSize":["500"],"pageNum":["1"]}]
+2026-07-11 00:09:20 [XNIO-1 task-5] INFO  o.d.c.r.aspectj.RateLimiterAspect - 限制令牌 => 20, 剩余令牌 => 19, 缓存key => 'global:rate_limit:/auth/tenant/list:0:0:0:0:0:0:0:1:'
+2026-07-11 00:09:20 [XNIO-1 task-3] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /resource/sse],参数类型[param],参数:[{"Authorization":["Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJsb2dpblR5cGUiOiJsb2dpbiIsImxvZ2luSWQiOiJzeXNfdXNlcjoxIiwicm5TdHIiOiJZRWNtNnB3ZThieWJIdTdYVG1LbzVoZlppYjlVTGsyWiIsImNsaWVudGlkIjoiZTVjZDdlNDg5MWJmOTVkMWQxOTIwNmNlMjRhN2IzMmUiLCJ0ZW5hbnRJZCI6IjEwMDEiLCJ1c2VySWQiOjEsInVzZXJOYW1lIjoiYWRtaW4iLCJkZXB0SWQiOjEwMCwiZGVwdE5hbWUiOiLkuJzop5LlsbHmmbrmhaflhpzlnLoiLCJkZXB0Q2F0ZWdvcnkiOiIifQ.8SyM-cqiKb4CmTEf8SX3_GCCw5UnzepXRGXwDKOLYYI"],"clientid":["e5cd7e4891bf95d1d19206ce24a7b32e"]}]
+2026-07-11 00:09:20 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /resource/sse],参数类型[param],参数:[{"Authorization":["Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJsb2dpblR5cGUiOiJsb2dpbiIsImxvZ2luSWQiOiJzeXNfdXNlcjoxIiwicm5TdHIiOiJZRWNtNnB3ZThieWJIdTdYVG1LbzVoZlppYjlVTGsyWiIsImNsaWVudGlkIjoiZTVjZDdlNDg5MWJmOTVkMWQxOTIwNmNlMjRhN2IzMmUiLCJ0ZW5hbnRJZCI6IjEwMDEiLCJ1c2VySWQiOjEsInVzZXJOYW1lIjoiYWRtaW4iLCJkZXB0SWQiOjEwMCwiZGVwdE5hbWUiOiLkuJzop5LlsbHmmbrmhaflhpzlnLoiLCJkZXB0Q2F0ZWdvcnkiOiIifQ.8SyM-cqiKb4CmTEf8SX3_GCCw5UnzepXRGXwDKOLYYI"],"clientid":["e5cd7e4891bf95d1d19206ce24a7b32e"]}]
+2026-07-11 00:09:20 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /resource/sse],耗时:[0]毫秒
+2026-07-11 00:09:20 [XNIO-1 task-3] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /resource/sse],参数类型[param],参数:[{"Authorization":["Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJsb2dpblR5cGUiOiJsb2dpbiIsImxvZ2luSWQiOiJzeXNfdXNlcjoxIiwicm5TdHIiOiJZRWNtNnB3ZThieWJIdTdYVG1LbzVoZlppYjlVTGsyWiIsImNsaWVudGlkIjoiZTVjZDdlNDg5MWJmOTVkMWQxOTIwNmNlMjRhN2IzMmUiLCJ0ZW5hbnRJZCI6IjEwMDEiLCJ1c2VySWQiOjEsInVzZXJOYW1lIjoiYWRtaW4iLCJkZXB0SWQiOjEwMCwiZGVwdE5hbWUiOiLkuJzop5LlsbHmmbrmhaflhpzlnLoiLCJkZXB0Q2F0ZWdvcnkiOiIifQ.8SyM-cqiKb4CmTEf8SX3_GCCw5UnzepXRGXwDKOLYYI"],"clientid":["e5cd7e4891bf95d1d19206ce24a7b32e"]}]
+2026-07-11 00:09:20 [XNIO-1 task-3] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /resource/sse],耗时:[0]毫秒
+2026-07-11 00:09:21 [XNIO-1 task-5] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /auth/tenant/list],耗时:[405]毫秒
+2026-07-11 00:09:21 [XNIO-1 task-6] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/common/store/list],耗时:[1121]毫秒
+2026-07-11 00:09:21 [XNIO-1 task-5] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/warehouse/packEntry/sourceVeg],无参数
+2026-07-11 00:09:21 [XNIO-1 task-6] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/plant/plot/list],参数类型[param],参数:[{"pageSize":["999"],"pageNum":["1"]}]
+2026-07-11 00:09:22 [XNIO-1 task-5] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/warehouse/packEntry/sourceVeg],耗时:[1021]毫秒
+2026-07-11 00:09:23 [XNIO-1 task-5] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /resource/sse],参数类型[param],参数:[{"Authorization":["Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJsb2dpblR5cGUiOiJsb2dpbiIsImxvZ2luSWQiOiJzeXNfdXNlcjoxIiwicm5TdHIiOiJZRWNtNnB3ZThieWJIdTdYVG1LbzVoZlppYjlVTGsyWiIsImNsaWVudGlkIjoiZTVjZDdlNDg5MWJmOTVkMWQxOTIwNmNlMjRhN2IzMmUiLCJ0ZW5hbnRJZCI6IjEwMDEiLCJ1c2VySWQiOjEsInVzZXJOYW1lIjoiYWRtaW4iLCJkZXB0SWQiOjEwMCwiZGVwdE5hbWUiOiLkuJzop5LlsbHmmbrmhaflhpzlnLoiLCJkZXB0Q2F0ZWdvcnkiOiIifQ.8SyM-cqiKb4CmTEf8SX3_GCCw5UnzepXRGXwDKOLYYI"],"clientid":["e5cd7e4891bf95d1d19206ce24a7b32e"]}]
+2026-07-11 00:09:24 [XNIO-1 task-6] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/plant/plot/list],耗时:[2164]毫秒
+2026-07-11 00:09:24 [XNIO-1 task-6] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/warehouse/packEntry/vegProductsByMaterial],参数类型[param],参数:[{"materialIds":["9303000000000076"]}]
+2026-07-11 00:09:24 [XNIO-1 task-6] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/warehouse/packEntry/vegProductsByMaterial],耗时:[407]毫秒
+2026-07-11 00:09:24 [XNIO-1 task-5] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/warehouse/packEntry/materialStock],参数类型[param],参数:[{"productIds":["9304000000000053"]}]
+2026-07-11 00:09:24 [XNIO-1 task-6] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/warehouse/packEntry/storeDemand/batch],参数类型[param],参数:[{"productIds":["9304000000000053"]}]
+2026-07-11 00:09:24 [XNIO-1 task-6] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/warehouse/packEntry/storeDemand/batch],耗时:[191]毫秒
+2026-07-11 00:09:25 [XNIO-1 task-5] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/warehouse/packEntry/materialStock],耗时:[904]毫秒
+2026-07-11 00:10:50 [XNIO-1 task-5] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /system/user/getInfo],无参数
+2026-07-11 00:10:53 [XNIO-1 task-5] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /system/user/getInfo],耗时:[2648]毫秒
+2026-07-11 00:10:53 [XNIO-1 task-5] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /system/menu/getRouters],无参数
+2026-07-11 00:10:54 [XNIO-1 task-5] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /system/menu/getRouters],耗时:[1230]毫秒
+2026-07-11 00:10:54 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /auth/tenant/list],无参数
+2026-07-11 00:10:54 [XNIO-1 task-5] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/user/farm/accessible],无参数
+2026-07-11 00:10:54 [XNIO-1 task-5] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/user/farm/accessible],耗时:[0]毫秒
+2026-07-11 00:10:54 [XNIO-1 task-3] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/common/store/my-stores],无参数
+2026-07-11 00:10:54 [XNIO-1 task-6] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/store/return/operation/pork-candidates],参数类型[param],参数:[{"storeId":["2074507706392731649"]}]
+2026-07-11 00:10:54 [XNIO-1 task-2] INFO  o.d.c.r.aspectj.RateLimiterAspect - 限制令牌 => 20, 剩余令牌 => 19, 缓存key => 'global:rate_limit:/auth/tenant/list:0:0:0:0:0:0:0:1:'
+2026-07-11 00:10:54 [XNIO-1 task-5] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /resource/sse],参数类型[param],参数:[{"Authorization":["Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJsb2dpblR5cGUiOiJsb2dpbiIsImxvZ2luSWQiOiJzeXNfdXNlcjoxIiwicm5TdHIiOiJZRWNtNnB3ZThieWJIdTdYVG1LbzVoZlppYjlVTGsyWiIsImNsaWVudGlkIjoiZTVjZDdlNDg5MWJmOTVkMWQxOTIwNmNlMjRhN2IzMmUiLCJ0ZW5hbnRJZCI6IjEwMDEiLCJ1c2VySWQiOjEsInVzZXJOYW1lIjoiYWRtaW4iLCJkZXB0SWQiOjEwMCwiZGVwdE5hbWUiOiLkuJzop5LlsbHmmbrmhaflhpzlnLoiLCJkZXB0Q2F0ZWdvcnkiOiIifQ.8SyM-cqiKb4CmTEf8SX3_GCCw5UnzepXRGXwDKOLYYI"],"clientid":["e5cd7e4891bf95d1d19206ce24a7b32e"]}]
+2026-07-11 00:10:54 [XNIO-1 task-4] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /resource/sse],参数类型[param],参数:[{"Authorization":["Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJsb2dpblR5cGUiOiJsb2dpbiIsImxvZ2luSWQiOiJzeXNfdXNlcjoxIiwicm5TdHIiOiJZRWNtNnB3ZThieWJIdTdYVG1LbzVoZlppYjlVTGsyWiIsImNsaWVudGlkIjoiZTVjZDdlNDg5MWJmOTVkMWQxOTIwNmNlMjRhN2IzMmUiLCJ0ZW5hbnRJZCI6IjEwMDEiLCJ1c2VySWQiOjEsInVzZXJOYW1lIjoiYWRtaW4iLCJkZXB0SWQiOjEwMCwiZGVwdE5hbWUiOiLkuJzop5LlsbHmmbrmhaflhpzlnLoiLCJkZXB0Q2F0ZWdvcnkiOiIifQ.8SyM-cqiKb4CmTEf8SX3_GCCw5UnzepXRGXwDKOLYYI"],"clientid":["e5cd7e4891bf95d1d19206ce24a7b32e"]}]
+2026-07-11 00:10:54 [XNIO-1 task-4] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /resource/sse],耗时:[0]毫秒
+2026-07-11 00:10:54 [XNIO-1 task-5] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /resource/sse],参数类型[param],参数:[{"Authorization":["Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJsb2dpblR5cGUiOiJsb2dpbiIsImxvZ2luSWQiOiJzeXNfdXNlcjoxIiwicm5TdHIiOiJZRWNtNnB3ZThieWJIdTdYVG1LbzVoZlppYjlVTGsyWiIsImNsaWVudGlkIjoiZTVjZDdlNDg5MWJmOTVkMWQxOTIwNmNlMjRhN2IzMmUiLCJ0ZW5hbnRJZCI6IjEwMDEiLCJ1c2VySWQiOjEsInVzZXJOYW1lIjoiYWRtaW4iLCJkZXB0SWQiOjEwMCwiZGVwdE5hbWUiOiLkuJzop5LlsbHmmbrmhaflhpzlnLoiLCJkZXB0Q2F0ZWdvcnkiOiIifQ.8SyM-cqiKb4CmTEf8SX3_GCCw5UnzepXRGXwDKOLYYI"],"clientid":["e5cd7e4891bf95d1d19206ce24a7b32e"]}]
+2026-07-11 00:10:54 [XNIO-1 task-5] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /resource/sse],耗时:[0]毫秒
+2026-07-11 00:10:54 [XNIO-1 task-3] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/common/store/my-stores],耗时:[447]毫秒
+2026-07-11 00:10:55 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /auth/tenant/list],耗时:[655]毫秒
+2026-07-11 00:10:55 [XNIO-1 task-6] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/store/return/operation/pork-candidates],耗时:[888]毫秒
+2026-07-11 00:10:55 [XNIO-1 task-6] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/store/return/operation/veg-candidates],参数类型[param],参数:[{"storeId":["2074507706392731649"]}]
+2026-07-11 00:10:55 [XNIO-1 task-6] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/store/return/operation/veg-candidates],耗时:[388]毫秒
+2026-07-11 00:10:57 [XNIO-1 task-6] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /resource/sse],参数类型[param],参数:[{"Authorization":["Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJsb2dpblR5cGUiOiJsb2dpbiIsImxvZ2luSWQiOiJzeXNfdXNlcjoxIiwicm5TdHIiOiJZRWNtNnB3ZThieWJIdTdYVG1LbzVoZlppYjlVTGsyWiIsImNsaWVudGlkIjoiZTVjZDdlNDg5MWJmOTVkMWQxOTIwNmNlMjRhN2IzMmUiLCJ0ZW5hbnRJZCI6IjEwMDEiLCJ1c2VySWQiOjEsInVzZXJOYW1lIjoiYWRtaW4iLCJkZXB0SWQiOjEwMCwiZGVwdE5hbWUiOiLkuJzop5LlsbHmmbrmhaflhpzlnLoiLCJkZXB0Q2F0ZWdvcnkiOiIifQ.8SyM-cqiKb4CmTEf8SX3_GCCw5UnzepXRGXwDKOLYYI"],"clientid":["e5cd7e4891bf95d1d19206ce24a7b32e"]}]
+2026-07-11 00:11:21 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/public/trace/T20260710VG000320],无参数
+2026-07-11 00:11:21 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/public/trace/T20260710VG000320],耗时:[9]毫秒
+2026-07-11 00:11:48 [XNIO-1 task-6] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /system/user/getInfo],无参数
+2026-07-11 00:11:49 [XNIO-1 task-6] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /system/user/getInfo],耗时:[889]毫秒
+2026-07-11 00:11:49 [XNIO-1 task-6] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /system/menu/getRouters],无参数
+2026-07-11 00:11:49 [XNIO-1 task-6] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /system/menu/getRouters],耗时:[662]毫秒
+2026-07-11 00:11:50 [XNIO-1 task-5] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /auth/tenant/list],无参数
+2026-07-11 00:11:50 [XNIO-1 task-6] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/user/farm/accessible],无参数
+2026-07-11 00:11:50 [XNIO-1 task-6] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/user/farm/accessible],耗时:[0]毫秒
+2026-07-11 00:11:50 [XNIO-1 task-3] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/store/return/operation/pork-candidates],参数类型[param],参数:[{"storeId":["2074507706392731649"]}]
+2026-07-11 00:11:50 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/common/store/my-stores],无参数
+2026-07-11 00:11:50 [XNIO-1 task-5] INFO  o.d.c.r.aspectj.RateLimiterAspect - 限制令牌 => 20, 剩余令牌 => 18, 缓存key => 'global:rate_limit:/auth/tenant/list:0:0:0:0:0:0:0:1:'
+2026-07-11 00:11:50 [XNIO-1 task-6] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /resource/sse],参数类型[param],参数:[{"Authorization":["Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJsb2dpblR5cGUiOiJsb2dpbiIsImxvZ2luSWQiOiJzeXNfdXNlcjoxIiwicm5TdHIiOiJZRWNtNnB3ZThieWJIdTdYVG1LbzVoZlppYjlVTGsyWiIsImNsaWVudGlkIjoiZTVjZDdlNDg5MWJmOTVkMWQxOTIwNmNlMjRhN2IzMmUiLCJ0ZW5hbnRJZCI6IjEwMDEiLCJ1c2VySWQiOjEsInVzZXJOYW1lIjoiYWRtaW4iLCJkZXB0SWQiOjEwMCwiZGVwdE5hbWUiOiLkuJzop5LlsbHmmbrmhaflhpzlnLoiLCJkZXB0Q2F0ZWdvcnkiOiIifQ.8SyM-cqiKb4CmTEf8SX3_GCCw5UnzepXRGXwDKOLYYI"],"clientid":["e5cd7e4891bf95d1d19206ce24a7b32e"]}]
+2026-07-11 00:11:50 [XNIO-1 task-4] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /resource/sse],参数类型[param],参数:[{"Authorization":["Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJsb2dpblR5cGUiOiJsb2dpbiIsImxvZ2luSWQiOiJzeXNfdXNlcjoxIiwicm5TdHIiOiJZRWNtNnB3ZThieWJIdTdYVG1LbzVoZlppYjlVTGsyWiIsImNsaWVudGlkIjoiZTVjZDdlNDg5MWJmOTVkMWQxOTIwNmNlMjRhN2IzMmUiLCJ0ZW5hbnRJZCI6IjEwMDEiLCJ1c2VySWQiOjEsInVzZXJOYW1lIjoiYWRtaW4iLCJkZXB0SWQiOjEwMCwiZGVwdE5hbWUiOiLkuJzop5LlsbHmmbrmhaflhpzlnLoiLCJkZXB0Q2F0ZWdvcnkiOiIifQ.8SyM-cqiKb4CmTEf8SX3_GCCw5UnzepXRGXwDKOLYYI"],"clientid":["e5cd7e4891bf95d1d19206ce24a7b32e"]}]
+2026-07-11 00:11:50 [XNIO-1 task-4] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /resource/sse],耗时:[0]毫秒
+2026-07-11 00:11:50 [XNIO-1 task-6] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /resource/sse],参数类型[param],参数:[{"Authorization":["Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJsb2dpblR5cGUiOiJsb2dpbiIsImxvZ2luSWQiOiJzeXNfdXNlcjoxIiwicm5TdHIiOiJZRWNtNnB3ZThieWJIdTdYVG1LbzVoZlppYjlVTGsyWiIsImNsaWVudGlkIjoiZTVjZDdlNDg5MWJmOTVkMWQxOTIwNmNlMjRhN2IzMmUiLCJ0ZW5hbnRJZCI6IjEwMDEiLCJ1c2VySWQiOjEsInVzZXJOYW1lIjoiYWRtaW4iLCJkZXB0SWQiOjEwMCwiZGVwdE5hbWUiOiLkuJzop5LlsbHmmbrmhaflhpzlnLoiLCJkZXB0Q2F0ZWdvcnkiOiIifQ.8SyM-cqiKb4CmTEf8SX3_GCCw5UnzepXRGXwDKOLYYI"],"clientid":["e5cd7e4891bf95d1d19206ce24a7b32e"]}]
+2026-07-11 00:11:50 [XNIO-1 task-6] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /resource/sse],耗时:[0]毫秒
+2026-07-11 00:11:50 [XNIO-1 task-5] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /auth/tenant/list],耗时:[411]毫秒
+2026-07-11 00:11:50 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/common/store/my-stores],耗时:[449]毫秒
+2026-07-11 00:11:51 [XNIO-1 task-3] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/store/return/operation/pork-candidates],耗时:[1282]毫秒
+2026-07-11 00:11:51 [XNIO-1 task-3] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/store/return/operation/veg-candidates],参数类型[param],参数:[{"storeId":["2074507706392731649"]}]
+2026-07-11 00:11:51 [XNIO-1 task-3] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/store/return/operation/veg-candidates],耗时:[533]毫秒
+2026-07-11 00:11:53 [XNIO-1 task-3] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /resource/sse],参数类型[param],参数:[{"Authorization":["Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJsb2dpblR5cGUiOiJsb2dpbiIsImxvZ2luSWQiOiJzeXNfdXNlcjoxIiwicm5TdHIiOiJZRWNtNnB3ZThieWJIdTdYVG1LbzVoZlppYjlVTGsyWiIsImNsaWVudGlkIjoiZTVjZDdlNDg5MWJmOTVkMWQxOTIwNmNlMjRhN2IzMmUiLCJ0ZW5hbnRJZCI6IjEwMDEiLCJ1c2VySWQiOjEsInVzZXJOYW1lIjoiYWRtaW4iLCJkZXB0SWQiOjEwMCwiZGVwdE5hbWUiOiLkuJzop5LlsbHmmbrmhaflhpzlnLoiLCJkZXB0Q2F0ZWdvcnkiOiIifQ.8SyM-cqiKb4CmTEf8SX3_GCCw5UnzepXRGXwDKOLYYI"],"clientid":["e5cd7e4891bf95d1d19206ce24a7b32e"]}]
+2026-07-11 00:13:24 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/breed/dashboard/fattening-trend],参数类型[param],参数:[{"period":["week"],"metric":["marketing"]}]
+2026-07-11 00:13:25 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/breed/dashboard/fattening-trend],耗时:[1094]毫秒
+2026-07-11 00:13:25 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/breed/dashboard/annual],无参数
+2026-07-11 00:13:25 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/breed/dashboard/annual],耗时:[399]毫秒
+2026-07-11 00:14:24 [XNIO-1 task-3] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /resource/sse],参数类型[param],参数:[{"Authorization":["Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJsb2dpblR5cGUiOiJsb2dpbiIsImxvZ2luSWQiOiJzeXNfdXNlcjoxIiwicm5TdHIiOiJZRWNtNnB3ZThieWJIdTdYVG1LbzVoZlppYjlVTGsyWiIsImNsaWVudGlkIjoiZTVjZDdlNDg5MWJmOTVkMWQxOTIwNmNlMjRhN2IzMmUiLCJ0ZW5hbnRJZCI6IjEwMDEiLCJ1c2VySWQiOjEsInVzZXJOYW1lIjoiYWRtaW4iLCJkZXB0SWQiOjEwMCwiZGVwdE5hbWUiOiLkuJzop5LlsbHmmbrmhaflhpzlnLoiLCJkZXB0Q2F0ZWdvcnkiOiIifQ.8SyM-cqiKb4CmTEf8SX3_GCCw5UnzepXRGXwDKOLYYI"],"clientid":["e5cd7e4891bf95d1d19206ce24a7b32e"]}]
+2026-07-11 00:14:24 [XNIO-1 task-3] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /resource/sse],耗时:[11]毫秒
+2026-07-11 00:14:42 [XNIO-1 task-3] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/store/return/operation/pork-candidates],参数类型[param],参数:[{"storeId":["2074507706392731649"]}]
+2026-07-11 00:14:45 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/dict/version],无参数
+2026-07-11 00:14:45 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/dict/version],耗时:[108]毫秒
+2026-07-11 00:14:45 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/dict/full],无参数
+2026-07-11 00:14:45 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/dict/full],耗时:[16]毫秒
+2026-07-11 00:14:45 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/config/version],无参数
+2026-07-11 00:14:45 [XNIO-1 task-3] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/store/return/operation/pork-candidates],耗时:[3062]毫秒
+2026-07-11 00:14:47 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/config/version],耗时:[1989]毫秒
+2026-07-11 00:15:11 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[POST /applet/auth/login],参数类型[json],参数:[{"username":"dev_boss","clientId":"mp-applet-dongjiaoshan","tenantId":"1001","grantType":"password"}]
+2026-07-11 00:15:12 [async-2] INFO  o.d.s.s.i.SysLogininforServiceImpl - [127.0.0.1]内网IP[dev_boss][Success][登录成功]
+2026-07-11 00:15:13 [XNIO-1 task-2] INFO  o.d.web.listener.UserActionListener - user doLogin, userId:sys_user:9107, token:***xHJOD9ek
+2026-07-11 00:15:13 [XNIO-1 task-2] INFO  o.d.d.c.c.a.AppletAuthController - [applet-auth-mock] password login ok username=dev_boss userId=9107 token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJsb2dpblR5cGUiOiJsb2dpbiIsImxvZ2luSWQiOiJzeXNfdXNlcjo5MTA3Iiwicm5TdHIiOiJCcmVHaTJ3MVNscWZiSGhTVUt0NWRPZ1hIdHFUU201WSIsImNsaWVudGlkIjoibXAtYXBwbGV0LWRvbmdqaWFvc2hhbiIsInRlbmFudElkIjoiMTAwMSIsInVzZXJJZCI6OTEwNywidXNlck5hbWUiOiJkZXZfYm9zcyIsImRlcHRJZCI6MTAwLCJkZXB0TmFtZSI6IuS4nOinkuWxseWGnOWcuiJ9.Dpt9umC5ZjhqlaXJLRWqj1czpTf2MUwXpANxHJOD9ek
+2026-07-11 00:15:13 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[POST /applet/auth/login],耗时:[1298]毫秒
+2026-07-11 00:15:13 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /applet/auth/getInfo],无参数
+2026-07-11 00:15:13 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /applet/auth/getInfo],耗时:[3]毫秒
+2026-07-11 00:15:13 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/dict/version],无参数
+2026-07-11 00:15:13 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/dict/version],耗时:[68]毫秒
+2026-07-11 00:15:13 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/dict/full],无参数
+2026-07-11 00:15:13 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/dict/full],耗时:[11]毫秒
+2026-07-11 00:15:13 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/applet/user/role-tabs],无参数
+2026-07-11 00:15:13 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/applet/user/role-tabs],耗时:[6]毫秒
+2026-07-11 00:15:13 [XNIO-1 task-4] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/applet/user/role-tabs],无参数
+2026-07-11 00:15:13 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/user/farm/accessible],无参数
+2026-07-11 00:15:13 [XNIO-1 task-3] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /applet/auth/getInfo],无参数
+2026-07-11 00:15:13 [XNIO-1 task-4] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/applet/user/role-tabs],耗时:[4]毫秒
+2026-07-11 00:15:13 [XNIO-1 task-3] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /applet/auth/getInfo],耗时:[0]毫秒
+2026-07-11 00:15:13 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/user/farm/accessible],耗时:[3]毫秒
+2026-07-11 00:15:13 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/breed/dashboard/inventory],无参数
+2026-07-11 00:15:13 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/breed/dashboard/inventory],耗时:[396]毫秒
+2026-07-11 00:15:13 [XNIO-1 task-3] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/breed/dashboard/daily-overview],无参数
+2026-07-11 00:15:13 [XNIO-1 task-4] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/breed/dashboard/breeding-annual],无参数
+2026-07-11 00:15:13 [XNIO-1 task-6] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/breed/dashboard/annual],无参数
+2026-07-11 00:15:13 [XNIO-1 task-5] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/breed/dashboard/fattening-age-distribution],无参数
+2026-07-11 00:15:13 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/breed/dashboard/monthly-production-stats],无参数
+2026-07-11 00:15:14 [XNIO-1 task-5] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/breed/dashboard/fattening-age-distribution],耗时:[197]毫秒
+2026-07-11 00:15:14 [XNIO-1 task-4] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/breed/dashboard/breeding-annual],耗时:[337]毫秒
+2026-07-11 00:15:14 [XNIO-1 task-6] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/breed/dashboard/annual],耗时:[435]毫秒
+2026-07-11 00:15:14 [XNIO-1 task-6] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/breed/dashboard/fattening-trend],参数类型[param],参数:[{"period":["week"],"metric":["marketing"]}]
+2026-07-11 00:15:14 [XNIO-1 task-3] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/breed/dashboard/daily-overview],耗时:[470]毫秒
+2026-07-11 00:15:15 [XNIO-1 task-6] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/breed/dashboard/fattening-trend],耗时:[633]毫秒
+2026-07-11 00:15:15 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/breed/dashboard/monthly-production-stats],耗时:[1329]毫秒
+2026-07-11 00:15:32 [XNIO-1 task-3] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /system/user/getInfo],无参数
+2026-07-11 00:15:34 [XNIO-1 task-3] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /system/user/getInfo],耗时:[1651]毫秒
+2026-07-11 00:15:34 [XNIO-1 task-3] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /system/menu/getRouters],无参数
+2026-07-11 00:15:35 [XNIO-1 task-3] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /system/menu/getRouters],耗时:[394]毫秒
+2026-07-11 00:15:35 [XNIO-1 task-6] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /auth/tenant/list],无参数
+2026-07-11 00:15:35 [XNIO-1 task-3] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/user/farm/accessible],无参数
+2026-07-11 00:15:35 [XNIO-1 task-3] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/user/farm/accessible],耗时:[0]毫秒
+2026-07-11 00:15:35 [XNIO-1 task-5] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/common/store/my-stores],无参数
+2026-07-11 00:15:35 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/store/return/operation/pork-candidates],参数类型[param],参数:[{"storeId":["2074507706392731649"]}]
+2026-07-11 00:15:35 [XNIO-1 task-6] INFO  o.d.c.r.aspectj.RateLimiterAspect - 限制令牌 => 20, 剩余令牌 => 19, 缓存key => 'global:rate_limit:/auth/tenant/list:0:0:0:0:0:0:0:1:'
+2026-07-11 00:15:35 [XNIO-1 task-3] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /resource/sse],参数类型[param],参数:[{"Authorization":["Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJsb2dpblR5cGUiOiJsb2dpbiIsImxvZ2luSWQiOiJzeXNfdXNlcjoxIiwicm5TdHIiOiJZRWNtNnB3ZThieWJIdTdYVG1LbzVoZlppYjlVTGsyWiIsImNsaWVudGlkIjoiZTVjZDdlNDg5MWJmOTVkMWQxOTIwNmNlMjRhN2IzMmUiLCJ0ZW5hbnRJZCI6IjEwMDEiLCJ1c2VySWQiOjEsInVzZXJOYW1lIjoiYWRtaW4iLCJkZXB0SWQiOjEwMCwiZGVwdE5hbWUiOiLkuJzop5LlsbHmmbrmhaflhpzlnLoiLCJkZXB0Q2F0ZWdvcnkiOiIifQ.8SyM-cqiKb4CmTEf8SX3_GCCw5UnzepXRGXwDKOLYYI"],"clientid":["e5cd7e4891bf95d1d19206ce24a7b32e"]}]
+2026-07-11 00:15:35 [XNIO-1 task-6] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /auth/tenant/list],耗时:[665]毫秒
+2026-07-11 00:15:36 [XNIO-1 task-5] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/common/store/my-stores],耗时:[1427]毫秒
+2026-07-11 00:15:38 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/store/return/operation/pork-candidates],耗时:[3252]毫秒
+2026-07-11 00:15:38 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/store/return/operation/veg-candidates],参数类型[param],参数:[{"storeId":["2074507706392731649"]}]
+2026-07-11 00:15:38 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/store/return/operation/veg-candidates],耗时:[356]毫秒
+2026-07-11 00:16:32 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/dict/version],无参数
+2026-07-11 00:16:32 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/dict/version],耗时:[85]毫秒
+2026-07-11 00:16:32 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/dict/full],无参数
+2026-07-11 00:16:32 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/dict/full],耗时:[5]毫秒
+2026-07-11 00:16:32 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/config/version],无参数
+2026-07-11 00:16:33 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/config/version],耗时:[911]毫秒
+2026-07-11 00:16:35 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[POST /applet/auth/login],参数类型[json],参数:[{"username":"dev_boss","clientId":"mp-applet-dongjiaoshan","tenantId":"1001","grantType":"password"}]
+2026-07-11 00:16:36 [async-3] INFO  o.d.s.s.i.SysLogininforServiceImpl - [127.0.0.1]内网IP[dev_boss][Success][登录成功]
+2026-07-11 00:16:37 [XNIO-1 task-2] INFO  o.d.web.listener.UserActionListener - user doLogin, userId:sys_user:9107, token:***53FIjhGw
+2026-07-11 00:16:37 [XNIO-1 task-2] INFO  o.d.d.c.c.a.AppletAuthController - [applet-auth-mock] password login ok username=dev_boss userId=9107 token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJsb2dpblR5cGUiOiJsb2dpbiIsImxvZ2luSWQiOiJzeXNfdXNlcjo5MTA3Iiwicm5TdHIiOiJaU3BDTmI5dUNteGs0ZExoU2l0STZMbmJMdjgxM0VUdiIsImNsaWVudGlkIjoibXAtYXBwbGV0LWRvbmdqaWFvc2hhbiIsInRlbmFudElkIjoiMTAwMSIsInVzZXJJZCI6OTEwNywidXNlck5hbWUiOiJkZXZfYm9zcyIsImRlcHRJZCI6MTAwLCJkZXB0TmFtZSI6IuS4nOinkuWxseWGnOWcuiJ9.G8meGgD4rhgwl8N9y0QcgDshNVHkEgcyUyo53FIjhGw
+2026-07-11 00:16:37 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[POST /applet/auth/login],耗时:[1793]毫秒
+2026-07-11 00:16:37 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /applet/auth/getInfo],无参数
+2026-07-11 00:16:37 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /applet/auth/getInfo],耗时:[1]毫秒
+2026-07-11 00:16:37 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/dict/version],无参数
+2026-07-11 00:16:37 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/dict/version],耗时:[90]毫秒
+2026-07-11 00:16:37 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/dict/full],无参数
+2026-07-11 00:16:37 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/dict/full],耗时:[8]毫秒
+2026-07-11 00:16:37 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/applet/user/role-tabs],无参数
+2026-07-11 00:16:37 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/applet/user/role-tabs],耗时:[2]毫秒
+2026-07-11 00:16:37 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/applet/user/role-tabs],无参数
+2026-07-11 00:16:37 [XNIO-1 task-6] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /applet/auth/getInfo],无参数
+2026-07-11 00:16:37 [XNIO-1 task-3] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/user/farm/accessible],无参数
+2026-07-11 00:16:37 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/applet/user/role-tabs],耗时:[2]毫秒
+2026-07-11 00:16:37 [XNIO-1 task-3] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/user/farm/accessible],耗时:[0]毫秒
+2026-07-11 00:16:37 [XNIO-1 task-6] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /applet/auth/getInfo],耗时:[0]毫秒
+2026-07-11 00:16:37 [XNIO-1 task-6] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/breed/dashboard/inventory],无参数
+2026-07-11 00:16:38 [XNIO-1 task-6] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/breed/dashboard/inventory],耗时:[493]毫秒
+2026-07-11 00:16:38 [XNIO-1 task-3] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/breed/dashboard/daily-overview],无参数
+2026-07-11 00:16:38 [XNIO-1 task-6] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/breed/dashboard/annual],无参数
+2026-07-11 00:16:38 [XNIO-1 task-4] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/breed/dashboard/breeding-annual],无参数
+2026-07-11 00:16:38 [XNIO-1 task-5] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/breed/dashboard/fattening-age-distribution],无参数
+2026-07-11 00:16:38 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/breed/dashboard/monthly-production-stats],无参数
+2026-07-11 00:16:38 [XNIO-1 task-6] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/breed/dashboard/annual],耗时:[188]毫秒
+2026-07-11 00:16:38 [XNIO-1 task-5] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/breed/dashboard/fattening-age-distribution],耗时:[404]毫秒
+2026-07-11 00:16:38 [XNIO-1 task-5] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /djs/breed/dashboard/fattening-trend],参数类型[param],参数:[{"period":["week"],"metric":["marketing"]}]
+2026-07-11 00:16:38 [XNIO-1 task-4] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/breed/dashboard/breeding-annual],耗时:[650]毫秒
+2026-07-11 00:16:38 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/breed/dashboard/monthly-production-stats],耗时:[700]毫秒
+2026-07-11 00:16:39 [XNIO-1 task-3] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/breed/dashboard/daily-overview],耗时:[1090]毫秒
+2026-07-11 00:16:39 [XNIO-1 task-5] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /djs/breed/dashboard/fattening-trend],耗时:[795]毫秒
+2026-07-11 00:17:24 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]开始请求 => URL[GET /resource/sse],参数类型[param],参数:[{"Authorization":["Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJsb2dpblR5cGUiOiJsb2dpbiIsImxvZ2luSWQiOiJzeXNfdXNlcjoxIiwicm5TdHIiOiJZRWNtNnB3ZThieWJIdTdYVG1LbzVoZlppYjlVTGsyWiIsImNsaWVudGlkIjoiZTVjZDdlNDg5MWJmOTVkMWQxOTIwNmNlMjRhN2IzMmUiLCJ0ZW5hbnRJZCI6IjEwMDEiLCJ1c2VySWQiOjEsInVzZXJOYW1lIjoiYWRtaW4iLCJkZXB0SWQiOjEwMCwiZGVwdE5hbWUiOiLkuJzop5LlsbHmmbrmhaflhpzlnLoiLCJkZXB0Q2F0ZWdvcnkiOiIifQ.8SyM-cqiKb4CmTEf8SX3_GCCw5UnzepXRGXwDKOLYYI"],"clientid":["e5cd7e4891bf95d1d19206ce24a7b32e"]}]
+2026-07-11 00:17:24 [XNIO-1 task-2] INFO  o.d.c.w.i.PlusWebInvokeTimeInterceptor - [PLUS]结束请求 => URL[GET /resource/sse],耗时:[6]毫秒
+2026-07-11 00:18:04 [SpringApplicationShutdownHook] INFO  io.undertow - stopping server: Undertow - 2.3.24.Final
+2026-07-11 00:18:04 [SpringApplicationShutdownHook] INFO  o.d.c.core.config.ThreadPoolConfig - ====关闭后台任务任务线程池====
+2026-07-11 00:18:04 [SpringApplicationShutdownHook] INFO  c.b.d.d.DynamicRoutingDataSource - dynamic-datasource start closing ....
+2026-07-11 00:18:04 [SpringApplicationShutdownHook] INFO  com.zaxxer.hikari.HikariDataSource - master - Shutdown initiated...
+2026-07-11 00:18:04 [SpringApplicationShutdownHook] INFO  com.zaxxer.hikari.HikariDataSource - master - Shutdown completed.
+2026-07-11 00:18:04 [SpringApplicationShutdownHook] INFO  c.b.d.d.d.DefaultDataSourceDestroyer - dynamic-datasource close the datasource named [master] success,
+2026-07-11 00:18:04 [SpringApplicationShutdownHook] INFO  c.b.d.d.DynamicRoutingDataSource - dynamic-datasource all closed success,bye
+2026-07-11 00:18:04 [SpringApplicationShutdownHook] INFO  io.undertow.servlet - Destroying Spring FrameworkServlet 'dispatcherServlet'

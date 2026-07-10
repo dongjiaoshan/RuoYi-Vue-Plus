@@ -355,4 +355,133 @@ class StockCheckServiceImplTest {
         assertThat(service.isLocationLocked(LOCATION_ID)).isFalse();
     }
 
+    // -------- F0-1 盘点组语义（F0-8 验收门：多行篮子组系统量按组 SUM / 篮子组不建幽灵行） --------
+
+    @Test
+    @DisplayName("currentStock（F0-1）：同 (库位,产品) 多行（篮子+非篮子）→ 系统量 = 组 SUM（非 LIMIT 1 单行）；无行 → 0")
+    void testCurrentStock_GroupSum() {
+        // 用真实实现（Testable 子类 stub 掉了 currentStock，此处走原方法验证组 SUM 委托）
+        StockCheckServiceImpl real = new StockCheckServiceImpl(
+            baseMapper, locationStockMapper, stockFlowMapper, locationInfoMapper, productInfoMapper,
+            bizCodeGenerator, lossFlowService);
+        // 组内两行：非篮子 10 + 白条篮 15.5 → 系统量 25.5（与工人实盘的物理总量同口径）
+        when(locationStockMapper.sumStockByProductLocation(LOCATION_ID, PRODUCT_ID))
+            .thenReturn(new BigDecimal("25.5"));
+        assertThat(real.currentStock(LOCATION_ID, PRODUCT_ID)).isEqualByComparingTo("25.5");
+
+        // 无库存行：SUM 返 null → 0
+        when(locationStockMapper.sumStockByProductLocation(LOCATION_ID, 9999L)).thenReturn(null);
+        assertThat(real.currentStock(LOCATION_ID, 9999L)).isEqualByComparingTo("0");
+    }
+
+    @Test
+    @DisplayName("completeCheck（F0-1）：实盘 28 < 篮子合计 30（组库存全在篮子行）→ 非篮子行按 0 校准且不建幽灵新行，差异只留流水")
+    void testCompleteCheck_BasketOnlyGroup_NoPhantomRow() {
+        StockCheckRecord header = new StockCheckRecord();
+        header.setId(1L);
+        header.setCheckId(CHECK_ID);
+        header.setLocationId(LOCATION_ID);
+        header.setCheckStatus("in_progress");
+        header.setIsHeader(1);
+        when(baseMapper.selectById(1L)).thenReturn(header);
+
+        StockCheckRecord line = new StockCheckRecord();
+        line.setCheckId(CHECK_ID);
+        line.setLocationId(LOCATION_ID);
+        line.setProductId(PRODUCT_ID);
+        line.setSysStock(new BigDecimal("30"));
+        line.setCheckStock(new BigDecimal("28"));
+        line.setDiffStock(new BigDecimal("-2"));
+        line.setCheckResultType(2);
+        line.setIsHeader(0);
+        when(baseMapper.selectList(any())).thenReturn(List.of(line));
+        // 该组库存全在耳号/白条/地块篮子行上（篮子合计 30 > 实盘 28）→ 非篮目标量 floor 到 0
+        when(locationStockMapper.sumBasketStockByProductLocation(LOCATION_ID, PRODUCT_ID))
+            .thenReturn(new BigDecimal("30"));
+        // 非篮子行 UPDATE 无命中
+        when(locationStockMapper.setStockAfterCheck(eq(LOCATION_ID), eq(PRODUCT_ID), any(), any(), eq(USER_ID)))
+            .thenReturn(0);
+
+        service.completeCheck(1L);
+
+        // 非篮子行 SET 目标量 = 0（不 SET 实盘全量 28，否则组合计 = 28 + 30 篮子翻倍）
+        verify(locationStockMapper, times(1))
+            .setStockAfterCheck(eq(LOCATION_ID), eq(PRODUCT_ID), eq(BigDecimal.ZERO), eq(2), eq(USER_ID));
+        // 不建幽灵行（否则新行 + 篮子行合计翻倍 = STOCK-D2-01 错账根因）
+        verify(locationStockMapper, never()).insert(any(LocationStock.class));
+        // 差异流水照写（盘亏留痕）+ header 正常收口
+        verify(stockFlowMapper, times(1)).insert(any(StockFlow.class));
+        assertThat(header.getCheckStatus()).isEqualTo("completed");
+    }
+
+    @Test
+    @DisplayName("completeCheck（F0-1）：混合组（篮子 10 + 非篮子）实盘 28 → 非篮子行 SET 18（= 实盘 − 篮子合计），组合计 == 实盘")
+    void testCompleteCheck_MixedGroup_NonBasketTarget() {
+        StockCheckRecord header = new StockCheckRecord();
+        header.setId(1L);
+        header.setCheckId(CHECK_ID);
+        header.setLocationId(LOCATION_ID);
+        header.setCheckStatus("in_progress");
+        header.setIsHeader(1);
+        when(baseMapper.selectById(1L)).thenReturn(header);
+
+        StockCheckRecord line = new StockCheckRecord();
+        line.setCheckId(CHECK_ID);
+        line.setLocationId(LOCATION_ID);
+        line.setProductId(PRODUCT_ID);
+        line.setSysStock(new BigDecimal("25"));
+        line.setCheckStock(new BigDecimal("28"));
+        line.setDiffStock(new BigDecimal("3"));
+        line.setCheckResultType(2);
+        line.setIsHeader(0);
+        when(baseMapper.selectList(any())).thenReturn(List.of(line));
+        when(locationStockMapper.sumBasketStockByProductLocation(LOCATION_ID, PRODUCT_ID))
+            .thenReturn(new BigDecimal("10"));
+        when(locationStockMapper.setStockAfterCheck(eq(LOCATION_ID), eq(PRODUCT_ID), any(), any(), eq(USER_ID)))
+            .thenReturn(1);
+
+        service.completeCheck(1L);
+
+        // 非篮子行只承接实盘量中超出篮子合计的部分：28 − 10 = 18（SET 28 会使组合计虚增到 38）
+        verify(locationStockMapper, times(1))
+            .setStockAfterCheck(eq(LOCATION_ID), eq(PRODUCT_ID), eq(new BigDecimal("18")), eq(2), eq(USER_ID));
+        verify(locationStockMapper, never()).insert(any(LocationStock.class));
+    }
+
+    @Test
+    @DisplayName("completeCheck（F0-1）：回写 affected=0 且组内完全无行 → 首次建账 INSERT 新库存行（stock=实盘量）")
+    void testCompleteCheck_EmptyGroup_FirstTimeInsert() {
+        StockCheckRecord header = new StockCheckRecord();
+        header.setId(1L);
+        header.setCheckId(CHECK_ID);
+        header.setLocationId(LOCATION_ID);
+        header.setCheckStatus("in_progress");
+        header.setIsHeader(1);
+        when(baseMapper.selectById(1L)).thenReturn(header);
+
+        StockCheckRecord line = new StockCheckRecord();
+        line.setCheckId(CHECK_ID);
+        line.setLocationId(LOCATION_ID);
+        line.setProductId(PRODUCT_ID);
+        line.setSysStock(BigDecimal.ZERO);
+        line.setCheckStock(new BigDecimal("8"));
+        line.setDiffStock(new BigDecimal("8"));
+        line.setCheckResultType(2);
+        line.setIsHeader(0);
+        when(baseMapper.selectList(any())).thenReturn(List.of(line));
+        when(locationStockMapper.setStockAfterCheck(any(), any(), any(), any(), any())).thenReturn(0);
+        // 组内无任何行（篮子合计 0）→ 非篮目标量 = 实盘 8 → 首次建账
+        when(locationStockMapper.sumBasketStockByProductLocation(LOCATION_ID, PRODUCT_ID))
+            .thenReturn(BigDecimal.ZERO);
+
+        service.completeCheck(1L);
+
+        ArgumentCaptor<LocationStock> cap = ArgumentCaptor.forClass(LocationStock.class);
+        verify(locationStockMapper, times(1)).insert(cap.capture());
+        LocationStock row = cap.getValue();
+        assertThat(row.getLocationId()).isEqualTo(LOCATION_ID);
+        assertThat(row.getProductId()).isEqualTo(PRODUCT_ID);
+        assertThat(row.getProductStock()).isEqualByComparingTo("8");
+    }
+
 }

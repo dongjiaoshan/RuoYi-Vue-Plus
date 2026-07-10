@@ -202,7 +202,7 @@ public class LocationStockServiceImpl extends DjsBaseServiceImpl<LocationStockMa
         // 库位级业务锁（WMS-STOCK-001）：盘点进行中的库位禁出入库（后端双保险）
         stockCheckService.assertLocationUnlocked(locationId);
         // row186-BE：出库量不得超过当前库存（前端软拦 + 此处后端 fail-fast 硬拦，写流水前拦截防绕过/并发超扣；
-        // 与 step3 的 deductByProductLocation 行锁原子校验互为内外两道闸）。
+        // 与 step3 的 deductStockById 行锁原子校验互为内外两道闸）。
         BigDecimal currentStock = stock.getProductStock() == null ? BigDecimal.ZERO : stock.getProductStock();
         if (bo.getQuantity().compareTo(currentStock) > 0) {
             throw new ServiceException(
@@ -228,12 +228,13 @@ public class LocationStockServiceImpl extends DjsBaseServiceImpl<LocationStockMa
         flow.setRemark(bo.getRemark());
         stockFlowMapper.insert(flow);
 
-        // 3. UPDATE location_stock 原子扣减（product_stock >= quantity 行锁 + 数量校验）
-        int affected = locationStockMapper().deductByProductLocation(locationId, productId, bo.getQuantity(), userId);
+        // 3. 按行 id 原子扣减（product_stock >= quantity 行锁 + 数量校验）——UI 按库存行出库，
+        //    精确扣所选行/篮，避免同 (库位,产品) 多耳号/地块/白条篮串扣（与 pigTransfer 同范式）
+        int affected = locationStockMapper().deductStockById(stock.getId(), bo.getQuantity(), userId);
         if (affected == 0) {
             // 抛异常 → @Transactional 回滚 step 2
             throw new ServiceException(
-                "库存不足，无法出库（product=" + product.getProductName()
+                "库存不足或已被并发占用，无法出库（product=" + product.getProductName()
                     + " / 当前库存=" + stock.getProductStock() + product.getProductUnit()
                     + " / 申请=" + bo.getQuantity() + product.getProductUnit() + "）");
         }

@@ -203,6 +203,13 @@ class VegetableHandleServiceImplTest {
         existing.setHandleStatus("processing");
         when(handleMapper.selectByPlantingRecordId(60001L)).thenReturn(existing);
 
+        // 作物 12001 配置了 related_product=88001（入库写 stock_flow 需可解析 product_id，
+        // 无映射时服务显式抛错 —— happy path 必须配好映射）
+        CropInfo crop = new CropInfo();
+        crop.setId(12001L);
+        crop.setRelatedProduct(88001L);
+        when(cropInfoMapper.selectById(12001L)).thenReturn(crop);
+
         LocationInfo loc = new LocationInfo();
         loc.setId(90001L);
         loc.setLocationName("蔬菜鲜品库");
@@ -247,6 +254,8 @@ class VegetableHandleServiceImplTest {
         assertThat(flow.getChangeNum()).isEqualByComparingTo("30.000");
         assertThat(flow.getWarehouseId()).isEqualTo(90001L);
         assertThat(flow.getPlotId()).isEqualTo(11001L);
+        // product_id 走作物 related_product 映射解析
+        assertThat(flow.getProductId()).isEqualTo(88001L);
     }
 
     // -------- happy 处理-饲料 --------
@@ -579,7 +588,9 @@ class VegetableHandleServiceImplTest {
         h.setHandledWeight(new BigDecimal(handled));
         h.setFeedWeight(BigDecimal.ZERO);
         h.setSendPlatformWeight(BigDecimal.ZERO);
-        h.setStockInWeight(BigDecimal.ZERO);
+        // 行59 损耗口径 loss = picked − stockIn − sendPlatform − feed：
+        // 保持台账自洽 handled = stockIn + sendPlatform（已处理量全记入库分量）
+        h.setStockInWeight(new BigDecimal(handled));
         h.setLossWeight(BigDecimal.ZERO);
         h.setIsWeighed(isWeighed);
         h.setHandleStatus("processing");

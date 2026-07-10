@@ -19,6 +19,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.contains;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
@@ -42,6 +44,10 @@ class BizReferenceCheckerImplTest {
     @BeforeEach
     void setup() {
         checker = new BizReferenceCheckerImpl(jdbcTemplate);
+        // 默认引用表都存在（tableExists 守卫放行）；缺表守卫路径在专用用例里单独 stub 覆盖
+        when(jdbcTemplate.queryForObject(
+            contains("information_schema.TABLES"), eq(Integer.class), any(Object[].class)))
+            .thenReturn(1);
     }
 
     @Test
@@ -102,6 +108,18 @@ class BizReferenceCheckerImplTest {
             .thenReturn(List.of(1));
 
         assertThat(checker.isReferenced("t_md_supplier", 123L)).isTrue();
+    }
+
+    @Test
+    @DisplayName("tableExists 守卫：引用表已被迁移 DROP → 跳过反查且不打裸 SQL，isReferenced=false")
+    void refTableMissingSkipped() {
+        checker.register("t_md_store", "t_store_check_record", "store_id");
+        when(jdbcTemplate.queryForObject(
+            contains("information_schema.TABLES"), eq(Integer.class), any(Object[].class)))
+            .thenReturn(0);
+
+        assertThat(checker.isReferenced("t_md_store", 123L)).isFalse();
+        verify(jdbcTemplate, never()).queryForList(any(String.class), eq(Integer.class), any());
     }
 
     @Test

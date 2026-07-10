@@ -319,10 +319,21 @@ public class StockSelfServiceImpl implements IStockSelfService {
         flow.setRemark(bo.getDiffReason());
         stockFlowMapper.insert(flow);
 
-        // 2. 回写 location_stock 至目标绝对值 + check_result；无行 → 兜底 INSERT
-        int affected = locationStockMapper.setStockAfterCheck(locId, productId, targetStock, resultCode, userId);
-        if (affected == 0) {
-            LocationStock stock = newStockRow(locId, productId, product, targetStock, userId);
+        // 2. 回写 location_stock 非篮子行至「非篮目标量 = 目标组量 − 篮子行合计」+ check_result。
+        //    系统量/目标量是组口径（含耳号/地块/白条篮子行），篮子行的账随各自业务链走、不参与盘点 SET，
+        //    非篮子行只承接目标组量中超出篮子合计的部分 —— SET 后组合计 == 目标组量。
+        BigDecimal basketStock = basketStock(locId, productId);
+        BigDecimal nonBasketTarget = targetStock.subtract(basketStock);
+        if (nonBasketTarget.compareTo(BigDecimal.ZERO) < 0) {
+            log.warn("盘点目标量低于篮子行合计，非篮子行按 0 校准（差额已由盘点流水留痕）："
+                    + "location={} product={} 目标组量={} 篮子合计={}", locId, productId, targetStock, basketStock);
+            nonBasketTarget = BigDecimal.ZERO;
+        }
+        int affected = locationStockMapper.setStockAfterCheck(locId, productId, nonBasketTarget, resultCode, userId);
+        if (affected == 0 && nonBasketTarget.compareTo(BigDecimal.ZERO) > 0) {
+            // 无非篮子行且有非篮余量（首次建账 / 组内仅篮子行但目标超出篮子合计）→ 按非篮目标量建行；
+            // 按组量全量建行会与篮子行合计翻倍
+            LocationStock stock = newStockRow(locId, productId, product, nonBasketTarget, userId);
             stock.setLatestCheckTime(new Date());
             stock.setCheckResult(resultCode);
             locationStockMapper.insert(stock);
@@ -414,18 +425,22 @@ public class StockSelfServiceImpl implements IStockSelfService {
     }
 
     /**
-     * 查系统现量（无库存行返 0）—— 与 {@code StockCheckServiceImpl.currentStock} 同口径。
+     * 查系统现量（组内全部行 SUM；无库存行返 0）—— 与 {@code StockCheckServiceImpl.currentStock} 同口径。
+     *
+     * <p>同 (库位,产品) 可能存在多行（耳号/地块/白条篮子 + 非篮子行），系统现量取组合计，
+     * 与工人实盘的物理总量同口径。</p>
      */
     private BigDecimal currentStock(Long locationId, Long productId) {
-        LocationStock stock = locationStockMapper.selectOne(
-            new LambdaQueryWrapper<LocationStock>()
-                .eq(LocationStock::getLocationId, locationId)
-                .eq(LocationStock::getProductId, productId)
-                .last("LIMIT 1"));
-        if (stock == null || stock.getProductStock() == null) {
-            return BigDecimal.ZERO;
-        }
-        return stock.getProductStock();
+        BigDecimal sum = locationStockMapper.sumStockByProductLocation(locationId, productId);
+        return sum == null ? BigDecimal.ZERO : sum;
+    }
+
+    /**
+     * 组内篮子行库存合计（{@code plot_id / ear_no / white_bar_no} 任一非 NULL）；无篮子行返 0。
+     */
+    private BigDecimal basketStock(Long locationId, Long productId) {
+        BigDecimal sum = locationStockMapper.sumBasketStockByProductLocation(locationId, productId);
+        return sum == null ? BigDecimal.ZERO : sum;
     }
 
     /**

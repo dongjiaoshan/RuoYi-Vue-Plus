@@ -51,7 +51,7 @@ import static org.mockito.Mockito.when;
  * <p>覆盖核心场景：</p>
  * <ol>
  *   <li>insertByBo happy：returnNo=RET 开头 + operatorId 注入 + returnDate 缺省 now + locationId 存值</li>
- *   <li>insertByBo 联动外购入库：调 {@code purchaseInService.inbound(productId, locationId, qty, "return_in", "门店退回入库:...")}</li>
+ *   <li>insertByBo 联动入库：调 {@code purchaseInService.inboundReturnBasket(productId, locationId, qty, "return_in", "门店退回入库:...")}（row31 退货专属篮）</li>
  *   <li>insertByBo 产品/门店不存在 → 抛 ServiceException + 不 INSERT + <b>不联动入库</b></li>
  *   <li>updateByBo 元数据 only：不回写 returnNo / operatorId / productId / locationId / returnQuantity + 不联动入库</li>
  *   <li>deleteByIds → softDelete（不冲销库存，V1）</li>
@@ -134,7 +134,7 @@ class StoreReturnServiceImplTest {
             r.setId(60000L + (long) (Math.random() * 1000));
             return 1;
         });
-        when(purchaseInService.inbound(any(), any(), any(), anyString(), any())).thenReturn(77777L);
+        when(purchaseInService.inboundReturnBasket(any(), any(), any(), anyString(), any())).thenReturn(77777L);
         // product / store 默认存在
         ProductInfo product = new ProductInfo();
         product.setId(PRODUCT_ID);
@@ -186,24 +186,24 @@ class StoreReturnServiceImplTest {
     }
 
     @Test
-    @DisplayName("insertByBo 联动外购入库：inbound(productId, locationId, qty, return_in, 门店退回入库:RET...)")
+    @DisplayName("insertByBo 联动入库：row31 走退货专属篮 inboundReturnBasket(productId, locationId, qty, return_in, 门店退回入库:RET...)")
     void testInsert_InboundLinkage() {
         service.insertByBo(bo("customer_to_store", STORE_ID));
 
         ArgumentCaptor<String> remarkCap = ArgumentCaptor.forClass(String.class);
-        verify(purchaseInService, times(1)).inbound(
+        verify(purchaseInService, times(1)).inboundReturnBasket(
             eq(PRODUCT_ID), eq(LOCATION_ID), eq(new BigDecimal("3.5")), eq(FLOW_RETURN_IN), remarkCap.capture());
         assertThat(remarkCap.getValue()).startsWith("门店退回入库").contains(RETURN_NO);
     }
 
     @Test
-    @DisplayName("insertByBo 方向留空 → 默认 customer_to_store（门店主场景）+ 仍联动入库")
+    @DisplayName("insertByBo 方向留空 → 默认 customer_to_store（门店主场景）+ 仍联动退货篮入库")
     void testInsert_DefaultDirection() {
         service.insertByBo(bo(null, STORE_ID));
         ArgumentCaptor<StoreReturn> cap = ArgumentCaptor.forClass(StoreReturn.class);
         verify(baseMapper, times(1)).insert(cap.capture());
         assertThat(cap.getValue().getReturnDirection()).isEqualTo("customer_to_store");
-        verify(purchaseInService, times(1)).inbound(any(), any(), any(), eq(FLOW_RETURN_IN), any());
+        verify(purchaseInService, times(1)).inboundReturnBasket(any(), any(), any(), eq(FLOW_RETURN_IN), any());
     }
 
     @Test
@@ -214,7 +214,7 @@ class StoreReturnServiceImplTest {
             .isInstanceOf(ServiceException.class)
             .hasMessageContaining("产品不存在");
         verify(baseMapper, never()).insert(any(StoreReturn.class));
-        verify(purchaseInService, never()).inbound(any(), any(), any(), anyString(), any());
+        verify(purchaseInService, never()).inboundReturnBasket(any(), any(), any(), anyString(), any());
     }
 
     @Test
@@ -225,7 +225,7 @@ class StoreReturnServiceImplTest {
             .isInstanceOf(ServiceException.class)
             .hasMessageContaining("门店不存在");
         verify(baseMapper, never()).insert(any(StoreReturn.class));
-        verify(purchaseInService, never()).inbound(any(), any(), any(), anyString(), any());
+        verify(purchaseInService, never()).inboundReturnBasket(any(), any(), any(), anyString(), any());
     }
 
     @Test
@@ -256,7 +256,7 @@ class StoreReturnServiceImplTest {
         assertThat(e.getReturnQuantity()).isNull();   // 入库驱动字段锁死（即便 bo 传了 9.9）
         assertThat(e.getReturnReason()).isEqualTo("修正原因"); // 元数据可改
         // 编辑不再次联动入库
-        verify(purchaseInService, never()).inbound(any(), any(), any(), anyString(), any());
+        verify(purchaseInService, never()).inboundReturnBasket(any(), any(), any(), anyString(), any());
     }
 
     @Test
@@ -277,7 +277,7 @@ class StoreReturnServiceImplTest {
         int n = service.deleteByIds(List.of(60001L, 60002L));
         assertThat(n).isEqualTo(2);
         verify(baseMapper, times(2)).update(any(), any());
-        verify(purchaseInService, never()).inbound(any(), any(), any(), anyString(), any());
+        verify(purchaseInService, never()).inboundReturnBasket(any(), any(), any(), anyString(), any());
     }
 
     @Test

@@ -46,9 +46,11 @@ import java.util.stream.Collectors;
  *
  * <p>核心逻辑：</p>
  * <ul>
- *   <li><b>库存真值在仓库</b>（ADR-0012 药品归仓库库位统一）：use / loss 走
+ *   <li><b>库存真值在仓库</b>（ADR-0012 药品归仓库库位统一）：use 走
  *       {@link MedicineStockProvider#deduct}（落仓库 location_stock，库存不足抛业务异常自然回滚），
- *       return 走 {@link MedicineStockProvider#add}。批次行 {@code t_breed_medicine_batch.quantity}
+ *       loss 走 {@link MedicineStockProvider#deductLoss}（另双写仓库统一损耗台账），
+ *       return 走 {@link MedicineStockProvider#add}；provider 内同事务落
+ *       {@code t_warehouse_stock_flow} 出入库流水。批次行 {@code t_breed_medicine_batch.quantity}
  *       退化为入库快照（不再随领用扣减），但 batchId 仍写台账行作溯源。</li>
  *   <li><b>幂等性</b>：本方法不做幂等去重，依赖 Controller 上的
  *       {@code @RepeatSubmit} 防同一用户短时重复 POST。</li>
@@ -168,13 +170,17 @@ public class MedUsageServiceImpl extends DjsBaseServiceImpl<MedUsageMapper, MedU
             medicineId = batch.getMedicineId();
         }
 
-        // 2. 按 usageType 扣减或归还仓库库存（ADR-0012：库存真值在仓库 location_stock，按 medicineId）
+        // 2. 按 usageType 扣减或归还仓库库存（ADR-0012：库存真值在仓库 location_stock，按 medicineId），
+        //    provider 内同事务落 t_warehouse_stock_flow 出入库流水（use→dept_pick_out /
+        //    loss→loss+统一损耗台账 / return→pick_return_in）。
+        //    操作人与台账 operator 口径一致：选了领用人（代领）用所选，否则当前登录人
         String type = StringUtils.isBlank(bo.getUsageType()) ? TYPE_USE : bo.getUsageType();
         BigDecimal qty = bo.getUsageQty();
-        Long operatorId = LoginHelper.getUserId();
+        Long operatorId = bo.getOperatorId() != null ? bo.getOperatorId() : LoginHelper.getUserId();
         switch (type) {
-            // deduct 库存不足自抛 ServiceException → @Transactional 自然回滚（不 catch 吞）
-            case TYPE_USE, TYPE_LOSS -> medicineStockProvider.deduct(medicineId, qty, operatorId);
+            // deduct/deductLoss 库存不足自抛 ServiceException → @Transactional 自然回滚（不 catch 吞）
+            case TYPE_USE -> medicineStockProvider.deduct(medicineId, qty, operatorId);
+            case TYPE_LOSS -> medicineStockProvider.deductLoss(medicineId, qty, operatorId);
             case TYPE_RETURN -> medicineStockProvider.add(medicineId, qty, operatorId);
             default -> throw new ServiceException("无效的领用类型：" + type);
         }

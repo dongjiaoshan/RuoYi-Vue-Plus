@@ -70,14 +70,13 @@ public class StoreServiceImpl extends DjsBaseServiceImpl<StoreMapper, Store> imp
      * 启动时注册门店引用关系给 {@link BizReferenceChecker}，让 {@link #deleteWithValidByIds} 的
      * {@code isReferenced} 反查真正生效（未注册时 isReferenced 恒 false → 软删空校验）。
      *
-     * <p>门店被以下三类业务记录引用即不允许软删：门店产品关联（在卖哪些 SKU）/ 门店销售流水 / 门店盘点。
-     * 三表均有 {@code store_id} + {@code del_flag}，符合 {@code BizReferenceCheckerImpl} 的反查口径。</p>
+     * <p>门店被以下两类业务记录引用即不允许软删：门店产品关联（在卖哪些 SKU）/ 门店销售流水。
+     * 两表均有 {@code store_id} + {@code del_flag}，符合 {@code BizReferenceCheckerImpl} 的反查口径。</p>
      */
     @PostConstruct
     public void registerReferences() {
         bizReferenceChecker.register("t_md_store", "t_store_product_relation", "store_id");
         bizReferenceChecker.register("t_md_store", "t_store_sale_record", "store_id");
-        bizReferenceChecker.register("t_md_store", "t_store_check_record", "store_id");
     }
 
     @Override

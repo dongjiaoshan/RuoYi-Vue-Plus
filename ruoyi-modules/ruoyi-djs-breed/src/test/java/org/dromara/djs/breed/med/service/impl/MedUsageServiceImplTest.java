@@ -44,9 +44,10 @@ import static org.mockito.Mockito.when;
  * <p>覆盖：use happy path 扣减 / 库存不足拒绝 / return 归还 / loss 扣减 /
  * 药品与批次归属不一致拒绝 / 批次不存在拒绝 / today-stat 聚合 / softDelete 不回滚库存。</p>
  *
- * <p>ADR-0012：库存真值在仓库 location_stock，use/loss 走
- * {@link MedicineStockProvider#deduct}、return 走 {@link MedicineStockProvider#add}；
- * 批次 quantity 退化为入库快照不再随领用扣减。库存不足由 provider 抛 ServiceException。</p>
+ * <p>ADR-0012：库存真值在仓库 location_stock，use 走 {@link MedicineStockProvider#deduct}、
+ * loss 走 {@link MedicineStockProvider#deductLoss}（另双写损耗台账）、return 走
+ * {@link MedicineStockProvider#add}；批次 quantity 退化为入库快照不再随领用扣减。
+ * 库存不足由 provider 抛 ServiceException。</p>
  *
  * @author djs
  * @since BRD-MED-002
@@ -175,15 +176,18 @@ class MedUsageServiceImplTest {
     }
 
     @Test
-    @DisplayName("insertByBo[loss]: 走 provider.deduct（与 use 一致），不调 add")
-    void testInsertLoss_DeductSamePath() {
+    @DisplayName("insertByBo[loss]: 走 provider.deductLoss（loss 流水 + 损耗台账），不调 deduct/add")
+    void testInsertLoss_DeductLossPath() {
         when(medBatchMapper.selectById(50001L)).thenReturn(existingBatch(new BigDecimal("100.000")));
         when(medUsageMapper.insert(any(MedUsage.class))).thenReturn(1);
 
         int rows = service.insertByBo(sampleBo("loss", "2.500"));
 
         assertThat(rows).isEqualTo(1);
-        verify(medicineStockProvider, times(1)).deduct(eq(MEDICINE_ID), any(BigDecimal.class), any());
+        ArgumentCaptor<BigDecimal> qtyCaptor = ArgumentCaptor.forClass(BigDecimal.class);
+        verify(medicineStockProvider, times(1)).deductLoss(eq(MEDICINE_ID), qtyCaptor.capture(), any());
+        assertThat(qtyCaptor.getValue()).isEqualByComparingTo("2.500");
+        verify(medicineStockProvider, never()).deduct(any(), any(), any());
         verify(medicineStockProvider, never()).add(any(), any(), any());
     }
 
@@ -200,6 +204,7 @@ class MedUsageServiceImplTest {
         verify(medicineStockProvider, times(1)).add(eq(MEDICINE_ID), qtyCaptor.capture(), any());
         assertThat(qtyCaptor.getValue()).isEqualByComparingTo("1.500");
         verify(medicineStockProvider, never()).deduct(any(), any(), any());
+        verify(medicineStockProvider, never()).deductLoss(any(), any(), any());
     }
 
     @Test
@@ -212,6 +217,7 @@ class MedUsageServiceImplTest {
             .hasMessageContaining("批次不存在或已删除");
 
         verify(medicineStockProvider, never()).deduct(any(), any(), any());
+        verify(medicineStockProvider, never()).deductLoss(any(), any(), any());
         verify(medicineStockProvider, never()).add(any(), any(), any());
         verify(medUsageMapper, never()).insert(any(MedUsage.class));
     }

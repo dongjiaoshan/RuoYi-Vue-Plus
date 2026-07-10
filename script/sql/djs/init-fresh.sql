@@ -1,5513 +1,5452 @@
 -- ============================================================================
 -- init-fresh.sql — 东角山 djs 业务库「全新环境」一次性初始化快照
 -- ============================================================================
--- 用途：
---   全新空库从源码初始化时，用本文件一把建好所有 djs 业务表 + 字典 + 菜单
---   + 编码规则 + ruoyi 默认数据 cleanup。本文件 = 把所有版本号 ≤ Flyway
---   baseline（V202605281100）的迁移按版本升序拼接而成（被 baseline-on-migrate
---   跳过、新库不会自动跑的那批）。原始 SQL 原样拼接，未改写。
+-- 本文件 = 从零跑完全部 Flyway 迁移后的库的 mysqldump 完整快照：
+--   结构 + 种子数据（字典 / 菜单 / 角色权限 / 编码规则 / dev 用户等）
+--   + flyway_schema_history 全量行。快照头版本 = V202608091500。
+--   正文由 mysqldump 生成（含 DROP TABLE IF EXISTS），勿手改正文。
 --
 -- 全新环境初始化顺序（三步）：
 --   (1) 导入 ruoyi 自带 script/sql/ry_vue_5.X.sql 建 sys_* 系统表（含 ry_job /
 --       ry_workflow 按 quickstart 需要时一并导）。
---   (2) 跑本 init-fresh.sql：建 djs 业务表 + 字典 + 菜单 + 编码规则 + cleanup
---       ruoyi 默认 demo/sample 数据。
+--   (2) 跑本 init-fresh.sql。本文件会以最终形态覆盖重建全部 sys_* / t_* 表
+--       （第 (1) 步建的表被本文件 DROP+CREATE 覆盖属预期），并灌入全部 seed
+--       数据与 flyway_schema_history。
 --       例：mysql -uroot -p ry-vue < script/sql/djs/init-fresh.sql
---   (3) 启动 ruoyi-admin。首次启动 Flyway baseline-on-migrate=true 会：
---         - 建 flyway_schema_history 表并插入 baseline 行（version=202605281100）；
---         - 把版本 ≤ baseline 的迁移视为已应用、跳过（即本文件已覆盖的那批）；
---         - 把版本 > baseline 的迁移作为增量按序应用。
+--   (3) 启动 ruoyi-admin。Flyway 读到快照自带的 flyway_schema_history
+--       （已含 baseline 202605281100 + 版本 ≤ V202608091500 的全部迁移记录），
+--       校验通过后只增量应用版本 > V202608091500 的新迁移文件。
 --
 -- 维护约定：
---   新增 DDL 一律写成版本号 > baseline（V202607220910 之后）的 Flyway 增量迁移文件，
---   放 ruoyi-admin/src/main/resources/db/migration/，Flyway 启动时自动应用。
---   无需再手动维护本快照 —— baseline 不动，本文件就一直等价于「baseline 之前的全集」。
---   仅当 Kevin 升 baseline-version 时才需要把新跨过 baseline 的迁移重新合进本文件。
+--   新增 DDL 一律写版本号 > V202608091500 的 Flyway 增量迁移文件，放
+--   ruoyi-admin/src/main/resources/db/migration/，启动时自动增量应用，
+--   无需维护本快照。需要重生成快照（如想把增量收进快照头）时：
+--     ① 建 scratch 库 → 导 ry_vue_5.X.sql → 导本文件 → 用 flyway-maven-plugin
+--        （配置对齐 application.yml：baseline 202605281100、outOfOrder=false、
+--        placeholderReplacement=false）跑 flyway:migrate 应用剩余增量；
+--     ② mysqldump --routines --triggers --events --hex-blob
+--        --set-gtid-purged=OFF --default-character-set=utf8mb4 <scratch库>
+--        整体替换本文件正文（保留本头部注释，更新快照头版本号）；
+--     ③ 从零对拍：干净库按上面三步流程跑一遍，必须 0 ERROR、表数与
+--        scratch 库一致，再抽表比对行数。
 --
 -- 注意：本文件含 INSERT sys_dict_data / sys_menu，导入后需跑
 --   bash script/sql/djs/_post-init.sh 清 Redis 字典缓存（若此前 admin 已起过）。
---
--- 合并自 40 个迁移文件（版本 ≤ V202605281100），按版本升序：
---   V202605200900__SYS-INIT-001-create-business-tables-common.sql
---   V202605200901__SYS-INIT-001-create-business-tables-breed.sql
---   V202605200902__SYS-INIT-001-create-business-tables-plant.sql
---   V202605200903__SYS-INIT-001-create-business-tables-warehouse.sql
---   V202605200904__SYS-INIT-001-create-business-tables-store.sql
---   V202605200905__SYS-INIT-001-extend-ruoyi-tables.sql
---   V202605200906__SYS-INIT-001-cleanup-ruoyi-menus.sql
---   V202605201000__SYS-INIT-002-init-dict.sql
---   V202605201100__SYS-AUTH-001-roles-and-menus.sql
---   V202605201200__SYS-INFRA-002-oss-config-and-menus.sql
---   V202605201500__SYS-CLEANUP-single-tenant.sql
---   V202605201600__SYS-CLEANUP-ruoyi-demo-menus.sql
---   V202605201700__SYS-CLEANUP-ruoyi-sample-data.sql
---   V202605210800__D02-PATCH-D01-missing-tables.sql
---   V202605210900__SYS-INFRA-004-biz-code-rules.sql
---   V202605211200__SYS-MD-001-menu.sql
---   V202605211300__SYS-MD-002-menu.sql
---   V202605211400__D02-PATCH-D01-D02-fixes.sql
---   V202605211800__D02-PATCH-fix-audit-cols.sql
---   V202605211900__D02-PATCH-65-tables-audit-cols.sql
---   V202605220900__SYS-MD-003-menu.sql
---   V202605221000__BRD-MD-001-breeding-menu-and-dict.sql
---   V202605221100__BRD-MD-002-farm-barn-pen-menu.sql
---   V202605221101__BRD-MED-001-medicine-batch.sql
---   V202605221200__BRD-MD-003-production-configs.sql
---   V202605221201__SYS-FIX-001-biz-dict-supplement.sql
---   V202605221300__D04-CLOSING-D02-D03-leftover-fixes.sql
---   V202605221400__D04-CLOSING-seed-dev-users-and-depts.sql
---   V202605222100__D04-TH06-seed-mock-dev-user.sql
---   V202605231400__SYS-MD-FIX-002-store-supplier.sql
---   V202605242200__BRD-CORE-001-add-status-record-update-cols.sql
---   V202605242300__BRD-EVENT-001-003-admin-readonly-list-menu.sql
---   V202605260900__BRD-CORE-001-menu.sql
---   V202605260901__BRD-CORE-001-realign-status-record-comment.sql
---   V202605270900__BRD-EVENT-001-intro-no-rule.sql
---   V202605270901__BRD-EVENT-001-menu.sql
---   V202605270902__BRD-EVENT-003-menu.sql
---   V202605280800__D05-CLOSING-fixes.sql
---   V202605281000__SYS-FIX-002-drop-person-postId.sql
---   V202605281100__D05-HOTFIX-breeding-split-4-menus.sql
 -- ============================================================================
 
-
--- ----------------------------------------------------------------------------
--- 来源文件：V202605200900__SYS-INIT-001-create-business-tables-common.sql
--- ----------------------------------------------------------------------------
--- ============================================================
--- SYS-INIT-001 业务表 DDL — 跨域 common
--- 生成时间: 2026-05-20
--- 表数: 4 张（sys_farm / t_md_store / t_md_supplier / mp_subscribe_record）
--- 强制规范: tenant_id VARCHAR(20) NOT NULL DEFAULT '1001' / UNIQUE 含 del_unique 生成列 / 审计字段对齐 ruoyi
--- 引用: doc/05-架构文档-ruoyi.md §6, doc/06-实现描述.md 第 1 章 (SYS-MD-002/003 + SYS-INFRA-006/007), doc/_db-changes.md
--- 注: mp_subscribe_record 为全局共享表（SYS-INFRA-006 / SYS-INFRA-007 IGNORE 名单），不含 tenant_id
---     sys_farm 为农场主数据表（SYS-INFRA-007），全局共享，不含 tenant_id
--- ============================================================
-
-SET NAMES utf8mb4;
-SET FOREIGN_KEY_CHECKS = 0;
-
--- ------------------------------------------------------------
--- 1. sys_farm（农场主数据，SYS-INFRA-007 多农场底座）
--- ------------------------------------------------------------
-DROP TABLE IF EXISTS sys_farm;
-CREATE TABLE sys_farm (
-  id              BIGINT       NOT NULL AUTO_INCREMENT COMMENT '农场 ID',
-  farm_code       VARCHAR(32)  NOT NULL COMMENT '农场编码（如 DJS-MAIN）',
-  farm_name       VARCHAR(64)  NOT NULL COMMENT '农场名称',
-  farm_status     TINYINT      NOT NULL DEFAULT 0 COMMENT '农场状态（字典 djs_farm_status：0=启用 1=停用）',
-  contact_name    VARCHAR(32)  NULL COMMENT '联系人',
-  contact_phone   VARCHAR(20)  NULL COMMENT '联系电话',
-  address         VARCHAR(255) NULL COMMENT '地址',
-  create_dept       BIGINT       NULL COMMENT '创建部门',
-  create_by       BIGINT       NULL COMMENT '创建人',
-  create_time     DATETIME     NULL COMMENT '创建时间',
-  update_by       BIGINT       NULL COMMENT '更新人',
-  update_time     DATETIME     NULL COMMENT '更新时间',
-  del_flag        CHAR(1)      DEFAULT '0' COMMENT '删除标志 0=未删 1=已删',
-  remark          VARCHAR(500) NULL COMMENT '备注',
-  del_unique          BIGINT       NOT NULL DEFAULT 0 COMMENT "软删除生成 token（应用层 update del_flag='1' 时同步 SET del_unique=id；§6.3.0）",
-  PRIMARY KEY (id),
-  UNIQUE KEY uk_farm_code (farm_code, del_unique),
-  KEY idx_status (farm_status)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='农场主数据（V1 仅 1 条 1001=东角山主场）';
-
--- 种子数据：V1 主场（建表后立即可用）
-INSERT INTO sys_farm (id, farm_code, farm_name, farm_status, create_by, create_time)
-VALUES (1001, 'DJS-MAIN', '东角山主场', 0, 1, NOW())
-ON DUPLICATE KEY UPDATE farm_name = VALUES(farm_name);
-
--- ------------------------------------------------------------
--- 2. t_md_store（门店主数据，SYS-MD-002）
--- ------------------------------------------------------------
-DROP TABLE IF EXISTS t_md_store;
-CREATE TABLE t_md_store (
-  id              BIGINT       NOT NULL AUTO_INCREMENT COMMENT '门店 ID',
-  tenant_id       VARCHAR(20)  NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID（多租户）',
-  store_code      VARCHAR(32)  NOT NULL COMMENT '门店编码（业务自定义，如 BJ001）',
-  store_name      VARCHAR(64)  NOT NULL COMMENT '门店名称',
-  store_type      VARCHAR(16)  NOT NULL DEFAULT 'direct' COMMENT '门店类型 direct=直营 / franchise=加盟（V1 自由文本，待客户上线前确认是否上字典）',
-  business_status TINYINT      NOT NULL DEFAULT 1 COMMENT '经营状态 1=合作中 0=已终止',
-  address         VARCHAR(255) NULL COMMENT '门店地址',
-  contact_name    VARCHAR(32)  NULL COMMENT '联系人',
-  contact_phone   VARCHAR(20)  NULL COMMENT '联系电话',
-  create_dept       BIGINT       NULL COMMENT '创建部门',
-  create_by       BIGINT       NULL COMMENT '创建人',
-  create_time     DATETIME     NULL COMMENT '创建时间',
-  update_by       BIGINT       NULL COMMENT '更新人',
-  update_time     DATETIME     NULL COMMENT '更新时间',
-  del_flag        CHAR(1)      DEFAULT '0' COMMENT '删除标志 0=未删 1=已删',
-  remark          VARCHAR(500) NULL COMMENT '备注',
-  del_unique          BIGINT       NOT NULL DEFAULT 0 COMMENT "软删除生成 token（应用层 update del_flag='1' 时同步 SET del_unique=id；§6.3.0）",
-  PRIMARY KEY (id),
-  UNIQUE KEY uk_store_code (tenant_id, store_code, del_unique),
-  KEY idx_tenant_create (tenant_id, create_time),
-  KEY idx_status (business_status)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='门店主数据（SYS-MD-002）';
-
--- ------------------------------------------------------------
--- 3. t_md_supplier（供应商主数据，SYS-MD-003）
--- ------------------------------------------------------------
-DROP TABLE IF EXISTS t_md_supplier;
-CREATE TABLE t_md_supplier (
-  id              BIGINT       NOT NULL AUTO_INCREMENT COMMENT '供应商 ID',
-  tenant_id       VARCHAR(20)  NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
-  supplier_code   VARCHAR(32)  NOT NULL COMMENT '供应商编码（SYS-INFRA-004 生成 G0001 风格）',
-  supplier_name   VARCHAR(128) NOT NULL COMMENT '供应商名称',
-  supplier_type   VARCHAR(32)  NOT NULL COMMENT '供应商类型 字典 djs_supplier_type: feed/breed/med/seed/pack/other',
-  contact_name    VARCHAR(32)  NULL COMMENT '联系人',
-  contact_phone   VARCHAR(20)  NULL COMMENT '联系电话',
-  address         VARCHAR(255) NULL COMMENT '地址',
-  business_status TINYINT      NOT NULL DEFAULT 1 COMMENT '合作状态 1=合作中 0=已终止',
-  settle_type     VARCHAR(16)  NULL COMMENT '结算方式 cash/monthly/quarterly（V1 自由文本，待客户上线前确认是否上字典）',
-  bank_account    VARCHAR(64)  NULL COMMENT '银行账号',
-  bank_name       VARCHAR(64)  NULL COMMENT '开户行',
-  create_dept       BIGINT       NULL COMMENT '创建部门',
-  create_by       BIGINT       NULL COMMENT '创建人',
-  create_time     DATETIME     NULL COMMENT '创建时间',
-  update_by       BIGINT       NULL COMMENT '更新人',
-  update_time     DATETIME     NULL COMMENT '更新时间',
-  del_flag        CHAR(1)      DEFAULT '0' COMMENT '删除标志',
-  remark          VARCHAR(500) NULL COMMENT '备注',
-  del_unique          BIGINT       NOT NULL DEFAULT 0 COMMENT "软删除生成 token（应用层 update del_flag='1' 时同步 SET del_unique=id；§6.3.0）",
-  PRIMARY KEY (id),
-  UNIQUE KEY uk_supplier_code (tenant_id, supplier_code, del_unique),
-  KEY idx_tenant_create (tenant_id, create_time),
-  KEY idx_supplier_type (supplier_type)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='供应商主数据（SYS-MD-003）';
-
--- ------------------------------------------------------------
--- 4. mp_subscribe_record（微信订阅消息记录，SYS-INFRA-006）
--- 注: 全局共享表，不带 tenant_id（参 SYS-INFRA-007 IGNORE 名单）
--- ------------------------------------------------------------
-DROP TABLE IF EXISTS mp_subscribe_record;
-CREATE TABLE mp_subscribe_record (
-  id              BIGINT       NOT NULL AUTO_INCREMENT COMMENT '主键',
-  user_id         BIGINT       NOT NULL COMMENT '用户 ID（sys_user.user_id）',
-  openid          VARCHAR(64)  NOT NULL COMMENT '微信 openid',
-  template_id     VARCHAR(64)  NOT NULL COMMENT '微信模板 ID',
-  subscribed_at   DATETIME     NOT NULL COMMENT '授权时间',
-  expired_at      DATETIME     NULL COMMENT '过期时间（订阅消息有效期 7 天）',
-  used            TINYINT      NOT NULL DEFAULT 0 COMMENT '0=未使用 1=已使用',
-  used_at         DATETIME     NULL COMMENT '使用时间',
-  always_keep     TINYINT      NOT NULL DEFAULT 0 COMMENT '是否勾选"总是保持以上选择" 1=是 0=否',
-  create_time     DATETIME     NOT NULL COMMENT '创建时间',
-  PRIMARY KEY (id),
-  KEY idx_user_template (user_id, template_id, used, expired_at),
-  KEY idx_openid (openid)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='微信订阅消息授权记录（SYS-INFRA-006，全局共享）';
-
-SET FOREIGN_KEY_CHECKS = 1;
-
-
--- ----------------------------------------------------------------------------
--- 来源文件：V202605200901__SYS-INIT-001-create-business-tables-breed.sql
--- ----------------------------------------------------------------------------
--- ============================================================
--- SYS-INIT-001 业务表 DDL — 养殖域 BRD
--- 生成时间: 2026-05-20
--- 表数: 29 张（含 _db-changes 列出的 25 张 + pig_batch + t_breed_production_config + t_breed_medicine_info + t_breed_medicine_use）
--- 强制规范: tenant_id VARCHAR(20) NOT NULL DEFAULT '1001' / UNIQUE 含 del_unique 生成列 / 审计字段对齐 ruoyi
--- 引用: doc/05-架构文档-ruoyi.md §6, doc/06-实现描述.md 第 2 章 (BRD-*) + SYS-INFRA-004 (pig_batch), doc/_db-changes.md
--- ============================================================
-
-SET NAMES utf8mb4;
-SET FOREIGN_KEY_CHECKS = 0;
-
--- ============================================================
--- 主数据（5 张）
--- ============================================================
-
--- ------------------------------------------------------------
--- 1. t_farm_breed_info（育种信息表，品种+品系合表，CR-20260519-06）
--- breed_strain 字段区分 1=品种 / 2=品系
--- ------------------------------------------------------------
-DROP TABLE IF EXISTS t_farm_breed_info;
-CREATE TABLE t_farm_breed_info (
-  id                BIGINT       NOT NULL AUTO_INCREMENT,
-  tenant_id         VARCHAR(20)  NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
-  breed_strain      TINYINT      NOT NULL COMMENT '类型 1=品种 / 2=品系',
-  breed_strain_code VARCHAR(32)  NOT NULL COMMENT '品种/品系编码（业务码，字符串引用）',
-  breed_strain_name VARCHAR(64)  NOT NULL COMMENT '品种/品系名称',
-  parent_code       VARCHAR(32)  NULL COMMENT '父级编码（品系归属品种时填）',
-  description       VARCHAR(255) NULL COMMENT '描述',
-  create_dept         BIGINT       NULL COMMENT '创建部门',
-  create_by         BIGINT       NULL COMMENT '创建人',
-  create_time       DATETIME     NULL COMMENT '创建时间',
-  update_by         BIGINT       NULL COMMENT '更新人',
-  update_time       DATETIME     NULL COMMENT '更新时间',
-  del_flag          CHAR(1)      DEFAULT '0' COMMENT '删除标志',
-  remark            VARCHAR(500) NULL COMMENT '备注',
-  del_unique          BIGINT       NOT NULL DEFAULT 0 COMMENT "软删除生成 token（应用层 update del_flag='1' 时同步 SET del_unique=id；§6.3.0）",
-  PRIMARY KEY (id),
-  UNIQUE KEY uk_breed_strain_code (tenant_id, breed_strain, breed_strain_code, del_unique),
-  KEY idx_tenant_create (tenant_id, create_time)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='育种信息表（品种+品系合表，BRD-MD-001）';
-
--- ------------------------------------------------------------
--- 2. t_farm_breed_config（育种配置表，配种关系合表，CR-20260519-06）
--- typo 修复: confing -> config / monther_code -> mother_code
--- ------------------------------------------------------------
-DROP TABLE IF EXISTS t_farm_breed_config;
-CREATE TABLE t_farm_breed_config (
-  id                BIGINT       NOT NULL AUTO_INCREMENT,
-  tenant_id         VARCHAR(20)  NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
-  breed_strain      TINYINT      NOT NULL COMMENT '类型 1=品种配种 / 2=品系配种',
-  mother_code       VARCHAR(32)  NOT NULL COMMENT '母本品种/品系编码（引用 t_farm_breed_info.breed_strain_code）',
-  father_code       VARCHAR(32)  NOT NULL COMMENT '父本品种/品系编码',
-  cub_code          VARCHAR(32)  NOT NULL COMMENT '仔代品种/品系编码（必须先在 t_farm_breed_info 建好）',
-  create_dept         BIGINT       NULL COMMENT '创建部门',
-  create_by         BIGINT       NULL COMMENT '创建人',
-  create_time       DATETIME     NULL COMMENT '创建时间',
-  update_by         BIGINT       NULL COMMENT '更新人',
-  update_time       DATETIME     NULL COMMENT '更新时间',
-  del_flag          CHAR(1)      DEFAULT '0' COMMENT '删除标志',
-  remark            VARCHAR(500) NULL COMMENT '备注',
-  del_unique          BIGINT       NOT NULL DEFAULT 0 COMMENT "软删除生成 token（应用层 update del_flag='1' 时同步 SET del_unique=id；§6.3.0）",
-  PRIMARY KEY (id),
-  UNIQUE KEY uk_breed_config (tenant_id, breed_strain, mother_code, father_code, del_unique),
-  KEY idx_tenant_create (tenant_id, create_time),
-  KEY idx_cub (tenant_id, cub_code)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='育种配置表（配种关系合表，BRD-MD-001）';
-
--- ------------------------------------------------------------
--- 3. t_farm_barn_info（栋舍信息表，BRD-MD-002）
--- ------------------------------------------------------------
-DROP TABLE IF EXISTS t_farm_barn_info;
-CREATE TABLE t_farm_barn_info (
-  id              BIGINT       NOT NULL AUTO_INCREMENT,
-  tenant_id       VARCHAR(20)  NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
-  barn_code       VARCHAR(32)  NOT NULL COMMENT '栋舍编码',
-  barn_name       VARCHAR(64)  NOT NULL COMMENT '栋舍名称',
-  barn_type       VARCHAR(16)  NOT NULL COMMENT '栋舍类型 字典 barn_type：母猪舍/育成舍/公猪舍/产床舍/育肥舍/隔离舍',
-  capacity        INT          NULL COMMENT '设计容量（头数，推断字段）',
-  current_count   INT          NULL DEFAULT 0 COMMENT '当前头数（推断字段，可定时算）',
-  barn_status     TINYINT      NOT NULL DEFAULT 1 COMMENT '状态 1=启用 0=停用',
-  create_dept       BIGINT       NULL COMMENT '创建部门',
-  create_by       BIGINT       NULL COMMENT '创建人',
-  create_time     DATETIME     NULL COMMENT '创建时间',
-  update_by       BIGINT       NULL COMMENT '更新人',
-  update_time     DATETIME     NULL COMMENT '更新时间',
-  del_flag        CHAR(1)      DEFAULT '0' COMMENT '删除标志',
-  remark          VARCHAR(500) NULL COMMENT '备注',
-  del_unique          BIGINT       NOT NULL DEFAULT 0 COMMENT "软删除生成 token（应用层 update del_flag='1' 时同步 SET del_unique=id；§6.3.0）",
-  PRIMARY KEY (id),
-  UNIQUE KEY uk_barn_code (tenant_id, barn_code, del_unique),
-  KEY idx_tenant_create (tenant_id, create_time),
-  KEY idx_barn_type (barn_type)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='栋舍信息表（BRD-MD-002）';
-
--- ------------------------------------------------------------
--- 4. t_farm_barn_pen（栏位信息表，BRD-MD-002）
--- typo 修复: bran_pen -> barn_pen
--- ------------------------------------------------------------
-DROP TABLE IF EXISTS t_farm_barn_pen;
-CREATE TABLE t_farm_barn_pen (
-  id              BIGINT       NOT NULL AUTO_INCREMENT,
-  tenant_id       VARCHAR(20)  NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
-  barn_id         BIGINT       NOT NULL COMMENT '栋舍 ID',
-  pen_code        VARCHAR(32)  NOT NULL COMMENT '栏位编码',
-  pen_name        VARCHAR(64)  NOT NULL COMMENT '栏位名称',
-  pen_type        VARCHAR(16)  NOT NULL COMMENT '栏位类型：大栏/限位栏/产床/隔离栏',
-  capacity        INT          NULL COMMENT '设计容量',
-  current_count   INT          NULL DEFAULT 0 COMMENT '当前头数',
-  pen_status      TINYINT      NOT NULL DEFAULT 1 COMMENT '状态 1=启用 0=停用',
-  create_dept       BIGINT       NULL COMMENT '创建部门',
-  create_by       BIGINT       NULL COMMENT '创建人',
-  create_time     DATETIME     NULL COMMENT '创建时间',
-  update_by       BIGINT       NULL COMMENT '更新人',
-  update_time     DATETIME     NULL COMMENT '更新时间',
-  del_flag        CHAR(1)      DEFAULT '0' COMMENT '删除标志',
-  remark          VARCHAR(500) NULL COMMENT '备注',
-  del_unique          BIGINT       NOT NULL DEFAULT 0 COMMENT "软删除生成 token（应用层 update del_flag='1' 时同步 SET del_unique=id；§6.3.0）",
-  PRIMARY KEY (id),
-  UNIQUE KEY uk_pen_code (tenant_id, barn_id, pen_code, del_unique),
-  KEY idx_tenant_create (tenant_id, create_time),
-  KEY idx_barn (barn_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='栏位信息表（BRD-MD-002）';
-
--- ------------------------------------------------------------
--- 5. t_breed_production_config（生产配置表，BRD-MD-003）
--- type 字段区分 sow / fattening / marketing
--- ------------------------------------------------------------
-DROP TABLE IF EXISTS t_breed_production_config;
-CREATE TABLE t_breed_production_config (
-  id              BIGINT       NOT NULL AUTO_INCREMENT,
-  tenant_id       VARCHAR(20)  NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
-  config_type     VARCHAR(16)  NOT NULL COMMENT '配置类型 sow=母猪 / fattening=育肥 / marketing=出栏',
-  config_key      VARCHAR(64)  NOT NULL COMMENT '配置键（如 breed_wean_to_mate_days）',
-  value_days      INT          NULL COMMENT '天数值（type=sow 时用）',
-  start_age       INT          NULL COMMENT '起始日龄（type=fattening 时用）',
-  end_age         INT          NULL COMMENT '结束日龄（type=fattening 时用）',
-  record_grow     TINYINT      NULL DEFAULT 0 COMMENT '是否需要记录生长 1=是 0=否',
-  display_order   INT          DEFAULT 0 COMMENT '展示顺序',
-  create_dept       BIGINT       NULL COMMENT '创建部门',
-  create_by       BIGINT       NULL COMMENT '创建人',
-  create_time     DATETIME     NULL COMMENT '创建时间',
-  update_by       BIGINT       NULL COMMENT '更新人',
-  update_time     DATETIME     NULL COMMENT '更新时间',
-  del_flag        CHAR(1)      DEFAULT '0' COMMENT '删除标志',
-  remark          VARCHAR(500) NULL COMMENT '备注',
-  del_unique          BIGINT       NOT NULL DEFAULT 0 COMMENT "软删除生成 token（应用层 update del_flag='1' 时同步 SET del_unique=id；§6.3.0）",
-  PRIMARY KEY (id),
-  UNIQUE KEY uk_config_key (tenant_id, config_type, config_key, del_unique),
-  KEY idx_tenant_create (tenant_id, create_time)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='生产配置表（BRD-MD-003，3 type 多行）';
-
--- ============================================================
--- 核心实体 + 状态机（3 张）
--- ============================================================
-
--- ------------------------------------------------------------
--- 6. t_farm_pig_info（猪只信息表 ★ 中心实体，BRD-CORE-001）
--- v1.2 改造：pig_status 废弃 / 新增 current_status + status_started_at + lifecycle_id + recyclable
--- ------------------------------------------------------------
-DROP TABLE IF EXISTS t_farm_pig_info;
-CREATE TABLE t_farm_pig_info (
-  id                  BIGINT       NOT NULL AUTO_INCREMENT,
-  tenant_id           VARCHAR(20)  NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
-  ear_tag             VARCHAR(32)  NULL COMMENT '耳号全版 {breed}-{strain}-{sex}-{yyMMdd}-{seq:03d}',
-  ear_no              VARCHAR(32)  NOT NULL COMMENT '耳号简版 {yyMMdd}-{seq:03d}',
-  lifecycle_id        INT          NOT NULL DEFAULT 1 COMMENT '生命周期 id（耳号复用次数+1，SYS-INFRA-004）',
-  recyclable          TINYINT(1)   NOT NULL DEFAULT 0 COMMENT '是否可回收复用 1=是 0=否',
-  pig_sex             CHAR(1)      NOT NULL COMMENT '性别 F=母 M=公',
-  pig_type            VARCHAR(16)  NOT NULL COMMENT '猪只类型 字典 pig_type：sow/boar/piglet/fattening',
-  pig_breed_code      VARCHAR(32)  NULL COMMENT '品种编码（引用 t_farm_breed_info）',
-  pig_strain_code     VARCHAR(32)  NULL COMMENT '品系编码（引用 t_farm_breed_info）',
-  current_status      VARCHAR(16)  NOT NULL DEFAULT 'HB' COMMENT '当前状态（10 枚举）：HB/PZ/PH/FM/DN/LC/KH/FQ/END/BOAR_ACTIVE；字典 djs_pig_lifecycle',
-  status_started_at   DATETIME     NOT NULL COMMENT '进入当前状态的时间（小程序"按 X 天提醒"基准）',
-  end_reason          VARCHAR(16)  NULL COMMENT '终止原因 END 状态时填：DEAD/CULL/MARKET',
-  father_ear          VARCHAR(32)  NULL COMMENT '父猪耳号（仔猪用）',
-  mother_ear          VARCHAR(32)  NULL COMMENT '母猪耳号（仔猪用）',
-  birth_date          DATE         NULL COMMENT '出生日期',
-  introduce_date      DATE         NULL COMMENT '引种日期',
-  introduce_type      VARCHAR(16)  NULL COMMENT '引种方式 字典 introduce_from：internal/external',
-  supplier_id         BIGINT       NULL COMMENT '供应商 ID（外部引种用）',
-  parity              INT          NULL DEFAULT 0 COMMENT '胎次（母猪用）',
-  barn_id             BIGINT       NULL COMMENT '当前栋舍 ID',
-  pen_id              BIGINT       NULL COMMENT '当前栏位 ID',
-  mating_id           BIGINT       NULL COMMENT '最近一次配种记录 ID',
-  is_appointed        TINYINT(1)   NULL DEFAULT 0 COMMENT '是否被预约出栏 1=是 0=否',
-  store_id            BIGINT       NULL COMMENT '预约门店 ID',
-  create_dept           BIGINT       NULL COMMENT '创建部门',
-  create_by           BIGINT       NULL COMMENT '创建人',
-  create_time         DATETIME     NULL COMMENT '创建时间',
-  update_by           BIGINT       NULL COMMENT '更新人',
-  update_time         DATETIME     NULL COMMENT '更新时间',
-  del_flag            CHAR(1)      DEFAULT '0' COMMENT '删除标志',
-  version             INT          DEFAULT 0 COMMENT '乐观锁版本',
-  remark              VARCHAR(500) NULL COMMENT '备注',
-  del_unique          BIGINT       NOT NULL DEFAULT 0 COMMENT "软删除生成 token（应用层 update del_flag='1' 时同步 SET del_unique=id；§6.3.0）",
-  PRIMARY KEY (id),
-  UNIQUE KEY uk_ear_no_farm (tenant_id, ear_no, lifecycle_id, del_unique),
-  KEY idx_tenant_create (tenant_id, create_time),
-  KEY idx_current_status (tenant_id, current_status),
-  KEY idx_barn_pen (barn_id, pen_id),
-  KEY idx_pig_type (tenant_id, pig_type),
-  KEY idx_recyclable (tenant_id, recyclable)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='猪只信息表（中心实体，BRD-CORE-001）';
-
--- ------------------------------------------------------------
--- 7. t_farm_status_record（状态变更记录表 ★ 状态机历史，BRD-CORE-001）
--- 流水表无 UNIQUE 故无需 del_unique，但 _db-changes 说统计表不带 del_flag/update_by
--- 这里不算预聚合统计，保留 del_flag/update_by
--- ------------------------------------------------------------
-DROP TABLE IF EXISTS t_farm_status_record;
-CREATE TABLE t_farm_status_record (
-  id              BIGINT       NOT NULL AUTO_INCREMENT,
-  tenant_id       VARCHAR(20)  NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
-  pig_id          BIGINT       NOT NULL COMMENT '猪只 ID',
-  ear_no          VARCHAR(32)  NOT NULL COMMENT '耳号（冗余便于查询）',
-  old_status      VARCHAR(16)  NULL COMMENT '原状态',
-  new_status      VARCHAR(16)  NOT NULL COMMENT '新状态',
-  event_type      VARCHAR(16)  NOT NULL COMMENT '触发事件（11 枚举）：INTRO/BREED/FARROW/WEAN/OESTRUS/NULL_RETURN/DIE/ELIMINATE/CASTRATE/TRANSFER/SLAUGHTER；字典 djs_pig_status_event',
-  related_event_id BIGINT      NULL COMMENT '关联业务事件 ID（如 breeding_id/farrow_id）',
-  duration_days   INT          NULL COMMENT '在原状态停留天数（业务层计算）',
-  change_time     DATETIME     NOT NULL COMMENT '状态变更时间',
-  create_dept       BIGINT       NULL COMMENT '创建部门',
-  create_by       BIGINT       NULL COMMENT '操作人',
-  create_time     DATETIME     NULL COMMENT '记录创建时间',
-  update_by       BIGINT       NULL COMMENT '更新人（MP insertFill 占位，状态记录实际不 update）',
-  update_time     DATETIME     NULL COMMENT '更新时间（MP insertFill 占位）',
-  PRIMARY KEY (id),
-  KEY idx_tenant_create (tenant_id, create_time),
-  KEY idx_ear_change (ear_no, change_time),
-  KEY idx_pig (tenant_id, pig_id, change_time)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='状态变更记录（状态机历史，BRD-CORE-001）';
-
--- ------------------------------------------------------------
--- 8. pig_batch（耳号批次回收表，SYS-INFRA-004 v1.2 新增）
--- ------------------------------------------------------------
-DROP TABLE IF EXISTS pig_batch;
-CREATE TABLE pig_batch (
-  id              BIGINT       NOT NULL AUTO_INCREMENT,
-  tenant_id       VARCHAR(20)  NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
-  batch_no        VARCHAR(32)  NOT NULL COMMENT '批次号（yymmdd_yymmdd 格式）',
-  year            SMALLINT     NOT NULL COMMENT '所属年份',
-  batch_status    CHAR(1)      NOT NULL DEFAULT 'A' COMMENT '状态 A=Active C=Closed',
-  closed_at       DATETIME     NULL COMMENT '关闭时间',
-  closed_by       BIGINT       NULL COMMENT '关闭操作人 user_id',
-  recycled_count  INT          NULL DEFAULT 0 COMMENT '回收数量',
-  create_dept       BIGINT       NULL COMMENT '创建部门',
-  create_by       BIGINT       NULL COMMENT '创建人',
-  create_time     DATETIME     NOT NULL COMMENT '创建时间',
-  update_by       BIGINT       NULL COMMENT '更新人',
-  update_time     DATETIME     NULL COMMENT '更新时间',
-  del_flag        CHAR(1)      DEFAULT '0' COMMENT '删除标志',
-  remark          VARCHAR(500) NULL COMMENT '备注',
-  del_unique          BIGINT       NOT NULL DEFAULT 0 COMMENT "软删除生成 token（应用层 update del_flag='1' 时同步 SET del_unique=id；§6.3.0）",
-  PRIMARY KEY (id),
-  UNIQUE KEY uk_tenant_batch (tenant_id, batch_no, del_unique),
-  KEY idx_tenant_status (tenant_id, batch_status),
-  KEY idx_year (year)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='耳号批次回收表（SYS-INFRA-004）';
-
--- ============================================================
--- 事件流水（13 张）
--- ============================================================
-
--- ------------------------------------------------------------
--- 9. t_farm_pig_introduce（猪种引种记录，BRD-EVENT-001）
--- ------------------------------------------------------------
-DROP TABLE IF EXISTS t_farm_pig_introduce;
-CREATE TABLE t_farm_pig_introduce (
-  id              BIGINT       NOT NULL AUTO_INCREMENT,
-  tenant_id       VARCHAR(20)  NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
-  introduce_no    VARCHAR(32)  NOT NULL COMMENT '引种单号',
-  introduce_type  VARCHAR(16)  NOT NULL COMMENT '引种方式 字典 introduce_from：external/internal',
-  introduce_date  DATE         NOT NULL COMMENT '引种日期',
-  supplier_id     BIGINT       NULL COMMENT '供应商 ID（外部引种时必填）',
-  pig_count       INT          NOT NULL COMMENT '引入头数',
-  start_ear_no    VARCHAR(32)  NULL COMMENT '起始耳号',
-  pig_breed_code  VARCHAR(32)  NULL COMMENT '品种编码',
-  pig_strain_code VARCHAR(32)  NULL COMMENT '品系编码',
-  pig_sex         CHAR(1)      NULL COMMENT '性别（统一时填，混批时 NULL）',
-  proof_oss_ids   VARCHAR(1024) NULL COMMENT '凭证图片 OSS IDs 逗号分隔（外部引种强制）',
-  barn_id         BIGINT       NULL COMMENT '目标栋舍 ID',
-  pen_id          BIGINT       NULL COMMENT '目标栏位 ID',
-  create_dept       BIGINT       NULL COMMENT '创建部门',
-  create_by       BIGINT       NULL COMMENT '录入人',
-  create_time     DATETIME     NULL COMMENT '录入时间',
-  update_by       BIGINT       NULL COMMENT '更新人',
-  update_time     DATETIME     NULL COMMENT '更新时间',
-  del_flag        CHAR(1)      DEFAULT '0' COMMENT '删除标志',
-  remark          VARCHAR(500) NULL COMMENT '备注',
-  del_unique          BIGINT       NOT NULL DEFAULT 0 COMMENT "软删除生成 token（应用层 update del_flag='1' 时同步 SET del_unique=id；§6.3.0）",
-  PRIMARY KEY (id),
-  UNIQUE KEY uk_introduce_no (tenant_id, introduce_no, del_unique),
-  KEY idx_tenant_create (tenant_id, create_time),
-  KEY idx_introduce_date (introduce_date)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='猪种引种记录（BRD-EVENT-001）';
-
--- ------------------------------------------------------------
--- 10. t_farm_pig_breeding（母猪配种记录，BRD-EVENT-002）
--- ------------------------------------------------------------
-DROP TABLE IF EXISTS t_farm_pig_breeding;
-CREATE TABLE t_farm_pig_breeding (
-  id              BIGINT       NOT NULL AUTO_INCREMENT,
-  tenant_id       VARCHAR(20)  NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
-  pig_id          BIGINT       NOT NULL COMMENT '母猪 ID',
-  ear_no          VARCHAR(32)  NOT NULL COMMENT '母猪耳号（冗余）',
-  breeding_date   DATETIME     NOT NULL COMMENT '配种日期',
-  breeding_type   VARCHAR(16)  NOT NULL COMMENT '配种方式 字典 breeding_type：own_boar/semen',
-  boar_ear_no     VARCHAR(32)  NULL COMMENT '公猪耳号（本场公猪时填）',
-  semen_supplier  VARCHAR(64)  NULL COMMENT '精液供应商（精液产品时填）',
-  semen_batch_no  VARCHAR(32)  NULL COMMENT '精液批号',
-  parity          INT          NULL COMMENT '本次胎次',
-  operator_id     BIGINT       NULL COMMENT '操作人 user_id',
-  barn_name       VARCHAR(64)  NULL COMMENT '栋舍名称冗余',
-  pen_name        VARCHAR(64)  NULL COMMENT '栏位名称冗余',
-  create_dept       BIGINT       NULL COMMENT '创建部门',
-  create_by       BIGINT       NULL COMMENT '录入人',
-  create_time     DATETIME     NULL COMMENT '录入时间',
-  update_by       BIGINT       NULL COMMENT '更新人',
-  update_time     DATETIME     NULL COMMENT '更新时间',
-  del_flag        CHAR(1)      DEFAULT '0' COMMENT '删除标志',
-  remark          VARCHAR(500) NULL COMMENT '备注',
-  PRIMARY KEY (id),
-  KEY idx_tenant_create (tenant_id, create_time),
-  KEY idx_pig (tenant_id, pig_id),
-  KEY idx_breeding_date (breeding_date)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='母猪配种记录（BRD-EVENT-002）';
-
--- ------------------------------------------------------------
--- 11. t_farm_pig_farrow（母猪分娩记录，BRD-EVENT-002）
--- ------------------------------------------------------------
-DROP TABLE IF EXISTS t_farm_pig_farrow;
-CREATE TABLE t_farm_pig_farrow (
-  id                BIGINT       NOT NULL AUTO_INCREMENT,
-  tenant_id         VARCHAR(20)  NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
-  pig_id            BIGINT       NOT NULL COMMENT '母猪 ID',
-  ear_no            VARCHAR(32)  NOT NULL COMMENT '母猪耳号',
-  breeding_id       BIGINT       NOT NULL COMMENT '关联配种记录 ID',
-  farrow_date       DATETIME     NOT NULL COMMENT '分娩日期',
-  total_born        INT          NOT NULL COMMENT '总产仔数',
-  live_born         INT          NOT NULL COMMENT '活产数',
-  dead_born         INT          NULL DEFAULT 0 COMMENT '死胎数',
-  mummy_born        INT          NULL DEFAULT 0 COMMENT '木乃伊数',
-  weak_born         INT          NULL DEFAULT 0 COMMENT '弱仔数',
-  male_count        INT          NULL COMMENT '公仔数',
-  female_count      INT          NULL COMMENT '母仔数',
-  total_weight      DECIMAL(12,2) NULL COMMENT '产仔总重 kg',
-  avg_weight        DECIMAL(8,3)  NULL COMMENT '平均出生重 kg',
-  parity            INT          NULL COMMENT '本次胎次',
-  operator_id       BIGINT       NULL COMMENT '操作人 user_id',
-  barn_name         VARCHAR(64)  NULL COMMENT '栋舍名称冗余',
-  pen_name          VARCHAR(64)  NULL COMMENT '栏位名称冗余',
-  create_dept         BIGINT       NULL COMMENT '创建部门',
-  create_by         BIGINT       NULL COMMENT '录入人',
-  create_time       DATETIME     NULL COMMENT '录入时间',
-  update_by         BIGINT       NULL COMMENT '更新人',
-  update_time       DATETIME     NULL COMMENT '更新时间',
-  del_flag          CHAR(1)      DEFAULT '0' COMMENT '删除标志',
-  remark            VARCHAR(500) NULL COMMENT '备注',
-  PRIMARY KEY (id),
-  KEY idx_tenant_create (tenant_id, create_time),
-  KEY idx_pig (tenant_id, pig_id),
-  KEY idx_breeding (breeding_id),
-  KEY idx_farrow_date (farrow_date)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='母猪分娩记录（BRD-EVENT-002）';
-
--- ------------------------------------------------------------
--- 12. t_farm_pig_weaning（母猪断奶记录，BRD-EVENT-002）
--- ------------------------------------------------------------
-DROP TABLE IF EXISTS t_farm_pig_weaning;
-CREATE TABLE t_farm_pig_weaning (
-  id                BIGINT       NOT NULL AUTO_INCREMENT,
-  tenant_id         VARCHAR(20)  NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
-  pig_id            BIGINT       NOT NULL COMMENT '母猪 ID',
-  ear_no            VARCHAR(32)  NOT NULL COMMENT '母猪耳号',
-  farrow_id         BIGINT       NOT NULL COMMENT '关联分娩记录 ID',
-  breeding_id       BIGINT       NULL COMMENT '关联配种记录 ID',
-  weaning_date      DATETIME     NOT NULL COMMENT '断奶日期',
-  weaned_count      INT          NOT NULL COMMENT '断奶头数',
-  weaned_weight     DECIMAL(12,2) NULL COMMENT '断奶总重 kg',
-  avg_weaned_weight DECIMAL(8,3)  NULL COMMENT '平均断奶重 kg',
-  operator_id       BIGINT       NULL COMMENT '操作人',
-  create_dept         BIGINT       NULL COMMENT '创建部门',
-  create_by         BIGINT       NULL COMMENT '录入人',
-  create_time       DATETIME     NULL COMMENT '录入时间',
-  update_by         BIGINT       NULL COMMENT '更新人',
-  update_time       DATETIME     NULL COMMENT '更新时间',
-  del_flag          CHAR(1)      DEFAULT '0' COMMENT '删除标志',
-  remark            VARCHAR(500) NULL COMMENT '备注',
-  PRIMARY KEY (id),
-  KEY idx_tenant_create (tenant_id, create_time),
-  KEY idx_pig (tenant_id, pig_id),
-  KEY idx_farrow (farrow_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='母猪断奶记录（BRD-EVENT-002）';
-
--- ------------------------------------------------------------
--- 13. t_farm_pig_heat（母猪查情记录，BRD-EVENT-002）
--- ------------------------------------------------------------
-DROP TABLE IF EXISTS t_farm_pig_heat;
-CREATE TABLE t_farm_pig_heat (
-  id                BIGINT       NOT NULL AUTO_INCREMENT,
-  tenant_id         VARCHAR(20)  NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
-  pig_id            BIGINT       NOT NULL COMMENT '母猪 ID',
-  ear_no            VARCHAR(32)  NOT NULL COMMENT '母猪耳号',
-  heat_date         DATETIME     NOT NULL COMMENT '查情日期',
-  heat_result       VARCHAR(16)  NOT NULL COMMENT '查情结果：normal=正常/no_heat=未发情/pregnant=已妊娠/abnormal=异常',
-  is_pregnant_confirmed TINYINT(1) NULL DEFAULT 0 COMMENT '是否确认妊娠：1=已妊娠（OESTRUS 事件 payload 决定 PZ→PH 状态跳转）',
-  operator_id       BIGINT       NULL COMMENT '操作人 user_id',
-  create_dept         BIGINT       NULL COMMENT '创建部门',
-  create_by         BIGINT       NULL COMMENT '录入人',
-  create_time       DATETIME     NULL COMMENT '录入时间',
-  update_by         BIGINT       NULL COMMENT '更新人',
-  update_time       DATETIME     NULL COMMENT '更新时间',
-  del_flag          CHAR(1)      DEFAULT '0' COMMENT '删除标志',
-  remark            VARCHAR(500) NULL COMMENT '备注',
-  PRIMARY KEY (id),
-  KEY idx_tenant_create (tenant_id, create_time),
-  KEY idx_pig (tenant_id, pig_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='母猪查情记录（BRD-EVENT-002）';
-
--- ------------------------------------------------------------
--- 14. t_farm_pig_abnormal（母猪返空流记录，BRD-EVENT-002）
--- ------------------------------------------------------------
-DROP TABLE IF EXISTS t_farm_pig_abnormal;
-CREATE TABLE t_farm_pig_abnormal (
-  id                BIGINT       NOT NULL AUTO_INCREMENT,
-  tenant_id         VARCHAR(20)  NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
-  pig_id            BIGINT       NOT NULL COMMENT '母猪 ID',
-  ear_no            VARCHAR(32)  NOT NULL COMMENT '母猪耳号',
-  abnormal_date     DATETIME     NOT NULL COMMENT '异常日期',
-  abnormal_type     VARCHAR(16)  NOT NULL COMMENT '异常类型：abort=流产/return=返情/idle=空怀',
-  related_breeding_id BIGINT     NULL COMMENT '关联配种记录 ID',
-  abnormal_reason   VARCHAR(32)  NULL COMMENT '异常原因',
-  operator_id       BIGINT       NULL COMMENT '操作人',
-  create_dept         BIGINT       NULL COMMENT '创建部门',
-  create_by         BIGINT       NULL COMMENT '录入人',
-  create_time       DATETIME     NULL COMMENT '录入时间',
-  update_by         BIGINT       NULL COMMENT '更新人',
-  update_time       DATETIME     NULL COMMENT '更新时间',
-  del_flag          CHAR(1)      DEFAULT '0' COMMENT '删除标志',
-  remark            VARCHAR(500) NULL COMMENT '备注',
-  PRIMARY KEY (id),
-  KEY idx_tenant_create (tenant_id, create_time),
-  KEY idx_pig (tenant_id, pig_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='母猪返空流记录（BRD-EVENT-002）';
-
--- ------------------------------------------------------------
--- 15. t_farm_pig_pigletno（仔猪耳号打标记录，BRD-EVENT-003）
--- ------------------------------------------------------------
-DROP TABLE IF EXISTS t_farm_pig_pigletno;
-CREATE TABLE t_farm_pig_pigletno (
-  id                BIGINT       NOT NULL AUTO_INCREMENT,
-  tenant_id         VARCHAR(20)  NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
-  piglet_ear_no     VARCHAR(32)  NOT NULL COMMENT '仔猪耳号',
-  mother_ear_no     VARCHAR(32)  NOT NULL COMMENT '母猪耳号',
-  father_ear_no     VARCHAR(32)  NULL COMMENT '父猪耳号',
-  farrow_id         BIGINT       NOT NULL COMMENT '关联分娩记录 ID',
-  tag_date          DATETIME     NOT NULL COMMENT '打标日期',
-  piglet_sex        CHAR(1)      NOT NULL COMMENT '性别 F=母 M=公',
-  birth_weight      DECIMAL(8,3) NULL COMMENT '出生重 kg',
-  pig_id            BIGINT       NULL COMMENT '生成的 t_farm_pig_info.id',
-  operator_id       BIGINT       NULL COMMENT '操作人',
-  create_dept         BIGINT       NULL COMMENT '创建部门',
-  create_by         BIGINT       NULL COMMENT '录入人',
-  create_time       DATETIME     NULL COMMENT '录入时间',
-  update_by         BIGINT       NULL COMMENT '更新人',
-  update_time       DATETIME     NULL COMMENT '更新时间',
-  del_flag          CHAR(1)      DEFAULT '0' COMMENT '删除标志',
-  remark            VARCHAR(500) NULL COMMENT '备注',
-  del_unique          BIGINT       NOT NULL DEFAULT 0 COMMENT "软删除生成 token（应用层 update del_flag='1' 时同步 SET del_unique=id；§6.3.0）",
-  PRIMARY KEY (id),
-  UNIQUE KEY uk_piglet_ear (tenant_id, piglet_ear_no, del_unique),
-  KEY idx_tenant_create (tenant_id, create_time),
-  KEY idx_mother (mother_ear_no),
-  KEY idx_farrow (farrow_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='仔猪耳号打标记录（BRD-EVENT-003）';
-
--- ------------------------------------------------------------
--- 16. t_farm_wean_weight（断奶仔猪重记录，BRD-EVENT-003）
--- ------------------------------------------------------------
-DROP TABLE IF EXISTS t_farm_wean_weight;
-CREATE TABLE t_farm_wean_weight (
-  id                BIGINT       NOT NULL AUTO_INCREMENT,
-  tenant_id         VARCHAR(20)  NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
-  piglet_ear_no     VARCHAR(32)  NOT NULL COMMENT '仔猪耳号',
-  weaning_id        BIGINT       NULL COMMENT '关联断奶记录 ID',
-  weigh_date        DATETIME     NOT NULL COMMENT '称重日期',
-  weight            DECIMAL(8,3) NOT NULL COMMENT '断奶重 kg',
-  operator_id       BIGINT       NULL COMMENT '操作人',
-  create_dept         BIGINT       NULL COMMENT '创建部门',
-  create_by         BIGINT       NULL COMMENT '录入人',
-  create_time       DATETIME     NULL COMMENT '录入时间',
-  update_by         BIGINT       NULL COMMENT '更新人',
-  update_time       DATETIME     NULL COMMENT '更新时间',
-  del_flag          CHAR(1)      DEFAULT '0' COMMENT '删除标志',
-  remark            VARCHAR(500) NULL COMMENT '备注',
-  PRIMARY KEY (id),
-  KEY idx_tenant_create (tenant_id, create_time),
-  KEY idx_piglet (piglet_ear_no),
-  KEY idx_weaning (weaning_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='断奶仔猪重记录（BRD-EVENT-003）';
-
--- ------------------------------------------------------------
--- 17. t_farm_pig_death（猪只死亡记录，BRD-EVENT-004）
--- typo 修复: death_type x2 -> death_pig_type + death_kind
--- ------------------------------------------------------------
-DROP TABLE IF EXISTS t_farm_pig_death;
-CREATE TABLE t_farm_pig_death (
-  id                BIGINT       NOT NULL AUTO_INCREMENT,
-  tenant_id         VARCHAR(20)  NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
-  pig_id            BIGINT       NOT NULL COMMENT '猪只 ID',
-  ear_no            VARCHAR(32)  NOT NULL COMMENT '猪只耳号',
-  death_date        DATETIME     NOT NULL COMMENT '死亡日期',
-  death_pig_type    VARCHAR(16)  NOT NULL COMMENT '死亡猪只类型 字典 pig_type：sow/boar/piglet/fattening',
-  death_kind        VARCHAR(16)  NOT NULL COMMENT '死亡分类 字典 death_type：normal/abnormal',
-  death_reason      VARCHAR(32)  NULL COMMENT '死亡原因 字典 death_reason',
-  death_dest        VARCHAR(32)  NULL COMMENT '死亡去向 字典 death_dest',
-  death_weight      DECIMAL(12,2) NULL COMMENT '死亡重量 kg',
-  oss_ids           VARCHAR(1024) NULL COMMENT '照片 OSS IDs 多图逗号分隔',
-  operator_id       BIGINT       NULL COMMENT '操作人',
-  barn_name         VARCHAR(64)  NULL COMMENT '栋舍名称冗余',
-  pen_name          VARCHAR(64)  NULL COMMENT '栏位名称冗余',
-  create_dept         BIGINT       NULL COMMENT '创建部门',
-  create_by         BIGINT       NULL COMMENT '录入人',
-  create_time       DATETIME     NULL COMMENT '录入时间',
-  update_by         BIGINT       NULL COMMENT '更新人',
-  update_time       DATETIME     NULL COMMENT '更新时间',
-  del_flag          CHAR(1)      DEFAULT '0' COMMENT '删除标志',
-  remark            VARCHAR(500) NULL COMMENT '备注',
-  PRIMARY KEY (id),
-  KEY idx_tenant_create (tenant_id, create_time),
-  KEY idx_pig (tenant_id, pig_id),
-  KEY idx_death_date (death_date)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='猪只死亡记录（BRD-EVENT-004）';
-
--- ------------------------------------------------------------
--- 18. t_farm_pig_culling（猪只淘汰记录，BRD-EVENT-004）
--- ------------------------------------------------------------
-DROP TABLE IF EXISTS t_farm_pig_culling;
-CREATE TABLE t_farm_pig_culling (
-  id                BIGINT       NOT NULL AUTO_INCREMENT,
-  tenant_id         VARCHAR(20)  NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
-  pig_id            BIGINT       NOT NULL COMMENT '猪只 ID',
-  ear_no            VARCHAR(32)  NOT NULL COMMENT '猪只耳号',
-  culling_date      DATETIME     NOT NULL COMMENT '淘汰日期',
-  culling_reason    VARCHAR(32)  NOT NULL COMMENT '淘汰原因 字典 eliminate_reason',
-  culling_dest      VARCHAR(32)  NULL COMMENT '淘汰去向 字典 eliminate_dest',
-  culling_weight    DECIMAL(12,2) NULL COMMENT '淘汰重量 kg',
-  oss_ids           VARCHAR(1024) NULL COMMENT '照片 OSS IDs',
-  operator_id       BIGINT       NULL COMMENT '操作人',
-  create_dept         BIGINT       NULL COMMENT '创建部门',
-  create_by         BIGINT       NULL COMMENT '录入人',
-  create_time       DATETIME     NULL COMMENT '录入时间',
-  update_by         BIGINT       NULL COMMENT '更新人',
-  update_time       DATETIME     NULL COMMENT '更新时间',
-  del_flag          CHAR(1)      DEFAULT '0' COMMENT '删除标志',
-  remark            VARCHAR(500) NULL COMMENT '备注',
-  PRIMARY KEY (id),
-  KEY idx_tenant_create (tenant_id, create_time),
-  KEY idx_pig (tenant_id, pig_id),
-  KEY idx_culling_date (culling_date)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='猪只淘汰记录（BRD-EVENT-004）';
-
--- ------------------------------------------------------------
--- 19. t_farm_castrate_record（猪只阉割记录，BRD-EVENT-004）
--- ------------------------------------------------------------
-DROP TABLE IF EXISTS t_farm_castrate_record;
-CREATE TABLE t_farm_castrate_record (
-  id                BIGINT       NOT NULL AUTO_INCREMENT,
-  tenant_id         VARCHAR(20)  NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
-  pig_id            BIGINT       NOT NULL COMMENT '猪只 ID',
-  ear_no            VARCHAR(32)  NOT NULL COMMENT '猪只耳号',
-  castrate_date     DATETIME     NOT NULL COMMENT '阉割日期',
-  operator_id       BIGINT       NULL COMMENT '操作人',
-  create_dept         BIGINT       NULL COMMENT '创建部门',
-  create_by         BIGINT       NULL COMMENT '录入人',
-  create_time       DATETIME     NULL COMMENT '录入时间',
-  update_by         BIGINT       NULL COMMENT '更新人',
-  update_time       DATETIME     NULL COMMENT '更新时间',
-  del_flag          CHAR(1)      DEFAULT '0' COMMENT '删除标志',
-  remark            VARCHAR(500) NULL COMMENT '备注',
-  PRIMARY KEY (id),
-  KEY idx_tenant_create (tenant_id, create_time),
-  KEY idx_pig (tenant_id, pig_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='猪只阉割记录（BRD-EVENT-004）';
-
--- ------------------------------------------------------------
--- 20. t_farm_pig_transfer（猪只转移记录，BRD-EVENT-004）
--- ------------------------------------------------------------
-DROP TABLE IF EXISTS t_farm_pig_transfer;
-CREATE TABLE t_farm_pig_transfer (
-  id                BIGINT       NOT NULL AUTO_INCREMENT,
-  tenant_id         VARCHAR(20)  NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
-  pig_id            BIGINT       NOT NULL COMMENT '猪只 ID',
-  ear_no            VARCHAR(32)  NOT NULL COMMENT '猪只耳号',
-  transfer_date     DATETIME     NOT NULL COMMENT '转移日期',
-  old_barn_id       BIGINT       NULL COMMENT '原栋舍 ID',
-  old_pen_id        BIGINT       NULL COMMENT '原栏位 ID',
-  old_barn_name     VARCHAR(64)  NULL COMMENT '原栋舍名称冗余',
-  old_pen_name      VARCHAR(64)  NULL COMMENT '原栏位名称冗余',
-  new_barn_id       BIGINT       NOT NULL COMMENT '新栋舍 ID',
-  new_pen_id        BIGINT       NULL COMMENT '新栏位 ID',
-  new_barn_name     VARCHAR(64)  NULL COMMENT '新栋舍名称冗余',
-  new_pen_name      VARCHAR(64)  NULL COMMENT '新栏位名称冗余',
-  transfer_reason   VARCHAR(64)  NULL COMMENT '转移原因',
-  operator_id       BIGINT       NULL COMMENT '操作人',
-  create_dept         BIGINT       NULL COMMENT '创建部门',
-  create_by         BIGINT       NULL COMMENT '录入人',
-  create_time       DATETIME     NULL COMMENT '录入时间',
-  update_by         BIGINT       NULL COMMENT '更新人',
-  update_time       DATETIME     NULL COMMENT '更新时间',
-  del_flag          CHAR(1)      DEFAULT '0' COMMENT '删除标志',
-  remark            VARCHAR(500) NULL COMMENT '备注',
-  PRIMARY KEY (id),
-  KEY idx_tenant_create (tenant_id, create_time),
-  KEY idx_pig (tenant_id, pig_id),
-  KEY idx_transfer_date (transfer_date)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='猪只转移记录（BRD-EVENT-004）';
-
--- ------------------------------------------------------------
--- 21. t_farm_pig_marketing（猪只出栏记录，BRD-EVENT-004）
--- ------------------------------------------------------------
-DROP TABLE IF EXISTS t_farm_pig_marketing;
-CREATE TABLE t_farm_pig_marketing (
-  id                BIGINT       NOT NULL AUTO_INCREMENT,
-  tenant_id         VARCHAR(20)  NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
-  pig_id            BIGINT       NOT NULL COMMENT '猪只 ID',
-  ear_no            VARCHAR(32)  NOT NULL COMMENT '猪只耳号',
-  marketing_date    DATETIME     NOT NULL COMMENT '出栏日期',
-  out_weight        DECIMAL(12,2) NOT NULL COMMENT '出栏重量 kg',
-  out_dest          VARCHAR(32)  NOT NULL COMMENT '出栏去向 字典 out_house_dest：送宰/外销/...',
-  store_id          BIGINT       NULL COMMENT '目标门店 ID（如适用）',
-  is_room           TINYINT(1)   NULL DEFAULT 0 COMMENT '燎毛间是否接收 1=已接收 0=未接收',
-  oss_ids           VARCHAR(1024) NULL COMMENT '照片 OSS IDs',
-  operator_id       BIGINT       NULL COMMENT '操作人',
-  create_dept         BIGINT       NULL COMMENT '创建部门',
-  create_by         BIGINT       NULL COMMENT '录入人',
-  create_time       DATETIME     NULL COMMENT '录入时间',
-  update_by         BIGINT       NULL COMMENT '更新人',
-  update_time       DATETIME     NULL COMMENT '更新时间',
-  del_flag          CHAR(1)      DEFAULT '0' COMMENT '删除标志',
-  remark            VARCHAR(500) NULL COMMENT '备注',
-  PRIMARY KEY (id),
-  KEY idx_tenant_create (tenant_id, create_time),
-  KEY idx_pig (tenant_id, pig_id),
-  KEY idx_marketing_date (marketing_date)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='猪只出栏记录（BRD-EVENT-004）';
-
--- ------------------------------------------------------------
--- 22. t_farm_grow_record（猪只生长记录/背膘，BRD-EVENT-005）
--- ------------------------------------------------------------
-DROP TABLE IF EXISTS t_farm_grow_record;
-CREATE TABLE t_farm_grow_record (
-  id                BIGINT       NOT NULL AUTO_INCREMENT,
-  tenant_id         VARCHAR(20)  NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
-  pig_id            BIGINT       NOT NULL COMMENT '猪只 ID',
-  ear_no            VARCHAR(32)  NOT NULL COMMENT '猪只耳号',
-  measure_date      DATETIME     NOT NULL COMMENT '测量日期',
-  back_fat          DECIMAL(5,2) NULL COMMENT '背膘厚 mm',
-  weight            DECIMAL(12,2) NULL COMMENT '体重 kg',
-  age_days          INT          NULL COMMENT '日龄',
-  oss_ids           VARCHAR(1024) NULL COMMENT '照片 OSS IDs（可选）',
-  operator_id       BIGINT       NULL COMMENT '测量人',
-  create_dept         BIGINT       NULL COMMENT '创建部门',
-  create_by         BIGINT       NULL COMMENT '录入人',
-  create_time       DATETIME     NULL COMMENT '录入时间',
-  update_by         BIGINT       NULL COMMENT '更新人',
-  update_time       DATETIME     NULL COMMENT '更新时间',
-  del_flag          CHAR(1)      DEFAULT '0' COMMENT '删除标志',
-  remark            VARCHAR(500) NULL COMMENT '备注',
-  PRIMARY KEY (id),
-  KEY idx_tenant_create (tenant_id, create_time),
-  KEY idx_pig (tenant_id, pig_id),
-  KEY idx_measure_date (measure_date)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='猪只生长记录（BRD-EVENT-005）';
-
--- ============================================================
--- 用药管理（3 张）
--- ============================================================
-
--- ------------------------------------------------------------
--- 23. t_breed_medicine_info（药品库主数据，BRD-MED-001）
--- ------------------------------------------------------------
-DROP TABLE IF EXISTS t_breed_medicine_info;
-CREATE TABLE t_breed_medicine_info (
-  id                BIGINT       NOT NULL AUTO_INCREMENT,
-  tenant_id         VARCHAR(20)  NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
-  medicine_code     VARCHAR(32)  NOT NULL COMMENT '药品编码',
-  medicine_name     VARCHAR(128) NOT NULL COMMENT '药品名称',
-  medicine_type     VARCHAR(16)  NOT NULL COMMENT '药品类型 字典 drug_type：vaccine/health/treat',
-  supplier_id       BIGINT       NULL COMMENT '供应商 ID',
-  approval_no       VARCHAR(64)  NULL COMMENT '批准文号',
-  batch_no          VARCHAR(64)  NULL COMMENT '批号',
-  expire_date       DATE         NULL COMMENT '过期日期',
-  withdraw_days     INT          NULL COMMENT '休药期（天）',
-  unit              VARCHAR(16)  NULL COMMENT '单位（瓶/盒/克 等）',
-  current_stock     DECIMAL(12,2) NULL DEFAULT 0 COMMENT '当前库存',
-  create_dept         BIGINT       NULL COMMENT '创建部门',
-  create_by         BIGINT       NULL COMMENT '创建人',
-  create_time       DATETIME     NULL COMMENT '创建时间',
-  update_by         BIGINT       NULL COMMENT '更新人',
-  update_time       DATETIME     NULL COMMENT '更新时间',
-  del_flag          CHAR(1)      DEFAULT '0' COMMENT '删除标志',
-  remark            VARCHAR(500) NULL COMMENT '备注',
-  del_unique          BIGINT       NOT NULL DEFAULT 0 COMMENT "软删除生成 token（应用层 update del_flag='1' 时同步 SET del_unique=id；§6.3.0）",
-  PRIMARY KEY (id),
-  UNIQUE KEY uk_medicine_code (tenant_id, medicine_code, del_unique),
-  KEY idx_tenant_create (tenant_id, create_time),
-  KEY idx_medicine_type (medicine_type)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='药品库主数据（BRD-MED-001）';
-
--- ------------------------------------------------------------
--- 24. t_breed_medicine_use（药品领用/退回/损耗，BRD-MED-002）
--- ------------------------------------------------------------
-DROP TABLE IF EXISTS t_breed_medicine_use;
-CREATE TABLE t_breed_medicine_use (
-  id                BIGINT       NOT NULL AUTO_INCREMENT,
-  tenant_id         VARCHAR(20)  NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
-  medicine_id       BIGINT       NOT NULL COMMENT '药品 ID',
-  use_date          DATE         NOT NULL COMMENT '领用日期（业务日期，BRD-MED-003 用此过滤"3 天内已领"）',
-  inout_type        VARCHAR(16)  NOT NULL COMMENT '类型 字典 medicine_use_type：pick=领用/return=退回/loss=损耗',
-  use_location      VARCHAR(32)  NULL COMMENT '领用位置 字典 medicine_use_location',
-  use_count         DECIMAL(12,2) NOT NULL COMMENT '数量',
-  operator_id       BIGINT       NULL COMMENT '操作人',
-  create_dept         BIGINT       NULL COMMENT '创建部门',
-  create_by         BIGINT       NULL COMMENT '录入人',
-  create_time       DATETIME     NULL COMMENT '录入时间',
-  update_by         BIGINT       NULL COMMENT '更新人',
-  update_time       DATETIME     NULL COMMENT '更新时间',
-  del_flag          CHAR(1)      DEFAULT '0' COMMENT '删除标志',
-  remark            VARCHAR(500) NULL COMMENT '备注',
-  PRIMARY KEY (id),
-  KEY idx_tenant_create (tenant_id, create_time),
-  KEY idx_medicine_date (medicine_id, use_date),
-  KEY idx_use_date (use_date)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='药品领用/退回/损耗（BRD-MED-002）';
-
--- ------------------------------------------------------------
--- 25. t_farm_medicine_record（用药耗用流水/治疗记录，BRD-MED-003）
--- 表名按 _db-changes：t_farm_annual_indicator (用药) -> t_farm_medicine_record
--- ------------------------------------------------------------
-DROP TABLE IF EXISTS t_farm_medicine_record;
-CREATE TABLE t_farm_medicine_record (
-  id                BIGINT       NOT NULL AUTO_INCREMENT,
-  tenant_id         VARCHAR(20)  NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
-  pig_id            BIGINT       NULL COMMENT '猪只 ID（批量用药时为 NULL，明细在 detail）',
-  ear_no            VARCHAR(32)  NULL COMMENT '耳号（单只用药时填）',
-  batch_pig_ids     VARCHAR(2048) NULL COMMENT '批量猪只 ID 逗号分隔（批量用药时）',
-  treat_date        DATETIME     NOT NULL COMMENT '用药日期',
-  drug_type         VARCHAR(16)  NOT NULL COMMENT '用药类型 字典 drug_type：vaccine/health/treat',
-  medicine_reason   VARCHAR(32)  NULL COMMENT '用药原因 字典 medicine_reason',
-  medicine_id       BIGINT       NOT NULL COMMENT '药品 ID',
-  dose              DECIMAL(12,2) NOT NULL COMMENT '用药量',
-  medicine_way      VARCHAR(16)  NULL COMMENT '用药方式 字典 medicine_way',
-  operator_id       BIGINT       NULL COMMENT '用药人',
-  create_dept         BIGINT       NULL COMMENT '创建部门',
-  create_by         BIGINT       NULL COMMENT '录入人',
-  create_time       DATETIME     NULL COMMENT '录入时间',
-  update_by         BIGINT       NULL COMMENT '更新人',
-  update_time       DATETIME     NULL COMMENT '更新时间',
-  del_flag          CHAR(1)      DEFAULT '0' COMMENT '删除标志',
-  remark            VARCHAR(500) NULL COMMENT '备注',
-  PRIMARY KEY (id),
-  KEY idx_tenant_create (tenant_id, create_time),
-  KEY idx_pig (tenant_id, pig_id),
-  KEY idx_treat_date (treat_date),
-  KEY idx_medicine (medicine_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='用药耗用/治疗流水（BRD-MED-003，原 xlsx 误命名 t_farm_annual_indicator）';
-
--- ============================================================
--- 统计预聚合（4 张）— 不带 del_flag/update_by（_db-changes 全局规则）
--- ============================================================
-
--- ------------------------------------------------------------
--- 26. t_farm_sow_record（母猪日数据汇总，定时任务）
--- ------------------------------------------------------------
-DROP TABLE IF EXISTS t_farm_sow_record;
-CREATE TABLE t_farm_sow_record (
-  id                BIGINT       NOT NULL AUTO_INCREMENT,
-  tenant_id         VARCHAR(20)  NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
-  stat_date         DATE         NOT NULL COMMENT '统计日期',
-  sow_total         INT          NULL DEFAULT 0 COMMENT '母猪总数',
-  sow_pregnant      INT          NULL DEFAULT 0 COMMENT '配怀母猪数',
-  sow_farrow        INT          NULL DEFAULT 0 COMMENT '分娩母猪数',
-  sow_weaning       INT          NULL DEFAULT 0 COMMENT '断奶母猪数',
-  sow_idle          INT          NULL DEFAULT 0 COMMENT '空怀母猪数',
-  sow_culling_count INT          NULL DEFAULT 0 COMMENT '当日淘汰母猪数',
-  sow_death_count   INT          NULL DEFAULT 0 COMMENT '当日死亡母猪数',
-  piglet_total      INT          NULL DEFAULT 0 COMMENT '仔猪总数',
-  create_time       DATETIME     NULL COMMENT '记录创建时间',
-  PRIMARY KEY (id),
-  UNIQUE KEY uk_tenant_date (tenant_id, stat_date),
-  KEY idx_stat_date (stat_date)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='母猪日数据汇总（统计预聚合，定时任务重算）';
-
--- ------------------------------------------------------------
--- 27. t_farm_sow_performance（母猪性能表，每日 update 每头母猪一行）
--- ------------------------------------------------------------
-DROP TABLE IF EXISTS t_farm_sow_performance;
-CREATE TABLE t_farm_sow_performance (
-  id                BIGINT       NOT NULL AUTO_INCREMENT,
-  tenant_id         VARCHAR(20)  NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
-  pig_id            BIGINT       NOT NULL COMMENT '母猪 ID',
-  ear_no            VARCHAR(32)  NOT NULL COMMENT '母猪耳号',
-  parity            INT          NULL DEFAULT 0 COMMENT '累计胎次',
-  total_born        INT          NULL DEFAULT 0 COMMENT '累计产仔数',
-  total_live_born   INT          NULL DEFAULT 0 COMMENT '累计活产数',
-  total_weaned      INT          NULL DEFAULT 0 COMMENT '累计断奶数',
-  avg_born_weight   DECIMAL(8,3) NULL COMMENT '平均出生重 kg',
-  avg_weaned_weight DECIMAL(8,3) NULL COMMENT '平均断奶重 kg',
-  last_update_date  DATE         NULL COMMENT '最近统计日期',
-  create_time       DATETIME     NULL COMMENT '记录创建时间',
-  PRIMARY KEY (id),
-  UNIQUE KEY uk_tenant_pig (tenant_id, pig_id),
-  KEY idx_ear (ear_no)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='母猪性能表（每头母猪一行，定时刷新）';
-
--- ------------------------------------------------------------
--- 28. t_farm_monthly_production（养殖月指标统计，定时 update 当月）
--- ------------------------------------------------------------
-DROP TABLE IF EXISTS t_farm_monthly_production;
-CREATE TABLE t_farm_monthly_production (
-  id                BIGINT       NOT NULL AUTO_INCREMENT,
-  tenant_id         VARCHAR(20)  NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
-  stat_month        CHAR(7)      NOT NULL COMMENT '统计月份 yyyy-MM',
-  introduce_count   INT          NULL DEFAULT 0 COMMENT '当月引种数',
-  born_count        INT          NULL DEFAULT 0 COMMENT '当月产仔数',
-  weaned_count      INT          NULL DEFAULT 0 COMMENT '当月断奶数',
-  death_count       INT          NULL DEFAULT 0 COMMENT '当月死亡数',
-  culling_count     INT          NULL DEFAULT 0 COMMENT '当月淘汰数',
-  marketing_count   INT          NULL DEFAULT 0 COMMENT '当月出栏数',
-  marketing_weight  DECIMAL(15,2) NULL DEFAULT 0 COMMENT '当月出栏总重 kg',
-  create_time       DATETIME     NULL COMMENT '记录创建时间',
-  PRIMARY KEY (id),
-  UNIQUE KEY uk_tenant_month (tenant_id, stat_month)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='养殖月指标统计（定时任务每日 update 当月）';
-
--- ------------------------------------------------------------
--- 29. t_farm_annual_indicator（年度指标，定时 update 当年）
--- ------------------------------------------------------------
-DROP TABLE IF EXISTS t_farm_annual_indicator;
-CREATE TABLE t_farm_annual_indicator (
-  id                BIGINT       NOT NULL AUTO_INCREMENT,
-  tenant_id         VARCHAR(20)  NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
-  stat_year         SMALLINT     NOT NULL COMMENT '统计年份',
-  introduce_count   INT          NULL DEFAULT 0 COMMENT '年度引种数',
-  born_count        INT          NULL DEFAULT 0 COMMENT '年度产仔数',
-  weaned_count      INT          NULL DEFAULT 0 COMMENT '年度断奶数',
-  death_count       INT          NULL DEFAULT 0 COMMENT '年度死亡数',
-  culling_count     INT          NULL DEFAULT 0 COMMENT '年度淘汰数',
-  marketing_count   INT          NULL DEFAULT 0 COMMENT '年度出栏数',
-  marketing_weight  DECIMAL(15,2) NULL DEFAULT 0 COMMENT '年度出栏总重 kg',
-  psy               DECIMAL(8,2) NULL COMMENT 'PSY（每头母猪年产断奶仔猪数）',
-  mortality_rate    DECIMAL(5,2) NULL COMMENT '死亡率 %',
-  create_time       DATETIME     NULL COMMENT '记录创建时间',
-  PRIMARY KEY (id),
-  UNIQUE KEY uk_tenant_year (tenant_id, stat_year)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='年度指标（定时任务每日 update 当年）';
-
-SET FOREIGN_KEY_CHECKS = 1;
-
-
--- ----------------------------------------------------------------------------
--- 来源文件：V202605200902__SYS-INIT-001-create-business-tables-plant.sql
--- ----------------------------------------------------------------------------
--- ============================================================
--- SYS-INIT-001 业务表 DDL — 种植域 PLT
--- 生成时间: 2026-05-20
--- 表数: 14 张（_db-changes 列出 13 张 + PLT-PLAN-002 新增 t_plant_pick_activity）
--- 强制规范: tenant_id VARCHAR(20) NOT NULL DEFAULT '1001' / UNIQUE 含 del_unique 生成列 / 审计字段对齐 ruoyi
--- typo 修复: belong zone -> belong_zone / draiage_condition -> drainage_condition /
---           lrrigation_interval -> irrigation_interval / t_plant_crop_crop -> t_plant_crop_organic /
---           tillage_method -> tillage_way (与字典对齐)
--- 引用: doc/05-架构文档-ruoyi.md §6, doc/06-实现描述.md 第 3 章 (PLT-*), doc/_db-changes.md
--- ============================================================
-
-SET NAMES utf8mb4;
-SET FOREIGN_KEY_CHECKS = 0;
-
--- ============================================================
--- 主数据 + 关联（7 张）
--- ============================================================
-
--- ------------------------------------------------------------
--- 1. t_plant_plot_zone（地块片区表，PLT-MD-001）
--- ------------------------------------------------------------
-DROP TABLE IF EXISTS t_plant_plot_zone;
-CREATE TABLE t_plant_plot_zone (
-  id              BIGINT       NOT NULL AUTO_INCREMENT,
-  tenant_id       VARCHAR(20)  NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
-  zone_code       VARCHAR(32)  NOT NULL COMMENT '片区编码',
-  zone_name       VARCHAR(64)  NOT NULL COMMENT '片区名称',
-  zone_belong     VARCHAR(64)  NULL COMMENT '归属部门/区域',
-  zone_status     TINYINT      NOT NULL DEFAULT 1 COMMENT '状态 1=启用 0=停用',
-  total_area      DECIMAL(10,2) NULL COMMENT '片区总面积 亩（推断字段）',
-  create_dept       BIGINT       NULL COMMENT '创建部门',
-  create_by       BIGINT       NULL COMMENT '创建人',
-  create_time     DATETIME     NULL COMMENT '创建时间',
-  update_by       BIGINT       NULL COMMENT '更新人',
-  update_time     DATETIME     NULL COMMENT '更新时间',
-  del_flag        CHAR(1)      DEFAULT '0' COMMENT '删除标志',
-  remark          VARCHAR(500) NULL COMMENT '备注',
-  del_unique          BIGINT       NOT NULL DEFAULT 0 COMMENT "软删除生成 token（应用层 update del_flag='1' 时同步 SET del_unique=id；§6.3.0）",
-  PRIMARY KEY (id),
-  UNIQUE KEY uk_zone_code (tenant_id, zone_code, del_unique),
-  KEY idx_tenant_create (tenant_id, create_time)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='地块片区表（PLT-MD-001）';
-
--- ------------------------------------------------------------
--- 2. t_plant_plot_info（地块信息表，PLT-MD-001）
--- typo 修复: belong zone / draiage_condition
--- ------------------------------------------------------------
-DROP TABLE IF EXISTS t_plant_plot_info;
-CREATE TABLE t_plant_plot_info (
-  id                  BIGINT       NOT NULL AUTO_INCREMENT,
-  tenant_id           VARCHAR(20)  NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
-  plot_code           VARCHAR(32)  NOT NULL COMMENT '地块编码',
-  plot_name           VARCHAR(64)  NOT NULL COMMENT '地块名称',
-  belong_zone         VARCHAR(32)  NULL COMMENT '归属片区编码（typo 修复 belong zone -> belong_zone）',
-  plot_type           VARCHAR(16)  NULL COMMENT '地块类型 字典',
-  plot_status         TINYINT      NOT NULL DEFAULT 1 COMMENT '状态 1=启用 0=停用',
-  area                DECIMAL(10,2) NULL COMMENT '面积 亩',
-  is_rented           TINYINT(1)   NULL DEFAULT 0 COMMENT '是否租赁 1=租赁 0=自有',
-  soil_type           VARCHAR(32)  NULL COMMENT '土壤类型 字典 soil_type',
-  soil_fertility      VARCHAR(32)  NULL COMMENT '土壤肥力 字典 soil_fertility',
-  terrain_condition   VARCHAR(32)  NULL COMMENT '地势情况 字典 terrain_condition',
-  light_condition     VARCHAR(32)  NULL COMMENT '光照条件 字典 light_condition',
-  drainage_condition  VARCHAR(32)  NULL COMMENT '排水条件 字典 drain_condition（typo 修复 draiage -> drainage）',
-  plot_location_x     DECIMAL(10,7) NULL COMMENT '经度',
-  plot_location_y     DECIMAL(10,7) NULL COMMENT '纬度',
-  oss_ids             VARCHAR(1024) NULL COMMENT '图片 OSS IDs 多图逗号分隔',
-  create_dept           BIGINT       NULL COMMENT '创建部门',
-  create_by           BIGINT       NULL COMMENT '创建人',
-  create_time         DATETIME     NULL COMMENT '创建时间',
-  update_by           BIGINT       NULL COMMENT '更新人',
-  update_time         DATETIME     NULL COMMENT '更新时间',
-  del_flag            CHAR(1)      DEFAULT '0' COMMENT '删除标志',
-  remark              VARCHAR(500) NULL COMMENT '备注',
-  del_unique          BIGINT       NOT NULL DEFAULT 0 COMMENT "软删除生成 token（应用层 update del_flag='1' 时同步 SET del_unique=id；§6.3.0）",
-  PRIMARY KEY (id),
-  UNIQUE KEY uk_plot_code (tenant_id, plot_code, del_unique),
-  KEY idx_tenant_create (tenant_id, create_time),
-  KEY idx_zone (belong_zone)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='地块信息表（PLT-MD-001）';
-
--- ------------------------------------------------------------
--- 3. t_plant_crop_info（作物信息，PLT-MD-001）
--- typo 修复: lrrigation_interval -> irrigation_interval
--- ------------------------------------------------------------
-DROP TABLE IF EXISTS t_plant_crop_info;
-CREATE TABLE t_plant_crop_info (
-  id                    BIGINT       NOT NULL AUTO_INCREMENT,
-  tenant_id             VARCHAR(20)  NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
-  crop_code             VARCHAR(32)  NOT NULL COMMENT '作物编码',
-  variety_name          VARCHAR(64)  NOT NULL COMMENT '品种名称',
-  crop_family           VARCHAR(32)  NULL COMMENT '作物科属 字典 crop_family',
-  planting_season       VARCHAR(16)  NULL COMMENT '种植季节',
-  max_cycle             INT          NULL COMMENT '最大生长周期（天）',
-  min_cycle             INT          NULL COMMENT '最小生长周期（天）',
-  predicted_per         DECIMAL(10,2) NULL COMMENT '预计亩产 kg',
-  irrigation_interval   INT          NULL COMMENT '灌溉间隔（天，typo 修复 lrrigation -> irrigation）',
-  pick_unit_price       DECIMAL(10,2) NULL COMMENT '采摘单价（PLT-PERF-001 用，元/kg）',
-  oss_ids               VARCHAR(1024) NULL COMMENT '图片 OSS IDs',
-  create_dept             BIGINT       NULL COMMENT '创建部门',
-  create_by             BIGINT       NULL COMMENT '创建人',
-  create_time           DATETIME     NULL COMMENT '创建时间',
-  update_by             BIGINT       NULL COMMENT '更新人',
-  update_time           DATETIME     NULL COMMENT '更新时间',
-  del_flag              CHAR(1)      DEFAULT '0' COMMENT '删除标志',
-  remark                VARCHAR(500) NULL COMMENT '备注',
-  del_unique          BIGINT       NOT NULL DEFAULT 0 COMMENT "软删除生成 token（应用层 update del_flag='1' 时同步 SET del_unique=id；§6.3.0）",
-  PRIMARY KEY (id),
-  UNIQUE KEY uk_crop_code (tenant_id, crop_code, del_unique),
-  KEY idx_tenant_create (tenant_id, create_time)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='作物信息（PLT-MD-001）';
-
--- ------------------------------------------------------------
--- 4. t_plant_zone_plotno（片区地块关联表，M:N）
--- ------------------------------------------------------------
-DROP TABLE IF EXISTS t_plant_zone_plotno;
-CREATE TABLE t_plant_zone_plotno (
-  id              BIGINT       NOT NULL AUTO_INCREMENT,
-  tenant_id       VARCHAR(20)  NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
-  zone_id         BIGINT       NOT NULL COMMENT '片区 ID',
-  plot_id         BIGINT       NOT NULL COMMENT '地块 ID',
-  create_dept       BIGINT       NULL COMMENT '创建部门',
-  create_by       BIGINT       NULL COMMENT '创建人',
-  create_time     DATETIME     NULL COMMENT '创建时间',
-  PRIMARY KEY (id),
-  UNIQUE KEY uk_zone_plot (tenant_id, zone_id, plot_id),
-  KEY idx_tenant_create (tenant_id, create_time),
-  KEY idx_plot (plot_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='片区地块关联表（M:N，硬删）';
-
--- ------------------------------------------------------------
--- 5. t_plant_plot_organic（地块有机证书信息表，PLT-MD-003）
--- ------------------------------------------------------------
-DROP TABLE IF EXISTS t_plant_plot_organic;
-CREATE TABLE t_plant_plot_organic (
-  id              BIGINT       NOT NULL AUTO_INCREMENT,
-  tenant_id       VARCHAR(20)  NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
-  organic_no      VARCHAR(64)  NOT NULL COMMENT '证书编号',
-  organic_company VARCHAR(128) NULL COMMENT '认证机构',
-  organic_valid   DATE         NULL COMMENT '证书有效期（typo 修复 vaild -> valid）',
-  is_warning      TINYINT(1)   NULL DEFAULT 0 COMMENT '是否预警 1=是 0=否',
-  oss_ids         VARCHAR(1024) NULL COMMENT '证书图片 OSS IDs',
-  create_dept       BIGINT       NULL COMMENT '创建部门',
-  create_by       BIGINT       NULL COMMENT '创建人',
-  create_time     DATETIME     NULL COMMENT '创建时间',
-  update_by       BIGINT       NULL COMMENT '更新人',
-  update_time     DATETIME     NULL COMMENT '更新时间',
-  del_flag        CHAR(1)      DEFAULT '0' COMMENT '删除标志',
-  remark          VARCHAR(500) NULL COMMENT '备注',
-  del_unique          BIGINT       NOT NULL DEFAULT 0 COMMENT "软删除生成 token（应用层 update del_flag='1' 时同步 SET del_unique=id；§6.3.0）",
-  PRIMARY KEY (id),
-  UNIQUE KEY uk_organic_no (tenant_id, organic_no, del_unique),
-  KEY idx_tenant_create (tenant_id, create_time),
-  KEY idx_warning (is_warning)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='地块有机证书信息表（PLT-MD-003）';
-
--- ------------------------------------------------------------
--- 6. t_plant_organic_plotno（有机证书与地块关联表，M:N）
--- ------------------------------------------------------------
-DROP TABLE IF EXISTS t_plant_organic_plotno;
-CREATE TABLE t_plant_organic_plotno (
-  id              BIGINT       NOT NULL AUTO_INCREMENT,
-  tenant_id       VARCHAR(20)  NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
-  organic_id      BIGINT       NOT NULL COMMENT '证书 ID',
-  plot_id         BIGINT       NOT NULL COMMENT '地块 ID',
-  create_dept       BIGINT       NULL COMMENT '创建部门',
-  create_by       BIGINT       NULL COMMENT '创建人',
-  create_time     DATETIME     NULL COMMENT '创建时间',
-  PRIMARY KEY (id),
-  UNIQUE KEY uk_organic_plot (tenant_id, organic_id, plot_id),
-  KEY idx_tenant_create (tenant_id, create_time),
-  KEY idx_plot (plot_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='有机证书与地块关联表（M:N，硬删）';
-
--- ------------------------------------------------------------
--- 7. t_plant_crop_organic（作物有机证书信息表，PLT-MD-003）
--- typo 修复: 原 t_plant_crop_crop -> t_plant_crop_organic
--- ------------------------------------------------------------
-DROP TABLE IF EXISTS t_plant_crop_organic;
-CREATE TABLE t_plant_crop_organic (
-  id              BIGINT       NOT NULL AUTO_INCREMENT,
-  tenant_id       VARCHAR(20)  NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
-  crop_no         VARCHAR(64)  NOT NULL COMMENT '证书编号',
-  crop_company    VARCHAR(128) NULL COMMENT '认证机构',
-  crop_valid      DATE         NULL COMMENT '证书有效期',
-  crop_id         BIGINT       NULL COMMENT '关联作物 ID',
-  is_warning      TINYINT(1)   NULL DEFAULT 0 COMMENT '是否预警 1=是 0=否',
-  oss_ids         VARCHAR(1024) NULL COMMENT '证书图片 OSS IDs',
-  create_dept       BIGINT       NULL COMMENT '创建部门',
-  create_by       BIGINT       NULL COMMENT '创建人',
-  create_time     DATETIME     NULL COMMENT '创建时间',
-  update_by       BIGINT       NULL COMMENT '更新人',
-  update_time     DATETIME     NULL COMMENT '更新时间',
-  del_flag        CHAR(1)      DEFAULT '0' COMMENT '删除标志',
-  remark          VARCHAR(500) NULL COMMENT '备注',
-  del_unique          BIGINT       NOT NULL DEFAULT 0 COMMENT "软删除生成 token（应用层 update del_flag='1' 时同步 SET del_unique=id；§6.3.0）",
-  PRIMARY KEY (id),
-  UNIQUE KEY uk_crop_no (tenant_id, crop_no, del_unique),
-  KEY idx_tenant_create (tenant_id, create_time),
-  KEY idx_crop (crop_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='作物有机证书信息表（PLT-MD-003，typo 修复 crop_crop -> crop_organic）';
-
--- ============================================================
--- 计划 + 农事（4 张）
--- ============================================================
-
--- ------------------------------------------------------------
--- 8. t_plant_plant_plan（种植采摘计划表，PLT-PLAN-001）
--- ------------------------------------------------------------
-DROP TABLE IF EXISTS t_plant_plant_plan;
-CREATE TABLE t_plant_plant_plan (
-  id                    BIGINT       NOT NULL AUTO_INCREMENT,
-  tenant_id             VARCHAR(20)  NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
-  plan_no               VARCHAR(32)  NOT NULL COMMENT '计划编号',
-  plan_year             SMALLINT     NOT NULL COMMENT '计划年份',
-  plan_crop             BIGINT       NOT NULL COMMENT '计划作物 ID',
-  planting_season       VARCHAR(16)  NULL COMMENT '种植季节',
-  plant_date            DATE         NULL COMMENT '计划种植日期',
-  earliest_harvestdate  DATE         NULL COMMENT '最早采收日期',
-  total_area            DECIMAL(10,2) NULL COMMENT '总面积 亩',
-  total_predicted_yield DECIMAL(15,2) NULL COMMENT '计划预计总产量 kg（推断字段，便于双甘特图）',
-  plant_status          TINYINT      NOT NULL DEFAULT 1 COMMENT '计划状态 1=草稿 2=待开始 3=正常执行 4=已完成 5=延期',
-  create_dept             BIGINT       NULL COMMENT '创建部门',
-  create_by             BIGINT       NULL COMMENT '创建人',
-  create_time           DATETIME     NULL COMMENT '创建时间',
-  update_by             BIGINT       NULL COMMENT '更新人',
-  update_time           DATETIME     NULL COMMENT '更新时间',
-  del_flag              CHAR(1)      DEFAULT '0' COMMENT '删除标志',
-  remark                VARCHAR(500) NULL COMMENT '备注',
-  del_unique          BIGINT       NOT NULL DEFAULT 0 COMMENT "软删除生成 token（应用层 update del_flag='1' 时同步 SET del_unique=id；§6.3.0）",
-  PRIMARY KEY (id),
-  UNIQUE KEY uk_plan_no (tenant_id, plan_no, del_unique),
-  KEY idx_tenant_create (tenant_id, create_time),
-  KEY idx_plan_year (plan_year),
-  KEY idx_plan_crop (plan_crop)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='种植采摘计划表（PLT-PLAN-001）';
-
--- ------------------------------------------------------------
--- 9. t_plant_plant_details（地块种植列表/明细，PLT-PLAN-001）
--- ------------------------------------------------------------
-DROP TABLE IF EXISTS t_plant_plant_details;
-CREATE TABLE t_plant_plant_details (
-  id                    BIGINT       NOT NULL AUTO_INCREMENT,
-  tenant_id             VARCHAR(20)  NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
-  plant_id              BIGINT       NOT NULL COMMENT '种植计划 ID',
-  plot_id               BIGINT       NOT NULL COMMENT '地块 ID',
-  crop_id               BIGINT       NOT NULL COMMENT '作物 ID',
-  plant_money           DECIMAL(12,2) NULL COMMENT '种植成本预算 元',
-  plant_date            DATE         NULL COMMENT '计划种植日期（按月+上中下旬）',
-  begin_plantdate       DATE         NULL COMMENT '计划开始种植日期',
-  end_plantdate         DATE         NULL COMMENT '计划结束种植日期',
-  begin_pickdate        DATE         NULL COMMENT '计划开始采摘日期',
-  end_pickdate          DATE         NULL COMMENT '计划结束采摘日期',
-  start_actualdate      DATE         NULL COMMENT '实际开始种植日期',
-  end_actualdate        DATE         NULL COMMENT '实际结束采摘日期',
-  predicted_yield       DECIMAL(12,2) NULL COMMENT '预计产量 kg',
-  actual_yield          DECIMAL(12,2) NULL DEFAULT 0 COMMENT '实际采摘产量 kg（采摘录入累加）',
-  loss_yield            DECIMAL(12,2) NULL DEFAULT 0 COMMENT '损失产量 kg（灾害记录累加）',
-  area                  DECIMAL(10,2) NULL COMMENT '面积 亩',
-  is_pick               TINYINT(1)   NULL DEFAULT 0 COMMENT '是否采摘完成 1=完成 0=未完成',
-  is_activity           TINYINT(1)   NULL DEFAULT 0 COMMENT '是否采摘活动',
-  team_id               BIGINT       NULL COMMENT '关联班组 ID',
-  create_dept             BIGINT       NULL COMMENT '创建部门',
-  create_by             BIGINT       NULL COMMENT '创建人',
-  create_time           DATETIME     NULL COMMENT '创建时间',
-  update_by             BIGINT       NULL COMMENT '更新人',
-  update_time           DATETIME     NULL COMMENT '更新时间',
-  del_flag              CHAR(1)      DEFAULT '0' COMMENT '删除标志',
-  remark                VARCHAR(500) NULL COMMENT '备注',
-  PRIMARY KEY (id),
-  KEY idx_tenant_create (tenant_id, create_time),
-  KEY idx_plan_plot (plant_id, plot_id),
-  KEY idx_dates (begin_plantdate, end_plantdate),
-  KEY idx_plot (plot_id),
-  KEY idx_crop (crop_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='地块种植列表（PLT-PLAN-001）';
-
--- ------------------------------------------------------------
--- 10. t_plant_farm_records（农事记录，PLT-WORK-001）
--- typo 修复: tillage_method -> tillage_way（与字典对齐）
--- 新增字段: material_type / material_id（看板查询"今天用了什么肥"，建议补）
--- ------------------------------------------------------------
-DROP TABLE IF EXISTS t_plant_farm_records;
-CREATE TABLE t_plant_farm_records (
-  id                  BIGINT       NOT NULL AUTO_INCREMENT,
-  tenant_id           VARCHAR(20)  NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
-  plant_id            BIGINT       NULL COMMENT '种植计划 ID',
-  plot_id             BIGINT       NOT NULL COMMENT '地块 ID',
-  crop_id             BIGINT       NULL COMMENT '作物 ID',
-  team_id             BIGINT       NULL COMMENT '班组 ID',
-  farm_type           VARCHAR(16)  NOT NULL COMMENT '农事类型 字典 farm_work_type：12 类（翻耕/整地/施肥/浇灌/除草/...）',
-  farm_date           DATE         NOT NULL COMMENT '作业日期',
-  farm_by             BIGINT       NULL COMMENT '作业人 user_id',
-  tillage_type        VARCHAR(32)  NULL COMMENT '整地类型 字典 tillage_type',
-  tillage_way         VARCHAR(32)  NULL COMMENT '整地方式 字典 tillage_way（typo 修复 tillage_method -> tillage_way）',
-  material_type       VARCHAR(32)  NULL COMMENT '用药/施肥种类（推断字段，建议补，含农药/化肥/有机肥等）',
-  material_id         BIGINT       NULL COMMENT '材料 ID（关联仓库药品/化肥）',
-  material_dose       DECIMAL(12,2) NULL COMMENT '使用量',
-  disaster_type       VARCHAR(32)  NULL COMMENT '灾害类型（farm_type=disaster 时填）',
-  loss_yield          DECIMAL(12,2) NULL COMMENT '损失产量 kg（disaster 时填）',
-  loss_rate           DECIMAL(5,2) NULL COMMENT '损失率 %',
-  transplant_rate     DECIMAL(5,2) NULL COMMENT '移栽百分比 %（farm_type=transplant 时填）',
-  oss_ids             VARCHAR(1024) NULL COMMENT '现场照片 OSS IDs',
-  is_warning          TINYINT(1)   NULL DEFAULT 0 COMMENT '是否预警 1=是 0=否',
-  create_dept           BIGINT       NULL COMMENT '创建部门',
-  create_by           BIGINT       NULL COMMENT '录入人',
-  create_time         DATETIME     NULL COMMENT '录入时间',
-  update_by           BIGINT       NULL COMMENT '更新人',
-  update_time         DATETIME     NULL COMMENT '更新时间',
-  del_flag            CHAR(1)      DEFAULT '0' COMMENT '删除标志',
-  remark              VARCHAR(500) NULL COMMENT '备注',
-  PRIMARY KEY (id),
-  KEY idx_tenant_create (tenant_id, create_time),
-  KEY idx_plot_date (plot_id, farm_date),
-  KEY idx_farm_type (farm_type),
-  KEY idx_plant (plant_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='农事记录（PLT-WORK-001，含 12 类）';
-
--- ------------------------------------------------------------
--- 11. t_plant_pick_activity（采摘活动表，PLT-PLAN-002 新增）
--- ------------------------------------------------------------
-DROP TABLE IF EXISTS t_plant_pick_activity;
-CREATE TABLE t_plant_pick_activity (
-  id              BIGINT       NOT NULL AUTO_INCREMENT,
-  tenant_id       VARCHAR(20)  NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
-  activity_no     VARCHAR(32)  NOT NULL COMMENT '活动编号',
-  activity_date   DATE         NOT NULL COMMENT '活动日期',
-  crop_id         BIGINT       NOT NULL COMMENT '作物 ID',
-  activity_name   VARCHAR(128) NULL COMMENT '活动名称',
-  daily_pick_weight DECIMAL(12,2) NULL DEFAULT 0 COMMENT '当日采摘总重 kg',
-  participant_count INT        NULL COMMENT '参与人数',
-  create_dept       BIGINT       NULL COMMENT '创建部门',
-  create_by       BIGINT       NULL COMMENT '创建人',
-  create_time     DATETIME     NULL COMMENT '创建时间',
-  update_by       BIGINT       NULL COMMENT '更新人',
-  update_time     DATETIME     NULL COMMENT '更新时间',
-  del_flag        CHAR(1)      DEFAULT '0' COMMENT '删除标志',
-  remark          VARCHAR(500) NULL COMMENT '备注',
-  del_unique          BIGINT       NOT NULL DEFAULT 0 COMMENT "软删除生成 token（应用层 update del_flag='1' 时同步 SET del_unique=id；§6.3.0）",
-  PRIMARY KEY (id),
-  UNIQUE KEY uk_activity_no (tenant_id, activity_no, del_unique),
-  KEY idx_tenant_create (tenant_id, create_time),
-  KEY idx_activity_date (activity_date)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='采摘活动表（PLT-PLAN-002）';
-
--- ============================================================
--- 班组 + 绩效（3 张）
--- ============================================================
-
--- ------------------------------------------------------------
--- 12. t_plant_work_team（班组表，PLT-MD-002）
--- ------------------------------------------------------------
-DROP TABLE IF EXISTS t_plant_work_team;
-CREATE TABLE t_plant_work_team (
-  id              BIGINT       NOT NULL AUTO_INCREMENT,
-  tenant_id       VARCHAR(20)  NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
-  team_code       VARCHAR(32)  NOT NULL COMMENT '班组编码',
-  team_name       VARCHAR(64)  NOT NULL COMMENT '班组名称',
-  leader_id       BIGINT       NULL COMMENT '班组长 user_id',
-  team_status     TINYINT      NOT NULL DEFAULT 1 COMMENT '状态 1=启用 0=停用',
-  create_dept       BIGINT       NULL COMMENT '创建部门',
-  create_by       BIGINT       NULL COMMENT '创建人',
-  create_time     DATETIME     NULL COMMENT '创建时间',
-  update_by       BIGINT       NULL COMMENT '更新人',
-  update_time     DATETIME     NULL COMMENT '更新时间',
-  del_flag        CHAR(1)      DEFAULT '0' COMMENT '删除标志',
-  remark          VARCHAR(500) NULL COMMENT '备注',
-  del_unique          BIGINT       NOT NULL DEFAULT 0 COMMENT "软删除生成 token（应用层 update del_flag='1' 时同步 SET del_unique=id；§6.3.0）",
-  PRIMARY KEY (id),
-  UNIQUE KEY uk_team_code (tenant_id, team_code, del_unique),
-  KEY idx_tenant_create (tenant_id, create_time)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='班组表（PLT-MD-002）';
-
--- ------------------------------------------------------------
--- 13. t_plant_work_people（班组人员表，M:N，关联 sys_user）
--- 业务约束: 一人只能在一个班组（service 层保证）
--- ------------------------------------------------------------
-DROP TABLE IF EXISTS t_plant_work_people;
-CREATE TABLE t_plant_work_people (
-  id              BIGINT       NOT NULL AUTO_INCREMENT,
-  tenant_id       VARCHAR(20)  NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
-  work_id         BIGINT       NOT NULL COMMENT '班组 ID',
-  people_id       BIGINT       NOT NULL COMMENT '人员 user_id（关联 sys_user.user_id）',
-  is_leader       TINYINT(1)   NULL DEFAULT 0 COMMENT '是否班组长 1=是 0=否',
-  join_date       DATE         NULL COMMENT '加入日期',
-  create_dept       BIGINT       NULL COMMENT '创建部门',
-  create_by       BIGINT       NULL COMMENT '创建人',
-  create_time     DATETIME     NULL COMMENT '创建时间',
-  update_by       BIGINT       NULL COMMENT '更新人',
-  update_time     DATETIME     NULL COMMENT '更新时间',
-  del_flag        CHAR(1)      DEFAULT '0' COMMENT '删除标志',
-  remark          VARCHAR(500) NULL COMMENT '备注',
-  del_unique          BIGINT       NOT NULL DEFAULT 0 COMMENT "软删除生成 token（应用层 update del_flag='1' 时同步 SET del_unique=id；§6.3.0）",
-  PRIMARY KEY (id),
-  UNIQUE KEY uk_team_people (tenant_id, work_id, people_id, del_unique),
-  KEY idx_tenant_create (tenant_id, create_time),
-  KEY idx_people (people_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='班组人员表（PLT-MD-002，关联 sys_user）';
-
--- ------------------------------------------------------------
--- 14. t_plant_work_performance（绩效表，PLT-PERF-001，月度结算）
--- ------------------------------------------------------------
-DROP TABLE IF EXISTS t_plant_work_performance;
-CREATE TABLE t_plant_work_performance (
-  id                    BIGINT       NOT NULL AUTO_INCREMENT,
-  tenant_id             VARCHAR(20)  NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
-  stat_month            CHAR(7)      NOT NULL COMMENT '统计月份 yyyy-MM',
-  team_id               BIGINT       NULL COMMENT '班组 ID',
-  people_id             BIGINT       NULL COMMENT '人员 user_id',
-  crop_id               BIGINT       NULL COMMENT '作物 ID',
-  pick_weight           DECIMAL(12,2) NULL DEFAULT 0 COMMENT '采摘重量 kg',
-  unit_price_snapshot   DECIMAL(10,2) NULL COMMENT '单价快照（不受历史影响）',
-  performance_amount    DECIMAL(12,2) NULL DEFAULT 0 COMMENT '应付绩效金额 元',
-  performance_rule      VARCHAR(255) NULL COMMENT '绩效规则说明',
-  create_dept             BIGINT       NULL COMMENT '创建部门',
-  create_by             BIGINT       NULL COMMENT '创建人',
-  create_time           DATETIME     NULL COMMENT '创建时间',
-  update_by             BIGINT       NULL COMMENT '更新人',
-  update_time           DATETIME     NULL COMMENT '更新时间',
-  del_flag              CHAR(1)      DEFAULT '0' COMMENT '删除标志',
-  remark                VARCHAR(500) NULL COMMENT '备注',
-  PRIMARY KEY (id),
-  KEY idx_tenant_create (tenant_id, create_time),
-  KEY idx_month_team (stat_month, team_id),
-  KEY idx_people (people_id),
-  KEY idx_crop (crop_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='绩效表（PLT-PERF-001）';
-
-SET FOREIGN_KEY_CHECKS = 1;
-
-
--- ----------------------------------------------------------------------------
--- 来源文件：V202605200903__SYS-INIT-001-create-business-tables-warehouse.sql
--- ----------------------------------------------------------------------------
--- ============================================================
--- SYS-INIT-001 业务表 DDL — 仓库域 WMS
--- 生成时间: 2026-05-20
--- 表数: 16 张（_db-changes 列出 16 张，无追溯码因移到 store 文件? 不，追溯码仍属仓库域）
--- 强制规范: tenant_id VARCHAR(20) NOT NULL DEFAULT '1001' / UNIQUE 含 del_unique 生成列 / 审计字段对齐 ruoyi
--- typo 修复: 前缀空格 t_ warehouse_ -> t_warehouse_ / product_status x2 -> 合并 /
---           pig_code -> trace_code / pig_time -> trace_event (跨业态命名修正) /
---           farm_name 冗余 -> farm_id (改 JOIN)
--- 引用: doc/05-架构文档-ruoyi.md §6, doc/06-实现描述.md 第 4 章 (WMS-*) + 第 6 章 (TRC-*), doc/_db-changes.md
--- ============================================================
-
-SET NAMES utf8mb4;
-SET FOREIGN_KEY_CHECKS = 0;
-
--- ============================================================
--- 库位 + 库存（3 张）
--- ============================================================
-
--- ------------------------------------------------------------
--- 1. t_warehouse_location_info（库位信息表，WMS-MD-001）
--- ------------------------------------------------------------
-DROP TABLE IF EXISTS t_warehouse_location_info;
-CREATE TABLE t_warehouse_location_info (
-  id              BIGINT       NOT NULL AUTO_INCREMENT,
-  tenant_id       VARCHAR(20)  NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
-  location_code   VARCHAR(32)  NOT NULL COMMENT '库位编码',
-  location_name   VARCHAR(64)  NOT NULL COMMENT '库位名称',
-  location_type   VARCHAR(16)  NULL COMMENT '库位类型 字典 location_type：冷藏/常温/干燥/冻品库/...',
-  capacity        DECIMAL(12,2) NULL COMMENT '设计容量',
-  capacity_unit   VARCHAR(16)  NULL COMMENT '容量单位（kg/件）',
-  current_load    DECIMAL(12,2) NULL DEFAULT 0 COMMENT '当前占用',
-  location_status TINYINT      NOT NULL DEFAULT 1 COMMENT '状态 1=启用 0=停用',
-  create_dept       BIGINT       NULL COMMENT '创建部门',
-  create_by       BIGINT       NULL COMMENT '创建人',
-  create_time     DATETIME     NULL COMMENT '创建时间',
-  update_by       BIGINT       NULL COMMENT '更新人',
-  update_time     DATETIME     NULL COMMENT '更新时间',
-  del_flag        CHAR(1)      DEFAULT '0' COMMENT '删除标志',
-  remark          VARCHAR(500) NULL COMMENT '备注',
-  del_unique          BIGINT       NOT NULL DEFAULT 0 COMMENT "软删除生成 token（应用层 update del_flag='1' 时同步 SET del_unique=id；§6.3.0）",
-  PRIMARY KEY (id),
-  UNIQUE KEY uk_location_code (tenant_id, location_code, del_unique),
-  KEY idx_tenant_create (tenant_id, create_time),
-  KEY idx_location_type (location_type)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='库位信息表（WMS-MD-001，typo 修复前缀空格）';
-
--- ------------------------------------------------------------
--- 2. t_warehouse_location_stock（库存明细表，WMS-MD-001）
--- ------------------------------------------------------------
-DROP TABLE IF EXISTS t_warehouse_location_stock;
-CREATE TABLE t_warehouse_location_stock (
-  id              BIGINT       NOT NULL AUTO_INCREMENT,
-  tenant_id       VARCHAR(20)  NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
-  warehouse_id    BIGINT       NOT NULL COMMENT '库位 ID',
-  product_id      BIGINT       NOT NULL COMMENT '产品 ID',
-  ear_no          VARCHAR(32)  NULL COMMENT '关联猪只耳号（白条等）',
-  plot_id         BIGINT       NULL COMMENT '关联地块 ID（果蔬）',
-  is_end          TINYINT(1)   NULL DEFAULT 0 COMMENT '是否已出清 1=是 0=否',
-  product_stock   DECIMAL(12,2) NOT NULL DEFAULT 0 COMMENT '库存数量',
-  stock_unit      VARCHAR(16)  NULL COMMENT '单位',
-  last_in_time    DATETIME     NULL COMMENT '最近一次入库时间',
-  last_out_time   DATETIME     NULL COMMENT '最近一次出库时间',
-  create_dept       BIGINT       NULL COMMENT '创建部门',
-  create_by       BIGINT       NULL COMMENT '创建人',
-  create_time     DATETIME     NULL COMMENT '创建时间',
-  update_by       BIGINT       NULL COMMENT '更新人',
-  update_time     DATETIME     NULL COMMENT '更新时间',
-  del_flag        CHAR(1)      DEFAULT '0' COMMENT '删除标志',
-  version         INT          DEFAULT 0 COMMENT '乐观锁',
-  remark          VARCHAR(500) NULL COMMENT '备注',
-  PRIMARY KEY (id),
-  KEY idx_tenant_create (tenant_id, create_time),
-  KEY idx_warehouse_product (warehouse_id, product_id),
-  KEY idx_product (product_id),
-  KEY idx_ear (ear_no)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='库存明细表（WMS-MD-001）';
-
--- ------------------------------------------------------------
--- 3. t_warehouse_stock_flow（出入库记录表 ★ 大表，WMS-FLOW-001）
--- ------------------------------------------------------------
-DROP TABLE IF EXISTS t_warehouse_stock_flow;
-CREATE TABLE t_warehouse_stock_flow (
-  id              BIGINT       NOT NULL AUTO_INCREMENT,
-  tenant_id       VARCHAR(20)  NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
-  flow_no         VARCHAR(32)  NOT NULL COMMENT '流水号（20260312XXXXX 日期+5位自增 SYS-INFRA-004）',
-  flow_date       DATETIME     NOT NULL COMMENT '业务日期',
-  product_id      BIGINT       NOT NULL COMMENT '产品 ID',
-  warehouse_id    BIGINT       NULL COMMENT '库位 ID',
-  inout_type      CHAR(3)      NOT NULL COMMENT '出入库类型 in=入库 out=出库',
-  flow_type       VARCHAR(16)  NOT NULL COMMENT '业务类型 字典：pick=领用/return=退回/loss=损耗/produce=生产/check=盘点 等',
-  stock_in_type   VARCHAR(16)  NULL COMMENT '入库类型 字典 stock_in_type：采摘/月台/交易/净菜/退货',
-  stock_out_type  VARCHAR(16)  NULL COMMENT '出库类型 字典 stock_out_type',
-  stock_out_dest  VARCHAR(32)  NULL COMMENT '出库去向 字典 stock_out_dest',
-  change_num      DECIMAL(12,2) NOT NULL COMMENT '变更数量（正负，正=入 负=出）',
-  change_quantity DECIMAL(12,2) NULL COMMENT '变更数量绝对值（前端展示用，后端自动算）',
-  supplier_id     BIGINT       NULL COMMENT '供应商 ID（外购时）',
-  ear_no          VARCHAR(32)  NULL COMMENT '关联猪只耳号',
-  plot_id         BIGINT       NULL COMMENT '关联地块 ID',
-  operator_id     BIGINT       NULL COMMENT '操作人 user_id',
-  create_dept       BIGINT       NULL COMMENT '创建部门',
-  create_by       BIGINT       NULL COMMENT '录入人',
-  create_time     DATETIME     NULL COMMENT '录入时间',
-  update_by       BIGINT       NULL COMMENT '更新人',
-  update_time     DATETIME     NULL COMMENT '更新时间',
-  del_flag        CHAR(1)      DEFAULT '0' COMMENT '删除标志',
-  remark          VARCHAR(500) NULL COMMENT '备注',
-  del_unique          BIGINT       NOT NULL DEFAULT 0 COMMENT "软删除生成 token（应用层 update del_flag='1' 时同步 SET del_unique=id；§6.3.0）",
-  PRIMARY KEY (id),
-  UNIQUE KEY uk_flow_no (tenant_id, flow_no, del_unique),
-  KEY idx_tenant_create (tenant_id, create_time),
-  KEY idx_flow_date (flow_date),
-  KEY idx_product (product_id),
-  KEY idx_warehouse (warehouse_id),
-  KEY idx_inout_type (inout_type, flow_type)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='出入库记录表（WMS-FLOW-001 大表）';
-
--- ============================================================
--- 产品 + 生产（4 张）
--- ============================================================
-
--- ------------------------------------------------------------
--- 4. t_warehouse_product_info（产品信息表，WMS-MD-002）
--- typo 修复: product_status x2 -> 合并为 1 个
--- ------------------------------------------------------------
-DROP TABLE IF EXISTS t_warehouse_product_info;
-CREATE TABLE t_warehouse_product_info (
-  id                  BIGINT       NOT NULL AUTO_INCREMENT,
-  tenant_id           VARCHAR(20)  NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
-  product_code        VARCHAR(32)  NOT NULL COMMENT '产品编码',
-  product_name        VARCHAR(128) NOT NULL COMMENT '产品名称',
-  product_type        TINYINT      NOT NULL COMMENT '产品类型 1=自产 2=外购 3=礼盒',
-  belong_type         VARCHAR(32)  NULL COMMENT '自生产产品类（自产时用，字典 product_type）',
-  buy_class           VARCHAR(32)  NULL COMMENT '外购产品类（外购时用，字典 purchase_product_type）',
-  product_attr        VARCHAR(32)  NULL COMMENT '产品属性',
-  product_workshop    VARCHAR(32)  NULL COMMENT '生产车间：燎毛/分割/肉品打包/蔬菜打包/肉品净菜间',
-  product_material    VARCHAR(64)  NULL COMMENT '产品原料/材质',
-  is_buy_out          TINYINT(1)   NULL DEFAULT 0 COMMENT '是否买断',
-  product_status      TINYINT      NOT NULL DEFAULT 1 COMMENT '产品状态 1=上架 0=下架',
-  unit                VARCHAR(16)  NULL COMMENT '单位',
-  reference_price     DECIMAL(10,2) NULL COMMENT '参考价 元',
-  gift_components     JSON         NULL COMMENT '礼盒组件清单 JSON [{product_id,count,unit}]（type=3 时用）',
-  oss_ids             VARCHAR(1024) NULL COMMENT '产品图片 OSS IDs',
-  create_dept           BIGINT       NULL COMMENT '创建部门',
-  create_by           BIGINT       NULL COMMENT '创建人',
-  create_time         DATETIME     NULL COMMENT '创建时间',
-  update_by           BIGINT       NULL COMMENT '更新人',
-  update_time         DATETIME     NULL COMMENT '更新时间',
-  del_flag            CHAR(1)      DEFAULT '0' COMMENT '删除标志',
-  remark              VARCHAR(500) NULL COMMENT '备注',
-  del_unique          BIGINT       NOT NULL DEFAULT 0 COMMENT "软删除生成 token（应用层 update del_flag='1' 时同步 SET del_unique=id；§6.3.0）",
-  PRIMARY KEY (id),
-  UNIQUE KEY uk_product_code (tenant_id, product_code, del_unique),
-  KEY idx_tenant_create (tenant_id, create_time),
-  KEY idx_product_type (product_type),
-  KEY idx_status (product_status)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='产品信息表（共表 自产/外购/礼盒，WMS-MD-002）';
-
--- ------------------------------------------------------------
--- 5. t_warehouse_product_production（产品生产信息表/发货，WMS-DEMAND-001 etc）
--- 发货产品不入库
--- ------------------------------------------------------------
-DROP TABLE IF EXISTS t_warehouse_product_production;
-CREATE TABLE t_warehouse_product_production (
-  id                  BIGINT       NOT NULL AUTO_INCREMENT,
-  tenant_id           VARCHAR(20)  NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
-  produce_no          VARCHAR(32)  NOT NULL COMMENT '生产编号（260312Z0001 日期+产品类型字母 Z/G/B/H/D/L+序号）',
-  produce_date        DATETIME     NOT NULL COMMENT '生产日期',
-  product_id          BIGINT       NOT NULL COMMENT '产品 ID',
-  produce_quantity    DECIMAL(12,2) NOT NULL COMMENT '生产数量',
-  plot_id             BIGINT       NULL COMMENT '关联地块 ID',
-  ear_no              VARCHAR(32)  NULL COMMENT '关联猪只耳号',
-  white_bar_id        BIGINT       NULL COMMENT '关联白条 ID',
-  material_id         BIGINT       NULL COMMENT '原料 ID',
-  produce_location    BIGINT       NULL COMMENT '生产库位 ID',
-  demand_id           BIGINT       NULL COMMENT '关联需求 ID',
-  is_delivery_check   TINYINT(1)   NULL DEFAULT 0 COMMENT '是否发货确认',
-  is_arrival_confirm  TINYINT(1)   NULL DEFAULT 0 COMMENT '是否到货确认',
-  operator_id         BIGINT       NULL COMMENT '操作人',
-  create_dept           BIGINT       NULL COMMENT '创建部门',
-  create_by           BIGINT       NULL COMMENT '录入人',
-  create_time         DATETIME     NULL COMMENT '录入时间',
-  update_by           BIGINT       NULL COMMENT '更新人',
-  update_time         DATETIME     NULL COMMENT '更新时间',
-  del_flag            CHAR(1)      DEFAULT '0' COMMENT '删除标志',
-  remark              VARCHAR(500) NULL COMMENT '备注',
-  del_unique          BIGINT       NOT NULL DEFAULT 0 COMMENT "软删除生成 token（应用层 update del_flag='1' 时同步 SET del_unique=id；§6.3.0）",
-  PRIMARY KEY (id),
-  UNIQUE KEY uk_produce_no (tenant_id, produce_no, del_unique),
-  KEY idx_tenant_create (tenant_id, create_time),
-  KEY idx_produce_date (produce_date),
-  KEY idx_product (product_id),
-  KEY idx_demand (demand_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='产品生产信息表（发货不入库）';
-
--- ------------------------------------------------------------
--- 6. t_warehouse_product_produce（非发货产品生产信息表，WMS-PIG-002 etc）
--- 过程产品入库
--- ------------------------------------------------------------
-DROP TABLE IF EXISTS t_warehouse_product_produce;
-CREATE TABLE t_warehouse_product_produce (
-  id                  BIGINT       NOT NULL AUTO_INCREMENT,
-  tenant_id           VARCHAR(20)  NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
-  produce_no          VARCHAR(32)  NOT NULL COMMENT '生产编号',
-  produce_date        DATETIME     NOT NULL COMMENT '生产日期',
-  product_id          BIGINT       NOT NULL COMMENT '产品 ID',
-  produce_quantity    DECIMAL(12,2) NOT NULL COMMENT '生产数量',
-  in_stock_quantity   DECIMAL(12,2) NULL COMMENT '实际入库数量',
-  loss_quantity       DECIMAL(12,2) NULL COMMENT '损耗数量',
-  plot_id             BIGINT       NULL COMMENT '关联地块 ID',
-  ear_no              VARCHAR(32)  NULL COMMENT '关联猪只耳号',
-  white_bar_id        BIGINT       NULL COMMENT '关联白条 ID',
-  material_id         BIGINT       NULL COMMENT '原料 ID',
-  location_id         BIGINT       NULL COMMENT '入库库位 ID',
-  operator_id         BIGINT       NULL COMMENT '操作人',
-  create_dept           BIGINT       NULL COMMENT '创建部门',
-  create_by           BIGINT       NULL COMMENT '录入人',
-  create_time         DATETIME     NULL COMMENT '录入时间',
-  update_by           BIGINT       NULL COMMENT '更新人',
-  update_time         DATETIME     NULL COMMENT '更新时间',
-  del_flag            CHAR(1)      DEFAULT '0' COMMENT '删除标志',
-  remark              VARCHAR(500) NULL COMMENT '备注',
-  del_unique          BIGINT       NOT NULL DEFAULT 0 COMMENT "软删除生成 token（应用层 update del_flag='1' 时同步 SET del_unique=id；§6.3.0）",
-  PRIMARY KEY (id),
-  UNIQUE KEY uk_produce_no (tenant_id, produce_no, del_unique),
-  KEY idx_tenant_create (tenant_id, create_time),
-  KEY idx_product (product_id),
-  KEY idx_white_bar (white_bar_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='非发货产品生产信息表（入库）';
-
--- ------------------------------------------------------------
--- 7. t_warehouse_bar_info（白条信息表，WMS-PIG-001）
--- ------------------------------------------------------------
-DROP TABLE IF EXISTS t_warehouse_bar_info;
-CREATE TABLE t_warehouse_bar_info (
-  id                  BIGINT       NOT NULL AUTO_INCREMENT,
-  tenant_id           VARCHAR(20)  NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
-  bar_code            VARCHAR(32)  NOT NULL COMMENT '白条编码',
-  ear_no              VARCHAR(32)  NULL COMMENT '关联猪只耳号（自产时填）',
-  bar_status          VARCHAR(16)  NOT NULL DEFAULT 'pending_singe' COMMENT '状态：pending_singe=待燎毛/singeing=燎毛中/pending_in=待入库/in_stock=已入库/cutting=分割中/done=分割完成',
-  out_time            DATETIME     NULL COMMENT '出栏时间',
-  out_weight          DECIMAL(12,2) NULL COMMENT '出栏重量 kg',
-  in_weight           DECIMAL(12,2) NULL COMMENT '燎毛后入库重量 kg',
-  in_time             DATETIME     NULL COMMENT '入库时间',
-  in_type             VARCHAR(16)  NULL COMMENT '入库类型：自产/外购',
-  back_fat            DECIMAL(5,2) NULL COMMENT '背膘厚 mm',
-  acid_remove_time    DATETIME     NULL COMMENT '排酸完成时间',
-  acid_remove_loss    DECIMAL(12,2) NULL COMMENT '排酸损失 kg',
-  buy_date            DATE         NULL COMMENT '采购日期（外购时填）',
-  buy_weight          DECIMAL(12,2) NULL COMMENT '采购重量 kg（外购时填）',
-  supplier_id         BIGINT       NULL COMMENT '供应商 ID（外购时填）',
-  location_id         BIGINT       NULL COMMENT '入库库位 ID',
-  operator_id         BIGINT       NULL COMMENT '操作人',
-  create_dept           BIGINT       NULL COMMENT '创建部门',
-  create_by           BIGINT       NULL COMMENT '录入人',
-  create_time         DATETIME     NULL COMMENT '录入时间',
-  update_by           BIGINT       NULL COMMENT '更新人',
-  update_time         DATETIME     NULL COMMENT '更新时间',
-  del_flag            CHAR(1)      DEFAULT '0' COMMENT '删除标志',
-  version             INT          DEFAULT 0 COMMENT '乐观锁',
-  remark              VARCHAR(500) NULL COMMENT '备注',
-  del_unique          BIGINT       NOT NULL DEFAULT 0 COMMENT "软删除生成 token（应用层 update del_flag='1' 时同步 SET del_unique=id；§6.3.0）",
-  PRIMARY KEY (id),
-  UNIQUE KEY uk_bar_code (tenant_id, bar_code, del_unique),
-  KEY idx_tenant_create (tenant_id, create_time),
-  KEY idx_ear_no (ear_no),
-  KEY idx_bar_status (bar_status),
-  KEY idx_supplier (supplier_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='白条信息表（WMS-PIG-001）';
-
--- ============================================================
--- 业务流（5 张）
--- ============================================================
-
--- ------------------------------------------------------------
--- 8. t_warehouse_check_record（盘点记录表，WMS-STOCK-001）
--- ------------------------------------------------------------
-DROP TABLE IF EXISTS t_warehouse_check_record;
-CREATE TABLE t_warehouse_check_record (
-  id              BIGINT       NOT NULL AUTO_INCREMENT,
-  tenant_id       VARCHAR(20)  NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
-  check_no        VARCHAR(32)  NOT NULL COMMENT '盘点单号',
-  check_date      DATE         NOT NULL COMMENT '盘点日期',
-  check_status    VARCHAR(16)  NOT NULL DEFAULT 'draft' COMMENT '状态 字典 djs_check_status：draft/in_progress/completed',
-  product_id      BIGINT       NULL COMMENT '产品 ID（按产品盘点时）',
-  warehouse_id    BIGINT       NULL COMMENT '库位 ID',
-  sys_stock       DECIMAL(12,2) NULL COMMENT '系统库存',
-  check_stock     DECIMAL(12,2) NULL COMMENT '实盘数',
-  diff_stock      DECIMAL(12,2) NULL COMMENT '差异（实盘-系统）',
-  scope_desc      VARCHAR(255) NULL COMMENT '盘点范围说明',
-  operator_id     BIGINT       NULL COMMENT '盘点人',
-  create_dept       BIGINT       NULL COMMENT '创建部门',
-  create_by       BIGINT       NULL COMMENT '录入人',
-  create_time     DATETIME     NULL COMMENT '录入时间',
-  update_by       BIGINT       NULL COMMENT '更新人',
-  update_time     DATETIME     NULL COMMENT '更新时间',
-  del_flag        CHAR(1)      DEFAULT '0' COMMENT '删除标志',
-  remark          VARCHAR(500) NULL COMMENT '备注',
-  del_unique          BIGINT       NOT NULL DEFAULT 0 COMMENT "软删除生成 token（应用层 update del_flag='1' 时同步 SET del_unique=id；§6.3.0）",
-  PRIMARY KEY (id),
-  UNIQUE KEY uk_check_no (tenant_id, check_no, del_unique),
-  KEY idx_tenant_create (tenant_id, create_time),
-  KEY idx_check_date (check_date),
-  KEY idx_product (product_id),
-  KEY idx_warehouse (warehouse_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='盘点记录表（WMS-STOCK-001）';
-
--- ------------------------------------------------------------
--- 9. t_warehouse_return_product（退货管理表，WMS-SHIP-001）
--- ------------------------------------------------------------
-DROP TABLE IF EXISTS t_warehouse_return_product;
-CREATE TABLE t_warehouse_return_product (
-  id                  BIGINT       NOT NULL AUTO_INCREMENT,
-  tenant_id           VARCHAR(20)  NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
-  return_no           VARCHAR(32)  NOT NULL COMMENT '退货单号',
-  store_id            BIGINT       NULL COMMENT '退货门店 ID',
-  product_id          BIGINT       NOT NULL COMMENT '产品 ID',
-  return_weight       DECIMAL(12,2) NOT NULL COMMENT '退货重量',
-  confirm_weight      DECIMAL(12,2) NULL COMMENT '确认重量',
-  confirm_user        BIGINT       NULL COMMENT '确认人 user_id',
-  is_confirm          TINYINT(1)   NULL DEFAULT 0 COMMENT '是否已确认 1=是 0=否',
-  return_reason       VARCHAR(255) NULL COMMENT '退货原因',
-  return_direction    VARCHAR(32)  NULL DEFAULT 'store_to_warehouse' COMMENT '退货方向：store_to_warehouse/warehouse_to_supplier',
-  create_dept           BIGINT       NULL COMMENT '创建部门',
-  create_by           BIGINT       NULL COMMENT '录入人',
-  create_time         DATETIME     NULL COMMENT '录入时间',
-  update_by           BIGINT       NULL COMMENT '更新人',
-  update_time         DATETIME     NULL COMMENT '更新时间',
-  del_flag            CHAR(1)      DEFAULT '0' COMMENT '删除标志',
-  remark              VARCHAR(500) NULL COMMENT '备注',
-  del_unique          BIGINT       NOT NULL DEFAULT 0 COMMENT "软删除生成 token（应用层 update del_flag='1' 时同步 SET del_unique=id；§6.3.0）",
-  PRIMARY KEY (id),
-  UNIQUE KEY uk_return_no (tenant_id, return_no, del_unique),
-  KEY idx_tenant_create (tenant_id, create_time),
-  KEY idx_store (store_id),
-  KEY idx_product (product_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='退货管理表（WMS-SHIP-001）';
-
--- ------------------------------------------------------------
--- 10. t_warehouse_demand_manage（需求管理表，WMS-DEMAND-001）
--- 新增字段: shipped_count / confirmed_count（_db-changes 建议补，状态机推进依赖累计）
--- ------------------------------------------------------------
-DROP TABLE IF EXISTS t_warehouse_demand_manage;
-CREATE TABLE t_warehouse_demand_manage (
-  id                  BIGINT       NOT NULL AUTO_INCREMENT,
-  tenant_id           VARCHAR(20)  NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
-  demand_no           VARCHAR(32)  NOT NULL COMMENT '需求单号',
-  demand_date         DATE         NOT NULL COMMENT '需求日期',
-  store_id            BIGINT       NULL COMMENT '门店 ID',
-  product_id          BIGINT       NOT NULL COMMENT '产品 ID',
-  product_type        TINYINT      NOT NULL COMMENT '产品类型 1=猪肉 2=蔬菜 3=礼盒 4=其他',
-  demand_quantity     DECIMAL(12,2) NOT NULL COMMENT '需求数量',
-  shipped_count       DECIMAL(12,2) NULL DEFAULT 0 COMMENT '累计已发货量（建议补）',
-  confirmed_count     DECIMAL(12,2) NULL DEFAULT 0 COMMENT '累计已确认量（建议补）',
-  demand_status       VARCHAR(16)  NOT NULL DEFAULT 'DRAFT' COMMENT '状态 字典 djs_demand_status：DRAFT/SUBMITTED/CONFIRMED/IN_PRODUCTION/PARTIAL_SHIPPED/COMPLETED/CANCELLED',
-  audit_history       JSON         NULL COMMENT '状态流转历史 JSON（v1.1 手写状态机，便于 V2 迁 Flowable）',
-  demand_confirmer    BIGINT       NULL COMMENT '确认人 user_id',
-  create_dept           BIGINT       NULL COMMENT '创建部门',
-  create_by           BIGINT       NULL COMMENT '录入人',
-  create_time         DATETIME     NULL COMMENT '录入时间',
-  update_by           BIGINT       NULL COMMENT '更新人',
-  update_time         DATETIME     NULL COMMENT '更新时间',
-  del_flag            CHAR(1)      DEFAULT '0' COMMENT '删除标志',
-  version             INT          DEFAULT 0 COMMENT '乐观锁',
-  remark              VARCHAR(500) NULL COMMENT '备注',
-  del_unique          BIGINT       NOT NULL DEFAULT 0 COMMENT "软删除生成 token（应用层 update del_flag='1' 时同步 SET del_unique=id；§6.3.0）",
-  PRIMARY KEY (id),
-  UNIQUE KEY uk_demand_no (tenant_id, demand_no, del_unique),
-  KEY idx_tenant_create (tenant_id, create_time),
-  KEY idx_store (store_id),
-  KEY idx_demand_status (demand_status),
-  KEY idx_demand_date (demand_date)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='需求管理表（WMS-DEMAND-001 / STR-DEMAND-001 同表双视角）';
-
--- ------------------------------------------------------------
--- 11. t_warehouse_planting_record（地块种植记录表，WMS 视角快照）
--- 与 t_plant_plant_details 字段高度重叠，保留作仓库视角快照
--- ------------------------------------------------------------
-DROP TABLE IF EXISTS t_warehouse_planting_record;
-CREATE TABLE t_warehouse_planting_record (
-  id                  BIGINT       NOT NULL AUTO_INCREMENT,
-  tenant_id           VARCHAR(20)  NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
-  plot_id             BIGINT       NOT NULL COMMENT '地块 ID',
-  crop_id             BIGINT       NOT NULL COMMENT '作物 ID',
-  plant_date          DATE         NULL COMMENT '种植日期',
-  harvest_date        DATE         NULL COMMENT '采收日期',
-  harvest_weight      DECIMAL(12,2) NULL COMMENT '采收重量 kg',
-  disaster_record     VARCHAR(500) NULL COMMENT '灾害记录摘要',
-  team_id             BIGINT       NULL COMMENT '关联班组 ID',
-  create_dept           BIGINT       NULL COMMENT '创建部门',
-  create_by           BIGINT       NULL COMMENT '录入人',
-  create_time         DATETIME     NULL COMMENT '录入时间',
-  update_by           BIGINT       NULL COMMENT '更新人',
-  update_time         DATETIME     NULL COMMENT '更新时间',
-  del_flag            CHAR(1)      DEFAULT '0' COMMENT '删除标志',
-  remark              VARCHAR(500) NULL COMMENT '备注',
-  PRIMARY KEY (id),
-  KEY idx_tenant_create (tenant_id, create_time),
-  KEY idx_plot (plot_id),
-  KEY idx_crop (crop_id),
-  KEY idx_harvest_date (harvest_date)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='地块种植记录表（仓库视角快照，与 t_plant_plant_details 协同）';
-
--- ------------------------------------------------------------
--- 12. t_warehouse_vegetable_handle（毛菜处理间，WMS-VEG-001）
--- ------------------------------------------------------------
-DROP TABLE IF EXISTS t_warehouse_vegetable_handle;
-CREATE TABLE t_warehouse_vegetable_handle (
-  id                      BIGINT       NOT NULL AUTO_INCREMENT,
-  tenant_id               VARCHAR(20)  NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
-  plot_id                 BIGINT       NULL COMMENT '关联地块 ID',
-  crop_id                 BIGINT       NULL COMMENT '关联作物 ID',
-  handle_date             DATETIME     NOT NULL COMMENT '处理日期',
-  picked_weight           DECIMAL(12,2) NULL COMMENT '采摘重量 kg',
-  handled_weight          DECIMAL(12,2) NULL COMMENT '处理后重量 kg',
-  feed_weight             DECIMAL(12,2) NULL COMMENT '饲喂重量 kg',
-  send_platform_weight    DECIMAL(12,2) NULL COMMENT '送月台重量 kg',
-  stock_in_weight         DECIMAL(12,2) NULL COMMENT '入库重量 kg',
-  loss_weight             DECIMAL(12,2) NULL COMMENT '损耗重量 kg',
-  operator_id             BIGINT       NULL COMMENT '操作人',
-  create_dept               BIGINT       NULL COMMENT '创建部门',
-  create_by               BIGINT       NULL COMMENT '录入人',
-  create_time             DATETIME     NULL COMMENT '录入时间',
-  update_by               BIGINT       NULL COMMENT '更新人',
-  update_time             DATETIME     NULL COMMENT '更新时间',
-  del_flag                CHAR(1)      DEFAULT '0' COMMENT '删除标志',
-  remark                  VARCHAR(500) NULL COMMENT '备注',
-  PRIMARY KEY (id),
-  KEY idx_tenant_create (tenant_id, create_time),
-  KEY idx_plot (plot_id),
-  KEY idx_handle_date (handle_date)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='毛菜处理间（WMS-VEG-001）';
-
--- ------------------------------------------------------------
--- 13. t_warehouse_handle_record（毛菜处理记录，WMS-VEG-001）
--- ------------------------------------------------------------
-DROP TABLE IF EXISTS t_warehouse_handle_record;
-CREATE TABLE t_warehouse_handle_record (
-  id                      BIGINT       NOT NULL AUTO_INCREMENT,
-  tenant_id               VARCHAR(20)  NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
-  plot_id                 BIGINT       NULL COMMENT '关联地块 ID',
-  crop_id                 BIGINT       NULL COMMENT '关联作物 ID',
-  record_type             VARCHAR(16)  NOT NULL COMMENT '记录类型：stock_in=入库/platform=送月台/feed=饲喂/loss=损耗',
-  handle_target           VARCHAR(32)  NULL COMMENT '处理目标：保鲜室/蔬菜月台/饲料库 等',
-  location_id             BIGINT       NULL COMMENT '目标库位 ID',
-  weight                  DECIMAL(12,2) NULL COMMENT '处理重量 kg',
-  handle_date             DATETIME     NULL COMMENT '处理日期',
-  operator_id             BIGINT       NULL COMMENT '操作人',
-  create_dept               BIGINT       NULL COMMENT '创建部门',
-  create_by               BIGINT       NULL COMMENT '录入人',
-  create_time             DATETIME     NULL COMMENT '录入时间',
-  update_by               BIGINT       NULL COMMENT '更新人',
-  update_time             DATETIME     NULL COMMENT '更新时间',
-  del_flag                CHAR(1)      DEFAULT '0' COMMENT '删除标志',
-  remark                  VARCHAR(500) NULL COMMENT '备注',
-  PRIMARY KEY (id),
-  KEY idx_tenant_create (tenant_id, create_time),
-  KEY idx_plot (plot_id),
-  KEY idx_record_type (record_type)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='毛菜处理记录（WMS-VEG-001）';
-
--- ------------------------------------------------------------
--- 14. t_warehouse_supplier_record（供应商交易信息）
--- ------------------------------------------------------------
-DROP TABLE IF EXISTS t_warehouse_supplier_record;
-CREATE TABLE t_warehouse_supplier_record (
-  id              BIGINT       NOT NULL AUTO_INCREMENT,
-  tenant_id       VARCHAR(20)  NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
-  supplier_id     BIGINT       NOT NULL COMMENT '供应商 ID',
-  product_id      BIGINT       NOT NULL COMMENT '产品 ID',
-  buy_num         DECIMAL(12,2) NOT NULL COMMENT '采购数量',
-  buy_price       DECIMAL(10,2) NULL COMMENT '采购单价（推断字段）',
-  buy_amount      DECIMAL(15,2) NULL COMMENT '采购总额（推断字段）',
-  buy_date        DATE         NULL COMMENT '采购日期',
-  create_dept       BIGINT       NULL COMMENT '创建部门',
-  create_by       BIGINT       NULL COMMENT '录入人',
-  create_time     DATETIME     NULL COMMENT '录入时间',
-  update_by       BIGINT       NULL COMMENT '更新人',
-  update_time     DATETIME     NULL COMMENT '更新时间',
-  del_flag        CHAR(1)      DEFAULT '0' COMMENT '删除标志',
-  remark          VARCHAR(500) NULL COMMENT '备注',
-  PRIMARY KEY (id),
-  KEY idx_tenant_create (tenant_id, create_time),
-  KEY idx_supplier (supplier_id),
-  KEY idx_product (product_id),
-  KEY idx_buy_date (buy_date)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='供应商交易信息表';
-
--- ============================================================
--- 追溯（2 张，TRC-CORE-001）
--- 表名改造: pig_code -> trace_code / pig_time -> trace_event（含猪肉+果蔬+礼盒 3 种）
--- ============================================================
-
--- ------------------------------------------------------------
--- 15. t_warehouse_trace_code（追溯码，TRC-CORE-001）
--- _db-changes: 原 t_warehouse_pig_code，因含 3 业态改名 trace_code
--- 改造: farm_name 冗余 -> farm_id (JOIN sys_farm)
--- 毫秒级 datetime(3)
--- ------------------------------------------------------------
-DROP TABLE IF EXISTS t_warehouse_trace_code;
-CREATE TABLE t_warehouse_trace_code (
-  id                  BIGINT       NOT NULL AUTO_INCREMENT,
-  tenant_id           VARCHAR(20)  NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
-  produce_code        VARCHAR(64)  NOT NULL COMMENT '追溯码（UNIQUE）',
-  code_type           VARCHAR(16)  NOT NULL COMMENT '追溯码类型：pork=猪肉 / veg=果蔬 / gift=礼盒',
-  product_id          BIGINT       NULL COMMENT '产品 ID',
-  pig_ear_no          VARCHAR(32)  NULL COMMENT '关联猪只耳号',
-  plot_id             BIGINT       NULL COMMENT '关联地块 ID',
-  plant_days          INT          NULL COMMENT '种植天数（果蔬时填）',
-  havest_date         DATE         NULL COMMENT '采收日期',
-  crop_cert_id        BIGINT       NULL COMMENT '作物有机证书 ID',
-  plot_cert_id        BIGINT       NULL COMMENT '地块有机证书 ID',
-  store_id            BIGINT       NULL COMMENT '门店 ID',
-  farm_id             BIGINT       NULL COMMENT '农场 ID（替代原 farm_name 冗余，JOIN sys_farm 取名）',
-  gift_components     JSON         NULL COMMENT '礼盒子追溯码 JSON（礼盒时用）',
-  qr_oss_id           BIGINT       NULL COMMENT 'QR 码图片 OSS ID',
-  create_dept           BIGINT       NULL COMMENT '创建部门',
-  create_by           BIGINT       NULL COMMENT '生成人',
-  create_time         DATETIME(3)  NULL COMMENT '生成时间（毫秒级）',
-  update_by           BIGINT       NULL COMMENT '更新人',
-  update_time         DATETIME(3)  NULL COMMENT '更新时间',
-  del_flag            CHAR(1)      DEFAULT '0' COMMENT '删除标志',
-  remark              VARCHAR(500) NULL COMMENT '备注',
-  del_unique          BIGINT       NOT NULL DEFAULT 0 COMMENT "软删除生成 token（应用层 update del_flag='1' 时同步 SET del_unique=id；§6.3.0）",
-  PRIMARY KEY (id),
-  UNIQUE KEY uk_produce_code (tenant_id, produce_code, del_unique),
-  KEY idx_tenant_create (tenant_id, create_time),
-  KEY idx_code_type (code_type),
-  KEY idx_product (product_id),
-  KEY idx_pig_ear (pig_ear_no),
-  KEY idx_plot (plot_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='追溯码（TRC-CORE-001，原 pig_code 改名）';
-
--- ------------------------------------------------------------
--- 16. t_warehouse_trace_event（时间追溯/事件流水，TRC-CORE-001）
--- _db-changes: 原 t_warehouse_pig_time，改名 trace_event
--- 流水表无 UNIQUE、无 del_flag/update_by（immutable）
--- 毫秒级 datetime(3)
--- ------------------------------------------------------------
-DROP TABLE IF EXISTS t_warehouse_trace_event;
-CREATE TABLE t_warehouse_trace_event (
-  id              BIGINT       NOT NULL AUTO_INCREMENT,
-  tenant_id       VARCHAR(20)  NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
-  produce_code    VARCHAR(64)  NOT NULL COMMENT '追溯码（关联 t_warehouse_trace_code）',
-  trace_content   VARCHAR(32)  NOT NULL COMMENT '事件类型（7 种）：marketing=出栏/singe=燎毛/slaughter=屠宰/acid=排酸/in_stock=入库/ship=发货/arrival=到店',
-  trace_time      DATETIME(3)  NOT NULL COMMENT '事件时间（毫秒级）',
-  event_data      JSON         NULL COMMENT '事件附加数据 JSON',
-  operator_id     BIGINT       NULL COMMENT '操作人',
-  create_time     DATETIME(3)  NULL COMMENT '记录创建时间',
-  PRIMARY KEY (id),
-  KEY idx_tenant_create (tenant_id, create_time),
-  KEY idx_code_time (produce_code, trace_time),
-  KEY idx_trace_content (trace_content)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='时间追溯/事件流水（TRC-CORE-001，原 pig_time 改名）';
-
-SET FOREIGN_KEY_CHECKS = 1;
-
-
--- ----------------------------------------------------------------------------
--- 来源文件：V202605200904__SYS-INIT-001-create-business-tables-store.sql
--- ----------------------------------------------------------------------------
--- ============================================================
--- SYS-INIT-001 业务表 DDL — 门店域 STR (含会员)
--- 生成时间: 2026-05-20
--- 表数: 6 张
---   t_store_product_relation / t_store_sale_record / t_store_check_record /
---   t_store_member / t_store_member_consumption / t_store_return
--- 注: 追溯 TRC-* 的 2 张表（t_warehouse_trace_code / t_warehouse_trace_event）已放在 warehouse 文件
---     数据驾驶舱 DSH-* 全部复用其他模块数据，无新表
--- 强制规范: tenant_id VARCHAR(20) NOT NULL DEFAULT '1001' / UNIQUE 含 del_unique 生成列 / 审计字段对齐 ruoyi
--- 引用: doc/05-架构文档-ruoyi.md §6, doc/06-实现描述.md 第 5 章 (STR-*) + 第 6/7 章, doc/_db-changes.md
--- ============================================================
-
-SET NAMES utf8mb4;
-SET FOREIGN_KEY_CHECKS = 0;
-
--- ------------------------------------------------------------
--- 1. t_store_product_relation（门店产品关联，STR-OP-001）
--- M:N 关联表
--- ------------------------------------------------------------
-DROP TABLE IF EXISTS t_store_product_relation;
-CREATE TABLE t_store_product_relation (
-  id              BIGINT       NOT NULL AUTO_INCREMENT,
-  tenant_id       VARCHAR(20)  NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
-  store_id        BIGINT       NOT NULL COMMENT '门店 ID',
-  product_id      BIGINT       NOT NULL COMMENT '产品 ID',
-  shelf_status    TINYINT      NULL DEFAULT 1 COMMENT '上架状态 1=上架 0=下架',
-  shelf_price     DECIMAL(10,2) NULL COMMENT '上架价格 元',
-  create_dept       BIGINT       NULL COMMENT '创建部门',
-  create_by       BIGINT       NULL COMMENT '创建人',
-  create_time     DATETIME     NULL COMMENT '创建时间',
-  update_by       BIGINT       NULL COMMENT '更新人',
-  update_time     DATETIME     NULL COMMENT '更新时间',
-  del_flag        CHAR(1)      DEFAULT '0' COMMENT '删除标志',
-  remark          VARCHAR(500) NULL COMMENT '备注',
-  del_unique          BIGINT       NOT NULL DEFAULT 0 COMMENT "软删除生成 token（应用层 update del_flag='1' 时同步 SET del_unique=id；§6.3.0）",
-  PRIMARY KEY (id),
-  UNIQUE KEY uk_store_product (tenant_id, store_id, product_id, del_unique),
-  KEY idx_tenant_create (tenant_id, create_time),
-  KEY idx_product (product_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='门店产品关联（STR-OP-001）';
-
--- ------------------------------------------------------------
--- 2. t_store_sale_record（门店销售流水，STR-OP-001 ★ 待 P1 #7 数据来源）
--- V1 手录，V2 接 POS/微信支付回调
--- ------------------------------------------------------------
-DROP TABLE IF EXISTS t_store_sale_record;
-CREATE TABLE t_store_sale_record (
-  id              BIGINT       NOT NULL AUTO_INCREMENT,
-  tenant_id       VARCHAR(20)  NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
-  sale_no         VARCHAR(32)  NOT NULL COMMENT '销售单号',
-  store_id        BIGINT       NOT NULL COMMENT '门店 ID',
-  product_id      BIGINT       NOT NULL COMMENT '产品 ID',
-  sale_date       DATETIME     NOT NULL COMMENT '销售日期',
-  quantity        DECIMAL(12,2) NOT NULL COMMENT '销售数量',
-  unit_price      DECIMAL(10,2) NULL COMMENT '单价 元',
-  total_amount    DECIMAL(12,2) NULL COMMENT '总额 元',
-  member_id       BIGINT       NULL COMMENT '会员 ID（可选）',
-  data_source     VARCHAR(16)  NULL DEFAULT 'manual' COMMENT '数据来源：manual=手录/pos=POS/wxpay=微信支付（V1 仅 manual）',
-  create_dept       BIGINT       NULL COMMENT '创建部门',
-  create_by       BIGINT       NULL COMMENT '录入人',
-  create_time     DATETIME     NULL COMMENT '录入时间',
-  update_by       BIGINT       NULL COMMENT '更新人',
-  update_time     DATETIME     NULL COMMENT '更新时间',
-  del_flag        CHAR(1)      DEFAULT '0' COMMENT '删除标志',
-  remark          VARCHAR(500) NULL COMMENT '备注',
-  del_unique          BIGINT       NOT NULL DEFAULT 0 COMMENT "软删除生成 token（应用层 update del_flag='1' 时同步 SET del_unique=id；§6.3.0）",
-  PRIMARY KEY (id),
-  UNIQUE KEY uk_sale_no (tenant_id, sale_no, del_unique),
-  KEY idx_tenant_create (tenant_id, create_time),
-  KEY idx_store_date (store_id, sale_date),
-  KEY idx_product (product_id),
-  KEY idx_member (member_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='门店销售流水（STR-OP-001 V1 手录）';
-
--- ------------------------------------------------------------
--- 3. t_store_check_record（门店盘点，STR-STOCK-001）
--- 与仓库盘点 t_warehouse_check_record 同结构，单独表
--- ------------------------------------------------------------
-DROP TABLE IF EXISTS t_store_check_record;
-CREATE TABLE t_store_check_record (
-  id              BIGINT       NOT NULL AUTO_INCREMENT,
-  tenant_id       VARCHAR(20)  NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
-  check_no        VARCHAR(32)  NOT NULL COMMENT '盘点单号',
-  store_id        BIGINT       NOT NULL COMMENT '门店 ID',
-  check_date      DATE         NOT NULL COMMENT '盘点日期',
-  check_status    VARCHAR(16)  NOT NULL DEFAULT 'draft' COMMENT '状态 字典 djs_check_status：draft/in_progress/completed',
-  product_id      BIGINT       NULL COMMENT '产品 ID',
-  sys_stock       DECIMAL(12,2) NULL COMMENT '系统库存',
-  check_stock     DECIMAL(12,2) NULL COMMENT '实盘数',
-  diff_stock      DECIMAL(12,2) NULL COMMENT '差异',
-  operator_id     BIGINT       NULL COMMENT '盘点人',
-  create_dept       BIGINT       NULL COMMENT '创建部门',
-  create_by       BIGINT       NULL COMMENT '录入人',
-  create_time     DATETIME     NULL COMMENT '录入时间',
-  update_by       BIGINT       NULL COMMENT '更新人',
-  update_time     DATETIME     NULL COMMENT '更新时间',
-  del_flag        CHAR(1)      DEFAULT '0' COMMENT '删除标志',
-  remark          VARCHAR(500) NULL COMMENT '备注',
-  del_unique          BIGINT       NOT NULL DEFAULT 0 COMMENT "软删除生成 token（应用层 update del_flag='1' 时同步 SET del_unique=id；§6.3.0）",
-  PRIMARY KEY (id),
-  UNIQUE KEY uk_check_no (tenant_id, check_no, del_unique),
-  KEY idx_tenant_create (tenant_id, create_time),
-  KEY idx_store_date (store_id, check_date)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='门店盘点（STR-STOCK-001）';
-
--- ------------------------------------------------------------
--- 4. t_store_member（会员档案，STR-MEMBER-001 v1.1 大幅裁剪）
--- 会员编号规则 10001 起，SYS-INFRA-004 生成
--- ------------------------------------------------------------
-DROP TABLE IF EXISTS t_store_member;
-CREATE TABLE t_store_member (
-  id              BIGINT       NOT NULL AUTO_INCREMENT,
-  tenant_id       VARCHAR(20)  NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
-  member_no       VARCHAR(32)  NOT NULL COMMENT '会员编号（10001 风格 SYS-INFRA-004 生成）',
-  member_name     VARCHAR(64)  NULL COMMENT '会员姓名',
-  phone           VARCHAR(20)  NOT NULL COMMENT '手机号',
-  member_level    VARCHAR(16)  NULL COMMENT '会员等级',
-  join_date       DATE         NULL COMMENT '入会日期',
-  store_id        BIGINT       NULL COMMENT '所属门店 ID',
-  member_tags     VARCHAR(255) NULL COMMENT '会员标签（逗号分隔）',
-  member_status   TINYINT      NOT NULL DEFAULT 1 COMMENT '状态 1=正常 0=停用',
-  create_dept       BIGINT       NULL COMMENT '创建部门',
-  create_by       BIGINT       NULL COMMENT '创建人',
-  create_time     DATETIME     NULL COMMENT '创建时间',
-  update_by       BIGINT       NULL COMMENT '更新人',
-  update_time     DATETIME     NULL COMMENT '更新时间',
-  del_flag        CHAR(1)      DEFAULT '0' COMMENT '删除标志',
-  remark          VARCHAR(500) NULL COMMENT '备注',
-  del_unique          BIGINT       NOT NULL DEFAULT 0 COMMENT "软删除生成 token（应用层 update del_flag='1' 时同步 SET del_unique=id；§6.3.0）",
-  PRIMARY KEY (id),
-  UNIQUE KEY uk_member_no (tenant_id, member_no, del_unique),
-  UNIQUE KEY uk_phone (tenant_id, phone, del_unique),
-  KEY idx_tenant_create (tenant_id, create_time),
-  KEY idx_store (store_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='会员档案（STR-MEMBER-001 v1.1 裁剪后）';
-
--- ------------------------------------------------------------
--- 5. t_store_member_consumption（会员手动消费记录，STR-MEMBER-001）
--- v1.1 裁剪: 去掉 amount_auto / payment_method / wx_pay_transaction_id 等"交易自动化"字段
--- ------------------------------------------------------------
-DROP TABLE IF EXISTS t_store_member_consumption;
-CREATE TABLE t_store_member_consumption (
-  id                BIGINT       NOT NULL AUTO_INCREMENT,
-  tenant_id         VARCHAR(20)  NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
-  member_id         BIGINT       NOT NULL COMMENT '会员 ID',
-  consume_date      DATETIME     NOT NULL COMMENT '消费日期',
-  store_id          BIGINT       NULL COMMENT '门店 ID',
-  sku               VARCHAR(64)  NULL COMMENT '商品 SKU/产品编码',
-  product_id        BIGINT       NULL COMMENT '产品 ID',
-  quantity          DECIMAL(12,2) NULL COMMENT '数量',
-  amount_manual     DECIMAL(12,2) NULL COMMENT '手填金额 元',
-  notes             VARCHAR(500) NULL COMMENT '备注',
-  create_dept         BIGINT       NULL COMMENT '创建部门',
-  create_by         BIGINT       NULL COMMENT '录入人',
-  create_time       DATETIME     NULL COMMENT '录入时间',
-  update_by         BIGINT       NULL COMMENT '更新人',
-  update_time       DATETIME     NULL COMMENT '更新时间',
-  del_flag          CHAR(1)      DEFAULT '0' COMMENT '删除标志',
-  remark            VARCHAR(500) NULL COMMENT '备注（兼容字段）',
-  PRIMARY KEY (id),
-  KEY idx_tenant_create (tenant_id, create_time),
-  KEY idx_member_date (member_id, consume_date),
-  KEY idx_store (store_id),
-  KEY idx_product (product_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='会员手动消费记录（STR-MEMBER-001 V1 手录）';
-
--- ------------------------------------------------------------
--- 6. t_store_return（门店退回管理，STR-RETURN-001）
--- 与 t_warehouse_return_product 区分：本表记录从顾客退回门店的流水
--- ------------------------------------------------------------
-DROP TABLE IF EXISTS t_store_return;
-CREATE TABLE t_store_return (
-  id                  BIGINT       NOT NULL AUTO_INCREMENT,
-  tenant_id           VARCHAR(20)  NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
-  return_no           VARCHAR(32)  NOT NULL COMMENT '退回单号',
-  return_direction    VARCHAR(32)  NOT NULL COMMENT '退回方向：customer_to_store=顾客→门店 / store_to_warehouse=门店→仓库 / warehouse_to_supplier=仓库→供应商',
-  store_id            BIGINT       NULL COMMENT '门店 ID',
-  product_id          BIGINT       NOT NULL COMMENT '产品 ID',
-  return_quantity     DECIMAL(12,2) NOT NULL COMMENT '退回数量',
-  return_reason       VARCHAR(255) NULL COMMENT '退回原因',
-  trace_code          VARCHAR(64)  NULL COMMENT '已贴追溯码（如有）',
-  return_date         DATETIME     NOT NULL COMMENT '退回日期',
-  member_id           BIGINT       NULL COMMENT '退回会员 ID（顾客退回时）',
-  operator_id         BIGINT       NULL COMMENT '操作人',
-  create_dept           BIGINT       NULL COMMENT '创建部门',
-  create_by           BIGINT       NULL COMMENT '录入人',
-  create_time         DATETIME     NULL COMMENT '录入时间',
-  update_by           BIGINT       NULL COMMENT '更新人',
-  update_time         DATETIME     NULL COMMENT '更新时间',
-  del_flag            CHAR(1)      DEFAULT '0' COMMENT '删除标志',
-  remark              VARCHAR(500) NULL COMMENT '备注',
-  del_unique          BIGINT       NOT NULL DEFAULT 0 COMMENT "软删除生成 token（应用层 update del_flag='1' 时同步 SET del_unique=id；§6.3.0）",
-  PRIMARY KEY (id),
-  UNIQUE KEY uk_return_no (tenant_id, return_no, del_unique),
-  KEY idx_tenant_create (tenant_id, create_time),
-  KEY idx_store_date (store_id, return_date),
-  KEY idx_product (product_id),
-  KEY idx_member (member_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='门店退回管理（STR-RETURN-001 多方向退回）';
-
-SET FOREIGN_KEY_CHECKS = 1;
-
-
--- ----------------------------------------------------------------------------
--- 来源文件：V202605200905__SYS-INIT-001-extend-ruoyi-tables.sql
--- ----------------------------------------------------------------------------
--- ============================================================
--- SYS-INIT-001 — 步骤 3：扩展 ruoyi 自带 sys_* 表
--- 生成时间: 2026-05-20
--- 内容：sys_user / sys_oss_config / sys_client / sys_post 扩字段
--- 引用: doc/06-实现描述.md SYS-AUTH-001 / SYS-INFRA-002 / SYS-INFRA-006
--- ============================================================
-
-SET NAMES utf8mb4;
-
--- ----------------------------------------------------------------
--- 1. sys_user 加多农场 + 微信字段
---    farm_id 类型对齐 sys_user.tenant_id（VARCHAR(20)）
--- ----------------------------------------------------------------
-ALTER TABLE sys_user
-  ADD COLUMN farm_id              VARCHAR(20)  DEFAULT NULL COMMENT '当前默认农场 id（V1 默认 "1001"）',
-  ADD COLUMN current_farm_id      VARCHAR(20)  DEFAULT NULL COMMENT '当前激活的农场 id（用户切换后更新）',
-  ADD COLUMN accessible_farm_ids  VARCHAR(500) DEFAULT NULL COMMENT '可访问的农场 id 列表（逗号分隔，多农场用户用）',
-  ADD COLUMN wx_openid            VARCHAR(64)  DEFAULT NULL COMMENT '微信 openid',
-  ADD COLUMN wx_unionid           VARCHAR(64)  DEFAULT NULL COMMENT '微信 unionid',
-  ADD INDEX idx_wx_openid (wx_openid);
-
--- ----------------------------------------------------------------
--- 2. sys_oss_config 加 STS 字段
--- ----------------------------------------------------------------
-ALTER TABLE sys_oss_config
-  ADD COLUMN sts_role_arn         VARCHAR(200) DEFAULT NULL COMMENT 'STS 角色 ARN（阿里云）',
-  ADD COLUMN sts_session_duration INT          DEFAULT 3600 COMMENT 'STS 会话有效期（秒）';
-
--- ----------------------------------------------------------------
--- 3. sys_client 新增小程序客户端
---    id 显式赋值（ruoyi sys_client 无 AUTO_INCREMENT，dev seed 用低位 id）
---    client_secret 是 dev 占位，prod 部署时由运维替换
--- ----------------------------------------------------------------
-INSERT INTO sys_client
-  (id, client_id, client_key, client_secret, grant_type, device_type, active_timeout, timeout, status, del_flag, create_time, update_time)
-VALUES
-  (3, 'mp-applet-dongjiaoshan', 'mp_dongjiaoshan', 'djs_mp_dev_placeholder_replace_in_prod', 'wechat,password', 'mp', 1800, 604800, '0', '0', NOW(), NOW());
-
--- ----------------------------------------------------------------
--- 4. sys_post 加微信角色码
--- ----------------------------------------------------------------
-ALTER TABLE sys_post
-  ADD COLUMN wx_role_code VARCHAR(64) DEFAULT NULL COMMENT '小程序角色码（pig_keeper / planter / warehouse_keeper / store_clerk 等）';
-
-
--- ----------------------------------------------------------------------------
--- 来源文件：V202605200906__SYS-INIT-001-cleanup-ruoyi-menus.sql
--- ----------------------------------------------------------------------------
--- ============================================================
--- SYS-INIT-001 — 步骤 4：清理 ruoyi 自带不用的菜单
--- 生成时间: 2026-05-20
--- 原则：隐藏（visible='1'）而非物理删，便于回滚；demo 物理删（不会再用）
--- ruoyi 约定：visible '0'=显示 '1'=隐藏
--- ============================================================
-
-SET NAMES utf8mb4;
-
--- 服务器监控（不用）— 服务监控 / 缓存监控 / 在线用户
-UPDATE sys_menu SET visible='1' WHERE menu_name IN ('服务监控', '缓存监控', '在线用户');
-
--- 系统工具 — 表单构建 / 通知公告 不用
-UPDATE sys_menu SET visible='1' WHERE menu_name IN ('表单构建', '通知公告');
-
--- demo 模块菜单物理删（确认不再用）
-DELETE FROM sys_menu WHERE perms LIKE 'demo:%';
-
-
--- ----------------------------------------------------------------------------
--- 来源文件：V202605201000__SYS-INIT-002-init-dict.sql
--- ----------------------------------------------------------------------------
--- ============================================================
--- SYS-INIT-002 字典数据初始化
--- 生成时间: 2026-05-20
--- 范围: 38 类 dict_type + 约 224 条 dict_data
---   A 系统通用 6 类 (dict_id 100000-100099, dict_code 1000000-1000999)
---   B 养殖域   8 类 (dict_id 100100-100199, dict_code 1001000-1001999)
---   C 种植域   5 类 (dict_id 100200-100249, dict_code 1002000-1002499)
---   D 种植空白 8 类 (dict_id 100250-100299, dict_code 1002500-1002999)  -- doc/02 v1.1 + doc/06 要求
---   E 仓库域   6 类 (dict_id 100300-100399, dict_code 1003000-1003999)
---   F 门店域   3 类 (dict_id 100400-100499, dict_code 1004000-1004999)
---   G 跨域/追溯 2 类 (dict_id 100500-100599, dict_code 1005000-1005999)
--- 约束:
---   1. 全部 INSERT IGNORE 幂等（PK / UNIQUE(tenant_id, dict_type) 撞了即跳过）
---   2. tenant_id 全 '1001'（与 SYS-INIT-001 CR-20260520-01 一致，VARCHAR(20)）
---   3. dict_type 前缀 'djs_'
---   4. dict_label 中文 / dict_value 英文蛇形或大写枚举
---   5. create_by / create_dept 为 bigint，置 NULL（ruoyi 5.x 设计：业务字典无具体创建人）
--- 引用: doc/02-需求拆解-v1.2.md §SYS-INIT-002, doc/06-实现描述.md §SYS-INIT-002
--- ============================================================
-
-SET NAMES utf8mb4;
-
--- ============================================================
--- A. 系统通用（6 类）
--- ============================================================
-
--- A1 djs_user_status 用户状态
-INSERT IGNORE INTO sys_dict_type
-  (dict_id, tenant_id, dict_name, dict_type, create_by, create_time, remark)
-VALUES
-  (100001, '1001', '用户状态', 'djs_user_status', NULL, NOW(), '系统通用：员工档案状态');
-INSERT IGNORE INTO sys_dict_data
-  (dict_code, tenant_id, dict_sort, dict_label, dict_value, dict_type, css_class, list_class, is_default, create_by, create_time)
-VALUES
-  (1000010, '1001', 0, '在职', '0', 'djs_user_status', '', 'primary', 'Y', NULL, NOW()),
-  (1000011, '1001', 1, '离职', '1', 'djs_user_status', '', 'danger',  'N', NULL, NOW()),
-  (1000012, '1001', 2, '试用', '2', 'djs_user_status', '', 'warning', 'N', NULL, NOW());
-
--- A2 djs_role_code 系统角色（13 个，v1.2 含 boss + manager）
-INSERT IGNORE INTO sys_dict_type
-  (dict_id, tenant_id, dict_name, dict_type, create_by, create_time, remark)
-VALUES
-  (100002, '1001', '系统角色', 'djs_role_code', NULL, NOW(), '系统通用：13 种业务角色 code');
-INSERT IGNORE INTO sys_dict_data
-  (dict_code, tenant_id, dict_sort, dict_label, dict_value, dict_type, css_class, list_class, is_default, create_by, create_time)
-VALUES
-  (1000020, '1001',  0, '老板',           'boss',             'djs_role_code', '', 'primary', 'N', NULL, NOW()),
-  (1000021, '1001',  1, '管理人员',       'manager',          'djs_role_code', '', 'primary', 'N', NULL, NOW()),
-  (1000022, '1001',  2, '系统管理员',     'admin',            'djs_role_code', '', 'danger',  'N', NULL, NOW()),
-  (1000023, '1001',  3, '养猪员',         'pig_keeper',       'djs_role_code', '', 'info',    'N', NULL, NOW()),
-  (1000024, '1001',  4, '种植员',         'planter',          'djs_role_code', '', 'info',    'N', NULL, NOW()),
-  (1000025, '1001',  5, '仓管员',         'warehouse_keeper', 'djs_role_code', '', 'info',    'N', NULL, NOW()),
-  (1000026, '1001',  6, '门店员工',       'store_clerk',      'djs_role_code', '', 'info',    'N', NULL, NOW()),
-  (1000027, '1001',  7, '店长',           'store_manager',    'djs_role_code', '', 'success', 'N', NULL, NOW()),
-  (1000028, '1001',  8, '调度员',         'dispatcher',       'djs_role_code', '', 'warning', 'N', NULL, NOW()),
-  (1000029, '1001',  9, '屠宰员',         'butcher',          'djs_role_code', '', 'info',    'N', NULL, NOW()),
-  (1000030, '1001', 10, '打包员',         'packer',           'djs_role_code', '', 'info',    'N', NULL, NOW()),
-  (1000031, '1001', 11, '司机',           'driver',           'djs_role_code', '', 'info',    'N', NULL, NOW()),
-  (1000032, '1001', 12, '顾客',           'customer',         'djs_role_code', '', '',        'N', NULL, NOW());
-
--- A3 djs_farm_status 农场状态
-INSERT IGNORE INTO sys_dict_type
-  (dict_id, tenant_id, dict_name, dict_type, create_by, create_time, remark)
-VALUES
-  (100003, '1001', '农场状态', 'djs_farm_status', NULL, NOW(), '系统通用：sys_farm.farm_status');
-INSERT IGNORE INTO sys_dict_data
-  (dict_code, tenant_id, dict_sort, dict_label, dict_value, dict_type, css_class, list_class, is_default, create_by, create_time)
-VALUES
-  (1000040, '1001', 0, '启用', '0', 'djs_farm_status', '', 'primary', 'Y', NULL, NOW()),
-  (1000041, '1001', 1, '停用', '1', 'djs_farm_status', '', 'danger',  'N', NULL, NOW());
-
--- A4 djs_store_status 门店状态
-INSERT IGNORE INTO sys_dict_type
-  (dict_id, tenant_id, dict_name, dict_type, create_by, create_time, remark)
-VALUES
-  (100004, '1001', '门店状态', 'djs_store_status', NULL, NOW(), '系统通用：t_md_store.status');
-INSERT IGNORE INTO sys_dict_data
-  (dict_code, tenant_id, dict_sort, dict_label, dict_value, dict_type, css_class, list_class, is_default, create_by, create_time)
-VALUES
-  (1000050, '1001', 0, '启用',   '0', 'djs_store_status', '', 'primary', 'Y', NULL, NOW()),
-  (1000051, '1001', 1, '停用',   '1', 'djs_store_status', '', 'danger',  'N', NULL, NOW()),
-  (1000052, '1001', 2, '装修中', '2', 'djs_store_status', '', 'warning', 'N', NULL, NOW());
-
--- A5 djs_supplier_type 供应商类型
-INSERT IGNORE INTO sys_dict_type
-  (dict_id, tenant_id, dict_name, dict_type, create_by, create_time, remark)
-VALUES
-  (100005, '1001', '供应商类型', 'djs_supplier_type', NULL, NOW(), '系统通用：t_md_supplier.supplier_type');
-INSERT IGNORE INTO sys_dict_data
-  (dict_code, tenant_id, dict_sort, dict_label, dict_value, dict_type, css_class, list_class, is_default, create_by, create_time)
-VALUES
-  (1000060, '1001', 0, '饲料',     'feed',  'djs_supplier_type', '', 'primary', 'N', NULL, NOW()),
-  (1000061, '1001', 1, '种猪',     'breed', 'djs_supplier_type', '', 'primary', 'N', NULL, NOW()),
-  (1000062, '1001', 2, '兽药',     'med',   'djs_supplier_type', '', 'warning', 'N', NULL, NOW()),
-  (1000063, '1001', 3, '蔬菜种子', 'seed',  'djs_supplier_type', '', 'success', 'N', NULL, NOW()),
-  (1000064, '1001', 4, '包材',     'pack',  'djs_supplier_type', '', 'info',    'N', NULL, NOW()),
-  (1000065, '1001', 5, '其他',     'other', 'djs_supplier_type', '', '',        'N', NULL, NOW());
-
--- A6 djs_yes_no 通用是否
-INSERT IGNORE INTO sys_dict_type
-  (dict_id, tenant_id, dict_name, dict_type, create_by, create_time, remark)
-VALUES
-  (100006, '1001', '通用是否', 'djs_yes_no', NULL, NOW(), '系统通用：1=是 / 0=否');
-INSERT IGNORE INTO sys_dict_data
-  (dict_code, tenant_id, dict_sort, dict_label, dict_value, dict_type, css_class, list_class, is_default, create_by, create_time)
-VALUES
-  (1000070, '1001', 0, '是', '1', 'djs_yes_no', '', 'primary', 'N', NULL, NOW()),
-  (1000071, '1001', 1, '否', '0', 'djs_yes_no', '', 'info',    'Y', NULL, NOW());
-
--- ============================================================
--- B. 养殖域（10 类）
--- ============================================================
-
--- B1 djs_pig_gender 猪只性别
-INSERT IGNORE INTO sys_dict_type
-  (dict_id, tenant_id, dict_name, dict_type, create_by, create_time, remark)
-VALUES
-  (100101, '1001', '猪只性别', 'djs_pig_gender', NULL, NOW(), '养殖：公/母');
-INSERT IGNORE INTO sys_dict_data
-  (dict_code, tenant_id, dict_sort, dict_label, dict_value, dict_type, css_class, list_class, is_default, create_by, create_time)
-VALUES
-  (1001010, '1001', 0, '公', 'M', 'djs_pig_gender', '', 'primary', 'N', NULL, NOW()),
-  (1001011, '1001', 1, '母', 'F', 'djs_pig_gender', '', 'success', 'N', NULL, NOW());
-
--- B2 djs_pig_breed 品种
-INSERT IGNORE INTO sys_dict_type
-  (dict_id, tenant_id, dict_name, dict_type, create_by, create_time, remark)
-VALUES
-  (100102, '1001', '猪只品种', 'djs_pig_breed', NULL, NOW(), '养殖：杜洛克/长白/大白 等');
-INSERT IGNORE INTO sys_dict_data
-  (dict_code, tenant_id, dict_sort, dict_label, dict_value, dict_type, css_class, list_class, is_default, create_by, create_time)
-VALUES
-  (1001020, '1001', 0, '杜洛克', 'duroc',     'djs_pig_breed', '', 'primary', 'N', NULL, NOW()),
-  (1001021, '1001', 1, '长白',   'landrace',  'djs_pig_breed', '', 'primary', 'N', NULL, NOW()),
-  (1001022, '1001', 2, '大白',   'yorkshire', 'djs_pig_breed', '', 'primary', 'N', NULL, NOW()),
-  (1001023, '1001', 3, 'PIC',    'pic',       'djs_pig_breed', '', 'success', 'N', NULL, NOW()),
-  (1001024, '1001', 4, '二元',   'binary',    'djs_pig_breed', '', 'info',    'N', NULL, NOW()),
-  (1001025, '1001', 5, '三元',   'ternary',   'djs_pig_breed', '', 'info',    'N', NULL, NOW()),
-  (1001026, '1001', 6, '其他',   'other',     'djs_pig_breed', '', '',        'N', NULL, NOW());
-
--- B3 djs_pig_lifecycle 猪只生命周期阶段（状态机 10 状态 — 与 BRD-CORE-001 enum 必须严格一致）
-INSERT IGNORE INTO sys_dict_type
-  (dict_id, tenant_id, dict_name, dict_type, create_by, create_time, remark)
-VALUES
-  (100103, '1001', '猪只生命周期', 'djs_pig_lifecycle', NULL, NOW(), '养殖：状态机 10 状态，BRD-CORE-001 enum 严格对齐');
-INSERT IGNORE INTO sys_dict_data
-  (dict_code, tenant_id, dict_sort, dict_label, dict_value, dict_type, css_class, list_class, is_default, create_by, create_time)
-VALUES
-  (1001030, '1001', 0, '后备',    'HB',                  'djs_pig_lifecycle', '', 'info',    'Y', NULL, NOW()),
-  (1001031, '1001', 1, '配种',    'PZ',                  'djs_pig_lifecycle', '', 'primary', 'N', NULL, NOW()),
-  (1001032, '1001', 2, '配怀',    'PH',                  'djs_pig_lifecycle', '', 'primary', 'N', NULL, NOW()),
-  (1001033, '1001', 3, '分娩',    'FM',                  'djs_pig_lifecycle', '', 'success', 'N', NULL, NOW()),
-  (1001034, '1001', 4, '断奶',    'DN',                  'djs_pig_lifecycle', '', 'success', 'N', NULL, NOW()),
-  (1001035, '1001', 5, '流产',    'LC',                  'djs_pig_lifecycle', '', 'warning', 'N', NULL, NOW()),
-  (1001036, '1001', 6, '空怀',    'KH',                  'djs_pig_lifecycle', '', 'warning', 'N', NULL, NOW()),
-  (1001037, '1001', 7, '返情',    'FQ',                  'djs_pig_lifecycle', '', 'warning', 'N', NULL, NOW()),
-  (1001038, '1001', 8, '终止',    'END',                 'djs_pig_lifecycle', '', 'danger',  'N', NULL, NOW()),
-  (1001039, '1001', 9, '公猪在产', 'BOAR_ACTIVE',        'djs_pig_lifecycle', '', 'info',    'N', NULL, NOW());
-
--- B4 djs_pig_status_event 猪只状态机事件（11 个，BRD-CORE-001 严格对齐）
-INSERT IGNORE INTO sys_dict_type
-  (dict_id, tenant_id, dict_name, dict_type, create_by, create_time, remark)
-VALUES
-  (100104, '1001', '状态机事件', 'djs_pig_status_event', NULL, NOW(), '养殖：状态机 11 事件，BRD-CORE-001 enum 严格对齐');
-INSERT IGNORE INTO sys_dict_data
-  (dict_code, tenant_id, dict_sort, dict_label, dict_value, dict_type, css_class, list_class, is_default, create_by, create_time)
-VALUES
-  (1001040, '1001',  0, '引种',     'INTRO',       'djs_pig_status_event', '', 'primary', 'N', NULL, NOW()),
-  (1001041, '1001',  1, '配种',     'BREED',       'djs_pig_status_event', '', 'primary', 'N', NULL, NOW()),
-  (1001042, '1001',  2, '分娩',     'FARROW',      'djs_pig_status_event', '', 'success', 'N', NULL, NOW()),
-  (1001043, '1001',  3, '断奶',     'WEAN',        'djs_pig_status_event', '', 'success', 'N', NULL, NOW()),
-  (1001044, '1001',  4, '查情',     'OESTRUS',     'djs_pig_status_event', '', 'info',    'N', NULL, NOW()),
-  (1001045, '1001',  5, '返空',     'NULL_RETURN', 'djs_pig_status_event', '', 'warning', 'N', NULL, NOW()),
-  (1001046, '1001',  6, '死亡',     'DIE',         'djs_pig_status_event', '', 'danger',  'N', NULL, NOW()),
-  (1001047, '1001',  7, '淘汰',     'ELIMINATE',   'djs_pig_status_event', '', 'danger',  'N', NULL, NOW()),
-  (1001048, '1001',  8, '阉割',     'CASTRATE',    'djs_pig_status_event', '', 'info',    'N', NULL, NOW()),
-  (1001049, '1001',  9, '转移',     'TRANSFER',    'djs_pig_status_event', '', 'info',    'N', NULL, NOW()),
-  (1001050, '1001', 10, '出栏',     'SLAUGHTER',   'djs_pig_status_event', '', 'warning', 'N', NULL, NOW());
-
--- B5 djs_barn_type 栋舍类型
-INSERT IGNORE INTO sys_dict_type
-  (dict_id, tenant_id, dict_name, dict_type, create_by, create_time, remark)
-VALUES
-  (100105, '1001', '栋舍类型', 'djs_barn_type', NULL, NOW(), '养殖：t_farm_barn.barn_type');
-INSERT IGNORE INTO sys_dict_data
-  (dict_code, tenant_id, dict_sort, dict_label, dict_value, dict_type, css_class, list_class, is_default, create_by, create_time)
-VALUES
-  (1001060, '1001', 0, '配种舍', 'breeding',  'djs_barn_type', '', 'primary', 'N', NULL, NOW()),
-  (1001061, '1001', 1, '妊娠舍', 'pregnant',  'djs_barn_type', '', 'primary', 'N', NULL, NOW()),
-  (1001062, '1001', 2, '产房',   'farrow',    'djs_barn_type', '', 'success', 'N', NULL, NOW()),
-  (1001063, '1001', 3, '保育舍', 'nursery',   'djs_barn_type', '', 'success', 'N', NULL, NOW()),
-  (1001064, '1001', 4, '育肥舍', 'fattening', 'djs_barn_type', '', 'warning', 'N', NULL, NOW()),
-  (1001065, '1001', 5, '隔离舍', 'isolation', 'djs_barn_type', '', 'danger',  'N', NULL, NOW());
-
--- B6 djs_pen_type 栏位类型
-INSERT IGNORE INTO sys_dict_type
-  (dict_id, tenant_id, dict_name, dict_type, create_by, create_time, remark)
-VALUES
-  (100106, '1001', '栏位类型', 'djs_pen_type', NULL, NOW(), '养殖：t_farm_pen.pen_type');
-INSERT IGNORE INTO sys_dict_data
-  (dict_code, tenant_id, dict_sort, dict_label, dict_value, dict_type, css_class, list_class, is_default, create_by, create_time)
-VALUES
-  (1001070, '1001', 0, '公栏',   'male',   'djs_pen_type', '', 'primary', 'N', NULL, NOW()),
-  (1001071, '1001', 1, '母栏',   'female', 'djs_pen_type', '', 'success', 'N', NULL, NOW()),
-  (1001072, '1001', 2, '限位栏', 'stall',  'djs_pen_type', '', 'warning', 'N', NULL, NOW()),
-  (1001073, '1001', 3, '群栏',   'group',  'djs_pen_type', '', 'info',    'N', NULL, NOW());
-
--- B7 djs_med_type 药品类型
-INSERT IGNORE INTO sys_dict_type
-  (dict_id, tenant_id, dict_name, dict_type, create_by, create_time, remark)
-VALUES
-  (100107, '1001', '药品类型', 'djs_med_type', NULL, NOW(), '养殖：t_farm_med.med_type');
-INSERT IGNORE INTO sys_dict_data
-  (dict_code, tenant_id, dict_sort, dict_label, dict_value, dict_type, css_class, list_class, is_default, create_by, create_time)
-VALUES
-  (1001080, '1001', 0, '抗生素',   'antibiotic',   'djs_med_type', '', 'danger',  'N', NULL, NOW()),
-  (1001081, '1001', 1, '疫苗',     'vaccine',      'djs_med_type', '', 'primary', 'N', NULL, NOW()),
-  (1001082, '1001', 2, '营养剂',   'nutrition',    'djs_med_type', '', 'success', 'N', NULL, NOW()),
-  (1001083, '1001', 3, '消毒剂',   'disinfectant', 'djs_med_type', '', 'warning', 'N', NULL, NOW()),
-  (1001084, '1001', 4, '其他',     'other',        'djs_med_type', '', '',        'N', NULL, NOW());
-
--- B8 djs_elimination_reason 淘汰原因
-INSERT IGNORE INTO sys_dict_type
-  (dict_id, tenant_id, dict_name, dict_type, create_by, create_time, remark)
-VALUES
-  (100108, '1001', '淘汰原因', 'djs_elimination_reason', NULL, NOW(), '养殖：淘汰事件原因分类');
-INSERT IGNORE INTO sys_dict_data
-  (dict_code, tenant_id, dict_sort, dict_label, dict_value, dict_type, css_class, list_class, is_default, create_by, create_time)
-VALUES
-  (1001090, '1001', 0, '年龄', 'age',         'djs_elimination_reason', '', 'info',    'N', NULL, NOW()),
-  (1001091, '1001', 1, '疾病', 'disease',     'djs_elimination_reason', '', 'danger',  'N', NULL, NOW()),
-  (1001092, '1001', 2, '性能', 'performance', 'djs_elimination_reason', '', 'warning', 'N', NULL, NOW()),
-  (1001093, '1001', 3, '其他', 'other',       'djs_elimination_reason', '', '',        'N', NULL, NOW());
-
--- B9 djs_pig_type 猪只类型
-INSERT IGNORE INTO sys_dict_type
-  (dict_id, tenant_id, dict_name, dict_type, create_by, create_time, remark)
-VALUES
-  (100109, '1001', '猪只类型', 'djs_pig_type', NULL, NOW(), '养殖：t_farm_pig_info.pig_type');
-INSERT IGNORE INTO sys_dict_data
-  (dict_code, tenant_id, dict_sort, dict_label, dict_value, dict_type, css_class, list_class, is_default, create_by, create_time)
-VALUES
-  (1001100, '1001', 0, '母猪',   'sow',       'djs_pig_type', '', 'success', 'Y', NULL, NOW()),
-  (1001101, '1001', 1, '公猪',   'boar',      'djs_pig_type', '', 'primary', 'N', NULL, NOW()),
-  (1001102, '1001', 2, '仔猪',   'piglet',    'djs_pig_type', '', 'info',    'N', NULL, NOW()),
-  (1001103, '1001', 3, '育肥猪', 'fattening', 'djs_pig_type', '', 'warning', 'N', NULL, NOW());
-
--- B10 djs_pig_end_reason 猪只终止原因
-INSERT IGNORE INTO sys_dict_type
-  (dict_id, tenant_id, dict_name, dict_type, create_by, create_time, remark)
-VALUES
-  (100110, '1001', '终止原因', 'djs_pig_end_reason', NULL, NOW(), '养殖：t_farm_pig_info.end_reason（DIE→DEAD / ELIMINATE→CULL / SLAUGHTER→MARKET）');
-INSERT IGNORE INTO sys_dict_data
-  (dict_code, tenant_id, dict_sort, dict_label, dict_value, dict_type, css_class, list_class, is_default, create_by, create_time)
-VALUES
-  (1001110, '1001', 0, '死亡', 'DEAD',   'djs_pig_end_reason', '', 'danger',  'N', NULL, NOW()),
-  (1001111, '1001', 1, '淘汰', 'CULL',   'djs_pig_end_reason', '', 'warning', 'N', NULL, NOW()),
-  (1001112, '1001', 2, '出栏', 'MARKET', 'djs_pig_end_reason', '', 'info',    'N', NULL, NOW());
-
--- ============================================================
--- C. 种植域（5 类 — 已有清晰值）
--- ============================================================
-
--- C1 djs_plot_type 地块类型
-INSERT IGNORE INTO sys_dict_type
-  (dict_id, tenant_id, dict_name, dict_type, create_by, create_time, remark)
-VALUES
-  (100201, '1001', '地块类型', 'djs_plot_type', NULL, NOW(), '种植：t_plant_plot.plot_type');
-INSERT IGNORE INTO sys_dict_data
-  (dict_code, tenant_id, dict_sort, dict_label, dict_value, dict_type, css_class, list_class, is_default, create_by, create_time)
-VALUES
-  (1002010, '1001', 0, '大棚', 'greenhouse', 'djs_plot_type', '', 'primary', 'N', NULL, NOW()),
-  (1002011, '1001', 1, '露天', 'open',       'djs_plot_type', '', 'success', 'N', NULL, NOW()),
-  (1002012, '1001', 2, '水田', 'paddy',      'djs_plot_type', '', 'info',    'N', NULL, NOW());
-
--- C2 djs_crop_type 作物类型
-INSERT IGNORE INTO sys_dict_type
-  (dict_id, tenant_id, dict_name, dict_type, create_by, create_time, remark)
-VALUES
-  (100202, '1001', '作物类型', 'djs_crop_type', NULL, NOW(), '种植：t_plant_crop.crop_type');
-INSERT IGNORE INTO sys_dict_data
-  (dict_code, tenant_id, dict_sort, dict_label, dict_value, dict_type, css_class, list_class, is_default, create_by, create_time)
-VALUES
-  (1002020, '1001', 0, '叶菜',   'leaf',       'djs_crop_type', '', 'success', 'N', NULL, NOW()),
-  (1002021, '1001', 1, '根茎',   'root',       'djs_crop_type', '', 'warning', 'N', NULL, NOW()),
-  (1002022, '1001', 2, '茄果',   'fruit_veg',  'djs_crop_type', '', 'primary', 'N', NULL, NOW()),
-  (1002023, '1001', 3, '水果',   'fruit',      'djs_crop_type', '', 'danger',  'N', NULL, NOW()),
-  (1002024, '1001', 4, '其他',   'other',      'djs_crop_type', '', '',        'N', NULL, NOW());
-
--- C3 djs_organic_cert_status 有机认证状态
-INSERT IGNORE INTO sys_dict_type
-  (dict_id, tenant_id, dict_name, dict_type, create_by, create_time, remark)
-VALUES
-  (100203, '1001', '有机认证状态', 'djs_organic_cert_status', NULL, NOW(), '种植：t_plant_plot.organic_cert_status');
-INSERT IGNORE INTO sys_dict_data
-  (dict_code, tenant_id, dict_sort, dict_label, dict_value, dict_type, css_class, list_class, is_default, create_by, create_time)
-VALUES
-  (1002030, '1001', 0, '未认证',   'none',       'djs_organic_cert_status', '', 'info',    'Y', NULL, NOW()),
-  (1002031, '1001', 1, '转换期',   'transition', 'djs_organic_cert_status', '', 'warning', 'N', NULL, NOW()),
-  (1002032, '1001', 2, '已认证',   'certified',  'djs_organic_cert_status', '', 'success', 'N', NULL, NOW()),
-  (1002033, '1001', 3, '已过期',   'expired',    'djs_organic_cert_status', '', 'danger',  'N', NULL, NOW());
-
--- C4 djs_farm_work_type 农事类型
-INSERT IGNORE INTO sys_dict_type
-  (dict_id, tenant_id, dict_name, dict_type, create_by, create_time, remark)
-VALUES
-  (100204, '1001', '农事类型', 'djs_farm_work_type', NULL, NOW(), '种植：t_plant_work.work_type');
-INSERT IGNORE INTO sys_dict_data
-  (dict_code, tenant_id, dict_sort, dict_label, dict_value, dict_type, css_class, list_class, is_default, create_by, create_time)
-VALUES
-  (1002040, '1001',  0, '播种',   'sow',        'djs_farm_work_type', '', 'primary', 'N', NULL, NOW()),
-  (1002041, '1001',  1, '移栽',   'transplant', 'djs_farm_work_type', '', 'primary', 'N', NULL, NOW()),
-  (1002042, '1001',  2, '施肥',   'fertilize',  'djs_farm_work_type', '', 'success', 'N', NULL, NOW()),
-  (1002043, '1001',  3, '灌溉',   'irrigate',   'djs_farm_work_type', '', 'info',    'N', NULL, NOW()),
-  (1002044, '1001',  4, '喷药',   'spray',      'djs_farm_work_type', '', 'warning', 'N', NULL, NOW()),
-  (1002045, '1001',  5, '除草',   'weed',       'djs_farm_work_type', '', 'warning', 'N', NULL, NOW()),
-  (1002046, '1001',  6, '整地',   'till',       'djs_farm_work_type', '', 'info',    'N', NULL, NOW()),
-  (1002047, '1001',  7, '修剪',   'prune',      'djs_farm_work_type', '', 'info',    'N', NULL, NOW()),
-  (1002048, '1001',  8, '嫁接',   'graft',      'djs_farm_work_type', '', 'info',    'N', NULL, NOW()),
-  (1002049, '1001',  9, '套袋',   'bag',        'djs_farm_work_type', '', 'info',    'N', NULL, NOW()),
-  (1002050, '1001', 10, '疏果',   'thin_fruit', 'djs_farm_work_type', '', 'info',    'N', NULL, NOW()),
-  (1002051, '1001', 11, '其他',   'other',      'djs_farm_work_type', '', '',        'N', NULL, NOW());
-
--- C5 djs_disaster_type 灾害类型
-INSERT IGNORE INTO sys_dict_type
-  (dict_id, tenant_id, dict_name, dict_type, create_by, create_time, remark)
-VALUES
-  (100205, '1001', '灾害类型', 'djs_disaster_type', NULL, NOW(), '种植：t_plant_disaster.disaster_type');
-INSERT IGNORE INTO sys_dict_data
-  (dict_code, tenant_id, dict_sort, dict_label, dict_value, dict_type, css_class, list_class, is_default, create_by, create_time)
-VALUES
-  (1002060, '1001', 0, '旱',       'drought', 'djs_disaster_type', '', 'warning', 'N', NULL, NOW()),
-  (1002061, '1001', 1, '涝',       'flood',   'djs_disaster_type', '', 'primary', 'N', NULL, NOW()),
-  (1002062, '1001', 2, '风',       'wind',    'djs_disaster_type', '', 'info',    'N', NULL, NOW()),
-  (1002063, '1001', 3, '冻',       'frost',   'djs_disaster_type', '', 'info',    'N', NULL, NOW()),
-  (1002064, '1001', 4, '病虫害',   'pest',    'djs_disaster_type', '', 'danger',  'N', NULL, NOW());
-
--- ============================================================
--- D. 种植空白补全（8 类 — 业内通用默认值，doc/02 v1.1 + doc/06 要求）
--- 注: 客户上线前必须过一遍（命名/术语可能有客户偏好）
--- 命名沿用 doc/02 / doc/06 既有约定，不加 djs_ 前缀冲突的话补 djs_ 统一
--- ============================================================
-
--- D1 djs_soil_type 土壤类型
-INSERT IGNORE INTO sys_dict_type
-  (dict_id, tenant_id, dict_name, dict_type, create_by, create_time, remark)
-VALUES
-  (100251, '1001', '土壤类型', 'djs_soil_type', NULL, NOW(), '种植：v1.1 业内默认值占位，客户上线前确认');
-INSERT IGNORE INTO sys_dict_data
-  (dict_code, tenant_id, dict_sort, dict_label, dict_value, dict_type, css_class, list_class, is_default, create_by, create_time)
-VALUES
-  (1002510, '1001', 0, '壤土',     'loam',        'djs_soil_type', '', 'primary', 'N', NULL, NOW()),
-  (1002511, '1001', 1, '砂土',     'sand',        'djs_soil_type', '', 'warning', 'N', NULL, NOW()),
-  (1002512, '1001', 2, '黏土',     'clay',        'djs_soil_type', '', 'info',    'N', NULL, NOW()),
-  (1002513, '1001', 3, '壤砂土',   'loam_sand',   'djs_soil_type', '', 'primary', 'N', NULL, NOW()),
-  (1002514, '1001', 4, '砂壤土',   'sand_loam',   'djs_soil_type', '', 'primary', 'N', NULL, NOW()),
-  (1002515, '1001', 5, '黑土',     'black_soil',  'djs_soil_type', '', 'success', 'N', NULL, NOW());
-
--- D2 djs_soil_fertility 土壤肥力
-INSERT IGNORE INTO sys_dict_type
-  (dict_id, tenant_id, dict_name, dict_type, create_by, create_time, remark)
-VALUES
-  (100252, '1001', '土壤肥力', 'djs_soil_fertility', NULL, NOW(), '种植：v1.1 业内默认值占位，客户上线前确认');
-INSERT IGNORE INTO sys_dict_data
-  (dict_code, tenant_id, dict_sort, dict_label, dict_value, dict_type, css_class, list_class, is_default, create_by, create_time)
-VALUES
-  (1002520, '1001', 0, '高',     'high',   'djs_soil_fertility', '', 'success', 'N', NULL, NOW()),
-  (1002521, '1001', 1, '中',     'medium', 'djs_soil_fertility', '', 'primary', 'N', NULL, NOW()),
-  (1002522, '1001', 2, '低',     'low',    'djs_soil_fertility', '', 'warning', 'N', NULL, NOW()),
-  (1002523, '1001', 3, '贫瘠',   'barren', 'djs_soil_fertility', '', 'danger',  'N', NULL, NOW());
-
--- D3 djs_terrain_condition 地势情况
-INSERT IGNORE INTO sys_dict_type
-  (dict_id, tenant_id, dict_name, dict_type, create_by, create_time, remark)
-VALUES
-  (100253, '1001', '地势情况', 'djs_terrain_condition', NULL, NOW(), '种植：v1.1 业内默认值占位，客户上线前确认');
-INSERT IGNORE INTO sys_dict_data
-  (dict_code, tenant_id, dict_sort, dict_label, dict_value, dict_type, css_class, list_class, is_default, create_by, create_time)
-VALUES
-  (1002530, '1001', 0, '平地',   'flat',         'djs_terrain_condition', '', 'success', 'N', NULL, NOW()),
-  (1002531, '1001', 1, '缓坡',   'gentle_slope', 'djs_terrain_condition', '', 'primary', 'N', NULL, NOW()),
-  (1002532, '1001', 2, '陡坡',   'steep_slope',  'djs_terrain_condition', '', 'warning', 'N', NULL, NOW()),
-  (1002533, '1001', 3, '梯田',   'terrace',      'djs_terrain_condition', '', 'info',    'N', NULL, NOW());
-
--- D4 djs_light_condition 光照条件
-INSERT IGNORE INTO sys_dict_type
-  (dict_id, tenant_id, dict_name, dict_type, create_by, create_time, remark)
-VALUES
-  (100254, '1001', '光照条件', 'djs_light_condition', NULL, NOW(), '种植：v1.1 业内默认值占位，客户上线前确认');
-INSERT IGNORE INTO sys_dict_data
-  (dict_code, tenant_id, dict_sort, dict_label, dict_value, dict_type, css_class, list_class, is_default, create_by, create_time)
-VALUES
-  (1002540, '1001', 0, '充足',     'sufficient', 'djs_light_condition', '', 'success', 'N', NULL, NOW()),
-  (1002541, '1001', 1, '一般',     'normal',     'djs_light_condition', '', 'primary', 'N', NULL, NOW()),
-  (1002542, '1001', 2, '半阴',     'half_shade', 'djs_light_condition', '', 'warning', 'N', NULL, NOW()),
-  (1002543, '1001', 3, '阴',       'shade',      'djs_light_condition', '', 'info',    'N', NULL, NOW());
-
--- D5 djs_drain_condition 排水条件
-INSERT IGNORE INTO sys_dict_type
-  (dict_id, tenant_id, dict_name, dict_type, create_by, create_time, remark)
-VALUES
-  (100255, '1001', '排水条件', 'djs_drain_condition', NULL, NOW(), '种植：v1.1 业内默认值占位，客户上线前确认');
-INSERT IGNORE INTO sys_dict_data
-  (dict_code, tenant_id, dict_sort, dict_label, dict_value, dict_type, css_class, list_class, is_default, create_by, create_time)
-VALUES
-  (1002550, '1001', 0, '良好', 'good',   'djs_drain_condition', '', 'success', 'N', NULL, NOW()),
-  (1002551, '1001', 1, '一般', 'normal', 'djs_drain_condition', '', 'primary', 'N', NULL, NOW()),
-  (1002552, '1001', 2, '较差', 'poor',   'djs_drain_condition', '', 'warning', 'N', NULL, NOW());
-
--- D6 djs_crop_family 作物科属
-INSERT IGNORE INTO sys_dict_type
-  (dict_id, tenant_id, dict_name, dict_type, create_by, create_time, remark)
-VALUES
-  (100256, '1001', '作物科属', 'djs_crop_family', NULL, NOW(), '种植：v1.1 业内默认值占位，客户上线前确认');
-INSERT IGNORE INTO sys_dict_data
-  (dict_code, tenant_id, dict_sort, dict_label, dict_value, dict_type, css_class, list_class, is_default, create_by, create_time)
-VALUES
-  (1002560, '1001', 0, '茄科',     'solanaceae',    'djs_crop_family', '', 'primary', 'N', NULL, NOW()),
-  (1002561, '1001', 1, '葫芦科',   'cucurbitaceae', 'djs_crop_family', '', 'primary', 'N', NULL, NOW()),
-  (1002562, '1001', 2, '十字花科', 'cruciferae',    'djs_crop_family', '', 'success', 'N', NULL, NOW()),
-  (1002563, '1001', 3, '豆科',     'leguminosae',   'djs_crop_family', '', 'success', 'N', NULL, NOW()),
-  (1002564, '1001', 4, '禾本科',   'gramineae',     'djs_crop_family', '', 'warning', 'N', NULL, NOW()),
-  (1002565, '1001', 5, '菊科',     'compositae',    'djs_crop_family', '', 'info',    'N', NULL, NOW()),
-  (1002566, '1001', 6, '百合科',   'liliaceae',     'djs_crop_family', '', 'info',    'N', NULL, NOW()),
-  (1002567, '1001', 7, '旋花科',   'convolvulaceae','djs_crop_family', '', 'info',    'N', NULL, NOW());
-
--- D7 djs_tillage_type 整地类型
-INSERT IGNORE INTO sys_dict_type
-  (dict_id, tenant_id, dict_name, dict_type, create_by, create_time, remark)
-VALUES
-  (100257, '1001', '整地类型', 'djs_tillage_type', NULL, NOW(), '种植：v1.1 业内默认值占位，客户上线前确认');
-INSERT IGNORE INTO sys_dict_data
-  (dict_code, tenant_id, dict_sort, dict_label, dict_value, dict_type, css_class, list_class, is_default, create_by, create_time)
-VALUES
-  (1002570, '1001', 0, '深耕', 'deep',       'djs_tillage_type', '', 'primary', 'N', NULL, NOW()),
-  (1002571, '1001', 1, '浅耕', 'shallow',    'djs_tillage_type', '', 'primary', 'N', NULL, NOW()),
-  (1002572, '1001', 2, '旋耕', 'rotary',     'djs_tillage_type', '', 'success', 'N', NULL, NOW()),
-  (1002573, '1001', 3, '免耕', 'no_till',    'djs_tillage_type', '', 'info',    'N', NULL, NOW());
-
--- D8 djs_tillage_way 整地方式
-INSERT IGNORE INTO sys_dict_type
-  (dict_id, tenant_id, dict_name, dict_type, create_by, create_time, remark)
-VALUES
-  (100258, '1001', '整地方式', 'djs_tillage_way', NULL, NOW(), '种植：v1.1 业内默认值占位，客户上线前确认');
-INSERT IGNORE INTO sys_dict_data
-  (dict_code, tenant_id, dict_sort, dict_label, dict_value, dict_type, css_class, list_class, is_default, create_by, create_time)
-VALUES
-  (1002580, '1001', 0, '机械翻耕', 'mechanical',  'djs_tillage_way', '', 'primary', 'N', NULL, NOW()),
-  (1002581, '1001', 1, '人工翻耕', 'manual',      'djs_tillage_way', '', 'warning', 'N', NULL, NOW()),
-  (1002582, '1001', 2, '起垄',     'ridging',     'djs_tillage_way', '', 'success', 'N', NULL, NOW()),
-  (1002583, '1001', 3, '平整',     'leveling',    'djs_tillage_way', '', 'info',    'N', NULL, NOW());
-
--- ============================================================
--- E. 仓库域（6 类）
--- ============================================================
-
--- E1 djs_warehouse_type 仓库类型
-INSERT IGNORE INTO sys_dict_type
-  (dict_id, tenant_id, dict_name, dict_type, create_by, create_time, remark)
-VALUES
-  (100301, '1001', '仓库类型', 'djs_warehouse_type', NULL, NOW(), '仓库：t_warehouse_house.warehouse_type');
-INSERT IGNORE INTO sys_dict_data
-  (dict_code, tenant_id, dict_sort, dict_label, dict_value, dict_type, css_class, list_class, is_default, create_by, create_time)
-VALUES
-  (1003010, '1001', 0, '鲜肉仓',   'fresh_meat', 'djs_warehouse_type', '', 'danger',  'N', NULL, NOW()),
-  (1003011, '1001', 1, '蔬菜仓',   'veg',        'djs_warehouse_type', '', 'success', 'N', NULL, NOW()),
-  (1003012, '1001', 2, '物资仓',   'material',   'djs_warehouse_type', '', 'info',    'N', NULL, NOW()),
-  (1003013, '1001', 3, '包材仓',   'pack',       'djs_warehouse_type', '', 'warning', 'N', NULL, NOW());
-
--- E2 djs_product_status 产品状态
-INSERT IGNORE INTO sys_dict_type
-  (dict_id, tenant_id, dict_name, dict_type, create_by, create_time, remark)
-VALUES
-  (100302, '1001', '产品状态', 'djs_product_status', NULL, NOW(), '仓库：产品在库/已发/已售/已退/报损');
-INSERT IGNORE INTO sys_dict_data
-  (dict_code, tenant_id, dict_sort, dict_label, dict_value, dict_type, css_class, list_class, is_default, create_by, create_time)
-VALUES
-  (1003020, '1001', 0, '在库', 'in_stock',  'djs_product_status', '', 'primary', 'Y', NULL, NOW()),
-  (1003021, '1001', 1, '已发', 'shipped',   'djs_product_status', '', 'warning', 'N', NULL, NOW()),
-  (1003022, '1001', 2, '已售', 'sold',      'djs_product_status', '', 'success', 'N', NULL, NOW()),
-  (1003023, '1001', 3, '已退', 'returned',  'djs_product_status', '', 'info',    'N', NULL, NOW()),
-  (1003024, '1001', 4, '报损', 'damaged',   'djs_product_status', '', 'danger',  'N', NULL, NOW());
-
--- E3 djs_demand_business 需求业态
-INSERT IGNORE INTO sys_dict_type
-  (dict_id, tenant_id, dict_name, dict_type, create_by, create_time, remark)
-VALUES
-  (100303, '1001', '需求业态', 'djs_demand_business', NULL, NOW(), '仓库：t_warehouse_demand.business_type');
-INSERT IGNORE INTO sys_dict_data
-  (dict_code, tenant_id, dict_sort, dict_label, dict_value, dict_type, css_class, list_class, is_default, create_by, create_time)
-VALUES
-  (1003030, '1001', 0, '门店', 'store',      'djs_demand_business', '', 'primary', 'N', NULL, NOW()),
-  (1003031, '1001', 1, '经销', 'distrib',    'djs_demand_business', '', 'success', 'N', NULL, NOW()),
-  (1003032, '1001', 2, '团购', 'group',      'djs_demand_business', '', 'warning', 'N', NULL, NOW()),
-  (1003033, '1001', 3, '加工', 'processing', 'djs_demand_business', '', 'info',    'N', NULL, NOW());
-
--- E4 djs_demand_status 需求状态
-INSERT IGNORE INTO sys_dict_type
-  (dict_id, tenant_id, dict_name, dict_type, create_by, create_time, remark)
-VALUES
-  (100304, '1001', '需求状态', 'djs_demand_status', NULL, NOW(), '仓库：t_warehouse_demand.status 7 状态');
-INSERT IGNORE INTO sys_dict_data
-  (dict_code, tenant_id, dict_sort, dict_label, dict_value, dict_type, css_class, list_class, is_default, create_by, create_time)
-VALUES
-  (1003040, '1001', 0, '草稿',     'DRAFT',      'djs_demand_status', '', 'info',    'N', NULL, NOW()),
-  (1003041, '1001', 1, '已提交',   'SUBMITTED',  'djs_demand_status', '', 'primary', 'N', NULL, NOW()),
-  (1003042, '1001', 2, '已确认',   'CONFIRMED',  'djs_demand_status', '', 'primary', 'N', NULL, NOW()),
-  (1003043, '1001', 3, '排产中',   'IN_PRODUCTION',   'djs_demand_status', '', 'warning', 'N', NULL, NOW()),
-  (1003044, '1001', 4, '部分发货', 'PARTIAL_SHIPPED', 'djs_demand_status', '', 'warning', 'N', NULL, NOW()),
-  (1003045, '1001', 5, '已完成',   'COMPLETED',  'djs_demand_status', '', 'success', 'N', NULL, NOW()),
-  (1003046, '1001', 6, '已取消',   'CANCELLED',  'djs_demand_status', '', 'danger',  'N', NULL, NOW());
-
--- E5 djs_stock_flow_type 出入库类型
-INSERT IGNORE INTO sys_dict_type
-  (dict_id, tenant_id, dict_name, dict_type, create_by, create_time, remark)
-VALUES
-  (100305, '1001', '出入库类型', 'djs_stock_flow_type', NULL, NOW(), '仓库：t_warehouse_stock_flow.flow_type');
-INSERT IGNORE INTO sys_dict_data
-  (dict_code, tenant_id, dict_sort, dict_label, dict_value, dict_type, css_class, list_class, is_default, create_by, create_time)
-VALUES
-  (1003050, '1001', 0, '入库',   'IN',       'djs_stock_flow_type', '', 'success', 'N', NULL, NOW()),
-  (1003051, '1001', 1, '出库',   'OUT',      'djs_stock_flow_type', '', 'warning', 'N', NULL, NOW()),
-  (1003052, '1001', 2, '调拨',   'TRANSFER', 'djs_stock_flow_type', '', 'primary', 'N', NULL, NOW()),
-  (1003053, '1001', 3, '盘盈',   'GAIN',     'djs_stock_flow_type', '', 'info',    'N', NULL, NOW()),
-  (1003054, '1001', 4, '盘亏',   'LOSS',     'djs_stock_flow_type', '', 'danger',  'N', NULL, NOW());
-
--- E6 djs_pack_type 包装类型
-INSERT IGNORE INTO sys_dict_type
-  (dict_id, tenant_id, dict_name, dict_type, create_by, create_time, remark)
-VALUES
-  (100306, '1001', '包装类型', 'djs_pack_type', NULL, NOW(), '仓库：t_warehouse_product.pack_type');
-INSERT IGNORE INTO sys_dict_data
-  (dict_code, tenant_id, dict_sort, dict_label, dict_value, dict_type, css_class, list_class, is_default, create_by, create_time)
-VALUES
-  (1003060, '1001', 0, '散装',     'bulk',      'djs_pack_type', '', 'info',    'N', NULL, NOW()),
-  (1003061, '1001', 1, '标准盒',   'std_box',   'djs_pack_type', '', 'primary', 'N', NULL, NOW()),
-  (1003062, '1001', 2, '礼盒',     'gift_box',  'djs_pack_type', '', 'success', 'N', NULL, NOW()),
-  (1003063, '1001', 3, '真空袋',   'vacuum',    'djs_pack_type', '', 'warning', 'N', NULL, NOW());
-
--- ============================================================
--- F. 门店域（3 类）
--- ============================================================
-
--- F1 djs_member_level 会员等级
-INSERT IGNORE INTO sys_dict_type
-  (dict_id, tenant_id, dict_name, dict_type, create_by, create_time, remark)
-VALUES
-  (100401, '1001', '会员等级', 'djs_member_level', NULL, NOW(), '门店：t_store_member.member_level');
-INSERT IGNORE INTO sys_dict_data
-  (dict_code, tenant_id, dict_sort, dict_label, dict_value, dict_type, css_class, list_class, is_default, create_by, create_time)
-VALUES
-  (1004010, '1001', 0, '普通',           'normal', 'djs_member_level', '', 'info',    'Y', NULL, NOW()),
-  (1004011, '1001', 1, '重要价值客户',   'vip',    'djs_member_level', '', 'danger',  'N', NULL, NOW()),
-  (1004012, '1001', 2, '重要保持客户',   'keep',   'djs_member_level', '', 'warning', 'N', NULL, NOW());
-
--- F2 djs_return_reason 退货原因
-INSERT IGNORE INTO sys_dict_type
-  (dict_id, tenant_id, dict_name, dict_type, create_by, create_time, remark)
-VALUES
-  (100402, '1001', '退货原因', 'djs_return_reason', NULL, NOW(), '门店：t_store_return.reason');
-INSERT IGNORE INTO sys_dict_data
-  (dict_code, tenant_id, dict_sort, dict_label, dict_value, dict_type, css_class, list_class, is_default, create_by, create_time)
-VALUES
-  (1004020, '1001', 0, '质量问题',         'quality',      'djs_return_reason', '', 'danger',  'N', NULL, NOW()),
-  (1004021, '1001', 1, '客户改主意',       'mind_change',  'djs_return_reason', '', 'warning', 'N', NULL, NOW()),
-  (1004022, '1001', 2, '配送问题',         'delivery',     'djs_return_reason', '', 'info',    'N', NULL, NOW()),
-  (1004023, '1001', 3, '其他',             'other',        'djs_return_reason', '', '',        'N', NULL, NOW());
-
--- F3 djs_dispatch_priority 调度优先级
-INSERT IGNORE INTO sys_dict_type
-  (dict_id, tenant_id, dict_name, dict_type, create_by, create_time, remark)
-VALUES
-  (100403, '1001', '调度优先级', 'djs_dispatch_priority', NULL, NOW(), '门店：t_store_dispatch.priority');
-INSERT IGNORE INTO sys_dict_data
-  (dict_code, tenant_id, dict_sort, dict_label, dict_value, dict_type, css_class, list_class, is_default, create_by, create_time)
-VALUES
-  (1004030, '1001', 0, '紧急', 'urgent', 'djs_dispatch_priority', '', 'danger',  'N', NULL, NOW()),
-  (1004031, '1001', 1, '普通', 'normal', 'djs_dispatch_priority', '', 'primary', 'Y', NULL, NOW()),
-  (1004032, '1001', 2, '低',   'low',    'djs_dispatch_priority', '', 'info',    'N', NULL, NOW());
-
--- ============================================================
--- G. 跨域 / 追溯（2 类）
--- ============================================================
-
--- G1 djs_trace_event_type 追溯事件类型
-INSERT IGNORE INTO sys_dict_type
-  (dict_id, tenant_id, dict_name, dict_type, create_by, create_time, remark)
-VALUES
-  (100501, '1001', '追溯事件类型', 'djs_trace_event_type', NULL, NOW(), '追溯：t_store_trace.event_type');
-INSERT IGNORE INTO sys_dict_data
-  (dict_code, tenant_id, dict_sort, dict_label, dict_value, dict_type, css_class, list_class, is_default, create_by, create_time)
-VALUES
-  (1005010, '1001', 0, '引种',     'intro',     'djs_trace_event_type', '', 'primary', 'N', NULL, NOW()),
-  (1005011, '1001', 1, '出生',     'birth',     'djs_trace_event_type', '', 'primary', 'N', NULL, NOW()),
-  (1005012, '1001', 2, '配种',     'breed',     'djs_trace_event_type', '', 'primary', 'N', NULL, NOW()),
-  (1005013, '1001', 3, '分娩',     'farrow',    'djs_trace_event_type', '', 'success', 'N', NULL, NOW()),
-  (1005014, '1001', 4, '用药',     'medicate',  'djs_trace_event_type', '', 'warning', 'N', NULL, NOW()),
-  (1005015, '1001', 5, '出栏',     'slaughter', 'djs_trace_event_type', '', 'danger',  'N', NULL, NOW()),
-  (1005016, '1001', 6, '燎毛',     'singe',     'djs_trace_event_type', '', 'info',    'N', NULL, NOW()),
-  (1005017, '1001', 7, '分割',     'split',     'djs_trace_event_type', '', 'info',    'N', NULL, NOW()),
-  (1005018, '1001', 8, '发货',     'ship',      'djs_trace_event_type', '', 'warning', 'N', NULL, NOW()),
-  (1005019, '1001', 9, '售卖',     'sell',      'djs_trace_event_type', '', 'success', 'N', NULL, NOW());
-
--- G2 djs_subscribe_message_type 订阅消息类型
-INSERT IGNORE INTO sys_dict_type
-  (dict_id, tenant_id, dict_name, dict_type, create_by, create_time, remark)
-VALUES
-  (100502, '1001', '订阅消息类型', 'djs_subscribe_message_type', NULL, NOW(), '跨域：mp_subscribe_record.message_type');
-INSERT IGNORE INTO sys_dict_data
-  (dict_code, tenant_id, dict_sort, dict_label, dict_value, dict_type, css_class, list_class, is_default, create_by, create_time)
-VALUES
-  (1005020, '1001', 0, '出栏通知',     'slaughter_notice',  'djs_subscribe_message_type', '', 'danger',  'N', NULL, NOW()),
-  (1005021, '1001', 1, '库存告警',     'stock_alert',       'djs_subscribe_message_type', '', 'warning', 'N', NULL, NOW()),
-  (1005022, '1001', 2, '销售汇总',     'sales_summary',     'djs_subscribe_message_type', '', 'success', 'N', NULL, NOW()),
-  (1005023, '1001', 3, '内测反馈',     'internal_feedback', 'djs_subscribe_message_type', '', 'info',    'N', NULL, NOW());
-
--- H1 djs_check_status 盘点状态（跨域复用：仓库 + 门店 check_record）
-INSERT IGNORE INTO sys_dict_type
-  (dict_id, tenant_id, dict_name, dict_type, create_by, create_time, remark)
-VALUES
-  (100601, '1001', '盘点状态', 'djs_check_status', NULL, NOW(), '跨域：t_warehouse_check_record / t_store_check_record.check_status');
-INSERT IGNORE INTO sys_dict_data
-  (dict_code, tenant_id, dict_sort, dict_label, dict_value, dict_type, css_class, list_class, is_default, create_by, create_time)
-VALUES
-  (1006010, '1001', 0, '草稿',     'draft',       'djs_check_status', '', 'info',    'Y', NULL, NOW()),
-  (1006011, '1001', 1, '进行中',   'in_progress', 'djs_check_status', '', 'warning', 'N', NULL, NOW()),
-  (1006012, '1001', 2, '已完成',   'completed',   'djs_check_status', '', 'success', 'N', NULL, NOW());
-
--- ============================================================
--- 验收: 期望 dict_type=39, dict_data≈228
--- SELECT COUNT(*) FROM sys_dict_type  WHERE dict_type LIKE 'djs_%';   -- 39
--- SELECT COUNT(*) FROM sys_dict_data  WHERE dict_type LIKE 'djs_%';   -- 228
--- ============================================================
-
-
--- ----------------------------------------------------------------------------
--- 来源文件：V202605201100__SYS-AUTH-001-roles-and-menus.sql
--- ----------------------------------------------------------------------------
--- =============================================================================
--- SYS-AUTH-001  用户 / 角色 / 权限三件套
--- =============================================================================
---   1. 13 个角色种子数据（ruoyi 自带 superadmin role_id=1 + 12 个新增 djs 角色 role_id=101-112）
---   2. 业务一级目录菜单 + 二级通用主数据菜单 seed（menu_id 段 5000-5099 / 7000 / 8000 / 9000 / 10000）
---   3. 角色 → 菜单 / 角色 → 用户 关联种子（仅 boss / manager 全菜单；其他业务角色由各业务 ticket 自己 INSERT sys_role_menu）
---   4. admin (user_id=1) 关联 superadmin 角色（IGNORE 防重）；租户清理由 V202605201500 处理
+-- MySQL dump 10.13  Distrib 8.0.46, for Linux (aarch64)
 --
--- 角色清单（按 doc/05 §4.4.4 表 + doc/06 SYS-AUTH-001 §5 + doc/02 v1.2 §SYS-AUTH-001）：
---   role_id=1   superadmin       超级管理员   （ruoyi 自带，不变）
---   role_id=101 system_admin     系统管理员
---   role_id=102 boss             老板         （v1.2 新增）
---   role_id=103 manager          管理人员     （v1.2 新增）
---   role_id=104 breed_admin      养殖管理员
---   role_id=105 plant_admin      种植管理员
---   role_id=106 warehouse_admin  仓库管理员
---   role_id=107 store_admin      门店管理员
---   role_id=108 breed_worker     养殖工人
---   role_id=109 vet              兽医
---   role_id=110 warehouse_worker 仓库工人（含分割师 / 库管员）
---   role_id=111 plant_worker     种植工人
---   role_id=112 store_clerk      门店店员
--- =============================================================================
+-- Host: localhost    Database: f0fix_scratch
+-- ------------------------------------------------------
+-- Server version	8.0.46
 
-SET NAMES utf8mb4;
+/*!40101 SET @OLD_CHARACTER_SET_CLIENT=@@CHARACTER_SET_CLIENT */;
+/*!40101 SET @OLD_CHARACTER_SET_RESULTS=@@CHARACTER_SET_RESULTS */;
+/*!40101 SET @OLD_COLLATION_CONNECTION=@@COLLATION_CONNECTION */;
+/*!50503 SET NAMES utf8mb4 */;
+/*!40103 SET @OLD_TIME_ZONE=@@TIME_ZONE */;
+/*!40103 SET TIME_ZONE='+00:00' */;
+/*!40014 SET @OLD_UNIQUE_CHECKS=@@UNIQUE_CHECKS, UNIQUE_CHECKS=0 */;
+/*!40014 SET @OLD_FOREIGN_KEY_CHECKS=@@FOREIGN_KEY_CHECKS, FOREIGN_KEY_CHECKS=0 */;
+/*!40101 SET @OLD_SQL_MODE=@@SQL_MODE, SQL_MODE='NO_AUTO_VALUE_ON_ZERO' */;
+/*!40111 SET @OLD_SQL_NOTES=@@SQL_NOTES, SQL_NOTES=0 */;
 
--- -----------------------------------------------------------------------------
--- 1. 12 个新角色 INSERT（ruoyi superadmin role_id=1 是自带，不重复插）
--- -----------------------------------------------------------------------------
-INSERT INTO sys_role
-  (role_id, tenant_id, role_name, role_key, role_sort, data_scope, menu_check_strictly, dept_check_strictly,
-   status, del_flag, create_by, create_time, remark)
-VALUES
-  (101, '1001', '系统管理员',     'system_admin',     2,  '1', 1, 1, '0', '0', 1, NOW(), 'SYS-AUTH-001 用户/角色/字典维护'),
-  (102, '1001', '老板',           'boss',             3,  '1', 1, 1, '0', '0', 1, NOW(), 'SYS-AUTH-001 v1.2 DSH驾驶舱可见 + 跨域数据浏览'),
-  (103, '1001', '管理人员',       'manager',          4,  '1', 1, 1, '0', '0', 1, NOW(), 'SYS-AUTH-001 v1.2 DSH驾驶舱可见 + 业务管理'),
-  (104, '1001', '养殖管理员',     'breed_admin',      5,  '1', 1, 1, '0', '0', 1, NOW(), 'SYS-AUTH-001 养殖 admin 模块'),
-  (105, '1001', '种植管理员',     'plant_admin',      6,  '1', 1, 1, '0', '0', 1, NOW(), 'SYS-AUTH-001 种植 admin 模块'),
-  (106, '1001', '仓库管理员',     'warehouse_admin',  7,  '1', 1, 1, '0', '0', 1, NOW(), 'SYS-AUTH-001 仓库 admin 模块'),
-  (107, '1001', '门店管理员',     'store_admin',      8,  '1', 1, 1, '0', '0', 1, NOW(), 'SYS-AUTH-001 门店 admin 模块'),
-  (108, '1001', '养殖工人',       'breed_worker',     9,  '4', 1, 1, '0', '0', 1, NOW(), 'SYS-AUTH-001 养殖小程序'),
-  (109, '1001', '兽医',           'vet',              10, '4', 1, 1, '0', '0', 1, NOW(), 'SYS-AUTH-001 养殖小程序（含药品）'),
-  (110, '1001', '仓库工人',       'warehouse_worker', 11, '4', 1, 1, '0', '0', 1, NOW(), 'SYS-AUTH-001 仓库小程序（含分割师/库管员）'),
-  (111, '1001', '种植工人',       'plant_worker',     12, '4', 1, 1, '0', '0', 1, NOW(), 'SYS-AUTH-001 种植小程序'),
-  (112, '1001', '门店店员',       'store_clerk',      13, '4', 1, 1, '0', '0', 1, NOW(), 'SYS-AUTH-001 门店小程序');
-
--- -----------------------------------------------------------------------------
--- 2. 业务一级 / 二级目录菜单 seed
---    menu_id 段：通用主数据 5000-5099 / 养殖 7000 / 种植 8000 / 仓库 9000 / 门店 10000
---    一级目录是各业务 ticket 实现 list/form 时的父节点占位；具体 list 菜单由对应 ticket INSERT
--- -----------------------------------------------------------------------------
-INSERT INTO sys_menu
-  (menu_id, menu_name, parent_id, order_num, path, component, query_param, is_frame, is_cache,
-   menu_type, visible, status, perms, icon, create_by, create_time, remark)
-VALUES
-  -- 一级目录：通用主数据（人员 / 门店 / 供应商 / 农场切换）
-  (5000, '通用主数据',   0,    50,  'djs-common',    NULL,                            '', 1, 0, 'M', '0', '0', '',                          'tab',       1, NOW(), 'SYS-AUTH-001 通用主数据目录'),
-  -- 二级（人员 / 门店 / 供应商三个 list 由 SYS-MD-001/002/003 自己 INSERT；本 ticket 不预占）
-
-  -- 一级目录：养殖（BRD-*）
-  (7000, '养殖',         0,    70,  'djs-breed',     NULL,                            '', 1, 0, 'M', '0', '0', '',                          'tree',      1, NOW(), 'SYS-AUTH-001 BRD-* 全域'),
-  -- 一级目录：种植（PLT-*）
-  (8000, '种植',         0,    80,  'djs-plant',     NULL,                            '', 1, 0, 'M', '0', '0', '',                          'tree-table',1, NOW(), 'SYS-AUTH-001 PLT-* 全域'),
-  -- 一级目录：仓库（WMS-*）
-  (9000, '仓库',         0,    90,  'djs-warehouse', NULL,                            '', 1, 0, 'M', '0', '0', '',                          'list',      1, NOW(), 'SYS-AUTH-001 WMS-* 全域'),
-  -- 一级目录：门店销售（STR-* + TRC + DSH）
-  (10000,'门店销售',     0,    100, 'djs-store',     NULL,                            '', 1, 0, 'M', '0', '0', '',                          'star',      1, NOW(), 'SYS-AUTH-001 STR-* + TRC-* + DSH-*');
-
--- -----------------------------------------------------------------------------
--- 3. 农场切换 perm seed（菜单不挂，仅做权限串占位，UserFarmController 端点用）
---    放在通用主数据下作"按钮型"权限（visible='1' 隐藏）
--- -----------------------------------------------------------------------------
-INSERT INTO sys_menu
-  (menu_id, menu_name, parent_id, order_num, path, component, query_param, is_frame, is_cache,
-   menu_type, visible, status, perms, icon, create_by, create_time, remark)
-VALUES
-  (5050, '查询可访问农场', 5000, 1, '', NULL, '', 1, 0, 'F', '1', '0', 'djs:user:farm:query',  '#', 1, NOW(), 'SYS-AUTH-001 农场切换器 GET /djs/user/farm/accessible'),
-  (5051, '切换当前农场',   5000, 2, '', NULL, '', 1, 0, 'F', '1', '0', 'djs:user:farm:switch', '#', 1, NOW(), 'SYS-AUTH-001 农场切换器 POST /djs/user/farm/switch');
-
--- -----------------------------------------------------------------------------
--- 4. 角色 → 菜单 映射：boss / manager / system_admin / 4 业务 admin 给一级目录可见
---    （具体 list 菜单与按钮权限由对应业务 ticket INSERT sys_role_menu）
--- -----------------------------------------------------------------------------
-
--- boss / manager 全菜单可见（5000-10999 + 5050/5051 农场切换）
-INSERT INTO sys_role_menu (role_id, menu_id)
-SELECT 102, menu_id FROM sys_menu WHERE menu_id BETWEEN 5000 AND 10999;
-INSERT INTO sys_role_menu (role_id, menu_id)
-SELECT 103, menu_id FROM sys_menu WHERE menu_id BETWEEN 5000 AND 10999;
-
--- system_admin 仅通用主数据目录可见
-INSERT INTO sys_role_menu (role_id, menu_id) VALUES
-  (101, 5000), (101, 5050), (101, 5051);
-
--- 4 个业务 admin 各自仅可见对应一级目录 + 通用主数据（数据来源）
-INSERT INTO sys_role_menu (role_id, menu_id) VALUES
-  (104, 7000), (104, 5000), (104, 5050), -- breed_admin: 养殖 + 通用主数据 + 农场查询
-  (105, 8000), (105, 5000), (105, 5050), -- plant_admin
-  (106, 9000), (106, 5000), (106, 5050), -- warehouse_admin
-  (107, 10000),(107, 5000), (107, 5050); -- store_admin
-
--- 5 个 worker 角色（breed_worker / vet / warehouse_worker / plant_worker / store_clerk）
--- V1 主要走小程序，admin 后台仅给农场查询权限（小程序登录后查可见农场）
-INSERT INTO sys_role_menu (role_id, menu_id) VALUES
-  (108, 5050), -- breed_worker
-  (109, 5050), -- vet
-  (110, 5050), -- warehouse_worker
-  (111, 5050), -- plant_worker
-  (112, 5050); -- store_clerk
-
--- -----------------------------------------------------------------------------
--- 5. 给 admin 用户分配 superadmin 角色（ruoyi 自带，sys_user_role 应已存在，IGNORE 防重）
---    （admin tenant_id 与 sys_tenant 重命名由 V202605201500__SYS-CLEANUP-single-tenant 统一处理）
--- -----------------------------------------------------------------------------
-INSERT IGNORE INTO sys_user_role (user_id, role_id) VALUES (1, 1);
-
--- =============================================================================
--- 验收 query（subagent 自测用）
---   SELECT role_id, role_key, role_name FROM sys_role WHERE role_id IN (1,101,102,103,104,105,106,107,108,109,110,111,112);
---   SELECT menu_id, menu_name, parent_id FROM sys_menu WHERE menu_id BETWEEN 5000 AND 10999;
---   SELECT role_id, COUNT(menu_id) FROM sys_role_menu WHERE role_id BETWEEN 101 AND 112 GROUP BY role_id;
---   SELECT user_id, user_name, tenant_id FROM sys_user WHERE user_id = 1;
--- =============================================================================
-
-
--- ----------------------------------------------------------------------------
--- 来源文件：V202605201200__SYS-INFRA-002-oss-config-and-menus.sql
--- ----------------------------------------------------------------------------
--- =============================================================================
--- SYS-INFRA-002: OSS STS 直传 — 配置 + 菜单权限 seed
 --
--- 1. 把 ruoyi 自带 minio config (id=1) 调整为 djs dev 用桶 djs-dev（V1 dev 环境）
--- 2. 占位 aliyun-djs 配置（V1 不启用，prod 上线时 Kevin 改 access_key / sts_role_arn）
--- 3. 菜单权限 seed：
---    - admin 端 djs:common:oss:sts → 挂在通用主数据 5000 下，按钮型 (visible='1' 隐藏)
---    - 小程序端 djs:applet:oss:sts → 同样按钮型，仅做权限串占位（不展示菜单）
+-- Table structure for table `flyway_schema_history`
 --
--- 上游依赖：SYS-INIT-001（sys_oss_config 已扩 sts_role_arn / sts_session_duration），
---           SYS-AUTH-001（5000 通用主数据父菜单已建）
--- =============================================================================
 
--- -----------------------------------------------------------------------------
--- 1. minio 配置：dev 用桶名 djs-dev（与本机 docker dev-minio 容器联调）
---    sys_oss_config 由 V202605201500 cleanup 统一搬到 tenant_id='1001'
--- -----------------------------------------------------------------------------
--- dev-minio 容器实际 root user/password 是 ruoyi / ruoyi123（见 docker inspect dev-minio）
-UPDATE sys_oss_config
-SET bucket_name          = 'djs-dev',
-    access_key           = 'ruoyi',
-    secret_key           = 'ruoyi123',
-    endpoint             = '127.0.0.1:9000',
-    domain               = '',
-    is_https             = 'N',
-    region               = '',
-    access_policy        = '1',       -- public（dev 用，浏览器直拉 URL）
-    status               = '0',       -- 启用为默认
-    sts_role_arn         = '',
-    sts_session_duration = 600
-WHERE config_key = 'minio';
+DROP TABLE IF EXISTS `flyway_schema_history`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `flyway_schema_history` (
+  `installed_rank` int NOT NULL,
+  `version` varchar(50) DEFAULT NULL,
+  `description` varchar(200) NOT NULL,
+  `type` varchar(20) NOT NULL,
+  `script` varchar(1000) NOT NULL,
+  `checksum` int DEFAULT NULL,
+  `installed_by` varchar(100) NOT NULL,
+  `installed_on` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `execution_time` int NOT NULL,
+  `success` tinyint(1) NOT NULL,
+  PRIMARY KEY (`installed_rank`),
+  KEY `flyway_schema_history_s_idx` (`success`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
 
--- aliyun 配置：占位为 djs 业务桶（V1 不启用，status=1；上线时 Kevin 改 ak/sk/role_arn 后 status=0）
-UPDATE sys_oss_config
-SET bucket_name          = 'dongjiaoshan-prod',
-    domain               = '',
-    is_https             = 'Y',
-    region               = 'cn-hangzhou',
-    sts_role_arn         = '',                                  -- prod 启用时填 acs:ram::<account-id>:role/<sts-role>
-    sts_session_duration = 600,
-    status               = '1',                                 -- 停用，等真实 key
-    remark               = '东角山 prod 阿里云 OSS（V1 占位，待 Kevin 填客户 RAM 子账号）'
-WHERE config_key = 'aliyun';
-
--- -----------------------------------------------------------------------------
--- 2. 菜单权限：admin 端 + 小程序端 OSS STS 权限串
---    挂在通用主数据 5000 下作"按钮型"权限（visible='1' 隐藏，仅做 perms 串占位）
---    分配菜单 id: 5052（admin） / 5053（applet）
--- -----------------------------------------------------------------------------
-INSERT INTO sys_menu
-  (menu_id, menu_name,           parent_id, order_num, path, component, query_param,
-   is_frame, is_cache, menu_type, visible, status, perms,
-   icon, create_by, create_time, remark)
-VALUES
-  (5052, '申请 OSS 上传凭证(admin)', 5000, 11, '', NULL, '',
-   1, 0, 'F', '1', '0', 'djs:common:oss:sts',
-   '#', 1, NOW(), 'SYS-INFRA-002 admin 直传 OSS GET/POST /djs/oss/sts/*'),
-  (5053, '申请 OSS 上传凭证(小程序)', 5000, 12, '', NULL, '',
-   1, 0, 'F', '1', '0', 'djs:applet:oss:sts',
-   '#', 1, NOW(), 'SYS-INFRA-002 小程序直传 OSS GET/POST /djs/applet/oss/sts/*');
-
--- -----------------------------------------------------------------------------
--- 3. 角色绑权
---    - boss(102) / manager(103) 已通过 SYS-AUTH-001 的范围 SELECT 拿到 5000-10999，
---      新增的 5052/5053 自动包含？—— 不！那个 INSERT 是一次性快照（SELECT 时刻），新增菜单要补回写
---    - system_admin(101) admin 上传必备
---    - 4 个业务 admin（104/105/106/107）admin 上传必备
---    - 小程序登录用户角色（如 mp_user）后续 ticket 接入时绑 5053
--- -----------------------------------------------------------------------------
-INSERT INTO sys_role_menu (role_id, menu_id) VALUES
-  (101, 5052), -- system_admin
-  (102, 5052), (102, 5053), -- boss
-  (103, 5052), (103, 5053), -- manager
-  (104, 5052), -- breed_admin
-  (105, 5052), -- plant_admin
-  (106, 5052), -- warehouse_admin
-  (107, 5052); -- store_admin
-
-
--- ----------------------------------------------------------------------------
--- 来源文件：V202605201500__SYS-CLEANUP-single-tenant.sql
--- ----------------------------------------------------------------------------
--- =============================================================================
--- SYS-CLEANUP-single-tenant  V1 单租户规整
--- =============================================================================
--- V1 只服务一个农场（东角山有机生态农场）。
--- 本脚本在 ruoyi 基础 seed + 所有 djs DDL 之后执行：
---   1) 把 ruoyi 默认 '000000' 租户 rename 为业务租户 '1001'
---   2) 把所有 ruoyi 自带 sys_* 表的 tenant_id='000000' 行 rebind 到 '1001'
--- 跑完后：整库不存在 tenant_id='000000'，sys_tenant 唯一一行 = 1001 东角山农场。
 --
--- 多租户拦截器 `tenant.enable=true` 保留：单租户场景无副作用，V2 多农场启用即生效。
--- =============================================================================
-
--- 1. 重命名 ruoyi 默认租户 → 东角山农场
-UPDATE sys_tenant SET
-  tenant_id         = '1001',
-  company_name      = '东角山有机生态农场',
-  contact_user_name = '王奎',
-  contact_phone     = '13800000000',
-  address           = '广州市从化区',
-  intro             = '东角山有机生态农场 V1 默认租户'
-WHERE tenant_id = '000000';
-
--- 2. ruoyi 自带 sys_* 表数据 rebind 到 '1001'
-UPDATE sys_user        SET tenant_id = '1001' WHERE tenant_id = '000000';
-UPDATE sys_role        SET tenant_id = '1001' WHERE tenant_id = '000000';
-UPDATE sys_dept        SET tenant_id = '1001' WHERE tenant_id = '000000';
-UPDATE sys_post        SET tenant_id = '1001' WHERE tenant_id = '000000';
-UPDATE sys_dict_type   SET tenant_id = '1001' WHERE tenant_id = '000000';
-UPDATE sys_dict_data   SET tenant_id = '1001' WHERE tenant_id = '000000';
-UPDATE sys_config      SET tenant_id = '1001' WHERE tenant_id = '000000';
-UPDATE sys_notice      SET tenant_id = '1001' WHERE tenant_id = '000000';
-UPDATE sys_oss_config  SET tenant_id = '1001' WHERE tenant_id = '000000';
-
--- =============================================================================
--- 验收 query
---   SELECT (
---     (SELECT COUNT(*) FROM sys_tenant    WHERE tenant_id <> '1001') +
---     (SELECT COUNT(*) FROM sys_user       WHERE tenant_id <> '1001') +
---     (SELECT COUNT(*) FROM sys_role       WHERE tenant_id <> '1001') +
---     (SELECT COUNT(*) FROM sys_dept       WHERE tenant_id <> '1001') +
---     (SELECT COUNT(*) FROM sys_post       WHERE tenant_id <> '1001') +
---     (SELECT COUNT(*) FROM sys_dict_type  WHERE tenant_id <> '1001') +
---     (SELECT COUNT(*) FROM sys_dict_data  WHERE tenant_id <> '1001') +
---     (SELECT COUNT(*) FROM sys_config     WHERE tenant_id <> '1001') +
---     (SELECT COUNT(*) FROM sys_notice     WHERE tenant_id <> '1001') +
---     (SELECT COUNT(*) FROM sys_oss_config WHERE tenant_id <> '1001')
---   ) AS not_1001_rows;
---   -- 期望 = 0
--- =============================================================================
-
-
--- ----------------------------------------------------------------------------
--- 来源文件：V202605201600__SYS-CLEANUP-ruoyi-demo-menus.sql
--- ----------------------------------------------------------------------------
--- =============================================================================
--- SYS-CLEANUP-ruoyi-demo-menus  V1 不用的 ruoyi 自带菜单清理
--- =============================================================================
--- ruoyi 默认 seed 包含 V1 用不到的功能菜单（工作流 / 租户管理 / 客户端管理 / demo）。
--- 直接 DELETE 删菜单 + role-menu 关联；对于开发期还要用的（代码生成 / 系统监控）改为 visible='1' 隐藏。
+-- Dumping data for table `flyway_schema_history`
 --
--- 删除范围（67 项，含子菜单 + 按钮权限）：
---   - PLUS官网(4)                     纯营销跳转
---   - 测试菜单(5) + 请假申请 demo     ruoyi 工作流示例
---   - 租户管理(6) / 租户套餐(122)     V1 单租户 1001，不需要管理界面
---   - 客户端管理(123)                 sys_client 已 SQL 配死，不需要 UI
---   - 工作流(11616) 全树              V1 不上 Flowable
---   - 我的任务(11618) 全树            工作流配套
+
+LOCK TABLES `flyway_schema_history` WRITE;
+/*!40000 ALTER TABLE `flyway_schema_history` DISABLE KEYS */;
+INSERT INTO `flyway_schema_history` VALUES (1,'202605281100','dongjiaoshan v1 baseline (D04 closing snapshot)','BASELINE','dongjiaoshan v1 baseline (D04 closing snapshot)',NULL,'root','2026-07-10 08:33:09',0,1),(2,'202605281200','BRD-EVENT-002-be-pig-mating-fields','SQL','V202605281200__BRD-EVENT-002-be-pig-mating-fields.sql',-1942668929,'root','2026-07-10 08:33:09',31,1),(3,'202605281201','BRD-EVENT-002-be-menu','SQL','V202605281201__BRD-EVENT-002-be-menu.sql',-9845071,'root','2026-07-10 08:33:09',6,1),(4,'202605281300','BRD-EVENT-004-be-menu','SQL','V202605281300__BRD-EVENT-004-be-menu.sql',-1243006406,'root','2026-07-10 08:33:09',7,1),(5,'202605281400','BRD-EVENT-005-be-growth-table','SQL','V202605281400__BRD-EVENT-005-be-growth-table.sql',1096112075,'root','2026-07-10 08:33:09',52,1),(6,'202605281401','BRD-EVENT-005-be-menu','SQL','V202605281401__BRD-EVENT-005-be-menu.sql',1724255746,'root','2026-07-10 08:33:09',5,1),(7,'202605281500','BRD-MED-002-usage','SQL','V202605281500__BRD-MED-002-usage.sql',-1809319343,'root','2026-07-10 08:33:09',21,1),(8,'202605281501','BRD-MED-002-menu','SQL','V202605281501__BRD-MED-002-menu.sql',-329313820,'root','2026-07-10 08:33:09',4,1),(9,'202605282000','SYS-FIX-004-person-post-id','SQL','V202605282000__SYS-FIX-004-person-post-id.sql',1137723511,'root','2026-07-10 08:33:09',43,1),(10,'202605282100','D06-HOTFIX-event-tables-add-del-unique','SQL','V202605282100__D06-HOTFIX-event-tables-add-del-unique.sql',-1432637479,'root','2026-07-10 08:33:09',95,1),(11,'202605282200','D06-HOTFIX-merge-event-menus-to-status-record','SQL','V202605282200__D06-HOTFIX-merge-event-menus-to-status-record.sql',-843012104,'root','2026-07-10 08:33:09',3,1),(12,'202605282300','SYS-FIX-005-drop-person-and-rewash-post','SQL','V202605282300__SYS-FIX-005-drop-person-and-rewash-post.sql',1314461663,'root','2026-07-10 08:33:09',11,1),(13,'202605282400','SYS-FIX-006-rename-root-dept-and-purge-sample','SQL','V202605282400__SYS-FIX-006-rename-root-dept-and-purge-sample.sql',-1001714582,'root','2026-07-10 08:33:09',5,1),(14,'202605282500','D06-CLOSING-add-proof-oss-ids-to-breeding-farrow','SQL','V202605282500__D06-CLOSING-add-proof-oss-ids-to-breeding-farrow.sql',-1851072768,'root','2026-07-10 08:33:09',56,1),(15,'202605290900','BRD-MED-003-treatment','SQL','V202605290900__BRD-MED-003-treatment.sql',-690353667,'root','2026-07-10 08:33:09',48,1),(16,'202605290910','WMS-MD-001-warehouse-master','SQL','V202605290910__WMS-MD-001-warehouse-master.sql',1920909974,'root','2026-07-10 08:33:09',37,1),(17,'202605300900','BRD-LIST-001-menu','SQL','V202605300900__BRD-LIST-001-menu.sql',1115222955,'root','2026-07-10 08:33:09',6,1),(18,'202605310900','BRD-DASH-001-be-aggregate-table-audit-fields','SQL','V202605310900__BRD-DASH-001-be-aggregate-table-audit-fields.sql',-929366937,'root','2026-07-10 08:33:10',484,1),(19,'202605310901','BRD-DASH-001-be-menu','SQL','V202605310901__BRD-DASH-001-be-menu.sql',922774715,'root','2026-07-10 08:33:10',3,1),(20,'202605311000','D07-HOTFIX-002-merge-pig-list-menus','SQL','V202605311000__D07-HOTFIX-002-merge-pig-list-menus.sql',-1701668456,'root','2026-07-10 08:33:10',4,1),(21,'202605311100','WMS-MD-002-product-master','SQL','V202605311100__WMS-MD-002-product-master.sql',-1890798878,'root','2026-07-10 08:33:10',46,1),(22,'202606040900','WMS-PIG-001-burn-record','SQL','V202606040900__WMS-PIG-001-burn-record.sql',-386376268,'root','2026-07-10 08:33:10',19,1),(23,'202606050900','PLT-MD-001-plant-master-data','SQL','V202606050900__PLT-MD-001-plant-master-data.sql',1337229704,'root','2026-07-10 08:33:10',65,1),(24,'202606050901','PLT-MD-001-fix-plot-type-dup','SQL','V202606050901__PLT-MD-001-fix-plot-type-dup.sql',-1873388226,'root','2026-07-10 08:33:10',2,1),(25,'202606061000','WMS-DEMAND-001-demand-tables','SQL','V202606061000__WMS-DEMAND-001-demand-tables.sql',-1934660212,'root','2026-07-10 08:33:10',116,1),(26,'202606061010','WMS-DEMAND-001-dict-seed','SQL','V202606061010__WMS-DEMAND-001-dict-seed.sql',1612967047,'root','2026-07-10 08:33:10',2,1),(27,'202606061020','WMS-DEMAND-001-menu-seed','SQL','V202606061020__WMS-DEMAND-001-menu-seed.sql',-525589436,'root','2026-07-10 08:33:10',2,1),(28,'202606061030','PLT-MD-002-plant-work-team','SQL','V202606061030__PLT-MD-002-plant-work-team.sql',179795102,'root','2026-07-10 08:33:10',39,1),(29,'202606061040','PLT-MD-002-menu','SQL','V202606061040__PLT-MD-002-menu.sql',-1610931148,'root','2026-07-10 08:33:10',3,1),(30,'202606061050','D08-HOTFIX-demand-pig-add-create-dept','SQL','V202606061050__D08-HOTFIX-demand-pig-add-create-dept.sql',-159756908,'root','2026-07-10 08:33:10',23,1),(31,'202606061060','D08-CLOSING-seed-white-bar-product','SQL','V202606061060__D08-CLOSING-seed-white-bar-product.sql',497607265,'root','2026-07-10 08:33:10',3,1),(32,'202606061070','D08-CLOSING-drop-unused-zone-plotno','SQL','V202606061070__D08-CLOSING-drop-unused-zone-plotno.sql',1610585288,'root','2026-07-10 08:33:10',5,1),(33,'202606071100','WMS-PIG-002-cut-record','SQL','V202606071100__WMS-PIG-002-cut-record.sql',567974413,'root','2026-07-10 08:33:11',59,1),(34,'202606071110','MP-UX-002-applet-permission-menus','SQL','V202606071110__MP-UX-002-applet-permission-menus.sql',-2001257048,'root','2026-07-10 08:33:11',3,1),(35,'202606071120','PLT-MD-003-organic-cert','SQL','V202606071120__PLT-MD-003-organic-cert.sql',-606908775,'root','2026-07-10 08:33:11',61,1),(36,'202606071200','WMS-VEG-001-veg-handle','SQL','V202606071200__WMS-VEG-001-veg-handle.sql',-1836123052,'root','2026-07-10 08:33:11',69,1),(37,'202606071300','WMS-MAT-001-mat-flow','SQL','V202606071300__WMS-MAT-001-mat-flow.sql',-443780084,'root','2026-07-10 08:33:11',31,1),(38,'202606071400','PLT-PLAN-001-plant-plan','SQL','V202606071400__PLT-PLAN-001-plant-plan.sql',-27488744,'root','2026-07-10 08:33:11',47,1),(39,'202606071510','D9-closing-stock-flow-demand-id','SQL','V202606071510__D9-closing-stock-flow-demand-id.sql',1742297027,'root','2026-07-10 08:33:11',41,1),(40,'202606071520','D9-closing-planting-record-product-id','SQL','V202606071520__D9-closing-planting-record-product-id.sql',-741382971,'root','2026-07-10 08:33:11',33,1),(41,'202606071540','D9-closing-applet-farrow-menu','SQL','V202606071540__D9-closing-applet-farrow-menu.sql',-643861798,'root','2026-07-10 08:33:11',2,1),(42,'202606071600','D9-closing-biz-code-seed','SQL','V202606071600__D9-closing-biz-code-seed.sql',-1102605433,'root','2026-07-10 08:33:11',2,1),(43,'202606071700','D9-closing-event-dicts','SQL','V202606071700__D9-closing-event-dicts.sql',1275352849,'root','2026-07-10 08:33:11',10,1),(44,'202606081100','DJS-FIX-ADMIN-W22-002-product-rename','SQL','V202606081100__DJS-FIX-ADMIN-W22-002-product-rename.sql',-936564563,'root','2026-07-10 08:33:11',4,1),(45,'202606081200','DJS-FIX-MP-W22-002-feed-menu','SQL','V202606081200__DJS-FIX-MP-W22-002-feed-menu.sql',-593532710,'root','2026-07-10 08:33:11',2,1),(46,'202606081300','DJS-FIX-MP-W22-003-applet-eartag-menu','SQL','V202606081300__DJS-FIX-MP-W22-003-applet-eartag-menu.sql',-1188607859,'root','2026-07-10 08:33:11',2,1),(47,'202606081500','D9-hotfix-stock-out-dest-dict','SQL','V202606081500__D9-hotfix-stock-out-dest-dict.sql',1417193325,'root','2026-07-10 08:33:11',2,1),(48,'202606081600','D9-hotfix-purchase-in-menu-and-dict','SQL','V202606081600__D9-hotfix-purchase-in-menu-and-dict.sql',1419580267,'root','2026-07-10 08:33:11',5,1),(49,'202606091000','DJS-FIX-SYS-W22-004-menu-seed-rebind','SQL','V202606091000__DJS-FIX-SYS-W22-004-menu-seed-rebind.sql',-1738827446,'root','2026-07-10 08:33:11',5,1),(50,'202606091400','WMS-MAT-001-FEED-EXT-feed-write-menu','SQL','V202606091400__WMS-MAT-001-FEED-EXT-feed-write-menu.sql',1781773898,'root','2026-07-10 08:33:11',3,1),(51,'202606091500','CROSS-FLOW-001-bar-no-biz-code','SQL','V202606091500__CROSS-FLOW-001-bar-no-biz-code.sql',-1158148776,'root','2026-07-10 08:33:11',1,1),(52,'202606101000','WMS-SHIP-001-shipment-return-tables','SQL','V202606101000__WMS-SHIP-001-shipment-return-tables.sql',-1902361568,'root','2026-07-10 08:33:11',56,1),(53,'202606101010','WMS-SHIP-001-dict-seed','SQL','V202606101010__WMS-SHIP-001-dict-seed.sql',-1918974625,'root','2026-07-10 08:33:11',5,1),(54,'202606101020','WMS-SHIP-001-menu-seed','SQL','V202606101020__WMS-SHIP-001-menu-seed.sql',-835869865,'root','2026-07-10 08:33:11',4,1),(55,'202606101100','WMS-PACK-001-pack-record','SQL','V202606101100__WMS-PACK-001-pack-record.sql',-455818852,'root','2026-07-10 08:33:11',25,1),(56,'202606101200','PLT-PLAN-002-pick-plan-activity','SQL','V202606101200__PLT-PLAN-002-pick-plan-activity.sql',-145600388,'root','2026-07-10 08:33:11',27,1),(57,'202606101300','PLT-WORK-001-farm-records','SQL','V202606101300__PLT-WORK-001-farm-records.sql',-1681271607,'root','2026-07-10 08:33:11',38,1),(58,'202606111100','D10-HOTFIX-pack-ship-merge-and-7363-rebind','SQL','V202606111100__D10-HOTFIX-pack-ship-merge-and-7363-rebind.sql',1338758828,'root','2026-07-10 08:33:11',91,1),(59,'202606111200','BRD-FIX-DICT-NAMING-001-rename-dict-types','SQL','V202606111200__BRD-FIX-DICT-NAMING-001-rename-dict-types.sql',-349411813,'root','2026-07-10 08:33:11',12,1),(60,'202606111300','D10X-FIX-DICT-seed-5-missing-event-dicts','SQL','V202606111300__D10X-FIX-DICT-seed-5-missing-event-dicts.sql',-2128507242,'root','2026-07-10 08:33:11',7,1),(61,'202606111400','DJS-FIX-A5-pig-detail-route-menu','SQL','V202606111400__DJS-FIX-A5-pig-detail-route-menu.sql',1273673063,'root','2026-07-10 08:33:11',2,1),(62,'202606111510','BRD-FIX-MP-EVENT-BREED-IA-farrow-multiclass-cols','SQL','V202606111510__BRD-FIX-MP-EVENT-BREED-IA-farrow-multiclass-cols.sql',391222573,'root','2026-07-10 08:33:11',22,1),(63,'202606111520','BRD-FIX-MP-EVENT-BREED-IA-weaning-detail','SQL','V202606111520__BRD-FIX-MP-EVENT-BREED-IA-weaning-detail.sql',-1736569229,'root','2026-07-10 08:33:11',12,1),(64,'202606111530','BRD-FIX-MP-EVENT-BREED-IA-seed-heat-result-dict','SQL','V202606111530__BRD-FIX-MP-EVENT-BREED-IA-seed-heat-result-dict.sql',-2104052010,'root','2026-07-10 08:33:12',2,1),(65,'202606111600','BRD-FIX-MP-EVENT-LEAVE-IA-castrater','SQL','V202606111600__BRD-FIX-MP-EVENT-LEAVE-IA-castrater.sql',-1351760577,'root','2026-07-10 08:33:12',28,1),(66,'202606111700','BRD-FIX-MP-EVENT-MISC-IA-applet-growth-menu','SQL','V202606111700__BRD-FIX-MP-EVENT-MISC-IA-applet-growth-menu.sql',-248663436,'root','2026-07-10 08:33:12',2,1),(67,'202606111710','BRD-FIX-MP-INTRO-001-introduce-pig-id','SQL','V202606111710__BRD-FIX-MP-INTRO-001-introduce-pig-id.sql',7950556,'root','2026-07-10 08:33:12',66,1),(68,'202606111810','BRD-FIX-MP-MED-IA-001-add-vaccine-type','SQL','V202606111810__BRD-FIX-MP-MED-IA-001-add-vaccine-type.sql',354089838,'root','2026-07-10 08:33:12',28,1),(69,'202606111820','BRD-FIX-MP-FEED-IA-001-feed-dest-dict','SQL','V202606111820__BRD-FIX-MP-FEED-IA-001-feed-dest-dict.sql',207755044,'root','2026-07-10 08:33:12',1,1),(70,'202606120800','DJS-FIX-DICT-SEED-001-introduce-strain-handle','SQL','V202606120800__DJS-FIX-DICT-SEED-001-introduce-strain-handle.sql',158661196,'root','2026-07-10 08:33:12',4,1),(71,'202606120930','BRD-CORE-001-FIX-status-record-update-cols-idempotent','SQL','V202606120930__BRD-CORE-001-FIX-status-record-update-cols-idempotent.sql',-1983389161,'root','2026-07-10 08:33:12',3,1),(72,'202606130800','DJS-HOTFIX-D11-001-mp-menu-rebind','SQL','V202606130800__DJS-HOTFIX-D11-001-mp-menu-rebind.sql',1790936615,'root','2026-07-10 08:33:12',2,1),(73,'202606130900','WMS-FLOW-001-menu','SQL','V202606130900__WMS-FLOW-001-menu.sql',1359874672,'root','2026-07-10 08:33:12',2,1),(74,'202606130910','WMS-DEMAND-002-mp-dispatch-menu','SQL','V202606130910__WMS-DEMAND-002-mp-dispatch-menu.sql',-787100708,'root','2026-07-10 08:33:12',2,1),(75,'202606130920','WMS-STOCK-001-check-record-tables','SQL','V202606130920__WMS-STOCK-001-check-record-tables.sql',1414379217,'root','2026-07-10 08:33:12',22,1),(76,'202606130925','WMS-STOCK-001-menu','SQL','V202606130925__WMS-STOCK-001-menu.sql',-1669376470,'root','2026-07-10 08:33:12',5,1),(77,'202606130930','PLT-WORK-002-farm-records-list-menu','SQL','V202606130930__PLT-WORK-002-farm-records-list-menu.sql',315066623,'root','2026-07-10 08:33:12',2,1),(78,'202606130940','PLT-WORK-003-disaster-menu','SQL','V202606130940__PLT-WORK-003-disaster-menu.sql',99895361,'root','2026-07-10 08:33:12',2,1),(79,'202606131000','BIZCODE-GOV-produce-return-rules','SQL','V202606131000__BIZCODE-GOV-produce-return-rules.sql',-1781863425,'root','2026-07-10 08:33:12',1,1),(80,'202606131010','WMS-FLOW-001-flow-type-pack-dict','SQL','V202606131010__WMS-FLOW-001-flow-type-pack-dict.sql',705619095,'root','2026-07-10 08:33:12',1,1),(81,'202606131020','W22-006-warehouse-dashboard-menu','SQL','V202606131020__W22-006-warehouse-dashboard-menu.sql',777877727,'root','2026-07-10 08:33:12',2,1),(82,'202606141200','STR-DEMAND-001-menu','SQL','V202606141200__STR-DEMAND-001-menu.sql',1446178935,'root','2026-07-10 08:33:12',6,1),(83,'202606141210','STR-OP-001-store-operation-tables','SQL','V202606141210__STR-OP-001-store-operation-tables.sql',-918469886,'root','2026-07-10 08:33:12',33,1),(84,'202606141220','STR-OP-001-menu','SQL','V202606141220__STR-OP-001-menu.sql',395475712,'root','2026-07-10 08:33:12',3,1),(85,'202606141230','STR-STOCK-001-store-check-record','SQL','V202606141230__STR-STOCK-001-store-check-record.sql',-1253108823,'root','2026-07-10 08:33:12',19,1),(86,'202606141240','STR-STOCK-001-menu','SQL','V202606141240__STR-STOCK-001-menu.sql',-1252655259,'root','2026-07-10 08:33:12',3,1),(87,'202606141250','PLT-PICK-001-mp-permission-menu','SQL','V202606141250__PLT-PICK-001-mp-permission-menu.sql',761346097,'root','2026-07-10 08:33:12',2,1),(88,'202606141400','PLT-PERF-001-performance-align-menu','SQL','V202606141400__PLT-PERF-001-performance-align-menu.sql',-1563087623,'root','2026-07-10 08:33:12',22,1),(89,'202606141410','DJS-FIX-ADMIN-W22-008-location-type-8-class','SQL','V202606141410__DJS-FIX-ADMIN-W22-008-location-type-8-class.sql',-718096026,'root','2026-07-10 08:33:12',7,1),(90,'202606141420','WMS-FLOW-001-FIX-inout-type-dict','SQL','V202606141420__WMS-FLOW-001-FIX-inout-type-dict.sql',1759733047,'root','2026-07-10 08:33:12',2,1),(91,'202606150000','STR-SPLIT-001-inhouse-add-source','SQL','V202606150000__STR-SPLIT-001-inhouse-add-source.sql',197493178,'root','2026-07-10 08:33:12',29,1),(92,'202606150010','STR-SPLIT-001-menu','SQL','V202606150010__STR-SPLIT-001-menu.sql',-1164236254,'root','2026-07-10 08:33:12',3,1),(93,'202606150100','STR-MEMBER-001-menu','SQL','V202606150100__STR-MEMBER-001-menu.sql',1585570665,'root','2026-07-10 08:33:12',3,1),(94,'202606150210','STR-RETURN-001-menu','SQL','V202606150210__STR-RETURN-001-menu.sql',1045145333,'root','2026-07-10 08:33:12',2,1),(95,'202606150700','TRC-CORE-001-trace-dict-seed','SQL','V202606150700__TRC-CORE-001-trace-dict-seed.sql',633445697,'root','2026-07-10 08:33:12',3,1),(96,'202606150710','PLT-DASH-001-menu','SQL','V202606150710__PLT-DASH-001-menu.sql',507110108,'root','2026-07-10 08:33:12',2,1),(97,'202606150800','STR-DASH-001-menu','SQL','V202606150800__STR-DASH-001-menu.sql',1525635318,'root','2026-07-10 08:33:12',3,1),(98,'202606150900','TRC-ADMIN-001-menu','SQL','V202606150900__TRC-ADMIN-001-menu.sql',-1829997164,'root','2026-07-10 08:33:12',2,1),(99,'202606160800','D12X-ADMIN-MENU-REBIND-001-admin-cm-config-rebind','SQL','V202606160800__D12X-ADMIN-MENU-REBIND-001-admin-cm-config-rebind.sql',-1738839689,'root','2026-07-10 08:33:12',10,1),(100,'202606160900','D12X-MP-SLAUGHTER-001-add-operator','SQL','V202606160900__D12X-MP-SLAUGHTER-001-add-operator.sql',70424415,'root','2026-07-10 08:33:12',21,1),(101,'202606160940','D12X-MP-BURN-IA-001-white-bar-products','SQL','V202606160940__D12X-MP-BURN-IA-001-white-bar-products.sql',-1056999859,'root','2026-07-10 08:33:12',2,1),(102,'202606161000','D12X-BRD-STATEMACHINE-PH-001-remove-ph','SQL','V202606161000__D12X-BRD-STATEMACHINE-PH-001-remove-ph.sql',-1062069234,'root','2026-07-10 08:33:12',2,1),(103,'202606161010','D12X-BRD-EARNO-FORMAT-001-pig-code-seed','SQL','V202606161010__D12X-BRD-EARNO-FORMAT-001-pig-code-seed.sql',1788005155,'root','2026-07-10 08:33:12',4,1),(104,'202606161020','D12X-FIX-seed-warehouse-plant-workers','SQL','V202606161020__D12X-FIX-seed-warehouse-plant-workers.sql',1082822296,'root','2026-07-10 08:33:12',2,1),(105,'202606170800','WMS-WHITEBAR-SHIP-001-menu','SQL','V202606170800__WMS-WHITEBAR-SHIP-001-menu.sql',270370081,'root','2026-07-10 08:33:12',1,1),(106,'202606171000','STR-RETURN-REBUILD-001-add-location','SQL','V202606171000__STR-RETURN-REBUILD-001-add-location.sql',-232063765,'root','2026-07-10 08:33:12',28,1),(107,'202606171100','ADMIN-MENU-IA-001-regroup-menus','SQL','V202606171100__ADMIN-MENU-IA-001-regroup-menus.sql',-1329476192,'root','2026-07-10 08:33:12',23,1),(108,'202606171200','ADMIN-DICT-FIX-001-pig-cut-status','SQL','V202606171200__ADMIN-DICT-FIX-001-pig-cut-status.sql',240492032,'root','2026-07-10 08:33:12',2,1),(109,'202606180800','FIX-HEAT-001-heat-result-nullable','SQL','V202606180800__FIX-HEAT-001-heat-result-nullable.sql',-1632503313,'root','2026-07-10 08:33:12',19,1),(110,'202606180810','FIX-BREEDING-001-semen-dict','SQL','V202606180810__FIX-BREEDING-001-semen-dict.sql',-365801033,'root','2026-07-10 08:33:12',24,1),(111,'202606181100','FIX-FEED-001-stock-out-dest-dept','SQL','V202606181100__FIX-FEED-001-stock-out-dest-dept.sql',745652198,'root','2026-07-10 08:33:12',1,1),(112,'202606190900','FIX-PLT-DASH-PERM-001-grant-dashboard-perm','SQL','V202606190900__FIX-PLT-DASH-PERM-001-grant-dashboard-perm.sql',-755675683,'root','2026-07-10 08:33:12',3,1),(113,'202606190910','FIX-WMS-LOC-OVERVIEW-001-menu','SQL','V202606190910__FIX-WMS-LOC-OVERVIEW-001-menu.sql',-787201235,'root','2026-07-10 08:33:12',3,1),(114,'202606190920','FIX-WMS-PRODSPLIT-001-product-split-menu','SQL','V202606190920__FIX-WMS-PRODSPLIT-001-product-split-menu.sql',-998277255,'root','2026-07-10 08:33:12',4,1),(115,'202606190930','FIX-PLT-PERF-PERM-001-grant-performance','SQL','V202606190930__FIX-PLT-PERF-PERM-001-grant-performance.sql',-1431706698,'root','2026-07-10 08:33:12',1,1),(116,'202606200900','FIX-WMS-VEGRECEIVE-001-veg-receive','SQL','V202606200900__FIX-WMS-VEGRECEIVE-001-veg-receive.sql',-569718846,'root','2026-07-10 08:33:12',14,1),(117,'202606200920','FIX-TRC-PORK-CHAIN-001-backfill-earno-events','SQL','V202606200920__FIX-TRC-PORK-CHAIN-001-backfill-earno-events.sql',1395429666,'root','2026-07-10 08:33:12',4,1),(118,'202606210910','FIX-MGMT-MP-BRD-001-dashboard-endpoint-remarks','SQL','V202606210910__FIX-MGMT-MP-BRD-001-dashboard-endpoint-remarks.sql',1496334414,'root','2026-07-10 08:33:13',4,1),(119,'202606211000','FIX-PLT-MP-PICK-001-farm-records-operator','SQL','V202606211000__FIX-PLT-MP-PICK-001-farm-records-operator.sql',-33069010,'root','2026-07-10 08:33:13',22,1),(120,'202606211100','FIX-PLT-MP-HARVEST-001-farm-records-harvest-weight','SQL','V202606211100__FIX-PLT-MP-HARVEST-001-farm-records-harvest-weight.sql',335778378,'root','2026-07-10 08:33:13',19,1),(121,'202606220800','FIX-WMS-DFIX7-001-nullable-cols','SQL','V202606220800__FIX-WMS-DFIX7-001-nullable-cols.sql',-356211946,'root','2026-07-10 08:33:13',64,1),(122,'202606221000','DJS-FIX-APPLET-PERMS-001-grant-applet-perms-to-roles','SQL','V202606221000__DJS-FIX-APPLET-PERMS-001-grant-applet-perms-to-roles.sql',510614357,'root','2026-07-10 08:33:13',7,1),(123,'202606221100','DJS-FIX-ROLE-PERMS-002-grant-domain-perms-to-roles','SQL','V202606221100__DJS-FIX-ROLE-PERMS-002-grant-domain-perms-to-roles.sql',1736520788,'root','2026-07-10 08:33:13',16,1),(124,'202606230900','IMG-LIB-001-image-library','SQL','V202606230900__IMG-LIB-001-image-library.sql',1922642969,'root','2026-07-10 08:33:13',22,1),(125,'202606230910','IMG-LIB-001-master-data-image-field','SQL','V202606230910__IMG-LIB-001-master-data-image-field.sql',976403879,'root','2026-07-10 08:33:13',31,1),(126,'202606230920','IMG-LIB-001-menu','SQL','V202606230920__IMG-LIB-001-menu.sql',1386525165,'root','2026-07-10 08:33:13',2,1),(127,'202606240900','FIX-PLT-PLOTTYPE-001-revocab','SQL','V202606240900__FIX-PLT-PLOTTYPE-001-revocab.sql',2002920281,'root','2026-07-10 08:33:13',3,1),(128,'202606241000','FIX-CC-MATING-METHOD-001-revocab','SQL','V202606241000__FIX-CC-MATING-METHOD-001-revocab.sql',1552829852,'root','2026-07-10 08:33:13',2,1),(129,'202606250900','FIX-WMS-MP-MENU-HIDE-001-hide-mp-placeholder-menus','SQL','V202606250900__FIX-WMS-MP-MENU-HIDE-001-hide-mp-placeholder-menus.sql',221585466,'root','2026-07-10 08:33:13',1,1),(130,'202606260010','FIX-BRD-AD-MENU-CLEANUP-001-hide-breed-menus','SQL','V202606260010__FIX-BRD-AD-MENU-CLEANUP-001-hide-breed-menus.sql',-52785300,'root','2026-07-10 08:33:13',2,1),(131,'202606260011','FIX-BRD-AD-FARM-MENU-001-rename-farm-menu','SQL','V202606260011__FIX-BRD-AD-FARM-MENU-001-rename-farm-menu.sql',-1070450209,'root','2026-07-10 08:33:13',1,1),(132,'202606260020','FIX-PLT-AD-PLAN-001-menu-name','SQL','V202606260020__FIX-PLT-AD-PLAN-001-menu-name.sql',-369927730,'root','2026-07-10 08:33:13',1,1),(133,'202606260021','FIX-PLT-AD-PLOT-001-zone-belong-dict','SQL','V202606260021__FIX-PLT-AD-PLOT-001-zone-belong-dict.sql',-2081641931,'root','2026-07-10 08:33:13',1,1),(134,'202606260030','FIX-STR-DASH-REMOVE-001-hide-menu','SQL','V202606260030__FIX-STR-DASH-REMOVE-001-hide-menu.sql',616025161,'root','2026-07-10 08:33:13',1,1),(135,'202606260031','FIX-STR-MEMBER-REMOVE-001-hide-menu','SQL','V202606260031__FIX-STR-MEMBER-REMOVE-001-hide-menu.sql',-648499903,'root','2026-07-10 08:33:13',1,1),(136,'202606260040','A5-admin-packing-menus','SQL','V202606260040__A5-admin-packing-menus.sql',-440268160,'root','2026-07-10 08:33:13',3,1),(137,'202606260050','A1-production-config-refactor','SQL','V202606260050__A1-production-config-refactor.sql',491565359,'root','2026-07-10 08:33:13',17,1),(138,'202606270100','STORE-REALIGN-IA-001-menu','SQL','V202606270100__STORE-REALIGN-IA-001-menu.sql',-634973463,'root','2026-07-10 08:33:13',6,1),(139,'202606270200','STORE-RETURN-REALIGN-001-confirm-flow','SQL','V202606270200__STORE-RETURN-REALIGN-001-confirm-flow.sql',1696606168,'root','2026-07-10 08:33:13',26,1),(140,'202606270300','STORE-DEMAND-REALIGN-001','SQL','V202606270300__STORE-DEMAND-REALIGN-001.sql',-2073618754,'root','2026-07-10 08:33:13',43,1),(141,'202606270400','STORE-LEDGER-001','SQL','V202606270400__STORE-LEDGER-001.sql',769933368,'root','2026-07-10 08:33:13',14,1),(142,'202606270410','STORE-LEDGER-001-menu','SQL','V202606270410__STORE-LEDGER-001-menu.sql',-548354926,'root','2026-07-10 08:33:13',7,1),(143,'202606270500','STORE-TRACE-ONSITE-001-menu-dict','SQL','V202606270500__STORE-TRACE-ONSITE-001-menu-dict.sql',-1765246197,'root','2026-07-10 08:33:13',5,1),(144,'202606270600','STORE-PRODUCT-PERMS-001-grant-write','SQL','V202606270600__STORE-PRODUCT-PERMS-001-grant-write.sql',1161073732,'root','2026-07-10 08:33:13',2,1),(145,'202606280900','DJS-FIX-WMS-RALN-menu','SQL','V202606280900__DJS-FIX-WMS-RALN-menu.sql',1339783859,'root','2026-07-10 08:33:13',8,1),(146,'202606280901','DJS-FIX-WMS-RALN-outsource-pig','SQL','V202606280901__DJS-FIX-WMS-RALN-outsource-pig.sql',1027847918,'root','2026-07-10 08:33:13',15,1),(147,'202606280902','DJS-FIX-WMS-RALN-location-cols','SQL','V202606280902__DJS-FIX-WMS-RALN-location-cols.sql',877784389,'root','2026-07-10 08:33:13',21,1),(148,'202606280910','DJS-FIX-WMS-RALN-demand-dict','SQL','V202606280910__DJS-FIX-WMS-RALN-demand-dict.sql',-451546835,'root','2026-07-10 08:33:13',4,1),(149,'202606281100','DJS-FIX-WMS-RALN-B-stock-out-perm','SQL','V202606281100__DJS-FIX-WMS-RALN-B-stock-out-perm.sql',627979865,'root','2026-07-10 08:33:13',3,1),(150,'202606281101','DJS-FIX-WMS-FLOW-INOUT-MODE-dict','SQL','V202606281101__DJS-FIX-WMS-FLOW-INOUT-MODE-dict.sql',-162752367,'root','2026-07-10 08:33:13',2,1),(151,'202606281200','STORE-IA-4MENU-001','SQL','V202606281200__STORE-IA-4MENU-001.sql',-1047594192,'root','2026-07-10 08:33:13',11,1),(152,'202606281210','STORE-LEDGER-REALIGN-001-wh-return','SQL','V202606281210__STORE-LEDGER-REALIGN-001-wh-return.sql',-311591125,'root','2026-07-10 08:33:13',19,1),(153,'202606290900','FIX-PLT-AD-PICKACT-001-menu','SQL','V202606290900__FIX-PLT-AD-PICKACT-001-menu.sql',1561084829,'root','2026-07-10 08:33:13',5,1),(154,'202606290910','FIX-PLT-AD-OVERVIEW-001-menu','SQL','V202606290910__FIX-PLT-AD-OVERVIEW-001-menu.sql',798403737,'root','2026-07-10 08:33:13',8,1),(155,'202606290920','FIX-PLT-AD-ZONE-001-menu','SQL','V202606290920__FIX-PLT-AD-ZONE-001-menu.sql',1145143911,'root','2026-07-10 08:33:13',8,1),(156,'202606290930','FIX-PLT-AD-INFO-LIST-001-ddl','SQL','V202606290930__FIX-PLT-AD-INFO-LIST-001-ddl.sql',1143694087,'root','2026-07-10 08:33:13',36,1),(157,'202606290950','FIX-PLT-AD-IA-001-ddl','SQL','V202606290950__FIX-PLT-AD-IA-001-ddl.sql',425986537,'root','2026-07-10 08:33:13',5,1),(158,'202606291000','BRD-AD-PROTO-ALIGN-001-breed-menu-realign','SQL','V202606291000__BRD-AD-PROTO-ALIGN-001-breed-menu-realign.sql',-782020780,'root','2026-07-10 08:33:13',10,1),(159,'202606291001','BRD-AD-PROTO-ALIGN-002-pen-type-realign','SQL','V202606291001__BRD-AD-PROTO-ALIGN-002-pen-type-realign.sql',587098310,'root','2026-07-10 08:33:13',3,1),(160,'202606291010','FIX-PLT-AD-D22-TESTFIX-menu','SQL','V202606291010__FIX-PLT-AD-D22-TESTFIX-menu.sql',136021948,'root','2026-07-10 08:33:13',7,1),(161,'202606291100','DJS-FIX-WMS-PACK-deliver-dest-dict','SQL','V202606291100__DJS-FIX-WMS-PACK-deliver-dest-dict.sql',2077110204,'root','2026-07-10 08:33:13',28,1),(162,'202606291200','DJS-FIX-WMS-PROD-MENU-flatten-packentry','SQL','V202606291200__DJS-FIX-WMS-PROD-MENU-flatten-packentry.sql',-1026114263,'root','2026-07-10 08:33:13',6,1),(163,'202606291300','BRD-AD-PROTO-ALIGN-003-breeding-menu-split-ensure','SQL','V202606291300__BRD-AD-PROTO-ALIGN-003-breeding-menu-split-ensure.sql',-2035458763,'root','2026-07-10 08:33:13',4,1),(164,'202606291400','DJS-FIX-WMS-DEMAND-deprecate-in-production','SQL','V202606291400__DJS-FIX-WMS-DEMAND-deprecate-in-production.sql',-276957922,'root','2026-07-10 08:33:13',3,1),(165,'202606291500','FIX-PLT-HARVEST-ACTIVITY-001-plant-activity','SQL','V202606291500__FIX-PLT-HARVEST-ACTIVITY-001-plant-activity.sql',-1075084102,'root','2026-07-10 08:33:14',14,1),(166,'202606300900','0613-05-demand-status-deleted-dict','SQL','V202606300900__0613-05-demand-status-deleted-dict.sql',-347435275,'root','2026-07-10 08:33:14',2,1),(167,'202606301000','STORE-IA-5MENU-001-menu','SQL','V202606301000__STORE-IA-5MENU-001-menu.sql',2018209227,'root','2026-07-10 08:33:14',9,1),(168,'202606301100','0613-04-store-demand-status-dict','SQL','V202606301100__0613-04-store-demand-status-dict.sql',478862240,'root','2026-07-10 08:33:14',3,1),(169,'202606301200','0613-11-demand-confirm-menu','SQL','V202606301200__0613-11-demand-confirm-menu.sql',-1001706301,'root','2026-07-10 08:33:14',3,1),(170,'202606301300','0613-11-fix-confirm-menu-parent','SQL','V202606301300__0613-11-fix-confirm-menu-parent.sql',-342460079,'root','2026-07-10 08:33:14',2,1),(171,'202606301400','FIX-614-pen-type-scatter-nursery','SQL','V202606301400__FIX-614-pen-type-scatter-nursery.sql',-1799402734,'root','2026-07-10 08:33:14',2,1),(172,'202606301410','DJS-FIX-6-14-HIDE-MENUS-001','SQL','V202606301410__DJS-FIX-6-14-HIDE-MENUS-001.sql',236379018,'root','2026-07-10 08:33:14',3,1),(173,'202607010900','DJS-FIX-6-14-FARROW-CRUSHED-COL-001','SQL','V202607010900__DJS-FIX-6-14-FARROW-CRUSHED-COL-001.sql',1860399318,'root','2026-07-10 08:33:14',18,1),(174,'202607011000','DJS-FIX-6-14-FARROW-MALEFEMALE-BACKFILL-001','SQL','V202607011000__DJS-FIX-6-14-FARROW-MALEFEMALE-BACKFILL-001.sql',-1151276064,'root','2026-07-10 08:33:14',2,1),(175,'202607011100','PLT-DASH-RESTORE-001-menu','SQL','V202607011100__PLT-DASH-RESTORE-001-menu.sql',-983624540,'root','2026-07-10 08:33:14',5,1),(176,'202607011500','DJS-FIX-6-15-HIDE-PLOT-ORGANIC-001','SQL','V202607011500__DJS-FIX-6-15-HIDE-PLOT-ORGANIC-001.sql',-1751970700,'root','2026-07-10 08:33:14',1,1),(177,'202607011600','FIX-PLT-MP-PICK-PERSON-001-farm-by-nullable','SQL','V202607011600__FIX-PLT-MP-PICK-PERSON-001-farm-by-nullable.sql',592321115,'root','2026-07-10 08:33:14',22,1),(178,'202607011700','FIX-MED-MODEL-002-stock-medicine-dim','SQL','V202607011700__FIX-MED-MODEL-002-stock-medicine-dim.sql',-1581082835,'root','2026-07-10 08:33:14',25,1),(179,'202607011800','FIX-MED-MODEL-003-medicine-seed','SQL','V202607011800__FIX-MED-MODEL-003-medicine-seed.sql',-1049470992,'root','2026-07-10 08:33:14',4,1),(180,'202607011900','FIX-MED-MODEL-006-menu-migrate','SQL','V202607011900__FIX-MED-MODEL-006-menu-migrate.sql',790037027,'root','2026-07-10 08:33:14',1,1),(181,'202607012000','FIX-BRD-INTRO-PIG-STATUS-001-backfill-blank-status','SQL','V202607012000__FIX-BRD-INTRO-PIG-STATUS-001-backfill-blank-status.sql',-1233258112,'root','2026-07-10 08:33:14',1,1),(182,'202607012100','FIX-PLT-PLAN-STATUS-derive','SQL','V202607012100__FIX-PLT-PLAN-STATUS-derive.sql',-776398613,'root','2026-07-10 08:33:14',2,1),(183,'202607012200','FIX-WEANING-LACTATION-DAYS-25','SQL','V202607012200__FIX-WEANING-LACTATION-DAYS-25.sql',1308847646,'root','2026-07-10 08:33:14',2,1),(184,'202607020900','FIX-ELIMINATE-RECORDER-001-add-culling-recorder','SQL','V202607020900__FIX-ELIMINATE-RECORDER-001-add-culling-recorder.sql',91695989,'root','2026-07-10 08:33:14',23,1),(185,'202607021000','FIX-6-16-DIE-RECORDER-001-add-recorder-id','SQL','V202607021000__FIX-6-16-DIE-RECORDER-001-add-recorder-id.sql',-1630109642,'root','2026-07-10 08:33:14',25,1),(186,'202607021100','FIX-BRD-GROWTH-APPLET-POST-001','SQL','V202607021100__FIX-BRD-GROWTH-APPLET-POST-001.sql',578874117,'root','2026-07-10 08:33:14',2,1),(187,'202607021200','FIX-BRD-STRAIN-BACKFILL-001-null-strain-code','SQL','V202607021200__FIX-BRD-STRAIN-BACKFILL-001-null-strain-code.sql',-511178991,'root','2026-07-10 08:33:14',2,1),(188,'202607030900','WSA-001-pork-return-dict','SQL','V202607030900__WSA-001-pork-return-dict.sql',114841310,'root','2026-07-10 08:33:14',2,1),(189,'202607030901','WSA-002-workshop-store-pack','SQL','V202607030901__WSA-002-workshop-store-pack.sql',-1197715662,'root','2026-07-10 08:33:14',2,1),(190,'202607030902','WSA-003-store-inventory','SQL','V202607030902__WSA-003-store-inventory.sql',2098563940,'root','2026-07-10 08:33:14',13,1),(191,'202607031000','DJS-FIX-617-159-seed-plant-candidate-user','SQL','V202607031000__DJS-FIX-617-159-seed-plant-candidate-user.sql',-1924037438,'root','2026-07-10 08:33:14',2,1),(192,'202607031100','FIX-BRD-GROWTH-BACKFAT-001-weight-nullable','SQL','V202607031100__FIX-BRD-GROWTH-BACKFAT-001-weight-nullable.sql',-89172365,'root','2026-07-10 08:33:14',23,1),(193,'202607031101','FIX-BRD-CASTRATE-PERM-001-grant','SQL','V202607031101__FIX-BRD-CASTRATE-PERM-001-grant.sql',1899388396,'root','2026-07-10 08:33:14',3,1),(194,'202607031102','FIX-BRD-PIG-STATUS-BACKFILL-001-blank-current-status','SQL','V202607031102__FIX-BRD-PIG-STATUS-BACKFILL-001-blank-current-status.sql',-1073116119,'root','2026-07-10 08:33:14',2,1),(195,'202607031200','FIX-BRD-PIGTYPE-001-backfill-pig-type','SQL','V202607031200__FIX-BRD-PIGTYPE-001-backfill-pig-type.sql',-1397532631,'root','2026-07-10 08:33:14',2,1),(196,'202607031300','FIX-BRD-PIG-EMPTY-STATUS-001-decouple-status-axis','SQL','V202607031300__FIX-BRD-PIG-EMPTY-STATUS-001-decouple-status-axis.sql',1249858496,'root','2026-07-10 08:33:14',8,1),(197,'202607181000','FIX-BRD-SLAUGHTER-PERM-001-grant','SQL','V202607181000__FIX-BRD-SLAUGHTER-PERM-001-grant.sql',-1171929013,'root','2026-07-10 08:33:14',2,1),(198,'202607181100','FIX-WMS-OUTSOURCE-EARNO-001-burn-record-nullable','SQL','V202607181100__FIX-WMS-OUTSOURCE-EARNO-001-burn-record-nullable.sql',1663680846,'root','2026-07-10 08:33:14',21,1),(199,'202607181200','WMS-VEG-FEED-LOG-001-feed-log-table','SQL','V202607181200__WMS-VEG-FEED-LOG-001-feed-log-table.sql',-25435196,'root','2026-07-10 08:33:14',9,1),(200,'202607190001','FIX-BRD-PIGINFO-BIRTHWEIGHT-001-add-col','SQL','V202607190001__FIX-BRD-PIGINFO-BIRTHWEIGHT-001-add-col.sql',570196617,'root','2026-07-10 08:33:14',27,1),(201,'202607190002','FIX-WMS-MP-BURN-WHITEBAR-ATTR-001-rawmaterial','SQL','V202607190002__FIX-WMS-MP-BURN-WHITEBAR-ATTR-001-rawmaterial.sql',340498194,'root','2026-07-10 08:33:14',1,1),(202,'202607191000','FIX-BRD-CASTRATE-ISCASTRATED-001-add-col','SQL','V202607191000__FIX-BRD-CASTRATE-ISCASTRATED-001-add-col.sql',-1006006740,'root','2026-07-10 08:33:14',27,1),(203,'202607191100','FIX-CROSS-FLOW-002-veg-picking-backfill','SQL','V202607191100__FIX-CROSS-FLOW-002-veg-picking-backfill.sql',545640683,'root','2026-07-10 08:33:14',2,1),(204,'202607191200','FIX-PLT-PICK-EXPORT-PERM-001-grant','SQL','V202607191200__FIX-PLT-PICK-EXPORT-PERM-001-grant.sql',-101279650,'root','2026-07-10 08:33:14',3,1),(205,'202607201000','FIX-WEANING-SOW-FARROW-WEAN-DAYS-25','SQL','V202607201000__FIX-WEANING-SOW-FARROW-WEAN-DAYS-25.sql',-1070239714,'root','2026-07-10 08:33:14',2,1),(206,'202607201100','FIX-PLT-AD-PICK-FARMTYPE-001-add-harvest-dict','SQL','V202607201100__FIX-PLT-AD-PICK-FARMTYPE-001-add-harvest-dict.sql',1819475057,'root','2026-07-10 08:33:14',1,1),(207,'202607211000','FIX-SOW-RESERVE-TO-BREED-DAYS','SQL','V202607211000__FIX-SOW-RESERVE-TO-BREED-DAYS.sql',907881013,'root','2026-07-10 08:33:14',2,1),(208,'202607211100','BRD-EVENT-AGE-DAYS-SNAPSHOT','SQL','V202607211100__BRD-EVENT-AGE-DAYS-SNAPSHOT.sql',388172657,'root','2026-07-10 08:33:14',229,1),(209,'202607220900','WMS-OUTSOURCE-001-location-type-farm-class','SQL','V202607220900__WMS-OUTSOURCE-001-location-type-farm-class.sql',-1106290016,'root','2026-07-10 08:33:14',2,1),(210,'202607220905','WMS-OUTSOURCE-002-buy-class-seed','SQL','V202607220905__WMS-OUTSOURCE-002-buy-class-seed.sql',199858612,'root','2026-07-10 08:33:14',2,1),(211,'202607220910','WMS-OUTSOURCE-003-purchasein-menu-relocate','SQL','V202607220910__WMS-OUTSOURCE-003-purchasein-menu-relocate.sql',1414640878,'root','2026-07-10 08:33:14',1,1),(212,'202607221000','FIX-WEANING-DETAIL-DEL-UNIQUE-001','SQL','V202607221000__FIX-WEANING-DETAIL-DEL-UNIQUE-001.sql',954032540,'root','2026-07-10 08:33:15',33,1),(213,'202607221010','FIX-BELONG-TYPE-OTHER-SEED-001','SQL','V202607221010__FIX-BELONG-TYPE-OTHER-SEED-001.sql',1206296841,'root','2026-07-10 08:33:15',2,1),(214,'202607221020','FIX-TRACE-MARKETING-LABEL-001','SQL','V202607221020__FIX-TRACE-MARKETING-LABEL-001.sql',-484417415,'root','2026-07-10 08:33:15',1,1),(215,'202607221030','FIX-DROP-ORPHAN-STORE-CHECK-RECORD-001','SQL','V202607221030__FIX-DROP-ORPHAN-STORE-CHECK-RECORD-001.sql',556191998,'root','2026-07-10 08:33:15',8,1),(216,'202607221040','FIX-DROP-DEAD-PICK-ACTIVITY-001','SQL','V202607221040__FIX-DROP-DEAD-PICK-ACTIVITY-001.sql',-661170847,'root','2026-07-10 08:33:15',6,1),(217,'202607221050','FIX-DROP-BAR-SINGED-DICT-001','SQL','V202607221050__FIX-DROP-BAR-SINGED-DICT-001.sql',1441247512,'root','2026-07-10 08:33:15',2,1),(218,'202607221100','STORE-PORK-SPLIT-MENU-001-menu','SQL','V202607221100__STORE-PORK-SPLIT-MENU-001-menu.sql',918042496,'root','2026-07-10 08:33:15',3,1),(219,'202607221110','STORE-PORK-PACK-MENU-RENAME-001','SQL','V202607221110__STORE-PORK-PACK-MENU-RENAME-001.sql',-1188208453,'root','2026-07-10 08:33:15',1,1),(220,'202607221201','FIX-VEGRECEIVE-PURCHASE-IN-LABEL-001','SQL','V202607221201__FIX-VEGRECEIVE-PURCHASE-IN-LABEL-001.sql',-1366581412,'root','2026-07-10 08:33:15',1,1),(221,'202607221202','FIX-WMS-VEGRECEIVE-LOSS-001','SQL','V202607221202__FIX-WMS-VEGRECEIVE-LOSS-001.sql',2137823388,'root','2026-07-10 08:33:15',22,1),(222,'202607221400','WMS-CUT-REMAIN-001-stockflow-whitebar','SQL','V202607221400__WMS-CUT-REMAIN-001-stockflow-whitebar.sql',829542055,'root','2026-07-10 08:33:15',44,1),(223,'202607221405','WMS-OUTSOURCE-DELGUARD-001-outsourcepig-barid','SQL','V202607221405__WMS-OUTSOURCE-DELGUARD-001-outsourcepig-barid.sql',2118206381,'root','2026-07-10 08:33:15',26,1),(224,'202607221410','DJS-PERM-BOARD-001-board-scoped-applet-grants','SQL','V202607221410__DJS-PERM-BOARD-001-board-scoped-applet-grants.sql',-373797614,'root','2026-07-10 08:33:15',8,1),(225,'202607221411','DJS-PERM-MENU-001-mp-permission-tree','SQL','V202607221411__DJS-PERM-MENU-001-mp-permission-tree.sql',-277538562,'root','2026-07-10 08:33:15',5,1),(226,'202607221412','FIX-DJS-PERM-MENU-001-mp-perm-tree-path','SQL','V202607221412__FIX-DJS-PERM-MENU-001-mp-perm-tree-path.sql',1750730068,'root','2026-07-10 08:33:15',3,1),(227,'202607231000','FIX-PRODUCE-NO-DAILY-SEQ-001','SQL','V202607231000__FIX-PRODUCE-NO-DAILY-SEQ-001.sql',-31807220,'root','2026-07-10 08:33:15',1,1),(228,'202607240800','FIX-WMS-FLOWDICT-001-inout-mode-taxonomy','SQL','V202607240800__FIX-WMS-FLOWDICT-001-inout-mode-taxonomy.sql',938925282,'root','2026-07-10 08:33:15',6,1),(229,'202607241100','FIX-WMS-FLOWDICT-002-check-loss-dest','SQL','V202607241100__FIX-WMS-FLOWDICT-002-check-loss-dest.sql',-2016690361,'root','2026-07-10 08:33:15',1,1),(230,'202607241200','STR-USER-REL-001-store-user-relation','SQL','V202607241200__STR-USER-REL-001-store-user-relation.sql',-1295693698,'root','2026-07-10 08:33:15',10,1),(231,'202607241210','STR-USER-REL-001-menu','SQL','V202607241210__STR-USER-REL-001-menu.sql',-1460118095,'root','2026-07-10 08:33:15',2,1),(232,'202607241220','STORE-SPLIT-STOREID-001-inhouse-store-id','SQL','V202607241220__STORE-SPLIT-STOREID-001-inhouse-store-id.sql',-1901620615,'root','2026-07-10 08:33:15',29,1),(233,'202607241300','FIX-BRD-MP-EVENT-PERM-001-event-menu-grants','SQL','V202607241300__FIX-BRD-MP-EVENT-PERM-001-event-menu-grants.sql',1433930183,'root','2026-07-10 08:33:15',4,1),(234,'202607241310','FIX-WMS-FLOWDICT-DEPT-RETURN-001-dept-return-label','SQL','V202607241310__FIX-WMS-FLOWDICT-DEPT-RETURN-001-dept-return-label.sql',-693236179,'root','2026-07-10 08:33:15',2,1),(235,'202607251000','WMS-LOSS-001-loss-flow-feed-source','SQL','V202607251000__WMS-LOSS-001-loss-flow-feed-source.sql',-1269787680,'root','2026-07-10 08:33:15',33,1),(236,'202607251400','WMS-MATPICK-ADMIN-001-menu','SQL','V202607251400__WMS-MATPICK-ADMIN-001-menu.sql',840328430,'root','2026-07-10 08:33:15',3,1),(237,'202607251500','WMS-STOCK-OVERVIEW-001-menu','SQL','V202607251500__WMS-STOCK-OVERVIEW-001-menu.sql',-1963731403,'root','2026-07-10 08:33:15',3,1),(238,'202607251600','WMS-LOSS-OVERVIEW-001-menu','SQL','V202607251600__WMS-LOSS-OVERVIEW-001-menu.sql',494629969,'root','2026-07-10 08:33:15',3,1),(239,'202607260900','DJS-FIX-WMS-GIFT-PACK-001-gift-menu','SQL','V202607260900__DJS-FIX-WMS-GIFT-PACK-001-gift-menu.sql',1231558829,'root','2026-07-10 08:33:15',2,1),(240,'202607261000','DJS-PERM-MENU-002-warehouse-tab-tree','SQL','V202607261000__DJS-PERM-MENU-002-warehouse-tab-tree.sql',-749843368,'root','2026-07-10 08:33:15',5,1),(241,'202607261100','DJS-PERM-MENU-003-breed-tab-perms','SQL','V202607261100__DJS-PERM-MENU-003-breed-tab-perms.sql',994802293,'root','2026-07-10 08:33:15',8,1),(242,'202607261200','DJS-PERM-MENU-004-plant-tab-perms','SQL','V202607261200__DJS-PERM-MENU-004-plant-tab-perms.sql',1797291053,'root','2026-07-10 08:33:15',5,1),(243,'202607261300','DJS-PERM-MENU-005-warehouse-tab-perms-refine','SQL','V202607261300__DJS-PERM-MENU-005-warehouse-tab-perms-refine.sql',-154376303,'root','2026-07-10 08:33:15',10,1),(244,'202607261400','DJS-PERM-MENU-006-admin-menu-level-rbac','SQL','V202607261400__DJS-PERM-MENU-006-admin-menu-level-rbac.sql',-989695183,'root','2026-07-10 08:33:15',57,1),(245,'202607261500','STORE-RETURN-UNIFY-001-direction-fix','SQL','V202607261500__STORE-RETURN-UNIFY-001-direction-fix.sql',1359800189,'root','2026-07-10 08:33:15',2,1),(246,'202607261600','DJS-PERM-MENU-007-breed-mp-tab-decouple','SQL','V202607261600__DJS-PERM-MENU-007-breed-mp-tab-decouple.sql',-217648811,'root','2026-07-10 08:33:15',4,1),(247,'202607261700','FIX-WMS-CUTPICKUP-SPLIT-001-inhouse-pickup-status','SQL','V202607261700__FIX-WMS-CUTPICKUP-SPLIT-001-inhouse-pickup-status.sql',2065386600,'root','2026-07-10 08:33:15',31,1),(248,'202607262000','FIX-WMS-BAR-CUT-FIELDS-001-bar-cut-cols','SQL','V202607262000__FIX-WMS-BAR-CUT-FIELDS-001-bar-cut-cols.sql',1739759688,'root','2026-07-10 08:33:15',24,1),(249,'202607262100','WMS-FEED-RECORD-001-feed-record-menu','SQL','V202607262100__WMS-FEED-RECORD-001-feed-record-menu.sql',-1125427409,'root','2026-07-10 08:33:15',35,1),(250,'202607262200','BRD-STAT-001-create-indicator-record','SQL','V202607262200__BRD-STAT-001-create-indicator-record.sql',1184179855,'root','2026-07-10 08:33:15',17,1),(251,'202607262300','BRD-STAT-001-extend-monthly-annual-sowperf','SQL','V202607262300__BRD-STAT-001-extend-monthly-annual-sowperf.sql',-869750686,'root','2026-07-10 08:33:15',58,1),(252,'202607262400','WMS-STAT-001-create-warehouse-stat-tables','SQL','V202607262400__WMS-STAT-001-create-warehouse-stat-tables.sql',-551544078,'root','2026-07-10 08:33:15',81,1),(253,'202607262500','WMS-STAT-001-menu','SQL','V202607262500__WMS-STAT-001-menu.sql',923686374,'root','2026-07-10 08:33:16',2,1),(254,'202607262600','TRC-EVENT-EXT-001-white-bar-events','SQL','V202607262600__TRC-EVENT-EXT-001-white-bar-events.sql',-644580234,'root','2026-07-10 08:33:16',1,1),(255,'202607280901','BRD-STAT-FIX-001-pig-info-wean-snapshot','SQL','V202607280901__BRD-STAT-FIX-001-pig-info-wean-snapshot.sql',775883561,'root','2026-07-10 08:33:16',34,1),(256,'202607280902','BRD-STAT-FIX-001-year-production-rename','SQL','V202607280902__BRD-STAT-FIX-001-year-production-rename.sql',-1552323907,'root','2026-07-10 08:33:16',24,1),(257,'202607281200','TRC-CONTENT-VEG-SEED-001-veg-nodes-and-labels','SQL','V202607281200__TRC-CONTENT-VEG-SEED-001-veg-nodes-and-labels.sql',462931011,'root','2026-07-10 08:33:16',2,1),(258,'202607290901','FIX-WMS-STAT-001-remove-report-menus','SQL','V202607290901__FIX-WMS-STAT-001-remove-report-menus.sql',-1312393246,'root','2026-07-10 08:33:16',2,1),(259,'202607290902','FIX-DJS-PERM-MENU-008-breed-tab-nav-ns','SQL','V202607290902__FIX-DJS-PERM-MENU-008-breed-tab-nav-ns.sql',1116361489,'root','2026-07-10 08:33:16',6,1),(260,'202607290903','FIX-WMS-PRODSPLIT-002-collapse-giftbox-type','SQL','V202607290903__FIX-WMS-PRODSPLIT-002-collapse-giftbox-type.sql',2091425805,'root','2026-07-10 08:33:16',4,1),(261,'202607300900','DENGBO-DAMAGE-001-product-production-damage-cols','SQL','V202607300900__DENGBO-DAMAGE-001-product-production-damage-cols.sql',-785454238,'root','2026-07-10 08:33:16',35,1),(262,'202607301000','FIX-DENGBO-R5-medicine-unit-dict','SQL','V202607301000__FIX-DENGBO-R5-medicine-unit-dict.sql',1136972944,'root','2026-07-10 08:33:16',3,1),(263,'202607301100','FIX-DENGBO-R75-stock-overview-rename','SQL','V202607301100__FIX-DENGBO-R75-stock-overview-rename.sql',1636169480,'root','2026-07-10 08:33:16',1,1),(264,'202607301200','DENGBO-R7-job-rerun','SQL','V202607301200__DENGBO-R7-job-rerun.sql',-1702187302,'root','2026-07-10 08:33:16',9,1),(265,'202607301300','DENGBO-R4-pick-activity-destination','SQL','V202607301300__DENGBO-R4-pick-activity-destination.sql',-821228634,'root','2026-07-10 08:33:16',36,1),(266,'202607301400','FIX-DENGBO-R51-med-usage-batchid-optional','SQL','V202607301400__FIX-DENGBO-R51-med-usage-batchid-optional.sql',2015061869,'root','2026-07-10 08:33:16',23,1),(267,'202607301500','FIX-DENGBO-R53-gestation-114','SQL','V202607301500__FIX-DENGBO-R53-gestation-114.sql',1788457421,'root','2026-07-10 08:33:16',2,1),(268,'202607302310','FIX-DENGBO-R81-stockflow-flowtype-widen','SQL','V202607302310__FIX-DENGBO-R81-stockflow-flowtype-widen.sql',799438506,'root','2026-07-10 08:33:16',6,1),(269,'202607302320','FIX-DENGBO-ZONE-STATUS-COMMENT','SQL','V202607302320__FIX-DENGBO-ZONE-STATUS-COMMENT.sql',152716005,'root','2026-07-10 08:33:16',4,1),(270,'202607310900','FIX-WMS-WHITEBAR-BURNID-001','SQL','V202607310900__FIX-WMS-WHITEBAR-BURNID-001.sql',1867373548,'root','2026-07-10 08:33:16',187,1),(271,'202607310901','FIX-WMS-WHITEBAR-NO-002','SQL','V202607310901__FIX-WMS-WHITEBAR-NO-002.sql',2034733584,'root','2026-07-10 08:33:16',78,1),(272,'202607311000','DENGBO-R15-product-alias','SQL','V202607311000__DENGBO-R15-product-alias.sql',-961999626,'root','2026-07-10 08:33:16',9,1),(273,'202607311001','DENGBO-R17-bar-out-dest-dict','SQL','V202607311001__DENGBO-R17-bar-out-dest-dict.sql',1343504375,'root','2026-07-10 08:33:16',2,1),(274,'202607311002','DENGBO-R17-bar-out-dest-values','SQL','V202607311002__DENGBO-R17-bar-out-dest-values.sql',938966526,'root','2026-07-10 08:33:16',2,1),(275,'202607311003','DENGBO-R17-reuse-existing-dicts','SQL','V202607311003__DENGBO-R17-reuse-existing-dicts.sql',-226067365,'root','2026-07-10 08:33:16',2,1),(276,'202607311004','DENGBO-R16-trace-display-name','SQL','V202607311004__DENGBO-R16-trace-display-name.sql',-2044891562,'root','2026-07-10 08:33:16',23,1),(277,'202607311005','DENGBO-NPD-stat-refactor','SQL','V202607311005__DENGBO-NPD-stat-refactor.sql',-1494785494,'root','2026-07-10 08:33:16',57,1),(278,'202607311006','WS12-white-bar-shipment-menu','SQL','V202607311006__WS12-white-bar-shipment-menu.sql',-631388024,'root','2026-07-10 08:33:16',3,1),(279,'202607311007','WS13-pig-transfer-flow-type','SQL','V202607311007__WS13-pig-transfer-flow-type.sql',1260249801,'root','2026-07-10 08:33:16',2,1),(280,'202607311010','FIX-WMS-TRANSFER-DEST-dict','SQL','V202607311010__FIX-WMS-TRANSFER-DEST-dict.sql',-1194146371,'root','2026-07-10 08:33:16',2,1),(281,'202607311011','DENGBO-R27-burn-loss-type','SQL','V202607311011__DENGBO-R27-burn-loss-type.sql',-654929945,'root','2026-07-10 08:33:16',1,1),(282,'202607311020','DENGBO-R30-med-usage-operator','SQL','V202607311020__DENGBO-R30-med-usage-operator.sql',-365714860,'root','2026-07-10 08:33:16',23,1),(283,'202607311021','DENGBO-R32-med-record-batch-nullable','SQL','V202607311021__DENGBO-R32-med-record-batch-nullable.sql',921013070,'root','2026-07-10 08:33:16',23,1),(284,'202607311030','DENGBO-R195-cut-bar-count-decimal','SQL','V202607311030__DENGBO-R195-cut-bar-count-decimal.sql',2049028154,'root','2026-07-10 08:33:16',25,1),(285,'202607311040','R160-R161-backfill-farrow-piglet-weight','SQL','V202607311040__R160-R161-backfill-farrow-piglet-weight.sql',790229231,'root','2026-07-10 08:33:16',2,1),(286,'202607312000','DENGBO-R35-med-record-dosage-unit','SQL','V202607312000__DENGBO-R35-med-record-dosage-unit.sql',-561468379,'root','2026-07-10 08:33:16',28,1),(287,'202607312100','DENGBO-R205-cut-record-out-type','SQL','V202607312100__DENGBO-R205-cut-record-out-type.sql',-961437622,'root','2026-07-10 08:33:17',27,1),(288,'202607312200','DENGBO-R206-indicator-prod-consume','SQL','V202607312200__DENGBO-R206-indicator-prod-consume.sql',349384258,'root','2026-07-10 08:33:17',18,1),(289,'202607312300','DENGBO-R206-drop-prod-consume','SQL','V202607312300__DENGBO-R206-drop-prod-consume.sql',-298616949,'root','2026-07-10 08:33:17',23,1),(290,'202607312400','DENGBO-ADMIN-R2-cut-record-out-dest','SQL','V202607312400__DENGBO-ADMIN-R2-cut-record-out-dest.sql',-1174911716,'root','2026-07-10 08:33:17',21,1),(291,'202608010900','DATA-RESEED-V3-dict-align','SQL','V202608010900__DATA-RESEED-V3-dict-align.sql',-1062059902,'root','2026-07-10 08:33:17',4,1),(292,'202608011000','FIX-PLT-TEAM-PERM-WAREHOUSE-001-grant','SQL','V202608011000__FIX-PLT-TEAM-PERM-WAREHOUSE-001-grant.sql',-820901906,'root','2026-07-10 08:33:17',1,1),(293,'202608011100','FIX-DJS-PERM-MENU-009-breed-tab-collapse','SQL','V202608011100__FIX-DJS-PERM-MENU-009-breed-tab-collapse.sql',114837052,'root','2026-07-10 08:33:17',2,1),(294,'202608011200','DENGBO-ADMIN-R14-R21-breed-stat-boar-intro','SQL','V202608011200__DENGBO-ADMIN-R14-R21-breed-stat-boar-intro.sql',1676893203,'root','2026-07-10 08:33:17',44,1),(295,'202608020900','DJS-PERM-REBUILD-001-role-menu-domain-minimal','SQL','V202608020900__DJS-PERM-REBUILD-001-role-menu-domain-minimal.sql',931972187,'root','2026-07-10 08:33:17',12,1),(296,'202608091000','DJS-PERM-PICKACT-mp-warehouse-pickactivity','SQL','V202608091000__DJS-PERM-PICKACT-mp-warehouse-pickactivity.sql',-2122450617,'root','2026-07-10 08:33:17',2,1),(297,'202608091100','DENGBO-R7-pig-daily-snapshot','SQL','V202608091100__DENGBO-R7-pig-daily-snapshot.sql',-1110597300,'root','2026-07-10 08:33:17',12,1),(298,'202608091200','DENGBO-ADMIN-R23-year-stat-boar-intro','SQL','V202608091200__DENGBO-ADMIN-R23-year-stat-boar-intro.sql',908028116,'root','2026-07-10 08:33:17',19,1),(299,'202608091300','DJS-MENU-CLEANUP-001-remove-refactor-orphan-menus','SQL','V202608091300__DJS-MENU-CLEANUP-001-remove-refactor-orphan-menus.sql',1004539666,'root','2026-07-10 08:33:17',2,1),(300,'202608091400','DJS-IMGLIB-REMOVE-001-drop-image-library-and-default-image','SQL','V202608091400__DJS-IMGLIB-REMOVE-001-drop-image-library-and-default-image.sql',-1173587170,'root','2026-07-10 08:33:17',10,1),(301,'202608091500','FIX-WMS-WEIGHT-DEC3-001-weight-precision-3','SQL','V202608091500__FIX-WMS-WEIGHT-DEC3-001-weight-precision-3.sql',237455078,'root','2026-07-10 08:33:17',84,1);
+/*!40000 ALTER TABLE `flyway_schema_history` ENABLE KEYS */;
+UNLOCK TABLES;
+
 --
--- 隐藏范围（visible='0'→'1'，可在菜单管理里改回）：
---   - 系统监控(2) + Admin监控(117) + 任务调度中心(120)   运维上线后再露出
---   - 系统工具(3) + 代码生成(115)                       开发期内部用
--- =============================================================================
-
--- 1. 解除 role-menu 关联（ruoyi 无 CASCADE）
-DELETE FROM sys_role_menu WHERE menu_id IN (
-  4, 5, 6, 121, 122, 123,
-  1061, 1062, 1063, 1064, 1065,
-  1606, 1607, 1608, 1609, 1610,
-  1611, 1612, 1613, 1614, 1615,
-  11616, 11618, 11619, 11620, 11621, 11622,
-  11623, 11624, 11625, 11626, 11627,
-  11629, 11630, 11631, 11632, 11633,
-  11638, 11639, 11640, 11641, 11642, 11643,
-  11644, 11645, 11646, 11647, 11648, 11649, 11650, 11651, 11652,
-  11653, 11654, 11655, 11656, 11657, 11658, 11659,
-  11700, 11701,
-  11801, 11802, 11803, 11804, 11805, 11806
-);
-
--- 2. 删菜单本身
-DELETE FROM sys_menu WHERE menu_id IN (
-  4, 5, 6, 121, 122, 123,
-  1061, 1062, 1063, 1064, 1065,
-  1606, 1607, 1608, 1609, 1610,
-  1611, 1612, 1613, 1614, 1615,
-  11616, 11618, 11619, 11620, 11621, 11622,
-  11623, 11624, 11625, 11626, 11627,
-  11629, 11630, 11631, 11632, 11633,
-  11638, 11639, 11640, 11641, 11642, 11643,
-  11644, 11645, 11646, 11647, 11648, 11649, 11650, 11651, 11652,
-  11653, 11654, 11655, 11656, 11657, 11658, 11659,
-  11700, 11701,
-  11801, 11802, 11803, 11804, 11805, 11806
-);
-
--- 3. 隐藏开发期 dev-tool 菜单（visible='1' 在导航不显示，菜单管理里仍可见可改回）
-UPDATE sys_menu SET visible = '1'
-WHERE menu_id IN (2, 117, 120, 3, 115);
-
--- =============================================================================
--- 验收 query
---   SELECT menu_id, menu_name FROM sys_menu WHERE menu_id IN (4,5,6,123,11616,11618);
---   -- 期望 0 rows
---   SELECT menu_id, menu_name, visible FROM sys_menu WHERE menu_id IN (2,3,115,117,120);
---   -- 期望 visible='1'
---   SELECT COUNT(*) AS visible_top_dirs FROM sys_menu WHERE parent_id=0 AND visible='0';
---   -- 期望 6（系统管理 + 5 个业务一级目录）
--- =============================================================================
-
-
--- ----------------------------------------------------------------------------
--- 来源文件：V202605201700__SYS-CLEANUP-ruoyi-sample-data.sql
--- ----------------------------------------------------------------------------
--- =============================================================================
--- SYS-CLEANUP-ruoyi-sample-data  清理 ruoyi 自带 sample 数据
--- =============================================================================
--- ruoyi base seed (ry_vue_5.X.sql) 自带的演示用 sample 数据，V1 业务不用。
--- 单租户合并（V202605201500）后 admin 视角能看到，造成 UI noise。本脚本清理它们。
+-- Table structure for table `gen_table`
 --
--- 删除范围：
---   - 2 个 sample 角色: role_id=3 (test1) / role_id=4 (test2)
---   - 2 个 sample 用户: user_id=3 (test) / user_id=4 (test1)
---   - 3 类工作流字典 (wf_business_status / wf_form_type / wf_task_status，菜单已在 V202605201600 删除)
---   - sys_notice 全部 sample 数据 (ruoyi 自带 2 条演示通知)
+
+DROP TABLE IF EXISTS `gen_table`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `gen_table` (
+  `table_id` bigint NOT NULL COMMENT '编号',
+  `data_name` varchar(200) DEFAULT '' COMMENT '数据源名称',
+  `table_name` varchar(200) DEFAULT '' COMMENT '表名称',
+  `table_comment` varchar(500) DEFAULT '' COMMENT '表描述',
+  `sub_table_name` varchar(64) DEFAULT NULL COMMENT '关联子表的表名',
+  `sub_table_fk_name` varchar(64) DEFAULT NULL COMMENT '子表关联的外键名',
+  `class_name` varchar(100) DEFAULT '' COMMENT '实体类名称',
+  `tpl_category` varchar(200) DEFAULT 'crud' COMMENT '使用的模板（crud单表操作 tree树表操作）',
+  `package_name` varchar(100) DEFAULT NULL COMMENT '生成包路径',
+  `module_name` varchar(30) DEFAULT NULL COMMENT '生成模块名',
+  `business_name` varchar(30) DEFAULT NULL COMMENT '生成业务名',
+  `function_name` varchar(50) DEFAULT NULL COMMENT '生成功能名',
+  `function_author` varchar(50) DEFAULT NULL COMMENT '生成功能作者',
+  `gen_type` char(1) DEFAULT '0' COMMENT '生成代码方式（0zip压缩包 1自定义路径）',
+  `gen_path` varchar(200) DEFAULT '/' COMMENT '生成路径（不填默认项目路径）',
+  `options` varchar(1000) DEFAULT NULL COMMENT '其它生成选项',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '创建者',
+  `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新者',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  PRIMARY KEY (`table_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='代码生成业务表';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
 --
--- 保留（V1 必需）:
---   - 10 个 sys_* 系统字典 (sys_user_sex / sys_show_hide / sys_normal_disable 等，ruoyi UI 组件依赖)
---   - sys_dept 部门树 / sys_post 岗位（admin.dept_id 引用，留待 SYS-MD-001 业务人员管理落地时 rename）
--- =============================================================================
-
--- 1. 解 FK 关联（ruoyi 无 CASCADE）
-DELETE FROM sys_user_role WHERE user_id IN (3, 4) OR role_id IN (3, 4);
-DELETE FROM sys_role_menu WHERE role_id IN (3, 4);
-DELETE FROM sys_role_dept WHERE role_id IN (3, 4);
-DELETE FROM sys_user_post WHERE user_id IN (3, 4);
-
--- 2. 删 sample 角色 + 用户
-DELETE FROM sys_role WHERE role_id IN (3, 4);
-DELETE FROM sys_user WHERE user_id IN (3, 4);
-
--- 3. 删工作流字典（菜单已在 V202605201600 删除）
-DELETE FROM sys_dict_data WHERE dict_type IN ('wf_business_status', 'wf_form_type', 'wf_task_status');
-DELETE FROM sys_dict_type WHERE dict_type IN ('wf_business_status', 'wf_form_type', 'wf_task_status');
-
--- 4. 删 sample 通知
-DELETE FROM sys_notice;
-
--- =============================================================================
--- 验收 query
---   SELECT role_id, role_key FROM sys_role ORDER BY role_id;
---   -- 期望: 1 superadmin + 12 djs (101-112) = 13 rows
---   SELECT user_id, user_name FROM sys_user;
---   -- 期望: 1 row (admin)
---   SELECT COUNT(*) FROM sys_dict_type WHERE dict_type LIKE 'wf_%';
---   -- 期望: 0
---   SELECT COUNT(*) FROM sys_notice;
---   -- 期望: 0
--- =============================================================================
-
-
--- ----------------------------------------------------------------------------
--- 来源文件：V202605210800__D02-PATCH-D01-missing-tables.sql
--- ----------------------------------------------------------------------------
--- ============================================================
--- D02 开工前置补丁 — 补建 D01 SYS-INIT-001 漏建的 3 张表 + 1 个菜单占位
---   修补目标：
---     1. t_md_biz_code_rule       —— SYS-INFRA-004 编码规则配置
---     2. t_md_biz_code_sequence   —— SYS-INFRA-004 编码序号（按日/按月/按年）
---     3. t_md_person              —— SYS-MD-001 人员主数据
---     4. sys_menu menu_id=5001    —— SYS-AUTH-001 人员管理二级菜单占位（5000 通用主数据下）
---   字段风格对齐 D01 SYS-INIT-001 common.sql 既有表（tenant_id VARCHAR(20)/del_unique BIGINT 应用层 fill）
--- ============================================================
-
--- ------------------------------------------------------------
--- 1. t_md_biz_code_rule（业务编码规则配置）
--- ------------------------------------------------------------
-DROP TABLE IF EXISTS t_md_biz_code_rule;
-CREATE TABLE t_md_biz_code_rule (
-  id           BIGINT       NOT NULL AUTO_INCREMENT COMMENT '主键',
-  tenant_id    VARCHAR(20)  NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
-  code_type    VARCHAR(32)  NOT NULL COMMENT '编码类型 EAR_NO/TRACE_CODE/DEMAND_NO/SHIP_NO/PACK_NO/STOCK_FLOW_NO ...',
-  pattern      VARCHAR(255) NOT NULL COMMENT '编码格式串，支持占位符 {farmCode2}{barnCode2}{yyMM}{yyyyMMdd}{dailySeq4}{seq4}{seq6} 等',
-  daily_reset  TINYINT(1)   NOT NULL DEFAULT 1 COMMENT '是否每日重置序号 1=是 0=否',
-  prefix       VARCHAR(16)  NOT NULL DEFAULT '' COMMENT '固定前缀（如 T/D/S/P/F）',
-  seq_length   INT          NOT NULL DEFAULT 4 COMMENT '序号位数（4/6）',
-  status       CHAR(1)      NOT NULL DEFAULT '0' COMMENT '状态 0=启用 1=停用',
-  create_dept  BIGINT       NULL COMMENT '创建部门',
-  create_by    BIGINT       NULL COMMENT '创建人',
-  create_time  DATETIME     NULL COMMENT '创建时间',
-  update_by    BIGINT       NULL COMMENT '更新人',
-  update_time  DATETIME     NULL COMMENT '更新时间',
-  del_flag     CHAR(1)      DEFAULT '0' COMMENT '删除标志',
-  remark       VARCHAR(500) NULL COMMENT '备注',
-  del_unique   BIGINT       NOT NULL DEFAULT 0 COMMENT '软删除生成 token（应用层 fill）',
-  PRIMARY KEY (id),
-  UNIQUE KEY uk_code_type (tenant_id, code_type, del_unique),
-  KEY idx_status (status)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='业务编码规则配置（SYS-INFRA-004）';
-
--- ------------------------------------------------------------
--- 2. t_md_biz_code_sequence（业务编码序号表）
---   按 (tenant_id, code_type, seq_date) 维度计数；daily_reset=0 时 seq_date 填空串
--- ------------------------------------------------------------
-DROP TABLE IF EXISTS t_md_biz_code_sequence;
-CREATE TABLE t_md_biz_code_sequence (
-  id           BIGINT       NOT NULL AUTO_INCREMENT COMMENT '主键',
-  tenant_id    VARCHAR(20)  NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
-  code_type    VARCHAR(32)  NOT NULL COMMENT '编码类型',
-  seq_date     VARCHAR(8)   NOT NULL DEFAULT '' COMMENT '序号统计周期：yyyyMMdd / yyyyMM / yyyy / 空串（终生）',
-  current_seq  BIGINT       NOT NULL DEFAULT 0 COMMENT '当前已用最大序号',
-  create_dept  BIGINT       NULL COMMENT '创建部门',
-  create_by    BIGINT       NULL COMMENT '创建人',
-  create_time  DATETIME     NULL COMMENT '创建时间',
-  update_by    BIGINT       NULL COMMENT '更新人',
-  update_time  DATETIME     NULL COMMENT '更新时间',
-  del_flag     CHAR(1)      DEFAULT '0' COMMENT '删除标志',
-  remark       VARCHAR(500) NULL COMMENT '备注',
-  del_unique   BIGINT       NOT NULL DEFAULT 0 COMMENT '软删除生成 token（应用层 fill）',
-  PRIMARY KEY (id),
-  UNIQUE KEY uk_code_seq (tenant_id, code_type, seq_date, del_unique)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='业务编码序号表（SYS-INFRA-004 并发安全计数）';
-
--- ------------------------------------------------------------
--- 3. t_md_person（人员主数据）
--- ------------------------------------------------------------
-DROP TABLE IF EXISTS t_md_person;
-CREATE TABLE t_md_person (
-  id           BIGINT       NOT NULL AUTO_INCREMENT COMMENT '主键',
-  tenant_id    VARCHAR(20)  NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
-  person_code  VARCHAR(32)  NOT NULL COMMENT '人员编号（SYS-INFRA-004 MEMBER_NO 生成）',
-  name         VARCHAR(64)  NOT NULL COMMENT '姓名',
-  gender       CHAR(1)      NULL COMMENT '性别 0=男 1=女 (字典 sys_user_sex)',
-  phone        VARCHAR(20)  NULL COMMENT '联系电话',
-  id_card      VARCHAR(20)  NULL COMMENT '身份证号',
-  position     VARCHAR(64)  NULL COMMENT '岗位描述',
-  post_id      BIGINT       NULL COMMENT '岗位（sys_post.post_id 外键，区分 admin 角色 vs 微信端角色）',
-  hire_date    DATE         NULL COMMENT '入职日期',
-  status       CHAR(1)      NOT NULL DEFAULT '0' COMMENT '状态 0=在职 1=离职 2=试用 (字典 djs_person_status)',
-  avatar_url   VARCHAR(500) NULL COMMENT '头像（OSS key，SYS-INFRA-002）',
-  create_dept  BIGINT       NULL COMMENT '创建部门',
-  create_by    BIGINT       NULL COMMENT '创建人',
-  create_time  DATETIME     NULL COMMENT '创建时间',
-  update_by    BIGINT       NULL COMMENT '更新人',
-  update_time  DATETIME     NULL COMMENT '更新时间',
-  del_flag     CHAR(1)      DEFAULT '0' COMMENT '删除标志',
-  remark       VARCHAR(500) NULL COMMENT '备注',
-  del_unique   BIGINT       NOT NULL DEFAULT 0 COMMENT '软删除生成 token（应用层 fill）',
-  PRIMARY KEY (id),
-  UNIQUE KEY uk_person_code (tenant_id, person_code, del_unique),
-  KEY idx_post (post_id),
-  KEY idx_status (status),
-  KEY idx_tenant_create (tenant_id, create_time)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='人员主数据（SYS-MD-001）';
-
--- ------------------------------------------------------------
--- 4. menu_id 5001 = 人员管理（5000 通用主数据下的二级菜单占位）
---   按钮权限菜单 5010-5014 由 SYS-MD-001 自己 seed
---   role_id 101 (boss) / 102 (manager) 自动挂载（D01 SYS-AUTH-001 已用 BETWEEN 5000 AND 10999 兜底）
---     —— D01 把 role 101-103 全挂 5000-10999 区间，5001 INSERT 后无需补 sys_role_menu
--- ------------------------------------------------------------
-INSERT IGNORE INTO sys_menu
-  (menu_id, menu_name, parent_id, order_num, path, component, query_param, is_frame, is_cache,
-   menu_type, visible, status, perms, icon, create_by, create_time, remark)
-VALUES
-  (5001, '人员管理', 5000, 1, 'person', 'djs-common/person/index', '', 1, 0,
-   'C', '0', '0', 'djs:common:person:list', 'user', 1, NOW(), 'SYS-MD-001 占位');
-
-
--- ----------------------------------------------------------------------------
--- 来源文件：V202605210900__SYS-INFRA-004-biz-code-rules.sql
--- ----------------------------------------------------------------------------
--- ============================================================
--- SYS-INFRA-004 业务编码规则种子数据
---   9 类编码：
---     业务单据（每日重置 5 + 终生 1）：EAR_NO / DEMAND_NO / SHIP_NO / PACK_NO / STOCK_FLOW_NO / TRACE_CODE
---     主数据（终生递增 3）：MEMBER_NO / STORE_CODE / SUPPLIER_CODE
---   tenant_id 不显式赋值（DEFAULT '1001'，对齐 D01 SYS-INIT-001 规约）
--- ============================================================
-
-INSERT IGNORE INTO t_md_biz_code_rule
-  (code_type,       pattern,                                   daily_reset, prefix, seq_length, status, create_by, create_time)
-VALUES
-  ('EAR_NO',        '{farmCode2}{barnCode2}{yyMM}{dailySeq4}', 1,           '',     4,          '0',    1,         NOW()),
-  ('TRACE_CODE',    'T{yyyyMMdd}{productCode2}{seq6}',         0,           'T',    6,          '0',    1,         NOW()),
-  ('DEMAND_NO',     'D{yyyyMMdd}{bizCode2}{seq4}',             1,           'D',    4,          '0',    1,         NOW()),
-  ('SHIP_NO',       'S{yyyyMMdd}{seq4}',                       1,           'S',    4,          '0',    1,         NOW()),
-  ('PACK_NO',       'P{yyyyMMdd}{seq4}',                       1,           'P',    4,          '0',    1,         NOW()),
-  ('STOCK_FLOW_NO', 'F{yyyyMMdd}{ioCode2}{seq4}',              1,           'F',    4,          '0',    1,         NOW()),
-  ('MEMBER_NO',     'M{seq4}',                                 0,           'M',    4,          '0',    1,         NOW()),
-  ('STORE_CODE',    'ST{seq4}',                                0,           'ST',   4,          '0',    1,         NOW()),
-  ('SUPPLIER_CODE', 'G{seq4}',                                 0,           'G',    4,          '0',    1,         NOW());
-
-
--- ----------------------------------------------------------------------------
--- 来源文件：V202605211200__SYS-MD-001-menu.sql
--- ----------------------------------------------------------------------------
--- ============================================================
--- SYS-MD-001 人员管理菜单按钮权限
---   父菜单 5001 (人员管理) 已在 SYS-AUTH-001 占位 (path='person')
---   状态字典走 D1 SYS-INIT-002 已 seed 的 djs_user_status（0 在职/1 离职/2 试用）
---   role 101/102/103 通过 SYS-AUTH-001 BETWEEN 5000-10999 兜底，本文件不写 sys_role_menu
--- ============================================================
-
-INSERT IGNORE INTO sys_menu (
-    menu_id, menu_name, parent_id, order_num,
-    path, component, query_param,
-    is_frame, is_cache, menu_type, visible, status,
-    perms, icon, create_by, create_time, remark)
-VALUES
-  (5010, '人员查询', 5001, 1, '', '', '', 1, 0, 'F', '0', '0',
-   'djs:common:person:list',    '#', 1, NOW(), 'SYS-MD-001'),
-  (5011, '人员新增', 5001, 2, '', '', '', 1, 0, 'F', '0', '0',
-   'djs:common:person:add',     '#', 1, NOW(), 'SYS-MD-001'),
-  (5012, '人员修改', 5001, 3, '', '', '', 1, 0, 'F', '0', '0',
-   'djs:common:person:edit',    '#', 1, NOW(), 'SYS-MD-001'),
-  (5013, '人员删除', 5001, 4, '', '', '', 1, 0, 'F', '0', '0',
-   'djs:common:person:remove',  '#', 1, NOW(), 'SYS-MD-001'),
-  (5014, '人员导出', 5001, 5, '', '', '', 1, 0, 'F', '0', '0',
-   'djs:common:person:export',  '#', 1, NOW(), 'SYS-MD-001');
-
-
--- ----------------------------------------------------------------------------
--- 来源文件：V202605211300__SYS-MD-002-menu.sql
--- ----------------------------------------------------------------------------
--- ============================================================
--- SYS-MD-002 门店管理菜单 + 按钮权限
---   一级父菜单 5000 (通用主数据) 已在 SYS-AUTH-001 占位
---   本 ticket 新增二级父菜单 5002 (门店管理) 及 5 个按钮权限 5020-5024
---   role 101/102/103 通过 SYS-AUTH-001 BETWEEN 5000-10999 兜底，本文件不写 sys_role_menu
--- ============================================================
-
-INSERT IGNORE INTO sys_menu (
-    menu_id, menu_name, parent_id, order_num,
-    path, component, query_param,
-    is_frame, is_cache, menu_type, visible, status,
-    perms, icon, create_by, create_time, remark)
-VALUES
-  -- 二级目录：门店管理（挂在通用主数据 5000 下）
-  (5002, '门店管理', 5000, 2, 'store', 'djs-common/store/index', '',
-   1, 0, 'C', '0', '0',
-   'djs:common:store:list', 'shop', 1, NOW(), 'SYS-MD-002'),
-
-  -- 三级按钮权限
-  (5020, '门店查询', 5002, 1, '', '', '', 1, 0, 'F', '0', '0',
-   'djs:common:store:list',    '#', 1, NOW(), 'SYS-MD-002'),
-  (5021, '门店新增', 5002, 2, '', '', '', 1, 0, 'F', '0', '0',
-   'djs:common:store:add',     '#', 1, NOW(), 'SYS-MD-002'),
-  (5022, '门店修改', 5002, 3, '', '', '', 1, 0, 'F', '0', '0',
-   'djs:common:store:edit',    '#', 1, NOW(), 'SYS-MD-002'),
-  (5023, '门店删除', 5002, 4, '', '', '', 1, 0, 'F', '0', '0',
-   'djs:common:store:remove',  '#', 1, NOW(), 'SYS-MD-002'),
-  (5024, '门店导出', 5002, 5, '', '', '', 1, 0, 'F', '0', '0',
-   'djs:common:store:export',  '#', 1, NOW(), 'SYS-MD-002');
-
-
--- ----------------------------------------------------------------------------
--- 来源文件：V202605211400__D02-PATCH-D01-D02-fixes.sql
--- ----------------------------------------------------------------------------
--- ============================================================
--- D02 当日修订补丁（D01 推断字段 + D01/D02 字典与 DDL 不自洽 修订）
---   触发：D02 全栈 review 提出
---     1. t_md_store / t_farm_pig_info 4 个 AI 推断字段不符合实际业务
---     2. djs_pig_lifecycle / djs_demand_status dict_value 与 DDL enum 不一致
---     3. djs_check_status 字典缺失（DDL 已引用）
---   修补范围（与重新跑全量初始化 SQL 后结果等价）：
---     A. ALTER DROP 4 个推断字段
---     B. 重写 djs_pig_lifecycle 10 行 dict_data（HB/PZ/PH/FM/DN/LC/KH/FQ/END + BOAR_ACTIVE）
---     C. 修正 djs_demand_status 2 行 dict_value（SCHEDULING→IN_PRODUCTION / PARTIAL→PARTIAL_SHIPPED）
---     D. 新增 djs_check_status 字典 + 3 行 dict_data
---   幂等性：
---     - DROP COLUMN 用 information_schema 守卫，已删则跳过（MySQL 8 无 DROP IF EXISTS COLUMN）
---     - dict_data 用 DELETE + INSERT 重写
---     - dict_type 用 INSERT IGNORE（已存在则跳过）
---   重跑场景：
---     - 已 drop & rebuild dev DB（源 SQL 已修）→ 本 patch 全 no-op
---     - 沿用现 dev DB → 本 patch 完成迁移
--- ============================================================
-
--- ------------------------------------------------------------
--- A. ALTER DROP 4 个推断字段（D02 review 决策：删）
--- ------------------------------------------------------------
-
--- A1. t_md_store.warehouse_id：客户 V1 无门店专属仓库需求
-SET @col := (SELECT COUNT(*) FROM information_schema.COLUMNS
-             WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 't_md_store' AND COLUMN_NAME = 'warehouse_id');
-SET @sql := IF(@col > 0, 'ALTER TABLE t_md_store DROP COLUMN warehouse_id', 'SELECT ''A1 skip: t_md_store.warehouse_id absent'' AS info');
-PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
-
--- A2. t_md_store.settle_type：客户 V1 无门店结算需求
-SET @col := (SELECT COUNT(*) FROM information_schema.COLUMNS
-             WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 't_md_store' AND COLUMN_NAME = 'settle_type');
-SET @sql := IF(@col > 0, 'ALTER TABLE t_md_store DROP COLUMN settle_type', 'SELECT ''A2 skip: t_md_store.settle_type absent'' AS info');
-PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
-
--- A3. t_farm_pig_info.current_weight：无日常称重事件源，应改走 t_farm_pig_weight_record（V2 引入）
-SET @col := (SELECT COUNT(*) FROM information_schema.COLUMNS
-             WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 't_farm_pig_info' AND COLUMN_NAME = 'current_weight');
-SET @sql := IF(@col > 0, 'ALTER TABLE t_farm_pig_info DROP COLUMN current_weight', 'SELECT ''A3 skip: t_farm_pig_info.current_weight absent'' AS info');
-PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
-
--- A4. t_farm_pig_info.current_age_days：VO 层从 birth_date 实时算（DATEDIFF），落库冗余
-SET @col := (SELECT COUNT(*) FROM information_schema.COLUMNS
-             WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 't_farm_pig_info' AND COLUMN_NAME = 'current_age_days');
-SET @sql := IF(@col > 0, 'ALTER TABLE t_farm_pig_info DROP COLUMN current_age_days', 'SELECT ''A4 skip: t_farm_pig_info.current_age_days absent'' AS info');
-PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
-
--- ------------------------------------------------------------
--- B. 重写 djs_pig_lifecycle 字典 dict_value（与 BRD-CORE-001 PigState enum 严格对齐）
---    DDL t_farm_pig_info.current_status DEFAULT 'HB' / 9 枚举：HB/PZ/PH/FM/DN/LC/KH/FQ/END
---    + 公猪固定 BOAR_ACTIVE（不在 9 状态内，但需 enum 字段非空）
--- ------------------------------------------------------------
-DELETE FROM sys_dict_data WHERE dict_type = 'djs_pig_lifecycle';
-INSERT INTO sys_dict_data
-  (dict_code, tenant_id, dict_sort, dict_label, dict_value, dict_type, css_class, list_class, is_default, create_by, create_time)
-VALUES
-  (1001030, '1001', 0, '后备',     'HB',          'djs_pig_lifecycle', '', 'info',    'Y', NULL, NOW()),
-  (1001031, '1001', 1, '配种',     'PZ',          'djs_pig_lifecycle', '', 'primary', 'N', NULL, NOW()),
-  (1001032, '1001', 2, '配怀',     'PH',          'djs_pig_lifecycle', '', 'primary', 'N', NULL, NOW()),
-  (1001033, '1001', 3, '分娩',     'FM',          'djs_pig_lifecycle', '', 'success', 'N', NULL, NOW()),
-  (1001034, '1001', 4, '断奶',     'DN',          'djs_pig_lifecycle', '', 'success', 'N', NULL, NOW()),
-  (1001035, '1001', 5, '流产',     'LC',          'djs_pig_lifecycle', '', 'warning', 'N', NULL, NOW()),
-  (1001036, '1001', 6, '空怀',     'KH',          'djs_pig_lifecycle', '', 'warning', 'N', NULL, NOW()),
-  (1001037, '1001', 7, '返情',     'FQ',          'djs_pig_lifecycle', '', 'warning', 'N', NULL, NOW()),
-  (1001038, '1001', 8, '终止',     'END',         'djs_pig_lifecycle', '', 'danger',  'N', NULL, NOW()),
-  (1001039, '1001', 9, '公猪在产', 'BOAR_ACTIVE', 'djs_pig_lifecycle', '', 'info',    'N', NULL, NOW());
-
--- ------------------------------------------------------------
--- C. 修正 djs_demand_status 2 行 dict_value（与 DDL t_warehouse_demand_manage.demand_status enum 对齐）
--- ------------------------------------------------------------
-UPDATE sys_dict_data SET dict_value = 'IN_PRODUCTION'
-  WHERE dict_type = 'djs_demand_status' AND dict_value = 'SCHEDULING';
-UPDATE sys_dict_data SET dict_value = 'PARTIAL_SHIPPED'
-  WHERE dict_type = 'djs_demand_status' AND dict_value = 'PARTIAL';
-
--- ------------------------------------------------------------
--- D. 新增 djs_check_status 字典（盘点状态，跨域 warehouse + store）
--- ------------------------------------------------------------
-INSERT IGNORE INTO sys_dict_type
-  (dict_id, tenant_id, dict_name, dict_type, create_by, create_time, remark)
-VALUES
-  (100601, '1001', '盘点状态', 'djs_check_status', NULL, NOW(), '跨域：t_warehouse_check_record / t_store_check_record.check_status');
-DELETE FROM sys_dict_data WHERE dict_type = 'djs_check_status';
-INSERT INTO sys_dict_data
-  (dict_code, tenant_id, dict_sort, dict_label, dict_value, dict_type, css_class, list_class, is_default, create_by, create_time)
-VALUES
-  (1006010, '1001', 0, '草稿',   'draft',       'djs_check_status', '', 'info',    'Y', NULL, NOW()),
-  (1006011, '1001', 1, '进行中', 'in_progress', 'djs_check_status', '', 'warning', 'N', NULL, NOW()),
-  (1006012, '1001', 2, '已完成', 'completed',   'djs_check_status', '', 'success', 'N', NULL, NOW());
-
--- ============================================================
--- 验收（dev MySQL 跑完后预期）：
---   SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE()
---     AND ((TABLE_NAME='t_md_store' AND COLUMN_NAME IN ('warehouse_id','settle_type'))
---          OR (TABLE_NAME='t_farm_pig_info' AND COLUMN_NAME IN ('current_weight','current_age_days')));
---   -- 0
---   SELECT COUNT(*) FROM sys_dict_type WHERE dict_type LIKE 'djs_%';    -- 39
---   SELECT COUNT(*) FROM sys_dict_data WHERE dict_type LIKE 'djs_%';    -- 228（旧 224 - 9 老 lifecycle + 10 新 + 3 check_status）
---   SELECT dict_value FROM sys_dict_data WHERE dict_type='djs_pig_lifecycle' ORDER BY dict_sort;
---   -- HB,PZ,PH,FM,DN,LC,KH,FQ,END,BOAR_ACTIVE
---   SELECT dict_value FROM sys_dict_data WHERE dict_type='djs_demand_status' ORDER BY dict_sort;
---   -- DRAFT,SUBMITTED,CONFIRMED,IN_PRODUCTION,PARTIAL_SHIPPED,COMPLETED,CANCELLED
--- ============================================================
-
-
--- ----------------------------------------------------------------------------
--- 来源文件：V202605211800__D02-PATCH-fix-audit-cols.sql
--- ----------------------------------------------------------------------------
--- ============================================================
--- D02 hot-patch — 把 D01/D02 创建的 3 张主数据/编码表的审计字段对齐 ruoyi BaseEntity 约定
---   ruoyi BaseEntity: createDept Long / createBy Long / updateBy Long （不是 varchar）
---   现状：t_md_biz_code_rule / t_md_biz_code_sequence / t_md_person 都用 varchar(64) + 缺 create_dept
---   后果：MyBatis-Plus auto-SELECT 含 create_dept → SQLSyntaxErrorException
---         seed 写入 'system' → 后续 ResultSet.getLong(create_by) NumberFormatException
---   修复步骤：先 UPDATE 把字符串值改成 NULL / 1，再 MODIFY 类型为 BIGINT，最后 ADD create_dept
--- ============================================================
-
--- ------------------------------------------------------------
--- t_md_biz_code_rule（9 行 seed，create_by='system' / update_by=''）
--- ------------------------------------------------------------
-UPDATE t_md_biz_code_rule SET create_by = '1' WHERE create_by = 'system';
-UPDATE t_md_biz_code_rule SET update_by = NULL WHERE update_by = '' OR update_by IS NULL OR update_by = '0';
-ALTER TABLE t_md_biz_code_rule
-  MODIFY COLUMN create_by BIGINT NULL COMMENT '创建人',
-  MODIFY COLUMN update_by BIGINT NULL COMMENT '更新人',
-  ADD COLUMN create_dept BIGINT NULL COMMENT '创建部门' AFTER status;
-
--- ------------------------------------------------------------
--- t_md_biz_code_sequence（0 行，简单 ALTER）
--- ------------------------------------------------------------
-UPDATE t_md_biz_code_sequence SET create_by = NULL WHERE create_by = '' OR create_by IS NULL;
-UPDATE t_md_biz_code_sequence SET update_by = NULL WHERE update_by = '' OR update_by IS NULL;
-ALTER TABLE t_md_biz_code_sequence
-  MODIFY COLUMN create_by BIGINT NULL COMMENT '创建人',
-  MODIFY COLUMN update_by BIGINT NULL COMMENT '更新人',
-  ADD COLUMN create_dept BIGINT NULL COMMENT '创建部门' AFTER current_seq;
-
--- ------------------------------------------------------------
--- t_md_person（0 行）
--- ------------------------------------------------------------
-UPDATE t_md_person SET create_by = NULL WHERE create_by = '' OR create_by IS NULL;
-UPDATE t_md_person SET update_by = NULL WHERE update_by = '' OR update_by IS NULL;
-ALTER TABLE t_md_person
-  MODIFY COLUMN create_by BIGINT NULL COMMENT '创建人',
-  MODIFY COLUMN update_by BIGINT NULL COMMENT '更新人',
-  ADD COLUMN create_dept BIGINT NULL COMMENT '创建部门' AFTER avatar_url;
-
--- ------------------------------------------------------------
--- sys_menu 5001 占位的 create_by 也是 'system'，改成 1
---   （ruoyi 自带 sys_menu.create_by 已经是 bigint，存 'system' 等于隐式转 0；这里改成显式 1=admin）
--- ------------------------------------------------------------
-UPDATE sys_menu SET create_by = 1 WHERE menu_id = 5001 AND (create_by = 0 OR create_by IS NULL);
-
-
--- ----------------------------------------------------------------------------
--- 来源文件：V202605211900__D02-PATCH-65-tables-audit-cols.sql
--- ----------------------------------------------------------------------------
--- ============================================================
--- D02 closing patch — 65 张 D01 SYS-INIT-001 业务表审计字段对齐 ruoyi BaseEntity
---   一次性 ALTER 62 张表（DB 实际存在 + 还是 varchar 的）：
---     MODIFY create_by  BIGINT NULL
---     MODIFY update_by  BIGINT NULL（若存在 varchar）
---     ADD    create_dept BIGINT NULL（若不存在）
---   源 DDL V202605200900~V202605200904 已同步用 BIGINT + create_dept；本 patch 让运行库追上。
---   先 UPDATE 字符串 audit 列为 NULL，避免 'system' 字符串 NumberFormatException
--- ============================================================
-
-UPDATE sys_farm SET create_by = NULL WHERE create_by NOT REGEXP '^[0-9]+$' OR create_by = '' OR create_by IS NULL;
-UPDATE sys_farm SET update_by = NULL WHERE update_by NOT REGEXP '^[0-9]+$' OR update_by = '' OR update_by IS NULL;
-ALTER TABLE sys_farm
-  MODIFY COLUMN create_by BIGINT NULL COMMENT '创建人',
-  MODIFY COLUMN update_by BIGINT NULL COMMENT '更新人',
-  ADD COLUMN create_dept BIGINT NULL COMMENT '创建部门';
-
-UPDATE t_breed_medicine_info SET create_by = NULL WHERE create_by NOT REGEXP '^[0-9]+$' OR create_by = '' OR create_by IS NULL;
-UPDATE t_breed_medicine_info SET update_by = NULL WHERE update_by NOT REGEXP '^[0-9]+$' OR update_by = '' OR update_by IS NULL;
-ALTER TABLE t_breed_medicine_info
-  MODIFY COLUMN create_by BIGINT NULL COMMENT '创建人',
-  MODIFY COLUMN update_by BIGINT NULL COMMENT '更新人',
-  ADD COLUMN create_dept BIGINT NULL COMMENT '创建部门';
-
-UPDATE t_breed_medicine_use SET create_by = NULL WHERE create_by NOT REGEXP '^[0-9]+$' OR create_by = '' OR create_by IS NULL;
-UPDATE t_breed_medicine_use SET update_by = NULL WHERE update_by NOT REGEXP '^[0-9]+$' OR update_by = '' OR update_by IS NULL;
-ALTER TABLE t_breed_medicine_use
-  MODIFY COLUMN create_by BIGINT NULL COMMENT '创建人',
-  MODIFY COLUMN update_by BIGINT NULL COMMENT '更新人',
-  ADD COLUMN create_dept BIGINT NULL COMMENT '创建部门';
-
-UPDATE t_breed_production_config SET create_by = NULL WHERE create_by NOT REGEXP '^[0-9]+$' OR create_by = '' OR create_by IS NULL;
-UPDATE t_breed_production_config SET update_by = NULL WHERE update_by NOT REGEXP '^[0-9]+$' OR update_by = '' OR update_by IS NULL;
-ALTER TABLE t_breed_production_config
-  MODIFY COLUMN create_by BIGINT NULL COMMENT '创建人',
-  MODIFY COLUMN update_by BIGINT NULL COMMENT '更新人',
-  ADD COLUMN create_dept BIGINT NULL COMMENT '创建部门';
-
-UPDATE t_farm_barn_info SET create_by = NULL WHERE create_by NOT REGEXP '^[0-9]+$' OR create_by = '' OR create_by IS NULL;
-UPDATE t_farm_barn_info SET update_by = NULL WHERE update_by NOT REGEXP '^[0-9]+$' OR update_by = '' OR update_by IS NULL;
-ALTER TABLE t_farm_barn_info
-  MODIFY COLUMN create_by BIGINT NULL COMMENT '创建人',
-  MODIFY COLUMN update_by BIGINT NULL COMMENT '更新人',
-  ADD COLUMN create_dept BIGINT NULL COMMENT '创建部门';
-
-UPDATE t_farm_barn_pen SET create_by = NULL WHERE create_by NOT REGEXP '^[0-9]+$' OR create_by = '' OR create_by IS NULL;
-UPDATE t_farm_barn_pen SET update_by = NULL WHERE update_by NOT REGEXP '^[0-9]+$' OR update_by = '' OR update_by IS NULL;
-ALTER TABLE t_farm_barn_pen
-  MODIFY COLUMN create_by BIGINT NULL COMMENT '创建人',
-  MODIFY COLUMN update_by BIGINT NULL COMMENT '更新人',
-  ADD COLUMN create_dept BIGINT NULL COMMENT '创建部门';
-
-UPDATE t_farm_breed_config SET create_by = NULL WHERE create_by NOT REGEXP '^[0-9]+$' OR create_by = '' OR create_by IS NULL;
-UPDATE t_farm_breed_config SET update_by = NULL WHERE update_by NOT REGEXP '^[0-9]+$' OR update_by = '' OR update_by IS NULL;
-ALTER TABLE t_farm_breed_config
-  MODIFY COLUMN create_by BIGINT NULL COMMENT '创建人',
-  MODIFY COLUMN update_by BIGINT NULL COMMENT '更新人',
-  ADD COLUMN create_dept BIGINT NULL COMMENT '创建部门';
-
-UPDATE t_farm_breed_info SET create_by = NULL WHERE create_by NOT REGEXP '^[0-9]+$' OR create_by = '' OR create_by IS NULL;
-UPDATE t_farm_breed_info SET update_by = NULL WHERE update_by NOT REGEXP '^[0-9]+$' OR update_by = '' OR update_by IS NULL;
-ALTER TABLE t_farm_breed_info
-  MODIFY COLUMN create_by BIGINT NULL COMMENT '创建人',
-  MODIFY COLUMN update_by BIGINT NULL COMMENT '更新人',
-  ADD COLUMN create_dept BIGINT NULL COMMENT '创建部门';
-
-UPDATE t_farm_castrate_record SET create_by = NULL WHERE create_by NOT REGEXP '^[0-9]+$' OR create_by = '' OR create_by IS NULL;
-UPDATE t_farm_castrate_record SET update_by = NULL WHERE update_by NOT REGEXP '^[0-9]+$' OR update_by = '' OR update_by IS NULL;
-ALTER TABLE t_farm_castrate_record
-  MODIFY COLUMN create_by BIGINT NULL COMMENT '创建人',
-  MODIFY COLUMN update_by BIGINT NULL COMMENT '更新人',
-  ADD COLUMN create_dept BIGINT NULL COMMENT '创建部门';
-
-UPDATE t_farm_grow_record SET create_by = NULL WHERE create_by NOT REGEXP '^[0-9]+$' OR create_by = '' OR create_by IS NULL;
-UPDATE t_farm_grow_record SET update_by = NULL WHERE update_by NOT REGEXP '^[0-9]+$' OR update_by = '' OR update_by IS NULL;
-ALTER TABLE t_farm_grow_record
-  MODIFY COLUMN create_by BIGINT NULL COMMENT '创建人',
-  MODIFY COLUMN update_by BIGINT NULL COMMENT '更新人',
-  ADD COLUMN create_dept BIGINT NULL COMMENT '创建部门';
-
-UPDATE t_farm_medicine_record SET create_by = NULL WHERE create_by NOT REGEXP '^[0-9]+$' OR create_by = '' OR create_by IS NULL;
-UPDATE t_farm_medicine_record SET update_by = NULL WHERE update_by NOT REGEXP '^[0-9]+$' OR update_by = '' OR update_by IS NULL;
-ALTER TABLE t_farm_medicine_record
-  MODIFY COLUMN create_by BIGINT NULL COMMENT '创建人',
-  MODIFY COLUMN update_by BIGINT NULL COMMENT '更新人',
-  ADD COLUMN create_dept BIGINT NULL COMMENT '创建部门';
-
-UPDATE t_farm_pig_abnormal SET create_by = NULL WHERE create_by NOT REGEXP '^[0-9]+$' OR create_by = '' OR create_by IS NULL;
-UPDATE t_farm_pig_abnormal SET update_by = NULL WHERE update_by NOT REGEXP '^[0-9]+$' OR update_by = '' OR update_by IS NULL;
-ALTER TABLE t_farm_pig_abnormal
-  MODIFY COLUMN create_by BIGINT NULL COMMENT '创建人',
-  MODIFY COLUMN update_by BIGINT NULL COMMENT '更新人',
-  ADD COLUMN create_dept BIGINT NULL COMMENT '创建部门';
-
-UPDATE t_farm_pig_breeding SET create_by = NULL WHERE create_by NOT REGEXP '^[0-9]+$' OR create_by = '' OR create_by IS NULL;
-UPDATE t_farm_pig_breeding SET update_by = NULL WHERE update_by NOT REGEXP '^[0-9]+$' OR update_by = '' OR update_by IS NULL;
-ALTER TABLE t_farm_pig_breeding
-  MODIFY COLUMN create_by BIGINT NULL COMMENT '创建人',
-  MODIFY COLUMN update_by BIGINT NULL COMMENT '更新人',
-  ADD COLUMN create_dept BIGINT NULL COMMENT '创建部门';
-
-UPDATE t_farm_pig_culling SET create_by = NULL WHERE create_by NOT REGEXP '^[0-9]+$' OR create_by = '' OR create_by IS NULL;
-UPDATE t_farm_pig_culling SET update_by = NULL WHERE update_by NOT REGEXP '^[0-9]+$' OR update_by = '' OR update_by IS NULL;
-ALTER TABLE t_farm_pig_culling
-  MODIFY COLUMN create_by BIGINT NULL COMMENT '创建人',
-  MODIFY COLUMN update_by BIGINT NULL COMMENT '更新人',
-  ADD COLUMN create_dept BIGINT NULL COMMENT '创建部门';
-
-UPDATE t_farm_pig_death SET create_by = NULL WHERE create_by NOT REGEXP '^[0-9]+$' OR create_by = '' OR create_by IS NULL;
-UPDATE t_farm_pig_death SET update_by = NULL WHERE update_by NOT REGEXP '^[0-9]+$' OR update_by = '' OR update_by IS NULL;
-ALTER TABLE t_farm_pig_death
-  MODIFY COLUMN create_by BIGINT NULL COMMENT '创建人',
-  MODIFY COLUMN update_by BIGINT NULL COMMENT '更新人',
-  ADD COLUMN create_dept BIGINT NULL COMMENT '创建部门';
-
-UPDATE t_farm_pig_farrow SET create_by = NULL WHERE create_by NOT REGEXP '^[0-9]+$' OR create_by = '' OR create_by IS NULL;
-UPDATE t_farm_pig_farrow SET update_by = NULL WHERE update_by NOT REGEXP '^[0-9]+$' OR update_by = '' OR update_by IS NULL;
-ALTER TABLE t_farm_pig_farrow
-  MODIFY COLUMN create_by BIGINT NULL COMMENT '创建人',
-  MODIFY COLUMN update_by BIGINT NULL COMMENT '更新人',
-  ADD COLUMN create_dept BIGINT NULL COMMENT '创建部门';
-
-UPDATE t_farm_pig_heat SET create_by = NULL WHERE create_by NOT REGEXP '^[0-9]+$' OR create_by = '' OR create_by IS NULL;
-UPDATE t_farm_pig_heat SET update_by = NULL WHERE update_by NOT REGEXP '^[0-9]+$' OR update_by = '' OR update_by IS NULL;
-ALTER TABLE t_farm_pig_heat
-  MODIFY COLUMN create_by BIGINT NULL COMMENT '创建人',
-  MODIFY COLUMN update_by BIGINT NULL COMMENT '更新人',
-  ADD COLUMN create_dept BIGINT NULL COMMENT '创建部门';
-
-UPDATE t_farm_pig_info SET create_by = NULL WHERE create_by NOT REGEXP '^[0-9]+$' OR create_by = '' OR create_by IS NULL;
-UPDATE t_farm_pig_info SET update_by = NULL WHERE update_by NOT REGEXP '^[0-9]+$' OR update_by = '' OR update_by IS NULL;
-ALTER TABLE t_farm_pig_info
-  MODIFY COLUMN create_by BIGINT NULL COMMENT '创建人',
-  MODIFY COLUMN update_by BIGINT NULL COMMENT '更新人',
-  ADD COLUMN create_dept BIGINT NULL COMMENT '创建部门';
-
-UPDATE t_farm_pig_introduce SET create_by = NULL WHERE create_by NOT REGEXP '^[0-9]+$' OR create_by = '' OR create_by IS NULL;
-UPDATE t_farm_pig_introduce SET update_by = NULL WHERE update_by NOT REGEXP '^[0-9]+$' OR update_by = '' OR update_by IS NULL;
-ALTER TABLE t_farm_pig_introduce
-  MODIFY COLUMN create_by BIGINT NULL COMMENT '创建人',
-  MODIFY COLUMN update_by BIGINT NULL COMMENT '更新人',
-  ADD COLUMN create_dept BIGINT NULL COMMENT '创建部门';
-
-UPDATE t_farm_pig_marketing SET create_by = NULL WHERE create_by NOT REGEXP '^[0-9]+$' OR create_by = '' OR create_by IS NULL;
-UPDATE t_farm_pig_marketing SET update_by = NULL WHERE update_by NOT REGEXP '^[0-9]+$' OR update_by = '' OR update_by IS NULL;
-ALTER TABLE t_farm_pig_marketing
-  MODIFY COLUMN create_by BIGINT NULL COMMENT '创建人',
-  MODIFY COLUMN update_by BIGINT NULL COMMENT '更新人',
-  ADD COLUMN create_dept BIGINT NULL COMMENT '创建部门';
-
-UPDATE t_farm_pig_pigletno SET create_by = NULL WHERE create_by NOT REGEXP '^[0-9]+$' OR create_by = '' OR create_by IS NULL;
-UPDATE t_farm_pig_pigletno SET update_by = NULL WHERE update_by NOT REGEXP '^[0-9]+$' OR update_by = '' OR update_by IS NULL;
-ALTER TABLE t_farm_pig_pigletno
-  MODIFY COLUMN create_by BIGINT NULL COMMENT '创建人',
-  MODIFY COLUMN update_by BIGINT NULL COMMENT '更新人',
-  ADD COLUMN create_dept BIGINT NULL COMMENT '创建部门';
-
-UPDATE t_farm_pig_transfer SET create_by = NULL WHERE create_by NOT REGEXP '^[0-9]+$' OR create_by = '' OR create_by IS NULL;
-UPDATE t_farm_pig_transfer SET update_by = NULL WHERE update_by NOT REGEXP '^[0-9]+$' OR update_by = '' OR update_by IS NULL;
-ALTER TABLE t_farm_pig_transfer
-  MODIFY COLUMN create_by BIGINT NULL COMMENT '创建人',
-  MODIFY COLUMN update_by BIGINT NULL COMMENT '更新人',
-  ADD COLUMN create_dept BIGINT NULL COMMENT '创建部门';
-
-UPDATE t_farm_pig_weaning SET create_by = NULL WHERE create_by NOT REGEXP '^[0-9]+$' OR create_by = '' OR create_by IS NULL;
-UPDATE t_farm_pig_weaning SET update_by = NULL WHERE update_by NOT REGEXP '^[0-9]+$' OR update_by = '' OR update_by IS NULL;
-ALTER TABLE t_farm_pig_weaning
-  MODIFY COLUMN create_by BIGINT NULL COMMENT '创建人',
-  MODIFY COLUMN update_by BIGINT NULL COMMENT '更新人',
-  ADD COLUMN create_dept BIGINT NULL COMMENT '创建部门';
-
-UPDATE t_farm_status_record SET create_by = NULL WHERE create_by NOT REGEXP '^[0-9]+$' OR create_by = '' OR create_by IS NULL;
-ALTER TABLE t_farm_status_record
-  MODIFY COLUMN create_by BIGINT NULL COMMENT '创建人',
-  ADD COLUMN create_dept BIGINT NULL COMMENT '创建部门';
-
-UPDATE t_farm_wean_weight SET create_by = NULL WHERE create_by NOT REGEXP '^[0-9]+$' OR create_by = '' OR create_by IS NULL;
-UPDATE t_farm_wean_weight SET update_by = NULL WHERE update_by NOT REGEXP '^[0-9]+$' OR update_by = '' OR update_by IS NULL;
-ALTER TABLE t_farm_wean_weight
-  MODIFY COLUMN create_by BIGINT NULL COMMENT '创建人',
-  MODIFY COLUMN update_by BIGINT NULL COMMENT '更新人',
-  ADD COLUMN create_dept BIGINT NULL COMMENT '创建部门';
-
-UPDATE t_md_store SET create_by = NULL WHERE create_by NOT REGEXP '^[0-9]+$' OR create_by = '' OR create_by IS NULL;
-UPDATE t_md_store SET update_by = NULL WHERE update_by NOT REGEXP '^[0-9]+$' OR update_by = '' OR update_by IS NULL;
-ALTER TABLE t_md_store
-  MODIFY COLUMN create_by BIGINT NULL COMMENT '创建人',
-  MODIFY COLUMN update_by BIGINT NULL COMMENT '更新人',
-  ADD COLUMN create_dept BIGINT NULL COMMENT '创建部门';
-
-UPDATE t_md_supplier SET create_by = NULL WHERE create_by NOT REGEXP '^[0-9]+$' OR create_by = '' OR create_by IS NULL;
-UPDATE t_md_supplier SET update_by = NULL WHERE update_by NOT REGEXP '^[0-9]+$' OR update_by = '' OR update_by IS NULL;
-ALTER TABLE t_md_supplier
-  MODIFY COLUMN create_by BIGINT NULL COMMENT '创建人',
-  MODIFY COLUMN update_by BIGINT NULL COMMENT '更新人',
-  ADD COLUMN create_dept BIGINT NULL COMMENT '创建部门';
-
-UPDATE t_plant_crop_info SET create_by = NULL WHERE create_by NOT REGEXP '^[0-9]+$' OR create_by = '' OR create_by IS NULL;
-UPDATE t_plant_crop_info SET update_by = NULL WHERE update_by NOT REGEXP '^[0-9]+$' OR update_by = '' OR update_by IS NULL;
-ALTER TABLE t_plant_crop_info
-  MODIFY COLUMN create_by BIGINT NULL COMMENT '创建人',
-  MODIFY COLUMN update_by BIGINT NULL COMMENT '更新人',
-  ADD COLUMN create_dept BIGINT NULL COMMENT '创建部门';
-
-UPDATE t_plant_crop_organic SET create_by = NULL WHERE create_by NOT REGEXP '^[0-9]+$' OR create_by = '' OR create_by IS NULL;
-UPDATE t_plant_crop_organic SET update_by = NULL WHERE update_by NOT REGEXP '^[0-9]+$' OR update_by = '' OR update_by IS NULL;
-ALTER TABLE t_plant_crop_organic
-  MODIFY COLUMN create_by BIGINT NULL COMMENT '创建人',
-  MODIFY COLUMN update_by BIGINT NULL COMMENT '更新人',
-  ADD COLUMN create_dept BIGINT NULL COMMENT '创建部门';
-
-UPDATE t_plant_farm_records SET create_by = NULL WHERE create_by NOT REGEXP '^[0-9]+$' OR create_by = '' OR create_by IS NULL;
-UPDATE t_plant_farm_records SET update_by = NULL WHERE update_by NOT REGEXP '^[0-9]+$' OR update_by = '' OR update_by IS NULL;
-ALTER TABLE t_plant_farm_records
-  MODIFY COLUMN create_by BIGINT NULL COMMENT '创建人',
-  MODIFY COLUMN update_by BIGINT NULL COMMENT '更新人',
-  ADD COLUMN create_dept BIGINT NULL COMMENT '创建部门';
-
-UPDATE t_plant_organic_plotno SET create_by = NULL WHERE create_by NOT REGEXP '^[0-9]+$' OR create_by = '' OR create_by IS NULL;
-ALTER TABLE t_plant_organic_plotno
-  MODIFY COLUMN create_by BIGINT NULL COMMENT '创建人',
-  ADD COLUMN create_dept BIGINT NULL COMMENT '创建部门';
-
-UPDATE t_plant_pick_activity SET create_by = NULL WHERE create_by NOT REGEXP '^[0-9]+$' OR create_by = '' OR create_by IS NULL;
-UPDATE t_plant_pick_activity SET update_by = NULL WHERE update_by NOT REGEXP '^[0-9]+$' OR update_by = '' OR update_by IS NULL;
-ALTER TABLE t_plant_pick_activity
-  MODIFY COLUMN create_by BIGINT NULL COMMENT '创建人',
-  MODIFY COLUMN update_by BIGINT NULL COMMENT '更新人',
-  ADD COLUMN create_dept BIGINT NULL COMMENT '创建部门';
-
-UPDATE t_plant_plant_details SET create_by = NULL WHERE create_by NOT REGEXP '^[0-9]+$' OR create_by = '' OR create_by IS NULL;
-UPDATE t_plant_plant_details SET update_by = NULL WHERE update_by NOT REGEXP '^[0-9]+$' OR update_by = '' OR update_by IS NULL;
-ALTER TABLE t_plant_plant_details
-  MODIFY COLUMN create_by BIGINT NULL COMMENT '创建人',
-  MODIFY COLUMN update_by BIGINT NULL COMMENT '更新人',
-  ADD COLUMN create_dept BIGINT NULL COMMENT '创建部门';
-
-UPDATE t_plant_plant_plan SET create_by = NULL WHERE create_by NOT REGEXP '^[0-9]+$' OR create_by = '' OR create_by IS NULL;
-UPDATE t_plant_plant_plan SET update_by = NULL WHERE update_by NOT REGEXP '^[0-9]+$' OR update_by = '' OR update_by IS NULL;
-ALTER TABLE t_plant_plant_plan
-  MODIFY COLUMN create_by BIGINT NULL COMMENT '创建人',
-  MODIFY COLUMN update_by BIGINT NULL COMMENT '更新人',
-  ADD COLUMN create_dept BIGINT NULL COMMENT '创建部门';
-
-UPDATE t_plant_plot_info SET create_by = NULL WHERE create_by NOT REGEXP '^[0-9]+$' OR create_by = '' OR create_by IS NULL;
-UPDATE t_plant_plot_info SET update_by = NULL WHERE update_by NOT REGEXP '^[0-9]+$' OR update_by = '' OR update_by IS NULL;
-ALTER TABLE t_plant_plot_info
-  MODIFY COLUMN create_by BIGINT NULL COMMENT '创建人',
-  MODIFY COLUMN update_by BIGINT NULL COMMENT '更新人',
-  ADD COLUMN create_dept BIGINT NULL COMMENT '创建部门';
-
-UPDATE t_plant_plot_organic SET create_by = NULL WHERE create_by NOT REGEXP '^[0-9]+$' OR create_by = '' OR create_by IS NULL;
-UPDATE t_plant_plot_organic SET update_by = NULL WHERE update_by NOT REGEXP '^[0-9]+$' OR update_by = '' OR update_by IS NULL;
-ALTER TABLE t_plant_plot_organic
-  MODIFY COLUMN create_by BIGINT NULL COMMENT '创建人',
-  MODIFY COLUMN update_by BIGINT NULL COMMENT '更新人',
-  ADD COLUMN create_dept BIGINT NULL COMMENT '创建部门';
-
-UPDATE t_plant_plot_zone SET create_by = NULL WHERE create_by NOT REGEXP '^[0-9]+$' OR create_by = '' OR create_by IS NULL;
-UPDATE t_plant_plot_zone SET update_by = NULL WHERE update_by NOT REGEXP '^[0-9]+$' OR update_by = '' OR update_by IS NULL;
-ALTER TABLE t_plant_plot_zone
-  MODIFY COLUMN create_by BIGINT NULL COMMENT '创建人',
-  MODIFY COLUMN update_by BIGINT NULL COMMENT '更新人',
-  ADD COLUMN create_dept BIGINT NULL COMMENT '创建部门';
-
-UPDATE t_plant_work_people SET create_by = NULL WHERE create_by NOT REGEXP '^[0-9]+$' OR create_by = '' OR create_by IS NULL;
-UPDATE t_plant_work_people SET update_by = NULL WHERE update_by NOT REGEXP '^[0-9]+$' OR update_by = '' OR update_by IS NULL;
-ALTER TABLE t_plant_work_people
-  MODIFY COLUMN create_by BIGINT NULL COMMENT '创建人',
-  MODIFY COLUMN update_by BIGINT NULL COMMENT '更新人',
-  ADD COLUMN create_dept BIGINT NULL COMMENT '创建部门';
-
-UPDATE t_plant_work_performance SET create_by = NULL WHERE create_by NOT REGEXP '^[0-9]+$' OR create_by = '' OR create_by IS NULL;
-UPDATE t_plant_work_performance SET update_by = NULL WHERE update_by NOT REGEXP '^[0-9]+$' OR update_by = '' OR update_by IS NULL;
-ALTER TABLE t_plant_work_performance
-  MODIFY COLUMN create_by BIGINT NULL COMMENT '创建人',
-  MODIFY COLUMN update_by BIGINT NULL COMMENT '更新人',
-  ADD COLUMN create_dept BIGINT NULL COMMENT '创建部门';
-
-UPDATE t_plant_work_team SET create_by = NULL WHERE create_by NOT REGEXP '^[0-9]+$' OR create_by = '' OR create_by IS NULL;
-UPDATE t_plant_work_team SET update_by = NULL WHERE update_by NOT REGEXP '^[0-9]+$' OR update_by = '' OR update_by IS NULL;
-ALTER TABLE t_plant_work_team
-  MODIFY COLUMN create_by BIGINT NULL COMMENT '创建人',
-  MODIFY COLUMN update_by BIGINT NULL COMMENT '更新人',
-  ADD COLUMN create_dept BIGINT NULL COMMENT '创建部门';
-
-UPDATE t_plant_zone_plotno SET create_by = NULL WHERE create_by NOT REGEXP '^[0-9]+$' OR create_by = '' OR create_by IS NULL;
-ALTER TABLE t_plant_zone_plotno
-  MODIFY COLUMN create_by BIGINT NULL COMMENT '创建人',
-  ADD COLUMN create_dept BIGINT NULL COMMENT '创建部门';
-
-UPDATE t_store_check_record SET create_by = NULL WHERE create_by NOT REGEXP '^[0-9]+$' OR create_by = '' OR create_by IS NULL;
-UPDATE t_store_check_record SET update_by = NULL WHERE update_by NOT REGEXP '^[0-9]+$' OR update_by = '' OR update_by IS NULL;
-ALTER TABLE t_store_check_record
-  MODIFY COLUMN create_by BIGINT NULL COMMENT '创建人',
-  MODIFY COLUMN update_by BIGINT NULL COMMENT '更新人',
-  ADD COLUMN create_dept BIGINT NULL COMMENT '创建部门';
-
-UPDATE t_store_member SET create_by = NULL WHERE create_by NOT REGEXP '^[0-9]+$' OR create_by = '' OR create_by IS NULL;
-UPDATE t_store_member SET update_by = NULL WHERE update_by NOT REGEXP '^[0-9]+$' OR update_by = '' OR update_by IS NULL;
-ALTER TABLE t_store_member
-  MODIFY COLUMN create_by BIGINT NULL COMMENT '创建人',
-  MODIFY COLUMN update_by BIGINT NULL COMMENT '更新人',
-  ADD COLUMN create_dept BIGINT NULL COMMENT '创建部门';
-
-UPDATE t_store_member_consumption SET create_by = NULL WHERE create_by NOT REGEXP '^[0-9]+$' OR create_by = '' OR create_by IS NULL;
-UPDATE t_store_member_consumption SET update_by = NULL WHERE update_by NOT REGEXP '^[0-9]+$' OR update_by = '' OR update_by IS NULL;
-ALTER TABLE t_store_member_consumption
-  MODIFY COLUMN create_by BIGINT NULL COMMENT '创建人',
-  MODIFY COLUMN update_by BIGINT NULL COMMENT '更新人',
-  ADD COLUMN create_dept BIGINT NULL COMMENT '创建部门';
-
-UPDATE t_store_product_relation SET create_by = NULL WHERE create_by NOT REGEXP '^[0-9]+$' OR create_by = '' OR create_by IS NULL;
-UPDATE t_store_product_relation SET update_by = NULL WHERE update_by NOT REGEXP '^[0-9]+$' OR update_by = '' OR update_by IS NULL;
-ALTER TABLE t_store_product_relation
-  MODIFY COLUMN create_by BIGINT NULL COMMENT '创建人',
-  MODIFY COLUMN update_by BIGINT NULL COMMENT '更新人',
-  ADD COLUMN create_dept BIGINT NULL COMMENT '创建部门';
-
-UPDATE t_store_return SET create_by = NULL WHERE create_by NOT REGEXP '^[0-9]+$' OR create_by = '' OR create_by IS NULL;
-UPDATE t_store_return SET update_by = NULL WHERE update_by NOT REGEXP '^[0-9]+$' OR update_by = '' OR update_by IS NULL;
-ALTER TABLE t_store_return
-  MODIFY COLUMN create_by BIGINT NULL COMMENT '创建人',
-  MODIFY COLUMN update_by BIGINT NULL COMMENT '更新人',
-  ADD COLUMN create_dept BIGINT NULL COMMENT '创建部门';
-
-UPDATE t_store_sale_record SET create_by = NULL WHERE create_by NOT REGEXP '^[0-9]+$' OR create_by = '' OR create_by IS NULL;
-UPDATE t_store_sale_record SET update_by = NULL WHERE update_by NOT REGEXP '^[0-9]+$' OR update_by = '' OR update_by IS NULL;
-ALTER TABLE t_store_sale_record
-  MODIFY COLUMN create_by BIGINT NULL COMMENT '创建人',
-  MODIFY COLUMN update_by BIGINT NULL COMMENT '更新人',
-  ADD COLUMN create_dept BIGINT NULL COMMENT '创建部门';
-
-UPDATE t_warehouse_bar_info SET create_by = NULL WHERE create_by NOT REGEXP '^[0-9]+$' OR create_by = '' OR create_by IS NULL;
-UPDATE t_warehouse_bar_info SET update_by = NULL WHERE update_by NOT REGEXP '^[0-9]+$' OR update_by = '' OR update_by IS NULL;
-ALTER TABLE t_warehouse_bar_info
-  MODIFY COLUMN create_by BIGINT NULL COMMENT '创建人',
-  MODIFY COLUMN update_by BIGINT NULL COMMENT '更新人',
-  ADD COLUMN create_dept BIGINT NULL COMMENT '创建部门';
-
-UPDATE t_warehouse_check_record SET create_by = NULL WHERE create_by NOT REGEXP '^[0-9]+$' OR create_by = '' OR create_by IS NULL;
-UPDATE t_warehouse_check_record SET update_by = NULL WHERE update_by NOT REGEXP '^[0-9]+$' OR update_by = '' OR update_by IS NULL;
-ALTER TABLE t_warehouse_check_record
-  MODIFY COLUMN create_by BIGINT NULL COMMENT '创建人',
-  MODIFY COLUMN update_by BIGINT NULL COMMENT '更新人',
-  ADD COLUMN create_dept BIGINT NULL COMMENT '创建部门';
-
-UPDATE t_warehouse_demand_manage SET create_by = NULL WHERE create_by NOT REGEXP '^[0-9]+$' OR create_by = '' OR create_by IS NULL;
-UPDATE t_warehouse_demand_manage SET update_by = NULL WHERE update_by NOT REGEXP '^[0-9]+$' OR update_by = '' OR update_by IS NULL;
-ALTER TABLE t_warehouse_demand_manage
-  MODIFY COLUMN create_by BIGINT NULL COMMENT '创建人',
-  MODIFY COLUMN update_by BIGINT NULL COMMENT '更新人',
-  ADD COLUMN create_dept BIGINT NULL COMMENT '创建部门';
-
-UPDATE t_warehouse_handle_record SET create_by = NULL WHERE create_by NOT REGEXP '^[0-9]+$' OR create_by = '' OR create_by IS NULL;
-UPDATE t_warehouse_handle_record SET update_by = NULL WHERE update_by NOT REGEXP '^[0-9]+$' OR update_by = '' OR update_by IS NULL;
-ALTER TABLE t_warehouse_handle_record
-  MODIFY COLUMN create_by BIGINT NULL COMMENT '创建人',
-  MODIFY COLUMN update_by BIGINT NULL COMMENT '更新人',
-  ADD COLUMN create_dept BIGINT NULL COMMENT '创建部门';
-
-UPDATE t_warehouse_location_info SET create_by = NULL WHERE create_by NOT REGEXP '^[0-9]+$' OR create_by = '' OR create_by IS NULL;
-UPDATE t_warehouse_location_info SET update_by = NULL WHERE update_by NOT REGEXP '^[0-9]+$' OR update_by = '' OR update_by IS NULL;
-ALTER TABLE t_warehouse_location_info
-  MODIFY COLUMN create_by BIGINT NULL COMMENT '创建人',
-  MODIFY COLUMN update_by BIGINT NULL COMMENT '更新人',
-  ADD COLUMN create_dept BIGINT NULL COMMENT '创建部门';
-
-UPDATE t_warehouse_location_stock SET create_by = NULL WHERE create_by NOT REGEXP '^[0-9]+$' OR create_by = '' OR create_by IS NULL;
-UPDATE t_warehouse_location_stock SET update_by = NULL WHERE update_by NOT REGEXP '^[0-9]+$' OR update_by = '' OR update_by IS NULL;
-ALTER TABLE t_warehouse_location_stock
-  MODIFY COLUMN create_by BIGINT NULL COMMENT '创建人',
-  MODIFY COLUMN update_by BIGINT NULL COMMENT '更新人',
-  ADD COLUMN create_dept BIGINT NULL COMMENT '创建部门';
-
-UPDATE t_warehouse_planting_record SET create_by = NULL WHERE create_by NOT REGEXP '^[0-9]+$' OR create_by = '' OR create_by IS NULL;
-UPDATE t_warehouse_planting_record SET update_by = NULL WHERE update_by NOT REGEXP '^[0-9]+$' OR update_by = '' OR update_by IS NULL;
-ALTER TABLE t_warehouse_planting_record
-  MODIFY COLUMN create_by BIGINT NULL COMMENT '创建人',
-  MODIFY COLUMN update_by BIGINT NULL COMMENT '更新人',
-  ADD COLUMN create_dept BIGINT NULL COMMENT '创建部门';
-
-UPDATE t_warehouse_product_info SET create_by = NULL WHERE create_by NOT REGEXP '^[0-9]+$' OR create_by = '' OR create_by IS NULL;
-UPDATE t_warehouse_product_info SET update_by = NULL WHERE update_by NOT REGEXP '^[0-9]+$' OR update_by = '' OR update_by IS NULL;
-ALTER TABLE t_warehouse_product_info
-  MODIFY COLUMN create_by BIGINT NULL COMMENT '创建人',
-  MODIFY COLUMN update_by BIGINT NULL COMMENT '更新人',
-  ADD COLUMN create_dept BIGINT NULL COMMENT '创建部门';
-
-UPDATE t_warehouse_product_produce SET create_by = NULL WHERE create_by NOT REGEXP '^[0-9]+$' OR create_by = '' OR create_by IS NULL;
-UPDATE t_warehouse_product_produce SET update_by = NULL WHERE update_by NOT REGEXP '^[0-9]+$' OR update_by = '' OR update_by IS NULL;
-ALTER TABLE t_warehouse_product_produce
-  MODIFY COLUMN create_by BIGINT NULL COMMENT '创建人',
-  MODIFY COLUMN update_by BIGINT NULL COMMENT '更新人',
-  ADD COLUMN create_dept BIGINT NULL COMMENT '创建部门';
-
-UPDATE t_warehouse_product_production SET create_by = NULL WHERE create_by NOT REGEXP '^[0-9]+$' OR create_by = '' OR create_by IS NULL;
-UPDATE t_warehouse_product_production SET update_by = NULL WHERE update_by NOT REGEXP '^[0-9]+$' OR update_by = '' OR update_by IS NULL;
-ALTER TABLE t_warehouse_product_production
-  MODIFY COLUMN create_by BIGINT NULL COMMENT '创建人',
-  MODIFY COLUMN update_by BIGINT NULL COMMENT '更新人',
-  ADD COLUMN create_dept BIGINT NULL COMMENT '创建部门';
-
-UPDATE t_warehouse_return_product SET create_by = NULL WHERE create_by NOT REGEXP '^[0-9]+$' OR create_by = '' OR create_by IS NULL;
-UPDATE t_warehouse_return_product SET update_by = NULL WHERE update_by NOT REGEXP '^[0-9]+$' OR update_by = '' OR update_by IS NULL;
-ALTER TABLE t_warehouse_return_product
-  MODIFY COLUMN create_by BIGINT NULL COMMENT '创建人',
-  MODIFY COLUMN update_by BIGINT NULL COMMENT '更新人',
-  ADD COLUMN create_dept BIGINT NULL COMMENT '创建部门';
-
-UPDATE t_warehouse_stock_flow SET create_by = NULL WHERE create_by NOT REGEXP '^[0-9]+$' OR create_by = '' OR create_by IS NULL;
-UPDATE t_warehouse_stock_flow SET update_by = NULL WHERE update_by NOT REGEXP '^[0-9]+$' OR update_by = '' OR update_by IS NULL;
-ALTER TABLE t_warehouse_stock_flow
-  MODIFY COLUMN create_by BIGINT NULL COMMENT '创建人',
-  MODIFY COLUMN update_by BIGINT NULL COMMENT '更新人',
-  ADD COLUMN create_dept BIGINT NULL COMMENT '创建部门';
-
-UPDATE t_warehouse_supplier_record SET create_by = NULL WHERE create_by NOT REGEXP '^[0-9]+$' OR create_by = '' OR create_by IS NULL;
-UPDATE t_warehouse_supplier_record SET update_by = NULL WHERE update_by NOT REGEXP '^[0-9]+$' OR update_by = '' OR update_by IS NULL;
-ALTER TABLE t_warehouse_supplier_record
-  MODIFY COLUMN create_by BIGINT NULL COMMENT '创建人',
-  MODIFY COLUMN update_by BIGINT NULL COMMENT '更新人',
-  ADD COLUMN create_dept BIGINT NULL COMMENT '创建部门';
-
-UPDATE t_warehouse_trace_code SET create_by = NULL WHERE create_by NOT REGEXP '^[0-9]+$' OR create_by = '' OR create_by IS NULL;
-UPDATE t_warehouse_trace_code SET update_by = NULL WHERE update_by NOT REGEXP '^[0-9]+$' OR update_by = '' OR update_by IS NULL;
-ALTER TABLE t_warehouse_trace_code
-  MODIFY COLUMN create_by BIGINT NULL COMMENT '创建人',
-  MODIFY COLUMN update_by BIGINT NULL COMMENT '更新人',
-  ADD COLUMN create_dept BIGINT NULL COMMENT '创建部门';
-
-UPDATE t_warehouse_vegetable_handle SET create_by = NULL WHERE create_by NOT REGEXP '^[0-9]+$' OR create_by = '' OR create_by IS NULL;
-UPDATE t_warehouse_vegetable_handle SET update_by = NULL WHERE update_by NOT REGEXP '^[0-9]+$' OR update_by = '' OR update_by IS NULL;
-ALTER TABLE t_warehouse_vegetable_handle
-  MODIFY COLUMN create_by BIGINT NULL COMMENT '创建人',
-  MODIFY COLUMN update_by BIGINT NULL COMMENT '更新人',
-  ADD COLUMN create_dept BIGINT NULL COMMENT '创建部门';
-
--- sys_farm seed: create_by 'system' → 1 (idempotent — UPDATE 仅当当前值是 'system' 才生效)
-UPDATE sys_farm SET create_by = NULL WHERE create_by NOT REGEXP '^[0-9]+$' OR create_by = '';
-UPDATE sys_farm SET create_by = 1 WHERE id = 1001 AND (create_by IS NULL OR create_by = 0);
-
-
--- ----------------------------------------------------------------------------
--- 来源文件：V202605220900__SYS-MD-003-menu.sql
--- ----------------------------------------------------------------------------
--- ============================================================
--- SYS-MD-003 供应商管理菜单 + 按钮权限
---   父菜单 5003 (供应商管理) 由本 ticket seed（SYS-AUTH-001 未占位）
---   字典 djs_supplier_type 6 类已在 D1 SYS-INIT-002 灌
---   role 101/102/103 通过 SYS-AUTH-001 BETWEEN 5000-10999 兜底，本文件不写 sys_role_menu
--- ============================================================
-
-INSERT IGNORE INTO sys_menu (
-    menu_id, menu_name, parent_id, order_num,
-    path, component, query_param,
-    is_frame, is_cache, menu_type, visible, status,
-    perms, icon, create_by, create_time, remark)
-VALUES
-  (5003, '供应商管理', 5000, 3, 'supplier', 'djs-common/supplier/index', '', 1, 0, 'C', '0', '0',
-   'djs:common:supplier:list',     'peoples', 1, NOW(), 'SYS-MD-003'),
-  (5030, '供应商查询', 5003, 1, '', '', '', 1, 0, 'F', '0', '0',
-   'djs:common:supplier:list',     '#', 1, NOW(), 'SYS-MD-003'),
-  (5031, '供应商新增', 5003, 2, '', '', '', 1, 0, 'F', '0', '0',
-   'djs:common:supplier:add',      '#', 1, NOW(), 'SYS-MD-003'),
-  (5032, '供应商修改', 5003, 3, '', '', '', 1, 0, 'F', '0', '0',
-   'djs:common:supplier:edit',     '#', 1, NOW(), 'SYS-MD-003'),
-  (5033, '供应商删除', 5003, 4, '', '', '', 1, 0, 'F', '0', '0',
-   'djs:common:supplier:remove',   '#', 1, NOW(), 'SYS-MD-003'),
-  (5034, '供应商导出', 5003, 5, '', '', '', 1, 0, 'F', '0', '0',
-   'djs:common:supplier:export',   '#', 1, NOW(), 'SYS-MD-003');
-
-
--- ----------------------------------------------------------------------------
--- 来源文件：V202605221000__BRD-MD-001-breeding-menu-and-dict.sql
--- ----------------------------------------------------------------------------
--- ============================================================
--- BRD-MD-001 育种配置（品种 / 品系 / 配种关系）
---   表 t_farm_breed_info + t_farm_breed_config 已在 SYS-INIT-001 V202605200901 建好
---   本文件只 seed：
---     1. 字典 djs_breed_strain_type（1=品种 / 2=品系）
---     2. 父菜单 7000 (养殖) 已在 SYS-AUTH-001 V202605201100 占位
---     3. 二级目录 7010 (育种配置) + 4 个 C 菜单 7016-7019（品种/品系/品种配种/品系配种）
---     4. 三级按钮权限 7011-7015（list/add/edit/remove/export）
---   权限串 djs:breed:breeding:{list,add,edit,remove,export} 同时覆盖品种/品系/配种关系两个 Controller
---   （4 个 C 菜单共用一组按钮权限，BreedInfoController + BreedConfigController 共用）
--- ============================================================
-
-SET NAMES utf8mb4;
-
--- ------------------------------------------------------------
--- 1. 字典 djs_breed_strain_type（品种/品系类型，TINYINT 1/2 与表字段 breed_strain 对齐）
--- ------------------------------------------------------------
-INSERT IGNORE INTO sys_dict_type (
-    dict_id, tenant_id, dict_name, dict_type, create_by, create_time, remark)
-VALUES
-  (100151, '1001', '育种类型', 'djs_breed_strain_type', 1, NOW(), '养殖：1=品种 / 2=品系（BRD-MD-001 / t_farm_breed_info.breed_strain 字段对齐）');
-
-INSERT IGNORE INTO sys_dict_data (
-    dict_code, tenant_id, dict_sort, dict_label, dict_value, dict_type, css_class, list_class, is_default, create_by, create_time)
-VALUES
-  (1001510, '1001', 0, '品种', '1', 'djs_breed_strain_type', '', 'primary', 'Y', 1, NOW()),
-  (1001511, '1001', 1, '品系', '2', 'djs_breed_strain_type', '', 'success', 'N', 1, NOW());
-
--- ------------------------------------------------------------
--- 2. 菜单：育种配置目录 + 4 个 C 子菜单 + 5 个按钮权限
--- ------------------------------------------------------------
-INSERT IGNORE INTO sys_menu (
-    menu_id, menu_name, parent_id, order_num,
-    path, component, query_param,
-    is_frame, is_cache, menu_type, visible, status,
-    perms, icon, create_by, create_time, remark)
-VALUES
-  -- 二级目录：育种配置（M 目录，下挂 4 个 C 菜单）
-  (7010, '育种配置', 7000, 1, 'breeding-config', '', '',
-   1, 0, 'M', '0', '0',
-   '', 'tree', 1, NOW(), 'BRD-MD-001'),
-
-  -- 4 个 C 子菜单（独立路由 + 独立组件）
-  (7016, '品种管理', 7010, 1, 'breed-strain',      'djs-breed/breeding-config/strain',      '',
-   1, 0, 'C', '0', '0', 'djs:breed:breeding:list', 'list', 1, NOW(), 'BRD-MD-001'),
-  (7017, '品系管理', 7010, 2, 'breed-line',        'djs-breed/breeding-config/line',        '',
-   1, 0, 'C', '0', '0', 'djs:breed:breeding:list', 'list', 1, NOW(), 'BRD-MD-001'),
-  (7018, '品种配种', 7010, 3, 'breed-mate-strain', 'djs-breed/breeding-config/mate-strain', '',
-   1, 0, 'C', '0', '0', 'djs:breed:breeding:list', 'list', 1, NOW(), 'BRD-MD-001'),
-  (7019, '品系配种', 7010, 4, 'breed-mate-line',   'djs-breed/breeding-config/mate-line',   '',
-   1, 0, 'C', '0', '0', 'djs:breed:breeding:list', 'list', 1, NOW(), 'BRD-MD-001'),
-
-  -- 三级按钮权限（5 个，与后端 @SaCheckPermission 严格一致；4 个 C 菜单共用）
-  (7011, '育种查询', 7010, 1, '', '', '', 1, 0, 'F', '0', '0',
-   'djs:breed:breeding:list',   '#', 1, NOW(), 'BRD-MD-001'),
-  (7012, '育种新增', 7010, 2, '', '', '', 1, 0, 'F', '0', '0',
-   'djs:breed:breeding:add',    '#', 1, NOW(), 'BRD-MD-001'),
-  (7013, '育种修改', 7010, 3, '', '', '', 1, 0, 'F', '0', '0',
-   'djs:breed:breeding:edit',   '#', 1, NOW(), 'BRD-MD-001'),
-  (7014, '育种删除', 7010, 4, '', '', '', 1, 0, 'F', '0', '0',
-   'djs:breed:breeding:remove', '#', 1, NOW(), 'BRD-MD-001'),
-  (7015, '育种导出', 7010, 5, '', '', '', 1, 0, 'F', '0', '0',
-   'djs:breed:breeding:export', '#', 1, NOW(), 'BRD-MD-001');
-
-
--- ----------------------------------------------------------------------------
--- 来源文件：V202605221100__BRD-MD-002-farm-barn-pen-menu.sql
--- ----------------------------------------------------------------------------
--- ============================================================
--- BRD-MD-002 农场 + 栋舍 + 栏位 菜单 seed
---   表 sys_farm / t_farm_barn_info / t_farm_barn_pen 已在 SYS-INIT-001 cleanup 阶段建好
---   字典 djs_barn_type / djs_pen_type / djs_farm_status 已在 SYS-AUTH-001 seed
---   本文件只 seed 三块菜单（养殖目录 7000 下）：
---     7020-7022  农场信息（query / edit）        路由 djs-breed/farm/index  权限 djs:breed:farm-info:*
---     7030-7034  栋舍管理（list/add/edit/remove）              权限 djs:breed:barn:*
---     7040-7044  栏位管理（list/add/edit/remove）              权限 djs:breed:pen:*
---   注：栋舍 + 栏位 + 农场详情共用同一前端单页 djs-breed/farm/index.vue
---       （左侧 el-tree 栋舍→栏位，右侧 panel；农场只读 panel 在顶部）
---       菜单层"农场信息"挂目录，其下 5+5+2 = 12 个按钮权限串
--- ============================================================
-
-SET NAMES utf8mb4;
-
--- ------------------------------------------------------------
--- 1. 二级目录：农场信息（4 tab/section 单页）
--- ------------------------------------------------------------
-INSERT IGNORE INTO sys_menu (
-    menu_id, menu_name, parent_id, order_num,
-    path, component, query_param,
-    is_frame, is_cache, menu_type, visible, status,
-    perms, icon, create_by, create_time, remark)
-VALUES
-  (7020, '农场信息', 7000, 2, 'farm', 'djs-breed/farm/index', '',
-   1, 0, 'C', '0', '0',
-   'djs:breed:farm-info:query', 'building', 1, NOW(), 'BRD-MD-002');
-
--- ------------------------------------------------------------
--- 2. 农场信息按钮权限（2 个：query / edit）
--- ------------------------------------------------------------
-INSERT IGNORE INTO sys_menu (
-    menu_id, menu_name, parent_id, order_num,
-    path, component, query_param,
-    is_frame, is_cache, menu_type, visible, status,
-    perms, icon, create_by, create_time, remark)
-VALUES
-  (7021, '农场查询', 7020, 1, '', '', '', 1, 0, 'F', '0', '0',
-   'djs:breed:farm-info:query', '#', 1, NOW(), 'BRD-MD-002'),
-  (7022, '农场联系信息编辑', 7020, 2, '', '', '', 1, 0, 'F', '0', '0',
-   'djs:breed:farm-info:edit',  '#', 1, NOW(), 'BRD-MD-002');
-
--- ------------------------------------------------------------
--- 3. 栋舍按钮权限（4 个：list/add/edit/remove；与后端 @SaCheckPermission 严格一致）
---    挂在 7020 农场信息目录下（同一单页操作）
--- ------------------------------------------------------------
-INSERT IGNORE INTO sys_menu (
-    menu_id, menu_name, parent_id, order_num,
-    path, component, query_param,
-    is_frame, is_cache, menu_type, visible, status,
-    perms, icon, create_by, create_time, remark)
-VALUES
-  (7030, '栋舍查询', 7020, 3, '', '', '', 1, 0, 'F', '0', '0',
-   'djs:breed:barn:list',   '#', 1, NOW(), 'BRD-MD-002'),
-  (7031, '栋舍新增', 7020, 4, '', '', '', 1, 0, 'F', '0', '0',
-   'djs:breed:barn:add',    '#', 1, NOW(), 'BRD-MD-002'),
-  (7032, '栋舍修改', 7020, 5, '', '', '', 1, 0, 'F', '0', '0',
-   'djs:breed:barn:edit',   '#', 1, NOW(), 'BRD-MD-002'),
-  (7033, '栋舍删除', 7020, 6, '', '', '', 1, 0, 'F', '0', '0',
-   'djs:breed:barn:remove', '#', 1, NOW(), 'BRD-MD-002');
-
--- ------------------------------------------------------------
--- 4. 栏位按钮权限（4 个）
--- ------------------------------------------------------------
-INSERT IGNORE INTO sys_menu (
-    menu_id, menu_name, parent_id, order_num,
-    path, component, query_param,
-    is_frame, is_cache, menu_type, visible, status,
-    perms, icon, create_by, create_time, remark)
-VALUES
-  (7040, '栏位查询', 7020, 7, '', '', '', 1, 0, 'F', '0', '0',
-   'djs:breed:pen:list',   '#', 1, NOW(), 'BRD-MD-002'),
-  (7041, '栏位新增', 7020, 8, '', '', '', 1, 0, 'F', '0', '0',
-   'djs:breed:pen:add',    '#', 1, NOW(), 'BRD-MD-002'),
-  (7042, '栏位修改', 7020, 9, '', '', '', 1, 0, 'F', '0', '0',
-   'djs:breed:pen:edit',   '#', 1, NOW(), 'BRD-MD-002'),
-  (7043, '栏位删除', 7020, 10, '', '', '', 1, 0, 'F', '0', '0',
-   'djs:breed:pen:remove', '#', 1, NOW(), 'BRD-MD-002');
-
-
--- ----------------------------------------------------------------------------
--- 来源文件：V202605221101__BRD-MED-001-medicine-batch.sql
--- ----------------------------------------------------------------------------
--- ============================================================
--- BRD-MED-001 药品库 + 药品批次
+-- Dumping data for table `gen_table`
 --
--- 现状：
---   表 t_breed_medicine_info 已在 SYS-INIT-001 V202605200901 建好（含
---     medicine_code/name/type/supplier_id/approval_no/batch_no/expire_date/
---     withdraw_days/unit/current_stock + 审计 + del_flag + del_unique）。
---   prompt 数据模型段叫 t_farm_medicine，与 DB / doc/06 / _db-changes 已落地的
---   t_breed_medicine_info 不一致；本 ticket 按 DB + doc/06 走（详 D04 _open-issues raise）。
+
+LOCK TABLES `gen_table` WRITE;
+/*!40000 ALTER TABLE `gen_table` DISABLE KEYS */;
+/*!40000 ALTER TABLE `gen_table` ENABLE KEYS */;
+UNLOCK TABLES;
+
 --
--- 本文件做 3 件事：
---   1. 给 t_breed_medicine_info 加 4 列：spec / manufacturer / storage_condition / med_status
---   2. 建批次表 t_breed_medicine_batch（V1 admin 暴露批次能力；V2 BRD-MED-002 FIFO 扣减用）
---   3. seed 菜单：父 7000(养殖) 下二级 7040(药品库) + 7050(药品批次) + 子按钮权限
---      （djs_med_type 字典已在 SYS-INIT-002 V202605201000 seed，无需重做）
--- ============================================================
-
-SET NAMES utf8mb4;
-
--- ------------------------------------------------------------
--- 1. 给 t_breed_medicine_info 增列（spec / manufacturer / storage_condition / med_status）
---    用 INFORMATION_SCHEMA 探测列存在性，可重入；同 D02-PATCH 风格
--- ------------------------------------------------------------
-SET @schema := DATABASE();
-SET @tbl := 't_breed_medicine_info';
-
--- spec
-SET @col_exists := (SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
-  WHERE TABLE_SCHEMA = @schema AND TABLE_NAME = @tbl AND COLUMN_NAME = 'spec');
-SET @sql := IF(@col_exists = 0,
-  'ALTER TABLE t_breed_medicine_info ADD COLUMN spec VARCHAR(128) NULL COMMENT ''规格（如 10ml × 100 支 / 盒）'' AFTER current_stock',
-  'SELECT 1');
-PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
-
--- manufacturer
-SET @col_exists := (SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
-  WHERE TABLE_SCHEMA = @schema AND TABLE_NAME = @tbl AND COLUMN_NAME = 'manufacturer');
-SET @sql := IF(@col_exists = 0,
-  'ALTER TABLE t_breed_medicine_info ADD COLUMN manufacturer VARCHAR(128) NULL COMMENT ''生产厂家'' AFTER spec',
-  'SELECT 1');
-PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
-
--- storage_condition
-SET @col_exists := (SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
-  WHERE TABLE_SCHEMA = @schema AND TABLE_NAME = @tbl AND COLUMN_NAME = 'storage_condition');
-SET @sql := IF(@col_exists = 0,
-  'ALTER TABLE t_breed_medicine_info ADD COLUMN storage_condition VARCHAR(200) NULL COMMENT ''储存条件（如 2-8℃ 冷藏 避光）'' AFTER manufacturer',
-  'SELECT 1');
-PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
-
--- med_status
-SET @col_exists := (SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
-  WHERE TABLE_SCHEMA = @schema AND TABLE_NAME = @tbl AND COLUMN_NAME = 'med_status');
-SET @sql := IF(@col_exists = 0,
-  'ALTER TABLE t_breed_medicine_info ADD COLUMN med_status TINYINT NOT NULL DEFAULT 1 COMMENT ''状态 1=启用 0=停用（对齐 sys_normal_disable）'' AFTER storage_condition',
-  'SELECT 1');
-PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
-
-
--- ------------------------------------------------------------
--- 2. 建批次表 t_breed_medicine_batch（BRD-MED-001 批次能力，V2 FIFO 扣减用）
--- ------------------------------------------------------------
-DROP TABLE IF EXISTS t_breed_medicine_batch;
-CREATE TABLE t_breed_medicine_batch (
-  id                BIGINT       NOT NULL AUTO_INCREMENT COMMENT '主键（雪花）',
-  tenant_id         VARCHAR(20)  NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
-  medicine_id       BIGINT       NOT NULL COMMENT '药品 ID（引用 t_breed_medicine_info.id）',
-  batch_no          VARCHAR(64)  NOT NULL COMMENT '批次编码',
-  production_date   DATE         NULL COMMENT '生产日期',
-  expiry_date       DATE         NULL COMMENT '过期日期',
-  quantity          DECIMAL(18,3) NOT NULL DEFAULT 0 COMMENT '批次当前剩余库存',
-  unit_price        DECIMAL(18,2) NULL COMMENT '进货单价',
-  create_dept       BIGINT       NULL COMMENT '创建部门',
-  create_by         BIGINT       NULL COMMENT '创建人',
-  create_time       DATETIME     NULL COMMENT '创建时间',
-  update_by         BIGINT       NULL COMMENT '更新人',
-  update_time       DATETIME     NULL COMMENT '更新时间',
-  del_flag          CHAR(1)      DEFAULT '0' COMMENT '删除标志',
-  remark            VARCHAR(500) NULL COMMENT '备注',
-  del_unique        BIGINT       NOT NULL DEFAULT 0 COMMENT "软删 token（应用层 update del_flag='1' 时同步 SET del_unique=id）",
-  PRIMARY KEY (id),
-  UNIQUE KEY uk_med_batch (tenant_id, medicine_id, batch_no, del_unique),
-  KEY idx_tenant_create (tenant_id, create_time),
-  KEY idx_medicine (medicine_id),
-  KEY idx_expiry (expiry_date)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='药品批次表（BRD-MED-001）';
-
-
--- ------------------------------------------------------------
--- 3. 菜单 seed（父 7000=养殖 已有；二级 7060 药品库 / 7070 药品批次）
---    分段说明：BRD-MD-001 占 7010-7015（育种）/ BRD-MD-002 占 7020-7043
---    （农场 7020-7022 + 栋舍 7030-7033 + 栏位 7040-7043）
---    本 ticket 跳过 7040-7059 段避免 BRD-MD-002 扩展冲突；用 7060-7079
--- ------------------------------------------------------------
-INSERT IGNORE INTO sys_menu (
-    menu_id, menu_name, parent_id, order_num,
-    path, component, query_param,
-    is_frame, is_cache, menu_type, visible, status,
-    perms, icon, create_by, create_time, remark)
-VALUES
-  -- 二级目录：药品库
-  (7060, '药品库', 7000, 4, 'med', 'djs-breed/med/index', '',
-   1, 0, 'C', '0', '0',
-   'djs:breed:med:list', 'medication', 1, NOW(), 'BRD-MED-001'),
-
-  -- 子按钮权限（药品库 5 个，与后端 @SaCheckPermission 严格一致）
-  (7061, '药品查询', 7060, 1, '', '', '', 1, 0, 'F', '0', '0',
-   'djs:breed:med:list',   '#', 1, NOW(), 'BRD-MED-001'),
-  (7062, '药品新增', 7060, 2, '', '', '', 1, 0, 'F', '0', '0',
-   'djs:breed:med:add',    '#', 1, NOW(), 'BRD-MED-001'),
-  (7063, '药品修改', 7060, 3, '', '', '', 1, 0, 'F', '0', '0',
-   'djs:breed:med:edit',   '#', 1, NOW(), 'BRD-MED-001'),
-  (7064, '药品删除', 7060, 4, '', '', '', 1, 0, 'F', '0', '0',
-   'djs:breed:med:remove', '#', 1, NOW(), 'BRD-MED-001'),
-  (7065, '药品导出', 7060, 5, '', '', '', 1, 0, 'F', '0', '0',
-   'djs:breed:med:export', '#', 1, NOW(), 'BRD-MED-001'),
-
-  -- 二级目录：药品批次
-  (7070, '药品批次', 7000, 5, 'med-batch', 'djs-breed/med/batch', '',
-   1, 0, 'C', '0', '0',
-   'djs:breed:med-batch:list', 'list', 1, NOW(), 'BRD-MED-001'),
-
-  -- 子按钮权限（药品批次 5 个）
-  (7071, '批次查询', 7070, 1, '', '', '', 1, 0, 'F', '0', '0',
-   'djs:breed:med-batch:list',   '#', 1, NOW(), 'BRD-MED-001'),
-  (7072, '批次新增', 7070, 2, '', '', '', 1, 0, 'F', '0', '0',
-   'djs:breed:med-batch:add',    '#', 1, NOW(), 'BRD-MED-001'),
-  (7073, '批次修改', 7070, 3, '', '', '', 1, 0, 'F', '0', '0',
-   'djs:breed:med-batch:edit',   '#', 1, NOW(), 'BRD-MED-001'),
-  (7074, '批次删除', 7070, 4, '', '', '', 1, 0, 'F', '0', '0',
-   'djs:breed:med-batch:remove', '#', 1, NOW(), 'BRD-MED-001'),
-  (7075, '批次导出', 7070, 5, '', '', '', 1, 0, 'F', '0', '0',
-   'djs:breed:med-batch:export', '#', 1, NOW(), 'BRD-MED-001');
-
-
--- ----------------------------------------------------------------------------
--- 来源文件：V202605221200__BRD-MD-003-production-configs.sql
--- ----------------------------------------------------------------------------
--- ============================================================
--- BRD-MD-003 生产配置（3 tab）
---   tab1 生产周期 / tab2 精液公猪 / tab3 药品疫苗周期
+-- Table structure for table `gen_table_column`
 --
--- 本文件内容：
---   1. 建表 t_farm_production_cycle_config / t_farm_boar_config / t_farm_med_schedule_config
---      （SYS-INIT-001 V202605200901 未建过这 3 张表，所以本文件首次创建）
---   2. seed 字典 djs_med_event_trigger（药品周期触发时机枚举）
---      （djs_med_type 已在 BRD-MED-001 灌过，本文件不重复）
---   3. seed 6 个生产周期业内默认值（gestation/lactation/nursery/fattening/oestrus_cycle/weaning_to_breeding）
---   4. 菜单：父 7000 (养殖) 下 3 个二级目录
---      - 7050-7059 production-cycle 生产周期
---      - 7080-7089 production-boar  精液公猪
---      - 7090-7099 production-med   药品疫苗周期
---
--- 权限串：
---   - djs:breed:production-cycle:{list,add,edit,remove,export}
---   - djs:breed:production-boar:{list,add,edit,remove,export}
---   - djs:breed:production-med:{list,add,edit,remove,export}
---
--- v1.2 关键约束：无定时任务 / 无自动流转 —— 本配置只决定"建议时间"，
--- 状态转换 / 任务生成全靠 BRD-EVENT-* / BRD-CORE-001 状态机事件触发。
--- ============================================================
 
-SET NAMES utf8mb4;
+DROP TABLE IF EXISTS `gen_table_column`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `gen_table_column` (
+  `column_id` bigint NOT NULL COMMENT '编号',
+  `table_id` bigint DEFAULT NULL COMMENT '归属表编号',
+  `column_name` varchar(200) DEFAULT NULL COMMENT '列名称',
+  `column_comment` varchar(500) DEFAULT NULL COMMENT '列描述',
+  `column_type` varchar(100) DEFAULT NULL COMMENT '列类型',
+  `java_type` varchar(500) DEFAULT NULL COMMENT 'JAVA类型',
+  `java_field` varchar(200) DEFAULT NULL COMMENT 'JAVA字段名',
+  `is_pk` char(1) DEFAULT NULL COMMENT '是否主键（1是）',
+  `is_increment` char(1) DEFAULT NULL COMMENT '是否自增（1是）',
+  `is_required` char(1) DEFAULT NULL COMMENT '是否必填（1是）',
+  `is_insert` char(1) DEFAULT NULL COMMENT '是否为插入字段（1是）',
+  `is_edit` char(1) DEFAULT NULL COMMENT '是否编辑字段（1是）',
+  `is_list` char(1) DEFAULT NULL COMMENT '是否列表字段（1是）',
+  `is_query` char(1) DEFAULT NULL COMMENT '是否查询字段（1是）',
+  `query_type` varchar(200) DEFAULT 'EQ' COMMENT '查询方式（等于、不等于、大于、小于、范围）',
+  `html_type` varchar(200) DEFAULT NULL COMMENT '显示类型（文本框、文本域、下拉框、复选框、单选框、日期控件）',
+  `dict_type` varchar(200) DEFAULT '' COMMENT '字典类型',
+  `sort` int DEFAULT NULL COMMENT '排序',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '创建者',
+  `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新者',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  PRIMARY KEY (`column_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='代码生成业务表字段';
+/*!40101 SET character_set_client = @saved_cs_client */;
 
--- ------------------------------------------------------------
--- 1.1 t_farm_production_cycle_config  生产周期配置（Tab1）
--- ------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS `t_farm_production_cycle_config` (
-  `id`             BIGINT       NOT NULL                       COMMENT '主键（雪花）',
-  `tenant_id`      VARCHAR(20)  NOT NULL DEFAULT '1001'        COMMENT '农场ID（多租户，V1 全 1001 / ADR-0001）',
-  `config_key`     VARCHAR(64)  NOT NULL                       COMMENT '业务键（如 gestation_days）',
-  `default_value`  INT          NOT NULL                       COMMENT '业内默认值（天，seed 灌入，admin 不可改）',
-  `custom_value`   INT          NULL                           COMMENT '客户自定义值（天，admin 可改，null = 沿用 default）',
-  `unit`           VARCHAR(16)  NOT NULL DEFAULT '天'          COMMENT '单位',
-  `description`    VARCHAR(255) NULL                           COMMENT '业务含义说明',
-  `remark`         VARCHAR(500) NULL                           COMMENT '备注',
-  `create_dept`    BIGINT       NULL                           COMMENT '创建部门',
-  `create_by`      BIGINT       NULL                           COMMENT '创建者',
-  `create_time`    DATETIME     NULL                           COMMENT '创建时间',
-  `update_by`      BIGINT       NULL                           COMMENT '更新者',
-  `update_time`    DATETIME     NULL                           COMMENT '更新时间',
-  `del_flag`       CHAR(1)      NULL DEFAULT '0'               COMMENT '软删（0 未删 / 1 已删）',
-  `del_unique`     BIGINT       NOT NULL DEFAULT 0             COMMENT '软删唯一性辅助（未删=0，已删=id）',
+--
+-- Dumping data for table `gen_table_column`
+--
+
+LOCK TABLES `gen_table_column` WRITE;
+/*!40000 ALTER TABLE `gen_table_column` DISABLE KEYS */;
+/*!40000 ALTER TABLE `gen_table_column` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `mp_subscribe_record`
+--
+
+DROP TABLE IF EXISTS `mp_subscribe_record`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `mp_subscribe_record` (
+  `id` bigint NOT NULL AUTO_INCREMENT COMMENT '主键',
+  `user_id` bigint NOT NULL COMMENT '用户 ID（sys_user.user_id）',
+  `openid` varchar(64) NOT NULL COMMENT '微信 openid',
+  `template_id` varchar(64) NOT NULL COMMENT '微信模板 ID',
+  `subscribed_at` datetime NOT NULL COMMENT '授权时间',
+  `expired_at` datetime DEFAULT NULL COMMENT '过期时间（订阅消息有效期 7 天）',
+  `used` tinyint NOT NULL DEFAULT '0' COMMENT '0=未使用 1=已使用',
+  `used_at` datetime DEFAULT NULL COMMENT '使用时间',
+  `always_keep` tinyint NOT NULL DEFAULT '0' COMMENT '是否勾选"总是保持以上选择" 1=是 0=否',
+  `create_time` datetime NOT NULL COMMENT '创建时间',
   PRIMARY KEY (`id`),
-  UNIQUE KEY `uk_cycle_key`  (`tenant_id`, `config_key`, `del_unique`),
-  KEY         `idx_tenant`    (`tenant_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='生产周期配置（BRD-MD-003 Tab1）';
+  KEY `idx_user_template` (`user_id`,`template_id`,`used`,`expired_at`),
+  KEY `idx_openid` (`openid`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='微信订阅消息授权记录（SYS-INFRA-006，全局共享）';
+/*!40101 SET character_set_client = @saved_cs_client */;
 
--- ------------------------------------------------------------
--- 1.2 t_farm_boar_config  精液 / 公猪配置（Tab2）
--- ------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS `t_farm_boar_config` (
-  `id`                         BIGINT         NOT NULL                       COMMENT '主键（雪花）',
-  `tenant_id`                  VARCHAR(20)    NOT NULL DEFAULT '1001'        COMMENT '农场ID（多租户，V1 全 1001）',
-  `boar_id`                    BIGINT         NULL                           COMMENT '关联公猪 ID（V1 NULL = 通用配置 / V2 启用具体公猪覆盖）',
-  `sperm_quality_threshold`    DECIMAL(8,2)   NOT NULL                       COMMENT '精液密度阈值（亿/mL）',
-  `breeding_interval_days`     INT            NOT NULL                       COMMENT '同公猪两次采精最小间隔天数',
-  `remark`                     VARCHAR(500)   NULL                           COMMENT '备注',
-  `create_dept`                BIGINT         NULL                           COMMENT '创建部门',
-  `create_by`                  BIGINT         NULL                           COMMENT '创建者',
-  `create_time`                DATETIME       NULL                           COMMENT '创建时间',
-  `update_by`                  BIGINT         NULL                           COMMENT '更新者',
-  `update_time`                DATETIME       NULL                           COMMENT '更新时间',
-  `del_flag`                   CHAR(1)        NULL DEFAULT '0'               COMMENT '软删',
-  `del_unique`                 BIGINT         NOT NULL DEFAULT 0             COMMENT '软删唯一性辅助',
+--
+-- Dumping data for table `mp_subscribe_record`
+--
+
+LOCK TABLES `mp_subscribe_record` WRITE;
+/*!40000 ALTER TABLE `mp_subscribe_record` DISABLE KEYS */;
+/*!40000 ALTER TABLE `mp_subscribe_record` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `pig_batch`
+--
+
+DROP TABLE IF EXISTS `pig_batch`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `pig_batch` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
+  `batch_no` varchar(32) NOT NULL COMMENT '批次号（yymmdd_yymmdd 格式）',
+  `year` smallint NOT NULL COMMENT '所属年份',
+  `batch_status` char(1) NOT NULL DEFAULT 'A' COMMENT '状态 A=Active C=Closed',
+  `closed_at` datetime DEFAULT NULL COMMENT '关闭时间',
+  `closed_by` bigint DEFAULT NULL COMMENT '关闭操作人 user_id',
+  `recycled_count` int DEFAULT '0' COMMENT '回收数量',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '创建人',
+  `create_time` datetime NOT NULL COMMENT '创建时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新人',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `del_flag` char(1) DEFAULT '0' COMMENT '删除标志',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  `del_unique` bigint NOT NULL DEFAULT '0' COMMENT '软删除生成 token（应用层 update del_flag=''1'' 时同步 SET del_unique=id；§6.3.0）',
   PRIMARY KEY (`id`),
-  -- boar_id NULL 时 MySQL UNIQUE 不会冲突（NULL != NULL），刚好满足 V1 "通用配置一条 + 后续可加针对具体公猪覆盖"
-  UNIQUE KEY `uk_boar_id`     (`tenant_id`, `boar_id`, `del_unique`),
-  KEY         `idx_tenant`    (`tenant_id`),
-  KEY         `idx_boar_id`   (`boar_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='精液 / 公猪配置（BRD-MD-003 Tab2）';
+  UNIQUE KEY `uk_tenant_batch` (`tenant_id`,`batch_no`,`del_unique`),
+  KEY `idx_tenant_status` (`tenant_id`,`batch_status`),
+  KEY `idx_year` (`year`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='耳号批次回收表（SYS-INFRA-004）';
+/*!40101 SET character_set_client = @saved_cs_client */;
 
--- ------------------------------------------------------------
--- 1.3 t_farm_med_schedule_config  药品 / 疫苗周期配置（Tab3）
--- ------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS `t_farm_med_schedule_config` (
-  `id`              BIGINT       NOT NULL                       COMMENT '主键（雪花）',
-  `tenant_id`       VARCHAR(20)  NOT NULL DEFAULT '1001'        COMMENT '农场ID',
-  `med_type`        VARCHAR(32)  NOT NULL                       COMMENT '药品类型（字典 djs_med_type）',
-  `event_trigger`   VARCHAR(64)  NOT NULL                       COMMENT '触发时机（字典 djs_med_event_trigger）',
-  `days_offset`     INT          NOT NULL                       COMMENT '天数偏移（正 = 事件后 / 负 = 事件前）',
-  `description`     VARCHAR(255) NULL                           COMMENT '业务含义说明',
-  `remark`          VARCHAR(500) NULL                           COMMENT '备注',
-  `create_dept`     BIGINT       NULL                           COMMENT '创建部门',
-  `create_by`       BIGINT       NULL                           COMMENT '创建者',
-  `create_time`     DATETIME     NULL                           COMMENT '创建时间',
-  `update_by`       BIGINT       NULL                           COMMENT '更新者',
-  `update_time`     DATETIME     NULL                           COMMENT '更新时间',
-  `del_flag`        CHAR(1)      NULL DEFAULT '0'               COMMENT '软删',
-  `del_unique`      BIGINT       NOT NULL DEFAULT 0             COMMENT '软删唯一性辅助',
+--
+-- Dumping data for table `pig_batch`
+--
+
+LOCK TABLES `pig_batch` WRITE;
+/*!40000 ALTER TABLE `pig_batch` DISABLE KEYS */;
+/*!40000 ALTER TABLE `pig_batch` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `sys_client`
+--
+
+DROP TABLE IF EXISTS `sys_client`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `sys_client` (
+  `id` bigint NOT NULL COMMENT 'id',
+  `client_id` varchar(64) DEFAULT NULL COMMENT '客户端id',
+  `client_key` varchar(32) DEFAULT NULL COMMENT '客户端key',
+  `client_secret` varchar(255) DEFAULT NULL COMMENT '客户端秘钥',
+  `grant_type` varchar(255) DEFAULT NULL COMMENT '授权类型',
+  `device_type` varchar(32) DEFAULT NULL COMMENT '设备类型',
+  `active_timeout` int DEFAULT '1800' COMMENT 'token活跃超时时间',
+  `timeout` int DEFAULT '604800' COMMENT 'token固定超时',
+  `status` char(1) DEFAULT '0' COMMENT '状态（0正常 1停用）',
+  `del_flag` char(1) DEFAULT '0' COMMENT '删除标志（0代表存在 1代表删除）',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '创建者',
+  `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新者',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='系统授权表';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `sys_client`
+--
+
+LOCK TABLES `sys_client` WRITE;
+/*!40000 ALTER TABLE `sys_client` DISABLE KEYS */;
+INSERT INTO `sys_client` VALUES (1,'e5cd7e4891bf95d1d19206ce24a7b32e','pc','pc123','password,social','pc',1800,604800,'0','0',103,1,'2026-07-10 16:32:55',1,'2026-07-10 16:32:55'),(2,'428a8310cd442757ae699df5d894f051','app','app123','password,sms,social','android',1800,604800,'0','0',103,1,'2026-07-10 16:32:55',1,'2026-07-10 16:32:55'),(3,'mp-applet-dongjiaoshan','mp_dongjiaoshan','djs_mp_dev_placeholder_replace_in_prod','wechat,password','mp',1800,604800,'0','0',NULL,NULL,'2026-07-10 16:32:56',NULL,'2026-07-10 16:32:56');
+/*!40000 ALTER TABLE `sys_client` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `sys_config`
+--
+
+DROP TABLE IF EXISTS `sys_config`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `sys_config` (
+  `config_id` bigint NOT NULL COMMENT '参数主键',
+  `tenant_id` varchar(20) DEFAULT '000000' COMMENT '租户编号',
+  `config_name` varchar(100) DEFAULT '' COMMENT '参数名称',
+  `config_key` varchar(100) DEFAULT '' COMMENT '参数键名',
+  `config_value` varchar(500) DEFAULT '' COMMENT '参数键值',
+  `config_type` char(1) DEFAULT 'N' COMMENT '系统内置（Y是 N否）',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '创建者',
+  `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新者',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  PRIMARY KEY (`config_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='参数配置表';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `sys_config`
+--
+
+LOCK TABLES `sys_config` WRITE;
+/*!40000 ALTER TABLE `sys_config` DISABLE KEYS */;
+INSERT INTO `sys_config` VALUES (1,'1001','主框架页-默认皮肤样式名称','sys.index.skinName','skin-blue','Y',103,1,'2026-07-10 16:32:55',NULL,NULL,'蓝色 skin-blue、绿色 skin-green、紫色 skin-purple、红色 skin-red、黄色 skin-yellow'),(2,'1001','用户管理-账号初始密码','sys.user.initPassword','123456','Y',103,1,'2026-07-10 16:32:55',NULL,NULL,'初始化密码 123456'),(3,'1001','主框架页-侧边栏主题','sys.index.sideTheme','theme-dark','Y',103,1,'2026-07-10 16:32:55',NULL,NULL,'深色主题theme-dark，浅色主题theme-light'),(5,'1001','账号自助-是否开启用户注册功能','sys.account.registerUser','false','Y',103,1,'2026-07-10 16:32:55',NULL,NULL,'是否开启注册用户功能（true开启，false关闭）'),(11,'1001','OSS预览列表资源开关','sys.oss.previewListResource','true','Y',103,1,'2026-07-10 16:32:55',NULL,NULL,'true:开启, false:关闭'),(200,'1001','有机证书到期预警天数','plant.organic.warning_days','60','Y',NULL,1,'2026-07-10 16:33:11',NULL,NULL,'PLT-MD-003 默认 60 天（土地 + 作物证书共用）');
+/*!40000 ALTER TABLE `sys_config` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `sys_dept`
+--
+
+DROP TABLE IF EXISTS `sys_dept`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `sys_dept` (
+  `dept_id` bigint NOT NULL COMMENT '部门id',
+  `tenant_id` varchar(20) DEFAULT '000000' COMMENT '租户编号',
+  `parent_id` bigint DEFAULT '0' COMMENT '父部门id',
+  `ancestors` varchar(500) DEFAULT '' COMMENT '祖级列表',
+  `dept_name` varchar(30) DEFAULT '' COMMENT '部门名称',
+  `dept_category` varchar(100) DEFAULT NULL COMMENT '部门类别编码',
+  `order_num` int DEFAULT '0' COMMENT '显示顺序',
+  `leader` bigint DEFAULT NULL COMMENT '负责人',
+  `phone` varchar(11) DEFAULT NULL COMMENT '联系电话',
+  `email` varchar(50) DEFAULT NULL COMMENT '邮箱',
+  `status` char(1) DEFAULT '0' COMMENT '部门状态（0正常 1停用）',
+  `del_flag` char(1) DEFAULT '0' COMMENT '删除标志（0代表存在 1代表删除）',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '创建者',
+  `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新者',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  PRIMARY KEY (`dept_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='部门表';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `sys_dept`
+--
+
+LOCK TABLES `sys_dept` WRITE;
+/*!40000 ALTER TABLE `sys_dept` DISABLE KEYS */;
+INSERT INTO `sys_dept` VALUES (100,'1001',0,'0','东角山智慧农场',NULL,0,NULL,NULL,NULL,'0','0',103,1,'2026-07-10 16:32:54',NULL,NULL),(101,'1001',100,'0,100','深圳总公司',NULL,1,NULL,'15888888888','xxx@qq.com','1','2',103,1,'2026-07-10 16:32:54',NULL,NULL),(102,'1001',100,'0,100','长沙分公司',NULL,2,NULL,'15888888888','xxx@qq.com','1','2',103,1,'2026-07-10 16:32:54',NULL,NULL),(103,'1001',101,'0,100,101','研发部门',NULL,1,1,'15888888888','xxx@qq.com','1','2',103,1,'2026-07-10 16:32:54',NULL,NULL),(104,'1001',101,'0,100,101','市场部门',NULL,2,NULL,'15888888888','xxx@qq.com','1','2',103,1,'2026-07-10 16:32:54',NULL,NULL),(105,'1001',101,'0,100,101','测试部门',NULL,3,NULL,'15888888888','xxx@qq.com','1','2',103,1,'2026-07-10 16:32:54',NULL,NULL),(106,'1001',101,'0,100,101','财务部门',NULL,4,NULL,'15888888888','xxx@qq.com','1','2',103,1,'2026-07-10 16:32:54',NULL,NULL),(107,'1001',101,'0,100,101','运维部门',NULL,5,NULL,'15888888888','xxx@qq.com','1','2',103,1,'2026-07-10 16:32:54',NULL,NULL),(108,'1001',102,'0,100,102','市场部门',NULL,1,NULL,'15888888888','xxx@qq.com','1','2',103,1,'2026-07-10 16:32:54',NULL,NULL),(109,'1001',102,'0,100,102','财务部门',NULL,2,NULL,'15888888888','xxx@qq.com','1','2',103,1,'2026-07-10 16:32:54',NULL,NULL),(200,'1001',100,'0,100','东角山-养殖部',NULL,1,NULL,NULL,NULL,'0','0',NULL,1,'2026-07-10 16:32:56',NULL,NULL),(201,'1001',100,'0,100','东角山-种植部',NULL,2,NULL,NULL,NULL,'0','0',NULL,1,'2026-07-10 16:32:56',NULL,NULL),(202,'1001',100,'0,100','东角山-仓库部',NULL,3,NULL,NULL,NULL,'0','0',NULL,1,'2026-07-10 16:32:56',NULL,NULL),(203,'1001',100,'0,100','东角山-门店部',NULL,4,NULL,NULL,NULL,'0','0',NULL,1,'2026-07-10 16:32:56',NULL,NULL),(204,'1001',100,'0,100','东角山-综合管理部',NULL,5,NULL,NULL,NULL,'0','0',NULL,1,'2026-07-10 16:32:56',NULL,NULL);
+/*!40000 ALTER TABLE `sys_dept` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `sys_dict_data`
+--
+
+DROP TABLE IF EXISTS `sys_dict_data`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `sys_dict_data` (
+  `dict_code` bigint NOT NULL COMMENT '字典编码',
+  `tenant_id` varchar(20) DEFAULT '000000' COMMENT '租户编号',
+  `dict_sort` int DEFAULT '0' COMMENT '字典排序',
+  `dict_label` varchar(100) DEFAULT '' COMMENT '字典标签',
+  `dict_value` varchar(100) DEFAULT '' COMMENT '字典键值',
+  `dict_type` varchar(100) DEFAULT '' COMMENT '字典类型',
+  `css_class` varchar(100) DEFAULT NULL COMMENT '样式属性（其他样式扩展）',
+  `list_class` varchar(100) DEFAULT NULL COMMENT '表格回显样式',
+  `is_default` char(1) DEFAULT 'N' COMMENT '是否默认（Y是 N否）',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '创建者',
+  `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新者',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  PRIMARY KEY (`dict_code`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='字典数据表';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `sys_dict_data`
+--
+
+LOCK TABLES `sys_dict_data` WRITE;
+/*!40000 ALTER TABLE `sys_dict_data` DISABLE KEYS */;
+INSERT INTO `sys_dict_data` VALUES (1,'1001',1,'男','0','sys_user_sex','','','Y',103,1,'2026-07-10 16:32:55',NULL,NULL,'性别男'),(2,'1001',2,'女','1','sys_user_sex','','','N',103,1,'2026-07-10 16:32:55',NULL,NULL,'性别女'),(3,'1001',3,'未知','2','sys_user_sex','','','N',103,1,'2026-07-10 16:32:55',NULL,NULL,'性别未知'),(4,'1001',1,'显示','0','sys_show_hide','','primary','Y',103,1,'2026-07-10 16:32:55',NULL,NULL,'显示菜单'),(5,'1001',2,'隐藏','1','sys_show_hide','','danger','N',103,1,'2026-07-10 16:32:55',NULL,NULL,'隐藏菜单'),(6,'1001',1,'正常','0','sys_normal_disable','','primary','Y',103,1,'2026-07-10 16:32:55',NULL,NULL,'正常状态'),(7,'1001',2,'停用','1','sys_normal_disable','','danger','N',103,1,'2026-07-10 16:32:55',NULL,NULL,'停用状态'),(12,'1001',1,'是','Y','sys_yes_no','','primary','Y',103,1,'2026-07-10 16:32:55',NULL,NULL,'系统默认是'),(13,'1001',2,'否','N','sys_yes_no','','danger','N',103,1,'2026-07-10 16:32:55',NULL,NULL,'系统默认否'),(14,'1001',1,'通知','1','sys_notice_type','','warning','Y',103,1,'2026-07-10 16:32:55',NULL,NULL,'通知'),(15,'1001',2,'公告','2','sys_notice_type','','success','N',103,1,'2026-07-10 16:32:55',NULL,NULL,'公告'),(16,'1001',1,'正常','0','sys_notice_status','','primary','Y',103,1,'2026-07-10 16:32:55',NULL,NULL,'正常状态'),(17,'1001',2,'关闭','1','sys_notice_status','','danger','N',103,1,'2026-07-10 16:32:55',NULL,NULL,'关闭状态'),(18,'1001',1,'新增','1','sys_oper_type','','info','N',103,1,'2026-07-10 16:32:55',NULL,NULL,'新增操作'),(19,'1001',2,'修改','2','sys_oper_type','','info','N',103,1,'2026-07-10 16:32:55',NULL,NULL,'修改操作'),(20,'1001',3,'删除','3','sys_oper_type','','danger','N',103,1,'2026-07-10 16:32:55',NULL,NULL,'删除操作'),(21,'1001',4,'授权','4','sys_oper_type','','primary','N',103,1,'2026-07-10 16:32:55',NULL,NULL,'授权操作'),(22,'1001',5,'导出','5','sys_oper_type','','warning','N',103,1,'2026-07-10 16:32:55',NULL,NULL,'导出操作'),(23,'1001',6,'导入','6','sys_oper_type','','warning','N',103,1,'2026-07-10 16:32:55',NULL,NULL,'导入操作'),(24,'1001',7,'强退','7','sys_oper_type','','danger','N',103,1,'2026-07-10 16:32:55',NULL,NULL,'强退操作'),(25,'1001',8,'生成代码','8','sys_oper_type','','warning','N',103,1,'2026-07-10 16:32:55',NULL,NULL,'生成操作'),(26,'1001',9,'清空数据','9','sys_oper_type','','danger','N',103,1,'2026-07-10 16:32:55',NULL,NULL,'清空操作'),(27,'1001',1,'成功','0','sys_common_status','','primary','N',103,1,'2026-07-10 16:32:55',NULL,NULL,'正常状态'),(28,'1001',2,'失败','1','sys_common_status','','danger','N',103,1,'2026-07-10 16:32:55',NULL,NULL,'停用状态'),(29,'1001',99,'其他','0','sys_oper_type','','info','N',103,1,'2026-07-10 16:32:55',NULL,NULL,'其他操作'),(30,'1001',0,'密码认证','password','sys_grant_type','el-check-tag','default','N',103,1,'2026-07-10 16:32:55',NULL,NULL,'密码认证'),(31,'1001',0,'短信认证','sms','sys_grant_type','el-check-tag','default','N',103,1,'2026-07-10 16:32:55',NULL,NULL,'短信认证'),(32,'1001',0,'邮件认证','email','sys_grant_type','el-check-tag','default','N',103,1,'2026-07-10 16:32:55',NULL,NULL,'邮件认证'),(33,'1001',0,'小程序认证','xcx','sys_grant_type','el-check-tag','default','N',103,1,'2026-07-10 16:32:55',NULL,NULL,'小程序认证'),(34,'1001',0,'三方登录认证','social','sys_grant_type','el-check-tag','default','N',103,1,'2026-07-10 16:32:55',NULL,NULL,'三方登录认证'),(35,'1001',0,'PC','pc','sys_device_type','','default','N',103,1,'2026-07-10 16:32:55',NULL,NULL,'PC'),(36,'1001',0,'安卓','android','sys_device_type','','default','N',103,1,'2026-07-10 16:32:55',NULL,NULL,'安卓'),(37,'1001',0,'iOS','ios','sys_device_type','','default','N',103,1,'2026-07-10 16:32:55',NULL,NULL,'iOS'),(38,'1001',0,'小程序','xcx','sys_device_type','','default','N',103,1,'2026-07-10 16:32:55',NULL,NULL,'小程序'),(13201,'1001',0,'外部引种','external','djs_introduce_type','','warning','N',103,1,'2026-07-10 16:33:12',NULL,NULL,NULL),(13202,'1001',1,'内部引种','internal','djs_introduce_type','','success','Y',103,1,'2026-07-10 16:33:12',NULL,NULL,NULL),(13221,'1001',0,'入库','1','djs_handle_target','','primary','N',106,1,'2026-07-10 16:33:12',NULL,NULL,NULL),(13222,'1001',1,'月台','2','djs_handle_target','','success','N',106,1,'2026-07-10 16:33:12',NULL,NULL,NULL),(13223,'1001',2,'有机饲料','3','djs_handle_target','','warning','N',106,1,'2026-07-10 16:33:12',NULL,NULL,NULL),(13231,'1001',1,'恩施黑猪','1','djs_pig_strain','','primary','N',103,1,'2026-07-10 16:33:12',NULL,NULL,NULL),(13232,'1001',2,'两头乌','2','djs_pig_strain','','primary','N',103,1,'2026-07-10 16:33:12',NULL,NULL,NULL),(13233,'1001',3,'梅花星','3','djs_pig_strain','','primary','N',103,1,'2026-07-10 16:33:12',NULL,NULL,NULL),(13234,'1001',4,'杜洛克','4','djs_pig_strain','','success','N',103,1,'2026-07-10 16:33:12',NULL,NULL,NULL),(13235,'1001',5,'巴克夏','5','djs_pig_strain','','success','N',103,1,'2026-07-10 16:33:12',NULL,NULL,NULL),(13241,'1001',1,'恩施黑猪','01','djs_pig_breed','','primary','N',103,1,'2026-07-10 16:33:12',NULL,NULL,NULL),(13242,'1001',2,'两头乌','02','djs_pig_breed','','primary','N',103,1,'2026-07-10 16:33:12',NULL,NULL,NULL),(13243,'1001',3,'梅花星','03','djs_pig_breed','','primary','N',103,1,'2026-07-10 16:33:12',NULL,NULL,NULL),(13244,'1001',4,'杜洛克','04','djs_pig_breed','','success','N',103,1,'2026-07-10 16:33:12',NULL,NULL,NULL),(13245,'1001',5,'巴克夏','05','djs_pig_breed','','success','N',103,1,'2026-07-10 16:33:12',NULL,NULL,NULL),(13246,'1001',6,'其它二元','06','djs_pig_breed','','info','N',103,1,'2026-07-10 16:33:12',NULL,NULL,NULL),(103201,'1001',1,'自产','1','djs_veg_receive_type','','primary','Y',NULL,1,'2026-07-10 16:33:12',NULL,NULL,'自产果蔬月台收货'),(103202,'1001',2,'外购','2','djs_veg_receive_type','','success','N',NULL,1,'2026-07-10 16:33:12',NULL,NULL,'外购果蔬验收入库'),(103211,'1001',1,'待入库','pending','djs_veg_receive_status','','info','N',NULL,1,'2026-07-10 16:33:12',NULL,NULL,'尚未开始入库'),(103212,'1001',2,'入库中','processing','djs_veg_receive_status','','warning','N',NULL,1,'2026-07-10 16:33:12',NULL,NULL,'部分入库'),(103213,'1001',3,'已入库','done','djs_veg_receive_status','','success','N',NULL,1,'2026-07-10 16:33:12',NULL,NULL,'入库完成'),(1000010,'1001',0,'在职','0','djs_user_status','','primary','Y',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1000011,'1001',1,'离职','1','djs_user_status','','danger','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1000012,'1001',2,'试用','2','djs_user_status','','warning','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1000020,'1001',0,'老板','boss','djs_role_code','','primary','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1000021,'1001',1,'管理人员','manager','djs_role_code','','primary','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1000022,'1001',2,'系统管理员','admin','djs_role_code','','danger','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1000023,'1001',3,'养猪员','pig_keeper','djs_role_code','','info','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1000024,'1001',4,'种植员','planter','djs_role_code','','info','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1000025,'1001',5,'仓管员','warehouse_keeper','djs_role_code','','info','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1000026,'1001',6,'门店员工','store_clerk','djs_role_code','','info','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1000027,'1001',7,'店长','store_manager','djs_role_code','','success','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1000028,'1001',8,'调度员','dispatcher','djs_role_code','','warning','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1000029,'1001',9,'屠宰员','butcher','djs_role_code','','info','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1000030,'1001',10,'打包员','packer','djs_role_code','','info','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1000031,'1001',11,'司机','driver','djs_role_code','','info','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1000032,'1001',12,'顾客','customer','djs_role_code','','','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1000040,'1001',0,'启用','0','djs_farm_status','','primary','Y',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1000041,'1001',1,'停用','1','djs_farm_status','','danger','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1000050,'1001',0,'合作中','0','djs_store_status','','success','Y',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1000051,'1001',1,'已终止','1','djs_store_status','','danger','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1000052,'1001',2,'装修中','2','djs_store_status','','warning','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1000060,'1001',0,'饲料原材料','feed','djs_supplier_type','','primary','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1000061,'1001',1,'种猪','breed','djs_supplier_type','','primary','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1000062,'1001',2,'药品','med','djs_supplier_type','','warning','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1000063,'1001',3,'种子','seed','djs_supplier_type','','success','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1000065,'1001',5,'其他','other','djs_supplier_type','','','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1000070,'1001',0,'是','1','djs_yes_no','','primary','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1000071,'1001',1,'否','0','djs_yes_no','','info','Y',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1001010,'1001',0,'公','M','djs_pig_sex','','primary','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1001011,'1001',1,'母','F','djs_pig_sex','','success','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1001030,'1001',0,'后备','HB','djs_pig_lifecycle','','info','Y',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1001031,'1001',1,'配种','PZ','djs_pig_lifecycle','','primary','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1001033,'1001',3,'分娩','FM','djs_pig_lifecycle','','success','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1001034,'1001',4,'断奶','DN','djs_pig_lifecycle','','success','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1001035,'1001',5,'流产','LC','djs_pig_lifecycle','','warning','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1001036,'1001',6,'空怀','KH','djs_pig_lifecycle','','warning','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1001037,'1001',7,'返情','FQ','djs_pig_lifecycle','','warning','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1001038,'1001',8,'终止','END','djs_pig_lifecycle','','danger','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1001040,'1001',0,'引种','INTRO','djs_pig_status_event','','primary','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1001041,'1001',1,'配种','BREED','djs_pig_status_event','','primary','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1001042,'1001',2,'分娩','FARROW','djs_pig_status_event','','success','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1001043,'1001',3,'断奶','WEAN','djs_pig_status_event','','success','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1001044,'1001',4,'查情','OESTRUS','djs_pig_status_event','','info','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1001045,'1001',5,'返空','NULL_RETURN','djs_pig_status_event','','warning','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1001046,'1001',6,'死亡','DIE','djs_pig_status_event','','danger','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1001047,'1001',7,'淘汰','ELIMINATE','djs_pig_status_event','','danger','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1001048,'1001',8,'阉割','CASTRATE','djs_pig_status_event','','info','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1001049,'1001',9,'转移','TRANSFER','djs_pig_status_event','','info','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1001050,'1001',10,'出栏','SLAUGHTER','djs_pig_status_event','','warning','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1001060,'1001',0,'配种舍','breeding','djs_barn_type','','primary','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1001061,'1001',1,'妊娠舍','pregnant','djs_barn_type','','primary','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1001062,'1001',2,'产房','farrow','djs_barn_type','','success','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1001063,'1001',3,'保育舍','nursery','djs_barn_type','','success','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1001064,'1001',4,'育肥舍','fattening','djs_barn_type','','warning','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1001065,'1001',5,'隔离舍','isolation','djs_barn_type','','danger','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1001070,'1001',0,'大栏','big','djs_pen_type','','primary','N',NULL,NULL,'2026-07-10 16:33:13',NULL,NULL,NULL),(1001071,'1001',1,'限位栏','stall','djs_pen_type','','warning','N',NULL,NULL,'2026-07-10 16:33:13',NULL,NULL,NULL),(1001072,'1001',2,'产床','farrow','djs_pen_type','','success','N',NULL,NULL,'2026-07-10 16:33:13',NULL,NULL,NULL),(1001073,'1001',3,'散栏','scatter','djs_pen_type','','info','N',NULL,NULL,'2026-07-10 16:33:14',NULL,NULL,NULL),(1001074,'1001',4,'保育栏','nursery_pen','djs_pen_type','','success','N',NULL,NULL,'2026-07-10 16:33:14',NULL,NULL,NULL),(1001080,'1001',0,'抗生素','antibiotic','djs_med_type','','danger','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1001081,'1001',1,'疫苗','vaccine','djs_med_type','','primary','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1001082,'1001',2,'营养剂','nutrition','djs_med_type','','success','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1001083,'1001',3,'消毒剂','disinfectant','djs_med_type','','warning','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1001084,'1001',4,'其他','other','djs_med_type','','','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1001100,'1001',0,'母猪','sow','djs_pig_type','','success','Y',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1001101,'1001',1,'公猪','boar','djs_pig_type','','primary','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1001102,'1001',2,'仔猪','piglet','djs_pig_type','','info','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1001103,'1001',3,'育肥猪','fattening','djs_pig_type','','warning','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1001110,'1001',0,'死亡','DEAD','djs_pig_end_reason','','danger','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1001111,'1001',1,'淘汰','CULL','djs_pig_end_reason','','warning','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1001112,'1001',2,'出栏','MARKET','djs_pig_end_reason','','info','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1001510,'1001',0,'品种','1','djs_breed_strain_type','','primary','Y',NULL,1,'2026-07-10 16:32:56',NULL,NULL,NULL),(1001511,'1001',1,'品系','2','djs_breed_strain_type','','success','N',NULL,1,'2026-07-10 16:32:56',NULL,NULL,NULL),(1001530,'1001',0,'仔猪出生','birth','djs_med_event_trigger','','primary','N',NULL,1,'2026-07-10 16:32:56',NULL,NULL,NULL),(1001531,'1001',1,'断奶','weaning','djs_med_event_trigger','','success','N',NULL,1,'2026-07-10 16:32:56',NULL,NULL,NULL),(1001532,'1001',2,'转入育肥','fattening_start','djs_med_event_trigger','','success','N',NULL,1,'2026-07-10 16:32:56',NULL,NULL,NULL),(1001533,'1001',3,'配种','mating','djs_med_event_trigger','','warning','N',NULL,1,'2026-07-10 16:32:56',NULL,NULL,NULL),(1001534,'1001',4,'妊娠确认','pregnant','djs_med_event_trigger','','warning','N',NULL,1,'2026-07-10 16:32:56',NULL,NULL,NULL),(1001535,'1001',5,'分娩','farrow','djs_med_event_trigger','','danger','N',NULL,1,'2026-07-10 16:32:56',NULL,NULL,NULL),(1001536,'1001',6,'引种入栏','introduce','djs_med_event_trigger','','info','N',NULL,1,'2026-07-10 16:32:56',NULL,NULL,NULL),(1002010,'1001',0,'保育','nursery','djs_plot_type','','primary','N',NULL,NULL,'2026-07-10 16:33:13',NULL,NULL,NULL),(1002011,'1001',1,'露天','open','djs_plot_type','','success','Y',NULL,NULL,'2026-07-10 16:33:13',NULL,NULL,NULL),(1002012,'1001',2,'单体棚','single_shed','djs_plot_type','','warning','N',NULL,NULL,'2026-07-10 16:33:13',NULL,NULL,NULL),(1002013,'1001',3,'连体棚','multi_shed','djs_plot_type','','info','N',NULL,NULL,'2026-07-10 16:33:13',NULL,NULL,NULL),(1002020,'1001',0,'叶菜','leaf','djs_crop_type','','success','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1002021,'1001',1,'根茎','root','djs_crop_type','','warning','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1002022,'1001',2,'茄果','fruit_veg','djs_crop_type','','primary','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1002023,'1001',3,'水果','fruit','djs_crop_type','','danger','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1002024,'1001',4,'其他','other','djs_crop_type','','','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1002030,'1001',0,'未认证','none','djs_organic_cert_status','','info','Y',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1002031,'1001',1,'转换期','transition','djs_organic_cert_status','','warning','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1002032,'1001',2,'已认证','certified','djs_organic_cert_status','','success','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1002033,'1001',3,'已过期','expired','djs_organic_cert_status','','danger','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1002510,'1001',0,'壤土','loam','djs_soil_type','','primary','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1002511,'1001',1,'砂土','sand','djs_soil_type','','warning','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1002512,'1001',2,'黏土','clay','djs_soil_type','','info','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1002513,'1001',3,'壤砂土','loam_sand','djs_soil_type','','primary','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1002514,'1001',4,'砂壤土','sand_loam','djs_soil_type','','primary','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1002515,'1001',5,'黑土','black_soil','djs_soil_type','','success','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1002520,'1001',0,'高','high','djs_soil_fertility','','success','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1002521,'1001',1,'中','medium','djs_soil_fertility','','primary','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1002522,'1001',2,'低','low','djs_soil_fertility','','warning','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1002523,'1001',3,'贫瘠','barren','djs_soil_fertility','','danger','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1002530,'1001',0,'平地','flat','djs_terrain_condition','','success','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1002531,'1001',1,'缓坡','gentle_slope','djs_terrain_condition','','primary','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1002532,'1001',2,'陡坡','steep_slope','djs_terrain_condition','','warning','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1002533,'1001',3,'梯田','terrace','djs_terrain_condition','','info','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1002540,'1001',0,'充足','sufficient','djs_light_condition','','success','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1002541,'1001',1,'一般','normal','djs_light_condition','','primary','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1002542,'1001',2,'半阴','half_shade','djs_light_condition','','warning','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1002543,'1001',3,'阴','shade','djs_light_condition','','info','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1002550,'1001',0,'良好','good','djs_drain_condition','','success','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1002551,'1001',1,'一般','normal','djs_drain_condition','','primary','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1002552,'1001',2,'较差','poor','djs_drain_condition','','warning','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1002560,'1001',0,'茄科','solanaceae','djs_crop_family','','primary','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1002561,'1001',1,'葫芦科','cucurbitaceae','djs_crop_family','','primary','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1002562,'1001',2,'十字花科','cruciferae','djs_crop_family','','success','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1002563,'1001',3,'豆科','leguminosae','djs_crop_family','','success','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1002564,'1001',4,'禾本科','gramineae','djs_crop_family','','warning','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1002565,'1001',5,'菊科','compositae','djs_crop_family','','info','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1002566,'1001',6,'百合科','liliaceae','djs_crop_family','','info','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1002567,'1001',7,'旋花科','convolvulaceae','djs_crop_family','','info','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1003010,'1001',0,'鲜肉仓','fresh_meat','djs_warehouse_type','','danger','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1003011,'1001',1,'蔬菜仓','veg','djs_warehouse_type','','success','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1003012,'1001',2,'物资仓','material','djs_warehouse_type','','info','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1003013,'1001',3,'包材仓','pack','djs_warehouse_type','','warning','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1003020,'1001',0,'在库','in_stock','djs_product_status','','primary','Y',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1003021,'1001',1,'已发','shipped','djs_product_status','','warning','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1003022,'1001',2,'已售','sold','djs_product_status','','success','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1003023,'1001',3,'已退','returned','djs_product_status','','info','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1003024,'1001',4,'报损','damaged','djs_product_status','','danger','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1003030,'1001',0,'门店','store','djs_demand_business','','primary','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1003031,'1001',1,'经销','distrib','djs_demand_business','','success','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1003032,'1001',2,'团购','group','djs_demand_business','','warning','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1003033,'1001',3,'加工','processing','djs_demand_business','','info','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1003040,'1001',0,'草稿','DRAFT','djs_demand_status','','info','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1003041,'1001',1,'已提交','SUBMITTED','djs_demand_status','','primary','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1003042,'1001',2,'已确认','CONFIRMED','djs_demand_status','','primary','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1003043,'1001',3,'排产中','IN_PRODUCTION','djs_demand_status','','warning','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1003044,'1001',4,'部分发货','PARTIAL_SHIPPED','djs_demand_status','','warning','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1003045,'1001',5,'已完成','COMPLETED','djs_demand_status','','success','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1003046,'1001',6,'已取消','CANCELLED','djs_demand_status','','danger','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1003047,'1001',7,'已删除','DELETED','djs_demand_status','','info','N',NULL,NULL,'2026-07-10 16:33:14',NULL,NULL,NULL),(1003050,'1001',0,'入库','IN','djs_stock_flow_type','','success','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1003051,'1001',1,'出库','OUT','djs_stock_flow_type','','warning','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1003052,'1001',2,'调拨','TRANSFER','djs_stock_flow_type','','primary','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1003053,'1001',3,'盘盈','GAIN','djs_stock_flow_type','','info','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1003054,'1001',4,'盘亏','LOSS','djs_stock_flow_type','','danger','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1003060,'1001',0,'散装','bulk','djs_pack_type','','info','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1003061,'1001',1,'标准盒','std_box','djs_pack_type','','primary','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1003062,'1001',2,'礼盒','gift_box','djs_pack_type','','success','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1003063,'1001',3,'真空袋','vacuum','djs_pack_type','','warning','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1004010,'1001',0,'普通','normal','djs_member_level','','info','Y',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1004011,'1001',1,'重要价值客户','vip','djs_member_level','','danger','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1004012,'1001',2,'重要保持客户','keep','djs_member_level','','warning','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1004020,'1001',0,'质量问题','quality','djs_return_reason','','danger','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1004021,'1001',1,'客户改主意','mind_change','djs_return_reason','','warning','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1004022,'1001',2,'配送问题','delivery','djs_return_reason','','info','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1004023,'1001',3,'其他','other','djs_return_reason','','','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1004030,'1001',0,'紧急','urgent','djs_dispatch_priority','','danger','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1004031,'1001',1,'普通','normal','djs_dispatch_priority','','primary','Y',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1004032,'1001',2,'低','low','djs_dispatch_priority','','info','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1005010,'1001',0,'引种','intro','djs_trace_event_type','','primary','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1005011,'1001',1,'出生','birth','djs_trace_event_type','','primary','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1005012,'1001',2,'配种','breed','djs_trace_event_type','','primary','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1005013,'1001',3,'分娩','farrow','djs_trace_event_type','','success','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1005014,'1001',4,'用药','medicate','djs_trace_event_type','','warning','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1005015,'1001',5,'出栏','slaughter','djs_trace_event_type','','danger','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1005016,'1001',6,'燎毛','singe','djs_trace_event_type','','info','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1005017,'1001',7,'分割','split','djs_trace_event_type','','info','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1005018,'1001',8,'发货','ship','djs_trace_event_type','','warning','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1005019,'1001',9,'售卖','sell','djs_trace_event_type','','success','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1005020,'1001',0,'出栏通知','slaughter_notice','djs_subscribe_message_type','','danger','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1005021,'1001',1,'库存告警','stock_alert','djs_subscribe_message_type','','warning','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1005022,'1001',2,'销售汇总','sales_summary','djs_subscribe_message_type','','success','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1005023,'1001',3,'内测反馈','internal_feedback','djs_subscribe_message_type','','info','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1006000,'1001',0,'空怀','EMPTY','djs_sow_status','','info','Y',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1006001,'1001',1,'配种','BREEDING','djs_sow_status','','primary','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1006002,'1001',2,'妊娠','PREGNANT','djs_sow_status','','primary','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1006003,'1001',3,'分娩','FARROWING','djs_sow_status','','success','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1006004,'1001',4,'哺乳','LACTATING','djs_sow_status','','success','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1006005,'1001',5,'返情','RETURN_HEAT','djs_sow_status','','warning','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1006006,'1001',6,'淘汰','ELIMINATED','djs_sow_status','','danger','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1006010,'1001',0,'草稿','draft','djs_check_status','','info','Y',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1006011,'1001',1,'进行中','in_progress','djs_check_status','','warning','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1006012,'1001',2,'已完成','completed','djs_check_status','','success','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1006015,'1001',0,'饲料','feed','djs_material_type','','primary','Y',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1006016,'1001',1,'兽药','med','djs_material_type','','warning','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1006017,'1001',2,'疫苗','vaccine','djs_material_type','','success','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1006018,'1001',3,'工器具','tool','djs_material_type','','info','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1006019,'1001',4,'其他','other','djs_material_type','','','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1006020,'1001',0,'待处理','pending','djs_task_status','','info','Y',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1006021,'1001',1,'进行中','in_progress','djs_task_status','','primary','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1006022,'1001',2,'已完成','completed','djs_task_status','','success','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1006023,'1001',3,'已取消','cancelled','djs_task_status','','','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1006024,'1001',4,'已退回','returned','djs_task_status','','warning','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1006030,'1001',0,'养殖','breed','djs_task_biz','','primary','Y',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1006031,'1001',1,'种植','plant','djs_task_biz','','success','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1006032,'1001',2,'仓库','warehouse','djs_task_biz','','info','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1006033,'1001',3,'门店','store','djs_task_biz','','warning','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1006034,'1001',4,'用药','med','djs_task_biz','','danger','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1006035,'1001',5,'通用','general','djs_task_biz','','','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1006040,'1001',0,'货品损坏','damaged','djs_return_loss_reason','','danger','Y',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1006041,'1001',1,'过期/失效','expired','djs_return_loss_reason','','danger','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1006042,'1001',2,'规格错','wrong_spec','djs_return_loss_reason','','warning','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1006043,'1001',3,'客户退还','customer_return','djs_return_loss_reason','','info','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1006044,'1001',4,'盘亏','inventory_loss','djs_return_loss_reason','','warning','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1006045,'1001',5,'其他','other','djs_return_loss_reason','','','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1006050,'1001',0,'水稻','rice','djs_crop','','success','Y',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1006051,'1001',1,'小麦','wheat','djs_crop','','warning','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1006052,'1001',2,'玉米','corn','djs_crop','','warning','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1006053,'1001',3,'大豆','soybean','djs_crop','','info','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1006054,'1001',4,'蔬菜','vegetable','djs_crop','','success','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1006055,'1001',5,'水果','fruit','djs_crop','','danger','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1006056,'1001',6,'其他','other','djs_crop','','','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1006060,'1001',0,'计划中','planning','djs_dispatch_stage','','info','Y',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1006061,'1001',1,'已派工','dispatched','djs_dispatch_stage','','primary','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1006062,'1001',2,'执行中','in_field','djs_dispatch_stage','','primary','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1006063,'1001',3,'已完成','completed','djs_dispatch_stage','','success','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1006064,'1001',4,'已回执','reported','djs_dispatch_stage','','success','N',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,NULL),(1006200,'1001',0,'送宰','slaughter','djs_market_dest','','primary','Y',NULL,NULL,'2026-07-10 16:33:11',NULL,NULL,NULL),(1006201,'1001',1,'外销','sale_out','djs_market_dest','','success','N',NULL,NULL,'2026-07-10 16:33:11',NULL,NULL,NULL),(1006202,'1001',2,'其他','other','djs_market_dest','','','N',NULL,NULL,'2026-07-10 16:33:11',NULL,NULL,NULL),(1006220,'1001',0,'无害化','harmless','djs_death_dest','','info','Y',NULL,NULL,'2026-07-10 16:33:11',NULL,NULL,NULL),(1006221,'1001',1,'食用','edible','djs_death_dest','','warning','N',NULL,NULL,'2026-07-10 16:33:11',NULL,NULL,NULL),(1006222,'1001',2,'其他','other','djs_death_dest','','','N',NULL,NULL,'2026-07-10 16:33:11',NULL,NULL,NULL),(1006230,'1001',0,'年龄','age','djs_culling_reason','','info','N',NULL,NULL,'2026-07-10 16:33:11',NULL,NULL,NULL),(1006231,'1001',1,'疾病','disease','djs_culling_reason','','danger','Y',NULL,NULL,'2026-07-10 16:33:11',NULL,NULL,NULL),(1006232,'1001',2,'性能','performance','djs_culling_reason','','warning','N',NULL,NULL,'2026-07-10 16:33:11',NULL,NULL,NULL),(1006233,'1001',3,'其他','other','djs_culling_reason','','','N',NULL,NULL,'2026-07-10 16:33:11',NULL,NULL,NULL),(1006240,'1001',0,'屠宰','slaughter','djs_culling_dest','','primary','Y',NULL,NULL,'2026-07-10 16:33:11',NULL,NULL,NULL),(1006241,'1001',1,'外卖','sale_out','djs_culling_dest','','success','N',NULL,NULL,'2026-07-10 16:33:11',NULL,NULL,NULL),(1006242,'1001',2,'无害化','harmless','djs_culling_dest','','info','N',NULL,NULL,'2026-07-10 16:33:11',NULL,NULL,NULL),(1006243,'1001',3,'其他','other','djs_culling_dest','','','N',NULL,NULL,'2026-07-10 16:33:11',NULL,NULL,NULL),(1006250,'1001',0,'本场公猪','1','djs_mating_method','','primary','Y',NULL,NULL,'2026-07-10 16:33:11',NULL,NULL,NULL),(1006251,'1001',1,'精液产品','2','djs_mating_method','','success','N',NULL,NULL,'2026-07-10 16:33:11',NULL,NULL,NULL),(1006300,'1001',0,'厨房','kitchen','djs_stock_out_dest','','primary','Y',NULL,NULL,'2026-07-10 16:33:11',NULL,NULL,NULL),(1006301,'1001',1,'矿山','mine','djs_stock_out_dest','','success','N',NULL,NULL,'2026-07-10 16:33:11',NULL,NULL,NULL),(1006302,'1001',2,'大冶门店','daye_store','djs_stock_out_dest','','warning','N',NULL,NULL,'2026-07-10 16:33:11',NULL,NULL,NULL),(1006303,'1001',3,'个人','personal','djs_stock_out_dest','','info','N',NULL,NULL,'2026-07-10 16:33:11',NULL,NULL,NULL),(1006304,'1001',4,'投喂','feed','djs_stock_out_dest','','success','N',NULL,NULL,'2026-07-10 16:33:12',NULL,NULL,'饲料领用出库去向：投喂给畜禽'),(1006305,'1001',5,'部门领用','dept','djs_stock_out_dest','','info','N',NULL,NULL,'2026-07-10 16:33:12',NULL,NULL,'采食领用出库去向：部门内部消耗（工人不选，前端固定传值）'),(1006306,'1001',6,'发货月台','ship_dock','djs_stock_out_dest','','warning','N',NULL,NULL,'2026-07-10 16:33:15',NULL,NULL,'FIX-WMS-FLOWDICT-001 发货 / 白条领去发货月台'),(1006307,'1001',7,'部门领用','dept_pick','djs_stock_out_dest','','info','N',NULL,NULL,'2026-07-10 16:33:15',NULL,NULL,'FIX-WMS-FLOWDICT-001 养殖/种植物资领用去向'),(1006308,'1001',8,'白条分割','bar_cut','djs_stock_out_dest','','primary','N',NULL,NULL,'2026-07-10 16:33:15',NULL,NULL,'FIX-WMS-FLOWDICT-001 白条出库去分割间'),(1006309,'1001',9,'生产领用','prod_pick','djs_stock_out_dest','','info','N',NULL,NULL,'2026-07-10 16:33:15',NULL,NULL,'FIX-WMS-FLOWDICT-001 仓库生产消耗去向'),(1006310,'1001',0,'返情','R','djs_abnormal','','warning','Y',NULL,NULL,'2026-07-10 16:33:11',NULL,NULL,NULL),(1006311,'1001',1,'流产','A','djs_abnormal','','danger','N',NULL,NULL,'2026-07-10 16:33:11',NULL,NULL,NULL),(1006312,'1001',2,'空怀','N','djs_abnormal','','info','N',NULL,NULL,'2026-07-10 16:33:11',NULL,NULL,NULL),(1006320,'1001',0,'配种失败','mating_fail','djs_null_return','','warning','Y',NULL,NULL,'2026-07-10 16:33:11',NULL,NULL,NULL),(1006321,'1001',1,'早期流产','early_abort','djs_null_return','','danger','N',NULL,NULL,'2026-07-10 16:33:11',NULL,NULL,NULL),(1006322,'1001',2,'胚胎死亡','embryo_death','djs_null_return','','danger','N',NULL,NULL,'2026-07-10 16:33:11',NULL,NULL,NULL),(1006323,'1001',3,'疾病影响','disease','djs_null_return','','danger','N',NULL,NULL,'2026-07-10 16:33:11',NULL,NULL,NULL),(1006324,'1001',4,'营养不良','malnutrition','djs_null_return','','info','N',NULL,NULL,'2026-07-10 16:33:11',NULL,NULL,NULL),(1006325,'1001',5,'其他','other','djs_null_return','','','N',NULL,NULL,'2026-07-10 16:33:11',NULL,NULL,NULL),(1006330,'1001',0,'猪瘟疫苗','classical_swine_fever','djs_vaccine_type','','primary','Y',NULL,NULL,'2026-07-10 16:33:11',NULL,NULL,NULL),(1006331,'1001',1,'口蹄疫疫苗','foot_mouth','djs_vaccine_type','','primary','N',NULL,NULL,'2026-07-10 16:33:11',NULL,NULL,NULL),(1006332,'1001',2,'蓝耳病疫苗','prrs','djs_vaccine_type','','success','N',NULL,NULL,'2026-07-10 16:33:11',NULL,NULL,NULL),(1006333,'1001',3,'伪狂犬疫苗','pseudorabies','djs_vaccine_type','','success','N',NULL,NULL,'2026-07-10 16:33:11',NULL,NULL,NULL),(1006334,'1001',4,'圆环病毒疫苗','circovirus','djs_vaccine_type','','warning','N',NULL,NULL,'2026-07-10 16:33:11',NULL,NULL,NULL),(1006335,'1001',5,'支原体疫苗','mycoplasma','djs_vaccine_type','','warning','N',NULL,NULL,'2026-07-10 16:33:11',NULL,NULL,NULL),(1006336,'1001',6,'细小病毒疫苗','parvovirus','djs_vaccine_type','','info','N',NULL,NULL,'2026-07-10 16:33:11',NULL,NULL,NULL),(1006337,'1001',7,'其他','other','djs_vaccine_type','','','N',NULL,NULL,'2026-07-10 16:33:11',NULL,NULL,NULL),(1006340,'1001',0,'正常死亡','normal','djs_death_kind','','info','Y',NULL,NULL,'2026-07-10 16:33:11',NULL,NULL,NULL),(1006341,'1001',1,'异常死亡','abnormal','djs_death_kind','','danger','N',NULL,NULL,'2026-07-10 16:33:11',NULL,NULL,NULL),(1006350,'1001',0,'阳性','POS','djs_heat_result','','success','Y',NULL,NULL,'2026-07-10 16:33:12',NULL,NULL,NULL),(1006351,'1001',1,'阴性','NEG','djs_heat_result','','info','N',NULL,NULL,'2026-07-10 16:33:12',NULL,NULL,NULL),(1006352,'1001',2,'待复查','PEND','djs_heat_result','','warning','N',NULL,NULL,'2026-07-10 16:33:12',NULL,NULL,NULL),(1006400,'1001',0,'杜洛克精液','DLK','djs_semen','','primary','Y',NULL,NULL,'2026-07-10 16:33:12',NULL,NULL,NULL),(1006401,'1001',1,'长白精液','CB','djs_semen','','success','N',NULL,NULL,'2026-07-10 16:33:12',NULL,NULL,NULL),(1006402,'1001',2,'大白精液','DB','djs_semen','','info','N',NULL,NULL,'2026-07-10 16:33:12',NULL,NULL,NULL),(1006403,'1001',3,'皮特兰精液','PTL','djs_semen','','warning','N',NULL,NULL,'2026-07-10 16:33:12',NULL,NULL,NULL),(1006410,'1001',10,'盘点计损','check_loss','djs_stock_out_dest','','danger','N',NULL,NULL,'2026-07-10 16:33:15',NULL,NULL,'FIX-WMS-FLOWDICT-002 盘点计损/异常出库去向（补 001 撞键漏插）'),(1006411,'1001',11,'冻品库','frozen_store','djs_stock_out_dest','','info','N',NULL,1,'2026-07-10 16:33:16',NULL,NULL,'FIX-WMS-TRANSFER-DEST 猪肉鲜品库→冻品库转移出库去向（row163）'),(1007000,'1001',0,'直营','direct','djs_store_type','','primary','Y',NULL,NULL,'2026-07-10 16:32:57',NULL,NULL,NULL),(1007001,'1001',1,'加盟','franchise','djs_store_type','','success','N',NULL,NULL,'2026-07-10 16:32:57',NULL,NULL,NULL),(1007010,'1001',0,'合作中','0','djs_supplier_status','','success','Y',NULL,NULL,'2026-07-10 16:32:57',NULL,NULL,NULL),(1007011,'1001',1,'已终止','1','djs_supplier_status','','danger','N',NULL,NULL,'2026-07-10 16:32:57',NULL,NULL,NULL),(1007020,'1001',0,'现款现货','cash','djs_settle_type','','primary','Y',NULL,NULL,'2026-07-10 16:32:57',NULL,NULL,NULL),(1007021,'1001',1,'月结','monthly','djs_settle_type','','warning','N',NULL,NULL,'2026-07-10 16:32:57',NULL,NULL,NULL),(1007022,'1001',2,'季结','quarterly','djs_settle_type','','info','N',NULL,NULL,'2026-07-10 16:32:57',NULL,NULL,NULL),(1007030,'1001',1,'毛菜处理损耗','veg_handle_loss','djs_loss_type','','warning','N',NULL,1,'2026-07-10 16:33:15',NULL,NULL,'果蔬：毛菜间称重−鲜品库入库−发往月台−饲喂'),(1007031,'1001',2,'运输损耗','transport_loss','djs_loss_type','','warning','N',NULL,1,'2026-07-10 16:33:15',NULL,NULL,'果蔬：发往月台重−月台接收重'),(1007032,'1001',3,'录入损耗','manual_loss','djs_loss_type','','info','N',NULL,1,'2026-07-10 16:33:15',NULL,NULL,'物资领用时手动录入的损耗量'),(1007033,'1001',4,'生产损耗','production_loss','djs_loss_type','','danger','N',NULL,1,'2026-07-10 16:33:15',NULL,NULL,'仅原材料：出库量−生产消耗−录入损耗−生产退回（操作人空）'),(1007034,'1001',5,'盘点损耗','check_loss','djs_loss_type','','danger','N',NULL,1,'2026-07-10 16:33:15',NULL,NULL,'盘点计损（盘亏）'),(1007035,'1001',6,'预冷损耗','precool_loss','djs_loss_type','','warning','N',NULL,1,'2026-07-10 16:33:15',NULL,NULL,'白条：入白条库重−出白条库重'),(1007036,'1001',7,'分割损耗','cut_loss','djs_loss_type','','warning','N',NULL,1,'2026-07-10 16:33:15',NULL,NULL,'白条：白条出库重−所有分割产品重量之和'),(1007037,'1001',8,'燎毛损耗','burn_loss','djs_loss_type','','warning','N',NULL,1,'2026-07-10 16:33:16',NULL,NULL,'白条：燎毛间接收重量[头皮肉重量]−燎毛入库产品重量之和'),(1007040,'1001',1,'毛菜间','veg_handle','djs_feed_type','','success','N',NULL,1,'2026-07-10 16:33:15',NULL,NULL,'毛菜处理间去向选饲料饲喂'),(1007041,'1001',2,'仓库','warehouse','djs_feed_type','','primary','N',NULL,1,'2026-07-10 16:33:15',NULL,NULL,'仓库物资领用选饲料饲喂'),(1007200,'1001',1,'分割车间','cut','djs_pig_cut_out_type','','primary','Y',NULL,1,'2026-07-10 16:33:17',NULL,NULL,''),(1007201,'1001',2,'发货月台','ship','djs_pig_cut_out_type','','success','N',NULL,1,'2026-07-10 16:33:17',NULL,NULL,''),(1007202,'1001',3,'仓库出库','warehouse','djs_pig_cut_out_type','','info','N',NULL,1,'2026-07-10 16:33:17',NULL,NULL,''),(1008000,'1001',1,'领用','use','djs_med_pick_action','','primary','Y',NULL,1,'2026-07-10 16:33:09',NULL,NULL,'BRD-MED-002'),(1008001,'1001',2,'退回','return','djs_med_pick_action','','success','N',NULL,1,'2026-07-10 16:33:09',NULL,NULL,'BRD-MED-002'),(1008002,'1001',3,'损耗','loss','djs_med_pick_action','','danger','N',NULL,1,'2026-07-10 16:33:09',NULL,NULL,'BRD-MED-002'),(1009010,'1001',1,'保健','health','djs_medicine_use_type','','success','N',NULL,1,NULL,NULL,NULL,'保健用药'),(1009011,'1001',2,'治疗','treatment','djs_medicine_use_type','','warning','Y',NULL,1,NULL,NULL,NULL,'治疗用药（默认）'),(1009012,'1001',3,'疫苗','vaccine','djs_medicine_use_type','','primary','N',NULL,1,NULL,NULL,NULL,'疫苗接种'),(1009020,'1001',1,'腹泻','diarrhea','djs_medicine_reason','','warning','N',NULL,1,NULL,NULL,NULL,'消化道症状'),(1009021,'1001',2,'发热','fever','djs_medicine_reason','','danger','N',NULL,1,NULL,NULL,NULL,'体温异常'),(1009022,'1001',3,'咳嗽','cough','djs_medicine_reason','','warning','N',NULL,1,NULL,NULL,NULL,'呼吸道症状'),(1009023,'1001',4,'皮肤病','skin','djs_medicine_reason','','info','N',NULL,1,NULL,NULL,NULL,'皮肤病变'),(1009024,'1001',5,'关节炎','arthritis','djs_medicine_reason','','info','N',NULL,1,NULL,NULL,NULL,'运动系统'),(1009025,'1001',6,'产后保健','postpartum','djs_medicine_reason','','success','N',NULL,1,NULL,NULL,NULL,'产后/恢复期'),(1009026,'1001',7,'预防保健','prevent','djs_medicine_reason','','success','N',NULL,1,NULL,NULL,NULL,'常规预防'),(1009027,'1001',8,'其他','other','djs_medicine_reason','','default','N',NULL,1,NULL,NULL,NULL,'其他原因'),(1009030,'1001',1,'拌料','mix_feed','djs_medicine_way','','primary','Y',NULL,1,NULL,NULL,NULL,'混入饲料（默认）'),(1009031,'1001',2,'饮水','in_water','djs_medicine_way','','primary','N',NULL,1,NULL,NULL,NULL,'混入饮用水'),(1009032,'1001',3,'注射','injection','djs_medicine_way','','warning','N',NULL,1,NULL,NULL,NULL,'肌肉/皮下/静脉注射'),(1009033,'1001',4,'口服','oral','djs_medicine_way','','primary','N',NULL,1,NULL,NULL,NULL,'直接口服'),(1009034,'1001',5,'喷雾','spray','djs_medicine_way','','info','N',NULL,1,NULL,NULL,NULL,'气雾给药'),(1009035,'1001',6,'涂抹','topical','djs_medicine_way','','info','N',NULL,1,NULL,NULL,NULL,'外用涂抹'),(1009040,'1001',1,'单只用药','1','djs_drug_type','','primary','Y',NULL,1,NULL,NULL,NULL,'一头猪一条记录'),(1009041,'1001',2,'批量主记录','2','djs_drug_type','','warning','N',NULL,1,NULL,NULL,NULL,'批量用药 master，pig_id=null'),(1009042,'1001',3,'批量明细记录','3','djs_drug_type','','info','N',NULL,1,NULL,NULL,NULL,'批量用药 detail，回指 master_id'),(1020000,'1001',1,'冻品','frozen','djs_location_type','','primary','N',NULL,1,'2026-07-10 16:33:09',NULL,NULL,NULL),(1020001,'1001',2,'蔬菜鲜品','veg_fresh','djs_location_type','','success','N',NULL,1,'2026-07-10 16:33:09',NULL,NULL,NULL),(1020002,'1001',6,'干货','dry_goods','djs_location_type','','warning','N',NULL,1,'2026-07-10 16:33:09',NULL,NULL,NULL),(1020003,'1001',7,'原材料','raw_material','djs_location_type','','info','N',NULL,1,'2026-07-10 16:33:09',NULL,NULL,NULL),(1020004,'1001',5,'药品','medicine','djs_location_type','','danger','N',NULL,1,'2026-07-10 16:33:09',NULL,NULL,NULL),(1020006,'1001',0,'白条','white_bar','djs_location_type','','danger','N',103,1,'2026-07-10 16:33:12',NULL,NULL,NULL),(1020007,'1001',3,'重口蔬菜','veg_heavy','djs_location_type','','success','N',103,1,'2026-07-10 16:33:12',NULL,NULL,NULL),(1020008,'1001',4,'包材','packaging','djs_location_type','','info','N',103,1,'2026-07-10 16:33:12',NULL,NULL,NULL),(1020010,'1001',0,'启用','1','djs_location_status','','success','Y',NULL,1,'2026-07-10 16:33:09',NULL,NULL,NULL),(1020011,'1001',1,'停用','2','djs_location_status','','info','N',NULL,1,'2026-07-10 16:33:09',NULL,NULL,NULL),(1020020,'1001',0,'正常','1','djs_check_result','','success','Y',NULL,1,'2026-07-10 16:33:09',NULL,NULL,NULL),(1020021,'1001',1,'异常','2','djs_check_result','','danger','N',NULL,1,'2026-07-10 16:33:09',NULL,NULL,NULL),(1020022,'1001',2,'计损','3','djs_check_result','','warning','N',NULL,1,'2026-07-10 16:33:09',NULL,NULL,NULL),(1020030,'1001',0,'自产','1','djs_product_type','','success','Y',NULL,1,'2026-07-10 16:33:10',NULL,NULL,NULL),(1020031,'1001',1,'外购','2','djs_product_type','','warning','N',NULL,1,'2026-07-10 16:33:10',NULL,NULL,NULL),(1020040,'1001',0,'猪肉产品','pork','djs_belong_type','','danger','N',NULL,1,'2026-07-10 16:33:10',NULL,NULL,NULL),(1020041,'1001',1,'果蔬产品','vegetable','djs_belong_type','','success','N',NULL,1,'2026-07-10 16:33:10',NULL,NULL,NULL),(1020042,'1001',2,'白条产品','white_bar','djs_belong_type','','warning','N',NULL,1,'2026-07-10 16:33:10',NULL,NULL,NULL),(1020043,'1001',3,'干货产品','dry_good','djs_belong_type','','info','N',NULL,1,'2026-07-10 16:33:10',NULL,NULL,NULL),(1020044,'1001',4,'鸡蛋产品','egg','djs_belong_type','','','N',NULL,1,'2026-07-10 16:33:10',NULL,NULL,NULL),(1020045,'1001',5,'礼盒产品','gift_box','djs_belong_type','','primary','N',NULL,1,'2026-07-10 16:33:10',NULL,NULL,NULL),(1020046,'1001',6,'包材','package','djs_belong_type','','info','N',NULL,1,'2026-07-10 16:33:11',NULL,NULL,'WMS-MAT-001'),(1020047,'1001',7,'采食原料','feed','djs_belong_type','','info','N',NULL,1,'2026-07-10 16:33:11',NULL,NULL,'WMS-MAT-001'),(1020048,'1001',8,'种子','seed','djs_belong_type','','info','N',NULL,1,'2026-07-10 16:33:11',NULL,NULL,'WMS-MAT-001'),(1020049,'1001',9,'其他','other','djs_belong_type','','info','N',NULL,1,'2026-07-10 16:33:15',NULL,NULL,'FIX-BELONG-TYPE-OTHER-SEED-001'),(1020050,'1001',0,'生产产品','1','djs_product_attr','','primary','Y',NULL,1,'2026-07-10 16:33:10',NULL,NULL,NULL),(1020051,'1001',1,'原材料','2','djs_product_attr','','info','N',NULL,1,'2026-07-10 16:33:10',NULL,NULL,NULL),(1020060,'1001',0,'燎毛间','1','djs_product_workshop','','danger','N',NULL,1,'2026-07-10 16:33:10',NULL,NULL,NULL),(1020061,'1001',1,'分割间','2','djs_product_workshop','','warning','N',NULL,1,'2026-07-10 16:33:10',NULL,NULL,NULL),(1020062,'1001',2,'肉品打包间','3','djs_product_workshop','','primary','N',NULL,1,'2026-07-10 16:33:10',NULL,NULL,NULL),(1020063,'1001',3,'蔬菜打包间','4','djs_product_workshop','','success','N',NULL,1,'2026-07-10 16:33:10',NULL,NULL,NULL),(1021000,'1001',0,'待处理','pending','djs_burn_status','','info','Y',NULL,1,'2026-07-10 16:33:10',NULL,NULL,NULL),(1021001,'1001',1,'已完成','done','djs_burn_status','','success','N',NULL,1,'2026-07-10 16:33:10',NULL,NULL,NULL),(1022000,'1001',0,'待燎毛','pending_singe','djs_bar_status','','info','Y',NULL,1,'2026-07-10 16:33:11',NULL,NULL,NULL),(1022001,'1001',1,'燎毛中','singing','djs_bar_status','','warning','N',NULL,1,'2026-07-10 16:33:11',NULL,NULL,NULL),(1022003,'1001',3,'已入库','in_stock','djs_bar_status','','success','N',NULL,1,'2026-07-10 16:33:11',NULL,NULL,NULL),(1022004,'1001',4,'待分割','pending_cut','djs_bar_status','','info','N',NULL,1,'2026-07-10 16:33:11',NULL,NULL,NULL),(1022005,'1001',5,'分割中','cutting','djs_bar_status','','warning','N',NULL,1,'2026-07-10 16:33:11',NULL,NULL,NULL),(1022006,'1001',6,'分割完成','cut_done','djs_bar_status','','success','N',NULL,1,'2026-07-10 16:33:11',NULL,NULL,NULL),(1022100,'1001',0,'燎毛间','1','djs_bar_in_method','','primary','Y',NULL,1,'2026-07-10 16:33:11',NULL,NULL,NULL),(1022101,'1001',1,'分割间','2','djs_bar_in_method','','success','N',NULL,1,'2026-07-10 16:33:11',NULL,NULL,NULL),(1022200,'1001',0,'发货领用','1','djs_bar_out_method','','primary','Y',NULL,1,'2026-07-10 16:33:11',NULL,NULL,NULL),(1022201,'1001',1,'分割间','2','djs_bar_out_method','','success','N',NULL,1,'2026-07-10 16:33:11',NULL,NULL,NULL),(1022202,'1001',2,'后台出库','3','djs_bar_out_method',NULL,'default','N',NULL,1,'2026-07-10 16:33:16',NULL,NULL,'row17 仓库出库=矿山/厨房直接取走，终态 out_method=3'),(1022300,'1001',0,'精瘦肉','lean','djs_pig_cut_part','','success','Y',NULL,1,'2026-07-10 16:33:11',NULL,NULL,NULL),(1022301,'1001',1,'部位肉','part','djs_pig_cut_part','','success','N',NULL,1,'2026-07-10 16:33:11',NULL,NULL,NULL),(1022302,'1001',2,'骨类','bone','djs_pig_cut_part','','info','N',NULL,1,'2026-07-10 16:33:11',NULL,NULL,NULL),(1022303,'1001',3,'猪皮','skin','djs_pig_cut_part','','info','N',NULL,1,'2026-07-10 16:33:11',NULL,NULL,NULL),(1022304,'1001',4,'碎料','scrap','djs_pig_cut_part','','warning','N',NULL,1,'2026-07-10 16:33:11',NULL,NULL,NULL),(1022400,'1001',0,'待打包','pending','djs_pack_status','','info','Y',NULL,1,'2026-07-10 16:33:11',NULL,NULL,NULL),(1022401,'1001',1,'已打包','packed','djs_pack_status','','success','N',NULL,1,'2026-07-10 16:33:11',NULL,NULL,NULL),(1022402,'1001',2,'已出库待发货','shipped_out','djs_pack_status','','warning','N',NULL,1,'2026-07-10 16:33:11',NULL,NULL,NULL),(1022500,'1001',0,'仓库','1','djs_produce_location','','primary','Y',NULL,1,'2026-07-10 16:33:11',NULL,NULL,NULL),(1022501,'1001',1,'门店','2','djs_produce_location','','success','N',NULL,1,'2026-07-10 16:33:11',NULL,NULL,NULL),(1022600,'1001',0,'发货','1','djs_deliver_type','','primary','Y',NULL,1,'2026-07-10 16:33:11',NULL,NULL,NULL),(1022601,'1001',1,'邮寄','2','djs_deliver_type','','warning','N',NULL,1,'2026-07-10 16:33:11',NULL,NULL,NULL),(1022602,'1001',2,'销售','3','djs_deliver_type','','success','N',NULL,1,'2026-07-10 16:33:11',NULL,NULL,NULL),(1022700,'1001',0,'发货月台','platform','djs_pack_send_dest','','primary','Y',NULL,1,'2026-07-10 16:33:13',NULL,NULL,'送发货月台'),(1022701,'1001',1,'邮寄','mail','djs_pack_send_dest','','warning','N',NULL,1,'2026-07-10 16:33:13',NULL,NULL,'个人邮寄'),(1022702,'1001',2,'礼盒','gift','djs_pack_send_dest','','success','N',NULL,1,'2026-07-10 16:33:13',NULL,NULL,'礼盒装'),(1023000,'1001',0,'待处理','pending','djs_veg_handle_status','','info','Y',NULL,1,'2026-07-10 16:33:11',NULL,NULL,NULL),(1023001,'1001',1,'处理中','processing','djs_veg_handle_status','','warning','N',NULL,1,'2026-07-10 16:33:11',NULL,NULL,NULL),(1023002,'1001',2,'已完成','done','djs_veg_handle_status','','success','N',NULL,1,'2026-07-10 16:33:11',NULL,NULL,NULL),(1023100,'1001',0,'采收','1','djs_record_type','','primary','Y',NULL,1,'2026-07-10 16:33:11',NULL,NULL,NULL),(1023101,'1001',1,'处理','2','djs_record_type','','success','N',NULL,1,'2026-07-10 16:33:11',NULL,NULL,NULL),(1025000,'1001',0,'上旬','05','djs_plant_period','','info','Y',NULL,1,'2026-07-10 16:33:11',NULL,NULL,NULL),(1025001,'1001',1,'中旬','15','djs_plant_period','','primary','N',NULL,1,'2026-07-10 16:33:11',NULL,NULL,NULL),(1025002,'1001',2,'下旬','25','djs_plant_period','','success','N',NULL,1,'2026-07-10 16:33:11',NULL,NULL,NULL),(1025100,'1001',0,'待开始','pending','djs_pick_status','','info','Y',NULL,1,'2026-07-10 16:33:11',NULL,NULL,NULL),(1025101,'1001',1,'采摘中','picking','djs_pick_status','','warning','N',NULL,1,'2026-07-10 16:33:11',NULL,NULL,NULL),(1025102,'1001',2,'已完成','completed','djs_pick_status','','success','N',NULL,1,'2026-07-10 16:33:11',NULL,NULL,NULL),(1025103,'1001',3,'延期','delayed','djs_pick_status','','danger','N',NULL,1,'2026-07-10 16:33:11',NULL,NULL,NULL),(1025200,'1001',0,'待开始','pending','djs_plant_plan_status','','info','Y',NULL,1,'2026-07-10 16:33:11',NULL,NULL,NULL),(1025201,'1001',1,'执行中','ongoing','djs_plant_plan_status','','primary','N',NULL,1,'2026-07-10 16:33:11',NULL,NULL,NULL),(1025202,'1001',2,'已完成','completed','djs_plant_plan_status','','success','N',NULL,1,'2026-07-10 16:33:11',NULL,NULL,NULL),(1025203,'1001',3,'延期','delayed','djs_plant_plan_status','','danger','N',NULL,1,'2026-07-10 16:33:11',NULL,NULL,NULL),(1026000,'1001',0,'翻耕','tillage_break','djs_farm_work_type','','info','Y',NULL,1,'2026-07-10 16:33:11',NULL,NULL,'空地阶段'),(1026001,'1001',1,'整地','tillage_prepare','djs_farm_work_type','','info','N',NULL,1,'2026-07-10 16:33:11',NULL,NULL,'空地阶段，特殊字段 tillage_type/method'),(1026002,'1001',2,'施肥','fertilize','djs_farm_work_type','','info','N',NULL,1,'2026-07-10 16:33:11',NULL,NULL,'空地阶段'),(1026003,'1001',3,'移栽','transplant','djs_farm_work_type','','primary','N',NULL,1,'2026-07-10 16:33:11',NULL,NULL,'生长阶段独立画布，特殊字段 transplant_plot/percent'),(1026004,'1001',4,'水肥','water_fertilize','djs_farm_work_type','','primary','N',NULL,1,'2026-07-10 16:33:11',NULL,NULL,'生长阶段'),(1026005,'1001',5,'浇灌','irrigation','djs_farm_work_type','','primary','N',NULL,1,'2026-07-10 16:33:11',NULL,NULL,'生长阶段'),(1026006,'1001',6,'除草','weed','djs_farm_work_type','','primary','N',NULL,1,'2026-07-10 16:33:11',NULL,NULL,'生长阶段'),(1026007,'1001',7,'病虫防治','pest_control','djs_farm_work_type','','primary','N',NULL,1,'2026-07-10 16:33:11',NULL,NULL,'生长阶段'),(1026008,'1001',8,'整枝绑蔓','pruning','djs_farm_work_type','','primary','N',NULL,1,'2026-07-10 16:33:11',NULL,NULL,'生长阶段'),(1026009,'1001',9,'退茬','rotation','djs_farm_work_type','','primary','N',NULL,1,'2026-07-10 16:33:11',NULL,NULL,'生长阶段；触发 plot_info.plot_status=1 + plant_details.plant_status=completed'),(1026010,'1001',10,'灾害损失','disaster','djs_farm_work_type','','danger','N',NULL,1,'2026-07-10 16:33:11',NULL,NULL,'独立画布；触发 plant_details.loss_yield 累加'),(1026011,'1001',11,'采摘活动','harvest_activity','djs_farm_work_type','','success','N',NULL,1,'2026-07-10 16:33:11',NULL,NULL,'生长阶段游客采摘活动登记'),(1026012,'1001',12,'采收','harvest','djs_farm_work_type','','primary','N',NULL,1,'2026-07-10 16:33:14',NULL,NULL,'普通采收 is_pick=2，区别于游客采摘活动 harvest_activity'),(1026100,'1001',0,'深耕','deep','djs_tillage_type','','primary','Y',NULL,1,'2026-07-10 16:33:11',NULL,NULL,NULL),(1026101,'1001',1,'浅耕','shallow','djs_tillage_type','','info','N',NULL,1,'2026-07-10 16:33:11',NULL,NULL,NULL),(1026102,'1001',2,'旋耕','rotary','djs_tillage_type','','success','N',NULL,1,'2026-07-10 16:33:11',NULL,NULL,NULL),(1026103,'1001',3,'深松','spike','djs_tillage_type','','warning','N',NULL,1,'2026-07-10 16:33:11',NULL,NULL,NULL),(1026200,'1001',0,'人工','manual','djs_tillage_way','','info','Y',NULL,1,'2026-07-10 16:33:11',NULL,NULL,NULL),(1026201,'1001',1,'机械','machine','djs_tillage_way','','primary','N',NULL,1,'2026-07-10 16:33:11',NULL,NULL,NULL),(1026202,'1001',2,'混合','mixed','djs_tillage_way','','success','N',NULL,1,'2026-07-10 16:33:11',NULL,NULL,NULL),(1026300,'1001',0,'虫害','insect','djs_disaster_type','','warning','Y',NULL,1,'2026-07-10 16:33:11',NULL,NULL,NULL),(1026301,'1001',1,'风灾','wind','djs_disaster_type','','warning','N',NULL,1,'2026-07-10 16:33:11',NULL,NULL,NULL),(1026302,'1001',2,'洪涝','flood','djs_disaster_type','','danger','N',NULL,1,'2026-07-10 16:33:11',NULL,NULL,NULL),(1026303,'1001',3,'干旱','drought','djs_disaster_type','','danger','N',NULL,1,'2026-07-10 16:33:11',NULL,NULL,NULL),(1026304,'1001',4,'病害','disease','djs_disaster_type','','danger','N',NULL,1,'2026-07-10 16:33:11',NULL,NULL,NULL),(1027000,'1001',8,'种植库','crop_loc','djs_location_type','','success','N',103,1,'2026-07-10 16:33:14',NULL,NULL,NULL),(1027001,'1001',9,'养殖库','farm_loc','djs_location_type','','primary','N',103,1,'2026-07-10 16:33:14',NULL,NULL,NULL),(1027010,'1001',1,'原料','raw','djs_buy_class','','primary','N',103,1,'2026-07-10 16:33:14',NULL,NULL,NULL),(1027011,'1001',2,'饲料','feed','djs_buy_class','','success','N',103,1,'2026-07-10 16:33:14',NULL,NULL,NULL),(1027012,'1001',3,'药品','medicine','djs_buy_class','','danger','N',103,1,'2026-07-10 16:33:14',NULL,NULL,NULL),(1027013,'1001',4,'肥料','fertilizer','djs_buy_class','','warning','N',103,1,'2026-07-10 16:33:14',NULL,NULL,NULL),(1027014,'1001',5,'农药','pesticide','djs_buy_class','','danger','N',103,1,'2026-07-10 16:33:14',NULL,NULL,NULL),(1027015,'1001',6,'种子','seed','djs_buy_class','','success','N',103,1,'2026-07-10 16:33:14',NULL,NULL,NULL),(1027016,'1001',7,'设备','equipment','djs_buy_class','','info','N',103,1,'2026-07-10 16:33:14',NULL,NULL,NULL),(1027017,'1001',8,'包材','packaging','djs_buy_class','','info','N',103,1,'2026-07-10 16:33:14',NULL,NULL,NULL),(1027018,'1001',9,'其他','other','djs_buy_class','','info','N',103,1,'2026-07-10 16:33:14',NULL,NULL,NULL),(1028000,'1001',10,'仓库库','warehouse','djs_location_type','','info','N',103,1,'2026-07-10 16:33:17',NULL,NULL,NULL),(1028010,'1001',7,'礼盒打包间','7','djs_product_workshop','','primary','N',103,1,'2026-07-10 16:33:17',NULL,NULL,NULL),(1028020,'1001',1,'胀气','1','djs_death_reason','','default','N',103,1,'2026-07-10 16:33:17',NULL,NULL,NULL),(1028021,'1001',2,'回肠炎','2','djs_death_reason','','default','N',103,1,'2026-07-10 16:33:17',NULL,NULL,NULL),(1028022,'1001',3,'急性胸膜肺炎','3','djs_death_reason','','default','N',103,1,'2026-07-10 16:33:17',NULL,NULL,NULL),(1028023,'1001',4,'高烧','4','djs_death_reason','','default','N',103,1,'2026-07-10 16:33:17',NULL,NULL,NULL),(1028024,'1001',5,'腹泻','5','djs_death_reason','','default','N',103,1,'2026-07-10 16:33:17',NULL,NULL,NULL),(1028025,'1001',6,'呼吸道问题','6','djs_death_reason','','default','N',103,1,'2026-07-10 16:33:17',NULL,NULL,NULL),(1028026,'1001',7,'瘦弱(长期不食)','7','djs_death_reason','','default','N',103,1,'2026-07-10 16:33:17',NULL,NULL,NULL),(1028027,'1001',8,'皮肤苍白','8','djs_death_reason','','default','N',103,1,'2026-07-10 16:33:17',NULL,NULL,NULL),(1028028,'1001',9,'神经症状','9','djs_death_reason','','default','N',103,1,'2026-07-10 16:33:17',NULL,NULL,NULL),(1028029,'1001',10,'突然死亡','10','djs_death_reason','','default','N',103,1,'2026-07-10 16:33:17',NULL,NULL,NULL),(1030010,'1001',0,'空闲','1','djs_plot_status','','info','Y',NULL,1,'2026-07-10 16:33:10',NULL,NULL,NULL),(1030011,'1001',1,'种植','2','djs_plot_status','','success','N',NULL,1,'2026-07-10 16:33:10',NULL,NULL,NULL),(1030012,'1001',2,'采摘','3','djs_plot_status','','warning','N',NULL,1,'2026-07-10 16:33:10',NULL,NULL,NULL),(1030020,'1001',0,'春季','spring','djs_planting_season','','success','Y',NULL,1,'2026-07-10 16:33:10',NULL,NULL,NULL),(1030021,'1001',1,'夏季','summer','djs_planting_season','','danger','N',NULL,1,'2026-07-10 16:33:10',NULL,NULL,NULL),(1030022,'1001',2,'秋季','autumn','djs_planting_season','','warning','N',NULL,1,'2026-07-10 16:33:10',NULL,NULL,NULL),(1030023,'1001',3,'冬季','winter','djs_planting_season','','info','N',NULL,1,'2026-07-10 16:33:10',NULL,NULL,NULL),(1030040,'1001',0,'自用','1','djs_plot_lease','','info','Y',NULL,1,'2026-07-10 16:33:13',NULL,NULL,NULL),(1030041,'1001',1,'租赁','2','djs_plot_lease','','warning','N',NULL,1,'2026-07-10 16:33:13',NULL,NULL,NULL),(1031000,'1001',0,'启用','1','djs_common_status','','success','Y',NULL,1,'2026-07-10 16:33:10',NULL,NULL,NULL),(1031001,'1001',1,'停用','2','djs_common_status','','info','N',NULL,1,'2026-07-10 16:33:10',NULL,NULL,NULL),(1031100,'1001',1,'待领用','pending_pickup','djs_pig_cut_status','','info','Y',NULL,1,'2026-07-10 16:33:12',NULL,NULL,NULL),(1031101,'1001',2,'已领用','picked','djs_pig_cut_status','','warning','N',NULL,1,'2026-07-10 16:33:12',NULL,NULL,NULL),(1031102,'1001',3,'分割中','cutting','djs_pig_cut_status','','warning','N',NULL,1,'2026-07-10 16:33:12',NULL,NULL,NULL),(1031103,'1001',4,'已完成','done','djs_pig_cut_status','','success','N',NULL,1,'2026-07-10 16:33:12',NULL,NULL,NULL),(1088001,'1001',0,'ml','ml','djs_medicine_unit','','primary','Y',NULL,1,'2026-07-10 16:33:16',NULL,NULL,'默认'),(1088002,'1001',1,'L','L','djs_medicine_unit','','default','N',NULL,1,'2026-07-10 16:33:16',NULL,NULL,''),(1088003,'1001',2,'mg','mg','djs_medicine_unit','','default','N',NULL,1,'2026-07-10 16:33:16',NULL,NULL,''),(1088004,'1001',3,'g','g','djs_medicine_unit','','default','N',NULL,1,'2026-07-10 16:33:16',NULL,NULL,''),(1088005,'1001',4,'kg','kg','djs_medicine_unit','','default','N',NULL,1,'2026-07-10 16:33:16',NULL,NULL,''),(1088006,'1001',5,'片','片','djs_medicine_unit','','default','N',NULL,1,'2026-07-10 16:33:16',NULL,NULL,''),(1089001,'1001',0,'销售','sale','djs_pick_dest','','primary','Y',NULL,1,'2026-07-10 16:33:16',NULL,NULL,'不写仓库库存，只进产量分摊'),(1089002,'1001',1,'毛菜保鲜室','veg_fresh','djs_pick_dest','','success','N',NULL,1,'2026-07-10 16:33:16',NULL,NULL,'复用毛菜处理入库（L0006 + location_stock）'),(1089003,'1001',2,'果蔬月台','platform','djs_pick_dest','','success','N',NULL,1,'2026-07-10 16:33:16',NULL,NULL,'复用毛菜处理月台（send_platform）'),(1089004,'1001',3,'损耗','loss','djs_pick_dest','','warning','N',NULL,1,'2026-07-10 16:33:16',NULL,NULL,'写 loss_flow'),(1089005,'1001',4,'饲料饲喂','feed','djs_pick_dest','','info','N',NULL,1,'2026-07-10 16:33:16',NULL,NULL,'复用毛菜处理饲料台账'),(9204030,'1001',0,'待确认','SUBMITTED','djs_store_demand_status','','warning','N',NULL,1,'2026-07-10 16:33:14',NULL,NULL,'仓库 SUBMITTED 映射'),(9204031,'1001',1,'已确认','CONFIRMED','djs_store_demand_status','','primary','N',NULL,1,'2026-07-10 16:33:14',NULL,NULL,'仓库 CONFIRMED 未收货'),(9204032,'1001',2,'已发货','SHIPPED','djs_store_demand_status','','success','N',NULL,1,'2026-07-10 16:33:14',NULL,NULL,'仓库 PARTIAL_SHIPPED/COMPLETED 未收货'),(9204033,'1001',3,'确认到店','ARRIVED','djs_store_demand_status','','success','N',NULL,1,'2026-07-10 16:33:14',NULL,NULL,'已收货 received_time!=null'),(9204034,'1001',4,'已删除','DELETED','djs_store_demand_status','','info','N',NULL,1,'2026-07-10 16:33:14',NULL,NULL,'仓库 DELETED/CANCELLED 映射'),(92040201,'1001',1,'白条','white_bar','djs_demand_product_type','','danger','Y',NULL,1,NULL,NULL,NULL,'需指定猪只'),(92040202,'1001',2,'猪','pig','djs_demand_product_type','','danger','N',NULL,1,NULL,NULL,NULL,'需指定猪只'),(92040203,'1001',3,'果蔬','vegetable','djs_demand_product_type','','success','N',NULL,1,NULL,NULL,NULL,''),(92040204,'1001',4,'干货','dry','djs_demand_product_type','','info','N',NULL,1,NULL,NULL,NULL,''),(92040205,'1001',5,'鸡蛋','egg','djs_demand_product_type','','warning','N',NULL,1,NULL,NULL,NULL,''),(92040206,'1001',6,'礼盒','gift_box','djs_demand_product_type','','warning','N',NULL,1,NULL,NULL,NULL,'内部使用'),(92040207,'1001',7,'其他','other','djs_demand_product_type','','info','N',NULL,1,NULL,NULL,NULL,''),(92060101,'1001',1,'待发货','pending','djs_shipment_status','','info','Y',NULL,1,NULL,NULL,NULL,'初始态'),(92060102,'1001',2,'清点中','checking','djs_shipment_status','','warning','N',NULL,1,NULL,NULL,NULL,'工人正在清点'),(92060103,'1001',3,'已发车','shipped','djs_shipment_status','','primary','N',NULL,1,NULL,NULL,NULL,'清点完成 + 上车'),(92060104,'1001',4,'已到货','delivered','djs_shipment_status','','success','N',NULL,1,NULL,NULL,NULL,'门店签收（CROSS-FLOW-003 触发）'),(92060201,'1001',1,'顾客→门店','customer_to_store','djs_return_direction','','info','N',NULL,1,NULL,NULL,NULL,'V1 仅录入占位，不联动 stock_flow'),(92060202,'1001',2,'门店→仓库','store_to_warehouse','djs_return_direction','','primary','Y',NULL,1,NULL,NULL,NULL,'V1 主路径，联动 stock_flow return_in'),(92060203,'1001',3,'仓库→供应商','warehouse_to_supplier','djs_return_direction','','warning','N',NULL,1,NULL,NULL,NULL,'V1 仅录入占位，不联动 stock_flow'),(92060301,'1001',1,'待确认','pending','djs_return_status','','info','Y',NULL,1,NULL,NULL,NULL,'mp 工人 / 顾客提交后初始态'),(92060302,'1001',2,'已确认','confirmed','djs_return_status','','success','N',NULL,1,NULL,NULL,NULL,'admin 复核通过 + 联动 stock_flow'),(92060303,'1001',3,'已驳回','rejected','djs_return_status','','danger','N',NULL,1,NULL,NULL,NULL,'admin 驳回不入库'),(92065001,'1001',1,'待仓库确认','pending','djs_store_return_status','','warning','Y',NULL,1,NULL,NULL,NULL,'退回操作提交后初始态'),(92065002,'1001',2,'已入库','received','djs_store_return_status','','success','N',NULL,1,NULL,NULL,NULL,'仓库确认实收 + 联动外购入库'),(92066001,'1001',1,'门店','store','djs_demand_mailing_type','','primary','Y',NULL,1,NULL,NULL,NULL,'门店自取/配送'),(92066002,'1001',2,'个人邮寄','mailing','djs_demand_mailing_type','','warning','N',NULL,1,NULL,NULL,NULL,'个人邮寄'),(92067001,'1001',1,'前腿肉','前腿肉','djs_pork_cut_product','','primary','Y',NULL,1,NULL,NULL,NULL,'STORE-TRACE-ONSITE-001'),(92067002,'1001',2,'五花肉','五花肉','djs_pork_cut_product','','primary','N',NULL,1,NULL,NULL,NULL,'STORE-TRACE-ONSITE-001'),(92067003,'1001',3,'排骨','排骨','djs_pork_cut_product','','primary','N',NULL,1,NULL,NULL,NULL,'STORE-TRACE-ONSITE-001'),(92067004,'1001',4,'肘子','肘子','djs_pork_cut_product','','primary','N',NULL,1,NULL,NULL,NULL,'STORE-TRACE-ONSITE-001'),(92067005,'1001',5,'大排','大排','djs_pork_cut_product','','primary','N',NULL,1,NULL,NULL,NULL,'STORE-TRACE-ONSITE-001'),(102450000,'1001',0,'领用出库','pick_out','djs_flow_type','','warning','Y',NULL,1,'2026-07-10 16:33:11',NULL,NULL,'WMS-MAT-001'),(102450001,'1001',1,'退回入库','return_in','djs_flow_type','','success','N',NULL,1,'2026-07-10 16:33:11',NULL,NULL,'WMS-MAT-001'),(102450002,'1001',2,'损耗','loss','djs_flow_type','','danger','N',NULL,1,'2026-07-10 16:33:11',NULL,NULL,'WMS-MAT-001'),(102450003,'1001',3,'白条出库','cut_out','djs_flow_type','','warning','N',NULL,1,'2026-07-10 16:33:11',NULL,NULL,'WMS-MAT-001'),(102450004,'1001',4,'分割间入库','cut_out_in','djs_flow_type','','success','N',NULL,1,'2026-07-10 16:33:11',NULL,NULL,'WMS-MAT-001'),(102450005,'1001',5,'毛菜间入库','veg_stock_in','djs_flow_type','','success','N',NULL,1,'2026-07-10 16:33:11',NULL,NULL,'WMS-MAT-001'),(102450006,'1001',6,'白条入库','bar_in_stock','djs_flow_type','','success','N',NULL,1,'2026-07-10 16:33:11',NULL,NULL,'WMS-MAT-001'),(102450007,'1001',7,'燎毛间入库','slaughter_burn','djs_flow_type','','warning','N',NULL,1,'2026-07-10 16:33:11',NULL,NULL,'WMS-MAT-001'),(102450008,'1001',8,'发货出库','ship_out','djs_flow_type','','warning','N',NULL,1,'2026-07-10 16:33:11',NULL,NULL,'WMS-MAT-001'),(102450009,'1001',9,'盘盈入库','check_in','djs_flow_type','','success','N',NULL,1,'2026-07-10 16:33:11',NULL,NULL,'WMS-MAT-001'),(102450010,'1001',10,'盘点计损出库','check_out','djs_flow_type','','danger','N',NULL,1,'2026-07-10 16:33:11',NULL,NULL,'WMS-MAT-001'),(102450011,'1001',11,'供应商入库','supplier_in','djs_flow_type','','primary','N',NULL,1,'2026-07-10 16:33:11',NULL,NULL,'WMS-MAT-001'),(102450012,'1001',12,'其他','other','djs_flow_type','','info','N',NULL,1,'2026-07-10 16:33:11',NULL,NULL,'WMS-MAT-001'),(102450013,'1001',13,'采购入库','purchase_in','djs_flow_type','','primary','N',NULL,1,'2026-07-10 16:33:11',NULL,NULL,'D9 hotfix 采购入库简化版'),(102450014,'1001',14,'打包入库','pack_in','djs_flow_type','','success','N',NULL,1,'2026-07-10 16:33:12',NULL,NULL,'WMS-FLOW-001 补 D10 打包成品入库'),(102450015,'1001',15,'打包消耗','pack_consume','djs_flow_type','','warning','N',NULL,1,'2026-07-10 16:33:12',NULL,NULL,'WMS-FLOW-001 补 D10 礼盒组件消耗出库'),(102450016,'1001',16,'果蔬月台入库','veg_receive_in','djs_flow_type','','success','N',NULL,1,'2026-07-10 16:33:12',NULL,NULL,'FIX-WMS-VEGRECEIVE-001 自产果蔬月台收货入库'),(102450017,'1001',17,'外购产品月台入库','veg_purchase_in','djs_flow_type','','success','N',NULL,1,'2026-07-10 16:33:12',NULL,NULL,'FIX-WMS-VEGRECEIVE-001 外购果蔬验收入库'),(102450018,'1001',18,'退货入库','return_goods_in','djs_flow_type','','primary','N',NULL,1,'2026-07-10 16:33:13',NULL,NULL,'DJS-FIX-WMS-RALN-B 入库记录入库方式'),(102450019,'1001',19,'后台出库','backstage_out','djs_flow_type','','info','N',NULL,1,'2026-07-10 16:33:13',NULL,NULL,'DJS-FIX-WMS-RALN-B 出库记录出库方式'),(102450020,'1001',20,'门店退回','store_return_in','djs_flow_type','','success','N',NULL,1,'2026-07-10 16:33:15',NULL,NULL,'FIX-WMS-FLOWDICT-001 门店退货入库（ReturnProductServiceImpl）'),(102450021,'1001',21,'生产退回','prod_return_in','djs_flow_type','','success','N',NULL,1,'2026-07-10 16:33:15',NULL,NULL,'FIX-WMS-FLOWDICT-001 仓库生产退回（暂无写入点，待 BO 补来源字段）'),(102450022,'1001',22,'部门退回','pick_return_in','djs_flow_type','','success','N',NULL,1,'2026-07-10 16:33:15',NULL,NULL,'FIX-WMS-FLOWDICT-001 物资领用退回（MatFlowServiceImpl.returnBack）'),(102450023,'1001',23,'盘点异常出库','check_abnormal_out','djs_flow_type','','danger','N',NULL,1,'2026-07-10 16:33:15',NULL,NULL,'FIX-WMS-FLOWDICT-001 盘亏且 check_result=异常(2)'),(102450024,'1001',24,'部门领用','dept_pick_out','djs_flow_type','','warning','N',NULL,1,'2026-07-10 16:33:15',NULL,NULL,'FIX-WMS-FLOWDICT-001 养殖/种植物资领用（暂无来源区分，待 BO 补字段）'),(102450025,'1001',25,'生产领用','prod_pick_out','djs_flow_type','','warning','N',NULL,1,'2026-07-10 16:33:15',NULL,NULL,'FIX-WMS-FLOWDICT-001 仓库生产消耗（礼盒打包组件 pack_consume 归此）'),(102450026,'1001',26,'饲料出库','feed_out','djs_flow_type','','warning','N',NULL,1,'2026-07-10 16:33:15',NULL,NULL,'FIX-WMS-FLOWDICT-001 belong_type=feed 的领用出库'),(102450027,'1001',27,'转移出库','transfer_out','djs_flow_type','','warning','N',NULL,1,'2026-07-10 16:33:16',NULL,NULL,'WS13 猪肉鲜品库转移出库（PigTransfer 源侧）'),(102450028,'1001',28,'转移入库','transfer_in','djs_flow_type','','success','N',NULL,1,'2026-07-10 16:33:16',NULL,NULL,'WS13 冻品库转移入库（PigTransfer 目标侧）'),(102451000,'1001',0,'自产','1','djs_in_type','','primary','Y',NULL,1,'2026-07-10 16:33:11',NULL,NULL,'WMS-MAT-001'),(102451001,'1001',1,'供应商','2','djs_in_type','','success','N',NULL,1,'2026-07-10 16:33:11',NULL,NULL,'WMS-MAT-001'),(102452000,'1001',0,'包材','package','djs_mat_type','','info','Y',NULL,1,'2026-07-10 16:33:11',NULL,NULL,'WMS-MAT-001'),(102452001,'1001',1,'白条','white_bar','djs_mat_type','','warning','N',NULL,1,'2026-07-10 16:33:11',NULL,NULL,'WMS-MAT-001'),(102452002,'1001',2,'蔬菜','vegetable','djs_mat_type','','success','N',NULL,1,'2026-07-10 16:33:11',NULL,NULL,'WMS-MAT-001'),(102452003,'1001',3,'鸡蛋','egg','djs_mat_type','','info','N',NULL,1,'2026-07-10 16:33:11',NULL,NULL,'WMS-MAT-001'),(102452004,'1001',4,'干货','dry_good','djs_mat_type','','info','N',NULL,1,'2026-07-10 16:33:11',NULL,NULL,'WMS-MAT-001'),(102452005,'1001',5,'果蔬','fruit_veg','djs_mat_type','','success','N',NULL,1,'2026-07-10 16:33:11',NULL,NULL,'WMS-MAT-001'),(102452006,'1001',6,'采食原料','feed','djs_mat_type','','info','N',NULL,1,'2026-07-10 16:33:11',NULL,NULL,'WMS-MAT-001'),(102452007,'1001',7,'药品','medicine','djs_mat_type','','danger','N',NULL,1,'2026-07-10 16:33:11',NULL,NULL,'WMS-MAT-001'),(102452008,'1001',8,'种子','seed','djs_mat_type','','info','N',NULL,1,'2026-07-10 16:33:11',NULL,NULL,'WMS-MAT-001'),(102452101,'1001',0,'启用','1','djs_active_status','','primary','Y',NULL,NULL,'2026-07-10 16:33:12',NULL,NULL,'STR-OP-001'),(102452102,'1001',1,'停用','2','djs_active_status','','danger','N',NULL,NULL,'2026-07-10 16:33:12',NULL,NULL,'STR-OP-001'),(102452103,'1001',0,'手录','manual','djs_sale_source','','primary','Y',NULL,NULL,'2026-07-10 16:33:12',NULL,NULL,'STR-OP-001'),(102452104,'1001',1,'Excel导入','excel_import','djs_sale_source','','info','N',NULL,NULL,'2026-07-10 16:33:12',NULL,NULL,'STR-OP-001'),(102453000,'1001',0,'入库','IN','djs_inout_type','','success','Y',NULL,1,'2026-07-10 16:33:12',NULL,NULL,'WMS-FLOW-001'),(102453001,'1001',1,'出库','OT','djs_inout_type','','warning','N',NULL,1,'2026-07-10 16:33:12',NULL,NULL,'WMS-FLOW-001'),(102454000,'1001',0,'猪肉','pork','djs_trace_code_type','','danger','N',NULL,1,'2026-07-10 16:33:12',NULL,NULL,'TRC-CORE-001'),(102454001,'1001',1,'果蔬','veg','djs_trace_code_type','','success','N',NULL,1,'2026-07-10 16:33:12',NULL,NULL,'TRC-CORE-001'),(102454002,'1001',2,'礼盒','gift','djs_trace_code_type','','warning','N',NULL,1,'2026-07-10 16:33:12',NULL,NULL,'TRC-CORE-001'),(102454010,'1001',0,'营销出栏','marketing','djs_trace_content','','primary','N',NULL,1,'2026-07-10 16:33:12',NULL,NULL,'TRC-CORE-001'),(102454011,'1001',1,'屠宰完成','singe','djs_trace_content','','info','N',NULL,1,'2026-07-10 16:33:12',NULL,NULL,'TRC-CORE-001'),(102454012,'1001',2,'屠宰分割','slaughter','djs_trace_content','','warning','N',NULL,1,'2026-07-10 16:33:12',NULL,NULL,'TRC-CORE-001'),(102454013,'1001',3,'排酸','acid','djs_trace_content','','warning','N',NULL,1,'2026-07-10 16:33:12',NULL,NULL,'TRC-CORE-001'),(102454014,'1001',4,'入库','in_stock','djs_trace_content','','success','N',NULL,1,'2026-07-10 16:33:12',NULL,NULL,'TRC-CORE-001'),(102454015,'1001',5,'发货','ship','djs_trace_content','','primary','N',NULL,1,'2026-07-10 16:33:12',NULL,NULL,'TRC-CORE-001'),(102454016,'1001',6,'到店','arrival','djs_trace_content','','success','N',NULL,1,'2026-07-10 16:33:12',NULL,NULL,'TRC-CORE-001'),(102454017,'1001',7,'白条入库','white_bar_in','djs_trace_content','','info','N',NULL,1,'2026-07-10 16:33:16',NULL,NULL,'TRC-EVENT-EXT-001 邓博 row19'),(102454018,'1001',8,'白条出库(领用)','white_bar_pick','djs_trace_content','','warning','N',NULL,1,'2026-07-10 16:33:16',NULL,NULL,'TRC-EVENT-EXT-001 邓博 row19'),(102454019,'1001',9,'播种','sowing','djs_trace_content','','success','N',NULL,1,'2026-07-10 16:33:16',NULL,NULL,'TRC-CONTENT-VEG-SEED-001 果蔬节点'),(102454020,'1001',10,'采摘','harvest','djs_trace_content','','success','N',NULL,1,'2026-07-10 16:33:16',NULL,NULL,'TRC-CONTENT-VEG-SEED-001 果蔬节点 邓博 row19'),(102454021,'1001',11,'毛菜处理','veg_handle','djs_trace_content','','info','N',NULL,1,'2026-07-10 16:33:16',NULL,NULL,'TRC-CONTENT-VEG-SEED-001 果蔬节点'),(102454022,'1001',12,'打包','pack','djs_trace_content','','primary','N',NULL,1,'2026-07-10 16:33:16',NULL,NULL,'TRC-CONTENT-VEG-SEED-001 果蔬节点'),(1026070301,'1001',0,'白条·整只','PROD-WHITE-BAR-01','djs_pork_return_product','','primary','N',NULL,1,'2026-07-10 16:33:14',NULL,NULL,NULL),(1026070302,'1001',1,'白条·猪头','PROD-WHITE-BAR-02','djs_pork_return_product','','primary','N',NULL,1,'2026-07-10 16:33:14',NULL,NULL,NULL),(1026070303,'1001',2,'白条·猪蹄','PROD-WHITE-BAR-03','djs_pork_return_product','','primary','N',NULL,1,'2026-07-10 16:33:14',NULL,NULL,NULL),(1026070304,'1001',3,'白条·半只','PROD-WHITE-BAR-04','djs_pork_return_product','','primary','N',NULL,1,'2026-07-10 16:33:14',NULL,NULL,NULL),(1026070305,'1001',4,'猪肉·精瘦肉','PROD-PIG-LEAN-01','djs_pork_return_product','','success','N',NULL,1,'2026-07-10 16:33:14',NULL,NULL,NULL),(1026070306,'1001',5,'猪肉·部位肉','PROD-PIG-PART-01','djs_pork_return_product','','success','N',NULL,1,'2026-07-10 16:33:14',NULL,NULL,NULL),(1026070307,'1001',6,'猪肉·骨类','PROD-PIG-BONE-01','djs_pork_return_product','','success','N',NULL,1,'2026-07-10 16:33:14',NULL,NULL,NULL),(1026070308,'1001',7,'猪肉·猪皮','PROD-PIG-SKIN-01','djs_pork_return_product','','success','N',NULL,1,'2026-07-10 16:33:14',NULL,NULL,NULL),(1026070309,'1001',8,'猪肉·碎料','PROD-PIG-SCRAP-01','djs_pork_return_product','','success','N',NULL,1,'2026-07-10 16:33:14',NULL,NULL,NULL),(1026070310,'1001',4,'门店打包间','5','djs_product_workshop','','success','N',NULL,1,'2026-07-10 16:33:14',NULL,NULL,NULL);
+/*!40000 ALTER TABLE `sys_dict_data` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `sys_dict_type`
+--
+
+DROP TABLE IF EXISTS `sys_dict_type`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `sys_dict_type` (
+  `dict_id` bigint NOT NULL COMMENT '字典主键',
+  `tenant_id` varchar(20) DEFAULT '000000' COMMENT '租户编号',
+  `dict_name` varchar(100) DEFAULT '' COMMENT '字典名称',
+  `dict_type` varchar(100) DEFAULT '' COMMENT '字典类型',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '创建者',
+  `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新者',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  PRIMARY KEY (`dict_id`),
+  UNIQUE KEY `tenant_id` (`tenant_id`,`dict_type`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='字典类型表';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `sys_dict_type`
+--
+
+LOCK TABLES `sys_dict_type` WRITE;
+/*!40000 ALTER TABLE `sys_dict_type` DISABLE KEYS */;
+INSERT INTO `sys_dict_type` VALUES (1,'1001','用户性别','sys_user_sex',103,1,'2026-07-10 16:32:55',NULL,NULL,'用户性别列表'),(2,'1001','菜单状态','sys_show_hide',103,1,'2026-07-10 16:32:55',NULL,NULL,'菜单状态列表'),(3,'1001','系统开关','sys_normal_disable',103,1,'2026-07-10 16:32:55',NULL,NULL,'系统开关列表'),(6,'1001','系统是否','sys_yes_no',103,1,'2026-07-10 16:32:55',NULL,NULL,'系统是否列表'),(7,'1001','通知类型','sys_notice_type',103,1,'2026-07-10 16:32:55',NULL,NULL,'通知类型列表'),(8,'1001','通知状态','sys_notice_status',103,1,'2026-07-10 16:32:55',NULL,NULL,'通知状态列表'),(9,'1001','操作类型','sys_oper_type',103,1,'2026-07-10 16:32:55',NULL,NULL,'操作类型列表'),(10,'1001','系统状态','sys_common_status',103,1,'2026-07-10 16:32:55',NULL,NULL,'登录状态列表'),(11,'1001','授权类型','sys_grant_type',103,1,'2026-07-10 16:32:55',NULL,NULL,'认证授权类型'),(12,'1001','设备类型','sys_device_type',103,1,'2026-07-10 16:32:55',NULL,NULL,'客户端设备类型'),(1320,'1001','引种类型','djs_introduce_type',103,1,'2026-07-10 16:33:12',NULL,NULL,'养殖：引种登记类型，t_farm_pig_introduce.introduce_type 存值 external/internal'),(1321,'1001','品系','djs_pig_strain',103,1,'2026-07-10 16:33:12',NULL,NULL,'养殖：猪只品系，与 djs_pig_breed 同源值集（D10Y #7）'),(1322,'1001','处理去向','djs_handle_target',106,1,'2026-07-10 16:33:12',NULL,NULL,'仓库：蔬菜处理去向，1=入库/2=月台/3=有机饲料（零售直送第4值待客户确认）'),(100001,'1001','用户状态','djs_user_status',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,'系统通用：员工档案状态'),(100002,'1001','系统角色','djs_role_code',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,'系统通用：13 种业务角色 code'),(100003,'1001','农场状态','djs_farm_status',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,'系统通用：sys_farm.farm_status'),(100004,'1001','门店状态','djs_store_status',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,'系统通用：t_md_store.status'),(100005,'1001','供应商类型','djs_supplier_type',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,'系统通用：t_md_supplier.supplier_type'),(100006,'1001','通用是否','djs_yes_no',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,'系统通用：1=是 / 0=否'),(100101,'1001','猪只性别','djs_pig_sex',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,'养殖：公/母'),(100102,'1001','猪只品种','djs_pig_breed',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,'养殖：杜洛克/长白/大白 等'),(100103,'1001','猪只生命周期','djs_pig_lifecycle',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,'养殖：种母猪繁殖状态机 8 状态（HB/PZ/FM/DN/LC/KH/FQ/END），BRD-CORE-001/ADR-0016；非种母猪空状态'),(100104,'1001','状态机事件','djs_pig_status_event',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,'养殖：状态机 11 事件，BRD-CORE-001 enum 严格对齐'),(100105,'1001','栋舍类型','djs_barn_type',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,'养殖：t_farm_barn.barn_type'),(100106,'1001','栏位类型','djs_pen_type',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,'养殖：t_farm_pen.pen_type'),(100107,'1001','药品类型','djs_med_type',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,'养殖：t_farm_med.med_type'),(100109,'1001','猪只类型','djs_pig_type',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,'养殖：t_farm_pig_info.pig_type'),(100110,'1001','终止原因','djs_pig_end_reason',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,'养殖：t_farm_pig_info.end_reason（DIE→DEAD / ELIMINATE→CULL / SLAUGHTER→MARKET）'),(100151,'1001','育种类型','djs_breed_strain_type',NULL,1,'2026-07-10 16:32:56',NULL,NULL,'养殖：1=品种 / 2=品系（BRD-MD-001 / t_farm_breed_info.breed_strain 字段对齐）'),(100153,'1001','药品触发时机','djs_med_event_trigger',NULL,1,'2026-07-10 16:32:56',NULL,NULL,'养殖：药品 / 疫苗周期触发的业务事件类型（BRD-MD-003 Tab3）'),(100201,'1001','地块类型','djs_plot_type',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,'种植：t_plant_plot.plot_type'),(100202,'1001','作物类型','djs_crop_type',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,'种植：t_plant_crop.crop_type'),(100203,'1001','有机认证状态','djs_organic_cert_status',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,'种植：t_plant_plot.organic_cert_status'),(100251,'1001','土壤类型','djs_soil_type',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,'种植：v1.1 业内默认值占位，客户上线前确认'),(100252,'1001','土壤肥力','djs_soil_fertility',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,'种植：v1.1 业内默认值占位，客户上线前确认'),(100253,'1001','地势情况','djs_terrain_condition',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,'种植：v1.1 业内默认值占位，客户上线前确认'),(100254,'1001','光照条件','djs_light_condition',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,'种植：v1.1 业内默认值占位，客户上线前确认'),(100255,'1001','排水条件','djs_drain_condition',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,'种植：v1.1 业内默认值占位，客户上线前确认'),(100256,'1001','作物科属','djs_crop_family',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,'种植：v1.1 业内默认值占位，客户上线前确认'),(100301,'1001','仓库类型','djs_warehouse_type',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,'仓库：t_warehouse_house.warehouse_type'),(100302,'1001','产品状态','djs_product_status',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,'仓库：产品在库/已发/已售/已退/报损'),(100303,'1001','需求业态','djs_demand_business',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,'仓库：t_warehouse_demand.business_type'),(100304,'1001','需求状态','djs_demand_status',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,'仓库：t_warehouse_demand.status 7 状态'),(100305,'1001','出入库类型','djs_stock_flow_type',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,'仓库：t_warehouse_stock_flow.flow_type'),(100306,'1001','包装类型','djs_pack_type',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,'仓库：t_warehouse_product.pack_type'),(100401,'1001','会员等级','djs_member_level',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,'门店：t_store_member.member_level'),(100402,'1001','退货原因','djs_return_reason',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,'门店：t_store_return.reason'),(100403,'1001','调度优先级','djs_dispatch_priority',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,'门店：t_store_dispatch.priority'),(100501,'1001','追溯事件类型','djs_trace_event_type',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,'追溯：t_store_trace.event_type'),(100502,'1001','订阅消息类型','djs_subscribe_message_type',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,'跨域：mp_subscribe_record.message_type'),(100600,'1001','母猪状态','djs_sow_status',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,'养殖：母猪状态机 7 状态，BRD-CORE-001 enum 严格对齐'),(100601,'1001','盘点状态','djs_check_status',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,'跨域：t_warehouse_check_record / t_store_check_record.check_status'),(100602,'1001','任务状态','djs_task_status',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,'跨域：派工/作业 5 状态'),(100603,'1001','任务业务类型','djs_task_biz',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,'跨域：派工业务类型 6 类'),(100604,'1001','退还/损耗原因','djs_return_loss_reason',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,'仓库：退货/损耗常见原因'),(100605,'1001','作物','djs_crop',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,'种植：常见作物明细，djs_crop_type 是大类'),(100606,'1001','派工阶段','djs_dispatch_stage',NULL,NULL,'2026-07-10 16:32:56',NULL,NULL,'仓库/跨域：派工生命周期 5 阶段'),(100620,'1001','出栏去向','djs_market_dest',NULL,NULL,'2026-07-10 16:33:11',NULL,NULL,'养殖：肥猪出栏目的地（送宰/外销/其他），mp BRD-EVENT-004 SLAUGHTER 用'),(100621,'1001','死亡原因','djs_death_reason',NULL,NULL,'2026-07-10 16:33:11',NULL,NULL,'养殖：猪只死亡分类，mp BRD-EVENT-004 DIE 用；客户后续可在 admin 字典页扩展粒度'),(100622,'1001','死亡去向','djs_death_dest',NULL,NULL,'2026-07-10 16:33:11',NULL,NULL,'养殖：猪只死亡处置方向，mp BRD-EVENT-004 DIE 用'),(100623,'1001','淘汰原因','djs_culling_reason',NULL,NULL,'2026-07-10 16:33:11',NULL,NULL,'养殖：淘汰事件原因；与 D2 djs_elimination_reason 同义异名，最终命名由 MP-IA-S0-09 决策'),(100624,'1001','淘汰去向','djs_culling_dest',NULL,NULL,'2026-07-10 16:33:11',NULL,NULL,'养殖：淘汰事件去向，mp BRD-EVENT-004 ELIMINATE 用'),(100625,'1001','配种方式','djs_mating_method',NULL,NULL,'2026-07-10 16:33:11',NULL,NULL,'养殖：BRD-EVENT-002 BREED 配种事件入参 breedingType；varchar(16) 允许扩展'),(100630,'1001','出库去向','djs_stock_out_dest',NULL,NULL,'2026-07-10 16:33:11',NULL,NULL,'仓库：出库流水的 stock_out_dest，WMS-MAT-001 领用 / WMS-PIG-002 分割等用'),(100631,'1001','异常类型','djs_abnormal',NULL,NULL,'2026-07-10 16:33:11',NULL,NULL,'养殖：返空流异常类型，DB 存值 R=返情/A=流产/N=空怀，对应状态机 FQ/LC/KH'),(100632,'1001','返空原因','djs_null_return',NULL,NULL,'2026-07-10 16:33:11',NULL,NULL,'养殖：返空流原因细分，客户未给具体值，按业内常见 seed 默认，待客户核'),(100633,'1001','疫苗类型','djs_vaccine_type',NULL,NULL,'2026-07-10 16:33:11',NULL,NULL,'养殖：疫苗分类，客户 xlsx 未填，按生猪场常规免疫程序 seed 默认，待客户核'),(100634,'1001','死亡类型','djs_death_kind',NULL,NULL,'2026-07-10 16:33:11',NULL,NULL,'养殖：猪只死亡分类，DB 存值 normal=正常/abnormal=异常，mp die 页 inline options 权威'),(100635,'1001','查情结果','djs_heat_result',NULL,NULL,'2026-07-10 16:33:12',NULL,NULL,'养殖：查情录入结果，mp heat 页 inline options 权威（阳性触发 PZ→PH）'),(100640,'1001','配种精液','djs_semen',NULL,NULL,'2026-07-10 16:33:12',NULL,NULL,'养殖：配种类型=精液时的精液产品下拉（FIX-BREEDING-001，纯字典、不扣库存）'),(100700,'1001','门店类型','djs_store_type',NULL,NULL,'2026-07-10 16:32:57',NULL,NULL,'门店：直营 / 加盟'),(100701,'1001','供应商合作状态','djs_supplier_status',NULL,NULL,'2026-07-10 16:32:57',NULL,NULL,'供应商：合作中 / 已终止'),(100702,'1001','结算方式','djs_settle_type',NULL,NULL,'2026-07-10 16:32:57',NULL,NULL,'供应商：现款现货 / 月结 / 季结'),(100800,'1001','药品领用动作','djs_med_pick_action',NULL,1,'2026-07-10 16:33:09',NULL,NULL,'BRD-MED-002'),(100901,'1001','用药类型','djs_medicine_use_type',NULL,1,NULL,NULL,NULL,'BRD-MED-003 保健/治疗/疫苗'),(100902,'1001','用药原因','djs_medicine_reason',NULL,1,NULL,NULL,NULL,'BRD-MED-003 治疗事件原因'),(100903,'1001','用药方式','djs_medicine_way',NULL,1,NULL,NULL,NULL,'BRD-MED-003 给药途径'),(100904,'1001','用药记录类型','djs_drug_type',NULL,1,NULL,NULL,NULL,'BRD-MED-003 单只 vs 批量 master/detail'),(102000,'1001','库位类型','djs_location_type',NULL,1,'2026-07-10 16:33:09',NULL,NULL,'仓库：库位类型（WMS-MD-001 业内默认 6 类；客户未明示，可后调）'),(102001,'1001','库位状态','djs_location_status',NULL,1,'2026-07-10 16:33:09',NULL,NULL,'仓库：库位状态 1=启用 / 2=停用（WMS-MD-001）'),(102002,'1001','盘点结果','djs_check_result',NULL,1,'2026-07-10 16:33:09',NULL,NULL,'仓库：盘点结果（WMS-MD-001 + WMS-STOCK-001 共用）'),(102010,'1001','产品类型','djs_product_type',NULL,1,'2026-07-10 16:33:10',NULL,NULL,'仓库：产品类型 1=自产 / 2=外购 / 3=礼盒（WMS-MD-002）'),(102011,'1001','自产产品归属类型','djs_belong_type',NULL,1,'2026-07-10 16:33:10',NULL,NULL,'仓库：自产产品归属类型（WMS-MD-002，product_type=1 时使用）'),(102012,'1001','外购产品类','djs_buy_class',NULL,1,'2026-07-10 16:33:10',NULL,NULL,'仓库：外购产品类（WMS-MD-002，🔴 Q3 客户未明示具体类目；admin 字典管理页可自加）'),(102013,'1001','产品属性','djs_product_attr',NULL,1,'2026-07-10 16:33:10',NULL,NULL,'仓库：产品属性 1=生产产品 / 2=原材料（WMS-MD-002）'),(102014,'1001','生产车间','djs_product_workshop',NULL,1,'2026-07-10 16:33:10',NULL,NULL,'仓库：生产车间 1=燎毛间 / 2=分割间 / 3=肉品打包 / 4=蔬菜打包（WMS-MD-002）'),(102100,'1001','燎毛状态','djs_burn_status',NULL,1,'2026-07-10 16:33:10',NULL,NULL,'WMS-PIG-001 燎毛工序记录状态'),(102200,'1001','白条状态','djs_bar_status',NULL,1,'2026-07-10 16:33:11',NULL,NULL,'WMS-PIG-002 doc/11 §2.8'),(102210,'1001','白条入库方式','djs_bar_in_method',NULL,1,'2026-07-10 16:33:11',NULL,NULL,'WMS-PIG-002 doc/11 §2.8 R14'),(102220,'1001','白条出库方式','djs_bar_out_method',NULL,1,'2026-07-10 16:33:11',NULL,NULL,'WMS-PIG-002 doc/11 §2.8 R17'),(102230,'1001','猪肉分割部位','djs_pig_cut_part',NULL,1,'2026-07-10 16:33:11',NULL,NULL,'WMS-PIG-002 doc/06'),(102240,'1001','打包状态','djs_pack_status',NULL,1,'2026-07-10 16:33:11',NULL,NULL,'WMS-PACK-001'),(102250,'1001','生产位置','djs_produce_location',NULL,1,'2026-07-10 16:33:11',NULL,NULL,'WMS-PACK-001 doc/11 §2.6 R27'),(102260,'1001','发货方式','djs_deliver_type',NULL,1,'2026-07-10 16:33:11',NULL,NULL,'WMS-PACK-001 doc/11 §2.6 R28'),(102270,'1001','打包发送位置','djs_pack_send_dest',NULL,1,'2026-07-10 16:33:13',NULL,NULL,'DJS-FIX-WMS-PACK 生产管理打包录入发送位置'),(102300,'1001','蔬菜处理状态','djs_veg_handle_status',NULL,1,'2026-07-10 16:33:11',NULL,NULL,'WMS-VEG-001'),(102310,'1001','处理记录类型','djs_record_type',NULL,1,'2026-07-10 16:33:11',NULL,NULL,'WMS-VEG-001 doc/11 §2.13 R8'),(102500,'1001','计划阶段（旬）','djs_plant_period',NULL,1,'2026-07-10 16:33:11',NULL,NULL,'PLT-PLAN-001 doc/11 §1.8 R10'),(102510,'1001','采摘状态','djs_pick_status',NULL,1,'2026-07-10 16:33:11',NULL,NULL,'PLT-PLAN-001 doc/11 §1.8 R18'),(102520,'1001','种植计划状态','djs_plant_plan_status',NULL,1,'2026-07-10 16:33:11',NULL,NULL,'PLT-PLAN-001 doc/11 §1.7 R13'),(102600,'1001','农事类型','djs_farm_work_type',NULL,1,'2026-07-10 16:33:11',NULL,NULL,'PLT-WORK-001 12 类（空地 3 + 种植 7 + 其他 2）；doc/06 + doc/10 §F-PLT-06'),(102601,'1001','整地类型','djs_tillage_type',NULL,1,'2026-07-10 16:33:11',NULL,NULL,'PLT-WORK-001 farm_type=tillage_prepare 用；🔴 待客户最终确认'),(102602,'1001','整地方式','djs_tillage_way',NULL,1,'2026-07-10 16:33:11',NULL,NULL,'PLT-WORK-001 farm_type=tillage_prepare 用；🔴 待客户最终确认'),(102603,'1001','灾害类型','djs_disaster_type',NULL,1,'2026-07-10 16:33:11',NULL,NULL,'PLT-WORK-001 farm_type=disaster 用；🔴 待客户最终确认'),(103001,'1001','地块状态','djs_plot_status',NULL,1,'2026-07-10 16:33:10',NULL,NULL,'种植：地块状态 1=空闲 / 2=种植 / 3=采摘（PLT-MD-001）'),(103002,'1001','种植季节','djs_planting_season',NULL,1,'2026-07-10 16:33:10',NULL,NULL,'种植：种植季节 春/夏/秋/冬（PLT-MD-001，作物多选）'),(103003,'1001','所属大区','djs_zone_belong',NULL,1,NULL,NULL,NULL,'FIX-PLT-AD-PLOT-001 片区所属大区（项待客户提供清单后补 sys_dict_data）'),(103004,'1001','是否租赁','djs_plot_lease',NULL,1,'2026-07-10 16:33:13',NULL,NULL,'FIX-PLT-AD-ZONE-001 地块是否租赁（1=自用 / 2=租赁）'),(103100,'1001','通用启停状态','djs_common_status',NULL,1,'2026-07-10 16:33:10',NULL,NULL,'ADR-0004 通用启停字典；班组等业务复用'),(103110,'1001','猪肉分割状态','djs_pig_cut_status',NULL,1,'2026-07-10 16:33:12',NULL,NULL,'ADMIN-DICT-FIX-001 / WMS-PIG-002 分割记录状态'),(103200,'1001','果蔬收货类型','djs_veg_receive_type',NULL,1,'2026-07-10 16:33:12',NULL,NULL,'FIX-WMS-VEGRECEIVE-001 果蔬月台收货：自产 / 外购'),(103210,'1001','果蔬收货状态','djs_veg_receive_status',NULL,1,'2026-07-10 16:33:12',NULL,NULL,'FIX-WMS-VEGRECEIVE-001 果蔬间入库状态'),(920402,'1001','需求业态','djs_demand_product_type',NULL,1,NULL,NULL,NULL,'DJS-FIX-WMS-RALN-C 7 业态'),(920403,'1001','门店需求状态','djs_store_demand_status',NULL,1,'2026-07-10 16:33:14',NULL,NULL,'门店视角 5 态派生字典（0613-04）'),(920500,'1001','流水类型','djs_flow_type',NULL,1,'2026-07-10 16:33:11',NULL,NULL,'WMS-MAT-001 业务流水语义'),(920510,'1001','入库类型','djs_in_type',NULL,1,'2026-07-10 16:33:11',NULL,NULL,'WMS-MAT-001 doc/11 §2.3 R17'),(920520,'1001','物资类型','djs_mat_type',NULL,1,'2026-07-10 16:33:11',NULL,NULL,'WMS-MAT-001 mp 端 9 类分类'),(920530,'1001','出入类型','djs_inout_type',NULL,1,'2026-07-10 16:33:12',NULL,NULL,'WMS-FLOW-001 出入库流水方向 IN/OT'),(920601,'1001','发货状态','djs_shipment_status',NULL,1,NULL,NULL,NULL,'WMS-SHIP-001 4 态'),(920602,'1001','退货方向','djs_return_direction',NULL,1,NULL,NULL,NULL,'WMS-SHIP-001 doc/06 默认三方向；V1 仅 store_to_warehouse 联动 stock_flow'),(920603,'1001','退货状态','djs_return_status',NULL,1,NULL,NULL,NULL,'WMS-SHIP-001 3 态'),(920650,'1001','门店退货状态','djs_store_return_status',NULL,1,NULL,NULL,NULL,'STORE-RETURN-REALIGN-001 两段式 2 态'),(920660,'1001','需求邮寄类型','djs_demand_mailing_type',NULL,1,NULL,NULL,NULL,'STORE-DEMAND-REALIGN-001 门店/个人邮寄'),(920670,'1001','猪肉零售部位','djs_pork_cut_product',NULL,1,NULL,NULL,NULL,'STORE-TRACE-ONSITE-001 现场生码部位卡'),(920701,'1001','产品关联状态','djs_active_status',NULL,NULL,'2026-07-10 16:33:12',NULL,NULL,'t_store_product_relation.is_active'),(920702,'1001','销售来源','djs_sale_source',NULL,NULL,'2026-07-10 16:33:12',NULL,NULL,'t_store_sale_record.source'),(920710,'1001','追溯码类型','djs_trace_code_type',NULL,1,'2026-07-10 16:33:12',NULL,NULL,'TRC-CORE-001 追溯码业态 pork/veg/gift'),(920711,'1001','追溯事件类型','djs_trace_content',NULL,1,'2026-07-10 16:33:12',NULL,NULL,'TRC-CORE-001 追溯链事件节点'),(1007003,'1001','损耗类型','djs_loss_type',NULL,1,'2026-07-10 16:33:15',NULL,NULL,'WMS-LOSS-001 统一损耗台账损耗类型'),(1007004,'1001','饲喂来源','djs_feed_type',NULL,1,'2026-07-10 16:33:15',NULL,NULL,'WMS-LOSS-001 饲料饲喂来源（行64）'),(1007200,'1001','白条出库类型','djs_pig_cut_out_type',NULL,1,'2026-07-10 16:33:17',NULL,NULL,'DENGBO-R205 白条领用表出库位置'),(1088000,'1001','用药量单位','djs_medicine_unit',NULL,1,'2026-07-10 16:33:16',NULL,NULL,'FIX-DENGBO-R5 用药领用单位下拉'),(1089000,'1001','采摘去向','djs_pick_dest',NULL,1,'2026-07-10 16:33:16',NULL,NULL,'DENGBO-R4 采摘活动采摘去向 5 值'),(102607030,'1001','猪肉产品退回','djs_pork_return_product',NULL,1,'2026-07-10 16:33:14',NULL,NULL,'门店退回/盘点/打包取数：label=产品名 value=product_id 业务码（WSA-001，客户可在 admin 增删）');
+/*!40000 ALTER TABLE `sys_dict_type` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `sys_farm`
+--
+
+DROP TABLE IF EXISTS `sys_farm`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `sys_farm` (
+  `id` bigint NOT NULL AUTO_INCREMENT COMMENT '农场 ID',
+  `farm_code` varchar(32) NOT NULL COMMENT '农场编码（如 DJS-MAIN）',
+  `farm_name` varchar(64) NOT NULL COMMENT '农场名称',
+  `farm_status` tinyint NOT NULL DEFAULT '0' COMMENT '农场状态（字典 djs_farm_status：0=启用 1=停用）',
+  `contact_name` varchar(32) DEFAULT NULL COMMENT '联系人',
+  `contact_phone` varchar(20) DEFAULT NULL COMMENT '联系电话',
+  `address` varchar(255) DEFAULT NULL COMMENT '地址',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '创建人',
+  `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新人',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `del_flag` char(1) DEFAULT '0' COMMENT '删除标志 0=未删 1=已删',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  `del_unique` bigint NOT NULL DEFAULT '0' COMMENT '软删除生成 token（应用层 update del_flag=''1'' 时同步 SET del_unique=id；§6.3.0）',
   PRIMARY KEY (`id`),
-  UNIQUE KEY `uk_med_trigger` (`tenant_id`, `med_type`, `event_trigger`, `days_offset`, `del_unique`),
-  KEY         `idx_tenant`    (`tenant_id`),
-  KEY         `idx_trigger`   (`event_trigger`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='药品 / 疫苗周期配置（BRD-MD-003 Tab3）';
+  UNIQUE KEY `uk_farm_code` (`farm_code`,`del_unique`),
+  KEY `idx_status` (`farm_status`)
+) ENGINE=InnoDB AUTO_INCREMENT=1002 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='农场主数据（V1 仅 1 条 1001=东角山主场）';
+/*!40101 SET character_set_client = @saved_cs_client */;
 
--- ============================================================
--- 2. 字典：djs_med_event_trigger（药品触发时机枚举，BRD-MED-002 自动建任务时查询用）
---    （djs_med_type 由 BRD-MED-001 V202605221100 灌过，本文件不重复）
--- ============================================================
-INSERT IGNORE INTO sys_dict_type (
-    dict_id, tenant_id, dict_name, dict_type, create_by, create_time, remark)
-VALUES
-  (100153, '1001', '药品触发时机', 'djs_med_event_trigger', 1, NOW(), '养殖：药品 / 疫苗周期触发的业务事件类型（BRD-MD-003 Tab3）');
-
-INSERT IGNORE INTO sys_dict_data (
-    dict_code, tenant_id, dict_sort, dict_label, dict_value, dict_type, css_class, list_class, is_default, create_by, create_time)
-VALUES
-  (1001530, '1001', 0, '仔猪出生',  'birth',            'djs_med_event_trigger', '', 'primary', 'N', 1, NOW()),
-  (1001531, '1001', 1, '断奶',      'weaning',          'djs_med_event_trigger', '', 'success', 'N', 1, NOW()),
-  (1001532, '1001', 2, '转入育肥',  'fattening_start',  'djs_med_event_trigger', '', 'success', 'N', 1, NOW()),
-  (1001533, '1001', 3, '配种',      'mating',           'djs_med_event_trigger', '', 'warning', 'N', 1, NOW()),
-  (1001534, '1001', 4, '妊娠确认',  'pregnant',         'djs_med_event_trigger', '', 'warning', 'N', 1, NOW()),
-  (1001535, '1001', 5, '分娩',      'farrow',           'djs_med_event_trigger', '', 'danger',  'N', 1, NOW()),
-  (1001536, '1001', 6, '引种入栏',  'introduce',        'djs_med_event_trigger', '', 'info',    'N', 1, NOW());
-
--- ============================================================
--- 3. seed 6 个生产周期业内默认值（v1.1 / spawn prompt 明确数值）
---    INSERT 不显式赋 tenant_id —— 走 MetaObjectHandler.insertFill 自动填 '1001'
---    （但本 seed 在 ruoyi 启动前跑，handler 不生效 → 显式写 tenant_id）
--- ============================================================
-INSERT IGNORE INTO t_farm_production_cycle_config (
-    id, tenant_id, config_key, default_value, custom_value, unit, description, create_by, create_time, del_flag, del_unique)
-VALUES
-  (1, '1001', 'gestation_days',           114, NULL, '天', '妊娠天数（母猪配种到分娩的标准周期）',         1, NOW(), '0', 0),
-  (2, '1001', 'lactation_days',            28, NULL, '天', '哺乳天数（仔猪从出生到断奶的标准时长）',       1, NOW(), '0', 0),
-  (3, '1001', 'nursery_days',              35, NULL, '天', '保育天数（仔猪从断奶到转入育肥的标准时长）',   1, NOW(), '0', 0),
-  (4, '1001', 'fattening_days',           120, NULL, '天', '育肥天数（保育结束到达出栏的标准时长）',       1, NOW(), '0', 0),
-  (5, '1001', 'oestrus_cycle_days',        21, NULL, '天', '发情周期（母猪一个发情周期的标准时长）',       1, NOW(), '0', 0),
-  (6, '1001', 'weaning_to_breeding_days',   7, NULL, '天', '断奶到配种（母猪断奶后到下次配种的建议时长）', 1, NOW(), '0', 0);
-
--- ============================================================
--- 4. 菜单：3 个二级目录（挂养殖目录 7000 下）+ 各自按钮权限
--- ============================================================
-
--- ----------------------------------------------------
--- 4.1 二级目录：生产周期 / 精液公猪 / 药品周期（各一个）
--- ----------------------------------------------------
-INSERT IGNORE INTO sys_menu (
-    menu_id, menu_name, parent_id, order_num,
-    path, component, query_param,
-    is_frame, is_cache, menu_type, visible, status,
-    perms, icon, create_by, create_time, remark)
-VALUES
-  -- 生产周期（Tab1 入口，但物理上单页 3 tab 在 production-config/index.vue 内）
-  (7050, '生产配置', 7000, 5, 'production-config', 'djs-breed/production-config/index', '',
-   1, 0, 'C', '0', '0',
-   'djs:breed:production-cycle:list', 'time', 1, NOW(), 'BRD-MD-003 生产配置主入口（3 tab 单页）');
-
--- ----------------------------------------------------
--- 4.2 生产周期 按钮权限（5 个，挂在生产配置主菜单 7050 下）
--- ----------------------------------------------------
-INSERT IGNORE INTO sys_menu (
-    menu_id, menu_name, parent_id, order_num,
-    path, component, query_param,
-    is_frame, is_cache, menu_type, visible, status,
-    perms, icon, create_by, create_time, remark)
-VALUES
-  (7051, '生产周期查询', 7050, 1, '', '', '', 1, 0, 'F', '0', '0',
-   'djs:breed:production-cycle:list',   '#', 1, NOW(), 'BRD-MD-003 Tab1'),
-  (7052, '生产周期新增', 7050, 2, '', '', '', 1, 0, 'F', '0', '0',
-   'djs:breed:production-cycle:add',    '#', 1, NOW(), 'BRD-MD-003 Tab1'),
-  (7053, '生产周期修改', 7050, 3, '', '', '', 1, 0, 'F', '0', '0',
-   'djs:breed:production-cycle:edit',   '#', 1, NOW(), 'BRD-MD-003 Tab1'),
-  (7054, '生产周期删除', 7050, 4, '', '', '', 1, 0, 'F', '0', '0',
-   'djs:breed:production-cycle:remove', '#', 1, NOW(), 'BRD-MD-003 Tab1'),
-  (7055, '生产周期导出', 7050, 5, '', '', '', 1, 0, 'F', '0', '0',
-   'djs:breed:production-cycle:export', '#', 1, NOW(), 'BRD-MD-003 Tab1');
-
--- ----------------------------------------------------
--- 4.3 精液 / 公猪配置 按钮权限（5 个，挂在 7050 下）
--- ----------------------------------------------------
-INSERT IGNORE INTO sys_menu (
-    menu_id, menu_name, parent_id, order_num,
-    path, component, query_param,
-    is_frame, is_cache, menu_type, visible, status,
-    perms, icon, create_by, create_time, remark)
-VALUES
-  (7080, '公猪配置查询', 7050, 6, '', '', '', 1, 0, 'F', '0', '0',
-   'djs:breed:production-boar:list',   '#', 1, NOW(), 'BRD-MD-003 Tab2'),
-  (7081, '公猪配置新增', 7050, 7, '', '', '', 1, 0, 'F', '0', '0',
-   'djs:breed:production-boar:add',    '#', 1, NOW(), 'BRD-MD-003 Tab2'),
-  (7082, '公猪配置修改', 7050, 8, '', '', '', 1, 0, 'F', '0', '0',
-   'djs:breed:production-boar:edit',   '#', 1, NOW(), 'BRD-MD-003 Tab2'),
-  (7083, '公猪配置删除', 7050, 9, '', '', '', 1, 0, 'F', '0', '0',
-   'djs:breed:production-boar:remove', '#', 1, NOW(), 'BRD-MD-003 Tab2'),
-  (7084, '公猪配置导出', 7050, 10, '', '', '', 1, 0, 'F', '0', '0',
-   'djs:breed:production-boar:export', '#', 1, NOW(), 'BRD-MD-003 Tab2');
-
--- ----------------------------------------------------
--- 4.4 药品 / 疫苗周期 按钮权限（5 个，挂在 7050 下）
--- ----------------------------------------------------
-INSERT IGNORE INTO sys_menu (
-    menu_id, menu_name, parent_id, order_num,
-    path, component, query_param,
-    is_frame, is_cache, menu_type, visible, status,
-    perms, icon, create_by, create_time, remark)
-VALUES
-  (7090, '药品周期查询', 7050, 11, '', '', '', 1, 0, 'F', '0', '0',
-   'djs:breed:production-med:list',   '#', 1, NOW(), 'BRD-MD-003 Tab3'),
-  (7091, '药品周期新增', 7050, 12, '', '', '', 1, 0, 'F', '0', '0',
-   'djs:breed:production-med:add',    '#', 1, NOW(), 'BRD-MD-003 Tab3'),
-  (7092, '药品周期修改', 7050, 13, '', '', '', 1, 0, 'F', '0', '0',
-   'djs:breed:production-med:edit',   '#', 1, NOW(), 'BRD-MD-003 Tab3'),
-  (7093, '药品周期删除', 7050, 14, '', '', '', 1, 0, 'F', '0', '0',
-   'djs:breed:production-med:remove', '#', 1, NOW(), 'BRD-MD-003 Tab3'),
-  (7094, '药品周期导出', 7050, 15, '', '', '', 1, 0, 'F', '0', '0',
-   'djs:breed:production-med:export', '#', 1, NOW(), 'BRD-MD-003 Tab3');
-
--- ============================================================
--- 5. 角色 → 菜单：boss(102) / manager(103) / breed_admin(104) 给本 ticket 菜单可见
---    （SYS-AUTH-001 的一次性 SELECT 已建过，但只在那次扫的范围里；新菜单要追加）
--- ============================================================
-INSERT IGNORE INTO sys_role_menu (role_id, menu_id)
-SELECT 102, menu_id FROM sys_menu WHERE menu_id IN (7050,7051,7052,7053,7054,7055,7080,7081,7082,7083,7084,7090,7091,7092,7093,7094);
-INSERT IGNORE INTO sys_role_menu (role_id, menu_id)
-SELECT 103, menu_id FROM sys_menu WHERE menu_id IN (7050,7051,7052,7053,7054,7055,7080,7081,7082,7083,7084,7090,7091,7092,7093,7094);
-INSERT IGNORE INTO sys_role_menu (role_id, menu_id)
-SELECT 104, menu_id FROM sys_menu WHERE menu_id IN (7050,7051,7052,7053,7054,7055,7080,7081,7082,7083,7084,7090,7091,7092,7093,7094);
-
-
--- ----------------------------------------------------------------------------
--- 来源文件：V202605221201__SYS-FIX-001-biz-dict-supplement.sql
--- ----------------------------------------------------------------------------
--- ============================================================
--- SYS-FIX-001 biz 组件字典补 seed（D03 _open-issues #37）
--- 范围: 7 类 dict_type + ~37 条 dict_data
---   dict_id 100600-100699 / dict_code 1006000-1006099（H 跨域补充段）
--- 约束:
---   1. INSERT IGNORE 幂等
---   2. tenant_id 全 '1001'
---   3. 与 doc/06 BRD-CORE-001 母猪状态机 / BRD-MED-* / WMS-DEMAND-* 命名严格对齐
--- ============================================================
-
-SET NAMES utf8mb4;
-
--- ------------------------------------------------------------
--- H1 djs_sow_status 母猪状态机（7 状态 — 与 BRD-CORE-001 SowStatus enum 严格一致）
--- ------------------------------------------------------------
-INSERT IGNORE INTO sys_dict_type
-  (dict_id, tenant_id, dict_name, dict_type, create_by, create_time, remark)
-VALUES
-  (100600, '1001', '母猪状态', 'djs_sow_status', NULL, NOW(), '养殖：母猪状态机 7 状态，BRD-CORE-001 enum 严格对齐');
-
-INSERT IGNORE INTO sys_dict_data
-  (dict_code, tenant_id, dict_sort, dict_label, dict_value, dict_type, css_class, list_class, is_default, create_by, create_time)
-VALUES
-  (1006000, '1001', 0, '空怀',   'EMPTY',       'djs_sow_status', '', 'info',    'Y', NULL, NOW()),
-  (1006001, '1001', 1, '配种',   'BREEDING',    'djs_sow_status', '', 'primary', 'N', NULL, NOW()),
-  (1006002, '1001', 2, '妊娠',   'PREGNANT',    'djs_sow_status', '', 'primary', 'N', NULL, NOW()),
-  (1006003, '1001', 3, '分娩',   'FARROWING',   'djs_sow_status', '', 'success', 'N', NULL, NOW()),
-  (1006004, '1001', 4, '哺乳',   'LACTATING',   'djs_sow_status', '', 'success', 'N', NULL, NOW()),
-  (1006005, '1001', 5, '返情',   'RETURN_HEAT', 'djs_sow_status', '', 'warning', 'N', NULL, NOW()),
-  (1006006, '1001', 6, '淘汰',   'ELIMINATED',  'djs_sow_status', '', 'danger',  'N', NULL, NOW());
-
--- ------------------------------------------------------------
--- H2 djs_material_type 物资类型（仓库 biz 组件 MaterialCard / MaterialList）
--- ------------------------------------------------------------
-INSERT IGNORE INTO sys_dict_type
-  (dict_id, tenant_id, dict_name, dict_type, create_by, create_time, remark)
-VALUES
-  (100601, '1001', '物资类型', 'djs_material_type', NULL, NOW(), '仓库：饲料/兽药/疫苗/工器具/其他');
-
-INSERT IGNORE INTO sys_dict_data
-  (dict_code, tenant_id, dict_sort, dict_label, dict_value, dict_type, css_class, list_class, is_default, create_by, create_time)
-VALUES
-  (1006015, '1001', 0, '饲料',   'feed',    'djs_material_type', '', 'primary', 'Y', NULL, NOW()),
-  (1006016, '1001', 1, '兽药',   'med',     'djs_material_type', '', 'warning', 'N', NULL, NOW()),
-  (1006017, '1001', 2, '疫苗',   'vaccine', 'djs_material_type', '', 'success', 'N', NULL, NOW()),
-  (1006018, '1001', 3, '工器具', 'tool',    'djs_material_type', '', 'info',    'N', NULL, NOW()),
-  (1006019, '1001', 4, '其他',   'other',   'djs_material_type', '', '',        'N', NULL, NOW());
-
--- ------------------------------------------------------------
--- H3 djs_task_status 任务状态（TaskCard / 派工通用）
--- ------------------------------------------------------------
-INSERT IGNORE INTO sys_dict_type
-  (dict_id, tenant_id, dict_name, dict_type, create_by, create_time, remark)
-VALUES
-  (100602, '1001', '任务状态', 'djs_task_status', NULL, NOW(), '跨域：派工/作业 5 状态');
-
-INSERT IGNORE INTO sys_dict_data
-  (dict_code, tenant_id, dict_sort, dict_label, dict_value, dict_type, css_class, list_class, is_default, create_by, create_time)
-VALUES
-  (1006020, '1001', 0, '待处理',  'pending',     'djs_task_status', '', 'info',    'Y', NULL, NOW()),
-  (1006021, '1001', 1, '进行中',  'in_progress', 'djs_task_status', '', 'primary', 'N', NULL, NOW()),
-  (1006022, '1001', 2, '已完成',  'completed',   'djs_task_status', '', 'success', 'N', NULL, NOW()),
-  (1006023, '1001', 3, '已取消',  'cancelled',   'djs_task_status', '', '',        'N', NULL, NOW()),
-  (1006024, '1001', 4, '已退回',  'returned',    'djs_task_status', '', 'warning', 'N', NULL, NOW());
-
--- ------------------------------------------------------------
--- H4 djs_task_biz 任务业务类型（TaskCard 顶部 bizType 标签）
--- ------------------------------------------------------------
-INSERT IGNORE INTO sys_dict_type
-  (dict_id, tenant_id, dict_name, dict_type, create_by, create_time, remark)
-VALUES
-  (100603, '1001', '任务业务类型', 'djs_task_biz', NULL, NOW(), '跨域：派工业务类型 6 类');
-
-INSERT IGNORE INTO sys_dict_data
-  (dict_code, tenant_id, dict_sort, dict_label, dict_value, dict_type, css_class, list_class, is_default, create_by, create_time)
-VALUES
-  (1006030, '1001', 0, '养殖', 'breed',     'djs_task_biz', '', 'primary', 'Y', NULL, NOW()),
-  (1006031, '1001', 1, '种植', 'plant',     'djs_task_biz', '', 'success', 'N', NULL, NOW()),
-  (1006032, '1001', 2, '仓库', 'warehouse', 'djs_task_biz', '', 'info',    'N', NULL, NOW()),
-  (1006033, '1001', 3, '门店', 'store',     'djs_task_biz', '', 'warning', 'N', NULL, NOW()),
-  (1006034, '1001', 4, '用药', 'med',       'djs_task_biz', '', 'danger',  'N', NULL, NOW()),
-  (1006035, '1001', 5, '通用', 'general',   'djs_task_biz', '', '',        'N', NULL, NOW());
-
--- ------------------------------------------------------------
--- H5 djs_return_loss_reason 退还/损耗原因（ReturnLossForm）
--- ------------------------------------------------------------
-INSERT IGNORE INTO sys_dict_type
-  (dict_id, tenant_id, dict_name, dict_type, create_by, create_time, remark)
-VALUES
-  (100604, '1001', '退还/损耗原因', 'djs_return_loss_reason', NULL, NOW(), '仓库：退货/损耗常见原因');
-
-INSERT IGNORE INTO sys_dict_data
-  (dict_code, tenant_id, dict_sort, dict_label, dict_value, dict_type, css_class, list_class, is_default, create_by, create_time)
-VALUES
-  (1006040, '1001', 0, '货品损坏',    'damaged',         'djs_return_loss_reason', '', 'danger',  'Y', NULL, NOW()),
-  (1006041, '1001', 1, '过期/失效',   'expired',         'djs_return_loss_reason', '', 'danger',  'N', NULL, NOW()),
-  (1006042, '1001', 2, '规格错',     'wrong_spec',      'djs_return_loss_reason', '', 'warning', 'N', NULL, NOW()),
-  (1006043, '1001', 3, '客户退还',    'customer_return', 'djs_return_loss_reason', '', 'info',    'N', NULL, NOW()),
-  (1006044, '1001', 4, '盘亏',       'inventory_loss',  'djs_return_loss_reason', '', 'warning', 'N', NULL, NOW()),
-  (1006045, '1001', 5, '其他',       'other',           'djs_return_loss_reason', '', '',        'N', NULL, NOW());
-
--- ------------------------------------------------------------
--- H6 djs_crop 作物（PlotPickList / 田块 biz 组件，与 djs_crop_type 大类区分）
--- ------------------------------------------------------------
-INSERT IGNORE INTO sys_dict_type
-  (dict_id, tenant_id, dict_name, dict_type, create_by, create_time, remark)
-VALUES
-  (100605, '1001', '作物', 'djs_crop', NULL, NOW(), '种植：常见作物明细，djs_crop_type 是大类');
-
-INSERT IGNORE INTO sys_dict_data
-  (dict_code, tenant_id, dict_sort, dict_label, dict_value, dict_type, css_class, list_class, is_default, create_by, create_time)
-VALUES
-  (1006050, '1001', 0, '水稻',  'rice',      'djs_crop', '', 'success', 'Y', NULL, NOW()),
-  (1006051, '1001', 1, '小麦',  'wheat',     'djs_crop', '', 'warning', 'N', NULL, NOW()),
-  (1006052, '1001', 2, '玉米',  'corn',      'djs_crop', '', 'warning', 'N', NULL, NOW()),
-  (1006053, '1001', 3, '大豆',  'soybean',   'djs_crop', '', 'info',    'N', NULL, NOW()),
-  (1006054, '1001', 4, '蔬菜',  'vegetable', 'djs_crop', '', 'success', 'N', NULL, NOW()),
-  (1006055, '1001', 5, '水果',  'fruit',     'djs_crop', '', 'danger',  'N', NULL, NOW()),
-  (1006056, '1001', 6, '其他',  'other',     'djs_crop', '', '',        'N', NULL, NOW());
-
--- ------------------------------------------------------------
--- H7 djs_dispatch_stage 派工阶段（DispatchEntry / 仓库 biz 组件）
--- ------------------------------------------------------------
-INSERT IGNORE INTO sys_dict_type
-  (dict_id, tenant_id, dict_name, dict_type, create_by, create_time, remark)
-VALUES
-  (100606, '1001', '派工阶段', 'djs_dispatch_stage', NULL, NOW(), '仓库/跨域：派工生命周期 5 阶段');
-
-INSERT IGNORE INTO sys_dict_data
-  (dict_code, tenant_id, dict_sort, dict_label, dict_value, dict_type, css_class, list_class, is_default, create_by, create_time)
-VALUES
-  (1006060, '1001', 0, '计划中',  'planning',   'djs_dispatch_stage', '', 'info',    'Y', NULL, NOW()),
-  (1006061, '1001', 1, '已派工',  'dispatched', 'djs_dispatch_stage', '', 'primary', 'N', NULL, NOW()),
-  (1006062, '1001', 2, '执行中',  'in_field',   'djs_dispatch_stage', '', 'primary', 'N', NULL, NOW()),
-  (1006063, '1001', 3, '已完成',  'completed',  'djs_dispatch_stage', '', 'success', 'N', NULL, NOW()),
-  (1006064, '1001', 4, '已回执',  'reported',   'djs_dispatch_stage', '', 'success', 'N', NULL, NOW());
-
-
--- ----------------------------------------------------------------------------
--- 来源文件：V202605221300__D04-CLOSING-D02-D03-leftover-fixes.sql
--- ----------------------------------------------------------------------------
--- D04 closing — D02/D03 历史问题 runtime patch
--- 由 D4 BRD-MD-002 raise（_open-issues "sys_farm seed 1001 farm_status=1=停用"）触发
--- 源 DDL `V202605200900__SYS-INIT-001-create-business-tables-common.sql` 已同步修：
---   - sys_farm.farm_status DEFAULT 1 → DEFAULT 0
---   - comment '1=启用 0=停用' → '0=启用 1=停用'（与字典 djs_farm_status 对齐）
---   - seed 1001 行 farm_status 1 → 0
--- 本文件是运行库 patch（已运行的 dev DB 需要 UPDATE backfill）
-
--- ----------------------------------------------------------------------
--- 1) sys_farm 1001 主场状态 1=停用 → 0=启用（与 djs_farm_status 字典对齐）
--- ----------------------------------------------------------------------
-UPDATE sys_farm
-SET farm_status = 0
-WHERE id = 1001 AND farm_status = 1;
-
--- ----------------------------------------------------------------------
--- 2) sys_farm 表 DEFAULT 1 → DEFAULT 0（运行库 ALTER）
--- ----------------------------------------------------------------------
-ALTER TABLE sys_farm
-  MODIFY COLUMN farm_status TINYINT NOT NULL DEFAULT 0
-  COMMENT '农场状态（字典 djs_farm_status：0=启用 1=停用）';
-
--- 验证
--- SELECT id, farm_code, farm_name, farm_status FROM sys_farm WHERE id = 1001;
--- 期望：farm_status = 0
-
-
--- ----------------------------------------------------------------------------
--- 来源文件：V202605221400__D04-CLOSING-seed-dev-users-and-depts.sql
--- ----------------------------------------------------------------------------
--- D04 closing — dev / 联调用户 + 部门 seed
--- 触发：D04 MIN-INFRA-003 raise（通讯录端点 SELECT sys_user 仅 admin 1 行，dev 联调全空，UI 验证无数据）
--- 决策：Kevin closing 拍板 — D04 当晚加 SQL seed（5-8 用户覆盖 4 板块角色 + 2-3 部门）
 --
--- 覆盖：
---   - 4 部门：200 养殖部 / 201 种植部 / 202 仓库部 / 203 门店部（挂 XXX科技 100 下）+ 204 综合管理部
---   - 8 用户：每板块至少 1 个管理员 + 工人，含 boss / vet 角色
---   - 全部 tenant_id=1001 + farm_id=1001 + current_farm_id=1001（V1 单农场）
---   - 密码统一 admin123（BCrypt 同 admin user）
+-- Dumping data for table `sys_farm`
 --
--- 注意：user_id 9100-9107 业务角色用户；mock LoginUser 9001 (user_name=dev) 由后续 patch
--- V202605222100__D04-TH06-seed-mock-dev-user.sql 单独 seed，对齐 AppletAuthController#mockUserId
 
--- ----------------------------------------------------------------------
--- 1) 部门 seed
--- ----------------------------------------------------------------------
+LOCK TABLES `sys_farm` WRITE;
+/*!40000 ALTER TABLE `sys_farm` DISABLE KEYS */;
+INSERT INTO `sys_farm` VALUES (1001,'DJS-MAIN','东角山主场',0,NULL,NULL,NULL,NULL,1,'2026-07-10 16:32:55',NULL,NULL,'0',NULL,0);
+/*!40000 ALTER TABLE `sys_farm` ENABLE KEYS */;
+UNLOCK TABLES;
 
-INSERT INTO sys_dept (dept_id, parent_id, ancestors, dept_name, order_num, leader, phone, email, status, del_flag, create_by, create_time, tenant_id)
-VALUES
-  (200, 100, '0,100',        '东角山-养殖部',     1, NULL, NULL, NULL, '0', '0', 1, NOW(), '1001'),
-  (201, 100, '0,100',        '东角山-种植部',     2, NULL, NULL, NULL, '0', '0', 1, NOW(), '1001'),
-  (202, 100, '0,100',        '东角山-仓库部',     3, NULL, NULL, NULL, '0', '0', 1, NOW(), '1001'),
-  (203, 100, '0,100',        '东角山-门店部',     4, NULL, NULL, NULL, '0', '0', 1, NOW(), '1001'),
-  (204, 100, '0,100',        '东角山-综合管理部', 5, NULL, NULL, NULL, '0', '0', 1, NOW(), '1001')
-ON DUPLICATE KEY UPDATE dept_name = VALUES(dept_name);
-
--- ----------------------------------------------------------------------
--- 2) 用户 seed（密码统一 admin123，BCrypt hash 同 admin user）
--- ----------------------------------------------------------------------
-
-INSERT INTO sys_user (user_id, tenant_id, dept_id, user_name, nick_name, user_type, email, phonenumber, sex, password, status, del_flag, farm_id, current_farm_id, create_by, create_time, remark)
-VALUES
-  (9100, '1001', 200, 'dev_breed_mgr',     '李养殖（养殖管理员）', 'sys_user', 'breed_mgr@dongjiaoshan.dev',    '13800009100', '0', '$2a$10$7JB720yubVSZvuENVucfeurUyOJyKdyXBdC0HyrCl1tT5ZUmgo7Wm', '0', '0', '1001', '1001', 1, NOW(), 'D04 dev seed - 养殖管理员'),
-  (9101, '1001', 200, 'dev_breed_worker',  '张三（养殖工人）',     'sys_user', 'breed_worker@dongjiaoshan.dev', '13800009101', '1', '$2a$10$7JB720yubVSZvuENVucfeurUyOJyKdyXBdC0HyrCl1tT5ZUmgo7Wm', '0', '0', '1001', '1001', 1, NOW(), 'D04 dev seed - 养殖工人'),
-  (9102, '1001', 200, 'dev_vet',           '王兽医（兽医）',       'sys_user', 'vet@dongjiaoshan.dev',          '13800009102', '0', '$2a$10$7JB720yubVSZvuENVucfeurUyOJyKdyXBdC0HyrCl1tT5ZUmgo7Wm', '0', '0', '1001', '1001', 1, NOW(), 'D04 dev seed - 兽医'),
-  (9103, '1001', 201, 'dev_plant_mgr',     '陈种植（种植管理员）', 'sys_user', 'plant_mgr@dongjiaoshan.dev',    '13800009103', '0', '$2a$10$7JB720yubVSZvuENVucfeurUyOJyKdyXBdC0HyrCl1tT5ZUmgo7Wm', '0', '0', '1001', '1001', 1, NOW(), 'D04 dev seed - 种植管理员'),
-  (9104, '1001', 202, 'dev_warehouse_mgr', '赵仓库（仓库管理员）', 'sys_user', 'warehouse_mgr@dongjiaoshan.dev','13800009104', '0', '$2a$10$7JB720yubVSZvuENVucfeurUyOJyKdyXBdC0HyrCl1tT5ZUmgo7Wm', '0', '0', '1001', '1001', 1, NOW(), 'D04 dev seed - 仓库管理员'),
-  (9105, '1001', 203, 'dev_store_mgr',     '钱门店（门店管理员）', 'sys_user', 'store_mgr@dongjiaoshan.dev',    '13800009105', '0', '$2a$10$7JB720yubVSZvuENVucfeurUyOJyKdyXBdC0HyrCl1tT5ZUmgo7Wm', '0', '0', '1001', '1001', 1, NOW(), 'D04 dev seed - 门店管理员'),
-  (9106, '1001', 203, 'dev_store_clerk',   '孙小妹（门店店员）',   'sys_user', 'store_clerk@dongjiaoshan.dev',  '13800009106', '1', '$2a$10$7JB720yubVSZvuENVucfeurUyOJyKdyXBdC0HyrCl1tT5ZUmgo7Wm', '0', '0', '1001', '1001', 1, NOW(), 'D04 dev seed - 门店店员'),
-  (9107, '1001', 204, 'dev_boss',          '老板（dev 测试）',     'sys_user', 'boss@dongjiaoshan.dev',         '13800009107', '0', '$2a$10$7JB720yubVSZvuENVucfeurUyOJyKdyXBdC0HyrCl1tT5ZUmgo7Wm', '0', '0', '1001', '1001', 1, NOW(), 'D04 dev seed - 老板')
-ON DUPLICATE KEY UPDATE nick_name = VALUES(nick_name), dept_id = VALUES(dept_id);
-
--- ----------------------------------------------------------------------
--- 3) 用户 → 角色绑定
--- ----------------------------------------------------------------------
-
-INSERT INTO sys_user_role (user_id, role_id)
-VALUES
-  (9100, 104),  -- breed_admin
-  (9101, 108),  -- breed_worker
-  (9102, 109),  -- vet
-  (9103, 105),  -- plant_admin
-  (9104, 106),  -- warehouse_admin
-  (9105, 107),  -- store_admin
-  (9106, 112),  -- store_clerk
-  (9107, 102)   -- boss
-ON DUPLICATE KEY UPDATE role_id = VALUES(role_id);
-
--- ----------------------------------------------------------------------
--- 验证
--- ----------------------------------------------------------------------
--- SELECT COUNT(*) FROM sys_user WHERE user_id BETWEEN 9100 AND 9107 AND del_flag='0';
--- 期望：8
--- SELECT COUNT(*) FROM sys_dept WHERE dept_id BETWEEN 200 AND 204 AND del_flag='0';
--- 期望：5
--- SELECT COUNT(*) FROM sys_user_role WHERE user_id BETWEEN 9100 AND 9107;
--- 期望：8
-
-
--- ----------------------------------------------------------------------------
--- 来源文件：V202605222100__D04-TH06-seed-mock-dev-user.sql
--- ----------------------------------------------------------------------------
--- D04 testing-human #6 — 补 user_id=9001 dev 用户（mock LoginUser 对齐）
--- 触发：mock dev/dev123 login 颁发 mock-token-9001（mockUserId=9001L，[AppletAuthController.java:112]），
---       但 D04 closing seed 当时为"避开 mock LoginUser 9001"用了 9100-9107 段，DB 无 user_id=9001 行。
---       小程序"我的"页 GET /applet/user/me 走 SELECT sys_user WHERE user_id=9001 → 空 → R.fail(404)
---       → 前端"加载失败"。
--- 决策：补一行 user_id=9001 user_name=dev，与 mock LoginUser 对齐；保留 9100-9107 业务角色 seed 不动。
-
-INSERT INTO sys_user (user_id, tenant_id, dept_id, user_name, nick_name, user_type, email, phonenumber, sex, password, status, del_flag, farm_id, current_farm_id, create_by, create_time, remark)
-VALUES
-  (9001, '1001', 204, 'dev', 'dev 员工', 'sys_user', 'dev@dongjiaoshan.dev', '13800009001', '0',
-   '$2a$10$7JB720yubVSZvuENVucfeurUyOJyKdyXBdC0HyrCl1tT5ZUmgo7Wm',
-   '0', '0', '1001', '1001', 1, NOW(), 'D04 TH#6 - mock LoginUser 对齐（dev/dev123）')
-ON DUPLICATE KEY UPDATE nick_name = VALUES(nick_name), dept_id = VALUES(dept_id), status = '0', del_flag = '0';
-
-INSERT INTO sys_user_role (user_id, role_id)
-VALUES
-  (9001, 101)  -- admin 角色（mock LoginUser.rolePermission 默认 *:*:*，DB 给个 admin 角色对齐）
-ON DUPLICATE KEY UPDATE role_id = VALUES(role_id);
-
--- 验证：
--- SELECT user_id, user_name, nick_name, dept_id FROM sys_user WHERE user_id = 9001;
--- 期望：1 行 dev / dev 员工 / 204
-
-
--- ----------------------------------------------------------------------------
--- 来源文件：V202605231400__SYS-MD-FIX-002-store-supplier.sql
--- ----------------------------------------------------------------------------
--- ============================================================
--- SYS-MD-FIX-002 门店 + 供应商 V1 验收 gap（D03 testing-human #4 hetao 反馈）
 --
--- 改动总览：
---   1. t_md_store：重命名 contact_* → manager_*；新增 short_name/open_date/pos_system_id
---      /image_oss_id/manager_user_id；business_status TINYINT → VARCHAR(16) 走字典
---      djs_store_status
---   2. t_md_supplier：重命名 contact_* → liaison_*；新增 license_no/license_image_oss_id
---      /business_license_no/cooperation_start_date/deal_count/purchase_qty；business_status
---      TINYINT → VARCHAR(16) 走字典 djs_supplier_status；settle_type 走字典 djs_settle_type
---   3. 字典调整：djs_store_status label 改 / djs_store_type 新建 / djs_supplier_type label 改
---      + 数据 backfill / djs_supplier_status 新建 / djs_settle_type 新建
+-- Table structure for table `sys_logininfor`
 --
--- 跑完后必须 flush redis 字典缓存：bash script/sql/djs/_post-init.sh
--- ============================================================
-SET NAMES utf8mb4;
 
--- ===========================
--- 1. t_md_store 改造
--- ===========================
--- 1.1 字段重命名 contact_* → manager_*
-ALTER TABLE t_md_store CHANGE COLUMN contact_name manager_name VARCHAR(32) NULL COMMENT '店长姓名';
-ALTER TABLE t_md_store CHANGE COLUMN contact_phone manager_phone VARCHAR(20) NULL COMMENT '店长电话';
+DROP TABLE IF EXISTS `sys_logininfor`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `sys_logininfor` (
+  `info_id` bigint NOT NULL COMMENT '访问ID',
+  `tenant_id` varchar(20) DEFAULT '000000' COMMENT '租户编号',
+  `user_name` varchar(50) DEFAULT '' COMMENT '用户账号',
+  `client_key` varchar(32) DEFAULT '' COMMENT '客户端',
+  `device_type` varchar(32) DEFAULT '' COMMENT '设备类型',
+  `ipaddr` varchar(128) DEFAULT '' COMMENT '登录IP地址',
+  `login_location` varchar(255) DEFAULT '' COMMENT '登录地点',
+  `browser` varchar(50) DEFAULT '' COMMENT '浏览器类型',
+  `os` varchar(50) DEFAULT '' COMMENT '操作系统',
+  `status` char(1) DEFAULT '0' COMMENT '登录状态（0成功 1失败）',
+  `msg` varchar(255) DEFAULT '' COMMENT '提示消息',
+  `login_time` datetime DEFAULT NULL COMMENT '访问时间',
+  PRIMARY KEY (`info_id`),
+  KEY `idx_sys_logininfor_s` (`status`),
+  KEY `idx_sys_logininfor_lt` (`login_time`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='系统访问记录';
+/*!40101 SET character_set_client = @saved_cs_client */;
 
--- 1.2 business_status TINYINT(1=合作中/0=已终止) → VARCHAR(16) 走 djs_store_status 字典
---     旧值 1 → '0'（合作中），旧值 0 → '1'（已终止）
-ALTER TABLE t_md_store ADD COLUMN business_status_new VARCHAR(16) NOT NULL DEFAULT '0' AFTER store_type;
-UPDATE t_md_store SET business_status_new = CASE WHEN business_status=1 THEN '0' WHEN business_status=0 THEN '1' ELSE '0' END;
-ALTER TABLE t_md_store DROP COLUMN business_status;
-ALTER TABLE t_md_store CHANGE COLUMN business_status_new business_status VARCHAR(16) NOT NULL DEFAULT '0' COMMENT '合作状态（字典 djs_store_status: 0=合作中/1=已终止/2=装修中）';
-
--- 1.3 新加字段
-ALTER TABLE t_md_store ADD COLUMN short_name VARCHAR(64) NULL COMMENT '门店简称' AFTER store_name;
-ALTER TABLE t_md_store ADD COLUMN open_date DATE NULL COMMENT '开业日期' AFTER short_name;
-ALTER TABLE t_md_store ADD COLUMN pos_system_id VARCHAR(64) NULL COMMENT '收银系统 ID' AFTER manager_phone;
-ALTER TABLE t_md_store ADD COLUMN image_oss_id BIGINT NULL COMMENT '门店图片（引用 sys_oss.oss_id）' AFTER pos_system_id;
-ALTER TABLE t_md_store ADD COLUMN manager_user_id BIGINT NULL COMMENT '店长 sys_user.user_id（NULL=未设置）' AFTER manager_phone;
-ALTER TABLE t_md_store ADD INDEX idx_store_manager (manager_user_id);
-
--- ===========================
--- 2. t_md_supplier 改造
--- ===========================
--- 2.1 字段重命名 contact_* → liaison_*
-ALTER TABLE t_md_supplier CHANGE COLUMN contact_name liaison_name VARCHAR(32) NULL COMMENT '联系负责人';
-ALTER TABLE t_md_supplier CHANGE COLUMN contact_phone liaison_phone VARCHAR(20) NULL COMMENT '负责人电话';
-
--- 2.2 业务数据 backfill：pack（包材）映射 → other（其他），再删 pack 字典
-UPDATE t_md_supplier SET supplier_type='other' WHERE supplier_type='pack';
-
--- 2.3 business_status TINYINT → VARCHAR(16) 走 djs_supplier_status 字典
---     旧值 1 → '0'（合作中），旧值 0 → '1'（已终止）
-ALTER TABLE t_md_supplier ADD COLUMN business_status_new VARCHAR(16) NOT NULL DEFAULT '0' AFTER address;
-UPDATE t_md_supplier SET business_status_new = CASE WHEN business_status=1 THEN '0' WHEN business_status=0 THEN '1' ELSE '0' END;
-ALTER TABLE t_md_supplier DROP COLUMN business_status;
-ALTER TABLE t_md_supplier CHANGE COLUMN business_status_new business_status VARCHAR(16) NOT NULL DEFAULT '0' COMMENT '合作状态（字典 djs_supplier_status: 0=合作中/1=已终止）';
-
--- 2.4 settle_type 自由文本 → VARCHAR(16) 走 djs_settle_type 字典
---     旧数据统一 backfill 为 cash（V1 默认现款现货）；已是 cash 重复 UPDATE 也安全
-UPDATE t_md_supplier SET settle_type = 'cash' WHERE settle_type IS NOT NULL AND settle_type NOT IN ('cash','monthly','quarterly');
-UPDATE t_md_supplier SET settle_type = 'cash' WHERE settle_type IS NULL OR settle_type = '';
-ALTER TABLE t_md_supplier MODIFY COLUMN settle_type VARCHAR(16) NULL DEFAULT 'cash' COMMENT '结算方式（字典 djs_settle_type: cash=现款现货/monthly=月结/quarterly=季结）';
-
--- 2.5 新加字段
-ALTER TABLE t_md_supplier ADD COLUMN license_no VARCHAR(64) NULL COMMENT '营业执照编号' AFTER supplier_name;
-ALTER TABLE t_md_supplier ADD COLUMN license_image_oss_id BIGINT NULL COMMENT '营业执照图片（sys_oss.oss_id）' AFTER license_no;
-ALTER TABLE t_md_supplier ADD COLUMN business_license_no VARCHAR(64) NULL COMMENT '经营许可证编号' AFTER license_image_oss_id;
-ALTER TABLE t_md_supplier ADD COLUMN cooperation_start_date DATE NULL COMMENT '合作开始日期' AFTER business_license_no;
-ALTER TABLE t_md_supplier ADD COLUMN deal_count INT NOT NULL DEFAULT 0 COMMENT '交易次数（聚合冗余 / V1 stub=0，下游 BRD-MED / WMS-PURCHASE 落地后回填）';
-ALTER TABLE t_md_supplier ADD COLUMN purchase_qty DECIMAL(18,3) NOT NULL DEFAULT 0 COMMENT '累计购入商品数（V1 stub=0）';
-
--- ===========================
--- 3. 字典调整
--- ===========================
--- 3.1 djs_store_status label 改语义（0=启用→合作中 / 1=停用→已终止）；装修中 (value=2) 不变
-UPDATE sys_dict_data SET dict_label='合作中', list_class='success' WHERE dict_type='djs_store_status' AND dict_value='0';
-UPDATE sys_dict_data SET dict_label='已终止', list_class='danger'  WHERE dict_type='djs_store_status' AND dict_value='1';
-
--- 3.2 djs_store_type 新建（V1 直营 / 加盟）
-INSERT IGNORE INTO sys_dict_type
-  (dict_id, tenant_id, dict_name, dict_type, create_by, create_time, remark)
-VALUES
-  (100700, '1001', '门店类型', 'djs_store_type', NULL, NOW(), '门店：直营 / 加盟');
-INSERT IGNORE INTO sys_dict_data
-  (dict_code, tenant_id, dict_sort, dict_label, dict_value, dict_type, css_class, list_class, is_default, create_by, create_time)
-VALUES
-  (1007000, '1001', 0, '直营', 'direct',    'djs_store_type', '', 'primary', 'Y', NULL, NOW()),
-  (1007001, '1001', 1, '加盟', 'franchise', 'djs_store_type', '', 'success', 'N', NULL, NOW());
-
--- 3.3 djs_supplier_type label 改：饲料 → 饲料原材料 / 兽药 → 药品 / 蔬菜种子 → 种子
-UPDATE sys_dict_data SET dict_label='药品'         WHERE dict_type='djs_supplier_type' AND dict_value='med';
-UPDATE sys_dict_data SET dict_label='种猪'         WHERE dict_type='djs_supplier_type' AND dict_value='breed';
-UPDATE sys_dict_data SET dict_label='饲料原材料'   WHERE dict_type='djs_supplier_type' AND dict_value='feed';
-UPDATE sys_dict_data SET dict_label='种子'         WHERE dict_type='djs_supplier_type' AND dict_value='seed';
--- 删除 pack（V1 不要；t_md_supplier 中 pack 数据已在 §2.2 UPDATE 到 other）；保留 other 作兜底
-DELETE FROM sys_dict_data WHERE dict_type='djs_supplier_type' AND dict_value='pack';
-
--- 3.4 djs_supplier_status 新建
-INSERT IGNORE INTO sys_dict_type
-  (dict_id, tenant_id, dict_name, dict_type, create_by, create_time, remark)
-VALUES
-  (100701, '1001', '供应商合作状态', 'djs_supplier_status', NULL, NOW(), '供应商：合作中 / 已终止');
-INSERT IGNORE INTO sys_dict_data
-  (dict_code, tenant_id, dict_sort, dict_label, dict_value, dict_type, css_class, list_class, is_default, create_by, create_time)
-VALUES
-  (1007010, '1001', 0, '合作中', '0', 'djs_supplier_status', '', 'success', 'Y', NULL, NOW()),
-  (1007011, '1001', 1, '已终止', '1', 'djs_supplier_status', '', 'danger',  'N', NULL, NOW());
-
--- 3.5 djs_settle_type 新建
-INSERT IGNORE INTO sys_dict_type
-  (dict_id, tenant_id, dict_name, dict_type, create_by, create_time, remark)
-VALUES
-  (100702, '1001', '结算方式', 'djs_settle_type', NULL, NOW(), '供应商：现款现货 / 月结 / 季结');
-INSERT IGNORE INTO sys_dict_data
-  (dict_code, tenant_id, dict_sort, dict_label, dict_value, dict_type, css_class, list_class, is_default, create_by, create_time)
-VALUES
-  (1007020, '1001', 0, '现款现货', 'cash',      'djs_settle_type', '', 'primary', 'Y', NULL, NOW()),
-  (1007021, '1001', 1, '月结',     'monthly',   'djs_settle_type', '', 'warning', 'N', NULL, NOW()),
-  (1007022, '1001', 2, '季结',     'quarterly', 'djs_settle_type', '', 'info',    'N', NULL, NOW());
-
--- ===========================
--- 4. 菜单按钮权限（SYS-MD-FIX-002 新增"设置店长"按钮）
---    SYS-MD-002 已 seed menu_id 5002 (门店目录) + 5020-5024 (list/add/edit/remove/export)；
---    本 ticket 在 5002 下新增 menu_id 5025 设置店长
--- ===========================
-INSERT IGNORE INTO sys_menu (
-    menu_id, menu_name, parent_id, order_num,
-    path, component, query_param,
-    is_frame, is_cache, menu_type, visible, status,
-    perms, icon, create_by, create_time, remark)
-VALUES
-  (5025, '设置店长', 5002, 6, '', '', '',
-   1, 0, 'F', '0', '0',
-   'djs:common:store:setManager', '#', 1, NOW(), 'SYS-MD-FIX-002');
-
-
--- ----------------------------------------------------------------------------
--- 来源文件：V202605242200__BRD-CORE-001-add-status-record-update-cols.sql
--- ----------------------------------------------------------------------------
--- ============================================================
--- BRD-CORE-001 t_farm_status_record 补 update_by / update_time 列
 --
--- 触发：testing-human B.1 mp 引种提交时 MP InjectionMetaObjectHandler
--- 全局 insertFill 注入 updateBy/updateTime，但本表 DDL 缺这两列 →
--- SQLSyntaxErrorException: Unknown column 'update_by' in 'field list'
+-- Dumping data for table `sys_logininfor`
 --
--- 其他 12 张业务表都已有这两列；status_record 当初按"事件流不可编辑"
--- 语义省略，但 MP 框架行为是全局 insertFill 不分表，省不掉。
+
+LOCK TABLES `sys_logininfor` WRITE;
+/*!40000 ALTER TABLE `sys_logininfor` DISABLE KEYS */;
+/*!40000 ALTER TABLE `sys_logininfor` ENABLE KEYS */;
+UNLOCK TABLES;
+
 --
--- SYS-INIT-001 V202605200901 源文件同步更新，新环境从零跑也正确。
--- ============================================================
-ALTER TABLE t_farm_status_record
-  ADD COLUMN update_by   BIGINT   NULL COMMENT '更新人（MP insertFill 占位，状态记录实际不 update）' AFTER create_time,
-  ADD COLUMN update_time DATETIME NULL COMMENT '更新时间（MP insertFill 占位）' AFTER update_by;
-
-
--- ----------------------------------------------------------------------------
--- 来源文件：V202605242300__BRD-EVENT-001-003-admin-readonly-list-menu.sql
--- ----------------------------------------------------------------------------
--- ============================================================
--- BRD-EVENT-001/003 admin 端补只读列表页菜单
+-- Table structure for table `sys_menu`
 --
--- testing-human B 阶段：admin 左侧「引种登记」/「仔猪耳标」点击空白页。
--- doc/02 scope = be+fe-app（只 mp 录），admin 端补只读历史查询页（不录入）。
+
+DROP TABLE IF EXISTS `sys_menu`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `sys_menu` (
+  `menu_id` bigint NOT NULL COMMENT '菜单ID',
+  `menu_name` varchar(50) NOT NULL COMMENT '菜单名称',
+  `parent_id` bigint DEFAULT '0' COMMENT '父菜单ID',
+  `order_num` int DEFAULT '0' COMMENT '显示顺序',
+  `path` varchar(200) DEFAULT '' COMMENT '路由地址',
+  `component` varchar(255) DEFAULT NULL COMMENT '组件路径',
+  `query_param` varchar(255) DEFAULT NULL COMMENT '路由参数',
+  `is_frame` int DEFAULT '1' COMMENT '是否为外链（0是 1否）',
+  `is_cache` int DEFAULT '0' COMMENT '是否缓存（0缓存 1不缓存）',
+  `menu_type` char(1) DEFAULT '' COMMENT '菜单类型（M目录 C菜单 F按钮）',
+  `visible` char(1) DEFAULT '0' COMMENT '显示状态（0显示 1隐藏）',
+  `status` char(1) DEFAULT '0' COMMENT '菜单状态（0正常 1停用）',
+  `perms` varchar(100) DEFAULT NULL COMMENT '权限标识',
+  `icon` varchar(100) DEFAULT '#' COMMENT '菜单图标',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '创建者',
+  `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新者',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `remark` varchar(500) DEFAULT '' COMMENT '备注',
+  PRIMARY KEY (`menu_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='菜单权限表';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
 --
--- 1) menu 7110「仔猪耳标」从 M（目录）改 C（页面）+ 加 path/component/perms
--- 2) breed_admin / breed_worker 加 7110 菜单访问
--- 3) intro/eartag :list 权限赋给 breed_admin / breed_worker（boss/manager 已有）
--- ============================================================
-
-UPDATE sys_menu
-SET menu_type = 'C',
-    path = 'eartag',
-    component = 'djs-breed/event/eartag/index',
-    perms = 'djs:breed:event:eartag:list'
-WHERE menu_id = 7110;
-
-INSERT IGNORE INTO sys_role_menu (role_id, menu_id)
-SELECT r.role_id, 7110 FROM sys_role r
-WHERE r.role_key IN ('breed_admin', 'breed_worker');
-
-
--- ----------------------------------------------------------------------------
--- 来源文件：V202605260900__BRD-CORE-001-menu.sql
--- ----------------------------------------------------------------------------
--- ============================================================
--- BRD-CORE-001 猪只主表 + 状态机引擎（菜单 + 按钮权限）
---   父菜单 7000 (养殖) 已在 SYS-AUTH-001 V202605201100 占位
---   本文件分配 7200-7299 段（参 .claude/CLAUDE.md §6 第 6 条段表）
---     7200 二级目录：猪只主表（admin 列表 + 详情）
---     7201-7204 三级按钮：查询 / 详情 / 历史 / 触发事件
---   权限串 djs:breed:pig:* 与后端 PigController @SaCheckPermission 严格一致
---   注：djs:breed:pig:event 是通用事件入口，仅赋系统级角色（boss / 调试），
---   不下放普通用户；BRD-EVENT-* 子 ticket 自己写业务端点 + 内部调 fireEvent
--- ============================================================
-
-SET NAMES utf8mb4;
-
--- ------------------------------------------------------------
--- 菜单：猪只主表（挂养殖目录 7000 下，order_num=50 排在育种 / 农场 / 药品 / 公猪 / 用药计划之后）
--- ------------------------------------------------------------
-INSERT IGNORE INTO sys_menu (
-    menu_id, menu_name, parent_id, order_num,
-    path, component, query_param,
-    is_frame, is_cache, menu_type, visible, status,
-    perms, icon, create_by, create_time, remark)
-VALUES
-  -- 二级目录：猪只主表（admin 列表 + 详情 + 历史）
-  (7200, '猪只主表', 7000, 50, 'pig', 'djs-breed/pig/index', '',
-   1, 0, 'C', '0', '0',
-   'djs:breed:pig:list', 'monitor', 1, NOW(), 'BRD-CORE-001'),
-
-  -- 三级按钮权限（4 个，与后端 PigController @SaCheckPermission 严格一致）
-  (7201, '猪只查询', 7200, 1, '', '', '', 1, 0, 'F', '0', '0',
-   'djs:breed:pig:list',  '#', 1, NOW(), 'BRD-CORE-001'),
-  (7202, '猪只详情', 7200, 2, '', '', '', 1, 0, 'F', '0', '0',
-   'djs:breed:pig:query', '#', 1, NOW(), 'BRD-CORE-001'),
-  (7203, '触发事件', 7200, 3, '', '', '', 1, 0, 'F', '0', '0',
-   'djs:breed:pig:event', '#', 1, NOW(), 'BRD-CORE-001'),
-  (7204, '猪只导出', 7200, 4, '', '', '', 1, 0, 'F', '0', '0',
-   'djs:breed:pig:export', '#', 1, NOW(), 'BRD-CORE-001');
-
--- ------------------------------------------------------------
--- 角色 → 菜单映射
---   boss / manager / breed_admin / breed_worker 全部赋猪只主表 list + query
---   djs:breed:pig:event 仅赋 boss（系统级 / 调试），manager / 业务角色不下放
---   djs:breed:pig:export 赋 boss + manager
--- ------------------------------------------------------------
--- list (7201) + query (7202)：所有养殖相关角色
-INSERT IGNORE INTO sys_role_menu (role_id, menu_id)
-SELECT r.role_id, m.menu_id
-FROM sys_role r
-CROSS JOIN (SELECT 7200 AS menu_id UNION SELECT 7201 UNION SELECT 7202) m
-WHERE r.role_key IN ('boss', 'manager', 'breed_admin', 'breed_worker');
-
--- event (7203)：仅 boss（系统级）
-INSERT IGNORE INTO sys_role_menu (role_id, menu_id)
-SELECT r.role_id, 7203
-FROM sys_role r
-WHERE r.role_key IN ('boss');
-
--- export (7204)：boss + manager
-INSERT IGNORE INTO sys_role_menu (role_id, menu_id)
-SELECT r.role_id, 7204
-FROM sys_role r
-WHERE r.role_key IN ('boss', 'manager');
-
-
--- ----------------------------------------------------------------------------
--- 来源文件：V202605260901__BRD-CORE-001-realign-status-record-comment.sql
--- ----------------------------------------------------------------------------
--- ============================================================
--- BRD-CORE-001 修 t_farm_status_record.event_type 列注释词汇漂移（无破坏性）
---   SYS-INIT-001 V202605200901 建表时注释写的是 MATING/CONFIRM_PREG/.../DEAD/CULL/MARKET (10 个旧词汇)
---   SYS-INIT-002 V202605201000 灌字典 djs_pig_status_event 用的是 INTRO/BREED/FARROW/.../SLAUGHTER (11 个)
---   应用层（PigStatusEvent enum / PigStateMachine）以字典 11 个 value 为准
---   本 SQL 只改 COLUMN COMMENT 元数据，不动数据 / 不动类型 / 不动索引
--- ============================================================
-
-SET NAMES utf8mb4;
-
-ALTER TABLE t_farm_status_record MODIFY COLUMN event_type VARCHAR(16) NOT NULL
-  COMMENT '触发事件（11 枚举，字典 djs_pig_status_event）：INTRO/BREED/FARROW/WEAN/OESTRUS/NULL_RETURN/DIE/ELIMINATE/CASTRATE/TRANSFER/SLAUGHTER';
-
--- 顺带修 t_farm_pig_info.current_status 注释（原写"9 枚举"，应为 10：含 BOAR_ACTIVE 公猪在产）
-ALTER TABLE t_farm_pig_info MODIFY COLUMN current_status VARCHAR(16) NOT NULL DEFAULT 'HB'
-  COMMENT '当前状态（10 枚举，字典 djs_pig_lifecycle）：HB/PZ/PH/FM/DN/LC/KH/FQ/END/BOAR_ACTIVE；BRD-CORE-001 状态机维护';
-
-
--- ----------------------------------------------------------------------------
--- 来源文件：V202605270900__BRD-EVENT-001-intro-no-rule.sql
--- ----------------------------------------------------------------------------
--- ============================================================
--- BRD-EVENT-001 引种单号编码规则（INTRO_NO）
---   pattern: INT{yyyyMMdd}{seq4}     例 INT202605260001（每日重置 4 位序号）
--- ============================================================
-
-INSERT IGNORE INTO t_md_biz_code_rule
-  (code_type, pattern,                  daily_reset, prefix, seq_length, status, create_by, create_time)
-VALUES
-  ('INTRO_NO', 'INT{yyyyMMdd}{seq4}',   1,           'INT',  4,          '0',    1,         NOW());
-
-
--- ----------------------------------------------------------------------------
--- 来源文件：V202605270901__BRD-EVENT-001-menu.sql
--- ----------------------------------------------------------------------------
--- ============================================================
--- BRD-EVENT-001 引种登记（菜单 + 按钮权限）
---   父菜单 7000 (养殖) 已在 SYS-AUTH-001 占位
---   本文件分配 7100-7109 段（CLAUDE.md §6 段表：7100-7199 = BRD-EVENT-001~005 业务事件）
---     7100 二级目录：引种登记（admin 查看历史 + 业务）
---     7101-7105 三级按钮
---   权限串 djs:breed:event:intro* 与后端 PigIntroController @SaCheckPermission 严格一致
---   注：引种主入口在 mp 端（CameraUpload 拍照 + 表单），admin 端只做列表查看 / 导出
--- ============================================================
-
-SET NAMES utf8mb4;
-
-INSERT IGNORE INTO sys_menu (
-    menu_id, menu_name, parent_id, order_num,
-    path, component, query_param,
-    is_frame, is_cache, menu_type, visible, status,
-    perms, icon, create_by, create_time, remark)
-VALUES
-  -- 二级目录：引种登记
-  (7100, '引种登记', 7000, 10, 'intro', 'djs-breed/event/intro/index', '',
-   1, 0, 'C', '0', '0',
-   'djs:breed:event:intro:list', 'log', 1, NOW(), 'BRD-EVENT-001'),
-
-  -- 三级按钮（与 controller @SaCheckPermission 一一对应）
-  (7101, '引种查询', 7100, 1, '', '', '', 1, 0, 'F', '0', '0',
-   'djs:breed:event:intro:list',   '#', 1, NOW(), 'BRD-EVENT-001'),
-  (7102, '引种详情', 7100, 2, '', '', '', 1, 0, 'F', '0', '0',
-   'djs:breed:event:intro:query',  '#', 1, NOW(), 'BRD-EVENT-001'),
-  (7103, '引种新增', 7100, 3, '', '', '', 1, 0, 'F', '0', '0',
-   'djs:breed:event:intro',        '#', 1, NOW(), 'BRD-EVENT-001'),
-  (7104, '引种导出', 7100, 4, '', '', '', 1, 0, 'F', '0', '0',
-   'djs:breed:event:intro:export', '#', 1, NOW(), 'BRD-EVENT-001');
-
--- ------------------------------------------------------------
--- 角色 → 菜单映射（对齐当前项目角色：boss / manager / breed_admin / breed_worker / vet）
---   list / query (7100, 7101, 7102): boss / manager / breed_admin / breed_worker（养殖员录入端会查自己引的猪）
---   intro 写权限 (7103): boss / manager / breed_admin / breed_worker
---   export (7104): boss / manager / breed_admin
--- ------------------------------------------------------------
-INSERT IGNORE INTO sys_role_menu (role_id, menu_id)
-SELECT r.role_id, m.menu_id
-FROM sys_role r
-CROSS JOIN (SELECT 7100 AS menu_id UNION SELECT 7101 UNION SELECT 7102 UNION SELECT 7103) m
-WHERE r.role_key IN ('boss', 'manager', 'breed_admin', 'breed_worker');
-
-INSERT IGNORE INTO sys_role_menu (role_id, menu_id)
-SELECT r.role_id, 7104
-FROM sys_role r
-WHERE r.role_key IN ('boss', 'manager', 'breed_admin');
-
-
--- ----------------------------------------------------------------------------
--- 来源文件：V202605270902__BRD-EVENT-003-menu.sql
--- ----------------------------------------------------------------------------
--- ============================================================
--- BRD-EVENT-003 仔猪批量耳标（菜单 + 按钮权限）
---   父菜单 7000 (养殖) 在 SYS-AUTH-001 占位；本文件分配 7110-7119 段
---   参 .claude/CLAUDE.md §6 第 6 条：7100-7199 留给 BRD-EVENT-001~005 业务事件
---     7110          二级目录：仔猪耳标（小程序入口 + 后续 admin 列表）
---     7111-7113     三级按钮：查询 / 批量贴标
---   权限串 djs:breed:event:eartag(:query) 与 PigEarTagController @SaCheckPermission 一致
---   注：本菜单主要服务小程序写入；admin 端 V1 不提供独立列表页（详情通过 BRD-LIST-001 接入）
--- ============================================================
-
-SET NAMES utf8mb4;
-
--- ------------------------------------------------------------
--- 菜单：仔猪耳标（挂养殖目录 7000 下，order_num=60 排在猪只主表之后）
--- ------------------------------------------------------------
-INSERT IGNORE INTO sys_menu (
-    menu_id, menu_name, parent_id, order_num,
-    path, component, query_param,
-    is_frame, is_cache, menu_type, visible, status,
-    perms, icon, create_by, create_time, remark)
-VALUES
-  -- 二级目录：仔猪耳标
-  (7110, '仔猪耳标', 7000, 60, 'eartag', '', '',
-   1, 0, 'M', '0', '0',
-   '', 'edit', 1, NOW(), 'BRD-EVENT-003'),
-
-  -- 三级按钮权限
-  (7111, '耳标查询', 7110, 1, '', '', '', 1, 0, 'F', '0', '0',
-   'djs:breed:event:eartag:query', '#', 1, NOW(), 'BRD-EVENT-003'),
-  (7112, '批量贴标', 7110, 2, '', '', '', 1, 0, 'F', '0', '0',
-   'djs:breed:event:eartag', '#', 1, NOW(), 'BRD-EVENT-003');
-
--- ------------------------------------------------------------
--- 角色 → 菜单映射
---   query (7111)：所有养殖相关角色
---   eartag write (7112)：boss / manager / pig_keeper（执行人）；butcher 不需要
--- ------------------------------------------------------------
-INSERT IGNORE INTO sys_role_menu (role_id, menu_id)
-SELECT r.role_id, m.menu_id
-FROM sys_role r
-CROSS JOIN (SELECT 7110 AS menu_id UNION SELECT 7111) m
-WHERE r.role_key IN ('boss', 'manager', 'pig_keeper', 'butcher');
-
-INSERT IGNORE INTO sys_role_menu (role_id, menu_id)
-SELECT r.role_id, 7112
-FROM sys_role r
-WHERE r.role_key IN ('boss', 'manager', 'pig_keeper');
-
-
--- ----------------------------------------------------------------------------
--- 来源文件：V202605280800__D05-CLOSING-fixes.sql
--- ----------------------------------------------------------------------------
--- ============================================================
--- D05 Closing 修复补丁
--- 修复 D5 实施中发现的 5 个数据问题（_open-issues.md 待决项）
+-- Dumping data for table `sys_menu`
 --
---   1. menu_id 7103 名称重复（"引种登记" → "引种新增"）
---   2. BRD-CORE-001 菜单 7200-7202 补赋 breed_admin / breed_worker
---   3. djs_pig_gender dict_value 对齐 DB（male/female → M/F）
---   4. 补种 djs_pig_type 字典（4 值）
---   5. 补种 djs_pig_end_reason 字典（3 值）
--- ============================================================
 
-SET NAMES utf8mb4;
+LOCK TABLES `sys_menu` WRITE;
+/*!40000 ALTER TABLE `sys_menu` DISABLE KEYS */;
+INSERT INTO `sys_menu` VALUES (1,'系统管理',0,1,'system',NULL,'',1,0,'M','0','0','','system',103,1,'2026-07-10 16:32:54',NULL,NULL,'系统管理目录'),(2,'系统监控',0,3,'monitor',NULL,'',1,0,'M','1','0','','monitor',103,1,'2026-07-10 16:32:54',NULL,NULL,'系统监控目录'),(3,'系统工具',0,4,'tool',NULL,'',1,0,'M','1','0','','tool',103,1,'2026-07-10 16:32:54',NULL,NULL,'系统工具目录'),(100,'用户管理',1,1,'user','system/user/index','',1,0,'C','0','0','system:user:list','user',103,1,'2026-07-10 16:32:54',NULL,NULL,'用户管理菜单'),(101,'角色管理',1,2,'role','system/role/index','',1,0,'C','0','0','system:role:list','peoples',103,1,'2026-07-10 16:32:54',NULL,NULL,'角色管理菜单'),(102,'菜单管理',1,3,'menu','system/menu/index','',1,0,'C','0','0','system:menu:list','tree-table',103,1,'2026-07-10 16:32:54',NULL,NULL,'菜单管理菜单'),(103,'部门管理',1,4,'dept','system/dept/index','',1,0,'C','0','0','system:dept:list','tree',103,1,'2026-07-10 16:32:54',NULL,NULL,'部门管理菜单'),(104,'岗位管理',1,5,'post','system/post/index','',1,0,'C','0','0','system:post:list','post',103,1,'2026-07-10 16:32:54',NULL,NULL,'岗位管理菜单'),(105,'字典管理',1,6,'dict','system/dict/index','',1,0,'C','0','0','system:dict:list','dict',103,1,'2026-07-10 16:32:54',NULL,NULL,'字典管理菜单'),(106,'参数设置',1,7,'config','system/config/index','',1,0,'C','0','0','system:config:list','edit',103,1,'2026-07-10 16:32:54',NULL,NULL,'参数设置菜单'),(107,'通知公告',1,8,'notice','system/notice/index','',1,0,'C','1','0','system:notice:list','message',103,1,'2026-07-10 16:32:54',NULL,NULL,'通知公告菜单'),(108,'日志管理',1,9,'log','','',1,0,'M','0','0','','log',103,1,'2026-07-10 16:32:54',NULL,NULL,'日志管理菜单'),(109,'在线用户',2,1,'online','monitor/online/index','',1,0,'C','1','0','monitor:online:list','online',103,1,'2026-07-10 16:32:54',NULL,NULL,'在线用户菜单'),(113,'缓存监控',2,5,'cache','monitor/cache/index','',1,0,'C','1','0','monitor:cache:list','redis',103,1,'2026-07-10 16:32:54',NULL,NULL,'缓存监控菜单'),(115,'代码生成',3,2,'gen','tool/gen/index','',1,0,'C','1','0','tool:gen:list','code',103,1,'2026-07-10 16:32:54',NULL,NULL,'代码生成菜单'),(116,'修改生成配置',3,2,'gen-edit/index/:tableId','tool/gen/editTable','',1,1,'C','1','0','tool:gen:edit','#',103,1,'2026-07-10 16:32:54',NULL,NULL,'/tool/gen'),(117,'Admin监控',2,5,'Admin','monitor/admin/index','',1,0,'C','1','0','monitor:admin:list','dashboard',103,1,'2026-07-10 16:32:54',NULL,NULL,'Admin监控菜单'),(118,'文件管理',1,10,'oss','system/oss/index','',1,0,'C','0','0','system:oss:list','upload',103,1,'2026-07-10 16:32:54',NULL,NULL,'文件管理菜单'),(120,'任务调度中心',2,6,'snailjob','monitor/snailjob/index','',1,0,'C','1','0','monitor:snailjob:list','job',103,1,'2026-07-10 16:32:54',NULL,NULL,'SnailJob控制台菜单'),(130,'分配用户',1,2,'role-auth/user/:roleId','system/role/authUser','',1,1,'C','1','0','system:role:edit','#',103,1,'2026-07-10 16:32:54',NULL,NULL,'/system/role'),(131,'分配角色',1,1,'user-auth/role/:userId','system/user/authRole','',1,1,'C','1','0','system:user:edit','#',103,1,'2026-07-10 16:32:54',NULL,NULL,'/system/user'),(132,'字典数据',1,6,'dict-data/index/:dictId','system/dict/data','',1,1,'C','1','0','system:dict:list','#',103,1,'2026-07-10 16:32:54',NULL,NULL,'/system/dict'),(133,'文件配置管理',1,10,'oss-config/index','system/oss/config','',1,1,'C','1','0','system:ossConfig:list','#',103,1,'2026-07-10 16:32:54',NULL,NULL,'/system/oss'),(500,'操作日志',108,1,'operlog','monitor/operlog/index','',1,0,'C','0','0','monitor:operlog:list','form',103,1,'2026-07-10 16:32:54',NULL,NULL,'操作日志菜单'),(501,'登录日志',108,2,'logininfor','monitor/logininfor/index','',1,0,'C','0','0','monitor:logininfor:list','logininfor',103,1,'2026-07-10 16:32:54',NULL,NULL,'登录日志菜单'),(1001,'用户查询',100,1,'','','',1,0,'F','0','0','system:user:query','#',103,1,'2026-07-10 16:32:54',NULL,NULL,''),(1002,'用户新增',100,2,'','','',1,0,'F','0','0','system:user:add','#',103,1,'2026-07-10 16:32:54',NULL,NULL,''),(1003,'用户修改',100,3,'','','',1,0,'F','0','0','system:user:edit','#',103,1,'2026-07-10 16:32:54',NULL,NULL,''),(1004,'用户删除',100,4,'','','',1,0,'F','0','0','system:user:remove','#',103,1,'2026-07-10 16:32:54',NULL,NULL,''),(1005,'用户导出',100,5,'','','',1,0,'F','0','0','system:user:export','#',103,1,'2026-07-10 16:32:54',NULL,NULL,''),(1006,'用户导入',100,6,'','','',1,0,'F','0','0','system:user:import','#',103,1,'2026-07-10 16:32:54',NULL,NULL,''),(1007,'重置密码',100,7,'','','',1,0,'F','0','0','system:user:resetPwd','#',103,1,'2026-07-10 16:32:54',NULL,NULL,''),(1008,'角色查询',101,1,'','','',1,0,'F','0','0','system:role:query','#',103,1,'2026-07-10 16:32:54',NULL,NULL,''),(1009,'角色新增',101,2,'','','',1,0,'F','0','0','system:role:add','#',103,1,'2026-07-10 16:32:54',NULL,NULL,''),(1010,'角色修改',101,3,'','','',1,0,'F','0','0','system:role:edit','#',103,1,'2026-07-10 16:32:54',NULL,NULL,''),(1011,'角色删除',101,4,'','','',1,0,'F','0','0','system:role:remove','#',103,1,'2026-07-10 16:32:54',NULL,NULL,''),(1012,'角色导出',101,5,'','','',1,0,'F','0','0','system:role:export','#',103,1,'2026-07-10 16:32:54',NULL,NULL,''),(1013,'菜单查询',102,1,'','','',1,0,'F','0','0','system:menu:query','#',103,1,'2026-07-10 16:32:54',NULL,NULL,''),(1014,'菜单新增',102,2,'','','',1,0,'F','0','0','system:menu:add','#',103,1,'2026-07-10 16:32:54',NULL,NULL,''),(1015,'菜单修改',102,3,'','','',1,0,'F','0','0','system:menu:edit','#',103,1,'2026-07-10 16:32:54',NULL,NULL,''),(1016,'菜单删除',102,4,'','','',1,0,'F','0','0','system:menu:remove','#',103,1,'2026-07-10 16:32:54',NULL,NULL,''),(1017,'部门查询',103,1,'','','',1,0,'F','0','0','system:dept:query','#',103,1,'2026-07-10 16:32:54',NULL,NULL,''),(1018,'部门新增',103,2,'','','',1,0,'F','0','0','system:dept:add','#',103,1,'2026-07-10 16:32:54',NULL,NULL,''),(1019,'部门修改',103,3,'','','',1,0,'F','0','0','system:dept:edit','#',103,1,'2026-07-10 16:32:54',NULL,NULL,''),(1020,'部门删除',103,4,'','','',1,0,'F','0','0','system:dept:remove','#',103,1,'2026-07-10 16:32:54',NULL,NULL,''),(1021,'岗位查询',104,1,'','','',1,0,'F','0','0','system:post:query','#',103,1,'2026-07-10 16:32:54',NULL,NULL,''),(1022,'岗位新增',104,2,'','','',1,0,'F','0','0','system:post:add','#',103,1,'2026-07-10 16:32:54',NULL,NULL,''),(1023,'岗位修改',104,3,'','','',1,0,'F','0','0','system:post:edit','#',103,1,'2026-07-10 16:32:54',NULL,NULL,''),(1024,'岗位删除',104,4,'','','',1,0,'F','0','0','system:post:remove','#',103,1,'2026-07-10 16:32:54',NULL,NULL,''),(1025,'岗位导出',104,5,'','','',1,0,'F','0','0','system:post:export','#',103,1,'2026-07-10 16:32:54',NULL,NULL,''),(1026,'字典查询',105,1,'#','','',1,0,'F','0','0','system:dict:query','#',103,1,'2026-07-10 16:32:54',NULL,NULL,''),(1027,'字典新增',105,2,'#','','',1,0,'F','0','0','system:dict:add','#',103,1,'2026-07-10 16:32:54',NULL,NULL,''),(1028,'字典修改',105,3,'#','','',1,0,'F','0','0','system:dict:edit','#',103,1,'2026-07-10 16:32:54',NULL,NULL,''),(1029,'字典删除',105,4,'#','','',1,0,'F','0','0','system:dict:remove','#',103,1,'2026-07-10 16:32:54',NULL,NULL,''),(1030,'字典导出',105,5,'#','','',1,0,'F','0','0','system:dict:export','#',103,1,'2026-07-10 16:32:54',NULL,NULL,''),(1031,'参数查询',106,1,'#','','',1,0,'F','0','0','system:config:query','#',103,1,'2026-07-10 16:32:54',NULL,NULL,''),(1032,'参数新增',106,2,'#','','',1,0,'F','0','0','system:config:add','#',103,1,'2026-07-10 16:32:54',NULL,NULL,''),(1033,'参数修改',106,3,'#','','',1,0,'F','0','0','system:config:edit','#',103,1,'2026-07-10 16:32:54',NULL,NULL,''),(1034,'参数删除',106,4,'#','','',1,0,'F','0','0','system:config:remove','#',103,1,'2026-07-10 16:32:54',NULL,NULL,''),(1035,'参数导出',106,5,'#','','',1,0,'F','0','0','system:config:export','#',103,1,'2026-07-10 16:32:54',NULL,NULL,''),(1036,'公告查询',107,1,'#','','',1,0,'F','0','0','system:notice:query','#',103,1,'2026-07-10 16:32:54',NULL,NULL,''),(1037,'公告新增',107,2,'#','','',1,0,'F','0','0','system:notice:add','#',103,1,'2026-07-10 16:32:54',NULL,NULL,''),(1038,'公告修改',107,3,'#','','',1,0,'F','0','0','system:notice:edit','#',103,1,'2026-07-10 16:32:54',NULL,NULL,''),(1039,'公告删除',107,4,'#','','',1,0,'F','0','0','system:notice:remove','#',103,1,'2026-07-10 16:32:54',NULL,NULL,''),(1040,'操作查询',500,1,'#','','',1,0,'F','0','0','monitor:operlog:query','#',103,1,'2026-07-10 16:32:54',NULL,NULL,''),(1041,'操作删除',500,2,'#','','',1,0,'F','0','0','monitor:operlog:remove','#',103,1,'2026-07-10 16:32:54',NULL,NULL,''),(1042,'日志导出',500,4,'#','','',1,0,'F','0','0','monitor:operlog:export','#',103,1,'2026-07-10 16:32:54',NULL,NULL,''),(1043,'登录查询',501,1,'#','','',1,0,'F','0','0','monitor:logininfor:query','#',103,1,'2026-07-10 16:32:54',NULL,NULL,''),(1044,'登录删除',501,2,'#','','',1,0,'F','0','0','monitor:logininfor:remove','#',103,1,'2026-07-10 16:32:54',NULL,NULL,''),(1045,'日志导出',501,3,'#','','',1,0,'F','0','0','monitor:logininfor:export','#',103,1,'2026-07-10 16:32:54',NULL,NULL,''),(1046,'在线查询',109,1,'#','','',1,0,'F','0','0','monitor:online:query','#',103,1,'2026-07-10 16:32:54',NULL,NULL,''),(1047,'批量强退',109,2,'#','','',1,0,'F','0','0','monitor:online:batchLogout','#',103,1,'2026-07-10 16:32:54',NULL,NULL,''),(1048,'单条强退',109,3,'#','','',1,0,'F','0','0','monitor:online:forceLogout','#',103,1,'2026-07-10 16:32:54',NULL,NULL,''),(1050,'账户解锁',501,4,'#','','',1,0,'F','0','0','monitor:logininfor:unlock','#',103,1,'2026-07-10 16:32:54',NULL,NULL,''),(1055,'生成查询',115,1,'#','','',1,0,'F','0','0','tool:gen:query','#',103,1,'2026-07-10 16:32:54',NULL,NULL,''),(1056,'生成修改',115,2,'#','','',1,0,'F','0','0','tool:gen:edit','#',103,1,'2026-07-10 16:32:54',NULL,NULL,''),(1057,'生成删除',115,3,'#','','',1,0,'F','0','0','tool:gen:remove','#',103,1,'2026-07-10 16:32:54',NULL,NULL,''),(1058,'导入代码',115,2,'#','','',1,0,'F','0','0','tool:gen:import','#',103,1,'2026-07-10 16:32:54',NULL,NULL,''),(1059,'预览代码',115,4,'#','','',1,0,'F','0','0','tool:gen:preview','#',103,1,'2026-07-10 16:32:54',NULL,NULL,''),(1060,'生成代码',115,5,'#','','',1,0,'F','0','0','tool:gen:code','#',103,1,'2026-07-10 16:32:54',NULL,NULL,''),(1600,'文件查询',118,1,'#','','',1,0,'F','0','0','system:oss:query','#',103,1,'2026-07-10 16:32:54',NULL,NULL,''),(1601,'文件上传',118,2,'#','','',1,0,'F','0','0','system:oss:upload','#',103,1,'2026-07-10 16:32:54',NULL,NULL,''),(1602,'文件下载',118,3,'#','','',1,0,'F','0','0','system:oss:download','#',103,1,'2026-07-10 16:32:54',NULL,NULL,''),(1603,'文件删除',118,4,'#','','',1,0,'F','0','0','system:oss:remove','#',103,1,'2026-07-10 16:32:54',NULL,NULL,''),(1620,'配置列表',118,5,'#','','',1,0,'F','0','0','system:ossConfig:list','#',103,1,'2026-07-10 16:32:54',NULL,NULL,''),(1621,'配置添加',118,6,'#','','',1,0,'F','0','0','system:ossConfig:add','#',103,1,'2026-07-10 16:32:54',NULL,NULL,''),(1622,'配置编辑',118,6,'#','','',1,0,'F','0','0','system:ossConfig:edit','#',103,1,'2026-07-10 16:32:54',NULL,NULL,''),(1623,'配置删除',118,6,'#','','',1,0,'F','0','0','system:ossConfig:remove','#',103,1,'2026-07-10 16:32:54',NULL,NULL,''),(5000,'通用主数据',0,50,'djs-common',NULL,'',1,0,'M','0','0','','tab',NULL,1,'2026-07-10 16:32:56',NULL,NULL,'SYS-AUTH-001 通用主数据目录'),(5002,'门店管理',5000,2,'store','djs-common/store/index','',1,0,'C','0','0','djs:common:store:*','shop',NULL,1,'2026-07-10 16:32:56',NULL,NULL,'SYS-MD-002'),(5003,'供应商管理',5000,3,'supplier','djs-common/supplier/index','',1,0,'C','0','0','djs:common:supplier:*','peoples',NULL,1,'2026-07-10 16:32:56',NULL,NULL,'SYS-MD-003'),(5050,'查询可访问农场',5000,1,'',NULL,'',1,0,'F','1','0','djs:user:farm:query','#',NULL,1,'2026-07-10 16:32:56',NULL,NULL,'SYS-AUTH-001 农场切换器 GET /djs/user/farm/accessible'),(5051,'切换当前农场',5000,2,'',NULL,'',1,0,'F','1','0','djs:user:farm:switch','#',NULL,1,'2026-07-10 16:32:56',NULL,NULL,'SYS-AUTH-001 农场切换器 POST /djs/user/farm/switch'),(5052,'申请 OSS 上传凭证(admin)',5000,11,'',NULL,'',1,0,'F','1','0','djs:common:oss:sts','#',NULL,1,'2026-07-10 16:32:56',NULL,NULL,'SYS-INFRA-002 admin 直传 OSS GET/POST /djs/oss/sts/*'),(5053,'申请 OSS 上传凭证(小程序)',11010,12,'',NULL,'',1,0,'F','1','0','djs:applet:oss:sts','#',NULL,1,'2026-07-10 16:32:56',NULL,NULL,'SYS-INFRA-002 小程序直传 OSS GET/POST /djs/applet/oss/sts/*'),(5350,'mp 门店 picker',11010,91,'','','',1,0,'F','1','0','djs:applet:common:store:list','#',NULL,1,'2026-07-10 16:33:11',NULL,NULL,'MP-UX-002 StorePicker GET /djs/applet/common/store/list'),(5351,'mp 库位 picker',11010,92,'','','',1,0,'F','1','0','djs:applet:warehouse:location:list','#',NULL,1,'2026-07-10 16:33:11',NULL,NULL,'MP-UX-002 LocationPicker GET /djs/applet/warehouse/location/list'),(5352,'mp 产品 picker',11010,93,'','','',1,0,'F','1','0','djs:applet:warehouse:product:list','#',NULL,1,'2026-07-10 16:33:11',NULL,NULL,'MP-UX-002 ProductPicker GET /djs/applet/warehouse/product/list'),(5600,'定时任务重跑',5000,90,'job-rerun','djs-common/jobRerun/index','',1,0,'C','0','0','djs:job:rerun:list','time-range',NULL,1,'2026-07-10 16:33:16',NULL,NULL,'DENGBO-R7'),(5601,'日志查询',5600,1,'','','',1,0,'F','0','0','djs:job:rerun:list','#',NULL,1,'2026-07-10 16:33:16',NULL,NULL,'DENGBO-R7'),(5602,'手动重跑',5600,2,'','','',1,0,'F','0','0','djs:job:rerun:exec','#',NULL,1,'2026-07-10 16:33:16',NULL,NULL,'DENGBO-R7'),(7000,'养殖',0,70,'djs-breed',NULL,'',1,0,'M','0','0','','tree',NULL,1,'2026-07-10 16:32:56',NULL,NULL,'SYS-AUTH-001 BRD-* 全域'),(7005,'农场信息管理',7000,2,'farm-group','','',1,0,'M','0','0','','guide',NULL,1,'2026-07-10 16:33:13',NULL,NULL,'BRD-AD-PROTO-ALIGN-001 农场信息管理分组（原型 IA）'),(7010,'育种配置管理',7000,1,'breeding-config','','',1,0,'M','0','0','','tree',NULL,1,'2026-07-10 16:32:56',NULL,NULL,'BRD-MD-001'),(7016,'品种信息管理',7010,1,'breed-strain','djs-breed/breeding-config/strain','',1,0,'C','0','0','djs:breed:breeding:*','list',NULL,1,'2026-07-10 16:32:56',NULL,NULL,'BRD-MD-001'),(7017,'品系信息管理',7010,2,'breed-line','djs-breed/breeding-config/line','',1,0,'C','0','0','djs:breed:breeding:*','list',NULL,1,'2026-07-10 16:32:56',NULL,NULL,'BRD-MD-001'),(7018,'品种配种信息管理',7010,3,'breed-mate-strain','djs-breed/breeding-config/mate-strain','',1,0,'C','0','0','djs:breed:breeding:*','list',NULL,1,'2026-07-10 16:32:56',NULL,NULL,'BRD-MD-001'),(7019,'品系配种信息管理',7010,4,'breed-mate-line','djs-breed/breeding-config/mate-line','',1,0,'C','0','0','djs:breed:breeding:*','list',NULL,1,'2026-07-10 16:32:56',NULL,NULL,'BRD-MD-001'),(7020,'农场栋舍管理',7005,2,'farm','djs-breed/farm/index','',1,0,'C','0','0','djs:breed:farm-info:*','building',NULL,1,'2026-07-10 16:32:56',NULL,NULL,'BRD-MD-002'),(7023,'栏位详情',7000,16,'farm/pen-detail/:barnId','djs-breed/farm/pen-detail','',1,0,'C','1','0','djs:breed:barn:*','#',NULL,1,'2026-07-10 16:33:13',NULL,NULL,'BRD-AD-PROTO-ALIGN-001 栏位详情隐藏路由（克隆 7205 模式，parent=7000，path 参数 :barnId；visible=1 不进侧边栏）'),(7030,'栋舍查询',7020,3,'','','',1,0,'F','0','0','djs:breed:barn:list','#',NULL,1,'2026-07-10 16:32:56',NULL,NULL,'BRD-MD-002'),(7031,'栋舍新增',7020,4,'','','',1,0,'F','0','0','djs:breed:barn:add','#',NULL,1,'2026-07-10 16:32:56',NULL,NULL,'BRD-MD-002'),(7032,'栋舍修改',7020,5,'','','',1,0,'F','0','0','djs:breed:barn:edit','#',NULL,1,'2026-07-10 16:32:56',NULL,NULL,'BRD-MD-002'),(7033,'栋舍删除',7020,6,'','','',1,0,'F','0','0','djs:breed:barn:remove','#',NULL,1,'2026-07-10 16:32:56',NULL,NULL,'BRD-MD-002'),(7040,'栏位查询',7020,7,'','','',1,0,'F','0','0','djs:breed:pen:list','#',NULL,1,'2026-07-10 16:32:56',NULL,NULL,'BRD-MD-002'),(7041,'栏位新增',7020,8,'','','',1,0,'F','0','0','djs:breed:pen:add','#',NULL,1,'2026-07-10 16:32:56',NULL,NULL,'BRD-MD-002'),(7042,'栏位修改',7020,9,'','','',1,0,'F','0','0','djs:breed:pen:edit','#',NULL,1,'2026-07-10 16:32:56',NULL,NULL,'BRD-MD-002'),(7043,'栏位删除',7020,10,'','','',1,0,'F','0','0','djs:breed:pen:remove','#',NULL,1,'2026-07-10 16:32:56',NULL,NULL,'BRD-MD-002'),(7050,'生产配置管理',7005,5,'production-config','djs-breed/production-config/index','',1,0,'C','0','0','djs:breed:production-cycle:*','time',NULL,1,'2026-07-10 16:32:56',NULL,NULL,'BRD-MD-003 生产配置主入口（3 tab 单页）'),(7056,'育肥阶段查询',7050,16,'','','',1,0,'F','0','0','djs:breed:fatten-stage:list','#',NULL,1,'2026-07-10 16:33:13',NULL,NULL,'A1 育肥生产配置 Tab2'),(7057,'育肥阶段保存',7050,17,'','','',1,0,'F','0','0','djs:breed:fatten-stage:edit','#',NULL,1,'2026-07-10 16:33:13',NULL,NULL,'A1 育肥生产配置 Tab2'),(7060,'药品库',9303,4,'med','djs-breed/med/index','',1,0,'C','1','0','djs:breed:med:*','medication',NULL,1,'2026-07-10 16:32:56',NULL,NULL,'BRD-MED-001'),(7070,'药品批次',9303,5,'med-batch','djs-breed/med/batch','',1,0,'C','1','0','djs:breed:med-batch:*','list',NULL,1,'2026-07-10 16:32:56',NULL,NULL,'BRD-MED-001'),(7080,'公猪配置查询',7050,6,'','','',1,0,'F','0','0','djs:breed:production-boar:list','#',NULL,1,'2026-07-10 16:32:56',NULL,NULL,'BRD-MD-003 Tab2'),(7081,'公猪配置新增',7050,7,'','','',1,0,'F','0','0','djs:breed:production-boar:add','#',NULL,1,'2026-07-10 16:32:56',NULL,NULL,'BRD-MD-003 Tab2'),(7082,'公猪配置修改',7050,8,'','','',1,0,'F','0','0','djs:breed:production-boar:edit','#',NULL,1,'2026-07-10 16:32:56',NULL,NULL,'BRD-MD-003 Tab2'),(7083,'公猪配置删除',7050,9,'','','',1,0,'F','0','0','djs:breed:production-boar:remove','#',NULL,1,'2026-07-10 16:32:56',NULL,NULL,'BRD-MD-003 Tab2'),(7084,'公猪配置导出',7050,10,'','','',1,0,'F','0','0','djs:breed:production-boar:export','#',NULL,1,'2026-07-10 16:32:56',NULL,NULL,'BRD-MD-003 Tab2'),(7090,'药品周期查询',7050,11,'','','',1,0,'F','0','0','djs:breed:production-med:list','#',NULL,1,'2026-07-10 16:32:56',NULL,NULL,'BRD-MD-003 Tab3'),(7091,'药品周期新增',7050,12,'','','',1,0,'F','0','0','djs:breed:production-med:add','#',NULL,1,'2026-07-10 16:32:56',NULL,NULL,'BRD-MD-003 Tab3'),(7092,'药品周期修改',7050,13,'','','',1,0,'F','0','0','djs:breed:production-med:edit','#',NULL,1,'2026-07-10 16:32:56',NULL,NULL,'BRD-MD-003 Tab3'),(7093,'药品周期删除',7050,14,'','','',1,0,'F','0','0','djs:breed:production-med:remove','#',NULL,1,'2026-07-10 16:32:56',NULL,NULL,'BRD-MD-003 Tab3'),(7094,'药品周期导出',7050,15,'','','',1,0,'F','0','0','djs:breed:production-med:export','#',NULL,1,'2026-07-10 16:32:56',NULL,NULL,'BRD-MD-003 Tab3'),(7145,'事件台账',7000,4,'event-status-record','djs-breed/event/status-record/index','',1,0,'C','0','0','djs:breed:pig:*','log',NULL,1,'2026-07-10 16:33:09',NULL,NULL,'D06 HOTFIX 合并事件菜单'),(7200,'猪只主表',7000,10,'pig','djs-breed/pig/index','',1,0,'C','0','0','djs:breed:pig:*','monitor',NULL,1,'2026-07-10 16:32:57',NULL,NULL,'BRD-CORE-001'),(7205,'猪只详情页',7000,15,'pig/detail/:id','djs-breed/pig/detail','',1,0,'C','1','0','djs:breed:pig:*','#',NULL,1,'2026-07-10 16:33:11',NULL,NULL,'DJS-FIX A5 猪只详情隐藏路由（admin 只读，path 参数 :id；visible=1 不进侧边栏）'),(7360,'mp 猪只 picker 搜索',11010,91,'','','',1,0,'F','1','0','djs:applet:pig:search','#',NULL,1,'2026-07-10 16:33:09',NULL,NULL,'BRD-LIST-001 PigPicker /applet/pig/search'),(7400,'养殖看板',7000,20,'dashboard','djs-breed/dashboard/index','',1,0,'C','1','0','djs:breed:dashboard:*','chart',NULL,1,'2026-07-10 16:33:10',NULL,NULL,'BRD-DASH-001 dashboard'),(8000,'种植',0,80,'djs-plant',NULL,'',1,0,'M','0','0','','tree-table',NULL,1,'2026-07-10 16:32:56',NULL,NULL,'SYS-AUTH-001 PLT-* 全域'),(8004,'采摘管理',8000,5,'plt-pick-mgmt',NULL,'',1,0,'M','0','0','','date',NULL,1,'2026-07-10 16:33:13',NULL,NULL,'FIX-PLT-AD-IA-001'),(8005,'种植信息管理',8000,1,'plt-info',NULL,'',1,0,'M','0','0','','documentation',NULL,1,'2026-07-10 16:33:12',NULL,NULL,'ADMIN-MENU-IA-001'),(8006,'种植管理',8000,2,'plt-plan-mgmt',NULL,'',1,0,'M','0','0','','tree',NULL,1,'2026-07-10 16:33:12',NULL,NULL,'ADMIN-MENU-IA-001'),(8007,'农事管理',8000,3,'plt-farm-work',NULL,'',1,0,'M','0','0','','edit',NULL,1,'2026-07-10 16:33:12',NULL,NULL,'ADMIN-MENU-IA-001'),(8008,'人员管理',8000,4,'plt-staff',NULL,'',1,0,'M','0','0','','peoples',NULL,1,'2026-07-10 16:33:12',NULL,NULL,'ADMIN-MENU-IA-001'),(8010,'地块管理',8005,2,'plot','djs-plant/plot/index','',1,0,'C','0','0','djs:plant:plot:*','tree',NULL,1,'2026-07-10 16:33:10',NULL,NULL,'PLT-MD-001'),(8011,'片区新增',8018,1,'','','',1,0,'F','0','0','djs:plant:zone:add','#',NULL,1,'2026-07-10 16:33:10',NULL,NULL,'PLT-MD-001'),(8012,'片区修改',8018,2,'','','',1,0,'F','0','0','djs:plant:zone:edit','#',NULL,1,'2026-07-10 16:33:10',NULL,NULL,'PLT-MD-001'),(8013,'片区删除',8018,3,'','','',1,0,'F','0','0','djs:plant:zone:remove','#',NULL,1,'2026-07-10 16:33:10',NULL,NULL,'PLT-MD-001'),(8018,'片区管理',8005,1,'zone','djs-plant/zone/index','',1,0,'C','0','0','djs:plant:plot:*','tree',NULL,1,'2026-07-10 16:33:13',NULL,NULL,'FIX-PLT-AD-ZONE-001'),(8020,'作物管理',8005,3,'crop','djs-plant/crop/index','',1,0,'C','0','0','djs:plant:crop:*','sprout',NULL,1,'2026-07-10 16:33:10',NULL,NULL,'PLT-MD-001'),(8030,'班组管理',8008,1,'team','djs-plant/team/index',NULL,1,0,'C','0','0','djs:plant:team:*','people',NULL,1,'2026-07-10 16:33:10',NULL,NULL,'PLT-MD-002'),(8050,'土地有机认证',8005,4,'plotOrganic','djs-plant/plotOrganic/index','',1,0,'C','1','0','djs:plant:plotOrganic:*','star',NULL,1,'2026-07-10 16:33:11',NULL,NULL,'PLT-MD-003'),(8060,'果蔬有机认证',8005,5,'cropOrganic','djs-plant/cropOrganic/index','',1,0,'C','0','0','djs:plant:cropOrganic:*','star',NULL,1,'2026-07-10 16:33:11',NULL,NULL,'PLT-MD-003'),(8070,'种植计划',8006,1,'plan','djs-plant/plan/index','',1,0,'C','0','0','djs:plant:plan:*','date',NULL,1,'2026-07-10 16:33:11',NULL,NULL,'PLT-PLAN-001'),(8075,'种植计划创建',8006,2,'plan/wizard','djs-plant/plan/wizard','',1,0,'C','1','0','djs:plant:plan:*','guide',NULL,1,'2026-07-10 16:33:11',NULL,NULL,'PLT-PLAN-001'),(8078,'计划详情',8006,3,'plan/detail','djs-plant/plan/detail','',0,0,'C','1','0','djs:plant:plan:*','view',NULL,1,'2026-07-10 16:33:11',NULL,NULL,'PLT-PLAN-001 隐藏菜单'),(8082,'采摘计划',8004,2,'plan','djs-plant/pick/plan/index','',1,0,'C','0','0','djs:plant:pick:*','list',NULL,1,'2026-07-10 16:33:11',NULL,NULL,'PLT-PLAN-002 按作物聚合'),(8084,'采摘活动',8004,1,'activity','djs-plant/pick/activity/index','',1,0,'C','0','0','djs:plant:pick:activity:*','tree',NULL,1,'2026-07-10 16:33:11',NULL,NULL,'PLT-PLAN-002 游客采摘活动'),(8098,'农事记录',8007,1,'records','djs-plant/work/records/index','',1,0,'C','0','0','djs:plant:farm:*','documentation',NULL,1,'2026-07-10 16:33:12',NULL,NULL,'PLT-WORK-002 admin PC 单页 + 5 Tab 只读查询；复用 t_plant_farm_records'),(8100,'灾害记录',8007,2,'work/disaster','djs-plant/work/disaster/index','',1,0,'C','0','0','djs:plant:farm:disaster:*','warning',NULL,1,'2026-07-10 16:33:12',NULL,NULL,'PLT-WORK-003 admin 独立灾害子页 + 列表 + 详情（PC 只查）；复用 t_plant_farm_records 灾害子集'),(8110,'种植看板',8000,0,'dashboard','djs-plant/dashboard/index','',1,0,'C','0','0','djs:plant:dashboard:*','dashboard',NULL,1,'2026-07-10 16:33:14',NULL,NULL,'PLT-DASH-RESTORE-001 种植看板富图仪表盘'),(8112,'种植总览',8006,0,'overview','djs-plant/overview/index','',1,0,'C','0','0','djs:plant:overview:*','chart',NULL,1,'2026-07-10 16:33:13',NULL,NULL,'FIX-PLT-AD-OVERVIEW-001 种植总览着陆页'),(8200,'绩效管理',8008,2,'performance','djs-plant/performance/index',NULL,1,0,'C','0','0','djs:plantPerformance:*','money',NULL,1,'2026-07-10 16:33:12',NULL,NULL,'PLT-PERF-001'),(9000,'仓库',0,90,'djs-warehouse',NULL,'',1,0,'M','0','0','','list',NULL,1,'2026-07-10 16:32:56',NULL,NULL,'SYS-AUTH-001 WMS-* 全域'),(9010,'库位配置管理',9303,1,'location','djs-warehouse/location/index','',1,0,'C','0','0','djs:warehouse:location:*','tree',NULL,1,'2026-07-10 16:33:09',NULL,NULL,'WMS-MD-001'),(9020,'库存查询',9302,1,'stock','djs-warehouse/stock/index','',1,0,'C','0','0','djs:warehouse:stock:*','list',NULL,1,'2026-07-10 16:33:09',NULL,NULL,'WMS-MD-001'),(9026,'库位总览',9302,2,'location-overview','djs-warehouse/location-overview/index','',1,0,'C','0','0','djs:warehouse:location:*','chart',NULL,1,'2026-07-10 16:33:12',NULL,NULL,'FIX-WMS-LOC-OVERVIEW-001'),(9028,'外购猪只',9301,2,'outsourcePig','djs-warehouse/outsourcePig/index','',1,0,'C','0','0','djs:warehouse:outsourcePig:*','pig',NULL,1,'2026-07-10 16:33:13',NULL,NULL,'DJS-FIX-WMS-RALN'),(9036,'产品配置',9303,3,'product-conf','djs-warehouse/product/index','{\"productType\":\"1\"}',1,0,'C','0','0','djs:warehouse:product:*','shopping',NULL,1,'2026-07-10 16:33:12',NULL,NULL,'FIX-WMS-PRODSPLIT-001'),(9037,'商品配置',9303,4,'goods-conf','djs-warehouse/product/index','{\"productType\":\"2\"}',1,0,'C','0','0','djs:warehouse:product:*','goods',NULL,1,'2026-07-10 16:33:12',NULL,NULL,'FIX-WMS-PRODSPLIT-001'),(9040,'需求管理',9000,1,'demand','djs-warehouse/demand/index',NULL,1,0,'C','0','0','djs:warehouse:demand:*','documentation',NULL,1,'2026-07-10 16:33:10',NULL,NULL,'WMS-DEMAND-001'),(9060,'采购入库',9302,0,'purchase-in','djs-warehouse/purchaseIn/index','',1,0,'C','0','0','djs:warehouse:purchaseIn:*','shopping-bag-3',NULL,1,'2026-07-10 16:33:11',NULL,NULL,'D9 hotfix 采购入库简化版'),(9100,'包材领用',9302,8,'matPack','djs-warehouse/matPack/index','',1,0,'C','1','0','djs:warehouse:mat:pack:*','box',NULL,1,'2026-07-10 16:33:11',NULL,NULL,'WMS-MAT-001 包材标杆'),(9110,'出入库流水',9302,2,'stockFlow','djs-warehouse/stockFlow/index','',1,0,'C','1','0','djs:warehouse:stockFlow:*','tickets',NULL,1,'2026-07-10 16:33:11',NULL,NULL,'WMS-MAT-001 流水查询 / D11 扩展'),(9118,'生产物资领用',9301,5,'matPick','djs-warehouse/matPick/index','',1,0,'C','0','0','djs:warehouse:matPick:*','shopping',NULL,1,'2026-07-10 16:33:15',NULL,NULL,'WMS-MATPICK-ADMIN-001'),(9123,'库存日汇总',9302,8,'stockOverview','djs-warehouse/stockOverview/index','',1,0,'C','0','0','djs:warehouse:stockOverview:*','chart',NULL,1,'2026-07-10 16:33:15',NULL,NULL,'WMS-STOCK-OVERVIEW-001'),(9126,'损耗总览',9302,12,'lossOverview','djs-warehouse/lossOverview/index','',1,0,'C','0','0','djs:warehouse:loss:overview:*','documentation',NULL,1,'2026-07-10 16:33:15',NULL,NULL,'WMS-LOSS-OVERVIEW-001'),(9130,'有机饲喂记录',9302,13,'feedRecord','djs-warehouse/feedRecord/index','',1,0,'C','0','0','djs:warehouse:feed:record:*','documentation',NULL,1,'2026-07-10 16:33:15',NULL,NULL,'WMS-FEED-RECORD-001'),(9210,'退货记录',9302,6,'return','djs-warehouse/return/index','',1,0,'C','0','0','djs:warehouse:return:*','refresh',NULL,1,'2026-07-10 16:33:11',NULL,NULL,'WMS-SHIP-001 admin'),(9217,'发货流水',9304,3,'shipment-list','djs-warehouse/shipment/index','',1,0,'C','1','0','djs:warehouse:shipment:*','document',NULL,1,'2026-07-10 16:33:11',NULL,NULL,'WMS-SHIP-001 admin 只读'),(9230,'产品生产',9301,1,'production','djs-warehouse/production/index','',1,0,'C','0','0','djs:warehouse:production:*','documentation',NULL,1,'2026-07-10 16:33:11',NULL,NULL,'WMS-PACK-001 admin 只读'),(9231,'白条发货记录',9301,2,'whiteBarShipment','djs-warehouse/production/whiteBarShipment/index','',1,0,'C','0','0','djs:warehouse:whiteBarShipment:list','documentation',NULL,1,'2026-07-10 16:33:16',NULL,NULL,'WS12'),(9233,'肉品打包管理',9300,3,'packEntry/meat','djs-warehouse/production/packEntry/meat/index','',1,0,'C','0','0','djs:warehouse:packEntry:*','goods',NULL,1,'2026-07-10 16:33:13',NULL,NULL,'A5 admin 肉品打包录入'),(9234,'其他产品打包管理',9300,5,'packEntry/other','djs-warehouse/production/packEntry/other/index','',1,0,'C','0','0','djs:warehouse:packEntry:*','shopping',NULL,1,'2026-07-10 16:33:13',NULL,NULL,'A5 admin 其他产品打包录入'),(9236,'果蔬打包管理',9300,4,'packEntry/veg','djs-warehouse/production/packEntry/veg/index','',1,0,'C','0','0','djs:warehouse:packEntry:*','tree-table',NULL,1,'2026-07-10 16:33:13',NULL,NULL,'A5 admin 果蔬打包录入'),(9237,'白条分割管理',9300,2,'packEntry/cut','djs-warehouse/production/packEntry/cut/index','',1,0,'C','0','0','djs:warehouse:packEntry:*','cascader',NULL,1,'2026-07-10 16:33:13',NULL,NULL,'A5 admin 白条分割录入'),(9238,'分割白条领用',9300,1,'packEntry/pickup','djs-warehouse/production/packEntry/pickup/index','',1,0,'C','0','0','djs:warehouse:packEntry:*','guide',NULL,1,'2026-07-10 16:33:13',NULL,NULL,'A5 admin 分割白条领用录入'),(9240,'入库记录',9302,3,'flow/in','djs-warehouse/flow/in/index','',1,0,'C','0','0','djs:warehouse:flowIn:*','download',NULL,1,'2026-07-10 16:33:12',NULL,NULL,'WMS-FLOW-001 admin'),(9241,'出库记录',9302,4,'flow/out','djs-warehouse/flow/out/index','',1,0,'C','0','0','djs:warehouse:flowOut:*','upload',NULL,1,'2026-07-10 16:33:12',NULL,NULL,'WMS-FLOW-001 admin'),(9249,'礼盒打包管理',9300,6,'packEntry/gift','djs-warehouse/production/packEntry/gift/index','',1,0,'C','0','0','djs:warehouse:packEntry:*','box',NULL,1,'2026-07-10 16:33:15',NULL,NULL,'DJS-FIX-WMS-GIFT-PACK-001 礼盒打包独立页面'),(9250,'盘点记录',9302,6,'check','djs-warehouse/check/index','',1,0,'C','0','0','djs:warehouse:check:*','cascader',NULL,1,'2026-07-10 16:33:12',NULL,NULL,'WMS-STOCK-001 admin'),(9300,'生产管理',9000,10,'wh-production',NULL,'',1,0,'M','0','0','','build',NULL,1,'2026-07-10 16:33:12',NULL,NULL,'ADMIN-MENU-IA-001'),(9301,'产品生产管理',9000,11,'wh-product-prod',NULL,'',1,0,'M','0','0','','shopping',NULL,1,'2026-07-10 16:33:12',NULL,NULL,'ADMIN-MENU-IA-001'),(9302,'库存管理',9000,12,'wh-stock-mgmt',NULL,'',1,0,'M','0','0','','druid',NULL,1,'2026-07-10 16:33:12',NULL,NULL,'ADMIN-MENU-IA-001'),(9303,'仓库配置管理',9000,13,'wh-config',NULL,'',1,0,'M','0','0','','tool',NULL,1,'2026-07-10 16:33:12',NULL,NULL,'ADMIN-MENU-IA-001'),(9304,'发货管理',9000,14,'wh-shipment',NULL,'',1,0,'M','1','0','','guide',NULL,1,'2026-07-10 16:33:12',NULL,NULL,'ADMIN-MENU-IA-001'),(9400,'仓库总览',9000,0,'dashboard','djs-warehouse/index','',1,0,'C','0','0','djs:warehouse:dashboard:*','dashboard',NULL,1,'2026-07-10 16:33:12',NULL,NULL,'W22-006 仓库 dashboard 菜单补登记'),(10000,'门店管理',0,100,'djs-store',NULL,'',1,0,'M','0','0','','star',NULL,1,'2026-07-10 16:32:56',NULL,NULL,'SYS-AUTH-001 STR-* + TRC-* + DSH-*'),(10001,'需求管理',10000,1,'demand',NULL,'',1,0,'M','1','0','','documentation',NULL,1,'2026-07-10 16:33:12',NULL,NULL,'STR-DEMAND-001'),(10002,'需求下单',10000,2,'list','djs-store/demand/index','',1,0,'C','0','0','djs:store:demand:*','edit',NULL,1,'2026-07-10 16:33:12',NULL,NULL,'STR-DEMAND-001'),(10100,'门店经营',10000,2,'operation',NULL,'',1,0,'M','1','0','','shopping',NULL,1,'2026-07-10 16:33:12',NULL,NULL,'STR-OP-001'),(10110,'产品关联',10100,1,'relation','djs-store/operation/relation/index','',1,0,'C','1','0','djs:storeRelation:*','link',NULL,1,'2026-07-10 16:33:12',NULL,NULL,'STR-OP-001'),(10120,'经营明细',10100,2,'sale','djs-store/operation/sale/index','',1,0,'C','1','0','djs:storeSale:*','money',NULL,1,'2026-07-10 16:33:12',NULL,NULL,'STR-OP-001'),(10200,'门店盘点',10600,2,'check','djs-store/check/index','',1,0,'C','0','0','djs:store:check:*','list',NULL,1,'2026-07-10 16:33:12',NULL,NULL,'STR-STOCK-001 admin'),(10210,'产品管理',10600,1,'product','djs-store/product/index','',1,0,'C','1','0','djs:warehouse:product:*','goods',NULL,1,'2026-07-10 16:33:13',NULL,NULL,'STORE-LEDGER-001 门店产品管理入口'),(10300,'门店分割',10600,2,'split','djs-store/split/index','',1,0,'C','1','0','djs:store:split:*','scissor',NULL,1,'2026-07-10 16:33:12',NULL,NULL,'STR-SPLIT-001 admin'),(10310,'门店猪肉打包',10500,3,'pork-split','djs-store/pork-split/index','',1,0,'C','0','0','djs:store:trace:*','tool',NULL,1,'2026-07-10 16:33:15',NULL,NULL,'门店现场分割白条生码（STORE-PORK-SPLIT-001）'),(10320,'会员档案',10600,3,'member','djs-store/member/index','',1,0,'C','1','0','djs:store:member:*','peoples',NULL,1,'2026-07-10 16:33:12',NULL,NULL,'STR-MEMBER-001'),(10350,'退回记录',10601,2,'return-record','djs-store/return/index','{\"tab\":\"record\"}',1,0,'C','0','0','djs:store:return:*','documentation',NULL,1,'2026-07-10 16:33:12',NULL,NULL,'STR-RETURN-001 admin'),(10360,'退回操作',10601,1,'return-op','djs-store/return/index','{\"tab\":\"operation\"}',1,0,'C','0','0','djs:store:return:*','edit',NULL,1,'2026-07-10 16:33:13',NULL,NULL,'STORE-RETURN-REALIGN-001 退回操作矩阵录入'),(10400,'门店总览',10000,1,'dashboard','djs-store/dashboard/index','',1,0,'C','1','0','djs:store:dashboard:*','dashboard',NULL,1,'2026-07-10 16:33:12',NULL,NULL,'STR-DASH-001 门店首页 dashboard'),(10500,'追溯码管理',10000,4,'trace-mgmt',NULL,'',1,0,'M','0','0',NULL,'guide',NULL,1,'2026-07-10 16:33:12',NULL,NULL,'TRC-ADMIN-001 追溯一级父菜单（ADR-0006 M1 例外）'),(10501,'果蔬追溯码管理',10500,1,'trace-veg','djs-store/trace/index','{\"tab\":\"veg\"}',1,0,'C','0','0','djs:warehouse:trace:*','barcode',NULL,1,'2026-07-10 16:33:12',NULL,NULL,'TRC-ADMIN-001 admin 追溯码 3 套'),(10520,'猪肉追溯码管理',10500,2,'trace-pork','djs-store/trace/index','{\"tab\":\"pork\"}',1,0,'C','0','0','djs:store:trace:*','qrcode',NULL,1,'2026-07-10 16:33:13',NULL,NULL,'STORE-TRACE-ONSITE-001 现场生码'),(10521,'追溯码打印',10501,1,'','','',1,0,'F','1','0','djs:store:trace:print','#',NULL,1,'2026-07-10 16:33:13',NULL,NULL,'STORE-TRACE-ONSITE-001'),(10600,'门店管理',10000,3,'store-mgmt',NULL,'',1,0,'M','0','0','','shopping',NULL,1,'2026-07-10 16:33:12',NULL,NULL,'ADMIN-MENU-IA-001'),(10601,'退回管理',10000,5,'store-return-mgmt',NULL,'',1,0,'M','0','0','','redo',NULL,1,'2026-07-10 16:33:12',NULL,NULL,'ADMIN-MENU-IA-001'),(11000,'小程序权限',0,900,'mp-perm',NULL,'',1,0,'M','1','0','','phone',NULL,1,'2026-07-10 16:33:15',NULL,NULL,'DJS-PERM-MENU-001 mp 权限树顶级'),(11010,'通用小程序',11000,1,'mp-common',NULL,'',1,0,'M','1','0','','component',NULL,1,'2026-07-10 16:33:15',NULL,NULL,'跨板块共享 picker + OSS'),(11020,'养殖小程序',11000,2,'mp-breed',NULL,'',1,0,'M','1','0','','tree',NULL,1,'2026-07-10 16:33:15',NULL,NULL,'养殖 mp 权限'),(11021,'养殖',11020,1,'mp-breed-home',NULL,'',1,0,'M','1','0','','tree',NULL,1,'2026-07-10 16:33:15',NULL,NULL,'DJS-PERM-MENU-003 养殖 mp 底栏 tab：养殖'),(11022,'养殖·生产事件',11021,1,'','','',1,0,'F','1','0','djs:breed:event:*','#',NULL,1,'2026-07-10 16:33:15',NULL,NULL,'DJS-PERM-MENU-003 配种/分娩/查情·断奶·返空/转移/死亡/淘汰/引种/耳标/生长/阉割/出栏'),(11023,'养殖·基础数据',11021,2,'','','',1,0,'F','1','0','djs:applet:breed:*','#',NULL,1,'2026-07-10 16:33:15',NULL,NULL,'DJS-PERM-MENU-003 饲料领用·退回·损耗 / 栋舍·栏位·分娩·生长 picker'),(11024,'疫苗药品',11020,2,'mp-breed-med',NULL,'',1,0,'M','1','0','djs:mptab:breed:med','#',NULL,1,'2026-07-10 16:33:15',NULL,NULL,'DJS-PERM-MENU-003 养殖 mp 底栏 tab：疫苗药品（med/med-batch/med-record/med-usage）'),(11025,'养殖管理',11020,3,'mp-breed-dash',NULL,'',1,0,'M','1','0','djs:mptab:breed:dashboard','#',NULL,1,'2026-07-10 16:33:15',NULL,NULL,'DJS-PERM-MENU-003 养殖 mp 底栏 tab：养殖管理（dashboard）'),(11026,'养殖·导航',11021,9,'','','',1,0,'F','1','0','djs:mptab:breed:home','#',NULL,1,'2026-07-10 16:33:15',NULL,NULL,'DJS-PERM-MENU-007 tab 可见性专用权限'),(11030,'种植小程序',11000,3,'mp-plant',NULL,'',1,0,'M','1','0','','tree',NULL,1,'2026-07-10 16:33:15',NULL,NULL,'种植 mp 权限'),(11031,'采收',11030,1,'','','',1,0,'F','1','0','djs:applet:plant:pick:*','#',NULL,1,'2026-07-10 16:33:15',NULL,NULL,'DJS-PERM-MENU-004 种植 mp tab：采收'),(11032,'农事',11030,2,'mp-plant-work',NULL,'',1,0,'M','1','0','','tree',NULL,1,'2026-07-10 16:33:15',NULL,NULL,'DJS-PERM-MENU-004 种植 mp tab：农事'),(11033,'农事录入',11032,1,'','','',1,0,'F','1','0','djs:applet:plant:work:*','#',NULL,1,'2026-07-10 16:33:15',NULL,NULL,'DJS-PERM-MENU-004 空地/生长/灾害/移栽/中央分发/我的记录'),(11034,'班组下拉',11032,2,'','','',1,0,'F','1','0','djs:applet:plant:team:list','#',NULL,1,'2026-07-10 16:33:15',NULL,NULL,'DJS-PERM-MENU-004 班组 picker'),(11040,'仓库小程序',11000,4,'mp-warehouse',NULL,'',1,0,'M','1','0','','tree',NULL,1,'2026-07-10 16:33:15',NULL,NULL,'仓库 mp 权限'),(11041,'蔬菜处理',11040,1,'mp-wh-veg',NULL,'',1,0,'M','1','0','','tree',NULL,1,'2026-07-10 16:33:15',NULL,NULL,'DJS-PERM-MENU-002 仓库 mp tab 蔬菜处理'),(11042,'分拣发货',11040,2,'mp-wh-dispatch',NULL,'',1,0,'M','1','0','','tree',NULL,1,'2026-07-10 16:33:15',NULL,NULL,'DJS-PERM-MENU-002 仓库 mp tab 分拣发货'),(11050,'门店小程序',11000,5,'mp-store',NULL,'',1,0,'M','1','0','','tree',NULL,1,'2026-07-10 16:33:15',NULL,NULL,'门店 mp 权限（V1 暂空，预留）'),(11060,'毛菜处理',11041,1,'','','',1,0,'F','1','0','djs:applet:warehouse:vegHandle:handle*','#',NULL,1,'2026-07-10 16:33:15',NULL,NULL,'DJS-PERM-MENU-005'),(11061,'果蔬月台',11041,2,'mp-wh-veg-platform',NULL,'',1,0,'M','1','0','','tree',NULL,1,'2026-07-10 16:33:15',NULL,NULL,'DJS-PERM-MENU-005'),(11062,'月台入库',11061,1,'','','',1,0,'F','1','0','djs:applet:warehouse:vegHandle:platform*','#',NULL,1,'2026-07-10 16:33:15',NULL,NULL,'DJS-PERM-MENU-005'),(11063,'蔬菜入库',11061,2,'','','',1,0,'F','1','0','djs:applet:warehouse:vegHandle:stockIn*','#',NULL,1,'2026-07-10 16:33:15',NULL,NULL,'DJS-PERM-MENU-005'),(11064,'物资领用',11042,1,'','','',1,0,'F','1','0','djs:applet:warehouse:mat:*','#',NULL,1,'2026-07-10 16:33:15',NULL,NULL,'DJS-PERM-MENU-005 领用/退回/损耗'),(11065,'发货月台',11042,2,'','','',1,0,'F','1','0','djs:applet:warehouse:ship:*','#',NULL,1,'2026-07-10 16:33:15',NULL,NULL,'DJS-PERM-MENU-005 清点/白条/蔬菜/礼盒/门店发货'),(11066,'库存盘点',11042,3,'','','',1,0,'F','1','0','djs:applet:warehouse:check:*','#',NULL,1,'2026-07-10 16:33:15',NULL,NULL,'DJS-PERM-MENU-005 多库一览/盘点明细/实盘录入/修改/删除'),(11067,'退货管理',11042,4,'','','',1,0,'F','1','0','djs:applet:warehouse:return:*','#',NULL,1,'2026-07-10 16:33:15',NULL,NULL,'DJS-PERM-MENU-005 退货录入'),(11068,'燎毛间',11040,3,'mp-wh-burn',NULL,'',1,0,'M','1','0','','tree',NULL,1,'2026-07-10 16:33:15',NULL,NULL,'DJS-PERM-MENU-005 仓库首页聚合（燎毛/分割/打包）'),(11069,'白条分割领用',11068,1,'','','',1,0,'F','1','0','djs:applet:warehouse:pigCut:*','#',NULL,1,'2026-07-10 16:33:15',NULL,NULL,'DJS-PERM-MENU-005 白条领用/出库称重/完成'),(11070,'打包·包材',11068,2,'','','',1,0,'F','1','0','djs:applet:warehouse:pack*','#',NULL,1,'2026-07-10 16:33:15',NULL,NULL,'DJS-PERM-MENU-005 蔬菜/礼盒/干货/芹菜/白条打包 + 包材（pack* 含 packing）'),(11071,'需求调度',11040,4,'','','',1,0,'F','1','0','djs:applet:warehouse:demand:*','#',NULL,1,'2026-07-10 16:33:15',NULL,NULL,'DJS-PERM-MENU-005 调度首页/白条·蔬菜需求/猪只选择/统计'),(11072,'采摘活动',11041,3,'','','',1,0,'F','1','0','djs:applet:warehouse:vegHandle:pickActivity','#',NULL,1,'2026-07-10 16:33:17',NULL,NULL,'DJS-PERM-PICKACT mp仓库蔬菜处理采摘活动入口');
+/*!40000 ALTER TABLE `sys_menu` ENABLE KEYS */;
+UNLOCK TABLES;
 
--- ------------------------------------------------------------
--- Fix 1: menu_id 7103 名称去重
---   7100 = 引种登记（二级目录）
---   7103 = 引种新增（三级按钮，perms djs:breed:intro:add）
--- ------------------------------------------------------------
-UPDATE sys_menu SET menu_name = '引种新增' WHERE menu_id = 7103;
-
--- ------------------------------------------------------------
--- Fix 2: BRD-CORE-001 猪只主表菜单补赋 breed_admin / breed_worker
---   V202605260900 源文件引用了不存在的 pig_keeper / butcher
---   运行库只赋了 boss + manager，breed_worker 看不到猪只主表菜单
--- ------------------------------------------------------------
-INSERT IGNORE INTO sys_role_menu (role_id, menu_id)
-SELECT r.role_id, m.menu_id
-FROM sys_role r
-CROSS JOIN (SELECT 7200 AS menu_id UNION SELECT 7201 UNION SELECT 7202) m
-WHERE r.role_key IN ('breed_admin', 'breed_worker');
-
--- ------------------------------------------------------------
--- Fix 3: djs_pig_gender dict_value 对齐 DB
---   t_farm_pig_info.pig_sex CHAR(1) 存 'F'/'M'
---   原字典值 male/female 与 DB 不一致导致 dict-tag 显示为空
--- ------------------------------------------------------------
-UPDATE sys_dict_data
-SET dict_value = 'M'
-WHERE dict_type = 'djs_pig_gender' AND dict_label = '公';
-
-UPDATE sys_dict_data
-SET dict_value = 'F'
-WHERE dict_type = 'djs_pig_gender' AND dict_label = '母';
-
--- ------------------------------------------------------------
--- Fix 4: 补种 djs_pig_type 字典（猪只类型）
---   t_farm_pig_info.pig_type 引用此字典
---   dict_id = 100109，数据 ID 从 1001100 起
--- ------------------------------------------------------------
-INSERT IGNORE INTO sys_dict_type
-  (dict_id, tenant_id, dict_name, dict_type, create_by, create_time, remark)
-VALUES
-  (100109, '1001', '猪只类型', 'djs_pig_type', NULL, NOW(), '养殖：t_farm_pig_info.pig_type');
-
-INSERT IGNORE INTO sys_dict_data
-  (dict_code, tenant_id, dict_sort, dict_label, dict_value, dict_type, css_class, list_class, is_default, create_by, create_time)
-VALUES
-  (1001100, '1001', 0, '母猪',   'sow',       'djs_pig_type', '', 'success', 'Y', NULL, NOW()),
-  (1001101, '1001', 1, '公猪',   'boar',      'djs_pig_type', '', 'primary', 'N', NULL, NOW()),
-  (1001102, '1001', 2, '仔猪',   'piglet',    'djs_pig_type', '', 'info',    'N', NULL, NOW()),
-  (1001103, '1001', 3, '育肥猪', 'fattening', 'djs_pig_type', '', 'warning', 'N', NULL, NOW());
-
--- ------------------------------------------------------------
--- Fix 5: 补种 djs_pig_end_reason 字典（终止原因）
---   t_farm_pig_info.end_reason 引用此字典
---   dict_id = 100110，数据 ID 从 1001110 起
--- ------------------------------------------------------------
-INSERT IGNORE INTO sys_dict_type
-  (dict_id, tenant_id, dict_name, dict_type, create_by, create_time, remark)
-VALUES
-  (100110, '1001', '终止原因', 'djs_pig_end_reason', NULL, NOW(), '养殖：t_farm_pig_info.end_reason（DIE→DEAD / ELIMINATE→CULL / SLAUGHTER→MARKET）');
-
-INSERT IGNORE INTO sys_dict_data
-  (dict_code, tenant_id, dict_sort, dict_label, dict_value, dict_type, css_class, list_class, is_default, create_by, create_time)
-VALUES
-  (1001110, '1001', 0, '死亡', 'DEAD',   'djs_pig_end_reason', '', 'danger',  'N', NULL, NOW()),
-  (1001111, '1001', 1, '淘汰', 'CULL',   'djs_pig_end_reason', '', 'warning', 'N', NULL, NOW()),
-  (1001112, '1001', 2, '出栏', 'MARKET', 'djs_pig_end_reason', '', 'info',    'N', NULL, NOW());
-
-
--- ----------------------------------------------------------------------------
--- 来源文件：V202605281000__SYS-FIX-002-drop-person-postId.sql
--- ----------------------------------------------------------------------------
-SET NAMES utf8mb4;
--- Removes post_id (sys_post foreign key) from t_md_person.
--- post_id was removed from the Person domain; column should not exist in fresh installs.
--- For environments where it was added by an earlier migration, drop it here.
-SET @sql = IF(
-    EXISTS(
-        SELECT 1
-        FROM information_schema.COLUMNS
-        WHERE TABLE_SCHEMA = DATABASE()
-          AND TABLE_NAME = 't_md_person'
-          AND COLUMN_NAME = 'post_id'
-    ),
-    'ALTER TABLE t_md_person DROP COLUMN post_id',
-    'SELECT 1'
-);
-PREPARE stmt FROM @sql;
-EXECUTE stmt;
-DEALLOCATE PREPARE stmt;
-
-
--- ----------------------------------------------------------------------------
--- 来源文件：V202605281100__D05-HOTFIX-breeding-split-4-menus.sql
--- ----------------------------------------------------------------------------
--- ============================================================
--- D05-HOTFIX BRD-MD-001 育种配置 — 顶层菜单按 4 个独立子菜单拆开
 --
--- 拆分前：7010 是 C 菜单（单页 4 tab：品种 / 品种配种 / 品系 / 品系配种）
--- 拆分后：7010 改 M 目录，下挂 4 个 C 菜单：
---   7016 品种管理      breed-strain      djs-breed/breeding-config/strain
---   7017 品系管理      breed-line        djs-breed/breeding-config/line
---   7018 品种配种      breed-mate-strain djs-breed/breeding-config/mate-strain
---   7019 品系配种      breed-mate-line   djs-breed/breeding-config/mate-line
+-- Table structure for table `sys_notice`
 --
--- 7011-7015 按钮权限（list/add/edit/remove/export）保留 parent_id=7010 不动 —
--- v-hasPermi 看 perms 串 djs:breed:breeding:{action}，不依赖按钮归属哪个 C 菜单。
--- ============================================================
 
-SET NAMES utf8mb4;
+DROP TABLE IF EXISTS `sys_notice`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `sys_notice` (
+  `notice_id` bigint NOT NULL COMMENT '公告ID',
+  `tenant_id` varchar(20) DEFAULT '000000' COMMENT '租户编号',
+  `notice_title` varchar(50) NOT NULL COMMENT '公告标题',
+  `notice_type` char(1) NOT NULL COMMENT '公告类型（1通知 2公告）',
+  `notice_content` longblob COMMENT '公告内容',
+  `status` char(1) DEFAULT '0' COMMENT '公告状态（0正常 1关闭）',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '创建者',
+  `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新者',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `remark` varchar(255) DEFAULT NULL COMMENT '备注',
+  PRIMARY KEY (`notice_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='通知公告表';
+/*!40101 SET character_set_client = @saved_cs_client */;
 
--- 1) 7010 由 C 菜单升级为 M 目录
-UPDATE sys_menu
-   SET menu_type = 'M',
-       component = '',
-       perms     = '',
-       icon      = 'tree'
- WHERE menu_id = 7010;
+--
+-- Dumping data for table `sys_notice`
+--
 
--- 2) 新增 4 个 C 菜单（独立路由 + 独立组件，共用一组 perms）
-INSERT IGNORE INTO sys_menu (
-    menu_id, menu_name, parent_id, order_num,
-    path, component, query_param,
-    is_frame, is_cache, menu_type, visible, status,
-    perms, icon, create_by, create_time, remark)
-VALUES
-  (7016, '品种管理', 7010, 1, 'breed-strain',      'djs-breed/breeding-config/strain',      '',
-   1, 0, 'C', '0', '0', 'djs:breed:breeding:list', 'list', 1, NOW(), 'D05-HOTFIX BRD-MD-001 split-4-menus'),
+LOCK TABLES `sys_notice` WRITE;
+/*!40000 ALTER TABLE `sys_notice` DISABLE KEYS */;
+/*!40000 ALTER TABLE `sys_notice` ENABLE KEYS */;
+UNLOCK TABLES;
 
-  (7017, '品系管理', 7010, 2, 'breed-line',        'djs-breed/breeding-config/line',        '',
-   1, 0, 'C', '0', '0', 'djs:breed:breeding:list', 'list', 1, NOW(), 'D05-HOTFIX BRD-MD-001 split-4-menus'),
+--
+-- Table structure for table `sys_oper_log`
+--
 
-  (7018, '品种配种', 7010, 3, 'breed-mate-strain', 'djs-breed/breeding-config/mate-strain', '',
-   1, 0, 'C', '0', '0', 'djs:breed:breeding:list', 'list', 1, NOW(), 'D05-HOTFIX BRD-MD-001 split-4-menus'),
+DROP TABLE IF EXISTS `sys_oper_log`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `sys_oper_log` (
+  `oper_id` bigint NOT NULL COMMENT '日志主键',
+  `tenant_id` varchar(20) DEFAULT '000000' COMMENT '租户编号',
+  `title` varchar(50) DEFAULT '' COMMENT '模块标题',
+  `business_type` int DEFAULT '0' COMMENT '业务类型（0其它 1新增 2修改 3删除）',
+  `method` varchar(100) DEFAULT '' COMMENT '方法名称',
+  `request_method` varchar(10) DEFAULT '' COMMENT '请求方式',
+  `operator_type` int DEFAULT '0' COMMENT '操作类别（0其它 1后台用户 2手机端用户）',
+  `oper_name` varchar(50) DEFAULT '' COMMENT '操作人员',
+  `dept_name` varchar(50) DEFAULT '' COMMENT '部门名称',
+  `oper_url` varchar(255) DEFAULT '' COMMENT '请求URL',
+  `oper_ip` varchar(128) DEFAULT '' COMMENT '主机地址',
+  `oper_location` varchar(255) DEFAULT '' COMMENT '操作地点',
+  `oper_param` varchar(4000) DEFAULT '' COMMENT '请求参数',
+  `json_result` varchar(4000) DEFAULT '' COMMENT '返回参数',
+  `status` int DEFAULT '0' COMMENT '操作状态（0正常 1异常）',
+  `error_msg` varchar(4000) DEFAULT '' COMMENT '错误消息',
+  `oper_time` datetime DEFAULT NULL COMMENT '操作时间',
+  `cost_time` bigint DEFAULT '0' COMMENT '消耗时间',
+  PRIMARY KEY (`oper_id`),
+  KEY `idx_sys_oper_log_bt` (`business_type`),
+  KEY `idx_sys_oper_log_s` (`status`),
+  KEY `idx_sys_oper_log_ot` (`oper_time`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='操作日志记录';
+/*!40101 SET character_set_client = @saved_cs_client */;
 
-  (7019, '品系配种', 7010, 4, 'breed-mate-line',   'djs-breed/breeding-config/mate-line',   '',
-   1, 0, 'C', '0', '0', 'djs:breed:breeding:list', 'list', 1, NOW(), 'D05-HOTFIX BRD-MD-001 split-4-menus');
+--
+-- Dumping data for table `sys_oper_log`
+--
 
+LOCK TABLES `sys_oper_log` WRITE;
+/*!40000 ALTER TABLE `sys_oper_log` DISABLE KEYS */;
+/*!40000 ALTER TABLE `sys_oper_log` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `sys_oss`
+--
+
+DROP TABLE IF EXISTS `sys_oss`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `sys_oss` (
+  `oss_id` bigint NOT NULL COMMENT '对象存储主键',
+  `tenant_id` varchar(20) DEFAULT '000000' COMMENT '租户编号',
+  `file_name` varchar(255) NOT NULL DEFAULT '' COMMENT '文件名',
+  `original_name` varchar(255) NOT NULL DEFAULT '' COMMENT '原名',
+  `file_suffix` varchar(10) NOT NULL DEFAULT '' COMMENT '文件后缀名',
+  `url` varchar(500) NOT NULL COMMENT 'URL地址',
+  `ext1` text COMMENT '扩展字段',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+  `create_by` bigint DEFAULT NULL COMMENT '上传人',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新人',
+  `service` varchar(20) NOT NULL DEFAULT 'minio' COMMENT '服务商',
+  PRIMARY KEY (`oss_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='OSS对象存储表';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `sys_oss`
+--
+
+LOCK TABLES `sys_oss` WRITE;
+/*!40000 ALTER TABLE `sys_oss` DISABLE KEYS */;
+/*!40000 ALTER TABLE `sys_oss` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `sys_oss_config`
+--
+
+DROP TABLE IF EXISTS `sys_oss_config`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `sys_oss_config` (
+  `oss_config_id` bigint NOT NULL COMMENT '主键',
+  `tenant_id` varchar(20) DEFAULT '000000' COMMENT '租户编号',
+  `config_key` varchar(20) NOT NULL DEFAULT '' COMMENT '配置key',
+  `access_key` varchar(255) DEFAULT '' COMMENT 'accessKey',
+  `secret_key` varchar(255) DEFAULT '' COMMENT '秘钥',
+  `bucket_name` varchar(255) DEFAULT '' COMMENT '桶名称',
+  `prefix` varchar(255) DEFAULT '' COMMENT '前缀',
+  `endpoint` varchar(255) DEFAULT '' COMMENT '访问站点',
+  `domain` varchar(255) DEFAULT '' COMMENT '自定义域名',
+  `is_https` char(1) DEFAULT 'N' COMMENT '是否https（Y=是,N=否）',
+  `region` varchar(255) DEFAULT '' COMMENT '域',
+  `access_policy` char(1) NOT NULL DEFAULT '1' COMMENT '桶权限类型(0=private 1=public 2=custom)',
+  `status` char(1) DEFAULT '1' COMMENT '是否默认（0=是,1=否）',
+  `ext1` varchar(255) DEFAULT '' COMMENT '扩展字段',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '创建者',
+  `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新者',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  `sts_role_arn` varchar(200) DEFAULT NULL COMMENT 'STS 角色 ARN（阿里云）',
+  `sts_session_duration` int DEFAULT '3600' COMMENT 'STS 会话有效期（秒）',
+  PRIMARY KEY (`oss_config_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='对象存储配置表';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `sys_oss_config`
+--
+
+LOCK TABLES `sys_oss_config` WRITE;
+/*!40000 ALTER TABLE `sys_oss_config` DISABLE KEYS */;
+INSERT INTO `sys_oss_config` VALUES (1,'1001','minio','ruoyi','ruoyi123','djs-dev','','127.0.0.1:9000','','N','','1','0','',103,1,'2026-07-10 16:32:55',1,'2026-07-10 16:32:55',NULL,'',600),(2,'1001','qiniu','XXXXXXXXXXXXXXX','XXXXXXXXXXXXXXX','ruoyi','','s3-cn-north-1.qiniucs.com','','N','','1','1','',103,1,'2026-07-10 16:32:55',1,'2026-07-10 16:32:55',NULL,NULL,3600),(3,'1001','aliyun','XXXXXXXXXXXXXXX','XXXXXXXXXXXXXXX','dongjiaoshan-prod','','oss-cn-beijing.aliyuncs.com','','Y','cn-hangzhou','1','1','',103,1,'2026-07-10 16:32:55',1,'2026-07-10 16:32:55','东角山 prod 阿里云 OSS（V1 占位，待 Kevin 填客户 RAM 子账号）','',600),(4,'1001','qcloud','XXXXXXXXXXXXXXX','XXXXXXXXXXXXXXX','ruoyi-1240000000','','cos.ap-beijing.myqcloud.com','','N','ap-beijing','1','1','',103,1,'2026-07-10 16:32:55',1,'2026-07-10 16:32:55',NULL,NULL,3600),(5,'1001','image','ruoyi','ruoyi123','ruoyi','image','127.0.0.1:9000','','N','','1','1','',103,1,'2026-07-10 16:32:55',1,'2026-07-10 16:32:55',NULL,NULL,3600);
+/*!40000 ALTER TABLE `sys_oss_config` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `sys_post`
+--
+
+DROP TABLE IF EXISTS `sys_post`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `sys_post` (
+  `post_id` bigint NOT NULL COMMENT '岗位ID',
+  `tenant_id` varchar(20) DEFAULT '000000' COMMENT '租户编号',
+  `dept_id` bigint NOT NULL COMMENT '部门id',
+  `post_code` varchar(64) NOT NULL COMMENT '岗位编码',
+  `post_category` varchar(100) DEFAULT NULL COMMENT '岗位类别编码',
+  `post_name` varchar(50) NOT NULL COMMENT '岗位名称',
+  `post_sort` int NOT NULL COMMENT '显示顺序',
+  `status` char(1) NOT NULL COMMENT '状态（0正常 1停用）',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '创建者',
+  `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新者',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  `wx_role_code` varchar(64) DEFAULT NULL COMMENT '小程序角色码（pig_keeper / planter / warehouse_keeper / store_clerk 等）',
+  PRIMARY KEY (`post_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='岗位信息表';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `sys_post`
+--
+
+LOCK TABLES `sys_post` WRITE;
+/*!40000 ALTER TABLE `sys_post` DISABLE KEYS */;
+INSERT INTO `sys_post` VALUES (1,'000000',100,'farm_manager',NULL,'场长',1,'0',100,1,'2026-07-10 16:33:09',NULL,NULL,'农场负责人 / 农场综合管理',NULL),(2,'000000',100,'feeder',NULL,'饲养员',2,'0',100,1,'2026-07-10 16:33:09',NULL,NULL,'日常喂养 / 圈舍清洁 / 巡检',NULL),(3,'000000',100,'vet',NULL,'兽医',3,'0',100,1,'2026-07-10 16:33:09',NULL,NULL,'疫病诊断 / 用药 / 防疫',NULL),(4,'000000',100,'warehouse',NULL,'仓库管理员',4,'0',100,1,'2026-07-10 16:33:09',NULL,NULL,'物资出入库 / 库存盘点',NULL),(5,'000000',100,'technician',NULL,'技术员',5,'0',100,1,'2026-07-10 16:33:09',NULL,NULL,'配种 / 育种 / 生产技术指导',NULL);
+/*!40000 ALTER TABLE `sys_post` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `sys_role`
+--
+
+DROP TABLE IF EXISTS `sys_role`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `sys_role` (
+  `role_id` bigint NOT NULL COMMENT '角色ID',
+  `tenant_id` varchar(20) DEFAULT '000000' COMMENT '租户编号',
+  `role_name` varchar(30) NOT NULL COMMENT '角色名称',
+  `role_key` varchar(100) NOT NULL COMMENT '角色权限字符串',
+  `role_sort` int NOT NULL COMMENT '显示顺序',
+  `data_scope` char(1) DEFAULT '1' COMMENT '数据范围（1：全部数据权限 2：自定数据权限 3：本部门数据权限 4：本部门及以下数据权限 5：仅本人数据权限 6：部门及以下或本人数据权限）',
+  `menu_check_strictly` tinyint(1) DEFAULT '1' COMMENT '菜单树选择项是否关联显示',
+  `dept_check_strictly` tinyint(1) DEFAULT '1' COMMENT '部门树选择项是否关联显示',
+  `status` char(1) NOT NULL COMMENT '角色状态（0正常 1停用）',
+  `del_flag` char(1) DEFAULT '0' COMMENT '删除标志（0代表存在 1代表删除）',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '创建者',
+  `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新者',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  PRIMARY KEY (`role_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='角色信息表';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `sys_role`
+--
+
+LOCK TABLES `sys_role` WRITE;
+/*!40000 ALTER TABLE `sys_role` DISABLE KEYS */;
+INSERT INTO `sys_role` VALUES (1,'1001','超级管理员','superadmin',1,'1',1,1,'0','0',103,1,'2026-07-10 16:32:54',NULL,NULL,'超级管理员'),(101,'1001','系统管理员','system_admin',2,'1',1,1,'0','0',NULL,1,'2026-07-10 16:32:56',NULL,NULL,'SYS-AUTH-001 用户/角色/字典维护'),(102,'1001','老板','boss',3,'1',1,1,'0','0',NULL,1,'2026-07-10 16:32:56',NULL,NULL,'SYS-AUTH-001 v1.2 DSH驾驶舱可见 + 跨域数据浏览'),(103,'1001','管理人员','manager',4,'1',1,1,'0','0',NULL,1,'2026-07-10 16:32:56',NULL,NULL,'SYS-AUTH-001 v1.2 DSH驾驶舱可见 + 业务管理'),(104,'1001','养殖管理员','breed_admin',5,'1',1,1,'0','0',NULL,1,'2026-07-10 16:32:56',NULL,NULL,'SYS-AUTH-001 养殖 admin 模块'),(105,'1001','种植管理员','plant_admin',6,'1',1,1,'0','0',NULL,1,'2026-07-10 16:32:56',NULL,NULL,'SYS-AUTH-001 种植 admin 模块'),(106,'1001','仓库管理员','warehouse_admin',7,'1',1,1,'0','0',NULL,1,'2026-07-10 16:32:56',NULL,NULL,'SYS-AUTH-001 仓库 admin 模块'),(107,'1001','门店管理员','store_admin',8,'1',1,1,'0','0',NULL,1,'2026-07-10 16:32:56',NULL,NULL,'SYS-AUTH-001 门店 admin 模块'),(108,'1001','养殖工人','breed_worker',9,'4',1,1,'0','0',NULL,1,'2026-07-10 16:32:56',NULL,NULL,'SYS-AUTH-001 养殖小程序'),(109,'1001','兽医','vet',10,'4',1,1,'0','0',NULL,1,'2026-07-10 16:32:56',NULL,NULL,'SYS-AUTH-001 养殖小程序（含药品）'),(110,'1001','仓库工人','warehouse_worker',11,'4',1,1,'0','0',NULL,1,'2026-07-10 16:32:56',NULL,NULL,'SYS-AUTH-001 仓库小程序（含分割师/库管员）'),(111,'1001','种植工人','plant_worker',12,'4',1,1,'0','0',NULL,1,'2026-07-10 16:32:56',NULL,NULL,'SYS-AUTH-001 种植小程序'),(112,'1001','门店店员','store_clerk',13,'4',1,1,'0','0',NULL,1,'2026-07-10 16:32:56',NULL,NULL,'SYS-AUTH-001 门店小程序');
+/*!40000 ALTER TABLE `sys_role` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `sys_role_dept`
+--
+
+DROP TABLE IF EXISTS `sys_role_dept`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `sys_role_dept` (
+  `role_id` bigint NOT NULL COMMENT '角色ID',
+  `dept_id` bigint NOT NULL COMMENT '部门ID',
+  PRIMARY KEY (`role_id`,`dept_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='角色和部门关联表';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `sys_role_dept`
+--
+
+LOCK TABLES `sys_role_dept` WRITE;
+/*!40000 ALTER TABLE `sys_role_dept` DISABLE KEYS */;
+/*!40000 ALTER TABLE `sys_role_dept` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `sys_role_menu`
+--
+
+DROP TABLE IF EXISTS `sys_role_menu`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `sys_role_menu` (
+  `role_id` bigint NOT NULL COMMENT '角色ID',
+  `menu_id` bigint NOT NULL COMMENT '菜单ID',
+  PRIMARY KEY (`role_id`,`menu_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='角色和菜单关联表';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `sys_role_menu`
+--
+
+LOCK TABLES `sys_role_menu` WRITE;
+/*!40000 ALTER TABLE `sys_role_menu` DISABLE KEYS */;
+INSERT INTO `sys_role_menu` VALUES (1,5600),(1,5601),(1,5602),(1,8004),(1,8005),(1,8006),(1,8007),(1,8008),(1,8010),(1,8011),(1,8012),(1,8013),(1,8018),(1,8020),(1,8030),(1,8050),(1,8060),(1,8070),(1,8075),(1,8078),(1,8110),(1,8200),(1,9026),(1,9028),(1,9036),(1,9037),(1,9040),(1,9060),(1,9118),(1,9123),(1,9126),(1,9130),(1,9231),(1,9300),(1,9301),(1,9302),(1,9303),(1,9304),(1,10001),(1,10002),(1,10100),(1,10110),(1,10120),(1,10200),(1,10210),(1,10300),(1,10310),(1,10320),(1,10350),(1,10360),(1,10400),(1,10500),(1,10501),(1,10520),(1,10521),(1,10600),(1,10601),(101,1),(101,2),(101,3),(101,100),(101,101),(101,102),(101,103),(101,104),(101,105),(101,106),(101,107),(101,108),(101,109),(101,113),(101,115),(101,116),(101,117),(101,118),(101,120),(101,130),(101,131),(101,132),(101,133),(101,500),(101,501),(101,1001),(101,1002),(101,1003),(101,1004),(101,1005),(101,1006),(101,1007),(101,1008),(101,1009),(101,1010),(101,1011),(101,1012),(101,1013),(101,1014),(101,1015),(101,1016),(101,1017),(101,1018),(101,1019),(101,1020),(101,1021),(101,1022),(101,1023),(101,1024),(101,1025),(101,1026),(101,1027),(101,1028),(101,1029),(101,1030),(101,1031),(101,1032),(101,1033),(101,1034),(101,1035),(101,1036),(101,1037),(101,1038),(101,1039),(101,1040),(101,1041),(101,1042),(101,1043),(101,1044),(101,1045),(101,1046),(101,1047),(101,1048),(101,1050),(101,1055),(101,1056),(101,1057),(101,1058),(101,1059),(101,1060),(101,1600),(101,1601),(101,1602),(101,1603),(101,1620),(101,1621),(101,1622),(101,1623),(101,5000),(101,5002),(101,5003),(101,5050),(101,5051),(101,5052),(101,5053),(101,5350),(101,5351),(101,5352),(101,5600),(101,5601),(101,5602),(101,7360),(101,11000),(101,11010),(101,11020),(101,11021),(101,11022),(101,11023),(101,11024),(101,11025),(101,11026),(101,11030),(101,11031),(101,11032),(101,11033),(101,11034),(101,11040),(101,11041),(101,11042),(101,11050),(101,11060),(101,11061),(101,11062),(101,11063),(101,11064),(101,11065),(101,11066),(101,11067),(101,11068),(101,11069),(101,11070),(101,11071),(101,11072),(102,5000),(102,5002),(102,5003),(102,5050),(102,5051),(102,5052),(102,5600),(102,5601),(102,5602),(102,7000),(102,7005),(102,7010),(102,7016),(102,7017),(102,7018),(102,7019),(102,7020),(102,7023),(102,7030),(102,7031),(102,7032),(102,7033),(102,7040),(102,7041),(102,7042),(102,7043),(102,7050),(102,7056),(102,7057),(102,7060),(102,7070),(102,7080),(102,7081),(102,7082),(102,7083),(102,7084),(102,7090),(102,7091),(102,7092),(102,7093),(102,7094),(102,7145),(102,7200),(102,7205),(102,7400),(102,8000),(102,8004),(102,8005),(102,8006),(102,8007),(102,8008),(102,8010),(102,8011),(102,8012),(102,8013),(102,8018),(102,8020),(102,8030),(102,8050),(102,8060),(102,8070),(102,8075),(102,8078),(102,8082),(102,8084),(102,8098),(102,8100),(102,8110),(102,8112),(102,8200),(102,9000),(102,9010),(102,9020),(102,9026),(102,9028),(102,9036),(102,9037),(102,9040),(102,9060),(102,9100),(102,9110),(102,9118),(102,9123),(102,9126),(102,9130),(102,9210),(102,9217),(102,9230),(102,9231),(102,9233),(102,9234),(102,9236),(102,9237),(102,9238),(102,9240),(102,9241),(102,9249),(102,9250),(102,9300),(102,9301),(102,9302),(102,9303),(102,9304),(102,9400),(102,10000),(102,10001),(102,10002),(102,10100),(102,10110),(102,10120),(102,10200),(102,10210),(102,10300),(102,10310),(102,10320),(102,10350),(102,10360),(102,10400),(102,10500),(102,10501),(102,10520),(102,10521),(102,10600),(102,10601),(102,11020),(102,11021),(102,11022),(102,11023),(102,11024),(102,11025),(102,11026),(102,11030),(102,11031),(102,11032),(102,11033),(102,11034),(102,11040),(102,11041),(102,11042),(102,11060),(102,11061),(102,11062),(102,11063),(102,11064),(102,11065),(102,11066),(102,11067),(102,11068),(102,11069),(102,11070),(102,11071),(102,11072),(103,5000),(103,5002),(103,5003),(103,5050),(103,5051),(103,5052),(103,5600),(103,5601),(103,5602),(103,7000),(103,7005),(103,7010),(103,7016),(103,7017),(103,7018),(103,7019),(103,7020),(103,7023),(103,7030),(103,7031),(103,7032),(103,7033),(103,7040),(103,7041),(103,7042),(103,7043),(103,7050),(103,7056),(103,7057),(103,7060),(103,7070),(103,7080),(103,7081),(103,7082),(103,7083),(103,7084),(103,7090),(103,7091),(103,7092),(103,7093),(103,7094),(103,7145),(103,7200),(103,7205),(103,7400),(103,8000),(103,8004),(103,8005),(103,8006),(103,8007),(103,8008),(103,8010),(103,8011),(103,8012),(103,8013),(103,8018),(103,8020),(103,8030),(103,8050),(103,8060),(103,8070),(103,8075),(103,8078),(103,8082),(103,8084),(103,8098),(103,8100),(103,8110),(103,8112),(103,8200),(103,9000),(103,9010),(103,9020),(103,9026),(103,9028),(103,9036),(103,9037),(103,9040),(103,9060),(103,9100),(103,9110),(103,9118),(103,9123),(103,9126),(103,9130),(103,9210),(103,9217),(103,9230),(103,9231),(103,9233),(103,9234),(103,9236),(103,9237),(103,9238),(103,9240),(103,9241),(103,9249),(103,9250),(103,9300),(103,9301),(103,9302),(103,9303),(103,9304),(103,9400),(103,10000),(103,10001),(103,10002),(103,10100),(103,10110),(103,10120),(103,10200),(103,10210),(103,10300),(103,10310),(103,10320),(103,10350),(103,10360),(103,10400),(103,10500),(103,10501),(103,10520),(103,10521),(103,10600),(103,10601),(103,11020),(103,11021),(103,11022),(103,11023),(103,11024),(103,11025),(103,11026),(103,11030),(103,11031),(103,11032),(103,11033),(103,11034),(103,11040),(103,11041),(103,11042),(103,11060),(103,11061),(103,11062),(103,11063),(103,11064),(103,11065),(103,11066),(103,11067),(103,11068),(103,11069),(103,11070),(103,11071),(103,11072),(104,5000),(104,5002),(104,5003),(104,5050),(104,5051),(104,5052),(104,5600),(104,5601),(104,5602),(104,7000),(104,7005),(104,7010),(104,7016),(104,7017),(104,7018),(104,7019),(104,7020),(104,7023),(104,7030),(104,7031),(104,7032),(104,7033),(104,7040),(104,7041),(104,7042),(104,7043),(104,7050),(104,7056),(104,7057),(104,7080),(104,7081),(104,7082),(104,7083),(104,7084),(104,7090),(104,7091),(104,7092),(104,7093),(104,7094),(104,7145),(104,7200),(104,7205),(104,7400),(104,11020),(104,11021),(104,11022),(104,11023),(104,11024),(104,11025),(104,11026),(105,5000),(105,5002),(105,5003),(105,5050),(105,5051),(105,5052),(105,5600),(105,5601),(105,5602),(105,8000),(105,8004),(105,8005),(105,8006),(105,8007),(105,8008),(105,8010),(105,8011),(105,8012),(105,8013),(105,8018),(105,8020),(105,8030),(105,8050),(105,8060),(105,8070),(105,8075),(105,8078),(105,8082),(105,8084),(105,8098),(105,8100),(105,8110),(105,8112),(105,8200),(105,11030),(105,11031),(105,11032),(105,11033),(105,11034),(106,5000),(106,5002),(106,5003),(106,5050),(106,5051),(106,5052),(106,5600),(106,5601),(106,5602),(106,7060),(106,7070),(106,9000),(106,9010),(106,9020),(106,9026),(106,9028),(106,9036),(106,9037),(106,9040),(106,9060),(106,9100),(106,9110),(106,9118),(106,9123),(106,9126),(106,9130),(106,9210),(106,9217),(106,9230),(106,9231),(106,9233),(106,9234),(106,9236),(106,9237),(106,9238),(106,9240),(106,9241),(106,9249),(106,9250),(106,9300),(106,9301),(106,9302),(106,9303),(106,9304),(106,9400),(106,11040),(106,11041),(106,11042),(106,11060),(106,11061),(106,11062),(106,11063),(106,11064),(106,11065),(106,11066),(106,11067),(106,11068),(106,11069),(106,11070),(106,11071),(106,11072),(107,5000),(107,5002),(107,5003),(107,5050),(107,5051),(107,5052),(107,5600),(107,5601),(107,5602),(107,10000),(107,10001),(107,10002),(107,10100),(107,10110),(107,10120),(107,10200),(107,10210),(107,10300),(107,10310),(107,10320),(107,10350),(107,10360),(107,10400),(107,10500),(107,10501),(107,10520),(107,10521),(107,10600),(107,10601),(108,5000),(108,5002),(108,5003),(108,5050),(108,5051),(108,5052),(108,5600),(108,5601),(108,5602),(108,7000),(108,7005),(108,7010),(108,7016),(108,7017),(108,7018),(108,7019),(108,7020),(108,7023),(108,7030),(108,7031),(108,7032),(108,7033),(108,7040),(108,7041),(108,7042),(108,7043),(108,7050),(108,7056),(108,7057),(108,7080),(108,7081),(108,7082),(108,7083),(108,7084),(108,7090),(108,7091),(108,7092),(108,7093),(108,7094),(108,7145),(108,7200),(108,7205),(108,7400),(108,11020),(108,11021),(108,11022),(108,11023),(108,11024),(108,11025),(108,11026),(109,5000),(109,5002),(109,5003),(109,5050),(109,5051),(109,5052),(109,5600),(109,5601),(109,5602),(109,7000),(109,7005),(109,7010),(109,7016),(109,7017),(109,7018),(109,7019),(109,7020),(109,7023),(109,7030),(109,7031),(109,7032),(109,7033),(109,7040),(109,7041),(109,7042),(109,7043),(109,7050),(109,7056),(109,7057),(109,7080),(109,7081),(109,7082),(109,7083),(109,7084),(109,7090),(109,7091),(109,7092),(109,7093),(109,7094),(109,7145),(109,7200),(109,7205),(109,7400),(109,11020),(109,11021),(109,11022),(109,11023),(109,11024),(109,11025),(109,11026),(110,5000),(110,5002),(110,5003),(110,5050),(110,5051),(110,5052),(110,5600),(110,5601),(110,5602),(110,7060),(110,7070),(110,9000),(110,9010),(110,9020),(110,9026),(110,9028),(110,9036),(110,9037),(110,9040),(110,9060),(110,9100),(110,9110),(110,9118),(110,9123),(110,9126),(110,9130),(110,9210),(110,9217),(110,9230),(110,9231),(110,9233),(110,9234),(110,9236),(110,9237),(110,9238),(110,9240),(110,9241),(110,9249),(110,9250),(110,9300),(110,9301),(110,9302),(110,9303),(110,9304),(110,9400),(110,11040),(110,11041),(110,11042),(110,11060),(110,11061),(110,11062),(110,11063),(110,11064),(110,11065),(110,11066),(110,11067),(110,11068),(110,11069),(110,11070),(110,11071),(110,11072),(111,5000),(111,5002),(111,5003),(111,5050),(111,5051),(111,5052),(111,5600),(111,5601),(111,5602),(111,8000),(111,8004),(111,8005),(111,8006),(111,8007),(111,8008),(111,8010),(111,8011),(111,8012),(111,8013),(111,8018),(111,8020),(111,8030),(111,8050),(111,8060),(111,8070),(111,8075),(111,8078),(111,8082),(111,8084),(111,8098),(111,8100),(111,8110),(111,8112),(111,8200),(111,11030),(111,11031),(111,11032),(111,11033),(111,11034),(112,5000),(112,5002),(112,5003),(112,5050),(112,5051),(112,5052),(112,5600),(112,5601),(112,5602),(112,10000),(112,10001),(112,10002),(112,10100),(112,10110),(112,10120),(112,10200),(112,10210),(112,10300),(112,10310),(112,10320),(112,10350),(112,10360),(112,10400),(112,10500),(112,10501),(112,10520),(112,10521),(112,10600),(112,10601);
+/*!40000 ALTER TABLE `sys_role_menu` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `sys_social`
+--
+
+DROP TABLE IF EXISTS `sys_social`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `sys_social` (
+  `id` bigint NOT NULL COMMENT '主键',
+  `user_id` bigint NOT NULL COMMENT '用户ID',
+  `tenant_id` varchar(20) DEFAULT '000000' COMMENT '租户id',
+  `auth_id` varchar(255) NOT NULL COMMENT '平台+平台唯一id',
+  `source` varchar(255) NOT NULL COMMENT '用户来源',
+  `open_id` varchar(255) DEFAULT NULL COMMENT '平台编号唯一id',
+  `user_name` varchar(30) NOT NULL COMMENT '登录账号',
+  `nick_name` varchar(30) DEFAULT '' COMMENT '用户昵称',
+  `email` varchar(255) DEFAULT '' COMMENT '用户邮箱',
+  `avatar` varchar(500) DEFAULT '' COMMENT '头像地址',
+  `access_token` varchar(2000) NOT NULL COMMENT '用户的授权令牌',
+  `expire_in` int DEFAULT NULL COMMENT '用户的授权令牌的有效期，部分平台可能没有',
+  `refresh_token` varchar(255) DEFAULT NULL COMMENT '刷新令牌，部分平台可能没有',
+  `access_code` varchar(2000) DEFAULT NULL COMMENT '平台的授权信息，部分平台可能没有',
+  `union_id` varchar(255) DEFAULT NULL COMMENT '用户的 unionid',
+  `scope` varchar(255) DEFAULT NULL COMMENT '授予的权限，部分平台可能没有',
+  `token_type` varchar(255) DEFAULT NULL COMMENT '个别平台的授权信息，部分平台可能没有',
+  `id_token` varchar(2000) DEFAULT NULL COMMENT 'id token，部分平台可能没有',
+  `mac_algorithm` varchar(255) DEFAULT NULL COMMENT '小米平台用户的附带属性，部分平台可能没有',
+  `mac_key` varchar(255) DEFAULT NULL COMMENT '小米平台用户的附带属性，部分平台可能没有',
+  `code` varchar(255) DEFAULT NULL COMMENT '用户的授权code，部分平台可能没有',
+  `oauth_token` varchar(255) DEFAULT NULL COMMENT 'Twitter平台用户的附带属性，部分平台可能没有',
+  `oauth_token_secret` varchar(255) DEFAULT NULL COMMENT 'Twitter平台用户的附带属性，部分平台可能没有',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '创建者',
+  `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新者',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `del_flag` char(1) DEFAULT '0' COMMENT '删除标志（0代表存在 1代表删除）',
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='社会化关系表';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `sys_social`
+--
+
+LOCK TABLES `sys_social` WRITE;
+/*!40000 ALTER TABLE `sys_social` DISABLE KEYS */;
+/*!40000 ALTER TABLE `sys_social` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `sys_tenant`
+--
+
+DROP TABLE IF EXISTS `sys_tenant`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `sys_tenant` (
+  `id` bigint NOT NULL COMMENT 'id',
+  `tenant_id` varchar(20) NOT NULL COMMENT '租户编号',
+  `contact_user_name` varchar(20) DEFAULT NULL COMMENT '联系人',
+  `contact_phone` varchar(20) DEFAULT NULL COMMENT '联系电话',
+  `company_name` varchar(30) DEFAULT NULL COMMENT '企业名称',
+  `license_number` varchar(30) DEFAULT NULL COMMENT '统一社会信用代码',
+  `address` varchar(200) DEFAULT NULL COMMENT '地址',
+  `intro` varchar(200) DEFAULT NULL COMMENT '企业简介',
+  `domain` varchar(200) DEFAULT NULL COMMENT '域名',
+  `remark` varchar(200) DEFAULT NULL COMMENT '备注',
+  `package_id` bigint DEFAULT NULL COMMENT '租户套餐编号',
+  `expire_time` datetime DEFAULT NULL COMMENT '过期时间',
+  `account_count` int DEFAULT '-1' COMMENT '用户数量（-1不限制）',
+  `status` char(1) DEFAULT '0' COMMENT '租户状态（0正常 1停用）',
+  `del_flag` char(1) DEFAULT '0' COMMENT '删除标志（0代表存在 1代表删除）',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '创建者',
+  `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新者',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='租户表';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `sys_tenant`
+--
+
+LOCK TABLES `sys_tenant` WRITE;
+/*!40000 ALTER TABLE `sys_tenant` DISABLE KEYS */;
+INSERT INTO `sys_tenant` VALUES (1,'1001','王奎','13800000000','东角山有机生态农场',NULL,'广州市从化区','东角山有机生态农场 V1 默认租户',NULL,NULL,NULL,NULL,-1,'0','0',103,1,'2026-07-10 16:32:54',NULL,NULL);
+/*!40000 ALTER TABLE `sys_tenant` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `sys_tenant_package`
+--
+
+DROP TABLE IF EXISTS `sys_tenant_package`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `sys_tenant_package` (
+  `package_id` bigint NOT NULL COMMENT '租户套餐id',
+  `package_name` varchar(20) DEFAULT NULL COMMENT '套餐名称',
+  `menu_ids` varchar(3000) DEFAULT NULL COMMENT '关联菜单id',
+  `remark` varchar(200) DEFAULT NULL COMMENT '备注',
+  `menu_check_strictly` tinyint(1) DEFAULT '1' COMMENT '菜单树选择项是否关联显示',
+  `status` char(1) DEFAULT '0' COMMENT '状态（0正常 1停用）',
+  `del_flag` char(1) DEFAULT '0' COMMENT '删除标志（0代表存在 1代表删除）',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '创建者',
+  `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新者',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  PRIMARY KEY (`package_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='租户套餐表';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `sys_tenant_package`
+--
+
+LOCK TABLES `sys_tenant_package` WRITE;
+/*!40000 ALTER TABLE `sys_tenant_package` DISABLE KEYS */;
+/*!40000 ALTER TABLE `sys_tenant_package` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `sys_user`
+--
+
+DROP TABLE IF EXISTS `sys_user`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `sys_user` (
+  `user_id` bigint NOT NULL COMMENT '用户ID',
+  `tenant_id` varchar(20) DEFAULT '000000' COMMENT '租户编号',
+  `dept_id` bigint DEFAULT NULL COMMENT '部门ID',
+  `user_name` varchar(30) NOT NULL COMMENT '用户账号',
+  `nick_name` varchar(30) NOT NULL COMMENT '用户昵称',
+  `user_type` varchar(10) DEFAULT 'sys_user' COMMENT '用户类型（sys_user系统用户）',
+  `email` varchar(50) DEFAULT '' COMMENT '用户邮箱',
+  `phonenumber` varchar(11) DEFAULT '' COMMENT '手机号码',
+  `sex` char(1) DEFAULT '0' COMMENT '用户性别（0男 1女 2未知）',
+  `avatar` bigint DEFAULT NULL COMMENT '头像地址',
+  `password` varchar(100) DEFAULT '' COMMENT '密码',
+  `status` char(1) DEFAULT '0' COMMENT '账号状态（0正常 1停用）',
+  `del_flag` char(1) DEFAULT '0' COMMENT '删除标志（0代表存在 1代表删除）',
+  `login_ip` varchar(128) DEFAULT '' COMMENT '最后登录IP',
+  `login_date` datetime DEFAULT NULL COMMENT '最后登录时间',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '创建者',
+  `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新者',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  `farm_id` varchar(20) DEFAULT NULL COMMENT '当前默认农场 id（V1 默认 "1001"）',
+  `current_farm_id` varchar(20) DEFAULT NULL COMMENT '当前激活的农场 id（用户切换后更新）',
+  `accessible_farm_ids` varchar(500) DEFAULT NULL COMMENT '可访问的农场 id 列表（逗号分隔，多农场用户用）',
+  `wx_openid` varchar(64) DEFAULT NULL COMMENT '微信 openid',
+  `wx_unionid` varchar(64) DEFAULT NULL COMMENT '微信 unionid',
+  PRIMARY KEY (`user_id`),
+  KEY `idx_wx_openid` (`wx_openid`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='用户信息表';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `sys_user`
+--
+
+LOCK TABLES `sys_user` WRITE;
+/*!40000 ALTER TABLE `sys_user` DISABLE KEYS */;
+INSERT INTO `sys_user` VALUES (1,'1001',100,'admin','疯狂的狮子Li','sys_user','crazyLionLi@163.com','15888888888','1',NULL,'$2a$10$7JB720yubVSZvUI0rEqK/.VqGOZTH.ulu33dHOiBE8ByOhJIrdAu2','0','0','127.0.0.1','2026-07-10 16:32:54',103,1,'2026-07-10 16:32:54',NULL,NULL,'管理员',NULL,NULL,NULL,NULL,NULL),(9001,'1001',204,'dev','dev 员工','sys_user','dev@dongjiaoshan.dev','13800009001','0',NULL,'$2a$10$7JB720yubVSZvuENVucfeurUyOJyKdyXBdC0HyrCl1tT5ZUmgo7Wm','0','0','',NULL,NULL,1,'2026-07-10 16:32:56',NULL,NULL,'D04 TH#6 - mock LoginUser 对齐（dev/dev123）','1001','1001',NULL,NULL,NULL),(9100,'1001',200,'dev_breed_mgr','李养殖（养殖管理员）','sys_user','breed_mgr@dongjiaoshan.dev','13800009100','0',NULL,'$2a$10$7JB720yubVSZvuENVucfeurUyOJyKdyXBdC0HyrCl1tT5ZUmgo7Wm','0','0','',NULL,NULL,1,'2026-07-10 16:32:56',NULL,NULL,'D04 dev seed - 养殖管理员','1001','1001',NULL,NULL,NULL),(9101,'1001',200,'dev_breed_worker','张三（养殖工人）','sys_user','breed_worker@dongjiaoshan.dev','13800009101','1',NULL,'$2a$10$7JB720yubVSZvuENVucfeurUyOJyKdyXBdC0HyrCl1tT5ZUmgo7Wm','0','0','',NULL,NULL,1,'2026-07-10 16:32:56',NULL,NULL,'D04 dev seed - 养殖工人','1001','1001',NULL,NULL,NULL),(9102,'1001',200,'dev_vet','王兽医（兽医）','sys_user','vet@dongjiaoshan.dev','13800009102','0',NULL,'$2a$10$7JB720yubVSZvuENVucfeurUyOJyKdyXBdC0HyrCl1tT5ZUmgo7Wm','0','0','',NULL,NULL,1,'2026-07-10 16:32:56',NULL,NULL,'D04 dev seed - 兽医','1001','1001',NULL,NULL,NULL),(9103,'1001',201,'dev_plant_mgr','陈种植（种植管理员）','sys_user','plant_mgr@dongjiaoshan.dev','13800009103','0',NULL,'$2a$10$7JB720yubVSZvuENVucfeurUyOJyKdyXBdC0HyrCl1tT5ZUmgo7Wm','0','0','',NULL,NULL,1,'2026-07-10 16:32:56',NULL,NULL,'D04 dev seed - 种植管理员','1001','1001',NULL,NULL,NULL),(9104,'1001',202,'dev_warehouse_mgr','赵仓库（仓库管理员）','sys_user','warehouse_mgr@dongjiaoshan.dev','13800009104','0',NULL,'$2a$10$7JB720yubVSZvuENVucfeurUyOJyKdyXBdC0HyrCl1tT5ZUmgo7Wm','0','0','',NULL,NULL,1,'2026-07-10 16:32:56',NULL,NULL,'D04 dev seed - 仓库管理员','1001','1001',NULL,NULL,NULL),(9105,'1001',203,'dev_store_mgr','钱门店（门店管理员）','sys_user','store_mgr@dongjiaoshan.dev','13800009105','0',NULL,'$2a$10$7JB720yubVSZvuENVucfeurUyOJyKdyXBdC0HyrCl1tT5ZUmgo7Wm','0','0','',NULL,NULL,1,'2026-07-10 16:32:56',NULL,NULL,'D04 dev seed - 门店管理员','1001','1001',NULL,NULL,NULL),(9106,'1001',203,'dev_store_clerk','孙小妹（门店店员）','sys_user','store_clerk@dongjiaoshan.dev','13800009106','1',NULL,'$2a$10$7JB720yubVSZvuENVucfeurUyOJyKdyXBdC0HyrCl1tT5ZUmgo7Wm','0','0','',NULL,NULL,1,'2026-07-10 16:32:56',NULL,NULL,'D04 dev seed - 门店店员','1001','1001',NULL,NULL,NULL),(9107,'1001',204,'dev_boss','老板（dev 测试）','sys_user','boss@dongjiaoshan.dev','13800009107','0',NULL,'$2a$10$7JB720yubVSZvuENVucfeurUyOJyKdyXBdC0HyrCl1tT5ZUmgo7Wm','0','0','',NULL,NULL,1,'2026-07-10 16:32:56',NULL,NULL,'D04 dev seed - 老板','1001','1001',NULL,NULL,NULL),(9108,'1001',202,'dev_warehouse_worker','吴仓库（仓库工人）','sys_user','warehouse_worker@dongjiaoshan.dev','13800009108','1',NULL,'$2a$10$7JB720yubVSZvuENVucfeurUyOJyKdyXBdC0HyrCl1tT5ZUmgo7Wm','0','0','',NULL,NULL,1,'2026-07-10 16:33:12',NULL,NULL,'D12X dev seed - 仓库工人','1001','1001',NULL,NULL,NULL),(9109,'1001',201,'dev_plant_worker','周种植（种植工人）','sys_user','plant_worker@dongjiaoshan.dev','13800009109','1',NULL,'$2a$10$7JB720yubVSZvuENVucfeurUyOJyKdyXBdC0HyrCl1tT5ZUmgo7Wm','0','0','',NULL,NULL,1,'2026-07-10 16:33:12',NULL,NULL,'D12X dev seed - 种植工人','1001','1001',NULL,NULL,NULL),(9110,'1001',201,'dev_plant_worker2','李种植（种植工人）','sys_user','plant_worker2@dongjiaoshan.dev','13800009110','1',NULL,'$2a$10$7JB720yubVSZvuENVucfeurUyOJyKdyXBdC0HyrCl1tT5ZUmgo7Wm','0','0','',NULL,NULL,1,'2026-07-10 16:33:14',NULL,NULL,'种植工人（未分配班组）','1001','1001',NULL,NULL,NULL);
+/*!40000 ALTER TABLE `sys_user` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `sys_user_post`
+--
+
+DROP TABLE IF EXISTS `sys_user_post`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `sys_user_post` (
+  `user_id` bigint NOT NULL COMMENT '用户ID',
+  `post_id` bigint NOT NULL COMMENT '岗位ID',
+  PRIMARY KEY (`user_id`,`post_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='用户与岗位关联表';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `sys_user_post`
+--
+
+LOCK TABLES `sys_user_post` WRITE;
+/*!40000 ALTER TABLE `sys_user_post` DISABLE KEYS */;
+/*!40000 ALTER TABLE `sys_user_post` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `sys_user_role`
+--
+
+DROP TABLE IF EXISTS `sys_user_role`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `sys_user_role` (
+  `user_id` bigint NOT NULL COMMENT '用户ID',
+  `role_id` bigint NOT NULL COMMENT '角色ID',
+  PRIMARY KEY (`user_id`,`role_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='用户和角色关联表';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `sys_user_role`
+--
+
+LOCK TABLES `sys_user_role` WRITE;
+/*!40000 ALTER TABLE `sys_user_role` DISABLE KEYS */;
+INSERT INTO `sys_user_role` VALUES (1,1),(9001,101),(9100,104),(9101,108),(9102,109),(9103,105),(9104,106),(9105,107),(9106,112),(9107,102),(9108,110),(9109,111),(9110,111);
+/*!40000 ALTER TABLE `sys_user_role` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_breed_medicine_batch`
+--
+
+DROP TABLE IF EXISTS `t_breed_medicine_batch`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_breed_medicine_batch` (
+  `id` bigint NOT NULL AUTO_INCREMENT COMMENT '主键（雪花）',
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
+  `medicine_id` bigint NOT NULL COMMENT '药品 ID（引用 t_breed_medicine_info.id）',
+  `batch_no` varchar(64) NOT NULL COMMENT '批次编码',
+  `production_date` date DEFAULT NULL COMMENT '生产日期',
+  `expiry_date` date DEFAULT NULL COMMENT '过期日期',
+  `quantity` decimal(18,3) NOT NULL DEFAULT '0.000' COMMENT '批次当前剩余库存',
+  `stock_qty` decimal(18,3) NOT NULL DEFAULT '0.000' COMMENT '原始入库量（绝对上界；service 校验 quantity ≤ stock_qty 防退回累计污染）',
+  `unit_price` decimal(18,2) DEFAULT NULL COMMENT '进货单价',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '创建人',
+  `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新人',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `del_flag` char(1) DEFAULT '0' COMMENT '删除标志',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  `del_unique` bigint NOT NULL DEFAULT '0' COMMENT '软删 token（应用层 update del_flag=''1'' 时同步 SET del_unique=id）',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_med_batch` (`tenant_id`,`medicine_id`,`batch_no`,`del_unique`),
+  KEY `idx_tenant_create` (`tenant_id`,`create_time`),
+  KEY `idx_medicine` (`medicine_id`),
+  KEY `idx_expiry` (`expiry_date`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='药品批次表（BRD-MED-001）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_breed_medicine_batch`
+--
+
+LOCK TABLES `t_breed_medicine_batch` WRITE;
+/*!40000 ALTER TABLE `t_breed_medicine_batch` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_breed_medicine_batch` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_breed_medicine_info`
+--
+
+DROP TABLE IF EXISTS `t_breed_medicine_info`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_breed_medicine_info` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
+  `medicine_code` varchar(32) NOT NULL COMMENT '药品编码',
+  `medicine_name` varchar(128) NOT NULL COMMENT '药品名称',
+  `medicine_type` varchar(16) NOT NULL COMMENT '药品类型 字典 drug_type：vaccine/health/treat',
+  `supplier_id` bigint DEFAULT NULL COMMENT '供应商 ID',
+  `approval_no` varchar(64) DEFAULT NULL COMMENT '批准文号',
+  `batch_no` varchar(64) DEFAULT NULL COMMENT '批号',
+  `expire_date` date DEFAULT NULL COMMENT '过期日期',
+  `withdraw_days` int DEFAULT NULL COMMENT '休药期（天）',
+  `unit` varchar(16) DEFAULT NULL COMMENT '单位（瓶/盒/克 等）',
+  `current_stock` decimal(12,2) DEFAULT '0.00' COMMENT '当前库存',
+  `spec` varchar(128) DEFAULT NULL COMMENT '规格（如 10ml × 100 支 / 盒）',
+  `manufacturer` varchar(128) DEFAULT NULL COMMENT '生产厂家',
+  `storage_condition` varchar(200) DEFAULT NULL COMMENT '储存条件（如 2-8℃ 冷藏 避光）',
+  `med_status` tinyint NOT NULL DEFAULT '1' COMMENT '状态 1=启用 0=停用（对齐 sys_normal_disable）',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '创建人',
+  `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新人',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `del_flag` char(1) DEFAULT '0' COMMENT '删除标志',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  `del_unique` bigint NOT NULL DEFAULT '0' COMMENT '软删除生成 token（应用层 update del_flag=''1'' 时同步 SET del_unique=id；§6.3.0）',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_medicine_code` (`tenant_id`,`medicine_code`,`del_unique`),
+  KEY `idx_tenant_create` (`tenant_id`,`create_time`),
+  KEY `idx_medicine_type` (`medicine_type`)
+) ENGINE=InnoDB AUTO_INCREMENT=5 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='药品库主数据（BRD-MED-001）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_breed_medicine_info`
+--
+
+LOCK TABLES `t_breed_medicine_info` WRITE;
+/*!40000 ALTER TABLE `t_breed_medicine_info` DISABLE KEYS */;
+INSERT INTO `t_breed_medicine_info` VALUES (1,'1001','MED-AB-001','阿莫西林可溶性粉','antibiotic',NULL,NULL,NULL,NULL,7,'袋',0.00,'100g/袋','华畜生物',NULL,1,NULL,NULL,NULL,NULL,NULL,'0',NULL,0),(2,'1001','MED-VC-001','猪瘟活疫苗','vaccine',NULL,NULL,NULL,NULL,0,'瓶',0.00,'20头份/瓶','金宇保灵',NULL,1,NULL,NULL,NULL,NULL,NULL,'0',NULL,0),(3,'1001','MED-NU-001','复合多维','nutrition',NULL,NULL,NULL,NULL,0,'袋',0.00,'500g/袋','正大',NULL,1,NULL,NULL,NULL,NULL,NULL,'0',NULL,0),(4,'1001','MED-DI-001','聚维酮碘溶液','disinfectant',NULL,NULL,NULL,NULL,0,'桶',0.00,'5L/桶','大华农',NULL,1,NULL,NULL,NULL,NULL,NULL,'0',NULL,0);
+/*!40000 ALTER TABLE `t_breed_medicine_info` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_breed_medicine_record`
+--
+
+DROP TABLE IF EXISTS `t_breed_medicine_record`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_breed_medicine_record` (
+  `id` bigint NOT NULL AUTO_INCREMENT COMMENT '主键（雪花）',
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
+  `use_date` datetime NOT NULL COMMENT '用药日期（业务日期，非 create_time）',
+  `pig_id` bigint DEFAULT NULL COMMENT '猪只 ID（drug_type=1 必填；drug_type=2 master 行 NULL；drug_type=3 detail 行必填）',
+  `ear_no` varchar(32) DEFAULT NULL COMMENT '猪只耳号冗余（drug_type=1/3 时存）',
+  `master_id` bigint DEFAULT NULL COMMENT '批量用药 master id（drug_type=3 detail 行回指）',
+  `drug_type` tinyint NOT NULL COMMENT '1=单只 / 2=批量 master / 3=批量 detail（字典 djs_drug_type）',
+  `medicine_type` varchar(32) NOT NULL COMMENT '用药类型（djs_medicine_use_type: health/treatment/vaccine）',
+  `vaccine_type` varchar(32) DEFAULT NULL COMMENT '疫苗类型（字典 djs_vaccine_type，仅免疫类用药填写）',
+  `medicine_reason` varchar(32) DEFAULT NULL COMMENT '用药原因（djs_medicine_reason）',
+  `medicine_way` varchar(32) NOT NULL COMMENT '用药方式（djs_medicine_way）',
+  `medicine_id` bigint NOT NULL COMMENT '药品 FK → t_breed_medicine_info.id',
+  `medicine_name` varchar(128) NOT NULL COMMENT '药品名冗余（防药品改名影响历史）',
+  `batch_id` bigint DEFAULT NULL COMMENT '批次 ID（药品废弃批次后恒 NULL；保留兼容旧数据）',
+  `usage_id` bigint DEFAULT NULL COMMENT '领用记录 FK → t_breed_medicine_usage.id（追溯 3 天领用源头，V1 可选）',
+  `schedule_id` bigint DEFAULT NULL COMMENT '用药 schedule FK → t_farm_production_cycle_config.id（V1 仅记录不强校验归属，预留 V2）',
+  `medicine_dosage` decimal(12,3) NOT NULL COMMENT '用药剂量',
+  `dosage_unit` varchar(32) DEFAULT NULL COMMENT '剂量单位（记录展示用：g/mg/ml/L/kg/片等）',
+  `operator_id` bigint NOT NULL COMMENT '操作人 user_id（FK → sys_user.user_id，ADR-0007）',
+  `operator_name` varchar(64) DEFAULT NULL COMMENT '操作人冗余姓名（sys_user.nick_name 快照）',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '创建人',
+  `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新人',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `del_flag` char(1) DEFAULT '0' COMMENT '删除标志',
+  `del_unique` bigint NOT NULL DEFAULT '0' COMMENT '软删 token（软删时同步 SET del_unique=id）',
+  PRIMARY KEY (`id`),
+  KEY `idx_tenant_use_date` (`tenant_id`,`use_date`),
+  KEY `idx_pig` (`tenant_id`,`pig_id`),
+  KEY `idx_master` (`master_id`),
+  KEY `idx_batch` (`batch_id`),
+  KEY `idx_medicine` (`medicine_id`),
+  KEY `idx_operator` (`operator_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='用药治疗流水（单只 + 批量 master/detail，BRD-MED-003）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_breed_medicine_record`
+--
+
+LOCK TABLES `t_breed_medicine_record` WRITE;
+/*!40000 ALTER TABLE `t_breed_medicine_record` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_breed_medicine_record` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_breed_medicine_usage`
+--
+
+DROP TABLE IF EXISTS `t_breed_medicine_usage`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_breed_medicine_usage` (
+  `id` bigint NOT NULL AUTO_INCREMENT COMMENT '主键（雪花）',
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
+  `batch_id` bigint DEFAULT NULL COMMENT '药品批次 ID（可选，去批次后可空，按 medicine_id 落账）',
+  `medicine_id` bigint NOT NULL COMMENT '药品 ID（引用 t_breed_medicine_info.id，冗余便于报表）',
+  `usage_type` varchar(20) NOT NULL DEFAULT 'use' COMMENT '类型：use=领用 / return=退回 / loss=损耗',
+  `usage_qty` decimal(18,3) NOT NULL COMMENT '数量（与批次 quantity 对齐 DECIMAL(18,3)）',
+  `use_date` date NOT NULL COMMENT '业务日期（领用/退回/损耗发生日，非 create_time；BRD-MED-003 按此过滤）',
+  `related_pen_id` bigint DEFAULT NULL COMMENT '关联栏位（可选，批次级用药关联到栏位）',
+  `pig_id` bigint DEFAULT NULL COMMENT '关联猪只（可选，单只用药场景）',
+  `schedule_id` bigint DEFAULT NULL COMMENT '关联用药计划 ID（可选，BRD-MD-003 t_farm_production_cycle_config 中的 schedule 项）',
+  `operator_id` bigint DEFAULT NULL COMMENT '领用人 user_id（默认当前登录人）',
+  `operator_name` varchar(64) DEFAULT NULL COMMENT '领用人姓名快照',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '创建人',
+  `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新人',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `del_flag` char(1) DEFAULT '0' COMMENT '删除标志',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  `del_unique` bigint NOT NULL DEFAULT '0' COMMENT '软删 token（应用层 update del_flag=''1'' 时同步 SET del_unique=id）',
+  PRIMARY KEY (`id`),
+  KEY `idx_batch_id` (`batch_id`),
+  KEY `idx_medicine_id` (`medicine_id`),
+  KEY `idx_use_date` (`use_date`),
+  KEY `idx_tenant_use_date` (`tenant_id`,`use_date`),
+  KEY `idx_pig_id` (`pig_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='药品领用台账（领用/退回/损耗共表，BRD-MED-002）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_breed_medicine_usage`
+--
+
+LOCK TABLES `t_breed_medicine_usage` WRITE;
+/*!40000 ALTER TABLE `t_breed_medicine_usage` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_breed_medicine_usage` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_breed_medicine_use`
+--
+
+DROP TABLE IF EXISTS `t_breed_medicine_use`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_breed_medicine_use` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
+  `medicine_id` bigint NOT NULL COMMENT '药品 ID',
+  `use_date` date NOT NULL COMMENT '领用日期（业务日期，BRD-MED-003 用此过滤"3 天内已领"）',
+  `inout_type` varchar(16) NOT NULL COMMENT '类型 字典 medicine_use_type：pick=领用/return=退回/loss=损耗',
+  `use_location` varchar(32) DEFAULT NULL COMMENT '领用位置 字典 medicine_use_location',
+  `use_count` decimal(12,2) NOT NULL COMMENT '数量',
+  `operator_id` bigint DEFAULT NULL COMMENT '操作人',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '录入人',
+  `create_time` datetime DEFAULT NULL COMMENT '录入时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新人',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `del_flag` char(1) DEFAULT '0' COMMENT '删除标志',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  PRIMARY KEY (`id`),
+  KEY `idx_tenant_create` (`tenant_id`,`create_time`),
+  KEY `idx_medicine_date` (`medicine_id`,`use_date`),
+  KEY `idx_use_date` (`use_date`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='药品领用/退回/损耗（BRD-MED-002）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_breed_medicine_use`
+--
+
+LOCK TABLES `t_breed_medicine_use` WRITE;
+/*!40000 ALTER TABLE `t_breed_medicine_use` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_breed_medicine_use` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_breed_production_config`
+--
+
+DROP TABLE IF EXISTS `t_breed_production_config`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_breed_production_config` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
+  `config_type` varchar(16) NOT NULL COMMENT '配置类型 sow=母猪 / fattening=育肥 / marketing=出栏',
+  `config_key` varchar(64) NOT NULL COMMENT '配置键（如 breed_wean_to_mate_days）',
+  `value_days` int DEFAULT NULL COMMENT '天数值（type=sow 时用）',
+  `start_age` int DEFAULT NULL COMMENT '起始日龄（type=fattening 时用）',
+  `end_age` int DEFAULT NULL COMMENT '结束日龄（type=fattening 时用）',
+  `record_grow` tinyint DEFAULT '0' COMMENT '是否需要记录生长 1=是 0=否',
+  `display_order` int DEFAULT '0' COMMENT '展示顺序',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '创建人',
+  `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新人',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `del_flag` char(1) DEFAULT '0' COMMENT '删除标志',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  `del_unique` bigint NOT NULL DEFAULT '0' COMMENT '软删除生成 token（应用层 update del_flag=''1'' 时同步 SET del_unique=id；§6.3.0）',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_config_key` (`tenant_id`,`config_type`,`config_key`,`del_unique`),
+  KEY `idx_tenant_create` (`tenant_id`,`create_time`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='生产配置表（BRD-MD-003，3 type 多行）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_breed_production_config`
+--
+
+LOCK TABLES `t_breed_production_config` WRITE;
+/*!40000 ALTER TABLE `t_breed_production_config` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_breed_production_config` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_djs_job_log`
+--
+
+DROP TABLE IF EXISTS `t_djs_job_log`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_djs_job_log` (
+  `id` bigint NOT NULL COMMENT '主键（雪花）',
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户编号',
+  `job_name` varchar(64) NOT NULL COMMENT 'job 名（breed-aggregate / warehouse-stat / organic-warning）',
+  `target_date` date DEFAULT NULL COMMENT '重算目标日（手动重跑落具体日，schedule / 无日期 job 为 null）',
+  `status` varchar(16) NOT NULL COMMENT '执行状态（running / success / fail）',
+  `error_msg` varchar(1000) DEFAULT NULL COMMENT '失败信息（status=fail 时落，截断至 1000）',
+  `cost_ms` bigint DEFAULT NULL COMMENT '耗时毫秒（done / fail 时回填）',
+  `run_time` datetime NOT NULL COMMENT '触发时间',
+  `trigger_type` varchar(16) NOT NULL COMMENT '触发方式（schedule 定时 / manual 手动重跑）',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '创建者',
+  `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新者',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `del_flag` char(1) NOT NULL DEFAULT '0' COMMENT '删除标记（0 未删 / 1 已删）',
+  PRIMARY KEY (`id`),
+  KEY `idx_job_log_tenant_name_time` (`tenant_id`,`job_name`,`run_time`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='djs 定时任务执行日志';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_djs_job_log`
+--
+
+LOCK TABLES `t_djs_job_log` WRITE;
+/*!40000 ALTER TABLE `t_djs_job_log` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_djs_job_log` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_farm_barn_info`
+--
+
+DROP TABLE IF EXISTS `t_farm_barn_info`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_farm_barn_info` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
+  `barn_code` varchar(32) NOT NULL COMMENT '栋舍编码',
+  `barn_name` varchar(64) NOT NULL COMMENT '栋舍名称',
+  `barn_type` varchar(16) NOT NULL COMMENT '栋舍类型 字典 barn_type：母猪舍/育成舍/公猪舍/产床舍/育肥舍/隔离舍',
+  `capacity` int DEFAULT NULL COMMENT '设计容量（头数，推断字段）',
+  `current_count` int DEFAULT '0' COMMENT '当前头数（推断字段，可定时算）',
+  `barn_status` tinyint NOT NULL DEFAULT '1' COMMENT '状态 1=启用 0=停用',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '创建人',
+  `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新人',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `del_flag` char(1) DEFAULT '0' COMMENT '删除标志',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  `del_unique` bigint NOT NULL DEFAULT '0' COMMENT '软删除生成 token（应用层 update del_flag=''1'' 时同步 SET del_unique=id；§6.3.0）',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_barn_code` (`tenant_id`,`barn_code`,`del_unique`),
+  KEY `idx_tenant_create` (`tenant_id`,`create_time`),
+  KEY `idx_barn_type` (`barn_type`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='栋舍信息表（BRD-MD-002）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_farm_barn_info`
+--
+
+LOCK TABLES `t_farm_barn_info` WRITE;
+/*!40000 ALTER TABLE `t_farm_barn_info` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_farm_barn_info` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_farm_barn_pen`
+--
+
+DROP TABLE IF EXISTS `t_farm_barn_pen`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_farm_barn_pen` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
+  `barn_id` bigint NOT NULL COMMENT '栋舍 ID',
+  `pen_code` varchar(32) NOT NULL COMMENT '栏位编码',
+  `pen_name` varchar(64) NOT NULL COMMENT '栏位名称',
+  `pen_type` varchar(16) NOT NULL COMMENT '栏位类型：大栏/限位栏/产床/隔离栏',
+  `capacity` int DEFAULT NULL COMMENT '设计容量',
+  `current_count` int DEFAULT '0' COMMENT '当前头数',
+  `pen_status` tinyint NOT NULL DEFAULT '1' COMMENT '状态 1=启用 0=停用',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '创建人',
+  `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新人',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `del_flag` char(1) DEFAULT '0' COMMENT '删除标志',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  `del_unique` bigint NOT NULL DEFAULT '0' COMMENT '软删除生成 token（应用层 update del_flag=''1'' 时同步 SET del_unique=id；§6.3.0）',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_pen_code` (`tenant_id`,`barn_id`,`pen_code`,`del_unique`),
+  KEY `idx_tenant_create` (`tenant_id`,`create_time`),
+  KEY `idx_barn` (`barn_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='栏位信息表（BRD-MD-002）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_farm_barn_pen`
+--
+
+LOCK TABLES `t_farm_barn_pen` WRITE;
+/*!40000 ALTER TABLE `t_farm_barn_pen` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_farm_barn_pen` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_farm_boar_config`
+--
+
+DROP TABLE IF EXISTS `t_farm_boar_config`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_farm_boar_config` (
+  `id` bigint NOT NULL COMMENT '主键（雪花）',
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '农场ID（多租户，V1 全 1001）',
+  `boar_id` bigint DEFAULT NULL COMMENT '关联公猪 ID（V1 NULL = 通用配置 / V2 启用具体公猪覆盖）',
+  `sperm_quality_threshold` decimal(8,2) NOT NULL COMMENT '精液密度阈值（亿/mL）',
+  `breeding_interval_days` int NOT NULL COMMENT '同公猪两次采精最小间隔天数',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '创建者',
+  `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新者',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `del_flag` char(1) DEFAULT '0' COMMENT '软删',
+  `del_unique` bigint NOT NULL DEFAULT '0' COMMENT '软删唯一性辅助',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_boar_id` (`tenant_id`,`boar_id`,`del_unique`),
+  KEY `idx_tenant` (`tenant_id`),
+  KEY `idx_boar_id` (`boar_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='精液 / 公猪配置（BRD-MD-003 Tab2）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_farm_boar_config`
+--
+
+LOCK TABLES `t_farm_boar_config` WRITE;
+/*!40000 ALTER TABLE `t_farm_boar_config` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_farm_boar_config` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_farm_breed_config`
+--
+
+DROP TABLE IF EXISTS `t_farm_breed_config`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_farm_breed_config` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
+  `breed_strain` tinyint NOT NULL COMMENT '类型 1=品种配种 / 2=品系配种',
+  `mother_code` varchar(32) NOT NULL COMMENT '母本品种/品系编码（引用 t_farm_breed_info.breed_strain_code）',
+  `father_code` varchar(32) NOT NULL COMMENT '父本品种/品系编码',
+  `cub_code` varchar(32) NOT NULL COMMENT '仔代品种/品系编码（必须先在 t_farm_breed_info 建好）',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '创建人',
+  `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新人',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `del_flag` char(1) DEFAULT '0' COMMENT '删除标志',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  `del_unique` bigint NOT NULL DEFAULT '0' COMMENT '软删除生成 token（应用层 update del_flag=''1'' 时同步 SET del_unique=id；§6.3.0）',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_breed_config` (`tenant_id`,`breed_strain`,`mother_code`,`father_code`,`del_unique`),
+  KEY `idx_tenant_create` (`tenant_id`,`create_time`),
+  KEY `idx_cub` (`tenant_id`,`cub_code`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='育种配置表（配种关系合表，BRD-MD-001）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_farm_breed_config`
+--
+
+LOCK TABLES `t_farm_breed_config` WRITE;
+/*!40000 ALTER TABLE `t_farm_breed_config` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_farm_breed_config` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_farm_breed_info`
+--
+
+DROP TABLE IF EXISTS `t_farm_breed_info`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_farm_breed_info` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
+  `breed_strain` tinyint NOT NULL COMMENT '类型 1=品种 / 2=品系',
+  `breed_strain_code` varchar(32) NOT NULL COMMENT '品种/品系编码（业务码，字符串引用）',
+  `breed_strain_name` varchar(64) NOT NULL COMMENT '品种/品系名称',
+  `parent_code` varchar(32) DEFAULT NULL COMMENT '父级编码（品系归属品种时填）',
+  `description` varchar(255) DEFAULT NULL COMMENT '描述',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '创建人',
+  `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新人',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `del_flag` char(1) DEFAULT '0' COMMENT '删除标志',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  `del_unique` bigint NOT NULL DEFAULT '0' COMMENT '软删除生成 token（应用层 update del_flag=''1'' 时同步 SET del_unique=id；§6.3.0）',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_breed_strain_code` (`tenant_id`,`breed_strain`,`breed_strain_code`,`del_unique`),
+  KEY `idx_tenant_create` (`tenant_id`,`create_time`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='育种信息表（品种+品系合表，BRD-MD-001）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_farm_breed_info`
+--
+
+LOCK TABLES `t_farm_breed_info` WRITE;
+/*!40000 ALTER TABLE `t_farm_breed_info` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_farm_breed_info` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_farm_castrate_record`
+--
+
+DROP TABLE IF EXISTS `t_farm_castrate_record`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_farm_castrate_record` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
+  `pig_id` bigint NOT NULL COMMENT '猪只 ID',
+  `ear_no` varchar(32) NOT NULL COMMENT '猪只耳号',
+  `castrate_date` datetime NOT NULL COMMENT '阉割日期',
+  `operator_id` bigint DEFAULT NULL COMMENT '操作人',
+  `castrater` varchar(64) DEFAULT NULL COMMENT '阉割人员（现场执刀人员名/编码）',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '录入人',
+  `create_time` datetime DEFAULT NULL COMMENT '录入时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新人',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `del_flag` char(1) DEFAULT '0' COMMENT '删除标志',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  PRIMARY KEY (`id`),
+  KEY `idx_tenant_create` (`tenant_id`,`create_time`),
+  KEY `idx_pig` (`tenant_id`,`pig_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='猪只阉割记录（BRD-EVENT-004）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_farm_castrate_record`
+--
+
+LOCK TABLES `t_farm_castrate_record` WRITE;
+/*!40000 ALTER TABLE `t_farm_castrate_record` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_farm_castrate_record` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_farm_fatten_age_stage`
+--
+
+DROP TABLE IF EXISTS `t_farm_fatten_age_stage`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_farm_fatten_age_stage` (
+  `id` bigint NOT NULL COMMENT '主键（雪花）',
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '农场ID（多租户，V1 全 1001 / ADR-0001）',
+  `start_age` int NOT NULL COMMENT '起始日龄（天，含）',
+  `end_age` int NOT NULL COMMENT '截止日龄（天，含）',
+  `record_growth` tinyint NOT NULL DEFAULT '0' COMMENT '是否记录生长记录（1 记录 / 0 不记录）',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '创建者',
+  `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新者',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `del_flag` char(1) DEFAULT '0' COMMENT '软删（0 未删 / 1 已删）',
+  `del_unique` bigint NOT NULL DEFAULT '0' COMMENT '软删唯一性辅助（未删=0，已删=id）',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_start_age` (`tenant_id`,`start_age`,`del_unique`),
+  KEY `idx_tenant` (`tenant_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='育肥日龄阶段配置（A1 Tab2）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_farm_fatten_age_stage`
+--
+
+LOCK TABLES `t_farm_fatten_age_stage` WRITE;
+/*!40000 ALTER TABLE `t_farm_fatten_age_stage` DISABLE KEYS */;
+INSERT INTO `t_farm_fatten_age_stage` VALUES (201,'1001',26,42,1,NULL,NULL,1,'2026-07-10 16:33:13',NULL,NULL,'0',0),(202,'1001',43,70,1,NULL,NULL,1,'2026-07-10 16:33:13',NULL,NULL,'0',0),(203,'1001',71,140,1,NULL,NULL,1,'2026-07-10 16:33:13',NULL,NULL,'0',0),(204,'1001',141,200,1,NULL,NULL,1,'2026-07-10 16:33:13',NULL,NULL,'0',0),(205,'1001',201,250,1,NULL,NULL,1,'2026-07-10 16:33:13',NULL,NULL,'0',0);
+/*!40000 ALTER TABLE `t_farm_fatten_age_stage` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_farm_grow_record`
+--
+
+DROP TABLE IF EXISTS `t_farm_grow_record`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_farm_grow_record` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
+  `pig_id` bigint NOT NULL COMMENT '猪只 ID',
+  `ear_no` varchar(32) NOT NULL COMMENT '猪只耳号',
+  `measure_date` datetime NOT NULL COMMENT '测量日期',
+  `back_fat` decimal(5,2) DEFAULT NULL COMMENT '背膘厚 mm',
+  `weight` decimal(12,2) DEFAULT NULL COMMENT '体重 kg',
+  `age_days` int DEFAULT NULL COMMENT '日龄',
+  `oss_ids` varchar(1024) DEFAULT NULL COMMENT '照片 OSS IDs（可选）',
+  `operator_id` bigint DEFAULT NULL COMMENT '测量人',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '录入人',
+  `create_time` datetime DEFAULT NULL COMMENT '录入时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新人',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `del_flag` char(1) DEFAULT '0' COMMENT '删除标志',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  PRIMARY KEY (`id`),
+  KEY `idx_tenant_create` (`tenant_id`,`create_time`),
+  KEY `idx_pig` (`tenant_id`,`pig_id`),
+  KEY `idx_measure_date` (`measure_date`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='猪只生长记录（BRD-EVENT-005）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_farm_grow_record`
+--
+
+LOCK TABLES `t_farm_grow_record` WRITE;
+/*!40000 ALTER TABLE `t_farm_grow_record` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_farm_grow_record` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_farm_indicator_record`
+--
+
+DROP TABLE IF EXISTS `t_farm_indicator_record`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_farm_indicator_record` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
+  `stat_date` date NOT NULL COMMENT '统计日期（T-1）',
+  `farrow_sow_count` int DEFAULT '0' COMMENT '分娩母猪数（当日分娩记录的母猪数）',
+  `breeding_sow_count` int DEFAULT '0' COMMENT '配种母猪数（当日配种记录的母猪数）',
+  `weaning_sow_count` int DEFAULT '0' COMMENT '断奶母猪数（当日断奶记录的母猪数）',
+  `abnormal_sow_count` int DEFAULT '0' COMMENT '返空流母猪数（当日返空流记录数）',
+  `introduce_sow_count` int DEFAULT '0' COMMENT '引种母猪数（当日内外部引种头数）',
+  `introduce_boar_count` int DEFAULT '0' COMMENT '引种公猪数（当日外部引种公猪头数）',
+  `heat_no_breed_count` int DEFAULT '0' COMMENT '查情不配种数（当日查情但 3 日内未配种的母猪数）',
+  `death_pig_count` int DEFAULT '0' COMMENT '死亡猪只数（当日 DIE 事件数）',
+  `culling_pig_count` int DEFAULT '0' COMMENT '淘汰猪只数（当日 ELIMINATE 事件数）',
+  `total_born_count` int DEFAULT '0' COMMENT '产仔数（当日总产仔数 SUM total_born）',
+  `live_born_count` int DEFAULT '0' COMMENT '活仔数（当日总活仔数 SUM live_born）',
+  `piglet_tag_count` int DEFAULT '0' COMMENT '仔猪打标数（当日打标记录数）',
+  `weaned_piglet_count` int DEFAULT '0' COMMENT '断奶仔猪数（当日断奶头数 SUM weaned_count）',
+  `growth_record_count` int DEFAULT '0' COMMENT '生长记录数（当日生长记录录入数）',
+  `castrate_pig_count` int DEFAULT '0' COMMENT '阉割猪只数（当日 CASTRATE 事件数）',
+  `medicated_pig_count` int DEFAULT '0' COMMENT '用药猪只数（当日有用药记录的猪只数 DISTINCT pig_id）',
+  `marketing_pig_count` int DEFAULT '0' COMMENT '出栏猪只数量（当日出栏头数）',
+  `death_fattening_count` int DEFAULT '0' COMMENT '死亡肥猪数（当日 DIE 且 pig_type=fattening）',
+  `death_sow_count` int DEFAULT '0' COMMENT '死亡种母猪数（当日 DIE 且 pig_type=sow）',
+  `death_piglet_count` int DEFAULT '0' COMMENT '死亡仔猪数（当日 DIE 且 pig_type=piglet）',
+  `avg_marketing_weight` decimal(12,3) DEFAULT '0.000' COMMENT '平均出栏重（出栏总重/出栏头数）',
+  `marketing_weight` decimal(12,3) DEFAULT '0.000' COMMENT '出栏总重（当日出栏猪只总重）',
+  `wean_total_weight` decimal(12,3) DEFAULT '0.000' COMMENT '猪只断奶总重（当日出栏猪只断奶时总重）',
+  `growth_total_days` int DEFAULT '0' COMMENT '生长总天数（Σ 当日出栏猪 出栏日−断奶日）',
+  `net_gain_weight` decimal(12,3) DEFAULT '0.000' COMMENT '净增重（出栏总重−断奶总重）',
+  `daily_gain_weight` decimal(12,3) DEFAULT '0.000' COMMENT '日增重（净增重/生长总天数）',
+  `avg_backfat_thickness` decimal(12,3) DEFAULT '0.000' COMMENT '平均背膘厚（当日出栏猪背膘厚之和/有背膘的肥猪数）',
+  `end_production_sow_count` int DEFAULT '0' COMMENT '期末生产母猪头数（期末非后备非终止种母猪存栏）',
+  `end_boar_count` int DEFAULT '0' COMMENT '期末种公猪数',
+  `end_fattening_count` int DEFAULT '0' COMMENT '期末肥猪头数',
+  `end_piglet_count` int DEFAULT '0' COMMENT '期末仔猪头数',
+  `end_reserve_count` int DEFAULT '0' COMMENT '期末后备猪头数（种母猪 HB）',
+  `end_reserve_230_count` int DEFAULT '0' COMMENT '期末 230 日龄以上后备猪头数',
+  `end_nonprod_sow_count` int DEFAULT '0' COMMENT '期末非生产状态母猪头数（空怀/返情/流产/断奶）',
+  `year_batch_farrow_count` int DEFAULT '0' COMMENT '当年配种批次分娩头数（分娩日−114 天落当年则累加）',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '创建者',
+  `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新者',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  `del_flag` char(1) NOT NULL DEFAULT '0' COMMENT '删除标志',
+  `del_unique` bigint NOT NULL DEFAULT '0' COMMENT '软删唯一标识',
+  `npd_days` int DEFAULT '0' COMMENT '日NPD天数（当日非生产状态母猪头数 = end_nonprod_sow_count）',
+  `feed_total_days` int DEFAULT '0' COMMENT '饲养总天数（Σ当日出栏猪 出栏日−断奶日+1）',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_indicator_tenant_date` (`tenant_id`,`stat_date`,`del_unique`),
+  KEY `idx_stat_date` (`stat_date`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='养殖农场日数据记录（BRD-STAT-001，邓博 row10，定时落盘 T-1）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_farm_indicator_record`
+--
+
+LOCK TABLES `t_farm_indicator_record` WRITE;
+/*!40000 ALTER TABLE `t_farm_indicator_record` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_farm_indicator_record` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_farm_med_schedule_config`
+--
+
+DROP TABLE IF EXISTS `t_farm_med_schedule_config`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_farm_med_schedule_config` (
+  `id` bigint NOT NULL COMMENT '主键（雪花）',
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '农场ID',
+  `med_type` varchar(32) NOT NULL COMMENT '药品类型（字典 djs_med_type）',
+  `event_trigger` varchar(64) NOT NULL COMMENT '触发时机（字典 djs_med_event_trigger）',
+  `days_offset` int NOT NULL COMMENT '天数偏移（正 = 事件后 / 负 = 事件前）',
+  `description` varchar(255) DEFAULT NULL COMMENT '业务含义说明',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '创建者',
+  `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新者',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `del_flag` char(1) DEFAULT '0' COMMENT '软删',
+  `del_unique` bigint NOT NULL DEFAULT '0' COMMENT '软删唯一性辅助',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_med_trigger` (`tenant_id`,`med_type`,`event_trigger`,`days_offset`,`del_unique`),
+  KEY `idx_tenant` (`tenant_id`),
+  KEY `idx_trigger` (`event_trigger`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='药品 / 疫苗周期配置（BRD-MD-003 Tab3）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_farm_med_schedule_config`
+--
+
+LOCK TABLES `t_farm_med_schedule_config` WRITE;
+/*!40000 ALTER TABLE `t_farm_med_schedule_config` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_farm_med_schedule_config` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_farm_medicine_record`
+--
+
+DROP TABLE IF EXISTS `t_farm_medicine_record`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_farm_medicine_record` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
+  `pig_id` bigint DEFAULT NULL COMMENT '猪只 ID（批量用药时为 NULL，明细在 detail）',
+  `ear_no` varchar(32) DEFAULT NULL COMMENT '耳号（单只用药时填）',
+  `batch_pig_ids` varchar(2048) DEFAULT NULL COMMENT '批量猪只 ID 逗号分隔（批量用药时）',
+  `treat_date` datetime NOT NULL COMMENT '用药日期',
+  `drug_type` varchar(16) NOT NULL COMMENT '用药类型 字典 drug_type：vaccine/health/treat',
+  `medicine_reason` varchar(32) DEFAULT NULL COMMENT '用药原因 字典 medicine_reason',
+  `medicine_id` bigint NOT NULL COMMENT '药品 ID',
+  `dose` decimal(12,2) NOT NULL COMMENT '用药量',
+  `medicine_way` varchar(16) DEFAULT NULL COMMENT '用药方式 字典 medicine_way',
+  `operator_id` bigint DEFAULT NULL COMMENT '用药人',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '录入人',
+  `create_time` datetime DEFAULT NULL COMMENT '录入时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新人',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `del_flag` char(1) DEFAULT '0' COMMENT '删除标志',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  PRIMARY KEY (`id`),
+  KEY `idx_tenant_create` (`tenant_id`,`create_time`),
+  KEY `idx_pig` (`tenant_id`,`pig_id`),
+  KEY `idx_treat_date` (`treat_date`),
+  KEY `idx_medicine` (`medicine_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='用药耗用/治疗流水（BRD-MED-003，原 xlsx 误命名 t_farm_annual_indicator）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_farm_medicine_record`
+--
+
+LOCK TABLES `t_farm_medicine_record` WRITE;
+/*!40000 ALTER TABLE `t_farm_medicine_record` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_farm_medicine_record` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_farm_monthly_production`
+--
+
+DROP TABLE IF EXISTS `t_farm_monthly_production`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_farm_monthly_production` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '创建者',
+  `update_by` bigint DEFAULT NULL COMMENT '更新者',
+  `stat_month` char(7) NOT NULL COMMENT '统计月份 yyyy-MM',
+  `introduce_count` int DEFAULT '0' COMMENT '当月引种母猪数（Σ当月T-1前日表 introduce_sow_count）',
+  `introduce_boar_count` int DEFAULT '0' COMMENT '当月引种公猪数',
+  `born_count` int DEFAULT '0' COMMENT '当月总活仔数（Σ当月T-1前日表 live_born_count）',
+  `weaned_count` int DEFAULT '0' COMMENT '当月断奶数',
+  `death_count` int DEFAULT '0' COMMENT '当月死亡数',
+  `culling_count` int DEFAULT '0' COMMENT '当月淘汰数',
+  `marketing_count` int DEFAULT '0' COMMENT '当月出栏数',
+  `marketing_weight` decimal(15,2) DEFAULT '0.00' COMMENT '当月出栏总重 kg',
+  `create_time` datetime DEFAULT NULL COMMENT '记录创建时间',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  `del_flag` char(1) NOT NULL DEFAULT '0' COMMENT '删除标志',
+  `del_unique` bigint NOT NULL DEFAULT '0' COMMENT '软删唯一标识',
+  `mate_litter_count` int DEFAULT '0' COMMENT '当月累计匹配配种窝数（每日 当天−114 配种母猪数累加）',
+  `farrow_rate` decimal(12,3) DEFAULT '0.000' COMMENT '分娩率%（当月分娩头数/累计匹配配种窝数×100）',
+  `breed_rate` decimal(12,3) DEFAULT '0.000' COMMENT '配种率%（当月配种母猪数/((Σ日生产母猪+Σ日230后备)/当月天数)×100）',
+  `wean_breed_interval` decimal(12,3) DEFAULT '0.000' COMMENT '断配间隔（当月断到配天数之和/完成断到配母猪头数）',
+  `abnormal_count` int DEFAULT '0' COMMENT '返空流头数（当月返空流母猪头数）',
+  `npd_days` decimal(12,3) DEFAULT '0.000' COMMENT '月均NPD天数',
+  `total_born_count` int DEFAULT '0' COMMENT '总产仔数（当月 SUM total_born）',
+  `avg_born_per_litter` decimal(12,3) DEFAULT '0.000' COMMENT '窝均总产仔数（总产仔/分娩母猪头数）',
+  `avg_live_born_per_litter` decimal(12,3) DEFAULT '0.000' COMMENT '窝均活仔（总活仔/分娩母猪头数）',
+  `avg_weaned_per_litter` decimal(12,3) DEFAULT '0.000' COMMENT '窝均断奶（断奶仔猪数/断奶母头数）',
+  `farrow_loss_rate` decimal(12,3) DEFAULT '0.000' COMMENT '分娩舍损失率（当月死亡仔猪数/当月总活仔数）',
+  `avg_prod_sow_stock` decimal(12,3) DEFAULT '0.000' COMMENT '月均生产母猪存栏数（Σ日期末生产母猪头数/当月已历天数）',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_monthly_tenant_month` (`tenant_id`,`stat_month`,`del_unique`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='养殖月指标统计（定时任务每日 update 当月）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_farm_monthly_production`
+--
+
+LOCK TABLES `t_farm_monthly_production` WRITE;
+/*!40000 ALTER TABLE `t_farm_monthly_production` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_farm_monthly_production` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_farm_pig_abnormal`
+--
+
+DROP TABLE IF EXISTS `t_farm_pig_abnormal`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_farm_pig_abnormal` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
+  `pig_id` bigint NOT NULL COMMENT '母猪 ID',
+  `ear_no` varchar(32) NOT NULL COMMENT '母猪耳号',
+  `age_days` int DEFAULT NULL COMMENT '操作当时猪只日龄(事件日-出生日/引种日,落库冻结快照,ADR-0017)',
+  `abnormal_date` datetime NOT NULL COMMENT '异常日期',
+  `abnormal_type` varchar(16) NOT NULL COMMENT '异常类型：abort=流产/return=返情/idle=空怀',
+  `related_breeding_id` bigint DEFAULT NULL COMMENT '关联配种记录 ID',
+  `abnormal_reason` varchar(32) DEFAULT NULL COMMENT '异常原因',
+  `operator_id` bigint DEFAULT NULL COMMENT '操作人',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '录入人',
+  `create_time` datetime DEFAULT NULL COMMENT '录入时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新人',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `del_flag` char(1) DEFAULT '0' COMMENT '删除标志',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  `del_unique` bigint NOT NULL DEFAULT '0' COMMENT '软删 token',
+  PRIMARY KEY (`id`),
+  KEY `idx_tenant_create` (`tenant_id`,`create_time`),
+  KEY `idx_pig` (`tenant_id`,`pig_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='母猪返空流记录（BRD-EVENT-002）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_farm_pig_abnormal`
+--
+
+LOCK TABLES `t_farm_pig_abnormal` WRITE;
+/*!40000 ALTER TABLE `t_farm_pig_abnormal` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_farm_pig_abnormal` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_farm_pig_breeding`
+--
+
+DROP TABLE IF EXISTS `t_farm_pig_breeding`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_farm_pig_breeding` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
+  `pig_id` bigint NOT NULL COMMENT '母猪 ID',
+  `ear_no` varchar(32) NOT NULL COMMENT '母猪耳号（冗余）',
+  `age_days` int DEFAULT NULL COMMENT '操作当时猪只日龄(事件日-出生日/引种日,落库冻结快照,ADR-0017)',
+  `breeding_date` datetime NOT NULL COMMENT '配种日期',
+  `breeding_type` varchar(16) NOT NULL COMMENT '配种方式 字典 breeding_type：own_boar/semen',
+  `boar_ear_no` varchar(32) DEFAULT NULL COMMENT '公猪耳号（本场公猪时填）',
+  `semen_supplier` varchar(64) DEFAULT NULL COMMENT '精液供应商（精液产品时填）',
+  `semen_batch_no` varchar(32) DEFAULT NULL COMMENT '精液批号',
+  `parity` int DEFAULT NULL COMMENT '本次胎次',
+  `operator_id` bigint DEFAULT NULL COMMENT '操作人 user_id',
+  `barn_name` varchar(64) DEFAULT NULL COMMENT '栋舍名称冗余',
+  `pen_name` varchar(64) DEFAULT NULL COMMENT '栏位名称冗余',
+  `proof_oss_ids` varchar(1024) DEFAULT NULL COMMENT '凭证图片 OSS IDs 逗号分隔（配种现场照片）',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '录入人',
+  `create_time` datetime DEFAULT NULL COMMENT '录入时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新人',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `del_flag` char(1) DEFAULT '0' COMMENT '删除标志',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  `del_unique` bigint NOT NULL DEFAULT '0' COMMENT '软删 token',
+  `semen_code` varchar(64) DEFAULT NULL COMMENT '配种精液字典code（djs_semen；breedingType=精液时填）',
+  PRIMARY KEY (`id`),
+  KEY `idx_tenant_create` (`tenant_id`,`create_time`),
+  KEY `idx_pig` (`tenant_id`,`pig_id`),
+  KEY `idx_breeding_date` (`breeding_date`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='母猪配种记录（BRD-EVENT-002）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_farm_pig_breeding`
+--
+
+LOCK TABLES `t_farm_pig_breeding` WRITE;
+/*!40000 ALTER TABLE `t_farm_pig_breeding` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_farm_pig_breeding` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_farm_pig_culling`
+--
+
+DROP TABLE IF EXISTS `t_farm_pig_culling`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_farm_pig_culling` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
+  `pig_id` bigint NOT NULL COMMENT '猪只 ID',
+  `ear_no` varchar(32) NOT NULL COMMENT '猪只耳号',
+  `age_days` int DEFAULT NULL COMMENT '操作当时猪只日龄(事件日-出生日/引种日,落库冻结快照,ADR-0017)',
+  `culling_date` datetime NOT NULL COMMENT '淘汰日期',
+  `culling_reason` varchar(32) NOT NULL COMMENT '淘汰原因 字典 eliminate_reason',
+  `culling_dest` varchar(32) DEFAULT NULL COMMENT '淘汰去向 字典 eliminate_dest',
+  `culling_weight` decimal(12,2) DEFAULT NULL COMMENT '淘汰重量 kg',
+  `oss_ids` varchar(1024) DEFAULT NULL COMMENT '照片 OSS IDs',
+  `operator_id` bigint DEFAULT NULL COMMENT '操作人',
+  `culling_recorder_id` bigint DEFAULT NULL COMMENT '淘汰记录人 sys_user.user_id',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '录入人',
+  `create_time` datetime DEFAULT NULL COMMENT '录入时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新人',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `del_flag` char(1) DEFAULT '0' COMMENT '删除标志',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  PRIMARY KEY (`id`),
+  KEY `idx_tenant_create` (`tenant_id`,`create_time`),
+  KEY `idx_pig` (`tenant_id`,`pig_id`),
+  KEY `idx_culling_date` (`culling_date`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='猪只淘汰记录（BRD-EVENT-004）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_farm_pig_culling`
+--
+
+LOCK TABLES `t_farm_pig_culling` WRITE;
+/*!40000 ALTER TABLE `t_farm_pig_culling` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_farm_pig_culling` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_farm_pig_death`
+--
+
+DROP TABLE IF EXISTS `t_farm_pig_death`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_farm_pig_death` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
+  `pig_id` bigint NOT NULL COMMENT '猪只 ID',
+  `ear_no` varchar(32) NOT NULL COMMENT '猪只耳号',
+  `age_days` int DEFAULT NULL COMMENT '操作当时猪只日龄(事件日-出生日/引种日,落库冻结快照,ADR-0017)',
+  `death_date` datetime NOT NULL COMMENT '死亡日期',
+  `death_pig_type` varchar(16) NOT NULL COMMENT '死亡猪只类型 字典 pig_type：sow/boar/piglet/fattening',
+  `death_kind` varchar(16) NOT NULL COMMENT '死亡分类 字典 death_type：normal/abnormal',
+  `death_reason` varchar(32) DEFAULT NULL COMMENT '死亡原因 字典 death_reason',
+  `death_dest` varchar(32) DEFAULT NULL COMMENT '死亡去向 字典 death_dest',
+  `death_weight` decimal(12,2) DEFAULT NULL COMMENT '死亡重量 kg',
+  `oss_ids` varchar(1024) DEFAULT NULL COMMENT '照片 OSS IDs 多图逗号分隔',
+  `operator_id` bigint DEFAULT NULL COMMENT '操作人',
+  `recorder_id` bigint DEFAULT NULL COMMENT '死亡记录人员ID（sys_user.user_id）',
+  `barn_name` varchar(64) DEFAULT NULL COMMENT '栋舍名称冗余',
+  `pen_name` varchar(64) DEFAULT NULL COMMENT '栏位名称冗余',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '录入人',
+  `create_time` datetime DEFAULT NULL COMMENT '录入时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新人',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `del_flag` char(1) DEFAULT '0' COMMENT '删除标志',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  PRIMARY KEY (`id`),
+  KEY `idx_tenant_create` (`tenant_id`,`create_time`),
+  KEY `idx_pig` (`tenant_id`,`pig_id`),
+  KEY `idx_death_date` (`death_date`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='猪只死亡记录（BRD-EVENT-004）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_farm_pig_death`
+--
+
+LOCK TABLES `t_farm_pig_death` WRITE;
+/*!40000 ALTER TABLE `t_farm_pig_death` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_farm_pig_death` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_farm_pig_farrow`
+--
+
+DROP TABLE IF EXISTS `t_farm_pig_farrow`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_farm_pig_farrow` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
+  `pig_id` bigint NOT NULL COMMENT '母猪 ID',
+  `ear_no` varchar(32) NOT NULL COMMENT '母猪耳号',
+  `age_days` int DEFAULT NULL COMMENT '操作当时猪只日龄(事件日-出生日/引种日,落库冻结快照,ADR-0017)',
+  `breeding_id` bigint NOT NULL COMMENT '关联配种记录 ID',
+  `farrow_date` datetime NOT NULL COMMENT '分娩日期',
+  `total_born` int NOT NULL COMMENT '总产仔数',
+  `live_born` int NOT NULL COMMENT '活产数',
+  `dead_born` int DEFAULT '0' COMMENT '死胎数',
+  `mummy_born` int DEFAULT '0' COMMENT '木乃伊数',
+  `weak_born` int DEFAULT '0' COMMENT '弱仔数',
+  `healthy_male` int DEFAULT '0' COMMENT '健仔公猪数（原型 93 健仔数·公猪数）',
+  `healthy_female` int DEFAULT '0' COMMENT '健仔母猪数（原型 93 健仔数·母猪数）',
+  `weak_raised_male` int DEFAULT '0' COMMENT '弱仔留养公猪数（原型 93 弱仔数(饲养)·公猪数）',
+  `weak_raised_female` int DEFAULT '0' COMMENT '弱仔留养母猪数（原型 93 弱仔数(饲养)·母猪数）',
+  `weak_culled` int DEFAULT '0' COMMENT '弱仔处死数（原型 93 弱仔数(处死)）',
+  `deformed_born` int DEFAULT '0' COMMENT '畸形数（原型 93 畸形数）',
+  `crushed_born` int DEFAULT '0' COMMENT '压死数（原型 93 产仔性能·压死系列）',
+  `male_count` int DEFAULT NULL COMMENT '公仔数',
+  `female_count` int DEFAULT NULL COMMENT '母仔数',
+  `total_weight` decimal(12,2) DEFAULT NULL COMMENT '产仔总重 kg',
+  `avg_weight` decimal(8,3) DEFAULT NULL COMMENT '平均出生重 kg',
+  `parity` int DEFAULT NULL COMMENT '本次胎次',
+  `operator_id` bigint DEFAULT NULL COMMENT '操作人 user_id',
+  `barn_name` varchar(64) DEFAULT NULL COMMENT '栋舍名称冗余',
+  `pen_name` varchar(64) DEFAULT NULL COMMENT '栏位名称冗余',
+  `proof_oss_ids` varchar(1024) DEFAULT NULL COMMENT '凭证图片 OSS IDs 逗号分隔（分娩现场照片）',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '录入人',
+  `create_time` datetime DEFAULT NULL COMMENT '录入时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新人',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `del_flag` char(1) DEFAULT '0' COMMENT '删除标志',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  `del_unique` bigint NOT NULL DEFAULT '0' COMMENT '软删 token',
+  PRIMARY KEY (`id`),
+  KEY `idx_tenant_create` (`tenant_id`,`create_time`),
+  KEY `idx_pig` (`tenant_id`,`pig_id`),
+  KEY `idx_breeding` (`breeding_id`),
+  KEY `idx_farrow_date` (`farrow_date`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='母猪分娩记录（BRD-EVENT-002）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_farm_pig_farrow`
+--
+
+LOCK TABLES `t_farm_pig_farrow` WRITE;
+/*!40000 ALTER TABLE `t_farm_pig_farrow` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_farm_pig_farrow` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_farm_pig_growth`
+--
+
+DROP TABLE IF EXISTS `t_farm_pig_growth`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_farm_pig_growth` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
+  `pig_id` bigint NOT NULL COMMENT '猪只 ID（关联 t_farm_pig_info.id）',
+  `ear_no` varchar(32) NOT NULL COMMENT '猪只耳号（冗余便于查询）',
+  `measure_date` date NOT NULL COMMENT '测量日期',
+  `weight` decimal(12,2) DEFAULT NULL COMMENT '体重 kg（可选，admin 端录）',
+  `backfat_thickness` decimal(5,2) DEFAULT NULL COMMENT '背膘厚 mm（admin 端录，专业设备）',
+  `back_height` decimal(5,2) DEFAULT NULL COMMENT '背高 cm（admin 端录）',
+  `photo_oss_ids` varchar(500) DEFAULT NULL COMMENT '测量照片 OSS IDs（grow_photo 业务类型，逗号分隔）',
+  `operator_id` bigint DEFAULT NULL COMMENT '操作人 user_id（从 LoginUser 取）',
+  `barn_name` varchar(64) DEFAULT NULL COMMENT '栋舍名称（冗余）',
+  `pen_name` varchar(64) DEFAULT NULL COMMENT '栏位名称（冗余）',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '录入人',
+  `create_time` datetime DEFAULT NULL COMMENT '录入时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新人',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `del_flag` char(1) DEFAULT '0' COMMENT '删除标志',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  PRIMARY KEY (`id`),
+  KEY `idx_tenant_create` (`tenant_id`,`create_time`),
+  KEY `idx_pig_date` (`tenant_id`,`pig_id`,`measure_date`),
+  KEY `idx_measure_date` (`measure_date`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='猪只生长记录（BRD-EVENT-005）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_farm_pig_growth`
+--
+
+LOCK TABLES `t_farm_pig_growth` WRITE;
+/*!40000 ALTER TABLE `t_farm_pig_growth` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_farm_pig_growth` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_farm_pig_heat`
+--
+
+DROP TABLE IF EXISTS `t_farm_pig_heat`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_farm_pig_heat` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
+  `pig_id` bigint NOT NULL COMMENT '母猪 ID',
+  `ear_no` varchar(32) NOT NULL COMMENT '母猪耳号',
+  `age_days` int DEFAULT NULL COMMENT '操作当时猪只日龄(事件日-出生日/引种日,落库冻结快照,ADR-0017)',
+  `heat_date` datetime NOT NULL COMMENT '查情日期',
+  `heat_result` varchar(16) DEFAULT NULL COMMENT '查情结果（602-5 后 mp 不录，可空）',
+  `is_pregnant_confirmed` tinyint(1) DEFAULT '0' COMMENT '是否确认妊娠：1=已妊娠（OESTRUS 事件 payload 决定 PZ→PH 状态跳转）',
+  `operator_id` bigint DEFAULT NULL COMMENT '操作人 user_id',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '录入人',
+  `create_time` datetime DEFAULT NULL COMMENT '录入时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新人',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `del_flag` char(1) DEFAULT '0' COMMENT '删除标志',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  `del_unique` bigint NOT NULL DEFAULT '0' COMMENT '软删 token',
+  PRIMARY KEY (`id`),
+  KEY `idx_tenant_create` (`tenant_id`,`create_time`),
+  KEY `idx_pig` (`tenant_id`,`pig_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='母猪查情记录（BRD-EVENT-002）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_farm_pig_heat`
+--
+
+LOCK TABLES `t_farm_pig_heat` WRITE;
+/*!40000 ALTER TABLE `t_farm_pig_heat` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_farm_pig_heat` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_farm_pig_info`
+--
+
+DROP TABLE IF EXISTS `t_farm_pig_info`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_farm_pig_info` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
+  `ear_tag` varchar(32) DEFAULT NULL COMMENT '耳号全版 {breed}-{strain}-{sex}-{yyMMdd}-{seq:03d}',
+  `ear_no` varchar(32) NOT NULL COMMENT '耳号简版 {yyMMdd}-{seq:03d}',
+  `lifecycle_id` int NOT NULL DEFAULT '1' COMMENT '生命周期 id（耳号复用次数+1，SYS-INFRA-004）',
+  `recyclable` tinyint(1) NOT NULL DEFAULT '0' COMMENT '是否可回收复用 1=是 0=否',
+  `pig_sex` char(1) NOT NULL COMMENT '性别 F=母 M=公',
+  `pig_type` varchar(16) NOT NULL COMMENT '猪只类型 字典 pig_type：sow/boar/piglet/fattening',
+  `pig_breed_code` varchar(32) DEFAULT NULL COMMENT '品种编码（引用 t_farm_breed_info）',
+  `pig_strain_code` varchar(32) DEFAULT NULL COMMENT '品系编码（引用 t_farm_breed_info）',
+  `current_status` varchar(16) NOT NULL DEFAULT 'HB' COMMENT '当前状态（8 枚举，字典 djs_pig_lifecycle）：HB/PZ/FM/DN/LC/KH/FQ/END；仅种母猪走繁殖态，非种母猪平时空(空串)、终止 END；BRD-CORE-001 状态机',
+  `status_started_at` datetime NOT NULL COMMENT '进入当前状态的时间（小程序"按 X 天提醒"基准）',
+  `end_reason` varchar(16) DEFAULT NULL COMMENT '终止原因 END 状态时填：DEAD/CULL/MARKET',
+  `father_ear` varchar(32) DEFAULT NULL COMMENT '父猪耳号（仔猪用）',
+  `mother_ear` varchar(32) DEFAULT NULL COMMENT '母猪耳号（仔猪用）',
+  `birth_date` date DEFAULT NULL COMMENT '出生日期',
+  `birth_weight` decimal(6,2) DEFAULT NULL COMMENT '出生重kg（仔猪耳标登记时按头录入回写）',
+  `introduce_date` date DEFAULT NULL COMMENT '引种日期',
+  `introduce_type` varchar(16) DEFAULT NULL COMMENT '引种方式 字典 introduce_from：internal/external',
+  `supplier_id` bigint DEFAULT NULL COMMENT '供应商 ID（外部引种用）',
+  `parity` int DEFAULT '0' COMMENT '胎次（母猪用）',
+  `mating_count` int NOT NULL DEFAULT '0' COMMENT '累计配种次数（每次 BREED 事件 +1）',
+  `last_mating_date` date DEFAULT NULL COMMENT '最近一次配种日期',
+  `barn_id` bigint DEFAULT NULL COMMENT '当前栋舍 ID',
+  `pen_id` bigint DEFAULT NULL COMMENT '当前栏位 ID',
+  `mating_id` bigint DEFAULT NULL COMMENT '最近一次配种记录 ID',
+  `is_appointed` tinyint(1) DEFAULT '0' COMMENT '是否被预约出栏 1=是 0=否',
+  `store_id` bigint DEFAULT NULL COMMENT '预约门店 ID',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '创建人',
+  `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新人',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `del_flag` char(1) DEFAULT '0' COMMENT '删除标志',
+  `version` int DEFAULT '0' COMMENT '乐观锁版本',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  `del_unique` bigint NOT NULL DEFAULT '0' COMMENT '软删除生成 token（应用层 update del_flag=''1'' 时同步 SET del_unique=id；§6.3.0）',
+  `is_castrated` tinyint NOT NULL DEFAULT '1' COMMENT '是否阉割：1否 2是',
+  `wean_date` date DEFAULT NULL COMMENT '断奶日期(育肥猪溯源快照)',
+  `wean_weight` decimal(8,3) DEFAULT NULL COMMENT '个体断奶重kg(溯源快照)',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_ear_no_farm` (`tenant_id`,`ear_no`,`lifecycle_id`,`del_unique`),
+  KEY `idx_tenant_create` (`tenant_id`,`create_time`),
+  KEY `idx_current_status` (`tenant_id`,`current_status`),
+  KEY `idx_barn_pen` (`barn_id`,`pen_id`),
+  KEY `idx_pig_type` (`tenant_id`,`pig_type`),
+  KEY `idx_recyclable` (`tenant_id`,`recyclable`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='猪只信息表（中心实体，BRD-CORE-001）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_farm_pig_info`
+--
+
+LOCK TABLES `t_farm_pig_info` WRITE;
+/*!40000 ALTER TABLE `t_farm_pig_info` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_farm_pig_info` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_farm_pig_introduce`
+--
+
+DROP TABLE IF EXISTS `t_farm_pig_introduce`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_farm_pig_introduce` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
+  `introduce_no` varchar(32) NOT NULL COMMENT '引种单号',
+  `introduce_type` varchar(16) NOT NULL COMMENT '引种方式 字典 introduce_from：external/internal',
+  `introduce_date` date NOT NULL COMMENT '引种日期',
+  `supplier_id` bigint DEFAULT NULL COMMENT '供应商 ID（外部引种时必填）',
+  `pig_count` int NOT NULL COMMENT '引入头数',
+  `start_ear_no` varchar(32) DEFAULT NULL COMMENT '起始耳号',
+  `pig_breed_code` varchar(32) DEFAULT NULL COMMENT '品种编码',
+  `pig_strain_code` varchar(32) DEFAULT NULL COMMENT '品系编码',
+  `pig_sex` char(1) DEFAULT NULL COMMENT '性别（统一时填，混批时 NULL）',
+  `proof_oss_ids` varchar(1024) DEFAULT NULL COMMENT '凭证图片 OSS IDs 逗号分隔（外部引种强制）',
+  `barn_id` bigint DEFAULT NULL COMMENT '目标栋舍 ID',
+  `pen_id` bigint DEFAULT NULL COMMENT '目标栏位 ID',
+  `pig_id` bigint DEFAULT NULL COMMENT '内部引种关联的已存在猪只 ID（外部引种为 NULL，BRD-FIX-MP-INTRO-001）',
+  `operator` varchar(64) DEFAULT NULL COMMENT '引种人员（原型 86，V1 自由文本，BRD-FIX-MP-INTRO-001）',
+  `introduce_weight` decimal(8,2) DEFAULT NULL COMMENT '引种体重 kg（原型 86，内部引种登记，BRD-FIX-MP-INTRO-001）',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '录入人',
+  `create_time` datetime DEFAULT NULL COMMENT '录入时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新人',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `del_flag` char(1) DEFAULT '0' COMMENT '删除标志',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  `del_unique` bigint NOT NULL DEFAULT '0' COMMENT '软删除生成 token（应用层 update del_flag=''1'' 时同步 SET del_unique=id；§6.3.0）',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_introduce_no` (`tenant_id`,`introduce_no`,`del_unique`),
+  KEY `idx_tenant_create` (`tenant_id`,`create_time`),
+  KEY `idx_introduce_date` (`introduce_date`),
+  KEY `idx_introduce_pig_id` (`pig_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='猪种引种记录（BRD-EVENT-001）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_farm_pig_introduce`
+--
+
+LOCK TABLES `t_farm_pig_introduce` WRITE;
+/*!40000 ALTER TABLE `t_farm_pig_introduce` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_farm_pig_introduce` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_farm_pig_marketing`
+--
+
+DROP TABLE IF EXISTS `t_farm_pig_marketing`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_farm_pig_marketing` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
+  `pig_id` bigint NOT NULL COMMENT '猪只 ID',
+  `ear_no` varchar(32) NOT NULL COMMENT '猪只耳号',
+  `age_days` int DEFAULT NULL COMMENT '操作当时猪只日龄(事件日-出生日/引种日,落库冻结快照,ADR-0017)',
+  `marketing_date` datetime NOT NULL COMMENT '出栏日期',
+  `out_weight` decimal(12,2) NOT NULL COMMENT '出栏重量 kg',
+  `out_dest` varchar(32) NOT NULL COMMENT '出栏去向 字典 out_house_dest：送宰/外销/...',
+  `store_id` bigint DEFAULT NULL COMMENT '目标门店 ID（如适用）',
+  `is_room` tinyint(1) DEFAULT '0' COMMENT '燎毛间是否接收 1=已接收 0=未接收',
+  `oss_ids` varchar(1024) DEFAULT NULL COMMENT '照片 OSS IDs',
+  `operator_id` bigint DEFAULT NULL COMMENT '操作人',
+  `operator` varchar(64) DEFAULT NULL COMMENT '出栏操作员 userId(EmployeePicker 选择)',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '录入人',
+  `create_time` datetime DEFAULT NULL COMMENT '录入时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新人',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `del_flag` char(1) DEFAULT '0' COMMENT '删除标志',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  PRIMARY KEY (`id`),
+  KEY `idx_tenant_create` (`tenant_id`,`create_time`),
+  KEY `idx_pig` (`tenant_id`,`pig_id`),
+  KEY `idx_marketing_date` (`marketing_date`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='猪只出栏记录（BRD-EVENT-004）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_farm_pig_marketing`
+--
+
+LOCK TABLES `t_farm_pig_marketing` WRITE;
+/*!40000 ALTER TABLE `t_farm_pig_marketing` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_farm_pig_marketing` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_farm_pig_pigletno`
+--
+
+DROP TABLE IF EXISTS `t_farm_pig_pigletno`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_farm_pig_pigletno` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
+  `piglet_ear_no` varchar(32) NOT NULL COMMENT '仔猪耳号',
+  `mother_ear_no` varchar(32) NOT NULL COMMENT '母猪耳号',
+  `father_ear_no` varchar(32) DEFAULT NULL COMMENT '父猪耳号',
+  `farrow_id` bigint NOT NULL COMMENT '关联分娩记录 ID',
+  `tag_date` datetime NOT NULL COMMENT '打标日期',
+  `piglet_sex` char(1) NOT NULL COMMENT '性别 F=母 M=公',
+  `birth_weight` decimal(8,3) DEFAULT NULL COMMENT '出生重 kg',
+  `pig_id` bigint DEFAULT NULL COMMENT '生成的 t_farm_pig_info.id',
+  `operator_id` bigint DEFAULT NULL COMMENT '操作人',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '录入人',
+  `create_time` datetime DEFAULT NULL COMMENT '录入时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新人',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `del_flag` char(1) DEFAULT '0' COMMENT '删除标志',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  `del_unique` bigint NOT NULL DEFAULT '0' COMMENT '软删除生成 token（应用层 update del_flag=''1'' 时同步 SET del_unique=id；§6.3.0）',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_piglet_ear` (`tenant_id`,`piglet_ear_no`,`del_unique`),
+  KEY `idx_tenant_create` (`tenant_id`,`create_time`),
+  KEY `idx_mother` (`mother_ear_no`),
+  KEY `idx_farrow` (`farrow_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='仔猪耳号打标记录（BRD-EVENT-003）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_farm_pig_pigletno`
+--
+
+LOCK TABLES `t_farm_pig_pigletno` WRITE;
+/*!40000 ALTER TABLE `t_farm_pig_pigletno` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_farm_pig_pigletno` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_farm_pig_snapshot`
+--
+
+DROP TABLE IF EXISTS `t_farm_pig_snapshot`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_farm_pig_snapshot` (
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户（V1 恒 1001）',
+  `snap_date` date NOT NULL COMMENT '快照自然日（该日收盘时点）',
+  `pig_id` bigint NOT NULL COMMENT '猪只 ID（FK t_farm_pig_info.id）',
+  `pig_type` varchar(20) DEFAULT NULL COMMENT '猪类型 sow/boar/fattening/piglet（快照当时值）',
+  `current_status` varchar(20) DEFAULT NULL COMMENT '繁殖态/生命周期状态码（快照当时值）',
+  `birth_date` date DEFAULT NULL COMMENT '出生日期（算 230 日龄后备）',
+  `create_time` datetime DEFAULT CURRENT_TIMESTAMP COMMENT '快照生成时间',
+  PRIMARY KEY (`tenant_id`,`snap_date`,`pig_id`),
+  KEY `idx_pig_snapshot_date` (`tenant_id`,`snap_date`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='猪只每日状态快照（期末存栏指标历史可信源）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_farm_pig_snapshot`
+--
+
+LOCK TABLES `t_farm_pig_snapshot` WRITE;
+/*!40000 ALTER TABLE `t_farm_pig_snapshot` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_farm_pig_snapshot` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_farm_pig_transfer`
+--
+
+DROP TABLE IF EXISTS `t_farm_pig_transfer`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_farm_pig_transfer` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
+  `pig_id` bigint NOT NULL COMMENT '猪只 ID',
+  `ear_no` varchar(32) NOT NULL COMMENT '猪只耳号',
+  `age_days` int DEFAULT NULL COMMENT '操作当时猪只日龄(事件日-出生日/引种日,落库冻结快照,ADR-0017)',
+  `transfer_date` datetime NOT NULL COMMENT '转移日期',
+  `old_barn_id` bigint DEFAULT NULL COMMENT '原栋舍 ID',
+  `old_pen_id` bigint DEFAULT NULL COMMENT '原栏位 ID',
+  `old_barn_name` varchar(64) DEFAULT NULL COMMENT '原栋舍名称冗余',
+  `old_pen_name` varchar(64) DEFAULT NULL COMMENT '原栏位名称冗余',
+  `new_barn_id` bigint NOT NULL COMMENT '新栋舍 ID',
+  `new_pen_id` bigint DEFAULT NULL COMMENT '新栏位 ID',
+  `new_barn_name` varchar(64) DEFAULT NULL COMMENT '新栋舍名称冗余',
+  `new_pen_name` varchar(64) DEFAULT NULL COMMENT '新栏位名称冗余',
+  `transfer_reason` varchar(64) DEFAULT NULL COMMENT '转移原因',
+  `operator_id` bigint DEFAULT NULL COMMENT '操作人',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '录入人',
+  `create_time` datetime DEFAULT NULL COMMENT '录入时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新人',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `del_flag` char(1) DEFAULT '0' COMMENT '删除标志',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  PRIMARY KEY (`id`),
+  KEY `idx_tenant_create` (`tenant_id`,`create_time`),
+  KEY `idx_pig` (`tenant_id`,`pig_id`),
+  KEY `idx_transfer_date` (`transfer_date`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='猪只转移记录（BRD-EVENT-004）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_farm_pig_transfer`
+--
+
+LOCK TABLES `t_farm_pig_transfer` WRITE;
+/*!40000 ALTER TABLE `t_farm_pig_transfer` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_farm_pig_transfer` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_farm_pig_weaning`
+--
+
+DROP TABLE IF EXISTS `t_farm_pig_weaning`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_farm_pig_weaning` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
+  `pig_id` bigint NOT NULL COMMENT '母猪 ID',
+  `ear_no` varchar(32) NOT NULL COMMENT '母猪耳号',
+  `age_days` int DEFAULT NULL COMMENT '操作当时猪只日龄(事件日-出生日/引种日,落库冻结快照,ADR-0017)',
+  `farrow_id` bigint NOT NULL COMMENT '关联分娩记录 ID',
+  `breeding_id` bigint DEFAULT NULL COMMENT '关联配种记录 ID',
+  `weaning_date` datetime NOT NULL COMMENT '断奶日期',
+  `weaned_count` int NOT NULL COMMENT '断奶头数',
+  `weaned_weight` decimal(12,2) DEFAULT NULL COMMENT '断奶总重 kg',
+  `avg_weaned_weight` decimal(8,3) DEFAULT NULL COMMENT '平均断奶重 kg',
+  `operator_id` bigint DEFAULT NULL COMMENT '操作人',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '录入人',
+  `create_time` datetime DEFAULT NULL COMMENT '录入时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新人',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `del_flag` char(1) DEFAULT '0' COMMENT '删除标志',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  `del_unique` bigint NOT NULL DEFAULT '0' COMMENT '软删 token',
+  PRIMARY KEY (`id`),
+  KEY `idx_tenant_create` (`tenant_id`,`create_time`),
+  KEY `idx_pig` (`tenant_id`,`pig_id`),
+  KEY `idx_farrow` (`farrow_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='母猪断奶记录（BRD-EVENT-002）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_farm_pig_weaning`
+--
+
+LOCK TABLES `t_farm_pig_weaning` WRITE;
+/*!40000 ALTER TABLE `t_farm_pig_weaning` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_farm_pig_weaning` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_farm_pig_weaning_detail`
+--
+
+DROP TABLE IF EXISTS `t_farm_pig_weaning_detail`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_farm_pig_weaning_detail` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
+  `weaning_id` bigint NOT NULL COMMENT '关联断奶记录 ID（FK → t_farm_pig_weaning.id）',
+  `piglet_seq` int NOT NULL COMMENT '仔猪序号（同一断奶记录内从 1 起递增）',
+  `ear_no` varchar(32) DEFAULT NULL COMMENT '仔猪耳号（可空，原型逐头行允许无耳号只录重）',
+  `weight` decimal(8,3) NOT NULL COMMENT '断奶体重 kg',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '录入人',
+  `create_time` datetime DEFAULT NULL COMMENT '录入时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新人',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `del_flag` char(1) DEFAULT '0' COMMENT '删除标志',
+  `del_unique` bigint NOT NULL DEFAULT '0' COMMENT '软删 token（del_flag=1 时 SET=id）',
+  `remark` varchar(255) DEFAULT NULL COMMENT '备注',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_weaning_seq` (`tenant_id`,`weaning_id`,`piglet_seq`,`del_unique`),
+  KEY `idx_weaning` (`weaning_id`),
+  KEY `idx_tenant_create` (`tenant_id`,`create_time`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='母猪断奶逐头录重明细（BRD-FIX-MP-EVENT-BREED-IA-001）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_farm_pig_weaning_detail`
+--
+
+LOCK TABLES `t_farm_pig_weaning_detail` WRITE;
+/*!40000 ALTER TABLE `t_farm_pig_weaning_detail` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_farm_pig_weaning_detail` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_farm_production_cycle_config`
+--
+
+DROP TABLE IF EXISTS `t_farm_production_cycle_config`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_farm_production_cycle_config` (
+  `id` bigint NOT NULL COMMENT '主键（雪花）',
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '农场ID（多租户，V1 全 1001 / ADR-0001）',
+  `config_key` varchar(64) NOT NULL COMMENT '业务键（如 gestation_days）',
+  `default_value` int NOT NULL COMMENT '业内默认值（天，seed 灌入，admin 不可改）',
+  `custom_value` int DEFAULT NULL COMMENT '客户自定义值（天，admin 可改，null = 沿用 default）',
+  `unit` varchar(16) NOT NULL DEFAULT '天' COMMENT '单位',
+  `description` varchar(255) DEFAULT NULL COMMENT '业务含义说明',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '创建者',
+  `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新者',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `del_flag` char(1) DEFAULT '0' COMMENT '软删（0 未删 / 1 已删）',
+  `del_unique` bigint NOT NULL DEFAULT '0' COMMENT '软删唯一性辅助（未删=0，已删=id）',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_cycle_key` (`tenant_id`,`config_key`,`del_unique`),
+  KEY `idx_tenant` (`tenant_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='生产周期配置（BRD-MD-003 Tab1）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_farm_production_cycle_config`
+--
+
+LOCK TABLES `t_farm_production_cycle_config` WRITE;
+/*!40000 ALTER TABLE `t_farm_production_cycle_config` DISABLE KEYS */;
+INSERT INTO `t_farm_production_cycle_config` VALUES (1,'1001','gestation_days',114,NULL,'天','妊娠天数（母猪配种到分娩的标准周期）',NULL,NULL,1,'2026-07-10 16:32:56',NULL,NULL,'0',0),(2,'1001','lactation_days',25,NULL,'天','哺乳天数（仔猪从出生到断奶的标准时长）',NULL,NULL,1,'2026-07-10 16:32:56',NULL,NULL,'0',0),(3,'1001','nursery_days',35,NULL,'天','保育天数（仔猪从断奶到转入育肥的标准时长）',NULL,NULL,1,'2026-07-10 16:32:56',NULL,NULL,'0',0),(4,'1001','fattening_days',120,NULL,'天','育肥天数（保育结束到达出栏的标准时长）',NULL,NULL,1,'2026-07-10 16:32:56',NULL,NULL,'0',0),(5,'1001','oestrus_cycle_days',21,NULL,'天','发情周期（母猪一个发情周期的标准时长）',NULL,NULL,1,'2026-07-10 16:32:56',NULL,NULL,'0',0),(6,'1001','weaning_to_breeding_days',7,NULL,'天','断奶到配种（母猪断奶后到下次配种的建议时长）',NULL,NULL,1,'2026-07-10 16:32:56',NULL,NULL,'0',0),(101,'1001','sow_wean_to_breed_days',6,NULL,'天','断奶到配种天数',NULL,NULL,1,'2026-07-10 16:33:13',NULL,NULL,'0',0),(102,'1001','sow_return_to_breed_days',5,NULL,'天','返情到配种天数',NULL,NULL,1,'2026-07-10 16:33:13',NULL,NULL,'0',0),(103,'1001','sow_empty_to_breed_days',5,NULL,'天','空怀到配种天数',NULL,NULL,1,'2026-07-10 16:33:13',NULL,NULL,'0',0),(104,'1001','sow_abort_to_breed_days',5,NULL,'天','流产到配种天数',NULL,NULL,1,'2026-07-10 16:33:13',NULL,NULL,'0',0),(105,'1001','sow_breed_to_farrow_days',114,NULL,'天','配种到分娩天数',NULL,NULL,1,'2026-07-10 16:33:13',NULL,NULL,'0',0),(106,'1001','sow_farrow_to_wean_days',25,NULL,'天','分娩到断奶天数',NULL,NULL,1,'2026-07-10 16:33:13',NULL,NULL,'0',0),(107,'1001','slaughter_age_days',175,NULL,'天','出栏日龄（育肥猪达到出栏的标准日龄）',NULL,NULL,1,'2026-07-10 16:33:13',NULL,NULL,'0',0),(108,'1001','sow_reserve_to_breed_days',7,NULL,'天','后备到配种天数',NULL,NULL,1,'2026-07-10 16:33:14',NULL,NULL,'0',0);
+/*!40000 ALTER TABLE `t_farm_production_cycle_config` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_farm_sow_performance`
+--
+
+DROP TABLE IF EXISTS `t_farm_sow_performance`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_farm_sow_performance` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '创建者',
+  `update_by` bigint DEFAULT NULL COMMENT '更新者',
+  `pig_id` bigint NOT NULL COMMENT '母猪 ID',
+  `ear_no` varchar(32) NOT NULL COMMENT '母猪耳号',
+  `parity` int DEFAULT '0' COMMENT '累计胎次',
+  `total_born` int DEFAULT '0' COMMENT '累计产仔数',
+  `total_live_born` int DEFAULT '0' COMMENT '累计活产数',
+  `total_weaned` int DEFAULT '0' COMMENT '累计断奶数',
+  `avg_born_weight` decimal(8,3) DEFAULT NULL COMMENT '平均出生重 kg',
+  `avg_weaned_weight` decimal(8,3) DEFAULT NULL COMMENT '平均断奶重 kg',
+  `last_update_date` date DEFAULT NULL COMMENT '最近统计日期',
+  `create_time` datetime DEFAULT NULL COMMENT '记录创建时间',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  `del_flag` char(1) NOT NULL DEFAULT '0' COMMENT '删除标志',
+  `del_unique` bigint NOT NULL DEFAULT '0' COMMENT '软删唯一标识',
+  `avg_gestation_days` decimal(12,3) DEFAULT NULL COMMENT '平均怀孕天数（配种到分娩天数之和/状态变化次数）',
+  `wean_breed_days` decimal(12,3) DEFAULT NULL COMMENT '断奶-配种天数（断奶到配种天数之和/状态变化次数）',
+  `abnormal_total` int DEFAULT '0' COMMENT '返空流总次数',
+  `avg_born_per_litter` decimal(12,3) DEFAULT NULL COMMENT '窝均产仔数（总产仔之和/胎次）',
+  `avg_live_born_per_litter` decimal(12,3) DEFAULT NULL COMMENT '窝均活仔数（活产之和/胎次）',
+  `avg_weaned_per_litter` decimal(12,3) DEFAULT NULL COMMENT '窝均断奶数（断奶头数之和/胎次）',
+  `npd` decimal(12,3) DEFAULT NULL COMMENT 'NPD（365−配种至分娩天数−分娩至断奶天数）',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_sow_perf_tenant_pig_parity` (`tenant_id`,`pig_id`,`parity`,`del_unique`),
+  KEY `idx_ear` (`ear_no`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='母猪性能表（每头母猪一行，定时刷新）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_farm_sow_performance`
+--
+
+LOCK TABLES `t_farm_sow_performance` WRITE;
+/*!40000 ALTER TABLE `t_farm_sow_performance` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_farm_sow_performance` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_farm_sow_record`
+--
+
+DROP TABLE IF EXISTS `t_farm_sow_record`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_farm_sow_record` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '创建者',
+  `update_by` bigint DEFAULT NULL COMMENT '更新者',
+  `stat_date` date NOT NULL COMMENT '统计日期',
+  `sow_total` int DEFAULT '0' COMMENT '母猪总数',
+  `sow_pregnant` int DEFAULT '0' COMMENT '配怀母猪数',
+  `sow_farrow` int DEFAULT '0' COMMENT '分娩母猪数',
+  `sow_weaning` int DEFAULT '0' COMMENT '断奶母猪数',
+  `sow_idle` int DEFAULT '0' COMMENT '空怀母猪数',
+  `sow_culling_count` int DEFAULT '0' COMMENT '当日淘汰母猪数',
+  `sow_death_count` int DEFAULT '0' COMMENT '当日死亡母猪数',
+  `piglet_total` int DEFAULT '0' COMMENT '仔猪总数',
+  `create_time` datetime DEFAULT NULL COMMENT '记录创建时间',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  `del_flag` char(1) NOT NULL DEFAULT '0' COMMENT '删除标志',
+  `del_unique` bigint NOT NULL DEFAULT '0' COMMENT '软删唯一标识',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_sow_record_tenant_date` (`tenant_id`,`stat_date`,`del_unique`),
+  KEY `idx_stat_date` (`stat_date`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='母猪日数据汇总（统计预聚合，定时任务重算）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_farm_sow_record`
+--
+
+LOCK TABLES `t_farm_sow_record` WRITE;
+/*!40000 ALTER TABLE `t_farm_sow_record` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_farm_sow_record` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_farm_status_record`
+--
+
+DROP TABLE IF EXISTS `t_farm_status_record`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_farm_status_record` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
+  `pig_id` bigint NOT NULL COMMENT '猪只 ID',
+  `ear_no` varchar(32) NOT NULL COMMENT '耳号（冗余便于查询）',
+  `old_status` varchar(16) DEFAULT NULL COMMENT '原状态',
+  `new_status` varchar(16) NOT NULL COMMENT '新状态',
+  `event_type` varchar(16) NOT NULL COMMENT '触发事件（11 枚举，字典 djs_pig_status_event）：INTRO/BREED/FARROW/WEAN/OESTRUS/NULL_RETURN/DIE/ELIMINATE/CASTRATE/TRANSFER/SLAUGHTER',
+  `related_event_id` bigint DEFAULT NULL COMMENT '关联业务事件 ID（如 breeding_id/farrow_id）',
+  `duration_days` int DEFAULT NULL COMMENT '在原状态停留天数（业务层计算）',
+  `change_time` datetime NOT NULL COMMENT '状态变更时间',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '操作人',
+  `create_time` datetime DEFAULT NULL COMMENT '记录创建时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新人（MP insertFill 占位，状态记录实际不 update）',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间（MP insertFill 占位）',
+  PRIMARY KEY (`id`),
+  KEY `idx_tenant_create` (`tenant_id`,`create_time`),
+  KEY `idx_ear_change` (`ear_no`,`change_time`),
+  KEY `idx_pig` (`tenant_id`,`pig_id`,`change_time`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='状态变更记录（状态机历史，BRD-CORE-001）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_farm_status_record`
+--
+
+LOCK TABLES `t_farm_status_record` WRITE;
+/*!40000 ALTER TABLE `t_farm_status_record` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_farm_status_record` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_farm_wean_weight`
+--
+
+DROP TABLE IF EXISTS `t_farm_wean_weight`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_farm_wean_weight` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
+  `piglet_ear_no` varchar(32) NOT NULL COMMENT '仔猪耳号',
+  `weaning_id` bigint DEFAULT NULL COMMENT '关联断奶记录 ID',
+  `weigh_date` datetime NOT NULL COMMENT '称重日期',
+  `weight` decimal(8,3) NOT NULL COMMENT '断奶重 kg',
+  `operator_id` bigint DEFAULT NULL COMMENT '操作人',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '录入人',
+  `create_time` datetime DEFAULT NULL COMMENT '录入时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新人',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `del_flag` char(1) DEFAULT '0' COMMENT '删除标志',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  PRIMARY KEY (`id`),
+  KEY `idx_tenant_create` (`tenant_id`,`create_time`),
+  KEY `idx_piglet` (`piglet_ear_no`),
+  KEY `idx_weaning` (`weaning_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='断奶仔猪重记录（BRD-EVENT-003）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_farm_wean_weight`
+--
+
+LOCK TABLES `t_farm_wean_weight` WRITE;
+/*!40000 ALTER TABLE `t_farm_wean_weight` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_farm_wean_weight` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_farm_year_production`
+--
+
+DROP TABLE IF EXISTS `t_farm_year_production`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_farm_year_production` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '创建者',
+  `update_by` bigint DEFAULT NULL COMMENT '更新者',
+  `stat_year` smallint NOT NULL COMMENT '统计年份',
+  `introduce_count` int DEFAULT '0' COMMENT '年度引种母猪数（Σ当年T-1前月表 introduce_count）',
+  `introduce_boar_count` int DEFAULT '0' COMMENT '年度引种公猪数（Σ当年T-1前月表 introduce_boar_count）',
+  `born_count` int DEFAULT '0' COMMENT '年度产仔数',
+  `weaned_count` int DEFAULT '0' COMMENT '年度断奶数',
+  `death_count` int DEFAULT '0' COMMENT '年度死亡数',
+  `culling_count` int DEFAULT '0' COMMENT '年度淘汰数',
+  `marketing_count` int DEFAULT '0' COMMENT '年度出栏数',
+  `marketing_weight` decimal(15,2) DEFAULT '0.00' COMMENT '年度出栏总重 kg',
+  `psy` decimal(8,2) DEFAULT NULL COMMENT 'PSY（每头母猪年产断奶仔猪数）',
+  `mortality_rate` decimal(5,2) DEFAULT NULL COMMENT '死亡率 %',
+  `create_time` datetime DEFAULT NULL COMMENT '记录创建时间',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  `del_flag` char(1) NOT NULL DEFAULT '0' COMMENT '删除标志',
+  `del_unique` bigint NOT NULL DEFAULT '0' COMMENT '软删唯一标识',
+  `avg_prod_sow_stock` decimal(12,3) DEFAULT '0.000' COMMENT '年均生产母猪存栏数（Σ日期末生产母猪头数/已历天数）',
+  `breeding_count` int DEFAULT '0' COMMENT '年配种头数（当年总配种次数）',
+  `total_born_count` int DEFAULT '0' COMMENT '总产仔数（当年 Σ日总产仔）',
+  `farrow_count` int DEFAULT '0' COMMENT '年分娩次数（当年 Σ日分娩头数）',
+  `total_live_born` int DEFAULT '0' COMMENT '总活仔数（当年 Σ日总活仔）',
+  `avg_live_born_per_litter` decimal(12,3) DEFAULT '0.000' COMMENT '窝均活仔数（总活仔/年分娩次数）',
+  `total_weaned_piglet` int DEFAULT '0' COMMENT '总断奶仔猪数（当年 Σ日断奶仔猪头数）',
+  `total_weaned_sow` int DEFAULT '0' COMMENT '总断奶母猪头数（当年 Σ日断奶母猪头数）',
+  `avg_weaned_per_litter` decimal(12,3) DEFAULT '0.000' COMMENT '窝均断奶数（总断奶仔猪/总断奶母猪）',
+  `wean_breed_total_days` int DEFAULT '0' COMMENT '当年断配间隔总天数',
+  `wean_breed_total_count` int DEFAULT '0' COMMENT '当年断配间隔总记录数',
+  `wean_breed_interval` decimal(12,3) DEFAULT '0.000' COMMENT '断配间隔（总天数/总记录数）',
+  `total_npd_days` int DEFAULT '0' COMMENT '全年总NPD天数（Σ日230后备+Σ日非生产母猪）',
+  `avg_npd_days` decimal(12,3) DEFAULT '0.000' COMMENT '年均NPD天数（总NPD/年均能繁存栏）',
+  `year_batch_farrow_count` int DEFAULT '0' COMMENT '年分娩头数（Σ日当年配种批次分娩头数）',
+  `year_farrow_rate` decimal(12,3) DEFAULT '0.000' COMMENT '年分娩率%（年分娩头数/年配种头数×100）',
+  `avg_marketing_weight` decimal(12,3) DEFAULT '0.000' COMMENT '平均出栏重（Σ日出栏总重/Σ日出栏头数）',
+  `farrow_loss_rate` decimal(12,3) DEFAULT '0.000' COMMENT '分娩舍损失率（当年死亡仔猪数/总活仔数）',
+  `total_fattening_death` int DEFAULT '0' COMMENT '肥猪死亡数（当年 Σ日 death_fattening_count）',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_annual_tenant_year` (`tenant_id`,`stat_year`,`del_unique`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='年度指标（定时任务每日 update 当年）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_farm_year_production`
+--
+
+LOCK TABLES `t_farm_year_production` WRITE;
+/*!40000 ALTER TABLE `t_farm_year_production` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_farm_year_production` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_md_biz_code_rule`
+--
+
+DROP TABLE IF EXISTS `t_md_biz_code_rule`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_md_biz_code_rule` (
+  `id` bigint NOT NULL AUTO_INCREMENT COMMENT '主键',
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
+  `code_type` varchar(32) NOT NULL COMMENT '编码类型 EAR_NO/TRACE_CODE/DEMAND_NO/SHIP_NO/PACK_NO/STOCK_FLOW_NO ...',
+  `pattern` varchar(255) NOT NULL COMMENT '编码格式串，支持占位符 {farmCode2}{barnCode2}{yyMM}{yyyyMMdd}{dailySeq4}{seq4}{seq6} 等',
+  `daily_reset` tinyint(1) NOT NULL DEFAULT '1' COMMENT '是否每日重置序号 1=是 0=否',
+  `prefix` varchar(16) NOT NULL DEFAULT '' COMMENT '固定前缀（如 T/D/S/P/F）',
+  `seq_length` int NOT NULL DEFAULT '4' COMMENT '序号位数（4/6）',
+  `status` char(1) NOT NULL DEFAULT '0' COMMENT '状态 0=启用 1=停用',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '创建人',
+  `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新人',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `del_flag` char(1) DEFAULT '0' COMMENT '删除标志',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  `del_unique` bigint NOT NULL DEFAULT '0' COMMENT '软删除生成 token（应用层 fill）',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_code_type` (`tenant_id`,`code_type`,`del_unique`),
+  KEY `idx_status` (`status`)
+) ENGINE=InnoDB AUTO_INCREMENT=19 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='业务编码规则配置（SYS-INFRA-004）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_md_biz_code_rule`
+--
+
+LOCK TABLES `t_md_biz_code_rule` WRITE;
+/*!40000 ALTER TABLE `t_md_biz_code_rule` DISABLE KEYS */;
+INSERT INTO `t_md_biz_code_rule` VALUES (1,'1001','EAR_NO','{farmCode2}{barnCode2}{yyMM}{dailySeq4}',1,'',4,'0',NULL,1,'2026-07-10 16:32:56',NULL,NULL,'0',NULL,0),(2,'1001','TRACE_CODE','T{yyyyMMdd}{productCode2}{seq6}',0,'T',6,'0',NULL,1,'2026-07-10 16:32:56',NULL,NULL,'0',NULL,0),(3,'1001','DEMAND_NO','D{yyyyMMdd}{bizCode2}{seq4}',1,'D',4,'0',NULL,1,'2026-07-10 16:32:56',NULL,NULL,'0',NULL,0),(4,'1001','SHIP_NO','S{yyyyMMdd}{seq4}',1,'S',4,'0',NULL,1,'2026-07-10 16:32:56',NULL,NULL,'0',NULL,0),(5,'1001','PACK_NO','P{yyyyMMdd}{seq4}',1,'P',4,'0',NULL,1,'2026-07-10 16:32:56',NULL,NULL,'0',NULL,0),(6,'1001','STOCK_FLOW_NO','F{yyyyMMdd}{ioCode2}{seq4}',1,'F',4,'0',NULL,1,'2026-07-10 16:32:56',NULL,NULL,'0',NULL,0),(7,'1001','MEMBER_NO','1{seq4}',0,'1',4,'0',NULL,1,'2026-07-10 16:32:56',NULL,NULL,'0',NULL,0),(8,'1001','STORE_CODE','ST{seq4}',0,'ST',4,'0',NULL,1,'2026-07-10 16:32:56',NULL,NULL,'0',NULL,0),(9,'1001','SUPPLIER_CODE','G{seq4}',0,'G',4,'0',NULL,1,'2026-07-10 16:32:56',NULL,NULL,'0',NULL,0),(10,'1001','INTRO_NO','INT{yyyyMMdd}{seq4}',1,'INT',4,'0',NULL,1,'2026-07-10 16:32:57',NULL,NULL,'0',NULL,0),(11,'1001','BURN_NO','BURN{yyMMdd}{seq4}',1,'BURN',4,'0',NULL,1,'2026-07-10 16:33:11',NULL,NULL,'0',NULL,0),(12,'1001','CUT_NO','CUT{yyMMdd}{seq4}',1,'CUT',4,'0',NULL,1,'2026-07-10 16:33:11',NULL,NULL,'0',NULL,0),(13,'1001','PLAN_NO','PLAN-{yyyy}-{seq3}',2,'PLAN',3,'0',NULL,1,'2026-07-10 16:33:11',NULL,NULL,'0',NULL,0),(14,'1001','BAR_NO','BAR{yyMMdd}{seq4}',1,'BAR',4,'0',NULL,1,'2026-07-10 16:33:11',NULL,NULL,'0',NULL,0),(15,'1001','CHECK_NO','C{yyyyMMdd}{seq5}',1,'C',5,'0',NULL,1,'2026-07-10 16:33:12',NULL,NULL,'0',NULL,0),(16,'1001','PRODUCE_NO','{yyMMdd}{seq4}',1,'',4,'0',NULL,1,'2026-07-10 16:33:12',NULL,NULL,'0',NULL,0),(17,'1001','RETURN_NO','RET{yyyyMMdd}{seq4}',1,'RET',4,'0',NULL,1,'2026-07-10 16:33:12',NULL,NULL,'0',NULL,0),(18,'1001','STORE_CHECK_NO','SC{yyyyMMdd}{seq5}',1,'SC',5,'0',NULL,1,'2026-07-10 16:33:12',NULL,NULL,'0',NULL,0);
+/*!40000 ALTER TABLE `t_md_biz_code_rule` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_md_biz_code_sequence`
+--
+
+DROP TABLE IF EXISTS `t_md_biz_code_sequence`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_md_biz_code_sequence` (
+  `id` bigint NOT NULL AUTO_INCREMENT COMMENT '主键',
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
+  `code_type` varchar(32) NOT NULL COMMENT '编码类型',
+  `seq_date` varchar(8) NOT NULL DEFAULT '' COMMENT '序号统计周期：yyyyMMdd / yyyyMM / yyyy / 空串（终生）',
+  `current_seq` bigint NOT NULL DEFAULT '0' COMMENT '当前已用最大序号',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '创建人',
+  `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新人',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `del_flag` char(1) DEFAULT '0' COMMENT '删除标志',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  `del_unique` bigint NOT NULL DEFAULT '0' COMMENT '软删除生成 token（应用层 fill）',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_code_seq` (`tenant_id`,`code_type`,`seq_date`,`del_unique`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='业务编码序号表（SYS-INFRA-004 并发安全计数）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_md_biz_code_sequence`
+--
+
+LOCK TABLES `t_md_biz_code_sequence` WRITE;
+/*!40000 ALTER TABLE `t_md_biz_code_sequence` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_md_biz_code_sequence` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_md_store`
+--
+
+DROP TABLE IF EXISTS `t_md_store`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_md_store` (
+  `id` bigint NOT NULL AUTO_INCREMENT COMMENT '门店 ID',
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID（多租户）',
+  `store_code` varchar(32) NOT NULL COMMENT '门店编码（业务自定义，如 BJ001）',
+  `store_name` varchar(64) NOT NULL COMMENT '门店名称',
+  `short_name` varchar(64) DEFAULT NULL COMMENT '门店简称',
+  `open_date` date DEFAULT NULL COMMENT '开业日期',
+  `store_type` varchar(16) NOT NULL DEFAULT 'direct' COMMENT '门店类型 direct=直营 / franchise=加盟（V1 自由文本，待客户上线前确认是否上字典）',
+  `business_status` varchar(16) NOT NULL DEFAULT '0' COMMENT '合作状态（字典 djs_store_status: 0=合作中/1=已终止/2=装修中）',
+  `address` varchar(255) DEFAULT NULL COMMENT '门店地址',
+  `manager_name` varchar(32) DEFAULT NULL COMMENT '店长姓名',
+  `manager_phone` varchar(20) DEFAULT NULL COMMENT '店长电话',
+  `manager_user_id` bigint DEFAULT NULL COMMENT '店长 sys_user.user_id（NULL=未设置）',
+  `pos_system_id` varchar(64) DEFAULT NULL COMMENT '收银系统 ID',
+  `image_oss_id` bigint DEFAULT NULL COMMENT '门店图片（引用 sys_oss.oss_id）',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '创建人',
+  `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新人',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `del_flag` char(1) DEFAULT '0' COMMENT '删除标志 0=未删 1=已删',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  `del_unique` bigint NOT NULL DEFAULT '0' COMMENT '软删除生成 token（应用层 update del_flag=''1'' 时同步 SET del_unique=id；§6.3.0）',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_store_code` (`tenant_id`,`store_code`,`del_unique`),
+  KEY `idx_tenant_create` (`tenant_id`,`create_time`),
+  KEY `idx_store_manager` (`manager_user_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='门店主数据（SYS-MD-002）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_md_store`
+--
+
+LOCK TABLES `t_md_store` WRITE;
+/*!40000 ALTER TABLE `t_md_store` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_md_store` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_md_supplier`
+--
+
+DROP TABLE IF EXISTS `t_md_supplier`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_md_supplier` (
+  `id` bigint NOT NULL AUTO_INCREMENT COMMENT '供应商 ID',
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
+  `supplier_code` varchar(32) NOT NULL COMMENT '供应商编码（SYS-INFRA-004 生成 G0001 风格）',
+  `supplier_name` varchar(128) NOT NULL COMMENT '供应商名称',
+  `license_no` varchar(64) DEFAULT NULL COMMENT '营业执照编号',
+  `license_image_oss_id` bigint DEFAULT NULL COMMENT '营业执照图片（sys_oss.oss_id）',
+  `business_license_no` varchar(64) DEFAULT NULL COMMENT '经营许可证编号',
+  `cooperation_start_date` date DEFAULT NULL COMMENT '合作开始日期',
+  `supplier_type` varchar(32) NOT NULL COMMENT '供应商类型 字典 djs_supplier_type: feed/breed/med/seed/pack/other',
+  `liaison_name` varchar(32) DEFAULT NULL COMMENT '联系负责人',
+  `liaison_phone` varchar(20) DEFAULT NULL COMMENT '负责人电话',
+  `address` varchar(255) DEFAULT NULL COMMENT '地址',
+  `business_status` varchar(16) NOT NULL DEFAULT '0' COMMENT '合作状态（字典 djs_supplier_status: 0=合作中/1=已终止）',
+  `settle_type` varchar(16) DEFAULT 'cash' COMMENT '结算方式（字典 djs_settle_type: cash=现款现货/monthly=月结/quarterly=季结）',
+  `bank_account` varchar(64) DEFAULT NULL COMMENT '银行账号',
+  `bank_name` varchar(64) DEFAULT NULL COMMENT '开户行',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '创建人',
+  `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新人',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `del_flag` char(1) DEFAULT '0' COMMENT '删除标志',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  `del_unique` bigint NOT NULL DEFAULT '0' COMMENT '软删除生成 token（应用层 update del_flag=''1'' 时同步 SET del_unique=id；§6.3.0）',
+  `deal_count` int NOT NULL DEFAULT '0' COMMENT '交易次数（聚合冗余 / V1 stub=0，下游 BRD-MED / WMS-PURCHASE 落地后回填）',
+  `purchase_qty` decimal(18,3) NOT NULL DEFAULT '0.000' COMMENT '累计购入商品数（V1 stub=0）',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_supplier_code` (`tenant_id`,`supplier_code`,`del_unique`),
+  KEY `idx_tenant_create` (`tenant_id`,`create_time`),
+  KEY `idx_supplier_type` (`supplier_type`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='供应商主数据（SYS-MD-003）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_md_supplier`
+--
+
+LOCK TABLES `t_md_supplier` WRITE;
+/*!40000 ALTER TABLE `t_md_supplier` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_md_supplier` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_plant_crop_info`
+--
+
+DROP TABLE IF EXISTS `t_plant_crop_info`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_plant_crop_info` (
+  `id` bigint NOT NULL AUTO_INCREMENT COMMENT '主键（雪花）',
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
+  `crop_code` varchar(32) NOT NULL COMMENT '作物业务码（用户手填，例 C001）',
+  `crop_name` varchar(64) NOT NULL COMMENT '作物名称（例 白菜）',
+  `crop_image_preview` varchar(512) DEFAULT NULL COMMENT '缩略图 OSS objectName',
+  `crop_image_url` varchar(2048) DEFAULT NULL COMMENT '原图 OSS objectNames 逗号分隔',
+  `variety_name` varchar(64) DEFAULT NULL COMMENT '品种名（例 京白菜 4 号）',
+  `variety_origin` varchar(128) DEFAULT NULL COMMENT '品种来源/供应商（V1 自由文本，V2 FK supplier_id）',
+  `crop_family` varchar(32) DEFAULT NULL COMMENT '字典 djs_crop_family（科属）',
+  `related_product` bigint DEFAULT NULL COMMENT '关联产品 FK → t_warehouse_product_info.id（D8 WMS-MD-002 同日，逻辑约束不写 FK）',
+  `planting_season` varchar(64) DEFAULT NULL COMMENT '字典 djs_planting_season 多选逗号分隔',
+  `sowing_period` varchar(64) DEFAULT NULL COMMENT '适宜播种期（手输自由文本，例 "3 月上旬-4 月下旬"）',
+  `max_cycle` int DEFAULT NULL COMMENT '生长最大周期（天）',
+  `min_cycle` int DEFAULT NULL COMMENT '生长最小周期（天）',
+  `fertilization_interval` int DEFAULT NULL COMMENT '施肥间隔（天）',
+  `irrigation_interval` int DEFAULT NULL COMMENT '浇灌间隔（天）',
+  `predicted_per` decimal(12,3) DEFAULT NULL COMMENT '预计亩产（kg/亩）',
+  `quality_desc` varchar(500) DEFAULT NULL COMMENT '品质描述',
+  `pick_unit_price` decimal(10,2) DEFAULT NULL COMMENT '采摘单价（元/斤），P1#14 单价位置 V1 暂放此',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '创建人',
+  `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新人',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `del_flag` char(1) DEFAULT '0' COMMENT '删除标志',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  `del_unique` bigint NOT NULL DEFAULT '0' COMMENT '软删 token',
+  `image_oss_id` varchar(32) DEFAULT NULL COMMENT '主图 ossId（4 层 resolver L1，sys_oss.oss_id）',
+  `image_source` tinyint NOT NULL DEFAULT '0' COMMENT '图来源（0 自动匹配 / 1 手动）',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_crop_code` (`tenant_id`,`crop_code`,`del_unique`),
+  KEY `idx_crop_name` (`tenant_id`,`crop_name`),
+  KEY `idx_crop_family` (`tenant_id`,`crop_family`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='种植 - 作物信息表（PLT-MD-001）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_plant_crop_info`
+--
+
+LOCK TABLES `t_plant_crop_info` WRITE;
+/*!40000 ALTER TABLE `t_plant_crop_info` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_plant_crop_info` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_plant_crop_organic`
+--
+
+DROP TABLE IF EXISTS `t_plant_crop_organic`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_plant_crop_organic` (
+  `id` bigint NOT NULL AUTO_INCREMENT COMMENT '主键（雪花）',
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
+  `crop_cert_no` varchar(64) NOT NULL COMMENT '果蔬证书编号（用户手填）',
+  `crop_cert_company` varchar(128) NOT NULL COMMENT '颁发单位',
+  `crop_cert_valid` date NOT NULL COMMENT '证书有效期到期日',
+  `crop_id` bigint DEFAULT NULL COMMENT 'FK → t_plant_crop_info.id（旧单值，过渡兼容，关联以 rel 表为准）',
+  `crop_image_preview` varchar(512) DEFAULT NULL COMMENT '缩略图 OSS ossId（单张）',
+  `crop_image_url` varchar(2048) DEFAULT NULL COMMENT '原图 OSS ossIds 逗号分隔（多张）',
+  `is_warning` tinyint NOT NULL DEFAULT '2' COMMENT '字典 djs_yes_no：1=预警 / 2=正常',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '创建人',
+  `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新人',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  `del_flag` char(1) NOT NULL DEFAULT '0' COMMENT '删除标志',
+  `del_unique` bigint NOT NULL DEFAULT '0' COMMENT '软删 token',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_crop_cert_no` (`tenant_id`,`crop_cert_no`,`del_unique`),
+  KEY `idx_crop_id` (`tenant_id`,`crop_id`),
+  KEY `idx_crop_cert_valid` (`tenant_id`,`crop_cert_valid`),
+  KEY `idx_is_warning` (`tenant_id`,`is_warning`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='种植 - 果蔬有机证书（PLT-MD-003）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_plant_crop_organic`
+--
+
+LOCK TABLES `t_plant_crop_organic` WRITE;
+/*!40000 ALTER TABLE `t_plant_crop_organic` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_plant_crop_organic` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_plant_crop_organic_rel`
+--
+
+DROP TABLE IF EXISTS `t_plant_crop_organic_rel`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_plant_crop_organic_rel` (
+  `id` bigint NOT NULL AUTO_INCREMENT COMMENT '主键（雪花）',
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
+  `organic_id` bigint NOT NULL COMMENT 'FK → t_plant_crop_organic.id',
+  `crop_id` bigint NOT NULL COMMENT 'FK → t_plant_crop_info.id',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '创建人',
+  `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新人',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `del_flag` char(1) NOT NULL DEFAULT '0' COMMENT '删除标志',
+  `del_unique` bigint NOT NULL DEFAULT '0' COMMENT '软删 token（编辑 + 软删旧关联时 SET del_unique=id）',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_organic_crop` (`tenant_id`,`organic_id`,`crop_id`,`del_unique`),
+  KEY `idx_organic` (`tenant_id`,`organic_id`),
+  KEY `idx_crop` (`tenant_id`,`crop_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='种植 - 果蔬证书-作物关联表（FIX-PLT-AD-INFO-LIST-001 一证多作物）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_plant_crop_organic_rel`
+--
+
+LOCK TABLES `t_plant_crop_organic_rel` WRITE;
+/*!40000 ALTER TABLE `t_plant_crop_organic_rel` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_plant_crop_organic_rel` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_plant_farm_records`
+--
+
+DROP TABLE IF EXISTS `t_plant_farm_records`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_plant_farm_records` (
+  `id` bigint NOT NULL COMMENT '主键 snowflake',
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户编号',
+  `record_no` varchar(32) NOT NULL COMMENT '业务码 FR+yyyyMMdd+4 位序号（inline mapper.selectMaxByDate）',
+  `plant_id` bigint DEFAULT NULL COMMENT 'FK → t_plant_plant_plan.id；空地处理时为空',
+  `plot_id` bigint NOT NULL COMMENT 'FK → t_plant_plot_info.id',
+  `plot_type` tinyint DEFAULT NULL COMMENT 'djs_plot_status 1=空闲 / 2=种植 / 3=采摘（冗余下单时地块状态）',
+  `crop_id` bigint DEFAULT NULL COMMENT 'FK → t_plant_crop_info.id；空地时为空',
+  `crop_name` varchar(64) DEFAULT NULL COMMENT '冗余作物名',
+  `farm_type` varchar(32) NOT NULL COMMENT 'djs_farm_work_type 12 类',
+  `farm_date` date NOT NULL COMMENT '农事日期',
+  `farm_by` bigint DEFAULT NULL COMMENT '作业班组ID（采摘个人录入时可空，个人记录在 operator_user_id）',
+  `operator_user_id` bigint DEFAULT NULL COMMENT '操作人(采摘人员)sys_user.user_id',
+  `tillage_type` varchar(32) DEFAULT NULL COMMENT 'djs_tillage_type 仅 farm_type=tillage_prepare',
+  `tillage_method` varchar(32) DEFAULT NULL COMMENT 'djs_tillage_way 仅 farm_type=tillage_prepare（doc/11 §1.9 字段名 tillage_method）',
+  `transplant_plot` bigint DEFAULT NULL COMMENT '转移地块 FK → t_plant_plot_info.id 仅 farm_type=transplant',
+  `transplant_percent` tinyint DEFAULT NULL COMMENT '移栽百分比 0-100，业务规则≤60，仅 farm_type=transplant',
+  `disaster_type` varchar(32) DEFAULT NULL COMMENT 'djs_disaster_type 仅 farm_type=disaster',
+  `loss_rate` decimal(5,2) DEFAULT NULL COMMENT '损失率 0-100，仅 farm_type=disaster',
+  `loss_yield` decimal(12,3) DEFAULT NULL COMMENT '损失产量；触发更新 plant_details.loss_yield 累加',
+  `harvest_weight` decimal(12,3) DEFAULT NULL COMMENT '采摘重量 kg（farm_type=harvest_activity 采摘活动管理录入）',
+  `is_warning` tinyint DEFAULT '2' COMMENT '预警标记 djs_yes_no 1=是 / 2=否（loss_rate≥30 触发 1）',
+  `proof_oss_ids` varchar(500) DEFAULT NULL COMMENT 'OSS bizType=plant_farm_proof，逗号分隔 ossIds',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '创建者',
+  `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新者',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  `del_flag` char(1) NOT NULL DEFAULT '0' COMMENT '软删 0=正常 / 1=已删',
+  `del_unique` bigint NOT NULL DEFAULT '0' COMMENT '软删唯一辅助列（活动行=0；软删行=id）',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_record_no` (`tenant_id`,`record_no`,`del_unique`),
+  KEY `idx_plot_date` (`tenant_id`,`plot_id`,`farm_date`),
+  KEY `idx_farm_type_date` (`tenant_id`,`farm_type`,`farm_date`),
+  KEY `idx_farm_by` (`tenant_id`,`farm_by`,`farm_date`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='农事记录单表（一表覆盖 12 类，farm_type 字段区分；doc/11 §1.9）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_plant_farm_records`
+--
+
+LOCK TABLES `t_plant_farm_records` WRITE;
+/*!40000 ALTER TABLE `t_plant_farm_records` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_plant_farm_records` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_plant_organic_plotno`
+--
+
+DROP TABLE IF EXISTS `t_plant_organic_plotno`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_plant_organic_plotno` (
+  `id` bigint NOT NULL AUTO_INCREMENT COMMENT '主键（雪花）',
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
+  `organic_id` bigint NOT NULL COMMENT 'FK → t_plant_plot_organic.id',
+  `plot_id` bigint NOT NULL COMMENT 'FK → t_plant_plot_info.id',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '创建人',
+  `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新人',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `del_flag` char(1) NOT NULL DEFAULT '0' COMMENT '删除标志',
+  `del_unique` bigint NOT NULL DEFAULT '0' COMMENT '软删 token（编辑 + 软删旧关联时 SET del_unique=id）',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_organic_plot` (`tenant_id`,`organic_id`,`plot_id`,`del_unique`),
+  KEY `idx_organic` (`tenant_id`,`organic_id`),
+  KEY `idx_plot` (`tenant_id`,`plot_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='种植 - 证书-地块关联表（PLT-MD-003）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_plant_organic_plotno`
+--
+
+LOCK TABLES `t_plant_organic_plotno` WRITE;
+/*!40000 ALTER TABLE `t_plant_organic_plotno` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_plant_organic_plotno` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_plant_plant_activity`
+--
+
+DROP TABLE IF EXISTS `t_plant_plant_activity`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_plant_plant_activity` (
+  `id` bigint NOT NULL AUTO_INCREMENT COMMENT '主键（雪花）',
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
+  `activity_date` date NOT NULL COMMENT '采摘日期',
+  `crop_id` bigint NOT NULL COMMENT 'FK → t_plant_crop_info.id',
+  `daily_weight` decimal(12,3) NOT NULL DEFAULT '0.000' COMMENT '当日采摘重量（kg，同 crop+date+班组累加）',
+  `pick_weight` decimal(12,3) DEFAULT NULL COMMENT '本次采摘重量（kg，per-event；与 daily_weight 同值，新列语义更明确）',
+  `pick_dest` varchar(32) DEFAULT NULL COMMENT '采摘去向（字典 djs_pick_dest：sale/veg_fresh/platform/loss/feed；NULL=历史销售）',
+  `product_id` bigint DEFAULT NULL COMMENT '果蔬成品 product_id（= crop.related_product 解析，可空）',
+  `plot_id` bigint DEFAULT NULL COMMENT '地块 id（非销售去向必填；销售去向为空，结算时平均分摊到活动地块）',
+  `recorder_id` bigint DEFAULT NULL COMMENT '记录人 userId（仓库相关人员；替代旧记录班组 activity_by）',
+  `activity_by` bigint DEFAULT NULL COMMENT '记录班组 FK → t_plant_work_team.id',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '创建人',
+  `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新人',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `del_flag` char(1) NOT NULL DEFAULT '0' COMMENT '删除标志',
+  `del_unique` bigint NOT NULL DEFAULT '0' COMMENT '软删 token（软删时 SET del_unique=id 释放活槽）',
+  PRIMARY KEY (`id`),
+  KEY `idx_crop_date` (`tenant_id`,`crop_id`,`activity_date`),
+  KEY `idx_crop_date_dest` (`tenant_id`,`crop_id`,`activity_date`,`pick_dest`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='种植 - 采摘活动表（FIX-PLT-HARVEST-ACTIVITY-001 采摘重量流水）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_plant_plant_activity`
+--
+
+LOCK TABLES `t_plant_plant_activity` WRITE;
+/*!40000 ALTER TABLE `t_plant_plant_activity` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_plant_plant_activity` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_plant_plant_details`
+--
+
+DROP TABLE IF EXISTS `t_plant_plant_details`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_plant_plant_details` (
+  `id` bigint NOT NULL AUTO_INCREMENT COMMENT '主键 snowflake',
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户编号',
+  `plant_id` bigint NOT NULL COMMENT 'FK → t_plant_plant_plan.id',
+  `plot_id` bigint NOT NULL COMMENT 'FK → t_plant_plot_info.id',
+  `crop_id` bigint NOT NULL COMMENT 'FK → t_plant_crop_info.id',
+  `plant_month` tinyint NOT NULL COMMENT '计划月份 1-12（xlsx plant_money typo 清理）',
+  `plant_period` char(2) NOT NULL COMMENT '计划阶段 djs_plant_period: 05=上旬 / 15=中旬 / 25=下旬',
+  `begin_actualdate` date DEFAULT NULL COMMENT '实际开始种植日期（工人录入触发）',
+  `end_actualdate` date DEFAULT NULL COMMENT '实际结束种植日期',
+  `begin_harvestdate` date DEFAULT NULL COMMENT '实际开始采摘日期',
+  `end_harvestdate` date DEFAULT NULL COMMENT '实际结束采摘日期',
+  `earliest_harvestdate` date NOT NULL COMMENT '计划最早采摘日期（plant_start + crop.min_cycle）',
+  `last_harvestdate` date NOT NULL COMMENT '计划最晚采摘日期（plant_start + crop.max_cycle）',
+  `plant_status` varchar(16) NOT NULL DEFAULT 'pending' COMMENT 'djs_plant_plan_status',
+  `harvest_status` varchar(16) NOT NULL DEFAULT 'pending' COMMENT 'djs_pick_status',
+  `plot_area` decimal(10,2) NOT NULL COMMENT '地块面积（冗余 from plot.plot_area）',
+  `expected_yield` decimal(12,3) DEFAULT NULL COMMENT '预计产量 = area × crop.predicted_per',
+  `loss_yield` decimal(12,3) DEFAULT NULL COMMENT '预计损失产量（灾害填写）',
+  `actual_yield` decimal(12,3) DEFAULT NULL COMMENT '实际产量（采摘累计，CROSS-FLOW-002 触发）',
+  `average_yield` decimal(12,3) DEFAULT NULL COMMENT '平均亩产 = actual / area',
+  `plant_by` bigint DEFAULT NULL COMMENT '种植班组 FK → t_plant_work_team.id',
+  `harvest_by` bigint DEFAULT NULL COMMENT '采摘班组 FK → t_plant_work_team.id',
+  `is_pick` tinyint NOT NULL DEFAULT '2' COMMENT '是否游客采摘 djs_yes_no（1=是 / 2=否）',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '创建者',
+  `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新者',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  `del_flag` char(1) DEFAULT '0' COMMENT '软删 0=正常 1=已删',
+  `del_unique` bigint NOT NULL DEFAULT '0' COMMENT '软删唯一辅助列',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_plan_plot_month` (`tenant_id`,`plant_id`,`plot_id`,`plant_month`,`plant_period`,`del_unique`),
+  KEY `idx_plan` (`tenant_id`,`plant_id`),
+  KEY `idx_plot` (`tenant_id`,`plot_id`),
+  KEY `idx_crop` (`tenant_id`,`crop_id`),
+  KEY `idx_status` (`tenant_id`,`plant_status`),
+  KEY `idx_harvest_status` (`tenant_id`,`harvest_status`),
+  KEY `idx_is_pick` (`tenant_id`,`is_pick`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='种植计划明细（doc/11 §1.8 30 字段）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_plant_plant_details`
+--
+
+LOCK TABLES `t_plant_plant_details` WRITE;
+/*!40000 ALTER TABLE `t_plant_plant_details` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_plant_plant_details` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_plant_plant_plan`
+--
+
+DROP TABLE IF EXISTS `t_plant_plant_plan`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_plant_plant_plan` (
+  `id` bigint NOT NULL AUTO_INCREMENT COMMENT '主键 snowflake',
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户编号',
+  `plan_no` varchar(32) NOT NULL COMMENT '业务码 PLAN-yyyy-NNN',
+  `plan_year` int NOT NULL COMMENT '计划年份 例 2026',
+  `crop_id` bigint NOT NULL COMMENT 'FK → t_plant_crop_info.id',
+  `plant_date` varchar(32) DEFAULT NULL COMMENT '计划种植时间（自由文本 例"4月上旬"）',
+  `plan_season` varchar(16) NOT NULL COMMENT 'djs_planting_season: spring/summer/autumn/winter',
+  `earliest_harvestdate` date DEFAULT NULL COMMENT '由明细表聚合 MIN(details.earliest)',
+  `last_harvestdate` date DEFAULT NULL COMMENT '由明细表聚合 MAX(details.last)',
+  `total_area` decimal(10,2) DEFAULT NULL COMMENT '亩，SUM(details.plot_area)',
+  `total_plot` int DEFAULT NULL COMMENT '地块数 COUNT(details)',
+  `plant_status` varchar(16) NOT NULL DEFAULT 'pending' COMMENT 'djs_plant_plan_status',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '创建者',
+  `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新者',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  `del_flag` char(1) DEFAULT '0' COMMENT '软删 0=正常 1=已删',
+  `del_unique` bigint NOT NULL DEFAULT '0' COMMENT '软删唯一辅助列（活动行=0；软删行=id）',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_plan_no` (`tenant_id`,`plan_no`,`del_unique`),
+  KEY `idx_year_season` (`tenant_id`,`plan_year`,`plan_season`),
+  KEY `idx_crop` (`tenant_id`,`crop_id`),
+  KEY `idx_status` (`tenant_id`,`plant_status`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='种植计划主表（doc/11 §1.7）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_plant_plant_plan`
+--
+
+LOCK TABLES `t_plant_plant_plan` WRITE;
+/*!40000 ALTER TABLE `t_plant_plant_plan` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_plant_plant_plan` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_plant_plot_info`
+--
+
+DROP TABLE IF EXISTS `t_plant_plot_info`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_plant_plot_info` (
+  `id` bigint NOT NULL AUTO_INCREMENT COMMENT '主键（雪花）',
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
+  `plot_code` varchar(32) NOT NULL COMMENT '地块业务码（用户手填，例 P001）',
+  `plot_image_preview` varchar(512) DEFAULT NULL COMMENT '缩略图 OSS objectName（单张）',
+  `plot_image_url` varchar(2048) DEFAULT NULL COMMENT '原图 OSS objectNames 逗号分隔（多张）',
+  `zone_id` bigint NOT NULL COMMENT 'FK → t_plant_plot_zone.id（一对多）',
+  `plot_type` varchar(32) DEFAULT NULL COMMENT '字典 djs_plot_type（露天/大棚/温室）',
+  `plot_name` varchar(64) NOT NULL COMMENT '地块名称',
+  `plot_status` tinyint NOT NULL DEFAULT '1' COMMENT '字典 djs_plot_status：1=空闲 / 2=种植 / 3=采摘',
+  `is_lease` tinyint NOT NULL DEFAULT '0' COMMENT '字典 djs_yes_no：是否租赁 1=是 / 0=否',
+  `plot_remark` varchar(500) DEFAULT NULL COMMENT '地块业务备注（区别于系统 remark）',
+  `plot_area` decimal(10,2) NOT NULL COMMENT '面积（亩）',
+  `plot_location_desc` varchar(500) DEFAULT NULL COMMENT '位置文字描述',
+  `plot_location_x` decimal(10,7) DEFAULT NULL COMMENT '经度',
+  `plot_location_y` decimal(10,7) DEFAULT NULL COMMENT '纬度',
+  `soil_type` varchar(32) DEFAULT NULL COMMENT '字典 djs_soil_type',
+  `soil_fertility` varchar(32) DEFAULT NULL COMMENT '字典 djs_soil_fertility',
+  `soil_ph` decimal(4,2) DEFAULT NULL COMMENT '土壤 PH 值（0.00-14.00）',
+  `terrain_condition` varchar(32) DEFAULT NULL COMMENT '字典 djs_terrain_condition',
+  `light_condition` varchar(32) DEFAULT NULL COMMENT '字典 djs_light_condition',
+  `drain_condition` varchar(32) DEFAULT NULL COMMENT '字典 djs_drain_condition',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '创建人',
+  `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新人',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `del_flag` char(1) DEFAULT '0' COMMENT '删除标志',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  `del_unique` bigint NOT NULL DEFAULT '0' COMMENT '软删 token（update del_flag=''1'' 时同步 SET del_unique=id）',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_plot_code` (`tenant_id`,`plot_code`,`del_unique`),
+  KEY `idx_plot_zone` (`tenant_id`,`zone_id`),
+  KEY `idx_plot_status` (`tenant_id`,`plot_status`),
+  KEY `idx_plot_name` (`tenant_id`,`plot_name`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='种植 - 地块信息表（PLT-MD-001）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_plant_plot_info`
+--
+
+LOCK TABLES `t_plant_plot_info` WRITE;
+/*!40000 ALTER TABLE `t_plant_plot_info` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_plant_plot_info` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_plant_plot_organic`
+--
+
+DROP TABLE IF EXISTS `t_plant_plot_organic`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_plant_plot_organic` (
+  `id` bigint NOT NULL AUTO_INCREMENT COMMENT '主键（雪花）',
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
+  `organic_no` varchar(64) NOT NULL COMMENT '证书编号（用户手填，例 GB-2026-001）',
+  `organic_company` varchar(128) NOT NULL COMMENT '颁发单位（例 南京国环）',
+  `organic_valid` date NOT NULL COMMENT '证书有效期到期日',
+  `organic_image_preview` varchar(512) DEFAULT NULL COMMENT '缩略图 OSS ossId（单张）',
+  `organic_image_url` varchar(2048) DEFAULT NULL COMMENT '原图 OSS ossIds 逗号分隔（多张）',
+  `is_warning` tinyint NOT NULL DEFAULT '2' COMMENT '字典 djs_yes_no：1=预警 / 2=正常（默认 2）',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '创建人',
+  `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新人',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  `del_flag` char(1) NOT NULL DEFAULT '0' COMMENT '删除标志',
+  `del_unique` bigint NOT NULL DEFAULT '0' COMMENT '软删 token（update del_flag=''1'' 时 SET del_unique=id）',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_organic_no` (`tenant_id`,`organic_no`,`del_unique`),
+  KEY `idx_organic_valid` (`tenant_id`,`organic_valid`),
+  KEY `idx_is_warning` (`tenant_id`,`is_warning`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='种植 - 土地有机证书（PLT-MD-003）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_plant_plot_organic`
+--
+
+LOCK TABLES `t_plant_plot_organic` WRITE;
+/*!40000 ALTER TABLE `t_plant_plot_organic` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_plant_plot_organic` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_plant_plot_zone`
+--
+
+DROP TABLE IF EXISTS `t_plant_plot_zone`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_plant_plot_zone` (
+  `id` bigint NOT NULL AUTO_INCREMENT COMMENT '主键（雪花）',
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
+  `zone_code` varchar(32) NOT NULL COMMENT '片区业务码（用户手填，例 Z001）',
+  `zone_name` varchar(64) NOT NULL COMMENT '片区名称（例 A 区 / 东部温室区）',
+  `zone_desc` varchar(255) DEFAULT NULL COMMENT '片区说明',
+  `zone_belong` varchar(64) DEFAULT NULL COMMENT '所属大区（例 东部）',
+  `zone_status` tinyint NOT NULL DEFAULT '1' COMMENT '状态 1=启用 0=停用（不走 sys_normal_disable）',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '创建人',
+  `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新人',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `del_flag` char(1) DEFAULT '0' COMMENT '删除标志',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  `del_unique` bigint NOT NULL DEFAULT '0' COMMENT '软删 token（update del_flag=''1'' 时同步 SET del_unique=id）',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_zone_code` (`tenant_id`,`zone_code`,`del_unique`),
+  KEY `idx_zone_status` (`tenant_id`,`zone_status`),
+  KEY `idx_zone_name` (`tenant_id`,`zone_name`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='种植 - 片区表（PLT-MD-001）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_plant_plot_zone`
+--
+
+LOCK TABLES `t_plant_plot_zone` WRITE;
+/*!40000 ALTER TABLE `t_plant_plot_zone` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_plant_plot_zone` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_plant_work_people`
+--
+
+DROP TABLE IF EXISTS `t_plant_work_people`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_plant_work_people` (
+  `id` bigint NOT NULL COMMENT '主键 (snowflake)',
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
+  `team_id` bigint NOT NULL COMMENT 'FK t_plant_work_team.id',
+  `user_id` bigint NOT NULL COMMENT 'FK sys_user.user_id (ADR-0007: 员工统一 sys_user)',
+  `is_leader` tinyint NOT NULL DEFAULT '2' COMMENT '是否负责人 1=是 2=否',
+  `join_date` date DEFAULT NULL COMMENT '加入日期',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '创建者',
+  `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新者',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  `del_flag` char(1) NOT NULL DEFAULT '0' COMMENT '删除标志 0=正常 1=已删',
+  `del_unique` bigint NOT NULL DEFAULT '0' COMMENT '软删唯一标识',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_user_active` (`tenant_id`,`user_id`,`del_unique`),
+  KEY `idx_team` (`team_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='种植班组成员 (PLT-MD-002)';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_plant_work_people`
+--
+
+LOCK TABLES `t_plant_work_people` WRITE;
+/*!40000 ALTER TABLE `t_plant_work_people` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_plant_work_people` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_plant_work_performance`
+--
+
+DROP TABLE IF EXISTS `t_plant_work_performance`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_plant_work_performance` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
+  `stat_month` char(7) NOT NULL COMMENT '统计月份 yyyy-MM',
+  `team_id` bigint DEFAULT NULL COMMENT '班组 ID',
+  `people_id` bigint DEFAULT NULL COMMENT '人员 user_id',
+  `crop_id` bigint DEFAULT NULL COMMENT '作物 ID',
+  `pick_weight` decimal(12,3) DEFAULT '0.000' COMMENT '采摘总量（斤）',
+  `unit_price_snapshot` decimal(10,2) DEFAULT NULL COMMENT '单价快照（不受历史影响）',
+  `performance_amount` decimal(12,2) DEFAULT '0.00' COMMENT '应付绩效金额 元',
+  `performance_rule` varchar(255) DEFAULT NULL COMMENT '绩效规则说明',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '创建人',
+  `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新人',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `del_flag` char(1) DEFAULT '0' COMMENT '删除标志',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  PRIMARY KEY (`id`),
+  KEY `idx_tenant_create` (`tenant_id`,`create_time`),
+  KEY `idx_month_team` (`stat_month`,`team_id`),
+  KEY `idx_people` (`people_id`),
+  KEY `idx_crop` (`crop_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='绩效表（PLT-PERF-001）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_plant_work_performance`
+--
+
+LOCK TABLES `t_plant_work_performance` WRITE;
+/*!40000 ALTER TABLE `t_plant_work_performance` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_plant_work_performance` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_plant_work_team`
+--
+
+DROP TABLE IF EXISTS `t_plant_work_team`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_plant_work_team` (
+  `id` bigint NOT NULL COMMENT '主键 (snowflake)',
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
+  `team_name` varchar(64) NOT NULL COMMENT '班组名称',
+  `leader_id` bigint DEFAULT NULL COMMENT '班组负责人 sys_user.user_id (ADR-0007)',
+  `team_status` tinyint NOT NULL DEFAULT '1' COMMENT '状态 djs_common_status: 1=启用 2=停用',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '创建者',
+  `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新者',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  `del_flag` char(1) NOT NULL DEFAULT '0' COMMENT '删除标志 0=正常 1=已删',
+  `del_unique` bigint NOT NULL DEFAULT '0' COMMENT '软删唯一标识 (active=0 / 软删=id)',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_team_name` (`tenant_id`,`team_name`,`del_unique`),
+  KEY `idx_leader` (`leader_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='种植班组 (PLT-MD-002)';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_plant_work_team`
+--
+
+LOCK TABLES `t_plant_work_team` WRITE;
+/*!40000 ALTER TABLE `t_plant_work_team` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_plant_work_team` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_store_daily_ledger`
+--
+
+DROP TABLE IF EXISTS `t_store_daily_ledger`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_store_daily_ledger` (
+  `id` bigint NOT NULL COMMENT '主键（雪花）',
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户号（V1 全 1001）',
+  `store_id` bigint NOT NULL COMMENT '门店 FK → t_md_store.id',
+  `product_id` bigint NOT NULL COMMENT '产品 FK → t_warehouse_product_info.id',
+  `ledger_date` date NOT NULL COMMENT '盘点日期（到天）',
+  `opening_qty` decimal(12,2) NOT NULL DEFAULT '0.00' COMMENT '期初库存（V1 手填，首次建账即期初）',
+  `inbound_qty` decimal(12,2) NOT NULL DEFAULT '0.00' COMMENT '当日入库量（可用仓库发出量预填，口径=发出非实收）',
+  `sale_qty` decimal(12,2) NOT NULL DEFAULT '0.00' COMMENT '销售量（可由 t_store_sale_record 当日聚合预填）',
+  `gift_qty` decimal(12,2) NOT NULL DEFAULT '0.00' COMMENT '赠送量（手填）',
+  `return_qty` decimal(12,2) NOT NULL DEFAULT '0.00' COMMENT '退货量（顾客退货，可由 t_store_return 当日聚合预填）',
+  `wh_return_qty` decimal(12,2) NOT NULL DEFAULT '0.00' COMMENT '退回量（门店退回仓库，可由 t_store_return store_to_warehouse 当日聚合预填）',
+  `loss_qty` decimal(12,2) NOT NULL DEFAULT '0.00' COMMENT '损耗量（手填，未填按 0）',
+  `closing_qty` decimal(12,2) NOT NULL DEFAULT '0.00' COMMENT '期末库存（service 算：期初+入库−销售−赠送−退货−损耗）',
+  `operator_id` bigint DEFAULT NULL COMMENT '盘点人 user_id → sys_user.user_id（LoginHelper 注入）',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  `create_by` bigint DEFAULT NULL COMMENT '创建者',
+  `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新者',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `del_flag` char(1) NOT NULL DEFAULT '0' COMMENT '软删标记（0 未删 / 1 已删）',
+  `del_unique` bigint NOT NULL DEFAULT '0' COMMENT '软删唯一辅助列（未删=0，删除时写 id 解唯一冲突，DjsMetaObjectHandler 自动）',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_store_product_date` (`tenant_id`,`store_id`,`product_id`,`ledger_date`,`del_unique`),
+  KEY `idx_store_date` (`store_id`,`ledger_date`),
+  KEY `idx_product_date` (`product_id`,`ledger_date`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='门店经营流水盘点台账（STORE-LEDGER-001）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_store_daily_ledger`
+--
+
+LOCK TABLES `t_store_daily_ledger` WRITE;
+/*!40000 ALTER TABLE `t_store_daily_ledger` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_store_daily_ledger` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_store_inventory`
+--
+
+DROP TABLE IF EXISTS `t_store_inventory`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_store_inventory` (
+  `id` bigint NOT NULL COMMENT '主键（雪花）',
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
+  `store_id` bigint NOT NULL COMMENT '门店 ID',
+  `product_id` bigint NOT NULL COMMENT '产品 FK → t_warehouse_product_info.id',
+  `stock_qty` decimal(12,3) NOT NULL DEFAULT '0.000' COMMENT '门店结存数量/重量（盘点期末回写、期初读取）',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '创建者',
+  `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新者',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `del_flag` char(1) NOT NULL DEFAULT '0' COMMENT '删除标志',
+  `del_unique` bigint NOT NULL DEFAULT '0' COMMENT '软删唯一标识',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_store_product` (`tenant_id`,`store_id`,`product_id`,`del_unique`),
+  KEY `idx_store` (`tenant_id`,`store_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='门店独立库存（盘点期初读/期末写，WSA-003）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_store_inventory`
+--
+
+LOCK TABLES `t_store_inventory` WRITE;
+/*!40000 ALTER TABLE `t_store_inventory` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_store_inventory` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_store_member`
+--
+
+DROP TABLE IF EXISTS `t_store_member`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_store_member` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
+  `member_no` varchar(32) NOT NULL COMMENT '会员编号（10001 风格 SYS-INFRA-004 生成）',
+  `member_name` varchar(64) DEFAULT NULL COMMENT '会员姓名',
+  `phone` varchar(20) NOT NULL COMMENT '手机号',
+  `member_level` varchar(16) DEFAULT NULL COMMENT '会员等级',
+  `join_date` date DEFAULT NULL COMMENT '入会日期',
+  `store_id` bigint DEFAULT NULL COMMENT '所属门店 ID',
+  `member_tags` varchar(255) DEFAULT NULL COMMENT '会员标签（逗号分隔）',
+  `member_status` tinyint NOT NULL DEFAULT '1' COMMENT '状态 1=正常 0=停用',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '创建人',
+  `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新人',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `del_flag` char(1) DEFAULT '0' COMMENT '删除标志',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  `del_unique` bigint NOT NULL DEFAULT '0' COMMENT '软删除生成 token（应用层 update del_flag=''1'' 时同步 SET del_unique=id；§6.3.0）',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_member_no` (`tenant_id`,`member_no`,`del_unique`),
+  UNIQUE KEY `uk_phone` (`tenant_id`,`phone`,`del_unique`),
+  KEY `idx_tenant_create` (`tenant_id`,`create_time`),
+  KEY `idx_store` (`store_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='会员档案（STR-MEMBER-001 v1.1 裁剪后）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_store_member`
+--
+
+LOCK TABLES `t_store_member` WRITE;
+/*!40000 ALTER TABLE `t_store_member` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_store_member` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_store_member_consumption`
+--
+
+DROP TABLE IF EXISTS `t_store_member_consumption`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_store_member_consumption` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
+  `member_id` bigint NOT NULL COMMENT '会员 ID',
+  `consume_date` datetime NOT NULL COMMENT '消费日期',
+  `store_id` bigint DEFAULT NULL COMMENT '门店 ID',
+  `sku` varchar(64) DEFAULT NULL COMMENT '商品 SKU/产品编码',
+  `product_id` bigint DEFAULT NULL COMMENT '产品 ID',
+  `quantity` decimal(12,2) DEFAULT NULL COMMENT '数量',
+  `amount_manual` decimal(12,2) DEFAULT NULL COMMENT '手填金额 元',
+  `notes` varchar(500) DEFAULT NULL COMMENT '备注',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '录入人',
+  `create_time` datetime DEFAULT NULL COMMENT '录入时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新人',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `del_flag` char(1) DEFAULT '0' COMMENT '删除标志',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注（兼容字段）',
+  PRIMARY KEY (`id`),
+  KEY `idx_tenant_create` (`tenant_id`,`create_time`),
+  KEY `idx_member_date` (`member_id`,`consume_date`),
+  KEY `idx_store` (`store_id`),
+  KEY `idx_product` (`product_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='会员手动消费记录（STR-MEMBER-001 V1 手录）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_store_member_consumption`
+--
+
+LOCK TABLES `t_store_member_consumption` WRITE;
+/*!40000 ALTER TABLE `t_store_member_consumption` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_store_member_consumption` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_store_product_relation`
+--
+
+DROP TABLE IF EXISTS `t_store_product_relation`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_store_product_relation` (
+  `id` bigint NOT NULL COMMENT 'snowflake',
+  `store_id` bigint NOT NULL COMMENT 'FK t_md_store.id 门店',
+  `product_id` bigint NOT NULL COMMENT 'FK t_warehouse_product_info.id 产品',
+  `is_active` tinyint NOT NULL DEFAULT '1' COMMENT 'djs_active_status 1=启用/2=停用',
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '创建者',
+  `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新者',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  `del_flag` char(1) NOT NULL DEFAULT '0' COMMENT '删除标志（0 存在 / 1 删除）',
+  `del_unique` bigint NOT NULL DEFAULT '0' COMMENT '软删唯一标识',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_store_product` (`tenant_id`,`store_id`,`product_id`,`del_unique`),
+  KEY `idx_store` (`store_id`,`is_active`,`del_flag`),
+  KEY `idx_product` (`product_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='门店产品关联（STR-OP-001）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_store_product_relation`
+--
+
+LOCK TABLES `t_store_product_relation` WRITE;
+/*!40000 ALTER TABLE `t_store_product_relation` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_store_product_relation` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_store_return`
+--
+
+DROP TABLE IF EXISTS `t_store_return`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_store_return` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
+  `return_no` varchar(32) NOT NULL COMMENT '退回单号',
+  `return_direction` varchar(32) NOT NULL COMMENT '退回方向：customer_to_store=顾客→门店 / store_to_warehouse=门店→仓库 / warehouse_to_supplier=仓库→供应商',
+  `store_id` bigint DEFAULT NULL COMMENT '门店 ID',
+  `product_id` bigint NOT NULL COMMENT '产品 ID',
+  `location_id` bigint DEFAULT NULL COMMENT '退回入库库位 FK→t_warehouse_location_info.id（K4 联动外购入库）',
+  `return_quantity` decimal(12,2) NOT NULL COMMENT '退回数量',
+  `return_reason` varchar(255) DEFAULT NULL COMMENT '退回原因',
+  `trace_code` varchar(64) DEFAULT NULL COMMENT '已贴追溯码（如有）',
+  `return_date` datetime NOT NULL COMMENT '退回日期',
+  `member_id` bigint DEFAULT NULL COMMENT '退回会员 ID（顾客退回时）',
+  `operator_id` bigint DEFAULT NULL COMMENT '操作人',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '录入人',
+  `create_time` datetime DEFAULT NULL COMMENT '录入时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新人',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `del_flag` char(1) DEFAULT '0' COMMENT '删除标志',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  `del_unique` bigint NOT NULL DEFAULT '0' COMMENT '软删除生成 token（应用层 update del_flag=''1'' 时同步 SET del_unique=id；§6.3.0）',
+  `goods_weight` decimal(12,3) DEFAULT NULL COMMENT '报退货物重量(kg)（原型「货物重量」）',
+  `return_status` varchar(16) NOT NULL DEFAULT 'pending' COMMENT '退货状态 djs_store_return_status：pending=待仓库确认 / received=已入库',
+  `received_qty` decimal(12,2) DEFAULT NULL COMMENT '仓库实收量（仓库确认时填）',
+  `received_weight` decimal(12,3) DEFAULT NULL COMMENT '仓库实收重量(kg)（仓库确认时填）',
+  `confirm_user_id` bigint DEFAULT NULL COMMENT '仓库确认人 user_id',
+  `confirm_time` datetime DEFAULT NULL COMMENT '仓库确认时间',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_return_no` (`tenant_id`,`return_no`,`del_unique`),
+  KEY `idx_tenant_create` (`tenant_id`,`create_time`),
+  KEY `idx_store_date` (`store_id`,`return_date`),
+  KEY `idx_product` (`product_id`),
+  KEY `idx_member` (`member_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='门店退回管理（STR-RETURN-001 多方向退回）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_store_return`
+--
+
+LOCK TABLES `t_store_return` WRITE;
+/*!40000 ALTER TABLE `t_store_return` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_store_return` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_store_sale_record`
+--
+
+DROP TABLE IF EXISTS `t_store_sale_record`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_store_sale_record` (
+  `id` bigint NOT NULL COMMENT 'snowflake',
+  `store_id` bigint NOT NULL COMMENT 'FK t_md_store.id',
+  `product_id` bigint NOT NULL COMMENT 'FK t_warehouse_product_info.id',
+  `product_name` varchar(128) NOT NULL COMMENT '冗余产品名（导入/快照）',
+  `sale_date` date NOT NULL COMMENT '销售日期（只到天）',
+  `sale_qty` decimal(12,3) NOT NULL COMMENT '销售数量',
+  `sale_unit` varchar(16) NOT NULL COMMENT '单位（冗余自 product）',
+  `sale_amount` decimal(10,2) NOT NULL COMMENT '销售总额 元',
+  `operator_id` bigint NOT NULL COMMENT 'FK sys_user.user_id 手录店员',
+  `source` varchar(16) NOT NULL DEFAULT 'manual' COMMENT 'djs_sale_source manual=手录/excel_import',
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '创建者',
+  `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新者',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  `del_flag` char(1) NOT NULL DEFAULT '0' COMMENT '删除标志（0 存在 / 1 删除）',
+  `del_unique` bigint NOT NULL DEFAULT '0' COMMENT '软删唯一标识',
+  PRIMARY KEY (`id`),
+  KEY `idx_store_date` (`store_id`,`sale_date`),
+  KEY `idx_product` (`product_id`),
+  KEY `idx_source` (`source`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='门店销售流水（STR-OP-001 V1 手录 + Excel 导入）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_store_sale_record`
+--
+
+LOCK TABLES `t_store_sale_record` WRITE;
+/*!40000 ALTER TABLE `t_store_sale_record` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_store_sale_record` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_store_user_relation`
+--
+
+DROP TABLE IF EXISTS `t_store_user_relation`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_store_user_relation` (
+  `id` bigint NOT NULL AUTO_INCREMENT COMMENT '主键（雪花）',
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户 ID',
+  `store_id` bigint NOT NULL COMMENT '门店 ID（t_md_store.id）',
+  `user_id` bigint NOT NULL COMMENT '人员 sys_user.user_id',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '创建人',
+  `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新人',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `del_flag` char(1) NOT NULL DEFAULT '0' COMMENT '软删标记（0 未删 / 1 已删）',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  `del_unique` bigint NOT NULL DEFAULT '0' COMMENT '软删唯一性辅助列（软删时应用层 SET=id）',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_store_user` (`tenant_id`,`store_id`,`user_id`,`del_unique`),
+  KEY `idx_user` (`user_id`),
+  KEY `idx_store` (`store_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='门店-人员关联（STR-USER-REL-001）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_store_user_relation`
+--
+
+LOCK TABLES `t_store_user_relation` WRITE;
+/*!40000 ALTER TABLE `t_store_user_relation` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_store_user_relation` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_warehouse_bar_info`
+--
+
+DROP TABLE IF EXISTS `t_warehouse_bar_info`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_warehouse_bar_info` (
+  `id` bigint NOT NULL AUTO_INCREMENT COMMENT '主键',
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
+  `bar_id` varchar(32) NOT NULL COMMENT '业务码 BAR+yyMMdd+4 位（doc/11 §2.8 R6）',
+  `marketing_time` datetime DEFAULT NULL COMMENT '出栏时间（doc/11 §2.8 R7 改名，xlsx out_time）',
+  `marketing_weight` decimal(12,3) DEFAULT NULL COMMENT '出栏重量 kg（doc/11 §2.8 R8）',
+  `arrive_time` datetime DEFAULT NULL COMMENT '燎毛间到场时间',
+  `arrive_weight` decimal(12,3) DEFAULT NULL COMMENT '到场重量 kg（燎毛前过磅）',
+  `ear_no` varchar(32) DEFAULT NULL COMMENT '猪只耳号（FK 关联 t_farm_pig_info.ear_no；外购无耳号）',
+  `in_weight` decimal(12,3) DEFAULT NULL COMMENT '燎毛后入库重量 kg',
+  `in_time` datetime DEFAULT NULL COMMENT '入库时间',
+  `in_method` tinyint DEFAULT NULL COMMENT '1=燎毛间 / 2=分割间（djs_bar_in_method）',
+  `out_time` datetime DEFAULT NULL COMMENT '出白条库时间（本 ticket cut_done 阶段写入）',
+  `out_weight` decimal(12,3) DEFAULT NULL COMMENT '出库重量 kg（本 ticket cut_done 阶段写入 = in_weight - drip_loss）',
+  `out_method` tinyint DEFAULT NULL COMMENT '1=发货领用 / 2=分割间（djs_bar_out_method；本 ticket 分割工序写 2）',
+  `acid_remove_time` int DEFAULT NULL COMMENT '排酸时长（分钟，本 ticket cut_done 阶段写入 = cut_done_time - pickup_time）',
+  `acid_remove_loss` decimal(12,3) DEFAULT NULL COMMENT '排酸损耗 kg（本 ticket cut_done 阶段写入 = drip_loss）',
+  `cut_product_weight` decimal(12,3) DEFAULT NULL COMMENT '分割产品重量 kg（白条分割成产品后总重 = Σ cut_out_in by white_bar_id，cutDone 落库）',
+  `cut_loss` decimal(12,3) DEFAULT NULL COMMENT '分割损耗 kg（= 出库重量 − 分割产品重量，cutDone 落库）',
+  `buy_date` date DEFAULT NULL COMMENT '采购日期（仅外购）',
+  `buy_weight` decimal(12,3) DEFAULT NULL COMMENT '采购重量（仅外购）',
+  `supplier_id` bigint DEFAULT NULL COMMENT '供应商 ID（仅外购）',
+  `mark_id` varchar(32) DEFAULT NULL COMMENT '标识号',
+  `status` varchar(16) NOT NULL DEFAULT 'pending_singe' COMMENT '字典 djs_bar_status 7 态',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '创建者',
+  `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新者',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  `del_flag` char(1) NOT NULL DEFAULT '0' COMMENT '删除标志',
+  `del_unique` bigint NOT NULL DEFAULT '0' COMMENT '软删唯一性辅助列',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_bar_id` (`tenant_id`,`bar_id`,`del_unique`),
+  KEY `idx_ear_no` (`tenant_id`,`ear_no`),
+  KEY `idx_status` (`tenant_id`,`status`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='白条信息表（doc/11 §2.8，重建以对齐字段权威）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_warehouse_bar_info`
+--
+
+LOCK TABLES `t_warehouse_bar_info` WRITE;
+/*!40000 ALTER TABLE `t_warehouse_bar_info` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_warehouse_bar_info` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_warehouse_check_record`
+--
+
+DROP TABLE IF EXISTS `t_warehouse_check_record`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_warehouse_check_record` (
+  `id` bigint NOT NULL COMMENT '主键（雪花）',
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
+  `check_id` varchar(32) NOT NULL COMMENT '盘点单业务码 C{yyyyMMdd}{seq5}（同一盘点单的 header + 各 line 共用）',
+  `location_id` bigint NOT NULL COMMENT 'FK t_warehouse_location_info.id（盘点是按库位的，xlsx 缺、doc/11 §2.4 推断）',
+  `product_id` bigint NOT NULL COMMENT 'FK t_warehouse_product_info.id（header 行写 0 占位）',
+  `product_name` varchar(128) NOT NULL DEFAULT '' COMMENT '产品名称（冗余）',
+  `product_unit` varchar(16) NOT NULL DEFAULT '' COMMENT '产品单位（冗余）',
+  `sys_stock` decimal(12,3) NOT NULL DEFAULT '0.000' COMMENT '盘点时系统库存量',
+  `check_stock` decimal(12,3) NOT NULL DEFAULT '0.000' COMMENT '实盘量',
+  `diff_stock` decimal(12,3) NOT NULL DEFAULT '0.000' COMMENT '差异 = check_stock - sys_stock（>0 盘盈 / <0 盘亏）',
+  `check_result_type` tinyint NOT NULL DEFAULT '1' COMMENT '字典 djs_check_result：1=正常 / 2=异常 / 3=计损',
+  `diff_reason` varchar(255) DEFAULT NULL COMMENT '差异原因',
+  `check_by` bigint DEFAULT NULL COMMENT 'FK sys_user.user_id（实盘录入人；header 行可空）',
+  `check_date` datetime NOT NULL COMMENT '盘点日期',
+  `check_status` varchar(16) NOT NULL DEFAULT 'draft' COMMENT '字典 djs_check_status：draft / in_progress / completed',
+  `is_header` tinyint NOT NULL DEFAULT '0' COMMENT '1=盘点单头（承载 status / 库位锁）/ 0=盘点明细 line',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '创建者',
+  `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新者',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  `del_flag` char(1) NOT NULL DEFAULT '0' COMMENT '删除标志（0 存在 / 1 删除）',
+  `del_unique` bigint NOT NULL DEFAULT '0' COMMENT '软删唯一标识',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_check_line` (`tenant_id`,`check_id`,`location_id`,`product_id`,`del_unique`),
+  KEY `idx_location` (`location_id`,`check_status`,`del_flag`),
+  KEY `idx_check_date` (`check_date`),
+  KEY `idx_check_id` (`check_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='盘点记录表（WMS-STOCK-001）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_warehouse_check_record`
+--
+
+LOCK TABLES `t_warehouse_check_record` WRITE;
+/*!40000 ALTER TABLE `t_warehouse_check_record` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_warehouse_check_record` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_warehouse_cropp_record`
+--
+
+DROP TABLE IF EXISTS `t_warehouse_cropp_record`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_warehouse_cropp_record` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
+  `stat_date` date NOT NULL COMMENT '统计日期（T-1）',
+  `crop_id` bigint NOT NULL COMMENT '作物 ID（FK → t_plant_crop_info.id；展示走 JOIN 取 crop_code/crop_name/image）',
+  `pick_weight` decimal(12,3) DEFAULT '0.000' COMMENT '采摘量（当日该作物毛菜处理间称重总重 = Σ handle_record record_type=1 record_weight）',
+  `feed_weight` decimal(12,3) DEFAULT '0.000' COMMENT '饲喂量（当日该作物饲料饲喂总重 = Σ handle_record handle_target=3 record_weight）',
+  `veg_handle_rate` decimal(12,3) DEFAULT NULL COMMENT '毛菜处理率%（(采摘总量−毛菜损耗量)/采摘总量×100；分母 0 → NULL）',
+  `receive_weight` decimal(12,3) DEFAULT '0.000' COMMENT '接收量（当日该作物果蔬月台接收总重 = Σ veg_receive.weight 自产）',
+  `send_platform_weight` decimal(12,3) DEFAULT '0.000' COMMENT '发往月台量（当日该作物从毛菜处理间发往月台重 = Σ handle_record handle_target=2 record_weight）',
+  `transport_loss_rate` decimal(12,3) DEFAULT NULL COMMENT '路损率%（(发往月台量−接收量)/接收量×100，按 row17 写法以接收量为分母；分母 0 → NULL）',
+  `out_weight` decimal(12,3) DEFAULT '0.000' COMMENT '出库量（当日该作物生产领用出库量−生产退回量 = Σ stock_flow prod_pick_out − prod_return_in）',
+  `net_veg_loss_rate` decimal(12,3) DEFAULT NULL COMMENT '净菜损耗率%（(生产损耗+录入损耗)/出库量×100，按 row17 以出库量为分母；分母 0 → NULL）',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '创建者',
+  `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新者',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  `del_flag` char(1) NOT NULL DEFAULT '0' COMMENT '删除标志',
+  `del_unique` bigint NOT NULL DEFAULT '0' COMMENT '软删唯一标识',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_wh_cropp_tenant_date_crop` (`tenant_id`,`stat_date`,`crop_id`,`del_unique`),
+  KEY `idx_wh_cropp_stat_date` (`stat_date`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='作物日数据记录（WMS-STAT-001，邓博 row17，定时落盘 T-1，一作物一行）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_warehouse_cropp_record`
+--
+
+LOCK TABLES `t_warehouse_cropp_record` WRITE;
+/*!40000 ALTER TABLE `t_warehouse_cropp_record` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_warehouse_cropp_record` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_warehouse_demand_manage`
+--
+
+DROP TABLE IF EXISTS `t_warehouse_demand_manage`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_warehouse_demand_manage` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
+  `demand_no` varchar(32) NOT NULL COMMENT '需求单号',
+  `demand_date` date NOT NULL COMMENT '需求日期',
+  `store_id` bigint DEFAULT NULL COMMENT '门店 ID',
+  `product_id` bigint NOT NULL COMMENT '产品 ID',
+  `product_name` varchar(128) NOT NULL DEFAULT '' COMMENT '产品名（冗余）',
+  `product_spec` varchar(64) DEFAULT NULL COMMENT '产品规格',
+  `product_type` varchar(32) NOT NULL COMMENT '业态：white_bar/vegetable/gift_box/other，字典 djs_demand_product_type',
+  `demand_quantity` decimal(12,3) NOT NULL COMMENT '需求量',
+  `product_unit` varchar(16) NOT NULL DEFAULT '' COMMENT '单位',
+  `raw_material` varchar(255) DEFAULT NULL COMMENT '原材料描述，例"需要 5 头猪"',
+  `material_qty` decimal(12,3) DEFAULT NULL COMMENT '原材料计算量',
+  `demand_remark` varchar(500) DEFAULT NULL COMMENT '需求备注',
+  `demand_explain` varchar(500) DEFAULT NULL COMMENT '需求说明，例"25 号之前每天 1 头猪送到矿业 / 背膘不要太厚"',
+  `shipped_count` decimal(12,3) NOT NULL DEFAULT '0.000' COMMENT '累计已发货量（CROSS-FLOW-003 listener 原子 += 更新）',
+  `confirmed_count` decimal(12,3) NOT NULL DEFAULT '0.000' COMMENT '累计已确认量',
+  `demand_status` varchar(16) NOT NULL DEFAULT 'DRAFT' COMMENT '状态 字典 djs_demand_status：DRAFT/SUBMITTED/CONFIRMED/IN_PRODUCTION/PARTIAL_SHIPPED/COMPLETED/CANCELLED',
+  `audit_history` json DEFAULT NULL COMMENT '状态流转历史 JSON（v1.1 手写状态机，便于 V2 迁 Flowable）',
+  `demand_confirmer` bigint DEFAULT NULL COMMENT '确认人 user_id',
+  `confirmer_time` datetime DEFAULT NULL COMMENT '确认时间',
+  `expected_arrive_date` date DEFAULT NULL COMMENT '期望到货日',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '录入人',
+  `create_time` datetime DEFAULT NULL COMMENT '录入时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新人',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `del_flag` char(1) DEFAULT '0' COMMENT '删除标志',
+  `version` int DEFAULT '0' COMMENT '乐观锁',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  `del_unique` bigint NOT NULL DEFAULT '0' COMMENT '软删除生成 token（应用层 update del_flag=''1'' 时同步 SET del_unique=id；§6.3.0）',
+  `demand_type` varchar(16) DEFAULT NULL COMMENT '需求类型 djs_demand_mailing_type: store门店/mailing个人邮寄',
+  `expected_weight` decimal(12,3) DEFAULT NULL COMMENT '预计到店重量(kg)',
+  `received_time` datetime DEFAULT NULL COMMENT '门店收货确认时间（门店侧确认收货）',
+  `received_by` bigint DEFAULT NULL COMMENT '门店收货确认人 user_id',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_demand_no` (`tenant_id`,`demand_no`,`del_unique`),
+  KEY `idx_tenant_create` (`tenant_id`,`create_time`),
+  KEY `idx_store` (`store_id`),
+  KEY `idx_demand_date` (`demand_date`),
+  KEY `idx_tenant_status_date` (`tenant_id`,`demand_status`,`demand_date`),
+  KEY `idx_store_status` (`tenant_id`,`store_id`,`demand_status`),
+  KEY `idx_product_type` (`tenant_id`,`product_type`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='需求管理表（WMS-DEMAND-001 / STR-DEMAND-001 同表双视角）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_warehouse_demand_manage`
+--
+
+LOCK TABLES `t_warehouse_demand_manage` WRITE;
+/*!40000 ALTER TABLE `t_warehouse_demand_manage` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_warehouse_demand_manage` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_warehouse_demand_pig`
+--
+
+DROP TABLE IF EXISTS `t_warehouse_demand_pig`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_warehouse_demand_pig` (
+  `id` bigint NOT NULL AUTO_INCREMENT COMMENT 'snowflake',
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
+  `demand_id` bigint NOT NULL COMMENT 'FK t_warehouse_demand_manage.id',
+  `ear_no` varchar(32) NOT NULL COMMENT '耳号，关联 t_farm_pig_info.ear_no',
+  `assigned_at` datetime NOT NULL COMMENT '指定时间',
+  `assigned_by` bigint NOT NULL COMMENT 'FK sys_user.user_id',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '创建人',
+  `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新人',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  `del_flag` char(1) NOT NULL DEFAULT '0' COMMENT '删除标志',
+  `del_unique` bigint NOT NULL DEFAULT '0' COMMENT '软删唯一性辅助列',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_tenant_demand_ear` (`tenant_id`,`demand_id`,`ear_no`,`del_unique`),
+  KEY `idx_demand` (`tenant_id`,`demand_id`),
+  KEY `idx_ear` (`tenant_id`,`ear_no`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='需求↔猪只关联（白条业态指定猪只）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_warehouse_demand_pig`
+--
+
+LOCK TABLES `t_warehouse_demand_pig` WRITE;
+/*!40000 ALTER TABLE `t_warehouse_demand_pig` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_warehouse_demand_pig` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_warehouse_feed_log`
+--
+
+DROP TABLE IF EXISTS `t_warehouse_feed_log`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_warehouse_feed_log` (
+  `id` bigint NOT NULL COMMENT '主键（雪花）',
+  `feed_date` datetime NOT NULL COMMENT '饲喂时间（精确到时分秒）',
+  `crop_id` bigint DEFAULT NULL COMMENT '作物 FK → t_plant_crop_info.id',
+  `crop_name` varchar(64) DEFAULT NULL COMMENT '作物名称（冗余快照）',
+  `feed_type` varchar(20) DEFAULT NULL COMMENT '饲喂来源（字典 djs_feed_type：veg_handle 毛菜间 / warehouse 仓库）',
+  `product_id` bigint DEFAULT NULL COMMENT '产品 ID（按产品归集饲喂量用；毛菜间来源经 crop→related_product 反解可空）',
+  `location_id` bigint DEFAULT NULL COMMENT '饲喂位置（库位 FK；仓库领用饲喂来源有值）',
+  `operator_id` bigint DEFAULT NULL COMMENT '操作人 user_id',
+  `feed_weight` decimal(12,3) NOT NULL COMMENT '饲喂重量(kg)',
+  `remark` varchar(255) DEFAULT NULL COMMENT '备注',
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户编号',
+  `create_by` bigint DEFAULT NULL COMMENT '创建者',
+  `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新者',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `del_flag` char(1) NOT NULL DEFAULT '0' COMMENT '删除标记（0 未删 / 1 已删）',
+  PRIMARY KEY (`id`),
+  KEY `idx_feed_date_crop` (`feed_date`,`crop_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='饲料饲喂台账（果蔬去向三）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_warehouse_feed_log`
+--
+
+LOCK TABLES `t_warehouse_feed_log` WRITE;
+/*!40000 ALTER TABLE `t_warehouse_feed_log` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_warehouse_feed_log` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_warehouse_gift_box`
+--
+
+DROP TABLE IF EXISTS `t_warehouse_gift_box`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_warehouse_gift_box` (
+  `id` bigint NOT NULL AUTO_INCREMENT COMMENT '主键（雪花）',
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
+  `box_product_id` bigint NOT NULL COMMENT 'FK → t_warehouse_product_info.id（product_type=3 礼盒）',
+  `component_product_id` bigint NOT NULL COMMENT 'FK → t_warehouse_product_info.id（组件 SKU）',
+  `component_count` decimal(12,3) NOT NULL COMMENT '组件数量',
+  `component_unit` varchar(16) NOT NULL COMMENT '组件单位（冗余，便于展示）',
+  `component_sort` int NOT NULL DEFAULT '0' COMMENT '排序',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '创建人',
+  `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新人',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `del_flag` char(1) DEFAULT '0' COMMENT '删除标志',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  `del_unique` bigint NOT NULL DEFAULT '0' COMMENT '软删 token',
+  PRIMARY KEY (`id`),
+  KEY `idx_box` (`tenant_id`,`box_product_id`),
+  KEY `idx_component` (`tenant_id`,`component_product_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='礼盒组件清单（WMS-MD-002）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_warehouse_gift_box`
+--
+
+LOCK TABLES `t_warehouse_gift_box` WRITE;
+/*!40000 ALTER TABLE `t_warehouse_gift_box` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_warehouse_gift_box` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_warehouse_handle_record`
+--
+
+DROP TABLE IF EXISTS `t_warehouse_handle_record`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_warehouse_handle_record` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001',
+  `handle_id` bigint NOT NULL COMMENT 'FK → t_warehouse_vegetable_handle.id',
+  `plot_id` bigint NOT NULL COMMENT '冗余 plot_id',
+  `crop_id` bigint NOT NULL COMMENT '冗余 crop_id',
+  `record_type` tinyint NOT NULL COMMENT 'djs_record_type 1=采收 / 2=处理',
+  `record_weight` decimal(12,3) NOT NULL COMMENT '本次重量(kg)',
+  `is_weighed` tinyint DEFAULT NULL COMMENT '1=是/2=否',
+  `is_finish` tinyint DEFAULT NULL COMMENT '1=是/2=否',
+  `handle_target` tinyint DEFAULT NULL COMMENT 'djs_handle_target 1=入库/2=月台/3=饲料（record_type=2 必填）',
+  `location_id` bigint DEFAULT NULL COMMENT '入库库位 FK → t_warehouse_location_info.id（handle_target=1 必填）',
+  `handle_user` bigint NOT NULL COMMENT 'FK → sys_user.user_id',
+  `handle_time` datetime NOT NULL COMMENT '处理时间',
+  `proof_oss_ids` varchar(500) DEFAULT NULL COMMENT 'CameraUploadWithWatermark biz_type=warehouse_veg_handle',
+  `remark` varchar(500) DEFAULT NULL,
+  `create_dept` bigint DEFAULT NULL,
+  `create_by` bigint DEFAULT NULL,
+  `create_time` datetime DEFAULT NULL,
+  `update_by` bigint DEFAULT NULL,
+  `update_time` datetime DEFAULT NULL,
+  `del_flag` char(1) DEFAULT '0',
+  `del_unique` bigint NOT NULL DEFAULT '0',
+  PRIMARY KEY (`id`),
+  KEY `idx_handle_id` (`tenant_id`,`handle_id`),
+  KEY `idx_handle_time` (`tenant_id`,`handle_time`),
+  KEY `idx_handle_user` (`tenant_id`,`handle_user`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='毛菜处理记录流水（doc/11 §2.13）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_warehouse_handle_record`
+--
+
+LOCK TABLES `t_warehouse_handle_record` WRITE;
+/*!40000 ALTER TABLE `t_warehouse_handle_record` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_warehouse_handle_record` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_warehouse_indicator_record`
+--
+
+DROP TABLE IF EXISTS `t_warehouse_indicator_record`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_warehouse_indicator_record` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
+  `stat_date` date NOT NULL COMMENT '统计日期（T-1）',
+  `slaughter_count` int DEFAULT '0' COMMENT '屠宰头数（当日燎毛间接收的猪只头数 = 当日 burn 记录数）',
+  `slaughter_weight` decimal(12,3) DEFAULT '0.000' COMMENT '送宰总重（当日出栏送宰猪总重 bar.marketing_weight + 当日外购猪总重 outsource.pig_weight）',
+  `avg_slaughter_weight` decimal(12,3) DEFAULT NULL COMMENT '送宰均重（送宰总重/屠宰头数；分母 0 → NULL）',
+  `arrive_weight` decimal(12,3) DEFAULT '0.000' COMMENT '接收重量（当日燎毛间称重总重 = Σ burn.arrive_weight）',
+  `slaughter_rate` decimal(12,3) DEFAULT NULL COMMENT '屠宰率%（接收重量/送宰总重×100；分母 0 → NULL）',
+  `bar_total_weight` decimal(12,3) DEFAULT '0.000' COMMENT '白条总重（当日白条库入库白条产品总重 = Σ burn.burn_weight）',
+  `avg_bar_weight` decimal(12,3) DEFAULT NULL COMMENT '白条均重（白条总重/屠宰头数；分母 0 → NULL）',
+  `bar_yield_rate` decimal(12,3) DEFAULT NULL COMMENT '白条出品率%（白条总重/送宰总重×100；row16 写÷屠宰头数为笔误，统一÷送宰总重对齐 row18；分母 0 → NULL）',
+  `cut_bar_count` decimal(12,1) DEFAULT NULL COMMENT '分割白条数（当日转入分割车间白条数；半只0.5/整只1加权）',
+  `precool_loss` decimal(12,3) DEFAULT '0.000' COMMENT '预冷损耗（当日 loss_flow loss_type=precool_loss 之和）',
+  `cut_product_weight` decimal(12,3) DEFAULT '0.000' COMMENT '分割产品总重（当日分割车间产出产品重之和 = Σ product_inhouse.product_weight 猪肉）',
+  `cut_bar_weight` decimal(12,3) DEFAULT '0.000' COMMENT '分割白条总重（当日白条出库总重 = Σ cut_record.pickup_weight）',
+  `cut_rate` decimal(12,3) DEFAULT NULL COMMENT '分割率%（分割产品总重/分割白条总重×100；分母 0 → NULL）',
+  `cut_loss` decimal(12,3) DEFAULT '0.000' COMMENT '分割间损耗重（当日 loss_flow loss_type=cut_loss 之和）',
+  `veg_weigh_weight` decimal(12,3) DEFAULT '0.000' COMMENT '毛菜称量总重（当日毛菜处理间采摘称重之和 = Σ vegetable_handle.picked_weight）',
+  `veg_loss` decimal(12,3) DEFAULT '0.000' COMMENT '毛菜损耗重（当日 loss_flow loss_type=veg_handle_loss 之和）',
+  `veg_loss_rate` decimal(12,3) DEFAULT NULL COMMENT '毛菜损耗率%（毛菜损耗重/毛菜称量总重×100；分母 0 → NULL）',
+  `send_platform_weight` decimal(12,3) DEFAULT '0.000' COMMENT '发往月台果蔬总重（当日 Σ vegetable_handle.send_platform_weight）',
+  `receive_platform_weight` decimal(12,3) DEFAULT '0.000' COMMENT '月台接收果蔬总重（当日 Σ veg_receive.weight 自产 receive_type=1）',
+  `transport_loss_rate` decimal(12,3) DEFAULT NULL COMMENT '路损率%（(发往月台量−月台接收量)/发往月台量×100，运输损耗标准口径；分母 0 → NULL）',
+  `prod_pick_weight` decimal(12,3) DEFAULT '0.000' COMMENT '果蔬生产领用总重（当日 stock_flow flow_type=prod_pick_out 之和）',
+  `prod_loss_weight` decimal(12,3) DEFAULT NULL COMMENT '果蔬生产损耗总重（当日果蔬领用−退回−录入损耗−饲喂(feed_out)−打包生产使用量，≥0；仅自产果蔬）',
+  `net_veg_loss_rate` decimal(12,3) DEFAULT NULL COMMENT '净菜损耗率%（(生产损耗+录入损耗)/(生产领用−生产退回)×100；分母≤0 → NULL）',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '创建者',
+  `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新者',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  `del_flag` char(1) NOT NULL DEFAULT '0' COMMENT '删除标志',
+  `del_unique` bigint NOT NULL DEFAULT '0' COMMENT '软删唯一标识',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_wh_indicator_tenant_date` (`tenant_id`,`stat_date`,`del_unique`),
+  KEY `idx_wh_indicator_stat_date` (`stat_date`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='仓库日数据记录（WMS-STAT-001，邓博 row16，定时落盘 T-1）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_warehouse_indicator_record`
+--
+
+LOCK TABLES `t_warehouse_indicator_record` WRITE;
+/*!40000 ALTER TABLE `t_warehouse_indicator_record` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_warehouse_indicator_record` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_warehouse_location_info`
+--
+
+DROP TABLE IF EXISTS `t_warehouse_location_info`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_warehouse_location_info` (
+  `id` bigint NOT NULL AUTO_INCREMENT COMMENT '主键（雪花）',
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
+  `location_code` varchar(32) NOT NULL COMMENT '业务码（用户手填，例 L0001 / FROZEN-01）',
+  `location_name` varchar(64) NOT NULL COMMENT '库位名称（例 冻品库 / 蔬菜鲜品库）',
+  `location_type` varchar(32) NOT NULL COMMENT '字典 djs_location_type（frozen/fresh/dry/ambient/medicine/feed）',
+  `location_thumb` varchar(512) DEFAULT NULL COMMENT '缩略图 OSS ID',
+  `location_img` varchar(2048) DEFAULT NULL COMMENT '原图 OSS IDs 逗号分隔',
+  `location_status` tinyint NOT NULL DEFAULT '1' COMMENT '字典 djs_location_status：1=启用 / 2=停用',
+  `location_sort` int DEFAULT '0' COMMENT '库位排序（升序，越小越靠前）',
+  `location_desc` varchar(500) DEFAULT NULL COMMENT '库位说明',
+  `capacity` decimal(12,2) DEFAULT NULL COMMENT '容量（kg / m³，单位由 location_type 决定）',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '创建人',
+  `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新人',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `del_flag` char(1) DEFAULT '0' COMMENT '删除标志',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  `del_unique` bigint NOT NULL DEFAULT '0' COMMENT '软删 token（update del_flag=''1'' 时同步 SET del_unique=id）',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_location_code` (`tenant_id`,`location_code`,`del_unique`),
+  KEY `idx_tenant_status` (`tenant_id`,`location_status`),
+  KEY `idx_location_type` (`tenant_id`,`location_type`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='库位信息表（WMS-MD-001）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_warehouse_location_info`
+--
+
+LOCK TABLES `t_warehouse_location_info` WRITE;
+/*!40000 ALTER TABLE `t_warehouse_location_info` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_warehouse_location_info` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_warehouse_location_stock`
+--
+
+DROP TABLE IF EXISTS `t_warehouse_location_stock`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_warehouse_location_stock` (
+  `id` bigint NOT NULL AUTO_INCREMENT COMMENT '主键（雪花）',
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
+  `location_id` bigint NOT NULL COMMENT 'FK → t_warehouse_location_info.id',
+  `product_id` bigint DEFAULT NULL COMMENT 'FK → t_warehouse_product_info（WMS-MD-002 D8 建）',
+  `ear_no` varchar(32) DEFAULT NULL COMMENT '白条入库按耳号关联（猪只库存追溯）',
+  `plot_id` bigint DEFAULT NULL COMMENT '蔬菜入库按地块关联',
+  `medicine_id` bigint DEFAULT NULL COMMENT '药品维：药品库存按药品关联 FK → t_breed_medicine_info.id（与 product_id/ear_no/plot_id 四选一互斥）',
+  `product_name` varchar(128) NOT NULL COMMENT '产品名称（冗余字段，便于列表展示）',
+  `product_stock` decimal(12,3) NOT NULL DEFAULT '0.000' COMMENT '当前库存数量',
+  `product_unit` varchar(16) NOT NULL COMMENT '产品单位（kg / 头 / 箱 等）',
+  `is_end` tinyint NOT NULL DEFAULT '1' COMMENT '字典 djs_yes_no：是否完成；1=是（已用完，不显示）/ 0=否（进行中）',
+  `latest_check_time` datetime DEFAULT NULL COMMENT '最新盘点时间（由 WMS-STOCK-001 D11 更新）',
+  `check_result` tinyint DEFAULT NULL COMMENT '字典 djs_check_result：1=正常 / 2=异常 / 3=计损',
+  `operator_id` bigint DEFAULT NULL COMMENT '最后操作人 FK → sys_user.user_id（ADR-0007）',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '创建人',
+  `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新人',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `del_flag` char(1) DEFAULT '0' COMMENT '删除标志',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  `del_unique` bigint NOT NULL DEFAULT '0' COMMENT '软删 token（update del_flag=''1'' 时同步 SET del_unique=id）',
+  `white_bar_no` varchar(32) DEFAULT NULL COMMENT '白条流水号（半只/整只白条唯一标识）',
+  PRIMARY KEY (`id`),
+  KEY `idx_location` (`tenant_id`,`location_id`),
+  KEY `idx_product` (`tenant_id`,`product_id`),
+  KEY `idx_ear_no` (`tenant_id`,`ear_no`),
+  KEY `idx_plot` (`tenant_id`,`plot_id`),
+  KEY `idx_is_end` (`tenant_id`,`is_end`),
+  KEY `idx_medicine` (`tenant_id`,`medicine_id`),
+  KEY `idx_white_bar_no` (`tenant_id`,`white_bar_no`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='库存明细表（WMS-MD-001）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_warehouse_location_stock`
+--
+
+LOCK TABLES `t_warehouse_location_stock` WRITE;
+/*!40000 ALTER TABLE `t_warehouse_location_stock` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_warehouse_location_stock` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_warehouse_loss_flow`
+--
+
+DROP TABLE IF EXISTS `t_warehouse_loss_flow`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_warehouse_loss_flow` (
+  `id` bigint NOT NULL COMMENT '主键（雪花）',
+  `loss_date` datetime NOT NULL COMMENT '损耗发生时间',
+  `product_id` bigint DEFAULT NULL COMMENT '产品 ID（FK → t_warehouse_product_info.id）',
+  `product_code` varchar(64) DEFAULT NULL COMMENT '产品编码（冗余快照，行58 核心字段）',
+  `product_name` varchar(128) DEFAULT NULL COMMENT '产品名称（冗余快照）',
+  `product_unit` varchar(16) DEFAULT NULL COMMENT '单位（冗余快照）',
+  `belong_type` varchar(32) DEFAULT NULL COMMENT '业态归属（冗余，按品类聚合/过滤；字典 djs_belong_type）',
+  `loss_type` varchar(20) NOT NULL COMMENT '损耗类型（字典 djs_loss_type）',
+  `loss_weight` decimal(12,3) NOT NULL COMMENT '损耗量',
+  `location_id` bigint DEFAULT NULL COMMENT '损耗位置（库位 FK → t_warehouse_location_info.id）',
+  `location_name` varchar(64) DEFAULT NULL COMMENT '损耗位置名称（冗余快照）',
+  `operator_id` bigint DEFAULT NULL COMMENT '操作人（系统自动算的损耗如生产损耗为空）',
+  `source_biz_type` varchar(20) DEFAULT NULL COMMENT '来源业务（veg_handle/transport/mat/cut/check/production）',
+  `source_biz_id` bigint DEFAULT NULL COMMENT '来源记录 ID（追溯回指源单）',
+  `source_flow_id` bigint DEFAULT NULL COMMENT '关联 stock_flow.id（若损耗同时是一条出库流水）',
+  `ear_no` varchar(32) DEFAULT NULL COMMENT '猪只耳号 / 白条号（追溯标签，白条损耗用）',
+  `plot_id` bigint DEFAULT NULL COMMENT '地块 ID（追溯标签，果蔬损耗用）',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户编号（=农场编码，行58）',
+  `create_by` bigint DEFAULT NULL COMMENT '创建者',
+  `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新者',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `del_flag` char(1) NOT NULL DEFAULT '0' COMMENT '删除标记（0 未删 / 1 已删）',
+  `white_bar_no` varchar(32) DEFAULT NULL COMMENT '白条流水号（半只/整只白条唯一标识，滴水损失记录追溯）',
+  PRIMARY KEY (`id`),
+  KEY `idx_loss_date` (`loss_date`),
+  KEY `idx_loss_product` (`product_id`),
+  KEY `idx_loss_type` (`loss_type`),
+  KEY `idx_white_bar_no` (`tenant_id`,`white_bar_no`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='统一损耗流水台账（WMS-LOSS-001）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_warehouse_loss_flow`
+--
+
+LOCK TABLES `t_warehouse_loss_flow` WRITE;
+/*!40000 ALTER TABLE `t_warehouse_loss_flow` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_warehouse_loss_flow` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_warehouse_monthly_record`
+--
+
+DROP TABLE IF EXISTS `t_warehouse_monthly_record`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_warehouse_monthly_record` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
+  `stat_month` varchar(7) NOT NULL COMMENT '统计月份 yyyy-MM（当月每日刷新，历史月固定）',
+  `slaughter_count` int DEFAULT '0' COMMENT '屠宰头数（当月日屠宰头数之和）',
+  `slaughter_rate` decimal(12,3) DEFAULT NULL COMMENT '屠宰率%（当月日接收重量之和/当月日送宰总重之和×100；分母 0 → NULL）',
+  `bar_yield_rate` decimal(12,3) DEFAULT NULL COMMENT '白条出品率%（当月日白条总重之和/当月日送宰总重之和×100；分母 0 → NULL）',
+  `cut_yield_rate` decimal(12,3) DEFAULT NULL COMMENT '分割出品率%（当月日分割产品总重之和/当月日分割白条总重之和×100；分母 0 → NULL）',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '创建者',
+  `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新者',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  `del_flag` char(1) NOT NULL DEFAULT '0' COMMENT '删除标志',
+  `del_unique` bigint NOT NULL DEFAULT '0' COMMENT '软删唯一标识',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_wh_monthly_tenant_month` (`tenant_id`,`stat_month`,`del_unique`),
+  KEY `idx_wh_monthly_stat_month` (`stat_month`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='仓库月数据记录（WMS-STAT-001，邓博 row18，汇总当月日表）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_warehouse_monthly_record`
+--
+
+LOCK TABLES `t_warehouse_monthly_record` WRITE;
+/*!40000 ALTER TABLE `t_warehouse_monthly_record` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_warehouse_monthly_record` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_warehouse_outsource_pig`
+--
+
+DROP TABLE IF EXISTS `t_warehouse_outsource_pig`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_warehouse_outsource_pig` (
+  `id` bigint NOT NULL AUTO_INCREMENT COMMENT '主键（雪花）',
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
+  `purchase_date` date DEFAULT NULL COMMENT '购买日期（必填，应用层校验）',
+  `arrive_time` datetime DEFAULT NULL COMMENT '到场时间（可空）',
+  `pig_mark_no` varchar(64) DEFAULT NULL COMMENT '猪只标识号（可空）',
+  `pig_weight` decimal(10,2) DEFAULT NULL COMMENT '毛猪重量 kg（必填，应用层校验）',
+  `slaughter_date` date DEFAULT NULL COMMENT '送宰日期（必填，应用层校验）',
+  `supplier_id` bigint DEFAULT NULL COMMENT '供应商 ID → t_djs_supplier.id（必填，应用层校验）',
+  `bar_id` varchar(32) DEFAULT NULL COMMENT '镜像白条业务码（= t_warehouse_bar_info.bar_id；录入时回写，删除前据此反查白条状态做下游拦截）',
+  `buyer` varchar(32) DEFAULT NULL COMMENT '购买人 sys_user.user_id（可空）',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '创建人',
+  `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新人',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `del_flag` char(1) DEFAULT '0' COMMENT '删除标志（0 未删 / 1 已删）',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  `del_unique` bigint NOT NULL DEFAULT '0' COMMENT '软删 token（del_flag=''1'' 时 SET del_unique=id）',
+  PRIMARY KEY (`id`),
+  KEY `idx_tenant_purchase` (`tenant_id`,`purchase_date`),
+  KEY `idx_tenant_supplier` (`tenant_id`,`supplier_id`),
+  KEY `idx_tenant_barid` (`tenant_id`,`bar_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='外购猪只台账（DJS-FIX-WMS-RALN）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_warehouse_outsource_pig`
+--
+
+LOCK TABLES `t_warehouse_outsource_pig` WRITE;
+/*!40000 ALTER TABLE `t_warehouse_outsource_pig` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_warehouse_outsource_pig` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_warehouse_pig_burn_record`
+--
+
+DROP TABLE IF EXISTS `t_warehouse_pig_burn_record`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_warehouse_pig_burn_record` (
+  `id` bigint NOT NULL AUTO_INCREMENT COMMENT '主键',
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
+  `burn_id` varchar(32) NOT NULL COMMENT '业务码 BURN+YYMMDD+4 位序号（本表幂等键）',
+  `ear_no` varchar(32) DEFAULT NULL COMMENT '猪只耳号（自养填；外购无耳号留空，靠白条 supplier_id 区分）',
+  `burn_time` datetime NOT NULL COMMENT '燎毛时间（工序时间）',
+  `arrive_weight` decimal(12,3) DEFAULT NULL COMMENT '到场重量 kg（可选；填则计算损耗）',
+  `burn_weight` decimal(12,3) NOT NULL COMMENT '燎毛后重量 kg（白条入库重量）',
+  `loss_weight` decimal(12,3) DEFAULT NULL COMMENT '损耗 kg（到场重量 - 入库合计；到场重量未填时为空）',
+  `burn_status` varchar(16) NOT NULL DEFAULT 'pending' COMMENT '字典 djs_burn_status：pending=待处理 / done=已完成（已扣库存）',
+  `operator_id` bigint DEFAULT NULL COMMENT 'mp 提交人 FK → sys_user.user_id（ADR-0007）',
+  `location_id` bigint DEFAULT NULL COMMENT '入白条库的库位 FK → t_warehouse_location_info.id（done 状态必填）',
+  `proof_oss_ids` varchar(500) DEFAULT NULL COMMENT '凭证图 OSS IDs CSV（CameraUploadWithWatermark biz_type=warehouse_pig_burn）',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '创建者',
+  `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新者',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  `del_flag` char(1) NOT NULL DEFAULT '0' COMMENT '删除标志',
+  `del_unique` bigint NOT NULL DEFAULT '0' COMMENT '软删唯一标识',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_burn_id` (`tenant_id`,`burn_id`,`del_unique`),
+  KEY `idx_ear_no` (`tenant_id`,`ear_no`),
+  KEY `idx_burn_time` (`tenant_id`,`burn_time`),
+  KEY `idx_burn_status` (`tenant_id`,`burn_status`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='燎毛工序记录单（WMS-PIG-001）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_warehouse_pig_burn_record`
+--
+
+LOCK TABLES `t_warehouse_pig_burn_record` WRITE;
+/*!40000 ALTER TABLE `t_warehouse_pig_burn_record` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_warehouse_pig_burn_record` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_warehouse_pig_cut_record`
+--
+
+DROP TABLE IF EXISTS `t_warehouse_pig_cut_record`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_warehouse_pig_cut_record` (
+  `id` bigint NOT NULL AUTO_INCREMENT COMMENT '主键',
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
+  `cut_id` varchar(32) NOT NULL COMMENT '业务码 CUT+yyMMdd+4 位（本表幂等键）',
+  `white_bar_id` bigint NOT NULL COMMENT 'FK → t_warehouse_bar_info.id（被分割的白条）',
+  `bar_id` varchar(32) NOT NULL COMMENT '冗余 bar_info.bar_id 便于查询',
+  `ear_no` varchar(32) DEFAULT NULL COMMENT '冗余白条耳号',
+  `pickup_time` datetime NOT NULL COMMENT '白条领用时间（pickup 阶段写）',
+  `cut_start_time` datetime DEFAULT NULL COMMENT '分割开始时间（cutOut 首次提交阶段写）',
+  `cut_done_time` datetime DEFAULT NULL COMMENT '出库完成时间（cutDone 阶段写）',
+  `pickup_weight` decimal(12,3) DEFAULT NULL COMMENT '领用重量 kg（= bar_info.in_weight 快照）',
+  `drip_loss` decimal(12,3) DEFAULT NULL COMMENT '滴水损失 kg（cutDone 阶段写）',
+  `acid_remove_minutes` int DEFAULT NULL COMMENT '排酸时长（min，= cut_done_time - pickup_time）',
+  `operator_id` bigint DEFAULT NULL COMMENT 'mp 分割师 FK → sys_user.user_id',
+  `location_id` bigint DEFAULT NULL COMMENT '分割产出入冻品库 location FK',
+  `target_store_id` bigint DEFAULT NULL COMMENT '指定目标门店（V1 可空）',
+  `target_demand_id` bigint DEFAULT NULL COMMENT '关联需求 FK → t_warehouse_demand_manage.id（V1 可空）',
+  `is_half` tinyint NOT NULL DEFAULT '2' COMMENT '是否半扇分割 1=是 / 2=否（整只）',
+  `cut_status` varchar(16) NOT NULL DEFAULT 'pending_pickup' COMMENT 'pending_pickup / picked / cutting / done',
+  `out_type` varchar(16) DEFAULT 'cut' COMMENT '出库类型 cut=分割车间/ship=发货月台/warehouse=仓库出库（白条领用表）',
+  `out_dest` varchar(50) DEFAULT NULL COMMENT '出库去向码值（字典 djs_stock_out_dest，仅 out_type=warehouse 仓库出库时有值）',
+  `proof_oss_ids` varchar(500) DEFAULT NULL COMMENT '凭证图 OSS IDs CSV（biz_type=warehouse_pig_cut）',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '创建者',
+  `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新者',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  `del_flag` char(1) NOT NULL DEFAULT '0' COMMENT '删除标志',
+  `del_unique` bigint NOT NULL DEFAULT '0' COMMENT '软删唯一性辅助列',
+  `white_bar_no` varchar(32) DEFAULT NULL COMMENT '白条流水号（半只/整只白条唯一标识）',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_cut_id` (`tenant_id`,`cut_id`,`del_unique`),
+  KEY `idx_white_bar` (`tenant_id`,`white_bar_id`),
+  KEY `idx_status` (`tenant_id`,`cut_status`),
+  KEY `idx_pickup_time` (`tenant_id`,`pickup_time`),
+  KEY `idx_white_bar_no` (`tenant_id`,`white_bar_no`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='猪肉分割工序记录单（WMS-PIG-002）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_warehouse_pig_cut_record`
+--
+
+LOCK TABLES `t_warehouse_pig_cut_record` WRITE;
+/*!40000 ALTER TABLE `t_warehouse_pig_cut_record` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_warehouse_pig_cut_record` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_warehouse_planting_record`
+--
+
+DROP TABLE IF EXISTS `t_warehouse_planting_record`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_warehouse_planting_record` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001',
+  `plot_id` bigint NOT NULL COMMENT 'FK → t_plant_plot_info.id',
+  `crop_id` bigint NOT NULL COMMENT 'FK → t_plant_crop_info.id',
+  `product_id` bigint DEFAULT NULL COMMENT '冗余产品 ID（PLT-PICK-001 / WMS-VEG-001 写入，FK → t_warehouse_product_info.id；用于 stock_flow / 追溯链按 product 关联）',
+  `plot_name` varchar(64) DEFAULT NULL COMMENT '冗余',
+  `crop_name` varchar(64) DEFAULT NULL COMMENT '冗余',
+  `plant_date` date DEFAULT NULL COMMENT '种植日期',
+  `harvest_date` date NOT NULL COMMENT '采摘日期',
+  `harvest_weight` decimal(12,3) NOT NULL COMMENT '收获产量(kg)',
+  `expect_yield` decimal(12,3) DEFAULT NULL COMMENT '预计产量',
+  `avg_yield` decimal(12,3) DEFAULT NULL COMMENT '平均亩产',
+  `is_loss` tinyint DEFAULT NULL COMMENT '是否损失 1=是/2=否',
+  `disaster_record` varchar(500) DEFAULT NULL COMMENT '灾害记录（多个逗号分隔）',
+  `team_id` bigint DEFAULT NULL COMMENT '班组 ID',
+  `team_name` varchar(64) DEFAULT NULL COMMENT '班组名称',
+  `data_date` datetime NOT NULL COMMENT '数据生成时间（一般同采摘时间）',
+  `handle_status` varchar(16) NOT NULL DEFAULT 'pending' COMMENT 'djs_veg_handle_status：mp 处理工领取标记',
+  `create_dept` bigint DEFAULT NULL,
+  `create_by` bigint DEFAULT NULL,
+  `create_time` datetime DEFAULT NULL,
+  `update_by` bigint DEFAULT NULL,
+  `update_time` datetime DEFAULT NULL,
+  `remark` varchar(500) DEFAULT NULL,
+  `del_flag` char(1) DEFAULT '0',
+  `del_unique` bigint NOT NULL DEFAULT '0',
+  PRIMARY KEY (`id`),
+  KEY `idx_plot_crop` (`tenant_id`,`plot_id`,`crop_id`),
+  KEY `idx_handle_status` (`tenant_id`,`handle_status`),
+  KEY `idx_data_date` (`tenant_id`,`data_date`),
+  KEY `idx_product_id` (`product_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='仓库视角种植记录（doc/11 §2.14；WMS-VEG-001 建表 / D14 CROSS-FLOW-002 listener 写入）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_warehouse_planting_record`
+--
+
+LOCK TABLES `t_warehouse_planting_record` WRITE;
+/*!40000 ALTER TABLE `t_warehouse_planting_record` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_warehouse_planting_record` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_warehouse_product_info`
+--
+
+DROP TABLE IF EXISTS `t_warehouse_product_info`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_warehouse_product_info` (
+  `id` bigint NOT NULL AUTO_INCREMENT COMMENT '主键（雪花）',
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
+  `product_id` varchar(32) NOT NULL COMMENT '业务码（用户手填，例 P0001 / SP-PORK-001）',
+  `product_name` varchar(128) NOT NULL COMMENT '产品 / 商品名称',
+  `product_type` tinyint NOT NULL COMMENT '字典 djs_product_type：1=自产 / 2=外购 / 3=礼盒',
+  `product_unit` varchar(16) NOT NULL COMMENT '单位（kg / 个 / 盒 等）',
+  `product_spec` varchar(64) DEFAULT NULL COMMENT '规格（如 500g/包）',
+  `product_alias` varchar(128) DEFAULT NULL COMMENT '产品别名',
+  `belong_type` varchar(32) DEFAULT NULL COMMENT '字典 djs_belong_type：自产归属类型（pork/vegetable/white_bar/dry_good/egg/gift_box）',
+  `buy_class` varchar(32) DEFAULT NULL COMMENT '字典 djs_buy_class：外购产品类（V1 客户后填）',
+  `product_thumb` varchar(512) DEFAULT NULL COMMENT '缩略图 OSS ID',
+  `product_img` varchar(2048) DEFAULT NULL COMMENT '原图 OSS IDs 逗号分隔',
+  `product_attr` tinyint DEFAULT NULL COMMENT '字典 djs_product_attr：1=生产产品 / 2=原材料',
+  `product_workshop` tinyint DEFAULT NULL COMMENT '字典 djs_product_workshop：1=燎毛间 / 2=分割间 / 3=肉品打包 / 4=蔬菜打包',
+  `store_location_id` varchar(255) DEFAULT NULL COMMENT '存储库位 ID 列表（逗号分隔；V2 改关联表）',
+  `product_status` tinyint NOT NULL DEFAULT '0' COMMENT '字典 sys_normal_disable：0=正常 / 1=停用',
+  `product_material` bigint DEFAULT NULL COMMENT 'FK → t_warehouse_product_info.id（生产产品关联原材料）',
+  `product_desc` varchar(500) DEFAULT NULL COMMENT '产品描述',
+  `material_num` decimal(12,3) DEFAULT NULL COMMENT '原材料计算量（主要鸡蛋）',
+  `is_delivery` tinyint NOT NULL DEFAULT '1' COMMENT '字典 djs_yes_no：是否发货产品 1=是 / 0=否',
+  `supplier_id` bigint DEFAULT NULL COMMENT 'FK → t_md_supplier.id（外购产品填）',
+  `is_buy_out` tinyint NOT NULL DEFAULT '0' COMMENT '字典 djs_yes_no：是否可外购 1=是 / 0=否',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '创建人',
+  `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新人',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `del_flag` char(1) DEFAULT '0' COMMENT '删除标志',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  `del_unique` bigint NOT NULL DEFAULT '0' COMMENT '软删 token（update del_flag=''1'' 时同步 SET del_unique=id）',
+  `image_oss_id` varchar(32) DEFAULT NULL COMMENT '主图 ossId（4 层 resolver L1，sys_oss.oss_id）',
+  `image_source` tinyint NOT NULL DEFAULT '0' COMMENT '图来源（0 自动匹配 / 1 手动）',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_product_id` (`tenant_id`,`product_id`,`del_unique`),
+  KEY `idx_product_type` (`tenant_id`,`product_type`),
+  KEY `idx_belong_type` (`tenant_id`,`belong_type`),
+  KEY `idx_buy_class` (`tenant_id`,`buy_class`),
+  KEY `idx_status` (`tenant_id`,`product_status`)
+) ENGINE=InnoDB AUTO_INCREMENT=100000000000000123 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='产品/商品/礼盒共表（WMS-MD-002）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_warehouse_product_info`
+--
+
+LOCK TABLES `t_warehouse_product_info` WRITE;
+/*!40000 ALTER TABLE `t_warehouse_product_info` DISABLE KEYS */;
+INSERT INTO `t_warehouse_product_info` VALUES (100000000000000001,'1001','PROD-WHITE-BAR-01','白条·整只',1,'kg',NULL,NULL,'white_bar',NULL,NULL,NULL,2,1,NULL,0,NULL,NULL,NULL,0,NULL,0,NULL,NULL,'2026-07-10 16:33:10',NULL,'2026-07-10 16:33:14','0',NULL,0,NULL,0),(100000000000000004,'1001','PROD-WHITE-BAR-04','白条·半只',1,'kg',NULL,NULL,'white_bar',NULL,NULL,NULL,2,1,NULL,0,NULL,NULL,NULL,0,NULL,0,NULL,NULL,'2026-07-10 16:33:12',NULL,'2026-07-10 16:33:14','0',NULL,0,NULL,0),(100000000000000101,'1001','PROD-PIG-LEAN-01','猪肉·精瘦肉',1,'kg',NULL,NULL,'pork',NULL,NULL,NULL,1,2,NULL,0,NULL,NULL,NULL,1,NULL,0,NULL,NULL,'2026-07-10 16:33:11',NULL,NULL,'0',NULL,0,NULL,0),(100000000000000102,'1001','PROD-PIG-PART-01','猪肉·部位肉',1,'kg',NULL,NULL,'pork',NULL,NULL,NULL,1,2,NULL,0,NULL,NULL,NULL,1,NULL,0,NULL,NULL,'2026-07-10 16:33:11',NULL,NULL,'0',NULL,0,NULL,0),(100000000000000103,'1001','PROD-PIG-BONE-01','猪肉·骨类',1,'kg',NULL,NULL,'pork',NULL,NULL,NULL,1,2,NULL,0,NULL,NULL,NULL,1,NULL,0,NULL,NULL,'2026-07-10 16:33:11',NULL,NULL,'0',NULL,0,NULL,0),(100000000000000104,'1001','PROD-PIG-SKIN-01','猪肉·猪皮',1,'kg',NULL,NULL,'pork',NULL,NULL,NULL,1,2,NULL,0,NULL,NULL,NULL,1,NULL,0,NULL,NULL,'2026-07-10 16:33:11',NULL,NULL,'0',NULL,0,NULL,0),(100000000000000105,'1001','PROD-PIG-SCRAP-01','猪肉·碎料',1,'kg',NULL,NULL,'pork',NULL,NULL,NULL,1,2,NULL,0,NULL,NULL,NULL,1,NULL,0,NULL,NULL,'2026-07-10 16:33:11',NULL,NULL,'0',NULL,0,NULL,0),(100000000000000106,'1001','PROD-WHITE-BAR-02','白条·猪头',1,'kg','整',NULL,'white_bar',NULL,NULL,NULL,2,1,NULL,0,NULL,NULL,NULL,1,NULL,0,NULL,1,'2026-07-10 16:33:11',NULL,'2026-07-10 16:33:14','0','WMS-MAT-001 D08 #11 决策 a',0,NULL,0),(100000000000000107,'1001','PROD-WHITE-BAR-03','白条·猪蹄',1,'kg','只',NULL,'white_bar',NULL,NULL,NULL,2,1,NULL,0,NULL,NULL,NULL,1,NULL,0,NULL,1,'2026-07-10 16:33:11',NULL,'2026-07-10 16:33:14','0','WMS-MAT-001 D08 #11 决策 a',0,NULL,0),(100000000000000108,'1001','PROD-PACK-BAG-01','塑料袋',2,'个','500g/包',NULL,'package',NULL,NULL,NULL,2,NULL,NULL,0,NULL,NULL,NULL,0,NULL,0,NULL,1,'2026-07-10 16:33:11',NULL,NULL,'0','WMS-MAT-001 seed',0,NULL,0),(100000000000000109,'1001','PROD-PACK-BOX-01','纸箱',2,'个','5kg/箱',NULL,'package',NULL,NULL,NULL,2,NULL,NULL,0,NULL,NULL,NULL,0,NULL,0,NULL,1,'2026-07-10 16:33:11',NULL,NULL,'0','WMS-MAT-001 seed',0,NULL,0),(100000000000000110,'1001','PROD-PACK-LABEL-01','标签贴纸',2,'张','-',NULL,'package',NULL,NULL,NULL,2,NULL,NULL,0,NULL,NULL,NULL,0,NULL,0,NULL,1,'2026-07-10 16:33:11',NULL,NULL,'0','WMS-MAT-001 seed',0,NULL,0),(100000000000000111,'1001','PROD-PACK-ROPE-01','捆扎绳',2,'米','-',NULL,'package',NULL,NULL,NULL,2,NULL,NULL,0,NULL,NULL,NULL,0,NULL,0,NULL,1,'2026-07-10 16:33:11',NULL,NULL,'0','WMS-MAT-001 seed',0,NULL,0),(100000000000000112,'1001','PROD-PACK-OTHER-01','其他包材',2,'个','-',NULL,'package',NULL,NULL,NULL,2,NULL,NULL,0,NULL,NULL,NULL,0,NULL,0,NULL,1,'2026-07-10 16:33:11',NULL,NULL,'0','WMS-MAT-001 seed',0,NULL,0),(100000000000000113,'1001','PROD-FEED-CORN-01','玉米',2,'kg','袋装',NULL,'feed',NULL,NULL,NULL,2,NULL,NULL,0,NULL,NULL,NULL,0,NULL,0,NULL,1,'2026-07-10 16:33:11',NULL,NULL,'0','WMS-MAT-001 seed',0,NULL,0),(100000000000000114,'1001','PROD-FEED-SOY-01','大豆',2,'kg','袋装',NULL,'feed',NULL,NULL,NULL,2,NULL,NULL,0,NULL,NULL,NULL,0,NULL,0,NULL,1,'2026-07-10 16:33:11',NULL,NULL,'0','WMS-MAT-001 seed',0,NULL,0),(100000000000000115,'1001','PROD-FEED-BRAN-01','麸皮',2,'kg','袋装',NULL,'feed',NULL,NULL,NULL,2,NULL,NULL,0,NULL,NULL,NULL,0,NULL,0,NULL,1,'2026-07-10 16:33:11',NULL,NULL,'0','WMS-MAT-001 seed',0,NULL,0),(100000000000000116,'1001','PROD-FEED-GRASS-01','牧草',2,'kg','-',NULL,'feed',NULL,NULL,NULL,2,NULL,NULL,0,NULL,NULL,NULL,0,NULL,0,NULL,1,'2026-07-10 16:33:11',NULL,NULL,'0','WMS-MAT-001 seed',0,NULL,0),(100000000000000117,'1001','PROD-FEED-OTHER-01','其他原料',2,'kg','-',NULL,'feed',NULL,NULL,NULL,2,NULL,NULL,0,NULL,NULL,NULL,0,NULL,0,NULL,1,'2026-07-10 16:33:11',NULL,NULL,'0','WMS-MAT-001 seed',0,NULL,0),(100000000000000118,'1001','PROD-SEED-VEG-01','蔬菜种子',2,'g','-',NULL,'seed',NULL,NULL,NULL,2,NULL,NULL,0,NULL,NULL,NULL,0,NULL,0,NULL,1,'2026-07-10 16:33:11',NULL,NULL,'0','WMS-MAT-001 seed',0,NULL,0),(100000000000000119,'1001','PROD-SEED-GRAIN-01','粮食种子',2,'g','-',NULL,'seed',NULL,NULL,NULL,2,NULL,NULL,0,NULL,NULL,NULL,0,NULL,0,NULL,1,'2026-07-10 16:33:11',NULL,NULL,'0','WMS-MAT-001 seed',0,NULL,0),(100000000000000120,'1001','PROD-SEED-FRUIT-01','果树种子',2,'粒','-',NULL,'seed',NULL,NULL,NULL,2,NULL,NULL,0,NULL,NULL,NULL,0,NULL,0,NULL,1,'2026-07-10 16:33:11',NULL,NULL,'0','WMS-MAT-001 seed',0,NULL,0),(100000000000000121,'1001','PROD-SEED-HERB-01','草本种子',2,'g','-',NULL,'seed',NULL,NULL,NULL,2,NULL,NULL,0,NULL,NULL,NULL,0,NULL,0,NULL,1,'2026-07-10 16:33:11',NULL,NULL,'0','WMS-MAT-001 seed',0,NULL,0),(100000000000000122,'1001','PROD-SEED-OTHER-01','其他种子',2,'g','-',NULL,'seed',NULL,NULL,NULL,2,NULL,NULL,0,NULL,NULL,NULL,0,NULL,0,NULL,1,'2026-07-10 16:33:11',NULL,NULL,'0','WMS-MAT-001 seed',0,NULL,0);
+/*!40000 ALTER TABLE `t_warehouse_product_info` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_warehouse_product_inhouse`
+--
+
+DROP TABLE IF EXISTS `t_warehouse_product_inhouse`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_warehouse_product_inhouse` (
+  `id` bigint NOT NULL AUTO_INCREMENT COMMENT '主键',
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
+  `produce_date` date NOT NULL COMMENT '生产日期',
+  `product_id` bigint NOT NULL COMMENT 'FK → t_warehouse_product_info.id（分割品标准 SKU）',
+  `product_name` varchar(128) NOT NULL COMMENT '产品名称（冗余）',
+  `product_type` tinyint NOT NULL COMMENT 'djs_product_type 1=自产 / 2=外购 / 3=礼盒',
+  `product_unit` varchar(16) NOT NULL COMMENT '计量单位',
+  `product_spec` varchar(64) DEFAULT NULL COMMENT '规格',
+  `plot_id` bigint DEFAULT NULL COMMENT '蔬菜来源地块（D9 WMS-VEG-001 用）',
+  `ear_no` varchar(32) DEFAULT NULL COMMENT '猪肉来源耳号（冗余便于查询）',
+  `product_sort` int DEFAULT NULL COMMENT '产品序号',
+  `product_weight` decimal(12,3) NOT NULL COMMENT '产品重量 kg',
+  `produce_time` datetime NOT NULL COMMENT '生产时间',
+  `white_bar_id` bigint DEFAULT NULL COMMENT 'FK → t_warehouse_bar_info.id（分割时关联）',
+  `pickup_status` tinyint NOT NULL DEFAULT '0' COMMENT '燎毛产出行白条领用状态 0未领/1已领（仅 white_bar_id 非空的燎毛产出行用；其余行恒 0 无意义）',
+  `pickup_weight` decimal(10,3) DEFAULT NULL COMMENT '该产出行白条领用过磅重量 kg（领用进分割车间时现场过磅；整猪 cut_record.pickup_weight=各行之和）',
+  `cut_part` varchar(32) DEFAULT NULL COMMENT '分割部位 djs_pig_cut_part：lean/part/bone/skin/scrap',
+  `source` varchar(16) NOT NULL DEFAULT 'warehouse' COMMENT '来源 warehouse=仓库分割/store=门店再分',
+  `store_id` bigint DEFAULT NULL COMMENT '门店 ID（仅 source=store 的门店拆单行有值；warehouse 行 / 历史行 NULL）',
+  `material_id` bigint DEFAULT NULL COMMENT '原材料 ID',
+  `material_consume` decimal(12,3) DEFAULT NULL COMMENT '原材料耗用 kg',
+  `location_id` bigint DEFAULT NULL COMMENT '入库库位 FK → t_warehouse_location_info.id（冻品库 / 蔬菜鲜品库）',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '创建者',
+  `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新者',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  `del_flag` char(1) NOT NULL DEFAULT '0' COMMENT '删除标志',
+  `del_unique` bigint NOT NULL DEFAULT '0' COMMENT '软删唯一性辅助列',
+  `white_bar_no` varchar(32) DEFAULT NULL COMMENT '白条流水号（半只/整只白条唯一标识，燎毛按白条生成）',
+  PRIMARY KEY (`id`),
+  KEY `idx_white_bar` (`tenant_id`,`white_bar_id`),
+  KEY `idx_plot` (`tenant_id`,`plot_id`),
+  KEY `idx_product` (`tenant_id`,`product_id`),
+  KEY `idx_produce_date` (`tenant_id`,`produce_date`),
+  KEY `idx_source` (`tenant_id`,`source`),
+  KEY `idx_store_id` (`store_id`),
+  KEY `idx_white_bar_no` (`tenant_id`,`white_bar_no`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='过程产品（非发货）信息表（doc/11 §2.7）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_warehouse_product_inhouse`
+--
+
+LOCK TABLES `t_warehouse_product_inhouse` WRITE;
+/*!40000 ALTER TABLE `t_warehouse_product_inhouse` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_warehouse_product_inhouse` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_warehouse_product_produce`
+--
+
+DROP TABLE IF EXISTS `t_warehouse_product_produce`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_warehouse_product_produce` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
+  `produce_no` varchar(32) NOT NULL COMMENT '生产编号',
+  `produce_date` datetime NOT NULL COMMENT '生产日期',
+  `product_id` bigint NOT NULL COMMENT '产品 ID',
+  `produce_quantity` decimal(12,2) NOT NULL COMMENT '生产数量',
+  `in_stock_quantity` decimal(12,2) DEFAULT NULL COMMENT '实际入库数量',
+  `loss_quantity` decimal(12,2) DEFAULT NULL COMMENT '损耗数量',
+  `plot_id` bigint DEFAULT NULL COMMENT '关联地块 ID',
+  `ear_no` varchar(32) DEFAULT NULL COMMENT '关联猪只耳号',
+  `white_bar_id` bigint DEFAULT NULL COMMENT '关联白条 ID',
+  `material_id` bigint DEFAULT NULL COMMENT '原料 ID',
+  `location_id` bigint DEFAULT NULL COMMENT '入库库位 ID',
+  `operator_id` bigint DEFAULT NULL COMMENT '操作人',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '录入人',
+  `create_time` datetime DEFAULT NULL COMMENT '录入时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新人',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `del_flag` char(1) DEFAULT '0' COMMENT '删除标志',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  `del_unique` bigint NOT NULL DEFAULT '0' COMMENT '软删除生成 token（应用层 update del_flag=''1'' 时同步 SET del_unique=id；§6.3.0）',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_produce_no` (`tenant_id`,`produce_no`,`del_unique`),
+  KEY `idx_tenant_create` (`tenant_id`,`create_time`),
+  KEY `idx_product` (`product_id`),
+  KEY `idx_white_bar` (`white_bar_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='非发货产品生产信息表（入库）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_warehouse_product_produce`
+--
+
+LOCK TABLES `t_warehouse_product_produce` WRITE;
+/*!40000 ALTER TABLE `t_warehouse_product_produce` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_warehouse_product_produce` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_warehouse_product_production`
+--
+
+DROP TABLE IF EXISTS `t_warehouse_product_production`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_warehouse_product_production` (
+  `id` bigint NOT NULL AUTO_INCREMENT COMMENT '主键（雪花）',
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
+  `produce_date` date NOT NULL COMMENT '生产日期（doc/11 §2.6 R6）',
+  `produce_no` varchar(32) NOT NULL COMMENT '业务码 yyMMdd+前缀+4位（Z=猪肉/G=果蔬/B=白条/H=干货/D=鸡蛋/L=礼盒，doc/11 §2.6 R7）',
+  `product_id` bigint NOT NULL COMMENT 'FK → t_warehouse_product_info.id（doc/11 §2.6 R8）',
+  `product_name` varchar(128) NOT NULL COMMENT '产品名称冗余（doc/11 §2.6 R9）',
+  `product_type` tinyint NOT NULL COMMENT 'djs_product_type 1=自产 / 2=外购 / 3=礼盒（doc/11 §2.6 R10）',
+  `product_unit` varchar(16) NOT NULL COMMENT '计量单位（doc/11 §2.6 R11）',
+  `product_spec` varchar(64) DEFAULT NULL COMMENT '规格（doc/11 §2.6 R12）',
+  `plot_id` bigint DEFAULT NULL COMMENT '蔬菜来源地块 ID（doc/11 §2.6 R13）',
+  `ear_no` varchar(32) DEFAULT NULL COMMENT '猪肉来源耳号（doc/11 §2.6 R14）',
+  `product_sort` int NOT NULL DEFAULT '1' COMMENT '产品序号 1 开始自增（doc/11 §2.6 R15）',
+  `product_weight` decimal(12,3) NOT NULL COMMENT '产品重量 kg（doc/11 §2.6 R16）',
+  `produce_quantity` decimal(12,3) DEFAULT NULL COMMENT '生产数量（kg / 件数 / 盒数；PACK service 双写 productWeight 同步；SHIP 流水读）',
+  `store_id` bigint DEFAULT NULL COMMENT '需求门店 FK → t_md_store.id（doc/11 §2.6 R17）',
+  `demand_id` bigint DEFAULT NULL COMMENT '关联需求 FK → t_warehouse_demand_manage.id（WMS-SHIP-001 用；PACK 不写）',
+  `produce_time` datetime NOT NULL COMMENT '生产时间到时分秒（doc/11 §2.6 R18）',
+  `is_delivery_check` tinyint NOT NULL DEFAULT '0' COMMENT '是否发货清点 djs_yes_no 1=是/0=否（doc/11 §2.6 R19，WMS-SHIP-001 推进）',
+  `delivery_check_time` datetime DEFAULT NULL COMMENT '发货清点时间（doc/11 §2.6 R20）',
+  `is_arrival_confirm` tinyint NOT NULL DEFAULT '0' COMMENT '是否到货确认 djs_yes_no 1=是/0=否（doc/11 §2.6 R21）',
+  `arrival_confirm_time` datetime DEFAULT NULL COMMENT '到货确认时间（doc/11 §2.6 R22）',
+  `white_bar_id` bigint DEFAULT NULL COMMENT '内部分割时关联白条 FK → t_warehouse_bar_info.id（doc/11 §2.6 R23）',
+  `material_id` bigint DEFAULT NULL COMMENT '原材料 ID（doc/11 §2.6 R24）',
+  `material_consume` decimal(12,3) DEFAULT NULL COMMENT '原材料耗用 kg（doc/11 §2.6 R25）',
+  `supplier_id` bigint DEFAULT NULL COMMENT '外购供应商 ID（doc/11 §2.6 R26）',
+  `produce_location` bigint DEFAULT NULL COMMENT '生产位置 FK → t_warehouse_location_info.id（D10 hotfix 改类型）',
+  `deliver_type` tinyint DEFAULT NULL COMMENT '发货方式 djs_deliver_type 1=发货/2=邮寄/3=销售（doc/11 §2.6 R28）',
+  `deliver_dest` varchar(16) DEFAULT NULL COMMENT '发送位置字典 djs_pack_send_dest：platform 发货月台 / mail 邮寄 / gift 礼盒',
+  `pack_status` varchar(16) NOT NULL DEFAULT 'pending' COMMENT 'djs_pack_status pending/packed/shipped_out（本 ticket 扩展字段）',
+  `proof_oss_ids` varchar(500) DEFAULT NULL COMMENT '凭证图 OSS IDs CSV（biz_type=warehouse_pack_proof，本 ticket 扩展字段）',
+  `trace_code` varchar(64) DEFAULT NULL COMMENT '追溯码（D11 TRC-CORE-001 回填，hook 字段）',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '创建者',
+  `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新者',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  `del_flag` char(1) NOT NULL DEFAULT '0' COMMENT '删除标志',
+  `del_unique` bigint NOT NULL DEFAULT '0' COMMENT '软删唯一性辅助列',
+  `is_damaged` tinyint NOT NULL DEFAULT '0' COMMENT '是否损坏 djs_yes_no：1=是/0=否（门店标损）',
+  `damage_evidence_oss_ids` varchar(500) DEFAULT NULL COMMENT '损坏凭证图 OSS IDs CSV（biz_type=warehouse_damage_evidence）',
+  `damage_remark` varchar(500) DEFAULT NULL COMMENT '损坏备注',
+  `damage_time` datetime DEFAULT NULL COMMENT '标损时间',
+  `white_bar_no` varchar(32) DEFAULT NULL COMMENT '白条流水号（半只/整只白条唯一标识，发货带上门店按它识别到货半只）',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_produce_no` (`tenant_id`,`produce_no`,`del_unique`),
+  KEY `idx_product` (`tenant_id`,`product_id`,`produce_date`),
+  KEY `idx_store` (`tenant_id`,`store_id`,`produce_date`),
+  KEY `idx_white_bar` (`tenant_id`,`white_bar_id`),
+  KEY `idx_pack_status` (`tenant_id`,`pack_status`,`del_flag`),
+  KEY `idx_produce_time` (`tenant_id`,`produce_time`),
+  KEY `idx_demand_id` (`demand_id`),
+  KEY `idx_pp_damage` (`tenant_id`,`is_damaged`,`del_flag`),
+  KEY `idx_white_bar_no` (`tenant_id`,`white_bar_no`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='发货产品生产信息表（doc/11 §2.6，WMS-PACK-001）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_warehouse_product_production`
+--
+
+LOCK TABLES `t_warehouse_product_production` WRITE;
+/*!40000 ALTER TABLE `t_warehouse_product_production` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_warehouse_product_production` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_warehouse_return_product`
+--
+
+DROP TABLE IF EXISTS `t_warehouse_return_product`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_warehouse_return_product` (
+  `id` bigint NOT NULL COMMENT '主键（snowflake）',
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
+  `return_no` varchar(32) NOT NULL COMMENT '退货单号（业务码 RET+yyyyMMdd+4，inline）',
+  `store_id` bigint DEFAULT NULL COMMENT '退货门店 FK → t_md_store.id（其他方向时可空）',
+  `apply_time` datetime NOT NULL COMMENT '退货申请时间',
+  `product_id` bigint NOT NULL COMMENT '产品 FK → t_warehouse_product_info.id',
+  `product_name` varchar(128) NOT NULL COMMENT '产品名称（冗余，便于列表展示）',
+  `return_weight` decimal(12,3) NOT NULL COMMENT '退货重量',
+  `confirm_weight` decimal(12,3) DEFAULT NULL COMMENT '确认重量（admin 端复核后）',
+  `confirm_user` bigint DEFAULT NULL COMMENT '确认人 user_id → sys_user.user_id',
+  `confirm_time` datetime DEFAULT NULL COMMENT '确认时间',
+  `is_confirm` tinyint NOT NULL DEFAULT '0' COMMENT '是否已确认 1=已确认 0=待确认',
+  `return_reason` varchar(255) DEFAULT NULL COMMENT '退货原因',
+  `return_direction` varchar(32) NOT NULL DEFAULT 'store_to_warehouse' COMMENT '退货方向字典 djs_return_direction（V1 仅 store_to_warehouse 联动 stock_flow，其他 2 方向占位）',
+  `return_status` varchar(16) NOT NULL DEFAULT 'pending' COMMENT '退货状态字典 djs_return_status：pending/confirmed/rejected',
+  `proof_oss_ids` varchar(500) DEFAULT NULL COMMENT '退货凭证图 OSS IDs CSV（bizType=warehouse_return_proof）',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '创建者（mp 工人 / admin 录入）',
+  `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新者',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  `del_flag` char(1) NOT NULL DEFAULT '0' COMMENT '删除标志',
+  `del_unique` bigint NOT NULL DEFAULT '0' COMMENT '软删唯一辅助列',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_return_no` (`tenant_id`,`return_no`,`del_unique`),
+  KEY `idx_store_apply` (`tenant_id`,`store_id`,`apply_time`),
+  KEY `idx_product` (`tenant_id`,`product_id`,`del_flag`),
+  KEY `idx_status` (`tenant_id`,`return_status`,`del_flag`),
+  KEY `idx_direction` (`tenant_id`,`return_direction`,`del_flag`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='退货管理表（WMS-SHIP-001 D10，3 方向 V1 仅 store_to_warehouse 联动 stock_flow）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_warehouse_return_product`
+--
+
+LOCK TABLES `t_warehouse_return_product` WRITE;
+/*!40000 ALTER TABLE `t_warehouse_return_product` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_warehouse_return_product` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_warehouse_shipment`
+--
+
+DROP TABLE IF EXISTS `t_warehouse_shipment`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_warehouse_shipment` (
+  `id` bigint NOT NULL COMMENT '主键（snowflake）',
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
+  `shipment_no` varchar(32) NOT NULL COMMENT '发货单号（SHIP_NO 业务码 S+yyyyMMdd+seq4）',
+  `demand_id` bigint NOT NULL COMMENT 'FK → t_warehouse_demand_manage.id',
+  `product_type` varchar(32) NOT NULL COMMENT '业态字典 djs_demand_product_type：white_bar/vegetable/gift_box/other',
+  `store_id` bigint NOT NULL COMMENT '目的门店 FK → t_md_store.id',
+  `ship_date` date NOT NULL COMMENT '发货日期',
+  `ship_quantity` decimal(12,3) NOT NULL COMMENT '本次发货数量（kg / 头 / 盒）',
+  `ship_unit` varchar(16) NOT NULL COMMENT '单位',
+  `deliver_type` tinyint NOT NULL COMMENT '发货方式字典 djs_deliver_type 1=发货/2=邮寄/3=销售（D8 seed）',
+  `receiver_name` varchar(64) DEFAULT NULL COMMENT '收件人姓名（礼盒邮寄场景）',
+  `receiver_phone` varchar(32) DEFAULT NULL COMMENT '收件人电话',
+  `receiver_address` varchar(255) DEFAULT NULL COMMENT '收件地址',
+  `shipment_status` varchar(16) NOT NULL DEFAULT 'pending' COMMENT '状态字典 djs_shipment_status：pending/checking/shipped/delivered',
+  `checker_id` bigint DEFAULT NULL COMMENT '清点员 user_id（→ sys_user.user_id）',
+  `check_time` datetime DEFAULT NULL COMMENT '清点完成时间',
+  `proof_oss_ids` varchar(500) DEFAULT NULL COMMENT '清点凭证图 OSS IDs CSV（bizType=warehouse_shipment_proof）',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '创建者',
+  `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新者',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  `del_flag` char(1) NOT NULL DEFAULT '0' COMMENT '删除标志 0=未删 1=已删',
+  `del_unique` bigint NOT NULL DEFAULT '0' COMMENT '软删唯一辅助列（DjsBaseServiceImpl#softDelete 同步 id）',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_shipment_no` (`tenant_id`,`shipment_no`,`del_unique`),
+  KEY `idx_demand` (`tenant_id`,`demand_id`,`del_flag`),
+  KEY `idx_store_date` (`tenant_id`,`store_id`,`ship_date`),
+  KEY `idx_status` (`tenant_id`,`shipment_status`,`del_flag`),
+  KEY `idx_checker_time` (`tenant_id`,`checker_id`,`check_time`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='发货流水主表（WMS-SHIP-001 D10）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_warehouse_shipment`
+--
+
+LOCK TABLES `t_warehouse_shipment` WRITE;
+/*!40000 ALTER TABLE `t_warehouse_shipment` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_warehouse_shipment` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_warehouse_stock_flow`
+--
+
+DROP TABLE IF EXISTS `t_warehouse_stock_flow`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_warehouse_stock_flow` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
+  `flow_no` varchar(32) NOT NULL COMMENT '流水号（20260312XXXXX 日期+5位自增 SYS-INFRA-004）',
+  `flow_date` datetime NOT NULL COMMENT '业务日期',
+  `product_id` bigint DEFAULT NULL COMMENT '产品ID（product_id/ear_no/plot_id 三维互斥，plot 或耳标维度流水时为空）',
+  `warehouse_id` bigint DEFAULT NULL COMMENT '库位 ID',
+  `demand_id` bigint DEFAULT NULL COMMENT '关联需求单 ID（仅 ship_out 流水写入，FK → t_warehouse_demand_manage.id；D14 CROSS-FLOW-003 聚合 shipped_count）',
+  `inout_type` char(3) NOT NULL COMMENT '出入库类型 in=入库 out=出库',
+  `flow_type` varchar(32) NOT NULL COMMENT '业务类型 字典：pick=领用/return=退回/loss=损耗/produce=生产/check=盘点 等',
+  `stock_in_type` varchar(16) DEFAULT NULL COMMENT '入库类型 字典 stock_in_type：采摘/月台/交易/净菜/退货',
+  `stock_out_type` varchar(16) DEFAULT NULL COMMENT '出库类型 字典 stock_out_type',
+  `stock_out_dest` varchar(32) DEFAULT NULL COMMENT '出库去向 字典 stock_out_dest',
+  `change_num` decimal(12,3) NOT NULL COMMENT '变更数量（正负，正=入 负=出）',
+  `change_quantity` decimal(12,3) DEFAULT NULL COMMENT '变更数量绝对值（前端展示用，后端自动算）',
+  `supplier_id` bigint DEFAULT NULL COMMENT '供应商 ID（外购时）',
+  `ear_no` varchar(32) DEFAULT NULL COMMENT '关联猪只耳号',
+  `white_bar_id` bigint DEFAULT NULL COMMENT '白条 ID（= t_warehouse_bar_info.id；仅分割产出 cut_out_in 流水写值，分割剩余重量/超量校验按此聚合，外购无耳号也可用）',
+  `plot_id` bigint DEFAULT NULL COMMENT '关联地块 ID',
+  `operator_id` bigint DEFAULT NULL COMMENT '操作人 user_id',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '录入人',
+  `create_time` datetime DEFAULT NULL COMMENT '录入时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新人',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `del_flag` char(1) DEFAULT '0' COMMENT '删除标志',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  `proof_oss_ids` varchar(500) DEFAULT NULL COMMENT '凭证图 OSS IDs CSV（WMS-MAT-001）',
+  `del_unique` bigint NOT NULL DEFAULT '0' COMMENT '软删除生成 token（应用层 update del_flag=''1'' 时同步 SET del_unique=id；§6.3.0）',
+  `white_bar_no` varchar(32) DEFAULT NULL COMMENT '白条流水号（半只/整只白条唯一标识）',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_flow_no` (`tenant_id`,`flow_no`,`del_unique`),
+  KEY `idx_tenant_create` (`tenant_id`,`create_time`),
+  KEY `idx_flow_date` (`flow_date`),
+  KEY `idx_product` (`product_id`),
+  KEY `idx_warehouse` (`warehouse_id`),
+  KEY `idx_inout_type` (`inout_type`,`flow_type`),
+  KEY `idx_demand_id` (`demand_id`),
+  KEY `idx_tenant_whitebar` (`tenant_id`,`white_bar_id`),
+  KEY `idx_white_bar_no` (`tenant_id`,`white_bar_no`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='出入库记录表（WMS-FLOW-001 大表）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_warehouse_stock_flow`
+--
+
+LOCK TABLES `t_warehouse_stock_flow` WRITE;
+/*!40000 ALTER TABLE `t_warehouse_stock_flow` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_warehouse_stock_flow` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_warehouse_supplier_record`
+--
+
+DROP TABLE IF EXISTS `t_warehouse_supplier_record`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_warehouse_supplier_record` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
+  `supplier_id` bigint NOT NULL COMMENT '供应商 ID',
+  `product_id` bigint NOT NULL COMMENT '产品 ID',
+  `buy_num` decimal(12,2) NOT NULL COMMENT '采购数量',
+  `buy_price` decimal(10,2) DEFAULT NULL COMMENT '采购单价（推断字段）',
+  `buy_amount` decimal(15,2) DEFAULT NULL COMMENT '采购总额（推断字段）',
+  `buy_date` date DEFAULT NULL COMMENT '采购日期',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '录入人',
+  `create_time` datetime DEFAULT NULL COMMENT '录入时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新人',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `del_flag` char(1) DEFAULT '0' COMMENT '删除标志',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  PRIMARY KEY (`id`),
+  KEY `idx_tenant_create` (`tenant_id`,`create_time`),
+  KEY `idx_supplier` (`supplier_id`),
+  KEY `idx_product` (`product_id`),
+  KEY `idx_buy_date` (`buy_date`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='供应商交易信息表';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_warehouse_supplier_record`
+--
+
+LOCK TABLES `t_warehouse_supplier_record` WRITE;
+/*!40000 ALTER TABLE `t_warehouse_supplier_record` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_warehouse_supplier_record` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_warehouse_trace_code`
+--
+
+DROP TABLE IF EXISTS `t_warehouse_trace_code`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_warehouse_trace_code` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
+  `produce_code` varchar(64) NOT NULL COMMENT '追溯码（UNIQUE）',
+  `code_type` varchar(16) NOT NULL COMMENT '追溯码类型：pork=猪肉 / veg=果蔬 / gift=礼盒',
+  `product_id` bigint DEFAULT NULL COMMENT '产品 ID',
+  `trace_display_name` varchar(128) DEFAULT NULL COMMENT '生码时定格的展示名(有证=产品名/无证=别名)',
+  `pig_ear_no` varchar(32) DEFAULT NULL COMMENT '关联猪只耳号',
+  `plot_id` bigint DEFAULT NULL COMMENT '关联地块 ID',
+  `plant_days` int DEFAULT NULL COMMENT '种植天数（果蔬时填）',
+  `havest_date` date DEFAULT NULL COMMENT '采收日期',
+  `crop_cert_id` bigint DEFAULT NULL COMMENT '作物有机证书 ID',
+  `plot_cert_id` bigint DEFAULT NULL COMMENT '地块有机证书 ID',
+  `store_id` bigint DEFAULT NULL COMMENT '门店 ID',
+  `farm_id` bigint DEFAULT NULL COMMENT '农场 ID（替代原 farm_name 冗余，JOIN sys_farm 取名）',
+  `gift_components` json DEFAULT NULL COMMENT '礼盒子追溯码 JSON（礼盒时用）',
+  `qr_oss_id` bigint DEFAULT NULL COMMENT 'QR 码图片 OSS ID',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '生成人',
+  `create_time` datetime(3) DEFAULT NULL COMMENT '生成时间（毫秒级）',
+  `update_by` bigint DEFAULT NULL COMMENT '更新人',
+  `update_time` datetime(3) DEFAULT NULL COMMENT '更新时间',
+  `del_flag` char(1) DEFAULT '0' COMMENT '删除标志',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  `del_unique` bigint NOT NULL DEFAULT '0' COMMENT '软删除生成 token（应用层 update del_flag=''1'' 时同步 SET del_unique=id；§6.3.0）',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_produce_code` (`tenant_id`,`produce_code`,`del_unique`),
+  KEY `idx_tenant_create` (`tenant_id`,`create_time`),
+  KEY `idx_code_type` (`code_type`),
+  KEY `idx_product` (`product_id`),
+  KEY `idx_pig_ear` (`pig_ear_no`),
+  KEY `idx_plot` (`plot_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='追溯码（TRC-CORE-001，原 pig_code 改名）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_warehouse_trace_code`
+--
+
+LOCK TABLES `t_warehouse_trace_code` WRITE;
+/*!40000 ALTER TABLE `t_warehouse_trace_code` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_warehouse_trace_code` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_warehouse_trace_event`
+--
+
+DROP TABLE IF EXISTS `t_warehouse_trace_event`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_warehouse_trace_event` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户/农场 ID',
+  `produce_code` varchar(64) NOT NULL COMMENT '追溯码（关联 t_warehouse_trace_code）',
+  `trace_content` varchar(32) NOT NULL COMMENT '事件类型（7 种）：marketing=出栏/singe=燎毛/slaughter=屠宰/acid=排酸/in_stock=入库/ship=发货/arrival=到店',
+  `trace_time` datetime(3) NOT NULL COMMENT '事件时间（毫秒级）',
+  `event_data` json DEFAULT NULL COMMENT '事件附加数据 JSON',
+  `operator_id` bigint DEFAULT NULL COMMENT '操作人',
+  `create_time` datetime(3) DEFAULT NULL COMMENT '记录创建时间',
+  PRIMARY KEY (`id`),
+  KEY `idx_tenant_create` (`tenant_id`,`create_time`),
+  KEY `idx_code_time` (`produce_code`,`trace_time`),
+  KEY `idx_trace_content` (`trace_content`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='时间追溯/事件流水（TRC-CORE-001，原 pig_time 改名）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_warehouse_trace_event`
+--
+
+LOCK TABLES `t_warehouse_trace_event` WRITE;
+/*!40000 ALTER TABLE `t_warehouse_trace_event` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_warehouse_trace_event` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_warehouse_veg_receive`
+--
+
+DROP TABLE IF EXISTS `t_warehouse_veg_receive`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_warehouse_veg_receive` (
+  `id` bigint NOT NULL COMMENT '主键（雪花）',
+  `receive_no` varchar(32) DEFAULT NULL COMMENT '收货流水号（冗余 stock_flow.flow_no，便于 mp 回显）',
+  `receive_type` tinyint NOT NULL COMMENT '收货类型 djs_veg_receive_type：1=自产 / 2=外购',
+  `crop_id` bigint DEFAULT NULL COMMENT '作物 ID（自产 FK→t_plant_crop_info.id）/ 外购产品 ID（FK→t_warehouse_product_info.id）',
+  `crop_name` varchar(64) DEFAULT NULL COMMENT '作物 / 产品名称（冗余，便于列表展示免 JOIN）',
+  `plot_id` bigint DEFAULT NULL COMMENT '地块 ID（仅自产 FK→t_plant_plot_info.id；外购为 NULL）',
+  `plot_code` varchar(32) DEFAULT NULL COMMENT '地块编号（冗余，仅自产）',
+  `product_id` bigint DEFAULT NULL COMMENT '外购对应产品 ID（FK→t_warehouse_product_info.id；自产为 NULL，库存按 plot_id 维度）',
+  `weight` decimal(12,3) NOT NULL COMMENT '本次入库重量(kg)',
+  `loss_weight` decimal(10,3) DEFAULT '0.000' COMMENT '损耗重量(kg)：地块标记入库完成时把剩余待入库量结算为损耗',
+  `supplier_id` bigint DEFAULT NULL COMMENT '供应商 ID（仅外购 FK→t_md_supplier.id）',
+  `supplier_name` varchar(64) DEFAULT NULL COMMENT '供应商名称（冗余，仅外购）',
+  `location_id` bigint NOT NULL COMMENT '入库库位 ID（FK→t_warehouse_location_info.id；保鲜室）',
+  `location_name` varchar(64) DEFAULT NULL COMMENT '入库库位名称（冗余）',
+  `is_finish` tinyint NOT NULL DEFAULT '2' COMMENT '是否入库完成 djs_yes_no：1=是 / 2=否（仅自产用，标记该地块/作物入库结束）',
+  `receive_status` varchar(20) NOT NULL DEFAULT 'done' COMMENT '收货状态 djs_veg_receive_status：pending 待入库 / processing 入库中 / done 已入库',
+  `operator_id` bigint DEFAULT NULL COMMENT '入库人（FK→sys_user.user_id；ADR-0007 冗余最后操作人）',
+  `receive_time` datetime DEFAULT NULL COMMENT '收货入库时间',
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001' COMMENT '租户编号',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_by` bigint DEFAULT NULL COMMENT '创建者',
+  `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新者',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `remark` varchar(500) DEFAULT NULL COMMENT '备注',
+  `del_flag` char(1) NOT NULL DEFAULT '0' COMMENT '删除标志（0 未删 / 1 已删）',
+  `del_unique` bigint NOT NULL DEFAULT '0' COMMENT '软删唯一性辅助列',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_veg_receive_no` (`tenant_id`,`receive_no`,`del_unique`),
+  KEY `idx_veg_receive_crop` (`tenant_id`,`crop_id`),
+  KEY `idx_veg_receive_plot` (`tenant_id`,`plot_id`),
+  KEY `idx_veg_receive_type` (`tenant_id`,`receive_type`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='果蔬月台收货记录（自产二次入库 + 外购验收入库）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_warehouse_veg_receive`
+--
+
+LOCK TABLES `t_warehouse_veg_receive` WRITE;
+/*!40000 ALTER TABLE `t_warehouse_veg_receive` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_warehouse_veg_receive` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `t_warehouse_vegetable_handle`
+--
+
+DROP TABLE IF EXISTS `t_warehouse_vegetable_handle`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `t_warehouse_vegetable_handle` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `tenant_id` varchar(20) NOT NULL DEFAULT '1001',
+  `planting_record_id` bigint DEFAULT NULL COMMENT 'FK → t_warehouse_planting_record.id（上游来源）',
+  `plot_id` bigint NOT NULL COMMENT 'FK → t_plant_plot_info.id',
+  `crop_id` bigint NOT NULL COMMENT 'FK → t_plant_crop_info.id',
+  `product_id` bigint DEFAULT NULL COMMENT 'FK → t_warehouse_product_info.id（belong_type=vegetable）',
+  `pick_start_time` datetime NOT NULL COMMENT '采摘开始时间',
+  `pick_end_time` datetime DEFAULT NULL COMMENT '采摘结束时间',
+  `picked_weight` decimal(12,3) DEFAULT '0.000' COMMENT '已摘(kg)',
+  `handled_weight` decimal(12,3) DEFAULT '0.000' COMMENT '处理后(kg) = 月台 + 入库',
+  `feed_weight` decimal(12,3) DEFAULT '0.000' COMMENT '饲料饲喂(kg)',
+  `send_platform_weight` decimal(12,3) DEFAULT '0.000' COMMENT '发往蔬菜月台(kg)',
+  `stock_in_weight` decimal(12,3) DEFAULT '0.000' COMMENT '入库(kg)',
+  `loss_weight` decimal(12,3) DEFAULT '0.000' COMMENT '损耗(kg) = 已摘 - 处理 - 饲喂',
+  `is_weighed` tinyint NOT NULL DEFAULT '2' COMMENT '1=是 / 2=否',
+  `is_finish` tinyint NOT NULL DEFAULT '2' COMMENT '1=是 / 2=否',
+  `handle_status` varchar(16) NOT NULL DEFAULT 'pending' COMMENT 'djs_veg_handle_status pending/processing/done',
+  `create_dept` bigint DEFAULT NULL,
+  `create_by` bigint DEFAULT NULL,
+  `create_time` datetime DEFAULT NULL,
+  `update_by` bigint DEFAULT NULL,
+  `update_time` datetime DEFAULT NULL,
+  `remark` varchar(500) DEFAULT NULL,
+  `del_flag` char(1) DEFAULT '0',
+  `del_unique` bigint NOT NULL DEFAULT '0',
+  PRIMARY KEY (`id`),
+  KEY `idx_planting_record` (`tenant_id`,`planting_record_id`),
+  KEY `idx_plot_crop_date` (`tenant_id`,`plot_id`,`crop_id`,`pick_start_time`),
+  KEY `idx_status` (`tenant_id`,`handle_status`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='毛菜处理间汇总（doc/11 §2.12）';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_warehouse_vegetable_handle`
+--
+
+LOCK TABLES `t_warehouse_vegetable_handle` WRITE;
+/*!40000 ALTER TABLE `t_warehouse_vegetable_handle` DISABLE KEYS */;
+/*!40000 ALTER TABLE `t_warehouse_vegetable_handle` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `test_demo`
+--
+
+DROP TABLE IF EXISTS `test_demo`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `test_demo` (
+  `id` bigint NOT NULL COMMENT '主键',
+  `tenant_id` varchar(20) DEFAULT '000000' COMMENT '租户编号',
+  `dept_id` bigint DEFAULT NULL COMMENT '部门id',
+  `user_id` bigint DEFAULT NULL COMMENT '用户id',
+  `order_num` int DEFAULT '0' COMMENT '排序号',
+  `test_key` varchar(255) DEFAULT NULL COMMENT 'key键',
+  `value` varchar(255) DEFAULT NULL COMMENT '值',
+  `version` int DEFAULT '0' COMMENT '版本',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+  `create_by` bigint DEFAULT NULL COMMENT '创建人',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新人',
+  `del_flag` int DEFAULT '0' COMMENT '删除标志',
+  PRIMARY KEY (`id`) USING BTREE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='测试单表';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `test_demo`
+--
+
+LOCK TABLES `test_demo` WRITE;
+/*!40000 ALTER TABLE `test_demo` DISABLE KEYS */;
+INSERT INTO `test_demo` VALUES (1,'000000',102,4,1,'测试数据权限','测试',0,103,'2026-07-10 16:32:55',1,NULL,NULL,0),(2,'000000',102,3,2,'子节点1','111',0,103,'2026-07-10 16:32:55',1,NULL,NULL,0),(3,'000000',102,3,3,'子节点2','222',0,103,'2026-07-10 16:32:55',1,NULL,NULL,0),(4,'000000',108,4,4,'测试数据','demo',0,103,'2026-07-10 16:32:55',1,NULL,NULL,0),(5,'000000',108,3,13,'子节点11','1111',0,103,'2026-07-10 16:32:55',1,NULL,NULL,0),(6,'000000',108,3,12,'子节点22','2222',0,103,'2026-07-10 16:32:55',1,NULL,NULL,0),(7,'000000',108,3,11,'子节点33','3333',0,103,'2026-07-10 16:32:55',1,NULL,NULL,0),(8,'000000',108,3,10,'子节点44','4444',0,103,'2026-07-10 16:32:55',1,NULL,NULL,0),(9,'000000',108,3,9,'子节点55','5555',0,103,'2026-07-10 16:32:55',1,NULL,NULL,0),(10,'000000',108,3,8,'子节点66','6666',0,103,'2026-07-10 16:32:55',1,NULL,NULL,0),(11,'000000',108,3,7,'子节点77','7777',0,103,'2026-07-10 16:32:55',1,NULL,NULL,0),(12,'000000',108,3,6,'子节点88','8888',0,103,'2026-07-10 16:32:55',1,NULL,NULL,0),(13,'000000',108,3,5,'子节点99','9999',0,103,'2026-07-10 16:32:55',1,NULL,NULL,0);
+/*!40000 ALTER TABLE `test_demo` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Table structure for table `test_tree`
+--
+
+DROP TABLE IF EXISTS `test_tree`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `test_tree` (
+  `id` bigint NOT NULL COMMENT '主键',
+  `tenant_id` varchar(20) DEFAULT '000000' COMMENT '租户编号',
+  `parent_id` bigint DEFAULT '0' COMMENT '父id',
+  `dept_id` bigint DEFAULT NULL COMMENT '部门id',
+  `user_id` bigint DEFAULT NULL COMMENT '用户id',
+  `tree_name` varchar(255) DEFAULT NULL COMMENT '值',
+  `version` int DEFAULT '0' COMMENT '版本',
+  `create_dept` bigint DEFAULT NULL COMMENT '创建部门',
+  `create_time` datetime DEFAULT NULL COMMENT '创建时间',
+  `create_by` bigint DEFAULT NULL COMMENT '创建人',
+  `update_time` datetime DEFAULT NULL COMMENT '更新时间',
+  `update_by` bigint DEFAULT NULL COMMENT '更新人',
+  `del_flag` int DEFAULT '0' COMMENT '删除标志',
+  PRIMARY KEY (`id`) USING BTREE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='测试树表';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `test_tree`
+--
+
+LOCK TABLES `test_tree` WRITE;
+/*!40000 ALTER TABLE `test_tree` DISABLE KEYS */;
+INSERT INTO `test_tree` VALUES (1,'000000',0,102,4,'测试数据权限',0,103,'2026-07-10 16:32:55',1,NULL,NULL,0),(2,'000000',1,102,3,'子节点1',0,103,'2026-07-10 16:32:55',1,NULL,NULL,0),(3,'000000',2,102,3,'子节点2',0,103,'2026-07-10 16:32:55',1,NULL,NULL,0),(4,'000000',0,108,4,'测试树1',0,103,'2026-07-10 16:32:55',1,NULL,NULL,0),(5,'000000',4,108,3,'子节点11',0,103,'2026-07-10 16:32:55',1,NULL,NULL,0),(6,'000000',4,108,3,'子节点22',0,103,'2026-07-10 16:32:55',1,NULL,NULL,0),(7,'000000',4,108,3,'子节点33',0,103,'2026-07-10 16:32:55',1,NULL,NULL,0),(8,'000000',5,108,3,'子节点44',0,103,'2026-07-10 16:32:55',1,NULL,NULL,0),(9,'000000',6,108,3,'子节点55',0,103,'2026-07-10 16:32:55',1,NULL,NULL,0),(10,'000000',7,108,3,'子节点66',0,103,'2026-07-10 16:32:55',1,NULL,NULL,0),(11,'000000',7,108,3,'子节点77',0,103,'2026-07-10 16:32:55',1,NULL,NULL,0),(12,'000000',10,108,3,'子节点88',0,103,'2026-07-10 16:32:55',1,NULL,NULL,0),(13,'000000',10,108,3,'子节点99',0,103,'2026-07-10 16:32:55',1,NULL,NULL,0);
+/*!40000 ALTER TABLE `test_tree` ENABLE KEYS */;
+UNLOCK TABLES;
+
+--
+-- Dumping events for database 'f0fix_scratch'
+--
+
+--
+-- Dumping routines for database 'f0fix_scratch'
+--
+/*!40103 SET TIME_ZONE=@OLD_TIME_ZONE */;
+
+/*!40101 SET SQL_MODE=@OLD_SQL_MODE */;
+/*!40014 SET FOREIGN_KEY_CHECKS=@OLD_FOREIGN_KEY_CHECKS */;
+/*!40014 SET UNIQUE_CHECKS=@OLD_UNIQUE_CHECKS */;
+/*!40101 SET CHARACTER_SET_CLIENT=@OLD_CHARACTER_SET_CLIENT */;
+/*!40101 SET CHARACTER_SET_RESULTS=@OLD_CHARACTER_SET_RESULTS */;
+/*!40101 SET COLLATION_CONNECTION=@OLD_COLLATION_CONNECTION */;
+/*!40111 SET SQL_NOTES=@OLD_SQL_NOTES */;
+
+-- Dump completed on 2026-07-10 16:33:35

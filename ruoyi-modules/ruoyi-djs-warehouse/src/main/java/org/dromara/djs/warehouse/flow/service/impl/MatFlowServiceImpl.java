@@ -1314,10 +1314,13 @@ public class MatFlowServiceImpl implements IMatFlowService {
         stockFlowMapper.insert(flow);
 
         // 3. 损耗"扣减"（注：损耗 = 不可逆消耗，从账面剥离；与"退回"减 inhouse 同源、但不回补货架）。
-        //    可打包食品原料（vegetable/egg/dry_good/other）：领用时已离 location_stock 进「待打包」
-        //    product_inhouse，损耗剥离的是这部分 WIP（与"退回"对称，让 admin 打包来源「领用剩余重量」归零），
-        //    不再二次扣 location_stock。其余物资（包材/饲料/种子/药品）无 WIP → 从 location_stock 扣减（原行为）。
-        if (isPackableFood(product.getBelongType())) {
+        //    可打包食品原料（vegetable/egg/dry_good/other）+ 猪肉（pork，分割产 ear_no 篮领用产 inhouse）：
+        //    领用时已离 location_stock 进「待打包」product_inhouse，损耗剥离的是这部分今日领用剩余 WIP
+        //    （与"退回"对称，让打包来源「领用剩余重量」相应扣减），不再二次扣 location_stock（仓库库存）。
+        //    admin 猪肉损耗走篮级 lossByBatch/lossPorkEar 已剥 inhouse；mp 产品级损耗（r129 无 batchId）走此
+        //    产品级分支，历史误从 location_stock 扣（pork 不在 isPackableFood 集）→ 与 admin 口径不一致，此处对齐。
+        //    其余物资（包材/饲料/种子/药品）无 WIP → 从 location_stock 扣减（原行为）。
+        if (isPackableFood(product.getBelongType()) || "pork".equals(product.getBelongType())) {
             reduceTodayInhouseForBasket(bo.getProductId(), null, null, bo.getQuantity());
         } else {
             // 若工人领用后已把物理物品消耗完才补登损耗，则库存可能已扣到 0 —— 这种情况下损耗只在流水留痕，
@@ -1407,8 +1410,10 @@ public class MatFlowServiceImpl implements IMatFlowService {
      * <ol>
      *   <li>查选中篮 {@code location_stock[id=batchId]}（防御：未软删；product 主数据取名称 / 单位）；</li>
      *   <li>校验今日额度（仍按 {@code (user, product)} 统计，与现状一致）；</li>
-     *   <li>INSERT {@code loss} 流水（带篮源标签）+ {@code deductStockById(batchId, qty)} 扣选中篮——
-     *       与现状 loss 语义一致，{@code affected==0} 打 warn 不抛（损耗 = 不可逆消耗，账实倒挂留痕审计）。</li>
+     *   <li>INSERT {@code loss} 流水（带篮源标签）+ 损耗扣减：可打包食品原料（领用时已离货架进「待打包」
+     *       {@code product_inhouse}）剥离今天待打包 WIP、不再二次扣货架；其余物资无 WIP →
+     *       {@code deductStockById(batchId, qty)} 扣选中篮——与现状 loss 语义一致，
+     *       {@code affected==0} 打 warn 不抛（损耗 = 不可逆消耗，账实倒挂留痕审计）。</li>
      * </ol>
      */
     private Long lossByBatch(MatLossBo bo) {
@@ -1421,7 +1426,7 @@ public class MatFlowServiceImpl implements IMatFlowService {
         if (isVegPlotBasket(basket)) {
             return lossVegPlot(bo, basket);
         }
-        // 猪肉耳号卡（r164）：损耗量按 (productId, earNo, location) FIFO 扣减整组多篮，不只扣首篮。
+        // 猪肉耳号卡（r164）：损耗量按 (productId, earNo) 剥离今天待打包 inhouse（领用已扣货架、产 WIP）。
         if (isPorkEarBasket(basket)) {
             return lossPorkEar(bo, basket);
         }
@@ -1459,11 +1464,19 @@ public class MatFlowServiceImpl implements IMatFlowService {
         flow.setProofOssIds(bo.getProofOssIds());
         stockFlowMapper.insert(flow);
 
-        // 3. 扣选中篮（与现状 loss 语义一致：affected==0 打 warn 不抛，账实倒挂留痕）
-        int affected = locationStockMapper.deductStockById(basket.getId(), bo.getQuantity(), userId);
-        if (affected == 0) {
-            log.warn("按篮 loss 流水已记，但选中篮扣减失败（账面已不足）：user={}, batchId={}, qty={}",
-                userId, basket.getId(), bo.getQuantity());
+        // 3. 损耗"扣减"（与 loss()/feed() 可打包食品分支同源）：可打包食品原料（vegetable/egg/dry_good/other）
+        //    领用（pickByBatch）时已离 location_stock 进「待打包」product_inhouse，损耗剥离的是这部分 WIP
+        //    （让 admin 打包来源「领用剩余重量」相应扣减），不再二次扣货架（否则货架双扣 + inhouse 幽灵残留）；
+        //    扣不够（差额已打包）→ reduceTodayInhouseForBasket 内部打 warn 不抛，账实倒挂留痕审计。
+        //    其余物资（包材/饲料/种子/药品）无 WIP → 扣选中篮（affected==0 打 warn 不抛，与现状 loss 语义一致）。
+        if (isPackableFood(product == null ? null : product.getBelongType())) {
+            reduceTodayInhouseForBasket(productId, null, null, bo.getQuantity());
+        } else {
+            int affected = locationStockMapper.deductStockById(basket.getId(), bo.getQuantity(), userId);
+            if (affected == 0) {
+                log.warn("按篮 loss 流水已记，但选中篮扣减失败（账面已不足）：user={}, batchId={}, qty={}",
+                    userId, basket.getId(), bo.getQuantity());
+            }
         }
 
         // 统一损耗台账双写（WMS-LOSS-001，行59 录入损耗）：productId 走篮的 product_id、locationId 走篮的库位。
@@ -1530,9 +1543,10 @@ public class MatFlowServiceImpl implements IMatFlowService {
     }
 
     /**
-     * 猪肉「耳号卡」损耗（r164，{@link #lossByBatch} 识别耳号卡后走此）：损耗量按 {@code (productId, earNo, location)}
-     * 在选中库位内按 id 升序 FIFO 逐篮扣减 {@code location_stock}（同耳号同库位多篮 = 多次入库），不只扣首篮。
-     * 损耗 = 不可逆消耗、不产 inhouse；扣不够（账面已不足）剩余量打 warn 不抛（与现状 loss 语义一致，账实倒挂留痕）。
+     * 猪肉「耳号卡」损耗（r164，{@link #lossByBatch} 识别耳号卡后走此）：损耗量按 {@code (productId, earNo)}
+     * 剥离「今天待打包」{@code product_inhouse}——猪肉篮领用（{@link #pickPorkEar}）时 location_stock 已 −、
+     * product_inhouse +，损耗消耗的是这部分 WIP（与 {@link #returnByBatch} 猪肉篮路径 / {@link #lossVegPlot} 对称），
+     * 不再二次扣 {@code location_stock}。损耗 = 不可逆消耗；扣不够（差额已打包）打 warn 不抛（账实倒挂留痕）。
      */
     private Long lossPorkEar(MatLossBo bo, LocationStock firstBasket) {
         Long productId = firstBasket.getProductId();
@@ -1567,30 +1581,11 @@ public class MatFlowServiceImpl implements IMatFlowService {
         flow.setProofOssIds(bo.getProofOssIds());
         stockFlowMapper.insert(flow);
 
-        // 3. 同库位同耳号各篮按 id 升序 FIFO 逐篮扣减 location_stock；扣不够剩余量打 warn 不抛（账实倒挂留痕）
-        List<LocationStock> baskets = locationStockMapper.selectList(
-            new LambdaQueryWrapper<LocationStock>()
-                .eq(LocationStock::getProductId, productId)
-                .eq(LocationStock::getEarNo, earNo)
-                .eq(LocationStock::getLocationId, firstLocId)
-                .gt(LocationStock::getProductStock, BigDecimal.ZERO)
-                .orderByAsc(LocationStock::getId));
-        BigDecimal remaining = bo.getQuantity();
-        for (LocationStock basket : baskets) {
-            if (remaining.compareTo(BigDecimal.ZERO) <= 0) {
-                break;
-            }
-            BigDecimal take = basket.getProductStock().min(remaining);
-            int affected = locationStockMapper.deductStockById(basket.getId(), take, userId);
-            if (affected == 0) {
-                continue;
-            }
-            remaining = remaining.subtract(take);
-        }
-        if (remaining.compareTo(BigDecimal.ZERO) > 0) {
-            log.warn("按耳号卡 loss 流水已记，但账面不足未扣尽：user={}, product={}, ear={}, loc={}, 剩余未扣={}",
-                userId, productId, earNo, firstLocId, remaining.stripTrailingZeros().toPlainString());
-        }
+        // 3. 损耗 = 消耗「今天待打包」inhouse：猪肉篮领用（pickPorkEar）时 location_stock 已 −、product_inhouse +
+        //    （每篮一行、带耳号标签），损耗剥离的是这部分待打包 WIP（与 returnByBatch 猪肉篮路径 / lossVegPlot 对称，
+        //    让 admin 打包「领用剩余重量」相应扣减）；不再二次扣 location_stock（否则货架双扣 + inhouse 幽灵残留）。
+        //    扣不够（差额已打包）→ reduceTodayInhouseForBasket 内部打 warn 不抛，账实倒挂留痕审计。
+        reduceTodayInhouseForBasket(productId, earNo, null, bo.getQuantity());
 
         // 4. 统一损耗台账双写（WMS-LOSS-001）：productId 走耳号卡 product_id、locationId 走首篮库位。
         lossFlowService.record("manual_loss", productId, bo.getQuantity(), firstLocId, userId, "mat", null, flow.getId());

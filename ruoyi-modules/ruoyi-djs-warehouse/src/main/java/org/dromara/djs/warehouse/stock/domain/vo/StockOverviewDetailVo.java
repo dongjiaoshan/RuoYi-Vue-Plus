@@ -14,9 +14,11 @@ import java.math.BigDecimal;
  * <p>某自然日下钻得到的按产品库存情况（弹窗 el-table），仅含当日有库存的产品。
  * compute-on-read 回放 {@code t_warehouse_stock_flow}（Kevin 拍板）：</p>
  * <ul>
- *   <li>期初库存 = Σ change_num WHERE flow_date &lt; 当日 0 点（累计到昨日末）。</li>
+ *   <li>期初库存 = Σ(按 inout_type 带符号的 change_quantity) WHERE flow_date &lt; 当日 0 点（累计到昨日末）。</li>
  *   <li>入库量 = Σ change_quantity WHERE inout_type='IN' AND DATE(flow_date)=当日。</li>
- *   <li>出库量 = Σ change_quantity WHERE inout_type='OT' AND DATE(flow_date)=当日。</li>
+ *   <li>出库量 = Σ change_quantity WHERE inout_type='OT' AND DATE(flow_date)=当日（不含 ship_out）。</li>
+ *   <li>已发货 = Σ change_quantity WHERE flow_type='ship_out' AND DATE(flow_date)=当日
+ *       （row42「生产产品不入库」：成品发货流水为信息列，不计期初/出库/期末）。</li>
  *   <li>损耗量 = Σ loss_flow.loss_weight WHERE DATE(loss_date)=当日（信息列，期末不二次扣，
  *       损耗已含在出库流水里）。</li>
  *   <li>饲料饲喂量 = Σ feed_log.feed_weight WHERE DATE(feed_date)=当日（仅果蔬原材料有值）。</li>
@@ -69,9 +71,13 @@ public class StockOverviewDetailVo implements Serializable {
     @ExcelProperty(value = "入库量")
     private BigDecimal inboundQty;
 
-    /** 出库量（当日 OT 流水绝对值合计；含损耗流水）。 */
+    /** 出库量（当日 OT 流水绝对值合计，不含 ship_out；含损耗流水）。 */
     @ExcelProperty(value = "出库量")
     private BigDecimal outboundQty;
+
+    /** 已发货（当日 ship_out 流水合计；row42 生产产品不入库 → 信息列，不计期初/出库/期末）。 */
+    @ExcelProperty(value = "已发货")
+    private BigDecimal shippedQty;
 
     /** 损耗量（当日 loss_flow 合计，信息列，期末不二次扣）。 */
     @ExcelProperty(value = "损耗量")

@@ -78,10 +78,10 @@ public class MedBatchServiceImpl extends DjsBaseServiceImpl<MedBatchMapper, MedB
      * 分页查询批次列表，支持「近 3 天已出库批次」过滤（mp 用药领用专用）。
      *
      * <p>{@code recentUsedOnly=true} 时只返「近 3 天内有过领用出库（{@code usage_type='use'}）」的药品的批次：
-     * 药品库存真值落仓库药品库（{@code 药品库 L0015}），{@code t_warehouse_stock_flow} 不记药品维流水
-     * （药品出入库经 {@link MedicineStockProvider} 直接增减 {@code t_warehouse_location_stock}），故「出库」
-     * 事实落在领用台账 {@code t_breed_medicine_usage}。本过滤以该台账为准（r51 去批次后按 medicine_id 收敛，
-     * 含空批次台账行），等价于「3 天内从药品库领过的药品」。</p>
+     * 药品库存真值落仓库药品库（{@code 药品库 L0015}）。{@link MedicineStockProvider} 出入库虽落
+     * {@code t_warehouse_stock_flow} 流水（对账账簿），「领用出库」业务事实仍以领用台账
+     * {@code t_breed_medicine_usage} 为准（口径稳定、覆盖流水补齐前的历史行）。本过滤按该台账收敛
+     * （r51 去批次后按 medicine_id 收敛，含空批次台账行），等价于「3 天内从药品库领过的药品」。</p>
      *
      * <p>实现：先查近 3 天 {@code use} 台账去重出 {@code medicineId} 集合，再用 {@code medicine_id IN (...)} 收敛到主查询
      * 的 wrapper，从而保持分页 total 正确（非取页后再 filter）。集合为空 → 直接返空页（无批次符合）。</p>
@@ -175,10 +175,11 @@ public class MedBatchServiceImpl extends DjsBaseServiceImpl<MedBatchMapper, MedB
             throw new ServiceException("药品批次入参转换失败");
         }
         int rows = baseMapper.insert(entity);
-        // ADR-0012：采购入库同步把入库量增到仓库库存（batch 行 quantity 仅作入库快照）
+        // ADR-0012：采购入库同步把入库量增到仓库库存（batch 行 quantity 仅作入库快照），
+        // provider 内同事务落 purchase_in 入库流水（stock_flow，与领用退回 pick_return_in 分流）
         if (entity.getMedicineId() != null && entity.getQuantity() != null
             && entity.getQuantity().signum() > 0) {
-            medicineStockProvider.add(entity.getMedicineId(), entity.getQuantity(), LoginHelper.getUserId());
+            medicineStockProvider.addPurchase(entity.getMedicineId(), entity.getQuantity(), LoginHelper.getUserId());
         }
         return rows;
     }

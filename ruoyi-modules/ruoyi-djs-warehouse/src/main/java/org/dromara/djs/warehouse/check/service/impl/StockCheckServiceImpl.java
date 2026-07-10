@@ -54,8 +54,9 @@ import java.util.stream.Collectors;
  *
  * <h3>完成盘点跨表事务（completeCheck 核心风险）</h3>
  * <p>单 {@code @Transactional} 跨 N 步：对每条 line 按 {@code diffStock} 正负写流水
- * （盘盈 {@code check_in/IN} / 盘亏 {@code check_out/OT}）+ 回写 location_stock 至实盘量
- * + 刷新 latest_check_time；最后 header status='completed' 解锁。任一异常整体回滚。</p>
+ * （盘盈 {@code check_in/IN} / 盘亏 {@code check_out/OT}）+ 回写 location_stock 非篮子行至
+ * 非篮目标量（= 实盘量 − 篮子行合计；篮子行不参与盘点 SET）+ 刷新 latest_check_time；
+ * 最后 header status='completed' 解锁。任一异常整体回滚。</p>
  *
  * @author djs
  * @since WMS-STOCK-001
@@ -172,13 +173,25 @@ public class StockCheckServiceImpl
             if (diff.compareTo(BigDecimal.ZERO) != 0) {
                 writeDiffFlow(header, line, diff, userId);
             }
-            // 2b. 回写 location_stock 至实盘绝对值 + 刷新 latest_check_time + check_result
+            // 2b. 回写 location_stock（非篮子行）至非篮目标量 + 刷新 latest_check_time + check_result。
+            //     实盘量是组物理总量（含耳号/地块/白条篮子），篮子行的账随各自业务链走、不参与盘点 SET，
+            //     非篮子行只承接实盘量中超出篮子合计的部分 —— SET 后组合计 == 实盘量。
+            BigDecimal checkStock = line.getCheckStock() == null ? BigDecimal.ZERO : line.getCheckStock();
+            BigDecimal basketStock = basketStock(line.getLocationId(), line.getProductId());
+            BigDecimal nonBasketTarget = checkStock.subtract(basketStock);
+            if (nonBasketTarget.compareTo(BigDecimal.ZERO) < 0) {
+                log.warn("盘点实盘量低于篮子行合计，非篮子行按 0 校准（差额已由差异流水留痕）："
+                        + "checkId={} location={} product={} 实盘={} 篮子合计={}",
+                    header.getCheckId(), line.getLocationId(), line.getProductId(), checkStock, basketStock);
+                nonBasketTarget = BigDecimal.ZERO;
+            }
             int affected = locationStockMapper.setStockAfterCheck(
                 line.getLocationId(), line.getProductId(),
-                line.getCheckStock(), line.getCheckResultType(), userId);
-            if (affected == 0) {
-                // location_stock 无对应行（盘点的产品此前从未有库存记录）→ 兜底 INSERT 一条新库存行
-                insertStockRow(line, userId);
+                nonBasketTarget, line.getCheckResultType(), userId);
+            if (affected == 0 && nonBasketTarget.compareTo(BigDecimal.ZERO) > 0) {
+                // 无非篮子行且有非篮余量（首次建账 / 组内仅篮子行但实盘超出篮子合计）→ 按非篮目标量建行；
+                // 按实盘全量建行会与篮子行合计翻倍
+                insertStockRow(line, nonBasketTarget, userId);
             }
         }
 
@@ -435,18 +448,14 @@ public class StockCheckServiceImpl
     }
 
     /**
-     * 查 location + product 的系统现量（无库存行返 0）。
+     * 查 location + product 的系统现量（组内全部行 SUM；无库存行返 0）。
+     *
+     * <p>同 (库位,产品) 可能存在多行（耳号/地块/白条篮子 + 非篮子行），系统现量取组合计，
+     * 与工人实盘的物理总量同口径。</p>
      */
     protected BigDecimal currentStock(Long locationId, Long productId) {
-        LocationStock stock = locationStockMapper.selectOne(
-            new LambdaQueryWrapper<LocationStock>()
-                .eq(LocationStock::getLocationId, locationId)
-                .eq(LocationStock::getProductId, productId)
-                .last("LIMIT 1"));
-        if (stock == null || stock.getProductStock() == null) {
-            return BigDecimal.ZERO;
-        }
-        return stock.getProductStock();
+        BigDecimal sum = locationStockMapper.sumStockByProductLocation(locationId, productId);
+        return sum == null ? BigDecimal.ZERO : sum;
     }
 
     /**
@@ -493,14 +502,22 @@ public class StockCheckServiceImpl
     }
 
     /**
-     * location_stock 无对应行时兜底 INSERT 一条新库存行（盘点首次为该 product 建账）。
+     * 组内篮子行库存合计（{@code plot_id / ear_no / white_bar_no} 任一非 NULL）；无篮子行返 0。
      */
-    private void insertStockRow(StockCheckRecord line, Long userId) {
+    private BigDecimal basketStock(Long locationId, Long productId) {
+        BigDecimal sum = locationStockMapper.sumBasketStockByProductLocation(locationId, productId);
+        return sum == null ? BigDecimal.ZERO : sum;
+    }
+
+    /**
+     * location_stock 无非篮子行时兜底 INSERT 一条新库存行（stock = 非篮目标量，盘点首次为该 product 建账）。
+     */
+    private void insertStockRow(StockCheckRecord line, BigDecimal nonBasketTarget, Long userId) {
         LocationStock stock = new LocationStock();
         stock.setLocationId(line.getLocationId());
         stock.setProductId(line.getProductId());
         stock.setProductName(line.getProductName());
-        stock.setProductStock(line.getCheckStock());
+        stock.setProductStock(nonBasketTarget);
         stock.setProductUnit(line.getProductUnit());
         stock.setIsEnd(0);
         stock.setLatestCheckTime(new Date());

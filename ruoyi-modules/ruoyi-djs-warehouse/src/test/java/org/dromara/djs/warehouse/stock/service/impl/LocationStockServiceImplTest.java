@@ -13,8 +13,10 @@ import org.dromara.djs.warehouse.flow.mapper.StockFlowMapper;
 import org.dromara.djs.warehouse.location.domain.LocationInfo;
 import org.dromara.djs.warehouse.location.mapper.LocationInfoMapper;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
+import org.dromara.djs.warehouse.flow.domain.StockFlow;
 import org.dromara.djs.warehouse.stock.domain.LocationStock;
 import org.dromara.djs.warehouse.stock.domain.bo.LocationStockBo;
+import org.dromara.djs.warehouse.stock.domain.bo.StockOutBo;
 import org.dromara.djs.warehouse.stock.domain.query.LocationStockQuery;
 import org.dromara.djs.warehouse.stock.domain.vo.LocationStockVo;
 import org.dromara.djs.warehouse.stock.mapper.LocationStockMapper;
@@ -39,6 +41,9 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -237,6 +242,79 @@ class LocationStockServiceImplTest {
         assertThatThrownBy(() -> service.insertByBo(bo))
             .isInstanceOf(ServiceException.class)
             .hasMessageContaining("stock.dimension.exclusive");
+    }
+
+    // -------- productOut（F0-8 验收门 · F0-1：出库按所选行 id 扣，组内其他篮子行不动） --------
+
+    private LocationStock stockRowA() {
+        LocationStock row = new LocationStock();
+        row.setId(111L);
+        row.setLocationId(90001L);
+        row.setProductId(50001L);
+        row.setProductName("猪后腿肉");
+        row.setProductStock(new BigDecimal("10"));
+        return row;
+    }
+
+    private StockOutBo stockOutBo(BigDecimal qty) {
+        StockOutBo bo = new StockOutBo();
+        bo.setId(111L);
+        bo.setQuantity(qty);
+        bo.setStockOutDest("dept_pick");
+        bo.setRemark("ut-productout");
+        return bo;
+    }
+
+    private void stubProductOutCommon() {
+        when(stockMapper.selectById(111L)).thenReturn(stockRowA());
+        org.dromara.djs.warehouse.product.domain.ProductInfo product =
+            new org.dromara.djs.warehouse.product.domain.ProductInfo();
+        product.setId(50001L);
+        product.setProductName("猪后腿肉");
+        product.setProductUnit("kg");
+        when(productInfoMapper.selectById(50001L)).thenReturn(product);
+        when(bizCodeGenerator.generate(any(), any())).thenReturn("FAKE_FLOW_NO");
+        when(stockFlowMapper.insert(any(StockFlow.class))).thenAnswer(inv -> {
+            StockFlow f = inv.getArgument(0);
+            f.setId(50003L);
+            return 1;
+        });
+    }
+
+    @Test
+    @DisplayName("productOut happy（F0-1）：按所选行 id=111 原子扣 5（组维度 deductByProductLocation 绝不发生 → 同组行 B 余量不变）+ 流水 backstage_out/OT/-5")
+    void testProductOut_DeductsSelectedRowOnly() {
+        stubProductOutCommon();
+        when(stockMapper.deductStockById(eq(111L), any(BigDecimal.class), eq(10086L))).thenReturn(1);
+
+        Long flowId = service.productOut(stockOutBo(new BigDecimal("5")));
+        assertThat(flowId).isEqualTo(50003L);
+
+        // F0-1 核心：只扣所选行（id=111，且仅 1 次）；组维度扣减 API 不被调用 → 同 (库位,产品) 其他耳号/地块/白条篮不串扣
+        verify(stockMapper, times(1)).deductStockById(eq(111L), eq(new BigDecimal("5")), eq(10086L));
+        verify(stockMapper, times(1)).deductStockById(anyLong(), any(BigDecimal.class), anyLong());
+        verify(stockMapper, never()).deductByProductLocation(any(), any(), any(), any());
+
+        ArgumentCaptor<StockFlow> cap = ArgumentCaptor.forClass(StockFlow.class);
+        verify(stockFlowMapper, times(1)).insert(cap.capture());
+        StockFlow f = cap.getValue();
+        assertThat(f.getFlowType()).isEqualTo("backstage_out");
+        assertThat(f.getInoutType()).isEqualTo("OT");
+        assertThat(f.getChangeNum()).isEqualByComparingTo("-5");
+        assertThat(f.getChangeQuantity()).isEqualByComparingTo("5");
+        assertThat(f.getWarehouseId()).isEqualTo(90001L);
+        assertThat(f.getProductId()).isEqualTo(50001L);
+    }
+
+    @Test
+    @DisplayName("productOut：行级扣减 affected=0（并发占用）→ 抛'库存不足或已被并发占用'（@Transactional 连流水回滚）")
+    void testProductOut_ConcurrentLost_Throws() {
+        stubProductOutCommon();
+        when(stockMapper.deductStockById(anyLong(), any(BigDecimal.class), anyLong())).thenReturn(0);
+
+        assertThatThrownBy(() -> service.productOut(stockOutBo(new BigDecimal("5"))))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("库存不足或已被并发占用");
     }
 
 }

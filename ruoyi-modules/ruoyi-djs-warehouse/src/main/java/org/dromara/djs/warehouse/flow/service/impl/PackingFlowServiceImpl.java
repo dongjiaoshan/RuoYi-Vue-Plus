@@ -35,8 +35,9 @@ import java.util.Map;
  *   <li>{@code packOut} 走 {@link LocationStockMapper#deductByProductLocation} —— SQL 内置
  *       {@code product_stock >= deductQty} 行锁 + 数量校验，并发只有一次 affectedRows > 0。</li>
  *   <li>{@code packIn} 走 {@link LocationStockMapper#addByProductLocation}；无库存行则 INSERT 建账。</li>
- *   <li>{@code packCheck} 走 {@link LocationStockMapper#setStockAfterCheck}（设实盘绝对值）+
- *       差异流水（盘盈 check_in / 盘亏 check_out），逻辑对齐 {@code StockCheckServiceImpl} 单 line。</li>
+ *   <li>{@code packCheck} 走 {@link LocationStockMapper#setStockAfterCheck}（非篮子行设
+ *       「实盘量 − 篮子行合计」）+ 差异流水（盘盈 check_in / 盘亏 check_out），
+ *       逻辑对齐 {@code StockCheckServiceImpl} 单 line。</li>
  *   <li>3 动作均先 {@link IStockCheckService#assertLocationUnlocked} 拒绝盘点锁定中的库位（后端双保险）。</li>
  * </ul>
  *
@@ -198,11 +199,21 @@ public class PackingFlowServiceImpl implements IPackingFlowService {
             flowId = flow.getId();
         }
 
-        // 3. 回写 location_stock 至实盘绝对值 + 刷新 latest_check_time / check_result；无行则建账
+        // 3. 回写 location_stock 非篮子行至「非篮目标量 = 实盘量 − 篮子行合计」+ 刷新 latest_check_time
+        //    / check_result。实盘量是组物理总量（含篮子行），篮子行的账随各自业务链走、不参与盘点 SET。
+        BigDecimal basketStock = basketStock(locId, bo.getProductId());
+        BigDecimal nonBasketTarget = bo.getCheckStock().subtract(basketStock);
+        if (nonBasketTarget.compareTo(BigDecimal.ZERO) < 0) {
+            log.warn("盘点实盘量低于篮子行合计，非篮子行按 0 校准（差额已由差异流水留痕）："
+                    + "location={} product={} 实盘={} 篮子合计={}",
+                locId, bo.getProductId(), bo.getCheckStock(), basketStock);
+            nonBasketTarget = BigDecimal.ZERO;
+        }
         int affected = locationStockMapper.setStockAfterCheck(
-            locId, bo.getProductId(), bo.getCheckStock(), resultType, userId);
-        if (affected == 0) {
-            LocationStock stock = insertStockRow(locId, product, bo.getCheckStock(), userId);
+            locId, bo.getProductId(), nonBasketTarget, resultType, userId);
+        if (affected == 0 && nonBasketTarget.compareTo(BigDecimal.ZERO) > 0) {
+            // 无非篮子行且有非篮余量（首次建账）→ 按非篮目标量建行；按实盘全量建行会与篮子行合计翻倍
+            LocationStock stock = insertStockRow(locId, product, nonBasketTarget, userId);
             // 建账行补盘点字段
             stock.setLatestCheckTime(new Date());
             stock.setCheckResult(resultType);
@@ -266,20 +277,22 @@ public class PackingFlowServiceImpl implements IPackingFlowService {
     }
 
     /**
-     * 查 location + product 的系统现量（无库存行返 0）。
+     * 查 location + product 的系统现量（组内全部行 SUM；无库存行返 0）。
      *
-     * <p>protected 便于单测 stub。</p>
+     * <p>同 (库位,产品) 可能存在多行（耳号/地块/白条篮子 + 非篮子行），系统现量取组合计，
+     * 与工人实盘的物理总量同口径。protected 便于单测 stub。</p>
      */
     protected BigDecimal currentStock(Long locationId, Long productId) {
-        LocationStock stock = locationStockMapper.selectOne(
-            new LambdaQueryWrapper<LocationStock>()
-                .eq(LocationStock::getLocationId, locationId)
-                .eq(LocationStock::getProductId, productId)
-                .last("LIMIT 1"));
-        if (stock == null || stock.getProductStock() == null) {
-            return BigDecimal.ZERO;
-        }
-        return stock.getProductStock();
+        BigDecimal sum = locationStockMapper.sumStockByProductLocation(locationId, productId);
+        return sum == null ? BigDecimal.ZERO : sum;
+    }
+
+    /**
+     * 组内篮子行库存合计（{@code plot_id / ear_no / white_bar_no} 任一非 NULL）；无篮子行返 0。
+     */
+    private BigDecimal basketStock(Long locationId, Long productId) {
+        BigDecimal sum = locationStockMapper.sumBasketStockByProductLocation(locationId, productId);
+        return sum == null ? BigDecimal.ZERO : sum;
     }
 
     /**

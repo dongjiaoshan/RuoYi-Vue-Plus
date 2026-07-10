@@ -102,7 +102,7 @@ class MedBatchServiceImplTest {
     }
 
     @Test
-    @DisplayName("insertByBo: happy path → mapper.insert 调一次 + provider.add 同步入库量到仓库库存")
+    @DisplayName("insertByBo: happy path → mapper.insert 调一次 + provider.addPurchase 同步入库量到仓库库存")
     void testInsertByBo_HappyPath() {
         MedBatchBo bo = sampleBo();
         when(medBatchMapper.insert(any(MedBatch.class))).thenAnswer(inv -> {
@@ -121,9 +121,9 @@ class MedBatchServiceImplTest {
         assertThat(saved.getBatchNo()).isEqualTo("B20260501");
         assertThat(saved.getQuantity()).isEqualByComparingTo("120.00");
 
-        // ADR-0012：采购入库把入库量增到仓库库存（operatorId 单测无登录上下文为 null）
+        // ADR-0012：采购入库把入库量增到仓库库存（purchase_in 流水链；operatorId 单测无登录上下文为 null）
         ArgumentCaptor<BigDecimal> addQty = ArgumentCaptor.forClass(BigDecimal.class);
-        verify(medicineStockProvider, times(1)).add(eq(MEDICINE_ID), addQty.capture(), any());
+        verify(medicineStockProvider, times(1)).addPurchase(eq(MEDICINE_ID), addQty.capture(), any());
         assertThat(addQty.getValue()).isEqualByComparingTo("120.00");
     }
 

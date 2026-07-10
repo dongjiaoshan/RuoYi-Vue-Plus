@@ -18,6 +18,7 @@ import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.domain.ProductInhouse;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
 import org.dromara.djs.warehouse.product.mapper.ProductInhouseMapper;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
@@ -101,6 +102,17 @@ class PigBurnRecordServiceImplTest {
     private static final Long OPERATOR_ID = 9001L;
     private static final Long TYPE_WHOLE = 100000000000000001L;
     private static final Long TYPE_HEAD = 2059526196453937154L;
+
+    @BeforeAll
+    static void initMpEntityCache() {
+        // MyBatis-Plus 单测 entity cache 预热（coder-mp-entity-cache-test）：
+        // 累计入库总重校验用 LambdaQueryWrapper<ProductInhouse>，无 Spring 上下文时需预热 lambda 列名解析
+        com.baomidou.mybatisplus.core.MybatisConfiguration cfg = new com.baomidou.mybatisplus.core.MybatisConfiguration();
+        org.apache.ibatis.builder.MapperBuilderAssistant assistant =
+            new org.apache.ibatis.builder.MapperBuilderAssistant(cfg, "");
+        assistant.setCurrentNamespace("test");
+        com.baomidou.mybatisplus.core.metadata.TableInfoHelper.initTableInfo(assistant, ProductInhouse.class);
+    }
 
     static class TestablePigBurnRecordServiceImpl extends PigBurnRecordServiceImpl {
         TestablePigBurnRecordServiceImpl(PigBurnRecordMapper b, StockFlowMapper f, BarInfoMapper bi,
@@ -223,7 +235,8 @@ class PigBurnRecordServiceImplTest {
         assertThat(saved.getEarNo()).isEqualTo("010126050101");
         assertThat(saved.getOperatorId()).isEqualTo(OPERATOR_ID);
         assertThat(saved.getBurnWeight()).isEqualByComparingTo("85.500");
-        assertThat(saved.getLossWeight()).isEqualByComparingTo("25.000");
+        // r134：burn_record 是产出行粒度，不再存损耗（整只损耗 = bar_info.arrive_weight − in_weight 派生）
+        assertThat(saved.getLossWeight()).isNull();
 
         // 2 行 product_inhouse + 2 行 IN 流水
         verify(productInhouseMapper, times(2)).insert(any(ProductInhouse.class));
@@ -290,18 +303,20 @@ class PigBurnRecordServiceImplTest {
     }
 
     @Test
-    @DisplayName("submitBurnRecord: 到场重量 < 入库合计 → 抛 不能大于到场重量")
+    @DisplayName("submitBurnRecord: 已入库+本次合计 > 头皮肉重量(bar.arrive_weight) → 抛 + 不写入")
     void testSubmit_ArriveLessThanInbound() {
-        when(barInfoMapper.selectById(BAR_ID)).thenReturn(sampleBar("pending_singe"));
+        // r194/FIX-WMS-CUTPICKUP-SPLIT-001：重量上限口径 = bar_info.arrive_weight（头皮肉重量），
+        // 非 bo.arriveWeight。单品 ≤ 头皮肉重量、累计（DB 已入库 + 本次）≤ 头皮肉重量。
+        BarInfo bar = sampleBar("pending_singe");
+        bar.setArriveWeight(new BigDecimal("84.000")); // 单品 80.3 / 5.2 均 ≤ 84，累计 85.5 > 84
+        when(barInfoMapper.selectById(BAR_ID)).thenReturn(bar);
         when(locationInfoMapper.selectById(LOCATION_ID)).thenReturn(new LocationInfo());
         stubTypes();
+        // productInhouseMapper.selectList 未 stub → 空列表（该白条尚无已入库产出行）
 
-        PigBurnRecordBo bo = sampleBo();
-        bo.setArriveWeight(new BigDecimal("50.000")); // < 85.5 合计
-
-        assertThatThrownBy(() -> service.submitBurnRecord(bo))
+        assertThatThrownBy(() -> service.submitBurnRecord(sampleBo()))
             .isInstanceOf(ServiceException.class)
-            .hasMessageContaining("不能大于到场重量");
+            .hasMessageContaining("不能超过头皮肉重量");
 
         verify(burnMapper, never()).insert(any(PigBurnRecord.class));
     }

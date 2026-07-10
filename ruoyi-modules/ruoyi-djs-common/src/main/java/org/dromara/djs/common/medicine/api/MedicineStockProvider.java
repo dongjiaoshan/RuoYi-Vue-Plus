@@ -41,7 +41,8 @@ public interface MedicineStockProvider {
     List<MedicineProductDto> listMedicineProductsByIds(Collection<Long> ids);
 
     /**
-     * 扣减药品库存（领用 / 损耗），落该药品商品库存所在库位（{@code selectDefaultLocationByProduct}）。
+     * 扣减药品库存（领用 use），落该药品商品库存所在库位（{@code selectDefaultLocationByProduct}）。
+     * 实现方同事务落一条领用出库流水（{@code t_warehouse_stock_flow}，flow_type=dept_pick_out）。
      * 库存不足抛业务异常（不吞）。
      *
      * @param productId  药品商品 id（{@code t_warehouse_product_info.id}）
@@ -51,13 +52,35 @@ public interface MedicineStockProvider {
     void deduct(Long productId, BigDecimal qty, Long operatorId);
 
     /**
-     * 增加药品库存（退回），落该药品商品原库存所在库位。
+     * 扣减药品库存（损耗 loss）：扣减语义同 {@link #deduct}，但实现方按损耗落流水
+     * （flow_type=loss）并同步双写仓库统一损耗台账 {@code t_warehouse_loss_flow}
+     * （损耗总览 / 库存详情损耗 tab 数据源）。库存不足抛业务异常（不吞）。
+     *
+     * @param productId  药品商品 id
+     * @param qty        损耗数量（>0）
+     * @param operatorId 操作人 userId
+     */
+    void deductLoss(Long productId, BigDecimal qty, Long operatorId);
+
+    /**
+     * 增加药品库存（领用退回），落该药品商品原库存所在库位。实现方同事务落一条领用退回
+     * 入库流水（flow_type=pick_return_in，计入退回额度、不计入采购统计）。
      *
      * @param productId  药品商品 id
      * @param qty        增加数量（>0）
      * @param operatorId 操作人 userId
      */
     void add(Long productId, BigDecimal qty, Long operatorId);
+
+    /**
+     * 增加药品库存（批次采购入库），落该药品商品原库存所在库位。实现方同事务落一条采购
+     * 入库流水（flow_type=purchase_in，计入采购入库记录页 / 产品月采购统计）。
+     *
+     * @param productId  药品商品 id
+     * @param qty        入库数量（>0）
+     * @param operatorId 操作人 userId
+     */
+    void addPurchase(Long productId, BigDecimal qty, Long operatorId);
 
     /**
      * 批量取药品当前库存合计（供领用列表回显）。

@@ -27,17 +27,26 @@ import java.util.Map;
 public interface AggregateQueryMapper {
 
     /**
-     * 实时库存：按 pig_type 分组 COUNT（排除 lifecycle='END'）。
+     * 实时库存：按 pig_type 分组 COUNT（排除 lifecycle='END'），并追加一行
+     * {@code pigType='reserve'} = 后备存栏（{@code current_status='HB'} 计数，与
+     * {@code InventoryAppletServiceImpl} 后备段口径一致；后备猪 pig_type 仍是 sow，
+     * 已含在 sow 计数内，此行为 dashboard 单列后备存栏提供计数，不改 sow 口径）。
      *
      * @param tenantId 租户
-     * @return 形如 [{pig_type:'sow', cnt:23}, ...]
+     * @return 形如 [{pig_type:'sow', cnt:23}, ..., {pig_type:'reserve', cnt:2}]
      */
     @Select("SELECT pig_type AS pigType, COUNT(*) AS cnt "
         + " FROM t_farm_pig_info "
         + " WHERE tenant_id = #{tenantId} "
         + "   AND del_flag = '0' "
         + "   AND current_status <> 'END' "
-        + " GROUP BY pig_type")
+        + " GROUP BY pig_type "
+        + " UNION ALL "
+        + " SELECT 'reserve' AS pigType, COUNT(*) AS cnt "
+        + " FROM t_farm_pig_info "
+        + " WHERE tenant_id = #{tenantId} "
+        + "   AND del_flag = '0' "
+        + "   AND current_status = 'HB'")
     List<Map<String, Object>> countInventoryByType(@Param("tenantId") String tenantId);
 
     /**

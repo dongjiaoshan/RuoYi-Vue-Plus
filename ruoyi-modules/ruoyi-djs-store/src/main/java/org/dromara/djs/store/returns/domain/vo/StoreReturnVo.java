@@ -52,6 +52,21 @@ public class StoreReturnVo implements Serializable {
     @ExcelProperty(value = "产品名称")
     private String productName;
 
+    /**
+     * 产品归属类型 djs_belong_type（service 内存聚合填）：pork/white_bar=猪肉 tab，其余=果蔬 tab。
+     * 前端「退回记录」猪肉/果蔬分 tab 归属由此字段决定（不再靠前端 listProduct 分页 join，避免产品超页丢归属默认成果蔬）。
+     */
+    private String belongType;
+
+    /** 产品业务编码（product_info.product_id，service 内存聚合填，原型「产品代码」列）。 */
+    private String productCode;
+
+    /** 产品规格（service 内存聚合填）。 */
+    private String productSpec;
+
+    /** 产品单位（service 内存聚合填，原型「单位」列）。 */
+    private String productUnit;
+
     private Long locationId;
 
     /** 入库库位名称（service 内存聚合填，STR-RETURN-REBUILD-001 K4 联动外购入库目标库位）。 */
