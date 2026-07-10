@@ -314,6 +314,32 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
                                   @Param("userId") Long userId);
 
     /**
+     * 按 {@code (location_id, product_id)} 且 {@code plot_id / ear_no / white_bar_no 全 NULL} 原子累加
+     * 门店退货入库到「退货专属篮」（row31：门店退回猪肉/果蔬成品无地块/耳号来源，客户拍板专设一个不带
+     * 地块编号/耳号的退货篮承载；再领用/发货不带追溯——客户确认符合）。
+     *
+     * <p>与 {@link #addByProductLocation}（不约束 plot/ear，会并进已有地块/耳号行→污染追溯归属）区分：
+     * 本方法只命中「退货篮」那一行，退货量累加进退货篮、绝不并进自产果蔬地块行或分割猪肉耳号行。
+     * {@code updated==0}（首次退货、退货篮不存在）→ 调用方 INSERT 一条 plot/ear/white_bar 全 NULL 的新退货篮。</p>
+     *
+     * @return affectedRows（0 = 该 (库位,产品) 尚无退货篮 → 调用方 INSERT 新退货篮）
+     */
+    @Update("UPDATE t_warehouse_location_stock "
+        + "   SET product_stock = product_stock + #{addQty},"
+        + "       update_by = #{userId},"
+        + "       update_time = NOW() "
+        + " WHERE location_id = #{locationId} "
+        + "   AND product_id  = #{productId} "
+        + "   AND plot_id IS NULL "
+        + "   AND ear_no IS NULL "
+        + "   AND white_bar_no IS NULL "
+        + "   AND del_flag = '0'")
+    int addByProductLocationReturn(@Param("locationId") Long locationId,
+                                   @Param("productId") Long productId,
+                                   @Param("addQty") BigDecimal addQty,
+                                   @Param("userId") Long userId);
+
+    /**
      * 按 {@code medicine_id} + {@code location_id} 原子扣减药品库存（ADR-0012 药品归仓库库位统一，
      * FIX-MED-MODEL-004/005 领用 / 损耗 / 治疗用药）。
      *
@@ -917,6 +943,62 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
                                                 @Param("locationId") Long locationId);
 
     /**
+     * mp 物资领用「退货专属篮卡」列表（row31：门店退回猪肉/果蔬成品无地块/耳号来源，客户拍板专设一张
+     * 「退货」卡承载——{@code plot_id / ear_no / white_bar_no 全 NULL} 的退货篮）。
+     *
+     * <p>与 {@link #selectVegIssueByPlot}（只列 {@code plot_id IS NOT NULL} 地块卡）/
+     * {@link #selectPorkIssueByEar}（只列 {@code ear_no IS NOT NULL} 耳号卡）互补：本方法只捞该产品的退货篮
+     * （三源标签全空），一产品聚合成一张 {@code batchCode='退货'} 卡，service 层追加到地块卡/耳号卡列表末尾。
+     * 自产果蔬(plot 维)/分割猪肉(ear 维) 的正常库存三源标签有值，天然不入本卡；只有门店退货入库的篮进来。
+     * 今日三量按「三源标签全空」的流水聚合（即退货篮自身的领/退/损，pick_out/return_in/loss）。</p>
+     *
+     * <p>{@code batchId = MIN(s.id)}（退货篮真实 id，pickByBatch 据其 plot/ear 皆空落通用分支扣减、
+     * 产出 pick_out 流水 plot/ear 皆空——再领用/发货不带追溯，客户已确认符合）。返仍有库存或今日动过的退货篮。</p>
+     *
+     * @param productId 产品 ID（果蔬取原材料 id / 猪肉取成品 id，与 issue*Batches 入参一致）
+     * @param locationId 库位 ID（可空，chip 选中态过滤）
+     * @return 该产品的退货篮卡（0~1 张，无退货库存则空 list）
+     */
+    @Select("""
+        <script>
+        SELECT MIN(s.id)                     AS batchId,
+               '退货'                         AS batchCode,
+               s.product_id                  AS productId,
+               MAX(s.product_name)           AS productName,
+               COALESCE(MAX(s.product_unit), 'kg') AS productUnit,
+               SUM(s.product_stock)          AS currentStock,
+               COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
+                          WHERE f.product_id = s.product_id AND f.plot_id IS NULL AND f.ear_no IS NULL AND f.white_bar_no IS NULL
+                            AND f.flow_type IN ('prod_pick_out','dept_pick_out','pick_out')
+                            AND DATE(f.flow_date) = CURDATE()
+                            AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayPicked,
+               COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
+                          WHERE f.product_id = s.product_id AND f.plot_id IS NULL AND f.ear_no IS NULL AND f.white_bar_no IS NULL
+                            AND f.flow_type IN ('prod_return_in','pick_return_in','store_return_in')
+                            AND DATE(f.flow_date) = CURDATE()
+                            AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayReturned,
+               COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
+                          WHERE f.product_id = s.product_id AND f.plot_id IS NULL AND f.ear_no IS NULL AND f.white_bar_no IS NULL
+                            AND f.flow_type = 'loss' AND DATE(f.flow_date) = CURDATE()
+                            AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayLoss,
+               (SELECT s3.location_id FROM t_warehouse_location_stock s3 WHERE s3.id = MIN(s.id)) AS locationId
+          FROM t_warehouse_location_stock s
+         WHERE s.del_flag      = '0'
+           AND s.tenant_id     = '1001'
+           AND s.product_id    = #{productId}
+           AND s.plot_id IS NULL
+           AND s.ear_no IS NULL
+           AND s.white_bar_no IS NULL
+           AND s.location_id IS NOT NULL
+           AND (s.product_stock > 0 OR DATE(s.update_time) = CURDATE())
+           <if test="locationId != null"> AND s.location_id = #{locationId} </if>
+         GROUP BY s.product_id
+        </script>
+        """)
+    List<MatIssueBasketVo> selectReturnBasketCards(@Param("productId") Long productId,
+                                                   @Param("locationId") Long locationId);
+
+    /**
      * mp 物资领用「按库位类型列待领外购商品卡」列表（WMS-OUTSOURCE-001：种植库 crop_loc / 养殖库 farm_loc）。
      *
      * <p>与 {@link #selectMatIssueItems}（按 belong_type 组织）对称，本方法按 {@code location_type} 组织：
@@ -1082,10 +1164,13 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
                s.white_bar_no                    AS whiteBarNo,
                s.plot_id                         AS plotId,
                pl.plot_code                      AS plotCode,
+               <!-- row32：今日四量子查询按 product_id + warehouse_id（+ ear_no / white_bar_no）关联，
+                    不按 plot_id —— 退回(prod_return_in/pick_return_in)/损耗(loss)流水不写 plot_id（仅 pick_out
+                    带 plot），若强求 f.plot_id = s.plot_id 则自产果蔬（库存行带 plot）的今日退回/损耗恒 0，
+                    与 mp 按 product 汇总不一致（客户 row32）。去 plot 关联后按库位维度真实汇总。 -->
                COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
                           WHERE f.product_id = p.id AND f.warehouse_id = s.location_id
                             AND (f.ear_no = s.ear_no OR (f.ear_no IS NULL AND s.ear_no IS NULL))
-                            AND (f.plot_id = s.plot_id OR (f.plot_id IS NULL AND s.plot_id IS NULL))
                             AND (f.white_bar_no = s.white_bar_no OR (f.white_bar_no IS NULL AND s.white_bar_no IS NULL))
                             AND f.flow_type IN ('prod_pick_out','dept_pick_out','pick_out')
                             AND DATE(f.flow_date) = CURDATE()
@@ -1093,7 +1178,6 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
                COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
                           WHERE f.product_id = p.id AND f.warehouse_id = s.location_id
                             AND (f.ear_no = s.ear_no OR (f.ear_no IS NULL AND s.ear_no IS NULL))
-                            AND (f.plot_id = s.plot_id OR (f.plot_id IS NULL AND s.plot_id IS NULL))
                             AND (f.white_bar_no = s.white_bar_no OR (f.white_bar_no IS NULL AND s.white_bar_no IS NULL))
                             AND f.flow_type IN ('prod_return_in','pick_return_in')
                             AND DATE(f.flow_date) = CURDATE()
@@ -1101,14 +1185,12 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
                COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
                           WHERE f.product_id = p.id AND f.warehouse_id = s.location_id
                             AND (f.ear_no = s.ear_no OR (f.ear_no IS NULL AND s.ear_no IS NULL))
-                            AND (f.plot_id = s.plot_id OR (f.plot_id IS NULL AND s.plot_id IS NULL))
                             AND (f.white_bar_no = s.white_bar_no OR (f.white_bar_no IS NULL AND s.white_bar_no IS NULL))
                             AND f.flow_type = 'loss' AND DATE(f.flow_date) = CURDATE()
                             AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayLoss,
                COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
                           WHERE f.product_id = p.id AND f.warehouse_id = s.location_id
                             AND (f.ear_no = s.ear_no OR (f.ear_no IS NULL AND s.ear_no IS NULL))
-                            AND (f.plot_id = s.plot_id OR (f.plot_id IS NULL AND s.plot_id IS NULL))
                             AND (f.white_bar_no = s.white_bar_no OR (f.white_bar_no IS NULL AND s.white_bar_no IS NULL))
                             AND f.flow_type = 'feed_out' AND DATE(f.flow_date) = CURDATE()
                             AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayFeed
@@ -1135,6 +1217,9 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
                 （mp 按 product 聚合时已折叠进总库存），admin 行视图剔除，避免多出"库位空"重复行使两端行数不一致。
                 有耳号(猪肉篮)/有地块(自产果蔬篮)的行保留——它们靠 ear_no/plot_id 而非 location 成行。 -->
            AND NOT (s.location_id IS NULL AND s.ear_no IS NULL AND s.plot_id IS NULL)
+           <!-- row27：毛菜鲜品库（L0006）= 毛菜处理前的原料暂存库，果蔬不在此生产领用（与 mp matPack
+                TAB_LOCATION_RULE 蔬菜业态只取蔬菜保鲜库/重口味蔬菜库、排除毛菜库同口径）。 -->
+           AND NOT (p.belong_type = 'vegetable' AND l.location_name LIKE '%毛菜%')
            AND p.belong_type IN
            <foreach collection="belongTypes" item="bt" open="(" separator="," close=")">#{bt}</foreach>
            <if test="keyword != null and keyword != ''">

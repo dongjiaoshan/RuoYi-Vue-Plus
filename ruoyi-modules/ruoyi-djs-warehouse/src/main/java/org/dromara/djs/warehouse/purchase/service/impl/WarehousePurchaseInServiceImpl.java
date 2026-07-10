@@ -100,6 +100,23 @@ public class WarehousePurchaseInServiceImpl implements IWarehousePurchaseInServi
     @Override
     @Transactional(rollbackFor = Exception.class)
     public Long inbound(Long productId, Long locationId, BigDecimal quantity, String flowType, String remark) {
+        return doInbound(productId, locationId, quantity, flowType, remark, false);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public Long inboundReturnBasket(Long productId, Long locationId, BigDecimal quantity, String flowType, String remark) {
+        return doInbound(productId, locationId, quantity, flowType, remark, true);
+    }
+
+    /**
+     * 入库公共逻辑：UPSERT location_stock + INSERT stock_flow（同事务，失败整体回滚）。
+     *
+     * @param toReturnBasket true = 门店退货入退货专属篮（row31，UPSERT 命中 plot/ear/white_bar 全 NULL 的退货篮，
+     *                       不并进地块/耳号行）；false = 常规入库（采购/生产退回，按 product+location 合并）。
+     */
+    private Long doInbound(Long productId, Long locationId, BigDecimal quantity, String flowType, String remark,
+                           boolean toReturnBasket) {
         ProductInfo product = requireProduct(productId);
         requireLocation(locationId);
         if (quantity == null || quantity.compareTo(BigDecimal.ZERO) <= 0) {
@@ -107,8 +124,10 @@ public class WarehousePurchaseInServiceImpl implements IWarehousePurchaseInServi
         }
         Long userId = LoginHelper.getUserId();
 
-        // 1. UPSERT location_stock
-        int updated = locationStockMapper.addByProductLocation(locationId, productId, quantity, userId);
+        // 1. UPSERT location_stock（退货入退货篮 / 常规按 product+location 合并）
+        int updated = toReturnBasket
+            ? locationStockMapper.addByProductLocationReturn(locationId, productId, quantity, userId)
+            : locationStockMapper.addByProductLocation(locationId, productId, quantity, userId);
         if (updated == 0) {
             // 不存在 → INSERT 新库存行（同事务，failure → 整体回滚）
             LocationStock fresh = new LocationStock();

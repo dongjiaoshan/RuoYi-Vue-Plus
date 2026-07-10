@@ -47,6 +47,21 @@ public interface IWarehousePurchaseInService {
     Long inbound(Long productId, Long locationId, BigDecimal quantity, String flowType, String remark);
 
     /**
+     * 门店退货入库到「退货专属篮」（row31）。与 {@link #inbound} 唯一区别：库存 UPSERT 命中
+     * {@code plot_id / ear_no / white_bar_no 全 NULL} 的退货篮那一行，绝不并进自产果蔬地块行或分割猪肉耳号行
+     * （门店退回的成品无地块/耳号来源，客户拍板专设退货篮承载；再领用/发货不带追溯）。
+     * 首次退货（退货篮不存在）→ INSERT 一条三源标签全 NULL 的新退货篮。stock_flow 同 {@link #inbound}。
+     *
+     * @param productId 入库产品 ID（果蔬取原材料 id / 猪肉取成品 id）
+     * @param locationId 退货入库库位 ID
+     * @param quantity  入库数量，必须 &gt; 0
+     * @param flowType  stock_flow.flow_type（门店退货走 store_return_in）
+     * @param remark    备注（可空）
+     * @return 写入的 stock_flow id
+     */
+    Long inboundReturnBasket(Long productId, Long locationId, BigDecimal quantity, String flowType, String remark);
+
+    /**
      * 分页查询采购入库记录（仅 stock_flow.flow_type='purchase_in'）。
      */
     TableDataInfo<PurchaseInRecordVo> queryPageList(PurchaseInQuery query, PageQuery pageQuery);

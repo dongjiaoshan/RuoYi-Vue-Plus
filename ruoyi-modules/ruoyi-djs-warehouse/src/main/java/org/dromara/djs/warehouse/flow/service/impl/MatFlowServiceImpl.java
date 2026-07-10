@@ -1748,14 +1748,20 @@ public class MatFlowServiceImpl implements IMatFlowService {
     public List<MatIssueBasketVo> issuePorkBatches(String productId, String locationId) {
         Long pid = requireProductId(productId);
         Long locId = parseLocationId(locationId);
-        return locationStockMapper.selectPorkIssueByEar(pid, locId);
+        List<MatIssueBasketVo> cards = new ArrayList<>(locationStockMapper.selectPorkIssueByEar(pid, locId));
+        // row31：退货专属篮卡追加到耳号卡末尾（门店退回猪肉成品无耳号来源，客户拍板单独一张「退货」卡）
+        cards.addAll(locationStockMapper.selectReturnBasketCards(pid, locId));
+        return cards;
     }
 
     @Override
     public List<MatIssueBasketVo> issueVegBatches(String productId, String locationId) {
         Long pid = requireProductId(productId);
         Long locId = parseLocationId(locationId);
-        return locationStockMapper.selectVegIssueByPlot(pid, locId);
+        List<MatIssueBasketVo> cards = new ArrayList<>(locationStockMapper.selectVegIssueByPlot(pid, locId));
+        // row31：退货专属篮卡追加到地块卡末尾（门店退回果蔬无地块来源，客户拍板单独一张「退货」卡）
+        cards.addAll(locationStockMapper.selectReturnBasketCards(pid, locId));
+        return cards;
     }
 
     /**

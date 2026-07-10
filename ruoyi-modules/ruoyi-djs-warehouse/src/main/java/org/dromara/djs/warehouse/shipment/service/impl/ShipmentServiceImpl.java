@@ -466,9 +466,15 @@ public class ShipmentServiceImpl
      * listStorePendingDemands 共用，避免逻辑复制。
      */
     private List<ProductProduction> findAvailableProductionsForDemand(DemandManage demand) {
+        // 可发清单只算「当天打包」的成品（produce_date = 今日，Asia/Shanghai）——与 loadShippableDemands
+        // 的 demand_date=today、打包扣减 deductDemandOnPack 的 demand_date=CURDATE() 同口径。否则昨天/前天
+        // 打包、未发货、未绑 demand 的成品会被今天的 demand 匹配进「生产量」，让列表看着有货，
+        // 但 shipped_count（仅当天打包累加）判定「未备齐·无法出车」，造成「列表有货却发不出车」的错位。
+        LocalDate today = LocalDate.now(SHIP_TODAY_ZONE);
         LambdaQueryWrapper<ProductProduction> wrapper = new LambdaQueryWrapper<ProductProduction>()
             .isNull(ProductProduction::getDemandId)
             .eq(ProductProduction::getIsDeliveryCheck, 0)
+            .apply("DATE(produce_date) = {0}", today.toString())
             // 发送位置=礼盒的成品是礼盒组件（预留给礼盒打包消耗），不出现在发货月台（礼盒澄清 2026-06-25）。
             // deliver_dest 为 NULL（默认发货月台）或非 'gift' 才可直接发货。
             .and(w -> w.isNull(ProductProduction::getDeliverDest)

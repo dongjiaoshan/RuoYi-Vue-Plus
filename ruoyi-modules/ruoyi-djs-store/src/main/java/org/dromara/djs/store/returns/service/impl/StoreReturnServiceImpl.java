@@ -210,8 +210,9 @@ public class StoreReturnServiceImpl
         baseMapper.insert(entity);
 
         // K4 联动外购入库：同事务 UPSERT location_stock + stock_flow(return_in)。
-        // inbound 内部校验库位存在 / 数量 > 0，失败抛 → 整体回滚（退回记录一并撤销，不留半态）。
-        purchaseInService.inbound(resolveInboundProductId(bo.getProductId()), bo.getLocationId(), bo.getReturnQuantity(),
+        // row31：门店退回猪肉/果蔬成品无地块/耳号来源 → 入「退货专属篮」（plot/ear/white_bar 全空），
+        // 不并进自产果蔬地块行/分割猪肉耳号行；再领用/发货不带追溯（客户确认符合）。
+        purchaseInService.inboundReturnBasket(resolveInboundProductId(bo.getProductId()), bo.getLocationId(), bo.getReturnQuantity(),
             FLOW_TYPE_RETURN_IN, "门店退回入库：" + entity.getReturnNo());
 
         log.info("[STR-RETURN-REBUILD-001] return id={} no={} product={} location={} qty={} → return_in 联动入库",
@@ -588,7 +589,8 @@ public class StoreReturnServiceImpl
 
         // 确认实收时才联动外购入库：同事务 UPSERT location_stock + stock_flow(store_return_in)，
         // inbound 内部校验库位 / 数量，失败抛 → 整体回滚（确认与入库一致，不留半态）。
-        purchaseInService.inbound(inboundProductId, locationId, bo.getReceivedQty(),
+        // row31：入「退货专属篮」（plot/ear/white_bar 全空），不并进地块/耳号行；再领用/发货不带追溯（客户确认符合）。
+        purchaseInService.inboundReturnBasket(inboundProductId, locationId, bo.getReceivedQty(),
             FLOW_TYPE_RETURN_IN, "门店退回仓库确认入库：" + existing.getReturnNo());
 
         log.info("[STORE-RETURN-UNIFY-001] confirm id={} no={} location={} receivedQty={} inboundProduct={} → received 联动入库",
