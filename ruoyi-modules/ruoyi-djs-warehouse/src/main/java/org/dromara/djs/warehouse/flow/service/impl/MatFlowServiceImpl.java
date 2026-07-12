@@ -220,6 +220,15 @@ public class MatFlowServiceImpl implements IMatFlowService {
         // 强制覆盖出库去向 dest（不信 mp 传的具体值）。flow_type 由各分支统一调 resolvePickFlowType(bo) 取。
         // 仓库打包领用（warehouse）→ 生产领用(prod_pick)；养殖 / 种植物资领用（breed/plant）→ 部门领用(dept_pick)。
         bo.setStockOutDest(resolvePickDest(bo));
+        // row40：与小程序同口径硬化——仓库打包领用(prod_pick)时，原材料必须有对应生产成品才允许领用
+        // （无对应成品的原料领了也无法打包，四季豆案例）。canIssueMaterial 内部已放行非打包业态(包材/白条/
+        // 饲料/种子)、非 attr=2 原料、解析不到成品链的情况；养殖/种植部门领用(dept_pick)不在此约束内。
+        // 原仅 mp 前端软校验(canIssueMaterial GET 端点)，后端补硬拦截 → 同时保护 admin + mp。
+        if (DEST_PROD_PICK.equals(bo.getStockOutDest())
+            && !canIssueMaterial(bo.getProductId() == null ? null : String.valueOf(bo.getProductId()),
+                                 bo.getPlotId() == null ? null : String.valueOf(bo.getPlotId()))) {
+            throw new ServiceException("该原材料没有对应的生产产品，无法领用，请先创建对应的生产产品");
+        }
         // 「按源手选」领用（对齐客户最新原型「仓库>分拣发货>物资领用」）：batchId 非空 = 用户在源篮子列表
         // 里手选了某一篮（猪肉耳号篮 / 自产果蔬地块篮），按该篮 id 行锁扣减 + 产带源标签的 inhouse。
         // 优先于 plot / product 维度兜底（兜底保留给无 batchId 的旧调用）。
@@ -1093,6 +1102,15 @@ public class MatFlowServiceImpl implements IMatFlowService {
         //    出现，源篮子均带 product_id）→ 跳过额度校验，仅回补（不阻塞）
         if (productId != null) {
             ensureTodayCapacity(productId, bo.getQuantity(), productName, productUnit, product == null ? null : product.getBelongType());
+            // row38：按篮子校验——退回量不能超过该篮子今日领用净剩余（product+库位+ear_no+white_bar_no+plot_id 维度），
+            // 防止退回到「没领用过」的篮子/库位（如领用耳号 A 却退到库位 B，账实倒挂虚增该篮库存）。
+            BigDecimal basketNet = safe(stockFlowMapper.sumTodayNetPickedByBasket(
+                productId, locId, basket.getEarNo(), basket.getWhiteBarNo(), basket.getPlotId()));
+            if (bo.getQuantity().compareTo(basketNet) > 0) {
+                throw new ServiceException("退回数量（" + bo.getQuantity().stripTrailingZeros().toPlainString()
+                    + "）超过该篮子今日领用剩余（" + basketNet.stripTrailingZeros().toPlainString()
+                    + "），请退回到实际领用过的源篮子");
+            }
         }
 
         // 2. INSERT stock_flow（return_in 入库，带篮的 product_id + plot_id + ear_no + white_bar_no 源标签）
@@ -1562,6 +1580,14 @@ public class MatFlowServiceImpl implements IMatFlowService {
         // 1. 校验今日额度（按 user+product 统计，与现状一致）
         if (productId != null) {
             ensureTodayCapacity(productId, bo.getQuantity(), productName, productUnit, product == null ? null : product.getBelongType());
+            // row38：按篮子校验——损耗量不能超过该篮子（耳号卡）今日领用净剩余，防止对没领用过的篮子/库位登记损耗。
+            BigDecimal basketNet = safe(stockFlowMapper.sumTodayNetPickedByBasket(
+                productId, firstLocId, earNo, firstBasket.getWhiteBarNo(), null));
+            if (bo.getQuantity().compareTo(basketNet) > 0) {
+                throw new ServiceException("损耗数量（" + bo.getQuantity().stripTrailingZeros().toPlainString()
+                    + "）超过该篮子今日领用剩余（" + basketNet.stripTrailingZeros().toPlainString()
+                    + "），请对实际领用过的源篮子登记损耗");
+            }
         }
 
         // 2. INSERT loss 流水（带 ear_no + product_id + white_bar_no 源标签，warehouse_id=首篮库位、量=总损耗量）

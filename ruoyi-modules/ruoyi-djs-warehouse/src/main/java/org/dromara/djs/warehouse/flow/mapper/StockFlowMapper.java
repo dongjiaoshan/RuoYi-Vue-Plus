@@ -51,6 +51,33 @@ public interface StockFlowMapper extends BaseMapperPlus<StockFlow, StockFlowVo> 
                                          @Param("flowType") String flowType);
 
     /**
+     * 按<b>篮子维度</b>（product + location + ear_no + white_bar_no + plot_id，NULL-safe 匹配）算今日「领用剩余」净额：
+     * {@code 领用(pick_out) − 退回(return_in) − 损耗(loss) − 饲喂(feed_out)}。
+     *
+     * <p>row38：退回入库 / 当日损耗按篮子校验用——只能退/损该篮子今日实际领用剩余的量，防止退回到「没领用过的
+     * 篮子/库位」（如领用耳号 A 却退到库位 B）。返 ≤ 0 = 该篮今日无可退/可损量，调用方拦截。</p>
+     *
+     * @return 该篮子今日领用净剩余（无流水返 0）
+     */
+    @Select("SELECT COALESCE(SUM(CASE "
+        + "   WHEN flow_type IN ('prod_pick_out','dept_pick_out','pick_out') THEN change_quantity "
+        + "   WHEN flow_type IN ('prod_return_in','pick_return_in','store_return_in','loss','feed_out') THEN -change_quantity "
+        + "   ELSE 0 END), 0) "
+        + "  FROM t_warehouse_stock_flow "
+        + " WHERE product_id   = #{productId} "
+        + "   AND warehouse_id = #{locationId} "
+        + "   AND (ear_no = #{earNo} OR (ear_no IS NULL AND #{earNo} IS NULL)) "
+        + "   AND (white_bar_no = #{whiteBarNo} OR (white_bar_no IS NULL AND #{whiteBarNo} IS NULL)) "
+        + "   AND (plot_id = #{plotId} OR (plot_id IS NULL AND #{plotId} IS NULL)) "
+        + "   AND DATE(flow_date) = CURDATE() "
+        + "   AND del_flag = '0' AND tenant_id = '1001'")
+    BigDecimal sumTodayNetPickedByBasket(@Param("productId") Long productId,
+                                         @Param("locationId") Long locationId,
+                                         @Param("earNo") String earNo,
+                                         @Param("whiteBarNo") String whiteBarNo,
+                                         @Param("plotId") Long plotId);
+
+    /**
      * 按当前用户 + 流水类型 + 今日 + 可选物资类型 SUM（前端"今日数据"卡片用，不限定 productId）。
      *
      * <p>matType 可选：若非空则 JOIN product_info 按 belong_type 过滤。MyBatis {@code <if>} 用注解

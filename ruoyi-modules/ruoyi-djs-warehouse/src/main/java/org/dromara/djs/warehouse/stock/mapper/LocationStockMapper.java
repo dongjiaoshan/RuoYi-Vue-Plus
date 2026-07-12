@@ -1012,8 +1012,9 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
      *
      * <p>与 {@link #selectVegIssueByPlot}（只列 {@code plot_id IS NOT NULL} 地块卡）/
      * {@link #selectPorkIssueByEar}（只列 {@code ear_no IS NOT NULL} 耳号卡）互补：本方法只捞该产品的退货篮
-     * （三源标签全空），一产品聚合成一张 {@code batchCode='退货'} 卡，service 层追加到地块卡/耳号卡列表末尾。
-     * 自产果蔬(plot 维)/分割猪肉(ear 维) 的正常库存三源标签有值，天然不入本卡；只有门店退货入库的篮进来。
+     * （三源标签全空），一产品聚合成一张 {@code batchCode=''}（空标签）卡，service 层追加到地块卡/耳号卡列表末尾。
+     * 标签留空：外购与退回库存都无地块/耳号来源，不打「退货」字样避免把外购库存误标退货（row41），前端 chip 为空即隐藏。
+     * 自产果蔬(plot 维)/分割猪肉(ear 维) 的正常库存三源标签有值，天然不入本卡；只有门店退货/外购入库的篮进来。
      * 今日三量按「三源标签全空」的流水聚合（即退货篮自身的领/退/损，pick_out/return_in/loss）。</p>
      *
      * <p>{@code batchId = MIN(s.id)}（退货篮真实 id，pickByBatch 据其 plot/ear 皆空落通用分支扣减、
@@ -1026,7 +1027,7 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
     @Select("""
         <script>
         SELECT MIN(s.id)                     AS batchId,
-               '退货'                         AS batchCode,
+               ''                            AS batchCode,
                s.product_id                  AS productId,
                MAX(s.product_name)           AS productName,
                COALESCE(MAX(s.product_unit), 'kg') AS productUnit,
@@ -1232,10 +1233,15 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
                     不按 plot_id —— 退回(prod_return_in/pick_return_in)/损耗(loss)流水不写 plot_id（仅 pick_out
                     带 plot），若强求 f.plot_id = s.plot_id 则自产果蔬（库存行带 plot）的今日退回/损耗恒 0，
                     与 mp 按 product 汇总不一致（客户 row32）。去 plot 关联后按库位维度真实汇总。 -->
+               <!-- row39：今日出库(领用)子查询 **须** 按 plot_id 关联——pick_out 流水带 plot（自产果蔬按地块领用），
+                    同一产品同库位的多地块行若不按 plot 关联会共享同一领用汇总（四季豆两地块都显 0.501，实际只领了一个地块）。
+                    NULL-safe：猪肉耳号行 / 非地块物资行 plot_id 两端皆 NULL 仍匹配（不影响 row32——退回/损耗流水 plot_id=NULL
+                    故那三个子查询保持不按 plot 关联）。 -->
                COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
                           WHERE f.product_id = p.id AND f.warehouse_id = s.location_id
                             AND (f.ear_no = s.ear_no OR (f.ear_no IS NULL AND s.ear_no IS NULL))
                             AND (f.white_bar_no = s.white_bar_no OR (f.white_bar_no IS NULL AND s.white_bar_no IS NULL))
+                            AND (f.plot_id = s.plot_id OR (f.plot_id IS NULL AND s.plot_id IS NULL))
                             AND f.flow_type IN ('prod_pick_out','dept_pick_out','pick_out')
                             AND DATE(f.flow_date) = CURDATE()
                             AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayPicked,
