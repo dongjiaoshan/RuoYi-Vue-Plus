@@ -1,6 +1,7 @@
 package org.dromara.djs.warehouse.shipment.returnpkg.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.common.core.exception.ServiceException;
@@ -287,7 +288,16 @@ public class ReturnProductServiceImpl
         if (StringUtils.isNotBlank(bo.getRemark())) {
             upd.setRemark(bo.getRemark());
         }
-        baseMapper.updateById(upd);
+        // 并发守卫（对齐 markDeliveryChecked 范式）：UPDATE 带未确认谓词（is_confirm 空或 ≠1），
+        // 双击 / 两人同点同一单时只有一个请求真正命中；affected==0 = 已被并发确认 → 幂等返回，
+        // 不再回补库存，杜绝双倍 location_stock + 双份 store_return_in 流水。
+        int rows = baseMapper.update(upd, new LambdaUpdateWrapper<ReturnProduct>()
+            .eq(ReturnProduct::getId, id)
+            .and(w -> w.isNull(ReturnProduct::getIsConfirm).or().ne(ReturnProduct::getIsConfirm, 1)));
+        if (rows == 0) {
+            log.info("[WMS-SHIP-001] confirmReturn returnId={} 确认守卫未命中（已被并发确认），幂等跳过回补库存", id);
+            return;
+        }
 
         // 2. 仅 store_to_warehouse 方向真回库存（其他方向 V1 占位不联动）。
         //    门店退回到仓库 = 真把 confirmWeight 加回 location_stock + 写一条 return_in 流水，

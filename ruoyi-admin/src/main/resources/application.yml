@@ -78,8 +78,12 @@ spring:
     table: flyway_schema_history
     baseline-on-migrate: true
     # baseline-version = 当前已部署的最大 V<version>（D04 HOTFIX V202605281100）。
-    # 后续新增 SQL 时间戳必须 > 该值（建议直接用当天 yyyyMMddHHmm），否则会被视为
-    # baseline 之前已应用而跳过。每次升 baseline 都需要所有部署环境同步升级。
+    # 后续新增 SQL 取号按 ADR-0008 §2.5：先查目标库当前最大版本
+    #   SELECT MAX(version) FROM flyway_schema_history WHERE success=1;
+    # 新文件时间戳必须 > 该 max version + 1 小时 buffer。
+    # 不要按"当天日期"命名——版本号已排到未来日历日，当天戳 < 已应用 max 会被
+    # out-of-order=false 拒绝、启动失败。也不要大跨度跳未来日期（贴 max + buffer 取号，
+    # 控制版本号相对真实日历的透支幅度）。每次升 baseline 都需要所有部署环境同步升级。
     baseline-version: 202605281100
     baseline-description: dongjiaoshan v1 baseline (D04 closing snapshot)
     validate-on-migrate: true

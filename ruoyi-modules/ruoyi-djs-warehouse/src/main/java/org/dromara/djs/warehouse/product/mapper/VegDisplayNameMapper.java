@@ -17,7 +17,7 @@ import java.util.Map;
  *
  * <h3>映射链（已用 staging 真实数据核实）</h3>
  * <pre>
- * 原材料 id = COALESCE(NULLIF(product_material,''), product.id)
+ * 原材料 id = COALESCE(product_material, product.id)
  *   —— 加工成品（如「有机上海青250g」）走 product_material 指向的基础菜；
  *      基础果蔬（如「上海青」attr=2，product_material 为 NULL）即自身为原材料，回落 product.id。
  *   → t_plant_crop_info WHERE related_product = 原材料 id → 得作物 crop
@@ -31,9 +31,11 @@ import java.util.Map;
  * 旧单值链，已废弃置 NULL，当前关联全在 {@code t_plant_crop_organic_rel}（organic_id ↔ crop_id）。
  * 直 JOIN {@code crop_organic.crop_id} 会恒查空 → 果蔬永远显示别名（本次「顽固」根因）。</p>
  *
- * <p><b>雪花 id 整数比较</b>：{@code related_product}/{@code product.id} 均 &gt; 2^53，JOIN key 用
- * {@code CAST(... AS SIGNED)}；若与 VARCHAR {@code product_material} 直接比较，MySQL 隐式转 DOUBLE，
- * 相邻雪花 id 浮点精度丢失而误命中相邻作物（实测 {@code 9303000000000003 = '9303000000000005'} 返 TRUE）。</p>
+ * <p><b>雪花 id 整数比较</b>：{@code related_product} / {@code product_material} / {@code product.id}
+ * 均为 BIGINT 雪花 id（&gt; 2^53），JOIN key 外层保留 {@code CAST(... AS SIGNED)} 锁定整数语义；
+ * 一旦任一侧以字符串参与比较（如把 id 转 CHAR 或改传字符串参数），MySQL 隐式转 DOUBLE，
+ * 相邻雪花 id 浮点精度丢失而误命中相邻作物（实测 {@code 9303000000000003 = '9303000000000005'} 返 TRUE）。
+ * 该 CAST 不可删。</p>
  *
  * <p>跨表 {@code @Select} 显式 {@code tenant_id='1001'}（单租户 V1；多租户拦截器在跨表原生 SQL 不保证注入）。</p>
  *
@@ -70,7 +72,7 @@ public interface VegDisplayNameMapper {
                          AND o.crop_cert_valid &gt;= CURDATE()
                         WHERE c.del_flag = '0'
                           AND c.tenant_id = '1001'
-                          AND c.related_product = CAST(COALESCE(NULLIF(p.product_material, ''), CAST(p.id AS CHAR)) AS SIGNED)
+                          AND c.related_product = CAST(COALESCE(p.product_material, p.id) AS SIGNED)
                       ) THEN p.product_name
                  ELSE COALESCE(NULLIF(p.product_alias, ''), p.product_name)
                END
@@ -109,7 +111,7 @@ public interface VegDisplayNameMapper {
                          AND o.crop_cert_valid &gt;= CURDATE()
                         WHERE c.del_flag = '0'
                           AND c.tenant_id = '1001'
-                          AND c.related_product = CAST(COALESCE(NULLIF(p.product_material, ''), CAST(p.id AS CHAR)) AS SIGNED)
+                          AND c.related_product = CAST(COALESCE(p.product_material, p.id) AS SIGNED)
                       ) THEN p.product_name
                  ELSE COALESCE(NULLIF(p.product_alias, ''), p.product_name)
                END AS displayName
@@ -131,7 +133,8 @@ public interface VegDisplayNameMapper {
      * 且 {@code crop_cert_id} 在一证多作物重构后废弃置 NULL），故追溯页有机证书必须在读时按产品→作物→关联表
      * 解析，不能读 {@code trace_code.crop_cert_id}（恒 NULL → 有机证书永不显示，本条根因）。</p>
      *
-     * <p>雪花 id 用 {@code CAST(... AS SIGNED)} 整数比较（避免与 VARCHAR 隐式转 DOUBLE 精度丢失误命中相邻作物）；
+     * <p>BIGINT 雪花 id JOIN key 外层保留 {@code CAST(... AS SIGNED)} 锁定整数语义（防字符串参与比较时
+     * MySQL 隐式转 DOUBLE、相邻雪花 id 精度丢失误命中相邻作物）；
      * 单租户显式 {@code tenant_id='1001'}。返每行 {@code certNo / issuer / validTo / imagePreview}；无证返空 list。</p>
      *
      * @param productId 果蔬产品主键 {@code t_warehouse_product_info.id}
@@ -141,7 +144,7 @@ public interface VegDisplayNameMapper {
         SELECT DISTINCT o.id
         FROM t_warehouse_product_info p
         JOIN t_plant_crop_info c
-          ON c.related_product = CAST(COALESCE(NULLIF(p.product_material, ''), CAST(p.id AS CHAR)) AS SIGNED)
+          ON c.related_product = CAST(COALESCE(p.product_material, p.id) AS SIGNED)
          AND c.del_flag = '0'
          AND c.tenant_id = '1001'
         JOIN t_plant_crop_organic_rel rel

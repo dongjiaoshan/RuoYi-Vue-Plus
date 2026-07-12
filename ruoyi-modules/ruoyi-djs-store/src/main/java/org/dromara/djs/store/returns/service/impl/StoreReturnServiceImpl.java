@@ -1,6 +1,7 @@
 package org.dromara.djs.store.returns.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.common.core.exception.ServiceException;
@@ -585,7 +586,16 @@ public class StoreReturnServiceImpl
         entity.setConfirmUserId(LoginHelper.getUserId());
         entity.setConfirmTime(LocalDateTime.now());
         entity.setReturnStatus(STATUS_RECEIVED);
-        int rows = baseMapper.updateById(entity);
+        // 并发守卫（对齐 markDeliveryChecked 范式）：UPDATE 带状态谓词，仅未确认行可置 received。
+        // 慢网双击 / 两人同点同一单时只有一个请求真正命中；affected==0 = 已被并发确认 → 幂等返回，
+        // 不再联动入库，杜绝双倍回补库存 + 双份 store_return_in 流水。
+        int rows = baseMapper.update(entity, new LambdaUpdateWrapper<StoreReturn>()
+            .eq(StoreReturn::getId, bo.getId())
+            .ne(StoreReturn::getReturnStatus, STATUS_RECEIVED));
+        if (rows == 0) {
+            log.info("[STORE-RETURN-UNIFY-001] confirm id={} 状态守卫未命中（已被并发确认），幂等跳过入库", bo.getId());
+            return 0;
+        }
 
         // 确认实收时才联动外购入库：同事务 UPSERT location_stock + stock_flow(store_return_in)，
         // inbound 内部校验库位 / 数量，失败抛 → 整体回滚（确认与入库一致，不留半态）。

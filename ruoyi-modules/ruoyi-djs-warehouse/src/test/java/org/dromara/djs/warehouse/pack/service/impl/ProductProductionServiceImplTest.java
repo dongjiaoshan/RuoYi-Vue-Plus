@@ -326,6 +326,8 @@ class ProductProductionServiceImplTest {
         demand.setDemandQuantity(new BigDecimal("10"));
         demand.setShippedCount(BigDecimal.ZERO);
         when(demandManageMapper.selectOldestUncompletedDemand(eq(60100L), eq(7L))).thenReturn(demand);
+        // incrementShipped 带上界守卫：affected=1 = 守卫命中正常扣减（0 会被 service 判并发超打抛错）
+        when(demandManageMapper.incrementShipped(eq(50001L), any(), any())).thenReturn(1);
 
         Long id = service.submitGiftPack(sampleGiftBo());
 

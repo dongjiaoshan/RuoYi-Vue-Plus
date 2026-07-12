@@ -1441,7 +1441,8 @@ public class ProductProductionServiceImpl
             return;
         }
         // row53-BE：打包份数硬拦——本次打包量不得超过该需求剩余份数（剩余 = demand_quantity − 已发货）。
-        // 前端「剩余可打包份数」只是软提示，后端在写入前 fail-fast 防绕过/并发超打。
+        // 前端「剩余可打包份数」只是软提示；此处先读校验负责给出带剩余数的友好报错，
+        // 并发安全由 incrementShipped 的 DB 端上界守卫（累加 <= demand_quantity 原子判定）兜底。
         BigDecimal demandQty = demand.getDemandQuantity() == null ? BigDecimal.ZERO : demand.getDemandQuantity();
         BigDecimal shipped = demand.getShippedCount() == null ? BigDecimal.ZERO : demand.getShippedCount();
         BigDecimal remain = demandQty.subtract(shipped);
@@ -1454,6 +1455,10 @@ public class ProductProductionServiceImpl
                 + "，本次 " + packQty.stripTrailingZeros().toPlainString());
         }
         int rows = demandManageMapper.incrementShipped(demand.getId(), TENANT_V1, packQty);
+        if (rows == 0) {
+            // 上界守卫未命中：并发打包已把剩余份数吃掉（或需求行已删）→ 拒绝本次打包，整事务回滚。
+            throw new ServiceException("打包份数超过该需求剩余份数（存在并发打包），请刷新需求后重试");
+        }
         log.info("[PACK-DEMAND-DEDUCT] 打包即扣需求 demandId={} productId={} storeId={} packQty={} affected={}",
             demand.getId(), productId, storeId, packQty, rows);
     }

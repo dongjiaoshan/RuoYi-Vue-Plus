@@ -95,6 +95,12 @@ public interface DemandManageMapper extends BaseMapperPlus<DemandManage, DemandM
      * {@code SET shipped_count = COALESCE(shipped_count,0) + #{delta}} 把累加压到一条
      * UPDATE，靠 InnoDB 行锁串行化同一行的累加，不依赖 transition 的 Redisson 锁。</p>
      *
+     * <p><b>上界守卫（并发防超打）</b>：WHERE 带
+     * {@code COALESCE(shipped_count,0) + #{delta} <= demand_quantity}——两个工人并发给同门店
+     * 同产品打包时，各自读到的「剩余份数」应用层校验挡不住 race，累加必须在 DB 端与上界
+     * 校验原子完成。守卫未命中（会超上界）→ affected 0，调用方
+     * {@code deductDemandOnPack} 据此抛业务异常回滚本次打包。</p>
+     *
      * <p>租户隔离：未启全局 MP 拦截器，原生 {@code @Update} 不会自动注入 tenant 过滤，
      * 显式手写 {@code tenant_id}（V1 全 {@code '1001'}，与本 mapper 既有聚合 SQL 范式一致）。
      * {@code del_flag='0'}（CHAR(1) 未删，非数字 0）。</p>
@@ -102,7 +108,8 @@ public interface DemandManageMapper extends BaseMapperPlus<DemandManage, DemandM
      * @param demandId 需求 ID
      * @param tenantId 租户 ID（V1 传 {@code "1001"}）
      * @param delta    本次发货增量（{@code event.shippedQuantity}）
-     * @return 受影响行数（0 = demand 已删 / 不存在，listener 据此短路）
+     * @return 受影响行数（0 = demand 已删 / 不存在 / 累加将超 {@code demand_quantity} 上界，
+     *         调用方据此抛业务异常）
      */
     @Update("""
         UPDATE t_warehouse_demand_manage
@@ -110,6 +117,7 @@ public interface DemandManageMapper extends BaseMapperPlus<DemandManage, DemandM
         WHERE id = #{demandId}
           AND tenant_id = #{tenantId}
           AND del_flag = '0'
+          AND COALESCE(shipped_count, 0) + #{delta} <= demand_quantity
         """)
     int incrementShipped(@Param("demandId") Long demandId,
                          @Param("tenantId") String tenantId,
