@@ -112,11 +112,17 @@ public class StoreTraceServiceImpl implements IStoreTraceService {
         //   demand.received_time=今天 → 其已发货(is_delivery_check=1)的 white_bar 业态 production → ear_no。
         // 不再用「仓库当天在库白条(in_stock)」——那是仓库视角，与门店确认收货无关（旧 bug：确认收货后白条不显示）。
         LocalDate today = LocalDate.now(TODAY_ZONE);
-        List<Long> receivedDemandIds = demandManageMapper.selectList(
-                new LambdaQueryWrapper<DemandManage>()
-                    .ge(DemandManage::getReceivedTime, today.atStartOfDay())
-                    .lt(DemandManage::getReceivedTime, today.plusDays(1).atStartOfDay())
-                    .select(DemandManage::getId))
+        // row41：按当前所选门店过滤（StoreContext 头，与现场生码 currentStoreId 同源）——门店猪肉打包 picker 应
+        // 只看本店当天确认收货的白条；storeId 为空（超管未选店）→ 不加店过滤，兜底看全部（不阻断）。
+        Long storeId = currentStoreId();
+        LambdaQueryWrapper<DemandManage> demandWrapper = new LambdaQueryWrapper<DemandManage>()
+            .ge(DemandManage::getReceivedTime, today.atStartOfDay())
+            .lt(DemandManage::getReceivedTime, today.plusDays(1).atStartOfDay())
+            .select(DemandManage::getId);
+        if (storeId != null) {
+            demandWrapper.eq(DemandManage::getStoreId, storeId);
+        }
+        List<Long> receivedDemandIds = demandManageMapper.selectList(demandWrapper)
             .stream().map(DemandManage::getId).filter(Objects::nonNull).distinct().toList();
         if (receivedDemandIds.isEmpty()) {
             return emptyPigPage();
@@ -129,13 +135,14 @@ public class StoreTraceServiceImpl implements IStoreTraceService {
         if (whiteBarProductIds.isEmpty()) {
             return emptyPigPage();
         }
-        // 已发货到门店的白条 production（取耳号 + 到货重量；耳号去重保序，同耳号多 production 累加到货重量）
+        // 已发货到门店的白条 production（取耳号/白条号 + 到货重量；按 white_bar_no（半只）或耳号去重保序累加）。
+        // row41：不再强求 ear_no 非空——整只白条发货 production 常无耳号、只有 white_bar_no（如 BAR2607080012），
+        // 若过滤 ear_no IS NOT NULL 会把这些门店已收货白条全漏掉（门店猪肉打包显空）。
         List<ProductProduction> barProds = productProductionMapper.selectList(
             new LambdaQueryWrapper<ProductProduction>()
                 .in(ProductProduction::getDemandId, receivedDemandIds)
                 .in(ProductProduction::getProductId, whiteBarProductIds)
                 .eq(ProductProduction::getIsDeliveryCheck, DELIVERY_CHECKED)
-                .isNotNull(ProductProduction::getEarNo)
                 .orderByDesc(ProductProduction::getId)
                 .select(ProductProduction::getEarNo, ProductProduction::getWhiteBarNo, ProductProduction::getProduceQuantity));
         // 门店到货白条按【半只】一条（邓博 row13：white_bar_no 区分同一耳号的两个半只，门店按半只识别 / 现场分割）。
@@ -147,16 +154,20 @@ public class StoreTraceServiceImpl implements IStoreTraceService {
         Map<String, Integer> barCountByEar = new LinkedHashMap<>();
         for (ProductProduction p : barProds) {
             String ear = p.getEarNo();
-            if (StringUtils.isBlank(ear)) {
+            String wbNo = p.getWhiteBarNo();
+            // row41：门店白条以 white_bar_no（半只）为主键，ear_no 可空（整只白条发货 production 常无耳号）；
+            // 仅当耳号与白条号都为空才无从识别、跳过。key 优先 white_bar_no，回落 EAR:<耳号>。
+            if (StringUtils.isBlank(ear) && StringUtils.isBlank(wbNo)) {
                 continue;
             }
-            String wbNo = p.getWhiteBarNo();
             String key = StringUtils.isNotBlank(wbNo) ? wbNo : ("EAR:" + ear);
             if (!arrivedByKey.containsKey(key)) {
                 keyOrder.add(key);
                 keyToEar.put(key, ear);
                 keyToWhiteBarNo.put(key, StringUtils.isNotBlank(wbNo) ? wbNo : null);
-                barCountByEar.merge(ear, 1, Integer::sum);
+                if (StringUtils.isNotBlank(ear)) {
+                    barCountByEar.merge(ear, 1, Integer::sum);
+                }
             }
             arrivedByKey.merge(key, p.getProduceQuantity() == null ? BigDecimal.ZERO : p.getProduceQuantity(), BigDecimal::add);
         }
@@ -165,7 +176,8 @@ public class StoreTraceServiceImpl implements IStoreTraceService {
         }
 
         // 已现场打包重量按耳号合计（门店 pork 追溯码 remark「重量=Ykg」，追溯码按耳号、暂无半只维度）。
-        List<String> earNoList = keyToEar.values().stream().distinct().toList();
+        // row41：过滤空耳号（整只白条无耳号行靠 white_bar_no 识别，不参与按耳号的猪只信息 enrich / 已用量合计）。
+        List<String> earNoList = keyToEar.values().stream().filter(StringUtils::isNotBlank).distinct().toList();
         Map<String, BigDecimal> usedByEar = sumOnsiteUsedWeightByEarNo(earNoList);
 
         // 按耳号批量 enrich 猪只信息（earNo → PigAvailableVo），additive 跨域只读

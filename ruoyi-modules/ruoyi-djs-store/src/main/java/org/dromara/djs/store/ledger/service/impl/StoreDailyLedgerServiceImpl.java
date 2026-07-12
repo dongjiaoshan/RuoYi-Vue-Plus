@@ -94,6 +94,14 @@ public class StoreDailyLedgerServiceImpl implements IStoreDailyLedgerService {
     private static final String CATEGORY_INBOUND = "inbound";
     private static final String CATEGORY_STOCK = "stock";
 
+    /** 产品品类页签（DENGBO-R10）：猪肉 / 果蔬 / 其他。 */
+    private static final String TAB_PORK = "pork";
+    private static final String TAB_VEG = "veg";
+    private static final String TAB_OTHER = "other";
+    /** {@code t_warehouse_product_info.belong_type} 字典值。 */
+    private static final String BELONG_PORK = "pork";
+    private static final String BELONG_VEGETABLE = "vegetable";
+
     private final StoreDailyLedgerMapper baseMapper;
     private final StoreMapper storeMapper;
     private final ProductInfoMapper productInfoMapper;
@@ -132,7 +140,8 @@ public class StoreDailyLedgerServiceImpl implements IStoreDailyLedgerService {
 
         // 三类候选并集（保留首次命中类别；inbound 与 stock 合并时 category=stock，inbound 量后面补）。
         List<Long> porkIds = resolvePorkReturnProductIds();
-        Map<Long, BigDecimal> inboundMap = selectStoreShippedProducts(storeId, date);    // 新到货：productId → 当日发货量（排 white_bar）
+        Set<Long> porkIdSetForTab = new LinkedHashSet<>(porkIds);
+        Map<Long, BigDecimal> inboundMap = selectStoreShippedProducts(storeId, date);    // 新到货：productId → 当日到店份数（需求量 demand_quantity，排 white_bar）
         Map<Long, BigDecimal> stockMap = selectPositiveStockByProduct(storeId);          // 昨日库存：productId → 结存（>0）
 
         // 类别归属：优先级 pork > stock > inbound（库存优先于新到货以保留期初）。
@@ -180,6 +189,7 @@ public class StoreDailyLedgerServiceImpl implements IStoreDailyLedgerService {
             vo.setProductUnit(p.getProductUnit());
             vo.setProductSpec(p.getProductSpec());
             vo.setCategory(category);
+            vo.setBelongTab(resolveBelongTab(p, porkIdSetForTab));
             vo.setOpeningQty(nz(stockMap.get(pid)));
             vo.setInboundQty(inbound);
             // 猪肉行入库手动可编辑（有上限）；其余（新到货/库存）入库为发货量只读。
@@ -344,19 +354,25 @@ public class StoreDailyLedgerServiceImpl implements IStoreDailyLedgerService {
 
     /**
      * 新到货候选：当日发货到该门店的产品（{@code t_warehouse_shipment} ⋈ {@code t_warehouse_demand_manage}
-     * 取 productId，排除 white_bar），按产品聚合发货量。
+     * 取 productId，排除 white_bar），按产品聚合<b>到店份数</b>。
      *
-     * <p>shipment 自带 productType，先按 storeId + shipDate + 非 white_bar 过滤；productId 经 demandId
-     * join demand 拿（shipment 表无 productId 列）。demand 缺失（脏数据）→ 跳过该 shipment 行 + warn，不抛。</p>
+     * <p>DENGBO-R10：盘点按产品单位（份）显示、不用重量。发货 {@code ship_quantity} 存的是重量
+     * （果蔬 3 份=0.905kg，且 {@code ship_unit='份'} 与值自相矛盾），需求 {@code demand_quantity} 才是份数。
+     * 故到店量取<b>需求订购份数</b>（Kevin 2026-07-12 拍板）：按已发货的 distinct demandId 累加其
+     * {@code demand_quantity}，按 productId 归组（一需求一发货、订购=到货，多发货同一需求只计一次避免重复）。</p>
      *
-     * @return productId(雪花) → 当日发货量合计
+     * <p>shipment 先按 storeId + shipDate + 非 white_bar 过滤；productId / demand_quantity 经 demandId
+     * join demand 拿。demand 缺失（脏数据）→ 跳过该 demand + warn，不抛。</p>
+     *
+     * @return productId(雪花) → 当日到店份数合计（demand_quantity，产品单位）
      */
     private Map<Long, BigDecimal> selectStoreShippedProducts(Long storeId, LocalDate date) {
         List<Shipment> shipments = shipmentMapper.selectList(
             new LambdaQueryWrapper<Shipment>()
                 .eq(Shipment::getStoreId, storeId)
                 .eq(Shipment::getShipDate, date)
-                .ne(Shipment::getProductType, PRODUCT_TYPE_WHITE_BAR));
+                .ne(Shipment::getProductType, PRODUCT_TYPE_WHITE_BAR)
+                .select(Shipment::getDemandId, Shipment::getShipmentNo));
         if (shipments.isEmpty()) {
             return Map.of();
         }
@@ -366,18 +382,41 @@ public class StoreDailyLedgerServiceImpl implements IStoreDailyLedgerService {
             log.warn("[STORE-LEDGER] 门店 {} {} 有发货但均无 demandId，新到货候选回退为空", storeId, date);
             return Map.of();
         }
-        Map<Long, Long> demandToProduct = demandManageProductMap(demandIds);
+        // 已发货的 distinct 需求：id → (productId, demandQuantity)。
+        Map<Long, DemandManage> demandById = demandManageMapper.selectList(
+                new LambdaQueryWrapper<DemandManage>()
+                    .in(DemandManage::getId, demandIds)
+                    .select(DemandManage::getId, DemandManage::getProductId, DemandManage::getDemandQuantity))
+            .stream()
+            .filter(d -> d.getProductId() != null)
+            .collect(Collectors.toMap(DemandManage::getId, d -> d, (a, b) -> a));
         Map<Long, BigDecimal> result = new LinkedHashMap<>();
-        for (Shipment s : shipments) {
-            Long productId = s.getDemandId() == null ? null : demandToProduct.get(s.getDemandId());
-            if (productId == null) {
-                log.warn("[STORE-LEDGER] 发货单 {} 关联需求 {} 缺产品，跳过新到货预填",
-                    s.getShipmentNo(), s.getDemandId());
+        for (Long did : demandIds) {   // distinct demandId：订购=到货，同一需求多次发货只计一次份数
+            DemandManage d = demandById.get(did);
+            if (d == null) {
+                log.warn("[STORE-LEDGER] 已发货需求 {} 缺产品或已删，跳过新到货预填", did);
                 continue;
             }
-            result.merge(productId, nz(s.getShipQuantity()), BigDecimal::add);
+            result.merge(d.getProductId(), nz(d.getDemandQuantity()), BigDecimal::add);
         }
         return result;
+    }
+
+    /**
+     * 产品品类页签（DENGBO-R10）：产品在 {@code djs_pork_return_product} 字典或 {@code belong_type='pork'} → 猪肉；
+     * {@code belong_type='vegetable'} → 果蔬；其余（含外购 belong_type=NULL / egg / dry_good / other / gift_box）→ 其他。
+     */
+    private String resolveBelongTab(ProductInfo p, Set<Long> porkIds) {
+        if (p == null) {
+            return TAB_OTHER;
+        }
+        if (porkIds.contains(p.getId()) || BELONG_PORK.equals(p.getBelongType())) {
+            return TAB_PORK;
+        }
+        if (BELONG_VEGETABLE.equals(p.getBelongType())) {
+            return TAB_VEG;
+        }
+        return TAB_OTHER;
     }
 
     /**
@@ -391,23 +430,6 @@ public class StoreDailyLedgerServiceImpl implements IStoreDailyLedgerService {
                 .eq(Shipment::getProductType, PRODUCT_TYPE_WHITE_BAR)
                 .select(Shipment::getShipQuantity));
         return shipments.stream().map(s -> nz(s.getShipQuantity())).reduce(BigDecimal.ZERO, BigDecimal::add);
-    }
-
-    /** demandId → productId(雪花) 映射（DemandManage 取 id + productId 两列；缺 productId 的脏数据跳过）。 */
-    private Map<Long, Long> demandManageProductMap(List<Long> demandIds) {
-        if (demandIds == null || demandIds.isEmpty()) {
-            return Map.of();
-        }
-        return demandManageMapper.selectList(
-                new LambdaQueryWrapper<DemandManage>()
-                    .in(DemandManage::getId, demandIds)
-                    .select(DemandManage::getId, DemandManage::getProductId))
-            .stream()
-            .filter(d -> d.getProductId() != null)
-            .collect(Collectors.toMap(
-                DemandManage::getId,
-                DemandManage::getProductId,
-                (a, b) -> a));
     }
 
     /** 昨日库存候选：门店独立库存 {@code stock_qty>0} 的产品。 */
@@ -509,6 +531,8 @@ public class StoreDailyLedgerServiceImpl implements IStoreDailyLedgerService {
             .map(StoreDailyLedgerVo::getStoreId).filter(Objects::nonNull).distinct().toList());
         Map<Long, ProductInfo> products = productMap(list.stream()
             .map(StoreDailyLedgerVo::getProductId).filter(Objects::nonNull).distinct().toList());
+        // 详情按品类分 TAB（DENGBO-R10）：同候选口径（猪肉字典 ∪ belong_type=pork / vegetable / 其他）。
+        Set<Long> porkIdSetForTab = new LinkedHashSet<>(resolvePorkReturnProductIds());
         for (StoreDailyLedgerVo vo : list) {
             if (vo.getStoreId() != null) {
                 vo.setStoreName(storeNames.get(vo.getStoreId()));
@@ -518,6 +542,7 @@ public class StoreDailyLedgerServiceImpl implements IStoreDailyLedgerService {
                 vo.setProductName(p.getProductName());
                 vo.setProductUnit(p.getProductUnit());
             }
+            vo.setBelongTab(resolveBelongTab(p, porkIdSetForTab));
         }
     }
 

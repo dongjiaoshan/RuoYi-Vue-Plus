@@ -150,7 +150,9 @@ public interface SowDetailAggMapper {
             f.parity        AS parity,
             f.total_born    AS totalBorn,
             b.boar_ear_no   AS boarEarNo,
+            COALESCE(f.live_born, 0) AS liveBorn,
             f.avg_weight    AS avgWeight,
+            (COALESCE(f.healthy_male,0)   + COALESCE(f.weak_raised_male,0))   AS maleCount,
             (COALESCE(f.healthy_female,0) + COALESCE(f.weak_raised_female,0)) AS femaleCount,
             (CASE WHEN f.healthy_male IS NULL AND f.healthy_female IS NULL
                   THEN COALESCE(f.live_born, 0)

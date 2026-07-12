@@ -353,8 +353,12 @@ public class PigCoreServiceImpl implements IPigCoreService {
         enrichBarnPenCodes(List.of(vo));
         enrichParentEarTags(List.of(vo));
         PigDetailVo detail = toDetailVo(vo);
+        // row43：状态记录只呈现真实的生命周期状态变更；过滤空转记录（old_status = new_status，
+        // 典型为栋舍转移 TRANSFER 在同一状态内写的记录），否则会在「状态记录」里出现相邻两条同状态（如断奶→断奶）。
+        // 转移本身在「转移记录」tab 呈现，不属于状态变更。old_status 为 null（引种首条）保留。
         LambdaQueryWrapper<PigStatusRecord> w = new LambdaQueryWrapper<PigStatusRecord>()
             .eq(PigStatusRecord::getPigId, pigId)
+            .apply("(old_status IS NULL OR old_status <> new_status)")
             .orderByDesc(PigStatusRecord::getChangeTime, PigStatusRecord::getId)
             .last("LIMIT " + RECENT_HISTORY_LIMIT);
         detail.setRecentHistory(statusRecordMapper.selectVoList(w));
@@ -666,8 +670,12 @@ public class PigCoreServiceImpl implements IPigCoreService {
         if (pigId == null) {
             throw new ServiceException(I18nMessages.t("pig.id.required"));
         }
+        // row43：状态记录只呈现真实的生命周期状态变更；过滤空转记录（old_status = new_status，
+        // 典型为栋舍转移 TRANSFER 在同一状态内写的记录），否则「状态记录」里会出现相邻两条同状态（如断奶→断奶）。
+        // 转移本身在「转移记录」tab 呈现，不属于状态变更。old_status 为 null（引种首条）保留。
         LambdaQueryWrapper<PigStatusRecord> w = new LambdaQueryWrapper<PigStatusRecord>()
             .eq(PigStatusRecord::getPigId, pigId)
+            .apply("(old_status IS NULL OR old_status <> new_status)")
             .orderByDesc(PigStatusRecord::getChangeTime, PigStatusRecord::getId)
             .last("LIMIT " + LIST_HISTORY_LIMIT);
         return statusRecordMapper.selectVoList(w);

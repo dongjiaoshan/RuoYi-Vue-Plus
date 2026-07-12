@@ -51,6 +51,9 @@ public class StoreDailyLedgerVo implements Serializable {
     @ExcelProperty(value = "单位")
     private String productUnit;
 
+    /** 产品品类页签（DENGBO-R10）：pork=猪肉 / veg=果蔬 / other=其他。详情按此分 TAB。 */
+    private String belongTab;
+
     @ExcelProperty(value = "盘点日期")
     private LocalDate ledgerDate;
 

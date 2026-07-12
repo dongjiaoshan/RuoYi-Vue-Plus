@@ -74,6 +74,21 @@ public class WarehouseMatIssueController extends BaseController {
     }
 
     /**
+     * 领用软校验（row40.2#2）：原材料是否有对应生产成品（无对应成品 → 前端提交前阻断/友好提示，与 mp
+     * {@code canIssueMaterial} 同口径）。后端 {@code pick()} 已硬拦（row40.1），此端点仅供 admin 前端友好提示用。
+     *
+     * @param productId 产品雪花 id（可空，与 plotId 二选一）
+     * @param plotId    地块 id（自产果蔬按地块领用时传，解析原材料）
+     * @return 是否可领用（true=有对应成品或豁免业态 / false=无对应成品应拦截）
+     */
+    @SaCheckPermission("djs:warehouse:matPick:list")
+    @GetMapping("/canIssueMaterial")
+    public R<Boolean> canIssueMaterial(@RequestParam(required = false) String productId,
+                                       @RequestParam(required = false) String plotId) {
+        return R.ok(matFlowService.canIssueMaterial(productId, plotId));
+    }
+
+    /**
      * 领用出库（出库 → 扣库存 + 写 pick_out 流水；操作人 = 当前登录 admin）。
      */
     @SaCheckPermission("djs:warehouse:matPick:pick")

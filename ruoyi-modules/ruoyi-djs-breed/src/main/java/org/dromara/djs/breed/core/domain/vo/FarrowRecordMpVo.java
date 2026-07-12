@@ -40,10 +40,16 @@ public class FarrowRecordMpVo implements Serializable {
     /** 配种公猪耳号（原型「公猪」字段）；无关联配种 → null。 */
     private String boarEarNo;
 
+    /** 活仔数（live_born，row42）。 */
+    private Integer liveBorn;
+
     /** 仔猪均重 kg。 */
     private BigDecimal avgWeight;
 
-    /** 母猪数（健仔母 + 弱仔留养母，原型「母猪数」）。 */
+    /** 公仔猪数（健仔公 + 弱仔留养公，与 femaleCount 对称，row42）。 */
+    private Integer maleCount;
+
+    /** 母仔猪数（健仔母 + 弱仔留养母，原型「母猪数」）。 */
     private Integer femaleCount;
 
     /** 健仔数 = healthy_male + healthy_female。 */

@@ -42,8 +42,15 @@ public class StoreDailyLedgerCandidateVo implements Serializable {
     /** 产品规格。 */
     private String productSpec;
 
-    /** 候选类别：pork=猪肉 / inbound=新到货 / stock=昨日库存。 */
+    /** 候选类别（来源）：pork=猪肉 / inbound=新到货 / stock=昨日库存。 */
     private String category;
+
+    /**
+     * 产品品类页签（DENGBO-R10）：pork=猪肉 / veg=果蔬 / other=其他。
+     * <p>前端「新增当日盘点」按此分 3 个 TAB 展示。归属：产品在 {@code djs_pork_return_product} 字典
+     * 或 {@code belong_type='pork'} → pork；{@code belong_type='vegetable'} → veg；其余（含外购 belong_type=NULL）→ other。</p>
+     */
+    private String belongTab;
 
     /** 期初库存（库存表当前结存，只读，无则 0）。 */
     private BigDecimal openingQty;
