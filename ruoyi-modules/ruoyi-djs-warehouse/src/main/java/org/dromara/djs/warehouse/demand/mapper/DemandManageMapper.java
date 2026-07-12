@@ -405,6 +405,7 @@ public interface DemandManageMapper extends BaseMapperPlus<DemandManage, DemandM
                dm.product_id               AS productId,
                MAX(dm.product_name)        AS productName,
                MAX(dm.product_spec)        AS productSpec,
+               MAX(dm.product_unit)        AS productUnit,
                MAX(dm.product_type)        AS productType,
                MAX(pi.belong_type)         AS belongType,
                MAX(pm.product_name)        AS rawMaterialName,

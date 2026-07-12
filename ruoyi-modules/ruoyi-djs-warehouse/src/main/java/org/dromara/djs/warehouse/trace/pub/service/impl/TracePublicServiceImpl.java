@@ -324,6 +324,13 @@ public class TracePublicServiceImpl
     // ============================ pork 分支 ============================
 
     private void fillPork(PublicTraceVo vo, TraceCode code, List<PublicTraceVo.TimelineNode> timeline) {
+        // row48：重量改取肉品打包实际称重（product_production.product_weight，kg）按克展示、去掉规格「/份」
+        //（如规格 700g/份、实际打包 0.500kg → 展示「重量：500g」）；无打包记录则保留 buildProduct 的规格兜底。
+        ProductProduction pack = findPackProduction(code.getProduceCode());
+        if (pack != null && pack.getProductWeight() != null && vo.getProduct() != null) {
+            vo.getProduct().setWeight(toGramStr(pack.getProductWeight()));
+        }
+
         String earNo = code.getPigEarNo();
         // 农场名（trace_code.farm_id 走 sys_farm，复用 admin farm-name mapper）
         String farmName = resolveFarmName(code.getFarmId());
@@ -922,6 +929,14 @@ public class TracePublicServiceImpl
 
     private String toStr(BigDecimal v) {
         return v == null ? null : v.stripTrailingZeros().toPlainString();
+    }
+
+    /** 千克 → 克整数字符串（肉品打包 product_weight 存 kg，猪肉追溯页按克展示，如 0.500kg → "500g"）。 */
+    private String toGramStr(BigDecimal kg) {
+        if (kg == null) {
+            return null;
+        }
+        return kg.multiply(new BigDecimal("1000")).stripTrailingZeros().toPlainString() + "g";
     }
 
     private String strOf(Object v) {

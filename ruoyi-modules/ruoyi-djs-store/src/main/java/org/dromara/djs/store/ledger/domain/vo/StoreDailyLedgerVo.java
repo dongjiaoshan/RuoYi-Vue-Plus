@@ -51,6 +51,12 @@ public class StoreDailyLedgerVo implements Serializable {
     @ExcelProperty(value = "单位")
     private String productUnit;
 
+    /**
+     * 白条产品（DENGBO-R12）对应原材料 {@code product_material} 的计量单位（如 kg）；仅白条产品行有值，
+     * 前端详情据此把该行按重量口径展示（KG 保留 3 位），其余行回落 {@link #productUnit}。
+     */
+    private String materialUnit;
+
     /** 产品品类页签（DENGBO-R10）：pork=猪肉 / veg=果蔬 / other=其他。详情按此分 TAB。 */
     private String belongTab;
 

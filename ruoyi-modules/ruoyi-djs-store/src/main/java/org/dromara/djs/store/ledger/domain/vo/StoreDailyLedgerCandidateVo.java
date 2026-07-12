@@ -9,9 +9,11 @@ import java.math.BigDecimal;
 /**
  * 当日盘点候选行 VO（STORE-LEDGER-001 / WSA 重构「新增当日盘点」GET 候选）。
  *
- * <p>候选 = 三类产品并集（{@link #category}）：
+ * <p>候选 = 四类产品并集（{@link #category}）：
  * <ul>
- *   <li>{@code pork} 猪肉：字典 {@code djs_pork_return_product} resolve 出的产品；入库量手动可编辑（上限=当日白条发货重量）；</li>
+ *   <li>{@code pork} 猪肉成品：字典 {@code djs_pork_return_product} resolve 出的产品；入库量手动可编辑（上限=当日白条发货重量）；</li>
+ *   <li>{@code white_bar} 白条产品（DENGBO-R12）：字典 {@code djs_white_bar_return_product} 配置产品，仅当日有白条到店时列出；
+ *       按重量盘点、单位取对应原材料单位（{@link #materialUnit}）、入库量手动可编辑（上限=当日白条发货重量）；</li>
  *   <li>{@code inbound} 新到货：当日发货到该门店（shipment⋈demand，排 white_bar）的产品；{@code inboundQty}=发货量、{@link #inboundReadonly}=true；</li>
  *   <li>{@code stock} 昨日库存：{@code t_store_inventory.stock_qty>0} 的产品；{@code openingQty}=结存。</li>
  * </ul>
@@ -39,16 +41,23 @@ public class StoreDailyLedgerCandidateVo implements Serializable {
     /** 产品单位。 */
     private String productUnit;
 
+    /**
+     * 白条产品（DENGBO-R11/R12）对应原材料 {@code product_material} 的计量单位（如 kg）；仅 white_bar 类目行有值。
+     * 前端据此把白条产品行按重量口径展示（KG 保留 3 位），其余行回落 {@link #productUnit}。
+     */
+    private String materialUnit;
+
     /** 产品规格。 */
     private String productSpec;
 
-    /** 候选类别（来源）：pork=猪肉 / inbound=新到货 / stock=昨日库存。 */
+    /** 候选类别（来源）：pork=猪肉成品 / white_bar=白条产品 / inbound=新到货 / stock=昨日库存。 */
     private String category;
 
     /**
      * 产品品类页签（DENGBO-R10）：pork=猪肉 / veg=果蔬 / other=其他。
-     * <p>前端「新增当日盘点」按此分 3 个 TAB 展示。归属：产品在 {@code djs_pork_return_product} 字典
-     * 或 {@code belong_type='pork'} → pork；{@code belong_type='vegetable'} → veg；其余（含外购 belong_type=NULL）→ other。</p>
+     * <p>前端「新增当日盘点」按此分 3 个 TAB 展示。归属：产品在 {@code djs_pork_return_product} /
+     * {@code djs_white_bar_return_product} 字典或 {@code belong_type='pork'} → pork；{@code belong_type='vegetable'} → veg；
+     * 其余（含外购 belong_type=NULL）→ other。</p>
      */
     private String belongTab;
 
