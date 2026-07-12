@@ -49,6 +49,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -103,13 +104,14 @@ public class StoreReturnServiceImpl
     private static final String MP_STATUS_CONFIRMED = "confirmed";
 
     /**
-     * 「猪肉产品」tab 归属类型（字典 djs_belong_type）：猪肉 + 白条。
-     * 退回操作猪肉 tab 取这两类产品做固定候选清单，与门店关联无关。
+     * 白条产品退回字典（DENGBO-R11，dict_value=产品业务码 product_id）。门店退回操作「白条产品」来源。
+     * 空字典客户在 admin 字典管理自配；单位取对应产品原材料单位、按重量退货。
      */
-    private static final List<String> PORK_BELONG_TYPES = List.of("pork", "white_bar");
+    private static final String DICT_WHITE_BAR_RETURN_PRODUCT = "djs_white_bar_return_product";
 
-    /** 猪肉产品退回字典（阶段0 seed，dict_value=产品业务码 product_id）。 */
-    private static final String DICT_PORK_RETURN_PRODUCT = "djs_pork_return_product";
+    /** 退回操作猪肉 tab 产品子类（DENGBO-R11）：pork=猪肉产品(到店成品,按份) / white_bar=白条产品(字典,按重量)。 */
+    private static final String SUB_CAT_PORK = "pork";
+    private static final String SUB_CAT_WHITE_BAR = "white_bar";
 
     /** 果蔬归属类型（字典 djs_belong_type）：退回入库回退到原材料 product_material 的判定。 */
     private static final String BELONG_TYPE_VEGETABLE = "vegetable";
@@ -264,10 +266,10 @@ public class StoreReturnServiceImpl
         // 退回上限按 belong_type + admin row9 分流（懒算 + 逐条累加）：
         //   · 白条产品本身：累计 ≤ 当日到店白条总重（row142，保留）。
         //   · 案例①（admin row9）：当日到店猪肉成品配置的原材料产品 → ≤ 当日到店对应猪肉成品总重。
-        //   · 案例②（admin row9）：当日到店白条 + 该产品属字典 djs_pork_return_product → ≤ (当日到店白条总重 − 今日已退白条配置产品累计)。
+        //   · 案例②（DENGBO-R11）：当日到店白条 + 该产品属字典 djs_white_bar_return_product（白条产品）→ ≤ (当日到店白条总重 − 今日已退白条配置产品累计)。
         //   · 其余：逐产品 ≤ 当日到店该产品重（现状回退）。
         Map<Long, BigDecimal> arrivedPorkWeightByMaterial = buildArrivedPorkWeightByMaterial(bo.getStoreId(), today);
-        List<Long> dictReturnProductIds = resolvePorkReturnProductIds();
+        List<Long> dictReturnProductIds = resolveWhiteBarReturnProductIds();
         boolean whiteBarArrivedToday = hasWhiteBarArrivedToday(bo.getStoreId());
         BigDecimal whiteBarDeliveredTotal = null;
         BigDecimal whiteBarReturnedAccum = BigDecimal.ZERO;
@@ -350,56 +352,111 @@ public class StoreReturnServiceImpl
             return List.of();
         }
         LocalDate today = LocalDate.now(ZONE_SHANGHAI);
-        // admin row8：退回候选 = 两来源并集（去重保序）
-        //   ① 当日到店猪肉成品 → 其配置的原材料产品（product_material）：如到店猪瘦肉(成品) → 展示原材料精瘦肉；
-        //   ② 当日到店白条 → 字典 djs_pork_return_product 配置产品（现状口径保留）。
-        LinkedHashMap<Long, ProductInfo> candidates = new LinkedHashMap<>();
+        // DENGBO-R11：猪肉 tab 候选拆两子类（保序、跨子类去重）：
+        //   · 猪肉产品(pork)：当日到店的猪肉成品（belong_type=pork 且配了原材料 product_material）——按份退回，
+        //     单位=成品自身单位（份，如「黑毛猪筒子骨700g/份」），退回量+单位+退回产品重量三列与果蔬一致（Kevin 2026-07-12）；
+        //   · 白条产品(white_bar)：字典 djs_white_bar_return_product 配置产品（当日有白条到店才列）——按重量退货，单位=对应产品原材料单位。
+        List<StoreReturnPorkCandidateVo> result = new ArrayList<>();
+        LinkedHashSet<Long> seen = new LinkedHashSet<>();
 
-        for (ProductInfo material : resolveArrivedPorkMaterials(storeId, today)) {
-            candidates.putIfAbsent(material.getId(), material);
-        }
-        if (hasWhiteBarArrivedToday(storeId)) {
-            for (ProductInfo p : resolvePorkReturnDictProducts()) {
-                candidates.putIfAbsent(p.getId(), p);
+        for (ProductInfo finished : resolveArrivedPorkFinishedProducts(storeId, today)) {
+            if (seen.add(finished.getId())) {
+                result.add(buildPorkCandidate(finished, SUB_CAT_PORK, finished.getProductUnit()));
             }
         }
-
-        return candidates.values().stream()
-            .sorted(Comparator.comparing(ProductInfo::getId))
-            .map(p -> {
-                StoreReturnPorkCandidateVo vo = new StoreReturnPorkCandidateVo();
-                vo.setProductId(p.getId());
-                vo.setProductName(p.getProductName());
-                vo.setProductUnit(p.getProductUnit());
-                return vo;
-            }).collect(Collectors.toList());
+        if (hasWhiteBarArrivedToday(storeId)) {
+            List<ProductInfo> whiteBarProducts = resolveWhiteBarReturnDictProducts();
+            Map<Long, String> materialUnits = resolveMaterialUnits(whiteBarProducts);
+            for (ProductInfo p : whiteBarProducts) {
+                if (seen.add(p.getId())) {
+                    result.add(buildPorkCandidate(p, SUB_CAT_WHITE_BAR,
+                        materialUnits.getOrDefault(p.getId(), p.getProductUnit())));
+                }
+            }
+        }
+        return result;
     }
 
-    /**
-     * admin row8 案例①：当日到店猪肉成品（belong_type=pork 且配置了原材料 product_material）对应的原材料产品集。
-     * 如当日到店猪瘦肉(成品 product_material=精瘦肉) → 返回精瘦肉。无到店成品/无配置 → 空。
-     */
-    private List<ProductInfo> resolveArrivedPorkMaterials(Long storeId, LocalDate today) {
-        List<Long> materialIds = buildArrivedPorkWeightByMaterial(storeId, today).keySet()
-            .stream().filter(Objects::nonNull).collect(Collectors.toList());
-        if (materialIds.isEmpty()) {
+    private StoreReturnPorkCandidateVo buildPorkCandidate(ProductInfo p, String subCategory, String unit) {
+        StoreReturnPorkCandidateVo vo = new StoreReturnPorkCandidateVo();
+        vo.setProductId(p.getId());
+        vo.setProductName(p.getProductName());
+        vo.setProductUnit(unit);
+        vo.setSubCategory(subCategory);
+        return vo;
+    }
+
+    /** 白条产品退回字典 djs_white_bar_return_product 配置产品（空字典 → 空，不回退 belong_type）。 */
+    private List<ProductInfo> resolveWhiteBarReturnDictProducts() {
+        List<Long> ids = resolveWhiteBarReturnProductIds();
+        if (ids.isEmpty()) {
             return List.of();
         }
-        return productInfoMapper.selectList(new LambdaQueryWrapper<ProductInfo>().in(ProductInfo::getId, materialIds));
+        return productInfoMapper.selectList(new LambdaQueryWrapper<ProductInfo>()
+            .in(ProductInfo::getId, ids).orderByAsc(ProductInfo::getId));
     }
 
     /**
-     * admin row8 案例②：字典 djs_pork_return_product 配置的退回候选产品（字典空 → 回退 belong_type，向后兼容）。
+     * 白条产品退回候选产品 id：读字典 {@link #DICT_WHITE_BAR_RETURN_PRODUCT} 的 dict_value（产品业务码 product_id）
+     * → resolve 成雪花主键。空字典 → 空（不回退 belong_type，白条产品完全由字典驱动，客户自配）。
      */
-    private List<ProductInfo> resolvePorkReturnDictProducts() {
-        List<Long> dictIds = resolvePorkReturnProductIds();
-        LambdaQueryWrapper<ProductInfo> w = new LambdaQueryWrapper<>();
-        if (!dictIds.isEmpty()) {
-            w.in(ProductInfo::getId, dictIds);
-        } else {
-            w.in(ProductInfo::getBelongType, PORK_BELONG_TYPES);
+    private List<Long> resolveWhiteBarReturnProductIds() {
+        Map<String, String> dict = dictService.getAllDictByDictType(DICT_WHITE_BAR_RETURN_PRODUCT);
+        if (dict == null || dict.isEmpty()) {
+            log.warn("[STORE-RETURN] 字典 {} 为空，白条产品退回候选为空（待客户在 admin 字典管理配置）", DICT_WHITE_BAR_RETURN_PRODUCT);
+            return List.of();
         }
-        return productInfoMapper.selectList(w.orderByAsc(ProductInfo::getId));
+        List<String> codes = dict.keySet().stream()
+            .filter(StringUtils::isNotBlank).distinct().collect(Collectors.toList());
+        if (codes.isEmpty()) {
+            return List.of();
+        }
+        return productInfoMapper.selectList(new LambdaQueryWrapper<ProductInfo>()
+                .in(ProductInfo::getProductId, codes).select(ProductInfo::getId))
+            .stream().map(ProductInfo::getId).filter(Objects::nonNull).distinct().collect(Collectors.toList());
+    }
+
+    /**
+     * 白条产品 → 对应产品原材料（{@code product_material}）的单位（DENGBO-R11）。
+     * 无原材料 / 材料无单位 → 缺省（调用方回落产品自身单位）。
+     */
+    private Map<Long, String> resolveMaterialUnits(List<ProductInfo> products) {
+        Map<Long, Long> productToMaterial = products.stream()
+            .filter(p -> p.getProductMaterial() != null)
+            .collect(Collectors.toMap(ProductInfo::getId, ProductInfo::getProductMaterial, (a, b) -> a, LinkedHashMap::new));
+        if (productToMaterial.isEmpty()) {
+            return Map.of();
+        }
+        Map<Long, String> materialUnit = productInfoMapper.selectList(new LambdaQueryWrapper<ProductInfo>()
+                .in(ProductInfo::getId, new LinkedHashSet<>(productToMaterial.values()))
+                .select(ProductInfo::getId, ProductInfo::getProductUnit))
+            .stream().filter(m -> m.getProductUnit() != null)
+            .collect(Collectors.toMap(ProductInfo::getId, ProductInfo::getProductUnit, (a, b) -> a));
+        Map<Long, String> result = new LinkedHashMap<>();
+        productToMaterial.forEach((pid, mid) -> {
+            String u = materialUnit.get(mid);
+            if (u != null) {
+                result.put(pid, u);
+            }
+        });
+        return result;
+    }
+
+    /**
+     * DENGBO-R11：当日到店的猪肉成品（belong_type=pork 且配置了原材料 product_material）。
+     * 猪肉产品退回候选直接展示这些成品（按份，单位=成品自身单位），退回量+单位+退回产品重量三列与果蔬一致。
+     * 无到店成品/无配置 → 空。退回校验落「其余」分支（≤ 当日到店该成品总重）。
+     */
+    private List<ProductInfo> resolveArrivedPorkFinishedProducts(Long storeId, LocalDate today) {
+        List<Long> deliveredIds = productProductionMapper.selectDeliveredProductIdsToStore(storeId, today);
+        if (deliveredIds == null || deliveredIds.isEmpty()) {
+            return List.of();
+        }
+        return productInfoMapper.selectList(new LambdaQueryWrapper<ProductInfo>()
+            .in(ProductInfo::getId, deliveredIds)
+            .eq(ProductInfo::getBelongType, "pork")
+            .isNotNull(ProductInfo::getProductMaterial)
+            .orderByAsc(ProductInfo::getId));
     }
 
     /**
@@ -445,26 +502,6 @@ public class StoreReturnServiceImpl
             }
         }
         return total;
-    }
-
-    /**
-     * 猪肉退回候选产品 id：读字典 djs_pork_return_product 的 dict_value（产品业务码 product_id）
-     * → 经 t_warehouse_product_info.product_id resolve 成雪花主键。字典空 → 返空（调用方回退 belong_type）。
-     */
-    private List<Long> resolvePorkReturnProductIds() {
-        Map<String, String> dict = dictService.getAllDictByDictType(DICT_PORK_RETURN_PRODUCT);
-        if (dict == null || dict.isEmpty()) {
-            log.warn("[STORE-RETURN] 字典 {} 为空，猪肉退回候选回退 belong_type", DICT_PORK_RETURN_PRODUCT);
-            return List.of();
-        }
-        List<String> codes = dict.keySet().stream()
-            .filter(StringUtils::isNotBlank).distinct().collect(Collectors.toList());
-        if (codes.isEmpty()) {
-            return List.of();
-        }
-        return productInfoMapper.selectList(new LambdaQueryWrapper<ProductInfo>()
-                .in(ProductInfo::getProductId, codes).select(ProductInfo::getId))
-            .stream().map(ProductInfo::getId).filter(Objects::nonNull).distinct().collect(Collectors.toList());
     }
 
     /**

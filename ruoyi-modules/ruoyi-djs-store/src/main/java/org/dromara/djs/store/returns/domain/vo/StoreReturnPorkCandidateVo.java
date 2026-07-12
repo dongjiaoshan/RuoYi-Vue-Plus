@@ -32,8 +32,15 @@ public class StoreReturnPorkCandidateVo implements Serializable {
     private String productName;
 
     /**
-     * 产品单位（kg / 个 等）。
+     * 产品单位（kg / 个 / 份 等）。
+     * <p>猪肉产品(pork)=产品自身单位（份）；白条产品(white_bar)=对应产品原材料的单位（DENGBO-R11）。</p>
      */
     private String productUnit;
+
+    /**
+     * 产品子类（DENGBO-R11）：{@code pork}=猪肉产品（到店成品，按份退回，显示退回量+单位+退回产品重量）
+     * / {@code white_bar}=白条产品（djs_white_bar_return_product 字典，按重量退货，单位取原材料单位）。
+     */
+    private String subCategory;
 
 }
