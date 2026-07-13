@@ -241,15 +241,12 @@ public class VegReceiveServiceImpl implements IVegReceiveService {
     public Long inbound(VegInboundBo bo) {
         Long userId = resolveOperator(bo.getOperatorId());
 
-        // 0a. 锁定守门（步10 Part1）：该地块已标记入库完成（is_finish=1）即锁定，不可再次入库
-        if (vegReceiveMapper.countFinishedByPlot(bo.getCropId(), bo.getPlotId()) > 0) {
-            throw new ServiceException("该地块已标记入库完成，不能再次入库");
-        }
-
-        // 0b. 校验入库库位口径（spec 步10：自产月台入库仅限蔬菜保鲜库 L0003 / 重口味蔬菜库 L0004）
+        // 0a. 校验入库库位口径（spec 步10：自产月台入库仅限蔬菜保鲜库 L0003 / 重口味蔬菜库 L0004）
         requireInboundLocation(bo.getLocationId());
 
-        // 1. 校验剩余可入量（月台量 − 已入 self 量），超量拒绝（不凭空入库）
+        // 1. 校验真实剩余可入量（月台量 − 已入 − 已结算损耗），超量拒绝（不凭空入库）。
+        //    row66：不再「该地块有 is_finish 行就整地块锁死」——同地块当天可多趟送达、待入库叠加，
+        //    某趟标记完成只结算当趟剩余为损耗；剩余可入=0 时本处自然拒绝，新送达使剩余>0 则可继续入。
         BigDecimal remain = vegReceiveMapper.selectRemainInboundWeight(bo.getCropId(), bo.getPlotId());
         BigDecimal remainSafe = remain != null ? remain : BigDecimal.ZERO;
         if (bo.getWeight().compareTo(remainSafe) > 0) {

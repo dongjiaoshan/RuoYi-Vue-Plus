@@ -1344,30 +1344,41 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
                p.product_unit                    AS productUnit,
                COALESCE(p.product_thumb, p.image_oss_id) AS productThumb,
                p.belong_type                     AS belongType,
+               -- admin row55：猪肉按 (产品, 耳号) 分行，耳号列展示；无耳号（整只白条）ear_no 为 NULL 折成一产品一行。
+               s.ear_no                          AS earNo,
+               MAX(s.white_bar_no)               AS whiteBarNo,
+               -- row56：行已到耳号粒度、篮唯一（每 (产品,耳号) 恰一篮），batchId 直接带在行上，
+               -- 领用出库弹框去掉源篮子选择，提交按此 batchId 走 pickByBatch 精确扣该篮。
+               MIN(s.id)                         AS batchId,
                COALESCE(SUM(s.product_stock), 0) AS currentStock,
                (SELECT s2.location_id
                   FROM t_warehouse_location_stock s2
                  WHERE s2.product_id = p.id
+                   AND (s2.ear_no = s.ear_no OR (s2.ear_no IS NULL AND s.ear_no IS NULL))
                    AND s2.del_flag = '0'
                    AND s2.tenant_id = '1001'
                  ORDER BY s2.product_stock DESC, s2.location_id ASC
                  LIMIT 1)                         AS defaultLocationId,
                COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
                           WHERE f.product_id = p.id
+                            AND (f.ear_no = s.ear_no OR (f.ear_no IS NULL AND s.ear_no IS NULL))
                             AND f.flow_type IN ('prod_pick_out','dept_pick_out','pick_out')
                             AND DATE(f.flow_date) = CURDATE()
                             AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayPicked,
                COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
                           WHERE f.product_id = p.id
+                            AND (f.ear_no = s.ear_no OR (f.ear_no IS NULL AND s.ear_no IS NULL))
                             AND f.flow_type IN ('prod_return_in','pick_return_in','store_return_in')
                             AND DATE(f.flow_date) = CURDATE()
                             AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayReturned,
                COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
                           WHERE f.product_id = p.id
+                            AND (f.ear_no = s.ear_no OR (f.ear_no IS NULL AND s.ear_no IS NULL))
                             AND f.flow_type = 'loss' AND DATE(f.flow_date) = CURDATE()
                             AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayLoss,
                COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
                           WHERE f.product_id = p.id
+                            AND (f.ear_no = s.ear_no OR (f.ear_no IS NULL AND s.ear_no IS NULL))
                             AND f.flow_type = 'feed_out' AND DATE(f.flow_date) = CURDATE()
                             AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayFeed
           FROM t_warehouse_product_info p
@@ -1384,12 +1395,13 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
            <foreach collection="belongTypes" item="bt" open="(" separator="," close=")">#{bt}</foreach>
            <if test="keyword != null and keyword != ''">
              AND (p.product_name LIKE CONCAT('%', #{keyword}, '%')
-               OR p.product_id LIKE CONCAT('%', #{keyword}, '%'))
+               OR p.product_id LIKE CONCAT('%', #{keyword}, '%')
+               OR s.ear_no LIKE CONCAT('%', #{keyword}, '%'))
            </if>
          GROUP BY p.id, p.product_id, p.product_name, p.product_unit, p.product_thumb,
-                  p.image_oss_id, p.belong_type
+                  p.image_oss_id, p.belong_type, s.ear_no
         HAVING SUM(s.product_stock) > 0 OR MAX(DATE(s.update_time)) = CURDATE()
-         ORDER BY currentStock ASC, p.product_name ASC
+         ORDER BY p.product_name ASC, s.ear_no ASC
         </script>
         """)
     List<MatIssueItemVo> selectAdminMatPorkProducts(@Param("belongTypes") List<String> belongTypes,

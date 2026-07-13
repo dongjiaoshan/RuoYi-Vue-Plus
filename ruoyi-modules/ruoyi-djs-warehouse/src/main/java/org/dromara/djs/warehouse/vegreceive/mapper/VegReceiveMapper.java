@@ -142,27 +142,24 @@ public interface VegReceiveMapper extends BaseMapperPlus<VegReceive, VegReceive>
      *
      * <p>地块月台量 = {@code SUM(send_platform_weight) by plot}；实际入库 = 本表 self 该 (crop, plot) 已入量；
      * 待入库 = 月台量 − 实际入库（取 0 兜底负值）。损耗 = 该地块已标记入库完成行的 {@code loss_weight} 合计
-     * （r72：头卡汇总损耗量 = Σ各地块 lossWeight）。状态：已标记入库完成（{@code is_finish=1} 存在）→ done（步10
-     * Part1 锁定，唯一 done 判据）/ actual=0→pending / 其余→processing。<b>数量打满（actual≥月台量）但未勾
-     * 「入库完成」仍是 processing</b>（row4：量满不自动 done，否则未勾完成就被锁死无法收尾），地块卡仍可点进去
-     * 打开「是否入库完成」开关收尾。仅返月台量 &gt; 0 的地块。</p>
+     * （r72：头卡汇总损耗量 = Σ各地块 lossWeight）。状态按<b>真实待入库量</b>（月台量 − 已入 − 已结算损耗）判：
+     * &gt; 0 → 可处理（actual=0→pending / 其余→processing）；≤ 0 → done。<b>不再以「是否有 is_finish 行」锁死</b>——
+     * row66：同地块当天可多趟送达、待入库量叠加，某趟标记完成只把当趟剩余结算为损耗，新送达的量让地块回到可处理，
+     * 不会出现「第一趟处理完成后、同地块第二趟送来无法处理」。仅返月台量 &gt; 0 的地块。</p>
      *
-     * <p><b>当天过滤（r73 ②）</b>：地块仅显当天「入库完成 + 未完成」，次日不再显示昨天及更早已完成的地块。
-     * 实现 = 排除「已标记入库完成且最后一次完成日期早于今天」的地块（{@code finishedBefore = 0}）；
-     * 未完成地块（{@code finished=0}）恒显示，当天完成地块（{@code DATE(receive_time)=CURDATE()}）仍显示为 done。
-     * 完成日期取该 (crop, plot) is_finish=1 行的最大 {@code receive_time}（收货入库时间，即勾选完成那一刻）。</p>
+     * <p><b>当天过滤（r73 ②）</b>：待入库量 &gt; 0 的地块恒显（可处理，跨日新送达也显）；待入库量 ≤ 0 时——
+     * 当天有完成（{@code finishedToday > 0}）仍显 done、次日不再显示（{@code finishedToday=0} 且无待入 → 隐）。</p>
      */
     @Select("""
         SELECT t.plot_id     AS plotId,
                pl.plot_code  AS plotCode,
                CASE
-                 WHEN t.finished > 0 THEN 'done'
+                 WHEN t.platform - t.actual - t.loss <= 0 THEN 'done'
                  WHEN t.actual <= 0 THEN 'pending'
                  ELSE 'processing'
                END           AS inboundStatus,
                CASE
-                 WHEN t.finished > 0 THEN 0
-                 WHEN t.platform - t.actual > 0 THEN t.platform - t.actual
+                 WHEN t.platform - t.actual - t.loss > 0 THEN t.platform - t.actual - t.loss
                  ELSE 0
                END           AS pendingWeight,
                t.actual      AS actualWeight,
@@ -198,18 +195,8 @@ public interface VegReceiveMapper extends BaseMapperPlus<VegReceive, VegReceive>
                           AND vrf.is_finish = 1
                           AND vrf.del_flag = '0'
                           AND vrf.tenant_id = '1001'
-                   ) AS finished,
-                   (
-                       SELECT COUNT(1)
-                         FROM t_warehouse_veg_receive vrb
-                        WHERE vrb.receive_type = 1
-                          AND vrb.crop_id = #{cropId}
-                          AND vrb.plot_id = vh.plot_id
-                          AND vrb.is_finish = 1
-                          AND vrb.del_flag = '0'
-                          AND vrb.tenant_id = '1001'
-                          AND DATE(vrb.receive_time) < CURDATE()
-                   ) AS finishedBefore
+                          AND DATE(vrf.receive_time) = CURDATE()
+                   ) AS finishedToday
               FROM t_warehouse_vegetable_handle vh
              WHERE vh.del_flag = '0'
                AND vh.tenant_id = '1001'
@@ -221,18 +208,20 @@ public interface VegReceiveMapper extends BaseMapperPlus<VegReceive, VegReceive>
                  ON pl.id = t.plot_id
                 AND pl.del_flag = '0'
          WHERE t.platform > 0
-           AND t.finishedBefore = 0
+           AND (t.platform - t.actual - t.loss > 0 OR t.finishedToday > 0)
          ORDER BY pl.plot_code, t.plot_id
         """)
     List<VegInboundPlotVo> selectInboundPlots(@Param("cropId") Long cropId);
 
     /**
-     * 某 (crop, plot) 自产月台量 − 已入库量 = 剩余可入库量（service 入库前校验防超量）。
+     * 某 (crop, plot) 真实剩余可入库量 = 自产月台量 − 已入库量 − 已结算损耗量（service 入库前校验防超量）。
      *
-     * <p>返回剩余可入库（≥ 0）；无任何月台量返 0。</p>
+     * <p>row66：同地块当天可多趟送达、待入库量叠加。某趟标记「入库完成」时会把当趟剩余结算为损耗
+     * （{@code is_finish=1} 行的 {@code loss_weight}），这部分已不可再入；故剩余可入 = 月台量 − 已入 − 已结算损耗。
+     * 新送达的量（{@code send_platform_weight} 增量）不被前趟损耗吃掉，可继续入库。返回 ≥ 0；无月台量返 0。</p>
      */
     @Select("""
-        SELECT COALESCE(p.platform, 0) - COALESCE(r.actual, 0)
+        SELECT COALESCE(p.platform, 0) - COALESCE(r.actual, 0) - COALESCE(l.loss, 0)
           FROM (
             SELECT COALESCE(SUM(vh.send_platform_weight), 0) AS platform
               FROM t_warehouse_vegetable_handle vh
@@ -249,35 +238,19 @@ public interface VegReceiveMapper extends BaseMapperPlus<VegReceive, VegReceive>
                AND vr.plot_id = #{plotId}
                AND vr.del_flag = '0'
                AND vr.tenant_id = '1001'
-          ) r
+          ) r,
+          (
+            SELECT COALESCE(SUM(vrl.loss_weight), 0) AS loss
+              FROM t_warehouse_veg_receive vrl
+             WHERE vrl.receive_type = 1
+               AND vrl.crop_id = #{cropId}
+               AND vrl.plot_id = #{plotId}
+               AND vrl.is_finish = 1
+               AND vrl.del_flag = '0'
+               AND vrl.tenant_id = '1001'
+          ) l
         """)
     BigDecimal selectRemainInboundWeight(@Param("cropId") Long cropId, @Param("plotId") Long plotId);
-
-    /**
-     * 统计某 (crop, plot) 自产入库是否已标记完成（{@code is_finish=1}）的收货行数。
-     *
-     * <p>步10 Part1 锁定守门：果蔬间入库一旦标记「入库完成」，该地块即锁定不可再次入库。
-     * service 在 {@link org.dromara.djs.warehouse.vegreceive.service.impl.VegReceiveServiceImpl#inbound}
-     * 开头调用，&gt; 0 即拒绝。</p>
-     *
-     * <p>仅统计自产（{@code receive_type=1}）+ 未软删（{@code del_flag='0'}）行；
-     * {@code tenant_id} V1 单租户显式 {@code '1001'}（与本 mapper 其他聚合 SQL 同范式）。</p>
-     *
-     * @param cropId 作物 id
-     * @param plotId 地块 id
-     * @return 已标记入库完成的收货行数（0 = 未锁定，可入库）
-     */
-    @Select("""
-        SELECT COUNT(1)
-          FROM t_warehouse_veg_receive
-         WHERE receive_type = 1
-           AND crop_id   = #{cropId}
-           AND plot_id   = #{plotId}
-           AND is_finish = 1
-           AND del_flag  = '0'
-           AND tenant_id = '1001'
-        """)
-    long countFinishedByPlot(@Param("cropId") Long cropId, @Param("plotId") Long plotId);
 
     /**
      * 取作物名称（VegInbound 提交时冗余写入 receive 记录；自产无 product，从 vegetable_handle 冗余取）。

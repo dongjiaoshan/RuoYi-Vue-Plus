@@ -68,6 +68,13 @@ public class WhiteBarShipmentVo implements Serializable {
     private String outDest;
 
     /**
+     * 发货门店名（= {@code product_production.store_id} → {@code t_md_store.store_name}；
+     * 发货月台发往门店时有值，后台出库/非到门店时为 {@code null} 显示空）。
+     */
+    @ExcelProperty(value = "门店")
+    private String storeName;
+
+    /**
      * 出库量（= {@code product_production.product_weight}）。
      */
     @ExcelProperty(value = "出库量")

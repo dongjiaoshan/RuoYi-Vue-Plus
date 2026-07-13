@@ -925,8 +925,9 @@ public class ProductProductionServiceImpl
             .apply(StringUtils.isNotBlank(query.getProductSort()),
                 "CAST(product_sort AS CHAR) LIKE CONCAT('%', {0}, '%')", query.getProductSort())
             .eq(query.getStoreId() != null, ProductProduction::getStoreId, query.getStoreId())
-            .orderByAsc(ProductProduction::getProductSort)
-            .orderByAsc(ProductProduction::getId);
+            // admin row59：产品明细按生产时间降序（后生产的排最前）；id DESC 作同秒/并发插入的稳定 tiebreaker。
+            .orderByDesc(ProductProduction::getProduceTime)
+            .orderByDesc(ProductProduction::getId);
         Page<ProductProductionVo> page = baseMapper.selectVoPage(pageQuery.build(), wrapper);
         fillJoinNames(page.getRecords());
         return TableDataInfo.build(page);
