@@ -102,7 +102,9 @@ public interface VegReceiveMapper extends BaseMapperPlus<VegReceive, VegReceive>
      * （果蔬/猪肉/蛋等），便于 dock 卡片次标签展示。{@code cropId} 承载产品 {@code id}（snowflake，非业务码）。</p>
      *
      * <p>筛选：{@code productName} 非空时按产品名模糊匹配（mp dock 外购搜索框）。
-     * 仅返启用产品（{@code product_status=0}）。租户单租户显式 {@code tenant_id='1001'}。</p>
+     * 产品条件 = 产品（{@code product_type=1}）+ 原材料（{@code product_attr=2}）+ 支持外购
+     * （{@code is_buy_out=1}，是否支持外购=是）+ 启用（{@code product_status=0}）。
+     * 租户单租户显式 {@code tenant_id='1001'}。</p>
      *
      * @param productName 产品名称模糊关键字（可空）
      * @return 外购待收货列表项（pendingWeight 恒 0）
@@ -128,6 +130,7 @@ public interface VegReceiveMapper extends BaseMapperPlus<VegReceive, VegReceive>
            AND p.tenant_id     = '1001'
            AND p.product_type  = 1
            AND p.product_attr  = 2
+           AND p.is_buy_out    = 1
            AND p.product_status = 0
            <if test="productName != null and productName != ''">
              AND p.product_name LIKE CONCAT('%', #{productName}, '%')

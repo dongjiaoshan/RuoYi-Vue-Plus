@@ -251,12 +251,18 @@ public class StoreDailyLedgerServiceImpl implements IStoreDailyLedgerService {
         LocalDate date = bo.getLedgerDate() == null ? LocalDate.now() : bo.getLedgerDate();
         Long operatorId = LoginHelper.getUserId();
 
-        // 已存在的同门店同日行（产品 → entity），用于 UPSERT（重盘覆盖）。
+        // 已存在的同门店同日行（产品 → entity），用于 UPSERT（更正覆盖）。
         Map<Long, StoreDailyLedger> existingByProduct = baseMapper.selectList(
                 new LambdaQueryWrapper<StoreDailyLedger>()
                     .eq(StoreDailyLedger::getStoreId, bo.getStoreId())
                     .eq(StoreDailyLedger::getLedgerDate, date))
             .stream().collect(Collectors.toMap(StoreDailyLedger::getProductId, e -> e, (a, b) -> a));
+
+        // DENGBO-R13：同一天不能重复盘点。非「修改」提交（edit != true）时，该门店该日已有盘点记录则拒绝；
+        // 更正走列表「修改」入口（edit=true），允许覆盖。
+        if (!Boolean.TRUE.equals(bo.getEdit()) && !existingByProduct.isEmpty()) {
+            throw new ServiceException("该门店 " + date + " 已有盘点记录，不能重复盘点；如需更正请点击列表中的「修改」", 400);
+        }
 
         // 入库上限 = 当日白条发货重量（一次取，所有白条派生行共用同一上限）。
         // 上限适用集 = 猪肉成品字典 ∪ 白条产品字典（DENGBO-R12，两者均由白条派生）。

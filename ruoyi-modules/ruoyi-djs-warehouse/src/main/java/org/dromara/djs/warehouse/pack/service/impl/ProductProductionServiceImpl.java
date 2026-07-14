@@ -442,8 +442,8 @@ public class ProductProductionServiceImpl
         fillTraceCode(p, src.getEarNo(), src.getPlotId());
 
         // 履约门店需求（需求 C）——肉品/干货/其他打包均走此口。发送位置=礼盒 → 礼盒组件，不扣门店直接需求；
-        // 其余（发货月台）= 直接履约，须选门店 + 打包即扣需求（发货不再扣）。扣减量按需求单位口径
-        // （肉品 kg 单位=按重量；其他产品份数模式=按份数；份-单位无计量规则=1 次 1 份）。
+        // 其余（发货月台）= 直接履约，须选门店 + 打包即扣需求（发货不再扣）。
+        // 扣减量恒 1 份（Kevin 2026-07-14：所有打包提交 1 次 = 恰好 1 份，与重量/material_num 无关，不出小数）。
         fulfillDirectDemandOnPack(product.getId(), bo.getStoreId(),
             resolveDemandDeductQty(product, bo.getProductWeight()), bo.getDeliverDest());
 
@@ -1397,26 +1397,14 @@ public class ProductProductionServiceImpl
      * </ul>
      */
     /**
-     * 本次打包应扣的「门店需求量」。门店需求一律按「份/盒/只/枚」等<b>计数</b>口径下单（无按重量需求），
-     * 故打包扣减也按份计：
+     * 本次打包应扣的「门店需求量」，恒为 1 份。
      *
-     * <ul>
-     *   <li><b>按份数</b>（配了计量规则 {@code material_num>0}，如鸡蛋一盒 30 枚）：前端把 份数×material_num
-     *       发为重量 → 还原份数 = 重量 ÷ material_num，按份数扣（1 次打包 = N 份）。</li>
-     *   <li><b>按重量</b>（每份重量，如腊肉 {@code unit=kg} 无计量规则）+ 计数单位无计量（果蔬份-单位/白条整只）：
-     *       1 次打包成功 = 1 份/只，与录入重量无关（Kevin 2026-06-26：腊肉录入的是「每份重量」，仍按份扣；
-     *       「打包成功就是打包了一份」）。</li>
-     * </ul>
+     * <p>Kevin 2026-07-14 复申：所有打包提交 1 次 = 恰好扣 1 份（整数），与录入重量 / {@code material_num} 无关，
+     * 不可能出现小数。故不论产品是否配计量规则、录入的是重量还是份数，一次打包成功都只扣 1 份门店需求。</p>
      *
      * <p>礼盒打包不走此口（{@code submitGiftPack} 直接按盒数 packBoxCount 扣）。</p>
      */
     protected BigDecimal resolveDemandDeductQty(ProductInfo product, BigDecimal packWeightKg) {
-        BigDecimal materialNum = product == null ? null : product.getMaterialNum();
-        if (materialNum != null && materialNum.signum() > 0 && packWeightKg != null) {
-            // 按份数模式：重量 = 份数 × material_num（前端换算），还原份数
-            return packWeightKg.divide(materialNum, 3, java.math.RoundingMode.HALF_UP);
-        }
-        // 按重量（每份重量）/ 计数单位无计量：1 次打包 = 1 份/只，与重量无关
         return BigDecimal.ONE;
     }
 

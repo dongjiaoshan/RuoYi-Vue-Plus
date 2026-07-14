@@ -198,8 +198,8 @@ public interface PlantPlanMapper extends BaseMapperPlus<PlantPlan, PlantPlanVo> 
      *
      * <p>年份锚定计划主表 {@code plan_year = #{planYear}}（默认当年由 service 兜底）。每行单条：</p>
      * <ul>
-     *   <li>{@code plantedPlot} = 当年已种植地块数 = 当年种植行为次数之和（COUNT(*) 非 DISTINCT），
-     *       即当年所属计划下已实际开始种植（begin_actualdate IS NOT NULL）的明细行数。</li>
+     *   <li>{@code plantedPlot} = 当年<b>已完成</b>种植地块数 = 当年所属计划下种植状态已完成
+     *       （plant_status='completed'）的明细行数之和，与列表列「已完成种植地块数量」(finishedPlot) 同源同口径之和。</li>
      *   <li>{@code plannedPlot} = 当年计划种植地块数 = Σ计划地块 = 当年所属计划明细行数
      *       （COUNT(*) 非 DISTINCT，每条明细 = 一个计划地块占用）。</li>
      *   <li>{@code cropVarietyCount} = 当年计划种植作物品种数 = COUNT(DISTINCT plan.crop_id)。</li>
@@ -211,7 +211,7 @@ public interface PlantPlanMapper extends BaseMapperPlus<PlantPlan, PlantPlanVo> 
      */
     @Select("""
         SELECT
-            COALESCE(SUM(CASE WHEN d.begin_actualdate IS NOT NULL THEN 1 ELSE 0 END), 0) AS plantedPlot,
+            COALESCE(SUM(CASE WHEN d.plant_status = 'completed' THEN 1 ELSE 0 END), 0) AS plantedPlot,
             COUNT(d.id) AS plannedPlot,
             COUNT(DISTINCT p.crop_id) AS cropVarietyCount
           FROM t_plant_plant_plan p

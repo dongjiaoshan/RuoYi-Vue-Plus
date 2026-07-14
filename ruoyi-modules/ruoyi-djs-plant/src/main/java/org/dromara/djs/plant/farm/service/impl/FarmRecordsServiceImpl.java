@@ -164,6 +164,8 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
     @Override
     @Transactional(rollbackFor = Exception.class)
     public Long submitDisaster(DisasterRecordBo bo) {
+        // 多次录入累计校验（row79）：同批次（crop+plot+plant）历史损失率 + 本次 不得超过 100%。
+        requireDisasterLossWithinCap(bo.getCropId(), bo.getPlotId(), bo.getPlantId(), bo.getLossRate());
         FarmRecords r = new FarmRecords();
         buildBase(r, "disaster", bo.getPlotId(), bo.getCropId(), bo.getPlantId(), bo.getFarmBy(),
             bo.getFarmDate(), bo.getProofOssIds(), bo.getRemark());
@@ -294,6 +296,11 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
     @Transactional(rollbackFor = Exception.class)
     public int submitDisasterBatch(DisasterBatchBo bo) {
         int warning = bo.getLossRate() != null && bo.getLossRate().compareTo(WARNING_LOSS_RATE) >= 0 ? 1 : 2;
+        // 多次录入累计校验（row79）：整事务前逐地块各自校验（每地块历史累计不同，同一 lossRate 可能部分地块超）。
+        // 全部通过才 INSERT，避免先写了一部分地块再撞超限留下半截批量。
+        for (DisasterBatchBo.PlotTarget t : bo.getTargets()) {
+            requireDisasterLossWithinCap(t.getCropId(), t.getPlotId(), t.getPlantId(), bo.getLossRate());
+        }
         int count = 0;
         for (DisasterBatchBo.PlotTarget t : bo.getTargets()) {
             FarmRecords r = new FarmRecords();
@@ -911,6 +918,28 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
                     .last("LIMIT 1"));
         }
         return target;
+    }
+
+    /**
+     * 灾害损失率累计校验（row79）：同批次（crop+plot+plant）历史累计损失率 + 本次 不得超过 100%。
+     *
+     * <p>与 {@code computeLossYield}/{@code accumulateLossYield} 同批次口径，换茬复种不掺旧茬。
+     * 本次损失率为空按 0 处理（不拦）。超限抛 {@link ServiceException}，事务回滚。</p>
+     */
+    private void requireDisasterLossWithinCap(Long cropId, Long plotId, Long plantId, BigDecimal lossRate) {
+        BigDecimal current = baseMapper.sumDisasterLossRate(cropId, plotId, plantId);
+        if (current == null) {
+            current = BigDecimal.ZERO;
+        }
+        BigDecimal add = lossRate == null ? BigDecimal.ZERO : lossRate;
+        if (current.add(add).compareTo(new BigDecimal("100")) > 0) {
+            BigDecimal remain = new BigDecimal("100").subtract(current);
+            if (remain.compareTo(BigDecimal.ZERO) < 0) {
+                remain = BigDecimal.ZERO;
+            }
+            throw new ServiceException("本次损失率超出剩余可录 " + remain.stripTrailingZeros().toPlainString()
+                + "%（已累计 " + current.stripTrailingZeros().toPlainString() + "%）");
+        }
     }
 
     /**

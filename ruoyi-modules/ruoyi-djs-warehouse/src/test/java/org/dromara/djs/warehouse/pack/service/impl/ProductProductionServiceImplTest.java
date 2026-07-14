@@ -237,6 +237,39 @@ class ProductProductionServiceImplTest {
     }
 
     @Test
+    @DisplayName("submitVegPack: 铁令——即使产品配 material_num=1 且打包 0.55kg，门店需求恰好扣 1 份（不可能出小数）")
+    void testVegPack_DeductExactlyOneCopy_RegardlessOfWeightOrMaterialNum() {
+        when(inhouseMapper.selectById(70001L)).thenReturn(sampleVegSource());
+        // 复现测试脏配置：果蔬产品被误配 material_num=1.000（Kevin 2026-07-14 铁令覆盖）
+        ProductInfo p = sampleVegProduct();
+        p.setMaterialNum(new BigDecimal("1.000"));
+        when(productInfoMapper.selectById(60010L)).thenReturn(p);
+        when(locationInfoMapper.selectById(90001L)).thenReturn(sampleLocation());
+        when(productionMapper.insert(any(ProductProduction.class))).thenAnswer(inv -> {
+            ((ProductProduction) inv.getArgument(0)).setId(80013L);
+            return 1;
+        });
+        // 门店有未完成需求 → 打包即扣
+        org.dromara.djs.warehouse.demand.domain.DemandManage demand =
+            new org.dromara.djs.warehouse.demand.domain.DemandManage();
+        demand.setId(50002L);
+        demand.setDemandQuantity(new BigDecimal("3"));
+        demand.setShippedCount(BigDecimal.ZERO);
+        when(demandManageMapper.selectOldestUncompletedDemand(eq(60010L), eq(7L))).thenReturn(demand);
+        when(demandManageMapper.incrementShipped(eq(50002L), any(), any())).thenReturn(1);
+
+        // 打包 0.55kg（=550g）
+        VegPackBo bo = sampleVegBo();
+        bo.setProductWeight(new BigDecimal("0.550"));
+        service.submitVegPack(bo);
+
+        // 铁令：扣减量恒 1 份（整数），不是 0.55
+        ArgumentCaptor<BigDecimal> qtyCap = ArgumentCaptor.forClass(BigDecimal.class);
+        verify(demandManageMapper, times(1)).incrementShipped(eq(50002L), any(), qtyCap.capture());
+        assertThat(qtyCap.getValue()).isEqualByComparingTo("1");
+    }
+
+    @Test
     @DisplayName("submitVegPack: 来源不存在 → 抛 + production 不 INSERT")
     void testVegPack_SourceMissing() {
         when(inhouseMapper.selectById(70001L)).thenReturn(null);

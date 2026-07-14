@@ -36,6 +36,15 @@ public class StoreDailyLedgerBatchBo {
     /** 盘点日期（缺省 service 用今天）。 */
     private LocalDate ledgerDate;
 
+    /**
+     * 是否更正已盘记录（DENGBO-R13）：
+     * <ul>
+     *   <li>{@code null}/{@code false} = 新增当日盘点，此时该门店该日<b>已有盘点记录则拒绝</b>（同一天不能重复盘点）；</li>
+     *   <li>{@code true} = 「修改」入口更正上次盘点结果，允许覆盖已有记录。</li>
+     * </ul>
+     */
+    private Boolean edit;
+
     /** 备注。 */
     private String remark;
 

@@ -535,6 +535,70 @@ class MatFlowServiceImplTest {
     }
 
     @Test
+    @DisplayName("lossByBatch 白条·猪头 null-ear 篮损耗(row70)：pork 走 reduceTodayInhouse 剥「今日领用剩余」，不再 deductStockById 扣货架")
+    void testLossByBatch_PorkNullEar_DeductsInhouseNotShelf() {
+        Long batchId = 90050L;
+        Long locId = 7003L;
+        // 白条·猪头 null-ear 篮：ear_no / plot_id 全 null（分发既不中 isVegPlotBasket 也不中 isPorkEarBasket → 落尾分支）
+        LocationStock basket = new LocationStock();
+        basket.setId(batchId);
+        basket.setLocationId(locId);
+        basket.setProductId(PRODUCT_ID);
+        basket.setEarNo(null);
+        basket.setWhiteBarNo("BAR-001");
+        basket.setPlotId(null);
+        basket.setProductName("白条·猪头");
+        basket.setProductUnit("kg");
+        basket.setProductStock(new BigDecimal("30"));
+        basket.setDelFlag("0");
+        when(locationStockMapper.selectById(batchId)).thenReturn(basket);
+
+        ProductInfo product = new ProductInfo();
+        product.setId(PRODUCT_ID);
+        product.setProductName("白条·猪头");
+        product.setProductUnit("kg");
+        product.setBelongType("pork");
+        when(productInfoMapper.selectById(PRODUCT_ID)).thenReturn(product);
+
+        // 额度校验（pork 非可打包 → 走 flow SUM 口径）：已领 20 / 无退无损无饲 → 余 20，损 3 通过
+        when(stockFlowMapper.sumTodayByProductTypes(eq(PRODUCT_ID), argThat(l -> l != null && l.contains("dept_pick_out")))).thenReturn(new BigDecimal("20"));
+        when(stockFlowMapper.sumTodayByProductTypes(eq(PRODUCT_ID), argThat(l -> l != null && l.contains("pick_return_in")))).thenReturn(BigDecimal.ZERO);
+        when(stockFlowMapper.sumTodayByProductType(PRODUCT_ID, "loss")).thenReturn(BigDecimal.ZERO);
+        when(stockFlowMapper.sumTodayByProductType(PRODUCT_ID, "feed_out")).thenReturn(BigDecimal.ZERO);
+
+        // reduceTodayInhouseForBasket(productId, null, null, ...)：earNo=null → 退化成 productId 维匹配今日 null-ear inhouse
+        ProductInhouse wip = new ProductInhouse();
+        wip.setId(60001L);
+        wip.setProductId(PRODUCT_ID);
+        wip.setEarNo(null);
+        wip.setPlotId(null);
+        wip.setProductWeight(new BigDecimal("10"));
+        when(productInhouseMapper.selectList(any())).thenReturn(java.util.List.of(wip));
+        when(productInhouseMapper.deductWeightById(eq(60001L), any(BigDecimal.class))).thenReturn(1);
+
+        MatLossBo bo = new MatLossBo();
+        bo.setBatchId(batchId);
+        bo.setProductId(PRODUCT_ID);
+        bo.setLocationId(locId);
+        bo.setQuantity(new BigDecimal("3"));
+        bo.setRemark("ut-row70");
+        service.loss(bo);
+
+        // 1 行 loss 流水（带篮 product_id / white_bar_no 源标签、plot_id 为 null）
+        ArgumentCaptor<StockFlow> fCap = ArgumentCaptor.forClass(StockFlow.class);
+        verify(stockFlowMapper, times(1)).insert(fCap.capture());
+        StockFlow f = fCap.getValue();
+        assertThat(f.getFlowType()).isEqualTo("loss");
+        assertThat(f.getInoutType()).isEqualTo("OT");
+        assertThat(f.getChangeQuantity()).isEqualByComparingTo("3");
+        assertThat(f.getWhiteBarNo()).isEqualTo("BAR-001");
+
+        // row70 核心：pork 走剥离今日待打包 inhouse（deductWeightById），不再 deductStockById 扣货架
+        verify(productInhouseMapper, times(1)).deductWeightById(eq(60001L), eq(new BigDecimal("3")));
+        verify(locationStockMapper, never()).deductStockById(anyLong(), any(BigDecimal.class), any());
+    }
+
+    @Test
     @DisplayName("requireProduct 找不到 → 抛产品不存在 + 任何 mapper 不调")
     void testPick_ProductNotFound() {
         when(productInfoMapper.selectOne(any())).thenReturn(null);

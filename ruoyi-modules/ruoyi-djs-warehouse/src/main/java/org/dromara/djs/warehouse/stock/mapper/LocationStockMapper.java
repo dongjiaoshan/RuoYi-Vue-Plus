@@ -1229,14 +1229,11 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
                s.white_bar_no                    AS whiteBarNo,
                s.plot_id                         AS plotId,
                pl.plot_code                      AS plotCode,
-               <!-- row32：今日四量子查询按 product_id + warehouse_id（+ ear_no / white_bar_no）关联，
-                    不按 plot_id —— 退回(prod_return_in/pick_return_in)/损耗(loss)流水不写 plot_id（仅 pick_out
-                    带 plot），若强求 f.plot_id = s.plot_id 则自产果蔬（库存行带 plot）的今日退回/损耗恒 0，
-                    与 mp 按 product 汇总不一致（客户 row32）。去 plot 关联后按库位维度真实汇总。 -->
-               <!-- row39：今日出库(领用)子查询 **须** 按 plot_id 关联——pick_out 流水带 plot（自产果蔬按地块领用），
-                    同一产品同库位的多地块行若不按 plot 关联会共享同一领用汇总（四季豆两地块都显 0.501，实际只领了一个地块）。
-                    NULL-safe：猪肉耳号行 / 非地块物资行 plot_id 两端皆 NULL 仍匹配（不影响 row32——退回/损耗流水 plot_id=NULL
-                    故那三个子查询保持不按 plot 关联）。 -->
+               <!-- row39/row67/row68：今日四量子查询全部按 plot_id NULL-safe 关联——领用(pick_out)、退回
+                    (prod_return_in/pick_return_in/store_return_in)、损耗(loss)自产果蔬地块卡路径的流水均写 plot_id
+                    （returnVegPlot/lossVegPlot），同一产品同库位的多地块行必须按 plot 隔离，否则 A 地块的退回/损耗
+                    会 leak 到 B 地块行（四季豆两地块都显同一退回/损耗值，row67/68）。NULL-safe 分支保证猪肉耳号行 /
+                    非地块物资行 / 产品级历史流水（plot_id=NULL）两端皆 NULL 仍匹配，不影响非自产果蔬业态。 -->
                COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
                           WHERE f.product_id = p.id AND f.warehouse_id = s.location_id
                             AND (f.ear_no = s.ear_no OR (f.ear_no IS NULL AND s.ear_no IS NULL))
@@ -1249,6 +1246,7 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
                           WHERE f.product_id = p.id AND f.warehouse_id = s.location_id
                             AND (f.ear_no = s.ear_no OR (f.ear_no IS NULL AND s.ear_no IS NULL))
                             AND (f.white_bar_no = s.white_bar_no OR (f.white_bar_no IS NULL AND s.white_bar_no IS NULL))
+                            AND (f.plot_id = s.plot_id OR (f.plot_id IS NULL AND s.plot_id IS NULL))
                             AND f.flow_type IN ('prod_return_in','pick_return_in','store_return_in')
                             AND DATE(f.flow_date) = CURDATE()
                             AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayReturned,
@@ -1256,6 +1254,7 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
                           WHERE f.product_id = p.id AND f.warehouse_id = s.location_id
                             AND (f.ear_no = s.ear_no OR (f.ear_no IS NULL AND s.ear_no IS NULL))
                             AND (f.white_bar_no = s.white_bar_no OR (f.white_bar_no IS NULL AND s.white_bar_no IS NULL))
+                            AND (f.plot_id = s.plot_id OR (f.plot_id IS NULL AND s.plot_id IS NULL))
                             AND f.flow_type = 'loss' AND DATE(f.flow_date) = CURDATE()
                             AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayLoss,
                COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f

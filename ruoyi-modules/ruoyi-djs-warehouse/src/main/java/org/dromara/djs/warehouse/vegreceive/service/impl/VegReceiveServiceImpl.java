@@ -418,14 +418,13 @@ public class VegReceiveServiceImpl implements IVegReceiveService {
     }
 
     /**
-     * 校验「自产食材原料」（{@code product_type=1 且 product_attr=2}）存在，否则抛异常。
+     * 校验外购收货产品（{@code product_type=1 且 product_attr=2 且 is_buy_out=1}）存在，否则抛异常。
      *
-     * <p>口径与蔬菜月台外购列表 {@link VegReceiveMapper#selectPurchasedPending} 一致：现场外购收货认
-     * 自产食材原料（果蔬/猪肉/蛋/白条/干货里 {@code product_attr=2} 的原料）；纯外购商品
-     * （{@code product_type=2}，饲料/药品/肥料/农药/包材等生产资料）走 admin 采购入库、不在此现场收货。
-     * 不再用 {@code is_buy_out=1} 收口：现网自产食材普遍 {@code is_buy_out=0}（果蔬全为 0），加该条件会和列表
-     * 矛盾——列表给出的果蔬（如香蒜 Y00059）提交时被这里拒绝。任何自产食材都可临时外购补货，外购属性不固有。
-     * protected 便于单测 stub。</p>
+     * <p>口径与蔬菜月台外购列表 {@link VegReceiveMapper#selectPurchasedPending} 一致：外购收货只认
+     * 「原材料（{@code product_attr=2}）+ 是否支持外购=是（{@code is_buy_out=1}）」的产品
+     * （{@code product_type=1}）；纯外购商品（{@code product_type=2}，饲料/药品/肥料/农药/包材等生产资料）
+     * 走 admin 采购入库、不在此现场收货。是否支持外购由 admin 产品配置显式决定——未开外购的食材（如丝瓜
+     * {@code is_buy_out=0}）不进外购收货选品。protected 便于单测 stub。</p>
      */
     protected ProductInfo requirePurchaseProduct(Long productId) {
         ProductInfo p = productInfoMapper.selectOne(
@@ -433,10 +432,11 @@ public class VegReceiveServiceImpl implements IVegReceiveService {
         if (p == null) {
             throw new ServiceException("外购产品不存在或已删除：" + productId);
         }
-        boolean selfMaterial = p.getProductType() != null && p.getProductType() == 1
-            && p.getProductAttr() != null && p.getProductAttr() == 2;
-        if (!selfMaterial) {
-            throw new ServiceException("该产品非自产食材原料，不能走蔬菜月台外购收货：" + p.getProductName());
+        boolean purchasable = p.getProductType() != null && p.getProductType() == 1
+            && p.getProductAttr() != null && p.getProductAttr() == 2
+            && p.getIsBuyOut() != null && p.getIsBuyOut() == 1;
+        if (!purchasable) {
+            throw new ServiceException("该产品未开启「支持外购」，不能走蔬菜月台外购收货：" + p.getProductName());
         }
         return p;
     }

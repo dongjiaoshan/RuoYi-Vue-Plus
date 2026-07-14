@@ -94,6 +94,32 @@ public interface FarmRecordsMapper extends BaseMapperPlus<FarmRecords, FarmRecor
     int sumTransplantedPercent(@Param("cropId") Long cropId, @Param("plotId") Long plotId);
 
     /**
+     * 取某 (作物, 地块, 种植批次) 的累计灾害损失率（灾害多次录入累计校验用）。
+     *
+     * <p>= {@code SUM(loss_rate) WHERE farm_type='disaster'}，按 (crop, plot, plant) 三元组定位——
+     * 与 {@code computeLossYield}/{@code accumulateLossYield} 的 loss_yield 累加口径一致（同一种植批次内），
+     * 换茬复种（新 plant_id）不掺旧茬历史。空（无灾害记录）返 0。
+     * {@code submitDisaster}/{@code submitDisasterBatch} 提交前用此校验「历史累计 + 本次 ≤ 100%」。</p>
+     *
+     * @param cropId  作物 id
+     * @param plotId  地块 id
+     * @param plantId 种植批次 id
+     * @return 累计损失率（0-100，历史脏数据下可能 >100）
+     */
+    @Select("""
+        SELECT COALESCE(SUM(loss_rate), 0)
+          FROM t_plant_farm_records
+         WHERE del_flag = '0'
+           AND tenant_id = '1001'
+           AND farm_type = 'disaster'
+           AND crop_id = #{cropId}
+           AND plot_id = #{plotId}
+           AND plant_id = #{plantId}
+        """)
+    java.math.BigDecimal sumDisasterLossRate(@Param("cropId") Long cropId, @Param("plotId") Long plotId,
+        @Param("plantId") Long plantId);
+
+    /**
      * 按地块 + 农事类型聚合「30 天内上次同工种日期」（row14 空地类列表卡用）。
      *
      * <p>只读聚合，显式 {@code tenant_id='1001'} + {@code del_flag='0'}。仅取近 30 天内

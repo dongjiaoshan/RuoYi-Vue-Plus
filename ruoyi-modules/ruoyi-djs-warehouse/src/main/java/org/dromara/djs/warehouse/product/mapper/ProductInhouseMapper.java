@@ -43,4 +43,17 @@ public interface ProductInhouseMapper extends BaseMapperPlus<ProductInhouse, Pro
     @Select("SELECT COALESCE(SUM(product_weight), 0) FROM t_warehouse_product_inhouse "
         + " WHERE product_id = #{productId} AND DATE(produce_date) = CURDATE() AND del_flag = '0'")
     BigDecimal sumTodayRemaining(@Param("productId") Long productId);
+
+    /**
+     * 某产品「今日某地块待打包余额」= SUM(product_weight) of 今日该 (product_id, plot_id) product_inhouse。
+     *
+     * <p>{@link #sumTodayRemaining} 的地块限定变体（自产果蔬按地块领用时 product_inhouse.plot_id 已写入）：
+     * = 该地块今日领用 − 生产耗用 − 已退 − 已损，即该地块当前还能退/损的最大量。同一作物多地块共用同一
+     * product_id，产品级 {@link #sumTodayRemaining} 会跨地块混算（A 地块领了 B 地块也能退），退回/损耗地块卡
+     * 路径（returnVegPlot/lossVegPlot）须按地块校验，无该地块 inhouse 行 → 返 0 → 拒绝退回。</p>
+     */
+    @Select("SELECT COALESCE(SUM(product_weight), 0) FROM t_warehouse_product_inhouse "
+        + " WHERE product_id = #{productId} AND plot_id = #{plotId} "
+        + "   AND DATE(produce_date) = CURDATE() AND del_flag = '0'")
+    BigDecimal sumTodayRemainingByPlot(@Param("productId") Long productId, @Param("plotId") Long plotId);
 }

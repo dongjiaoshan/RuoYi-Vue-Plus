@@ -1164,8 +1164,10 @@ public class MatFlowServiceImpl implements IMatFlowService {
         String productName = product != null ? product.getProductName() : firstBasket.getProductName();
         String productUnit = product != null ? product.getProductUnit() : firstBasket.getProductUnit();
 
-        // 1. 校验今日额度（按 user+product 统计，与现状一致）
-        ensureTodayCapacity(productId, bo.getQuantity(), productName, productUnit, product == null ? null : product.getBelongType());
+        // 1. 校验今日额度（按 (user, product, plot) 统计，row69）：同作物多地块共用 product_id，退回须按地块校验
+        //    今日领用剩余，B 地块无领用剩余（该地块 inhouse 余额=0）则拒绝退回，防扣到 A 地块的领用剩余。
+        ensureTodayCapacity(productId, bo.getQuantity(), productName, productUnit,
+            product == null ? null : product.getBelongType(), plotId);
 
         // 2. INSERT return_in 流水（带 product_id + plot_id 源标签，warehouse_id=首篮库位）
         StockFlow flow = new StockFlow();
@@ -1485,10 +1487,14 @@ public class MatFlowServiceImpl implements IMatFlowService {
         // 3. 损耗"扣减"（与 loss()/feed() 可打包食品分支同源）：可打包食品原料（vegetable/egg/dry_good/other）
         //    领用（pickByBatch）时已离 location_stock 进「待打包」product_inhouse，损耗剥离的是这部分 WIP
         //    （让 admin 打包来源「领用剩余重量」相应扣减），不再二次扣货架（否则货架双扣 + inhouse 幽灵残留）；
-        //    扣不够（差额已打包）→ reduceTodayInhouseForBasket 内部打 warn 不抛，账实倒挂留痕审计。
         //    其余物资（包材/饲料/种子/药品）无 WIP → 扣选中篮（affected==0 打 warn 不抛，与现状 loss 语义一致）。
-        if (isPackableFood(product == null ? null : product.getBelongType())) {
-            reduceTodayInhouseForBasket(productId, null, null, bo.getQuantity());
+        //    pork（白条·猪头 null-ear 篮）与可打包食品同源：领用已离货架进待打包 inhouse，损耗必须剥离今日
+        //    inhouse（「今日领用剩余」）而非二次扣货架（与产品级 loss() 尾分支 isPackableFood||pork 对齐）；
+        //    earNo=null 时 reduceTodayInhouseForBasket 退化成 (productId) 维匹配 null-ear inhouse 行。
+        //    扣不够（差额已打包）→ reduceTodayInhouseForBasket 内部打 warn 不抛，账实倒挂留痕审计。
+        String tailBelongType = product == null ? null : product.getBelongType();
+        if (isPackableFood(tailBelongType) || "pork".equals(tailBelongType)) {
+            reduceTodayInhouseForBasket(productId, basket.getEarNo(), null, bo.getQuantity());
         } else {
             int affected = locationStockMapper.deductStockById(basket.getId(), bo.getQuantity(), userId);
             if (affected == 0) {
@@ -1529,8 +1535,10 @@ public class MatFlowServiceImpl implements IMatFlowService {
         String productName = product != null ? product.getProductName() : firstBasket.getProductName();
         String productUnit = product != null ? product.getProductUnit() : firstBasket.getProductUnit();
 
-        // 1. 校验今日额度（按 user+product 统计，与现状一致）
-        ensureTodayCapacity(productId, bo.getQuantity(), productName, productUnit, product == null ? null : product.getBelongType());
+        // 1. 校验今日额度（按 (user, product, plot) 统计，row69）：同作物多地块共用 product_id，损耗须按地块校验
+        //    今日领用剩余，B 地块无领用剩余（该地块 inhouse 余额=0）则拒绝损耗，防扣到 A 地块的领用剩余。
+        ensureTodayCapacity(productId, bo.getQuantity(), productName, productUnit,
+            product == null ? null : product.getBelongType(), plotId);
 
         // 2. INSERT loss 流水（带 product_id + plot_id 源标签，warehouse_id=首篮库位、量=总损耗量）
         StockFlow flow = new StockFlow();
@@ -1951,9 +1959,24 @@ public class MatFlowServiceImpl implements IMatFlowService {
      */
     protected void ensureTodayCapacity(Long productId, BigDecimal applying,
                                        String productName, String productUnit, String belongType) {
+        ensureTodayCapacity(productId, applying, productName, productUnit, belongType, null);
+    }
+
+    /**
+     * {@link #ensureTodayCapacity(Long, BigDecimal, String, String, String)} 的地块限定重载。
+     *
+     * <p>{@code plotId} 非空且为可打包食品原料（自产果蔬地块卡退回/损耗）时，剩余量按 <b>(product, plot)</b>
+     * 计（{@code sumTodayRemainingByPlot}），而非产品级 {@code sumTodayRemaining}——同一作物多地块共用同一
+     * product_id，产品级会跨地块混算（A 地块领了 B 地块也能退，row69）。B 地块无今日领用剩余 → 按地块余额=0
+     * → 拒绝退回/损耗。{@code plotId} 为空时退化成原产品级口径（其余全部调用方不变）。</p>
+     */
+    protected void ensureTodayCapacity(Long productId, BigDecimal applying,
+                                       String productName, String productUnit, String belongType, Long plotId) {
         BigDecimal remaining;
         if (isPackableFood(belongType)) {
-            remaining = safe(productInhouseMapper.sumTodayRemaining(productId));
+            remaining = plotId != null
+                ? safe(productInhouseMapper.sumTodayRemainingByPlot(productId, plotId))
+                : safe(productInhouseMapper.sumTodayRemaining(productId));
         } else {
             BigDecimal picked = safe(stockFlowMapper.sumTodayByProductTypes(productId, PICK_OUT_FLOW_TYPES));
             BigDecimal returned = safe(stockFlowMapper.sumTodayByProductTypes(productId, RETURN_IN_FLOW_TYPES));
