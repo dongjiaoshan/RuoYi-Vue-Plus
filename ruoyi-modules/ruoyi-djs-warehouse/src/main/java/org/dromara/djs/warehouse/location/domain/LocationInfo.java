@@ -69,7 +69,7 @@ public class LocationInfo extends TenantEntity {
     private String locationImg;
 
     /**
-     * 库位状态（字典 {@code djs_location_status}：1=启用 / 2=停用）。
+     * 库位状态（字典 {@code djs_common_status}：1=启用 / 2=停用）。
      */
     private Integer locationStatus;
 

@@ -44,7 +44,7 @@ public class StoreProductRelationServiceImpl
     implements IStoreProductRelationService {
 
     /**
-     * 启用状态（字典 {@code djs_active_status}）。
+     * 启用状态（字典 {@code djs_common_status}）。
      */
     private static final int ACTIVE = 1;
 

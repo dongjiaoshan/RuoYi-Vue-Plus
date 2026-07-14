@@ -77,35 +77,35 @@ class DjsDictServiceImplTest {
     }
 
     @Test
-    @DisplayName("DictTypeConstants 反射出来正好 50 项")
+    @DisplayName("DictTypeConstants 反射出来正好 45 项")
     void allDjsDictTypesCount() {
         assertThat(DjsDictServiceImpl.allDjsDictTypesForTest())
-            .hasSize(50)
+            .hasSize(45)
             .allSatisfy(s -> assertThat(s).startsWith(DictTypeConstants.DJS_PREFIX));
     }
 
     @Test
-    @DisplayName("queryAllDjsTypes：遍历 50 个 dict_type 全部调 ruoyi 一次")
+    @DisplayName("queryAllDjsTypes：遍历 45 个 dict_type 全部调 ruoyi 一次")
     void queryAllDjsTypes_callsRuoyiOncePerType() {
         Map<String, List<SysDictDataVo>> all = service.queryAllDjsTypes();
 
-        assertThat(all).hasSize(50);
+        assertThat(all).hasSize(45);
         assertThat(all.keySet()).contains(
             DictTypeConstants.PIG_SEX, DictTypeConstants.PIG_BREED,
-            DictTypeConstants.USER_STATUS, DictTypeConstants.WAREHOUSE_TYPE,
+            DictTypeConstants.WAREHOUSE_TYPE,
             DictTypeConstants.INTRODUCE_TYPE, DictTypeConstants.PIG_STRAIN,
             DictTypeConstants.HANDLE_TARGET);
-        verify(sysDictTypeService, times(50)).selectDictDataByType(anyString());
+        verify(sysDictTypeService, times(45)).selectDictDataByType(anyString());
     }
 
     @Test
-    @DisplayName("queryFull：实时聚合算 SHA-256（64 hex），返全量 50 项")
+    @DisplayName("queryFull：实时聚合算 SHA-256（64 hex），返全量 45 项")
     void queryFull_computesRealtime() {
         DjsDictFullVo vo = service.queryFull();
 
         assertThat(vo.getVersion()).hasSize(64).matches("[0-9a-f]{64}");
-        assertThat(vo.getData()).hasSize(50);
-        verify(sysDictTypeService, times(50)).selectDictDataByType(anyString());
+        assertThat(vo.getData()).hasSize(45);
+        verify(sysDictTypeService, times(45)).selectDictDataByType(anyString());
     }
 
     @Test

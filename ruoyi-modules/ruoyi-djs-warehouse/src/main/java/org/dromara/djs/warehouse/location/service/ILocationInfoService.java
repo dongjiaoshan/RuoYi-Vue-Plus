@@ -51,7 +51,7 @@ public interface ILocationInfoService {
      * 行内切换库位状态（仅更新 {@code location_status} 单字段，不碰其它字段）。
      *
      * @param id     库位 ID
-     * @param status 目标状态（字典 {@code djs_location_status}：1=启用 / 2=停用）
+     * @param status 目标状态（字典 {@code djs_common_status}：1=启用 / 2=停用）
      * @return 受影响行数（成功 1）
      */
     int updateStatus(Long id, Integer status);

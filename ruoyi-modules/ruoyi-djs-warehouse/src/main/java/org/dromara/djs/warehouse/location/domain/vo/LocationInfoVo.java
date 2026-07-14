@@ -70,7 +70,7 @@ public class LocationInfoVo implements Serializable {
      * 状态。
      */
     @ExcelProperty(value = "状态", converter = ExcelDictConvert.class)
-    @ExcelDictFormat(dictType = "djs_location_status")
+    @ExcelDictFormat(dictType = "djs_common_status")
     private Integer locationStatus;
 
     /**

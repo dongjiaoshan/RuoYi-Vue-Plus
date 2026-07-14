@@ -3,7 +3,7 @@ package org.dromara.djs.common.wechat;
 /**
  * 微信小程序订阅消息类型枚举（SYS-INFRA-006）。
  *
- * <p>4 类 V1 启用的订阅消息，对应字典 {@code djs_subscribe_message_type}（dict_id=100502）：
+ * <p>4 类 V1 启用的订阅消息（本枚举 + application.yml 模板配置即权威，无字典镜像）：
  * <ul>
  *   <li>{@link #SLAUGHTER_NOTICE} — 出栏通知（BRD-EVENT-004 触发）</li>
  *   <li>{@link #STOCK_ALERT}      — 库存告警（WMS 库存低于阈值触发）</li>

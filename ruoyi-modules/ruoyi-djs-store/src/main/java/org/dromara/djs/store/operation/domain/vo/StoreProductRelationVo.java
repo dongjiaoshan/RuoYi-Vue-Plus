@@ -54,7 +54,7 @@ public class StoreProductRelationVo implements Serializable {
     private String productSpec;
 
     /**
-     * 启用状态（字典 {@code djs_active_status}：1=启用 / 2=停用）。
+     * 启用状态（字典 {@code djs_common_status}：1=启用 / 2=停用）。
      */
     private Integer isActive;
 
