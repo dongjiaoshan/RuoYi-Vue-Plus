@@ -490,14 +490,15 @@ public interface WarehouseDashboardMapper {
     List<ChartSeriesItemVo> selectDemandByProductName(@Param("tenantId") String tenantId, @Param("belongType") String belongType);
 
     /**
-     * 图②（细分）：近 30 日某归属类型退货按产品名构成（退货环「猪肉 / 果蔬」切换）。
+     * 图②（细分）：近 7 日某归属类型退货按产品名构成（退货环「猪肉 / 果蔬」切换）。
      *
-     * <p>对齐原型「产品退货分布」环：默认猪肉（belong_type=pork，梅花肉 / 排骨 / 猪腿肉 / 猪五花 / 其他），
-     * 可切换果蔬（vegetable）。按产品名聚合退货次数 COUNT，返回产品名作为 name。</p>
+     * <p>对齐原型「退货产品分布(近7日)」环：默认猪肉（belong_type=pork，梅花肉 / 排骨 / 猪腿肉 / 猪五花 / 其他），
+     * 可切换果蔬（vegetable）。按产品名聚合退货次数 COUNT，返回产品名作为 name。
+     * 猪肉全量返回、果蔬由前端取 TOP5 其余归「其他」，故此处不加 LIMIT。</p>
      *
      * @param tenantId   租户
      * @param belongType 产品归属类型（pork / vegetable）
-     * @return 各产品 name(=product_name) + value(=COUNT)
+     * @return 各产品 name(=product_name) + value(=COUNT)，按值降序
      */
     @Select("SELECT p.product_name AS name, COUNT(*) AS value "
         + "  FROM t_store_return r "
@@ -505,11 +506,31 @@ public interface WarehouseDashboardMapper {
         + " WHERE r.tenant_id = #{tenantId} "
         + "   AND p.belong_type = #{belongType} "
         + "   AND r.del_flag = '0' "
-        + "   AND r.create_time >= DATE_SUB(NOW(), INTERVAL 30 DAY) "
+        + "   AND r.create_time >= DATE_SUB(NOW(), INTERVAL 7 DAY) "
         + " GROUP BY p.id, p.product_name "
-        + " ORDER BY value DESC "
-        + " LIMIT 12")
+        + " ORDER BY value DESC")
     List<ChartSeriesItemVo> selectReturnByProductName(@Param("tenantId") String tenantId, @Param("belongType") String belongType);
+
+    /**
+     * 图①（细分·近 7 日）：近 7 日某归属类型需求按产品名分布（明日产品需求分布饼「猪肉 / 果蔬」切换）。
+     *
+     * <p>对齐原型「明日产品需求分布（近7日）」饼：按 belong_type 过滤 + 按产品名聚合 SUM(demand_quantity)，
+     * 前端「猪肉 / 果蔬」切换。猪肉全量返回、果蔬由前端取 TOP5 其余归「其他」，故此处不加 LIMIT。</p>
+     *
+     * @param tenantId   租户
+     * @param belongType 产品归属类型（pork / vegetable）
+     * @return 各产品 name(=product_name) + value(=SUM demand_quantity)，按值降序
+     */
+    @Select("SELECT p.product_name AS name, COALESCE(SUM(d.demand_quantity), 0) AS value "
+        + "  FROM t_warehouse_demand_manage d "
+        + "  JOIN t_warehouse_product_info p ON p.id = d.product_id AND p.del_flag = '0' "
+        + " WHERE d.tenant_id = #{tenantId} "
+        + "   AND p.belong_type = #{belongType} "
+        + "   AND d.del_flag = '0' "
+        + "   AND d.demand_date >= DATE_SUB(CURDATE(), INTERVAL 7 DAY) "
+        + " GROUP BY p.id, p.product_name "
+        + " ORDER BY value DESC")
+    List<ChartSeriesItemVo> selectDemandByProductName7d(@Param("tenantId") String tenantId, @Param("belongType") String belongType);
 
     /**
      * 图③：近 N 日生产趋势（按 produce_date 日聚合 SUM product_weight）。

@@ -104,6 +104,12 @@ public class StoreVo implements Serializable {
     private String posSystemId;
 
     /**
+     * 生产标识码（门店级唯一，用于门店打包生产编码前缀）。
+     */
+    @ExcelProperty(value = "生产标识码")
+    private String productionMarkCode;
+
+    /**
      * 门店图片（OSS oss_id；前端 image-preview 用）。
      */
     private Long imageOssId;

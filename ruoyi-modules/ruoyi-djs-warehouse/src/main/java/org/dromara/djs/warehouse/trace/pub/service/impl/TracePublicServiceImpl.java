@@ -14,6 +14,8 @@ import org.dromara.djs.breed.core.mapper.PigMapper;
 import org.dromara.djs.breed.core.service.ISowDetailService;
 import org.dromara.djs.breed.event.growth.domain.PigGrowth;
 import org.dromara.djs.breed.event.growth.mapper.PigGrowthMapper;
+import org.dromara.djs.breed.event.slaughter.domain.PigMarketing;
+import org.dromara.djs.breed.event.slaughter.mapper.PigMarketingMapper;
 import org.dromara.djs.breed.med.domain.Medicine;
 import org.dromara.djs.breed.med.mapper.MedicineMapper;
 import org.dromara.djs.breed.med.record.domain.MedRecord;
@@ -121,6 +123,7 @@ public class TracePublicServiceImpl
     // breed
     private final PigMapper pigMapper;
     private final PigGrowthMapper pigGrowthMapper;
+    private final PigMarketingMapper pigMarketingMapper;
     private final MedRecordMapper medRecordMapper;
     private final MedicineMapper medicineMapper;
     /** 谱系复用 breed 既有反查逻辑（earNo→Pig→queryPedigree），不重写。 */
@@ -152,6 +155,7 @@ public class TracePublicServiceImpl
                                   OssService ossService,
                                   PigMapper pigMapper,
                                   PigGrowthMapper pigGrowthMapper,
+                                  PigMarketingMapper pigMarketingMapper,
                                   MedRecordMapper medRecordMapper,
                                   MedicineMapper medicineMapper,
                                   ISowDetailService sowDetailService,
@@ -175,6 +179,7 @@ public class TracePublicServiceImpl
         this.ossService = ossService;
         this.pigMapper = pigMapper;
         this.pigGrowthMapper = pigGrowthMapper;
+        this.pigMarketingMapper = pigMarketingMapper;
         this.medRecordMapper = medRecordMapper;
         this.medicineMapper = medicineMapper;
         this.sowDetailService = sowDetailService;
@@ -350,6 +355,17 @@ public class TracePublicServiceImpl
                 pigBlock.setSex(pig.getPigSex());
                 pigBlock.setBreed(pig.getPigBreedCode());
                 pigBlock.setBirthDate(birthDate);
+                // 出生重：Pig.birth_weight；出栏重：t_farm_pig_marketing.out_weight（按 pig_id 取最近一条）
+                pigBlock.setBirthWeight(toStr(pig.getBirthWeight()));
+                PigMarketing marketing = pigMarketingMapper.selectOne(
+                    new LambdaQueryWrapper<PigMarketing>()
+                        .eq(PigMarketing::getPigId, pig.getId())
+                        .orderByDesc(PigMarketing::getMarketingDate)
+                        .orderByDesc(PigMarketing::getId)
+                        .last("limit 1"));
+                if (marketing != null) {
+                    pigBlock.setMarketWeight(toStr(marketing.getOutWeight()));
+                }
                 // 生长记录倒序（最新在前）+ 栋舍名（barnName 用生长记录冗余兜底）
                 List<PigGrowth> growths = pigGrowthMapper.selectList(
                     new LambdaQueryWrapper<PigGrowth>()

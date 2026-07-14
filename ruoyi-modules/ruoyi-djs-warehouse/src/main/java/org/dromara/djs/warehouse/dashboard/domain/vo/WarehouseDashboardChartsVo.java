@@ -35,6 +35,12 @@ public class WarehouseDashboardChartsVo implements Serializable {
     /** 图①：果蔬产品当日需求分布饼（近 30 日 vegetable 业态按产品名 SUM 需求量，对齐原型）。 */
     private List<ChartSeriesItemVo> demandByType;
 
+    /** 图①（对齐原型·近 7 日）：明日产品需求分布·猪肉（pork belong_type 按产品名 SUM 需求量）。 */
+    private List<ChartSeriesItemVo> demandPork;
+
+    /** 图①（对齐原型·近 7 日）：明日产品需求分布·果蔬（vegetable belong_type 按产品名 SUM 需求量，前端「猪肉/果蔬」切换）。 */
+    private List<ChartSeriesItemVo> demandVeg;
+
     /** 图②：退货环（按退货方向构成 COUNT，兼容旧口径）。 */
     private List<ChartSeriesItemVo> returnByDirection;
 
@@ -156,6 +162,8 @@ public class WarehouseDashboardChartsVo implements Serializable {
     public static WarehouseDashboardChartsVo empty() {
         WarehouseDashboardChartsVo vo = new WarehouseDashboardChartsVo();
         vo.setDemandByType(List.of());
+        vo.setDemandPork(List.of());
+        vo.setDemandVeg(List.of());
         vo.setReturnByDirection(List.of());
         vo.setReturnPork(List.of());
         vo.setReturnVegetable(List.of());

@@ -38,6 +38,14 @@ public class TraceCodeListVo implements Serializable {
     @ExcelProperty(value = "追溯码")
     private String produceCode;
 
+    /**
+     * 生产编码（DENGBO-ROW84：门店现场打包持久化 {@code <生产标识码>YYMMDD####}；仓库码 / 旧门店码为空）。
+     *
+     * <p>补打（重打印）列表「生产编号」列优先读本列（门店现做码无产出记录、{@code produceNo} 反查为空）。</p>
+     */
+    @ExcelProperty(value = "生产编码")
+    private String productionCode;
+
     @ExcelProperty(value = "类型")
     private String codeType;
 

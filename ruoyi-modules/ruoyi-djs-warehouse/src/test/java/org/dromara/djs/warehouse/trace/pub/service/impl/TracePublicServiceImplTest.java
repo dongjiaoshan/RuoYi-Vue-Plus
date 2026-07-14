@@ -12,6 +12,7 @@ import org.dromara.djs.breed.core.mapper.PigMapper;
 import org.dromara.djs.breed.core.service.ISowDetailService;
 import org.dromara.djs.breed.event.growth.domain.PigGrowth;
 import org.dromara.djs.breed.event.growth.mapper.PigGrowthMapper;
+import org.dromara.djs.breed.event.slaughter.mapper.PigMarketingMapper;
 import org.dromara.djs.breed.med.domain.Medicine;
 import org.dromara.djs.breed.med.mapper.MedicineMapper;
 import org.dromara.djs.breed.med.record.domain.MedRecord;
@@ -112,6 +113,7 @@ class TracePublicServiceImplTest {
     @Mock private OssService ossService;
     @Mock private PigMapper pigMapper;
     @Mock private PigGrowthMapper pigGrowthMapper;
+    @Mock private PigMarketingMapper pigMarketingMapper;
     @Mock private MedRecordMapper medRecordMapper;
     @Mock private MedicineMapper medicineMapper;
     @Mock private ISowDetailService sowDetailService;
@@ -169,7 +171,7 @@ class TracePublicServiceImplTest {
         service = spy(new TracePublicServiceImpl(
             traceCodeMapper, traceEventMapper, productInfoMapper, storeMapper,
             traceFarmNameMapper, traceUserNameMapper, ossService,
-            pigMapper, pigGrowthMapper, medRecordMapper, medicineMapper, sowDetailService,
+            pigMapper, pigGrowthMapper, pigMarketingMapper, medRecordMapper, medicineMapper, sowDetailService,
             plotInfoMapper, plotZoneMapper, farmRecordsMapper, cropOrganicMapper, plotOrganicMapper,
             plantDetailsMapper, cropInfoMapper,
             plantingRecordMapper, vegetableHandleMapper, productProductionMapper, vegDisplayNameMapper));

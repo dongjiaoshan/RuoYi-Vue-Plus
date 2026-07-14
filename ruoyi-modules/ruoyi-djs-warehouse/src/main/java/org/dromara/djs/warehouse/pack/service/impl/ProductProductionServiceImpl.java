@@ -879,9 +879,10 @@ public class ProductProductionServiceImpl
         Date beginDate = query == null ? null : query.getBeginDate();
         Date endDate = query == null ? null : query.getEndDate();
         String earNo = query == null ? null : query.getEarNo();
+        Long storeId = query == null ? null : query.getStoreId();
         List<String> outMethods = query == null ? null : query.getOutMethods();
         List<String> outDests = query == null ? null : query.getOutDests();
-        return baseMapper.selectWhiteBarShipmentList(beginDate, endDate, earNo, outMethods, outDests);
+        return baseMapper.selectWhiteBarShipmentList(beginDate, endDate, earNo, storeId, outMethods, outDests);
     }
 
     @Override
@@ -1749,11 +1750,16 @@ public class ProductProductionServiceImpl
                     .select(Store::getId, Store::getStoreName)
                     .in(Store::getId, storeIds))
                 .stream().collect(Collectors.toMap(Store::getId, Store::getStoreName, (a, b) -> a));
-        Map<Long, String> plotNameMap = plotIds.isEmpty() ? Map.of()
+        List<PlotInfo> plotInfos = plotIds.isEmpty() ? List.of()
             : plotInfoMapper.selectList(new LambdaQueryWrapper<PlotInfo>()
-                    .select(PlotInfo::getId, PlotInfo::getPlotName)
-                    .in(PlotInfo::getId, plotIds))
-                .stream().collect(Collectors.toMap(PlotInfo::getId, PlotInfo::getPlotName, (a, b) -> a));
+                    .select(PlotInfo::getId, PlotInfo::getPlotName, PlotInfo::getPlotCode)
+                    .in(PlotInfo::getId, plotIds));
+        Map<Long, String> plotNameMap = plotInfos.stream()
+            .filter(pi -> pi.getPlotName() != null)
+            .collect(Collectors.toMap(PlotInfo::getId, PlotInfo::getPlotName, (a, b) -> a));
+        Map<Long, String> plotCodeMap = plotInfos.stream()
+            .filter(pi -> pi.getPlotCode() != null)
+            .collect(Collectors.toMap(PlotInfo::getId, PlotInfo::getPlotCode, (a, b) -> a));
         // 原材料名称 + 单位：material_id → product_info.product_name / product_unit（同模块表，一次 IN 查回填两列）
         List<ProductInfo> materialInfos = materialIds.isEmpty() ? List.of()
             : productInfoMapper.selectList(new LambdaQueryWrapper<ProductInfo>()
@@ -1772,6 +1778,7 @@ public class ProductProductionServiceImpl
             }
             if (vo.getPlotId() != null) {
                 vo.setPlotName(plotNameMap.get(vo.getPlotId()));
+                vo.setPlotCode(plotCodeMap.get(vo.getPlotId()));
             }
             if (vo.getMaterialId() != null) {
                 vo.setMaterialName(materialNameMap.get(vo.getMaterialId()));

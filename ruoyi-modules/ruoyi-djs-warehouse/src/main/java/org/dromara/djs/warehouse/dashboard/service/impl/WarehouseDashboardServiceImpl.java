@@ -97,6 +97,9 @@ public class WarehouseDashboardServiceImpl implements IWarehouseDashboardService
 
         // 图① 果蔬产品当日需求分布饼：近 30 日 vegetable 业态按产品名（对齐原型小白菜/大白菜/...）
         vo.setDemandByType(nullToEmpty(dashboardMapper.selectDemandByProductName(tenantId, "vegetable")));
+        // 图①（对齐原型）明日产品需求分布（近 7 日）：猪肉全量 / 果蔬（前端切换 + TOP5 归其他）
+        vo.setDemandPork(nullToEmpty(dashboardMapper.selectDemandByProductName7d(tenantId, "pork")));
+        vo.setDemandVeg(nullToEmpty(dashboardMapper.selectDemandByProductName7d(tenantId, "vegetable")));
 
         // 图② 退货环：旧口径（方向）保留兼容；新口径按产品名分猪肉/果蔬，前端切换
         vo.setReturnByDirection(buildReturnByDirection(dashboardMapper.selectReturnByDirection(tenantId)));

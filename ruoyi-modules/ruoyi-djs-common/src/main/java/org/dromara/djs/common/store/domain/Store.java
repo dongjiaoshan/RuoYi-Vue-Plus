@@ -94,6 +94,12 @@ public class Store extends TenantEntity {
     private String posSystemId;
 
     /**
+     * 生产标识码（门店级唯一，用于门店打包生产编码前缀，规则 {@code <生产标识码>YYMMDD####}）。
+     * UNIQUE(tenant_id, production_mark_code, del_unique)，不同门店不可重复。
+     */
+    private String productionMarkCode;
+
+    /**
      * 门店图片（引用 sys_oss.oss_id，不直接存 URL）。
      */
     private Long imageOssId;

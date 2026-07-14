@@ -163,6 +163,10 @@ public class PublicTraceVo implements Serializable {
         private Integer ageDays;
         /** 出栏日期（Pig 无列，用 marketing 事件时间兜底，可能为 null）。 */
         private LocalDateTime marketDate;
+        /** 出生重（kg，源 {@code t_farm_pig_info.birth_weight}；无 → null）。 */
+        private String birthWeight;
+        /** 出栏重（kg，源 {@code t_farm_pig_marketing.out_weight} 最近一条；无 → null）。 */
+        private String marketWeight;
         /** 所属农场名。 */
         private String farmName;
         /** 栋舍名（用生长记录冗余兜底，可能为 null）。 */

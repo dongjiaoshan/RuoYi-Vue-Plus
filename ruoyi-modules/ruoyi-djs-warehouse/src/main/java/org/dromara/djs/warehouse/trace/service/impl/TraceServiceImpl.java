@@ -173,7 +173,8 @@ public class TraceServiceImpl
     }
 
     @Override
-    public String genPorkOnsiteCode(String earNo, String cutLabel, java.math.BigDecimal weight, Long storeId) {
+    public String genPorkOnsiteCode(String earNo, String cutLabel, java.math.BigDecimal weight, Long storeId,
+                                    String productionCode) {
         if (StringUtils.isBlank(earNo)) {
             throw new ServiceException("现场生码失败：猪只耳号为空");
         }
@@ -185,9 +186,11 @@ public class TraceServiceImpl
             BizCodeType.TRACE_CODE, Map.of("productCode", TraceCodeTypeConst.PRODUCT_CODE_PORK));
 
         // b. 组装 trace_code（部位 + 重量写 remark，表无 cut_part / weight 列）
-        // store_id 落库（row201）：门店现场码归属当前门店，「已生成追溯码管理」列表 / C 端追溯页据此显销售门店
+        // store_id 落库（row201）：门店现场码归属当前门店，「已生成追溯码管理」列表 / C 端追溯页据此显销售门店。
+        // production_code 落库（DENGBO-ROW84）：门店侧预生成的生产编码，补打列表「生产编号」列直接读；空则不落。
         TraceCode traceCode = new TraceCode();
         traceCode.setProduceCode(produceCode);
+        traceCode.setProductionCode(StringUtils.isNotBlank(productionCode) ? productionCode : null);
         traceCode.setCodeType(TraceCodeTypeConst.PORK);
         traceCode.setPigEarNo(earNo);
         traceCode.setStoreId(storeId);
@@ -204,8 +207,8 @@ public class TraceServiceImpl
         // d. 按耳号回填上游 4 事件（marketing/singe/slaughter/acid，真实时间戳），补齐链路
         backfillEarNoEvents(produceCode, earNo);
 
-        log.info("[STORE-TRACE-ONSITE-001] genPorkOnsiteCode produceCode={} earNo={} cut={} weight={}",
-            produceCode, earNo, cutLabel, weight);
+        log.info("[STORE-TRACE-ONSITE-001] genPorkOnsiteCode produceCode={} productionCode={} earNo={} cut={} weight={}",
+            produceCode, productionCode, earNo, cutLabel, weight);
         return produceCode;
     }
 

@@ -64,6 +64,16 @@ public enum BizCodeType {
     PRODUCE_NO,
 
     /**
+     * 门店打包生产编码（按门店生产标识码 + 每日重置），格式 {@code {prefix}{yyMMdd}{seq4}}。
+     * 例：{@code DJS01260313 0001}（prefix={@code DJS01} 门店生产标识码 → {@code DJS012603130001}）。
+     *
+     * <p>{@code daily_reset=3}：seq_date = {@code yyMMdd + prefix} 复合键，每个门店生产标识码当日各自
+     * 从 0001 独立起算（{@link BizCodeGeneratorImpl#resolveSeqDate}）。prefix 由门店服务按当前门店
+     * {@code production_mark_code} 传入（context.prefix）。门店猪肉打包追溯标签「生产编码」取此值。</p>
+     */
+    STORE_PRODUCE_NO,
+
+    /**
      * 门店退货单号（每日重置），格式 {@code RET{yyyyMMdd}{seq4}}。
      * 例：{@code RET202606130001}。
      *

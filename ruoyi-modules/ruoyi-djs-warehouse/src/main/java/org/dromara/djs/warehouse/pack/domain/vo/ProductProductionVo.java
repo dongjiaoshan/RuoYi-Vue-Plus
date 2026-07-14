@@ -57,6 +57,12 @@ public class ProductProductionVo implements Serializable {
     @ExcelProperty(value = "蔬菜来源地块")
     private String plotName;
 
+    /**
+     * 来源地块业务编码（= plotId 对应 {@code t_plant_plot_info.plot_code}，service 端 JOIN 回填）。
+     */
+    @ExcelProperty(value = "来源地块编码")
+    private String plotCode;
+
     @ExcelProperty(value = "来源耳号")
     private String earNo;
 

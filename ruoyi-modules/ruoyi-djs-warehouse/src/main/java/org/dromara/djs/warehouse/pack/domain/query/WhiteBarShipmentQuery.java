@@ -51,4 +51,9 @@ public class WhiteBarShipmentQuery {
      */
     private List<String> outDests;
 
+    /**
+     * 门店筛选（{@code product_production.store_id}）。非空时精确过滤到发往该门店的白条出库记录。
+     */
+    private Long storeId;
+
 }

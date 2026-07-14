@@ -11,6 +11,7 @@ import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.web.core.BaseController;
 import org.dromara.djs.store.trace.domain.bo.StoreTraceOnsiteBo;
+import org.dromara.djs.store.trace.domain.vo.StoreOnsiteCodeVo;
 import org.dromara.djs.store.trace.domain.vo.StorePackProductVo;
 import org.dromara.djs.store.trace.domain.vo.TraceablePigVo;
 import org.dromara.djs.store.trace.service.IStoreTraceService;
@@ -71,13 +72,16 @@ public class StoreTraceController extends BaseController {
     }
 
     /**
-     * 现场按需生码（猪只 + 部位/产品 + 重量 → 生成 pork 追溯码，返回 produce_code 供前端打印）。
+     * 现场按需生码（猪只 + 部位/产品 + 重量 → 生成 pork 追溯码 + 门店生产编码，供前端打印）。
+     *
+     * <p>返回 {@link StoreOnsiteCodeVo}：{@code produceCode} 追溯码（二维码用）+ {@code productionCode}
+     * 门店生产编码（{@code <生产标识码>YYMMDD####}，标签「生产编码」文本展示，row84）。</p>
      */
     @SaCheckPermission("djs:store:trace:gen")
     @Log(title = "门店现场生码", businessType = BusinessType.INSERT)
     @RepeatSubmit
     @PostMapping("/gen")
-    public R<String> gen(@Valid @RequestBody StoreTraceOnsiteBo bo) {
+    public R<StoreOnsiteCodeVo> gen(@Valid @RequestBody StoreTraceOnsiteBo bo) {
         return R.ok("生码成功", storeTraceService.genOnsiteCode(bo));
     }
 

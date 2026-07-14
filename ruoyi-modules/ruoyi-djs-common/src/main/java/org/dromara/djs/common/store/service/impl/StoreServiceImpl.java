@@ -124,6 +124,7 @@ public class StoreServiceImpl extends DjsBaseServiceImpl<StoreMapper, Store> imp
         if (entity == null) {
             throw new ServiceException("门店入参转换失败");
         }
+        checkProductionMarkCodeUnique(entity.getProductionMarkCode(), null);
         entity.setStoreCode(generateStoreCode());
         if (StringUtils.isBlank(entity.getBusinessStatus())) {
             entity.setBusinessStatus("0"); // 默认 合作中
@@ -149,6 +150,7 @@ public class StoreServiceImpl extends DjsBaseServiceImpl<StoreMapper, Store> imp
         if (entity == null) {
             throw new ServiceException("门店入参转换失败");
         }
+        checkProductionMarkCodeUnique(entity.getProductionMarkCode(), bo.getId());
         // store_code 不允许通过编辑端点修改
         entity.setStoreCode(exists.getStoreCode());
         // manager_user_id 不允许通过编辑端点修改，必须走 setManager 端点
@@ -236,6 +238,41 @@ public class StoreServiceImpl extends DjsBaseServiceImpl<StoreMapper, Store> imp
      */
     private String generateStoreCode() {
         return bizCodeGenerator.generate(BizCodeType.STORE_CODE, Map.of());
+    }
+
+    @Override
+    public String generateStoreProduceCode(Long storeId) {
+        if (storeId == null) {
+            throw new ServiceException("生成门店生产编码失败：门店 ID 为空");
+        }
+        Store store = baseMapper.selectById(storeId);
+        if (store == null) {
+            throw new ServiceException("生成门店生产编码失败：门店不存在或已删除：" + storeId);
+        }
+        String markCode = store.getProductionMarkCode();
+        if (StringUtils.isBlank(markCode)) {
+            throw new ServiceException("当前门店未设置生产标识码，请先在门店管理中配置");
+        }
+        // STORE_PRODUCE_NO：pattern {prefix}{yyMMdd}{seq4}，daily_reset=3 按 prefix（门店生产标识码）分桶每日重置
+        return bizCodeGenerator.generate(BizCodeType.STORE_PRODUCE_NO, Map.of("prefix", markCode));
+    }
+
+    /**
+     * 校验生产标识码门店级唯一：同租户下不同门店不可重复（DB 亦有 UNIQUE 兜底并发）。
+     *
+     * @param productionMarkCode 生产标识码（空 / 空白跳过校验，允许门店暂不设置）
+     * @param excludeId          编辑时排除自身 id（新增传 null）
+     */
+    private void checkProductionMarkCodeUnique(String productionMarkCode, Long excludeId) {
+        if (StringUtils.isBlank(productionMarkCode)) {
+            return;
+        }
+        LambdaQueryWrapper<Store> wrapper = new LambdaQueryWrapper<Store>()
+            .eq(Store::getProductionMarkCode, productionMarkCode)
+            .ne(excludeId != null, Store::getId, excludeId);
+        if (baseMapper.exists(wrapper)) {
+            throw new ServiceException("生产标识码已存在，不同门店不能重复：" + productionMarkCode);
+        }
     }
 
 }

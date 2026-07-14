@@ -42,13 +42,18 @@ public interface ITraceService {
      * <p>追溯写主体（INSERT trace_code）失败抛 {@link org.dromara.common.core.exception.ServiceException}
      * （现场生码是用户主动动作，需明确反馈成败，区别于工序 hook 的容错跳过）。</p>
      *
-     * @param earNo    猪只耳号（必填，已出栏可追溯猪只）
-     * @param cutLabel 零售部位中文名（如「前腿肉」，写入 remark；字典 {@code djs_pork_cut_product}）
-     * @param weight   产品重量 kg（必填，写入 remark）
-     * @param storeId  归属门店 FK（{@code t_md_store.id}，现场生码归属当前门店；无门店传 null）
+     * <p>DENGBO-ROW84：生产编码（{@code productionCode}）由门店侧按门店生产标识码 + 每日流水预先生成后传入，
+     * 落 {@code production_code} 列持久化，补打（重打印）列表按「生产编号」列直接读；此处只落库不重算流水，
+     * 避免生成两个流水号。传 null / 空白时不落（旧口径兼容）。</p>
+     *
+     * @param earNo          猪只耳号（必填，已出栏可追溯猪只）
+     * @param cutLabel       零售部位中文名（如「前腿肉」，写入 remark；字典 {@code djs_pork_cut_product}）
+     * @param weight         产品重量 kg（必填，写入 remark）
+     * @param storeId        归属门店 FK（{@code t_md_store.id}，现场生码归属当前门店；无门店传 null）
+     * @param productionCode 生产编码（{@code <生产标识码>YYMMDD####}，门店侧预生成，落 production_code 列；null 不落）
      * @return 生成的追溯码 produce_code
      */
-    String genPorkOnsiteCode(String earNo, String cutLabel, java.math.BigDecimal weight, Long storeId);
+    String genPorkOnsiteCode(String earNo, String cutLabel, java.math.BigDecimal weight, Long storeId, String productionCode);
 
     /**
      * 写一条事件流水：INSERT trace_event（trace_content + trace_time=now + operator_id）。immutable。

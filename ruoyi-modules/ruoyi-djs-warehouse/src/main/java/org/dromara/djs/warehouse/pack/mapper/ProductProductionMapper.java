@@ -420,6 +420,7 @@ public interface ProductProductionMapper extends BaseMapperPlus<ProductProductio
      * @param beginDate  发货日期起（空则不过滤）
      * @param endDate    发货日期止（空则不过滤）
      * @param earNo      猪只耳号模糊（空则不过滤）
+     * @param storeId    门店筛选（{@code product_production.store_id} 精确匹配；空则不过滤）
      * @param outMethods 出库方式多选（派生 djs_bar_out_method 值 1/3；空则不过滤）
      * @param outDests   出库去向多选（djs_stock_out_dest 值；空则不过滤）
      * @return 白条发货记录行（按生产时间倒序）
@@ -461,6 +462,9 @@ public interface ProductProductionMapper extends BaseMapperPlus<ProductProductio
         "   <if test='earNo != null and earNo != \"\"'>",
         "     AND pp.ear_no LIKE CONCAT('%', #{earNo}, '%')",
         "   </if>",
+        "   <if test='storeId != null'>",
+        "     AND pp.store_id = #{storeId}",
+        "   </if>",
         "   <if test='outMethods != null and outMethods.size() > 0'>",
         "     AND (CASE WHEN pp.remark LIKE '后台出库%' THEN '3' ELSE '1' END)",
         "         IN <foreach collection='outMethods' item='m' open='(' separator=',' close=')'>#{m}</foreach>",
@@ -477,6 +481,7 @@ public interface ProductProductionMapper extends BaseMapperPlus<ProductProductio
     List<WhiteBarShipmentVo> selectWhiteBarShipmentList(@Param("beginDate") Date beginDate,
                                                         @Param("endDate") Date endDate,
                                                         @Param("earNo") String earNo,
+                                                        @Param("storeId") Long storeId,
                                                         @Param("outMethods") List<String> outMethods,
                                                         @Param("outDests") List<String> outDests);
 

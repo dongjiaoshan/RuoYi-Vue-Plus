@@ -56,6 +56,14 @@ public class TraceCode extends TenantEntity {
     private String produceCode;
 
     /**
+     * 生产编码（DENGBO-ROW84：门店现场打包 {@code <生产标识码>YYMMDD####}）。
+     *
+     * <p>门店现场生码时按门店生产标识码 + 每日流水生成并落此列，补打（重打印）列表按「生产编号」列直接读；
+     * 仓库码 / 旧门店码为 NULL（生产编号由 {@code t_warehouse_product_production.produce_no} 反查，展示层兼容）。</p>
+     */
+    private String productionCode;
+
+    /**
      * 追溯码类型（字典 {@code djs_trace_code_type}，VARCHAR(16) 值 pork / veg / gift）。
      */
     private String codeType;

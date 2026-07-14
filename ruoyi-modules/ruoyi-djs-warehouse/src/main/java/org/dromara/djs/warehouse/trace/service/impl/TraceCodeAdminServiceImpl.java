@@ -396,6 +396,8 @@ public class TraceCodeAdminServiceImpl
     private void copyCodeFields(TraceCode c, TraceCodeListVo vo) {
         vo.setId(c.getId());
         vo.setProduceCode(c.getProduceCode());
+        // DENGBO-ROW84：门店现做码持久化的生产编码（仓库码 / 旧门店码为 NULL）
+        vo.setProductionCode(c.getProductionCode());
         vo.setCodeType(c.getCodeType());
         // 生成来源：remark「现场生码」前缀 = 门店现场分割打包；否则 = 仓库（打包/发货产出）
         vo.setSource(c.getRemark() != null && c.getRemark().startsWith(ONSITE_REMARK_PREFIX)
@@ -451,22 +453,26 @@ public class TraceCodeAdminServiceImpl
             new LambdaQueryWrapper<ProductProduction>()
                 .in(ProductProduction::getTraceCode, codes)
                 .orderByDesc(ProductProduction::getId));
-        if (rows == null || rows.isEmpty()) {
-            return;
-        }
-        Map<String, ProductProduction> byCode = rows.stream()
+        Map<String, ProductProduction> byCode = rows == null ? Map.of() : rows.stream()
             .collect(Collectors.toMap(ProductProduction::getTraceCode, p -> p, (a, b) -> a));
         for (TraceCodeListVo vo : vos) {
             ProductProduction p = vo.getProduceCode() == null ? null : byCode.get(vo.getProduceCode());
-            if (p == null) {
-                continue;
+            if (p != null) {
+                vo.setProduceNo(p.getProduceNo());
+                vo.setSerialNo(p.getProductSort() != null ? p.getProductSort() : parseSerial(p.getProduceNo()));
+                // 实际重量：优先 productWeight（成品净重），缺则 produceQuantity
+                vo.setActualWeight(p.getProductWeight() != null ? p.getProductWeight() : p.getProduceQuantity());
+                // 采摘时间：产出记录 produceTime（时刻）优先，缺则 produceDate
+                vo.setPickTime(p.getProduceTime() != null ? p.getProduceTime() : p.getProduceDate());
             }
-            vo.setProduceNo(p.getProduceNo());
-            vo.setSerialNo(p.getProductSort() != null ? p.getProductSort() : parseSerial(p.getProduceNo()));
-            // 实际重量：优先 productWeight（成品净重），缺则 produceQuantity
-            vo.setActualWeight(p.getProductWeight() != null ? p.getProductWeight() : p.getProduceQuantity());
-            // 采摘时间：产出记录 produceTime（时刻）优先，缺则 produceDate
-            vo.setPickTime(p.getProduceTime() != null ? p.getProduceTime() : p.getProduceDate());
+            // DENGBO-ROW84：门店现做码无产出记录（produceNo 反查空），用持久化的生产编码兜底填「生产编号 / 序号」，
+            //   让补打（重打印）列表显示生产编码（仓库码有 produceNo 时不覆盖）。
+            if (StringUtils.isBlank(vo.getProduceNo()) && StringUtils.isNotBlank(vo.getProductionCode())) {
+                vo.setProduceNo(vo.getProductionCode());
+                if (vo.getSerialNo() == null) {
+                    vo.setSerialNo(parseSerial(vo.getProductionCode()));
+                }
+            }
         }
     }
 

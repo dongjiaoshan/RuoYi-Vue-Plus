@@ -63,4 +63,15 @@ public interface IStoreService {
      */
     int deleteWithValidByIds(Collection<Long> ids);
 
+    /**
+     * 生成门店打包生产编码：{@code <生产标识码>YYMMDD####}（每个门店当日各自从 0001 起）。
+     *
+     * <p>规则 {@link org.dromara.djs.common.encoder.BizCodeType#STORE_PRODUCE_NO}，prefix = 门店
+     * {@code production_mark_code}。门店未设置生产标识码 → 抛业务异常（前端提示先在门店管理配置）。</p>
+     *
+     * @param storeId 门店 ID（不能为空）
+     * @return 门店打包生产编码 {@code <生产标识码>YYMMDD####}
+     */
+    String generateStoreProduceCode(Long storeId);
+
 }

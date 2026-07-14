@@ -3,6 +3,7 @@ package org.dromara.djs.store.trace.service;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.store.trace.domain.bo.StoreTraceOnsiteBo;
+import org.dromara.djs.store.trace.domain.vo.StoreOnsiteCodeVo;
 import org.dromara.djs.store.trace.domain.vo.StorePackProductVo;
 import org.dromara.djs.store.trace.domain.vo.TraceablePigVo;
 import org.dromara.djs.warehouse.trace.domain.query.TraceCodeQuery;
@@ -48,12 +49,12 @@ public interface IStoreTraceService {
     List<StorePackProductVo> listPackProducts();
 
     /**
-     * 门店现场按需生码（猪只 + 部位 + 重量 → 生成 pork 追溯码）。
+     * 门店现场按需生码（猪只 + 部位 + 重量 → 生成 pork 追溯码 + 门店生产编码）。
      *
      * @param bo 现场生码入参
-     * @return 生成的追溯码 produce_code
+     * @return 追溯码 produce_code（二维码用）+ 门店生产编码 {@code <生产标识码>YYMMDD####}（标签展示用）
      */
-    String genOnsiteCode(StoreTraceOnsiteBo bo);
+    StoreOnsiteCodeVo genOnsiteCode(StoreTraceOnsiteBo bo);
 
     /**
      * 已生成猪肉追溯码分页列表（ADMIN-STORE 91-1，恒 {@code codeType='pork'}）。

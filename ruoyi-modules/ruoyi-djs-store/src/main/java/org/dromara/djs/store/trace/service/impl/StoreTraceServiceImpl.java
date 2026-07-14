@@ -6,11 +6,13 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.common.core.utils.StringUtils;
 import org.dromara.djs.common.store.context.StoreContext;
+import org.dromara.djs.common.store.service.IStoreService;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.breed.core.domain.vo.PigAvailableVo;
 import org.dromara.djs.breed.core.service.IPigQueryService;
 import org.dromara.djs.store.trace.domain.bo.StoreTraceOnsiteBo;
+import org.dromara.djs.store.trace.domain.vo.StoreOnsiteCodeVo;
 import org.dromara.djs.store.trace.domain.vo.StorePackProductVo;
 import org.dromara.djs.store.trace.domain.vo.TraceablePigVo;
 import org.dromara.djs.warehouse.demand.domain.DemandManage;
@@ -83,6 +85,7 @@ public class StoreTraceServiceImpl implements IStoreTraceService {
     private final DemandManageMapper demandManageMapper;
     private final ProductProductionMapper productProductionMapper;
     private final TraceCodeMapper traceCodeMapper;
+    private final IStoreService storeService;
 
     /**
      * 可追溯 picker = 当天入库白条（FIX-STORE-TRACE-BAR-001 测试问题 158）。
@@ -304,13 +307,22 @@ public class StoreTraceServiceImpl implements IStoreTraceService {
     }
 
     @Override
-    public String genOnsiteCode(StoreTraceOnsiteBo bo) {
+    public StoreOnsiteCodeVo genOnsiteCode(StoreTraceOnsiteBo bo) {
         // row201：现场码归属当前门店（StoreContext 由 Current-Store-Id 头注入；未选门店/超管无上下文 → null 容错）
         Long storeId = currentStoreId();
-        String produceCode = traceService.genPorkOnsiteCode(bo.getEarNo(), bo.getCutLabel(), bo.getWeight(), storeId);
-        log.info("[STORE-TRACE-ONSITE-001] store onsite gen produceCode={} earNo={} cut={} storeId={}",
-            produceCode, bo.getEarNo(), bo.getCutLabel(), storeId);
-        return produceCode;
+        // row84：生产编码 = <门店生产标识码>YYMMDD####（门店级每日流水），标签「生产编码」展示用。
+        //   必须先生成——门店未配生产标识码时抛异常，避免生了追溯码却无生产编码的半成品。
+        String productionCode = storeService.generateStoreProduceCode(storeId);
+        // 追溯码（T{yyyyMMdd}PG{seq6}）仍按原规则生成，二维码 encode 用（C 端 /trace/pork/{code} 查得到）。
+        // row84 follow-up：把上面生成的 productionCode 传下去落 trace_code.production_code 列（补打列表「生产编号」读此），
+        //   不在 warehouse 侧重算流水，避免生成两个生产编码。
+        String produceCode = traceService.genPorkOnsiteCode(bo.getEarNo(), bo.getCutLabel(), bo.getWeight(), storeId, productionCode);
+        log.info("[STORE-TRACE-ONSITE-001] store onsite gen produceCode={} productionCode={} earNo={} cut={} storeId={}",
+            produceCode, productionCode, bo.getEarNo(), bo.getCutLabel(), storeId);
+        StoreOnsiteCodeVo vo = new StoreOnsiteCodeVo();
+        vo.setProduceCode(produceCode);
+        vo.setProductionCode(productionCode);
+        return vo;
     }
 
     /** 当前所选门店 id（StoreContext 头值；空 / 非数字 → null，不阻断生码）。 */

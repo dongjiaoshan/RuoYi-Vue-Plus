@@ -91,6 +91,12 @@ public class StoreBo extends BaseEntity {
     private String posSystemId;
 
     /**
+     * 生产标识码（门店级唯一，用于门店打包生产编码前缀）。
+     */
+    @Size(max = 32, message = "生产标识码长度不能超过 {max} 个字符")
+    private String productionMarkCode;
+
+    /**
      * 门店图片（OSS oss_id）。
      */
     private Long imageOssId;
