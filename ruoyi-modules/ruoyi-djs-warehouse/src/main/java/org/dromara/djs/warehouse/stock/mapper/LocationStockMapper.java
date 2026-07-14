@@ -1261,6 +1261,7 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
                           WHERE f.product_id = p.id AND f.warehouse_id = s.location_id
                             AND (f.ear_no = s.ear_no OR (f.ear_no IS NULL AND s.ear_no IS NULL))
                             AND (f.white_bar_no = s.white_bar_no OR (f.white_bar_no IS NULL AND s.white_bar_no IS NULL))
+                            AND (f.plot_id = s.plot_id OR (f.plot_id IS NULL AND s.plot_id IS NULL))
                             AND f.flow_type = 'feed_out' AND DATE(f.flow_date) = CURDATE()
                             AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayFeed
           FROM t_warehouse_location_stock s

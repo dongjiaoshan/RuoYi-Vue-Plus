@@ -66,6 +66,7 @@ class StoreSplitServiceImplTest {
 
     @Mock private ProductInhouseMapper baseMapper;
     @Mock private ProductInfoMapper productInfoMapper;
+    @Mock private org.dromara.djs.common.store.service.IStoreService storeService;
 
     private TestableStoreSplitServiceImpl service;
 
@@ -97,8 +98,9 @@ class StoreSplitServiceImplTest {
         ProductInfo stubSku;
         boolean throwOnResolve = false;
 
-        TestableStoreSplitServiceImpl(ProductInhouseMapper b, ProductInfoMapper pm) {
-            super(b, pm);
+        TestableStoreSplitServiceImpl(ProductInhouseMapper b, ProductInfoMapper pm,
+                                      org.dromara.djs.common.store.service.IStoreService iss) {
+            super(b, pm, iss);
         }
 
         @Override
@@ -112,7 +114,7 @@ class StoreSplitServiceImplTest {
 
     @BeforeEach
     void setup() {
-        service = new TestableStoreSplitServiceImpl(baseMapper, productInfoMapper);
+        service = new TestableStoreSplitServiceImpl(baseMapper, productInfoMapper, storeService);
         ProductInfo sku = new ProductInfo();
         sku.setId(SKU_ID);
         sku.setProductId("PROD-PIG-LEAN-01");

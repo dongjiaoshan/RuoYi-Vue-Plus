@@ -9,6 +9,7 @@ import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.common.base.DjsBaseServiceImpl;
 import org.dromara.djs.common.store.domain.Store;
 import org.dromara.djs.common.store.mapper.StoreMapper;
+import org.dromara.djs.common.store.service.IStoreService;
 import org.dromara.djs.store.operation.domain.StoreProductRelation;
 import org.dromara.djs.store.operation.domain.StoreSaleRecord;
 import org.dromara.djs.store.operation.domain.bo.StoreSaleRecordBo;
@@ -62,15 +63,18 @@ public class StoreSaleRecordServiceImpl
     private final ProductInfoMapper productInfoMapper;
     private final StoreMapper storeMapper;
     private final StoreProductRelationMapper relationMapper;
+    private final IStoreService storeService;
 
     public StoreSaleRecordServiceImpl(StoreSaleRecordMapper baseMapper,
                                       ProductInfoMapper productInfoMapper,
                                       StoreMapper storeMapper,
-                                      StoreProductRelationMapper relationMapper) {
+                                      StoreProductRelationMapper relationMapper,
+                                      IStoreService storeService) {
         super(baseMapper);
         this.productInfoMapper = productInfoMapper;
         this.storeMapper = storeMapper;
         this.relationMapper = relationMapper;
+        this.storeService = storeService;
     }
 
     @Override
@@ -103,6 +107,8 @@ public class StoreSaleRecordServiceImpl
     @Override
     @Transactional(rollbackFor = Exception.class)
     public Long addManual(StoreSaleRecordBo bo) {
+        // 已终止合作门店禁止销售录入
+        storeService.assertStoreActive(bo.getStoreId());
         ProductInfo product = productInfoMapper.selectById(bo.getProductId());
         if (product == null) {
             throw new ServiceException("产品不存在或已删除：" + bo.getProductId());

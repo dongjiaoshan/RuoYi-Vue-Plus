@@ -9,6 +9,7 @@ import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.common.base.DjsBaseServiceImpl;
 import org.dromara.djs.common.store.context.StoreContext;
+import org.dromara.djs.common.store.service.IStoreService;
 import org.dromara.djs.store.split.domain.bo.StoreSplitBo;
 import org.dromara.djs.store.split.domain.query.StoreSplitQuery;
 import org.dromara.djs.store.split.domain.vo.StoreSplitVo;
@@ -71,11 +72,14 @@ public class StoreSplitServiceImpl
     private static final String UNIT_KG = "kg";
 
     private final ProductInfoMapper productInfoMapper;
+    private final IStoreService storeService;
 
     public StoreSplitServiceImpl(ProductInhouseMapper baseMapper,
-                                 ProductInfoMapper productInfoMapper) {
+                                 ProductInfoMapper productInfoMapper,
+                                 IStoreService storeService) {
         super(baseMapper);
         this.productInfoMapper = productInfoMapper;
+        this.storeService = storeService;
     }
 
     @Override
@@ -97,6 +101,8 @@ public class StoreSplitServiceImpl
     public Long addSplit(StoreSplitBo bo) {
         // 门店拆单必须在已选门店上下文下进行（写绑当前门店，防跨门店写）
         Long storeId = currentStoreIdOrThrow();
+        // 已终止合作门店禁止拆单
+        storeService.assertStoreActive(storeId);
         ProductInfo sku = resolveSkuByCutPart(bo.getCutPart());
 
         ProductInhouse e = new ProductInhouse();

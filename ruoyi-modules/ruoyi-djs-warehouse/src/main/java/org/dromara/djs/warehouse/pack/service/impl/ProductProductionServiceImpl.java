@@ -1031,6 +1031,8 @@ public class ProductProductionServiceImpl
     public List<ProductInhouse> listSourceForMeat() {
         // 肉品打包来源 = belong_type='pork' 的「今天领用」活动 inhouse（doc/14 §5：只显今天领用待打包，
         // ear_no = 篮子标签 = 来源猪只耳号）；排除白条/蔬菜，避免混入肉品耳号去重条。今天没领用 → 空（须先 mp 领用）。
+        // material_id 非空 = 经物资领用产的原料 inhouse（bridgeMaterialInhouse）；燎毛产整只白条（white_bar_id 非空、
+        // material_id 空、无 prod_pick_out 流水）不是肉品打包合法领用来源（须先走白条领用/分割），排除以免「领用剩余重量」虚高于今日出库。
         List<Long> productIds = productInfoMapper.selectList(
                 new LambdaQueryWrapper<ProductInfo>()
                     .select(ProductInfo::getId)
@@ -1043,6 +1045,7 @@ public class ProductProductionServiceImpl
             new LambdaQueryWrapper<ProductInhouse>()
                 .in(ProductInhouse::getProductId, productIds)
                 .eq(ProductInhouse::getSource, SOURCE_WAREHOUSE)
+                .isNotNull(ProductInhouse::getMaterialId)
                 .gt(ProductInhouse::getProductWeight, BigDecimal.ZERO)
                 .apply("DATE(produce_date) = CURDATE()")
                 .orderByDesc(ProductInhouse::getId)

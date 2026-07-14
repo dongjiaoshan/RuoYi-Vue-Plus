@@ -77,6 +77,7 @@ class StoreReturnServiceImplTest {
     @Mock private org.dromara.common.core.service.DictService dictService;
     @Mock private org.dromara.djs.warehouse.pack.service.IProductProductionService productProductionService;
     @Mock private org.dromara.djs.warehouse.pack.mapper.ProductProductionMapper productProductionMapper;
+    @Mock private org.dromara.djs.common.store.service.IStoreService storeService;
 
     private TestableStoreReturnServiceImpl service;
     private MockedStatic<LoginHelper> loginHelperMock;
@@ -112,8 +113,9 @@ class StoreReturnServiceImplTest {
                                        IBizCodeGenerator g, IWarehousePurchaseInService pis,
                                        DemandManageMapper dm, org.dromara.common.core.service.DictService ds,
                                        org.dromara.djs.warehouse.pack.service.IProductProductionService pps,
-                                       org.dromara.djs.warehouse.pack.mapper.ProductProductionMapper ppm) {
-            super(b, sm, pm, lm, g, pis, dm, ds, pps, ppm);
+                                       org.dromara.djs.warehouse.pack.mapper.ProductProductionMapper ppm,
+                                       org.dromara.djs.common.store.service.IStoreService iss) {
+            super(b, sm, pm, lm, g, pis, dm, ds, pps, ppm, iss);
         }
 
         @Override
@@ -126,7 +128,7 @@ class StoreReturnServiceImplTest {
     void setup() {
         service = new TestableStoreReturnServiceImpl(baseMapper, storeMapper, productInfoMapper,
             locationInfoMapper, bizCodeGenerator, purchaseInService, demandManageMapper, dictService,
-            productProductionService, productProductionMapper);
+            productProductionService, productProductionMapper, storeService);
         loginHelperMock = Mockito.mockStatic(LoginHelper.class);
         loginHelperMock.when(LoginHelper::getUserId).thenReturn(USER_ID);
         when(baseMapper.insert(any(StoreReturn.class))).thenAnswer(inv -> {

@@ -9,6 +9,7 @@ import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.satoken.utils.LoginHelper;
 import org.dromara.djs.store.demand.domain.bo.StoreDemandBatchBo;
+import org.dromara.djs.common.store.service.IStoreService;
 import org.dromara.djs.store.demand.service.IStoreDemandService;
 import org.dromara.djs.warehouse.demand.core.enums.DemandStatus;
 import org.dromara.djs.warehouse.demand.domain.DemandManage;
@@ -71,6 +72,8 @@ public class StoreDemandServiceImpl implements IStoreDemandService {
     private final IProductProductionService productProductionService;
 
     private final ITraceService traceService;
+
+    private final IStoreService storeService;
 
     /** 门店视角派生状态：已发货（{@code djs_store_demand_status} 之一）。 */
     private static final String STORE_STATUS_SHIPPED = "SHIPPED";
@@ -165,6 +168,8 @@ public class StoreDemandServiceImpl implements IStoreDemandService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public Long createStoreDemand(DemandManageBo bo) {
+        // 已终止合作门店禁止下单（覆盖单条 + batchCreate 逐条路径）
+        storeService.assertStoreActive(bo.getStoreId());
         // 编辑路径不走本方法（门店端创建专用）；强制清空 id 避免误更新
         bo.setId(null);
         // warehouse insertByBo 已直接落 SUBMITTED（门店发起 = 提交需求给仓库，无独立存草稿环节，

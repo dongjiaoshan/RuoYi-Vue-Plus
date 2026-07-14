@@ -257,6 +257,23 @@ public class StoreServiceImpl extends DjsBaseServiceImpl<StoreMapper, Store> imp
         return bizCodeGenerator.generate(BizCodeType.STORE_PRODUCE_NO, Map.of("prefix", markCode));
     }
 
+    /** 合作状态字典 djs_store_status：已终止。 */
+    private static final String BUSINESS_STATUS_TERMINATED = "1";
+
+    @Override
+    public void assertStoreActive(Long storeId) {
+        if (storeId == null) {
+            return;
+        }
+        Store store = baseMapper.selectById(storeId);
+        if (store == null) {
+            throw new ServiceException("门店不存在或已删除：" + storeId, 404);
+        }
+        if (BUSINESS_STATUS_TERMINATED.equals(store.getBusinessStatus())) {
+            throw new ServiceException("门店「" + store.getStoreName() + "」已停止合作，无法进行业务操作", 409);
+        }
+    }
+
     /**
      * 校验生产标识码门店级唯一：同租户下不同门店不可重复（DB 亦有 UNIQUE 兜底并发）。
      *

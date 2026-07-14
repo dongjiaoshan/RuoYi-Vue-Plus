@@ -1043,6 +1043,9 @@ public class MatFlowServiceImpl implements IMatFlowService {
 
         // 1. 校验今日额度：已领 ≥ 已退 + 已损 + 当次退回量
         ensureTodayCapacity(bo.getProductId(), bo.getQuantity(), product.getProductName(), product.getProductUnit(), product.getBelongType());
+        // row123：本行今日出库为 0（该产品该库位当天未领用）→ 硬拦退回，防对没领用过的行录退回（后端双保险）。
+        ensureTodayRowRemaining(bo.getProductId(), locId, null, null, null, bo.getQuantity(),
+            product.getProductName(), product.getProductUnit(), "退回");
 
         // 2. INSERT stock_flow（return_in 入库）
         StockFlow flow = new StockFlow();
@@ -1317,6 +1320,9 @@ public class MatFlowServiceImpl implements IMatFlowService {
 
         // 1. 校验今日额度（同退回）
         ensureTodayCapacity(bo.getProductId(), bo.getQuantity(), product.getProductName(), product.getProductUnit(), product.getBelongType());
+        // row123：本行今日出库为 0 → 硬拦损耗，防对没领用过的行录损耗（后端双保险）。
+        ensureTodayRowRemaining(bo.getProductId(), bo.getLocationId(), null, null, null, bo.getQuantity(),
+            product.getProductName(), product.getProductUnit(), "损耗");
 
         // 2. INSERT stock_flow（loss 出库）
         StockFlow flow = new StockFlow();
@@ -1374,6 +1380,9 @@ public class MatFlowServiceImpl implements IMatFlowService {
         // 1. 校验今日额度（与退回/损耗同口径）：饲喂量纳入额度，不能超出当日可操作余量
         //    （非可打包物资 = 已领−已退−已损−已饲喂；可打包食品原料 = 今日待打包余额）。
         ensureTodayCapacity(bo.getProductId(), bo.getQuantity(), product.getProductName(), product.getProductUnit(), product.getBelongType());
+        // row123：本行今日出库为 0 → 硬拦饲喂，防对没领用过的行录饲喂（后端双保险）。
+        ensureTodayRowRemaining(bo.getProductId(), bo.getLocationId(), null, null, null, bo.getQuantity(),
+            product.getProductName(), product.getProductUnit(), "饲喂");
 
         // 2. INSERT stock_flow（feed_out 出库）
         StockFlow flow = new StockFlow();
@@ -1988,6 +1997,33 @@ public class MatFlowServiceImpl implements IMatFlowService {
             throw new ServiceException(
                 "今日额度不足（product=" + productName + " / 剩余可操作=" + remaining + productUnit
                     + " / 当次申请=" + applying + "；可打包原料已扣减产品生产耗用）");
+        }
+    }
+
+    /**
+     * 校验「本行今日出库剩余」（row123）：退回入库 / 当日损耗 / 饲料饲喂只能操作本行今日已领用出库的剩余量。
+     *
+     * <p>剩余量 = 该 {@code (product, location, ear_no, white_bar_no, plot_id)} 篮今日
+     * {@code 领用(pick_out) − 退回(return_in) − 损耗(loss) − 饲喂(feed_out)}
+     * （{@link StockFlowMapper#sumTodayNetPickedByBasket}，NULL-safe，与列表「今日四量」展示口径一致）。
+     * 今日出库为 0（该篮当天从未领用）→ 剩余 ≤ 0 → 硬拦，防止对「没领用过」的产品/库位/地块行录退回/损耗/饲喂
+     * （前端已按行 remaining 软拦，此为后端双保险；产品级 {@link #ensureTodayCapacity} 会跨库位/跨地块混算，
+     * 无法拦「本行今日出库=0 但同产品别的行有领用」的越权操作）。</p>
+     *
+     * @param opName 操作名（拼错误信息用：退回 / 损耗 / 饲喂）
+     */
+    private void ensureTodayRowRemaining(Long productId, Long locationId, String earNo, String whiteBarNo,
+                                         Long plotId, BigDecimal applying, String productName,
+                                         String productUnit, String opName) {
+        if (productId == null || locationId == null) {
+            return;
+        }
+        BigDecimal net = safe(stockFlowMapper.sumTodayNetPickedByBasket(
+            productId, locationId, earNo, whiteBarNo, plotId));
+        if (net.compareTo(applying) < 0) {
+            throw new ServiceException(opName + "数量（" + applying.stripTrailingZeros().toPlainString()
+                + productUnit + "）超过本行今日领用剩余（" + net.stripTrailingZeros().toPlainString() + productUnit
+                + "，product=" + productName + "）；请先领用出库后再" + opName);
         }
     }
 

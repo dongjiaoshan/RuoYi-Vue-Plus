@@ -15,6 +15,7 @@ import org.dromara.djs.common.encoder.BizCodeType;
 import org.dromara.djs.common.encoder.IBizCodeGenerator;
 import org.dromara.djs.common.store.domain.Store;
 import org.dromara.djs.common.store.mapper.StoreMapper;
+import org.dromara.djs.common.store.service.IStoreService;
 import org.dromara.djs.store.returns.domain.StoreReturn;
 import org.dromara.djs.store.returns.domain.bo.StoreReturnBatchBo;
 import org.dromara.djs.store.returns.domain.bo.StoreReturnBo;
@@ -134,6 +135,7 @@ public class StoreReturnServiceImpl
     private final DictService dictService;
     private final IProductProductionService productProductionService;
     private final ProductProductionMapper productProductionMapper;
+    private final IStoreService storeService;
 
     public StoreReturnServiceImpl(StoreReturnMapper baseMapper,
                                   StoreMapper storeMapper,
@@ -144,7 +146,8 @@ public class StoreReturnServiceImpl
                                   DemandManageMapper demandManageMapper,
                                   DictService dictService,
                                   IProductProductionService productProductionService,
-                                  ProductProductionMapper productProductionMapper) {
+                                  ProductProductionMapper productProductionMapper,
+                                  IStoreService storeService) {
         super(baseMapper);
         this.storeMapper = storeMapper;
         this.productInfoMapper = productInfoMapper;
@@ -155,6 +158,7 @@ public class StoreReturnServiceImpl
         this.dictService = dictService;
         this.productProductionService = productProductionService;
         this.productProductionMapper = productProductionMapper;
+        this.storeService = storeService;
     }
 
     @Override
@@ -183,6 +187,8 @@ public class StoreReturnServiceImpl
     @Override
     @Transactional(rollbackFor = Exception.class)
     public Long insertByBo(StoreReturnBo bo) {
+        // 0. 已终止合作门店禁止退回（storeId 可空的方向由 assertStoreActive 直接放行）
+        storeService.assertStoreActive(bo.getStoreId());
         // 1. 产品必校验
         ProductInfo product = productInfoMapper.selectById(bo.getProductId());
         if (product == null) {
@@ -258,6 +264,8 @@ public class StoreReturnServiceImpl
     @Override
     @Transactional(rollbackFor = Exception.class)
     public int batchCreate(StoreReturnBatchBo bo) {
+        // 已终止合作门店禁止批量退回
+        storeService.assertStoreActive(bo.getStoreId());
         if (storeMapper.selectById(bo.getStoreId()) == null) {
             throw new ServiceException("门店不存在或已删除：" + bo.getStoreId(), 404);
         }

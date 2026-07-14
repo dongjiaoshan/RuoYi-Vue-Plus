@@ -74,4 +74,18 @@ public interface IStoreService {
      */
     String generateStoreProduceCode(Long storeId);
 
+    /**
+     * 断言门店处于「合作中」状态，否则拒绝业务操作。
+     *
+     * <p>门店合作状态字典 {@code djs_store_status}：{@code '0'}=合作中 / {@code '1'}=已终止 / {@code '2'}=装修中。
+     * 已终止（{@code '1'}）门店禁止一切业务写操作（需求下单 / 盘点 / 退回 / 拆单 / 销售录入等），
+     * 在各 store 业务 service 写入口处调用本方法拦截。</p>
+     *
+     * <p>{@code storeId} 为空时直接放行（部分业务方向门店字段可空，非「已终止门店」场景，交由各自的存在性校验处理）。</p>
+     *
+     * @param storeId 门店 ID（可空 → 放行）
+     * @throws ServiceException 门店不存在（404）或已终止合作（409）
+     */
+    void assertStoreActive(Long storeId);
+
 }

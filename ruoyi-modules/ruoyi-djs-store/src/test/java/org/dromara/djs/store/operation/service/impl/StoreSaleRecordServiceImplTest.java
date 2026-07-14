@@ -3,6 +3,7 @@ package org.dromara.djs.store.operation.service.impl;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.djs.common.store.domain.Store;
 import org.dromara.djs.common.store.mapper.StoreMapper;
+import org.dromara.djs.common.store.service.IStoreService;
 import org.dromara.djs.store.operation.domain.StoreProductRelation;
 import org.dromara.djs.store.operation.domain.StoreSaleRecord;
 import org.dromara.djs.store.operation.domain.bo.StoreSaleRecordBo;
@@ -54,9 +55,10 @@ class StoreSaleRecordServiceImplTest {
     private final ProductInfoMapper productInfoMapper = mock(ProductInfoMapper.class);
     private final StoreMapper storeMapper = mock(StoreMapper.class);
     private final StoreProductRelationMapper relationMapper = mock(StoreProductRelationMapper.class);
+    private final IStoreService storeService = mock(IStoreService.class);
 
     private final StoreSaleRecordServiceImpl service =
-        new StoreSaleRecordServiceImpl(saleMapper, productInfoMapper, storeMapper, relationMapper);
+        new StoreSaleRecordServiceImpl(saleMapper, productInfoMapper, storeMapper, relationMapper, storeService);
 
     private ProductInfo product(long id, String name) {
         ProductInfo p = new ProductInfo();

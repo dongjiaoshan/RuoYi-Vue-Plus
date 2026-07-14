@@ -11,6 +11,7 @@ import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.satoken.utils.LoginHelper;
 import org.dromara.djs.common.store.domain.Store;
 import org.dromara.djs.common.store.mapper.StoreMapper;
+import org.dromara.djs.common.store.service.IStoreService;
 import org.dromara.djs.store.inventory.domain.StoreInventory;
 import org.dromara.djs.store.inventory.mapper.StoreInventoryMapper;
 import org.dromara.djs.store.ledger.domain.StoreDailyLedger;
@@ -133,6 +134,7 @@ public class StoreDailyLedgerServiceImpl implements IStoreDailyLedgerService {
     private final ProductProductionMapper productProductionMapper;
     private final StoreInventoryMapper storeInventoryMapper;
     private final DictService dictService;
+    private final IStoreService storeService;
 
     @Override
     public TableDataInfo<StoreDailyLedgerHeaderVo> queryHeaderPage(StoreDailyLedgerQuery query, PageQuery pageQuery) {
@@ -245,6 +247,8 @@ public class StoreDailyLedgerServiceImpl implements IStoreDailyLedgerService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public int batchSave(StoreDailyLedgerBatchBo bo) {
+        // 已终止合作门店禁止盘点
+        storeService.assertStoreActive(bo.getStoreId());
         if (storeMapper.selectById(bo.getStoreId()) == null) {
             throw new ServiceException("门店不存在或已删除：" + bo.getStoreId(), 404);
         }
