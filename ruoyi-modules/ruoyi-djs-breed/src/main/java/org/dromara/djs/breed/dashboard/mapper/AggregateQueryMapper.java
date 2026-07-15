@@ -433,6 +433,18 @@ public interface AggregateQueryMapper {
                                                     @Param("from") java.time.LocalDateTime from,
                                                     @Param("to") java.time.LocalDateTime to);
 
+    /** 出栏头数按日分组（label = 日数字 "1".."31"，即 DAY(marketing_date)）。区间右开，供单月逐日趋势用。 */
+    @Select("SELECT DAY(marketing_date) AS d, COUNT(*) AS v "
+        + " FROM t_farm_pig_marketing "
+        + " WHERE tenant_id = #{tenantId} "
+        + "   AND del_flag = '0' "
+        + "   AND marketing_date >= #{from} "
+        + "   AND marketing_date <  #{to} "
+        + " GROUP BY d ORDER BY d")
+    List<Map<String, Object>> countMarketingByDay(@Param("tenantId") String tenantId,
+                                                  @Param("from") java.time.LocalDateTime from,
+                                                  @Param("to") java.time.LocalDateTime to);
+
     // ============================================================
     //  日表落盘 row10 缺的指标（BRD-STAT-001）
     //  全部区间右开 [from, to)；DATE 列传 LocalDate，DATETIME 列传 LocalDateTime。

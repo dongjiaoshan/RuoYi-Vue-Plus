@@ -122,17 +122,29 @@ public class DashboardController {
     }
 
     /**
+     * 育肥猪日龄分布（按后台「育肥阶段」配置动态分桶，row95）。
+     * 读 t_farm_fatten_age_stage 各阶段 [startAge, endAge] 归桶，label 用 remark。
+     */
+    @SaCheckPermission("djs:breed:dashboard:inventory")
+    @GetMapping("/fattening-stage-distribution")
+    public R<List<AgeBucketVo>> getFatteningStageDistribution() {
+        return R.ok(dashboardService.getFatteningStageDistribution());
+    }
+
+    /**
      * 育肥指标趋势折线 + 实时库存 3 格（FIX-MGMT-MP-BRD-001）。
      *
-     * @param period week / month，缺省 week
+     * @param period week / month，缺省 week；month 非空时忽略
      * @param metric market / target / onhand，缺省 market
+     * @param month  yyyyMM / yyyy-MM，非空时返回该月逐日数据（忽略 period）
      */
     @SaCheckPermission("djs:breed:dashboard:inventory")
     @GetMapping("/fattening-trend")
     public R<FatteningTrendVo> getFatteningTrend(
         @RequestParam(value = "period", required = false) String period,
-        @RequestParam(value = "metric", required = false) String metric) {
-        return R.ok(dashboardService.getFatteningTrend(period, metric));
+        @RequestParam(value = "metric", required = false) String metric,
+        @RequestParam(value = "month", required = false) String month) {
+        return R.ok(dashboardService.getFatteningTrend(period, metric, month));
     }
 
     /**

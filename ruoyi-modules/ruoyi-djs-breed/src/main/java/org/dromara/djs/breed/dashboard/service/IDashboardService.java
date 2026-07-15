@@ -74,12 +74,21 @@ public interface IDashboardService {
     List<AgeBucketVo> getFatteningAgeDistribution();
 
     /**
+     * 育肥猪日龄分布（按后台「育肥阶段」配置 t_farm_fatten_age_stage 动态分桶，row95）。
+     *
+     * <p>读 {@link org.dromara.djs.breed.production.service.IFattenAgeStageService#queryList()} 各阶段
+     * {@code [startAge, endAge]}（含两端）归桶；label 用 remark 非空、否则 "startAge-endAge天"；按 startAge 升序。</p>
+     */
+    List<AgeBucketVo> getFatteningStageDistribution();
+
+    /**
      * 育肥指标趋势折线 + 实时库存 3 格（FIX-MGMT-MP-BRD-001）。
      *
-     * @param period week / month（null/非法 → week）
+     * @param period week / month（null/非法 → week）；month 非空时忽略此参
      * @param metric market / target / onhand（null/非法 → market）
+     * @param month  yyyyMM / yyyy-MM，非空时返回该月逐日数据（1~该月天数），忽略 period；空/null 时保持 week/month 原逻辑
      */
-    FatteningTrendVo getFatteningTrend(String period, String metric);
+    FatteningTrendVo getFatteningTrend(String period, String metric, String month);
 
     /**
      * 当月生产统计表（率/窝均 10 行，当月 vs 上月，#7.8，实时算）。

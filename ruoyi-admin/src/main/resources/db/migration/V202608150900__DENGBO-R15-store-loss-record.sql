@@ -1,0 +1,23 @@
+CREATE TABLE t_store_loss_record (
+  id BIGINT NOT NULL COMMENT '主键（雪花）',
+  tenant_id VARCHAR(20) NOT NULL DEFAULT '1001' COMMENT '租户号',
+  store_id BIGINT NOT NULL COMMENT '门店 FK t_md_store.id',
+  product_id BIGINT NOT NULL DEFAULT 0 COMMENT '产品 FK t_warehouse_product_info.id（门店日损耗填产品；白条分割损耗汇总行=0）',
+  product_unit VARCHAR(16) NULL COMMENT '产品单位',
+  loss_qty DECIMAL(12,3) NOT NULL DEFAULT 0 COMMENT '损耗量（门店日损耗=ledger.loss_qty 原样含负；白条分割损耗=到店重−退回入库重 钳0）',
+  loss_date DATE NOT NULL COMMENT '损耗日期',
+  loss_type VARCHAR(32) NOT NULL COMMENT '损耗类型 store_daily_loss/white_bar_split_loss',
+  white_bar_arrive_weight DECIMAL(12,3) NULL COMMENT '白条到店重量kg（仅白条分割损耗行）',
+  white_bar_split_weight DECIMAL(12,3) NULL COMMENT '白条退回入库重量kg（仅白条分割损耗行）',
+  remark VARCHAR(500) NULL COMMENT '备注',
+  create_by BIGINT NULL COMMENT '创建者',
+  create_time DATETIME NULL COMMENT '创建时间',
+  update_by BIGINT NULL COMMENT '更新者',
+  update_time DATETIME NULL COMMENT '更新时间',
+  create_dept BIGINT NULL COMMENT '创建部门',
+  del_flag CHAR(1) NOT NULL DEFAULT '0' COMMENT '软删',
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_store_product_date_type (tenant_id, store_id, product_id, loss_date, loss_type),
+  KEY idx_store_date (store_id, loss_date),
+  KEY idx_loss_date_type (loss_date, loss_type)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='门店损耗记录表（DENGBO-R15 定时任务落盘）';

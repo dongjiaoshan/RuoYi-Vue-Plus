@@ -1371,6 +1371,10 @@ public class MatFlowServiceImpl implements IMatFlowService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public Long feed(MatFeedBo bo) {
+        // 「按源手选」饲喂（batchId 非空）：从用户选中的那一篮（自产果蔬地块篮）扣饲喂量（与 loss 对称分派）。
+        if (bo.getBatchId() != null) {
+            return feedByBatch(bo);
+        }
         ProductInfo product = requireProduct(bo.getProductId());
         // 库位级业务锁（WMS-STOCK-001）：盘点进行中的库位禁出入库（后端双保险）
         stockCheckService.assertLocationUnlocked(bo.getLocationId());
@@ -1380,15 +1384,18 @@ public class MatFlowServiceImpl implements IMatFlowService {
         // 1. 校验今日额度（与退回/损耗同口径）：饲喂量纳入额度，不能超出当日可操作余量
         //    （非可打包物资 = 已领−已退−已损−已饲喂；可打包食品原料 = 今日待打包余额）。
         ensureTodayCapacity(bo.getProductId(), bo.getQuantity(), product.getProductName(), product.getProductUnit(), product.getBelongType());
-        // row123：本行今日出库为 0 → 硬拦饲喂，防对没领用过的行录饲喂（后端双保险）。
-        ensureTodayRowRemaining(bo.getProductId(), bo.getLocationId(), null, null, null, bo.getQuantity(),
+        // row16/row123：本行今日出库剩余（今日领用−退回−损耗−饲喂）为 0 → 硬拦饲喂，防对没领用过的行录饲喂（后端双保险）。
+        //   带 plot_id（自产果蔬即便走产品级分支）：篮维度须含 plot_id，否则 sumTodayNetPickedByBasket 传 plotId=null
+        //   退化成 plot_id IS NULL，排除带 plot 的领用/退回/损耗流水、只计入 feed_out(plot_id=NULL) → net 恒负被误拦。
+        ensureTodayRowRemaining(bo.getProductId(), bo.getLocationId(), null, null, bo.getPlotId(), bo.getQuantity(),
             product.getProductName(), product.getProductUnit(), "饲喂");
 
-        // 2. INSERT stock_flow（feed_out 出库）
+        // 2. INSERT stock_flow（feed_out 出库；带 plot_id 源标签，与 pick/return/loss 自产果蔬口径一致）
         StockFlow flow = new StockFlow();
         flow.setFlowNo(generateFlowNo(INOUT_OUT));
         flow.setFlowDate(new Date());
         flow.setProductId(bo.getProductId());
+        flow.setPlotId(bo.getPlotId());
         flow.setWarehouseId(bo.getLocationId());
         flow.setInoutType(INOUT_OUT);
         flow.setFlowType(FLOW_FEED_OUT);
@@ -1404,8 +1411,9 @@ public class MatFlowServiceImpl implements IMatFlowService {
         //    product_inhouse，饲喂剥离的是这部分 WIP（与"退回/损耗"对称，让 admin 打包来源「领用剩余重量」归零），
         //    不再二次扣 location_stock。其余物资（包材/饲料/种子/药品）无 WIP → 从 location_stock 扣减。
         //    饲料/种子等非可打包物资仍走 location_stock（本改动只影响可打包食品，不误伤养殖/种植饲喂）。
+        //    带 plot_id（自产果蔬走产品级分支）：按 plot 匹配剥离该地块今天待打包 WIP（与 lossVegPlot 对称）。
         if (isPackableFood(product.getBelongType())) {
-            reduceTodayInhouseForBasket(bo.getProductId(), null, null, bo.getQuantity());
+            reduceTodayInhouseForBasket(bo.getProductId(), null, bo.getPlotId(), bo.getQuantity());
         } else {
             // affected==0 打 warn 不抛（账实倒挂留痕，工人可能消耗完才补登，与 loss() 一致）。
             int affected = locationStockMapper.deductByProductLocation(
@@ -1424,6 +1432,155 @@ public class MatFlowServiceImpl implements IMatFlowService {
         feedLog.setFeedType(FEED_TYPE_WAREHOUSE);
         feedLog.setProductId(bo.getProductId());
         feedLog.setLocationId(bo.getLocationId());
+        feedLog.setOperatorId(userId);
+        feedLog.setFeedWeight(bo.getQuantity());
+        feedLog.setRemark(bo.getRemark());
+        feedLogMapper.insert(feedLog);
+
+        return flow.getId();
+    }
+
+    /**
+     * 「按源手选」饲喂（{@code batchId} 非空）：从用户选中的那一篮扣饲喂量（镜像 {@link #lossByBatch}）。
+     *
+     * <p>自产果蔬地块篮命中 → {@link #feedVegPlot}（按 {@code (product, plot)} 剥离今天待打包 WIP）；
+     * 猪肉耳号篮无饲喂业务 → 抛 {@link ServiceException}（前端保证猪肉 tab 无饲喂按钮，此为后端防御）；
+     * 其余（包材 / 鸡蛋 / 干货等物资篮）走 {@code deductStockById} 扣选中篮（与现状 feed 物资分支语义一致，
+     * {@code affected==0} 打 warn 不抛，账实倒挂留痕）。</p>
+     */
+    private Long feedByBatch(MatFeedBo bo) {
+        LocationStock basket = locationStockMapper.selectById(bo.getBatchId());
+        if (basket == null || !"0".equals(basket.getDelFlag())) {
+            throw new ServiceException("选中的篮子不存在或已删除（batchId=" + bo.getBatchId() + "）");
+        }
+        // 自产果蔬地块卡（batchId = 地块 FIFO 首篮 id）：饲喂量按 (productId, plotId) 剥离今天待打包 inhouse，
+        // 不二次扣 location_stock（与 lossVegPlot 对称）。
+        if (isVegPlotBasket(basket)) {
+            return feedVegPlot(bo, basket);
+        }
+        // 猪肉耳号卡：猪肉无饲喂业务（前端猪肉 tab 无饲喂按钮），命中 = 异常入参 → 明确拒绝。
+        if (isPorkEarBasket(basket)) {
+            throw new ServiceException("猪肉不支持饲料饲喂");
+        }
+        Long locId = basket.getLocationId();
+        // 库位级业务锁（WMS-STOCK-001）：盘点进行中的库位禁出入库（后端双保险）
+        stockCheckService.assertLocationUnlocked(locId);
+        // 记录人：mp 弹层选了用所选（代他人饲喂），否则取当前登录人兜底
+        Long userId = resolveOperatorId(bo.getOperatorId());
+
+        Long productId = basket.getProductId();
+        ProductInfo product = productId == null ? null : productInfoMapper.selectById(productId);
+        String productName = product != null ? product.getProductName() : basket.getProductName();
+        String productUnit = product != null ? product.getProductUnit() : basket.getProductUnit();
+
+        // 1. 校验今日额度（仍按 user+product 统计，与现状一致）；productId 缺失 → 跳过（不阻塞）
+        if (productId != null) {
+            ensureTodayCapacity(productId, bo.getQuantity(), productName, productUnit, product == null ? null : product.getBelongType());
+        }
+
+        // 2. INSERT stock_flow（feed_out 出库，带篮的 product_id + plot_id + ear_no + white_bar_no 源标签）
+        StockFlow flow = new StockFlow();
+        flow.setFlowNo(generateFlowNo(INOUT_OUT));
+        flow.setFlowDate(new Date());
+        flow.setProductId(productId);
+        flow.setPlotId(basket.getPlotId());
+        flow.setEarNo(basket.getEarNo());
+        flow.setWhiteBarNo(basket.getWhiteBarNo());
+        flow.setWarehouseId(locId);
+        flow.setInoutType(INOUT_OUT);
+        flow.setFlowType(FLOW_FEED_OUT);
+        flow.setChangeNum(bo.getQuantity().negate());
+        flow.setChangeQuantity(bo.getQuantity());
+        flow.setOperatorId(userId);
+        flow.setRemark(bo.getRemark());
+        flow.setProofOssIds(bo.getProofOssIds());
+        stockFlowMapper.insert(flow);
+
+        // 3. 饲喂扣减：可打包食品原料（领用已离货架进「待打包」inhouse）剥离今天待打包 WIP、不二次扣货架；
+        //    其余物资无 WIP → 扣选中篮（affected==0 打 warn 不抛，与现状 feed 物资分支语义一致）。
+        String tailBelongType = product == null ? null : product.getBelongType();
+        if (isPackableFood(tailBelongType)) {
+            reduceTodayInhouseForBasket(productId, basket.getEarNo(), null, bo.getQuantity());
+        } else {
+            int affected = locationStockMapper.deductStockById(basket.getId(), bo.getQuantity(), userId);
+            if (affected == 0) {
+                log.warn("按篮 feed 流水已记，但选中篮扣减失败（账面已不足）：user={}, batchId={}, qty={}",
+                    userId, basket.getId(), bo.getQuantity());
+            }
+        }
+
+        // 4. 写饲喂台账 feed_log（feed_type='warehouse'）：crop_id/cropName 仓库领用饲喂无作物维度，留空。
+        FeedLog feedLog = new FeedLog();
+        feedLog.setFeedDate(new Date());
+        feedLog.setFeedType(FEED_TYPE_WAREHOUSE);
+        feedLog.setProductId(productId);
+        feedLog.setLocationId(locId);
+        feedLog.setOperatorId(userId);
+        feedLog.setFeedWeight(bo.getQuantity());
+        feedLog.setRemark(bo.getRemark());
+        feedLogMapper.insert(feedLog);
+
+        return flow.getId();
+    }
+
+    /**
+     * 自产果蔬「地块卡」饲喂（{@link #feedByBatch} 识别地块卡后走此，镜像 {@link #lossVegPlot}）：饲喂量按
+     * {@code (productId, plotId)} 剥离「今天待打包」{@code product_inhouse}——自产果蔬领用（{@code pickVegPlot}）时
+     * location_stock 已 −、product_inhouse +，饲喂消耗的是这部分待打包 WIP（与 {@code returnVegPlot} / {@code lossVegPlot} 对称，
+     * 让 admin 果蔬打包「领用剩余重量」相应扣减），不再二次扣 {@code location_stock}。
+     * 扣不够（差额已打包）→ {@link #reduceTodayInhouseForBasket} 内部打 warn 不抛，账实倒挂留痕审计。
+     *
+     * <p>四步同事务：</p>
+     * <ol>
+     *   <li>校验今日额度（按 {@code (user, product, plot)} 统计，row16）：同作物多地块共用 product_id，饲喂须按地块
+     *       校验今日领用剩余，B 地块无领用剩余则拒绝饲喂，防扣到 A 地块的领用剩余；</li>
+     *   <li>INSERT {@code feed_out} 流水（带 {@code product_id} + {@code plot_id} 源标签，{@code warehouse_id} = 首篮库位）；</li>
+     *   <li>剥离今天该地块待打包 {@code product_inhouse}；</li>
+     *   <li>写饲喂台账 {@code feed_log}（feed_type='warehouse'）。</li>
+     * </ol>
+     */
+    private Long feedVegPlot(MatFeedBo bo, LocationStock firstBasket) {
+        Long productId = firstBasket.getProductId();
+        Long plotId = firstBasket.getPlotId();
+        Long firstLocId = firstBasket.getLocationId();
+        // 库位级业务锁（WMS-STOCK-001）：盘点进行中的首篮库位禁出入库（后端双保险）
+        stockCheckService.assertLocationUnlocked(firstLocId);
+        // 记录人：mp 弹层选了用所选（代他人饲喂），否则取当前登录人兜底
+        Long userId = resolveOperatorId(bo.getOperatorId());
+
+        ProductInfo product = productInfoMapper.selectById(productId);
+        String productName = product != null ? product.getProductName() : firstBasket.getProductName();
+        String productUnit = product != null ? product.getProductUnit() : firstBasket.getProductUnit();
+
+        // 1. 校验今日额度（按 (user, product, plot) 统计，row16）
+        ensureTodayCapacity(productId, bo.getQuantity(), productName, productUnit,
+            product == null ? null : product.getBelongType(), plotId);
+
+        // 2. INSERT feed_out 流水（带 product_id + plot_id 源标签，warehouse_id=首篮库位、量=总饲喂量）
+        StockFlow flow = new StockFlow();
+        flow.setFlowNo(generateFlowNo(INOUT_OUT));
+        flow.setFlowDate(new Date());
+        flow.setProductId(productId);
+        flow.setPlotId(plotId);
+        flow.setWarehouseId(firstLocId);
+        flow.setInoutType(INOUT_OUT);
+        flow.setFlowType(FLOW_FEED_OUT);
+        flow.setChangeNum(bo.getQuantity().negate());
+        flow.setChangeQuantity(bo.getQuantity());
+        flow.setOperatorId(userId);
+        flow.setRemark(bo.getRemark());
+        flow.setProofOssIds(bo.getProofOssIds());
+        stockFlowMapper.insert(flow);
+
+        // 3. 剥离今天该地块待打包 inhouse（与 returnVegPlot / lossVegPlot 对称）；不二次扣 location_stock。
+        reduceTodayInhouseForBasket(productId, null, plotId, bo.getQuantity());
+
+        // 4. 写饲喂台账 feed_log（feed_type='warehouse'）：crop_id/cropName 仓库领用饲喂无作物维度，留空。
+        FeedLog feedLog = new FeedLog();
+        feedLog.setFeedDate(new Date());
+        feedLog.setFeedType(FEED_TYPE_WAREHOUSE);
+        feedLog.setProductId(productId);
+        feedLog.setLocationId(firstLocId);
         feedLog.setOperatorId(userId);
         feedLog.setFeedWeight(bo.getQuantity());
         feedLog.setRemark(bo.getRemark());

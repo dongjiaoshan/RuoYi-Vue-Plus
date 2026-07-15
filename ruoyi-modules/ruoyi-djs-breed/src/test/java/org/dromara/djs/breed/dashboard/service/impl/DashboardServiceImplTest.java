@@ -85,6 +85,8 @@ class DashboardServiceImplTest {
     private SowPerformanceMapper sowPerformanceMapper;
     @Mock
     private org.dromara.djs.breed.production.service.IProductionCycleConfigService productionCycleConfigService;
+    @Mock
+    private org.dromara.djs.breed.production.service.IFattenAgeStageService fattenAgeStageService;
 
     private DashboardServiceImpl service;
 
@@ -92,7 +94,8 @@ class DashboardServiceImplTest {
     void setup() {
         service = new DashboardServiceImpl(
             sowRecordMapper, monthlyProductionMapper, annualIndicatorMapper, aggregateQueryMapper,
-            farmIndicatorRecordMapper, sowPerformanceMapper, productionCycleConfigService);
+            farmIndicatorRecordMapper, sowPerformanceMapper, productionCycleConfigService,
+            fattenAgeStageService);
     }
 
     @Test

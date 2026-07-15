@@ -28,7 +28,9 @@ import org.dromara.djs.breed.dashboard.mapper.FarmIndicatorRecordMapper;
 import org.dromara.djs.breed.dashboard.mapper.MonthlyProductionMapper;
 import org.dromara.djs.breed.dashboard.mapper.SowRecordMapper;
 import org.dromara.djs.breed.dashboard.service.IDashboardService;
+import org.dromara.djs.breed.production.domain.vo.FattenAgeStageVo;
 import org.dromara.djs.breed.production.mapper.SowPerformanceMapper;
+import org.dromara.djs.breed.production.service.IFattenAgeStageService;
 import org.dromara.djs.breed.production.service.IProductionCycleConfigService;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -92,6 +94,7 @@ public class DashboardServiceImpl implements IDashboardService {
     private final FarmIndicatorRecordMapper farmIndicatorRecordMapper;
     private final SowPerformanceMapper sowPerformanceMapper;
     private final IProductionCycleConfigService productionCycleConfigService;
+    private final IFattenAgeStageService fattenAgeStageService;
 
     /** 配种→分娩天数配置键（row183）：缺省 114 天。 */
     private static final String CONFIG_KEY_BREED_TO_FARROW = "sow_breed_to_farrow_days";
@@ -564,13 +567,60 @@ public class DashboardServiceImpl implements IDashboardService {
     }
 
     @Override
-    public FatteningTrendVo getFatteningTrend(String period, String metric) {
-        String p = "month".equalsIgnoreCase(period) ? "month" : "week";
+    public List<AgeBucketVo> getFatteningStageDistribution() {
+        String tenantId = currentTenant();
+        // 读后台「育肥阶段」配置（queryList 已按 startAge 升序）；每条 [startAge, endAge] 含两端归桶。
+        List<FattenAgeStageVo> stages = fattenAgeStageService.queryList();
+        List<AgeBucketVo> list = new ArrayList<>(stages.size());
+        if (stages.isEmpty()) {
+            return list;
+        }
+        int[] counts = new int[stages.size()];
+        for (Map<String, Object> r : aggregateQueryMapper.selectFatteningAges(tenantId)) {
+            Object a = r.get("age");
+            if (a == null) {
+                continue;
+            }
+            int age = ((Number) a).intValue();
+            // 归入第一个匹配阶段（含两端）；阶段区间理论不重叠，命中即停。
+            for (int i = 0; i < stages.size(); i++) {
+                FattenAgeStageVo s = stages.get(i);
+                Integer start = s.getStartAge();
+                Integer end = s.getEndAge();
+                boolean geLower = start == null || age >= start;
+                boolean leUpper = end == null || age <= end;
+                if (geLower && leUpper) {
+                    counts[i]++;
+                    break;
+                }
+            }
+        }
+        for (int i = 0; i < stages.size(); i++) {
+            FattenAgeStageVo s = stages.get(i);
+            String remark = s.getRemark();
+            String label = (remark != null && !remark.isBlank())
+                ? remark
+                : (s.getStartAge() + "-" + s.getEndAge() + "天");
+            list.add(new AgeBucketVo(label, counts[i]));
+        }
+        return list;
+    }
+
+    @Override
+    public FatteningTrendVo getFatteningTrend(String period, String metric, String month) {
         String m = metric == null ? "market" : metric.toLowerCase();
         if (!"market".equals(m) && !"target".equals(m) && !"onhand".equals(m)) {
             m = "market";
         }
         String tenantId = currentTenant();
+
+        // month 非空 → 忽略 period，返回该月逐日（1~该月天数）数据。
+        YearMonth targetMonth = parseMonth(month);
+        if (targetMonth != null) {
+            return buildFatteningTrendByDay(tenantId, m, targetMonth);
+        }
+
+        String p = "month".equalsIgnoreCase(period) ? "month" : "week";
         FatteningTrendVo vo = new FatteningTrendVo();
         vo.setPeriod(p);
         vo.setMetric(m);
@@ -604,6 +654,55 @@ public class DashboardServiceImpl implements IDashboardService {
                 labels.add(label);
                 values.add(trendValue(m, byMonth.getOrDefault(label, 0), tenantId));
             }
+        }
+        vo.setLabels(labels);
+        vo.setValues(values);
+        vo.setLiveStock(buildFatteningLiveStock(tenantId));
+        return vo;
+    }
+
+    /**
+     * 解析 month 入参（"yyyyMM" 或 "yyyy-MM"），可空。
+     *
+     * @return 解析出的 YearMonth；入参空/null/非法 → null（调用方据此退回 week/month 原逻辑）
+     */
+    private static YearMonth parseMonth(String month) {
+        if (month == null || month.isBlank()) {
+            return null;
+        }
+        String s = month.trim();
+        try {
+            if (s.contains("-")) {
+                return YearMonth.parse(s, java.time.format.DateTimeFormatter.ofPattern("yyyy-MM"));
+            }
+            return YearMonth.parse(s, java.time.format.DateTimeFormatter.ofPattern("yyyyMM"));
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /**
+     * 单月逐日育肥趋势：labels = 该月每一天的「日」数字（"1".."该月天数"），values 按 metric 取值。
+     * market = 该日出栏头数（无出栏补 0）；target/onhand 沿用 {@link #trendValue} 逻辑（每点同值）。
+     */
+    private FatteningTrendVo buildFatteningTrendByDay(String tenantId, String metric, YearMonth ym) {
+        FatteningTrendVo vo = new FatteningTrendVo();
+        vo.setPeriod("month");
+        vo.setMetric(metric);
+
+        int days = ym.lengthOfMonth();
+        // from = 该月 1 日 00:00；to = 次月 1 日 00:00（右开区间）。
+        LocalDateTime from = ym.atDay(1).atStartOfDay();
+        LocalDateTime to = ym.plusMonths(1).atDay(1).atStartOfDay();
+        // countMarketingByDay 返回 [{d:日数字, v:头数}, ...]（label = DAY(marketing_date)）。
+        Map<String, Integer> byDay = toLabelMap(aggregateQueryMapper.countMarketingByDay(tenantId, from, to));
+
+        List<String> labels = new ArrayList<>(days);
+        List<BigDecimal> values = new ArrayList<>(days);
+        for (int day = 1; day <= days; day++) {
+            String label = String.valueOf(day);
+            labels.add(label);
+            values.add(trendValue(metric, byDay.getOrDefault(label, 0), tenantId));
         }
         vo.setLabels(labels);
         vo.setValues(values);

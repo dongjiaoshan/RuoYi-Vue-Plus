@@ -160,13 +160,13 @@ public class StoreDailyLedgerServiceImpl implements IStoreDailyLedgerService {
         if (storeMapper.selectById(storeId) == null) {
             throw new ServiceException("门店不存在或已删除：" + storeId, 404);
         }
-        LocalDate date = ledgerDate == null ? LocalDate.now() : ledgerDate;
+        LocalDate date = ledgerDate == null ? LocalDate.now(ZONE_SHANGHAI) : ledgerDate;
 
         // 四类候选并集（保留首次命中类别；inbound 与 stock 合并时 category=stock，inbound 量后面补）。
         List<Long> porkIds = resolvePorkReturnProductIds();
         // DENGBO-R12：白条产品（字典 djs_white_bar_return_product 配置产品），仅当日有白条到店时列出；
         // 按重量盘点、单位取对应原材料单位、入库量手动可编辑（客户自配字典，空则无白条产品行）。
-        List<ProductInfo> whiteBarProducts = hasWhiteBarArrivedToday(storeId)
+        List<ProductInfo> whiteBarProducts = hasWhiteBarArrivedOnDate(storeId, date)
             ? resolveWhiteBarReturnDictProducts() : List.of();
         Set<Long> whiteBarIds = whiteBarProducts.stream().map(ProductInfo::getId)
             .collect(Collectors.toCollection(LinkedHashSet::new));
@@ -464,19 +464,23 @@ public class StoreDailyLedgerServiceImpl implements IStoreDailyLedgerService {
     }
 
     /**
-     * 该门店「当日是否有白条产品到店」（DENGBO-R12，口径与门店退回操作 {@code hasWhiteBarArrivedToday} 一致）：
-     * 该店当日确认收货（{@code received_time}=今天）的需求下，存在已发货清点（{@code is_delivery_check=1}）的
-     * white_bar 业态成品。{@code storeId} 为空 / 无到店 → false。
+     * 该门店「盘点日当天是否有白条产品到店」（DENGBO-R14）：该店在 {@code date} 当天确认收货
+     * （{@code received_time}=盘点日）的需求下，存在已发货清点（{@code is_delivery_check=1}）的 white_bar 业态成品。
+     *
+     * <p>白条候选门禁必须按<b>盘点日</b>（listCandidates 的 date 参数）判定，而非 {@code LocalDate.now()}——
+     * 否则查看/录入非今天的盘点日（如补录昨日）时白条到店判定错位、白条产品行不显示（DENGBO-R14 修复）。</p>
+     *
+     * @param storeId 门店；为空 → false
+     * @param date    盘点日期（白条到店口径按此日，非当前系统日）
      */
-    private boolean hasWhiteBarArrivedToday(Long storeId) {
-        if (storeId == null) {
+    private boolean hasWhiteBarArrivedOnDate(Long storeId, LocalDate date) {
+        if (storeId == null || date == null) {
             return false;
         }
-        LocalDate today = LocalDate.now(ZONE_SHANGHAI);
         List<Long> demandIds = demandManageMapper.selectList(new LambdaQueryWrapper<DemandManage>()
                 .eq(DemandManage::getStoreId, storeId)
-                .ge(DemandManage::getReceivedTime, today.atStartOfDay())
-                .lt(DemandManage::getReceivedTime, today.plusDays(1).atStartOfDay())
+                .ge(DemandManage::getReceivedTime, date.atStartOfDay())
+                .lt(DemandManage::getReceivedTime, date.plusDays(1).atStartOfDay())
                 .select(DemandManage::getId))
             .stream().map(DemandManage::getId).filter(Objects::nonNull).distinct().toList();
         if (demandIds.isEmpty()) {
