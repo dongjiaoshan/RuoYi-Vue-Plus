@@ -49,10 +49,6 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class SowDetailServiceImpl implements ISowDetailService {
 
-    /** 字典：猪只品种（谱系卡品种 label）。 */
-    private static final String DICT_PIG_BREED = "djs_pig_breed";
-    /** 字典：猪只品系（谱系卡品系 label）。 */
-    private static final String DICT_PIG_STRAIN = "djs_pig_strain";
     /** 字典：用药原因（用药记录 reason label）。 */
     private static final String DICT_MED_REASON = "djs_medicine_reason";
     /** 字典：用药方式（用药记录 way label）。 */
@@ -152,7 +148,7 @@ public class SowDetailServiceImpl implements ISowDetailService {
         PedigreeVo vo = new PedigreeVo();
         LocalDate today = LocalDate.now();
         // 品种/品系名优先取 t_farm_breed_info 主数据（外部引种 BreedInfoPicker 写的 2 位码如 "01"），
-        // 字典回落（djs_pig_breed/strain 历史 1 位码）；与列表 PigCoreServiceImpl 同口径，避免品系显示成纯 code。
+        // 原始 code 回落（旧静态字典已废）；与列表 PigCoreServiceImpl 同口径，避免品系显示成纯 code。
         Map<String, String> breedNameMap = breedStrainNameMap(1);
         Map<String, String> strainNameMap = breedStrainNameMap(2);
 
@@ -161,8 +157,8 @@ public class SowDetailServiceImpl implements ISowDetailService {
         if (dam != null) {
             vo.setDamPigId(dam.getId());
             vo.setDamEarNo(dam.getEarNo());
-            vo.setDamBreed(resolveBreedStrainName(breedNameMap, DICT_PIG_BREED, dam.getPigBreedCode()));
-            vo.setDamStrain(resolveBreedStrainName(strainNameMap, DICT_PIG_STRAIN, dam.getPigStrainCode()));
+            vo.setDamBreed(resolveBreedStrainName(breedNameMap, dam.getPigBreedCode()));
+            vo.setDamStrain(resolveBreedStrainName(strainNameMap, dam.getPigStrainCode()));
             vo.setDamAgeDays(calcAgeDays(dam, today));
             vo.setDamParity(nz(dam.getParity()) > 0 ? dam.getParity() : null);
         } else if (StringUtils.isNotBlank(pig.getMotherEar())) {
@@ -175,8 +171,8 @@ public class SowDetailServiceImpl implements ISowDetailService {
         if (sire != null) {
             vo.setSirePigId(sire.getId());
             vo.setSireEarNo(sire.getEarNo());
-            vo.setSireBreed(resolveBreedStrainName(breedNameMap, DICT_PIG_BREED, sire.getPigBreedCode()));
-            vo.setSireStrain(resolveBreedStrainName(strainNameMap, DICT_PIG_STRAIN, sire.getPigStrainCode()));
+            vo.setSireBreed(resolveBreedStrainName(breedNameMap, sire.getPigBreedCode()));
+            vo.setSireStrain(resolveBreedStrainName(strainNameMap, sire.getPigStrainCode()));
             vo.setSireAgeDays(calcAgeDays(sire, today));
         } else if (StringUtils.isNotBlank(pig.getFatherEar())) {
             vo.setSireEarNo(pig.getFatherEar());
@@ -271,12 +267,12 @@ public class SowDetailServiceImpl implements ISowDetailService {
     }
 
     /** 品种/品系名解析：主数据优先（2 位码权威名）→ 字典回落（历史 1 位码）→ 原始 code；与列表口径一致。 */
-    private String resolveBreedStrainName(Map<String, String> infoNameMap, String dictType, String code) {
+    private String resolveBreedStrainName(Map<String, String> infoNameMap, String code) {
         if (StringUtils.isBlank(code)) {
             return null;
         }
         String name = infoNameMap.get(code);
-        return StringUtils.isNotBlank(name) ? name : translateDict(dictType, code);
+        return StringUtils.isNotBlank(name) ? name : code;
     }
 
     /** 日龄 = NOW − birthDate（缺 birthDate fallback introduceDate）；均空 → null。 */

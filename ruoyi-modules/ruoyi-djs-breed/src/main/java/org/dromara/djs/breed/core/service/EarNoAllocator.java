@@ -22,8 +22,8 @@ import java.util.concurrent.TimeUnit;
  * <h3>格式</h3>
  * <p>各段以 {@code -} 分隔 = {@code {品系}-{品种2}-{性别1}-{出生yyMMdd6}-{当天序号3}}（客户权威编码表）：</p>
  * <ul>
- *   <li>品系码 = {@code djs_pig_strain} 字典 dict_value（原样取，支持 1-2 位）；</li>
- *   <li>品种码 = {@code djs_pig_breed} 字典 dict_value（定长 2 位，01-06）；</li>
+ *   <li>品系码 = t_farm_breed_info 品系 breed_strain_code（原样取，支持 1-2 位）；</li>
+ *   <li>品种码 = t_farm_breed_info 品种 breed_strain_code（定长 2 位，01-06）；</li>
  *   <li>性别码 = 客户权威表 {@code 1=公(M) / 2=母(F)}（外部引种、仔猪打耳标均编入）；</li>
  *   <li>出生年月日 = {@code yyMMdd}（猪只出生日，非系统当前日）；</li>
  *   <li>序号 = 3 位补零，<b>当天级全场 max+1（不分品系品种性别）</b>——同一天所有猪统一从 001 顺序递增，
@@ -82,8 +82,8 @@ public class EarNoAllocator {
     /**
      * 分配 N 个连号耳号（同品系 + 同品种 + 同出生日；序号在当天全场范围内连续唯一）。
      *
-     * @param strainCode 品系码（{@code djs_pig_strain} dict_value，1 位）；不可空
-     * @param breedCode  品种码（{@code djs_pig_breed} dict_value，2 位）；不可空
+     * @param strainCode 品系码（t_farm_breed_info breed_strain_code，1 位）；不可空
+     * @param breedCode  品种码（t_farm_breed_info breed_strain_code，2 位）；不可空
      * @param pigSex     性别（{@code M} 公 / {@code F} 母）；保留仅为兼容老调用方，不参与组装
      * @param birthDate  出生日期（耳号 yyMMdd 段 + 序号桶维度）；不可空
      * @param count      分配数量；必须 &gt; 0

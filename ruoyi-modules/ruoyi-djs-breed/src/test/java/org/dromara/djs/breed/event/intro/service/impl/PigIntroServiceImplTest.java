@@ -541,9 +541,9 @@ class PigIntroServiceImplTest {
         pig.setBirthDate(birth);
         when(innerPigMapper.selectBatchIds(any())).thenReturn(List.of(pig));
 
-        // 品系字典翻译命中
-        when(dictService.getDictLabel(eq("djs_pig_strain"), eq("4"))).thenReturn("杜洛克");
-        when(dictService.getDictLabel(eq("djs_pig_breed"), eq("04"))).thenReturn("杜洛克");
+        // 品种/品系名走 t_farm_breed_info 主数据（旧静态字典 djs_pig_breed/strain 已废除）
+        when(pigCoreService.loadBreedStrainNameMap(1)).thenReturn(Map.of("04", "杜洛克"));
+        when(pigCoreService.loadBreedStrainNameMap(2)).thenReturn(Map.of("4", "杜洛克"));
 
         TableDataInfo<IntroRecordVo> result = service.queryAppletRecords(new PigIntroQuery(), new PageQuery(1, 10));
         List<IntroRecordVo> rows = result.getRows();

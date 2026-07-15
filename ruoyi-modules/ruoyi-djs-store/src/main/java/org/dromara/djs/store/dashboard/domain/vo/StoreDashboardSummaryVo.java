@@ -56,21 +56,6 @@ public class StoreDashboardSummaryVo implements Serializable {
     private Integer pendingPurchaseCount;
 
     /**
-     * KPI 7：会员总数（{@code COUNT(*)} t_store_member，原型「客户/会员信息组」）。
-     */
-    private Long totalMembers;
-
-    /**
-     * KPI 8：今日新增会员数（{@code create_time} 落在今天，原型「会员信息组」）。
-     */
-    private Long todayNewMembers;
-
-    /**
-     * KPI 9：老客复购数（{@code t_store_member_consumption} 当月下单 ≥ 2 次的会员数，原型「会员信息组」）。
-     */
-    private Long repeatCustomer;
-
-    /**
      * KPI 10：本月客单价（{@code monthSaleAmount / monthOrderCount}，订单数 0 时为 0，原型「会员信息组」）。
      */
     private BigDecimal monthAvgPrice;
@@ -99,11 +84,6 @@ public class StoreDashboardSummaryVo implements Serializable {
      * 近 10 日趋势（订单数 / 销售额 / 客单价 / 销售量 / 退货量）。
      */
     private List<StoreTrendPointVo> trend10Days;
-
-    /**
-     * 近 10 日新增会员趋势（原型「近十日订单数与新会员趋势」竖柱，按日补 0 至 10 个点）。
-     */
-    private List<StoreMemberGrowthPointVo> memberGrowth10Days;
 
     /**
      * 本月逐日趋势（原型「销售额与客单价趋势」竖柱=销售额 + 折线=客单价，横轴本月每天）。
@@ -158,16 +138,12 @@ public class StoreDashboardSummaryVo implements Serializable {
         vo.setMonthOrderCount(0);
         vo.setPendingShipCount(0);
         vo.setPendingPurchaseCount(0);
-        vo.setTotalMembers(0L);
-        vo.setTodayNewMembers(0L);
-        vo.setRepeatCustomer(0L);
         vo.setMonthAvgPrice(BigDecimal.ZERO);
         vo.setProductStructure(List.of());
         vo.setMonthProductStructure(List.of());
         vo.setTop10Products(List.of());
         vo.setMonthTop10ByOrder(List.of());
         vo.setTrend10Days(List.of());
-        vo.setMemberGrowth10Days(List.of());
         vo.setMonthDailyTrend(List.of());
         vo.setSaleByCategory(List.of());
         vo.setAvgPriceToday(BigDecimal.ZERO);

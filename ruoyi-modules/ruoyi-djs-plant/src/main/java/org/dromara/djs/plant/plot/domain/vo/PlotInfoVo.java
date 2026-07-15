@@ -77,27 +77,22 @@ public class PlotInfoVo implements Serializable {
     private BigDecimal plotLocationX;
     private BigDecimal plotLocationY;
 
-    @ExcelProperty(value = "土壤类型", converter = ExcelDictConvert.class)
-    @ExcelDictFormat(dictType = "djs_soil_type")
+    @ExcelProperty(value = "土壤类型")
     private String soilType;
 
-    @ExcelProperty(value = "土壤肥力", converter = ExcelDictConvert.class)
-    @ExcelDictFormat(dictType = "djs_soil_fertility")
+    @ExcelProperty(value = "土壤肥力")
     private String soilFertility;
 
     @ExcelProperty(value = "PH")
     private BigDecimal soilPh;
 
-    @ExcelProperty(value = "地势", converter = ExcelDictConvert.class)
-    @ExcelDictFormat(dictType = "djs_terrain_condition")
+    @ExcelProperty(value = "地势")
     private String terrainCondition;
 
-    @ExcelProperty(value = "光照", converter = ExcelDictConvert.class)
-    @ExcelDictFormat(dictType = "djs_light_condition")
+    @ExcelProperty(value = "光照")
     private String lightCondition;
 
-    @ExcelProperty(value = "排水", converter = ExcelDictConvert.class)
-    @ExcelDictFormat(dictType = "djs_drain_condition")
+    @ExcelProperty(value = "排水")
     private String drainCondition;
 
     @ExcelProperty(value = "创建时间")

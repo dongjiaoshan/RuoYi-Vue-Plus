@@ -42,4 +42,16 @@ public class PlantActivityVo implements Serializable {
 
     /** 记录班组名称（enrich from t_plant_work_team.team_name，可空）。 */
     private String teamName;
+
+    /** 采摘去向原始字典值（{@code djs_pick_dest}：sale/veg_fresh/platform/loss/feed；NULL=历史销售）。 */
+    private String pickDest;
+
+    /** 采摘去向字典标签（enrich，getDictLabel(djs_pick_dest)；缺失回落原始值，row164 记录卡展示）。 */
+    private String pickDestLabel;
+
+    /** 记录人 userId（= t_plant_plant_activity.recorder_id，可空）。 */
+    private Long recorderId;
+
+    /** 采摘处理人姓名（enrich from sys_user.nick_name，可空，row164 记录卡展示）。 */
+    private String recorderName;
 }

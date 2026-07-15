@@ -704,6 +704,11 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
             .set(PlantDetails::getUpdateBy, updateBy);
         if (toCompleted) {
             uw.set(PlantDetails::getEndHarvestdate, bo.getAdjustDate());
+        } else {
+            // row160④：首次采摘录入（待采摘 → 采摘中）时把所选班组回写 plant_details.harvest_by，
+            // 作为「首次采摘录入班组」权威源。第二次录入（采摘中 → 采摘完成）时前端读回该班组预填并锁定，
+            // 保证同一地块二次录入班组默认第一次的且不可调整。完成态不再改写班组。
+            uw.set(PlantDetails::getHarvestBy, bo.getTeamId());
         }
         int affected = plantDetailsMapper.update(null, uw);
 

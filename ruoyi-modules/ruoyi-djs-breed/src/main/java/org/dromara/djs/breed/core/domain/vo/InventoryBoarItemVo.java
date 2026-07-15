@@ -14,10 +14,10 @@ public class InventoryBoarItemVo {
     /** 耳号 */
     private String earNo;
 
-    /** 品种 code（djs_pig_breed，前端字典翻译） */
+    /** 品种 code（t_farm_breed_info 主数据翻译） */
     private String breedCode;
 
-    /** 品系 code（djs_pig_strain） */
+    /** 品系 code（t_farm_breed_info 主数据翻译） */
     private String strainCode;
 
     /** 品种中文名（t_farm_breed_info 主表优先 → djs_pig_breed 字典 → code 回落） */

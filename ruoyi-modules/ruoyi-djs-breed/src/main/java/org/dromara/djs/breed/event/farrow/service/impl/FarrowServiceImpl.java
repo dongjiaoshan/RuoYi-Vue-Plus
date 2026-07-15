@@ -269,8 +269,8 @@ public class FarrowServiceImpl implements IFarrowService {
             // 事件时日龄：分娩当时母猪日龄 = farrowDate - birth_date（farrowDate 缺时回落 NOW）
             LocalDate eventDate = vo.getFarrowDate() != null ? vo.getFarrowDate().toLocalDate() : LocalDate.now();
             vo.setAgeDays(calcAgeDays(p, eventDate));
-            vo.setPigStrainName(resolveBreedStrainName(strainNameMap, "djs_pig_strain", p.getPigStrainCode()));
-            vo.setPigBreedName(resolveBreedStrainName(breedNameMap, "djs_pig_breed", p.getPigBreedCode()));
+            vo.setPigStrainName(resolveBreedStrainName(strainNameMap, p.getPigStrainCode()));
+            vo.setPigBreedName(resolveBreedStrainName(breedNameMap, p.getPigBreedCode()));
         }
     }
 
@@ -284,7 +284,7 @@ public class FarrowServiceImpl implements IFarrowService {
     }
 
     /** 品种/品系 code→中文名：主数据 t_farm_breed_info 优先 → 字典回落 → 原始 code 回落（缺 code 返 null）。 */
-    private String resolveBreedStrainName(Map<String, String> infoNameMap, String dictType, String code) {
+    private String resolveBreedStrainName(Map<String, String> infoNameMap, String code) {
         if (StringUtils.isBlank(code)) {
             return null;
         }
@@ -292,8 +292,7 @@ public class FarrowServiceImpl implements IFarrowService {
         if (StringUtils.isNotBlank(name)) {
             return name;
         }
-        String label = dictService.getDictLabel(dictType, code);
-        return StringUtils.isNotBlank(label) ? label : code;
+        return code;
     }
 
     @Override
@@ -341,8 +340,8 @@ public class FarrowServiceImpl implements IFarrowService {
             // 仔猪品系/品种继承母猪（母猪 pig_strain_code / pig_breed_code → 主数据/字典翻译）
             Pig mother = motherById.get(r.getPigId());
             if (mother != null) {
-                vo.setPigletStrainName(resolveBreedStrainName(strainNameMap, "djs_pig_strain", mother.getPigStrainCode()));
-                vo.setPigletBreedName(resolveBreedStrainName(breedNameMap, "djs_pig_breed", mother.getPigBreedCode()));
+                vo.setPigletStrainName(resolveBreedStrainName(strainNameMap, mother.getPigStrainCode()));
+                vo.setPigletBreedName(resolveBreedStrainName(breedNameMap, mother.getPigBreedCode()));
             }
             // 日龄 = NOW - farrowDate + 1（仔猪日龄，出生当天算 1 日龄 · 畜牧惯例）；farrowDate 缺时 null（mp 端该格不渲染）
             if (r.getFarrowDate() != null) {

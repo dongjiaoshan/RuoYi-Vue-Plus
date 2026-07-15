@@ -4,10 +4,8 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.common.tenant.helper.TenantHelper;
 import org.dromara.djs.store.dashboard.domain.vo.StoreDashboardDailyVo;
-import org.dromara.djs.store.dashboard.domain.vo.StoreDashboardMemberStatVo;
 import org.dromara.djs.store.dashboard.domain.vo.StoreDashboardSummaryVo;
 import org.dromara.djs.store.dashboard.domain.vo.StoreGroupCountVo;
-import org.dromara.djs.store.dashboard.domain.vo.StoreMemberGrowthPointVo;
 import org.dromara.djs.store.dashboard.domain.vo.StoreProductRankItemVo;
 import org.dromara.djs.store.dashboard.domain.vo.StoreSaleCategoryVo;
 import org.dromara.djs.store.dashboard.domain.vo.StoreTrendPointVo;
@@ -85,10 +83,7 @@ public class StoreDashboardServiceImpl implements IStoreDashboardService {
         vo.setPendingShipCount(nz(dashboardMapper.countPendingShip(tenantId, storeId)));
         vo.setPendingPurchaseCount(nz(dashboardMapper.countPendingPurchase(tenantId, storeId)));
 
-        // 会员 KPI（原型「会员信息组」：今日新增 / 会员总数 / 老客复购 / 本月客单价）
-        vo.setTotalMembers(nzLong(dashboardMapper.countTotalMembers(tenantId, storeId)));
-        vo.setTodayNewMembers(nzLong(dashboardMapper.countTodayNewMembers(tenantId, storeId)));
-        vo.setRepeatCustomer(nzLong(dashboardMapper.countRepeatCustomers(tenantId, storeId)));
+        // 本月客单价（monthSaleAmount / monthOrderCount）
         vo.setMonthAvgPrice(avg(vo.getMonthSaleAmount(), vo.getMonthOrderCount()));
 
         vo.setProductStructure(nzList(dashboardMapper.selectProductStructure(tenantId, storeId)));
@@ -98,9 +93,6 @@ public class StoreDashboardServiceImpl implements IStoreDashboardService {
 
         // 近 10 日趋势：销售 trend 为基，按日期 union merge 退货量（无销售但有退货的日补点），算客单价
         vo.setTrend10Days(buildTrend10Days(tenantId, storeId));
-
-        // 近 10 日新增会员趋势（原型「近十日订单数与新会员趋势」竖柱）
-        vo.setMemberGrowth10Days(nzList(dashboardMapper.selectMemberGrowth10Days(tenantId, storeId)));
 
         // 本月逐日趋势（原型「销售额与客单价趋势」竖柱=销售额 + 折线=客单价）
         vo.setMonthDailyTrend(buildMonthDailyTrend(tenantId, storeId));
@@ -115,25 +107,6 @@ public class StoreDashboardServiceImpl implements IStoreDashboardService {
         vo.setTodayRechargeAmount(null);
         vo.setTodayRechargeAmountYoy(null);
 
-        return vo;
-    }
-
-    @Override
-    public List<StoreMemberGrowthPointVo> getMemberGrowth10Days(Long storeId) {
-        String tenantId = currentTenant();
-        return nzList(dashboardMapper.selectMemberGrowth10Days(tenantId, storeId));
-    }
-
-    @Override
-    public StoreDashboardMemberStatVo getMemberStat(Long storeId) {
-        String tenantId = currentTenant();
-        StoreDashboardMemberStatVo vo = new StoreDashboardMemberStatVo();
-        long todayNew = nzLong(dashboardMapper.countTodayNewMembers(tenantId, storeId));
-        vo.setTotalCount(nzLong(dashboardMapper.countTotalMembers(tenantId, storeId)));
-        vo.setTodayNew(todayNew);
-        // V1 无渠道 / 推荐人字段 → 今日发展口径等同今日新增（见 assumptions）
-        vo.setTodayDeveloped(todayNew);
-        vo.setMonthNew(nzLong(dashboardMapper.countMonthNewMembers(tenantId, storeId)));
         return vo;
     }
 

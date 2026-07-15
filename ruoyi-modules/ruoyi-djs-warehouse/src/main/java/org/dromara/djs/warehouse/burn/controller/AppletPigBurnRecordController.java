@@ -23,6 +23,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
@@ -62,11 +63,14 @@ public class AppletPigBurnRecordController extends BaseController {
 
     /**
      * mp 入库产品类型列表（白条标准 4 类型：整只 / 半只 / 猪头 / 猪蹄）。
+     *
+     * <p>可选 {@code barInfoId}（row171）：带上则每产品回填该白条已入库份数 recordedCount，
+     * mp 进页 / 重进时据此还原「已入库 x/2」计数（不再仅靠前端 session Map，重进会丢）。</p>
      */
     @SaCheckLogin
     @GetMapping("/productTypes")
-    public R<List<BurnProductTypeVo>> productTypes() {
-        return R.ok(service.queryProductTypes());
+    public R<List<BurnProductTypeVo>> productTypes(@RequestParam(required = false) Long barInfoId) {
+        return R.ok(service.queryProductTypes(barInfoId));
     }
 
     /**
@@ -79,6 +83,18 @@ public class AppletPigBurnRecordController extends BaseController {
     @GetMapping("/product/{productId}/inboundLocations")
     public R<List<LocationPickerVo>> productInboundLocations(@PathVariable Long productId) {
         return R.ok(service.queryProductInboundLocations(productId));
+    }
+
+    /**
+     * mp 猪肉类可选入库库位（row170）：固定「猪肉鲜品库」+「冻品库」两个启用库位。
+     *
+     * <p>猪肉类产品（猪头/猪蹄等鲜品）入库时可在这两库间选，默认产品配置库位。白条类（整只/半只）
+     * 不用此端点（锁定产品配置库位）。</p>
+     */
+    @SaCheckLogin
+    @GetMapping("/porkLocations")
+    public R<List<LocationPickerVo>> porkLocations() {
+        return R.ok(service.queryPorkOptionLocations());
     }
 
     /**

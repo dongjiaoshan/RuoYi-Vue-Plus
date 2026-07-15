@@ -107,6 +107,21 @@ public class MedicineVo implements Serializable {
     private String imageUrl;
 
     /**
+     * 今日已领（当日仓库领用出库 SUM，全场口径，与物资领用卡同源；mp 药品领用卡下排，不入 Excel）。row129。
+     */
+    private BigDecimal todayPicked;
+
+    /**
+     * 今日退回（当日仓库领用退回入库 SUM，全场口径；不入 Excel）。row129。
+     */
+    private BigDecimal todayReturned;
+
+    /**
+     * 今日损耗（当日仓库损耗出库 SUM，全场口径；不入 Excel）。row129。
+     */
+    private BigDecimal todayLoss;
+
+    /**
      * 生产厂家。
      */
     @ExcelProperty(value = "生产厂家")

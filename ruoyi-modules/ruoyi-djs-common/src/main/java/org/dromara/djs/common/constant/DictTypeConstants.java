@@ -1,21 +1,20 @@
 package org.dromara.djs.common.constant;
 
 /**
- * djs 业务字典类型常量（45 类）。
+ * djs 业务字典类型常量（32 类）。
  *
  * <p>所有业务代码使用本常量引用 {@code sys_dict_type.dict_type} 字符串，
- * 避免 30+ 个下游 ticket 硬编码 "djs_pig_breed" 之类字符串散落。</p>
+ * 避免 30+ 个下游 ticket 硬编码 "djs_pig_sex" 之类字符串散落。</p>
  *
  * <p>数据源：{@code db/migration} 下各域 dict seed。
- * 若 seed SQL 增删 dict_type，本文件必须同步更新（当前 45 类）。</p>
+ * 若 seed SQL 增删 dict_type，本文件必须同步更新（当前 32 类）。</p>
  *
  * <p>分组：</p>
  * <ul>
  *   <li>A. 系统通用（4 类）</li>
- *   <li>B. 养殖域（22 类）</li>
- *   <li>C. 种植域（9 类）</li>
- *   <li>D. 仓库域（6 类）</li>
- *   <li>E. 门店域（1 类）</li>
+ *   <li>B. 养殖域（18 类）</li>
+ *   <li>C. 种植域（2 类）</li>
+ *   <li>D. 仓库域（5 类）</li>
  *   <li>H. 通用扩展（3 类，含跨域盘点状态）</li>
  * </ul>
  *
@@ -44,13 +43,10 @@ public final class DictTypeConstants {
     /** 通用是否：1 是 / 0 否。 */
     public static final String YES_NO = "djs_yes_no";
 
-    // ---------------- B. 养殖域（22 类） ----------------
+    // ---------------- B. 养殖域（18 类） ----------------
 
     /** 猪只性别（DB 列值 M/F，对齐 doc/11 R8）。 */
     public static final String PIG_SEX = "djs_pig_sex";
-
-    /** 猪只品种：duroc / landrace / yorkshire / pic / binary / ternary / other。 */
-    public static final String PIG_BREED = "djs_pig_breed";
 
     /** 猪只生命周期阶段（9 状态，与 BRD-CORE-001 状态机 enum 必须严格一致）。 */
     public static final String PIG_LIFECYCLE = "djs_pig_lifecycle";
@@ -79,9 +75,6 @@ public final class DictTypeConstants {
     /** 疫苗类型（mp 用药类型=疫苗 时联动二级下拉）。 */
     public static final String VACCINE_TYPE = "djs_vaccine_type";
 
-    /** 配种方式（BRD-EVENT-002 BREED breedingType；1=本场公猪 / 2=精液产品 / AI / LQ / RJ；对齐 doc/11）。 */
-    public static final String MATING_METHOD = "djs_mating_method";
-
     /** 死亡原因（BRD-EVENT-004 DIE deathReason）。 */
     public static final String DEATH_REASON = "djs_death_reason";
 
@@ -100,19 +93,13 @@ public final class DictTypeConstants {
     /** 药品领用动作（BRD-MED-002：use=领用 / return=退回 / loss=损耗；与用药类型 MEDICINE_USE_TYPE 语义分离）。 */
     public static final String MED_PICK_ACTION = "djs_med_pick_action";
 
-    /** 用药量单位（mp 用药领用：ml/L/mg/g/kg/片，默认 ml）。 */
-    public static final String MEDICINE_UNIT = "djs_medicine_unit";
-
     /** 引种类型（BRD-EVENT-001：external 外部引种 / internal 内部引种；对齐 t_farm_pig_introduce.introduce_type）。 */
     public static final String INTRODUCE_TYPE = "djs_introduce_type";
-
-    /** 猪只品系（与 djs_pig_breed 同源；引种页 pigStrainCode 下拉源）。 */
-    public static final String PIG_STRAIN = "djs_pig_strain";
 
     /** 返空流异常类型（BRD-EVENT-002 NULL_RETURN，DB 存 R 返情 / A 流产 / N 空怀，映射状态机 FQ/LC/KH）。 */
     public static final String ABNORMAL = "djs_abnormal";
 
-    // ---------------- C. 种植域（9 类） ----------------
+    // ---------------- C. 种植域（2 类） ----------------
 
     /** 作物科属。 */
     public static final String CROP_FAMILY = "djs_crop_family";
@@ -120,31 +107,7 @@ public final class DictTypeConstants {
     /** 地块类型。 */
     public static final String PLOT_TYPE = "djs_plot_type";
 
-    /** 土壤类型。 */
-    public static final String SOIL_TYPE = "djs_soil_type";
-
-    /** 土壤肥力。 */
-    public static final String SOIL_FERTILITY = "djs_soil_fertility";
-
-    /** 地形条件。 */
-    public static final String TERRAIN_CONDITION = "djs_terrain_condition";
-
-    /** 排水条件。 */
-    public static final String DRAIN_CONDITION = "djs_drain_condition";
-
-    /** 光照条件。 */
-    public static final String LIGHT_CONDITION = "djs_light_condition";
-
-    /** 耕作类型。 */
-    public static final String TILLAGE_TYPE = "djs_tillage_type";
-
-    /** 耕作方式。 */
-    public static final String TILLAGE_WAY = "djs_tillage_way";
-
-    // ---------------- D. 仓库域（6 类） ----------------
-
-    /** 仓库类型。 */
-    public static final String WAREHOUSE_TYPE = "djs_warehouse_type";
+    // ---------------- D. 仓库域（5 类） ----------------
 
     /** 农事工作类型（饲料投放 / 施药 / 施肥 等）。 */
     public static final String FARM_WORK_TYPE = "djs_farm_work_type";
@@ -160,11 +123,6 @@ public final class DictTypeConstants {
 
     /** 物资/商品分类（feed/medicine/fertilizer/pesticide/packaging/seed/equipment/raw/other；t_warehouse_product_info.buy_class，mp 物资领用「商品分类」展示+筛选码→中文）。 */
     public static final String BUY_CLASS = "djs_buy_class";
-
-    // ---------------- E. 门店域（1 类） ----------------
-
-    /** 会员等级。 */
-    public static final String MEMBER_LEVEL = "djs_member_level";
 
     // ---------------- H. 通用扩展（3 类，含跨域盘点状态） ----------------
 

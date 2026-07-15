@@ -3,7 +3,10 @@ package org.dromara.djs.plant.activity.controller.applet;
 import cn.dev33.satoken.annotation.SaCheckLogin;
 import lombok.RequiredArgsConstructor;
 import org.dromara.common.core.domain.R;
+import org.dromara.common.core.service.DictService;
+import org.dromara.common.core.utils.StringUtils;
 import org.dromara.common.web.core.BaseController;
+import org.dromara.djs.common.mapper.DjsUserExtMapper;
 import org.dromara.djs.plant.activity.domain.PlantActivity;
 import org.dromara.djs.plant.activity.domain.vo.PlantActivityVo;
 import org.dromara.djs.plant.activity.service.IPlantActivityService;
@@ -41,9 +44,14 @@ import java.util.stream.Collectors;
 @RequestMapping("/djs/applet/plant/activity")
 public class AppletPlantActivityController extends BaseController {
 
+    /** 采摘去向字典 key（djs_pick_dest：sale/veg_fresh/platform/loss/feed）。 */
+    private static final String DICT_PICK_DEST = "djs_pick_dest";
+
     private final IPlantActivityService plantActivityService;
     private final CropInfoMapper cropInfoMapper;
     private final PlantWorkTeamMapper teamMapper;
+    private final DictService dictService;
+    private final DjsUserExtMapper userExtMapper;
 
     /**
      * 采摘活动记录列表（mp 采摘活动记录，按采摘日期倒序）。
@@ -87,6 +95,21 @@ public class AppletPlantActivityController extends BaseController {
                 .filter(t -> t.getTeamName() != null)
                 .collect(Collectors.toMap(PlantWorkTeam::getId, PlantWorkTeam::getTeamName, (a, b) -> a));
 
+        // row164：采摘处理人姓名批量 enrich（recorder_id → sys_user.nick_name），去重防 N+1
+        List<Long> recorderIds = records.stream()
+            .map(PlantActivity::getRecorderId)
+            .filter(Objects::nonNull)
+            .distinct()
+            .collect(Collectors.toList());
+        Map<Long, String> recorderNameMap = recorderIds.isEmpty()
+            ? Map.of()
+            : userExtMapper.selectNickNamesByIds(recorderIds).stream()
+                .filter(m -> m.get("userId") != null && m.get("nickName") != null)
+                .collect(Collectors.toMap(
+                    m -> ((Number) m.get("userId")).longValue(),
+                    m -> String.valueOf(m.get("nickName")),
+                    (a, b) -> a));
+
         List<PlantActivityVo> list = records.stream().map(r -> {
             PlantActivityVo vo = new PlantActivityVo();
             vo.setId(r.getId());
@@ -96,6 +119,13 @@ public class AppletPlantActivityController extends BaseController {
             vo.setDailyWeight(r.getDailyWeight());
             vo.setActivityBy(r.getActivityBy());
             vo.setTeamName(r.getActivityBy() == null ? null : teamNameMap.get(r.getActivityBy()));
+            // row164：采摘去向字典 label（缺失回落原始值）+ 采摘处理人姓名
+            vo.setPickDest(r.getPickDest());
+            vo.setPickDestLabel(StringUtils.isBlank(r.getPickDest())
+                ? null
+                : dictService.getDictLabel(DICT_PICK_DEST, r.getPickDest()));
+            vo.setRecorderId(r.getRecorderId());
+            vo.setRecorderName(r.getRecorderId() == null ? null : recorderNameMap.get(r.getRecorderId()));
             return vo;
         }).collect(Collectors.toList());
 

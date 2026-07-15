@@ -60,6 +60,19 @@ public class MedRecord extends TenantEntity {
     private String earNo;
 
     /**
+     * 用药时的猪只类型快照（djs_pig_type: sow/boar/piglet/fattening）。
+     * 提交时从 {@code t_farm_pig_info.pig_type} 冗余落库，供列表显示（耳号后类型状态）
+     * 与按猪只类型搜索使用；drug_type=2 master 行为 NULL。
+     */
+    private String pigType;
+
+    /**
+     * 用药时的母猪当前状态快照（djs_pig_lifecycle）。
+     * 提交时从 {@code t_farm_pig_info.current_status} 冗余落库；drug_type=2 master 行为 NULL。
+     */
+    private String pigStatus;
+
+    /**
      * 批量用药 master id（drug_type=3 detail 行回指）。
      */
     private Long masterId;

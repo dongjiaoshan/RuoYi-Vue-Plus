@@ -24,7 +24,7 @@ jobs:
           command_timeout: 30m
           script: |
             set -e
-            REPO_DIR=/opt/dongjiaoshan-prod
+            REPO_DIR=/www/wwwroot/api.dongjiaoshan.com
             COMPOSE="docker compose -f script/docker/docker-compose.deploy.yml"
 
             cd "$REPO_DIR"

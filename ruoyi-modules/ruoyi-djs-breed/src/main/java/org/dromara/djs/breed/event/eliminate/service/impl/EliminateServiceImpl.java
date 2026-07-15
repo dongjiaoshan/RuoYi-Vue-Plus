@@ -170,8 +170,8 @@ public class EliminateServiceImpl implements IEliminateService {
             // 事件时日龄：淘汰当时日龄 = cullingDate - birth_date（cullingDate 缺时回落 NOW）
             LocalDate eventDate = vo.getCullingDate() != null ? vo.getCullingDate().toLocalDate() : LocalDate.now();
             vo.setAgeDays(calcAgeDays(p, eventDate));
-            vo.setPigStrainName(resolveBreedStrainName(strainNameMap, "djs_pig_strain", p.getPigStrainCode()));
-            vo.setPigBreedName(resolveBreedStrainName(breedNameMap, "djs_pig_breed", p.getPigBreedCode()));
+            vo.setPigStrainName(resolveBreedStrainName(strainNameMap, p.getPigStrainCode()));
+            vo.setPigBreedName(resolveBreedStrainName(breedNameMap, p.getPigBreedCode()));
             vo.setBarnName(p.getBarnId() != null ? barnNameById.get(p.getBarnId()) : null);
             vo.setPenName(p.getPenId() != null ? penNameById.get(p.getPenId()) : null);
         }
@@ -228,7 +228,7 @@ public class EliminateServiceImpl implements IEliminateService {
     }
 
     /** 品种/品系 code→中文名：主数据 t_farm_breed_info 优先 → 字典回落 → 原始 code 回落（缺 code 返 null）。 */
-    private String resolveBreedStrainName(Map<String, String> infoNameMap, String dictType, String code) {
+    private String resolveBreedStrainName(Map<String, String> infoNameMap, String code) {
         if (StringUtils.isBlank(code)) {
             return null;
         }
@@ -236,8 +236,7 @@ public class EliminateServiceImpl implements IEliminateService {
         if (StringUtils.isNotBlank(name)) {
             return name;
         }
-        String label = dictService.getDictLabel(dictType, code);
-        return StringUtils.isNotBlank(label) ? label : code;
+        return code;
     }
 
     /**

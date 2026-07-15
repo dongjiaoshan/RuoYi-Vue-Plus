@@ -41,6 +41,14 @@ public class MedRecordVo implements Serializable {
     @ExcelProperty(value = "耳号")
     private String earNo;
 
+    /** 用药时猪只类型快照（djs_pig_type），列表耳号后展示 + 按类型搜索。 */
+    @ExcelProperty(value = "猪只类型")
+    private String pigType;
+
+    /** 用药时母猪状态快照（djs_pig_lifecycle）。 */
+    @ExcelProperty(value = "猪只状态")
+    private String pigStatus;
+
     private Long masterId;
 
     @ExcelProperty(value = "记录类型(单/批)")

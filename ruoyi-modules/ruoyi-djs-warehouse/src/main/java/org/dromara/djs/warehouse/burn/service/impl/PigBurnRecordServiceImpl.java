@@ -136,6 +136,12 @@ public class PigBurnRecordServiceImpl
     private static final Integer LOCATION_STATUS_ENABLED = 1;
 
     /**
+     * row170 猪肉类可选库位名（按库位名精确匹配，两库 location_type 均为 warehouse 无法靠字典类型过滤）。
+     */
+    private static final String PORK_FRESH_LOCATION_NAME = "猪肉鲜品库";
+    private static final String FROZEN_LOCATION_NAME = "冻品库";
+
+    /**
      * 损耗类型（字典 {@code djs_loss_type}）：燎毛损耗（DENGBO row27）。
      */
     private static final String LOSS_TYPE_BURN = "burn_loss";
@@ -392,6 +398,11 @@ public class PigBurnRecordServiceImpl
 
     @Override
     public List<BurnProductTypeVo> queryProductTypes() {
+        return queryProductTypes(null);
+    }
+
+    @Override
+    public List<BurnProductTypeVo> queryProductTypes(Long barInfoId) {
         List<ProductInfo> types = loadWhiteBarTypes();
         // IMG-LIB-001：批量解析产品图，禁 N+1。
         // L1 优先用户上传的缩略图 product_thumb（admin 产品表单唯一图片入口），退回自动匹配的 image_oss_id；
@@ -401,6 +412,9 @@ public class PigBurnRecordServiceImpl
             .toList();
         List<String> urls = imageUrlResolver.resolveList(items);
         boolean urlsAligned = urls.size() == types.size();
+        // row171：带 barInfoId 时聚合该白条 product_inhouse 每 productId 已入库行数（半只两扇 → 2），
+        // 回填 recordedCount，让 mp 卡片「已入库 x/2」计数在重进 / 热重载后仍准确（不再仅靠 session Map）。
+        Map<Long, Integer> recordedCountMap = loadRecordedCountMap(barInfoId);
         List<BurnProductTypeVo> result = new ArrayList<>(types.size());
         for (int i = 0; i < types.size(); i++) {
             ProductInfo p = types.get(i);
@@ -410,6 +424,63 @@ public class PigBurnRecordServiceImpl
             vo.setProductName(p.getProductName());
             vo.setProductType(resolveProductType(p.getProductId()));
             vo.setImageUrl(urlsAligned ? urls.get(i) : null);
+            vo.setRecordedCount(recordedCountMap.getOrDefault(p.getId(), 0));
+            result.add(vo);
+        }
+        return result;
+    }
+
+    /**
+     * 聚合该白条 {@code product_inhouse} 中每 productId 已入库行数（row171）。
+     *
+     * <p>一头白条一次燎毛产出行 = 一条 inhouse（半只分两次录 → 同 productId 2 条 → count=2）。
+     * barInfoId 为 null 返空表（recordedCount 恒 0）。</p>
+     *
+     * @return productId → 已入库行数
+     */
+    private Map<Long, Integer> loadRecordedCountMap(Long barInfoId) {
+        if (barInfoId == null) {
+            return Map.of();
+        }
+        List<ProductInhouse> rows = productInhouseMapper.selectList(
+            new LambdaQueryWrapper<ProductInhouse>()
+                .select(ProductInhouse::getProductId)
+                .eq(ProductInhouse::getWhiteBarId, barInfoId));
+        Map<Long, Integer> map = new HashMap<>();
+        for (ProductInhouse ih : rows) {
+            if (ih.getProductId() != null) {
+                map.merge(ih.getProductId(), 1, Integer::sum);
+            }
+        }
+        return map;
+    }
+
+    /**
+     * row170：猪肉类可选入库库位 = 固定「猪肉鲜品库」+「冻品库」两个启用库位（按此顺序）。
+     *
+     * <p>两库 location_type 在 v3 reseed 后均为 {@code warehouse}，无法靠字典类型过滤 → 按库位名精确匹配。
+     * 缺某库（如未 seed）则跳过，返回可命中的子集。</p>
+     */
+    @Override
+    public List<LocationPickerVo> queryPorkOptionLocations() {
+        List<String> names = List.of(PORK_FRESH_LOCATION_NAME, FROZEN_LOCATION_NAME);
+        List<LocationInfo> rows = locationInfoMapper.selectList(
+            new LambdaQueryWrapper<LocationInfo>()
+                .in(LocationInfo::getLocationName, names)
+                .eq(LocationInfo::getLocationStatus, LOCATION_STATUS_ENABLED));
+        Map<String, LocationInfo> byName = rows.stream()
+            .collect(Collectors.toMap(LocationInfo::getLocationName, l -> l, (a, b) -> a));
+        List<LocationPickerVo> result = new ArrayList<>(names.size());
+        for (String name : names) {
+            LocationInfo l = byName.get(name);
+            if (l == null) {
+                continue;
+            }
+            LocationPickerVo vo = new LocationPickerVo();
+            vo.setId(l.getId());
+            vo.setLocationCode(l.getLocationCode());
+            vo.setLocationName(l.getLocationName());
+            vo.setLocationType(l.getLocationType());
             result.add(vo);
         }
         return result;

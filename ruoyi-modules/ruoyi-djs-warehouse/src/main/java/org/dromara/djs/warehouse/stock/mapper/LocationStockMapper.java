@@ -466,8 +466,13 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
      * 单租户显式 {@code tenant_id='1001'}，未软删。keyword 非空时按 product_name 模糊过滤。
      * 排序：有库存（{@code stock>0}）优先，再按药品名（row150：有库存优先展示）。</p>
      *
+     * <p>今日三量（{@code todayPicked / todayReturned / todayLoss}）子查询与物资领用卡
+     * {@link #selectMatIssueItemsByType} 完全同源（全场口径、按 {@code DATE(flow_date)=CURDATE()}）：
+     * 领用 {@code dept_pick_out} / 退回 {@code pick_return_in} / 损耗 {@code loss}。药品经 provider
+     * 领用 / 退回 / 损耗均落这些 {@code stock_flow} 流水，故三量与物资领用药品库卡一致（row129）。</p>
+     *
      * @param keyword 药品名模糊过滤（可空）
-     * @return 药品商品行（id / name / unit / spec / stock），有库存优先、再按药品名排序
+     * @return 药品商品行（id / name / unit / spec / stock / todayPicked / todayReturned / todayLoss），有库存优先、再按药品名排序
      */
     @Select("""
         <script>
@@ -476,7 +481,22 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
                p.product_unit AS unit,
                p.product_spec AS spec,
                COALESCE(NULLIF(p.product_thumb, ''), p.image_oss_id) AS imageId,
-               COALESCE(st.stock, 0) AS stock
+               COALESCE(st.stock, 0) AS stock,
+               COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
+                          WHERE f.product_id = p.id
+                            AND f.flow_type IN ('prod_pick_out','dept_pick_out','pick_out')
+                            AND DATE(f.flow_date) = CURDATE()
+                            AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayPicked,
+               COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
+                          WHERE f.product_id = p.id
+                            AND f.flow_type IN ('prod_return_in','pick_return_in')
+                            AND DATE(f.flow_date) = CURDATE()
+                            AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayReturned,
+               COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
+                          WHERE f.product_id = p.id
+                            AND f.flow_type = 'loss'
+                            AND DATE(f.flow_date) = CURDATE()
+                            AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayLoss
           FROM t_warehouse_product_info p
           LEFT JOIN (SELECT product_id, SUM(product_stock) AS stock
                        FROM t_warehouse_location_stock
@@ -496,6 +516,39 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
         </script>
         """)
     List<Map<String, Object>> selectMedicineProducts(@Param("keyword") String keyword);
+
+    /**
+     * 列出某操作人「近 3 天已领用」的 distinct 药品商品 id（{@code buy_class='medicine'}），
+     * 供用药治疗「使用药品」picker（{@link org.dromara.djs.common.medicine.api.MedicineStockProvider#listRecentPickedMedicineIds}）。
+     *
+     * <p>数据源为仓库领用出库流水 {@code t_warehouse_stock_flow}（flow_type=dept_pick_out，近 3 天），
+     * JOIN {@code t_warehouse_product_info}（buy_class='medicine'）确保只取药品。<b>覆盖两个药品领用入口</b>
+     * （疫苗药品页药品领用 + 物资领用药品库领用）——两入口领用都落 dept_pick_out 流水（row131）。
+     * {@code operatorId} 非空时按 {@code f.operator_id} 限定当前 mp 用户；为 null 时不限（admin 端）。
+     * 按最近领用时间倒序。单租户显式 {@code tenant_id='1001'}。</p>
+     *
+     * @param operatorId 操作人 user_id（可空 = 不限）
+     * @return 药品商品 id 列表（按最近领用时间倒序，DISTINCT）
+     */
+    @Select("""
+        <script>
+        SELECT f.product_id
+          FROM t_warehouse_stock_flow f
+          JOIN t_warehouse_product_info p
+            ON p.id = f.product_id
+           AND p.buy_class = 'medicine'
+           AND p.del_flag = '0'
+           AND p.tenant_id = '1001'
+         WHERE f.flow_type = 'dept_pick_out'
+           AND f.del_flag = '0'
+           AND f.tenant_id = '1001'
+           AND DATE(f.flow_date) >= CURDATE() - INTERVAL 3 DAY
+         <if test="operatorId != null"> AND f.operator_id = #{operatorId} </if>
+         GROUP BY f.product_id
+         ORDER BY MAX(f.flow_date) DESC, MAX(f.id) DESC
+        </script>
+        """)
+    List<Long> selectRecentPickedMedicineIds(@Param("operatorId") Long operatorId);
 
     /**
      * 按 id 集合列出药品商品（{@code buy_class='medicine'}）+ 跨库位库存合计。

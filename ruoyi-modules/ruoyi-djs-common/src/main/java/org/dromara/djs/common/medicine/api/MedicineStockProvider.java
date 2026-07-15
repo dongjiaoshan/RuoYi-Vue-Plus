@@ -33,12 +33,27 @@ public interface MedicineStockProvider {
 
     /**
      * 按 id 集合列出药品商品（{@code buy_class='medicine'}）+ 当前库存合计，供「用药治疗 / 批量用药」
-     * 消费「近 3 天已领用药品」清单（id 来自 {@code t_breed_medicine_usage} 领用台账）。
+     * 消费「近 3 天已领用药品」清单（id 来自 {@link #listRecentPickedMedicineIds}）。
      *
      * @param ids 药品商品 id 集合
      * @return 药品商品行；无则空 list（入参空亦返空 list）
      */
     List<MedicineProductDto> listMedicineProductsByIds(Collection<Long> ids);
+
+    /**
+     * 列出某操作人「近 3 天已领用」的 distinct 药品商品 id（{@code buy_class='medicine'}），
+     * 供用药治疗「使用药品」picker 数据源，按最近领用时间倒序。
+     *
+     * <p>数据源统一为仓库领用出库流水 {@code t_warehouse_stock_flow}（flow_type=dept_pick_out，
+     * 近 3 天），覆盖<b>两个药品领用入口</b>（疫苗药品页药品领用 + 物资领用药品库领用）——两入口经本 provider /
+     * MatFlow 领用都落 dept_pick_out 流水，故从流水取「已领药品」天然一致（row131：从物资领用药品库领用
+     * 出来的药品也能在「使用药品」里显示）。取代原「只从 {@code t_breed_medicine_usage} 取」的口径
+     * （那只覆盖疫苗药品页入口）。</p>
+     *
+     * @param operatorId 操作人 user_id（null = 不限，全场近 3 天已领药品，admin 端）
+     * @return 药品商品 id 列表（按最近领用时间倒序，DISTINCT）；无则空 list
+     */
+    List<Long> listRecentPickedMedicineIds(Long operatorId);
 
     /**
      * 扣减药品库存（领用 use），落该药品商品库存所在库位（{@code selectDefaultLocationByProduct}）。

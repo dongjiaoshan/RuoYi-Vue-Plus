@@ -32,6 +32,16 @@ public class MedRecordQuery extends BaseEntity {
     private String medicineType;
 
     /**
+     * 药品名称（模糊）。
+     */
+    private String medicineName;
+
+    /**
+     * 用药时猪只类型（djs_pig_type，精确，走 pig_type 快照列）。
+     */
+    private String pigType;
+
+    /**
      * 记录类型（1=单只 / 2=master / 3=detail，精确）。
      */
     private Integer drugType;

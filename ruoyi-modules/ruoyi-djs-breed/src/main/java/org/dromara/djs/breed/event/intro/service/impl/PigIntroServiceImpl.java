@@ -350,7 +350,7 @@ public class PigIntroServiceImpl implements IPigIntroService {
             .collect(Collectors.toList());
     }
 
-    /** 品种名解析（#22）：t_farm_breed_info 主表优先 → djs_pig_breed 字典回落 → 原始 code 回落。 */
+    /** 品种名解析（#22）：t_farm_breed_info 主表优先 → 原始 code 回落（旧静态字典已废，走 t_farm_breed_info 主表）。 */
     private String translateBreed(Map<String, String> breedNameMap, String code) {
         if (StringUtils.isBlank(code)) {
             return null;
@@ -359,11 +359,10 @@ public class PigIntroServiceImpl implements IPigIntroService {
         if (StringUtils.isNotBlank(name)) {
             return name;
         }
-        String label = dictService.getDictLabel("djs_pig_breed", code);
-        return StringUtils.isNotBlank(label) ? label : code;
+        return code;
     }
 
-    /** 品系名解析（#22）：t_farm_breed_info 主表优先 → djs_pig_strain 字典回落 → 原始 code 回落（601-6）。 */
+    /** 品系名解析（#22）：t_farm_breed_info 主表优先 → 原始 code 回落（旧静态字典已废，走 t_farm_breed_info 主表）。 */
     private String translateStrain(Map<String, String> strainNameMap, String code) {
         if (StringUtils.isBlank(code)) {
             return null;
@@ -372,8 +371,7 @@ public class PigIntroServiceImpl implements IPigIntroService {
         if (StringUtils.isNotBlank(name)) {
             return name;
         }
-        String label = dictService.getDictLabel("djs_pig_strain", code);
-        return StringUtils.isNotBlank(label) ? label : code;
+        return code;
     }
 
     /** 日龄（天）= NOW - birthDate；birthDate 为 null（外部引种 / 无出生日期）返 null（601-6）。 */

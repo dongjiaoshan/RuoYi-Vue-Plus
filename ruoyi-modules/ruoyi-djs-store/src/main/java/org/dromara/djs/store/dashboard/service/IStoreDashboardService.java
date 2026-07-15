@@ -1,9 +1,7 @@
 package org.dromara.djs.store.dashboard.service;
 
 import org.dromara.djs.store.dashboard.domain.vo.StoreDashboardDailyVo;
-import org.dromara.djs.store.dashboard.domain.vo.StoreDashboardMemberStatVo;
 import org.dromara.djs.store.dashboard.domain.vo.StoreDashboardSummaryVo;
-import org.dromara.djs.store.dashboard.domain.vo.StoreMemberGrowthPointVo;
 
 import java.util.List;
 
@@ -39,23 +37,5 @@ public interface IStoreDashboardService {
      * @return 每日一览 VO（无数据时速览全 0、统计列表空）
      */
     StoreDashboardDailyVo getDaily(Long storeId);
-
-    /**
-     * 近 10 日客户增长：{@code t_store_member} 按 {@code DATE(create_time)} 每日新增数
-     * （FIX-MGMT-MP-STORE-001）。仅出有新增的日期行，前端按 10 日窗口补 0。
-     *
-     * @param storeId 门店 ID（可空，null 时按数据权限范围聚合）
-     * @return 近 10 日增长点列表（按日期升序，无数据返空列表）
-     */
-    List<StoreMemberGrowthPointVo> getMemberGrowth10Days(Long storeId);
-
-    /**
-     * 会员当日 4 格统计：会员总数 / 今日新增 / 今日发展 / 当月新增
-     * （FIX-MGMT-MP-STORE-001）。V1 无渠道字段，今日发展口径等同今日新增。
-     *
-     * @param storeId 门店 ID（可空，null 时按数据权限范围聚合）
-     * @return 会员 4 格 VO（无数据时 4 格全 0）
-     */
-    StoreDashboardMemberStatVo getMemberStat(Long storeId);
 
 }

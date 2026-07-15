@@ -29,12 +29,12 @@ import static org.mockito.Mockito.when;
  *
  * <p>覆盖：</p>
  * <ul>
- *   <li>queryAllDjsTypes：遍历 50 个 dict_type 全部调 ruoyi 一次</li>
+ *   <li>queryAllDjsTypes：遍历 32 个 dict_type 全部调 ruoyi 一次</li>
  *   <li>currentVersion / queryFull：每次实时聚合计算 SHA-256（不读写 redis）</li>
  *   <li>SHA-256 输出：64 字符小写 hex（不是 MD5 32 字符）</li>
  *   <li>hash 稳定性：相同字典两次算一致</li>
  *   <li><b>回归（甲方反馈）</b>：底层字典数据变化 → version 立即变化，不残留旧值</li>
- *   <li>常量加载：DictTypeConstants 反射出来正好 50 项</li>
+ *   <li>常量加载：DictTypeConstants 反射出来正好 32 项</li>
  * </ul>
  *
  * <p>服务实时聚合底层 ruoyi {@code selectDictDataByType}（命中 {@code CacheNames.SYS_DICT}），
@@ -77,35 +77,35 @@ class DjsDictServiceImplTest {
     }
 
     @Test
-    @DisplayName("DictTypeConstants 反射出来正好 45 项")
+    @DisplayName("DictTypeConstants 反射出来正好 32 项")
     void allDjsDictTypesCount() {
         assertThat(DjsDictServiceImpl.allDjsDictTypesForTest())
-            .hasSize(45)
+            .hasSize(32)
             .allSatisfy(s -> assertThat(s).startsWith(DictTypeConstants.DJS_PREFIX));
     }
 
     @Test
-    @DisplayName("queryAllDjsTypes：遍历 45 个 dict_type 全部调 ruoyi 一次")
+    @DisplayName("queryAllDjsTypes：遍历 32 个 dict_type 全部调 ruoyi 一次")
     void queryAllDjsTypes_callsRuoyiOncePerType() {
         Map<String, List<SysDictDataVo>> all = service.queryAllDjsTypes();
 
-        assertThat(all).hasSize(45);
+        assertThat(all).hasSize(32);
         assertThat(all.keySet()).contains(
-            DictTypeConstants.PIG_SEX, DictTypeConstants.PIG_BREED,
-            DictTypeConstants.WAREHOUSE_TYPE,
-            DictTypeConstants.INTRODUCE_TYPE, DictTypeConstants.PIG_STRAIN,
+            DictTypeConstants.PIG_SEX, DictTypeConstants.STORE_STATUS,
+            DictTypeConstants.BUY_CLASS,
+            DictTypeConstants.INTRODUCE_TYPE, DictTypeConstants.BARN_TYPE,
             DictTypeConstants.HANDLE_TARGET);
-        verify(sysDictTypeService, times(45)).selectDictDataByType(anyString());
+        verify(sysDictTypeService, times(32)).selectDictDataByType(anyString());
     }
 
     @Test
-    @DisplayName("queryFull：实时聚合算 SHA-256（64 hex），返全量 45 项")
+    @DisplayName("queryFull：实时聚合算 SHA-256（64 hex），返全量 32 项")
     void queryFull_computesRealtime() {
         DjsDictFullVo vo = service.queryFull();
 
         assertThat(vo.getVersion()).hasSize(64).matches("[0-9a-f]{64}");
-        assertThat(vo.getData()).hasSize(45);
-        verify(sysDictTypeService, times(45)).selectDictDataByType(anyString());
+        assertThat(vo.getData()).hasSize(32);
+        verify(sysDictTypeService, times(32)).selectDictDataByType(anyString());
     }
 
     @Test
@@ -131,10 +131,10 @@ class DjsDictServiceImplTest {
     void version_reflectsDictDataChange() {
         String before = service.currentVersion();
 
-        // 模拟 admin 改了 PIG_BREED 字典：ruoyi SYS_DICT cache 即时更新 →
+        // 模拟 admin 改了 PIG_SEX 字典：ruoyi SYS_DICT cache 即时更新 →
         // 本服务下次实时聚合拿到新值（旧实现下 version 被缓存 1h，这里会失败）
-        when(sysDictTypeService.selectDictDataByType(DictTypeConstants.PIG_BREED))
-            .thenReturn(singleItem(DictTypeConstants.PIG_BREED, "CHANGED"));
+        when(sysDictTypeService.selectDictDataByType(DictTypeConstants.PIG_SEX))
+            .thenReturn(singleItem(DictTypeConstants.PIG_SEX, "CHANGED"));
 
         String after = service.currentVersion();
 

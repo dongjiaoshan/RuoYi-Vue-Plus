@@ -54,4 +54,14 @@ public class BurnProductTypeVo implements Serializable {
      */
     private String productType;
 
+    /**
+     * 该产品在当前白条已入库份数（row171）。
+     *
+     * <p>仅当 {@code productTypes} 端点带 {@code barInfoId} 入参时回填 = 该白条 {@code product_inhouse}
+     * 中该 productId 的行数（半只两扇分两次录 → 2；未录 → 0）。用于 mp 卡片「已入库 x/2」计数在
+     * 页面重进 / 热重载后仍准确（不再仅靠前端 session Map，重进 singing 白条时 session 为空会丢计数）。
+     * 不带 barInfoId 时恒 0。</p>
+     */
+    private Integer recordedCount;
+
 }

@@ -163,15 +163,14 @@ public interface IPigCoreService {
     /**
      * 品种/品系 code → 中文名解析：主数据 t_farm_breed_info（{@code infoNameMap}）优先 → 字典 {@code dictType} 回落 → 原始 code 回落。
      *
-     * <p>供跨服务（如生长记录 listGrowthTodo）复用同一套解析口径，避免各处重复 dict 回落逻辑。
+     * <p>供跨服务（如生长记录 listGrowthTodo）复用同一套解析口径，避免各处重复回落逻辑。
      * {@code infoNameMap} 由 {@link #loadBreedStrainNameMap} 预载（1=品种 / 2=品系），批量调用前载一次防 N+1。</p>
      *
      * @param infoNameMap breed_info code→名映射（loadBreedStrainNameMap 结果）
-     * @param dictType    回落字典类型（{@code djs_pig_breed} / {@code djs_pig_strain}）
      * @param code        品种/品系 code（空 → 返 null）
-     * @return 中文名（主数据 → 字典 → code 三级回落；code 空返 null）
+     * @return 中文名（t_farm_breed_info 主数据命中→名，否则回落原始 code；code 空返 null）
      */
-    String resolveBreedStrainName(Map<String, String> infoNameMap, String dictType, String code);
+    String resolveBreedStrainName(Map<String, String> infoNameMap, String code);
 
     /**
      * 栋舍 × 头数聚合（BRD-FIX-MP-PIGSELECT-001）——mp 端 PigSelectPanel 顶部「栋舍 chip」数据源。

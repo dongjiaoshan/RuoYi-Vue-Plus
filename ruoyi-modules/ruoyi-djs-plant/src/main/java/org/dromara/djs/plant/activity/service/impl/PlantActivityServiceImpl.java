@@ -32,8 +32,14 @@ import java.util.List;
 public class PlantActivityServiceImpl extends DjsBaseServiceImpl<PlantActivityMapper, PlantActivity>
     implements IPlantActivityService {
 
-    /** 采摘去向「销售」value（djs_pick_dest）：不选地块、不在录入时分摊产量。 */
+    /** 采摘去向「销售」value（djs_pick_dest）：不选地块、按作物维度累加产量。 */
     private static final String PICK_DEST_SALE = "sale";
+
+    /** 种植状态「已完成」value（djs_plant_status / t_plant_plant_details.plant_status）：可采摘前置。 */
+    private static final String PLANT_STATUS_COMPLETED = "completed";
+
+    /** 采摘状态「已完成」value（djs_pick_status / t_plant_plant_details.harvest_status）：终态明细不再作累加首选。 */
+    private static final String PICK_STATUS_COMPLETED = "completed";
 
     private final CropInfoMapper cropInfoMapper;
     private final PlantDetailsMapper plantDetailsMapper;
@@ -109,12 +115,62 @@ public class PlantActivityServiceImpl extends DjsBaseServiceImpl<PlantActivityMa
         activity.setRecorderId(bo.getRecorderId());
         baseMapper.insert(activity);
 
-        // 2. 非销售去向：当场把本次重量累加进所选地块产量（plant_details.actual_yield）
-        //    销售去向：不在录入时分摊（plot_id 为空，结算时由地块完成平均分摊到活动地块）
+        // 2. 累加已采产量（plant_details.actual_yield），保证头卡「已采产量」即时出数（row162）。
+        //    - 非销售去向：累加进所选地块（plotId + cropId 定位）。
+        //    - 销售去向：无地块，按【作物维度】定位该作物下一条明细累加，不依赖 plot_id
+        //      （客户口径：销售录入后已采产量必须反映本次重量；否则 plot_id 空 + 不分摊 → 头卡恒 0）。
         if (!sale) {
             accumulateActualYield(bo.getPlotId(), bo.getCropId(), weight);
+        } else {
+            accumulateActualYieldByCrop(bo.getCropId(), weight);
         }
         return activity.getId();
+    }
+
+    /**
+     * 销售去向（无地块）按作物维度累加已采产量。
+     *
+     * <p>定位该作物下【采摘窗口与当月相交、种植完成】明细，优先未采摘完成（harvest_status != completed）
+     * 的最新一行累加 {@code actual_yield}；无「未完成」候选时退而取最新一行。目标集与采摘活动头卡可见集
+     * （listCropPlots：plant_status='completed' + 采摘窗口与当月相交）对齐，使累加后头卡 Σactual_yield 立即出数。
+     * 无匹配明细 → warn 跳过，不阻断录入。</p>
+     */
+    private void accumulateActualYieldByCrop(Long cropId, BigDecimal weight) {
+        if (cropId == null || weight == null || weight.signum() <= 0) {
+            return;
+        }
+        LocalDate today = LocalDate.now();
+        LocalDate firstDay = today.withDayOfMonth(1);
+        LocalDate lastDay = today.with(java.time.temporal.TemporalAdjusters.lastDayOfMonth());
+        // 该作物下、种植完成、采摘窗口与当月相交的明细（与头卡可见集同口径）
+        List<PlantDetails> candidates = plantDetailsMapper.selectList(
+            new LambdaQueryWrapper<PlantDetails>()
+                .eq(PlantDetails::getCropId, cropId)
+                .eq(PlantDetails::getPlantStatus, PLANT_STATUS_COMPLETED)
+                .le(PlantDetails::getEarliestHarvestdate, lastDay)
+                .ge(PlantDetails::getLastHarvestdate, firstDay)
+                .orderByDesc(PlantDetails::getId));
+        if (candidates.isEmpty()) {
+            log.warn("recordPickActivity[销售]: 未找到当月可采摘 plant_details cropId={}，跳过 actual_yield 累加", cropId);
+            return;
+        }
+        // 采摘活动头卡（source≠plant 的采摘活动入口）只看 is_pick=1 明细，优先落 is_pick=1 候选保证头卡出数；
+        // 无 is_pick=1 候选（如从果蔬处理入口录入的普通作物）则回退全体候选。同类候选内优先未采摘完成，其次最新一行。
+        PlantDetails target = pickAccumulateTarget(candidates.stream()
+            .filter(d -> d.getIsPick() != null && d.getIsPick() == 1)
+            .toList());
+        if (target == null) {
+            target = pickAccumulateTarget(candidates);
+        }
+        if (target == null) {
+            return;
+        }
+        BigDecimal current = target.getActualYield() == null ? BigDecimal.ZERO : target.getActualYield();
+        plantDetailsMapper.update(null,
+            new LambdaUpdateWrapper<PlantDetails>()
+                .eq(PlantDetails::getId, target.getId())
+                .set(PlantDetails::getActualYield, current.add(weight))
+                .set(PlantDetails::getUpdateBy, LoginHelper.getUserId()));
     }
 
     /**
@@ -138,6 +194,20 @@ public class PlantActivityServiceImpl extends DjsBaseServiceImpl<PlantActivityMa
                 .eq(PlantDetails::getId, target.getId())
                 .set(PlantDetails::getActualYield, current.add(weight))
                 .set(PlantDetails::getUpdateBy, LoginHelper.getUserId()));
+    }
+
+    /**
+     * 从候选明细中挑累加目标：优先未采摘完成（harvest_status != completed），其次列表首元素（调用方已按 id 降序，即最新一行）。
+     * 空列表返 null。
+     */
+    private PlantDetails pickAccumulateTarget(List<PlantDetails> candidates) {
+        if (candidates == null || candidates.isEmpty()) {
+            return null;
+        }
+        return candidates.stream()
+            .filter(d -> !PICK_STATUS_COMPLETED.equals(d.getHarvestStatus()))
+            .findFirst()
+            .orElse(candidates.get(0));
     }
 
     /**

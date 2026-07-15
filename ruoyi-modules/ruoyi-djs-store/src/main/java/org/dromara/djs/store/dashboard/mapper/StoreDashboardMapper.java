@@ -4,7 +4,6 @@ import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 import org.dromara.djs.store.dashboard.domain.vo.StoreGroupCountVo;
-import org.dromara.djs.store.dashboard.domain.vo.StoreMemberGrowthPointVo;
 import org.dromara.djs.store.dashboard.domain.vo.StoreProductRankItemVo;
 import org.dromara.djs.store.dashboard.domain.vo.StoreSaleCategoryVo;
 import org.dromara.djs.store.dashboard.domain.vo.StoreTrendPointVo;
@@ -352,96 +351,6 @@ public interface StoreDashboardMapper {
         + "   AND (#{storeId} IS NULL OR r.store_id = #{storeId}) "
         + " GROUP BY p.belong_type")
     List<StoreSaleCategoryVo> selectMonthAccumByBelongType(@Param("tenantId") String tenantId, @Param("storeId") Long storeId);
-
-    /**
-     * 近 10 日会员增长：{@code t_store_member} 按 {@code create_time} 日期分组 COUNT。
-     *
-     * <p>仅出"当日有新增"的日期行（GROUP BY DATE 自然跳过 0 增长日）；前端按 10 日窗口补 0。
-     * 门店过滤走 member.store_id（可空）。</p>
-     *
-     * @param tenantId 租户
-     * @param storeId  门店 ID（可空）
-     * @return 近 10 日每日新增会员数（按日期升序），无记录返空
-     */
-    @Select("SELECT DATE(create_time) AS `date`, CAST(COUNT(*) AS SIGNED) AS `count` "
-        + "  FROM t_store_member "
-        + " WHERE tenant_id = #{tenantId} "
-        + "   AND del_flag = '0' "
-        + "   AND create_time >= DATE_SUB(CURDATE(), INTERVAL 9 DAY) "
-        + "   AND (#{storeId} IS NULL OR store_id = #{storeId}) "
-        + " GROUP BY DATE(create_time) "
-        + " ORDER BY DATE(create_time)")
-    List<StoreMemberGrowthPointVo> selectMemberGrowth10Days(@Param("tenantId") String tenantId, @Param("storeId") Long storeId);
-
-    /**
-     * 会员总数（软删不计，按门店可选过滤）。
-     *
-     * @param tenantId 租户
-     * @param storeId  门店 ID（可空）
-     * @return 会员总数，无记录返 0
-     */
-    @Select("SELECT COUNT(*) "
-        + "  FROM t_store_member "
-        + " WHERE tenant_id = #{tenantId} "
-        + "   AND del_flag = '0' "
-        + "   AND (#{storeId} IS NULL OR store_id = #{storeId})")
-    Long countTotalMembers(@Param("tenantId") String tenantId, @Param("storeId") Long storeId);
-
-    /**
-     * 今日新增会员数（{@code create_time} 落在今天，软删不计，按门店可选过滤）。
-     *
-     * @param tenantId 租户
-     * @param storeId  门店 ID（可空）
-     * @return 今日新增会员数，无记录返 0
-     */
-    @Select("SELECT COUNT(*) "
-        + "  FROM t_store_member "
-        + " WHERE tenant_id = #{tenantId} "
-        + "   AND del_flag = '0' "
-        + "   AND DATE(create_time) = CURDATE() "
-        + "   AND (#{storeId} IS NULL OR store_id = #{storeId})")
-    Long countTodayNewMembers(@Param("tenantId") String tenantId, @Param("storeId") Long storeId);
-
-    /**
-     * 当月新增会员数（{@code create_time} 落在当月，软删不计，按门店可选过滤）。
-     *
-     * @param tenantId 租户
-     * @param storeId  门店 ID（可空）
-     * @return 当月新增会员数，无记录返 0
-     */
-    @Select("SELECT COUNT(*) "
-        + "  FROM t_store_member "
-        + " WHERE tenant_id = #{tenantId} "
-        + "   AND del_flag = '0' "
-        + "   AND create_time >= DATE_FORMAT(NOW(), '%Y-%m-01') "
-        + "   AND create_time < DATE_FORMAT(DATE_ADD(NOW(), INTERVAL 1 MONTH), '%Y-%m-01') "
-        + "   AND (#{storeId} IS NULL OR store_id = #{storeId})")
-    Long countMonthNewMembers(@Param("tenantId") String tenantId, @Param("storeId") Long storeId);
-
-    /**
-     * 老客复购数：当月在 {@code t_store_member_consumption} 下单 ≥ 2 次的会员数
-     * （原型「会员信息组-老客复购数」）。
-     *
-     * <p>口径：本月（{@code consume_date >= 当月1号}）按 {@code member_id} 分组，
-     * 组内消费记录数 ≥ 2 的会员计入；外层 COUNT(*) 得复购会员数。
-     * {@code t_store_member_consumption} 无 {@code del_unique}/部分软删字段差异，统一按
-     * {@code del_flag='0'} 过滤。门店过滤走 consumption.store_id（可空）。</p>
-     *
-     * @param tenantId 租户
-     * @param storeId  门店 ID（可空）
-     * @return 当月复购会员数，无记录返 0
-     */
-    @Select("SELECT COUNT(*) FROM ( "
-        + "  SELECT member_id "
-        + "    FROM t_store_member_consumption "
-        + "   WHERE tenant_id = #{tenantId} "
-        + "     AND del_flag = '0' "
-        + "     AND consume_date >= DATE_FORMAT(NOW(), '%Y-%m-01') "
-        + "     AND (#{storeId} IS NULL OR store_id = #{storeId}) "
-        + "   GROUP BY member_id "
-        + "  HAVING COUNT(*) >= 2 "
-        + ") t")
-    Long countRepeatCustomers(@Param("tenantId") String tenantId, @Param("storeId") Long storeId);
 
     /**
      * 当月订单产品结构（原型「当月订单产品结构」饼图）：按 product_name 分组本月订单数。

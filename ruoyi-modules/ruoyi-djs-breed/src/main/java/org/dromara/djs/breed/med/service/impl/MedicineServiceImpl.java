@@ -83,6 +83,10 @@ public class MedicineServiceImpl extends DjsBaseServiceImpl<MedicineMapper, Medi
         vo.setSpec(dto.getSpec());
         vo.setImageUrl(dto.getImageUrl());
         vo.setCurrentStock(dto.getStock());
+        // row129：今日三量（全场口径，与物资领用卡同源）回填给 mp 药品领用卡下排展示
+        vo.setTodayPicked(dto.getTodayPicked());
+        vo.setTodayReturned(dto.getTodayReturned());
+        vo.setTodayLoss(dto.getTodayLoss());
         vo.setMedStatus(1);
         return vo;
     }

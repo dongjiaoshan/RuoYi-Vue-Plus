@@ -77,6 +77,29 @@ public interface IPigBurnRecordService {
     List<BurnProductTypeVo> queryProductTypes();
 
     /**
+     * 入库产品类型列表（带该白条已入库份数回填，row171）。
+     *
+     * <p>与 {@link #queryProductTypes()} 相同的产品集合，另按 {@code barInfoId} 聚合每产品在该白条
+     * {@code product_inhouse} 已入库行数写入 {@link BurnProductTypeVo#getRecordedCount()}。
+     * mp 进页 / 重进 singing 白条时据此还原「已入库 x/2」计数，不再仅靠前端 session Map（重进会丢）。
+     * {@code barInfoId} 为 null 时等同 {@link #queryProductTypes()}（recordedCount 恒 0）。</p>
+     *
+     * @param barInfoId 当前白条主键（可空）
+     */
+    List<BurnProductTypeVo> queryProductTypes(Long barInfoId);
+
+    /**
+     * 猪肉类产品可选入库库位（row170）：固定「猪肉鲜品库」+「冻品库」两个启用库位。
+     *
+     * <p>客户诉求：猪肉类产品（猪头/猪蹄等鲜品）入库库位可在「猪肉鲜品库」「冻品库」间选，默认产品配置库位。
+     * 因两库 {@code location_type} 在 v3 reseed 后均泛化为 {@code warehouse}，无法靠字典类型过滤，故按
+     * 库位名精确匹配返回。白条类（整只/半只）不用此端点（锁定产品配置库位）。</p>
+     *
+     * @return 启用态的「猪肉鲜品库」「冻品库」（按此固定顺序，缺某库则跳过）
+     */
+    List<LocationPickerVo> queryPorkOptionLocations();
+
+    /**
      * 按产品取已配置的入库库位列表（MP-PRODIN 决策 #2）。
      *
      * <p>读 {@code t_warehouse_product_info.store_location_id}（逗号分隔库位 ID），过滤为

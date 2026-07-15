@@ -105,6 +105,13 @@ public class MedicineStockProviderImpl implements MedicineStockProvider {
         return toDtoList(locationStockMapper.selectMedicineProductsByIds(ids));
     }
 
+    @Override
+    public List<Long> listRecentPickedMedicineIds(Long operatorId) {
+        // row131：近 3 天已领药品 id 从仓库领用出库流水取（覆盖疫苗药品页 + 物资领用药品库两个入口，
+        // 两入口领用都落 dept_pick_out 流水，天然一致）。
+        return locationStockMapper.selectRecentPickedMedicineIds(operatorId);
+    }
+
     /**
      * 药品商品行（id/name/unit/spec/imageId/stock）→ {@link MedicineProductDto}。
      * imageId 原为 {@code COALESCE(product_thumb, image_oss_id)} 裸 ossId，经 IMG-LIB-001 resolver
@@ -120,6 +127,10 @@ public class MedicineStockProviderImpl implements MedicineStockProvider {
             dto.setUnit(toStr(row.get("unit")));
             dto.setSpec(toStr(row.get("spec")));
             dto.setStock(toBigDecimal(row.get("stock")));
+            // row129：今日三量（selectMedicineProducts 回传；selectMedicineProductsByIds 无此列 → 兜 0）
+            dto.setTodayPicked(toBigDecimal(row.get("todayPicked")));
+            dto.setTodayReturned(toBigDecimal(row.get("todayReturned")));
+            dto.setTodayLoss(toBigDecimal(row.get("todayLoss")));
             result.add(dto);
             imgItems.add(new ImageUrlResolver.Item(toStr(row.get("imageId")), MEDICINE_BELONG_TYPE));
         }

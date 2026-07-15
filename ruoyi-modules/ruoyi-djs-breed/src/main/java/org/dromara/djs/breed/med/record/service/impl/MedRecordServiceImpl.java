@@ -47,8 +47,9 @@ import java.util.stream.Collectors;
  *
  * <p>核心逻辑（药品废弃批次 · 迁药品维度）：</p>
  * <ul>
- *   <li><b>使用药品下拉</b>：{@link MedRecordMapper#selectRecentUsedMedicineIds} 取近 3 天已领用的
- *       distinct 药品（按 operatorId 限定 mp 当前用户），药品名/单位/规格/库存由仓库
+ *   <li><b>使用药品下拉</b>：{@link MedicineStockProvider#listRecentPickedMedicineIds} 取近 3 天已领用的
+ *       distinct 药品（数据源 = 仓库领用出库流水 dept_pick_out，覆盖疫苗药品页 + 物资领用药品库两个领用入口，
+ *       row131；按 operatorId 限定 mp 当前用户），药品名/单位/规格/库存由仓库
  *       {@link MedicineStockProvider#listMedicineProductsByIds} 解析。不再依赖批次/t_breed_medicine_info。</li>
  *   <li><b>用药 = 纯记录，不扣库存</b>：库存扣减只在药品「领用/退回」（MedUsage）做，用药只能选
  *       3 天内已领药品（领用时已扣过库存），用药再扣会双扣，故用药仅落台账。{@code dosageUnit}
@@ -107,6 +108,9 @@ public class MedRecordServiceImpl extends DjsBaseServiceImpl<MedRecordMapper, Me
         MedRecord entity = toEntity(bo);
         entity.setDrugType(1);
         entity.setEarNo(pig.getEarNo());
+        // row139：落用药时的猪只类型 + 状态快照（供列表显示 + 按类型搜索）
+        entity.setPigType(pig.getPigType());
+        entity.setPigStatus(pig.getCurrentStatus());
         entity.setMedicineName(medicineName);
         fillOperator(entity, bo.getOperatorId(), bo.getOperatorName());
         baseMapper.insert(entity);
@@ -171,6 +175,9 @@ public class MedRecordServiceImpl extends DjsBaseServiceImpl<MedRecordMapper, Me
             d.setUseDate(bo.getUseDate());
             d.setPigId(p.getId());
             d.setEarNo(p.getEarNo());
+            // row139：detail 行落每头猪当时的类型 + 状态快照
+            d.setPigType(p.getPigType());
+            d.setPigStatus(p.getCurrentStatus());
             d.setMasterId(master.getId());
             d.setDrugType(3);
             d.setMedicineType(bo.getMedicineType());
@@ -256,7 +263,9 @@ public class MedRecordServiceImpl extends DjsBaseServiceImpl<MedRecordMapper, Me
     @Override
     public List<UsableBatchVo> listUsableBatches(Long operatorId) {
         // 药品废弃批次：取近 3 天已领用的 distinct 药品 id，再经仓库 provider 解析名/单位/规格/库存。
-        List<Long> ids = baseMapper.selectRecentUsedMedicineIds(operatorId);
+        // row131：数据源改为仓库领用出库流水（覆盖疫苗药品页 + 物资领用药品库两个领用入口），
+        // 取代原「只查 t_breed_medicine_usage」（只覆盖疫苗药品页入口）。
+        List<Long> ids = medicineStockProvider.listRecentPickedMedicineIds(operatorId);
         if (ids.isEmpty()) {
             return List.of();
         }
@@ -357,6 +366,8 @@ public class MedRecordServiceImpl extends DjsBaseServiceImpl<MedRecordMapper, Me
         }
         w.eq(q.getPigId() != null, "pig_id", q.getPigId())
             .like(StringUtils.isNotBlank(q.getEarNo()), "ear_no", q.getEarNo())
+            .like(StringUtils.isNotBlank(q.getMedicineName()), "medicine_name", q.getMedicineName())
+            .eq(StringUtils.isNotBlank(q.getPigType()), "pig_type", q.getPigType())
             .eq(StringUtils.isNotBlank(q.getMedicineType()), "medicine_type", q.getMedicineType())
             .eq(q.getDrugType() != null, "drug_type", q.getDrugType())
             .eq(q.getBatchId() != null, "batch_id", q.getBatchId())

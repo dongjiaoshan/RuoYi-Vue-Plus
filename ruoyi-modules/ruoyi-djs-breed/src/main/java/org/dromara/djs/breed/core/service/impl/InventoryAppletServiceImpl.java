@@ -50,10 +50,6 @@ public class InventoryAppletServiceImpl implements IInventoryAppletService {
     /** 品种/品系 code→中文名解析（复用 PigCore 口径：t_farm_breed_info 主表优先 → 字典回落 → code 回落）。 */
     private final IPigCoreService pigCoreService;
 
-    /** 品种字典类型（回落）。 */
-    private static final String DICT_PIG_BREED = "djs_pig_breed";
-    /** 品系字典类型（回落）。 */
-    private static final String DICT_PIG_STRAIN = "djs_pig_strain";
 
     /** 后备段标记：前端传 pigType=reserve，后端按 current_status='HB' 过滤（非 pig_type） */
     private static final String RESERVE = "reserve";
@@ -373,8 +369,8 @@ public class InventoryAppletServiceImpl implements IInventoryAppletService {
             vo.setEarNo(p.getEarNo());
             vo.setBreedCode(p.getPigBreedCode());
             vo.setStrainCode(p.getPigStrainCode());
-            vo.setBreedName(pigCoreService.resolveBreedStrainName(breedNameMap, DICT_PIG_BREED, p.getPigBreedCode()));
-            vo.setStrainName(pigCoreService.resolveBreedStrainName(strainNameMap, DICT_PIG_STRAIN, p.getPigStrainCode()));
+            vo.setBreedName(pigCoreService.resolveBreedStrainName(breedNameMap, p.getPigBreedCode()));
+            vo.setStrainName(pigCoreService.resolveBreedStrainName(strainNameMap, p.getPigStrainCode()));
             vo.setBarnName(p.getBarnId() == null ? "未分配"
                 : barnNameMap.getOrDefault(p.getBarnId(), "未分配"));
             vo.setAgeDays(p.getBirthDate() == null ? null

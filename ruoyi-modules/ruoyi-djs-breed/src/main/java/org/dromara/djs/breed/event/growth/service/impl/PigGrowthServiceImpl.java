@@ -205,9 +205,9 @@ public class PigGrowthServiceImpl implements IPigGrowthService {
             vo.setLastMeasureDate(lastMeasureMap.get(p.getId()));
             // row12：品种/品系编码 + 中文名（育肥生长录入弹框「品系/品种」格用），与 searchByEarKeyword 同口径
             vo.setPigBreedCode(p.getPigBreedCode());
-            vo.setPigBreedName(pigCoreService.resolveBreedStrainName(breedNameMap, "djs_pig_breed", p.getPigBreedCode()));
+            vo.setPigBreedName(pigCoreService.resolveBreedStrainName(breedNameMap, p.getPigBreedCode()));
             vo.setPigStrainCode(p.getPigStrainCode());
-            vo.setPigStrainName(pigCoreService.resolveBreedStrainName(strainNameMap, "djs_pig_strain", p.getPigStrainCode()));
+            vo.setPigStrainName(pigCoreService.resolveBreedStrainName(strainNameMap, p.getPigStrainCode()));
             LocalDate base = p.getBirthDate() != null ? p.getBirthDate() : p.getIntroduceDate();
             if (base != null) {
                 vo.setAgeDays((int) Math.max(ChronoUnit.DAYS.between(base, today), 0L));

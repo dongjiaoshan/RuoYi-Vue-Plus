@@ -445,9 +445,9 @@ public class PigCoreServiceImpl implements IPigCoreService {
         vo.setPigSexLabel("F".equals(pig.getPigSex()) ? "母猪" : "M".equals(pig.getPigSex()) ? "公猪" : null);
         vo.setPigBreedCode(pig.getPigBreedCode());
         // #19/#22：品种/品系名优先取 t_farm_breed_info 主表（客户配的权威名 04=国寿黑），字典回落（单详情，按 code 各预载一次）
-        vo.setPigBreedLabel(resolveBreedStrainName(loadBreedStrainNameMap(1), "djs_pig_breed", pig.getPigBreedCode()));
+        vo.setPigBreedLabel(resolveBreedStrainName(loadBreedStrainNameMap(1), pig.getPigBreedCode()));
         vo.setPigStrainCode(pig.getPigStrainCode());
-        vo.setPigStrainLabel(resolveBreedStrainName(loadBreedStrainNameMap(2), "djs_pig_strain", pig.getPigStrainCode()));
+        vo.setPigStrainLabel(resolveBreedStrainName(loadBreedStrainNameMap(2), pig.getPigStrainCode()));
         vo.setAgeDays(calcAgeDays(pig, LocalDate.now()));
         // 当前位置：栋舍名 + 栏位名拼接（缺任一则降级，全缺为 null）
         String barnName = pig.getBarnId() != null
@@ -493,15 +493,15 @@ public class PigCoreServiceImpl implements IPigCoreService {
     /**
      * 品种/品系 code→中文名解析（邓博 2026-06-17 #13：mp 选猪卡「品系」显示中文不显代码）。
      * 主数据权威源 = t_farm_breed_info（外部引种 BreedInfoPicker 写入的 2 位码如 "01"）；
-     * 缺则回落字典（djs_pig_breed / djs_pig_strain，历史单位码如 "1"）；再缺回落原始 code。
+     * 缺则回落原始 code（旧静态字典 djs_pig_breed/djs_pig_strain 已废除）。
      */
     @Override
-    public String resolveBreedStrainName(Map<String, String> infoNameMap, String dictType, String code) {
+    public String resolveBreedStrainName(Map<String, String> infoNameMap, String code) {
         if (StringUtils.isBlank(code)) {
             return null;
         }
         String name = infoNameMap.get(code);
-        return StringUtils.isNotBlank(name) ? name : translateDictOrCode(dictType, code);
+        return StringUtils.isNotBlank(name) ? name : code;
     }
 
     @Override
@@ -626,8 +626,8 @@ public class PigCoreServiceImpl implements IPigCoreService {
                 }
             }
             // 品种/品系中文名：t_farm_breed_info 主表优先 → 字典回落 → code 回落（2 位码也能翻出名）
-            vo.setPigBreedName(resolveBreedStrainName(breedNameMap, "djs_pig_breed", vo.getPigBreedCode()));
-            vo.setPigStrainName(resolveBreedStrainName(strainNameMap, "djs_pig_strain", vo.getPigStrainCode()));
+            vo.setPigBreedName(resolveBreedStrainName(breedNameMap, vo.getPigBreedCode()));
+            vo.setPigStrainName(resolveBreedStrainName(strainNameMap, vo.getPigStrainCode()));
         }
     }
 
@@ -804,7 +804,7 @@ public class PigCoreServiceImpl implements IPigCoreService {
         // 即到期日落在 [今天, 今天+N] 或更早才提醒；远未到期（差 >N 天）不打红标。
         int dueWindowDays = "WEANING".equalsIgnoreCase(dueType) ? 3 : 5;
         // 邓博 2026-06-17 #13/#19：品种 + 品系名都优先取 t_farm_breed_info 主表（客户在「品种品系表」配的权威名，
-        // 如 04=国寿黑）；字典 djs_pig_breed(04=杜洛克) / djs_pig_strain 仅作回落。批量预载一次防 N+1。
+        // 如 04=国寿黑）；旧静态字典已废，缺则回落原始 code。批量预载一次防 N+1。
         Map<String, String> breedNameMap = loadBreedStrainNameMap(1);
         Map<String, String> strainNameMap = loadBreedStrainNameMap(2);
         // row51「其他猪只」卡：批量取本页各猪上次生长记录日期 MAX(measure_date)（一次 IN 查防 N+1）。
@@ -824,10 +824,10 @@ public class PigCoreServiceImpl implements IPigCoreService {
             // 品种/品系编码 + 中文名（mp 选猪弹层「品种/品系」标签）
             vo.setPigBreedCode(p.getPigBreedCode());
             // #19：品种 breed_info 主表优先 → 字典回落 → code 回落（与品系同源，04=国寿黑而非杜洛克）
-            vo.setPigBreedName(resolveBreedStrainName(breedNameMap, "djs_pig_breed", p.getPigBreedCode()));
+            vo.setPigBreedName(resolveBreedStrainName(breedNameMap, p.getPigBreedCode()));
             vo.setPigStrainCode(p.getPigStrainCode());
             // #13：品系 breed_info 主数据优先 → 字典回落 → code 回落
-            vo.setPigStrainName(resolveBreedStrainName(strainNameMap, "djs_pig_strain", p.getPigStrainCode()));
+            vo.setPigStrainName(resolveBreedStrainName(strainNameMap, p.getPigStrainCode()));
             // MP-UX-002：END 状态时携带 endReason，给 mp PigPicker 显示 "终止 · 死亡 / 上市" 用
             if (PigLifecycle.END.name().equals(p.getCurrentStatus())) {
                 vo.setEndReason(p.getEndReason());

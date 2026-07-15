@@ -37,4 +37,16 @@ public class MedicineProductDto implements Serializable {
     /** 展示图 public URL（{@code COALESCE(product_thumb, image_oss_id)}，mp 领用卡片展示） */
     private String imageUrl;
 
+    /**
+     * 今日已领（{@code t_warehouse_stock_flow} 当日 dept_pick_out SUM，全场口径，与物资领用卡同源）。
+     * mp 药品领用卡下排「今日已领」，与物资领用 stock-card 三量对齐（row129）。
+     */
+    private BigDecimal todayPicked;
+
+    /** 今日退回（当日 pick_return_in SUM，全场口径）。 */
+    private BigDecimal todayReturned;
+
+    /** 今日损耗（当日 loss SUM，全场口径）。 */
+    private BigDecimal todayLoss;
+
 }

@@ -79,12 +79,10 @@ public class FarmRecordsVo implements Serializable {
     @ExcelProperty(value = "处理班组")
     private String teamName;
 
-    @ExcelProperty(value = "整地类型", converter = ExcelDictConvert.class)
-    @ExcelDictFormat(dictType = "djs_tillage_type")
+    @ExcelProperty(value = "整地类型")
     private String tillageType;
 
-    @ExcelProperty(value = "整地方式", converter = ExcelDictConvert.class)
-    @ExcelDictFormat(dictType = "djs_tillage_way")
+    @ExcelProperty(value = "整地方式")
     private String tillageMethod;
 
     @ExcelProperty(value = "转移地块 ID")

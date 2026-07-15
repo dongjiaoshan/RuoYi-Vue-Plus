@@ -30,8 +30,12 @@ public interface VegReceiveMapper extends BaseMapperPlus<VegReceive, VegReceive>
      *
      * <p>待入库 = {@code SUM(vegetable_handle.send_platform_weight)} − {@code SUM(已入库 self weight)}
      * − {@code SUM(已标记入库完成行的 loss_weight)}（row21：地块标记入库完成后剩余量结算为损耗、不再正数挂着，
-     * 故聚合待入库扣掉损耗自然归 0）。损耗 {@code lossWeight} = 该作物已完成行的 loss 合计。
-     * 仅保留待入库 &gt; 0 的作物（全完成作物 pending 归 0 后从列表消失）。</p>
+     * 故聚合待入库扣掉损耗自然归 0——此处扣减用<b>全历史</b> loss 保证已完成地块量归零，不受当天口径影响）。</p>
+     *
+     * <p>展示列 {@code lossWeight}（row179）= 该作物<b>当天</b>（{@code DATE(receive_time)=CURDATE()}）入库完成
+     * 结算的 loss 合计，与详情 {@link #selectInboundPlots} 的地块 loss 口径一致。刚送到月台、当天未标记完成的
+     * 作物 loss 恒 0（客户「刚送到不应有损耗」）；不再累计历史（昨日 / 更早）已完成地块的损耗，避免列表卡显历史
+     * 累计损耗、而详情当天口径显 0 的不一致。仅保留待入库 &gt; 0 的作物（全完成作物 pending 归 0 后从列表消失）。</p>
      */
     @Select("""
         SELECT t.crop_id      AS cropId,
@@ -68,6 +72,7 @@ public interface VegReceiveMapper extends BaseMapperPlus<VegReceive, VegReceive>
                             AND vrl2.is_finish = 1
                             AND vrl2.del_flag = '0'
                             AND vrl2.tenant_id = '1001'
+                            AND DATE(vrl2.receive_time) = CURDATE()
                        ), 0) AS loss
               FROM t_warehouse_vegetable_handle vh
              WHERE vh.del_flag = '0'
@@ -144,8 +149,15 @@ public interface VegReceiveMapper extends BaseMapperPlus<VegReceive, VegReceive>
      * 某作物下、按地块的果蔬间入库行。
      *
      * <p>地块月台量 = {@code SUM(send_platform_weight) by plot}；实际入库 = 本表 self 该 (crop, plot) 已入量；
-     * 待入库 = 月台量 − 实际入库（取 0 兜底负值）。损耗 = 该地块已标记入库完成行的 {@code loss_weight} 合计
-     * （r72：头卡汇总损耗量 = Σ各地块 lossWeight）。状态按<b>真实待入库量</b>（月台量 − 已入 − 已结算损耗）判：
+     * 待入库 = 月台量 − 实际入库 − <b>全历史</b>已结算损耗（取 0 兜底负值）。</p>
+     *
+     * <p>展示列 {@code lossWeight}（row179）= 该地块<b>当天</b>（{@code DATE(receive_time)=CURDATE()}）入库完成
+     * 结算的 loss 合计（{@code lossToday}），与列表卡 {@link #selectSelfPending} 的 loss 口径一致——刚送到、当天
+     * 未标记完成的地块 loss 恒 0。<b>pending / 状态判定仍用全历史 loss（{@code lossAll}）</b>：昨日已完成地块的
+     * 待入库量必须保持归 0（否则历史结算损耗不扣、量重新变正、已完成地块误重现），故 pending 扣减与展示 loss 拆两路。
+     * 头卡损耗量 = Σ各地块 lossWeight（前端聚合），随之变为当天口径与列表卡对齐。</p>
+     *
+     * <p>状态按<b>真实待入库量</b>（月台量 − 已入 − 已结算全历史损耗）判：
      * &gt; 0 → 可处理（actual=0→pending / 其余→processing）；≤ 0 → done。<b>不再以「是否有 is_finish 行」锁死</b>——
      * row66：同地块当天可多趟送达、待入库量叠加，某趟标记完成只把当趟剩余结算为损耗，新送达的量让地块回到可处理，
      * 不会出现「第一趟处理完成后、同地块第二趟送来无法处理」。仅返月台量 &gt; 0 的地块。</p>
@@ -157,16 +169,16 @@ public interface VegReceiveMapper extends BaseMapperPlus<VegReceive, VegReceive>
         SELECT t.plot_id     AS plotId,
                pl.plot_code  AS plotCode,
                CASE
-                 WHEN t.platform - t.actual - t.loss <= 0 THEN 'done'
+                 WHEN t.platform - t.actual - t.loss_all <= 0 THEN 'done'
                  WHEN t.actual <= 0 THEN 'pending'
                  ELSE 'processing'
                END           AS inboundStatus,
                CASE
-                 WHEN t.platform - t.actual - t.loss > 0 THEN t.platform - t.actual - t.loss
+                 WHEN t.platform - t.actual - t.loss_all > 0 THEN t.platform - t.actual - t.loss_all
                  ELSE 0
                END           AS pendingWeight,
                t.actual      AS actualWeight,
-               t.loss        AS lossWeight
+               t.loss_today  AS lossWeight
           FROM (
             SELECT vh.plot_id,
                    COALESCE(SUM(vh.send_platform_weight), 0) AS platform,
@@ -188,7 +200,18 @@ public interface VegReceiveMapper extends BaseMapperPlus<VegReceive, VegReceive>
                           AND vrl.is_finish = 1
                           AND vrl.del_flag = '0'
                           AND vrl.tenant_id = '1001'
-                     ), 0) AS loss,
+                     ), 0) AS loss_all,
+                   COALESCE((
+                       SELECT SUM(vrt.loss_weight)
+                         FROM t_warehouse_veg_receive vrt
+                        WHERE vrt.receive_type = 1
+                          AND vrt.crop_id = #{cropId}
+                          AND vrt.plot_id = vh.plot_id
+                          AND vrt.is_finish = 1
+                          AND vrt.del_flag = '0'
+                          AND vrt.tenant_id = '1001'
+                          AND DATE(vrt.receive_time) = CURDATE()
+                     ), 0) AS loss_today,
                    (
                        SELECT COUNT(1)
                          FROM t_warehouse_veg_receive vrf
@@ -211,7 +234,7 @@ public interface VegReceiveMapper extends BaseMapperPlus<VegReceive, VegReceive>
                  ON pl.id = t.plot_id
                 AND pl.del_flag = '0'
          WHERE t.platform > 0
-           AND (t.platform - t.actual - t.loss > 0 OR t.finishedToday > 0)
+           AND (t.platform - t.actual - t.loss_all > 0 OR t.finishedToday > 0)
          ORDER BY pl.plot_code, t.plot_id
         """)
     List<VegInboundPlotVo> selectInboundPlots(@Param("cropId") Long cropId);

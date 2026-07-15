@@ -84,4 +84,10 @@ public class VegCropVo implements Serializable {
      */
     private BigDecimal disasterLoss;
 
+    /**
+     * 待处理地块数（= 该作物下处理未完成的地块数量，处理未完成 = 汇总行 is_finish != 1；
+     * 与地块明细页 processStatus!='done' 口径一致，mp 列表卡右上角展示）。
+     */
+    private Integer pendingPlotCount;
+
 }

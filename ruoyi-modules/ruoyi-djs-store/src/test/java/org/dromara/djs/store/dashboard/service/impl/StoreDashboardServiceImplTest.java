@@ -2,10 +2,8 @@ package org.dromara.djs.store.dashboard.service.impl;
 
 import org.dromara.common.tenant.helper.TenantHelper;
 import org.dromara.djs.store.dashboard.domain.vo.StoreDashboardDailyVo;
-import org.dromara.djs.store.dashboard.domain.vo.StoreDashboardMemberStatVo;
 import org.dromara.djs.store.dashboard.domain.vo.StoreDashboardSummaryVo;
 import org.dromara.djs.store.dashboard.domain.vo.StoreGroupCountVo;
-import org.dromara.djs.store.dashboard.domain.vo.StoreMemberGrowthPointVo;
 import org.dromara.djs.store.dashboard.domain.vo.StoreProductRankItemVo;
 import org.dromara.djs.store.dashboard.domain.vo.StoreSaleCategoryVo;
 import org.dromara.djs.store.dashboard.domain.vo.StoreTrendPointVo;
@@ -331,51 +329,6 @@ class StoreDashboardServiceImplTest {
         assertThat(vo.getSaleByCategory().get(0).getSaleAmount()).isEqualByComparingTo("0");
         // 今日客单价 = 500 / 4 = 125.00（仍正常算）
         assertThat(vo.getAvgPriceToday()).isEqualByComparingTo("125.00");
-    }
-
-    @Test
-    @DisplayName("会员 4 格统计 happy：总数 / 今日新增 / 今日发展(=今日新增) / 当月新增")
-    void getMemberStat_happy() {
-        when(dashboardMapper.countTotalMembers(eq("1001"), eq(null))).thenReturn(120L);
-        when(dashboardMapper.countTodayNewMembers(eq("1001"), eq(null))).thenReturn(3L);
-        when(dashboardMapper.countMonthNewMembers(eq("1001"), eq(null))).thenReturn(18L);
-
-        StoreDashboardMemberStatVo vo = service.getMemberStat(null);
-
-        assertThat(vo.getTotalCount()).isEqualTo(120L);
-        assertThat(vo.getTodayNew()).isEqualTo(3L);
-        // V1 无渠道字段：今日发展 = 今日新增
-        assertThat(vo.getTodayDeveloped()).isEqualTo(3L);
-        assertThat(vo.getMonthNew()).isEqualTo(18L);
-    }
-
-    @Test
-    @DisplayName("会员 4 格统计 全空兜底：mapper 返 null → 4 格全 0，不抛 NPE")
-    void getMemberStat_allNull_fallbackZero() {
-        when(dashboardMapper.countTotalMembers(eq("1001"), eq(null))).thenReturn(null);
-        when(dashboardMapper.countTodayNewMembers(eq("1001"), eq(null))).thenReturn(null);
-        when(dashboardMapper.countMonthNewMembers(eq("1001"), eq(null))).thenReturn(null);
-
-        StoreDashboardMemberStatVo vo = service.getMemberStat(null);
-
-        assertThat(vo.getTotalCount()).isZero();
-        assertThat(vo.getTodayNew()).isZero();
-        assertThat(vo.getTodayDeveloped()).isZero();
-        assertThat(vo.getMonthNew()).isZero();
-    }
-
-    @Test
-    @DisplayName("近 10 日会员增长 happy：透传 mapper 行；null → 空列表")
-    void getMemberGrowth_happyAndNull() {
-        StoreMemberGrowthPointVo p1 = new StoreMemberGrowthPointVo();
-        p1.setDate("2026-06-05");
-        p1.setCount(2);
-        when(dashboardMapper.selectMemberGrowth10Days(eq("1001"), eq(null))).thenReturn(List.of(p1));
-        assertThat(service.getMemberGrowth10Days(null)).hasSize(1);
-        assertThat(service.getMemberGrowth10Days(null).get(0).getCount()).isEqualTo(2);
-
-        when(dashboardMapper.selectMemberGrowth10Days(eq("1001"), eq(null))).thenReturn(null);
-        assertThat(service.getMemberGrowth10Days(null)).isEmpty();
     }
 
     /**

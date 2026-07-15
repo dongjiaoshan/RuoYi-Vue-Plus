@@ -410,8 +410,8 @@ public class WeaningServiceImpl implements IWeaningService {
                 }
             }
             // 仔猪品系品种（同窝取母猪 strain/breed code，主表名解析回落字典）
-            vo.setPigStrainName(resolveBreedStrainName(strainNameMap, "djs_pig_strain", pig.getPigStrainCode()));
-            vo.setPigBreedName(resolveBreedStrainName(breedNameMap, "djs_pig_breed", pig.getPigBreedCode()));
+            vo.setPigStrainName(resolveBreedStrainName(strainNameMap, pig.getPigStrainCode()));
+            vo.setPigBreedName(resolveBreedStrainName(breedNameMap, pig.getPigBreedCode()));
         }
     }
 
@@ -420,7 +420,7 @@ public class WeaningServiceImpl implements IWeaningService {
      * 缺则回落字典（{@code dictType}）；再缺回落原始 code；code 空 → null。
      * 与 PigCoreServiceImpl.resolveBreedStrainName 同口径（#13 mp 选猪卡品系显中文不显码）。
      */
-    private String resolveBreedStrainName(Map<String, String> infoNameMap, String dictType, String code) {
+    private String resolveBreedStrainName(Map<String, String> infoNameMap, String code) {
         if (StringUtils.isBlank(code)) {
             return null;
         }
@@ -428,8 +428,7 @@ public class WeaningServiceImpl implements IWeaningService {
         if (StringUtils.isNotBlank(name)) {
             return name;
         }
-        String label = dictService.getDictLabel(dictType, code);
-        return StringUtils.isNotBlank(label) ? label : code;
+        return code;
     }
 
     @Override
