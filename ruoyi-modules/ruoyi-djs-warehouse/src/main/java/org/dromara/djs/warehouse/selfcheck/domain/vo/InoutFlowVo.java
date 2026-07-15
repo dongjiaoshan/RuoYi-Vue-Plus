@@ -12,7 +12,8 @@ import java.math.BigDecimal;
  * 进出库流水卡 VO（入库记录 / 出库记录 tab）。
  *
  * <p>对应 mp 契约 {@code stockCheck.ts} InoutFlowVo。数据源 {@code t_warehouse_stock_flow}
- * 中按 {@code inout_type}（IN/OT）+ {@code flow_type NOT IN ('check_in','check_out')} 过滤。</p>
+ * 按 {@code inout_type}（IN/OT）过滤；盘点流水（check_in / check_out / check_abnormal_out）
+ * 是真实入出库动作，一并按 inout_type 归入对应 tab（r195）。</p>
  *
  * <ul>
  *   <li>{@code inoutTypeLabel} 走字典 {@code djs_flow_type} 把 flow_type 转中文（注解翻译）。</li>

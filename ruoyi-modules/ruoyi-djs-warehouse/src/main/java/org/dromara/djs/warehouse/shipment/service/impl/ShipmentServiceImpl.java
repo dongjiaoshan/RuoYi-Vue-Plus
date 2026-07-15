@@ -377,7 +377,10 @@ public class ShipmentServiceImpl
             vo.setShipStatus(allShipped ? "已发货" : "待发货");
             list.add(vo);
         });
-        // 5. 稳定排序：待发需求多的门店在前，其次按门店名。
+        // 5. 发货月台只展示「当天还有货要发」的门店：产品种类数=0（当天需求已全部发完 COMPLETED，
+        //    或无 SHIPPABLE 待发需求）的门店不进列表，避免「0 种·已发货」的空壳卡占屏（流程性问题 row187）。
+        list.removeIf(vo -> vo.getProductKindCount() <= 0);
+        // 6. 稳定排序：待发需求多的门店在前，其次按门店名。
         list.sort(Comparator.comparingInt(ShipStoreVo::getPendingDemandCount).reversed()
             .thenComparing(v -> v.getStoreName() == null ? "" : v.getStoreName()));
         return list;

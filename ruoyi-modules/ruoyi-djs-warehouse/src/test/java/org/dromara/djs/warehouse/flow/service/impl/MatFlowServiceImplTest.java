@@ -143,6 +143,10 @@ class MatFlowServiceImplTest {
             f.setId(50000L + (long) (Math.random() * 1000));
             return 1;
         });
+        // 默认：本行今日领用剩余充足（ensureTodayRowRemaining 守卫，row123/row16 硬校验）——退回/损耗/饲喂
+        // happy 用例默认「今日已领用过」，不被「未领用即操作」硬拦；专测该守卫的用例可另行覆盖返 0。
+        when(stockFlowMapper.sumTodayNetPickedByBasket(any(), any(), any(), any(), any()))
+            .thenReturn(new BigDecimal("999999"));
     }
 
     @AfterEach
@@ -515,12 +519,11 @@ class MatFlowServiceImplTest {
     }
 
     @Test
-    @DisplayName("loss happy：额度内损 3 → INSERT(loss / OT / -3) + 扣库存（影响行 0 不抛）")
+    @DisplayName("loss happy（非可打包物资 package）：额度内损 3 → INSERT(loss / OT / -3)；领用时已扣货架，损耗不再二次扣 location_stock（DENGBO-R18/R19）")
     void testLoss_Happy() {
         when(stockFlowMapper.sumTodayByProductTypes(eq(PRODUCT_ID), argThat(l -> l != null && l.contains("dept_pick_out")))).thenReturn(new BigDecimal("20"));
         when(stockFlowMapper.sumTodayByProductTypes(eq(PRODUCT_ID), argThat(l -> l != null && l.contains("pick_return_in")))).thenReturn(BigDecimal.ZERO);
         when(stockFlowMapper.sumTodayByProductType(PRODUCT_ID, "loss")).thenReturn(BigDecimal.ZERO);
-        when(locationStockMapper.deductByProductLocation(any(), any(), any(), any())).thenReturn(0);
 
         Long id = service.loss(lossBo(new BigDecimal("3")));
         assertThat(id).isNotNull();
@@ -531,7 +534,8 @@ class MatFlowServiceImplTest {
         assertThat(f.getFlowType()).isEqualTo("loss");
         assertThat(f.getInoutType()).isEqualTo("OT");
         assertThat(f.getChangeNum()).isEqualByComparingTo("-3");
-        // loss 即使 affected==0 也不抛（service 内部 log.warn 兜底，本测不验证 log）
+        // DENGBO-R18/R19 核心：非可打包物资（饲料/种子/包材/药品）损耗只在 stock_flow 留痕，不二次扣货架
+        verify(locationStockMapper, never()).deductByProductLocation(any(), any(), any(), any());
     }
 
     @Test
@@ -950,7 +954,7 @@ class MatFlowServiceImplTest {
     }
 
     @Test
-    @DisplayName("feed happy（饲料）：额度内喂 20 → 三写齐全：流水 feed_out/OT/-20 + location_stock 扣 20 + feed_log(feed_type=warehouse, weight=20)")
+    @DisplayName("feed happy（饲料，非可打包）：额度内喂 20 → 两写：流水 feed_out/OT/-20 + feed_log(warehouse, weight=20)；领用时已扣货架，饲喂不再二次扣 location_stock（DENGBO-R18/R19 同口径）")
     void testFeed_Happy_ThreeWrites() {
         stubFeedProduct();
         // 今日额度：已领 50 − 已退 0 − 已损 0 − 已饲喂 10 = 剩 40 ≥ 20
@@ -958,7 +962,6 @@ class MatFlowServiceImplTest {
         when(stockFlowMapper.sumTodayByProductTypes(eq(PRODUCT_ID), argThat(l -> l != null && l.contains("pick_return_in")))).thenReturn(BigDecimal.ZERO);
         when(stockFlowMapper.sumTodayByProductType(PRODUCT_ID, "loss")).thenReturn(BigDecimal.ZERO);
         when(stockFlowMapper.sumTodayByProductType(PRODUCT_ID, "feed_out")).thenReturn(new BigDecimal("10"));
-        when(locationStockMapper.deductByProductLocation(eq(LOCATION_ID), eq(PRODUCT_ID), any(), eq(USER_ID))).thenReturn(1);
 
         Long flowId = service.feed(feedBo(new BigDecimal("20")));
         assertThat(flowId).isNotNull();
@@ -972,10 +975,9 @@ class MatFlowServiceImplTest {
         assertThat(f.getChangeNum()).isEqualByComparingTo("-20");
         assertThat(f.getChangeQuantity()).isEqualByComparingTo("20");
         assertThat(f.getOperatorId()).isEqualTo(USER_ID);
-        // 写 2：货架扣减量 == 流水量（双账簿对账）
-        verify(locationStockMapper, times(1))
-            .deductByProductLocation(eq(LOCATION_ID), eq(PRODUCT_ID), eq(new BigDecimal("20")), eq(USER_ID));
-        // 写 3：饲喂台账 feed_log（feed_type=warehouse，行64 来源②；作物维度留空）
+        // DENGBO-R18/R19 同口径：非可打包物资领用时已扣货架，饲喂只留流水，不二次扣 location_stock
+        verify(locationStockMapper, never()).deductByProductLocation(any(), any(), any(), any());
+        // 写 2：饲喂台账 feed_log（feed_type=warehouse，行64 来源②；作物维度留空）
         ArgumentCaptor<FeedLog> logCap = ArgumentCaptor.forClass(FeedLog.class);
         verify(feedLogMapper, times(1)).insert(logCap.capture());
         FeedLog log = logCap.getValue();

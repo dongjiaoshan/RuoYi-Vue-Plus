@@ -224,8 +224,13 @@ public interface StockSelfMapper {
                                                 @Param("checkResult") String checkResult);
 
     /**
-     * 进出库流水分页（入库记录 / 出库记录 tab）：stock_flow 中 {@code inout_type=#{inoutType}}
-     * 且 {@code flow_type NOT IN ('check_in','check_out','check_abnormal_out')}（盘点流水归盘点记录 tab）。
+     * 进出库流水分页（入库记录 / 出库记录 tab）：stock_flow 中 {@code inout_type=#{inoutType}}（IN/OT）。
+     *
+     * <p>盘点产生的流水（盘盈入库 check_in / 盘点计损出库 check_out / 盘点异常出库 check_abnormal_out）
+     * 本身就是真实的入 / 出库动作，按 {@code inout_type} 天然归入对应 tab：
+     * check_in → 入库记录，check_out / check_abnormal_out → 出库记录（r195：盘点计损/盘亏出库
+     * 之前被 {@code NOT IN(...)} 过滤丢失，导致出库记录看不到盘点损耗，已放开）。盘点记录 tab 另有
+     * {@code selectCheckRecordsPage} 单独聚合这三类，两处口径互不冲突。</p>
      *
      * <p>产品名 / 单位 LEFT JOIN product_info；供应商名 LEFT JOIN {@code t_md_supplier}；
      * {@code flowType} 原值出给 VO，由注解翻译为 {@code inoutTypeLabel}。mp 传的业务子类型 inoutType
@@ -254,7 +259,6 @@ public interface StockSelfMapper {
            AND sup.tenant_id = f.tenant_id
          WHERE f.warehouse_id = #{locationId}
            AND f.inout_type   = #{inoutType}
-           AND f.flow_type    NOT IN ('check_in', 'check_out', 'check_abnormal_out')
            AND f.del_flag     = '0'
            AND f.tenant_id    = '1001'
            <if test="startDate != null and startDate != ''">

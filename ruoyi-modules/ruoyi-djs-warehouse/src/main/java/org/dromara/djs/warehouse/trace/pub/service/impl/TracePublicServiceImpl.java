@@ -515,7 +515,7 @@ public class TracePublicServiceImpl
             PlotInfo plot = plotInfoMapper.selectById(code.getPlotId());
             if (plot != null) {
                 PublicTraceVo.PlotBlock plotBlock = new PublicTraceVo.PlotBlock();
-                plotBlock.setPlotName(plot.getPlotName());
+                plotBlock.setPlotName(plot.getPlotCode());
                 plotBlock.setArea(toStr(plot.getPlotArea()));
                 if (plot.getZoneId() != null) {
                     PlotZone zone = plotZoneMapper.selectById(plot.getZoneId());
@@ -528,7 +528,7 @@ public class TracePublicServiceImpl
                 vo.setPlot(plotBlock);
                 // 产品块冗余地块名（原型产品信息块展示地块编号/名）
                 if (vo.getProduct() != null) {
-                    vo.getProduct().setPlotName(plot.getPlotName());
+                    vo.getProduct().setPlotName(plot.getPlotCode());
                 }
             }
             // 地块农事

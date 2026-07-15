@@ -593,7 +593,7 @@ public class TraceCodeAdminServiceImpl
         }
         Map<Long, String> map = plotInfoMapper.selectList(
                 new LambdaQueryWrapper<PlotInfo>().in(PlotInfo::getId, ids)).stream()
-            .collect(Collectors.toMap(PlotInfo::getId, PlotInfo::getPlotName, (a, b) -> a));
+            .collect(Collectors.toMap(PlotInfo::getId, PlotInfo::getPlotCode, (a, b) -> a));
         for (TraceCodeListVo vo : vos) {
             if (vo.getPlotId() != null) {
                 vo.setPlotName(map.get(vo.getPlotId()));

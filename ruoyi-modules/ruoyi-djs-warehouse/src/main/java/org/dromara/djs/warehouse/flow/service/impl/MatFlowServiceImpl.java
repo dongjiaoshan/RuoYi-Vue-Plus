@@ -1339,27 +1339,17 @@ public class MatFlowServiceImpl implements IMatFlowService {
         flow.setProofOssIds(bo.getProofOssIds());
         stockFlowMapper.insert(flow);
 
-        // 3. 损耗"扣减"（注：损耗 = 不可逆消耗，从账面剥离；与"退回"减 inhouse 同源、但不回补货架）。
-        //    可打包食品原料（vegetable/egg/dry_good/other）+ 猪肉（pork，分割产 ear_no 篮领用产 inhouse）：
-        //    领用时已离 location_stock 进「待打包」product_inhouse，损耗剥离的是这部分今日领用剩余 WIP
-        //    （与"退回"对称，让打包来源「领用剩余重量」相应扣减），不再二次扣 location_stock（仓库库存）。
-        //    admin 猪肉损耗走篮级 lossByBatch/lossPorkEar 已剥 inhouse；mp 产品级损耗（r129 无 batchId）走此
-        //    产品级分支，历史误从 location_stock 扣（pork 不在 isPackableFood 集）→ 与 admin 口径不一致，此处对齐。
-        //    其余物资（包材/饲料/种子/药品）无 WIP → 从 location_stock 扣减（原行为）。
+        // 3. 损耗从「今日领用剩余」剥离（损耗 = 不可逆消耗，与"退回/饲喂"同源，都不回补货架）：
+        //    - 可打包食品原料（vegetable/egg/dry_good/other）+ 猪肉（pork）：领用时已离 location_stock 进
+        //      「待打包」product_inhouse，损耗剥离这部分今日领用 WIP（与"退回"对称，让打包来源「领用剩余重量」相应扣减）。
+        //      admin 猪肉损耗走篮级 lossByBatch/lossPorkEar 已剥 inhouse；mp 产品级损耗（r129 无 batchId）走此分支。
+        //    - 其余物资（包材/饲料/种子/药品）：领用出库时 location_stock 已扣过一次，损耗只在 stock_flow=loss 留痕
+        //      驱动「今日领用剩余 = 已领−已退−已损−已饲」聚合收敛，**不再二次扣 location_stock**
+        //      （DENGBO-R18/R19：饲料/种子提交损耗后库存被二次扣减 —— 损耗的是已领出仓的量，货架不应再减）。
         if (isPackableFood(product.getBelongType()) || "pork".equals(product.getBelongType())) {
             reduceTodayInhouseForBasket(bo.getProductId(), null, null, bo.getQuantity());
-        } else {
-            // 若工人领用后已把物理物品消耗完才补登损耗，则库存可能已扣到 0 —— 这种情况下损耗只在流水留痕，
-            // 不再走 update。affectedRows==0 时不抛异常（流水仍记录管理者审计用），打 warn 让 admin 流水查询页
-            // 能看到这种"账实倒挂"明细。
-            int affected = locationStockMapper.deductByProductLocation(
-                bo.getLocationId(), bo.getProductId(), bo.getQuantity(), userId);
-            if (affected == 0) {
-                log.warn("WMS-MAT-001 loss 流水已记，但 location_stock 扣减失败（账面已不足）："
-                        + "user={}, product={}, location={}, qty={}",
-                    userId, bo.getProductId(), bo.getLocationId(), bo.getQuantity());
-            }
         }
+        // 非可打包物资：不动 location_stock（领用时已扣货架），仅靠 stock_flow=loss + 下方 loss_flow 记账。
 
         // 4. 统一损耗台账双写（WMS-LOSS-001，行59 录入损耗）：原 stock_flow 留痕不动，仅追加一条 loss_flow 明细。
         lossFlowService.record("manual_loss", bo.getProductId(), bo.getQuantity(),
@@ -1406,24 +1396,16 @@ public class MatFlowServiceImpl implements IMatFlowService {
         flow.setProofOssIds(bo.getProofOssIds());
         stockFlowMapper.insert(flow);
 
-        // 3. 饲喂"扣减"（与 loss() 同源：不可逆消耗，从账面剥离）。
-        //    可打包食品原料（vegetable/egg/dry_good/other）：领用时已离 location_stock 进「待打包」
-        //    product_inhouse，饲喂剥离的是这部分 WIP（与"退回/损耗"对称，让 admin 打包来源「领用剩余重量」归零），
-        //    不再二次扣 location_stock。其余物资（包材/饲料/种子/药品）无 WIP → 从 location_stock 扣减。
-        //    饲料/种子等非可打包物资仍走 location_stock（本改动只影响可打包食品，不误伤养殖/种植饲喂）。
-        //    带 plot_id（自产果蔬走产品级分支）：按 plot 匹配剥离该地块今天待打包 WIP（与 lossVegPlot 对称）。
+        // 3. 饲喂从「今日领用剩余」剥离（与 loss() 同口径：不可逆消耗，都不回补货架）：
+        //    - 可打包食品原料（vegetable/egg/dry_good/other）：领用时已离 location_stock 进「待打包」
+        //      product_inhouse，饲喂剥离这部分 WIP（与"退回/损耗"对称，让 admin 打包来源「领用剩余重量」归零）。
+        //      带 plot_id（自产果蔬走产品级分支）：按 plot 匹配剥离该地块今天待打包 WIP（与 lossVegPlot 对称）。
+        //    - 其余物资（包材/饲料/种子/药品）：领用出库时 location_stock 已扣过一次，饲喂只在 stock_flow=feed_out
+        //      留痕驱动「今日领用剩余」聚合收敛，**不再二次扣 location_stock**（与 loss() 同口径 · DENGBO-R18/R19）。
         if (isPackableFood(product.getBelongType())) {
             reduceTodayInhouseForBasket(bo.getProductId(), null, bo.getPlotId(), bo.getQuantity());
-        } else {
-            // affected==0 打 warn 不抛（账实倒挂留痕，工人可能消耗完才补登，与 loss() 一致）。
-            int affected = locationStockMapper.deductByProductLocation(
-                bo.getLocationId(), bo.getProductId(), bo.getQuantity(), userId);
-            if (affected == 0) {
-                log.warn("warehouse feed 流水已记，但 location_stock 扣减失败（账面已不足）："
-                        + "user={}, product={}, location={}, qty={}",
-                    userId, bo.getProductId(), bo.getLocationId(), bo.getQuantity());
-            }
         }
+        // 非可打包物资：不动 location_stock（领用时已扣货架），仅靠 stock_flow=feed_out + 下方 feed_log 记账。
 
         // 4. 写饲喂台账 feed_log（feed_type='warehouse'，行64 来源②）：crop_id/cropName 仓库领用饲喂无作物维度，留空。
         // feed_date 用含时分秒的 now()（DATETIME），与毛菜处理间来源对齐，admin「有机饲喂记录」精确到时分秒。

@@ -727,17 +727,13 @@ public class StoreReturnServiceImpl
 
     @Override
     public List<StoreReturnGroupVo> listPendingGroups() {
-        // mp 退货管理分组卡：门店→仓库退回，按门店分组，状态派生（全 received→confirmed 否则 pending）。
-        // 收件箱语义：pending（待确认）不限日期全列出，含历史未确认；received（已确认）只取近 7 天防无限堆积。
-        LocalDateTime receivedFloor = LocalDate.now(ZONE_SHANGHAI).minusDays(7).atStartOfDay();
+        // mp 退货管理分组卡：门店→仓库退回，按门店分组。收件箱语义 —— 只列「待确认」（pending），
+        // 已确认（received）不再进列表（仓库工人接受入库后即从收件箱消失，避免历史已确认长期堆积）。
+        // pending 不限日期全列出，含历史未确认。
         List<StoreReturn> rows = baseMapper.selectList(new LambdaQueryWrapper<StoreReturn>()
             .eq(StoreReturn::getReturnDirection, DIRECTION_STORE_TO_WAREHOUSE)
             .isNotNull(StoreReturn::getStoreId)
-            .and(w -> w
-                .eq(StoreReturn::getReturnStatus, STATUS_PENDING)
-                .or(o -> o
-                    .eq(StoreReturn::getReturnStatus, STATUS_RECEIVED)
-                    .ge(StoreReturn::getReturnDate, receivedFloor))));
+            .eq(StoreReturn::getReturnStatus, STATUS_PENDING));
         if (rows.isEmpty()) {
             return List.of();
         }
@@ -749,17 +745,17 @@ public class StoreReturnServiceImpl
             StoreReturnGroupVo vo = new StoreReturnGroupVo();
             vo.setStoreId(storeId);
             vo.setStoreName(storeNames.get(storeId));
-            boolean allReceived = group.stream().allMatch(r -> STATUS_RECEIVED.equals(r.getReturnStatus()));
-            vo.setReturnStatus(allReceived ? MP_STATUS_CONFIRMED : MP_STATUS_PENDING);
+            // 列表只含 pending 行，状态恒为待确认。
+            vo.setReturnStatus(MP_STATUS_PENDING);
             vo.setProductKindCount((int) group.stream()
                 .map(StoreReturn::getProductId).filter(Objects::nonNull).distinct().count());
             vo.setReturnTime(group.stream().map(StoreReturn::getReturnDate).filter(Objects::nonNull)
                 .max(Comparator.naturalOrder()).orElse(null));
             list.add(vo);
         });
+        // 全 pending，按退回时间倒序（最新退回置顶）。
         list.sort(Comparator
-            .comparing((StoreReturnGroupVo v) -> MP_STATUS_PENDING.equals(v.getReturnStatus()) ? 0 : 1)
-            .thenComparing(v -> v.getReturnTime() == null ? LocalDateTime.MIN : v.getReturnTime(),
+            .comparing((StoreReturnGroupVo v) -> v.getReturnTime() == null ? LocalDateTime.MIN : v.getReturnTime(),
                 Comparator.reverseOrder()));
         return list;
     }
@@ -800,6 +796,7 @@ public class StoreReturnServiceImpl
             ProductInfo p = r.getProductId() == null ? null : productMap.get(r.getProductId());
             vo.setProductName(p == null ? null : p.getProductName());
             vo.setProductCategory(p == null ? null : p.getBelongType());
+            vo.setReturnQuantity(r.getReturnQuantity());
             vo.setReturnWeight(r.getGoodsWeight());
             vo.setConfirmWeight(r.getReceivedWeight());
             vo.setIsConfirm(received ? 1 : 0);
