@@ -64,10 +64,11 @@ public interface IAppletPlantManageDashboardService {
      *
      * @param month     月份过滤（可空）
      * @param cropId    作物过滤（可空）
+     * @param year      年份过滤（可空 → 不限年份，跨年"去年记录"用）
      * @param pageQuery 分页参数
      * @return 种植记录分页
      */
-    TableDataInfo<PlantRecordVo> getPlanRecords(Integer month, Long cropId, PageQuery pageQuery);
+    TableDataInfo<PlantRecordVo> getPlanRecords(Integer month, Long cropId, Integer year, PageQuery pageQuery);
 
     /**
      * 采摘计划时间轴（按计划采摘月分组，同结构复用 timeline VO）。
@@ -83,9 +84,10 @@ public interface IAppletPlantManageDashboardService {
      * @param month     月份过滤（可空）
      * @param cropId    作物过滤（可空）
      * @param pickType  采摘类型过滤 is_pick（1=活动 / 2=基地，可空）
+     * @param year      年份过滤（可空 → 不限年份，跨年"去年记录"用）
      * @param pageQuery 分页参数
      * @return 采摘记录分页
      */
-    TableDataInfo<PickRecordVo> getPickRecords(Integer month, Long cropId, Integer pickType, PageQuery pageQuery);
+    TableDataInfo<PickRecordVo> getPickRecords(Integer month, Long cropId, Integer pickType, Integer year, PageQuery pageQuery);
 
 }

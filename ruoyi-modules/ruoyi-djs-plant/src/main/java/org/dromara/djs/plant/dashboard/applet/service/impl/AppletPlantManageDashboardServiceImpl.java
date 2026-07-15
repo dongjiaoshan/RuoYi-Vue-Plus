@@ -136,10 +136,11 @@ public class AppletPlantManageDashboardServiceImpl implements IAppletPlantManage
     }
 
     @Override
-    public TableDataInfo<PlantRecordVo> getPlanRecords(Integer month, Long cropId, PageQuery pageQuery) {
+    public TableDataInfo<PlantRecordVo> getPlanRecords(Integer month, Long cropId, Integer year, PageQuery pageQuery) {
         // PageQuery 构造参数顺序为 (pageSize, pageNum)
         PageQuery pq = pageQuery != null ? pageQuery : new PageQuery(10, 1);
-        IPage<PlantRecordVo> page = dashboardMapper.selectPlanRecordsPage(pq.build(), currentTenant(), month, cropId);
+        // year==null 时透传 null，mapper <if> 不拼年份条件（不限年份，向后兼容）
+        IPage<PlantRecordVo> page = dashboardMapper.selectPlanRecordsPage(pq.build(), currentTenant(), month, cropId, year);
         return TableDataInfo.build(page);
     }
 
@@ -153,11 +154,12 @@ public class AppletPlantManageDashboardServiceImpl implements IAppletPlantManage
     }
 
     @Override
-    public TableDataInfo<PickRecordVo> getPickRecords(Integer month, Long cropId, Integer pickType, PageQuery pageQuery) {
+    public TableDataInfo<PickRecordVo> getPickRecords(Integer month, Long cropId, Integer pickType, Integer year, PageQuery pageQuery) {
         // PageQuery 构造参数顺序为 (pageSize, pageNum)
         PageQuery pq = pageQuery != null ? pageQuery : new PageQuery(10, 1);
+        // year==null 时透传 null，mapper <if> 不拼年份条件（不限年份，向后兼容）
         IPage<AppletPlantManageDashboardMapper.PickRecordRow> page =
-            dashboardMapper.selectPickRecordsPage(pq.build(), currentTenant(), month, cropId, pickType);
+            dashboardMapper.selectPickRecordsPage(pq.build(), currentTenant(), month, cropId, pickType, year);
 
         List<PickRecordVo> rows = new ArrayList<>(page.getRecords().size());
         for (AppletPlantManageDashboardMapper.PickRecordRow r : page.getRecords()) {

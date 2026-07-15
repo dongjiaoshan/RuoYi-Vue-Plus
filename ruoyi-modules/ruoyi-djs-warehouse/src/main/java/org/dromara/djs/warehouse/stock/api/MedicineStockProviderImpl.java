@@ -139,7 +139,11 @@ public class MedicineStockProviderImpl implements MedicineStockProvider {
 
     @Override
     public void deductLoss(Long productId, BigDecimal qty, Long operatorId) {
-        StockFlow flow = doDeduct(productId, qty, operatorId, FLOW_LOSS);
+        // 药品损耗不二次扣库存（root cause 修复）：药品无 inhouse「待打包」池（无打包链），领用（deduct）
+        // 已从 location_stock 扣过一次真值，损耗此时只记录流水 + 双写损耗台账即可；若再走 doDeduct
+        // → deductByProductLocation 会二次扣 location_stock（对齐 MatFlowServiceImpl.loss() 对
+        // 可打包食品原料「不再二次扣 location_stock、只剥 WIP」的口径，药品因无 WIP 故连剥都不需要）。
+        StockFlow flow = insertStockFlowWithoutDeduct(productId, qty, operatorId, FLOW_LOSS);
         // 统一损耗台账双写（WMS-LOSS-001）：损耗总览 / 库存详情损耗 tab 数据源，
         // 关联本次 loss 出库流水；record 内回填产品/库位快照
         lossFlowService.record(LOSS_TYPE_MANUAL, productId, qty, flow.getWarehouseId(),
@@ -159,6 +163,26 @@ public class MedicineStockProviderImpl implements MedicineStockProvider {
         int aff = locationStockMapper.deductByProductLocation(locationId, productId, qty, operatorId);
         if (aff == 0) {
             throw new ServiceException("药品库存不足");
+        }
+        return insertStockFlow(locationId, productId, qty, operatorId, INOUT_OUT, flowType);
+    }
+
+    /**
+     * 药品损耗专用：解析默认库位 → 落一条 loss 出库流水，<b>不扣 location_stock</b>。
+     *
+     * <p>与 {@link #doDeduct} 的唯一区别：省去 {@code deductByProductLocation} 那步。药品库存真值已在
+     * 领用（{@link #deduct}）时从 {@code location_stock} 扣过一次，损耗再扣即二次扣减。故损耗只记流水
+     * （供出入库记录 / 损耗总览回放）+ 由调用方双写损耗台账，库存不再变动。</p>
+     *
+     * <p>库位解析仍走 {@link LocationStockMapper#selectDefaultLocationByProduct}：为 null（该药品无任何库存行）
+     * 时仍抛 {@link ServiceException}，不吞异常——流水的 {@code warehouse_id} 需要一个真实库位快照。</p>
+     *
+     * @return 已落库的 loss 出库流水（供损耗台账关联 {@code loss_flow.source_flow_id}）
+     */
+    private StockFlow insertStockFlowWithoutDeduct(Long productId, BigDecimal qty, Long operatorId, String flowType) {
+        Long locationId = locationStockMapper.selectDefaultLocationByProduct(productId);
+        if (locationId == null) {
+            throw new ServiceException("药品无库存记录，无法登记损耗：" + productId);
         }
         return insertStockFlow(locationId, productId, qty, operatorId, INOUT_OUT, flowType);
     }

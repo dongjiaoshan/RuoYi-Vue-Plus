@@ -108,14 +108,16 @@ public class AppletPlantManageDashboardController extends BaseController {
      *
      * @param month     月份过滤（可空）
      * @param cropId    作物过滤（可空）
+     * @param year      年份过滤（可空 → 不限年份，跨年"去年记录"用）
      * @param pageQuery 分页参数
      * @return 种植记录分页
      */
     @GetMapping("/planRecords")
     public TableDataInfo<PlantRecordVo> planRecords(@RequestParam(required = false) Integer month,
                                                     @RequestParam(required = false) Long cropId,
+                                                    @RequestParam(required = false) Integer year,
                                                     PageQuery pageQuery) {
-        return dashboardService.getPlanRecords(month, cropId, pageQuery);
+        return dashboardService.getPlanRecords(month, cropId, year, pageQuery);
     }
 
     /**
@@ -135,6 +137,7 @@ public class AppletPlantManageDashboardController extends BaseController {
      * @param month     月份过滤（可空）
      * @param cropId    作物过滤（可空）
      * @param pickType  采摘类型过滤 is_pick（1=活动 / 2=基地，可空）
+     * @param year      年份过滤（可空 → 不限年份，跨年"去年记录"用）
      * @param pageQuery 分页参数
      * @return 采摘记录分页
      */
@@ -142,8 +145,9 @@ public class AppletPlantManageDashboardController extends BaseController {
     public TableDataInfo<PickRecordVo> pickRecords(@RequestParam(required = false) Integer month,
                                                    @RequestParam(required = false) Long cropId,
                                                    @RequestParam(required = false) Integer pickType,
+                                                   @RequestParam(required = false) Integer year,
                                                    PageQuery pageQuery) {
-        return dashboardService.getPickRecords(month, cropId, pickType, pageQuery);
+        return dashboardService.getPickRecords(month, cropId, pickType, year, pageQuery);
     }
 
 }

@@ -263,6 +263,7 @@ public interface AppletPlantManageDashboardMapper {
      * @param tenantId 租户
      * @param month    月份过滤（plant_month，可空）
      * @param cropId   作物过滤（可空）
+     * @param year     年份过滤（YEAR(begin_actualdate)，可空 → 不限年份，跨年"去年记录"用）
      * @return 种植记录分页
      */
     @Select("<script>"
@@ -280,12 +281,14 @@ public interface AppletPlantManageDashboardMapper {
         + "   AND d.begin_actualdate IS NOT NULL "
         + "   <if test='month != null'> AND d.plant_month = #{month} </if>"
         + "   <if test='cropId != null'> AND d.crop_id = #{cropId} </if>"
+        + "   <if test='year != null'> AND YEAR(d.begin_actualdate) = #{year} </if>"
         + " ORDER BY d.begin_actualdate DESC, d.id DESC "
         + "</script>")
     IPage<PlantRecordVo> selectPlanRecordsPage(IPage<PlantRecordVo> page,
                                                @Param("tenantId") String tenantId,
                                                @Param("month") Integer month,
-                                               @Param("cropId") Long cropId);
+                                               @Param("cropId") Long cropId,
+                                               @Param("year") Integer year);
 
     // ============================ 端点 7 pickTimeline 采摘计划时间轴 ============================
 
@@ -343,6 +346,7 @@ public interface AppletPlantManageDashboardMapper {
      * @param month    月份过滤（MONTH(begin_harvestdate)，可空）
      * @param cropId   作物过滤（可空）
      * @param pickType 采摘类型过滤 is_pick（1/2，可空）
+     * @param year     年份过滤（YEAR(begin_harvestdate)，可空 → 不限年份，跨年"去年记录"用）
      * @return 采摘记录分页
      */
     @Select("<script>"
@@ -362,13 +366,15 @@ public interface AppletPlantManageDashboardMapper {
         + "   <if test='month != null'> AND MONTH(d.begin_harvestdate) = #{month} </if>"
         + "   <if test='cropId != null'> AND d.crop_id = #{cropId} </if>"
         + "   <if test='pickType != null'> AND d.is_pick = #{pickType} </if>"
+        + "   <if test='year != null'> AND YEAR(d.begin_harvestdate) = #{year} </if>"
         + " ORDER BY d.begin_harvestdate DESC, d.id DESC "
         + "</script>")
     IPage<PickRecordRow> selectPickRecordsPage(IPage<PickRecordRow> page,
                                                @Param("tenantId") String tenantId,
                                                @Param("month") Integer month,
                                                @Param("cropId") Long cropId,
-                                               @Param("pickType") Integer pickType);
+                                               @Param("pickType") Integer pickType,
+                                               @Param("year") Integer year);
 
     // ============================ mapper 内部行载体 ============================
 
