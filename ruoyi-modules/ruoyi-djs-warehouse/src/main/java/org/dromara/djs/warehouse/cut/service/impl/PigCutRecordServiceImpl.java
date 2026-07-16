@@ -975,18 +975,23 @@ public class PigCutRecordServiceImpl
         vo.setMarkId(bar.getSupplierId() != null ? bar.getMarkId() : null);
         vo.setMarketingWeight(bar.getMarketingWeight());
         vo.setInWeight(bar.getInWeight());
-        vo.setInTime(bar.getInTime());
         if (row != null) {
             vo.setInhouseId(row.getId());
             vo.setWhiteBarNo(row.getWhiteBarNo());
             vo.setProductName(row.getProductName());
             vo.setProductWeight(row.getProductWeight());
             vo.setProductUnit(StringUtils.isNotBlank(row.getProductUnit()) ? row.getProductUnit() : "kg");
+            // row144：入库时间按半只产出行各自的入库(称重)时间 produce_time 显示——同一头猪左右两半是燎毛间分别
+            // 称重入库的，时间本就有间隔；bar.in_time 是「处理完成」按钮的统一时刻(两半相同)，不能当各半只入库时间。
+            // 排酸时长(前端 now − inTime)随之按半只各自算。produce_time 缺失→回落 bar.in_time 不瞎编。
+            vo.setInTime(row.getProduceTime() != null ? row.getProduceTime() : bar.getInTime());
         } else {
             vo.setInhouseId(null);
             vo.setProductName("白条（整只）");
             vo.setProductWeight(bar.getMarketingWeight() != null ? bar.getMarketingWeight() : bar.getInWeight());
             vo.setProductUnit("kg");
+            // 整只兜底(旧数据无产出行)：用白条处理完成入库时间
+            vo.setInTime(bar.getInTime());
         }
         return vo;
     }
