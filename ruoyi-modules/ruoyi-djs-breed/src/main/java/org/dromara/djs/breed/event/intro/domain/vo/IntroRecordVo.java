@@ -59,6 +59,13 @@ public class IntroRecordVo implements Serializable {
     /** 引种日期。 */
     private LocalDate introduceDate;
 
+    /**
+     * 供应商名称（row225，外部引种记录卡左下显示）。
+     * <p>外部引种关联 {@code t_md_supplier.supplier_name}，service 批查装配；
+     * 内部引种无供应商 → null（mp 端不渲染该段）。</p>
+     */
+    private String supplierName;
+
     /** 引种人员 userId（EmployeePicker 所选；legacy 可能自由文本）。 */
     private String operator;
 

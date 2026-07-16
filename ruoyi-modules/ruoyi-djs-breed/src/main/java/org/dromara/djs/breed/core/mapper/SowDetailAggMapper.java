@@ -184,6 +184,7 @@ public interface SowDetailAggMapper {
             medicine_reason  AS reason,
             medicine_name    AS medicineName,
             medicine_dosage  AS dosage,
+            dosage_unit      AS dosageUnit,
             medicine_way     AS way,
             operator_name    AS operatorName
         FROM t_breed_medicine_record
@@ -206,11 +207,13 @@ public interface SowDetailAggMapper {
      * <p>开始/结束时间（旧栏位驻留区间）由 service 用相邻日期补算（SQL 仅给 transferDate）。</p>
      */
     @Select("""
-        SELECT transferDate, targetBarn, slaughter FROM (
+        SELECT transferDate, sourceBarn, targetBarn, operatorId, slaughter FROM (
             SELECT
                 transfer_date AS rawDate,
                 DATE_FORMAT(transfer_date, '%Y-%m-%d') AS transferDate,
+                CONCAT(COALESCE(old_barn_name, ''), COALESCE(old_pen_name, '')) AS sourceBarn,
                 CONCAT(COALESCE(new_barn_name, ''), COALESCE(new_pen_name, '')) AS targetBarn,
+                operator_id AS operatorId,
                 0 AS slaughter,
                 id AS rawId
             FROM t_farm_pig_transfer
@@ -219,7 +222,9 @@ public interface SowDetailAggMapper {
             SELECT
                 marketing_date AS rawDate,
                 DATE_FORMAT(marketing_date, '%Y-%m-%d') AS transferDate,
+                '' AS sourceBarn,
                 '' AS targetBarn,
+                operator_id AS operatorId,
                 1 AS slaughter,
                 id AS rawId
             FROM t_farm_pig_marketing

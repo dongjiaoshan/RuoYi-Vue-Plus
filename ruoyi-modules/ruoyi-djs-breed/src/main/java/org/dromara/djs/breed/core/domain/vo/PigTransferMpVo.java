@@ -1,6 +1,8 @@
 package org.dromara.djs.breed.core.domain.vo;
 
 import lombok.Data;
+import org.dromara.common.translation.annotation.Translation;
+import org.dromara.common.translation.constant.TransConstant;
 
 import java.io.Serial;
 import java.io.Serializable;
@@ -32,8 +34,22 @@ public class PigTransferMpVo implements Serializable {
     /** 转移日期（'YYYY-MM-DD'）。 */
     private String transferDate;
 
+    /**
+     * 原栋舍（row215，oldBarnName + oldPenName 拼接）。
+     * <p>普通转移取 {@code t_farm_pig_transfer.old_barn_name/old_pen_name}；
+     * 出栏记录（marketing 表无原栋舍列）→ 空串，mp 端按需兜底。</p>
+     */
+    private String sourceBarn;
+
     /** 转移栋舍（newBarnName + newPenName；出栏 → 「出栏」）。 */
     private String targetBarn;
+
+    /** 转移人 userId（row215，transfer/marketing 的 operator_id；翻译用，非直接展示）。 */
+    private Long operatorId;
+
+    /** 转移人姓名（operatorId → USER_ID_TO_NICKNAME 翻译；翻不到回落 null）。 */
+    @Translation(type = TransConstant.USER_ID_TO_NICKNAME, mapper = "operatorId")
+    private String operatorName;
 
     /** 开始时间（旧栏位驻留起始 'YYYY-MM-DD'）；缺 → null。 */
     private String fromDate;

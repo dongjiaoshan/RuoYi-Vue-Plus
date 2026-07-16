@@ -33,6 +33,9 @@ public class PigMedRecordMpVo implements Serializable {
     /** 用药量 medicine_dosage。 */
     private BigDecimal dosage;
 
+    /** 用药量单位 dosage_unit（g/ml/片 等，mp 端拼在用药量后展示，row216/218）；缺 → null。 */
+    private String dosageUnit;
+
     /** 用药方式 label（已字典翻译，djs_medicine_way）。 */
     private String way;
 

@@ -306,6 +306,19 @@ public class PigIntroServiceImpl implements IPigIntroService {
         // 字典 djs_pig_breed(04=杜洛克)/djs_pig_strain 仅回落。批量预载一次防 N+1。
         Map<String, String> breedNameMap = pigCoreService.loadBreedStrainNameMap(1);
         Map<String, String> strainNameMap = pigCoreService.loadBreedStrainNameMap(2);
+
+        // row225：供应商名（外部引种记录卡左下）。收集去重 supplierId 一次性批查，避免 N+1；
+        // 内部引种 supplierId 为空不装配 → supplierName null。
+        Set<Long> supplierIds = page.getRecords().stream()
+            .map(PigIntroduce::getSupplierId)
+            .filter(Objects::nonNull)
+            .collect(Collectors.toSet());
+        Map<Long, String> supplierNameById = supplierIds.isEmpty()
+            ? Map.of()
+            : supplierMapper.selectByIds(supplierIds).stream()
+                .filter(s -> s.getId() != null && s.getSupplierName() != null)
+                .collect(Collectors.toMap(Supplier::getId, Supplier::getSupplierName, (a, b) -> a));
+
         List<IntroRecordVo> rows = new ArrayList<>(page.getRecords().size());
         for (PigIntroduce e : page.getRecords()) {
             IntroRecordVo vo = new IntroRecordVo();
@@ -320,6 +333,7 @@ public class PigIntroServiceImpl implements IPigIntroService {
             vo.setPigStrainLabel(translateStrain(strainNameMap, e.getPigStrainCode()));
             vo.setAgeDays(calcAgeDays(e.getPigId() != null ? birthDateById.get(e.getPigId()) : null));
             vo.setIntroduceDate(e.getIntroduceDate());
+            vo.setSupplierName(e.getSupplierId() != null ? supplierNameById.get(e.getSupplierId()) : null);
             vo.setOperator(e.getOperator());
             vo.setProofOssIds(e.getProofOssIds());
             vo.setProofImageUrls(resolveProofUrls(e.getProofOssIds()));
