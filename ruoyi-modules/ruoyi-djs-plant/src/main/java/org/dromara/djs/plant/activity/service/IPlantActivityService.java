@@ -55,6 +55,15 @@ public interface IPlantActivityService {
     Long recordPickActivity(PickActivityRecordBo bo);
 
     /**
+     * DENGBO-R24「录入完成」结算：把当前批次未结算销售量按地块均分到当前批次全部已采摘完成地块的
+     * actual_yield（3 位小数、尾差进最后一块），并把本批次销售流水与地块标记 settle_round=N。
+     * 前置：当前批次全部地块须采摘完成，否则抛异常。
+     *
+     * @param cropId 作物 id
+     */
+    void settlePickActivity(Long cropId);
+
+    /**
      * 采摘活动记录列表（mp 采摘活动记录，按采摘日期倒序）。
      *
      * @param cropId 作物 id（可空 = 全场查询，不按作物过滤；非空则按作物过滤）

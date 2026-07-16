@@ -1,14 +1,20 @@
 package org.dromara.djs.store.loss.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.metadata.IPage;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.common.core.service.DictService;
 import org.dromara.common.core.utils.StringUtils;
+import org.dromara.common.mybatis.core.page.PageQuery;
+import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.tenant.helper.TenantHelper;
 import org.dromara.djs.store.ledger.domain.StoreDailyLedger;
 import org.dromara.djs.store.ledger.mapper.StoreDailyLedgerMapper;
 import org.dromara.djs.store.loss.domain.StoreLossRecord;
+import org.dromara.djs.store.loss.domain.query.StoreLossQuery;
+import org.dromara.djs.store.loss.domain.vo.StoreLossRecordVo;
+import org.dromara.djs.store.loss.domain.vo.WhiteBarSplitLossVo;
 import org.dromara.djs.store.loss.mapper.StoreLossRecordMapper;
 import org.dromara.djs.store.loss.service.IStoreLossService;
 import org.dromara.djs.store.returns.domain.StoreReturn;
@@ -72,6 +78,9 @@ public class StoreLossServiceImpl implements IStoreLossService {
     /** 白条产品退回字典（label=产品名 / value=产品业务码 product_id）。 */
     private static final String DICT_WHITE_BAR_RETURN_PRODUCT = "djs_white_bar_return_product";
 
+    /** 损耗类型字典（label=中文 / value=类型码）：列表展示 + 白条分割损耗汇总行 productName 占位来源。 */
+    private static final String DICT_STORE_LOSS_TYPE = "djs_store_loss_type";
+
     /** 业务日时区（与项目其余「今日」口径一致，避免 DB CURDATE() 时区雷）。 */
     private static final ZoneId ZONE_SHANGHAI = ZoneId.of("Asia/Shanghai");
 
@@ -95,6 +104,95 @@ public class StoreLossServiceImpl implements IStoreLossService {
         int dailyRows = aggregateStoreDailyLoss(date);
         int whiteBarRows = aggregateWhiteBarSplitLoss(date);
         log.info("[STORE-LOSS] aggregate date={} 门店日损耗={}行 白条分割损耗={}行", date, dailyRows, whiteBarRows);
+    }
+
+    @Override
+    public TableDataInfo<StoreLossRecordVo> queryPageList(StoreLossQuery query, PageQuery pageQuery) {
+        // 门店维度由 StoreLineHandler 行级注入（Current-Store-Id 头），不在此显式过滤。
+        LambdaQueryWrapper<StoreLossRecord> w = new LambdaQueryWrapper<StoreLossRecord>()
+            .eq(StringUtils.isNotBlank(query.getLossType()), StoreLossRecord::getLossType, query.getLossType())
+            .ge(query.getLossDateFrom() != null, StoreLossRecord::getLossDate, query.getLossDateFrom())
+            .le(query.getLossDateTo() != null, StoreLossRecord::getLossDate, query.getLossDateTo())
+            .orderByDesc(StoreLossRecord::getLossDate)
+            .orderByDesc(StoreLossRecord::getId);
+
+        IPage<StoreLossRecordVo> page = baseMapper.selectVoPage(pageQuery.build(), w);
+        fillNames(page.getRecords());
+
+        // 产品名称模糊：LEFT JOIN 语义靠内存回填后过滤（白条分割损耗汇总行 productName=类型中文占位，一并纳入过滤）。
+        // 注：产品名过滤在本页记录内做，total 取过滤后条数（列表页产品名多为精确定位，容忍分页粒度差）。
+        if (StringUtils.isNotBlank(query.getProductName())) {
+            String kw = query.getProductName().trim();
+            List<StoreLossRecordVo> filtered = page.getRecords().stream()
+                .filter(v -> v.getProductName() != null && v.getProductName().contains(kw))
+                .toList();
+            return TableDataInfo.build(filtered);
+        }
+        return TableDataInfo.build(page);
+    }
+
+    @Override
+    public WhiteBarSplitLossVo getWhiteBarSplitLoss(Long storeId, LocalDate date) {
+        WhiteBarSplitLossVo vo = new WhiteBarSplitLossVo();
+        vo.setArriveWeight(BigDecimal.ZERO);
+        vo.setReturnReceivedWeight(BigDecimal.ZERO);
+        vo.setSplitLoss(BigDecimal.ZERO);
+        if (storeId == null) {
+            return vo;
+        }
+        LocalDate d = date == null ? LocalDate.now(ZONE_SHANGHAI) : date;
+        // 到店重：当日该店 white_bar 发货 ship_quantity 之和。
+        BigDecimal arrive = nz(sumWhiteBarArriveWeightByStore(d).get(storeId));
+        vo.setArriveWeight(arrive);
+        if (arrive.signum() <= 0) {
+            return vo;   // 无白条到店：退回/损耗均 0，前端据 arriveWeight=0 隐藏
+        }
+        // 退回入库重：门店退货入库流水（t_store_return 门店退回仓库、已入库、白条退回产品字典），口径同定时任务。
+        Set<Long> whiteBarProductIds = resolveWhiteBarReturnProductIds();
+        BigDecimal returnReceived = whiteBarProductIds.isEmpty()
+            ? BigDecimal.ZERO
+            : nz(sumWhiteBarReturnReceivedWeightByStore(d, whiteBarProductIds).get(storeId));
+        vo.setReturnReceivedWeight(returnReceived);
+        BigDecimal loss = arrive.subtract(returnReceived);
+        vo.setSplitLoss(loss.signum() < 0 ? BigDecimal.ZERO : loss);
+        return vo;
+    }
+
+    /**
+     * 回填 productName / productUnit：门店日损耗行 LEFT JOIN {@code t_warehouse_product_info}；
+     * 白条分割损耗汇总行（productId=哨兵 0）productName 取损耗类型中文（{@code djs_store_loss_type}）占位。
+     */
+    private void fillNames(List<StoreLossRecordVo> list) {
+        if (list == null || list.isEmpty()) {
+            return;
+        }
+        List<Long> realProductIds = list.stream()
+            .map(StoreLossRecordVo::getProductId)
+            .filter(id -> id != null && id != SENTINEL_PRODUCT_ID)
+            .distinct().toList();
+        Map<Long, ProductInfo> products = realProductIds.isEmpty()
+            ? Map.of()
+            : productInfoMapper.selectList(new LambdaQueryWrapper<ProductInfo>()
+                    .in(ProductInfo::getId, realProductIds)
+                    .select(ProductInfo::getId, ProductInfo::getProductName, ProductInfo::getProductUnit))
+                .stream().collect(Collectors.toMap(ProductInfo::getId, p -> p, (a, b) -> a));
+        Map<String, String> lossTypeDict = dictService.getAllDictByDictType(DICT_STORE_LOSS_TYPE);
+        String whiteBarSplitLabel = lossTypeDict == null ? null : lossTypeDict.get(LOSS_TYPE_WHITE_BAR_SPLIT);
+
+        for (StoreLossRecordVo vo : list) {
+            if (vo.getProductId() != null && vo.getProductId() != SENTINEL_PRODUCT_ID) {
+                ProductInfo p = products.get(vo.getProductId());
+                if (p != null) {
+                    vo.setProductName(p.getProductName());
+                    if (StringUtils.isBlank(vo.getProductUnit())) {
+                        vo.setProductUnit(p.getProductUnit());
+                    }
+                }
+            } else {
+                // 白条分割损耗汇总行：无真实产品，用类型中文占位（字典缺失兜底固定文案）。
+                vo.setProductName(StringUtils.isNotBlank(whiteBarSplitLabel) ? whiteBarSplitLabel : "白条分割损耗");
+            }
+        }
     }
 
     /**

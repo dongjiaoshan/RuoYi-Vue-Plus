@@ -42,4 +42,10 @@ public class PickActivityRecordBo {
 
     /** 记录人 userId（仓库相关人员）。 */
     private Long recorderId;
+
+    /**
+     * DENGBO-R24 录入完成标志：1=本次录入后触发「录入完成」结算（把当前批次未结算销售量按地块均分）。
+     * 前置：当前批次全部地块必须采摘完成，否则拒绝。null/其它=仅录入不结算。
+     */
+    private Integer finishFlag;
 }

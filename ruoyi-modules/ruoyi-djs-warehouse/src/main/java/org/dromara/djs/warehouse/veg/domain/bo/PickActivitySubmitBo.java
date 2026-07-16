@@ -1,6 +1,5 @@
 package org.dromara.djs.warehouse.veg.domain.bo;
 
-import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.NotNull;
 import lombok.Data;
 
@@ -29,13 +28,13 @@ public class PickActivitySubmitBo {
     /** 作物名称（冗余快照，写仓库台账 remark / feed_log.crop_name 用，可空）。 */
     private String cropName;
 
-    /** 采摘日期。 */
-    @NotNull(message = "采摘日期不能为空")
+    /** 采摘日期（结算-only 可空）。 */
     private LocalDate activityDate;
 
-    /** 本次采摘重量 kg（> 0）。 */
-    @NotNull(message = "请输入采摘重量")
-    @DecimalMin(value = "0.001", message = "采摘重量必须大于 0")
+    /**
+     * 本次采摘重量 kg。DENGBO-R24：录入完成结算-only 时可为空/0（仅触发销售量分摊、不录入新流水）；
+     * 正常录入的 &gt;0 校验由 service 层 recordPickActivity 兜底（此处不加 @DecimalMin，否则挡住结算-only）。
+     */
     private BigDecimal pickWeight;
 
     /** 采摘去向（字典 {@code djs_pick_dest}：sale/veg_fresh/platform/loss/feed）。 */
@@ -47,4 +46,7 @@ public class PickActivitySubmitBo {
 
     /** 记录人 userId（仓库相关人员）。 */
     private Long recorderId;
+
+    /** DENGBO-R24 录入完成标志：1=本次录入后触发销售量分摊结算（前置：当前批次全部地块采摘完成）。 */
+    private Integer finishFlag;
 }

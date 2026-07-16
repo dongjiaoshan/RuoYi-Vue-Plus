@@ -102,6 +102,9 @@ public class PlantDetails extends TenantEntity {
     /** 是否游客采摘活动（字典 {@code djs_yes_no}：1=是 / 2=否）。 */
     private Integer isPick;
 
+    /** DENGBO-R21/R24 采摘活动销售分摊结算轮次：0=未结算(当前批次)，&gt;0=已随第 N 次录入完成参与分摊。 */
+    private Integer pickSettleRound;
+
     @TableLogic
     private String delFlag;
 

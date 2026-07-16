@@ -844,10 +844,12 @@ public class VegetableHandleServiceImpl
         plantBo.setPickDest(bo.getPickDest());
         plantBo.setPlotId(bo.getPlotId());
         plantBo.setRecorderId(bo.getRecorderId());
+        plantBo.setFinishFlag(bo.getFinishFlag()); // DENGBO-R24 录入完成标志透传
         Long activityId = plantActivityService.recordPickActivity(plantBo);
 
         // 2. 非销售去向：写仓库台账（销售不写仓库库存、只进产量分摊，已在 step1 plant 侧完成行写入）
-        if (!sale) {
+        //    DENGBO-R24：结算-only（仅录入完成、无本次重量）→ activityId 为 null，不写任何去向台账。
+        if (activityId != null && !sale) {
             String cropName = bo.getCropName();
             if (cropName == null || cropName.isBlank()) {
                 CropInfo crop = cropInfoMapper.selectById(bo.getCropId());
@@ -888,10 +890,9 @@ public class VegetableHandleServiceImpl
                 // 毛菜保鲜室 = 复用毛菜处理入库（stock_flow veg_stock_in + location_stock 按 plot 篮，落 L0006）
                 insertPickStockIn(bo, weight, userId, now);
             case PICK_DEST_PLATFORM ->
-                // 果蔬月台 = 暂存态：毛菜处理月台亦仅汇总 send_platform、无独立库存/流水表，采摘去向月台同口径不写库存表。
-                // 月台量由 t_plant_plant_activity(pick_dest=platform) 自身承载（行5 admin 列 + mp 记录），此处无副作用台账。
-                log.info("采摘去向[果蔬月台]入账：暂存态不写仓库库存，量由采摘活动行承载 cropId={} plotId={} weight={}",
-                    bo.getCropId(), bo.getPlotId(), weight);
+                // DENGBO-R22：果蔬月台 = 写一行 t_warehouse_vegetable_handle 承载「发往月台重量」，
+                // 使采摘活动直送月台的果蔬出现在「自产产品收货」待入库列表（selectSelfPending 读 send_platform_weight）、可入库。
+                insertPickPlatform(bo, weight, now);
             case PICK_DEST_LOSS ->
                 // 损耗 = 复用统一损耗台账 loss_flow（loss_type=veg_handle_loss）
                 insertPickLoss(bo, weight, userId);
@@ -901,6 +902,29 @@ public class VegetableHandleServiceImpl
             default -> throw new ServiceException("非法/不入仓库的采摘去向：" + dest
                 + "（销售去向不应调用本入账方法）");
         }
+    }
+
+    /**
+     * DENGBO-R22 采摘去向[果蔬月台]：写一行 {@code t_warehouse_vegetable_handle} 只承载 send_platform_weight，
+     * 使采摘活动直送月台的果蔬进入「自产产品收货」待入库列表（{@code selectSelfPending} 按 send_platform_weight 聚合）、可入库。
+     * 其余处理量字段置 0，复用现有月台待收货/入库/损耗全链路，无需改查询 SQL。
+     */
+    private void insertPickPlatform(PickDestSubmitBo bo, BigDecimal weight, Date now) {
+        VegetableHandle handle = new VegetableHandle();
+        handle.setPlotId(bo.getPlotId());
+        handle.setCropId(bo.getCropId());
+        handle.setProductId(resolveProductIdByCrop(bo.getCropId(), bo.getProductId()));
+        handle.setPickStartTime(now);
+        handle.setPickedWeight(BigDecimal.ZERO);
+        handle.setHandledWeight(BigDecimal.ZERO);
+        handle.setFeedWeight(BigDecimal.ZERO);
+        handle.setSendPlatformWeight(weight);
+        handle.setStockInWeight(BigDecimal.ZERO);
+        handle.setLossWeight(BigDecimal.ZERO);
+        handle.setIsWeighed(2);
+        handle.setIsFinish(2);
+        handle.setHandleStatus(STATUS_PROCESSING);
+        baseMapper.insert(handle);
     }
 
     /**

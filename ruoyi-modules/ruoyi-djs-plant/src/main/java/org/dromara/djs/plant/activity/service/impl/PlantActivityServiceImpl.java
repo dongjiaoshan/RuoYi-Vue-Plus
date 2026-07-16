@@ -18,7 +18,9 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.LocalDate;
+import java.time.temporal.TemporalAdjusters;
 import java.util.List;
 
 /**
@@ -85,10 +87,17 @@ public class PlantActivityServiceImpl extends DjsBaseServiceImpl<PlantActivityMa
         if (bo.getCropId() == null) {
             throw new ServiceException("作物 id 不能为空");
         }
+        BigDecimal weight = bo.getPickWeight();
+        boolean finish = bo.getFinishFlag() != null && bo.getFinishFlag() == 1;
+        boolean hasWeight = weight != null && weight.signum() > 0;
+        // DENGBO-R24：勾了「录入完成」但没填本次采摘重量 → 只做结算分摊、不录入新流水（结算-only）。
+        if (finish && !hasWeight) {
+            settlePickActivity(bo.getCropId());
+            return null;
+        }
         if (bo.getActivityDate() == null) {
             throw new ServiceException("采摘日期不能为空");
         }
-        BigDecimal weight = bo.getPickWeight();
         if (weight == null || weight.signum() <= 0) {
             throw new ServiceException("采摘重量必须大于 0");
         }
@@ -115,62 +124,109 @@ public class PlantActivityServiceImpl extends DjsBaseServiceImpl<PlantActivityMa
         activity.setRecorderId(bo.getRecorderId());
         baseMapper.insert(activity);
 
-        // 2. 累加已采产量（plant_details.actual_yield），保证头卡「已采产量」即时出数（row162）。
-        //    - 非销售去向：累加进所选地块（plotId + cropId 定位）。
-        //    - 销售去向：无地块，按【作物维度】定位该作物下一条明细累加，不依赖 plot_id
-        //      （客户口径：销售录入后已采产量必须反映本次重量；否则 plot_id 空 + 不分摊 → 头卡恒 0）。
+        // 2. 累加已采产量（plant_details.actual_yield）。
+        //    - 非销售去向：即时累加进所选地块（= 各地块「原始采摘量」）。
+        //    - 销售去向（DENGBO-R21/R24）：**不再整笔堆进单条地块**（旧 accumulateActualYieldByCrop 是 row21 bug）；
+        //      只落 t_plant_plant_activity(settle_round=0) 流水，待「录入完成」按地块均分本批次未结算销售量。
         if (!sale) {
             accumulateActualYield(bo.getPlotId(), bo.getCropId(), weight);
-        } else {
-            accumulateActualYieldByCrop(bo.getCropId(), weight);
+        }
+
+        // 3. DENGBO-R24：本次录入勾选「录入完成」→ 结算当前批次销售量分摊（前置：本批次全部地块采摘完成）。
+        if (bo.getFinishFlag() != null && bo.getFinishFlag() == 1) {
+            settlePickActivity(bo.getCropId());
         }
         return activity.getId();
     }
 
     /**
-     * 销售去向（无地块）按作物维度累加已采产量。
+     * DENGBO-R24「录入完成」结算：把当前批次未结算销售量按地块均分到当前批次全部已采摘完成地块的
+     * {@code actual_yield}（S/N 截 3 位小数 DOWN，尾差 S−base×(N−1) 进最后一块），并把本批次销售流水
+     * 与参与地块标记 {@code settle_round=N}。
      *
-     * <p>定位该作物下【采摘窗口与当月相交、种植完成】明细，优先未采摘完成（harvest_status != completed）
-     * 的最新一行累加 {@code actual_yield}；无「未完成」候选时退而取最新一行。目标集与采摘活动头卡可见集
-     * （listCropPlots：plant_status='completed' + 采摘窗口与当月相交）对齐，使累加后头卡 Σactual_yield 立即出数。
-     * 无匹配明细 → warn 跳过，不阻断录入。</p>
+     * <p>批次口径：当前批次 = 该作物 {@code is_pick=1}、种植完成、采摘窗口与当月相交、{@code pick_settle_round=0}
+     * 的地块 + {@code pick_dest=sale}、{@code settle_round=0} 的销售流水。已结算(round&gt;0)不再参与；
+     * 「录入完成后新增地块」及其新增销售流水 round=0，归入下一批次单独结算（row24 场景②）。</p>
+     *
+     * <p>前置门（row24 规则1）：当前批次全部地块必须 {@code harvest_status='completed'}，否则拒绝。</p>
      */
-    private void accumulateActualYieldByCrop(Long cropId, BigDecimal weight) {
-        if (cropId == null || weight == null || weight.signum() <= 0) {
-            return;
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void settlePickActivity(Long cropId) {
+        if (cropId == null) {
+            throw new ServiceException("作物 id 不能为空");
         }
         LocalDate today = LocalDate.now();
         LocalDate firstDay = today.withDayOfMonth(1);
-        LocalDate lastDay = today.with(java.time.temporal.TemporalAdjusters.lastDayOfMonth());
-        // 该作物下、种植完成、采摘窗口与当月相交的明细（与头卡可见集同口径）
-        List<PlantDetails> candidates = plantDetailsMapper.selectList(
+        LocalDate lastDay = today.with(TemporalAdjusters.lastDayOfMonth());
+        // 当前批次地块（未结算）：与采摘活动头卡可见集同口径 + pick_settle_round=0；按 id 升序，最后一块 = 最新地块承接尾差。
+        List<PlantDetails> plots = plantDetailsMapper.selectList(
             new LambdaQueryWrapper<PlantDetails>()
                 .eq(PlantDetails::getCropId, cropId)
+                .eq(PlantDetails::getIsPick, 1)
                 .eq(PlantDetails::getPlantStatus, PLANT_STATUS_COMPLETED)
                 .le(PlantDetails::getEarliestHarvestdate, lastDay)
                 .ge(PlantDetails::getLastHarvestdate, firstDay)
-                .orderByDesc(PlantDetails::getId));
-        if (candidates.isEmpty()) {
-            log.warn("recordPickActivity[销售]: 未找到当月可采摘 plant_details cropId={}，跳过 actual_yield 累加", cropId);
-            return;
+                .and(w -> w.eq(PlantDetails::getPickSettleRound, 0).or().isNull(PlantDetails::getPickSettleRound))
+                .orderByAsc(PlantDetails::getId));
+        if (plots.isEmpty()) {
+            throw new ServiceException("本批次没有可结算的地块（请确认地块已设为采摘活动且种植完成）");
         }
-        // 采摘活动头卡（source≠plant 的采摘活动入口）只看 is_pick=1 明细，优先落 is_pick=1 候选保证头卡出数；
-        // 无 is_pick=1 候选（如从果蔬处理入口录入的普通作物）则回退全体候选。同类候选内优先未采摘完成，其次最新一行。
-        PlantDetails target = pickAccumulateTarget(candidates.stream()
-            .filter(d -> d.getIsPick() != null && d.getIsPick() == 1)
-            .toList());
-        if (target == null) {
-            target = pickAccumulateTarget(candidates);
+        boolean allDone = plots.stream().allMatch(p -> PICK_STATUS_COMPLETED.equals(p.getHarvestStatus()));
+        if (!allDone) {
+            throw new ServiceException("请先完成本批次全部地块的采摘，再点「录入完成」");
         }
-        if (target == null) {
-            return;
+        // 当前批次未结算销售流水合计
+        List<PlantActivity> sales = baseMapper.selectList(
+            new LambdaQueryWrapper<PlantActivity>()
+                .eq(PlantActivity::getCropId, cropId)
+                .eq(PlantActivity::getPickDest, PICK_DEST_SALE)
+                .and(w -> w.eq(PlantActivity::getSettleRound, 0).or().isNull(PlantActivity::getSettleRound)));
+        BigDecimal totalSale = sales.stream()
+            .map(a -> a.getPickWeight() == null ? BigDecimal.ZERO : a.getPickWeight())
+            .reduce(BigDecimal.ZERO, BigDecimal::add);
+
+        int round = nextSettleRound(cropId);
+        Long userId = LoginHelper.getUserId();
+        int n = plots.size();
+        // 均分：base = S/N 截 3 位（DOWN），前 N-1 块 += base，最后一块 += S − base×(N−1)（尾差进最后块）。
+        BigDecimal base = totalSale.signum() > 0
+            ? totalSale.divide(BigDecimal.valueOf(n), 3, RoundingMode.DOWN) : BigDecimal.ZERO;
+        BigDecimal lastShare = totalSale.subtract(base.multiply(BigDecimal.valueOf(n - 1L)));
+        for (int i = 0; i < n; i++) {
+            PlantDetails p = plots.get(i);
+            BigDecimal share = (i == n - 1) ? lastShare : base;
+            LambdaUpdateWrapper<PlantDetails> upd = new LambdaUpdateWrapper<PlantDetails>()
+                .eq(PlantDetails::getId, p.getId())
+                .set(PlantDetails::getPickSettleRound, round)
+                .set(PlantDetails::getUpdateBy, userId);
+            if (share.signum() > 0) {
+                BigDecimal current = p.getActualYield() == null ? BigDecimal.ZERO : p.getActualYield();
+                upd.set(PlantDetails::getActualYield, current.add(share));
+            }
+            plantDetailsMapper.update(null, upd);
         }
-        BigDecimal current = target.getActualYield() == null ? BigDecimal.ZERO : target.getActualYield();
-        plantDetailsMapper.update(null,
-            new LambdaUpdateWrapper<PlantDetails>()
-                .eq(PlantDetails::getId, target.getId())
-                .set(PlantDetails::getActualYield, current.add(weight))
-                .set(PlantDetails::getUpdateBy, LoginHelper.getUserId()));
+        // 标记本批次销售流水已结算（round=N）
+        if (!sales.isEmpty()) {
+            baseMapper.update(null,
+                new LambdaUpdateWrapper<PlantActivity>()
+                    .eq(PlantActivity::getCropId, cropId)
+                    .eq(PlantActivity::getPickDest, PICK_DEST_SALE)
+                    .and(w -> w.eq(PlantActivity::getSettleRound, 0).or().isNull(PlantActivity::getSettleRound))
+                    .set(PlantActivity::getSettleRound, round));
+        }
+    }
+
+    /** 该作物下一结算轮次 = 已结算地块最大 round + 1（首次结算 → 1）。 */
+    private int nextSettleRound(Long cropId) {
+        Integer maxRound = plantDetailsMapper.selectList(
+                new LambdaQueryWrapper<PlantDetails>()
+                    .select(PlantDetails::getPickSettleRound)
+                    .eq(PlantDetails::getCropId, cropId)
+                    .eq(PlantDetails::getIsPick, 1))
+            .stream().map(p -> p.getPickSettleRound() == null ? 0 : p.getPickSettleRound())
+            .max(Integer::compareTo).orElse(0);
+        return maxRound + 1;
     }
 
     /**
@@ -194,20 +250,6 @@ public class PlantActivityServiceImpl extends DjsBaseServiceImpl<PlantActivityMa
                 .eq(PlantDetails::getId, target.getId())
                 .set(PlantDetails::getActualYield, current.add(weight))
                 .set(PlantDetails::getUpdateBy, LoginHelper.getUserId()));
-    }
-
-    /**
-     * 从候选明细中挑累加目标：优先未采摘完成（harvest_status != completed），其次列表首元素（调用方已按 id 降序，即最新一行）。
-     * 空列表返 null。
-     */
-    private PlantDetails pickAccumulateTarget(List<PlantDetails> candidates) {
-        if (candidates == null || candidates.isEmpty()) {
-            return null;
-        }
-        return candidates.stream()
-            .filter(d -> !PICK_STATUS_COMPLETED.equals(d.getHarvestStatus()))
-            .findFirst()
-            .orElse(candidates.get(0));
     }
 
     /**

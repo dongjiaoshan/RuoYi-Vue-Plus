@@ -51,6 +51,9 @@ public class PlantActivity extends TenantEntity {
     /** 采摘去向（字典 {@code djs_pick_dest}：sale/veg_fresh/platform/loss/feed；NULL=历史销售）。 */
     private String pickDest;
 
+    /** DENGBO-R21/R24 销售量分摊结算轮次：0=未结算(当前批次)，&gt;0=已随第 N 次「录入完成」结算。 */
+    private Integer settleRound;
+
     /** 果蔬成品 product_id（= {@code crop.related_product} 解析，可空）。 */
     private Long productId;
 

@@ -165,6 +165,7 @@ store:
   includes:
     - t_store_daily_ledger
     - t_store_inventory
+    - t_store_loss_record
     - t_store_member
     - t_store_member_consumption
     - t_store_product_relation
