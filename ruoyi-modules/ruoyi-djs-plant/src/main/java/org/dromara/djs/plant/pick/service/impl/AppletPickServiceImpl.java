@@ -126,6 +126,13 @@ public class AppletPickServiceImpl implements IAppletPickService {
             detail.setBeginHarvestdate(bo.getHarvestDate());
         }
 
+        // 1.1 首次「开始采摘」（pending→picking，赢得乐观激活）把本次所选采收班组写进
+        //     plant_details.harvest_by，作为「采收班组」权威源。完成采摘（picking→completed）不再改写，
+        //     使第二次录入时前端能反显出「开始采摘时所选班组」并锁定（保证反显=开始所选，不与本次脱节）。
+        if (wonActivation && !finish) {
+            detail.setHarvestBy(bo.getTeamId());
+        }
+
         // 2. harvest_status 流转：pending → picking；finish 时 → completed。
         //    pending→target 已由上面乐观 UPDATE 原子完成；这里 entity 同步成 target，
         //    并补齐 picking→completed（行已 picking 时再完成）的状态推进——该路 wonActivation=false（CAS 命不中 pending），
@@ -156,8 +163,8 @@ public class AppletPickServiceImpl implements IAppletPickService {
 
         // 5. INSERT 一行 t_plant_farm_records（farm_type='harvest_activity'，可追溯）
         //    复用 IFarmRecordsService.submitGrow（内含 record_no 生成 + plot_type/crop_name 冗余）。
-        //    采收按班组记录：所选「采收班组」落 farm_by；operator_user_id 留空，
-        //    且不覆盖 admin 采摘计划已分配的 detail.harvest_by（仅记录本次采收班组）。
+        //    采收按班组记录：所选「采收班组」落 farm_records.farm_by（本次留痕）；operator_user_id 留空。
+        //    首次开始采摘时同步写 plant_details.harvest_by（见 1.1），供完成采摘反显锁定同一班组。
         GrowRecordBo grow = new GrowRecordBo();
         // 口径（FIX-PLT-AD-PICK-FARMTYPE-001）：is_pick=1 设为采摘活动 → harvest_activity；其余普通采收 → harvest（采收）。
         grow.setFarmType(detail.getIsPick() != null && detail.getIsPick() == 1

@@ -892,7 +892,7 @@ public class VegetableHandleServiceImpl
             case PICK_DEST_PLATFORM ->
                 // DENGBO-R22：果蔬月台 = 写一行 t_warehouse_vegetable_handle 承载「发往月台重量」，
                 // 使采摘活动直送月台的果蔬出现在「自产产品收货」待入库列表（selectSelfPending 读 send_platform_weight）、可入库。
-                insertPickPlatform(bo, weight, now);
+                insertPickPlatform(bo, weight, userId, now);
             case PICK_DEST_LOSS ->
                 // 损耗 = 复用统一损耗台账 loss_flow（loss_type=veg_handle_loss）
                 insertPickLoss(bo, weight, userId);
@@ -905,11 +905,16 @@ public class VegetableHandleServiceImpl
     }
 
     /**
-     * DENGBO-R22 采摘去向[果蔬月台]：写一行 {@code t_warehouse_vegetable_handle} 只承载 send_platform_weight，
-     * 使采摘活动直送月台的果蔬进入「自产产品收货」待入库列表（{@code selectSelfPending} 按 send_platform_weight 聚合）、可入库。
-     * 其余处理量字段置 0，复用现有月台待收货/入库/损耗全链路，无需改查询 SQL。
+     * DENGBO-R22 采摘去向[果蔬月台]：写一行 {@code t_warehouse_vegetable_handle} 承载 send_platform_weight，
+     * 使采摘活动直送月台的果蔬进入「自产产品收货」待入库列表（{@code selectSelfPending} 按 send_platform_weight 聚合）、可入库；
+     * 其余处理量字段置 0，复用现有月台待收货/入库/损耗全链路。
+     *
+     * <p>Kevin 2026-07-16 定 A：同写一行 {@code t_warehouse_handle_record}(handle_target=2 发往月台，按 handle_time)，
+     * 使采摘直送月台的量计入「发往月台果蔬总重」日统计（{@code WarehouseStatAggregateMapper.sumSendPlatformWeight}
+     * 读 handle_record）+ 作物维发往口径，与入库后计入的「月台接收」（veg_receive）对称、不再漏计。
+     * handle_record 按 handle_id/handle_user 归属本行，不污染毛菜处理列表；待入库仍只读 vegetable_handle，不双计。</p>
      */
-    private void insertPickPlatform(PickDestSubmitBo bo, BigDecimal weight, Date now) {
+    private void insertPickPlatform(PickDestSubmitBo bo, BigDecimal weight, Long userId, Date now) {
         VegetableHandle handle = new VegetableHandle();
         handle.setPlotId(bo.getPlotId());
         handle.setCropId(bo.getCropId());
@@ -925,6 +930,19 @@ public class VegetableHandleServiceImpl
         handle.setIsFinish(2);
         handle.setHandleStatus(STATUS_PROCESSING);
         baseMapper.insert(handle);
+
+        HandleRecord record = new HandleRecord();
+        record.setHandleId(handle.getId());
+        record.setPlotId(bo.getPlotId());
+        record.setCropId(bo.getCropId());
+        record.setRecordType(RECORD_TYPE_HANDLE);
+        record.setRecordWeight(weight);
+        record.setHandleTarget(HANDLE_TARGET_PLATFORM);
+        record.setLocationId(null);
+        record.setIsFinish(2);
+        record.setHandleUser(userId);
+        record.setHandleTime(now);
+        handleRecordMapper.insert(record);
     }
 
     /**

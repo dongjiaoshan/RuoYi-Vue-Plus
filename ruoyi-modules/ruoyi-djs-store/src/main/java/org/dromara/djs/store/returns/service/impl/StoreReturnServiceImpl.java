@@ -606,7 +606,8 @@ public class StoreReturnServiceImpl
             throw new ServiceException("该退回记录已确认入库，请勿重复确认", 400);
         }
 
-        // 入库目标产品：果蔬成品→原材料 product_material（docx，缺料阻断），猪肉/其他→成品本身。
+        // 入库目标产品：配了 product_material 的成品(果蔬/猪肉)→原材料 product_material（缺料阻断），
+        // 本身即原材料(白条字典 kg 产品/外购原料)→按产品ID入库（邓博 2026-07-16：退回入库都是原材料）。
         Long inboundProductId = resolveInboundProductId(existing.getProductId());
         // 入库库位：前端显式选优先；mp 确认页只填实收量不选库位 → 按入库产品预设库位 / 库存最多库位兜底；
         // 仍无 → 阻断（不做「只写流水不增库存」的库存黑洞，提示运营先补库位）。
@@ -832,13 +833,17 @@ public class StoreReturnServiceImpl
         if (p == null) {
             return productId;
         }
-        if (BELONG_TYPE_VEGETABLE.equals(p.getBelongType())) {
-            Long material = p.getProductMaterial();
-            if (material == null) {
-                throw new ServiceException(
-                    "果蔬成品「" + p.getProductName() + "」未配原材料(product_material)，无法退回入库；请先在产品主数据配置后再确认退回", 400);
-            }
+        // 邓博 2026-07-16：退回入库一律记「原材料」——生产产品(成品)本身无库存概念，仓库只存原材料，
+        // 打包后才成生产产品发往门店。故凡配了 product_material 的成品(果蔬份/猪肉份)一律回退到其原材料入库；
+        // 产品本身即原材料(product_material 空，如白条字典的后腿肉/龙骨、外购原料)则按产品ID直接入库。
+        Long material = p.getProductMaterial();
+        if (material != null) {
             return material;
+        }
+        // 果蔬成品理应配原材料——缺料阻断，防「成品入库」库存黑洞（猪肉/白条原材料本身 product_material 空、直接入库）。
+        if (BELONG_TYPE_VEGETABLE.equals(p.getBelongType())) {
+            throw new ServiceException(
+                "果蔬成品「" + p.getProductName() + "」未配原材料(product_material)，无法退回入库；请先在产品主数据配置后再确认退回", 400);
         }
         return productId;
     }
