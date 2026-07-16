@@ -109,6 +109,24 @@ public class AppletPickController extends BaseController {
         return R.ok(appletPickService.listCropPlots(parsePlanId(planId), parseCropId(cropId), isPick));
     }
 
+    /**
+     * 作物级「是否已录入完成/结算」（row223 边界缺口修复）：mp 采摘活动详情头卡「采摘重量录入」按钮
+     * 据此从服务端恢复持久置灰态。
+     *
+     * <p>与 {@link #cropPlots} 不同，本判定<b>不带列表日期过滤</b>（无当月采摘窗口相交、无「completed 地块
+     * 只在 end_harvestdate==today 展示」），故跨完成窗口后重进——那些 completed 行已被列表日期驱逐、
+     * plots 变空——仍据表内 {@code pick_settle_round>0} 行返回 true，按钮保持置灰不复活。</p>
+     *
+     * @param cropId 作物 id（必填字符串，空 / 非数字 → 明确友好 ServiceException）
+     * @param isPick is_pick 过滤值（可空，空时默认 2=普通采收；「采摘活动管理」页传 1 = 游客采摘活动，
+     *               与 {@link #cropPlots} 同 isPick 契约）
+     */
+    @GetMapping("/cropSettled")
+    public R<Boolean> cropSettled(@RequestParam(required = false) String cropId,
+                                  @RequestParam(required = false) Integer isPick) {
+        return R.ok(appletPickService.isCropSettled(parseCropId(cropId), isPick));
+    }
+
     /** 必填作物 id 解析：空 / 非数字 → 明确友好 ServiceException（不让框架抛类型不匹配）。 */
     private Long parseCropId(String cropId) {
         if (cropId == null || cropId.isBlank()) {

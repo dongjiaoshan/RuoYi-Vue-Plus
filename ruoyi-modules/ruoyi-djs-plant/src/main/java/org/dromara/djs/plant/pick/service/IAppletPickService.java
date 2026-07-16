@@ -84,4 +84,23 @@ public interface IAppletPickService {
      * @return 地块卡列表（无数据返空列表）
      */
     List<PickTaskVo> listCropPlots(Long planId, Long cropId, Integer isPick);
+
+    /**
+     * 作物级「是否已录入完成/结算」判定（row223 边界缺口修复）。
+     *
+     * <p>返回该作物是否已随任一次「录入完成」参与过分摊结算 = {@code EXISTS(crop_id=? AND is_pick=?
+     * AND pick_settle_round>0)}。与 {@code settlePickActivity} 写入口径对齐（结算时把当前批次地块
+     * {@code pick_settle_round} 置 &gt;0）。</p>
+     *
+     * <p>关键：本判定<b>不带 {@code listCropPlots} 的日期过滤</b>（既无「当月采摘窗口相交」也无
+     * 「completed 地块只在 end_harvestdate==today 展示」）。故跨完成窗口后重进——那些 completed 地块行
+     * 已被列表日期过滤驱逐、{@code plots} 变空——本判定仍据表内实存的 {@code pick_settle_round>0} 行返回
+     * true，使 mp 头卡「采摘重量录入」按钮持久置灰（不再随列表行被日期驱逐而复活可点）。</p>
+     *
+     * @param cropId 作物 id（必填，空抛 ServiceException）
+     * @param isPick is_pick 过滤值（可空，空时默认 2=普通采收；「采摘活动管理」页传 1 只看游客采摘活动，
+     *               与 {@link #listCropPlots} 同 isPick 契约）
+     * @return true=该作物已录入完成（存在 pick_settle_round&gt;0 的地块）；false=尚未
+     */
+    boolean isCropSettled(Long cropId, Integer isPick);
 }

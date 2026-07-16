@@ -278,6 +278,18 @@ public class PickPlanServiceImpl implements IPickPlanService {
             throw new ServiceException("采摘明细不存在或已删除（id=" + bo.getId() + "）");
         }
 
+        // row30（何涛 2026-07-16）：取消采摘活动守卫——采摘中 / 采摘完成的地块不得取消采摘活动，
+        // 仅未进入采摘（待采摘 pending 等）的地块可取消。前端 rowEditable 已隐藏按钮，此为防直接打 API 的后端兜底。
+        if (isPick == 2) {
+            String hs = existing.getHarvestStatus();
+            if ("picking".equals(hs) || "completed".equals(hs)) {
+                PlotInfo plot = existing.getPlotId() == null ? null : plotMapper.selectById(existing.getPlotId());
+                String plotLabel = (plot != null && plot.getPlotName() != null) ? plot.getPlotName() : ("id=" + existing.getPlotId());
+                String hsLabel = "picking".equals(hs) ? "采摘中" : "采摘完成";
+                throw new ServiceException("地块【" + plotLabel + "】已" + hsLabel + "，不能取消采摘活动");
+            }
+        }
+
         // 普通采收（is_pick=2）必须有采摘班组（源头杜绝 mp 空 picker）；游客采摘活动（is_pick=1）不强制。
         if (isPick == 2 && existing.getHarvestBy() == null) {
             throw new ServiceException("请先指派采摘班组再取消采摘活动（id=" + bo.getId() + "）");

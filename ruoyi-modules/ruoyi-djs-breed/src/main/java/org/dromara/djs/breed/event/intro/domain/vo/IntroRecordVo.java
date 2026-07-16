@@ -50,9 +50,11 @@ public class IntroRecordVo implements Serializable {
     private String pigStrainLabel;
 
     /**
-     * 日龄（天，601-6）。
-     * <p>内部引种：关联猪只 {@code t_farm_pig.birth_date} 算 NOW - birthDate；
-     * 外部引种 / 无 birthDate：null（mp 端 {@code '-'} 兜底）。</p>
+     * 日龄（天，601-6 / row224）。
+     * <p>内部引种：关联猪只 {@code pig_id → t_farm_pig_info.birth_date} 算 NOW - birthDate。
+     * 外部引种：外部引种表单必填「出生日期」落到新建猪 {@code t_farm_pig_info.birth_date}，
+     * 记录 {@code start_ear_no} 即当次首头猪耳号，沿 {@code start_ear_no = ear_no} 取 birth_date 同口径算。
+     * 仅当 birthDate 缺失（历史脏数据）才 null（mp 端 {@code '-'} 兜底）。</p>
      */
     private Integer ageDays;
 

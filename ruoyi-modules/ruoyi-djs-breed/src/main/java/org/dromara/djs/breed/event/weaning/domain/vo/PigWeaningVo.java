@@ -69,12 +69,13 @@ public class PigWeaningVo implements Serializable {
     private String penName;
 
     /**
-     * 仔猪品系中文名（row24，记录卡第 3 行）。同窝仔猪品系一致，取母猪 pig_strain_code
-     * 经 t_farm_breed_info 主表名解析（缺回落 djs_pig_strain 字典 / 原始 code）。queryPage 后批量 enrich。
+     * 仔猪品系中文名（row24，记录卡第 3 行）。同窝仔猪品系一致，取该窝已耳标仔猪真实 pig_strain_code
+     * （母×父 → 育种配置派生，与母猪可能不同；未耳标窝回落母猪 code），经 t_farm_breed_info 主表名解析
+     * （缺回落 djs_pig_strain 字典 / 原始 code）。queryPage 后批量 enrich。
      */
     private String pigStrainName;
 
-    /** 仔猪品种中文名（row24，记录卡第 3 行）。同 {@link #pigStrainName}，取母猪 pig_breed_code 解析。 */
+    /** 仔猪品种中文名（row24，记录卡第 3 行）。同 {@link #pigStrainName}，取该窝仔猪真实 pig_breed_code 解析。 */
     private String pigBreedName;
 
     private String remark;

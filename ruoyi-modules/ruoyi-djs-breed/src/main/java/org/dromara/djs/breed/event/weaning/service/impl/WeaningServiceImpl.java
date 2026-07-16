@@ -377,6 +377,8 @@ public class WeaningServiceImpl implements IWeaningService {
             : penMapper.selectBatchIds(penIds).stream()
                 .collect(Collectors.toMap(Pen::getId, Function.identity(), (a, b) -> a));
 
+        // 仔猪品系/品种取该窝已耳标仔猪真实 code（母×父 → 育种配置派生，与母猪可能不同），未耳标窝回落母猪 code。
+        Map<Long, String[]> cubCodeByFarrow = loadCubStrainBreedByFarrow(farrowIds);
         // 品种/品系主数据 code→中文名（一次预载，避免逐头查 N+1；缺回落字典）
         Map<String, String> breedNameMap = pigCoreService.loadBreedStrainNameMap(1);
         Map<String, String> strainNameMap = pigCoreService.loadBreedStrainNameMap(2);
@@ -409,10 +411,56 @@ public class WeaningServiceImpl implements IWeaningService {
                     vo.setPenName(pen.getPenName());
                 }
             }
-            // 仔猪品系品种（同窝取母猪 strain/breed code，主表名解析回落字典）
-            vo.setPigStrainName(resolveBreedStrainName(strainNameMap, pig.getPigStrainCode()));
-            vo.setPigBreedName(resolveBreedStrainName(breedNameMap, pig.getPigBreedCode()));
+            // 仔猪品系品种：优先窝内已耳标仔猪真实 code（母×父 → 育种配置派生），未耳标回落母猪 code。
+            String[] cub = vo.getFarrowId() == null ? null : cubCodeByFarrow.get(vo.getFarrowId());
+            String strainCode = cub != null && cub[0] != null ? cub[0] : pig.getPigStrainCode();
+            String breedCode = cub != null && cub[1] != null ? cub[1] : pig.getPigBreedCode();
+            vo.setPigStrainName(resolveBreedStrainName(strainNameMap, strainCode));
+            vo.setPigBreedName(resolveBreedStrainName(breedNameMap, breedCode));
         }
+    }
+
+    /**
+     * 按 farrowId 批量取该窝已耳标仔猪的真实品系/品种 code（同窝一致，取一头即可）。
+     *
+     * <p>仔猪 code 在耳标时按【母本 × 父本 → 育种配置表】派生（{@code PigEarTagServiceImpl.resolveCubBreedStrain}），
+     * 与母猪 code 可能不同，故断奶记录卡「仔猪品系品种」须取仔猪真实 code、非母猪代理。
+     * 走 {@code t_farm_pig_pigletno.farrow_id → pig_id → t_farm_pig_info.pig_strain_code/pig_breed_code}。
+     * 未耳标窝（无 pigletno）不入表，由调用方回落母猪 code。</p>
+     *
+     * @return {@code farrowId → [strainCode, breedCode]}（任一维缺则该维为 null）
+     */
+    private Map<Long, String[]> loadCubStrainBreedByFarrow(Set<Long> farrowIds) {
+        if (farrowIds == null || farrowIds.isEmpty()) {
+            return Map.of();
+        }
+        List<PigPigletno> piglets = pigletnoMapper.selectList(Wrappers.<PigPigletno>lambdaQuery()
+            .in(PigPigletno::getFarrowId, farrowIds)
+            .isNotNull(PigPigletno::getPigId)
+            .eq(PigPigletno::getDelFlag, "0"));
+        if (piglets.isEmpty()) {
+            return Map.of();
+        }
+        // farrowId → 该窝任一仔猪 pig_id（同窝品系品种一致，取第一头）
+        Map<Long, Long> onePigletPigIdByFarrow = new java.util.HashMap<>();
+        for (PigPigletno pn : piglets) {
+            if (pn.getFarrowId() != null && pn.getPigId() != null) {
+                onePigletPigIdByFarrow.putIfAbsent(pn.getFarrowId(), pn.getPigId());
+            }
+        }
+        Set<Long> pigletPigIds = new java.util.HashSet<>(onePigletPigIdByFarrow.values());
+        Map<Long, Pig> pigletById = pigletPigIds.isEmpty() ? Map.of()
+            : pigMapper.selectByIds(pigletPigIds).stream()
+                .filter(p -> p.getId() != null)
+                .collect(Collectors.toMap(Pig::getId, Function.identity(), (a, b) -> a));
+        Map<Long, String[]> result = new java.util.HashMap<>();
+        onePigletPigIdByFarrow.forEach((farrowId, pigId) -> {
+            Pig piglet = pigletById.get(pigId);
+            if (piglet != null) {
+                result.put(farrowId, new String[]{piglet.getPigStrainCode(), piglet.getPigBreedCode()});
+            }
+        });
+        return result;
     }
 
     /**

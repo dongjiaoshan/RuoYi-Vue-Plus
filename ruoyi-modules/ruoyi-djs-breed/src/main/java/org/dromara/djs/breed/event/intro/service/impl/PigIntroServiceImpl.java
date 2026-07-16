@@ -17,6 +17,7 @@ import org.dromara.djs.breed.core.mapper.PigMapper;
 import org.dromara.djs.breed.core.service.EarNoAllocator;
 import org.dromara.djs.breed.core.service.I18nMessages;
 import org.dromara.djs.breed.core.service.IPigCoreService;
+import org.dromara.djs.breed.core.util.PigAgeUtil;
 import org.dromara.djs.breed.event.intro.domain.PigIntroduce;
 import org.dromara.djs.breed.event.intro.domain.bo.PigIntroBatchBo;
 import org.dromara.djs.breed.event.intro.domain.bo.PigIntroBo;
@@ -291,7 +292,6 @@ public class PigIntroServiceImpl implements IPigIntroService {
         Page<PigIntroduce> page = introduceMapper.selectPage(pageQuery.build(), wrapper);
 
         // 内部引种记录的日龄取关联猪只 t_farm_pig.birth_date 算（601-6）：批量查避免 N+1。
-        // 外部引种无单头 pigId（批量新建多猪），日龄置 null（前端 '-' 兜底）。
         Set<Long> pigIds = page.getRecords().stream()
             .map(PigIntroduce::getPigId)
             .filter(Objects::nonNull)
@@ -301,6 +301,23 @@ public class PigIntroServiceImpl implements IPigIntroService {
             : pigMapper.selectBatchIds(pigIds).stream()
                 .filter(p -> p.getBirthDate() != null)
                 .collect(Collectors.toMap(Pig::getId, Pig::getBirthDate, (a, b) -> a));
+
+        // row224：外部引种无单头 pigId（批量新建多猪），但记录的 start_ear_no 就是当次新建的
+        // 首头猪耳号（外部引种表单有必填「出生日期」，落到 t_farm_pig_info.birth_date）。
+        // 沿 start_ear_no = t_farm_pig_info.ear_no 的关联路径批量取 birth_date，算出真实日龄。
+        Set<String> extEarNos = page.getRecords().stream()
+            .filter(e -> "external".equals(e.getIntroduceType()))
+            .map(PigIntroduce::getStartEarNo)
+            .filter(StringUtils::isNotBlank)
+            .collect(Collectors.toSet());
+        Map<String, LocalDate> birthDateByEarNo = extEarNos.isEmpty()
+            ? Map.of()
+            : pigMapper.selectList(Wrappers.<Pig>lambdaQuery()
+                    .select(Pig::getEarNo, Pig::getBirthDate)
+                    .in(Pig::getEarNo, extEarNos))
+                .stream()
+                .filter(p -> p.getEarNo() != null && p.getBirthDate() != null)
+                .collect(Collectors.toMap(Pig::getEarNo, Pig::getBirthDate, (a, b) -> a));
 
         // 邓博 2026-06-17 #22：品种/品系名优先取 t_farm_breed_info 主表（客户配的权威名 04=国寿黑），
         // 字典 djs_pig_breed(04=杜洛克)/djs_pig_strain 仅回落。批量预载一次防 N+1。
@@ -331,7 +348,17 @@ public class PigIntroServiceImpl implements IPigIntroService {
             vo.setPigSexLabel("F".equals(e.getPigSex()) ? "母" : "M".equals(e.getPigSex()) ? "公" : null);
             vo.setPigBreedLabel(translateBreed(breedNameMap, e.getPigBreedCode()));
             vo.setPigStrainLabel(translateStrain(strainNameMap, e.getPigStrainCode()));
-            vo.setAgeDays(calcAgeDays(e.getPigId() != null ? birthDateById.get(e.getPigId()) : null));
+            // 日龄（row224）：内部引种 = NOW − birthDate（现况，随时间增长，pigId→birth_date）；
+            // 外部引种 = 引种日期 − 出生日期（引种当时日龄快照，畜牧惯例当天=起算即纯 DATEDIFF；
+            // startEarNo→birth_date）——两者口径不同但均用 PigAgeUtil 家族的纯 DATEDIFF、负值归 0。
+            if (e.getPigId() != null) {
+                vo.setAgeDays(calcAgeDays(birthDateById.get(e.getPigId())));
+            }
+            else {
+                LocalDate extBirth = StringUtils.isNotBlank(e.getStartEarNo())
+                    ? birthDateByEarNo.get(e.getStartEarNo()) : null;
+                vo.setAgeDays(PigAgeUtil.ageDaysAt(extBirth, null, e.getIntroduceDate()));
+            }
             vo.setIntroduceDate(e.getIntroduceDate());
             vo.setSupplierName(e.getSupplierId() != null ? supplierNameById.get(e.getSupplierId()) : null);
             vo.setOperator(e.getOperator());
@@ -388,7 +415,7 @@ public class PigIntroServiceImpl implements IPigIntroService {
         return code;
     }
 
-    /** 日龄（天）= NOW - birthDate；birthDate 为 null（外部引种 / 无出生日期）返 null（601-6）。 */
+    /** 日龄（天）= NOW - birthDate；birthDate 为 null（无出生日期）返 null（601-6 / row224）。 */
     private Integer calcAgeDays(LocalDate birthDate) {
         if (birthDate == null) {
             return null;

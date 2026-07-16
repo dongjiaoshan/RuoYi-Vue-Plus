@@ -57,6 +57,15 @@ public class PickTaskVo implements Serializable {
     /** 1=游客采摘活动 / 2=否（字典 djs_yes_no）。 */
     private Integer isPick;
 
+    /**
+     * 采摘活动销售分摊结算轮次（{@code t_plant_plant_details.pick_settle_round}）：
+     * 0/null=未「录入完成」（当前批次），&gt;0=已随第 N 次「录入完成」参与分摊结算。
+     *
+     * <p>供 mp 采摘活动详情头卡从服务端恢复「采摘重量录入」按钮置灰态：该作物任一地块
+     * {@code pickSettleRound>0} 即已录入完成，重进详情页按钮亦保持置灰不可再录（row223）。</p>
+     */
+    private Integer pickSettleRound;
+
     private Long harvestBy;
     private String harvestTeamName;
 

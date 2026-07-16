@@ -71,10 +71,10 @@ public class PigFarrowVo implements Serializable {
      */
     private Integer ageDays;
 
-    /** 仔猪品系中文名（母猪 t_farm_pig_info.pig_strain_code → 主数据/字典翻译；缺则 null）。 */
+    /** 仔猪品系中文名（该窝已耳标仔猪真实 pig_strain_code → 主数据/字典翻译；未耳标回落母猪；缺则 null）。 */
     private String pigStrainName;
 
-    /** 仔猪品种中文名（母猪 t_farm_pig_info.pig_breed_code → 主数据/字典翻译；缺则 null）。 */
+    /** 仔猪品种中文名（该窝已耳标仔猪真实 pig_breed_code → 主数据/字典翻译；未耳标回落母猪；缺则 null）。 */
     private String pigBreedName;
 
     private String remark;

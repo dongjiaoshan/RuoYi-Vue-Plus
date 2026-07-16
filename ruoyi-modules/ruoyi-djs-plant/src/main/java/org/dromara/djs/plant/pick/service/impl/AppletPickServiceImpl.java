@@ -404,6 +404,23 @@ public class AppletPickServiceImpl implements IAppletPickService {
     }
 
     @Override
+    public boolean isCropSettled(Long cropId, Integer isPick) {
+        if (cropId == null) {
+            throw new ServiceException("作物 id 必填");
+        }
+        int pickFlag = isPick == null ? IS_PICK_NORMAL : isPick;
+        // row223：作物级「已录入完成/结算」判定——纯 crop_id + is_pick + pick_settle_round>0，
+        //   与 settlePickActivity 写入口径对齐；刻意不带 listCropPlots 的日期/当月窗口/plot_status 过滤，
+        //   使跨完成窗口后（completed 地块行被列表日期驱逐、plots 变空）头卡按钮仍能从服务端恢复持久置灰。
+        Long settledCount = detailsMapper.selectCount(
+            new LambdaQueryWrapper<PlantDetails>()
+                .eq(PlantDetails::getCropId, cropId)
+                .eq(PlantDetails::getIsPick, pickFlag)
+                .gt(PlantDetails::getPickSettleRound, 0));
+        return settledCount != null && settledCount > 0;
+    }
+
+    @Override
     public PickTaskVo getTaskDetail(Long id) {
         if (id == null) {
             throw new ServiceException("id 必填");
@@ -521,6 +538,9 @@ public class AppletPickServiceImpl implements IAppletPickService {
             vo.setExpectedYield(d.getExpectedYield());
             vo.setActualYield(d.getActualYield());
             vo.setIsPick(d.getIsPick());
+            // row223：采摘活动「录入完成/称重完成」持久标志——pick_settle_round>0 = 已结算（已录入完成）。
+            //   mp 详情头卡据此从服务端恢复「采摘重量录入」按钮置灰态（重进页亦保持置灰）。
+            vo.setPickSettleRound(d.getPickSettleRound());
             vo.setHarvestBy(d.getHarvestBy());
             vo.setHarvestTeamName(d.getHarvestBy() == null ? null : teamMap.get(d.getHarvestBy()));
             vo.setMemberCount(d.getHarvestBy() == null ? null

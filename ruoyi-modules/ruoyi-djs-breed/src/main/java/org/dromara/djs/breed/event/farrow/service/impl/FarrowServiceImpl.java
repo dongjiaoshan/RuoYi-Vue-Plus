@@ -259,6 +259,11 @@ public class FarrowServiceImpl implements IFarrowService {
         Map<Long, Pig> pigById = pigMapper.selectBatchIds(pigIds).stream()
             .filter(p -> p.getId() != null)
             .collect(Collectors.toMap(Pig::getId, java.util.function.Function.identity(), (a, b) -> a));
+        // 仔猪品系/品种取该窝已耳标仔猪的真实 code（母×父 → 育种配置派生，与母猪可能不同），
+        // 未耳标窝回落母猪 code。批查一次避免 N+1。
+        Set<Long> farrowIds = rows.stream().map(PigFarrowVo::getId)
+            .filter(Objects::nonNull).collect(Collectors.toSet());
+        Map<Long, String[]> cubCodeByFarrow = loadCubStrainBreedByFarrow(farrowIds);
         Map<String, String> breedNameMap = pigCoreService.loadBreedStrainNameMap(1);
         Map<String, String> strainNameMap = pigCoreService.loadBreedStrainNameMap(2);
         for (PigFarrowVo vo : rows) {
@@ -269,9 +274,56 @@ public class FarrowServiceImpl implements IFarrowService {
             // 事件时日龄：分娩当时母猪日龄 = farrowDate - birth_date（farrowDate 缺时回落 NOW）
             LocalDate eventDate = vo.getFarrowDate() != null ? vo.getFarrowDate().toLocalDate() : LocalDate.now();
             vo.setAgeDays(calcAgeDays(p, eventDate));
-            vo.setPigStrainName(resolveBreedStrainName(strainNameMap, p.getPigStrainCode()));
-            vo.setPigBreedName(resolveBreedStrainName(breedNameMap, p.getPigBreedCode()));
+            // [strain=code[0], breed=code[1]]：优先窝内仔猪真实 code，缺（未耳标）回落母猪
+            String[] cub = cubCodeByFarrow.get(vo.getId());
+            String strainCode = cub != null && cub[0] != null ? cub[0] : p.getPigStrainCode();
+            String breedCode = cub != null && cub[1] != null ? cub[1] : p.getPigBreedCode();
+            vo.setPigStrainName(resolveBreedStrainName(strainNameMap, strainCode));
+            vo.setPigBreedName(resolveBreedStrainName(breedNameMap, breedCode));
         }
+    }
+
+    /**
+     * 按 farrowId 批量取该窝已耳标仔猪的真实品系/品种 code（同窝一致，取一头即可）。
+     *
+     * <p>仔猪 code 在耳标时按【母本 × 父本 → 育种配置表】派生（{@code PigEarTagServiceImpl.resolveCubBreedStrain}），
+     * 与母猪 code 可能不同，故记录卡「仔猪品系品种」须取仔猪真实 code、非母猪代理。
+     * 走 {@code t_farm_pig_pigletno.farrow_id → pig_id → t_farm_pig_info.pig_strain_code/pig_breed_code}。
+     * 未耳标窝（无 pigletno）不入表，由调用方回落母猪 code。</p>
+     *
+     * @return {@code farrowId → [strainCode, breedCode]}（任一维缺则该维为 null）
+     */
+    private Map<Long, String[]> loadCubStrainBreedByFarrow(Set<Long> farrowIds) {
+        if (farrowIds == null || farrowIds.isEmpty()) {
+            return Map.of();
+        }
+        List<PigPigletno> piglets = pigletnoMapper.selectList(Wrappers.<PigPigletno>lambdaQuery()
+            .in(PigPigletno::getFarrowId, farrowIds)
+            .isNotNull(PigPigletno::getPigId)
+            .eq(PigPigletno::getDelFlag, "0"));
+        if (piglets.isEmpty()) {
+            return Map.of();
+        }
+        // farrowId → 该窝任一仔猪 pig_id（同窝品系品种一致，取第一头）
+        Map<Long, Long> onePigletPigIdByFarrow = new HashMap<>();
+        for (PigPigletno pn : piglets) {
+            if (pn.getFarrowId() != null && pn.getPigId() != null) {
+                onePigletPigIdByFarrow.putIfAbsent(pn.getFarrowId(), pn.getPigId());
+            }
+        }
+        Set<Long> pigletPigIds = new java.util.HashSet<>(onePigletPigIdByFarrow.values());
+        Map<Long, Pig> pigletById = pigletPigIds.isEmpty() ? Map.of()
+            : pigMapper.selectBatchIds(pigletPigIds).stream()
+                .filter(p -> p.getId() != null)
+                .collect(Collectors.toMap(Pig::getId, java.util.function.Function.identity(), (a, b) -> a));
+        Map<Long, String[]> result = new HashMap<>();
+        onePigletPigIdByFarrow.forEach((farrowId, pigId) -> {
+            Pig piglet = pigletById.get(pigId);
+            if (piglet != null) {
+                result.put(farrowId, new String[]{piglet.getPigStrainCode(), piglet.getPigBreedCode()});
+            }
+        });
+        return result;
     }
 
     /** 日龄（天）= eventDate - birth_date（缺 birth_date 回落 introduce_date）；两者均空 → null。 */
@@ -308,13 +360,17 @@ public class FarrowServiceImpl implements IFarrowService {
             return List.of();
         }
         enrichTaggedCounts(rows);
-        // 批查母猪：仔猪品系/品种继承母猪（避免 N+1：去重 pigId 一次性查 t_farm_pig_info）
+        // 批查母猪（避免 N+1：去重 pigId 一次性查 t_farm_pig_info）；仔猪品系/品种优先取窝内已耳标仔猪真实 code，
+        // 未耳标窝回落母猪 code。
         Set<Long> pigIds = rows.stream().map(PigFarrowVo::getPigId)
             .filter(Objects::nonNull).collect(Collectors.toSet());
         Map<Long, Pig> motherById = pigIds.isEmpty() ? Map.of()
             : pigMapper.selectBatchIds(pigIds).stream()
                 .filter(p -> p.getId() != null)
                 .collect(Collectors.toMap(Pig::getId, java.util.function.Function.identity(), (a, b) -> a));
+        Set<Long> litterFarrowIds = rows.stream().map(PigFarrowVo::getId)
+            .filter(Objects::nonNull).collect(Collectors.toSet());
+        Map<Long, String[]> cubCodeByFarrow = loadCubStrainBreedByFarrow(litterFarrowIds);
         Map<String, String> breedNameMap = pigCoreService.loadBreedStrainNameMap(1);
         Map<String, String> strainNameMap = pigCoreService.loadBreedStrainNameMap(2);
         LocalDate today = LocalDate.now();
@@ -337,12 +393,15 @@ public class FarrowServiceImpl implements IFarrowService {
             vo.setFemaleCount(r.getFemaleCount());
             vo.setBarnName(r.getBarnName());
             vo.setPenName(r.getPenName());
-            // 仔猪品系/品种继承母猪（母猪 pig_strain_code / pig_breed_code → 主数据/字典翻译）
+            // 仔猪品系/品种：优先窝内已耳标仔猪真实 code（母×父 → 育种配置派生），未耳标回落母猪 code。
             Pig mother = motherById.get(r.getPigId());
-            if (mother != null) {
-                vo.setPigletStrainName(resolveBreedStrainName(strainNameMap, mother.getPigStrainCode()));
-                vo.setPigletBreedName(resolveBreedStrainName(breedNameMap, mother.getPigBreedCode()));
-            }
+            String[] cub = cubCodeByFarrow.get(r.getId());
+            String strainCode = cub != null && cub[0] != null
+                ? cub[0] : (mother != null ? mother.getPigStrainCode() : null);
+            String breedCode = cub != null && cub[1] != null
+                ? cub[1] : (mother != null ? mother.getPigBreedCode() : null);
+            vo.setPigletStrainName(resolveBreedStrainName(strainNameMap, strainCode));
+            vo.setPigletBreedName(resolveBreedStrainName(breedNameMap, breedCode));
             // 日龄 = NOW - farrowDate + 1（仔猪日龄，出生当天算 1 日龄 · 畜牧惯例）；farrowDate 缺时 null（mp 端该格不渲染）
             if (r.getFarrowDate() != null) {
                 vo.setAgeDays((int) ChronoUnit.DAYS.between(r.getFarrowDate().toLocalDate(), today) + 1);
