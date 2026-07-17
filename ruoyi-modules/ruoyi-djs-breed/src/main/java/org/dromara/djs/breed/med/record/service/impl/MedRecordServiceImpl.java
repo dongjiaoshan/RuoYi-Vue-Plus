@@ -370,6 +370,7 @@ public class MedRecordServiceImpl extends DjsBaseServiceImpl<MedRecordMapper, Me
             .eq(StringUtils.isNotBlank(q.getPigType()), "pig_type", q.getPigType())
             .eq(StringUtils.isNotBlank(q.getMedicineType()), "medicine_type", q.getMedicineType())
             .eq(q.getDrugType() != null, "drug_type", q.getDrugType())
+            .ne(Boolean.TRUE.equals(q.getExcludeMaster()), "drug_type", 2)
             .eq(q.getBatchId() != null, "batch_id", q.getBatchId())
             .eq(q.getMedicineId() != null, "medicine_id", q.getMedicineId())
             .eq(q.getOperatorId() != null, "operator_id", q.getOperatorId())

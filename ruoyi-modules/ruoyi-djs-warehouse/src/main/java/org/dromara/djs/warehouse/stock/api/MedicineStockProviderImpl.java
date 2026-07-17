@@ -268,6 +268,33 @@ public class MedicineStockProviderImpl implements MedicineStockProvider {
         return result;
     }
 
+    @Override
+    public Map<String, BigDecimal> todayFlowStat(Long medicineId) {
+        Map<String, BigDecimal> stat = new HashMap<>(4);
+        stat.put("use", BigDecimal.ZERO);
+        stat.put("return", BigDecimal.ZERO);
+        stat.put("loss", BigDecimal.ZERO);
+        if (medicineId == null) {
+            return stat;
+        }
+        Map<String, Object> row = locationStockMapper.selectMedicineTodayFlowStat(medicineId);
+        if (row != null) {
+            BigDecimal use = toBigDecimal(row.get("useQty"));
+            BigDecimal ret = toBigDecimal(row.get("returnQty"));
+            BigDecimal loss = toBigDecimal(row.get("lossQty"));
+            if (use != null) {
+                stat.put("use", use);
+            }
+            if (ret != null) {
+                stat.put("return", ret);
+            }
+            if (loss != null) {
+                stat.put("loss", loss);
+            }
+        }
+        return stat;
+    }
+
     /**
      * {@code product_id} 列取值转 {@link Long}（JDBC 可能返 BigInteger / Long / Number）。
      */

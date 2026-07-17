@@ -71,4 +71,11 @@ public class MedRecordQuery extends BaseEntity {
      */
     private Long operatorId;
 
+    /**
+     * 排除批量 master 汇总行（drug_type=2）。mp 扁平台账列表传 true——批量用药按
+     * 「1 条 master 表头(空耳号/汇总用药量) + N 条 detail(各耳号/每头用量)」存储，扁平台账只应展示
+     * detail/单只，否则 master 会渲染成空耳号的幽灵卡（row7）。admin 台账不传（保留按 drug_type 查看 master）。
+     */
+    private Boolean excludeMaster;
+
 }

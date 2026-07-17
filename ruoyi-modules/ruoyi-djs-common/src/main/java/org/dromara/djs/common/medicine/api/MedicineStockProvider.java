@@ -105,4 +105,15 @@ public interface MedicineStockProvider {
      */
     Map<Long, BigDecimal> getStocks(Collection<Long> productIds);
 
+    /**
+     * 单个药品今日三量（已领 / 退回 / 损耗），口径与药品领用列表卡完全一致（读仓库出入库流水
+     * {@code t_warehouse_stock_flow}，全场、今日）。供药品领用详情页 today-stat 与列表同源，
+     * 修 row7：详情原查养殖台账 {@code t_breed_medicine_usage} 只含养殖入口、漏仓库物资领用入口，
+     * 导致详情三量恒 ≤ 列表、派生的最大可退回/可录入损耗偏小。
+     *
+     * @param medicineId 药品商品 ID（为 null 返回全 0）
+     * @return {@code {"use","return","loss"} -> 数量}（缺省 0，key 顺序对齐前端 MedUsageTodayStat）
+     */
+    Map<String, BigDecimal> todayFlowStat(Long medicineId);
+
 }

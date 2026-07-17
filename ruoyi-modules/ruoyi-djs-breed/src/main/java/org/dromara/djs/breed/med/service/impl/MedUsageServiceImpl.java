@@ -30,10 +30,8 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
-import java.time.LocalDate;
 import java.util.Collection;
 import java.util.Collections;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -242,25 +240,10 @@ public class MedUsageServiceImpl extends DjsBaseServiceImpl<MedUsageMapper, MedU
 
     @Override
     public Map<String, BigDecimal> todayStat(Long medicineId) {
-        LocalDate today = LocalDate.now();
-        LambdaQueryWrapper<MedUsage> wrapper = new LambdaQueryWrapper<MedUsage>()
-            .eq(MedUsage::getUseDate, today)
-            .eq(medicineId != null, MedUsage::getMedicineId, medicineId);
-        List<MedUsageVo> todays = baseMapper.selectVoList(wrapper);
-
-        Map<String, BigDecimal> stat = new LinkedHashMap<>();
-        stat.put(TYPE_USE, BigDecimal.ZERO);
-        stat.put(TYPE_RETURN, BigDecimal.ZERO);
-        stat.put(TYPE_LOSS, BigDecimal.ZERO);
-        for (MedUsageVo vo : todays) {
-            String t = vo.getUsageType();
-            BigDecimal q = vo.getUsageQty();
-            if (t == null || q == null || !stat.containsKey(t)) {
-                continue;
-            }
-            stat.put(t, stat.get(t).add(q));
-        }
-        return stat;
+        // row7：与药品领用列表卡同源——读仓库出入库流水（全场、今日）经 provider 聚合，
+        // 而非查养殖台账 t_breed_medicine_usage（只含养殖药品领用页入口、漏仓库物资领用药品库入口，
+        // 导致详情三量恒 ≤ 列表、派生的最大可退回/可录入损耗偏小）。key 仍为 use/return/loss。
+        return medicineStockProvider.todayFlowStat(medicineId);
     }
 
     /**

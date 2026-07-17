@@ -518,6 +518,37 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
     List<Map<String, Object>> selectMedicineProducts(@Param("keyword") String keyword);
 
     /**
+     * 单个药品今日三量（已领 / 退回 / 损耗），口径与 {@link #selectMedicineProducts} 的
+     * {@code todayPicked/todayReturned/todayLoss} 三段子查询**完全一致**（全场、按 {@code product_id}、
+     * {@code DATE(flow_date)=CURDATE()}），供药品领用详情页 today-stat 与列表卡同源。
+     *
+     * <p>不查养殖药品领用台账 {@code t_breed_medicine_usage}（那只含养殖药品领用页入口、漏掉仓库
+     * 物资领用药品库入口 → 详情恒 ≤ 列表，row7 数值不一致根因）；统一读 {@code t_warehouse_stock_flow}。</p>
+     *
+     * @param medicineId 药品商品 ID
+     * @return 单行 {@code useQty / returnQty / lossQty}
+     */
+    @Select("""
+        SELECT
+          COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
+                     WHERE f.product_id = #{medicineId}
+                       AND f.flow_type IN ('prod_pick_out','dept_pick_out','pick_out')
+                       AND DATE(f.flow_date) = CURDATE()
+                       AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS useQty,
+          COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
+                     WHERE f.product_id = #{medicineId}
+                       AND f.flow_type IN ('prod_return_in','pick_return_in')
+                       AND DATE(f.flow_date) = CURDATE()
+                       AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS returnQty,
+          COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
+                     WHERE f.product_id = #{medicineId}
+                       AND f.flow_type = 'loss'
+                       AND DATE(f.flow_date) = CURDATE()
+                       AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS lossQty
+        """)
+    Map<String, Object> selectMedicineTodayFlowStat(@Param("medicineId") Long medicineId);
+
+    /**
      * 列出某操作人「近 3 天已领用」的 distinct 药品商品 id（{@code buy_class='medicine'}），
      * 供用药治疗「使用药品」picker（{@link org.dromara.djs.common.medicine.api.MedicineStockProvider#listRecentPickedMedicineIds}）。
      *
