@@ -409,15 +409,26 @@ public class AppletPickServiceImpl implements IAppletPickService {
             throw new ServiceException("作物 id 必填");
         }
         int pickFlag = isPick == null ? IS_PICK_NORMAL : isPick;
-        // row223：作物级「已录入完成/结算」判定——纯 crop_id + is_pick + pick_settle_round>0，
-        //   与 settlePickActivity 写入口径对齐；刻意不带 listCropPlots 的日期/当月窗口/plot_status 过滤，
-        //   使跨完成窗口后（completed 地块行被列表日期驱逐、plots 变空）头卡按钮仍能从服务端恢复持久置灰。
-        Long settledCount = detailsMapper.selectCount(
+        // row7（何涛 2026-07-17）：头卡「采摘重量录入」按钮置灰口径 = 该作物采摘活动地块**全部已结算**
+        //   （无未结算地块）。原「存在任一已结算地块即置灰」太黏——首轮「录入完成」后再新增采摘活动地块
+        //   （pick_settle_round=0 未结算）时按钮仍恒灰、无法为新地块继续录入。改为「无未结算地块才置灰」：
+        //   新地块出现即 unsettled>0 → 返 false → 按钮重新可用，与 settlePickActivity 按 settle_round 隔离
+        //   新地块单独结算同口径。仍刻意不带日期/当月窗口/plot_status 过滤，使跨完成窗口后（completed 地块行
+        //   被列表日期驱逐、plots 变空）头卡按钮仍能从服务端恢复正确置灰（保留 row223 修复）。
+        Long total = detailsMapper.selectCount(
+            new LambdaQueryWrapper<PlantDetails>()
+                .eq(PlantDetails::getCropId, cropId)
+                .eq(PlantDetails::getIsPick, pickFlag));
+        if (total == null || total == 0) {
+            return false;   // 无采摘活动地块 → 不置灰
+        }
+        Long unsettled = detailsMapper.selectCount(
             new LambdaQueryWrapper<PlantDetails>()
                 .eq(PlantDetails::getCropId, cropId)
                 .eq(PlantDetails::getIsPick, pickFlag)
-                .gt(PlantDetails::getPickSettleRound, 0));
-        return settledCount != null && settledCount > 0;
+                .and(w -> w.eq(PlantDetails::getPickSettleRound, 0)
+                    .or().isNull(PlantDetails::getPickSettleRound)));
+        return unsettled != null && unsettled == 0;   // 无未结算地块 = 全部已结算 → 置灰
     }
 
     @Override

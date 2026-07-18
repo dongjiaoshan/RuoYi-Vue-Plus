@@ -231,6 +231,16 @@ public class PickPlanServiceImpl implements IPickPlanService {
             throw new ServiceException("采摘明细不存在或已删除（id=" + bo.getId() + "）");
         }
 
+        // row6（何涛 2026-07-17）：只有未进入采摘（待开始 pending / 延期 delayed）的地块可设置采摘计划；
+        // 采摘中 / 采摘完成锁定，与前端 rowEditable 同口径。防「页面未刷新、采摘状态已变仍直接打 API」的后端兜底。
+        String hs = existing.getHarvestStatus();
+        if ("picking".equals(hs) || "completed".equals(hs)) {
+            PlotInfo plot = existing.getPlotId() == null ? null : plotMapper.selectById(existing.getPlotId());
+            String plotLabel = (plot != null && plot.getPlotName() != null) ? plot.getPlotName() : ("id=" + existing.getPlotId());
+            String hsLabel = "picking".equals(hs) ? "采摘中" : "采摘完成";
+            throw new ServiceException("地块【" + plotLabel + "】已" + hsLabel + "，不能设置采摘计划");
+        }
+
         // 「设置采摘计划」：用户显式给定开始（必填）/ 结束采摘日期（earliest/last_harvestdate）。
         //   - 两端都给：直接采用（结束 ≥ 开始 校验）。
         //   - 只给开始：计划最晚按作物采摘周期窗口（创建时固化 = 原 last-earliest 天数）由最早派生重算。
@@ -278,22 +288,19 @@ public class PickPlanServiceImpl implements IPickPlanService {
             throw new ServiceException("采摘明细不存在或已删除（id=" + bo.getId() + "）");
         }
 
-        // row30（何涛 2026-07-16）：取消采摘活动守卫——采摘中 / 采摘完成的地块不得取消采摘活动，
-        // 仅未进入采摘（待采摘 pending 等）的地块可取消。前端 rowEditable 已隐藏按钮，此为防直接打 API 的后端兜底。
-        if (isPick == 2) {
-            String hs = existing.getHarvestStatus();
-            if ("picking".equals(hs) || "completed".equals(hs)) {
-                PlotInfo plot = existing.getPlotId() == null ? null : plotMapper.selectById(existing.getPlotId());
-                String plotLabel = (plot != null && plot.getPlotName() != null) ? plot.getPlotName() : ("id=" + existing.getPlotId());
-                String hsLabel = "picking".equals(hs) ? "采摘中" : "采摘完成";
-                throw new ServiceException("地块【" + plotLabel + "】已" + hsLabel + "，不能取消采摘活动");
-            }
+        // row6（何涛 2026-07-17）：设为 / 取消采摘活动守卫——采摘中 / 采摘完成的地块不得改采摘活动标记，
+        // 仅未进入采摘（待开始 pending / 延期 delayed 等）的地块可操作，与前端 rowEditable 同口径。
+        // 前端已按状态隐藏按钮，此为防「页面未刷新、采摘状态已变仍直接打 API」的后端兜底。
+        String hs = existing.getHarvestStatus();
+        if ("picking".equals(hs) || "completed".equals(hs)) {
+            PlotInfo plot = existing.getPlotId() == null ? null : plotMapper.selectById(existing.getPlotId());
+            String plotLabel = (plot != null && plot.getPlotName() != null) ? plot.getPlotName() : ("id=" + existing.getPlotId());
+            String hsLabel = "picking".equals(hs) ? "采摘中" : "采摘完成";
+            String op = isPick == 1 ? "设为采摘活动" : "取消采摘活动";
+            throw new ServiceException("地块【" + plotLabel + "】已" + hsLabel + "，不能" + op);
         }
-
-        // 普通采收（is_pick=2）必须有采摘班组（源头杜绝 mp 空 picker）；游客采摘活动（is_pick=1）不强制。
-        if (isPick == 2 && existing.getHarvestBy() == null) {
-            throw new ServiceException("请先指派采摘班组再取消采摘活动（id=" + bo.getId() + "）");
-        }
+        // row3（何涛 2026-07-17）：取消采摘活动不再强制先指派采摘班组——按上面采摘状态判定即可
+        //（待开始 / 延期可取消，采摘中 / 采摘完成已拦），班组在实际采收时再指派。
 
         return detailsMapper.update(null,
             Wrappers.<PlantDetails>update()

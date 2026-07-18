@@ -912,6 +912,7 @@ public class PlantPlanServiceImpl extends DjsBaseServiceImpl<PlantPlanMapper, Pl
             .filter(d -> startableDetailIds.contains(d.getId()))
             .map(PlantDetails::getPlotId).filter(Objects::nonNull).collect(Collectors.toSet());
         if (!plotIds.isEmpty()) {
+            assertPlotsIdle(plotIds);   // row5：播种前校验地块为空地（上一轮须先退茬）
             plotMapper.update(null,
                 new com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<PlotInfo>()
                     .in(PlotInfo::getId, plotIds)
@@ -927,6 +928,28 @@ public class PlantPlanServiceImpl extends DjsBaseServiceImpl<PlantPlanMapper, Pl
             baseMapper.recalcPlanStatus(pid);
         }
         return startableDetailIds.size();
+    }
+
+    /**
+     * row5（何涛 2026-07-17）：播种/首次种植前置校验——目标地块必须为空地（plot_status=1 空闲）。
+     *
+     * <p>上一轮种植过的地块须先退茬（submitRotation：采摘态 3 → 空闲 1）才能继续播种下一轮计划；
+     * 非空地即拒绝并列出地块编号。字典 djs_plot_status：1=空闲 / 2=种植 / 3=采摘。</p>
+     */
+    private void assertPlotsIdle(Set<Long> plotIds) {
+        if (CollUtil.isEmpty(plotIds)) {
+            return;
+        }
+        List<PlotInfo> plots = plotMapper.selectList(
+            new LambdaQueryWrapper<PlotInfo>().in(PlotInfo::getId, plotIds));
+        List<String> notIdle = plots.stream()
+            .filter(p -> p.getPlotStatus() == null || p.getPlotStatus() != 1)
+            .map(p -> p.getPlotCode() != null ? p.getPlotCode() : ("id=" + p.getId()))
+            .toList();
+        if (!notIdle.isEmpty()) {
+            throw new ServiceException("地块 " + String.join("、", notIdle)
+                + " 非空地状态，须先退茬成空地才能播种（上一轮种植未退茬）");
+        }
     }
 
     // ============================================================
@@ -1000,6 +1023,7 @@ public class PlantPlanServiceImpl extends DjsBaseServiceImpl<PlantPlanMapper, Pl
             Set<Long> plotIds = needBackfill.stream()
                 .map(PlantDetails::getPlotId).filter(Objects::nonNull).collect(Collectors.toSet());
             if (!plotIds.isEmpty()) {
+                assertPlotsIdle(plotIds);   // row5：首次种植（未开工直接完成）前校验地块为空地
                 plotMapper.update(null,
                     new com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<PlotInfo>()
                         .in(PlotInfo::getId, plotIds)

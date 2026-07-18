@@ -712,6 +712,19 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
         }
         int affected = plantDetailsMapper.update(null, uw);
 
+        // row4（何涛 2026-07-17）：地块进入采摘（采摘中 / 采摘完成）后，plot_info.plot_status 从 2（种植）
+        //   置 3（采摘），字典 djs_plot_status：1=空闲 / 2=种植 / 3=采摘。与 submitPick 首次开采同口径，
+        //   使地块状态随采摘进度流转（不再停留种植态），并让后续退茬（submitRotation 要求 plot_status=3）可执行。
+        //   仅当前为 2（种植）时翻一次；已是 3（多次调整）/ 1（异常）不动。
+        PlotInfo plot = bo.getPlotId() == null ? null : plotInfoMapper.selectById(bo.getPlotId());
+        if (plot != null && plot.getPlotStatus() != null && plot.getPlotStatus() == 2) {
+            plotInfoMapper.update(null,
+                new LambdaUpdateWrapper<PlotInfo>()
+                    .eq(PlotInfo::getId, bo.getPlotId())
+                    .set(PlotInfo::getPlotStatus, 3)
+                    .set(PlotInfo::getUpdateBy, updateBy));
+        }
+
         // 写一条 harvest_activity 农事记录留痕（不录重量）
         Long cropPlantId = details.get(0).getPlantId();
         FarmRecords trace = new FarmRecords();
