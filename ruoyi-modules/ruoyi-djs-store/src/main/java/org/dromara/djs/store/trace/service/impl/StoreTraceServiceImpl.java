@@ -310,6 +310,8 @@ public class StoreTraceServiceImpl implements IStoreTraceService {
     public StoreOnsiteCodeVo genOnsiteCode(StoreTraceOnsiteBo bo) {
         // row201：现场码归属当前门店（StoreContext 由 Current-Store-Id 头注入；未选门店/超管无上下文 → null 容错）
         Long storeId = currentStoreId();
+        // 已终止合作门店禁止现场生码（口径同门店域其余业务写路径；storeId=null 放行，由下方生产编码生成兜底报错）
+        storeService.assertStoreActive(storeId);
         // row84：生产编码 = <门店生产标识码>YYMMDD####（门店级每日流水），标签「生产编码」展示用。
         //   必须先生成——门店未配生产标识码时抛异常，避免生了追溯码却无生产编码的半成品。
         String productionCode = storeService.generateStoreProduceCode(storeId);

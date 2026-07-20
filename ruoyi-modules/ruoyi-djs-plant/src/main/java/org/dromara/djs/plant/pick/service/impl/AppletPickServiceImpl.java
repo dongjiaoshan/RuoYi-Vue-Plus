@@ -147,9 +147,12 @@ public class AppletPickServiceImpl implements IAppletPickService {
             if (yield != null && area != null && area.compareTo(BigDecimal.ZERO) > 0) {
                 detail.setAverageYield(yield.divide(area, 3, RoundingMode.HALF_UP));
             }
-        } else if (wonActivation) {
-            // 「开始采摘」首次 pending→picking（赢得乐观推进）：把关联地块 plot_status 从 2（种植）置 3（采摘），
-            // 字典 djs_plot_status：1=空闲/2=种植/3=采摘。只在首次激活时翻一次，避免并发重复翻。
+        }
+        if (wonActivation) {
+            // 首次离开 pending（开始采摘 pending→picking，或未开始直接完成 pending→completed）：
+            // 把关联地块 plot_status 置 3（采摘），字典 djs_plot_status：1=空闲/2=种植/3=采摘。
+            // 只在赢得乐观激活时翻一次，避免并发重复翻；直达 completed 也要翻，否则地块停在种植态、
+            // 进不了退茬候选（submitRotation 要求 plot_status=3）。
             if (detail.getPlotId() != null) {
                 PlotInfo plot = plotMapper.selectById(detail.getPlotId());
                 if (plot != null) {

@@ -40,7 +40,8 @@ import java.util.stream.Collectors;
 /**
  * 门店损耗记录聚合 Service 实现（DENGBO-R15）。
  *
- * <p>每晚定时任务把两类损耗落盘到 {@code t_store_loss_record}（幂等：先物理删该日旧行再重插）：</p>
+ * <p>每天凌晨定时任务把 T-1（昨日，已完结）两类损耗落盘到 {@code t_store_loss_record}
+ * （幂等：先物理删该日旧行再重插；admin 手动重跑传显式日期）：</p>
  * <ol>
  *   <li><b>门店日损耗</b>（{@code store_daily_loss}）：读 {@code t_store_daily_ledger} 当日各行 {@code loss_qty}
  *       逐产品搬入（join {@code t_warehouse_product_info} 补 {@code product_unit}），
@@ -81,6 +82,12 @@ public class StoreLossServiceImpl implements IStoreLossService {
     /** 损耗类型字典（label=中文 / value=类型码）：列表展示 + 白条分割损耗汇总行 productName 占位来源。 */
     private static final String DICT_STORE_LOSS_TYPE = "djs_store_loss_type";
 
+    /** 白条分割损耗汇总行 productName 占位兜底文案（字典缺失时用）。 */
+    private static final String WHITE_BAR_SPLIT_FALLBACK_LABEL = "白条分割损耗";
+
+    /** 白条分割损耗汇总行单位：本质是 kg 重量（到店重 − 退回入库重）。 */
+    private static final String UNIT_KG = "kg";
+
     /** 业务日时区（与项目其余「今日」口径一致，避免 DB CURDATE() 时区雷）。 */
     private static final ZoneId ZONE_SHANGHAI = ZoneId.of("Asia/Shanghai");
 
@@ -94,7 +101,9 @@ public class StoreLossServiceImpl implements IStoreLossService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void aggregate(LocalDate targetDate) {
-        LocalDate date = targetDate == null ? LocalDate.now(ZONE_SHANGHAI) : targetDate;
+        // 默认 T-1：定时任务凌晨 1:30 触发，聚合的是已完结的昨日（当日凌晨两数据源必然为空）。
+        // admin 手动重跑走 DjsJobRegistry 传显式日期，不受此默认影响。
+        LocalDate date = targetDate == null ? LocalDate.now(ZONE_SHANGHAI).minusDays(1) : targetDate;
 
         // 幂等：先物理删该日旧行再重插。唯一键 (tenant_id, store_id, product_id, loss_date, loss_type)
         // 不含 del_flag，走 @TableLogic 软删会残留旧行占键、重跑重插 Duplicate entry，故物理删该日彻底清空。
@@ -112,22 +121,32 @@ public class StoreLossServiceImpl implements IStoreLossService {
         LambdaQueryWrapper<StoreLossRecord> w = new LambdaQueryWrapper<StoreLossRecord>()
             .eq(StringUtils.isNotBlank(query.getLossType()), StoreLossRecord::getLossType, query.getLossType())
             .ge(query.getLossDateFrom() != null, StoreLossRecord::getLossDate, query.getLossDateFrom())
-            .le(query.getLossDateTo() != null, StoreLossRecord::getLossDate, query.getLossDateTo())
-            .orderByDesc(StoreLossRecord::getLossDate)
+            .le(query.getLossDateTo() != null, StoreLossRecord::getLossDate, query.getLossDateTo());
+
+        // 产品名称模糊：下推到 SQL 分页前——先按产品名 LIKE 预查产品雪花 id 集；关键字命中白条分割损耗
+        // 中文占位（字典 label / 兜底文案）时把哨兵行（product_id=0）一并纳入，保证 total / 翻页语义正确。
+        if (StringUtils.isNotBlank(query.getProductName())) {
+            String kw = query.getProductName().trim();
+            Set<Long> matchedIds = productInfoMapper.selectList(new LambdaQueryWrapper<ProductInfo>()
+                    .like(ProductInfo::getProductName, kw)
+                    .select(ProductInfo::getId))
+                .stream().map(ProductInfo::getId).filter(Objects::nonNull)
+                .collect(Collectors.toCollection(TreeSet::new));
+            if (resolveWhiteBarSplitLabel().contains(kw)) {
+                matchedIds.add(SENTINEL_PRODUCT_ID);
+            }
+            if (matchedIds.isEmpty()) {
+                // 无命中产品：恒假条件返回空页（不生成空 IN ()）
+                w.eq(StoreLossRecord::getProductId, -1L);
+            } else {
+                w.in(StoreLossRecord::getProductId, matchedIds);
+            }
+        }
+        w.orderByDesc(StoreLossRecord::getLossDate)
             .orderByDesc(StoreLossRecord::getId);
 
         IPage<StoreLossRecordVo> page = baseMapper.selectVoPage(pageQuery.build(), w);
         fillNames(page.getRecords());
-
-        // 产品名称模糊：LEFT JOIN 语义靠内存回填后过滤（白条分割损耗汇总行 productName=类型中文占位，一并纳入过滤）。
-        // 注：产品名过滤在本页记录内做，total 取过滤后条数（列表页产品名多为精确定位，容忍分页粒度差）。
-        if (StringUtils.isNotBlank(query.getProductName())) {
-            String kw = query.getProductName().trim();
-            List<StoreLossRecordVo> filtered = page.getRecords().stream()
-                .filter(v -> v.getProductName() != null && v.getProductName().contains(kw))
-                .toList();
-            return TableDataInfo.build(filtered);
-        }
         return TableDataInfo.build(page);
     }
 
@@ -176,8 +195,7 @@ public class StoreLossServiceImpl implements IStoreLossService {
                     .in(ProductInfo::getId, realProductIds)
                     .select(ProductInfo::getId, ProductInfo::getProductName, ProductInfo::getProductUnit))
                 .stream().collect(Collectors.toMap(ProductInfo::getId, p -> p, (a, b) -> a));
-        Map<String, String> lossTypeDict = dictService.getAllDictByDictType(DICT_STORE_LOSS_TYPE);
-        String whiteBarSplitLabel = lossTypeDict == null ? null : lossTypeDict.get(LOSS_TYPE_WHITE_BAR_SPLIT);
+        String whiteBarSplitLabel = resolveWhiteBarSplitLabel();
 
         for (StoreLossRecordVo vo : list) {
             if (vo.getProductId() != null && vo.getProductId() != SENTINEL_PRODUCT_ID) {
@@ -189,10 +207,17 @@ public class StoreLossServiceImpl implements IStoreLossService {
                     }
                 }
             } else {
-                // 白条分割损耗汇总行：无真实产品，用类型中文占位（字典缺失兜底固定文案）。
-                vo.setProductName(StringUtils.isNotBlank(whiteBarSplitLabel) ? whiteBarSplitLabel : "白条分割损耗");
+                // 白条分割损耗汇总行：无真实产品，用类型中文占位。
+                vo.setProductName(whiteBarSplitLabel);
             }
         }
+    }
+
+    /** 白条分割损耗汇总行 productName 占位：损耗类型字典 {@code djs_store_loss_type} 中文 label，字典缺失兜底固定文案。 */
+    private String resolveWhiteBarSplitLabel() {
+        Map<String, String> lossTypeDict = dictService.getAllDictByDictType(DICT_STORE_LOSS_TYPE);
+        String label = lossTypeDict == null ? null : lossTypeDict.get(LOSS_TYPE_WHITE_BAR_SPLIT);
+        return StringUtils.isNotBlank(label) ? label : WHITE_BAR_SPLIT_FALLBACK_LABEL;
     }
 
     /**
@@ -258,6 +283,7 @@ public class StoreLossServiceImpl implements IStoreLossService {
             StoreLossRecord record = new StoreLossRecord();
             record.setStoreId(storeId);
             record.setProductId(SENTINEL_PRODUCT_ID);
+            record.setProductUnit(UNIT_KG);   // 哨兵行无真实产品可回填，单位固定 kg（重量口径）
             record.setLossQty(loss);
             record.setLossDate(date);
             record.setLossType(LOSS_TYPE_WHITE_BAR_SPLIT);

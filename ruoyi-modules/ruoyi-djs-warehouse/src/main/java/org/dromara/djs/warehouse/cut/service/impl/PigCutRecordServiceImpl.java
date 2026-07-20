@@ -255,13 +255,28 @@ public class PigCutRecordServiceImpl
         }
         // P3.c'（邓博 row13）：整只 / mp 白条领用 = 白条出白条库。逐白条产出行扣半只库存(by white_bar_no) +
         // 写白条出库流水（去向=白条分割）。修「白条库出库记录缺失」；结算仍按 white_bar_id(整猪) 不变。
+        // 只取未领行（pickup_status=0/NULL）：整只路径消费产出行同样置位，已领行不再二次扣篮子/写流水。
         List<ProductInhouse> barRows = productInhouseMapper.selectList(
             new LambdaQueryWrapper<ProductInhouse>()
                 .eq(ProductInhouse::getWhiteBarId, bar.getId())
                 .isNotNull(ProductInhouse::getWhiteBarNo)
-                .gt(ProductInhouse::getProductWeight, BigDecimal.ZERO));
+                .gt(ProductInhouse::getProductWeight, BigDecimal.ZERO)
+                .and(w -> w.eq(ProductInhouse::getPickupStatus, 0).or().isNull(ProductInhouse::getPickupStatus)));
         for (ProductInhouse r : barRows) {
-            writeBarCutOutFlow(r, r.getProductWeight(), userId);
+            // 整只路径消费产出行 = 该行已领：置 pickup_status=1 + pickup_weight（与 pickupByInhouseRow 同置位口径；
+            // 整只领用无逐行过磅，领用重取该行燎毛入库重 product_weight）。乐观锁 WHERE pickup_status=0/NULL：
+            // 并发已领行置位不中 → 跳过该行，不重复扣篮子、不重复写出库流水。置位后 admin 半只卡不再对已消费行
+            // 重复出卡、countCutBar/sumCutBarWeight 不双算、submitCutDone pendingRows 可归零整猪收口。
+            int marked = productInhouseMapper.update(null,
+                new LambdaUpdateWrapper<ProductInhouse>()
+                    .eq(ProductInhouse::getId, r.getId())
+                    .and(w -> w.eq(ProductInhouse::getPickupStatus, 0).or().isNull(ProductInhouse::getPickupStatus))
+                    .set(ProductInhouse::getPickupStatus, 1)
+                    .set(ProductInhouse::getPickupWeight, r.getProductWeight()));
+            if (marked == 0) {
+                continue;
+            }
+            writeBarCutOutFlow(r, r.getProductWeight(), userId, true);
         }
         // mp 整只兜底路径：无逐产出行拆分，建整猪 cut_record（whiteBarNo=null → 剩余/超量回落 white_bar_id）。
         // 预冷按整只：inWeight = bar.in_weight（整猪入库重）；产品维度走通用白条产品 id（无逐行产品）。
@@ -310,7 +325,8 @@ public class PigCutRecordServiceImpl
         // 半只维度贯穿（邓博 row13/row14）：外购 / 旧数据行 white_bar_no 空 → 领用时补生成一个 BAR_NO 落到该产出行，
         // 使这半只在 库存/流水/分割/剩余/超量 全链有稳定半只键（cut_out_in 按 white_bar_no 聚合，互不串扣）。
         String whiteBarNo = row.getWhiteBarNo();
-        if (StringUtils.isBlank(whiteBarNo)) {
+        boolean barNoGenerated = StringUtils.isBlank(whiteBarNo);
+        if (barNoGenerated) {
             whiteBarNo = bizCodeGenerator.generate(BizCodeType.BAR_NO, Map.of());
             productInhouseMapper.update(null, new LambdaUpdateWrapper<ProductInhouse>()
                 .eq(ProductInhouse::getId, row.getId())
@@ -318,7 +334,8 @@ public class PigCutRecordServiceImpl
             row.setWhiteBarNo(whiteBarNo);
         }
         // 白条领用到分割间 = 白条出白条库：扣该半只库存行(by white_bar_no) + 写白条出库流水（去向=白条分割）。
-        writeBarCutOutFlow(row, rowWeight, userId);
+        // 本次补号的行（外购/旧数据）白条库本就无该篮子 → stockRequired=false 走降级；原生带号的现代燎毛行必须命中篮子。
+        writeBarCutOutFlow(row, rowWeight, userId, !barNoGenerated);
         // 邓博 row14 修复：按半只 surface —— 每领一个产出行即建独立 cut_record（picked）+ 推 bar pending_cut，
         // 立即在白条分割车间可见可分割，不再等整头猪所有产出行领完才建 cut_record（原 finalize 逻辑=「领半只后分割车间看不到」根因）。
         // bar → pending_cut 幂等（已 pending_cut/cutting → affected=0 不抛）；剩余未领行仍可继续领（picker 含 pending_cut/cutting）。
@@ -334,13 +351,16 @@ public class PigCutRecordServiceImpl
     /**
      * 白条领用到分割间 = 白条出白条库：扣该半只白条库存行（P2 燎毛按 white_bar_no 建）+ 写「白条出库」流水（去向=白条分割）。
      *
-     * <p>邓博 row13：白条去分割车间时从白条库正常出库（修出库记录缺失致库存不准）。white_bar_no 空（外购 /
-     * 旧数据）→ 跳过库存行扣减、流水仍按 ear_no 写（优雅降级，不阻断领用）；命中库存行但扣减 affected=0
-     * （余量不足 / 并发抢占）→ 抛异常回滚，防流水与货架单边分叉。流水库位取 inhouse.location_id，
+     * <p>邓博 row13：白条去分割车间时从白条库正常出库（修出库记录缺失致库存不准）。库存扣减口径：
+     * {@code stockRequired=true}（现代燎毛行，white_bar_no 燎毛入库时建、白条库必有对应篮子）时，
+     * 篮子查不到（已被领光 / 盘点清零 / 重复领用）或扣减 affected=0（余量不足 / 并发抢占）→ 抛异常回滚，
+     * 防出库流水与货架库存单边分叉；{@code stockRequired=false}（white_bar_no 空，或外购 / 旧数据行
+     * 领用时现补生成 BAR_NO、白条库本就无该篮子）→ 跳过库存行扣减、流水仍照写（优雅降级，不阻断领用）。
+     * 篮子查询按 id 升序取最早一行，消除 LIMIT 1 非确定性。流水库位取 inhouse.location_id，
      * 空则回落白条库存行 location_id（doc/11 warehouse_id 必填）。分割结算/超量/剩余/损耗仍按
      * white_bar_id(整猪)，cut_out 流水不参与结算（结算用 cut_out_in），故此处补写不影响分割口径。</p>
      */
-    private void writeBarCutOutFlow(ProductInhouse row, BigDecimal weight, Long userId) {
+    private void writeBarCutOutFlow(ProductInhouse row, BigDecimal weight, Long userId, boolean stockRequired) {
         Long warehouseId = row.getLocationId();
         if (StringUtils.isNotBlank(row.getWhiteBarNo())) {
             LocationStock barStock = locationStockMapper.selectOne(
@@ -348,7 +368,11 @@ public class PigCutRecordServiceImpl
                     .eq(LocationStock::getProductId, row.getProductId())
                     .eq(LocationStock::getWhiteBarNo, row.getWhiteBarNo())
                     .gt(LocationStock::getProductStock, BigDecimal.ZERO)
+                    .orderByAsc(LocationStock::getId)
                     .last("LIMIT 1"));
+            if (barStock == null && stockRequired) {
+                throw new ServiceException("该半只白条库存不存在或已出库：white_bar_no=" + row.getWhiteBarNo());
+            }
             if (barStock != null) {
                 int affected = locationStockMapper.deductStockById(barStock.getId(), weight, userId);
                 if (affected == 0) {
@@ -890,10 +914,11 @@ public class PigCutRecordServiceImpl
 
     @Override
     public List<BarInfoVo> queryAvailableBars() {
+        // 按入库时间升序 = 先进先出（row93：默认选最早进分割库的白条优先处理）；LIMIT 50 截断时留下的是最老积压。
         List<BarInfo> bars = barInfoMapper.selectList(
             new LambdaQueryWrapper<BarInfo>()
                 .eq(BarInfo::getStatus, BAR_STATUS_IN_STOCK)
-                .orderByDesc(BarInfo::getInTime)
+                .orderByAsc(BarInfo::getInTime)
                 .last("LIMIT 50"));
         // FIX-WMS-OUTSOURCE-001 行51：批量取各白条燎毛实际产出的分产品（半只/五花肉/整只 等），
         // 白条领用卡片据此展示「燎毛产出明细 + 各自重量」，取代仅显「白条(整只)+整猪重量」。
@@ -916,10 +941,12 @@ public class PigCutRecordServiceImpl
     public List<BarPickupItemVo> queryPickupItems() {
         // 邓博 row14 按半只 surface：一头猪部分半只已领(bar 转 pending_cut/cutting) 后，剩余未领半只仍要能继续领——
         // 故 picker 含 in_stock/pending_cut/cutting 三态（仅展示各 bar 的未领产出行；无未领行的不出卡）。
+        // 按入库时间升序 = 先进先出（row93：默认选最早进分割库的白条优先处理，前端默认选中第一张卡即最早）；
+        // LIMIT 50 截断时留下的是最老积压，不再把排酸超时的老白条挤出列表。
         List<BarInfo> bars = barInfoMapper.selectList(
             new LambdaQueryWrapper<BarInfo>()
                 .in(BarInfo::getStatus, BAR_STATUS_IN_STOCK, BAR_STATUS_PENDING_CUT, BAR_STATUS_CUTTING)
-                .orderByDesc(BarInfo::getInTime)
+                .orderByAsc(BarInfo::getInTime)
                 .last("LIMIT 50"));
         if (bars.isEmpty()) {
             return List.of();

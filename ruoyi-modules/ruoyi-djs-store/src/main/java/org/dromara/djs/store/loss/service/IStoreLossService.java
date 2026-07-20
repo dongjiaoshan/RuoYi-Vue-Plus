@@ -20,9 +20,10 @@ import java.time.LocalDate;
 public interface IStoreLossService {
 
     /**
-     * 聚合指定日的门店损耗到 {@code t_store_loss_record}（幂等：先软删该日旧行再重插）。
+     * 聚合指定日的门店损耗到 {@code t_store_loss_record}（幂等：先删该日旧行再重插）。
      *
-     * @param targetDate 目标日；{@code null} 取今天（{@code Asia/Shanghai}）
+     * @param targetDate 目标日；{@code null} 取昨天（T-1，{@code Asia/Shanghai}）——定时任务凌晨触发，
+     *                   聚合的是已完结的昨日；admin 手动重跑传显式日期不受此默认影响
      */
     void aggregate(LocalDate targetDate);
 

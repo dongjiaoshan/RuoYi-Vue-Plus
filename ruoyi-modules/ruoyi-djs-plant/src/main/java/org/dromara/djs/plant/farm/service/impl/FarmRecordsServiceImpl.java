@@ -345,9 +345,13 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
         if (plot == null) {
             throw new ServiceException("地块不存在: " + plotId);
         }
-        // 幂等拦截（231）：已退茬变空地（plot_status=1）的地块拒绝重复退茬。
+        // 幂等拦截（231）：已退茬变空地（plot_status=1）的地块拒绝重复退茬；
+        // 其余非采摘态（如 2=种植）给准确文案，不误报「已退茬」。
         if (plot.getPlotStatus() == null || plot.getPlotStatus() != 3) {
-            throw new ServiceException("该地块已退茬，无需重复退茬");
+            if (plot.getPlotStatus() != null && plot.getPlotStatus() == 1) {
+                throw new ServiceException("该地块已退茬，无需重复退茬");
+            }
+            throw new ServiceException("地块状态不满足退茬（需处于采摘状态）");
         }
         plot.setPlotStatus(1);
         plotInfoMapper.updateById(plot);
@@ -687,30 +691,41 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
         if (!"picking".equals(bo.getPickStatus()) && !"completed".equals(bo.getPickStatus())) {
             throw new ServiceException("非法采摘状态（仅支持 picking 采摘中 / completed 采摘完成）：" + bo.getPickStatus());
         }
-        // 定位该地块 + 作物下未结束采摘的明细（harvest_status != completed）
+        // 定位该地块 + 作物下的采摘活动明细（本接口是「采摘活动管理」路径，只动 is_pick=1 游客活动行，
+        // 不碰 is_pick=2 普通采收行——普通采收状态由 submitPick 的 pending→picking/completed CAS 独占推进）
         List<PlantDetails> details = plantDetailsMapper.selectList(
             new LambdaQueryWrapper<PlantDetails>()
                 .eq(PlantDetails::getPlotId, bo.getPlotId())
-                .eq(PlantDetails::getCropId, bo.getCropId()));
+                .eq(PlantDetails::getCropId, bo.getCropId())
+                .eq(PlantDetails::getIsPick, 1));
         if (CollUtil.isEmpty(details)) {
             throw new ServiceException("该地块下无对应作物的种植明细，无法调整采摘状态");
         }
         Long updateBy = currentUserSafe();
         boolean toCompleted = "completed".equals(bo.getPickStatus());
-        LambdaUpdateWrapper<PlantDetails> uw = new LambdaUpdateWrapper<PlantDetails>()
-            .eq(PlantDetails::getPlotId, bo.getPlotId())
-            .eq(PlantDetails::getCropId, bo.getCropId())
-            .set(PlantDetails::getHarvestStatus, bo.getPickStatus())
-            .set(PlantDetails::getUpdateBy, updateBy);
-        if (toCompleted) {
-            uw.set(PlantDetails::getEndHarvestdate, bo.getAdjustDate());
-        } else {
-            // row160④：首次采摘录入（待采摘 → 采摘中）时把所选班组回写 plant_details.harvest_by，
-            // 作为「首次采摘录入班组」权威源。第二次录入（采摘中 → 采摘完成）时前端读回该班组预填并锁定，
-            // 保证同一地块二次录入班组默认第一次的且不可调整。完成态不再改写班组。
-            uw.set(PlantDetails::getHarvestBy, bo.getTeamId());
+        // completed 方向只动未完成行（不覆写已完成行的 end_harvestdate 历史完成日期）；
+        // picking 方向对全部活动行生效（completed→picking 重开是本接口的本职功能）。
+        List<Long> targetIds = details.stream()
+            .filter(d -> !toCompleted || !"completed".equals(d.getHarvestStatus()))
+            .map(PlantDetails::getId)
+            .toList();
+        int affected = 0;
+        if (CollUtil.isNotEmpty(targetIds)) {
+            // 按 select 出的行 id 集合更新，与上面的定位口径严格一致
+            LambdaUpdateWrapper<PlantDetails> uw = new LambdaUpdateWrapper<PlantDetails>()
+                .in(PlantDetails::getId, targetIds)
+                .set(PlantDetails::getHarvestStatus, bo.getPickStatus())
+                .set(PlantDetails::getUpdateBy, updateBy);
+            if (toCompleted) {
+                uw.set(PlantDetails::getEndHarvestdate, bo.getAdjustDate());
+            } else {
+                // row160④：首次采摘录入（待采摘 → 采摘中）时把所选班组回写 plant_details.harvest_by，
+                // 作为「首次采摘录入班组」权威源。第二次录入（采摘中 → 采摘完成）时前端读回该班组预填并锁定，
+                // 保证同一地块二次录入班组默认第一次的且不可调整。完成态不再改写班组。
+                uw.set(PlantDetails::getHarvestBy, bo.getTeamId());
+            }
+            affected = plantDetailsMapper.update(null, uw);
         }
-        int affected = plantDetailsMapper.update(null, uw);
 
         // row4（何涛 2026-07-17）：地块进入采摘（采摘中 / 采摘完成）后，plot_info.plot_status 从 2（种植）
         //   置 3（采摘），字典 djs_plot_status：1=空闲 / 2=种植 / 3=采摘。与 submitPick 首次开采同口径，

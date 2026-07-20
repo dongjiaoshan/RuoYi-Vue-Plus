@@ -107,7 +107,7 @@ public interface ProductInfoMapper extends BaseMapperPlus<ProductInfo, ProductIn
               LEFT JOIN t_warehouse_product_info pi
                 ON pi.id = sf.product_id AND pi.del_flag = '0' AND pi.tenant_id = sf.tenant_id
              WHERE sf.product_id = #{productId}
-               AND sf.flow_type  = 'return_in'
+               AND sf.flow_type IN ('return_in', 'store_return_in', 'prod_return_in', 'pick_return_in')
                AND sf.del_flag   = '0'
                AND sf.tenant_id  = '1001'
           ) t
@@ -137,7 +137,7 @@ public interface ProductInfoMapper extends BaseMapperPlus<ProductInfo, ProductIn
                sf.flow_date    AS bizDate,
                CASE
                  WHEN sf.inout_type = 'IN' THEN 'in_stock'
-                 WHEN sf.flow_type = 'pick_out' THEN 'pick_out'
+                 WHEN sf.flow_type IN ('pick_out', 'prod_pick_out', 'dept_pick_out') THEN 'pick_out'
                  ELSE 'backend_out'
                END             AS bizType,
                sf.change_quantity AS bizNum,

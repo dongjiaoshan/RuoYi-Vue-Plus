@@ -92,7 +92,10 @@ public class StoreBo extends BaseEntity {
 
     /**
      * 生产标识码（门店级唯一，用于门店打包生产编码前缀）。
+     *
+     * <p>新增必填（row130）；编辑不强制——存量未配置的老门店仍可编辑其他字段。</p>
      */
+    @NotBlank(message = "生产标识码不能为空", groups = OnCreate.class)
     @Size(max = 32, message = "生产标识码长度不能超过 {max} 个字符")
     private String productionMarkCode;
 
@@ -106,5 +109,9 @@ public class StoreBo extends BaseEntity {
      */
     @Size(max = 500, message = "备注长度不能超过 {max} 个字符")
     private String remark;
+
+    /** 新增校验组（编辑不校验的仅新增约束挂此组）。 */
+    public interface OnCreate {
+    }
 
 }

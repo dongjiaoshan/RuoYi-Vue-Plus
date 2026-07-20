@@ -78,6 +78,30 @@ public interface StockFlowMapper extends BaseMapperPlus<StockFlow, StockFlowVo> 
                                          @Param("plotId") Long plotId);
 
     /**
+     * 按「产品 null-ear 组」维度（product + {@code ear_no IS NULL}，跨库位 / 跨白条号）算今日「领用剩余」净额：
+     * {@code 领用(pick_out 三键) − 退回(return_in 三键) − 损耗(loss) − 饲喂(feed_out)}。
+     *
+     * <p>admin 猪肉聚合行（{@code selectAdminMatPorkProducts} GROUP BY ear_no，NULL 归一组跨库位 SUM）与 mp
+     * 猪肉「退货卡」的 {@code batchId} 语义 = 「该产品 null-ear 组」而非单篮：组级 FIFO 领用写的流水按首篮标签
+     * 落库（white_bar / warehouse 取首篮），该组的退回 / 损耗校验须按同组维度聚合，按篮 keyed
+     * （{@link #sumTodayNetPickedByBasket}）会因「领用记在首篮标签、退损选中篮对不上」粒度错位误拦。
+     * flow_type 键集与 {@link #sumTodayNetPickedByBasket} 完全一致；过滤维度与聚合行「今日四量」子查询一致
+     * （仅 product + ear_no IS NULL，不限库位 / 白条号 / 地块）。</p>
+     *
+     * @return 该产品 null-ear 组今日领用净剩余（无流水返 0）
+     */
+    @Select("SELECT COALESCE(SUM(CASE "
+        + "   WHEN flow_type IN ('prod_pick_out','dept_pick_out','pick_out') THEN change_quantity "
+        + "   WHEN flow_type IN ('prod_return_in','pick_return_in','store_return_in','loss','feed_out') THEN -change_quantity "
+        + "   ELSE 0 END), 0) "
+        + "  FROM t_warehouse_stock_flow "
+        + " WHERE product_id = #{productId} "
+        + "   AND ear_no IS NULL "
+        + "   AND DATE(flow_date) = CURDATE() "
+        + "   AND del_flag = '0' AND tenant_id = '1001'")
+    BigDecimal sumTodayNetPickedByNullEarGroup(@Param("productId") Long productId);
+
+    /**
      * 按当前用户 + 流水类型 + 今日 + 可选物资类型 SUM（前端"今日数据"卡片用，不限定 productId）。
      *
      * <p>matType 可选：若非空则 JOIN product_info 按 belong_type 过滤。MyBatis {@code <if>} 用注解

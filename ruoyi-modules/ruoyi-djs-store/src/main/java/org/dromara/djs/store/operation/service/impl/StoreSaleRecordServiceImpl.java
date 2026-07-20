@@ -142,9 +142,8 @@ public class StoreSaleRecordServiceImpl
         if (rows == null || rows.isEmpty()) {
             return 0;
         }
-        if (storeMapper.selectById(storeId) == null) {
-            throw new ServiceException("门店不存在或已删除：" + storeId);
-        }
+        // 已终止合作门店禁止导入销售流水（口径同 addManual；自含门店存在性检查）
+        storeService.assertStoreActive(storeId);
         // 该门店已关联产品 → 按产品名建索引（导入只允许录入已关联 SKU）
         Map<String, ProductInfo> nameToProduct = loadStoreProductsByName(storeId);
 

@@ -2,6 +2,7 @@ package org.dromara.djs.common.store.controller;
 
 import cn.dev33.satoken.annotation.SaCheckPermission;
 import jakarta.servlet.http.HttpServletResponse;
+import jakarta.validation.groups.Default;
 import lombok.RequiredArgsConstructor;
 import org.dromara.common.core.domain.R;
 import org.dromara.common.excel.utils.ExcelUtil;
@@ -92,7 +93,7 @@ public class StoreController extends BaseController {
     @Log(title = "门店管理", businessType = BusinessType.INSERT)
     @RepeatSubmit
     @PostMapping("/add")
-    public R<Void> add(@Validated @RequestBody StoreBo bo) {
+    public R<Void> add(@Validated({StoreBo.OnCreate.class, Default.class}) @RequestBody StoreBo bo) {
         return toAjax(storeService.insertByBo(bo));
     }
 

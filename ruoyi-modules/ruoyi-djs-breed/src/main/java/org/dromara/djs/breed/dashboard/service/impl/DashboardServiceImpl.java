@@ -917,8 +917,8 @@ public class DashboardServiceImpl implements IDashboardService {
         upsertFarmIndicator(tenantId, targetDate);
         upsertSowRecord(tenantId, targetDate);
         upsertSowPerformance(tenantId, targetDate);
-        upsertMonthlyProduction(tenantId, YearMonth.from(targetDate), targetDate);
-        upsertAnnualIndicator(tenantId, (short) targetDate.getYear(), targetDate);
+        upsertMonthlyProduction(tenantId, YearMonth.from(targetDate));
+        upsertAnnualIndicator(tenantId, (short) targetDate.getYear());
 
         log.info("[DashboardAggregate] done tenant={} date={}", tenantId, targetDate);
         return String.format("ok | tenant=%s | date=%s | tables=[indicator_record, sow_record, sow_performance, monthly_production, annual_indicator]",
@@ -1105,68 +1105,81 @@ public class DashboardServiceImpl implements IDashboardService {
         List<Map<String, Object>> sows = aggregateQueryMapper.selectAliveSows(tenantId);
         for (Map<String, Object> sow : sows) {
             Long pigId = ((Number) sow.get("id")).longValue();
-            String earNo = Objects.toString(sow.get("earNo"), "");
-            Integer parity = sow.get("parity") == null ? 0 : ((Number) sow.get("parity")).intValue();
-
-            Map<String, Object> fa = aggregateQueryMapper.sowFarrowAgg(tenantId, pigId);
-            int totalBorn = mapInt(fa, "totalBorn");
-            int totalLiveBorn = mapInt(fa, "totalLiveBorn");
-            int litterCount = mapInt(fa, "litterCount");
-            BigDecimal sumAvgBornWeight = mapBd(fa, "sumAvgBornWeight");
-            // 平均怀孕天数（row94）：状态记录表 配种(PZ)→分娩(FM) 的 Σduration_days/条数
-            Map<String, Object> gestAgg = aggregateQueryMapper.sowGestationByStatus(tenantId, pigId);
-            int gestSum = mapInt(gestAgg, "sumDays");
-            int gestCount = mapInt(gestAgg, "cnt");
-
-            Map<String, Object> we = aggregateQueryMapper.sowWeanAgg(tenantId, pigId);
-            int totalWeaned = mapInt(we, "totalWeaned");
-            int weanCount = mapInt(we, "weanCount");
-            BigDecimal sumAvgWeanedWeight = mapBd(we, "sumAvgWeanedWeight");
-
-            int abnormalTotal = aggregateQueryMapper.sowAbnormalCount(tenantId, pigId);
-
-            // 断奶-配种天数（row97/183）：状态记录表 断奶(DN)→配种(PZ) 的 Σduration_days/条数
-            Map<String, Object> wb = aggregateQueryMapper.sowWeanBreedByStatus(tenantId, pigId);
-            int wbSum = mapInt(wb, "sumDays");
-            int wbCnt = mapInt(wb, "cnt");
-
-            SowPerformance sp = new SowPerformance();
-            sp.setPigId(pigId);
-            sp.setEarNo(earNo);
-            sp.setParity(parity);
-            sp.setTotalBorn(totalBorn);
-            sp.setTotalLiveBorn(totalLiveBorn);
-            sp.setTotalWeaned(totalWeaned);
-            // 平均出生重 = Σ分娩 avg_weight / 分娩窝数；平均断奶重 = Σ断奶 avg_weaned_weight / 断奶批数
-            sp.setAvgBornWeight(litterCount > 0 ? scale3(divide(sumAvgBornWeight, litterCount)) : null);
-            sp.setAvgWeanedWeight(weanCount > 0 ? scale3(divide(sumAvgWeanedWeight, weanCount)) : null);
-            sp.setLastUpdateDate(statDate);
-
-            // row11 指标算法列
-            sp.setAvgGestationDays(gestCount > 0 ? scale2(divide(new BigDecimal(gestSum), gestCount)) : null);
-            sp.setWeanBreedDays(wbCnt > 0 ? scale2(divide(new BigDecimal(wbSum), wbCnt)) : null);
-            sp.setAbnormalTotal(abnormalTotal);
-            // 窝均按胎次（parity）；parity=0 时退化用窝数兜底，避免除 0
-            int litterDenom = parity != null && parity > 0 ? parity : litterCount;
-            sp.setAvgBornPerLitter(litterDenom > 0 ? scale3(divide(new BigDecimal(totalBorn), litterDenom)) : null);
-            sp.setAvgLiveBornPerLitter(litterDenom > 0 ? scale3(divide(new BigDecimal(totalLiveBorn), litterDenom)) : null);
-            int weanDenom = parity != null && parity > 0 ? parity : weanCount;
-            sp.setAvgWeanedPerLitter(weanDenom > 0 ? scale3(divide(new BigDecimal(totalWeaned), weanDenom)) : null);
-            // NPD（row113 母猪性能，邓博 2026-07-05 = admin row202）= 状态变更记录表中 old_status ∈
-            // {LC/KH/FQ/DN} 且（new_status=PZ 或 event ∈ {DIE/ELIMINATE}）的 Σduration_days（每段非生产
-            // 状态持续到再配种/死淘的天数总和），保留 2 位小数。
-            sp.setNpd(scale2(aggregateQueryMapper.sumSowNpdDurationDays(tenantId, pigId)));
-
-            SowPerformance existing = sowPerformanceMapper.selectOne(
-                new LambdaQueryWrapper<SowPerformance>().eq(SowPerformance::getPigId, pigId));
-            if (existing == null) {
-                sp.setDelFlag("0");
-                sp.setDelUnique(0L);
-                sowPerformanceMapper.insert(sp);
-            } else {
-                sp.setId(existing.getId());
-                sowPerformanceMapper.updateById(sp);
+            try {
+                upsertSingleSowPerformance(tenantId, statDate, sow, pigId);
+            } catch (Exception e) {
+                // 单猪失败只跳过该猪（记日志），不让异常中断整轮母猪性能跑批
+                log.warn("[DashboardAggregate] upsertSowPerformance 单猪失败 pigId={}", pigId, e);
             }
+        }
+    }
+
+    private void upsertSingleSowPerformance(String tenantId, LocalDate statDate, Map<String, Object> sow, Long pigId) {
+        String earNo = Objects.toString(sow.get("earNo"), "");
+        Integer parity = sow.get("parity") == null ? 0 : ((Number) sow.get("parity")).intValue();
+
+        Map<String, Object> fa = aggregateQueryMapper.sowFarrowAgg(tenantId, pigId);
+        int totalBorn = mapInt(fa, "totalBorn");
+        int totalLiveBorn = mapInt(fa, "totalLiveBorn");
+        int litterCount = mapInt(fa, "litterCount");
+        BigDecimal sumAvgBornWeight = mapBd(fa, "sumAvgBornWeight");
+        // 平均怀孕天数（row94）：状态记录表 配种(PZ)→分娩(FM) 的 Σduration_days/条数
+        Map<String, Object> gestAgg = aggregateQueryMapper.sowGestationByStatus(tenantId, pigId);
+        int gestSum = mapInt(gestAgg, "sumDays");
+        int gestCount = mapInt(gestAgg, "cnt");
+
+        Map<String, Object> we = aggregateQueryMapper.sowWeanAgg(tenantId, pigId);
+        int totalWeaned = mapInt(we, "totalWeaned");
+        int weanCount = mapInt(we, "weanCount");
+        BigDecimal sumAvgWeanedWeight = mapBd(we, "sumAvgWeanedWeight");
+
+        int abnormalTotal = aggregateQueryMapper.sowAbnormalCount(tenantId, pigId);
+
+        // 断奶-配种天数（row97/183）：状态记录表 断奶(DN)→配种(PZ) 的 Σduration_days/条数
+        Map<String, Object> wb = aggregateQueryMapper.sowWeanBreedByStatus(tenantId, pigId);
+        int wbSum = mapInt(wb, "sumDays");
+        int wbCnt = mapInt(wb, "cnt");
+
+        SowPerformance sp = new SowPerformance();
+        sp.setPigId(pigId);
+        sp.setEarNo(earNo);
+        sp.setParity(parity);
+        sp.setTotalBorn(totalBorn);
+        sp.setTotalLiveBorn(totalLiveBorn);
+        sp.setTotalWeaned(totalWeaned);
+        // 平均出生重 = Σ分娩 avg_weight / 分娩窝数；平均断奶重 = Σ断奶 avg_weaned_weight / 断奶批数
+        sp.setAvgBornWeight(litterCount > 0 ? scale3(divide(sumAvgBornWeight, litterCount)) : null);
+        sp.setAvgWeanedWeight(weanCount > 0 ? scale3(divide(sumAvgWeanedWeight, weanCount)) : null);
+        sp.setLastUpdateDate(statDate);
+
+        // row11 指标算法列
+        sp.setAvgGestationDays(gestCount > 0 ? scale2(divide(new BigDecimal(gestSum), gestCount)) : null);
+        sp.setWeanBreedDays(wbCnt > 0 ? scale2(divide(new BigDecimal(wbSum), wbCnt)) : null);
+        sp.setAbnormalTotal(abnormalTotal);
+        // 窝均按胎次（parity）；parity=0 时退化用窝数兜底，避免除 0
+        int litterDenom = parity != null && parity > 0 ? parity : litterCount;
+        sp.setAvgBornPerLitter(litterDenom > 0 ? scale3(divide(new BigDecimal(totalBorn), litterDenom)) : null);
+        sp.setAvgLiveBornPerLitter(litterDenom > 0 ? scale3(divide(new BigDecimal(totalLiveBorn), litterDenom)) : null);
+        int weanDenom = parity != null && parity > 0 ? parity : weanCount;
+        sp.setAvgWeanedPerLitter(weanDenom > 0 ? scale3(divide(new BigDecimal(totalWeaned), weanDenom)) : null);
+        // NPD（row113 母猪性能，邓博 2026-07-05 = admin row202）= 状态变更记录表中 old_status ∈
+        // {LC/KH/FQ/DN} 且（new_status=PZ 或 event ∈ {DIE/ELIMINATE}）的 Σduration_days（每段非生产
+        // 状态持续到再配种/死淘的天数总和），保留 2 位小数。
+        sp.setNpd(scale2(aggregateQueryMapper.sumSowNpdDurationDays(tenantId, pigId)));
+
+        // 定位现有行：唯一键是 (tenant_id, pig_id, parity, del_unique)，同 pig 允许多行（不同 parity），
+        // 取 id 最小行 UPDATE（每猪一行的展示口径），避免 selectOne 命中多行抛异常。
+        List<SowPerformance> existingRows = sowPerformanceMapper.selectList(
+            new LambdaQueryWrapper<SowPerformance>()
+                .eq(SowPerformance::getPigId, pigId)
+                .orderByAsc(SowPerformance::getId));
+        if (existingRows.isEmpty()) {
+            sp.setDelFlag("0");
+            sp.setDelUnique(0L);
+            sowPerformanceMapper.insert(sp);
+        } else {
+            sp.setId(existingRows.get(0).getId());
+            sowPerformanceMapper.updateById(sp);
         }
     }
 
@@ -1239,12 +1252,16 @@ public class DashboardServiceImpl implements IDashboardService {
         }
     }
 
-    private void upsertMonthlyProduction(String tenantId, YearMonth month, LocalDate statDate) {
+    private void upsertMonthlyProduction(String tenantId, YearMonth month) {
         LocalDate from = month.atDay(1);
-        // row43②：月度只统计当月「T-1」（截至昨日 = statDate 当日，右开到 statDate+1），不含今天及以后。
-        //   statDate 恒在 month 内（caller 用 YearMonth.from(targetDate)）；当月完整走完时最后一次
-        //   月内 run 的 statDate=月末 → to=下月 1 日 = 全月，历史完整月不受影响。
-        LocalDate to = statDate.plusDays(1);
+        // row43②：月度只统计「T-1」（不含今天及以后）——右开界 = min(下月 1 日, 今天)。
+        //   历史完整月恒取全月，当月取到昨天为止；统计窗口只由 month 决定，不随触发日截断
+        //   （对历史日重跑 = 重算该月完整口径，UPSERT 幂等）。
+        LocalDate to = month.plusMonths(1).atDay(1);
+        LocalDate today = LocalDate.now();
+        if (today.isBefore(to)) {
+            to = today;
+        }
         LocalDateTime dtFrom = from.atStartOfDay();
         LocalDateTime dtTo = to.atStartOfDay();
 
@@ -1369,10 +1386,15 @@ public class DashboardServiceImpl implements IDashboardService {
         }
     }
 
-    private void upsertAnnualIndicator(String tenantId, short year, LocalDate statDate) {
+    private void upsertAnnualIndicator(String tenantId, short year) {
         LocalDate from = LocalDate.of(year, 1, 1);
-        // row44②：年度只统计当年「T-1」（截至昨日 = statDate，右开到 statDate+1），不含今天及以后。
-        LocalDate to = statDate.plusDays(1);
+        // row44②：年度只统计「T-1」（不含今天及以后）——右开界 = min(次年 1 月 1 日, 今天)。
+        //   历史年恒取全年，当年取到昨天为止；统计窗口只由 year 决定，不随触发日截断。
+        LocalDate to = LocalDate.of(year + 1, 1, 1);
+        LocalDate today = LocalDate.now();
+        if (today.isBefore(to)) {
+            to = today;
+        }
         LocalDateTime dtFrom = from.atStartOfDay();
         LocalDateTime dtTo = to.atStartOfDay();
 
@@ -1381,7 +1403,13 @@ public class DashboardServiceImpl implements IDashboardService {
         //   Σ 月即得 T-1 年度总量，年↔月逐层可对账（年 = 其各月之和）。仅汇总有月行的月份；
         //   无月行的月份（如日/月统计上线前）不计入——年表口径 = 月表已跟踪运营月之和。
         String fromMonth = String.format("%04d-01", year);
-        String toMonth = YearMonth.from(statDate).toString();
+        // 月行汇总右闭界 = min(当年 12 月, T-1 所在月)：历史年恒取全年 12 个月，当年只到昨天所在月。
+        YearMonth endMonth = YearMonth.of(year, 12);
+        YearMonth tMinus1Month = YearMonth.from(LocalDate.now().minusDays(1));
+        if (tMinus1Month.isBefore(endMonth)) {
+            endMonth = tMinus1Month;
+        }
+        String toMonth = endMonth.toString();
         Map<String, Object> mSum = aggregateQueryMapper.sumMonthlyProductionRange(tenantId, fromMonth, toMonth);
         int introduceCount = mapInt(mSum, "introduceCount");
         int introduceBoarCount = mapInt(mSum, "introduceBoarCount");

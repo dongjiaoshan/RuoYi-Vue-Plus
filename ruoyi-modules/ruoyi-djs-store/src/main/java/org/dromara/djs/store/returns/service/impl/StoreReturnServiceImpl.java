@@ -940,6 +940,9 @@ public class StoreReturnServiceImpl
         }
     }
 
+    /** 猪肉类业态（与前端 ReturnRecordList categoryOf 同口径：pork/white_bar 归猪肉 tab，其余含空归果蔬）。 */
+    private static final List<String> PORK_BELONG_TYPES = List.of("pork", "white_bar");
+
     private LambdaQueryWrapper<StoreReturn> buildQueryWrapper(StoreReturnQuery q) {
         LambdaQueryWrapper<StoreReturn> w = new LambdaQueryWrapper<>();
         if (q == null) {
@@ -947,6 +950,34 @@ public class StoreReturnServiceImpl
         }
         boolean hasStoreIds = q.getStoreIds() != null && !q.getStoreIds().isEmpty();
         boolean hasProductIds = q.getProductIds() != null && !q.getProductIds().isEmpty();
+        // 产品名称模糊：先查产品 id 集下推（跨页正确；命中 0 个 → 恒假条件返回空页而非退化全量）
+        if (StringUtils.isNotBlank(q.getProductName())) {
+            List<Long> nameIds = productInfoMapper.selectList(new LambdaQueryWrapper<ProductInfo>()
+                    .select(ProductInfo::getId)
+                    .like(ProductInfo::getProductName, q.getProductName()))
+                .stream().map(ProductInfo::getId).filter(Objects::nonNull).toList();
+            if (nameIds.isEmpty()) {
+                w.eq(StoreReturn::getId, -1L);
+            } else {
+                w.in(StoreReturn::getProductId, nameIds);
+            }
+        }
+        // 业态 tab 下推：pork=IN 猪肉产品集；vegetable=NOT IN 猪肉产品集（belong_type 空天然归果蔬）
+        if (StringUtils.isNotBlank(q.getBelongCategory())) {
+            List<Long> porkIds = productInfoMapper.selectList(new LambdaQueryWrapper<ProductInfo>()
+                    .select(ProductInfo::getId)
+                    .in(ProductInfo::getBelongType, PORK_BELONG_TYPES))
+                .stream().map(ProductInfo::getId).filter(Objects::nonNull).toList();
+            if ("pork".equals(q.getBelongCategory())) {
+                if (porkIds.isEmpty()) {
+                    w.eq(StoreReturn::getId, -1L);
+                } else {
+                    w.in(StoreReturn::getProductId, porkIds);
+                }
+            } else if ("vegetable".equals(q.getBelongCategory()) && !porkIds.isEmpty()) {
+                w.notIn(StoreReturn::getProductId, porkIds);
+            }
+        }
         w.like(StringUtils.isNotBlank(q.getReturnNo()), StoreReturn::getReturnNo, q.getReturnNo())
             .in(hasStoreIds, StoreReturn::getStoreId, q.getStoreIds())
             .eq(!hasStoreIds && q.getStoreId() != null, StoreReturn::getStoreId, q.getStoreId())

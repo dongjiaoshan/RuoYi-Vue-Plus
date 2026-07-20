@@ -12,7 +12,7 @@ import org.springframework.stereotype.Component;
 /**
  * 门店损耗记录定时任务（DENGBO-R15）。
  *
- * <p>每晚落盘两类损耗到 {@code t_store_loss_record}：门店日损耗（读盘点台账 loss_qty 原样搬）
+ * <p>每天凌晨落盘 T-1（昨日）两类损耗到 {@code t_store_loss_record}：门店日损耗（读盘点台账 loss_qty 原样搬）
  * + 白条分割损耗（到店重−退回入库重 钳 0）。聚合逻辑复用 {@link IStoreLossService#aggregate}
  * （与 admin 手动重跑同源），本类只负责「定时触发 + 租户上下文」。</p>
  *
@@ -44,7 +44,7 @@ public class StoreLossJob {
         jobRegistry.register(JOB_NAME, storeLossService::aggregate);
     }
 
-    /** 每天 1:30 触发，落盘当天两类门店损耗（错峰养殖/仓库跑批）。 */
+    /** 每天 1:30 触发，落盘 T-1（昨日，已完结）两类门店损耗（错峰养殖/仓库跑批）。 */
     @Scheduled(cron = "${djs.schedule.store-loss-cron:0 30 1 * * ?}")
     public void aggregate() {
         DjsJobRunner.run(JOB_NAME, () -> storeLossService.aggregate(null));
