@@ -4,8 +4,8 @@ spring.servlet.multipart.location: /ruoyi/server/temp
 --- # 监控中心配置
 spring.boot.admin.client:
   # 增加客户端开关
-  enabled: true
-  url: http://localhost:9090/admin
+  enabled: ${BOOT_ADMIN_ENABLED:false}
+  url: ${BOOT_ADMIN_URL:http://localhost:9090/admin}
   instance:
     service-host-type: IP
     metadata:
@@ -16,7 +16,7 @@ spring.boot.admin.client:
 
 --- # snail-job 配置
 snail-job:
-  enabled: true
+  enabled: ${SNAIL_JOB_ENABLED:false}
   # 需要在 SnailJob 后台组管理创建对应名称的组,然后创建任务的时候选择对应的组,才能正确分派任务
   group: "ruoyi_group"
   # SnailJob 接入验证令牌 详见 script/sql/ry_job.sql `sj_group_config`表
@@ -50,9 +50,9 @@ spring:
           driverClassName: com.mysql.cj.jdbc.Driver
           # jdbc 所有参数配置参考 https://lionli.blog.csdn.net/article/details/122018562
           # rewriteBatchedStatements=true 批处理优化 大幅提升批量插入更新删除性能(对数据库有性能损耗 使用批量操作应考虑性能问题)
-          url: jdbc:mysql://localhost:3306/ry-vue?useUnicode=true&characterEncoding=utf8&zeroDateTimeBehavior=convertToNull&useSSL=true&serverTimezone=GMT%2B8&autoReconnect=true&rewriteBatchedStatements=true&allowPublicKeyRetrieval=true&nullCatalogMeansCurrent=true
-          username: root
-          password: root
+          url: ${MASTER_DB_URL:jdbc:mysql://localhost:3306/dongjiaoshan?useUnicode=true&characterEncoding=utf8&zeroDateTimeBehavior=convertToNull&useSSL=false&serverTimezone=Asia/Shanghai&autoReconnect=true&rewriteBatchedStatements=true&allowPublicKeyRetrieval=true&nullCatalogMeansCurrent=true}
+          username: ${MASTER_DB_USERNAME:root}
+          password: ${MASTER_DB_PASSWORD:root}
 #        # 从库数据源
 #        slave:
 #          lazy: true
@@ -98,18 +98,12 @@ spring:
 --- # redis 单机配置(单机与集群只能开启一个另一个需要注释掉)
 spring.data:
   redis:
-    # 地址
-    host: localhost
-    # 端口，默认为6379
-    port: 6379
-    # 数据库索引
-    database: 0
-    # redis 密码必须配置
-    password: ruoyi123
-    # 连接超时时间
+    host: ${REDIS_HOST:localhost}
+    port: ${REDIS_PORT:6379}
+    database: ${REDIS_DATABASE:0}
+    password: ${REDIS_PASSWORD:ruoyi123}
     timeout: 10s
-    # 是否开启ssl
-    ssl.enabled: false
+    ssl.enabled: ${REDIS_SSL_ENABLED:false}
 
 # redisson 配置
 redisson:
@@ -270,3 +264,20 @@ justauth:
       client-id: 10**********6
       client-secret: 1f7d08**********5b7**********29e
       redirect-uri: ${justauth.address}/social-callback?source=gitea
+
+--- # 东角山生产/类生产配置：微信真登录；appId/secret 走环境变量，不入 git
+djs:
+  wechat:
+    miniapp:
+      # 必填：真实小程序 AppID / AppSecret，由部署环境变量注入。
+      # 无默认值 —— 缺失时启动即报错，防生产误回退 mock。
+      app-id: ${WX_MA_APPID}
+      secret: ${WX_MA_SECRET}
+      # 真微信登录默认开（mock 关）；如需临时回退 mock jscode2session 设 WX_MA_MOCK=true
+      mock: ${WX_MA_MOCK:false}
+  applet:
+    # dev 多角色快速登录端点（9 角色按钮 → /applet/auth/login）开关：
+    #   - 真生产：默认 false（dev/dev123 → 40004），仅真微信登录。
+    #   - staging / UAT 体验环境：设环境变量 DJS_APPLET_AUTH_MOCK=true 保留快速登录测多角色。
+    # 与上面 wechat.mock 相互独立：可同时「真微信登录 + dev 快速登录」并存。
+    auth-mock-enabled: ${DJS_APPLET_AUTH_MOCK:false}

@@ -1,0 +1,82 @@
+package org.dromara.djs.breed.event.growth.domain.vo;
+
+import cn.idev.excel.annotation.ExcelIgnoreUnannotated;
+import com.fasterxml.jackson.annotation.JsonFormat;
+import io.github.linpeilie.annotations.AutoMapper;
+import lombok.Data;
+import org.dromara.common.translation.annotation.Translation;
+import org.dromara.common.translation.constant.TransConstant;
+import org.dromara.djs.breed.event.growth.domain.PigGrowth;
+
+import java.io.Serial;
+import java.io.Serializable;
+import java.math.BigDecimal;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.util.List;
+
+/**
+ * 生长记录视图（BRD-EVENT-005 GROWTH）。
+ *
+ * @author djs
+ * @since BRD-EVENT-005
+ */
+@Data
+@ExcelIgnoreUnannotated
+@AutoMapper(target = PigGrowth.class)
+public class PigGrowthVo implements Serializable {
+
+    @Serial
+    private static final long serialVersionUID = 1L;
+
+    private Long id;
+    private Long pigId;
+    private String earNo;
+
+    @JsonFormat(pattern = "yyyy-MM-dd")
+    private LocalDate measureDate;
+
+    private BigDecimal weight;
+    private BigDecimal backfatThickness;
+    private BigDecimal backHeight;
+    private String photoOssIds;
+
+    /**
+     * 测量照片可访问 URL 列表（由 photoOssIds 经 OssService 预解析；无照片 → 空 list）。
+     * <p>mp {@code <image>} 无法携 Bearer token 取鉴权下载端点，故后端 JOIN sys_oss 预解析成
+     * 直链注入（仿 {@code PigIntroServiceImpl.resolveProofUrls}）。仅 queryPage enrich，
+     * 新增 / 详情接口不填。</p>
+     */
+    private List<String> photoUrls;
+
+    private Long operatorId;
+
+    /**
+     * 操作人姓名（来自 {@code sys_user.nick_name}，ADR-0007 ＋ 跨层契约 §4.5）。
+     * <p>USER_ID_TO_NICKNAME 走 NicknameTranslationImpl 取 sys_user.nick_name 中文名。</p>
+     */
+    @Translation(type = TransConstant.USER_ID_TO_NICKNAME, mapper = "operatorId")
+    private String operatorName;
+
+    private String barnName;
+    private String penName;
+    private String remark;
+
+    /**
+     * 测量时日龄（天）= measureDate - pig.birthDate（缺时 fallback introduceDate）；均空 → null。
+     * <p>BRD-FIX-MP-EVENT-MISC-IA-001：mp 端"记录列表"timeline「42 日龄」（原型 15）；null → 该格不渲染。
+     * 仅 queryPage enrich（admin 列表 / mp 历史用），新增 / 详情接口不填。</p>
+     */
+    private Integer ageDays;
+
+    /**
+     * 猪只类型中文（种母猪 / 种公猪 / 育肥猪 / 仔猪）；缺基准类型 → null。
+     * <p>fe-growth row54：mp 记录列表卡第二行展示「猪只类型 / 日龄 / 背膘厚度 / 记录人员」。
+     * service 层 {@code queryPage} 按 pig_type 批量 enrich（与 ageDays 同批查 pig 防 N+1）；
+     * 新增 / 详情接口不填。</p>
+     */
+    private String pigTypeName;
+
+    @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")
+    private LocalDateTime createTime;
+}

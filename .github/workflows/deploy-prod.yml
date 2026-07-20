@@ -1,0 +1,78 @@
+name: Deploy Prod (Backend)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-backend-prod
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Trigger deploy on server
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.SSH_HOST_PROD }}
+          username: root
+          key: ${{ secrets.SSH_PRIVATE_KEY_PROD }}
+          command_timeout: 30m
+          script: |
+            set -e
+            REPO_DIR=/www/wwwroot/api.dongjiaoshan.com
+            COMPOSE="docker compose -f script/docker/docker-compose.deploy.yml"
+
+            cd "$REPO_DIR"
+            [ -f .env ] || { echo "ERROR: .env missing" >&2; exit 1; }
+
+            echo "==> Pulling latest main branch"
+            git fetch origin main
+            git reset --hard origin/main
+
+            echo "==> Stopping old container to free memory for Maven build"
+            DEPLOY_ENV=prod $COMPOSE stop ruoyi-admin || true
+
+            echo "==> Building new image (multi-stage Maven build)"
+            export DOCKER_BUILDKIT=1
+            export COMPOSE_DOCKER_CLI_BUILD=1
+            DEPLOY_ENV=prod $COMPOSE build ruoyi-admin
+
+            echo "==> Starting new container"
+            DEPLOY_ENV=prod $COMPOSE up -d ruoyi-admin
+
+            echo "==> Brief wait for app to settle (60s)..."
+            sleep 60
+
+            echo "==> Best-effort smoke test (does NOT fail the deploy):"
+            for i in $(seq 1 12); do
+              if curl -s -o /dev/null --max-time 3 http://127.0.0.1:8080/; then
+                echo "✅ Port 8080 responding at attempt $i"
+                break
+              fi
+              echo "[$i] port not responding yet"
+              sleep 5
+            done
+
+            # ruoyi 的 sys_dict 缓存无 TTL，只在 admin 改字典时主动 evict；Flyway 直接改 sys_dict_data
+            # 绕过缓存失效 → 重启后 Redis 仍返旧字典快照（典型：品种/品系码表更新后小程序仍拿到旧值，
+            # 导致耳号拼错）。部署后强制刷一次 *:sys_dict + *djs:dict* 缓存，让下次访问重读 DB。
+            echo "==> Flushing dict cache (ruoyi sys_dict no-TTL; Flyway dict seeds bypass cache evict)"
+            REDIS_PW="$(docker exec djs-redis-prod printenv REDIS_PASSWORD 2>/dev/null || true)"
+            if [ -n "$REDIS_PW" ]; then
+              REDIS_CONTAINER="djs-redis-prod" REDIS_PASSWORD="$REDIS_PW" bash script/sql/djs/_post-init.sh || true
+            else
+              echo "WARN: 读不到 djs-redis-prod 的 REDIS_PASSWORD，跳过字典缓存刷新" >&2
+            fi
+
+            echo "==> Container status:"
+            DEPLOY_ENV=prod $COMPOSE ps
+            echo "==> Last 80 lines of app log:"
+            DEPLOY_ENV=prod $COMPOSE logs --tail=80 ruoyi-admin || true
+
+            # 永远 exit 0：部署完成就算成功，健康状态自己 SSH 上去看
+            exit 0

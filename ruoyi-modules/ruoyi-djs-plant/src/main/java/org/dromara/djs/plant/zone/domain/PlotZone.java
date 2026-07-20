@@ -1,0 +1,81 @@
+package org.dromara.djs.plant.zone.domain;
+
+import com.baomidou.mybatisplus.annotation.TableId;
+import com.baomidou.mybatisplus.annotation.TableLogic;
+import com.baomidou.mybatisplus.annotation.TableName;
+import lombok.Data;
+import lombok.EqualsAndHashCode;
+import org.dromara.common.tenant.core.TenantEntity;
+import org.dromara.djs.common.base.DjsBaseServiceImpl;
+
+import java.io.Serial;
+
+/**
+ * 片区实体（PLT-MD-001）。
+ *
+ * <p>对应表 {@code t_plant_plot_zone}（V202606050900）：</p>
+ * <ul>
+ *   <li>下游 {@code t_plant_plot_info.zone_id} 一对多关联</li>
+ *   <li>删除前校验：片区下若仍有未删除地块，service 抛 {@code plant.zone.has_plot}</li>
+ * </ul>
+ *
+ * <p>软删走 {@code del_flag} + {@code del_unique}，服务层走 {@link DjsBaseServiceImpl#softDelete}。</p>
+ *
+ * @author djs
+ * @since PLT-MD-001
+ */
+@Data
+@EqualsAndHashCode(callSuper = true)
+@TableName("t_plant_plot_zone")
+public class PlotZone extends TenantEntity {
+
+    @Serial
+    private static final long serialVersionUID = 1L;
+
+    /**
+     * 主键（雪花）。
+     */
+    @TableId
+    private Long id;
+
+    /**
+     * 片区业务码（用户手填；UNIQUE(tenant_id, zone_code, del_unique)）。
+     */
+    private String zoneCode;
+
+    /**
+     * 片区名称（例 A 区 / 东部温室区）。
+     */
+    private String zoneName;
+
+    /**
+     * 片区说明。
+     */
+    private String zoneDesc;
+
+    /**
+     * 所属大区（例 东部）。
+     */
+    private String zoneBelong;
+
+    /**
+     * 状态：{@code 1}=启用 / {@code 0}=停用（**不走** {@code sys_normal_disable}；与片区数据实态一致：
+     * 真实在用片区存 1）。
+     *
+     * <p>全模块统一口径：mp 片区/地块 picker、{@code idleZoneCounts} 胶囊、种植计划地块下发、
+     * admin 列表 toggle / 状态列均按 {@code zone_status=1} 视为启用过滤；新建片区默认 1。
+     * 停用片区不出现在 mp 农事筛选下拉里。</p>
+     */
+    private Integer zoneStatus;
+
+    /**
+     * 软删标记。
+     */
+    @TableLogic
+    private String delFlag;
+
+    /**
+     * 软删唯一性辅助列。
+     */
+    private Long delUnique;
+}

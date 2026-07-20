@@ -68,6 +68,29 @@ spring:
     basename: i18n/messages
   profiles:
     active: @profiles.active@
+  # Flyway DB migration —— 只管业务 SQL（classpath:db/migration/V*__*.sql）
+  # ruoyi 自带 ry_vue_5.X.sql / ry_job.sql / ry_workflow.sql 仍按 quickstart 手工导入。
+  # 已部署环境（dev/staging）：首次启动时 baseline-on-migrate 会创建 flyway_schema_history 表
+  # 并把 baseline-version 之前的 SQL 全部标记为已应用，避免重跑。
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    table: flyway_schema_history
+    baseline-on-migrate: true
+    # baseline-version = 当前已部署的最大 V<version>（D04 HOTFIX V202605281100）。
+    # 后续新增 SQL 取号按 ADR-0008 §2.5：先查目标库当前最大版本
+    #   SELECT MAX(version) FROM flyway_schema_history WHERE success=1;
+    # 新文件时间戳必须 > 该 max version + 1 小时 buffer。
+    # 不要按"当天日期"命名——版本号已排到未来日历日，当天戳 < 已应用 max 会被
+    # out-of-order=false 拒绝、启动失败。也不要大跨度跳未来日期（贴 max + buffer 取号，
+    # 控制版本号相对真实日历的透支幅度）。每次升 baseline 都需要所有部署环境同步升级。
+    baseline-version: 202605281100
+    baseline-description: dongjiaoshan v1 baseline (D04 closing snapshot)
+    validate-on-migrate: true
+    # 严格顺序 —— 不允许跳号或乱序补挂
+    out-of-order: false
+    # SQL 注释里的 ${...} 别被 flyway 当占位符替换（业务 SQL 没用占位符）
+    placeholder-replacement: false
   # 文件上传
   servlet:
     multipart:
@@ -133,6 +156,23 @@ tenant:
     - sys_client
     - sys_oss_config
     - flow_spel
+    - sys_farm
+    - mp_subscribe_record
+
+# 门店行级数据隔离（STORE-PERM-001）—— 白名单（opt-in）：仅以下表会被注入 WHERE store_id=?
+# 空上下文 / 非白名单表 / 超管租管 一律不过滤，详见 StoreLineHandler。
+store:
+  includes:
+    - t_store_daily_ledger
+    - t_store_inventory
+    - t_store_loss_record
+    - t_store_member
+    - t_store_member_consumption
+    - t_store_product_relation
+    - t_store_return
+    - t_store_sale_record
+    - t_warehouse_demand_manage
+    - t_warehouse_product_inhouse
 
 # MyBatisPlus配置
 # https://baomidou.com/config/
@@ -261,3 +301,63 @@ warm-flow:
   node-tooltip: true
   # 默认Authorization，如果有多个token，用逗号分隔
   token-name: ${sa-token.token-name},clientid
+
+--- # 东角山业务配置（V1 多农场 disabled / OSS STS / 业务编码生成器 / 微信集成）
+djs:
+  security:
+    # API 鉴权全局开关（Kevin 2026-07-08 拍板）。V1 权限靠 admin 菜单 / mp tab 的显示隐藏控制，
+    # 后端 API 不做细粒度 @SaCheckPermission 校验。
+    #   false（默认）→ 所有 @SaCheckPermission 放行（仍需登录），权限只由前端菜单可见性控制
+    #   true  → 恢复 ruoyi 原生按菜单权限精确校验（可随时回退）
+    # 只影响服务端 API 拦截，不影响 getInfo 下发给前端的 permissions（mp tab / admin 按钮显隐不受影响）。
+    api-permission-check: ${DJS_API_PERM_CHECK:false}
+  store:
+    # 门店墙（员工↔门店绑定过滤 my-stores 下拉）。V1 默认 false = 关墙，全员返全部门店
+    # （ADR-0018 门店不做隔离、全员可跨店）；V2 接多加盟商时置 true 按绑定过滤。
+    wall-enabled: ${DJS_STORE_WALL:false}
+  multi-farm:
+    # V1 disabled，V2 启用拦截器后多农场生效（SYS-INFRA-007）
+    enabled: false
+  schedule:
+    # djs 业务统计定时任务总开关（Spring @Scheduled 单机跑，独立于 snail-job 调度中心）。
+    # 默认 true；置 false 整体停掉养殖/仓库统计聚合 + 有机证书预警 job。详见 DjsSchedulingConfig。
+    enabled: ${DJS_SCHEDULE_ENABLED:true}
+    # 养殖统计聚合 cron（日→月→年 UPSERT），每日 0:00 跑 T-1（邓博 row9：每晚12点）。
+    breed-aggregate-cron: 0 0 0 * * ?
+    # 仓库统计聚合 cron（日/作物日/月 UPSERT），每日 0:00 跑 T-1。
+    warehouse-stat-cron: 0 0 0 * * ?
+    # 有机证书到期预警扫描 cron（PLT-MD-003），每日 0:00。
+    organic-warning-cron: 0 0 0 * * ?
+  applet:
+    # 小程序 mock 账号密码登录开关（dev 多角色快速登录 9 角色按钮依赖它）。
+    # dev 默认 true；上生产前置 false（或设环境变量 DJS_APPLET_AUTH_MOCK=false），
+    # mock 账号登录端点返 40004，仅留真微信登录。详见 doc/_adr/0003-mp-mock-auth.md。
+    auth-mock-enabled: ${DJS_APPLET_AUTH_MOCK:true}
+  oss-sts:
+    # 阿里云 OSS STS Token 服务（SYS-INFRA-002）
+    enabled: true
+    region: cn-hangzhou
+  encoder:
+    # 业务编码生成器（SYS-INFRA-004）
+    ear-no:
+      # 耳号生成器预留天数：超过此天数未使用的预占耳号回收
+      reserve-days: 90
+  wechat:
+    # 微信小程序集成（SYS-AUTH-001 登录 + SYS-INFRA-006 订阅消息推送）
+    miniapp:
+      # AppID："mock" 表示 dev 阶段不调微信真实 API（登录走 mock openid，推送走 mock 日志）
+      app-id: ${WX_MA_APPID:mock}
+      secret: ${WX_MA_SECRET:}
+      # 显式 mock 开关；app-id=mock 时强制为 mock（取或运算）
+      mock: ${WX_MA_MOCK:true}
+      # 4 类订阅消息模板 ID（V1 占位空字符串，运维填入真实模板 ID 后生效）
+      templates:
+        slaughter_notice: ""
+        stock_alert: ""
+        sales_summary: ""
+        internal_feedback: ""
+      # 推送失败重试策略（指数退避，含首次共尝试 max-attempts 次）
+      retry:
+        max-attempts: 3
+        initial-backoff-ms: 500
+        backoff-multiplier: 2.0

@@ -74,7 +74,7 @@ Three-layer Maven hierarchy — keep new code in the layer that matches its role
 
 ### Key framework choices (don't fight these)
 
-- **Persistence**: MyBatis-Plus with custom `BaseMapperPlus` / `ServiceImpl` extensions in `ruoyi-common-mybatis`. Entities extend `TenantEntity`/`BaseEntity`. Data permission, tenant isolation, and encryption are implemented as MP interceptors — apply via annotations (`@DataPermission`, `@TenantIgnore`, `@EncryptField`) rather than writing raw SQL filters.
+- **Persistence**: MyBatis-Plus with custom `BaseMapperPlus` / `ServiceImpl` extensions in `ruoyi-common-mybatis`. Entities extend `TenantEntity` (defined in `ruoyi-common-tenant`) / `BaseEntity`. Data permission, tenant isolation, and encryption are implemented as MP interceptors — apply via annotations (`@DataPermission`, `@TenantIgnore`, `@EncryptField`) rather than writing raw SQL filters.
 - **Multi-datasource**: `dynamic-datasource`; switch via `@DS("name")`. Master is `master`.
 - **Auth**: Sa-Token (not Spring Security). Permission checks use `@SaCheckPermission` / `@SaCheckRole`. Login logic is in `ruoyi-admin` `org.dromara.web.service`.
 - **Multi-tenancy**: enabled by default via `ruoyi-common-tenant`; most tables carry `tenant_id` and MP auto-injects the filter. Use `TenantHelper.ignore(...)` for cross-tenant operations.

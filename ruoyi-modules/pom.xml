@@ -15,6 +15,12 @@
         <module>ruoyi-job</module>
         <module>ruoyi-system</module>
         <module>ruoyi-workflow</module>
+        <!-- 东角山业务模块 -->
+        <module>ruoyi-djs-common</module>
+        <module>ruoyi-djs-breed</module>
+        <module>ruoyi-djs-plant</module>
+        <module>ruoyi-djs-warehouse</module>
+        <module>ruoyi-djs-store</module>
     </modules>
 
     <artifactId>ruoyi-modules</artifactId>
