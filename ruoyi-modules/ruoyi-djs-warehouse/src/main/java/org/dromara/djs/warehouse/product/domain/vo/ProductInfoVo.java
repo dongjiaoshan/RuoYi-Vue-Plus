@@ -136,6 +136,10 @@ public class ProductInfoVo implements Serializable {
     @ExcelDictFormat(dictType = "djs_yes_no")
     private Integer isBuyOut;
 
+    @ExcelProperty(value = "是否原材料外售", converter = ExcelDictConvert.class)
+    @ExcelDictFormat(dictType = "djs_yes_no")
+    private Integer isMaterialSold;
+
     @ExcelProperty(value = "备注")
     private String remark;
 

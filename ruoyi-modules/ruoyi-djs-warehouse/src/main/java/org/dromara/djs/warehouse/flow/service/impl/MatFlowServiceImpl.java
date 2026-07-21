@@ -29,6 +29,7 @@ import org.dromara.djs.plant.crop.domain.CropInfo;
 import org.dromara.djs.plant.crop.mapper.CropInfoMapper;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.domain.ProductInhouse;
+import org.dromara.djs.warehouse.product.domain.vo.MatEstimatedDemandVo;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
 import org.dromara.djs.warehouse.product.mapper.ProductInhouseMapper;
 import org.dromara.djs.warehouse.stock.domain.LocationStock;
@@ -2033,6 +2034,7 @@ public class MatFlowServiceImpl implements IMatFlowService {
                 }
             }
         }
+        backfillEstimatedDemand(items);
         return items;
     }
 
@@ -2059,7 +2061,45 @@ public class MatFlowServiceImpl implements IMatFlowService {
                 }
             }
         }
+        backfillEstimatedDemand(items);
         return items;
+    }
+
+    /**
+     * 回填 mp 生产领用卡「明日预估需求量」（row18）。
+     *
+     * <p>以 items 的 {@code productId}（= 领用卡产品，作原材料）distinct 非空集合，单次批量反查
+     * {@link ProductInfoMapper#selectEstimatedDemandByMaterials} 得每原材料的
+     * Σ（以它为原材料的成品的 明日需求量 × 单份用量），再回填到各 item.estimatedDemand。
+     * 未命中（无配比成品）→ 保持 null，前端卡片「预估需求量」显空。禁 N+1（单次批量查）。</p>
+     */
+    private void backfillEstimatedDemand(List<MatIssueItemVo> items) {
+        if (items == null || items.isEmpty()) {
+            return;
+        }
+        Set<Long> materialIds = new HashSet<>();
+        for (MatIssueItemVo it : items) {
+            if (it.getProductId() != null) {
+                materialIds.add(it.getProductId());
+            }
+        }
+        if (materialIds.isEmpty()) {
+            return;
+        }
+        List<MatEstimatedDemandVo> rows = productInfoMapper.selectEstimatedDemandByMaterials(new ArrayList<>(materialIds));
+        Map<Long, BigDecimal> estimatedByMaterial = new HashMap<>();
+        if (rows != null) {
+            for (MatEstimatedDemandVo row : rows) {
+                if (row.getMaterialId() != null) {
+                    estimatedByMaterial.putIfAbsent(row.getMaterialId(), row.getEstimatedDemand());
+                }
+            }
+        }
+        for (MatIssueItemVo it : items) {
+            if (it.getProductId() != null) {
+                it.setEstimatedDemand(estimatedByMaterial.get(it.getProductId()));
+            }
+        }
     }
 
     @Override

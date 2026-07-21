@@ -199,4 +199,14 @@ public class MatIssueItemVo implements Serializable {
      */
     private BigDecimal remainReturnable;
 
+    /**
+     * mp 生产领用「明日预估需求量」= Σ（以本产品为原材料的成品的 明日需求量 × 单份用量 {@code material_num}）。
+     *
+     * <p>仅 {@code issueItems} / {@code issueItemsByType} 端点经 {@code backfillEstimatedDemand} 批量回填；
+     * 其余端点不回填即 null。material_num 常态多 NULL（仅鸡蛋等配了）→ 该原材料无成品配比 → 无聚合行 →
+     * 本字段 null，前端卡片「预估需求量」显空（非 0）。明日 = {@code CURDATE()+1 天}，汇总全部门店需求
+     * （生产备料非某门店），排除 CANCELLED / DELETED 单。</p>
+     */
+    private BigDecimal estimatedDemand;
+
 }

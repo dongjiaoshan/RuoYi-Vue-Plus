@@ -160,6 +160,12 @@ public class ProductInfo extends TenantEntity {
     private Integer isBuyOut;
 
     /**
+     * 字典 {@code djs_yes_no}：是否原材料外售 1=是 / 0=否。
+     * 为「是」时该生产产品到店后，门店盘点/退回按其关联原材料（{@link #productMaterial}）口径处理。
+     */
+    private Integer isMaterialSold;
+
+    /**
      * 软删标记（'0' 未删 / '1' 已删）。
      */
     @TableLogic

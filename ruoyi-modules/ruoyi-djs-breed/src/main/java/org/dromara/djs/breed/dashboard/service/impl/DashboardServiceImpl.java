@@ -500,6 +500,7 @@ public class DashboardServiceImpl implements IDashboardService {
         BreedingAnnualVo vo = new BreedingAnnualVo();
         vo.setYear(year);
         if (ai == null) {
+            vo.setPsy(BigDecimal.ZERO);
             vo.setMateRate(BigDecimal.ZERO);
             vo.setFarrowRate(BigDecimal.ZERO);
             vo.setWeanMateInterval(BigDecimal.ZERO);
@@ -514,6 +515,8 @@ public class DashboardServiceImpl implements IDashboardService {
         // ②年度繁殖与配种：以年表 t_farm_year_production 落盘值为权威源（甲方口径，取代旧 live 实时算）。
         //   年表率类字段已 ×100（如 55.56），mp 直接拼 "%"。配种率 V1 口径同分娩率（年表仅存 year_farrow_rate）。
         BigDecimal farrowRate = bdZero(ai.getYearFarrowRate());
+        // R72：年度繁殖卡首格由「配种率」改「PSY」，取年表 psy（头/母猪·年）。mateRate 仍保留兼容不再前端展示。
+        vo.setPsy(bdZero(ai.getPsy()));
         vo.setMateRate(farrowRate);
         vo.setFarrowRate(farrowRate);
         vo.setWeanMateInterval(bdZero(ai.getWeanBreedInterval()));
@@ -608,9 +611,12 @@ public class DashboardServiceImpl implements IDashboardService {
 
     @Override
     public FatteningTrendVo getFatteningTrend(String period, String metric, String month) {
-        String m = metric == null ? "market" : metric.toLowerCase();
-        if (!"market".equals(m) && !"target".equals(m) && !"onhand".equals(m)) {
-            m = "market";
+        // R67/68/69：三 tab 的 metric 键对齐 mp 契约（marketing 出栏头数 / marketingTarget 出栏均重 /
+        // liveStock 肥猪进栏）。旧键 market/target/onhand 与 mp 实际发的键不匹配 → 三 tab 全落 default 出栏头数
+        // （折线完全一致，甲方投诉根因）。统一小写后按新键分发，未知键回落出栏头数。
+        String m = metric == null ? METRIC_MARKETING : metric.toLowerCase();
+        if (!METRIC_MARKETING.equals(m) && !METRIC_MARKETING_WEIGHT.equals(m) && !METRIC_WEANED.equals(m)) {
+            m = METRIC_MARKETING;
         }
         String tenantId = currentTenant();
 
@@ -682,8 +688,10 @@ public class DashboardServiceImpl implements IDashboardService {
     }
 
     /**
-     * 单月逐日育肥趋势：labels = 该月每一天的「日」数字（"1".."该月天数"），values 按 metric 取值。
-     * market = 该日出栏头数（无出栏补 0）；target/onhand 沿用 {@link #trendValue} 逻辑（每点同值）。
+     * 单月逐日育肥趋势：labels = 该月每一天的「日」数字，values 按 metric 逐日取日表列值。
+     * R67/68/69：三 tab 分别取 t_farm_indicator_record 的 marketing_pig_count（出栏头数）/
+     * avg_marketing_weight（出栏均重）/ weaned_piglet_count（肥猪进栏），按 stat_date 日号索引，无当日行补 0。
+     * R71：当月只画到今天（不显示未来日期的 0 平线）；历史月画满当月最大日。
      */
     private FatteningTrendVo buildFatteningTrendByDay(String tenantId, String metric, YearMonth ym) {
         FatteningTrendVo vo = new FatteningTrendVo();
@@ -691,23 +699,48 @@ public class DashboardServiceImpl implements IDashboardService {
         vo.setMetric(metric);
 
         int days = ym.lengthOfMonth();
-        // from = 该月 1 日 00:00；to = 次月 1 日 00:00（右开区间）。
-        LocalDateTime from = ym.atDay(1).atStartOfDay();
-        LocalDateTime to = ym.plusMonths(1).atDay(1).atStartOfDay();
-        // countMarketingByDay 返回 [{d:日数字, v:头数}, ...]（label = DAY(marketing_date)）。
-        Map<String, Integer> byDay = toLabelMap(aggregateQueryMapper.countMarketingByDay(tenantId, from, to));
+        // R71：当月截到今天（今天 7/20 → x 轴止于 20，不把未来空数据画成 0 平线）；历史月画满月。
+        if (ym.equals(YearMonth.now())) {
+            days = Math.min(days, LocalDate.now().getDayOfMonth());
+        }
+        // R67/68/69：逐日读日表整行明细（[first, toExclusive) 右开区间），按 stat_date 日号索引。
+        Map<String, FarmIndicatorRecord> byDay = new LinkedHashMap<>();
+        for (FarmIndicatorRecord r : aggregateQueryMapper.selectIndicatorRecordsInRange(
+            tenantId, ym.atDay(1), ym.plusMonths(1).atDay(1))) {
+            if (r.getStatDate() != null) {
+                byDay.put(String.valueOf(r.getStatDate().getDayOfMonth()), r);
+            }
+        }
 
         List<String> labels = new ArrayList<>(days);
         List<BigDecimal> values = new ArrayList<>(days);
         for (int day = 1; day <= days; day++) {
             String label = String.valueOf(day);
             labels.add(label);
-            values.add(trendValue(metric, byDay.getOrDefault(label, 0), tenantId));
+            values.add(dailyTrendValue(metric, byDay.get(label)));
         }
         vo.setLabels(labels);
         vo.setValues(values);
         vo.setLiveStock(buildFatteningLiveStock(tenantId));
         return vo;
+    }
+
+    /**
+     * R67/68/69：逐日趋势按 metric 取日表列值（无当日记录补 0）。
+     * marketing 出栏头数 / marketingTarget 出栏均重 / liveStock 肥猪进栏。
+     */
+    private static BigDecimal dailyTrendValue(String metric, FarmIndicatorRecord r) {
+        if (r == null) {
+            return BigDecimal.ZERO;
+        }
+        return switch (metric) {
+            case METRIC_MARKETING_WEIGHT ->
+                r.getAvgMarketingWeight() == null ? BigDecimal.ZERO : r.getAvgMarketingWeight();
+            case METRIC_WEANED ->
+                r.getWeanedPigletCount() == null ? BigDecimal.ZERO : new BigDecimal(r.getWeanedPigletCount());
+            default ->
+                r.getMarketingPigCount() == null ? BigDecimal.ZERO : new BigDecimal(r.getMarketingPigCount());
+        };
     }
 
     /**
@@ -768,7 +801,7 @@ public class DashboardServiceImpl implements IDashboardService {
         vo.setPreviousMonth(prev.toString());
         List<MonthlyProductionStatVo.StatRow> rows = vo.getRows();
         rows.add(new MonthlyProductionStatVo.StatRow("分娩率", mv(curr, MonthlyProduction::getFarrowRate), mv(prev0, MonthlyProduction::getFarrowRate), "%"));
-        rows.add(new MonthlyProductionStatVo.StatRow("配怀率", mv(curr, MonthlyProduction::getBreedRate), mv(prev0, MonthlyProduction::getBreedRate), "%"));
+        // R73：删除「配怀率」行（窗口伪影常 >100%，甲方要求整行去掉）。
         rows.add(new MonthlyProductionStatVo.StatRow("断配间隔", mv(curr, MonthlyProduction::getWeanBreedInterval), mv(prev0, MonthlyProduction::getWeanBreedInterval), "天"));
         rows.add(new MonthlyProductionStatVo.StatRow("返空流头数", mvInt(curr, MonthlyProduction::getAbnormalCount), mvInt(prev0, MonthlyProduction::getAbnormalCount), "头"));
         rows.add(new MonthlyProductionStatVo.StatRow("平均非生产天数", mv(curr, MonthlyProduction::getNpdDays), mv(prev0, MonthlyProduction::getNpdDays), "天"));
@@ -798,6 +831,11 @@ public class DashboardServiceImpl implements IDashboardService {
 
     /** 育肥出栏目标占位常量（V1，target 趋势用；可后续配置化）。 */
     private static final int FATTENING_TARGET_PER_PERIOD = 100;
+
+    /** R67/68/69 育肥趋势三 tab metric 键（小写，对齐 mp 契约）：出栏头数 / 出栏均重 / 肥猪进栏。 */
+    private static final String METRIC_MARKETING = "marketing";
+    private static final String METRIC_MARKETING_WEIGHT = "marketingtarget";
+    private static final String METRIC_WEANED = "livestock";
 
     /** 比率 = numerator / denominator，4 位小数，denom=0 → 0。 */
     private static BigDecimal ratio(int numerator, int denominator) {

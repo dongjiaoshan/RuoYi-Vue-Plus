@@ -1,18 +1,18 @@
 package org.dromara.djs.common.constant;
 
 /**
- * djs 业务字典类型常量（32 类）。
+ * djs 业务字典类型常量（33 类）。
  *
  * <p>所有业务代码使用本常量引用 {@code sys_dict_type.dict_type} 字符串，
  * 避免 30+ 个下游 ticket 硬编码 "djs_pig_sex" 之类字符串散落。</p>
  *
  * <p>数据源：{@code db/migration} 下各域 dict seed。
- * 若 seed SQL 增删 dict_type，本文件必须同步更新（当前 32 类）。</p>
+ * 若 seed SQL 增删 dict_type，本文件必须同步更新（当前 33 类）。</p>
  *
  * <p>分组：</p>
  * <ul>
  *   <li>A. 系统通用（4 类）</li>
- *   <li>B. 养殖域（18 类）</li>
+ *   <li>B. 养殖域（19 类）</li>
  *   <li>C. 种植域（2 类）</li>
  *   <li>D. 仓库域（5 类）</li>
  *   <li>H. 通用扩展（3 类，含跨域盘点状态）</li>
@@ -43,7 +43,7 @@ public final class DictTypeConstants {
     /** 通用是否：1 是 / 0 否。 */
     public static final String YES_NO = "djs_yes_no";
 
-    // ---------------- B. 养殖域（18 类） ----------------
+    // ---------------- B. 养殖域（19 类） ----------------
 
     /** 猪只性别（DB 列值 M/F，对齐 doc/11 R8）。 */
     public static final String PIG_SEX = "djs_pig_sex";
@@ -98,6 +98,9 @@ public final class DictTypeConstants {
 
     /** 返空流异常类型（BRD-EVENT-002 NULL_RETURN，DB 存 R 返情 / A 流产 / N 空怀，映射状态机 FQ/LC/KH）。 */
     public static final String ABNORMAL = "djs_abnormal";
+
+    /** 默认仔猪重量（DENGBO R64/R65：出生重预填耳标页 / 断奶重预填断奶页，dict_value 存数字 kg，客户可改）。 */
+    public static final String PIGLET_DEFAULT_WEIGHT = "djs_piglet_default_weight";
 
     // ---------------- C. 种植域（2 类） ----------------
 

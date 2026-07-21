@@ -443,9 +443,17 @@ public class ProductProductionServiceImpl
 
         // 履约门店需求（需求 C）——肉品/干货/其他打包均走此口。发送位置=礼盒 → 礼盒组件，不扣门店直接需求；
         // 其余（发货月台）= 直接履约，须选门店 + 打包即扣需求（发货不再扣）。
-        // 扣减量恒 1 份（Kevin 2026-07-14：所有打包提交 1 次 = 恰好 1 份，与重量/material_num 无关，不出小数）。
-        fulfillDirectDemandOnPack(product.getId(), bo.getStoreId(),
-            resolveDemandDeductQty(product, bo.getProductWeight()), bo.getDeliverDest());
+        // 按产品单位分流（Kevin 2026-07-21）：
+        //   · 非 KG（份/盒等）：扣减量恒 1 份（一次打包=1 份，与重量/material_num 无关，不出小数）。
+        //   · KG（散装 kg 等）：称重必须 ≥ 所选门店剩余需求重量，否则拦；满足则把该需求扣满至 COMPLETED
+        //     （客户规则：KG 产品一次称重 ≥ 需求即满足整单，只能重不能少）。
+        if (isKgUnit(product.getProductUnit())) {
+            fulfillKgDemandOnPack(product.getId(), bo.getStoreId(),
+                bo.getProductWeight(), bo.getDeliverDest());
+        } else {
+            fulfillDirectDemandOnPack(product.getId(), bo.getStoreId(),
+                resolveDemandDeductQty(product, bo.getProductWeight()), bo.getDeliverDest());
+        }
 
         log.info("[WMS-PACK-001] dry pack done id={} produceNo={} weight={} unit={} traceCode={}",
             p.getId(), p.getProduceNo(), bo.getProductWeight(), bo.getProductUnit(), p.getTraceCode());
@@ -1454,6 +1462,89 @@ public class ProductProductionServiceImpl
         }
         log.info("[PACK-DEMAND-DEDUCT] 打包即扣需求 demandId={} productId={} storeId={} packQty={} affected={}",
             demand.getId(), productId, storeId, packQty, rows);
+    }
+
+    /**
+     * 产品单位是否为 KG（按重量计的散装产品，如筒子骨散装 kg）。
+     *
+     * <p>不区分大小写（客户明确要求），归一化后匹配 {@code kg} / {@code 公斤}；空 → false（按份数口径处理）。</p>
+     */
+    static boolean isKgUnit(String unit) {
+        if (unit == null) {
+            return false;
+        }
+        String s = unit.trim().toLowerCase();
+        return "kg".equals(s) || "公斤".equals(s);
+    }
+
+    /**
+     * KG 产品打包的门店需求履约（Kevin 2026-07-21）：镜像 {@link #fulfillDirectDemandOnPack} 的分流前置，
+     * 但扣减口径为「称重满足即把该需求扣满完成」而非恒扣 1 份。
+     *
+     * <ul>
+     *   <li>发送位置=礼盒（{@code deliver_dest='gift'}）：礼盒组件不扣直接需求，直接返回。</li>
+     *   <li>{@code storeId} 为空：抛 {@link ServiceException}（须选门店，与 {@link #fulfillDirectDemandOnPack} 一致）。</li>
+     *   <li>其余：调 {@link #deductKgDemandComplete}，称重 {@code weighedKg} &lt; 门店剩余需求重量 → 拦；否则扣满至 COMPLETED。</li>
+     * </ul>
+     *
+     * @param productId  打包目标产品 id（KG 单位）
+     * @param storeId    门店 id（可空）
+     * @param weighedKg  本次称重（肉品前端已 g÷1000 得 kg，与 demand_quantity 同量纲）
+     * @param deliverDest 发送位置
+     */
+    protected void fulfillKgDemandOnPack(Long productId, Long storeId, BigDecimal weighedKg, String deliverDest) {
+        if (DELIVER_DEST_GIFT.equals(deliverDest)) {
+            // 礼盒组件：不绑门店、不扣直接需求（履约在礼盒打包环节）
+            return;
+        }
+        if (storeId == null) {
+            throw new ServiceException("请选择门店");
+        }
+        deductKgDemandComplete(productId, storeId, weighedKg);
+    }
+
+    /**
+     * KG 产品扣满门店需求：取该门店最早未完成需求，称重必须 ≥ 剩余需求重量，满足则一次扣满至 COMPLETED。
+     *
+     * <p>剩余重量 {@code remain = demand_quantity − COALESCE(shipped_count, 0)}。称重 {@code weighedKg} 严格小于
+     * {@code remain} → 抛「重量未满足需求，请处理后再试」（客户规则：KG 产品只能重不能少，等于放行）。满足则以
+     * {@code remain} 累加 {@code shipped_count}，其 DB 端上界守卫（累加 ≤ demand_quantity）恒成立 → 需求扣满 COMPLETED。</p>
+     *
+     * <p>无匹配未完成需求 → log.warn 跳过、<b>不报错</b>（与 {@link #deductDemandOnPack} 一致，保证无 demand 的
+     * 场景/单测不阻塞主链路）。</p>
+     *
+     * @param productId 打包目标产品 id
+     * @param storeId   门店 id（非空）
+     * @param weighedKg 本次称重（kg）
+     */
+    protected void deductKgDemandComplete(Long productId, Long storeId, BigDecimal weighedKg) {
+        if (productId == null || weighedKg == null) {
+            return;
+        }
+        DemandManage demand = demandManageMapper.selectOldestUncompletedDemand(productId, storeId);
+        if (demand == null) {
+            log.warn("[PACK-DEMAND-DEDUCT-KG] KG 打包未匹配到未完成需求，跳过扣减 productId={} storeId={} weighedKg={}",
+                productId, storeId, weighedKg);
+            return;
+        }
+        BigDecimal demandQty = demand.getDemandQuantity() == null ? BigDecimal.ZERO : demand.getDemandQuantity();
+        BigDecimal shipped = demand.getShippedCount() == null ? BigDecimal.ZERO : demand.getShippedCount();
+        BigDecimal remain = demandQty.subtract(shipped);
+        if (remain.signum() <= 0) {
+            // 已满足（并发已扣满）：无需再扣，直接返回。
+            return;
+        }
+        if (weighedKg.compareTo(remain) < 0) {
+            throw new ServiceException("重量未满足需求，请处理后再试");
+        }
+        // 以剩余需求重量扣满：上界守卫（shipped + remain <= demand_quantity）恒成立 → 需求置 COMPLETED。
+        int rows = demandManageMapper.incrementShipped(demand.getId(), TENANT_V1, remain);
+        if (rows == 0) {
+            // 并发履约已把剩余量吃掉（或需求行已删）→ 拒绝本次打包，整事务回滚。
+            throw new ServiceException("需求已被并发履约，请刷新后重试");
+        }
+        log.info("[PACK-DEMAND-DEDUCT-KG] KG 打包扣满需求 demandId={} productId={} storeId={} weighedKg={} remain={} affected={}",
+            demand.getId(), productId, storeId, weighedKg, remain, rows);
     }
 
     /**

@@ -240,7 +240,8 @@ public class WarehouseDashboardServiceImpl implements IWarehouseDashboardService
         new PorkMetric("分割总重", WarehouseIndicatorRecord::getCutBarWeight, false),
         new PorkMetric("分割产品重", WarehouseIndicatorRecord::getCutProductWeight, false),
         new PorkMetric("分割率", WarehouseIndicatorRecord::getCutRate, true),
-        new PorkMetric("分割损耗重", WarehouseIndicatorRecord::getCutLoss, false)
+        // R80：文案「分割损耗重」→「分割损耗」。
+        new PorkMetric("分割损耗", WarehouseIndicatorRecord::getCutLoss, false)
     );
 
     /**
@@ -259,18 +260,32 @@ public class WarehouseDashboardServiceImpl implements IWarehouseDashboardService
             List<String> daily = new ArrayList<>();
             BigDecimal sum = BigDecimal.ZERO;
             boolean hasAny = false;
+            // R80：率/均值类累计分母 = 有数据（值 >0）天数，无活动天（0/空）不摊薄均值。
+            int dataDays = 0;
             for (LocalDate d : dates) {
                 WarehouseIndicatorRecord r = byDate.get(d);
                 Object raw = r == null ? null : m.getter().apply(r);
-                daily.add(fmtCell(raw));
+                // R81：率/均值类当日空值兜底显示 0.00（前端 withPct 再补 %），非率类保持原样（空/数值）。
+                daily.add(m.rateOrAvg() && raw == null ? "0.00" : fmtCell(raw));
                 if (raw instanceof Number n) {
-                    sum = sum.add(new BigDecimal(n.toString()));
+                    BigDecimal bd = new BigDecimal(n.toString());
+                    sum = sum.add(bd);
                     hasAny = true;
+                    if (bd.signum() > 0) {
+                        dataDays++;
+                    }
                 }
             }
             row.setDailyValues(daily);
-            // 率 / 均值类不汇总（累计无意义），整数 / 重量类汇总
-            row.setTotal(m.rateOrAvg() || !hasAny ? "" : fmtCell(sum));
+            if (m.rateOrAvg()) {
+                // R80：率/均值类累计 = 每日之和 / 有数据天数（原为留空）；无数据 → 0.00 兜底（对齐 R81 空值口径）。
+                row.setTotal(dataDays > 0
+                    ? fmtCell(sum.divide(new BigDecimal(dataDays), 2, RoundingMode.HALF_UP))
+                    : "0.00");
+            } else {
+                // 整数 / 重量类累计 = 逐日之和；全月无数据留空。
+                row.setTotal(hasAny ? fmtCell(sum) : "");
+            }
             rows.add(row);
         }
         return rows;

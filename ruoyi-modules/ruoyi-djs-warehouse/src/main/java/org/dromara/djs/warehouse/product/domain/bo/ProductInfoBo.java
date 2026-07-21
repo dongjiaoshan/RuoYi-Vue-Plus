@@ -166,6 +166,11 @@ public class ProductInfoBo extends BaseEntity {
     private Integer isBuyOut;
 
     /**
+     * 字典 {@code djs_yes_no}：是否原材料外售 1/0（不传默认 0）。
+     */
+    private Integer isMaterialSold;
+
+    /**
      * 备注。
      */
     @Size(max = 500, message = "{product.remark.size}")

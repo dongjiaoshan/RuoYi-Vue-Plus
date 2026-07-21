@@ -50,6 +50,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 /**
  * 门店经营流水盘点台账 Service 实现（STORE-LEDGER-001 / WSA 阶段1 重构）。
@@ -164,6 +165,11 @@ public class StoreDailyLedgerServiceImpl implements IStoreDailyLedgerService {
 
         // 四类候选并集（保留首次命中类别；inbound 与 stock 合并时 category=stock，inbound 量后面补）。
         List<Long> porkIds = resolvePorkReturnProductIds();
+        // DENGBO 原材料外售：猪肉成品若配置「是否原材料外售=是」且有原材料，盘点候选改列其原材料产品，
+        // 各指标按原材料维度聚合（多成品指向同一原材料合并成一行，见 foldByEffective）。
+        Map<Long, Long> porkSwap = resolveMaterialSoldSwap(porkIds);
+        List<Long> effectivePorkIds = porkIds.stream()
+            .map(id -> porkSwap.getOrDefault(id, id)).distinct().collect(Collectors.toList());
         // DENGBO-R12：白条产品（字典 djs_white_bar_return_product 配置产品），仅当日有白条到店时列出；
         // 按重量盘点、单位取对应原材料单位、入库量手动可编辑（客户自配字典，空则无白条产品行）。
         List<ProductInfo> whiteBarProducts = hasWhiteBarArrivedOnDate(storeId, date)
@@ -171,15 +177,16 @@ public class StoreDailyLedgerServiceImpl implements IStoreDailyLedgerService {
         Set<Long> whiteBarIds = whiteBarProducts.stream().map(ProductInfo::getId)
             .collect(Collectors.toCollection(LinkedHashSet::new));
         Map<Long, String> whiteBarMaterialUnits = resolveMaterialUnits(whiteBarProducts);
-        // 猪肉 TAB 归属集 = 猪肉成品字典 ∪ 白条产品字典（belong_type=pork 在 resolveBelongTab 里另判）。
-        Set<Long> porkTabIdSet = new LinkedHashSet<>(porkIds);
+        // 猪肉 TAB 归属集 = 猪肉成品(已 swap 原材料)字典 ∪ 白条产品字典（belong_type=pork 在 resolveBelongTab 里另判）。
+        Set<Long> porkTabIdSet = new LinkedHashSet<>(effectivePorkIds);
         porkTabIdSet.addAll(whiteBarIds);
-        Map<Long, BigDecimal> inboundMap = selectStoreShippedProducts(storeId, date);    // 新到货：productId → 当日到店份数（需求量 demand_quantity，排 white_bar）
-        Map<Long, BigDecimal> stockMap = selectPositiveStockByProduct(storeId);          // 昨日库存：productId → 结存（>0）
+        // 新到货 / 昨日库存：成品维度记录 foldByEffective 折叠到原材料 key（swap 空则原样）。
+        Map<Long, BigDecimal> inboundMap = foldByEffective(selectStoreShippedProducts(storeId, date), porkSwap);    // 新到货：productId → 当日到店份数（需求量 demand_quantity，排 white_bar）
+        Map<Long, BigDecimal> stockMap = foldByEffective(selectPositiveStockByProduct(storeId), porkSwap);          // 昨日库存：productId → 结存（>0）
 
         // 类别归属：优先级 pork > white_bar > stock > inbound（库存优先于新到货以保留期初）。
         Map<Long, String> categoryByProduct = new LinkedHashMap<>();
-        for (Long pid : porkIds) {
+        for (Long pid : effectivePorkIds) {
             categoryByProduct.put(pid, CATEGORY_PORK);
         }
         for (Long pid : whiteBarIds) {
@@ -203,9 +210,12 @@ public class StoreDailyLedgerServiceImpl implements IStoreDailyLedgerService {
             .stream().collect(Collectors.toMap(ProductInfo::getId, p -> p, (a, b) -> a));
 
         // 预填：销售量 / 退货量(顾客) / 退回量(门店退仓库) 当日聚合 + 期初(库存结存)。
-        Map<Long, BigDecimal> saleMap = sumSaleByProduct(storeId, date, productIds);
-        Map<Long, BigDecimal> returnSaleMap = sumReturnByProduct(storeId, date, productIds, DIRECTION_CUSTOMER_TO_STORE);
-        Map<Long, BigDecimal> returnWhMap = sumReturnByProduct(storeId, date, productIds, DIRECTION_STORE_TO_WAREHOUSE);
+        // 指标查询扩集 = 展示产品 ∪ 被 swap 的成品 id，查完 foldByEffective 折叠——成品 id 下的历史记录也归并到原材料行。
+        List<Long> metricIds = Stream.concat(productIds.stream(), porkSwap.keySet().stream())
+            .distinct().collect(Collectors.toList());
+        Map<Long, BigDecimal> saleMap = foldByEffective(sumSaleByProduct(storeId, date, metricIds), porkSwap);
+        Map<Long, BigDecimal> returnSaleMap = foldByEffective(sumReturnByProduct(storeId, date, metricIds, DIRECTION_CUSTOMER_TO_STORE), porkSwap);
+        Map<Long, BigDecimal> returnWhMap = foldByEffective(sumReturnByProduct(storeId, date, metricIds, DIRECTION_STORE_TO_WAREHOUSE), porkSwap);
 
         List<StoreDailyLedgerCandidateVo> result = new ArrayList<>();
         for (Long pid : productIds) {
@@ -371,6 +381,39 @@ public class StoreDailyLedgerServiceImpl implements IStoreDailyLedgerService {
 
     private static BigDecimal nz(BigDecimal v) {
         return v == null ? BigDecimal.ZERO : v;
+    }
+
+    /**
+     * 猪肉成品 → 原材料 的 swap 映射（DENGBO 原材料外售）。
+     *
+     * <p>取 {@code finishedIds} 中「是否原材料外售=是」({@code is_material_sold=1}) 且配了原材料
+     * ({@code product_material≠null}) 的成品，映射到其原材料 id。盘点候选据此把成品替换为原材料展示。
+     * 无命中 → 空 map（调用方 getOrDefault 退回原 id，行为不变）。</p>
+     */
+    private Map<Long, Long> resolveMaterialSoldSwap(List<Long> finishedIds) {
+        if (finishedIds == null || finishedIds.isEmpty()) {
+            return Map.of();
+        }
+        return productInfoMapper.selectList(new LambdaQueryWrapper<ProductInfo>()
+                .in(ProductInfo::getId, finishedIds)
+                .eq(ProductInfo::getIsMaterialSold, 1)
+                .isNotNull(ProductInfo::getProductMaterial)
+                .select(ProductInfo::getId, ProductInfo::getProductMaterial))
+            .stream()
+            .collect(Collectors.toMap(ProductInfo::getId, ProductInfo::getProductMaterial, (a, b) -> a));
+    }
+
+    /**
+     * 按 swap 折叠指标 map：成品 key 的数值累加进其原材料 key（多成品指向同一原材料则 SUM 合并）。
+     * swap 空则原样返回（无原材料外售场景零影响）。
+     */
+    private static Map<Long, BigDecimal> foldByEffective(Map<Long, BigDecimal> src, Map<Long, Long> swap) {
+        if (swap == null || swap.isEmpty() || src == null || src.isEmpty()) {
+            return src;
+        }
+        Map<Long, BigDecimal> out = new LinkedHashMap<>();
+        src.forEach((k, v) -> out.merge(swap.getOrDefault(k, k), nz(v), BigDecimal::add));
+        return out;
     }
 
     /**

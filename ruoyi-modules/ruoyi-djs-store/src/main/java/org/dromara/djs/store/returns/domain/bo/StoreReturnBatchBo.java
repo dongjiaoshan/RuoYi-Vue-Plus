@@ -44,15 +44,17 @@ public class StoreReturnBatchBo {
         @NotNull(message = "产品不能为空")
         private Long productId;
 
-        /** 退回重量(kg)（原型「退回产品重量(KG)」，落 goods_weight）。 */
-        @NotNull(message = "退回重量不能为空")
-        @Positive(message = "退回重量必须大于 0")
+        /**
+         * 退回产品重量(kg)（落 goods_weight）。流程性问题 row15：不再单列录入，由前端按单位派生——
+         * 产品单位为 kg → 取退回量的值；产品单位非 kg → 默认 0。故此处放开为可空/可 0。
+         */
         private BigDecimal returnWeight;
 
         /**
-         * 退回量（果蔬份数/把/盒，落 return_quantity）。果蔬行必填、猪肉行可空——
-         * 猪肉行只录重量，service 兜底用 returnWeight 回退。
+         * 退回量（按产品单位：kg 产品为重量、非 kg 产品为份数/把/盒，落 return_quantity）。
+         * 流程性问题 row15 起为唯一录入项，必填。
          */
+        @NotNull(message = "退回量不能为空")
         @Positive(message = "退回量必须大于 0")
         private BigDecimal returnQuantity;
 

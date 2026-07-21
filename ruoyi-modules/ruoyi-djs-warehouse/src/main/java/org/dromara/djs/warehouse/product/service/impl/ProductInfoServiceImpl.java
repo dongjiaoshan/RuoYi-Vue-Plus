@@ -322,7 +322,7 @@ public class ProductInfoServiceImpl extends DjsBaseServiceImpl<ProductInfoMapper
     }
 
     /**
-     * 插入前默认值兜底：productStatus 默认 0（正常）；isDelivery 默认 1；isBuyOut 默认 0。
+     * 插入前默认值兜底：productStatus 默认 0（正常）；isDelivery 默认 1；isBuyOut 默认 0；isMaterialSold 默认 0。
      */
     private void applyDefaultsBeforeInsert(ProductInfo entity) {
         if (entity.getProductStatus() == null) {
@@ -333,6 +333,9 @@ public class ProductInfoServiceImpl extends DjsBaseServiceImpl<ProductInfoMapper
         }
         if (entity.getIsBuyOut() == null) {
             entity.setIsBuyOut(0);
+        }
+        if (entity.getIsMaterialSold() == null) {
+            entity.setIsMaterialSold(0);
         }
     }
 

@@ -328,7 +328,8 @@ public class StoreReturnServiceImpl
                 dictReturnedAccum = dictReturnedAccum.add(rw);
             } else {
                 // 其余生产产品：退回重量 ≤ 当日送达该店该产品的总重量（逐产品封顶，现状回退）。
-                validateReturnWithinDelivered(bo.getStoreId(), item.getProductId(), today, item.getReturnWeight(), product.getProductName());
+                // row15：非 kg 产品前端派生 rw=0 → 该重量封顶自动放行（口径变更已在报告标注）。
+                validateReturnWithinDelivered(bo.getStoreId(), item.getProductId(), today, rw, product.getProductName());
             }
 
             StoreReturn entity = new StoreReturn();
@@ -337,9 +338,9 @@ public class StoreReturnServiceImpl
             entity.setReturnDirection(DIRECTION_STORE_TO_WAREHOUSE);
             entity.setStoreId(bo.getStoreId());
             entity.setProductId(item.getProductId());
-            // 退回重量(KG) 始终落 goods_weight；退回量（果蔬份数/把/盒）落 return_quantity，
-            // 猪肉行无 returnQuantity 时回退 returnWeight（按重量计量，保留旧行为）。
-            entity.setGoodsWeight(item.getReturnWeight());
+            // 退回产品重量(kg) 落 goods_weight（row15：kg 产品=退回量派生、非 kg=0，null 兜底 0）；
+            // 退回量按产品单位落 return_quantity。
+            entity.setGoodsWeight(rw);
             entity.setReturnQuantity(returnMetric);
             entity.setTraceCode(item.getTraceCode());
             entity.setReturnDate(LocalDateTime.now());
@@ -368,7 +369,15 @@ public class StoreReturnServiceImpl
         LinkedHashSet<Long> seen = new LinkedHashSet<>();
 
         for (ProductInfo finished : resolveArrivedPorkFinishedProducts(storeId, today)) {
-            if (seen.add(finished.getId())) {
+            // DENGBO 原材料外售：成品若配置「是否原材料外售=是」且有原材料，候选改列其原材料产品
+            // （name/单位取原材料，一般 kg → 按重量退货）；多成品共享同一原材料时 seen 去重成一行。
+            Integer sold = finished.getIsMaterialSold();
+            if (sold != null && sold == 1 && finished.getProductMaterial() != null) {
+                ProductInfo material = productInfoMapper.selectById(finished.getProductMaterial());
+                if (material != null && seen.add(material.getId())) {
+                    result.add(buildPorkCandidate(material, SUB_CAT_PORK, material.getProductUnit()));
+                }
+            } else if (seen.add(finished.getId())) {
                 result.add(buildPorkCandidate(finished, SUB_CAT_PORK, finished.getProductUnit()));
             }
         }
@@ -783,7 +792,8 @@ public class StoreReturnServiceImpl
             .filter(Objects::nonNull).distinct().toList();
         Map<Long, ProductInfo> productMap = productIds.isEmpty() ? Map.of()
             : productInfoMapper.selectList(new LambdaQueryWrapper<ProductInfo>()
-                    .select(ProductInfo::getId, ProductInfo::getProductName, ProductInfo::getBelongType)
+                    .select(ProductInfo::getId, ProductInfo::getProductName, ProductInfo::getBelongType,
+                        ProductInfo::getProductUnit)
                     .in(ProductInfo::getId, productIds))
                 .stream().collect(Collectors.toMap(ProductInfo::getId, p -> p, (a, b) -> a));
         boolean received = STATUS_RECEIVED.equals(storeStatus);
@@ -797,6 +807,7 @@ public class StoreReturnServiceImpl
             ProductInfo p = r.getProductId() == null ? null : productMap.get(r.getProductId());
             vo.setProductName(p == null ? null : p.getProductName());
             vo.setProductCategory(p == null ? null : p.getBelongType());
+            vo.setProductUnit(p == null ? null : p.getProductUnit());
             vo.setReturnQuantity(r.getReturnQuantity());
             vo.setReturnWeight(r.getGoodsWeight());
             vo.setConfirmWeight(r.getReceivedWeight());

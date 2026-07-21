@@ -30,6 +30,9 @@ snail-job:
 
 --- # 数据源配置
 spring:
+  # Flyway 跟随 primary 数据源：连本地=true（迁移本地库）/ 连 staging=false（别动线上库）
+  flyway:
+    enabled: true        # ← primary: master 时改 true / primary: staging 时保持 false
   datasource:
     type: com.zaxxer.hikari.HikariDataSource
     # 动态数据源文档 https://www.kancloud.cn/tracy5546/dynamic-datasource/content
@@ -37,19 +40,27 @@ spring:
       # 性能分析插件(有性能损耗 不建议生产环境使用)
       p6spy: true
       # 设置默认的数据源或者数据源组,默认值即为 master
-      primary: master
+      # ★★ 切换数据库就改这一个词：master = 本地 dev 库 / staging = 线上 RDS ★★
+      primary: staging
       # 严格模式 匹配不到数据源则报错
       strict: true
       datasource:
         # 主库数据源
+        # 本地 dev 库（docker dev-mysql）
         master:
           type: ${spring.datasource.type}
           driverClassName: com.mysql.cj.jdbc.Driver
-          # jdbc 所有参数配置参考 https://lionli.blog.csdn.net/article/details/122018562
-          # rewriteBatchedStatements=true 批处理优化 大幅提升批量插入更新删除性能(对数据库有性能损耗 使用批量操作应考虑性能问题)
           url: jdbc:mysql://localhost:3306/ry-vue?useUnicode=true&characterEncoding=utf8&zeroDateTimeBehavior=convertToNull&useSSL=true&serverTimezone=GMT%2B8&autoReconnect=true&rewriteBatchedStatements=true&allowPublicKeyRetrieval=true&nullCatalogMeansCurrent=true
           username: root
           password: root
+        # 线上 staging RDS（lazy：非 primary 时不连接，避免没连 staging 时启动报错）
+        staging:
+          lazy: true
+          type: ${spring.datasource.type}
+          driverClassName: com.mysql.cj.jdbc.Driver
+          url: jdbc:mysql://rm-bp11hpm242954e99s9o.mysql.rds.aliyuncs.com:3306/dongjiaoshan?useUnicode=true&characterEncoding=utf8&zeroDateTimeBehavior=convertToNull&useSSL=false&serverTimezone=Asia/Shanghai&autoReconnect=true&rewriteBatchedStatements=true&allowPublicKeyRetrieval=true&nullCatalogMeansCurrent=true
+          username: djs_app
+          password: DONGjiaoshan2016
 #        # 从库数据源
 #        slave:
 #          lazy: true
