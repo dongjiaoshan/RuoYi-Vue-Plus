@@ -85,6 +85,8 @@ public class StoreDemandServiceImpl implements IStoreDemandService {
     private static final String BELONG_VEGETABLE = "vegetable";
     private static final String BELONG_PORK = "pork";
     private static final String BELONG_WHITE_BAR = "white_bar";
+    private static final String BELONG_GIFT_BOX = "gift_box";
+    private static final String BELONG_DRY_GOOD = "dry_good";
 
     @Override
     public TableDataInfo<DemandManageVo> queryStoreList(DemandManageQuery query, PageQuery pageQuery) {
@@ -137,8 +139,16 @@ public class StoreDemandServiceImpl implements IStoreDemandService {
                 if (w != null && w.signum() > 0) {
                     vo.setExpectedWeight(w);
                 }
+            } else if (BELONG_GIFT_BOX.equals(belong) || BELONG_DRY_GOOD.equals(belong)) {
+                // row33：礼盒 / 干货预计到店重量按「已发货实际重量之和」（kg）。礼盒 / 干货是自带真实
+                // product_weight 的独立成品（如 干羊肚菌礼盒80g/份→0.08~0.10kg），生产时称重 → 已发货后
+                // 按实际称重回填，与白条/果蔬同口径。鸡蛋按枚数计（非重量），不含在内、保持 '—'。
+                BigDecimal w = productProductionMapper.sumShippedGiftWeightByDemand(vo.getId());
+                if (w != null && w.signum() > 0) {
+                    vo.setExpectedWeight(w);
+                }
             }
-            // 其余 belong（egg / dry_good / gift_box / 外购商品 / null）→ 不回填，前端 '—'
+            // 其余 belong（egg 按枚数 / 外购商品 / null）→ 不回填，前端 '—'
         }
     }
 

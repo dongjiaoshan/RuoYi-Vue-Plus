@@ -76,7 +76,9 @@ public interface ProductInfoMapper extends BaseMapperPlus<ProductInfo, ProductIn
      *
      * <p>明日 = {@code DATE_ADD(CURDATE(), INTERVAL 1 DAY)}（{@code demand_date} 是 DATE 列直接等值走索引）；
      * 汇总全部门店需求（生产备料非某门店，不加 store_id 过滤）；排除 CANCELLED / DELETED 单。
-     * 成品未配 material_num 的（{@code material_num IS NULL}）不计入 → 某材料无任何配比成品则无行返回
+     * <b>kg 兜底（与 {@code DemandManageMapper.materialCalcQty} 同口径）：成品单位为 kg（含公斤）时按 1:1 kg
+     * 计入（乘数 = 1，不依赖 material_num）；非 kg 成品仍按 material_num 配比。</b>
+     * 非 kg 且未配 material_num 的成品不计入；某材料无任何有明日需求的配比/kg 成品则无行返回
      * → service 回填 null → 前端卡片「预估需求量」显空。租户单租户显式 {@code tenant_id='1001'}（V1）。</p>
      *
      * @param materialIds 原材料产品 id 列表（= 领用卡的 productId 集合，distinct 非空）
@@ -85,7 +87,9 @@ public interface ProductInfoMapper extends BaseMapperPlus<ProductInfo, ProductIn
     @Select("""
         <script>
         SELECT p.product_material AS materialId,
-               SUM(dm.demand_quantity * p.material_num) AS estimatedDemand
+               SUM(dm.demand_quantity *
+                   CASE WHEN LOWER(TRIM(p.product_unit)) IN ('kg','公斤') THEN 1
+                        ELSE p.material_num END) AS estimatedDemand
           FROM t_warehouse_product_info p
           JOIN t_warehouse_demand_manage dm
             ON dm.product_id = p.id
@@ -94,7 +98,7 @@ public interface ProductInfoMapper extends BaseMapperPlus<ProductInfo, ProductIn
            AND dm.del_flag = '0'
            AND dm.tenant_id = '1001'
          WHERE p.product_attr = 1
-           AND p.material_num IS NOT NULL
+           AND (p.material_num IS NOT NULL OR LOWER(TRIM(p.product_unit)) IN ('kg','公斤'))
            AND p.del_flag = '0'
            AND p.tenant_id = '1001'
            AND p.product_material IN

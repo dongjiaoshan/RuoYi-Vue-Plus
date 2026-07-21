@@ -397,7 +397,15 @@ public class ProductProductionServiceImpl
 
         ProductInhouse src = requireActiveInhouse(bo.getSourceInhouseId());
         ProductInfo product = requireDeliveryProduct(bo.getProductId());
-        requireInhouseEnough(src, bo.getProductWeight());
+        // row32：肉品打包(有耳号)库存判定按「同原材料(product_id)+同耳号」今日领用来源池**总重量**，
+        // 而非单条领用行余量——分多次领用=多条 inhouse 行(单条最大3kg但总领8kg),打包3001g按池总重放行、FIFO 跨行扣减。
+        // 无耳号(干货/其他 dry 打包)保持单条口径,零影响。
+        List<ProductInhouse> srcPool = src.getEarNo() != null ? resolveMeatSourcePool(src) : null;
+        if (srcPool != null) {
+            requirePoolEnough(srcPool, bo.getProductWeight());
+        } else {
+            requireInhouseEnough(src, bo.getProductWeight());
+        }
         // 入库库位（前端收银台不采集，可空 → 默认取产品配置库位/首个可用库位兜底）
         Long locationId = resolveLocationId(bo.getLocationId(), product);
         // D-2：目标库位盘点锁定中 → 拒绝入库
@@ -430,7 +438,12 @@ public class ProductProductionServiceImpl
         baseMapper.insert(p);
 
         // row42：生产产品不入库（直送发货月台，不进 location_stock / 不写入库流水）。
-        consumeInhouse(src, bo.getProductWeight());
+        // row32：有耳号肉品按来源池 FIFO 跨行扣减总重；无耳号维持单条扣减。
+        if (srcPool != null) {
+            consumePoolFifo(srcPool, bo.getProductWeight());
+        } else {
+            consumeInhouse(src, bo.getProductWeight());
+        }
 
         // 肉品打包原材料库存校验 + 扣减（猪肉全闭环 Part I P8）：
         // 仅 belong_type=pork 且目标产品配了 product_material（关联原材料）时校验，
@@ -1332,6 +1345,65 @@ public class ProductProductionServiceImpl
         }
         int affected = productInhouseMapper.deductWeightById(src.getId(), consumeWeight);
         if (affected == 0) {
+            throw new ServiceException("来源待打包库存不足或已被占用，请刷新后重试");
+        }
+    }
+
+    /**
+     * row32：肉品打包来源池 = 同 (product_id, ear_no) 的今日仓库分割产 inhouse（与 {@link #listSourceForMeat}
+     * 同过滤：source=warehouse、material_id 非空、product_weight&gt;0、DATE(produce_date)=CURDATE()），FIFO 排序
+     * （produce_date、id 升序）。分多次领用同耳号 = 多条行；库存判定/扣减按池总重而非单条。空 → 兜底含 src 自身。
+     */
+    private List<ProductInhouse> resolveMeatSourcePool(ProductInhouse src) {
+        LambdaQueryWrapper<ProductInhouse> w = new LambdaQueryWrapper<ProductInhouse>()
+            .eq(ProductInhouse::getProductId, src.getProductId())
+            .eq(ProductInhouse::getEarNo, src.getEarNo())
+            .eq(ProductInhouse::getSource, SOURCE_WAREHOUSE)
+            .isNotNull(ProductInhouse::getMaterialId)
+            .gt(ProductInhouse::getProductWeight, BigDecimal.ZERO)
+            .apply("DATE(produce_date) = CURDATE()")
+            .orderByAsc(ProductInhouse::getProduceDate)
+            .orderByAsc(ProductInhouse::getId);
+        List<ProductInhouse> pool = productInhouseMapper.selectList(w);
+        return pool.isEmpty() ? List.of(src) : pool;
+    }
+
+    /** row32：来源池总余量 ≥ 本次打包实重，否则抛（口径：同耳号原材料领用总重，而非单行最大）。 */
+    private void requirePoolEnough(List<ProductInhouse> pool, BigDecimal packWeight) {
+        if (packWeight == null) {
+            return;
+        }
+        BigDecimal total = pool.stream()
+            .map(x -> x.getProductWeight() == null ? BigDecimal.ZERO : x.getProductWeight())
+            .reduce(BigDecimal.ZERO, BigDecimal::add);
+        if (total.compareTo(packWeight) < 0) {
+            throw new ServiceException("来源待打包库存不足：当前 " + total.stripTrailingZeros().toPlainString()
+                + "，本次打包 " + packWeight.stripTrailingZeros().toPlainString());
+        }
+    }
+
+    /** row32：按 FIFO 从来源池逐行扣减本次打包实重（复用 {@link #consumeInhouse} 单行部分扣/整行软删 + 行锁）。 */
+    private void consumePoolFifo(List<ProductInhouse> pool, BigDecimal packWeight) {
+        if (packWeight == null || packWeight.signum() <= 0) {
+            if (!pool.isEmpty()) {
+                productInhouseMapper.deleteById(pool.get(0).getId());
+            }
+            return;
+        }
+        BigDecimal remain = packWeight;
+        for (ProductInhouse row : pool) {
+            if (remain.signum() <= 0) {
+                break;
+            }
+            BigDecimal avail = row.getProductWeight() == null ? BigDecimal.ZERO : row.getProductWeight();
+            if (avail.signum() <= 0) {
+                continue;
+            }
+            BigDecimal take = avail.min(remain);
+            consumeInhouse(row, take);
+            remain = remain.subtract(take);
+        }
+        if (remain.signum() > 0) {
             throw new ServiceException("来源待打包库存不足或已被占用，请刷新后重试");
         }
     }

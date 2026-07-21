@@ -165,9 +165,15 @@ public class StoreDailyLedgerServiceImpl implements IStoreDailyLedgerService {
 
         // 四类候选并集（保留首次命中类别；inbound 与 stock 合并时 category=stock，inbound 量后面补）。
         List<Long> porkIds = resolvePorkReturnProductIds();
-        // DENGBO 原材料外售：猪肉成品若配置「是否原材料外售=是」且有原材料，盘点候选改列其原材料产品，
-        // 各指标按原材料维度聚合（多成品指向同一原材料合并成一行，见 foldByEffective）。
-        Map<Long, Long> porkSwap = resolveMaterialSoldSwap(porkIds);
+        // row27/29：原材料外售 swap 域从「猪肉字典」扩到**全部候选产品**（字典 ∪ 当日到货 ∪ 昨日库存）——凡
+        // 配置「是否原材料外售=是」且有原材料的产品（含以成品自身 id 到店/在库的材料外售成品，如「黑毛猪筒子骨500g/份」），
+        // 盘点候选一律改列其原材料产品、按原材料 id 合并成一行（不区分来源），各指标按原材料维度 foldByEffective 聚合。
+        Map<Long, BigDecimal> deliveredRaw = selectStoreShippedProducts(storeId, date);
+        Map<Long, BigDecimal> stockRaw = selectPositiveStockByProduct(storeId);
+        Set<Long> swapDomain = new LinkedHashSet<>(porkIds);
+        swapDomain.addAll(deliveredRaw.keySet());
+        swapDomain.addAll(stockRaw.keySet());
+        Map<Long, Long> porkSwap = resolveMaterialSoldSwap(new ArrayList<>(swapDomain));
         List<Long> effectivePorkIds = porkIds.stream()
             .map(id -> porkSwap.getOrDefault(id, id)).distinct().collect(Collectors.toList());
         // DENGBO-R12：白条产品（字典 djs_white_bar_return_product 配置产品），仅当日有白条到店时列出；
@@ -181,8 +187,11 @@ public class StoreDailyLedgerServiceImpl implements IStoreDailyLedgerService {
         Set<Long> porkTabIdSet = new LinkedHashSet<>(effectivePorkIds);
         porkTabIdSet.addAll(whiteBarIds);
         // 新到货 / 昨日库存：成品维度记录 foldByEffective 折叠到原材料 key（swap 空则原样）。
-        Map<Long, BigDecimal> inboundMap = foldByEffective(selectStoreShippedProducts(storeId, date), porkSwap);    // 新到货：productId → 当日到店份数（需求量 demand_quantity，排 white_bar）
-        Map<Long, BigDecimal> stockMap = foldByEffective(selectPositiveStockByProduct(storeId), porkSwap);          // 昨日库存：productId → 结存（>0）
+        Map<Long, BigDecimal> inboundMap = foldByEffective(deliveredRaw, porkSwap);    // 新到货：productId → 当日到店份数（需求量 demand_quantity，排 white_bar）
+        Map<Long, BigDecimal> stockMap = foldByEffective(stockRaw, porkSwap);          // 昨日库存：productId → 结存（>0）
+        // row29：材料外售成品折进原材料行后，「当日入库」默认取其发货**实际重量**(kg，盘点按原材料按重盘)，
+        // 而非份数——用户可在此基础上更正为白条分割成原材料的实际重量。materialId → Σ材料外售成品发货 product_weight。
+        Map<Long, BigDecimal> materialSoldInboundWeight = resolveMaterialSoldInboundWeight(storeId, date, porkSwap);
 
         // 类别归属：优先级 pork > white_bar > stock > inbound（库存优先于新到货以保留期初）。
         Map<Long, String> categoryByProduct = new LinkedHashMap<>();
@@ -229,7 +238,9 @@ public class StoreDailyLedgerServiceImpl implements IStoreDailyLedgerService {
             boolean whiteBar = CATEGORY_WHITE_BAR.equals(category);
             // 猪肉成品 + 白条产品入库量手动可编辑（DENGBO-R12：白条产品入库量用户录入，有上限）；新到货 / 库存只读。
             boolean editableInbound = CATEGORY_PORK.equals(category) || whiteBar;
-            BigDecimal inbound = nz(inboundMap.get(pid));   // 新到货发货量（pork/白条/stock 行也可能恰有发货，预填为参考）
+            // row29：材料外售折进的原材料行，当日入库默认取材料外售成品发货实际重量(kg)；否则取新到货份数。
+            BigDecimal inbound = materialSoldInboundWeight.containsKey(pid)
+                ? materialSoldInboundWeight.get(pid) : nz(inboundMap.get(pid));
 
             StoreDailyLedgerCandidateVo vo = new StoreDailyLedgerCandidateVo();
             vo.setProductId(pid);
@@ -390,6 +401,25 @@ public class StoreDailyLedgerServiceImpl implements IStoreDailyLedgerService {
      * ({@code product_material≠null}) 的成品，映射到其原材料 id。盘点候选据此把成品替换为原材料展示。
      * 无命中 → 空 map（调用方 getOrDefault 退回原 id，行为不变）。</p>
      */
+    /**
+     * row29：材料外售成品折进原材料行后，「当日入库」默认取该原材料对应材料外售成品的**发货实际重量**（kg）。
+     * = 对每个被 swap 的材料外售成品 finishedId，取当日发往该店实际称重 {@code product_weight}，按 materialId 累加。
+     * swap 键通常寥寥（当日到店的材料外售成品数），逐个查 {@link ProductProductionMapper#sumDeliveredWeightToStore}。
+     */
+    private Map<Long, BigDecimal> resolveMaterialSoldInboundWeight(Long storeId, LocalDate date, Map<Long, Long> swap) {
+        Map<Long, BigDecimal> out = new LinkedHashMap<>();
+        if (swap == null || swap.isEmpty()) {
+            return out;
+        }
+        swap.forEach((finishedId, materialId) -> {
+            BigDecimal w = productProductionMapper.sumDeliveredWeightToStore(storeId, finishedId, date);
+            if (w != null && w.signum() > 0) {
+                out.merge(materialId, w, BigDecimal::add);
+            }
+        });
+        return out;
+    }
+
     private Map<Long, Long> resolveMaterialSoldSwap(List<Long> finishedIds) {
         if (finishedIds == null || finishedIds.isEmpty()) {
             return Map.of();

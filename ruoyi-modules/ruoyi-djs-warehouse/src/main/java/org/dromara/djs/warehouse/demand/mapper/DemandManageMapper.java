@@ -381,8 +381,11 @@ public interface DemandManageMapper extends BaseMapperPlus<DemandManage, DemandM
      * {@code pm.product_name}（原材料名称）+ {@code pm.product_unit}（原材料单位）。
      * 兼容别名：{@code rawMaterial}=原材料名称、{@code materialQty}=原材料计算量（前端旧列绑定）。
      * <b>原材料计算量 = 需求量 × 单份用量</b>（{@code pi.material_num}，产品配置「原材料计算量」/单份用量，
-     * 主要鸡蛋按枚数配比）：{@code SUM(dm.demand_quantity) * MAX(pi.material_num)}。产品未配 material_num
-     * （果蔬 / 猪肉当前多为 NULL）时计算量为 NULL（前端显空，不误显 0）；未配 product_material 时原材料名/单位为 NULL。
+     * 主要鸡蛋按枚数配比）：{@code SUM(dm.demand_quantity) * MAX(pi.material_num)}。
+     * <b>kg 兜底：产品单位为 kg（含公斤）且已配关联原材料（{@code product_material} 非空）时，
+     * 原材料按 1:1 kg 计——计算量直接 = 需求量（{@code SUM(dm.demand_quantity)}），不依赖 material_num</b>
+     * （kg 产品无枚数配比、material_num 恒 NULL；如筒子骨散装 kg 需求 6 → 计算量 6）。
+     * 非 kg 且产品未配 material_num（果蔬 / 部分猪肉）时计算量为 NULL（前端显空，不误显 0）；未配 product_material 时原材料名/单位为 NULL。
      * 不再读需求行冗余 {@code dm.raw_material / dm.material_qty}（历史留空列，恒 NULL / 0）。</p>
      *
      * <p>可选过滤：产品名 LIKE / 需求门店 / 需求日期区间。
@@ -411,7 +414,9 @@ public interface DemandManageMapper extends BaseMapperPlus<DemandManage, DemandM
                MAX(pm.product_name)        AS rawMaterialName,
                MAX(pm.product_unit)        AS materialUnit,
                SUM(dm.demand_quantity)     AS demandQuantity,
-               CASE WHEN MAX(pi.material_num) IS NULL THEN NULL
+               CASE WHEN LOWER(TRIM(MAX(dm.product_unit))) IN ('kg','公斤') AND MAX(pi.product_material) IS NOT NULL
+                         THEN SUM(dm.demand_quantity)
+                    WHEN MAX(pi.material_num) IS NULL THEN NULL
                     ELSE SUM(dm.demand_quantity) * MAX(pi.material_num) END AS materialCalcQty,
                COUNT(DISTINCT dm.store_id) AS storeCount,
                COUNT(DISTINCT CASE WHEN dm.demand_status IN ('CONFIRMED','IN_PRODUCTION','PARTIAL_SHIPPED','COMPLETED')

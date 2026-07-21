@@ -231,7 +231,7 @@ public class WarehouseDashboardServiceImpl implements IWarehouseDashboardService
     private static final List<PorkMetric> PORK_METRICS = List.of(
         new PorkMetric("屠宰头数", WarehouseIndicatorRecord::getSlaughterCount, false),
         new PorkMetric("送宰均重", WarehouseIndicatorRecord::getAvgSlaughterWeight, true),
-        new PorkMetric("接收均重", WarehouseIndicatorRecord::getArriveWeight, false),
+        new PorkMetric("接收均重", WarehouseIndicatorRecord::getArriveWeight, true),
         new PorkMetric("屠宰率", WarehouseIndicatorRecord::getSlaughterRate, true),
         new PorkMetric("白条均重", WarehouseIndicatorRecord::getAvgBarWeight, true),
         new PorkMetric("白条出品率", WarehouseIndicatorRecord::getBarYieldRate, true),

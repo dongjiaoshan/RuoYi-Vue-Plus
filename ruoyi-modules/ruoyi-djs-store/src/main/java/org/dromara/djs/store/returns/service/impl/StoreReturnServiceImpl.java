@@ -305,13 +305,10 @@ public class StoreReturnServiceImpl
                         + ")不能超过当日到店白条总重(" + whiteBarDeliveredTotal.toPlainString() + ")", 400);
                 }
                 whiteBarReturnedAccum = projected;
-            } else if (materialLimit != null) {
-                // 案例①：原材料产品 ≤ 当日到店对应猪肉成品总重。
-                if (rw.compareTo(materialLimit) > 0) {
-                    throw new ServiceException("产品「" + product.getProductName() + "」退回重量(" + rw.toPlainString()
-                        + ")不能超过当日到店对应猪肉产品总重(" + materialLimit.toPlainString() + ")", 400);
-                }
             } else if (whiteBarArrivedToday && dictReturnProductIds.contains(item.getProductId())) {
+                // row30③：白条退回字典产品(=白条分割原材料)优先并入「白条池」累加判定——重量与白条重量加到一起判断，
+                // 不再单条 materialLimit（案例①）。当某原材料既是材料外售产品的原材料、又在白条退回字典时，
+                // 其退回量应对当日到店白条总重的剩余额度封顶，而非单看对应猪肉成品总重。
                 // 案例②：白条配置产品 ≤ (当日到店白条总重 − 今日已退白条配置产品累计)。
                 if (whiteBarDeliveredTotal == null) {
                     whiteBarDeliveredTotal = sumWhiteBarDeliveredToStore(bo.getStoreId(), today);
@@ -326,6 +323,12 @@ public class StoreReturnServiceImpl
                         + ")不能超过当日到店白条总重扣除今日已退配置产品后的剩余(" + remain.toPlainString() + ")", 400);
                 }
                 dictReturnedAccum = dictReturnedAccum.add(rw);
+            } else if (materialLimit != null) {
+                // 案例①：材料外售原材料(不在白条退回字典)→ ≤ 当日到店对应猪肉成品总重。
+                if (rw.compareTo(materialLimit) > 0) {
+                    throw new ServiceException("产品「" + product.getProductName() + "」退回重量(" + rw.toPlainString()
+                        + ")不能超过当日到店对应猪肉产品总重(" + materialLimit.toPlainString() + ")", 400);
+                }
             } else {
                 // 其余生产产品：退回重量 ≤ 当日送达该店该产品的总重量（逐产品封顶，现状回退）。
                 // row15：非 kg 产品前端派生 rw=0 → 该重量封顶自动放行（口径变更已在报告标注）。
@@ -613,6 +616,34 @@ public class StoreReturnServiceImpl
         }
         if (STATUS_RECEIVED.equals(existing.getReturnStatus())) {
             throw new ServiceException("该退回记录已确认入库，请勿重复确认", 400);
+        }
+
+        // row35：仓库称重重量上限校验。仓库确认页录入的仓库称重（receivedWeight，缺省回退 receivedQty）不得离谱：
+        //   · 份数产品（单位非 kg）：≤ 当天到店该产品总重量（sumDeliveredWeightToStore，kg）；
+        //   · 重量产品（单位 kg）：≤ 门店录入重量（goods_weight）的一倍。
+        // 兜底放行：取不到到店重 / 门店录入重（0 或空）时不拦（避免历史数据/跨日确认误伤合法退货）。
+        ProductInfo returnProduct = productInfoMapper.selectById(existing.getProductId());
+        BigDecimal weighed = bo.getReceivedWeight() != null ? bo.getReceivedWeight()
+            : (bo.getReceivedQty() != null ? bo.getReceivedQty() : BigDecimal.ZERO);
+        if (returnProduct != null && weighed.signum() > 0) {
+            String unit = returnProduct.getProductUnit() == null ? "" : returnProduct.getProductUnit().trim().toLowerCase();
+            boolean kgUnit = "kg".equals(unit) || "公斤".equals(unit);
+            if (kgUnit) {
+                BigDecimal storeEntered = existing.getGoodsWeight();
+                if (storeEntered != null && storeEntered.signum() > 0 && weighed.compareTo(storeEntered) > 0) {
+                    throw new ServiceException("仓库称重重量(" + weighed.toPlainString()
+                        + "kg)不能超过门店录入重量(" + storeEntered.toPlainString() + "kg)", 400);
+                }
+            } else {
+                LocalDate arriveDate = existing.getReturnDate() != null
+                    ? existing.getReturnDate().toLocalDate() : LocalDate.now(ZONE_SHANGHAI);
+                BigDecimal arrivedTotal = productProductionMapper.sumDeliveredWeightToStore(
+                    existing.getStoreId(), existing.getProductId(), arriveDate);
+                if (arrivedTotal != null && arrivedTotal.signum() > 0 && weighed.compareTo(arrivedTotal) > 0) {
+                    throw new ServiceException("仓库称重重量(" + weighed.toPlainString()
+                        + "kg)不能超过该产品当天到店总重量(" + arrivedTotal.toPlainString() + "kg)", 400);
+                }
+            }
         }
 
         // 入库目标产品：配了 product_material 的成品(果蔬/猪肉)→原材料 product_material（缺料阻断），
