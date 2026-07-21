@@ -63,6 +63,7 @@ class StoreLossServiceImplTest {
     @Mock private ShipmentMapper shipmentMapper;
     @Mock private StoreReturnMapper storeReturnMapper;
     @Mock private ProductInfoMapper productInfoMapper;
+    @Mock private org.dromara.djs.warehouse.product.mapper.ProductInhouseMapper productInhouseMapper;
     @Mock private DictService dictService;
 
     private StoreLossServiceImpl service;
@@ -92,7 +93,7 @@ class StoreLossServiceImplTest {
     @BeforeEach
     void setup() {
         service = new StoreLossServiceImpl(baseMapper, storeDailyLedgerMapper, shipmentMapper,
-            storeReturnMapper, productInfoMapper, dictService);
+            storeReturnMapper, productInfoMapper, productInhouseMapper, dictService);
         tenantHelperMock = Mockito.mockStatic(TenantHelper.class);
         tenantHelperMock.when(TenantHelper::getTenantId).thenReturn(TENANT_ID);
         when(baseMapper.insert(any(StoreLossRecord.class))).thenReturn(1);

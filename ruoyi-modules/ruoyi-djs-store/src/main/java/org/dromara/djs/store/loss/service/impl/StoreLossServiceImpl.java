@@ -96,6 +96,7 @@ public class StoreLossServiceImpl implements IStoreLossService {
     private final ShipmentMapper shipmentMapper;
     private final StoreReturnMapper storeReturnMapper;
     private final ProductInfoMapper productInfoMapper;
+    private final org.dromara.djs.warehouse.product.mapper.ProductInhouseMapper productInhouseMapper;
     private final DictService dictService;
 
     @Override
@@ -172,7 +173,12 @@ public class StoreLossServiceImpl implements IStoreLossService {
             ? BigDecimal.ZERO
             : nz(sumWhiteBarReturnReceivedWeightByStore(d, whiteBarProductIds).get(storeId));
         vo.setReturnReceivedWeight(returnReceived);
-        BigDecimal loss = arrive.subtract(returnReceived);
+        // row34：白条分割损耗 = 白条到店重 − 门店分割产出重 − 退回入库重。
+        // 分割产出 = 该店当日门店端分割白条产出的原材料 inhouse(source='store',StoreSplit.addSplit 写)之和；
+        // 原公式只减退回、把整条白条当损耗（54.5−5=49.5 明显偏高），漏减了分割产出这块（占大头）。
+        BigDecimal splitProduce = nz(productInhouseMapper.sumStoreSplitWeightByStore(storeId, d));
+        vo.setSplitProduceWeight(splitProduce);
+        BigDecimal loss = arrive.subtract(splitProduce).subtract(returnReceived);
         vo.setSplitLoss(loss.signum() < 0 ? BigDecimal.ZERO : loss);
         return vo;
     }
@@ -275,8 +281,10 @@ public class StoreLossServiceImpl implements IStoreLossService {
             if (arrive.signum() <= 0) {
                 continue;   // 到店重 ≤ 0 视为无白条到店，不记录
             }
-            BigDecimal split = nz(splitByStore.get(storeId));
-            BigDecimal loss = arrive.subtract(split);
+            BigDecimal returnReceived = nz(splitByStore.get(storeId));
+            // row34：损耗 = 白条到店 − 门店分割产出 − 退回入库（与实时 getWhiteBarSplitLoss 同口径）。
+            BigDecimal splitProduce = nz(productInhouseMapper.sumStoreSplitWeightByStore(storeId, date));
+            BigDecimal loss = arrive.subtract(splitProduce).subtract(returnReceived);
             if (loss.signum() < 0) {
                 loss = BigDecimal.ZERO;   // 钳 0
             }
@@ -288,7 +296,8 @@ public class StoreLossServiceImpl implements IStoreLossService {
             record.setLossDate(date);
             record.setLossType(LOSS_TYPE_WHITE_BAR_SPLIT);
             record.setWhiteBarArriveWeight(arrive);
-            record.setWhiteBarSplitWeight(split);
+            // white_bar_split_weight 落「门店分割产出重」（row34 前误存退回入库重，语义纠正为真·分割产出）。
+            record.setWhiteBarSplitWeight(splitProduce);
             baseMapper.insert(record);
             rows++;
         }
