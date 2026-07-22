@@ -6,7 +6,9 @@ import org.apache.ibatis.annotations.Select;
 import org.dromara.common.mybatis.core.mapper.BaseMapperPlus;
 import org.dromara.djs.plant.perf.domain.PlantWorkPerformance;
 import org.dromara.djs.plant.perf.domain.vo.FarmCountRow;
+import org.dromara.djs.plant.perf.domain.vo.PerfActivityAggRow;
 import org.dromara.djs.plant.perf.domain.vo.PerfAggRow;
+import org.dromara.djs.plant.perf.domain.vo.PlotCropTeamRow;
 import org.dromara.djs.plant.perf.domain.vo.PerfListRow;
 import org.dromara.djs.plant.perf.domain.vo.PlantWorkPerformanceVo;
 
@@ -30,11 +32,15 @@ import java.util.Map;
 public interface PlantWorkPerformanceMapper extends BaseMapperPlus<PlantWorkPerformance, PlantWorkPerformanceVo> {
 
     /**
-     * 按 班组(harvest_by) × 作物(crop_id) 聚合指定月份的采摘总量。
+     * 按 采摘班组(team_id) × 作物(crop_id) 聚合指定月份的采收总量（row39 口径）。
      *
-     * <p>聚合源：{@code t_plant_plant_details.actual_yield}（实际产量，公斤，mp 按公斤录入）。
-     * 月份维度：{@code DATE_FORMAT(end_actualdate, '%Y-%m')}（采摘完成日所在月）。
-     * 仅纳入 {@code actual_yield > 0 AND harvest_by IS NOT NULL} 的有效采摘行。</p>
+     * <p>聚合源：{@code t_warehouse_handle_record.record_weight}（毛菜处理间采摘重量录入时各组对应作物的
+     * 称重重量，公斤）。仅纳入 {@code record_type=1}（采收录入，非处理录入）、{@code team_id IS NOT NULL}
+     * （处理录入 record_type=2 不带班组）、{@code record_weight > 0} 的有效称重行。
+     * 月份维度：{@code DATE_FORMAT(handle_time, '%Y-%m')}（称重录入时刻所在月）。</p>
+     *
+     * <p>row39 前口径以种植端 {@code t_plant_plant_details.actual_yield} 为准；改为以仓库毛菜处理间实际
+     * 称重（各班组录入）为各组当月采收总重量，绩效更贴合现场过磅结果。</p>
      *
      * <p>显式 {@code tenant_id='1001'}（V1 单租户，无全局拦截器）。</p>
      *
@@ -43,18 +49,71 @@ public interface PlantWorkPerformanceMapper extends BaseMapperPlus<PlantWorkPerf
      */
     @Select("""
         SELECT
-            harvest_by AS teamId,
+            team_id AS teamId,
             crop_id AS cropId,
-            SUM(actual_yield) AS pickWeight
-          FROM t_plant_plant_details
+            SUM(record_weight) AS pickWeight
+          FROM t_warehouse_handle_record
          WHERE tenant_id = '1001'
            AND del_flag = '0'
-           AND actual_yield > 0
-           AND harvest_by IS NOT NULL
-           AND DATE_FORMAT(end_actualdate, '%Y-%m') = #{statMonth}
-         GROUP BY harvest_by, crop_id
+           AND record_type = 1
+           AND team_id IS NOT NULL
+           AND record_weight > 0
+           AND DATE_FORMAT(handle_time, '%Y-%m') = #{statMonth}
+         GROUP BY team_id, crop_id
         """)
     List<PerfAggRow> aggregateByMonth(@Param("statMonth") String statMonth);
+
+    /**
+     * 当月采摘活动量按 作物 × 地块 聚合（row12：绩效并入采摘活动处理数据）。
+     *
+     * <p>源 {@code t_plant_plant_activity}：仅计 {@code pick_dest} 非空行（排除旧农事路径行防与
+     * 毛菜过磅双算）且 plot 非空（销售未结算行无地块、无法归属班组，不计入绩效）。
+     * service 层按地块采收班组集合平摊后并入 {@link #aggregateByMonth} 结果。</p>
+     *
+     * <p>显式 {@code tenant_id='1001' AND del_flag='0'}（V1 无全局拦截器）。</p>
+     *
+     * @param statMonth 统计月份（"yyyy-MM"）
+     * @return 聚合行（cropId / plotId / pickWeight）；无数据返空 list
+     */
+    @Select("""
+        SELECT
+            a.crop_id AS cropId,
+            a.plot_id AS plotId,
+            SUM(a.daily_weight) AS pickWeight
+          FROM t_plant_plant_activity a
+         WHERE a.tenant_id = '1001'
+           AND a.del_flag = '0'
+           AND a.pick_dest IS NOT NULL
+           AND a.plot_id IS NOT NULL
+           AND a.daily_weight > 0
+           AND DATE_FORMAT(a.activity_date, '%Y-%m') = #{statMonth}
+         GROUP BY a.crop_id, a.plot_id
+        """)
+    List<PerfActivityAggRow> selectActivityAggByMonth(@Param("statMonth") String statMonth);
+
+    /**
+     * 按地块集合解析 地块 × 作物 → 采收班组（row12 平摊归属）。
+     *
+     * <p>{@code t_plant_plant_details JOIN t_plant_details_team(role='harvest')}，DISTINCT 去重
+     * （同 plot+crop 多计划/多明细共享班组时只计一次）。</p>
+     *
+     * @param plotIds 地块 ID 集合（非空）
+     * @return (plotId, cropId, teamId) 行
+     */
+    @Select("""
+        <script>
+        SELECT DISTINCT d.plot_id AS plotId,
+               d.crop_id AS cropId,
+               dt.team_id AS teamId
+          FROM t_plant_plant_details d
+          JOIN t_plant_details_team dt
+                 ON dt.detail_id = d.id AND dt.role = 'harvest' AND dt.del_flag = '0'
+         WHERE d.del_flag = '0'
+           AND d.plot_id IN
+           <foreach collection="plotIds" item="pid" open="(" separator="," close=")">#{pid}</foreach>
+        </script>
+        """)
+    List<PlotCropTeamRow> selectHarvestTeamsByPlots(@Param("plotIds") Collection<Long> plotIds);
 
     /**
      * 主列表分页：按 班组 × 月 聚合已结算绩效行（rework 134/135）。

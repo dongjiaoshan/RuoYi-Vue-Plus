@@ -6,6 +6,7 @@ import lombok.Data;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.util.List;
 
 /**
  * 采摘去向录入 BO（DENGBO-R4 决策 A）。
@@ -48,4 +49,10 @@ public class PickActivityRecordBo {
      * 前置：当前批次全部地块必须采摘完成，否则拒绝。null/其它=仅录入不结算。
      */
     private Integer finishFlag;
+
+    /**
+     * 绩效班组 id 多选（row129）。写入采摘活动后落 junction {@code t_plant_activity_team}。
+     * null/空 = 不落 junction（绩效归属口径本次不管，只做存储 + 展示）。
+     */
+    private List<Long> teamIds;
 }

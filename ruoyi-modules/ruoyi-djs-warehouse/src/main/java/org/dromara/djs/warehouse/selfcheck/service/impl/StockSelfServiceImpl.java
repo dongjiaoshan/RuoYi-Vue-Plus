@@ -52,8 +52,8 @@ import java.util.stream.Collectors;
  *
  * <h3>读端点</h3>
  * <p>聚合查询委托 {@link StockSelfMapper}（各库入口 / 库详情 / 待盘点 / 盘点记录 / 进出库流水）；
- * 白条库逐条走 {@link BarInfoMapper} 取在库白条（{@code status IN ('in_stock','pending_cut')}）
- * 后在 service 格式化排酸时长 / 入库时间。</p>
+ * 白条库逐条走 {@link BarInfoMapper} 取可领用在库白条（{@code status='in_stock'}，口径对齐分割白条领用）
+ * 后在 service 计算排酸时长（(排酸完成 ?? now) − 入库）/ 格式化入库时间。</p>
  *
  * <h3>写端点（入库 / 出库 / 盘点）</h3>
  * <ul>
@@ -199,11 +199,13 @@ public class StockSelfServiceImpl implements IStockSelfService {
 
     @Override
     public List<WhiteBarStockVo> listWhiteBarStocks(String locationId) {
-        // locationId 不参与过滤（白条是逻辑库，bar_info 无 location_id 列）；接收参数仅保契约一致
+        // 134.1：白条库列表 = 可领用白条库存，口径对齐分割白条领用（AppletPigCutController.availableBars →
+        //   queryAvailableBars，status='in_stock'）。故只取 status='in_stock'（未领未分割）；pending_cut（已领用
+        //   进分割流）不再计入白条库物理在库。上限不设（盘点/库存视图需展示全部在库，不像领用 picker 截 50）。
+        // locationId 不参与过滤（白条是逻辑库，bar_info 无 location_id 列）；接收参数仅保契约一致。
         List<BarInfo> bars = barInfoMapper.selectList(
             new LambdaQueryWrapper<BarInfo>()
-                .in(BarInfo::getStatus, List.of("in_stock", "pending_cut"))
-                .eq(BarInfo::getDelFlag, "0")
+                .eq(BarInfo::getStatus, "in_stock")
                 .orderByDesc(BarInfo::getInTime));
         SimpleDateFormat mdhm = new SimpleDateFormat("MM-dd HH:mm");
         return bars.stream().map(b -> {
@@ -212,12 +214,33 @@ public class StockSelfServiceImpl implements IStockSelfService {
             vo.setProductName(WHITE_BAR_PRODUCT_NAME);
             vo.setEarNo(b.getEarNo());
             vo.setInboundTime(b.getInTime() == null ? null : mdhm.format(b.getInTime()));
-            vo.setAcidDischargeDuration(formatAcidDuration(b.getAcidRemoveTime()));
+            vo.setAcidDischargeDuration(formatAcidDuration(resolveAcidMinutes(b)));
             // bar_info 无门店字段，固定 null
             vo.setDesignatedStore(null);
             vo.setInboundWeight(b.getInWeight());
             return vo;
         }).toList();
+    }
+
+    /**
+     * 白条排酸时长分钟数（134.4）。口径 = (排酸完成时间 ?? now) − 入库时间：
+     * <ul>
+     *   <li>已结算排酸时长 {@code acid_remove_time}（分割领用时按 out−in 计算写入，分钟）非空 → 直接取；</li>
+     *   <li>在库排酸进行中（{@code acid_remove_time} 空，白条库均为此态）→ now − {@code in_time}；</li>
+     *   <li>{@code in_time} 缺失 → null（交 {@link #formatAcidDuration} 兜「-」，不瞎编）。</li>
+     * </ul>
+     * bar_info 无独立「排酸完成时间」列，故未结算态用 now − in_time；与分割记录
+     * {@code PigCutRecordServiceImpl.computeAcidMinutes}（out−in）复用同一时间差算法。
+     */
+    private static Integer resolveAcidMinutes(BarInfo b) {
+        if (b.getAcidRemoveTime() != null && b.getAcidRemoveTime() >= 0) {
+            return b.getAcidRemoveTime();
+        }
+        if (b.getInTime() == null) {
+            return null;
+        }
+        long mins = (System.currentTimeMillis() - b.getInTime().getTime()) / 60_000L;
+        return (int) Math.max(0L, mins);
     }
 
     @Override

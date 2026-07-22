@@ -3,7 +3,9 @@ package org.dromara.djs.plant.perf.service.impl;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.djs.plant.farm.service.IFarmRecordsService;
 import org.dromara.djs.plant.perf.domain.PlantWorkPerformance;
+import org.dromara.djs.plant.perf.domain.vo.PerfActivityAggRow;
 import org.dromara.djs.plant.perf.domain.vo.PerfAggRow;
+import org.dromara.djs.plant.perf.domain.vo.PlotCropTeamRow;
 import org.dromara.djs.plant.perf.mapper.PlantWorkPerformanceMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -36,6 +38,11 @@ import static org.mockito.Mockito.when;
  *
  * <p>覆盖核心 generate(statMonth)：聚合(公斤) × 单价快照(元/斤) × 2（公斤→斤换算）= 应付金额
  * + 幂等软删 + 月份校验。</p>
+ *
+ * <p>row39 口径：聚合源为毛菜处理间采摘重量录入的各班组对应作物称重重量
+ * （{@code aggregateByMonth} 由 t_plant_plant_details 改取 t_warehouse_handle_record）。
+ * 本类 mock baseMapper.aggregateByMonth，逻辑层（单价快照 × 换算 × 幂等软删）不受聚合源变更影响，
+ * 预期金额/行数不变；agg() 构造的 (teamId × cropId × pickWeight 公斤) 现语义为各组称重总重量。</p>
  *
  * @author djs
  * @since PLT-PERF-001
@@ -109,6 +116,51 @@ class PlantWorkPerformanceServiceImplTest {
         assertThat(r2.getPerformanceAmount()).isEqualByComparingTo("200.00");
         // 绩效行不手工赋 tenant_id（走 MetaObjectHandler）
         assertThat(r2.getTenantId()).isNull();
+    }
+
+    @Test
+    @DisplayName("generate: 采摘活动量按地块采收班组平摊并入（row12：多班组各 1/N）")
+    void testGenerate_ActivitySharesSplitAcrossTeams() {
+        String month = "2026-04";
+        // 过磅聚合：班组1×作物10 = 100.000 公斤
+        when(baseMapper.aggregateByMonth(month)).thenReturn(List.of(agg(1L, 10L, "100.000")));
+        // 活动聚合：作物10×地块7 = 10.000 公斤 → 地块7采收班组 {1,2} → 各摊 5.000
+        PerfActivityAggRow act = new PerfActivityAggRow();
+        act.setCropId(10L);
+        act.setPlotId(7L);
+        act.setPickWeight(new BigDecimal("10.000"));
+        when(baseMapper.selectActivityAggByMonth(month)).thenReturn(List.of(act));
+        PlotCropTeamRow t1 = new PlotCropTeamRow();
+        t1.setPlotId(7L);
+        t1.setCropId(10L);
+        t1.setTeamId(1L);
+        PlotCropTeamRow t2 = new PlotCropTeamRow();
+        t2.setPlotId(7L);
+        t2.setCropId(10L);
+        t2.setTeamId(2L);
+        when(baseMapper.selectHarvestTeamsByPlots(anyCollection())).thenReturn(List.of(t1, t2));
+        when(baseMapper.selectCropUnitPrices(anyCollection())).thenReturn(List.of(
+            Map.of("cropId", 10L, "pickUnitPrice", new BigDecimal("1.00"))
+        ));
+        when(baseMapper.update(eq(null), any())).thenReturn(0);
+        when(baseMapper.insert(any(PlantWorkPerformance.class))).thenReturn(1);
+
+        int rows = service.generate(month);
+
+        assertThat(rows).as("班组1(过磅+摊) + 班组2(纯摊) → 2 行").isEqualTo(2);
+        ArgumentCaptor<PlantWorkPerformance> captor = ArgumentCaptor.forClass(PlantWorkPerformance.class);
+        verify(baseMapper, times(2)).insert(captor.capture());
+        List<PlantWorkPerformance> inserted = captor.getAllValues();
+
+        PlantWorkPerformance r1 = inserted.stream().filter(p -> p.getTeamId().equals(1L)).findFirst().orElseThrow();
+        // 100.000 过磅 + 10/2=5.000 平摊 = 105.000 公斤 × 1.00 × 2 = 210.00
+        assertThat(r1.getPickWeight()).isEqualByComparingTo("105.000");
+        assertThat(r1.getPerformanceAmount()).isEqualByComparingTo("210.00");
+
+        PlantWorkPerformance r2 = inserted.stream().filter(p -> p.getTeamId().equals(2L)).findFirst().orElseThrow();
+        // 纯平摊 5.000 公斤 × 1.00 × 2 = 10.00
+        assertThat(r2.getPickWeight()).isEqualByComparingTo("5.000");
+        assertThat(r2.getPerformanceAmount()).isEqualByComparingTo("10.00");
     }
 
     @Test

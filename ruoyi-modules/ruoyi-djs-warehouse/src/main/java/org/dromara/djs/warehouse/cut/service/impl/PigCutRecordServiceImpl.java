@@ -124,6 +124,8 @@ public class PigCutRecordServiceImpl
      * stock_flow.flow_type 白条分割出库流水。
      */
     private static final String FLOW_TYPE_CUT_OUT = "cut_out";
+    /** 损耗出库 flow_type（邓博 row17：白条领用残量清零流水，与物资损耗共用字典码）。 */
+    private static final String FLOW_TYPE_LOSS = "loss";
     /** 出库去向：白条分割（FIX-WMS-FLOWDICT-001，白条出库固定去分割间）。 */
     private static final String STOCK_OUT_DEST_BAR_CUT = "bar_cut";
 
@@ -358,10 +360,13 @@ public class PigCutRecordServiceImpl
      * 领用时现补生成 BAR_NO、白条库本就无该篮子）→ 跳过库存行扣减、流水仍照写（优雅降级，不阻断领用）。
      * 篮子查询按 id 升序取最早一行，消除 LIMIT 1 非确定性。流水库位取 inhouse.location_id，
      * 空则回落白条库存行 location_id（doc/11 warehouse_id 必填）。分割结算/超量/剩余/损耗仍按
-     * white_bar_id(整猪)，cut_out 流水不参与结算（结算用 cut_out_in），故此处补写不影响分割口径。</p>
+     * white_bar_id(整猪)，cut_out 流水不参与结算（结算用 cut_out_in），故此处补写不影响分割口径。
+     * 邓博 row17：每个半只篮只能领用一次（pickup_status 乐观锁），领用扣重后篮内残量（入库重 −
+     * 领用重）无后续业务消费 → 同事务清零并写 loss 流水（{@link #drainBarResidualToLossFlow}）。</p>
      */
     private void writeBarCutOutFlow(ProductInhouse row, BigDecimal weight, Long userId, boolean stockRequired) {
         Long warehouseId = row.getLocationId();
+        Long drainedBasketId = null;
         if (StringUtils.isNotBlank(row.getWhiteBarNo())) {
             LocationStock barStock = locationStockMapper.selectOne(
                 new LambdaQueryWrapper<LocationStock>()
@@ -382,6 +387,7 @@ public class PigCutRecordServiceImpl
                 if (warehouseId == null) {
                     warehouseId = barStock.getLocationId();
                 }
+                drainedBasketId = barStock.getId();
             }
         }
         if (warehouseId == null) {
@@ -405,6 +411,51 @@ public class PigCutRecordServiceImpl
         out.setWhiteBarId(row.getWhiteBarId());
         out.setOperatorId(userId);
         stockFlowMapper.insert(out);
+        if (drainedBasketId != null) {
+            drainBarResidualToLossFlow(drainedBasketId, row.getProductId(), warehouseId,
+                row.getEarNo(), row.getWhiteBarNo(), row.getWhiteBarId(), userId);
+        }
+    }
+
+    /**
+     * 白条篮残量转损耗出库（邓博 row17）：领用扣重后复读该篮余量（= 入库重 − 领用重），残量 > 0 →
+     * 同事务二次扣减清零 + 写 {@code flow_type=loss} 出库流水留痕（防死残量永久躺在白条库存）。
+     *
+     * <p>仅白条篮（white_bar_no 命中的行）走本清零；耳号分割产出篮不适用。预冷损耗账
+     * {@code t_warehouse_loss_flow} 由领用链路单独记（writePickupPrecoolLoss），
+     * 此处绝不写 loss_flow —— 再写 = 损耗总览双算。</p>
+     */
+    private void drainBarResidualToLossFlow(Long barStockId, Long productId, Long warehouseId,
+                                            String earNo, String whiteBarNo, Long whiteBarId, Long userId) {
+        LocationStock refreshed = locationStockMapper.selectById(barStockId);
+        if (refreshed == null || refreshed.getProductStock() == null
+            || refreshed.getProductStock().compareTo(BigDecimal.ZERO) <= 0) {
+            return;
+        }
+        BigDecimal residual = refreshed.getProductStock();
+        int drained = locationStockMapper.deductStockById(barStockId, residual, userId);
+        if (drained == 0) {
+            // 本事务已持该篮行锁，理论不可达；防御性跳过（残量留待盘点），不阻断领用主链
+            log.warn("白条篮残量清零失败 — stockId={} whiteBarNo={} residual={}", barStockId, whiteBarNo, residual);
+            return;
+        }
+        StockFlow loss = new StockFlow();
+        Map<String, Object> ctx = new HashMap<>(2);
+        ctx.put("ioCode", INOUT_OUT);
+        loss.setFlowNo(bizCodeGenerator.generate(BizCodeType.STOCK_FLOW_NO, ctx));
+        loss.setFlowDate(new Date());
+        loss.setProductId(productId);
+        loss.setWarehouseId(warehouseId);
+        loss.setInoutType(INOUT_OUT);
+        loss.setFlowType(FLOW_TYPE_LOSS);
+        loss.setChangeNum(residual.negate());
+        loss.setChangeQuantity(residual);
+        loss.setEarNo(earNo);
+        loss.setWhiteBarNo(whiteBarNo);
+        loss.setWhiteBarId(whiteBarId);
+        loss.setOperatorId(userId);
+        loss.setRemark("白条领用残量转损耗出库（入库重-领用重）");
+        stockFlowMapper.insert(loss);
     }
 
     @Override

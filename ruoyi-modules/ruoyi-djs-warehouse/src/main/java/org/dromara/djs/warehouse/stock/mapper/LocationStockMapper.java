@@ -870,7 +870,8 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
      * <p>仅返启用产品（{@code product_status=0}）。排序：库存升序（缺货优先）再按产品名。
      * 租户单租户显式 {@code tenant_id='1001'}。{@code lastPickTime}（排序用）取该产品全部人今日最近一次领用时间。</p>
      *
-     * @param belongTypes 字典 {@code djs_belong_type} 值列表（如 [pork, white_bar] / [vegetable]）
+     * @param belongTypes 字典 {@code djs_belong_type} 值列表（如 [pork, white_bar] / [vegetable]）；
+     *                    为 null / 空则不按业态过滤（生产领用「按库不按业态」：选中库位后列该库全部库存产品，row42）
      * @param locationId  库位 ID（可空，chip 选中态）
      * @param userId      当前登录人 user_id（今日三量按人统计）
      * @return 待领产品卡列表；无则空 list
@@ -942,8 +943,10 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
            AND p.tenant_id     = '1001'
            AND p.product_status = 0
            AND (COALESCE(p.product_attr, 0) != 1 OR COALESCE(p.product_type, 0) != 1)
-           AND p.belong_type IN
-           <foreach collection="belongTypes" item="bt" open="(" separator="," close=")">#{bt}</foreach>
+           <if test="belongTypes != null and belongTypes.size() > 0">
+             AND p.belong_type IN
+             <foreach collection="belongTypes" item="bt" open="(" separator="," close=")">#{bt}</foreach>
+           </if>
            <if test="locationId != null">
              AND EXISTS (SELECT 1 FROM t_warehouse_location_stock s3
                           WHERE s3.product_id = p.id AND s3.location_id = #{locationId}

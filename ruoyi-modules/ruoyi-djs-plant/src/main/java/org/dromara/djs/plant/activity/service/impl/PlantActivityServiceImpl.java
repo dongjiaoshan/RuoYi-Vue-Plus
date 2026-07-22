@@ -45,13 +45,16 @@ public class PlantActivityServiceImpl extends DjsBaseServiceImpl<PlantActivityMa
 
     private final CropInfoMapper cropInfoMapper;
     private final PlantDetailsMapper plantDetailsMapper;
+    private final org.dromara.djs.plant.team.service.PlantTeamLinkService teamLinkService;
 
     public PlantActivityServiceImpl(PlantActivityMapper baseMapper,
                                     CropInfoMapper cropInfoMapper,
-                                    PlantDetailsMapper plantDetailsMapper) {
+                                    PlantDetailsMapper plantDetailsMapper,
+                                    org.dromara.djs.plant.team.service.PlantTeamLinkService teamLinkService) {
         super(baseMapper);
         this.cropInfoMapper = cropInfoMapper;
         this.plantDetailsMapper = plantDetailsMapper;
+        this.teamLinkService = teamLinkService;
     }
 
     @Override
@@ -76,6 +79,10 @@ public class PlantActivityServiceImpl extends DjsBaseServiceImpl<PlantActivityMa
         activity.setPickWeight(dailyWeight);
         activity.setActivityBy(activityBy);
         baseMapper.insert(activity);
+        // row40：采摘活动班组多选中间表同步（单值写入路径，保持中间表与旧单列一致）
+        if (activityBy != null) {
+            teamLinkService.syncActivityTeams(activity.getId(), List.of(activityBy));
+        }
     }
 
     @Override
@@ -123,6 +130,11 @@ public class PlantActivityServiceImpl extends DjsBaseServiceImpl<PlantActivityMa
         activity.setPlotId(sale ? null : bo.getPlotId());
         activity.setRecorderId(bo.getRecorderId());
         baseMapper.insert(activity);
+
+        // 1.1 row129 绩效班组多选：落 junction t_plant_activity_team。
+        //     teamIds 为 null（旧调用方不带）→ syncActivityTeams 内部跳过；空 list → 清空（新建无历史，等价 no-op）。
+        //     绩效归属口径（各组全额 vs 均分）本次不管，此处只做存储；记录展示由 AppletPlantActivityController 走 activityTeamNames。
+        teamLinkService.syncActivityTeams(activity.getId(), bo.getTeamIds());
 
         // 2. 累加已采产量（plant_details.actual_yield）。
         //    - 非销售去向：即时累加进所选地块（= 各地块「原始采摘量」）。

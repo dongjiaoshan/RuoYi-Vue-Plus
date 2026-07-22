@@ -5,6 +5,7 @@ import lombok.Data;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.util.List;
 
 /**
  * 采摘去向录入编排入参（DENGBO-R4 决策 A，mp 采摘活动录入弹窗）。
@@ -49,4 +50,10 @@ public class PickActivitySubmitBo {
 
     /** DENGBO-R24 录入完成标志：1=本次录入后触发销售量分摊结算（前置：当前批次全部地块采摘完成）。 */
     private Integer finishFlag;
+
+    /**
+     * 绩效班组 id 多选（row129）。落 plant junction {@code t_plant_activity_team}，供采摘活动记录/班组筛选按多班组展示。
+     * null/空 = 不落 junction（绩效归属口径本次不管，只做存储 + 展示）。
+     */
+    private List<Long> teamIds;
 }

@@ -637,6 +637,8 @@ public class VegetableHandleServiceImpl
         record.setHandleId(handle.getId());
         record.setPlotId(planting.getPlotId());
         record.setCropId(planting.getCropId());
+        // row38：记入采摘班组，作为 row39 班组绩效按组采收总重量的统计维度
+        record.setTeamId(bo.getTeamId());
         record.setRecordType(RECORD_TYPE_PICK);
         record.setRecordWeight(weight);
         record.setIsWeighed(weighDone ? 1 : 2);
@@ -849,6 +851,7 @@ public class VegetableHandleServiceImpl
         plantBo.setPlotId(bo.getPlotId());
         plantBo.setRecorderId(bo.getRecorderId());
         plantBo.setFinishFlag(bo.getFinishFlag()); // DENGBO-R24 录入完成标志透传
+        plantBo.setTeamIds(bo.getTeamIds());       // row129 绩效班组多选透传（plant 侧落 junction）
         Long activityId = plantActivityService.recordPickActivity(plantBo);
 
         // 2. 非销售去向：写仓库台账（销售不写仓库库存、只进产量分摊，已在 step1 plant 侧完成行写入）

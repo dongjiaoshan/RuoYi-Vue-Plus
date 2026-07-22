@@ -47,4 +47,11 @@ public class HarvestSubmitBo {
     @NotNull(message = "{veg.weigh_user.required}")
     private Long weighUserId;
 
+    /**
+     * 采摘班组 ID（FK → t_plant_work_team.id），row38 新增必填。记入 handle_record.team_id，
+     * 作为 row39 班组绩效按组采收总重量的统计维度。
+     */
+    @NotNull(message = "{veg.team.required}")
+    private Long teamId;
+
 }

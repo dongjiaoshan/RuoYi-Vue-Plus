@@ -41,7 +41,7 @@ public interface DemandManageMapper extends BaseMapperPlus<DemandManage, DemandM
      * <p>租户隔离：未启全局 MP 拦截器，显式 {@code tenant_id='1001'}（V1 单租户，与
      * {@code LocationStockMapper} 自定义聚合范式一致）。</p>
      *
-     * @param today 今日日期（Asia/Shanghai 算，由 service 传入，不用 DB CURDATE() 避免时区雷）
+     * @param today KPI 统计日期（service 按 Asia/Shanghai 传入；需求 KPI 口径 = 明日，不用 DB CURDATE() 避免时区雷）
      * @return 聚合 Map（单行）
      */
     @Select("""
@@ -66,14 +66,14 @@ public interface DemandManageMapper extends BaseMapperPlus<DemandManage, DemandM
     Map<String, Object> selectTodayKpiMainAgg(@Param("today") LocalDate today);
 
     /**
-     * 今日白条已调配头数（DJS-FIX-ADMIN-W22-007）：子表去重耳号计数。
+     * KPI 日白条已调配头数（DJS-FIX-ADMIN-W22-007，口径 = 明日）：子表去重耳号计数。
      *
      * <p>demand_pig 子表存在一行 = 这头已指定，{@code COUNT(DISTINCT ear_no)} 即已调配头数。</p>
      *
      * <p>租户隔离：显式 {@code tenant_id='1001'}（V1 单租户，与 {@code LocationStockMapper} 范式一致）。</p>
      *
-     * @param today 今日日期
-     * @return 今日白条已指定的去重耳号数
+     * @param today KPI 统计日期（明日）
+     * @return 该日白条已指定的去重耳号数
      */
     @Select("""
         SELECT COUNT(DISTINCT dp.ear_no)
@@ -382,6 +382,8 @@ public interface DemandManageMapper extends BaseMapperPlus<DemandManage, DemandM
      * 兼容别名：{@code rawMaterial}=原材料名称、{@code materialQty}=原材料计算量（前端旧列绑定）。
      * <b>原材料计算量 = 需求量 × 单份用量</b>（{@code pi.material_num}，产品配置「原材料计算量」/单份用量，
      * 主要鸡蛋按枚数配比）：{@code SUM(dm.demand_quantity) * MAX(pi.material_num)}。
+     * <b>单位一致兜底：产品单位与原材料单位一致（忽略大小写/空白）、已配关联原材料且未配 material_num 配比时，
+     * 计算量直接 = 需求量</b>（如 大米10斤 袋→袋；显式配了配比的仍走配比分支，不被单位一致劫持）。
      * <b>kg 兜底：产品单位为 kg（含公斤）且已配关联原材料（{@code product_material} 非空）时，
      * 原材料按 1:1 kg 计——计算量直接 = 需求量（{@code SUM(dm.demand_quantity)}），不依赖 material_num</b>
      * （kg 产品无枚数配比、material_num 恒 NULL；如筒子骨散装 kg 需求 6 → 计算量 6）。
@@ -414,7 +416,10 @@ public interface DemandManageMapper extends BaseMapperPlus<DemandManage, DemandM
                MAX(pm.product_name)        AS rawMaterialName,
                MAX(pm.product_unit)        AS materialUnit,
                SUM(dm.demand_quantity)     AS demandQuantity,
-               CASE WHEN LOWER(TRIM(MAX(dm.product_unit))) IN ('kg','公斤') AND MAX(pi.product_material) IS NOT NULL
+               CASE WHEN MAX(pi.product_material) IS NOT NULL AND MAX(pi.material_num) IS NULL
+                         AND LOWER(TRIM(MAX(dm.product_unit))) = LOWER(TRIM(MAX(pm.product_unit)))
+                         THEN SUM(dm.demand_quantity)
+                    WHEN LOWER(TRIM(MAX(dm.product_unit))) IN ('kg','公斤') AND MAX(pi.product_material) IS NOT NULL
                          THEN SUM(dm.demand_quantity)
                     WHEN MAX(pi.material_num) IS NULL THEN NULL
                     ELSE SUM(dm.demand_quantity) * MAX(pi.material_num) END AS materialCalcQty,

@@ -55,6 +55,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.Date;
 import java.util.HashMap;
@@ -99,6 +100,8 @@ public class ProductProductionServiceImpl
     private static final String INOUT_OUT = "OT";
     /** 白条出库 flow_type（邓博 row13：白条离白条库统一「白条出库」，去向区分白条分割 / 发货月台 / 仓库出库）。 */
     private static final String FLOW_TYPE_CUT_OUT = "cut_out";
+    /** 损耗出库 flow_type（邓博 row17：白条领用残量清零流水，与物资损耗共用字典码）。 */
+    private static final String FLOW_TYPE_LOSS = "loss";
     /** 出库去向：发货月台。 */
     private static final String STOCK_OUT_DEST_SHIP_DOCK = "ship_dock";
 
@@ -777,16 +780,20 @@ public class ProductProductionServiceImpl
      *
      * <p>邓博 row13：白条无论去分割间还是发货月台，都要从白条库正常出库（修「白条库出库记录缺失致库存不准」）。
      * {@code dest} 区分去向（{@code ship_dock} 发货月台 / {@code bar_cut} 白条分割）。
-     * {@code burn_id} 为空（外购 / 旧数据）→ 跳过库存行扣减、流水仍按 ear_no 写（优雅降级，不阻断领用）。</p>
+     * {@code burn_id} 为空（外购 / 旧数据）→ 跳过库存行扣减、流水仍按 ear_no 写（优雅降级，不阻断领用）。
+     * 邓博 row17：每个半只篮只能领用一次（inhouse pickup_status 乐观锁），领用扣重后篮内残量
+     * （入库重 − 领用重）无后续业务消费 → 同事务清零并写 loss 流水（{@link #drainBarResidualToLossFlow}）。</p>
      */
     private void writeWhiteBarOutFlow(ProductInhouse src, BigDecimal weight, String dest, Long userId) {
         Long warehouseId = src.getLocationId();
+        Long drainedBasketId = null;
         if (StringUtils.isNotBlank(src.getWhiteBarNo())) {
             LocationStock barStock = locationStockMapper.selectOne(
                 new LambdaQueryWrapper<LocationStock>()
                     .eq(LocationStock::getProductId, src.getProductId())
                     .eq(LocationStock::getWhiteBarNo, src.getWhiteBarNo())
                     .gt(LocationStock::getProductStock, BigDecimal.ZERO)
+                    .orderByAsc(LocationStock::getId)
                     .last("LIMIT 1"));
             if (barStock != null) {
                 int affected = locationStockMapper.deductStockById(barStock.getId(), weight, userId);
@@ -797,6 +804,7 @@ public class ProductProductionServiceImpl
                 if (warehouseId == null) {
                     warehouseId = barStock.getLocationId();
                 }
+                drainedBasketId = barStock.getId();
             }
         }
         if (warehouseId == null) {
@@ -820,6 +828,51 @@ public class ProductProductionServiceImpl
         out.setWhiteBarId(src.getWhiteBarId());
         out.setOperatorId(userId);
         stockFlowMapper.insert(out);
+        if (drainedBasketId != null) {
+            drainBarResidualToLossFlow(drainedBasketId, src.getProductId(), warehouseId,
+                src.getEarNo(), src.getWhiteBarNo(), src.getWhiteBarId(), userId);
+        }
+    }
+
+    /**
+     * 白条篮残量转损耗出库（邓博 row17）：领用扣重后复读该篮余量（= 入库重 − 领用重），残量 > 0 →
+     * 同事务二次扣减清零 + 写 {@code flow_type=loss} 出库流水留痕（防死残量永久躺在白条库存）。
+     *
+     * <p>仅白条篮（white_bar_no 命中的行）走本清零；耳号分割产出篮不适用。预冷损耗账
+     * {@code t_warehouse_loss_flow} 由领用链路单独记（{@link #writePrecoolLossOnBarOut} /
+     * cut 模块 writePickupPrecoolLoss），此处绝不写 loss_flow —— 再写 = 损耗总览双算。</p>
+     */
+    private void drainBarResidualToLossFlow(Long barStockId, Long productId, Long warehouseId,
+                                            String earNo, String whiteBarNo, Long whiteBarId, Long userId) {
+        LocationStock refreshed = locationStockMapper.selectById(barStockId);
+        if (refreshed == null || refreshed.getProductStock() == null
+            || refreshed.getProductStock().compareTo(BigDecimal.ZERO) <= 0) {
+            return;
+        }
+        BigDecimal residual = refreshed.getProductStock();
+        int drained = locationStockMapper.deductStockById(barStockId, residual, userId);
+        if (drained == 0) {
+            // 本事务已持该篮行锁，理论不可达；防御性跳过（残量留待盘点），不阻断出库主链
+            log.warn("白条篮残量清零失败 — stockId={} whiteBarNo={} residual={}", barStockId, whiteBarNo, residual);
+            return;
+        }
+        StockFlow loss = new StockFlow();
+        Map<String, Object> ctx = new HashMap<>(2);
+        ctx.put("ioCode", INOUT_OUT);
+        loss.setFlowNo(bizCodeGenerator.generate(BizCodeType.STOCK_FLOW_NO, ctx));
+        loss.setFlowDate(new Date());
+        loss.setProductId(productId);
+        loss.setWarehouseId(warehouseId);
+        loss.setInoutType(INOUT_OUT);
+        loss.setFlowType(FLOW_TYPE_LOSS);
+        loss.setChangeNum(residual.negate());
+        loss.setChangeQuantity(residual);
+        loss.setEarNo(earNo);
+        loss.setWhiteBarNo(whiteBarNo);
+        loss.setWhiteBarId(whiteBarId);
+        loss.setOperatorId(userId);
+        loss.setRemark("白条领用残量转损耗出库（入库重-领用重）");
+        stockFlowMapper.insert(loss);
     }
 
     /**
@@ -1893,6 +1946,10 @@ public class ProductProductionServiceImpl
      * （StoreMapper 在 ruoyi-djs-common），plot_id → {@code t_plant_plot_info.plot_name}
      * （PlotInfoMapper 在 ruoyi-djs-plant，warehouse 模块已依赖）。原材料名称 / 单位：material_id →
      * {@code t_warehouse_product_info.product_name / product_unit}（同模块 ProductInfoMapper，一次 IN 查回填两列）。</p>
+     *
+     * <p>「是否到货确认」读侧派生（邓博 row15）：落库列 {@code is_arrival_confirm} 无写 1 入口（打包创建恒 0），
+     * 权威源 = 所属需求单 {@code t_warehouse_demand_manage.received_time}（admin 门店需求「确认到货」写入，
+     * 与门店需求 ARRIVED 状态同源）。demand_id 空（礼盒组件 / 未清点行等）保持落库值显「否」。</p>
      */
     private void fillJoinNames(List<ProductProductionVo> rows) {
         if (rows == null || rows.isEmpty()) {
@@ -1908,6 +1965,10 @@ public class ProductProductionServiceImpl
             .collect(Collectors.toSet());
         Set<Long> materialIds = rows.stream()
             .map(ProductProductionVo::getMaterialId)
+            .filter(Objects::nonNull)
+            .collect(Collectors.toSet());
+        Set<Long> demandIds = rows.stream()
+            .map(ProductProductionVo::getDemandId)
             .filter(Objects::nonNull)
             .collect(Collectors.toSet());
 
@@ -1937,6 +1998,13 @@ public class ProductProductionServiceImpl
         Map<Long, String> materialUnitMap = materialInfos.stream()
             .filter(pi -> pi.getProductUnit() != null)
             .collect(Collectors.toMap(ProductInfo::getId, ProductInfo::getProductUnit, (a, b) -> a));
+        // 到货确认派生源：demand_id → demand.received_time（一次 IN 查，只取已收货的，无 N+1）
+        Map<Long, LocalDateTime> demandReceivedMap = demandIds.isEmpty() ? Map.of()
+            : demandManageMapper.selectList(new LambdaQueryWrapper<DemandManage>()
+                    .select(DemandManage::getId, DemandManage::getReceivedTime)
+                    .in(DemandManage::getId, demandIds)
+                    .isNotNull(DemandManage::getReceivedTime))
+                .stream().collect(Collectors.toMap(DemandManage::getId, DemandManage::getReceivedTime, (a, b) -> a));
 
         for (ProductProductionVo vo : rows) {
             if (vo.getStoreId() != null) {
@@ -1949,6 +2017,13 @@ public class ProductProductionServiceImpl
             if (vo.getMaterialId() != null) {
                 vo.setMaterialName(materialNameMap.get(vo.getMaterialId()));
                 vo.setMaterialUnit(materialUnitMap.get(vo.getMaterialId()));
+            }
+            if (vo.getDemandId() != null) {
+                LocalDateTime received = demandReceivedMap.get(vo.getDemandId());
+                if (received != null) {
+                    vo.setIsArrivalConfirm(1);
+                    vo.setArrivalConfirmTime(Date.from(received.atZone(PACK_TODAY_ZONE).toInstant()));
+                }
             }
         }
     }

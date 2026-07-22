@@ -2018,7 +2018,11 @@ public class MatFlowServiceImpl implements IMatFlowService {
 
     @Override
     public List<MatIssueItemVo> issueItems(String belongType, String locationId) {
-        List<String> belongTypes = parseBelongTypes(belongType);
+        // row42「按库不按业态」：belongType 为空时 belongTypes=null → mapper 不加 belong_type IN 过滤，
+        // 列该库位全部库存产品（生产领用选中库位后展示全库存）；非空则仍按业态过滤（如包材 tab 无库位、按 package）。
+        List<String> belongTypes = (belongType == null || belongType.isBlank())
+            ? null
+            : parseBelongTypes(belongType);
         Long locId = parseLocationId(locationId);
         Long userId = LoginHelper.getUserId();
         List<MatIssueItemVo> items = locationStockMapper.selectMatIssueItems(belongTypes, locId, userId);

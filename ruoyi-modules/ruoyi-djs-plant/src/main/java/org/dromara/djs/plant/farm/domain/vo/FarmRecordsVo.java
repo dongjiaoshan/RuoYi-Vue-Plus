@@ -75,9 +75,17 @@ public class FarmRecordsVo implements Serializable {
     @ExcelProperty(value = "处理班组 ID")
     private Long farmBy;
 
-    /** service enrich：班组名（PlantWorkTeam.teamName）。 */
+    /** service enrich：班组名（PlantWorkTeam.teamName；多选时 = 第一个）。 */
     @ExcelProperty(value = "处理班组")
     private String teamName;
+
+    /** service enrich：处理班组全集 id（G1-TEAMS-MULTISELECT，row37；回显用）。 */
+    @cn.idev.excel.annotation.ExcelIgnore
+    private java.util.List<Long> farmByIds;
+
+    /** service enrich：处理班组全集名（多 tag / 逗号展示；空则回落 {@link #teamName}）。 */
+    @cn.idev.excel.annotation.ExcelIgnore
+    private java.util.List<String> teamNames;
 
     @ExcelProperty(value = "整地类型")
     private String tillageType;

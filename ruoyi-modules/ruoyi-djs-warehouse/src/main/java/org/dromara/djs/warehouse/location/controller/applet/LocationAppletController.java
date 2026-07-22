@@ -83,6 +83,7 @@ public class LocationAppletController {
             vo.setLocationCode(l.getLocationCode());
             vo.setLocationName(l.getLocationName());
             vo.setLocationType(l.getLocationType());
+            vo.setLocationSort(l.getLocationSort());
             return vo;
         }).collect(Collectors.toList());
         return R.ok(vos);

@@ -78,12 +78,13 @@ public class AppletMatFlowController extends BaseController {
      *
      * <p>某业态产品 + 当前库存 + 当前登录人今日已领 / 退 / 损（驱动卡片字段与点入表单上限）。</p>
      *
-     * @param belongType 字典 {@code djs_belong_type}
+     * @param belongType 字典 {@code djs_belong_type}（可空：row42「按库不按业态」，选中库位后列该库全部库存产品，
+     *                   不按业态过滤；为空且无 locationId 时列全部启用产品）
      * @param locationId 库位 ID（可空，chip 选中态过滤；snowflake string 防截断，service 内 parse）
      */
     @SaCheckLogin
     @GetMapping("/issueItems")
-    public R<List<MatIssueItemVo>> issueItems(@RequestParam String belongType,
+    public R<List<MatIssueItemVo>> issueItems(@RequestParam(required = false) String belongType,
                                               @RequestParam(required = false) String locationId) {
         return R.ok(matFlowService.issueItems(belongType, locationId));
     }

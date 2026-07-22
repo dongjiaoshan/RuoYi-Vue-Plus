@@ -21,7 +21,9 @@ import org.dromara.djs.plant.farm.service.IFarmRecordsService;
 import org.dromara.djs.plant.perf.domain.PlantWorkPerformance;
 import org.dromara.djs.plant.perf.domain.query.PlantWorkPerformanceQuery;
 import org.dromara.djs.plant.perf.domain.vo.FarmCountRow;
+import org.dromara.djs.plant.perf.domain.vo.PerfActivityAggRow;
 import org.dromara.djs.plant.perf.domain.vo.PerfAggRow;
+import org.dromara.djs.plant.perf.domain.vo.PlotCropTeamRow;
 import org.dromara.djs.plant.perf.domain.vo.PerfDetailCropExportVo;
 import org.dromara.djs.plant.perf.domain.vo.PerfDetailFarmExportVo;
 import org.dromara.djs.plant.perf.domain.vo.PerfListRow;
@@ -40,6 +42,8 @@ import java.util.Collections;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -131,8 +135,8 @@ public class PlantWorkPerformanceServiceImpl
             .set("update_time", now);
         baseMapper.update(null, clearWrapper);
 
-        // 2. 聚合该月 班组 × 作物 采摘总量
-        List<PerfAggRow> aggRows = baseMapper.aggregateByMonth(statMonth);
+        // 2. 聚合该月 班组 × 作物 采摘总量（毛菜处理过磅 + 采摘活动平摊，row12）
+        List<PerfAggRow> aggRows = mergeActivityShares(baseMapper.aggregateByMonth(statMonth), statMonth);
         if (aggRows.isEmpty()) {
             return 0;
         }
@@ -225,6 +229,52 @@ public class PlantWorkPerformanceServiceImpl
         } catch (IOException e) {
             throw new ServiceException("绩效详情导出失败：" + e.getMessage());
         }
+    }
+
+    /**
+     * 采摘活动量并入班组聚合（row12）：按 (crop, plot) 聚合的活动量，经地块采收班组集合平摊
+     * （多班组各计 1/N），合并进毛菜过磅聚合行。无采收班组归属的活动量跳过（无法计入班组绩效）。
+     */
+    private List<PerfAggRow> mergeActivityShares(List<PerfAggRow> aggRows, String statMonth) {
+        List<PerfActivityAggRow> actRows = baseMapper.selectActivityAggByMonth(statMonth);
+        if (actRows.isEmpty()) {
+            return aggRows;
+        }
+        Set<Long> plotIds = actRows.stream()
+            .map(PerfActivityAggRow::getPlotId)
+            .filter(Objects::nonNull)
+            .collect(Collectors.toCollection(HashSet::new));
+        // (plotId:cropId) -> 采收班组集合（DISTINCT，多计划共享班组只计一次）
+        Map<String, Set<Long>> teamsByPlotCrop = new HashMap<>();
+        for (PlotCropTeamRow r : baseMapper.selectHarvestTeamsByPlots(plotIds)) {
+            teamsByPlotCrop.computeIfAbsent(r.getPlotId() + ":" + r.getCropId(), k -> new LinkedHashSet<>())
+                .add(r.getTeamId());
+        }
+        // 合并容器：既有过磅行按 (teamId:cropId) 建索引
+        Map<String, PerfAggRow> merged = new LinkedHashMap<>();
+        for (PerfAggRow row : aggRows) {
+            merged.put(row.getTeamId() + ":" + row.getCropId(), row);
+        }
+        for (PerfActivityAggRow act : actRows) {
+            Set<Long> teams = teamsByPlotCrop.get(act.getPlotId() + ":" + act.getCropId());
+            if (teams == null || teams.isEmpty() || act.getPickWeight() == null) {
+                continue;
+            }
+            BigDecimal share = act.getPickWeight()
+                .divide(BigDecimal.valueOf(teams.size()), 3, RoundingMode.HALF_UP);
+            for (Long teamId : teams) {
+                PerfAggRow row = merged.computeIfAbsent(teamId + ":" + act.getCropId(), k -> {
+                    PerfAggRow nr = new PerfAggRow();
+                    nr.setTeamId(teamId);
+                    nr.setCropId(act.getCropId());
+                    nr.setPickWeight(BigDecimal.ZERO);
+                    return nr;
+                });
+                BigDecimal base = row.getPickWeight() != null ? row.getPickWeight() : BigDecimal.ZERO;
+                row.setPickWeight(base.add(share));
+            }
+        }
+        return new ArrayList<>(merged.values());
     }
 
     /**

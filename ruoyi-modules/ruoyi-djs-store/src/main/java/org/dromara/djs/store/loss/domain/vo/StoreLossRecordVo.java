@@ -53,7 +53,7 @@ public class StoreLossRecordVo implements Serializable {
     /** 白条到店重量kg（仅白条分割损耗行）。 */
     private BigDecimal whiteBarArriveWeight;
 
-    /** 白条退回入库重量kg（仅白条分割损耗行）。 */
+    /** 白条分割产品总重kg = 退回入库重 − 材料外售到店重（仅白条分割损耗行）。 */
     private BigDecimal whiteBarSplitWeight;
 
     private String remark;

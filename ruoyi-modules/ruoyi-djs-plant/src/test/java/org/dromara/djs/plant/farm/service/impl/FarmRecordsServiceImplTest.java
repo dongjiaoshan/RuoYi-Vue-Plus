@@ -107,6 +107,8 @@ class FarmRecordsServiceImplTest {
     private ImageUrlResolver imageUrlResolver;
     @Mock
     private IPlantActivityService plantActivityService;
+    @Mock
+    private org.dromara.djs.plant.team.service.PlantTeamLinkService teamLinkService;
 
     private FarmRecordsServiceImpl service;
 
@@ -127,7 +129,7 @@ class FarmRecordsServiceImplTest {
 
     @BeforeEach
     void setUp() {
-        service = new FarmRecordsServiceImpl(baseMapper, plotInfoMapper, plotZoneMapper, cropInfoMapper, plantDetailsMapper, teamMapper, peopleMapper, imageUrlResolver, plantActivityService);
+        service = new FarmRecordsServiceImpl(baseMapper, plotInfoMapper, plotZoneMapper, cropInfoMapper, plantDetailsMapper, teamMapper, peopleMapper, imageUrlResolver, plantActivityService, teamLinkService);
         // mocking selectMaxRecordNoByPrefix 返 null（当日尚无序号）→ next=1
         when(baseMapper.selectMaxRecordNoByPrefix(any(), any())).thenReturn(null);
         // mocking plot / crop 落库快照（plot_type / crop_name 冗余）

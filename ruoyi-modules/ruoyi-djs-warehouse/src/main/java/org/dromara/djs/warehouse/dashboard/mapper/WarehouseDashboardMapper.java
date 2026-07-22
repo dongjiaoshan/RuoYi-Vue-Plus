@@ -589,9 +589,9 @@ public interface WarehouseDashboardMapper {
         @Param("days") int days, @Param("belongType") String belongType);
 
     /**
-     * 图④：最近一个盘点单结果分布（GROUP BY check_result_type，仅明细行 is_header=0）。
+     * 图④：近 7 日盘点结果分布（GROUP BY check_result_type，仅明细行 is_header=0）。
      *
-     * <p>取该租户最近盘点日（DATE(MAX(check_date))）当天明细，按 1 正常/2 异常/3 计损 计数。
+     * <p>统计近 7 日（check_date >= 当天前 7 天）所有盘点明细，按 1 正常/2 异常/3 计损 计数。
      * 返回原始 check_result_type 数值字符串作为 name，由 service 映射中文。</p>
      *
      * @param tenantId 租户
@@ -602,8 +602,7 @@ public interface WarehouseDashboardMapper {
         + " WHERE tenant_id = #{tenantId} "
         + "   AND del_flag = '0' "
         + "   AND is_header = 0 "
-        + "   AND DATE(check_date) = (SELECT DATE(MAX(check_date)) FROM t_warehouse_check_record "
-        + "                            WHERE tenant_id = #{tenantId} AND del_flag = '0' AND is_header = 0) "
+        + "   AND check_date >= DATE_SUB(CURDATE(), INTERVAL 7 DAY) "
         + " GROUP BY check_result_type")
     List<ChartSeriesItemVo> selectCheckResult(@Param("tenantId") String tenantId);
 

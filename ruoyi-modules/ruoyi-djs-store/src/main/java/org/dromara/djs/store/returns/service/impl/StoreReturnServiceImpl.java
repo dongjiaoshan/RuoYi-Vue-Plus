@@ -604,7 +604,83 @@ public class StoreReturnServiceImpl
                 return vo;
             });
         }
-        return new java.util.ArrayList<>(dedup.values());
+        // row52：镜像猪肉候选路径——果蔬成品若「是否原材料外售=是」且配了原材料，候选折叠为其原材料产品
+        //（name/unit 取原材料；多成品共享同一原材料时合并成一行，保序）。
+        return foldVegMaterialSold(new java.util.ArrayList<>(dedup.values()));
+    }
+
+    /**
+     * row52：果蔬候选的「材料外售 → 原材料」折叠（镜像 {@link #listPorkCandidates} 的原材料外售路径）。
+     *
+     * <p>门槛必须 {@code is_material_sold==1} 且配了 {@code product_material}——只看 product_material 会误伤
+     * 「有机牛心甘蓝500g(is_material_sold=0)」这类正常成品。命中的候选替换成其原材料产品（id/name/unit 取原材料），
+     * 未命中原样；再按有效 id 用 {@link LinkedHashMap} 去重合并、保序（多成品同原材料 → 一行）。</p>
+     */
+    private List<StoreReturnVegCandidateVo> foldVegMaterialSold(List<StoreReturnVegCandidateVo> candidates) {
+        if (candidates.isEmpty()) {
+            return candidates;
+        }
+        List<Long> productIds = candidates.stream().map(StoreReturnVegCandidateVo::getProductId)
+            .filter(Objects::nonNull).distinct().collect(Collectors.toList());
+        Map<Long, ProductInfo> infoMap = productInfoMapper.selectList(new LambdaQueryWrapper<ProductInfo>()
+                .select(ProductInfo::getId, ProductInfo::getProductName, ProductInfo::getProductUnit,
+                    ProductInfo::getIsMaterialSold, ProductInfo::getProductMaterial)
+                .in(ProductInfo::getId, productIds))
+            .stream().collect(Collectors.toMap(ProductInfo::getId, p -> p, (a, b) -> a));
+        // 收集命中的原材料 id，再批量查原材料产品的 name/unit（避免 N+1）。
+        Set<Long> materialIds = new LinkedHashSet<>();
+        for (StoreReturnVegCandidateVo c : candidates) {
+            ProductInfo info = infoMap.get(c.getProductId());
+            if (info != null && isMaterialSold(info) && info.getProductMaterial() != null) {
+                materialIds.add(info.getProductMaterial());
+            }
+        }
+        Map<Long, ProductInfo> materialMap = materialIds.isEmpty() ? Map.of()
+            : productInfoMapper.selectList(new LambdaQueryWrapper<ProductInfo>()
+                    .select(ProductInfo::getId, ProductInfo::getProductName, ProductInfo::getProductUnit)
+                    .in(ProductInfo::getId, materialIds))
+                .stream().collect(Collectors.toMap(ProductInfo::getId, p -> p, (a, b) -> a));
+        Map<Long, StoreReturnVegCandidateVo> folded = new LinkedHashMap<>();
+        for (StoreReturnVegCandidateVo c : candidates) {
+            ProductInfo info = infoMap.get(c.getProductId());
+            Long effectiveId = c.getProductId();
+            String name = c.getProductName();
+            String unit = c.getProductUnit();
+            if (info != null && isMaterialSold(info) && info.getProductMaterial() != null) {
+                ProductInfo material = materialMap.get(info.getProductMaterial());
+                if (material != null) {
+                    effectiveId = material.getId();
+                    name = material.getProductName();
+                    unit = material.getProductUnit();
+                }
+            }
+            Long key = effectiveId;
+            String vName = name;
+            String vUnit = unit;
+            folded.computeIfAbsent(key, k -> {
+                StoreReturnVegCandidateVo vo = new StoreReturnVegCandidateVo();
+                vo.setProductId(key);
+                vo.setProductName(vName);
+                vo.setProductUnit(vUnit);
+                return vo;
+            });
+        }
+        return new ArrayList<>(folded.values());
+    }
+
+    /** 产品「是否原材料外售=是」判定（row52 折叠门槛：仅 is_material_sold==1 生效）。 */
+    private static boolean isMaterialSold(ProductInfo p) {
+        Integer sold = p.getIsMaterialSold();
+        return sold != null && sold == 1;
+    }
+
+    /** 产品单位是否按重量计（kg/公斤，不区分大小写；空 → false 按份数口径）。 */
+    private static boolean isKgUnit(String unit) {
+        if (unit == null) {
+            return false;
+        }
+        String s = unit.trim().toLowerCase();
+        return "kg".equals(s) || "公斤".equals(s);
     }
 
     @Override
@@ -626,9 +702,7 @@ public class StoreReturnServiceImpl
         BigDecimal weighed = bo.getReceivedWeight() != null ? bo.getReceivedWeight()
             : (bo.getReceivedQty() != null ? bo.getReceivedQty() : BigDecimal.ZERO);
         if (returnProduct != null && weighed.signum() > 0) {
-            String unit = returnProduct.getProductUnit() == null ? "" : returnProduct.getProductUnit().trim().toLowerCase();
-            boolean kgUnit = "kg".equals(unit) || "公斤".equals(unit);
-            if (kgUnit) {
+            if (isKgUnit(returnProduct.getProductUnit())) {
                 BigDecimal storeEntered = existing.getGoodsWeight();
                 if (storeEntered != null && storeEntered.signum() > 0 && weighed.compareTo(storeEntered) > 0) {
                     throw new ServiceException("仓库称重重量(" + weighed.toPlainString()
@@ -736,6 +810,8 @@ public class StoreReturnServiceImpl
         Set<Long> storeIds = byGroup.values().stream()
             .map(g -> g.get(0).getStoreId()).filter(Objects::nonNull).collect(Collectors.toSet());
         Map<Long, String> storeNames = storeNameMap(new ArrayList<>(storeIds));
+        // row57：重量三列只算按重量计（kg）行，份数产品单独归「非重量产品退回重量」。一次查全部行产品单位避免 N+1。
+        Map<Long, String> unitByProduct = productUnitMap(rows);
         List<StoreReturnStoreDailyVo> all = new ArrayList<>(byGroup.size());
         for (List<StoreReturn> group : byGroup.values()) {
             StoreReturn any = group.get(0);
@@ -745,13 +821,27 @@ public class StoreReturnServiceImpl
             vo.setStoreName(storeNames.get(any.getStoreId()));
             vo.setProductKindCount((int) group.stream()
                 .map(StoreReturn::getProductId).filter(Objects::nonNull).distinct().count());
-            BigDecimal returnTotal = group.stream().map(StoreReturn::getGoodsWeight).filter(Objects::nonNull)
-                .reduce(BigDecimal.ZERO, BigDecimal::add);
-            BigDecimal confirmTotal = group.stream().map(StoreReturn::getReceivedWeight).filter(Objects::nonNull)
-                .reduce(BigDecimal.ZERO, BigDecimal::add);
+            // row57：① 确认重量 = Σ kg 行 received_weight；② 退货重量 = Σ kg 行 goods_weight；
+            //        ③ 重量差异 = 退货 − 确认（同为 kg 口径）；④ 非重量产品退回重量 = Σ 非 kg 行 received_weight（仓库称重）。
+            BigDecimal returnTotal = BigDecimal.ZERO;
+            BigDecimal confirmTotal = BigDecimal.ZERO;
+            BigDecimal nonWeightReturnTotal = BigDecimal.ZERO;
+            for (StoreReturn r : group) {
+                if (isKgUnit(unitByProduct.get(r.getProductId()))) {
+                    if (r.getGoodsWeight() != null) {
+                        returnTotal = returnTotal.add(r.getGoodsWeight());
+                    }
+                    if (r.getReceivedWeight() != null) {
+                        confirmTotal = confirmTotal.add(r.getReceivedWeight());
+                    }
+                } else if (r.getReceivedWeight() != null) {
+                    nonWeightReturnTotal = nonWeightReturnTotal.add(r.getReceivedWeight());
+                }
+            }
             vo.setReturnWeightTotal(returnTotal);
             vo.setConfirmWeightTotal(confirmTotal);
             vo.setWeightDiffTotal(returnTotal.subtract(confirmTotal));
+            vo.setNonWeightReturnWeightTotal(nonWeightReturnTotal);
             group.stream().filter(r -> r.getConfirmTime() != null)
                 .max(Comparator.comparing(StoreReturn::getConfirmTime))
                 .ifPresent(latest -> {
@@ -764,6 +854,20 @@ public class StoreReturnServiceImpl
             .comparing(StoreReturnStoreDailyVo::getReturnDate, Comparator.reverseOrder())
             .thenComparing(StoreReturnStoreDailyVo::getStoreId, Comparator.reverseOrder()));
         return all;
+    }
+
+    /** row57：批量取退回行产品单位 map（productId → productUnit），供 kg / 非 kg 分流，避免逐行 selectById。 */
+    private Map<Long, String> productUnitMap(List<StoreReturn> rows) {
+        List<Long> pids = rows.stream().map(StoreReturn::getProductId)
+            .filter(Objects::nonNull).distinct().collect(Collectors.toList());
+        if (pids.isEmpty()) {
+            return Map.of();
+        }
+        return productInfoMapper.selectList(new LambdaQueryWrapper<ProductInfo>()
+                .select(ProductInfo::getId, ProductInfo::getProductUnit)
+                .in(ProductInfo::getId, pids))
+            .stream().collect(Collectors.toMap(ProductInfo::getId,
+                p -> p.getProductUnit() == null ? "" : p.getProductUnit(), (a, b) -> a));
     }
 
     @Override

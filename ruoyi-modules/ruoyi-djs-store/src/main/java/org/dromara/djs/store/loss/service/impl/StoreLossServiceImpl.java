@@ -96,7 +96,7 @@ public class StoreLossServiceImpl implements IStoreLossService {
     private final ShipmentMapper shipmentMapper;
     private final StoreReturnMapper storeReturnMapper;
     private final ProductInfoMapper productInfoMapper;
-    private final org.dromara.djs.warehouse.product.mapper.ProductInhouseMapper productInhouseMapper;
+    private final org.dromara.djs.warehouse.pack.service.IProductProductionService productProductionService;
     private final DictService dictService;
 
     @Override
@@ -156,6 +156,8 @@ public class StoreLossServiceImpl implements IStoreLossService {
         WhiteBarSplitLossVo vo = new WhiteBarSplitLossVo();
         vo.setArriveWeight(BigDecimal.ZERO);
         vo.setReturnReceivedWeight(BigDecimal.ZERO);
+        vo.setMaterialSoldArriveWeight(BigDecimal.ZERO);
+        vo.setSplitTotalWeight(BigDecimal.ZERO);
         vo.setSplitLoss(BigDecimal.ZERO);
         if (storeId == null) {
             return vo;
@@ -173,12 +175,13 @@ public class StoreLossServiceImpl implements IStoreLossService {
             ? BigDecimal.ZERO
             : nz(sumWhiteBarReturnReceivedWeightByStore(d, whiteBarProductIds).get(storeId));
         vo.setReturnReceivedWeight(returnReceived);
-        // row34：白条分割损耗 = 白条到店重 − 门店分割产出重 − 退回入库重。
-        // 分割产出 = 该店当日门店端分割白条产出的原材料 inhouse(source='store',StoreSplit.addSplit 写)之和；
-        // 原公式只减退回、把整条白条当损耗（54.5−5=49.5 明显偏高），漏减了分割产出这块（占大头）。
-        BigDecimal splitProduce = nz(productInhouseMapper.sumStoreSplitWeightByStore(storeId, d));
-        vo.setSplitProduceWeight(splitProduce);
-        BigDecimal loss = arrive.subtract(splitProduce).subtract(returnReceived);
+        // row49：白条分割损耗 = max(0, 白条到店重 − 白条分割产品总重)，
+        //   白条分割产品总重 = 白条退回当日入库重 − 材料外售到店重（原材料∈白条退回字典的成品发货实称）。
+        BigDecimal materialSoldArrive = sumMaterialSoldArriveWeight(storeId, d, whiteBarProductIds);
+        vo.setMaterialSoldArriveWeight(materialSoldArrive);
+        BigDecimal splitTotal = returnReceived.subtract(materialSoldArrive);
+        vo.setSplitTotalWeight(splitTotal);
+        BigDecimal loss = arrive.subtract(splitTotal);
         vo.setSplitLoss(loss.signum() < 0 ? BigDecimal.ZERO : loss);
         return vo;
     }
@@ -282,9 +285,11 @@ public class StoreLossServiceImpl implements IStoreLossService {
                 continue;   // 到店重 ≤ 0 视为无白条到店，不记录
             }
             BigDecimal returnReceived = nz(splitByStore.get(storeId));
-            // row34：损耗 = 白条到店 − 门店分割产出 − 退回入库（与实时 getWhiteBarSplitLoss 同口径）。
-            BigDecimal splitProduce = nz(productInhouseMapper.sumStoreSplitWeightByStore(storeId, date));
-            BigDecimal loss = arrive.subtract(splitProduce).subtract(returnReceived);
+            // row50：白条分割产品总重 = 退回入库重 − 材料外售到店重（原材料∈白条退回字典的成品发货实称）；
+            //   损耗 = max(0, 白条到店 − 白条分割产品总重)（与实时 getWhiteBarSplitLoss 同口径）。
+            BigDecimal materialSoldArrive = sumMaterialSoldArriveWeight(storeId, date, whiteBarProductIds);
+            BigDecimal splitTotal = returnReceived.subtract(materialSoldArrive);
+            BigDecimal loss = arrive.subtract(splitTotal);
             if (loss.signum() < 0) {
                 loss = BigDecimal.ZERO;   // 钳 0
             }
@@ -296,8 +301,8 @@ public class StoreLossServiceImpl implements IStoreLossService {
             record.setLossDate(date);
             record.setLossType(LOSS_TYPE_WHITE_BAR_SPLIT);
             record.setWhiteBarArriveWeight(arrive);
-            // white_bar_split_weight 落「门店分割产出重」（row34 前误存退回入库重，语义纠正为真·分割产出）。
-            record.setWhiteBarSplitWeight(splitProduce);
+            // white_bar_split_weight 落「白条分割产品总重」= 退回入库重 − 材料外售到店重（row50 语义）。
+            record.setWhiteBarSplitWeight(splitTotal);
             baseMapper.insert(record);
             rows++;
         }
@@ -346,6 +351,31 @@ public class StoreLossServiceImpl implements IStoreLossService {
             result.merge(r.getStoreId(), nz(r.getReceivedWeight()), BigDecimal::add);
         }
         return result;
+    }
+
+    /**
+     * 当日该店材料外售成品到店重 kg（row49/50）：取「是否材料外售=是」({@code is_material_sold=1})
+     * 且原材料（{@code product_material}）∈ 白条退回字典产品集的成品，累加各成品当日发往该店的发货实称重
+     * （{@link org.dromara.djs.warehouse.pack.service.IProductProductionService#sumDeliveredWeightToStore}）。
+     * 无门店 / 空字典 / 无命中成品 → 0，不抛。
+     */
+    private BigDecimal sumMaterialSoldArriveWeight(Long storeId, LocalDate date, Set<Long> whiteBarProductIds) {
+        if (storeId == null || whiteBarProductIds == null || whiteBarProductIds.isEmpty()) {
+            return BigDecimal.ZERO;
+        }
+        List<Long> finishedIds = productInfoMapper.selectList(new LambdaQueryWrapper<ProductInfo>()
+                .eq(ProductInfo::getIsMaterialSold, 1)
+                .in(ProductInfo::getProductMaterial, whiteBarProductIds)
+                .select(ProductInfo::getId))
+            .stream().map(ProductInfo::getId).filter(Objects::nonNull).distinct().toList();
+        if (finishedIds.isEmpty()) {
+            return BigDecimal.ZERO;
+        }
+        BigDecimal sum = BigDecimal.ZERO;
+        for (Long finishedId : finishedIds) {
+            sum = sum.add(nz(productProductionService.sumDeliveredWeightToStore(storeId, finishedId, date)));
+        }
+        return sum;
     }
 
     /**

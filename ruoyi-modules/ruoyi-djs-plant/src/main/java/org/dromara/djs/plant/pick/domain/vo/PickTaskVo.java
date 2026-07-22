@@ -70,6 +70,21 @@ public class PickTaskVo implements Serializable {
     private String harvestTeamName;
 
     /**
+     * 种植班组（row40）：采收/采摘录入时默认预填此班组（可改）。取 plant_details.plant_by（多选第一个）。
+     */
+    private Long plantBy;
+    /** 种植班组名（row40，预填展示）。 */
+    private String plantTeamName;
+    /** 种植班组全集 id（row40，多班组时全部预填）。 */
+    private java.util.List<Long> plantByIds;
+    /** 种植班组全集名（row40，多班组时全部展示）。 */
+    private java.util.List<String> plantTeamNames;
+    /** 采摘班组全集 id（row40 回显）。 */
+    private java.util.List<Long> harvestByIds;
+    /** 采摘班组全集名（row40 回显）。 */
+    private java.util.List<String> harvestTeamNames;
+
+    /**
      * 指派班组成员数（t_plant_work_people 行数）。
      *
      * <p>供 mp 区分两种空 picker：harvestBy 为空 = 未指派班组；

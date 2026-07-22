@@ -7,6 +7,8 @@ import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Pattern;
 import lombok.Data;
 
+import java.util.List;
+
 /**
  * 种植计划明细子项输入 BO（PLT-PLAN-001 向导 step3 单元）。
  *
@@ -36,9 +38,18 @@ public class PlantDetailInputBo {
     @Pattern(regexp = "^(05|15|25)$", message = "{plant.plan.plantPeriod.invalid}")
     private String plantPeriod;
 
-    /** 种植班组（可空）。 */
+    /** 种植班组（可空，过渡兼容单值 = 多选第一个）。 */
     private Long plantBy;
 
-    /** 采摘班组（可空）。 */
+    /** 采摘班组（可空，过渡兼容单值 = 多选第一个）。 */
     private Long harvestBy;
+
+    /**
+     * 种植班组全集（G1-TEAMS-MULTISELECT，row36）。非空时以此为准写中间表，
+     * 旧单列 {@code plantBy} 取本 list 第一个；为 null 时退化为单值 {@code plantBy}。
+     */
+    private List<Long> plantByIds;
+
+    /** 采摘班组全集（同 {@link #plantByIds} 语义，写 role=harvest）。 */
+    private List<Long> harvestByIds;
 }

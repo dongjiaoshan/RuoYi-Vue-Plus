@@ -67,6 +67,7 @@ public class AppletPickServiceImpl implements IAppletPickService {
     private final IFarmRecordsService farmRecordsService;
     private final ApplicationEventPublisher eventPublisher;
     private final ImageUrlResolver imageUrlResolver;
+    private final org.dromara.djs.plant.team.service.PlantTeamLinkService teamLinkService;
 
     /** 作物 L2 默认图统一走果蔬（IMG-LIB-001）。 */
     private static final String CROP_BELONG_TYPE = "vegetable";
@@ -134,8 +135,14 @@ public class AppletPickServiceImpl implements IAppletPickService {
         // 1.1 首次「开始采摘」（pending→picking，赢得乐观激活）把本次所选采收班组写进
         //     plant_details.harvest_by，作为「采收班组」权威源。完成采摘（picking→completed）不再改写，
         //     使第二次录入时前端能反显出「开始采摘时所选班组」并锁定（保证反显=开始所选，不与本次脱节）。
+        // row40：采收班组多选 —— 旧单列 harvest_by = 第一个（过渡兼容），全集 sync 中间表 role=harvest
+        java.util.List<Long> effPickTeams = CollUtil.isNotEmpty(bo.getTeamIds())
+            ? bo.getTeamIds().stream().filter(Objects::nonNull).distinct().collect(Collectors.toList())
+            : (bo.getTeamId() == null ? Collections.emptyList() : java.util.List.of(bo.getTeamId()));
         if (wonActivation && !finish) {
-            detail.setHarvestBy(bo.getTeamId());
+            detail.setHarvestBy(effPickTeams.isEmpty() ? null : effPickTeams.get(0));
+            teamLinkService.syncDetailTeams(detail.getId(),
+                org.dromara.djs.plant.team.service.PlantTeamLinkService.ROLE_HARVEST, effPickTeams);
         }
 
         // 2. harvest_status 流转：pending → picking；finish 时 → completed。
@@ -180,7 +187,8 @@ public class AppletPickServiceImpl implements IAppletPickService {
         grow.setPlantId(detail.getPlantId());
         grow.setPlotId(detail.getPlotId());
         grow.setCropId(detail.getCropId());
-        grow.setFarmBy(bo.getTeamId());   // 采收班组落 farm_by
+        grow.setFarmBy(effPickTeams.isEmpty() ? bo.getTeamId() : effPickTeams.get(0));   // 采收班组落 farm_by（多选第一个）
+        grow.setFarmByIds(effPickTeams);   // row40：farm_records 班组全集 sync 中间表
         grow.setFarmDate(bo.getHarvestDate());
         grow.setProofOssIds(joinOssIds(bo.getProofOssIds()));
         grow.setRemark(bo.getRemark());
@@ -516,7 +524,14 @@ public class AppletPickServiceImpl implements IAppletPickService {
         Set<Long> plotIds = entities.stream().map(PlantDetails::getPlotId).filter(Objects::nonNull).collect(Collectors.toSet());
         Set<Long> cropIds = entities.stream().map(PlantDetails::getCropId).filter(Objects::nonNull).collect(Collectors.toSet());
         Set<Long> teamIds = new HashSet<>();
-        entities.forEach(d -> { if (d.getHarvestBy() != null) { teamIds.add(d.getHarvestBy()); } });
+        entities.forEach(d -> {
+            if (d.getHarvestBy() != null) { teamIds.add(d.getHarvestBy()); }
+            if (d.getPlantBy() != null) { teamIds.add(d.getPlantBy()); }   // row40：种植班组预填
+        });
+        // 班组多选中间表 enrich（row40）：批量取各明细 role → 名/id
+        Set<Long> detailIds = entities.stream().map(PlantDetails::getId).filter(Objects::nonNull).collect(Collectors.toSet());
+        Map<Long, Map<String, java.util.List<String>>> teamNamesMap = teamLinkService.detailTeamNames(detailIds);
+        Map<Long, Map<String, java.util.List<Long>>> teamIdsMap = teamLinkService.detailTeamIds(detailIds);
 
         Map<Long, String> planNoMap = planIds.isEmpty() ? Map.of()
             : planMapper.selectByIds(planIds).stream()
@@ -572,6 +587,23 @@ public class AppletPickServiceImpl implements IAppletPickService {
             vo.setHarvestTeamName(d.getHarvestBy() == null ? null : teamMap.get(d.getHarvestBy()));
             vo.setMemberCount(d.getHarvestBy() == null ? null
                 : Math.toIntExact(teamMemberCountMap.getOrDefault(d.getHarvestBy(), 0L)));
+            // row40：种植班组预填字段 + 多班组全集（中间表优先，回落旧单列）
+            vo.setPlantBy(d.getPlantBy());
+            vo.setPlantTeamName(d.getPlantBy() == null ? null : teamMap.get(d.getPlantBy()));
+            Map<String, java.util.List<String>> roleNames = teamNamesMap.getOrDefault(d.getId(), Map.of());
+            Map<String, java.util.List<Long>> roleIds = teamIdsMap.getOrDefault(d.getId(), Map.of());
+            java.util.List<String> plantNames = roleNames.get(org.dromara.djs.plant.team.service.PlantTeamLinkService.ROLE_PLANT);
+            java.util.List<String> harvestNames = roleNames.get(org.dromara.djs.plant.team.service.PlantTeamLinkService.ROLE_HARVEST);
+            java.util.List<Long> plantIds = roleIds.get(org.dromara.djs.plant.team.service.PlantTeamLinkService.ROLE_PLANT);
+            java.util.List<Long> harvestIds = roleIds.get(org.dromara.djs.plant.team.service.PlantTeamLinkService.ROLE_HARVEST);
+            vo.setPlantTeamNames(CollUtil.isNotEmpty(plantNames) ? plantNames
+                : (vo.getPlantTeamName() == null ? Collections.emptyList() : java.util.List.of(vo.getPlantTeamName())));
+            vo.setPlantByIds(CollUtil.isNotEmpty(plantIds) ? plantIds
+                : (d.getPlantBy() == null ? Collections.emptyList() : java.util.List.of(d.getPlantBy())));
+            vo.setHarvestTeamNames(CollUtil.isNotEmpty(harvestNames) ? harvestNames
+                : (vo.getHarvestTeamName() == null ? Collections.emptyList() : java.util.List.of(vo.getHarvestTeamName())));
+            vo.setHarvestByIds(CollUtil.isNotEmpty(harvestIds) ? harvestIds
+                : (d.getHarvestBy() == null ? Collections.emptyList() : java.util.List.of(d.getHarvestBy())));
             return vo;
         }).collect(Collectors.toList());
     }

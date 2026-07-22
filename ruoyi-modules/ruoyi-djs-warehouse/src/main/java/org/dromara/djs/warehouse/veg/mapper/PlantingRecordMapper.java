@@ -21,7 +21,9 @@ public interface PlantingRecordMapper extends BaseMapperPlus<PlantingRecord, Pla
     /**
      * mp 待处理列表：左联 vegetable_handle 取已累计字段（如未开工则 NULL）。
      *
-     * <p>过滤 handle_status != 'done' 且 del_flag='0'，按 data_date DESC 限制 50 条。</p>
+     * <p>过滤 handle_status != 'done' 且 del_flag='0'，按 data_date DESC 限制 50 条。
+     * 排除采摘活动地块（plot+crop 命中 is_pick=1 明细）：活动产量走采摘活动去向链
+     * （veg_fresh 直入库 / platform 直写处理流水），不进毛菜处理过磅，避免同批量双录（row12）。</p>
      */
     @Select("SELECT p.id AS plantingRecordId, p.plot_id AS plotId, p.plot_name AS plotName,"
         + "       p.crop_id AS cropId, p.crop_name AS cropName,"
@@ -33,6 +35,9 @@ public interface PlantingRecordMapper extends BaseMapperPlus<PlantingRecord, Pla
         + "  LEFT JOIN t_warehouse_vegetable_handle h "
         + "         ON h.planting_record_id = p.id AND h.del_flag='0'"
         + " WHERE p.del_flag='0' AND p.handle_status <> 'done'"
+        + "   AND NOT EXISTS (SELECT 1 FROM t_plant_plant_details d"
+        + "        WHERE d.plot_id = p.plot_id AND d.crop_id = p.crop_id"
+        + "          AND d.is_pick = 1 AND d.del_flag = '0')"
         + " ORDER BY p.data_date DESC, p.id DESC LIMIT 50")
     List<PendingPlantingRecordVo> selectPendingList();
 

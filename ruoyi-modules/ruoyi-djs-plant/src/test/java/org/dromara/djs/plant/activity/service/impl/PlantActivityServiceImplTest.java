@@ -58,6 +58,8 @@ class PlantActivityServiceImplTest {
     private CropInfoMapper cropInfoMapper;
     @Mock
     private PlantDetailsMapper plantDetailsMapper;
+    @Mock
+    private org.dromara.djs.plant.team.service.PlantTeamLinkService teamLinkService;
 
     private PlantActivityServiceImpl service;
 
@@ -76,7 +78,7 @@ class PlantActivityServiceImplTest {
 
     @BeforeEach
     void setUp() {
-        service = new PlantActivityServiceImpl(baseMapper, cropInfoMapper, plantDetailsMapper);
+        service = new PlantActivityServiceImpl(baseMapper, cropInfoMapper, plantDetailsMapper, teamLinkService);
     }
 
     @Test

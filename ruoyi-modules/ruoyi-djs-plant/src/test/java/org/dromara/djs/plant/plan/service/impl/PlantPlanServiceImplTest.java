@@ -88,6 +88,8 @@ class PlantPlanServiceImplTest {
     private PlantWorkTeamMapper teamMapper;
     @Mock
     private IBizCodeGenerator bizCodeGenerator;
+    @Mock
+    private org.dromara.djs.plant.team.service.PlantTeamLinkService teamLinkService;
 
     private PlantPlanServiceImpl service;
 
@@ -107,7 +109,7 @@ class PlantPlanServiceImplTest {
 
     @BeforeEach
     void setUp() {
-        service = new PlantPlanServiceImpl(planMapper, detailsMapper, cropMapper, plotMapper, zoneMapper, teamMapper, bizCodeGenerator);
+        service = new PlantPlanServiceImpl(planMapper, detailsMapper, cropMapper, plotMapper, zoneMapper, teamMapper, bizCodeGenerator, teamLinkService);
     }
 
     @Test
