@@ -34,6 +34,13 @@ public final class TraceContentConst {
     /** 白条出库（领用）（白条被领用出库进入分割时刻；邓博 row19 拆出的独立事件）。 */
     public static final String WHITE_BAR_PICK = "white_bar_pick";
 
+    /**
+     * 白条分割（白条在分割管理中首次分割时刻；邓博 row61 猪肉追溯时间轴节点）。
+     * 非 trace_event 落地：追溯聚合时按 {@code t_warehouse_pig_cut_record.cut_start_time}
+     * （out_type='cut' 最早一次）合成，与果蔬合成工序节点同范式。
+     */
+    public static final String WHITE_BAR_CUT = "white_bar_cut";
+
     /** 发货（发货确认工序）。 */
     public static final String SHIP = "ship";
 

@@ -2,13 +2,16 @@ package org.dromara.djs.warehouse.trace.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import jakarta.servlet.http.HttpServletRequest;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.common.core.exception.ServiceException;
+import org.dromara.common.core.utils.ServletUtils;
 import org.dromara.common.core.utils.StringUtils;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.tenant.helper.TenantHelper;
 import org.dromara.djs.common.base.DjsBaseServiceImpl;
+import org.dromara.djs.common.store.context.StoreContext;
 import org.dromara.djs.common.store.domain.Store;
 import org.dromara.djs.common.store.mapper.StoreMapper;
 import org.dromara.djs.plant.plot.domain.PlotInfo;
@@ -221,8 +224,46 @@ public class TraceCodeAdminServiceImpl
             applyVegShipFilter(w, query);
             applyPorkExcludeWhiteBarFilter(w, query);
         }
+        applyStoreScope(w);
         w.orderByDesc(TraceCode::getCreateTime).orderByDesc(TraceCode::getId);
         return w;
+    }
+
+    /**
+     * 追溯码列表按「当前所选门店」隔离（DENGBO row59）。
+     *
+     * <p>追溯码控制器在 {@code /djs/warehouse/**} 前缀下，<b>不在</b> {@code StoreContextInterceptor}
+     * 的 {@code /djs/store/**} 注入范围内（仓库域跨门店查共享表，不自动注入门店上下文），故
+     * {@link StoreContext#getStoreId()} 恒空——直接读前端全局注入的请求头
+     * {@code Current-Store-Id}（{@link StoreContext#HEADER_STORE_ID}，plus-ui request.ts 全局挂）。</p>
+     *
+     * <p>option B（与门店墙口径一致）：显式选了门店即按该店过滤（含超管）；未选门店（无 header）不过滤看全部。
+     * {@code store_id} 为 NULL 的历史码在选店后不显（属该店无关码，正确排除，不误伤别店视角）。</p>
+     */
+    private void applyStoreScope(LambdaQueryWrapper<TraceCode> w) {
+        Long storeId = currentSelectedStoreId();
+        if (storeId != null) {
+            w.eq(TraceCode::getStoreId, storeId);
+        }
+    }
+
+    /**
+     * 当前请求头携带的所选门店 ID（{@code Current-Store-Id}）；无请求上下文 / 未选门店 / 非法值 → null。
+     */
+    private Long currentSelectedStoreId() {
+        try {
+            HttpServletRequest req = ServletUtils.getRequest();
+            if (req == null) {
+                return null;
+            }
+            String raw = req.getHeader(StoreContext.HEADER_STORE_ID);
+            if (StringUtils.isBlank(raw)) {
+                return null;
+            }
+            return Long.valueOf(raw.trim());
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     /**

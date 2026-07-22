@@ -32,6 +32,7 @@ import org.dromara.djs.warehouse.stock.domain.LocationStock;
 import org.dromara.djs.warehouse.stock.mapper.LocationStockMapper;
 import org.dromara.djs.warehouse.veg.domain.FeedLog;
 import org.dromara.djs.warehouse.veg.domain.HandleRecord;
+import org.dromara.djs.warehouse.veg.domain.HandleRecordTeam;
 import org.dromara.djs.warehouse.veg.domain.PlantingRecord;
 import org.dromara.djs.warehouse.veg.domain.VegetableHandle;
 import org.dromara.djs.warehouse.veg.domain.bo.HandleRecordSubmitBo;
@@ -49,6 +50,7 @@ import org.dromara.djs.warehouse.veg.domain.vo.VegPlotDetailVo;
 import org.dromara.djs.warehouse.veg.domain.vo.VegetableHandleVo;
 import org.dromara.djs.warehouse.veg.mapper.FeedLogMapper;
 import org.dromara.djs.warehouse.veg.mapper.HandleRecordMapper;
+import org.dromara.djs.warehouse.veg.mapper.HandleRecordTeamMapper;
 import org.dromara.djs.warehouse.veg.mapper.PlantingRecordMapper;
 import org.dromara.djs.warehouse.veg.mapper.VegetableHandleMapper;
 import org.dromara.djs.warehouse.veg.service.IVegetableHandleService;
@@ -57,8 +59,10 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.util.ArrayList;
 import java.util.Date;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -149,6 +153,8 @@ public class VegetableHandleServiceImpl
     private static final String PICK_DEST_FEED = "feed";
 
     private final HandleRecordMapper handleRecordMapper;
+    /** 采摘班组多选中间表 mapper（ROW64）：采收行同步全集，旧单列 team_id 仍写首值过渡。 */
+    private final HandleRecordTeamMapper handleRecordTeamMapper;
     private final PlantingRecordMapper plantingRecordMapper;
     private final StockFlowMapper stockFlowMapper;
     private final LocationInfoMapper locationInfoMapper;
@@ -174,6 +180,7 @@ public class VegetableHandleServiceImpl
 
     public VegetableHandleServiceImpl(VegetableHandleMapper baseMapper,
                                       HandleRecordMapper handleRecordMapper,
+                                      HandleRecordTeamMapper handleRecordTeamMapper,
                                       PlantingRecordMapper plantingRecordMapper,
                                       StockFlowMapper stockFlowMapper,
                                       LocationInfoMapper locationInfoMapper,
@@ -188,6 +195,7 @@ public class VegetableHandleServiceImpl
                                       IPlantActivityService plantActivityService) {
         super(baseMapper);
         this.handleRecordMapper = handleRecordMapper;
+        this.handleRecordTeamMapper = handleRecordTeamMapper;
         this.plantingRecordMapper = plantingRecordMapper;
         this.stockFlowMapper = stockFlowMapper;
         this.locationInfoMapper = locationInfoMapper;
@@ -632,13 +640,18 @@ public class VegetableHandleServiceImpl
             throw new ServiceException("该地块已称重完成，不能再录入采摘重量");
         }
 
+        // row64：采摘班组多选——去重去空后，旧单列 team_id 写首值作过渡（row39 班组绩效按 team_id
+        // GROUP BY 口径不变），全集写入 t_warehouse_handle_record_team 中间表。
+        List<Long> teamIds = new ArrayList<>(new LinkedHashSet<>(
+            bo.getTeamIds().stream().filter(Objects::nonNull).toList()));
+
         // Step 3：INSERT handle_record（采收）
         HandleRecord record = new HandleRecord();
         record.setHandleId(handle.getId());
         record.setPlotId(planting.getPlotId());
         record.setCropId(planting.getCropId());
-        // row38：记入采摘班组，作为 row39 班组绩效按组采收总重量的统计维度
-        record.setTeamId(bo.getTeamId());
+        // row64：旧单列写多选第一个，作为 row39 班组绩效按组采收总重量的统计维度（口径不变）
+        record.setTeamId(teamIds.isEmpty() ? null : teamIds.get(0));
         record.setRecordType(RECORD_TYPE_PICK);
         record.setRecordWeight(weight);
         record.setIsWeighed(weighDone ? 1 : 2);
@@ -648,6 +661,12 @@ public class VegetableHandleServiceImpl
         record.setHandleUser(userId);
         record.setHandleTime(now);
         handleRecordMapper.insert(record);
+
+        // Step 3.1：同步采摘班组多选中间表（先物理删旧关联再逐条插；采收行 INSERT-only，删为幂等无害）
+        handleRecordTeamMapper.physicalDeleteByRecordId(record.getId());
+        for (Long teamId : teamIds) {
+            handleRecordTeamMapper.insert(new HandleRecordTeam(record.getId(), teamId));
+        }
 
         // Step 4：聚合 UPDATE vegetable_handle（picked_weight += weight）
         // 序号9-Req1：采摘阶段 is_finish 恒为 2（未处理完成）→ 损耗恒置 0，不在采摘时结算损耗（客户 2026-06-20）

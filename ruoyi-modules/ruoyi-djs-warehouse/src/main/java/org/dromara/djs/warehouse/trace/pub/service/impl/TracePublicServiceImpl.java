@@ -22,6 +22,8 @@ import org.dromara.djs.breed.med.record.domain.MedRecord;
 import org.dromara.djs.breed.med.record.mapper.MedRecordMapper;
 import org.dromara.djs.common.store.domain.Store;
 import org.dromara.djs.common.store.mapper.StoreMapper;
+import org.dromara.djs.warehouse.cut.domain.PigCutRecord;
+import org.dromara.djs.warehouse.cut.mapper.PigCutRecordMapper;
 import org.dromara.djs.plant.crop.domain.CropInfo;
 import org.dromara.djs.plant.crop.mapper.CropInfoMapper;
 import org.dromara.djs.plant.farm.domain.FarmRecords;
@@ -52,9 +54,7 @@ import org.dromara.djs.warehouse.trace.pub.domain.vo.PublicTraceVo;
 import org.dromara.djs.warehouse.trace.pub.mapper.TraceUserNameMapper;
 import org.dromara.djs.warehouse.trace.pub.service.ITracePublicService;
 import org.dromara.djs.warehouse.veg.domain.PlantingRecord;
-import org.dromara.djs.warehouse.veg.domain.VegetableHandle;
 import org.dromara.djs.warehouse.veg.mapper.PlantingRecordMapper;
-import org.dromara.djs.warehouse.veg.mapper.VegetableHandleMapper;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
@@ -114,6 +114,20 @@ public class TracePublicServiceImpl
     /** 缓存 TTL（~10min）。 */
     private static final Duration CACHE_TTL = Duration.ofMinutes(10);
 
+    /**
+     * 猪肉时间轴不展示的事件（DENGBO row61）：白条入库 / 屠宰 / 排酸——不在客户要求的 7 节点集，聚合时剔除。
+     */
+    private static final Set<String> PORK_TIMELINE_EXCLUDED = Set.of(
+        TraceContentConst.WHITE_BAR_IN, TraceContentConst.SLAUGHTER, TraceContentConst.ACID);
+
+    /**
+     * 果蔬农事记录不展示的类型（DENGBO row63）：采摘 / 采摘活动——追溯页只显真实农事工序，采摘另有节点。
+     */
+    private static final Set<String> VEG_PLOT_RECORD_EXCLUDED = Set.of("harvest", "harvest_activity");
+
+    /** 白条领用表出库类型：分割车间（{@code djs_pig_cut_out_type}），白条分割节点时刻只取 cut。 */
+    private static final String PIG_CUT_OUT_TYPE_CUT = "cut";
+
     private final TraceEventMapper traceEventMapper;
     private final ProductInfoMapper productInfoMapper;
     private final StoreMapper storeMapper;
@@ -138,13 +152,13 @@ public class TracePublicServiceImpl
     private final PlantDetailsMapper plantDetailsMapper;
     private final CropInfoMapper cropInfoMapper;
     // veg 工序时间轴源（同 warehouse 模块内）
-    /** 仓库视角种植记录：播种 / 采收节点时间源。 */
+    /** 仓库视角种植记录：种植 / 采摘节点时间源。 */
     private final PlantingRecordMapper plantingRecordMapper;
-    /** 毛菜处理汇总：毛菜处理节点时间源。 */
-    private final VegetableHandleMapper vegetableHandleMapper;
-    /** 发货产品生产记录：打包节点时间 + 果蔬成品实际称重（按 trace_code 关联）。 */
+    /** 发货产品生产记录：产品生产（打包）节点时间 + 果蔬成品实际称重（按 trace_code 关联）。 */
     private final ProductProductionMapper productProductionMapper;
     private final VegDisplayNameMapper vegDisplayNameMapper;
+    /** 白条领用 / 分割记录：猪肉追溯「白条分割」节点时间源（row61，cut_start_time）。 */
+    private final PigCutRecordMapper pigCutRecordMapper;
 
     public TracePublicServiceImpl(TraceCodeMapper baseMapper,
                                   TraceEventMapper traceEventMapper,
@@ -167,9 +181,9 @@ public class TracePublicServiceImpl
                                   PlantDetailsMapper plantDetailsMapper,
                                   CropInfoMapper cropInfoMapper,
                                   PlantingRecordMapper plantingRecordMapper,
-                                  VegetableHandleMapper vegetableHandleMapper,
                                   ProductProductionMapper productProductionMapper,
-                                  VegDisplayNameMapper vegDisplayNameMapper) {
+                                  VegDisplayNameMapper vegDisplayNameMapper,
+                                  PigCutRecordMapper pigCutRecordMapper) {
         super(baseMapper);
         this.traceEventMapper = traceEventMapper;
         this.productInfoMapper = productInfoMapper;
@@ -191,9 +205,9 @@ public class TracePublicServiceImpl
         this.plantDetailsMapper = plantDetailsMapper;
         this.cropInfoMapper = cropInfoMapper;
         this.plantingRecordMapper = plantingRecordMapper;
-        this.vegetableHandleMapper = vegetableHandleMapper;
         this.productProductionMapper = productProductionMapper;
         this.vegDisplayNameMapper = vegDisplayNameMapper;
+        this.pigCutRecordMapper = pigCutRecordMapper;
     }
 
     @Override
@@ -401,8 +415,52 @@ public class TracePublicServiceImpl
         // 检疫信息：V1 数据源缺口（无检疫表/字段），返 null（见 _open-issues）
         vo.setQuarantine(null);
 
+        // row61：时间轴重构成 7 节点（出栏/屠宰完成/白条领用/白条分割/产品生产/冷链发货/到店）
+        remodelPorkTimeline(timeline, earNo);
+
         // 门店（pork/veg 共用 fillStore）
         fillStore(vo, code);
+    }
+
+    /**
+     * 猪肉追溯时间轴重构（DENGBO row61）：只保留客户要求的 7 节点，补「白条分割」合成节点。
+     *
+     * <p><b>保留</b>：{@code marketing}(出栏) / {@code singe}(屠宰完成) / {@code white_bar_pick}(白条领用) /
+     * {@code white_bar_cut}(白条分割·合成) / {@code in_stock}(产品生产·打包完成) / {@code ship}(冷链发货) /
+     * {@code arrival}(到店)。<b>去掉</b>：{@code white_bar_in}(白条入库) / {@code slaughter}(屠宰) /
+     * {@code acid}(排酸)——不在客户要求节点集。</p>
+     *
+     * <p>「白条分割」时刻取 {@code t_warehouse_pig_cut_record.cut_start_time}（out_type='cut' 首次分割开始）；
+     * 无（外购白条 / 未分割）→ 不补该节点。按 {@code trace_time} 倒序（最新在上，对齐原型「由下至上：出栏→到店」）。</p>
+     */
+    private void remodelPorkTimeline(List<PublicTraceVo.TimelineNode> timeline, String earNo) {
+        if (timeline == null) {
+            return;
+        }
+        timeline.removeIf(n -> PORK_TIMELINE_EXCLUDED.contains(n.getTraceContent()));
+        LocalDateTime cutTime = findWhiteBarCutTime(earNo);
+        addProcessNode(timeline, TraceContentConst.WHITE_BAR_CUT, cutTime);
+        timeline.sort(Comparator.comparing(PublicTraceVo.TimelineNode::getTraceTime,
+            Comparator.nullsLast(Comparator.reverseOrder())));
+    }
+
+    /**
+     * 白条分割时刻：按耳号查 {@code cut_record}（{@code out_type='cut'}）最早一次分割开始时间
+     * {@code cut_start_time}；无（外购 / 未分割 / 时间未落）→ null（不补节点）。
+     */
+    private LocalDateTime findWhiteBarCutTime(String earNo) {
+        if (StringUtils.isBlank(earNo)) {
+            return null;
+        }
+        PigCutRecord cut = pigCutRecordMapper.selectOne(
+            new LambdaQueryWrapper<PigCutRecord>()
+                .select(PigCutRecord::getCutStartTime)
+                .eq(PigCutRecord::getEarNo, earNo)
+                .eq(PigCutRecord::getOutType, PIG_CUT_OUT_TYPE_CUT)
+                .isNotNull(PigCutRecord::getCutStartTime)
+                .orderByAsc(PigCutRecord::getCutStartTime)
+                .last("limit 1"));
+        return cut == null ? null : toLocalDateTime(cut.getCutStartTime());
     }
 
     private List<PublicTraceVo.GrowthRow> toGrowthRows(List<PigGrowth> growths, LocalDate birthDate) {
@@ -531,10 +589,11 @@ public class TracePublicServiceImpl
                     vo.getProduct().setPlotName(plot.getPlotCode());
                 }
             }
-            // 地块农事
+            // 地块农事（row63：过滤掉采摘 / 采摘活动，追溯页只显真实农事工序）
             List<FarmRecords> records = farmRecordsMapper.selectList(
                 new LambdaQueryWrapper<FarmRecords>()
                     .eq(FarmRecords::getPlotId, code.getPlotId())
+                    .notIn(FarmRecords::getFarmType, VEG_PLOT_RECORD_EXCLUDED)
                     .orderByAsc(FarmRecords::getFarmDate));
             vo.setPlotRecords(toPlotRecordRows(records));
             // 该地块历史种植作物（与农事记录并存）
@@ -544,7 +603,7 @@ public class TracePublicServiceImpl
             vo.setPlotCropHistory(new ArrayList<>());
         }
 
-        // ④ 时间轴补 4 个果蔬工序节点：播种 / 采收 / 毛菜处理 / 打包（有源才加，缺源不造空节点），完后按时间排序
+        // ④ 时间轴重构成 5 节点：种植 / 采摘 / 产品生产 / 冷链发货 / 到店（row62）
         appendVegProcessNodes(timeline, code, pack);
 
         // 有机证书（作物认证 + 地块认证，图 ossId 解析 url）
@@ -572,61 +631,59 @@ public class TracePublicServiceImpl
     }
 
     /**
-     * 果蔬工序时间轴补节点（播种 / 采收 / 毛菜处理 / 打包）。
+     * 果蔬工序时间轴重构成 5 节点（DENGBO row62）：种植 / 采摘 / 产品生产 / 冷链发货 / 到店。
      *
-     * <p>来源（按工序）：</p>
+     * <p>来源（按节点）：</p>
      * <ul>
-     *   <li>播种：仓库种植记录 {@code planting_record.plant_date}；缺则用 {@code 采收日 − 生长天数} 反推。</li>
-     *   <li>采收：{@code trace_code.havest_date}；缺则种植记录 {@code harvest_date}。</li>
-     *   <li>毛菜处理：毛菜处理汇总 {@code vegetable_handle.pick_end_time}（无则 {@code update_time}）。</li>
-     *   <li>打包：发货生产记录 {@code product_production.produce_time}（无则 {@code produce_date}）。</li>
+     *   <li>种植（sowing）：仓库种植记录 {@code planting_record.plant_date}（种植完成时间）；
+     *       缺则用 {@code 采摘日 − 生长天数} 反推。</li>
+     *   <li>采摘（harvest）：{@code trace_code.havest_date}；缺则种植记录 {@code harvest_date}。</li>
+     *   <li>产品生产（pack）：发货生产记录 {@code product_production.produce_time}（无则 {@code produce_date}），
+     *       即果蔬在仓库打包的时间。</li>
+     *   <li>冷链发货（ship）/ 到店（arrival）：{@code trace_event} 基础节点（发货月台确认发货 / 门店确认到店）。</li>
      * </ul>
      *
-     * <p>某工序时间无源 → 不造该节点（不显空节点）。合成节点 operatorName 为 null（上游表无统一记录人映射，
-     * C 端工序节点只展示「工序名 + 时间」即可）。补完按 traceTime 升序排（果蔬工序自然时序）。</p>
+     * <p><b>去掉</b>：{@code in_stock}(入库)——产品生产改用打包节点，不再另显入库；不再补 {@code veg_handle}(毛菜处理)。
+     * 某节点时间无源 → 不造该节点（不显空节点）。合成节点 operatorName 为 null（上游表无统一记录人映射）。
+     * 按 {@code trace_time} 倒序（最新在上，对齐原型「由下至上：种植→到店」）。</p>
      */
     private void appendVegProcessNodes(List<PublicTraceVo.TimelineNode> timeline,
                                        TraceCode code, ProductProduction pack) {
         if (timeline == null) {
             return;
         }
-        // 仓库种植记录（播种 / 采收兜底时间源）：按 plot_id + product_id 取一条
+        // 去掉基础 in_stock 事件节点：产品生产改用下方打包节点，不再另显入库
+        timeline.removeIf(n -> TraceContentConst.IN_STOCK.equals(n.getTraceContent()));
+
+        // 仓库种植记录（种植 / 采摘兜底时间源）：按 plot_id + product_id 取一条
         PlantingRecord planting = findPlantingRecord(code.getPlotId(), code.getProductId());
 
         // 邓博 row19：种植 / 采摘节点写班组名（非人员名）；取仓库种植记录的 team_name，无则 null。
         String teamName = planting != null ? planting.getTeamName() : null;
 
-        // 播种
+        // 种植
         LocalDate sowDate = planting != null ? toLocalDate(planting.getPlantDate()) : null;
         if (sowDate == null && code.getHarvestDate() != null && code.getPlantDays() != null) {
             sowDate = code.getHarvestDate().minusDays(code.getPlantDays());
         }
         addProcessNode(timeline, TraceContentConst.SOWING, atDayStart(sowDate), teamName);
 
-        // 采收
+        // 采摘
         LocalDate harvestDate = code.getHarvestDate() != null
             ? code.getHarvestDate()
             : (planting != null ? toLocalDate(planting.getHarvestDate()) : null);
         addProcessNode(timeline, TraceContentConst.HARVEST, atDayStart(harvestDate), teamName);
 
-        // 毛菜处理
-        VegetableHandle handle = findVegetableHandle(code.getPlotId(), code.getProductId());
-        if (handle != null) {
-            Date handleTime = handle.getPickEndTime() != null
-                ? handle.getPickEndTime() : handle.getUpdateTime();
-            addProcessNode(timeline, TraceContentConst.VEG_HANDLE, toLocalDateTime(handleTime));
-        }
-
-        // 打包
+        // 产品生产（打包）
         if (pack != null) {
             Date packTime = pack.getProduceTime() != null
                 ? pack.getProduceTime() : pack.getProduceDate();
             addProcessNode(timeline, TraceContentConst.PACK, toLocalDateTime(packTime));
         }
 
-        // 按时间升序排（null 时间排末尾，保持工序节点可见但不打乱有时间节点的顺序）
+        // 按时间倒序（null 时间排末尾，最新在上，对齐「由下至上：种植→到店」）
         timeline.sort(Comparator.comparing(PublicTraceVo.TimelineNode::getTraceTime,
-            Comparator.nullsLast(Comparator.naturalOrder())));
+            Comparator.nullsLast(Comparator.reverseOrder())));
     }
 
     /** 仓库种植记录：按 plot_id + product_id 取最近一条（无 product_id 退化为仅按 plot_id）。 */
@@ -640,19 +697,6 @@ public class TracePublicServiceImpl
                 .eq(productId != null, PlantingRecord::getProductId, productId)
                 .orderByDesc(PlantingRecord::getHarvestDate)
                 .orderByDesc(PlantingRecord::getId)
-                .last("limit 1"));
-    }
-
-    /** 毛菜处理汇总：按 plot_id + product_id 取最近一条（无 product_id 退化为仅按 plot_id）。 */
-    private VegetableHandle findVegetableHandle(Long plotId, Long productId) {
-        if (plotId == null) {
-            return null;
-        }
-        return vegetableHandleMapper.selectOne(
-            new LambdaQueryWrapper<VegetableHandle>()
-                .eq(VegetableHandle::getPlotId, plotId)
-                .eq(productId != null, VegetableHandle::getProductId, productId)
-                .orderByDesc(VegetableHandle::getId)
                 .last("limit 1"));
     }
 
