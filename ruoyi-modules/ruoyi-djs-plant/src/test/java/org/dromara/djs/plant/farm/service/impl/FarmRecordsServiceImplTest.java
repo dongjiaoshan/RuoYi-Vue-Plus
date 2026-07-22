@@ -3,6 +3,7 @@ package org.dromara.djs.plant.farm.service.impl;
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
@@ -22,6 +23,7 @@ import org.dromara.djs.plant.farm.domain.bo.EmptyRecordBo;
 import org.dromara.djs.plant.farm.domain.bo.GrowBatchBo;
 import org.dromara.djs.plant.farm.domain.bo.GrowRecordBo;
 import org.dromara.djs.plant.farm.domain.bo.HarvestWeightBo;
+import org.dromara.djs.plant.farm.domain.bo.PlotPickStatusBo;
 import org.dromara.djs.plant.farm.domain.bo.RotationRecordBo;
 import org.dromara.djs.plant.farm.domain.bo.TransplantRecordBo;
 import org.dromara.djs.plant.farm.domain.query.FarmRecordsQuery;
@@ -406,6 +408,84 @@ class FarmRecordsServiceImplTest {
         ArgumentCaptor<FarmRecords> cap = ArgumentCaptor.forClass(FarmRecords.class);
         verify(baseMapper, times(1)).insert(cap.capture());
         assertThat(cap.getValue().getFarmType()).isEqualTo("harvest");
+    }
+
+    @Test
+    @DisplayName("adjustPlotPickStatus completed: begin_harvestdate NULL-safe 回填（COALESCE 不覆写已有值）+ end_harvestdate=调整日期")
+    @SuppressWarnings("unchecked")
+    void adjustPlotPickStatus_completed_backfills_begin_harvestdate() {
+        PlotPickStatusBo bo = new PlotPickStatusBo();
+        bo.setPlotId(1L);
+        bo.setCropId(2L);
+        bo.setPickStatus("completed");
+        bo.setAdjustDate(LocalDate.of(2026, 7, 21));
+        bo.setTeamId(10L);
+
+        PlantDetails d = new PlantDetails();
+        d.setId(55L);
+        d.setPlantId(7L);
+        d.setIsPick(1);
+        d.setHarvestStatus("picking");   // 未完成行 → completed 方向的更新目标
+        when(plantDetailsMapper.selectList(any(Wrapper.class))).thenReturn(List.of(d));
+        when(plantDetailsMapper.update(isNull(), any(Wrapper.class))).thenReturn(1);
+        when(baseMapper.insert(any(FarmRecords.class))).thenAnswer(inv -> {
+            ((FarmRecords) inv.getArgument(0)).setId(600L);
+            return 1;
+        });
+
+        int affected = service.adjustPlotPickStatus(bo);
+        assertThat(affected).isEqualTo(1);
+
+        ArgumentCaptor<Wrapper> cap = ArgumentCaptor.forClass(Wrapper.class);
+        verify(plantDetailsMapper).update(isNull(), cap.capture());
+        LambdaUpdateWrapper<PlantDetails> uw = (LambdaUpdateWrapper<PlantDetails>) cap.getValue();
+        String sqlSet = uw.getSqlSet();
+        // begin_harvestdate 走 COALESCE NULL-safe 回填（已有值不覆写）；end_harvestdate 同批落调整日期
+        assertThat(sqlSet).contains("begin_harvestdate = COALESCE(begin_harvestdate,");
+        assertThat(sqlSet).contains("end_harvestdate");
+        // 调整日期走参数绑定（非字符串拼接），状态值也在同一 wrapper 参数里
+        assertThat(uw.getParamNameValuePairs().values())
+            .contains(LocalDate.of(2026, 7, 21), "completed");
+        // 留痕农事记录仍写一条 harvest_activity
+        verify(baseMapper).insert(any(FarmRecords.class));
+    }
+
+    @Test
+    @DisplayName("adjustPlotPickStatus picking: 同样回填 begin_harvestdate + 班组写 harvest_by")
+    @SuppressWarnings("unchecked")
+    void adjustPlotPickStatus_picking_backfills_begin_harvestdate() {
+        PlotPickStatusBo bo = new PlotPickStatusBo();
+        bo.setPlotId(1L);
+        bo.setCropId(2L);
+        bo.setPickStatus("picking");
+        bo.setAdjustDate(LocalDate.of(2026, 7, 20));
+        bo.setTeamId(10L);
+
+        PlantDetails d = new PlantDetails();
+        d.setId(56L);
+        d.setPlantId(7L);
+        d.setIsPick(1);
+        d.setHarvestStatus("pending");
+        when(plantDetailsMapper.selectList(any(Wrapper.class))).thenReturn(List.of(d));
+        when(plantDetailsMapper.update(isNull(), any(Wrapper.class))).thenReturn(1);
+        when(baseMapper.insert(any(FarmRecords.class))).thenAnswer(inv -> {
+            ((FarmRecords) inv.getArgument(0)).setId(601L);
+            return 1;
+        });
+
+        int affected = service.adjustPlotPickStatus(bo);
+        assertThat(affected).isEqualTo(1);
+
+        ArgumentCaptor<Wrapper> cap = ArgumentCaptor.forClass(Wrapper.class);
+        verify(plantDetailsMapper).update(isNull(), cap.capture());
+        LambdaUpdateWrapper<PlantDetails> uw = (LambdaUpdateWrapper<PlantDetails>) cap.getValue();
+        String sqlSet = uw.getSqlSet();
+        assertThat(sqlSet).contains("begin_harvestdate = COALESCE(begin_harvestdate,");
+        // picking 方向不写 end_harvestdate（完成日期归 completed 方向独占），班组落 harvest_by
+        assertThat(sqlSet).doesNotContain("end_harvestdate");
+        assertThat(sqlSet).contains("harvest_by");
+        assertThat(uw.getParamNameValuePairs().values())
+            .contains(LocalDate.of(2026, 7, 20), "picking", 10L);
     }
 
     @Test

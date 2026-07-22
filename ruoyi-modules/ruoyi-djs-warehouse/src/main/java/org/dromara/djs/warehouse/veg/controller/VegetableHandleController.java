@@ -9,9 +9,11 @@ import org.dromara.common.excel.utils.ExcelUtil;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.web.core.BaseController;
+import org.dromara.djs.warehouse.veg.domain.query.PickDetailQuery;
 import org.dromara.djs.warehouse.veg.domain.query.VegHandleQuery;
 import org.dromara.djs.warehouse.veg.domain.vo.FeedDailyStatVo;
 import org.dromara.djs.warehouse.veg.domain.vo.HandleRecordVo;
+import org.dromara.djs.warehouse.veg.domain.vo.PickDetailVo;
 import org.dromara.djs.warehouse.veg.domain.vo.VegetableHandleVo;
 import org.dromara.djs.warehouse.veg.service.IFeedLogService;
 import org.dromara.djs.warehouse.veg.service.IVegetableHandleService;
@@ -85,6 +87,25 @@ public class VegetableHandleController extends BaseController {
     public void export(VegHandleQuery query, HttpServletResponse response) {
         List<VegetableHandleVo> list = service.queryList(query);
         ExcelUtil.exportExcel(list, "毛菜处理汇总", VegetableHandleVo.class, response);
+    }
+
+    /**
+     * 采摘明细只读列表（FIX-ADMIN-0721）：采收过磅流水（record_type=1），
+     * 列 = 采摘日期 / 作物名称 / 地块编号 / 采摘量 / 采摘班组。
+     */
+    @SaCheckPermission("djs:warehouse:vegHandle:list")
+    @GetMapping("/pickDetail/list")
+    public TableDataInfo<PickDetailVo> pickDetailList(PickDetailQuery query, PageQuery pageQuery) {
+        return service.queryPickDetailPage(query, pageQuery);
+    }
+
+    /**
+     * 采摘明细导出（同列表 WHERE，不分页）。
+     */
+    @SaCheckPermission("djs:warehouse:vegHandle:export")
+    @PostMapping("/pickDetail/export")
+    public void pickDetailExport(PickDetailQuery query, HttpServletResponse response) {
+        service.exportPickDetail(query, response);
     }
 
 }

@@ -81,6 +81,11 @@ public class AppletPickServiceImpl implements IAppletPickService {
     private static final String HARVEST_FARM_TYPE = "harvest_activity";
     /** harvest：普通采收 (is_pick=2) 农事类型，区别于游客采摘活动（FIX-PLT-AD-PICK-FARMTYPE-001）。 */
     private static final String HARVEST_NORMAL_FARM_TYPE = "harvest";
+    /**
+     * 育苗（保育）地块类型（{@code djs_plot_type='nursery'}）：92.1 育苗地块须先移栽才进采收，
+     * 采收列表卡 / 作物详情地块列表均排除此类地块（与移栽域「保育地块=移栽源」口径一致）。
+     */
+    private static final String PLOT_TYPE_NURSERY = "nursery";
 
     @Override
     public List<PickTaskVo> listMyTasks(String status) {
@@ -282,9 +287,13 @@ public class AppletPickServiceImpl implements IAppletPickService {
         List<PlantDetails> filtered = all.stream()
             // r19：只展示地块 plot_status IN(2 种植,3 采摘)，排除 1 空闲（字典 djs_plot_status）。
             //   plot 查无视为不在采摘态，排除。
+            // 92.1：育苗（保育 plot_type='nursery'）地块须先移栽才进采收，采收列表卡排除。
             .filter(d -> {
                 PlotInfo plot = plotMap.get(d.getPlotId());
-                return plot != null && plot.getPlotStatus() != null
+                if (plot == null || PLOT_TYPE_NURSERY.equals(plot.getPlotType())) {
+                    return false;
+                }
+                return plot.getPlotStatus() != null
                     && (plot.getPlotStatus() == 2 || plot.getPlotStatus() == 3);
             })
             // r21：采摘完成（harvest_status='completed'）的地块只在「完成当天」展示，
@@ -392,9 +401,13 @@ public class AppletPickServiceImpl implements IAppletPickService {
                 : plotMapper.selectByIds(detailPlotIds).stream()
                     .collect(Collectors.toMap(PlotInfo::getId, p -> p, (a, b) -> a));
             entities = entities.stream()
+                // 92.1：育苗（保育 plot_type='nursery'）地块须先移栽才进采收，作物详情地块列表排除。
                 .filter(d -> {
                     PlotInfo plot = detailPlotMap.get(d.getPlotId());
-                    return plot != null && plot.getPlotStatus() != null
+                    if (plot == null || PLOT_TYPE_NURSERY.equals(plot.getPlotType())) {
+                        return false;
+                    }
+                    return plot.getPlotStatus() != null
                         && (plot.getPlotStatus() == 2 || plot.getPlotStatus() == 3);
                 })
                 // r21：采摘完成（harvest_status='completed'）的地块只在「完成当天」展示，end_harvestdate != 今天

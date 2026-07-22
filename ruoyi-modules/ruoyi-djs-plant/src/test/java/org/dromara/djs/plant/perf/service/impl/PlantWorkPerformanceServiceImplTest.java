@@ -1,6 +1,7 @@
 package org.dromara.djs.plant.perf.service.impl;
 
 import org.dromara.common.core.exception.ServiceException;
+import org.dromara.djs.plant.farm.service.IFarmRecordsService;
 import org.dromara.djs.plant.perf.domain.PlantWorkPerformance;
 import org.dromara.djs.plant.perf.domain.vo.PerfAggRow;
 import org.dromara.djs.plant.perf.mapper.PlantWorkPerformanceMapper;
@@ -33,7 +34,8 @@ import static org.mockito.Mockito.when;
 /**
  * {@link PlantWorkPerformanceServiceImpl} 单测（PLT-PERF-001）。
  *
- * <p>覆盖核心 generate(statMonth)：聚合 × 单价快照 = 应付金额 + 幂等软删 + 月份校验。</p>
+ * <p>覆盖核心 generate(statMonth)：聚合(公斤) × 单价快照(元/斤) × 2（公斤→斤换算）= 应付金额
+ * + 幂等软删 + 月份校验。</p>
  *
  * @author djs
  * @since PLT-PERF-001
@@ -48,11 +50,14 @@ class PlantWorkPerformanceServiceImplTest {
     @Mock
     private PlantWorkPerformanceMapper baseMapper;
 
+    @Mock
+    private IFarmRecordsService farmRecordsService;
+
     private PlantWorkPerformanceServiceImpl service;
 
     @BeforeEach
     void setup() {
-        service = new PlantWorkPerformanceServiceImpl(baseMapper);
+        service = new PlantWorkPerformanceServiceImpl(baseMapper, farmRecordsService);
     }
 
     private PerfAggRow agg(Long teamId, Long cropId, String weight) {
@@ -64,10 +69,10 @@ class PlantWorkPerformanceServiceImplTest {
     }
 
     @Test
-    @DisplayName("generate: happy path → 软删旧月 + 2 组 INSERT，金额=量×单价快照")
+    @DisplayName("generate: happy path → 软删旧月 + 2 组 INSERT，金额=量(公斤)×单价(元/斤)×2")
     void testGenerate_HappyPath() {
         String month = "2026-04";
-        // 2 组聚合：班组1×作物10 = 100.500 斤；班组2×作物20 = 50.000 斤
+        // 2 组聚合：班组1×作物10 = 100.500 公斤；班组2×作物20 = 50.000 公斤
         when(baseMapper.aggregateByMonth(month)).thenReturn(List.of(
             agg(1L, 10L, "100.500"),
             agg(2L, 20L, "50.000")
@@ -95,13 +100,13 @@ class PlantWorkPerformanceServiceImplTest {
         assertThat(r1.getCropId()).isEqualTo(10L);
         assertThat(r1.getPickWeight()).isEqualByComparingTo("100.500");
         assertThat(r1.getUnitPriceSnapshot()).isEqualByComparingTo("1.20");
-        // 100.500 × 1.20 = 120.60
-        assertThat(r1.getPerformanceAmount()).isEqualByComparingTo("120.60");
-        assertThat(r1.getPerformanceRule()).isEqualTo("1.2 元/斤");
+        // 100.500 公斤 × 1.20 元/斤 × 2 = 241.20
+        assertThat(r1.getPerformanceAmount()).isEqualByComparingTo("241.20");
+        assertThat(r1.getPerformanceRule()).isEqualTo("1.2 元/斤 ×2（公斤→斤）");
 
         PlantWorkPerformance r2 = inserted.stream().filter(p -> p.getTeamId().equals(2L)).findFirst().orElseThrow();
-        // 50.000 × 2.00 = 100.00
-        assertThat(r2.getPerformanceAmount()).isEqualByComparingTo("100.00");
+        // 50.000 公斤 × 2.00 元/斤 × 2 = 200.00
+        assertThat(r2.getPerformanceAmount()).isEqualByComparingTo("200.00");
         // 绩效行不手工赋 tenant_id（走 MetaObjectHandler）
         assertThat(r2.getTenantId()).isNull();
     }

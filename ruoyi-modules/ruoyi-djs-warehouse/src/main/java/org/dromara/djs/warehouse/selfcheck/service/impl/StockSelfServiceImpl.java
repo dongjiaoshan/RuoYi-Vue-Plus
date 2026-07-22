@@ -11,6 +11,7 @@ import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.satoken.utils.LoginHelper;
 import org.dromara.djs.common.encoder.BizCodeType;
 import org.dromara.djs.common.encoder.IBizCodeGenerator;
+import org.dromara.djs.common.image.service.ImageUrlResolver;
 import org.dromara.djs.common.supplier.domain.Supplier;
 import org.dromara.djs.common.supplier.mapper.SupplierMapper;
 import org.dromara.djs.warehouse.check.service.IStockCheckService;
@@ -43,6 +44,8 @@ import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
+import java.util.stream.Collectors;
 
 /**
  * 库存盘点自助子系统 Service 实现（SELFCHECK）。
@@ -97,6 +100,11 @@ public class StockSelfServiceImpl implements IStockSelfService {
      */
     private static final String WHITE_BAR_PRODUCT_NAME = "白条(整只)";
 
+    /**
+     * 产品缩略图 IMG-LIB-001 分类键（belongType 当前不参与 URL 解析，仅保留调用签名一致性）。
+     */
+    private static final String PRODUCT_BELONG_TYPE = "product";
+
     private final StockSelfMapper stockSelfMapper;
     private final LocationStockMapper locationStockMapper;
     private final StockFlowMapper stockFlowMapper;
@@ -106,6 +114,7 @@ public class StockSelfServiceImpl implements IStockSelfService {
     private final IBizCodeGenerator bizCodeGenerator;
     private final IStockCheckService stockCheckService;
     private final ILossFlowService lossFlowService;
+    private final ImageUrlResolver imageUrlResolver;
 
     public StockSelfServiceImpl(StockSelfMapper stockSelfMapper,
                                 LocationStockMapper locationStockMapper,
@@ -115,7 +124,8 @@ public class StockSelfServiceImpl implements IStockSelfService {
                                 SupplierMapper supplierMapper,
                                 IBizCodeGenerator bizCodeGenerator,
                                 IStockCheckService stockCheckService,
-                                ILossFlowService lossFlowService) {
+                                ILossFlowService lossFlowService,
+                                ImageUrlResolver imageUrlResolver) {
         this.stockSelfMapper = stockSelfMapper;
         this.locationStockMapper = locationStockMapper;
         this.stockFlowMapper = stockFlowMapper;
@@ -125,6 +135,7 @@ public class StockSelfServiceImpl implements IStockSelfService {
         this.bizCodeGenerator = bizCodeGenerator;
         this.stockCheckService = stockCheckService;
         this.lossFlowService = lossFlowService;
+        this.imageUrlResolver = imageUrlResolver;
     }
 
     // ============================ 读端点 ============================
@@ -137,7 +148,53 @@ public class StockSelfServiceImpl implements IStockSelfService {
     @Override
     public List<StoreProductVo> listStoreProducts(String locationId, String keyword, String sort) {
         Long locId = requireLocationId(locationId);
-        return stockSelfMapper.selectStoreProducts(locId, trimToNull(keyword), trimToNull(sort));
+        List<StoreProductVo> vos = stockSelfMapper.selectStoreProducts(locId, trimToNull(keyword), trimToNull(sort));
+        // 114.4：产品卡缩略图（mapper SELECT 不取图，thumbUrl 恒 null → 前端全灰框）。
+        //   按 productId 批量取 ProductInfo，COALESCE(product_thumb, image_oss_id) → OSS URL 回填。
+        fillProductThumb(vos);
+        return vos;
+    }
+
+    /**
+     * 批量回填产品缩略图 public URL（114.4）：{@code COALESCE(product_thumb, image_oss_id)} → OSS URL，禁 N+1。
+     *
+     * <p>一次 {@code selectByIds} 取产品图 ossId，再一次 {@link ImageUrlResolver#resolveList} 转 URL
+     * （与 {@code PigBurnRecordServiceImpl} 产品图解析范式一致）。取不到图的位置留 null，前端占位兜底。</p>
+     */
+    private void fillProductThumb(List<StoreProductVo> vos) {
+        if (vos == null || vos.isEmpty()) {
+            return;
+        }
+        List<Long> productIds = vos.stream().map(StoreProductVo::getProductId)
+            .filter(Objects::nonNull).distinct().collect(Collectors.toList());
+        if (productIds.isEmpty()) {
+            return;
+        }
+        Map<Long, String> ossIdMap = new HashMap<>();
+        for (ProductInfo p : productInfoMapper.selectByIds(productIds)) {
+            if (p.getId() != null) {
+                ossIdMap.put(p.getId(), resolveProductImageOssId(p));
+            }
+        }
+        List<ImageUrlResolver.Item> items = vos.stream()
+            .map(v -> new ImageUrlResolver.Item(
+                v.getProductId() == null ? null : ossIdMap.get(v.getProductId()), PRODUCT_BELONG_TYPE))
+            .collect(Collectors.toList());
+        List<String> urls = imageUrlResolver.resolveList(items);
+        if (urls.size() != vos.size()) {
+            return;
+        }
+        for (int i = 0; i < vos.size(); i++) {
+            vos.get(i).setThumbUrl(urls.get(i));
+        }
+    }
+
+    /**
+     * 产品卡展示用 ossId 优先级：用户在 admin 上传的缩略图 {@code product_thumb} 优先，退回自动匹配的
+     * {@code image_oss_id}（两者都空交 resolver 走默认图兜底）。与 {@code PigBurnRecordServiceImpl} 同口径。
+     */
+    private static String resolveProductImageOssId(ProductInfo p) {
+        return StringUtils.isNotBlank(p.getProductThumb()) ? p.getProductThumb() : p.getImageOssId();
     }
 
     @Override

@@ -224,19 +224,22 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
     /**
      * 移栽累计达 100% 副作用（row13，与 {@link #submitRotation} 退茬置空写法风格一致）：
      * <ul>
-     *   <li>① {@code plant_details.harvest_status='completed'}（采摘完成）+ {@code end_harvestdate=farmDate}，
+     *   <li>① {@code plant_details.harvest_status='completed'}（采摘完成）+ {@code end_harvestdate=farmDate}
+     *       + {@code begin_harvestdate} NULL-safe 回填（首次写入不覆写，口径对齐 submitPick），
      *       where crop_id + plot_id（该地块该作物全部明细）</li>
      *   <li>② {@code plot_info.plot_status=1}（空地），where id=plotId</li>
      * </ul>
      */
     private void applyTransplantCompleteSideEffect(Long cropId, Long plotId, LocalDate farmDate) {
         Long updateBy = currentUserSafe();
+        // {0} 为 MP 参数绑定占位（farmDate 是 LocalDate），非字符串拼接，无注入面。
         plantDetailsMapper.update(null,
             new LambdaUpdateWrapper<PlantDetails>()
                 .eq(PlantDetails::getCropId, cropId)
                 .eq(PlantDetails::getPlotId, plotId)
                 .set(PlantDetails::getHarvestStatus, "completed")
                 .set(PlantDetails::getEndHarvestdate, farmDate)
+                .setSql("begin_harvestdate = COALESCE(begin_harvestdate, {0})", farmDate)
                 .set(PlantDetails::getUpdateBy, updateBy));
         plotInfoMapper.update(null,
             new LambdaUpdateWrapper<PlotInfo>()
@@ -444,12 +447,30 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
 
         // 移栽进度层：返各地块累计已移% + 上次时间（FIX-PLT-MP-WORK-BATCH-001 移栽单块录入用）
         Map<Long, Integer> transplantedMap = new HashMap<>();
+        // row103：各源地块「上次转移目标」地块 id + 其片区 id（二次移栽录入弹窗默认回填）
+        Map<Long, Long> lastTransplantPlotMap = new HashMap<>();
+        Map<Long, Long> lastTransplantZoneMap = new HashMap<>();
         if ("transplant".equals(farmType)) {
             for (Map<String, Object> row : baseMapper.selectTransplantedPercentByCrop(cropId)) {
                 Object pid = row.get("plotId");
                 Object pct = row.get("transplantedPercent");
                 if (pid != null) {
                     transplantedMap.put(((Number) pid).longValue(), pct instanceof Number n ? n.intValue() : 0);
+                }
+            }
+            for (Map<String, Object> row : baseMapper.selectLastTransplantTargetByCrop(cropId)) {
+                Object pid = row.get("plotId");
+                if (pid == null) {
+                    continue;
+                }
+                Long srcPlot = ((Number) pid).longValue();
+                Object tPlot = row.get("lastTransplantPlotId");
+                Object tZone = row.get("lastTransplantZoneId");
+                if (tPlot instanceof Number n) {
+                    lastTransplantPlotMap.put(srcPlot, n.longValue());
+                }
+                if (tZone instanceof Number n) {
+                    lastTransplantZoneMap.put(srcPlot, n.longValue());
                 }
             }
         }
@@ -516,6 +537,9 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
             vo.setLastTeamId(lastTeamByPlot.get(d.getPlotId()));
             if ("transplant".equals(farmType)) {
                 vo.setTransplantedPercent(transplantedMap.getOrDefault(d.getPlotId(), 0));
+                // row103：二次移栽默认回填上次转移目标 + 其片区（无历史移栽记录留空）
+                vo.setLastTransplantPlotId(lastTransplantPlotMap.get(d.getPlotId()));
+                vo.setLastTransplantZoneId(lastTransplantZoneMap.get(d.getPlotId()));
             }
             if ("disaster".equals(farmType)) {
                 vo.setDisasterRecords(disasterByPlot.getOrDefault(d.getPlotId(), List.of()));
@@ -716,6 +740,10 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
                 .in(PlantDetails::getId, targetIds)
                 .set(PlantDetails::getHarvestStatus, bo.getPickStatus())
                 .set(PlantDetails::getUpdateBy, updateBy);
+            // begin_harvestdate NULL-safe 回填（两方向都补）：首次进入采摘（picking / 未开采直接 completed）
+            // 以本次调整日期作为开始采摘日期；已有值不覆写（口径对齐 submitPick 的「首次采收回填 begin_harvestdate」）。
+            // {0} 为 MP 参数绑定占位（adjustDate 是 LocalDate），非字符串拼接，无注入面。
+            uw.setSql("begin_harvestdate = COALESCE(begin_harvestdate, {0})", bo.getAdjustDate());
             if (toCompleted) {
                 uw.set(PlantDetails::getEndHarvestdate, bo.getAdjustDate());
             } else {
@@ -1125,6 +1153,8 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
             PlotInfo transplant = vo.getTransplantPlot() == null ? null : plotMap.get(vo.getTransplantPlot());
             if (transplant != null) {
                 vo.setTransplantPlotName(transplant.getPlotName());
+                // row101.2：移栽记录卡「转移后」优先显地块编号（前端 plotCode ?? plotName 回落）
+                vo.setTransplantPlotCode(transplant.getPlotCode());
                 if (transplant.getZoneId() != null) {
                     vo.setTransplantPlotZoneName(zoneMap.get(transplant.getZoneId()));
                 }

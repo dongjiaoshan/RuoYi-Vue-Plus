@@ -55,9 +55,9 @@ public class PerfListRow implements Serializable {
     private Integer teamMemberCount;
 
     /**
-     * 采摘总量（斤，= SUM(pick_weight)）。
+     * 采摘总量（公斤，= SUM(pick_weight)）。
      */
-    @ExcelProperty(value = "采摘总量(斤)")
+    @ExcelProperty(value = "采摘量(公斤)")
     private BigDecimal totalPickWeight;
 
     /**

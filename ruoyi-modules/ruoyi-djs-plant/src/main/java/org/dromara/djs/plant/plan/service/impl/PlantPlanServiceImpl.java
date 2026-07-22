@@ -920,12 +920,14 @@ public class PlantPlanServiceImpl extends DjsBaseServiceImpl<PlantPlanMapper, Pl
                     .set(PlotInfo::getUpdateBy, updateBy));
         }
 
-        // 派生重算受影响计划主表 plant_status（开工 done=0 时仍落 pending，无害；与 finishPlant 对称）
+        // 派生重算受影响计划主表 plant_status（开工 done=0 时仍落 pending，无害；与 finishPlant 对称）；
+        // 明细采摘窗口已按 begin_actualdate 重算 → 同步重算主表 earliest/last_harvestdate 聚合（详情头部取主表）
         Set<Long> affectedPlanIds = details.stream()
             .filter(d -> startableSet.contains(d.getId()))
             .map(PlantDetails::getPlantId).filter(Objects::nonNull).collect(Collectors.toSet());
         for (Long pid : affectedPlanIds) {
             baseMapper.recalcPlanStatus(pid);
+            baseMapper.recalcAggregates(pid);
         }
         return startableDetailIds.size();
     }
@@ -1041,11 +1043,13 @@ public class PlantPlanServiceImpl extends DjsBaseServiceImpl<PlantPlanMapper, Pl
                 .set(PlantDetails::getEndActualdate, completeDate)
                 .set(PlantDetails::getUpdateBy, updateBy));
 
-        // 派生重算受影响计划主表 plant_status（任一完成→ongoing / 全部完成→completed）
+        // 派生重算受影响计划主表 plant_status（任一完成→ongoing / 全部完成→completed）；
+        // 未开工明细补种后采摘窗口已重算 → 同步重算主表 earliest/last_harvestdate 聚合（详情头部取主表）
         Set<Long> affectedPlanIds = finishables.stream()
             .map(PlantDetails::getPlantId).filter(Objects::nonNull).collect(Collectors.toSet());
         for (Long pid : affectedPlanIds) {
             baseMapper.recalcPlanStatus(pid);
+            baseMapper.recalcAggregates(pid);
         }
         return finishableDetailIds.size();
     }

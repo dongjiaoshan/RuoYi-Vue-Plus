@@ -6,6 +6,7 @@ import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.satoken.utils.LoginHelper;
 import org.dromara.djs.common.encoder.IBizCodeGenerator;
+import org.dromara.djs.common.image.service.ImageUrlResolver;
 import org.dromara.djs.common.supplier.domain.Supplier;
 import org.dromara.djs.common.supplier.mapper.SupplierMapper;
 import org.dromara.djs.warehouse.check.service.IStockCheckService;
@@ -80,6 +81,7 @@ class StockSelfServiceImplTest {
     @Mock private IBizCodeGenerator bizCodeGenerator;
     @Mock private IStockCheckService stockCheckService;
     @Mock private ILossFlowService lossFlowService;
+    @Mock private ImageUrlResolver imageUrlResolver;
 
     private StockSelfServiceImpl service;
     private MockedStatic<LoginHelper> loginHelperMock;
@@ -107,7 +109,8 @@ class StockSelfServiceImplTest {
     void setup() {
         service = new StockSelfServiceImpl(
             stockSelfMapper, locationStockMapper, stockFlowMapper, productInfoMapper,
-            barInfoMapper, supplierMapper, bizCodeGenerator, stockCheckService, lossFlowService);
+            barInfoMapper, supplierMapper, bizCodeGenerator, stockCheckService, lossFlowService,
+            imageUrlResolver);
         loginHelperMock = Mockito.mockStatic(LoginHelper.class);
         loginHelperMock.when(LoginHelper::getUserId).thenReturn(USER_ID);
 

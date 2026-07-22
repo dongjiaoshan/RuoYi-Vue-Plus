@@ -1,5 +1,6 @@
 package org.dromara.djs.warehouse.veg.service;
 
+import jakarta.servlet.http.HttpServletResponse;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.warehouse.veg.domain.bo.HandleRecordSubmitBo;
@@ -7,9 +8,11 @@ import org.dromara.djs.warehouse.veg.domain.bo.HarvestSubmitBo;
 import org.dromara.djs.warehouse.veg.domain.bo.PickActivitySubmitBo;
 import org.dromara.djs.warehouse.veg.domain.bo.PickDestSubmitBo;
 import org.dromara.djs.warehouse.veg.domain.bo.ProcessSubmitBo;
+import org.dromara.djs.warehouse.veg.domain.query.PickDetailQuery;
 import org.dromara.djs.warehouse.veg.domain.query.VegHandleQuery;
 import org.dromara.djs.warehouse.veg.domain.vo.HandleRecordVo;
 import org.dromara.djs.warehouse.veg.domain.vo.PendingPlantingRecordVo;
+import org.dromara.djs.warehouse.veg.domain.vo.PickDetailVo;
 import org.dromara.djs.warehouse.veg.domain.vo.VegCropVo;
 import org.dromara.djs.warehouse.veg.domain.vo.VegPlotDetailVo;
 import org.dromara.djs.warehouse.veg.domain.vo.VegetableHandleVo;
@@ -121,5 +124,17 @@ public interface IVegetableHandleService {
      * mp "我的处理记录"（按 handle_user = current）。
      */
     TableDataInfo<HandleRecordVo> myRecords(PageQuery pageQuery);
+
+    /**
+     * admin 采摘明细列表（分页，只读；FIX-ADMIN-0721）。
+     *
+     * <p>数据源 = 采收过磅流水（handle_record record_type=1），与仓库统计权威口径同源。</p>
+     */
+    TableDataInfo<PickDetailVo> queryPickDetailPage(PickDetailQuery query, PageQuery pageQuery);
+
+    /**
+     * admin 采摘明细导出（不分页，同 WHERE；FIX-ADMIN-0721）。
+     */
+    void exportPickDetail(PickDetailQuery query, HttpServletResponse response);
 
 }

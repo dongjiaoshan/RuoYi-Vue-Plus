@@ -1,6 +1,9 @@
 package org.dromara.djs.warehouse.veg.service.impl;
 
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import org.dromara.common.core.exception.ServiceException;
+import org.dromara.common.mybatis.core.page.PageQuery;
+import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.satoken.utils.LoginHelper;
 import org.dromara.djs.common.encoder.BizCodeType;
 import org.dromara.djs.common.encoder.IBizCodeGenerator;
@@ -14,6 +17,8 @@ import org.dromara.djs.warehouse.veg.domain.HandleRecord;
 import org.dromara.djs.warehouse.veg.domain.PlantingRecord;
 import org.dromara.djs.warehouse.veg.domain.VegetableHandle;
 import org.dromara.djs.warehouse.veg.domain.bo.HandleRecordSubmitBo;
+import org.dromara.djs.warehouse.veg.domain.query.PickDetailQuery;
+import org.dromara.djs.warehouse.veg.domain.vo.PickDetailVo;
 import org.dromara.djs.warehouse.veg.mapper.HandleRecordMapper;
 import org.dromara.djs.warehouse.veg.mapper.PlantingRecordMapper;
 import org.dromara.djs.warehouse.veg.mapper.VegetableHandleMapper;
@@ -32,6 +37,8 @@ import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -656,6 +663,36 @@ class VegetableHandleServiceImplTest {
         assertThat(upd.getLossWeight()).isEqualByComparingTo("10.000");
         assertThat(upd.getIsFinish()).isEqualTo(1);
         assertThat(upd.getHandleStatus()).isEqualTo("done");
+    }
+
+    // -------- 采摘明细只读列表（FIX-ADMIN-0721） --------
+
+    @Test
+    @DisplayName("采摘明细 happy：分页查询透传 mapper 固定行，query 原样下传")
+    void testQueryPickDetailPage_HappyPath() {
+        PickDetailVo row = new PickDetailVo();
+        row.setPickDate(LocalDate.of(2026, 7, 21));
+        row.setCropName("小白菜");
+        row.setPlotCode("A-01");
+        row.setPickWeight(new BigDecimal("12.345"));
+        row.setTeamId(30001L);
+        row.setTeamName("采摘一组");
+        Page<PickDetailVo> page = new Page<>(1, 10);
+        page.setRecords(List.of(row));
+        page.setTotal(1);
+        when(recordMapper.selectPickDetailPage(any(), any(PickDetailQuery.class))).thenReturn(page);
+
+        PickDetailQuery q = new PickDetailQuery();
+        q.setCropName("白菜");
+        q.setTeamId(30001L);
+        TableDataInfo<PickDetailVo> result = service.queryPickDetailPage(q, new PageQuery(1, 10));
+
+        assertThat(result.getTotal()).isEqualTo(1);
+        assertThat(result.getRows()).hasSize(1);
+        assertThat(result.getRows().get(0).getCropName()).isEqualTo("小白菜");
+        assertThat(result.getRows().get(0).getPlotCode()).isEqualTo("A-01");
+        assertThat(result.getRows().get(0).getPickWeight()).isEqualByComparingTo("12.345");
+        verify(recordMapper).selectPickDetailPage(any(), eq(q));
     }
 
 }

@@ -94,9 +94,9 @@ public class PlantDetailsVo implements Serializable {
     private String plotCode;
     @ExcelProperty(value = "作物名称")
     private String cropName;
-    @ExcelIgnore
-    private String plantTeamName;
     @ExcelProperty(value = "种植班组")
+    private String plantTeamName;
+    @ExcelProperty(value = "采摘班组")
     private String harvestTeamName;
 
     /** 种植日期（取实际开始种植 begin_actualdate；采摘计划详情列展示用）。 */

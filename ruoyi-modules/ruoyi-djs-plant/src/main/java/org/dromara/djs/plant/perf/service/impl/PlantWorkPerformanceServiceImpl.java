@@ -1,19 +1,29 @@
 package org.dromara.djs.plant.perf.service.impl;
 
+import cn.idev.excel.write.metadata.WriteSheet;
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import jakarta.servlet.http.HttpServletResponse;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.core.utils.StringUtils;
+import org.dromara.common.core.utils.file.FileUtils;
+import org.dromara.common.excel.utils.ExcelUtil;
+import org.dromara.common.excel.utils.ExcelWriterWrapper;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.common.base.DjsBaseServiceImpl;
+import org.dromara.djs.plant.farm.domain.query.FarmRecordsQuery;
+import org.dromara.djs.plant.farm.domain.vo.FarmRecordsVo;
+import org.dromara.djs.plant.farm.service.IFarmRecordsService;
 import org.dromara.djs.plant.perf.domain.PlantWorkPerformance;
 import org.dromara.djs.plant.perf.domain.query.PlantWorkPerformanceQuery;
 import org.dromara.djs.plant.perf.domain.vo.FarmCountRow;
 import org.dromara.djs.plant.perf.domain.vo.PerfAggRow;
+import org.dromara.djs.plant.perf.domain.vo.PerfDetailCropExportVo;
+import org.dromara.djs.plant.perf.domain.vo.PerfDetailFarmExportVo;
 import org.dromara.djs.plant.perf.domain.vo.PerfListRow;
 import org.dromara.djs.plant.perf.domain.vo.PlantWorkPerformanceVo;
 import org.dromara.djs.plant.perf.mapper.PlantWorkPerformanceMapper;
@@ -21,8 +31,10 @@ import org.dromara.djs.plant.perf.service.IPlantWorkPerformanceService;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.io.IOException;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.time.YearMonth;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Date;
@@ -38,9 +50,9 @@ import java.util.stream.Collectors;
 /**
  * 班组绩效结算 Service 实现（PLT-PERF-001）。
  *
- * <p>核心 {@code generate(statMonth)}：幂等软删该月旧行 → 聚合 details.actual_yield →
- * 读 crop.pick_unit_price 作单价快照算金额 → 批量 INSERT。
- * 单价取快照（不实时 JOIN），后续改价不污染历史月。</p>
+ * <p>核心 {@code generate(statMonth)}：幂等软删该月旧行 → 聚合 details.actual_yield（公斤）→
+ * 读 crop.pick_unit_price（元/斤）作单价快照，金额 = 采摘量(公斤) × 单价(元/斤) × 2（公斤→斤换算）
+ * → 批量 INSERT。单价取快照（不实时 JOIN），后续改价不污染历史月。</p>
  *
  * @author djs
  * @since PLT-PERF-001
@@ -61,8 +73,15 @@ public class PlantWorkPerformanceServiceImpl
      */
     private static final String DEL_FLAG_SUPERSEDED = "2";
 
-    public PlantWorkPerformanceServiceImpl(PlantWorkPerformanceMapper baseMapper) {
+    /**
+     * 农事记录 Service（详情导出 sheet2 数据源，只调用不改其内部实现）。
+     */
+    private final IFarmRecordsService farmRecordsService;
+
+    public PlantWorkPerformanceServiceImpl(PlantWorkPerformanceMapper baseMapper,
+                                           IFarmRecordsService farmRecordsService) {
         super(baseMapper);
+        this.farmRecordsService = farmRecordsService;
     }
 
     @Override
@@ -131,8 +150,10 @@ public class PlantWorkPerformanceServiceImpl
         for (PerfAggRow agg : aggRows) {
             BigDecimal pickWeight = agg.getPickWeight() != null ? agg.getPickWeight() : BigDecimal.ZERO;
             BigDecimal unitPrice = cropPriceMap.getOrDefault(agg.getCropId(), BigDecimal.ZERO);
-            // 金额 = 采摘总量 × 单价快照，保留 2 位（元）
-            BigDecimal amount = pickWeight.multiply(unitPrice).setScale(2, RoundingMode.HALF_UP);
+            // 金额 = 采摘量(公斤) × 单价快照(元/斤) × 2（公斤→斤换算），保留 2 位（元）
+            BigDecimal amount = pickWeight.multiply(unitPrice)
+                .multiply(BigDecimal.valueOf(2))
+                .setScale(2, RoundingMode.HALF_UP);
 
             PlantWorkPerformance row = new PlantWorkPerformance();
             row.setStatMonth(statMonth);
@@ -141,7 +162,7 @@ public class PlantWorkPerformanceServiceImpl
             row.setPickWeight(pickWeight);
             row.setUnitPriceSnapshot(unitPrice);
             row.setPerformanceAmount(amount);
-            row.setPerformanceRule(unitPrice.stripTrailingZeros().toPlainString() + " 元/斤");
+            row.setPerformanceRule(unitPrice.stripTrailingZeros().toPlainString() + " 元/斤 ×2（公斤→斤）");
             // del_flag / tenant_id / 审计字段走 MP MetaObjectHandler + @TableLogic 默认，不手工赋 tenant_id
             rows.add(row);
         }
@@ -149,6 +170,61 @@ public class PlantWorkPerformanceServiceImpl
             inserted += baseMapper.insert(row);
         }
         return inserted;
+    }
+
+    @Override
+    public void exportDetail(Long teamId, String statMonth, HttpServletResponse response) {
+        if (teamId == null) {
+            throw new ServiceException("班组 ID 不能为空");
+        }
+        if (StringUtils.isBlank(statMonth) || !STAT_MONTH_PATTERN.matcher(statMonth).matches()) {
+            throw new ServiceException("统计月份格式必须为 yyyy-MM（如 2026-04）");
+        }
+        // sheet1 产量绩效：与详情抽屉产量绩效 tab 同口径（逐作物行）
+        List<PerfDetailCropExportVo> cropRows = queryCropRows(teamId, statMonth).stream()
+            .map(r -> {
+                PerfDetailCropExportVo vo = new PerfDetailCropExportVo();
+                vo.setCropName(r.getCropName());
+                vo.setPickWeight(r.getPickWeight());
+                vo.setUnitPriceSnapshot(r.getUnitPriceSnapshot());
+                vo.setPerformanceAmount(r.getPerformanceAmount());
+                return vo;
+            })
+            .collect(Collectors.toList());
+        // sheet2 农事记录：与详情抽屉农事记录 tab 同口径（farm_by = teamId + farm_date ∈ 整月，全量不分页）
+        YearMonth month = YearMonth.parse(statMonth);
+        FarmRecordsQuery farmQuery = new FarmRecordsQuery();
+        farmQuery.setFarmBy(teamId);
+        farmQuery.setFarmDateBegin(month.atDay(1));
+        farmQuery.setFarmDateEnd(month.atEndOfMonth());
+        List<PerfDetailFarmExportVo> farmRows = new ArrayList<>();
+        for (FarmRecordsVo record : farmRecordsService.queryList(farmQuery)) {
+            PerfDetailFarmExportVo vo = new PerfDetailFarmExportVo();
+            vo.setRecordNo(record.getRecordNo());
+            vo.setFarmType(record.getFarmType());
+            vo.setPlotName(record.getPlotName());
+            vo.setFarmDate(record.getFarmDate());
+            farmRows.add(vo);
+        }
+        // 双 sheet 写出：每个 sheet 各自指定表头类
+        String filename = ExcelUtil.encodingFilename("绩效详情_" + statMonth);
+        FileUtils.setAttachmentResponseHeader(response, filename);
+        response.setContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;charset=UTF-8");
+        try {
+            ExcelUtil.exportExcel(PerfDetailCropExportVo.class, response.getOutputStream(), wrapper -> {
+                WriteSheet cropSheet = ExcelWriterWrapper.sheetBuilder(0, "产量绩效")
+                    .head(PerfDetailCropExportVo.class)
+                    .build();
+                wrapper.write(cropRows, cropSheet);
+                WriteSheet farmSheet = ExcelWriterWrapper.sheetBuilder(1, "农事记录")
+                    .head(PerfDetailFarmExportVo.class)
+                    .build();
+                // sheet2 表头类与 wrapper 泛型（sheet1 头类）不同，走底层 writer 写出
+                wrapper.excelWriter().write(farmRows, farmSheet);
+            });
+        } catch (IOException e) {
+            throw new ServiceException("绩效详情导出失败：" + e.getMessage());
+        }
     }
 
     /**

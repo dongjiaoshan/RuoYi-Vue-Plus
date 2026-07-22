@@ -74,15 +74,18 @@ public class AppletPlotPickerController {
     /**
      * 地块 picker 列表。
      *
-     * @param keyword 关键字（同时 LIKE plotName / plotCode），可空
-     * @param zoneId  片区 ID（非空时按片区过滤地块），可空
+     * @param keyword    关键字（同时 LIKE plotName / plotCode），可空
+     * @param zoneId     片区 ID（非空时按片区过滤地块），可空
+     * @param plotStatus 地块状态（row102：移栽转移目标只能选空地，传 1 只列空闲地块；空时不按状态过滤），可空
      */
     @SaCheckLogin
     @GetMapping("/listAll")
     public R<List<PlotPickerVo>> listAll(@RequestParam(required = false) String keyword,
-                                         @RequestParam(required = false) Long zoneId) {
+                                         @RequestParam(required = false) Long zoneId,
+                                         @RequestParam(required = false) Integer plotStatus) {
         LambdaQueryWrapper<PlotInfo> wrapper = new LambdaQueryWrapper<PlotInfo>()
             .eq(zoneId != null, PlotInfo::getZoneId, zoneId)
+            .eq(plotStatus != null, PlotInfo::getPlotStatus, plotStatus)
             .and(StringUtils.isNotBlank(keyword), w -> w
                 .like(PlotInfo::getPlotName, keyword)
                 .or()

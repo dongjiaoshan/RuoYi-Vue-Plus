@@ -72,6 +72,36 @@ public interface FarmRecordsMapper extends BaseMapperPlus<FarmRecords, FarmRecor
     List<Map<String, Object>> selectTransplantedPercentByCrop(@Param("cropId") Long cropId);
 
     /**
+     * 按作物取每个源地块「上次转移目标」（row103：二次移栽默认回填上次转移目标 + 其片区）。
+     *
+     * <p>每个源地块（plot_id）取其最近一条 {@code farm_type='transplant'} 记录（{@code farm_date DESC, id DESC}）
+     * 的 {@code transplant_plot}（目标地块 id），LEFT JOIN {@code t_plant_plot_info} 解出该目标地块的
+     * {@code zone_id}（目标地块所属片区，供前端预选片区 picker）。窗口取每源地块 transplant_plot 非空的最新一条。
+     * 显式 {@code tenant_id='1001'} + {@code del_flag='0'}（V1 单农场硬编码，不依赖租户拦截器）。
+     * 返回 {@code {plotId, lastTransplantPlotId, lastTransplantZoneId}}，无移栽记录的地块不出行。</p>
+     *
+     * @param cropId 作物 id
+     * @return 每行 {@code {plotId, lastTransplantPlotId, lastTransplantZoneId}}
+     */
+    @Select("""
+        SELECT t.plot_id AS plotId, t.transplant_plot AS lastTransplantPlotId, tp.zone_id AS lastTransplantZoneId
+          FROM (
+            SELECT plot_id, transplant_plot,
+                   ROW_NUMBER() OVER (PARTITION BY plot_id ORDER BY farm_date DESC, id DESC) AS rn
+              FROM t_plant_farm_records
+             WHERE del_flag = '0'
+               AND tenant_id = '1001'
+               AND farm_type = 'transplant'
+               AND crop_id = #{cropId}
+               AND transplant_plot IS NOT NULL
+          ) t
+          LEFT JOIN t_plant_plot_info tp
+                 ON tp.id = t.transplant_plot AND tp.del_flag = '0' AND tp.tenant_id = '1001'
+         WHERE t.rn = 1
+        """)
+    List<Map<String, Object>> selectLastTransplantTargetByCrop(@Param("cropId") Long cropId);
+
+    /**
      * 取某 (作物, 地块) 的累计移栽百分比（移栽校验 + 状态机判定共用，避免口径漂移）。
      *
      * <p>= {@code SUM(transplant_percent) WHERE farm_type='transplant'}。空（无移栽记录）返 0。

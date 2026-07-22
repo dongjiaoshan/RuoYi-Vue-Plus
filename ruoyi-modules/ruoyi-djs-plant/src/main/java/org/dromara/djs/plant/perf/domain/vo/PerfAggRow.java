@@ -33,7 +33,7 @@ public class PerfAggRow implements Serializable {
     private Long cropId;
 
     /**
-     * 采摘总量（斤，= SUM(actual_yield)）。
+     * 采摘总量（公斤，= SUM(actual_yield)）。
      */
     private BigDecimal pickWeight;
 }

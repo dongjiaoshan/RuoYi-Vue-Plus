@@ -32,7 +32,7 @@ public interface PlantWorkPerformanceMapper extends BaseMapperPlus<PlantWorkPerf
     /**
      * 按 班组(harvest_by) × 作物(crop_id) 聚合指定月份的采摘总量。
      *
-     * <p>聚合源：{@code t_plant_plant_details.actual_yield}（实际产量，斤）。
+     * <p>聚合源：{@code t_plant_plant_details.actual_yield}（实际产量，公斤，mp 按公斤录入）。
      * 月份维度：{@code DATE_FORMAT(end_actualdate, '%Y-%m')}（采摘完成日所在月）。
      * 仅纳入 {@code actual_yield > 0 AND harvest_by IS NOT NULL} 的有效采摘行。</p>
      *

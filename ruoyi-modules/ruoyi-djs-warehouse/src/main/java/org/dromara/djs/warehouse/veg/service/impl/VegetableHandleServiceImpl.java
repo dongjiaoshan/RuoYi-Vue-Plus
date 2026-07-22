@@ -3,8 +3,10 @@ package org.dromara.djs.warehouse.veg.service.impl;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import jakarta.servlet.http.HttpServletResponse;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.common.core.exception.ServiceException;
+import org.dromara.common.excel.utils.ExcelUtil;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.satoken.utils.LoginHelper;
@@ -37,9 +39,11 @@ import org.dromara.djs.warehouse.veg.domain.bo.HarvestSubmitBo;
 import org.dromara.djs.warehouse.veg.domain.bo.PickActivitySubmitBo;
 import org.dromara.djs.warehouse.veg.domain.bo.PickDestSubmitBo;
 import org.dromara.djs.warehouse.veg.domain.bo.ProcessSubmitBo;
+import org.dromara.djs.warehouse.veg.domain.query.PickDetailQuery;
 import org.dromara.djs.warehouse.veg.domain.query.VegHandleQuery;
 import org.dromara.djs.warehouse.veg.domain.vo.HandleRecordVo;
 import org.dromara.djs.warehouse.veg.domain.vo.PendingPlantingRecordVo;
+import org.dromara.djs.warehouse.veg.domain.vo.PickDetailVo;
 import org.dromara.djs.warehouse.veg.domain.vo.VegCropVo;
 import org.dromara.djs.warehouse.veg.domain.vo.VegPlotDetailVo;
 import org.dromara.djs.warehouse.veg.domain.vo.VegetableHandleVo;
@@ -1152,6 +1156,20 @@ public class VegetableHandleServiceImpl
             .le(query.getPickStartTimeTo() != null, VegetableHandle::getPickStartTime, query.getPickStartTimeTo())
             .orderByDesc(VegetableHandle::getId);
         return wrapper;
+    }
+
+    @Override
+    public TableDataInfo<PickDetailVo> queryPickDetailPage(PickDetailQuery query, PageQuery pageQuery) {
+        PickDetailQuery q = query == null ? new PickDetailQuery() : query;
+        Page<PickDetailVo> page = handleRecordMapper.selectPickDetailPage(pageQuery.build(), q);
+        return TableDataInfo.build(page);
+    }
+
+    @Override
+    public void exportPickDetail(PickDetailQuery query, HttpServletResponse response) {
+        PickDetailQuery q = query == null ? new PickDetailQuery() : query;
+        List<PickDetailVo> list = handleRecordMapper.selectPickDetailList(q);
+        ExcelUtil.exportExcel(list, "采摘明细", PickDetailVo.class, response);
     }
 
 }
