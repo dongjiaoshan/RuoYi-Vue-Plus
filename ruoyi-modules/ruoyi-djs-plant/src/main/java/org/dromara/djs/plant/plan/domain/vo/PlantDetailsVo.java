@@ -85,6 +85,12 @@ public class PlantDetailsVo implements Serializable {
     @ExcelProperty(value = "是否采摘活动", converter = ExcelDictConvert.class)
     @ExcelDictFormat(readConverterExp = "1=是,2=否")
     private Integer isPick;
+
+    /** 是否移栽调整（PLT-TRANSPLANT-REDO-001）：1=该明细由育苗移栽落地生成（plot_id=目标地块）。 */
+    @ExcelProperty(value = "是否移栽调整", converter = ExcelDictConvert.class)
+    @ExcelDictFormat(readConverterExp = "1=是,0=否")
+    private Integer transplantAdjusted;
+
     @ExcelIgnore
     private Date createTime;
 

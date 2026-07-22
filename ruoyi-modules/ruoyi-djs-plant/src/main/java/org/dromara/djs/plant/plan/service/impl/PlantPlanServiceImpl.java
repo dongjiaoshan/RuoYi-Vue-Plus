@@ -549,6 +549,93 @@ public class PlantPlanServiceImpl extends DjsBaseServiceImpl<PlantPlanMapper, Pl
         }
     }
 
+    // ============================================================
+    // 育苗移栽落地（PLT-TRANSPLANT-REDO-001）
+    // ============================================================
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public int materializeTransplantTargets(Long planId, Long sourcePlotId, Long cropId, List<Long> targetPlotIds) {
+        if (planId == null || sourcePlotId == null || cropId == null || CollUtil.isEmpty(targetPlotIds)) {
+            return 0;
+        }
+        // 源育苗明细（日期模板）：同计划 + 同源地块 + 同作物；多条(多月旬)取 id 最小一条作日期模板
+        List<PlantDetails> sourceDetails = detailsMapper.selectList(
+            new LambdaQueryWrapper<PlantDetails>()
+                .eq(PlantDetails::getPlantId, planId)
+                .eq(PlantDetails::getPlotId, sourcePlotId)
+                .eq(PlantDetails::getCropId, cropId)
+                .orderByAsc(PlantDetails::getId));
+        if (sourceDetails.isEmpty()) {
+            throw new ServiceException("移栽源育苗明细不存在（计划 " + planId + " / 地块 " + sourcePlotId + "）");
+        }
+        PlantDetails src = sourceDetails.get(0);
+        CropInfo crop = cropMapper.selectById(cropId);
+
+        List<Long> distinctTargets = targetPlotIds.stream().filter(Objects::nonNull).distinct().toList();
+        Map<Long, PlotInfo> targetMap = distinctTargets.isEmpty() ? Map.of()
+            : plotMapper.selectByIds(distinctTargets).stream()
+                .collect(Collectors.toMap(PlotInfo::getId, p -> p, (a, b) -> a));
+
+        Long updateBy = currentUserIdSafe();
+        List<PlantDetails> newDetails = new ArrayList<>();
+        List<Long> newDetailPlotIds = new ArrayList<>();
+        for (Long targetId : distinctTargets) {
+            PlotInfo tp = targetMap.get(targetId);
+            if (tp == null) {
+                throw new ServiceException("移栽目标地块不存在：" + targetId);
+            }
+            // 幂等：目标已有本计划明细（前次落地 / 重复触发）→ 跳过，不重复建（并发双落地兜底）
+            boolean exists = detailsMapper.selectCount(
+                new LambdaQueryWrapper<PlantDetails>()
+                    .eq(PlantDetails::getPlantId, planId)
+                    .eq(PlantDetails::getPlotId, targetId)) > 0;
+            if (exists) {
+                continue;
+            }
+            PlantDetails d = new PlantDetails();
+            d.setPlantId(planId);
+            d.setPlotId(targetId);
+            d.setCropId(cropId);
+            d.setPlantMonth(src.getPlantMonth());
+            d.setPlantPeriod(src.getPlantPeriod());
+            d.setBeginActualdate(src.getBeginActualdate());          // 种植时间不变
+            d.setEarliestHarvestdate(src.getEarliestHarvestdate());  // 采摘期含育苗时长，不变
+            d.setLastHarvestdate(src.getLastHarvestdate());
+            d.setPlantStatus("completed");   // 满种：已定植进产出期
+            d.setHarvestStatus("pending");   // 采摘改在目标大田发生
+            d.setPlotArea(tp.getPlotArea());
+            BigDecimal expected = BigDecimal.ZERO;
+            if (tp.getPlotArea() != null && crop != null && crop.getPredictedPer() != null) {
+                expected = tp.getPlotArea().multiply(crop.getPredictedPer());
+            }
+            d.setExpectedYield(expected);
+            d.setIsPick(2);
+            d.setPlantBy(src.getPlantBy());   // 沿用源育苗种植班组（过渡兼容旧单列）
+            d.setTransplantAdjusted(1);
+            newDetails.add(d);
+            newDetailPlotIds.add(targetId);
+        }
+        if (newDetails.isEmpty()) {
+            return 0;   // 全部目标已落地（幂等）
+        }
+        // point③：目标须在计划时间窗口内无冲突计划（复用采摘区间重叠校验；有冲突则整事务回滚）
+        validateHarvestOverlap(newDetails, targetMap, null);
+        for (PlantDetails d : newDetails) {
+            detailsMapper.insert(d);
+        }
+        // 目标地块 plot_status=2（种植）
+        plotMapper.update(null,
+            new com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<PlotInfo>()
+                .in(PlotInfo::getId, newDetailPlotIds)
+                .set(PlotInfo::getPlotStatus, 2)
+                .set(PlotInfo::getUpdateBy, updateBy));
+        // 新增目标满种明细后主表 totalPlot / totalArea / earliest·last_harvestdate / plant_status 需重算
+        baseMapper.recalcAggregates(planId);
+        baseMapper.recalcPlanStatus(planId);
+        return newDetails.size();
+    }
+
     /**
      * 阶段串 → 该旬代表日（5/15/25），用于按月按旬拼真实日期。
      */

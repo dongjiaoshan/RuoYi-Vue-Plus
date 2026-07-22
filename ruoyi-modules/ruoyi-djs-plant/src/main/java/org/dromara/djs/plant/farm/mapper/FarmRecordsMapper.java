@@ -124,6 +124,30 @@ public interface FarmRecordsMapper extends BaseMapperPlus<FarmRecords, FarmRecor
     int sumTransplantedPercent(@Param("cropId") Long cropId, @Param("plotId") Long plotId);
 
     /**
+     * 取某 (作物, 源地块) 的全部转移目标地块（PLT-TRANSPLANT-REDO-001 移栽 100% 落地用）。
+     *
+     * <p>{@code SELECT DISTINCT transplant_plot WHERE farm_type='transplant'}——一块育苗可移到多块大田，
+     * 落地时全部目标地块各建一条满种明细（非取比例最大一块）。显式 {@code tenant_id='1001'} + {@code del_flag='0'}
+     * （V1 单农场硬编码，不依赖租户拦截器）。</p>
+     *
+     * @param cropId       作物 id
+     * @param sourcePlotId 源育苗地块 id
+     * @return 目标地块 id 列表（按 id 升序；无移栽记录返空）
+     */
+    @Select("""
+        SELECT DISTINCT transplant_plot
+          FROM t_plant_farm_records
+         WHERE del_flag = '0'
+           AND tenant_id = '1001'
+           AND farm_type = 'transplant'
+           AND crop_id = #{cropId}
+           AND plot_id = #{sourcePlotId}
+           AND transplant_plot IS NOT NULL
+         ORDER BY transplant_plot ASC
+        """)
+    List<Long> selectTransplantTargetPlots(@Param("cropId") Long cropId, @Param("sourcePlotId") Long sourcePlotId);
+
+    /**
      * 取某 (作物, 地块, 种植批次) 的累计灾害损失率（灾害多次录入累计校验用）。
      *
      * <p>= {@code SUM(loss_rate) WHERE farm_type='disaster'}，按 (crop, plot, plant) 三元组定位——

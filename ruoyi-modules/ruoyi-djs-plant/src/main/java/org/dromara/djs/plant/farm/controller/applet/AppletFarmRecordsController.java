@@ -18,6 +18,7 @@ import org.dromara.djs.plant.farm.domain.bo.GrowRecordBo;
 import org.dromara.djs.plant.farm.domain.bo.HarvestWeightBo;
 import org.dromara.djs.plant.farm.domain.bo.PlotPickStatusBo;
 import org.dromara.djs.plant.farm.domain.bo.RotationRecordBo;
+import org.dromara.djs.plant.farm.domain.bo.TransplantFinalizeBo;
 import org.dromara.djs.plant.farm.domain.bo.TransplantRecordBo;
 import org.dromara.djs.plant.farm.domain.query.FarmRecordsQuery;
 import org.dromara.djs.plant.farm.domain.vo.DispatchSummaryVo;
@@ -90,6 +91,19 @@ public class AppletFarmRecordsController extends BaseController {
     @PostMapping("/submit/transplant")
     public R<Long> submitTransplant(@Valid @RequestBody TransplantRecordBo bo) {
         return R.ok(farmRecordsService.submitTransplant(bo));
+    }
+
+    /**
+     * 结束移栽（PLT-TRANSPLANT-REDO-001）：苗损/不再移栽时按当前累计触发落地
+     * （目标地块入计划满种、源育苗地块转退茬），逃生口，避免部分移栽后源地块卡死。
+     *
+     * @return 实际落地的目标满种明细行数（0=已结束/已落地）
+     */
+    @SaCheckLogin
+    @SaCheckPermission("djs:applet:plant:work:transplant")
+    @PostMapping("/finalize/transplant")
+    public R<Integer> finalizeTransplant(@Valid @RequestBody TransplantFinalizeBo bo) {
+        return R.ok(farmRecordsService.finalizeTransplant(bo));
     }
 
     @SaCheckLogin

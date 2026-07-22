@@ -74,23 +74,41 @@ public class AppletPlotPickerController {
     /**
      * 地块 picker 列表。
      *
-     * @param keyword    关键字（同时 LIKE plotName / plotCode），可空
-     * @param zoneId     片区 ID（非空时按片区过滤地块），可空
-     * @param plotStatus 地块状态（row102：移栽转移目标只能选空地，传 1 只列空闲地块；空时不按状态过滤），可空
+     * @param keyword        关键字（同时 LIKE plotName / plotCode），可空
+     * @param zoneId         片区 ID（非空时按片区过滤地块），可空
+     * @param plotStatus     地块状态（row102：移栽转移目标只能选空地，传 1 只列空闲地块；空时不按状态过滤），可空
+     * @param excludePlanned 移栽目标专用（PLT-TRANSPLANT-REDO-001 / point③）：为真时额外三重约束——
+     *                       ① 计划时间窗口内无进行中计划（有 harvest_status&lt;&gt;'completed' 活跃明细即排除）；
+     *                       ② 禁止目标为另一块育苗地（plot_type&lt;&gt;'nursery'，NULL-safe）；
+     *                       ③ 只限启用片区（zone_status=1）。默认 false，不影响其它 picker 调用方。
      */
     @SaCheckLogin
     @GetMapping("/listAll")
     public R<List<PlotPickerVo>> listAll(@RequestParam(required = false) String keyword,
                                          @RequestParam(required = false) Long zoneId,
-                                         @RequestParam(required = false) Integer plotStatus) {
+                                         @RequestParam(required = false) Integer plotStatus,
+                                         @RequestParam(required = false) Boolean excludePlanned) {
         LambdaQueryWrapper<PlotInfo> wrapper = new LambdaQueryWrapper<PlotInfo>()
             .eq(zoneId != null, PlotInfo::getZoneId, zoneId)
             .eq(plotStatus != null, PlotInfo::getPlotStatus, plotStatus)
             .and(StringUtils.isNotBlank(keyword), w -> w
                 .like(PlotInfo::getPlotName, keyword)
                 .or()
-                .like(PlotInfo::getPlotCode, keyword))
-            .orderByAsc(PlotInfo::getPlotCode)
+                .like(PlotInfo::getPlotCode, keyword));
+        if (Boolean.TRUE.equals(excludePlanned)) {
+            // 移栽目标地块约束（V1 单农场显式 tenant_id='1001'）：
+            // ① 无进行中计划：排除任何存在「未采完」明细（harvest_status<>'completed'）的地块
+            wrapper.notInSql(PlotInfo::getId,
+                "SELECT plot_id FROM t_plant_plant_details "
+                    + "WHERE del_flag = '0' AND tenant_id = '1001' AND harvest_status <> 'completed'");
+            // ② 禁止目标为另一块育苗地（NULL-safe：plot_type 为空的普通地块保留）
+            wrapper.and(w -> w.isNull(PlotInfo::getPlotType).or().ne(PlotInfo::getPlotType, "nursery"));
+            // ③ 只限启用片区（zone_status=1，与种植计划地块选择同口径；未分组/停用片区地块不作移栽目标）
+            wrapper.inSql(PlotInfo::getZoneId,
+                "SELECT id FROM t_plant_plot_zone "
+                    + "WHERE del_flag = '0' AND tenant_id = '1001' AND zone_status = 1");
+        }
+        wrapper.orderByAsc(PlotInfo::getPlotCode)
             // 防御上限 1000（V1 单农场地块主数据量级；与无 LIMIT 的 idleZoneCounts 全量计数对齐）。
             // 200 太小：空地总数超 200 时，plot_code 升序尾部的地块（含用户新建的）被截断不显示。
             .last("LIMIT 1000");

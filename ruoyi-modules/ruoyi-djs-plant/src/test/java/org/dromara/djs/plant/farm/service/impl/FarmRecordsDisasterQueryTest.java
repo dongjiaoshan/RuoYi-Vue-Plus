@@ -79,6 +79,8 @@ class FarmRecordsDisasterQueryTest {
     private IPlantActivityService plantActivityService;
     @Mock
     private org.dromara.djs.plant.team.service.PlantTeamLinkService teamLinkService;
+    @Mock
+    private org.dromara.djs.plant.plan.service.IPlantPlanService plantPlanService;
 
     private FarmRecordsServiceImpl service;
 
@@ -94,7 +96,7 @@ class FarmRecordsDisasterQueryTest {
 
     @BeforeEach
     void setUp() {
-        service = new FarmRecordsServiceImpl(baseMapper, plotInfoMapper, plotZoneMapper, cropInfoMapper, plantDetailsMapper, teamMapper, peopleMapper, imageUrlResolver, plantActivityService, teamLinkService);
+        service = new FarmRecordsServiceImpl(baseMapper, plotInfoMapper, plotZoneMapper, cropInfoMapper, plantDetailsMapper, teamMapper, peopleMapper, imageUrlResolver, plantActivityService, teamLinkService, plantPlanService);
     }
 
     private FarmRecordsVo buildDisasterVo() {

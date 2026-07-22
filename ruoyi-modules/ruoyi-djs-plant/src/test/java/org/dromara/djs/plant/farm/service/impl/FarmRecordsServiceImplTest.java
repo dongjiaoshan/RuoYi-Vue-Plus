@@ -109,6 +109,8 @@ class FarmRecordsServiceImplTest {
     private IPlantActivityService plantActivityService;
     @Mock
     private org.dromara.djs.plant.team.service.PlantTeamLinkService teamLinkService;
+    @Mock
+    private org.dromara.djs.plant.plan.service.IPlantPlanService plantPlanService;
 
     private FarmRecordsServiceImpl service;
 
@@ -129,7 +131,7 @@ class FarmRecordsServiceImplTest {
 
     @BeforeEach
     void setUp() {
-        service = new FarmRecordsServiceImpl(baseMapper, plotInfoMapper, plotZoneMapper, cropInfoMapper, plantDetailsMapper, teamMapper, peopleMapper, imageUrlResolver, plantActivityService, teamLinkService);
+        service = new FarmRecordsServiceImpl(baseMapper, plotInfoMapper, plotZoneMapper, cropInfoMapper, plantDetailsMapper, teamMapper, peopleMapper, imageUrlResolver, plantActivityService, teamLinkService, plantPlanService);
         // mocking selectMaxRecordNoByPrefix 返 null（当日尚无序号）→ next=1
         when(baseMapper.selectMaxRecordNoByPrefix(any(), any())).thenReturn(null);
         // mocking plot / crop 落库快照（plot_type / crop_name 冗余）
@@ -308,7 +310,7 @@ class FarmRecordsServiceImplTest {
     }
 
     @Test
-    @DisplayName("移栽：累计刚好跨过 100% → 自动状态机（采摘完成 + 地块置空，row13）")
+    @DisplayName("移栽：累计刚好跨过 100% → 自动落地（目标满种入计划 + 源明细采摘完成 + 源地块转采摘态，PLT-TRANSPLANT-REDO-001）")
     void submitTransplant_reaches_100_triggers_stateMachine() {
         TransplantRecordBo bo = new TransplantRecordBo();
         bo.setPlantId(7L);
@@ -318,21 +320,58 @@ class FarmRecordsServiceImplTest {
         bo.setFarmDate(LocalDate.now());
         bo.setTransplantPlot(3L);
         bo.setTransplantPercent(40);
-        // 提交前累计 60（60+40=100 ≤ 100 放行），提交后重查 100（跨过 → 触发状态机）
+        // 提交前累计 60（60+40=100 ≤ 100 放行），提交后重查 100（跨过 → 触发落地）
         when(baseMapper.sumTransplantedPercent(2L, 1L)).thenReturn(60, 100);
         when(baseMapper.insert(any(FarmRecords.class))).thenAnswer(inv -> {
             ((FarmRecords) inv.getArgument(0)).setId(211L);
             return 1;
         });
+        // 落地：查全部目标地块（B/C 两块）
+        when(baseMapper.selectTransplantTargetPlots(2L, 1L)).thenReturn(List.of(3L, 4L));
         when(plantDetailsMapper.update(isNull(), any(Wrapper.class))).thenReturn(1);
         when(plotInfoMapper.update(isNull(), any(Wrapper.class))).thenReturn(1);
 
         Long id = service.submitTransplant(bo);
         assertThat(id).isEqualTo(211L);
         verify(baseMapper).insert(any(FarmRecords.class));
-        // 副作用：plant_details 采摘完成 + plot_info 置空地各 1 次
+        // ① 目标满种入计划：交 plan 模块落地，带全部目标地块
+        verify(plantPlanService).materializeTransplantTargets(7L, 1L, 2L, List.of(3L, 4L));
+        // ② 源育苗明细标采摘完成（1 次 update）
         verify(plantDetailsMapper).update(isNull(), any(Wrapper.class));
+        // ③ 源育苗地块转采摘态(待退茬)（1 次 update）
         verify(plotInfoMapper).update(isNull(), any(Wrapper.class));
+    }
+
+    @Test
+    @DisplayName("结束移栽：部分移栽(<100%)按当前累计触发落地；无移栽记录抛错；已落地幂等返 0")
+    void finalizeTransplant_partial_and_guards() {
+        org.dromara.djs.plant.farm.domain.bo.TransplantFinalizeBo bo =
+            new org.dromara.djs.plant.farm.domain.bo.TransplantFinalizeBo();
+        bo.setPlantId(7L);
+        bo.setPlotId(1L);
+        bo.setCropId(2L);
+        bo.setFarmDate(LocalDate.now());
+
+        // 无移栽记录 → 抛错，不落地
+        when(baseMapper.sumTransplantedPercent(2L, 1L)).thenReturn(0);
+        assertThatThrownBy(() -> service.finalizeTransplant(bo))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("无移栽记录");
+
+        // 有累计(60%) 且源明细未完成 → 触发落地
+        when(baseMapper.sumTransplantedPercent(2L, 1L)).thenReturn(60);
+        when(plantDetailsMapper.selectCount(any(Wrapper.class))).thenReturn(0L);
+        when(baseMapper.selectTransplantTargetPlots(2L, 1L)).thenReturn(List.of(3L));
+        when(plantDetailsMapper.update(isNull(), any(Wrapper.class))).thenReturn(1);
+        when(plotInfoMapper.update(isNull(), any(Wrapper.class))).thenReturn(1);
+        int landed = service.finalizeTransplant(bo);
+        assertThat(landed).isEqualTo(1);
+        verify(plantPlanService).materializeTransplantTargets(7L, 1L, 2L, List.of(3L));
+
+        // 源明细已采摘完成（已落地）→ 幂等返 0，不重复落地
+        when(plantDetailsMapper.selectCount(any(Wrapper.class))).thenReturn(1L);
+        int again = service.finalizeTransplant(bo);
+        assertThat(again).isZero();
     }
 
     @Test
