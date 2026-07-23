@@ -120,6 +120,18 @@ public interface IPlantPlanService {
     int materializeTransplantTargets(Long planId, Long sourcePlotId, Long cropId, java.util.List<Long> targetPlotIds);
 
     /**
+     * row159：移栽提交时对本次所选「转移目标地块」做前移校验——用源育苗采摘窗口构造一条预期满种明细，
+     * 校验该目标地块是否与既有计划采摘区间冲突。选块提交当次即报（而非拖到累计 100% 自动落地时才暴露、
+     * 且报的是历史目标集里的无关块）。目标已物化 / 源明细缺失 / 无采摘窗 → 跳过不阻断。
+     *
+     * @param planId       种植计划 id
+     * @param sourcePlotId 源育苗地块 id
+     * @param cropId       作物 id
+     * @param targetPlotId 本次转移目标地块 id
+     */
+    void validateTransplantTargetConflict(Long planId, Long sourcePlotId, Long cropId, Long targetPlotId);
+
+    /**
      * 跨模块薄壳：聚合"进行中（pending/ongoing）"种植计划摘要给需求确认 SummaryBar 用
      * （DJS-FIX-ADMIN-W22-003 蔬菜业态）。
      *

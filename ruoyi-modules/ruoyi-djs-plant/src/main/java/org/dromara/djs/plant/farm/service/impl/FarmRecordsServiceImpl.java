@@ -229,6 +229,12 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
             throw new ServiceException(
                 "本次移栽百分比超出剩余可移 " + (100 - moved) + "%（已累计 " + moved + "%）");
         }
+        // row159 前移校验：本次所选转移目标地块在源采摘窗口下若与既有计划采摘区间冲突，选块提交当次即报，
+        // 不拖到累计 100% 自动落地时才暴露（届时报的是历史目标全集里的无关块，用户困惑）。
+        if (bo.getTransplantPlot() != null) {
+            plantPlanService.validateTransplantTargetConflict(
+                bo.getPlantId(), bo.getPlotId(), bo.getCropId(), bo.getTransplantPlot());
+        }
         FarmRecords r = new FarmRecords();
         buildBase(r, "transplant", bo.getPlotId(), bo.getCropId(), bo.getPlantId(),
             firstFarmTeam(effFarmTeams(bo.getFarmByIds(), bo.getFarmBy())),
@@ -806,6 +812,9 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
         }
         Long updateBy = currentUserSafe();
         boolean toCompleted = "completed".equals(bo.getPickStatus());
+        // row152：采摘班组多选。teamIds 优先（去重去空），空则回落单值 teamId。harvest_by/留痕 farm_by 写首值，
+        // 全集落 t_plant_details_team（明细）+ t_farm_records_team（留痕）中间表。
+        List<Long> effTeams = effFarmTeams(bo.getTeamIds(), bo.getTeamId());
         // completed 方向只动未完成行（不覆写已完成行的 end_harvestdate 历史完成日期）；
         // picking 方向对全部活动行生效（completed→picking 重开是本接口的本职功能）。
         List<Long> targetIds = details.stream()
@@ -829,9 +838,17 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
                 // row160④：首次采摘录入（待采摘 → 采摘中）时把所选班组回写 plant_details.harvest_by，
                 // 作为「首次采摘录入班组」权威源。第二次录入（采摘中 → 采摘完成）时前端读回该班组预填并锁定，
                 // 保证同一地块二次录入班组默认第一次的且不可调整。完成态不再改写班组。
-                uw.set(PlantDetails::getHarvestBy, bo.getTeamId());
+                // row152 多选：harvest_by 写首值兼容旧展示，全集另落 t_plant_details_team。
+                uw.set(PlantDetails::getHarvestBy, firstFarmTeam(effTeams));
             }
             affected = plantDetailsMapper.update(null, uw);
+            // row152：picking 首次录入把采摘班组全集落明细中间表（completed 方向不改班组、不动关联）。
+            if (!toCompleted) {
+                for (Long detailId : targetIds) {
+                    teamLinkService.syncDetailTeams(detailId,
+                        org.dromara.djs.plant.team.service.PlantTeamLinkService.ROLE_HARVEST, effTeams);
+                }
+            }
         }
 
         // row4（何涛 2026-07-17）：地块进入采摘（采摘中 / 采摘完成）后，plot_info.plot_status 从 2（种植）
@@ -847,15 +864,16 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
                     .set(PlotInfo::getUpdateBy, updateBy));
         }
 
-        // 写一条 harvest_activity 农事记录留痕（不录重量）
+        // 写一条 harvest_activity 农事记录留痕（不录重量）；row152：farm_by 写班组首值，全集另落 t_farm_records_team。
         Long cropPlantId = details.get(0).getPlantId();
         FarmRecords trace = new FarmRecords();
         buildBase(trace, "harvest_activity", bo.getPlotId(), bo.getCropId(), cropPlantId,
-            bo.getTeamId(), bo.getAdjustDate(), null,
+            firstFarmTeam(effTeams), bo.getAdjustDate(), null,
             "采摘状态调整为" + (toCompleted ? "采摘完成" : "采摘中"));
         // 采摘人员（先选班组后从该班组成员中选）落 operator_user_id，与 farm_by(班组) 并存
         trace.setOperatorUserId(bo.getOperatorUserId());
         baseMapper.insert(trace);
+        applyFarmTeamLinks(trace.getId(), bo.getTeamIds(), bo.getTeamId());
         return affected;
     }
 

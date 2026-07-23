@@ -232,8 +232,13 @@ public class PlantWorkPerformanceServiceImpl
     }
 
     /**
-     * 采摘活动量并入班组聚合（row12）：按 (crop, plot) 聚合的活动量，经地块采收班组集合平摊
-     * （多班组各计 1/N），合并进毛菜过磅聚合行。无采收班组归属的活动量跳过（无法计入班组绩效）。
+     * 采摘活动量并入班组聚合（row12 + row43a）：按 (crop, plot) 聚合的活动量，经班组集合平摊
+     * （多班组各计 1/N），合并进毛菜过磅聚合行。
+     *
+     * <p>班组集合按 (plotId:cropId) 解析，<b>COALESCE 优先</b>：先取活动<b>自身</b>中间表
+     * {@code t_plant_activity_team} 直接指定的班组（{@link PlantWorkPerformanceMapper#selectActivityDirectTeamsByMonth}），
+     * 该 (plot,crop) 无直接班组时才兜底地块采收班组（{@code role='harvest'}）。修复原逻辑「活动直接指定
+     * 班组、但地块无 harvest 明细的整条活动量被跳过丢失」。两处都无班组归属才跳过（无法计入班组绩效）。</p>
      */
     private List<PerfAggRow> mergeActivityShares(List<PerfAggRow> aggRows, String statMonth) {
         List<PerfActivityAggRow> actRows = baseMapper.selectActivityAggByMonth(statMonth);
@@ -244,10 +249,16 @@ public class PlantWorkPerformanceServiceImpl
             .map(PerfActivityAggRow::getPlotId)
             .filter(Objects::nonNull)
             .collect(Collectors.toCollection(HashSet::new));
-        // (plotId:cropId) -> 采收班组集合（DISTINCT，多计划共享班组只计一次）
-        Map<String, Set<Long>> teamsByPlotCrop = new HashMap<>();
+        // (plotId:cropId) -> 活动自身直接指定班组集合（首选）
+        Map<String, Set<Long>> activityTeamsByPlotCrop = new HashMap<>();
+        for (PlotCropTeamRow r : baseMapper.selectActivityDirectTeamsByMonth(statMonth)) {
+            activityTeamsByPlotCrop.computeIfAbsent(r.getPlotId() + ":" + r.getCropId(), k -> new LinkedHashSet<>())
+                .add(r.getTeamId());
+        }
+        // (plotId:cropId) -> 地块采收班组集合（兜底，DISTINCT，多计划共享班组只计一次）
+        Map<String, Set<Long>> harvestTeamsByPlotCrop = new HashMap<>();
         for (PlotCropTeamRow r : baseMapper.selectHarvestTeamsByPlots(plotIds)) {
-            teamsByPlotCrop.computeIfAbsent(r.getPlotId() + ":" + r.getCropId(), k -> new LinkedHashSet<>())
+            harvestTeamsByPlotCrop.computeIfAbsent(r.getPlotId() + ":" + r.getCropId(), k -> new LinkedHashSet<>())
                 .add(r.getTeamId());
         }
         // 合并容器：既有过磅行按 (teamId:cropId) 建索引
@@ -256,7 +267,12 @@ public class PlantWorkPerformanceServiceImpl
             merged.put(row.getTeamId() + ":" + row.getCropId(), row);
         }
         for (PerfActivityAggRow act : actRows) {
-            Set<Long> teams = teamsByPlotCrop.get(act.getPlotId() + ":" + act.getCropId());
+            String plotCropKey = act.getPlotId() + ":" + act.getCropId();
+            // COALESCE 优先：活动自身直接指定班组 → 空时兜底地块采收班组
+            Set<Long> teams = activityTeamsByPlotCrop.get(plotCropKey);
+            if (teams == null || teams.isEmpty()) {
+                teams = harvestTeamsByPlotCrop.get(plotCropKey);
+            }
             if (teams == null || teams.isEmpty() || act.getPickWeight() == null) {
                 continue;
             }

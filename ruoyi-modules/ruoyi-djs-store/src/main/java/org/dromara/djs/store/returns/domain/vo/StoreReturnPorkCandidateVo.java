@@ -4,6 +4,7 @@ import lombok.Data;
 
 import java.io.Serial;
 import java.io.Serializable;
+import java.math.BigDecimal;
 
 /**
  * 退回操作「猪肉产品」tab 候选行 VO。
@@ -42,5 +43,16 @@ public class StoreReturnPorkCandidateVo implements Serializable {
      * / {@code white_bar}=白条产品（djs_white_bar_return_product 字典，按重量退货，单位取原材料单位）。
      */
     private String subCategory;
+
+    /**
+     * 到店量（退回量上限，row40）。口径按子类分流：
+     * <ul>
+     *   <li>猪肉产品(pork,按份)：当日到店该产品需求订购份数 {@code SUM(demand_quantity)}；</li>
+     *   <li>材料外售原材料(kg)：对应成品当日到店重量（kg）；</li>
+     *   <li>白条产品(white_bar,kg)：当日到店白条总重（kg，池化上限）。</li>
+     * </ul>
+     * 前端 el-input-number 以此作 {@code :max}；空 → 不封顶。
+     */
+    private BigDecimal arrivedQuantity;
 
 }

@@ -32,36 +32,81 @@ import java.util.Map;
 public interface PlantWorkPerformanceMapper extends BaseMapperPlus<PlantWorkPerformance, PlantWorkPerformanceVo> {
 
     /**
-     * 按 采摘班组(team_id) × 作物(crop_id) 聚合指定月份的采收总量（row39 口径）。
+     * 按 采摘班组(team_id) × 作物(crop_id) 聚合指定月份的采收总量（row39 + row43 多组平摊口径）。
      *
      * <p>聚合源：{@code t_warehouse_handle_record.record_weight}（毛菜处理间采摘重量录入时各组对应作物的
-     * 称重重量，公斤）。仅纳入 {@code record_type=1}（采收录入，非处理录入）、{@code team_id IS NOT NULL}
-     * （处理录入 record_type=2 不带班组）、{@code record_weight > 0} 的有效称重行。
-     * 月份维度：{@code DATE_FORMAT(handle_time, '%Y-%m')}（称重录入时刻所在月）。</p>
+     * 称重重量，公斤）。仅纳入 {@code record_type=1}（采收录入，非处理录入）、{@code record_weight > 0}
+     * 的有效称重行。月份维度：{@code DATE_FORMAT(handle_time, '%Y-%m')}（称重录入时刻所在月）。</p>
      *
-     * <p>row39 前口径以种植端 {@code t_plant_plant_details.actual_yield} 为准；改为以仓库毛菜处理间实际
-     * 称重（各班组录入）为各组当月采收总重量，绩效更贴合现场过磅结果。</p>
+     * <p><b>row43 多组平摊</b>：一条采收记录可选多个班组（多选中间表
+     * {@code t_warehouse_handle_record_team}）。旧口径按单列 {@code team_id}（写首值）GROUP BY，重量全记第一
+     * 组。改为按中间表拆行——每条 record 的 {@code record_weight} 除以其班组数
+     * {@code COALESCE(中间表班组数, 1)} 后按班组归集（LEFT JOIN 中间表：无中间表行的旧记录兜底单列
+     * {@code r.team_id}、班组数按 1 计）。每组平摊量 SUM 后 {@code ROUND(...,3)} 保留 3 位小数。</p>
      *
-     * <p>显式 {@code tenant_id='1001'}（V1 单租户，无全局拦截器）。</p>
+     * <p>显式 {@code tenant_id='1001'}（V1 单租户，无全局拦截器），中间表 JOIN 每张表带 tenant / del_flag。</p>
      *
      * @param statMonth 统计月份（"yyyy-MM"）
      * @return 聚合行（teamId / cropId / pickWeight）；无数据返空 list
      */
     @Select("""
         SELECT
-            team_id AS teamId,
-            crop_id AS cropId,
-            SUM(record_weight) AS pickWeight
-          FROM t_warehouse_handle_record
-         WHERE tenant_id = '1001'
-           AND del_flag = '0'
-           AND record_type = 1
-           AND team_id IS NOT NULL
-           AND record_weight > 0
-           AND DATE_FORMAT(handle_time, '%Y-%m') = #{statMonth}
-         GROUP BY team_id, crop_id
+            s.teamId AS teamId,
+            s.cropId AS cropId,
+            ROUND(SUM(s.shareWeight), 3) AS pickWeight
+          FROM (
+            SELECT
+                COALESCE(rt.team_id, r.team_id) AS teamId,
+                r.crop_id AS cropId,
+                r.record_weight / COALESCE(tc.cnt, 1) AS shareWeight
+              FROM t_warehouse_handle_record r
+              LEFT JOIN t_warehouse_handle_record_team rt
+                     ON rt.record_id = r.id AND rt.del_flag = '0' AND rt.tenant_id = '1001'
+              LEFT JOIN (SELECT record_id, COUNT(*) AS cnt
+                           FROM t_warehouse_handle_record_team
+                          WHERE del_flag = '0' AND tenant_id = '1001'
+                          GROUP BY record_id) tc
+                     ON tc.record_id = r.id
+             WHERE r.tenant_id = '1001'
+               AND r.del_flag = '0'
+               AND r.record_type = 1
+               AND r.record_weight > 0
+               AND DATE_FORMAT(r.handle_time, '%Y-%m') = #{statMonth}
+               AND COALESCE(rt.team_id, r.team_id) IS NOT NULL
+          ) s
+         GROUP BY s.teamId, s.cropId
         """)
     List<PerfAggRow> aggregateByMonth(@Param("statMonth") String statMonth);
+
+    /**
+     * 当月采摘活动直接指定的班组（row43a：绩效计入活动直接班组）。
+     *
+     * <p>源 {@code t_plant_plant_activity JOIN t_plant_activity_team}：把每个当月采摘活动
+     * （{@code pick_dest} 非空、plot 非空、{@code daily_weight>0}）自身中间表指定的班组，
+     * 解析成 (plotId, cropId, teamId) 行（DISTINCT 去重）。service 层用它作为活动量平摊班组的
+     * <b>首选集合</b>，为空时才兜底 {@link #selectHarvestTeamsByPlots} 地块采收班组——修复「活动直接
+     * 指定班组但地块无 harvest 明细的整条被跳过、活动量丢失」。</p>
+     *
+     * <p>显式 {@code tenant_id='1001' AND del_flag='0'}（V1 无全局拦截器）。</p>
+     *
+     * @param statMonth 统计月份（"yyyy-MM"）
+     * @return (plotId, cropId, teamId) 行；无数据返空 list
+     */
+    @Select("""
+        SELECT DISTINCT a.plot_id AS plotId,
+               a.crop_id AS cropId,
+               at.team_id AS teamId
+          FROM t_plant_plant_activity a
+          JOIN t_plant_activity_team at
+                 ON at.activity_id = a.id AND at.del_flag = '0' AND at.tenant_id = '1001'
+         WHERE a.tenant_id = '1001'
+           AND a.del_flag = '0'
+           AND a.pick_dest IS NOT NULL
+           AND a.plot_id IS NOT NULL
+           AND a.daily_weight > 0
+           AND DATE_FORMAT(a.activity_date, '%Y-%m') = #{statMonth}
+        """)
+    List<PlotCropTeamRow> selectActivityDirectTeamsByMonth(@Param("statMonth") String statMonth);
 
     /**
      * 当月采摘活动量按 作物 × 地块 聚合（row12：绩效并入采摘活动处理数据）。

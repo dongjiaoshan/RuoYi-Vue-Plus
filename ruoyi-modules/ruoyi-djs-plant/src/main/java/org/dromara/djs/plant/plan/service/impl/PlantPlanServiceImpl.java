@@ -505,6 +505,18 @@ public class PlantPlanServiceImpl extends DjsBaseServiceImpl<PlantPlanMapper, Pl
     private void validateHarvestOverlap(List<PlantDetails> incoming,
                                         Map<Long, PlotInfo> plotMap,
                                         Long excludePlanId) {
+        validateHarvestOverlap(incoming, plotMap, excludePlanId, null);
+    }
+
+    /**
+     * 采摘区间重叠校验。{@code scene} 非空时作为异常前缀，标明冲突发生的场景（如移栽 100% 自动落地时
+     * 物化「转移目标地块」入计划），避免用户误以为冒出一块无关地块（row159）。地块名优先用地块编号
+     * {@code plotCode}（与 mp 地块选择器展示一致），回落地块名 / id。
+     */
+    private void validateHarvestOverlap(List<PlantDetails> incoming,
+                                        Map<Long, PlotInfo> plotMap,
+                                        Long excludePlanId,
+                                        String scene) {
         Set<Long> plotIds = incoming.stream()
             .map(PlantDetails::getPlotId).filter(Objects::nonNull).collect(Collectors.toSet());
         if (plotIds.isEmpty()) {
@@ -539,9 +551,11 @@ public class PlantPlanServiceImpl extends DjsBaseServiceImpl<PlantPlanMapper, Pl
                 LocalDate b2 = old.getLastHarvestdate();
                 if (!a1.isAfter(b2) && !a2.isBefore(b1)) {
                     PlotInfo plot = plotMap == null ? null : plotMap.get(item.getPlotId());
-                    String plotLabel = plot != null && plot.getPlotName() != null
-                        ? plot.getPlotName() : ("地块 " + item.getPlotId());
-                    throw new ServiceException("「" + plotLabel + "」已有种植记录的采摘区间（"
+                    String plotLabel = plot == null ? ("地块 " + item.getPlotId())
+                        : (plot.getPlotCode() != null ? plot.getPlotCode()
+                        : (plot.getPlotName() != null ? plot.getPlotName() : ("地块 " + item.getPlotId())));
+                    String prefix = StringUtils.isNotBlank(scene) ? (scene + "：") : "";
+                    throw new ServiceException(prefix + "「" + plotLabel + "」已有种植记录的采摘区间（"
                         + b1 + " ~ " + b2 + "）与本次采摘区间（" + a1 + " ~ " + a2
                         + "）重叠，请调整种植月份或旬别后再提交");
                 }
@@ -619,8 +633,10 @@ public class PlantPlanServiceImpl extends DjsBaseServiceImpl<PlantPlanMapper, Pl
         if (newDetails.isEmpty()) {
             return 0;   // 全部目标已落地（幂等）
         }
-        // point③：目标须在计划时间窗口内无冲突计划（复用采摘区间重叠校验；有冲突则整事务回滚）
-        validateHarvestOverlap(newDetails, targetMap, null);
+        // point③：目标须在计划时间窗口内无冲突计划（复用采摘区间重叠校验；有冲突则整事务回滚）。
+        // row159：100% 落地时物化的是「源育苗地块的历史转移目标全集」，冲突地块可能非本次所选——
+        // 传场景前缀让文案标明是「移栽落地·转移目标地块」，避免用户误以为报了无关地块。
+        validateHarvestOverlap(newDetails, targetMap, null, "移栽落地·转移目标地块");
         for (PlantDetails d : newDetails) {
             detailsMapper.insert(d);
         }
@@ -634,6 +650,44 @@ public class PlantPlanServiceImpl extends DjsBaseServiceImpl<PlantPlanMapper, Pl
         baseMapper.recalcAggregates(planId);
         baseMapper.recalcPlanStatus(planId);
         return newDetails.size();
+    }
+
+    @Override
+    public void validateTransplantTargetConflict(Long planId, Long sourcePlotId, Long cropId, Long targetPlotId) {
+        if (planId == null || sourcePlotId == null || cropId == null || targetPlotId == null) {
+            return;
+        }
+        // 目标已有本计划明细（已物化）→ 无需重复校验
+        boolean exists = detailsMapper.selectCount(
+            new LambdaQueryWrapper<PlantDetails>()
+                .eq(PlantDetails::getPlantId, planId)
+                .eq(PlantDetails::getPlotId, targetPlotId)) > 0;
+        if (exists) {
+            return;
+        }
+        // 源育苗明细日期模板（同 materializeTransplantTargets：id 最小一条）
+        List<PlantDetails> sourceDetails = detailsMapper.selectList(
+            new LambdaQueryWrapper<PlantDetails>()
+                .eq(PlantDetails::getPlantId, planId)
+                .eq(PlantDetails::getPlotId, sourcePlotId)
+                .eq(PlantDetails::getCropId, cropId)
+                .orderByAsc(PlantDetails::getId));
+        if (sourceDetails.isEmpty()) {
+            return;   // 源缺失 → 落地环节会再报，选块阶段不阻断
+        }
+        PlantDetails src = sourceDetails.get(0);
+        if (src.getEarliestHarvestdate() == null || src.getLastHarvestdate() == null) {
+            return;
+        }
+        PlotInfo tp = plotMapper.selectById(targetPlotId);
+        if (tp == null) {
+            return;
+        }
+        PlantDetails prospective = new PlantDetails();
+        prospective.setPlotId(targetPlotId);
+        prospective.setEarliestHarvestdate(src.getEarliestHarvestdate());
+        prospective.setLastHarvestdate(src.getLastHarvestdate());
+        validateHarvestOverlap(List.of(prospective), Map.of(targetPlotId, tp), null, "移栽·转移目标地块");
     }
 
     /**

@@ -207,6 +207,8 @@ public class TraceCodeAdminServiceImpl
     private static final String SOURCE_STORE = "store";
     /** 白条产品业态（{@code t_warehouse_product_info.belong_type}，字典 djs_belong_type）；猪肉追溯列表排除。 */
     private static final String WHITE_BAR_BELONG_TYPE = "white_bar";
+    /** 猪肉产品业态（{@code t_warehouse_product_info.belong_type}）；门店现场码按产品名反查产品规格。 */
+    private static final String PORK_BELONG_TYPE = "pork";
 
     private LambdaQueryWrapper<TraceCode> buildWrapper(TraceCodeQuery query) {
         LambdaQueryWrapper<TraceCode> w = new LambdaQueryWrapper<>();
@@ -347,16 +349,20 @@ public class TraceCodeAdminServiceImpl
      * {@code listSourceForMeat} 等误捞），故 product_id / 产出记录均空，{@code 产品 / 产品规格 / 实际重量 /
      * 生产编号} 列在仓库流口径下取不到值。但产品名 + 重量已落在 remark「现场生码 部位=X 重量=Ykg」，
      * 这里从 remark 回填 {@code productName + actualWeight}，避免门店行这两列空白（备注里有、列里却空的割裂感）。
-     * 到店日期 / 生产编号 / 产品规格 是仓库发货流字段，门店现做码本无，按现状留空。</p>
+     * 到店日期 / 生产编号 是仓库发货流字段，门店现做码本无，按现状留空。
+     * 产品规格：门店现做码 product_id 恒 NULL 取不到，改按回填后的产品名反查
+     * {@code belong_type='pork'} 产品主数据补齐（客户要求列表展示规格），见 {@link #fillOnsiteProductSpec}。</p>
      */
     private void fillOnsiteDerivedFields(List<? extends TraceCodeListVo> vos) {
         if (vos == null) {
             return;
         }
+        List<TraceCodeListVo> storeRows = new java.util.ArrayList<>();
         for (TraceCodeListVo vo : vos) {
             if (!SOURCE_STORE.equals(vo.getSource())) {
                 continue;
             }
+            storeRows.add(vo);
             String remark = vo.getRemark();
             if (remark == null || remark.isBlank()) {
                 continue;
@@ -384,6 +390,48 @@ public class TraceCodeAdminServiceImpl
                             // 非法重量串忽略，保持空
                         }
                     }
+                }
+            }
+        }
+        fillOnsiteProductSpec(storeRows);
+    }
+
+    /**
+     * 门店现场码产品规格回填（客户要求列表展示规格）。
+     *
+     * <p>门店现场生码「纯生码不联动库存」，{@code trace_code.product_id} 恒 NULL，产品规格取不到，
+     * 只能按上一步从 remark 回填的产品名反查产品主数据。批量按
+     * {@code belong_type='pork' AND product_name IN(names)} 查 {@code t_warehouse_product_info}，
+     * 构 {@code productName → productSpec} 映射逐行回填；重名取任一（{@code (a,b)->a}），
+     * 未命中（部位字典回退的老码名字不匹配）留空不造假。仅补规格为空的行，不覆盖已有值。</p>
+     */
+    private void fillOnsiteProductSpec(List<TraceCodeListVo> storeRows) {
+        if (storeRows.isEmpty()) {
+            return;
+        }
+        List<String> names = storeRows.stream()
+            .map(TraceCodeListVo::getProductName)
+            .filter(StringUtils::isNotBlank)
+            .distinct().toList();
+        if (names.isEmpty()) {
+            return;
+        }
+        Map<String, String> nameToSpec = productInfoMapper.selectList(
+                new LambdaQueryWrapper<ProductInfo>()
+                    .select(ProductInfo::getProductName, ProductInfo::getProductSpec)
+                    .eq(ProductInfo::getBelongType, PORK_BELONG_TYPE)
+                    .in(ProductInfo::getProductName, names))
+            .stream()
+            .filter(p -> StringUtils.isNotBlank(p.getProductName()) && StringUtils.isNotBlank(p.getProductSpec()))
+            .collect(Collectors.toMap(ProductInfo::getProductName, ProductInfo::getProductSpec, (a, b) -> a));
+        if (nameToSpec.isEmpty()) {
+            return;
+        }
+        for (TraceCodeListVo vo : storeRows) {
+            if (StringUtils.isBlank(vo.getProductSpec()) && StringUtils.isNotBlank(vo.getProductName())) {
+                String spec = nameToSpec.get(vo.getProductName());
+                if (StringUtils.isNotBlank(spec)) {
+                    vo.setProductSpec(spec);
                 }
             }
         }

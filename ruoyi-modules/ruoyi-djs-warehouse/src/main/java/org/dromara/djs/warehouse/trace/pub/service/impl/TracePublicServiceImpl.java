@@ -635,9 +635,10 @@ public class TracePublicServiceImpl
      *
      * <p>来源（按节点）：</p>
      * <ul>
-     *   <li>种植（sowing）：仓库种植记录 {@code planting_record.plant_date}（种植完成时间）；
-     *       缺则用 {@code 采摘日 − 生长天数} 反推。</li>
-     *   <li>采摘（harvest）：{@code trace_code.havest_date}；缺则种植记录 {@code harvest_date}。</li>
+     *   <li>种植（sowing）：种植明细 {@code plant_details.create_time}（录入时刻，DATETIME 有时分秒）近似种植完成时间；
+     *       无明细则退化种植日 {@code planting_record.plant_date}（DATE）0 点，plant_date 缺则 {@code 采摘日 − 生长天数} 反推。</li>
+     *   <li>采摘（harvest）：仓库种植记录 {@code planting_record.data_date}（DATETIME 有时分秒，「一般同采摘时间」）；
+     *       无则退化采摘日（{@code trace_code.havest_date} / 种植记录 {@code harvest_date}，DATE）0 点。</li>
      *   <li>产品生产（pack）：发货生产记录 {@code product_production.produce_time}（无则 {@code produce_date}），
      *       即果蔬在仓库打包的时间。</li>
      *   <li>冷链发货（ship）/ 到店（arrival）：{@code trace_event} 基础节点（发货月台确认发货 / 门店确认到店）。</li>
@@ -661,18 +662,30 @@ public class TracePublicServiceImpl
         // 邓博 row19：种植 / 采摘节点写班组名（非人员名）；取仓库种植记录的 team_name，无则 null。
         String teamName = planting != null ? planting.getTeamName() : null;
 
-        // 种植
+        // 采摘（采摘开始时间）：优先取种植记录 data_date（DATETIME「数据生成时间，一般同采摘时间」，
+        // 有真实时分秒），无则退化采摘日 0 点（trace_code.havest_date / planting.harvest_date 均 DATE，无时分秒）。
+        LocalDate harvestDate = code.getHarvestDate() != null
+            ? code.getHarvestDate()
+            : (planting != null ? toLocalDate(planting.getHarvestDate()) : null);
+        LocalDateTime harvestTime = planting != null ? toLocalDateTime(planting.getDataDate()) : null;
+        if (harvestTime == null) {
+            harvestTime = atDayStart(harvestDate);
+        }
+
+        // 种植（种植完成时间）：plant_date 为 DATE 无时分秒，取该地块种植明细录入时刻
+        // plant_details.create_time（DATETIME，有真实时分秒）近似；无明细或晚于采摘时间则退化种植日 0 点
+        // （保证时间轴顺序 种植 ≤ 采摘 ≤ 产品生产，不倒挂）。
         LocalDate sowDate = planting != null ? toLocalDate(planting.getPlantDate()) : null;
         if (sowDate == null && code.getHarvestDate() != null && code.getPlantDays() != null) {
             sowDate = code.getHarvestDate().minusDays(code.getPlantDays());
         }
-        addProcessNode(timeline, TraceContentConst.SOWING, atDayStart(sowDate), teamName);
+        LocalDateTime sowTime = resolvePlantRecordTime(code.getPlotId());
+        if (sowTime == null || (harvestTime != null && sowTime.isAfter(harvestTime))) {
+            sowTime = atDayStart(sowDate);
+        }
 
-        // 采摘
-        LocalDate harvestDate = code.getHarvestDate() != null
-            ? code.getHarvestDate()
-            : (planting != null ? toLocalDate(planting.getHarvestDate()) : null);
-        addProcessNode(timeline, TraceContentConst.HARVEST, atDayStart(harvestDate), teamName);
+        addProcessNode(timeline, TraceContentConst.SOWING, sowTime, teamName);
+        addProcessNode(timeline, TraceContentConst.HARVEST, harvestTime, teamName);
 
         // 产品生产（打包）
         if (pack != null) {
@@ -713,6 +726,25 @@ public class TracePublicServiceImpl
                 .orderByDesc(PlantingRecord::getHarvestDate)
                 .orderByDesc(PlantingRecord::getId)
                 .last("limit 1"));
+    }
+
+    /**
+     * 种植节点时分秒源：按 plot 取最近一条种植明细的 {@code create_time}（DATETIME，录入时刻，有时分秒）。
+     *
+     * <p>种植日 {@code plant_date} 是 DATE 无时分秒，故用种植明细录入时刻近似「种植完成时间」（与产品生产节点
+     * 取 produce_time 录入时刻同理）；无种植明细返 null（调用方退化种植日 0 点）。</p>
+     */
+    private LocalDateTime resolvePlantRecordTime(Long plotId) {
+        if (plotId == null) {
+            return null;
+        }
+        PlantDetails detail = plantDetailsMapper.selectOne(
+            new LambdaQueryWrapper<PlantDetails>()
+                .eq(PlantDetails::getPlotId, plotId)
+                .orderByDesc(PlantDetails::getBeginActualdate)
+                .orderByDesc(PlantDetails::getId)
+                .last("limit 1"));
+        return detail != null ? toLocalDateTime(detail.getCreateTime()) : null;
     }
 
     /** 时间非空才补节点（避免显示无意义空时间工序行）。 */

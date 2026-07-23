@@ -26,26 +26,31 @@ import java.util.Map;
 public interface DemandManageMapper extends BaseMapperPlus<DemandManage, DemandManageVo> {
 
     /**
-     * 明日 KPI 横条主表聚合（DJS-FIX-ADMIN-W22-007）：JOIN 产品主数据 belong_type，1 query 出 7 数。
+     * 明日 KPI 横条主表聚合（DJS-FIX-ADMIN-W22-007）：JOIN 产品主数据 belong_type，1 query 出 8 数。
      *
-     * <p>「已调配」= 状态 {@code IN ('CONFIRMED','IN_PRODUCTION','PARTIAL_SHIPPED','COMPLETED')}
-     * （已脱离待确认态、未取消；状态集合是固定枚举不随租户变，直接写死 SQL）。</p>
+     * <p>「已调配」= 该行所属产品（同 {@code demand_date + product_id} 组）当日<b>已全部确认</b>——组内
+     * 全部非 CANCELLED/DELETED、{@code store_id} 非空的行都已脱离 DRAFT/SUBMITTED 待确认态
+     * （派生表 {@code fc.fully_confirmed=1} 门，SQL 里按 product_id 分组求得）。与列表
+     * {@code selectDemandGroupList} 的「已全部确认」为同一口径；不再按单行状态集合判定。</p>
      *
      * <p>{@code todayPigDemand}「明日猪需求头数」口径：按产品主数据 {@code belong_type='white_bar'}
      * 识别白条carcass，产品名含「半」（半扇 / 白条·半只）按 0.5 头折算、其余（整只白条）按 1 头计。
      * 非白条产品不计入头数——{@code product_type='pig'} 的黑毛猪瘦肉 / 腰子等实为 {@code belong_type='pork'}
      * 切割品，改由 {@code todayPorkDemand} 承接。可出 0.5 小数，service 端用 BigDecimal 承接。</p>
      *
+     * <p>{@code todayPigAssigned}「明日白条已配头数」口径：与 {@code todayPigDemand} 同
+     * {@code belong_type='white_bar'} + 半只 ×0.5 折算规则，但仅计所属产品当日已全部确认
+     * （{@code fc.fully_confirmed=1}）的头数；不再按 demand_pig 子表指定耳号计。</p>
+     *
      * <p>{@code todayPorkDemand / todayPorkAssigned}「明日猪肉产品需求 / 已调配条数」口径：
-     * 按产品主数据 {@code belong_type='pork'}（字典 djs_belong_type 猪肉产品）计条数；已调配限已确认状态集合。</p>
+     * 按产品主数据 {@code belong_type='pork'}（字典 djs_belong_type 猪肉产品）计条数；已调配限所属产品当日已全部确认。</p>
      *
      * <p>{@code todayOtherDemand / todayOtherAssigned}「明日其他产品需求 / 已调配条数」口径：
      * {@code product_type IN ('other','gift_box','dry','egg')} 且 {@code belong_type} 非 pork
-     * （NULL-safe 排除混进 other 业态的猪肉切割品）。</p>
+     * （NULL-safe 排除混进 other 业态的猪肉切割品）；已调配限所属产品当日已全部确认。</p>
      *
-     * <p>返 Map 键：{@code todayPigDemand / todayPorkDemand / todayPorkAssigned / todayVegSpeciesDemand /
-     * todayVegSpeciesAssigned / todayOtherDemand / todayOtherAssigned}（白条已调配头数走
-     * {@link #selectTodayPigAssigned} 子表）。</p>
+     * <p>返 Map 键：{@code todayPigDemand / todayPigAssigned / todayPorkDemand / todayPorkAssigned /
+     * todayVegSpeciesDemand / todayVegSpeciesAssigned / todayOtherDemand / todayOtherAssigned}。</p>
      *
      * <p>租户隔离：未启全局 MP 拦截器，显式 {@code tenant_id='1001'}（V1 单租户，与
      * {@code LocationStockMapper} 自定义聚合范式一致）。</p>
@@ -59,51 +64,42 @@ public interface DemandManageMapper extends BaseMapperPlus<DemandManage, DemandM
                   WHEN pi.belong_type = 'white_bar' AND dm.product_name LIKE '%半%' THEN dm.demand_quantity * 0.5
                   WHEN pi.belong_type = 'white_bar' THEN dm.demand_quantity
                   ELSE 0 END), 0) AS todayPigDemand,
+          COALESCE(SUM(CASE
+                  WHEN pi.belong_type = 'white_bar' AND fc.fully_confirmed = 1 AND dm.product_name LIKE '%半%' THEN dm.demand_quantity * 0.5
+                  WHEN pi.belong_type = 'white_bar' AND fc.fully_confirmed = 1 THEN dm.demand_quantity
+                  ELSE 0 END), 0) AS todayPigAssigned,
           COUNT(CASE WHEN pi.belong_type = 'pork' THEN 1 END) AS todayPorkDemand,
           COUNT(CASE WHEN pi.belong_type = 'pork'
                 AND dm.demand_status IN ('CONFIRMED','IN_PRODUCTION','PARTIAL_SHIPPED','COMPLETED')
+                AND fc.fully_confirmed = 1
                 THEN 1 END) AS todayPorkAssigned,
           COUNT(DISTINCT CASE WHEN dm.product_type = 'vegetable' THEN dm.product_id END) AS todayVegSpeciesDemand,
           COUNT(DISTINCT CASE WHEN dm.product_type = 'vegetable'
-                AND dm.demand_status IN ('CONFIRMED','IN_PRODUCTION','PARTIAL_SHIPPED','COMPLETED')
+                AND fc.fully_confirmed = 1
                 THEN dm.product_id END) AS todayVegSpeciesAssigned,
           COUNT(CASE WHEN dm.product_type IN ('other','gift_box','dry','egg')
                 AND (pi.belong_type IS NULL OR pi.belong_type <> 'pork') THEN 1 END) AS todayOtherDemand,
           COUNT(CASE WHEN dm.product_type IN ('other','gift_box','dry','egg')
                 AND (pi.belong_type IS NULL OR pi.belong_type <> 'pork')
                 AND dm.demand_status IN ('CONFIRMED','IN_PRODUCTION','PARTIAL_SHIPPED','COMPLETED')
+                AND fc.fully_confirmed = 1
                 THEN 1 END) AS todayOtherAssigned
         FROM t_warehouse_demand_manage dm
         LEFT JOIN t_warehouse_product_info pi
                ON pi.id = dm.product_id AND pi.del_flag = '0' AND pi.tenant_id = '1001'
+        LEFT JOIN (
+          SELECT product_id,
+                 CASE WHEN SUM(CASE WHEN demand_status IN ('DRAFT','SUBMITTED') THEN 1 ELSE 0 END) = 0 THEN 1 ELSE 0 END AS fully_confirmed
+          FROM t_warehouse_demand_manage
+          WHERE demand_date = #{today} AND del_flag = '0' AND tenant_id = '1001'
+            AND store_id IS NOT NULL AND demand_status NOT IN ('CANCELLED','DELETED')
+          GROUP BY product_id
+        ) fc ON fc.product_id = dm.product_id
         WHERE dm.demand_date = #{today}
           AND dm.del_flag = '0'
           AND dm.tenant_id = '1001'
         """)
     Map<String, Object> selectTodayKpiMainAgg(@Param("today") LocalDate today);
-
-    /**
-     * KPI 日白条已调配头数（DJS-FIX-ADMIN-W22-007，口径 = 明日）：子表去重耳号计数。
-     *
-     * <p>demand_pig 子表存在一行 = 这头已指定，{@code COUNT(DISTINCT ear_no)} 即已调配头数。</p>
-     *
-     * <p>租户隔离：显式 {@code tenant_id='1001'}（V1 单租户，与 {@code LocationStockMapper} 范式一致）。</p>
-     *
-     * @param today KPI 统计日期（明日）
-     * @return 该日白条已指定的去重耳号数
-     */
-    @Select("""
-        SELECT COUNT(DISTINCT dp.ear_no)
-        FROM t_warehouse_demand_pig dp
-        JOIN t_warehouse_demand_manage dm ON dm.id = dp.demand_id
-             AND dm.del_flag = '0'
-             AND dm.tenant_id = dp.tenant_id
-        WHERE dm.demand_date = #{today}
-          AND dm.product_type IN ('white_bar','pig')
-          AND dp.del_flag = '0'
-          AND dp.tenant_id = '1001'
-        """)
-    Integer selectTodayPigAssigned(@Param("today") LocalDate today);
 
     /**
      * 原子累加 {@code shipped_count}（CROSS-FLOW-003 发货反向更新；并发安全）。
@@ -358,12 +354,13 @@ public interface DemandManageMapper extends BaseMapperPlus<DemandManage, DemandM
      *
      * @param storeId 门店 FK（{@code t_md_store.id}）
      * @param day     需求日期（今日，由 service 按 Asia/Shanghai 传入，不用 DB CURDATE() 避免时区雷）
-     * @return 每行 {@code {productId, productName, productUnit}}（无则空 List）
+     * @return 每行 {@code {productId, productName, productUnit, arrivedQuantity}}（arrivedQuantity=当日该产品需求订购份数 SUM，供退回上限；无则空 List）
      */
     @Select("""
         SELECT product_id AS productId,
                MAX(product_name) AS productName,
-               MAX(product_unit) AS productUnit
+               MAX(product_unit) AS productUnit,
+               COALESCE(SUM(demand_quantity), 0) AS arrivedQuantity
         FROM t_warehouse_demand_manage
         WHERE store_id = #{storeId}
           AND demand_date = #{day}

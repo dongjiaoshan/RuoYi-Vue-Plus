@@ -117,6 +117,9 @@ public class StoreReturnServiceImpl
     /** 果蔬归属类型（字典 djs_belong_type）：退回入库回退到原材料 product_material 的判定。 */
     private static final String BELONG_TYPE_VEGETABLE = "vegetable";
 
+    /** 产品属性（字典 djs_product_attr）：1=生产产品/成品，2=原材料。只有果蔬「成品」缺料才阻断退回入库。 */
+    private static final int PRODUCT_ATTR_FINISHED = 1;
+
     /** 白条归属类型（字典 djs_belong_type）：门店当日白条到店判定。 */
     private static final String BELONG_TYPE_WHITE_BAR = "white_bar";
 
@@ -374,6 +377,8 @@ public class StoreReturnServiceImpl
         //   · 白条产品(white_bar)：字典 djs_white_bar_return_product 配置产品（当日有白条到店才列）——按重量退货，单位=对应产品原材料单位。
         List<StoreReturnPorkCandidateVo> result = new ArrayList<>();
         LinkedHashSet<Long> seen = new LinkedHashSet<>();
+        // row40：材料外售原材料行的到店量 = 对应成品当日到店重（kg），一次聚合避免逐行查（与 batchCreate 案例① 同口径）。
+        Map<Long, BigDecimal> arrivedWeightByMaterial = buildArrivedPorkWeightByMaterial(storeId, today);
 
         for (ProductInfo finished : resolveArrivedPorkFinishedProducts(storeId, today)) {
             // DENGBO 原材料外售：成品若配置「是否原材料外售=是」且有原材料，候选改列其原材料产品
@@ -382,31 +387,38 @@ public class StoreReturnServiceImpl
             if (sold != null && sold == 1 && finished.getProductMaterial() != null) {
                 ProductInfo material = productInfoMapper.selectById(finished.getProductMaterial());
                 if (material != null && seen.add(material.getId())) {
-                    result.add(buildPorkCandidate(material, SUB_CAT_PORK, material.getProductUnit()));
+                    // 材料外售原材料行到店量 = 对应成品到店重（kg）。
+                    result.add(buildPorkCandidate(material, SUB_CAT_PORK, material.getProductUnit(),
+                        arrivedWeightByMaterial.get(material.getId())));
                 }
             } else if (seen.add(finished.getId())) {
-                result.add(buildPorkCandidate(finished, SUB_CAT_PORK, finished.getProductUnit()));
+                // 猪肉产品(按份)行到店量 = 当日到店该产品需求订购份数 SUM(demand_quantity)。
+                result.add(buildPorkCandidate(finished, SUB_CAT_PORK, finished.getProductUnit(),
+                    productProductionMapper.sumDeliveredQuantityToStore(storeId, finished.getId(), today)));
             }
         }
         if (hasWhiteBarArrivedToday(storeId)) {
             List<ProductInfo> whiteBarProducts = resolveWhiteBarReturnDictProducts();
             Map<Long, String> materialUnits = resolveMaterialUnits(whiteBarProducts);
+            // 白条产品(kg)行到店量 = 当日到店白条总重（池化上限，各白条产品行同值）。
+            BigDecimal whiteBarDeliveredTotal = sumWhiteBarDeliveredToStore(storeId, today);
             for (ProductInfo p : whiteBarProducts) {
                 if (seen.add(p.getId())) {
                     result.add(buildPorkCandidate(p, SUB_CAT_WHITE_BAR,
-                        materialUnits.getOrDefault(p.getId(), p.getProductUnit())));
+                        materialUnits.getOrDefault(p.getId(), p.getProductUnit()), whiteBarDeliveredTotal));
                 }
             }
         }
         return result;
     }
 
-    private StoreReturnPorkCandidateVo buildPorkCandidate(ProductInfo p, String subCategory, String unit) {
+    private StoreReturnPorkCandidateVo buildPorkCandidate(ProductInfo p, String subCategory, String unit, BigDecimal arrivedQuantity) {
         StoreReturnPorkCandidateVo vo = new StoreReturnPorkCandidateVo();
         vo.setProductId(p.getId());
         vo.setProductName(p.getProductName());
         vo.setProductUnit(unit);
         vo.setSubCategory(subCategory);
+        vo.setArrivedQuantity(arrivedQuantity);
         return vo;
     }
 
@@ -622,15 +634,21 @@ public class StoreReturnServiceImpl
                 continue;
             }
             Long productId = Long.valueOf(pid.toString());
-            dedup.computeIfAbsent(productId, k -> {
-                StoreReturnVegCandidateVo vo = new StoreReturnVegCandidateVo();
-                vo.setProductId(productId);
+            // row41：computeIfAbsent 仅建首条 VO（name/unit 取首条），到店量 arrivedQuantity 需把今天+昨天两天累加。
+            StoreReturnVegCandidateVo vo = dedup.computeIfAbsent(productId, k -> {
+                StoreReturnVegCandidateVo v = new StoreReturnVegCandidateVo();
+                v.setProductId(productId);
                 Object name = r.get("productName");
-                vo.setProductName(name == null ? null : name.toString());
+                v.setProductName(name == null ? null : name.toString());
                 Object unit = r.get("productUnit");
-                vo.setProductUnit(unit == null ? null : unit.toString());
-                return vo;
+                v.setProductUnit(unit == null ? null : unit.toString());
+                v.setArrivedQuantity(BigDecimal.ZERO);
+                return v;
             });
+            BigDecimal arrived = toBigDecimal(r.get("arrivedQuantity"));
+            if (arrived != null) {
+                vo.setArrivedQuantity(vo.getArrivedQuantity() == null ? arrived : vo.getArrivedQuantity().add(arrived));
+            }
         }
         // row52：镜像猪肉候选路径——果蔬成品若「是否原材料外售=是」且配了原材料，候选折叠为其原材料产品
         //（name/unit 取原材料；多成品共享同一原材料时合并成一行，保序）。
@@ -685,13 +703,19 @@ public class StoreReturnServiceImpl
             Long key = effectiveId;
             String vName = name;
             String vUnit = unit;
-            folded.computeIfAbsent(key, k -> {
-                StoreReturnVegCandidateVo vo = new StoreReturnVegCandidateVo();
-                vo.setProductId(key);
-                vo.setProductName(vName);
-                vo.setProductUnit(vUnit);
-                return vo;
+            StoreReturnVegCandidateVo vo = folded.computeIfAbsent(key, k -> {
+                StoreReturnVegCandidateVo v = new StoreReturnVegCandidateVo();
+                v.setProductId(key);
+                v.setProductName(vName);
+                v.setProductUnit(vUnit);
+                v.setArrivedQuantity(BigDecimal.ZERO);
+                return v;
             });
+            // row41：多成品共享同一原材料折叠成一行 → 到店量累加。
+            BigDecimal arrived = c.getArrivedQuantity();
+            if (arrived != null) {
+                vo.setArrivedQuantity(vo.getArrivedQuantity() == null ? arrived : vo.getArrivedQuantity().add(arrived));
+            }
         }
         return new ArrayList<>(folded.values());
     }
@@ -700,6 +724,20 @@ public class StoreReturnServiceImpl
     private static boolean isMaterialSold(ProductInfo p) {
         Integer sold = p.getIsMaterialSold();
         return sold != null && sold == 1;
+    }
+
+    /** row41：把 mapper 原生聚合结果（BigDecimal / Number / String）安全转 BigDecimal；空 → null（不封顶）。 */
+    private static BigDecimal toBigDecimal(Object v) {
+        if (v == null) {
+            return null;
+        }
+        if (v instanceof BigDecimal bd) {
+            return bd;
+        }
+        if (v instanceof Number n) {
+            return new BigDecimal(n.toString());
+        }
+        return new BigDecimal(v.toString());
     }
 
     /** 产品单位是否按重量计（kg/公斤，不区分大小写；空 → false 按份数口径）。 */
@@ -1014,8 +1052,12 @@ public class StoreReturnServiceImpl
         if (material != null) {
             return material;
         }
-        // 果蔬成品理应配原材料——缺料阻断，防「成品入库」库存黑洞（猪肉/白条原材料本身 product_material 空、直接入库）。
-        if (BELONG_TYPE_VEGETABLE.equals(p.getBelongType())) {
+        // 判别成品 vs 原材料的权威字段是 product_attr（djs_product_attr：1=生产产品/成品，2=原材料）。
+        // 果蔬「成品」(product_attr=1) 理应配原材料——缺料阻断，防成品入库库存黑洞；
+        // 果蔬本身即原材料(product_attr=2，如采摘直接入库的净菜/毛菜) product_material 天然为空，按自身 id 直接入库
+        //（猪肉/白条原材料本身 product_material 也空、直接入库）。
+        if (BELONG_TYPE_VEGETABLE.equals(p.getBelongType())
+            && Integer.valueOf(PRODUCT_ATTR_FINISHED).equals(p.getProductAttr())) {
             throw new ServiceException(
                 "果蔬成品「" + p.getProductName() + "」未配原材料(product_material)，无法退回入库；请先在产品主数据配置后再确认退回", 400);
         }

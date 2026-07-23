@@ -130,6 +130,8 @@ public class WarehouseDashboardServiceImpl implements IWarehouseDashboardService
         vo.setTodayDemandOffal(BigDecimal.ZERO);   // 红白脏产品 V1 无对应 belong_type 数据源，默认 0
         vo.setTodayDemandGiftBox(nzd(dashboardMapper.sumTodayDemandByType(tenantId, "gift_box")));
         vo.setTodayDemandVegetableKinds(nz(dashboardMapper.countTodayDemandKindsByBelong(tenantId, "vegetable")));
+        vo.setTodayDemandPorkKinds(nz(dashboardMapper.countTodayDemandKindsByBelong(tenantId, "pork")));
+        vo.setTodayDemandOtherKinds(nz(dashboardMapper.countTodayDemandOtherKinds(tenantId)));
         vo.setTodayDemandVegetable(nzd(dashboardMapper.sumTodayDemandByBelong(tenantId, "vegetable")));
         vo.setTodayDemandEgg(nzd(dashboardMapper.sumTodayDemandByBelong(tenantId, "egg")));
         vo.setTodayDemandDryGood(nzd(dashboardMapper.sumTodayDemandByBelong(tenantId, "dry_good")));
@@ -140,6 +142,9 @@ public class WarehouseDashboardServiceImpl implements IWarehouseDashboardService
         // 横条 2「今日生产」8 项（对齐原型）+ 兼容旧 5 项
         vo.setTodaySlaughterPigCount(nz(dashboardMapper.countTodaySlaughterPigs(tenantId)));
         vo.setTodayWhiteBarWeight(nzd(dashboardMapper.sumTodayWhiteBarWeight(tenantId)));
+        vo.setTodayMarketingWeight(nzd(dashboardMapper.sumTodayMarketingWeight(tenantId)));
+        vo.setTodayVegHandleKinds(nz(dashboardMapper.countTodayVegHandleKinds(tenantId)));
+        vo.setTodayVegHandleWeight(nzd(dashboardMapper.sumTodayVegHandleWeight(tenantId)));
         vo.setTodayCutBarCount(nzd(dashboardMapper.countTodayCutBars(tenantId)));
         vo.setTodayCutProductWeight(nzd(dashboardMapper.sumTodayCutProductWeight(tenantId)));
         vo.setTodayVegReceiveKinds(nz(dashboardMapper.countTodayVegReceiveKinds(tenantId)));

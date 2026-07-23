@@ -5,6 +5,7 @@ import cn.idev.excel.annotation.ExcelIgnoreUnannotated;
 import cn.idev.excel.annotation.ExcelProperty;
 import com.fasterxml.jackson.annotation.JsonFormat;
 import lombok.Data;
+import org.dromara.common.excel.annotation.ExcelDictFormat;
 
 import java.io.Serial;
 import java.io.Serializable;
@@ -35,6 +36,11 @@ public class PickDetailVo implements Serializable {
 
     @ExcelProperty(value = "作物名称")
     private String cropName;
+
+    /** 统计来源：1=毛菜处理间 2=采摘活动（row44）。前端按 code 显示中文；导出走 readConverterExp 映射。 */
+    @ExcelDictFormat(readConverterExp = "1=毛菜处理间,2=采摘活动")
+    @ExcelProperty(value = "统计来源")
+    private String statSource;
 
     @ExcelProperty(value = "地块编号")
     private String plotCode;

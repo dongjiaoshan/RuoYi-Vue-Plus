@@ -4,6 +4,7 @@ import lombok.Data;
 
 import java.io.Serial;
 import java.io.Serializable;
+import java.math.BigDecimal;
 
 /**
  * 退回操作「果蔬产品」tab 候选行 VO。
@@ -37,5 +38,11 @@ public class StoreReturnVegCandidateVo implements Serializable {
      * 产品单位（kg / 把 / 份 等，需求冗余 product_unit）。
      */
     private String productUnit;
+
+    /**
+     * 到店量（退回量上限，row41）= 当日（今天+昨天两天累加）该产品需求订购份数 {@code SUM(demand_quantity)}。
+     * 材料外售折叠为原材料时多成品共享同一原材料 → 汇总累加。前端 el-input-number 以此作 {@code :max}；空 → 不封顶。
+     */
+    private BigDecimal arrivedQuantity;
 
 }

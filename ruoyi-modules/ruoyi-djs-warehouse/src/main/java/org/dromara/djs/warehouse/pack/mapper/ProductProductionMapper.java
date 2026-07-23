@@ -369,6 +369,34 @@ public interface ProductProductionMapper extends BaseMapperPlus<ProductProductio
     List<Long> selectDeliveredProductIdsToStore(@Param("storeId") Long storeId, @Param("date") LocalDate date);
 
     /**
+     * row40：当日到店该店该产品「需求订购份数」之和 {@code SUM(demand_quantity)}（门店退回上限按份数比对，份数产品口径）。
+     *
+     * <p>「到店」判定与 {@link #sumDeliveredWeightToStore} 同源——该产品当日发货清点
+     * （{@code is_delivery_check=1}、{@code delivery_check_time} 当天）且门店经 {@code demand_id → store_id} 关联；
+     * 但聚合的是<b>需求订购份数</b>而非成品重量（Kevin 2026-07-12 口径：份数产品到店量 = 当日到店该产品需求订购份数）。</p>
+     *
+     * <p>为避免 production ↔ demand 一对多 JOIN 造成 {@code demand_quantity} 扇出重复求和（每份成品一条 production 行，
+     * 直接 SUM 会 ×份数），改从 demand 侧 SUM，用 EXISTS 关联「当日已发货清点该产品」的 production 界定到店 demand 集合。
+     * 租户隔离 V1 单租户显式 {@code tenant_id='1001'}。</p>
+     *
+     * @param storeId   门店 FK
+     * @param productId 产品 FK
+     * @param date      业务日（按 delivery_check_time 当天过滤）
+     * @return 当日到店该店该产品需求订购份数之和（无 → 0）
+     */
+    @Select("SELECT COALESCE(SUM(dm.demand_quantity), 0) "
+        + "FROM t_warehouse_demand_manage dm "
+        + "WHERE dm.store_id = #{storeId} AND dm.product_id = #{productId} "
+        + "AND dm.del_flag = '0' AND dm.tenant_id = '1001' "
+        + "AND EXISTS (SELECT 1 FROM t_warehouse_product_production pp "
+        + "  WHERE pp.demand_id = dm.id AND pp.product_id = #{productId} "
+        + "  AND pp.is_delivery_check = 1 AND DATE(pp.delivery_check_time) = #{date} "
+        + "  AND pp.del_flag = '0' AND pp.tenant_id = '1001')")
+    BigDecimal sumDeliveredQuantityToStore(@Param("storeId") Long storeId,
+                                           @Param("productId") Long productId,
+                                           @Param("date") LocalDate date);
+
+    /**
      * admin row5：某白条需求「已发货白条实际重量之和」（kg）——供门店需求列表「预计到店重量」白条口径。
      * = Σ 绑定到该 demand 的 white_bar 成品已发货清点(is_delivery_check=1)重量 product_weight。
      * demand_id 门店级松散绑定，故 JOIN 商品主数据按 belong_type='white_bar' 过滤只算白条产出行。

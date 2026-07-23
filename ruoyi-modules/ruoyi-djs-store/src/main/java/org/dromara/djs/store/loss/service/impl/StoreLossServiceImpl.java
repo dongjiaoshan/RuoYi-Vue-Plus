@@ -119,7 +119,9 @@ public class StoreLossServiceImpl implements IStoreLossService {
     @Override
     public TableDataInfo<StoreLossRecordVo> queryPageList(StoreLossQuery query, PageQuery pageQuery) {
         // 门店维度由 StoreLineHandler 行级注入（Current-Store-Id 头），不在此显式过滤。
+        // 损耗为 0 的历史行不显示（写入端已不落盘新 0 行，此处隐藏历史已落盘的 0 行）；盘盈负值仍展示。
         LambdaQueryWrapper<StoreLossRecord> w = new LambdaQueryWrapper<StoreLossRecord>()
+            .ne(StoreLossRecord::getLossQty, BigDecimal.ZERO)
             .eq(StringUtils.isNotBlank(query.getLossType()), StoreLossRecord::getLossType, query.getLossType())
             .ge(query.getLossDateFrom() != null, StoreLossRecord::getLossDate, query.getLossDateFrom())
             .le(query.getLossDateTo() != null, StoreLossRecord::getLossDate, query.getLossDateTo());
@@ -246,11 +248,15 @@ public class StoreLossServiceImpl implements IStoreLossService {
             .map(StoreDailyLedger::getProductId).filter(Objects::nonNull).distinct().toList());
         int rows = 0;
         for (StoreDailyLedger ledger : ledgers) {
+            BigDecimal loss = nz(ledger.getLossQty());
+            if (loss.signum() == 0) {
+                continue;   // 损耗为 0 不落盘（不记录不显示）；盘盈负值仍原样搬
+            }
             StoreLossRecord record = new StoreLossRecord();
             record.setStoreId(ledger.getStoreId());
             record.setProductId(ledger.getProductId());
             record.setProductUnit(ledger.getProductId() == null ? null : unitByProduct.get(ledger.getProductId()));
-            record.setLossQty(nz(ledger.getLossQty()));   // 原样搬，含负（盘盈不钳 0）
+            record.setLossQty(loss);   // 原样搬，含负（盘盈不钳 0）
             record.setLossDate(date);
             record.setLossType(LOSS_TYPE_STORE_DAILY);
             baseMapper.insert(record);

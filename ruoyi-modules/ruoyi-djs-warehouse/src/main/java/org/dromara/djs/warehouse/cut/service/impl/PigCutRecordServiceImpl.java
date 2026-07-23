@@ -1012,11 +1012,17 @@ public class PigCutRecordServiceImpl
         // row187：分割白条领用只领「白条库的白条」（整只/半只，belong_type='white_bar'）。燎毛副产猪头/猪蹄
         // （belong_type='pork'）虽同样写 product_inhouse 带 white_bar_id，但不入白条库、不参与白条分割 →
         // 只展示白条产出行卡；但「该 bar 有无未领产出行」仍按全量 rows 判定，避免仅有副产行的 bar 误落整只兜底卡。
-        Set<Long> whiteBarProductIds = rows.isEmpty() ? Set.of() : productInfoMapper.selectList(
-                new LambdaQueryWrapper<ProductInfo>()
-                    .select(ProductInfo::getId)
-                    .eq(ProductInfo::getBelongType, "white_bar"))
-            .stream().map(ProductInfo::getId).filter(Objects::nonNull).collect(Collectors.toSet());
+        // row146：卡标题实时取产品配置名（product_inhouse.product_name 是燎毛入库时冻结的快照，产品改名不回写）。
+        // 一次查白条产品的 id + product_name，既建可领判定 Set，也建 id→实时名 Map 供 toPickupItem 覆盖快照名。
+        List<ProductInfo> whiteBarProducts = rows.isEmpty() ? List.of() : productInfoMapper.selectList(
+            new LambdaQueryWrapper<ProductInfo>()
+                .select(ProductInfo::getId, ProductInfo::getProductName)
+                .eq(ProductInfo::getBelongType, "white_bar"));
+        Set<Long> whiteBarProductIds = whiteBarProducts.stream()
+            .map(ProductInfo::getId).filter(Objects::nonNull).collect(Collectors.toSet());
+        Map<Long, String> whiteBarNameById = whiteBarProducts.stream()
+            .filter(p -> p.getId() != null && p.getProductName() != null)
+            .collect(Collectors.toMap(ProductInfo::getId, ProductInfo::getProductName, (a, b) -> a));
         Map<Long, List<ProductInhouse>> rowsByBar = new HashMap<>();
         for (ProductInhouse r : rows) {
             if (r.getWhiteBarId() != null) {
@@ -1030,21 +1036,21 @@ public class PigCutRecordServiceImpl
                 // 燎毛多产出行 → 每白条产出行一张可单独领用的卡（半只 / 半扇 各一张）；跳过副产（猪头/猪蹄）。
                 for (ProductInhouse r : rs) {
                     if (whiteBarProductIds.contains(r.getProductId())) {
-                        result.add(toPickupItem(bar, r));
+                        result.add(toPickupItem(bar, r, whiteBarNameById));
                     }
                 }
                 // 有未领产出行但全是副产 → 不出白条卡、也不落整只兜底（bar 是现代燎毛数据，仅无可领白条行）。
             } else if (BAR_STATUS_IN_STOCK.equals(bar.getStatus())) {
                 // 真·无任何未领产出行的旧数据白条 + in_stock → 整只兜底卡（inhouseId=null，领用走整猪路径），向后兼容。
                 // pending_cut/cutting 且无未领行 = 已全部领完 → 不再出卡（避免全领 bar 冒出空整只卡）。
-                result.add(toPickupItem(bar, null));
+                result.add(toPickupItem(bar, null, whiteBarNameById));
             }
         }
         return result;
     }
 
-    /** 组装单张白条领用卡（row 非空 = 按产出行；row 空 = 整只兜底）。 */
-    private BarPickupItemVo toPickupItem(BarInfo bar, ProductInhouse row) {
+    /** 组装单张白条领用卡（row 非空 = 按产出行；row 空 = 整只兜底）。nameById = 白条产品 id→实时配置名（row146）。 */
+    private BarPickupItemVo toPickupItem(BarInfo bar, ProductInhouse row, Map<Long, String> nameById) {
         BarPickupItemVo vo = new BarPickupItemVo();
         vo.setBarInfoId(bar.getId());
         vo.setBarId(bar.getBarId());
@@ -1056,7 +1062,8 @@ public class PigCutRecordServiceImpl
         if (row != null) {
             vo.setInhouseId(row.getId());
             vo.setWhiteBarNo(row.getWhiteBarNo());
-            vo.setProductName(row.getProductName());
+            // row146：优先实时产品配置名（改名即时生效）；产品被删/无映射 → 回落燎毛入库快照名，不显空。
+            vo.setProductName(nameById.getOrDefault(row.getProductId(), row.getProductName()));
             vo.setProductWeight(row.getProductWeight());
             vo.setProductUnit(StringUtils.isNotBlank(row.getProductUnit()) ? row.getProductUnit() : "kg");
             // row144：入库时间按半只产出行各自的入库(称重)时间 produce_time 显示——同一头猪左右两半是燎毛间分别

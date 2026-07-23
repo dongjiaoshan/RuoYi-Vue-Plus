@@ -291,6 +291,7 @@ class DemandManageServiceImplTest {
         // 模拟 jdbc 聚合列类型：SUM → BigDecimal，COUNT → Long
         Map<String, Object> agg = new HashMap<>();
         agg.put("todayPigDemand", new BigDecimal("12"));
+        agg.put("todayPigAssigned", new BigDecimal("6.5"));
         agg.put("todayPorkDemand", 3L);
         agg.put("todayPorkAssigned", 2L);
         agg.put("todayVegSpeciesDemand", 5L);
@@ -298,12 +299,11 @@ class DemandManageServiceImplTest {
         agg.put("todayOtherDemand", 5L);
         agg.put("todayOtherAssigned", 4L);
         when(demandMapper.selectTodayKpiMainAgg(any(LocalDate.class))).thenReturn(agg);
-        when(demandMapper.selectTodayPigAssigned(any(LocalDate.class))).thenReturn(12);
 
         DemandTodayKpiVo vo = service.getTodayKpi();
-        // 猪需求头数含半只 0.5 折算 → BigDecimal，比值不比 scale
+        // 猪需求/已配头数含半只 0.5 折算 → BigDecimal，比值不比 scale
         assertThat(vo.getTodayPigDemand()).isEqualByComparingTo(new BigDecimal("12"));
-        assertThat(vo.getTodayPigAssigned()).isEqualTo(12);
+        assertThat(vo.getTodayPigAssigned()).isEqualByComparingTo("6.5");
         assertThat(vo.getTodayPorkDemand()).isEqualTo(3);
         assertThat(vo.getTodayPorkAssigned()).isEqualTo(2);
         assertThat(vo.getTodayVegSpeciesDemand()).isEqualTo(5);
@@ -312,20 +312,17 @@ class DemandManageServiceImplTest {
         assertThat(vo.getTodayOtherAssigned()).isEqualTo(4);
         // 今日日期按 Asia/Shanghai 算（不依赖 DB CURDATE）
         verify(demandMapper).selectTodayKpiMainAgg(any(LocalDate.class));
-        verify(demandMapper).selectTodayPigAssigned(any(LocalDate.class));
     }
 
     @Test
     @DisplayName("getTodayKpi 无数据 → 8 数全 0（agg 缺键 + 子表 null 兜底）")
     void getTodayKpiEmpty() {
-        // 主表无今日 demand：SUM/COUNT 仍返单行但值为 0（这里模拟缺键 → intFromAgg 兜底 0）
+        // 主表无今日 demand：SUM/COUNT 仍返单行但值为 0（这里模拟缺键 → intFromAgg/bdFromAgg 兜底 0）
         when(demandMapper.selectTodayKpiMainAgg(any(LocalDate.class))).thenReturn(new HashMap<>());
-        // 子表无白条已派：COUNT 返 0；极端 null 也兜底
-        when(demandMapper.selectTodayPigAssigned(any(LocalDate.class))).thenReturn(null);
 
         DemandTodayKpiVo vo = service.getTodayKpi();
         assertThat(vo.getTodayPigDemand()).isZero();
-        assertThat(vo.getTodayPigAssigned()).isZero();
+        assertThat(vo.getTodayPigAssigned()).isEqualByComparingTo(BigDecimal.ZERO);
         assertThat(vo.getTodayPorkDemand()).isZero();
         assertThat(vo.getTodayPorkAssigned()).isZero();
         assertThat(vo.getTodayVegSpeciesDemand()).isZero();

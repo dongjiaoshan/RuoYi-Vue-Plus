@@ -25,7 +25,10 @@ public class PickDetailQuery {
     /** 作物名称模糊匹配（planting_record 冗余 crop_name）。 */
     private String cropName;
 
-    /** 采摘班组精确匹配（planting_record 冗余 team_id）。 */
+    /** 采摘班组精确匹配（采收记录实际班组 / 采摘活动班组集合）。 */
     private Long teamId;
+
+    /** 统计来源精确匹配：1=毛菜处理间 2=采摘活动（对派生表 statSource，row44）。 */
+    private String statSource;
 
 }

@@ -21,7 +21,7 @@ import java.util.List;
  *   <li>③ 生产趋势折线 {@link #productionTrend}：t_warehouse_product_production 按 produce_date 日聚合 SUM(product_weight)，近 7 日补齐。</li>
  *   <li>④ 盘点结果饼 {@link #checkResult}：t_warehouse_check_record（仅明细行 is_header=0）GROUP BY check_result_type（正常/异常/计损），COUNT，最近一个盘点单。</li>
  *   <li>⑤ 异常库位环 {@link #locationHealth}：t_warehouse_check_record 当月 COUNT(DISTINCT location_id) 异常（diff_stock!=0）vs 正常。</li>
- *   <li>⑥ 损耗折线 {@link #lossTrend}：t_warehouse_stock_flow flow_type='loss' 按 flow_date 日聚合 SUM(change_quantity)，近 7 日补齐。</li>
+ *   <li>⑥ 损耗折线 {@link #lossTrend}：统一损耗台账 t_warehouse_loss_flow 按 loss_date 日聚合 SUM(loss_weight)，近 7 日补齐。</li>
  * </ul>
  *
  * @author djs
@@ -94,8 +94,14 @@ public class WarehouseDashboardChartsVo implements Serializable {
     /** 横条 1「今日需求」4：礼盒需求量（份，product_type='gift_box'）。 */
     private BigDecimal todayDemandGiftBox;
 
-    /** 横条 1「今日需求」5：果蔬需求品类数（种，belong_type='vegetable' 去重产品数）。 */
+    /** 横条 1「今日需求」5：果蔬产品需求品种数（种，belong_type='vegetable' 去重产品数）。 */
     private Integer todayDemandVegetableKinds;
+
+    /** 横条 1「今日需求」：猪肉产品需求品种数（种，belong_type='pork' 去重产品数）。 */
+    private Integer todayDemandPorkKinds;
+
+    /** 横条 1「今日需求」：其他产品需求品种数（种，belong_type 非 pork/vegetable/white_bar 去重产品数）。 */
+    private Integer todayDemandOtherKinds;
 
     /** 横条 1「今日需求」6：果蔬需求量（kg，belong_type='vegetable' SUM demand_quantity）。 */
     private BigDecimal todayDemandVegetable;
@@ -120,6 +126,15 @@ public class WarehouseDashboardChartsVo implements Serializable {
 
     /** 横条 2「今日生产」2：白条总重（kg，今日燎毛 burn_weight 合计）。 */
     private BigDecimal todayWhiteBarWeight;
+
+    /** 横条 2「今日生产」：出栏猪只总重（kg，今日 bar_info marketing_weight 合计）。 */
+    private BigDecimal todayMarketingWeight;
+
+    /** 横条 2「今日生产」：毛菜处理果蔬品种数（种，今日 handle_record record_type=1 已称重去重作物数）。 */
+    private Integer todayVegHandleKinds;
+
+    /** 横条 2「今日生产」：毛菜处理果蔬总重量（kg，今日 handle_record record_type=1 已称重 record_weight 合计）。 */
+    private BigDecimal todayVegHandleWeight;
 
     /** 横条 2「今日生产」3：分割白条数（今日转入分割车间白条数；半只计 0.5、整只计 1，故为小数）。 */
     private BigDecimal todayCutBarCount;
@@ -183,6 +198,8 @@ public class WarehouseDashboardChartsVo implements Serializable {
         vo.setTodayDemandOffal(BigDecimal.ZERO);
         vo.setTodayDemandGiftBox(BigDecimal.ZERO);
         vo.setTodayDemandVegetableKinds(0);
+        vo.setTodayDemandPorkKinds(0);
+        vo.setTodayDemandOtherKinds(0);
         vo.setTodayDemandVegetable(BigDecimal.ZERO);
         vo.setTodayDemandEgg(BigDecimal.ZERO);
         vo.setTodayDemandDryGood(BigDecimal.ZERO);
@@ -192,6 +209,9 @@ public class WarehouseDashboardChartsVo implements Serializable {
         // 今日生产 8 项 + 兼容旧 5 项
         vo.setTodaySlaughterPigCount(0);
         vo.setTodayWhiteBarWeight(BigDecimal.ZERO);
+        vo.setTodayMarketingWeight(BigDecimal.ZERO);
+        vo.setTodayVegHandleKinds(0);
+        vo.setTodayVegHandleWeight(BigDecimal.ZERO);
         vo.setTodayCutBarCount(BigDecimal.ZERO);
         vo.setTodayCutProductWeight(BigDecimal.ZERO);
         vo.setTodayVegReceiveKinds(0);

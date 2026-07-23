@@ -16,16 +16,18 @@ import java.math.BigDecimal;
  * <ul>
  *   <li>白条需求头数 = 主表 {@code belong_type='white_bar'} 明日 {@code SUM(demand_quantity)}，
  *       产品名含「半」按 0.5 头折算</li>
- *   <li>白条已调配头数 = 子表 {@code t_warehouse_demand_pig} 明日白条下 {@code COUNT(DISTINCT ear_no)}</li>
- *   <li>猪肉产品需求/已调配条数 = {@code belong_type='pork'} 明日条数，已调配限「已确认」状态集合</li>
+ *   <li>白条已配头数 = 主表 {@code belong_type='white_bar'} 明日、所属产品当日已全部确认的
+ *       {@code SUM(demand_quantity)}，同样含半只 0.5 折算（不再走 demand_pig 子表指定耳号）</li>
+ *   <li>猪肉产品需求/已调配条数 = {@code belong_type='pork'} 明日条数，已调配限所属产品当日已全部确认</li>
  *   <li>果蔬需求/已调配品种数 = {@code product_type='vegetable'} 明日 {@code COUNT(DISTINCT product_id)}，
- *       已调配限「已确认」状态集合</li>
+ *       已调配限所属产品当日已全部确认</li>
  *   <li>其他需求/已调配条数 = {@code product_type IN ('other','gift_box','dry','egg')} 且 belong_type 非 pork
- *       明日条数，已调配限「已确认」状态集合</li>
+ *       明日条数，已调配限所属产品当日已全部确认</li>
  * </ul>
  *
- * <p>「已调配」状态集合：{@code CONFIRMED / IN_PRODUCTION / PARTIAL_SHIPPED / COMPLETED}
- * （已脱离 DRAFT/SUBMITTED 待确认态、未 CANCELLED）。</p>
+ * <p>「已调配 / 已全部确认」口径：某 {@code (demand_date, product_id)} 组内全部非 CANCELLED/DELETED、
+ * {@code store_id} 非空的行都不在 DRAFT/SUBMITTED 待确认态，即该产品当日「已全部确认」——与需求列表
+ * 分组口径 {@code ALL_CONFIRMED} 一致。</p>
  *
  * @author djs
  * @since DJS-FIX-ADMIN-W22-007
@@ -43,8 +45,11 @@ public class DemandTodayKpiVo implements Serializable {
      */
     private BigDecimal todayPigDemand;
 
-    /** 明日白条猪已调配头数（demand_pig 子表明日白条下去重耳号数）。 */
-    private Integer todayPigAssigned;
+    /**
+     * 明日白条猪已配头数（头）：按需求状态「所属产品当日已全部确认」计头数，含半只 0.5 折算，
+     * 不再走 demand_pig 子表指定耳号。可含 0.5 小数，故用 {@link BigDecimal}。
+     */
+    private BigDecimal todayPigAssigned;
 
     /** 明日猪肉产品需求条数（belong_type='pork' 明日 COUNT）。 */
     private Integer todayPorkDemand;

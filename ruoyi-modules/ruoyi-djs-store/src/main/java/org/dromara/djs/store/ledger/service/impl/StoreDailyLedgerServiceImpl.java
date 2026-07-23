@@ -295,7 +295,10 @@ public class StoreDailyLedgerServiceImpl implements IStoreDailyLedgerService {
         // 否则逐行各比完整上限可被多行绕过（5 行各录满 limit → 累计 5×limit 全过）。
         Set<Long> whiteBarCappedIdSet = new LinkedHashSet<>(resolvePorkReturnProductIds());
         whiteBarCappedIdSet.addAll(resolveWhiteBarReturnProductIds());
-        BigDecimal whiteBarLimit = sumTodayWhiteBarShipWeight(bo.getStoreId(), date);
+        // row38：入库上限 = 当日白条发货重量 + 材料外售且原材料∈白条退回字典的成品当日到店实称重（重叠部分才加）。
+        // 后者是白条分割成原材料后再外售的产出，其到店重与白条发货重叠，也应计入可入库上限。
+        BigDecimal whiteBarLimit = sumTodayWhiteBarShipWeight(bo.getStoreId(), date)
+            .add(sumMaterialSoldWhiteBarArriveWeight(bo.getStoreId(), date));
         BigDecimal porkInboundSum = BigDecimal.ZERO;
 
         int saved = 0;
@@ -316,7 +319,7 @@ public class StoreDailyLedgerServiceImpl implements IStoreDailyLedgerService {
                 porkInboundSum = porkInboundSum.add(inbound);
                 if (porkInboundSum.compareTo(whiteBarLimit) > 0) {
                     throw new ServiceException(
-                        "本批猪肉/白条到货合计(" + porkInboundSum.toPlainString() + ")不能超过当日白条发货重量("
+                        "本批猪肉/白条到货合计(" + porkInboundSum.toPlainString() + ")不能超过 白条发货重量+材料外售到店重("
                             + whiteBarLimit.toPlainString() + ")", 400);
                 }
             }
@@ -652,6 +655,38 @@ public class StoreDailyLedgerServiceImpl implements IStoreDailyLedgerService {
                 .eq(Shipment::getProductType, PRODUCT_TYPE_WHITE_BAR)
                 .select(Shipment::getShipQuantity));
         return shipments.stream().map(s -> nz(s.getShipQuantity())).reduce(BigDecimal.ZERO, BigDecimal::add);
+    }
+
+    /**
+     * 材料外售成品当日到店实称重合计（row38：补入白条入库上限）。
+     *
+     * <p>取「是否原材料外售=是」({@code is_material_sold=1}) 且原材料属于白条退回字典产品集
+     * ({@code product_material ∈ } {@link #resolveWhiteBarReturnProductIds()}) 的成品，逐个累加当日发往该店的
+     * 实际称重 {@code product_weight}（{@link ProductProductionMapper#sumDeliveredWeightToStore}）。
+     * 这些成品是白条分割成原材料后再外售的产出，其到店重与白条发货重叠，故计入可入库上限。</p>
+     *
+     * <p>直接取数（不复用 loss 服务 {@code getWhiteBarSplitLoss}——该服务 arriveWeight=0 时提前 return 会漏算）。
+     * 白条退回字典为空 / 无命中成品 → 0。</p>
+     */
+    private BigDecimal sumMaterialSoldWhiteBarArriveWeight(Long storeId, LocalDate date) {
+        List<Long> whiteBarMaterialIds = resolveWhiteBarReturnProductIds();
+        if (whiteBarMaterialIds.isEmpty()) {
+            return BigDecimal.ZERO;
+        }
+        List<Long> finishedIds = productInfoMapper.selectList(new LambdaQueryWrapper<ProductInfo>()
+                .eq(ProductInfo::getIsMaterialSold, 1)
+                .isNotNull(ProductInfo::getProductMaterial)
+                .in(ProductInfo::getProductMaterial, whiteBarMaterialIds)
+                .select(ProductInfo::getId))
+            .stream().map(ProductInfo::getId).filter(Objects::nonNull).distinct().toList();
+        BigDecimal sum = BigDecimal.ZERO;
+        for (Long finishedId : finishedIds) {
+            BigDecimal w = productProductionMapper.sumDeliveredWeightToStore(storeId, finishedId, date);
+            if (w != null && w.signum() > 0) {
+                sum = sum.add(w);
+            }
+        }
+        return sum;
     }
 
     /** 昨日库存候选：门店独立库存 {@code stock_qty>0} 的产品。 */
