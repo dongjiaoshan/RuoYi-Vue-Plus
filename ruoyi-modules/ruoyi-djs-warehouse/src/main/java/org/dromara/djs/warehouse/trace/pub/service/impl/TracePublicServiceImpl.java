@@ -686,15 +686,30 @@ public class TracePublicServiceImpl
             Comparator.nullsLast(Comparator.reverseOrder())));
     }
 
-    /** 仓库种植记录：按 plot_id + product_id 取最近一条（无 product_id 退化为仅按 plot_id）。 */
+    /**
+     * 仓库种植记录：优先按 plot_id + product_id 取最近一条；exact 命中不到（种植记录 product_id 常为 NULL、
+     * 与追溯码 product_id 对不上）则退化为仅按 plot_id 取该地块最近一条——否则果蔬追溯的种植/采摘节点会因 join key
+     * 对不上被整体跳过（row74）。
+     */
     private PlantingRecord findPlantingRecord(Long plotId, Long productId) {
         if (plotId == null) {
             return null;
         }
+        if (productId != null) {
+            PlantingRecord exact = plantingRecordMapper.selectOne(
+                new LambdaQueryWrapper<PlantingRecord>()
+                    .eq(PlantingRecord::getPlotId, plotId)
+                    .eq(PlantingRecord::getProductId, productId)
+                    .orderByDesc(PlantingRecord::getHarvestDate)
+                    .orderByDesc(PlantingRecord::getId)
+                    .last("limit 1"));
+            if (exact != null) {
+                return exact;
+            }
+        }
         return plantingRecordMapper.selectOne(
             new LambdaQueryWrapper<PlantingRecord>()
                 .eq(PlantingRecord::getPlotId, plotId)
-                .eq(productId != null, PlantingRecord::getProductId, productId)
                 .orderByDesc(PlantingRecord::getHarvestDate)
                 .orderByDesc(PlantingRecord::getId)
                 .last("limit 1"));
