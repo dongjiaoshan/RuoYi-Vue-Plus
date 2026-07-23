@@ -621,11 +621,13 @@ public class DemandManageServiceImpl extends DjsBaseServiceImpl<DemandManageMapp
         LocalDate kpiDate = LocalDate.now(TODAY_ZONE).plusDays(1);
         DemandTodayKpiVo vo = new DemandTodayKpiVo();
 
-        // 主表 1 query：白条需求头数 + 果蔬需求/已调配品种数 + 其他需求/已调配条数
+        // 主表 1 query：白条需求头数 + 猪肉产品需求/已调配条数 + 果蔬需求/已调配品种数 + 其他需求/已调配条数
         //（「已调配」= demand_status IN CONFIRMED/IN_PRODUCTION/PARTIAL_SHIPPED/COMPLETED，写死在 mapper SQL）
         Map<String, Object> agg = baseMapper.selectTodayKpiMainAgg(kpiDate);
         // 白条猪需求头数含半只 0.5 折算，可出小数 → BigDecimal（其余仍为整数计数）
         vo.setTodayPigDemand(bdFromAgg(agg, "todayPigDemand"));
+        vo.setTodayPorkDemand(intFromAgg(agg, "todayPorkDemand"));
+        vo.setTodayPorkAssigned(intFromAgg(agg, "todayPorkAssigned"));
         vo.setTodayVegSpeciesDemand(intFromAgg(agg, "todayVegSpeciesDemand"));
         vo.setTodayVegSpeciesAssigned(intFromAgg(agg, "todayVegSpeciesAssigned"));
         vo.setTodayOtherDemand(intFromAgg(agg, "todayOtherDemand"));

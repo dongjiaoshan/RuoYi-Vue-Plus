@@ -73,13 +73,19 @@ public interface HandleRecordMapper extends BaseMapperPlus<HandleRecord, HandleR
                p2.plot_code       AS plotCode,
                a.daily_weight     AS pickWeight,
                NULL               AS teamId,
-               (SELECT GROUP_CONCAT(DISTINCT wt.team_name ORDER BY wt.team_name SEPARATOR '、')
-                  FROM t_plant_plant_details d
-                  JOIN t_plant_details_team dt
-                         ON dt.detail_id = d.id AND dt.role = 'harvest' AND dt.del_flag = '0'
-                  JOIN t_plant_work_team wt
-                         ON wt.id = dt.team_id AND wt.del_flag = '0'
-                 WHERE d.plot_id = a.plot_id AND d.crop_id = a.crop_id AND d.del_flag = '0'
+               COALESCE(
+                 (SELECT GROUP_CONCAT(DISTINCT wt.team_name ORDER BY wt.team_name SEPARATOR '、')
+                    FROM t_plant_activity_team at
+                    JOIN t_plant_work_team wt
+                           ON wt.id = at.team_id AND wt.del_flag = '0'
+                   WHERE at.activity_id = a.id AND at.del_flag = '0' AND at.tenant_id = '1001'),
+                 (SELECT GROUP_CONCAT(DISTINCT wt.team_name ORDER BY wt.team_name SEPARATOR '、')
+                    FROM t_plant_plant_details d
+                    JOIN t_plant_details_team dt
+                           ON dt.detail_id = d.id AND dt.role = 'harvest' AND dt.del_flag = '0'
+                    JOIN t_plant_work_team wt
+                           ON wt.id = dt.team_id AND wt.del_flag = '0'
+                   WHERE d.plot_id = a.plot_id AND d.crop_id = a.crop_id AND d.del_flag = '0')
                )                  AS teamName,
                a.create_time      AS sortTime,
                a.id               AS sortId
@@ -102,12 +108,16 @@ public interface HandleRecordMapper extends BaseMapperPlus<HandleRecord, HandleR
              AND ci.crop_name LIKE CONCAT('%', #{q.cropName}, '%')
            </if>
            <if test="q.teamId != null">
-             AND EXISTS (SELECT 1
-                           FROM t_plant_plant_details d2
-                           JOIN t_plant_details_team dt2
-                                  ON dt2.detail_id = d2.id AND dt2.role = 'harvest' AND dt2.del_flag = '0'
-                          WHERE d2.plot_id = a.plot_id AND d2.crop_id = a.crop_id AND d2.del_flag = '0'
-                            AND dt2.team_id = #{q.teamId})
+             AND (EXISTS (SELECT 1
+                            FROM t_plant_activity_team at2
+                           WHERE at2.activity_id = a.id AND at2.del_flag = '0' AND at2.tenant_id = '1001'
+                             AND at2.team_id = #{q.teamId})
+               OR EXISTS (SELECT 1
+                            FROM t_plant_plant_details d2
+                            JOIN t_plant_details_team dt2
+                                   ON dt2.detail_id = d2.id AND dt2.role = 'harvest' AND dt2.del_flag = '0'
+                           WHERE d2.plot_id = a.plot_id AND d2.crop_id = a.crop_id AND d2.del_flag = '0'
+                             AND dt2.team_id = #{q.teamId}))
            </if>
           ) t
          ORDER BY t.sortTime DESC, t.sortId DESC

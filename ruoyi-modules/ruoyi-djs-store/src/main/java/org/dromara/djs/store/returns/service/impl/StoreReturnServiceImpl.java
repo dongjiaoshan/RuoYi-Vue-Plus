@@ -276,7 +276,11 @@ public class StoreReturnServiceImpl
         //   · 案例①（admin row9）：当日到店猪肉成品配置的原材料产品 → ≤ 当日到店对应猪肉成品总重。
         //   · 案例②（DENGBO-R11）：当日到店白条 + 该产品属字典 djs_white_bar_return_product（白条产品）→ ≤ (当日到店白条总重 − 今日已退白条配置产品累计)。
         //   · 其余：逐产品 ≤ 当日到店该产品重（现状回退）。
-        Map<Long, BigDecimal> arrivedPorkWeightByMaterial = buildArrivedPorkWeightByMaterial(bo.getStoreId(), today);
+        Map<Long, BigDecimal> arrivedWeightByMaterial = new LinkedHashMap<>(buildArrivedPorkWeightByMaterial(bo.getStoreId(), today));
+        // row67：果蔬材料外售成品的退回候选被折叠成其原材料产品（foldVegMaterialSold），
+        // 判定须镜像猪肉「按原材料聚合到店成品重」的口径，否则原材料产品在生产表无行、到店恒 0 → 无法退回。
+        buildArrivedVegWeightByMaterial(bo.getStoreId(), today)
+            .forEach((mid, w) -> arrivedWeightByMaterial.merge(mid, w, BigDecimal::add));
         List<Long> dictReturnProductIds = resolveWhiteBarReturnProductIds();
         boolean whiteBarArrivedToday = hasWhiteBarArrivedToday(bo.getStoreId());
         BigDecimal whiteBarDeliveredTotal = null;
@@ -293,7 +297,7 @@ public class StoreReturnServiceImpl
             BigDecimal returnMetric = item.getReturnQuantity() != null
                 ? item.getReturnQuantity() : item.getReturnWeight();
             BigDecimal rw = item.getReturnWeight() == null ? BigDecimal.ZERO : item.getReturnWeight();
-            BigDecimal materialLimit = arrivedPorkWeightByMaterial.get(item.getProductId());
+            BigDecimal materialLimit = arrivedWeightByMaterial.get(item.getProductId());
             if (BELONG_TYPE_WHITE_BAR.equals(product.getBelongType())) {
                 // 白条：累计已退 + 本次 ≤ 当日到店白条总重（不按单个白条产品分别封顶）。
                 if (whiteBarDeliveredTotal == null) {
@@ -324,10 +328,10 @@ public class StoreReturnServiceImpl
                 }
                 dictReturnedAccum = dictReturnedAccum.add(rw);
             } else if (materialLimit != null) {
-                // 案例①：材料外售原材料(不在白条退回字典)→ ≤ 当日到店对应猪肉成品总重。
+                // 案例①：材料外售原材料(不在白条退回字典)→ ≤ 当日到店对应成品总重（猪肉/果蔬同口径）。
                 if (rw.compareTo(materialLimit) > 0) {
                     throw new ServiceException("产品「" + product.getProductName() + "」退回重量(" + rw.toPlainString()
-                        + ")不能超过当日到店对应猪肉产品总重(" + materialLimit.toPlainString() + ")", 400);
+                        + ")不能超过当日到店对应成品总重(" + materialLimit.toPlainString() + ")", 400);
                 }
             } else {
                 // 其余生产产品：退回重量 ≤ 当日送达该店该产品的总重量（逐产品封顶，现状回退）。
@@ -492,6 +496,30 @@ public class StoreReturnServiceImpl
         List<ProductInfo> arrivedFinished = productInfoMapper.selectList(new LambdaQueryWrapper<ProductInfo>()
             .in(ProductInfo::getId, deliveredIds)
             .eq(ProductInfo::getBelongType, "pork")
+            .isNotNull(ProductInfo::getProductMaterial));
+        Map<Long, BigDecimal> byMaterial = new LinkedHashMap<>();
+        for (ProductInfo q : arrivedFinished) {
+            BigDecimal w = productProductionService.sumDeliveredWeightToStore(storeId, q.getId(), today);
+            byMaterial.merge(q.getProductMaterial(), w == null ? BigDecimal.ZERO : w, BigDecimal::add);
+        }
+        return byMaterial;
+    }
+
+    /**
+     * row67：当日到店的果蔬「材料外售」成品按「配置的原材料产品」聚合到店重量。
+     * 门槛与退回候选折叠 {@link #foldVegMaterialSold} 一致：belong_type=vegetable 且 is_material_sold=1 且配了 product_material。
+     * key = product_material（原材料产品 id），value = 该原材料对应的当日到店果蔬成品总重（kg，SUM product_weight）。
+     * 候选折叠后原材料产品自身在生产表无行、到店恒 0；本聚合让退回校验案例①按对应成品到店重封顶。
+     */
+    private Map<Long, BigDecimal> buildArrivedVegWeightByMaterial(Long storeId, LocalDate today) {
+        List<Long> deliveredIds = productProductionMapper.selectDeliveredProductIdsToStore(storeId, today);
+        if (deliveredIds == null || deliveredIds.isEmpty()) {
+            return Map.of();
+        }
+        List<ProductInfo> arrivedFinished = productInfoMapper.selectList(new LambdaQueryWrapper<ProductInfo>()
+            .in(ProductInfo::getId, deliveredIds)
+            .eq(ProductInfo::getBelongType, "vegetable")
+            .eq(ProductInfo::getIsMaterialSold, 1)
             .isNotNull(ProductInfo::getProductMaterial));
         Map<Long, BigDecimal> byMaterial = new LinkedHashMap<>();
         for (ProductInfo q : arrivedFinished) {

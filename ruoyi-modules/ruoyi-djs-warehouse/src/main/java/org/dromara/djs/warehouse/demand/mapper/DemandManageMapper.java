@@ -26,17 +26,26 @@ import java.util.Map;
 public interface DemandManageMapper extends BaseMapperPlus<DemandManage, DemandManageVo> {
 
     /**
-     * 今日 KPI 横条主表聚合（DJS-FIX-ADMIN-W22-007）：1 query 出 5 数。
+     * 明日 KPI 横条主表聚合（DJS-FIX-ADMIN-W22-007）：JOIN 产品主数据 belong_type，1 query 出 7 数。
      *
      * <p>「已调配」= 状态 {@code IN ('CONFIRMED','IN_PRODUCTION','PARTIAL_SHIPPED','COMPLETED')}
      * （已脱离待确认态、未取消；状态集合是固定枚举不随租户变，直接写死 SQL）。</p>
      *
-     * <p>{@code todayPigDemand}「今日猪需求头数」口径：白条/猪业态下仅统计【白条整只】+【白条半只】
-     * 两类（产品名含「整只」/「半只」），整只按 1 头、半只按 0.5 头折算（半只 = 半头猪），
-     * 猪头 / 猪蹄不计入头数。可出 0.5 小数，service 端用 BigDecimal 承接。</p>
+     * <p>{@code todayPigDemand}「明日猪需求头数」口径：按产品主数据 {@code belong_type='white_bar'}
+     * 识别白条carcass，产品名含「半」（半扇 / 白条·半只）按 0.5 头折算、其余（整只白条）按 1 头计。
+     * 非白条产品不计入头数——{@code product_type='pig'} 的黑毛猪瘦肉 / 腰子等实为 {@code belong_type='pork'}
+     * 切割品，改由 {@code todayPorkDemand} 承接。可出 0.5 小数，service 端用 BigDecimal 承接。</p>
      *
-     * <p>返 Map 键：{@code todayPigDemand / todayVegSpeciesDemand / todayVegSpeciesAssigned /
-     * todayOtherDemand / todayOtherAssigned}（白条已调配头数走 {@link #selectTodayPigAssigned} 子表）。</p>
+     * <p>{@code todayPorkDemand / todayPorkAssigned}「明日猪肉产品需求 / 已调配条数」口径：
+     * 按产品主数据 {@code belong_type='pork'}（字典 djs_belong_type 猪肉产品）计条数；已调配限已确认状态集合。</p>
+     *
+     * <p>{@code todayOtherDemand / todayOtherAssigned}「明日其他产品需求 / 已调配条数」口径：
+     * {@code product_type IN ('other','gift_box','dry','egg')} 且 {@code belong_type} 非 pork
+     * （NULL-safe 排除混进 other 业态的猪肉切割品）。</p>
+     *
+     * <p>返 Map 键：{@code todayPigDemand / todayPorkDemand / todayPorkAssigned / todayVegSpeciesDemand /
+     * todayVegSpeciesAssigned / todayOtherDemand / todayOtherAssigned}（白条已调配头数走
+     * {@link #selectTodayPigAssigned} 子表）。</p>
      *
      * <p>租户隔离：未启全局 MP 拦截器，显式 {@code tenant_id='1001'}（V1 单租户，与
      * {@code LocationStockMapper} 自定义聚合范式一致）。</p>
@@ -47,21 +56,29 @@ public interface DemandManageMapper extends BaseMapperPlus<DemandManage, DemandM
     @Select("""
         SELECT
           COALESCE(SUM(CASE
-                  WHEN product_type IN ('white_bar','pig') AND product_name LIKE '%整只%' THEN demand_quantity
-                  WHEN product_type IN ('white_bar','pig') AND product_name LIKE '%半只%' THEN demand_quantity * 0.5
+                  WHEN pi.belong_type = 'white_bar' AND dm.product_name LIKE '%半%' THEN dm.demand_quantity * 0.5
+                  WHEN pi.belong_type = 'white_bar' THEN dm.demand_quantity
                   ELSE 0 END), 0) AS todayPigDemand,
-          COUNT(DISTINCT CASE WHEN product_type = 'vegetable' THEN product_id END) AS todayVegSpeciesDemand,
-          COUNT(DISTINCT CASE WHEN product_type = 'vegetable'
-                AND demand_status IN ('CONFIRMED','IN_PRODUCTION','PARTIAL_SHIPPED','COMPLETED')
-                THEN product_id END) AS todayVegSpeciesAssigned,
-          COUNT(CASE WHEN product_type IN ('other','gift_box','dry','egg') THEN 1 END) AS todayOtherDemand,
-          COUNT(CASE WHEN product_type IN ('other','gift_box','dry','egg')
-                AND demand_status IN ('CONFIRMED','IN_PRODUCTION','PARTIAL_SHIPPED','COMPLETED')
+          COUNT(CASE WHEN pi.belong_type = 'pork' THEN 1 END) AS todayPorkDemand,
+          COUNT(CASE WHEN pi.belong_type = 'pork'
+                AND dm.demand_status IN ('CONFIRMED','IN_PRODUCTION','PARTIAL_SHIPPED','COMPLETED')
+                THEN 1 END) AS todayPorkAssigned,
+          COUNT(DISTINCT CASE WHEN dm.product_type = 'vegetable' THEN dm.product_id END) AS todayVegSpeciesDemand,
+          COUNT(DISTINCT CASE WHEN dm.product_type = 'vegetable'
+                AND dm.demand_status IN ('CONFIRMED','IN_PRODUCTION','PARTIAL_SHIPPED','COMPLETED')
+                THEN dm.product_id END) AS todayVegSpeciesAssigned,
+          COUNT(CASE WHEN dm.product_type IN ('other','gift_box','dry','egg')
+                AND (pi.belong_type IS NULL OR pi.belong_type <> 'pork') THEN 1 END) AS todayOtherDemand,
+          COUNT(CASE WHEN dm.product_type IN ('other','gift_box','dry','egg')
+                AND (pi.belong_type IS NULL OR pi.belong_type <> 'pork')
+                AND dm.demand_status IN ('CONFIRMED','IN_PRODUCTION','PARTIAL_SHIPPED','COMPLETED')
                 THEN 1 END) AS todayOtherAssigned
-        FROM t_warehouse_demand_manage
-        WHERE demand_date = #{today}
-          AND del_flag = '0'
-          AND tenant_id = '1001'
+        FROM t_warehouse_demand_manage dm
+        LEFT JOIN t_warehouse_product_info pi
+               ON pi.id = dm.product_id AND pi.del_flag = '0' AND pi.tenant_id = '1001'
+        WHERE dm.demand_date = #{today}
+          AND dm.del_flag = '0'
+          AND dm.tenant_id = '1001'
         """)
     Map<String, Object> selectTodayKpiMainAgg(@Param("today") LocalDate today);
 

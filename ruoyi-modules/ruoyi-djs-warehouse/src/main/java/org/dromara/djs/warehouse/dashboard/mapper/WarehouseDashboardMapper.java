@@ -589,21 +589,29 @@ public interface WarehouseDashboardMapper {
         @Param("days") int days, @Param("belongType") String belongType);
 
     /**
-     * 图④：近 7 日盘点结果分布（GROUP BY check_result_type，仅明细行 is_header=0）。
+     * 图④：近 7 日盘点结果分布（按盘点流水 flow_type 计数）。
      *
-     * <p>统计近 7 日（check_date >= 当天前 7 天）所有盘点明细，按 1 正常/2 异常/3 计损 计数。
-     * 返回原始 check_result_type 数值字符串作为 name，由 service 映射中文。</p>
+     * <p>数据源与「盘点记录」列表同源 = {@code t_warehouse_stock_flow} 盘点流水（含 mp 自助盘点，
+     * admin 建单链 {@code t_warehouse_check_record} 覆盖不全，mp 现场盘点只写 stock_flow）。
+     * 近 7 日（flow_date >= 当天前 7 天）按 flow_type → 结果映射计数：
+     * {@code check_in}=正常(1) / {@code check_abnormal_out}=异常(2) / {@code check_out}=计损(3)。
+     * 返回结果数值字符串作为 name，由 service 映射中文。</p>
      *
      * @param tenantId 租户
-     * @return name(=check_result_type) + value(=COUNT)
+     * @return name(=1/2/3) + value(=COUNT)
      */
-    @Select("SELECT CAST(check_result_type AS CHAR) AS name, COUNT(*) AS value "
-        + "  FROM t_warehouse_check_record "
+    @Select("SELECT CAST("
+        + "         CASE flow_type "
+        + "           WHEN 'check_in' THEN 1 "
+        + "           WHEN 'check_abnormal_out' THEN 2 "
+        + "           WHEN 'check_out' THEN 3 "
+        + "         END AS CHAR) AS name, COUNT(*) AS value "
+        + "  FROM t_warehouse_stock_flow "
         + " WHERE tenant_id = #{tenantId} "
         + "   AND del_flag = '0' "
-        + "   AND is_header = 0 "
-        + "   AND check_date >= DATE_SUB(CURDATE(), INTERVAL 7 DAY) "
-        + " GROUP BY check_result_type")
+        + "   AND flow_type IN ('check_in', 'check_out', 'check_abnormal_out') "
+        + "   AND flow_date >= DATE_SUB(CURDATE(), INTERVAL 7 DAY) "
+        + " GROUP BY flow_type")
     List<ChartSeriesItemVo> selectCheckResult(@Param("tenantId") String tenantId);
 
     /**

@@ -15,8 +15,7 @@ import org.dromara.djs.common.image.service.ImageUrlResolver;
 import org.dromara.djs.common.supplier.domain.Supplier;
 import org.dromara.djs.common.supplier.mapper.SupplierMapper;
 import org.dromara.djs.warehouse.check.service.IStockCheckService;
-import org.dromara.djs.warehouse.cross.domain.BarInfo;
-import org.dromara.djs.warehouse.cross.mapper.BarInfoMapper;
+import org.dromara.djs.warehouse.cut.service.IPigCutRecordService;
 import org.dromara.djs.warehouse.flow.domain.StockFlow;
 import org.dromara.djs.warehouse.flow.mapper.StockFlowMapper;
 import org.dromara.djs.warehouse.loss.service.ILossFlowService;
@@ -52,8 +51,8 @@ import java.util.stream.Collectors;
  *
  * <h3>读端点</h3>
  * <p>聚合查询委托 {@link StockSelfMapper}（各库入口 / 库详情 / 待盘点 / 盘点记录 / 进出库流水）；
- * 白条库逐条走 {@link BarInfoMapper} 取可领用在库白条（{@code status='in_stock'}，口径对齐分割白条领用）
- * 后在 service 计算排酸时长（(排酸完成 ?? now) − 入库）/ 格式化入库时间。</p>
+ * 白条库列表直接委托 {@link IPigCutRecordService#queryPickupItems()}（与 admin 分割白条领用同一取数：
+ * 按半只/半扇逐燎毛产出行，旧数据回落整只兜底卡），service 只做 VO 映射 + 排酸时长（now − 半只入库）格式化。</p>
  *
  * <h3>写端点（入库 / 出库 / 盘点）</h3>
  * <ul>
@@ -96,11 +95,6 @@ public class StockSelfServiceImpl implements IStockSelfService {
     private static final int RESULT_LOSS = 3;
 
     /**
-     * 白条库逻辑产品名（bar_info 无产品主数据，固定展示名）。
-     */
-    private static final String WHITE_BAR_PRODUCT_NAME = "白条(整只)";
-
-    /**
      * 产品缩略图 IMG-LIB-001 分类键（belongType 当前不参与 URL 解析，仅保留调用签名一致性）。
      */
     private static final String PRODUCT_BELONG_TYPE = "product";
@@ -109,7 +103,7 @@ public class StockSelfServiceImpl implements IStockSelfService {
     private final LocationStockMapper locationStockMapper;
     private final StockFlowMapper stockFlowMapper;
     private final ProductInfoMapper productInfoMapper;
-    private final BarInfoMapper barInfoMapper;
+    private final IPigCutRecordService pigCutService;
     private final SupplierMapper supplierMapper;
     private final IBizCodeGenerator bizCodeGenerator;
     private final IStockCheckService stockCheckService;
@@ -120,7 +114,7 @@ public class StockSelfServiceImpl implements IStockSelfService {
                                 LocationStockMapper locationStockMapper,
                                 StockFlowMapper stockFlowMapper,
                                 ProductInfoMapper productInfoMapper,
-                                BarInfoMapper barInfoMapper,
+                                IPigCutRecordService pigCutService,
                                 SupplierMapper supplierMapper,
                                 IBizCodeGenerator bizCodeGenerator,
                                 IStockCheckService stockCheckService,
@@ -130,7 +124,7 @@ public class StockSelfServiceImpl implements IStockSelfService {
         this.locationStockMapper = locationStockMapper;
         this.stockFlowMapper = stockFlowMapper;
         this.productInfoMapper = productInfoMapper;
-        this.barInfoMapper = barInfoMapper;
+        this.pigCutService = pigCutService;
         this.supplierMapper = supplierMapper;
         this.bizCodeGenerator = bizCodeGenerator;
         this.stockCheckService = stockCheckService;
@@ -199,48 +193,29 @@ public class StockSelfServiceImpl implements IStockSelfService {
 
     @Override
     public List<WhiteBarStockVo> listWhiteBarStocks(String locationId) {
-        // 134.1：白条库列表 = 可领用白条库存，口径对齐分割白条领用（AppletPigCutController.availableBars →
-        //   queryAvailableBars，status='in_stock'）。故只取 status='in_stock'（未领未分割）；pending_cut（已领用
-        //   进分割流）不再计入白条库物理在库。上限不设（盘点/库存视图需展示全部在库，不像领用 picker 截 50）。
+        // 135：白条库取数「完全对齐」admin 分割白条领用菜单——直接委托同一 queryPickupItems()（按半只/半扇
+        //   逐燎毛产出行出行；旧数据无产出行的白条回落整只兜底卡）。故白条库显示的即半只，含 in_stock/pending_cut/
+        //   cutting 三态未领行 + FIFO LIMIT 50，与领用 picker 逐行一致（测试原话「取数逻辑调整成和后台一样」）。
         // locationId 不参与过滤（白条是逻辑库，bar_info 无 location_id 列）；接收参数仅保契约一致。
-        List<BarInfo> bars = barInfoMapper.selectList(
-            new LambdaQueryWrapper<BarInfo>()
-                .eq(BarInfo::getStatus, "in_stock")
-                .orderByDesc(BarInfo::getInTime));
         SimpleDateFormat mdhm = new SimpleDateFormat("MM-dd HH:mm");
-        return bars.stream().map(b -> {
+        long now = System.currentTimeMillis();
+        return pigCutService.queryPickupItems().stream().map(it -> {
             WhiteBarStockVo vo = new WhiteBarStockVo();
-            vo.setId(b.getId());
-            vo.setProductName(WHITE_BAR_PRODUCT_NAME);
-            vo.setEarNo(b.getEarNo());
-            vo.setInboundTime(b.getInTime() == null ? null : mdhm.format(b.getInTime()));
-            vo.setAcidDischargeDuration(formatAcidDuration(resolveAcidMinutes(b)));
+            // 半只行用 inhouseId 保 :key 唯一；整只兜底行(inhouseId=null)回落 barInfoId
+            vo.setId(it.getInhouseId() != null ? it.getInhouseId() : it.getBarInfoId());
+            vo.setProductName(it.getProductName());
+            // 外购无耳号 → 回落白条标识号 mark_id（与 queryPickupItems 同口径）
+            vo.setEarNo(StringUtils.isNotBlank(it.getEarNo()) ? it.getEarNo() : it.getMarkId());
+            vo.setInboundTime(it.getInTime() == null ? null : mdhm.format(it.getInTime()));
+            // 在库未领半只均排酸进行中：now − 入库(半只 produce_time)；BarPickupItemVo 无 acid_remove_time 列
+            Integer mins = it.getInTime() == null ? null : (int) Math.max(0L, (now - it.getInTime().getTime()) / 60_000L);
+            vo.setAcidDischargeDuration(formatAcidDuration(mins));
             // bar_info 无门店字段，固定 null
             vo.setDesignatedStore(null);
-            vo.setInboundWeight(b.getInWeight());
+            // 半只领用重（productWeight）；整只兜底回落上市/入库重
+            vo.setInboundWeight(it.getProductWeight());
             return vo;
         }).toList();
-    }
-
-    /**
-     * 白条排酸时长分钟数（134.4）。口径 = (排酸完成时间 ?? now) − 入库时间：
-     * <ul>
-     *   <li>已结算排酸时长 {@code acid_remove_time}（分割领用时按 out−in 计算写入，分钟）非空 → 直接取；</li>
-     *   <li>在库排酸进行中（{@code acid_remove_time} 空，白条库均为此态）→ now − {@code in_time}；</li>
-     *   <li>{@code in_time} 缺失 → null（交 {@link #formatAcidDuration} 兜「-」，不瞎编）。</li>
-     * </ul>
-     * bar_info 无独立「排酸完成时间」列，故未结算态用 now − in_time；与分割记录
-     * {@code PigCutRecordServiceImpl.computeAcidMinutes}（out−in）复用同一时间差算法。
-     */
-    private static Integer resolveAcidMinutes(BarInfo b) {
-        if (b.getAcidRemoveTime() != null && b.getAcidRemoveTime() >= 0) {
-            return b.getAcidRemoveTime();
-        }
-        if (b.getInTime() == null) {
-            return null;
-        }
-        long mins = (System.currentTimeMillis() - b.getInTime().getTime()) / 60_000L;
-        return (int) Math.max(0L, mins);
     }
 
     @Override

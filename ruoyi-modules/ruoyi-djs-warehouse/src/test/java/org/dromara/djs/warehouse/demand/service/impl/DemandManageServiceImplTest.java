@@ -286,11 +286,13 @@ class DemandManageServiceImplTest {
     }
 
     @Test
-    @DisplayName("getTodayKpi happy → 6 字段装配正确（聚合列 Long/BigDecimal 统一转 int）")
+    @DisplayName("getTodayKpi happy → 8 字段装配正确（聚合列 Long/BigDecimal 统一转 int）")
     void getTodayKpiHappy() {
         // 模拟 jdbc 聚合列类型：SUM → BigDecimal，COUNT → Long
         Map<String, Object> agg = new HashMap<>();
         agg.put("todayPigDemand", new BigDecimal("12"));
+        agg.put("todayPorkDemand", 3L);
+        agg.put("todayPorkAssigned", 2L);
         agg.put("todayVegSpeciesDemand", 5L);
         agg.put("todayVegSpeciesAssigned", 4L);
         agg.put("todayOtherDemand", 5L);
@@ -302,6 +304,8 @@ class DemandManageServiceImplTest {
         // 猪需求头数含半只 0.5 折算 → BigDecimal，比值不比 scale
         assertThat(vo.getTodayPigDemand()).isEqualByComparingTo(new BigDecimal("12"));
         assertThat(vo.getTodayPigAssigned()).isEqualTo(12);
+        assertThat(vo.getTodayPorkDemand()).isEqualTo(3);
+        assertThat(vo.getTodayPorkAssigned()).isEqualTo(2);
         assertThat(vo.getTodayVegSpeciesDemand()).isEqualTo(5);
         assertThat(vo.getTodayVegSpeciesAssigned()).isEqualTo(4);
         assertThat(vo.getTodayOtherDemand()).isEqualTo(5);
@@ -312,7 +316,7 @@ class DemandManageServiceImplTest {
     }
 
     @Test
-    @DisplayName("getTodayKpi 无数据 → 6 数全 0（agg 缺键 + 子表 null 兜底）")
+    @DisplayName("getTodayKpi 无数据 → 8 数全 0（agg 缺键 + 子表 null 兜底）")
     void getTodayKpiEmpty() {
         // 主表无今日 demand：SUM/COUNT 仍返单行但值为 0（这里模拟缺键 → intFromAgg 兜底 0）
         when(demandMapper.selectTodayKpiMainAgg(any(LocalDate.class))).thenReturn(new HashMap<>());
@@ -322,6 +326,8 @@ class DemandManageServiceImplTest {
         DemandTodayKpiVo vo = service.getTodayKpi();
         assertThat(vo.getTodayPigDemand()).isZero();
         assertThat(vo.getTodayPigAssigned()).isZero();
+        assertThat(vo.getTodayPorkDemand()).isZero();
+        assertThat(vo.getTodayPorkAssigned()).isZero();
         assertThat(vo.getTodayVegSpeciesDemand()).isZero();
         assertThat(vo.getTodayVegSpeciesAssigned()).isZero();
         assertThat(vo.getTodayOtherDemand()).isZero();

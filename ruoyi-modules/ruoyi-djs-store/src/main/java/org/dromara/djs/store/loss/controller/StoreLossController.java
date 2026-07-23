@@ -43,7 +43,7 @@ public class StoreLossController extends BaseController {
 
     /**
      * 当日某门店白条分割损耗（门店盘点抽屉「当日白条分割损耗」展示，口径同定时任务）。
-     * = max(0, 白条到店重 − 白条退回产品入库重)；退回入库重来自门店退货入库流水 {@code t_store_return}。
+     * = max(0, 白条到店重 + 材料外售同产品到店重 − 白条退回产品入库重)；退回入库重来自门店退货入库流水 {@code t_store_return}。
      *
      * @param storeId 门店 id
      * @param date    业务日（yyyy-MM-dd，空取今天）
