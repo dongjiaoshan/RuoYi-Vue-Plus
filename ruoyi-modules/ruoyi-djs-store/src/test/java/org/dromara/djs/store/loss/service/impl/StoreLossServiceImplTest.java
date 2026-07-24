@@ -43,7 +43,8 @@ import static org.mockito.Mockito.when;
 /**
  * {@link StoreLossServiceImpl} 单测（DENGBO-R15）。
  *
- * <p>覆盖 happy path：门店日损耗 2 行（含负值原样搬）+ 白条分割损耗 1 行（到店>退回，loss=到店−退回 钳 0）
+ * <p>覆盖 happy path：门店日损耗 2 行（含负值原样搬）+ 白条分割损耗 1 行
+ * （loss = max(0, 到店 − 白条分割产品总重)，分割产品总重=当日各白条部位入库量之和）
  * → 断言总插 3 行、白条分割损耗行 loss_qty / arrive / split 正确。</p>
  *
  * @author djs
@@ -101,7 +102,7 @@ class StoreLossServiceImplTest {
     }
 
     @Test
-    @DisplayName("aggregate happy：门店日损耗2行(含负值原样搬)+白条分割损耗1行(到店−退回钳0) → 总插3行")
+    @DisplayName("aggregate happy：门店日损耗2行(含负值原样搬)+白条分割损耗1行(到店−分割产品总重钳0) → 总插3行")
     void testAggregate_Happy() {
         // 门店日损耗：产品 A loss=2.5、产品 B loss=-1.0（盘盈原样搬）。
         StoreDailyLedger la = ledger(PRODUCT_A, new BigDecimal("2.5"));
@@ -160,9 +161,12 @@ class StoreLossServiceImplTest {
     }
 
     @Test
-    @DisplayName("aggregate 白条退回>到店 → loss 钳 0")
+    @DisplayName("aggregate 白条分割产品总重>到店 → loss 钳 0")
     void testAggregate_WhiteBarLossClampZero() {
-        when(storeDailyLedgerMapper.selectList(any())).thenReturn(List.of());
+        // 白条部位入库(分割产品总重) 50 > 到店 20 → loss=max(0,20−50)=0。
+        StoreDailyLedger wbInbound = inboundLedger(WHITE_BAR_PRODUCT, new BigDecimal("50.000"));
+        // 第 1 次（门店日损耗）空；第 2 次（白条部位入库汇总）返 [wbInbound]。
+        when(storeDailyLedgerMapper.selectList(any())).thenReturn(List.of(), List.of(wbInbound));
         Shipment ship = new Shipment();
         ship.setStoreId(STORE_ID);
         ship.setShipQuantity(new BigDecimal("20.000"));
@@ -170,10 +174,6 @@ class StoreLossServiceImplTest {
         when(dictService.getAllDictByDictType("djs_white_bar_return_product"))
             .thenReturn(Map.of(WHITE_BAR_CODE, "白条产品"));
         when(productInfoMapper.selectList(any())).thenReturn(List.of(product(WHITE_BAR_PRODUCT, WHITE_BAR_CODE, "kg")));
-        StoreReturn ret = new StoreReturn();
-        ret.setStoreId(STORE_ID);
-        ret.setReceivedWeight(new BigDecimal("50.000"));   // 退回 > 到店
-        when(storeReturnMapper.selectList(any())).thenReturn(List.of(ret));
 
         service.aggregate(DATE);
 
@@ -203,6 +203,16 @@ class StoreLossServiceImplTest {
         l.setProductId(productId);
         l.setLedgerDate(DATE);
         l.setLossQty(loss);
+        return l;
+    }
+
+    /** 白条部位当日入库行（门店分割产出）：白条分割产品总重 = 各部位 inbound_qty 之和。 */
+    private StoreDailyLedger inboundLedger(Long productId, BigDecimal inbound) {
+        StoreDailyLedger l = new StoreDailyLedger();
+        l.setStoreId(STORE_ID);
+        l.setProductId(productId);
+        l.setLedgerDate(DATE);
+        l.setInboundQty(inbound);
         return l;
     }
 
