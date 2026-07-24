@@ -108,10 +108,12 @@ public interface IStoreReturnService {
     /**
      * mp 退货确认详情：某门店某状态（mp 词表 pending/confirmed）下的退回清单（字段对齐 mp ReturnItem）。
      *
-     * @param storeId  门店 ID（必填）
-     * @param mpStatus mp 词表状态 pending / confirmed
+     * @param storeId    门店 ID（必填）
+     * @param mpStatus   mp 词表状态 pending / confirmed
+     * @param returnDate 退回日期（{@code yyyy-MM-dd}，row174：分组卡携带；非空则只取该门店该天的退回行，
+     *                   能翻历史某天；空则不限日期，向后兼容）
      */
-    List<StoreReturnAppletItemVo> listAppletItemsByStoreAndStatus(Long storeId, String mpStatus);
+    List<StoreReturnAppletItemVo> listAppletItemsByStoreAndStatus(Long storeId, String mpStatus, String returnDate);
 
     /** 软删除（DjsBaseServiceImpl#softDelete 范式）。 */
     int deleteByIds(Collection<Long> ids);

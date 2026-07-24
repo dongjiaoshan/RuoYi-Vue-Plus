@@ -467,6 +467,11 @@ public class ShipmentServiceImpl
             return List.of();
         }
         Map<Long, ProductInfo> productMap = loadProductInfoMap(productions);
+        // 原材料单位：按 product_info.product_material 自引用 FK 批量 IN 查关联原材料的 product_unit（无 N+1）。
+        // 用于 mp 发货清单「产品总重」是否展示的判定——如干羊肚菌礼盒 product_unit='盒'、原材料=干货 unit='kg'。
+        Set<Long> materialIds = productMap.values().stream()
+            .map(ProductInfo::getProductMaterial).filter(Objects::nonNull).collect(Collectors.toSet());
+        Map<Long, ProductInfo> materialMap = loadProductInfoByIds(materialIds);
         Map<Long, String> locationNameMap = loadLocationNameMap(productions);
         return productions.stream().map(p -> {
             ProductInfo info = p.getProductId() == null ? null : productMap.get(p.getProductId());
@@ -478,6 +483,7 @@ public class ShipmentServiceImpl
             vo.setProductName(info == null ? null : info.getProductName());
             vo.setBelongType(info == null ? null : info.getBelongType());
             vo.setProductUnit(info == null ? null : info.getProductUnit());
+            vo.setMaterialUnit(resolveMaterialUnit(info, materialMap));
             vo.setMaterialNum(info == null ? null : info.getMaterialNum());
             vo.setProduceQuantity(p.getProduceQuantity());
             vo.setProductSpec(p.getProductSpec());
@@ -581,6 +587,37 @@ public class ShipmentServiceImpl
             new LambdaQueryWrapper<ProductInfo>().in(ProductInfo::getId, productIds));
         return infos.stream().collect(
             Collectors.toMap(ProductInfo::getId, i -> i, (a, b) -> a));
+    }
+
+    /**
+     * 批量取产品主数据（按 id 集合，仅 select id + product_unit，供原材料单位回填）。
+     */
+    private Map<Long, ProductInfo> loadProductInfoByIds(Set<Long> ids) {
+        if (ids == null || ids.isEmpty()) {
+            return Map.of();
+        }
+        return productInfoMapper.selectList(new LambdaQueryWrapper<ProductInfo>()
+                .select(ProductInfo::getId, ProductInfo::getProductUnit)
+                .in(ProductInfo::getId, ids))
+            .stream().collect(Collectors.toMap(ProductInfo::getId, i -> i, (a, b) -> a));
+    }
+
+    /**
+     * 解析产品的原材料计量单位：product_material 自引用 FK 非空且关联原材料存在 → 取原材料 product_unit；
+     * 否则（无关联 / 原材料已删）回落自身 product_unit。
+     */
+    private String resolveMaterialUnit(ProductInfo info, Map<Long, ProductInfo> materialMap) {
+        if (info == null) {
+            return null;
+        }
+        Long materialId = info.getProductMaterial();
+        if (materialId != null) {
+            ProductInfo material = materialMap.get(materialId);
+            if (material != null && material.getProductUnit() != null) {
+                return material.getProductUnit();
+            }
+        }
+        return info.getProductUnit();
     }
 
     private Map<Long, String> loadLocationNameMap(List<ProductProduction> productions) {

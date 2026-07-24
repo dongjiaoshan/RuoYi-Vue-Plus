@@ -938,8 +938,9 @@ public class StoreReturnServiceImpl
 
     @Override
     public List<StoreReturnGroupVo> listPendingGroups() {
-        // mp 退货管理分组卡：门店→仓库退回，按门店分组。收件箱语义 —— 只列「待确认」（pending），
-        // 已确认（received）不再进列表（仓库工人接受入库后即从收件箱消失，避免历史已确认长期堆积）。
+        // mp 退货管理分组卡：门店→仓库退回，按「退回日期(截到天)+门店」分组（row174）。每卡 = 一门店某天的
+        // 全部待确认退回行——按门店退货日期归组，进详情时该卡明细也按当天过滤（能翻历史某天，绝不硬编码今天）。
+        // 收件箱语义 —— 只列「待确认」（pending），已确认（received）不再进列表（仓库工人接受入库后即从收件箱消失）。
         // pending 不限日期全列出，含历史未确认。
         List<StoreReturn> rows = baseMapper.selectList(new LambdaQueryWrapper<StoreReturn>()
             .eq(StoreReturn::getReturnDirection, DIRECTION_STORE_TO_WAREHOUSE)
@@ -948,31 +949,46 @@ public class StoreReturnServiceImpl
         if (rows.isEmpty()) {
             return List.of();
         }
-        Map<Long, List<StoreReturn>> byStore = rows.stream()
-            .collect(Collectors.groupingBy(StoreReturn::getStoreId));
-        Map<Long, String> storeNames = storeNameMap(new ArrayList<>(byStore.keySet()));
-        List<StoreReturnGroupVo> list = new ArrayList<>(byStore.size());
-        byStore.forEach((storeId, group) -> {
+        // 按「退回日(天)+门店」分组，与 buildStoreDailyList 同一 key 范式（保序 LinkedHashMap）；
+        // 无退回日期的脏行剔除（无法归属某天卡）。
+        Map<String, List<StoreReturn>> byGroup = rows.stream()
+            .filter(r -> r.getReturnDate() != null && r.getStoreId() != null)
+            .collect(Collectors.groupingBy(
+                r -> r.getReturnDate().toLocalDate() + "|" + r.getStoreId(),
+                LinkedHashMap::new, Collectors.toList()));
+        if (byGroup.isEmpty()) {
+            return List.of();
+        }
+        Set<Long> storeIds = byGroup.values().stream()
+            .map(g -> g.get(0).getStoreId()).filter(Objects::nonNull).collect(Collectors.toSet());
+        Map<Long, String> storeNames = storeNameMap(new ArrayList<>(storeIds));
+        List<StoreReturnGroupVo> list = new ArrayList<>(byGroup.size());
+        for (List<StoreReturn> group : byGroup.values()) {
+            StoreReturn any = group.get(0);
             StoreReturnGroupVo vo = new StoreReturnGroupVo();
-            vo.setStoreId(storeId);
-            vo.setStoreName(storeNames.get(storeId));
+            vo.setStoreId(any.getStoreId());
+            vo.setStoreName(storeNames.get(any.getStoreId()));
+            vo.setReturnDate(any.getReturnDate().toLocalDate());
             // 列表只含 pending 行，状态恒为待确认。
             vo.setReturnStatus(MP_STATUS_PENDING);
+            // 品种数 / 退回时间按「当天组内」算（不跨天混算）。
             vo.setProductKindCount((int) group.stream()
                 .map(StoreReturn::getProductId).filter(Objects::nonNull).distinct().count());
             vo.setReturnTime(group.stream().map(StoreReturn::getReturnDate).filter(Objects::nonNull)
                 .max(Comparator.naturalOrder()).orElse(null));
             list.add(vo);
-        });
-        // 全 pending，按退回时间倒序（最新退回置顶）。
+        }
+        // 排序：退回日倒序 → 组内最近退回时间倒序（最新退回置顶）。
         list.sort(Comparator
-            .comparing((StoreReturnGroupVo v) -> v.getReturnTime() == null ? LocalDateTime.MIN : v.getReturnTime(),
+            .comparing((StoreReturnGroupVo v) -> v.getReturnDate() == null ? LocalDate.MIN : v.getReturnDate(),
+                Comparator.reverseOrder())
+            .thenComparing(v -> v.getReturnTime() == null ? LocalDateTime.MIN : v.getReturnTime(),
                 Comparator.reverseOrder()));
         return list;
     }
 
     @Override
-    public List<StoreReturnAppletItemVo> listAppletItemsByStoreAndStatus(Long storeId, String mpStatus) {
+    public List<StoreReturnAppletItemVo> listAppletItemsByStoreAndStatus(Long storeId, String mpStatus, String returnDate) {
         if (storeId == null) {
             throw new ServiceException("门店 ID 不能为空", 400);
         }
@@ -981,11 +997,19 @@ public class StoreReturnServiceImpl
         }
         // mp 词表 → store 词表：confirmed→received，其余按 pending。
         String storeStatus = MP_STATUS_CONFIRMED.equals(mpStatus) ? STATUS_RECEIVED : STATUS_PENDING;
-        List<StoreReturn> rows = baseMapper.selectList(new LambdaQueryWrapper<StoreReturn>()
+        LambdaQueryWrapper<StoreReturn> wrapper = new LambdaQueryWrapper<StoreReturn>()
             .eq(StoreReturn::getReturnDirection, DIRECTION_STORE_TO_WAREHOUSE)
             .eq(StoreReturn::getStoreId, storeId)
-            .eq(StoreReturn::getReturnStatus, storeStatus)
-            .orderByDesc(StoreReturn::getReturnDate));
+            .eq(StoreReturn::getReturnStatus, storeStatus);
+        // row174：分组卡携带退回日期非空 → 限定该门店该天的退回行（能翻历史某天，只看当天明细，绝不硬编码今天）；
+        // 空则维持现状（不限日期，向后兼容旧入口/直接调用）。
+        if (StringUtils.isNotBlank(returnDate)) {
+            LocalDate day = LocalDate.parse(returnDate);
+            wrapper.ge(StoreReturn::getReturnDate, day.atStartOfDay())
+                .lt(StoreReturn::getReturnDate, day.plusDays(1).atStartOfDay());
+        }
+        wrapper.orderByDesc(StoreReturn::getReturnDate);
+        List<StoreReturn> rows = baseMapper.selectList(wrapper);
         if (rows.isEmpty()) {
             return List.of();
         }

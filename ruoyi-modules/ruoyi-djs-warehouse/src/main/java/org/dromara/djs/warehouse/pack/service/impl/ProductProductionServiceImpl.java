@@ -420,7 +420,7 @@ public class ProductProductionServiceImpl
         p.setProductId(product.getId());
         p.setProductName(resolveProductionName(product));
         p.setProductType(product.getProductType() != null ? product.getProductType() : 1);
-        p.setProductUnit(bo.getProductUnit());
+        p.setProductUnit(StringUtils.isNotBlank(product.getProductUnit()) ? product.getProductUnit() : bo.getProductUnit());
         p.setProductSpec(StringUtils.isNotBlank(bo.getProductSpec())
             ? bo.getProductSpec() : product.getProductSpec());
         p.setEarNo(src.getEarNo());

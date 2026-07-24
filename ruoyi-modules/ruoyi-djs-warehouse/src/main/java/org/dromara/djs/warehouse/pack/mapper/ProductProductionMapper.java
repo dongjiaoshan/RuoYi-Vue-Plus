@@ -224,7 +224,7 @@ public interface ProductProductionMapper extends BaseMapperPlus<ProductProductio
         "SELECT pp.product_id          AS productId,",
         "       DATE(pp.produce_date)  AS produceDate,",
         "       MAX(pp.product_name)   AS productName,",
-        "       MAX(pp.product_unit)   AS productUnit,",
+        "       MAX(COALESCE(pi.product_unit, pp.product_unit)) AS productUnit,",
         "       MAX(pp.product_spec)   AS productSpec,",
         "       MAX(pi.belong_type)    AS belongType,",
         "       MAX(pp.product_type)   AS productType,",

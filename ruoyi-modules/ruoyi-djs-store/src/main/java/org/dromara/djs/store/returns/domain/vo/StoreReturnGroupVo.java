@@ -5,6 +5,7 @@ import lombok.Data;
 
 import java.io.Serial;
 import java.io.Serializable;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 
 /**
@@ -33,6 +34,10 @@ public class StoreReturnGroupVo implements Serializable {
 
     /** 门店名称（StoreMapper 批量填充，避免 N+1）。 */
     private String storeName;
+
+    /** 退回日期（该组归属的门店退货日，row174 按「天+门店」分组，供 detail 按当天过滤明细）。 */
+    @JsonFormat(pattern = "yyyy-MM-dd")
+    private LocalDate returnDate;
 
     /** 退回状态（mp 词表 djs_return_status：pending / confirmed；由 store 的 pending/received 派生映射）。 */
     private String returnStatus;

@@ -56,6 +56,15 @@ public class AvailableProductionVo implements Serializable {
      */
     private BigDecimal materialNum;
 
+    /**
+     * 原材料计量单位（service 层按 product_info.product_material 自引用 FK 查关联原材料的 product_unit 填充）：
+     * kg / 份 / 枚 等。product_material 为 NULL（自身即原材料 / 无关联）时回落自身 product_unit。
+     *
+     * <p>mp 发货清单「产品总重」是否展示以此判定——如干羊肚菌礼盒（product_unit='盒'、原材料=干货 unit='kg'）
+     * 材料单位为 kg，鸡蛋礼盒（原材料 unit='枚'）不显。区别于 {@link #productUnit}（产品自身单位，礼盒='盒'）。</p>
+     */
+    private String materialUnit;
+
     private Long produceLocation;
 
     /** 库位名称（service 层 JOIN location_info 填充）。 */

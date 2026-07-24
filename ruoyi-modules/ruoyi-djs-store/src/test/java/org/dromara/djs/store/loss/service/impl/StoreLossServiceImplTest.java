@@ -9,8 +9,6 @@ import org.dromara.djs.store.ledger.domain.StoreDailyLedger;
 import org.dromara.djs.store.ledger.mapper.StoreDailyLedgerMapper;
 import org.dromara.djs.store.loss.domain.StoreLossRecord;
 import org.dromara.djs.store.loss.mapper.StoreLossRecordMapper;
-import org.dromara.djs.store.returns.domain.StoreReturn;
-import org.dromara.djs.store.returns.mapper.StoreReturnMapper;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
 import org.dromara.djs.warehouse.shipment.domain.Shipment;
@@ -61,9 +59,7 @@ class StoreLossServiceImplTest {
     @Mock private StoreLossRecordMapper baseMapper;
     @Mock private StoreDailyLedgerMapper storeDailyLedgerMapper;
     @Mock private ShipmentMapper shipmentMapper;
-    @Mock private StoreReturnMapper storeReturnMapper;
     @Mock private ProductInfoMapper productInfoMapper;
-    @Mock private org.dromara.djs.warehouse.pack.service.IProductProductionService productProductionService;
     @Mock private DictService dictService;
 
     private StoreLossServiceImpl service;
@@ -86,14 +82,13 @@ class StoreLossServiceImplTest {
         TableInfoHelper.initTableInfo(assistant, StoreLossRecord.class);
         TableInfoHelper.initTableInfo(assistant, StoreDailyLedger.class);
         TableInfoHelper.initTableInfo(assistant, Shipment.class);
-        TableInfoHelper.initTableInfo(assistant, StoreReturn.class);
         TableInfoHelper.initTableInfo(assistant, ProductInfo.class);
     }
 
     @BeforeEach
     void setup() {
         service = new StoreLossServiceImpl(baseMapper, storeDailyLedgerMapper, shipmentMapper,
-            storeReturnMapper, productInfoMapper, productProductionService, dictService);
+            productInfoMapper, dictService);
         tenantHelperMock = Mockito.mockStatic(TenantHelper.class);
         tenantHelperMock.when(TenantHelper::getTenantId).thenReturn(TENANT_ID);
         when(baseMapper.insert(any(StoreLossRecord.class))).thenReturn(1);
@@ -111,14 +106,17 @@ class StoreLossServiceImplTest {
         // 门店日损耗：产品 A loss=2.5、产品 B loss=-1.0（盘盈原样搬）。
         StoreDailyLedger la = ledger(PRODUCT_A, new BigDecimal("2.5"));
         StoreDailyLedger lb = ledger(PRODUCT_B, new BigDecimal("-1.0"));
-        when(storeDailyLedgerMapper.selectList(any())).thenReturn(List.of(la, lb));
+        // 白条部位当日入库（门店分割产出）：WHITE_BAR_PRODUCT inbound=30 → 白条分割产品总重 30.000。
+        StoreDailyLedger wbInbound = inboundLedger(WHITE_BAR_PRODUCT, new BigDecimal("30.000"));
+        // selectList 被调 2 次：第 1 次（门店日损耗）返 [la, lb]；第 2 次（白条部位入库汇总）返 [wbInbound]。
+        when(storeDailyLedgerMapper.selectList(any())).thenReturn(List.of(la, lb), List.of(wbInbound));
         // 产品单位补充
         when(productInfoMapper.selectList(any())).thenReturn(List.of(
             product(PRODUCT_A, null, "斤"),
             product(PRODUCT_B, null, "个"),
             product(WHITE_BAR_PRODUCT, WHITE_BAR_CODE, "kg")));
 
-        // 白条到店重 100.000，退回入库重 30.000 → loss = 70.000。
+        // 白条到店重 100.000，白条分割产品总重 30.000 → loss = 70.000。
         Shipment ship = new Shipment();
         ship.setStoreId(STORE_ID);
         ship.setShipQuantity(new BigDecimal("100.000"));
@@ -126,11 +124,6 @@ class StoreLossServiceImplTest {
 
         when(dictService.getAllDictByDictType("djs_white_bar_return_product"))
             .thenReturn(Map.of(WHITE_BAR_CODE, "白条产品"));
-
-        StoreReturn ret = new StoreReturn();
-        ret.setStoreId(STORE_ID);
-        ret.setReceivedWeight(new BigDecimal("30.000"));
-        when(storeReturnMapper.selectList(any())).thenReturn(List.of(ret));
 
         service.aggregate(DATE);
 
@@ -155,7 +148,7 @@ class StoreLossServiceImplTest {
             .findFirst().orElseThrow();
         assertThat(recB.getLossQty()).isEqualByComparingTo("-1.0");
 
-        // 白条分割损耗行：product_id=0（哨兵），loss=到店−退回=70，arrive=100 split=30
+        // 白条分割损耗行：product_id=0（哨兵），loss=到店−分割产品总重=70，arrive=100 split=30
         StoreLossRecord recWb = inserted.stream()
             .filter(r -> "white_bar_split_loss".equals(r.getLossType()))
             .findFirst().orElseThrow();
