@@ -102,7 +102,6 @@ public interface PlantWorkPerformanceMapper extends BaseMapperPlus<PlantWorkPerf
          WHERE a.tenant_id = '1001'
            AND a.del_flag = '0'
            AND a.pick_dest IS NOT NULL
-           AND a.plot_id IS NOT NULL
            AND a.daily_weight > 0
            AND DATE_FORMAT(a.activity_date, '%Y-%m') = #{statMonth}
         """)
@@ -112,8 +111,9 @@ public interface PlantWorkPerformanceMapper extends BaseMapperPlus<PlantWorkPerf
      * 当月采摘活动量按 作物 × 地块 聚合（row12：绩效并入采摘活动处理数据）。
      *
      * <p>源 {@code t_plant_plant_activity}：仅计 {@code pick_dest} 非空行（排除旧农事路径行防与
-     * 毛菜过磅双算）且 plot 非空（销售未结算行无地块、无法归属班组，不计入绩效）。
-     * service 层按地块采收班组集合平摊后并入 {@link #aggregateByMonth} 结果。</p>
+     * 毛菜过磅双算）。含销售去向（{@code pick_dest=sale}，plot_id 为空）行——按 (crop, NULL) 汇总，
+     * service 层用其直接班组集合（junction）平摊并入班组绩效，与采摘明细页口径一致。
+     * service 层按班组集合平摊后并入 {@link #aggregateByMonth} 结果。</p>
      *
      * <p>显式 {@code tenant_id='1001' AND del_flag='0'}（V1 无全局拦截器）。</p>
      *
@@ -129,7 +129,6 @@ public interface PlantWorkPerformanceMapper extends BaseMapperPlus<PlantWorkPerf
          WHERE a.tenant_id = '1001'
            AND a.del_flag = '0'
            AND a.pick_dest IS NOT NULL
-           AND a.plot_id IS NOT NULL
            AND a.daily_weight > 0
            AND DATE_FORMAT(a.activity_date, '%Y-%m') = #{statMonth}
          GROUP BY a.crop_id, a.plot_id

@@ -236,6 +236,23 @@ public interface PlantDashboardMapper {
         + "   AND farm_type = 'disaster'")
     Integer countTodayDisaster(@Param("tenantId") String tenantId);
 
+    /**
+     * 今日工作 - 采摘活动处理总重量：今日（{@code activity_date = CURDATE()}）采摘活动明细
+     * {@code SUM(daily_weight)}（kg）。与采摘明细页 / 班组绩效同源同口径（只计 {@code pick_dest} 非空、
+     * {@code daily_weight > 0} 的采摘活动行，排除旧农事路径行防与毛菜过磅双算）。
+     *
+     * @param tenantId 租户
+     * @return 当天采摘活动处理总重量 kg，无则 0
+     */
+    @Select("SELECT COALESCE(SUM(daily_weight), 0) "
+        + "  FROM t_plant_plant_activity "
+        + " WHERE tenant_id = #{tenantId} "
+        + "   AND del_flag = '0' "
+        + "   AND activity_date = CURDATE() "
+        + "   AND pick_dest IS NOT NULL "
+        + "   AND daily_weight > 0")
+    BigDecimal selectTodayPickActivityWeight(@Param("tenantId") String tenantId);
+
     // ============================ 块 ② 当月完成率 ============================
 
     /**
