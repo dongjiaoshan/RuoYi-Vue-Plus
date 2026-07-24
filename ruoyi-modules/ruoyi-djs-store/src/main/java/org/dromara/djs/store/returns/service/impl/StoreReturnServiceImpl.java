@@ -1018,7 +1018,7 @@ public class StoreReturnServiceImpl
         Map<Long, ProductInfo> productMap = productIds.isEmpty() ? Map.of()
             : productInfoMapper.selectList(new LambdaQueryWrapper<ProductInfo>()
                     .select(ProductInfo::getId, ProductInfo::getProductName, ProductInfo::getBelongType,
-                        ProductInfo::getProductUnit)
+                        ProductInfo::getProductUnit, ProductInfo::getProductSpec)
                     .in(ProductInfo::getId, productIds))
                 .stream().collect(Collectors.toMap(ProductInfo::getId, p -> p, (a, b) -> a));
         boolean received = STATUS_RECEIVED.equals(storeStatus);
@@ -1033,6 +1033,7 @@ public class StoreReturnServiceImpl
             vo.setProductName(p == null ? null : p.getProductName());
             vo.setProductCategory(p == null ? null : p.getBelongType());
             vo.setProductUnit(p == null ? null : p.getProductUnit());
+            vo.setProductSpec(p == null ? null : p.getProductSpec());
             vo.setReturnQuantity(r.getReturnQuantity());
             vo.setReturnWeight(r.getGoodsWeight());
             vo.setConfirmWeight(r.getReceivedWeight());

@@ -302,6 +302,15 @@ public class PlantActivityServiceImpl extends DjsBaseServiceImpl<PlantActivityMa
     }
 
     @Override
+    public BigDecimal sumUnsettledSaleWeight(Long cropId) {
+        if (cropId == null) {
+            return BigDecimal.ZERO;
+        }
+        BigDecimal sum = baseMapper.sumUnsettledSaleWeight(cropId);
+        return sum == null ? BigDecimal.ZERO : sum;
+    }
+
+    @Override
     public List<PlantActivity> listRecords(Long cropId, LocalDate begin, LocalDate end) {
         // cropId 可空 = 全场查询（不按作物过滤）；条件化拼接
         LambdaQueryWrapper<PlantActivity> lqw = new LambdaQueryWrapper<PlantActivity>()

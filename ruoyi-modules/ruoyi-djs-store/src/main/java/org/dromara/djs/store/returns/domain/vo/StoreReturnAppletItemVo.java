@@ -53,6 +53,9 @@ public class StoreReturnAppletItemVo implements Serializable {
     /** 产品单位（← product_unit，service 回填；mp 退货确认页「退货单位」列显示，流程性问题 row16）。 */
     private String productUnit;
 
+    /** 产品规格（← product_spec，service 回填；mp 退货确认页品名行右侧显示，row186）。 */
+    private String productSpec;
+
     /** 退回数量（← return_quantity，退回的份数/把/盒；mp 确认页「退货量」列）。 */
     private BigDecimal returnQuantity;
 

@@ -424,7 +424,7 @@ class PigSearchServiceTest {
         when(barnMapper.selectBatchIds(anyCollection())).thenReturn(Arrays.asList(b11, b12));
 
         List<org.dromara.djs.breed.core.domain.vo.PigBarnCountVo> result =
-            service.countByBarn(null, "F", "sow", null, null, null);
+            service.countByBarn(null, "F", "sow", null, null, null, null);
         assertThat(result).hasSize(2);
         // 升序：B01 在前
         assertThat(result.get(0).getBarnCode()).isEqualTo("B01");
@@ -440,7 +440,7 @@ class PigSearchServiceTest {
         when(pigMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(Collections.emptyList());
 
         List<org.dromara.djs.breed.core.domain.vo.PigBarnCountVo> result =
-            service.countByBarn(null, null, null, null, null, null);
+            service.countByBarn(null, null, null, null, null, null, null);
         assertThat(result).isEmpty();
         org.mockito.Mockito.verify(barnMapper, org.mockito.Mockito.never()).selectBatchIds(anyCollection());
     }

@@ -187,7 +187,11 @@ public interface IPigCoreService {
      *                      （否则栋舍 chip 头数之和与列表条数对不上）；{@code null}/false → 不过滤
      * @param dueType       到期窗口过滤（{@code "FARROW"}=已到产期 / {@code "WEANING"}=已到断奶期 / null=不过滤）：
      *                      与 {@code searchByEarKeyword} 同口径按生产配置天数硬筛（dueDate ≤ 今天），使 chip 头数=列表条数（r120）
+     * @param minAgeDays    最小日龄过滤（天，row180）：仅计入 {@code 日龄 >= minAgeDays} 的猪只（出栏选猪用，按出栏配置
+     *                      {@code slaughter_age_days} 限到龄肥猪）。与 {@link #searchByEarKeyword} 同口径
+     *                      （{@code COALESCE(birth_date, introduce_date)}），否则 chip 计全部而列表只列到龄 → 头数对不上。
+     *                      {@code null}/≤0 → 不过滤（向后兼容其余 12 页调用方，行为不变）。
      * @return 栋舍头数聚合列表
      */
-    List<PigBarnCountVo> countByBarn(String statusFilter, String sexFilter, String pigTypeFilter, String earNoKeyword, Boolean breedReady, String dueType);
+    List<PigBarnCountVo> countByBarn(String statusFilter, String sexFilter, String pigTypeFilter, String earNoKeyword, Boolean breedReady, String dueType, Integer minAgeDays);
 }

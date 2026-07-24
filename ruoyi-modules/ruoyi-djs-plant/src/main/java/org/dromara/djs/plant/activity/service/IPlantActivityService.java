@@ -64,6 +64,19 @@ public interface IPlantActivityService {
     void settlePickActivity(Long cropId);
 
     /**
+     * 作物未结算销售量合计（kg，row176「已采产量」补计销售去向）。
+     *
+     * <p>销售去向录入时暂存流水（{@code plot_id} 空、{@code settle_round=0}），不即时累加进
+     * {@code plant_details.actual_yield}，故「已采产量 = Σactual_yield」会漏；本方法补回
+     * {@code pick_dest='sale' AND (settle_round=0 OR settle_round IS NULL)} 的 pick_weight 合计。
+     * 只有 {@code is_pick=1} 采摘活动有销售去向，{@code is_pick=2} 采收 → 恒 0（加法 no-op）。</p>
+     *
+     * @param cropId 作物 id（空 → 返 0，不抛）
+     * @return 未结算销售量合计（无记录 / cropId 为空返 0）
+     */
+    BigDecimal sumUnsettledSaleWeight(Long cropId);
+
+    /**
      * 采摘活动记录列表（mp 采摘活动记录，按采摘日期倒序）。
      *
      * @param cropId 作物 id（可空 = 全场查询，不按作物过滤；非空则按作物过滤）

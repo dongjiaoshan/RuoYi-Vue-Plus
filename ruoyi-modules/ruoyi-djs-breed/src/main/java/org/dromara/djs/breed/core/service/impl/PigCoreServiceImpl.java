@@ -975,9 +975,13 @@ public class PigCoreServiceImpl implements IPigCoreService {
     }
 
     @Override
-    public List<PigBarnCountVo> countByBarn(String statusFilter, String sexFilter, String pigTypeFilter, String earNoKeyword, Boolean breedReady, String dueType) {
+    public List<PigBarnCountVo> countByBarn(String statusFilter, String sexFilter, String pigTypeFilter, String earNoKeyword, Boolean breedReady, String dueType, Integer minAgeDays) {
         List<String> statuses = parseStatusFilter(statusFilter);
         boolean callerWantsEnd = statuses.contains(PigLifecycle.END.name());
+        // row180：出栏 chip 与列表同口径——日龄 >= minAgeDays（到龄肥猪）才计入 chip。
+        // 与 searchByEarKeyword 完全一致：COALESCE(birth_date, introduce_date)，无生日 → DATEDIFF 为 NULL 自动剔除。
+        // minAgeDays ≤0/null（其余 12 页调用方不传）→ 不过滤（向后兼容，行为不变）。
+        boolean applyMinAge = minAgeDays != null && minAgeDays > 0;
 
         // pigTypeFilter 支持 CSV（如 'piglet,fattening' 给阉割选猪 = 公的仔猪+育肥猪）；单值退化 .eq，CSV 走 IN。
         // 与 searchByEarKeyword 同口径，否则栋舍 chip 计数与列表条数对不上。
@@ -992,6 +996,9 @@ public class PigCoreServiceImpl implements IPigCoreService {
             .eq(StringUtils.isNotBlank(sexFilter), Pig::getPigSex, sexFilter)
             .eq(pigTypes.size() == 1, Pig::getPigType, pigTypes.isEmpty() ? null : pigTypes.get(0))
             .in(pigTypes.size() > 1, Pig::getPigType, pigTypes)
+            // row180：出栏选猪日龄 >= minAgeDays，与 searchByEarKeyword 完全一致（{0} 占位 + apply 防注入，
+            // COALESCE(birth_date, introduce_date) 同口径），否则 chip 计全部而列表只列到龄 → 对不上。
+            .apply(applyMinAge, "DATEDIFF(NOW(), COALESCE(birth_date, introduce_date)) >= {0}", minAgeDays)
             // 无栋舍归属的猪只不计入任何 chip
             .isNotNull(Pig::getBarnId);
         if (!statuses.isEmpty()) {

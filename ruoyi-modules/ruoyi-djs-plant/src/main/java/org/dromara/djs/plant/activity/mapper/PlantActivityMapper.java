@@ -73,4 +73,29 @@ public interface PlantActivityMapper extends BaseMapperPlus<PlantActivity, Plant
         """)
     java.math.BigDecimal selectTotalWeightInRange(@Param("startDate") LocalDate startDate,
                                                   @Param("endDate") LocalDate endDate);
+
+    /**
+     * 作物未结算销售量合计（kg，row176「已采产量」补计销售去向）。
+     *
+     * <p>销售去向（{@code pick_dest='sale'}）录入时 {@code plot_id} 留空、只落 per-event 流水
+     * （{@code settle_round=0}），不即时累加进 {@code plant_details.actual_yield}，待「录入完成」
+     * {@code settlePickActivity} 才按地块均分。故「已采产量 = Σactual_yield」会漏掉这批未结算销售量，
+     * 本方法求和补回该差额（{@code pick_dest='sale' AND (settle_round=0 OR settle_round IS NULL)}）。
+     * 只有 {@code is_pick=1} 采摘活动会录销售去向，{@code is_pick=2} 采收无 → 合计 0（加法 no-op，采收页安全）。
+     * 显式 {@code tenant_id='1001'} + {@code del_flag='0'}（V1 单农场，关租户行注入）。</p>
+     *
+     * @param cropId 作物 id（非空）
+     * @return 未结算销售量合计（无记录返 0）
+     */
+    @InterceptorIgnore(tenantLine = "true")
+    @Select("""
+        SELECT COALESCE(SUM(pick_weight), 0)
+          FROM t_plant_plant_activity
+         WHERE del_flag = '0'
+           AND tenant_id = '1001'
+           AND crop_id = #{cropId}
+           AND pick_dest = 'sale'
+           AND (settle_round = 0 OR settle_round IS NULL)
+        """)
+    java.math.BigDecimal sumUnsettledSaleWeight(@Param("cropId") Long cropId);
 }

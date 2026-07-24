@@ -68,6 +68,8 @@ public class AppletPickServiceImpl implements IAppletPickService {
     private final ApplicationEventPublisher eventPublisher;
     private final ImageUrlResolver imageUrlResolver;
     private final org.dromara.djs.plant.team.service.PlantTeamLinkService teamLinkService;
+    /** row176：已采产量补计未结算销售去向采摘量（销售录入暂存流水、结算前不进 actual_yield）。 */
+    private final org.dromara.djs.plant.activity.service.IPlantActivityService plantActivityService;
 
     /** 作物 L2 默认图统一走果蔬（IMG-LIB-001）。 */
     private static final String CROP_BELONG_TYPE = "vegetable";
@@ -78,6 +80,8 @@ public class AppletPickServiceImpl implements IAppletPickService {
      * 排除 is_pick=1 的游客采摘活动。
      */
     private static final int IS_PICK_NORMAL = 2;
+    /** is_pick=1：采摘活动（游客采摘），唯一有「销售」去向的采摘场景，已采产量需补未结算销售量（row176）。 */
+    private static final int IS_PICK_ACTIVITY = 1;
     /** harvest_activity：采摘计划设为「采摘活动」(is_pick=1) 的采摘行为农事类型（djs_farm_work_type）。 */
     private static final String HARVEST_FARM_TYPE = "harvest_activity";
     /** harvest：普通采收 (is_pick=2) 农事类型，区别于游客采摘活动（FIX-PLT-AD-PICK-FARMTYPE-001）。 */
@@ -251,7 +255,9 @@ public class AppletPickServiceImpl implements IAppletPickService {
         int cropKindCount = (int) picked.stream()
             .map(PlantDetails::getCropId).filter(Objects::nonNull).distinct().count();
 
-        // 当月采摘量 = 当月实际已采摘明细的 actual_yield 合计（与作物卡 actualYield 同口径）。
+        // 当月采摘量 = 当月实际已采摘明细的 actual_yield 合计（本页 is_pick=2 采收）。
+        //   采收无「销售」去向，不补未结算销售量——销售是采摘活动(is_pick=1)概念，且销售流水按作物聚合
+        //   无 is_pick 维度，若在此补加会把同作物采摘活动的销售误算进采收当月 KPI（row176 clean-QA 命中）。
         BigDecimal monthWeight = picked.stream()
             .map(d -> d.getActualYield() == null ? BigDecimal.ZERO : d.getActualYield())
             .reduce(BigDecimal.ZERO, BigDecimal::add);
@@ -352,10 +358,16 @@ public class AppletPickServiceImpl implements IAppletPickService {
             vo.setExpectedYield(rows.stream()
                 .map(d -> d.getExpectedYield() == null ? BigDecimal.ZERO : d.getExpectedYield())
                 .reduce(BigDecimal.ZERO, BigDecimal::add));
-            // 已采重量 = SUM(t_plant_details.actual_yield)，与作物详情头同源同口径（采摘重量录入累加进同一列）
-            vo.setActualYield(rows.stream()
+            // 已采重量 = SUM(t_plant_details.actual_yield)；仅采摘活动(is_pick=1)补加未结算销售量（row176）。
+            //   非销售去向即时累加进 actual_yield；销售去向录入暂存流水、结算前不进 actual_yield，故采摘活动
+            //   作物卡的 Σactual_yield 会漏未结算销售量。采收(is_pick=2)无销售去向，且销售流水按作物聚合无
+            //   is_pick 维度，在采收路径补加会把采摘活动的销售误算进来（row176 clean-QA），故仅 is_pick=1 补。
+            BigDecimal plotActual = rows.stream()
                 .map(d -> d.getActualYield() == null ? BigDecimal.ZERO : d.getActualYield())
-                .reduce(BigDecimal.ZERO, BigDecimal::add));
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+            vo.setActualYield(pickFlag == IS_PICK_ACTIVITY
+                ? plotActual.add(plantActivityService.sumUnsettledSaleWeight(e.getKey()))
+                : plotActual);
             result.add(vo);
         }
 
@@ -453,6 +465,22 @@ public class AppletPickServiceImpl implements IAppletPickService {
                 .and(w -> w.eq(PlantDetails::getPickSettleRound, 0)
                     .or().isNull(PlantDetails::getPickSettleRound)));
         return unsettled != null && unsettled == 0;   // 无未结算地块 = 全部已结算 → 置灰
+    }
+
+    @Override
+    public BigDecimal cropPickedTotal(Long cropId, Integer isPick) {
+        if (cropId == null) {
+            throw new ServiceException("作物 id 必填");
+        }
+        // Σ(当前展示地块 actual_yield)：复用 listCropPlots 同口径地块集，保证与 mp 头卡地块卡产量合计一致；
+        //   仅采摘活动(is_pick=1)补加未结算销售量（row176）——销售去向暂存流水、结算前不进 actual_yield，补回该差额；
+        //   采收(is_pick=2)无销售去向、销售流水按作物聚合无 is_pick 维度，补加会误算，故不补（row176 clean-QA）。
+        BigDecimal plotSum = listCropPlots(null, cropId, isPick).stream()
+            .map(v -> v.getActualYield() == null ? BigDecimal.ZERO : v.getActualYield())
+            .reduce(BigDecimal.ZERO, BigDecimal::add);
+        return (isPick != null && isPick == IS_PICK_ACTIVITY)
+            ? plotSum.add(plantActivityService.sumUnsettledSaleWeight(cropId))
+            : plotSum;
     }
 
     @Override
