@@ -45,10 +45,10 @@ import java.util.stream.Collectors;
  *       逐产品搬入（join {@code t_warehouse_product_info} 补 {@code product_unit}），
  *       <b>原样搬负值</b>（盘盈也搬，不钳 0）。</li>
  *   <li><b>白条分割损耗</b>（{@code white_bar_split_loss}）：按门店汇总一行（{@code product_id}=哨兵 0），
- *       {@code loss_qty} = 白条到店重 − 白条退回产品入库重（钳 0，&lt;0 取 0）；当天无白条到店（到店重=0）则不记录。
+ *       {@code loss_qty} = max(0, 白条到店重 − 白条分割产品总重)；当天无白条到店（到店重=0）则不记录。
  *       另存 {@code white_bar_arrive_weight}（当日该店 {@code white_bar} 发货 {@code ship_quantity} 之和）
- *       与 {@code white_bar_split_weight}（当日该店 {@code djs_white_bar_return_product} 字典产品
- *       {@code store_to_warehouse} 已确认 {@code received_weight} 之和）。</li>
+ *       与 {@code white_bar_split_weight}（白条在门店分割下来的产品总重 = 当日该店盘点台账中
+ *       {@code djs_white_bar_return_product} 字典各白条部位的 {@code inbound_qty} 入库量之和）。</li>
  * </ol>
  *
  * @author djs
@@ -336,13 +336,13 @@ public class StoreLossServiceImpl implements IStoreLossService {
     }
 
     /**
-     * 白条产品字典 {@code djs_white_bar_return_product} 的 value（产品业务码 product_id VARCHAR）→ 雪花主键。
-     * 空字典 / 无匹配产品 → 空（白条退回入库重记 0），不抛。
+     * 白条部位字典 {@code djs_white_bar_return_product} 的 value（产品业务码 product_id VARCHAR）→ 雪花主键。
+     * 空字典 / 无匹配产品 → 空（白条分割产品总重记 0），不抛。
      */
     private Set<Long> resolveWhiteBarReturnProductIds() {
         Map<String, String> dict = dictService.getAllDictByDictType(DICT_WHITE_BAR_RETURN_PRODUCT);
         if (dict == null || dict.isEmpty()) {
-            log.warn("[STORE-LOSS] 字典 {} 为空，白条退回入库重记 0", DICT_WHITE_BAR_RETURN_PRODUCT);
+            log.warn("[STORE-LOSS] 字典 {} 为空，白条分割产品总重记 0", DICT_WHITE_BAR_RETURN_PRODUCT);
             return Set.of();
         }
         List<String> codes = dict.keySet().stream()
