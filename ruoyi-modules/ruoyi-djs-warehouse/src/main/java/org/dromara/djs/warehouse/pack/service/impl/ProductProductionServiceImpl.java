@@ -273,6 +273,8 @@ public class ProductProductionServiceImpl
         ProductInhouse src = requireActiveInhouse(bo.getSourceInhouseId());
         // Step 2：校验目标产品存在 + 是发货品
         ProductInfo product = requireDeliveryProduct(bo.getProductId());
+        // admin row98：果蔬实称不得低于打包规则；超出规则 3% 必须经操作员二次确认。
+        validatePackMeasureRule(product, bo.getProductWeight(), bo.getAllowOverMeasure());
         // Step 2.5：果蔬打包来源原材料库存校验（V4，果疏产品全流程处理.docx）：
         // 目标果蔬成品若配了 product_material（关联来源原材料果蔬产品），则按 doc 规则
         // "领用果蔬重量（来源原材料库存）< 打包成品重量 → 拦截禁止"。
@@ -400,6 +402,10 @@ public class ProductProductionServiceImpl
 
         ProductInhouse src = requireActiveInhouse(bo.getSourceInhouseId());
         ProductInfo product = requireDeliveryProduct(bo.getProductId());
+        // admin row97：肉品实称规则与果蔬一致；其他 dry 业态不套用该重量规则。
+        if (BELONG_TYPE_PORK.equals(product.getBelongType())) {
+            validatePackMeasureRule(product, bo.getProductWeight(), bo.getAllowOverMeasure());
+        }
         // row32：肉品打包(有耳号)库存判定按「同原材料(product_id)+同耳号」今日领用来源池**总重量**，
         // 而非单条领用行余量——分多次领用=多条 inhouse 行(单条最大3kg但总领8kg),打包3001g按池总重放行、FIFO 跨行扣减。
         // 无耳号(干货/其他 dry 打包)保持单条口径,零影响。
@@ -1022,6 +1028,15 @@ public class ProductProductionServiceImpl
     public void markDamage(MarkDamageBo bo) {
         if (bo == null || bo.getId() == null) {
             throw new ServiceException("缺少生产记录 id");
+        }
+        ProductProduction production = baseMapper.selectById(bo.getId());
+        if (production == null) {
+            throw new ServiceException("生产记录不存在或已删除：" + bo.getId());
+        }
+        // admin row99：按 KG 计量的生产产品只能按重量管理，不能按“件”标损。
+        // 后端必须同步守门，避免隐藏按钮后仍可直接调用接口绕过业务规则。
+        if (isKgUnit(production.getProductUnit())) {
+            throw new ServiceException("KG 产品不支持记为损坏");
         }
         // 标损时间由后端取 now（前端不传，避免客户端时钟漂移）
         int affected = baseMapper.updateDamage(bo.getId(), bo.getEvidenceOssIds(), bo.getRemark(), new Date());
@@ -1863,6 +1878,25 @@ public class ProductProductionServiceImpl
             result.put(String.valueOf(pid), w.stripTrailingZeros().toPlainString());
         }
         return result;
+    }
+
+    /**
+     * admin rows97/98：肉品、果蔬打包实称校验。
+     * material_num 作为单包规则重量（kg）；低于规则直接拒绝，超过规则 3% 需要显式确认标记。
+     */
+    private void validatePackMeasureRule(ProductInfo product, BigDecimal actualWeight, Boolean allowOverMeasure) {
+        BigDecimal rule = product.getMaterialNum();
+        if (rule == null || rule.signum() <= 0 || actualWeight == null) {
+            return;
+        }
+        if (actualWeight.compareTo(rule) < 0) {
+            throw new ServiceException("实称重量(" + actualWeight.toPlainString()
+                + "kg)不能低于产品打包规则(" + rule.toPlainString() + "kg)", 400);
+        }
+        BigDecimal overLimit = rule.multiply(new BigDecimal("1.03"));
+        if (actualWeight.compareTo(overLimit) > 0 && !Boolean.TRUE.equals(allowOverMeasure)) {
+            throw new ServiceException("实称重量超过打包规则3%，请确认后继续", 400);
+        }
     }
 
     /**

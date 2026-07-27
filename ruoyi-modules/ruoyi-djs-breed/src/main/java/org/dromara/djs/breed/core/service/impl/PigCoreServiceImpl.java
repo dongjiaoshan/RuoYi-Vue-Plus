@@ -311,9 +311,10 @@ public class PigCoreServiceImpl implements IPigCoreService {
         String oldStatus = StringUtils.isBlank(pig.getCurrentStatus()) ? null : pig.getCurrentStatus();
 
         LocalDateTime now = LocalDateTime.now();
+        LocalDate effectiveIntroduceDate = introduceDate != null ? introduceDate : now.toLocalDate();
         // 进后备（HB）的业务时点 = 内部引种日期当天，而非提交时间（同外部引种口径，见 createPig）；
         // 无引种日期回落 now。durationDays 仍按 now 结算（原态在场天数到"提交留种"这一刻为止）。
-        LocalDateTime statusStartedAt = introduceDate != null ? introduceDate.atStartOfDay() : now;
+        LocalDateTime statusStartedAt = effectiveIntroduceDate.atStartOfDay();
         PigStatusRecord record = new PigStatusRecord();
         record.setPigId(pig.getId());
         record.setEarNo(pig.getEarNo());
@@ -329,6 +330,9 @@ public class PigCoreServiceImpl implements IPigCoreService {
         pig.setPigType(newType);
         pig.setCurrentStatus(newStatus);
         pig.setStatusStartedAt(statusStartedAt);
+        // 内部引种复用场内既有猪只，不经过 createPig；引种业务日期必须同步回猪只主表，
+        // 否则详情页读取 t_farm_pig_info.introduce_date 时只能显示空值。
+        pig.setIntroduceDate(effectiveIntroduceDate);
         int affected = pigMapper.updateById(pig);
         if (affected == 0) {
             throw new ServiceException(I18nMessages.t("pig.update.optimistic_lock_conflict", pig.getId()));

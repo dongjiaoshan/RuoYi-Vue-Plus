@@ -117,7 +117,8 @@ class AppletDemandServiceImplTest {
         d.setDemandNo("D202606130001");
         d.setStoreId(2001L);
         d.setProductType("white_bar");
-        d.setProductName("白条猪");
+        d.setProductName("White Bar");
+        d.setProductSpec("Half carcass");
         d.setDemandQuantity(new BigDecimal("3"));
         d.setProductUnit("头");
         d.setDemandStatus("SUBMITTED");
@@ -145,6 +146,26 @@ class AppletDemandServiceImplTest {
         assertThat(item.getStoreName()).isEqualTo("矿业门店");
         assertThat(item.getAssignedPigCount()).isEqualTo(2);
         assertThat(item.getProductType()).isEqualTo("white_bar");
+        assertThat(item.getProductSpec()).isEqualTo("Half carcass");
+        assertThat(item.getWhiteBarHeadFactor()).isEqualByComparingTo("0.5");
+    }
+
+    @Test
+    @DisplayName("白条头数因子同时识别中文规格、英文 half 与整扇")
+    void resolveWhiteBarHeadFactorAliases() {
+        DemandManage chineseSpec = new DemandManage();
+        chineseSpec.setProductName("白条");
+        chineseSpec.setProductSpec("半扇");
+        assertThat(AppletDemandServiceImpl.resolveWhiteBarHeadFactor(chineseSpec)).isEqualByComparingTo("0.5");
+
+        DemandManage english = new DemandManage();
+        english.setProductName("HALF CARCASS");
+        assertThat(AppletDemandServiceImpl.resolveWhiteBarHeadFactor(english)).isEqualByComparingTo("0.5");
+
+        DemandManage whole = new DemandManage();
+        whole.setProductName("白条整只");
+        whole.setProductSpec("整扇");
+        assertThat(AppletDemandServiceImpl.resolveWhiteBarHeadFactor(whole)).isEqualByComparingTo("1");
     }
 
     @Test

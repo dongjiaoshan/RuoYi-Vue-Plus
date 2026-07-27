@@ -50,6 +50,14 @@ public class ProductProductionGroupVo implements Serializable {
     /** 产品类型（字典 {@code djs_product_type}：1=自产/2=外购，已废弃 3 礼盒；保留兼容，主列表不展示）。 */
     private Integer productType;
 
+    /** 该产品生产日的有效需求总量（取消/删除需求不计）。 */
+    private BigDecimal demandQty;
+
+    /**
+     * 需求满足率（客户验收口径）：{@code demandQty / produceQty * 100%}。
+     */
+    private BigDecimal fulfillmentRate;
+
     /**
      * 生产量（组内生产记录条数 {@code COUNT(*)}；一次打包/出库确认 = 一份，全业态统一按条数计量，
      * 与子页「产品明细」逐件条数一致；不再按重量 SUM 算，避免份计量产品重量取整后显 0）。

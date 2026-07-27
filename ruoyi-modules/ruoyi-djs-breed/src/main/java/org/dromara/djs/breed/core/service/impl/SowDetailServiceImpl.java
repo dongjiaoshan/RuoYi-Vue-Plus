@@ -97,11 +97,25 @@ public class SowDetailServiceImpl implements ISowDetailService {
 
     /**
      * fallback：从本母猪分娩 / 断奶 / 配种 / 异常记录当场实时聚合（V1 粗口径）。
-     * 仅 t_farm_sow_performance 行不存在时走此路径。无对应聚合源的指标（窝均活仔 / 累计头数 /
-     * 平均出生重 / 平均断奶重）保持 null → mp 显 —，不瞎编。
+     * 仅 t_farm_sow_performance 行不存在时走此路径；无对应源数据的指标保持 null → mp 显 —。
      */
     private SowPerformanceMpVo calcSowPerformanceOnTheFly(Long pigId) {
         SowPerformanceMpVo vo = new SowPerformanceMpVo();
+
+        // 累计产仔 / 活仔 / 平均出生重 + 累计断奶 / 平均断奶重。
+        // 与 admin fallback 共用本方法，避免两端在汇总表尚未生成时口径分叉。
+        SowPerformanceMpVo farrowTotals = aggMapper.farrowProductionTotals(pigId);
+        if (farrowTotals != null) {
+            vo.setTotalBorn(farrowTotals.getTotalBorn());
+            vo.setTotalLiveBorn(farrowTotals.getTotalLiveBorn());
+            vo.setAvgLiveBornPerLitter(farrowTotals.getAvgLiveBornPerLitter());
+            vo.setAvgBornWeight(farrowTotals.getAvgBornWeight());
+        }
+        SowPerformanceMpVo weanTotals = aggMapper.weanProductionTotals(pigId);
+        if (weanTotals != null) {
+            vo.setTotalWeaned(weanTotals.getTotalWeaned());
+            vo.setAvgWeanedWeight(weanTotals.getAvgWeanedWeight());
+        }
 
         // 平均怀孕天数 = avg(分娩 − 配种)；无配对 → null
         vo.setAvgGestationDays(scale2(aggMapper.avgGestationDays(pigId)));

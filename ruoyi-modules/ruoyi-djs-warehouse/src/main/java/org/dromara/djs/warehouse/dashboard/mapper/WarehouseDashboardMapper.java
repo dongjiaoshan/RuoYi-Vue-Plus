@@ -228,22 +228,18 @@ public interface WarehouseDashboardMapper {
     BigDecimal sumTodayLoss(@Param("tenantId") String tenantId);
 
     /**
-     * 今日燎毛间入库称重的猪只头数（= 今日在燎毛间称重的整白条/整猪数，一头一计）。
+     * 今日送宰猪只头数（自产）：当天在养殖端选择送宰后即计入，无需等待燎毛间称重。
      *
-     * <p>与 {@code WarehouseStatAggregateMapper.countSlaughter} 同口径：源 {@code t_warehouse_bar_info}
-     * （一行 = 一头整猪），按「入库称重」{@code in_time} 落当天 + {@code in_method=1}（燎毛间）+
-     * {@code arrive_weight} 非空计。<b>不能</b>按 {@code COUNT(*) burn_record}：burn_record 是产出行粒度，
-     * 同一头拆多个半只/猪头/猪蹄各一条，会把一头整猪重复计（row198）。</p>
-     *
-     * @param tenantId 租户
-     * @return COUNT(*) t_warehouse_bar_info WHERE in_method=1 AND arrive_weight IS NOT NULL AND DATE(in_time)=CURDATE()，无记录返 0
+     * <p>出栏事件会立即镜像一行 {@code bar_info(status=pending_singe)} 并写
+     * {@code marketing_time}；此时 {@code in_time/arrive_weight} 尚为空。故仓库总览的“送宰猪只”
+     * 必须按出栏选择时间统计，而不能套用日统计“已屠宰称重”的口径。外购白条 {@code buy_date} 非空，
+     * 不属于养殖端送宰选择，排除。</p>
      */
     @Select("SELECT COUNT(*) "
         + "  FROM t_warehouse_bar_info "
         + " WHERE tenant_id = #{tenantId} "
-        + "   AND in_method = 1 "
-        + "   AND arrive_weight IS NOT NULL "
-        + "   AND DATE(in_time) = CURDATE() "
+        + "   AND DATE(marketing_time) = CURDATE() "
+        + "   AND buy_date IS NULL "
         + "   AND del_flag = '0'")
     Integer countTodaySlaughterPigs(@Param("tenantId") String tenantId);
 
@@ -319,16 +315,16 @@ public interface WarehouseDashboardMapper {
     BigDecimal countTodayCutBars(@Param("tenantId") String tenantId);
 
     /**
-     * 今日分割猪只产品总重（来源耳号非空的生产记录重量合计 kg = 猪肉产品产出）。
+     * 今日白条分割产品总重：当天分割间入库流水 {@code cut_out_in} 的重量之和。
      *
-     * @param tenantId 租户
-     * @return SUM(product_weight) WHERE ear_no IS NOT NULL，无记录返 0
+     * <p>分割产品在白条分割页确认入库时即写不可变库存流水；后续是否打包、是否有耳号均不影响本指标。
+     * 该口径与仓库日统计 {@code WarehouseStatAggregateMapper.sumCutProductWeight} 同源。</p>
      */
-    @Select("SELECT COALESCE(SUM(product_weight), 0) "
-        + "  FROM t_warehouse_product_production "
+    @Select("SELECT COALESCE(SUM(change_quantity), 0) "
+        + "  FROM t_warehouse_stock_flow "
         + " WHERE tenant_id = #{tenantId} "
-        + "   AND ear_no IS NOT NULL AND ear_no <> '' "
-        + "   AND produce_date = CURDATE() "
+        + "   AND flow_type = 'cut_out_in' "
+        + "   AND DATE(flow_date) = CURDATE() "
         + "   AND del_flag = '0'")
     BigDecimal sumTodayCutProductWeight(@Param("tenantId") String tenantId);
 

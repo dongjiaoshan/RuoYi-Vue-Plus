@@ -16,6 +16,8 @@ import org.dromara.djs.common.encoder.IBizCodeGenerator;
 import org.dromara.djs.common.store.domain.Store;
 import org.dromara.djs.common.store.mapper.StoreMapper;
 import org.dromara.djs.common.store.service.IStoreService;
+import org.dromara.djs.store.ledger.domain.StoreDailyLedger;
+import org.dromara.djs.store.ledger.mapper.StoreDailyLedgerMapper;
 import org.dromara.djs.store.returns.domain.StoreReturn;
 import org.dromara.djs.store.returns.domain.bo.StoreReturnBatchBo;
 import org.dromara.djs.store.returns.domain.bo.StoreReturnBo;
@@ -139,6 +141,7 @@ public class StoreReturnServiceImpl
     private final IProductProductionService productProductionService;
     private final ProductProductionMapper productProductionMapper;
     private final IStoreService storeService;
+    private final StoreDailyLedgerMapper storeDailyLedgerMapper;
 
     public StoreReturnServiceImpl(StoreReturnMapper baseMapper,
                                   StoreMapper storeMapper,
@@ -150,7 +153,8 @@ public class StoreReturnServiceImpl
                                   DictService dictService,
                                   IProductProductionService productProductionService,
                                   ProductProductionMapper productProductionMapper,
-                                  IStoreService storeService) {
+                                  IStoreService storeService,
+                                  StoreDailyLedgerMapper storeDailyLedgerMapper) {
         super(baseMapper);
         this.storeMapper = storeMapper;
         this.productInfoMapper = productInfoMapper;
@@ -162,6 +166,7 @@ public class StoreReturnServiceImpl
         this.productProductionService = productProductionService;
         this.productProductionMapper = productProductionMapper;
         this.storeService = storeService;
+        this.storeDailyLedgerMapper = storeDailyLedgerMapper;
     }
 
     @Override
@@ -288,8 +293,8 @@ public class StoreReturnServiceImpl
         boolean whiteBarArrivedToday = hasWhiteBarArrivedToday(bo.getStoreId());
         BigDecimal whiteBarDeliveredTotal = null;
         BigDecimal whiteBarReturnedAccum = BigDecimal.ZERO;
-        BigDecimal dictReturnedBaselineToday = null;
-        BigDecimal dictReturnedAccum = BigDecimal.ZERO;
+        Map<Long, BigDecimal> returnedBaselineByProduct = new LinkedHashMap<>();
+        Map<Long, BigDecimal> returnedAccumByProduct = new LinkedHashMap<>();
         int created = 0;
         for (StoreReturnBatchBo.Item item : bo.getItems()) {
             ProductInfo product = productInfoMapper.selectById(item.getProductId());
@@ -313,23 +318,20 @@ public class StoreReturnServiceImpl
                 }
                 whiteBarReturnedAccum = projected;
             } else if (whiteBarArrivedToday && dictReturnProductIds.contains(item.getProductId())) {
-                // row30③：白条退回字典产品(=白条分割原材料)优先并入「白条池」累加判定——重量与白条重量加到一起判断，
-                // 不再单条 materialLimit（案例①）。当某原材料既是材料外售产品的原材料、又在白条退回字典时，
-                // 其退回量应对当日到店白条总重的剩余额度封顶，而非单看对应猪肉成品总重。
-                // 案例②：白条配置产品 ≤ (当日到店白条总重 − 今日已退白条配置产品累计)。
-                if (whiteBarDeliveredTotal == null) {
-                    whiteBarDeliveredTotal = sumWhiteBarDeliveredToStore(bo.getStoreId(), today);
-                }
-                if (dictReturnedBaselineToday == null) {
-                    dictReturnedBaselineToday = sumDictReturnedToday(bo.getStoreId(), today, dictReturnProductIds);
-                }
-                BigDecimal projected = dictReturnedBaselineToday.add(dictReturnedAccum).add(rw);
-                if (projected.compareTo(whiteBarDeliveredTotal) > 0) {
-                    BigDecimal remain = whiteBarDeliveredTotal.subtract(dictReturnedBaselineToday).subtract(dictReturnedAccum).max(BigDecimal.ZERO);
+                // admin row101：按产品用“白条分割入库量 + 对应材料外售成品到店重量”独立封顶。
+                BigDecimal allowed = sumStoreSplitProductWeight(bo.getStoreId(), today, item.getProductId())
+                    .add(materialLimit == null ? BigDecimal.ZERO : materialLimit);
+                BigDecimal baseline = returnedBaselineByProduct.computeIfAbsent(item.getProductId(),
+                    productId -> sumReturnedTodayForProduct(bo.getStoreId(), today, productId));
+                BigDecimal accumulated = returnedAccumByProduct.getOrDefault(item.getProductId(), BigDecimal.ZERO);
+                BigDecimal projected = baseline.add(accumulated).add(rw);
+                if (projected.compareTo(allowed) > 0) {
+                    BigDecimal remain = allowed.subtract(baseline).subtract(accumulated).max(BigDecimal.ZERO);
                     throw new ServiceException("产品「" + product.getProductName() + "」退回重量(" + rw.toPlainString()
-                        + ")不能超过当日到店白条总重扣除今日已退配置产品后的剩余(" + remain.toPlainString() + ")", 400);
+                        + ")不能超过白条分割量与对应外售成品到店重量之和扣除今日已退后的剩余("
+                        + remain.toPlainString() + ")", 400);
                 }
-                dictReturnedAccum = dictReturnedAccum.add(rw);
+                returnedAccumByProduct.put(item.getProductId(), accumulated.add(rw));
             } else if (materialLimit != null) {
                 // 案例①：材料外售原材料(不在白条退回字典)→ ≤ 当日到店对应成品总重（猪肉/果蔬同口径）。
                 if (rw.compareTo(materialLimit) > 0) {
@@ -400,12 +402,19 @@ public class StoreReturnServiceImpl
         if (hasWhiteBarArrivedToday(storeId)) {
             List<ProductInfo> whiteBarProducts = resolveWhiteBarReturnDictProducts();
             Map<Long, String> materialUnits = resolveMaterialUnits(whiteBarProducts);
-            // 白条产品(kg)行到店量 = 当日到店白条总重（池化上限，各白条产品行同值）。
-            BigDecimal whiteBarDeliveredTotal = sumWhiteBarDeliveredToStore(storeId, today);
             for (ProductInfo p : whiteBarProducts) {
+                BigDecimal allowed = sumStoreSplitProductWeight(storeId, today, p.getId())
+                    .add(arrivedWeightByMaterial.getOrDefault(p.getId(), BigDecimal.ZERO));
                 if (seen.add(p.getId())) {
                     result.add(buildPorkCandidate(p, SUB_CAT_WHITE_BAR,
-                        materialUnits.getOrDefault(p.getId(), p.getProductUnit()), whiteBarDeliveredTotal));
+                        materialUnits.getOrDefault(p.getId(), p.getProductUnit()), allowed));
+                } else {
+                    result.stream().filter(candidate -> Objects.equals(candidate.getProductId(), p.getId()))
+                        .findFirst().ifPresent(candidate -> {
+                            candidate.setSubCategory(SUB_CAT_WHITE_BAR);
+                            candidate.setProductUnit(materialUnits.getOrDefault(p.getId(), p.getProductUnit()));
+                            candidate.setArrivedQuantity(allowed);
+                        });
                 }
             }
         }
@@ -541,18 +550,27 @@ public class StoreReturnServiceImpl
         return byMaterial;
     }
 
-    /**
-     * admin row9 案例②：今日该店已退回的「白条配置产品」（字典 djs_pork_return_product）退回重量之和（goods_weight，
-     * 方向 store_to_warehouse）。作为白条池校验的基线（本次批内累计另行叠加）。字典空 → 0。
-     */
-    private BigDecimal sumDictReturnedToday(Long storeId, LocalDate today, List<Long> dictProductIds) {
-        if (dictProductIds == null || dictProductIds.isEmpty()) {
-            return BigDecimal.ZERO;
+    /** admin row101：门店当日盘点台账中该白条分割产品的实际入库重量。 */
+    private BigDecimal sumStoreSplitProductWeight(Long storeId, LocalDate today, Long productId) {
+        List<StoreDailyLedger> rows = storeDailyLedgerMapper.selectList(new LambdaQueryWrapper<StoreDailyLedger>()
+            .eq(StoreDailyLedger::getStoreId, storeId)
+            .eq(StoreDailyLedger::getLedgerDate, today)
+            .eq(StoreDailyLedger::getProductId, productId));
+        BigDecimal total = BigDecimal.ZERO;
+        for (StoreDailyLedger row : rows) {
+            if (row.getInboundQty() != null) {
+                total = total.add(row.getInboundQty());
+            }
         }
+        return total;
+    }
+
+    /** admin row101：该产品今日已提交的门店退仓重量，供产品级额度扣减。 */
+    private BigDecimal sumReturnedTodayForProduct(Long storeId, LocalDate today, Long productId) {
         List<StoreReturn> rows = baseMapper.selectList(new LambdaQueryWrapper<StoreReturn>()
             .eq(StoreReturn::getStoreId, storeId)
             .eq(StoreReturn::getReturnDirection, DIRECTION_STORE_TO_WAREHOUSE)
-            .in(StoreReturn::getProductId, dictProductIds)
+            .eq(StoreReturn::getProductId, productId)
             .ge(StoreReturn::getReturnDate, today.atStartOfDay())
             .lt(StoreReturn::getReturnDate, today.plusDays(1).atStartOfDay()));
         BigDecimal total = BigDecimal.ZERO;

@@ -69,6 +69,17 @@ public interface StockCheckRecordMapper extends BaseMapperPlus<StockCheckRecord,
         SELECT CONCAT(g.day, '-', g.location_id, '-', g.operator_id) AS checkId,
                g.location_id   AS locationId,
                g.check_date    AS checkDate,
+               (
+                   SELECT COUNT(DISTINCT COALESCE(
+                              CAST(ls.product_id AS CHAR),
+                              CONCAT('M:', CAST(ls.medicine_id AS CHAR))
+                          ))
+                     FROM t_warehouse_location_stock ls
+                    WHERE ls.location_id = g.location_id
+                      AND ls.tenant_id = '1001'
+                      AND ls.del_flag = '0'
+                      AND ls.product_stock &gt; 0
+               ) AS stockProductCount,
                g.line_count    AS lineCount,
                g.abnormal_count AS abnormalCount,
                g.diff_sum      AS diffSum,
@@ -80,12 +91,12 @@ public interface StockCheckRecordMapper extends BaseMapperPlus<StockCheckRecord,
                    f.operator_id                                      AS operator_id,
                    MAX(f.flow_date)                                   AS check_date,
                    COUNT(*)                                           AS line_count,
-                   SUM(CASE WHEN f.flow_type = 'check_out' OR f.change_num &lt;&gt; 0 THEN 1 ELSE 0 END) AS abnormal_count,
+                   SUM(CASE WHEN f.flow_type IN ('check_out', 'check_abnormal_out') THEN 1 ELSE 0 END) AS abnormal_count,
                    SUM(f.change_num)                                  AS diff_sum,
                    MAX(f.create_time)                                 AS create_time,
                    MAX(f.flow_date)                                   AS sort_date
               FROM t_warehouse_stock_flow f
-             WHERE f.flow_type IN ('check_in', 'check_out')
+             WHERE f.flow_type IN ('check_in', 'check_out', 'check_abnormal_out')
                AND f.del_flag  = '0'
                AND f.tenant_id = '1001'
                <if test="locationIds != null and locationIds.size() > 0">
@@ -136,6 +147,7 @@ public interface StockCheckRecordMapper extends BaseMapperPlus<StockCheckRecord,
                f.change_num                          AS diffStock,
                CASE
                    WHEN f.flow_type = 'check_out' THEN 3
+                   WHEN f.flow_type = 'check_abnormal_out' THEN 2
                    WHEN f.change_num = 0          THEN 1
                    ELSE 2
                END                                   AS checkResultType,
@@ -148,7 +160,7 @@ public interface StockCheckRecordMapper extends BaseMapperPlus<StockCheckRecord,
             ON p.id = f.product_id
            AND p.del_flag = '0'
            AND p.tenant_id = f.tenant_id
-         WHERE f.flow_type IN ('check_in', 'check_out')
+         WHERE f.flow_type IN ('check_in', 'check_out', 'check_abnormal_out')
            AND f.del_flag  = '0'
            AND f.tenant_id = '1001'
            AND DATE_FORMAT(f.flow_date, '%Y%m%d') = #{day}

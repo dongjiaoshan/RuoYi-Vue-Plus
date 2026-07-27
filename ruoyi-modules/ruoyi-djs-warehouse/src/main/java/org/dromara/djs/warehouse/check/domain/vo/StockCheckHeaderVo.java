@@ -55,10 +55,12 @@ public class StockCheckHeaderVo implements Serializable {
     @ExcelProperty(value = "状态")
     private String checkStatus;
 
-    /**
-     * 盘点商品数 = 本盘点单明细 line 数（service 聚合）。
-     */
-    @ExcelProperty(value = "盘点商品数")
+    /** 当前库位仍有正库存的产品种类数。 */
+    @ExcelProperty(value = "库存产品数")
+    private Integer stockProductCount;
+
+    /** 本次盘点涉及的产品数（盘点流水行数）。 */
+    @ExcelProperty(value = "盘点产品数")
     private Integer lineCount;
 
     /**
@@ -86,7 +88,7 @@ public class StockCheckHeaderVo implements Serializable {
     private String checkByName;
 
     @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")
-    @ExcelProperty(value = "创建时间")
+    @ExcelProperty(value = "记录时间")
     private Date createTime;
 
 }

@@ -18,6 +18,7 @@ import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.util.Collections;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.stream.Collectors;
@@ -103,15 +104,33 @@ public class AppletDemandServiceImpl implements org.dromara.djs.warehouse.demand
             item.setStoreId(d.getStoreId());
             item.setStoreName(d.getStoreId() == null ? null : storeNameMap.get(d.getStoreId()));
             item.setProductName(d.getProductName());
+            item.setProductSpec(d.getProductSpec());
             item.setProductType(d.getProductType());
             item.setDemandQuantity(d.getDemandQuantity());
             item.setProductUnit(d.getProductUnit());
+            item.setWhiteBarHeadFactor(whiteBar ? resolveWhiteBarHeadFactor(d) : null);
             item.setDemandExplain(d.getDemandExplain());
             item.setDemandStatus(d.getDemandStatus());
             item.setExpectedArriveDate(d.getExpectedArriveDate());
             item.setAssignedPigCount(whiteBar ? assignedCountMap.getOrDefault(d.getId(), 0) : 0);
             return item;
         }).collect(Collectors.toList());
+    }
+
+    /**
+     * 白条订单保存的是用户输入的“份数”，这里仅给调度端返回每份的折算因子。
+     * 产品历史数据可能把“半扇”写在名称或规格中，也兼容英文 half、1/2 与 ½。
+     */
+    static BigDecimal resolveWhiteBarHeadFactor(DemandManage demand) {
+        String descriptor = (Objects.toString(demand.getProductName(), "") + " "
+            + Objects.toString(demand.getProductSpec(), "")).toLowerCase(Locale.ROOT);
+        boolean half = descriptor.contains("半扇")
+            || descriptor.contains("半片")
+            || descriptor.contains("半只")
+            || descriptor.contains("half")
+            || descriptor.contains("½")
+            || descriptor.matches(".*(^|\\D)1\\s*/\\s*2(\\D|$).*");
+        return half ? new BigDecimal("0.5") : BigDecimal.ONE;
     }
 
     @Override

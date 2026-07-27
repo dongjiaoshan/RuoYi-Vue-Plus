@@ -1098,6 +1098,7 @@ class MatFlowServiceImplTest {
         verify(stockFlowMapper, times(1)).insert(flowCap.capture());
         StockFlow f = flowCap.getValue();
         assertThat(f.getFlowType()).isEqualTo("feed_out");
+        assertThat(f.getStockOutDest()).isEqualTo("feed");
         assertThat(f.getInoutType()).isEqualTo("OT");
         assertThat(f.getChangeNum()).isEqualByComparingTo("-20");
         assertThat(f.getChangeQuantity()).isEqualByComparingTo("20");

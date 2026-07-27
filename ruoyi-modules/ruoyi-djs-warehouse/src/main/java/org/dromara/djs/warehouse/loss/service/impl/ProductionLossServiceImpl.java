@@ -86,8 +86,9 @@ public class ProductionLossServiceImpl implements IProductionLossService {
             rowOf(byProduct, pid)[4] = toDec(r.get("packUsage"));
         }
 
-        // 落库当日 00:00（损耗总览按 DATE(loss_date) 归日，取当日任意时刻即可）
-        Date lossDate = Date.from(date.atStartOfDay(ZONE).toInstant());
+        // admin row109：零点任务处理的是上一自然日，业务损耗时间记在上一日结束，
+        // 不能显示为任务触发日/目标日 00:00:00。
+        Date lossDate = Date.from(date.plusDays(1).atStartOfDay(ZONE).minusSeconds(1).toInstant());
         int written = 0;
         for (Map.Entry<Long, BigDecimal[]> e : byProduct.entrySet()) {
             BigDecimal[] a = e.getValue();

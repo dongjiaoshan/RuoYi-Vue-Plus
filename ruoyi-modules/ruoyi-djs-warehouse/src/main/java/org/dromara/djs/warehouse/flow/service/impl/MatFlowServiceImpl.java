@@ -141,6 +141,8 @@ public class MatFlowServiceImpl implements IMatFlowService {
      * 仓库饲喂出库 flow_type（djs_flow_type 现有值 V202607240800；行64 来源②仓库领用饲喂 / 行55 果蔬饲喂操作）。
      */
     private static final String FLOW_FEED_OUT = "feed_out";
+    /** 饲料出库的业务去向（djs_stock_out_dest）。 */
+    private static final String STOCK_OUT_DEST_FEED = "feed";
 
     /**
      * 仓库饲喂来源（feed_log.feed_type 字典 djs_feed_type）：仓库领用饲喂。
@@ -1545,6 +1547,7 @@ public class MatFlowServiceImpl implements IMatFlowService {
         flow.setWarehouseId(bo.getLocationId());
         flow.setInoutType(INOUT_OUT);
         flow.setFlowType(FLOW_FEED_OUT);
+        flow.setStockOutDest(STOCK_OUT_DEST_FEED);
         flow.setChangeNum(bo.getQuantity().negate());
         flow.setChangeQuantity(bo.getQuantity());
         flow.setOperatorId(userId);
@@ -1641,6 +1644,7 @@ public class MatFlowServiceImpl implements IMatFlowService {
         flow.setWarehouseId(locId);
         flow.setInoutType(INOUT_OUT);
         flow.setFlowType(FLOW_FEED_OUT);
+        flow.setStockOutDest(STOCK_OUT_DEST_FEED);
         flow.setChangeNum(bo.getQuantity().negate());
         flow.setChangeQuantity(bo.getQuantity());
         flow.setOperatorId(userId);
@@ -1717,6 +1721,7 @@ public class MatFlowServiceImpl implements IMatFlowService {
         flow.setWarehouseId(firstLocId);
         flow.setInoutType(INOUT_OUT);
         flow.setFlowType(FLOW_FEED_OUT);
+        flow.setStockOutDest(STOCK_OUT_DEST_FEED);
         flow.setChangeNum(bo.getQuantity().negate());
         flow.setChangeQuantity(bo.getQuantity());
         flow.setOperatorId(userId);

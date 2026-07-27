@@ -8,12 +8,17 @@ import org.dromara.common.satoken.utils.LoginHelper;
 import org.dromara.djs.common.encoder.IBizCodeGenerator;
 import org.dromara.djs.common.store.domain.Store;
 import org.dromara.djs.common.store.mapper.StoreMapper;
+import org.dromara.djs.store.ledger.domain.StoreDailyLedger;
+import org.dromara.djs.store.ledger.mapper.StoreDailyLedgerMapper;
 import org.dromara.djs.store.returns.domain.StoreReturn;
+import org.dromara.djs.store.returns.domain.bo.StoreReturnBatchBo;
 import org.dromara.djs.store.returns.domain.bo.StoreReturnBo;
 import org.dromara.djs.store.returns.mapper.StoreReturnMapper;
 import org.dromara.djs.warehouse.demand.mapper.DemandManageMapper;
+import org.dromara.djs.warehouse.demand.domain.DemandManage;
 import org.dromara.djs.warehouse.location.mapper.LocationInfoMapper;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
+import org.dromara.djs.warehouse.pack.domain.ProductProduction;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
 import org.dromara.djs.warehouse.purchase.service.IWarehousePurchaseInService;
 import org.junit.jupiter.api.AfterEach;
@@ -34,6 +39,7 @@ import org.mockito.quality.Strictness;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -78,6 +84,7 @@ class StoreReturnServiceImplTest {
     @Mock private org.dromara.djs.warehouse.pack.service.IProductProductionService productProductionService;
     @Mock private org.dromara.djs.warehouse.pack.mapper.ProductProductionMapper productProductionMapper;
     @Mock private org.dromara.djs.common.store.service.IStoreService storeService;
+    @Mock private StoreDailyLedgerMapper storeDailyLedgerMapper;
 
     private TestableStoreReturnServiceImpl service;
     private MockedStatic<LoginHelper> loginHelperMock;
@@ -102,6 +109,9 @@ class StoreReturnServiceImplTest {
         TableInfoHelper.initTableInfo(assistant, StoreReturn.class);
         TableInfoHelper.initTableInfo(assistant, Store.class);
         TableInfoHelper.initTableInfo(assistant, ProductInfo.class);
+        TableInfoHelper.initTableInfo(assistant, StoreDailyLedger.class);
+        TableInfoHelper.initTableInfo(assistant, DemandManage.class);
+        TableInfoHelper.initTableInfo(assistant, ProductProduction.class);
     }
 
     /**
@@ -114,8 +124,9 @@ class StoreReturnServiceImplTest {
                                        DemandManageMapper dm, org.dromara.common.core.service.DictService ds,
                                        org.dromara.djs.warehouse.pack.service.IProductProductionService pps,
                                        org.dromara.djs.warehouse.pack.mapper.ProductProductionMapper ppm,
-                                       org.dromara.djs.common.store.service.IStoreService iss) {
-            super(b, sm, pm, lm, g, pis, dm, ds, pps, ppm, iss);
+                                       org.dromara.djs.common.store.service.IStoreService iss,
+                                       StoreDailyLedgerMapper sdlm) {
+            super(b, sm, pm, lm, g, pis, dm, ds, pps, ppm, iss, sdlm);
         }
 
         @Override
@@ -128,7 +139,7 @@ class StoreReturnServiceImplTest {
     void setup() {
         service = new TestableStoreReturnServiceImpl(baseMapper, storeMapper, productInfoMapper,
             locationInfoMapper, bizCodeGenerator, purchaseInService, demandManageMapper, dictService,
-            productProductionService, productProductionMapper, storeService);
+            productProductionService, productProductionMapper, storeService, storeDailyLedgerMapper);
         loginHelperMock = Mockito.mockStatic(LoginHelper.class);
         loginHelperMock.when(LoginHelper::getUserId).thenReturn(USER_ID);
         when(baseMapper.insert(any(StoreReturn.class))).thenAnswer(inv -> {
@@ -300,5 +311,58 @@ class StoreReturnServiceImplTest {
         ArgumentCaptor<StoreReturn> cap = ArgumentCaptor.forClass(StoreReturn.class);
         verify(baseMapper, times(1)).insert(cap.capture());
         assertThat(cap.getValue().getReturnDate()).isEqualTo(fixed);
+    }
+
+    @Test
+    @DisplayName("admin row101：字典原材料退回额度=白条分割入库量+材料外售成品到店重")
+    void testBatchCreate_MergesSplitAndMaterialSoldWeights() {
+        long finishedId = 8100L;
+        ProductInfo finished = new ProductInfo();
+        finished.setId(finishedId);
+        finished.setBelongType("pork");
+        finished.setProductMaterial(PRODUCT_ID);
+        ProductInfo dictProduct = new ProductInfo();
+        dictProduct.setId(PRODUCT_ID);
+        dictProduct.setProductId("MAT-CODE");
+        dictProduct.setProductName("扇子骨");
+        dictProduct.setProductUnit("kg");
+        ProductInfo whiteBar = new ProductInfo();
+        whiteBar.setId(8200L);
+        whiteBar.setBelongType("white_bar");
+        when(productInfoMapper.selectList(any())).thenReturn(
+            List.of(finished),
+            List.of(),
+            List.of(dictProduct),
+            List.of(whiteBar)
+        );
+        when(productInfoMapper.selectById(PRODUCT_ID)).thenReturn(dictProduct);
+        when(productProductionMapper.selectDeliveredProductIdsToStore(any(), any()))
+            .thenReturn(List.of(finishedId));
+        when(productProductionService.sumDeliveredWeightToStore(any(), eq(finishedId), any()))
+            .thenReturn(new BigDecimal("1.001"));
+        when(dictService.getAllDictByDictType("djs_white_bar_return_product"))
+            .thenReturn(Map.of("MAT-CODE", "扇子骨"));
+        org.dromara.djs.warehouse.demand.domain.DemandManage demand =
+            new org.dromara.djs.warehouse.demand.domain.DemandManage();
+        demand.setId(8300L);
+        when(demandManageMapper.selectList(any())).thenReturn(List.of(demand));
+        when(productProductionMapper.selectCount(any())).thenReturn(1L);
+        StoreDailyLedger ledger = new StoreDailyLedger();
+        ledger.setInboundQty(new BigDecimal("3.000"));
+        when(storeDailyLedgerMapper.selectList(any())).thenReturn(List.of(ledger));
+        when(baseMapper.selectList(any())).thenReturn(List.of());
+
+        StoreReturnBatchBo.Item item = new StoreReturnBatchBo.Item();
+        item.setProductId(PRODUCT_ID);
+        item.setReturnQuantity(new BigDecimal("4.000"));
+        item.setReturnWeight(new BigDecimal("4.000"));
+        StoreReturnBatchBo batch = new StoreReturnBatchBo();
+        batch.setStoreId(STORE_ID);
+        batch.setItems(List.of(item));
+
+        assertThat(service.batchCreate(batch)).isEqualTo(1);
+        ArgumentCaptor<StoreReturn> captor = ArgumentCaptor.forClass(StoreReturn.class);
+        verify(baseMapper).insert(captor.capture());
+        assertThat(captor.getValue().getGoodsWeight()).isEqualByComparingTo("4.000");
     }
 }

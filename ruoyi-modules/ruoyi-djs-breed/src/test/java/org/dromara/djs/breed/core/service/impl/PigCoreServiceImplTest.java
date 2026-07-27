@@ -136,6 +136,27 @@ class PigCoreServiceImplTest {
     }
 
     @Test
+    @DisplayName("fireEvent 补录配种: 停留天数按业务日期计算，不按提交时间计算")
+    void fireEvent_backdated_breed_uses_business_date_for_duration() {
+        Pig pig = mkSow(1001L, PigLifecycle.HB);
+        pig.setStatusStartedAt(LocalDate.of(2026, 7, 22).atStartOfDay());
+        when(pigMapper.selectById(1001L)).thenReturn(pig);
+        when(pigMapper.updateById(any(Pig.class))).thenReturn(1);
+
+        PigEventBo bo = new PigEventBo();
+        bo.setPigId(1001L);
+        bo.setEventType(PigStatusEvent.BREED);
+        bo.setEventAt(LocalDateTime.of(2026, 7, 24, 22, 41, 8));
+
+        service.fireEvent(bo);
+
+        ArgumentCaptor<PigStatusRecord> captor = ArgumentCaptor.forClass(PigStatusRecord.class);
+        verify(statusRecordMapper).insert(captor.capture());
+        assertThat(captor.getValue().getDurationDays()).isEqualTo(2);
+        assertThat(captor.getValue().getChangeTime()).isEqualTo(bo.getEventAt());
+    }
+
+    @Test
     @DisplayName("fireEvent BREED: mating_id 被回写")
     void fireEvent_breed_updates_mating_id() {
         Pig pig = mkSow(101L, PigLifecycle.DN);
@@ -328,17 +349,37 @@ class PigCoreServiceImplTest {
         when(pigMapper.selectById(200L)).thenReturn(pig);
         when(pigMapper.updateById(any(Pig.class))).thenReturn(1);
 
-        service.internalIntroToReserve(200L, LocalDate.now());
+        LocalDate introduceDate = LocalDate.of(2026, 7, 21);
+        service.internalIntroToReserve(200L, introduceDate);
 
         ArgumentCaptor<Pig> captor = ArgumentCaptor.forClass(Pig.class);
         verify(pigMapper).updateById(captor.capture());
         assertThat(captor.getValue().getPigType()).isEqualTo("sow");
         assertThat(captor.getValue().getCurrentStatus()).isEqualTo("HB");
+        assertThat(captor.getValue().getIntroduceDate()).isEqualTo(introduceDate);
+        assertThat(captor.getValue().getStatusStartedAt()).isEqualTo(introduceDate.atStartOfDay());
 
         ArgumentCaptor<PigStatusRecord> recCaptor = ArgumentCaptor.forClass(PigStatusRecord.class);
         verify(statusRecordMapper).insert(recCaptor.capture());
         assertThat(recCaptor.getValue().getNewStatus()).isEqualTo("HB");
         assertThat(recCaptor.getValue().getEventType()).isEqualTo("INTRO");
+        assertThat(recCaptor.getValue().getChangeTime()).isEqualTo(introduceDate.atStartOfDay());
+    }
+
+    @Test
+    @DisplayName("internalIntroToReserve 引种日期为空: 主表和状态起点统一回落当天")
+    void internalIntroToReserve_null_date_falls_back_to_today() {
+        Pig pig = mkFattening(203L, "F", PigLifecycle.HB);
+        when(pigMapper.selectById(203L)).thenReturn(pig);
+        when(pigMapper.updateById(any(Pig.class))).thenReturn(1);
+
+        service.internalIntroToReserve(203L, null);
+
+        ArgumentCaptor<Pig> captor = ArgumentCaptor.forClass(Pig.class);
+        verify(pigMapper).updateById(captor.capture());
+        Pig updated = captor.getValue();
+        assertThat(updated.getIntroduceDate()).isNotNull();
+        assertThat(updated.getStatusStartedAt()).isEqualTo(updated.getIntroduceDate().atStartOfDay());
     }
 
     @Test

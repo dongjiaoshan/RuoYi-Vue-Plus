@@ -13,7 +13,7 @@ import java.util.List;
  * 损耗总览聚合查询 Mapper（WMS-LOSS-OVERVIEW-001，仓库-admin 行63）。
  *
  * <p>compute-on-read over {@code t_warehouse_loss_flow}，不建汇总表。两个聚合 @Select：
- * 按日汇总（distinct 产品数）+ 当日明细（LEFT JOIN product_info 取图）。
+ * 按日汇总（损耗明细记录数）+ 当日明细（LEFT JOIN product_info 取图）。
  * 自定义 @Select 含聚合，WHERE 显式带 {@code tenant_id}（多租户拦截器对聚合不保证注入）；
  * 雪花 id CAST AS CHAR 返前端防精度丢失。</p>
  *
@@ -24,11 +24,10 @@ import java.util.List;
 public interface LossOverviewMapper {
 
     /**
-     * 按自然日汇总损耗（行63 列表）：每日 distinct 损耗产品/商品数。
+     * 按自然日汇总损耗：每日损耗明细记录数，与详情逐条展示口径一致。
      *
-     * <p>{@code COUNT(DISTINCT product_id) GROUP BY DATE(loss_date)}，按日期倒序。
-     * product_id 可空（crop/plot 级损耗如毛菜处理/运输）时不计入 distinct（COUNT DISTINCT 忽略 NULL），
-     * 与 product_info JOIN 口径一致。</p>
+     * <p>{@code COUNT(*) GROUP BY DATE(loss_date)}，按日期倒序。定时重跑会先软删再重建，
+     * 因此同日汇总值必须严格等于详情有效行数。</p>
      *
      * @param tenantId  租户（V1 固定 '1001'）
      * @param dateFrom  起始日期（含，可空）
@@ -38,7 +37,7 @@ public interface LossOverviewMapper {
     @Select("""
         <script>
         SELECT DATE_FORMAT(loss_date, '%Y-%m-%d') AS lossDate,
-               COUNT(DISTINCT product_id) AS productCount
+               COUNT(*) AS productCount
         FROM t_warehouse_loss_flow
         WHERE del_flag = '0' AND tenant_id = #{tenantId}
         <if test="dateFrom != null"> AND loss_date &gt;= #{dateFrom} </if>

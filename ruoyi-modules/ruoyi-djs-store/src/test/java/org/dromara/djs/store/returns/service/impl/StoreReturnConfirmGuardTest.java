@@ -67,6 +67,7 @@ class StoreReturnConfirmGuardTest {
     @Mock private org.dromara.djs.warehouse.pack.service.IProductProductionService productProductionService;
     @Mock private org.dromara.djs.warehouse.pack.mapper.ProductProductionMapper productProductionMapper;
     @Mock private org.dromara.djs.common.store.service.IStoreService storeService;
+    @Mock private org.dromara.djs.store.ledger.mapper.StoreDailyLedgerMapper storeDailyLedgerMapper;
 
     private StoreReturnServiceImpl service;
     private MockedStatic<LoginHelper> loginHelperMock;
@@ -93,7 +94,7 @@ class StoreReturnConfirmGuardTest {
     void setup() {
         service = new StoreReturnServiceImpl(baseMapper, storeMapper, productInfoMapper,
             locationInfoMapper, bizCodeGenerator, purchaseInService, demandManageMapper, dictService,
-            productProductionService, productProductionMapper, storeService);
+            productProductionService, productProductionMapper, storeService, storeDailyLedgerMapper);
         loginHelperMock = Mockito.mockStatic(LoginHelper.class);
         loginHelperMock.when(LoginHelper::getUserId).thenReturn(USER_ID);
 

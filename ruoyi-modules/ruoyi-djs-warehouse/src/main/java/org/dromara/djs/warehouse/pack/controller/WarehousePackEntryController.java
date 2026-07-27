@@ -4,6 +4,7 @@ import cn.dev33.satoken.annotation.SaCheckPermission;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.dromara.common.core.domain.R;
+import org.dromara.common.idempotent.annotation.RepeatSubmit;
 import org.dromara.common.web.core.BaseController;
 import org.dromara.djs.warehouse.cut.domain.bo.PigCutDoneBo;
 import org.dromara.djs.warehouse.cut.domain.bo.PigCutOutBo;
@@ -94,6 +95,7 @@ public class WarehousePackEntryController extends BaseController {
      * 供「确认并打印追溯码」展示。</p>
      */
     @SaCheckPermission("djs:warehouse:packEntry:dry")
+    @RepeatSubmit
     @PostMapping("/dry")
     public R<PackSubmitResultVo> packDry(@Valid @RequestBody DryPackBo bo) {
         return R.ok(toResult(productionService.submitDryPack(bo)));
@@ -116,6 +118,7 @@ public class WarehousePackEntryController extends BaseController {
      * <p>原型「果蔬打包管理」：选地块 + 目标产品 + 重量 + 入库库位 + 发送位置。</p>
      */
     @SaCheckPermission("djs:warehouse:packEntry:veg")
+    @RepeatSubmit
     @PostMapping("/veg")
     public R<PackSubmitResultVo> packVeg(@Valid @RequestBody VegPackBo bo) {
         return R.ok(toResult(productionService.submitVegPack(bo)));

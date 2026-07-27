@@ -95,11 +95,12 @@ public interface PlotInfoMapper extends BaseMapperPlus<PlotInfo, PlotInfoVo> {
     List<Map<String, Object>> selectLatestRotationDates(@Param("plotIds") List<Long> plotIds);
 
     /**
-     * 地块详情·种植信息子表（FIX-PLT-AD-DETAIL-001，11 列，按 plotId 透视）。
+     * 地块详情·种植信息子表（按 plotId 透视）。
      *
      * <p>以种植明细 {@code t_plant_plant_details} 为基（一行一明细），JOIN 作物（名 / 码 / 图）
      * + 计划（保活）+ 班组（种植 {@code plant_by} / 采摘 {@code harvest_by} → team_name）。
-     * 「预计 / 实际亩产」按 kg 直返（决策#7 子表用 kg）。按种植日期倒序、明细 id 倒序。</p>
+     * 实际产量取本条种植明细 {@code actual_yield}；实际亩产按该产量除以当前地块面积
+     * {@code plot_info.plot_area} 现算。按种植日期倒序、明细 id 倒序。</p>
      *
      * <p>显式手写 {@code tenant_id='1001'} + {@code del_flag='0'}，用
      * {@code @InterceptorIgnore(tenantLine = "true")} 关 MP 租户拦截器对手写 LEFT JOIN 的二次注入
@@ -118,9 +119,8 @@ public interface PlotInfoMapper extends BaseMapperPlus<PlotInfo, PlotInfoVo> {
             c.crop_code           AS cropCode,
             tp.team_name          AS plantByName,
             d.expected_yield      AS expectedYield,
-            d.earliest_harvestdate AS earliestHarvestdate,
-            d.last_harvestdate    AS lastHarvestdate,
-            d.actual_yield        AS actualYield,
+            d.actual_yield        AS actualProduction,
+            ROUND(d.actual_yield / NULLIF(pl.plot_area, 0), 3) AS actualYield,
             d.begin_harvestdate   AS beginHarvestdate,
             d.end_harvestdate     AS endHarvestdate,
             th.team_name          AS harvestByName
@@ -128,6 +128,10 @@ public interface PlotInfoMapper extends BaseMapperPlus<PlotInfo, PlotInfoVo> {
           LEFT JOIN t_plant_plant_plan p
             ON p.id = d.plant_id
            AND p.del_flag = '0'
+          LEFT JOIN t_plant_plot_info pl
+            ON pl.id = d.plot_id
+           AND pl.del_flag = '0'
+           AND pl.tenant_id = '1001'
           LEFT JOIN t_plant_crop_info c
             ON c.id = d.crop_id
            AND c.del_flag = '0'
