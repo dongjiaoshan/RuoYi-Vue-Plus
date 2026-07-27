@@ -86,9 +86,10 @@ public class ProductionLossServiceImpl implements IProductionLossService {
             rowOf(byProduct, pid)[4] = toDec(r.get("packUsage"));
         }
 
-        // admin row109：零点任务处理的是上一自然日，业务损耗时间记在上一日结束，
-        // 不能显示为任务触发日/目标日 00:00:00。
-        Date lossDate = Date.from(date.plusDays(1).atStartOfDay(ZONE).minusSeconds(1).toInstant());
+        // 零点任务处理的是上一自然日：loss_date 落目标业务日当天 00:00:00。
+        // 不要改成 23:59:59——LossFlowMapper 的流水筛选上界是 `loss_date <= #{dateTo}`
+        // （dateTo 按 yyyy-MM-dd 解析成 00:00:00），当日 23:59:59 的行会被该上界整批排除。
+        Date lossDate = Date.from(date.atStartOfDay(ZONE).toInstant());
         int written = 0;
         for (Map.Entry<Long, BigDecimal[]> e : byProduct.entrySet()) {
             BigDecimal[] a = e.getValue();

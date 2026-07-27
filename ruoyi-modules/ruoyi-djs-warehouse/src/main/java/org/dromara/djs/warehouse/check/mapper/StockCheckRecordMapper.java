@@ -58,8 +58,10 @@ public interface StockCheckRecordMapper extends BaseMapperPlus<StockCheckRecord,
      *
      * <ul>
      *   <li>{@code checkId}：合成业务码 {@code yyyyMMdd-warehouseId-operatorId}（前端钻取明细用）。</li>
-     *   <li>{@code lineCount}：本组流水行数（= 盘点商品数）。</li>
-     *   <li>{@code abnormalCount}：盘亏（check_out）或盘盈量非 0 的行数（= 有差异的项数）。</li>
+     *   <li>{@code lineCount}：当天盘点的**产品数**（去重 product_id，含正常 / 异常 / 计损；
+     *       同一产品多条盘点流水只计 1）。</li>
+     *   <li>{@code abnormalCount}：当天盘点结果为异常（{@code check_abnormal_out}）或计损
+     *       （{@code check_out}）的**产品数**（同样去重 product_id）。</li>
      *   <li>{@code diffSum}：SUM(change_num)（净盈亏，盘盈正 / 盘亏负）。</li>
      *   <li>{@code checkBy}：operator_id（{@link org.dromara.common.translation.constant.TransConstant} 翻昵称）。</li>
      * </ul>
@@ -90,8 +92,9 @@ public interface StockCheckRecordMapper extends BaseMapperPlus<StockCheckRecord,
                    f.warehouse_id                                     AS location_id,
                    f.operator_id                                      AS operator_id,
                    MAX(f.flow_date)                                   AS check_date,
-                   COUNT(*)                                           AS line_count,
-                   SUM(CASE WHEN f.flow_type IN ('check_out', 'check_abnormal_out') THEN 1 ELSE 0 END) AS abnormal_count,
+                   COUNT(DISTINCT f.product_id)                       AS line_count,
+                   COUNT(DISTINCT CASE WHEN f.flow_type IN ('check_out', 'check_abnormal_out')
+                                       THEN f.product_id END)         AS abnormal_count,
                    SUM(f.change_num)                                  AS diff_sum,
                    MAX(f.create_time)                                 AS create_time,
                    MAX(f.flow_date)                                   AS sort_date
@@ -131,8 +134,16 @@ public interface StockCheckRecordMapper extends BaseMapperPlus<StockCheckRecord,
     /**
      * 盘点记录明细 line 列表（admin 详情钻取）：读某盘点单组（日期 + 库位 + 盘点人）的逐条盘点流水。
      *
-     * <p>{@code sysStock} 由 {@code checkStock - change_num} 反推（实盘 - 差异 = 盘前系统量）。
-     * {@code checkResultType}：check_out→3 计损 / change_num=0→1 正常 / 否则→2 异常。
+     * <p><b>盘点前库存 / 实盘量按库存台账回溯，不能用 {@code change_quantity} 推。</b>
+     * {@code change_quantity} 的写入语义是分支的（{@code StockSelfServiceImpl}）：正常盘点存实盘量、
+     * 计损 / 异常存<b>损失量</b>。旧实现统一套 {@code change_quantity - change_num}，对计损行会算出
+     * 「盘点前库存 = 损失量 × 2、实盘量 = 损失量」这种编造值（扇子骨真实 12.500 显示成 4.000）。</p>
+     *
+     * <p>正确口径：{@code 实盘量 = 该库位该产品当前库存合计 − 本行之后所有流水的 change_num 之和}
+     * （沿库存台账回溯到盘点那一刻，含篮子行故对 location_stock 求 SUM）；
+     * {@code 盘点前库存 = 实盘量 − change_num}。</p>
+     *
+     * <p>{@code checkResultType}：check_out→3 计损 / check_abnormal_out→2 异常 / change_num=0→1 正常 / 否则→2。
      * 产品代码 / 名称 / 单位 LEFT JOIN product_info。</p>
      */
     @Select("""
@@ -142,8 +153,38 @@ public interface StockCheckRecordMapper extends BaseMapperPlus<StockCheckRecord,
                f.product_id                          AS productId,
                p.product_name                        AS productName,
                p.product_unit                        AS productUnit,
-               (f.change_quantity - f.change_num)    AS sysStock,
-               f.change_quantity                     AS checkStock,
+               (
+                   SELECT COALESCE(SUM(ls.product_stock), 0)
+                     FROM t_warehouse_location_stock ls
+                    WHERE ls.location_id = f.warehouse_id
+                      AND ls.product_id  = f.product_id
+                      AND ls.tenant_id   = f.tenant_id
+                      AND ls.del_flag    = '0'
+               ) - (
+                   SELECT COALESCE(SUM(f2.change_num), 0)
+                     FROM t_warehouse_stock_flow f2
+                    WHERE f2.tenant_id    = f.tenant_id
+                      AND f2.del_flag     = '0'
+                      AND f2.warehouse_id = f.warehouse_id
+                      AND f2.product_id   = f.product_id
+                      AND f2.id           > f.id
+               ) - f.change_num                      AS sysStock,
+               (
+                   SELECT COALESCE(SUM(ls.product_stock), 0)
+                     FROM t_warehouse_location_stock ls
+                    WHERE ls.location_id = f.warehouse_id
+                      AND ls.product_id  = f.product_id
+                      AND ls.tenant_id   = f.tenant_id
+                      AND ls.del_flag    = '0'
+               ) - (
+                   SELECT COALESCE(SUM(f2.change_num), 0)
+                     FROM t_warehouse_stock_flow f2
+                    WHERE f2.tenant_id    = f.tenant_id
+                      AND f2.del_flag     = '0'
+                      AND f2.warehouse_id = f.warehouse_id
+                      AND f2.product_id   = f.product_id
+                      AND f2.id           > f.id
+               )                                     AS checkStock,
                f.change_num                          AS diffStock,
                CASE
                    WHEN f.flow_type = 'check_out' THEN 3

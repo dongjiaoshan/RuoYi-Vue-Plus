@@ -64,17 +64,23 @@ public interface IPlantActivityService {
     void settlePickActivity(Long cropId);
 
     /**
-     * 作物未结算销售量合计（kg，row176「已采产量」补计销售去向）。
+     * 作物「本批次」未结算销售量合计（kg，row176「已采产量」补计销售去向 + row202 批次下界）。
      *
      * <p>销售去向录入时暂存流水（{@code plot_id} 空、{@code settle_round=0}），不即时累加进
      * {@code plant_details.actual_yield}，故「已采产量 = Σactual_yield」会漏；本方法补回
      * {@code pick_dest='sale' AND (settle_round=0 OR settle_round IS NULL)} 的 pick_weight 合计。
      * 只有 {@code is_pick=1} 采摘活动有销售去向，{@code is_pick=2} 采收 → 恒 0（加法 no-op）。</p>
      *
-     * @param cropId 作物 id（空 → 返 0，不抛）
-     * @return 未结算销售量合计（无记录 / cropId 为空返 0）
+     * <p>row202：销售流水按作物聚合、无批次维度，历史批次退茬地块的未结算销售量会被后续每个批次
+     * 重复累加且永远清不掉。故必须带 {@code sinceDate}「本批次开采日」下界
+     * （= 该作物当前可见地块集 {@code begin_harvestdate} 的最小非空值）；{@code sinceDate} 为空
+     * 表示本批次一克未采 → 销售必为 0，直接返 0 不查库。</p>
+     *
+     * @param cropId    作物 id（空 → 返 0，不抛）
+     * @param sinceDate 本批次开采日（含，空 → 返 0，不抛）
+     * @return 本批次未结算销售量合计（无记录 / cropId 或 sinceDate 为空返 0）
      */
-    BigDecimal sumUnsettledSaleWeight(Long cropId);
+    BigDecimal sumUnsettledSaleWeight(Long cropId, LocalDate sinceDate);
 
     /**
      * 采摘活动记录列表（mp 采摘活动记录，按采摘日期倒序）。

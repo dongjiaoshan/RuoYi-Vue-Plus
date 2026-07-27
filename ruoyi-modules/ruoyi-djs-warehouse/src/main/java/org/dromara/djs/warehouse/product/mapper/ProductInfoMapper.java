@@ -70,16 +70,25 @@ public interface ProductInfoMapper extends BaseMapperPlus<ProductInfo, ProductIn
      * mp 生产领用「明日预估需求量」按原材料批量反查聚合（row18）。
      *
      * <p>口径：对每个原材料 {@code materialId}，取以它为 {@code product_material} 的所有生产产品
-     * （成品 {@code product_attr=1} 且已配 {@code material_num}），聚合其
-     * {@code SUM(明日需求量 × 单份用量)}——即 {@code DemandManageMapper.materialCalcQty}
-     * （需求量 × 单份用量）口径的「按原材料反向汇总」版。</p>
+     * （成品 {@code product_attr=1}），聚合其 {@code SUM(明日需求量 × 单份用量)}——即
+     * {@code DemandManageMapper.materialCalcQty}（需求量 × 单份用量）口径的「按原材料反向汇总」版。</p>
      *
      * <p>明日 = {@code DATE_ADD(CURDATE(), INTERVAL 1 DAY)}（{@code demand_date} 是 DATE 列直接等值走索引）；
      * 汇总全部门店需求（生产备料非某门店，不加 store_id 过滤）；排除 CANCELLED / DELETED 单。
-     * <b>kg 兜底（与 {@code DemandManageMapper.materialCalcQty} 同口径）：成品单位为 kg（含公斤）时按 1:1 kg
-     * 计入（乘数 = 1，不依赖 material_num）；非 kg 成品仍按 material_num 配比。</b>
-     * 非 kg 且未配 material_num 的成品不计入；某材料无任何有明日需求的配比/kg 成品则无行返回
-     * → service 回填 null → 前端卡片「预估需求量」显空。租户单租户显式 {@code tenant_id='1001'}（V1）。</p>
+     * 租户单租户显式 {@code tenant_id='1001'}（V1）。</p>
+     *
+     * <p>单份用量（{@code CASE} 三分支，自上而下优先）：</p>
+     * <ol>
+     *   <li>成品单位是 kg（含「公斤」）→ 1（1:1 kg，与 {@code DemandManageMapper.materialCalcQty} 同口径）</li>
+     *   <li>已配 {@code material_num} → {@code material_num}（显式配比优先于同单位推断）</li>
+     *   <li>成品单位 == 原材料单位（{@code LOWER(TRIM())} 比对，两边非空）→ 1（1:1 同单位族，如
+     *       「大米10斤(袋) ← 大米10斤(袋)」「黑猪油(罐) ← 黑猪油(罐)」；这类成品普遍没配
+     *       {@code material_num}，不兜底则整卡「预估需求量」恒空）</li>
+     * </ol>
+     *
+     * <p>三条都不满足的成品不计入——典型是「干羊肚菌70g(盒) ← 干羊肚菌(kg)」这类跨单位打包，换算关系
+     * 只能靠主数据配 {@code material_num} 表达，缺配比属数据配置问题，SQL 不猜。某材料无任何可算的
+     * 明日需求成品则无行返回 → service 回填 null → 前端卡片「预估需求量」显空。</p>
      *
      * @param materialIds 原材料产品 id 列表（= 领用卡的 productId 集合，distinct 非空）
      * @return 每原材料一行（materialId + estimatedDemand）；无配比成品的材料不出现在结果中
@@ -89,7 +98,8 @@ public interface ProductInfoMapper extends BaseMapperPlus<ProductInfo, ProductIn
         SELECT p.product_material AS materialId,
                SUM(dm.demand_quantity *
                    CASE WHEN LOWER(TRIM(p.product_unit)) IN ('kg','公斤') THEN 1
-                        ELSE p.material_num END) AS estimatedDemand
+                        WHEN p.material_num IS NOT NULL THEN p.material_num
+                        ELSE 1 END) AS estimatedDemand
           FROM t_warehouse_product_info p
           JOIN t_warehouse_demand_manage dm
             ON dm.product_id = p.id
@@ -97,8 +107,15 @@ public interface ProductInfoMapper extends BaseMapperPlus<ProductInfo, ProductIn
            AND dm.demand_status NOT IN ('CANCELLED', 'DELETED')
            AND dm.del_flag = '0'
            AND dm.tenant_id = '1001'
+          LEFT JOIN t_warehouse_product_info m
+            ON m.id = p.product_material
+           AND m.del_flag = '0'
+           AND m.tenant_id = '1001'
          WHERE p.product_attr = 1
-           AND (p.material_num IS NOT NULL OR LOWER(TRIM(p.product_unit)) IN ('kg','公斤'))
+           AND (p.material_num IS NOT NULL
+                OR LOWER(TRIM(p.product_unit)) IN ('kg','公斤')
+                OR (m.product_unit IS NOT NULL AND TRIM(m.product_unit) != ''
+                    AND LOWER(TRIM(p.product_unit)) = LOWER(TRIM(m.product_unit))))
            AND p.del_flag = '0'
            AND p.tenant_id = '1001'
            AND p.product_material IN

@@ -85,6 +85,18 @@ public interface IShipmentService {
     List<ShipStoreVo> listPendingStores();
 
     /**
+     * 单门店当天发货聚合（门店货物页头用，与 {@link #listPendingStores} 的门店卡同一个算法）。
+     *
+     * <p>返回该门店当天的产品种类数 + 需求满足率等聚合指标：满足率 = 每个产品种类
+     * {@code min(1, 生产量 ÷ 需求量)} 的平均 × 100。列表卡与详情页头读同一份后端结果，
+     * 避免两端各算一份导致数字对不上。</p>
+     *
+     * @param storeId 门店 ID（必填）
+     * @return 该门店当天聚合；当天无需求时返回种类 0 / 满足率 0.00 的空壳 VO
+     */
+    ShipStoreVo queryStoreSummary(Long storeId);
+
+    /**
      * 某门店的待发需求单列表 + 各需求可发产品清单（门店发货子页，D12X-MP-SHIPDOCK-IA-001）。
      *
      * <p>返回该门店所有 SHIPPABLE demand，每个 demand 内嵌按业态 + store_id 匹配出的可发 production

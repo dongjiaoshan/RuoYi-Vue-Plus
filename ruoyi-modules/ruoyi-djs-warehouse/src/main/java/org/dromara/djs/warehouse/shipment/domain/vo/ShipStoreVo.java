@@ -47,4 +47,13 @@ public class ShipStoreVo implements Serializable {
 
     /** 发货日期（该门店当天 demand 的业务日期 demand_date —— 门店列表只取当天，故即当天发货日，客户主诉求字段 #201）。 */
     private LocalDate shipDate;
+
+    /**
+     * 需求满足率（0-100，保留 2 位）：该门店当天每个<b>产品种类</b>的
+     * {@code min(1, 生产量 ÷ 需求量)} 取平均 × 100。
+     *
+     * <p>种类粒度与 mp 门店货物卡一一对应（同店同日同产品的多行 demand 先按 product_id 归并再平均）；
+     * 需求量 ≤ 0 的种类不计入分子分母；无种类 → 0.00。门店列表与门店货物页头共用此字段，避免两端各算一份。</p>
+     */
+    private BigDecimal satisfyRate;
 }

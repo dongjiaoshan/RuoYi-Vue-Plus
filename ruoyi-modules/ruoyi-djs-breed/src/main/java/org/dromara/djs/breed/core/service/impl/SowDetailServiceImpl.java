@@ -104,17 +104,19 @@ public class SowDetailServiceImpl implements ISowDetailService {
 
         // 累计产仔 / 活仔 / 平均出生重 + 累计断奶 / 平均断奶重。
         // 与 admin fallback 共用本方法，避免两端在汇总表尚未生成时口径分叉。
+        // MySQL 除法会多带 4 位小数（2.2100000），夜间汇总批存的是 scale3（2.210）；
+        // 这里必须同样 scale3，否则同一指标「当天实时算」与「次日读汇总」显示不同。
         SowPerformanceMpVo farrowTotals = aggMapper.farrowProductionTotals(pigId);
         if (farrowTotals != null) {
             vo.setTotalBorn(farrowTotals.getTotalBorn());
             vo.setTotalLiveBorn(farrowTotals.getTotalLiveBorn());
-            vo.setAvgLiveBornPerLitter(farrowTotals.getAvgLiveBornPerLitter());
-            vo.setAvgBornWeight(farrowTotals.getAvgBornWeight());
+            vo.setAvgLiveBornPerLitter(scale3(farrowTotals.getAvgLiveBornPerLitter()));
+            vo.setAvgBornWeight(scale3(farrowTotals.getAvgBornWeight()));
         }
         SowPerformanceMpVo weanTotals = aggMapper.weanProductionTotals(pigId);
         if (weanTotals != null) {
             vo.setTotalWeaned(weanTotals.getTotalWeaned());
-            vo.setAvgWeanedWeight(weanTotals.getAvgWeanedWeight());
+            vo.setAvgWeanedWeight(scale3(weanTotals.getAvgWeanedWeight()));
         }
 
         // 平均怀孕天数 = avg(分娩 − 配种)；无配对 → null
@@ -338,6 +340,11 @@ public class SowDetailServiceImpl implements ISowDetailService {
     /** BigDecimal 保留 2 位（HALF_UP）；null 透传 null。 */
     private BigDecimal scale2(BigDecimal v) {
         return v != null ? v.setScale(2, RoundingMode.HALF_UP) : null;
+    }
+
+    /** BigDecimal 保留 3 位（HALF_UP）；null 透传 null。与夜间汇总批口径一致。 */
+    private BigDecimal scale3(BigDecimal v) {
+        return v != null ? v.setScale(3, RoundingMode.HALF_UP) : null;
     }
 
     private int nz(Integer v) {

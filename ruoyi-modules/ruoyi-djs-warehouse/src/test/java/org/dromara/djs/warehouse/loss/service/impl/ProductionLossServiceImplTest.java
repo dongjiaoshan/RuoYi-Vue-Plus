@@ -48,8 +48,8 @@ class ProductionLossServiceImplTest {
     }
 
     @Test
-    @DisplayName("admin row109：目标自然日损耗时间落在当日23:59:59")
-    void aggregateWritesAtEndOfTargetDay() {
+    @DisplayName("admin row109：损耗日期落目标业务日当天 00:00:00（流水筛选上界 loss_date <= dateTo 才不会漏当日行）")
+    void aggregateWritesAtStartOfTargetDay() {
         when(aggregateMapper.selectProductFlowAgg("1001", "2026-07-26"))
             .thenReturn(List.of(Map.of("productId", 1L, "pickOut", new BigDecimal("2"))));
         when(aggregateMapper.selectProductManualLoss("1001", "2026-07-26")).thenReturn(List.of());
@@ -66,6 +66,6 @@ class ProductionLossServiceImplTest {
         Mockito.verify(lossFlowService).record(captor.capture());
         assertThat(captor.getValue().getLossDate().toInstant()
             .atZone(ZoneId.of("Asia/Shanghai")).toLocalDateTime().toString())
-            .isEqualTo("2026-07-26T23:59:59");
+            .isEqualTo("2026-07-26T00:00");
     }
 }

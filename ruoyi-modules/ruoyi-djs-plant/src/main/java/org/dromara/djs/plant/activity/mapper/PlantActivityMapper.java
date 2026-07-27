@@ -75,17 +75,25 @@ public interface PlantActivityMapper extends BaseMapperPlus<PlantActivity, Plant
                                                   @Param("endDate") LocalDate endDate);
 
     /**
-     * 作物未结算销售量合计（kg，row176「已采产量」补计销售去向）。
+     * 作物「本批次」未结算销售量合计（kg，row176「已采产量」补计销售去向 + row202 批次下界）。
      *
      * <p>销售去向（{@code pick_dest='sale'}）录入时 {@code plot_id} 留空、只落 per-event 流水
      * （{@code settle_round=0}），不即时累加进 {@code plant_details.actual_yield}，待「录入完成」
      * {@code settlePickActivity} 才按地块均分。故「已采产量 = Σactual_yield」会漏掉这批未结算销售量，
      * 本方法求和补回该差额（{@code pick_dest='sale' AND (settle_round=0 OR settle_round IS NULL)}）。
-     * 只有 {@code is_pick=1} 采摘活动会录销售去向，{@code is_pick=2} 采收无 → 合计 0（加法 no-op，采收页安全）。
-     * 显式 {@code tenant_id='1001'} + {@code del_flag='0'}（V1 单农场，关租户行注入）。</p>
+     * 只有 {@code is_pick=1} 采摘活动会录销售去向，{@code is_pick=2} 采收无 → 合计 0（加法 no-op，采收页安全）。</p>
      *
-     * @param cropId 作物 id（非空）
-     * @return 未结算销售量合计（无记录返 0）
+     * <p>row202 批次下界 {@code activity_date >= sinceDate}：销售流水按作物聚合、无批次维度，历史批次的地块
+     * 退茬（{@code plot_status=1}）后被地块可见集踢出、却永停在 {@code picking} 而无法走结算，其
+     * {@code settle_round=0} 销售流水会被之后每个新批次继续累加且永远清不掉。以「本批次开采日」
+     * （可见地块集 {@code begin_harvestdate} 最小非空值）作下界，把历史批次销售量挡在本批次卡片之外
+     * （流水本身保留，仍可在采摘活动记录查）。</p>
+     *
+     * <p>显式 {@code tenant_id='1001'} + {@code del_flag='0'}（V1 单农场，关租户行注入）。</p>
+     *
+     * @param cropId    作物 id（非空）
+     * @param sinceDate 本批次开采日下界（含，非空 —— 调用方 sinceDate 为空时须自行短路返 0，勿传 null）
+     * @return 本批次未结算销售量合计（无记录返 0）
      */
     @InterceptorIgnore(tenantLine = "true")
     @Select("""
@@ -95,7 +103,9 @@ public interface PlantActivityMapper extends BaseMapperPlus<PlantActivity, Plant
            AND tenant_id = '1001'
            AND crop_id = #{cropId}
            AND pick_dest = 'sale'
+           AND activity_date >= #{sinceDate}
            AND (settle_round = 0 OR settle_round IS NULL)
         """)
-    java.math.BigDecimal sumUnsettledSaleWeight(@Param("cropId") Long cropId);
+    java.math.BigDecimal sumUnsettledSaleWeight(@Param("cropId") Long cropId,
+                                                @Param("sinceDate") LocalDate sinceDate);
 }
