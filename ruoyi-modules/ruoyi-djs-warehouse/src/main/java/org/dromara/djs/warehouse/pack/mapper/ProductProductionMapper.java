@@ -190,6 +190,9 @@ public interface ProductProductionMapper extends BaseMapperPlus<ProductProductio
      * 全业态统一按条数计量，与子页「产品明细」逐件条数一致；不再按 {@code SUM(product_weight)} 重量算，
      * 避免份计量产品重量取整后显 0）。</p>
      *
+     * <p>「需求满足率」{@code fulfillmentRate} = {@code produceQty / demandQty * 100}（保留 2 位）。
+     * 需求量为 0 或无需求行时 {@code NULLIF} 使结果为 NULL，前端展示 {@code -}（不按 0% 显示）。</p>
+     *
      * <p>白条业态（{@code belong_type='white_bar'}）在本主列表隐藏（WHERE {@code pi.belong_type &lt;&gt; 'white_bar'}，
      * NULL-safe 保留历史无品类行）：白条是燎毛过程态、经白条领用页管理，不进产品生产概览；详情/其它页照常。</p>
      *
@@ -234,10 +237,12 @@ public interface ProductProductionMapper extends BaseMapperPlus<ProductProductio
         "       CASE WHEN LOWER(TRIM(MAX(COALESCE(pi.product_unit, pp.product_unit)))) IN ('kg', '公斤')",
         "            THEN COALESCE(SUM(pp.product_weight), 0)",
         "            ELSE COUNT(*) END AS produceQty,",
-        "       ROUND(COALESCE(MAX(dm.demand_qty), 0) / NULLIF(",
+        // 需求满足率 = 生产量 / 需求量 * 100；需求量为 0 / NULL 时 NULLIF 使整个表达式为 NULL，前端展示 -
+        "       ROUND(",
         "           CASE WHEN LOWER(TRIM(MAX(COALESCE(pi.product_unit, pp.product_unit)))) IN ('kg', '公斤')",
         "                THEN COALESCE(SUM(pp.product_weight), 0)",
-        "                ELSE COUNT(*) END, 0) * 100, 2) AS fulfillmentRate,",
+        "                ELSE COUNT(*) END",
+        "           / NULLIF(COALESCE(MAX(dm.demand_qty), 0), 0) * 100, 2) AS fulfillmentRate,",
         "       COUNT(*)               AS itemCount,",
         "       SUM(pp.material_consume) AS materialConsume,",
         "       MAX(pmi.product_name)  AS materialName,",

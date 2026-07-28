@@ -32,7 +32,12 @@ public interface VegReceiveMapper extends BaseMapperPlus<VegReceive, VegReceive>
      * − {@code SUM(已标记入库完成行的 loss_weight)}（row21：地块标记入库完成后剩余量结算为损耗、不再正数挂着，
      * 故聚合待入库扣掉损耗自然归 0——此处扣减用<b>全历史</b> loss 保证已完成地块量归零，不受当天口径影响）。</p>
      *
-     * <p>展示列 {@code lossWeight}（row179）= 该作物<b>当天</b>（{@code DATE(receive_time)=CURDATE()}）入库完成
+     * <p>展示列 {@code actualWeight}（row203）= 该作物<b>详情页当前展示地块</b>的已入库量合计，
+     * 与详情页 {@link #selectInboundPlots} 用同一套地块可见性谓词（{@code platform>0} 且
+     * {@code 待入库>0 或 当天有完成}）后按作物汇总，保证「列表卡 = 详情头卡 = 详情地块卡合计」三者恒等
+     * （row204 口径：列表与详情必须一致）。往日已完成、详情页不再展示的地块不计入。</p>
+     *
+     * <p>{@code lossWeight}（row179）= 该作物<b>当天</b>（{@code DATE(receive_time)=CURDATE()}）入库完成
      * 结算的 loss 合计，与详情 {@link #selectInboundPlots} 的地块 loss 口径一致。刚送到月台、当天未标记完成的
      * 作物 loss 恒 0（客户「刚送到不应有损耗」）；不再累计历史（昨日 / 更早）已完成地块的损耗，避免列表卡显历史
      * 累计损耗、而详情当天口径显 0 的不一致。仅保留待入库 &gt; 0 的作物（全完成作物 pending 归 0 后从列表消失）。</p>
@@ -43,6 +48,7 @@ public interface VegReceiveMapper extends BaseMapperPlus<VegReceive, VegReceive>
                cr.image_oss_id AS imageOssId,
                COALESCE(rp.product_id, cr.crop_code) AS productCode,
                t.pending      AS pendingWeight,
+               COALESCE(av.actual_visible, 0) AS actualWeight,
                t.loss         AS lossWeight
           FROM (
             SELECT vh.crop_id,
@@ -80,6 +86,52 @@ public interface VegReceiveMapper extends BaseMapperPlus<VegReceive, VegReceive>
                AND vh.send_platform_weight > 0
              GROUP BY vh.crop_id
           ) t
+          LEFT JOIN (
+            SELECT pv.crop_id, SUM(pv.actual) AS actual_visible
+              FROM (
+                SELECT vh2.crop_id,
+                       vh2.plot_id,
+                       COALESCE(SUM(vh2.send_platform_weight), 0) AS platform,
+                       COALESCE((
+                             SELECT SUM(vra.weight)
+                               FROM t_warehouse_veg_receive vra
+                              WHERE vra.receive_type = 1
+                                AND vra.crop_id = vh2.crop_id
+                                AND vra.plot_id = vh2.plot_id
+                                AND vra.del_flag = '0'
+                                AND vra.tenant_id = '1001'
+                           ), 0) AS actual,
+                       COALESCE((
+                             SELECT SUM(vla.loss_weight)
+                               FROM t_warehouse_veg_receive vla
+                              WHERE vla.receive_type = 1
+                                AND vla.crop_id = vh2.crop_id
+                                AND vla.plot_id = vh2.plot_id
+                                AND vla.is_finish = 1
+                                AND vla.del_flag = '0'
+                                AND vla.tenant_id = '1001'
+                           ), 0) AS loss_all,
+                       (
+                             SELECT COUNT(1)
+                               FROM t_warehouse_veg_receive vfa
+                              WHERE vfa.receive_type = 1
+                                AND vfa.crop_id = vh2.crop_id
+                                AND vfa.plot_id = vh2.plot_id
+                                AND vfa.is_finish = 1
+                                AND vfa.del_flag = '0'
+                                AND vfa.tenant_id = '1001'
+                                AND DATE(vfa.receive_time) = CURDATE()
+                       ) AS finished_today
+                  FROM t_warehouse_vegetable_handle vh2
+                 WHERE vh2.del_flag = '0'
+                   AND vh2.tenant_id = '1001'
+                   AND vh2.send_platform_weight > 0
+                 GROUP BY vh2.crop_id, vh2.plot_id
+              ) pv
+             WHERE pv.platform > 0
+               AND (pv.platform - pv.actual - pv.loss_all > 0 OR pv.finished_today > 0)
+             GROUP BY pv.crop_id
+          ) av ON av.crop_id = t.crop_id
           LEFT JOIN t_plant_crop_info cr ON cr.id = t.crop_id
           LEFT JOIN t_warehouse_product_info rp
                  ON rp.id = cr.related_product

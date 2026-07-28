@@ -71,6 +71,12 @@ public class VegReceiveItemVo implements Serializable {
     private BigDecimal pendingWeight;
 
     /**
+     * 实际入库量(kg)：仅自产列表填，= 该作物<b>详情页当前展示地块</b>的已入库量合计
+     * （与详情页头卡同源，保证列表与详情一致）。
+     */
+    private BigDecimal actualWeight;
+
+    /**
      * 损耗重量(kg)：仅自产列表填，= 该作物已标记入库完成行的损耗合计（row21）。
      */
     private BigDecimal lossWeight;

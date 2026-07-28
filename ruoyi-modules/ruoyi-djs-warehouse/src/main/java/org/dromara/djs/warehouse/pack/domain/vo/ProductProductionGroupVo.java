@@ -54,7 +54,9 @@ public class ProductProductionGroupVo implements Serializable {
     private BigDecimal demandQty;
 
     /**
-     * 需求满足率（客户验收口径）：{@code demandQty / produceQty * 100%}。
+     * 需求满足率（客户验收口径）：{@code produceQty / demandQty * 100%}，保留 2 位小数。
+     *
+     * <p>需求量为 0（当日该产品无需求行）时为 {@code null}，前端展示 {@code -}。</p>
      */
     private BigDecimal fulfillmentRate;
 

@@ -34,7 +34,7 @@ class ProductProductionMapperSqlContractTest {
     }
 
     @Test
-    @DisplayName("生产量按产品单位分流：kg 取重量合计 / 计数单位取记录条数；满足率同量纲相除")
+    @DisplayName("生产量按产品单位分流：kg 取重量合计 / 计数单位取记录条数；满足率 = 生产量 / 需求量")
     void fulfillmentRateUsesAcceptedFormula() throws Exception {
         String sql = productionGroupSql();
 
@@ -43,10 +43,11 @@ class ProductProductionMapperSqlContractTest {
             .contains("lower(trim(max(coalesce(pi.product_unit, pp.product_unit)))) in ('kg', '公斤')")
             .contains("then coalesce(sum(pp.product_weight), 0)")
             .contains("else count(*) end as produceqty");
-        // 满足率 = 需求量 / 同单位生产量 * 100，分母 0 用 NULLIF 兜底
+        // 满足率 = 同单位生产量 / 需求量 * 100，需求量 0 → NULLIF 令结果为 NULL（前端展示 -）
         assertThat(sql)
-            .contains("round(coalesce(max(dm.demand_qty), 0) / nullif(")
-            .contains("* 100, 2) as fulfillmentrate");
+            .contains("end / nullif(coalesce(max(dm.demand_qty), 0), 0) * 100, 2) as fulfillmentrate");
+        // 反向口径（需求量 / 生产量）不得复活
+        assertThat(sql).doesNotContain("round(coalesce(max(dm.demand_qty), 0) / nullif(");
         // 旧口径（kg 产品拿记录条数当产量）不得复活
         assertThat(sql).doesNotContain("/ count(*) * 100");
     }

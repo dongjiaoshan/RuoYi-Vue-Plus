@@ -314,8 +314,49 @@ class StoreReturnServiceImplTest {
     }
 
     @Test
-    @DisplayName("admin row101：字典原材料退回额度=白条分割入库量+材料外售成品到店重")
-    void testBatchCreate_MergesSplitAndMaterialSoldWeights() {
+    @DisplayName("row119：字典原材料退回额度=max(当日盘点 期初+入库, 材料外售成品到店重)，超额抛异常")
+    void testBatchCreate_RejectsOverArrivedQuantity() {
+        prepareWhiteBarDictScenario();
+
+        StoreReturnBatchBo.Item item = new StoreReturnBatchBo.Item();
+        item.setProductId(PRODUCT_ID);
+        item.setReturnQuantity(new BigDecimal("4.000"));
+        item.setReturnWeight(new BigDecimal("4.000"));
+        StoreReturnBatchBo batch = new StoreReturnBatchBo();
+        batch.setStoreId(STORE_ID);
+        batch.setItems(List.of(item));
+
+        // 盘点当日入库 3.000、材料外售成品到店 1.001 → 上限取大 = 3.000（旧口径相加 4.001 会放过 4.000 → 盘点损耗变负）
+        assertThatThrownBy(() -> service.batchCreate(batch))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("3.000");
+        verify(baseMapper, never()).insert(any(StoreReturn.class));
+    }
+
+    @Test
+    @DisplayName("row119：退回量等于当日到店量上限 → 放行入库")
+    void testBatchCreate_AllowsUpToArrivedQuantity() {
+        prepareWhiteBarDictScenario();
+
+        StoreReturnBatchBo.Item item = new StoreReturnBatchBo.Item();
+        item.setProductId(PRODUCT_ID);
+        item.setReturnQuantity(new BigDecimal("3.000"));
+        item.setReturnWeight(new BigDecimal("3.000"));
+        StoreReturnBatchBo batch = new StoreReturnBatchBo();
+        batch.setStoreId(STORE_ID);
+        batch.setItems(List.of(item));
+
+        assertThat(service.batchCreate(batch)).isEqualTo(1);
+        ArgumentCaptor<StoreReturn> captor = ArgumentCaptor.forClass(StoreReturn.class);
+        verify(baseMapper).insert(captor.capture());
+        assertThat(captor.getValue().getGoodsWeight()).isEqualByComparingTo("3.000");
+    }
+
+    /**
+     * 白条退回字典产品场景：该店当日有白条到店、盘点已录该产品入库 3.000、
+     * 另有一个材料外售成品（原材料=该产品）当日到店 1.001。
+     */
+    private void prepareWhiteBarDictScenario() {
         long finishedId = 8100L;
         ProductInfo finished = new ProductInfo();
         finished.setId(finishedId);
@@ -351,18 +392,5 @@ class StoreReturnServiceImplTest {
         ledger.setInboundQty(new BigDecimal("3.000"));
         when(storeDailyLedgerMapper.selectList(any())).thenReturn(List.of(ledger));
         when(baseMapper.selectList(any())).thenReturn(List.of());
-
-        StoreReturnBatchBo.Item item = new StoreReturnBatchBo.Item();
-        item.setProductId(PRODUCT_ID);
-        item.setReturnQuantity(new BigDecimal("4.000"));
-        item.setReturnWeight(new BigDecimal("4.000"));
-        StoreReturnBatchBo batch = new StoreReturnBatchBo();
-        batch.setStoreId(STORE_ID);
-        batch.setItems(List.of(item));
-
-        assertThat(service.batchCreate(batch)).isEqualTo(1);
-        ArgumentCaptor<StoreReturn> captor = ArgumentCaptor.forClass(StoreReturn.class);
-        verify(baseMapper).insert(captor.capture());
-        assertThat(captor.getValue().getGoodsWeight()).isEqualByComparingTo("4.000");
     }
 }

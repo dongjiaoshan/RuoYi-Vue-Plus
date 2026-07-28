@@ -15,16 +15,28 @@ import static org.assertj.core.api.Assertions.assertThat;
 @DisplayName("LossOverviewMapper SQL 口径契约")
 class LossOverviewMapperSqlContractTest {
 
-    @Test
-    @DisplayName("admin row105：每日产品数量严格等于当日有效损耗明细行数")
-    void dailyProductCountUsesDetailRowCount() throws Exception {
-        Method method = LossOverviewMapper.class.getMethod(
-            "selectDailyOverview", String.class, java.util.Date.class, java.util.Date.class);
+    private static String normalizedSql(String methodName, Class<?>... paramTypes) throws Exception {
+        Method method = LossOverviewMapper.class.getMethod(methodName, paramTypes);
         Select select = method.getAnnotation(Select.class);
-        String sql = String.join(" ", select.value()).replaceAll("\\s+", " ").toLowerCase(Locale.ROOT);
+        return String.join(" ", select.value()).replaceAll("\\s+", " ").toLowerCase(Locale.ROOT);
+    }
+
+    @Test
+    @DisplayName("admin row121：每日损耗品种数 = 当日明细按产品编码去重后的数量")
+    void dailyProductCountUsesDistinctProductCode() throws Exception {
+        String sql = normalizedSql("selectDailyOverview", String.class, java.util.Date.class, java.util.Date.class);
 
         assertThat(sql)
-            .contains("count(*) as productcount")
-            .doesNotContain("count(distinct");
+            .contains("count(distinct product_code) as productcount")
+            .doesNotContain("count(*)");
+    }
+
+    @Test
+    @DisplayName("admin row122：燎毛损耗明细单位固定 kg")
+    void detailForcesKgUnitForBurnLoss() throws Exception {
+        String sql = normalizedSql("selectDailyDetail", String.class, String.class, String.class, String.class);
+
+        assertThat(sql)
+            .contains("case when lf.loss_type = 'burn_loss' then 'kg' else lf.product_unit end as productunit");
     }
 }

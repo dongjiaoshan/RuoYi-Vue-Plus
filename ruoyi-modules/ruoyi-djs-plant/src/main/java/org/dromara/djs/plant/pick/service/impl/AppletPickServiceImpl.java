@@ -68,8 +68,6 @@ public class AppletPickServiceImpl implements IAppletPickService {
     private final ApplicationEventPublisher eventPublisher;
     private final ImageUrlResolver imageUrlResolver;
     private final org.dromara.djs.plant.team.service.PlantTeamLinkService teamLinkService;
-    /** row176：已采产量补计未结算销售去向采摘量（销售录入暂存流水、结算前不进 actual_yield）。 */
-    private final org.dromara.djs.plant.activity.service.IPlantActivityService plantActivityService;
 
     /** 作物 L2 默认图统一走果蔬（IMG-LIB-001）。 */
     private static final String CROP_BELONG_TYPE = "vegetable";
@@ -80,8 +78,6 @@ public class AppletPickServiceImpl implements IAppletPickService {
      * 排除 is_pick=1 的游客采摘活动。
      */
     private static final int IS_PICK_NORMAL = 2;
-    /** is_pick=1：采摘活动（游客采摘），唯一有「销售」去向的采摘场景，已采产量需补未结算销售量（row176）。 */
-    private static final int IS_PICK_ACTIVITY = 1;
     /** harvest_activity：采摘计划设为「采摘活动」(is_pick=1) 的采摘行为农事类型（djs_farm_work_type）。 */
     private static final String HARVEST_FARM_TYPE = "harvest_activity";
     /** harvest：普通采收 (is_pick=2) 农事类型，区别于游客采摘活动（FIX-PLT-AD-PICK-FARMTYPE-001）。 */
@@ -358,24 +354,12 @@ public class AppletPickServiceImpl implements IAppletPickService {
             vo.setExpectedYield(rows.stream()
                 .map(d -> d.getExpectedYield() == null ? BigDecimal.ZERO : d.getExpectedYield())
                 .reduce(BigDecimal.ZERO, BigDecimal::add));
-            // 已采重量 = SUM(t_plant_details.actual_yield)；仅采摘活动(is_pick=1)补加未结算销售量（row176）。
-            //   非销售去向即时累加进 actual_yield；销售去向录入暂存流水、结算前不进 actual_yield，故采摘活动
-            //   作物卡的 Σactual_yield 会漏未结算销售量。采收(is_pick=2)无销售去向，且销售流水按作物聚合无
-            //   is_pick 维度，在采收路径补加会把采摘活动的销售误算进来（row176 clean-QA），故仅 is_pick=1 补。
-            // row202：补加须带「本批次开采日」下界 = 本卡可见地块集 begin_harvestdate 最小非空值。
-            //   否则历史批次（地块已退茬 plot_status=1 被 filtered 踢出、却永停 picking 无法结算）的
-            //   settle_round=0 销售流水会被之后每个批次继续累加、且永远清不掉；全空 = 本批次未开采 → 补 0。
-            BigDecimal plotActual = rows.stream()
+            // 已采重量 = Σ(本卡可见地块 actual_yield)，与详情页头卡 cropPickedTotal / 地块卡合计严格同源。
+            //   未结算的销售流水（pick_dest=sale、plot_id 恒空）不在此预支，等员工勾「称重完成」结算时
+            //   均分写入 actual_yield 后自然并入；结算前可在「采摘活动记录」tab 与 admin 采摘活动表查到。
+            vo.setActualYield(rows.stream()
                 .map(d -> d.getActualYield() == null ? BigDecimal.ZERO : d.getActualYield())
-                .reduce(BigDecimal.ZERO, BigDecimal::add);
-            LocalDate batchSince = rows.stream()
-                .map(PlantDetails::getBeginHarvestdate)
-                .filter(Objects::nonNull)
-                .min(Comparator.naturalOrder())
-                .orElse(null);
-            vo.setActualYield(pickFlag == IS_PICK_ACTIVITY
-                ? plotActual.add(plantActivityService.sumUnsettledSaleWeight(e.getKey(), batchSince))
-                : plotActual);
+                .reduce(BigDecimal.ZERO, BigDecimal::add));
             result.add(vo);
         }
 
@@ -480,24 +464,11 @@ public class AppletPickServiceImpl implements IAppletPickService {
         if (cropId == null) {
             throw new ServiceException("作物 id 必填");
         }
-        // Σ(当前展示地块 actual_yield)：复用 listCropPlots 同口径地块集，保证与 mp 头卡地块卡产量合计一致；
-        //   仅采摘活动(is_pick=1)补加未结算销售量（row176）——销售去向暂存流水、结算前不进 actual_yield，补回该差额；
-        //   采收(is_pick=2)无销售去向、销售流水按作物聚合无 is_pick 维度，补加会误算，故不补（row176 clean-QA）。
-        // row202：补加带「本批次开采日」下界（可见地块集 begin_harvestdate 最小非空值），挡掉历史批次
-        //   永不结算的销售流水；与 listCropTasks 卡片口径严格一致。
-        List<PickTaskVo> plots = listCropPlots(null, cropId, isPick);
-        BigDecimal plotSum = plots.stream()
+        // Σ(当前展示地块 actual_yield)：复用 listCropPlots 同口径地块集，与 mp 头卡地块卡合计、
+        //   以及列表卡 listCropTasks 三者严格同源（row204：列表与详情必须一致，只算详情页展示的地块）。
+        return listCropPlots(null, cropId, isPick).stream()
             .map(v -> v.getActualYield() == null ? BigDecimal.ZERO : v.getActualYield())
             .reduce(BigDecimal.ZERO, BigDecimal::add);
-        if (isPick == null || isPick != IS_PICK_ACTIVITY) {
-            return plotSum;
-        }
-        LocalDate batchSince = plots.stream()
-            .map(PickTaskVo::getBeginHarvestdate)
-            .filter(Objects::nonNull)
-            .min(Comparator.naturalOrder())
-            .orElse(null);
-        return plotSum.add(plantActivityService.sumUnsettledSaleWeight(cropId, batchSince));
     }
 
     @Override

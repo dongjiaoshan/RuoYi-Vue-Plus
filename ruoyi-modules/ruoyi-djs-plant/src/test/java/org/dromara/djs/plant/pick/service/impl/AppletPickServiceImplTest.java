@@ -81,8 +81,6 @@ class AppletPickServiceImplTest {
     private ImageUrlResolver imageUrlResolver;
     @Mock
     private org.dromara.djs.plant.team.service.PlantTeamLinkService teamLinkService;
-    @Mock
-    private org.dromara.djs.plant.activity.service.IPlantActivityService plantActivityService;
 
     private AppletPickServiceImpl service;
 
@@ -96,7 +94,7 @@ class AppletPickServiceImplTest {
 
     @BeforeEach
     void setUp() {
-        service = new AppletPickServiceImpl(detailsMapper, planMapper, plotMapper, cropMapper, teamMapper, peopleMapper, farmRecordsService, eventPublisher, imageUrlResolver, teamLinkService, plantActivityService);
+        service = new AppletPickServiceImpl(detailsMapper, planMapper, plotMapper, cropMapper, teamMapper, peopleMapper, farmRecordsService, eventPublisher, imageUrlResolver, teamLinkService);
     }
 
     private PlantDetails detailFixture() {

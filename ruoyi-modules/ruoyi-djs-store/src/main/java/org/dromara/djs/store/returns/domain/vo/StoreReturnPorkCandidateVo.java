@@ -49,10 +49,17 @@ public class StoreReturnPorkCandidateVo implements Serializable {
      * <ul>
      *   <li>猪肉产品(pork,按份)：当日到店该产品需求订购份数 {@code SUM(demand_quantity)}；</li>
      *   <li>材料外售原材料(kg)：对应成品当日到店重量（kg）；</li>
-     *   <li>白条产品(white_bar,kg)：当日到店白条总重（kg，池化上限）。</li>
+     *   <li>白条产品(white_bar,kg)：{@code max(当日盘点 期初+入库, 材料外售成品当日到店重)}。</li>
      * </ul>
-     * 前端 el-input-number 以此作 {@code :max}；空 → 不封顶。
+     * 空 → 不封顶。
      */
     private BigDecimal arrivedQuantity;
+
+    /**
+     * 今日已退量（row119）：该门店该产品当日已提交的门店退仓量 {@code SUM(return_quantity)}。
+     * 剩余可退 = {@code arrivedQuantity - returnedQuantity}，前端 el-input-number 以此作 {@code :max}，
+     * 后端 {@code batchCreate} 用同一口径把关（前端 max 只是体验）。
+     */
+    private BigDecimal returnedQuantity;
 
 }

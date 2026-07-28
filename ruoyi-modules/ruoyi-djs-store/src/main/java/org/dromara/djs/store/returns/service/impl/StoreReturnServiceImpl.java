@@ -292,9 +292,16 @@ public class StoreReturnServiceImpl
         List<Long> dictReturnProductIds = resolveWhiteBarReturnProductIds();
         boolean whiteBarArrivedToday = hasWhiteBarArrivedToday(bo.getStoreId());
         BigDecimal whiteBarDeliveredTotal = null;
-        BigDecimal whiteBarReturnedAccum = BigDecimal.ZERO;
+        // 白条累计起点必须是「当日已入库的退回总重」，不能每次请求从 0 起：
+        // 从 0 起的话闸只在单次请求内生效，连提 N 次每次都能退满当日到店白条总重。
+        BigDecimal whiteBarReturnedAccum = null;
         Map<Long, BigDecimal> returnedBaselineByProduct = new LinkedHashMap<>();
         Map<Long, BigDecimal> returnedAccumByProduct = new LinkedHashMap<>();
+        // row119：与前端 :max 同源的「剩余可退」闸——直接取候选接口算好的 到店量 − 今日已退，
+        // 前端封顶只是体验，这里才是把关。候选里没有的产品（mp 退货录入可传任意产品）不进此闸，
+        // 仍由下面按业态分流的重量校验兜底。
+        Map<Long, BigDecimal> remainByProduct = buildRemainReturnableByProduct(bo.getStoreId());
+        Map<Long, BigDecimal> remainAccumByProduct = new LinkedHashMap<>();
         int created = 0;
         for (StoreReturnBatchBo.Item item : bo.getItems()) {
             ProductInfo product = productInfoMapper.selectById(item.getProductId());
@@ -305,11 +312,16 @@ public class StoreReturnServiceImpl
             BigDecimal returnMetric = item.getReturnQuantity() != null
                 ? item.getReturnQuantity() : item.getReturnWeight();
             BigDecimal rw = item.getReturnWeight() == null ? BigDecimal.ZERO : item.getReturnWeight();
+            // row119：剩余可退闸（口径 = 候选接口的 到店量 − 今日已退；本批多行同产品继续累加）。
+            assertWithinRemainReturnable(product, returnMetric, remainByProduct, remainAccumByProduct);
             BigDecimal materialLimit = arrivedWeightByMaterial.get(item.getProductId());
             if (BELONG_TYPE_WHITE_BAR.equals(product.getBelongType())) {
                 // 白条：累计已退 + 本次 ≤ 当日到店白条总重（不按单个白条产品分别封顶）。
                 if (whiteBarDeliveredTotal == null) {
                     whiteBarDeliveredTotal = sumWhiteBarDeliveredToStore(bo.getStoreId(), today);
+                }
+                if (whiteBarReturnedAccum == null) {
+                    whiteBarReturnedAccum = sumReturnedWhiteBarTodayForStore(bo.getStoreId(), today);
                 }
                 BigDecimal projected = whiteBarReturnedAccum.add(rw);
                 if (projected.compareTo(whiteBarDeliveredTotal) > 0) {
@@ -318,9 +330,9 @@ public class StoreReturnServiceImpl
                 }
                 whiteBarReturnedAccum = projected;
             } else if (whiteBarArrivedToday && dictReturnProductIds.contains(item.getProductId())) {
-                // admin row101：按产品用“白条分割入库量 + 对应材料外售成品到店重量”独立封顶。
-                BigDecimal allowed = sumStoreSplitProductWeight(bo.getStoreId(), today, item.getProductId())
-                    .add(materialLimit == null ? BigDecimal.ZERO : materialLimit);
+                // admin row101 / row119：按产品用 max(当日盘点 期初+入库, 对应材料外售成品到店重) 独立封顶
+                //（与候选接口 arrivedQuantity 同一口径，见 resolveWhiteBarDictArrived）。
+                BigDecimal allowed = resolveWhiteBarDictArrived(bo.getStoreId(), today, item.getProductId(), materialLimit);
                 BigDecimal baseline = returnedBaselineByProduct.computeIfAbsent(item.getProductId(),
                     productId -> sumReturnedTodayForProduct(bo.getStoreId(), today, productId));
                 BigDecimal accumulated = returnedAccumByProduct.getOrDefault(item.getProductId(), BigDecimal.ZERO);
@@ -328,8 +340,7 @@ public class StoreReturnServiceImpl
                 if (projected.compareTo(allowed) > 0) {
                     BigDecimal remain = allowed.subtract(baseline).subtract(accumulated).max(BigDecimal.ZERO);
                     throw new ServiceException("产品「" + product.getProductName() + "」退回重量(" + rw.toPlainString()
-                        + ")不能超过白条分割量与对应外售成品到店重量之和扣除今日已退后的剩余("
-                        + remain.toPlainString() + ")", 400);
+                        + ")不能超过当日到店量扣除今日已退后的剩余(" + remain.toPlainString() + ")", 400);
                 }
                 returnedAccumByProduct.put(item.getProductId(), accumulated.add(rw));
             } else if (materialLimit != null) {
@@ -367,6 +378,67 @@ public class StoreReturnServiceImpl
         return created;
     }
 
+    /**
+     * row119：按产品算「剩余可退量」= 到店量 − 今日已退量，口径直接复用退回操作页的候选接口
+     * （{@link #listPorkCandidates} / {@link #listVegCandidates}），保证前端 {@code :max} 与后端闸门同源。
+     *
+     * <p>到店量为空（不封顶）的候选不进 map；到店量为 0 的候选进 map 且值为 0 → 只能填 0（不可退）。
+     * 猪肉、果蔬两 tab 同产品出现时取较小的剩余额度，避免绕闸。</p>
+     *
+     * @param storeId 门店
+     * @return 产品 id → 剩余可退量（按产品单位；≥ 0）
+     */
+    private Map<Long, BigDecimal> buildRemainReturnableByProduct(Long storeId) {
+        Map<Long, BigDecimal> remain = new LinkedHashMap<>();
+        List<StoreReturnPorkCandidateVo> porkCandidates = listPorkCandidates(storeId);
+        for (StoreReturnPorkCandidateVo c : porkCandidates) {
+            mergeRemain(remain, c.getProductId(), c.getArrivedQuantity(), c.getReturnedQuantity());
+        }
+        for (StoreReturnVegCandidateVo c : listVegCandidates(storeId)) {
+            mergeRemain(remain, c.getProductId(), c.getArrivedQuantity(), c.getReturnedQuantity());
+        }
+        return remain;
+    }
+
+    /** 剩余可退量并入 map：到店量为空 → 不封顶（不写入）；同产品多来源取较小额度。 */
+    private void mergeRemain(Map<Long, BigDecimal> remain, Long productId, BigDecimal arrived, BigDecimal returned) {
+        if (productId == null || arrived == null) {
+            return;
+        }
+        BigDecimal used = returned == null ? BigDecimal.ZERO : returned;
+        BigDecimal left = arrived.subtract(used).max(BigDecimal.ZERO);
+        remain.merge(productId, left, BigDecimal::min);
+    }
+
+    /**
+     * row119：单行退回量不得超过「剩余可退量」（本批同产品多行累加）。
+     * 产品不在候选 map（不封顶 / mp 退货录入的任意产品）→ 直接放行，交给按业态分流的重量校验兜底。
+     */
+    private void assertWithinRemainReturnable(ProductInfo product, BigDecimal returnMetric,
+                                              Map<Long, BigDecimal> remainByProduct,
+                                              Map<Long, BigDecimal> remainAccumByProduct) {
+        BigDecimal limit = remainByProduct.get(product.getId());
+        if (limit == null) {
+            return;
+        }
+        BigDecimal metric = returnMetric == null ? BigDecimal.ZERO : returnMetric;
+        if (metric.signum() <= 0) {
+            return;
+        }
+        BigDecimal accumulated = remainAccumByProduct.getOrDefault(product.getId(), BigDecimal.ZERO);
+        BigDecimal projected = accumulated.add(metric);
+        if (projected.compareTo(limit) > 0) {
+            if (limit.signum() <= 0) {
+                throw new ServiceException("产品「" + product.getProductName()
+                    + "」当日没有到店（或今日已退完），不能退回", 400);
+            }
+            throw new ServiceException("产品「" + product.getProductName() + "」退回量("
+                + projected.toPlainString() + ")不能超过当日到店量扣除今日已退后的剩余("
+                + limit.toPlainString() + ")", 400);
+        }
+        remainAccumByProduct.put(product.getId(), projected);
+    }
+
     @Override
     public List<StoreReturnPorkCandidateVo> listPorkCandidates(Long storeId) {
         if (storeId == null) {
@@ -391,23 +463,23 @@ public class StoreReturnServiceImpl
                 if (material != null && seen.add(material.getId())) {
                     // 材料外售原材料行到店量 = 对应成品到店重（kg）。
                     result.add(buildPorkCandidate(material, SUB_CAT_PORK, material.getProductUnit(),
-                        arrivedWeightByMaterial.get(material.getId())));
+                        arrivedWeightByMaterial.get(material.getId()), storeId, today));
                 }
             } else if (seen.add(finished.getId())) {
                 // 猪肉产品(按份)行到店量 = 当日到店该产品需求订购份数 SUM(demand_quantity)。
                 result.add(buildPorkCandidate(finished, SUB_CAT_PORK, finished.getProductUnit(),
-                    productProductionMapper.sumDeliveredQuantityToStore(storeId, finished.getId(), today)));
+                    productProductionMapper.sumDeliveredQuantityToStore(storeId, finished.getId(), today), storeId, today));
             }
         }
         if (hasWhiteBarArrivedToday(storeId)) {
             List<ProductInfo> whiteBarProducts = resolveWhiteBarReturnDictProducts();
             Map<Long, String> materialUnits = resolveMaterialUnits(whiteBarProducts);
             for (ProductInfo p : whiteBarProducts) {
-                BigDecimal allowed = sumStoreSplitProductWeight(storeId, today, p.getId())
-                    .add(arrivedWeightByMaterial.getOrDefault(p.getId(), BigDecimal.ZERO));
+                BigDecimal allowed = resolveWhiteBarDictArrived(storeId, today, p.getId(),
+                    arrivedWeightByMaterial.getOrDefault(p.getId(), BigDecimal.ZERO));
                 if (seen.add(p.getId())) {
                     result.add(buildPorkCandidate(p, SUB_CAT_WHITE_BAR,
-                        materialUnits.getOrDefault(p.getId(), p.getProductUnit()), allowed));
+                        materialUnits.getOrDefault(p.getId(), p.getProductUnit()), allowed, storeId, today));
                 } else {
                     result.stream().filter(candidate -> Objects.equals(candidate.getProductId(), p.getId()))
                         .findFirst().ifPresent(candidate -> {
@@ -421,14 +493,34 @@ public class StoreReturnServiceImpl
         return result;
     }
 
-    private StoreReturnPorkCandidateVo buildPorkCandidate(ProductInfo p, String subCategory, String unit, BigDecimal arrivedQuantity) {
+    private StoreReturnPorkCandidateVo buildPorkCandidate(ProductInfo p, String subCategory, String unit,
+                                                          BigDecimal arrivedQuantity, Long storeId, LocalDate today) {
         StoreReturnPorkCandidateVo vo = new StoreReturnPorkCandidateVo();
         vo.setProductId(p.getId());
         vo.setProductName(p.getProductName());
         vo.setProductUnit(unit);
         vo.setSubCategory(subCategory);
         vo.setArrivedQuantity(arrivedQuantity);
+        vo.setReturnedQuantity(sumReturnedQuantityTodayForProduct(storeId, today, p.getId()));
         return vo;
+    }
+
+    /**
+     * row119：白条字典产品「当日到店量」（退回上限口径）
+     * = {@code max(当日盘点账面可支配量, 材料外售成品当日到店重)}。
+     *
+     * <p>账面可支配量 = {@code t_store_daily_ledger} 当日 {@code opening_qty + inbound_qty}——门店在盘点里自报的
+     * 「期初 + 当日入库」，与盘点明细「当日入库」列同源。白条分割成的部件由门店手工录入库量，材料外售成品送来的
+     * 那部分也要求门店计入同一行的入库量，因此两者<b>取大不相加</b>：相加会把外售那部分双计，让退回量超过盘点
+     * 当日入库（客户实测 扇子骨 退 3.000 > 入库 2.000），进而把盘点损耗算成负数。</p>
+     *
+     * <p>盘点尚未录入时账面为 0，回落材料外售成品当日到店重，保证盘点前仍能按实到重量退回。</p>
+     */
+    private BigDecimal resolveWhiteBarDictArrived(Long storeId, LocalDate today, Long productId,
+                                                  BigDecimal materialSoldArrived) {
+        BigDecimal ledgerAvailable = sumStoreLedgerAvailable(storeId, today, productId);
+        BigDecimal fallback = materialSoldArrived == null ? BigDecimal.ZERO : materialSoldArrived;
+        return ledgerAvailable.max(fallback);
     }
 
     /** 白条产品退回字典 djs_white_bar_return_product 配置产品（空字典 → 空，不回退 belong_type）。 */
@@ -550,16 +642,84 @@ public class StoreReturnServiceImpl
         return byMaterial;
     }
 
-    /** admin row101：门店当日盘点台账中该白条分割产品的实际入库重量。 */
-    private BigDecimal sumStoreSplitProductWeight(Long storeId, LocalDate today, Long productId) {
+    /**
+     * row119：门店当日盘点账面可支配量 = {@code t_store_daily_ledger} 当日该产品 {@code opening_qty + inbound_qty} 之和。
+     * 无盘点行 → 0。与盘点明细「期初库存 / 当日入库」两列同源，退回上限据此封顶后损耗公式
+     * {@code 期初+入库−销售−赠送+退货−退回−期末} 不会因退回超量变负。
+     */
+    private BigDecimal sumStoreLedgerAvailable(Long storeId, LocalDate today, Long productId) {
         List<StoreDailyLedger> rows = storeDailyLedgerMapper.selectList(new LambdaQueryWrapper<StoreDailyLedger>()
             .eq(StoreDailyLedger::getStoreId, storeId)
             .eq(StoreDailyLedger::getLedgerDate, today)
             .eq(StoreDailyLedger::getProductId, productId));
         BigDecimal total = BigDecimal.ZERO;
         for (StoreDailyLedger row : rows) {
+            if (row.getOpeningQty() != null) {
+                total = total.add(row.getOpeningQty());
+            }
             if (row.getInboundQty() != null) {
                 total = total.add(row.getInboundQty());
+            }
+        }
+        return total;
+    }
+
+    /**
+     * row119：该产品今日已提交的门店退仓<b>量</b>（{@code SUM(return_quantity)}，按产品单位计）。
+     * 与 {@link #sumReturnedTodayForProduct}（按 kg 重量）区分：份 / 盒等计件产品重量恒 0，
+     * 只有按量累计才能对「到店量」封顶，避免多次提交各自过闸。
+     */
+    private BigDecimal sumReturnedQuantityTodayForProduct(Long storeId, LocalDate today, Long productId) {
+        return sumReturnedQuantitySinceForProduct(storeId, today, today, productId);
+    }
+
+    /**
+     * 该产品在 [from, today] 窗口内已提交的门店退仓<b>量</b>（{@code SUM(return_quantity)}，按产品单位计）。
+     *
+     * <p>已退窗口必须与「到店量」的统计窗口一致，否则同一批到店量能被跨天重复退：
+     * 果蔬到店量算今天 + 昨天两天（{@link #listVegCandidates}），已退量若只算今天，
+     * 昨天退掉的部分今天不会被扣，1.000 的到店量能退成 2.000，负损耗照旧出现。</p>
+     */
+    private BigDecimal sumReturnedQuantitySinceForProduct(Long storeId, LocalDate from, LocalDate today, Long productId) {
+        List<StoreReturn> rows = baseMapper.selectList(new LambdaQueryWrapper<StoreReturn>()
+            .eq(StoreReturn::getStoreId, storeId)
+            .eq(StoreReturn::getReturnDirection, DIRECTION_STORE_TO_WAREHOUSE)
+            .eq(StoreReturn::getProductId, productId)
+            .ge(StoreReturn::getReturnDate, from.atStartOfDay())
+            .lt(StoreReturn::getReturnDate, today.plusDays(1).atStartOfDay()));
+        BigDecimal total = BigDecimal.ZERO;
+        for (StoreReturn r : rows) {
+            if (r.getReturnQuantity() != null) {
+                total = total.add(r.getReturnQuantity());
+            }
+        }
+        return total;
+    }
+
+    /**
+     * 该门店今日已提交的<b>白条业态</b>退仓重量合计，作为白条累计闸的起点基线。
+     *
+     * <p>白条按「当日到店白条总重」整体封顶、不按单产品分摊，所以基线也按业态整体取；
+     * 缺了它，闸只在单次请求内生效，连提多次每次都能退满。</p>
+     */
+    private BigDecimal sumReturnedWhiteBarTodayForStore(Long storeId, LocalDate today) {
+        List<Long> whiteBarProductIds = productInfoMapper.selectList(new LambdaQueryWrapper<ProductInfo>()
+                .eq(ProductInfo::getBelongType, BELONG_TYPE_WHITE_BAR)
+                .select(ProductInfo::getId))
+            .stream().map(ProductInfo::getId).filter(Objects::nonNull).collect(Collectors.toList());
+        if (whiteBarProductIds.isEmpty()) {
+            return BigDecimal.ZERO;
+        }
+        List<StoreReturn> rows = baseMapper.selectList(new LambdaQueryWrapper<StoreReturn>()
+            .eq(StoreReturn::getStoreId, storeId)
+            .eq(StoreReturn::getReturnDirection, DIRECTION_STORE_TO_WAREHOUSE)
+            .in(StoreReturn::getProductId, whiteBarProductIds)
+            .ge(StoreReturn::getReturnDate, today.atStartOfDay())
+            .lt(StoreReturn::getReturnDate, today.plusDays(1).atStartOfDay()));
+        BigDecimal total = BigDecimal.ZERO;
+        for (StoreReturn r : rows) {
+            if (r.getGoodsWeight() != null) {
+                total = total.add(r.getGoodsWeight());
             }
         }
         return total;
@@ -670,7 +830,14 @@ public class StoreReturnServiceImpl
         }
         // row52：镜像猪肉候选路径——果蔬成品若「是否原材料外售=是」且配了原材料，候选折叠为其原材料产品
         //（name/unit 取原材料；多成品共享同一原材料时合并成一行，保序）。
-        return foldVegMaterialSold(new java.util.ArrayList<>(dedup.values()));
+        List<StoreReturnVegCandidateVo> folded = foldVegMaterialSold(new java.util.ArrayList<>(dedup.values()));
+        // row119：折叠后按最终产品 id 填已退量，前端剩余可退 = 到店量 − 已退量。
+        // 已退窗口取「昨天 + 今天」，与上面到店量的两天窗口对齐——只扣今天的话，昨天到店的量昨天退过一次、
+        // 今天还能再拿到同样额度退第二次，负损耗照旧复现。
+        for (StoreReturnVegCandidateVo vo : folded) {
+            vo.setReturnedQuantity(sumReturnedQuantitySinceForProduct(storeId, today.minusDays(1), today, vo.getProductId()));
+        }
+        return folded;
     }
 
     /**

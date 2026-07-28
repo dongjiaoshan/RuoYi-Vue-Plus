@@ -128,10 +128,10 @@ public class AppletPickController extends BaseController {
     }
 
     /**
-     * 作物「已采产量」权威合计（row176）：mp 采摘活动详情头卡「已采产量」取数。
+     * 作物「已采产量」权威合计：mp 采摘活动详情头卡「已采产量」取数。
      *
-     * <p>= Σ(详情地块 actual_yield) + 该作物未结算销售量。销售去向录入暂存流水、结算前不进 actual_yield，
-     * 头卡若只按 Σ 地块 actual_yield 会漏该批销售量，本端点补回。{@code is_pick=2} 采收无销售 → 仅地块合计。</p>
+     * <p>= Σ(详情页展示地块的 actual_yield)，与列表卡 cropTasks 同源，故「列表卡 = 详情头卡 = 详情地块卡合计」
+     * 三者恒等。未结算的销售去向流水不在此预支，「录入完成」结算时均分写入 actual_yield 后自然并入。</p>
      *
      * @param cropId 作物 id（必填字符串，空 / 非数字 → 明确友好 ServiceException）
      * @param isPick is_pick 过滤值（可空，空时默认 2=普通采收；「采摘活动管理」页传 1 = 游客采摘活动，

@@ -38,7 +38,7 @@ public class LossOverviewDetailVo implements Serializable {
     /** 产品名称（冗余快照）。 */
     private String productName;
 
-    /** 单位（冗余快照）。 */
+    /** 单位（冗余快照；燎毛损耗不挂 product、无快照单位，后端固定返 kg）。 */
     private String productUnit;
 
     /** 损耗类型（字典 {@code djs_loss_type}，前端 dict-tag 渲染）。 */

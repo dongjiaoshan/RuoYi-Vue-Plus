@@ -209,7 +209,7 @@ public class PlantActivityServiceImpl extends DjsBaseServiceImpl<PlantActivityMa
             throw new ServiceException("请先完成本批次全部地块的采摘，再点「录入完成」");
         }
         // 本批次开采日 = 可见地块集 begin_harvestdate 最小非空值，作销售流水下界（口径同
-        // sumUnsettledSaleWeight）：销售流水按作物聚合、plot_id 恒空、无批次维度，不设下界会把历史批次
+        // 结算侧下界）：销售流水按作物聚合、plot_id 恒空、无批次维度，不设下界会把历史批次
         // （地块已退茬、永停 picking 而无法结算）的 settle_round=0 流水摊进本批次地块。全未开采时取今天。
         LocalDate since = plots.stream()
             .map(PlantDetails::getBeginHarvestdate)
@@ -365,19 +365,6 @@ public class PlantActivityServiceImpl extends DjsBaseServiceImpl<PlantActivityMa
             return null;
         }
         return crop.getRelatedProduct();
-    }
-
-    @Override
-    public BigDecimal sumUnsettledSaleWeight(Long cropId, LocalDate sinceDate) {
-        if (cropId == null) {
-            return BigDecimal.ZERO;
-        }
-        // 下界 = 本批次可见地块最早的采摘开始日；全部未开采时取今天：
-        //   历史批次（退茬地块永不结算、settle_round 恒 0）的销售流水被挡在下界之外，
-        //   同时当天现录的游客销售仍能计入（销售流水 plot_id 恒空，无法按地块归属，只能按日期划批次）。
-        LocalDate since = sinceDate == null ? LocalDate.now() : sinceDate;
-        BigDecimal sum = baseMapper.sumUnsettledSaleWeight(cropId, since);
-        return sum == null ? BigDecimal.ZERO : sum;
     }
 
     @Override
