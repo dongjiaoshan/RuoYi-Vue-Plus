@@ -51,6 +51,7 @@ import static org.mockito.Mockito.when;
  *   <li>BO.id 被强制清空（门店端创建专用，不走编辑路径）</li>
  *   <li>已终止合作门店：assertStoreActive 抛 → 不落单</li>
  *   <li>batchCreate：逐项补冗余字段 + mailing 标记 + 逐条 insertByBo</li>
+ *   <li>自产产品闸：外购商品（product_type=2）单条 / 整单均拒绝下单</li>
  * </ol>
  *
  * <p>不验证状态机 / 编码 / 业态校验细节——那是 warehouse service 的职责（已被 DemandManageServiceImplTest /
@@ -97,6 +98,12 @@ class StoreDemandServiceImplTest {
     void setUp() {
         loginHelperMock = Mockito.mockStatic(LoginHelper.class);
         loginHelperMock.when(LoginHelper::getUserId).thenReturn(2001L);
+        // 自产产品闸的默认桩：8001 = 自产白条（可下单）；测外购拒绝的用例自带 product_type=2 的桩
+        ProductInfo sellable = new ProductInfo();
+        sellable.setId(8001L);
+        sellable.setProductName("白条猪");
+        sellable.setProductType(1);
+        when(productInfoMapper.selectById(8001L)).thenReturn(sellable);
     }
 
     @AfterEach
@@ -164,11 +171,13 @@ class StoreDemandServiceImplTest {
         p1.setProductName("白条(半扇)");
         p1.setProductSpec("半头");
         p1.setProductUnit("头");
+        p1.setProductType(1);
         ProductInfo p2 = new ProductInfo();
         p2.setId(8002L);
         p2.setProductName("猪肉礼盒");
         p2.setProductSpec("250g");
         p2.setProductUnit("盒");
+        p2.setProductType(1);
         when(productInfoMapper.selectById(8001L)).thenReturn(p1);
         when(productInfoMapper.selectById(8002L)).thenReturn(p2);
         when(demandManageService.insertByBo(any(DemandManageBo.class))).thenReturn(9101L, 9102L);
@@ -202,6 +211,49 @@ class StoreDemandServiceImplTest {
         // 第 2 条：礼盒，个人邮寄
         assertThat(bos.get(1).getProductName()).isEqualTo("猪肉礼盒");
         assertThat(bos.get(1).getDemandType()).isEqualTo("mailing");
+    }
+
+    @Test
+    @DisplayName("createStoreDemand：外购商品（product_type=2）不可被门店下单 → 抛 ServiceException，不落单")
+    void createStoreDemandRejectPurchasedProduct() {
+        ProductInfo purchased = new ProductInfo();
+        purchased.setId(8009L);
+        purchased.setProductName("有机肥");
+        purchased.setProductType(2);
+        when(productInfoMapper.selectById(8009L)).thenReturn(purchased);
+        DemandManageBo bo = buildBo();
+        bo.setProductId(8009L);
+
+        assertThatThrownBy(() -> service.createStoreDemand(bo))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("不可被门店下单");
+
+        verify(demandManageService, never()).insertByBo(any(DemandManageBo.class));
+    }
+
+    @Test
+    @DisplayName("batchCreate：整单含外购商品 → 整单抛 ServiceException，一条都不落")
+    void batchCreateRejectPurchasedProduct() {
+        ProductInfo purchased = new ProductInfo();
+        purchased.setId(8009L);
+        purchased.setProductName("玉米饲料");
+        purchased.setProductType(2);
+        when(productInfoMapper.selectById(8009L)).thenReturn(purchased);
+
+        StoreDemandBatchBo batch = new StoreDemandBatchBo();
+        batch.setStoreId(5001L);
+        StoreDemandBatchBo.Item item = new StoreDemandBatchBo.Item();
+        item.setProductId(8009L);
+        item.setProductType("other");
+        item.setDemandQuantity(new BigDecimal("2"));
+        item.setMailing(false);
+        batch.setItems(List.of(item));
+
+        assertThatThrownBy(() -> service.batchCreate(batch))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("不可被门店下单");
+
+        verify(demandManageService, never()).insertByBo(any(DemandManageBo.class));
     }
 
     @Test

@@ -65,8 +65,11 @@ public class ProductAppletController {
      * @param productType     字典 {@code djs_product_type}：1=自产 / 2=外购（已废弃 3 礼盒）
      * @param keyword         关键字（同时 LIKE productName / productId）
      * @param excludeMaterial {@code true} 排除自产原料（{@code product_type=1 且 product_attr=2}），
-     *                        门店下单 picker 用——门店只订可售产品（成品/外购/礼盒），原料是仓库内部流转、不可下单（doc/14 §5）。
+     *                        门店下单 picker 用——原料是仓库内部流转、不可下单（doc/14 §5）。
      *                        默认 {@code false}（不排除，其余 picker 如打包/盘点不受影响）。
+     * @param sellableOnly    {@code true} 只返自产产品（{@code product_type=1}，含礼盒），门店下单 picker 用——
+     *                        外购商品（{@code =2}）是生产投入品（种子/药品/农药/肥料/饲料/包材/设备），走采购入库 →
+     *                        物资领用，不可被门店下单（doc/14 §5）。默认 {@code false}（不限定，其余 picker 不受影响）。
      */
     @SaCheckLogin
     @SaCheckPermission("djs:applet:warehouse:product:list")
@@ -75,13 +78,17 @@ public class ProductAppletController {
         @RequestParam(required = false) String belongType,
         @RequestParam(required = false) Integer productType,
         @RequestParam(required = false) String keyword,
-        @RequestParam(required = false) Boolean excludeMaterial
+        @RequestParam(required = false) Boolean excludeMaterial,
+        @RequestParam(required = false) Boolean sellableOnly
     ) {
         boolean exMat = Boolean.TRUE.equals(excludeMaterial);
+        boolean sellable = Boolean.TRUE.equals(sellableOnly);
         LambdaQueryWrapper<ProductInfo> wrapper = new LambdaQueryWrapper<ProductInfo>()
             .eq(ProductInfo::getProductStatus, 0)
             .eq(StringUtils.isNotBlank(belongType), ProductInfo::getBelongType, belongType)
             .eq(productType != null, ProductInfo::getProductType, productType)
+            // 只保留自产（含礼盒）：门店下单链路专用
+            .eq(sellable, ProductInfo::getProductType, 1)
             // 排除自产原料：保留「非自产 或 非原料 或 attr 未设」，即仅剔除 type=1 且 attr=2 的原料
             .and(exMat, w -> w
                 .ne(ProductInfo::getProductType, 1)

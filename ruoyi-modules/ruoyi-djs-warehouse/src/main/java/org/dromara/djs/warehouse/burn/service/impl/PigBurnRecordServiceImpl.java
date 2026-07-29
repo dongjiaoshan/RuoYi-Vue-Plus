@@ -102,6 +102,8 @@ public class PigBurnRecordServiceImpl
      * 燎毛入库产品类型由 admin 产品配置驱动 = belong_type='white_bar' + 燎毛间车间 + 正常态 + 原材料属性。
      */
     private static final String WHITE_BAR_BELONG_TYPE = "white_bar";
+    /** 早期占位白条产品业务码前缀：解析白条产品时排在甲方自建产品之后，避免占位产品夺走损耗 / 出库归属。 */
+    private static final String SEED_WHITE_BAR_CODE_PREFIX = "PROD-WHITE-BAR-";
 
     /**
      * 产品状态（{@code t_warehouse_product_info.product_status}，字典 sys_normal_disable）：0=正常 / 1=停用。
@@ -707,7 +709,7 @@ public class PigBurnRecordServiceImpl
     }
 
     /**
-     * 解析白条产品 id：产品主数据里「产品类别=白条产品 + 状态正常」的产品，按业务码升序取第一个
+     * 解析白条产品 id：产品主数据里「产品类别=白条产品 + 状态正常」的产品，甲方自建产品优先、其次按业务码升序取第一个
      *（甲方主数据里当前是「半扇」）。
      *
      * <p>口径与 {@code PigCutRecordServiceImpl#resolveWhiteBarProductId} 一致，使燎毛损耗 / 分割损耗 /
@@ -722,8 +724,7 @@ public class PigBurnRecordServiceImpl
             new LambdaQueryWrapper<ProductInfo>()
                 .eq(ProductInfo::getBelongType, WHITE_BAR_BELONG_TYPE)
                 .eq(ProductInfo::getProductStatus, PRODUCT_STATUS_NORMAL)
-                .orderByAsc(ProductInfo::getProductId)
-                .last("LIMIT 1"));
+                .last("ORDER BY (product_id LIKE '" + SEED_WHITE_BAR_CODE_PREFIX + "%'), product_id ASC LIMIT 1"));
         if (whiteBar == null || whiteBar.getId() == null) {
             log.warn("燎毛损耗未挂产品：产品配置里没有「产品类别=白条产品」且状态正常的产品");
             return null;

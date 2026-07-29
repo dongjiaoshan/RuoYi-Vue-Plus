@@ -100,6 +100,8 @@ public class PigCutRecordServiceImpl
      * product_id 按此类别从产品主数据解析，不绑固定业务码（甲方在 admin 维护白条产品）。
      */
     private static final String WHITE_BAR_BELONG_TYPE = "white_bar";
+    /** 早期占位白条产品业务码前缀：解析白条产品时排在甲方自建产品之后，避免占位产品夺走损耗 / 出库归属。 */
+    private static final String SEED_WHITE_BAR_CODE_PREFIX = "PROD-WHITE-BAR-";
 
     /**
      * 产品状态（{@code t_warehouse_product_info.product_status}，字典 sys_normal_disable）：0=正常 / 1=停用。
@@ -1184,7 +1186,7 @@ public class PigCutRecordServiceImpl
     }
 
     /**
-     * 解析通用白条 product_id：产品主数据里「产品类别=白条产品 + 状态=正常」的产品，按业务码升序取第一个。
+     * 解析通用白条 product_id：产品主数据里「产品类别=白条产品 + 状态=正常」的产品，甲方自建产品优先、其次按业务码升序取第一个。
      *
      * <p>用于白条级（而非分割产出级）的落库字段：整猪领用兜底 cut_record.product_id、白条分割出库流水
      * product_id、预冷损耗 product_id —— 这些行只需指向「白条」这个货品概念本身。
@@ -1195,8 +1197,7 @@ public class PigCutRecordServiceImpl
             new LambdaQueryWrapper<ProductInfo>()
                 .eq(ProductInfo::getBelongType, WHITE_BAR_BELONG_TYPE)
                 .eq(ProductInfo::getProductStatus, PRODUCT_STATUS_NORMAL)
-                .orderByAsc(ProductInfo::getProductId)
-                .last("LIMIT 1"));
+                .last("ORDER BY (product_id LIKE '" + SEED_WHITE_BAR_CODE_PREFIX + "%'), product_id ASC LIMIT 1"));
         if (whiteBar == null || whiteBar.getId() == null) {
             throw new ServiceException(
                 "白条产品主数据缺失：产品配置里没有「产品类别=白条产品」且状态正常的产品，请先在产品管理中维护");
