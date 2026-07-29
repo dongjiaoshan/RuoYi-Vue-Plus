@@ -22,7 +22,7 @@ import java.time.LocalDate;
  *       逐产品搬入，{@link #productId} 填对应产品，{@link #lossQty} 原样含负（盘盈不钳 0）。</li>
  *   <li><b>白条分割损耗</b>（{@code white_bar_split_loss}）：按门店汇总一行，{@link #productId}=哨兵 0，
  *       {@link #lossQty} = {@link #whiteBarArriveWeight}（当日白条到店重）− {@link #whiteBarSplitWeight}
- *       （当日白条退回产品入库重）钳 0；当天无白条到店则不记录。</li>
+ *       （当日白条分割产品总重）钳 0；当天无白条到店则不记录。</li>
  * </ol>
  *
  * <p>幂等：定时任务先按 {@code loss_date} 物理删该日旧行再重插。唯一键
@@ -53,7 +53,7 @@ public class StoreLossRecord extends TenantEntity {
     @TableField(updateStrategy = FieldStrategy.ALWAYS)
     private String productUnit;
 
-    /** 损耗量（门店日损耗=ledger.loss_qty 原样含负；白条分割损耗=到店重−退回入库重 钳 0）。 */
+    /** 损耗量（门店日损耗=ledger.loss_qty 原样含负；白条分割损耗=到店重−白条分割产品总重 钳 0）。 */
     private BigDecimal lossQty;
 
     /** 损耗日期（到天）。 */
@@ -66,7 +66,10 @@ public class StoreLossRecord extends TenantEntity {
     @TableField(updateStrategy = FieldStrategy.ALWAYS)
     private BigDecimal whiteBarArriveWeight;
 
-    /** 白条退回入库重量kg（仅白条分割损耗行有值；门店日损耗行 NULL）。 */
+    /**
+     * 白条分割产品总重kg = max(0, 各白条部位当日入库量之和 − 材料外售同原材料成品当日到店重)
+     * （仅白条分割损耗行有值；门店日损耗行 NULL）。
+     */
     @TableField(updateStrategy = FieldStrategy.ALWAYS)
     private BigDecimal whiteBarSplitWeight;
 

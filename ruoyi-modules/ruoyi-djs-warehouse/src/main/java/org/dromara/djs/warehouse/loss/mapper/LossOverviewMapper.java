@@ -28,8 +28,9 @@ public interface LossOverviewMapper {
      *
      * <p>{@code COUNT(DISTINCT product_code) GROUP BY DATE(loss_date)}，按日期倒序。
      * 与详情弹窗同源同过滤条件，因此汇总值严格等于详情行 {@code productCode} 的 distinct 个数。
-     * 燎毛损耗（{@code burn_loss}）按整猪记，流水不带 product_code，SQL 层 {@code COUNT(DISTINCT)}
-     * 天然忽略 NULL，不计入品种数。</p>
+     * 猪肉过程损耗（{@code burn_loss} 燎毛 / {@code cut_loss} 分割 / {@code precool_loss} 预冷）都挂白条
+     * 产品「半扇」，同日只算 1 个品种；{@code product_code} 为 NULL 的行被 {@code COUNT(DISTINCT)}
+     * 天然忽略，不计入品种数。</p>
      *
      * @param tenantId  租户（V1 固定 '1001'）
      * @param dateFrom  起始日期（含，可空）
@@ -59,8 +60,8 @@ public interface LossOverviewMapper {
      * {@code COALESCE(product_thumb, image_oss_id)} 作图片。搜索：产品名称模糊（loss_flow 冗余快照
      * product_name）/ 损耗类型精确。id CAST AS CHAR 返前端。</p>
      *
-     * <p>燎毛损耗（{@code burn_loss}）按整猪记、流水不挂 product，product_unit 为 NULL，
-     * 单位列在后端固定成 {@code kg}（燎毛损耗恒为重量口径），保证导出等其他消费方一致。</p>
+     * <p>燎毛损耗（{@code burn_loss}）恒为重量口径，单位列在后端固定成 {@code kg}，
+     * 兼容 {@code product_unit} 为 NULL 的行，保证导出等其他消费方一致。</p>
      *
      * @param tenantId    租户（V1 固定 '1001'）
      * @param date        统计自然日（必传，yyyy-MM-dd 边界由 service 转成当日 00:00:00/23:59:59 或这里 DATE() 比较）

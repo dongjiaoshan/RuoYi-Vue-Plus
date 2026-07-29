@@ -133,17 +133,24 @@ public interface WarehouseDashboardMapper {
     Integer countTodayDemandOtherKinds(@Param("tenantId") String tenantId);
 
     /**
-     * 今日白条需求头数（需求条目数，白条业态一条需求 = 一头/批，按 SUM(demand_quantity) 计头）。
+     * 今日白条需求头数（半扇折 0.5 头）。
+     *
+     * <p>口径与需求管理 KPI {@code DemandManageMapper.selectTodayKpiMainAgg} 的 {@code todayPigDemand}
+     * 同源：按产品主数据 {@code belong_type='white_bar'} 认白条（需求表业态列 {@code product_type}
+     * 另含 pig 等历史值，不可靠），产品名含「半」（半扇 / 白条·半只）每单位折 0.5 头、
+     * 其余（整只白条）按 1 头计。可出 0.5 小数，故返 BigDecimal。</p>
      *
      * @param tenantId 租户
-     * @return SUM(demand_quantity) WHERE product_type='white_bar'，无记录返 0
+     * @return Σ（含「半」的 demand_quantity × 0.5 + 其余 demand_quantity），无记录返 0
      */
-    @Select("SELECT COALESCE(SUM(demand_quantity), 0) "
-        + "  FROM t_warehouse_demand_manage "
-        + " WHERE tenant_id = #{tenantId} "
-        + "   AND product_type = 'white_bar' "
-        + "   AND demand_date = CURDATE() "
-        + "   AND del_flag = '0'")
+    @Select("SELECT COALESCE(SUM(CASE WHEN d.product_name LIKE '%半%' THEN d.demand_quantity * 0.5 "
+        + "                           ELSE d.demand_quantity END), 0) "
+        + "  FROM t_warehouse_demand_manage d "
+        + "  JOIN t_warehouse_product_info p ON p.id = d.product_id AND p.del_flag = '0' "
+        + " WHERE d.tenant_id = #{tenantId} "
+        + "   AND p.belong_type = 'white_bar' "
+        + "   AND d.demand_date = CURDATE() "
+        + "   AND d.del_flag = '0'")
     BigDecimal sumTodayWhiteBarHeads(@Param("tenantId") String tenantId);
 
     /**

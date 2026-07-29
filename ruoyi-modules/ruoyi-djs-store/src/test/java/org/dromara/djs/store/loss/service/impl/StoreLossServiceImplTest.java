@@ -9,6 +9,7 @@ import org.dromara.djs.store.ledger.domain.StoreDailyLedger;
 import org.dromara.djs.store.ledger.mapper.StoreDailyLedgerMapper;
 import org.dromara.djs.store.loss.domain.StoreLossRecord;
 import org.dromara.djs.store.loss.mapper.StoreLossRecordMapper;
+import org.dromara.djs.warehouse.pack.service.IProductProductionService;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
 import org.dromara.djs.warehouse.shipment.domain.Shipment;
@@ -44,8 +45,9 @@ import static org.mockito.Mockito.when;
  * {@link StoreLossServiceImpl} 单测（DENGBO-R15）。
  *
  * <p>覆盖 happy path：门店日损耗 2 行（含负值原样搬）+ 白条分割损耗 1 行
- * （loss = max(0, 到店 − 白条分割产品总重)，分割产品总重=当日各白条部位入库量之和）
- * → 断言总插 3 行、白条分割损耗行 loss_qty / arrive / split 正确。</p>
+ * （loss = max(0, 到店 − 白条分割产品总重)，分割产品总重 = max(0, 当日各白条部位入库量之和
+ * − 材料外售同原材料成品当日到店重)）→ 断言总插 3 行、白条分割损耗行 loss_qty / arrive / split 正确；
+ * 另覆盖材料外售剔除项与两处钳 0（loss 钳 0 / 分割产品总重钳 0）。</p>
  *
  * @author djs
  * @since DENGBO-R15
@@ -61,6 +63,7 @@ class StoreLossServiceImplTest {
     @Mock private StoreDailyLedgerMapper storeDailyLedgerMapper;
     @Mock private ShipmentMapper shipmentMapper;
     @Mock private ProductInfoMapper productInfoMapper;
+    @Mock private IProductProductionService productProductionService;
     @Mock private DictService dictService;
 
     private StoreLossServiceImpl service;
@@ -72,6 +75,9 @@ class StoreLossServiceImplTest {
     private static final Long PRODUCT_B = 8002L;
     private static final Long WHITE_BAR_PRODUCT = 8100L;
     private static final String WHITE_BAR_CODE = "P-WB-001";
+    /** 材料外售成品（原材料 = 白条部位产品）：其当日到店重从白条分割产品总重中剔除。 */
+    private static final Long MATERIAL_SOLD_PRODUCT = 8200L;
+    private static final String MATERIAL_SOLD_CODE = "P-MS-001";
     private static final LocalDate DATE = LocalDate.of(2026, 8, 15);
 
     /** MyBatis-Plus 单测 entity cache 预热（LambdaQueryWrapper 解析列名需要）。 */
@@ -89,7 +95,7 @@ class StoreLossServiceImplTest {
     @BeforeEach
     void setup() {
         service = new StoreLossServiceImpl(baseMapper, storeDailyLedgerMapper, shipmentMapper,
-            productInfoMapper, dictService);
+            productInfoMapper, productProductionService, dictService);
         tenantHelperMock = Mockito.mockStatic(TenantHelper.class);
         tenantHelperMock.when(TenantHelper::getTenantId).thenReturn(TENANT_ID);
         when(baseMapper.insert(any(StoreLossRecord.class))).thenReturn(1);
@@ -184,6 +190,64 @@ class StoreLossServiceImplTest {
         assertThat(recWb.getLossQty()).isEqualByComparingTo("0");   // 钳 0
         assertThat(recWb.getWhiteBarArriveWeight()).isEqualByComparingTo("20.000");
         assertThat(recWb.getWhiteBarSplitWeight()).isEqualByComparingTo("50.000");
+    }
+
+    @Test
+    @DisplayName("aggregate 分割产品总重剔除材料外售到店重：入库42.000−外售1.001=40.999，到店44.000 → loss 3.001")
+    void testAggregate_MaterialSoldExcludedFromSplitWeight() {
+        // 白条部位当日入库 42.000；材料外售成品（原材料 ∈ 白条部位字典）当日到店实称 1.001
+        // → 白条分割产品总重 = 42.000 − 1.001 = 40.999；loss = 44.000 − 40.999 = 3.001。
+        StoreDailyLedger wbInbound = inboundLedger(WHITE_BAR_PRODUCT, new BigDecimal("42.000"));
+        when(storeDailyLedgerMapper.selectList(any())).thenReturn(List.of(), List.of(wbInbound));
+        Shipment ship = new Shipment();
+        ship.setStoreId(STORE_ID);
+        ship.setShipQuantity(new BigDecimal("44.000"));
+        when(shipmentMapper.selectList(any())).thenReturn(List.of(ship));
+        when(dictService.getAllDictByDictType("djs_white_bar_return_product"))
+            .thenReturn(Map.of(WHITE_BAR_CODE, "白条产品"));
+        // productInfoMapper 两次调用：① 白条部位字典 resolve ② 材料外售成品（product_material ∈ 白条部位）
+        when(productInfoMapper.selectList(any())).thenReturn(
+            List.of(product(WHITE_BAR_PRODUCT, WHITE_BAR_CODE, "kg")),
+            List.of(product(MATERIAL_SOLD_PRODUCT, MATERIAL_SOLD_CODE, "份")));
+        when(productProductionService.sumDeliveredWeightToStore(STORE_ID, MATERIAL_SOLD_PRODUCT, DATE))
+            .thenReturn(new BigDecimal("1.001"));
+
+        service.aggregate(DATE);
+
+        ArgumentCaptor<StoreLossRecord> cap = ArgumentCaptor.forClass(StoreLossRecord.class);
+        verify(baseMapper, times(1)).insert(cap.capture());
+        StoreLossRecord recWb = cap.getValue();
+        assertThat(recWb.getLossType()).isEqualTo("white_bar_split_loss");
+        assertThat(recWb.getWhiteBarArriveWeight()).isEqualByComparingTo("44.000");
+        assertThat(recWb.getWhiteBarSplitWeight()).isEqualByComparingTo("40.999");
+        assertThat(recWb.getLossQty()).isEqualByComparingTo("3.001");
+    }
+
+    @Test
+    @DisplayName("aggregate 材料外售到店重 > 各部位入库量之和 → 白条分割产品总重钳 0")
+    void testAggregate_SplitWeightClampZero() {
+        // 入库 10.000 − 材料外售到店 15.000 = -5 → 分割产品总重钳 0；loss = 30.000 − 0 = 30.000。
+        StoreDailyLedger wbInbound = inboundLedger(WHITE_BAR_PRODUCT, new BigDecimal("10.000"));
+        when(storeDailyLedgerMapper.selectList(any())).thenReturn(List.of(), List.of(wbInbound));
+        Shipment ship = new Shipment();
+        ship.setStoreId(STORE_ID);
+        ship.setShipQuantity(new BigDecimal("30.000"));
+        when(shipmentMapper.selectList(any())).thenReturn(List.of(ship));
+        when(dictService.getAllDictByDictType("djs_white_bar_return_product"))
+            .thenReturn(Map.of(WHITE_BAR_CODE, "白条产品"));
+        when(productInfoMapper.selectList(any())).thenReturn(
+            List.of(product(WHITE_BAR_PRODUCT, WHITE_BAR_CODE, "kg")),
+            List.of(product(MATERIAL_SOLD_PRODUCT, MATERIAL_SOLD_CODE, "份")));
+        when(productProductionService.sumDeliveredWeightToStore(STORE_ID, MATERIAL_SOLD_PRODUCT, DATE))
+            .thenReturn(new BigDecimal("15.000"));
+
+        service.aggregate(DATE);
+
+        ArgumentCaptor<StoreLossRecord> cap = ArgumentCaptor.forClass(StoreLossRecord.class);
+        verify(baseMapper, times(1)).insert(cap.capture());
+        StoreLossRecord recWb = cap.getValue();
+        assertThat(recWb.getWhiteBarSplitWeight()).isEqualByComparingTo("0");   // 钳 0
+        assertThat(recWb.getLossQty()).isEqualByComparingTo("30.000");
     }
 
     @Test

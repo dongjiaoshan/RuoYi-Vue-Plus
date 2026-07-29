@@ -17,6 +17,7 @@ import org.dromara.djs.store.loss.domain.vo.StoreLossRecordVo;
 import org.dromara.djs.store.loss.domain.vo.WhiteBarSplitLossVo;
 import org.dromara.djs.store.loss.mapper.StoreLossRecordMapper;
 import org.dromara.djs.store.loss.service.IStoreLossService;
+import org.dromara.djs.warehouse.pack.service.IProductProductionService;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
 import org.dromara.djs.warehouse.shipment.domain.Shipment;
@@ -47,8 +48,9 @@ import java.util.stream.Collectors;
  *   <li><b>白条分割损耗</b>（{@code white_bar_split_loss}）：按门店汇总一行（{@code product_id}=哨兵 0），
  *       {@code loss_qty} = max(0, 白条到店重 − 白条分割产品总重)；当天无白条到店（到店重=0）则不记录。
  *       另存 {@code white_bar_arrive_weight}（当日该店 {@code white_bar} 发货 {@code ship_quantity} 之和）
- *       与 {@code white_bar_split_weight}（白条在门店分割下来的产品总重 = 当日该店盘点台账中
- *       {@code djs_white_bar_return_product} 字典各白条部位的 {@code inbound_qty} 入库量之和）。</li>
+ *       与 {@code white_bar_split_weight}（白条在门店分割下来的产品总重 = max(0, 当日该店盘点台账中
+ *       {@code djs_white_bar_return_product} 字典各白条部位的 {@code inbound_qty} 入库量之和
+ *       − 材料外售同原材料成品当日到店重)）。</li>
  * </ol>
  *
  * @author djs
@@ -67,8 +69,11 @@ public class StoreLossServiceImpl implements IStoreLossService {
     /** 白条分割损耗汇总行哨兵产品 id（无真实产品，让唯一键生效）。 */
     private static final long SENTINEL_PRODUCT_ID = 0L;
 
-    /** 业态字典值：白条（发货到店重量来源）。 */
+    /** 业态字典值（{@code djs_belong_type}）：白条 —— 发货到店重量来源 + 白条分割损耗汇总行的产品类型。 */
     private static final String PRODUCT_TYPE_WHITE_BAR = "white_bar";
+
+    /** 业态字典值（{@code djs_belong_type}）：其他 —— 外购商品 {@code belong_type} 恒空，按此值归类。 */
+    private static final String BELONG_TYPE_OTHER = "other";
 
     /** 白条部位字典（label=部位名 / value=产品业务码 product_id）：白条在门店分割下来的部位品集合。 */
     private static final String DICT_WHITE_BAR_RETURN_PRODUCT = "djs_white_bar_return_product";
@@ -89,6 +94,7 @@ public class StoreLossServiceImpl implements IStoreLossService {
     private final StoreDailyLedgerMapper storeDailyLedgerMapper;
     private final ShipmentMapper shipmentMapper;
     private final ProductInfoMapper productInfoMapper;
+    private final IProductProductionService productProductionService;
     private final DictService dictService;
 
     @Override
@@ -118,16 +124,31 @@ public class StoreLossServiceImpl implements IStoreLossService {
             .ge(query.getLossDateFrom() != null, StoreLossRecord::getLossDate, query.getLossDateFrom())
             .le(query.getLossDateTo() != null, StoreLossRecord::getLossDate, query.getLossDateTo());
 
-        // 产品名称模糊：下推到 SQL 分页前——先按产品名 LIKE 预查产品雪花 id 集；关键字命中白条分割损耗
-        // 中文占位（字典 label / 兜底文案）时把哨兵行（product_id=0）一并纳入，保证 total / 翻页语义正确。
-        if (StringUtils.isNotBlank(query.getProductName())) {
-            String kw = query.getProductName().trim();
-            Set<Long> matchedIds = productInfoMapper.selectList(new LambdaQueryWrapper<ProductInfo>()
-                    .like(ProductInfo::getProductName, kw)
-                    .select(ProductInfo::getId))
+        // 产品名称模糊 + 产品类型多选：两者都不在损耗表上，一次产品主数据查询预查出命中的产品雪花 id 集，
+        // 下推到 SQL 分页前，保证 total / 翻页语义正确。
+        String kw = StringUtils.trimToNull(query.getProductName());
+        List<String> belongTypes = query.getBelongTypes() == null ? List.of()
+            : query.getBelongTypes().stream().filter(StringUtils::isNotBlank).distinct().toList();
+        if (kw != null || !belongTypes.isEmpty()) {
+            LambdaQueryWrapper<ProductInfo> pw = new LambdaQueryWrapper<ProductInfo>()
+                .like(kw != null, ProductInfo::getProductName, kw)
+                .select(ProductInfo::getId);
+            if (!belongTypes.isEmpty()) {
+                if (belongTypes.contains(BELONG_TYPE_OTHER)) {
+                    // 「其他」一并命中 belong_type IS NULL（外购商品业态恒空），与 fillNames 的回落口径一致
+                    pw.and(q -> q.in(ProductInfo::getBelongType, belongTypes).or().isNull(ProductInfo::getBelongType));
+                } else {
+                    pw.in(ProductInfo::getBelongType, belongTypes);
+                }
+            }
+            Set<Long> matchedIds = productInfoMapper.selectList(pw)
                 .stream().map(ProductInfo::getId).filter(Objects::nonNull)
                 .collect(Collectors.toCollection(TreeSet::new));
-            if (resolveWhiteBarSplitLabel().contains(kw)) {
+            // 白条分割损耗哨兵行（product_id=0，无真实产品）：名称门（关键字命中中文占位：字典 label / 兜底文案）
+            // 与类型门（选中「白条产品」）都过才纳入。
+            boolean nameGate = kw == null || resolveWhiteBarSplitLabel().contains(kw);
+            boolean typeGate = belongTypes.isEmpty() || belongTypes.contains(PRODUCT_TYPE_WHITE_BAR);
+            if (nameGate && typeGate) {
                 matchedIds.add(SENTINEL_PRODUCT_ID);
             }
             if (matchedIds.isEmpty()) {
@@ -161,9 +182,9 @@ public class StoreLossServiceImpl implements IStoreLossService {
         if (arrive.signum() <= 0) {
             return vo;   // 无白条到店：分割/损耗均 0，前端据 arriveWeight=0 隐藏
         }
-        // 白条分割产品总重 = 白条在门店分割下来的产品总重 = 当日该店盘点各白条部位（白条退回字典产品）入库量之和。
+        // 白条分割产品总重 = 白条在门店分割下来的产品总重（各白条部位入库量之和 − 材料外售同原材料成品到店重）。
         Set<Long> cutProductIds = resolveWhiteBarReturnProductIds();
-        BigDecimal splitTotal = sumStoreSplitProductWeight(storeId, d, cutProductIds);
+        BigDecimal splitTotal = sumWhiteBarSplitWeight(storeId, d, cutProductIds);
         vo.setSplitTotalWeight(splitTotal);
         // 白条分割损耗 = max(0, 白条到店重 − 白条分割产品总重)。
         BigDecimal loss = arrive.subtract(splitTotal);
@@ -172,8 +193,9 @@ public class StoreLossServiceImpl implements IStoreLossService {
     }
 
     /**
-     * 回填 productName / productUnit：门店日损耗行 LEFT JOIN {@code t_warehouse_product_info}；
-     * 白条分割损耗汇总行（productId=哨兵 0）productName 取损耗类型中文（{@code djs_store_loss_type}）占位。
+     * 回填 productName / productUnit / belongType：门店日损耗行 LEFT JOIN {@code t_warehouse_product_info}；
+     * 白条分割损耗汇总行（productId=哨兵 0）productName 取损耗类型中文（{@code djs_store_loss_type}）占位、
+     * belongType 固定 {@code white_bar}（该行本就是白条口径）。
      */
     private void fillNames(List<StoreLossRecordVo> list) {
         if (list == null || list.isEmpty()) {
@@ -187,7 +209,8 @@ public class StoreLossServiceImpl implements IStoreLossService {
             ? Map.of()
             : productInfoMapper.selectList(new LambdaQueryWrapper<ProductInfo>()
                     .in(ProductInfo::getId, realProductIds)
-                    .select(ProductInfo::getId, ProductInfo::getProductName, ProductInfo::getProductUnit))
+                    .select(ProductInfo::getId, ProductInfo::getProductName, ProductInfo::getProductUnit,
+                        ProductInfo::getBelongType))
                 .stream().collect(Collectors.toMap(ProductInfo::getId, p -> p, (a, b) -> a));
         String whiteBarSplitLabel = resolveWhiteBarSplitLabel();
 
@@ -196,6 +219,8 @@ public class StoreLossServiceImpl implements IStoreLossService {
                 ProductInfo p = products.get(vo.getProductId());
                 if (p != null) {
                     vo.setProductName(p.getProductName());
+                    // 外购商品 belong_type 恒空 → 回落「其他」，与筛选口径一致
+                    vo.setBelongType(StringUtils.isNotBlank(p.getBelongType()) ? p.getBelongType() : BELONG_TYPE_OTHER);
                     if (StringUtils.isBlank(vo.getProductUnit())) {
                         vo.setProductUnit(p.getProductUnit());
                     }
@@ -203,6 +228,7 @@ public class StoreLossServiceImpl implements IStoreLossService {
             } else {
                 // 白条分割损耗汇总行：无真实产品，用类型中文占位。
                 vo.setProductName(whiteBarSplitLabel);
+                vo.setBelongType(PRODUCT_TYPE_WHITE_BAR);
             }
         }
     }
@@ -250,7 +276,8 @@ public class StoreLossServiceImpl implements IStoreLossService {
 
     /**
      * 白条分割损耗：按门店汇总一行。门店集 = 当日有白条发货（到店）的门店；
-     * {@code 白条分割产品总重 = 当日该店盘点各白条部位入库量之和}（白条在门店分割下来的产品总重）；
+     * {@code 白条分割产品总重 = max(0, 当日该店盘点各白条部位入库量之和 − 材料外售同原材料成品当日到店重)}
+     * （白条在门店分割下来的产品总重，与实时口径 {@link #getWhiteBarSplitLoss} 同源）；
      * {@code loss = max(0, 到店重 − 白条分割产品总重)}；到店重=0 的门店不记录。
      *
      * @return 落盘行数
@@ -271,8 +298,8 @@ public class StoreLossServiceImpl implements IStoreLossService {
             if (arrive.signum() <= 0) {
                 continue;   // 到店重 ≤ 0 视为无白条到店，不记录
             }
-            // 白条分割产品总重 = 当日该店盘点各白条部位（白条退回字典产品）入库量之和；损耗 = max(0, 到店 − 分割产品总重)。
-            BigDecimal splitTotal = sumStoreSplitProductWeight(storeId, date, cutProductIds);
+            // 白条分割产品总重 = 各白条部位入库量之和 − 材料外售同原材料成品到店重；损耗 = max(0, 到店 − 分割产品总重)。
+            BigDecimal splitTotal = sumWhiteBarSplitWeight(storeId, date, cutProductIds);
             BigDecimal loss = arrive.subtract(splitTotal);
             if (loss.signum() < 0) {
                 loss = BigDecimal.ZERO;   // 钳 0
@@ -313,7 +340,50 @@ public class StoreLossServiceImpl implements IStoreLossService {
     }
 
     /**
-     * 当日该店「白条分割产品总重」kg = 白条在门店分割下来的部位品总重：
+     * 当日该店「白条分割产品总重」kg = max(0, 各白条部位当日入库量之和 − 材料外售同原材料成品当日到店重)。
+     *
+     * <p>材料外售成品由白条分割成原材料后再外售，其到店重已随成品记在盘点入库里，属于原材料的外卖去向、
+     * 不是白条在门店分割留下的产品，故从入库项中剔除（客户口径：白条到店重 + 外卖产品重 − Σ原材料产品重 = 损耗）。
+     * 钳 0 避免材料外售到店重大于入库项时列表出负数。</p>
+     */
+    private BigDecimal sumWhiteBarSplitWeight(Long storeId, LocalDate date, Set<Long> cutProductIds) {
+        BigDecimal splitTotal = sumStoreSplitProductWeight(storeId, date, cutProductIds)
+            .subtract(sumMaterialSoldArriveWeight(storeId, date, cutProductIds));
+        return splitTotal.signum() < 0 ? BigDecimal.ZERO : splitTotal;
+    }
+
+    /**
+     * 当日该店材料外售成品到店实称重合计 kg（白条分割产品总重的扣减项）。
+     *
+     * <p>取「是否原材料外售=是」（{@code is_material_sold=1}）且原材料 ∈ 白条部位字典产品集
+     * （{@code product_material ∈ cutProductIds}）的成品，逐个累加当日发往该店的发货清点实称重
+     * {@code product_weight}（{@link IProductProductionService#sumDeliveredWeightToStore}）。
+     * 口径与门店盘点入库上限项 {@code StoreDailyLedgerServiceImpl.sumMaterialSoldWhiteBarArriveWeight} 同源。</p>
+     *
+     * <p>无门店 / 空字典 / 无命中成品 → 0，不抛。</p>
+     */
+    private BigDecimal sumMaterialSoldArriveWeight(Long storeId, LocalDate date, Set<Long> cutProductIds) {
+        if (storeId == null || cutProductIds == null || cutProductIds.isEmpty()) {
+            return BigDecimal.ZERO;
+        }
+        List<Long> finishedIds = productInfoMapper.selectList(new LambdaQueryWrapper<ProductInfo>()
+                .eq(ProductInfo::getIsMaterialSold, 1)
+                .isNotNull(ProductInfo::getProductMaterial)
+                .in(ProductInfo::getProductMaterial, cutProductIds)
+                .select(ProductInfo::getId))
+            .stream().map(ProductInfo::getId).filter(Objects::nonNull).distinct().toList();
+        BigDecimal sum = BigDecimal.ZERO;
+        for (Long finishedId : finishedIds) {
+            BigDecimal w = productProductionService.sumDeliveredWeightToStore(storeId, finishedId, date);
+            if (w != null && w.signum() > 0) {
+                sum = sum.add(w);
+            }
+        }
+        return sum;
+    }
+
+    /**
+     * 当日该店各白条部位入库量之和 kg（白条分割产品总重的入库项）：
      * 取当日该店盘点台账（{@code t_store_daily_ledger}）中 productId ∈ 白条部位字典产品集的行，
      * 累加其当日入库量（{@code inbound_qty}，门店对白条分割出的各部位实称入库）。
      * 无门店 / 空字典 → 0，不抛。

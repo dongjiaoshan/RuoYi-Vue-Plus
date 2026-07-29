@@ -625,9 +625,10 @@ public class PigBurnRecordServiceImpl
         // ---------- Step 5：DENGBO row27 燎毛损耗 ----------
         // 燎毛处理完成时，剩余未入库重量（= 头皮肉重量[到场重 arrive_weight] − 本次入库产品总重 inWeightTotal）
         // 计入「燎毛损耗」统一损耗流水，进「损耗总览」。arrive 为 null（未称重）或剩余 ≤ 0 时不记
-        //（record 内部对 lossWeight ≤ 0 自动跳过）。admin row15：燎毛损耗是整只级过程损耗、无具体产品，
-        // product_id 置 null（record 对 null productId 不回填 product_code/name，损耗总览 LEFT JOIN 显 '—'），
-        // 仅带耳号便于追溯。
+        //（record 内部对 lossWeight ≤ 0 自动跳过）。
+        // 损耗归属产品 = 白条产品（主数据里的「半扇」），与分割损耗 / 预冷损耗同一口径，三者在损耗总览里归到同一产品行；
+        // product_code / product_name / product_unit / belong_type 快照由 lossFlowService.record 按 productId 自动回填。
+        // 另带耳号便于追溯到具体整猪。
         if (headSkinWeight != null) {
             BigDecimal burnLoss = headSkinWeight.subtract(inWeightTotal);
             if (burnLoss.signum() > 0) {
@@ -635,7 +636,7 @@ public class PigBurnRecordServiceImpl
                 loss.setLossType(LOSS_TYPE_BURN);
                 loss.setLossWeight(burnLoss);
                 loss.setLossDate(new Date());
-                loss.setProductId(null);
+                loss.setProductId(resolveWhiteBarProductId());
                 loss.setEarNo(bar.getEarNo());
                 loss.setOperatorId(operatorId);
                 loss.setSourceBizType(LOSS_SOURCE_BIZ_BURN);
@@ -703,6 +704,31 @@ public class PigBurnRecordServiceImpl
     private Map<Long, ProductInfo> loadWhiteBarTypeMap() {
         return loadWhiteBarTypes().stream()
             .collect(Collectors.toMap(ProductInfo::getId, p -> p, (a, b) -> a));
+    }
+
+    /**
+     * 解析白条产品 id：产品主数据里「产品类别=白条产品 + 状态正常」的产品，按业务码升序取第一个
+     *（甲方主数据里当前是「半扇」）。
+     *
+     * <p>口径与 {@code PigCutRecordServiceImpl#resolveWhiteBarProductId} 一致，使燎毛损耗 / 分割损耗 /
+     * 预冷损耗三种猪肉过程损耗在「损耗总览」里归到同一个产品行。不绑固定业务码，因为白条产品由甲方在
+     * admin 产品配置里维护。</p>
+     *
+     * <p>与分割侧的唯一差别：查不到白条产品时返 {@code null} 而不抛异常 —— 损耗只是燎毛完成的副产账，
+     * 不能因产品主数据缺失阻断燎毛主链；此时 loss_flow 退化为无产品损耗行。</p>
+     */
+    private Long resolveWhiteBarProductId() {
+        ProductInfo whiteBar = productInfoMapper.selectOne(
+            new LambdaQueryWrapper<ProductInfo>()
+                .eq(ProductInfo::getBelongType, WHITE_BAR_BELONG_TYPE)
+                .eq(ProductInfo::getProductStatus, PRODUCT_STATUS_NORMAL)
+                .orderByAsc(ProductInfo::getProductId)
+                .last("LIMIT 1"));
+        if (whiteBar == null || whiteBar.getId() == null) {
+            log.warn("燎毛损耗未挂产品：产品配置里没有「产品类别=白条产品」且状态正常的产品");
+            return null;
+        }
+        return whiteBar.getId();
     }
 
     @Override
