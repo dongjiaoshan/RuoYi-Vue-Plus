@@ -117,12 +117,9 @@ public class PigBurnRecordServiceImpl
     private static final Integer PRODUCT_ATTR_RAW_MATERIAL = 2;
 
     /**
-     * 白条产品类别枚举（FIX-WMS-MP-BURN-001 录入约束 + 去前缀用），按 product_id 业务码后缀映射。
+     * 白条产品类别（FIX-WMS-MP-BURN-001 录入约束用）：half=半只（一头猪左右两扇）。
      */
-    private static final String PRODUCT_TYPE_WHOLE = "whole";
     private static final String PRODUCT_TYPE_HALF = "half";
-    private static final String PRODUCT_TYPE_HEAD = "head";
-    private static final String PRODUCT_TYPE_TROTTER = "trotter";
 
     /**
      * 白条状态码（{@code t_warehouse_bar_info.status}）。
@@ -422,7 +419,7 @@ public class PigBurnRecordServiceImpl
             vo.setProductId(p.getId());
             vo.setProductCode(p.getProductId());
             vo.setProductName(p.getProductName());
-            vo.setProductType(resolveProductType(p.getProductId()));
+            vo.setProductType(resolveProductType(p));
             vo.setImageUrl(urlsAligned ? urls.get(i) : null);
             vo.setRecordedCount(recordedCountMap.getOrDefault(p.getId(), 0));
             result.add(vo);
@@ -581,7 +578,7 @@ public class PigBurnRecordServiceImpl
             throw new ServiceException("白条状态不符（当前：" + bar.getStatus() + "，需燎毛中），请先录入产品入库");
         }
 
-        // ---------- Step 2：聚合该白条已入库产品 → 校验总重 + 整只/半只互斥（后端兜底前端约束）----------
+        // ---------- Step 2：聚合该白条已入库产品 → 校验总重 + 半只须集齐 2 扇（后端兜底前端约束）----------
         List<ProductInhouse> inhouses = productInhouseMapper.selectList(
             new LambdaQueryWrapper<ProductInhouse>()
                 .eq(ProductInhouse::getWhiteBarId, bar.getId()));
@@ -591,9 +588,6 @@ public class PigBurnRecordServiceImpl
 
         Map<Long, ProductInfo> typeMap = loadWhiteBarTypeMap();
         BigDecimal inWeightTotal = BigDecimal.ZERO;
-        boolean hasWhole = false;
-        boolean hasHalf = false;
-        int headCount = 0;
         int halfCount = 0;
         for (ProductInhouse ih : inhouses) {
             BigDecimal w = ih.getProductWeight();
@@ -601,27 +595,14 @@ public class PigBurnRecordServiceImpl
                 inWeightTotal = inWeightTotal.add(w);
             }
             ProductInfo type = typeMap.get(ih.getProductId());
-            String pt = type == null ? null : resolveProductType(type.getProductId());
-            if (PRODUCT_TYPE_WHOLE.equals(pt)) {
-                hasWhole = true;
-            } else if (PRODUCT_TYPE_HALF.equals(pt)) {
-                hasHalf = true;
+            if (type != null && PRODUCT_TYPE_HALF.equals(resolveProductType(type))) {
                 halfCount++;
-            } else if (PRODUCT_TYPE_HEAD.equals(pt)) {
-                headCount++;
             }
         }
-        // 整只 / 半只互斥（一头白条不能既整只又半只）
-        if (hasWhole && hasHalf) {
-            throw new ServiceException("整只与半只不能同时入库");
-        }
-        // 半只必须集齐 2 个（一头整猪左右两扇）才能处理完成
-        if (hasHalf && halfCount != 2) {
+        // 白条（半只）必须集齐 2 扇（一头整猪左右两扇）才能处理完成；
+        // 只录了猪头 / 猪脚 等非白条燎毛间原材料（halfCount=0）不受本约束。
+        if (halfCount > 0 && halfCount != 2) {
             throw new ServiceException("半只需录入 2 个才能处理完成，当前已录 " + halfCount + "/2");
-        }
-        // 猪头限 1 次
-        if (headCount > 1) {
-            throw new ServiceException("猪头最多入库 1 次");
         }
         // 累计入库总重 ≤ 头皮肉重量（到场重 arrive_weight）。arrive 为 null（未称重）时跳过本校验（向后兼容）。
         BigDecimal headSkinWeight = bar.getArriveWeight();
@@ -666,22 +647,19 @@ public class PigBurnRecordServiceImpl
 
 
     /**
-     * 按 product_id 业务码后缀映射结构化产品类别（FIX-WMS-MP-BURN-001）。
+     * 按产品主数据判定结构化产品类别（FIX-WMS-MP-BURN-001 录入约束用）。
      *
-     * <p>PROD-WHITE-BAR-01=整只 / -02=猪头 / -03=猪蹄 / -04=半只（与 white-bar seed 对齐）。
-     * 未识别码返回 {@code null}（前端 graceful 不拦）。</p>
+     * <p>判据是 {@code belong_type}（产品类别）而非业务码 —— 白条产品由甲方在 admin 产品配置里维护，
+     * 增删改都不该要求改代码：</p>
+     * <ul>
+     *   <li>{@code belong_type='white_bar'}（产品类别=白条产品）= 燎毛产出的白条本体，
+     *       一头猪出左右两扇 → {@link #PRODUCT_TYPE_HALF}，限录 2 次、须集齐 2 扇才能处理完成；</li>
+     *   <li>其余配在燎毛间的原材料（猪头 / 猪脚 等 {@code belong_type='pork'}）→ {@code null}，
+     *       不参与半只约束，前端按产品名回落判类别。</li>
+     * </ul>
      */
-    private String resolveProductType(String productCode) {
-        if (productCode == null) {
-            return null;
-        }
-        return switch (productCode) {
-            case "PROD-WHITE-BAR-01" -> PRODUCT_TYPE_WHOLE;
-            case "PROD-WHITE-BAR-02" -> PRODUCT_TYPE_HEAD;
-            case "PROD-WHITE-BAR-03" -> PRODUCT_TYPE_TROTTER;
-            case "PROD-WHITE-BAR-04" -> PRODUCT_TYPE_HALF;
-            default -> null;
-        };
+    private static String resolveProductType(ProductInfo product) {
+        return WHITE_BAR_BELONG_TYPE.equals(product.getBelongType()) ? PRODUCT_TYPE_HALF : null;
     }
 
     /**
@@ -709,8 +687,9 @@ public class PigBurnRecordServiceImpl
      * 原材料（如 GF0002 五花肉 belong_type='pork'，是燎毛间原材料但被 white_bar 过滤误挡）。</p>
      *
      * <p>只取 {@code product_attr=2}（原材料）；{@code product_attr=1} 生产产品 = 对外打包后的成品，
-     * 不在燎毛入库。标准白条（整只/半只，业务码前缀 PROD-WHITE-BAR-）+ 其它配在燎毛间的原材料都进；
-     * {@link #resolveProductType} 对非标准码返 null，前端回落按名称判类别。</p>
+     * 不在燎毛入库。白条本体（{@code belong_type='white_bar'}，甲方主数据里是「半扇」）+ 其它配在燎毛间的
+     * 原材料（猪头 / 猪脚 等 {@code belong_type='pork'}）都进；
+     * {@link #resolveProductType} 只对白条本体返 half，其余返 null，前端回落按名称判类别。</p>
      */
     private List<ProductInfo> loadWhiteBarTypes() {
         return productInfoMapper.selectList(

@@ -55,9 +55,11 @@ public interface IStoreReturnService {
     int batchCreate(StoreReturnBatchBo bo);
 
     /**
-     * 退回操作「猪肉产品」tab 候选列表：仅当该门店<b>当日有白条产品到店</b>时才返回配置的猪肉退回字典项，否则返空。
+     * 退回操作「猪肉产品」tab 候选列表（两子类，保序并跨子类去重）。
      *
-     * <p>候选清单本体取字典 {@code djs_pork_return_product}（空则回退 {@code belong_type IN ('pork','white_bar')}）。
+     * <p>① 猪肉产品：当日到店的猪肉成品（{@code belong_type='pork'}；配置「原材料外售」的成品改列其原材料）——
+     * 按份退回、单位取成品自身单位。② 白条产品：字典 {@code djs_white_bar_return_product} 配置产品，
+     * 仅当该门店<b>当日有白条到店</b>时列出——按重量退货、单位取对应原材料单位。
      * 「当日有白条到店」= 该店当日确认收货（{@code received_time}=今天）的需求下存在已发货清点
      * （{@code is_delivery_check=1}）的 white_bar 业态成品，口径与门店猪肉打包可追溯白条一致。每行带真实
      * 产品雪花 {@code productId} 供 {@link #batchCreate} 提交（提交时仍走产品 FK 校验）。</p>

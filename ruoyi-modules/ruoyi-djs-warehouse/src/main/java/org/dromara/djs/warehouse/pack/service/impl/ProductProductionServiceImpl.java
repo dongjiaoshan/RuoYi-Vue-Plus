@@ -150,6 +150,24 @@ public class ProductProductionServiceImpl
     private static final ZoneId PACK_TODAY_ZONE = ZoneId.of("Asia/Shanghai");
 
     /**
+     * 打包实称相对单包规则（{@code product_info.material_num}）的允许偏差百分比（对称，上下同值）。
+     * 现场秤精度有限、菜品自然分量参差，容差过窄会把打包台卡死（Kevin 2026-07-29）。
+     */
+    private static final int PACK_MEASURE_TOLERANCE_PERCENT = 10;
+    /** 容差带下界系数 = 1 − 容差（0.90）。 */
+    private static final BigDecimal PACK_MEASURE_LOWER_FACTOR =
+        BigDecimal.ONE.subtract(BigDecimal.valueOf(PACK_MEASURE_TOLERANCE_PERCENT, 2));
+    /** 容差带上界系数 = 1 + 容差（1.10）。 */
+    private static final BigDecimal PACK_MEASURE_UPPER_FACTOR =
+        BigDecimal.ONE.add(BigDecimal.valueOf(PACK_MEASURE_TOLERANCE_PERCENT, 2));
+    /**
+     * 「偏差超容差」异常文案里的稳定标识串——admin / mp 靠它识别「该弹二次确认框」而非普通报错，
+     * 改动必须同步 {@code miniapp/src/api/warehouse/pack.ts} 的 {@code PACK_MEASURE_DEVIATION_MARKER}。
+     */
+    private static final String PACK_MEASURE_DEVIATION_MARKER =
+        "偏差超过" + PACK_MEASURE_TOLERANCE_PERCENT + "%";
+
+    /**
      * 其他产品（egg/dry_good/other）打包来源业态白名单（统一目标模型 G5）。
      *
      * <p>这三类「其他业态食品」走与果蔬/肉品同构的「领用产 inhouse → dry 打包」路径：
@@ -273,7 +291,7 @@ public class ProductProductionServiceImpl
         ProductInhouse src = requireActiveInhouse(bo.getSourceInhouseId());
         // Step 2：校验目标产品存在 + 是发货品
         ProductInfo product = requireDeliveryProduct(bo.getProductId());
-        // admin row98：果蔬实称不得低于打包规则；超出规则 3% 必须经操作员二次确认。
+        // 果蔬实称须落在打包规则 ±10% 容差带内；偏低偏高超出都要操作员二次确认（不直接拒收）。
         validatePackMeasureRule(product, bo.getProductWeight(), bo.getAllowOverMeasure());
         // Step 2.5：果蔬打包来源原材料库存校验（V4，果疏产品全流程处理.docx）：
         // 目标果蔬成品若配了 product_material（关联来源原材料果蔬产品），则按 doc 规则
@@ -402,7 +420,8 @@ public class ProductProductionServiceImpl
 
         ProductInhouse src = requireActiveInhouse(bo.getSourceInhouseId());
         ProductInfo product = requireDeliveryProduct(bo.getProductId());
-        // admin row97：肉品实称规则与果蔬一致；其他 dry 业态不套用该重量规则。
+        // 肉品实称容差规则与果蔬一致；其他 dry 业态（干货 / 蛋 / other）不套用该重量规则
+        // ——它们按「份数 × 单份规格」提交，productWeight 不是单包实称，套上去必然误判。
         if (BELONG_TYPE_PORK.equals(product.getBelongType())) {
             validatePackMeasureRule(product, bo.getProductWeight(), bo.getAllowOverMeasure());
         }
@@ -1881,22 +1900,36 @@ public class ProductProductionServiceImpl
     }
 
     /**
-     * admin rows97/98：肉品、果蔬打包实称校验。
-     * material_num 作为单包规则重量（kg）；低于规则直接拒绝，超过规则 3% 需要显式确认标记。
+     * 肉品、果蔬打包实称校验：{@code material_num} 作为单包规则重量（kg），实称须落在
+     * <b>±{@value #PACK_MEASURE_TOLERANCE_PERCENT}% 对称容差带</b>内（Kevin 2026-07-29「限制要有，
+     * 但不要太严格，允许适当偏移」）。
+     *
+     * <ul>
+     *   <li>实称 ∈ [rule×{@code 0.9}, rule×{@code 1.1}] → 直接通过。</li>
+     *   <li>偏低或偏高超出容差带 → 不直接拒收，走<b>二次确认</b>：抛
+     *       {@link #PACK_MEASURE_DEVIATION_MARKER} 提示，前端弹确认框后带
+     *       {@code allowOverMeasure=true} 重提即放行（现场秤精度有限，硬拒会卡死打包台）。</li>
+     *   <li>未配规则（{@code material_num} 空 / ≤0）或实称为空 → 不校验。</li>
+     * </ul>
      */
     private void validatePackMeasureRule(ProductInfo product, BigDecimal actualWeight, Boolean allowOverMeasure) {
         BigDecimal rule = product.getMaterialNum();
         if (rule == null || rule.signum() <= 0 || actualWeight == null) {
             return;
         }
-        if (actualWeight.compareTo(rule) < 0) {
-            throw new ServiceException("实称重量(" + actualWeight.toPlainString()
-                + "kg)不能低于产品打包规则(" + rule.toPlainString() + "kg)", 400);
+        BigDecimal lowerBound = rule.multiply(PACK_MEASURE_LOWER_FACTOR);
+        BigDecimal upperBound = rule.multiply(PACK_MEASURE_UPPER_FACTOR);
+        if (actualWeight.compareTo(lowerBound) >= 0 && actualWeight.compareTo(upperBound) <= 0) {
+            return;
         }
-        BigDecimal overLimit = rule.multiply(new BigDecimal("1.03"));
-        if (actualWeight.compareTo(overLimit) > 0 && !Boolean.TRUE.equals(allowOverMeasure)) {
-            throw new ServiceException("实称重量超过打包规则3%，请确认后继续", 400);
+        if (Boolean.TRUE.equals(allowOverMeasure)) {
+            log.warn("[WMS-PACK-001] 实称与打包规则偏差超 {}%（操作员已确认放行）productId={} productCode={} productName={} actualWeight={}kg rule={}kg",
+                PACK_MEASURE_TOLERANCE_PERCENT, product.getId(), product.getProductId(), product.getProductName(),
+                actualWeight.toPlainString(), rule.toPlainString());
+            return;
         }
+        throw new ServiceException("实称 " + actualWeight.stripTrailingZeros().toPlainString() + "kg 与打包规则 "
+            + rule.stripTrailingZeros().toPlainString() + "kg " + PACK_MEASURE_DEVIATION_MARKER + "，确认继续？", 400);
     }
 
     /**

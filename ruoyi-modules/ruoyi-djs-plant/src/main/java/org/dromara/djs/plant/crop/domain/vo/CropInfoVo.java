@@ -48,6 +48,10 @@ public class CropInfoVo implements Serializable {
     @ExcelProperty(value = "科属")
     private String cropFamily;
 
+    /** 作物属（自由文本，例 芸薹属）。 */
+    @ExcelProperty(value = "作物属")
+    private String cropGenus;
+
     @ExcelProperty(value = "关联产品ID")
     private Long relatedProduct;
 

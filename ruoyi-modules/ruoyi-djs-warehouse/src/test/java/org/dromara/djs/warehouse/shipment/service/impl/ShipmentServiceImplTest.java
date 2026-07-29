@@ -533,7 +533,108 @@ class ShipmentServiceImplTest {
             .hasMessageContaining("store.id_required");
     }
 
+    // ============== 生产量口径（Kevin 2026-07-29：按产品单位，kg 取公斤数 / 其余每条计 1）==============
+
+    @Test
+    @DisplayName("生产量: kg 单位产品 → 取 produce_quantity 公斤数（不再 ÷ material_num）")
+    void queryStoreSummary_kgProduct_producedIsWeight() {
+        DemandManage d = newDemand(100L, 9L, DemandStatus.CONFIRMED);
+        d.setProductId(501L);
+        d.setDemandQuantity(new BigDecimal("10"));   // 需求 10kg
+        when(demandMapper.selectList(any())).thenReturn(List.of(d));
+        when(storeMapper.selectList(any())).thenReturn(List.of(newStore(9L, "城东店")));
+
+        ProductInfo kgProduct = newProduct(501L, "vegetable", "kg", new BigDecimal("0.25"));
+        when(productInfoMapper.selectList(any())).thenReturn(List.of(kgProduct));
+        ProductProduction made = newProduction(11L, null, "260610V0001", new BigDecimal("2.500"));
+        made.setProductId(501L);
+        made.setStoreId(9L);
+        when(productProductionMapper.selectList(any())).thenReturn(List.of(made));
+
+        ShipStoreVo vo = service.queryStoreSummary(9L);
+
+        // 生产量 2.5kg / 需求 10kg = 25%（旧口径 2.5 ÷ material_num 0.25 = 10 份 → 会误算 100%）
+        assertThat(vo.getSatisfyRate()).isEqualByComparingTo("25.00");
+    }
+
+    @Test
+    @DisplayName("生产量: 按件单位产品（份/枚）→ 每条打包记录恒计 1，与 produce_quantity / material_num 无关")
+    void queryStoreSummary_pieceProduct_producedIsOnePerRecord() {
+        DemandManage d = newDemand(100L, 9L, DemandStatus.CONFIRMED);
+        d.setProductId(502L);
+        d.setDemandQuantity(new BigDecimal("4"));    // 需求 4 份
+        when(demandMapper.selectList(any())).thenReturn(List.of(d));
+        when(storeMapper.selectList(any())).thenReturn(List.of(newStore(9L, "城东店")));
+
+        // 鸡蛋：一份=30 枚，两条打包记录各录 60（旧口径会还原成 2+2=4 份 → 误算 100%）
+        ProductInfo eggProduct = newProduct(502L, "egg", "份", new BigDecimal("30"));
+        when(productInfoMapper.selectList(any())).thenReturn(List.of(eggProduct));
+        ProductProduction m1 = newProduction(11L, null, "260610E0001", new BigDecimal("60"));
+        m1.setProductId(502L);
+        m1.setStoreId(9L);
+        ProductProduction m2 = newProduction(12L, null, "260610E0002", new BigDecimal("60"));
+        m2.setProductId(502L);
+        m2.setStoreId(9L);
+        when(productProductionMapper.selectList(any())).thenReturn(List.of(m1, m2));
+
+        ShipStoreVo vo = service.queryStoreSummary(9L);
+
+        // 2 条记录 = 2 份 / 需求 4 份 = 50%
+        assertThat(vo.getSatisfyRate()).isEqualByComparingTo("50.00");
+    }
+
+    @Test
+    @DisplayName("生产量: 礼盒（单位=盒）同按件计 —— 1 条打包记录 = 1，不再取 produce_quantity 盒数")
+    void queryStoreSummary_giftBox_producedIsOnePerRecord() {
+        DemandManage d = newDemand(100L, 9L, DemandStatus.CONFIRMED);
+        d.setProductId(503L);
+        d.setDemandQuantity(new BigDecimal("6"));    // 需求 6 盒
+        when(demandMapper.selectList(any())).thenReturn(List.of(d));
+        when(storeMapper.selectList(any())).thenReturn(List.of(newStore(9L, "城东店")));
+
+        ProductInfo giftProduct = newProduct(503L, "gift_box", "盒", null);
+        when(productInfoMapper.selectList(any())).thenReturn(List.of(giftProduct));
+        ProductProduction made = newProduction(11L, null, "260610G0001", new BigDecimal("6"));
+        made.setProductId(503L);
+        made.setStoreId(9L);
+        when(productProductionMapper.selectList(any())).thenReturn(List.of(made));
+
+        ShipStoreVo vo = service.queryStoreSummary(9L);
+
+        // 1 条记录 = 1 / 需求 6 = 16.67%
+        assertThat(vo.getSatisfyRate()).isEqualByComparingTo("16.67");
+    }
+
+    @Test
+    @DisplayName("生产量: 产品主数据缺失（product_info 查不到）→ 按件计 1，不拿重量当件数")
+    void queryStoreSummary_missingProductInfo_fallsBackToOne() {
+        DemandManage d = newDemand(100L, 9L, DemandStatus.CONFIRMED);
+        d.setProductId(504L);
+        d.setDemandQuantity(new BigDecimal("2"));
+        when(demandMapper.selectList(any())).thenReturn(List.of(d));
+        when(storeMapper.selectList(any())).thenReturn(List.of(newStore(9L, "城东店")));
+        when(productInfoMapper.selectList(any())).thenReturn(List.of());
+
+        ProductProduction made = newProduction(11L, null, "260610X0001", new BigDecimal("99.000"));
+        made.setProductId(504L);
+        made.setStoreId(9L);
+        when(productProductionMapper.selectList(any())).thenReturn(List.of(made));
+
+        ShipStoreVo vo = service.queryStoreSummary(9L);
+
+        assertThat(vo.getSatisfyRate()).isEqualByComparingTo("50.00");
+    }
+
     // ---------- helpers ----------
+
+    private ProductInfo newProduct(Long id, String belongType, String productUnit, BigDecimal materialNum) {
+        ProductInfo p = new ProductInfo();
+        p.setId(id);
+        p.setBelongType(belongType);
+        p.setProductUnit(productUnit);
+        p.setMaterialNum(materialNum);
+        return p;
+    }
 
     private DemandManage newDemand(Long id, Long storeId, DemandStatus status) {
         DemandManage d = new DemandManage();

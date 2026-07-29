@@ -39,8 +39,10 @@ import static org.mockito.Mockito.when;
  * <p>药品 provider（breed↔warehouse facade 的仓库侧真实现）此前从未被执行验证。覆盖全链：</p>
  * <ol>
  *   <li>deduct happy：解析默认库位 → 原子扣减 + 流水 OT/dept_pick_out/change_num=-q（F0-3 新加写入）</li>
- *   <li>deductLoss happy：流水 OT/loss + 双写统一损耗台账（manual_loss，关联流水）</li>
+ *   <li>deductLoss happy：流水 OT/loss + 双写统一损耗台账（manual_loss，关联流水），
+ *       且<b>不二次扣 location_stock</b>（领用时已扣过货架，药品无 WIP 池）</li>
  *   <li>deduct 无库位：selectDefaultLocationByProduct 返 null → 抛"药品无库存" + 零写入</li>
+ *   <li>deductLoss 无库存记录：库位解析返 null → 抛"药品无库存记录" + 零流水零台账（流水需真实库位快照）</li>
  *   <li>deduct 库存不足：deductByProductLocation 返 0 → 抛"药品库存不足" + 不写流水/损耗台账（扣减成功才写）</li>
  *   <li>add happy：加库存 + 流水 IN/pick_return_in/change_num=+q（领用退回）</li>
  *   <li>addPurchase happy：加库存 + 流水 IN/purchase_in（批次采购入库，与退回分流）</li>
@@ -107,23 +109,24 @@ class MedicineStockProviderImplTest {
     }
 
     @Test
-    @DisplayName("deductLoss happy：扣账 + 流水 OT/loss + 双写统一损耗台账 manual_loss（F0-3 修复：损耗总览不再对药品盲）")
+    @DisplayName("deductLoss happy：流水 OT/loss + 双写统一损耗台账 manual_loss，且不二次扣 location_stock（领用时已扣货架，药品无 WIP 池）")
     void testDeductLoss_Happy_WritesFlowAndLossFlow() {
         when(locationStockMapper.selectDefaultLocationByProduct(PRODUCT_ID)).thenReturn(LOCATION_ID);
-        when(locationStockMapper.deductByProductLocation(eq(LOCATION_ID), eq(PRODUCT_ID), any(BigDecimal.class), eq(OPERATOR_ID)))
-            .thenReturn(1);
 
         provider.deductLoss(PRODUCT_ID, new BigDecimal("2.5"), OPERATOR_ID);
 
-        // 三账：库存扣减 + 出库流水（loss）+ 损耗台账（manual_loss，关联流水）
-        verify(locationStockMapper, times(1))
-            .deductByProductLocation(eq(LOCATION_ID), eq(PRODUCT_ID), eq(new BigDecimal("2.5")), eq(OPERATOR_ID));
+        // 两账：出库流水（loss）+ 损耗台账（manual_loss，关联流水）；库存真值不动
+        // —— 药品领用（deduct）时已从 location_stock 扣过一次，损耗再扣即二次扣减
+        // （对齐 MatFlowServiceImpl.loss() 对非可打包物资「不动 location_stock、仅 stock_flow+loss_flow 留痕」口径）
+        verify(locationStockMapper, never()).deductByProductLocation(any(), any(), any(), any());
         ArgumentCaptor<StockFlow> cap = ArgumentCaptor.forClass(StockFlow.class);
         verify(stockFlowMapper, times(1)).insert(cap.capture());
         StockFlow f = cap.getValue();
         assertThat(f.getInoutType()).isEqualTo("OT");
         assertThat(f.getFlowType()).isEqualTo("loss");
         assertThat(f.getChangeNum()).isEqualByComparingTo("-2.5");
+        assertThat(f.getChangeQuantity()).isEqualByComparingTo("2.5");
+        assertThat(f.getWarehouseId()).isEqualTo(LOCATION_ID);
         verify(lossFlowService, times(1)).record(eq("manual_loss"), eq(PRODUCT_ID),
             eq(new BigDecimal("2.5")), eq(LOCATION_ID), eq(OPERATOR_ID), eq("med"), eq((Long) null), any());
     }
@@ -142,15 +145,26 @@ class MedicineStockProviderImplTest {
     }
 
     @Test
+    @DisplayName("deductLoss 无库存记录：库位解析返 null → 抛'药品无库存记录' + 零流水零台账（流水需真实库位快照，不吞异常）")
+    void testDeductLoss_NoLocation_Throws() {
+        when(locationStockMapper.selectDefaultLocationByProduct(PRODUCT_ID)).thenReturn(null);
+
+        assertThatThrownBy(() -> provider.deductLoss(PRODUCT_ID, new BigDecimal("2"), OPERATOR_ID))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("药品无库存记录");
+
+        verify(locationStockMapper, never()).deductByProductLocation(any(), any(), any(), any());
+        verify(stockFlowMapper, never()).insert(any(StockFlow.class));
+        verify(lossFlowService, never()).record(any(), any(), any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
     @DisplayName("deduct 库存不足：deductByProductLocation 返 0 → 抛'药品库存不足' + 不写流水（防流水与货架单边分叉）")
     void testDeduct_Insufficient_NoFlow() {
         when(locationStockMapper.selectDefaultLocationByProduct(PRODUCT_ID)).thenReturn(LOCATION_ID);
         when(locationStockMapper.deductByProductLocation(any(), any(), any(), any())).thenReturn(0);
 
         assertThatThrownBy(() -> provider.deduct(PRODUCT_ID, new BigDecimal("999"), OPERATOR_ID))
-            .isInstanceOf(ServiceException.class)
-            .hasMessageContaining("药品库存不足");
-        assertThatThrownBy(() -> provider.deductLoss(PRODUCT_ID, new BigDecimal("999"), OPERATOR_ID))
             .isInstanceOf(ServiceException.class)
             .hasMessageContaining("药品库存不足");
 

@@ -56,6 +56,9 @@ public class CropInfo extends TenantEntity {
     /** 作物科属（字典 djs_crop_family）。 */
     private String cropFamily;
 
+    /** 作物属（自由文本，例 芸薹属）。 */
+    private String cropGenus;
+
     /** 关联产品 FK → t_warehouse_product_info.id（D8 WMS-MD-002 同日，逻辑关联）。 */
     private Long relatedProduct;
 

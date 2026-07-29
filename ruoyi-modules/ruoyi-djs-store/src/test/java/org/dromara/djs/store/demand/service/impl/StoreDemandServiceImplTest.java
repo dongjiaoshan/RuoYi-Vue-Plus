@@ -2,14 +2,18 @@ package org.dromara.djs.store.demand.service.impl;
 
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.satoken.utils.LoginHelper;
+import org.dromara.djs.common.store.service.IStoreService;
 import org.dromara.djs.store.demand.domain.bo.StoreDemandBatchBo;
 import org.dromara.djs.warehouse.demand.core.enums.DemandStatus;
 import org.dromara.djs.warehouse.demand.domain.DemandManage;
 import org.dromara.djs.warehouse.demand.domain.bo.DemandManageBo;
 import org.dromara.djs.warehouse.demand.mapper.DemandManageMapper;
 import org.dromara.djs.warehouse.demand.service.IDemandManageService;
+import org.dromara.djs.warehouse.pack.mapper.ProductProductionMapper;
+import org.dromara.djs.warehouse.pack.service.IProductProductionService;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
+import org.dromara.djs.warehouse.trace.service.ITraceService;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -43,8 +47,9 @@ import static org.mockito.Mockito.when;
  * <p>覆盖薄封装层核心语义：门店发起需求 = insertByBo（warehouse 侧直接落 SUBMITTED），
  * 不再二次 transition(SUBMIT)（否则对已 SUBMITTED 的单子触发 SUBMIT = 非法状态转移）。验证：</p>
  * <ol>
- *   <li>createStoreDemand happy：返回 warehouse insertByBo 的 id；insertByBo 恰调用一次</li>
+ *   <li>createStoreDemand happy：先过 {@code assertStoreActive} 闸，再返回 warehouse insertByBo 的 id；insertByBo 恰调用一次</li>
  *   <li>BO.id 被强制清空（门店端创建专用，不走编辑路径）</li>
+ *   <li>已终止合作门店：assertStoreActive 抛 → 不落单</li>
  *   <li>batchCreate：逐项补冗余字段 + mailing 标记 + 逐条 insertByBo</li>
  * </ol>
  *
@@ -71,7 +76,17 @@ class StoreDemandServiceImplTest {
     private DemandManageMapper demandManageMapper;
 
     @Mock
-    private org.dromara.djs.warehouse.pack.service.IProductProductionService productProductionService;
+    private ProductProductionMapper productProductionMapper;
+
+    @Mock
+    private IProductProductionService productProductionService;
+
+    @Mock
+    private ITraceService traceService;
+
+    /** 已终止合作门店禁止下单（{@link StoreDemandServiceImpl#createStoreDemand} 首道闸）。 */
+    @Mock
+    private IStoreService storeService;
 
     @InjectMocks
     private StoreDemandServiceImpl service;
@@ -110,8 +125,22 @@ class StoreDemandServiceImplTest {
         Long id = service.createStoreDemand(bo);
 
         assertThat(id).isEqualTo(9001L);
+        // 下单前先过门店合作状态闸
+        verify(storeService, times(1)).assertStoreActive(5001L);
         // warehouse insertByBo 直接落 SUBMITTED，恰调用一次
         verify(demandManageService, times(1)).insertByBo(bo);
+    }
+
+    @Test
+    @DisplayName("createStoreDemand：已终止合作门店 → assertStoreActive 抛，不落单")
+    void createStoreDemandRejectTerminatedStore() {
+        DemandManageBo bo = buildBo();
+        Mockito.doThrow(new ServiceException("门店「测试店」已停止合作，无法进行业务操作", 409))
+            .when(storeService).assertStoreActive(5001L);
+
+        assertThatThrownBy(() -> service.createStoreDemand(bo)).isInstanceOf(ServiceException.class);
+
+        verify(demandManageService, never()).insertByBo(any(DemandManageBo.class));
     }
 
     @Test

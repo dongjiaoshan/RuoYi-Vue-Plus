@@ -135,8 +135,15 @@ public class ShipmentServiceImpl
     /** 礼盒组件（deliver_dest='gift'）：预留给礼盒打包消耗，不出现在发货月台。 */
     private static final String DELIVER_DEST_GIFT = "gift";
 
-    /** 产品业态 — 礼盒（produce_quantity 存的是盒数，不是重量）。 */
-    private static final String BELONG_TYPE_GIFT_BOX = "gift_box";
+    /**
+     * 「按重量计量」的产品单位集合（小写）——{@link #producedCopies} 据此决定生产量取
+     * {@code produce_quantity} 公斤数还是按件计 1。
+     *
+     * <p>成员与 {@code ProductProductionServiceImpl.isKgUnit} 一致：打包扣需求（KG 扣重量 / 其余恒扣 1 份）
+     * 与本处生产量必须同一把尺，否则满足率的分子分母量纲会错位。只收 kg 量纲——{@code produce_quantity}
+     * 全链路以 kg 落库，吨 / 斤等其他重量单位直接取原值会量纲错位，不纳入。</p>
+     */
+    private static final Set<String> WEIGHT_PRODUCT_UNITS = Set.of("kg", "公斤");
 
     /** 需求满足率中间比值精度（最终结果 scale=2）。 */
     private static final int RATE_CALC_SCALE = 6;
@@ -487,7 +494,8 @@ public class ShipmentServiceImpl
     /**
      * 单门店聚合 VO（门店列表卡 + 门店货物页头共用，两端读同一个后端算法，杜绝口径漂移）。
      *
-     * @param producedByProduct 该门店可发成品的打包份数（product_id → 份数），口径同 mp 门店货物卡「生产量」
+     * @param producedByProduct 该门店可发成品的生产量（product_id → 生产量），口径同 mp 门店货物卡「生产量」
+     *                          （kg 产品按公斤、按件产品每条计 1，见 {@link #producedCopies}）
      */
     private ShipStoreVo buildStoreVo(Long storeId, String storeName, List<DemandManage> storeDemands,
                                      Map<Long, BigDecimal> producedByProduct) {
@@ -576,7 +584,7 @@ public class ShipmentServiceImpl
     }
 
     /**
-     * 批量取各门店可发成品的「打包份数」（store_id → product_id → 份数），无 N+1：
+     * 批量取各门店可发成品的「生产量」（store_id → product_id → 生产量），无 N+1：
      * 一次查出所有相关门店的可发成品，再在内存按门店归属分摊。
      *
      * <p>未绑门店（store_id IS NULL）的通用成品对每个门店都可发，故各门店都计入
@@ -610,20 +618,35 @@ public class ShipmentServiceImpl
     }
 
     /**
-     * 单条成品的「打包份数」——与 mp 门店货物卡「生产量」同口径：
-     * 计量产品（material_num&gt;0，如鸡蛋一份=30 枚，produceQuantity 存的是份数×30）还原份数
-     * = produceQuantity ÷ material_num；礼盒 1 条 = produceQuantity 盒；其余每条 = 1 件/头/份。
+     * 单条成品的「生产量」——按<b>产品自身计量单位</b>取值，与 mp 门店货物卡「生产量」同口径
+     * （Kevin 2026-07-29）：
+     * <ul>
+     *   <li>按重量计量的产品（{@code product_unit} ∈ {@link #WEIGHT_PRODUCT_UNITS}）→ 生产量就是
+     *       {@code produce_quantity} 本身的公斤数（需求量同为 kg，两者同量纲，满足率才算得对）。</li>
+     *   <li>按件计量的产品（份 / 件 / 盒 / 枚 / 袋 …）→ <b>一条打包记录恒计 1</b>：打包台一次提交 = 产出
+     *       一件成品，与录入重量、{@code material_num} 单份规格都无关（与打包扣需求
+     *       {@code resolveDemandDeductQty} 恒扣 1 份同源）。</li>
+     * </ul>
+     *
+     * <p>产品主数据缺失（{@code info == null}）时无从判定单位，按件计 1（不拿重量当件数用）。</p>
+     *
+     * <p>与 admin 产品生产概览的 {@code ProductProductionMapper.selectGroupList} 生产量 SQL
+     * （{@code CASE WHEN unit IN ('kg','公斤') THEN SUM(product_weight) ELSE COUNT(*) END}）同一口径 —
+     * 两处必须一起改，否则 admin 与发货月台的满足率会对不上。</p>
      */
     private BigDecimal producedCopies(ProductProduction p, ProductInfo info) {
-        BigDecimal qty = p.getProduceQuantity() == null ? BigDecimal.ZERO : p.getProduceQuantity();
-        BigDecimal materialNum = info == null ? null : info.getMaterialNum();
-        if (materialNum != null && materialNum.signum() > 0) {
-            return qty.divide(materialNum, 0, RoundingMode.HALF_UP);
-        }
-        if (info != null && BELONG_TYPE_GIFT_BOX.equals(info.getBelongType())) {
-            return qty;
+        if (info != null && isWeightUnit(info.getProductUnit())) {
+            return p.getProduceQuantity() == null ? BigDecimal.ZERO : p.getProduceQuantity();
         }
         return BigDecimal.ONE;
+    }
+
+    /**
+     * 产品计量单位是否「按重量（kg）」——生产量取 produce_quantity 原值而非计 1 件的判定依据。
+     * 大小写与前后空白不敏感；空单位视为按件。
+     */
+    private static boolean isWeightUnit(String productUnit) {
+        return productUnit != null && WEIGHT_PRODUCT_UNITS.contains(productUnit.trim().toLowerCase());
     }
 
     /**
@@ -742,7 +765,7 @@ public class ShipmentServiceImpl
 
     /**
      * 批量取产品主数据（一次查 product_info，VO 填 productName / belongType / productUnit / materialNum）。
-     * mp 发货清单据此定数量单位（头/份/枚）+ 还原计量产品份数（份数 = produceQuantity ÷ material_num）。
+     * mp 发货清单据此定数量单位（kg/头/份/枚）+ 判定生产量取 produceQuantity 公斤数还是按件计 1。
      */
     private Map<Long, ProductInfo> loadProductInfoMap(List<ProductProduction> productions) {
         List<Long> productIds = productions.stream()

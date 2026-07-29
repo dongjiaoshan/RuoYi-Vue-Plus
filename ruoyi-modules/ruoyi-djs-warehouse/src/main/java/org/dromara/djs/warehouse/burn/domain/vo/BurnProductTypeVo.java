@@ -8,10 +8,10 @@ import java.io.Serializable;
 /**
  * 燎毛入库产品类型 VO（D12X-MP-BURN-IA-001 mp 入库子页用）。
  *
- * <p>白条入库需按产品类型「整只 / 半只 / 猪头 / 猪蹄」分别入库（客户 §2.3）。
- * 本 VO = {@code t_warehouse_product_info} 中 {@code belong_type='white_bar'} 且
- * {@code product_id LIKE 'PROD-WHITE-BAR-%'} 的标准 4 行（排除测试数据）。
- * mp 入库子页每类型一行，录入该类型重量 → 提交时 productTypeItems.productId 指向所选类型。</p>
+ * <p>白条入库按产品分别入库（客户 §2.3）。本 VO = {@code t_warehouse_product_info} 中
+ * 「生产车间=燎毛间 + 产品属性=原材料 + 状态=正常」的产品（含白条本体「半扇」与猪头 / 猪脚等
+ * 燎毛间原材料），由 admin 产品配置驱动、不绑固定业务码。
+ * mp 入库子页每产品一行，录入该产品重量 → 提交时 productTypeItems.productId 指向所选产品。</p>
  *
  * <p>{@code productId}（snowflake 主键）经 ruoyi JacksonConfig 自动序列化为 string。</p>
  *
@@ -30,12 +30,12 @@ public class BurnProductTypeVo implements Serializable {
     private Long productId;
 
     /**
-     * 产品业务码（如 PROD-WHITE-BAR-WHOLE → 实际为 PROD-WHITE-BAR-01 整只）。
+     * 产品业务码（{@code t_warehouse_product_info.product_id}，如 Y00142）。
      */
     private String productCode;
 
     /**
-     * 产品名称（白条·整只 / 白条·半只 / 白条·猪头 / 白条·猪蹄）。
+     * 产品名称（如 半扇 / 猪头 / 猪脚）。
      */
     private String productName;
 
@@ -45,12 +45,14 @@ public class BurnProductTypeVo implements Serializable {
     private String imageUrl;
 
     /**
-     * 结构化产品类别（FIX-WMS-MP-BURN-001 录入约束用）：
-     * whole=整只 / half=半只 / head=猪头 / trotter=猪蹄。
+     * 结构化产品类别（FIX-WMS-MP-BURN-001 录入约束用）：{@code half}=白条半只。
      *
-     * <p>按 {@code product_id} 业务码后缀映射（PROD-WHITE-BAR-01/02/03/04），让 mp 端互斥/限次约束
-     * （整只半只互斥各 1 次、猪头 1 次、猪蹄不限）+ 「猪头猪蹄不显白条编码」基于结构化枚举判断，
-     * 不靠 productName 字符串脆判。未识别码返回 {@code null}。</p>
+     * <p>按产品主数据 {@code belong_type} 判定 —— {@code white_bar}（产品类别=白条产品）即白条本体，
+     * 一头猪出左右两扇 → mp 限录 2 次、后端 finishBurn 须集齐 2 扇才放行。判据不绑业务码，
+     * 甲方在 admin 增删白条产品无需改代码。</p>
+     *
+     * <p>其余燎毛间原材料（猪头 / 猪脚 等 {@code belong_type='pork'}）返回 {@code null}，
+     * 不限次；mp 端按 productName 回落判是否隐藏白条编码。</p>
      */
     private String productType;
 

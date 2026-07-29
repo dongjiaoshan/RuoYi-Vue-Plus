@@ -64,6 +64,8 @@ public class StoreTraceServiceImpl implements IStoreTraceService {
     private static final String CODE_TYPE_PORK = "pork";
     /** 产品属性=生产产品（字典 djs_product_attr：1=生产产品 / 2=原材料）。 */
     private static final Integer PRODUCT_ATTR_PRODUCE = 1;
+    /** 门店打包间车间码（{@code t_warehouse_product_info.product_workshop}，字典 djs_product_workshop = 5）。 */
+    private static final Integer PRODUCT_WORKSHOP_STORE_PACK = 5;
     /** 猪肉业态。 */
     private static final String BELONG_TYPE_PORK = "pork";
     /** 白条业态（现场分割 picker 取白条 production 用）。 */
@@ -285,13 +287,16 @@ public class StoreTraceServiceImpl implements IStoreTraceService {
      * 本轮仅保留 djs_pork_cut_product 字典驱动 + {@code genPorkOnsiteCode} 现状，不改 product 驱动。</p>
      */
     /**
-     * 门店猪肉打包可选产品：产品属性=生产产品（{@code product_attr=1}）且业态=猪肉（{@code belong_type=pork}）。
+     * 门店猪肉打包可选产品：生产车间=门店打包间（{@code product_workshop=5}）、产品属性=生产产品
+     * （{@code product_attr=1}）且业态=猪肉（{@code belong_type=pork}）。
      *
-     * <p>无匹配产品 → 空 List（前端 PorkTracePanel 回退用部位字典 {@code djs_pork_cut_product}）。</p>
+     * <p>由客户在 admin 产品配置里把产品挂到「门店打包间」来决定门店现场能打哪些产品。
+     * 无匹配产品 → 空 List（前端 PorkTracePanel 回退用部位字典 {@code djs_pork_cut_product}）。</p>
      */
     @Override
     public List<StorePackProductVo> listPackProducts() {
         return productInfoMapper.selectList(new LambdaQueryWrapper<ProductInfo>()
+                .eq(ProductInfo::getProductWorkshop, PRODUCT_WORKSHOP_STORE_PACK)
                 .eq(ProductInfo::getProductAttr, PRODUCT_ATTR_PRODUCE)
                 .eq(ProductInfo::getBelongType, BELONG_TYPE_PORK))
             .stream().map(p -> {

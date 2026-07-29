@@ -38,7 +38,7 @@ public class WhiteBarShipmentVo implements Serializable {
     private Date produceTime;
 
     /**
-     * 产品编码（= {@code product_info.product_id} 业务码，如 PROD-WHITE-BAR-04）。
+     * 产品编码（= {@code product_info.product_id} 业务码，如 Y00142）。
      */
     @ExcelProperty(value = "产品编码")
     private String productCode;

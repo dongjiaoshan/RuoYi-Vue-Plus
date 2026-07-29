@@ -96,9 +96,15 @@ public class PigCutRecordServiceImpl
     private static final String CUT_PART_PRODUCT_CODE_SUFFIX = "-01";
 
     /**
-     * 白条产品业务码（D08-CLOSING seed PROD-WHITE-BAR-01）。
+     * 白条产品 belong_type（{@code djs_belong_type} 的「白条产品」）。白条级流水 / cut_record 的
+     * product_id 按此类别从产品主数据解析，不绑固定业务码（甲方在 admin 维护白条产品）。
      */
-    private static final String WHITE_BAR_PRODUCT_BIZ_CODE = "PROD-WHITE-BAR-01";
+    private static final String WHITE_BAR_BELONG_TYPE = "white_bar";
+
+    /**
+     * 产品状态（{@code t_warehouse_product_info.product_status}，字典 sys_normal_disable）：0=正常 / 1=停用。
+     */
+    private static final Integer PRODUCT_STATUS_NORMAL = 0;
 
     /**
      * 分割车间车间码（{@code t_warehouse_product_info.product_workshop}，字典 djs_product_workshop = 2）。
@@ -1009,7 +1015,7 @@ public class PigCutRecordServiceImpl
                 .in(ProductInhouse::getWhiteBarId, barIds)
                 .and(w -> w.eq(ProductInhouse::getPickupStatus, 0).or().isNull(ProductInhouse::getPickupStatus))
                 .orderByAsc(ProductInhouse::getId));
-        // row187：分割白条领用只领「白条库的白条」（整只/半只，belong_type='white_bar'）。燎毛副产猪头/猪蹄
+        // row187：分割白条领用只领「白条库的白条」（半扇，belong_type='white_bar'）。燎毛副产猪头/猪脚/蹄髈
         // （belong_type='pork'）虽同样写 product_inhouse 带 white_bar_id，但不入白条库、不参与白条分割 →
         // 只展示白条产出行卡；但「该 bar 有无未领产出行」仍按全量 rows 判定，避免仅有副产行的 bar 误落整只兜底卡。
         // row146：卡标题实时取产品配置名（product_inhouse.product_name 是燎毛入库时冻结的快照，产品改名不回写）。
@@ -1017,7 +1023,7 @@ public class PigCutRecordServiceImpl
         List<ProductInfo> whiteBarProducts = rows.isEmpty() ? List.of() : productInfoMapper.selectList(
             new LambdaQueryWrapper<ProductInfo>()
                 .select(ProductInfo::getId, ProductInfo::getProductName)
-                .eq(ProductInfo::getBelongType, "white_bar"));
+                .eq(ProductInfo::getBelongType, WHITE_BAR_BELONG_TYPE));
         Set<Long> whiteBarProductIds = whiteBarProducts.stream()
             .map(ProductInfo::getId).filter(Objects::nonNull).collect(Collectors.toSet());
         Map<Long, String> whiteBarNameById = whiteBarProducts.stream()
@@ -1178,17 +1184,22 @@ public class PigCutRecordServiceImpl
     }
 
     /**
-     * 解析白条 product_id（同 D8 PigBurnRecordServiceImpl 实现）。
+     * 解析通用白条 product_id：产品主数据里「产品类别=白条产品 + 状态=正常」的产品，按业务码升序取第一个。
+     *
+     * <p>用于白条级（而非分割产出级）的落库字段：整猪领用兜底 cut_record.product_id、白条分割出库流水
+     * product_id、预冷损耗 product_id —— 这些行只需指向「白条」这个货品概念本身。
+     * 白条产品由甲方在 admin 产品配置维护（当前只有「半扇」一条），故按类别解析而不绑固定业务码。</p>
      */
     protected Long resolveWhiteBarProductId() {
         ProductInfo whiteBar = productInfoMapper.selectOne(
             new LambdaQueryWrapper<ProductInfo>()
-                .eq(ProductInfo::getProductId, WHITE_BAR_PRODUCT_BIZ_CODE)
+                .eq(ProductInfo::getBelongType, WHITE_BAR_BELONG_TYPE)
+                .eq(ProductInfo::getProductStatus, PRODUCT_STATUS_NORMAL)
+                .orderByAsc(ProductInfo::getProductId)
                 .last("LIMIT 1"));
         if (whiteBar == null || whiteBar.getId() == null) {
             throw new ServiceException(
-                "白条产品主数据缺失（product_id=" + WHITE_BAR_PRODUCT_BIZ_CODE
-                    + "），请确认 V202606061060 seed 已执行");
+                "白条产品主数据缺失：产品配置里没有「产品类别=白条产品」且状态正常的产品，请先在产品管理中维护");
         }
         return whiteBar.getId();
     }

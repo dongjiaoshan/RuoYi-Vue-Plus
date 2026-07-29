@@ -248,6 +248,7 @@ public class CropInfoServiceImpl extends DjsBaseServiceImpl<CropInfoMapper, Crop
             .like(StringUtils.isNotBlank(query.getVarietyName()), CropInfo::getVarietyName, query.getVarietyName())
             .like(StringUtils.isNotBlank(query.getVarietyOrigin()), CropInfo::getVarietyOrigin, query.getVarietyOrigin())
             .like(StringUtils.isNotBlank(query.getCropFamily()), CropInfo::getCropFamily, query.getCropFamily())
+            .like(StringUtils.isNotBlank(query.getCropGenus()), CropInfo::getCropGenus, query.getCropGenus())
             .like(StringUtils.isNotBlank(query.getPlantingSeason()), CropInfo::getPlantingSeason, query.getPlantingSeason())
             .eq(query.getUpdateBy() != null, CropInfo::getUpdateBy, query.getUpdateBy())
             .between(beginTime != null && endTime != null, CropInfo::getUpdateTime, beginTime, endTime);

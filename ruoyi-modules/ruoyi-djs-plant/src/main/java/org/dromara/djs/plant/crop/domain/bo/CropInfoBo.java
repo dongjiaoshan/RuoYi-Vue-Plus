@@ -47,6 +47,10 @@ public class CropInfoBo extends BaseEntity {
     @Size(max = 32, message = "{plant.crop.family.size}")
     private String cropFamily;
 
+    /** 作物属（自由文本，例 芸薹属）。 */
+    @Size(max = 32, message = "{plant.crop.genus.size}")
+    private String cropGenus;
+
     /** 关联产品 FK → t_warehouse_product_info.id。 */
     private Long relatedProduct;
 
