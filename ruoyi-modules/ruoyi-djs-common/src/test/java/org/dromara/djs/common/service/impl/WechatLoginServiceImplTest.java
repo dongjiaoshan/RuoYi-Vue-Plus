@@ -22,8 +22,10 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.test.util.ReflectionTestUtils;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.times;
@@ -40,6 +42,7 @@ import static org.mockito.Mockito.when;
  *   <li>真模式 wechatLogin: WxJava getSessionInfo 换 openid（未绑定 → 40001，验证真 jscode2session 被调）</li>
  *   <li>真模式 jscode2session 抛 WxErrorException → ServiceException</li>
  *   <li>真模式 bindPhone: WxJava getPhoneNoInfo 解析手机号（未注册 → 40002，验证真手机号验证被调）</li>
+ *   <li>assertUserLoginable 账号状态闸：不存在 / 停用 / 删除 / null → 40003 同款文案；启用未删 → 放行</li>
  * </ol>
  *
  * <p>"颁 token + Sa-Token 集成"路径依赖 Sa-Token 上下文，放集成测试 / Playwright e2e；
@@ -170,13 +173,17 @@ class WechatLoginServiceImplTest {
     void testBindPhone_RealMode_PhoneCode() throws WxErrorException {
         enableRealMode();
         WechatBindPhoneBo bo = new WechatBindPhoneBo();
-        bo.setOpenid("real-openid-2");
+        // 真实模式下 openid 必须由 code 换取，客户端传的 openid 一律忽略（GRAY-PREP-001 加固）
+        bo.setCode("real-login-code");
         bo.setClientId(DjsAuthConstants.MP_APPLET_CLIENT_ID);
         bo.setPhoneCode("real-phone-code");
 
+        WxMaJscode2SessionResult session = new WxMaJscode2SessionResult();
+        session.setOpenid("real-openid-2");
         WxMaPhoneNumberInfo info = new WxMaPhoneNumberInfo();
         info.setPhoneNumber("13900139000");
         when(wxMaService.getUserService()).thenReturn(wxMaUserService);
+        when(wxMaUserService.getSessionInfo("real-login-code")).thenReturn(session);
         when(wxMaUserService.getPhoneNoInfo("real-phone-code")).thenReturn(info);
         when(djsUserExtMapper.selectUserIdByPhone("13900139000")).thenReturn(null);
 
@@ -184,5 +191,110 @@ class WechatLoginServiceImplTest {
         assertEquals(DjsAuthConstants.BIZ_CODE_PHONE_NOT_REGISTERED, ex.getCode());
         verify(wxMaUserService, times(1)).getPhoneNoInfo("real-phone-code");
         verify(djsUserExtMapper, times(0)).updateWxOpenid(anyLong(), anyString());
+    }
+
+    @Test
+    @DisplayName("真模式 bindPhone 安全闸：客户端直传 openid 不给 code → 拒绝（防冒充任意员工）")
+    void testBindPhone_RealMode_RejectsRawOpenid() {
+        enableRealMode();
+        WechatBindPhoneBo bo = new WechatBindPhoneBo();
+        bo.setOpenid("attacker-controlled-openid");
+        bo.setPhone("13900139000");
+        bo.setClientId(DjsAuthConstants.MP_APPLET_CLIENT_ID);
+
+        ServiceException ex = assertThrows(ServiceException.class, () -> service.bindPhone(bo));
+        assertTrue(ex.getMessage().contains("缺少微信 code"));
+        // 关键：绝不能走到查手机号 / 改写 wx_openid —— 否则等于拿别人手机号就能冒充登录
+        verify(djsUserExtMapper, times(0)).selectUserIdByPhone(anyString());
+        verify(djsUserExtMapper, times(0)).updateWxOpenid(anyLong(), anyString());
+    }
+
+    @Test
+    @DisplayName("真模式 bindPhone 安全闸：传了 code 但同时塞 phone → phone 被忽略，仍走微信换号")
+    void testBindPhone_RealMode_IgnoresRawPhone() throws WxErrorException {
+        enableRealMode();
+        WechatBindPhoneBo bo = new WechatBindPhoneBo();
+        bo.setCode("real-login-code");
+        bo.setPhoneCode("real-phone-code");
+        bo.setPhone("13800138000");   // 攻击者想指定的手机号，必须被忽略
+        bo.setClientId(DjsAuthConstants.MP_APPLET_CLIENT_ID);
+
+        WxMaJscode2SessionResult session = new WxMaJscode2SessionResult();
+        session.setOpenid("real-openid-3");
+        WxMaPhoneNumberInfo info = new WxMaPhoneNumberInfo();
+        info.setPhoneNumber("13900139000");   // 微信返回的才算数
+        when(wxMaService.getUserService()).thenReturn(wxMaUserService);
+        when(wxMaUserService.getSessionInfo("real-login-code")).thenReturn(session);
+        when(wxMaUserService.getPhoneNoInfo("real-phone-code")).thenReturn(info);
+        when(djsUserExtMapper.selectUserIdByPhone("13900139000")).thenReturn(null);
+
+        assertThrows(ServiceException.class, () -> service.bindPhone(bo));
+        // 查的是微信返回的号，不是 bo.phone
+        verify(djsUserExtMapper, times(1)).selectUserIdByPhone("13900139000");
+        verify(djsUserExtMapper, times(0)).selectUserIdByPhone("13800138000");
+    }
+
+    // ── assertUserLoginable 账号状态闸 ────────────────────────────────────
+    //
+    // 闸的职责：给<b>不查密码</b>的登录路径（mp dev mock 白名单）补账号层校验。
+    // selectLoginableUserId 的 SQL 谓词（del_flag='0' AND status='0'）把「账号不存在 /
+    // 已停用 / 已删除」三态统一归一成返回 null，下面按这三种业务场景分别固化拒绝行为。
+
+    @Test
+    @DisplayName("账号状态闸：账号存在且启用未删 → 放行，不抛异常")
+    void testAssertUserLoginable_ActiveAccountPasses() {
+        when(djsUserExtMapper.selectLoginableUserId(9001L)).thenReturn(9001L);
+
+        assertDoesNotThrow(() -> service.assertUserLoginable(9001L));
+    }
+
+    @Test
+    @DisplayName("账号状态闸：账号已停用 status='1' → 抛 40003，不放行")
+    void testAssertUserLoginable_DisabledAccountRejected() {
+        // status='1' 被 SQL 谓词过滤 → 查不到行
+        when(djsUserExtMapper.selectLoginableUserId(9001L)).thenReturn(null);
+
+        ServiceException ex = assertThrows(ServiceException.class, () -> service.assertUserLoginable(9001L));
+        assertEquals(DjsAuthConstants.BIZ_CODE_PASSWORD_ERROR, ex.getCode());
+        assertSameWordingAsPasswordError(ex);
+    }
+
+    @Test
+    @DisplayName("账号状态闸：账号已删除 del_flag='2' → 抛 40003，不放行")
+    void testAssertUserLoginable_DeletedAccountRejected() {
+        // del_flag='2' 被 SQL 谓词过滤 → 查不到行
+        when(djsUserExtMapper.selectLoginableUserId(9107L)).thenReturn(null);
+
+        ServiceException ex = assertThrows(ServiceException.class, () -> service.assertUserLoginable(9107L));
+        assertEquals(DjsAuthConstants.BIZ_CODE_PASSWORD_ERROR, ex.getCode());
+        assertSameWordingAsPasswordError(ex);
+    }
+
+    @Test
+    @DisplayName("账号状态闸：userId 在 sys_user 根本不存在（白名单占位 id）→ 抛 40003，不放行")
+    void testAssertUserLoginable_MissingAccountRejected() {
+        when(djsUserExtMapper.selectLoginableUserId(9108L)).thenReturn(null);
+
+        ServiceException ex = assertThrows(ServiceException.class, () -> service.assertUserLoginable(9108L));
+        assertEquals(DjsAuthConstants.BIZ_CODE_PASSWORD_ERROR, ex.getCode());
+        assertSameWordingAsPasswordError(ex);
+    }
+
+    @Test
+    @DisplayName("账号状态闸：userId 为 null → 直接拒，不查库")
+    void testAssertUserLoginable_NullUserIdRejected() {
+        ServiceException ex = assertThrows(ServiceException.class, () -> service.assertUserLoginable(null));
+        assertEquals(DjsAuthConstants.BIZ_CODE_PASSWORD_ERROR, ex.getCode());
+        verify(djsUserExtMapper, times(0)).selectLoginableUserId(null);
+    }
+
+    /**
+     * 拒绝文案必须走 i18n key {@code applet.auth.login.rejected}，与密码错误路径完全同款 ——
+     * 不回「该账号已停用」这类可用于枚举有效账号的信息。
+     *
+     * <p>无 Spring 上下文时 {@code I18nMessages.t} 回吐 key 本身，故这里断言 key。</p>
+     */
+    private void assertSameWordingAsPasswordError(ServiceException ex) {
+        assertEquals("applet.auth.login.rejected", ex.getMessage());
     }
 }

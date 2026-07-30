@@ -10,6 +10,7 @@ import org.dromara.djs.plant.farm.domain.bo.HarvestWeightBo;
 import org.dromara.djs.plant.farm.domain.bo.GrowRecordBo;
 import org.dromara.djs.plant.farm.domain.bo.PlotPickStatusBo;
 import org.dromara.djs.plant.farm.domain.bo.RotationRecordBo;
+import org.dromara.djs.plant.farm.domain.bo.TransplantFinalizeBo;
 import org.dromara.djs.plant.farm.domain.bo.TransplantRecordBo;
 import org.dromara.djs.plant.farm.domain.query.FarmRecordsQuery;
 import org.dromara.djs.plant.farm.domain.vo.DispatchSummaryVo;
@@ -43,6 +44,16 @@ public interface IFarmRecordsService {
 
     /** 移栽提交 — 独立画布；transplantPercent 业务规则 ≤60，BO 已 @Max 校验。 */
     Long submitTransplant(TransplantRecordBo bo);
+
+    /**
+     * 结束移栽（PLT-TRANSPLANT-REDO-001）— 苗损/不再移栽时按当前累计触发落地。
+     *
+     * <p>与「累计 100%」同一落地逻辑：已收苗目标地块各建满种明细、源育苗地块转退茬。
+     * 无移栽记录时拒绝；源明细已采摘完成（已落地）时幂等返 0。</p>
+     *
+     * @return 实际落地的目标满种明细行数（0=已结束/已落地）
+     */
+    int finalizeTransplant(TransplantFinalizeBo bo);
 
     /** 退茬提交 — 生长阶段；触发 plot_info.plot_status=1 + plant_details 完结。 */
     Long submitRotation(RotationRecordBo bo);

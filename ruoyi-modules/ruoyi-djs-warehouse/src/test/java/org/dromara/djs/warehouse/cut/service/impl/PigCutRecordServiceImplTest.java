@@ -550,4 +550,49 @@ class PigCutRecordServiceImplTest {
         assertThat(flowCap.getValue().getWarehouseId()).isEqualTo(90005L);
     }
 
+    @Test
+    @DisplayName("按产出行领用（邓博 row17）：领用后篮内残量>0 → 同事务二次扣减清零 + 补 flow_type=loss 出库流水（残量=入库重−领用重）")
+    void testPickupByRow_ResidualDrainedToLossFlow() {
+        when(barInfoMapper.selectById(70001L)).thenReturn(sampleBar());
+        when(productInhouseMapper.selectById(60001L)).thenReturn(inhouseRowA());
+        when(productInhouseMapper.selectList(any())).thenReturn(List.of());
+        when(productInhouseMapper.update(any(), any())).thenReturn(1);
+        when(barInfoMapper.updateStatusToPendingCut(eq(70001L), eq(9001L))).thenReturn(1);
+        when(locationStockMapper.selectOne(any())).thenReturn(barStockRowA());   // 篮子入库重 42.000
+        when(locationStockMapper.deductStockById(eq(111L), any(BigDecimal.class), eq(9001L))).thenReturn(1);
+        // drain 复读：领用 40 已扣，篮内残量 2.000（= 入库 42 − 领用 40）
+        LocationStock afterDeduct = barStockRowA();
+        afterDeduct.setProductStock(new BigDecimal("2.000"));
+        when(locationStockMapper.selectById(111L)).thenReturn(afterDeduct);
+        when(bizCodeGenerator.generate(any(), anyMap())).thenReturn("FAKE_FLOW_NO_1", "FAKE_FLOW_NO_2");
+        when(cutMapper.insert(any(PigCutRecord.class))).thenAnswer(inv -> {
+            PigCutRecord r = inv.getArgument(0);
+            r.setId(80004L);
+            return 1;
+        });
+
+        PigCutPickupBo bo = pickupRowBo();
+        bo.setPickupWeight(new BigDecimal("40.000"));   // 现场过磅 40 < 篮子 42
+
+        service.submitPickup(bo);
+
+        // 二次扣减同一篮（id=111）：先扣领用 40，再扣残量 2 清零
+        verify(locationStockMapper, times(1)).deductStockById(eq(111L), eq(new BigDecimal("40.000")), eq(9001L));
+        verify(locationStockMapper, times(1)).deductStockById(eq(111L), eq(new BigDecimal("2.000")), eq(9001L));
+
+        // 2 条流水：cut_out(-40) + loss(-2 残量留痕)；loss_flow 归领用链路预冷损耗，此处不重复记
+        ArgumentCaptor<StockFlow> flowCap = ArgumentCaptor.forClass(StockFlow.class);
+        verify(flowMapper, times(2)).insert(flowCap.capture());
+        List<StockFlow> flows = flowCap.getAllValues();
+        assertThat(flows.get(0).getFlowType()).isEqualTo("cut_out");
+        assertThat(flows.get(0).getChangeNum()).isEqualByComparingTo("-40.000");
+        StockFlow lossFlow = flows.get(1);
+        assertThat(lossFlow.getFlowType()).isEqualTo("loss");
+        assertThat(lossFlow.getInoutType()).isEqualTo("OT");
+        assertThat(lossFlow.getChangeNum()).isEqualByComparingTo("-2.000");
+        assertThat(lossFlow.getChangeQuantity()).isEqualByComparingTo("2.000");
+        assertThat(lossFlow.getWhiteBarNo()).isEqualTo("WB-A");
+        assertThat(lossFlow.getRemark()).contains("残量转损耗出库");
+    }
+
 }

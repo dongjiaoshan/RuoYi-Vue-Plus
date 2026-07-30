@@ -90,10 +90,15 @@ public interface PlantOverviewMapper {
         + "  COUNT(DISTINCT CASE WHEN d.begin_actualdate IS NOT NULL THEN d.plot_id END) AS donePlotCount, "
         + "  COALESCE(SUM(CASE WHEN d.begin_actualdate IS NOT NULL THEN d.plot_area ELSE 0 END), 0) AS doneArea, "
         + "  COALESCE(SUM(d.actual_yield), 0) AS doneHarvestYield, "
-        + "  COUNT(DISTINCT CASE WHEN d.begin_actualdate IS NOT NULL THEN d.plot_id END) AS currentPlantedPlotCount, "
-        + "  COALESCE(SUM(CASE WHEN d.begin_actualdate IS NOT NULL THEN d.plot_area ELSE 0 END), 0) AS currentPlantedArea "
+        // 当前种植：排除已移栽退休的育苗茬（nursery + harvest_status='completed'，PLT-TRANSPLANT-REDO-001），
+        // 避免育苗地块移栽出去后仍被算作"当前种植"。育苗中(harvest 未完成)仍计入。
+        + "  COUNT(DISTINCT CASE WHEN d.begin_actualdate IS NOT NULL "
+        + "    AND NOT (COALESCE(pi.plot_type, '') = 'nursery' AND d.harvest_status = 'completed') THEN d.plot_id END) AS currentPlantedPlotCount, "
+        + "  COALESCE(SUM(CASE WHEN d.begin_actualdate IS NOT NULL "
+        + "    AND NOT (COALESCE(pi.plot_type, '') = 'nursery' AND d.harvest_status = 'completed') THEN d.plot_area ELSE 0 END), 0) AS currentPlantedArea "
         + "FROM t_plant_plant_details d "
         + "LEFT JOIN t_plant_crop_info c ON c.id = d.crop_id AND c.tenant_id = #{tenantId} AND c.del_flag = '0' "
+        + "LEFT JOIN t_plant_plot_info pi ON pi.id = d.plot_id AND pi.tenant_id = #{tenantId} AND pi.del_flag = '0' "
         + "WHERE d.tenant_id = #{tenantId} AND d.del_flag = '0' "
         + "GROUP BY d.crop_id, c.crop_name, c.crop_code, c.image_oss_id "
         + "ORDER BY c.crop_name "

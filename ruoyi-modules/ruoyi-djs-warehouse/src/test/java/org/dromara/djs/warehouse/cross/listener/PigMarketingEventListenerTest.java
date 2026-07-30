@@ -78,7 +78,7 @@ class PigMarketingEventListenerTest {
         m.setEarNo("01A12605001");
         m.setMarketingDate(LocalDateTime.of(2026, 6, 4, 9, 30, 0));
         m.setOutWeight(new BigDecimal("125.500"));
-        m.setOutDest("send_slaughter");
+        m.setOutDest("slaughter");
         return m;
     }
 

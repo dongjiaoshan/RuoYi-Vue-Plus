@@ -30,6 +30,12 @@ public class ChartSeriesItemVo implements Serializable {
      */
     private BigDecimal value;
 
+    /**
+     * 产品单位（product_unit，供前端 KG / 非 KG 维度过滤；'kg' 为 KG，其余 / 空为非 KG）。
+     * 仅按产品名聚合的需求 / 退货分布 series 填充，其他分类类 series 为 null。
+     */
+    private String unit;
+
     public ChartSeriesItemVo() {
     }
 

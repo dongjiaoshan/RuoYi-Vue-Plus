@@ -43,11 +43,12 @@ public class StoreLossController extends BaseController {
 
     /**
      * 当日某门店白条分割损耗（门店盘点抽屉「当日白条分割损耗」展示，口径同定时任务）。
-     * = max(0, 白条到店重 − 白条退回产品入库重)；退回入库重来自门店退货入库流水 {@code t_store_return}。
+     * = max(0, 白条到店重 − 白条分割产品总重)；
+     * 白条分割产品总重 = max(0, 当日该店盘点各白条部位入库量之和 − 材料外售同原材料成品当日到店重)。
      *
      * @param storeId 门店 id
      * @param date    业务日（yyyy-MM-dd，空取今天）
-     * @return 到店重 / 退回入库重 / 分割损耗（无白条到店三者均 0，前端据 arriveWeight=0 隐藏）
+     * @return 到店重 / 白条分割产品总重 / 分割损耗（无白条到店三者均 0，前端据 arriveWeight=0 隐藏）
      */
     @SaCheckPermission("djs:storeLoss:list")
     @GetMapping("/white-bar-split-loss")

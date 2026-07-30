@@ -31,7 +31,13 @@ public class PlantStartBo {
     @NotNull(message = "请选择种植开始日期")
     private LocalDate beginActualdate;
 
-    /** 种植班组 id（{@code t_plant_work_team.id}，回写 plant_by）。 */
+    /** 种植班组 id（{@code t_plant_work_team.id}，回写 plant_by；过渡兼容单值 = 多选第一个）。 */
     @NotNull(message = "请选择种植班组")
     private Long plantBy;
+
+    /**
+     * 种植班组全集（G1-TEAMS-MULTISELECT，row36）。非空时写中间表 role=plant，
+     * 旧单列 {@code plantBy} 取本 list 第一个；为 null 时退化为单值 {@code plantBy}。
+     */
+    private List<Long> plantByIds;
 }

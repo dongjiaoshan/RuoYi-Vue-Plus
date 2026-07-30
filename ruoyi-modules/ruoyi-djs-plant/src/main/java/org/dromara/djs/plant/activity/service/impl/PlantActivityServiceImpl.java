@@ -14,6 +14,8 @@ import org.dromara.djs.plant.crop.domain.CropInfo;
 import org.dromara.djs.plant.crop.mapper.CropInfoMapper;
 import org.dromara.djs.plant.plan.domain.PlantDetails;
 import org.dromara.djs.plant.plan.mapper.PlantDetailsMapper;
+import org.dromara.djs.plant.plot.domain.PlotInfo;
+import org.dromara.djs.plant.plot.mapper.PlotInfoMapper;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -21,7 +23,12 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.time.temporal.TemporalAdjusters;
+import java.util.Comparator;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * 采摘活动 Service 实现（FIX-PLT-HARVEST-ACTIVITY-001 + DENGBO-R4 采摘去向）。
@@ -43,15 +50,24 @@ public class PlantActivityServiceImpl extends DjsBaseServiceImpl<PlantActivityMa
     /** 采摘状态「已完成」value（djs_pick_status / t_plant_plant_details.harvest_status）：终态明细不再作累加首选。 */
     private static final String PICK_STATUS_COMPLETED = "completed";
 
+    /** 育苗（保育）地块类型（{@code djs_plot_type='nursery'}）：须先移栽才进采摘，不进结算批次。 */
+    private static final String PLOT_TYPE_NURSERY = "nursery";
+
     private final CropInfoMapper cropInfoMapper;
     private final PlantDetailsMapper plantDetailsMapper;
+    private final PlotInfoMapper plotInfoMapper;
+    private final org.dromara.djs.plant.team.service.PlantTeamLinkService teamLinkService;
 
     public PlantActivityServiceImpl(PlantActivityMapper baseMapper,
                                     CropInfoMapper cropInfoMapper,
-                                    PlantDetailsMapper plantDetailsMapper) {
+                                    PlantDetailsMapper plantDetailsMapper,
+                                    PlotInfoMapper plotInfoMapper,
+                                    org.dromara.djs.plant.team.service.PlantTeamLinkService teamLinkService) {
         super(baseMapper);
         this.cropInfoMapper = cropInfoMapper;
         this.plantDetailsMapper = plantDetailsMapper;
+        this.plotInfoMapper = plotInfoMapper;
+        this.teamLinkService = teamLinkService;
     }
 
     @Override
@@ -76,6 +92,10 @@ public class PlantActivityServiceImpl extends DjsBaseServiceImpl<PlantActivityMa
         activity.setPickWeight(dailyWeight);
         activity.setActivityBy(activityBy);
         baseMapper.insert(activity);
+        // row40：采摘活动班组多选中间表同步（单值写入路径，保持中间表与旧单列一致）
+        if (activityBy != null) {
+            teamLinkService.syncActivityTeams(activity.getId(), List.of(activityBy));
+        }
     }
 
     @Override
@@ -124,6 +144,11 @@ public class PlantActivityServiceImpl extends DjsBaseServiceImpl<PlantActivityMa
         activity.setRecorderId(bo.getRecorderId());
         baseMapper.insert(activity);
 
+        // 1.1 row129 绩效班组多选：落 junction t_plant_activity_team。
+        //     teamIds 为 null（旧调用方不带）→ syncActivityTeams 内部跳过；空 list → 清空（新建无历史，等价 no-op）。
+        //     绩效归属口径（各组全额 vs 均分）本次不管，此处只做存储；记录展示由 AppletPlantActivityController 走 activityTeamNames。
+        teamLinkService.syncActivityTeams(activity.getId(), bo.getTeamIds());
+
         // 2. 累加已采产量（plant_details.actual_yield）。
         //    - 非销售去向：即时累加进所选地块（= 各地块「原始采摘量」）。
         //    - 销售去向（DENGBO-R21/R24）：**不再整笔堆进单条地块**（旧 accumulateActualYieldByCrop 是 row21 bug）；
@@ -144,9 +169,12 @@ public class PlantActivityServiceImpl extends DjsBaseServiceImpl<PlantActivityMa
      * {@code actual_yield}（S/N 截 3 位小数 DOWN，尾差 S−base×(N−1) 进最后一块），并把本批次销售流水
      * 与参与地块标记 {@code settle_round=N}。
      *
-     * <p>批次口径：当前批次 = 该作物 {@code is_pick=1}、种植完成、采摘窗口与当月相交、{@code pick_settle_round=0}
-     * 的地块 + {@code pick_dest=sale}、{@code settle_round=0} 的销售流水。已结算(round&gt;0)不再参与；
-     * 「录入完成后新增地块」及其新增销售流水 round=0，归入下一批次单独结算（row24 场景②）。</p>
+     * <p>批次口径（row202 起 = mp 详情页可见地块集）：当前批次地块 = 该作物 {@code is_pick=1}、种植完成、
+     * 采摘窗口与当月相交、{@code pick_settle_round=0}、且通过可见集三条过滤（非育苗 / {@code plot_status IN(2,3)} /
+     * 采摘完成只算完成当天，见 {@link #filterVisiblePlots}）；销售流水 = {@code pick_dest=sale}、
+     * {@code settle_round=0} 且 {@code activity_date >= 本批次开采日}（可见地块集 {@code begin_harvestdate}
+     * 最小非空值）。已结算(round&gt;0)不再参与；「录入完成后新增地块」及其新增销售流水 round=0，归入下一批次
+     * 单独结算（row24 场景②）。</p>
      *
      * <p>前置门（row24 规则1）：当前批次全部地块必须 {@code harvest_status='completed'}，否则拒绝。</p>
      */
@@ -160,7 +188,7 @@ public class PlantActivityServiceImpl extends DjsBaseServiceImpl<PlantActivityMa
         LocalDate firstDay = today.withDayOfMonth(1);
         LocalDate lastDay = today.with(TemporalAdjusters.lastDayOfMonth());
         // 当前批次地块（未结算）：与采摘活动头卡可见集同口径 + pick_settle_round=0；按 id 升序，最后一块 = 最新地块承接尾差。
-        List<PlantDetails> plots = plantDetailsMapper.selectList(
+        List<PlantDetails> candidates = plantDetailsMapper.selectList(
             new LambdaQueryWrapper<PlantDetails>()
                 .eq(PlantDetails::getCropId, cropId)
                 .eq(PlantDetails::getIsPick, 1)
@@ -169,6 +197,10 @@ public class PlantActivityServiceImpl extends DjsBaseServiceImpl<PlantActivityMa
                 .ge(PlantDetails::getLastHarvestdate, firstDay)
                 .and(w -> w.eq(PlantDetails::getPickSettleRound, 0).or().isNull(PlantDetails::getPickSettleRound))
                 .orderByAsc(PlantDetails::getId));
+        // row202：结算批次必须 == mp 详情页可见地块集，否则退茬 / 已过完成窗口的地块会把销售量摊到
+        //   从没采过它的新地块上。补齐可见集另外三条过滤（与 AppletPickServiceImpl.listCropPlots 同口径）：
+        //   ① 排除育苗地块 ② plot_status IN(2 种植,3 采摘) ③ 采摘完成的地块只在完成当天算数。
+        List<PlantDetails> plots = filterVisiblePlots(candidates, today);
         if (plots.isEmpty()) {
             throw new ServiceException("本批次没有可结算的地块（请确认地块已设为采摘活动且种植完成）");
         }
@@ -176,11 +208,20 @@ public class PlantActivityServiceImpl extends DjsBaseServiceImpl<PlantActivityMa
         if (!allDone) {
             throw new ServiceException("请先完成本批次全部地块的采摘，再点「录入完成」");
         }
+        // 本批次开采日 = 可见地块集 begin_harvestdate 最小非空值，作销售流水下界（口径同
+        // 结算侧下界）：销售流水按作物聚合、plot_id 恒空、无批次维度，不设下界会把历史批次
+        // （地块已退茬、永停 picking 而无法结算）的 settle_round=0 流水摊进本批次地块。全未开采时取今天。
+        LocalDate since = plots.stream()
+            .map(PlantDetails::getBeginHarvestdate)
+            .filter(Objects::nonNull)
+            .min(Comparator.naturalOrder())
+            .orElse(today);
         // 当前批次未结算销售流水合计
         List<PlantActivity> sales = baseMapper.selectList(
             new LambdaQueryWrapper<PlantActivity>()
                 .eq(PlantActivity::getCropId, cropId)
                 .eq(PlantActivity::getPickDest, PICK_DEST_SALE)
+                .ge(PlantActivity::getActivityDate, since)
                 .and(w -> w.eq(PlantActivity::getSettleRound, 0).or().isNull(PlantActivity::getSettleRound)));
         BigDecimal totalSale = sales.stream()
             .map(a -> a.getPickWeight() == null ? BigDecimal.ZERO : a.getPickWeight())
@@ -206,15 +247,52 @@ public class PlantActivityServiceImpl extends DjsBaseServiceImpl<PlantActivityMa
             }
             plantDetailsMapper.update(null, upd);
         }
-        // 标记本批次销售流水已结算（round=N）
+        // 标记本批次销售流水已结算（round=N）。下界与上面的查询严格一致 —— 早于本批次开采日的历史流水
+        // 没进 totalSale，就不能被标记成已结算（否则等于悄悄注销一笔从未分摊的销售量）。
         if (!sales.isEmpty()) {
             baseMapper.update(null,
                 new LambdaUpdateWrapper<PlantActivity>()
                     .eq(PlantActivity::getCropId, cropId)
                     .eq(PlantActivity::getPickDest, PICK_DEST_SALE)
+                    .ge(PlantActivity::getActivityDate, since)
                     .and(w -> w.eq(PlantActivity::getSettleRound, 0).or().isNull(PlantActivity::getSettleRound))
                     .set(PlantActivity::getSettleRound, round));
         }
+    }
+
+    /**
+     * 采摘活动可见地块集过滤（与 {@code AppletPickServiceImpl.listCropPlots} 同口径）。
+     *
+     * <p>三条：① 排除育苗地块（{@code plot_type='nursery'}，须先移栽）；② 只留
+     * {@code plot_status IN(2 种植,3 采摘)}（排除 1 空闲 = 已退茬）；③ 采摘完成
+     * （{@code harvest_status='completed'}）的地块只在 {@code end_harvestdate=今天} 当天算数。
+     * 地块查无一律排除。</p>
+     *
+     * @param details 候选明细（已按批次条件筛过）
+     * @param today   今天（r21 完成当天判定基准）
+     * @return 可见明细（保持入参顺序）
+     */
+    private List<PlantDetails> filterVisiblePlots(List<PlantDetails> details, LocalDate today) {
+        if (details.isEmpty()) {
+            return details;
+        }
+        Set<Long> plotIds = details.stream()
+            .map(PlantDetails::getPlotId).filter(Objects::nonNull).collect(Collectors.toSet());
+        Map<Long, PlotInfo> plotMap = plotIds.isEmpty() ? Map.of()
+            : plotInfoMapper.selectByIds(plotIds).stream()
+                .collect(Collectors.toMap(PlotInfo::getId, p -> p, (a, b) -> a));
+        return details.stream()
+            .filter(d -> {
+                PlotInfo plot = plotMap.get(d.getPlotId());
+                if (plot == null || PLOT_TYPE_NURSERY.equals(plot.getPlotType())) {
+                    return false;
+                }
+                return plot.getPlotStatus() != null
+                    && (plot.getPlotStatus() == 2 || plot.getPlotStatus() == 3);
+            })
+            .filter(d -> !PICK_STATUS_COMPLETED.equals(d.getHarvestStatus())
+                || today.equals(d.getEndHarvestdate()))
+            .toList();
     }
 
     /** 该作物下一结算轮次 = 已结算地块最大 round + 1（首次结算 → 1）。 */

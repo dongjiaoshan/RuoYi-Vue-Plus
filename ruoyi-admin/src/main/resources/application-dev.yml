@@ -32,7 +32,7 @@ snail-job:
 spring:
   # Flyway 跟随 primary 数据源：连本地=true（迁移本地库）/ 连 staging=false（别动线上库）
   flyway:
-    enabled: true        # ← primary: master 时改 true / primary: staging 时保持 false
+    enabled: false       # ← primary: master 时改 true / primary: staging 时保持 false
   datasource:
     type: com.zaxxer.hikari.HikariDataSource
     # 动态数据源文档 https://www.kancloud.cn/tracy5546/dynamic-datasource/content
@@ -41,7 +41,7 @@ spring:
       p6spy: true
       # 设置默认的数据源或者数据源组,默认值即为 master
       # ★★ 切换数据库就改这一个词：master = 本地 dev 库 / staging = 线上 RDS ★★
-      primary: staging
+      primary: master
       # 严格模式 匹配不到数据源则报错
       strict: true
       datasource:

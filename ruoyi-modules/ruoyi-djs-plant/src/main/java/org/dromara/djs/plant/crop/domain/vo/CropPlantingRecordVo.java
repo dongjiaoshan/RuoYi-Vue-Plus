@@ -43,7 +43,10 @@ public class CropPlantingRecordVo implements Serializable {
     /** 预计最早采摘日期。 */
     private Date earliestHarvestDate;
 
-    /** 实际亩产 kg/亩（average_yield）。 */
+    /** 实际产量 kg（明细采摘累计 actual_yield）。 */
+    private BigDecimal actualYield;
+
+    /** 实际亩产 kg/亩 = actual_yield / plot_area。 */
     private BigDecimal actualPer;
 
     /** 采摘开始日期。 */

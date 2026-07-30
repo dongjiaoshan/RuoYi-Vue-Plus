@@ -63,9 +63,9 @@ public class PlantWorkPerformanceVo implements Serializable {
     private String cropName;
 
     /**
-     * 采摘总量（斤）。
+     * 采摘总量（公斤）。
      */
-    @ExcelProperty(value = "采摘总量(斤)")
+    @ExcelProperty(value = "采摘量(公斤)")
     private BigDecimal pickWeight;
 
     /**

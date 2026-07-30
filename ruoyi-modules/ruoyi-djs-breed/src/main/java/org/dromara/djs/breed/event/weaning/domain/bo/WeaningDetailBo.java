@@ -28,11 +28,11 @@ public class WeaningDetailBo implements Serializable {
     private Integer pigletSeq;
 
     /** 仔猪耳号（可选）。 */
-    @Size(max = 32, message = "weaning.detail.ear_no.size")
+    @Size(max = 32, message = "{weaning.detail.ear_no.size}")
     private String earNo;
 
     /** 断奶体重 kg（必填，> 0）。 */
-    @NotNull(message = "weaning.detail.weight.required")
-    @Positive(message = "weaning.detail.weight.invalid")
+    @NotNull(message = "{weaning.detail.weight.required}")
+    @Positive(message = "{weaning.detail.weight.invalid}")
     private BigDecimal weight;
 }

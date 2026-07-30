@@ -41,7 +41,8 @@ import java.util.stream.Collectors;
  *
  * <p>不写状态机 / 编码 / 业态校验——全部复用 warehouse service。本类职责：</p>
  * <ul>
- *   <li>{@link #createStoreDemand} 单产品「门店发起」= insertByBo（warehouse 侧已直接落 SUBMITTED，不再二次 transition）</li>
+ *   <li>{@link #createStoreDemand} 单产品「门店发起」= 门店合作状态闸 + 自产产品闸（{@link #assertSellableProduct}）
+ *       + insertByBo（warehouse 侧已直接落 SUBMITTED，不再二次 transition）</li>
  *   <li>{@link #batchCreate} 购物车整单：逐项补产品冗余字段后循环 createStoreDemand</li>
  *   <li>{@link #receive} 门店收货确认：patch received_time / received_by（不触碰仓库状态机）+ 写
  *       追溯链「到店」(arrival) 节点（按 demand_id 反查已发货产品 trace_code 逐条 recordEvent）</li>
@@ -60,6 +61,9 @@ public class StoreDemandServiceImpl implements IStoreDemandService {
 
     /** 需求类型字典 djs_demand_mailing_type：个人邮寄。 */
     private static final String DEMAND_TYPE_MAILING = "mailing";
+
+    /** 产品类型字典 djs_product_type：自产（含礼盒）——门店唯一可下单的产品类型。 */
+    private static final Integer PRODUCT_TYPE_SELF_PRODUCED = 1;
 
     private final IDemandManageService demandManageService;
 
@@ -85,6 +89,7 @@ public class StoreDemandServiceImpl implements IStoreDemandService {
     private static final String BELONG_VEGETABLE = "vegetable";
     private static final String BELONG_PORK = "pork";
     private static final String BELONG_WHITE_BAR = "white_bar";
+    private static final String BELONG_DRY_GOOD = "dry_good";
 
     @Override
     public TableDataInfo<DemandManageVo> queryStoreList(DemandManageQuery query, PageQuery pageQuery) {
@@ -137,8 +142,15 @@ public class StoreDemandServiceImpl implements IStoreDemandService {
                 if (w != null && w.signum() > 0) {
                     vo.setExpectedWeight(w);
                 }
+            } else if (BELONG_DRY_GOOD.equals(belong)) {
+                // 干货预计到店重量按「已发货实际重量之和」（kg）。干货是自带真实 product_weight 的独立成品
+                // （如 干羊肚菌 80g/份→0.08~0.10kg），生产时逐份称重 → 已发货后按实际称重回填，与白条/果蔬同口径。
+                BigDecimal w = productProductionMapper.sumShippedDryGoodWeightByDemand(vo.getId());
+                if (w != null && w.signum() > 0) {
+                    vo.setExpectedWeight(w);
+                }
             }
-            // 其余 belong（egg / dry_good / gift_box / 外购商品 / null）→ 不回填，前端 '—'
+            // 其余 belong（礼盒为多产品组合、无单一整体重量，与鸡蛋按枚计一致 / 外购商品 / null）→ 不回填，前端 '—'
         }
     }
 
@@ -170,11 +182,35 @@ public class StoreDemandServiceImpl implements IStoreDemandService {
     public Long createStoreDemand(DemandManageBo bo) {
         // 已终止合作门店禁止下单（覆盖单条 + batchCreate 逐条路径）
         storeService.assertStoreActive(bo.getStoreId());
+        // 只放行自产产品（覆盖 admin 单条 / admin 购物车整单 / mp 三个创建入口）
+        assertSellableProduct(bo.getProductId());
         // 编辑路径不走本方法（门店端创建专用）；强制清空 id 避免误更新
         bo.setId(null);
         // warehouse insertByBo 已直接落 SUBMITTED（门店发起 = 提交需求给仓库，无独立存草稿环节，
         // 与 admin 仓库侧 add 同契约）+ 自动生成 demand_no + 业态字段校验，无需再 transition(SUBMIT)。
         return demandManageService.insertByBo(bo);
+    }
+
+    /**
+     * 门店可下单产品闸：只放行自产产品（{@code product_type=1}，含礼盒）。
+     *
+     * <p>外购商品（{@code product_type=2}）是生产投入品——种子 / 药品 / 农药 / 肥料 / 饲料 / 包材 / 设备，
+     * 走采购入库 → 物资领用消耗，不是门店可售商品（doc/14 §5）。前端候选已按 {@code productTypes=[1]} 收口，
+     * 本闸兜底挡住直接打接口、以及产品属性未配置的历史脏数据绕过下单。</p>
+     *
+     * @param productId 产品主键（{@code t_warehouse_product_info.id}）；为空时交由 BO 必填校验报错
+     */
+    private void assertSellableProduct(Long productId) {
+        if (productId == null) {
+            return;
+        }
+        ProductInfo product = productInfoMapper.selectById(productId);
+        if (product == null) {
+            throw new ServiceException("产品不存在或已删除：" + productId, 404);
+        }
+        if (!PRODUCT_TYPE_SELF_PRODUCED.equals(product.getProductType())) {
+            throw new ServiceException("「" + product.getProductName() + "」是外购商品，不可被门店下单", 400);
+        }
     }
 
     @Override

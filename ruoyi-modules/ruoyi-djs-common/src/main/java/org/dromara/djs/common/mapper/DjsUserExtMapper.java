@@ -57,6 +57,23 @@ public interface DjsUserExtMapper {
     Map<String, Object> selectAuthByUsername(@Param("username") String username);
 
     /**
+     * 查指定 user_id 是否为「存在 + 启用 + 未删」的可登录账号。
+     *
+     * <p>供不查密码的登录路径（mp dev mock 白名单）在颁发 token 前补账号层校验用。</p>
+     *
+     * @return 命中返 user_id；账号不存在 / {@code status='1'} 已停用 / {@code del_flag='2'} 已删除 均返 null
+     */
+    @Select("""
+        SELECT user_id
+        FROM sys_user
+        WHERE user_id = #{userId}
+          AND del_flag = '0'
+          AND status = '0'
+        LIMIT 1
+        """)
+    Long selectLoginableUserId(@Param("userId") Long userId);
+
+    /**
      * 通过手机号查询 user_id（用于 bind-phone）。
      *
      * @return user_id；未命中返 null

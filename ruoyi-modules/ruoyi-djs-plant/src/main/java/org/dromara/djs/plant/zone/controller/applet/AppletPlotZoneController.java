@@ -61,6 +61,12 @@ public class AppletPlotZoneController {
     private static final int IS_PICK_NORMAL = 2;
 
     /**
+     * 育苗（保育）地块类型（{@code djs_plot_type='nursery'}）：92.1 育苗地块须先移栽才进采收，
+     * 片区采摘任务角标与采收列表卡（{@code AppletPickServiceImpl}）同口径排除此类地块。
+     */
+    private static final String PLOT_TYPE_NURSERY = "nursery";
+
+    /**
      * 片区 picker 列表。
      *
      * @param keyword 关键字（同时 LIKE zoneName / zoneCode），可空
@@ -137,7 +143,8 @@ public class AppletPlotZoneController {
         Map<Long, PlotInfo> plotMap = plotInfoMapper.selectList(
                 new LambdaQueryWrapper<PlotInfo>()
                     .in(PlotInfo::getId, plotIds)
-                    .select(PlotInfo::getId, PlotInfo::getZoneId, PlotInfo::getPlotStatus))
+                    .select(PlotInfo::getId, PlotInfo::getZoneId, PlotInfo::getPlotStatus,
+                        PlotInfo::getPlotType))
             .stream()
             .collect(Collectors.toMap(PlotInfo::getId, p -> p, (a, b) -> a));
 
@@ -145,8 +152,12 @@ public class AppletPlotZoneController {
         Map<Long, Long> zoneCount = monthly.stream()
             .filter(d -> {
                 PlotInfo plot = plotMap.get(d.getPlotId());
+                // 92.1：育苗（保育 plot_type='nursery'）地块须先移栽才进采收，片区角标排除。
+                if (plot == null || PLOT_TYPE_NURSERY.equals(plot.getPlotType())) {
+                    return false;
+                }
                 // 地块必须在采摘态（2 种植 / 3 采摘）
-                if (plot == null || plot.getPlotStatus() == null
+                if (plot.getPlotStatus() == null
                     || (plot.getPlotStatus() != 2 && plot.getPlotStatus() != 3)) {
                     return false;
                 }

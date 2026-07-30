@@ -195,6 +195,50 @@ class ProductInfoServiceImplTest {
     }
 
     @Test
+    @DisplayName("新增：生产车间多归属 '3,5' 原样入库（WMS-PRODUCT-WORKSHOP-MULTI-001 一品多车间）")
+    void testInsertWorkshop_MultiValueKept() {
+        when(productInfoMapper.insert(any(ProductInfo.class))).thenReturn(1);
+        ProductInfoBo bo = selfBo();
+        bo.setProductWorkshop("3,5");
+
+        service.insertByBo(bo);
+
+        ArgumentCaptor<ProductInfo> captor = ArgumentCaptor.forClass(ProductInfo.class);
+        verify(productInfoMapper, times(1)).insert(captor.capture());
+        assertThat(captor.getValue().getProductWorkshop())
+            .as("多车间归属应原样保留，供 FIND_IN_SET 匹配")
+            .isEqualTo("3,5");
+    }
+
+    @Test
+    @DisplayName("新增：脏 CSV '3, 5,,3' 归一化成 '3,5'——带空格的段会让 FIND_IN_SET 静默不命中")
+    void testInsertWorkshop_NormalizesDirtyCsv() {
+        when(productInfoMapper.insert(any(ProductInfo.class))).thenReturn(1);
+        ProductInfoBo bo = selfBo();
+        bo.setProductWorkshop("3, 5,,3");
+
+        service.insertByBo(bo);
+
+        ArgumentCaptor<ProductInfo> captor = ArgumentCaptor.forClass(ProductInfo.class);
+        verify(productInfoMapper, times(1)).insert(captor.capture());
+        assertThat(captor.getValue().getProductWorkshop()).isEqualTo("3,5");
+    }
+
+    @Test
+    @DisplayName("新增：空串车间归一化成 null（列语义：空归属存 NULL 不存空串）")
+    void testInsertWorkshop_BlankToNull() {
+        when(productInfoMapper.insert(any(ProductInfo.class))).thenReturn(1);
+        ProductInfoBo bo = selfBo();
+        bo.setProductWorkshop("");
+
+        service.insertByBo(bo);
+
+        ArgumentCaptor<ProductInfo> captor = ArgumentCaptor.forClass(ProductInfo.class);
+        verify(productInfoMapper, times(1)).insert(captor.capture());
+        assertThat(captor.getValue().getProductWorkshop()).isNull();
+    }
+
+    @Test
     @DisplayName("新增外购 happy → productType=2 + supplierId → insert 1 次")
     void testInsertPurchase_HappyPath() {
         when(productInfoMapper.insert(any(ProductInfo.class))).thenReturn(1);

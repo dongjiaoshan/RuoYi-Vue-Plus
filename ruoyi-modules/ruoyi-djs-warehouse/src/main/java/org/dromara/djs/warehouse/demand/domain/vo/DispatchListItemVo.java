@@ -45,6 +45,9 @@ public class DispatchListItemVo implements Serializable {
     /** 产品名。 */
     private String productName;
 
+    /** 产品规格快照；白条半扇/整扇识别不能只依赖产品名。 */
+    private String productSpec;
+
     /** 业态：white_bar / vegetable / gift_box / other。 */
     private String productType;
 
@@ -53,6 +56,12 @@ public class DispatchListItemVo implements Serializable {
 
     /** 单位（kg / 头 / 盒）。 */
     private String productUnit;
+
+    /**
+     * 每一份白条订单折算的猪只头数：半扇=0.5，整扇=1。
+     * <p>由后端依据产品名和规格快照结构化给出，客户端不再自行猜测中文名称。</p>
+     */
+    private BigDecimal whiteBarHeadFactor;
 
     /** 需求说明（如 "25 号之前每天 1 头猪送到矿业 / 背膘不要太厚"）。 */
     private String demandExplain;

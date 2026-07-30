@@ -35,14 +35,14 @@ public class NullReturnBo implements Serializable {
     /** 录入人员 userId（mp EmployeePicker role=breed_worker 选；空则 service 回落 LoginHelper.getUserId()）。 */
     private Long operatorId;
 
-    @NotNull(message = "null_return.date.required")
+    @NotNull(message = "{null_return.date.required}")
     private LocalDateTime nullReturnDate;
 
     /** 异常类型：abort / return / idle。 */
-    @NotBlank(message = "null_return.abnormal_type.required")
-    @Pattern(regexp = "^(abort|return|idle)$", message = "null_return.abnormal_type.invalid")
+    @NotBlank(message = "{null_return.abnormal_type.required}")
+    @Pattern(regexp = "^(abort|return|idle)$", message = "{null_return.abnormal_type.invalid}")
     private String abnormalType;
 
-    @Size(max = 500, message = "null_return.remark.size")
+    @Size(max = 500, message = "{null_return.remark.size}")
     private String remark;
 }

@@ -65,12 +65,12 @@ public class StockFlowServiceImpl
     private static final String FLOW_TYPE_PACK_IN = "pack_in";
 
     /**
-     * 领用后损耗流水类型（djs_flow_type）。
-     * 损耗是「物资领用之后才产生的损耗」，不属于真正的出库；出库记录页 / 导出（queryOutList /
-     * queryOutExport）排除展示，只保留盘点计损（check_out）/ 盘点异常出库（check_abnormal_out）等
-     * 真出库口径。loss 流水本身仍写入（库存余额 / 损耗总览依赖）。
+     * 出库记录页 / 导出（queryOutList / queryOutExport）展示排除的流水类型（djs_flow_type）：
+     * 出库记录页仅展示库位领用 / 后台 / 盘点类真出库，生产发货（ship_out / pack_consume）与
+     * 领用后损耗（loss）不展示；流水本身仍写入（库存余额 / 损耗总览依赖）。
+     * ⚠️ 勿复用 / 勿改 MatFlowServiceImpl 的权威键集——那是额度统计口径，与本展示口径无关。
      */
-    private static final String FLOW_TYPE_LOSS = "loss";
+    private static final List<String> DISPLAY_EXCLUDED_OUT_FLOW_TYPES = List.of("loss", "ship_out", "pack_consume");
 
     private final LocationInfoMapper locationInfoMapper;
     private final ProductInfoMapper productInfoMapper;
@@ -125,9 +125,9 @@ public class StockFlowServiceImpl
 
     @Override
     public TableDataInfo<StockFlowVo> queryOutList(StockFlowQuery query, PageQuery pageQuery) {
-        // 出库记录页：排除领用后损耗（loss），只保留盘点计损 / 异常等真出库口径
+        // 出库记录页：排除生产发货 / 领用后损耗类流水，只保留库位领用 / 后台 / 盘点类真出库口径
         LambdaQueryWrapper<StockFlow> wrapper = buildWrapper(lockInout(query, INOUT_OUT))
-            .ne(StockFlow::getFlowType, FLOW_TYPE_LOSS);
+            .notIn(StockFlow::getFlowType, DISPLAY_EXCLUDED_OUT_FLOW_TYPES);
         Page<StockFlowVo> page = baseMapper.selectVoPage(pageQuery.build(), wrapper);
         fillJoinNames(page.getRecords());
         return TableDataInfo.build(page);
@@ -145,9 +145,9 @@ public class StockFlowServiceImpl
 
     @Override
     public List<StockFlowVo> queryOutExport(StockFlowQuery query) {
-        // 出库记录导出：与列表口径一致，排除领用后损耗（loss）
+        // 出库记录导出：与列表口径一致，排除生产发货 / 领用后损耗类流水
         LambdaQueryWrapper<StockFlow> wrapper = buildWrapper(lockInout(query, INOUT_OUT))
-            .ne(StockFlow::getFlowType, FLOW_TYPE_LOSS);
+            .notIn(StockFlow::getFlowType, DISPLAY_EXCLUDED_OUT_FLOW_TYPES);
         List<StockFlowVo> list = baseMapper.selectVoList(wrapper);
         fillJoinNames(list);
         return list;

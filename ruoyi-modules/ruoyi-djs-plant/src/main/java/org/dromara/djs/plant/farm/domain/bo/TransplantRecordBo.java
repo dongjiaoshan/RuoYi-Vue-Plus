@@ -36,6 +36,9 @@ public class TransplantRecordBo {
     @NotNull(message = "{plant.farm.team.required}")
     private Long farmBy;
 
+    /** 处理班组全集（G1-TEAMS-MULTISELECT，row37）。非空时写中间表，旧单列 farmBy 取第一个；为 null 时退化为单值 farmBy。 */
+    private java.util.List<Long> farmByIds;
+
     /** 农事日期。 */
     @NotNull(message = "{plant.farm.date.required}")
     private LocalDate farmDate;

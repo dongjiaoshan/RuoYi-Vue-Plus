@@ -28,7 +28,9 @@ public interface IMedicineService {
     List<MedicineVo> queryList(MedicineQuery query);
 
     /**
-     * 根据 ID 查询单条。
+     * 根据 ID 查询单条（与列表同源读仓库药品商品，id 即 {@code t_warehouse_product_info.id}）。
+     *
+     * @return 药品详情；id 为空或药品不存在返 null
      */
     MedicineVo queryById(Long id);
 

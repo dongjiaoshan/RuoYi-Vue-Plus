@@ -118,9 +118,10 @@ public class ProductInfoBo extends BaseEntity {
     private Integer productAttr;
 
     /**
-     * 字典 {@code djs_product_workshop}：1-4。
+     * 字典 {@code djs_product_workshop} 生产车间，CSV 多值（如 {@code "3,5"}）；admin 表单多选后 join 提交。
      */
-    private Integer productWorkshop;
+    @Size(max = 32, message = "{product.workshop.size}")
+    private String productWorkshop;
 
     /**
      * 存储库位 ID 列表（逗号分隔）。
@@ -164,6 +165,11 @@ public class ProductInfoBo extends BaseEntity {
      * 字典 {@code djs_yes_no}：是否可外购 1/0（不传默认 0）。
      */
     private Integer isBuyOut;
+
+    /**
+     * 字典 {@code djs_yes_no}：是否原材料外售 1/0（不传默认 0）。
+     */
+    private Integer isMaterialSold;
 
     /**
      * 备注。

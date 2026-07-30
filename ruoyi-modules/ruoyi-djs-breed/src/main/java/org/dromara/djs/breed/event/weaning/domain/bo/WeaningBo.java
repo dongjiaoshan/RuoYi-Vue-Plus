@@ -42,12 +42,12 @@ public class WeaningBo implements Serializable {
      */
     private Long farrowId;
 
-    @NotNull(message = "weaning.date.required")
+    @NotNull(message = "{weaning.date.required}")
     private LocalDateTime weaningDate;
 
     /** 断奶时仔猪数（实际活仔数）。 */
-    @NotNull(message = "weaning.count.required")
-    @Min(value = 0, message = "weaning.count.invalid")
+    @NotNull(message = "{weaning.count.required}")
+    @Min(value = 0, message = "{weaning.count.invalid}")
     private Integer weanedCount;
 
     /** 断奶总重 kg（OQ-11 fallback：母猪汇总，不逐头）。 */
@@ -63,7 +63,7 @@ public class WeaningBo implements Serializable {
     @Valid
     private List<WeaningDetailBo> details;
 
-    @Size(max = 500, message = "weaning.remark.size")
+    @Size(max = 500, message = "{weaning.remark.size}")
     private String remark;
 
     /** 录入人员 userId（mp EmployeePicker 选，支持替别人代录；admin / 老调用方缺省时 service fallback 登录态）。 */

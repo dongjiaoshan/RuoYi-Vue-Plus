@@ -75,7 +75,11 @@ public interface PlantDashboardMapper {
     BigDecimal selectCurrentPlantingArea(@Param("tenantId") String tenantId);
 
     /**
-     * 当前预计产量（kg）：未完成种植明细（{@code plant_status != 'completed'}）的 {@code SUM(expected_yield)}。
+     * 当前预计产量（kg）：在种明细的 {@code SUM(expected_yield)}。
+     *
+     * <p>在种口径 = 产出期 {@code plant_status='completed' AND harvest_status<>'completed'}
+     * （已定植、未采完），与 mp 农事/采收（{@code FarmRecordsMapper}）同源：{@code plant_status='completed'}
+     * 表示定植动作完成、作物在地可作业，采完才由 {@code harvest_status} 收口。</p>
      *
      * <p>区块 ① "当前预计产量"。前端按 kg → 万斤换算（{@code kg × 2 / 10000}）。</p>
      *
@@ -86,7 +90,8 @@ public interface PlantDashboardMapper {
         + "  FROM t_plant_plant_details d "
         + " WHERE d.tenant_id = #{tenantId} "
         + "   AND d.del_flag = '0' "
-        + "   AND d.plant_status <> 'completed'")
+        + "   AND d.plant_status = 'completed' "
+        + "   AND d.harvest_status <> 'completed'")
     BigDecimal selectCurrentExpectedYield(@Param("tenantId") String tenantId);
 
     /**
@@ -236,6 +241,23 @@ public interface PlantDashboardMapper {
         + "   AND farm_type = 'disaster'")
     Integer countTodayDisaster(@Param("tenantId") String tenantId);
 
+    /**
+     * 今日工作 - 采摘活动处理总重量：今日（{@code activity_date = CURDATE()}）采摘活动明细
+     * {@code SUM(daily_weight)}（kg）。与采摘明细页 / 班组绩效同源同口径（只计 {@code pick_dest} 非空、
+     * {@code daily_weight > 0} 的采摘活动行，排除旧农事路径行防与毛菜过磅双算）。
+     *
+     * @param tenantId 租户
+     * @return 当天采摘活动处理总重量 kg，无则 0
+     */
+    @Select("SELECT COALESCE(SUM(daily_weight), 0) "
+        + "  FROM t_plant_plant_activity "
+        + " WHERE tenant_id = #{tenantId} "
+        + "   AND del_flag = '0' "
+        + "   AND activity_date = CURDATE() "
+        + "   AND pick_dest IS NOT NULL "
+        + "   AND daily_weight > 0")
+    BigDecimal selectTodayPickActivityWeight(@Param("tenantId") String tenantId);
+
     // ============================ 块 ② 当月完成率 ============================
 
     /**
@@ -266,7 +288,8 @@ public interface PlantDashboardMapper {
     /**
      * 实时种植物统计（按作物分组）：在种地块数 + 预计产量合计。
      *
-     * <p>仅统计未完成种植（{@code plant_status != 'completed'}）的明细，按 {@code crop_id} 分组，
+     * <p>仅统计在种明细（产出期 {@code plant_status='completed' AND harvest_status<>'completed'}，
+     * 与 mp 农事/采收同源），按 {@code crop_id} 分组，
      * JOIN {@code t_plant_crop_info} 取作物名。bar = {@code COUNT(DISTINCT plot_id)}，
      * line = {@code SUM(expected_yield)}（kg）。</p>
      *
@@ -280,7 +303,8 @@ public interface PlantDashboardMapper {
         + "  LEFT JOIN t_plant_crop_info c ON c.id = d.crop_id AND c.del_flag = '0' "
         + " WHERE d.tenant_id = #{tenantId} "
         + "   AND d.del_flag = '0' "
-        + "   AND d.plant_status <> 'completed' "
+        + "   AND d.plant_status = 'completed' "
+        + "   AND d.harvest_status <> 'completed' "
         + " GROUP BY d.crop_id, c.crop_name "
         + " ORDER BY plotCount DESC, c.crop_name "
         + " LIMIT 30")
@@ -332,7 +356,8 @@ public interface PlantDashboardMapper {
     /**
      * 作物无证书品类数 = 在种作物中「不在」最新果蔬证书覆盖品类里的不重复作物（{@code crop_id}）数。
      *
-     * <p>在种作物 = {@code t_plant_plant_details} 进行中（{@code plant_status <> 'completed'}）的
+     * <p>在种作物 = {@code t_plant_plant_details} 产出期（{@code plant_status='completed' AND
+     * harvest_status<>'completed'}，与 mp 农事/采收同源）的
      * 不重复 {@code crop_id}；覆盖品类 = 最新证书在 {@code t_plant_crop_organic_rel} 里关联的
      * {@code crop_id} 集合。无证书 / 无关联时退化为全部在种作物数（子查询返回空集，{@code NOT IN} 恒真）。</p>
      *
@@ -343,7 +368,8 @@ public interface PlantDashboardMapper {
         + "  FROM t_plant_plant_details d "
         + " WHERE d.tenant_id = #{tenantId} "
         + "   AND d.del_flag = '0' "
-        + "   AND d.plant_status <> 'completed' "
+        + "   AND d.plant_status = 'completed' "
+        + "   AND d.harvest_status <> 'completed' "
         + "   AND d.crop_id NOT IN ( "
         + "       SELECT r.crop_id FROM t_plant_crop_organic_rel r "
         + "        WHERE r.tenant_id = #{tenantId} "

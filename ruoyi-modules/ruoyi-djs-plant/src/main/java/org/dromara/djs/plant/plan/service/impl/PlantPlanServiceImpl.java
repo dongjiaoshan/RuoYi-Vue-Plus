@@ -36,6 +36,7 @@ import org.dromara.djs.plant.plot.domain.PlotInfo;
 import org.dromara.djs.plant.plot.mapper.PlotInfoMapper;
 import org.dromara.djs.plant.team.domain.PlantWorkTeam;
 import org.dromara.djs.plant.team.mapper.PlantWorkTeamMapper;
+import org.dromara.djs.plant.team.service.PlantTeamLinkService;
 import org.dromara.djs.plant.zone.domain.PlotZone;
 import org.dromara.djs.plant.zone.mapper.PlotZoneMapper;
 import org.springframework.stereotype.Service;
@@ -87,6 +88,7 @@ public class PlantPlanServiceImpl extends DjsBaseServiceImpl<PlantPlanMapper, Pl
     private final PlotZoneMapper zoneMapper;
     private final PlantWorkTeamMapper teamMapper;
     private final IBizCodeGenerator bizCodeGenerator;
+    private final PlantTeamLinkService teamLinkService;
 
     public PlantPlanServiceImpl(
         PlantPlanMapper baseMapper,
@@ -95,7 +97,8 @@ public class PlantPlanServiceImpl extends DjsBaseServiceImpl<PlantPlanMapper, Pl
         PlotInfoMapper plotMapper,
         PlotZoneMapper zoneMapper,
         PlantWorkTeamMapper teamMapper,
-        IBizCodeGenerator bizCodeGenerator) {
+        IBizCodeGenerator bizCodeGenerator,
+        PlantTeamLinkService teamLinkService) {
         super(baseMapper);
         this.detailsMapper = detailsMapper;
         this.cropMapper = cropMapper;
@@ -103,6 +106,22 @@ public class PlantPlanServiceImpl extends DjsBaseServiceImpl<PlantPlanMapper, Pl
         this.zoneMapper = zoneMapper;
         this.teamMapper = teamMapper;
         this.bizCodeGenerator = bizCodeGenerator;
+        this.teamLinkService = teamLinkService;
+    }
+
+    /**
+     * 班组多选取值：list 非空 → 去空去重原样返回；否则回落单值（非空→单元素）；再否则空 list。
+     */
+    private List<Long> effectiveTeamIds(List<Long> ids, Long single) {
+        if (CollUtil.isNotEmpty(ids)) {
+            return ids.stream().filter(Objects::nonNull).distinct().collect(Collectors.toList());
+        }
+        return single == null ? Collections.emptyList() : List.of(single);
+    }
+
+    /** 取多选第一个（写旧单列过渡兼容）；空 → null。 */
+    private Long firstTeamId(List<Long> effectiveIds) {
+        return CollUtil.isEmpty(effectiveIds) ? null : effectiveIds.get(0);
     }
 
     // ============================================================
@@ -218,7 +237,7 @@ public class PlantPlanServiceImpl extends DjsBaseServiceImpl<PlantPlanMapper, Pl
     }
 
     /**
-     * 按 cropId 批量 enrich {@code cropName} + {@code cropImage}（crop_image_preview）。
+     * 按 cropId 批量 enrich {@code cropName} + {@code cropImage}。
      */
     private void enrichCrop(List<PlantPlanVo> list) {
         if (CollUtil.isEmpty(list)) {
@@ -235,9 +254,30 @@ public class PlantPlanServiceImpl extends DjsBaseServiceImpl<PlantPlanMapper, Pl
             CropInfo crop = cropMap.get(vo.getCropId());
             if (crop != null) {
                 vo.setCropName(crop.getCropName());
-                vo.setCropImage(crop.getCropImagePreview());
+                vo.setCropImage(resolveCropImageOssId(crop));
             }
         }
+    }
+
+    /**
+     * 取作物图 ossId：{@code image_oss_id → crop_image_preview → crop_image_url 首段} 兜底，全空返 null。
+     *
+     * <p>三个字段各有来源——{@code image_oss_id} 图库自动匹配 / 手选写入，
+     * {@code crop_image_preview} 与 {@code crop_image_url}（逗号分隔多图，取第一张）是 admin 端用户上传落位。
+     * 只读单个字段会漏掉另两路的图，表现为列表「作物图片」整列显 {@code -}。</p>
+     */
+    private String resolveCropImageOssId(CropInfo c) {
+        if (StringUtils.isNotBlank(c.getImageOssId())) {
+            return c.getImageOssId();
+        }
+        if (StringUtils.isNotBlank(c.getCropImagePreview())) {
+            return c.getCropImagePreview();
+        }
+        if (StringUtils.isNotBlank(c.getCropImageUrl())) {
+            String first = c.getCropImageUrl().split(",")[0].trim();
+            return StringUtils.isBlank(first) ? null : first;
+        }
+        return null;
     }
 
     /**
@@ -342,6 +382,11 @@ public class PlantPlanServiceImpl extends DjsBaseServiceImpl<PlantPlanMapper, Pl
         Map<Long, String> teamMap = teamIds.isEmpty() ? Map.of() : teamMapper.selectByIds(teamIds).stream()
             .collect(Collectors.toMap(PlantWorkTeam::getId, PlantWorkTeam::getTeamName, (a, b) -> a));
 
+        // 班组多选中间表 enrich（G1-TEAMS-MULTISELECT，row36）：批量取各明细 role → 名/id
+        Set<Long> detailIds = details.stream().map(PlantDetailsVo::getId).filter(Objects::nonNull).collect(Collectors.toSet());
+        Map<Long, Map<String, List<String>>> namesMap = teamLinkService.detailTeamNames(detailIds);
+        Map<Long, Map<String, List<Long>>> idsMap = teamLinkService.detailTeamIds(detailIds);
+
         for (PlantDetailsVo d : details) {
             PlotInfo plot = plotMap.get(d.getPlotId());
             if (plot != null) {
@@ -351,6 +396,22 @@ public class PlantPlanServiceImpl extends DjsBaseServiceImpl<PlantPlanMapper, Pl
             d.setCropName(cropMap.get(d.getCropId()));
             d.setPlantTeamName(d.getPlantBy() == null ? null : teamMap.get(d.getPlantBy()));
             d.setHarvestTeamName(d.getHarvestBy() == null ? null : teamMap.get(d.getHarvestBy()));
+
+            Map<String, List<String>> roleNames = namesMap.getOrDefault(d.getId(), Map.of());
+            Map<String, List<Long>> roleIds = idsMap.getOrDefault(d.getId(), Map.of());
+            List<String> plantNames = roleNames.get(PlantTeamLinkService.ROLE_PLANT);
+            List<String> harvestNames = roleNames.get(PlantTeamLinkService.ROLE_HARVEST);
+            // 中间表无数据（历史行未回填 / 单值兜底）时回落旧单列名，保证展示不空
+            d.setPlantTeamNames(CollUtil.isNotEmpty(plantNames) ? plantNames
+                : (d.getPlantTeamName() == null ? Collections.emptyList() : List.of(d.getPlantTeamName())));
+            d.setHarvestTeamNames(CollUtil.isNotEmpty(harvestNames) ? harvestNames
+                : (d.getHarvestTeamName() == null ? Collections.emptyList() : List.of(d.getHarvestTeamName())));
+            List<Long> plantIds = roleIds.get(PlantTeamLinkService.ROLE_PLANT);
+            List<Long> harvestIds = roleIds.get(PlantTeamLinkService.ROLE_HARVEST);
+            d.setPlantByIds(CollUtil.isNotEmpty(plantIds) ? plantIds
+                : (d.getPlantBy() == null ? Collections.emptyList() : List.of(d.getPlantBy())));
+            d.setHarvestByIds(CollUtil.isNotEmpty(harvestIds) ? harvestIds
+                : (d.getHarvestBy() == null ? Collections.emptyList() : List.of(d.getHarvestBy())));
         }
     }
 
@@ -398,8 +459,11 @@ public class PlantPlanServiceImpl extends DjsBaseServiceImpl<PlantPlanMapper, Pl
         }
         // 采摘区间交叉校验：同一地块已有种植明细的采摘区间不可与本次重叠
         validateHarvestOverlap(detailEntities, plotMap, null);
-        for (PlantDetails d : detailEntities) {
+        List<PlantDetailInputBo> inputs = bo.getDetails();
+        for (int i = 0; i < detailEntities.size(); i++) {
+            PlantDetails d = detailEntities.get(i);
             detailsMapper.insert(d);
+            syncDetailTeamLinks(d.getId(), inputs.get(i));   // 班组多选中间表
         }
 
         baseMapper.recalcAggregates(plan.getId());
@@ -428,9 +492,21 @@ public class PlantPlanServiceImpl extends DjsBaseServiceImpl<PlantPlanMapper, Pl
         d.setPlotArea(plot.getPlotArea());
         d.setExpectedYield(expected);
         d.setIsPick(2);
-        d.setPlantBy(input.getPlantBy());
-        d.setHarvestBy(input.getHarvestBy());
+        // 旧单列 = 多选第一个（过渡兼容 + 下游单值聚合口径不变）；全集在 insert 后 sync 中间表
+        d.setPlantBy(firstTeamId(effectiveTeamIds(input.getPlantByIds(), input.getPlantBy())));
+        d.setHarvestBy(firstTeamId(effectiveTeamIds(input.getHarvestByIds(), input.getHarvestBy())));
         return d;
+    }
+
+    /**
+     * 明细班组多选中间表同步（G1-TEAMS-MULTISELECT，row36）：种植 role=plant / 采摘 role=harvest。
+     * BO list 为 null 时退化为旧单列单值；两者皆空则清空该角色关联。
+     */
+    private void syncDetailTeamLinks(Long detailId, PlantDetailInputBo input) {
+        teamLinkService.syncDetailTeams(detailId, PlantTeamLinkService.ROLE_PLANT,
+            effectiveTeamIds(input.getPlantByIds(), input.getPlantBy()));
+        teamLinkService.syncDetailTeams(detailId, PlantTeamLinkService.ROLE_HARVEST,
+            effectiveTeamIds(input.getHarvestByIds(), input.getHarvestBy()));
     }
 
     /**
@@ -450,6 +526,18 @@ public class PlantPlanServiceImpl extends DjsBaseServiceImpl<PlantPlanMapper, Pl
     private void validateHarvestOverlap(List<PlantDetails> incoming,
                                         Map<Long, PlotInfo> plotMap,
                                         Long excludePlanId) {
+        validateHarvestOverlap(incoming, plotMap, excludePlanId, null);
+    }
+
+    /**
+     * 采摘区间重叠校验。{@code scene} 非空时作为异常前缀，标明冲突发生的场景（如移栽 100% 自动落地时
+     * 物化「转移目标地块」入计划），避免用户误以为冒出一块无关地块（row159）。地块名优先用地块编号
+     * {@code plotCode}（与 mp 地块选择器展示一致），回落地块名 / id。
+     */
+    private void validateHarvestOverlap(List<PlantDetails> incoming,
+                                        Map<Long, PlotInfo> plotMap,
+                                        Long excludePlanId,
+                                        String scene) {
         Set<Long> plotIds = incoming.stream()
             .map(PlantDetails::getPlotId).filter(Objects::nonNull).collect(Collectors.toSet());
         if (plotIds.isEmpty()) {
@@ -484,14 +572,143 @@ public class PlantPlanServiceImpl extends DjsBaseServiceImpl<PlantPlanMapper, Pl
                 LocalDate b2 = old.getLastHarvestdate();
                 if (!a1.isAfter(b2) && !a2.isBefore(b1)) {
                     PlotInfo plot = plotMap == null ? null : plotMap.get(item.getPlotId());
-                    String plotLabel = plot != null && plot.getPlotName() != null
-                        ? plot.getPlotName() : ("地块 " + item.getPlotId());
-                    throw new ServiceException("「" + plotLabel + "」已有种植记录的采摘区间（"
+                    String plotLabel = plot == null ? ("地块 " + item.getPlotId())
+                        : (plot.getPlotCode() != null ? plot.getPlotCode()
+                        : (plot.getPlotName() != null ? plot.getPlotName() : ("地块 " + item.getPlotId())));
+                    String prefix = StringUtils.isNotBlank(scene) ? (scene + "：") : "";
+                    throw new ServiceException(prefix + "「" + plotLabel + "」已有种植记录的采摘区间（"
                         + b1 + " ~ " + b2 + "）与本次采摘区间（" + a1 + " ~ " + a2
                         + "）重叠，请调整种植月份或旬别后再提交");
                 }
             }
         }
+    }
+
+    // ============================================================
+    // 育苗移栽落地（PLT-TRANSPLANT-REDO-001）
+    // ============================================================
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public int materializeTransplantTargets(Long planId, Long sourcePlotId, Long cropId, List<Long> targetPlotIds) {
+        if (planId == null || sourcePlotId == null || cropId == null || CollUtil.isEmpty(targetPlotIds)) {
+            return 0;
+        }
+        // 源育苗明细（日期模板）：同计划 + 同源地块 + 同作物；多条(多月旬)取 id 最小一条作日期模板
+        List<PlantDetails> sourceDetails = detailsMapper.selectList(
+            new LambdaQueryWrapper<PlantDetails>()
+                .eq(PlantDetails::getPlantId, planId)
+                .eq(PlantDetails::getPlotId, sourcePlotId)
+                .eq(PlantDetails::getCropId, cropId)
+                .orderByAsc(PlantDetails::getId));
+        if (sourceDetails.isEmpty()) {
+            throw new ServiceException("移栽源育苗明细不存在（计划 " + planId + " / 地块 " + sourcePlotId + "）");
+        }
+        PlantDetails src = sourceDetails.get(0);
+        CropInfo crop = cropMapper.selectById(cropId);
+
+        List<Long> distinctTargets = targetPlotIds.stream().filter(Objects::nonNull).distinct().toList();
+        Map<Long, PlotInfo> targetMap = distinctTargets.isEmpty() ? Map.of()
+            : plotMapper.selectByIds(distinctTargets).stream()
+                .collect(Collectors.toMap(PlotInfo::getId, p -> p, (a, b) -> a));
+
+        Long updateBy = currentUserIdSafe();
+        List<PlantDetails> newDetails = new ArrayList<>();
+        List<Long> newDetailPlotIds = new ArrayList<>();
+        for (Long targetId : distinctTargets) {
+            PlotInfo tp = targetMap.get(targetId);
+            if (tp == null) {
+                throw new ServiceException("移栽目标地块不存在：" + targetId);
+            }
+            // 幂等：目标已有本计划明细（前次落地 / 重复触发）→ 跳过，不重复建（并发双落地兜底）
+            boolean exists = detailsMapper.selectCount(
+                new LambdaQueryWrapper<PlantDetails>()
+                    .eq(PlantDetails::getPlantId, planId)
+                    .eq(PlantDetails::getPlotId, targetId)) > 0;
+            if (exists) {
+                continue;
+            }
+            PlantDetails d = new PlantDetails();
+            d.setPlantId(planId);
+            d.setPlotId(targetId);
+            d.setCropId(cropId);
+            d.setPlantMonth(src.getPlantMonth());
+            d.setPlantPeriod(src.getPlantPeriod());
+            d.setBeginActualdate(src.getBeginActualdate());          // 种植时间不变
+            d.setEarliestHarvestdate(src.getEarliestHarvestdate());  // 采摘期含育苗时长，不变
+            d.setLastHarvestdate(src.getLastHarvestdate());
+            d.setPlantStatus("completed");   // 满种：已定植进产出期
+            d.setHarvestStatus("pending");   // 采摘改在目标大田发生
+            d.setPlotArea(tp.getPlotArea());
+            BigDecimal expected = BigDecimal.ZERO;
+            if (tp.getPlotArea() != null && crop != null && crop.getPredictedPer() != null) {
+                expected = tp.getPlotArea().multiply(crop.getPredictedPer());
+            }
+            d.setExpectedYield(expected);
+            d.setIsPick(2);
+            d.setPlantBy(src.getPlantBy());   // 沿用源育苗种植班组（过渡兼容旧单列）
+            d.setTransplantAdjusted(1);
+            newDetails.add(d);
+            newDetailPlotIds.add(targetId);
+        }
+        if (newDetails.isEmpty()) {
+            return 0;   // 全部目标已落地（幂等）
+        }
+        // point③：目标须在计划时间窗口内无冲突计划（复用采摘区间重叠校验；有冲突则整事务回滚）。
+        // row159：100% 落地时物化的是「源育苗地块的历史转移目标全集」，冲突地块可能非本次所选——
+        // 传场景前缀让文案标明是「移栽落地·转移目标地块」，避免用户误以为报了无关地块。
+        validateHarvestOverlap(newDetails, targetMap, null, "移栽落地·转移目标地块");
+        for (PlantDetails d : newDetails) {
+            detailsMapper.insert(d);
+        }
+        // 目标地块 plot_status=2（种植）
+        plotMapper.update(null,
+            new com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<PlotInfo>()
+                .in(PlotInfo::getId, newDetailPlotIds)
+                .set(PlotInfo::getPlotStatus, 2)
+                .set(PlotInfo::getUpdateBy, updateBy));
+        // 新增目标满种明细后主表 totalPlot / totalArea / earliest·last_harvestdate / plant_status 需重算
+        baseMapper.recalcAggregates(planId);
+        baseMapper.recalcPlanStatus(planId);
+        return newDetails.size();
+    }
+
+    @Override
+    public void validateTransplantTargetConflict(Long planId, Long sourcePlotId, Long cropId, Long targetPlotId) {
+        if (planId == null || sourcePlotId == null || cropId == null || targetPlotId == null) {
+            return;
+        }
+        // 目标已有本计划明细（已物化）→ 无需重复校验
+        boolean exists = detailsMapper.selectCount(
+            new LambdaQueryWrapper<PlantDetails>()
+                .eq(PlantDetails::getPlantId, planId)
+                .eq(PlantDetails::getPlotId, targetPlotId)) > 0;
+        if (exists) {
+            return;
+        }
+        // 源育苗明细日期模板（同 materializeTransplantTargets：id 最小一条）
+        List<PlantDetails> sourceDetails = detailsMapper.selectList(
+            new LambdaQueryWrapper<PlantDetails>()
+                .eq(PlantDetails::getPlantId, planId)
+                .eq(PlantDetails::getPlotId, sourcePlotId)
+                .eq(PlantDetails::getCropId, cropId)
+                .orderByAsc(PlantDetails::getId));
+        if (sourceDetails.isEmpty()) {
+            return;   // 源缺失 → 落地环节会再报，选块阶段不阻断
+        }
+        PlantDetails src = sourceDetails.get(0);
+        if (src.getEarliestHarvestdate() == null || src.getLastHarvestdate() == null) {
+            return;
+        }
+        PlotInfo tp = plotMapper.selectById(targetPlotId);
+        if (tp == null) {
+            return;
+        }
+        PlantDetails prospective = new PlantDetails();
+        prospective.setPlotId(targetPlotId);
+        prospective.setEarliestHarvestdate(src.getEarliestHarvestdate());
+        prospective.setLastHarvestdate(src.getLastHarvestdate());
+        validateHarvestOverlap(List.of(prospective), Map.of(targetPlotId, tp), null, "移栽·转移目标地块");
     }
 
     /**
@@ -622,6 +839,7 @@ public class PlantPlanServiceImpl extends DjsBaseServiceImpl<PlantPlanMapper, Pl
                 // INSERT
                 PlantDetails d = buildDetail(plan.getId(), plan.getCropId(), crop, plot, input, plan.getPlanYear());
                 detailsMapper.insert(d);
+                syncDetailTeamLinks(d.getId(), input);   // 班组多选中间表
             } else {
                 // UPDATE
                 PlantDetails old = existingMap.get(input.getId());
@@ -629,11 +847,11 @@ public class PlantPlanServiceImpl extends DjsBaseServiceImpl<PlantPlanMapper, Pl
                     throw new ServiceException("明细不存在或已删除：" + input.getId());
                 }
                 if (old.getBeginActualdate() != null) {
-                    // 已开始：只允许改班组
+                    // 已开始：只允许改班组（旧单列 = 多选第一个）
                     PlantDetails patch = new PlantDetails();
                     patch.setId(old.getId());
-                    patch.setPlantBy(input.getPlantBy());
-                    patch.setHarvestBy(input.getHarvestBy());
+                    patch.setPlantBy(firstTeamId(effectiveTeamIds(input.getPlantByIds(), input.getPlantBy())));
+                    patch.setHarvestBy(firstTeamId(effectiveTeamIds(input.getHarvestByIds(), input.getHarvestBy())));
                     detailsMapper.updateById(patch);
                 } else {
                     // 未开始：plot/month/period 可改，重算派生字段
@@ -641,6 +859,7 @@ public class PlantPlanServiceImpl extends DjsBaseServiceImpl<PlantPlanMapper, Pl
                     refreshed.setId(old.getId());
                     detailsMapper.updateById(refreshed);
                 }
+                syncDetailTeamLinks(old.getId(), input);   // 班组多选中间表（先删后插，改班组即同步）
             }
         }
     }
@@ -868,15 +1087,21 @@ public class PlantPlanServiceImpl extends DjsBaseServiceImpl<PlantPlanMapper, Pl
             return 0;
         }
 
-        // 批量回写明细：begin_actualdate + plant_by + plant_status='ongoing'
+        // 批量回写明细：begin_actualdate + plant_by（= 多选第一个，过渡兼容）+ plant_status='ongoing'
         Long updateBy = currentUserIdSafe();
+        List<Long> effPlantTeams = effectiveTeamIds(bo.getPlantByIds(), bo.getPlantBy());
+        Long primaryPlantTeam = firstTeamId(effPlantTeams);
         detailsMapper.update(null,
             new com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<PlantDetails>()
                 .in(PlantDetails::getId, startableDetailIds)
                 .set(PlantDetails::getBeginActualdate, bo.getBeginActualdate())
-                .set(PlantDetails::getPlantBy, bo.getPlantBy())
+                .set(PlantDetails::getPlantBy, primaryPlantTeam)
                 .set(PlantDetails::getPlantStatus, "ongoing")
                 .set(PlantDetails::getUpdateBy, updateBy));
+        // 班组多选中间表 sync（role=plant）：所选各明细同一套种植班组全集
+        for (Long detailId : startableDetailIds) {
+            teamLinkService.syncDetailTeams(detailId, PlantTeamLinkService.ROLE_PLANT, effPlantTeams);
+        }
 
         // 采摘区间按实际开始日期重算（复用创建逻辑同一套 plusDays 公式，锚点从计划旬别换成 begin_actualdate）：
         // earliest_harvestdate = beginActualdate + crop.minCycle，last_harvestdate = beginActualdate + crop.maxCycle。
@@ -920,12 +1145,14 @@ public class PlantPlanServiceImpl extends DjsBaseServiceImpl<PlantPlanMapper, Pl
                     .set(PlotInfo::getUpdateBy, updateBy));
         }
 
-        // 派生重算受影响计划主表 plant_status（开工 done=0 时仍落 pending，无害；与 finishPlant 对称）
+        // 派生重算受影响计划主表 plant_status（开工 done=0 时仍落 pending，无害；与 finishPlant 对称）；
+        // 明细采摘窗口已按 begin_actualdate 重算 → 同步重算主表 earliest/last_harvestdate 聚合（详情头部取主表）
         Set<Long> affectedPlanIds = details.stream()
             .filter(d -> startableSet.contains(d.getId()))
             .map(PlantDetails::getPlantId).filter(Objects::nonNull).collect(Collectors.toSet());
         for (Long pid : affectedPlanIds) {
             baseMapper.recalcPlanStatus(pid);
+            baseMapper.recalcAggregates(pid);
         }
         return startableDetailIds.size();
     }
@@ -989,12 +1216,18 @@ public class PlantPlanServiceImpl extends DjsBaseServiceImpl<PlantPlanMapper, Pl
             .toList();
         if (!needBackfill.isEmpty()) {
             List<Long> backfillIds = needBackfill.stream().map(PlantDetails::getId).toList();
+            List<Long> effPlantTeams = effectiveTeamIds(bo.getPlantByIds(), bo.getPlantBy());
+            Long primaryPlantTeam = firstTeamId(effPlantTeams);
             detailsMapper.update(null,
                 new com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<PlantDetails>()
                     .in(PlantDetails::getId, backfillIds)
                     .set(PlantDetails::getBeginActualdate, completeDate)
-                    .set(PlantDetails::getPlantBy, bo.getPlantBy())
+                    .set(PlantDetails::getPlantBy, primaryPlantTeam)
                     .set(PlantDetails::getUpdateBy, updateBy));
+            // 班组多选中间表 sync（role=plant）
+            for (Long detailId : backfillIds) {
+                teamLinkService.syncDetailTeams(detailId, PlantTeamLinkService.ROLE_PLANT, effPlantTeams);
+            }
 
             // 采摘区间按种植(完成)日期重算：earliest = date + crop.minCycle，last = date + crop.maxCycle。
             Set<Long> cropIds = needBackfill.stream()
@@ -1041,11 +1274,13 @@ public class PlantPlanServiceImpl extends DjsBaseServiceImpl<PlantPlanMapper, Pl
                 .set(PlantDetails::getEndActualdate, completeDate)
                 .set(PlantDetails::getUpdateBy, updateBy));
 
-        // 派生重算受影响计划主表 plant_status（任一完成→ongoing / 全部完成→completed）
+        // 派生重算受影响计划主表 plant_status（任一完成→ongoing / 全部完成→completed）；
+        // 未开工明细补种后采摘窗口已重算 → 同步重算主表 earliest/last_harvestdate 聚合（详情头部取主表）
         Set<Long> affectedPlanIds = finishables.stream()
             .map(PlantDetails::getPlantId).filter(Objects::nonNull).collect(Collectors.toSet());
         for (Long pid : affectedPlanIds) {
             baseMapper.recalcPlanStatus(pid);
+            baseMapper.recalcAggregates(pid);
         }
         return finishableDetailIds.size();
     }

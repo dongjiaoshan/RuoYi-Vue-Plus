@@ -29,6 +29,9 @@ public class CropInfoQuery extends BaseEntity {
     /** 科属（djs_crop_family）。 */
     private String cropFamily;
 
+    /** 作物属（自由文本，模糊）。 */
+    private String cropGenus;
+
     /** 种植季节（包含匹配，逗号字段中含某季）。 */
     private String plantingSeason;
 

@@ -67,6 +67,7 @@ public class AppletPickServiceImpl implements IAppletPickService {
     private final IFarmRecordsService farmRecordsService;
     private final ApplicationEventPublisher eventPublisher;
     private final ImageUrlResolver imageUrlResolver;
+    private final org.dromara.djs.plant.team.service.PlantTeamLinkService teamLinkService;
 
     /** 作物 L2 默认图统一走果蔬（IMG-LIB-001）。 */
     private static final String CROP_BELONG_TYPE = "vegetable";
@@ -81,6 +82,11 @@ public class AppletPickServiceImpl implements IAppletPickService {
     private static final String HARVEST_FARM_TYPE = "harvest_activity";
     /** harvest：普通采收 (is_pick=2) 农事类型，区别于游客采摘活动（FIX-PLT-AD-PICK-FARMTYPE-001）。 */
     private static final String HARVEST_NORMAL_FARM_TYPE = "harvest";
+    /**
+     * 育苗（保育）地块类型（{@code djs_plot_type='nursery'}）：92.1 育苗地块须先移栽才进采收，
+     * 采收列表卡 / 作物详情地块列表均排除此类地块（与移栽域「保育地块=移栽源」口径一致）。
+     */
+    private static final String PLOT_TYPE_NURSERY = "nursery";
 
     @Override
     public List<PickTaskVo> listMyTasks(String status) {
@@ -129,8 +135,14 @@ public class AppletPickServiceImpl implements IAppletPickService {
         // 1.1 首次「开始采摘」（pending→picking，赢得乐观激活）把本次所选采收班组写进
         //     plant_details.harvest_by，作为「采收班组」权威源。完成采摘（picking→completed）不再改写，
         //     使第二次录入时前端能反显出「开始采摘时所选班组」并锁定（保证反显=开始所选，不与本次脱节）。
+        // row40：采收班组多选 —— 旧单列 harvest_by = 第一个（过渡兼容），全集 sync 中间表 role=harvest
+        java.util.List<Long> effPickTeams = CollUtil.isNotEmpty(bo.getTeamIds())
+            ? bo.getTeamIds().stream().filter(Objects::nonNull).distinct().collect(Collectors.toList())
+            : (bo.getTeamId() == null ? Collections.emptyList() : java.util.List.of(bo.getTeamId()));
         if (wonActivation && !finish) {
-            detail.setHarvestBy(bo.getTeamId());
+            detail.setHarvestBy(effPickTeams.isEmpty() ? null : effPickTeams.get(0));
+            teamLinkService.syncDetailTeams(detail.getId(),
+                org.dromara.djs.plant.team.service.PlantTeamLinkService.ROLE_HARVEST, effPickTeams);
         }
 
         // 2. harvest_status 流转：pending → picking；finish 时 → completed。
@@ -147,9 +159,12 @@ public class AppletPickServiceImpl implements IAppletPickService {
             if (yield != null && area != null && area.compareTo(BigDecimal.ZERO) > 0) {
                 detail.setAverageYield(yield.divide(area, 3, RoundingMode.HALF_UP));
             }
-        } else if (wonActivation) {
-            // 「开始采摘」首次 pending→picking（赢得乐观推进）：把关联地块 plot_status 从 2（种植）置 3（采摘），
-            // 字典 djs_plot_status：1=空闲/2=种植/3=采摘。只在首次激活时翻一次，避免并发重复翻。
+        }
+        if (wonActivation) {
+            // 首次离开 pending（开始采摘 pending→picking，或未开始直接完成 pending→completed）：
+            // 把关联地块 plot_status 置 3（采摘），字典 djs_plot_status：1=空闲/2=种植/3=采摘。
+            // 只在赢得乐观激活时翻一次，避免并发重复翻；直达 completed 也要翻，否则地块停在种植态、
+            // 进不了退茬候选（submitRotation 要求 plot_status=3）。
             if (detail.getPlotId() != null) {
                 PlotInfo plot = plotMapper.selectById(detail.getPlotId());
                 if (plot != null) {
@@ -172,7 +187,8 @@ public class AppletPickServiceImpl implements IAppletPickService {
         grow.setPlantId(detail.getPlantId());
         grow.setPlotId(detail.getPlotId());
         grow.setCropId(detail.getCropId());
-        grow.setFarmBy(bo.getTeamId());   // 采收班组落 farm_by
+        grow.setFarmBy(effPickTeams.isEmpty() ? bo.getTeamId() : effPickTeams.get(0));   // 采收班组落 farm_by（多选第一个）
+        grow.setFarmByIds(effPickTeams);   // row40：farm_records 班组全集 sync 中间表
         grow.setFarmDate(bo.getHarvestDate());
         grow.setProofOssIds(joinOssIds(bo.getProofOssIds()));
         grow.setRemark(bo.getRemark());
@@ -235,7 +251,9 @@ public class AppletPickServiceImpl implements IAppletPickService {
         int cropKindCount = (int) picked.stream()
             .map(PlantDetails::getCropId).filter(Objects::nonNull).distinct().count();
 
-        // 当月采摘量 = 当月实际已采摘明细的 actual_yield 合计（与作物卡 actualYield 同口径）。
+        // 当月采摘量 = 当月实际已采摘明细的 actual_yield 合计（本页 is_pick=2 采收）。
+        //   采收无「销售」去向，不补未结算销售量——销售是采摘活动(is_pick=1)概念，且销售流水按作物聚合
+        //   无 is_pick 维度，若在此补加会把同作物采摘活动的销售误算进采收当月 KPI（row176 clean-QA 命中）。
         BigDecimal monthWeight = picked.stream()
             .map(d -> d.getActualYield() == null ? BigDecimal.ZERO : d.getActualYield())
             .reduce(BigDecimal.ZERO, BigDecimal::add);
@@ -279,9 +297,13 @@ public class AppletPickServiceImpl implements IAppletPickService {
         List<PlantDetails> filtered = all.stream()
             // r19：只展示地块 plot_status IN(2 种植,3 采摘)，排除 1 空闲（字典 djs_plot_status）。
             //   plot 查无视为不在采摘态，排除。
+            // 92.1：育苗（保育 plot_type='nursery'）地块须先移栽才进采收，采收列表卡排除。
             .filter(d -> {
                 PlotInfo plot = plotMap.get(d.getPlotId());
-                return plot != null && plot.getPlotStatus() != null
+                if (plot == null || PLOT_TYPE_NURSERY.equals(plot.getPlotType())) {
+                    return false;
+                }
+                return plot.getPlotStatus() != null
                     && (plot.getPlotStatus() == 2 || plot.getPlotStatus() == 3);
             })
             // r21：采摘完成（harvest_status='completed'）的地块只在「完成当天」展示，
@@ -332,7 +354,9 @@ public class AppletPickServiceImpl implements IAppletPickService {
             vo.setExpectedYield(rows.stream()
                 .map(d -> d.getExpectedYield() == null ? BigDecimal.ZERO : d.getExpectedYield())
                 .reduce(BigDecimal.ZERO, BigDecimal::add));
-            // 已采重量 = SUM(t_plant_details.actual_yield)，与作物详情头同源同口径（采摘重量录入累加进同一列）
+            // 已采重量 = Σ(本卡可见地块 actual_yield)，与详情页头卡 cropPickedTotal / 地块卡合计严格同源。
+            //   未结算的销售流水（pick_dest=sale、plot_id 恒空）不在此预支，等员工勾「称重完成」结算时
+            //   均分写入 actual_yield 后自然并入；结算前可在「采摘活动记录」tab 与 admin 采摘活动表查到。
             vo.setActualYield(rows.stream()
                 .map(d -> d.getActualYield() == null ? BigDecimal.ZERO : d.getActualYield())
                 .reduce(BigDecimal.ZERO, BigDecimal::add));
@@ -389,9 +413,13 @@ public class AppletPickServiceImpl implements IAppletPickService {
                 : plotMapper.selectByIds(detailPlotIds).stream()
                     .collect(Collectors.toMap(PlotInfo::getId, p -> p, (a, b) -> a));
             entities = entities.stream()
+                // 92.1：育苗（保育 plot_type='nursery'）地块须先移栽才进采收，作物详情地块列表排除。
                 .filter(d -> {
                     PlotInfo plot = detailPlotMap.get(d.getPlotId());
-                    return plot != null && plot.getPlotStatus() != null
+                    if (plot == null || PLOT_TYPE_NURSERY.equals(plot.getPlotType())) {
+                        return false;
+                    }
+                    return plot.getPlotStatus() != null
                         && (plot.getPlotStatus() == 2 || plot.getPlotStatus() == 3);
                 })
                 // r21：采摘完成（harvest_status='completed'）的地块只在「完成当天」展示，end_harvestdate != 今天
@@ -429,6 +457,18 @@ public class AppletPickServiceImpl implements IAppletPickService {
                 .and(w -> w.eq(PlantDetails::getPickSettleRound, 0)
                     .or().isNull(PlantDetails::getPickSettleRound)));
         return unsettled != null && unsettled == 0;   // 无未结算地块 = 全部已结算 → 置灰
+    }
+
+    @Override
+    public BigDecimal cropPickedTotal(Long cropId, Integer isPick) {
+        if (cropId == null) {
+            throw new ServiceException("作物 id 必填");
+        }
+        // Σ(当前展示地块 actual_yield)：复用 listCropPlots 同口径地块集，与 mp 头卡地块卡合计、
+        //   以及列表卡 listCropTasks 三者严格同源（row204：列表与详情必须一致，只算详情页展示的地块）。
+        return listCropPlots(null, cropId, isPick).stream()
+            .map(v -> v.getActualYield() == null ? BigDecimal.ZERO : v.getActualYield())
+            .reduce(BigDecimal.ZERO, BigDecimal::add);
     }
 
     @Override
@@ -500,7 +540,14 @@ public class AppletPickServiceImpl implements IAppletPickService {
         Set<Long> plotIds = entities.stream().map(PlantDetails::getPlotId).filter(Objects::nonNull).collect(Collectors.toSet());
         Set<Long> cropIds = entities.stream().map(PlantDetails::getCropId).filter(Objects::nonNull).collect(Collectors.toSet());
         Set<Long> teamIds = new HashSet<>();
-        entities.forEach(d -> { if (d.getHarvestBy() != null) { teamIds.add(d.getHarvestBy()); } });
+        entities.forEach(d -> {
+            if (d.getHarvestBy() != null) { teamIds.add(d.getHarvestBy()); }
+            if (d.getPlantBy() != null) { teamIds.add(d.getPlantBy()); }   // row40：种植班组预填
+        });
+        // 班组多选中间表 enrich（row40）：批量取各明细 role → 名/id
+        Set<Long> detailIds = entities.stream().map(PlantDetails::getId).filter(Objects::nonNull).collect(Collectors.toSet());
+        Map<Long, Map<String, java.util.List<String>>> teamNamesMap = teamLinkService.detailTeamNames(detailIds);
+        Map<Long, Map<String, java.util.List<Long>>> teamIdsMap = teamLinkService.detailTeamIds(detailIds);
 
         Map<Long, String> planNoMap = planIds.isEmpty() ? Map.of()
             : planMapper.selectByIds(planIds).stream()
@@ -556,6 +603,23 @@ public class AppletPickServiceImpl implements IAppletPickService {
             vo.setHarvestTeamName(d.getHarvestBy() == null ? null : teamMap.get(d.getHarvestBy()));
             vo.setMemberCount(d.getHarvestBy() == null ? null
                 : Math.toIntExact(teamMemberCountMap.getOrDefault(d.getHarvestBy(), 0L)));
+            // row40：种植班组预填字段 + 多班组全集（中间表优先，回落旧单列）
+            vo.setPlantBy(d.getPlantBy());
+            vo.setPlantTeamName(d.getPlantBy() == null ? null : teamMap.get(d.getPlantBy()));
+            Map<String, java.util.List<String>> roleNames = teamNamesMap.getOrDefault(d.getId(), Map.of());
+            Map<String, java.util.List<Long>> roleIds = teamIdsMap.getOrDefault(d.getId(), Map.of());
+            java.util.List<String> plantNames = roleNames.get(org.dromara.djs.plant.team.service.PlantTeamLinkService.ROLE_PLANT);
+            java.util.List<String> harvestNames = roleNames.get(org.dromara.djs.plant.team.service.PlantTeamLinkService.ROLE_HARVEST);
+            java.util.List<Long> plantIds = roleIds.get(org.dromara.djs.plant.team.service.PlantTeamLinkService.ROLE_PLANT);
+            java.util.List<Long> harvestIds = roleIds.get(org.dromara.djs.plant.team.service.PlantTeamLinkService.ROLE_HARVEST);
+            vo.setPlantTeamNames(CollUtil.isNotEmpty(plantNames) ? plantNames
+                : (vo.getPlantTeamName() == null ? Collections.emptyList() : java.util.List.of(vo.getPlantTeamName())));
+            vo.setPlantByIds(CollUtil.isNotEmpty(plantIds) ? plantIds
+                : (d.getPlantBy() == null ? Collections.emptyList() : java.util.List.of(d.getPlantBy())));
+            vo.setHarvestTeamNames(CollUtil.isNotEmpty(harvestNames) ? harvestNames
+                : (vo.getHarvestTeamName() == null ? Collections.emptyList() : java.util.List.of(vo.getHarvestTeamName())));
+            vo.setHarvestByIds(CollUtil.isNotEmpty(harvestIds) ? harvestIds
+                : (d.getHarvestBy() == null ? Collections.emptyList() : java.util.List.of(d.getHarvestBy())));
             return vo;
         }).collect(Collectors.toList());
     }

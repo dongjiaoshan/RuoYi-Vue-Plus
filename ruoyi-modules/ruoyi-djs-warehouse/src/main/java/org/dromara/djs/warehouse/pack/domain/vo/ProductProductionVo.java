@@ -97,6 +97,12 @@ public class ProductProductionVo implements Serializable {
 
     private Long whiteBarId;
 
+    /**
+     * 关联需求单 FK → {@code t_warehouse_demand_manage.id}（发货清点写入；打包时 NULL）。
+     * 「是否到货确认」读侧按本字段派生（fillJoinNames 关联 demand.received_time）。
+     */
+    private Long demandId;
+
     private Long materialId;
 
     /**

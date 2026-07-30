@@ -113,17 +113,44 @@ public interface WarehouseDashboardMapper {
     Integer countTodayDemandKindsByBelong(@Param("tenantId") String tenantId, @Param("belongType") String belongType);
 
     /**
-     * 今日白条需求头数（需求条目数，白条业态一条需求 = 一头/批，按 SUM(demand_quantity) 计头）。
+     * 今日「其他产品」需求品种数（非白条业态、且产品归属类型非 pork/vegetable/white_bar 的去重产品数）。
+     *
+     * <p>白条按业态 {@code product_type='white_bar'} 单列（另计头数），故此处按 {@code d.product_type<>'white_bar'}
+     * 排除；剩余产品按主数据 {@code belong_type} 排除 pork/vegetable/white_bar，其余（gift_box/egg/dry_good/未映射）
+     * 统归「其他」。LEFT JOIN 使无主数据映射（belong_type NULL）的需求也计入「其他」。</p>
      *
      * @param tenantId 租户
-     * @return SUM(demand_quantity) WHERE product_type='white_bar'，无记录返 0
+     * @return COUNT(DISTINCT d.product_id)，无记录返 0
      */
-    @Select("SELECT COALESCE(SUM(demand_quantity), 0) "
-        + "  FROM t_warehouse_demand_manage "
-        + " WHERE tenant_id = #{tenantId} "
-        + "   AND product_type = 'white_bar' "
-        + "   AND demand_date = CURDATE() "
-        + "   AND del_flag = '0'")
+    @Select("SELECT COUNT(DISTINCT d.product_id) "
+        + "  FROM t_warehouse_demand_manage d "
+        + "  LEFT JOIN t_warehouse_product_info p ON p.id = d.product_id AND p.del_flag = '0' "
+        + " WHERE d.tenant_id = #{tenantId} "
+        + "   AND d.del_flag = '0' "
+        + "   AND d.demand_date = CURDATE() "
+        + "   AND d.product_type <> 'white_bar' "
+        + "   AND (p.belong_type IS NULL OR p.belong_type NOT IN ('pork', 'vegetable', 'white_bar'))")
+    Integer countTodayDemandOtherKinds(@Param("tenantId") String tenantId);
+
+    /**
+     * 今日白条需求头数（半扇折 0.5 头）。
+     *
+     * <p>口径与需求管理 KPI {@code DemandManageMapper.selectTodayKpiMainAgg} 的 {@code todayPigDemand}
+     * 同源：按产品主数据 {@code belong_type='white_bar'} 认白条（需求表业态列 {@code product_type}
+     * 另含 pig 等历史值，不可靠），产品名含「半」（半扇 / 白条·半只）每单位折 0.5 头、
+     * 其余（整只白条）按 1 头计。可出 0.5 小数，故返 BigDecimal。</p>
+     *
+     * @param tenantId 租户
+     * @return Σ（含「半」的 demand_quantity × 0.5 + 其余 demand_quantity），无记录返 0
+     */
+    @Select("SELECT COALESCE(SUM(CASE WHEN d.product_name LIKE '%半%' THEN d.demand_quantity * 0.5 "
+        + "                           ELSE d.demand_quantity END), 0) "
+        + "  FROM t_warehouse_demand_manage d "
+        + "  JOIN t_warehouse_product_info p ON p.id = d.product_id AND p.del_flag = '0' "
+        + " WHERE d.tenant_id = #{tenantId} "
+        + "   AND p.belong_type = 'white_bar' "
+        + "   AND d.demand_date = CURDATE() "
+        + "   AND d.del_flag = '0'")
     BigDecimal sumTodayWhiteBarHeads(@Param("tenantId") String tenantId);
 
     /**
@@ -208,22 +235,18 @@ public interface WarehouseDashboardMapper {
     BigDecimal sumTodayLoss(@Param("tenantId") String tenantId);
 
     /**
-     * 今日燎毛间入库称重的猪只头数（= 今日在燎毛间称重的整白条/整猪数，一头一计）。
+     * 今日送宰猪只头数（自产）：当天在养殖端选择送宰后即计入，无需等待燎毛间称重。
      *
-     * <p>与 {@code WarehouseStatAggregateMapper.countSlaughter} 同口径：源 {@code t_warehouse_bar_info}
-     * （一行 = 一头整猪），按「入库称重」{@code in_time} 落当天 + {@code in_method=1}（燎毛间）+
-     * {@code arrive_weight} 非空计。<b>不能</b>按 {@code COUNT(*) burn_record}：burn_record 是产出行粒度，
-     * 同一头拆多个半只/猪头/猪蹄各一条，会把一头整猪重复计（row198）。</p>
-     *
-     * @param tenantId 租户
-     * @return COUNT(*) t_warehouse_bar_info WHERE in_method=1 AND arrive_weight IS NOT NULL AND DATE(in_time)=CURDATE()，无记录返 0
+     * <p>出栏事件会立即镜像一行 {@code bar_info(status=pending_singe)} 并写
+     * {@code marketing_time}；此时 {@code in_time/arrive_weight} 尚为空。故仓库总览的“送宰猪只”
+     * 必须按出栏选择时间统计，而不能套用日统计“已屠宰称重”的口径。外购白条 {@code buy_date} 非空，
+     * 不属于养殖端送宰选择，排除。</p>
      */
     @Select("SELECT COUNT(*) "
         + "  FROM t_warehouse_bar_info "
         + " WHERE tenant_id = #{tenantId} "
-        + "   AND in_method = 1 "
-        + "   AND arrive_weight IS NOT NULL "
-        + "   AND DATE(in_time) = CURDATE() "
+        + "   AND DATE(marketing_time) = CURDATE() "
+        + "   AND buy_date IS NULL "
         + "   AND del_flag = '0'")
     Integer countTodaySlaughterPigs(@Param("tenantId") String tenantId);
 
@@ -241,6 +264,49 @@ public interface WarehouseDashboardMapper {
     BigDecimal sumTodayWhiteBarWeight(@Param("tenantId") String tenantId);
 
     /**
+     * 今日出栏猪只总重（白条主表 marketing_weight 合计 kg，按出栏时间 marketing_time 落当天计）。
+     *
+     * @param tenantId 租户
+     * @return SUM(marketing_weight) WHERE DATE(marketing_time)=CURDATE()，无记录返 0
+     */
+    @Select("SELECT COALESCE(SUM(marketing_weight), 0) "
+        + "  FROM t_warehouse_bar_info "
+        + " WHERE tenant_id = #{tenantId} "
+        + "   AND DATE(marketing_time) = CURDATE() "
+        + "   AND del_flag = '0'")
+    BigDecimal sumTodayMarketingWeight(@Param("tenantId") String tenantId);
+
+    /**
+     * 今日毛菜处理果蔬品种数（毛菜处理流水 record_type=1 已称重记录涉及的不重复作物数）。
+     *
+     * @param tenantId 租户
+     * @return COUNT(DISTINCT crop_id) WHERE record_type=1 AND is_weighed=1，无记录返 0
+     */
+    @Select("SELECT COUNT(DISTINCT crop_id) "
+        + "  FROM t_warehouse_handle_record "
+        + " WHERE tenant_id = #{tenantId} "
+        + "   AND record_type = 1 "
+        + "   AND is_weighed = 1 "
+        + "   AND DATE(handle_time) = CURDATE() "
+        + "   AND del_flag = '0'")
+    Integer countTodayVegHandleKinds(@Param("tenantId") String tenantId);
+
+    /**
+     * 今日毛菜处理果蔬总重量（毛菜处理流水 record_type=1 已称重 record_weight 合计 kg）。
+     *
+     * @param tenantId 租户
+     * @return SUM(record_weight) WHERE record_type=1 AND is_weighed=1，无记录返 0
+     */
+    @Select("SELECT COALESCE(SUM(record_weight), 0) "
+        + "  FROM t_warehouse_handle_record "
+        + " WHERE tenant_id = #{tenantId} "
+        + "   AND record_type = 1 "
+        + "   AND is_weighed = 1 "
+        + "   AND DATE(handle_time) = CURDATE() "
+        + "   AND del_flag = '0'")
+    BigDecimal sumTodayVegHandleWeight(@Param("tenantId") String tenantId);
+
+    /**
      * 今日分割白条数（当日转入分割车间白条数；半只计 0.5、整只计 1，row195 客户口径，按 pickup_time 当天计）。
      *
      * @param tenantId 租户
@@ -256,21 +322,21 @@ public interface WarehouseDashboardMapper {
     BigDecimal countTodayCutBars(@Param("tenantId") String tenantId);
 
     /**
-     * 今日分割猪只产品总重（来源耳号非空的生产记录重量合计 kg = 猪肉产品产出）。
+     * 今日白条分割产品总重：当天分割间入库流水 {@code cut_out_in} 的重量之和。
      *
-     * @param tenantId 租户
-     * @return SUM(product_weight) WHERE ear_no IS NOT NULL，无记录返 0
+     * <p>分割产品在白条分割页确认入库时即写不可变库存流水；后续是否打包、是否有耳号均不影响本指标。
+     * 该口径与仓库日统计 {@code WarehouseStatAggregateMapper.sumCutProductWeight} 同源。</p>
      */
-    @Select("SELECT COALESCE(SUM(product_weight), 0) "
-        + "  FROM t_warehouse_product_production "
+    @Select("SELECT COALESCE(SUM(change_quantity), 0) "
+        + "  FROM t_warehouse_stock_flow "
         + " WHERE tenant_id = #{tenantId} "
-        + "   AND ear_no IS NOT NULL AND ear_no <> '' "
-        + "   AND produce_date = CURDATE() "
+        + "   AND flow_type = 'cut_out_in' "
+        + "   AND DATE(flow_date) = CURDATE() "
         + "   AND del_flag = '0'")
     BigDecimal sumTodayCutProductWeight(@Param("tenantId") String tenantId);
 
     /**
-     * 今日果蔬接收品种数（收货记录涉及的不重复地块/产品品种数）。
+     * 今日果蔬月台接收品种数（自产收货 receive_type=1 且已入库重量>0，涉及的不重复地块/产品品种数）。
      *
      * @param tenantId 租户
      * @return COUNT(DISTINCT COALESCE(plot_id, product_id))，无记录返 0
@@ -278,12 +344,14 @@ public interface WarehouseDashboardMapper {
     @Select("SELECT COUNT(DISTINCT COALESCE(plot_id, product_id)) "
         + "  FROM t_warehouse_veg_receive "
         + " WHERE tenant_id = #{tenantId} "
+        + "   AND receive_type = 1 "
+        + "   AND weight > 0 "
         + "   AND DATE(receive_time) = CURDATE() "
         + "   AND del_flag = '0'")
     Integer countTodayVegReceiveKinds(@Param("tenantId") String tenantId);
 
     /**
-     * 今日果蔬接收总重（收货入库重量合计 kg）。
+     * 今日果蔬月台接收总重（自产收货 receive_type=1 且已入库重量>0 的重量合计 kg）。
      *
      * @param tenantId 租户
      * @return SUM(weight)，无记录返 0
@@ -291,6 +359,8 @@ public interface WarehouseDashboardMapper {
     @Select("SELECT COALESCE(SUM(weight), 0) "
         + "  FROM t_warehouse_veg_receive "
         + " WHERE tenant_id = #{tenantId} "
+        + "   AND receive_type = 1 "
+        + "   AND weight > 0 "
         + "   AND DATE(receive_time) = CURDATE() "
         + "   AND del_flag = '0'")
     BigDecimal sumTodayVegReceiveWeight(@Param("tenantId") String tenantId);
@@ -500,7 +570,7 @@ public interface WarehouseDashboardMapper {
      * @param belongType 产品归属类型（pork / vegetable）
      * @return 各产品 name(=product_name) + value(=COUNT)，按值降序
      */
-    @Select("SELECT p.product_name AS name, COUNT(*) AS value "
+    @Select("SELECT p.product_name AS name, COUNT(*) AS value, MAX(p.product_unit) AS unit "
         + "  FROM t_store_return r "
         + "  JOIN t_warehouse_product_info p ON p.id = r.product_id AND p.del_flag = '0' "
         + " WHERE r.tenant_id = #{tenantId} "
@@ -521,7 +591,7 @@ public interface WarehouseDashboardMapper {
      * @param belongType 产品归属类型（pork / vegetable）
      * @return 各产品 name(=product_name) + value(=SUM demand_quantity)，按值降序
      */
-    @Select("SELECT p.product_name AS name, COALESCE(SUM(d.demand_quantity), 0) AS value "
+    @Select("SELECT p.product_name AS name, COALESCE(SUM(d.demand_quantity), 0) AS value, MAX(p.product_unit) AS unit "
         + "  FROM t_warehouse_demand_manage d "
         + "  JOIN t_warehouse_product_info p ON p.id = d.product_id AND p.del_flag = '0' "
         + " WHERE d.tenant_id = #{tenantId} "
@@ -589,62 +659,69 @@ public interface WarehouseDashboardMapper {
         @Param("days") int days, @Param("belongType") String belongType);
 
     /**
-     * 图④：最近一个盘点单结果分布（GROUP BY check_result_type，仅明细行 is_header=0）。
+     * 图④：近 7 日盘点结果分布（按盘点流水 flow_type 计数）。
      *
-     * <p>取该租户最近盘点日（DATE(MAX(check_date))）当天明细，按 1 正常/2 异常/3 计损 计数。
-     * 返回原始 check_result_type 数值字符串作为 name，由 service 映射中文。</p>
+     * <p>数据源与「盘点记录」列表同源 = {@code t_warehouse_stock_flow} 盘点流水（含 mp 自助盘点，
+     * admin 建单链 {@code t_warehouse_check_record} 覆盖不全，mp 现场盘点只写 stock_flow）。
+     * 近 7 日（flow_date >= 当天前 7 天）按 flow_type → 结果映射计数：
+     * {@code check_in}=正常(1) / {@code check_abnormal_out}=异常(2) / {@code check_out}=计损(3)。
+     * 返回结果数值字符串作为 name，由 service 映射中文。</p>
      *
      * @param tenantId 租户
-     * @return name(=check_result_type) + value(=COUNT)
+     * @return name(=1/2/3) + value(=COUNT)
      */
-    @Select("SELECT CAST(check_result_type AS CHAR) AS name, COUNT(*) AS value "
-        + "  FROM t_warehouse_check_record "
+    @Select("SELECT CAST("
+        + "         CASE flow_type "
+        + "           WHEN 'check_in' THEN 1 "
+        + "           WHEN 'check_abnormal_out' THEN 2 "
+        + "           WHEN 'check_out' THEN 3 "
+        + "         END AS CHAR) AS name, COUNT(*) AS value "
+        + "  FROM t_warehouse_stock_flow "
         + " WHERE tenant_id = #{tenantId} "
         + "   AND del_flag = '0' "
-        + "   AND is_header = 0 "
-        + "   AND DATE(check_date) = (SELECT DATE(MAX(check_date)) FROM t_warehouse_check_record "
-        + "                            WHERE tenant_id = #{tenantId} AND del_flag = '0' AND is_header = 0) "
-        + " GROUP BY check_result_type")
+        + "   AND flow_type IN ('check_in', 'check_out', 'check_abnormal_out') "
+        + "   AND flow_date >= DATE_SUB(CURDATE(), INTERVAL 7 DAY) "
+        + " GROUP BY flow_type")
     List<ChartSeriesItemVo> selectCheckResult(@Param("tenantId") String tenantId);
 
     /**
-     * 图⑥：近 N 日损耗趋势（stock_flow flow_type='loss' 按 flow_date 日聚合 SUM change_quantity）。
+     * 图⑥：近 N 日损耗趋势（损耗记录台账 t_warehouse_loss_flow 按 loss_date 日聚合 SUM loss_weight）。
      *
      * <p>仅返回有记录的日期，service 层按近 N 日补齐缺口日为 0。</p>
      *
      * @param tenantId 租户
      * @param days     近几日
-     * @return 各日 date(yyyy-MM-dd) + value(=SUM change_quantity)
+     * @return 各日 date(yyyy-MM-dd) + value(=SUM loss_weight)
      */
-    @Select("SELECT DATE_FORMAT(flow_date, '%Y-%m-%d') AS date, COALESCE(SUM(change_quantity), 0) AS value "
-        + "  FROM t_warehouse_stock_flow "
+    @Select("SELECT DATE_FORMAT(loss_date, '%Y-%m-%d') AS date, COALESCE(SUM(loss_weight), 0) AS value "
+        + "  FROM t_warehouse_loss_flow "
         + " WHERE tenant_id = #{tenantId} "
         + "   AND del_flag = '0' "
-        + "   AND flow_type = 'loss' "
-        + "   AND flow_date >= DATE_SUB(CURDATE(), INTERVAL #{days} DAY) "
-        + " GROUP BY DATE_FORMAT(flow_date, '%Y-%m-%d') "
+        + "   AND loss_date >= DATE_SUB(CURDATE(), INTERVAL #{days} DAY) "
+        + " GROUP BY DATE_FORMAT(loss_date, '%Y-%m-%d') "
         + " ORDER BY date")
     List<ChartTrendPointVo> selectLossTrend(@Param("tenantId") String tenantId, @Param("days") int days);
 
     /**
      * 图⑥（细分）：近 N 日某归属类型损耗量日聚合（损耗趋势多系列：猪肉 / 果蔬）。
      *
-     * <p>对齐原型「产品生产损耗趋势」多折线。按产品归属过滤 loss 流水 SUM(change_quantity)。</p>
+     * <p>取统一损耗台账 t_warehouse_loss_flow 自带的 belong_type / loss_weight，按归属类型
+     * SUM(loss_weight) 出「损耗量」（非率），口径与「损耗总览」页一致。各损耗环节
+     * （毛菜 / 运输 / 盘点计损 / 白条预冷分割 / 生产 / 物资 / 燎毛）都双写这张台账；
+     * stock_flow 的 flow_type='loss' 不是统一损耗源、只含极少量损耗，故旧图恒近 0。</p>
      *
      * @param tenantId   租户
      * @param days       近几日
      * @param belongType 产品归属类型（pork / vegetable）
-     * @return 各日 date + value(=SUM change_quantity)
+     * @return 各日 date + value(=SUM loss_weight)
      */
-    @Select("SELECT DATE_FORMAT(f.flow_date, '%Y-%m-%d') AS date, COALESCE(SUM(f.change_quantity), 0) AS value "
-        + "  FROM t_warehouse_stock_flow f "
-        + "  JOIN t_warehouse_product_info p ON p.id = f.product_id AND p.del_flag = '0' "
-        + " WHERE f.tenant_id = #{tenantId} "
-        + "   AND f.del_flag = '0' "
-        + "   AND f.flow_type = 'loss' "
-        + "   AND p.belong_type = #{belongType} "
-        + "   AND f.flow_date >= DATE_SUB(CURDATE(), INTERVAL #{days} DAY) "
-        + " GROUP BY DATE_FORMAT(f.flow_date, '%Y-%m-%d') "
+    @Select("SELECT DATE_FORMAT(loss_date, '%Y-%m-%d') AS date, COALESCE(SUM(loss_weight), 0) AS value "
+        + "  FROM t_warehouse_loss_flow "
+        + " WHERE tenant_id = #{tenantId} "
+        + "   AND del_flag = '0' "
+        + "   AND belong_type = #{belongType} "
+        + "   AND loss_date >= DATE_SUB(CURDATE(), INTERVAL #{days} DAY) "
+        + " GROUP BY DATE_FORMAT(loss_date, '%Y-%m-%d') "
         + " ORDER BY date")
     List<ChartTrendPointVo> selectLossTrendByBelong(@Param("tenantId") String tenantId,
         @Param("days") int days, @Param("belongType") String belongType);

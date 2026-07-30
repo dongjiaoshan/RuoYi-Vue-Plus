@@ -37,6 +37,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.anyCollection;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -199,16 +200,54 @@ class MedicineServiceImplTest {
     }
 
     @Test
-    @DisplayName("queryById: 走 mapper.selectVoById")
-    void testQueryById() {
-        MedicineVo vo = new MedicineVo();
-        vo.setId(40001L);
-        vo.setMedicineCode("MED-001");
-        when(medicineMapper.selectVoById(40001L)).thenReturn(vo);
+    @DisplayName("queryById: 与 /list 同源走 provider，仓库药品 id 段 9305… 能查到（不再读已弃用的 t_breed_medicine_info）")
+    void testQueryById_WarehouseIdSpace() {
+        // 列表返的 id 是 t_warehouse_product_info.id（药品段 9305…）；
+        // 旧实现走 baseMapper.selectVoById 读 t_breed_medicine_info（id 段 2059…）→ 两段不重叠、恒返 null
+        Long warehouseMedicineId = 9305000000000001L;
+        MedicineProductDto dto = new MedicineProductDto();
+        dto.setId(warehouseMedicineId);
+        dto.setCode("S0001");
+        dto.setName("猪圆环病毒2型灭活疫苗");
+        dto.setUnit("瓶");
+        dto.setSpec("100头份/瓶");
+        dto.setSupplierId(9302000000000031L);
+        dto.setRemark("冷藏");
+        dto.setStock(new BigDecimal("12.500"));
+        dto.setImageUrl("https://oss/med-1.png");
+        when(medicineStockProvider.listMedicineProductsByIds(List.of(warehouseMedicineId)))
+            .thenReturn(List.of(dto));
 
-        MedicineVo got = service.queryById(40001L);
-        assertThat(got).isNotNull();
-        assertThat(got.getMedicineCode()).isEqualTo("MED-001");
+        MedicineVo got = service.queryById(warehouseMedicineId);
+
+        assertThat(got).as("9305… 段 id 必须查得到，不能静默返 null").isNotNull();
+        assertThat(got.getId()).isEqualTo(warehouseMedicineId);
+        // 前端 MedicineForm / MedBatchForm 消费的字段逐个落位（缺一个即空白输入框 / 下拉标签「名称（）」）
+        assertThat(got.getMedicineCode()).isEqualTo("S0001");
+        assertThat(got.getMedicineName()).isEqualTo("猪圆环病毒2型灭活疫苗");
+        assertThat(got.getUnit()).isEqualTo("瓶");
+        assertThat(got.getSpec()).isEqualTo("100头份/瓶");
+        assertThat(got.getSupplierId()).isEqualTo(9302000000000031L);
+        assertThat(got.getRemark()).isEqualTo("冷藏");
+        assertThat(got.getCurrentStock()).isEqualByComparingTo("12.500");
+        assertThat(got.getImageUrl()).isEqualTo("https://oss/med-1.png");
+        assertThat(got.getMedStatus()).isEqualTo(1);
+        verify(medicineStockProvider, times(1)).listMedicineProductsByIds(List.of(warehouseMedicineId));
+        verify(medicineMapper, never()).selectVoById(any());
+    }
+
+    @Test
+    @DisplayName("queryById: 药品不存在 → provider 返空 list → null（不抛）")
+    void testQueryById_NotFound() {
+        when(medicineStockProvider.listMedicineProductsByIds(anyCollection())).thenReturn(Collections.emptyList());
+        assertThat(service.queryById(9305000000009999L)).isNull();
+    }
+
+    @Test
+    @DisplayName("queryById: id 为 null → 直接 null，不打 provider")
+    void testQueryById_NullId() {
+        assertThat(service.queryById(null)).isNull();
+        verify(medicineStockProvider, never()).listMedicineProductsByIds(anyCollection());
     }
 
     @Test

@@ -33,7 +33,8 @@ public interface MedicineStockProvider {
 
     /**
      * 按 id 集合列出药品商品（{@code buy_class='medicine'}）+ 当前库存合计，供「用药治疗 / 批量用药」
-     * 消费「近 3 天已领用药品」清单（id 来自 {@link #listRecentPickedMedicineIds}）。
+     * 消费「近 3 天已领用药品」清单（id 来自 {@link #listRecentPickedMedicineIds}），
+     * 以及养殖端<b>药品详情</b>单 id 查询（详情必须与列表同一 id 空间，见实现方注释）。
      *
      * @param ids 药品商品 id 集合
      * @return 药品商品行；无则空 list（入参空亦返空 list）

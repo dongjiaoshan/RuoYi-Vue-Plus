@@ -76,12 +76,14 @@ public class AppletStoreReturnController extends BaseController {
 
     /**
      * 退货确认详情：某门店某状态（mp 词表 pending/confirmed）下的退回清单（逐产品，字段对齐 mp ReturnItem）。
+     * row174：可选 {@code returnDate}（yyyy-MM-dd，分组卡携带）非空时只取该门店该天的退回行（能翻历史某天）。
      */
     @SaCheckPermission("djs:applet:warehouse:return:add")
     @GetMapping("/store-items")
     public R<List<StoreReturnAppletItemVo>> listStoreItems(@RequestParam Long storeId,
-                                                           @RequestParam String returnStatus) {
-        return R.ok(service.listAppletItemsByStoreAndStatus(storeId, returnStatus));
+                                                           @RequestParam String returnStatus,
+                                                           @RequestParam(required = false) String returnDate) {
+        return R.ok(service.listAppletItemsByStoreAndStatus(storeId, returnStatus, returnDate));
     }
 
     /**

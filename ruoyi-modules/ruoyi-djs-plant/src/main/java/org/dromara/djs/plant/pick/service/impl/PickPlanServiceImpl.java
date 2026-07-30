@@ -25,6 +25,7 @@ import org.dromara.djs.plant.plot.domain.PlotInfo;
 import org.dromara.djs.plant.plot.mapper.PlotInfoMapper;
 import org.dromara.djs.plant.team.domain.PlantWorkTeam;
 import org.dromara.djs.plant.team.mapper.PlantWorkTeamMapper;
+import org.dromara.djs.plant.team.service.PlantTeamLinkService;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -32,6 +33,7 @@ import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.Date;
 import java.util.HashSet;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -63,6 +65,7 @@ public class PickPlanServiceImpl implements IPickPlanService {
     private final CropInfoMapper cropMapper;
     private final PlotInfoMapper plotMapper;
     private final PlantWorkTeamMapper teamMapper;
+    private final PlantTeamLinkService teamLinkService;
     private final ImageUrlResolver imageUrlResolver;
 
     /** 作物 L2 默认图统一走果蔬（IMG-LIB-001）。 */
@@ -333,6 +336,12 @@ public class PickPlanServiceImpl implements IPickPlanService {
         Map<Long, String> teamMap = teamIds.isEmpty() ? Map.of()
             : teamMapper.selectByIds(teamIds).stream().collect(Collectors.toMap(PlantWorkTeam::getId, PlantWorkTeam::getTeamName, (a, b) -> a));
 
+        // 班组多选中间表 enrich（row72）：采摘计划明细复用种植计划范式，读 junction 全部班组名/id 展示
+        // 全集（旧单列只存首值，故列表只显「一组」）；中间表空则回落旧单列兜底。
+        Set<Long> detailIds = details.stream().map(PlantDetailsVo::getId).filter(Objects::nonNull).collect(Collectors.toSet());
+        Map<Long, Map<String, List<String>>> namesMap = teamLinkService.detailTeamNames(detailIds);
+        Map<Long, Map<String, List<Long>>> idsMap = teamLinkService.detailTeamIds(detailIds);
+
         for (PlantDetailsVo d : details) {
             PlotInfo plot = plotMap.get(d.getPlotId());
             if (plot != null) {
@@ -342,6 +351,21 @@ public class PickPlanServiceImpl implements IPickPlanService {
             d.setCropName(cropMap.get(d.getCropId()));
             d.setPlantTeamName(d.getPlantBy() == null ? null : teamMap.get(d.getPlantBy()));
             d.setHarvestTeamName(d.getHarvestBy() == null ? null : teamMap.get(d.getHarvestBy()));
+
+            Map<String, List<String>> roleNames = namesMap.getOrDefault(d.getId(), Map.of());
+            Map<String, List<Long>> roleIds = idsMap.getOrDefault(d.getId(), Map.of());
+            List<String> plantNames = roleNames.get(PlantTeamLinkService.ROLE_PLANT);
+            List<String> harvestNames = roleNames.get(PlantTeamLinkService.ROLE_HARVEST);
+            d.setPlantTeamNames(CollUtil.isNotEmpty(plantNames) ? plantNames
+                : (d.getPlantTeamName() == null ? Collections.emptyList() : List.of(d.getPlantTeamName())));
+            d.setHarvestTeamNames(CollUtil.isNotEmpty(harvestNames) ? harvestNames
+                : (d.getHarvestTeamName() == null ? Collections.emptyList() : List.of(d.getHarvestTeamName())));
+            List<Long> plantIds = roleIds.get(PlantTeamLinkService.ROLE_PLANT);
+            List<Long> harvestIds = roleIds.get(PlantTeamLinkService.ROLE_HARVEST);
+            d.setPlantByIds(CollUtil.isNotEmpty(plantIds) ? plantIds
+                : (d.getPlantBy() == null ? Collections.emptyList() : List.of(d.getPlantBy())));
+            d.setHarvestByIds(CollUtil.isNotEmpty(harvestIds) ? harvestIds
+                : (d.getHarvestBy() == null ? Collections.emptyList() : List.of(d.getHarvestBy())));
             // 种植日期 = 实际开始种植日期（采摘计划详情列展示用）
             d.setPlantDate(d.getBeginActualdate());
             // row185：预计净产量 = max(0, 标准产量 − 灾害损失)，钳 0 防负（per-plot loss_yield 为本地块累计灾害损失）

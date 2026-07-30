@@ -29,6 +29,7 @@ import org.dromara.djs.plant.crop.domain.CropInfo;
 import org.dromara.djs.plant.crop.mapper.CropInfoMapper;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.domain.ProductInhouse;
+import org.dromara.djs.warehouse.product.domain.vo.MatEstimatedDemandVo;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
 import org.dromara.djs.warehouse.product.mapper.ProductInhouseMapper;
 import org.dromara.djs.warehouse.stock.domain.LocationStock;
@@ -47,6 +48,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Date;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -139,6 +141,8 @@ public class MatFlowServiceImpl implements IMatFlowService {
      * 仓库饲喂出库 flow_type（djs_flow_type 现有值 V202607240800；行64 来源②仓库领用饲喂 / 行55 果蔬饲喂操作）。
      */
     private static final String FLOW_FEED_OUT = "feed_out";
+    /** 饲料出库的业务去向（djs_stock_out_dest）。 */
+    private static final String STOCK_OUT_DEST_FEED = "feed";
 
     /**
      * 仓库饲喂来源（feed_log.feed_type 字典 djs_feed_type）：仓库领用饲喂。
@@ -388,6 +392,17 @@ public class MatFlowServiceImpl implements IMatFlowService {
         if (isPorkEarBasket(basket)) {
             return pickPorkEar(bo, basket);
         }
+        Long productId = basket.getProductId();
+        // product 主数据可空（篮子 product_id 缺失或 product 已删时，名称 / 单位回退篮子冗余字段）
+        ProductInfo product = productId == null ? null : productInfoMapper.selectById(productId);
+        // 猪肉「null-ear 组篮」（admin 猪肉聚合行 / mp 猪肉退货卡）：列表把该产品全部 ear_no IS NULL 的篮
+        // （不同白条号 / 不同库位）折成一行，batchId = 组内 MIN(id) 首篮、currentStock = 组 SUM——单篮扣减会在
+        // 首篮库存小 / 已扣空时整组锁死（行显组总量却只能领首篮余量）。识别为组篮 → 按 (productId, ear_no IS NULL)
+        // 跨库位按 id 升序 FIFO 扣减整组，与行展示口径一致。须查 product_info 判 belong_type：
+        // null-ear null-plot 篮也可能是包材 / 鸡蛋 / 干货等（mp 退货卡同构），那些保持下方单篮语义。
+        if (isPorkNullEarGroup(basket, product)) {
+            return pickPorkNullEarGroup(bo, basket, product);
+        }
         if (basket.getProductStock() == null || basket.getProductStock().signum() <= 0) {
             throw new ServiceException("选中的篮子已无库存，无法领用（batchId=" + bo.getBatchId() + "）");
         }
@@ -402,10 +417,6 @@ public class MatFlowServiceImpl implements IMatFlowService {
         stockCheckService.assertLocationUnlocked(locId);
         // 领用人：mp 弹层选了用所选（代他人领用），否则取当前登录人兜底
         Long userId = resolveOperatorId(bo.getOperatorId());
-
-        Long productId = basket.getProductId();
-        // product 主数据可空（篮子 product_id 缺失或 product 已删时，名称 / 单位回退篮子冗余字段）
-        ProductInfo product = productId == null ? null : productInfoMapper.selectById(productId);
 
         // 1. INSERT stock_flow（pick_out 出库，带篮的 product_id + plot_id + ear_no 源标签）
         StockFlow flow = new StockFlow();
@@ -698,6 +709,153 @@ public class MatFlowServiceImpl implements IMatFlowService {
                     + (productUnit == null ? "" : productUnit) + "，申请 "
                     + quantity.stripTrailingZeros().toPlainString() + (productUnit == null ? "" : productUnit));
         }
+    }
+
+    /**
+     * 是否「猪肉 null-ear 组篮」：篮 {@code ear_no} 为空、{@code plot_id} 为空（非地块篮）、{@code product_id}
+     * 非空，且产品 {@code belong_type='pork'}。
+     *
+     * <p>admin 猪肉聚合行（{@code selectAdminMatPorkProducts} GROUP BY ear_no，NULL 归一组跨库位 / 跨白条号 SUM）
+     * 与 mp 猪肉「退货卡」（{@code selectReturnBasketCards} 按产品聚合）回传的 {@code batchId} = 组内
+     * {@code MIN(id)} 首篮 id，语义是「该产品 null-ear 组」而非单篮 → 领 / 退 / 损按组操作（组级 FIFO 扣减、
+     * 组级今日净额校验）。<b>必须查 product_info 判 belong_type</b>——null-ear null-plot 篮也可能是包材 /
+     * 鸡蛋 / 干货等（mp 退货卡同构），那些保持单篮语义不受影响。</p>
+     */
+    private boolean isPorkNullEarGroup(LocationStock basket, ProductInfo product) {
+        return (basket.getEarNo() == null || basket.getEarNo().isBlank())
+            && basket.getPlotId() == null
+            && basket.getProductId() != null
+            && product != null && "pork".equals(product.getBelongType());
+    }
+
+    /**
+     * 猪肉「null-ear 组篮」领用：admin 猪肉聚合行 / mp 猪肉退货卡的 batchId = 该产品 null-ear 组的 FIFO 首篮 id。
+     * 按 {@code (productId, ear_no IS NULL)} <b>跨库位</b>按 id 升序 FIFO 扣减该组全部篮（与行展示的跨库位 SUM
+     * 口径一致；区别于 {@link #pickPorkEar} 的「同耳号同库位内」FIFO），不因首篮库存小 / 已扣空而锁死整组。
+     *
+     * <p>两步同事务（复制 {@link #pickPorkEar} 范式）：</p>
+     * <ol>
+     *   <li>写一条 pick_out 流水（组标签：{@code ear_no} 空；{@code white_bar_no} / {@code warehouse_id} 取首篮、
+     *       量 = 总申请量）；</li>
+     *   <li>{@link #consumePorkNullEarBaskets} 跨库位 FIFO 逐篮扣减 + 每扣一篮产一行 {@code product_inhouse}
+     *       （该篮 {@code white_bar_no} / 库位源标签逐篮带上 → 打包 / 追溯链不断）。组总量不足 → 抛
+     *       {@link ServiceException} 回滚整笔。</li>
+     * </ol>
+     */
+    private Long pickPorkNullEarGroup(MatPickBo bo, LocationStock firstBasket, ProductInfo product) {
+        Long productId = firstBasket.getProductId();
+        // 一致性校验：BO 带的 productId 与首篮 product_id 须一致（前端从聚合行 / 退货卡选源，两者应同源）
+        if (bo.getProductId() != null && !bo.getProductId().equals(productId)) {
+            throw new ServiceException("选中猪肉卡与产品不匹配（card.productId=" + productId
+                + " / bo.productId=" + bo.getProductId() + "）");
+        }
+        Long firstLocId = firstBasket.getLocationId();
+        // 库位级业务锁（WMS-STOCK-001）：盘点进行中的库位禁出入库（组内其余库位在 FIFO 逐篮扣减前各自校验）
+        stockCheckService.assertLocationUnlocked(firstLocId);
+        Long userId = resolveOperatorId(bo.getOperatorId());
+
+        // 1. 写一条 pick_out 流水（组标签 ear_no 空；white_bar_no / warehouse_id 取首篮、量=总申请量）
+        StockFlow flow = new StockFlow();
+        flow.setFlowNo(generateFlowNo(INOUT_OUT));
+        flow.setFlowDate(new Date());
+        flow.setProductId(productId);
+        flow.setWhiteBarNo(firstBasket.getWhiteBarNo());
+        flow.setWarehouseId(firstLocId);
+        flow.setInoutType(INOUT_OUT);
+        flow.setFlowType(resolvePickFlowType(bo));
+        flow.setStockOutDest(bo.getStockOutDest());
+        flow.setChangeNum(bo.getQuantity().negate());
+        flow.setChangeQuantity(bo.getQuantity());
+        flow.setOperatorId(userId);
+        flow.setRemark(bo.getRemark());
+        flow.setProofOssIds(bo.getProofOssIds());
+        stockFlowMapper.insert(flow);
+
+        // 2. 跨库位 FIFO 扣减该产品全部 null-ear 篮 + 每篮产 product_inhouse（white_bar_no / 库位逐篮带上）
+        consumePorkNullEarBaskets(productId, bo.getQuantity(), product, firstBasket, userId);
+
+        return flow.getId();
+    }
+
+    /**
+     * 猪肉按「{@code (product_id, ear_no IS NULL)} 组」跨库位 FIFO 扣减（{@link #pickPorkNullEarGroup} 用，
+     * 镜像 {@link #consumePorkEarBaskets}，区别：组键为 null-ear 且<b>不限库位</b>——组的展示口径就是跨库位 SUM）。
+     *
+     * <p>按 id 升序（先进先出）逐篮扣减 {@code location_stock}，每扣一篮产一行 {@code product_inhouse}
+     * （带该篮 {@code white_bar_no} / 库位源标签 → 猪肉打包追溯键）。逐篮扣减前对首次遇到的库位做盘点锁校验
+     * （锁定库位命中即抛、整笔回滚）。组总余量不足 → 抛 {@link ServiceException} 回滚整笔。</p>
+     */
+    private void consumePorkNullEarBaskets(Long productId, BigDecimal quantity,
+                                           ProductInfo product, LocationStock firstBasket, Long userId) {
+        List<LocationStock> baskets = locationStockMapper.selectList(
+            new LambdaQueryWrapper<LocationStock>()
+                .eq(LocationStock::getProductId, productId)
+                .isNull(LocationStock::getEarNo)
+                .gt(LocationStock::getProductStock, BigDecimal.ZERO)
+                .orderByAsc(LocationStock::getId));
+        String productName = product != null ? product.getProductName() : firstBasket.getProductName();
+        Integer productType = product != null && product.getProductType() != null ? product.getProductType() : 1;
+        String productUnit = product != null ? product.getProductUnit() : firstBasket.getProductUnit();
+        BigDecimal remaining = quantity;
+        LocalDate today = LocalDate.now();
+        Date now = new Date();
+        // 首篮库位已在 pickPorkNullEarGroup 校验过盘点锁；跨库位组内其余库位首次遇到时校验
+        Set<Long> checkedLocIds = new HashSet<>();
+        checkedLocIds.add(firstBasket.getLocationId());
+        for (LocationStock basket : baskets) {
+            if (remaining.compareTo(BigDecimal.ZERO) <= 0) {
+                break;
+            }
+            Long locId = basket.getLocationId();
+            if (locId != null && checkedLocIds.add(locId)) {
+                stockCheckService.assertLocationUnlocked(locId);
+            }
+            BigDecimal take = basket.getProductStock().min(remaining);
+            int affected = locationStockMapper.deductStockById(basket.getId(), take, userId);
+            if (affected == 0) {
+                // 并发抢占：该篮已被他人领走，跳过（不计入已领）
+                continue;
+            }
+            ProductInhouse inhouse = new ProductInhouse();
+            inhouse.setProduceDate(java.sql.Date.valueOf(today));
+            inhouse.setProduceTime(now);
+            inhouse.setProductId(productId);
+            inhouse.setProductName(productName);
+            inhouse.setProductType(productType);
+            inhouse.setProductUnit(productUnit);
+            inhouse.setProductWeight(take);
+            inhouse.setEarNo(basket.getEarNo());            // null-ear 组恒空，保持与篮标签一致
+            inhouse.setWhiteBarNo(basket.getWhiteBarNo());  // 白条号源标签逐篮带上（贯穿打包/追溯）
+            inhouse.setPlotId(basket.getPlotId());
+            inhouse.setLocationId(basket.getLocationId());
+            inhouse.setMaterialId(productId);               // 原材料 = 自身
+            inhouse.setMaterialConsume(take);
+            productInhouseMapper.insert(inhouse);
+            remaining = remaining.subtract(take);
+        }
+        if (remaining.compareTo(BigDecimal.ZERO) > 0) {
+            throw new ServiceException(
+                "库存不足：" + productName + " 可领 "
+                    + quantity.subtract(remaining).stripTrailingZeros().toPlainString()
+                    + (productUnit == null ? "" : productUnit) + "，申请 "
+                    + quantity.stripTrailingZeros().toPlainString() + (productUnit == null ? "" : productUnit));
+        }
+    }
+
+    /**
+     * 按篮算「今日领用净剩余」（退回 / 损耗 / 饲喂的按篮校验统一取数口）：猪肉 null-ear 组篮按
+     * {@code (product, ear_no IS NULL)} <b>组维度</b>聚合（{@link StockFlowMapper#sumTodayNetPickedByNullEarGroup}
+     * ——组级 FIFO 领用的流水按首篮标签落库，按篮 keyed 会「领用记在首篮、退损选中篮对不上」粒度错位误拦）；
+     * 其余篮按 {@code (product, location, ear_no, white_bar_no, plot_id)} 篮维度
+     * （{@link StockFlowMapper#sumTodayNetPickedByBasket}）。调用方保证 {@code basket.productId} 非空。
+     */
+    private BigDecimal todayBasketNet(LocationStock basket, ProductInfo product) {
+        if (isPorkNullEarGroup(basket, product)) {
+            return safe(stockFlowMapper.sumTodayNetPickedByNullEarGroup(basket.getProductId()));
+        }
+        return safe(stockFlowMapper.sumTodayNetPickedByBasket(
+            basket.getProductId(), basket.getLocationId(), basket.getEarNo(),
+            basket.getWhiteBarNo(), basket.getPlotId()));
     }
 
     /**
@@ -1107,8 +1265,8 @@ public class MatFlowServiceImpl implements IMatFlowService {
             ensureTodayCapacity(productId, bo.getQuantity(), productName, productUnit, product == null ? null : product.getBelongType());
             // row38：按篮子校验——退回量不能超过该篮子今日领用净剩余（product+库位+ear_no+white_bar_no+plot_id 维度），
             // 防止退回到「没领用过」的篮子/库位（如领用耳号 A 却退到库位 B，账实倒挂虚增该篮库存）。
-            BigDecimal basketNet = safe(stockFlowMapper.sumTodayNetPickedByBasket(
-                productId, locId, basket.getEarNo(), basket.getWhiteBarNo(), basket.getPlotId()));
+            // 猪肉 null-ear 组篮的领用是组级 FIFO（流水按首篮标签落库），净额同步按组维度（todayBasketNet 内分派）。
+            BigDecimal basketNet = todayBasketNet(basket, product);
             if (bo.getQuantity().compareTo(basketNet) > 0) {
                 throw new ServiceException("退回数量（" + bo.getQuantity().stripTrailingZeros().toPlainString()
                     + "）超过该篮子今日领用剩余（" + basketNet.stripTrailingZeros().toPlainString()
@@ -1389,6 +1547,7 @@ public class MatFlowServiceImpl implements IMatFlowService {
         flow.setWarehouseId(bo.getLocationId());
         flow.setInoutType(INOUT_OUT);
         flow.setFlowType(FLOW_FEED_OUT);
+        flow.setStockOutDest(STOCK_OUT_DEST_FEED);
         flow.setChangeNum(bo.getQuantity().negate());
         flow.setChangeQuantity(bo.getQuantity());
         flow.setOperatorId(userId);
@@ -1426,9 +1585,10 @@ public class MatFlowServiceImpl implements IMatFlowService {
      * 「按源手选」饲喂（{@code batchId} 非空）：从用户选中的那一篮扣饲喂量（镜像 {@link #lossByBatch}）。
      *
      * <p>自产果蔬地块篮命中 → {@link #feedVegPlot}（按 {@code (product, plot)} 剥离今天待打包 WIP）；
-     * 猪肉耳号篮无饲喂业务 → 抛 {@link ServiceException}（前端保证猪肉 tab 无饲喂按钮，此为后端防御）；
-     * 其余（包材 / 鸡蛋 / 干货等物资篮）走 {@code deductStockById} 扣选中篮（与现状 feed 物资分支语义一致，
-     * {@code affected==0} 打 warn 不抛，账实倒挂留痕）。</p>
+     * 猪肉耳号篮 / 猪肉 null-ear 组篮无饲喂业务 → 抛 {@link ServiceException}（前端保证猪肉 tab 无饲喂按钮，
+     * 此为后端防御）；其余（包材 / 鸡蛋 / 干货等物资篮）先按篮校验今日领用净剩余（{@link #todayBasketNet}），
+     * 再走 {@code deductStockById} 扣选中篮（与现状 feed 物资分支语义一致，{@code affected==0} 打 warn 不抛，
+     * 账实倒挂留痕）。</p>
      */
     private Long feedByBatch(MatFeedBo bo) {
         LocationStock basket = locationStockMapper.selectById(bo.getBatchId());
@@ -1452,12 +1612,25 @@ public class MatFlowServiceImpl implements IMatFlowService {
 
         Long productId = basket.getProductId();
         ProductInfo product = productId == null ? null : productInfoMapper.selectById(productId);
+        // 猪肉「null-ear 组篮」（admin 猪肉聚合行 / mp 猪肉退货卡）：与耳号卡同理，猪肉无饲喂业务 → 明确拒绝
+        // （须查 product_info 判 belong_type——null-ear null-plot 篮也可能是包材 / 鸡蛋等正常物资篮，不误拦）。
+        if (isPorkNullEarGroup(basket, product)) {
+            throw new ServiceException("猪肉不支持饲料饲喂");
+        }
         String productName = product != null ? product.getProductName() : basket.getProductName();
         String productUnit = product != null ? product.getProductUnit() : basket.getProductUnit();
 
         // 1. 校验今日额度（仍按 user+product 统计，与现状一致）；productId 缺失 → 跳过（不阻塞）
         if (productId != null) {
             ensureTodayCapacity(productId, bo.getQuantity(), productName, productUnit, product == null ? null : product.getBelongType());
+            // row16/row123 兄弟路径：带 batchId 的饲喂同样按篮校验今日领用净剩余——产品级 ensureTodayCapacity
+            // 跨库位混算，拦不住「A 篮领用后对 B 篮未领用行录饲喂」（净额口径与退回 / 损耗一致）。
+            BigDecimal basketNet = todayBasketNet(basket, product);
+            if (bo.getQuantity().compareTo(basketNet) > 0) {
+                throw new ServiceException("饲喂数量（" + bo.getQuantity().stripTrailingZeros().toPlainString()
+                    + "）超过该篮子今日领用剩余（" + basketNet.stripTrailingZeros().toPlainString()
+                    + "），请对实际领用过的源篮子饲喂");
+            }
         }
 
         // 2. INSERT stock_flow（feed_out 出库，带篮的 product_id + plot_id + ear_no + white_bar_no 源标签）
@@ -1471,6 +1644,7 @@ public class MatFlowServiceImpl implements IMatFlowService {
         flow.setWarehouseId(locId);
         flow.setInoutType(INOUT_OUT);
         flow.setFlowType(FLOW_FEED_OUT);
+        flow.setStockOutDest(STOCK_OUT_DEST_FEED);
         flow.setChangeNum(bo.getQuantity().negate());
         flow.setChangeQuantity(bo.getQuantity());
         flow.setOperatorId(userId);
@@ -1547,6 +1721,7 @@ public class MatFlowServiceImpl implements IMatFlowService {
         flow.setWarehouseId(firstLocId);
         flow.setInoutType(INOUT_OUT);
         flow.setFlowType(FLOW_FEED_OUT);
+        flow.setStockOutDest(STOCK_OUT_DEST_FEED);
         flow.setChangeNum(bo.getQuantity().negate());
         flow.setChangeQuantity(bo.getQuantity());
         flow.setOperatorId(userId);
@@ -1577,7 +1752,8 @@ public class MatFlowServiceImpl implements IMatFlowService {
      * <p>三步同事务：</p>
      * <ol>
      *   <li>查选中篮 {@code location_stock[id=batchId]}（防御：未软删；product 主数据取名称 / 单位）；</li>
-     *   <li>校验今日额度（仍按 {@code (user, product)} 统计，与现状一致）；</li>
+     *   <li>校验今日额度（仍按 {@code (user, product)} 统计，与现状一致）+ 按篮校验今日领用净剩余
+     *       （{@link #todayBasketNet}，猪肉 null-ear 组篮按组维度）；</li>
      *   <li>INSERT {@code loss} 流水（带篮源标签）+ 损耗扣减：可打包食品原料（领用时已离货架进「待打包」
      *       {@code product_inhouse}）剥离今天待打包 WIP、不再二次扣货架；其余物资无 WIP →
      *       {@code deductStockById(batchId, qty)} 扣选中篮——与现状 loss 语义一致，
@@ -1612,6 +1788,15 @@ public class MatFlowServiceImpl implements IMatFlowService {
         // 1. 校验今日额度（仍按 user+product 统计，与现状一致）；productId 缺失 → 跳过（不阻塞）
         if (productId != null) {
             ensureTodayCapacity(productId, bo.getQuantity(), productName, productUnit, product == null ? null : product.getBelongType());
+            // row38 兄弟路径：带 batchId 的损耗同样按篮校验今日领用净剩余——产品级 ensureTodayCapacity 跨库位
+            // 混算，拦不住「A 篮领用后对 B 篮未领用行登记损耗」（B 行今日损耗被污染）。猪肉 null-ear 组篮按组
+            // 维度、其余篮按 (product, location, ear_no, white_bar_no, plot_id) 篮维度（todayBasketNet 内分派）。
+            BigDecimal basketNet = todayBasketNet(basket, product);
+            if (bo.getQuantity().compareTo(basketNet) > 0) {
+                throw new ServiceException("损耗数量（" + bo.getQuantity().stripTrailingZeros().toPlainString()
+                    + "）超过该篮子今日领用剩余（" + basketNet.stripTrailingZeros().toPlainString()
+                    + "），请对实际领用过的源篮子登记损耗");
+            }
         }
 
         // 2. INSERT stock_flow（loss 出库，带篮的 product_id + plot_id + ear_no + white_bar_no 源标签）
@@ -1838,7 +2023,11 @@ public class MatFlowServiceImpl implements IMatFlowService {
 
     @Override
     public List<MatIssueItemVo> issueItems(String belongType, String locationId) {
-        List<String> belongTypes = parseBelongTypes(belongType);
+        // row42「按库不按业态」：belongType 为空时 belongTypes=null → mapper 不加 belong_type IN 过滤，
+        // 列该库位全部库存产品（生产领用选中库位后展示全库存）；非空则仍按业态过滤（如包材 tab 无库位、按 package）。
+        List<String> belongTypes = (belongType == null || belongType.isBlank())
+            ? null
+            : parseBelongTypes(belongType);
         Long locId = parseLocationId(locationId);
         Long userId = LoginHelper.getUserId();
         List<MatIssueItemVo> items = locationStockMapper.selectMatIssueItems(belongTypes, locId, userId);
@@ -1854,6 +2043,7 @@ public class MatFlowServiceImpl implements IMatFlowService {
                 }
             }
         }
+        backfillEstimatedDemand(items);
         return items;
     }
 
@@ -1880,7 +2070,45 @@ public class MatFlowServiceImpl implements IMatFlowService {
                 }
             }
         }
+        backfillEstimatedDemand(items);
         return items;
+    }
+
+    /**
+     * 回填 mp 生产领用卡「明日预估需求量」（row18）。
+     *
+     * <p>以 items 的 {@code productId}（= 领用卡产品，作原材料）distinct 非空集合，单次批量反查
+     * {@link ProductInfoMapper#selectEstimatedDemandByMaterials} 得每原材料的
+     * Σ（以它为原材料的成品的 明日需求量 × 单份用量），再回填到各 item.estimatedDemand。
+     * 未命中（无配比成品）→ 保持 null，前端卡片「预估需求量」显空。禁 N+1（单次批量查）。</p>
+     */
+    private void backfillEstimatedDemand(List<MatIssueItemVo> items) {
+        if (items == null || items.isEmpty()) {
+            return;
+        }
+        Set<Long> materialIds = new HashSet<>();
+        for (MatIssueItemVo it : items) {
+            if (it.getProductId() != null) {
+                materialIds.add(it.getProductId());
+            }
+        }
+        if (materialIds.isEmpty()) {
+            return;
+        }
+        List<MatEstimatedDemandVo> rows = productInfoMapper.selectEstimatedDemandByMaterials(new ArrayList<>(materialIds));
+        Map<Long, BigDecimal> estimatedByMaterial = new HashMap<>();
+        if (rows != null) {
+            for (MatEstimatedDemandVo row : rows) {
+                if (row.getMaterialId() != null) {
+                    estimatedByMaterial.putIfAbsent(row.getMaterialId(), row.getEstimatedDemand());
+                }
+            }
+        }
+        for (MatIssueItemVo it : items) {
+            if (it.getProductId() != null) {
+                it.setEstimatedDemand(estimatedByMaterial.get(it.getProductId()));
+            }
+        }
     }
 
     @Override

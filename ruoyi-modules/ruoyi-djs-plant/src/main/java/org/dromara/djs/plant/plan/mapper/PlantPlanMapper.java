@@ -93,10 +93,14 @@ public interface PlantPlanMapper extends BaseMapperPlus<PlantPlan, PlantPlanVo> 
     int recalcPlanStatus(@Param("planId") Long planId);
 
     /**
-     * 跨模块只读：聚合"进行中"种植计划给需求确认 SummaryBar 用
+     * 跨模块只读：聚合"在种"种植明细给需求确认 SummaryBar 用
      * （DJS-FIX-ADMIN-W22-003）。
      *
-     * <p>"进行中"语义：{@code plant_status IN ('pending','ongoing')}。聚合方式：</p>
+     * <p>"在种"语义按<b>明细</b>取产出期 {@code d.plant_status='completed' AND
+     * d.harvest_status<>'completed'}（已定植、未采完），与 mp 农事/采收（{@code FarmRecordsMapper}）
+     * 及种植看板同源。<b>不能按主表 {@code p.plant_status} 过滤</b>——主表状态是
+     * {@link #recalcPlanStatus} 由「明细 completed 计数」派生的，明细一旦定植完成主表就翻 'completed'，
+     * 按主表筛会把全部在地作物滤没。聚合方式：</p>
      * <ul>
      *   <li>{@code plotCount} = COUNT(DISTINCT d.plot_id)（同地块在多月/多期只算一次）</li>
      *   <li>{@code expectedYieldKg} = SUM(COALESCE(d.expected_yield,0)) - SUM(COALESCE(d.actual_yield,0))，
@@ -122,7 +126,8 @@ public interface PlantPlanMapper extends BaseMapperPlus<PlantPlan, PlantPlanVo> 
            AND d.tenant_id = p.tenant_id
          WHERE p.del_flag = '0'
            AND p.tenant_id = '1001'
-           AND p.plant_status IN ('pending','ongoing')
+           AND d.plant_status = 'completed'
+           AND d.harvest_status <> 'completed'
         """)
     PlantPlanSummaryVo selectDemandSummary();
 

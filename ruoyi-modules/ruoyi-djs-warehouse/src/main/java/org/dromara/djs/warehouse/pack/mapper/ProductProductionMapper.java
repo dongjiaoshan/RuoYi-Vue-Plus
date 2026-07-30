@@ -190,6 +190,9 @@ public interface ProductProductionMapper extends BaseMapperPlus<ProductProductio
      * 全业态统一按条数计量，与子页「产品明细」逐件条数一致；不再按 {@code SUM(product_weight)} 重量算，
      * 避免份计量产品重量取整后显 0）。</p>
      *
+     * <p>「需求满足率」{@code fulfillmentRate} = {@code produceQty / demandQty * 100}（保留 2 位）。
+     * 需求量为 0 或无需求行时 {@code NULLIF} 使结果为 NULL，前端展示 {@code -}（不按 0% 显示）。</p>
+     *
      * <p>白条业态（{@code belong_type='white_bar'}）在本主列表隐藏（WHERE {@code pi.belong_type &lt;&gt; 'white_bar'}，
      * NULL-safe 保留历史无品类行）：白条是燎毛过程态、经白条领用页管理，不进产品生产概览；详情/其它页照常。</p>
      *
@@ -224,11 +227,22 @@ public interface ProductProductionMapper extends BaseMapperPlus<ProductProductio
         "SELECT pp.product_id          AS productId,",
         "       DATE(pp.produce_date)  AS produceDate,",
         "       MAX(pp.product_name)   AS productName,",
-        "       MAX(pp.product_unit)   AS productUnit,",
+        "       MAX(COALESCE(pi.product_unit, pp.product_unit)) AS productUnit,",
         "       MAX(pp.product_spec)   AS productSpec,",
         "       MAX(pi.belong_type)    AS belongType,",
         "       MAX(pp.product_type)   AS productType,",
-        "       COUNT(*)               AS produceQty,",
+        "       COALESCE(MAX(dm.demand_qty), 0) AS demandQty,",
+        // 生产量按「产品自身计量单位」：kg 计量取当日重量合计，份 / 盒 / 枚等计数单位取记录条数
+        //（一次打包确认 = 一份）。需求量本就是按该单位下的单，两者同量纲，需求满足率才有意义。
+        "       CASE WHEN LOWER(TRIM(MAX(COALESCE(pi.product_unit, pp.product_unit)))) IN ('kg', '公斤')",
+        "            THEN COALESCE(SUM(pp.product_weight), 0)",
+        "            ELSE COUNT(*) END AS produceQty,",
+        // 需求满足率 = 生产量 / 需求量 * 100；需求量为 0 / NULL 时 NULLIF 使整个表达式为 NULL，前端展示 -
+        "       ROUND(",
+        "           CASE WHEN LOWER(TRIM(MAX(COALESCE(pi.product_unit, pp.product_unit)))) IN ('kg', '公斤')",
+        "                THEN COALESCE(SUM(pp.product_weight), 0)",
+        "                ELSE COUNT(*) END",
+        "           / NULLIF(COALESCE(MAX(dm.demand_qty), 0), 0) * 100, 2) AS fulfillmentRate,",
         "       COUNT(*)               AS itemCount,",
         "       SUM(pp.material_consume) AS materialConsume,",
         "       MAX(pmi.product_name)  AS materialName,",
@@ -244,6 +258,17 @@ public interface ProductProductionMapper extends BaseMapperPlus<ProductProductio
         "         ON pmi.id = pp.material_id",
         "        AND pmi.del_flag = '0'",
         "        AND pmi.tenant_id = pp.tenant_id",
+        "  LEFT JOIN (",
+        "       SELECT tenant_id, product_id, DATE(demand_date) AS demand_day,",
+        "              SUM(demand_quantity) AS demand_qty",
+        "         FROM t_warehouse_demand_manage",
+        "        WHERE del_flag = '0'",
+        "          AND demand_status NOT IN ('CANCELLED', 'DELETED')",
+        "        GROUP BY tenant_id, product_id, DATE(demand_date)",
+        "  ) dm",
+        "         ON dm.tenant_id = pp.tenant_id",
+        "        AND dm.product_id = pp.product_id",
+        "        AND dm.demand_day = DATE(pp.produce_date)",
         " WHERE pp.del_flag = '0'",
         "   AND pp.tenant_id = '1001'",
         "   AND (pi.belong_type IS NULL OR pi.belong_type &lt;&gt; 'white_bar')",
@@ -369,6 +394,34 @@ public interface ProductProductionMapper extends BaseMapperPlus<ProductProductio
     List<Long> selectDeliveredProductIdsToStore(@Param("storeId") Long storeId, @Param("date") LocalDate date);
 
     /**
+     * row40：当日到店该店该产品「需求订购份数」之和 {@code SUM(demand_quantity)}（门店退回上限按份数比对，份数产品口径）。
+     *
+     * <p>「到店」判定与 {@link #sumDeliveredWeightToStore} 同源——该产品当日发货清点
+     * （{@code is_delivery_check=1}、{@code delivery_check_time} 当天）且门店经 {@code demand_id → store_id} 关联；
+     * 但聚合的是<b>需求订购份数</b>而非成品重量（Kevin 2026-07-12 口径：份数产品到店量 = 当日到店该产品需求订购份数）。</p>
+     *
+     * <p>为避免 production ↔ demand 一对多 JOIN 造成 {@code demand_quantity} 扇出重复求和（每份成品一条 production 行，
+     * 直接 SUM 会 ×份数），改从 demand 侧 SUM，用 EXISTS 关联「当日已发货清点该产品」的 production 界定到店 demand 集合。
+     * 租户隔离 V1 单租户显式 {@code tenant_id='1001'}。</p>
+     *
+     * @param storeId   门店 FK
+     * @param productId 产品 FK
+     * @param date      业务日（按 delivery_check_time 当天过滤）
+     * @return 当日到店该店该产品需求订购份数之和（无 → 0）
+     */
+    @Select("SELECT COALESCE(SUM(dm.demand_quantity), 0) "
+        + "FROM t_warehouse_demand_manage dm "
+        + "WHERE dm.store_id = #{storeId} AND dm.product_id = #{productId} "
+        + "AND dm.del_flag = '0' AND dm.tenant_id = '1001' "
+        + "AND EXISTS (SELECT 1 FROM t_warehouse_product_production pp "
+        + "  WHERE pp.demand_id = dm.id AND pp.product_id = #{productId} "
+        + "  AND pp.is_delivery_check = 1 AND DATE(pp.delivery_check_time) = #{date} "
+        + "  AND pp.del_flag = '0' AND pp.tenant_id = '1001')")
+    BigDecimal sumDeliveredQuantityToStore(@Param("storeId") Long storeId,
+                                           @Param("productId") Long productId,
+                                           @Param("date") LocalDate date);
+
+    /**
      * admin row5：某白条需求「已发货白条实际重量之和」（kg）——供门店需求列表「预计到店重量」白条口径。
      * = Σ 绑定到该 demand 的 white_bar 成品已发货清点(is_delivery_check=1)重量 product_weight。
      * demand_id 门店级松散绑定，故 JOIN 商品主数据按 belong_type='white_bar' 过滤只算白条产出行。
@@ -397,6 +450,22 @@ public interface ProductProductionMapper extends BaseMapperPlus<ProductProductio
         + "WHERE pp.demand_id = #{demandId} AND pp.is_delivery_check = 1 "
         + "AND pp.del_flag = '0' AND pp.tenant_id = '1001'")
     BigDecimal sumShippedVegPorkWeightByDemand(@Param("demandId") Long demandId);
+
+    /**
+     * 某干货需求「已发货实际重量之和」（kg）——供门店需求列表「预计到店重量」干货口径。
+     * = Σ 绑定到该 demand 的 dry_good 成品已发货清点(is_delivery_check=1)自带重量 product_weight。
+     * 干货为独立成品（无组件 BOM），生产行自带真实逐份称重 product_weight（如 干羊肚菌 80g/份→0.08~0.10kg），
+     * 与白条/果蔬同口径按已发货实际重回填。礼盒（多产品组合，无单一整体重量）与鸡蛋按枚计一致，不含在内、保持 '—'。
+     *
+     * @param demandId 需求 FK
+     * @return 已发货干货总重（无 → 0）
+     */
+    @Select("SELECT COALESCE(SUM(pp.product_weight), 0) "
+        + "FROM t_warehouse_product_production pp "
+        + "JOIN t_warehouse_product_info pi ON pi.id = pp.product_id AND pi.belong_type = 'dry_good' "
+        + "WHERE pp.demand_id = #{demandId} AND pp.is_delivery_check = 1 "
+        + "AND pp.del_flag = '0' AND pp.tenant_id = '1001'")
+    BigDecimal sumShippedDryGoodWeightByDemand(@Param("demandId") Long demandId);
 
     /**
      * 白条发货记录列表（WS12 row133，「产品生产记录」下「白条发货记录」页）。

@@ -32,13 +32,11 @@ aliyun cms DescribeMetricLast --profile "$PROFILE" --Namespace acs_rds_dashboard
   --Dimensions "[{\"instanceId\":\"$RDS_ID\"}]" 2>/dev/null \
   | jq -r '.Datapoints | fromjson? | .[0] | "  连接使用率≈\(.Average|floor)%"' 2>/dev/null | head -1
 
-echo "── OSS 桶 ($OSS_PREFIX-*) ──"
+echo "── OSS 桶 ($OSS_BUCKET) ──"
 CFG=$(ensure_ossutil_config)
 if [ -n "$CFG" ]; then
-  for b in "$OSS_PREFIX-private" "$OSS_PREFIX-public" "$OSS_PREFIX-trace"; do
-    acl=$(aliyun oss stat "oss://$b" -c "$CFG" 2>/dev/null | awk -F': *' '/^ACL /{print $2}')
-    echo "  $b: ${acl:-不存在/不可读}"
-  done
+  acl=$(aliyun oss stat "oss://$OSS_BUCKET" -c "$CFG" 2>/dev/null | awk -F': *' '/^ACL /{print $2}')
+  echo "  $OSS_BUCKET: ${acl:-不存在/不可读}"
 else
   echo "  (ossutil 配置缺失，跳过)"
 fi

@@ -31,9 +31,9 @@ public interface CropInfoMapper extends BaseMapperPlus<CropInfo, CropInfoVo> {
      * 按 crop_id 批量聚合种植记录派生统计（历史种植次数 / 平均亩产 / 最大亩产）。
      *
      * <p>历史种植次数 historyPlantCount = COUNT(*) 全部明细行。
-     * 平均亩产 avgYield / 最大亩产 maxYield 取「采摘完成状态」({@code harvest_status='completed'})
-     * 明细的已摘重量 {@code actual_yield}（实际采收量）：AVG → avgYield；MAX → maxYield。
-     * 仅采摘完成行参与 AVG/MAX，无采摘完成行时返 null。</p>
+     * 平均亩产 avgYield / 最大亩产 maxYield（kg/亩）取「采摘完成状态」({@code harvest_status='completed'})
+     * 明细的每亩实收 {@code actual_yield / plot_area}（实际产量 / 地块面积）：AVG → avgYield；MAX → maxYield。
+     * 仅采摘完成且 actual_yield 非空、plot_area&gt;0 的行参与 AVG/MAX，无此类行时返 null。</p>
      *
      * @param cropIds 作物 id 集合（已 dedupe，非空）
      * @return 聚合行（无种植记录的 cropId 不出现，service 兜底 0/null）
@@ -43,8 +43,10 @@ public interface CropInfoMapper extends BaseMapperPlus<CropInfo, CropInfoVo> {
         SELECT
             crop_id AS cropId,
             COUNT(*) AS historyPlantCount,
-            AVG(CASE WHEN harvest_status = 'completed' THEN actual_yield END) AS avgYield,
-            MAX(CASE WHEN harvest_status = 'completed' THEN actual_yield END) AS maxYield
+            AVG(CASE WHEN harvest_status = 'completed' AND actual_yield IS NOT NULL AND plot_area &gt; 0
+                     THEN actual_yield / plot_area END) AS avgYield,
+            MAX(CASE WHEN harvest_status = 'completed' AND actual_yield IS NOT NULL AND plot_area &gt; 0
+                     THEN actual_yield / plot_area END) AS maxYield
           FROM t_plant_plant_details
          WHERE tenant_id = '1001'
            AND del_flag = '0'
@@ -79,8 +81,10 @@ public interface CropInfoMapper extends BaseMapperPlus<CropInfo, CropInfoVo> {
     /**
      * 按 cropId 查种植记录子表（作物详情 9 列）。
      *
-     * <p>JOIN 地块名 + 种植班组(plant_by) / 采摘班组(harvest_by)；亩产按 kg 返（决策#7 明细用 kg）。
-     * 预计亩产取作物 {@code predicted_per}；实际采收量取明细 {@code actual_yield}。按种植日期倒序。</p>
+     * <p>JOIN 地块名 + 种植班组(plant_by) / 采摘班组(harvest_by)。
+     * 预计亩产 predictedPer 取作物 {@code predicted_per}（kg/亩）；实际产量 actualYield 取明细
+     * {@code actual_yield}（实收 kg）；实际亩产 actualPer = {@code actual_yield / plot_area}（kg/亩）。
+     * 按种植日期倒序。</p>
      *
      * @param cropId 作物 id
      * @return 种植记录子表行；无记录返空 list
@@ -94,7 +98,8 @@ public interface CropInfoMapper extends BaseMapperPlus<CropInfo, CropInfoVo> {
             pt.team_name AS plantTeamName,
             c.predicted_per AS predictedPer,
             d.earliest_harvestdate AS earliestHarvestDate,
-            d.actual_yield AS actualPer,
+            d.actual_yield AS actualYield,
+            ROUND(d.actual_yield / NULLIF(p.plot_area, 0), 3) AS actualPer,
             d.begin_harvestdate AS pickStartDate,
             d.end_harvestdate AS pickEndDate,
             ht.team_name AS pickTeamName

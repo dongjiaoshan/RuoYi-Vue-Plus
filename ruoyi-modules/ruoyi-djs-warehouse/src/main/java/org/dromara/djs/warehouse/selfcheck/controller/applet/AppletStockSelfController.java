@@ -34,7 +34,7 @@ import java.util.List;
  * <ul>
  *   <li>{@code GET  /applet/warehouse/stock/storeEntries}  各库入口聚合</li>
  *   <li>{@code GET  /applet/warehouse/stock/storeProducts} 库详情标准库产品列表</li>
- *   <li>{@code GET  /applet/warehouse/stock/whiteBarStocks} 白条库整只逐条</li>
+ *   <li>{@code GET  /applet/warehouse/stock/whiteBarStocks} 白条库（半只逐条，对齐分割白条领用）</li>
  *   <li>{@code GET  /applet/warehouse/stock/pendingChecks} 待盘点产品列表</li>
  *   <li>{@code GET  /applet/warehouse/stock/checkRecords}  盘点记录分页</li>
  *   <li>{@code GET  /applet/warehouse/stock/inoutFlows}    进出库流水分页</li>
@@ -82,7 +82,7 @@ public class AppletStockSelfController extends BaseController {
     }
 
     /**
-     * 白条库整只逐条列表（locationId 接收但不参与过滤，白条是逻辑库）。
+     * 白条库列表（按半只/半扇逐燎毛产出行，取数完全对齐 admin 分割白条领用；locationId 接收但不参与过滤，白条是逻辑库）。
      */
     @SaCheckLogin
     @GetMapping("/whiteBarStocks")

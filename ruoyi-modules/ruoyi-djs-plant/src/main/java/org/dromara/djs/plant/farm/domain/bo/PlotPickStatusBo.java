@@ -6,6 +6,7 @@ import jakarta.validation.constraints.Size;
 import lombok.Data;
 
 import java.time.LocalDate;
+import java.util.List;
 
 /**
  * 土地采摘状态调整入参 BO（FIX-PLT-MP-HARVEST-001 #3，采摘活动管理富页）。
@@ -38,9 +39,16 @@ public class PlotPickStatusBo {
     @NotNull(message = "请选择状态调整日期")
     private LocalDate adjustDate;
 
-    /** 记录班组 id（{@code t_plant_work_team.id}，写留痕农事记录的 farm_by）。 */
-    @NotNull(message = "请选择记录班组")
+    /** 采摘班组 id（{@code t_plant_work_team.id}，写留痕农事记录的 farm_by）。单选兼容口径；多选走 {@link #teamIds} 首值。 */
+    @NotNull(message = "请选择采摘班组")
     private Long teamId;
+
+    /**
+     * 采摘班组全集 id（row152 多选，可空兼容旧单选）：picking 首次录入时复用
+     * {@code PlantTeamLinkService.syncDetailTeams(role=harvest)} 落 {@code t_plant_details_team}，
+     * {@code plant_details.harvest_by} 与留痕 {@code farm_by} 写首值。
+     */
+    private List<Long> teamIds;
 
     /** 采摘人员 user_id（{@code sys_user.user_id}，可空）：采摘活动土地状态只记班组、不记人员，前端不传，落 operator_user_id=NULL。 */
     private Long operatorUserId;

@@ -127,6 +127,8 @@ public class PigAppletController {
      * @param earNoKeyword  耳号关键字（row60：栋舍 chip 头数随搜索缩减，与 search 同 LIKE 口径）；空 → 不过滤
      * @param breedReady    配种选猪过滤（row13）：{@code true} 时与 search 同口径按最小在场天数剔除未达天数母猪；空 → 不过滤
      * @param dueType       到期窗口过滤（{@code FARROW}/{@code WEANING}）：与 search 同口径硬筛已到期母猪，使 chip 头数=列表条数（r120）；空 → 不过滤
+     * @param minAgeDays    最小日龄过滤（天，row180）：与 search 同口径只计到龄肥猪（出栏选猪传出栏配置 {@code slaughter_age_days}），
+     *                      否则 chip 计全部肥猪而列表只列到龄 → 头数对不上；空/≤0 → 不过滤
      */
     @SaCheckLogin
     @SaCheckPermission("djs:applet:pig:search")
@@ -137,9 +139,10 @@ public class PigAppletController {
         @RequestParam(required = false) String pigTypeFilter,
         @RequestParam(required = false) String earNoKeyword,
         @RequestParam(required = false) Boolean breedReady,
-        @RequestParam(required = false) String dueType
+        @RequestParam(required = false) String dueType,
+        @RequestParam(required = false) Integer minAgeDays
     ) {
-        return R.ok(pigCoreService.countByBarn(statusFilter, sexFilter, pigTypeFilter, earNoKeyword, breedReady, dueType));
+        return R.ok(pigCoreService.countByBarn(statusFilter, sexFilter, pigTypeFilter, earNoKeyword, breedReady, dueType, minAgeDays));
     }
 
     /**

@@ -1,5 +1,6 @@
 package org.dromara.djs.breed.core.service;
 
+import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.breed.core.domain.Pig;
@@ -13,6 +14,7 @@ import org.dromara.djs.breed.core.domain.vo.PigIntroDetailVo;
 import org.dromara.djs.breed.core.domain.vo.PigSearchVo;
 import org.dromara.djs.breed.core.domain.vo.PigStatusRecordVo;
 import org.dromara.djs.breed.core.domain.vo.PigVo;
+import org.dromara.djs.breed.core.enums.PigLifecycle;
 
 import java.time.LocalDate;
 import java.util.List;
@@ -42,6 +44,25 @@ public interface IPigCoreService {
      * @return 刚写入的 status_record（含 id）
      */
     PigStatusRecordVo fireEvent(PigEventBo bo);
+
+    /**
+     * 状态机 guard 预检：只算目标状态，不写 status_record、不改 {@code current_status}。
+     *
+     * <p>给「先 INSERT 业务台账、再 {@link #fireEvent}」的事件 service 用：台账写库<b>之前</b>
+     * 先把性别门 / 终态 / transition 合法性跑一遍，非法输入直接以 {@link ServiceException}(400)
+     * 拒绝。否则非法输入会先撞台账表自身的 DB 约束（NOT NULL / 外键），真正的业务错误被
+     * {@code DataIntegrityViolationException} 顶掉、退化成「发生未知异常，请联系管理员」，
+     * 用户拿不到可操作信息。</p>
+     *
+     * <p>guard 与 {@link #fireEvent} 同源（同一 {@link PigStateMachine#nextStatus}），
+     * 所以预检通过 = 后续 fireEvent 的状态机段必然通过。</p>
+     *
+     * @param bo 事件入参（pigId / eventType / payload；{@code relatedEventId} 此处不需要）
+     * @return 该事件将推进到的目标状态；NO_CHANGE 事件（TRANSFER / CASTRATE）返回原状态，
+     *         非种母猪空状态猪只可能为 {@code null}
+     * @throws ServiceException guard 不通过（code 400）：性别不符 / 已终态 / 非法 transition
+     */
+    PigLifecycle precheckEvent(PigEventBo bo);
 
     /**
      * 创建猪只（INTRO 路径）：INSERT pig + INSERT 初始 status_record + 发布事件。
@@ -187,7 +208,11 @@ public interface IPigCoreService {
      *                      （否则栋舍 chip 头数之和与列表条数对不上）；{@code null}/false → 不过滤
      * @param dueType       到期窗口过滤（{@code "FARROW"}=已到产期 / {@code "WEANING"}=已到断奶期 / null=不过滤）：
      *                      与 {@code searchByEarKeyword} 同口径按生产配置天数硬筛（dueDate ≤ 今天），使 chip 头数=列表条数（r120）
+     * @param minAgeDays    最小日龄过滤（天，row180）：仅计入 {@code 日龄 >= minAgeDays} 的猪只（出栏选猪用，按出栏配置
+     *                      {@code slaughter_age_days} 限到龄肥猪）。与 {@link #searchByEarKeyword} 同口径
+     *                      （{@code COALESCE(birth_date, introduce_date)}），否则 chip 计全部而列表只列到龄 → 头数对不上。
+     *                      {@code null}/≤0 → 不过滤（向后兼容其余 12 页调用方，行为不变）。
      * @return 栋舍头数聚合列表
      */
-    List<PigBarnCountVo> countByBarn(String statusFilter, String sexFilter, String pigTypeFilter, String earNoKeyword, Boolean breedReady, String dueType);
+    List<PigBarnCountVo> countByBarn(String statusFilter, String sexFilter, String pigTypeFilter, String earNoKeyword, Boolean breedReady, String dueType, Integer minAgeDays);
 }

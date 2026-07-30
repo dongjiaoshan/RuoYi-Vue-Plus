@@ -100,7 +100,8 @@ class PigSearchServiceTest {
     void setup() {
         service = new PigCoreServiceImpl(pigMapper, statusRecordMapper, stateMachine, publisher, barnMapper, penMapper,
             org.mockito.Mockito.mock(org.dromara.common.core.service.DictService.class), productionCycleConfigService,
-            org.mockito.Mockito.mock(org.dromara.djs.breed.breeding.mapper.BreedInfoMapper.class));
+            org.mockito.Mockito.mock(org.dromara.djs.breed.breeding.mapper.BreedInfoMapper.class),
+            org.mockito.Mockito.mock(org.dromara.djs.breed.farm.service.PenCountUpdater.class));
         // pigGrowthMapper 是 @Autowired 字段注入（非构造参），手动注入 mock；默认返空列表 → loadLastMeasureDateMap 返空
         ReflectionTestUtils.setField(service, "pigGrowthMapper", pigGrowthMapper);
     }
@@ -424,7 +425,7 @@ class PigSearchServiceTest {
         when(barnMapper.selectBatchIds(anyCollection())).thenReturn(Arrays.asList(b11, b12));
 
         List<org.dromara.djs.breed.core.domain.vo.PigBarnCountVo> result =
-            service.countByBarn(null, "F", "sow", null, null, null);
+            service.countByBarn(null, "F", "sow", null, null, null, null);
         assertThat(result).hasSize(2);
         // 升序：B01 在前
         assertThat(result.get(0).getBarnCode()).isEqualTo("B01");
@@ -440,7 +441,7 @@ class PigSearchServiceTest {
         when(pigMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(Collections.emptyList());
 
         List<org.dromara.djs.breed.core.domain.vo.PigBarnCountVo> result =
-            service.countByBarn(null, null, null, null, null, null);
+            service.countByBarn(null, null, null, null, null, null, null);
         assertThat(result).isEmpty();
         org.mockito.Mockito.verify(barnMapper, org.mockito.Mockito.never()).selectBatchIds(anyCollection());
     }

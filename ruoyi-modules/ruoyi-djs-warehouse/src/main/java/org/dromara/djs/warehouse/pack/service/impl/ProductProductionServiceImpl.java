@@ -55,6 +55,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.Date;
 import java.util.HashMap;
@@ -99,6 +100,8 @@ public class ProductProductionServiceImpl
     private static final String INOUT_OUT = "OT";
     /** 白条出库 flow_type（邓博 row13：白条离白条库统一「白条出库」，去向区分白条分割 / 发货月台 / 仓库出库）。 */
     private static final String FLOW_TYPE_CUT_OUT = "cut_out";
+    /** 损耗出库 flow_type（邓博 row17：白条领用残量清零流水，与物资损耗共用字典码）。 */
+    private static final String FLOW_TYPE_LOSS = "loss";
     /** 出库去向：发货月台。 */
     private static final String STOCK_OUT_DEST_SHIP_DOCK = "ship_dock";
 
@@ -145,6 +148,27 @@ public class ProductProductionServiceImpl
 
     /** 打包台「当天」时区：与发货月台 {@code SHIP_TODAY_ZONE} 一致，避免非 UTC+8 实例跨日归错天。 */
     private static final ZoneId PACK_TODAY_ZONE = ZoneId.of("Asia/Shanghai");
+
+    /**
+     * 打包实称相对单包规则（{@code product_info.material_num}）的允许超出百分比。
+     *
+     * <p><b>非对称</b>：只能大于不能小于 —— 短斤少两是不能发出去的，多给一点可以。
+     * 超出该百分比也只是提示、操作员确认后仍可提交（现场秤精度有限，硬拒会卡死打包台）。
+     * 邓博 2026-07-30 产品测试后确认口径。</p>
+     */
+    private static final int PACK_MEASURE_OVER_TOLERANCE_PERCENT = 3;
+    /** 允许上界系数 = 1 + 允许超出（1.03）。 */
+    private static final BigDecimal PACK_MEASURE_UPPER_FACTOR =
+        BigDecimal.ONE.add(BigDecimal.valueOf(PACK_MEASURE_OVER_TOLERANCE_PERCENT, 2));
+    /**
+     * 「超出上限」异常文案里的稳定标识串——admin / mp 靠它识别「该弹二次确认框」而非普通报错，
+     * 改动必须同步 {@code miniapp/src/api/warehouse/pack.ts} 的 {@code PACK_MEASURE_DEVIATION_MARKER}。
+     *
+     * <p>⚠️ <b>低于规则重量的异常不带这个串</b> —— 前端匹配不到标识就走普通报错、不给「继续」按钮，
+     * 硬拒就是靠这个区分实现的。</p>
+     */
+    private static final String PACK_MEASURE_DEVIATION_MARKER =
+        "超出" + PACK_MEASURE_OVER_TOLERANCE_PERCENT + "%";
 
     /**
      * 其他产品（egg/dry_good/other）打包来源业态白名单（统一目标模型 G5）。
@@ -270,6 +294,8 @@ public class ProductProductionServiceImpl
         ProductInhouse src = requireActiveInhouse(bo.getSourceInhouseId());
         // Step 2：校验目标产品存在 + 是发货品
         ProductInfo product = requireDeliveryProduct(bo.getProductId());
+        // 果蔬实称对打包规则「只能大于不能小于」：低于规则重量硬拒；超出 3% 弹提示、确认后可继续。
+        validatePackMeasureRule(product, bo.getProductWeight(), bo.getAllowOverMeasure());
         // Step 2.5：果蔬打包来源原材料库存校验（V4，果疏产品全流程处理.docx）：
         // 目标果蔬成品若配了 product_material（关联来源原材料果蔬产品），则按 doc 规则
         // "领用果蔬重量（来源原材料库存）< 打包成品重量 → 拦截禁止"。
@@ -397,7 +423,20 @@ public class ProductProductionServiceImpl
 
         ProductInhouse src = requireActiveInhouse(bo.getSourceInhouseId());
         ProductInfo product = requireDeliveryProduct(bo.getProductId());
-        requireInhouseEnough(src, bo.getProductWeight());
+        // 肉品实称规则与果蔬一致（下限硬拒 / 超 3% 可确认继续）；其他 dry 业态（干货 / 蛋 / other）不套用该重量规则
+        // ——它们按「份数 × 单份规格」提交，productWeight 不是单包实称，套上去必然误判。
+        if (BELONG_TYPE_PORK.equals(product.getBelongType())) {
+            validatePackMeasureRule(product, bo.getProductWeight(), bo.getAllowOverMeasure());
+        }
+        // row32：肉品打包(有耳号)库存判定按「同原材料(product_id)+同耳号」今日领用来源池**总重量**，
+        // 而非单条领用行余量——分多次领用=多条 inhouse 行(单条最大3kg但总领8kg),打包3001g按池总重放行、FIFO 跨行扣减。
+        // 无耳号(干货/其他 dry 打包)保持单条口径,零影响。
+        List<ProductInhouse> srcPool = src.getEarNo() != null ? resolveMeatSourcePool(src) : null;
+        if (srcPool != null) {
+            requirePoolEnough(srcPool, bo.getProductWeight());
+        } else {
+            requireInhouseEnough(src, bo.getProductWeight());
+        }
         // 入库库位（前端收银台不采集，可空 → 默认取产品配置库位/首个可用库位兜底）
         Long locationId = resolveLocationId(bo.getLocationId(), product);
         // D-2：目标库位盘点锁定中 → 拒绝入库
@@ -409,7 +448,7 @@ public class ProductProductionServiceImpl
         p.setProductId(product.getId());
         p.setProductName(resolveProductionName(product));
         p.setProductType(product.getProductType() != null ? product.getProductType() : 1);
-        p.setProductUnit(bo.getProductUnit());
+        p.setProductUnit(StringUtils.isNotBlank(product.getProductUnit()) ? product.getProductUnit() : bo.getProductUnit());
         p.setProductSpec(StringUtils.isNotBlank(bo.getProductSpec())
             ? bo.getProductSpec() : product.getProductSpec());
         p.setEarNo(src.getEarNo());
@@ -430,7 +469,12 @@ public class ProductProductionServiceImpl
         baseMapper.insert(p);
 
         // row42：生产产品不入库（直送发货月台，不进 location_stock / 不写入库流水）。
-        consumeInhouse(src, bo.getProductWeight());
+        // row32：有耳号肉品按来源池 FIFO 跨行扣减总重；无耳号维持单条扣减。
+        if (srcPool != null) {
+            consumePoolFifo(srcPool, bo.getProductWeight());
+        } else {
+            consumeInhouse(src, bo.getProductWeight());
+        }
 
         // 肉品打包原材料库存校验 + 扣减（猪肉全闭环 Part I P8）：
         // 仅 belong_type=pork 且目标产品配了 product_material（关联原材料）时校验，
@@ -443,9 +487,17 @@ public class ProductProductionServiceImpl
 
         // 履约门店需求（需求 C）——肉品/干货/其他打包均走此口。发送位置=礼盒 → 礼盒组件，不扣门店直接需求；
         // 其余（发货月台）= 直接履约，须选门店 + 打包即扣需求（发货不再扣）。
-        // 扣减量恒 1 份（Kevin 2026-07-14：所有打包提交 1 次 = 恰好 1 份，与重量/material_num 无关，不出小数）。
-        fulfillDirectDemandOnPack(product.getId(), bo.getStoreId(),
-            resolveDemandDeductQty(product, bo.getProductWeight()), bo.getDeliverDest());
+        // 按产品单位分流（Kevin 2026-07-21）：
+        //   · 非 KG（份/盒等）：扣减量恒 1 份（一次打包=1 份，与重量/material_num 无关，不出小数）。
+        //   · KG（散装 kg 等）：称重必须 ≥ 所选门店剩余需求重量，否则拦；满足则把该需求扣满至 COMPLETED
+        //     （客户规则：KG 产品一次称重 ≥ 需求即满足整单，只能重不能少）。
+        if (isKgUnit(product.getProductUnit())) {
+            fulfillKgDemandOnPack(product.getId(), bo.getStoreId(),
+                bo.getProductWeight(), bo.getDeliverDest());
+        } else {
+            fulfillDirectDemandOnPack(product.getId(), bo.getStoreId(),
+                resolveDemandDeductQty(product, bo.getProductWeight()), bo.getDeliverDest());
+        }
 
         log.info("[WMS-PACK-001] dry pack done id={} produceNo={} weight={} unit={} traceCode={}",
             p.getId(), p.getProduceNo(), bo.getProductWeight(), bo.getProductUnit(), p.getTraceCode());
@@ -463,6 +515,10 @@ public class ProductProductionServiceImpl
 
         ProductInhouse src = requireActiveInhouse(bo.getSourceInhouseId());
         ProductInfo product = requireDeliveryProduct(bo.getProductId());
+        // 芹菜页的产品选择器与蔬菜打包页同一集合（都按 belong_type='vegetable' 拉），
+        // 所以配了 material_num 的果蔬 SKU 从这里也能选到 —— 不校验就成了绕开
+        // 「实称不得低于规则重量」的口子。真芹菜 SKU 不配 material_num，校验直接跳过、零影响。
+        validatePackMeasureRule(product, bo.getProductWeight(), bo.getAllowOverMeasure());
         requireInhouseEnough(src, bo.getProductWeight());
         requireLocation(bo.getLocationId());
         // D-2：目标库位盘点锁定中 → 拒绝入库
@@ -756,16 +812,20 @@ public class ProductProductionServiceImpl
      *
      * <p>邓博 row13：白条无论去分割间还是发货月台，都要从白条库正常出库（修「白条库出库记录缺失致库存不准」）。
      * {@code dest} 区分去向（{@code ship_dock} 发货月台 / {@code bar_cut} 白条分割）。
-     * {@code burn_id} 为空（外购 / 旧数据）→ 跳过库存行扣减、流水仍按 ear_no 写（优雅降级，不阻断领用）。</p>
+     * {@code burn_id} 为空（外购 / 旧数据）→ 跳过库存行扣减、流水仍按 ear_no 写（优雅降级，不阻断领用）。
+     * 邓博 row17：每个半只篮只能领用一次（inhouse pickup_status 乐观锁），领用扣重后篮内残量
+     * （入库重 − 领用重）无后续业务消费 → 同事务清零并写 loss 流水（{@link #drainBarResidualToLossFlow}）。</p>
      */
     private void writeWhiteBarOutFlow(ProductInhouse src, BigDecimal weight, String dest, Long userId) {
         Long warehouseId = src.getLocationId();
+        Long drainedBasketId = null;
         if (StringUtils.isNotBlank(src.getWhiteBarNo())) {
             LocationStock barStock = locationStockMapper.selectOne(
                 new LambdaQueryWrapper<LocationStock>()
                     .eq(LocationStock::getProductId, src.getProductId())
                     .eq(LocationStock::getWhiteBarNo, src.getWhiteBarNo())
                     .gt(LocationStock::getProductStock, BigDecimal.ZERO)
+                    .orderByAsc(LocationStock::getId)
                     .last("LIMIT 1"));
             if (barStock != null) {
                 int affected = locationStockMapper.deductStockById(barStock.getId(), weight, userId);
@@ -776,6 +836,7 @@ public class ProductProductionServiceImpl
                 if (warehouseId == null) {
                     warehouseId = barStock.getLocationId();
                 }
+                drainedBasketId = barStock.getId();
             }
         }
         if (warehouseId == null) {
@@ -799,6 +860,51 @@ public class ProductProductionServiceImpl
         out.setWhiteBarId(src.getWhiteBarId());
         out.setOperatorId(userId);
         stockFlowMapper.insert(out);
+        if (drainedBasketId != null) {
+            drainBarResidualToLossFlow(drainedBasketId, src.getProductId(), warehouseId,
+                src.getEarNo(), src.getWhiteBarNo(), src.getWhiteBarId(), userId);
+        }
+    }
+
+    /**
+     * 白条篮残量转损耗出库（邓博 row17）：领用扣重后复读该篮余量（= 入库重 − 领用重），残量 > 0 →
+     * 同事务二次扣减清零 + 写 {@code flow_type=loss} 出库流水留痕（防死残量永久躺在白条库存）。
+     *
+     * <p>仅白条篮（white_bar_no 命中的行）走本清零；耳号分割产出篮不适用。预冷损耗账
+     * {@code t_warehouse_loss_flow} 由领用链路单独记（{@link #writePrecoolLossOnBarOut} /
+     * cut 模块 writePickupPrecoolLoss），此处绝不写 loss_flow —— 再写 = 损耗总览双算。</p>
+     */
+    private void drainBarResidualToLossFlow(Long barStockId, Long productId, Long warehouseId,
+                                            String earNo, String whiteBarNo, Long whiteBarId, Long userId) {
+        LocationStock refreshed = locationStockMapper.selectById(barStockId);
+        if (refreshed == null || refreshed.getProductStock() == null
+            || refreshed.getProductStock().compareTo(BigDecimal.ZERO) <= 0) {
+            return;
+        }
+        BigDecimal residual = refreshed.getProductStock();
+        int drained = locationStockMapper.deductStockById(barStockId, residual, userId);
+        if (drained == 0) {
+            // 本事务已持该篮行锁，理论不可达；防御性跳过（残量留待盘点），不阻断出库主链
+            log.warn("白条篮残量清零失败 — stockId={} whiteBarNo={} residual={}", barStockId, whiteBarNo, residual);
+            return;
+        }
+        StockFlow loss = new StockFlow();
+        Map<String, Object> ctx = new HashMap<>(2);
+        ctx.put("ioCode", INOUT_OUT);
+        loss.setFlowNo(bizCodeGenerator.generate(BizCodeType.STOCK_FLOW_NO, ctx));
+        loss.setFlowDate(new Date());
+        loss.setProductId(productId);
+        loss.setWarehouseId(warehouseId);
+        loss.setInoutType(INOUT_OUT);
+        loss.setFlowType(FLOW_TYPE_LOSS);
+        loss.setChangeNum(residual.negate());
+        loss.setChangeQuantity(residual);
+        loss.setEarNo(earNo);
+        loss.setWhiteBarNo(whiteBarNo);
+        loss.setWhiteBarId(whiteBarId);
+        loss.setOperatorId(userId);
+        loss.setRemark("白条领用残量转损耗出库（入库重-领用重）");
+        stockFlowMapper.insert(loss);
     }
 
     /**
@@ -948,6 +1054,15 @@ public class ProductProductionServiceImpl
     public void markDamage(MarkDamageBo bo) {
         if (bo == null || bo.getId() == null) {
             throw new ServiceException("缺少生产记录 id");
+        }
+        ProductProduction production = baseMapper.selectById(bo.getId());
+        if (production == null) {
+            throw new ServiceException("生产记录不存在或已删除：" + bo.getId());
+        }
+        // admin row99：按 KG 计量的生产产品只能按重量管理，不能按“件”标损。
+        // 后端必须同步守门，避免隐藏按钮后仍可直接调用接口绕过业务规则。
+        if (isKgUnit(production.getProductUnit())) {
+            throw new ServiceException("KG 产品不支持记为损坏");
         }
         // 标损时间由后端取 now（前端不传，避免客户端时钟漂移）
         int affected = baseMapper.updateDamage(bo.getId(), bo.getEvidenceOssIds(), bo.getRemark(), new Date());
@@ -1329,6 +1444,65 @@ public class ProductProductionServiceImpl
     }
 
     /**
+     * row32：肉品打包来源池 = 同 (product_id, ear_no) 的今日仓库分割产 inhouse（与 {@link #listSourceForMeat}
+     * 同过滤：source=warehouse、material_id 非空、product_weight&gt;0、DATE(produce_date)=CURDATE()），FIFO 排序
+     * （produce_date、id 升序）。分多次领用同耳号 = 多条行；库存判定/扣减按池总重而非单条。空 → 兜底含 src 自身。
+     */
+    private List<ProductInhouse> resolveMeatSourcePool(ProductInhouse src) {
+        LambdaQueryWrapper<ProductInhouse> w = new LambdaQueryWrapper<ProductInhouse>()
+            .eq(ProductInhouse::getProductId, src.getProductId())
+            .eq(ProductInhouse::getEarNo, src.getEarNo())
+            .eq(ProductInhouse::getSource, SOURCE_WAREHOUSE)
+            .isNotNull(ProductInhouse::getMaterialId)
+            .gt(ProductInhouse::getProductWeight, BigDecimal.ZERO)
+            .apply("DATE(produce_date) = CURDATE()")
+            .orderByAsc(ProductInhouse::getProduceDate)
+            .orderByAsc(ProductInhouse::getId);
+        List<ProductInhouse> pool = productInhouseMapper.selectList(w);
+        return pool.isEmpty() ? List.of(src) : pool;
+    }
+
+    /** row32：来源池总余量 ≥ 本次打包实重，否则抛（口径：同耳号原材料领用总重，而非单行最大）。 */
+    private void requirePoolEnough(List<ProductInhouse> pool, BigDecimal packWeight) {
+        if (packWeight == null) {
+            return;
+        }
+        BigDecimal total = pool.stream()
+            .map(x -> x.getProductWeight() == null ? BigDecimal.ZERO : x.getProductWeight())
+            .reduce(BigDecimal.ZERO, BigDecimal::add);
+        if (total.compareTo(packWeight) < 0) {
+            throw new ServiceException("来源待打包库存不足：当前 " + total.stripTrailingZeros().toPlainString()
+                + "，本次打包 " + packWeight.stripTrailingZeros().toPlainString());
+        }
+    }
+
+    /** row32：按 FIFO 从来源池逐行扣减本次打包实重（复用 {@link #consumeInhouse} 单行部分扣/整行软删 + 行锁）。 */
+    private void consumePoolFifo(List<ProductInhouse> pool, BigDecimal packWeight) {
+        if (packWeight == null || packWeight.signum() <= 0) {
+            if (!pool.isEmpty()) {
+                productInhouseMapper.deleteById(pool.get(0).getId());
+            }
+            return;
+        }
+        BigDecimal remain = packWeight;
+        for (ProductInhouse row : pool) {
+            if (remain.signum() <= 0) {
+                break;
+            }
+            BigDecimal avail = row.getProductWeight() == null ? BigDecimal.ZERO : row.getProductWeight();
+            if (avail.signum() <= 0) {
+                continue;
+            }
+            BigDecimal take = avail.min(remain);
+            consumeInhouse(row, take);
+            remain = remain.subtract(take);
+        }
+        if (remain.signum() > 0) {
+            throw new ServiceException("来源待打包库存不足或已被占用，请刷新后重试");
+        }
+    }
+
+    /**
      * 回填打包产出记录的原材料溯源列（row161/162 修复：material_id/material_consume 打包时从未落库）。
      *
      * <p>读侧 mapper（{@link #fillJoinNames} 按 material_id 关联原料名/单位）与前端列早已就绪，
@@ -1454,6 +1628,89 @@ public class ProductProductionServiceImpl
         }
         log.info("[PACK-DEMAND-DEDUCT] 打包即扣需求 demandId={} productId={} storeId={} packQty={} affected={}",
             demand.getId(), productId, storeId, packQty, rows);
+    }
+
+    /**
+     * 产品单位是否为 KG（按重量计的散装产品，如筒子骨散装 kg）。
+     *
+     * <p>不区分大小写（客户明确要求），归一化后匹配 {@code kg} / {@code 公斤}；空 → false（按份数口径处理）。</p>
+     */
+    static boolean isKgUnit(String unit) {
+        if (unit == null) {
+            return false;
+        }
+        String s = unit.trim().toLowerCase();
+        return "kg".equals(s) || "公斤".equals(s);
+    }
+
+    /**
+     * KG 产品打包的门店需求履约（Kevin 2026-07-21）：镜像 {@link #fulfillDirectDemandOnPack} 的分流前置，
+     * 但扣减口径为「称重满足即把该需求扣满完成」而非恒扣 1 份。
+     *
+     * <ul>
+     *   <li>发送位置=礼盒（{@code deliver_dest='gift'}）：礼盒组件不扣直接需求，直接返回。</li>
+     *   <li>{@code storeId} 为空：抛 {@link ServiceException}（须选门店，与 {@link #fulfillDirectDemandOnPack} 一致）。</li>
+     *   <li>其余：调 {@link #deductKgDemandComplete}，称重 {@code weighedKg} &lt; 门店剩余需求重量 → 拦；否则扣满至 COMPLETED。</li>
+     * </ul>
+     *
+     * @param productId  打包目标产品 id（KG 单位）
+     * @param storeId    门店 id（可空）
+     * @param weighedKg  本次称重（肉品前端已 g÷1000 得 kg，与 demand_quantity 同量纲）
+     * @param deliverDest 发送位置
+     */
+    protected void fulfillKgDemandOnPack(Long productId, Long storeId, BigDecimal weighedKg, String deliverDest) {
+        if (DELIVER_DEST_GIFT.equals(deliverDest)) {
+            // 礼盒组件：不绑门店、不扣直接需求（履约在礼盒打包环节）
+            return;
+        }
+        if (storeId == null) {
+            throw new ServiceException("请选择门店");
+        }
+        deductKgDemandComplete(productId, storeId, weighedKg);
+    }
+
+    /**
+     * KG 产品扣满门店需求：取该门店最早未完成需求，称重必须 ≥ 剩余需求重量，满足则一次扣满至 COMPLETED。
+     *
+     * <p>剩余重量 {@code remain = demand_quantity − COALESCE(shipped_count, 0)}。称重 {@code weighedKg} 严格小于
+     * {@code remain} → 抛「重量未满足需求，请处理后再试」（客户规则：KG 产品只能重不能少，等于放行）。满足则以
+     * {@code remain} 累加 {@code shipped_count}，其 DB 端上界守卫（累加 ≤ demand_quantity）恒成立 → 需求扣满 COMPLETED。</p>
+     *
+     * <p>无匹配未完成需求 → log.warn 跳过、<b>不报错</b>（与 {@link #deductDemandOnPack} 一致，保证无 demand 的
+     * 场景/单测不阻塞主链路）。</p>
+     *
+     * @param productId 打包目标产品 id
+     * @param storeId   门店 id（非空）
+     * @param weighedKg 本次称重（kg）
+     */
+    protected void deductKgDemandComplete(Long productId, Long storeId, BigDecimal weighedKg) {
+        if (productId == null || weighedKg == null) {
+            return;
+        }
+        DemandManage demand = demandManageMapper.selectOldestUncompletedDemand(productId, storeId);
+        if (demand == null) {
+            log.warn("[PACK-DEMAND-DEDUCT-KG] KG 打包未匹配到未完成需求，跳过扣减 productId={} storeId={} weighedKg={}",
+                productId, storeId, weighedKg);
+            return;
+        }
+        BigDecimal demandQty = demand.getDemandQuantity() == null ? BigDecimal.ZERO : demand.getDemandQuantity();
+        BigDecimal shipped = demand.getShippedCount() == null ? BigDecimal.ZERO : demand.getShippedCount();
+        BigDecimal remain = demandQty.subtract(shipped);
+        if (remain.signum() <= 0) {
+            // 已满足（并发已扣满）：无需再扣，直接返回。
+            return;
+        }
+        if (weighedKg.compareTo(remain) < 0) {
+            throw new ServiceException("重量未满足需求，请处理后再试");
+        }
+        // 以剩余需求重量扣满：上界守卫（shipped + remain <= demand_quantity）恒成立 → 需求置 COMPLETED。
+        int rows = demandManageMapper.incrementShipped(demand.getId(), TENANT_V1, remain);
+        if (rows == 0) {
+            // 并发履约已把剩余量吃掉（或需求行已删）→ 拒绝本次打包，整事务回滚。
+            throw new ServiceException("需求已被并发履约，请刷新后重试");
+        }
+        log.info("[PACK-DEMAND-DEDUCT-KG] KG 打包扣满需求 demandId={} productId={} storeId={} weighedKg={} remain={} affected={}",
+            demand.getId(), productId, storeId, weighedKg, remain, rows);
     }
 
     /**
@@ -1650,6 +1907,48 @@ public class ProductProductionServiceImpl
     }
 
     /**
+     * 肉品、果蔬打包实称校验：{@code material_num} 作为单包规则重量（kg），
+     * 口径<b>非对称</b>——只能大于不能小于（邓博 2026-07-30 产品测试后确认）：
+     *
+     * <ul>
+     *   <li>实称 &lt; rule → <b>硬拒</b>，不给「继续」（短斤少两不能发出去）。异常文案<b>不带</b>
+     *       {@link #PACK_MEASURE_DEVIATION_MARKER}，前端匹配不到标识 → 普通报错、无二次确认；
+     *       {@code allowOverMeasure} 对这一支<b>无效</b>，绕不过去。</li>
+     *   <li>实称 ∈ [rule, rule×{@code 1.03}] → 直接通过。</li>
+     *   <li>实称 &gt; rule×{@code 1.03} → 只提示，走<b>二次确认</b>：抛带
+     *       {@link #PACK_MEASURE_DEVIATION_MARKER} 的异常，前端弹确认框后带
+     *       {@code allowOverMeasure=true} 重提即放行（多给一点可以发，硬拒会卡死打包台）。</li>
+     *   <li>未配规则（{@code material_num} 空 / ≤0）或实称为空 → 不校验。</li>
+     * </ul>
+     */
+    private void validatePackMeasureRule(ProductInfo product, BigDecimal actualWeight, Boolean allowOverMeasure) {
+        BigDecimal rule = product.getMaterialNum();
+        if (rule == null || rule.signum() <= 0 || actualWeight == null) {
+            return;
+        }
+        String actualTxt = actualWeight.stripTrailingZeros().toPlainString();
+        String ruleTxt = rule.stripTrailingZeros().toPlainString();
+        // ① 低于规则重量 -> 硬拒（allowOverMeasure 也放不过去）
+        if (actualWeight.compareTo(rule) < 0) {
+            throw new ServiceException("实称 " + actualTxt + "kg 低于打包规则 " + ruleTxt
+                + "kg，不能少于规则重量，请重新称重", 400);
+        }
+        // ② 落在 [rule, rule×1.03] -> 通过
+        if (actualWeight.compareTo(rule.multiply(PACK_MEASURE_UPPER_FACTOR)) <= 0) {
+            return;
+        }
+        // ③ 超出上限 -> 提示 + 二次确认可继续
+        if (Boolean.TRUE.equals(allowOverMeasure)) {
+            log.warn("[WMS-PACK-001] 实称超打包规则 {}%（操作员已确认放行）productId={} productCode={} productName={} actualWeight={}kg rule={}kg",
+                PACK_MEASURE_OVER_TOLERANCE_PERCENT, product.getId(), product.getProductId(), product.getProductName(),
+                actualTxt, ruleTxt);
+            return;
+        }
+        throw new ServiceException("实称 " + actualTxt + "kg 比打包规则 " + ruleTxt + "kg "
+            + PACK_MEASURE_DEVIATION_MARKER + "，确认继续？", 400);
+    }
+
+    /**
      * 聚合某产品当前库存合计（未软删行 SUM(product_stock)；无行返 BigDecimal.ZERO）。
      */
     protected BigDecimal sumProductStock(Long productId) {
@@ -1730,6 +2029,10 @@ public class ProductProductionServiceImpl
      * （StoreMapper 在 ruoyi-djs-common），plot_id → {@code t_plant_plot_info.plot_name}
      * （PlotInfoMapper 在 ruoyi-djs-plant，warehouse 模块已依赖）。原材料名称 / 单位：material_id →
      * {@code t_warehouse_product_info.product_name / product_unit}（同模块 ProductInfoMapper，一次 IN 查回填两列）。</p>
+     *
+     * <p>「是否到货确认」读侧派生（邓博 row15）：落库列 {@code is_arrival_confirm} 无写 1 入口（打包创建恒 0），
+     * 权威源 = 所属需求单 {@code t_warehouse_demand_manage.received_time}（admin 门店需求「确认到货」写入，
+     * 与门店需求 ARRIVED 状态同源）。demand_id 空（礼盒组件 / 未清点行等）保持落库值显「否」。</p>
      */
     private void fillJoinNames(List<ProductProductionVo> rows) {
         if (rows == null || rows.isEmpty()) {
@@ -1745,6 +2048,10 @@ public class ProductProductionServiceImpl
             .collect(Collectors.toSet());
         Set<Long> materialIds = rows.stream()
             .map(ProductProductionVo::getMaterialId)
+            .filter(Objects::nonNull)
+            .collect(Collectors.toSet());
+        Set<Long> demandIds = rows.stream()
+            .map(ProductProductionVo::getDemandId)
             .filter(Objects::nonNull)
             .collect(Collectors.toSet());
 
@@ -1774,6 +2081,13 @@ public class ProductProductionServiceImpl
         Map<Long, String> materialUnitMap = materialInfos.stream()
             .filter(pi -> pi.getProductUnit() != null)
             .collect(Collectors.toMap(ProductInfo::getId, ProductInfo::getProductUnit, (a, b) -> a));
+        // 到货确认派生源：demand_id → demand.received_time（一次 IN 查，只取已收货的，无 N+1）
+        Map<Long, LocalDateTime> demandReceivedMap = demandIds.isEmpty() ? Map.of()
+            : demandManageMapper.selectList(new LambdaQueryWrapper<DemandManage>()
+                    .select(DemandManage::getId, DemandManage::getReceivedTime)
+                    .in(DemandManage::getId, demandIds)
+                    .isNotNull(DemandManage::getReceivedTime))
+                .stream().collect(Collectors.toMap(DemandManage::getId, DemandManage::getReceivedTime, (a, b) -> a));
 
         for (ProductProductionVo vo : rows) {
             if (vo.getStoreId() != null) {
@@ -1786,6 +2100,13 @@ public class ProductProductionServiceImpl
             if (vo.getMaterialId() != null) {
                 vo.setMaterialName(materialNameMap.get(vo.getMaterialId()));
                 vo.setMaterialUnit(materialUnitMap.get(vo.getMaterialId()));
+            }
+            if (vo.getDemandId() != null) {
+                LocalDateTime received = demandReceivedMap.get(vo.getDemandId());
+                if (received != null) {
+                    vo.setIsArrivalConfirm(1);
+                    vo.setArrivalConfirmTime(Date.from(received.atZone(PACK_TODAY_ZONE).toInstant()));
+                }
             }
         }
     }

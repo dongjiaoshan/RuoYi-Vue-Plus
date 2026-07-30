@@ -115,9 +115,14 @@ public class ProductInfo extends TenantEntity {
     private Integer productAttr;
 
     /**
-     * 字典 {@code djs_product_workshop}：1=燎毛间 / 2=分割间 / 3=肉品打包 / 4=蔬菜打包。
+     * 字典 {@code djs_product_workshop} 生产车间，<b>CSV 多值</b>（逗号分隔无空格，如 {@code "3,5"}）：
+     * 1=燎毛间 / 2=分割间 / 3=肉品打包间 / 4=蔬菜打包间 / 5=门店打包间 / 6=其他产品打包间 / 7=礼盒打包间。
+     *
+     * <p>同一产品可归属多个车间（如猪肉成品「肉品打包间 + 门店打包间」两处都能生产）。
+     * 过滤一律用 {@link org.dromara.djs.warehouse.product.util.WorkshopMatcher#findInSet}，
+     * <b>禁止 {@code eq} / {@code in}</b>——CSV 下等值比较会漏掉多归属行。</p>
      */
-    private Integer productWorkshop;
+    private String productWorkshop;
 
     /**
      * 存储库位 ID 列表（逗号分隔；V2 改关联表）。
@@ -158,6 +163,12 @@ public class ProductInfo extends TenantEntity {
      * 字典 {@code djs_yes_no}：是否可外购 1=是 / 0=否。
      */
     private Integer isBuyOut;
+
+    /**
+     * 字典 {@code djs_yes_no}：是否原材料外售 1=是 / 0=否。
+     * 为「是」时该生产产品到店后，门店盘点/退回按其关联原材料（{@link #productMaterial}）口径处理。
+     */
+    private Integer isMaterialSold;
 
     /**
      * 软删标记（'0' 未删 / '1' 已删）。

@@ -105,6 +105,13 @@ public class PlantDetails extends TenantEntity {
     /** DENGBO-R21/R24 采摘活动销售分摊结算轮次：0=未结算(当前批次)，&gt;0=已随第 N 次录入完成参与分摊。 */
     private Integer pickSettleRound;
 
+    /**
+     * 是否移栽调整（PLT-TRANSPLANT-REDO-001）：0=否 / 1=是。
+     * 1 = 该明细由育苗移栽累计 100%（或手动结束移栽）自动落地生成，{@code plotId}=目标地块。
+     * 配合 {@code t_plant_farm_records} 移栽记录（源地块→目标地块+比例）可追溯来源。
+     */
+    private Integer transplantAdjusted;
+
     @TableLogic
     private String delFlag;
 

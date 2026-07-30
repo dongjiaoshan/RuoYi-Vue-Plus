@@ -35,6 +35,7 @@ import org.dromara.djs.warehouse.product.domain.vo.ProductProductionRecordVo;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
 import org.dromara.djs.warehouse.product.service.IProductDisplayNameResolver;
 import org.dromara.djs.warehouse.product.service.IProductInfoService;
+import org.dromara.djs.warehouse.product.util.WorkshopMatcher;
 import org.dromara.djs.warehouse.stock.domain.LocationStock;
 import org.dromara.djs.warehouse.stock.mapper.LocationStockMapper;
 import org.springframework.dao.DuplicateKeyException;
@@ -200,6 +201,7 @@ public class ProductInfoServiceImpl extends DjsBaseServiceImpl<ProductInfoMapper
         if (entity == null) {
             throw new ServiceException("产品入参转换失败");
         }
+        normalizeWorkshop(entity);
         applyDefaultsBeforeInsert(entity);
 
         // 商品图只来自「商品配置」表单手动上传（product_thumb / image_oss_id）；上传了则标记手动
@@ -234,6 +236,7 @@ public class ProductInfoServiceImpl extends DjsBaseServiceImpl<ProductInfoMapper
         if (entity == null) {
             throw new ServiceException("产品入参转换失败");
         }
+        normalizeWorkshop(entity);
         // 编辑端点不允许改 productId / productType
         entity.setProductId(exists.getProductId());
         entity.setProductType(exists.getProductType());
@@ -292,6 +295,17 @@ public class ProductInfoServiceImpl extends DjsBaseServiceImpl<ProductInfoMapper
     }
 
     /**
+     * 归一化生产车间 CSV（去空格 / 去空段 / 去重），写入路径统一调用。
+     *
+     * <p>带空格的段会让 {@code FIND_IN_SET} 静默不命中（{@code FIND_IN_SET('5','3, 5')} = 0），
+     * 产品会从燎毛 / 分割 / 门店打包的取数里凭空消失且不报错。放在 {@link #toEntity} 之外，
+     * 是因为该钩子在单测里被整体 override，归一化藏在里面会测不到。</p>
+     */
+    private void normalizeWorkshop(ProductInfo entity) {
+        entity.setProductWorkshop(WorkshopMatcher.normalize(entity.getProductWorkshop()));
+    }
+
+    /**
      * 共表 3 形态差异化校验（写入路径前置）。
      */
     private void validateBoBeforeWrite(ProductInfoBo bo) {
@@ -322,7 +336,7 @@ public class ProductInfoServiceImpl extends DjsBaseServiceImpl<ProductInfoMapper
     }
 
     /**
-     * 插入前默认值兜底：productStatus 默认 0（正常）；isDelivery 默认 1；isBuyOut 默认 0。
+     * 插入前默认值兜底：productStatus 默认 0（正常）；isDelivery 默认 1；isBuyOut 默认 0；isMaterialSold 默认 0。
      */
     private void applyDefaultsBeforeInsert(ProductInfo entity) {
         if (entity.getProductStatus() == null) {
@@ -333,6 +347,9 @@ public class ProductInfoServiceImpl extends DjsBaseServiceImpl<ProductInfoMapper
         }
         if (entity.getIsBuyOut() == null) {
             entity.setIsBuyOut(0);
+        }
+        if (entity.getIsMaterialSold() == null) {
+            entity.setIsMaterialSold(0);
         }
     }
 
@@ -362,9 +379,6 @@ public class ProductInfoServiceImpl extends DjsBaseServiceImpl<ProductInfoMapper
             .eq(StringUtils.isNotBlank(query.getBuyClass()), ProductInfo::getBuyClass, query.getBuyClass())
             // 是否支持外购（原型「是否支持外购」筛选项）
             .eq(query.getIsBuyOut() != null, ProductInfo::getIsBuyOut, query.getIsBuyOut())
-            // 生产车间：R70 多选 productWorkshops 落 IN（...）；否则退回单值 productWorkshop
-            .in(CollUtil.isNotEmpty(query.getProductWorkshops()), ProductInfo::getProductWorkshop, query.getProductWorkshops())
-            .eq(CollUtil.isEmpty(query.getProductWorkshops()) && query.getProductWorkshop() != null, ProductInfo::getProductWorkshop, query.getProductWorkshop())
             // 产品属性（打包目标成品 product_attr=1 / 原材料=2，取数逻辑 doc#13）
             .eq(query.getProductAttr() != null, ProductInfo::getProductAttr, query.getProductAttr())
             // 关联原材料（自引用 FK → product_info.id 雪花 id）
@@ -377,10 +391,18 @@ public class ProductInfoServiceImpl extends DjsBaseServiceImpl<ProductInfoMapper
             .eq(query.getProductStatus() != null, ProductInfo::getProductStatus, query.getProductStatus())
             .eq(query.getUpdateBy() != null, ProductInfo::getUpdateBy, query.getUpdateBy())
             .ge(query.getUpdateBeginTime() != null, ProductInfo::getUpdateTime, query.getUpdateBeginTime())
-            .le(query.getUpdateEndTime() != null, ProductInfo::getUpdateTime, query.getUpdateEndTime())
-            // row22：产品配置列表按更新时间倒序（id 兜底）
-            .orderByDesc(ProductInfo::getUpdateTime).orderByDesc(ProductInfo::getId);
-        return wrapper;
+            .le(query.getUpdateEndTime() != null, ProductInfo::getUpdateTime, query.getUpdateEndTime());
+
+        // 生产车间（CSV 多归属）：多选 productWorkshops 落 OR 连接的 FIND_IN_SET 组（命中任一即入选）；
+        // 否则退回单值 productWorkshop。列是 CSV，禁 eq/in——'3,5' 既不等于 '3' 也不等于 '5'。
+        if (CollUtil.isNotEmpty(query.getProductWorkshops())) {
+            WorkshopMatcher.matchAny(wrapper, query.getProductWorkshops());
+        } else {
+            WorkshopMatcher.match(wrapper, query.getProductWorkshop());
+        }
+
+        // row22：产品配置列表按更新时间倒序（id 兜底，update_time 相同时稳定排序）
+        return wrapper.orderByDesc(ProductInfo::getUpdateTime).orderByDesc(ProductInfo::getId);
     }
 
     /**

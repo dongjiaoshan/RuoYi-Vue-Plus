@@ -11,11 +11,11 @@ import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.satoken.utils.LoginHelper;
 import org.dromara.djs.common.encoder.BizCodeType;
 import org.dromara.djs.common.encoder.IBizCodeGenerator;
+import org.dromara.djs.common.image.service.ImageUrlResolver;
 import org.dromara.djs.common.supplier.domain.Supplier;
 import org.dromara.djs.common.supplier.mapper.SupplierMapper;
 import org.dromara.djs.warehouse.check.service.IStockCheckService;
-import org.dromara.djs.warehouse.cross.domain.BarInfo;
-import org.dromara.djs.warehouse.cross.mapper.BarInfoMapper;
+import org.dromara.djs.warehouse.cut.service.IPigCutRecordService;
 import org.dromara.djs.warehouse.flow.domain.StockFlow;
 import org.dromara.djs.warehouse.flow.mapper.StockFlowMapper;
 import org.dromara.djs.warehouse.loss.service.ILossFlowService;
@@ -43,14 +43,16 @@ import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
+import java.util.stream.Collectors;
 
 /**
  * 库存盘点自助子系统 Service 实现（SELFCHECK）。
  *
  * <h3>读端点</h3>
  * <p>聚合查询委托 {@link StockSelfMapper}（各库入口 / 库详情 / 待盘点 / 盘点记录 / 进出库流水）；
- * 白条库逐条走 {@link BarInfoMapper} 取在库白条（{@code status IN ('in_stock','pending_cut')}）
- * 后在 service 格式化排酸时长 / 入库时间。</p>
+ * 白条库列表直接委托 {@link IPigCutRecordService#queryPickupItems()}（与 admin 分割白条领用同一取数：
+ * 按半只/半扇逐燎毛产出行，旧数据回落整只兜底卡），service 只做 VO 映射 + 排酸时长（now − 半只入库）格式化。</p>
  *
  * <h3>写端点（入库 / 出库 / 盘点）</h3>
  * <ul>
@@ -93,38 +95,41 @@ public class StockSelfServiceImpl implements IStockSelfService {
     private static final int RESULT_LOSS = 3;
 
     /**
-     * 白条库逻辑产品名（bar_info 无产品主数据，固定展示名）。
+     * 产品缩略图 IMG-LIB-001 分类键（belongType 当前不参与 URL 解析，仅保留调用签名一致性）。
      */
-    private static final String WHITE_BAR_PRODUCT_NAME = "白条(整只)";
+    private static final String PRODUCT_BELONG_TYPE = "product";
 
     private final StockSelfMapper stockSelfMapper;
     private final LocationStockMapper locationStockMapper;
     private final StockFlowMapper stockFlowMapper;
     private final ProductInfoMapper productInfoMapper;
-    private final BarInfoMapper barInfoMapper;
+    private final IPigCutRecordService pigCutService;
     private final SupplierMapper supplierMapper;
     private final IBizCodeGenerator bizCodeGenerator;
     private final IStockCheckService stockCheckService;
     private final ILossFlowService lossFlowService;
+    private final ImageUrlResolver imageUrlResolver;
 
     public StockSelfServiceImpl(StockSelfMapper stockSelfMapper,
                                 LocationStockMapper locationStockMapper,
                                 StockFlowMapper stockFlowMapper,
                                 ProductInfoMapper productInfoMapper,
-                                BarInfoMapper barInfoMapper,
+                                IPigCutRecordService pigCutService,
                                 SupplierMapper supplierMapper,
                                 IBizCodeGenerator bizCodeGenerator,
                                 IStockCheckService stockCheckService,
-                                ILossFlowService lossFlowService) {
+                                ILossFlowService lossFlowService,
+                                ImageUrlResolver imageUrlResolver) {
         this.stockSelfMapper = stockSelfMapper;
         this.locationStockMapper = locationStockMapper;
         this.stockFlowMapper = stockFlowMapper;
         this.productInfoMapper = productInfoMapper;
-        this.barInfoMapper = barInfoMapper;
+        this.pigCutService = pigCutService;
         this.supplierMapper = supplierMapper;
         this.bizCodeGenerator = bizCodeGenerator;
         this.stockCheckService = stockCheckService;
         this.lossFlowService = lossFlowService;
+        this.imageUrlResolver = imageUrlResolver;
     }
 
     // ============================ 读端点 ============================
@@ -137,28 +142,78 @@ public class StockSelfServiceImpl implements IStockSelfService {
     @Override
     public List<StoreProductVo> listStoreProducts(String locationId, String keyword, String sort) {
         Long locId = requireLocationId(locationId);
-        return stockSelfMapper.selectStoreProducts(locId, trimToNull(keyword), trimToNull(sort));
+        List<StoreProductVo> vos = stockSelfMapper.selectStoreProducts(locId, trimToNull(keyword), trimToNull(sort));
+        // 114.4：产品卡缩略图（mapper SELECT 不取图，thumbUrl 恒 null → 前端全灰框）。
+        //   按 productId 批量取 ProductInfo，COALESCE(product_thumb, image_oss_id) → OSS URL 回填。
+        fillProductThumb(vos);
+        return vos;
+    }
+
+    /**
+     * 批量回填产品缩略图 public URL（114.4）：{@code COALESCE(product_thumb, image_oss_id)} → OSS URL，禁 N+1。
+     *
+     * <p>一次 {@code selectByIds} 取产品图 ossId，再一次 {@link ImageUrlResolver#resolveList} 转 URL
+     * （与 {@code PigBurnRecordServiceImpl} 产品图解析范式一致）。取不到图的位置留 null，前端占位兜底。</p>
+     */
+    private void fillProductThumb(List<StoreProductVo> vos) {
+        if (vos == null || vos.isEmpty()) {
+            return;
+        }
+        List<Long> productIds = vos.stream().map(StoreProductVo::getProductId)
+            .filter(Objects::nonNull).distinct().collect(Collectors.toList());
+        if (productIds.isEmpty()) {
+            return;
+        }
+        Map<Long, String> ossIdMap = new HashMap<>();
+        for (ProductInfo p : productInfoMapper.selectByIds(productIds)) {
+            if (p.getId() != null) {
+                ossIdMap.put(p.getId(), resolveProductImageOssId(p));
+            }
+        }
+        List<ImageUrlResolver.Item> items = vos.stream()
+            .map(v -> new ImageUrlResolver.Item(
+                v.getProductId() == null ? null : ossIdMap.get(v.getProductId()), PRODUCT_BELONG_TYPE))
+            .collect(Collectors.toList());
+        List<String> urls = imageUrlResolver.resolveList(items);
+        if (urls.size() != vos.size()) {
+            return;
+        }
+        for (int i = 0; i < vos.size(); i++) {
+            vos.get(i).setThumbUrl(urls.get(i));
+        }
+    }
+
+    /**
+     * 产品卡展示用 ossId 优先级：用户在 admin 上传的缩略图 {@code product_thumb} 优先，退回自动匹配的
+     * {@code image_oss_id}（两者都空交 resolver 走默认图兜底）。与 {@code PigBurnRecordServiceImpl} 同口径。
+     */
+    private static String resolveProductImageOssId(ProductInfo p) {
+        return StringUtils.isNotBlank(p.getProductThumb()) ? p.getProductThumb() : p.getImageOssId();
     }
 
     @Override
     public List<WhiteBarStockVo> listWhiteBarStocks(String locationId) {
-        // locationId 不参与过滤（白条是逻辑库，bar_info 无 location_id 列）；接收参数仅保契约一致
-        List<BarInfo> bars = barInfoMapper.selectList(
-            new LambdaQueryWrapper<BarInfo>()
-                .in(BarInfo::getStatus, List.of("in_stock", "pending_cut"))
-                .eq(BarInfo::getDelFlag, "0")
-                .orderByDesc(BarInfo::getInTime));
+        // 135：白条库取数「完全对齐」admin 分割白条领用菜单——直接委托同一 queryPickupItems()（按半只/半扇
+        //   逐燎毛产出行出行；旧数据无产出行的白条回落整只兜底卡）。故白条库显示的即半只，含 in_stock/pending_cut/
+        //   cutting 三态未领行 + FIFO LIMIT 50，与领用 picker 逐行一致（测试原话「取数逻辑调整成和后台一样」）。
+        // locationId 不参与过滤（白条是逻辑库，bar_info 无 location_id 列）；接收参数仅保契约一致。
         SimpleDateFormat mdhm = new SimpleDateFormat("MM-dd HH:mm");
-        return bars.stream().map(b -> {
+        long now = System.currentTimeMillis();
+        return pigCutService.queryPickupItems().stream().map(it -> {
             WhiteBarStockVo vo = new WhiteBarStockVo();
-            vo.setId(b.getId());
-            vo.setProductName(WHITE_BAR_PRODUCT_NAME);
-            vo.setEarNo(b.getEarNo());
-            vo.setInboundTime(b.getInTime() == null ? null : mdhm.format(b.getInTime()));
-            vo.setAcidDischargeDuration(formatAcidDuration(b.getAcidRemoveTime()));
+            // 半只行用 inhouseId 保 :key 唯一；整只兜底行(inhouseId=null)回落 barInfoId
+            vo.setId(it.getInhouseId() != null ? it.getInhouseId() : it.getBarInfoId());
+            vo.setProductName(it.getProductName());
+            // 外购无耳号 → 回落白条标识号 mark_id（与 queryPickupItems 同口径）
+            vo.setEarNo(StringUtils.isNotBlank(it.getEarNo()) ? it.getEarNo() : it.getMarkId());
+            vo.setInboundTime(it.getInTime() == null ? null : mdhm.format(it.getInTime()));
+            // 在库未领半只均排酸进行中：now − 入库(半只 produce_time)；BarPickupItemVo 无 acid_remove_time 列
+            Integer mins = it.getInTime() == null ? null : (int) Math.max(0L, (now - it.getInTime().getTime()) / 60_000L);
+            vo.setAcidDischargeDuration(formatAcidDuration(mins));
             // bar_info 无门店字段，固定 null
             vo.setDesignatedStore(null);
-            vo.setInboundWeight(b.getInWeight());
+            // 半只领用重（productWeight）；整只兜底回落上市/入库重
+            vo.setInboundWeight(it.getProductWeight());
             return vo;
         }).toList();
     }

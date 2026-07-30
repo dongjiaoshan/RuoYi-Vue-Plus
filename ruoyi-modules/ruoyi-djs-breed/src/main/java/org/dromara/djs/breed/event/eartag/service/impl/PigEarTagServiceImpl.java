@@ -28,6 +28,7 @@ import org.dromara.djs.breed.event.eartag.mapper.PigPigletnoMapper;
 import org.dromara.djs.breed.event.eartag.service.IPigEarTagService;
 import org.dromara.djs.breed.event.farrow.domain.PigFarrow;
 import org.dromara.djs.breed.event.farrow.mapper.PigFarrowMapper;
+import org.dromara.djs.breed.farm.service.PenCountUpdater;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -76,6 +77,7 @@ public class PigEarTagServiceImpl implements IPigEarTagService {
     private final PigFarrowMapper farrowMapper;
     private final EarNoAllocator earNoAllocator;
     private final BreedConfigMapper breedConfigMapper;
+    private final PenCountUpdater penCountUpdater;
 
     @Override
     public FarrowEarTagStatVo statByFarrow(Long farrowId) {
@@ -218,6 +220,10 @@ public class PigEarTagServiceImpl implements IPigEarTagService {
 
             result.add(PigletEarTagVo.from(piglet, log));
         }
+
+        // 仔猪落母猪所在栏 → 该栏在场头数 += 本批头数（FIX-BRD-PENCOUNT-001；断奶转栏 / 死淘时按
+        // TRANSFER / 终止事件对应减回，两侧配对才不漂）。母猪只落栋舍未落栏时 penId 为 null → 空操作。
+        penCountUpdater.increase(mother.getPenId(), newCount);
 
         // R159：耳标提交后同步分娩表该窝的产仔总重 total_weight + 平均出生重 avg_weight
         // （按本窝全部已标仔猪的出生重累计，含本批 + 历史批；同事务可见刚 INSERT 的行）。

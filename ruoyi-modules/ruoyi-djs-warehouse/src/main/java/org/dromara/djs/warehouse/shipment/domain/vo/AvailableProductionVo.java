@@ -51,10 +51,22 @@ public class AvailableProductionVo implements Serializable {
     private String productUnit;
 
     /**
-     * 原材料计量量（service 层 JOIN product_info.material_num 填充）：如鸡蛋一份=42 枚则 material_num=42。
-     * material_num>0 的产品 produceQuantity 存的是「份数×material_num」的重量，mp 还原份数 = produceQuantity ÷ material_num。
+     * 单份规格 / 原材料计量量（service 层 JOIN product_info.material_num 填充）：如鸡蛋一份=42 枚则 material_num=42、
+     * 果蔬 0.25kg 一包则 material_num=0.25。仅作规格展示与打包称重容差校验的基准。
+     *
+     * <p>不参与「生产量」计算——生产量按 {@link #productUnit} 定：kg 单位取 produceQuantity 公斤数，
+     * 其余单位每条打包记录计 1 件（Kevin 2026-07-29）。</p>
      */
     private BigDecimal materialNum;
+
+    /**
+     * 原材料计量单位（service 层按 product_info.product_material 自引用 FK 查关联原材料的 product_unit 填充）：
+     * kg / 份 / 枚 等。product_material 为 NULL（自身即原材料 / 无关联）时回落自身 product_unit。
+     *
+     * <p>mp 发货清单「产品总重」是否展示以此判定——如干羊肚菌礼盒（product_unit='盒'、原材料=干货 unit='kg'）
+     * 材料单位为 kg，鸡蛋礼盒（原材料 unit='枚'）不显。区别于 {@link #productUnit}（产品自身单位，礼盒='盒'）。</p>
+     */
+    private String materialUnit;
 
     private Long produceLocation;
 

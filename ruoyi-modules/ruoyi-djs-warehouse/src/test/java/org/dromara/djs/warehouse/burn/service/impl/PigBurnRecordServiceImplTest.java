@@ -54,8 +54,9 @@ import static org.mockito.Mockito.when;
  *       + bar 推进 in_stock（乐观锁回填 in_weight）</li>
  *   <li>白条状态不符：bar status=in_stock → 抛 "白条状态不符" + 任何写入不发生</li>
  *   <li>白条不存在：selectById 返 null → 抛 "白条不存在"</li>
- *   <li>无效产品类型：productId 不在标准白条类型集 → 抛 "无效的白条产品类型"</li>
+ *   <li>无效产品类型：productId 不在燎毛间可入库产品集 → 抛 "无效的白条产品类型"</li>
  *   <li>到场重量小于入库合计 → 抛 "入库重量合计不能大于到场重量"</li>
+ *   <li>finishBurn 半只约束：白条本体（belong_type=white_bar）须集齐 2 扇；只录猪头等非白条原材料不受约束</li>
  * </ol>
  *
  * <p>子类化避开 MapStruct convert（无 Spring 上下文）+ stub generateBurnId 固定值。</p>
@@ -100,7 +101,9 @@ class PigBurnRecordServiceImplTest {
     private static final Long BAR_ID = 5001L;
     private static final Long LOCATION_ID = 90001L;
     private static final Long OPERATOR_ID = 9001L;
-    private static final Long TYPE_WHOLE = 100000000000000001L;
+    /** 白条本体「半扇」（belong_type=white_bar → productType=half，须集齐 2 扇）。 */
+    private static final Long TYPE_HALF = 100000000000000001L;
+    /** 燎毛间非白条原材料「猪头」（belong_type=pork → productType=null，不限次）。 */
     private static final Long TYPE_HEAD = 2059526196453937154L;
 
     @BeforeAll
@@ -162,23 +165,27 @@ class PigBurnRecordServiceImplTest {
         return bar;
     }
 
+    /**
+     * 燎毛入库可选产品（= 燎毛间 + 原材料 + 正常态）：甲方主数据里白条产品只有「半扇」一条，
+     * 猪头 / 猪脚归猪肉产品（belong_type=pork），同样配在燎毛间。
+     */
     private List<ProductInfo> sampleTypes() {
         List<ProductInfo> list = new ArrayList<>();
-        ProductInfo whole = new ProductInfo();
-        whole.setId(TYPE_WHOLE);
-        whole.setProductId("PROD-WHITE-BAR-01");
-        whole.setProductName("白条·整只");
-        whole.setProductType(1);
-        whole.setProductUnit("kg");
-        whole.setBelongType("white_bar");
-        list.add(whole);
+        ProductInfo half = new ProductInfo();
+        half.setId(TYPE_HALF);
+        half.setProductId("Y00142");
+        half.setProductName("半扇");
+        half.setProductType(1);
+        half.setProductUnit("kg");
+        half.setBelongType("white_bar");
+        list.add(half);
         ProductInfo head = new ProductInfo();
         head.setId(TYPE_HEAD);
-        head.setProductId("PROD-WHITE-BAR-02");
-        head.setProductName("白条·猪头");
+        head.setProductId("Y00116");
+        head.setProductName("猪头");
         head.setProductType(1);
         head.setProductUnit("kg");
-        head.setBelongType("white_bar");
+        head.setBelongType("pork");
         list.add(head);
         return list;
     }
@@ -191,7 +198,7 @@ class PigBurnRecordServiceImplTest {
         bo.setLocationId(LOCATION_ID);
         bo.setOperatorId(OPERATOR_ID);
         PigBurnRecordBo.ProductTypeItem i1 = new PigBurnRecordBo.ProductTypeItem();
-        i1.setProductId(TYPE_WHOLE);
+        i1.setProductId(TYPE_HALF);
         i1.setWeight(new BigDecimal("80.300"));
         PigBurnRecordBo.ProductTypeItem i2 = new PigBurnRecordBo.ProductTypeItem();
         i2.setProductId(TYPE_HEAD);
@@ -341,11 +348,11 @@ class PigBurnRecordServiceImplTest {
 
     @SuppressWarnings("unchecked")
     @Test
-    @DisplayName("finishBurn: happy(整只 80.3 ≤ 出栏重 110.5) → bar singing→in_stock 回填 in_weight 合计")
+    @DisplayName("finishBurn: happy(半扇 2 扇合计 80.3 ≤ 头皮肉重 110.5) → bar singing→in_stock 回填 in_weight 合计")
     void testFinish_Happy() {
         when(barInfoMapper.selectById(BAR_ID)).thenReturn(sampleBarWithMarketWeight("singing", "110.500"));
         when(productInhouseMapper.selectList(any(LambdaQueryWrapper.class)))
-            .thenReturn(List.of(inhouse(TYPE_WHOLE, "80.300")));
+            .thenReturn(List.of(inhouse(TYPE_HALF, "40.150"), inhouse(TYPE_HALF, "40.150")));
         when(productInfoMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(sampleTypes());
         when(barInfoMapper.updateStatusToInStock(eq(BAR_ID), any(BigDecimal.class), any(Date.class), eq(OPERATOR_ID)))
             .thenReturn(1);
@@ -362,7 +369,7 @@ class PigBurnRecordServiceImplTest {
     void testFinish_TotalExceedsMarketing() {
         when(barInfoMapper.selectById(BAR_ID)).thenReturn(sampleBarWithMarketWeight("singing", "100.000"));
         when(productInhouseMapper.selectList(any(LambdaQueryWrapper.class)))
-            .thenReturn(List.of(inhouse(TYPE_WHOLE, "120.000")));
+            .thenReturn(List.of(inhouse(TYPE_HALF, "60.000"), inhouse(TYPE_HALF, "60.000")));
         when(productInfoMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(sampleTypes());
 
         assertThatThrownBy(() -> service.finishBurn(BAR_ID, OPERATOR_ID))
@@ -374,27 +381,35 @@ class PigBurnRecordServiceImplTest {
 
     @SuppressWarnings("unchecked")
     @Test
-    @DisplayName("finishBurn: 整只 + 半只同时入库 → 抛 整只与半只不能同时入库")
-    void testFinish_WholeHalfMutex() {
+    @DisplayName("finishBurn: 半扇只录 1 扇 → 抛 半只需录入 2 个")
+    void testFinish_HalfNotPaired() {
         when(barInfoMapper.selectById(BAR_ID)).thenReturn(sampleBarWithMarketWeight("singing", "200.000"));
-        // sampleTypes 缺半只类型 → 补 PROD-WHITE-BAR-04
-        List<ProductInfo> types = sampleTypes();
-        ProductInfo half = new ProductInfo();
-        Long typeHalf = 100000000000000004L;
-        half.setId(typeHalf);
-        half.setProductId("PROD-WHITE-BAR-04");
-        half.setProductName("白条·半只");
-        half.setBelongType("white_bar");
-        types.add(half);
-        when(productInfoMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(types);
+        when(productInfoMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(sampleTypes());
         when(productInhouseMapper.selectList(any(LambdaQueryWrapper.class)))
-            .thenReturn(List.of(inhouse(TYPE_WHOLE, "50.000"), inhouse(typeHalf, "25.000")));
+            .thenReturn(List.of(inhouse(TYPE_HALF, "50.000"), inhouse(TYPE_HEAD, "5.000")));
 
         assertThatThrownBy(() -> service.finishBurn(BAR_ID, OPERATOR_ID))
             .isInstanceOf(ServiceException.class)
-            .hasMessageContaining("整只与半只不能同时入库");
+            .hasMessageContaining("半只需录入 2 个");
 
         verify(barInfoMapper, never()).updateStatusToInStock(any(), any(), any(), any());
+    }
+
+    @SuppressWarnings("unchecked")
+    @Test
+    @DisplayName("finishBurn: 只录非白条燎毛间原材料(猪头) → 不受半只约束，正常推进 in_stock")
+    void testFinish_NonWhiteBarOnly() {
+        when(barInfoMapper.selectById(BAR_ID)).thenReturn(sampleBarWithMarketWeight("singing", "110.500"));
+        when(productInfoMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(sampleTypes());
+        when(productInhouseMapper.selectList(any(LambdaQueryWrapper.class)))
+            .thenReturn(List.of(inhouse(TYPE_HEAD, "5.200")));
+        when(barInfoMapper.updateStatusToInStock(eq(BAR_ID), any(BigDecimal.class), any(Date.class), eq(OPERATOR_ID)))
+            .thenReturn(1);
+
+        service.finishBurn(BAR_ID, OPERATOR_ID);
+
+        verify(barInfoMapper, times(1))
+            .updateStatusToInStock(eq(BAR_ID), eq(new BigDecimal("5.200")), any(Date.class), eq(OPERATOR_ID));
     }
 
     @Test

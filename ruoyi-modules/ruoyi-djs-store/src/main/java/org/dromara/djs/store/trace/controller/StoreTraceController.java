@@ -62,8 +62,8 @@ public class StoreTraceController extends BaseController {
     }
 
     /**
-     * 门店猪肉打包可选产品列表（docx 取数：workshop=门店打包间(5) 且 product_material ∈ 字典
-     * {@code djs_pork_return_product}）。前端 PorkTracePanel 产品卡数据源；空则前端回退部位字典。
+     * 门店猪肉打包可选产品列表（取数：{@code product_workshop=门店打包间(5)} + 生产产品 + 猪肉业态）。
+     * 前端 PorkTracePanel 产品卡数据源；空则前端回退部位字典。
      */
     @SaCheckPermission("djs:store:trace:gen")
     @GetMapping("/products")

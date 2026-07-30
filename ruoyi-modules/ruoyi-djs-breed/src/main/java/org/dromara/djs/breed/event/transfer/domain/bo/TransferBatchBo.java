@@ -28,10 +28,10 @@ public class TransferBatchBo implements Serializable {
     private static final long serialVersionUID = 1L;
 
     /** 待转移猪只耳号列表（mp 端多选拿到，至少 1 头；snowflake 精度走 string，service 入口逐头 resolve pigId）。 */
-    @NotEmpty(message = "transfer.batch.empty")
+    @NotEmpty(message = "{transfer.batch.empty}")
     private List<String> earNos;
 
-    @NotNull(message = "transfer.date.required")
+    @NotNull(message = "{transfer.date.required}")
     private LocalDateTime transferDate;
 
     /** 目标栋舍 ID（与 newBarnCode 二选一；admin 端可直传 id）。 */
@@ -47,12 +47,12 @@ public class TransferBatchBo implements Serializable {
     private String newPenCode;
 
     /** 转移原因（可选，整批共用）。 */
-    @Size(max = 64, message = "transfer.reason.size")
+    @Size(max = 64, message = "{transfer.reason.size}")
     private String transferReason;
 
     /** 转移人员 userId（整批共用，EmployeePicker 选中，snowflake；可空，空则回落登录用户）。 */
     private String operator;
 
-    @Size(max = 500, message = "transfer.remark.size")
+    @Size(max = 500, message = "{transfer.remark.size}")
     private String remark;
 }

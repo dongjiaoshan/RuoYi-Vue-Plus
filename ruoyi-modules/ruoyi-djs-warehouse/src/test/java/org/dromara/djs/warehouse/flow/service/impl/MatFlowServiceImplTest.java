@@ -147,6 +147,9 @@ class MatFlowServiceImplTest {
         // happy 用例默认「今日已领用过」，不被「未领用即操作」硬拦；专测该守卫的用例可另行覆盖返 0。
         when(stockFlowMapper.sumTodayNetPickedByBasket(any(), any(), any(), any(), any()))
             .thenReturn(new BigDecimal("999999"));
+        // 猪肉 null-ear 组篮（admin 聚合行 / mp 退货卡）的组级净额同理默认充足；专测该守卫的用例另行覆盖
+        when(stockFlowMapper.sumTodayNetPickedByNullEarGroup(any()))
+            .thenReturn(new BigDecimal("999999"));
     }
 
     @AfterEach
@@ -932,6 +935,130 @@ class MatFlowServiceImplTest {
         verify(productInhouseMapper, times(2)).insert(any(ProductInhouse.class));
     }
 
+    /** 猪肉 null-ear 组篮 stub：ear_no / plot_id 全空 + product belong_type=pork（admin 聚合行 / mp 退货卡语义）。 */
+    private LocationStock nullEarPorkBasket(Long id, Long locId, String whiteBarNo, String stock) {
+        LocationStock b = new LocationStock();
+        b.setId(id);
+        b.setLocationId(locId);
+        b.setProductId(PRODUCT_ID);
+        b.setEarNo(null);
+        b.setWhiteBarNo(whiteBarNo);
+        b.setPlotId(null);
+        b.setProductName("筒子骨");
+        b.setProductUnit("kg");
+        b.setProductStock(new BigDecimal(stock));
+        b.setDelFlag("0");
+        return b;
+    }
+
+    private ProductInfo porkProduct(String name) {
+        ProductInfo product = new ProductInfo();
+        product.setId(PRODUCT_ID);
+        product.setProductName(name);
+        product.setProductUnit("kg");
+        product.setProductType(1);
+        product.setBelongType("pork");
+        return product;
+    }
+
+    @Test
+    @DisplayName("pickByBatch 猪肉 null-ear 组篮跨库位 FIFO：2 篮(0.2@库位A + 4.0@库位B) 领 4.2 → 2 次 deductStockById + 2 行 inhouse(白条号/库位逐篮带上)，首篮小库存不再锁死整组")
+    void testPickByBatch_PorkNullEarGroup_CrossLocationFifo() {
+        Long batchId = 90021L;
+        Long locA = 7001L;
+        Long locB = 7002L;
+        LocationStock b1 = nullEarPorkBasket(batchId, locA, "BAR-A", "0.2");
+        LocationStock b2 = nullEarPorkBasket(90022L, locB, "BAR-B", "4.0");
+        when(locationStockMapper.selectById(batchId)).thenReturn(b1);
+        when(locationStockMapper.selectList(any())).thenReturn(java.util.List.of(b1, b2));
+        when(productInfoMapper.selectById(PRODUCT_ID)).thenReturn(porkProduct("筒子骨"));
+        when(locationStockMapper.deductStockById(anyLong(), any(BigDecimal.class), eq(USER_ID))).thenReturn(1);
+
+        MatPickBo bo = new MatPickBo();
+        bo.setBatchId(batchId);
+        bo.setProductId(PRODUCT_ID);
+        bo.setQuantity(new BigDecimal("4.2"));
+        bo.setStockOutDest("门店发货");
+        service.pick(bo);
+
+        // 1 行 pick_out 流水：组标签 ear_no 空、white_bar / warehouse 取首篮、量=总申请量
+        ArgumentCaptor<StockFlow> fCap = ArgumentCaptor.forClass(StockFlow.class);
+        verify(stockFlowMapper, times(1)).insert(fCap.capture());
+        StockFlow f = fCap.getValue();
+        assertThat(f.getEarNo()).isNull();
+        assertThat(f.getWhiteBarNo()).isEqualTo("BAR-A");
+        assertThat(f.getWarehouseId()).isEqualTo(locA);
+        assertThat(f.getChangeQuantity()).isEqualByComparingTo("4.2");
+
+        // 跨库位 FIFO：首篮扣满 0.2、次篮（另一库位）扣 4.0——不再「显示 4.2 只能领 0.2」
+        verify(locationStockMapper, times(1)).deductStockById(eq(batchId), eq(new BigDecimal("0.2")), eq(USER_ID));
+        verify(locationStockMapper, times(1)).deductStockById(eq(90022L), eq(new BigDecimal("4.0")), eq(USER_ID));
+        // 组内第二库位也过盘点锁校验（首篮库位在入口已校验）
+        verify(stockCheckService, times(1)).assertLocationUnlocked(locA);
+        verify(stockCheckService, times(1)).assertLocationUnlocked(locB);
+        // 2 行 inhouse：白条号 / 库位源标签逐篮带上（打包 / 追溯链不断）
+        ArgumentCaptor<ProductInhouse> ihCap = ArgumentCaptor.forClass(ProductInhouse.class);
+        verify(productInhouseMapper, times(2)).insert(ihCap.capture());
+        List<ProductInhouse> rows = ihCap.getAllValues();
+        assertThat(rows.get(0).getWhiteBarNo()).isEqualTo("BAR-A");
+        assertThat(rows.get(0).getLocationId()).isEqualTo(locA);
+        assertThat(rows.get(0).getProductWeight()).isEqualByComparingTo("0.2");
+        assertThat(rows.get(1).getWhiteBarNo()).isEqualTo("BAR-B");
+        assertThat(rows.get(1).getLocationId()).isEqualTo(locB);
+        assertThat(rows.get(1).getProductWeight()).isEqualByComparingTo("4.0");
+        assertThat(rows.get(0).getEarNo()).isNull();
+    }
+
+    @Test
+    @DisplayName("lossByBatch 猪肉 null-ear 组篮净额守卫：今日组净领 2 < 损 3 → 抛「超过该篮子今日领用剩余」+ 零写入（row38 兄弟路径按组口径）")
+    void testLossByBatch_PorkNullEarGroup_OverNet_Rejected() {
+        Long batchId = 90031L;
+        LocationStock basket = nullEarPorkBasket(batchId, 7001L, "BAR-A", "10");
+        when(locationStockMapper.selectById(batchId)).thenReturn(basket);
+        when(productInfoMapper.selectById(PRODUCT_ID)).thenReturn(porkProduct("筒子骨"));
+        // 产品级额度充足（已领 20），但该 null-ear 组今日净领只有 2 → 组级守卫拦截
+        when(stockFlowMapper.sumTodayByProductTypes(eq(PRODUCT_ID), argThat(l -> l != null && l.contains("dept_pick_out")))).thenReturn(new BigDecimal("20"));
+        when(stockFlowMapper.sumTodayByProductTypes(eq(PRODUCT_ID), argThat(l -> l != null && l.contains("pick_return_in")))).thenReturn(BigDecimal.ZERO);
+        when(stockFlowMapper.sumTodayByProductType(PRODUCT_ID, "loss")).thenReturn(BigDecimal.ZERO);
+        when(stockFlowMapper.sumTodayByProductType(PRODUCT_ID, "feed_out")).thenReturn(BigDecimal.ZERO);
+        when(stockFlowMapper.sumTodayNetPickedByNullEarGroup(PRODUCT_ID)).thenReturn(new BigDecimal("2"));
+
+        MatLossBo bo = new MatLossBo();
+        bo.setBatchId(batchId);
+        bo.setProductId(PRODUCT_ID);
+        bo.setQuantity(new BigDecimal("3"));
+
+        assertThatThrownBy(() -> service.loss(bo))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("超过该篮子今日领用剩余");
+
+        verify(stockFlowMapper, never()).insert(any(StockFlow.class));
+        verify(productInhouseMapper, never()).deductWeightById(anyLong(), any(BigDecimal.class));
+        verify(locationStockMapper, never()).deductStockById(anyLong(), any(BigDecimal.class), any());
+    }
+
+    @Test
+    @DisplayName("feedByBatch 猪肉 null-ear 组篮：猪肉无饲喂业务 → 抛「猪肉不支持饲料饲喂」+ 零写入（与耳号卡同口径后端防御）")
+    void testFeedByBatch_PorkNullEarGroup_Rejected() {
+        Long batchId = 90041L;
+        LocationStock basket = nullEarPorkBasket(batchId, 7001L, "BAR-A", "10");
+        when(locationStockMapper.selectById(batchId)).thenReturn(basket);
+        when(productInfoMapper.selectById(PRODUCT_ID)).thenReturn(porkProduct("筒子骨"));
+
+        MatFeedBo bo = new MatFeedBo();
+        bo.setBatchId(batchId);
+        bo.setProductId(PRODUCT_ID);
+        bo.setQuantity(new BigDecimal("1"));
+
+        assertThatThrownBy(() -> service.feed(bo))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("猪肉不支持饲料饲喂");
+
+        verify(stockFlowMapper, never()).insert(any(StockFlow.class));
+        verify(feedLogMapper, never()).insert(any(FeedLog.class));
+        verify(locationStockMapper, never()).deductStockById(anyLong(), any(BigDecimal.class), any());
+    }
+
     // -------- feed（F0-8 验收门 · TEST-GAP-4：同文件 pick/return/loss 已覆盖，feed 此前裸奔） --------
 
     private MatFeedBo feedBo(BigDecimal qty) {
@@ -971,6 +1098,7 @@ class MatFlowServiceImplTest {
         verify(stockFlowMapper, times(1)).insert(flowCap.capture());
         StockFlow f = flowCap.getValue();
         assertThat(f.getFlowType()).isEqualTo("feed_out");
+        assertThat(f.getStockOutDest()).isEqualTo("feed");
         assertThat(f.getInoutType()).isEqualTo("OT");
         assertThat(f.getChangeNum()).isEqualByComparingTo("-20");
         assertThat(f.getChangeQuantity()).isEqualByComparingTo("20");

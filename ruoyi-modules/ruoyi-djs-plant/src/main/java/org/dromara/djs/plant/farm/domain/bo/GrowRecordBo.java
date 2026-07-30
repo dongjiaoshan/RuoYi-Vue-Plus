@@ -41,6 +41,9 @@ public class GrowRecordBo {
     @NotNull(message = "{plant.farm.team.required}")
     private Long farmBy;
 
+    /** 处理班组全集（G1-TEAMS-MULTISELECT，row37）。非空时写中间表，旧单列 farmBy 取第一个；为 null 时退化为单值 farmBy。 */
+    private java.util.List<Long> farmByIds;
+
     /** 操作人 sys_user.user_id（可空；采收链路已改按班组记录走 farm_by，本字段保留兼容其他农事/历史数据）。 */
     private Long operatorUserId;
 

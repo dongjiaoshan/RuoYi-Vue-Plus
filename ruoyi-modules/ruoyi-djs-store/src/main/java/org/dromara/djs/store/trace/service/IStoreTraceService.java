@@ -40,9 +40,9 @@ public interface IStoreTraceService {
     /**
      * 门店猪肉打包可选产品列表（docx「门店猪肉打包」产品取数）。
      *
-     * <p>两步取数：① 字典 {@code djs_pork_return_product} 的 value（产品业务码）resolve 出产品 id 集；
-     * ② 查 {@code t_warehouse_product_info}，取 {@code product_workshop=5（门店打包间）} 且
-     * {@code product_material ∈ 上述 id 集} 的猪肉产品。空 → 空 List（前端按部位字典兜底）。</p>
+     * <p>取数：{@code t_warehouse_product_info} 中 {@code product_workshop=5（门店打包间）}
+     * + {@code product_attr=1（生产产品）} + {@code belong_type='pork'} 的产品——即客户在 admin 产品配置里
+     * 挂到「门店打包间」的猪肉产品。空 → 空 List（前端按部位字典兜底）。</p>
      *
      * @return 可打包产品列表（产品卡数据源）
      */

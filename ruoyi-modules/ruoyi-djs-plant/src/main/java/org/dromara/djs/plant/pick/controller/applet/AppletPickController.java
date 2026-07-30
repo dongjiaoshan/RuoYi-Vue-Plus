@@ -127,6 +127,22 @@ public class AppletPickController extends BaseController {
         return R.ok(appletPickService.isCropSettled(parseCropId(cropId), isPick));
     }
 
+    /**
+     * 作物「已采产量」权威合计：mp 采摘活动详情头卡「已采产量」取数。
+     *
+     * <p>= Σ(详情页展示地块的 actual_yield)，与列表卡 cropTasks 同源，故「列表卡 = 详情头卡 = 详情地块卡合计」
+     * 三者恒等。未结算的销售去向流水不在此预支，「录入完成」结算时均分写入 actual_yield 后自然并入。</p>
+     *
+     * @param cropId 作物 id（必填字符串，空 / 非数字 → 明确友好 ServiceException）
+     * @param isPick is_pick 过滤值（可空，空时默认 2=普通采收；「采摘活动管理」页传 1 = 游客采摘活动，
+     *               与 {@link #cropPlots} 同 isPick 契约）
+     */
+    @GetMapping("/cropPickedTotal")
+    public R<java.math.BigDecimal> cropPickedTotal(@RequestParam(required = false) String cropId,
+                                                   @RequestParam(required = false) Integer isPick) {
+        return R.ok(appletPickService.cropPickedTotal(parseCropId(cropId), isPick));
+    }
+
     /** 必填作物 id 解析：空 / 非数字 → 明确友好 ServiceException（不让框架抛类型不匹配）。 */
     private Long parseCropId(String cropId) {
         if (cropId == null || cropId.isBlank()) {

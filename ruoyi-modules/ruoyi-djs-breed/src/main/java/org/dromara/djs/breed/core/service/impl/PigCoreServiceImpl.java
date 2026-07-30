@@ -42,6 +42,7 @@ import org.dromara.djs.breed.farm.domain.Barn;
 import org.dromara.djs.breed.farm.domain.Pen;
 import org.dromara.djs.breed.farm.mapper.BarnMapper;
 import org.dromara.djs.breed.farm.mapper.PenMapper;
+import org.dromara.djs.breed.farm.service.PenCountUpdater;
 import org.dromara.djs.breed.event.growth.domain.PigGrowth;
 import org.dromara.djs.breed.event.growth.mapper.PigGrowthMapper;
 import org.dromara.djs.breed.event.intro.domain.PigIntroduce;
@@ -112,10 +113,11 @@ public class PigCoreServiceImpl implements IPigCoreService {
     private final DictService dictService;
     private final IProductionCycleConfigService productionCycleConfigService;
     private final BreedInfoMapper breedInfoMapper;
+    private final PenCountUpdater penCountUpdater;
 
     /**
      * 生长记录 mapper（详情顶卡主图回退 + search「上次测量」enrich 用）。字段注入而非构造注入：保持
-     * {@link PigCoreServiceImpl} 9 参构造器签名不变（{@code PigCoreServiceImplTest} 直接 {@code new} 构造，
+     * {@link PigCoreServiceImpl} 构造器签名精简（{@code PigCoreServiceImplTest} 直接 {@code new} 构造，
      * 改签名会连带改单测）；本字段仅 {@link #queryDetail} / {@link #searchByEarKeyword} 用，单测不覆盖该路径，注入与否不影响既有用例。
      */
     @Autowired
@@ -143,7 +145,8 @@ public class PigCoreServiceImpl implements IPigCoreService {
                               PenMapper penMapper,
                               DictService dictService,
                               IProductionCycleConfigService productionCycleConfigService,
-                              BreedInfoMapper breedInfoMapper) {
+                              BreedInfoMapper breedInfoMapper,
+                              PenCountUpdater penCountUpdater) {
         this.pigMapper = pigMapper;
         this.statusRecordMapper = statusRecordMapper;
         this.stateMachine = stateMachine;
@@ -153,27 +156,22 @@ public class PigCoreServiceImpl implements IPigCoreService {
         this.dictService = dictService;
         this.productionCycleConfigService = productionCycleConfigService;
         this.breedInfoMapper = breedInfoMapper;
+        this.penCountUpdater = penCountUpdater;
     }
 
     @Override
     @Transactional(rollbackFor = Exception.class)
     public PigStatusRecordVo fireEvent(PigEventBo bo) {
-        Objects.requireNonNull(bo, "PigEventBo must not be null");
-        if (bo.getPigId() == null || bo.getEventType() == null) {
-            throw new ServiceException(I18nMessages.t("pig.event.bo_required"));
-        }
-
-        Pig pig = pigMapper.selectById(bo.getPigId());
-        if (pig == null) {
-            throw new ServiceException(I18nMessages.t("pig.not_found", bo.getPigId()));
-        }
+        Pig pig = requireEventPig(bo);
 
         // from 可为 null：育肥猪 / 仔猪 / 公猪等非种母猪类型空状态（''/NULL），仍可终止 / 转栏 / 阉割。
-        String curStatus = pig.getCurrentStatus();
-        PigLifecycle from = StringUtils.isBlank(curStatus) ? null : parseLifecycle(curStatus, pig.getId());
+        PigLifecycle from = resolveFrom(pig);
         PigLifecycle to = stateMachine.nextStatus(from, bo.getEventType(), pig.getPigSex(), bo.getPayload());
 
         LocalDateTime eventAt = Optional.ofNullable(bo.getEventAt()).orElseGet(LocalDateTime::now);
+
+        // 事件前所在栏位：applyEventSideEffects 会就地改写 pig.penId（TRANSFER），迁栏计数要用旧值
+        Long penIdBefore = pig.getPenId();
 
         // 1. 写 status_record
         PigStatusRecord record = new PigStatusRecord();
@@ -207,6 +205,15 @@ public class PigCoreServiceImpl implements IPigCoreService {
             applyBreedingCounters(pig.getId(), bo);
         }
 
+        // 2c. 栏位在场头数同步（FIX-BRD-PENCOUNT-001）：转群旧栏 -1 / 新栏 +1；终止事件（DIE /
+        //     ELIMINATE / SLAUGHTER → END）所在栏 -1。放在主 update 成功之后，乐观锁冲突已抛异常，
+        //     不会出现「猪没动而计数动了」。END 猪再 fireEvent 会被状态机拒（终态），故每头最多减一次。
+        if (bo.getEventType() == TRANSFER) {
+            penCountUpdater.move(penIdBefore, pig.getPenId(), 1);
+        } else if (to == PigLifecycle.END) {
+            penCountUpdater.decrease(pig.getPenId(), 1);
+        }
+
         // 3. 发布 Spring event（下游 dashboard / 推送 / 燎毛各自订阅）
         eventPublisher.publishEvent(new PigStateChangedEvent(this, record, pig, from, to));
 
@@ -214,6 +221,35 @@ public class PigCoreServiceImpl implements IPigCoreService {
             pig.getId(), pig.getEarNo(), bo.getEventType(), from, to, bo.getRelatedEventId());
 
         return toRecordVo(record);
+    }
+
+    @Override
+    public PigLifecycle precheckEvent(PigEventBo bo) {
+        Pig pig = requireEventPig(bo);
+        // 与 fireEvent 走同一个 nextStatus，只是丢掉结果不落库：guard 不通过在这里就抛 400。
+        return stateMachine.nextStatus(resolveFrom(pig), bo.getEventType(), pig.getPigSex(), bo.getPayload());
+    }
+
+    /** 事件入参基础校验 + 取猪只（{@link #fireEvent} / {@link #precheckEvent} 共用）。 */
+    private Pig requireEventPig(PigEventBo bo) {
+        Objects.requireNonNull(bo, "PigEventBo must not be null");
+        if (bo.getPigId() == null || bo.getEventType() == null) {
+            throw new ServiceException(I18nMessages.t("pig.event.bo_required"));
+        }
+        Pig pig = pigMapper.selectById(bo.getPigId());
+        if (pig == null) {
+            throw new ServiceException(I18nMessages.t("pig.not_found", bo.getPigId()));
+        }
+        return pig;
+    }
+
+    /**
+     * 当前状态解析：空状态（非种母猪 {@code ''}/NULL）→ {@code null}（仍可终止 / 转栏 / 阉割）；
+     * 非法状态串 → ServiceException。
+     */
+    private PigLifecycle resolveFrom(Pig pig) {
+        String curStatus = pig.getCurrentStatus();
+        return StringUtils.isBlank(curStatus) ? null : parseLifecycle(curStatus, pig.getId());
     }
 
     @Override
@@ -311,9 +347,10 @@ public class PigCoreServiceImpl implements IPigCoreService {
         String oldStatus = StringUtils.isBlank(pig.getCurrentStatus()) ? null : pig.getCurrentStatus();
 
         LocalDateTime now = LocalDateTime.now();
+        LocalDate effectiveIntroduceDate = introduceDate != null ? introduceDate : now.toLocalDate();
         // 进后备（HB）的业务时点 = 内部引种日期当天，而非提交时间（同外部引种口径，见 createPig）；
         // 无引种日期回落 now。durationDays 仍按 now 结算（原态在场天数到"提交留种"这一刻为止）。
-        LocalDateTime statusStartedAt = introduceDate != null ? introduceDate.atStartOfDay() : now;
+        LocalDateTime statusStartedAt = effectiveIntroduceDate.atStartOfDay();
         PigStatusRecord record = new PigStatusRecord();
         record.setPigId(pig.getId());
         record.setEarNo(pig.getEarNo());
@@ -329,6 +366,9 @@ public class PigCoreServiceImpl implements IPigCoreService {
         pig.setPigType(newType);
         pig.setCurrentStatus(newStatus);
         pig.setStatusStartedAt(statusStartedAt);
+        // 内部引种复用场内既有猪只，不经过 createPig；引种业务日期必须同步回猪只主表，
+        // 否则详情页读取 t_farm_pig_info.introduce_date 时只能显示空值。
+        pig.setIntroduceDate(effectiveIntroduceDate);
         int affected = pigMapper.updateById(pig);
         if (affected == 0) {
             throw new ServiceException(I18nMessages.t("pig.update.optimistic_lock_conflict", pig.getId()));
@@ -975,9 +1015,13 @@ public class PigCoreServiceImpl implements IPigCoreService {
     }
 
     @Override
-    public List<PigBarnCountVo> countByBarn(String statusFilter, String sexFilter, String pigTypeFilter, String earNoKeyword, Boolean breedReady, String dueType) {
+    public List<PigBarnCountVo> countByBarn(String statusFilter, String sexFilter, String pigTypeFilter, String earNoKeyword, Boolean breedReady, String dueType, Integer minAgeDays) {
         List<String> statuses = parseStatusFilter(statusFilter);
         boolean callerWantsEnd = statuses.contains(PigLifecycle.END.name());
+        // row180：出栏 chip 与列表同口径——日龄 >= minAgeDays（到龄肥猪）才计入 chip。
+        // 与 searchByEarKeyword 完全一致：COALESCE(birth_date, introduce_date)，无生日 → DATEDIFF 为 NULL 自动剔除。
+        // minAgeDays ≤0/null（其余 12 页调用方不传）→ 不过滤（向后兼容，行为不变）。
+        boolean applyMinAge = minAgeDays != null && minAgeDays > 0;
 
         // pigTypeFilter 支持 CSV（如 'piglet,fattening' 给阉割选猪 = 公的仔猪+育肥猪）；单值退化 .eq，CSV 走 IN。
         // 与 searchByEarKeyword 同口径，否则栋舍 chip 计数与列表条数对不上。
@@ -992,6 +1036,9 @@ public class PigCoreServiceImpl implements IPigCoreService {
             .eq(StringUtils.isNotBlank(sexFilter), Pig::getPigSex, sexFilter)
             .eq(pigTypes.size() == 1, Pig::getPigType, pigTypes.isEmpty() ? null : pigTypes.get(0))
             .in(pigTypes.size() > 1, Pig::getPigType, pigTypes)
+            // row180：出栏选猪日龄 >= minAgeDays，与 searchByEarKeyword 完全一致（{0} 占位 + apply 防注入，
+            // COALESCE(birth_date, introduce_date) 同口径），否则 chip 计全部而列表只列到龄 → 对不上。
+            .apply(applyMinAge, "DATEDIFF(NOW(), COALESCE(birth_date, introduce_date)) >= {0}", minAgeDays)
             // 无栋舍归属的猪只不计入任何 chip
             .isNotNull(Pig::getBarnId);
         if (!statuses.isEmpty()) {

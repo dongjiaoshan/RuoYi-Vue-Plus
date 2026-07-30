@@ -35,6 +35,7 @@ import org.dromara.djs.breed.farm.domain.Pen;
 import org.dromara.djs.breed.farm.mapper.BarnMapper;
 import org.dromara.djs.breed.farm.mapper.PenMapper;
 import org.dromara.djs.breed.farm.service.PenCapacityChecker;
+import org.dromara.djs.breed.farm.service.PenCountUpdater;
 import org.dromara.djs.common.encoder.BizCodeType;
 import org.dromara.djs.common.encoder.IBizCodeGenerator;
 import org.dromara.djs.common.supplier.domain.Supplier;
@@ -68,7 +69,7 @@ import java.util.stream.Collectors;
  *   <li>生成引种单号 INTRO_NO</li>
  *   <li>INSERT t_farm_pig_introduce</li>
  *   <li>循环 / 批量分配耳号 EAR_NO + pigCoreService.createPig 每头</li>
- *   <li>pen.current_count += pigCount（wrapper SQL setSql 原子加法）</li>
+ *   <li>pen.current_count += pigCount（{@link PenCountUpdater#increase} 原子加法）</li>
  * </ol>
  *
  * <p>启动时 {@code @PostConstruct} 注册 supplier 引用关系给 {@link BizReferenceChecker}，
@@ -94,6 +95,7 @@ public class PigIntroServiceImpl implements IPigIntroService {
     private final OssService ossService;
     private final ITransferService transferService;
     private final PenCapacityChecker penCapacityChecker;
+    private final PenCountUpdater penCountUpdater;
 
     public PigIntroServiceImpl(PigIntroduceMapper introduceMapper,
                                IPigCoreService pigCoreService,
@@ -107,7 +109,8 @@ public class PigIntroServiceImpl implements IPigIntroService {
                                EarNoAllocator earNoAllocator,
                                OssService ossService,
                                ITransferService transferService,
-                               PenCapacityChecker penCapacityChecker) {
+                               PenCapacityChecker penCapacityChecker,
+                               PenCountUpdater penCountUpdater) {
         this.introduceMapper = introduceMapper;
         this.pigCoreService = pigCoreService;
         this.bizCodeGenerator = bizCodeGenerator;
@@ -121,6 +124,7 @@ public class PigIntroServiceImpl implements IPigIntroService {
         this.ossService = ossService;
         this.transferService = transferService;
         this.penCapacityChecker = penCapacityChecker;
+        this.penCountUpdater = penCountUpdater;
     }
 
     @PostConstruct
@@ -141,7 +145,7 @@ public class PigIntroServiceImpl implements IPigIntroService {
         // 单头分配 1 个 EAR_NO（ADR-0011：品系+品种+公母+出生日 当天级 max+1；单头 BO 无 startEarNo 字段，纯后端生成）
         String earNo = earNoAllocator.allocateOne(bo.getPigStrainCode(), bo.getPigBreedCode(), bo.getPigSex(), bo.getBirthDate());
         Pig pig = createOnePig(bo, earNo, intro.getId());
-        incrementPenCount(bo.getPenId(), 1);
+        penCountUpdater.increase(bo.getPenId(), 1);
 
         return buildResult(intro, List.of(pig));
     }
@@ -204,7 +208,7 @@ public class PigIntroServiceImpl implements IPigIntroService {
         for (String earNo : earNos) {
             pigs.add(createOnePig(bo, earNo, intro.getId()));
         }
-        incrementPenCount(bo.getPenId(), count);
+        penCountUpdater.increase(bo.getPenId(), count);
 
         return buildResult(intro, pigs);
     }
@@ -628,16 +632,6 @@ public class PigIntroServiceImpl implements IPigIntroService {
             throw new ServiceException(I18nMessages.t("intro.barn_not_found", barnId));
         }
         return barn;
-    }
-
-    /**
-     * Pen.current_count 原子加 N（wrapper-only update，避免 read-modify-write race）。
-     */
-    private void incrementPenCount(Long penId, int delta) {
-        penMapper.update(null,
-            Wrappers.<Pen>update()
-                .eq("id", penId)
-                .setSql("current_count = COALESCE(current_count, 0) + " + delta));
     }
 
     /**

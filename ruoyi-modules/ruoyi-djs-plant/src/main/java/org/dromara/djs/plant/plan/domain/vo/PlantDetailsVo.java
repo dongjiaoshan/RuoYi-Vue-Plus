@@ -13,6 +13,7 @@ import java.io.Serializable;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.Date;
+import java.util.List;
 
 /**
  * 种植计划明细 VO（PLT-PLAN-001）。
@@ -84,6 +85,12 @@ public class PlantDetailsVo implements Serializable {
     @ExcelProperty(value = "是否采摘活动", converter = ExcelDictConvert.class)
     @ExcelDictFormat(readConverterExp = "1=是,2=否")
     private Integer isPick;
+
+    /** 是否移栽调整（PLT-TRANSPLANT-REDO-001）：1=该明细由育苗移栽落地生成（plot_id=目标地块）。 */
+    @ExcelProperty(value = "是否移栽调整", converter = ExcelDictConvert.class)
+    @ExcelDictFormat(readConverterExp = "1=是,0=否")
+    private Integer transplantAdjusted;
+
     @ExcelIgnore
     private Date createTime;
 
@@ -94,10 +101,23 @@ public class PlantDetailsVo implements Serializable {
     private String plotCode;
     @ExcelProperty(value = "作物名称")
     private String cropName;
-    @ExcelIgnore
-    private String plantTeamName;
     @ExcelProperty(value = "种植班组")
+    private String plantTeamName;
+    @ExcelProperty(value = "采摘班组")
     private String harvestTeamName;
+
+    /** 种植班组全集 id（G1-TEAMS-MULTISELECT，row36；编辑回显用）。 */
+    @ExcelIgnore
+    private List<Long> plantByIds;
+    /** 采摘班组全集 id（编辑回显用）。 */
+    @ExcelIgnore
+    private List<Long> harvestByIds;
+    /** 种植班组全集名（多 tag / 逗号展示；空则回落 {@link #plantTeamName}）。 */
+    @ExcelIgnore
+    private List<String> plantTeamNames;
+    /** 采摘班组全集名（多 tag / 逗号展示；空则回落 {@link #harvestTeamName}）。 */
+    @ExcelIgnore
+    private List<String> harvestTeamNames;
 
     /** 种植日期（取实际开始种植 begin_actualdate；采摘计划详情列展示用）。 */
     @ExcelProperty(value = "种植日期")

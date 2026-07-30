@@ -29,12 +29,12 @@ import static org.mockito.Mockito.when;
  *
  * <p>覆盖：</p>
  * <ul>
- *   <li>queryAllDjsTypes：遍历 32 个 dict_type 全部调 ruoyi 一次</li>
+ *   <li>queryAllDjsTypes：遍历 33 个 dict_type 全部调 ruoyi 一次</li>
  *   <li>currentVersion / queryFull：每次实时聚合计算 SHA-256（不读写 redis）</li>
  *   <li>SHA-256 输出：64 字符小写 hex（不是 MD5 32 字符）</li>
  *   <li>hash 稳定性：相同字典两次算一致</li>
  *   <li><b>回归（甲方反馈）</b>：底层字典数据变化 → version 立即变化，不残留旧值</li>
- *   <li>常量加载：DictTypeConstants 反射出来正好 32 项</li>
+ *   <li>常量加载：DictTypeConstants 反射出来正好 33 项</li>
  * </ul>
  *
  * <p>服务实时聚合底层 ruoyi {@code selectDictDataByType}（命中 {@code CacheNames.SYS_DICT}），
@@ -77,35 +77,35 @@ class DjsDictServiceImplTest {
     }
 
     @Test
-    @DisplayName("DictTypeConstants 反射出来正好 32 项")
+    @DisplayName("DictTypeConstants 反射出来正好 33 项")
     void allDjsDictTypesCount() {
         assertThat(DjsDictServiceImpl.allDjsDictTypesForTest())
-            .hasSize(32)
+            .hasSize(33)
             .allSatisfy(s -> assertThat(s).startsWith(DictTypeConstants.DJS_PREFIX));
     }
 
     @Test
-    @DisplayName("queryAllDjsTypes：遍历 32 个 dict_type 全部调 ruoyi 一次")
+    @DisplayName("queryAllDjsTypes：遍历 33 个 dict_type 全部调 ruoyi 一次")
     void queryAllDjsTypes_callsRuoyiOncePerType() {
         Map<String, List<SysDictDataVo>> all = service.queryAllDjsTypes();
 
-        assertThat(all).hasSize(32);
+        assertThat(all).hasSize(33);
         assertThat(all.keySet()).contains(
             DictTypeConstants.PIG_SEX, DictTypeConstants.STORE_STATUS,
             DictTypeConstants.BUY_CLASS,
             DictTypeConstants.INTRODUCE_TYPE, DictTypeConstants.BARN_TYPE,
             DictTypeConstants.HANDLE_TARGET);
-        verify(sysDictTypeService, times(32)).selectDictDataByType(anyString());
+        verify(sysDictTypeService, times(33)).selectDictDataByType(anyString());
     }
 
     @Test
-    @DisplayName("queryFull：实时聚合算 SHA-256（64 hex），返全量 32 项")
+    @DisplayName("queryFull：实时聚合算 SHA-256（64 hex），返全量 33 项")
     void queryFull_computesRealtime() {
         DjsDictFullVo vo = service.queryFull();
 
         assertThat(vo.getVersion()).hasSize(64).matches("[0-9a-f]{64}");
-        assertThat(vo.getData()).hasSize(32);
-        verify(sysDictTypeService, times(32)).selectDictDataByType(anyString());
+        assertThat(vo.getData()).hasSize(33);
+        verify(sysDictTypeService, times(33)).selectDictDataByType(anyString());
     }
 
     @Test

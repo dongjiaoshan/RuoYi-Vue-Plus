@@ -56,4 +56,18 @@ public interface ProductInhouseMapper extends BaseMapperPlus<ProductInhouse, Pro
         + " WHERE product_id = #{productId} AND plot_id = #{plotId} "
         + "   AND DATE(produce_date) = CURDATE() AND del_flag = '0'")
     BigDecimal sumTodayRemainingByPlot(@Param("productId") Long productId, @Param("plotId") Long plotId);
+
+    /**
+     * row34：某门店某业务日「白条分割产出」总重（kg）= 该店当日在门店端分割白条产出的原材料 inhouse
+     * product_weight 之和（{@code source='store'}，由 {@code StoreSplitServiceImpl.addSplit} 写、溯源 white_bar_id）。
+     * 供门店白条分割损耗口径：损耗 = 白条到店重 − 分割产出重 − 退回入库重。无分割 → 0（损耗回落 到店 − 退回）。
+     *
+     * @param storeId 门店 FK
+     * @param date    业务日（按 produce_date 当天）
+     * @return 该店当日门店分割产出总重（无 → 0）
+     */
+    @Select("SELECT COALESCE(SUM(product_weight), 0) FROM t_warehouse_product_inhouse "
+        + " WHERE source = 'store' AND store_id = #{storeId} "
+        + "   AND DATE(produce_date) = #{date} AND del_flag = '0'")
+    BigDecimal sumStoreSplitWeightByStore(@Param("storeId") Long storeId, @Param("date") java.time.LocalDate date);
 }

@@ -75,9 +75,17 @@ public class FarmRecordsVo implements Serializable {
     @ExcelProperty(value = "处理班组 ID")
     private Long farmBy;
 
-    /** service enrich：班组名（PlantWorkTeam.teamName）。 */
+    /** service enrich：班组名（PlantWorkTeam.teamName；多选时 = 第一个）。 */
     @ExcelProperty(value = "处理班组")
     private String teamName;
+
+    /** service enrich：处理班组全集 id（G1-TEAMS-MULTISELECT，row37；回显用）。 */
+    @cn.idev.excel.annotation.ExcelIgnore
+    private java.util.List<Long> farmByIds;
+
+    /** service enrich：处理班组全集名（多 tag / 逗号展示；空则回落 {@link #teamName}）。 */
+    @cn.idev.excel.annotation.ExcelIgnore
+    private java.util.List<String> teamNames;
 
     @ExcelProperty(value = "整地类型")
     private String tillageType;
@@ -91,6 +99,10 @@ public class FarmRecordsVo implements Serializable {
     /** service enrich：转移地块名（仅 transplant 类型）。 */
     @ExcelProperty(value = "转移地块")
     private String transplantPlotName;
+
+    /** service enrich：转移后地块编号（row101.2：移栽记录卡「转移后」优先显编号，反查 PlotInfo.plotCode）。 */
+    @ExcelProperty(value = "转移后地块编号")
+    private String transplantPlotCode;
 
     /** service enrich：转移后地块所属片区名（移栽记录卡展示，PlotZone.zoneName）。 */
     @ExcelProperty(value = "转移后片区")

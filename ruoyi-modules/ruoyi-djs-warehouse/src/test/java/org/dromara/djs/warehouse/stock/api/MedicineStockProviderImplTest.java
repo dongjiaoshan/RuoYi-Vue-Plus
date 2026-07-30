@@ -7,6 +7,7 @@ import org.dromara.djs.common.medicine.api.MedicineProductDto;
 import org.dromara.djs.warehouse.flow.domain.StockFlow;
 import org.dromara.djs.warehouse.flow.mapper.StockFlowMapper;
 import org.dromara.djs.warehouse.loss.service.ILossFlowService;
+import org.dromara.djs.warehouse.stock.domain.LocationStock;
 import org.dromara.djs.warehouse.stock.mapper.LocationStockMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -39,12 +40,16 @@ import static org.mockito.Mockito.when;
  * <p>药品 provider（breed↔warehouse facade 的仓库侧真实现）此前从未被执行验证。覆盖全链：</p>
  * <ol>
  *   <li>deduct happy：解析默认库位 → 原子扣减 + 流水 OT/dept_pick_out/change_num=-q（F0-3 新加写入）</li>
- *   <li>deductLoss happy：流水 OT/loss + 双写统一损耗台账（manual_loss，关联流水）</li>
+ *   <li>deductLoss happy：流水 OT/loss + 双写统一损耗台账（manual_loss，关联流水），
+ *       且<b>不二次扣 location_stock</b>（领用时已扣过货架，药品无 WIP 池）</li>
  *   <li>deduct 无库位：selectDefaultLocationByProduct 返 null → 抛"药品无库存" + 零写入</li>
+ *   <li>deductLoss 无库存记录：库位解析返 null → 抛"药品无库存记录" + 零流水零台账（流水需真实库位快照）</li>
  *   <li>deduct 库存不足：deductByProductLocation 返 0 → 抛"药品库存不足" + 不写流水/损耗台账（扣减成功才写）</li>
  *   <li>add happy：加库存 + 流水 IN/pick_return_in/change_num=+q（领用退回）</li>
  *   <li>addPurchase happy：加库存 + 流水 IN/purchase_in（批次采购入库，与退回分流）</li>
- *   <li>add 库存行不存在：addByProductLocation 返 0 → 抛 + 不写流水</li>
+ *   <li>add 该库位无产品维度行：addByProductLocation 返 0 → 兜底建账 + 落流水</li>
+ *   <li>addPurchase 零库存药品首次入库：无任何库存行 → 按配置存储库位（CSV 首个）建账 + purchase_in 流水</li>
+ *   <li>addPurchase 未配存储库位 → 兜底「药品库」库位；产品不存在 / 连药品库也没有 → 抛 + 零建账零流水</li>
  *   <li>getStocks：SUM 行 → Map&lt;productId, stock&gt; 映射正确</li>
  *   <li>listMedicineProducts：商品行 → DTO 字段映射 + resolver 回填 imageUrl</li>
  * </ol>
@@ -70,6 +75,10 @@ class MedicineStockProviderImplTest {
     private static final Long PRODUCT_ID = 8801L;
     private static final Long LOCATION_ID = 7701L;
     private static final Long OPERATOR_ID = 9001L;
+    /** 药品库库位 id（L0015，库里所有 161 个药品商品的 store_location_id）。 */
+    private static final Long MED_WAREHOUSE_ID = 9301000000000015L;
+    /** 另一个库位（验 store_location_id CSV 多值时只取首个）。 */
+    private static final Long OTHER_LOCATION_ID = 9301000000000012L;
 
     @BeforeEach
     void setup() {
@@ -107,23 +116,24 @@ class MedicineStockProviderImplTest {
     }
 
     @Test
-    @DisplayName("deductLoss happy：扣账 + 流水 OT/loss + 双写统一损耗台账 manual_loss（F0-3 修复：损耗总览不再对药品盲）")
+    @DisplayName("deductLoss happy：流水 OT/loss + 双写统一损耗台账 manual_loss，且不二次扣 location_stock（领用时已扣货架，药品无 WIP 池）")
     void testDeductLoss_Happy_WritesFlowAndLossFlow() {
         when(locationStockMapper.selectDefaultLocationByProduct(PRODUCT_ID)).thenReturn(LOCATION_ID);
-        when(locationStockMapper.deductByProductLocation(eq(LOCATION_ID), eq(PRODUCT_ID), any(BigDecimal.class), eq(OPERATOR_ID)))
-            .thenReturn(1);
 
         provider.deductLoss(PRODUCT_ID, new BigDecimal("2.5"), OPERATOR_ID);
 
-        // 三账：库存扣减 + 出库流水（loss）+ 损耗台账（manual_loss，关联流水）
-        verify(locationStockMapper, times(1))
-            .deductByProductLocation(eq(LOCATION_ID), eq(PRODUCT_ID), eq(new BigDecimal("2.5")), eq(OPERATOR_ID));
+        // 两账：出库流水（loss）+ 损耗台账（manual_loss，关联流水）；库存真值不动
+        // —— 药品领用（deduct）时已从 location_stock 扣过一次，损耗再扣即二次扣减
+        // （对齐 MatFlowServiceImpl.loss() 对非可打包物资「不动 location_stock、仅 stock_flow+loss_flow 留痕」口径）
+        verify(locationStockMapper, never()).deductByProductLocation(any(), any(), any(), any());
         ArgumentCaptor<StockFlow> cap = ArgumentCaptor.forClass(StockFlow.class);
         verify(stockFlowMapper, times(1)).insert(cap.capture());
         StockFlow f = cap.getValue();
         assertThat(f.getInoutType()).isEqualTo("OT");
         assertThat(f.getFlowType()).isEqualTo("loss");
         assertThat(f.getChangeNum()).isEqualByComparingTo("-2.5");
+        assertThat(f.getChangeQuantity()).isEqualByComparingTo("2.5");
+        assertThat(f.getWarehouseId()).isEqualTo(LOCATION_ID);
         verify(lossFlowService, times(1)).record(eq("manual_loss"), eq(PRODUCT_ID),
             eq(new BigDecimal("2.5")), eq(LOCATION_ID), eq(OPERATOR_ID), eq("med"), eq((Long) null), any());
     }
@@ -142,15 +152,26 @@ class MedicineStockProviderImplTest {
     }
 
     @Test
+    @DisplayName("deductLoss 无库存记录：库位解析返 null → 抛'药品无库存记录' + 零流水零台账（流水需真实库位快照，不吞异常）")
+    void testDeductLoss_NoLocation_Throws() {
+        when(locationStockMapper.selectDefaultLocationByProduct(PRODUCT_ID)).thenReturn(null);
+
+        assertThatThrownBy(() -> provider.deductLoss(PRODUCT_ID, new BigDecimal("2"), OPERATOR_ID))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("药品无库存记录");
+
+        verify(locationStockMapper, never()).deductByProductLocation(any(), any(), any(), any());
+        verify(stockFlowMapper, never()).insert(any(StockFlow.class));
+        verify(lossFlowService, never()).record(any(), any(), any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
     @DisplayName("deduct 库存不足：deductByProductLocation 返 0 → 抛'药品库存不足' + 不写流水（防流水与货架单边分叉）")
     void testDeduct_Insufficient_NoFlow() {
         when(locationStockMapper.selectDefaultLocationByProduct(PRODUCT_ID)).thenReturn(LOCATION_ID);
         when(locationStockMapper.deductByProductLocation(any(), any(), any(), any())).thenReturn(0);
 
         assertThatThrownBy(() -> provider.deduct(PRODUCT_ID, new BigDecimal("999"), OPERATOR_ID))
-            .isInstanceOf(ServiceException.class)
-            .hasMessageContaining("药品库存不足");
-        assertThatThrownBy(() -> provider.deductLoss(PRODUCT_ID, new BigDecimal("999"), OPERATOR_ID))
             .isInstanceOf(ServiceException.class)
             .hasMessageContaining("药品库存不足");
 
@@ -198,16 +219,110 @@ class MedicineStockProviderImplTest {
     }
 
     @Test
-    @DisplayName("add 库存行不存在：addByProductLocation 返 0 → 抛'药品退回失败' + 不写流水")
-    void testAdd_NoStockRow_NoFlow() {
+    @DisplayName("add 该库位无产品维度行：addByProductLocation 返 0 → 兜底建账（不再抛'退回失败'）+ 落 pick_return_in 流水")
+    void testAdd_NoProductRowInGroup_BootstrapsStockRow() {
         when(locationStockMapper.selectDefaultLocationByProduct(PRODUCT_ID)).thenReturn(LOCATION_ID);
         when(locationStockMapper.addByProductLocation(any(), any(), any(), any())).thenReturn(0);
+        when(locationStockMapper.selectProductInboundMeta(PRODUCT_ID)).thenReturn(productMeta(null));
 
-        assertThatThrownBy(() -> provider.add(PRODUCT_ID, BigDecimal.ONE, OPERATOR_ID))
+        provider.add(PRODUCT_ID, BigDecimal.ONE, OPERATOR_ID);
+
+        ArgumentCaptor<LocationStock> stockCap = ArgumentCaptor.forClass(LocationStock.class);
+        verify(locationStockMapper, times(1)).insert(stockCap.capture());
+        assertThat(stockCap.getValue().getLocationId()).isEqualTo(LOCATION_ID);
+        assertThat(stockCap.getValue().getProductStock()).isEqualByComparingTo("1");
+        ArgumentCaptor<StockFlow> cap = ArgumentCaptor.forClass(StockFlow.class);
+        verify(stockFlowMapper, times(1)).insert(cap.capture());
+        assertThat(cap.getValue().getFlowType()).isEqualTo("pick_return_in");
+    }
+
+    @Test
+    @DisplayName("addPurchase 零库存药品首次入库：无任何库存行 → 按配置存储库位（CSV 取首个）兜底建账 + 落 purchase_in 流水")
+    void testAddPurchase_ZeroStockMedicine_BootstrapsStockRow() {
+        // 库里 161 个药品商品全部零库存：selectDefaultLocationByProduct / addByProductLocation 都命中不到行
+        when(locationStockMapper.selectDefaultLocationByProduct(PRODUCT_ID)).thenReturn(null);
+        when(locationStockMapper.selectProductInboundMeta(PRODUCT_ID))
+            .thenReturn(productMeta(MED_WAREHOUSE_ID + ", " + OTHER_LOCATION_ID));
+        when(locationStockMapper.addByProductLocation(eq(MED_WAREHOUSE_ID), eq(PRODUCT_ID), any(), any())).thenReturn(0);
+
+        provider.addPurchase(PRODUCT_ID, new BigDecimal("120"), OPERATOR_ID);
+
+        ArgumentCaptor<LocationStock> stockCap = ArgumentCaptor.forClass(LocationStock.class);
+        verify(locationStockMapper, times(1)).insert(stockCap.capture());
+        LocationStock stock = stockCap.getValue();
+        assertThat(stock.getLocationId()).as("CSV 首个配置库位 = 药品库").isEqualTo(MED_WAREHOUSE_ID);
+        assertThat(stock.getProductId()).isEqualTo(PRODUCT_ID);
+        assertThat(stock.getProductStock()).isEqualByComparingTo("120");
+        assertThat(stock.getProductName()).as("DDL NOT NULL 列必须带上").isEqualTo("猪瘟活疫苗");
+        assertThat(stock.getProductUnit()).as("DDL NOT NULL 列必须带上").isEqualTo("瓶");
+        assertThat(stock.getIsEnd()).as("is_end 必须 0，否则不进库存合计口径").isEqualTo(0);
+        assertThat(stock.getOperatorId()).isEqualTo(OPERATOR_ID);
+        // 产品维度行：三源标签全 NULL，后续入库才能被 addByProductLocation UPDATE 命中
+        assertThat(stock.getEarNo()).isNull();
+        assertThat(stock.getPlotId()).isNull();
+        assertThat(stock.getWhiteBarNo()).isNull();
+
+        ArgumentCaptor<StockFlow> cap = ArgumentCaptor.forClass(StockFlow.class);
+        verify(stockFlowMapper, times(1)).insert(cap.capture());
+        StockFlow f = cap.getValue();
+        assertThat(f.getInoutType()).isEqualTo("IN");
+        assertThat(f.getFlowType()).isEqualTo("purchase_in");
+        assertThat(f.getChangeNum()).isEqualByComparingTo("120");
+        assertThat(f.getWarehouseId()).isEqualTo(MED_WAREHOUSE_ID);
+    }
+
+    @Test
+    @DisplayName("addPurchase 零库存 + 未配存储库位：兜底到「药品库」库位（location_name 定位，非恒返 null 的 location_type='medicine'）")
+    void testAddPurchase_NoConfiguredLocation_FallsBackToMedicineWarehouse() {
+        when(locationStockMapper.selectDefaultLocationByProduct(PRODUCT_ID)).thenReturn(null);
+        when(locationStockMapper.selectProductInboundMeta(PRODUCT_ID)).thenReturn(productMeta("  "));
+        when(locationStockMapper.selectMedicineWarehouseLocationId()).thenReturn(MED_WAREHOUSE_ID);
+        when(locationStockMapper.addByProductLocation(eq(MED_WAREHOUSE_ID), eq(PRODUCT_ID), any(), any())).thenReturn(0);
+
+        provider.addPurchase(PRODUCT_ID, new BigDecimal("10"), OPERATOR_ID);
+
+        ArgumentCaptor<LocationStock> stockCap = ArgumentCaptor.forClass(LocationStock.class);
+        verify(locationStockMapper, times(1)).insert(stockCap.capture());
+        assertThat(stockCap.getValue().getLocationId()).isEqualTo(MED_WAREHOUSE_ID);
+        verify(locationStockMapper, never()).selectDefaultMedicineLocationId();
+    }
+
+    @Test
+    @DisplayName("addPurchase 药品主数据不存在：抛异常 + 零建账零流水（不静默建到错库位）")
+    void testAddPurchase_ProductMissing_Throws() {
+        when(locationStockMapper.selectDefaultLocationByProduct(PRODUCT_ID)).thenReturn(null);
+        when(locationStockMapper.selectProductInboundMeta(PRODUCT_ID)).thenReturn(null);
+
+        assertThatThrownBy(() -> provider.addPurchase(PRODUCT_ID, BigDecimal.ONE, OPERATOR_ID))
             .isInstanceOf(ServiceException.class)
-            .hasMessageContaining("药品退回失败");
+            .hasMessageContaining("药品不存在或已删除");
 
+        verify(locationStockMapper, never()).insert(any(LocationStock.class));
         verify(stockFlowMapper, never()).insert(any(StockFlow.class));
+    }
+
+    @Test
+    @DisplayName("addPurchase 未配库位且无「药品库」：抛异常 + 零建账零流水")
+    void testAddPurchase_NoLocationAtAll_Throws() {
+        when(locationStockMapper.selectDefaultLocationByProduct(PRODUCT_ID)).thenReturn(null);
+        when(locationStockMapper.selectProductInboundMeta(PRODUCT_ID)).thenReturn(productMeta(null));
+        when(locationStockMapper.selectMedicineWarehouseLocationId()).thenReturn(null);
+
+        assertThatThrownBy(() -> provider.addPurchase(PRODUCT_ID, BigDecimal.ONE, OPERATOR_ID))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("药品库");
+
+        verify(locationStockMapper, never()).insert(any(LocationStock.class));
+        verify(stockFlowMapper, never()).insert(any(StockFlow.class));
+    }
+
+    /** {@code selectProductInboundMeta} 返回行（product_name / product_unit NOT NULL + 配置库位 CSV）。 */
+    private Map<String, Object> productMeta(String storeLocationId) {
+        Map<String, Object> meta = new HashMap<>();
+        meta.put("productName", "猪瘟活疫苗");
+        meta.put("productUnit", "瓶");
+        meta.put("storeLocationId", storeLocationId);
+        return meta;
     }
 
     @Test
@@ -229,13 +344,16 @@ class MedicineStockProviderImplTest {
     }
 
     @Test
-    @DisplayName("listMedicineProducts：商品行 → DTO 字段映射（id/name/unit/spec/stock）+ resolver 回填 imageUrl")
+    @DisplayName("listMedicineProducts：商品行 → DTO 字段映射（id/code/name/unit/spec/supplierId/remark/stock）+ resolver 回填 imageUrl")
     void testListMedicineProducts_DtoMapping() {
         Map<String, Object> row = new HashMap<>();
         row.put("id", 8801L);
+        row.put("code", "S0001");
         row.put("name", "土霉素");
         row.put("unit", "瓶");
         row.put("spec", "100ml");
+        row.put("supplierId", 9302000000000031L);
+        row.put("remark", "常温");
         row.put("stock", new BigDecimal("20"));
         row.put("imageId", "oss-123");
         when(locationStockMapper.selectMedicineProducts("土")).thenReturn(List.of(row));
@@ -246,9 +364,12 @@ class MedicineStockProviderImplTest {
         assertThat(list).hasSize(1);
         MedicineProductDto dto = list.get(0);
         assertThat(dto.getId()).isEqualTo(8801L);
+        assertThat(dto.getCode()).isEqualTo("S0001");
         assertThat(dto.getName()).isEqualTo("土霉素");
         assertThat(dto.getUnit()).isEqualTo("瓶");
         assertThat(dto.getSpec()).isEqualTo("100ml");
+        assertThat(dto.getSupplierId()).isEqualTo(9302000000000031L);
+        assertThat(dto.getRemark()).isEqualTo("常温");
         assertThat(dto.getStock()).isEqualByComparingTo("20");
         assertThat(dto.getImageUrl()).isEqualTo("https://oss/med-123.png");
     }

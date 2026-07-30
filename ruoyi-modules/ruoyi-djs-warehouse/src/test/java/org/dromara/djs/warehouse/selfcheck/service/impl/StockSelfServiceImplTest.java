@@ -6,11 +6,12 @@ import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.satoken.utils.LoginHelper;
 import org.dromara.djs.common.encoder.IBizCodeGenerator;
+import org.dromara.djs.common.image.service.ImageUrlResolver;
 import org.dromara.djs.common.supplier.domain.Supplier;
 import org.dromara.djs.common.supplier.mapper.SupplierMapper;
 import org.dromara.djs.warehouse.check.service.IStockCheckService;
 import org.dromara.djs.warehouse.cross.domain.BarInfo;
-import org.dromara.djs.warehouse.cross.mapper.BarInfoMapper;
+import org.dromara.djs.warehouse.cut.service.IPigCutRecordService;
 import org.dromara.djs.warehouse.flow.domain.StockFlow;
 import org.dromara.djs.warehouse.flow.mapper.StockFlowMapper;
 import org.dromara.djs.warehouse.loss.service.ILossFlowService;
@@ -75,11 +76,12 @@ class StockSelfServiceImplTest {
     @Mock private LocationStockMapper locationStockMapper;
     @Mock private StockFlowMapper stockFlowMapper;
     @Mock private ProductInfoMapper productInfoMapper;
-    @Mock private BarInfoMapper barInfoMapper;
+    @Mock private IPigCutRecordService pigCutService;
     @Mock private SupplierMapper supplierMapper;
     @Mock private IBizCodeGenerator bizCodeGenerator;
     @Mock private IStockCheckService stockCheckService;
     @Mock private ILossFlowService lossFlowService;
+    @Mock private ImageUrlResolver imageUrlResolver;
 
     private StockSelfServiceImpl service;
     private MockedStatic<LoginHelper> loginHelperMock;
@@ -107,7 +109,8 @@ class StockSelfServiceImplTest {
     void setup() {
         service = new StockSelfServiceImpl(
             stockSelfMapper, locationStockMapper, stockFlowMapper, productInfoMapper,
-            barInfoMapper, supplierMapper, bizCodeGenerator, stockCheckService, lossFlowService);
+            pigCutService, supplierMapper, bizCodeGenerator, stockCheckService, lossFlowService,
+            imageUrlResolver);
         loginHelperMock = Mockito.mockStatic(LoginHelper.class);
         loginHelperMock.when(LoginHelper::getUserId).thenReturn(USER_ID);
 

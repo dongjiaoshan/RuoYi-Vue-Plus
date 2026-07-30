@@ -29,6 +29,15 @@ public class StoreReturnQuery {
     /** 产品多选（R70 退回产品下拉多选）。非空时按 IN 过滤，优先于单值 productId。 */
     private List<Long> productIds;
 
+    /** 产品名称模糊（服务端先查 t_warehouse_product_info 得 id 集下推，保证跨页搜索/分页 total 正确）。 */
+    private String productName;
+
+    /**
+     * 产品业态 tab（pork=猪肉类含白条 / vegetable=其他含 belong_type 空）。
+     * 服务端按 belong_type 解析产品 id 集下推过滤，取代前端对当前页切片（分页 total 才正确）。
+     */
+    private String belongCategory;
+
     /** 退回方向精确。 */
     private String returnDirection;
 

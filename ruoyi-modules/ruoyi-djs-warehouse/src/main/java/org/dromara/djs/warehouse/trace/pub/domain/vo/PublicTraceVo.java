@@ -114,6 +114,8 @@ public class PublicTraceVo implements Serializable {
         private String imageUrl;
         /** 追溯码（= produce_code）。 */
         private String produceCode;
+        /** 生产编号（= {@code t_warehouse_product_production.produce_no} 生产单号；无打包记录为 null）。 */
+        private String produceNo;
         /** 打包日期（V1 无独立列，用追溯码生成时间兜底）。 */
         private Date packDate;
         /** 生长天数（veg 专属，源 {@code trace_code.plant_days}；无则 null）。 */

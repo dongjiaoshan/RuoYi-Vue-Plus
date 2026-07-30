@@ -267,10 +267,10 @@ public class DemandManageController extends BaseController {
         return R.ok(demandService.getSummary(productType));
     }
 
-    // =============== 今日 KPI 横条（DJS-FIX-ADMIN-W22-007）===============
+    // =============== 明日 KPI 横条（DJS-FIX-ADMIN-W22-007）===============
 
     /**
-     * 需求管理页顶部「今日全局」KPI 横条：一次返 6 个跨业态数字。
+     * 需求管理页顶部「明日全局」KPI 横条：一次返 6 个跨业态数字（口径 = 明日需求）。
      *
      * <p>白条需求/已调配头数 + 果蔬需求/已调配品种数 + 其他需求/已调配条数。
      * 与 {@code /summary}（当前业态摘要）互不替代：KPI 横条渲染在 SummaryBar 上方。</p>

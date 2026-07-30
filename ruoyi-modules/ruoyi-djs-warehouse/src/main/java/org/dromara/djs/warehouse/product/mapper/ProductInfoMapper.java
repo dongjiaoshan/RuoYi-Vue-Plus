@@ -5,6 +5,7 @@ import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 import org.dromara.common.mybatis.core.mapper.BaseMapperPlus;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
+import org.dromara.djs.warehouse.product.domain.vo.MatEstimatedDemandVo;
 import org.dromara.djs.warehouse.product.domain.vo.ProductFlowRecordVo;
 import org.dromara.djs.warehouse.product.domain.vo.ProductProductionRecordVo;
 import org.dromara.djs.warehouse.product.domain.vo.ProductInfoVo;
@@ -66,6 +67,65 @@ public interface ProductInfoMapper extends BaseMapperPlus<ProductInfo, ProductIn
     boolean existsFinishedProductByMaterial(@Param("materialId") Long materialId);
 
     /**
+     * mp 生产领用「明日预估需求量」按原材料批量反查聚合（row18）。
+     *
+     * <p>口径：对每个原材料 {@code materialId}，取以它为 {@code product_material} 的所有生产产品
+     * （成品 {@code product_attr=1}），聚合其 {@code SUM(明日需求量 × 单份用量)}——即
+     * {@code DemandManageMapper.materialCalcQty}（需求量 × 单份用量）口径的「按原材料反向汇总」版。</p>
+     *
+     * <p>明日 = {@code DATE_ADD(CURDATE(), INTERVAL 1 DAY)}（{@code demand_date} 是 DATE 列直接等值走索引）；
+     * 汇总全部门店需求（生产备料非某门店，不加 store_id 过滤）；排除 CANCELLED / DELETED 单。
+     * 租户单租户显式 {@code tenant_id='1001'}（V1）。</p>
+     *
+     * <p>单份用量（{@code CASE} 三分支，自上而下优先）：</p>
+     * <ol>
+     *   <li>成品单位是 kg（含「公斤」）→ 1（1:1 kg，与 {@code DemandManageMapper.materialCalcQty} 同口径）</li>
+     *   <li>已配 {@code material_num} → {@code material_num}（显式配比优先于同单位推断）</li>
+     *   <li>成品单位 == 原材料单位（{@code LOWER(TRIM())} 比对，两边非空）→ 1（1:1 同单位族，如
+     *       「大米10斤(袋) ← 大米10斤(袋)」「黑猪油(罐) ← 黑猪油(罐)」；这类成品普遍没配
+     *       {@code material_num}，不兜底则整卡「预估需求量」恒空）</li>
+     * </ol>
+     *
+     * <p>三条都不满足的成品不计入——典型是「干羊肚菌70g(盒) ← 干羊肚菌(kg)」这类跨单位打包，换算关系
+     * 只能靠主数据配 {@code material_num} 表达，缺配比属数据配置问题，SQL 不猜。某材料无任何可算的
+     * 明日需求成品则无行返回 → service 回填 null → 前端卡片「预估需求量」显空。</p>
+     *
+     * @param materialIds 原材料产品 id 列表（= 领用卡的 productId 集合，distinct 非空）
+     * @return 每原材料一行（materialId + estimatedDemand）；无配比成品的材料不出现在结果中
+     */
+    @Select("""
+        <script>
+        SELECT p.product_material AS materialId,
+               SUM(dm.demand_quantity *
+                   CASE WHEN LOWER(TRIM(p.product_unit)) IN ('kg','公斤') THEN 1
+                        WHEN p.material_num IS NOT NULL THEN p.material_num
+                        ELSE 1 END) AS estimatedDemand
+          FROM t_warehouse_product_info p
+          JOIN t_warehouse_demand_manage dm
+            ON dm.product_id = p.id
+           AND dm.demand_date = DATE_ADD(CURDATE(), INTERVAL 1 DAY)
+           AND dm.demand_status NOT IN ('CANCELLED', 'DELETED')
+           AND dm.del_flag = '0'
+           AND dm.tenant_id = '1001'
+          LEFT JOIN t_warehouse_product_info m
+            ON m.id = p.product_material
+           AND m.del_flag = '0'
+           AND m.tenant_id = '1001'
+         WHERE p.product_attr = 1
+           AND (p.material_num IS NOT NULL
+                OR LOWER(TRIM(p.product_unit)) IN ('kg','公斤')
+                OR (m.product_unit IS NOT NULL AND TRIM(m.product_unit) != ''
+                    AND LOWER(TRIM(p.product_unit)) = LOWER(TRIM(m.product_unit))))
+           AND p.del_flag = '0'
+           AND p.tenant_id = '1001'
+           AND p.product_material IN
+           <foreach collection="materialIds" item="mid" open="(" separator="," close=")">#{mid}</foreach>
+         GROUP BY p.product_material
+        </script>
+        """)
+    List<MatEstimatedDemandVo> selectEstimatedDemandByMaterials(@Param("materialIds") List<Long> materialIds);
+
+    /**
      * 产品详情「生产记录」子表（DJS-FIX-WMS-RALN-B）：按 productId 查 {@code t_warehouse_product_production}
      * 生产行 + {@code t_warehouse_stock_flow} 退货行（{@code flow_type=return_in}），UNION 后按日期倒序。
      *
@@ -107,7 +167,7 @@ public interface ProductInfoMapper extends BaseMapperPlus<ProductInfo, ProductIn
               LEFT JOIN t_warehouse_product_info pi
                 ON pi.id = sf.product_id AND pi.del_flag = '0' AND pi.tenant_id = sf.tenant_id
              WHERE sf.product_id = #{productId}
-               AND sf.flow_type  = 'return_in'
+               AND sf.flow_type IN ('return_in', 'store_return_in', 'prod_return_in', 'pick_return_in')
                AND sf.del_flag   = '0'
                AND sf.tenant_id  = '1001'
           ) t
@@ -137,7 +197,7 @@ public interface ProductInfoMapper extends BaseMapperPlus<ProductInfo, ProductIn
                sf.flow_date    AS bizDate,
                CASE
                  WHEN sf.inout_type = 'IN' THEN 'in_stock'
-                 WHEN sf.flow_type = 'pick_out' THEN 'pick_out'
+                 WHEN sf.flow_type IN ('pick_out', 'prod_pick_out', 'dept_pick_out') THEN 'pick_out'
                  ELSE 'backend_out'
                END             AS bizType,
                sf.change_quantity AS bizNum,

@@ -77,6 +77,10 @@ class FarmRecordsDisasterQueryTest {
     private ImageUrlResolver imageUrlResolver;
     @Mock
     private IPlantActivityService plantActivityService;
+    @Mock
+    private org.dromara.djs.plant.team.service.PlantTeamLinkService teamLinkService;
+    @Mock
+    private org.dromara.djs.plant.plan.service.IPlantPlanService plantPlanService;
 
     private FarmRecordsServiceImpl service;
 
@@ -92,7 +96,7 @@ class FarmRecordsDisasterQueryTest {
 
     @BeforeEach
     void setUp() {
-        service = new FarmRecordsServiceImpl(baseMapper, plotInfoMapper, plotZoneMapper, cropInfoMapper, plantDetailsMapper, teamMapper, peopleMapper, imageUrlResolver, plantActivityService);
+        service = new FarmRecordsServiceImpl(baseMapper, plotInfoMapper, plotZoneMapper, cropInfoMapper, plantDetailsMapper, teamMapper, peopleMapper, imageUrlResolver, plantActivityService, teamLinkService, plantPlanService);
     }
 
     private FarmRecordsVo buildDisasterVo() {
@@ -123,6 +127,9 @@ class FarmRecordsDisasterQueryTest {
         team.setId(10L);
         team.setTeamName("一组");
         when(teamMapper.selectByIds(anyCollection())).thenReturn(List.of(team));
+        // 班组多选中间表 enrich（G1-TEAMS-MULTISELECT）：mock 返回空 → 回落旧单列 teamName
+        when(teamLinkService.farmTeamNames(anyCollection())).thenReturn(java.util.Map.of());
+        when(teamLinkService.farmTeamIds(anyCollection())).thenReturn(java.util.Map.of());
     }
 
     @Test

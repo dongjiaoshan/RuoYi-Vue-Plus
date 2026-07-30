@@ -74,4 +74,12 @@ public class PlantWorkPerformanceController extends BaseController {
         List<PerfListRow> list = performanceService.queryList(query);
         ExcelUtil.exportExcel(list, "班组绩效", PerfListRow.class, response);
     }
+
+    /** 导出绩效详情（双 sheet：产量绩效逐作物行 + 该班组该月农事记录，与详情抽屉两 tab 同口径）。 */
+    @SaCheckPermission("djs:plantPerformance:export")
+    @Log(title = "种植-班组绩效", businessType = BusinessType.EXPORT)
+    @PostMapping("/export-detail")
+    public void exportDetail(@RequestParam Long teamId, @RequestParam String statMonth, HttpServletResponse response) {
+        performanceService.exportDetail(teamId, statMonth, response);
+    }
 }

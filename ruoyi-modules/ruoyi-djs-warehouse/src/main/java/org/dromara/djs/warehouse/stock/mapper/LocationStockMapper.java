@@ -275,6 +275,40 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
     Long selectDefaultLocationByProduct(@Param("productId") Long productId);
 
     /**
+     * 取产品首次入库兜底建账所需的元信息：名称 / 单位 / 配置存储库位（CSV）。
+     *
+     * <p>{@code t_warehouse_location_stock.product_name} / {@code product_unit} 均 NOT NULL，
+     * 零库存产品首次入库要新建库存行必须带上这两个冗余列；{@code store_location_id} 供
+     * 「产品尚无任何库存行 → 落哪个库位」的解析（{@code selectDefaultLocationByProduct} 此时返 null）。
+     * 产品不存在 / 已软删返 null，调用方抛业务异常（不静默兜个假库位）。
+     * 租户单租户显式 {@code tenant_id='1001'}（V1）。</p>
+     *
+     * @param productId 产品 ID
+     * @return {@code productName / productUnit / storeLocationId} 单行，或 null（产品不存在）
+     */
+    @Select("SELECT product_name AS productName, "
+        + "       product_unit AS productUnit, "
+        + "       store_location_id AS storeLocationId "
+        + "  FROM t_warehouse_product_info "
+        + " WHERE id = #{productId} AND del_flag = '0' AND tenant_id = '1001'")
+    Map<String, Object> selectProductInboundMeta(@Param("productId") Long productId);
+
+    /**
+     * 取「药品库」库位 id（药品零库存首次入库的最终兜底落位）。
+     *
+     * <p>按 {@code location_name='药品库'} 定位（与 {@link #selectMedicineProducts} 圈定养殖药品范围的
+     * 子查询同一条件，口径天然一致）。<b>不用</b> {@code location_type='medicine'} ——
+     * 库里药品库的 {@code location_type} 是 {@code farm_loc}，按 type 取恒返 null。
+     * 未建药品库返 null，调用方抛业务异常。租户单租户显式 {@code tenant_id='1001'}（V1）。</p>
+     *
+     * @return 药品库 location_id，或 null（未建药品库库位）
+     */
+    @Select("SELECT id FROM t_warehouse_location_info "
+        + " WHERE location_name = '药品库' AND del_flag = '0' AND tenant_id = '1001' "
+        + " ORDER BY id LIMIT 1")
+    Long selectMedicineWarehouseLocationId();
+
+    /**
      * 按 {@code product_id} + {@code location_id} 增加库存（WMS-MAT-001 物资退回 / 外购收货 / 各入库 UPSERT）。
      *
      * <p>只累加<b>非篮子行</b>（{@code plot_id / ear_no / white_bar_no} 全 NULL）：product 维度加库存
@@ -472,14 +506,17 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
      * 领用 / 退回 / 损耗均落这些 {@code stock_flow} 流水，故三量与物资领用药品库卡一致（row129）。</p>
      *
      * @param keyword 药品名模糊过滤（可空）
-     * @return 药品商品行（id / name / unit / spec / stock / todayPicked / todayReturned / todayLoss），有库存优先、再按药品名排序
+     * @return 药品商品行（id / code / name / unit / spec / supplierId / remark / stock / todayPicked / todayReturned / todayLoss），有库存优先、再按药品名排序
      */
     @Select("""
         <script>
         SELECT p.id           AS id,
+               p.product_id   AS code,
                p.product_name AS name,
                p.product_unit AS unit,
                p.product_spec AS spec,
+               p.supplier_id  AS supplierId,
+               p.remark       AS remark,
                COALESCE(NULLIF(p.product_thumb, ''), p.image_oss_id) AS imageId,
                COALESCE(st.stock, 0) AS stock,
                COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
@@ -585,8 +622,14 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
      * 按 id 集合列出药品商品（{@code buy_class='medicine'}）+ 跨库位库存合计。
      *
      * <p>供「用药治疗 / 批量用药」消费「近 3 天已领用药品」清单（id 来自
-     * {@code t_breed_medicine_usage.medicine_id} 领用台账，已是药品库药品，不再加库位过滤）。
-     * 返回列与 {@link #selectMedicineProducts} 一致（id / name / unit / spec / imageId / stock）。</p>
+     * {@code t_breed_medicine_usage.medicine_id} 领用台账，已是药品库药品，不再加库位过滤），
+     * 以及养殖端<b>药品详情</b>（{@code GET /djs/breed/med/getInfo/{id}}）单 id 查询 ——
+     * 详情与列表必须同源读 {@code t_warehouse_product_info}（药品 id 段 {@code 9305…}），
+     * 否则详情落到已弃用的 {@code t_breed_medicine_info}（id 段 {@code 2059…}）、两段 id 空间不重叠、
+     * 列表点进详情恒返 null。</p>
+     *
+     * <p>返回列与 {@link #selectMedicineProducts} 一致（id / code / name / unit / spec / supplierId /
+     * remark / imageId / stock），今日三量不查（详情走 {@link #selectMedicineTodayFlowStat}）。</p>
      *
      * @param ids 药品商品 id 集合（非空）
      * @return 药品商品行；按药品名排序
@@ -594,9 +637,12 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
     @Select("""
         <script>
         SELECT p.id           AS id,
+               p.product_id   AS code,
                p.product_name AS name,
                p.product_unit AS unit,
                p.product_spec AS spec,
+               p.supplier_id  AS supplierId,
+               p.remark       AS remark,
                COALESCE(NULLIF(p.product_thumb, ''), p.image_oss_id) AS imageId,
                COALESCE(st.stock, 0) AS stock
           FROM t_warehouse_product_info p
@@ -858,10 +904,12 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
      * <ul>
      *   <li>{@code belong_type IN (...)} 在后端强制过滤（不在前端 filter，跨层契约一致性）；
      *       「猪肉产品」tab 含 {@code pork + white_bar}（项目猪肉链口径）。</li>
-     *   <li>{@code locationId} 可空：传了则只统计该库位库存（chip 选中态过滤），且只返该库位有库存行的产品；
-     *       为空则跨库位 SUM 全业态产品（tab 默认态）。</li>
+     *   <li>{@code locationId} 可空：传了则<b>整卡按该库位口径</b>（chip 选中态）——库存 / 今日三量 /
+     *       剩余可退 / 默认库位全部只算该库位，且只返该库位有库存行的产品；为空则跨库位汇总（tab 默认态）。</li>
      *   <li>{@code currentStock} = 跨库位（或指定库位）SUM(product_stock)；产品无 location_stock 行 → 0。</li>
-     *   <li>{@code defaultLocationId} = 该产品库存最多的库位（点卡进表单时作默认 locationId）。</li>
+     *   <li>{@code defaultLocationId} = 该产品库存最多的库位（点卡进表单时作默认 locationId）；传了
+     *       {@code locationId} 时子查询同样按库位收窄 → 恒等于所选库位（外层 EXISTS 保证该库位必有库存行，
+     *       不会为 null），录入子页拿到的库位与卡片展示的库位一致。</li>
      *   <li>今日三量 = 子查询 {@code stock_flow WHERE product_id=p.id AND flow_type=? AND DATE(flow_date)=CURDATE()}
      *       （<b>全部人</b>，不按 operator 过滤——PC/admin 录入也计入，与 {@code MatFlowServiceImpl.ensureTodayCapacity}
      *       的全量额度口径一致；问题来源邓博测试 row3：PC 录入的领用/退回/损耗在 mp 不显示）。</li>
@@ -870,7 +918,8 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
      * <p>仅返启用产品（{@code product_status=0}）。排序：库存升序（缺货优先）再按产品名。
      * 租户单租户显式 {@code tenant_id='1001'}。{@code lastPickTime}（排序用）取该产品全部人今日最近一次领用时间。</p>
      *
-     * @param belongTypes 字典 {@code djs_belong_type} 值列表（如 [pork, white_bar] / [vegetable]）
+     * @param belongTypes 字典 {@code djs_belong_type} 值列表（如 [pork, white_bar] / [vegetable]）；
+     *                    为 null / 空则不按业态过滤（生产领用「按库不按业态」：选中库位后列该库全部库存产品，row42）
      * @param locationId  库位 ID（可空，chip 选中态）
      * @param userId      当前登录人 user_id（今日三量按人统计）
      * @return 待领产品卡列表；无则空 list
@@ -889,49 +938,63 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
                  WHERE s2.product_id = p.id
                    AND s2.del_flag = '0'
                    AND s2.tenant_id = '1001'
+                   <if test="locationId != null"> AND s2.location_id = #{locationId} </if>
                  ORDER BY s2.product_stock DESC, s2.location_id ASC
                  LIMIT 1)                         AS defaultLocationId,
+               <!-- 库位口径：传了 locationId（chip 选中态）时今日三量 / 剩余可退只算该库位的流水，
+                    与同卡的 currentStock / defaultLocationId 一致（一卡一库，不串别的库的领退损饲）；
+                    不传（tab 默认态）才跨库位汇总。库位明细子页拿的是同一个 locationId，两端同源。 -->
                COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
-                          WHERE f.product_id = p.id <if test="locationId != null"> AND f.warehouse_id = #{locationId} </if>
+                          WHERE f.product_id = p.id
                             AND f.flow_type IN ('prod_pick_out','dept_pick_out','pick_out') AND DATE(f.flow_date) = CURDATE()
-                            AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayPicked,
+                            AND f.del_flag = '0' AND f.tenant_id = '1001'
+                            <if test="locationId != null"> AND f.warehouse_id = #{locationId} </if>), 0) AS todayPicked,
                COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
-                          WHERE f.product_id = p.id <if test="locationId != null"> AND f.warehouse_id = #{locationId} </if>
+                          WHERE f.product_id = p.id
                             AND f.flow_type IN ('prod_return_in','pick_return_in','store_return_in') AND DATE(f.flow_date) = CURDATE()
-                            AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayReturned,
+                            AND f.del_flag = '0' AND f.tenant_id = '1001'
+                            <if test="locationId != null"> AND f.warehouse_id = #{locationId} </if>), 0) AS todayReturned,
                COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
-                          WHERE f.product_id = p.id <if test="locationId != null"> AND f.warehouse_id = #{locationId} </if>
+                          WHERE f.product_id = p.id
                             AND f.flow_type = 'loss' AND DATE(f.flow_date) = CURDATE()
-                            AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayLoss,
+                            AND f.del_flag = '0' AND f.tenant_id = '1001'
+                            <if test="locationId != null"> AND f.warehouse_id = #{locationId} </if>), 0) AS todayLoss,
                COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
-                          WHERE f.product_id = p.id <if test="locationId != null"> AND f.warehouse_id = #{locationId} </if>
+                          WHERE f.product_id = p.id
                             AND f.flow_type = 'feed_out' AND DATE(f.flow_date) = CURDATE()
-                            AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayFeed,
+                            AND f.del_flag = '0' AND f.tenant_id = '1001'
+                            <if test="locationId != null"> AND f.warehouse_id = #{locationId} </if>), 0) AS todayFeed,
                CASE WHEN p.belong_type IN ('vegetable','egg','dry_good','other')
                     THEN COALESCE((SELECT SUM(ih.product_weight) FROM t_warehouse_product_inhouse ih
                                     WHERE ih.product_id = p.id AND DATE(ih.produce_date) = CURDATE()
-                                      AND ih.del_flag = '0' AND ih.tenant_id = '1001'), 0)
+                                      AND ih.del_flag = '0' AND ih.tenant_id = '1001'
+                                      <if test="locationId != null"> AND ih.location_id = #{locationId} </if>), 0)
                     ELSE COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
-                                    WHERE f.product_id = p.id <if test="locationId != null"> AND f.warehouse_id = #{locationId} </if>
+                                    WHERE f.product_id = p.id
                                       AND f.flow_type IN ('prod_pick_out','dept_pick_out','pick_out')
-                                      AND DATE(f.flow_date) = CURDATE() AND f.del_flag = '0' AND f.tenant_id = '1001'), 0)
+                                      AND DATE(f.flow_date) = CURDATE() AND f.del_flag = '0' AND f.tenant_id = '1001'
+                                      <if test="locationId != null"> AND f.warehouse_id = #{locationId} </if>), 0)
                        - COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
-                                    WHERE f.product_id = p.id <if test="locationId != null"> AND f.warehouse_id = #{locationId} </if>
+                                    WHERE f.product_id = p.id
                                       AND f.flow_type IN ('prod_return_in','pick_return_in')
-                                      AND DATE(f.flow_date) = CURDATE() AND f.del_flag = '0' AND f.tenant_id = '1001'), 0)
+                                      AND DATE(f.flow_date) = CURDATE() AND f.del_flag = '0' AND f.tenant_id = '1001'
+                                      <if test="locationId != null"> AND f.warehouse_id = #{locationId} </if>), 0)
                        - COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
-                                    WHERE f.product_id = p.id <if test="locationId != null"> AND f.warehouse_id = #{locationId} </if>
+                                    WHERE f.product_id = p.id
                                       AND f.flow_type = 'loss'
-                                      AND DATE(f.flow_date) = CURDATE() AND f.del_flag = '0' AND f.tenant_id = '1001'), 0)
+                                      AND DATE(f.flow_date) = CURDATE() AND f.del_flag = '0' AND f.tenant_id = '1001'
+                                      <if test="locationId != null"> AND f.warehouse_id = #{locationId} </if>), 0)
                        - COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
-                                    WHERE f.product_id = p.id <if test="locationId != null"> AND f.warehouse_id = #{locationId} </if>
+                                    WHERE f.product_id = p.id
                                       AND f.flow_type = 'feed_out'
-                                      AND DATE(f.flow_date) = CURDATE() AND f.del_flag = '0' AND f.tenant_id = '1001'), 0)
+                                      AND DATE(f.flow_date) = CURDATE() AND f.del_flag = '0' AND f.tenant_id = '1001'
+                                      <if test="locationId != null"> AND f.warehouse_id = #{locationId} </if>), 0)
                     END                              AS remainReturnable,
                (SELECT MAX(f.flow_date) FROM t_warehouse_stock_flow f
                   WHERE f.product_id = p.id
                     AND f.flow_type IN ('prod_pick_out','dept_pick_out','pick_out') AND DATE(f.flow_date) = CURDATE()
-                    AND f.del_flag = '0' AND f.tenant_id = '1001') AS lastPickTime
+                    AND f.del_flag = '0' AND f.tenant_id = '1001'
+                    <if test="locationId != null"> AND f.warehouse_id = #{locationId} </if>) AS lastPickTime
           FROM t_warehouse_product_info p
           LEFT JOIN t_warehouse_location_stock s
             ON s.product_id = p.id
@@ -942,8 +1005,10 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
            AND p.tenant_id     = '1001'
            AND p.product_status = 0
            AND (COALESCE(p.product_attr, 0) != 1 OR COALESCE(p.product_type, 0) != 1)
-           AND p.belong_type IN
-           <foreach collection="belongTypes" item="bt" open="(" separator="," close=")">#{bt}</foreach>
+           <if test="belongTypes != null and belongTypes.size() > 0">
+             AND p.belong_type IN
+             <foreach collection="belongTypes" item="bt" open="(" separator="," close=")">#{bt}</foreach>
+           </if>
            <if test="locationId != null">
              AND EXISTS (SELECT 1 FROM t_warehouse_location_stock s3
                           WHERE s3.product_id = p.id AND s3.location_id = #{locationId}
@@ -1054,23 +1119,29 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
                MAX(s.product_name)           AS productName,
                COALESCE(MAX(s.product_unit), 'kg') AS productUnit,
                SUM(s.product_stock)          AS currentStock,
+               <!-- 库位口径与外层产品卡 selectMatIssueItems 同源：传了 locationId 只算该库位的流水，
+                    保证「外层卡今日三量 == 本页各篮之和」；不传才跨库位汇总。 -->
                COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
                           WHERE f.product_id = s.product_id AND f.plot_id = s.plot_id
                             AND f.flow_type IN ('prod_pick_out','dept_pick_out','pick_out')
                             AND DATE(f.flow_date) = CURDATE()
-                            AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayPicked,
+                            AND f.del_flag = '0' AND f.tenant_id = '1001'
+                            <if test="locationId != null"> AND f.warehouse_id = #{locationId} </if>), 0) AS todayPicked,
                COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
                           WHERE f.product_id = s.product_id AND f.plot_id = s.plot_id AND f.flow_type IN ('prod_return_in','pick_return_in')
                             AND DATE(f.flow_date) = CURDATE()
-                            AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayReturned,
+                            AND f.del_flag = '0' AND f.tenant_id = '1001'
+                            <if test="locationId != null"> AND f.warehouse_id = #{locationId} </if>), 0) AS todayReturned,
                COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
                           WHERE f.product_id = s.product_id AND f.plot_id = s.plot_id AND f.flow_type = 'loss'
                             AND DATE(f.flow_date) = CURDATE()
-                            AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayLoss,
+                            AND f.del_flag = '0' AND f.tenant_id = '1001'
+                            <if test="locationId != null"> AND f.warehouse_id = #{locationId} </if>), 0) AS todayLoss,
                COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
                           WHERE f.product_id = s.product_id AND f.plot_id = s.plot_id AND f.flow_type = 'feed_out'
                             AND DATE(f.flow_date) = CURDATE()
-                            AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayFeed,
+                            AND f.del_flag = '0' AND f.tenant_id = '1001'
+                            <if test="locationId != null"> AND f.warehouse_id = #{locationId} </if>), 0) AS todayFeed,
                (SELECT s3.location_id FROM t_warehouse_location_stock s3
                  WHERE s3.id = MIN(s.id))     AS locationId
           FROM t_warehouse_location_stock s
@@ -1116,20 +1187,24 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
                MAX(s.product_name)           AS productName,
                COALESCE(MAX(s.product_unit), 'kg') AS productUnit,
                SUM(s.product_stock)          AS currentStock,
+               <!-- 库位口径同 selectMatIssueItems / selectVegIssueByPlot：传了 locationId 只算该库位流水。 -->
                COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
                           WHERE f.product_id = s.product_id AND f.plot_id IS NULL AND f.ear_no IS NULL AND f.white_bar_no IS NULL
                             AND f.flow_type IN ('prod_pick_out','dept_pick_out','pick_out')
                             AND DATE(f.flow_date) = CURDATE()
-                            AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayPicked,
+                            AND f.del_flag = '0' AND f.tenant_id = '1001'
+                            <if test="locationId != null"> AND f.warehouse_id = #{locationId} </if>), 0) AS todayPicked,
                COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
                           WHERE f.product_id = s.product_id AND f.plot_id IS NULL AND f.ear_no IS NULL AND f.white_bar_no IS NULL
                             AND f.flow_type IN ('prod_return_in','pick_return_in','store_return_in')
                             AND DATE(f.flow_date) = CURDATE()
-                            AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayReturned,
+                            AND f.del_flag = '0' AND f.tenant_id = '1001'
+                            <if test="locationId != null"> AND f.warehouse_id = #{locationId} </if>), 0) AS todayReturned,
                COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
                           WHERE f.product_id = s.product_id AND f.plot_id IS NULL AND f.ear_no IS NULL AND f.white_bar_no IS NULL
                             AND f.flow_type = 'loss' AND DATE(f.flow_date) = CURDATE()
-                            AND f.del_flag = '0' AND f.tenant_id = '1001'), 0) AS todayLoss,
+                            AND f.del_flag = '0' AND f.tenant_id = '1001'
+                            <if test="locationId != null"> AND f.warehouse_id = #{locationId} </if>), 0) AS todayLoss,
                (SELECT s3.location_id FROM t_warehouse_location_stock s3 WHERE s3.id = MIN(s.id)) AS locationId
           FROM t_warehouse_location_stock s
          WHERE s.del_flag      = '0'

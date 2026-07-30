@@ -17,9 +17,10 @@ import java.math.BigDecimal;
  * 由本 ticket migration {@code V202606141400} ALTER 对齐 doc/11 §1.13）。</p>
  *
  * <p>结算口径：按 <b>班组(team_id) × 作物(crop_id) × 月份(stat_month)</b> 聚合
- * {@code t_plant_plant_details.actual_yield}（采摘总量）× 作物单价快照
- * {@code unit_price_snapshot}（结算瞬间读 {@code t_plant_crop_info.pick_unit_price}）
- * = 应付绩效金额 {@code performance_amount}。后续改单价不回写历史月（只认快照值）。</p>
+ * {@code t_plant_plant_details.actual_yield}（采摘量，公斤）× 作物单价快照
+ * {@code unit_price_snapshot}（元/斤，结算瞬间读 {@code t_plant_crop_info.pick_unit_price}）
+ * × 2（公斤→斤换算）= 应付绩效金额 {@code performance_amount}。
+ * 后续改单价不回写历史月（只认快照值）。</p>
  *
  * <p>绩效行由 {@code generate(statMonth)} 系统生成（先软删该月再聚合 INSERT，幂等），
  * 不支持手工 add/edit/remove。baseline 表的 {@code people_id} 列 doc/11 §1.13 无定义，
@@ -58,7 +59,7 @@ public class PlantWorkPerformance extends TenantEntity {
     private Long cropId;
 
     /**
-     * 采摘总量（斤，= SUM(actual_yield)）。
+     * 采摘总量（公斤，= SUM(actual_yield)）。
      */
     private BigDecimal pickWeight;
 
@@ -68,12 +69,12 @@ public class PlantWorkPerformance extends TenantEntity {
     private BigDecimal unitPriceSnapshot;
 
     /**
-     * 应付绩效金额（元，= pickWeight × unitPriceSnapshot）。
+     * 应付绩效金额（元，= pickWeight(公斤) × unitPriceSnapshot(元/斤) × 2 公斤→斤换算）。
      */
     private BigDecimal performanceAmount;
 
     /**
-     * 绩效规则描述（如 "1.00 元/斤"）。
+     * 绩效规则描述（如 "1.00 元/斤 ×2（公斤→斤）"）。
      */
     private String performanceRule;
 

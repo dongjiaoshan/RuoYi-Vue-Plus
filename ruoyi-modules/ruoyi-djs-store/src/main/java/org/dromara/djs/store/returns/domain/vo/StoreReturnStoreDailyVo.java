@@ -46,17 +46,21 @@ public class StoreReturnStoreDailyVo implements Serializable {
     @ExcelProperty("退货品种数")
     private int productKindCount;
 
-    /** 退回重量合计（Σ goods_weight）。 */
+    /** 退回重量合计（row57：仅按重量计（kg/公斤单位）行的 Σ goods_weight，份数产品不计入）。 */
     @ExcelProperty("退货重量")
     private BigDecimal returnWeightTotal;
 
-    /** 确认重量合计（Σ received_weight，未确认行不计入）。 */
+    /** 确认重量合计（row57：仅按重量计（kg/公斤单位）行的 Σ received_weight，份数产品与未确认行不计入）。 */
     @ExcelProperty("确认重量")
     private BigDecimal confirmWeightTotal;
 
-    /** 重量差异合计（returnWeightTotal - confirmWeightTotal）。 */
+    /** 重量差异合计（row57：returnWeightTotal - confirmWeightTotal，两侧同为 kg 行口径）。 */
     @ExcelProperty("重量差异")
     private BigDecimal weightDiffTotal;
+
+    /** 非重量产品退回重量合计（row57：份数产品（非 kg 单位）行的 Σ received_weight，即仓库称重）。 */
+    @ExcelProperty("非重量产品退回重量")
+    private BigDecimal nonWeightReturnWeightTotal;
 
     /** 确认时间（该组最近一条已确认行 confirm_time，无已确认行则为空）。 */
     @ExcelProperty("确认时间")

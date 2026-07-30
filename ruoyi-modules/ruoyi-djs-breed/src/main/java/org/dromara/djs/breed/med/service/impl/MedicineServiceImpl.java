@@ -74,13 +74,24 @@ public class MedicineServiceImpl extends DjsBaseServiceImpl<MedicineMapper, Medi
             .collect(Collectors.toList());
     }
 
-    /** {@link MedicineProductDto}（仓库药品商品）→ {@link MedicineVo}（养殖端「药品领用」契约）。 */
+    /**
+     * {@link MedicineProductDto}（仓库药品商品）→ {@link MedicineVo}（养殖端「药品领用」契约）。
+     *
+     * <p>{@code medicineType / approvalNo / batchNo / expireDate / withdrawDays / manufacturer /
+     * storageCondition} 在 {@code t_warehouse_product_info} 无对应列，留 null（药品主数据统一归仓库
+     * 商品管理后这些属性不再落库）。{@code medStatus} 恒 1（启用）—— 仓库侧
+     * {@code product_status} 的字典极性（{@code sys_normal_disable} 0=正常）与养殖侧
+     * {@code med_status}（1=启用）相反，直接映射会把在售药品显示成停用。</p>
+     */
     private MedicineVo toVo(MedicineProductDto dto) {
         MedicineVo vo = new MedicineVo();
         vo.setId(dto.getId());
+        vo.setMedicineCode(dto.getCode());
         vo.setMedicineName(dto.getName());
         vo.setUnit(dto.getUnit());
         vo.setSpec(dto.getSpec());
+        vo.setSupplierId(dto.getSupplierId());
+        vo.setRemark(dto.getRemark());
         vo.setImageUrl(dto.getImageUrl());
         vo.setCurrentStock(dto.getStock());
         // row129：今日三量（全场口径，与物资领用卡同源）回填给 mp 药品领用卡下排展示
@@ -91,9 +102,21 @@ public class MedicineServiceImpl extends DjsBaseServiceImpl<MedicineMapper, Medi
         return vo;
     }
 
+    /**
+     * 药品详情：与 {@link #queryList} <b>同源</b>走 {@link MedicineStockProvider}
+     * 读仓库药品商品（{@code t_warehouse_product_info}，药品 id 段 {@code 9305…}）。
+     *
+     * <p>不能走 {@code baseMapper.selectVoById}：那读的是已弃用的 {@code t_breed_medicine_info}
+     * （id 段 {@code 2059…}），与列表返的 id 空间完全不重叠 —— 拿列表 id 查详情会静默返
+     * {@code data=null}（HTTP 200、不报错），前端表单全空白。</p>
+     */
     @Override
     public MedicineVo queryById(Long id) {
-        return baseMapper.selectVoById(id);
+        if (id == null) {
+            return null;
+        }
+        List<MedicineProductDto> rows = medicineStockProvider.listMedicineProductsByIds(List.of(id));
+        return rows.isEmpty() ? null : toVo(rows.get(0));
     }
 
     @Override

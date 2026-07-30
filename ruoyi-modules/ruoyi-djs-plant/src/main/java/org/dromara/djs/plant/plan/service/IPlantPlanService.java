@@ -102,6 +102,36 @@ public interface IPlantPlanService {
     int finishPlant(PlantFinishBo bo);
 
     /**
+     * 育苗移栽落地：为每个目标地块新增一条「满种」明细（PLT-TRANSPLANT-REDO-001）。
+     *
+     * <p>由 {@code FarmRecordsServiceImpl} 在移栽累计 100%（或手动结束移栽）的同事务内调用。每个目标地块建一条
+     * {@code plant_status='completed'}（产出期）+ {@code harvest_status='pending'}（采摘改在大田）+
+     * {@code transplant_adjusted=1} 的明细：日期（begin_actualdate / 月 / 旬 / earliest / last_harvestdate）
+     * 沿用源育苗明细——种植/采收时间不变、采摘期含育苗时长；面积 / 预计产量按目标地块重取。落地前对新明细跑采摘
+     * 区间重叠校验（目标须在计划时间窗口内无冲突计划）。目标已有本计划明细则跳过（幂等，防并发双落地）。落地后
+     * 目标地块 {@code plot_status=2}（种植）并 recalc 计划聚合 / 状态。</p>
+     *
+     * @param planId        种植计划 id（源育苗明细所属计划）
+     * @param sourcePlotId  源育苗地块 id
+     * @param cropId        作物 id
+     * @param targetPlotIds 目标地块 id 列表（来自移栽记录 DISTINCT transplant_plot）
+     * @return 实际新增的目标满种明细行数（幂等跳过的不计入）
+     */
+    int materializeTransplantTargets(Long planId, Long sourcePlotId, Long cropId, java.util.List<Long> targetPlotIds);
+
+    /**
+     * row159：移栽提交时对本次所选「转移目标地块」做前移校验——用源育苗采摘窗口构造一条预期满种明细，
+     * 校验该目标地块是否与既有计划采摘区间冲突。选块提交当次即报（而非拖到累计 100% 自动落地时才暴露、
+     * 且报的是历史目标集里的无关块）。目标已物化 / 源明细缺失 / 无采摘窗 → 跳过不阻断。
+     *
+     * @param planId       种植计划 id
+     * @param sourcePlotId 源育苗地块 id
+     * @param cropId       作物 id
+     * @param targetPlotId 本次转移目标地块 id
+     */
+    void validateTransplantTargetConflict(Long planId, Long sourcePlotId, Long cropId, Long targetPlotId);
+
+    /**
      * 跨模块薄壳：聚合"进行中（pending/ongoing）"种植计划摘要给需求确认 SummaryBar 用
      * （DJS-FIX-ADMIN-W22-003 蔬菜业态）。
      *

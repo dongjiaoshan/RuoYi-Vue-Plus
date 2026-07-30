@@ -11,13 +11,12 @@ import java.time.LocalDate;
  * 地块详情·种植信息子表单行（FIX-PLT-AD-DETAIL-001，按 plotId 透视）。
  *
  * <p>映射 {@code t_plant_plant_details d} JOIN 作物 / 计划 / 班组（种植 + 采摘），
- * 对齐原型「地块详情·种植信息」子表：种植日期 / 作物图片 / 作物名称 / 作物编码 /
- * 种植人 / 预计亩产 / 预计最早采摘日期 / 预计最晚采摘日期 / 实际亩产 / 采摘开始日期 /
- * 采摘结束日期 / 采摘人。</p>
+ * 对齐「地块详情·种植信息」子表：种植日期 / 作物图片 / 作物名称 / 作物编码 /
+ * 种植人 / 预计亩产 / 实际产量 / 实际亩产 / 采摘开始日期 / 采摘结束日期 / 采摘人。</p>
  *
  * <p>「种植人 / 采摘人」= 班组名（{@code plant_by} / {@code harvest_by} JOIN
  * {@code t_plant_work_team.team_name}，对齐 {@code PlantRecordVo.employee} 口径）。
- * 「预计/实际亩产」按 kg 返（决策#7：明细 / 子表用 kg）。</p>
+ * 实际产量按 kg 返回；实际亩产为实际产量除以本条种植面积，按 kg/亩返回。</p>
  *
  * @author djs
  * @since FIX-PLT-AD-DETAIL-001
@@ -49,11 +48,8 @@ public class PlotPlantingRecordVo implements Serializable {
     /** 预计亩产（kg/亩）。 */
     private BigDecimal expectedYield;
 
-    /** 预计最早采摘日期。 */
-    private LocalDate earliestHarvestdate;
-
-    /** 预计最晚采摘日期。 */
-    private LocalDate lastHarvestdate;
+    /** 实际产量（kg）。 */
+    private BigDecimal actualProduction;
 
     /** 实际亩产（kg/亩）。 */
     private BigDecimal actualYield;

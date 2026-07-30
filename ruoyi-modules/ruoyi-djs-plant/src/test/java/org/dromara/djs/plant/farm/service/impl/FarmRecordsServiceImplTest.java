@@ -3,6 +3,7 @@ package org.dromara.djs.plant.farm.service.impl;
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
@@ -22,6 +23,7 @@ import org.dromara.djs.plant.farm.domain.bo.EmptyRecordBo;
 import org.dromara.djs.plant.farm.domain.bo.GrowBatchBo;
 import org.dromara.djs.plant.farm.domain.bo.GrowRecordBo;
 import org.dromara.djs.plant.farm.domain.bo.HarvestWeightBo;
+import org.dromara.djs.plant.farm.domain.bo.PlotPickStatusBo;
 import org.dromara.djs.plant.farm.domain.bo.RotationRecordBo;
 import org.dromara.djs.plant.farm.domain.bo.TransplantRecordBo;
 import org.dromara.djs.plant.farm.domain.query.FarmRecordsQuery;
@@ -105,6 +107,10 @@ class FarmRecordsServiceImplTest {
     private ImageUrlResolver imageUrlResolver;
     @Mock
     private IPlantActivityService plantActivityService;
+    @Mock
+    private org.dromara.djs.plant.team.service.PlantTeamLinkService teamLinkService;
+    @Mock
+    private org.dromara.djs.plant.plan.service.IPlantPlanService plantPlanService;
 
     private FarmRecordsServiceImpl service;
 
@@ -125,7 +131,7 @@ class FarmRecordsServiceImplTest {
 
     @BeforeEach
     void setUp() {
-        service = new FarmRecordsServiceImpl(baseMapper, plotInfoMapper, plotZoneMapper, cropInfoMapper, plantDetailsMapper, teamMapper, peopleMapper, imageUrlResolver, plantActivityService);
+        service = new FarmRecordsServiceImpl(baseMapper, plotInfoMapper, plotZoneMapper, cropInfoMapper, plantDetailsMapper, teamMapper, peopleMapper, imageUrlResolver, plantActivityService, teamLinkService, plantPlanService);
         // mocking selectMaxRecordNoByPrefix 返 null（当日尚无序号）→ next=1
         when(baseMapper.selectMaxRecordNoByPrefix(any(), any())).thenReturn(null);
         // mocking plot / crop 落库快照（plot_type / crop_name 冗余）
@@ -304,7 +310,7 @@ class FarmRecordsServiceImplTest {
     }
 
     @Test
-    @DisplayName("移栽：累计刚好跨过 100% → 自动状态机（采摘完成 + 地块置空，row13）")
+    @DisplayName("移栽：累计刚好跨过 100% → 自动落地（目标满种入计划 + 源明细采摘完成 + 源地块转采摘态，PLT-TRANSPLANT-REDO-001）")
     void submitTransplant_reaches_100_triggers_stateMachine() {
         TransplantRecordBo bo = new TransplantRecordBo();
         bo.setPlantId(7L);
@@ -314,21 +320,58 @@ class FarmRecordsServiceImplTest {
         bo.setFarmDate(LocalDate.now());
         bo.setTransplantPlot(3L);
         bo.setTransplantPercent(40);
-        // 提交前累计 60（60+40=100 ≤ 100 放行），提交后重查 100（跨过 → 触发状态机）
+        // 提交前累计 60（60+40=100 ≤ 100 放行），提交后重查 100（跨过 → 触发落地）
         when(baseMapper.sumTransplantedPercent(2L, 1L)).thenReturn(60, 100);
         when(baseMapper.insert(any(FarmRecords.class))).thenAnswer(inv -> {
             ((FarmRecords) inv.getArgument(0)).setId(211L);
             return 1;
         });
+        // 落地：查全部目标地块（B/C 两块）
+        when(baseMapper.selectTransplantTargetPlots(2L, 1L)).thenReturn(List.of(3L, 4L));
         when(plantDetailsMapper.update(isNull(), any(Wrapper.class))).thenReturn(1);
         when(plotInfoMapper.update(isNull(), any(Wrapper.class))).thenReturn(1);
 
         Long id = service.submitTransplant(bo);
         assertThat(id).isEqualTo(211L);
         verify(baseMapper).insert(any(FarmRecords.class));
-        // 副作用：plant_details 采摘完成 + plot_info 置空地各 1 次
+        // ① 目标满种入计划：交 plan 模块落地，带全部目标地块
+        verify(plantPlanService).materializeTransplantTargets(7L, 1L, 2L, List.of(3L, 4L));
+        // ② 源育苗明细标采摘完成（1 次 update）
         verify(plantDetailsMapper).update(isNull(), any(Wrapper.class));
+        // ③ 源育苗地块转采摘态(待退茬)（1 次 update）
         verify(plotInfoMapper).update(isNull(), any(Wrapper.class));
+    }
+
+    @Test
+    @DisplayName("结束移栽：部分移栽(<100%)按当前累计触发落地；无移栽记录抛错；已落地幂等返 0")
+    void finalizeTransplant_partial_and_guards() {
+        org.dromara.djs.plant.farm.domain.bo.TransplantFinalizeBo bo =
+            new org.dromara.djs.plant.farm.domain.bo.TransplantFinalizeBo();
+        bo.setPlantId(7L);
+        bo.setPlotId(1L);
+        bo.setCropId(2L);
+        bo.setFarmDate(LocalDate.now());
+
+        // 无移栽记录 → 抛错，不落地
+        when(baseMapper.sumTransplantedPercent(2L, 1L)).thenReturn(0);
+        assertThatThrownBy(() -> service.finalizeTransplant(bo))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("无移栽记录");
+
+        // 有累计(60%) 且源明细未完成 → 触发落地
+        when(baseMapper.sumTransplantedPercent(2L, 1L)).thenReturn(60);
+        when(plantDetailsMapper.selectCount(any(Wrapper.class))).thenReturn(0L);
+        when(baseMapper.selectTransplantTargetPlots(2L, 1L)).thenReturn(List.of(3L));
+        when(plantDetailsMapper.update(isNull(), any(Wrapper.class))).thenReturn(1);
+        when(plotInfoMapper.update(isNull(), any(Wrapper.class))).thenReturn(1);
+        int landed = service.finalizeTransplant(bo);
+        assertThat(landed).isEqualTo(1);
+        verify(plantPlanService).materializeTransplantTargets(7L, 1L, 2L, List.of(3L));
+
+        // 源明细已采摘完成（已落地）→ 幂等返 0，不重复落地
+        when(plantDetailsMapper.selectCount(any(Wrapper.class))).thenReturn(1L);
+        int again = service.finalizeTransplant(bo);
+        assertThat(again).isZero();
     }
 
     @Test
@@ -406,6 +449,84 @@ class FarmRecordsServiceImplTest {
         ArgumentCaptor<FarmRecords> cap = ArgumentCaptor.forClass(FarmRecords.class);
         verify(baseMapper, times(1)).insert(cap.capture());
         assertThat(cap.getValue().getFarmType()).isEqualTo("harvest");
+    }
+
+    @Test
+    @DisplayName("adjustPlotPickStatus completed: begin_harvestdate NULL-safe 回填（COALESCE 不覆写已有值）+ end_harvestdate=调整日期")
+    @SuppressWarnings("unchecked")
+    void adjustPlotPickStatus_completed_backfills_begin_harvestdate() {
+        PlotPickStatusBo bo = new PlotPickStatusBo();
+        bo.setPlotId(1L);
+        bo.setCropId(2L);
+        bo.setPickStatus("completed");
+        bo.setAdjustDate(LocalDate.of(2026, 7, 21));
+        bo.setTeamId(10L);
+
+        PlantDetails d = new PlantDetails();
+        d.setId(55L);
+        d.setPlantId(7L);
+        d.setIsPick(1);
+        d.setHarvestStatus("picking");   // 未完成行 → completed 方向的更新目标
+        when(plantDetailsMapper.selectList(any(Wrapper.class))).thenReturn(List.of(d));
+        when(plantDetailsMapper.update(isNull(), any(Wrapper.class))).thenReturn(1);
+        when(baseMapper.insert(any(FarmRecords.class))).thenAnswer(inv -> {
+            ((FarmRecords) inv.getArgument(0)).setId(600L);
+            return 1;
+        });
+
+        int affected = service.adjustPlotPickStatus(bo);
+        assertThat(affected).isEqualTo(1);
+
+        ArgumentCaptor<Wrapper> cap = ArgumentCaptor.forClass(Wrapper.class);
+        verify(plantDetailsMapper).update(isNull(), cap.capture());
+        LambdaUpdateWrapper<PlantDetails> uw = (LambdaUpdateWrapper<PlantDetails>) cap.getValue();
+        String sqlSet = uw.getSqlSet();
+        // begin_harvestdate 走 COALESCE NULL-safe 回填（已有值不覆写）；end_harvestdate 同批落调整日期
+        assertThat(sqlSet).contains("begin_harvestdate = COALESCE(begin_harvestdate,");
+        assertThat(sqlSet).contains("end_harvestdate");
+        // 调整日期走参数绑定（非字符串拼接），状态值也在同一 wrapper 参数里
+        assertThat(uw.getParamNameValuePairs().values())
+            .contains(LocalDate.of(2026, 7, 21), "completed");
+        // 留痕农事记录仍写一条 harvest_activity
+        verify(baseMapper).insert(any(FarmRecords.class));
+    }
+
+    @Test
+    @DisplayName("adjustPlotPickStatus picking: 同样回填 begin_harvestdate + 班组写 harvest_by")
+    @SuppressWarnings("unchecked")
+    void adjustPlotPickStatus_picking_backfills_begin_harvestdate() {
+        PlotPickStatusBo bo = new PlotPickStatusBo();
+        bo.setPlotId(1L);
+        bo.setCropId(2L);
+        bo.setPickStatus("picking");
+        bo.setAdjustDate(LocalDate.of(2026, 7, 20));
+        bo.setTeamId(10L);
+
+        PlantDetails d = new PlantDetails();
+        d.setId(56L);
+        d.setPlantId(7L);
+        d.setIsPick(1);
+        d.setHarvestStatus("pending");
+        when(plantDetailsMapper.selectList(any(Wrapper.class))).thenReturn(List.of(d));
+        when(plantDetailsMapper.update(isNull(), any(Wrapper.class))).thenReturn(1);
+        when(baseMapper.insert(any(FarmRecords.class))).thenAnswer(inv -> {
+            ((FarmRecords) inv.getArgument(0)).setId(601L);
+            return 1;
+        });
+
+        int affected = service.adjustPlotPickStatus(bo);
+        assertThat(affected).isEqualTo(1);
+
+        ArgumentCaptor<Wrapper> cap = ArgumentCaptor.forClass(Wrapper.class);
+        verify(plantDetailsMapper).update(isNull(), cap.capture());
+        LambdaUpdateWrapper<PlantDetails> uw = (LambdaUpdateWrapper<PlantDetails>) cap.getValue();
+        String sqlSet = uw.getSqlSet();
+        assertThat(sqlSet).contains("begin_harvestdate = COALESCE(begin_harvestdate,");
+        // picking 方向不写 end_harvestdate（完成日期归 completed 方向独占），班组落 harvest_by
+        assertThat(sqlSet).doesNotContain("end_harvestdate");
+        assertThat(sqlSet).contains("harvest_by");
+        assertThat(uw.getParamNameValuePairs().values())
+            .contains(LocalDate.of(2026, 7, 20), "picking", 10L);
     }
 
     @Test

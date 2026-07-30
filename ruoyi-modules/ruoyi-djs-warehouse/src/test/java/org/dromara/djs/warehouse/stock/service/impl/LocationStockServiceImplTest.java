@@ -1,7 +1,10 @@
 package org.dromara.djs.warehouse.stock.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
+import com.baomidou.mybatisplus.core.MybatisConfiguration;
+import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
@@ -121,6 +124,9 @@ class LocationStockServiceImplTest {
 
     @BeforeEach
     void setup() {
+        TableInfoHelper.initTableInfo(
+            new MapperBuilderAssistant(new MybatisConfiguration(), ""),
+            LocationStock.class);
         service = new TestableLocationStockServiceImpl(stockMapper, locationInfoMapper, plotInfoMapper,
             productInfoMapper, stockFlowMapper, bizCodeGenerator, stockCheckService);
         loginHelperMock = Mockito.mockStatic(LoginHelper.class);
@@ -168,6 +174,30 @@ class LocationStockServiceImplTest {
         assertThat(result.getTotal()).isEqualTo(1);
         assertThat(result.getRows()).hasSize(1);
         assertThat(result.getRows().get(0).getLocationName()).as("应回填 locationName").isEqualTo("冻品库");
+    }
+
+    @Test
+    @DisplayName("queryPageList: 零库存仅保留上海当天同一库存篮有流水的记录")
+    void testQueryPageList_ZeroStockVisibilityUsesTodayFlowAndAllDimensions() {
+        LocationStockQuery query = new LocationStockQuery();
+        PageQuery pageQuery = new PageQuery(1, 10);
+        Page<LocationStockVo> mockPage = new Page<>(1, 10);
+        mockPage.setRecords(List.of());
+        when(stockMapper.selectVoPage(any(Page.class), any(Wrapper.class))).thenReturn(mockPage);
+
+        service.queryPageList(query, pageQuery);
+
+        ArgumentCaptor<Wrapper<LocationStock>> captor = ArgumentCaptor.forClass(Wrapper.class);
+        verify(stockMapper).selectVoPage(any(Page.class), captor.capture());
+        String sql = captor.getValue().getCustomSqlSegment();
+        assertThat(sql)
+            .contains("product_stock > 0 OR EXISTS")
+            .contains("t_warehouse_stock_flow")
+            .contains("warehouse_id <=> t_warehouse_location_stock.location_id")
+            .contains("ear_no <=> t_warehouse_location_stock.ear_no")
+            .contains("white_bar_no <=> t_warehouse_location_stock.white_bar_no")
+            .contains("plot_id <=> t_warehouse_location_stock.plot_id")
+            .contains("UTC_TIMESTAMP()");
     }
 
     @Test

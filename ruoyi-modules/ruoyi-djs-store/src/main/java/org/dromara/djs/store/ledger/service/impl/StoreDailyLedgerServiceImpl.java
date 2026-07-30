@@ -28,7 +28,6 @@ import org.dromara.djs.store.returns.domain.StoreReturn;
 import org.dromara.djs.store.returns.mapper.StoreReturnMapper;
 import org.dromara.djs.warehouse.demand.domain.DemandManage;
 import org.dromara.djs.warehouse.demand.mapper.DemandManageMapper;
-import org.dromara.djs.warehouse.pack.domain.ProductProduction;
 import org.dromara.djs.warehouse.pack.mapper.ProductProductionMapper;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
@@ -50,17 +49,17 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 /**
  * 门店经营流水盘点台账 Service 实现（STORE-LEDGER-001 / WSA 阶段1 重构）。
  *
- * <h3>盘点候选（{@link #listCandidates}）= 四类产品并集</h3>
+ * <h3>盘点候选（{@link #listCandidates}）= 三类产品并集</h3>
  * <ol>
- *   <li><b>猪肉成品</b>：字典 {@code djs_pork_return_product} 的 value（业务码）resolve 出的产品
- *       （{@link #resolvePorkReturnProductIds}）。入库量手动可编辑，上限 = 当日白条发货重量。</li>
- *   <li><b>白条产品</b>（DENGBO-R12）：字典 {@code djs_white_bar_return_product} 配置产品
- *       （{@link #resolveWhiteBarReturnDictProducts}），<b>仅当日有白条到店</b>（{@link #hasWhiteBarArrivedToday}）时列出；
- *       按重量盘点、单位取对应原材料单位（{@link #resolveMaterialUnits}）、入库量手动可编辑（上限 = 当日白条发货重量）。</li>
+ *   <li><b>猪肉产品</b>：字典 {@code djs_white_bar_return_product}（白条到店分割部位清单）的 value（产品业务码）
+ *       resolve 出的产品（{@link #resolvePorkCandidateProductIds}）。这些部位即门店现存的猪肉原材料，
+ *       <b>与当日有无白条到店无关、恒列出</b>（没到货的日子也要能盘）；入库量手动可编辑，
+ *       上限 = 当日白条发货重量 + 材料外售成品当日到店重；单位取对应原材料单位（{@link #resolveMaterialUnits}）。</li>
  *   <li><b>新到货</b>：当日发货到该门店的产品（{@code t_warehouse_shipment} ⋈ {@code t_warehouse_demand_manage}
  *       取 productId，排除 white_bar），{@code inboundQty}=发货量、{@code inboundReadonly}=true。</li>
  *   <li><b>昨日库存</b>：{@code t_store_inventory.stock_qty>0} 的产品，{@code openingQty}=结存。</li>
@@ -73,7 +72,8 @@ import java.util.stream.Collectors;
  * <ul>
  *   <li>期末 {@code closingQty} 手动入参（实盘录入）；</li>
  *   <li>损耗 service 计算：{@code loss = opening + inbound − sale − gift + returnSale − returnWh − closing}；</li>
- *   <li>猪肉成品 / 白条产品行校验：本批累计 {@code inboundQty ≤ } 当日白条发货重量（{@link #sumTodayWhiteBarShipWeight}）；</li>
+ *   <li>猪肉产品行校验：本批累计 {@code inboundQty ≤ } 当日白条发货重量（{@link #sumTodayWhiteBarShipWeight}）
+ *       + 材料外售成品当日到店重（{@link #sumMaterialSoldWhiteBarArriveWeight}）；</li>
  *   <li>每行 {@code closingQty} UPSERT 进 {@code t_store_inventory.stock_qty}（期末回写、下次期初读）。</li>
  * </ul>
  *
@@ -89,11 +89,10 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class StoreDailyLedgerServiceImpl implements IStoreDailyLedgerService {
 
-    /** 猪肉产品退回字典（门店猪肉打包成品部位）：label=产品名 / value=产品业务码（{@code t_warehouse_product_info.product_id} VARCHAR）。 */
-    private static final String DICT_PORK_RETURN_PRODUCT = "djs_pork_return_product";
     /**
-     * 白条产品退回字典（DENGBO-R11 建，DENGBO-R12 盘点复用）：label=产品名 / value=产品业务码。
-     * 盘点「白条产品」来源；仅当日有白条到店时列出，按重量盘点、单位取对应原材料单位。空字典客户在 admin 字典管理自配。
+     * 白条到店分割部位字典：label=部位名 / value=产品业务码（{@code t_warehouse_product_info.product_id} VARCHAR）。
+     * 这些部位即门店现存的猪肉原材料，是<b>猪肉盘点候选的唯一来源</b>（与门店退回操作「白条产品」同一字典）。
+     * 客户在 admin 字典管理维护；某项 value 未对上产品（占位码）→ 该项静默不进候选。
      */
     private static final String DICT_WHITE_BAR_RETURN_PRODUCT = "djs_white_bar_return_product";
     /** 业态字典值：白条（新到货候选排除，白条作为猪肉入库上限的来源）。 */
@@ -102,9 +101,8 @@ public class StoreDailyLedgerServiceImpl implements IStoreDailyLedgerService {
     private static final String DIRECTION_CUSTOMER_TO_STORE = "customer_to_store";
     private static final String DIRECTION_STORE_TO_WAREHOUSE = "store_to_warehouse";
 
+    /** 候选类别：猪肉产品（白条分割部位字典驱动，按重量、原材料单位、入库可编辑且有上限）。 */
     private static final String CATEGORY_PORK = "pork";
-    /** 候选类别（DENGBO-R12）：白条产品（djs_white_bar_return_product 字典，按重量、原材料单位、入库可编辑）。 */
-    private static final String CATEGORY_WHITE_BAR = "white_bar";
     private static final String CATEGORY_INBOUND = "inbound";
     private static final String CATEGORY_STOCK = "stock";
 
@@ -115,11 +113,6 @@ public class StoreDailyLedgerServiceImpl implements IStoreDailyLedgerService {
     /** {@code t_warehouse_product_info.belong_type} 字典值。 */
     private static final String BELONG_PORK = "pork";
     private static final String BELONG_VEGETABLE = "vegetable";
-    /** {@code belong_type} 字典值：白条（当日白条到店判定）。 */
-    private static final String BELONG_WHITE_BAR = "white_bar";
-
-    /** product_production.is_delivery_check=1：已发货清点（到店白条口径与退回操作一致）。 */
-    private static final Integer DELIVERY_CHECKED = 1;
 
     /** 业务日时区（与项目其余「今日」口径一致，避免 DB CURDATE() 时区雷）。 */
     private static final ZoneId ZONE_SHANGHAI = ZoneId.of("Asia/Shanghai");
@@ -162,28 +155,32 @@ public class StoreDailyLedgerServiceImpl implements IStoreDailyLedgerService {
         }
         LocalDate date = ledgerDate == null ? LocalDate.now(ZONE_SHANGHAI) : ledgerDate;
 
-        // 四类候选并集（保留首次命中类别；inbound 与 stock 合并时 category=stock，inbound 量后面补）。
-        List<Long> porkIds = resolvePorkReturnProductIds();
-        // DENGBO-R12：白条产品（字典 djs_white_bar_return_product 配置产品），仅当日有白条到店时列出；
-        // 按重量盘点、单位取对应原材料单位、入库量手动可编辑（客户自配字典，空则无白条产品行）。
-        List<ProductInfo> whiteBarProducts = hasWhiteBarArrivedOnDate(storeId, date)
-            ? resolveWhiteBarReturnDictProducts() : List.of();
-        Set<Long> whiteBarIds = whiteBarProducts.stream().map(ProductInfo::getId)
-            .collect(Collectors.toCollection(LinkedHashSet::new));
-        Map<Long, String> whiteBarMaterialUnits = resolveMaterialUnits(whiteBarProducts);
-        // 猪肉 TAB 归属集 = 猪肉成品字典 ∪ 白条产品字典（belong_type=pork 在 resolveBelongTab 里另判）。
-        Set<Long> porkTabIdSet = new LinkedHashSet<>(porkIds);
-        porkTabIdSet.addAll(whiteBarIds);
-        Map<Long, BigDecimal> inboundMap = selectStoreShippedProducts(storeId, date);    // 新到货：productId → 当日到店份数（需求量 demand_quantity，排 white_bar）
-        Map<Long, BigDecimal> stockMap = selectPositiveStockByProduct(storeId);          // 昨日库存：productId → 结存（>0）
+        // 三类候选并集（保留首次命中类别；inbound 与 stock 合并时 category=stock，inbound 量后面补）。
+        List<Long> porkIds = resolvePorkCandidateProductIds();
+        // row27/29：原材料外售 swap 域从「猪肉字典」扩到**全部候选产品**（字典 ∪ 当日到货 ∪ 昨日库存）——凡
+        // 配置「是否原材料外售=是」且有原材料的产品（含以成品自身 id 到店/在库的材料外售成品，如「黑毛猪筒子骨500g/份」），
+        // 盘点候选一律改列其原材料产品、按原材料 id 合并成一行（不区分来源），各指标按原材料维度 foldByEffective 聚合。
+        Map<Long, BigDecimal> deliveredRaw = selectStoreShippedProducts(storeId, date);
+        Map<Long, BigDecimal> stockRaw = selectPositiveStockByProduct(storeId);
+        Set<Long> swapDomain = new LinkedHashSet<>(porkIds);
+        swapDomain.addAll(deliveredRaw.keySet());
+        swapDomain.addAll(stockRaw.keySet());
+        Map<Long, Long> porkSwap = resolveMaterialSoldSwap(new ArrayList<>(swapDomain));
+        List<Long> effectivePorkIds = porkIds.stream()
+            .map(id -> porkSwap.getOrDefault(id, id)).distinct().collect(Collectors.toList());
+        // 猪肉 TAB 归属集 = 猪肉候选字典（已 swap 原材料）；belong_type=pork 在 resolveBelongTab 里另判。
+        Set<Long> porkTabIdSet = new LinkedHashSet<>(effectivePorkIds);
+        // 新到货 / 昨日库存：成品维度记录 foldByEffective 折叠到原材料 key（swap 空则原样）。
+        Map<Long, BigDecimal> inboundMap = foldByEffective(deliveredRaw, porkSwap);    // 新到货：productId → 当日到店份数（需求量 demand_quantity，排 white_bar）
+        Map<Long, BigDecimal> stockMap = foldByEffective(stockRaw, porkSwap);          // 昨日库存：productId → 结存（>0）
+        // row29：材料外售成品折进原材料行后，「当日入库」默认取其发货**实际重量**(kg，盘点按原材料按重盘)，
+        // 而非份数——用户可在此基础上更正为白条分割成原材料的实际重量。materialId → Σ材料外售成品发货 product_weight。
+        Map<Long, BigDecimal> materialSoldInboundWeight = resolveMaterialSoldInboundWeight(storeId, date, porkSwap);
 
-        // 类别归属：优先级 pork > white_bar > stock > inbound（库存优先于新到货以保留期初）。
+        // 类别归属：优先级 pork > stock > inbound（库存优先于新到货以保留期初）。
         Map<Long, String> categoryByProduct = new LinkedHashMap<>();
-        for (Long pid : porkIds) {
+        for (Long pid : effectivePorkIds) {
             categoryByProduct.put(pid, CATEGORY_PORK);
-        }
-        for (Long pid : whiteBarIds) {
-            categoryByProduct.putIfAbsent(pid, CATEGORY_WHITE_BAR);
         }
         for (Long pid : stockMap.keySet()) {
             categoryByProduct.putIfAbsent(pid, CATEGORY_STOCK);
@@ -201,11 +198,17 @@ public class StoreDailyLedgerServiceImpl implements IStoreDailyLedgerService {
         Map<Long, ProductInfo> productMap = productInfoMapper.selectList(
                 new LambdaQueryWrapper<ProductInfo>().in(ProductInfo::getId, productIds))
             .stream().collect(Collectors.toMap(ProductInfo::getId, p -> p, (a, b) -> a));
+        // 猪肉产品行按重量盘点：单位取对应原材料单位（产品未配原材料 → 缺省，前端回落 productUnit）。
+        Map<Long, String> porkMaterialUnits = resolveMaterialUnits(effectivePorkIds.stream()
+            .map(productMap::get).filter(Objects::nonNull).collect(Collectors.toList()));
 
         // 预填：销售量 / 退货量(顾客) / 退回量(门店退仓库) 当日聚合 + 期初(库存结存)。
-        Map<Long, BigDecimal> saleMap = sumSaleByProduct(storeId, date, productIds);
-        Map<Long, BigDecimal> returnSaleMap = sumReturnByProduct(storeId, date, productIds, DIRECTION_CUSTOMER_TO_STORE);
-        Map<Long, BigDecimal> returnWhMap = sumReturnByProduct(storeId, date, productIds, DIRECTION_STORE_TO_WAREHOUSE);
+        // 指标查询扩集 = 展示产品 ∪ 被 swap 的成品 id，查完 foldByEffective 折叠——成品 id 下的历史记录也归并到原材料行。
+        List<Long> metricIds = Stream.concat(productIds.stream(), porkSwap.keySet().stream())
+            .distinct().collect(Collectors.toList());
+        Map<Long, BigDecimal> saleMap = foldByEffective(sumSaleByProduct(storeId, date, metricIds), porkSwap);
+        Map<Long, BigDecimal> returnSaleMap = foldByEffective(sumReturnByProduct(storeId, date, metricIds, DIRECTION_CUSTOMER_TO_STORE), porkSwap);
+        Map<Long, BigDecimal> returnWhMap = foldByEffective(sumReturnByProduct(storeId, date, metricIds, DIRECTION_STORE_TO_WAREHOUSE), porkSwap);
 
         List<StoreDailyLedgerCandidateVo> result = new ArrayList<>();
         for (Long pid : productIds) {
@@ -216,26 +219,26 @@ public class StoreDailyLedgerServiceImpl implements IStoreDailyLedgerService {
                 continue;
             }
             String category = categoryByProduct.getOrDefault(pid, CATEGORY_STOCK);
-            boolean whiteBar = CATEGORY_WHITE_BAR.equals(category);
-            // 猪肉成品 + 白条产品入库量手动可编辑（DENGBO-R12：白条产品入库量用户录入，有上限）；新到货 / 库存只读。
-            boolean editableInbound = CATEGORY_PORK.equals(category) || whiteBar;
-            BigDecimal inbound = nz(inboundMap.get(pid));   // 新到货发货量（pork/白条/stock 行也可能恰有发货，预填为参考）
+            // 猪肉产品行：按重量盘点（单位取原材料单位）+ 入库量用户手动录入（有上限）；新到货 / 库存行入库只读。
+            boolean porkRow = CATEGORY_PORK.equals(category);
+            // row29：材料外售折进的原材料行，当日入库默认取材料外售成品发货实际重量(kg)；否则取新到货份数。
+            BigDecimal inbound = materialSoldInboundWeight.containsKey(pid)
+                ? materialSoldInboundWeight.get(pid) : nz(inboundMap.get(pid));
 
             StoreDailyLedgerCandidateVo vo = new StoreDailyLedgerCandidateVo();
             vo.setProductId(pid);
             vo.setProductName(p.getProductName());
             vo.setProductUnit(p.getProductUnit());
-            // 白条产品单位取对应原材料单位（DENGBO-R12，按重量盘点）；其余行不设 materialUnit（前端回落 productUnit）。
-            if (whiteBar) {
-                vo.setMaterialUnit(whiteBarMaterialUnits.get(pid));
+            // 其余行不设 materialUnit（前端回落 productUnit）。
+            if (porkRow) {
+                vo.setMaterialUnit(porkMaterialUnits.get(pid));
             }
             vo.setProductSpec(p.getProductSpec());
             vo.setCategory(category);
             vo.setBelongTab(resolveBelongTab(p, porkTabIdSet));
             vo.setOpeningQty(nz(stockMap.get(pid)));
             vo.setInboundQty(inbound);
-            // 猪肉成品 / 白条产品入库手动可编辑（有上限）；其余（新到货/库存）入库为发货量只读。
-            vo.setInboundReadonly(!editableInbound);
+            vo.setInboundReadonly(!porkRow);
             vo.setSaleQty(saleMap.getOrDefault(pid, BigDecimal.ZERO));
             vo.setReturnSaleQty(returnSaleMap.getOrDefault(pid, BigDecimal.ZERO));
             vo.setReturnWhQty(returnWhMap.getOrDefault(pid, BigDecimal.ZERO));
@@ -269,12 +272,14 @@ public class StoreDailyLedgerServiceImpl implements IStoreDailyLedgerService {
         }
 
         // 入库上限 = 当日白条发货重量（一次取，所有白条派生行共用同一上限）。
-        // 上限适用集 = 猪肉成品字典 ∪ 白条产品字典（DENGBO-R12，两者均由白条派生）。
+        // 上限适用集 = 猪肉候选字典产品（白条分割部位，均由白条派生）。
         // 按本批所有适用行【累计】校验：各行 inbound 之和不得超白条总重，
         // 否则逐行各比完整上限可被多行绕过（5 行各录满 limit → 累计 5×limit 全过）。
-        Set<Long> whiteBarCappedIdSet = new LinkedHashSet<>(resolvePorkReturnProductIds());
-        whiteBarCappedIdSet.addAll(resolveWhiteBarReturnProductIds());
-        BigDecimal whiteBarLimit = sumTodayWhiteBarShipWeight(bo.getStoreId(), date);
+        Set<Long> whiteBarCappedIdSet = new LinkedHashSet<>(resolvePorkCandidateProductIds());
+        // row38：入库上限 = 当日白条发货重量 + 材料外售且原材料∈白条退回字典的成品当日到店实称重（重叠部分才加）。
+        // 后者是白条分割成原材料后再外售的产出，其到店重与白条发货重叠，也应计入可入库上限。
+        BigDecimal whiteBarLimit = sumTodayWhiteBarShipWeight(bo.getStoreId(), date)
+            .add(sumMaterialSoldWhiteBarArriveWeight(bo.getStoreId(), date));
         BigDecimal porkInboundSum = BigDecimal.ZERO;
 
         int saved = 0;
@@ -290,12 +295,12 @@ public class StoreDailyLedgerServiceImpl implements IStoreDailyLedgerService {
             BigDecimal returnWh = nz(item.getReturnWhQty());
             BigDecimal closing = nz(item.getClosingQty());
 
-            // 白条派生行（猪肉成品 + 白条产品）入库上限校验（累计本批所有适用行，不逐行各比完整上限）。
+            // 猪肉产品行（白条派生）入库上限校验（累计本批所有适用行，不逐行各比完整上限）。
             if (whiteBarCappedIdSet.contains(item.getProductId())) {
                 porkInboundSum = porkInboundSum.add(inbound);
                 if (porkInboundSum.compareTo(whiteBarLimit) > 0) {
                     throw new ServiceException(
-                        "本批猪肉/白条到货合计(" + porkInboundSum.toPlainString() + ")不能超过当日白条发货重量("
+                        "本批猪肉产品入库合计(" + porkInboundSum.toPlainString() + ")不能超过 白条发货重量+材料外售到店重("
                             + whiteBarLimit.toPlainString() + ")", 400);
                 }
             }
@@ -374,57 +379,68 @@ public class StoreDailyLedgerServiceImpl implements IStoreDailyLedgerService {
     }
 
     /**
-     * 猪肉候选：字典 {@code djs_pork_return_product} 的 value（产品业务码 VARCHAR）→ 雪花主键。
+     * 猪肉成品 → 原材料 的 swap 映射（DENGBO 原材料外售）。
      *
-     * <p>字典 value = {@code t_warehouse_product_info.product_id}（业务码）。空字典 / 无匹配产品 → 空回退 + warn，不抛。</p>
+     * <p>取 {@code finishedIds} 中「是否原材料外售=是」({@code is_material_sold=1}) 且配了原材料
+     * ({@code product_material≠null}) 的成品，映射到其原材料 id。盘点候选据此把成品替换为原材料展示。
+     * 无命中 → 空 map（调用方 getOrDefault 退回原 id，行为不变）。</p>
      */
-    private List<Long> resolvePorkReturnProductIds() {
-        Map<String, String> dict = dictService.getAllDictByDictType(DICT_PORK_RETURN_PRODUCT);
-        if (dict == null || dict.isEmpty()) {
-            log.warn("[STORE-LEDGER] 字典 {} 为空，猪肉盘点候选回退为空", DICT_PORK_RETURN_PRODUCT);
-            return List.of();
+    /**
+     * row29：材料外售成品折进原材料行后，「当日入库」默认取该原材料对应材料外售成品的**发货实际重量**（kg）。
+     * = 对每个被 swap 的材料外售成品 finishedId，取当日发往该店实际称重 {@code product_weight}，按 materialId 累加。
+     * swap 键通常寥寥（当日到店的材料外售成品数），逐个查 {@link ProductProductionMapper#sumDeliveredWeightToStore}。
+     */
+    private Map<Long, BigDecimal> resolveMaterialSoldInboundWeight(Long storeId, LocalDate date, Map<Long, Long> swap) {
+        Map<Long, BigDecimal> out = new LinkedHashMap<>();
+        if (swap == null || swap.isEmpty()) {
+            return out;
         }
-        // key=dictValue=产品业务码；过滤空值。
-        List<String> codes = dict.keySet().stream()
-            .filter(StringUtils::isNotBlank)
-            .distinct()
-            .toList();
-        if (codes.isEmpty()) {
-            return List.of();
-        }
-        List<Long> ids = productInfoMapper.selectList(
-                new LambdaQueryWrapper<ProductInfo>()
-                    .in(ProductInfo::getProductId, codes)
-                    .select(ProductInfo::getId))
-            .stream().map(ProductInfo::getId).filter(Objects::nonNull).distinct().toList();
-        if (ids.isEmpty()) {
-            log.warn("[STORE-LEDGER] 字典 {} 的业务码 {} 未匹配到任何产品，猪肉候选回退为空",
-                DICT_PORK_RETURN_PRODUCT, codes);
-        }
-        return ids;
+        swap.forEach((finishedId, materialId) -> {
+            BigDecimal w = productProductionMapper.sumDeliveredWeightToStore(storeId, finishedId, date);
+            if (w != null && w.signum() > 0) {
+                out.merge(materialId, w, BigDecimal::add);
+            }
+        });
+        return out;
     }
 
-    /**
-     * 白条产品候选（DENGBO-R12）：字典 {@code djs_white_bar_return_product} 配置产品（雪花主键，按 id 保序）。
-     * 空字典 → 空（不回退 belong_type，白条产品完全由字典驱动，客户在 admin 字典管理自配）。
-     */
-    private List<ProductInfo> resolveWhiteBarReturnDictProducts() {
-        List<Long> ids = resolveWhiteBarReturnProductIds();
-        if (ids.isEmpty()) {
-            return List.of();
+    private Map<Long, Long> resolveMaterialSoldSwap(List<Long> finishedIds) {
+        if (finishedIds == null || finishedIds.isEmpty()) {
+            return Map.of();
         }
         return productInfoMapper.selectList(new LambdaQueryWrapper<ProductInfo>()
-            .in(ProductInfo::getId, ids).orderByAsc(ProductInfo::getId));
+                .in(ProductInfo::getId, finishedIds)
+                .eq(ProductInfo::getIsMaterialSold, 1)
+                .isNotNull(ProductInfo::getProductMaterial)
+                .select(ProductInfo::getId, ProductInfo::getProductMaterial))
+            .stream()
+            .collect(Collectors.toMap(ProductInfo::getId, ProductInfo::getProductMaterial, (a, b) -> a));
     }
 
     /**
-     * 白条产品字典 {@code djs_white_bar_return_product} 的 dict_value（产品业务码 product_id）→ 雪花主键。
-     * 空字典 / 无匹配产品 → 空回退 + warn，不抛。与门店退回操作「白条产品」同一字典（DENGBO-R11/R12）。
+     * 按 swap 折叠指标 map：成品 key 的数值累加进其原材料 key（多成品指向同一原材料则 SUM 合并）。
+     * swap 空则原样返回（无原材料外售场景零影响）。
      */
-    private List<Long> resolveWhiteBarReturnProductIds() {
+    private static Map<Long, BigDecimal> foldByEffective(Map<Long, BigDecimal> src, Map<Long, Long> swap) {
+        if (swap == null || swap.isEmpty() || src == null || src.isEmpty()) {
+            return src;
+        }
+        Map<Long, BigDecimal> out = new LinkedHashMap<>();
+        src.forEach((k, v) -> out.merge(swap.getOrDefault(k, k), nz(v), BigDecimal::add));
+        return out;
+    }
+
+    /**
+     * 猪肉盘点候选产品 id：字典 {@link #DICT_WHITE_BAR_RETURN_PRODUCT} 的 dict_value（产品业务码
+     * {@code t_warehouse_product_info.product_id} VARCHAR）→ 雪花主键。
+     *
+     * <p>盘的是门店现有猪肉原材料，故恒取全字典、不按当日到货过滤。空字典 / 无匹配产品 → 空回退 + warn，不抛；
+     * 字典中未对上产品的项（占位业务码）静默跳过。与门店退回操作「白条产品」同一字典。</p>
+     */
+    private List<Long> resolvePorkCandidateProductIds() {
         Map<String, String> dict = dictService.getAllDictByDictType(DICT_WHITE_BAR_RETURN_PRODUCT);
         if (dict == null || dict.isEmpty()) {
-            log.warn("[STORE-LEDGER] 字典 {} 为空，白条产品盘点候选为空（待客户在 admin 字典管理配置）", DICT_WHITE_BAR_RETURN_PRODUCT);
+            log.warn("[STORE-LEDGER] 字典 {} 为空，猪肉盘点候选为空（待客户在 admin 字典管理配置）", DICT_WHITE_BAR_RETURN_PRODUCT);
             return List.of();
         }
         List<String> codes = dict.keySet().stream()
@@ -432,13 +448,18 @@ public class StoreDailyLedgerServiceImpl implements IStoreDailyLedgerService {
         if (codes.isEmpty()) {
             return List.of();
         }
-        return productInfoMapper.selectList(new LambdaQueryWrapper<ProductInfo>()
+        List<Long> ids = productInfoMapper.selectList(new LambdaQueryWrapper<ProductInfo>()
                 .in(ProductInfo::getProductId, codes).select(ProductInfo::getId))
             .stream().map(ProductInfo::getId).filter(Objects::nonNull).distinct().toList();
+        if (ids.isEmpty()) {
+            log.warn("[STORE-LEDGER] 字典 {} 的业务码 {} 未匹配到任何产品，猪肉盘点候选为空",
+                DICT_WHITE_BAR_RETURN_PRODUCT, codes);
+        }
+        return ids;
     }
 
     /**
-     * 白条产品 → 对应产品原材料（{@code product_material}）的单位（DENGBO-R12，盘点按重量、单位取原材料单位）。
+     * 产品 → 对应产品原材料（{@code product_material}）的单位（猪肉产品按重量盘点、单位取原材料单位）。
      * 无原材料 / 材料无单位 → 缺省（调用方回落产品自身单位）。
      */
     private Map<Long, String> resolveMaterialUnits(List<ProductInfo> products) {
@@ -461,43 +482,6 @@ public class StoreDailyLedgerServiceImpl implements IStoreDailyLedgerService {
             }
         });
         return result;
-    }
-
-    /**
-     * 该门店「盘点日当天是否有白条产品到店」（DENGBO-R14）：该店在 {@code date} 当天确认收货
-     * （{@code received_time}=盘点日）的需求下，存在已发货清点（{@code is_delivery_check=1}）的 white_bar 业态成品。
-     *
-     * <p>白条候选门禁必须按<b>盘点日</b>（listCandidates 的 date 参数）判定，而非 {@code LocalDate.now()}——
-     * 否则查看/录入非今天的盘点日（如补录昨日）时白条到店判定错位、白条产品行不显示（DENGBO-R14 修复）。</p>
-     *
-     * @param storeId 门店；为空 → false
-     * @param date    盘点日期（白条到店口径按此日，非当前系统日）
-     */
-    private boolean hasWhiteBarArrivedOnDate(Long storeId, LocalDate date) {
-        if (storeId == null || date == null) {
-            return false;
-        }
-        List<Long> demandIds = demandManageMapper.selectList(new LambdaQueryWrapper<DemandManage>()
-                .eq(DemandManage::getStoreId, storeId)
-                .ge(DemandManage::getReceivedTime, date.atStartOfDay())
-                .lt(DemandManage::getReceivedTime, date.plusDays(1).atStartOfDay())
-                .select(DemandManage::getId))
-            .stream().map(DemandManage::getId).filter(Objects::nonNull).distinct().toList();
-        if (demandIds.isEmpty()) {
-            return false;
-        }
-        List<Long> whiteBarProductIds = productInfoMapper.selectList(new LambdaQueryWrapper<ProductInfo>()
-                .eq(ProductInfo::getBelongType, BELONG_WHITE_BAR)
-                .select(ProductInfo::getId))
-            .stream().map(ProductInfo::getId).filter(Objects::nonNull).toList();
-        if (whiteBarProductIds.isEmpty()) {
-            return false;
-        }
-        Long cnt = productProductionMapper.selectCount(new LambdaQueryWrapper<ProductProduction>()
-            .in(ProductProduction::getDemandId, demandIds)
-            .in(ProductProduction::getProductId, whiteBarProductIds)
-            .eq(ProductProduction::getIsDeliveryCheck, DELIVERY_CHECKED));
-        return cnt != null && cnt > 0;
     }
 
     /**
@@ -551,8 +535,8 @@ public class StoreDailyLedgerServiceImpl implements IStoreDailyLedgerService {
     }
 
     /**
-     * 产品品类页签（DENGBO-R10）：产品在 {@code djs_pork_return_product} / {@code djs_white_bar_return_product} 字典
-     * （{@code porkTabIds} 为两字典并集）或 {@code belong_type='pork'} → 猪肉；{@code belong_type='vegetable'} → 果蔬；
+     * 产品品类页签（DENGBO-R10）：产品在猪肉候选字典 {@code djs_white_bar_return_product}（{@code porkTabIds}）
+     * 或 {@code belong_type='pork'} → 猪肉；{@code belong_type='vegetable'} → 果蔬；
      * 其余（含外购 belong_type=NULL / egg / dry_good / other / gift_box）→ 其他。
      */
     private String resolveBelongTab(ProductInfo p, Set<Long> porkTabIds) {
@@ -579,6 +563,38 @@ public class StoreDailyLedgerServiceImpl implements IStoreDailyLedgerService {
                 .eq(Shipment::getProductType, PRODUCT_TYPE_WHITE_BAR)
                 .select(Shipment::getShipQuantity));
         return shipments.stream().map(s -> nz(s.getShipQuantity())).reduce(BigDecimal.ZERO, BigDecimal::add);
+    }
+
+    /**
+     * 材料外售成品当日到店实称重合计（row38：补入白条入库上限）。
+     *
+     * <p>取「是否原材料外售=是」({@code is_material_sold=1}) 且原材料属于猪肉候选字典产品集
+     * ({@code product_material ∈ } {@link #resolvePorkCandidateProductIds()}) 的成品，逐个累加当日发往该店的
+     * 实际称重 {@code product_weight}（{@link ProductProductionMapper#sumDeliveredWeightToStore}）。
+     * 这些成品是白条分割成原材料后再外售的产出，其到店重与白条发货重叠，故计入可入库上限。</p>
+     *
+     * <p>直接取数（不复用 loss 服务 {@code getWhiteBarSplitLoss}——该服务 arriveWeight=0 时提前 return 会漏算）。
+     * 猪肉候选字典为空 / 无命中成品 → 0。</p>
+     */
+    private BigDecimal sumMaterialSoldWhiteBarArriveWeight(Long storeId, LocalDate date) {
+        List<Long> whiteBarMaterialIds = resolvePorkCandidateProductIds();
+        if (whiteBarMaterialIds.isEmpty()) {
+            return BigDecimal.ZERO;
+        }
+        List<Long> finishedIds = productInfoMapper.selectList(new LambdaQueryWrapper<ProductInfo>()
+                .eq(ProductInfo::getIsMaterialSold, 1)
+                .isNotNull(ProductInfo::getProductMaterial)
+                .in(ProductInfo::getProductMaterial, whiteBarMaterialIds)
+                .select(ProductInfo::getId))
+            .stream().map(ProductInfo::getId).filter(Objects::nonNull).distinct().toList();
+        BigDecimal sum = BigDecimal.ZERO;
+        for (Long finishedId : finishedIds) {
+            BigDecimal w = productProductionMapper.sumDeliveredWeightToStore(storeId, finishedId, date);
+            if (w != null && w.signum() > 0) {
+                sum = sum.add(w);
+            }
+        }
+        return sum;
     }
 
     /** 昨日库存候选：门店独立库存 {@code stock_qty>0} 的产品。 */
@@ -680,14 +696,12 @@ public class StoreDailyLedgerServiceImpl implements IStoreDailyLedgerService {
             .map(StoreDailyLedgerVo::getStoreId).filter(Objects::nonNull).distinct().toList());
         Map<Long, ProductInfo> products = productMap(list.stream()
             .map(StoreDailyLedgerVo::getProductId).filter(Objects::nonNull).distinct().toList());
-        // 详情按品类分 TAB（DENGBO-R10）：同候选口径（猪肉字典 ∪ 白条字典 ∪ belong_type=pork / vegetable / 其他）。
-        Set<Long> whiteBarIds = new LinkedHashSet<>(resolveWhiteBarReturnProductIds());
-        Set<Long> porkTabIdSet = new LinkedHashSet<>(resolvePorkReturnProductIds());
-        porkTabIdSet.addAll(whiteBarIds);
-        // 白条产品行详情按重量口径展示 → 补 materialUnit（对应原材料单位；DENGBO-R12）。
-        Map<Long, String> whiteBarMaterialUnits = whiteBarIds.isEmpty() ? Map.of()
+        // 详情按品类分 TAB（DENGBO-R10）：同候选口径（猪肉候选字典 ∪ belong_type=pork / vegetable / 其他）。
+        Set<Long> porkTabIdSet = new LinkedHashSet<>(resolvePorkCandidateProductIds());
+        // 猪肉产品行详情按重量口径展示 → 补 materialUnit（对应原材料单位）。
+        Map<Long, String> porkMaterialUnits = porkTabIdSet.isEmpty() ? Map.of()
             : resolveMaterialUnits(products.values().stream()
-                .filter(pr -> whiteBarIds.contains(pr.getId())).collect(Collectors.toList()));
+                .filter(pr -> porkTabIdSet.contains(pr.getId())).collect(Collectors.toList()));
         for (StoreDailyLedgerVo vo : list) {
             if (vo.getStoreId() != null) {
                 vo.setStoreName(storeNames.get(vo.getStoreId()));
@@ -696,8 +710,8 @@ public class StoreDailyLedgerServiceImpl implements IStoreDailyLedgerService {
             if (p != null) {
                 vo.setProductName(p.getProductName());
                 vo.setProductUnit(p.getProductUnit());
-                if (whiteBarIds.contains(p.getId())) {
-                    vo.setMaterialUnit(whiteBarMaterialUnits.get(p.getId()));
+                if (porkTabIdSet.contains(p.getId())) {
+                    vo.setMaterialUnit(porkMaterialUnits.get(p.getId()));
                 }
             }
             vo.setBelongTab(resolveBelongTab(p, porkTabIdSet));

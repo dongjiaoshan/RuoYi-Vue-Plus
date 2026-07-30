@@ -7,6 +7,7 @@ import org.dromara.djs.breed.core.domain.vo.FarrowByParityVo;
 import org.dromara.djs.breed.core.domain.vo.FarrowRecordMpVo;
 import org.dromara.djs.breed.core.domain.vo.PigMedRecordMpVo;
 import org.dromara.djs.breed.core.domain.vo.PigTransferMpVo;
+import org.dromara.djs.breed.core.domain.vo.SowPerformanceMpVo;
 
 import java.math.BigDecimal;
 import java.util.List;
@@ -26,6 +27,42 @@ import java.util.List;
 public interface SowDetailAggMapper {
 
     // ── 6 KPI 聚合 ──────────────────────────────────────────────────────────
+
+    /** 已落库分娩记录数；admin 生产指标实时 fallback 仅在至少一次分娩后启用。 */
+    @Select("""
+        SELECT COUNT(*)
+        FROM t_farm_pig_farrow
+        WHERE pig_id = #{pigId} AND del_flag = '0'
+        """)
+    int countFarrowRecords(@Param("pigId") Long pigId);
+
+    /**
+     * 分娩累计与重量实时快照。公式与夜间汇总一致：
+     * 累计值取 SUM；平均出生重取 Σ每窝平均重 / 分娩窝数。
+     */
+    @Select("""
+        SELECT
+            SUM(total_born) AS totalBorn,
+            SUM(live_born) AS totalLiveBorn,
+            SUM(live_born) / NULLIF(COUNT(*), 0) AS avgLiveBornPerLitter,
+            SUM(avg_weight) / NULLIF(COUNT(*), 0) AS avgBornWeight
+        FROM t_farm_pig_farrow
+        WHERE pig_id = #{pigId} AND del_flag = '0'
+        """)
+    SowPerformanceMpVo farrowProductionTotals(@Param("pigId") Long pigId);
+
+    /**
+     * 断奶累计与重量实时快照。公式与夜间汇总一致：
+     * 累计值取 SUM；平均断奶重取 Σ每批平均重 / 断奶批数。
+     */
+    @Select("""
+        SELECT
+            COALESCE(SUM(weaned_count), 0) AS totalWeaned,
+            SUM(avg_weaned_weight) / NULLIF(COUNT(*), 0) AS avgWeanedWeight
+        FROM t_farm_pig_weaning
+        WHERE pig_id = #{pigId} AND del_flag = '0'
+        """)
+    SowPerformanceMpVo weanProductionTotals(@Param("pigId") Long pigId);
 
     /**
      * 平均怀孕天数（row94 口径）= AVG(duration_days)，取状态变更记录表

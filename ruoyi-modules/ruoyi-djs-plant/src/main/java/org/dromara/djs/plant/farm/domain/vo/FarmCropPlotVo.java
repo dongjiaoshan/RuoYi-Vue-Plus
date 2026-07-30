@@ -67,6 +67,18 @@ public class FarmCropPlotVo implements Serializable {
      */
     private Integer transplantedPercent;
 
+    /**
+     * 上次转移目标地块 id（row103，仅 farmType=transplant 返回）：该源地块最近一条移栽记录的 transplant_plot，
+     * 前端二次移栽录入弹窗默认回填「转移地块」。无历史移栽记录留空。
+     */
+    private Long lastTransplantPlotId;
+
+    /**
+     * 上次转移目标地块所属片区 id（row103，仅 farmType=transplant 返回）：{@link #lastTransplantPlotId} 对应
+     * 目标地块的 zone_id，前端二次移栽录入弹窗默认回填「转移地块片区」。无历史移栽记录留空。
+     */
+    private Long lastTransplantZoneId;
+
     /** 采摘状态（字典 {@code djs_pick_status}：pending/picking/completed），退茬多选页每行展示。 */
     private String harvestStatus;
 

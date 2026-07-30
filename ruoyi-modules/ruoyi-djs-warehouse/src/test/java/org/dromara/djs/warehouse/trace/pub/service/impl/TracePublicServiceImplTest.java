@@ -45,9 +45,9 @@ import org.dromara.djs.warehouse.trace.mapper.TraceFarmNameMapper;
 import org.dromara.djs.warehouse.trace.pub.domain.vo.PublicTraceVo;
 import org.dromara.djs.warehouse.trace.pub.mapper.TraceUserNameMapper;
 import org.dromara.djs.warehouse.veg.domain.PlantingRecord;
-import org.dromara.djs.warehouse.veg.domain.VegetableHandle;
+import org.dromara.djs.warehouse.cut.domain.PigCutRecord;
+import org.dromara.djs.warehouse.cut.mapper.PigCutRecordMapper;
 import org.dromara.djs.warehouse.veg.mapper.PlantingRecordMapper;
-import org.dromara.djs.warehouse.veg.mapper.VegetableHandleMapper;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -125,9 +125,9 @@ class TracePublicServiceImplTest {
     @Mock private PlantDetailsMapper plantDetailsMapper;
     @Mock private CropInfoMapper cropInfoMapper;
     @Mock private PlantingRecordMapper plantingRecordMapper;
-    @Mock private VegetableHandleMapper vegetableHandleMapper;
     @Mock private ProductProductionMapper productProductionMapper;
     @Mock private VegDisplayNameMapper vegDisplayNameMapper;
+    @Mock private PigCutRecordMapper pigCutRecordMapper;
 
     private TracePublicServiceImpl service;
     private MockedStatic<TenantHelper> tenantHelperMock;
@@ -161,8 +161,8 @@ class TracePublicServiceImplTest {
         TableInfoHelper.initTableInfo(assistant, FarmRecords.class);
         TableInfoHelper.initTableInfo(assistant, PlantDetails.class);
         TableInfoHelper.initTableInfo(assistant, PlantingRecord.class);
-        TableInfoHelper.initTableInfo(assistant, VegetableHandle.class);
         TableInfoHelper.initTableInfo(assistant, ProductProduction.class);
+        TableInfoHelper.initTableInfo(assistant, PigCutRecord.class);
     }
 
     @BeforeEach
@@ -174,7 +174,7 @@ class TracePublicServiceImplTest {
             pigMapper, pigGrowthMapper, pigMarketingMapper, medRecordMapper, medicineMapper, sowDetailService,
             plotInfoMapper, plotZoneMapper, farmRecordsMapper, cropOrganicMapper, plotOrganicMapper,
             plantDetailsMapper, cropInfoMapper,
-            plantingRecordMapper, vegetableHandleMapper, productProductionMapper, vegDisplayNameMapper));
+            plantingRecordMapper, productProductionMapper, vegDisplayNameMapper, pigCutRecordMapper));
         doReturn(null).when(service).readCache(anyString());       // 缓存恒未命中 → 每次走聚合
         doNothing().when(service).writeCache(anyString(), any());  // 写缓存 no-op
         // TenantHelper.ignore(Supplier) → 直接执行 supplier
@@ -191,7 +191,7 @@ class TracePublicServiceImplTest {
     // ============================ pork 链路 ============================
 
     @Test
-    @DisplayName("pork 码：填 pig/growth/medications/store，veg 专属为 null，timeline 升序，operator 翻译")
+    @DisplayName("pork 码：填 pig/growth/medications/store，veg 专属为 null，timeline 倒序，operator 翻译")
     void getByProduceCode_pork_happy() {
         TraceCode code = new TraceCode();
         code.setProduceCode(PORK_CODE);
@@ -314,6 +314,45 @@ class TracePublicServiceImplTest {
         assertThat(vo.getQuarantine()).isNull();
     }
 
+    @Test
+    @DisplayName("pork 码 row61：时间轴重构成 7 节点（去白条入库/屠宰/排酸，补白条分割，倒序）")
+    void getByProduceCode_pork_timelineRemodel() {
+        TraceCode code = new TraceCode();
+        code.setProduceCode(PORK_CODE);
+        code.setCodeType("pork");
+        code.setPigEarNo(EAR_NO);
+        when(traceCodeMapper.selectOne(any(Wrapper.class))).thenReturn(code);
+
+        // 全量 9 事件（含要被剔除的 white_bar_in/slaughter/acid），mapper 倒序返回
+        when(traceEventMapper.selectList(any(Wrapper.class))).thenReturn(new java.util.ArrayList<>(List.of(
+            event("arrival", LocalDateTime.of(2026, 7, 22, 17, 0), null),
+            event("ship", LocalDateTime.of(2026, 7, 22, 16, 30), null),
+            event("in_stock", LocalDateTime.of(2026, 7, 22, 16, 0), null),
+            event("acid", LocalDateTime.of(2026, 7, 21, 14, 30), null),
+            event("slaughter", LocalDateTime.of(2026, 7, 21, 14, 0), null),
+            event("white_bar_pick", LocalDateTime.of(2026, 7, 18, 11, 0), null),
+            event("white_bar_in", LocalDateTime.of(2026, 7, 15, 22, 5), null),
+            event("singe", LocalDateTime.of(2026, 7, 15, 22, 0), null),
+            event("marketing", LocalDateTime.of(2026, 7, 15, 8, 0), null))));
+
+        // 白条分割时刻（cut_start_time 介于 白条领用 11:00 与 产品生产 之间）
+        PigCutRecord cut = new PigCutRecord();
+        cut.setCutStartTime(java.sql.Timestamp.valueOf(LocalDateTime.of(2026, 7, 18, 11, 30)));
+        when(pigCutRecordMapper.selectOne(any(Wrapper.class))).thenReturn(cut);
+
+        PublicTraceVo vo = service.getByProduceCode(PORK_CODE);
+
+        assertThat(vo).isNotNull();
+        // 恰好 7 节点、倒序（最新在上）：补入 white_bar_cut，剔除 white_bar_in/slaughter/acid
+        assertThat(vo.getTimeline()).extracting(PublicTraceVo.TimelineNode::getTraceContent)
+            .containsExactly("arrival", "ship", "in_stock", "white_bar_cut",
+                "white_bar_pick", "singe", "marketing");
+        for (int i = 1; i < vo.getTimeline().size(); i++) {
+            assertThat(vo.getTimeline().get(i).getTraceTime())
+                .isBeforeOrEqualTo(vo.getTimeline().get(i - 1).getTraceTime());
+        }
+    }
+
     // ============================ veg 链路 ============================
 
     @Test
@@ -343,6 +382,7 @@ class TracePublicServiceImplTest {
         PlotInfo plot = new PlotInfo();
         plot.setId(PLOT_ID);
         plot.setPlotName("东区3号地块");
+        plot.setPlotCode("东区3号地块");   // 追溯页地块编号取 plot_code（C 端「地块编号」列）
         plot.setPlotArea(new BigDecimal("2.50"));
         plot.setZoneId(ZONE_ID);
         when(plotInfoMapper.selectById(PLOT_ID)).thenReturn(plot);
@@ -429,7 +469,7 @@ class TracePublicServiceImplTest {
     }
 
     @Test
-    @DisplayName("veg 码：图取缩略图优先 / 重量取打包实重 / 所属大区 / 时间轴补 4 工序节点并升序")
+    @DisplayName("veg 码：图取缩略图优先 / 重量取打包实重 / 所属大区 / 时间轴 5 节点重构（去入库+毛菜，倒序）")
     void getByProduceCode_veg_processNodesAndWeightAndZone() {
         TraceCode code = new TraceCode();
         code.setProduceCode(VEG_CODE);
@@ -449,7 +489,7 @@ class TracePublicServiceImplTest {
         when(productInfoMapper.selectById(PRODUCT_ID)).thenReturn(product);
         when(ossService.selectUrlByIds("7777")).thenReturn("http://oss/thumb-7777.jpg");
 
-        // 时间轴本身只有 1 条入库事件（6/4），后补 4 工序节点
+        // 时间轴本身只有 1 条入库事件（6/4）——row62 起入库不再展示（被移除），产品生产改用打包节点
         TraceEvent inStock = event("in_stock", LocalDateTime.of(2026, 6, 4, 8, 0), 9103L);
         when(traceEventMapper.selectList(any(Wrapper.class))).thenReturn(List.of(inStock));
         when(traceUserNameMapper.selectUserNames(anyList())).thenReturn(List.of(
@@ -458,6 +498,7 @@ class TracePublicServiceImplTest {
         PlotInfo plot = new PlotInfo();
         plot.setId(PLOT_ID);
         plot.setPlotName("东区3号地块");
+        plot.setPlotCode("东区3号地块");   // 追溯页地块编号取 plot_code（C 端「地块编号」列）
         plot.setPlotArea(new BigDecimal("2.50"));
         plot.setZoneId(ZONE_ID);
         when(plotInfoMapper.selectById(PLOT_ID)).thenReturn(plot);
@@ -476,14 +517,7 @@ class TracePublicServiceImplTest {
         planting.setHarvestDate(java.sql.Date.valueOf(LocalDate.of(2026, 6, 1)));
         when(plantingRecordMapper.selectOne(any(Wrapper.class))).thenReturn(planting);
 
-        // ④ 毛菜处理：pick_end_time 6/2
-        VegetableHandle handle = new VegetableHandle();
-        handle.setPlotId(PLOT_ID);
-        handle.setProductId(PRODUCT_ID);
-        handle.setPickEndTime(java.sql.Timestamp.valueOf(LocalDateTime.of(2026, 6, 2, 14, 0)));
-        when(vegetableHandleMapper.selectOne(any(Wrapper.class))).thenReturn(handle);
-
-        // ② + ④ 打包：实重 0.98kg / 打包时间 6/3
+        // ② + ④ 打包（产品生产）：实重 0.98kg / 打包时间 6/3
         ProductProduction pack = new ProductProduction();
         pack.setTraceCode(VEG_CODE);
         pack.setProductWeight(new BigDecimal("0.98"));
@@ -500,14 +534,14 @@ class TracePublicServiceImplTest {
         assertThat(vo.getProduct().getSpec()).isEqualTo("1kg/盒");
         // ③ 所属大区
         assertThat(vo.getPlot().getZoneBelong()).isEqualTo("东部");
-        // ④ 时间轴：1 入库 + 4 工序节点 = 5，升序，工序节点齐全
-        assertThat(vo.getTimeline()).hasSize(5);
+        // ④ 时间轴 row62 重构：去入库、去毛菜处理 → 只留 种植(3/15) / 采摘(6/1) / 产品生产·打包(6/3)，倒序（最新在上）
+        assertThat(vo.getTimeline()).hasSize(3);
         assertThat(vo.getTimeline()).extracting(PublicTraceVo.TimelineNode::getTraceContent)
-            .containsExactly("sowing", "harvest", "veg_handle", "pack", "in_stock");
-        // 升序：相邻节点时间非降
+            .containsExactly("pack", "harvest", "sowing");
+        // 倒序：相邻节点时间非升
         for (int i = 1; i < vo.getTimeline().size(); i++) {
             assertThat(vo.getTimeline().get(i).getTraceTime())
-                .isAfterOrEqualTo(vo.getTimeline().get(i - 1).getTraceTime());
+                .isBeforeOrEqualTo(vo.getTimeline().get(i - 1).getTraceTime());
         }
     }
 

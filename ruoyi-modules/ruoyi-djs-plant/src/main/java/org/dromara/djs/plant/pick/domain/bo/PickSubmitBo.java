@@ -34,9 +34,15 @@ public class PickSubmitBo {
     /** 是否完成采收（true 置 completed + end_actualdate；默认 false 继续采）。 */
     private Boolean finish = false;
 
-    /** 采收班组 t_plant_work_team.id（必填；落 t_plant_farm_records.farm_by，采收按班组记录）。 */
+    /** 采收班组 t_plant_work_team.id（必填；落 t_plant_farm_records.farm_by，采收按班组记录；多选时 = 第一个）。 */
     @NotNull(message = "请选择采收班组")
     private Long teamId;
+
+    /**
+     * 采收班组全集（G1-TEAMS-MULTISELECT，row40）。非空时写中间表，
+     * 旧单列 {@code teamId} 取本 list 第一个；为 null 时退化为单值 {@code teamId}。
+     */
+    private List<Long> teamIds;
 
     /** 凭证图 OSS id（可选；bizType=plant_farm_proof）。 */
     private List<Long> proofOssIds;

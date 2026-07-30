@@ -25,6 +25,7 @@ import org.dromara.djs.plant.farm.domain.bo.GrowRecordBo;
 import org.dromara.djs.plant.farm.domain.bo.HarvestWeightBo;
 import org.dromara.djs.plant.farm.domain.bo.PlotPickStatusBo;
 import org.dromara.djs.plant.farm.domain.bo.RotationRecordBo;
+import org.dromara.djs.plant.farm.domain.bo.TransplantFinalizeBo;
 import org.dromara.djs.plant.farm.domain.bo.TransplantRecordBo;
 import org.dromara.djs.plant.farm.domain.query.FarmRecordsQuery;
 import org.dromara.djs.plant.farm.domain.vo.DispatchSummaryVo;
@@ -36,6 +37,7 @@ import org.dromara.djs.plant.farm.mapper.FarmRecordsMapper;
 import org.dromara.djs.plant.farm.service.IFarmRecordsService;
 import org.dromara.djs.plant.plan.domain.PlantDetails;
 import org.dromara.djs.plant.plan.mapper.PlantDetailsMapper;
+import org.dromara.djs.plant.plan.service.IPlantPlanService;
 import org.dromara.djs.plant.plot.domain.PlotInfo;
 import org.dromara.djs.plant.plot.mapper.PlotInfoMapper;
 import org.dromara.djs.plant.zone.domain.PlotZone;
@@ -107,6 +109,8 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
     private final PlantWorkPeopleMapper peopleMapper;
     private final ImageUrlResolver imageUrlResolver;
     private final IPlantActivityService plantActivityService;
+    private final org.dromara.djs.plant.team.service.PlantTeamLinkService teamLinkService;
+    private final IPlantPlanService plantPlanService;
 
     public FarmRecordsServiceImpl(FarmRecordsMapper baseMapper,
                                   PlotInfoMapper plotInfoMapper,
@@ -116,7 +120,9 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
                                   PlantWorkTeamMapper teamMapper,
                                   PlantWorkPeopleMapper peopleMapper,
                                   ImageUrlResolver imageUrlResolver,
-                                  IPlantActivityService plantActivityService) {
+                                  IPlantActivityService plantActivityService,
+                                  org.dromara.djs.plant.team.service.PlantTeamLinkService teamLinkService,
+                                  IPlantPlanService plantPlanService) {
         super(baseMapper);
         this.plotInfoMapper = plotInfoMapper;
         this.plotZoneMapper = plotZoneMapper;
@@ -126,6 +132,30 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
         this.peopleMapper = peopleMapper;
         this.imageUrlResolver = imageUrlResolver;
         this.plantActivityService = plantActivityService;
+        this.teamLinkService = teamLinkService;
+        this.plantPlanService = plantPlanService;
+    }
+
+    /**
+     * 处理班组多选取值（G1-TEAMS-MULTISELECT，row37）：list 非空 → 去空去重；否则回落单值。
+     */
+    private List<Long> effFarmTeams(java.util.List<Long> ids, Long single) {
+        if (CollUtil.isNotEmpty(ids)) {
+            return ids.stream().filter(Objects::nonNull).distinct().collect(Collectors.toList());
+        }
+        return single == null ? java.util.Collections.emptyList() : List.of(single);
+    }
+
+    /** 旧单列 farm_by = 多选第一个（过渡兼容）；空 → null。 */
+    private Long firstFarmTeam(List<Long> eff) {
+        return CollUtil.isEmpty(eff) ? null : eff.get(0);
+    }
+
+    /**
+     * 农事记录班组多选落地：旧单列已由 buildBase 写「第一个」，此处 sync 中间表全集。
+     */
+    private void applyFarmTeamLinks(Long recordId, java.util.List<Long> farmByIds, Long farmBy) {
+        teamLinkService.syncFarmTeams(recordId, effFarmTeams(farmByIds, farmBy));
     }
 
     // ============================================================
@@ -139,11 +169,13 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
             throw new ServiceException("不支持的空地农事类型: " + bo.getFarmType());
         }
         FarmRecords r = new FarmRecords();
-        buildBase(r, bo.getFarmType(), bo.getPlotId(), null, null, bo.getFarmBy(), bo.getFarmDate(),
+        buildBase(r, bo.getFarmType(), bo.getPlotId(), null, null,
+            firstFarmTeam(effFarmTeams(bo.getFarmByIds(), bo.getFarmBy())), bo.getFarmDate(),
             bo.getProofOssIds(), bo.getRemark());
         r.setTillageType(bo.getTillageType());
         r.setTillageMethod(bo.getTillageMethod());
         baseMapper.insert(r);
+        applyFarmTeamLinks(r.getId(), bo.getFarmByIds(), bo.getFarmBy());
         return r.getId();
     }
 
@@ -154,10 +186,12 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
             throw new ServiceException("不支持的生长阶段农事类型: " + bo.getFarmType());
         }
         FarmRecords r = new FarmRecords();
-        buildBase(r, bo.getFarmType(), bo.getPlotId(), bo.getCropId(), bo.getPlantId(), bo.getFarmBy(),
+        buildBase(r, bo.getFarmType(), bo.getPlotId(), bo.getCropId(), bo.getPlantId(),
+            firstFarmTeam(effFarmTeams(bo.getFarmByIds(), bo.getFarmBy())),
             bo.getFarmDate(), bo.getProofOssIds(), bo.getRemark());
         r.setOperatorUserId(bo.getOperatorUserId());
         baseMapper.insert(r);
+        applyFarmTeamLinks(r.getId(), bo.getFarmByIds(), bo.getFarmBy());
         return r.getId();
     }
 
@@ -167,7 +201,8 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
         // 多次录入累计校验（row79）：同批次（crop+plot+plant）历史损失率 + 本次 不得超过 100%。
         requireDisasterLossWithinCap(bo.getCropId(), bo.getPlotId(), bo.getPlantId(), bo.getLossRate());
         FarmRecords r = new FarmRecords();
-        buildBase(r, "disaster", bo.getPlotId(), bo.getCropId(), bo.getPlantId(), bo.getFarmBy(),
+        buildBase(r, "disaster", bo.getPlotId(), bo.getCropId(), bo.getPlantId(),
+            firstFarmTeam(effFarmTeams(bo.getFarmByIds(), bo.getFarmBy())),
             bo.getFarmDate(), bo.getProofOssIds(), bo.getRemark());
         r.setDisasterType(bo.getDisasterType());
         r.setLossRate(bo.getLossRate());
@@ -176,6 +211,7 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
         r.setLossYield(lossYield);
         r.setIsWarning(bo.getLossRate() != null && bo.getLossRate().compareTo(WARNING_LOSS_RATE) >= 0 ? 1 : 2);
         baseMapper.insert(r);
+        applyFarmTeamLinks(r.getId(), bo.getFarmByIds(), bo.getFarmBy());
 
         // 副作用：累加 plant_details.loss_yield（按 plantId + plotId + cropId 定位未结束 details）
         accumulateLossYield(bo.getPlantId(), bo.getPlotId(), bo.getCropId(), lossYield);
@@ -193,20 +229,50 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
             throw new ServiceException(
                 "本次移栽百分比超出剩余可移 " + (100 - moved) + "%（已累计 " + moved + "%）");
         }
+        // row159 前移校验：本次所选转移目标地块在源采摘窗口下若与既有计划采摘区间冲突，选块提交当次即报，
+        // 不拖到累计 100% 自动落地时才暴露（届时报的是历史目标全集里的无关块，用户困惑）。
+        if (bo.getTransplantPlot() != null) {
+            plantPlanService.validateTransplantTargetConflict(
+                bo.getPlantId(), bo.getPlotId(), bo.getCropId(), bo.getTransplantPlot());
+        }
         FarmRecords r = new FarmRecords();
-        buildBase(r, "transplant", bo.getPlotId(), bo.getCropId(), bo.getPlantId(), bo.getFarmBy(),
+        buildBase(r, "transplant", bo.getPlotId(), bo.getCropId(), bo.getPlantId(),
+            firstFarmTeam(effFarmTeams(bo.getFarmByIds(), bo.getFarmBy())),
             bo.getFarmDate(), bo.getProofOssIds(), bo.getRemark());
         r.setTransplantPlot(bo.getTransplantPlot());
         r.setTransplantPercent(bo.getTransplantPercent());
         baseMapper.insert(r);
+        applyFarmTeamLinks(r.getId(), bo.getFarmByIds(), bo.getFarmBy());
 
-        // 累计达 100% → 自动状态机（row13）。本次已 INSERT，重查含本次累计；
+        // 累计达 100% → 自动落地（PLT-TRANSPLANT-REDO-001）。本次已 INSERT，重查含本次累计；
         // 仅在「刚好跨过 100%」时触发（previousMoved < 100 ≤ now），幂等：本就 ≥100 应已被 row12 拦掉。
         int now = sumTransplantedPercent(bo.getCropId(), bo.getPlotId());
         if (moved < 100 && now >= 100) {
-            applyTransplantCompleteSideEffect(bo.getCropId(), bo.getPlotId(), bo.getFarmDate());
+            applyTransplantCompleteSideEffect(bo.getPlantId(), bo.getCropId(), bo.getPlotId(), bo.getFarmDate());
         }
         return r.getId();
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public int finalizeTransplant(TransplantFinalizeBo bo) {
+        // 无移栽记录不能结束移栽（避免误把从未移栽的地块置采摘态）
+        int moved = sumTransplantedPercent(bo.getCropId(), bo.getPlotId());
+        if (moved <= 0) {
+            throw new ServiceException("该地块无移栽记录，无法结束移栽");
+        }
+        // 幂等：源育苗明细已采摘完成（累计 100% 或前次结束移栽已落地）→ 直接返 0，不重复落地
+        boolean landed = plantDetailsMapper.selectCount(
+            new LambdaQueryWrapper<PlantDetails>()
+                .eq(PlantDetails::getPlantId, bo.getPlantId())
+                .eq(PlantDetails::getCropId, bo.getCropId())
+                .eq(PlantDetails::getPlotId, bo.getPlotId())
+                .eq(PlantDetails::getHarvestStatus, "completed")) > 0;
+        if (landed) {
+            return 0;
+        }
+        applyTransplantCompleteSideEffect(bo.getPlantId(), bo.getCropId(), bo.getPlotId(), bo.getFarmDate());
+        return 1;
     }
 
     /**
@@ -222,26 +288,40 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
     }
 
     /**
-     * 移栽累计达 100% 副作用（row13，与 {@link #submitRotation} 退茬置空写法风格一致）：
+     * 移栽累计达 100%（或手动结束移栽）落地（PLT-TRANSPLANT-REDO-001）。三步，同事务：
      * <ul>
-     *   <li>① {@code plant_details.harvest_status='completed'}（采摘完成）+ {@code end_harvestdate=farmDate}，
-     *       where crop_id + plot_id（该地块该作物全部明细）</li>
-     *   <li>② {@code plot_info.plot_status=1}（空地），where id=plotId</li>
+     *   <li>① 目标地块入计划：取该 (作物, 源地块) 的全部转移目标地块（{@code DISTINCT transplant_plot}），
+     *       交 {@link IPlantPlanService#materializeTransplantTargets} 为每块建一条「满种」明细
+     *       （日期沿用源育苗明细、面积按目标地块、{@code transplant_adjusted=1}），目标地块 {@code plot_status=2}。</li>
+     *   <li>② 源育苗明细标采摘完成：{@code harvest_status='completed'} + {@code end_harvestdate=farmDate}
+     *       + {@code begin_harvestdate} NULL-safe 回填，where plant_id + crop_id + plot_id（保留明细，供退茬列表命中）。</li>
+     *   <li>③ 源育苗地块 {@code plot_status=3}（采摘态/待退茬）——进退茬列表，工作人员退茬后转空地(1)。</li>
      * </ul>
+     * 幂等：目标已有本计划明细则跳过（materializeTransplantTargets 内），源置态为绝对 set，重跑无害。
+     * 无目标记录（防御）时只做源标完成 + 转退茬。
      */
-    private void applyTransplantCompleteSideEffect(Long cropId, Long plotId, LocalDate farmDate) {
+    private void applyTransplantCompleteSideEffect(Long planId, Long cropId, Long sourcePlotId, LocalDate farmDate) {
         Long updateBy = currentUserSafe();
+        // ① 目标地块入计划（满种明细）——plan 模块构建/校验/插入 + 目标 plot_status=2 + recalc
+        List<Long> targetPlotIds = baseMapper.selectTransplantTargetPlots(cropId, sourcePlotId);
+        if (CollUtil.isNotEmpty(targetPlotIds)) {
+            plantPlanService.materializeTransplantTargets(planId, sourcePlotId, cropId, targetPlotIds);
+        }
+        // ② 源育苗明细标采摘完成（保留明细走退茬）。{0} 为 MP 参数绑定占位（LocalDate），非拼接，无注入面。
         plantDetailsMapper.update(null,
             new LambdaUpdateWrapper<PlantDetails>()
+                .eq(PlantDetails::getPlantId, planId)
                 .eq(PlantDetails::getCropId, cropId)
-                .eq(PlantDetails::getPlotId, plotId)
+                .eq(PlantDetails::getPlotId, sourcePlotId)
                 .set(PlantDetails::getHarvestStatus, "completed")
                 .set(PlantDetails::getEndHarvestdate, farmDate)
+                .setSql("begin_harvestdate = COALESCE(begin_harvestdate, {0})", farmDate)
                 .set(PlantDetails::getUpdateBy, updateBy));
+        // ③ 源育苗地块转采摘态(3) → 进退茬列表（原直接置空(1)跳过退茬的行为改此）
         plotInfoMapper.update(null,
             new LambdaUpdateWrapper<PlotInfo>()
-                .eq(PlotInfo::getId, plotId)
-                .set(PlotInfo::getPlotStatus, 1)
+                .eq(PlotInfo::getId, sourcePlotId)
+                .set(PlotInfo::getPlotStatus, 3)
                 .set(PlotInfo::getUpdateBy, updateBy));
     }
 
@@ -258,9 +338,11 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
         }
 
         FarmRecords r = new FarmRecords();
-        buildBase(r, "rotation", bo.getPlotId(), bo.getCropId(), bo.getPlantId(), bo.getFarmBy(),
+        buildBase(r, "rotation", bo.getPlotId(), bo.getCropId(), bo.getPlantId(),
+            firstFarmTeam(effFarmTeams(bo.getFarmByIds(), bo.getFarmBy())),
             bo.getFarmDate(), bo.getProofOssIds(), bo.getRemark());
         baseMapper.insert(r);
+        applyFarmTeamLinks(r.getId(), bo.getFarmByIds(), bo.getFarmBy());
 
         // 副作用：plot_info.plot_status 回 1（空闲）。plant_status='completed' + end_actualdate
         // 归「种植完成」finishPlant 独占，退茬不再重复写。
@@ -281,8 +363,10 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
         for (GrowBatchBo.PlotTarget target : bo.getTargets()) {
             FarmRecords r = new FarmRecords();
             buildBase(r, type, target.getPlotId(), target.getCropId(), target.getPlantId(),
-                bo.getFarmBy(), bo.getFarmDate(), bo.getProofOssIds(), bo.getRemark());
+                firstFarmTeam(effFarmTeams(bo.getFarmByIds(), bo.getFarmBy())),
+                bo.getFarmDate(), bo.getProofOssIds(), bo.getRemark());
             baseMapper.insert(r);
+            applyFarmTeamLinks(r.getId(), bo.getFarmByIds(), bo.getFarmBy());
             count++;
             // 退茬副作用：每条 plot_status=1（空闲）。plant_status/end_actualdate 归「种植完成」独占。
             if (isRotation) {
@@ -304,7 +388,8 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
         int count = 0;
         for (DisasterBatchBo.PlotTarget t : bo.getTargets()) {
             FarmRecords r = new FarmRecords();
-            buildBase(r, "disaster", t.getPlotId(), t.getCropId(), t.getPlantId(), bo.getFarmBy(),
+            buildBase(r, "disaster", t.getPlotId(), t.getCropId(), t.getPlantId(),
+                firstFarmTeam(effFarmTeams(bo.getFarmByIds(), bo.getFarmBy())),
                 bo.getFarmDate(), bo.getProofOssIds(), bo.getRemark());
             r.setDisasterType(bo.getDisasterType());
             r.setLossRate(bo.getLossRate());
@@ -313,6 +398,7 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
             r.setLossYield(lossYield);
             r.setIsWarning(warning);
             baseMapper.insert(r);
+            applyFarmTeamLinks(r.getId(), bo.getFarmByIds(), bo.getFarmBy());
             count++;
             // 副作用：各地块累加对应 plant_details.loss_yield
             accumulateLossYield(t.getPlantId(), t.getPlotId(), t.getCropId(), lossYield);
@@ -325,10 +411,12 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
     public Long submitHarvestWeight(HarvestWeightBo bo) {
         // 1. INSERT 一行 harvest_activity 记录，携带本次 harvest_weight（供记录 tab 展示 作物+重量kg）
         FarmRecords r = new FarmRecords();
-        buildBase(r, "harvest_activity", bo.getPlotId(), bo.getCropId(), bo.getPlantId(), bo.getFarmBy(),
+        buildBase(r, "harvest_activity", bo.getPlotId(), bo.getCropId(), bo.getPlantId(),
+            firstFarmTeam(effFarmTeams(bo.getFarmByIds(), bo.getFarmBy())),
             bo.getFarmDate(), bo.getProofOssIds(), bo.getRemark());
         r.setHarvestWeight(bo.getHarvestWeight());
         baseMapper.insert(r);
+        applyFarmTeamLinks(r.getId(), bo.getFarmByIds(), bo.getFarmBy());
         // 2. 副作用：累加对应 plant_details.actual_yield（#3=a 采摘重量唯一录入口，采收 tab 已去重量）
         accumulateActualYield(bo.getPlantId(), bo.getPlotId(), bo.getCropId(), bo.getHarvestWeight());
         // 3. 副作用：写一行采摘活动流水（t_plant_plant_activity，邓博权威 spec：报表 SUM(daily_weight) GROUP BY crop_id,activity_date）
@@ -345,9 +433,13 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
         if (plot == null) {
             throw new ServiceException("地块不存在: " + plotId);
         }
-        // 幂等拦截（231）：已退茬变空地（plot_status=1）的地块拒绝重复退茬。
+        // 幂等拦截（231）：已退茬变空地（plot_status=1）的地块拒绝重复退茬；
+        // 其余非采摘态（如 2=种植）给准确文案，不误报「已退茬」。
         if (plot.getPlotStatus() == null || plot.getPlotStatus() != 3) {
-            throw new ServiceException("该地块已退茬，无需重复退茬");
+            if (plot.getPlotStatus() != null && plot.getPlotStatus() == 1) {
+                throw new ServiceException("该地块已退茬，无需重复退茬");
+            }
+            throw new ServiceException("地块状态不满足退茬（需处于采摘状态）");
         }
         plot.setPlotStatus(1);
         plotInfoMapper.updateById(plot);
@@ -440,12 +532,30 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
 
         // 移栽进度层：返各地块累计已移% + 上次时间（FIX-PLT-MP-WORK-BATCH-001 移栽单块录入用）
         Map<Long, Integer> transplantedMap = new HashMap<>();
+        // row103：各源地块「上次转移目标」地块 id + 其片区 id（二次移栽录入弹窗默认回填）
+        Map<Long, Long> lastTransplantPlotMap = new HashMap<>();
+        Map<Long, Long> lastTransplantZoneMap = new HashMap<>();
         if ("transplant".equals(farmType)) {
             for (Map<String, Object> row : baseMapper.selectTransplantedPercentByCrop(cropId)) {
                 Object pid = row.get("plotId");
                 Object pct = row.get("transplantedPercent");
                 if (pid != null) {
                     transplantedMap.put(((Number) pid).longValue(), pct instanceof Number n ? n.intValue() : 0);
+                }
+            }
+            for (Map<String, Object> row : baseMapper.selectLastTransplantTargetByCrop(cropId)) {
+                Object pid = row.get("plotId");
+                if (pid == null) {
+                    continue;
+                }
+                Long srcPlot = ((Number) pid).longValue();
+                Object tPlot = row.get("lastTransplantPlotId");
+                Object tZone = row.get("lastTransplantZoneId");
+                if (tPlot instanceof Number n) {
+                    lastTransplantPlotMap.put(srcPlot, n.longValue());
+                }
+                if (tZone instanceof Number n) {
+                    lastTransplantZoneMap.put(srcPlot, n.longValue());
                 }
             }
         }
@@ -512,6 +622,9 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
             vo.setLastTeamId(lastTeamByPlot.get(d.getPlotId()));
             if ("transplant".equals(farmType)) {
                 vo.setTransplantedPercent(transplantedMap.getOrDefault(d.getPlotId(), 0));
+                // row103：二次移栽默认回填上次转移目标 + 其片区（无历史移栽记录留空）
+                vo.setLastTransplantPlotId(lastTransplantPlotMap.get(d.getPlotId()));
+                vo.setLastTransplantZoneId(lastTransplantZoneMap.get(d.getPlotId()));
             }
             if ("disaster".equals(farmType)) {
                 vo.setDisasterRecords(disasterByPlot.getOrDefault(d.getPlotId(), List.of()));
@@ -687,30 +800,56 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
         if (!"picking".equals(bo.getPickStatus()) && !"completed".equals(bo.getPickStatus())) {
             throw new ServiceException("非法采摘状态（仅支持 picking 采摘中 / completed 采摘完成）：" + bo.getPickStatus());
         }
-        // 定位该地块 + 作物下未结束采摘的明细（harvest_status != completed）
+        // 定位该地块 + 作物下的采摘活动明细（本接口是「采摘活动管理」路径，只动 is_pick=1 游客活动行，
+        // 不碰 is_pick=2 普通采收行——普通采收状态由 submitPick 的 pending→picking/completed CAS 独占推进）
         List<PlantDetails> details = plantDetailsMapper.selectList(
             new LambdaQueryWrapper<PlantDetails>()
                 .eq(PlantDetails::getPlotId, bo.getPlotId())
-                .eq(PlantDetails::getCropId, bo.getCropId()));
+                .eq(PlantDetails::getCropId, bo.getCropId())
+                .eq(PlantDetails::getIsPick, 1));
         if (CollUtil.isEmpty(details)) {
             throw new ServiceException("该地块下无对应作物的种植明细，无法调整采摘状态");
         }
         Long updateBy = currentUserSafe();
         boolean toCompleted = "completed".equals(bo.getPickStatus());
-        LambdaUpdateWrapper<PlantDetails> uw = new LambdaUpdateWrapper<PlantDetails>()
-            .eq(PlantDetails::getPlotId, bo.getPlotId())
-            .eq(PlantDetails::getCropId, bo.getCropId())
-            .set(PlantDetails::getHarvestStatus, bo.getPickStatus())
-            .set(PlantDetails::getUpdateBy, updateBy);
-        if (toCompleted) {
-            uw.set(PlantDetails::getEndHarvestdate, bo.getAdjustDate());
-        } else {
-            // row160④：首次采摘录入（待采摘 → 采摘中）时把所选班组回写 plant_details.harvest_by，
-            // 作为「首次采摘录入班组」权威源。第二次录入（采摘中 → 采摘完成）时前端读回该班组预填并锁定，
-            // 保证同一地块二次录入班组默认第一次的且不可调整。完成态不再改写班组。
-            uw.set(PlantDetails::getHarvestBy, bo.getTeamId());
+        // row152：采摘班组多选。teamIds 优先（去重去空），空则回落单值 teamId。harvest_by/留痕 farm_by 写首值，
+        // 全集落 t_plant_details_team（明细）+ t_farm_records_team（留痕）中间表。
+        List<Long> effTeams = effFarmTeams(bo.getTeamIds(), bo.getTeamId());
+        // completed 方向只动未完成行（不覆写已完成行的 end_harvestdate 历史完成日期）；
+        // picking 方向对全部活动行生效（completed→picking 重开是本接口的本职功能）。
+        List<Long> targetIds = details.stream()
+            .filter(d -> !toCompleted || !"completed".equals(d.getHarvestStatus()))
+            .map(PlantDetails::getId)
+            .toList();
+        int affected = 0;
+        if (CollUtil.isNotEmpty(targetIds)) {
+            // 按 select 出的行 id 集合更新，与上面的定位口径严格一致
+            LambdaUpdateWrapper<PlantDetails> uw = new LambdaUpdateWrapper<PlantDetails>()
+                .in(PlantDetails::getId, targetIds)
+                .set(PlantDetails::getHarvestStatus, bo.getPickStatus())
+                .set(PlantDetails::getUpdateBy, updateBy);
+            // begin_harvestdate NULL-safe 回填（两方向都补）：首次进入采摘（picking / 未开采直接 completed）
+            // 以本次调整日期作为开始采摘日期；已有值不覆写（口径对齐 submitPick 的「首次采收回填 begin_harvestdate」）。
+            // {0} 为 MP 参数绑定占位（adjustDate 是 LocalDate），非字符串拼接，无注入面。
+            uw.setSql("begin_harvestdate = COALESCE(begin_harvestdate, {0})", bo.getAdjustDate());
+            if (toCompleted) {
+                uw.set(PlantDetails::getEndHarvestdate, bo.getAdjustDate());
+            } else {
+                // row160④：首次采摘录入（待采摘 → 采摘中）时把所选班组回写 plant_details.harvest_by，
+                // 作为「首次采摘录入班组」权威源。第二次录入（采摘中 → 采摘完成）时前端读回该班组预填并锁定，
+                // 保证同一地块二次录入班组默认第一次的且不可调整。完成态不再改写班组。
+                // row152 多选：harvest_by 写首值兼容旧展示，全集另落 t_plant_details_team。
+                uw.set(PlantDetails::getHarvestBy, firstFarmTeam(effTeams));
+            }
+            affected = plantDetailsMapper.update(null, uw);
+            // row152：picking 首次录入把采摘班组全集落明细中间表（completed 方向不改班组、不动关联）。
+            if (!toCompleted) {
+                for (Long detailId : targetIds) {
+                    teamLinkService.syncDetailTeams(detailId,
+                        org.dromara.djs.plant.team.service.PlantTeamLinkService.ROLE_HARVEST, effTeams);
+                }
+            }
         }
-        int affected = plantDetailsMapper.update(null, uw);
 
         // row4（何涛 2026-07-17）：地块进入采摘（采摘中 / 采摘完成）后，plot_info.plot_status 从 2（种植）
         //   置 3（采摘），字典 djs_plot_status：1=空闲 / 2=种植 / 3=采摘。与 submitPick 首次开采同口径，
@@ -725,15 +864,16 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
                     .set(PlotInfo::getUpdateBy, updateBy));
         }
 
-        // 写一条 harvest_activity 农事记录留痕（不录重量）
+        // 写一条 harvest_activity 农事记录留痕（不录重量）；row152：farm_by 写班组首值，全集另落 t_farm_records_team。
         Long cropPlantId = details.get(0).getPlantId();
         FarmRecords trace = new FarmRecords();
         buildBase(trace, "harvest_activity", bo.getPlotId(), bo.getCropId(), cropPlantId,
-            bo.getTeamId(), bo.getAdjustDate(), null,
+            firstFarmTeam(effTeams), bo.getAdjustDate(), null,
             "采摘状态调整为" + (toCompleted ? "采摘完成" : "采摘中"));
         // 采摘人员（先选班组后从该班组成员中选）落 operator_user_id，与 farm_by(班组) 并存
         trace.setOperatorUserId(bo.getOperatorUserId());
         baseMapper.insert(trace);
+        applyFarmTeamLinks(trace.getId(), bo.getTeamIds(), bo.getTeamId());
         return affected;
     }
 
@@ -1098,6 +1238,11 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
             : plotZoneMapper.selectByIds(zoneIds).stream()
             .collect(Collectors.toMap(PlotZone::getId, PlotZone::getZoneName, (a, b) -> a));
 
+        // 班组多选中间表 enrich（G1-TEAMS-MULTISELECT，row37）：批量取各记录班组名/id
+        Set<Long> recordIds = list.stream().map(FarmRecordsVo::getId).filter(Objects::nonNull).collect(Collectors.toSet());
+        Map<Long, List<String>> farmNamesMap = teamLinkService.farmTeamNames(recordIds);
+        Map<Long, List<Long>> farmIdsMap = teamLinkService.farmTeamIds(recordIds);
+
         for (FarmRecordsVo vo : list) {
             PlotInfo plot = plotMap.get(vo.getPlotId());
             if (plot != null) {
@@ -1110,11 +1255,19 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
             PlotInfo transplant = vo.getTransplantPlot() == null ? null : plotMap.get(vo.getTransplantPlot());
             if (transplant != null) {
                 vo.setTransplantPlotName(transplant.getPlotName());
+                // row101.2：移栽记录卡「转移后」优先显地块编号（前端 plotCode ?? plotName 回落）
+                vo.setTransplantPlotCode(transplant.getPlotCode());
                 if (transplant.getZoneId() != null) {
                     vo.setTransplantPlotZoneName(zoneMap.get(transplant.getZoneId()));
                 }
             }
             vo.setTeamName(vo.getFarmBy() == null ? null : teamMap.get(vo.getFarmBy()));
+            List<String> names = farmNamesMap.get(vo.getId());
+            vo.setTeamNames(CollUtil.isNotEmpty(names) ? names
+                : (vo.getTeamName() == null ? java.util.Collections.emptyList() : List.of(vo.getTeamName())));
+            List<Long> ids = farmIdsMap.get(vo.getId());
+            vo.setFarmByIds(CollUtil.isNotEmpty(ids) ? ids
+                : (vo.getFarmBy() == null ? java.util.Collections.emptyList() : List.of(vo.getFarmBy())));
         }
     }
 

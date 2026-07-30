@@ -14,6 +14,7 @@ import org.dromara.djs.plant.crop.domain.CropInfo;
 import org.dromara.djs.plant.crop.mapper.CropInfoMapper;
 import org.dromara.djs.plant.team.domain.PlantWorkTeam;
 import org.dromara.djs.plant.team.mapper.PlantWorkTeamMapper;
+import org.dromara.djs.plant.team.service.PlantTeamLinkService;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -52,6 +53,8 @@ public class AppletPlantActivityController extends BaseController {
     private final PlantWorkTeamMapper teamMapper;
     private final DictService dictService;
     private final DjsUserExtMapper userExtMapper;
+    /** row129 采摘活动班组多选中间表读服务（多班组顿号拼接展示，替代旧单列 activityBy）。 */
+    private final PlantTeamLinkService teamLinkService;
 
     /**
      * 采摘活动记录列表（mp 采摘活动记录，按采摘日期倒序）。
@@ -110,6 +113,15 @@ public class AppletPlantActivityController extends BaseController {
                     m -> String.valueOf(m.get("nickName")),
                     (a, b) -> a));
 
+        // row129：采摘活动班组多选 → 从 junction t_plant_activity_team 批量取各活动的班组名（多组顿号拼接），
+        // 替代旧单列 activityBy 单班组展示；junction 无记录时回落旧单列 teamNameMap（历史/单选路径）。
+        List<Long> activityIds = records.stream()
+            .map(PlantActivity::getId)
+            .filter(Objects::nonNull)
+            .distinct()
+            .collect(Collectors.toList());
+        Map<Long, List<String>> activityTeamNameMap = teamLinkService.activityTeamNames(activityIds);
+
         List<PlantActivityVo> list = records.stream().map(r -> {
             PlantActivityVo vo = new PlantActivityVo();
             vo.setId(r.getId());
@@ -118,7 +130,10 @@ public class AppletPlantActivityController extends BaseController {
             vo.setActivityDate(r.getActivityDate());
             vo.setDailyWeight(r.getDailyWeight());
             vo.setActivityBy(r.getActivityBy());
-            vo.setTeamName(r.getActivityBy() == null ? null : teamNameMap.get(r.getActivityBy()));
+            List<String> multiTeamNames = activityTeamNameMap.get(r.getId());
+            vo.setTeamName((multiTeamNames != null && !multiTeamNames.isEmpty())
+                ? String.join("、", multiTeamNames)
+                : (r.getActivityBy() == null ? null : teamNameMap.get(r.getActivityBy())));
             // row164：采摘去向字典 label（缺失回落原始值）+ 采摘处理人姓名
             vo.setPickDest(r.getPickDest());
             vo.setPickDestLabel(StringUtils.isBlank(r.getPickDest())

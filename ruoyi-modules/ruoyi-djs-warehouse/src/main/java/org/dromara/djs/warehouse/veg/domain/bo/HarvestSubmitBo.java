@@ -1,10 +1,12 @@
 package org.dromara.djs.warehouse.veg.domain.bo;
 
 import jakarta.validation.constraints.DecimalMin;
+import jakarta.validation.constraints.NotEmpty;
 import jakarta.validation.constraints.NotNull;
 import lombok.Data;
 
 import java.math.BigDecimal;
+import java.util.List;
 
 /**
  * mp 端采摘重量录入 BO（WMS-VEG-001 /harvest）。
@@ -46,5 +48,13 @@ public class HarvestSubmitBo {
      */
     @NotNull(message = "{veg.weigh_user.required}")
     private Long weighUserId;
+
+    /**
+     * 采摘班组 ID 列表（FK → t_plant_work_team.id），row64 由单选升级为全量多选，必填。
+     * 全集写入 t_warehouse_handle_record_team 中间表；旧单列 handle_record.team_id 写多选第一个作过渡，
+     * row39 班组绩效按 team_id GROUP BY 的统计口径不变。
+     */
+    @NotEmpty(message = "请选择采摘班组")
+    private List<Long> teamIds;
 
 }

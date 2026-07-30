@@ -42,4 +42,9 @@ public class LocationPickerVo implements Serializable {
      */
     private String locationType;
 
+    /**
+     * 库位排序值（location_sort，升序，越小越靠前；排序由前端按此值做，picker 端点保持按 id 倒序取数）。
+     */
+    private Integer locationSort;
+
 }

@@ -2,6 +2,7 @@ package org.dromara.djs.warehouse.dashboard.service.impl;
 
 import org.dromara.common.tenant.helper.TenantHelper;
 import org.dromara.djs.warehouse.dashboard.domain.vo.LocationOverviewItemVo;
+import org.dromara.djs.warehouse.dashboard.domain.vo.WarehouseDashboardChartsVo;
 import org.dromara.djs.warehouse.dashboard.domain.vo.WarehouseDashboardSummaryVo;
 import org.dromara.djs.warehouse.dashboard.mapper.WarehouseDashboardMapper;
 import org.dromara.djs.warehouse.dashboard.mapper.WarehouseProductionDashboardMapper;
@@ -140,6 +141,18 @@ class WarehouseDashboardServiceImplTest {
 
         assertThat(vo.getTodayDemandQuantity()).isEqualByComparingTo("10");
         assertThat(vo.getLocationOverview()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("图表指标：送宰头数与分割产品流水总重透传，并对空值兜零")
+    void getCharts_mapsSlaughterAndCutProductMetrics() {
+        when(dashboardMapper.countTodaySlaughterPigs(eq("1001"))).thenReturn(1);
+        when(dashboardMapper.sumTodayCutProductWeight(eq("1001"))).thenReturn(new BigDecimal("16.500"));
+
+        WarehouseDashboardChartsVo vo = service.getCharts();
+
+        assertThat(vo.getTodaySlaughterPigCount()).isEqualTo(1);
+        assertThat(vo.getTodayCutProductWeight()).isEqualByComparingTo("16.500");
     }
 
 }

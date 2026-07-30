@@ -21,6 +21,7 @@ import org.dromara.djs.common.domain.bo.WechatLoginBo;
 import org.dromara.djs.common.domain.vo.WechatLoginVo;
 import org.dromara.djs.common.mapper.DjsUserExtMapper;
 import org.dromara.djs.common.service.IWechatLoginService;
+import org.dromara.djs.common.util.I18nMessages;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
@@ -49,6 +50,15 @@ public class WechatLoginServiceImpl implements IWechatLoginService {
     private final PermissionService permissionService;
 
     /**
+     * mock 模式哨兵值：{@code djs.wechat.miniapp.app-id=mock} 表示不调微信真实 API。
+     *
+     * <p>该模式下 {@link #jscode2openid} 把 code 当 openid 用、{@link #bindPhone} 允许透传
+     * openid / phone —— 都是<b>绕过微信认证</b>的调试捷径，仅限本地。
+     * {@code application-prod.yml} 里 app-id 无默认值（缺失即启动失败），防线上误回退。</p>
+     */
+    private static final String MOCK_APP_ID = "mock";
+
+    /**
      * 微信小程序 AppID（生产环境从 application.yml 读 djs.wechat.miniapp.app-id）。
      * 默认 "mock" 表示走 dev mock 模式：直接使用前端传的 code 作为 openid。
      */
@@ -75,15 +85,29 @@ public class WechatLoginServiceImpl implements IWechatLoginService {
 
     @Override
     public WechatLoginVo bindPhone(WechatBindPhoneBo bo) {
-        // 1. 解析 openid：真实流程传 code（jscode2session 换 openid，客户端不经手 openid）；
-        //    dev / mock 模式可直接透传 openid。code 优先。
-        String openid = StrUtil.isNotBlank(bo.getCode()) ? jscode2openid(bo.getCode()) : bo.getOpenid();
+        // 客户端透传 openid / phone 只在 mock 模式（app-id=mock，本地调试）允许。
+        // 真实模式必须由微信换取：否则任何人 POST {openid:任意, phone:某员工手机号} 就能冒充该员工
+        // 拿到 token，并把 sys_user.wx_openid 改写成自己的（把真人的微信绑定顶掉）。
+        // mp 端本来就只传 {code, phoneCode}，加严不影响正常链路。
+        boolean mockMode = MOCK_APP_ID.equalsIgnoreCase(wxAppId);
+
+        // 1. openid：真实模式一律由 code 经 jscode2session 换取，客户端不经手
+        String openid;
+        if (StrUtil.isNotBlank(bo.getCode())) {
+            openid = jscode2openid(bo.getCode());
+        } else if (mockMode) {
+            openid = bo.getOpenid();
+        } else {
+            throw new ServiceException("缺少微信 code，无法绑定");
+        }
         if (StrUtil.isBlank(openid)) {
             throw new ServiceException("缺少 code / openid，无法绑定");
         }
 
-        // 2. 拿到真实手机号（dev：直接读 bo.phone；真实：调微信"手机号快速验证"接口换 phoneCode → phone）
-        String phone = StrUtil.isNotBlank(bo.getPhone()) ? bo.getPhone() : resolvePhoneByCode(bo.getPhoneCode());
+        // 2. 手机号：真实模式一律由 phoneCode 经微信「手机号快速验证」换取，忽略客户端传的 phone
+        String phone = (mockMode && StrUtil.isNotBlank(bo.getPhone()))
+            ? bo.getPhone()
+            : resolvePhoneByCode(bo.getPhoneCode());
         if (StrUtil.isBlank(phone)) {
             throw new ServiceException("手机号不能为空", DjsAuthConstants.BIZ_CODE_PHONE_NOT_REGISTERED);
         }
@@ -117,11 +141,30 @@ public class WechatLoginServiceImpl implements IWechatLoginService {
         String hash = auth == null ? null : (String) auth.get("password");
         // 账号不存在与密码错误统一提示，避免账号枚举
         if (hash == null || !BCrypt.checkpw(password, hash)) {
-            throw new ServiceException("账号或密码错误", DjsAuthConstants.BIZ_CODE_PASSWORD_ERROR);
+            throw loginRejected();
         }
         Long userId = ((Number) auth.get("userId")).longValue();
         // 真员工登录无 openid，颁真 token（issueToken 内按 userId 装配真菜单/角色权限）
         return issueToken(userId, null, StrUtil.blankToDefault(clientId, DjsAuthConstants.MP_APPLET_CLIENT_ID));
+    }
+
+    @Override
+    public void assertUserLoginable(Long userId) {
+        if (userId == null || djsUserExtMapper.selectLoginableUserId(userId) == null) {
+            log.info("[applet-auth] 拒绝登录：userId={} 在 sys_user 不存在 / 已停用 / 已删除", userId);
+            throw loginRejected();
+        }
+    }
+
+    /**
+     * 统一的登录拒绝异常：账号不存在 / 已停用 / 已删除 / 密码错误共用同一文案与业务码。
+     *
+     * <p>不区分具体原因（不回「该账号已停用」），否则可被用来枚举有效账号。</p>
+     */
+    private ServiceException loginRejected() {
+        return new ServiceException(
+            I18nMessages.t("applet.auth.login.rejected"),
+            DjsAuthConstants.BIZ_CODE_PASSWORD_ERROR);
     }
 
     // ---------------------- 内部辅助 ----------------------
@@ -139,7 +182,7 @@ public class WechatLoginServiceImpl implements IWechatLoginService {
         if (StrUtil.isBlank(code)) {
             throw new ServiceException("微信 code 不能为空");
         }
-        if ("mock".equalsIgnoreCase(wxAppId)) {
+        if (MOCK_APP_ID.equalsIgnoreCase(wxAppId)) {
             // dev mock：约定前端传 'mock-openid-<员工 user_name>'，便于本地预绑场景测试
             log.info("[mock] jscode2openid code={} → openid 直接复用 code", code);
             return code;
@@ -167,7 +210,7 @@ public class WechatLoginServiceImpl implements IWechatLoginService {
         if (StrUtil.isBlank(phoneCode)) {
             return null;
         }
-        if ("mock".equalsIgnoreCase(wxAppId)) {
+        if (MOCK_APP_ID.equalsIgnoreCase(wxAppId)) {
             log.warn("[mock] resolvePhoneByCode phoneCode={} 返 null（dev 模式请传 phone 字段）", phoneCode);
             return null;
         }

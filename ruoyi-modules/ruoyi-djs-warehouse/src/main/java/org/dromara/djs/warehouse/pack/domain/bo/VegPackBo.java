@@ -45,6 +45,9 @@ public class VegPackBo {
     @DecimalMin(value = "0.001", message = "{pack.product_weight.positive}")
     private BigDecimal productWeight;
 
+    /** 实称超过产品打包规则 3% 时，操作员是否已明确确认继续。 */
+    private Boolean allowOverMeasure;
+
     /**
      * 入库目标库位 FK → {@code t_warehouse_location_info.id}（蔬菜鲜品库）。
      *

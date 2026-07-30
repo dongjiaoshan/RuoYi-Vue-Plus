@@ -126,6 +126,8 @@ public class PlotInfoServiceImpl extends DjsBaseServiceImpl<PlotInfoMapper, Plot
         }
         // plot_code 不允许修改
         entity.setPlotCode(exists.getPlotCode());
+        // plot_status 编辑接口只读：状态只允许业务动作（种植/采摘/退茬）流转，置 null 让 updateById 跳过该列
+        entity.setPlotStatus(null);
         return baseMapper.updateById(entity);
     }
 

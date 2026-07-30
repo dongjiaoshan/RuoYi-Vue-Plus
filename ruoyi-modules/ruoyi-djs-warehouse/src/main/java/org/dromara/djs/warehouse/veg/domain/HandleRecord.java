@@ -49,6 +49,11 @@ public class HandleRecord extends TenantEntity {
     private Long cropId;
 
     /**
+     * 采摘班组 FK → {@code t_plant_work_team.id}（record_type=1 采收录入必填；record_type=2 处理录入为 null）。
+     */
+    private Long teamId;
+
+    /**
      * 记录类型 djs_record_type：1=采收 / 2=处理。
      */
     private Integer recordType;

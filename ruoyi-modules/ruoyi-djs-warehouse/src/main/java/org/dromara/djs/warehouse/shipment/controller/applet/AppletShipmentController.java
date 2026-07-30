@@ -29,6 +29,7 @@ import java.util.List;
  *   <li>{@code GET  /applet/warehouse/ship/productions}   按 demand_id 拉待清点产品</li>
  *   <li>{@code GET  /applet/warehouse/ship/store-list}    门店维度待发货聚合（发货月台 IA 进页）</li>
  *   <li>{@code GET  /applet/warehouse/ship/store-demands} 某门店待发需求单 + 各自可发清单（发货子页）</li>
+ *   <li>{@code GET  /applet/warehouse/ship/store-summary} 某门店当天聚合（种类数 + 需求满足率，发货子页头）</li>
  * </ul>
  *
  * @author djs
@@ -68,5 +69,12 @@ public class AppletShipmentController extends BaseController {
     @GetMapping("/store-demands")
     public R<List<ShipDemandVo>> listStorePendingDemands(@RequestParam Long storeId) {
         return R.ok(service.listStorePendingDemands(storeId));
+    }
+
+    /** 某门店当天发货聚合（门店货物页头：需求产品种类 + 需求满足率，与门店列表卡同一算法）。 */
+    @SaCheckPermission("djs:applet:warehouse:ship:check")
+    @GetMapping("/store-summary")
+    public R<ShipStoreVo> getStoreSummary(@RequestParam Long storeId) {
+        return R.ok(service.queryStoreSummary(storeId));
     }
 }

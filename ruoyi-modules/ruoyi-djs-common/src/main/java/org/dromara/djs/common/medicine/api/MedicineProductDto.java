@@ -22,6 +22,9 @@ public class MedicineProductDto implements Serializable {
     /** 药品商品 id（{@code t_warehouse_product_info.id}） */
     private Long id;
 
+    /** 药品业务码（{@code product_info.product_id} 业务码 VARCHAR，非主键；养殖端「药品编码」） */
+    private String code;
+
     /** 药品名（product_name） */
     private String name;
 
@@ -30,6 +33,12 @@ public class MedicineProductDto implements Serializable {
 
     /** 规格（product_spec） */
     private String spec;
+
+    /** 供应商 id（{@code product_info.supplier_id}，FK → t_md_supplier.id；可空） */
+    private Long supplierId;
+
+    /** 备注（{@code product_info.remark}；可空） */
+    private String remark;
 
     /** 当前库存合计（跨库位 SUM(product_stock)，无库存行按 0） */
     private BigDecimal stock;

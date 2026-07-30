@@ -13,7 +13,7 @@ import java.util.List;
  * 损耗总览聚合查询 Mapper（WMS-LOSS-OVERVIEW-001，仓库-admin 行63）。
  *
  * <p>compute-on-read over {@code t_warehouse_loss_flow}，不建汇总表。两个聚合 @Select：
- * 按日汇总（distinct 产品数）+ 当日明细（LEFT JOIN product_info 取图）。
+ * 按日汇总（损耗品种数）+ 当日明细（LEFT JOIN product_info 取图）。
  * 自定义 @Select 含聚合，WHERE 显式带 {@code tenant_id}（多租户拦截器对聚合不保证注入）；
  * 雪花 id CAST AS CHAR 返前端防精度丢失。</p>
  *
@@ -24,11 +24,13 @@ import java.util.List;
 public interface LossOverviewMapper {
 
     /**
-     * 按自然日汇总损耗（行63 列表）：每日 distinct 损耗产品/商品数。
+     * 按自然日汇总损耗：每日损耗品种数 = 当日明细按产品编码去重后的数量。
      *
-     * <p>{@code COUNT(DISTINCT product_id) GROUP BY DATE(loss_date)}，按日期倒序。
-     * product_id 可空（crop/plot 级损耗如毛菜处理/运输）时不计入 distinct（COUNT DISTINCT 忽略 NULL），
-     * 与 product_info JOIN 口径一致。</p>
+     * <p>{@code COUNT(DISTINCT product_code) GROUP BY DATE(loss_date)}，按日期倒序。
+     * 与详情弹窗同源同过滤条件，因此汇总值严格等于详情行 {@code productCode} 的 distinct 个数。
+     * 猪肉过程损耗（{@code burn_loss} 燎毛 / {@code cut_loss} 分割 / {@code precool_loss} 预冷）都挂白条
+     * 产品「半扇」，同日只算 1 个品种；{@code product_code} 为 NULL 的行被 {@code COUNT(DISTINCT)}
+     * 天然忽略，不计入品种数。</p>
      *
      * @param tenantId  租户（V1 固定 '1001'）
      * @param dateFrom  起始日期（含，可空）
@@ -38,7 +40,7 @@ public interface LossOverviewMapper {
     @Select("""
         <script>
         SELECT DATE_FORMAT(loss_date, '%Y-%m-%d') AS lossDate,
-               COUNT(DISTINCT product_id) AS productCount
+               COUNT(DISTINCT product_code) AS productCount
         FROM t_warehouse_loss_flow
         WHERE del_flag = '0' AND tenant_id = #{tenantId}
         <if test="dateFrom != null"> AND loss_date &gt;= #{dateFrom} </if>
@@ -58,6 +60,9 @@ public interface LossOverviewMapper {
      * {@code COALESCE(product_thumb, image_oss_id)} 作图片。搜索：产品名称模糊（loss_flow 冗余快照
      * product_name）/ 损耗类型精确。id CAST AS CHAR 返前端。</p>
      *
+     * <p>燎毛损耗（{@code burn_loss}）恒为重量口径，单位列在后端固定成 {@code kg}，
+     * 兼容 {@code product_unit} 为 NULL 的行，保证导出等其他消费方一致。</p>
+     *
      * @param tenantId    租户（V1 固定 '1001'）
      * @param date        统计自然日（必传，yyyy-MM-dd 边界由 service 转成当日 00:00:00/23:59:59 或这里 DATE() 比较）
      * @param productName 产品名称模糊（可空）
@@ -71,7 +76,7 @@ public interface LossOverviewMapper {
                COALESCE(pi.product_thumb, pi.image_oss_id) AS imageOssId,
                lf.product_code AS productCode,
                lf.product_name AS productName,
-               lf.product_unit AS productUnit,
+               CASE WHEN lf.loss_type = 'burn_loss' THEN 'kg' ELSE lf.product_unit END AS productUnit,
                lf.loss_type AS lossType,
                lf.loss_weight AS lossWeight
         FROM t_warehouse_loss_flow lf

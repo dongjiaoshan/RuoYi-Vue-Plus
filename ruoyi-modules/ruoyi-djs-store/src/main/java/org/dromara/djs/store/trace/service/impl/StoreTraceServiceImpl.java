@@ -21,6 +21,7 @@ import org.dromara.djs.warehouse.pack.domain.ProductProduction;
 import org.dromara.djs.warehouse.pack.mapper.ProductProductionMapper;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
+import org.dromara.djs.warehouse.product.util.WorkshopMatcher;
 import org.dromara.djs.store.trace.service.IStoreTraceService;
 import org.dromara.djs.warehouse.cross.mapper.BarInfoMapper;
 import org.dromara.djs.warehouse.trace.domain.TraceCode;
@@ -64,6 +65,14 @@ public class StoreTraceServiceImpl implements IStoreTraceService {
     private static final String CODE_TYPE_PORK = "pork";
     /** 产品属性=生产产品（字典 djs_product_attr：1=生产产品 / 2=原材料）。 */
     private static final Integer PRODUCT_ATTR_PRODUCE = 1;
+    /**
+     * 门店打包间车间码（{@code t_warehouse_product_info.product_workshop}，字典 djs_product_workshop = 5）。
+     *
+     * <p>车间列自 WMS-PRODUCT-WORKSHOP-MULTI-001 起是 CSV 多归属，过滤走
+     * {@link WorkshopMatcher#match}（{@code FIND_IN_SET}），不能 {@code eq}——
+     * 同时挂「肉品打包间 + 门店打包间」的产品值是 {@code "3,5"}，等值比较会把它漏掉。</p>
+     */
+    private static final String PRODUCT_WORKSHOP_STORE_PACK = "5";
     /** 猪肉业态。 */
     private static final String BELONG_TYPE_PORK = "pork";
     /** 白条业态（现场分割 picker 取白条 production 用）。 */
@@ -285,15 +294,17 @@ public class StoreTraceServiceImpl implements IStoreTraceService {
      * 本轮仅保留 djs_pork_cut_product 字典驱动 + {@code genPorkOnsiteCode} 现状，不改 product 驱动。</p>
      */
     /**
-     * 门店猪肉打包可选产品：产品属性=生产产品（{@code product_attr=1}）且业态=猪肉（{@code belong_type=pork}）。
+     * 门店猪肉打包可选产品：生产车间=门店打包间（{@code product_workshop=5}）、产品属性=生产产品
+     * （{@code product_attr=1}）且业态=猪肉（{@code belong_type=pork}）。
      *
-     * <p>无匹配产品 → 空 List（前端 PorkTracePanel 回退用部位字典 {@code djs_pork_cut_product}）。</p>
+     * <p>由客户在 admin 产品配置里把产品挂到「门店打包间」来决定门店现场能打哪些产品。
+     * 无匹配产品 → 空 List（前端 PorkTracePanel 回退用部位字典 {@code djs_pork_cut_product}）。</p>
      */
     @Override
     public List<StorePackProductVo> listPackProducts() {
-        return productInfoMapper.selectList(new LambdaQueryWrapper<ProductInfo>()
+        return productInfoMapper.selectList(WorkshopMatcher.match(new LambdaQueryWrapper<ProductInfo>()
                 .eq(ProductInfo::getProductAttr, PRODUCT_ATTR_PRODUCE)
-                .eq(ProductInfo::getBelongType, BELONG_TYPE_PORK))
+                .eq(ProductInfo::getBelongType, BELONG_TYPE_PORK), PRODUCT_WORKSHOP_STORE_PACK))
             .stream().map(p -> {
                 StorePackProductVo vo = new StorePackProductVo();
                 vo.setProductId(p.getId());
@@ -310,6 +321,8 @@ public class StoreTraceServiceImpl implements IStoreTraceService {
     public StoreOnsiteCodeVo genOnsiteCode(StoreTraceOnsiteBo bo) {
         // row201：现场码归属当前门店（StoreContext 由 Current-Store-Id 头注入；未选门店/超管无上下文 → null 容错）
         Long storeId = currentStoreId();
+        // 已终止合作门店禁止现场生码（口径同门店域其余业务写路径；storeId=null 放行，由下方生产编码生成兜底报错）
+        storeService.assertStoreActive(storeId);
         // row84：生产编码 = <门店生产标识码>YYMMDD####（门店级每日流水），标签「生产编码」展示用。
         //   必须先生成——门店未配生产标识码时抛异常，避免生了追溯码却无生产编码的半成品。
         String productionCode = storeService.generateStoreProduceCode(storeId);

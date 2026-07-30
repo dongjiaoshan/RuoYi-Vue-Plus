@@ -32,9 +32,9 @@ public class PigIntroBatchBo extends PigIntroBo {
      * service 层 count=1 是 count=N 的退化形态（连号分配 1 个 / 容量校验 remaining≥1 / pen 原子加 1），无副作用。
      * 上限 200 是为了避免单事务过大触发 MySQL row lock / undo log 压力。
      */
-    @NotNull(message = "intro.count.required")
-    @Min(value = 1, message = "intro.count.batch_min")
-    @Max(value = 200, message = "intro.count.batch_max")
+    @NotNull(message = "{intro.count.required}")
+    @Min(value = 1, message = "{intro.count.batch_min}")
+    @Max(value = 200, message = "{intro.count.batch_max}")
     private Integer pigCount;
 
     /**

@@ -8,9 +8,9 @@ import java.io.Serializable;
 /**
  * 门店猪肉打包可选产品 VO（STORE-TRACE-PACK-PRODUCT-001）。
  *
- * <p>门店现场分割白条按产品打包：产品取数 = 生产车间「门店打包间」（{@code product_workshop=5}）下、
- * 且 {@code product_material} 命中字典 {@code djs_pork_return_product} 的猪肉产品（docx「门店猪肉打包」两步取数）。
- * 前端 PorkTracePanel 产品卡按此列表渲染（替代旧固定 5 部位字典 djs_pork_cut_product）。</p>
+ * <p>门店现场分割白条按产品打包：产品取数 = 生产车间「门店打包间」（{@code product_workshop=5}）下的
+ * 生产产品（{@code product_attr=1}）且业态为猪肉（{@code belong_type='pork'}）。
+ * 前端 PorkTracePanel 产品卡按此列表渲染，为空时回退部位字典 {@code djs_pork_cut_product}。</p>
  *
  * @author djs
  * @since STORE-TRACE-PACK-PRODUCT-001

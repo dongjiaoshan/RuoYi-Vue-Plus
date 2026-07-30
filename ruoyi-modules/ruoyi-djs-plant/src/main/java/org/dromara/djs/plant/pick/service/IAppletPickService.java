@@ -103,4 +103,19 @@ public interface IAppletPickService {
      * @return true=该作物已录入完成（存在 pick_settle_round&gt;0 的地块）；false=尚未
      */
     boolean isCropSettled(Long cropId, Integer isPick);
+
+    /**
+     * 作物「已采产量」权威合计（kg）：mp 采摘活动详情头卡「已采产量」取数。
+     *
+     * <p>= Σ({@link #listCropPlots} 同口径地块集的 actual_yield)。与列表卡 {@code listCropTasks}
+     * 同源，故「列表卡 = 详情头卡 = 详情地块卡合计」三者恒等。未结算的销售去向流水
+     * （{@code pick_dest=sale}，plot_id 恒空）不在此预支，结算（「称重完成」）时均分写入
+     * {@code actual_yield} 后自然并入。</p>
+     *
+     * @param cropId 作物 id（必填，空抛 ServiceException）
+     * @param isPick is_pick 过滤值（可空，空时默认 2=普通采收；「采摘活动管理」页传 1 只看游客采摘活动，
+     *               与 {@link #listCropPlots} 同 isPick 契约）
+     * @return 已采产量合计（无可见地块 → 0）
+     */
+    java.math.BigDecimal cropPickedTotal(Long cropId, Integer isPick);
 }

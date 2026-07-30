@@ -36,6 +36,7 @@ import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.domain.ProductInhouse;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
 import org.dromara.djs.warehouse.product.mapper.ProductInhouseMapper;
+import org.dromara.djs.warehouse.product.util.WorkshopMatcher;
 import org.dromara.djs.warehouse.stock.domain.LocationStock;
 import org.dromara.djs.warehouse.stock.mapper.LocationStockMapper;
 import org.dromara.djs.warehouse.trace.domain.TraceContentConst;
@@ -102,6 +103,8 @@ public class PigBurnRecordServiceImpl
      * 燎毛入库产品类型由 admin 产品配置驱动 = belong_type='white_bar' + 燎毛间车间 + 正常态 + 原材料属性。
      */
     private static final String WHITE_BAR_BELONG_TYPE = "white_bar";
+    /** 早期占位白条产品业务码前缀：解析白条产品时排在甲方自建产品之后，避免占位产品夺走损耗 / 出库归属。 */
+    private static final String SEED_WHITE_BAR_CODE_PREFIX = "PROD-WHITE-BAR-";
 
     /**
      * 产品状态（{@code t_warehouse_product_info.product_status}，字典 sys_normal_disable）：0=正常 / 1=停用。
@@ -117,12 +120,9 @@ public class PigBurnRecordServiceImpl
     private static final Integer PRODUCT_ATTR_RAW_MATERIAL = 2;
 
     /**
-     * 白条产品类别枚举（FIX-WMS-MP-BURN-001 录入约束 + 去前缀用），按 product_id 业务码后缀映射。
+     * 白条产品类别（FIX-WMS-MP-BURN-001 录入约束用）：half=半只（一头猪左右两扇）。
      */
-    private static final String PRODUCT_TYPE_WHOLE = "whole";
     private static final String PRODUCT_TYPE_HALF = "half";
-    private static final String PRODUCT_TYPE_HEAD = "head";
-    private static final String PRODUCT_TYPE_TROTTER = "trotter";
 
     /**
      * 白条状态码（{@code t_warehouse_bar_info.status}）。
@@ -422,7 +422,7 @@ public class PigBurnRecordServiceImpl
             vo.setProductId(p.getId());
             vo.setProductCode(p.getProductId());
             vo.setProductName(p.getProductName());
-            vo.setProductType(resolveProductType(p.getProductId()));
+            vo.setProductType(resolveProductType(p));
             vo.setImageUrl(urlsAligned ? urls.get(i) : null);
             vo.setRecordedCount(recordedCountMap.getOrDefault(p.getId(), 0));
             result.add(vo);
@@ -581,7 +581,7 @@ public class PigBurnRecordServiceImpl
             throw new ServiceException("白条状态不符（当前：" + bar.getStatus() + "，需燎毛中），请先录入产品入库");
         }
 
-        // ---------- Step 2：聚合该白条已入库产品 → 校验总重 + 整只/半只互斥（后端兜底前端约束）----------
+        // ---------- Step 2：聚合该白条已入库产品 → 校验总重 + 半只须集齐 2 扇（后端兜底前端约束）----------
         List<ProductInhouse> inhouses = productInhouseMapper.selectList(
             new LambdaQueryWrapper<ProductInhouse>()
                 .eq(ProductInhouse::getWhiteBarId, bar.getId()));
@@ -591,9 +591,6 @@ public class PigBurnRecordServiceImpl
 
         Map<Long, ProductInfo> typeMap = loadWhiteBarTypeMap();
         BigDecimal inWeightTotal = BigDecimal.ZERO;
-        boolean hasWhole = false;
-        boolean hasHalf = false;
-        int headCount = 0;
         int halfCount = 0;
         for (ProductInhouse ih : inhouses) {
             BigDecimal w = ih.getProductWeight();
@@ -601,27 +598,14 @@ public class PigBurnRecordServiceImpl
                 inWeightTotal = inWeightTotal.add(w);
             }
             ProductInfo type = typeMap.get(ih.getProductId());
-            String pt = type == null ? null : resolveProductType(type.getProductId());
-            if (PRODUCT_TYPE_WHOLE.equals(pt)) {
-                hasWhole = true;
-            } else if (PRODUCT_TYPE_HALF.equals(pt)) {
-                hasHalf = true;
+            if (type != null && PRODUCT_TYPE_HALF.equals(resolveProductType(type))) {
                 halfCount++;
-            } else if (PRODUCT_TYPE_HEAD.equals(pt)) {
-                headCount++;
             }
         }
-        // 整只 / 半只互斥（一头白条不能既整只又半只）
-        if (hasWhole && hasHalf) {
-            throw new ServiceException("整只与半只不能同时入库");
-        }
-        // 半只必须集齐 2 个（一头整猪左右两扇）才能处理完成
-        if (hasHalf && halfCount != 2) {
+        // 白条（半只）必须集齐 2 扇（一头整猪左右两扇）才能处理完成；
+        // 只录了猪头 / 猪脚 等非白条燎毛间原材料（halfCount=0）不受本约束。
+        if (halfCount > 0 && halfCount != 2) {
             throw new ServiceException("半只需录入 2 个才能处理完成，当前已录 " + halfCount + "/2");
-        }
-        // 猪头限 1 次
-        if (headCount > 1) {
-            throw new ServiceException("猪头最多入库 1 次");
         }
         // 累计入库总重 ≤ 头皮肉重量（到场重 arrive_weight）。arrive 为 null（未称重）时跳过本校验（向后兼容）。
         BigDecimal headSkinWeight = bar.getArriveWeight();
@@ -644,9 +628,10 @@ public class PigBurnRecordServiceImpl
         // ---------- Step 5：DENGBO row27 燎毛损耗 ----------
         // 燎毛处理完成时，剩余未入库重量（= 头皮肉重量[到场重 arrive_weight] − 本次入库产品总重 inWeightTotal）
         // 计入「燎毛损耗」统一损耗流水，进「损耗总览」。arrive 为 null（未称重）或剩余 ≤ 0 时不记
-        //（record 内部对 lossWeight ≤ 0 自动跳过）。admin row15：燎毛损耗是整只级过程损耗、无具体产品，
-        // product_id 置 null（record 对 null productId 不回填 product_code/name，损耗总览 LEFT JOIN 显 '—'），
-        // 仅带耳号便于追溯。
+        //（record 内部对 lossWeight ≤ 0 自动跳过）。
+        // 损耗归属产品 = 白条产品（主数据里的「半扇」），与分割损耗 / 预冷损耗同一口径，三者在损耗总览里归到同一产品行；
+        // product_code / product_name / product_unit / belong_type 快照由 lossFlowService.record 按 productId 自动回填。
+        // 另带耳号便于追溯到具体整猪。
         if (headSkinWeight != null) {
             BigDecimal burnLoss = headSkinWeight.subtract(inWeightTotal);
             if (burnLoss.signum() > 0) {
@@ -654,7 +639,7 @@ public class PigBurnRecordServiceImpl
                 loss.setLossType(LOSS_TYPE_BURN);
                 loss.setLossWeight(burnLoss);
                 loss.setLossDate(new Date());
-                loss.setProductId(null);
+                loss.setProductId(resolveWhiteBarProductId());
                 loss.setEarNo(bar.getEarNo());
                 loss.setOperatorId(operatorId);
                 loss.setSourceBizType(LOSS_SOURCE_BIZ_BURN);
@@ -666,22 +651,19 @@ public class PigBurnRecordServiceImpl
 
 
     /**
-     * 按 product_id 业务码后缀映射结构化产品类别（FIX-WMS-MP-BURN-001）。
+     * 按产品主数据判定结构化产品类别（FIX-WMS-MP-BURN-001 录入约束用）。
      *
-     * <p>PROD-WHITE-BAR-01=整只 / -02=猪头 / -03=猪蹄 / -04=半只（与 white-bar seed 对齐）。
-     * 未识别码返回 {@code null}（前端 graceful 不拦）。</p>
+     * <p>判据是 {@code belong_type}（产品类别）而非业务码 —— 白条产品由甲方在 admin 产品配置里维护，
+     * 增删改都不该要求改代码：</p>
+     * <ul>
+     *   <li>{@code belong_type='white_bar'}（产品类别=白条产品）= 燎毛产出的白条本体，
+     *       一头猪出左右两扇 → {@link #PRODUCT_TYPE_HALF}，限录 2 次、须集齐 2 扇才能处理完成；</li>
+     *   <li>其余配在燎毛间的原材料（猪头 / 猪脚 等 {@code belong_type='pork'}）→ {@code null}，
+     *       不参与半只约束，前端按产品名回落判类别。</li>
+     * </ul>
      */
-    private String resolveProductType(String productCode) {
-        if (productCode == null) {
-            return null;
-        }
-        return switch (productCode) {
-            case "PROD-WHITE-BAR-01" -> PRODUCT_TYPE_WHOLE;
-            case "PROD-WHITE-BAR-02" -> PRODUCT_TYPE_HEAD;
-            case "PROD-WHITE-BAR-03" -> PRODUCT_TYPE_TROTTER;
-            case "PROD-WHITE-BAR-04" -> PRODUCT_TYPE_HALF;
-            default -> null;
-        };
+    private static String resolveProductType(ProductInfo product) {
+        return WHITE_BAR_BELONG_TYPE.equals(product.getBelongType()) ? PRODUCT_TYPE_HALF : null;
     }
 
     /**
@@ -698,7 +680,7 @@ public class PigBurnRecordServiceImpl
     /**
      * 燎毛间车间码（{@code t_warehouse_product_info.product_workshop}，字典 djs_product_workshop = 1）。
      */
-    private static final Integer PRODUCT_WORKSHOP_BURN = 1;
+    private static final String PRODUCT_WORKSHOP_BURN = "1";
 
     /**
      * 燎毛入库产品类型列表（admin 产品配置驱动）：product_workshop=1 燎毛间 + product_status=0 正常
@@ -709,21 +691,47 @@ public class PigBurnRecordServiceImpl
      * 原材料（如 GF0002 五花肉 belong_type='pork'，是燎毛间原材料但被 white_bar 过滤误挡）。</p>
      *
      * <p>只取 {@code product_attr=2}（原材料）；{@code product_attr=1} 生产产品 = 对外打包后的成品，
-     * 不在燎毛入库。标准白条（整只/半只，业务码前缀 PROD-WHITE-BAR-）+ 其它配在燎毛间的原材料都进；
-     * {@link #resolveProductType} 对非标准码返 null，前端回落按名称判类别。</p>
+     * 不在燎毛入库。白条本体（{@code belong_type='white_bar'}，甲方主数据里是「半扇」）+ 其它配在燎毛间的
+     * 原材料（猪头 / 猪脚 等 {@code belong_type='pork'}）都进；
+     * {@link #resolveProductType} 只对白条本体返 half，其余返 null，前端回落按名称判类别。</p>
      */
     private List<ProductInfo> loadWhiteBarTypes() {
         return productInfoMapper.selectList(
-            new LambdaQueryWrapper<ProductInfo>()
-                .eq(ProductInfo::getProductWorkshop, PRODUCT_WORKSHOP_BURN)
-                .eq(ProductInfo::getProductStatus, PRODUCT_STATUS_NORMAL)
-                .eq(ProductInfo::getProductAttr, PRODUCT_ATTR_RAW_MATERIAL)
+            WorkshopMatcher.match(
+                new LambdaQueryWrapper<ProductInfo>()
+                    .eq(ProductInfo::getProductStatus, PRODUCT_STATUS_NORMAL)
+                    .eq(ProductInfo::getProductAttr, PRODUCT_ATTR_RAW_MATERIAL),
+                PRODUCT_WORKSHOP_BURN)
                 .orderByAsc(ProductInfo::getProductId));
     }
 
     private Map<Long, ProductInfo> loadWhiteBarTypeMap() {
         return loadWhiteBarTypes().stream()
             .collect(Collectors.toMap(ProductInfo::getId, p -> p, (a, b) -> a));
+    }
+
+    /**
+     * 解析白条产品 id：产品主数据里「产品类别=白条产品 + 状态正常」的产品，甲方自建产品优先、其次按业务码升序取第一个
+     *（甲方主数据里当前是「半扇」）。
+     *
+     * <p>口径与 {@code PigCutRecordServiceImpl#resolveWhiteBarProductId} 一致，使燎毛损耗 / 分割损耗 /
+     * 预冷损耗三种猪肉过程损耗在「损耗总览」里归到同一个产品行。不绑固定业务码，因为白条产品由甲方在
+     * admin 产品配置里维护。</p>
+     *
+     * <p>与分割侧的唯一差别：查不到白条产品时返 {@code null} 而不抛异常 —— 损耗只是燎毛完成的副产账，
+     * 不能因产品主数据缺失阻断燎毛主链；此时 loss_flow 退化为无产品损耗行。</p>
+     */
+    private Long resolveWhiteBarProductId() {
+        ProductInfo whiteBar = productInfoMapper.selectOne(
+            new LambdaQueryWrapper<ProductInfo>()
+                .eq(ProductInfo::getBelongType, WHITE_BAR_BELONG_TYPE)
+                .eq(ProductInfo::getProductStatus, PRODUCT_STATUS_NORMAL)
+                .last("ORDER BY (product_id LIKE '" + SEED_WHITE_BAR_CODE_PREFIX + "%'), product_id ASC LIMIT 1"));
+        if (whiteBar == null || whiteBar.getId() == null) {
+            log.warn("燎毛损耗未挂产品：产品配置里没有「产品类别=白条产品」且状态正常的产品");
+            return null;
+        }
+        return whiteBar.getId();
     }
 
     @Override

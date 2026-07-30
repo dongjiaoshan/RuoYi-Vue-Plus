@@ -130,6 +130,8 @@ public class WarehouseDashboardServiceImpl implements IWarehouseDashboardService
         vo.setTodayDemandOffal(BigDecimal.ZERO);   // 红白脏产品 V1 无对应 belong_type 数据源，默认 0
         vo.setTodayDemandGiftBox(nzd(dashboardMapper.sumTodayDemandByType(tenantId, "gift_box")));
         vo.setTodayDemandVegetableKinds(nz(dashboardMapper.countTodayDemandKindsByBelong(tenantId, "vegetable")));
+        vo.setTodayDemandPorkKinds(nz(dashboardMapper.countTodayDemandKindsByBelong(tenantId, "pork")));
+        vo.setTodayDemandOtherKinds(nz(dashboardMapper.countTodayDemandOtherKinds(tenantId)));
         vo.setTodayDemandVegetable(nzd(dashboardMapper.sumTodayDemandByBelong(tenantId, "vegetable")));
         vo.setTodayDemandEgg(nzd(dashboardMapper.sumTodayDemandByBelong(tenantId, "egg")));
         vo.setTodayDemandDryGood(nzd(dashboardMapper.sumTodayDemandByBelong(tenantId, "dry_good")));
@@ -140,6 +142,9 @@ public class WarehouseDashboardServiceImpl implements IWarehouseDashboardService
         // 横条 2「今日生产」8 项（对齐原型）+ 兼容旧 5 项
         vo.setTodaySlaughterPigCount(nz(dashboardMapper.countTodaySlaughterPigs(tenantId)));
         vo.setTodayWhiteBarWeight(nzd(dashboardMapper.sumTodayWhiteBarWeight(tenantId)));
+        vo.setTodayMarketingWeight(nzd(dashboardMapper.sumTodayMarketingWeight(tenantId)));
+        vo.setTodayVegHandleKinds(nz(dashboardMapper.countTodayVegHandleKinds(tenantId)));
+        vo.setTodayVegHandleWeight(nzd(dashboardMapper.sumTodayVegHandleWeight(tenantId)));
         vo.setTodayCutBarCount(nzd(dashboardMapper.countTodayCutBars(tenantId)));
         vo.setTodayCutProductWeight(nzd(dashboardMapper.sumTodayCutProductWeight(tenantId)));
         vo.setTodayVegReceiveKinds(nz(dashboardMapper.countTodayVegReceiveKinds(tenantId)));
@@ -231,7 +236,7 @@ public class WarehouseDashboardServiceImpl implements IWarehouseDashboardService
     private static final List<PorkMetric> PORK_METRICS = List.of(
         new PorkMetric("屠宰头数", WarehouseIndicatorRecord::getSlaughterCount, false),
         new PorkMetric("送宰均重", WarehouseIndicatorRecord::getAvgSlaughterWeight, true),
-        new PorkMetric("接收均重", WarehouseIndicatorRecord::getArriveWeight, false),
+        new PorkMetric("接收均重", WarehouseIndicatorRecord::getArriveWeight, true),
         new PorkMetric("屠宰率", WarehouseIndicatorRecord::getSlaughterRate, true),
         new PorkMetric("白条均重", WarehouseIndicatorRecord::getAvgBarWeight, true),
         new PorkMetric("白条出品率", WarehouseIndicatorRecord::getBarYieldRate, true),
@@ -240,7 +245,8 @@ public class WarehouseDashboardServiceImpl implements IWarehouseDashboardService
         new PorkMetric("分割总重", WarehouseIndicatorRecord::getCutBarWeight, false),
         new PorkMetric("分割产品重", WarehouseIndicatorRecord::getCutProductWeight, false),
         new PorkMetric("分割率", WarehouseIndicatorRecord::getCutRate, true),
-        new PorkMetric("分割损耗重", WarehouseIndicatorRecord::getCutLoss, false)
+        // R80：文案「分割损耗重」→「分割损耗」。
+        new PorkMetric("分割损耗", WarehouseIndicatorRecord::getCutLoss, false)
     );
 
     /**
@@ -259,18 +265,32 @@ public class WarehouseDashboardServiceImpl implements IWarehouseDashboardService
             List<String> daily = new ArrayList<>();
             BigDecimal sum = BigDecimal.ZERO;
             boolean hasAny = false;
+            // R80：率/均值类累计分母 = 有数据（值 >0）天数，无活动天（0/空）不摊薄均值。
+            int dataDays = 0;
             for (LocalDate d : dates) {
                 WarehouseIndicatorRecord r = byDate.get(d);
                 Object raw = r == null ? null : m.getter().apply(r);
-                daily.add(fmtCell(raw));
+                // R81：率/均值类当日空值兜底显示 0.00（前端 withPct 再补 %），非率类保持原样（空/数值）。
+                daily.add(m.rateOrAvg() && raw == null ? "0.00" : fmtCell(raw));
                 if (raw instanceof Number n) {
-                    sum = sum.add(new BigDecimal(n.toString()));
+                    BigDecimal bd = new BigDecimal(n.toString());
+                    sum = sum.add(bd);
                     hasAny = true;
+                    if (bd.signum() > 0) {
+                        dataDays++;
+                    }
                 }
             }
             row.setDailyValues(daily);
-            // 率 / 均值类不汇总（累计无意义），整数 / 重量类汇总
-            row.setTotal(m.rateOrAvg() || !hasAny ? "" : fmtCell(sum));
+            if (m.rateOrAvg()) {
+                // R80：率/均值类累计 = 每日之和 / 有数据天数（原为留空）；无数据 → 0.00 兜底（对齐 R81 空值口径）。
+                row.setTotal(dataDays > 0
+                    ? fmtCell(sum.divide(new BigDecimal(dataDays), 2, RoundingMode.HALF_UP))
+                    : "0.00");
+            } else {
+                // 整数 / 重量类累计 = 逐日之和；全月无数据留空。
+                row.setTotal(hasAny ? fmtCell(sum) : "");
+            }
             rows.add(row);
         }
         return rows;

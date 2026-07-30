@@ -39,6 +39,9 @@ public class BreedingAnnualVo implements Serializable {
 
     // ---- ②年度繁殖与配种 ----
 
+    /** PSY = 年度断奶头数 / 当年平均母猪存栏 × 窝均断奶（年表 psy，头/母猪·年；R72 取代原「配种率」展示）。 */
+    private BigDecimal psy;
+
     /** 配种率（年表 year_farrow_rate，百分比数值如 55.56；V1 与分娩率同口径）。 */
     private BigDecimal mateRate;
 

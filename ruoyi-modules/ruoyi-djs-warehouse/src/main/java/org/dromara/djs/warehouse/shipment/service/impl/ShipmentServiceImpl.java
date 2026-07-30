@@ -40,9 +40,11 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Comparator;
 import java.util.Date;
 import java.util.HashMap;
@@ -129,6 +131,25 @@ public class ShipmentServiceImpl
         DemandStatus.PARTIAL_SHIPPED,
         DemandStatus.COMPLETED
     );
+
+    /** 礼盒组件（deliver_dest='gift'）：预留给礼盒打包消耗，不出现在发货月台。 */
+    private static final String DELIVER_DEST_GIFT = "gift";
+
+    /**
+     * 「按重量计量」的产品单位集合（小写）——{@link #producedCopies} 据此决定生产量取
+     * {@code produce_quantity} 公斤数还是按件计 1。
+     *
+     * <p>成员与 {@code ProductProductionServiceImpl.isKgUnit} 一致：打包扣需求（KG 扣重量 / 其余恒扣 1 份）
+     * 与本处生产量必须同一把尺，否则满足率的分子分母量纲会错位。只收 kg 量纲——{@code produce_quantity}
+     * 全链路以 kg 落库，吨 / 斤等其他重量单位直接取原值会量纲错位，不纳入。</p>
+     */
+    private static final Set<String> WEIGHT_PRODUCT_UNITS = Set.of("kg", "公斤");
+
+    /** 需求满足率中间比值精度（最终结果 scale=2）。 */
+    private static final int RATE_CALC_SCALE = 6;
+    private static final BigDecimal RATE_PERCENT = BigDecimal.valueOf(100);
+    /** 无可算种类时的满足率（0.00）。 */
+    private static final BigDecimal RATE_ZERO = BigDecimal.ZERO.setScale(2);
 
     private final ProductProductionMapper productProductionMapper;
     private final StockFlowMapper stockFlowMapper;
@@ -347,36 +368,15 @@ public class ShipmentServiceImpl
         if (byStore.isEmpty()) {
             return List.of();
         }
-        // 3. 批量填门店名（无 N+1）。
+        // 3. 批量填门店名 + 批量取各店可发成品份数（两处均无 N+1：门店数 × 需求数不再各查一次）。
         Map<Long, String> storeNameMap = loadStoreNameMap(byStore.keySet());
-        // 4. 每门店算待发需求数 + 待发产品种类数 + 总量。
+        Map<Long, Map<Long, BigDecimal>> producedByStore =
+            loadProducedCopies(byStore.keySet(), collectShippableProductIds(demands));
+        // 4. 每门店算待发需求数 + 待发产品种类数 + 总量 + 需求满足率。
         List<ShipStoreVo> list = new ArrayList<>(byStore.size());
-        byStore.forEach((storeId, storeDemands) -> {
-            ShipStoreVo vo = new ShipStoreVo();
-            vo.setStoreId(storeId);
-            vo.setStoreName(storeNameMap.get(storeId));
-            vo.setPendingDemandCount(storeDemands.size());
-            // 产品种类数 = 当日所有 SHIPPABLE 需求的产品种类（按 demand.product_id 去重），
-            // 含「已确认但未生产」的产品（流程性问题 row6：详情页 displayGoods 现也按需求全量展示，两处同口径）。
-            // COMPLETED 已发货 demand 不计入（与详情 loadShippableDemands 一致 → 已发完门店显 0 种）。
-            vo.setProductKindCount((int) storeDemands.stream()
-                .filter(d -> SHIPPABLE_STATUS_CODES.contains(d.getDemandStatus()))
-                .map(DemandManage::getProductId).filter(Objects::nonNull)
-                .distinct().count());
-            vo.setPendingQuantity(storeDemands.stream()
-                .map(DemandManage::getDemandQuantity).filter(Objects::nonNull)
-                .reduce(BigDecimal.ZERO, BigDecimal::add));
-            // 发货日期 = 该门店当天 demand 的业务日期（列表已过滤 demand_date=今天，取 max 兜底，客户主诉求字段 #201）。
-            vo.setShipDate(storeDemands.stream()
-                .map(DemandManage::getDemandDate).filter(Objects::nonNull)
-                .max(LocalDate::compareTo).orElse(null));
-            // 门店当天发货状态二态：出车发货「全有或全无」，无部分发货中间态。
-            // 全部 demand COMPLETED → 已发货；否则 → 待发货。
-            boolean allShipped = storeDemands.stream()
-                .allMatch(d -> DemandStatus.COMPLETED.name().equals(d.getDemandStatus()));
-            vo.setShipStatus(allShipped ? "已发货" : "待发货");
-            list.add(vo);
-        });
+        byStore.forEach((storeId, storeDemands) -> list.add(buildStoreVo(
+            storeId, storeNameMap.get(storeId), storeDemands,
+            producedByStore.getOrDefault(storeId, Map.of()))));
         // 5. 发货月台只展示「当天还有货要发」的门店：产品种类数=0（当天需求已全部发完 COMPLETED，
         //    或无 SHIPPABLE 待发需求）的门店不进列表，避免「0 种·已发货」的空壳卡占屏（流程性问题 row187）。
         list.removeIf(vo -> vo.getProductKindCount() <= 0);
@@ -384,6 +384,28 @@ public class ShipmentServiceImpl
         list.sort(Comparator.comparingInt(ShipStoreVo::getPendingDemandCount).reversed()
             .thenComparing(v -> v.getStoreName() == null ? "" : v.getStoreName()));
         return list;
+    }
+
+    @Override
+    public ShipStoreVo queryStoreSummary(Long storeId) {
+        if (storeId == null) {
+            throw new ServiceException(I18nMessages.t("shipment.store.id_required"), 400);
+        }
+        String storeName = loadStoreNameMap(Set.of(storeId)).get(storeId);
+        List<DemandManage> storeDemands = loadStoreListDemands(storeId);
+        if (storeDemands.isEmpty()) {
+            ShipStoreVo vo = new ShipStoreVo();
+            vo.setStoreId(storeId);
+            vo.setStoreName(storeName);
+            vo.setPendingQuantity(BigDecimal.ZERO);
+            vo.setShipStatus("待发货");
+            vo.setSatisfyRate(RATE_ZERO);
+            return vo;
+        }
+        Map<Long, Map<Long, BigDecimal>> producedByStore =
+            loadProducedCopies(Set.of(storeId), collectShippableProductIds(storeDemands));
+        return buildStoreVo(storeId, storeName, storeDemands,
+            producedByStore.getOrDefault(storeId, Map.of()));
     }
 
     @Override
@@ -419,15 +441,37 @@ public class ShipmentServiceImpl
     // ---------- private helpers ----------
 
     /**
-     * SHIP-DEMANDID-001 核心匹配：按 demand 的业态(belong_type) + store_id 筛出"可发的未分配库存"
+     * SHIP-DEMANDID-001 核心匹配：按 demand 的 product_id + store_id 筛出"可发的未分配库存"
      * （{@code demand_id IS NULL AND is_delivery_check=0}）。listAvailableProductions /
-     * listStorePendingDemands 共用，避免逻辑复制。
+     * listStorePendingDemands 共用，条件明细见 {@link #availableProductionWrapper}。
      */
     private List<ProductProduction> findAvailableProductionsForDemand(DemandManage demand) {
-        // 可发清单只算「当天打包」的成品（produce_date = 今日，Asia/Shanghai）——与 loadShippableDemands
-        // 的 demand_date=today、打包扣减 deductDemandOnPack 的 demand_date=CURDATE() 同口径。否则昨天/前天
-        // 打包、未发货、未绑 demand 的成品会被今天的 demand 匹配进「生产量」，让列表看着有货，
-        // 但 shipped_count（仅当天打包累加）判定「未备齐·无法出车」，造成「列表有货却发不出车」的错位。
+        return productProductionMapper.selectList(availableProductionWrapper(
+            demand.getStoreId() == null ? List.of() : List.of(demand.getStoreId()),
+            demand.getProductId() == null ? List.of() : List.of(demand.getProductId())));
+    }
+
+    /**
+     * 「可发成品」匹配条件的单一真相源（单 demand 查询与门店批量聚合共用，杜绝两处口径漂移）。
+     *
+     * <p>可发清单只算「当天打包」的成品（produce_date = 今日，Asia/Shanghai）——与 loadShippableDemands
+     * 的 demand_date=today、打包扣减 deductDemandOnPack 的 demand_date=CURDATE() 同口径。否则昨天/前天
+     * 打包、未发货、未绑 demand 的成品会被今天的 demand 匹配进「生产量」，让列表看着有货，
+     * 但 shipped_count（仅当天打包累加）判定「未备齐·无法出车」，造成「列表有货却发不出车」的错位。</p>
+     *
+     * @param storeIds   门店收窄：取同门店 + 未绑门店(store_id IS NULL)的库存（WMS-SHIP-STOREID-001）。
+     *                   打包时 store_id 可选，production.store_id 为 NULL 的库存不应被门店 demand 漏掉
+     *                   （§3.2「无待清点产品」根因之一）→ 放行待清点时绑定（confirmCheck 回写 demand_id
+     *                   + shipment.store_id 取 demand.store_id）。空集合 = 不按门店收窄。
+     * @param productIds 产品收窄：demand 只由「同款产品」产出履约（Kevin 2026-07-07）—— 精确匹配 product_id，
+     *                   不按 belong_type 族放大。白条需求只由同款白条产出履约、不再吃分割猪肉；果蔬等同族
+     *                   不同产品不串味。这样「可发清单(生产量)」与「shipped_count 扣减(备齐/出车判定)」同口径
+     *                   （扣减走 deductDemandOnPack 精确 product_id），杜绝生产量按族虚高、shipped_count
+     *                   按精确扣不到 → 备齐永不满足「无法出车」的错位（row3/row5）。空集合（产品已删/未绑）
+     *                   = 兜底放宽，不按产品收窄。
+     */
+    private LambdaQueryWrapper<ProductProduction> availableProductionWrapper(Collection<Long> storeIds,
+                                                                            Collection<Long> productIds) {
         LocalDate today = LocalDate.now(SHIP_TODAY_ZONE);
         LambdaQueryWrapper<ProductProduction> wrapper = new LambdaQueryWrapper<ProductProduction>()
             .isNull(ProductProduction::getDemandId)
@@ -436,27 +480,173 @@ public class ShipmentServiceImpl
             // 发送位置=礼盒的成品是礼盒组件（预留给礼盒打包消耗），不出现在发货月台（礼盒澄清 2026-06-25）。
             // deliver_dest 为 NULL（默认发货月台）或非 'gift' 才可直接发货。
             .and(w -> w.isNull(ProductProduction::getDeliverDest)
-                       .or().ne(ProductProduction::getDeliverDest, "gift"));
-
-        // store_id 收窄：取同门店 + 未绑门店(store_id IS NULL)的库存（WMS-SHIP-STOREID-001）。
-        // 打包时 store_id 可选，production.store_id 为 NULL 的库存不应被门店 demand 漏掉（§3.2「无待清点产品」根因之一）
-        // → 放行待本次清点时绑定（confirmCheck 回写 demand_id + shipment.store_id 取 demand.store_id）。
-        if (demand.getStoreId() != null) {
-            wrapper.and(w -> w.eq(ProductProduction::getStoreId, demand.getStoreId())
+                       .or().ne(ProductProduction::getDeliverDest, DELIVER_DEST_GIFT));
+        if (storeIds != null && !storeIds.isEmpty()) {
+            wrapper.and(w -> w.in(ProductProduction::getStoreId, storeIds)
                               .or().isNull(ProductProduction::getStoreId));
         }
-
-        // 产品收窄：demand 只由「同款产品」产出履约（Kevin 2026-07-07）—— 精确匹配 demand.product_id，
-        // 不按 belong_type 族放大。白条需求（白条·半只/整只）只由同款白条产出履约、不再吃分割猪肉；
-        // 果蔬等同族不同产品不串味。这样「可发清单(生产量)」与「shipped_count 扣减(备齐/出车判定)」同口径
-        //（扣减走 deductDemandOnPack 精确 product_id），杜绝生产量按族虚高、shipped_count 按精确扣不到 →
-        // 备齐永不满足「无法出车」的错位（row3/row5）。demand 无 product_id（产品已删/未绑）→ 兜底放宽
-        //（仅 store_id + demand_id IS NULL）。
-        if (demand.getProductId() != null) {
-            wrapper.eq(ProductProduction::getProductId, demand.getProductId());
+        if (productIds != null && !productIds.isEmpty()) {
+            wrapper.in(ProductProduction::getProductId, productIds);
         }
+        return wrapper.orderByDesc(ProductProduction::getProduceDate);
+    }
 
-        return productProductionMapper.selectList(wrapper.orderByDesc(ProductProduction::getProduceDate));
+    /**
+     * 单门店聚合 VO（门店列表卡 + 门店货物页头共用，两端读同一个后端算法，杜绝口径漂移）。
+     *
+     * @param producedByProduct 该门店可发成品的生产量（product_id → 生产量），口径同 mp 门店货物卡「生产量」
+     *                          （kg 产品按公斤、按件产品每条计 1，见 {@link #producedCopies}）
+     */
+    private ShipStoreVo buildStoreVo(Long storeId, String storeName, List<DemandManage> storeDemands,
+                                     Map<Long, BigDecimal> producedByProduct) {
+        ShipStoreVo vo = new ShipStoreVo();
+        vo.setStoreId(storeId);
+        vo.setStoreName(storeName);
+        vo.setPendingDemandCount(storeDemands.size());
+        // 产品种类数 = 当日所有 SHIPPABLE 需求的产品种类（按 demand.product_id 去重），
+        // 含「已确认但未生产」的产品（流程性问题 row6：详情页 displayGoods 现也按需求全量展示，两处同口径）。
+        // COMPLETED 已发货 demand 不计入（与详情 loadShippableDemands 一致 → 已发完门店显 0 种）。
+        Map<Long, BigDecimal> needByProduct = sumNeedByProduct(storeDemands);
+        vo.setProductKindCount(needByProduct.size());
+        vo.setSatisfyRate(calcSatisfyRate(needByProduct, producedByProduct));
+        vo.setPendingQuantity(storeDemands.stream()
+            .map(DemandManage::getDemandQuantity).filter(Objects::nonNull)
+            .reduce(BigDecimal.ZERO, BigDecimal::add));
+        // 发货日期 = 该门店当天 demand 的业务日期（列表已过滤 demand_date=今天，取 max 兜底，客户主诉求字段 #201）。
+        vo.setShipDate(storeDemands.stream()
+            .map(DemandManage::getDemandDate).filter(Objects::nonNull)
+            .max(LocalDate::compareTo).orElse(null));
+        // 门店当天发货状态二态：出车发货「全有或全无」，无部分发货中间态。
+        // 全部 demand COMPLETED → 已发货；否则 → 待发货。
+        boolean allShipped = storeDemands.stream()
+            .allMatch(d -> DemandStatus.COMPLETED.name().equals(d.getDemandStatus()));
+        vo.setShipStatus(allShipped ? "已发货" : "待发货");
+        return vo;
+    }
+
+    /**
+     * 该门店当天各产品种类的需求量（product_id → Σ demand_quantity）。
+     *
+     * <p>只取 SHIPPABLE 状态 + 有 product_id 的 demand（与产品种类数同口径）。<b>先按 product_id 归并</b>
+     * 是满足率算对的关键：同店同日同产品会有多行 demand，按 demand 行平均会把该产品的权重放大。</p>
+     */
+    private Map<Long, BigDecimal> sumNeedByProduct(List<DemandManage> storeDemands) {
+        Map<Long, BigDecimal> needByProduct = new LinkedHashMap<>();
+        for (DemandManage d : storeDemands) {
+            if (!SHIPPABLE_STATUS_CODES.contains(d.getDemandStatus()) || d.getProductId() == null) {
+                continue;
+            }
+            needByProduct.merge(d.getProductId(),
+                d.getDemandQuantity() == null ? BigDecimal.ZERO : d.getDemandQuantity(),
+                BigDecimal::add);
+        }
+        return needByProduct;
+    }
+
+    /**
+     * 需求满足率 = 各产品种类 {@code min(1, 生产量 ÷ 需求量)} 的平均 × 100（scale=2 HALF_UP）。
+     *
+     * <p>需求量 ≤ 0 的种类分子分母都不计；无可算种类 → 0.00。</p>
+     */
+    private BigDecimal calcSatisfyRate(Map<Long, BigDecimal> needByProduct,
+                                       Map<Long, BigDecimal> producedByProduct) {
+        BigDecimal ratioSum = BigDecimal.ZERO;
+        int kinds = 0;
+        for (Map.Entry<Long, BigDecimal> e : needByProduct.entrySet()) {
+            BigDecimal need = e.getValue();
+            if (need == null || need.signum() <= 0) {
+                continue;
+            }
+            kinds++;
+            BigDecimal made = producedByProduct.getOrDefault(e.getKey(), BigDecimal.ZERO);
+            BigDecimal ratio = made.divide(need, RATE_CALC_SCALE, RoundingMode.HALF_UP);
+            // 单项满足率钳在 [0, 1]：上限 100%（需求已定），下限 0（生产量为负的冲销脏数据不产出负百分比）
+            if (ratio.compareTo(BigDecimal.ONE) > 0) {
+                ratio = BigDecimal.ONE;
+            } else if (ratio.signum() < 0) {
+                ratio = BigDecimal.ZERO;
+            }
+            ratioSum = ratioSum.add(ratio);
+        }
+        if (kinds == 0) {
+            return RATE_ZERO;
+        }
+        return ratioSum.divide(BigDecimal.valueOf(kinds), RATE_CALC_SCALE, RoundingMode.HALF_UP)
+            .multiply(RATE_PERCENT).setScale(2, RoundingMode.HALF_UP);
+    }
+
+    /** SHIPPABLE 需求涉及的产品 id 集（满足率生产量批量查询的收窄条件）。 */
+    private Set<Long> collectShippableProductIds(List<DemandManage> demands) {
+        return demands.stream()
+            .filter(d -> SHIPPABLE_STATUS_CODES.contains(d.getDemandStatus()))
+            .map(DemandManage::getProductId).filter(Objects::nonNull)
+            .collect(Collectors.toSet());
+    }
+
+    /**
+     * 批量取各门店可发成品的「生产量」（store_id → product_id → 生产量），无 N+1：
+     * 一次查出所有相关门店的可发成品，再在内存按门店归属分摊。
+     *
+     * <p>未绑门店（store_id IS NULL）的通用成品对每个门店都可发，故各门店都计入
+     * ——与 {@link #findAvailableProductionsForDemand} 逐 demand 查的结果一致。</p>
+     */
+    private Map<Long, Map<Long, BigDecimal>> loadProducedCopies(Set<Long> storeIds, Set<Long> productIds) {
+        Map<Long, Map<Long, BigDecimal>> result = new HashMap<>();
+        if (storeIds.isEmpty() || productIds.isEmpty()) {
+            return result;
+        }
+        List<ProductProduction> productions = productProductionMapper.selectList(
+            availableProductionWrapper(storeIds, productIds));
+        if (productions.isEmpty()) {
+            return result;
+        }
+        Map<Long, ProductInfo> productMap = loadProductInfoMap(productions);
+        for (ProductProduction p : productions) {
+            if (p.getProductId() == null) {
+                continue;
+            }
+            BigDecimal copies = producedCopies(p, productMap.get(p.getProductId()));
+            if (p.getStoreId() == null) {
+                storeIds.forEach(sid -> result.computeIfAbsent(sid, k -> new HashMap<>())
+                    .merge(p.getProductId(), copies, BigDecimal::add));
+            } else {
+                result.computeIfAbsent(p.getStoreId(), k -> new HashMap<>())
+                    .merge(p.getProductId(), copies, BigDecimal::add);
+            }
+        }
+        return result;
+    }
+
+    /**
+     * 单条成品的「生产量」——按<b>产品自身计量单位</b>取值，与 mp 门店货物卡「生产量」同口径
+     * （Kevin 2026-07-29）：
+     * <ul>
+     *   <li>按重量计量的产品（{@code product_unit} ∈ {@link #WEIGHT_PRODUCT_UNITS}）→ 生产量就是
+     *       {@code produce_quantity} 本身的公斤数（需求量同为 kg，两者同量纲，满足率才算得对）。</li>
+     *   <li>按件计量的产品（份 / 件 / 盒 / 枚 / 袋 …）→ <b>一条打包记录恒计 1</b>：打包台一次提交 = 产出
+     *       一件成品，与录入重量、{@code material_num} 单份规格都无关（与打包扣需求
+     *       {@code resolveDemandDeductQty} 恒扣 1 份同源）。</li>
+     * </ul>
+     *
+     * <p>产品主数据缺失（{@code info == null}）时无从判定单位，按件计 1（不拿重量当件数用）。</p>
+     *
+     * <p>与 admin 产品生产概览的 {@code ProductProductionMapper.selectGroupList} 生产量 SQL
+     * （{@code CASE WHEN unit IN ('kg','公斤') THEN SUM(product_weight) ELSE COUNT(*) END}）同一口径 —
+     * 两处必须一起改，否则 admin 与发货月台的满足率会对不上。</p>
+     */
+    private BigDecimal producedCopies(ProductProduction p, ProductInfo info) {
+        if (info != null && isWeightUnit(info.getProductUnit())) {
+            return p.getProduceQuantity() == null ? BigDecimal.ZERO : p.getProduceQuantity();
+        }
+        return BigDecimal.ONE;
+    }
+
+    /**
+     * 产品计量单位是否「按重量（kg）」——生产量取 produce_quantity 原值而非计 1 件的判定依据。
+     * 大小写与前后空白不敏感；空单位视为按件。
+     */
+    private static boolean isWeightUnit(String productUnit) {
+        return productUnit != null && WEIGHT_PRODUCT_UNITS.contains(productUnit.trim().toLowerCase());
     }
 
     /**
@@ -467,6 +657,11 @@ public class ShipmentServiceImpl
             return List.of();
         }
         Map<Long, ProductInfo> productMap = loadProductInfoMap(productions);
+        // 原材料单位：按 product_info.product_material 自引用 FK 批量 IN 查关联原材料的 product_unit（无 N+1）。
+        // 用于 mp 发货清单「产品总重」是否展示的判定——如干羊肚菌70g product_unit='盒'、原材料=干货 unit='kg'。
+        Set<Long> materialIds = productMap.values().stream()
+            .map(ProductInfo::getProductMaterial).filter(Objects::nonNull).collect(Collectors.toSet());
+        Map<Long, ProductInfo> materialMap = loadProductInfoByIds(materialIds);
         Map<Long, String> locationNameMap = loadLocationNameMap(productions);
         return productions.stream().map(p -> {
             ProductInfo info = p.getProductId() == null ? null : productMap.get(p.getProductId());
@@ -478,6 +673,7 @@ public class ShipmentServiceImpl
             vo.setProductName(info == null ? null : info.getProductName());
             vo.setBelongType(info == null ? null : info.getBelongType());
             vo.setProductUnit(info == null ? null : info.getProductUnit());
+            vo.setMaterialUnit(resolveMaterialUnit(info, materialMap));
             vo.setMaterialNum(info == null ? null : info.getMaterialNum());
             vo.setProduceQuantity(p.getProduceQuantity());
             vo.setProductSpec(p.getProductSpec());
@@ -569,7 +765,7 @@ public class ShipmentServiceImpl
 
     /**
      * 批量取产品主数据（一次查 product_info，VO 填 productName / belongType / productUnit / materialNum）。
-     * mp 发货清单据此定数量单位（头/份/枚）+ 还原计量产品份数（份数 = produceQuantity ÷ material_num）。
+     * mp 发货清单据此定数量单位（kg/头/份/枚）+ 判定生产量取 produceQuantity 公斤数还是按件计 1。
      */
     private Map<Long, ProductInfo> loadProductInfoMap(List<ProductProduction> productions) {
         List<Long> productIds = productions.stream()
@@ -581,6 +777,37 @@ public class ShipmentServiceImpl
             new LambdaQueryWrapper<ProductInfo>().in(ProductInfo::getId, productIds));
         return infos.stream().collect(
             Collectors.toMap(ProductInfo::getId, i -> i, (a, b) -> a));
+    }
+
+    /**
+     * 批量取产品主数据（按 id 集合，仅 select id + product_unit，供原材料单位回填）。
+     */
+    private Map<Long, ProductInfo> loadProductInfoByIds(Set<Long> ids) {
+        if (ids == null || ids.isEmpty()) {
+            return Map.of();
+        }
+        return productInfoMapper.selectList(new LambdaQueryWrapper<ProductInfo>()
+                .select(ProductInfo::getId, ProductInfo::getProductUnit)
+                .in(ProductInfo::getId, ids))
+            .stream().collect(Collectors.toMap(ProductInfo::getId, i -> i, (a, b) -> a));
+    }
+
+    /**
+     * 解析产品的原材料计量单位：product_material 自引用 FK 非空且关联原材料存在 → 取原材料 product_unit；
+     * 否则（无关联 / 原材料已删）回落自身 product_unit。
+     */
+    private String resolveMaterialUnit(ProductInfo info, Map<Long, ProductInfo> materialMap) {
+        if (info == null) {
+            return null;
+        }
+        Long materialId = info.getProductMaterial();
+        if (materialId != null) {
+            ProductInfo material = materialMap.get(materialId);
+            if (material != null && material.getProductUnit() != null) {
+                return material.getProductUnit();
+            }
+        }
+        return info.getProductUnit();
     }
 
     private Map<Long, String> loadLocationNameMap(List<ProductProduction> productions) {
