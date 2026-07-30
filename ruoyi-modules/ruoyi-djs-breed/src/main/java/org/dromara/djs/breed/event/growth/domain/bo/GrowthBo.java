@@ -36,26 +36,26 @@ public class GrowthBo implements Serializable {
     private String earNo;
 
     /** 测量日期（默认今日）。 */
-    @NotNull(message = "growth.measure_date.required")
+    @NotNull(message = "{growth.measure_date.required}")
     private LocalDate measureDate;
 
     /** 体重 kg（可选，admin 端录；> 0 且 ≤ 999.99 kg）。 */
-    @DecimalMin(value = "0.01", message = "growth.weight.min")
-    @DecimalMax(value = "999.99", message = "growth.weight.max")
+    @DecimalMin(value = "0.01", message = "{growth.weight.min}")
+    @DecimalMax(value = "999.99", message = "{growth.weight.max}")
     private BigDecimal weight;
 
     /** 背膘厚 mm（可选，admin 端录）。 */
-    @DecimalMin(value = "0.00", message = "growth.backfat.min")
-    @DecimalMax(value = "999.99", message = "growth.backfat.max")
+    @DecimalMin(value = "0.00", message = "{growth.backfat.min}")
+    @DecimalMax(value = "999.99", message = "{growth.backfat.max}")
     private BigDecimal backfatThickness;
 
     /** 背高 cm（可选，admin 端录）。 */
-    @DecimalMin(value = "0.00", message = "growth.back_height.min")
-    @DecimalMax(value = "999.99", message = "growth.back_height.max")
+    @DecimalMin(value = "0.00", message = "{growth.back_height.min}")
+    @DecimalMax(value = "999.99", message = "{growth.back_height.max}")
     private BigDecimal backHeight;
 
     /** 测量照片 OSS IDs（逗号分隔；bizType=grow_photo）。 */
-    @Size(max = 500, message = "growth.photo.size")
+    @Size(max = 500, message = "{growth.photo.size}")
     private String photoOssIds;
 
     /**
@@ -63,10 +63,10 @@ public class GrowthBo implements Serializable {
      * <p>fe-growth row52：mp 录入由现场操作人显式选「记录人员」，落库 {@code t_farm_pig_growth.operator_id}；
      * 全链路 string 防 Long 截断，service 入口 parse 成 Long。</p>
      */
-    @NotBlank(message = "growth.operator.required")
+    @NotBlank(message = "{growth.operator.required}")
     private String operatorId;
 
     /** 备注。 */
-    @Size(max = 500, message = "growth.remark.size")
+    @Size(max = 500, message = "{growth.remark.size}")
     private String remark;
 }

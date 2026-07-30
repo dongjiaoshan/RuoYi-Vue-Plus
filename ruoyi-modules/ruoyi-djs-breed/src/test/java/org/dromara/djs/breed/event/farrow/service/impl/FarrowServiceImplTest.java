@@ -21,6 +21,7 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
@@ -31,6 +32,7 @@ import java.time.LocalDateTime;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -44,7 +46,8 @@ import static org.mockito.Mockito.when;
  *   <li>happy path：PZ 母猪 FARROW → INSERT farrow + fireEvent(FARROW)；</li>
  *   <li>breedingId 缺时回落 pig.matingId；</li>
  *   <li>校验 liveBorn > totalBorn → 拒绝；</li>
- *   <li>非法 transition（非 PZ）→ fireEvent 抛传播；</li>
+ *   <li>状态机 guard 前置：公猪（female_only）/ 非 PZ（invalid_transition）在写台账<b>之前</b>被拒，
+ *       台账 INSERT 不发生（否则 DB 列约束报错会把业务错误顶成「发生未知异常」）；</li>
  *   <li>pig 不存在 → 拒绝。</li>
  * </ul>
  *
@@ -203,17 +206,60 @@ class FarrowServiceImplTest {
     }
 
     @Test
-    @DisplayName("非法 transition: pig 状态非 PZ → fireEvent 抛 ServiceException 透传")
-    void invalidTransition() {
+    @DisplayName("guard 前置: HB 母猪（非 PZ）→ invalid_transition 且台账不落库、不 fireEvent")
+    void invalidTransition_rejectedBeforeLedgerInsert() {
         Pig pig = mkSow(203L, PigLifecycle.HB, null);
         when(pigMapper.selectById(203L)).thenReturn(pig);
-        when(pigCoreService.fireEvent(any()))
-            .thenThrow(new ServiceException("pig.event.invalid_transition"));
+        // 真状态机对 (HB, FARROW) 的行为见 PigCoreServiceImplTest#precheckEvent_hb_sow_farrow_invalid_transition
+        when(pigCoreService.precheckEvent(any(PigEventBo.class)))
+            .thenThrow(new ServiceException("pig.event.invalid_transition: 后备, 分娩", 400));
 
         FarrowBo bo = mkBo(203L, null, 6, 6);
         assertThatThrownBy(() -> service.recordFarrow(bo))
             .isInstanceOf(ServiceException.class)
-            .hasMessageContaining("pig.event.invalid_transition");
+            .hasMessageContaining("pig.event.invalid_transition")
+            .extracting(e -> ((ServiceException) e).getCode()).isEqualTo(400);
+
+        // 关键：台账 INSERT 必须没发生 —— 否则非法输入先撞 t_farm_pig_farrow 的列约束，
+        // 真业务错误会被 DataIntegrityViolationException 顶成 500「发生未知异常」
+        verify(farrowMapper, never()).insert(any(PigFarrow.class));
+        verify(pigCoreService, never()).fireEvent(any());
+    }
+
+    @Test
+    @DisplayName("guard 前置: 公猪走分娩 → female_only 且台账不落库、不 fireEvent")
+    void boarFarrow_rejectedBeforeLedgerInsert() {
+        Pig boar = mkSow(204L, PigLifecycle.HB, null);
+        boar.setPigSex("M");
+        boar.setPigType("boar");
+        boar.setCurrentStatus("");          // 种公猪空状态（ADR-0016）
+        when(pigMapper.selectById(204L)).thenReturn(boar);
+        // 真状态机对 (公猪, FARROW) 的行为见 PigCoreServiceImplTest#precheckEvent_boar_farrow_female_only
+        when(pigCoreService.precheckEvent(any(PigEventBo.class)))
+            .thenThrow(new ServiceException("pig.event.female_only: 分娩", 400));
+
+        FarrowBo bo = mkBo(204L, null, 5, 5);
+        assertThatThrownBy(() -> service.recordFarrow(bo))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("pig.event.female_only")
+            .extracting(e -> ((ServiceException) e).getCode()).isEqualTo(400);
+
+        verify(farrowMapper, never()).insert(any(PigFarrow.class));
+        verify(pigCoreService, never()).fireEvent(any());
+    }
+
+    @Test
+    @DisplayName("guard 前置顺序: precheckEvent → INSERT 台账 → fireEvent")
+    void guardRunsBeforeLedgerInsert() {
+        Pig pig = mkSow(205L, PigLifecycle.PZ, 7777L);
+        when(pigMapper.selectById(205L)).thenReturn(pig);
+
+        service.recordFarrow(mkBo(205L, 7777L, 10, 10));
+
+        InOrder order = inOrder(pigCoreService, farrowMapper);
+        order.verify(pigCoreService).precheckEvent(any(PigEventBo.class));
+        order.verify(farrowMapper).insert(any(PigFarrow.class));
+        order.verify(pigCoreService).fireEvent(any(PigEventBo.class));
     }
 
     @Test

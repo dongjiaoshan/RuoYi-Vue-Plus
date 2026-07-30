@@ -74,12 +74,15 @@ class PigEarTagServiceImplTest {
     private EarNoAllocator earNoAllocator;
     @Mock
     private BreedConfigMapper breedConfigMapper;
+    @Mock
+    private org.dromara.djs.breed.farm.service.PenCountUpdater penCountUpdater;
 
     private PigEarTagServiceImpl service;
 
     @BeforeEach
     void setup() {
-        service = new PigEarTagServiceImpl(pigMapper, pigletnoMapper, farrowMapper, earNoAllocator, breedConfigMapper);
+        service = new PigEarTagServiceImpl(pigMapper, pigletnoMapper, farrowMapper, earNoAllocator, breedConfigMapper,
+            penCountUpdater);
         // 仔代品系=4 / 品种=04（继承母猪，父猪未命中育种配置）：公前缀 -1- / 母前缀 -2-
         when(earNoAllocator.buildPrefix(eq("4"), eq("04"), eq("M"), any(LocalDate.class)))
             .thenReturn("4-04-1-260508");
@@ -197,6 +200,10 @@ class PigEarTagServiceImplTest {
         // pigletno.insert 3 次，性别段透传
         verify(pigletnoMapper, times(3)).insert(any(PigPigletno.class));
         verify(farrowMapper, times(1)).selectBoarEarByBreedingId(800L);
+
+        // 6) FIX-BRD-PENCOUNT-001：3 头仔猪落母猪所在栏（50）→ 该栏在场头数 += 3
+        assertThat(pigs).allMatch(p -> Long.valueOf(50L).equals(p.getPenId()));
+        verify(penCountUpdater).increase(50L, 3);
     }
 
     @Test

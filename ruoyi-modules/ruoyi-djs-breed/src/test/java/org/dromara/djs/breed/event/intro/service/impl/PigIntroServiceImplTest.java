@@ -103,6 +103,7 @@ class PigIntroServiceImplTest {
     private org.dromara.common.core.service.OssService ossService;
     private org.dromara.djs.breed.event.transfer.service.ITransferService transferService;
     private org.dromara.djs.breed.farm.service.PenCapacityChecker penCapacityChecker;
+    private org.dromara.djs.breed.farm.service.PenCountUpdater penCountUpdater;
 
     @BeforeEach
     void setup() {
@@ -111,6 +112,7 @@ class PigIntroServiceImplTest {
         ossService = org.mockito.Mockito.mock(org.dromara.common.core.service.OssService.class);
         transferService = org.mockito.Mockito.mock(org.dromara.djs.breed.event.transfer.service.ITransferService.class);
         penCapacityChecker = org.mockito.Mockito.mock(org.dromara.djs.breed.farm.service.PenCapacityChecker.class);
+        penCountUpdater = org.mockito.Mockito.mock(org.dromara.djs.breed.farm.service.PenCountUpdater.class);
         service = new PigIntroServiceImpl(
             introduceMapper, pigCoreService, bizCodeGenerator,
             supplierMapper, barnMapper, penMapper, bizReferenceChecker,
@@ -119,7 +121,8 @@ class PigIntroServiceImplTest {
             earNoAllocator,
             ossService,
             transferService,
-            penCapacityChecker);
+            penCapacityChecker,
+            penCountUpdater);
         // 用户填首号路径默认无撞号（existsEarNo 返 null 放行）
         when(innerPigMapper.existsEarNo(org.mockito.ArgumentMatchers.anyString())).thenReturn(null);
         // 通用 stubs
@@ -183,7 +186,7 @@ class PigIntroServiceImplTest {
         assertThat(captor.getValue().getPigSex()).isEqualTo("F");
         assertThat(captor.getValue().getSupplierId()).isEqualTo(SUPPLIER_ID);
 
-        verify(penMapper, times(1)).update(eq(null), any());
+        verify(penCountUpdater).increase(PEN_ID, 1);
     }
 
     @Test
@@ -308,8 +311,8 @@ class PigIntroServiceImplTest {
             org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(),
             org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(), eq(5));
         verify(pigCoreService, times(5)).createPig(any(PigCreateBo.class));
-        // pen.current_count += 5 via setSql wrapper
-        verify(penMapper, times(1)).update(eq(null), any());
+        // pen.current_count += 5（PenCountUpdater 原子加法）
+        verify(penCountUpdater).increase(PEN_ID, 5);
     }
 
     @Test
@@ -347,7 +350,7 @@ class PigIntroServiceImplTest {
         assertThat(result.getPigs().get(0).getEarNo()).isEqualTo("4-04-251200-888");
         verify(earNoAllocator, times(0)).allocate(any(), any(), any(), any(), anyInt());
         // pen.current_count += 1
-        verify(penMapper, times(1)).update(eq(null), any());
+        verify(penCountUpdater).increase(PEN_ID, 1);
     }
 
     @Test

@@ -100,7 +100,8 @@ class PigSearchServiceTest {
     void setup() {
         service = new PigCoreServiceImpl(pigMapper, statusRecordMapper, stateMachine, publisher, barnMapper, penMapper,
             org.mockito.Mockito.mock(org.dromara.common.core.service.DictService.class), productionCycleConfigService,
-            org.mockito.Mockito.mock(org.dromara.djs.breed.breeding.mapper.BreedInfoMapper.class));
+            org.mockito.Mockito.mock(org.dromara.djs.breed.breeding.mapper.BreedInfoMapper.class),
+            org.mockito.Mockito.mock(org.dromara.djs.breed.farm.service.PenCountUpdater.class));
         // pigGrowthMapper 是 @Autowired 字段注入（非构造参），手动注入 mock；默认返空列表 → loadLastMeasureDateMap 返空
         ReflectionTestUtils.setField(service, "pigGrowthMapper", pigGrowthMapper);
     }

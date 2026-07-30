@@ -33,36 +33,36 @@ public class BreedingBo implements Serializable {
     private String earNo;
 
     /** 配种日期 + 时间。 */
-    @NotNull(message = "breeding.date.required")
+    @NotNull(message = "{breeding.date.required}")
     private LocalDateTime breedingDate;
 
     /**
      * 配种方式（字典 djs_mating_method）。
      * 当前字典值：1 / 2 等单字符或 AI / LQ / RJ 等短字母码均允许（≤ 16）。
      */
-    @NotBlank(message = "breeding.type.required")
-    @Pattern(regexp = "^[A-Za-z0-9]{1,16}$", message = "breeding.type.invalid")
+    @NotBlank(message = "{breeding.type.required}")
+    @Pattern(regexp = "^[A-Za-z0-9]{1,16}$", message = "{breeding.type.invalid}")
     private String breedingType;
 
     /** 公猪耳号（breedingType=1 本场公猪时必填；精液类型时可空）。 */
-    @Size(max = 32, message = "breeding.boar_ear.size")
+    @Size(max = 32, message = "{breeding.boar_ear.size}")
     private String boarEarNo;
 
     /**
      * 配种精液字典 code（djs_semen；breedingType=精液（!=1）时必填）。
      * FIX-BREEDING-001 #21：精液改纯字典下拉，去掉供应商/批号手输项，不扣库存。
      */
-    @Size(max = 64, message = "breeding.semen_code.size")
+    @Size(max = 64, message = "{breeding.semen_code.size}")
     private String semenCode;
 
     /** 凭证图片 OSS IDs 逗号分隔（mp 端配种现场照片，与 PigIntroBo 对齐）。 */
-    @Size(max = 1024, message = "breeding.proof.size")
+    @Size(max = 1024, message = "{breeding.proof.size}")
     private String proofOssIds;
 
     /** 配种人员 userId（EmployeePicker 所选；空则 service 回落当前登录态 LoginHelper.getUserId()）。 */
     private Long operatorId;
 
     /** 备注。 */
-    @Size(max = 500, message = "breeding.remark.size")
+    @Size(max = 500, message = "{breeding.remark.size}")
     private String remark;
 }

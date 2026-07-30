@@ -33,41 +33,41 @@ public class DieBo implements Serializable {
     private String earNo;
 
     /** 死亡日期 + 时间。 */
-    @NotNull(message = "die.date.required")
+    @NotNull(message = "{die.date.required}")
     private LocalDateTime deathDate;
 
     /** 死亡分类（字典 death_type：normal/abnormal）。 */
-    @NotBlank(message = "die.kind.required")
-    @Size(max = 16, message = "die.kind.size")
+    @NotBlank(message = "{die.kind.required}")
+    @Size(max = 16, message = "{die.kind.size}")
     private String deathKind;
 
     /** 死亡原因（字典 death_reason）。V1 必填（mp 死亡录入页所有字段必填）。 */
-    @NotBlank(message = "die.reason.required")
-    @Size(max = 32, message = "die.reason.size")
+    @NotBlank(message = "{die.reason.required}")
+    @Size(max = 32, message = "{die.reason.size}")
     private String deathReason;
 
     /** 死亡去向（字典 death_dest）。V1 必填（Kevin 2026-05-29 拍板：追溯/账目须知去向）。 */
-    @NotBlank(message = "die.dest.required")
-    @Size(max = 32, message = "die.dest.size")
+    @NotBlank(message = "{die.dest.required}")
+    @Size(max = 32, message = "{die.dest.size}")
     private String deathDest;
 
     /** 死亡重量 kg（仔猪 / 育肥可填）。V1 必填（mp 死亡录入页所有字段必填）。 */
-    @NotNull(message = "die.weight.required")
+    @NotNull(message = "{die.weight.required}")
     private BigDecimal deathWeight;
 
     /** 死亡记录人员（sys_user.user_id；EmployeePicker 选中后回填）。V1 必填。 */
-    @NotNull(message = "die.recorder.required")
+    @NotNull(message = "{die.recorder.required}")
     private Long recorderId;
 
     /**
      * 死亡照片 OSS IDs（逗号分隔）。
      * 强制至少 1 张（多角度建议 ≥ 2）。
      */
-    @NotBlank(message = "die.photo.required")
-    @Size(max = 1024, message = "die.photo.size")
+    @NotBlank(message = "{die.photo.required}")
+    @Size(max = 1024, message = "{die.photo.size}")
     private String ossIds;
 
     /** 备注。 */
-    @Size(max = 500, message = "die.remark.size")
+    @Size(max = 500, message = "{die.remark.size}")
     private String remark;
 }

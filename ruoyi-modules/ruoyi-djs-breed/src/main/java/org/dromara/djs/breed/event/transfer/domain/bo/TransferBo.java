@@ -29,7 +29,7 @@ public class TransferBo implements Serializable {
     /** 猪只耳号简版（mp 端工人输入；与 pigId 二选一，service 入口按 earNo 查 pig.id）。 */
     private String earNo;
 
-    @NotNull(message = "transfer.date.required")
+    @NotNull(message = "{transfer.date.required}")
     private LocalDateTime transferDate;
 
     /** 新栋舍 ID（与 newBarnCode 二选一；admin 端可直传 id，mp 端建议传 newBarnCode）。 */
@@ -45,12 +45,12 @@ public class TransferBo implements Serializable {
     private String newPenCode;
 
     /** 转移原因（可选）。 */
-    @Size(max = 64, message = "transfer.reason.size")
+    @Size(max = 64, message = "{transfer.reason.size}")
     private String transferReason;
 
     /** 转移人员 userId（EmployeePicker 选中，snowflake；可空，空则回落登录用户）。 */
     private String operator;
 
-    @Size(max = 500, message = "transfer.remark.size")
+    @Size(max = 500, message = "{transfer.remark.size}")
     private String remark;
 }

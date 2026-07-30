@@ -13,6 +13,7 @@ import org.dromara.djs.breed.core.event.PigStateChangedEvent;
 import org.dromara.djs.breed.core.mapper.PigMapper;
 import org.dromara.djs.breed.core.mapper.PigStatusRecordMapper;
 import org.dromara.djs.breed.core.service.PigStateMachine;
+import org.dromara.djs.breed.farm.service.PenCountUpdater;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
@@ -70,6 +71,8 @@ class PigCoreServiceImplTest {
     private org.dromara.djs.breed.farm.mapper.BarnMapper barnMapper;
     @Mock
     private org.dromara.djs.breed.farm.mapper.PenMapper penMapper;
+    @Mock
+    private PenCountUpdater penCountUpdater;
 
     private PigCoreServiceImpl service;
 
@@ -79,7 +82,8 @@ class PigCoreServiceImplTest {
         service = new PigCoreServiceImpl(pigMapper, statusRecordMapper, sm, eventPublisher, barnMapper, penMapper,
             org.mockito.Mockito.mock(org.dromara.common.core.service.DictService.class),
             org.mockito.Mockito.mock(org.dromara.djs.breed.production.service.IProductionCycleConfigService.class),
-            org.mockito.Mockito.mock(org.dromara.djs.breed.breeding.mapper.BreedInfoMapper.class));
+            org.mockito.Mockito.mock(org.dromara.djs.breed.breeding.mapper.BreedInfoMapper.class),
+            penCountUpdater);
     }
 
     private Pig mkSow(Long id, PigLifecycle status) {
@@ -237,6 +241,124 @@ class PigCoreServiceImplTest {
         assertThat(captor.getValue().getPenId()).isEqualTo(20L);
         // 状态不变：仍 PZ
         assertThat(captor.getValue().getCurrentStatus()).isEqualTo("PZ");
+    }
+
+    @Test
+    @DisplayName("FIX-BRD-PENCOUNT-001 fireEvent TRANSFER: 旧栏 -1 / 新栏 +1（迁栏计数配对）")
+    void fireEvent_transfer_moves_pen_count() {
+        Pig pig = mkSow(120L, PigLifecycle.PZ);
+        pig.setBarnId(1L);
+        pig.setPenId(10L);
+        when(pigMapper.selectById(120L)).thenReturn(pig);
+        when(pigMapper.updateById(any(Pig.class))).thenReturn(1);
+
+        PigEventBo bo = new PigEventBo();
+        bo.setPigId(120L);
+        bo.setEventType(PigStatusEvent.TRANSFER);
+        bo.setPayload(java.util.Map.of("newBarnId", 2L, "newPenId", 20L));
+
+        service.fireEvent(bo);
+
+        // 旧栏 id 取事件前的值（applyEventSideEffects 已就地改写 pig.penId）
+        verify(penCountUpdater).move(10L, 20L, 1);
+        verify(penCountUpdater, never()).decrease(any(), org.mockito.ArgumentMatchers.anyInt());
+    }
+
+    @Test
+    @DisplayName("FIX-BRD-PENCOUNT-001 fireEvent TRANSFER 只换栋舍不换栏: from=to 交给 move 短路（见 PenCountUpdaterTest）")
+    void fireEvent_transfer_same_pen_passes_identical_ids() {
+        Pig pig = mkSow(121L, PigLifecycle.PZ);
+        pig.setBarnId(1L);
+        pig.setPenId(10L);
+        when(pigMapper.selectById(121L)).thenReturn(pig);
+        when(pigMapper.updateById(any(Pig.class))).thenReturn(1);
+
+        PigEventBo bo = new PigEventBo();
+        bo.setPigId(121L);
+        bo.setEventType(PigStatusEvent.TRANSFER);
+        bo.setPayload(java.util.Map.of("newBarnId", 2L, "newPenId", 10L));
+
+        service.fireEvent(bo);
+
+        verify(penCountUpdater).move(10L, 10L, 1);
+    }
+
+    @Test
+    @DisplayName("FIX-BRD-PENCOUNT-001 fireEvent SLAUGHTER: 出栏后所在栏 -1")
+    void fireEvent_slaughter_decreases_pen_count() {
+        Pig pig = mkSow(122L, PigLifecycle.DN);
+        pig.setPenId(30L);
+        when(pigMapper.selectById(122L)).thenReturn(pig);
+        when(pigMapper.updateById(any(Pig.class))).thenReturn(1);
+
+        PigEventBo bo = new PigEventBo();
+        bo.setPigId(122L);
+        bo.setEventType(PigStatusEvent.SLAUGHTER);
+
+        service.fireEvent(bo);
+
+        verify(penCountUpdater).decrease(30L, 1);
+        verify(penCountUpdater, never()).move(any(), any(), org.mockito.ArgumentMatchers.anyInt());
+    }
+
+    @Test
+    @DisplayName("FIX-BRD-PENCOUNT-001 fireEvent DIE / ELIMINATE: 终止事件同样把所在栏 -1")
+    void fireEvent_die_and_eliminate_decrease_pen_count() {
+        Pig died = mkSow(123L, PigLifecycle.FM);
+        died.setPenId(31L);
+        when(pigMapper.selectById(123L)).thenReturn(died);
+        Pig culled = mkSow(124L, PigLifecycle.KH);
+        culled.setPenId(32L);
+        when(pigMapper.selectById(124L)).thenReturn(culled);
+        when(pigMapper.updateById(any(Pig.class))).thenReturn(1);
+
+        PigEventBo dieBo = new PigEventBo();
+        dieBo.setPigId(123L);
+        dieBo.setEventType(PigStatusEvent.DIE);
+        service.fireEvent(dieBo);
+
+        PigEventBo elimBo = new PigEventBo();
+        elimBo.setPigId(124L);
+        elimBo.setEventType(PigStatusEvent.ELIMINATE);
+        service.fireEvent(elimBo);
+
+        verify(penCountUpdater).decrease(31L, 1);
+        verify(penCountUpdater).decrease(32L, 1);
+    }
+
+    @Test
+    @DisplayName("FIX-BRD-PENCOUNT-001 fireEvent 非迁栏非终止事件（BREED）: 不动栏位计数")
+    void fireEvent_breed_keeps_pen_count() {
+        Pig pig = mkSow(125L, PigLifecycle.HB);
+        pig.setPenId(33L);
+        when(pigMapper.selectById(125L)).thenReturn(pig);
+        when(pigMapper.updateById(any(Pig.class))).thenReturn(1);
+
+        PigEventBo bo = new PigEventBo();
+        bo.setPigId(125L);
+        bo.setEventType(PigStatusEvent.BREED);
+
+        service.fireEvent(bo);
+
+        org.mockito.Mockito.verifyNoInteractions(penCountUpdater);
+    }
+
+    @Test
+    @DisplayName("FIX-BRD-PENCOUNT-001 fireEvent 乐观锁冲突: 猪没动 → 栏位计数也不动")
+    void fireEvent_optimistic_lock_keeps_pen_count() {
+        Pig pig = mkSow(126L, PigLifecycle.PZ);
+        pig.setPenId(34L);
+        when(pigMapper.selectById(126L)).thenReturn(pig);
+        when(pigMapper.updateById(any(Pig.class))).thenReturn(0);
+
+        PigEventBo bo = new PigEventBo();
+        bo.setPigId(126L);
+        bo.setEventType(PigStatusEvent.TRANSFER);
+        bo.setPayload(java.util.Map.of("newBarnId", 2L, "newPenId", 44L));
+
+        assertThatThrownBy(() -> service.fireEvent(bo)).isInstanceOf(ServiceException.class);
+
+        org.mockito.Mockito.verifyNoInteractions(penCountUpdater);
     }
 
     @Test
@@ -468,5 +590,61 @@ class PigCoreServiceImplTest {
         // 状态不变事件 + 空状态：current_status 保持空（""），barn 更新
         assertThat(captor.getValue().getCurrentStatus()).isEqualTo("");
         assertThat(captor.getValue().getBarnId()).isEqualTo(2L);
+    }
+
+    @Test
+    @DisplayName("precheckEvent 公猪走 FARROW: 抛 female_only(400) 且不写任何库")
+    void precheckEvent_boar_farrow_female_only() {
+        Pig boar = mkFattening(300L, "M", null);
+        boar.setPigType("boar");
+        boar.setCurrentStatus("");          // 种公猪空状态（ADR-0016）
+        when(pigMapper.selectById(300L)).thenReturn(boar);
+
+        PigEventBo bo = new PigEventBo();
+        bo.setPigId(300L);
+        bo.setEventType(PigStatusEvent.FARROW);
+
+        assertThatThrownBy(() -> service.precheckEvent(bo))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("pig.event.female_only")
+            .extracting(e -> ((ServiceException) e).getCode()).isEqualTo(400);
+
+        verify(statusRecordMapper, never()).insert(any(PigStatusRecord.class));
+        verify(pigMapper, never()).updateById(any(Pig.class));
+    }
+
+    @Test
+    @DisplayName("precheckEvent HB 母猪走 FARROW: 抛 invalid_transition(400)（SIMPLE 表只有 PZ→FM）")
+    void precheckEvent_hb_sow_farrow_invalid_transition() {
+        Pig sow = mkSow(301L, PigLifecycle.HB);
+        when(pigMapper.selectById(301L)).thenReturn(sow);
+
+        PigEventBo bo = new PigEventBo();
+        bo.setPigId(301L);
+        bo.setEventType(PigStatusEvent.FARROW);
+
+        assertThatThrownBy(() -> service.precheckEvent(bo))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("pig.event.invalid_transition")
+            .extracting(e -> ((ServiceException) e).getCode()).isEqualTo(400);
+
+        verify(statusRecordMapper, never()).insert(any(PigStatusRecord.class));
+        verify(pigMapper, never()).updateById(any(Pig.class));
+    }
+
+    @Test
+    @DisplayName("precheckEvent PZ 母猪走 FARROW: 返目标态 FM 且不写任何库")
+    void precheckEvent_pz_sow_farrow_returns_FM() {
+        Pig sow = mkSow(302L, PigLifecycle.PZ);
+        when(pigMapper.selectById(302L)).thenReturn(sow);
+
+        PigEventBo bo = new PigEventBo();
+        bo.setPigId(302L);
+        bo.setEventType(PigStatusEvent.FARROW);
+
+        assertThat(service.precheckEvent(bo)).isEqualTo(PigLifecycle.FM);
+
+        verify(statusRecordMapper, never()).insert(any(PigStatusRecord.class));
+        verify(pigMapper, never()).updateById(any(Pig.class));
     }
 }

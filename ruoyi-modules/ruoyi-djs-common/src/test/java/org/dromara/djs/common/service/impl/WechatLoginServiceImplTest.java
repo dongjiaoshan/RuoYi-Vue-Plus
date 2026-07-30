@@ -24,6 +24,7 @@ import org.springframework.test.util.ReflectionTestUtils;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.times;
@@ -170,13 +171,17 @@ class WechatLoginServiceImplTest {
     void testBindPhone_RealMode_PhoneCode() throws WxErrorException {
         enableRealMode();
         WechatBindPhoneBo bo = new WechatBindPhoneBo();
-        bo.setOpenid("real-openid-2");
+        // 真实模式下 openid 必须由 code 换取，客户端传的 openid 一律忽略（GRAY-PREP-001 加固）
+        bo.setCode("real-login-code");
         bo.setClientId(DjsAuthConstants.MP_APPLET_CLIENT_ID);
         bo.setPhoneCode("real-phone-code");
 
+        WxMaJscode2SessionResult session = new WxMaJscode2SessionResult();
+        session.setOpenid("real-openid-2");
         WxMaPhoneNumberInfo info = new WxMaPhoneNumberInfo();
         info.setPhoneNumber("13900139000");
         when(wxMaService.getUserService()).thenReturn(wxMaUserService);
+        when(wxMaUserService.getSessionInfo("real-login-code")).thenReturn(session);
         when(wxMaUserService.getPhoneNoInfo("real-phone-code")).thenReturn(info);
         when(djsUserExtMapper.selectUserIdByPhone("13900139000")).thenReturn(null);
 
@@ -184,5 +189,46 @@ class WechatLoginServiceImplTest {
         assertEquals(DjsAuthConstants.BIZ_CODE_PHONE_NOT_REGISTERED, ex.getCode());
         verify(wxMaUserService, times(1)).getPhoneNoInfo("real-phone-code");
         verify(djsUserExtMapper, times(0)).updateWxOpenid(anyLong(), anyString());
+    }
+
+    @Test
+    @DisplayName("真模式 bindPhone 安全闸：客户端直传 openid 不给 code → 拒绝（防冒充任意员工）")
+    void testBindPhone_RealMode_RejectsRawOpenid() {
+        enableRealMode();
+        WechatBindPhoneBo bo = new WechatBindPhoneBo();
+        bo.setOpenid("attacker-controlled-openid");
+        bo.setPhone("13900139000");
+        bo.setClientId(DjsAuthConstants.MP_APPLET_CLIENT_ID);
+
+        ServiceException ex = assertThrows(ServiceException.class, () -> service.bindPhone(bo));
+        assertTrue(ex.getMessage().contains("缺少微信 code"));
+        // 关键：绝不能走到查手机号 / 改写 wx_openid —— 否则等于拿别人手机号就能冒充登录
+        verify(djsUserExtMapper, times(0)).selectUserIdByPhone(anyString());
+        verify(djsUserExtMapper, times(0)).updateWxOpenid(anyLong(), anyString());
+    }
+
+    @Test
+    @DisplayName("真模式 bindPhone 安全闸：传了 code 但同时塞 phone → phone 被忽略，仍走微信换号")
+    void testBindPhone_RealMode_IgnoresRawPhone() throws WxErrorException {
+        enableRealMode();
+        WechatBindPhoneBo bo = new WechatBindPhoneBo();
+        bo.setCode("real-login-code");
+        bo.setPhoneCode("real-phone-code");
+        bo.setPhone("13800138000");   // 攻击者想指定的手机号，必须被忽略
+        bo.setClientId(DjsAuthConstants.MP_APPLET_CLIENT_ID);
+
+        WxMaJscode2SessionResult session = new WxMaJscode2SessionResult();
+        session.setOpenid("real-openid-3");
+        WxMaPhoneNumberInfo info = new WxMaPhoneNumberInfo();
+        info.setPhoneNumber("13900139000");   // 微信返回的才算数
+        when(wxMaService.getUserService()).thenReturn(wxMaUserService);
+        when(wxMaUserService.getSessionInfo("real-login-code")).thenReturn(session);
+        when(wxMaUserService.getPhoneNoInfo("real-phone-code")).thenReturn(info);
+        when(djsUserExtMapper.selectUserIdByPhone("13900139000")).thenReturn(null);
+
+        assertThrows(ServiceException.class, () -> service.bindPhone(bo));
+        // 查的是微信返回的号，不是 bo.phone
+        verify(djsUserExtMapper, times(1)).selectUserIdByPhone("13900139000");
+        verify(djsUserExtMapper, times(0)).selectUserIdByPhone("13800138000");
     }
 }

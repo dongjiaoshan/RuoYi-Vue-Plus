@@ -1,6 +1,7 @@
 package org.dromara.djs.common.controller.applet;
 
 import org.dromara.common.core.domain.R;
+import org.dromara.common.core.exception.ServiceException;
 import org.dromara.djs.common.constant.DjsAuthConstants;
 import org.dromara.djs.common.domain.vo.WechatLoginVo;
 import org.dromara.djs.common.service.IWechatLoginService;
@@ -16,6 +17,10 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.times;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -86,8 +91,12 @@ class AppletAuthControllerTest {
     }
 
     @Test
-    @DisplayName("错误账号密码应返 40003")
+    @DisplayName("白名单未命中 → fallthrough 到真实员工登录，凭证错时返 40003")
     void wrongCredentialsShouldFail() {
+        // mock 白名单没有 hacker → 落到真实 employeePasswordLogin（sys_user + BCrypt）
+        when(wechatLoginService.employeePasswordLogin("hacker", "wrong", DjsAuthConstants.MP_APPLET_CLIENT_ID))
+            .thenThrow(new ServiceException("账号或密码错误", DjsAuthConstants.BIZ_CODE_PASSWORD_ERROR));
+
         AppletAuthController.AppletPasswordLoginBo bo = new AppletAuthController.AppletPasswordLoginBo();
         bo.setUsername("hacker");
         bo.setPassword("wrong");
@@ -100,9 +109,15 @@ class AppletAuthControllerTest {
     }
 
     @Test
-    @DisplayName("mock 关闭时（生产模式）应拒绝账号密码登录")
+    @DisplayName("mock 关闭时 dev 白名单失效，转真实员工登录（账号已停用 → 40003）")
     void productionModeShouldRejectMockLogin() {
+        // ⚠️ 关掉 authMockEnabled 并<b>不</b>直接拒绝登录，而是 fallthrough 到真实 BCrypt 校验。
+        // dev_* 账号的真实密码就是 dev123，所以光关开关挡不住——必须同时在账号层停用
+        // （见迁移 V202608251600 GRAY-PREP-001）。本用例把这个事实固化下来，
+        // 避免有人误以为"关了 mock 开关就安全了"。
         ReflectionTestUtils.setField(controller, "authMockEnabled", false);
+        when(wechatLoginService.employeePasswordLogin("dev", "dev123", DjsAuthConstants.MP_APPLET_CLIENT_ID))
+            .thenThrow(new ServiceException("账号或密码错误", DjsAuthConstants.BIZ_CODE_PASSWORD_ERROR));
 
         AppletAuthController.AppletPasswordLoginBo bo = new AppletAuthController.AppletPasswordLoginBo();
         bo.setUsername("dev");
@@ -111,7 +126,10 @@ class AppletAuthControllerTest {
 
         R<WechatLoginVo> r = controller.login(bo);
 
-        assertEquals(40004, r.getCode());
-        assertTrue(r.getMsg().contains("Mock 登录已关闭"));
+        assertEquals(DjsAuthConstants.BIZ_CODE_PASSWORD_ERROR, r.getCode());
+        // 关键：没有走 mock 分支（否则会拿到 mock-token-9001）
+        assertNull(r.getData());
+        verify(wechatLoginService, times(1))
+            .employeePasswordLogin("dev", "dev123", DjsAuthConstants.MP_APPLET_CLIENT_ID);
     }
 }

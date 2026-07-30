@@ -26,11 +26,11 @@ public class PigIntroInternalBo implements Serializable {
     private static final long serialVersionUID = 1L;
 
     /** 已存在猪只 ID（mp 端查耳号 auto-fill 后回填，snowflake string；后端 Long）。 */
-    @NotNull(message = "intro.internal.pig_required")
+    @NotNull(message = "{intro.internal.pig_required}")
     private Long pigId;
 
     /** 引种日期。 */
-    @NotNull(message = "intro.date.required")
+    @NotNull(message = "{intro.date.required}")
     private LocalDate introduceDate;
 
     /** 引种体重 kg（可选，原型 86「引种猪只体重」）。 */

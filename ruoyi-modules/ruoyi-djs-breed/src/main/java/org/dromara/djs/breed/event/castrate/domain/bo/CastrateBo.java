@@ -28,7 +28,7 @@ public class CastrateBo implements Serializable {
     /** 猪只耳号简版（mp 端工人输入；与 pigId 二选一，service 入口按 earNo 查 pig.id）。 */
     private String earNo;
 
-    @NotNull(message = "castrate.date.required")
+    @NotNull(message = "{castrate.date.required}")
     private LocalDateTime castrateDate;
 
     /**
@@ -39,9 +39,9 @@ public class CastrateBo implements Serializable {
      * 与 {@code operatorId}（系统登录态操作人）并存：operatorId 是录入账号，
      * castrater 是实际执刀人员（现场可不同人）。</p>
      */
-    @Size(max = 64, message = "castrate.castrater.size")
+    @Size(max = 64, message = "{castrate.castrater.size}")
     private String castrater;
 
-    @Size(max = 500, message = "castrate.remark.size")
+    @Size(max = 500, message = "{castrate.remark.size}")
     private String remark;
 }
