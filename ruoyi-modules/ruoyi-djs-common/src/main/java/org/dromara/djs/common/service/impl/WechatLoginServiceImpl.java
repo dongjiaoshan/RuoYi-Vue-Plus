@@ -21,6 +21,7 @@ import org.dromara.djs.common.domain.bo.WechatLoginBo;
 import org.dromara.djs.common.domain.vo.WechatLoginVo;
 import org.dromara.djs.common.mapper.DjsUserExtMapper;
 import org.dromara.djs.common.service.IWechatLoginService;
+import org.dromara.djs.common.util.I18nMessages;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
@@ -140,11 +141,30 @@ public class WechatLoginServiceImpl implements IWechatLoginService {
         String hash = auth == null ? null : (String) auth.get("password");
         // 账号不存在与密码错误统一提示，避免账号枚举
         if (hash == null || !BCrypt.checkpw(password, hash)) {
-            throw new ServiceException("账号或密码错误", DjsAuthConstants.BIZ_CODE_PASSWORD_ERROR);
+            throw loginRejected();
         }
         Long userId = ((Number) auth.get("userId")).longValue();
         // 真员工登录无 openid，颁真 token（issueToken 内按 userId 装配真菜单/角色权限）
         return issueToken(userId, null, StrUtil.blankToDefault(clientId, DjsAuthConstants.MP_APPLET_CLIENT_ID));
+    }
+
+    @Override
+    public void assertUserLoginable(Long userId) {
+        if (userId == null || djsUserExtMapper.selectLoginableUserId(userId) == null) {
+            log.info("[applet-auth] 拒绝登录：userId={} 在 sys_user 不存在 / 已停用 / 已删除", userId);
+            throw loginRejected();
+        }
+    }
+
+    /**
+     * 统一的登录拒绝异常：账号不存在 / 已停用 / 已删除 / 密码错误共用同一文案与业务码。
+     *
+     * <p>不区分具体原因（不回「该账号已停用」），否则可被用来枚举有效账号。</p>
+     */
+    private ServiceException loginRejected() {
+        return new ServiceException(
+            I18nMessages.t("applet.auth.login.rejected"),
+            DjsAuthConstants.BIZ_CODE_PASSWORD_ERROR);
     }
 
     // ---------------------- 内部辅助 ----------------------

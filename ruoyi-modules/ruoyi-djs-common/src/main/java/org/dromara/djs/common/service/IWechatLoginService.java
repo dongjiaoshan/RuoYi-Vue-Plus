@@ -67,4 +67,17 @@ public interface IWechatLoginService {
      * @throws org.dromara.common.core.exception.ServiceException 账号不存在/停用或密码错误时抛 code = 40003
      */
     WechatLoginVo employeePasswordLogin(String username, String password, String clientId);
+
+    /**
+     * 断言 userId 对应的 sys_user 允许登录（存在 + {@code status='0'} 启用 + {@code del_flag='0'} 未删）。
+     *
+     * <p>给<b>不查密码</b>的登录路径（{@code AppletAuthController} 的 dev mock 白名单）在颁发 token 前
+     * 补账号层校验：白名单是内存常量，命中即可颁 token，少了这道闸，sys_user 上的停用 / 删除 / 改密
+     * 对该路径零效果 —— 已停用的测试账号照样能登进系统。</p>
+     *
+     * @param userId sys_user.user_id
+     * @throws org.dromara.common.core.exception.ServiceException
+     *         账号不存在 / 已停用 / 已删除时抛 code = 40003；提示文案与密码错误完全一致（防账号枚举）
+     */
+    void assertUserLoginable(Long userId);
 }

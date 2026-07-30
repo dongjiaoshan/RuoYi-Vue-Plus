@@ -51,16 +51,18 @@ import java.util.Set;
  * <ul>
  *   <li>账号密码 login：接受 {@link #MOCK_ACCOUNTS} 白名单内任一账号（dev / admin / dev_boss /
  *       dev_breed_worker / dev_warehouse_worker / dev_store_clerk / dev_vet / dev_breed_mgr /
- *       dev_warehouse_mgr），命中即颁发 sa-token，token 绑定 client_id={@code mp-applet-dongjiaoshan}</li>
+ *       dev_warehouse_mgr），命中白名单<b>且该 userId 在 sys_user 存在 + 启用 + 未删</b>才颁发
+ *       sa-token，token 绑定 client_id={@code mp-applet-dongjiaoshan}</li>
  *   <li>wxLogin：完全代理到 SYS-AUTH-001 的 {@link IWechatLoginService}，复用其内置
  *       mock 模式（{@code djs.wechat.miniapp.app-id=mock}）</li>
  * </ul>
  *
- * <p><b>Kevin 上生产前必须：</b></p>
+ * <p><b>两道独立的关停手段（任一生效即登不进）：</b></p>
  * <ol>
- *   <li>关闭 {@code djs.applet.auth-mock-enabled}（默认 false）；</li>
- *   <li>账号密码登录走 ruoyi 自带 {@code /auth/login} 完整链路（password / captcha / 锁定策略），
- *       本 controller 的 mock login 端点会自动抛 ServiceException，禁止生产使用。</li>
+ *   <li><b>开关层</b>：{@code djs.applet.auth-mock-enabled=false} 关掉整条白名单
+ *       （注意关开关<b>不</b>直接拒绝请求，而是 fallthrough 到真实 BCrypt 登录）；</li>
+ *   <li><b>账号层</b>：把 sys_user 该行置 {@code status='1'} 或 {@code del_flag='2'}
+ *       —— 白名单命中后的账号状态闸会拒发 token，与密码错误同款提示。</li>
  * </ol>
  *
  * @author djs
@@ -86,7 +88,8 @@ public class AppletAuthController {
      * 是否启用 mock 账号密码登录。
      *
      * <p>V1 dev 阶段默认启用 ({@code djs.applet.auth-mock-enabled=true})；上生产前 Kevin
-     * 必须显式改 false，否则下面的 mock login 端点会让任意人用 dev/dev123 进入系统。</p>
+     * 必须显式改 false，否则下面的 mock login 端点会让任意人用 dev/dev123 进入系统
+     * （前提是那些账号在 sys_user 里仍是启用状态，见 login 里的账号状态闸）。</p>
      */
     @Value("${djs.applet.auth-mock-enabled:true}")
     private boolean authMockEnabled;
@@ -95,9 +98,11 @@ public class AppletAuthController {
      * V1 mock 账号白名单（username → {userId, password, nickname, roles}）。
      *
      * <p>新加调试账号在此处加一行即可，无需改 login 方法。userId 对齐 sys_user D04 dev seed
-     * （[`V202605211700__D04-dev-seed-users.sql`] 9100-9107 段）；`dev_warehouse_worker`
-     * sys_user 暂未 seed，用占位 9108 — mock 路径 userId 不依赖 sys_user 真行（走 sa-token
-     * 内存 LoginUser），故无影响。</p>
+     * （[`V202605211700__D04-dev-seed-users.sql`] 9100-9107 段）。</p>
+     *
+     * <p><b>userId 必须指向 sys_user 里存在 + 启用 + 未删的真行</b>：login 的账号状态闸按该 userId
+     * 查库，占位 / 已停用 / 已删除的 userId 一律登不进（这也是账号层停用测试账号的生效点）。
+     * 另外 {@link #buildMockLoginUser} 按 userId 读真菜单权限，占位 id 会拿到空权限集。</p>
      *
      * <p>角色 key 与 {@code UserBoardController.mapRolesToBoards} 一致：boss/manager → 全板块
      * 含 manage；breed_worker/breed_admin → breed；warehouse_* → warehouse；store_* V1 无板块。</p>
@@ -142,25 +147,33 @@ public class AppletAuthController {
      * <p>响应：</p>
      * <ul>
      *   <li>200 + {@link WechatLoginVo}（含 access_token、currentFarmId、userId）→ 登录成功</li>
-     *   <li>40003 + message → 账号或密码错误</li>
+     *   <li>40003 + message → 账号或密码错误 / 账号已停用或已删除（同一文案，防账号枚举）</li>
      * </ul>
      *
      * <p>登录顺序：① dev mock 白名单（仅 {@code authMockEnabled} 时，dev/dev123 多角色快速登录）；
      * ② 真实员工账号密码登录（走 sys_user + BCrypt，任何环境都可用——员工用登记账号 + 真实密码登录）。
      * 白名单未命中即落到真实员工登录，二者互不干扰。</p>
+     *
+     * <p><b>两条路径都受账号层状态约束</b>：② 的 {@code selectAuthByUsername} 自带
+     * {@code status='0' AND del_flag='0'} 过滤；① 白名单命中后显式过
+     * {@link IWechatLoginService#assertUserLoginable(Long)}（查 sys_user 存在 + 启用 + 未删），
+     * 不满足直接拒、<b>不</b> fallthrough 到 ②。白名单是内存常量，不加这道闸的话账号层停用
+     * （{@code status='1'} / {@code del_flag='2'} / 改密）对 mock 路径零效果。</p>
      */
     @SaIgnore
     @PostMapping("/login")
     public R<WechatLoginVo> login(@Valid @RequestBody AppletPasswordLoginBo bo) {
-        // ① dev mock 白名单：dev/dev123 等多角色快速登录（仅 authMockEnabled 环境）
-        if (authMockEnabled) {
-            MockAccount acc = MOCK_ACCOUNTS.get(bo.getUsername());
-            if (acc != null && acc.password().equals(bo.getPassword())) {
-                return R.ok(issueMockToken(bo.getUsername(), acc));
-            }
-        }
-        // ② 真实员工账号密码登录（sys_user + BCrypt，任何环境可用）
         try {
+            // ① dev mock 白名单：dev/dev123 等多角色快速登录（仅 authMockEnabled 环境）
+            if (authMockEnabled) {
+                MockAccount acc = MOCK_ACCOUNTS.get(bo.getUsername());
+                if (acc != null && acc.password().equals(bo.getPassword())) {
+                    // 账号状态闸：账号层停用 / 删除的 mock 账号一律不发 token
+                    wechatLoginService.assertUserLoginable(acc.userId());
+                    return R.ok(issueMockToken(bo.getUsername(), acc));
+                }
+            }
+            // ② 真实员工账号密码登录（sys_user + BCrypt，任何环境可用）
             return R.ok(wechatLoginService.employeePasswordLogin(bo.getUsername(), bo.getPassword(), bo.getClientId()));
         } catch (ServiceException e) {
             int code = e.getCode() != null ? e.getCode() : DjsAuthConstants.BIZ_CODE_PASSWORD_ERROR;

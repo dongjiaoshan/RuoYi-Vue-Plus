@@ -2,11 +2,11 @@ package org.dromara.djs.common.controller.applet;
 
 import org.dromara.common.core.domain.R;
 import org.dromara.common.core.exception.ServiceException;
+import org.dromara.common.core.service.PermissionService;
 import org.dromara.djs.common.constant.DjsAuthConstants;
 import org.dromara.djs.common.domain.vo.WechatLoginVo;
 import org.dromara.djs.common.service.IWechatLoginService;
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -17,6 +17,10 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.when;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.times;
@@ -32,7 +36,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *   <li>dev/dev123 → mock-token-9001 + userId=9001 + clientId=mp-applet-dongjiaoshan</li>
  *   <li>admin/admin123 → mock-token-1 + userId=1</li>
  *   <li>错密码 → 40003</li>
- *   <li>mock 关闭时 → 40004</li>
+ *   <li>mock 开关关闭 → fallthrough 到真实 BCrypt 登录</li>
+ *   <li><b>账号状态闸</b>：白名单命中但账号已停用 / 已删除 / userId 不存在 → 不发 token 返 40003，
+ *       且不 fallthrough；账号启用未删 → 照常发 token</li>
  * </ul>
  */
 @Tag("local")
@@ -44,6 +50,10 @@ class AppletAuthControllerTest {
     @Mock
     private IWechatLoginService wechatLoginService;
 
+    /** mock 登录也按 userId 读真菜单权限，controller 里是构造器注入的必需依赖。 */
+    @Mock
+    private PermissionService permissionService;
+
     @InjectMocks
     private AppletAuthController controller;
 
@@ -54,7 +64,6 @@ class AppletAuthControllerTest {
     }
 
     @Test
-    @Disabled("D03 mock 路径切真 sa-token 后，controller.login 内部走 LoginHelper.login / StpUtil.getTokenValue，需要 SaTokenContext；纯 Mockito 测无法 init，testing-human e2e 已覆盖。重写为 @SpringBootTest 或拆 buildMockLoginUser 纯逻辑单测后再启用。")
     @DisplayName("dev/dev123 应颁发 mock-token-9001")
     void devLoginShouldIssueMockToken() {
         AppletAuthController.AppletPasswordLoginBo bo = new AppletAuthController.AppletPasswordLoginBo();
@@ -75,7 +84,6 @@ class AppletAuthControllerTest {
     }
 
     @Test
-    @Disabled("D03 mock 路径切真 sa-token 后，controller.login 内部走 LoginHelper.login / StpUtil.getTokenValue，需要 SaTokenContext；纯 Mockito 测无法 init，testing-human e2e 已覆盖。重写为 @SpringBootTest 或拆 buildMockLoginUser 纯逻辑单测后再启用。")
     @DisplayName("admin/admin123 应颁发 mock-token-1")
     void adminLoginShouldIssueMockToken() {
         AppletAuthController.AppletPasswordLoginBo bo = new AppletAuthController.AppletPasswordLoginBo();
@@ -131,5 +139,85 @@ class AppletAuthControllerTest {
         assertNull(r.getData());
         verify(wechatLoginService, times(1))
             .employeePasswordLogin("dev", "dev123", DjsAuthConstants.MP_APPLET_CLIENT_ID);
+    }
+
+    @Test
+    @DisplayName("🔴 白名单命中但账号层已停用 → 不发 token，返 40003，且不 fallthrough 到真实登录")
+    void mockHitButAccountDisabledShouldNotIssueToken() {
+        // 账号状态闸：sys_user 里 dev(9001) 已 status='1' / del_flag='2' → service 抛 40003
+        doThrow(new ServiceException("applet.auth.login.rejected", DjsAuthConstants.BIZ_CODE_PASSWORD_ERROR))
+            .when(wechatLoginService).assertUserLoginable(9001L);
+
+        AppletAuthController.AppletPasswordLoginBo bo = new AppletAuthController.AppletPasswordLoginBo();
+        bo.setUsername("dev");
+        bo.setPassword("dev123");          // 白名单密码本身是对的
+        bo.setClientId(DjsAuthConstants.MP_APPLET_CLIENT_ID);
+
+        R<WechatLoginVo> r = controller.login(bo);
+
+        assertEquals(DjsAuthConstants.BIZ_CODE_PASSWORD_ERROR, r.getCode());
+        assertNull(r.getData());           // 没有 token
+        verify(wechatLoginService, times(1)).assertUserLoginable(9001L);
+        // 停用账号不得借 fallthrough 从真实 BCrypt 路径再试一次
+        verify(wechatLoginService, never()).employeePasswordLogin(anyString(), anyString(), anyString());
+        // 也不得装配权限（装配意味着已经在造 LoginUser）
+        verify(permissionService, never()).getMenuPermission(anyLong());
+    }
+
+    @Test
+    @DisplayName("🔴 白名单命中但 sys_user 无此 userId → 不发 token，返 40003")
+    void mockHitButAccountMissingShouldNotIssueToken() {
+        doThrow(new ServiceException("applet.auth.login.rejected", DjsAuthConstants.BIZ_CODE_PASSWORD_ERROR))
+            .when(wechatLoginService).assertUserLoginable(9108L);
+
+        AppletAuthController.AppletPasswordLoginBo bo = new AppletAuthController.AppletPasswordLoginBo();
+        bo.setUsername("dev_warehouse_worker");
+        bo.setPassword("dev123");
+        bo.setClientId(DjsAuthConstants.MP_APPLET_CLIENT_ID);
+
+        R<WechatLoginVo> r = controller.login(bo);
+
+        assertEquals(DjsAuthConstants.BIZ_CODE_PASSWORD_ERROR, r.getCode());
+        assertNull(r.getData());
+        verify(permissionService, never()).getMenuPermission(anyLong());
+    }
+
+    @Test
+    @DisplayName("白名单命中且账号启用未删 → 过闸后照常发 token（回归保护）")
+    void mockHitWithActiveAccountShouldIssueToken() {
+        // assertUserLoginable 是 void，默认不抛 = 账号启用未删
+        AppletAuthController.AppletPasswordLoginBo bo = new AppletAuthController.AppletPasswordLoginBo();
+        bo.setUsername("admin");
+        bo.setPassword("admin123");
+        bo.setClientId(DjsAuthConstants.MP_APPLET_CLIENT_ID);
+
+        R<WechatLoginVo> r = controller.login(bo);
+
+        assertEquals(200, r.getCode());
+        WechatLoginVo vo = r.getData();
+        assertNotNull(vo);
+        assertEquals(1L, vo.getUserId());
+        assertNotNull(vo.getAccessToken());
+        assertEquals(DjsAuthConstants.MP_APPLET_CLIENT_ID, vo.getClientId());
+        // 闸在颁 token 之前跑过，且没有落到真实密码登录
+        verify(wechatLoginService, times(1)).assertUserLoginable(1L);
+        verify(wechatLoginService, never()).employeePasswordLogin(anyString(), anyString(), anyString());
+    }
+
+    @Test
+    @DisplayName("白名单未命中不查账号状态闸（避免拿闸的行为差异枚举白名单）")
+    void nonWhitelistUsernameShouldNotHitAccountGate() {
+        when(wechatLoginService.employeePasswordLogin("caobi", "dev123", DjsAuthConstants.MP_APPLET_CLIENT_ID))
+            .thenThrow(new ServiceException("applet.auth.login.rejected", DjsAuthConstants.BIZ_CODE_PASSWORD_ERROR));
+
+        AppletAuthController.AppletPasswordLoginBo bo = new AppletAuthController.AppletPasswordLoginBo();
+        bo.setUsername("caobi");
+        bo.setPassword("dev123");
+        bo.setClientId(DjsAuthConstants.MP_APPLET_CLIENT_ID);
+
+        R<WechatLoginVo> r = controller.login(bo);
+
+        assertEquals(DjsAuthConstants.BIZ_CODE_PASSWORD_ERROR, r.getCode());
+        verify(wechatLoginService, never()).assertUserLoginable(anyLong());
     }
 }

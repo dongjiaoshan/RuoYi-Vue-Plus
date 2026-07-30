@@ -22,6 +22,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.test.util.ReflectionTestUtils;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -41,6 +42,7 @@ import static org.mockito.Mockito.when;
  *   <li>真模式 wechatLogin: WxJava getSessionInfo 换 openid（未绑定 → 40001，验证真 jscode2session 被调）</li>
  *   <li>真模式 jscode2session 抛 WxErrorException → ServiceException</li>
  *   <li>真模式 bindPhone: WxJava getPhoneNoInfo 解析手机号（未注册 → 40002，验证真手机号验证被调）</li>
+ *   <li>assertUserLoginable 账号状态闸：不存在 / 停用 / 删除 / null → 40003 同款文案；启用未删 → 放行</li>
  * </ol>
  *
  * <p>"颁 token + Sa-Token 集成"路径依赖 Sa-Token 上下文，放集成测试 / Playwright e2e；
@@ -230,5 +232,69 @@ class WechatLoginServiceImplTest {
         // 查的是微信返回的号，不是 bo.phone
         verify(djsUserExtMapper, times(1)).selectUserIdByPhone("13900139000");
         verify(djsUserExtMapper, times(0)).selectUserIdByPhone("13800138000");
+    }
+
+    // ── assertUserLoginable 账号状态闸 ────────────────────────────────────
+    //
+    // 闸的职责：给<b>不查密码</b>的登录路径（mp dev mock 白名单）补账号层校验。
+    // selectLoginableUserId 的 SQL 谓词（del_flag='0' AND status='0'）把「账号不存在 /
+    // 已停用 / 已删除」三态统一归一成返回 null，下面按这三种业务场景分别固化拒绝行为。
+
+    @Test
+    @DisplayName("账号状态闸：账号存在且启用未删 → 放行，不抛异常")
+    void testAssertUserLoginable_ActiveAccountPasses() {
+        when(djsUserExtMapper.selectLoginableUserId(9001L)).thenReturn(9001L);
+
+        assertDoesNotThrow(() -> service.assertUserLoginable(9001L));
+    }
+
+    @Test
+    @DisplayName("账号状态闸：账号已停用 status='1' → 抛 40003，不放行")
+    void testAssertUserLoginable_DisabledAccountRejected() {
+        // status='1' 被 SQL 谓词过滤 → 查不到行
+        when(djsUserExtMapper.selectLoginableUserId(9001L)).thenReturn(null);
+
+        ServiceException ex = assertThrows(ServiceException.class, () -> service.assertUserLoginable(9001L));
+        assertEquals(DjsAuthConstants.BIZ_CODE_PASSWORD_ERROR, ex.getCode());
+        assertSameWordingAsPasswordError(ex);
+    }
+
+    @Test
+    @DisplayName("账号状态闸：账号已删除 del_flag='2' → 抛 40003，不放行")
+    void testAssertUserLoginable_DeletedAccountRejected() {
+        // del_flag='2' 被 SQL 谓词过滤 → 查不到行
+        when(djsUserExtMapper.selectLoginableUserId(9107L)).thenReturn(null);
+
+        ServiceException ex = assertThrows(ServiceException.class, () -> service.assertUserLoginable(9107L));
+        assertEquals(DjsAuthConstants.BIZ_CODE_PASSWORD_ERROR, ex.getCode());
+        assertSameWordingAsPasswordError(ex);
+    }
+
+    @Test
+    @DisplayName("账号状态闸：userId 在 sys_user 根本不存在（白名单占位 id）→ 抛 40003，不放行")
+    void testAssertUserLoginable_MissingAccountRejected() {
+        when(djsUserExtMapper.selectLoginableUserId(9108L)).thenReturn(null);
+
+        ServiceException ex = assertThrows(ServiceException.class, () -> service.assertUserLoginable(9108L));
+        assertEquals(DjsAuthConstants.BIZ_CODE_PASSWORD_ERROR, ex.getCode());
+        assertSameWordingAsPasswordError(ex);
+    }
+
+    @Test
+    @DisplayName("账号状态闸：userId 为 null → 直接拒，不查库")
+    void testAssertUserLoginable_NullUserIdRejected() {
+        ServiceException ex = assertThrows(ServiceException.class, () -> service.assertUserLoginable(null));
+        assertEquals(DjsAuthConstants.BIZ_CODE_PASSWORD_ERROR, ex.getCode());
+        verify(djsUserExtMapper, times(0)).selectLoginableUserId(null);
+    }
+
+    /**
+     * 拒绝文案必须走 i18n key {@code applet.auth.login.rejected}，与密码错误路径完全同款 ——
+     * 不回「该账号已停用」这类可用于枚举有效账号的信息。
+     *
+     * <p>无 Spring 上下文时 {@code I18nMessages.t} 回吐 key 本身，故这里断言 key。</p>
+     */
+    private void assertSameWordingAsPasswordError(ServiceException ex) {
+        assertEquals("applet.auth.login.rejected", ex.getMessage());
     }
 }
