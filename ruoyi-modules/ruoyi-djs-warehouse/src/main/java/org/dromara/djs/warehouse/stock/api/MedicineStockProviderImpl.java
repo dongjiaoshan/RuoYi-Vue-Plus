@@ -35,6 +35,11 @@ import java.util.Map;
  * 取库存最多的库位），复用仓库物资领用同一 product 维原子扣减范式（{@code WHERE product_stock>=qty}
  * 行锁 + 数量校验同步）。{@code tenant_id} 由 MP 拦截器在 final SQL 阶段注入。</p>
  *
+ * <p>入库（{@link #add} 退回 / {@link #addPurchase} 采购）对<b>零库存药品</b>额外兜底建账：药品目录里
+ * 绝大多数药品尚未进过货、没有任何 {@code location_stock} 行，此时按产品配置的存储库位
+ * （{@code product_info.store_location_id}，缺省兜底「药品库」）INSERT 一条产品维度库存行，
+ * 范式对齐 {@code ProductInfoServiceImpl.inbound}。扣减 / 损耗不兜底 —— 零库存本就不该领用。</p>
+ *
  * <p>每次扣减 / 增加同步落一条 {@code t_warehouse_stock_flow} 出入库流水（口径对齐
  * {@code MatFlowServiceImpl}），供出入库记录页 / 库存总览流水回放对账：领用 dept_pick_out /
  * 损耗 loss（另双写统一损耗台账 {@code t_warehouse_loss_flow}，损耗总览数据源）/ 领用退回
