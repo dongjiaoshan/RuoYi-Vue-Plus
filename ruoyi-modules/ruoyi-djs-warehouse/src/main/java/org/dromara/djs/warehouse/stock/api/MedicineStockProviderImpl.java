@@ -11,6 +11,7 @@ import org.dromara.djs.common.medicine.api.MedicineStockProvider;
 import org.dromara.djs.warehouse.flow.domain.StockFlow;
 import org.dromara.djs.warehouse.flow.mapper.StockFlowMapper;
 import org.dromara.djs.warehouse.loss.service.ILossFlowService;
+import org.dromara.djs.warehouse.stock.domain.LocationStock;
 import org.dromara.djs.warehouse.stock.mapper.LocationStockMapper;
 import org.springframework.stereotype.Service;
 
@@ -113,7 +114,7 @@ public class MedicineStockProviderImpl implements MedicineStockProvider {
     }
 
     /**
-     * 药品商品行（id/name/unit/spec/imageId/stock）→ {@link MedicineProductDto}。
+     * 药品商品行（id/code/name/unit/spec/supplierId/remark/imageId/stock）→ {@link MedicineProductDto}。
      * imageId 原为 {@code COALESCE(product_thumb, image_oss_id)} 裸 ossId，经 IMG-LIB-001 resolver
      * 批量转 OSS public URL（禁 N+1）供 mp {@code <image :src>} 直接渲染；无图返 null（mp 端占位兜底）。
      */
@@ -123,9 +124,12 @@ public class MedicineStockProviderImpl implements MedicineStockProvider {
         for (Map<String, Object> row : rows) {
             MedicineProductDto dto = new MedicineProductDto();
             dto.setId(toLong(row.get("id")));
+            dto.setCode(toStr(row.get("code")));
             dto.setName(toStr(row.get("name")));
             dto.setUnit(toStr(row.get("unit")));
             dto.setSpec(toStr(row.get("spec")));
+            dto.setSupplierId(toLong(row.get("supplierId")));
+            dto.setRemark(toStr(row.get("remark")));
             dto.setStock(toBigDecimal(row.get("stock")));
             // row129：今日三量（selectMedicineProducts 回传；selectMedicineProductsByIds 无此列 → 兜 0）
             dto.setTodayPicked(toBigDecimal(row.get("todayPicked")));
@@ -209,18 +213,107 @@ public class MedicineStockProviderImpl implements MedicineStockProvider {
     }
 
     /**
-     * 增加共链：解析默认库位 → 加库存 → 落入库流水（退回 pick_return_in / 采购 purchase_in）。
+     * 增加共链：解析落位库位 → 加库存（无库存行则兜底建账）→ 落入库流水
+     * （退回 pick_return_in / 采购 purchase_in）。
+     *
+     * <p><b>零库存药品首次入库必须能成功</b>：药品目录（{@code buy_class='medicine'}）绝大多数是
+     * 「已建主数据、还没进过货」的零库存药品，此时 {@link LocationStockMapper#selectDefaultLocationByProduct}
+     * 与 {@link LocationStockMapper#addByProductLocation} 都命中不到任何行。故本方法按
+     * {@code ProductInfoServiceImpl.inbound} 同一范式兜底 INSERT 一条产品维度库存行
+     * （{@code plot_id / ear_no / white_bar_no} 全 NULL），落位库位由
+     * {@link #resolveInboundLocation} 解析。库位与库存行的解析失败一律抛
+     * {@link ServiceException}（不静默建到错库位），且失败时不写流水 —— 保持
+     * 「库存增减成功才落流水」的双账簿一致性。</p>
      */
     private void doAdd(Long productId, BigDecimal qty, Long operatorId, String flowType, String action) {
+        Map<String, Object> meta = null;
         Long locationId = locationStockMapper.selectDefaultLocationByProduct(productId);
         if (locationId == null) {
-            throw new ServiceException("药品无库位记录，无法" + action + "：" + productId);
+            meta = requireProductMeta(productId, action);
+            locationId = resolveInboundLocation(meta, productId, action);
         }
         int aff = locationStockMapper.addByProductLocation(locationId, productId, qty, operatorId);
         if (aff == 0) {
-            throw new ServiceException("药品" + action + "失败：库存行不存在");
+            // 该 (库位,产品) 尚无产品维度（非篮子）库存行 → 首次入库建账
+            if (meta == null) {
+                meta = requireProductMeta(productId, action);
+            }
+            insertProductStockRow(locationId, productId, qty, operatorId, meta);
         }
         insertStockFlow(locationId, productId, qty, operatorId, INOUT_IN, flowType);
+    }
+
+    /**
+     * 取产品元信息（名称 / 单位 / 配置存储库位），产品不存在或已软删则抛异常。
+     */
+    private Map<String, Object> requireProductMeta(Long productId, String action) {
+        Map<String, Object> meta = locationStockMapper.selectProductInboundMeta(productId);
+        if (meta == null) {
+            throw new ServiceException("药品不存在或已删除，无法" + action + "：" + productId);
+        }
+        return meta;
+    }
+
+    /**
+     * 解析首次入库落位库位：产品配置的存储库位（{@code product_info.store_location_id} 首个有效项）
+     * → 兜底「药品库」库位；两者都拿不到抛 {@link ServiceException}。
+     *
+     * <p>不用 {@link LocationStockMapper#selectDefaultMedicineLocationId}（按
+     * {@code location_type='medicine'} 查，而药品库的 {@code location_type} 是 {@code farm_loc}，
+     * 该方法恒返 null）。</p>
+     */
+    private Long resolveInboundLocation(Map<String, Object> meta, Long productId, String action) {
+        Long configured = firstConfiguredLocationId(toStr(meta.get("storeLocationId")));
+        if (configured != null) {
+            return configured;
+        }
+        Long medicineWarehouse = locationStockMapper.selectMedicineWarehouseLocationId();
+        if (medicineWarehouse == null) {
+            throw new ServiceException("药品未配置存储库位且未建「药品库」库位，无法" + action + "：" + productId);
+        }
+        return medicineWarehouse;
+    }
+
+    /**
+     * 取 {@code store_location_id}（逗号分隔多库位，V2 改关联表）里第一个有效库位 id；
+     * 空 / 全为非法值返 null（调用方兜底到药品库）。非法项 warn 出来，不静默丢。
+     */
+    private Long firstConfiguredLocationId(String storeLocationId) {
+        if (storeLocationId == null || storeLocationId.isBlank()) {
+            return null;
+        }
+        for (String token : storeLocationId.split(",")) {
+            String trimmed = token.trim();
+            if (trimmed.isEmpty()) {
+                continue;
+            }
+            try {
+                return Long.valueOf(trimmed);
+            } catch (NumberFormatException e) {
+                log.warn("product_info.store_location_id 含非法库位 id，已跳过：{}（原值 {}）", trimmed, storeLocationId);
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 首次入库建账：INSERT 一条产品维度库存行（{@code plot_id / ear_no / white_bar_no} 全 NULL，
+     * 与 {@link LocationStockMapper#addByProductLocation} 的命中条件对齐，后续入库走 UPDATE 累加）。
+     *
+     * <p>{@code product_name} / {@code product_unit} 是 DDL NOT NULL 的冗余列，取产品主数据快照；
+     * {@code is_end=0}（未用完，否则不进库存合计口径）。</p>
+     */
+    private void insertProductStockRow(Long locationId, Long productId, BigDecimal qty, Long operatorId,
+                                       Map<String, Object> meta) {
+        LocationStock stock = new LocationStock();
+        stock.setLocationId(locationId);
+        stock.setProductId(productId);
+        stock.setProductName(toStr(meta.get("productName")));
+        stock.setProductUnit(toStr(meta.get("productUnit")));
+        stock.setProductStock(qty);
+        stock.setIsEnd(0);
+        stock.setOperatorId(operatorId);
+        locationStockMapper.insert(stock);
     }
 
     /**

@@ -275,6 +275,40 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
     Long selectDefaultLocationByProduct(@Param("productId") Long productId);
 
     /**
+     * 取产品首次入库兜底建账所需的元信息：名称 / 单位 / 配置存储库位（CSV）。
+     *
+     * <p>{@code t_warehouse_location_stock.product_name} / {@code product_unit} 均 NOT NULL，
+     * 零库存产品首次入库要新建库存行必须带上这两个冗余列；{@code store_location_id} 供
+     * 「产品尚无任何库存行 → 落哪个库位」的解析（{@code selectDefaultLocationByProduct} 此时返 null）。
+     * 产品不存在 / 已软删返 null，调用方抛业务异常（不静默兜个假库位）。
+     * 租户单租户显式 {@code tenant_id='1001'}（V1）。</p>
+     *
+     * @param productId 产品 ID
+     * @return {@code productName / productUnit / storeLocationId} 单行，或 null（产品不存在）
+     */
+    @Select("SELECT product_name AS productName, "
+        + "       product_unit AS productUnit, "
+        + "       store_location_id AS storeLocationId "
+        + "  FROM t_warehouse_product_info "
+        + " WHERE id = #{productId} AND del_flag = '0' AND tenant_id = '1001'")
+    Map<String, Object> selectProductInboundMeta(@Param("productId") Long productId);
+
+    /**
+     * 取「药品库」库位 id（药品零库存首次入库的最终兜底落位）。
+     *
+     * <p>按 {@code location_name='药品库'} 定位（与 {@link #selectMedicineProducts} 圈定养殖药品范围的
+     * 子查询同一条件，口径天然一致）。<b>不用</b> {@code location_type='medicine'} ——
+     * 库里药品库的 {@code location_type} 是 {@code farm_loc}，按 type 取恒返 null。
+     * 未建药品库返 null，调用方抛业务异常。租户单租户显式 {@code tenant_id='1001'}（V1）。</p>
+     *
+     * @return 药品库 location_id，或 null（未建药品库库位）
+     */
+    @Select("SELECT id FROM t_warehouse_location_info "
+        + " WHERE location_name = '药品库' AND del_flag = '0' AND tenant_id = '1001' "
+        + " ORDER BY id LIMIT 1")
+    Long selectMedicineWarehouseLocationId();
+
+    /**
      * 按 {@code product_id} + {@code location_id} 增加库存（WMS-MAT-001 物资退回 / 外购收货 / 各入库 UPSERT）。
      *
      * <p>只累加<b>非篮子行</b>（{@code plot_id / ear_no / white_bar_no} 全 NULL）：product 维度加库存
@@ -472,14 +506,17 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
      * 领用 / 退回 / 损耗均落这些 {@code stock_flow} 流水，故三量与物资领用药品库卡一致（row129）。</p>
      *
      * @param keyword 药品名模糊过滤（可空）
-     * @return 药品商品行（id / name / unit / spec / stock / todayPicked / todayReturned / todayLoss），有库存优先、再按药品名排序
+     * @return 药品商品行（id / code / name / unit / spec / supplierId / remark / stock / todayPicked / todayReturned / todayLoss），有库存优先、再按药品名排序
      */
     @Select("""
         <script>
         SELECT p.id           AS id,
+               p.product_id   AS code,
                p.product_name AS name,
                p.product_unit AS unit,
                p.product_spec AS spec,
+               p.supplier_id  AS supplierId,
+               p.remark       AS remark,
                COALESCE(NULLIF(p.product_thumb, ''), p.image_oss_id) AS imageId,
                COALESCE(st.stock, 0) AS stock,
                COALESCE((SELECT SUM(f.change_quantity) FROM t_warehouse_stock_flow f
@@ -585,8 +622,14 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
      * 按 id 集合列出药品商品（{@code buy_class='medicine'}）+ 跨库位库存合计。
      *
      * <p>供「用药治疗 / 批量用药」消费「近 3 天已领用药品」清单（id 来自
-     * {@code t_breed_medicine_usage.medicine_id} 领用台账，已是药品库药品，不再加库位过滤）。
-     * 返回列与 {@link #selectMedicineProducts} 一致（id / name / unit / spec / imageId / stock）。</p>
+     * {@code t_breed_medicine_usage.medicine_id} 领用台账，已是药品库药品，不再加库位过滤），
+     * 以及养殖端<b>药品详情</b>（{@code GET /djs/breed/med/getInfo/{id}}）单 id 查询 ——
+     * 详情与列表必须同源读 {@code t_warehouse_product_info}（药品 id 段 {@code 9305…}），
+     * 否则详情落到已弃用的 {@code t_breed_medicine_info}（id 段 {@code 2059…}）、两段 id 空间不重叠、
+     * 列表点进详情恒返 null。</p>
+     *
+     * <p>返回列与 {@link #selectMedicineProducts} 一致（id / code / name / unit / spec / supplierId /
+     * remark / imageId / stock），今日三量不查（详情走 {@link #selectMedicineTodayFlowStat}）。</p>
      *
      * @param ids 药品商品 id 集合（非空）
      * @return 药品商品行；按药品名排序
@@ -594,9 +637,12 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
     @Select("""
         <script>
         SELECT p.id           AS id,
+               p.product_id   AS code,
                p.product_name AS name,
                p.product_unit AS unit,
                p.product_spec AS spec,
+               p.supplier_id  AS supplierId,
+               p.remark       AS remark,
                COALESCE(NULLIF(p.product_thumb, ''), p.image_oss_id) AS imageId,
                COALESCE(st.stock, 0) AS stock
           FROM t_warehouse_product_info p
