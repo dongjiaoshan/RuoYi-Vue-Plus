@@ -346,8 +346,11 @@ public class TracePublicServiceImpl
         // row48：重量改取肉品打包实际称重（product_production.product_weight，kg）按克展示、去掉规格「/份」
         //（如规格 700g/份、实际打包 0.500kg → 展示「重量：500g」）；无打包记录则保留 buildProduct 的规格兜底。
         ProductProduction pack = findPackProduction(code.getProduceCode());
-        if (pack != null && pack.getProductWeight() != null && vo.getProduct() != null) {
-            vo.getProduct().setWeight(toGramStr(pack.getProductWeight()));
+        if (pack != null && vo.getProduct() != null) {
+            if (pack.getProductWeight() != null) {
+                vo.getProduct().setWeight(toGramStr(pack.getProductWeight()));
+            }
+            vo.getProduct().setProduceNo(pack.getProduceNo());
         }
 
         String earNo = code.getPigEarNo();
@@ -563,9 +566,13 @@ public class TracePublicServiceImpl
         }
 
         // ② 重量改取打包实际称重：本追溯码对应的发货生产记录（trace_code 关联）product_weight；缺则保留规格兜底
+        //    同一条生产记录还提供「生产编号」produce_no（C 端产品信息块展示）
         ProductProduction pack = findPackProduction(code.getProduceCode());
-        if (pack != null && pack.getProductWeight() != null && vo.getProduct() != null) {
-            vo.getProduct().setWeight(toStr(pack.getProductWeight()));
+        if (pack != null && vo.getProduct() != null) {
+            if (pack.getProductWeight() != null) {
+                vo.getProduct().setWeight(toStr(pack.getProductWeight()));
+            }
+            vo.getProduct().setProduceNo(pack.getProduceNo());
         }
 
         // 地块 + 片区

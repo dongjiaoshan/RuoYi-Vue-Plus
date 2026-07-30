@@ -54,7 +54,7 @@ public class PlantPlanVo implements Serializable {
     @ExcelProperty(value = "作物")
     private String cropName;
 
-    /** 种植图片（crop_info.crop_image_preview，service enrich）。 */
+    /** 种植图片 ossId（crop_info 的 image_oss_id → crop_image_preview → crop_image_url 首段兜底，service enrich）。 */
     private String cropImage;
 
     private String plantDate;

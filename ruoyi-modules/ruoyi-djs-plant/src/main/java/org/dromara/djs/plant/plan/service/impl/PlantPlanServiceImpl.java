@@ -237,7 +237,7 @@ public class PlantPlanServiceImpl extends DjsBaseServiceImpl<PlantPlanMapper, Pl
     }
 
     /**
-     * 按 cropId 批量 enrich {@code cropName} + {@code cropImage}（crop_image_preview）。
+     * 按 cropId 批量 enrich {@code cropName} + {@code cropImage}。
      */
     private void enrichCrop(List<PlantPlanVo> list) {
         if (CollUtil.isEmpty(list)) {
@@ -254,9 +254,30 @@ public class PlantPlanServiceImpl extends DjsBaseServiceImpl<PlantPlanMapper, Pl
             CropInfo crop = cropMap.get(vo.getCropId());
             if (crop != null) {
                 vo.setCropName(crop.getCropName());
-                vo.setCropImage(crop.getCropImagePreview());
+                vo.setCropImage(resolveCropImageOssId(crop));
             }
         }
+    }
+
+    /**
+     * 取作物图 ossId：{@code image_oss_id → crop_image_preview → crop_image_url 首段} 兜底，全空返 null。
+     *
+     * <p>三个字段各有来源——{@code image_oss_id} 图库自动匹配 / 手选写入，
+     * {@code crop_image_preview} 与 {@code crop_image_url}（逗号分隔多图，取第一张）是 admin 端用户上传落位。
+     * 只读单个字段会漏掉另两路的图，表现为列表「作物图片」整列显 {@code -}。</p>
+     */
+    private String resolveCropImageOssId(CropInfo c) {
+        if (StringUtils.isNotBlank(c.getImageOssId())) {
+            return c.getImageOssId();
+        }
+        if (StringUtils.isNotBlank(c.getCropImagePreview())) {
+            return c.getCropImagePreview();
+        }
+        if (StringUtils.isNotBlank(c.getCropImageUrl())) {
+            String first = c.getCropImageUrl().split(",")[0].trim();
+            return StringUtils.isBlank(first) ? null : first;
+        }
+        return null;
     }
 
     /**

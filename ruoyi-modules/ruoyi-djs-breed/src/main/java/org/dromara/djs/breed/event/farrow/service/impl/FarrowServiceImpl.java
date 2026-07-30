@@ -18,6 +18,8 @@ import org.dromara.djs.breed.core.mapper.PigMapper;
 import org.dromara.djs.breed.core.service.I18nMessages;
 import org.dromara.djs.breed.core.service.IPigCoreService;
 import org.dromara.djs.breed.core.util.PigAgeUtil;
+import org.dromara.djs.breed.event.breeding.domain.PigBreeding;
+import org.dromara.djs.breed.event.breeding.mapper.PigBreedingMapper;
 import org.dromara.djs.breed.event.eartag.domain.PigPigletno;
 import org.dromara.djs.breed.event.eartag.mapper.PigPigletnoMapper;
 import org.dromara.djs.breed.event.farrow.domain.PigFarrow;
@@ -70,6 +72,7 @@ import java.util.stream.Collectors;
 public class FarrowServiceImpl implements IFarrowService {
 
     private final PigFarrowMapper farrowMapper;
+    private final PigBreedingMapper breedingMapper;
     private final PigMapper pigMapper;
     private final BarnMapper barnMapper;
     private final PenMapper penMapper;
@@ -100,11 +103,11 @@ public class FarrowServiceImpl implements IFarrowService {
 
         validate(bo);
 
-        // 1. 写 t_farm_pig_farrow（breedingId 缺时默认取 pig.matingId 最近配种）
+        // 1. 写 t_farm_pig_farrow（breedingId 见 resolveBreedingId：BO → pig.matingId → 按猪反查最近配种）
         PigFarrow farrow = new PigFarrow();
         farrow.setPigId(pig.getId());
         farrow.setEarNo(pig.getEarNo());
-        farrow.setBreedingId(Optional.ofNullable(bo.getBreedingId()).orElse(pig.getMatingId()));
+        farrow.setBreedingId(resolveBreedingId(bo, pig));
         farrow.setFarrowDate(bo.getFarrowDate());
         farrow.setTotalBorn(bo.getTotalBorn());
         farrow.setLiveBorn(bo.getLiveBorn());
@@ -444,6 +447,29 @@ public class FarrowServiceImpl implements IFarrowService {
         if (live > total) {
             throw new ServiceException(I18nMessages.t("farrow.live_exceeds_total", live, total));
         }
+    }
+
+    /**
+     * 关联配种记录 id：BO 显式传 → 母猪 {@code mating_id}（BREED 事件写入）→ 按 pigId 反查最近一条配种记录。
+     *
+     * <p>反查兜底是为初始数据导入的母猪：它们带 {@code last_mating_date} 却没走过系统内 BREED 事件，
+     * {@code mating_id} 为空。三支都取不到时返回 null——{@code breeding_id} 允许为空
+     * （历史配种不在系统内登记的母猪照样能录分娩），不阻断录入。</p>
+     */
+    private Long resolveBreedingId(FarrowBo bo, Pig pig) {
+        if (bo.getBreedingId() != null) {
+            return bo.getBreedingId();
+        }
+        if (pig.getMatingId() != null) {
+            return pig.getMatingId();
+        }
+        PigBreeding latest = breedingMapper.selectOne(new LambdaQueryWrapper<PigBreeding>()
+            .eq(PigBreeding::getPigId, pig.getId())
+            .eq(PigBreeding::getDelFlag, "0")
+            .orderByDesc(PigBreeding::getBreedingDate)
+            .orderByDesc(PigBreeding::getId)
+            .last("LIMIT 1"));
+        return latest == null ? null : latest.getId();
     }
 
     private String resolveBarnName(Long barnId) {

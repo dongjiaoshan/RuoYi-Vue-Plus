@@ -36,6 +36,7 @@ import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.domain.ProductInhouse;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
 import org.dromara.djs.warehouse.product.mapper.ProductInhouseMapper;
+import org.dromara.djs.warehouse.product.util.WorkshopMatcher;
 import org.dromara.djs.warehouse.stock.domain.LocationStock;
 import org.dromara.djs.warehouse.stock.mapper.LocationStockMapper;
 import org.dromara.djs.warehouse.trace.domain.TraceContentConst;
@@ -679,7 +680,7 @@ public class PigBurnRecordServiceImpl
     /**
      * 燎毛间车间码（{@code t_warehouse_product_info.product_workshop}，字典 djs_product_workshop = 1）。
      */
-    private static final Integer PRODUCT_WORKSHOP_BURN = 1;
+    private static final String PRODUCT_WORKSHOP_BURN = "1";
 
     /**
      * 燎毛入库产品类型列表（admin 产品配置驱动）：product_workshop=1 燎毛间 + product_status=0 正常
@@ -696,10 +697,11 @@ public class PigBurnRecordServiceImpl
      */
     private List<ProductInfo> loadWhiteBarTypes() {
         return productInfoMapper.selectList(
-            new LambdaQueryWrapper<ProductInfo>()
-                .eq(ProductInfo::getProductWorkshop, PRODUCT_WORKSHOP_BURN)
-                .eq(ProductInfo::getProductStatus, PRODUCT_STATUS_NORMAL)
-                .eq(ProductInfo::getProductAttr, PRODUCT_ATTR_RAW_MATERIAL)
+            WorkshopMatcher.match(
+                new LambdaQueryWrapper<ProductInfo>()
+                    .eq(ProductInfo::getProductStatus, PRODUCT_STATUS_NORMAL)
+                    .eq(ProductInfo::getProductAttr, PRODUCT_ATTR_RAW_MATERIAL),
+                PRODUCT_WORKSHOP_BURN)
                 .orderByAsc(ProductInfo::getProductId));
     }
 

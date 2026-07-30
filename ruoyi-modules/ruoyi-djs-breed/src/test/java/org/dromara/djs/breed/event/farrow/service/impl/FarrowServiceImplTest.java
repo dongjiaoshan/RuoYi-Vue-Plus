@@ -8,6 +8,7 @@ import org.dromara.djs.breed.core.enums.PigLifecycle;
 import org.dromara.djs.breed.core.enums.PigStatusEvent;
 import org.dromara.djs.breed.core.mapper.PigMapper;
 import org.dromara.djs.breed.core.service.IPigCoreService;
+import org.dromara.djs.breed.event.breeding.mapper.PigBreedingMapper;
 import org.dromara.djs.breed.event.eartag.mapper.PigPigletnoMapper;
 import org.dromara.djs.breed.event.farrow.domain.PigFarrow;
 import org.dromara.djs.breed.event.farrow.domain.bo.FarrowBo;
@@ -60,6 +61,8 @@ class FarrowServiceImplTest {
     @Mock
     private PigFarrowMapper farrowMapper;
     @Mock
+    private PigBreedingMapper breedingMapper;
+    @Mock
     private PigMapper pigMapper;
     @Mock
     private BarnMapper barnMapper;
@@ -76,7 +79,7 @@ class FarrowServiceImplTest {
 
     @BeforeEach
     void setup() {
-        service = new FarrowServiceImpl(farrowMapper, pigMapper, barnMapper, penMapper,
+        service = new FarrowServiceImpl(farrowMapper, breedingMapper, pigMapper, barnMapper, penMapper,
             pigletnoMapper, pigCoreService, dictService);
     }
 

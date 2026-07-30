@@ -88,9 +88,13 @@ public class ProductInfoVo implements Serializable {
     @ExcelDictFormat(dictType = "djs_product_attr")
     private Integer productAttr;
 
+    /**
+     * 生产车间 CSV 多值（如 {@code "3,5"}）。导出时 {@link ExcelDictConvert} 按 {@code separator}
+     * 逐值翻译再拼回（「肉品打包间,门店打包间」），无需自定义转换器。
+     */
     @ExcelProperty(value = "生产车间", converter = ExcelDictConvert.class)
     @ExcelDictFormat(dictType = "djs_product_workshop")
-    private Integer productWorkshop;
+    private String productWorkshop;
 
     @ExcelProperty(value = "存储库位")
     private String storeLocationId;

@@ -63,14 +63,18 @@ public class ProductInfoQuery extends BaseEntity {
     private Integer isBuyOut;
 
     /**
-     * 字典 djs_product_workshop：生产车间（原型筛选项）。
+     * 字典 djs_product_workshop：生产车间单值筛选（原型筛选项）。
+     *
+     * <p>产品侧是 CSV 多归属，故此处落 {@code FIND_IN_SET(值, product_workshop) > 0}
+     * ——「挂了该车间的产品」而非「只挂该车间的产品」。</p>
      */
-    private Integer productWorkshop;
+    private String productWorkshop;
 
     /**
-     * 生产车间集合（R70 多选）：非空时落 {@code product_workshop IN (...)}，叠加在 {@link #productWorkshop} 单值之上。
+     * 生产车间集合（R70 多选）：非空时落 {@code OR} 连接的多个 {@code FIND_IN_SET}（命中任一即入选），
+     * 叠加在 {@link #productWorkshop} 单值之上。
      */
-    private List<Integer> productWorkshops;
+    private List<String> productWorkshops;
 
     /**
      * 产品属性 djs_product_attr：1=生产产品（打包目标成品） / 2=原材料。

@@ -40,6 +40,7 @@ import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.domain.ProductInhouse;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
 import org.dromara.djs.warehouse.product.mapper.ProductInhouseMapper;
+import org.dromara.djs.warehouse.product.util.WorkshopMatcher;
 import org.dromara.djs.warehouse.trace.domain.TraceContentConst;
 import org.dromara.djs.warehouse.trace.service.ITraceService;
 import org.springframework.stereotype.Service;
@@ -111,7 +112,7 @@ public class PigCutRecordServiceImpl
     /**
      * 分割车间车间码（{@code t_warehouse_product_info.product_workshop}，字典 djs_product_workshop = 2）。
      */
-    private static final Integer PRODUCT_WORKSHOP_CUT = 2;
+    private static final String PRODUCT_WORKSHOP_CUT = "2";
 
     /**
      * 分割成品 belong_type（猪肉）。
@@ -1128,10 +1129,11 @@ public class PigCutRecordServiceImpl
         // 反查原料聚合；故分割只能选原料，不选生产产品）。belong_type='pork' + workshop=2 + attr=2，
         // 排除生产产品(attr=1)/商品/测试数据，按业务码升序。
         List<ProductInfo> types = productInfoMapper.selectList(
-            new LambdaQueryWrapper<ProductInfo>()
-                .eq(ProductInfo::getProductWorkshop, PRODUCT_WORKSHOP_CUT)
-                .eq(ProductInfo::getBelongType, CUT_PRODUCT_BELONG_TYPE)
-                .eq(ProductInfo::getProductAttr, PRODUCT_ATTR_MATERIAL)
+            WorkshopMatcher.match(
+                new LambdaQueryWrapper<ProductInfo>()
+                    .eq(ProductInfo::getBelongType, CUT_PRODUCT_BELONG_TYPE)
+                    .eq(ProductInfo::getProductAttr, PRODUCT_ATTR_MATERIAL),
+                PRODUCT_WORKSHOP_CUT)
                 .orderByAsc(ProductInfo::getProductId));
 
         // IMG-LIB-001：批量解析产品图，禁 N+1。L1 优先用户上传缩略图 product_thumb，退回自动匹配 image_oss_id，

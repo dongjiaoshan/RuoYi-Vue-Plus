@@ -54,6 +54,14 @@ public class CeleryPackBo {
     private Long storeId;
 
     /**
+     * 实称超出打包规则上限时，操作员已明确确认继续。
+     *
+     * <p>只对「超出」生效；实称低于规则重量是硬拒，这个标记放不过去
+     * （见 {@code ProductProductionServiceImpl#validatePackMeasureRule}）。</p>
+     */
+    private Boolean allowOverMeasure;
+
+    /**
      * 凭证图 OSS IDs CSV（可选）。
      */
     @Size(max = 500, message = "{pack.proof_oss_ids.size}")

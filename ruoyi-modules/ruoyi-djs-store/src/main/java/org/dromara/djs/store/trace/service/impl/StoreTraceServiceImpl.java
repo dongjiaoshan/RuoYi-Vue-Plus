@@ -21,6 +21,7 @@ import org.dromara.djs.warehouse.pack.domain.ProductProduction;
 import org.dromara.djs.warehouse.pack.mapper.ProductProductionMapper;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
+import org.dromara.djs.warehouse.product.util.WorkshopMatcher;
 import org.dromara.djs.store.trace.service.IStoreTraceService;
 import org.dromara.djs.warehouse.cross.mapper.BarInfoMapper;
 import org.dromara.djs.warehouse.trace.domain.TraceCode;
@@ -64,8 +65,14 @@ public class StoreTraceServiceImpl implements IStoreTraceService {
     private static final String CODE_TYPE_PORK = "pork";
     /** 产品属性=生产产品（字典 djs_product_attr：1=生产产品 / 2=原材料）。 */
     private static final Integer PRODUCT_ATTR_PRODUCE = 1;
-    /** 门店打包间车间码（{@code t_warehouse_product_info.product_workshop}，字典 djs_product_workshop = 5）。 */
-    private static final Integer PRODUCT_WORKSHOP_STORE_PACK = 5;
+    /**
+     * 门店打包间车间码（{@code t_warehouse_product_info.product_workshop}，字典 djs_product_workshop = 5）。
+     *
+     * <p>车间列自 WMS-PRODUCT-WORKSHOP-MULTI-001 起是 CSV 多归属，过滤走
+     * {@link WorkshopMatcher#match}（{@code FIND_IN_SET}），不能 {@code eq}——
+     * 同时挂「肉品打包间 + 门店打包间」的产品值是 {@code "3,5"}，等值比较会把它漏掉。</p>
+     */
+    private static final String PRODUCT_WORKSHOP_STORE_PACK = "5";
     /** 猪肉业态。 */
     private static final String BELONG_TYPE_PORK = "pork";
     /** 白条业态（现场分割 picker 取白条 production 用）。 */
@@ -295,10 +302,9 @@ public class StoreTraceServiceImpl implements IStoreTraceService {
      */
     @Override
     public List<StorePackProductVo> listPackProducts() {
-        return productInfoMapper.selectList(new LambdaQueryWrapper<ProductInfo>()
-                .eq(ProductInfo::getProductWorkshop, PRODUCT_WORKSHOP_STORE_PACK)
+        return productInfoMapper.selectList(WorkshopMatcher.match(new LambdaQueryWrapper<ProductInfo>()
                 .eq(ProductInfo::getProductAttr, PRODUCT_ATTR_PRODUCE)
-                .eq(ProductInfo::getBelongType, BELONG_TYPE_PORK))
+                .eq(ProductInfo::getBelongType, BELONG_TYPE_PORK), PRODUCT_WORKSHOP_STORE_PACK))
             .stream().map(p -> {
                 StorePackProductVo vo = new StorePackProductVo();
                 vo.setProductId(p.getId());

@@ -271,7 +271,7 @@ class ProductProductionServiceImplTest {
     }
 
     /**
-     * 打包称重容差用例的公共 stub：规则 0.500kg（容差带 [0.450, 0.550]）+ 允许 INSERT。
+     * 打包称重用例的公共 stub：规则 0.500kg（放行区间 [0.500, 0.515]，低于 0.500 硬拒）+ 允许 INSERT。
      *
      * @param productionId INSERT 时回填的自增 id
      */
@@ -296,82 +296,88 @@ class ProductProductionServiceImplTest {
     }
 
     @Test
-    @DisplayName("submitVegPack: 实称落在规则 ±10% 容差带内（0.499/0.500 规则）→ 直接通过，production 照常 INSERT")
-    void testVegPack_WithinMeasureToleranceAllowed() {
+    @DisplayName("submitVegPack: 实称恰等于规则重量（0.500/规则 0.500）→ 通过，production 照常 INSERT")
+    void testVegPack_ExactlyRuleWeightAllowed() {
         stubVegPackWithMeasureRule(80014L);
         VegPackBo bo = sampleVegBo();
-        bo.setProductWeight(new BigDecimal("0.499"));
+        bo.setProductWeight(new BigDecimal("0.500"));
 
         Long id = service.submitVegPack(bo);
 
         assertThat(id).isEqualTo(80014L);
         ArgumentCaptor<ProductProduction> cap = ArgumentCaptor.forClass(ProductProduction.class);
         verify(productionMapper, times(1)).insert(cap.capture());
-        assertThat(cap.getValue().getProductWeight()).isEqualByComparingTo("0.499");
+        assertThat(cap.getValue().getProductWeight()).isEqualByComparingTo("0.500");
     }
 
     @Test
-    @DisplayName("submitVegPack: 实称恰为容差带下界 rule×0.9（0.450）→ 边界含入，直接通过")
-    void testVegPack_ExactlyLowerToleranceBoundAllowed() {
-        stubVegPackWithMeasureRule(80015L);
-        VegPackBo bo = sampleVegBo();
-        bo.setProductWeight(new BigDecimal("0.450"));
-
-        assertThat(service.submitVegPack(bo)).isEqualTo(80015L);
-        verify(productionMapper, times(1)).insert(any(ProductProduction.class));
-    }
-
-    @Test
-    @DisplayName("submitVegPack: 实称恰为容差带上界 rule×1.1（0.550）→ 边界含入，直接通过")
+    @DisplayName("submitVegPack: 实称恰为允许上界 rule×1.03（0.515）→ 边界含入，直接通过")
     void testVegPack_ExactlyUpperToleranceBoundAllowed() {
         stubVegPackWithMeasureRule(80016L);
         VegPackBo bo = sampleVegBo();
-        bo.setProductWeight(new BigDecimal("0.550"));
+        bo.setProductWeight(new BigDecimal("0.515"));
 
         assertThat(service.submitVegPack(bo)).isEqualTo(80016L);
         verify(productionMapper, times(1)).insert(any(ProductProduction.class));
     }
 
     @Test
-    @DisplayName("submitVegPack: 实称低于容差带下界（0.449 < 0.450）且未确认 → 抛偏差提示，不 INSERT")
-    void testVegPack_BelowToleranceRequiresConfirmation() {
+    @DisplayName("submitVegPack: 实称低于规则重量（0.499 < 0.500）→ 硬拒，文案不带二次确认标识，不 INSERT")
+    void testVegPack_BelowRuleRejected() {
         stubVegPackMeasureRuleOnly();
         VegPackBo bo = sampleVegBo();
-        bo.setProductWeight(new BigDecimal("0.449"));
+        bo.setProductWeight(new BigDecimal("0.499"));
 
         assertThatThrownBy(() -> service.submitVegPack(bo))
             .isInstanceOf(ServiceException.class)
-            .hasMessageContaining("偏差超过10%")
-            .hasMessageContaining("0.449")
-            .hasMessageContaining("0.5");
+            .hasMessageContaining("低于打包规则")
+            .hasMessageContaining("不能少于规则重量")
+            .hasMessageContaining("0.499")
+            .hasMessageContaining("0.5")
+            // 关键：不带标识串 -> 前端不会弹「继续打包」，硬拒生效
+            .hasMessageNotContaining("超出3%");
         verify(productionMapper, never()).insert(any(ProductProduction.class));
     }
 
     @Test
-    @DisplayName("submitVegPack: 实称高于容差带上界（0.551 > 0.550）且未确认 → 抛偏差提示，不 INSERT")
+    @DisplayName("submitVegPack: 实称低于规则重量 + allowOverMeasure=true → 仍硬拒（确认绕不过下限），不 INSERT")
+    void testVegPack_BelowRuleNotBypassableByConfirmation() {
+        stubVegPackMeasureRuleOnly();
+        VegPackBo bo = sampleVegBo();
+        bo.setProductWeight(new BigDecimal("0.300"));
+        bo.setAllowOverMeasure(true);
+
+        assertThatThrownBy(() -> service.submitVegPack(bo))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("不能少于规则重量");
+        verify(productionMapper, never()).insert(any(ProductProduction.class));
+    }
+
+    @Test
+    @DisplayName("submitVegPack: 实称超出允许上界（0.516 > 0.515）且未确认 → 抛带标识的提示，不 INSERT")
     void testVegPack_OverToleranceRequiresConfirmation() {
         stubVegPackMeasureRuleOnly();
         VegPackBo bo = sampleVegBo();
-        bo.setProductWeight(new BigDecimal("0.551"));
+        bo.setProductWeight(new BigDecimal("0.516"));
 
         assertThatThrownBy(() -> service.submitVegPack(bo))
             .isInstanceOf(ServiceException.class)
-            .hasMessageContaining("偏差超过10%");
+            .hasMessageContaining("超出3%");
         verify(productionMapper, never()).insert(any(ProductProduction.class));
     }
 
     @Test
-    @DisplayName("submitVegPack: 偏差超容差但带 allowOverMeasure=true（二次确认）→ 放行 INSERT，偏低偏高都不拒收")
+    @DisplayName("submitVegPack: 超出上界但带 allowOverMeasure=true（二次确认）→ 放行 INSERT")
     void testVegPack_OverToleranceAllowedAfterConfirmation() {
         stubVegPackWithMeasureRule(80017L);
         VegPackBo bo = sampleVegBo();
-        bo.setProductWeight(new BigDecimal("0.300"));
+        bo.setProductWeight(new BigDecimal("0.600"));
         bo.setAllowOverMeasure(true);
 
         assertThat(service.submitVegPack(bo)).isEqualTo(80017L);
         ArgumentCaptor<ProductProduction> cap = ArgumentCaptor.forClass(ProductProduction.class);
         verify(productionMapper, times(1)).insert(cap.capture());
-        assertThat(cap.getValue().getProductWeight()).isEqualByComparingTo("0.300");
+        assertThat(cap.getValue().getProductWeight()).isEqualByComparingTo("0.600");
     }
 
     @Test
@@ -563,7 +569,7 @@ class ProductProductionServiceImplTest {
         assertThat(saved.getProduceNo()).isEqualTo("P2606280001");
     }
 
-    /** 肉品打包容差用例公共 stub：规则 0.500kg（容差带 [0.450, 0.550]）。 */
+    /** 肉品打包称重用例公共 stub：规则 0.500kg（放行区间 [0.500, 0.515]，低于 0.500 硬拒）。 */
     private DryPackBo stubPorkDryPackWithMeasureRule(String actualWeight) {
         ProductInhouse src = sampleVegSource();
         src.setPlotId(null);
@@ -582,31 +588,32 @@ class ProductProductionServiceImplTest {
     }
 
     @Test
-    @DisplayName("submitDryPack: 肉品实称超容差带上界（0.560 > 0.550）且未确认 → fail-fast")
+    @DisplayName("submitDryPack: 肉品实称超允许上界（0.560 > 0.515）且未确认 → fail-fast，文案带二次确认标识")
     void testDryPack_PorkOverToleranceRequiresConfirmation() {
         DryPackBo bo = stubPorkDryPackWithMeasureRule("0.560");
 
         assertThatThrownBy(() -> service.submitDryPack(bo))
             .isInstanceOf(ServiceException.class)
-            .hasMessageContaining("偏差超过10%");
+            .hasMessageContaining("超出3%");
         verify(productionMapper, never()).insert(any(ProductProduction.class));
     }
 
     @Test
-    @DisplayName("submitDryPack: 肉品实称低于容差带下界（0.400 < 0.450）且未确认 → 同样 fail-fast（下限不再无脑放行）")
-    void testDryPack_PorkBelowToleranceRequiresConfirmation() {
+    @DisplayName("submitDryPack: 肉品实称低于规则重量（0.400 < 0.500）→ 硬拒，文案不带二次确认标识")
+    void testDryPack_PorkBelowRuleRejected() {
         DryPackBo bo = stubPorkDryPackWithMeasureRule("0.400");
 
         assertThatThrownBy(() -> service.submitDryPack(bo))
             .isInstanceOf(ServiceException.class)
-            .hasMessageContaining("偏差超过10%");
+            .hasMessageContaining("不能少于规则重量")
+            .hasMessageNotContaining("超出3%");
         verify(productionMapper, never()).insert(any(ProductProduction.class));
     }
 
     @Test
-    @DisplayName("submitDryPack: 肉品实称在容差带内（0.520）→ 直接通过")
+    @DisplayName("submitDryPack: 肉品实称在 [规则, 规则×1.03] 内（0.510）→ 直接通过")
     void testDryPack_PorkWithinToleranceAllowed() {
-        DryPackBo bo = stubPorkDryPackWithMeasureRule("0.520");
+        DryPackBo bo = stubPorkDryPackWithMeasureRule("0.510");
         // KG 肉品打包必选门店（fulfillKgDemandOnPack）；无未完成需求时 warn 跳过扣减，不阻塞主链路
         bo.setStoreId(7L);
         when(locationInfoMapper.selectById(90001L)).thenReturn(sampleLocation());
@@ -655,6 +662,61 @@ class ProductProductionServiceImplTest {
         assertThat(saved.getProductSpec()).isEqualTo("按重量");
         // produce_no 全业态共用 PRODUCE_NO 每日计数器（前缀由 code rule 决定，非业态分桶）
         assertThat(saved.getProduceNo()).isEqualTo("P2606280001");
+    }
+
+    @Test
+    @DisplayName("submitCeleryPack: 目标产品配了 material_num 且实称低于规则 → 硬拒（芹菜页与蔬菜页同一 SKU 集合，不能成为绕过口）")
+    void testCeleryPack_BelowRuleRejected() {
+        when(inhouseMapper.selectById(70001L)).thenReturn(sampleVegSource());
+        ProductInfo p = sampleVegProduct();
+        p.setMaterialNum(new BigDecimal("0.500"));
+        when(productInfoMapper.selectById(60010L)).thenReturn(p);
+
+        CeleryPackBo bo = new CeleryPackBo();
+        bo.setSourceInhouseId(70001L);
+        bo.setProductId(60010L);
+        bo.setProductWeight(new BigDecimal("0.400"));
+        bo.setLocationId(90001L);
+        bo.setStoreId(7L);
+
+        assertThatThrownBy(() -> service.submitCeleryPack(bo))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("不能少于规则重量")
+            .hasMessageNotContaining("超出3%");
+        verify(productionMapper, never()).insert(any(ProductProduction.class));
+    }
+
+    @Test
+    @DisplayName("submitDryPack: 非肉品（干货）即便配了 material_num 也不套用重量规则 —— 它按份数×规格提交，套上必误判")
+    void testDryPack_NonPorkSkipsMeasureRule() {
+        ProductInhouse src = sampleVegSource();
+        src.setPlotId(null);
+        when(inhouseMapper.selectById(70001L)).thenReturn(src);
+        ProductInfo p = sampleVegProduct();
+        p.setBelongType("dry_good");
+        // 干货「30 枚/份」：份数模式提交的 productWeight 是份数，远小于 materialNum，
+        // 若误套重量规则会被下限硬拒 → 该页彻底不能提交
+        p.setMaterialNum(new BigDecimal("30.000"));
+        when(productInfoMapper.selectById(60010L)).thenReturn(p);
+        when(locationInfoMapper.selectById(90001L)).thenReturn(sampleLocation());
+        when(productionMapper.insert(any(ProductProduction.class))).thenAnswer(inv -> {
+            ((ProductProduction) inv.getArgument(0)).setId(80211L);
+            return 1;
+        });
+        when(locationStockMapper.addByProductLocation(any(), any(), any(), any())).thenReturn(1);
+        when(inhouseMapper.deleteById(any())).thenReturn(1);
+
+        DryPackBo bo = new DryPackBo();
+        bo.setSourceInhouseId(70001L);
+        bo.setProductId(60010L);
+        bo.setProductWeight(new BigDecimal("2.000"));
+        bo.setProductUnit("份");
+        bo.setLocationId(90001L);
+        // 其他产品打包同样必选门店（fulfillKgDemandOnPack 前置校验）；无未完成需求时 warn 跳过扣减
+        bo.setStoreId(7L);
+
+        assertThat(service.submitDryPack(bo)).isEqualTo(80211L);
+        verify(productionMapper, times(1)).insert(any(ProductProduction.class));
     }
 
     // ============================================================
