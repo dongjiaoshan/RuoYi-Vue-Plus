@@ -274,6 +274,9 @@ public class TracePublicServiceImpl
     private PublicTraceVo.ProductBlock buildProduct(TraceCode code) {
         PublicTraceVo.ProductBlock block = new PublicTraceVo.ProductBlock();
         block.setProduceCode(code.getProduceCode());
+        // 生产编号基线取门店现场打包落的 production_code（这类码没有 product_production 记录）；
+        // 仓库码走下面 fillPork/fillVeg 用 product_production.produce_no 覆盖。与 admin 补打列表同口径。
+        block.setProduceNo(code.getProductionCode());
         // 打包日期 V1 无独立列，用追溯码生成时间兜底（推断字段，见 _open-issues）
         block.setPackDate(code.getCreateTime());
         if (code.getProductId() != null) {
@@ -350,7 +353,9 @@ public class TracePublicServiceImpl
             if (pack.getProductWeight() != null) {
                 vo.getProduct().setWeight(toGramStr(pack.getProductWeight()));
             }
-            vo.getProduct().setProduceNo(pack.getProduceNo());
+            if (StringUtils.isNotBlank(pack.getProduceNo())) {
+                vo.getProduct().setProduceNo(pack.getProduceNo());
+            }
         }
 
         String earNo = code.getPigEarNo();
@@ -572,7 +577,9 @@ public class TracePublicServiceImpl
             if (pack.getProductWeight() != null) {
                 vo.getProduct().setWeight(toStr(pack.getProductWeight()));
             }
-            vo.getProduct().setProduceNo(pack.getProduceNo());
+            if (StringUtils.isNotBlank(pack.getProduceNo())) {
+                vo.getProduct().setProduceNo(pack.getProduceNo());
+            }
         }
 
         // 地块 + 片区
