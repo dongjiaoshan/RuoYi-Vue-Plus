@@ -58,6 +58,17 @@ public class WechatLoginServiceImpl implements IWechatLoginService {
      */
     private static final String MOCK_APP_ID = "mock";
 
+    /** mp token 总时长：30 天（doc/05 §4.4.3）。 */
+    private static final long TOKEN_TIMEOUT_SECONDS = 30 * 24 * 60 * 60L;
+
+    /**
+     * mp token「最低活跃频率」：7 天内有过任意请求即自动续期，超期未用才要求重新登录。
+     *
+     * <p>原值 30 分钟对 B 端农场工人过短——一天用几次、间隔超半小时是常态，等于每次开小程序都要重登。
+     * sa-token 每次请求会刷新活跃时间，所以 7 天是「连续 7 天没打开过」才掉线。</p>
+     */
+    private static final long TOKEN_ACTIVE_TIMEOUT_SECONDS = 7 * 24 * 60 * 60L;
+
     /**
      * 微信小程序 AppID（生产环境从 application.yml 读 djs.wechat.miniapp.app-id）。
      * 默认 "mock" 表示走 dev mock 模式：直接使用前端传的 code 作为 openid。
@@ -255,8 +266,8 @@ public class WechatLoginServiceImpl implements IWechatLoginService {
         SaLoginParameter model = new SaLoginParameter();
         model.setDeviceType("mp");
         // 30 天 token TTL（doc/05 §4.4.3）
-        model.setTimeout(30 * 24 * 60 * 60L);
-        model.setActiveTimeout(30 * 60L);
+        model.setTimeout(TOKEN_TIMEOUT_SECONDS);
+        model.setActiveTimeout(TOKEN_ACTIVE_TIMEOUT_SECONDS);
         model.setExtra(LoginHelper.CLIENT_KEY, clientId);
         // 把 current_farm_id 注入 token extra（FarmContextInterceptor V2 启用时读）
         model.setExtra("farmId", currentFarmId);
@@ -265,7 +276,10 @@ public class WechatLoginServiceImpl implements IWechatLoginService {
         // 拼响应
         WechatLoginVo vo = new WechatLoginVo();
         vo.setAccessToken(StpUtil.getTokenValue());
-        vo.setExpireIn(StpUtil.getTokenTimeout());
+        // 回传「活跃期限」而非 token 总时长：前端按 expireIn 算本地过期时间来决定要不要跳登录页，
+        // 给它 30 天而实际 activeTimeout 先到，会让前端以为还登着 → 冷启直接进业务页 → 请求 401
+        // 才发现掉线（用户看到的就是「闪一下又被踢回登录」）。两者取小才是 token 真正的可用期限。
+        vo.setExpireIn(Math.min(StpUtil.getTokenTimeout(), TOKEN_ACTIVE_TIMEOUT_SECONDS));
         vo.setClientId(clientId);
         vo.setOpenid(openid);
         vo.setUserId(userId);
