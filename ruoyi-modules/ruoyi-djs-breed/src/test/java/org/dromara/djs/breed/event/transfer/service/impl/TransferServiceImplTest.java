@@ -8,6 +8,7 @@ import org.dromara.djs.breed.core.enums.PigStatusEvent;
 import org.dromara.djs.breed.core.mapper.PigMapper;
 import org.dromara.djs.breed.core.service.IPigCoreService;
 import org.dromara.djs.breed.event.transfer.domain.PigTransfer;
+import org.dromara.djs.breed.event.transfer.domain.bo.ToFattenBo;
 import org.dromara.djs.breed.event.transfer.domain.bo.TransferBo;
 import org.dromara.djs.breed.event.transfer.mapper.PigTransferMapper;
 import org.dromara.djs.breed.farm.domain.Barn;
@@ -26,6 +27,7 @@ import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -228,5 +230,58 @@ class TransferServiceImplTest {
         verify(pigCoreService, times(1)).fireEvent(ev.capture());
         assertThat(ev.getValue().getEventType()).isEqualTo(PigStatusEvent.TRANSFER);
         assertThat(ev.getValue().getPigId()).isEqualTo(406L);
+    }
+
+    private ToFattenBo mkFattenBo(Long pigId, Long newBarnId, Long newPenId) {
+        ToFattenBo bo = new ToFattenBo();
+        bo.setPigId(pigId);
+        bo.setTransferDate(LocalDateTime.of(2026, 7, 31, 9, 0));
+        bo.setNewBarnId(newBarnId);
+        bo.setNewPenId(newPenId);
+        return bo;
+    }
+
+    @Test
+    @DisplayName("row163: 转育肥换了栋舍/栏位 → 先 TRANSFER 再 TO_FATTEN，两条共用同一 relatedEventId")
+    void toFatten_locationChanged_firesTransferThenToFatten() {
+        Pig pig = mkPig(410L, "sow", PigLifecycle.HB, 1L);
+        pig.setPenId(10L);
+        when(pigMapper.selectById(410L)).thenReturn(pig);
+        when(barnMapper.selectById(3L)).thenReturn(mkBarn(3L, "育肥舍3栋", "fattening"));
+        Pen newPen = new Pen();
+        newPen.setId(45L);
+        newPen.setPenName("散栏45");
+        when(penMapper.selectById(45L)).thenReturn(newPen);
+
+        service.toFatten(mkFattenBo(410L, 3L, 45L));
+
+        ArgumentCaptor<PigEventBo> ev = ArgumentCaptor.forClass(PigEventBo.class);
+        verify(pigCoreService, times(2)).fireEvent(ev.capture());
+        List<PigEventBo> fired = ev.getAllValues();
+        assertThat(fired.get(0).getEventType()).isEqualTo(PigStatusEvent.TRANSFER);
+        assertThat(fired.get(0).getPayload()).containsEntry("newBarnId", 3L).containsEntry("newPenId", 45L);
+        assertThat(fired.get(0).getPayload()).doesNotContainKey("newPigType");
+        assertThat(fired.get(1).getEventType()).isEqualTo(PigStatusEvent.TO_FATTEN);
+        assertThat(fired.get(1).getPayload()).containsEntry("newPigType", "fattening");
+        assertThat(fired.get(0).getRelatedEventId()).isEqualTo(fired.get(1).getRelatedEventId());
+    }
+
+    @Test
+    @DisplayName("row163: 原地转育肥（位置没变）→ 只 fireEvent(TO_FATTEN) 一条，不产生转移噪音")
+    void toFatten_sameLocation_firesOnlyToFatten() {
+        Pig pig = mkPig(411L, "sow", PigLifecycle.HB, 3L);
+        pig.setPenId(45L);
+        when(pigMapper.selectById(411L)).thenReturn(pig);
+        when(barnMapper.selectById(3L)).thenReturn(mkBarn(3L, "育肥舍3栋", "fattening"));
+        Pen samePen = new Pen();
+        samePen.setId(45L);
+        samePen.setPenName("散栏45");
+        when(penMapper.selectById(45L)).thenReturn(samePen);
+
+        service.toFatten(mkFattenBo(411L, 3L, 45L));
+
+        ArgumentCaptor<PigEventBo> ev = ArgumentCaptor.forClass(PigEventBo.class);
+        verify(pigCoreService, times(1)).fireEvent(ev.capture());
+        assertThat(ev.getValue().getEventType()).isEqualTo(PigStatusEvent.TO_FATTEN);
     }
 }

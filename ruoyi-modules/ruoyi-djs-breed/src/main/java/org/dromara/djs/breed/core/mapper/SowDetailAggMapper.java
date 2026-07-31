@@ -237,9 +237,12 @@ public interface SowDetailAggMapper {
      *
      * <p>UNION 两类记录：</p>
      * <ul>
-     *   <li>普通转移 t_farm_pig_transfer：targetBarn = CONCAT(new_barn_name, new_pen_name)，slaughter=0；</li>
+     *   <li>普通转移 t_farm_pig_transfer：targetBarn = 栋舍名 + 栏位名，slaughter=0；</li>
      *   <li>出栏 t_farm_pig_marketing（出栏 new_barn_id 恒非空，故另存此表）：targetBarn 空、slaughter=1。</li>
      * </ul>
+     *
+     * <p>栏位名当前口径不含栋舍名（admin row164），故与栋舍名拼接展示；早期快照的 pen_name 里
+     * 冗余存了栋舍名前缀，拼接前先判前缀避免拼出「育肥舍1栋育肥舍1栋散栏01」。</p>
      *
      * <p>开始/结束时间（旧栏位驻留区间）由 service 用相邻日期补算（SQL 仅给 transferDate）。</p>
      */
@@ -248,8 +251,12 @@ public interface SowDetailAggMapper {
             SELECT
                 transfer_date AS rawDate,
                 DATE_FORMAT(transfer_date, '%Y-%m-%d') AS transferDate,
-                CONCAT(COALESCE(old_barn_name, ''), COALESCE(old_pen_name, '')) AS sourceBarn,
-                CONCAT(COALESCE(new_barn_name, ''), COALESCE(new_pen_name, '')) AS targetBarn,
+                CASE WHEN LEFT(COALESCE(old_pen_name, ''), CHAR_LENGTH(COALESCE(old_barn_name, ''))) = COALESCE(old_barn_name, '')
+                     THEN COALESCE(old_pen_name, '')
+                     ELSE CONCAT(COALESCE(old_barn_name, ''), COALESCE(old_pen_name, '')) END AS sourceBarn,
+                CASE WHEN LEFT(COALESCE(new_pen_name, ''), CHAR_LENGTH(COALESCE(new_barn_name, ''))) = COALESCE(new_barn_name, '')
+                     THEN COALESCE(new_pen_name, '')
+                     ELSE CONCAT(COALESCE(new_barn_name, ''), COALESCE(new_pen_name, '')) END AS targetBarn,
                 operator_id AS operatorId,
                 0 AS slaughter,
                 id AS rawId

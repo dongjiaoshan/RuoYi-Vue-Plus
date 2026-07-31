@@ -268,7 +268,30 @@ public class TransferServiceImpl implements ITransferService {
         entity.setAgeDays(PigAgeUtil.ageDaysAt(pig, evtDate));
         transferMapper.insert(entity);
 
-        // 2. 状态机事件 TO_FATTEN：HB → YF；payload 同 TRANSFER 形态 + 固定切 pig_type=fattening
+        // 2. 位置真的换了 → 先补一条 TRANSFER 事件，让「转移」在事件台账上可见（admin row163）。
+        //    转育肥表单本身就是一次转移（录转移日期 / 负责人 / 目标栋舍栏位），只记 TO_FATTEN 的话
+        //    用户在事件台账按「转移」找不到任何记录。原地转育肥（位置没变）不记，避免台账噪音。
+        //    TRANSFER 是 NO_CHANGE 事件（HB → HB），不影响随后的 HB → YF；两条共用同一条转移记录 id。
+        boolean locationChanged = !Objects.equals(targetBarnId, pig.getBarnId())
+            || !Objects.equals(targetPenId, pig.getPenId());
+        if (locationChanged) {
+            Map<String, Object> movePayload = new HashMap<>(4);
+            if (targetBarnId != null) {
+                movePayload.put("newBarnId", targetBarnId);
+            }
+            if (targetPenId != null) {
+                movePayload.put("newPenId", targetPenId);
+            }
+            PigEventBo moveBo = new PigEventBo();
+            moveBo.setPigId(pig.getId());
+            moveBo.setEventType(PigStatusEvent.TRANSFER);
+            moveBo.setRelatedEventId(entity.getId());
+            moveBo.setEventAt(bo.getTransferDate());
+            moveBo.setPayload(movePayload);
+            pigCoreService.fireEvent(moveBo);
+        }
+
+        // 3. 状态机事件 TO_FATTEN：HB → YF；payload 同 TRANSFER 形态 + 固定切 pig_type=fattening
         Map<String, Object> payload = new HashMap<>(4);
         if (targetBarnId != null) {
             payload.put("newBarnId", targetBarnId);
