@@ -128,6 +128,15 @@ public class TracePublicServiceImpl
     /** 白条领用表出库类型：分割车间（{@code djs_pig_cut_out_type}），白条分割节点时刻只取 cut。 */
     private static final String PIG_CUT_OUT_TYPE_CUT = "cut";
 
+    /** 门店现场生码 remark 前缀（{@code TraceServiceImpl.buildOnsiteRemark} 写入）。 */
+    private static final String ONSITE_REMARK_PREFIX = "现场生码";
+
+    /** 猪肉产品业态（{@code t_warehouse_product_info.belong_type}）：现场码按部位名反查规格 / 图。 */
+    private static final String PORK_BELONG_TYPE = "pork";
+
+    /** 产品启用态（{@code product_status}，字典 sys_normal_disable：0=正常 / 1=停用）。 */
+    private static final Integer PRODUCT_STATUS_NORMAL = 0;
+
     private final TraceEventMapper traceEventMapper;
     private final ProductInfoMapper productInfoMapper;
     private final StoreMapper storeMapper;
@@ -357,6 +366,7 @@ public class TracePublicServiceImpl
                 vo.getProduct().setProduceNo(pack.getProduceNo());
             }
         }
+        fillOnsiteProduct(vo.getProduct(), code);
 
         String earNo = code.getPigEarNo();
         // 农场名（trace_code.farm_id 走 sys_farm，复用 admin farm-name mapper）
@@ -642,6 +652,86 @@ public class TracePublicServiceImpl
                 .eq(ProductProduction::getTraceCode, produceCode)
                 .orderByDesc(ProductProduction::getId)
                 .last("limit 1"));
+    }
+
+    /**
+     * 门店现场生码的产品信息块回填（顾客扫码页「产品信息」不再只剩一行生产编号）。
+     *
+     * <p>门店现场生码「纯生码不联动库存」：{@code genPorkOnsiteCode} 不查产品主数据，
+     * {@code trace_code.product_id} 恒 NULL、也不建 {@code product_production}，于是
+     * {@link #buildProduct} 整块跳过——C 端只剩生产编号，商品名称 / 规格 / 重量 / 产品图全空白。
+     * 部位与实际称重其实已落在 {@code remark}「现场生码 部位=X 重量=Ykg」，这里按同一口径解析回填，
+     * 与 admin 追溯码管理列表的 {@code fillOnsiteDerivedFields} 保持一致（同一张码两端展示不打架）。</p>
+     *
+     * <p>规格 / 描述 / 产品图按回填出的部位名反查 {@code belong_type='pork'} 产品主数据；
+     * 部位字典兜底的老码名字对不上产品时留空不造假。仅补空字段，不覆盖已有值。</p>
+     */
+    private void fillOnsiteProduct(PublicTraceVo.ProductBlock block, TraceCode code) {
+        String remark = code.getRemark();
+        if (block == null || remark == null || !remark.startsWith(ONSITE_REMARK_PREFIX)) {
+            return;
+        }
+        if (StringUtils.isBlank(block.getName())) {
+            block.setName(parseOnsiteCutPart(remark));
+        }
+        if (StringUtils.isBlank(block.getWeight())) {
+            block.setWeight(toGramStr(parseOnsiteWeightKg(remark)));
+        }
+        if (StringUtils.isBlank(block.getName())) {
+            return;
+        }
+        // 同名多条时优先启用中的（product_status=0）：停用产品的规格 / 图不该顶掉在用的那条。
+        // 软删由 ProductInfo 的 @TableLogic 自动排除，不需显式条件。
+        ProductInfo p = productInfoMapper.selectOne(
+            new LambdaQueryWrapper<ProductInfo>()
+                .eq(ProductInfo::getBelongType, PORK_BELONG_TYPE)
+                .eq(ProductInfo::getProductName, block.getName())
+                .eq(ProductInfo::getProductStatus, PRODUCT_STATUS_NORMAL)
+                .orderByAsc(ProductInfo::getId)
+                .last("limit 1"));
+        if (p == null) {
+            return;
+        }
+        if (StringUtils.isBlank(block.getSpec())) {
+            block.setSpec(p.getProductSpec());
+        }
+        if (StringUtils.isBlank(block.getDescription())) {
+            block.setDescription(p.getProductDesc());
+        }
+        if (StringUtils.isBlank(block.getImageUrl())) {
+            // 图优先产品配置缩略图 product_thumb，缺失才用原图 product_img（同 buildProduct 口径）
+            block.setImageUrl(resolveOssUrl(StringUtils.isNotBlank(p.getProductThumb())
+                ? p.getProductThumb() : p.getProductImg()));
+        }
+    }
+
+    /** 现场生码 remark 里的部位名（「部位=X」，截到「重量=」前）；无则 null。 */
+    private String parseOnsiteCutPart(String remark) {
+        int pi = remark.indexOf("部位=");
+        if (pi < 0) {
+            return null;
+        }
+        int wi = remark.indexOf("重量=", pi);
+        String part = (wi > pi ? remark.substring(pi + 3, wi) : remark.substring(pi + 3)).trim();
+        return part.isEmpty() ? null : part;
+    }
+
+    /** 现场生码 remark 里的实际称重 kg（「重量=Ykg」，剥非数字字符）；无 / 非法 → null。 */
+    private BigDecimal parseOnsiteWeightKg(String remark) {
+        int wi = remark.indexOf("重量=");
+        if (wi < 0) {
+            return null;
+        }
+        String num = remark.substring(wi + 3).replaceAll("[^0-9.]", "");
+        if (num.isEmpty()) {
+            return null;
+        }
+        try {
+            return new BigDecimal(num);
+        } catch (NumberFormatException e) {
+            log.warn("[trace-public] 现场生码 remark 重量解析失败 remark={}", remark);
+            return null;
+        }
     }
 
     /**
