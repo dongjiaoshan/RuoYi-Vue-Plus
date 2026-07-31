@@ -19,6 +19,7 @@ import static org.dromara.djs.breed.core.enums.PigLifecycle.HB;
 import static org.dromara.djs.breed.core.enums.PigLifecycle.KH;
 import static org.dromara.djs.breed.core.enums.PigLifecycle.LC;
 import static org.dromara.djs.breed.core.enums.PigLifecycle.PZ;
+import static org.dromara.djs.breed.core.enums.PigLifecycle.YF;
 import static org.dromara.djs.breed.core.enums.PigStatusEvent.BREED;
 import static org.dromara.djs.breed.core.enums.PigStatusEvent.CASTRATE;
 import static org.dromara.djs.breed.core.enums.PigStatusEvent.DIE;
@@ -28,6 +29,7 @@ import static org.dromara.djs.breed.core.enums.PigStatusEvent.INTRO;
 import static org.dromara.djs.breed.core.enums.PigStatusEvent.NULL_RETURN;
 import static org.dromara.djs.breed.core.enums.PigStatusEvent.OESTRUS;
 import static org.dromara.djs.breed.core.enums.PigStatusEvent.SLAUGHTER;
+import static org.dromara.djs.breed.core.enums.PigStatusEvent.TO_FATTEN;
 import static org.dromara.djs.breed.core.enums.PigStatusEvent.TRANSFER;
 import static org.dromara.djs.breed.core.enums.PigStatusEvent.WEAN;
 
@@ -35,7 +37,7 @@ import static org.dromara.djs.breed.core.enums.PigStatusEvent.WEAN;
  * 猪只状态机（BRD-CORE-001 ★ 业务心脏）。
  *
  * <p>手写 FSM，不引 spring-statemachine / Flowable。{@link #nextStatus} 为纯函数，
- * 不访问 DB，方便单测覆盖 11×9 transition 矩阵（9 状态，见 ADR-0010）。</p>
+ * 不访问 DB，方便单测覆盖 transition 矩阵（12 事件 × 9 状态，见 ADR-0010；YF/TO_FATTEN 见 admin row162）。</p>
  *
  * <p><b>三类 transition</b>：</p>
  * <ul>
@@ -44,7 +46,8 @@ import static org.dromara.djs.breed.core.enums.PigStatusEvent.WEAN;
  *   <li>特殊：</li>
  *   <li>&nbsp;&nbsp;- INTRO：不走本类，由 {@code PigCoreService#createPig} 创建态处理；</li>
  *   <li>&nbsp;&nbsp;- 终态 events（DIE/ELIMINATE/SLAUGHTER）→ END；</li>
- *   <li>&nbsp;&nbsp;- 状态不变 events（CASTRATE/TRANSFER）→ from。</li>
+ *   <li>&nbsp;&nbsp;- 状态不变 events（CASTRATE/TRANSFER）→ from；</li>
+ *   <li>&nbsp;&nbsp;- TO_FATTEN（admin row162）：HB → YF，同时 service 侧切 pig_type sow → fattening。</li>
  * </ul>
  *
  * <p>错误信息走 i18n，key 在 {@code ruoyi-admin/.../i18n/messages_zh_CN.properties} +
@@ -62,8 +65,8 @@ public class PigStateMachine {
     /** 复杂 transition（按 payload 分流）。 */
     private static final Map<PigStatusEvent, BiFunction<PigLifecycle, Map<String, Object>, PigLifecycle>> COMPLEX = buildComplexMap();
 
-    /** 仅母猪允许的事件（公猪触发抛 female_only）。 */
-    private static final Set<PigStatusEvent> FEMALE_ONLY = Set.of(BREED, OESTRUS, FARROW, WEAN, NULL_RETURN);
+    /** 仅母猪允许的事件（公猪触发抛 female_only）。TO_FATTEN 只作用于后备种母猪（admin row162）。 */
+    private static final Set<PigStatusEvent> FEMALE_ONLY = Set.of(BREED, OESTRUS, FARROW, WEAN, NULL_RETURN, TO_FATTEN);
 
     /** 终态聚合事件（任一非 END from → END，end_reason 在 service 内按事件填）。 */
     private static final Set<PigStatusEvent> TERMINAL_EVENTS = Set.of(DIE, ELIMINATE, SLAUGHTER);
@@ -150,6 +153,9 @@ public class PigStateMachine {
         m.put(new TransitionKey(PZ, FARROW), FM);
         // WEAN: FM → DN
         m.put(new TransitionKey(FM, WEAN), DN);
+        // TO_FATTEN（admin row162）: HB → YF —— 只有「后备」种母猪能转育肥；
+        // 其它繁殖态（PZ/FM/DN/...）不给转，避免把在孕 / 哺乳母猪误转成育肥猪。
+        m.put(new TransitionKey(HB, TO_FATTEN), YF);
         return Map.copyOf(m);
     }
 

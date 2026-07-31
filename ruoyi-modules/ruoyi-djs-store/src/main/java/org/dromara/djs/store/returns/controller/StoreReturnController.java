@@ -150,10 +150,14 @@ public class StoreReturnController extends BaseController {
     /**
      * 仓库「退货记录」外层「门店 + 当日」汇总导出（与 {@code /store-daily} 列表同口径）。
      * 仓库角色经 {@code djs:warehouse:return:export} 命中（与门店 export 权限 OR），无需补授门店权限。
+     *
+     * <p>必须是 {@code POST}：前端统一走 {@code utils/request.ts} 的 {@code download()} 通用下载方法，
+     * 它以 {@code application/x-www-form-urlencoded} POST 提交（djs 其余 export 端点全是 {@code @PostMapping}）。
+     * 挂 {@code @GetMapping} 会让点导出直接报 {@code Request method 'POST' is not supported}。</p>
      */
     @SaCheckPermission(value = {"djs:store:return:export", "djs:warehouse:return:export"}, mode = SaMode.OR)
     @Log(title = "门店退回汇总", businessType = BusinessType.EXPORT)
-    @GetMapping("/store-daily/export")
+    @PostMapping("/store-daily/export")
     public void storeDailyExport(StoreReturnQuery query, HttpServletResponse response) {
         List<StoreReturnStoreDailyVo> list = service.queryStoreDailyList(query);
         ExcelUtil.exportExcel(list == null ? new ArrayList<>() : list,

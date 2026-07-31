@@ -25,6 +25,7 @@ import org.dromara.djs.warehouse.demand.domain.bo.DemandBatchConfirmBo;
 import org.dromara.djs.warehouse.demand.domain.bo.DemandManageBo;
 import org.dromara.djs.warehouse.demand.domain.query.DemandManageQuery;
 import org.dromara.djs.warehouse.demand.domain.vo.AuditHistoryEntryVo;
+import org.dromara.djs.warehouse.demand.domain.vo.DemandGroupExportVo;
 import org.dromara.djs.warehouse.demand.domain.vo.DemandGroupVo;
 import org.dromara.djs.warehouse.demand.domain.vo.DemandManageVo;
 import org.dromara.djs.warehouse.demand.domain.vo.DemandPigVo;
@@ -287,6 +288,27 @@ public class DemandManageServiceImpl extends DjsBaseServiceImpl<DemandManageMapp
 
     @Override
     public TableDataInfo<DemandGroupVo> queryGroupList(DemandManageQuery query, PageQuery pageQuery) {
+        List<DemandGroupVo> all = aggregateGroups(query);
+        // 聚合后内存分页（分组行数小）
+        int total = all.size();
+        int pageNum = pageQuery == null || pageQuery.getPageNum() == null ? 1 : pageQuery.getPageNum();
+        int pageSize = pageQuery == null || pageQuery.getPageSize() == null ? 10 : pageQuery.getPageSize();
+        int from = Math.max(0, (pageNum - 1) * pageSize);
+        int to = Math.min(total, from + pageSize);
+        List<DemandGroupVo> pageRows = from >= total ? List.of() : all.subList(from, to);
+        TableDataInfo<DemandGroupVo> rsp = new TableDataInfo<>();
+        rsp.setRows(pageRows);
+        rsp.setTotal(total);
+        rsp.setCode(200);
+        rsp.setMsg("查询成功");
+        return rsp;
+    }
+
+    /**
+     * 分组聚合 + 三态 / 确认率 + 状态过滤（列表与导出共用，唯一口径来源）。
+     * 不分页——分页只在 {@link #queryGroupList} 里做，导出直接拿全量。
+     */
+    private List<DemandGroupVo> aggregateGroups(DemandManageQuery query) {
         String productName = query == null ? null : query.getProductName();
         String productType = query == null ? null : query.getProductType();
         List<String> productTypes = query == null ? null : query.getProductTypes();
@@ -318,19 +340,75 @@ public class DemandManageServiceImpl extends DjsBaseServiceImpl<DemandManageMapp
                 .filter(vo -> demandStatus.equals(vo.getDemandStatus()))
                 .toList();
         }
-        // 聚合后内存分页（分组行数小）
-        int total = all.size();
-        int pageNum = pageQuery == null || pageQuery.getPageNum() == null ? 1 : pageQuery.getPageNum();
-        int pageSize = pageQuery == null || pageQuery.getPageSize() == null ? 10 : pageQuery.getPageSize();
-        int from = Math.max(0, (pageNum - 1) * pageSize);
-        int to = Math.min(total, from + pageSize);
-        List<DemandGroupVo> pageRows = from >= total ? List.of() : all.subList(from, to);
-        TableDataInfo<DemandGroupVo> rsp = new TableDataInfo<>();
-        rsp.setRows(pageRows);
-        rsp.setTotal(total);
-        rsp.setCode(200);
-        rsp.setMsg("查询成功");
-        return rsp;
+        return all;
+    }
+
+    /** 分组三态 → 导出中文（与前端 {@code demand.groupStatus.*} 文案一致；三态外落「未知」）。 */
+    private static String groupStatusLabel(String code) {
+        if (code == null) {
+            return "未知";
+        }
+        return switch (code) {
+            case "PENDING" -> "待确认";
+            case "ALL_CONFIRMED" -> "已全部确认";
+            case "PARTIAL" -> "部分确认";
+            default -> "未知";
+        };
+    }
+
+    /** 白条业态码（列表单位显「头」而非产品单位）。 */
+    private static final String BELONG_TYPE_WHITE_BAR = "white_bar";
+    /** 白条订单展示单位（对齐前端 {@code WHITE_BAR_DEMAND_UNIT}）。 */
+    private static final String WHITE_BAR_DEMAND_UNIT = "头";
+
+    /** kg 单位判定（不区分大小写，匹配 kg / 公斤；空 → false 按计数口径）。 */
+    private static boolean isKgUnit(String unit) {
+        if (unit == null) {
+            return false;
+        }
+        String s = unit.trim().toLowerCase();
+        return "kg".equals(s) || "公斤".equals(s);
+    }
+
+    /** kg（含「公斤」）单位保留 3 位小数，其余计数单位取整（与前端 formatQtyByKgRule 同口径）。 */
+    private static String formatQtyByUnit(BigDecimal qty, String unit) {
+        if (qty == null) {
+            return "";
+        }
+        return isKgUnit(unit)
+            ? qty.setScale(3, java.math.RoundingMode.HALF_UP).toPlainString()
+            : qty.setScale(0, java.math.RoundingMode.HALF_UP).toPlainString();
+    }
+
+    @Override
+    public List<DemandGroupExportVo> queryGroupExportList(DemandManageQuery query) {
+        return aggregateGroups(query).stream().map(g -> {
+            DemandGroupExportVo e = new DemandGroupExportVo();
+            e.setDemandStatusLabel(groupStatusLabel(g.getDemandStatus()));
+            BigDecimal rate = g.getConfirmRate() == null ? BigDecimal.ZERO : g.getConfirmRate();
+            e.setConfirmRate(rate);
+            e.setConfirmRateLabel(rate.multiply(BigDecimal.valueOf(100))
+                .setScale(0, java.math.RoundingMode.HALF_UP).toPlainString() + "%");
+            e.setDemandDate(g.getDemandDate());
+            e.setProductName(g.getProductName());
+            e.setProductSpec(g.getProductSpec());
+            // 白条业态单位显「头」（与列表 formatOrderQuantity / WHITE_BAR_DEMAND_UNIT 一致），
+            // 且白条需求量按「头」计数可含半只（0.5），故不能取整——按 3 位小数去尾零输出。
+            boolean whiteBar = BELONG_TYPE_WHITE_BAR.equals(g.getBelongType());
+            e.setProductUnit(whiteBar ? WHITE_BAR_DEMAND_UNIT : g.getProductUnit());
+            e.setDemandQuantityLabel(whiteBar
+                ? (g.getDemandQuantity() == null ? "" : g.getDemandQuantity().stripTrailingZeros().toPlainString())
+                : formatQtyByUnit(g.getDemandQuantity(), g.getProductUnit()));
+            e.setBelongType(g.getBelongType());
+            e.setRawMaterialName(g.getRawMaterialName());
+            // 未配 material_num 时列表显「-」，导出留空（不误显 0）
+            e.setMaterialCalcQtyLabel(g.getMaterialCalcQty() == null
+                ? "" : formatQtyByUnit(g.getMaterialCalcQty(), g.getMaterialUnit()));
+            e.setMaterialUnit(g.getMaterialUnit());
+            e.setStoreCount(g.getStoreCount() == null ? 0 : g.getStoreCount());
+            e.setLastConfirmTime(g.getLastConfirmTime());
+            return e;
+        }).toList();
     }
 
     /**

@@ -2,6 +2,7 @@ package org.dromara.djs.breed.event.transfer.service;
 
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
+import org.dromara.djs.breed.event.transfer.domain.bo.ToFattenBo;
 import org.dromara.djs.breed.event.transfer.domain.bo.TransferBatchBo;
 import org.dromara.djs.breed.event.transfer.domain.bo.TransferBo;
 import org.dromara.djs.breed.event.transfer.domain.query.TransferQuery;
@@ -27,6 +28,18 @@ public interface ITransferService {
      * @return 每只的转移结果（顺序与入参 earNos 对应）
      */
     List<PigTransferVo> recordTransferBatch(TransferBatchBo bo);
+
+    /**
+     * 后备种母猪「转为育肥猪」（admin row162）。
+     *
+     * <p>仅允许 {@code pig_type='sow'} 且 {@code current_status='HB'} 的猪；执行后：
+     * 状态 HB → YF（育肥）、类型 sow → fattening、栋舍/栏位落到入参位置（空则沿用当前位置），
+     * 并写一条转移记录 + 一条 {@code TO_FATTEN} 事件台账。</p>
+     *
+     * @param bo 转移日期 / 负责人 / 目标栋舍 / 目标栏位
+     * @return 本次写入的转移记录
+     */
+    PigTransferVo toFatten(ToFattenBo bo);
 
     TableDataInfo<PigTransferVo> queryPage(TransferQuery query, PageQuery pageQuery);
 }

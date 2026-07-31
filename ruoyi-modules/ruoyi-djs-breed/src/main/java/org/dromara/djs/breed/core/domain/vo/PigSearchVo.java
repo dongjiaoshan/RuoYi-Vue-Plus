@@ -37,7 +37,7 @@ public class PigSearchVo implements Serializable {
     /** 类型 sow/boar/piglet/fattening。 */
     private String pigType;
 
-    /** 当前 lifecycle（HB/PZ/FM/DN/LC/KH/FQ/END，下拉副标识用；非种母猪为空）。 */
+    /** 当前 lifecycle（HB/PZ/FM/DN/LC/KH/FQ/YF/END，下拉副标识用；非种母猪为空）。 */
     private String currentStatus;
 
     /** 栋舍编码（service enrich，避免 N+1）。 */

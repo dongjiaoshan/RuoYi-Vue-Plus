@@ -18,6 +18,7 @@ import org.dromara.djs.breed.core.mapper.PigMapper;
 import org.dromara.djs.breed.core.service.I18nMessages;
 import org.dromara.djs.breed.core.service.IPigCoreService;
 import org.dromara.djs.breed.event.transfer.domain.PigTransfer;
+import org.dromara.djs.breed.event.transfer.domain.bo.ToFattenBo;
 import org.dromara.djs.breed.event.transfer.domain.bo.TransferBatchBo;
 import org.dromara.djs.breed.event.transfer.domain.bo.TransferBo;
 import org.dromara.djs.breed.event.transfer.domain.query.TransferQuery;
@@ -205,6 +206,89 @@ public class TransferServiceImpl implements ITransferService {
         log.info("[BRD-FIX-MP-EVENT-LEAVE-IA-001] recordTransferBatch count={} newBarn={}",
             results.size(), batchBo.getNewBarnCode() != null ? batchBo.getNewBarnCode() : batchBo.getNewBarnId());
         return results;
+    }
+
+    /** 转育肥前置条件：猪只类型 = 种母猪。 */
+    private static final String PIG_TYPE_SOW = "sow";
+    /** 转育肥后的猪只类型。 */
+    private static final String PIG_TYPE_FATTENING = "fattening";
+    /** 转育肥前置条件：当前状态 = 后备。 */
+    private static final String STATUS_HB = "HB";
+    /** 转育肥记录的转移原因（复用 t_farm_pig_transfer，靠此原因与普通转群区分）。 */
+    private static final String TO_FATTEN_REASON = "转为育肥猪";
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public PigTransferVo toFatten(ToFattenBo bo) {
+        Objects.requireNonNull(bo, "ToFattenBo must not be null");
+        Pig pig = pigMapper.selectById(bo.getPigId());
+        if (pig == null) {
+            throw new ServiceException(I18nMessages.t("pig.not_found", bo.getPigId()));
+        }
+        // 前置：仅「后备」的「种母猪」可转育肥（与列表按钮显隐同口径，防绕过前端直调接口）
+        if (!PIG_TYPE_SOW.equals(pig.getPigType()) || !STATUS_HB.equals(pig.getCurrentStatus())) {
+            throw new ServiceException("仅「后备」状态的种母猪可转为育肥猪（当前类型 "
+                + pig.getPigType() + "，状态 " + pig.getCurrentStatus() + "）", 400);
+        }
+
+        // 目标栋舍 / 栏位：空则沿用猪只当前位置（前端默认预填当前位置，此处兜底）
+        Long targetBarnId = bo.getNewBarnId() != null ? bo.getNewBarnId() : pig.getBarnId();
+        Long targetPenId = bo.getNewPenId() != null ? bo.getNewPenId() : pig.getPenId();
+        Barn newBarn = targetBarnId == null ? null : barnMapper.selectById(targetBarnId);
+        if (targetBarnId != null && newBarn == null) {
+            throw new ServiceException(I18nMessages.t("transfer.new_barn.not_found", targetBarnId), 400);
+        }
+        Pen newPen = targetPenId == null ? null : penMapper.selectById(targetPenId);
+        if (targetPenId != null && newPen == null) {
+            throw new ServiceException(I18nMessages.t("transfer.new_pen.not_found", targetPenId), 400);
+        }
+        // 换栏才校验超容（原地转育肥不净增占用，usedCount 已含本猪）
+        if (targetPenId != null && !targetPenId.equals(pig.getPenId())) {
+            penCapacityChecker.checkCapacity(targetPenId, 1);
+        }
+
+        // 1. 转移记录（复用 t_farm_pig_transfer，transfer_reason 标记为「转为育肥猪」）
+        PigTransfer entity = new PigTransfer();
+        entity.setPigId(pig.getId());
+        entity.setEarNo(pig.getEarNo());
+        entity.setTransferDate(bo.getTransferDate());
+        entity.setOldBarnId(pig.getBarnId());
+        entity.setOldPenId(pig.getPenId());
+        entity.setOldBarnName(resolveBarnName(pig.getBarnId()));
+        entity.setOldPenName(resolvePenName(pig.getPenId()));
+        entity.setNewBarnId(targetBarnId);
+        entity.setNewPenId(targetPenId);
+        entity.setNewBarnName(newBarn == null ? null : newBarn.getBarnName());
+        entity.setNewPenName(newPen == null ? null : newPen.getPenName());
+        entity.setTransferReason(TO_FATTEN_REASON);
+        entity.setRemark(bo.getRemark());
+        entity.setOperatorId(resolveOperatorId(bo.getOperator()));
+        entity.setDelFlag("0");
+        LocalDate evtDate = bo.getTransferDate() != null ? bo.getTransferDate().toLocalDate() : null;
+        entity.setAgeDays(PigAgeUtil.ageDaysAt(pig, evtDate));
+        transferMapper.insert(entity);
+
+        // 2. 状态机事件 TO_FATTEN：HB → YF；payload 同 TRANSFER 形态 + 固定切 pig_type=fattening
+        Map<String, Object> payload = new HashMap<>(4);
+        if (targetBarnId != null) {
+            payload.put("newBarnId", targetBarnId);
+        }
+        if (targetPenId != null) {
+            payload.put("newPenId", targetPenId);
+        }
+        payload.put("newPigType", PIG_TYPE_FATTENING);
+
+        PigEventBo eventBo = new PigEventBo();
+        eventBo.setPigId(pig.getId());
+        eventBo.setEventType(PigStatusEvent.TO_FATTEN);
+        eventBo.setRelatedEventId(entity.getId());
+        eventBo.setEventAt(bo.getTransferDate());
+        eventBo.setPayload(payload);
+        pigCoreService.fireEvent(eventBo);
+
+        log.info("[ADMIN-R162] toFatten pigId={} earNo={} transferId={} barn {} → {} pen {} → {}",
+            pig.getId(), pig.getEarNo(), entity.getId(), pig.getBarnId(), targetBarnId, pig.getPenId(), targetPenId);
+        return toVo(entity);
     }
 
     @Override

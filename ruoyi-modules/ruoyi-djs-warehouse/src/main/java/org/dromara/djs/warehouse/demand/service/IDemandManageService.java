@@ -7,6 +7,7 @@ import org.dromara.djs.warehouse.demand.domain.bo.AssignPigBo;
 import org.dromara.djs.warehouse.demand.domain.bo.DemandManageBo;
 import org.dromara.djs.warehouse.demand.domain.query.DemandManageQuery;
 import org.dromara.djs.warehouse.demand.domain.vo.AuditHistoryEntryVo;
+import org.dromara.djs.warehouse.demand.domain.vo.DemandGroupExportVo;
 import org.dromara.djs.warehouse.demand.domain.vo.DemandGroupVo;
 import org.dromara.djs.warehouse.demand.domain.vo.DemandManageVo;
 import org.dromara.djs.warehouse.demand.domain.vo.DemandPigVo;
@@ -44,6 +45,18 @@ public interface IDemandManageService {
      * @return 分组聚合分页结果
      */
     TableDataInfo<DemandGroupVo> queryGroupList(DemandManageQuery query, PageQuery pageQuery);
+
+    /**
+     * 需求管理汇总列表导出行（admin row155）。
+     *
+     * <p>与 {@link #queryGroupList} 完全同口径（同筛选、同分组、同三态/确认率算法），但<b>不分页</b>——
+     * 导出的是当前筛选下的全量分组行。列表里由前端算的展示值（状态中文 / 确认率百分比 / 按单位格式化的
+     * 数量）在 service 层预先算成文本，保证 xlsx 与页面所见一致。</p>
+     *
+     * @param query 与列表共用的筛选条件
+     * @return 导出行（顺序同列表）
+     */
+    List<DemandGroupExportVo> queryGroupExportList(DemandManageQuery query);
 
     /** 不分页查询（导出用）。 */
     List<DemandManageVo> queryList(DemandManageQuery query);

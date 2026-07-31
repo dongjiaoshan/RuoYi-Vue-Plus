@@ -6,7 +6,7 @@ import lombok.Getter;
 /**
  * 猪只生命周期状态枚举（BRD-CORE-001）。
  *
- * <p>与字典 {@code djs_pig_lifecycle} 严格对齐（8 枚举）。本质是**种母猪（sow）的繁殖状态机**（ADR-0016）：
+ * <p>与字典 {@code djs_pig_lifecycle} 严格对齐（9 枚举）。本质是**种母猪（sow）的繁殖状态机**（ADR-0016）：
  * 仅种母猪走本状态机；非种母猪类型（boar/piglet/fattening）的 current_status 为空（{@code ''}），仅终止时为 {@link #END}。
  * {@link #END} 为终态，进入后任何 {@code fireEvent} 调用都会被拒绝，由 {@code pig.end_reason} 字段
  * 区分 DEAD / CULL / MARKET 三种结局。</p>
@@ -32,6 +32,14 @@ public enum PigLifecycle {
     KH("空怀"),
     /** 返情：配种后返情。 */
     FQ("返情"),
+    /**
+     * 育肥：后备种母猪转为育肥猪后的状态（admin row162）。
+     *
+     * <p>非终态但也非繁殖态 —— 转育肥后 pig_type 已切成 fattening，不再参与繁殖事件；
+     * SIMPLE / COMPLEX 里没有任何以 YF 为 from 的繁殖 transition，故 BREED/FARROW/... 会被拒；
+     * 仍可 DIE / ELIMINATE / SLAUGHTER 终止，也可 TRANSFER 转栏。</p>
+     */
+    YF("育肥"),
     /** 终止：DIE / ELIMINATE / SLAUGHTER 都进此态，end_reason 区分（含非种母猪空状态的终止）。 */
     END("终止");
 
