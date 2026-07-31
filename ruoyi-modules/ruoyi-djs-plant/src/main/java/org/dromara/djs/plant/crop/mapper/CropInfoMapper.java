@@ -95,14 +95,22 @@ public interface CropInfoMapper extends BaseMapperPlus<CropInfo, CropInfoVo> {
             d.begin_actualdate AS plantDate,
             p.plot_code AS plotCode,
             p.plot_name AS plotName,
-            pt.team_name AS plantTeamName,
+            COALESCE((SELECT GROUP_CONCAT(wt.team_name ORDER BY wt.id SEPARATOR ',')
+                        FROM t_plant_details_team dtj
+                        JOIN t_plant_work_team wt ON wt.id = dtj.team_id AND wt.del_flag = '0'
+                       WHERE dtj.detail_id = d.id AND dtj.role = 'plant' AND dtj.del_flag = '0'),
+                     pt.team_name) AS plantTeamName,
             c.predicted_per AS predictedPer,
             d.earliest_harvestdate AS earliestHarvestDate,
             d.actual_yield AS actualYield,
             ROUND(d.actual_yield / NULLIF(p.plot_area, 0), 3) AS actualPer,
             d.begin_harvestdate AS pickStartDate,
             d.end_harvestdate AS pickEndDate,
-            ht.team_name AS pickTeamName
+            COALESCE((SELECT GROUP_CONCAT(wt.team_name ORDER BY wt.id SEPARATOR ',')
+                        FROM t_plant_details_team dtj
+                        JOIN t_plant_work_team wt ON wt.id = dtj.team_id AND wt.del_flag = '0'
+                       WHERE dtj.detail_id = d.id AND dtj.role = 'harvest' AND dtj.del_flag = '0'),
+                     ht.team_name) AS pickTeamName
           FROM t_plant_plant_details d
           LEFT JOIN t_plant_plot_info p
                  ON p.id = d.plot_id AND p.tenant_id = '1001' AND p.del_flag = '0'

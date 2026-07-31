@@ -98,9 +98,12 @@ public interface PlotInfoMapper extends BaseMapperPlus<PlotInfo, PlotInfoVo> {
      * 地块详情·种植信息子表（按 plotId 透视）。
      *
      * <p>以种植明细 {@code t_plant_plant_details} 为基（一行一明细），JOIN 作物（名 / 码 / 图）
-     * + 计划（保活）+ 班组（种植 {@code plant_by} / 采摘 {@code harvest_by} → team_name）。
-     * 实际产量取本条种植明细 {@code actual_yield}；实际亩产按该产量除以当前地块面积
-     * {@code plot_info.plot_area} 现算。按种植日期倒序、明细 id 倒序。</p>
+     * + 计划（保活）。实际产量取本条种植明细 {@code actual_yield}；实际亩产按该产量除以当前
+     * 地块面积 {@code plot_info.plot_area} 现算。按种植日期倒序、明细 id 倒序。</p>
+     *
+     * <p><b>班组是多选</b>：全集在 {@code t_plant_details_team}（role = plant / harvest），
+     * 按 team_id 升序 {@code GROUP_CONCAT} 成「一组,二组」。junction 无行时（历史单选数据）
+     * 回落到单列 {@code plant_by} / {@code harvest_by} —— 只读单列会把多选截成第一个。</p>
      *
      * <p>显式手写 {@code tenant_id='1001'} + {@code del_flag='0'}，用
      * {@code @InterceptorIgnore(tenantLine = "true")} 关 MP 租户拦截器对手写 LEFT JOIN 的二次注入
@@ -117,13 +120,23 @@ public interface PlotInfoMapper extends BaseMapperPlus<PlotInfo, PlotInfoVo> {
             COALESCE(c.image_oss_id, c.crop_image_preview) AS cropImage,
             c.crop_name           AS cropName,
             c.crop_code           AS cropCode,
-            tp.team_name          AS plantByName,
+            COALESCE((SELECT GROUP_CONCAT(t.team_name ORDER BY t.id SEPARATOR ',')
+                        FROM t_plant_details_team dt
+                        JOIN t_plant_work_team t
+                          ON t.id = dt.team_id AND t.del_flag = '0'
+                       WHERE dt.detail_id = d.id AND dt.role = 'plant' AND dt.del_flag = '0'),
+                     tp.team_name) AS plantByName,
             d.expected_yield      AS expectedYield,
             d.actual_yield        AS actualProduction,
             ROUND(d.actual_yield / NULLIF(pl.plot_area, 0), 3) AS actualYield,
             d.begin_harvestdate   AS beginHarvestdate,
             d.end_harvestdate     AS endHarvestdate,
-            th.team_name          AS harvestByName
+            COALESCE((SELECT GROUP_CONCAT(t.team_name ORDER BY t.id SEPARATOR ',')
+                        FROM t_plant_details_team dt
+                        JOIN t_plant_work_team t
+                          ON t.id = dt.team_id AND t.del_flag = '0'
+                       WHERE dt.detail_id = d.id AND dt.role = 'harvest' AND dt.del_flag = '0'),
+                     th.team_name) AS harvestByName
           FROM t_plant_plant_details d
           LEFT JOIN t_plant_plant_plan p
             ON p.id = d.plant_id
