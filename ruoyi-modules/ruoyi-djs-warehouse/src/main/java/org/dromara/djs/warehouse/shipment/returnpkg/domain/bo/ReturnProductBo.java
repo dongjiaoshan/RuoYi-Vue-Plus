@@ -35,11 +35,11 @@ public class ReturnProductBo {
     @Size(max = 128, message = "产品名长度不能超过 128")
     private String productName;
 
-    @NotNull(message = "退货重量不能为空")
-    @Positive(message = "退货重量必须大于 0")
+    @NotNull(message = "退回重量不能为空")
+    @Positive(message = "退回重量必须大于 0")
     private BigDecimal returnWeight;
 
-    @Size(max = 255, message = "退货原因长度不能超过 255")
+    @Size(max = 255, message = "退回原因长度不能超过 255")
     private String returnReason;
 
     /** 退货方向字典 djs_return_direction（不填时默认 store_to_warehouse）。 */

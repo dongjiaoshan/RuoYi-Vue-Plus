@@ -61,6 +61,12 @@ public class PigStatusRecord extends TenantEntity {
     /** 在原状态停留天数（业务层计算 = NOW - old_status_started_at）。 */
     private Integer durationDays;
 
-    /** 状态变更时间（业务发生时间，不一定等于 create_time）。 */
+    /**
+     * 状态变更时间（业务发生时间，不一定等于 create_time）。
+     *
+     * <p>日期部分恒为业务日期（表单选的引种 / 转移 / 配种 … 日期）；时分秒在业务日期 = 当天时
+     * 取真实操作时刻，补录历史日期时为 00:00:00
+     * （{@code PigCoreServiceImpl.withOperateClock}）。</p>
+     */
     private LocalDateTime changeTime;
 }

@@ -40,6 +40,14 @@ public class StoreReturnVegCandidateVo implements Serializable {
     private String productUnit;
 
     /**
+     * 归属类型（字典 {@code djs_belong_type}）。
+     *
+     * <p>row178：礼盒（{@code gift_box}）无法按单一原材料退回入库，服务端已从候选里剔除；
+     * 本字段回传给前端做二次过滤，前后端同一判据。</p>
+     */
+    private String belongType;
+
+    /**
      * 到店量（退回量上限，row41）= 当日（今天+昨天两天累加）该产品需求订购份数 {@code SUM(demand_quantity)}。
      * 材料外售折叠为原材料时多成品共享同一原材料 → 汇总累加。空 → 不封顶。
      */

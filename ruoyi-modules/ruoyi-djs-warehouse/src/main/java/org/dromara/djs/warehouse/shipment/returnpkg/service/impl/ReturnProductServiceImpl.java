@@ -331,7 +331,7 @@ public class ReturnProductServiceImpl
      */
     private void replenishStockOnReturn(ReturnProduct entity, BigDecimal confirmWeight, Long userId) {
         Long productId = entity.getProductId();
-        String remark = "门店退货入库 return_no=" + entity.getReturnNo() + " store_id=" + entity.getStoreId();
+        String remark = "门店退回入库 return_no=" + entity.getReturnNo() + " store_id=" + entity.getStoreId();
 
         ProductInfo product = productId == null ? null
             : productInfoMapper.selectOne(new LambdaQueryWrapper<ProductInfo>()

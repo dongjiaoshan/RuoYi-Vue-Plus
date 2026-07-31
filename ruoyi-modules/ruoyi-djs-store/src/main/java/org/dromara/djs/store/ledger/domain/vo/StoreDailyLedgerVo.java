@@ -75,7 +75,7 @@ public class StoreDailyLedgerVo implements Serializable {
     @ExcelProperty(value = "赠送量")
     private BigDecimal giftQty;
 
-    @ExcelProperty(value = "退货量")
+    @ExcelProperty(value = "顾客退回量")
     private BigDecimal returnQty;
 
     @ExcelProperty(value = "退回量")

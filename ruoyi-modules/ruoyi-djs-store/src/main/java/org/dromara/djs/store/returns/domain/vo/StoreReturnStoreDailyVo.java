@@ -1,5 +1,6 @@
 package org.dromara.djs.store.returns.domain.vo;
 
+import cn.idev.excel.annotation.ExcelIgnore;
 import cn.idev.excel.annotation.ExcelProperty;
 import com.fasterxml.jackson.annotation.JsonFormat;
 import lombok.Data;
@@ -31,7 +32,7 @@ public class StoreReturnStoreDailyVo implements Serializable {
     private static final long serialVersionUID = 1L;
 
     /** 退回日期（return_date 截到天）。 */
-    @ExcelProperty("退货日期")
+    @ExcelProperty("退回日期")
     @JsonFormat(pattern = "yyyy-MM-dd")
     private LocalDate returnDate;
 
@@ -39,15 +40,15 @@ public class StoreReturnStoreDailyVo implements Serializable {
     private Long storeId;
 
     /** 门店名称（StoreMapper 批量回填，避免 N+1）。 */
-    @ExcelProperty("退货门店")
+    @ExcelProperty("退回门店")
     private String storeName;
 
     /** 退回品种数（该组 distinct product_id 计数）。 */
-    @ExcelProperty("退货品种数")
+    @ExcelProperty("退回品种数")
     private int productKindCount;
 
     /** 退回重量合计（row57：仅按重量计（kg/公斤单位）行的 Σ goods_weight，份数产品不计入）。 */
-    @ExcelProperty("退货重量")
+    @ExcelProperty("退回重量")
     private BigDecimal returnWeightTotal;
 
     /** 确认重量合计（row57：仅按重量计（kg/公斤单位）行的 Σ received_weight，份数产品与未确认行不计入）。 */
@@ -61,6 +62,24 @@ public class StoreReturnStoreDailyVo implements Serializable {
     /** 非重量产品退回重量合计（row57：份数产品（非 kg 单位）行的 Σ received_weight，即仓库称重）。 */
     @ExcelProperty("非重量产品退回重量")
     private BigDecimal nonWeightReturnWeightTotal;
+
+    /**
+     * 已确认行数（该组 {@code return_status='received'} 计数）。
+     *
+     * <p>row178：确认时间 / 确认人取的是该组「最近一条已确认行」，只要有 1 条确认过就会填上，
+     * 部分确认（如 3/4）与全部确认在外层看不出差别 —— 仍是 pending 的行既没入库、外层也不留痕迹。
+     * 与 {@link #totalCount} 组成「确认进度 n/m」，未全部确认时前端标警告色。</p>
+     */
+    @ExcelIgnore
+    private int confirmedCount;
+
+    /** 总行数（该组全部退回行，含 pending 与 received）。 */
+    @ExcelIgnore
+    private int totalCount;
+
+    /** 确认进度（{@code confirmedCount/totalCount}，导出列；列表页由前端按两个计数渲染）。 */
+    @ExcelProperty("确认进度")
+    private String confirmProgress;
 
     /** 确认时间（该组最近一条已确认行 confirm_time，无已确认行则为空）。 */
     @ExcelProperty("确认时间")

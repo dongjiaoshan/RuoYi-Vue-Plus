@@ -242,6 +242,34 @@ class StoreReturnServiceImplTest {
     }
 
     @Test
+    @DisplayName("row178：礼盒退回仓库 → 抛 ServiceException + 不 INSERT + 不联动入库")
+    void testInsert_GiftBoxRejectedForWarehouseReturn() {
+        when(productInfoMapper.selectById(PRODUCT_ID)).thenReturn(giftBoxProduct());
+        assertThatThrownBy(() -> service.insertByBo(bo("store_to_warehouse", STORE_ID)))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("礼盒");
+        verify(baseMapper, never()).insert(any(StoreReturn.class));
+        verify(purchaseInService, never()).inboundReturnBasket(any(), any(), any(), anyString(), any());
+    }
+
+    @Test
+    @DisplayName("row178：礼盒顾客退门店不受影响（不回仓库库存）→ 正常入库")
+    void testInsert_GiftBoxAllowedForCustomerReturn() {
+        when(productInfoMapper.selectById(PRODUCT_ID)).thenReturn(giftBoxProduct());
+        assertThat(service.insertByBo(bo("customer_to_store", STORE_ID))).isNotNull();
+        verify(baseMapper, times(1)).insert(any(StoreReturn.class));
+    }
+
+    /** row178：礼盒 = belong_type gift_box + 无 product_material（多种原料组合，拆不回单一原材料）。 */
+    private ProductInfo giftBoxProduct() {
+        ProductInfo giftBox = new ProductInfo();
+        giftBox.setId(PRODUCT_ID);
+        giftBox.setProductName("有机蔬菜盲盒3.5斤");
+        giftBox.setBelongType("gift_box");
+        return giftBox;
+    }
+
+    @Test
     @DisplayName("updateByBo 元数据 only：不回写 returnNo/operatorId/productId/locationId/returnQuantity + 不联动入库")
     void testUpdate_MetadataOnly() {
         StoreReturn existing = new StoreReturn();
