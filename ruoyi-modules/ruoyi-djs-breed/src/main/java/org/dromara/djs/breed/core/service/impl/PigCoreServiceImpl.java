@@ -498,7 +498,8 @@ public class PigCoreServiceImpl implements IPigCoreService {
         vo.setBarnName(barnName);
         vo.setPenName(penName);
         if (StringUtils.isNotBlank(penName)) {
-            // pen_name 已含完整栋舍名前缀（如「育肥舍1栋散栏01」），直接用 penName 避免与 barnName 拼出重复前缀「育肥舍1栋育肥舍1栋散栏01」
+            // pen_name 只存栏位名（如「散栏01」，admin row164），与 barnName 拼成「育肥舍1栋散栏01」；
+            // 早期存量若已含栋舍名前缀则不再重复拼
             vo.setCurrentLocation(StringUtils.isNotBlank(barnName) && !penName.startsWith(barnName)
                 ? barnName + penName : penName);
         }

@@ -2,6 +2,7 @@ package org.dromara.djs.warehouse.trace.pub.service.impl;
 
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.dromara.common.core.service.OssService;
@@ -55,6 +56,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.MockedStatic;
 import org.mockito.Mockito;
@@ -163,6 +165,8 @@ class TracePublicServiceImplTest {
         TableInfoHelper.initTableInfo(assistant, PlantingRecord.class);
         TableInfoHelper.initTableInfo(assistant, ProductProduction.class);
         TableInfoHelper.initTableInfo(assistant, PigCutRecord.class);
+        // 现场码按部位名反查产品：断言 WHERE 谓词要 getTargetSql()，需先注册 ProductInfo 的 lambda cache
+        TableInfoHelper.initTableInfo(assistant, ProductInfo.class);
     }
 
     @BeforeEach
@@ -543,6 +547,118 @@ class TracePublicServiceImplTest {
             assertThat(vo.getTimeline().get(i).getTraceTime())
                 .isBeforeOrEqualTo(vo.getTimeline().get(i - 1).getTraceTime());
         }
+    }
+
+    // ============================ 门店现场生码 ============================
+
+    @Test
+    @DisplayName("门店现场码：product_id 恒 NULL，产品信息从 remark 部位/重量回填 + 按部位名反查规格描述图")
+    void getByProduceCode_porkOnsite_fillsProductFromRemark() {
+        TraceCode code = new TraceCode();
+        code.setProduceCode(PORK_CODE);
+        code.setCodeType("pork");
+        code.setProductId(null);                       // 现场生码不查产品主数据，恒 NULL
+        code.setProductionCode("A2607310001");
+        code.setPigEarNo(EAR_NO);
+        code.setRemark("现场生码 部位=黑毛猪五花肉500g/份 重量=0.32kg");
+        when(traceCodeMapper.selectOne(any(Wrapper.class))).thenReturn(code);
+        when(traceEventMapper.selectList(any(Wrapper.class))).thenReturn(List.of());
+        when(productProductionMapper.selectOne(any(Wrapper.class))).thenReturn(null);   // 现场码无打包记录
+
+        ProductInfo part = new ProductInfo();
+        part.setProductName("黑毛猪五花肉500g/份");
+        part.setProductSpec("500g/份");
+        part.setProductDesc("肥瘦相间，红烧最佳");
+        part.setProductThumb("9007");
+        when(productInfoMapper.selectOne(any(Wrapper.class))).thenReturn(part);
+        when(ossService.selectUrlByIds("9007")).thenReturn("http://oss/img-9007.jpg");
+
+        PublicTraceVo vo = service.getByProduceCode(PORK_CODE);
+
+        assertThat(vo).isNotNull();
+        PublicTraceVo.ProductBlock p = vo.getProduct();
+        assertThat(p.getName()).isEqualTo("黑毛猪五花肉500g/份");
+        assertThat(p.getWeight()).isEqualTo("320g");             // 0.32kg 按克展示（同 row48 口径）
+        assertThat(p.getSpec()).isEqualTo("500g/份");
+        assertThat(p.getDescription()).isEqualTo("肥瘦相间，红烧最佳");
+        assertThat(p.getImageUrl()).isEqualTo("http://oss/img-9007.jpg");
+        assertThat(p.getProduceNo()).isEqualTo("A2607310001");
+    }
+
+    @Test
+    @DisplayName("门店现场码：部位名未配成产品 → 只回填名称 + 重量，规格/图留空不造假")
+    void getByProduceCode_porkOnsite_unknownPart_keepsSpecBlank() {
+        TraceCode code = new TraceCode();
+        code.setProduceCode(PORK_CODE);
+        code.setCodeType("pork");
+        code.setProductId(null);
+        code.setPigEarNo(EAR_NO);
+        code.setRemark("现场生码 部位=五花肉 重量=0.5kg");
+        when(traceCodeMapper.selectOne(any(Wrapper.class))).thenReturn(code);
+        when(traceEventMapper.selectList(any(Wrapper.class))).thenReturn(List.of());
+        when(productProductionMapper.selectOne(any(Wrapper.class))).thenReturn(null);
+        when(productInfoMapper.selectOne(any(Wrapper.class))).thenReturn(null);   // 部位名查无产品
+
+        PublicTraceVo.ProductBlock p = service.getByProduceCode(PORK_CODE).getProduct();
+
+        assertThat(p.getName()).isEqualTo("五花肉");
+        assertThat(p.getWeight()).isEqualTo("500g");
+        assertThat(p.getSpec()).isNull();
+        assertThat(p.getDescription()).isNull();
+        assertThat(p.getImageUrl()).isNull();
+    }
+
+    @Test
+    @DisplayName("门店现场码：按部位名反查产品的 WHERE 必含 belong_type=pork + 产品名 + 仅启用（停用产品不得顶掉在用的）")
+    void getByProduceCode_porkOnsite_lookupFiltersTypeNameAndStatus() {
+        TraceCode code = new TraceCode();
+        code.setProduceCode(PORK_CODE);
+        code.setCodeType("pork");
+        code.setProductId(null);
+        code.setPigEarNo(EAR_NO);
+        code.setRemark("现场生码 部位=五花肉 重量=0.5kg");
+        when(traceCodeMapper.selectOne(any(Wrapper.class))).thenReturn(code);
+        when(traceEventMapper.selectList(any(Wrapper.class))).thenReturn(List.of());
+        when(productProductionMapper.selectOne(any(Wrapper.class))).thenReturn(null);
+        when(productInfoMapper.selectOne(any(Wrapper.class))).thenReturn(null);
+
+        service.getByProduceCode(PORK_CODE);
+
+        ArgumentCaptor<Wrapper> captor = ArgumentCaptor.forClass(Wrapper.class);
+        Mockito.verify(productInfoMapper).selectOne(captor.capture());
+        Wrapper<?> w = captor.getValue();
+        String sql = w.getTargetSql();
+        Map<String, Object> params = ((LambdaQueryWrapper<ProductInfo>) w).getParamNameValuePairs();
+        assertThat(sql).contains("belong_type").contains("product_name").contains("product_status");
+        // 三个绑定值：pork / 解析出的部位名 / 启用态 0
+        assertThat(params.values()).contains("pork", "五花肉", 0);
+    }
+
+    @Test
+    @DisplayName("仓库流猪肉码（remark 非现场生码）：产品信息仍走 product_id 主数据，现场码回填不介入")
+    void getByProduceCode_porkWarehouse_notTouchedByOnsiteFallback() {
+        TraceCode code = new TraceCode();
+        code.setProduceCode(PORK_CODE);
+        code.setCodeType("pork");
+        code.setProductId(PRODUCT_ID);
+        code.setPigEarNo(EAR_NO);
+        code.setRemark(null);
+        when(traceCodeMapper.selectOne(any(Wrapper.class))).thenReturn(code);
+        when(traceEventMapper.selectList(any(Wrapper.class))).thenReturn(List.of());
+        when(productProductionMapper.selectOne(any(Wrapper.class))).thenReturn(null);
+
+        ProductInfo product = new ProductInfo();
+        product.setId(PRODUCT_ID);
+        product.setProductName("猪肉·里脊");
+        product.setProductSpec("500g/份");
+        when(productInfoMapper.selectById(PRODUCT_ID)).thenReturn(product);
+
+        PublicTraceVo.ProductBlock p = service.getByProduceCode(PORK_CODE).getProduct();
+
+        assertThat(p.getName()).isEqualTo("猪肉·里脊");
+        assertThat(p.getWeight()).isEqualTo("500g/份");   // 规格兜底，未被现场码逻辑改写
+        // 现场码分支未触发 → 不按名反查产品
+        Mockito.verify(productInfoMapper, Mockito.never()).selectOne(any(Wrapper.class));
     }
 
     // ============================ 不存在 ============================

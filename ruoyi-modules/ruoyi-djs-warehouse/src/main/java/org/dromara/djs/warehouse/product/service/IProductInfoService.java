@@ -5,6 +5,7 @@ import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.warehouse.product.domain.bo.ProductStockInBo;
 import org.dromara.djs.warehouse.product.domain.bo.ProductInfoBo;
 import org.dromara.djs.warehouse.product.domain.query.ProductInfoQuery;
+import org.dromara.djs.warehouse.product.domain.vo.ProductFlowRecordExportVo;
 import org.dromara.djs.warehouse.product.domain.vo.ProductFlowRecordVo;
 import org.dromara.djs.warehouse.product.domain.vo.ProductInfoVo;
 import org.dromara.djs.warehouse.product.domain.vo.ProductProductionRecordVo;
@@ -99,6 +100,16 @@ public interface IProductInfoService {
      * @param bizDateTo    业务日期区间止（可空，DATE，含当天）
      */
     List<ProductFlowRecordVo> queryFlowRecords(Long productId, Date bizDateFrom, Date bizDateTo);
+
+    /**
+     * 外购商品详情「采购记录」子表导出（admin row168）：与 {@link #queryFlowRecords} 同数据同筛选，
+     * 业务类型转中文、采购量按单位口径（KG 3 位小数 / 非 KG 取整）预格式化成文本列。
+     *
+     * @param productId    产品 ID
+     * @param bizDateFrom  采购日期区间起（可空，DATE，含当天）
+     * @param bizDateTo    采购日期区间止（可空，DATE，含当天）
+     */
+    List<ProductFlowRecordExportVo> queryFlowRecordExportList(Long productId, Date bizDateFrom, Date bizDateTo);
 
     /**
      * 商品配置「产品入库」（DJS-FIX-WMS-RALN-B）：录入 产品 / 库位 / 数量 → 写入库 stock_flow + 增 location_stock。

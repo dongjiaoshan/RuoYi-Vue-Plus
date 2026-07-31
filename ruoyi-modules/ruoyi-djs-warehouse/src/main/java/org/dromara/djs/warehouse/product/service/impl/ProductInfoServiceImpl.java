@@ -29,6 +29,7 @@ import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.domain.bo.ProductStockInBo;
 import org.dromara.djs.warehouse.product.domain.bo.ProductInfoBo;
 import org.dromara.djs.warehouse.product.domain.query.ProductInfoQuery;
+import org.dromara.djs.warehouse.product.domain.vo.ProductFlowRecordExportVo;
 import org.dromara.djs.warehouse.product.domain.vo.ProductFlowRecordVo;
 import org.dromara.djs.warehouse.product.domain.vo.ProductInfoVo;
 import org.dromara.djs.warehouse.product.domain.vo.ProductProductionRecordVo;
@@ -43,6 +44,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
@@ -507,6 +509,50 @@ public class ProductInfoServiceImpl extends DjsBaseServiceImpl<ProductInfoMapper
             throw new ServiceException("产品 ID 不能为空");
         }
         return baseMapper.selectFlowRecords(productId, bizDateFrom, bizDateTo);
+    }
+
+    @Override
+    public List<ProductFlowRecordExportVo> queryFlowRecordExportList(Long productId, Date bizDateFrom, Date bizDateTo) {
+        return queryFlowRecords(productId, bizDateFrom, bizDateTo).stream().map(r -> {
+            ProductFlowRecordExportVo e = new ProductFlowRecordExportVo();
+            e.setBizDate(r.getBizDate());
+            e.setBizTypeLabel(flowBizTypeLabel(r.getBizType()));
+            e.setBizNumLabel(formatFlowQtyByUnit(r.getBizNum(), r.getBizUnit()));
+            e.setBizUnit(r.getBizUnit());
+            e.setSupplierName(r.getSupplierName());
+            e.setOperatorName(r.getOperatorName());
+            return e;
+        }).toList();
+    }
+
+    /** 流水业务类型码 → 中文（与前端 ProductView bizTypeLabel 同口径；未知码原样透出便于排查）。 */
+    private static String flowBizTypeLabel(String bizType) {
+        if (bizType == null) {
+            return "";
+        }
+        return switch (bizType) {
+            case "in_stock" -> "入库";
+            case "pick_out" -> "领用出库";
+            case "backend_out" -> "后台出库";
+            default -> bizType;
+        };
+    }
+
+    /**
+     * KG（含「公斤」）单位恒保留 3 位小数，其余单位去掉无意义尾零（与前端 formatQtyByUnit 同口径）。
+     *
+     * <p>非 KG 不做取整：单位里既有「瓶 / 袋 / 枚」这类离散计数，也有「吨 / 斤 / 升 / 亩」这类连续量，
+     * 取整会把 2.5 吨 抹成 3 吨。去尾零已经能满足「别再显示 90.000 瓶」的诉求且不损失数据。</p>
+     */
+    private static String formatFlowQtyByUnit(BigDecimal qty, String unit) {
+        if (qty == null) {
+            return "";
+        }
+        String u = unit == null ? "" : unit.trim().toLowerCase();
+        boolean kg = "kg".equals(u) || "公斤".equals(u);
+        return kg
+            ? qty.setScale(3, RoundingMode.HALF_UP).toPlainString()
+            : qty.stripTrailingZeros().toPlainString();
     }
 
     @Override

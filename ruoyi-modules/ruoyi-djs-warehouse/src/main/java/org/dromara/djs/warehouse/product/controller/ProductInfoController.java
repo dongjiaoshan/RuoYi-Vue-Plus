@@ -16,6 +16,7 @@ import org.dromara.common.web.core.BaseController;
 import org.dromara.djs.warehouse.product.domain.bo.ProductStockInBo;
 import org.dromara.djs.warehouse.product.domain.bo.ProductInfoBo;
 import org.dromara.djs.warehouse.product.domain.query.ProductInfoQuery;
+import org.dromara.djs.warehouse.product.domain.vo.ProductFlowRecordExportVo;
 import org.dromara.djs.warehouse.product.domain.vo.ProductFlowRecordVo;
 import org.dromara.djs.warehouse.product.domain.vo.ProductInfoVo;
 import org.dromara.djs.warehouse.product.domain.vo.ProductProductionRecordVo;
@@ -156,6 +157,25 @@ public class ProductInfoController extends BaseController {
         @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd") Date bizDateFrom,
         @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd") Date bizDateTo) {
         return R.ok(productInfoService.queryFlowRecords(productId, bizDateFrom, bizDateTo));
+    }
+
+    /**
+     * 导出外购商品详情「采购记录」子表（admin row168）：与 {@link #flowRecords} 同数据同筛选，导出区间内全量。
+     *
+     * @param productId   产品 ID
+     * @param bizDateFrom 采购日期区间起（可空，{@code yyyy-MM-dd}，含当天）
+     * @param bizDateTo   采购日期区间止（可空，{@code yyyy-MM-dd}，含当天）
+     */
+    @SaCheckPermission("djs:warehouse:product:list")
+    @Log(title = "采购记录", businessType = BusinessType.EXPORT)
+    @PostMapping("/flow/export/{productId}")
+    public void flowExport(
+        @PathVariable Long productId,
+        @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd") Date bizDateFrom,
+        @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd") Date bizDateTo,
+        HttpServletResponse response) {
+        List<ProductFlowRecordExportVo> list = productInfoService.queryFlowRecordExportList(productId, bizDateFrom, bizDateTo);
+        ExcelUtil.exportExcel(list, "采购记录", ProductFlowRecordExportVo.class, response);
     }
 
     /**

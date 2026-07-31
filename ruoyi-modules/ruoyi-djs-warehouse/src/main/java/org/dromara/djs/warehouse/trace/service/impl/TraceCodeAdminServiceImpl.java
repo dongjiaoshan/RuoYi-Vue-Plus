@@ -209,6 +209,8 @@ public class TraceCodeAdminServiceImpl
     private static final String WHITE_BAR_BELONG_TYPE = "white_bar";
     /** 猪肉产品业态（{@code t_warehouse_product_info.belong_type}）；门店现场码按产品名反查产品规格。 */
     private static final String PORK_BELONG_TYPE = "pork";
+    /** 产品启用态（{@code product_status}，字典 sys_normal_disable：0=正常 / 1=停用）。 */
+    private static final Integer PRODUCT_STATUS_NORMAL = 0;
 
     private LambdaQueryWrapper<TraceCode> buildWrapper(TraceCodeQuery query) {
         LambdaQueryWrapper<TraceCode> w = new LambdaQueryWrapper<>();
@@ -401,9 +403,12 @@ public class TraceCodeAdminServiceImpl
      *
      * <p>门店现场生码「纯生码不联动库存」，{@code trace_code.product_id} 恒 NULL，产品规格取不到，
      * 只能按上一步从 remark 回填的产品名反查产品主数据。批量按
-     * {@code belong_type='pork' AND product_name IN(names)} 查 {@code t_warehouse_product_info}，
-     * 构 {@code productName → productSpec} 映射逐行回填；重名取任一（{@code (a,b)->a}），
+     * {@code belong_type='pork' AND product_name IN(names) AND product_status=0} 查
+     * {@code t_warehouse_product_info}，构 {@code productName → productSpec} 映射逐行回填；
      * 未命中（部位字典回退的老码名字不匹配）留空不造假。仅补规格为空的行，不覆盖已有值。</p>
+     *
+     * <p>只取启用中的产品：同名下若混着停用行，按 id 先到先得会让停用规格顶掉在用的，
+     * 与 C 端 {@code TracePublicServiceImpl#fillOnsiteProduct} 口径也会打架（同一张码两端显示不一致）。</p>
      */
     private void fillOnsiteProductSpec(List<TraceCodeListVo> storeRows) {
         if (storeRows.isEmpty()) {
@@ -420,6 +425,7 @@ public class TraceCodeAdminServiceImpl
                 new LambdaQueryWrapper<ProductInfo>()
                     .select(ProductInfo::getProductName, ProductInfo::getProductSpec)
                     .eq(ProductInfo::getBelongType, PORK_BELONG_TYPE)
+                    .eq(ProductInfo::getProductStatus, PRODUCT_STATUS_NORMAL)
                     .in(ProductInfo::getProductName, names))
             .stream()
             .filter(p -> StringUtils.isNotBlank(p.getProductName()) && StringUtils.isNotBlank(p.getProductSpec()))

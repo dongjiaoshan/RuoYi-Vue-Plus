@@ -114,6 +114,7 @@ public interface StockOverviewMapper {
                COALESCE(pi.product_thumb, pi.image_oss_id) AS imageOssId,
                pi.product_id AS productCode,
                pi.product_name AS productName,
+               pi.product_spec AS productSpec,
                pi.product_unit AS productUnit,
                CAST(g.warehouse_id AS CHAR) AS locationId,
                li.location_name AS locationName,

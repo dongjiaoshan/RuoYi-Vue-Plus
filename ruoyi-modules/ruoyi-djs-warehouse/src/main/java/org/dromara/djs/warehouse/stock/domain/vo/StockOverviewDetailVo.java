@@ -25,7 +25,7 @@ import java.math.BigDecimal;
  * </ul>
  *
  * <p>产品维度回填来源：当日有库存的产品集合（location_stock）+ 当日有流水的产品集合（stock_flow）
- * 并集；产品图、单位、编码取 {@code t_warehouse_product_info}（COALESCE(product_thumb, image_oss_id)）。</p>
+ * 并集；产品图、规格、单位、编码取 {@code t_warehouse_product_info}（COALESCE(product_thumb, image_oss_id)）。</p>
  *
  * @author djs
  * @since WMS-STOCK-OVERVIEW-001
@@ -50,6 +50,10 @@ public class StockOverviewDetailVo implements Serializable {
     /** 产品名称。 */
     @ExcelProperty(value = "产品名称")
     private String productName;
+
+    /** 规格（product_info.product_spec，如 500g/包；可空）。 */
+    @ExcelProperty(value = "规格")
+    private String productSpec;
 
     /** 单位。 */
     @ExcelProperty(value = "单位")

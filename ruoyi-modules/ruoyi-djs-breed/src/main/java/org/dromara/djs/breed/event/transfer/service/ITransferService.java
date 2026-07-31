@@ -34,7 +34,11 @@ public interface ITransferService {
      *
      * <p>仅允许 {@code pig_type='sow'} 且 {@code current_status='HB'} 的猪；执行后：
      * 状态 HB → YF（育肥）、类型 sow → fattening、栋舍/栏位落到入参位置（空则沿用当前位置），
-     * 并写一条转移记录 + 一条 {@code TO_FATTEN} 事件台账。</p>
+     * 并写一条转移记录 + 事件台账。</p>
+     *
+     * <p>事件台账固定写两条：先 {@code TRANSFER} 再 {@code TO_FATTEN}。转育肥表单本身就是一次转移
+     * （录转移日期 / 负责人 / 目标栋舍栏位），与转移记录一一对应；位置没变也照记，否则「表单默认
+     * 预填当前位置、用户只改日期负责人」这条最常见路径在台账上按「转移」查不到（见 admin row163）。</p>
      *
      * @param bo 转移日期 / 负责人 / 目标栋舍 / 目标栏位
      * @return 本次写入的转移记录
