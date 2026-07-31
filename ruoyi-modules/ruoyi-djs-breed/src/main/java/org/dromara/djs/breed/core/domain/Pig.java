@@ -22,7 +22,7 @@ import java.time.LocalDateTime;
  *
  * <p><b>关键字段</b>：</p>
  * <ul>
- *   <li>{@link #currentStatus} 当前 lifecycle（{@code djs_pig_lifecycle} 8 枚举 HB/PZ/FM/DN/LC/KH/FQ/END）；</li>
+ *   <li>{@link #currentStatus} 当前 lifecycle（{@code djs_pig_lifecycle} 9 枚举 HB/PZ/FM/DN/LC/KH/FQ/YF/END）；</li>
  *   <li>{@link #statusStartedAt} 进入当前状态时间，小程序"按 X 天提醒"基准；</li>
  *   <li>{@link #endReason} 仅 currentStatus=END 时填 DEAD/CULL/MARKET；</li>
  *   <li>{@link #version} MyBatis-Plus 乐观锁；</li>
@@ -71,7 +71,8 @@ public class Pig extends TenantEntity {
     private String pigStrainCode;
 
     /**
-     * 当前状态（字典 {@code djs_pig_lifecycle}：HB/PZ/FM/DN/LC/KH/FQ/END）；仅种母猪走繁殖态，非种母猪为空（{@code ''}）。
+     * 当前状态（字典 {@code djs_pig_lifecycle}：HB/PZ/FM/DN/LC/KH/FQ/YF/END）；仅种母猪走繁殖态，非种母猪为空（{@code ''}）。
+     * YF（育肥）是后备种母猪转育肥后的落点，此时 pig_type 已切成 fattening、不再参与繁殖事件。
      * 由状态机维护，业务代码请通过 {@code fireEvent} 推进而非直接写。
      */
     private String currentStatus;

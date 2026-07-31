@@ -4,13 +4,17 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.core.utils.StringUtils;
+import org.dromara.djs.common.constant.DjsRedisKey;
 import org.dromara.djs.common.store.context.StoreContext;
 import org.dromara.djs.common.store.service.IStoreService;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.breed.core.domain.vo.PigAvailableVo;
 import org.dromara.djs.breed.core.service.IPigQueryService;
+import org.dromara.djs.store.ledger.domain.StoreDailyLedger;
+import org.dromara.djs.store.ledger.mapper.StoreDailyLedgerMapper;
 import org.dromara.djs.store.trace.domain.bo.StoreTraceOnsiteBo;
 import org.dromara.djs.store.trace.domain.vo.StoreOnsiteCodeVo;
 import org.dromara.djs.store.trace.domain.vo.StorePackProductVo;
@@ -31,6 +35,8 @@ import org.dromara.djs.warehouse.trace.domain.vo.TraceCodeDetailVo;
 import org.dromara.djs.warehouse.trace.domain.vo.TraceCodeListVo;
 import org.dromara.djs.warehouse.trace.service.ITraceCodeAdminService;
 import org.dromara.djs.warehouse.trace.service.ITraceService;
+import org.redisson.api.RLock;
+import org.redisson.api.RedissonClient;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
@@ -43,6 +49,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
@@ -65,6 +72,8 @@ public class StoreTraceServiceImpl implements IStoreTraceService {
     private static final String CODE_TYPE_PORK = "pork";
     /** 产品属性=生产产品（字典 djs_product_attr：1=生产产品 / 2=原材料）。 */
     private static final Integer PRODUCT_ATTR_PRODUCE = 1;
+    /** 产品属性=原材料（admin row160：产品卡的原材料剩余量按此类产品取盘点入库量）。 */
+    private static final Integer PRODUCT_ATTR_MATERIAL = 2;
     /**
      * 门店打包间车间码（{@code t_warehouse_product_info.product_workshop}，字典 djs_product_workshop = 5）。
      *
@@ -85,6 +94,10 @@ public class StoreTraceServiceImpl implements IStoreTraceService {
     private static final String ONSITE_REMARK_PREFIX = "现场生码";
     /** 「今天」时区（与发货月台一致，避免非 UTC+8 实例跨日偏移）。 */
     private static final ZoneId TODAY_ZONE = ZoneId.of("Asia/Shanghai");
+    /** 打包上限锁：抢锁等待秒数（收银现场是人工节奏，等几秒好过报错重试）。 */
+    private static final long PACK_LOCK_WAIT_SECONDS = 5L;
+    /** 打包上限锁：租约秒数（生码链路含两次业务码分配，留足余量，异常也会自动释放）。 */
+    private static final long PACK_LOCK_LEASE_SECONDS = 30L;
 
     private final IPigQueryService pigQueryService;
     private final ITraceService traceService;
@@ -95,6 +108,10 @@ public class StoreTraceServiceImpl implements IStoreTraceService {
     private final ProductProductionMapper productProductionMapper;
     private final TraceCodeMapper traceCodeMapper;
     private final IStoreService storeService;
+    /** 门店当日盘点台账（admin row160/161：原材料入库量 = 打包上限口径来源）。 */
+    private final StoreDailyLedgerMapper storeDailyLedgerMapper;
+    /** 打包上限校验的分布式锁（admin row161：防并发超打，见 genOnsiteCode）。 */
+    private final RedissonClient redissonClient;
 
     /**
      * 可追溯 picker = 当天入库白条（FIX-STORE-TRACE-BAR-001 测试问题 158）。
@@ -302,19 +319,149 @@ public class StoreTraceServiceImpl implements IStoreTraceService {
      */
     @Override
     public List<StorePackProductVo> listPackProducts() {
-        return productInfoMapper.selectList(WorkshopMatcher.match(new LambdaQueryWrapper<ProductInfo>()
-                .eq(ProductInfo::getProductAttr, PRODUCT_ATTR_PRODUCE)
-                .eq(ProductInfo::getBelongType, BELONG_TYPE_PORK), PRODUCT_WORKSHOP_STORE_PACK))
-            .stream().map(p -> {
-                StorePackProductVo vo = new StorePackProductVo();
-                vo.setProductId(p.getId());
-                vo.setProductCode(p.getProductId());
-                vo.setProductName(p.getProductName());
-                vo.setProductSpec(p.getProductSpec());
-                vo.setProductThumb(p.getProductThumb());
-                vo.setImageOssId(p.getImageOssId());
-                return vo;
-            }).toList();
+        List<ProductInfo> packProducts = productInfoMapper.selectList(WorkshopMatcher.match(new LambdaQueryWrapper<ProductInfo>()
+            .eq(ProductInfo::getProductAttr, PRODUCT_ATTR_PRODUCE)
+            .eq(ProductInfo::getBelongType, BELONG_TYPE_PORK), PRODUCT_WORKSHOP_STORE_PACK));
+        List<StorePackProductVo> list = packProducts.stream().map(p -> {
+            StorePackProductVo vo = new StorePackProductVo();
+            vo.setProductId(p.getId());
+            vo.setProductCode(p.getProductId());
+            vo.setProductName(p.getProductName());
+            vo.setProductSpec(p.getProductSpec());
+            vo.setProductThumb(p.getProductThumb());
+            vo.setImageOssId(p.getImageOssId());
+            vo.setMaterialId(p.getProductMaterial());
+            return vo;
+        }).toList();
+        fillMaterialStock(list);
+        return list;
+    }
+
+    /**
+     * admin row160/161：补齐每张产品卡的「原材料 + 门店盘点当日入库量 + 剩余可打包量」。
+     *
+     * <p>取数链路：产品 {@code product_material} → 原材料产品 →
+     * {@code t_store_daily_ledger}（当前门店 + 今日 + 该原材料）的 {@code inbound_qty} = 盘点录入的入库量；
+     * 再减去当日该门店已现场打包消耗该原材料的重量，得剩余（下限 0）。</p>
+     *
+     * <p>盘点未录入（无当日台账行）→ 入库量与剩余量都是 0，前端卡片显 0 g、生码被拦
+     * （客户口径：打包总重不得超过盘点里录入的原材料入库量）。</p>
+     *
+     * <p>兜底：产品未配 {@code product_material} 时，按产品名去猜同名的猪肉原材料
+     * （{@code product_attr=2 + belong_type=pork}）—— 部位字典兜底分支下产品卡本身就是部位/原材料名。</p>
+     */
+    private void fillMaterialStock(List<StorePackProductVo> list) {
+        if (list == null || list.isEmpty()) {
+            return;
+        }
+        // 1. 未配 product_material 的按产品名回退匹配同名原材料
+        List<String> namesNeedGuess = list.stream()
+            .filter(v -> v.getMaterialId() == null && StringUtils.isNotBlank(v.getProductName()))
+            .map(StorePackProductVo::getProductName).distinct().toList();
+        Map<String, ProductInfo> materialByName = namesNeedGuess.isEmpty() ? Map.of()
+            : productInfoMapper.selectList(new LambdaQueryWrapper<ProductInfo>()
+                .eq(ProductInfo::getProductAttr, PRODUCT_ATTR_MATERIAL)
+                .eq(ProductInfo::getBelongType, BELONG_TYPE_PORK)
+                .in(ProductInfo::getProductName, namesNeedGuess))
+            .stream().collect(Collectors.toMap(ProductInfo::getProductName, Function.identity(), (a, b) -> a));
+        for (StorePackProductVo v : list) {
+            if (v.getMaterialId() == null) {
+                ProductInfo guess = materialByName.get(v.getProductName());
+                if (guess != null) {
+                    v.setMaterialId(guess.getId());
+                }
+            }
+        }
+        // 2. 原材料名称
+        Set<Long> materialIds = list.stream().map(StorePackProductVo::getMaterialId)
+            .filter(Objects::nonNull).collect(Collectors.toCollection(LinkedHashSet::new));
+        Map<Long, String> materialNameById = materialIds.isEmpty() ? Map.of()
+            : productInfoMapper.selectByIds(materialIds).stream()
+            .filter(p -> p.getId() != null)
+            .collect(Collectors.toMap(ProductInfo::getId, ProductInfo::getProductName, (a, b) -> a));
+        // 3. 当日盘点入库量（当前门店 + 今日 + 这些原材料）
+        Long storeId = currentStoreId();
+        LocalDate today = LocalDate.now(TODAY_ZONE);
+        Map<Long, BigDecimal> inboundByMaterial = new LinkedHashMap<>();
+        if (!materialIds.isEmpty() && storeId != null) {
+            LambdaQueryWrapper<StoreDailyLedger> w = new LambdaQueryWrapper<StoreDailyLedger>()
+                .eq(StoreDailyLedger::getStoreId, storeId)
+                .eq(StoreDailyLedger::getLedgerDate, today)
+                .in(StoreDailyLedger::getProductId, materialIds)
+                .select(StoreDailyLedger::getProductId, StoreDailyLedger::getInboundQty);
+            for (StoreDailyLedger l : storeDailyLedgerMapper.selectList(w)) {
+                if (l.getProductId() != null) {
+                    inboundByMaterial.merge(l.getProductId(),
+                        l.getInboundQty() == null ? BigDecimal.ZERO : l.getInboundQty(), BigDecimal::add);
+                }
+            }
+        }
+        // 4. 当日已现场打包重量（按产品名 = 现场生码 remark 里的「部位=」）
+        Map<String, BigDecimal> usedByCutLabel = sumTodayOnsiteWeightByCutLabel(storeId, today);
+        Map<Long, BigDecimal> usedByMaterial = new LinkedHashMap<>();
+        for (StorePackProductVo v : list) {
+            BigDecimal used = usedByCutLabel.get(v.getProductName());
+            if (v.getMaterialId() != null && used != null) {
+                usedByMaterial.merge(v.getMaterialId(), used, BigDecimal::add);
+            }
+        }
+        // 5. 回填
+        for (StorePackProductVo v : list) {
+            Long mid = v.getMaterialId();
+            v.setMaterialName(mid == null ? null : materialNameById.get(mid));
+            BigDecimal inbound = mid == null ? BigDecimal.ZERO : inboundByMaterial.getOrDefault(mid, BigDecimal.ZERO);
+            BigDecimal used = mid == null ? BigDecimal.ZERO : usedByMaterial.getOrDefault(mid, BigDecimal.ZERO);
+            BigDecimal remaining = inbound.subtract(used);
+            v.setMaterialInboundQty(inbound);
+            v.setMaterialRemainingQty(remaining.signum() < 0 ? BigDecimal.ZERO : remaining);
+        }
+    }
+
+    /**
+     * 当日该门店已现场打包重量按「部位（= 产品名）」合计。
+     *
+     * <p>数据源同 {@link #sumOnsiteUsedWeightByEarNo}：门店现场码把部位与重量写在
+     * {@code trace_code.remark}（{@code 现场生码 部位=X 重量=Ykg}），表无专用列，故按 remark 解析。</p>
+     *
+     * @param storeId 当前门店（为空 → 返回空 map，不跨店统计）
+     * @param day     统计日（按 {@code create_time} 落在当天）
+     */
+    private Map<String, BigDecimal> sumTodayOnsiteWeightByCutLabel(Long storeId, LocalDate day) {
+        Map<String, BigDecimal> used = new LinkedHashMap<>();
+        if (storeId == null) {
+            return used;
+        }
+        List<TraceCode> codes = traceCodeMapper.selectList(
+            new LambdaQueryWrapper<TraceCode>()
+                .eq(TraceCode::getCodeType, CODE_TYPE_PORK)
+                .eq(TraceCode::getStoreId, storeId)
+                .likeRight(TraceCode::getRemark, ONSITE_REMARK_PREFIX)
+                .ge(TraceCode::getCreateTime, day.atStartOfDay())
+                .lt(TraceCode::getCreateTime, day.plusDays(1).atStartOfDay())
+                .select(TraceCode::getRemark));
+        for (TraceCode c : codes) {
+            String cut = parseCutLabelFromRemark(c.getRemark());
+            BigDecimal w = parseWeightFromRemark(c.getRemark());
+            if (cut != null && w != null) {
+                used.merge(cut, w, BigDecimal::add);
+            }
+        }
+        return used;
+    }
+
+    /** 从现场生码 remark「现场生码 部位=X 重量=Ykg」解析部位名；无则 null。 */
+    private String parseCutLabelFromRemark(String remark) {
+        if (remark == null) {
+            return null;
+        }
+        int ci = remark.indexOf("部位=");
+        if (ci < 0) {
+            return null;
+        }
+        String rest = remark.substring(ci + 3);
+        int wi = rest.indexOf(" 重量=");
+        String cut = (wi < 0 ? rest : rest.substring(0, wi)).trim();
+        return cut.isEmpty() ? null : cut;
     }
 
     @Override
@@ -323,6 +470,42 @@ public class StoreTraceServiceImpl implements IStoreTraceService {
         Long storeId = currentStoreId();
         // 已终止合作门店禁止现场生码（口径同门店域其余业务写路径；storeId=null 放行，由下方生产编码生成兜底报错）
         storeService.assertStoreActive(storeId);
+
+        // admin row161：打包上限口径 = 门店盘点里录入的该原材料当日入库量（不再用白条到店总重）。
+        //
+        // ⚠️ 必须按「门店 + 原材料」加分布式锁：上限校验是 read-then-write（读台账入库量与已打包量 →
+        // 判定 → 写 trace_code），两台收银终端同时提交时，各自都读到未含对方的剩余量、都判定通过，
+        // 合计就会超出盘点入库量且无任何报错（实测复现：剩余 0.2kg 时两笔 0.15kg 并发双双成功，超打 0.1kg）。
+        // 锁粒度到原材料：不同原材料互不阻塞；同一原材料的多个成品（如板油 1500g/份 与 2000g/份）
+        // 共享同一把锁，因为它们扣的是同一份库存。@RepeatSubmit 挡不住这个——它只拦完全相同的重复提交。
+        Long materialId = resolvePackMaterialId(bo);
+        if (materialId == null) {
+            // 解析不出原材料（部位字典兜底且无同名原材料）→ 无上限口径可卡，按原路径直接生码
+            return doGenOnsiteCode(bo, storeId);
+        }
+        String lockKey = String.format(DjsRedisKey.BIZ_CODE_LOCK, "store_pack:" + storeId + ":" + materialId);
+        RLock lock = redissonClient.getLock(lockKey);
+        boolean locked = false;
+        try {
+            locked = lock.tryLock(PACK_LOCK_WAIT_SECONDS, PACK_LOCK_LEASE_SECONDS, TimeUnit.SECONDS);
+            if (!locked) {
+                throw new ServiceException("该原材料正有其他打包在提交，请稍后重试", 400);
+            }
+            // 锁内重新读一次台账与已打包量再判定（锁外读到的余量可能已被别的终端消耗）
+            assertWithinMaterialInbound(bo);
+            return doGenOnsiteCode(bo, storeId);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ServiceException("打包提交被中断，请重试", 400);
+        } finally {
+            if (locked && lock.isHeldByCurrentThread()) {
+                lock.unlock();
+            }
+        }
+    }
+
+    /** 实际生码（生产编码 + 追溯码），由 {@link #genOnsiteCode} 在校验/加锁之后调用。 */
+    private StoreOnsiteCodeVo doGenOnsiteCode(StoreTraceOnsiteBo bo, Long storeId) {
         // row84：生产编码 = <门店生产标识码>YYMMDD####（门店级每日流水），标签「生产编码」展示用。
         //   必须先生成——门店未配生产标识码时抛异常，避免生了追溯码却无生产编码的半成品。
         String productionCode = storeService.generateStoreProduceCode(storeId);
@@ -336,6 +519,52 @@ public class StoreTraceServiceImpl implements IStoreTraceService {
         vo.setProduceCode(produceCode);
         vo.setProductionCode(productionCode);
         return vo;
+    }
+
+    /** 解析本次打包产品对应的原材料 id（用于取锁粒度）；解析不出 → null。 */
+    private Long resolvePackMaterialId(StoreTraceOnsiteBo bo) {
+        if (bo == null || StringUtils.isBlank(bo.getCutLabel())) {
+            return null;
+        }
+        return listPackProducts().stream()
+            .filter(p -> bo.getCutLabel().equals(p.getProductName()))
+            .map(StorePackProductVo::getMaterialId)
+            .filter(Objects::nonNull)
+            .findFirst().orElse(null);
+    }
+
+    /**
+     * admin row161：现场打包上限校验 —— 本次重量 ≤ 该产品对应原材料的「当日剩余可打包量」。
+     *
+     * <p>口径调整：原先按「白条到店总重 − 已打包」卡（{@code TraceablePigVo.remainingWeight}），
+     * 客户改为按「门店盘点里录入的该原材料入库量」卡 —— 白条到店后先在门店盘点录入各部位
+     * （原材料）分割入库重量，打包总重不得超过它。</p>
+     *
+     * <p>盘点未录入该原材料（当日无台账行）→ 上限为 0，直接拒绝并提示先去门店盘点录入，
+     * 避免「没盘点却能无限打包」。产品无法解析出原材料时不拦（配置缺失不阻断现场作业）。</p>
+     */
+    private void assertWithinMaterialInbound(StoreTraceOnsiteBo bo) {
+        if (bo == null || StringUtils.isBlank(bo.getCutLabel()) || bo.getWeight() == null) {
+            return;
+        }
+        StorePackProductVo target = listPackProducts().stream()
+            .filter(p -> bo.getCutLabel().equals(p.getProductName()))
+            .findFirst().orElse(null);
+        // 产品卡不在「门店打包间」配置里（部位字典兜底且同名原材料也查不到）→ 无原材料口径可卡，放行
+        if (target == null || target.getMaterialId() == null) {
+            return;
+        }
+        BigDecimal inbound = target.getMaterialInboundQty() == null ? BigDecimal.ZERO : target.getMaterialInboundQty();
+        BigDecimal remaining = target.getMaterialRemainingQty() == null ? BigDecimal.ZERO : target.getMaterialRemainingQty();
+        String materialName = StringUtils.isNotBlank(target.getMaterialName()) ? target.getMaterialName() : bo.getCutLabel();
+        if (inbound.signum() <= 0) {
+            throw new ServiceException("门店盘点未录入原材料「" + materialName + "」的当日入库量，无法打包；请先在门店盘点录入入库量", 400);
+        }
+        if (bo.getWeight().compareTo(remaining) > 0) {
+            throw new ServiceException("打包重量超出原材料「" + materialName + "」当日剩余可打包量（剩余 "
+                + remaining.stripTrailingZeros().toPlainString() + "kg，盘点入库量 "
+                + inbound.stripTrailingZeros().toPlainString() + "kg）", 400);
+        }
     }
 
     /** 当前所选门店 id（StoreContext 头值；空 / 非数字 → null，不阻断生码）。 */

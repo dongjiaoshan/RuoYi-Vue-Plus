@@ -14,6 +14,7 @@ import org.dromara.djs.warehouse.shipment.domain.vo.ShipmentVo;
 import org.dromara.djs.warehouse.shipment.service.IShipmentService;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -51,10 +52,16 @@ public class ShipmentController extends BaseController {
         return R.ok(service.queryById(id));
     }
 
-    /** 导出 Excel。 */
+    /**
+     * 导出 Excel。
+     *
+     * <p>必须是 {@code POST}：前端「发货流水」导出走 {@code utils/request.ts} 的 {@code download()}
+     * 通用下载方法（{@code application/x-www-form-urlencoded} POST），挂 {@code @GetMapping}
+     * 会直接报 {@code Request method 'POST' is not supported}（与退货记录 row156 同一处缺陷）。</p>
+     */
     @SaCheckPermission("djs:warehouse:shipment:export")
     @Log(title = "发货流水", businessType = BusinessType.EXPORT)
-    @GetMapping("/export")
+    @PostMapping("/export")
     public void export(ShipmentQuery query, HttpServletResponse response) {
         List<ShipmentVo> list = service.queryList(query);
         ExcelUtil.exportExcel(list == null ? new ArrayList<>() : list,

@@ -21,6 +21,7 @@ import org.dromara.djs.warehouse.demand.domain.bo.DemandManageBo;
 import org.dromara.djs.warehouse.demand.domain.query.DemandManageQuery;
 import org.dromara.djs.warehouse.demand.domain.vo.AuditHistoryEntryVo;
 import org.dromara.djs.warehouse.demand.domain.vo.DemandBatchConfirmResultVo;
+import org.dromara.djs.warehouse.demand.domain.vo.DemandGroupExportVo;
 import org.dromara.djs.warehouse.demand.domain.vo.DemandGroupVo;
 import org.dromara.djs.warehouse.demand.domain.vo.DemandManageVo;
 import org.dromara.djs.warehouse.demand.domain.vo.DemandPigVo;
@@ -122,13 +123,27 @@ public class DemandManageController extends BaseController {
         return toAjax(demandService.deleteWithValidByIds(Arrays.asList(ids)));
     }
 
-    /** 导出。 */
+    /** 导出（逐条需求单明细）。 */
     @SaCheckPermission("djs:warehouse:demand:export")
     @Log(title = "需求管理", businessType = BusinessType.EXPORT)
     @PostMapping("/export")
     public void export(DemandManageQuery query, HttpServletResponse response) {
         List<DemandManageVo> list = demandService.queryList(query);
         ExcelUtil.exportExcel(list, "需求管理", DemandManageVo.class, response);
+    }
+
+    /**
+     * 需求管理汇总列表导出（admin row155）。
+     *
+     * <p>导出的是页面「需求管理」列表所见的<b>分组汇总</b>行（与 {@code /group-list} 同口径同筛选），
+     * 不是逐条需求单明细（那是 {@code /export}）。分页不影响导出，导出当前筛选下全量。</p>
+     */
+    @SaCheckPermission("djs:warehouse:demand:export")
+    @Log(title = "需求管理汇总", businessType = BusinessType.EXPORT)
+    @PostMapping("/group-export")
+    public void groupExport(DemandManageQuery query, HttpServletResponse response) {
+        List<DemandGroupExportVo> list = demandService.queryGroupExportList(query);
+        ExcelUtil.exportExcel(list, "需求管理", DemandGroupExportVo.class, response);
     }
 
     // =============== 状态机操作 ===============

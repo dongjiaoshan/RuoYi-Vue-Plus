@@ -6,7 +6,7 @@ import lombok.Getter;
 /**
  * 猪只状态机 UI 事件枚举（BRD-CORE-001）。
  *
- * <p>与字典 {@code djs_pig_status_event} 严格对齐（11 枚举）。这是 UI 层 / 子 ticket
+ * <p>与字典 {@code djs_pig_status_event} 严格对齐（12 枚举）。这是 UI 层 / 子 ticket
  * 业务接口对外暴露的"事件名"；状态机内部把 OESTRUS（保持 PZ）/ NULL_RETURN（按 payload
  * 分流到 LC/KH/FQ）做不同处理，不对外暴露 CONFIRM_PREG 等内部 trigger。</p>
  *
@@ -38,7 +38,12 @@ public enum PigStatusEvent {
     /** 转移：(非 END)，状态不变，更新 barn_id / pen_id。 */
     TRANSFER("转移"),
     /** 出栏：(非 END) → END，end_reason=MARKET，触发燎毛跨域事件。 */
-    SLAUGHTER("出栏");
+    SLAUGHTER("出栏"),
+    /**
+     * 转育肥（admin row162）：后备种母猪转为育肥猪 —— HB → YF，
+     * 同时 pig_type sow → fattening、更新 barn_id / pen_id（payload 同 TRANSFER）。
+     */
+    TO_FATTEN("转育肥");
 
     private final String label;
 }

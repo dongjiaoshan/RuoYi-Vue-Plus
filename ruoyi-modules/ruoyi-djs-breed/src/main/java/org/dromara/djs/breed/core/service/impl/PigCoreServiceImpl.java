@@ -75,6 +75,7 @@ import static org.dromara.djs.breed.core.enums.PigStatusEvent.DIE;
 import static org.dromara.djs.breed.core.enums.PigStatusEvent.ELIMINATE;
 import static org.dromara.djs.breed.core.enums.PigStatusEvent.FARROW;
 import static org.dromara.djs.breed.core.enums.PigStatusEvent.SLAUGHTER;
+import static org.dromara.djs.breed.core.enums.PigStatusEvent.TO_FATTEN;
 import static org.dromara.djs.breed.core.enums.PigStatusEvent.TRANSFER;
 
 /**
@@ -208,7 +209,7 @@ public class PigCoreServiceImpl implements IPigCoreService {
         // 2c. 栏位在场头数同步（FIX-BRD-PENCOUNT-001）：转群旧栏 -1 / 新栏 +1；终止事件（DIE /
         //     ELIMINATE / SLAUGHTER → END）所在栏 -1。放在主 update 成功之后，乐观锁冲突已抛异常，
         //     不会出现「猪没动而计数动了」。END 猪再 fireEvent 会被状态机拒（终态），故每头最多减一次。
-        if (bo.getEventType() == TRANSFER) {
+        if (bo.getEventType() == TRANSFER || bo.getEventType() == TO_FATTEN) {
             penCountUpdater.move(penIdBefore, pig.getPenId(), 1);
         } else if (to == PigLifecycle.END) {
             penCountUpdater.decrease(pig.getPenId(), 1);
@@ -1292,7 +1293,9 @@ public class PigCoreServiceImpl implements IPigCoreService {
         if (ev == BREED) {
             pig.setMatingId(bo.getRelatedEventId());
         }
-        if (ev == TRANSFER) {
+        // TO_FATTEN（admin row162 后备种母猪转育肥）与 TRANSFER 的 payload 同形：
+        // newBarnId / newPenId 落位置，newPigType 切类型（转育肥固定 sow → fattening）。
+        if (ev == TRANSFER || ev == TO_FATTEN) {
             Map<String, Object> payload = bo.getPayload();
             if (payload != null) {
                 Object newBarn = payload.get("newBarnId");

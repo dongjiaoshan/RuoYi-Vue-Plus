@@ -9,6 +9,7 @@ import org.dromara.common.log.enums.BusinessType;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.web.core.BaseController;
+import org.dromara.djs.breed.event.transfer.domain.bo.ToFattenBo;
 import org.dromara.djs.breed.event.transfer.domain.bo.TransferBatchBo;
 import org.dromara.djs.breed.event.transfer.domain.bo.TransferBo;
 import org.dromara.djs.breed.event.transfer.domain.query.TransferQuery;
@@ -55,6 +56,20 @@ public class TransferController extends BaseController {
     @PostMapping("/batch")
     public R<List<PigTransferVo>> recordBatch(@Validated @RequestBody TransferBatchBo bo) {
         return R.ok(transferService.recordTransferBatch(bo));
+    }
+
+    /**
+     * 后备种母猪「转为育肥猪」（admin row162）。
+     *
+     * <p>猪只主表操作列入口：录转移日期 / 负责人 / 栋舍 / 栏位 → 状态 后备(HB) → 育肥(YF)、
+     * 类型 种母猪 → 育肥猪，并在事件台账留一条 {@code TO_FATTEN} 记录。</p>
+     */
+    @SaCheckPermission("djs:breed:event:transfer")
+    @Log(title = "转为育肥猪", businessType = BusinessType.UPDATE)
+    @RepeatSubmit
+    @PostMapping("/to-fatten")
+    public R<PigTransferVo> toFatten(@Validated @RequestBody ToFattenBo bo) {
+        return R.ok(transferService.toFatten(bo));
     }
 
     @SaCheckPermission("djs:breed:event:transfer:list")
