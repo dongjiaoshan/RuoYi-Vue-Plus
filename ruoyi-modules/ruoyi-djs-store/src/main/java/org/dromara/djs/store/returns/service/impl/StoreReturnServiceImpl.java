@@ -125,6 +125,15 @@ public class StoreReturnServiceImpl
     /** 白条归属类型（字典 djs_belong_type）：门店当日白条到店判定。 */
     private static final String BELONG_TYPE_WHITE_BAR = "white_bar";
 
+    /**
+     * 礼盒归属类型（字典 {@code djs_belong_type}）：门店退回不支持。
+     *
+     * <p>row178：礼盒是多种原料的组合装，{@code product_material} 单值表达不了它拆回哪些原材料，
+     * 退回确认时无法解析入库产品 / 库位，只会在确认那一步抛 400（mp 上仅弹一条红 toast，
+     * 极易被当成网络抖动划过去，门店以为退成功、仓库永远收不到）。故在选品与提交两层直接拦掉。</p>
+     */
+    private static final String BELONG_TYPE_GIFT_BOX = "gift_box";
+
     /** product_production.is_delivery_check=1：已发货清点（到店白条口径与门店猪肉打包一致）。 */
     private static final Integer DELIVERY_CHECKED = 1;
 
@@ -205,6 +214,10 @@ public class StoreReturnServiceImpl
         // 2. 门店非空才校验存在（customer_to_store 主场景必填，其余方向可空）
         if (bo.getStoreId() != null && storeMapper.selectById(bo.getStoreId()) == null) {
             throw new ServiceException("门店不存在或已删除：" + bo.getStoreId(), 404);
+        }
+        // 3. row178：门店→仓库方向拦礼盒（顾客退门店不受影响——那是门店自己收回，不回仓库库存）
+        if (DIRECTION_STORE_TO_WAREHOUSE.equals(bo.getReturnDirection())) {
+            assertReturnableToWarehouse(product);
         }
 
         StoreReturn entity = new StoreReturn();
@@ -308,6 +321,7 @@ public class StoreReturnServiceImpl
             if (product == null) {
                 throw new ServiceException("产品不存在或已删除：" + item.getProductId(), 404);
             }
+            assertReturnableToWarehouse(product);
             // 退回量度量：果蔬行用退回量（份/把/盒），猪肉行无退回量时回退退回重量（kg）——与下方落库口径一致。
             BigDecimal returnMetric = item.getReturnQuantity() != null
                 ? item.getReturnQuantity() : item.getReturnWeight();
@@ -500,6 +514,9 @@ public class StoreReturnServiceImpl
         vo.setProductName(p.getProductName());
         vo.setProductUnit(unit);
         vo.setSubCategory(subCategory);
+        // row178：归属类型回传前端做礼盒二次过滤（猪肉 tab 的候选源已按 belong_type IN (pork,white_bar) 过滤，
+        // 这里只是把判据显式化，前后端同源）。
+        vo.setBelongType(p.getBelongType());
         vo.setArrivedQuantity(arrivedQuantity);
         vo.setReturnedQuantity(sumReturnedQuantityTodayForProduct(storeId, today, p.getId()));
         return vo;
@@ -830,7 +847,8 @@ public class StoreReturnServiceImpl
         }
         // row52：镜像猪肉候选路径——果蔬成品若「是否原材料外售=是」且配了原材料，候选折叠为其原材料产品
         //（name/unit 取原材料；多成品共享同一原材料时合并成一行，保序）。
-        List<StoreReturnVegCandidateVo> folded = foldVegMaterialSold(new java.util.ArrayList<>(dedup.values()));
+        List<StoreReturnVegCandidateVo> folded = dropGiftBoxCandidates(
+            foldVegMaterialSold(new java.util.ArrayList<>(dedup.values())));
         // row119：折叠后按最终产品 id 填已退量，前端剩余可退 = 到店量 − 已退量。
         // 已退窗口取「昨天 + 今天」，与上面到店量的两天窗口对齐——只扣今天的话，昨天到店的量昨天退过一次、
         // 今天还能再拿到同样额度退第二次，负损耗照旧复现。
@@ -838,6 +856,43 @@ public class StoreReturnServiceImpl
             vo.setReturnedQuantity(sumReturnedQuantitySinceForProduct(storeId, today.minusDays(1), today, vo.getProductId()));
         }
         return folded;
+    }
+
+    /**
+     * row178：果蔬候选剔除礼盒（{@code belong_type=gift_box}）并回填归属类型。
+     *
+     * <p>候选源按需求业态 {@code product_type='vegetable'} 取，礼盒需求走 {@code product_type='gift_box'}
+     * 本不该混进来；但业态是需求录入时选的、与产品自身 {@code belong_type} 各存一份，选错就会漏出来，
+     * 而礼盒退回到确认那步必然 400（拆不回单一原材料）。这里按产品自身归属再兜一道。</p>
+     *
+     * @param candidates 折叠后的候选（可空集）
+     * @return 剔除礼盒并回填 {@code belongType} 的候选
+     */
+    private List<StoreReturnVegCandidateVo> dropGiftBoxCandidates(List<StoreReturnVegCandidateVo> candidates) {
+        if (candidates.isEmpty()) {
+            return candidates;
+        }
+        List<Long> productIds = candidates.stream().map(StoreReturnVegCandidateVo::getProductId)
+            .filter(Objects::nonNull).distinct().collect(Collectors.toList());
+        if (productIds.isEmpty()) {
+            return candidates;
+        }
+        Map<Long, String> belongMap = productInfoMapper.selectList(new LambdaQueryWrapper<ProductInfo>()
+                .select(ProductInfo::getId, ProductInfo::getBelongType)
+                .in(ProductInfo::getId, productIds))
+            .stream().filter(p -> p.getBelongType() != null)
+            .collect(Collectors.toMap(ProductInfo::getId, ProductInfo::getBelongType, (a, b) -> a));
+        List<StoreReturnVegCandidateVo> kept = new ArrayList<>(candidates.size());
+        for (StoreReturnVegCandidateVo c : candidates) {
+            String belongType = belongMap.get(c.getProductId());
+            if (BELONG_TYPE_GIFT_BOX.equals(belongType)) {
+                log.info("[STORE-RETURN] 果蔬退回候选剔除礼盒 productId={} name={}", c.getProductId(), c.getProductName());
+                continue;
+            }
+            c.setBelongType(belongType);
+            kept.add(c);
+        }
+        return kept;
     }
 
     /**
@@ -1093,6 +1148,13 @@ public class StoreReturnServiceImpl
             vo.setConfirmWeightTotal(confirmTotal);
             vo.setWeightDiffTotal(returnTotal.subtract(confirmTotal));
             vo.setNonWeightReturnWeightTotal(nonWeightReturnTotal);
+            // row178：确认进度 n/m。确认时间 / 确认人取「最近一条已确认行」，只要 1 条确认过就有值，
+            // 部分确认（3/4）与全部确认在外层看不出差别；显式给出已确认 / 总行数，未全确认前端标警告色。
+            int confirmedCount = (int) group.stream()
+                .filter(r -> STATUS_RECEIVED.equals(r.getReturnStatus())).count();
+            vo.setConfirmedCount(confirmedCount);
+            vo.setTotalCount(group.size());
+            vo.setConfirmProgress(confirmedCount + "/" + group.size());
             group.stream().filter(r -> r.getConfirmTime() != null)
                 .max(Comparator.comparing(StoreReturn::getConfirmTime))
                 .ifPresent(latest -> {
@@ -1178,7 +1240,7 @@ public class StoreReturnServiceImpl
             throw new ServiceException("门店 ID 不能为空", 400);
         }
         if (StringUtils.isBlank(mpStatus)) {
-            throw new ServiceException("退货状态不能为空", 400);
+            throw new ServiceException("退回状态不能为空", 400);
         }
         // mp 词表 → store 词表：confirmed→received，其余按 pending。
         String storeStatus = MP_STATUS_CONFIRMED.equals(mpStatus) ? STATUS_RECEIVED : STATUS_PENDING;
@@ -1328,6 +1390,23 @@ public class StoreReturnServiceImpl
                 .eq(LocationInfo::getLocationName, name)
                 .last("LIMIT 1"));
         return loc == null ? null : loc.getId();
+    }
+
+    /**
+     * row178：门店退回仓库的产品准入闸——礼盒（{@code belong_type=gift_box}）不收。
+     *
+     * <p>礼盒是多种原料的组合装，退回入库要拆回哪些原材料、各多少，单值 {@code product_material}
+     * 表达不了；不拦的话工人选得到、提交得成功，直到仓库确认那步才抛 400，门店端已经以为退完了。
+     * 选品接口（{@link #listPorkCandidates} / {@link #listVegCandidates}）不出礼盒是体验，
+     * 这里才是把关（mp / 三方可直接 POST 任意 productId）。</p>
+     *
+     * @param product 退回产品（非空）
+     */
+    private void assertReturnableToWarehouse(ProductInfo product) {
+        if (BELONG_TYPE_GIFT_BOX.equals(product.getBelongType())) {
+            throw new ServiceException("礼盒「" + product.getProductName()
+                + "」由多种原料组合而成，无法按单一原材料退回入库，暂不支持退回仓库", 400);
+        }
     }
 
     /** 退货产品是否猪肉（{@code belong_type=pork}）——仅 pork 走鲜/冻库分流（白条不分流，Kevin 口径）。 */

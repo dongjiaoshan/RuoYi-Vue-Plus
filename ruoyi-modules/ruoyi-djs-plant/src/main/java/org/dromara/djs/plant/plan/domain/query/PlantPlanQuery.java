@@ -6,6 +6,7 @@ import lombok.EqualsAndHashCode;
 import org.dromara.common.mybatis.core.domain.BaseEntity;
 
 import java.util.Date;
+import java.util.List;
 
 /**
  * 种植计划查询参数（PLT-PLAN-001 / FIX-PLT-AD-PLAN-001 对齐原型 4 项筛选）。
@@ -61,13 +62,13 @@ public class PlantPlanQuery extends BaseEntity {
     private Date endPlanDate;
 
     /**
-     * 计划月份（原型「计划月份」筛选，1-12）：查该年份下含该月份种植明细的计划。
+     * 计划月份多选（原型「计划月份」筛选，1-12，可多选）：查该年份下含任一所选月份种植明细的计划。
      *
      * <p>plant_month 在 t_plant_plant_details，非主表列，故 buildWrapper 用
-     * {@code EXISTS(SELECT 1 FROM t_plant_plant_details d WHERE d.plant_id=t_plant_plant_plan.id AND d.plant_month=#{planMonth})}
+     * {@code EXISTS(SELECT 1 FROM t_plant_plant_details d WHERE d.plant_id=t_plant_plant_plan.id AND d.plant_month IN (...))}
      * 过滤；年份维度仍用主表 {@link #planYear} 等值。取代原 {@link #beginPlanDate}/{@link #endPlanDate} 日期范围筛选。</p>
      */
-    private Integer planMonth;
+    private List<Integer> planMonths;
 
     /** 计划更新时间（按天精确，原型「计划更新时间」筛选）。 */
     @JsonFormat(pattern = "yyyy-MM-dd")

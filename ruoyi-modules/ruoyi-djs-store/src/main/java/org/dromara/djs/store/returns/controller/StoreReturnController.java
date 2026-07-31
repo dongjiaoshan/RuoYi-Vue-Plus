@@ -161,6 +161,6 @@ public class StoreReturnController extends BaseController {
     public void storeDailyExport(StoreReturnQuery query, HttpServletResponse response) {
         List<StoreReturnStoreDailyVo> list = service.queryStoreDailyList(query);
         ExcelUtil.exportExcel(list == null ? new ArrayList<>() : list,
-            "退货记录", StoreReturnStoreDailyVo.class, response);
+            "退回记录", StoreReturnStoreDailyVo.class, response);
     }
 }

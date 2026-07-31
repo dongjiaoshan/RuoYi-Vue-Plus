@@ -25,6 +25,7 @@ import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -224,7 +225,15 @@ public class StockFlowServiceImpl
                 // 无任何符合条件的产品 → 兜底空集 → 流水必空
                 return w.eq(StockFlow::getId, -1L);
             }
-            List<Long> productIds = products.stream().map(ProductInfo::getId).distinct().toList();
+            // row178：按产品名搜时把命中产品的原材料一并并入。退回 / 打包等入库流水一律记在「原材料」名下
+            //（邓博 2026-07-16 口径：仓库只存原材料），用户拿成品名「黑毛猪猪脚750g/份」搜入库记录会 0 条，
+            // 以为没入库。并入 product_material 后成品名、原材料名两种搜法都能命中同一条流水。
+            // 只在 productName 维度扩展：matType / buyClass / productType 单独过滤时不扩，避免跨业态串量。
+            LinkedHashSet<Long> productIds = products.stream().map(ProductInfo::getId)
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+            if (StringUtils.isNotBlank(query.getProductName())) {
+                products.stream().map(ProductInfo::getProductMaterial).filter(Objects::nonNull).forEach(productIds::add);
+            }
             w.in(StockFlow::getProductId, productIds);
         }
         // blockNo → 反查 plot.id 集合下推 plotId IN

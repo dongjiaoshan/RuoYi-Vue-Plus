@@ -450,6 +450,31 @@ class PigCoreServiceImplTest {
         assertThat(recCaptor.getValue().getChangeTime()).isEqualTo(introDate.atStartOfDay());
     }
 
+    @Test
+    @DisplayName("createPig 引种日期=今天: INTRO 流水 change_time 补真实时分秒，status_started_at 仍按日 00:00")
+    void createPig_changeTime_fills_clock_when_introduceDate_is_today() {
+        LocalDate today = LocalDate.now();
+        PigCreateBo bo = new PigCreateBo();
+        bo.setEarNo("260801-001");
+        bo.setPigSex("F");
+        bo.setPigType("sow");
+        bo.setIntroduceDate(today);
+
+        LocalDateTime before = LocalDateTime.now();
+        service.createPig(bo);
+        LocalDateTime after = LocalDateTime.now();
+
+        // 事件台账「变更时间」= 实际操作时刻（admin row172：表单只选日期，不能整行显示 00:00:00）
+        ArgumentCaptor<PigStatusRecord> recCaptor = ArgumentCaptor.forClass(PigStatusRecord.class);
+        verify(statusRecordMapper).insert(recCaptor.capture());
+        assertThat(recCaptor.getValue().getChangeTime()).isBetween(before, after);
+
+        // 猪只主表状态起点仍是按日粒度（在场天数 / 日龄阈值按 DAYS.between 算，带时分秒会少算一天）
+        ArgumentCaptor<Pig> pigCaptor = ArgumentCaptor.forClass(Pig.class);
+        verify(pigMapper).insert(pigCaptor.capture());
+        assertThat(pigCaptor.getValue().getStatusStartedAt()).isEqualTo(today.atStartOfDay());
+    }
+
     // ===== internalIntroToReserve（内部留种：育肥猪→种猪类型变更，FIX-BRD-PIGTYPE-001）=====
 
     private Pig mkFattening(Long id, String sex, PigLifecycle status) {

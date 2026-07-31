@@ -81,7 +81,7 @@ public class StoreReturnVo implements Serializable {
     private BigDecimal goodsWeight;
 
     /** 退货状态 djs_store_return_status：pending=待仓库确认 / received=已入库。 */
-    @ExcelProperty(value = "退货状态")
+    @ExcelProperty(value = "退回状态")
     private String returnStatus;
 
     /** 仓库实收量（原型「仓库实收量」）。 */

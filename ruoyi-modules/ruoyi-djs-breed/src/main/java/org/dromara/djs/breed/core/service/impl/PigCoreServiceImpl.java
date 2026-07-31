@@ -56,6 +56,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.Duration;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.LocalTime;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -183,7 +184,7 @@ public class PigCoreServiceImpl implements IPigCoreService {
         record.setNewStatus(to == null ? "" : to.name());
         record.setEventType(bo.getEventType().name());
         record.setRelatedEventId(bo.getRelatedEventId());
-        record.setChangeTime(eventAt);
+        record.setChangeTime(withOperateClock(eventAt));
         record.setDurationDays(calcDurationDays(pig.getStatusStartedAt(), eventAt));
         statusRecordMapper.insert(record);
 
@@ -307,8 +308,9 @@ public class PigCoreServiceImpl implements IPigCoreService {
         record.setOldStatus(null);
         record.setNewStatus(initialStatus);   // new_status NOT NULL：非种母猪空状态写 ''（非 null）
         record.setEventType(PigStatusEvent.INTRO.name());
-        // INTRO 事件的业务发生时点 = 引种日期（与 status_started_at 同源），养殖记录里「进入后备」按引种日期显示
-        record.setChangeTime(statusStartedAt);
+        // INTRO 事件的业务发生时点 = 引种日期（与 status_started_at 同源），养殖记录里「进入后备」按引种日期显示；
+        // 引种日期就是当天时补上真实操作时刻（日期不变，只补时分秒，见 withOperateClock）
+        record.setChangeTime(withOperateClock(statusStartedAt));
         statusRecordMapper.insert(record);
 
         eventPublisher.publishEvent(new PigStateChangedEvent(this, record, pig, null, initial));
@@ -358,7 +360,7 @@ public class PigCoreServiceImpl implements IPigCoreService {
         record.setOldStatus(oldStatus);
         record.setNewStatus(newStatus);
         record.setEventType(PigStatusEvent.INTRO.name());
-        record.setChangeTime(statusStartedAt);
+        record.setChangeTime(withOperateClock(statusStartedAt));
         if (oldStatus != null) {
             record.setDurationDays(calcDurationDays(pig.getStatusStartedAt(), now));
         }
@@ -1448,6 +1450,32 @@ public class PigCoreServiceImpl implements IPigCoreService {
         }
         long days = Duration.between(statusStartedAt, eventAt).toDays();
         return (int) Math.max(days, 0L);
+    }
+
+    /**
+     * 状态流水「变更时间」补时分秒。
+     *
+     * <p>admin 端各事件表单（引种 / 转移 / 转育肥 …）只让用户选日期，落到
+     * {@code PigEventBo.eventAt} 就是 {@code yyyy-MM-dd 00:00:00}，事件台账整行显示成
+     * 「2026-07-31 00:00:00」，时分秒恒为 0。规则：</p>
+     * <ul>
+     *   <li>调用方已给出真实时分秒（mp 各事件页传 {@code new Date()}）→ 原样保留；</li>
+     *   <li>只给了日期且这个业务日期就是今天 → 用当前时刻替换（日期不变，只把时分秒补成真实操作时刻）；</li>
+     *   <li>只给了日期且是补录历史日期 → 保留 00:00:00（历史那天几点录的不可知，不编造）。</li>
+     * </ul>
+     *
+     * <p>只作用于流水表 {@code t_farm_status_record.change_time}（列表展示 / 排序口径）。
+     * 不能顺带改 {@code t_farm_pig_info.status_started_at} 与 {@code duration_days}——
+     * 这两个按「日」粒度参与在场天数 / 日龄阈值计算（{@code DAYS.between} 满 24h 才进 1），
+     * 加上时分秒会把天数少算一天。</p>
+     */
+    private static LocalDateTime withOperateClock(LocalDateTime businessAt) {
+        LocalDateTime now = LocalDateTime.now();
+        if (businessAt == null) {
+            return now;
+        }
+        boolean dateOnly = LocalTime.MIDNIGHT.equals(businessAt.toLocalTime());
+        return dateOnly && businessAt.toLocalDate().equals(now.toLocalDate()) ? now : businessAt;
     }
 
     private Long parseLong(Object raw, String field) {

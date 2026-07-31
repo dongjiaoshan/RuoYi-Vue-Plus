@@ -45,6 +45,14 @@ public class StoreReturnPorkCandidateVo implements Serializable {
     private String subCategory;
 
     /**
+     * 归属类型（字典 {@code djs_belong_type}）。
+     *
+     * <p>row178：礼盒（{@code gift_box}）无法按单一原材料退回入库，服务端已从候选里剔除；
+     * 本字段回传给前端做二次过滤，前后端同一判据。</p>
+     */
+    private String belongType;
+
+    /**
      * 到店量（退回量上限，row40）。口径按子类分流：
      * <ul>
      *   <li>猪肉产品(pork,按份)：当日到店该产品需求订购份数 {@code SUM(demand_quantity)}；</li>

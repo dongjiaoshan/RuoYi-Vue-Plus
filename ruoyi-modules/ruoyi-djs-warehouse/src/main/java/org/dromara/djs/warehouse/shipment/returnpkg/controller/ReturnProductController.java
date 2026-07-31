@@ -69,7 +69,7 @@ public class ReturnProductController extends BaseController {
 
     /** 新增。 */
     @SaCheckPermission("djs:warehouse:return:add")
-    @Log(title = "退货管理", businessType = BusinessType.INSERT)
+    @Log(title = "退回管理", businessType = BusinessType.INSERT)
     @RepeatSubmit
     @PostMapping
     public R<Long> add(@Valid @RequestBody ReturnProductBo bo) {
@@ -78,7 +78,7 @@ public class ReturnProductController extends BaseController {
 
     /** 修改（仅 pending 可编辑）。 */
     @SaCheckPermission("djs:warehouse:return:edit")
-    @Log(title = "退货管理", businessType = BusinessType.UPDATE)
+    @Log(title = "退回管理", businessType = BusinessType.UPDATE)
     @RepeatSubmit
     @PutMapping
     public R<Void> edit(@Valid @RequestBody ReturnProductBo bo) {
@@ -87,7 +87,7 @@ public class ReturnProductController extends BaseController {
 
     /** 软删（支持批量）。 */
     @SaCheckPermission("djs:warehouse:return:remove")
-    @Log(title = "退货管理", businessType = BusinessType.DELETE)
+    @Log(title = "退回管理", businessType = BusinessType.DELETE)
     @DeleteMapping("/{ids}")
     public R<Void> remove(@PathVariable Long[] ids) {
         return toAjax(service.deleteByIds(Arrays.asList(ids)));
@@ -95,7 +95,7 @@ public class ReturnProductController extends BaseController {
 
     /** 确认退货（核心入库联动）。 */
     @SaCheckPermission("djs:warehouse:return:confirm")
-    @Log(title = "退货管理", businessType = BusinessType.UPDATE)
+    @Log(title = "退回管理", businessType = BusinessType.UPDATE)
     @PostMapping("/{id}/confirm")
     public R<Void> confirm(@PathVariable Long id, @Valid @RequestBody ReturnConfirmBo bo) {
         service.confirmReturn(id, bo);
@@ -104,11 +104,11 @@ public class ReturnProductController extends BaseController {
 
     /** 导出。 */
     @SaCheckPermission("djs:warehouse:return:export")
-    @Log(title = "退货管理", businessType = BusinessType.EXPORT)
+    @Log(title = "退回管理", businessType = BusinessType.EXPORT)
     @GetMapping("/export")
     public void export(ReturnProductQuery query, HttpServletResponse response) {
         List<ReturnProductVo> list = service.queryList(query);
         ExcelUtil.exportExcel(list == null ? new ArrayList<>() : list,
-            "退货管理", ReturnProductVo.class, response);
+            "退回管理", ReturnProductVo.class, response);
     }
 }

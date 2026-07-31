@@ -55,6 +55,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 
 /**
  * 种植计划 Service 实现（PLT-PLAN-001）。
@@ -166,7 +167,8 @@ public class PlantPlanServiceImpl extends DjsBaseServiceImpl<PlantPlanMapper, Pl
     private LambdaQueryWrapper<PlantPlan> buildWrapper(PlantPlanQuery query) {
         LambdaQueryWrapper<PlantPlan> wrapper = new LambdaQueryWrapper<>();
         if (query == null) {
-            return wrapper.orderByDesc(PlantPlan::getId);
+            applyPlantingPeriodOrder(wrapper);
+            return wrapper;
         }
         wrapper.like(StringUtils.isNotBlank(query.getPlanNo()), PlantPlan::getPlanNo, query.getPlanNo())
             .eq(query.getPlanYear() != null, PlantPlan::getPlanYear, query.getPlanYear())
@@ -188,15 +190,60 @@ public class PlantPlanServiceImpl extends DjsBaseServiceImpl<PlantPlanMapper, Pl
                 "%" + query.getQueryCreateByName().trim() + "%");
         }
         applyPlanDateRange(wrapper, query.getBeginPlanDate(), query.getEndPlanDate());
-        // 计划月份：该计划存在 plant_month=指定月份 的种植明细（年份维度由上面 planYear 等值过滤）
-        if (query.getPlanMonth() != null) {
-            wrapper.apply(
-                "EXISTS (SELECT 1 FROM t_plant_plant_details d "
-                    + "WHERE d.plant_id = t_plant_plant_plan.id AND d.del_flag = '0' AND d.plant_month = {0})",
-                query.getPlanMonth());
-        }
-        wrapper.orderByDesc(PlantPlan::getId);
+        applyPlanMonths(wrapper, query.getPlanMonths());
+        applyPlantingPeriodOrder(wrapper);
         return wrapper;
+    }
+
+    /**
+     * 计划月份多选过滤（admin row173）：该计划存在 plant_month 落在所选月份集合内的种植明细。
+     *
+     * <p>plant_month 在 t_plant_plant_details（非主表列），故用相关子查询
+     * {@code EXISTS(... AND d.plant_month IN (...))}；年份维度由 {@code planYear} 等值单独过滤。
+     * 月份是 Integer，占位符 {@code {0},{1}...} 交给 MP 预编译，无拼接注入面；
+     * null / 越界（非 1-12）月份直接丢弃，全丢完等于没选、不加条件。</p>
+     */
+    private void applyPlanMonths(LambdaQueryWrapper<PlantPlan> wrapper, List<Integer> months) {
+        if (CollUtil.isEmpty(months)) {
+            return;
+        }
+        List<Integer> valid = months.stream()
+            .filter(Objects::nonNull)
+            .filter(m -> m >= 1 && m <= 12)
+            .distinct()
+            .toList();
+        if (valid.isEmpty()) {
+            return;
+        }
+        String placeholders = IntStream.range(0, valid.size())
+            .mapToObj(i -> "{" + i + "}")
+            .collect(Collectors.joining(", "));
+        wrapper.apply(
+            "EXISTS (SELECT 1 FROM t_plant_plant_details d "
+                + "WHERE d.plant_id = t_plant_plant_plan.id AND d.del_flag = '0' "
+                + "AND d.plant_month IN (" + placeholders + "))",
+            valid.toArray());
+    }
+
+    /**
+     * 列表排序（admin row173）：按「计划种植日期」降序 = 计划年份 → 计划月份 → 旬别（下旬→中旬→上旬）。
+     *
+     * <p>「计划种植日期」是明细派生值，列表列取最早开工那条明细的 月份+旬别（见
+     * {@code PlantPlanMapper.selectListAggregates} 的 plantMonth/plantPeriod），非主表存储列，
+     * 故排序键用同源的相关子查询
+     * {@code MIN(CONCAT(LPAD(plant_month,2,'0'), plant_period))}（月份补零后拼旬别，字典序 == 时间序）。
+     * plant_period 取值 05/15/25，DESC 恰好落成 下旬(25) → 中旬(15) → 上旬(05)。</p>
+     *
+     * <p>无明细的计划子查询返 NULL，MySQL DESC 下 NULL 排最后；末尾再按 id DESC 保证同键行的
+     * 分页顺序稳定（否则翻页可能重复/漏行）。用 {@code last} 而非 {@code orderByDesc} 是因为
+     * Lambda 写法表达不了子查询表达式；本方法在 buildWrapper 末尾唯一调用一次。</p>
+     */
+    private void applyPlantingPeriodOrder(LambdaQueryWrapper<PlantPlan> wrapper) {
+        wrapper.last("ORDER BY plan_year DESC, ("
+            + "SELECT MIN(CONCAT(LPAD(d.plant_month, 2, '0'), d.plant_period)) "
+            + "FROM t_plant_plant_details d "
+            + "WHERE d.plant_id = t_plant_plant_plan.id AND d.del_flag = '0'"
+            + ") DESC, id DESC");
     }
 
     /**
