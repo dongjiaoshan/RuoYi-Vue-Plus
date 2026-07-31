@@ -538,7 +538,12 @@ public class ProductInfoServiceImpl extends DjsBaseServiceImpl<ProductInfoMapper
         };
     }
 
-    /** KG（含「公斤」）单位保留 3 位小数，其余计数单位取整（与前端 formatStockQtyByUnit 同口径）。 */
+    /**
+     * KG（含「公斤」）单位恒保留 3 位小数，其余单位去掉无意义尾零（与前端 formatQtyByUnit 同口径）。
+     *
+     * <p>非 KG 不做取整：单位里既有「瓶 / 袋 / 枚」这类离散计数，也有「吨 / 斤 / 升 / 亩」这类连续量，
+     * 取整会把 2.5 吨 抹成 3 吨。去尾零已经能满足「别再显示 90.000 瓶」的诉求且不损失数据。</p>
+     */
     private static String formatFlowQtyByUnit(BigDecimal qty, String unit) {
         if (qty == null) {
             return "";
@@ -547,7 +552,7 @@ public class ProductInfoServiceImpl extends DjsBaseServiceImpl<ProductInfoMapper
         boolean kg = "kg".equals(u) || "公斤".equals(u);
         return kg
             ? qty.setScale(3, RoundingMode.HALF_UP).toPlainString()
-            : qty.setScale(0, RoundingMode.HALF_UP).toPlainString();
+            : qty.stripTrailingZeros().toPlainString();
     }
 
     @Override

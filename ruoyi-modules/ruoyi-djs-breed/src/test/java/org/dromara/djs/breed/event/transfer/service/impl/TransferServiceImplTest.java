@@ -267,8 +267,8 @@ class TransferServiceImplTest {
     }
 
     @Test
-    @DisplayName("row163: 原地转育肥（位置没变）→ 只 fireEvent(TO_FATTEN) 一条，不产生转移噪音")
-    void toFatten_sameLocation_firesOnlyToFatten() {
+    @DisplayName("row163: 原地转育肥（表单默认预填当前位置）→ 仍先 TRANSFER 再 TO_FATTEN，台账查得到转移")
+    void toFatten_sameLocation_stillFiresTransfer() {
         Pig pig = mkPig(411L, "sow", PigLifecycle.HB, 3L);
         pig.setPenId(45L);
         when(pigMapper.selectById(411L)).thenReturn(pig);
@@ -281,7 +281,30 @@ class TransferServiceImplTest {
         service.toFatten(mkFattenBo(411L, 3L, 45L));
 
         ArgumentCaptor<PigEventBo> ev = ArgumentCaptor.forClass(PigEventBo.class);
-        verify(pigCoreService, times(1)).fireEvent(ev.capture());
-        assertThat(ev.getValue().getEventType()).isEqualTo(PigStatusEvent.TO_FATTEN);
+        verify(pigCoreService, times(2)).fireEvent(ev.capture());
+        List<PigEventBo> fired = ev.getAllValues();
+        assertThat(fired.get(0).getEventType()).isEqualTo(PigStatusEvent.TRANSFER);
+        assertThat(fired.get(1).getEventType()).isEqualTo(PigStatusEvent.TO_FATTEN);
+    }
+
+    @Test
+    @DisplayName("row163: 不传目标位置（沿用当前位置）→ 同样两条事件，payload 回落到猪只当前栋舍栏位")
+    void toFatten_nullTarget_fallsBackToCurrentAndStillFiresTransfer() {
+        Pig pig = mkPig(412L, "sow", PigLifecycle.HB, 3L);
+        pig.setPenId(45L);
+        when(pigMapper.selectById(412L)).thenReturn(pig);
+        when(barnMapper.selectById(3L)).thenReturn(mkBarn(3L, "育肥舍3栋", "fattening"));
+        Pen samePen = new Pen();
+        samePen.setId(45L);
+        samePen.setPenName("散栏45");
+        when(penMapper.selectById(45L)).thenReturn(samePen);
+
+        service.toFatten(mkFattenBo(412L, null, null));
+
+        ArgumentCaptor<PigEventBo> ev = ArgumentCaptor.forClass(PigEventBo.class);
+        verify(pigCoreService, times(2)).fireEvent(ev.capture());
+        List<PigEventBo> fired = ev.getAllValues();
+        assertThat(fired.get(0).getEventType()).isEqualTo(PigStatusEvent.TRANSFER);
+        assertThat(fired.get(0).getPayload()).containsEntry("newBarnId", 3L).containsEntry("newPenId", 45L);
     }
 }

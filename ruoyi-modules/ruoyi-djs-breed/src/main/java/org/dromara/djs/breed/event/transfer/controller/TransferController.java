@@ -62,7 +62,7 @@ public class TransferController extends BaseController {
      * 后备种母猪「转为育肥猪」（admin row162）。
      *
      * <p>猪只主表操作列入口：录转移日期 / 负责人 / 栋舍 / 栏位 → 状态 后备(HB) → 育肥(YF)、
-     * 类型 种母猪 → 育肥猪，并在事件台账留一条 {@code TO_FATTEN} 记录。</p>
+     * 类型 种母猪 → 育肥猪，并在事件台账留 {@code TRANSFER} + {@code TO_FATTEN} 两条记录。</p>
      */
     @SaCheckPermission("djs:breed:event:transfer")
     @Log(title = "转为育肥猪", businessType = BusinessType.UPDATE)

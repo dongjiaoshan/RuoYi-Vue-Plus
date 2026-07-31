@@ -13,7 +13,8 @@ import java.time.LocalDateTime;
  *
  * <p>业务：猪只主表里对「猪只类型=种母猪 且 当前状态=后备」的猪执行转育肥 —— 录转移日期 / 转移负责人 /
  * 转移栋舍 / 转移栏位，确认后猪只状态 HB → YF（育肥），猪只类型 sow → fattening，
- * 并在事件台账（{@code t_farm_status_record}）留一条 {@code TO_FATTEN} 记录。</p>
+ * 并在事件台账（{@code t_farm_status_record}）留 {@code TRANSFER} + {@code TO_FATTEN} 两条记录
+ * —— 转育肥本身就是一次转移，位置没变也记，否则按「转移」查不到（admin row163）。</p>
  *
  * <p>转移栋舍 / 栏位默认取猪只当前位置（前端预填），故这里可空 —— 空则沿用猪只现位置。</p>
  *
