@@ -85,6 +85,7 @@ class StoreReturnServiceImplTest {
     @Mock private org.dromara.djs.warehouse.pack.mapper.ProductProductionMapper productProductionMapper;
     @Mock private org.dromara.djs.common.store.service.IStoreService storeService;
     @Mock private StoreDailyLedgerMapper storeDailyLedgerMapper;
+    @Mock private org.dromara.common.core.service.UserService userService;
 
     private TestableStoreReturnServiceImpl service;
     private MockedStatic<LoginHelper> loginHelperMock;
@@ -125,8 +126,9 @@ class StoreReturnServiceImplTest {
                                        org.dromara.djs.warehouse.pack.service.IProductProductionService pps,
                                        org.dromara.djs.warehouse.pack.mapper.ProductProductionMapper ppm,
                                        org.dromara.djs.common.store.service.IStoreService iss,
-                                       StoreDailyLedgerMapper sdlm) {
-            super(b, sm, pm, lm, g, pis, dm, ds, pps, ppm, iss, sdlm);
+                                       StoreDailyLedgerMapper sdlm,
+                                       org.dromara.common.core.service.UserService us) {
+            super(b, sm, pm, lm, g, pis, dm, ds, pps, ppm, iss, sdlm, us);
         }
 
         @Override
@@ -139,7 +141,7 @@ class StoreReturnServiceImplTest {
     void setup() {
         service = new TestableStoreReturnServiceImpl(baseMapper, storeMapper, productInfoMapper,
             locationInfoMapper, bizCodeGenerator, purchaseInService, demandManageMapper, dictService,
-            productProductionService, productProductionMapper, storeService, storeDailyLedgerMapper);
+            productProductionService, productProductionMapper, storeService, storeDailyLedgerMapper, userService);
         loginHelperMock = Mockito.mockStatic(LoginHelper.class);
         loginHelperMock.when(LoginHelper::getUserId).thenReturn(USER_ID);
         when(baseMapper.insert(any(StoreReturn.class))).thenAnswer(inv -> {
@@ -253,11 +255,59 @@ class StoreReturnServiceImplTest {
     }
 
     @Test
-    @DisplayName("row178：礼盒顾客退门店不受影响（不回仓库库存）→ 正常入库")
-    void testInsert_GiftBoxAllowedForCustomerReturn() {
+    @DisplayName("row178：礼盒顾客退门店同样拦（insertByBo 对所有方向都真写 location_stock）→ 不 INSERT + 不联动入库")
+    void testInsert_GiftBoxRejectedForCustomerReturn() {
         when(productInfoMapper.selectById(PRODUCT_ID)).thenReturn(giftBoxProduct());
-        assertThat(service.insertByBo(bo("customer_to_store", STORE_ID))).isNotNull();
-        verify(baseMapper, times(1)).insert(any(StoreReturn.class));
+        assertThatThrownBy(() -> service.insertByBo(bo("customer_to_store", STORE_ID)))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("礼盒");
+        verify(baseMapper, never()).insert(any(StoreReturn.class));
+        // 关键断言：闸必须挡在 inbound 之前，否则错账已经写进仓库库存了
+        verify(purchaseInService, never()).inboundReturnBasket(any(), any(), any(), anyString(), any());
+    }
+
+    @Test
+    @DisplayName("row178：方向留空（默认 customer_to_store）也拦礼盒 → 不 INSERT + 不联动入库")
+    void testInsert_GiftBoxRejectedForBlankDirection() {
+        when(productInfoMapper.selectById(PRODUCT_ID)).thenReturn(giftBoxProduct());
+        assertThatThrownBy(() -> service.insertByBo(bo(null, STORE_ID)))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("礼盒");
+        verify(baseMapper, never()).insert(any(StoreReturn.class));
+        verify(purchaseInService, never()).inboundReturnBasket(any(), any(), any(), anyString(), any());
+    }
+
+    @Test
+    @DisplayName("row178：改方向也过礼盒闸（先按别的方向建、再 PUT 改成门店退仓库绕不过去）")
+    void testUpdate_GiftBoxRejectedOnDirectionChange() {
+        StoreReturn existing = new StoreReturn();
+        existing.setId(999L);
+        existing.setProductId(PRODUCT_ID);
+        when(baseMapper.selectById(999L)).thenReturn(existing);
+        when(productInfoMapper.selectById(PRODUCT_ID)).thenReturn(giftBoxProduct());
+
+        StoreReturnBo bo = bo("store_to_warehouse", STORE_ID);
+        bo.setId(999L);
+        assertThatThrownBy(() -> service.updateByBo(bo))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("礼盒");
+        verify(baseMapper, never()).updateById(any(StoreReturn.class));
+    }
+
+    @Test
+    @DisplayName("row178：退回入库流水备注带退回成品名（入库记录按成品名搜靠它精确定位，不串同原材料其他规格）")
+    void testInsert_RemarkCarriesReturnedProductName() {
+        ProductInfo finished = new ProductInfo();
+        finished.setId(PRODUCT_ID);
+        finished.setProductName("黑毛猪猪脚1000g/份");
+        finished.setBelongType("pork");
+        when(productInfoMapper.selectById(PRODUCT_ID)).thenReturn(finished);
+
+        service.insertByBo(bo("customer_to_store", STORE_ID));
+
+        ArgumentCaptor<String> remarkCap = ArgumentCaptor.forClass(String.class);
+        verify(purchaseInService, times(1)).inboundReturnBasket(any(), any(), any(), eq(FLOW_RETURN_IN), remarkCap.capture());
+        assertThat(remarkCap.getValue()).contains(RETURN_NO).contains("黑毛猪猪脚1000g/份");
     }
 
     /** row178：礼盒 = belong_type gift_box + 无 product_material（多种原料组合，拆不回单一原材料）。 */

@@ -237,25 +237,25 @@ class MedUsageServiceImplTest {
     }
 
     @Test
-    @DisplayName("todayStat: 聚合按 usageType → use/return/loss 缺省补 0")
-    void testTodayStat_Aggregation() {
-        MedUsageVo u1 = new MedUsageVo();
-        u1.setUsageType("use");
-        u1.setUsageQty(new BigDecimal("10.500"));
-        MedUsageVo u2 = new MedUsageVo();
-        u2.setUsageType("use");
-        u2.setUsageQty(new BigDecimal("2.000"));
-        MedUsageVo r1 = new MedUsageVo();
-        r1.setUsageType("return");
-        r1.setUsageQty(new BigDecimal("1.000"));
+    @DisplayName("todayStat: 委托给仓库流水 provider（不再自己查养殖台账），原样透传三量")
+    void testTodayStat_DelegatesToStockProvider() {
+        // row7 起今日三量与药品领用列表卡同源 = 读仓库出入库流水，聚合逻辑在
+        // MedicineStockProviderImpl.todayFlowStat 里；本 service 只负责转调，
+        // 所以这里断言「透传 + 不再碰 t_breed_medicine_usage」，聚合口径由 provider 侧自测覆盖。
+        Map<String, BigDecimal> providerStat = Map.of(
+            "use", new BigDecimal("12.500"),
+            "return", new BigDecimal("1.000"),
+            "loss", BigDecimal.ZERO);
+        when(medicineStockProvider.todayFlowStat(70001L)).thenReturn(providerStat);
 
-        when(medUsageMapper.selectVoList(any())).thenReturn(List.of(u1, u2, r1));
+        Map<String, BigDecimal> stat = service.todayStat(70001L);
 
-        Map<String, BigDecimal> stat = service.todayStat(null);
         assertThat(stat).hasSize(3);
         assertThat(stat.get("use")).isEqualByComparingTo("12.500");
         assertThat(stat.get("return")).isEqualByComparingTo("1.000");
         assertThat(stat.get("loss")).isEqualByComparingTo("0");
+        verify(medicineStockProvider).todayFlowStat(70001L);
+        verify(medUsageMapper, never()).selectVoList(any());
     }
 
     @Test

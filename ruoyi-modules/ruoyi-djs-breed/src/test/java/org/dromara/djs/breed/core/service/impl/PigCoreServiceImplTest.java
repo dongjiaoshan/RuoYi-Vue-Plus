@@ -160,6 +160,74 @@ class PigCoreServiceImplTest {
         assertThat(captor.getValue().getChangeTime()).isEqualTo(bo.getEventAt());
     }
 
+    // ===== change_time 补时分秒（admin row172，withOperateClock 四个分支）=====
+
+    /** 造一头 HB 后备母猪并把 mapper mock 好，供 change_time 各分支复用。 */
+    private void givenBreedableSow(Long pigId) {
+        Pig pig = mkSow(pigId, PigLifecycle.HB);
+        pig.setStatusStartedAt(LocalDate.now().minusDays(30).atStartOfDay());
+        when(pigMapper.selectById(pigId)).thenReturn(pig);
+        when(pigMapper.updateById(any(Pig.class))).thenReturn(1);
+    }
+
+    private PigStatusRecord fireBreedAndCaptureRecord(Long pigId, LocalDateTime eventAt) {
+        PigEventBo bo = new PigEventBo();
+        bo.setPigId(pigId);
+        bo.setEventType(PigStatusEvent.BREED);
+        bo.setEventAt(eventAt);
+        service.fireEvent(bo);
+        ArgumentCaptor<PigStatusRecord> captor = ArgumentCaptor.forClass(PigStatusRecord.class);
+        verify(statusRecordMapper).insert(captor.capture());
+        return captor.getValue();
+    }
+
+    @Test
+    @DisplayName("change_time: 业务日期=今天且表单只给日期 → 补成真实操作时刻（不再是 00:00:00）")
+    void changeTime_dateOnly_today_fillsRealClock() {
+        givenBreedableSow(1101L);
+
+        LocalDateTime before = LocalDateTime.now();
+        PigStatusRecord rec = fireBreedAndCaptureRecord(1101L, LocalDate.now().atStartOfDay());
+        LocalDateTime after = LocalDateTime.now();
+
+        assertThat(rec.getChangeTime()).isBetween(before, after);
+        assertThat(rec.getChangeTime().toLocalDate()).isEqualTo(LocalDate.now());
+    }
+
+    @Test
+    @DisplayName("change_time: 补录历史日期 → 保留 00:00:00（那天几点录的不可知，不编造）")
+    void changeTime_dateOnly_backdated_keepsMidnight() {
+        givenBreedableSow(1102L);
+        LocalDateTime backdated = LocalDate.now().minusDays(3).atStartOfDay();
+
+        PigStatusRecord rec = fireBreedAndCaptureRecord(1102L, backdated);
+
+        assertThat(rec.getChangeTime()).isEqualTo(backdated);
+    }
+
+    @Test
+    @DisplayName("change_time: 调用方已给真实时分秒（mp 传 new Date()）→ 原样保留，不被 now 覆盖")
+    void changeTime_callerSuppliedClock_preserved() {
+        givenBreedableSow(1103L);
+        // mp 各事件页传的是完整时刻；即使就是今天，也不能被 withOperateClock 改写
+        LocalDateTime mpSupplied = LocalDate.now().atTime(9, 17, 42);
+
+        PigStatusRecord rec = fireBreedAndCaptureRecord(1103L, mpSupplied);
+
+        assertThat(rec.getChangeTime()).isEqualTo(mpSupplied);
+    }
+
+    @Test
+    @DisplayName("change_time: 未来日期且只给日期 → 保留 00:00:00（不把未来事件盖成今天此刻）")
+    void changeTime_dateOnly_future_keepsMidnight() {
+        givenBreedableSow(1104L);
+        LocalDateTime future = LocalDate.now().plusDays(5).atStartOfDay();
+
+        PigStatusRecord rec = fireBreedAndCaptureRecord(1104L, future);
+
+        assertThat(rec.getChangeTime()).isEqualTo(future);
+    }
+
     @Test
     @DisplayName("fireEvent BREED: mating_id 被回写")
     void fireEvent_breed_updates_mating_id() {

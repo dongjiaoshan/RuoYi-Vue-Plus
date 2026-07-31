@@ -25,7 +25,6 @@ import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
 import java.util.ArrayList;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -194,6 +193,54 @@ public class StockFlowServiceImpl
     }
 
     /**
+     * row178：退回类入库流水（成品名 → 原材料台账扩展只放行这几种）。
+     *
+     * <p>退回入库落在原材料名下（{@code resolveInboundProductId} 把成品折成 {@code product_material}），
+     * 所以用成品名搜必须能查到原材料上的那条退回流水。但原材料台账里还有采购 / 分割产出 / 打包领用等，
+     * 与「我这笔退回入没入库」无关，一并并进来会把合计放大、行也认不出是谁的。</p>
+     */
+    private static final List<String> RETURN_FLOW_TYPES =
+        List.of("store_return_in", "return_in", "return_goods_in", "prod_return_in", "pick_return_in");
+
+    /**
+     * 产品维度谓词（{@code productName} 之外的部分），列表查询与原材料反查共用同一组条件。
+     *
+     * <p>抽出来是为了让注入的原材料 id 也过一遍 {@code matType / buyClass / productType}——
+     * 直接把 {@code product_material} 塞进 {@code productId IN} 会绕开这些筛选（成品与材料
+     * 业态/类型不一致时就串量）。</p>
+     */
+    private LambdaQueryWrapper<ProductInfo> productPredicates(StockFlowQuery query, boolean hasMatTypes, boolean hasProductTypes) {
+        LambdaQueryWrapper<ProductInfo> pw = new LambdaQueryWrapper<>();
+        return pw.in(hasMatTypes, ProductInfo::getBelongType, query.getMatTypes())
+            .eq(!hasMatTypes && StringUtils.isNotBlank(query.getMatType()), ProductInfo::getBelongType, query.getMatType())
+            .eq(StringUtils.isNotBlank(query.getBuyClass()), ProductInfo::getBuyClass, query.getBuyClass())
+            .in(hasProductTypes, ProductInfo::getProductType, query.getProductTypes())
+            .eq(!hasProductTypes && query.getProductType() != null, ProductInfo::getProductType, query.getProductType());
+    }
+
+    /**
+     * row178：成品名命中产品 → 需要一并看其退回流水的原材料 id 集。
+     *
+     * <p>仅在按产品名搜时扩展；材料 id 必须再过一遍同组谓词（见 {@link #productPredicates}）。</p>
+     *
+     * @return 原材料 id（无需扩展 / 材料被谓词滤掉 → 空集）
+     */
+    private List<Long> resolveReturnMaterialIds(StockFlowQuery query, List<ProductInfo> products,
+                                                boolean hasMatTypes, boolean hasProductTypes) {
+        if (StringUtils.isBlank(query.getProductName())) {
+            return List.of();
+        }
+        List<Long> rawIds = products.stream().map(ProductInfo::getProductMaterial)
+            .filter(Objects::nonNull).distinct().toList();
+        if (rawIds.isEmpty()) {
+            return List.of();
+        }
+        return productInfoMapper.selectList(
+                productPredicates(query, hasMatTypes, hasProductTypes).in(ProductInfo::getId, rawIds))
+            .stream().map(ProductInfo::getId).distinct().toList();
+    }
+
+    /**
      * 构造查询条件。
      *
      * <p>matType 维度走 product_info.belong_type 二次过滤：先按其他维度查 stock_flow，
@@ -213,28 +260,24 @@ public class StockFlowServiceImpl
             || StringUtils.isNotBlank(query.getProductName())
             || StringUtils.isNotBlank(query.getBuyClass())
             || hasProductTypes || query.getProductType() != null) {
-            LambdaQueryWrapper<ProductInfo> pw = new LambdaQueryWrapper<>();
-            pw.in(hasMatTypes, ProductInfo::getBelongType, query.getMatTypes())
-                .eq(!hasMatTypes && StringUtils.isNotBlank(query.getMatType()), ProductInfo::getBelongType, query.getMatType())
-                .eq(StringUtils.isNotBlank(query.getBuyClass()), ProductInfo::getBuyClass, query.getBuyClass())
-                .in(hasProductTypes, ProductInfo::getProductType, query.getProductTypes())
-                .eq(!hasProductTypes && query.getProductType() != null, ProductInfo::getProductType, query.getProductType())
+            LambdaQueryWrapper<ProductInfo> pw = productPredicates(query, hasMatTypes, hasProductTypes)
                 .like(StringUtils.isNotBlank(query.getProductName()), ProductInfo::getProductName, query.getProductName());
             List<ProductInfo> products = productInfoMapper.selectList(pw);
             if (products.isEmpty()) {
                 // 无任何符合条件的产品 → 兜底空集 → 流水必空
                 return w.eq(StockFlow::getId, -1L);
             }
-            // row178：按产品名搜时把命中产品的原材料一并并入。退回 / 打包等入库流水一律记在「原材料」名下
-            //（邓博 2026-07-16 口径：仓库只存原材料），用户拿成品名「黑毛猪猪脚750g/份」搜入库记录会 0 条，
-            // 以为没入库。并入 product_material 后成品名、原材料名两种搜法都能命中同一条流水。
-            // 只在 productName 维度扩展：matType / buyClass / productType 单独过滤时不扩，避免跨业态串量。
-            LinkedHashSet<Long> productIds = products.stream().map(ProductInfo::getId)
-                .collect(Collectors.toCollection(LinkedHashSet::new));
-            if (StringUtils.isNotBlank(query.getProductName())) {
-                products.stream().map(ProductInfo::getProductMaterial).filter(Objects::nonNull).forEach(productIds::add);
+            List<Long> ownIds = products.stream().map(ProductInfo::getId).distinct().toList();
+            List<Long> materialIds = resolveReturnMaterialIds(query, products, hasMatTypes, hasProductTypes);
+            if (materialIds.isEmpty()) {
+                w.in(StockFlow::getProductId, ownIds);
+            } else {
+                // 成品名命中的产品自身流水，OR 其原材料上「这一笔退回」的流水（下面 appendReturnBranch 说明范围）
+                w.and(outer -> outer.in(StockFlow::getProductId, ownIds)
+                    .or(branch -> branch.in(StockFlow::getProductId, materialIds)
+                        .in(StockFlow::getFlowType, RETURN_FLOW_TYPES)
+                        .like(StockFlow::getRemark, query.getProductName())));
             }
-            w.in(StockFlow::getProductId, productIds);
         }
         // blockNo → 反查 plot.id 集合下推 plotId IN
         if (StringUtils.isNotBlank(query.getBlockNo())) {

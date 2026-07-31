@@ -1468,12 +1468,16 @@ public class PigCoreServiceImpl implements IPigCoreService {
      * 不能顺带改 {@code t_farm_pig_info.status_started_at} 与 {@code duration_days}——
      * 这两个按「日」粒度参与在场天数 / 日龄阈值计算（{@code DAYS.between} 满 24h 才进 1），
      * 加上时分秒会把天数少算一天。</p>
+     *
+     * @param businessAt 业务时点，**不可为 null**：三个调用点都已各自兜底
+     *                   （fireEvent 走 {@code Optional...orElseGet(now)}，两处 INTRO 走
+     *                   {@code introduceDate.atStartOfDay()} 且引种日期为空时回落当天）。
+     *                   这里显式 requireNonNull 而不是静默回落 now，是因为一旦回落，
+     *                   写进流水的就不再是业务日期而是「今天」，属于静默数据错误。
      */
     private static LocalDateTime withOperateClock(LocalDateTime businessAt) {
+        Objects.requireNonNull(businessAt, "businessAt must not be null: 调用方需先兜底业务时点");
         LocalDateTime now = LocalDateTime.now();
-        if (businessAt == null) {
-            return now;
-        }
         boolean dateOnly = LocalTime.MIDNIGHT.equals(businessAt.toLocalTime());
         return dateOnly && businessAt.toLocalDate().equals(now.toLocalDate()) ? now : businessAt;
     }
