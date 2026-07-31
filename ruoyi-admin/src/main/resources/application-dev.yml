@@ -41,7 +41,7 @@ spring:
       p6spy: true
       # 设置默认的数据源或者数据源组,默认值即为 master
       # ★★ 切换数据库就改这一个词：master = 本地 dev 库 / staging = 线上 RDS ★★
-      primary: master
+      primary: staging
       # 严格模式 匹配不到数据源则报错
       strict: true
       datasource:

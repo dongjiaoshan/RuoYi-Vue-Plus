@@ -76,6 +76,31 @@ public class WechatLoginServiceImpl implements IWechatLoginService {
     @Value("${djs.wechat.miniapp.app-id:mock}")
     private String wxAppId;
 
+    /**
+     * 微信小程序 AppSecret（{@code djs.wechat.miniapp.secret}，只走环境变量 WX_MA_SECRET，不入 git）。
+     *
+     * <p>只用来做「配了真 appid 却没配 secret」的前置校验 —— 少了它微信会返 41004
+     * {@code appsecret missing}，WxJava 抛出的是一屏堆栈，看不出是本机没导环境变量。</p>
+     */
+    @Value("${djs.wechat.miniapp.secret:}")
+    private String wxSecret;
+
+    /**
+     * 调微信 API 前的前置自检：配了真 appid 就必须有 secret，否则给出可执行的提示而不是 41004 堆栈。
+     *
+     * <p>本地起后端拿 secret：
+     * {@code export WX_MA_SECRET=$(grep '^WX_MA_SECRET=' ~/.dongjiaoshan-secrets/prod.env | cut -d= -f2-)}</p>
+     */
+    private void assertWxConfigured() {
+        if (StrUtil.isBlank(wxSecret)) {
+            log.error("djs.wechat.miniapp.secret 为空（app-id={}）—— 环境变量 WX_MA_SECRET 没设", wxAppId);
+            throw new ServiceException(
+                "后端未配置微信 AppSecret（环境变量 WX_MA_SECRET），无法调用微信接口；"
+                    + "本地调试请改用「账号密码登录」，或导入 secret 后重启后端",
+                DjsAuthConstants.BIZ_CODE_PHONE_NOT_REGISTERED);
+        }
+    }
+
     @Override
     public WechatLoginVo wechatLogin(WechatLoginBo bo) {
         // 1. 凭 code 拿 openid（V1 mock：code 当作 openid 用；V2 切 jscode2session）
@@ -198,6 +223,7 @@ public class WechatLoginServiceImpl implements IWechatLoginService {
             log.info("[mock] jscode2openid code={} → openid 直接复用 code", code);
             return code;
         }
+        assertWxConfigured();
         try {
             WxMaJscode2SessionResult session = wxMaService.getUserService().getSessionInfo(code);
             String openid = session.getOpenid();
@@ -214,17 +240,29 @@ public class WechatLoginServiceImpl implements IWechatLoginService {
     /**
      * 手机号快速验证 phoneCode → phone。
      *
-     * <p>mock 模式：返 null（dev 走 bo.phone 字段直传）。真模式：调 WxJava
-     * {@code getUserService().getPhoneNoInfo(phoneCode)} 解析微信授权手机号（新版 code 直换，无需 sessionKey）。</p>
+     * <p>真模式：调 WxJava {@code getUserService().getPhoneNoInfo(phoneCode)} 解析微信授权手机号
+     * （新版 code 直换，无需 sessionKey）。</p>
+     *
+     * <p><b>mock 模式（{@code wx.ma.app-id=mock}，本地 dev）拿不到真手机号</b>：mock appid 没有
+     * 对应的 secret，换不了。这里直接抛出说明性异常，<b>不再返 null</b> —— 返 null 会被上游当成
+     * 「手机号为空」抛出「手机号不能为空」，而客户端明明已经授权成功，报错完全误导（现场表现：
+     * 微信弹窗选完手机号 → toast 说手机号不能为空）。<br>
+     * 早期 mock 模式靠客户端直传 {@code bo.phone} 兜底，但那条路已因冒充漏洞被封（任何人 POST
+     * 别人的手机号即可顶掉其微信绑定），前端也不再发该字段，所以 mock 下这条链路本就走不通。
+     * 本地调试请改用「账号密码登录」，或把 {@code wx.ma.app-id/secret} 配成真值。</p>
      */
     private String resolvePhoneByCode(String phoneCode) {
         if (StrUtil.isBlank(phoneCode)) {
             return null;
         }
         if (MOCK_APP_ID.equalsIgnoreCase(wxAppId)) {
-            log.warn("[mock] resolvePhoneByCode phoneCode={} 返 null（dev 模式请传 phone 字段）", phoneCode);
-            return null;
+            log.warn("[mock] wx.ma.app-id=mock，无法用 phoneCode 换取手机号（phoneCode={}）", phoneCode);
+            throw new ServiceException(
+                "当前后端为本地调试(mock)配置，无法获取微信手机号；请改用「账号密码登录」，"
+                    + "或将 wx.ma.app-id / secret 配成真实值",
+                DjsAuthConstants.BIZ_CODE_PHONE_NOT_REGISTERED);
         }
+        assertWxConfigured();
         try {
             WxMaPhoneNumberInfo info = wxMaService.getUserService().getPhoneNoInfo(phoneCode);
             return info.getPhoneNumber();

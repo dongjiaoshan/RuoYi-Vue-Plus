@@ -75,8 +75,20 @@ class WechatLoginServiceImplTest {
         ReflectionTestUtils.setField(service, "wxAppId", "mock");
     }
 
+    /**
+     * 真实模式 = 真 appid + 真 secret。两者必须成对设置：只设 appid 不设 secret 会被
+     * {@code assertWxConfigured()} 前置拦下（少了 secret 微信返 41004 appsecret missing，
+     * 那道闸就是把它翻译成可执行提示的）。
+     */
     private void enableRealMode() {
         ReflectionTestUtils.setField(service, "wxAppId", "wx42158dde5e73260c");
+        ReflectionTestUtils.setField(service, "wxSecret", "test-secret-not-a-real-one");
+    }
+
+    /** 真 appid 但没配 secret —— 本地忘了 export WX_MA_SECRET 的场景。 */
+    private void enableRealModeWithoutSecret() {
+        ReflectionTestUtils.setField(service, "wxAppId", "wx42158dde5e73260c");
+        ReflectionTestUtils.setField(service, "wxSecret", "");
     }
 
     @Test
@@ -166,6 +178,22 @@ class WechatLoginServiceImplTest {
             .thenThrow(new WxErrorException(WxError.builder().errorCode(40029).errorMsg("invalid code").build()));
 
         assertThrows(ServiceException.class, () -> service.wechatLogin(bo));
+    }
+
+    @Test
+    @DisplayName("真 appid 但没配 secret: 应前置拦下并提示 WX_MA_SECRET，不去调微信（防 41004 堆栈误导）")
+    void testWechatLogin_RealAppIdWithoutSecret_FailsFastWithActionableMessage() {
+        enableRealModeWithoutSecret();
+        WechatLoginBo bo = new WechatLoginBo();
+        bo.setCode("any-code");
+        bo.setClientId(DjsAuthConstants.MP_APPLET_CLIENT_ID);
+
+        ServiceException ex = assertThrows(ServiceException.class, () -> service.wechatLogin(bo));
+        // 报错必须点名环境变量，否则等于把 41004 换了身皮，照样没人知道该干什么
+        assertTrue(ex.getMessage().contains("WX_MA_SECRET"),
+            "报错应点名 WX_MA_SECRET，实际为：" + ex.getMessage());
+        // 关键：连微信都不该碰（省一次必然失败的外部调用，也让报错稳定可断言）
+        verify(wxMaService, times(0)).getUserService();
     }
 
     @Test
