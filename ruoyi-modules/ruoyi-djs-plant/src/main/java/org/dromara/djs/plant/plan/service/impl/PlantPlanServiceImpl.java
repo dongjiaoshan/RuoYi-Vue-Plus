@@ -131,10 +131,28 @@ public class PlantPlanServiceImpl extends DjsBaseServiceImpl<PlantPlanMapper, Pl
 
     @Override
     public TableDataInfo<PlantPlanVo> queryPageList(PlantPlanQuery query, PageQuery pageQuery) {
-        Page<PlantPlanVo> page = baseMapper.selectVoPage(pageQuery.build(), buildWrapper(query));
+        Page<PlantPlanVo> page = baseMapper.selectVoPage(buildFixedOrderPage(pageQuery), buildWrapper(query));
         enrichCrop(page.getRecords());
         enrichAggregates(page.getRecords());
         return TableDataInfo.build(page);
+    }
+
+    /**
+     * 分页对象：丢掉请求参数 {@code orderByColumn}/{@code isAsc} 带来的排序项，只认
+     * {@link #applyPlantingPeriodOrder} 定的固定排序。
+     *
+     * <p>MP 的分页拦截器把 {@code PageQuery} 的排序项**拼在 wrapper 的 ORDER BY 之前**
+     * （{@code ORDER BY <请求参数> , plan_year DESC, …}），所以 URL 上随便带个
+     * {@code ?orderByColumn=planYear&isAsc=asc} 就能静默压过甲方要求的首排序键，
+     * 而且不报错、不留痕。本页原型没有可点排序的列，前端也不发这两个参数，
+     * 这里直接清掉，把「按计划种植日期降序」变成服务端保证而不是前端自觉。</p>
+     *
+     * <p>将来真要做点表头排序，删掉这个方法改回 {@code pageQuery.build()} 即可。</p>
+     */
+    private <T> Page<T> buildFixedOrderPage(PageQuery pageQuery) {
+        Page<T> page = pageQuery.build();
+        page.orders().clear();
+        return page;
     }
 
     @Override
@@ -237,12 +255,21 @@ public class PlantPlanServiceImpl extends DjsBaseServiceImpl<PlantPlanMapper, Pl
      * <p>无明细的计划子查询返 NULL，MySQL DESC 下 NULL 排最后；末尾再按 id DESC 保证同键行的
      * 分页顺序稳定（否则翻页可能重复/漏行）。用 {@code last} 而非 {@code orderByDesc} 是因为
      * Lambda 写法表达不了子查询表达式；本方法在 buildWrapper 末尾唯一调用一次。</p>
+     *
+     * <p>⚠️ 子查询必须自己写 {@code d.tenant_id = t_plant_plant_plan.tenant_id}：MP 的
+     * {@code TenantLineInnerInterceptor} 只给 WHERE 里的子查询注入租户条件，**不进 ORDER BY 的标量子查询**。
+     * 缺这个谓词一是丢租户隔离，二是 {@code t_plant_plant_details} 的索引
+     * （{@code uk_plan_plot_month(tenant_id,plant_id,…)} / {@code idx_plan(tenant_id,plant_id)}）
+     * 首列就是 tenant_id，最左前缀失效会退化成全表扫（EXPLAIN type=ALL），
+     * 而本排序键是逐行标量子查询，成本 = 计划数 × 明细全表，数据量上去直接卡死。
+     * 关联外层 tenant_id 而不是硬编码 '1001'，V2 开多租户不用回来改。</p>
      */
     private void applyPlantingPeriodOrder(LambdaQueryWrapper<PlantPlan> wrapper) {
         wrapper.last("ORDER BY plan_year DESC, ("
             + "SELECT MIN(CONCAT(LPAD(d.plant_month, 2, '0'), d.plant_period)) "
             + "FROM t_plant_plant_details d "
-            + "WHERE d.plant_id = t_plant_plant_plan.id AND d.del_flag = '0'"
+            + "WHERE d.plant_id = t_plant_plant_plan.id AND d.del_flag = '0' "
+            + "AND d.tenant_id = t_plant_plant_plan.tenant_id"
             + ") DESC, id DESC");
     }
 

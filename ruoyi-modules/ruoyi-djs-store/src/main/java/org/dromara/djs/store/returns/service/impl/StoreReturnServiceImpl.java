@@ -6,6 +6,7 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.core.service.DictService;
+import org.dromara.common.core.service.UserService;
 import org.dromara.common.core.utils.StringUtils;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
@@ -151,6 +152,8 @@ public class StoreReturnServiceImpl
     private final ProductProductionMapper productProductionMapper;
     private final IStoreService storeService;
     private final StoreDailyLedgerMapper storeDailyLedgerMapper;
+    /** row178：导出「确认人」用（FastExcel 不走 Jackson，@Translation 不生效，只能 service 预填）。 */
+    private final UserService userService;
 
     public StoreReturnServiceImpl(StoreReturnMapper baseMapper,
                                   StoreMapper storeMapper,
@@ -163,8 +166,10 @@ public class StoreReturnServiceImpl
                                   IProductProductionService productProductionService,
                                   ProductProductionMapper productProductionMapper,
                                   IStoreService storeService,
-                                  StoreDailyLedgerMapper storeDailyLedgerMapper) {
+                                  StoreDailyLedgerMapper storeDailyLedgerMapper,
+                                  UserService userService) {
         super(baseMapper);
+        this.userService = userService;
         this.storeMapper = storeMapper;
         this.productInfoMapper = productInfoMapper;
         this.locationInfoMapper = locationInfoMapper;
@@ -215,10 +220,9 @@ public class StoreReturnServiceImpl
         if (bo.getStoreId() != null && storeMapper.selectById(bo.getStoreId()) == null) {
             throw new ServiceException("门店不存在或已删除：" + bo.getStoreId(), 404);
         }
-        // 3. row178：门店→仓库方向拦礼盒（顾客退门店不受影响——那是门店自己收回，不回仓库库存）
-        if (DIRECTION_STORE_TO_WAREHOUSE.equals(bo.getReturnDirection())) {
-            assertReturnableToWarehouse(product);
-        }
+        // 3. row178：拦礼盒。本方法对所有方向都无条件走下面的 inboundReturnBasket 真写仓库库存，
+        //    所以闸也不按方向区分（顾客退门店同样会写 location_stock）。
+        assertReturnable(product);
 
         StoreReturn entity = new StoreReturn();
         entity.setReturnNo(generateReturnNo());
@@ -243,7 +247,7 @@ public class StoreReturnServiceImpl
         // row31：门店退回猪肉/果蔬成品无地块/耳号来源 → 入「退货专属篮」（plot/ear/white_bar 全空），
         // 不并进自产果蔬地块行/分割猪肉耳号行；再领用/发货不带追溯（客户确认符合）。
         purchaseInService.inboundReturnBasket(resolveInboundProductId(bo.getProductId()), bo.getLocationId(), bo.getReturnQuantity(),
-            FLOW_TYPE_RETURN_IN, "门店退回入库：" + entity.getReturnNo());
+            FLOW_TYPE_RETURN_IN, returnInboundRemark("门店退回入库", entity.getReturnNo(), product));
 
         log.info("[STR-RETURN-REBUILD-001] return id={} no={} product={} location={} qty={} → return_in 联动入库",
             entity.getId(), entity.getReturnNo(), bo.getProductId(), bo.getLocationId(), bo.getReturnQuantity());
@@ -262,6 +266,14 @@ public class StoreReturnServiceImpl
         }
         if (bo.getStoreId() != null && storeMapper.selectById(bo.getStoreId()) == null) {
             throw new ServiceException("门店不存在或已删除：" + bo.getStoreId(), 404);
+        }
+        // row178：改方向也要过一遍礼盒闸，否则可以先按别的方向建、再 PUT 把方向改成门店退仓库绕过去
+        // （productId 建后锁死不可改，取存量行的产品判定）。
+        if (StringUtils.isNotBlank(bo.getReturnDirection()) && existing.getProductId() != null) {
+            ProductInfo product = productInfoMapper.selectById(existing.getProductId());
+            if (product != null) {
+                assertReturnable(product);
+            }
         }
 
         // 只更新元数据：returnNo / operatorId / productId / locationId / returnQuantity 均不回写
@@ -321,7 +333,7 @@ public class StoreReturnServiceImpl
             if (product == null) {
                 throw new ServiceException("产品不存在或已删除：" + item.getProductId(), 404);
             }
-            assertReturnableToWarehouse(product);
+            assertReturnable(product);
             // 退回量度量：果蔬行用退回量（份/把/盒），猪肉行无退回量时回退退回重量（kg）——与下方落库口径一致。
             BigDecimal returnMetric = item.getReturnQuantity() != null
                 ? item.getReturnQuantity() : item.getReturnWeight();
@@ -1067,7 +1079,7 @@ public class StoreReturnServiceImpl
         // inbound 内部校验库位 / 数量，失败抛 → 整体回滚（确认与入库一致，不留半态）。
         // row31：入「退货专属篮」（plot/ear/white_bar 全空），不并进地块/耳号行；再领用/发货不带追溯（客户确认符合）。
         purchaseInService.inboundReturnBasket(inboundProductId, locationId, bo.getReceivedQty(),
-            FLOW_TYPE_RETURN_IN, "门店退回仓库确认入库：" + existing.getReturnNo());
+            FLOW_TYPE_RETURN_IN, returnInboundRemark("门店退回仓库确认入库", existing.getReturnNo(), returnProduct));
 
         log.info("[STORE-RETURN-UNIFY-001] confirm id={} no={} location={} receivedQty={} inboundProduct={} → received 联动入库",
             bo.getId(), existing.getReturnNo(), locationId, bo.getReceivedQty(), inboundProductId);
@@ -1163,10 +1175,25 @@ public class StoreReturnServiceImpl
                 });
             all.add(vo);
         }
+        // row178：确认人姓名 service 侧预填。@Translation 只跑 Jackson 序列化链，导出走 FastExcel
+        // 直接读字段，光靠注解「确认人」整列是空的。
+        fillConfirmUserNames(all);
         all.sort(Comparator
             .comparing(StoreReturnStoreDailyVo::getReturnDate, Comparator.reverseOrder())
             .thenComparing(StoreReturnStoreDailyVo::getStoreId, Comparator.reverseOrder()));
         return all;
+    }
+
+    /** row178：按 confirmUser 批量回填确认人姓名（去重后逐个查，组数量级为「门店 × 天」，无 N+1 风险）。 */
+    private void fillConfirmUserNames(List<StoreReturnStoreDailyVo> rows) {
+        Map<Long, String> cache = new LinkedHashMap<>();
+        for (StoreReturnStoreDailyVo vo : rows) {
+            Long uid = vo.getConfirmUser();
+            if (uid == null) {
+                continue;
+            }
+            vo.setConfirmUserName(cache.computeIfAbsent(uid, userService::selectNicknameById));
+        }
     }
 
     /** row57：批量取退回行产品单位 map（productId → productUnit），供 kg / 非 kg 分流，避免逐行 selectById。 */
@@ -1393,20 +1420,42 @@ public class StoreReturnServiceImpl
     }
 
     /**
-     * row178：门店退回仓库的产品准入闸——礼盒（{@code belong_type=gift_box}）不收。
+     * row178：退回产品准入闸——礼盒（{@code belong_type=gift_box}）不收。
      *
      * <p>礼盒是多种原料的组合装，退回入库要拆回哪些原材料、各多少，单值 {@code product_material}
      * 表达不了；不拦的话工人选得到、提交得成功，直到仓库确认那步才抛 400，门店端已经以为退完了。
      * 选品接口（{@link #listPorkCandidates} / {@link #listVegCandidates}）不出礼盒是体验，
      * 这里才是把关（mp / 三方可直接 POST 任意 productId）。</p>
      *
+     * <p><b>不按方向区分</b>：{@link #insertByBo} 对所有方向（含 {@code customer_to_store}）都无条件调
+     * {@code inboundReturnBasket} 真写 {@code location_stock} + {@code stock_flow}，礼盒走哪个方向
+     * 都会把错账写进仓库库存。故这里一律拦。</p>
+     *
      * @param product 退回产品（非空）
      */
-    private void assertReturnableToWarehouse(ProductInfo product) {
+    private void assertReturnable(ProductInfo product) {
         if (BELONG_TYPE_GIFT_BOX.equals(product.getBelongType())) {
             throw new ServiceException("礼盒「" + product.getProductName()
-                + "」由多种原料组合而成，无法按单一原材料退回入库，暂不支持退回仓库", 400);
+                + "」由多种原料组合而成，无法按单一原材料退回入库，暂不支持退回", 400);
         }
+    }
+
+    /**
+     * row178：退回入库流水备注带上「退回的那个成品名」。
+     *
+     * <p>退回入库记在原材料名下（{@code resolveInboundProductId} 折算），流水行本身没有任何字段
+     * 指回成品；一个原材料常被 2-6 个规格成品共享（如「猪脚」对 500g/750g/1000g 三个规格），
+     * 只靠 {@code product_id} 无法回答「我退的那个规格入库了没」。把成品名写进备注，
+     * 入库记录按成品名搜时就能精确定位到这一笔（见 {@code StockFlowServiceImpl.buildWrapper}）。</p>
+     *
+     * @param action   动作描述（如「门店退回入库」）
+     * @param returnNo 退回单号
+     * @param product  退回的成品（可空 → 只写单号）
+     */
+    private String returnInboundRemark(String action, String returnNo, ProductInfo product) {
+        String base = action + "：" + returnNo;
+        return product == null || StringUtils.isBlank(product.getProductName())
+            ? base : base + " 退回产品：" + product.getProductName();
     }
 
     /** 退货产品是否猪肉（{@code belong_type=pork}）——仅 pork 走鲜/冻库分流（白条不分流，Kevin 口径）。 */

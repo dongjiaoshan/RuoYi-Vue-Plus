@@ -36,7 +36,8 @@ public class StoreReturnStoreDailyVo implements Serializable {
     @JsonFormat(pattern = "yyyy-MM-dd")
     private LocalDate returnDate;
 
-    /** 门店 ID（snowflake，Jackson 序列化为 string）。 */
+    /** 门店 ID（snowflake，Jackson 序列化为 string）。导出只要门店名，裸 ID 不进表头。 */
+    @ExcelIgnore
     private Long storeId;
 
     /** 门店名称（StoreMapper 批量回填，避免 N+1）。 */
@@ -86,10 +87,17 @@ public class StoreReturnStoreDailyVo implements Serializable {
     @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")
     private LocalDateTime confirmTime;
 
-    /** 确认人 ID（该组最近一条已确认行 confirm_user_id，翻译用）。 */
+    /** 确认人 ID（该组最近一条已确认行 confirm_user_id，翻译用）。导出只要姓名，裸 ID 不进表头。 */
+    @ExcelIgnore
     private Long confirmUser;
 
-    /** 确认人姓名（USER_ID_TO_NICKNAME 翻译，契约 4.5）。 */
+    /**
+     * 确认人姓名。
+     *
+     * <p>{@code @Translation} 只在 Jackson 序列化链上生效，FastExcel 导出直接读字段，不走 Jackson，
+     * 光靠注解导出会整列空 —— 所以 service 侧（{@code buildStoreDailyList}）已按 confirmUser 预填好；
+     * 注解保留给列表接口（预填值与翻译结果同源，覆盖无副作用）。</p>
+     */
     @ExcelProperty("确认人")
     @Translation(type = TransConstant.USER_ID_TO_NICKNAME, mapper = "confirmUser")
     private String confirmUserName;

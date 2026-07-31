@@ -331,11 +331,14 @@ public class ReturnProductServiceImpl
      */
     private void replenishStockOnReturn(ReturnProduct entity, BigDecimal confirmWeight, Long userId) {
         Long productId = entity.getProductId();
-        String remark = "门店退回入库 return_no=" + entity.getReturnNo() + " store_id=" + entity.getStoreId();
-
         ProductInfo product = productId == null ? null
             : productInfoMapper.selectOne(new LambdaQueryWrapper<ProductInfo>()
                 .eq(ProductInfo::getId, productId).last("LIMIT 1"));
+        // row178：备注带上退回的成品名 —— 入库流水记在原材料名下，一个原材料常被多个规格成品共享，
+        // 只靠 product_id 回答不了「我退的那个规格入库了没」。入库记录按成品名搜时靠这段定位。
+        String remark = "门店退回入库 return_no=" + entity.getReturnNo() + " store_id=" + entity.getStoreId()
+            + (product == null || StringUtils.isBlank(product.getProductName())
+                ? "" : " 退回产品：" + product.getProductName());
         // 兜底流水的记账产品：默认原产品；成品换算出原材料后取原材料（成品不应再产 IN 流水）。
         Long fallbackProductId = productId;
         if (product != null) {

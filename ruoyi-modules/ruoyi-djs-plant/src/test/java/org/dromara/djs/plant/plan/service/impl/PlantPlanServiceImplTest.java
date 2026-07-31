@@ -2,9 +2,12 @@ package org.dromara.djs.plant.plan.service.impl;
 
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
+import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.djs.common.encoder.BizCodeType;
 import org.dromara.djs.common.encoder.IBizCodeGenerator;
@@ -17,6 +20,7 @@ import org.dromara.djs.plant.plan.domain.bo.PlantPlanCreateBo;
 import org.dromara.djs.plant.plan.domain.bo.PlantFinishBo;
 import org.dromara.djs.plant.plan.domain.bo.PlantPlanUpdateBo;
 import org.dromara.djs.plant.plan.domain.bo.PlantStartBo;
+import org.dromara.djs.plant.plan.domain.query.PlantPlanQuery;
 import org.dromara.djs.plant.plan.mapper.PlantDetailsMapper;
 import org.dromara.djs.plant.plan.mapper.PlantPlanMapper;
 import org.dromara.djs.plant.plot.domain.PlotInfo;
@@ -38,7 +42,9 @@ import org.mockito.quality.Strictness;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -299,6 +305,135 @@ class PlantPlanServiceImplTest {
 
         assertThat(affected).isEqualTo(1);   // 仅 d1 完成（d2 已完成跳过）
         verify(plotMapper).update(isNull(), any(Wrapper.class));   // 待种植地块一步落地补 plot_status=2
+    }
+
+    // ============================================================
+    // 列表排序 + 计划月份多选（admin row173）
+    // ============================================================
+
+    /**
+     * 跑一次 {@code queryPageList} 并把 service 内部构造的 wrapper 抓出来。
+     *
+     * <p>{@code buildWrapper} 是私有方法，只能从公开入口反抓：ArgumentCaptor 拿到传给
+     * {@code selectVoPage} 的 wrapper，再断言它最终会渲染成什么 SQL 片段
+     * （{@code getSqlSegment()} = WHERE 段 + last 段，last 段就是 ORDER BY）。</p>
+     */
+    @SuppressWarnings("unchecked")
+    private LambdaQueryWrapper<PlantPlan> captureListWrapper(PlantPlanQuery query) {
+        when(planMapper.selectVoPage(any(), any())).thenReturn(new Page<>());
+        service.queryPageList(query, new PageQuery(10, 1));
+        ArgumentCaptor<LambdaQueryWrapper<PlantPlan>> cap = ArgumentCaptor.forClass(LambdaQueryWrapper.class);
+        verify(planMapper).selectVoPage(any(), cap.capture());
+        return cap.getValue();
+    }
+
+    @Test
+    @DisplayName("列表排序: ORDER BY 计划年份 → 最早明细(月份+旬别) → id，且子查询自带租户谓词")
+    void queryPageList_ordersByPlantingPeriodDesc_withTenantPredicate() {
+        String sql = captureListWrapper(new PlantPlanQuery()).getSqlSegment();
+
+        assertThat(sql).contains("ORDER BY plan_year DESC");
+        // 排序键与列表「计划种植日期」列同源：最早那条明细的 月份补零 + 旬别
+        assertThat(sql).contains("MIN(CONCAT(LPAD(d.plant_month, 2, '0'), d.plant_period))");
+        // ⚠️ 回归守门：MP 租户拦截器不进 ORDER BY 子查询，这个谓词必须自己写死在 SQL 里。
+        // 少了它 t_plant_plant_details 的索引（首列 tenant_id）最左前缀失效 → 逐行全表扫。
+        assertThat(sql).contains("d.tenant_id = t_plant_plant_plan.tenant_id");
+        // 同键行的分页稳定性兜底
+        assertThat(sql).endsWith("id DESC");
+    }
+
+    @Test
+    @DisplayName("列表排序: 请求参数 orderByColumn/isAsc 被丢弃，压不过固定排序")
+    @SuppressWarnings("unchecked")
+    void queryPageList_ignoresRequestOrderByParams() {
+        when(planMapper.selectVoPage(any(), any())).thenReturn(new Page<>());
+        PageQuery pageQuery = new PageQuery(10, 1);
+        pageQuery.setOrderByColumn("planYear");
+        pageQuery.setIsAsc("asc");
+
+        service.queryPageList(new PlantPlanQuery(), pageQuery);
+
+        // MP 分页拦截器把 page.orders() 拼在 wrapper 的 ORDER BY **之前**，
+        // 留着就等于任何人加个 ?orderByColumn=... 就能静默改掉甲方要求的首排序键。
+        ArgumentCaptor<Page<PlantPlan>> cap = ArgumentCaptor.forClass(Page.class);
+        verify(planMapper).selectVoPage(cap.capture(), any());
+        assertThat(cap.getValue().orders()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("计划月份多选: 传 [7,3] → EXISTS(... plant_month IN (?,?))，两个月份都进参数")
+    void queryPageList_planMonths_multiSelect() {
+        PlantPlanQuery q = new PlantPlanQuery();
+        q.setPlanMonths(List.of(7, 3));
+
+        LambdaQueryWrapper<PlantPlan> wrapper = captureListWrapper(q);
+
+        assertThat(wrapper.getSqlSegment()).contains("d.plant_month IN (");
+        assertThat(wrapper.getParamNameValuePairs().values()).contains(7, 3);
+    }
+
+    @Test
+    @DisplayName("计划月份多选: null（没选月份）→ 不加月份条件")
+    void queryPageList_planMonths_null_noFilter() {
+        // 注意断言 "d.plant_month IN"（筛选条件）而不是 "plant_month"：
+        // ORDER BY 的排序键里本来就有 LPAD(d.plant_month,...)，后者永远命中。
+        PlantPlanQuery q = new PlantPlanQuery();
+        q.setPlanMonths(null);
+
+        assertThat(captureListWrapper(q).getSqlSegment()).doesNotContain("d.plant_month IN");
+    }
+
+    @Test
+    @DisplayName("计划月份多选: 空 list（下拉清空）→ 不加月份条件")
+    void queryPageList_planMonths_empty_noFilter() {
+        PlantPlanQuery q = new PlantPlanQuery();
+        q.setPlanMonths(Collections.emptyList());
+
+        assertThat(captureListWrapper(q).getSqlSegment()).doesNotContain("d.plant_month IN");
+    }
+
+    @Test
+    @DisplayName("计划月份多选: 0 / 13 / null 越界值静默丢弃，只剩合法月份进 IN")
+    void queryPageList_planMonths_outOfRange_dropped() {
+        PlantPlanQuery q = new PlantPlanQuery();
+        q.setPlanMonths(Arrays.asList(0, 7, 13, null));
+
+        LambdaQueryWrapper<PlantPlan> wrapper = captureListWrapper(q);
+
+        assertThat(wrapper.getSqlSegment()).contains("d.plant_month IN (");
+        assertThat(wrapper.getParamNameValuePairs().values()).contains(7).doesNotContain(0, 13);
+    }
+
+    @Test
+    @DisplayName("计划月份多选: 全部越界(0/13) → 退化成不加月份条件，不生成空 IN ()")
+    void queryPageList_planMonths_allInvalid_noFilter() {
+        PlantPlanQuery q = new PlantPlanQuery();
+        q.setPlanMonths(List.of(0, 13));
+
+        assertThat(captureListWrapper(q).getSqlSegment()).doesNotContain("d.plant_month IN");
+    }
+
+    @Test
+    @DisplayName("排序键语义: CONCAT(LPAD(月,2,'0'), 旬别) 倒序 == 月份降序 + 下旬→中旬→上旬")
+    void plantingPeriodSortKey_semantics() {
+        // 与 applyPlantingPeriodOrder 的 SQL 表达式同构：月份补零后拼旬别（05/15/25），按字符串比较。
+        // 甲方要求「先按月份降序，同月份内下旬→中旬→上旬」，靠的就是 25 > 15 > 05 这个字典序巧合。
+        record Row(int month, String period, String label) {
+            String sortKey() {
+                return "%02d%s".formatted(month, period);
+            }
+        }
+        List<Row> rows = new ArrayList<>(List.of(
+            new Row(7, "05", "7月上旬"),
+            new Row(8, "05", "8月上旬"),
+            new Row(7, "25", "7月下旬"),
+            new Row(6, "15", "6月中旬"),
+            new Row(7, "15", "7月中旬")));
+
+        rows.sort(Comparator.comparing(Row::sortKey).reversed());
+
+        assertThat(rows.stream().map(Row::label))
+            .containsExactly("8月上旬", "7月下旬", "7月中旬", "7月上旬", "6月中旬");
     }
 
     // ============================================================

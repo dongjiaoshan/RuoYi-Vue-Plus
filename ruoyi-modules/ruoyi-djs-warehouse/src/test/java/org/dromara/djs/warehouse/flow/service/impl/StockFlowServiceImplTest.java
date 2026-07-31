@@ -2,6 +2,7 @@ package org.dromara.djs.warehouse.flow.service.impl;
 
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
@@ -138,6 +139,82 @@ class StockFlowServiceImplTest {
         assertThat(result.getRows()).hasSize(1);
         assertThat(result.getRows().get(0).getProductName()).as("回填产品名").isEqualTo("塑料袋");
         assertThat(result.getRows().get(0).getLocationName()).as("回填库位名").isEqualTo("包材库A");
+    }
+
+    /** row178：按成品名搜时，抓出下推给 mapper 的 wrapper（断言 SQL 结构）。 */
+    @SuppressWarnings("unchecked")
+    private LambdaQueryWrapper<StockFlow> captureWrapperForProductNameSearch(StockFlowQuery query, List<ProductInfo> nameHits,
+                                                                            List<ProductInfo> materialHits) {
+        // 第 1 次 selectList = 按 productName + 其余谓词命中的产品；第 2 次 = 原材料再过一遍同组谓词
+        when(productInfoMapper.selectList(any())).thenReturn(nameHits, materialHits);
+        Page<StockFlowVo> empty = new Page<>(1, 10);
+        empty.setRecords(List.of());
+        empty.setTotal(0);
+        when(stockFlowMapper.selectVoPage(any(Page.class), any(Wrapper.class))).thenReturn(empty);
+
+        service.queryInList(query, new PageQuery(1, 10));
+
+        ArgumentCaptor<Wrapper> cap = ArgumentCaptor.forClass(Wrapper.class);
+        verify(stockFlowMapper).selectVoPage(any(Page.class), cap.capture());
+        return (LambdaQueryWrapper<StockFlow>) cap.getValue();
+    }
+
+    private ProductInfo product(Long id, String name, Long materialId) {
+        ProductInfo p = new ProductInfo();
+        p.setId(id);
+        p.setProductName(name);
+        p.setProductMaterial(materialId);
+        return p;
+    }
+
+    @Test
+    @DisplayName("row178：成品名搜 → 原材料分支限退回类流水 + 备注含成品名（不把原材料整本台账并进来）")
+    void testProductNameSearch_MaterialBranchScopedToReturnFlows() {
+        StockFlowQuery query = new StockFlowQuery();
+        query.setProductName("黑毛猪猪脚1000g/份");
+
+        LambdaQueryWrapper<StockFlow> w = captureWrapperForProductNameSearch(query,
+            List.of(product(50101L, "黑毛猪猪脚1000g/份", 60001L)),
+            List.of(product(60001L, "猪脚", null)));
+
+        String sql = w.getTargetSql();
+        assertThat(sql).as("成品自身流水 OR 原材料分支").contains("OR");
+        assertThat(sql).as("原材料分支必须限定退回类流水，否则采购/分割/打包台账全被并进来").contains("flow_type IN");
+        assertThat(sql).as("原材料分支必须按备注里的成品名收敛到「这一笔退回」").contains("remark LIKE");
+        assertThat(w.getParamNameValuePairs().values())
+            .as("退回类流水白名单下推").contains("store_return_in")
+            .as("备注按成品名匹配").contains("%黑毛猪猪脚1000g/份%");
+    }
+
+    @Test
+    @DisplayName("row178：原材料 id 必须再过一遍 productTypes 等谓词（不能绕过筛选）")
+    void testProductNameSearch_MaterialRePassesOtherPredicates() {
+        StockFlowQuery query = new StockFlowQuery();
+        query.setProductName("黑毛猪猪脚1000g/份");
+        query.setProductTypes(List.of(1));
+
+        // 第 2 次查询（原材料过谓词）返回空 = 材料 product_type≠1 被滤掉
+        LambdaQueryWrapper<StockFlow> w = captureWrapperForProductNameSearch(query,
+            List.of(product(50101L, "黑毛猪猪脚1000g/份", 60001L)),
+            List.of());
+
+        // 材料被谓词滤掉 → 退化成纯 productId IN，没有 OR 分支，注入的材料 id 不会绕过 productTypes
+        assertThat(w.getTargetSql()).as("材料未通过谓词 → 不生成原材料分支").doesNotContain("remark LIKE");
+        assertThat(w.getParamNameValuePairs().values()).doesNotContain(60001L);
+        verify(productInfoMapper, times(2)).selectList(any());
+    }
+
+    @Test
+    @DisplayName("row178：不按产品名搜时不做原材料扩展（只查一次产品表）")
+    void testNoProductName_NoMaterialExpansion() {
+        StockFlowQuery query = new StockFlowQuery();
+        query.setMatType("pork");
+
+        LambdaQueryWrapper<StockFlow> w = captureWrapperForProductNameSearch(query,
+            List.of(product(50101L, "黑毛猪猪脚1000g/份", 60001L)), List.of());
+
+        assertThat(w.getTargetSql()).doesNotContain("remark LIKE");
+        verify(productInfoMapper, times(1)).selectList(any());
     }
 
     @Test
