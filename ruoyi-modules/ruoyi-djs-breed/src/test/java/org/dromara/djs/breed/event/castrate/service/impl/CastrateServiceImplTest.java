@@ -35,6 +35,7 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -65,6 +66,8 @@ class CastrateServiceImplTest {
     private DictService dictService;
     @Mock
     private UserService userService;
+    @Mock
+    private AutoCastrateExecutor autoCastrateExecutor;
 
     private CastrateServiceImpl service;
 
@@ -83,7 +86,7 @@ class CastrateServiceImplTest {
 
     @BeforeEach
     void setup() {
-        service = new CastrateServiceImpl(castrateMapper, pigMapper, pigCoreService, dictService, userService);
+        service = new CastrateServiceImpl(castrateMapper, pigMapper, pigCoreService, dictService, userService, autoCastrateExecutor);
     }
 
     /** 可阉割的公猪 = 育肥/仔猪公（R40：种公猪 boar 不可阉割，见 {@link #validate_boar_rejected}）。 */
@@ -212,12 +215,12 @@ class CastrateServiceImplTest {
             .hasMessageContaining("pig.not_found");
     }
 
-    // ========== admin row186：超龄公仔猪每日自动阉割 ==========
+    // ========== admin row186：批量扫描 + 逐头委派（单头写入逻辑见 AutoCastrateExecutorTest） ==========
 
-    private Pig mkMalePiglet(Long id, String earNo) {
+    private Pig mkMalePiglet(Long id) {
         Pig p = new Pig();
         p.setId(id);
-        p.setEarNo(earNo);
+        p.setEarNo("260706-M-" + id);
         p.setPigSex("M");
         p.setPigType("piglet");
         p.setCurrentStatus("");
@@ -226,63 +229,33 @@ class CastrateServiceImplTest {
     }
 
     @Test
-    @DisplayName("autoCastrate: happy path → 每头写阉割记录 + CASTRATE 事件，castrater='系统自动' 且 operatorId 为空")
-    void autoCastrate_happyPath() {
-        List<Pig> targets = List.of(mkMalePiglet(11L, "260706-M-001"), mkMalePiglet(12L, "260706-M-002"));
-        when(pigMapper.selectList(any())).thenReturn(targets);
-        // 抢占成功：条件更新影响 1 行
-        when(pigMapper.update(any(), any())).thenReturn(1);
+    @DisplayName("autoCastrate: 逐头委派给 executor，只统计真正处理成功的头数")
+    void autoCastrate_countsOnlyClaimed() {
+        when(pigMapper.selectList(any())).thenReturn(List.of(mkMalePiglet(11L), mkMalePiglet(12L)));
+        // 第一头抢到、第二头被他处抢先
+        when(autoCastrateExecutor.castrateOne(any(Pig.class), any(LocalDate.class), anyInt()))
+            .thenReturn(true).thenReturn(false);
 
-        int done = service.autoCastrateOverAgePiglets(LocalDate.of(2026, 8, 1));
-
-        assertThat(done).isEqualTo(2);
-        ArgumentCaptor<CastrateRecord> recCaptor = ArgumentCaptor.forClass(CastrateRecord.class);
-        verify(castrateMapper, times(2)).insert(recCaptor.capture());
-        CastrateRecord first = recCaptor.getAllValues().get(0);
-        assertThat(first.getCastrater()).isEqualTo("系统自动");
-        // 定时线程无登录上下文，操作人必须留空（与人工录入区分）
-        assertThat(first.getOperatorId()).isNull();
-        assertThat(first.getCastrateDate()).isEqualTo(LocalDate.of(2026, 8, 1).atStartOfDay());
-        assertThat(first.getRemark()).contains("7");
-
-        ArgumentCaptor<PigEventBo> evCaptor = ArgumentCaptor.forClass(PigEventBo.class);
-        verify(pigCoreService, times(2)).fireEvent(evCaptor.capture());
-        assertThat(evCaptor.getValue().getEventType()).isEqualTo(PigStatusEvent.CASTRATE);
+        assertThat(service.autoCastrateOverAgePiglets(LocalDate.of(2026, 8, 1))).isEqualTo(1);
+        verify(autoCastrateExecutor, times(2)).castrateOne(any(Pig.class), any(LocalDate.class), anyInt());
     }
 
     @Test
-    @DisplayName("autoCastrate: 抢占失败（并发已被人工阉割）→ 不写记录不发事件，计数不含该头")
-    void autoCastrate_alreadyCastratedByOthers_skipped() {
-        when(pigMapper.selectList(any())).thenReturn(List.of(mkMalePiglet(13L, "260706-M-003")));
-        // 条件更新 is_castrated=1 未命中 → 该头已被他处阉割
-        when(pigMapper.update(any(), any())).thenReturn(0);
-
-        int done = service.autoCastrateOverAgePiglets(LocalDate.of(2026, 8, 1));
-
-        assertThat(done).isZero();
-        verify(castrateMapper, never()).insert(any(CastrateRecord.class));
-        verify(pigCoreService, never()).fireEvent(any(PigEventBo.class));
-    }
-
-    @Test
-    @DisplayName("autoCastrate: 无命中猪只 → 返回 0，不触碰任何写入")
+    @DisplayName("autoCastrate: 无命中猪只 → 返回 0，不触碰 executor")
     void autoCastrate_noTargets() {
         when(pigMapper.selectList(any())).thenReturn(List.of());
 
         assertThat(service.autoCastrateOverAgePiglets(LocalDate.of(2026, 8, 1))).isZero();
-        verify(castrateMapper, never()).insert(any(CastrateRecord.class));
-        verify(pigCoreService, never()).fireEvent(any(PigEventBo.class));
+        verify(autoCastrateExecutor, never()).castrateOne(any(Pig.class), any(LocalDate.class), anyInt());
     }
 
     @Test
     @DisplayName("autoCastrate: 单头抛异常不中断整批，其余照常处理")
     void autoCastrate_oneFails_othersContinue() {
-        when(pigMapper.selectList(any())).thenReturn(
-            List.of(mkMalePiglet(14L, "260706-M-004"), mkMalePiglet(15L, "260706-M-005")));
-        when(pigMapper.update(any(), any())).thenReturn(1);
-        when(castrateMapper.insert(any(CastrateRecord.class))).thenThrow(new RuntimeException("boom")).thenReturn(1);
+        when(pigMapper.selectList(any())).thenReturn(List.of(mkMalePiglet(14L), mkMalePiglet(15L)));
+        when(autoCastrateExecutor.castrateOne(any(Pig.class), any(LocalDate.class), anyInt()))
+            .thenThrow(new RuntimeException("boom")).thenReturn(true);
 
         assertThat(service.autoCastrateOverAgePiglets(LocalDate.of(2026, 8, 1))).isEqualTo(1);
-        verify(pigCoreService, times(1)).fireEvent(any(PigEventBo.class));
     }
 }
