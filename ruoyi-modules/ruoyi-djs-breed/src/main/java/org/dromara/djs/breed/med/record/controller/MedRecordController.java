@@ -18,6 +18,8 @@ import org.dromara.djs.breed.med.record.domain.query.MedRecordQuery;
 import org.dromara.djs.breed.med.record.domain.vo.MedRecordVo;
 import org.dromara.djs.breed.med.record.domain.vo.UsableBatchVo;
 import org.dromara.djs.breed.med.record.service.IMedRecordService;
+import org.dromara.djs.breed.production.controller.ProductionCycleConfigController;
+import org.dromara.djs.breed.production.service.IProductionCycleConfigService;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -41,7 +43,7 @@ import java.util.List;
  *   <li>{@code GET    /getInfo/{id}}    详情</li>
  *   <li>{@code POST   /add}             单只用药</li>
  *   <li>{@code POST   /add-batch}       批量用药</li>
- *   <li>{@code GET    /usable-batch}    mp picker 数据源（3 天内已领可用批次）</li>
+ *   <li>{@code GET    /usable-batch}    mp picker 数据源（N 天内已领可用批次）</li>
  *   <li>{@code POST   /export}          导出</li>
  *   <li>{@code DELETE /remove/{ids}}    软删（不回滚库存）</li>
  * </ul>
@@ -56,6 +58,8 @@ import java.util.List;
 public class MedRecordController extends BaseController {
 
     private final IMedRecordService medRecordService;
+    /** row252：读「用药配置」med_pick_usable_days，透出给 mp 渲染「N 天内已领」文案。 */
+    private final IProductionCycleConfigService cycleConfigService;
 
     @SaCheckPermission("djs:breed:med-record:list")
     @GetMapping("/list")
@@ -92,7 +96,7 @@ public class MedRecordController extends BaseController {
     }
 
     /**
-     * mp picker：当前用户 3 天内已领 + 余量 > 0 的可用批次列表。
+     * mp picker：当前用户 N 天内已领 + 余量 > 0 的可用批次列表（N 见 {@link #usableDays()}）。
      *
      * <p>{@code mineOnly=true}（默认）按 LoginHelper.getUserId 过滤；
      * {@code false} 返全场（admin 端调）。</p>
@@ -102,6 +106,23 @@ public class MedRecordController extends BaseController {
     public R<List<UsableBatchVo>> usableBatch(@RequestParam(defaultValue = "true") boolean mineOnly) {
         Long operatorId = mineOnly ? LoginHelper.getUserId() : null;
         return R.ok(medRecordService.listUsableBatches(operatorId));
+    }
+
+    /**
+     * 药品领用可用天数（小程序 row252）：{@code /usable-batch} 的时间窗口 N。
+     *
+     * <p>取「用药配置」{@code med_pick_usable_days} 生效值，未配置 / 误配非正数 → 默认
+     * {@value org.dromara.djs.breed.production.controller.ProductionCycleConfigController#MED_PICK_USABLE_DAYS_DEFAULT}。
+     * mp 用药治疗 / 批量用药页拿它渲染「选择药品（N 天内已领）」标题与空态文案，
+     * 避免后台改了天数而页面还写死 3 天。</p>
+     *
+     * @return 可用天数（天）
+     */
+    @SaCheckPermission("djs:breed:med-record:list")
+    @GetMapping("/usable-days")
+    public R<Integer> usableDays() {
+        Integer days = cycleConfigService.getValue(ProductionCycleConfigController.MED_PICK_USABLE_DAYS_KEY);
+        return R.ok(days != null && days > 0 ? days : ProductionCycleConfigController.MED_PICK_USABLE_DAYS_DEFAULT);
     }
 
     @SaCheckPermission("djs:breed:med-record:export")

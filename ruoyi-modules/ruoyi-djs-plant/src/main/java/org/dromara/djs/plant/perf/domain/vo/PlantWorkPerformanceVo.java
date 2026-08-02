@@ -69,9 +69,9 @@ public class PlantWorkPerformanceVo implements Serializable {
     private BigDecimal pickWeight;
 
     /**
-     * 单价快照（元/斤）。
+     * 单价快照（元/公斤）。
      */
-    @ExcelProperty(value = "单价快照(元/斤)")
+    @ExcelProperty(value = "单价快照(元/公斤)")
     private BigDecimal unitPriceSnapshot;
 
     /**

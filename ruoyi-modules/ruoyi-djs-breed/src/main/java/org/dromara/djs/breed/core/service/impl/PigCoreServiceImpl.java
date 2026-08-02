@@ -738,12 +738,22 @@ public class PigCoreServiceImpl implements IPigCoreService {
                                                 Integer isCastrated,
                                                 Boolean breedReady) {
         int effectiveLimit = clampLimit(limit);
+        // 小程序 row256-259：**输入耳号搜索时放行「默认待办窗口」类过滤**。
+        // dueType(到产期/到断奶期) / minAgeDays(到出栏日龄) / breedReady(够在场天数) / excludeNullBarn
+        // 这四个维度存在的意义是「进页默认只列今天该干的那批猪」，属于列表的默认收窄，不是业务硬约束。
+        // 工人一旦手输耳号，就是奔着某一头具体的猪去的，此时还叠这些窗口 = 「库里明明有这头猪却搜不出来」
+        // （分娩录入搜不到未到产期的配种母猪、断奶录入搜不到未到期的分娩母猪、出栏录入搜不到未到龄育肥猪、
+        //  配种录入搜不到刚断奶的母猪）。搜索态只保留真·业务硬约束：状态白名单 statusFilter + 猪类
+        // pigTypeFilter + 性别 sexFilter + 阉割态 isCastrated + 栋舍 barnCode（用户显式点选的可见筛选）。
+        // 注意 dueType 本身不置空：它同时驱动预产期/到断奶期 enrich、临产角标与排序，置空会让搜索结果丢角标；
+        // 这里只跳过它的**硬筛**分支（见下方 applyDueFilter）。
+        boolean searchingByEarNo = StringUtils.isNotBlank(earNoKeyword);
         // 出栏选猪：仅返回到龄肥猪（日龄 >= slaughter_age_days）。日龄 = NOW − birth_date（缺则 introduce_date）；
         // 两者均空 → DATEDIFF 为 NULL，比较结果非真 → 自动剔除（无生日的猪不算到龄）。minAgeDays ≤0/null 不过滤。
-        boolean applyMinAge = minAgeDays != null && minAgeDays > 0;
+        boolean applyMinAge = !searchingByEarNo && minAgeDays != null && minAgeDays > 0;
         // FIX-BREEDING-001 #23a：配种选猪场景传 excludeNullBarn=true，排除无栋舍归属猪只，
         // 与 countByBarn（barn-count chip）口径对齐（列表数 = 各栋舍 chip 之和）。默认 false 不变。
-        boolean dropNullBarn = Boolean.TRUE.equals(excludeNullBarn);
+        boolean dropNullBarn = !searchingByEarNo && Boolean.TRUE.equals(excludeNullBarn);
         // statusFilter CSV："HB,PZ" → IN ('HB','PZ')；如果显式含 END（如燎毛工序选已出栏猪），跳过下方 .ne(END) 默认排除
         List<String> statuses = parseStatusFilter(statusFilter);
         boolean callerWantsEnd = statuses.contains(PigLifecycle.END.name());
@@ -797,7 +807,8 @@ public class PigCoreServiceImpl implements IPigCoreService {
 
         // row13：配种选猪场景（breedReady=true）按后台「母猪生产配置」最小在场天数过滤——
         // 未达对应天数（断奶/返情/空怀/流产→配种）的母猪不进待配种列表；后备 HB 无阈值全显。
-        if (Boolean.TRUE.equals(breedReady)) {
+        // row256：搜耳号时放行（见上方 searchingByEarNo）。
+        if (!searchingByEarNo && Boolean.TRUE.equals(breedReady)) {
             pigs = filterBreedReady(pigs, LocalDateTime.now());
             if (pigs.isEmpty()) {
                 return Collections.emptyList();
@@ -815,7 +826,9 @@ public class PigCoreServiceImpl implements IPigCoreService {
         //   WEANING（断奶板块）：分娩日 + sow_farrow_to_wean_days ≤ 今天 才显示（满足哺乳天数）。
         //   = dueDate ≤ 今天（dueDate 即「基准日 + 对应配置天数」）。无 dueDate（缺配种/分娩基准日）的母猪不进板块。
         //   配置缺失时 computeDueDateMap 返空 map → 不过滤（degrade 不卡空板块，与 filterBreedReady 同款防御）。
-        if (StringUtils.isNotBlank(dueType) && !dueDateMap.isEmpty()) {
+        // row257/258：搜耳号时**只跳过这段硬筛**，dueDateMap/displayDueMap 仍照算 —— 搜出来的未到期母猪
+        //   照样带预产期/到断奶期与临产角标，工人能一眼看出「这头还差几天」而不是搜不到。
+        if (!searchingByEarNo && StringUtils.isNotBlank(dueType) && !dueDateMap.isEmpty()) {
             LocalDate dueToday = LocalDate.now();
             pigs = pigs.stream()
                 .filter(p -> {
@@ -1022,10 +1035,17 @@ public class PigCoreServiceImpl implements IPigCoreService {
     public List<PigBarnCountVo> countByBarn(String statusFilter, String sexFilter, String pigTypeFilter, String earNoKeyword, Boolean breedReady, String dueType, Integer minAgeDays) {
         List<String> statuses = parseStatusFilter(statusFilter);
         boolean callerWantsEnd = statuses.contains(PigLifecycle.END.name());
+        // row256-258：与 searchByEarKeyword 保持同一条放行规则——传了耳号关键字就跳过
+        // 「默认待办窗口」类收窄（minAgeDays 到龄 / breedReady 在场天数 / dueType 到期硬筛）。
+        // 本方法的 javadoc 声称「与 search 同口径」，若只有 search 放行、chip 计数不放行，
+        // 该声明就是假的：同样参数下 search 返 1 条、barn-count 返空（QA 对抗验收实测复现）。
+        // 目前 PigSelectPanel 输入耳号时不重载 chip（Kevin 2026-07-21），故用户暂看不到；
+        // 但契约不能留假，一旦哪天恢复重载就会立刻表现为「列表有猪、chip 全 0」。
+        boolean searchingByEarNo = StringUtils.isNotBlank(earNoKeyword);
         // row180：出栏 chip 与列表同口径——日龄 >= minAgeDays（到龄肥猪）才计入 chip。
         // 与 searchByEarKeyword 完全一致：COALESCE(birth_date, introduce_date)，无生日 → DATEDIFF 为 NULL 自动剔除。
         // minAgeDays ≤0/null（其余 12 页调用方不传）→ 不过滤（向后兼容，行为不变）。
-        boolean applyMinAge = minAgeDays != null && minAgeDays > 0;
+        boolean applyMinAge = !searchingByEarNo && minAgeDays != null && minAgeDays > 0;
 
         // pigTypeFilter 支持 CSV（如 'piglet,fattening' 给阉割选猪 = 公的仔猪+育肥猪）；单值退化 .eq，CSV 走 IN。
         // 与 searchByEarKeyword 同口径，否则栋舍 chip 计数与列表条数对不上。
@@ -1055,7 +1075,7 @@ public class PigCoreServiceImpl implements IPigCoreService {
         }
 
         // row13：与 searchByEarKeyword 同口径——配种选猪时按最小在场天数过滤，否则栋舍 chip 头数之和对不上列表条数
-        if (Boolean.TRUE.equals(breedReady)) {
+        if (!searchingByEarNo && Boolean.TRUE.equals(breedReady)) {
             pigs = filterBreedReady(pigs, LocalDateTime.now());
             if (pigs.isEmpty()) {
                 return Collections.emptyList();
@@ -1065,7 +1085,7 @@ public class PigCoreServiceImpl implements IPigCoreService {
         // r120：与 searchByEarKeyword 同口径——分娩/断奶板块按生产配置天数硬筛（dueDate ≤ 今天）。
         // 不加此过滤则栋舍 chip 计未到期母猪、列表只列到期母猪 → chip 显 1 而列表空（测试 r120）。
         // 与列表侧 filter（上方 695-706）逻辑一致：配置缺失 → computeDueDateMap 返空 → 不过滤（degrade）。
-        if (StringUtils.isNotBlank(dueType)) {
+        if (!searchingByEarNo && StringUtils.isNotBlank(dueType)) {
             Map<Long, LocalDate> dueDateMap = computeDueDateMap(pigs, dueType);
             if (!dueDateMap.isEmpty()) {
                 LocalDate dueToday = LocalDate.now();
@@ -1391,6 +1411,15 @@ public class PigCoreServiceImpl implements IPigCoreService {
             .eq(query.getBarnId() != null, Pig::getBarnId, query.getBarnId())
             .eq(query.getPenId() != null, Pig::getPenId, query.getPenId())
             .ne(Boolean.TRUE.equals(query.getExcludeEnd()), Pig::getCurrentStatus, PigLifecycle.END.name());
+
+        // row251：最大日龄过滤（mp 疫苗药品猪只列表选「育肥猪」时传 fatten_med_max_age_days）。
+        // 与 minAgeDays 用同一日龄口径 COALESCE(birth_date, introduce_date)；差别在无生日的猪要放行——
+        // DATEDIFF 返 NULL 时比较非真会被剔除，故写成「日龄为空 OR 日龄 ≤ 上限」。null/≤0 → 不拼条件。
+        Integer maxAge = query.getMaxAgeDays();
+        if (maxAge != null && maxAge > 0) {
+            w.apply("(COALESCE(birth_date, introduce_date) IS NULL"
+                + " OR DATEDIFF(NOW(), COALESCE(birth_date, introduce_date)) <= {0})", maxAge);
+        }
 
         // 栋舍/栏位按名称模糊：先反查命中的 barn_id / pen_id 集合，再 in(...)；
         // 命中空集合时强制返空（in 空集合在 MP 里被忽略 → 改用恒假条件），避免误返全量。

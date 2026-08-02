@@ -114,6 +114,84 @@ public class CastrateServiceImpl implements ICastrateService {
         return toVo(entity);
     }
 
+    /** 自动阉割的阉割人落款（无登录上下文，与人工录入区分）。 */
+    private static final String AUTO_CASTRATER = "系统自动";
+
+    /** 仔猪自动阉割日龄阈值（天）：严格「超过」7 日龄才处理。 */
+    private static final int AUTO_CASTRATE_AGE_DAYS = 7;
+
+    @Override
+    public int autoCastrateOverAgePiglets(LocalDate targetDate) {
+        LocalDate baseDate = targetDate != null ? targetDate : LocalDate.now();
+        // 日龄口径与出栏选猪一致：COALESCE(birth_date, introduce_date)，两者皆空的猪算不出日龄、自动不命中。
+        List<Pig> targets = pigMapper.selectList(Wrappers.<Pig>lambdaQuery()
+            .eq(Pig::getPigSex, "M")
+            .eq(Pig::getPigType, "piglet")
+            .eq(Pig::getIsCastrated, 1)
+            .ne(Pig::getCurrentStatus, "END")
+            .apply("DATEDIFF({0}, COALESCE(birth_date, introduce_date)) > {1}",
+                baseDate, AUTO_CASTRATE_AGE_DAYS));
+        if (targets.isEmpty()) {
+            return 0;
+        }
+        int done = 0;
+        for (Pig pig : targets) {
+            try {
+                if (autoCastrateOne(pig, baseDate)) {
+                    done++;
+                }
+            } catch (Exception e) {
+                // 逐头独立：单头失败（状态机拒绝等）不拖垮整批
+                log.warn("[BRD-AUTO-CASTRATE] 跳过 pigId={} earNo={}：{}", pig.getId(), pig.getEarNo(), e.getMessage());
+            }
+        }
+        log.info("[BRD-AUTO-CASTRATE] baseDate={} 命中 {} 头，成功 {} 头", baseDate, targets.size(), done);
+        return done;
+    }
+
+    /**
+     * 单头自动阉割：阉割记录 + CASTRATE 事件台账 + is_castrated=2，三写与 {@link #recordCastrate} 同口径。
+     * 独立事务，保证单头失败不回滚已处理的其它猪。
+     *
+     * <p>先用带 {@code is_castrated=1} 条件的 UPDATE「抢占」再写台账：批量 SELECT 到逐头处理之间存在时间窗
+     * （全量一轮分钟级），期间人工可能已把同一头猪阉了。只有抢到（影响行数=1）的才继续写记录与事件，
+     * 否则直接跳过，避免一头猪出现两条阉割记录 / 两条 CASTRATE 事件。
+     * {@code t_farm_castrate_record} 无唯一约束，靠这个条件更新收口。</p>
+     *
+     * @return 是否真正处理了该头（false = 已被他处阉割，跳过）
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public boolean autoCastrateOne(Pig pig, LocalDate baseDate) {
+        // wrapper-only update：不走实体乐观锁（同 recordCastrate）；条件 is_castrated=1 兼作并发抢占
+        int claimed = pigMapper.update(null, Wrappers.<Pig>lambdaUpdate()
+            .set(Pig::getIsCastrated, 2)
+            .eq(Pig::getId, pig.getId())
+            .eq(Pig::getIsCastrated, 1));
+        if (claimed == 0) {
+            log.info("[BRD-AUTO-CASTRATE] pigId={} 已被他处阉割，跳过", pig.getId());
+            return false;
+        }
+
+        CastrateRecord entity = new CastrateRecord();
+        entity.setPigId(pig.getId());
+        entity.setEarNo(pig.getEarNo());
+        entity.setCastrateDate(baseDate.atStartOfDay());
+        entity.setCastrater(AUTO_CASTRATER);
+        entity.setRemark("超过 " + AUTO_CASTRATE_AGE_DAYS + " 日龄自动阉割");
+        // 定时线程无登录上下文，操作人留空（与 castrater='系统自动' 一起标识非人工录入）
+        entity.setOperatorId(null);
+        entity.setDelFlag("0");
+        castrateMapper.insert(entity);
+
+        PigEventBo eventBo = new PigEventBo();
+        eventBo.setPigId(pig.getId());
+        eventBo.setEventType(PigStatusEvent.CASTRATE);
+        eventBo.setRelatedEventId(entity.getId());
+        eventBo.setEventAt(baseDate.atStartOfDay());
+        pigCoreService.fireEvent(eventBo);
+        return true;
+    }
+
     @Override
     public TableDataInfo<CastrateRecordVo> queryPage(CastrateQuery query, PageQuery pageQuery) {
         LocalDateTime beginAt = query.getBeginDate() != null ? query.getBeginDate().atStartOfDay() : null;

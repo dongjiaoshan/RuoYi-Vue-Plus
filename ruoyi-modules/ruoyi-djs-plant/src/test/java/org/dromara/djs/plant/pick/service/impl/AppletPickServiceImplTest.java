@@ -81,6 +81,9 @@ class AppletPickServiceImplTest {
     private ImageUrlResolver imageUrlResolver;
     @Mock
     private org.dromara.djs.plant.team.service.PlantTeamLinkService teamLinkService;
+    /** row260：已采产量并入未结算销售量后新增的依赖（本类用例不涉未结算流水，默认返空 list）。 */
+    @Mock
+    private org.dromara.djs.plant.activity.mapper.PlantActivityMapper activityMapper;
 
     private AppletPickServiceImpl service;
 
@@ -94,7 +97,7 @@ class AppletPickServiceImplTest {
 
     @BeforeEach
     void setUp() {
-        service = new AppletPickServiceImpl(detailsMapper, planMapper, plotMapper, cropMapper, teamMapper, peopleMapper, farmRecordsService, eventPublisher, imageUrlResolver, teamLinkService);
+        service = new AppletPickServiceImpl(detailsMapper, planMapper, plotMapper, cropMapper, teamMapper, peopleMapper, farmRecordsService, eventPublisher, imageUrlResolver, teamLinkService, activityMapper);
     }
 
     private PlantDetails detailFixture() {

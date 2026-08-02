@@ -18,7 +18,7 @@ import java.math.BigDecimal;
  * <ul>
  *   <li>{@code relatedProduct} → {@code t_warehouse_product_info.id}（D8 WMS-MD-002 同日，逻辑关联不写 FK）</li>
  *   <li>{@code plantingSeason} 字典 {@code djs_planting_season} 多选逗号分隔（spring,summer 等）</li>
- *   <li>{@code pickUnitPrice} 采摘单价（元/斤），P1#14 单价位置 V1 暂放此</li>
+ *   <li>{@code pickUnitPrice} 采摘单价（元/公斤），P1#14 单价位置 V1 暂放此</li>
  * </ul>
  *
  * @author djs
@@ -86,7 +86,7 @@ public class CropInfo extends TenantEntity {
     /** 品质描述。 */
     private String qualityDesc;
 
-    /** 采摘单价（元/斤）。 */
+    /** 采摘单价（元/公斤）。 */
     private BigDecimal pickUnitPrice;
 
     /** 主图 ossId（IMG-LIB-001 4 层 resolver L1；create 时按 cropName 自动匹配存入）。 */

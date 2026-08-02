@@ -114,7 +114,7 @@ public class MedRecord extends TenantEntity {
 
     /**
      * 批次 ID（FK → {@code t_breed_medicine_batch.id}，必填，
-     * 从 3 天内已领批次中选）。
+     * 从 N 天内已领批次中选）。
      */
     private Long batchId;
 

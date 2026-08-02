@@ -58,7 +58,13 @@ public interface PickPlanMapper {
             COALESCE(SUM(d.plot_area),      0) AS totalAcreage,
             COALESCE(SUM(CASE WHEN d.begin_actualdate IS NOT NULL THEN d.plot_area ELSE 0 END), 0) AS currentPlantedArea,
             COALESCE(SUM(d.expected_yield), 0) AS expectedYield,
-            COALESCE(SUM(CASE WHEN YEAR(d.earliest_harvestdate) = #{currentYear} THEN d.actual_yield ELSE 0 END), 0) AS actualYield,
+            -- row260：已采产量 = 当年 Σactual_yield + 本作物未结算销售量（已录入但还没落到地块的部分）。
+            -- 销售去向按 DENGBO-R4/R24 故意不即时分摊（plot_id 空、settle_round=0），要等整批采摘完成才均分进
+            -- actual_yield；只算 actual_yield 会让「录了却不显示」。与 mp AppletPickServiceImpl 同口径，
+            -- 否则 admin 显 0 / mp 显 100 两端打架。谓词 plot_id IS NULL 不可省——非销售去向当场就写了
+            -- actual_yield 且 settle_round 同样是 0，漏掉它会双算。
+            COALESCE(SUM(CASE WHEN YEAR(d.earliest_harvestdate) = #{currentYear} THEN d.actual_yield ELSE 0 END), 0)
+              + COALESCE(MAX(ua.pendingSum), 0) AS actualYield,
             COALESCE(MAX(dl.disasterLoss), 0) AS disasterLoss,
             -- row185：预计净产量 = max(0, 预计产量 − 预计灾害损失量)，钳 0 防灾害>预计时出负
             GREATEST(COALESCE(SUM(d.expected_yield), 0) - COALESCE(MAX(dl.disasterLoss), 0), 0) AS netExpectedYield,
@@ -78,6 +84,25 @@ public interface PickPlanMapper {
                AND fr.crop_id IS NOT NULL
              GROUP BY fr.crop_id
           ) dl ON dl.crop_id = d.crop_id
+          LEFT JOIN (
+            -- row260：各作物「已录入未落地块」的采摘量 = 未结算销售流水
+            -- （pick_dest='sale' + plot_id 空 + settle_round∈{0,NULL}，三条缺一不可，
+            --  谓词逐条理由见 PlantActivityMapper#selectUnsettledPickedByCrops 注释）。
+            -- 先按作物预聚合再左联（与 dl 同款），避免与父表多 detail 行扇出重复计数；
+            -- 故上面取 MAX(ua.pendingSum) 而非 SUM（每作物一行，MAX 即该行值）。
+            -- 注：admin 本表是**作物级跨渠道**汇总（不按 is_pick 拆），这笔未结算量本就属于该作物、
+            -- 且结算后会落进同样被本表统计的 is_pick=1 地块，故在此并入一次是正确的、不重复；
+            -- mp 侧因为按 is_pick 分渠道展示，必须只在 is_pick=1 视图并入（见 AppletPickServiceImpl）。
+            SELECT pa.crop_id AS crop_id, SUM(pa.pick_weight) AS pendingSum
+              FROM t_plant_plant_activity pa
+             WHERE pa.del_flag = '0'
+               AND pa.tenant_id = #{tenantId}
+               AND pa.crop_id IS NOT NULL
+               AND pa.pick_dest = 'sale'
+               AND pa.plot_id IS NULL
+               AND (pa.settle_round = 0 OR pa.settle_round IS NULL)
+             GROUP BY pa.crop_id
+          ) ua ON ua.crop_id = d.crop_id
          WHERE d.del_flag = '0'
            AND d.tenant_id = #{tenantId}
            <if test='cropId != null'>        AND d.crop_id = #{cropId}                </if>

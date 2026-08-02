@@ -66,13 +66,16 @@ class MedRecordServiceImplTest {
     private PigMapper pigMapper;
     @Mock
     private MedicineStockProvider medicineStockProvider;
+    @Mock
+    private org.dromara.djs.breed.production.service.IProductionCycleConfigService cycleConfigService;
 
     private TestableMedRecordServiceImpl service;
 
     static class TestableMedRecordServiceImpl extends MedRecordServiceImpl {
         TestableMedRecordServiceImpl(MedRecordMapper r, MedBatchMapper b,
-                                     PigMapper p, MedicineStockProvider sp) {
-            super(r, b, p, sp);
+                                     PigMapper p, MedicineStockProvider sp,
+                                     org.dromara.djs.breed.production.service.IProductionCycleConfigService cc) {
+            super(r, b, p, sp, cc);
         }
 
         @Override
@@ -97,7 +100,7 @@ class MedRecordServiceImplTest {
     @BeforeEach
     void setup() {
         service = new TestableMedRecordServiceImpl(
-            medRecordMapper, medBatchMapper, pigMapper, medicineStockProvider);
+            medRecordMapper, medBatchMapper, pigMapper, medicineStockProvider, cycleConfigService);
     }
 
     // ---------------- 工具方法 ----------------
@@ -281,24 +284,24 @@ class MedRecordServiceImplTest {
     @DisplayName("listUsableBatches: 使用药品数据源走仓库领用流水（provider.listRecentPickedMedicineIds），覆盖两个领用入口（row131）")
     void testListUsableBatches_FromWarehousePickFlow() {
         Long operatorId = 5001L;
-        // 近 3 天已领药品 id 从仓库领用出库流水取（覆盖疫苗药品页 + 物资领用药品库两入口）
-        when(medicineStockProvider.listRecentPickedMedicineIds(operatorId)).thenReturn(List.of(MEDICINE_ID));
+        // 近 N 天已领药品 id 从仓库领用出库流水取（覆盖疫苗药品页 + 物资领用药品库两入口）
+        when(medicineStockProvider.listRecentPickedMedicineIds(operatorId, 15)).thenReturn(List.of(MEDICINE_ID));
         when(medicineStockProvider.listMedicineProductsByIds(anyCollection())).thenReturn(medicineProduct());
 
         var list = service.listUsableBatches(operatorId);
 
         // 数据源必须是仓库流水，不再查 t_breed_medicine_usage 台账
-        verify(medicineStockProvider).listRecentPickedMedicineIds(operatorId);
+        verify(medicineStockProvider).listRecentPickedMedicineIds(operatorId, 15);
         assertThat(list).hasSize(1);
         assertThat(list.get(0).getMedicineId()).isEqualTo(MEDICINE_ID);
         assertThat(list.get(0).getMedicineName()).isEqualTo("青霉素");
     }
 
     @Test
-    @DisplayName("listUsableBatches: 近 3 天无领用 → 空列表，不再查药品详情")
+    @DisplayName("listUsableBatches: 近 N 天无领用 → 空列表，不再查药品详情")
     void testListUsableBatches_Empty() {
         Long operatorId = 5001L;
-        when(medicineStockProvider.listRecentPickedMedicineIds(operatorId)).thenReturn(List.of());
+        when(medicineStockProvider.listRecentPickedMedicineIds(operatorId, 15)).thenReturn(List.of());
 
         var list = service.listUsableBatches(operatorId);
 

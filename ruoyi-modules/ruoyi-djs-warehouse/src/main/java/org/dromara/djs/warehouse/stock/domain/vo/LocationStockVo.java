@@ -114,6 +114,12 @@ public class LocationStockVo implements Serializable {
     private String productName;
 
     /**
+     * 产品规格（service JOIN product_info 回填；库存查询列表产品名称右侧展示）。
+     */
+    @ExcelProperty(value = "产品规格")
+    private String productSpec;
+
+    /**
      * 当前库存。
      */
     @ExcelProperty(value = "当前库存")

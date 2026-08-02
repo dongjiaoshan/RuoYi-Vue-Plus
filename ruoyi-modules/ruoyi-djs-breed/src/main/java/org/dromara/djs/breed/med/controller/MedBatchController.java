@@ -50,9 +50,9 @@ public class MedBatchController extends BaseController {
     /**
      * 分页查询批次列表。
      *
-     * <p>{@code recentUsedOnly=true}（mp 用药领用专用）只返「近 3 天内有过领用出库」的药品的批次：
+     * <p>{@code recentUsedOnly=true}（mp 用药领用专用）只返「近 N 天内有过领用出库」的药品的批次：
      * 药品库存真值落仓库药品库（{@code 药品库 L0015}），「出库」事实落在领用台账 {@code t_breed_medicine_usage}，
-     * 故按该台账近 3 天 {@code use} 记录收敛（r51 去批次后按 medicine_id 收敛，含空批次台账行）。
+     * 故按该台账近 N 天 {@code use} 记录收敛（r51 去批次后按 medicine_id 收敛，含空批次台账行）。
      * admin 列表不传该参（默认 false，全量）。</p>
      */
     @SaCheckPermission("djs:breed:med-batch:list")

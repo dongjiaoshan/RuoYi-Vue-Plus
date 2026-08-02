@@ -87,7 +87,7 @@ public class CropInfoVo implements Serializable {
     @ExcelProperty(value = "品质描述")
     private String qualityDesc;
 
-    @ExcelProperty(value = "采摘单价(元/斤)")
+    @ExcelProperty(value = "采摘单价(元/公斤)")
     private BigDecimal pickUnitPrice;
 
     /** 主图 ossId（IMG-LIB-001 L1）。 */

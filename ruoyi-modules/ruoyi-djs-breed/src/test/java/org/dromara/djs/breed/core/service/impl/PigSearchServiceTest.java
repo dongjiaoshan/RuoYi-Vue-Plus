@@ -445,4 +445,81 @@ class PigSearchServiceTest {
         assertThat(result).isEmpty();
         org.mockito.Mockito.verify(barnMapper, org.mockito.Mockito.never()).selectBatchIds(anyCollection());
     }
+
+    // ─────────── 小程序 row251/row255-258：QA 对抗验收指出的零覆盖，补回归防线 ───────────
+
+    @Test
+    @DisplayName("row257: 带耳号搜索 → dueType 硬筛放行（未到产期母猪也返回），但 dueDate/临产角标仍 enrich")
+    void search_withEarNo_relaxesDueTypeButKeepsEnrich() {
+        // 配种日 = 今天，离 114 天预产期还远 → 若 dueType 硬筛生效，本猪会被剔除
+        Pig sow = mkPig(1L, "260520-001", "PZ", "F", "sow", 11L, 21L);
+        sow.setLastMatingDate(java.time.LocalDate.now());
+        when(pigMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(List.of(sow));
+        when(barnMapper.selectBatchIds(anyCollection())).thenReturn(List.of());
+        when(penMapper.selectBatchIds(anyCollection())).thenReturn(List.of());
+        when(productionCycleConfigService.getValue("sow_breed_to_farrow_days")).thenReturn(114);
+
+        // 不带耳号：到期硬筛生效 → 未到期被剔除
+        List<PigSearchVo> strict = service.searchByEarKeyword(null, "PZ", null, "sow", null, 20, "FARROW", null, null, null, null);
+        assertThat(strict).isEmpty();
+
+        // 带耳号：放行，且 dueDate 仍被 enrich（角标不能因放行而丢）
+        List<PigSearchVo> relaxed = service.searchByEarKeyword("001", "PZ", null, "sow", null, 20, "FARROW", null, null, null, null);
+        assertThat(relaxed).hasSize(1);
+        assertThat(relaxed.get(0).getDueDate()).isNotNull();
+        assertThat(relaxed.get(0).getDue()).isFalse();
+    }
+
+    @Test
+    @DisplayName("row255-258: 带耳号搜索放行 dueType 硬筛后，statusFilter 等业务硬约束仍必须生效")
+    void search_withEarNo_stillEnforcesStatusWhitelist() {
+        // wrapper 里 statusFilter 走 SQL in(...)，mapper 被 mock 故此处以「传了白名单仍只返白名单内的猪」表达契约：
+        // 放行只针对到期/到龄/在场天数这类默认收窄，绝不放行状态白名单。
+        Pig sow = mkPig(1L, "260520-001", "PZ", "F", "sow", 11L, 21L);
+        when(pigMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(List.of(sow));
+        when(barnMapper.selectBatchIds(anyCollection())).thenReturn(List.of());
+        when(penMapper.selectBatchIds(anyCollection())).thenReturn(List.of());
+
+        List<PigSearchVo> rows = service.searchByEarKeyword("001", "PZ", null, "sow", null, 20, null, null, null, null, null);
+        assertThat(rows).hasSize(1);
+        assertThat(rows.get(0).getCurrentStatus()).isEqualTo("PZ");
+    }
+
+    @Test
+    @DisplayName("row258: 带耳号搜索 → breedReady（最小在场天数）硬筛放行")
+    void search_withEarNo_relaxesBreedReady() {
+        // 今天刚断奶 → breedReady 硬筛下达不到最小在场天数
+        Pig sow = mkPig(1L, "260520-001", "DN", "F", "sow", 11L, 21L);
+        sow.setStatusStartedAt(java.time.LocalDateTime.now());
+        when(pigMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(List.of(sow));
+        when(barnMapper.selectBatchIds(anyCollection())).thenReturn(List.of());
+        when(penMapper.selectBatchIds(anyCollection())).thenReturn(List.of());
+        when(productionCycleConfigService.getValuesByKeys(anyCollection()))
+            .thenReturn(java.util.Map.of("sow_wean_to_breed_days", 6));
+
+        List<PigSearchVo> strict = service.searchByEarKeyword(null, "DN", null, "sow", null, 20, null, null, null, null, true);
+        assertThat(strict).isEmpty();
+
+        List<PigSearchVo> relaxed = service.searchByEarKeyword("001", "DN", null, "sow", null, 20, null, null, null, null, true);
+        assertThat(relaxed).hasSize(1);
+    }
+
+    @Test
+    @DisplayName("row256-258: countByBarn 与 search 同规则——带耳号时 dueType 硬筛同样放行（契约不能只有一边真）")
+    void countByBarn_withEarNo_relaxesDueType() {
+        Pig sow = mkPig(1L, "260520-001", "PZ", "F", "sow", 11L, 21L);
+        sow.setLastMatingDate(java.time.LocalDate.now());
+        when(pigMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(List.of(sow));
+        Barn barn = new Barn();
+        barn.setId(11L);
+        barn.setBarnCode("B01");
+        barn.setBarnName("配分舍1栋");
+        when(barnMapper.selectBatchIds(anyCollection())).thenReturn(List.of(barn));
+        when(productionCycleConfigService.getValue("sow_breed_to_farrow_days")).thenReturn(114);
+
+        // 不带耳号：未到期 → chip 为空
+        assertThat(service.countByBarn("PZ", null, "sow", null, null, "FARROW", null)).isEmpty();
+        // 带耳号：放行 → chip 有 1 头，与 search 结果一致
+        assertThat(service.countByBarn("PZ", null, "sow", "001", null, "FARROW", null)).hasSize(1);
+    }
 }

@@ -474,12 +474,13 @@ public class LocationStockServiceImpl extends DjsBaseServiceImpl<LocationStockMa
     }
 
     /**
-     * 批量回填 {@code productCode} + {@code belongType} + {@code productAttr}
+     * 批量回填 {@code productCode} + {@code belongType} + {@code productAttr} + {@code productSpec}
      * （均取自产品主数据 {@code t_warehouse_product_info}）。
      *
-     * <p>库存表只存 {@code product_id} FK（Long），产品代码/业态/属性在产品主数据表。
-     * 单次 IN 查产品表回填，避免 N+1。库存行 {@code productId} 为空（按耳号 / 地块入库的行）→ 三者保持 null。
-     * {@code belongType + productAttr} 供库存详情「饲料饲喂记录」tab 判定（果蔬原材料才显示）。</p>
+     * <p>库存表只存 {@code product_id} FK（Long），产品代码/业态/属性/规格在产品主数据表。
+     * 单次 IN 查产品表回填，避免 N+1。库存行 {@code productId} 为空（按耳号 / 地块入库的行）→ 四者保持 null。
+     * {@code belongType + productAttr} 供库存详情「饲料饲喂记录」tab 判定（果蔬原材料才显示）；
+     * {@code productSpec} 供库存查询列表产品名称右侧的规格列（row183）。</p>
      */
     private void fillProductCodes(List<LocationStockVo> records) {
         if (records == null || records.isEmpty()) {
@@ -504,6 +505,7 @@ public class LocationStockServiceImpl extends DjsBaseServiceImpl<LocationStockMa
                     vo.setProductCode(product.getProductId());
                     vo.setBelongType(product.getBelongType());
                     vo.setProductAttr(product.getProductAttr());
+                    vo.setProductSpec(product.getProductSpec());
                 }
             }
         }

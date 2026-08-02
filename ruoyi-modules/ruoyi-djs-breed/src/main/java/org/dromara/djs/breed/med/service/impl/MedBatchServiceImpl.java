@@ -12,6 +12,8 @@ import org.dromara.common.satoken.utils.LoginHelper;
 import org.dromara.djs.breed.med.domain.MedBatch;
 import org.dromara.djs.breed.med.domain.MedUsage;
 import org.dromara.djs.breed.med.domain.Medicine;
+import org.dromara.djs.breed.production.controller.ProductionCycleConfigController;
+import org.dromara.djs.breed.production.service.IProductionCycleConfigService;
 import org.dromara.djs.breed.med.domain.bo.MedBatchBo;
 import org.dromara.djs.breed.med.domain.query.MedBatchQuery;
 import org.dromara.djs.breed.med.domain.vo.MedBatchVo;
@@ -45,21 +47,29 @@ import java.util.stream.Collectors;
 public class MedBatchServiceImpl extends DjsBaseServiceImpl<MedBatchMapper, MedBatch> implements IMedBatchService {
 
     /**
-     * mp 用药领用「近 N 天已出库药品」过滤窗口（含今天），与 BRD-MED-003 用药治疗「使用药品」picker
-     * 的「3 天内已领用药品」口径一致（3 天）。
+     * mp 用药领用「近 N 天已出库药品」过滤窗口（含今天）的兜底默认值，与 BRD-MED-003 用药治疗
+     * 「使用药品」picker 口径一致。row252：窗口天数改由「用药配置」{@code med_pick_usable_days} 决定
+     * （原写死 3 天），此常量仅在配置缺失 / 误配非正数 / 单测无 Spring 上下文时兜底。
      */
-    private static final long RECENT_USED_DAYS = 3L;
+    private static final long RECENT_USED_DAYS_FALLBACK = ProductionCycleConfigController.MED_PICK_USABLE_DAYS_DEFAULT;
 
     private final MedicineMapper medicineMapper;
     private final MedicineStockProvider medicineStockProvider;
 
     /**
-     * 领用台账 mapper（mp「近 3 天已出库批次」过滤用）。字段注入而非构造注入：
+     * 领用台账 mapper（mp「近 N 天已出库批次」过滤用）。字段注入而非构造注入：
      * 现有单测 {@code TestableMedBatchServiceImpl} 走 3 参构造器，新增构造参数会破坏其编译；
      * 该依赖仅 {@code recentUsedOnly} 路径使用，字段注入兼容单测且不影响既有 happy path。
      */
     @org.springframework.beans.factory.annotation.Autowired
     private MedUsageMapper medUsageMapper;
+
+    /**
+     * 用药配置服务（row252 读 {@code med_pick_usable_days}）。同上走字段注入不进构造器，
+     * 单测无 Spring 上下文时为 null → {@link #resolveRecentUsedDays()} 回落默认值。
+     */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private IProductionCycleConfigService cycleConfigService;
 
     public MedBatchServiceImpl(MedBatchMapper baseMapper, MedicineMapper medicineMapper,
                                MedicineStockProvider medicineStockProvider) {
@@ -74,26 +84,26 @@ public class MedBatchServiceImpl extends DjsBaseServiceImpl<MedBatchMapper, MedB
     }
 
     /**
-     * 分页查询批次列表，支持「近 3 天已出库批次」过滤（mp 用药领用专用）。
+     * 分页查询批次列表，支持「近 N 天已出库批次」过滤（mp 用药领用专用）。
      *
-     * <p>{@code recentUsedOnly=true} 时只返「近 3 天内有过领用出库（{@code usage_type='use'}）」的药品的批次：
+     * <p>{@code recentUsedOnly=true} 时只返「近 N 天内有过领用出库（{@code usage_type='use'}）」的药品的批次：
      * 药品库存真值落仓库药品库（{@code 药品库 L0015}）。{@link MedicineStockProvider} 出入库虽落
      * {@code t_warehouse_stock_flow} 流水（对账账簿），「领用出库」业务事实仍以领用台账
      * {@code t_breed_medicine_usage} 为准（口径稳定、覆盖流水补齐前的历史行）。本过滤按该台账收敛
      * （r51 去批次后按 medicine_id 收敛，含空批次台账行），等价于「3 天内从药品库领过的药品」。</p>
      *
-     * <p>实现：先查近 3 天 {@code use} 台账去重出 {@code medicineId} 集合，再用 {@code medicine_id IN (...)} 收敛到主查询
+     * <p>实现：先查近 N 天 {@code use} 台账去重出 {@code medicineId} 集合，再用 {@code medicine_id IN (...)} 收敛到主查询
      * 的 wrapper，从而保持分页 total 正确（非取页后再 filter）。集合为空 → 直接返空页（无批次符合）。</p>
      *
      * @param query          原查询条件
      * @param pageQuery      分页参数
-     * @param recentUsedOnly true=只返近 3 天已出库批次；false=全部（admin 列表口径）
+     * @param recentUsedOnly true=只返近 N 天已出库批次；false=全部（admin 列表口径）
      * @return 批次分页结果
      */
     public TableDataInfo<MedBatchVo> queryPageList(MedBatchQuery query, PageQuery pageQuery, boolean recentUsedOnly) {
         LambdaQueryWrapper<MedBatch> wrapper = buildQueryWrapper(query);
         if (recentUsedOnly) {
-            // r51 去批次：按「近 3 天用过的药品」收敛（不再按批次），兼容去批次后 batch_id 为空的台账行
+            // r51 去批次：按「近 N 天用过的药品」收敛（不再按批次），兼容去批次后 batch_id 为空的台账行
             Set<Long> recentMedicineIds = selectRecentUsedMedicineIds();
             if (recentMedicineIds.isEmpty()) {
                 long pageNum = pageQuery.getPageNum() == null ? PageQuery.DEFAULT_PAGE_NUM : pageQuery.getPageNum();
@@ -108,17 +118,30 @@ public class MedBatchServiceImpl extends DjsBaseServiceImpl<MedBatchMapper, MedB
     }
 
     /**
-     * 查近 3 天内（含今天）有 {@code use} 领用出库的药品 ID 集合（去重）。
+     * 药品领用可用天数（row252）：取「用药配置」{@code med_pick_usable_days} 生效值；
+     * 未注入配置服务（单测）/ 未配置 / 误配非正数 → 回落 {@link #RECENT_USED_DAYS_FALLBACK}。
+     */
+    private long resolveRecentUsedDays() {
+        if (cycleConfigService == null) {
+            return RECENT_USED_DAYS_FALLBACK;
+        }
+        Integer days = cycleConfigService.getValue(ProductionCycleConfigController.MED_PICK_USABLE_DAYS_KEY);
+        return days != null && days > 0 ? days : RECENT_USED_DAYS_FALLBACK;
+    }
+
+    /**
+     * 查近 N 天内（含今天）有 {@code use} 领用出库的药品 ID 集合（去重）。N 由「用药配置」
+     * {@code med_pick_usable_days} 决定（row252，原写死 3 天）。
      *
      * <p>r51 去批次：药品使用无批次说法，台账行 {@code batch_id} 可空，故按 {@code medicine_id} 收敛
      * （不再按 batch_id），含去批次后的空批次台账行。口径：{@code usage_type='use'} 且
-     * {@code use_date >= CURDATE() - 3 天}；{@code del_flag='0'} 由 MP {@code @TableLogic} 自动追加，
+     * {@code use_date >= CURDATE() - N 天}；{@code del_flag='0'} 由 MP {@code @TableLogic} 自动追加，
      * {@code tenant_id} 由多租户拦截器注入。仅取 {@code medicine_id} 列减小回传。</p>
      *
-     * @return 近 3 天已出库药品 ID 集合（可能为空）
+     * @return 近 N 天已出库药品 ID 集合（可能为空）
      */
     private Set<Long> selectRecentUsedMedicineIds() {
-        LocalDate since = LocalDate.now().minusDays(RECENT_USED_DAYS);
+        LocalDate since = LocalDate.now().minusDays(resolveRecentUsedDays());
         LambdaQueryWrapper<MedUsage> w = new LambdaQueryWrapper<MedUsage>()
             .select(MedUsage::getMedicineId)
             .eq(MedUsage::getUsageType, "use")

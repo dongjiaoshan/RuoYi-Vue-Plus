@@ -26,7 +26,7 @@ import java.time.LocalDate;
  * </ul>
  *
  * <p>{@code useDate} 是<b>业务日期</b>（领用 / 退回 / 损耗实际发生日），不是 create_time。
- * BRD-MED-003 用药治疗台账按此字段查"近 3 天已领可用药品"。</p>
+ * BRD-MED-003 用药治疗台账按此字段查"近 N 天已领可用药品"。</p>
  *
  * @author djs
  * @since BRD-MED-002

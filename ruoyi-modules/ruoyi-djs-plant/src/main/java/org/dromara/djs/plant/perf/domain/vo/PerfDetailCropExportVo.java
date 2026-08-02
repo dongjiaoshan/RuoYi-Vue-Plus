@@ -12,7 +12,7 @@ import java.math.BigDecimal;
  * 绩效详情导出 — sheet1「产量绩效」行（逐作物）。
  *
  * <p>数据源 = {@code queryCropRows(teamId, statMonth)}（与详情抽屉产量绩效 tab 同口径）。
- * 采摘量按公斤展示；单价为元/斤，绩效额 = 采摘量(公斤) × 单价(元/斤) × 2（公斤→斤换算）。</p>
+ * 采摘量按公斤展示；单价为元/公斤，绩效额 = 采摘量(公斤) × 单价(元/公斤)。</p>
  *
  * @author djs
  * @since PLT-PERF-001
@@ -37,9 +37,9 @@ public class PerfDetailCropExportVo implements Serializable {
     private BigDecimal pickWeight;
 
     /**
-     * 单价快照（元/斤）。
+     * 单价快照（元/公斤）。
      */
-    @ExcelProperty(value = "单价(元/斤)")
+    @ExcelProperty(value = "单价(元/公斤)")
     private BigDecimal unitPriceSnapshot;
 
     /**

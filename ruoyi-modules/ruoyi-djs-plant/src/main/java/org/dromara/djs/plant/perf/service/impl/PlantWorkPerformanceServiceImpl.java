@@ -55,7 +55,7 @@ import java.util.stream.Collectors;
  * 班组绩效结算 Service 实现（PLT-PERF-001）。
  *
  * <p>核心 {@code generate(statMonth)}：幂等软删该月旧行 → 聚合 details.actual_yield（公斤）→
- * 读 crop.pick_unit_price（元/斤）作单价快照，金额 = 采摘量(公斤) × 单价(元/斤) × 2（公斤→斤换算）
+ * 读 crop.pick_unit_price（元/公斤）作单价快照，金额 = 采摘量(公斤) × 单价(元/公斤)
  * → 批量 INSERT。单价取快照（不实时 JOIN），后续改价不污染历史月。</p>
  *
  * @author djs
@@ -154,9 +154,8 @@ public class PlantWorkPerformanceServiceImpl
         for (PerfAggRow agg : aggRows) {
             BigDecimal pickWeight = agg.getPickWeight() != null ? agg.getPickWeight() : BigDecimal.ZERO;
             BigDecimal unitPrice = cropPriceMap.getOrDefault(agg.getCropId(), BigDecimal.ZERO);
-            // 金额 = 采摘量(公斤) × 单价快照(元/斤) × 2（公斤→斤换算），保留 2 位（元）
+            // 金额 = 采摘量(公斤) × 单价快照(元/公斤)，保留 2 位（元）。单价录入即公斤价，两侧同单位直乘。
             BigDecimal amount = pickWeight.multiply(unitPrice)
-                .multiply(BigDecimal.valueOf(2))
                 .setScale(2, RoundingMode.HALF_UP);
 
             PlantWorkPerformance row = new PlantWorkPerformance();
@@ -166,7 +165,7 @@ public class PlantWorkPerformanceServiceImpl
             row.setPickWeight(pickWeight);
             row.setUnitPriceSnapshot(unitPrice);
             row.setPerformanceAmount(amount);
-            row.setPerformanceRule(unitPrice.stripTrailingZeros().toPlainString() + " 元/斤 ×2（公斤→斤）");
+            row.setPerformanceRule(unitPrice.stripTrailingZeros().toPlainString() + " 元/公斤");
             // del_flag / tenant_id / 审计字段走 MP MetaObjectHandler + @TableLogic 默认，不手工赋 tenant_id
             rows.add(row);
         }
@@ -255,11 +254,16 @@ public class PlantWorkPerformanceServiceImpl
             activityTeamsByPlotCrop.computeIfAbsent(r.getPlotId() + ":" + r.getCropId(), k -> new LinkedHashSet<>())
                 .add(r.getTeamId());
         }
-        // (plotId:cropId) -> 地块采收班组集合（兜底，DISTINCT，多计划共享班组只计一次）
+        // (plotId:cropId) -> 地块采收班组集合（兜底，DISTINCT，多计划共享班组只计一次）。
+        // plotIds 可能为空——当月活动全是销售去向（pick_dest='sale'，plot_id 恒 NULL）时即如此；
+        // selectHarvestTeamsByPlots 用 foreach 拼 IN，空集合会拼出 `IN ()` 让整个结算生成报错，
+        // 故空集合直接跳过（这些活动的班组只能来自 activityTeamsByPlotCrop 直接指定集合）。
         Map<String, Set<Long>> harvestTeamsByPlotCrop = new HashMap<>();
-        for (PlotCropTeamRow r : baseMapper.selectHarvestTeamsByPlots(plotIds)) {
-            harvestTeamsByPlotCrop.computeIfAbsent(r.getPlotId() + ":" + r.getCropId(), k -> new LinkedHashSet<>())
-                .add(r.getTeamId());
+        if (!plotIds.isEmpty()) {
+            for (PlotCropTeamRow r : baseMapper.selectHarvestTeamsByPlots(plotIds)) {
+                harvestTeamsByPlotCrop.computeIfAbsent(r.getPlotId() + ":" + r.getCropId(), k -> new LinkedHashSet<>())
+                    .add(r.getTeamId());
+            }
         }
         // 合并容器：既有过磅行按 (teamId:cropId) 建索引
         Map<String, PerfAggRow> merged = new LinkedHashMap<>();
