@@ -12,7 +12,6 @@ import java.util.List;
  *
  * <p>采摘重量流水读写基建：</p>
  * <ul>
- *   <li>{@link #recordDailyWeight}：旧 mp 采摘重量录入入口（DENGBO-R4 起改 per-event INSERT）</li>
  *   <li>{@link #recordPickActivity}：采摘去向录入入口（DENGBO-R4 决策 A，per-event + 去向 + 产量分摊）</li>
  *   <li>{@link #listRecords}：mp 采摘活动记录列表（倒序）</li>
  * </ul>
@@ -21,20 +20,6 @@ import java.util.List;
  * @since FIX-PLT-HARVEST-ACTIVITY-001
  */
 public interface IPlantActivityService {
-
-    /**
-     * 记录当次采摘重量（DENGBO-R4 起 per-event INSERT，不再幂等累加）。
-     *
-     * <p>原 UNIQUE(crop,date,班组) 已 DROP，每次 INSERT 一行 {@code t_plant_plant_activity}
-     * （pick_dest 留 NULL = 历史销售口径）。供 {@code FarmRecordsServiceImpl.submitHarvestWeight}
-     * 旧采摘重量录入端点调用，接口签名稳定。</p>
-     *
-     * @param cropId       作物 id（{@code t_plant_crop_info.id}，非空）
-     * @param activityDate 采摘日期（非空）
-     * @param dailyWeight  本次采摘重量 kg（非空，> 0）
-     * @param activityBy   记录班组 id（{@code t_plant_work_team.id}，可空）
-     */
-    void recordDailyWeight(Long cropId, LocalDate activityDate, BigDecimal dailyWeight, Long activityBy);
 
     /**
      * 采摘去向录入（DENGBO-R4 决策 A 主入口）。

@@ -48,6 +48,12 @@ public class StockFlow extends TenantEntity {
     private String flowNo;
 
     /**
+     * 批量出库单号（ADMIN-R187 毛菜间批量出库：同一次提交的多条流水共用一个单号，
+     * 出库单列表按它聚合成「一单」）。单条出库（产品出库 / 产品内部处理）为 null。
+     */
+    private String batchNo;
+
+    /**
      * 流水时间。
      */
     private Date flowDate;

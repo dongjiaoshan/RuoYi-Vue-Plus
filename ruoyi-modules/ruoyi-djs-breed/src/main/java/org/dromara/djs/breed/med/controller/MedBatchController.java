@@ -15,7 +15,6 @@ import org.dromara.djs.breed.med.domain.bo.MedBatchBo;
 import org.dromara.djs.breed.med.domain.query.MedBatchQuery;
 import org.dromara.djs.breed.med.domain.vo.MedBatchVo;
 import org.dromara.djs.breed.med.service.IMedBatchService;
-import org.dromara.djs.breed.med.service.impl.MedBatchServiceImpl;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -24,7 +23,6 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.Arrays;
@@ -48,19 +46,12 @@ public class MedBatchController extends BaseController {
     private final IMedBatchService medBatchService;
 
     /**
-     * 分页查询批次列表。
-     *
-     * <p>{@code recentUsedOnly=true}（mp 用药领用专用）只返「近 N 天内有过领用出库」的药品的批次：
-     * 药品库存真值落仓库药品库（{@code 药品库 L0015}），「出库」事实落在领用台账 {@code t_breed_medicine_usage}，
-     * 故按该台账近 N 天 {@code use} 记录收敛（r51 去批次后按 medicine_id 收敛，含空批次台账行）。
-     * admin 列表不传该参（默认 false，全量）。</p>
+     * 分页查询批次列表（admin 药品批次页）。
      */
     @SaCheckPermission("djs:breed:med-batch:list")
     @GetMapping("/list")
-    public TableDataInfo<MedBatchVo> list(MedBatchQuery query, PageQuery pageQuery,
-                                          @RequestParam(value = "recentUsedOnly", required = false, defaultValue = "false")
-                                          boolean recentUsedOnly) {
-        return ((MedBatchServiceImpl) medBatchService).queryPageList(query, pageQuery, recentUsedOnly);
+    public TableDataInfo<MedBatchVo> list(MedBatchQuery query, PageQuery pageQuery) {
+        return medBatchService.queryPageList(query, pageQuery);
     }
 
     /**

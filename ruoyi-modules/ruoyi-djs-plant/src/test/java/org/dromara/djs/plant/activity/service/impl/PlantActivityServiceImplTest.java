@@ -168,19 +168,4 @@ class PlantActivityServiceImplTest {
         verify(baseMapper, never()).insert(any(PlantActivity.class));
     }
 
-    @Test
-    @DisplayName("旧 recordDailyWeight：per-event INSERT 一行（pick_dest 留空）")
-    void recordDailyWeight_insertsPerEvent() {
-        ArgumentCaptor<PlantActivity> cap = ArgumentCaptor.forClass(PlantActivity.class);
-        service.recordDailyWeight(10L, LocalDate.of(2026, 6, 30), new BigDecimal("2.000"), 5L);
-
-        verify(baseMapper).insert(cap.capture());
-        PlantActivity inserted = cap.getValue();
-        assertEquals(new BigDecimal("2.000"), inserted.getDailyWeight());
-        assertEquals(new BigDecimal("2.000"), inserted.getPickWeight());
-        assertEquals(5L, inserted.getActivityBy());
-        assertNull(inserted.getPickDest());
-        // per-event：不再查 selectOne 做幂等累加
-        verify(baseMapper, never()).selectOne(any());
-    }
 }

@@ -121,7 +121,7 @@ public class AppletPickServiceImpl implements IAppletPickService {
         }
         boolean finish = Boolean.TRUE.equals(bo.getFinish());
         // FIX-PLT-MP-PICK-001（#3=a 按原型）：采收 tab 只走"开始/完成采摘"流程（采摘人员 + 日期），
-        // 不录重量。采摘重量改由农事「采摘活动管理」submitHarvestWeight 累加 actual_yield。
+        // 不录重量。采摘重量由采摘去向录入 recordPickActivity 落账（非销售即时累加 actual_yield，销售结算时分摊）。
         String targetStatus = finish ? "completed" : "picking";
 
         // SM-4 并发加固：地块「首次离开 pending（待采摘）」是发 PlantPickedEvent 的唯一闸门。

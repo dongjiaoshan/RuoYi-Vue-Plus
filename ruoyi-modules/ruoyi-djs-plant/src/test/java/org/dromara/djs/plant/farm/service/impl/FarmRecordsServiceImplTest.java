@@ -22,7 +22,6 @@ import org.dromara.djs.plant.farm.domain.bo.DisasterRecordBo;
 import org.dromara.djs.plant.farm.domain.bo.EmptyRecordBo;
 import org.dromara.djs.plant.farm.domain.bo.GrowBatchBo;
 import org.dromara.djs.plant.farm.domain.bo.GrowRecordBo;
-import org.dromara.djs.plant.farm.domain.bo.HarvestWeightBo;
 import org.dromara.djs.plant.farm.domain.bo.PlotPickStatusBo;
 import org.dromara.djs.plant.farm.domain.bo.RotationRecordBo;
 import org.dromara.djs.plant.farm.domain.bo.TransplantRecordBo;
@@ -598,39 +597,6 @@ class FarmRecordsServiceImplTest {
         });
         // 各地块累加 loss_yield
         verify(plantDetailsMapper, times(2)).update(isNull(), any(Wrapper.class));
-    }
-
-    @Test
-    @DisplayName("submitHarvestWeight happy: INSERT harvest_activity 携带 harvest_weight + 累加 actual_yield")
-    void submitHarvestWeight_happy() {
-        HarvestWeightBo bo = new HarvestWeightBo();
-        bo.setPlantId(7L);
-        bo.setPlotId(1L);
-        bo.setCropId(2L);
-        bo.setFarmBy(10L);
-        bo.setFarmDate(LocalDate.now());
-        bo.setHarvestWeight(new BigDecimal("52.21"));
-
-        when(baseMapper.insert(any(FarmRecords.class))).thenAnswer(inv -> {
-            ((FarmRecords) inv.getArgument(0)).setId(500L);
-            return 1;
-        });
-        PlantDetails d = new PlantDetails();
-        d.setId(66L);
-        d.setActualYield(new BigDecimal("10.00"));
-        when(plantDetailsMapper.selectOne(any())).thenReturn(d);
-        when(plantDetailsMapper.update(isNull(), any(Wrapper.class))).thenReturn(1);
-
-        Long id = service.submitHarvestWeight(bo);
-        assertThat(id).isEqualTo(500L);
-
-        ArgumentCaptor<FarmRecords> cap = ArgumentCaptor.forClass(FarmRecords.class);
-        verify(baseMapper).insert(cap.capture());
-        FarmRecords saved = cap.getValue();
-        assertThat(saved.getFarmType()).isEqualTo("harvest_activity");
-        assertThat(saved.getHarvestWeight()).isEqualByComparingTo("52.21");
-        // 累加 actual_yield
-        verify(plantDetailsMapper).update(isNull(), any(Wrapper.class));
     }
 
     @Test

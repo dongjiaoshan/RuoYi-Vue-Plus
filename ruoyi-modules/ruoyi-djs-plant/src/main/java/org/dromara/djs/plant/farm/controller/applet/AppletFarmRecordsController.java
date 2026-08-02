@@ -15,7 +15,6 @@ import org.dromara.djs.plant.farm.domain.bo.DisasterRecordBo;
 import org.dromara.djs.plant.farm.domain.bo.EmptyRecordBo;
 import org.dromara.djs.plant.farm.domain.bo.GrowBatchBo;
 import org.dromara.djs.plant.farm.domain.bo.GrowRecordBo;
-import org.dromara.djs.plant.farm.domain.bo.HarvestWeightBo;
 import org.dromara.djs.plant.farm.domain.bo.PlotPickStatusBo;
 import org.dromara.djs.plant.farm.domain.bo.RotationRecordBo;
 import org.dromara.djs.plant.farm.domain.bo.TransplantFinalizeBo;
@@ -135,19 +134,6 @@ public class AppletFarmRecordsController extends BaseController {
     @PostMapping("/submit/disasterBatch")
     public R<Integer> submitDisasterBatch(@Valid @RequestBody DisasterBatchBo bo) {
         return R.ok(farmRecordsService.submitDisasterBatch(bo));
-    }
-
-    /**
-     * 采摘活动管理「采摘重量录入」（FIX-PLT-MP-HARVEST-001 #3=a）：累加 plant_details.actual_yield +
-     * 写一行 harvest_activity 记录携带 harvest_weight。采收 tab 已去重量，本端点为采摘重量唯一录入口。
-     *
-     * @return 新增农事记录 id
-     */
-    @SaCheckLogin
-    @SaCheckPermission("djs:applet:plant:work:grow")
-    @PostMapping("/submitHarvestWeight")
-    public R<Long> submitHarvestWeight(@Valid @RequestBody HarvestWeightBo bo) {
-        return R.ok(farmRecordsService.submitHarvestWeight(bo));
     }
 
     /**
