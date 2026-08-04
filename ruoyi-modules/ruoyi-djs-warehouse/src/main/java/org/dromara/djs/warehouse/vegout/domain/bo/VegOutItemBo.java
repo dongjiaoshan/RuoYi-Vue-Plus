@@ -27,4 +27,10 @@ public class VegOutItemBo implements Serializable {
     @NotNull(message = "出库量不能为空")
     @DecimalMin(value = "0.001", message = "出库量必须大于 0")
     private BigDecimal quantity;
+
+    /**
+     * 出库销售单价（row194）。前端默认带出产品 {@code sale_price}，用户可改；
+     * 为空时 service 回落产品主数据价格。落库为流水行上的快照，改产品价格不影响历史单。
+     */
+    private BigDecimal outUnitPrice;
 }

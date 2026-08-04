@@ -750,6 +750,13 @@ public class StoreDailyLedgerServiceImpl implements IStoreDailyLedgerService {
     /**
      * 按退回方向当日聚合退回数量（按产品）。
      *
+     * <p><b>排除仓库确认为「产品丢弃」的行</b>（{@code is_discard=1}）：这批货仓库根本没入库
+     * （{@code confirm} 明确跳过整条入库链路），货是实际灭失的。把它算进门店「退回量」会让损耗公式
+     * {@code 期初+入库−销售−赠送+退货−退回−期末} 少减一块 —— 结果就是货没了、仓库没收到、
+     * 门店损耗也不体现，两头都不认账。丢弃的量留在门店 loss 里才是账实相符。</p>
+     *
+     * <p>仍是 {@code pending} 的行照常计入：门店提交退回时货已经物理离店，只是仓库还没确认。</p>
+     *
      * @param direction {@code djs_return_direction} 字典值：customer_to_store=退货量 / store_to_warehouse=退回量
      */
     private Map<Long, BigDecimal> sumReturnByProduct(Long storeId, LocalDate date, List<Long> productIds, String direction) {
@@ -760,6 +767,7 @@ public class StoreDailyLedgerServiceImpl implements IStoreDailyLedgerService {
                 .eq(StoreReturn::getStoreId, storeId)
                 .eq(StoreReturn::getReturnDirection, direction)
                 .in(StoreReturn::getProductId, productIds)
+                .ne(StoreReturn::getIsDiscard, 1)
                 .ge(StoreReturn::getReturnDate, from)
                 .lt(StoreReturn::getReturnDate, to));
         return records.stream().collect(Collectors.toMap(

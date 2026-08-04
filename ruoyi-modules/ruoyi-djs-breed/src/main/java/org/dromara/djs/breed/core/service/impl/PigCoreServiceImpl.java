@@ -736,7 +736,8 @@ public class PigCoreServiceImpl implements IPigCoreService {
                                                 Boolean excludeNullBarn,
                                                 Integer minAgeDays,
                                                 Integer isCastrated,
-                                                Boolean breedReady) {
+                                                Boolean breedReady,
+                                                Integer maxAgeDays) {
         int effectiveLimit = clampLimit(limit);
         // 小程序 row256-259：**输入耳号搜索时放行「默认待办窗口」类过滤**。
         // dueType(到产期/到断奶期) / minAgeDays(到出栏日龄) / breedReady(够在场天数) / excludeNullBarn
@@ -751,6 +752,8 @@ public class PigCoreServiceImpl implements IPigCoreService {
         // 出栏选猪：仅返回到龄肥猪（日龄 >= slaughter_age_days）。日龄 = NOW − birth_date（缺则 introduce_date）；
         // 两者均空 → DATEDIFF 为 NULL，比较结果非真 → 自动剔除（无生日的猪不算到龄）。minAgeDays ≤0/null 不过滤。
         boolean applyMinAge = !searchingByEarNo && minAgeDays != null && minAgeDays > 0;
+        // 用药最大日龄上限：业务硬约束，**搜索态同样生效**（与 minAgeDays 相反，见下方 apply 处注释）。
+        boolean applyMaxAge = maxAgeDays != null && maxAgeDays > 0;
         // FIX-BREEDING-001 #23a：配种选猪场景传 excludeNullBarn=true，排除无栋舍归属猪只，
         // 与 countByBarn（barn-count chip）口径对齐（列表数 = 各栋舍 chip 之和）。默认 false 不变。
         boolean dropNullBarn = !searchingByEarNo && Boolean.TRUE.equals(excludeNullBarn);
@@ -793,6 +796,13 @@ public class PigCoreServiceImpl implements IPigCoreService {
             // 出栏选猪：日龄 >= minAgeDays（到龄肥猪）。{0} 占位 + apply 防注入；
             // COALESCE(birth_date, introduce_date) 与 calcAgeDays 同口径；无生日（结果 NULL）则比较非真自动剔除。
             .apply(applyMinAge, "DATEDIFF(NOW(), COALESCE(birth_date, introduce_date)) >= {0}", minAgeDays)
+            // 用药选猪：育肥猪日龄 <= maxAgeDays（超龄肥猪临近出栏不再用药）。
+            // 注意 applyMaxAge **不带 !searchingByEarNo** —— 这是业务硬约束不是默认待办窗口，
+            // 手输耳号也不能把超龄猪搜出来（甲方 8/3 提的正是「搜 304 日龄育肥猪仍搜得到」）。
+            // 只约束育肥猪：种母猪/种公猪日龄天然超限，卡上限会让调用方在不限类型时不敢下发该参数。
+            .apply(applyMaxAge, "(pig_type <> {0}"
+                + " OR COALESCE(birth_date, introduce_date) IS NULL"
+                + " OR DATEDIFF(NOW(), COALESCE(birth_date, introduce_date)) <= {1})", PIG_TYPE_FATTENING, maxAgeDays)
             .orderByDesc(Pig::getId)
             .last("LIMIT " + effectiveLimit);
 
@@ -1201,6 +1211,9 @@ public class PigCoreServiceImpl implements IPigCoreService {
     /** 后备（HB）到配种的最小日龄阈值配置 key（按日龄过滤，区别于其他状态的「在场天数」）。 */
     private static final String RESERVE_BREED_DAYS_KEY = "sow_reserve_to_breed_days";
 
+    /** 猪只类型字典值：育肥猪。最大用药日龄上限只约束这一类（见 {@code buildWrapper} 的 maxAgeDays 分支）。 */
+    private static final String PIG_TYPE_FATTENING = "fattening";
+
     /**
      * row13/row35：配种选猪「待配种列表」按后台「母猪生产配置」过滤——两道门，AND 关系：
      * <ol>
@@ -1412,13 +1425,17 @@ public class PigCoreServiceImpl implements IPigCoreService {
             .eq(query.getPenId() != null, Pig::getPenId, query.getPenId())
             .ne(Boolean.TRUE.equals(query.getExcludeEnd()), Pig::getCurrentStatus, PigLifecycle.END.name());
 
-        // row251：最大日龄过滤（mp 疫苗药品猪只列表选「育肥猪」时传 fatten_med_max_age_days）。
-        // 与 minAgeDays 用同一日龄口径 COALESCE(birth_date, introduce_date)；差别在无生日的猪要放行——
-        // DATEDIFF 返 NULL 时比较非真会被剔除，故写成「日龄为空 OR 日龄 ≤ 上限」。null/≤0 → 不拼条件。
+        // 最大日龄过滤（用药场景传 fatten_med_max_age_days）。约束**只对育肥猪生效**：
+        // 种母猪/种公猪日龄天然远超上限，若无差别地卡上限，调用方在「全部」类型下就不敢下发该参数，
+        // 过滤等于失效（mp 批量选猪「全部」tab 曾因此漏掉 304 日龄育肥猪）。把猪种判定下沉到 SQL 后，
+        // 调用方可无条件下发，不必再按 pigType 分支。
+        // 日龄口径与 minAgeDays 一致：COALESCE(birth_date, introduce_date)；无生日的猪放行
+        // （DATEDIFF 返 NULL 时比较非真会被剔除，故写成「日龄为空 OR 日龄 ≤ 上限」）。null/≤0 → 不拼条件。
         Integer maxAge = query.getMaxAgeDays();
         if (maxAge != null && maxAge > 0) {
-            w.apply("(COALESCE(birth_date, introduce_date) IS NULL"
-                + " OR DATEDIFF(NOW(), COALESCE(birth_date, introduce_date)) <= {0})", maxAge);
+            w.apply("(pig_type <> {0}"
+                + " OR COALESCE(birth_date, introduce_date) IS NULL"
+                + " OR DATEDIFF(NOW(), COALESCE(birth_date, introduce_date)) <= {1})", PIG_TYPE_FATTENING, maxAge);
         }
 
         // 栋舍/栏位按名称模糊：先反查命中的 barn_id / pen_id 集合，再 in(...)；

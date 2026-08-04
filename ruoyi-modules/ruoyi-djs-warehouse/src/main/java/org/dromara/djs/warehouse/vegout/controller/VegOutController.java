@@ -90,4 +90,5 @@ public class VegOutController extends BaseController {
                                           @RequestParam(required = false) String productName) {
         return R.ok(vegOutService.queryBatchDetail(batchNo, productName));
     }
+
 }

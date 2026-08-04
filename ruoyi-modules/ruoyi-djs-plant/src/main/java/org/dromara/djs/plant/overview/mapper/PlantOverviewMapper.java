@@ -55,11 +55,18 @@ public interface PlantOverviewMapper {
      * @param tenantId 租户
      * @return 单行 {harvestedKg, expectedKg}（已采摘 actual_yield / 预计 expected_yield 合计 kg）
      */
+    // row267：预计产量逐地块扣灾害损失后再求和（钳零落在地块粒度，避免某地块超损吃掉别的地块）
     @Select("SELECT "
-        + "  COALESCE(SUM(actual_yield), 0)   AS harvestedKg, "
-        + "  COALESCE(SUM(expected_yield), 0) AS expectedKg "
-        + "FROM t_plant_plant_details "
-        + "WHERE tenant_id = #{tenantId} AND del_flag = '0'")
+        + "  COALESCE(SUM(d.actual_yield), 0) AS harvestedKg, "
+        + "  COALESCE(SUM(GREATEST(COALESCE(d.expected_yield,0) - COALESCE(dl.disaster_loss,0), 0)), 0) AS expectedKg "
+        + "FROM t_plant_plant_details d "
+        + "LEFT JOIN (SELECT fr.plot_id, fr.crop_id, SUM(fr.loss_yield) AS disaster_loss"
+        + "             FROM t_plant_farm_records fr"
+        + "            WHERE fr.del_flag='0' AND fr.tenant_id=#{tenantId} AND fr.farm_type='disaster'"
+        + "              AND fr.plot_id IS NOT NULL AND fr.crop_id IS NOT NULL"
+        + "            GROUP BY fr.plot_id, fr.crop_id) dl"
+        + "  ON dl.plot_id = d.plot_id AND dl.crop_id = d.crop_id "
+        + "WHERE d.tenant_id = #{tenantId} AND d.del_flag = '0'")
     YieldSumRow selectYieldSum(@Param("tenantId") String tenantId);
 
     // ============================ summary：作物卡片 ============================
@@ -86,7 +93,8 @@ public interface PlantOverviewMapper {
         + "  c.image_oss_id AS cropImageOssId, "
         + "  COUNT(DISTINCT d.plot_id) AS planPlotCount, "
         + "  COALESCE(SUM(d.plot_area), 0) AS planArea, "
-        + "  COALESCE(SUM(d.expected_yield), 0) AS planExpectedYield, "
+        // row267：预计产量逐地块扣灾害损失后再求和
+        + "  COALESCE(SUM(GREATEST(COALESCE(d.expected_yield,0) - COALESCE(dl.disaster_loss,0), 0)), 0) AS planExpectedYield, "
         + "  COUNT(DISTINCT CASE WHEN d.begin_actualdate IS NOT NULL THEN d.plot_id END) AS donePlotCount, "
         + "  COALESCE(SUM(CASE WHEN d.begin_actualdate IS NOT NULL THEN d.plot_area ELSE 0 END), 0) AS doneArea, "
         + "  COALESCE(SUM(d.actual_yield), 0) AS doneHarvestYield, "
@@ -97,6 +105,12 @@ public interface PlantOverviewMapper {
         + "  COALESCE(SUM(CASE WHEN d.begin_actualdate IS NOT NULL "
         + "    AND NOT (COALESCE(pi.plot_type, '') = 'nursery' AND d.harvest_status = 'completed') THEN d.plot_area ELSE 0 END), 0) AS currentPlantedArea "
         + "FROM t_plant_plant_details d "
+        + "LEFT JOIN (SELECT fr.plot_id, fr.crop_id, SUM(fr.loss_yield) AS disaster_loss"
+        + "             FROM t_plant_farm_records fr"
+        + "            WHERE fr.del_flag='0' AND fr.tenant_id=#{tenantId} AND fr.farm_type='disaster'"
+        + "              AND fr.plot_id IS NOT NULL AND fr.crop_id IS NOT NULL"
+        + "            GROUP BY fr.plot_id, fr.crop_id) dl"
+        + "  ON dl.plot_id = d.plot_id AND dl.crop_id = d.crop_id "
         + "LEFT JOIN t_plant_crop_info c ON c.id = d.crop_id AND c.tenant_id = #{tenantId} AND c.del_flag = '0' "
         + "LEFT JOIN t_plant_plot_info pi ON pi.id = d.plot_id AND pi.tenant_id = #{tenantId} AND pi.del_flag = '0' "
         + "WHERE d.tenant_id = #{tenantId} AND d.del_flag = '0' "
@@ -140,9 +154,16 @@ public interface PlantOverviewMapper {
         + "  d.earliest_harvestdate AS earliestHarvestdate, "
         + "  d.last_harvestdate AS lastHarvestdate, "
         + "  d.plot_area AS plotArea, "
-        + "  d.expected_yield AS expectedYield, "
+        // row267：预计产量扣该地块该作物的灾害损失（钳零）
+        + "  GREATEST(COALESCE(d.expected_yield,0) - COALESCE(dl.disaster_loss,0), 0) AS expectedYield, "
         + "  d.actual_yield AS actualYield "
         + "FROM t_plant_plant_details d "
+        + "LEFT JOIN (SELECT fr.plot_id, fr.crop_id, SUM(fr.loss_yield) AS disaster_loss"
+        + "             FROM t_plant_farm_records fr"
+        + "            WHERE fr.del_flag='0' AND fr.tenant_id=#{tenantId} AND fr.farm_type='disaster'"
+        + "              AND fr.plot_id IS NOT NULL AND fr.crop_id IS NOT NULL"
+        + "            GROUP BY fr.plot_id, fr.crop_id) dl"
+        + "  ON dl.plot_id = d.plot_id AND dl.crop_id = d.crop_id "
         + "LEFT JOIN t_plant_crop_info c ON c.id = d.crop_id AND c.tenant_id = #{tenantId} AND c.del_flag = '0' "
         + "LEFT JOIN t_plant_plot_info pl ON pl.id = d.plot_id AND pl.tenant_id = #{tenantId} AND pl.del_flag = '0' "
         + "LEFT JOIN t_plant_plant_plan pp ON pp.id = d.plant_id AND pp.tenant_id = #{tenantId} AND pp.del_flag = '0' "
@@ -181,9 +202,16 @@ public interface PlantOverviewMapper {
         + "  d.earliest_harvestdate AS earliestHarvestdate, "
         + "  d.last_harvestdate AS lastHarvestdate, "
         + "  d.plot_area AS plotArea, "
-        + "  d.expected_yield AS expectedYield, "
+        // row267：预计产量扣该地块该作物的灾害损失（钳零）
+        + "  GREATEST(COALESCE(d.expected_yield,0) - COALESCE(dl.disaster_loss,0), 0) AS expectedYield, "
         + "  d.actual_yield AS actualYield "
         + "FROM t_plant_plant_details d "
+        + "LEFT JOIN (SELECT fr.plot_id, fr.crop_id, SUM(fr.loss_yield) AS disaster_loss"
+        + "             FROM t_plant_farm_records fr"
+        + "            WHERE fr.del_flag='0' AND fr.tenant_id=#{tenantId} AND fr.farm_type='disaster'"
+        + "              AND fr.plot_id IS NOT NULL AND fr.crop_id IS NOT NULL"
+        + "            GROUP BY fr.plot_id, fr.crop_id) dl"
+        + "  ON dl.plot_id = d.plot_id AND dl.crop_id = d.crop_id "
         + "LEFT JOIN t_plant_crop_info c ON c.id = d.crop_id AND c.tenant_id = #{tenantId} AND c.del_flag = '0' "
         + "LEFT JOIN t_plant_plot_info pl ON pl.id = d.plot_id AND pl.tenant_id = #{tenantId} AND pl.del_flag = '0' "
         + "LEFT JOIN t_plant_plant_plan pp ON pp.id = d.plant_id AND pp.tenant_id = #{tenantId} AND pp.del_flag = '0' "

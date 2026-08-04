@@ -57,10 +57,18 @@ public interface PlantDetailsMapper extends BaseMapperPlus<PlantDetails, PlantDe
             d.end_actualdate AS endActualdate,
             d.plant_period  AS plantPeriod,
             p.plant_date    AS planDate,
-            d.expected_yield AS expectedYield,
+            -- row267：预计产量扣该地块该作物的灾害损失（钳零），与全站口径一致
+            GREATEST(COALESCE(d.expected_yield, 0) - COALESCE(dl.disaster_loss, 0), 0) AS expectedYield,
             d.actual_yield  AS actualYield,
             d.plant_status  AS plantStatus
           FROM t_plant_plant_details d
+          LEFT JOIN (SELECT fr.plot_id, fr.crop_id, SUM(fr.loss_yield) AS disaster_loss
+                       FROM t_plant_farm_records fr
+                      WHERE fr.del_flag = '0' AND fr.tenant_id = '1001'
+                        AND fr.farm_type = 'disaster'
+                        AND fr.plot_id IS NOT NULL AND fr.crop_id IS NOT NULL
+                      GROUP BY fr.plot_id, fr.crop_id) dl
+            ON dl.plot_id = d.plot_id AND dl.crop_id = d.crop_id
           JOIN t_plant_plant_plan p
             ON p.id = d.plant_id
            AND p.del_flag = '0'

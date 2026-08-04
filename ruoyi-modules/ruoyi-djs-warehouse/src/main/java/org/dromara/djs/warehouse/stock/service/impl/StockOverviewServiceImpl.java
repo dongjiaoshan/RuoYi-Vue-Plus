@@ -5,6 +5,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.dromara.common.tenant.helper.TenantHelper;
 import org.dromara.djs.warehouse.stock.domain.vo.StockOverviewDailyVo;
 import org.dromara.djs.warehouse.stock.domain.vo.StockOverviewDetailVo;
+import org.dromara.djs.warehouse.stock.domain.vo.StockOverviewMonthlyVo;
 import org.dromara.djs.warehouse.stock.mapper.StockOverviewMapper;
 import org.dromara.djs.warehouse.stock.service.IStockOverviewService;
 import org.springframework.stereotype.Service;
@@ -124,4 +125,14 @@ public class StockOverviewServiceImpl implements IStockOverviewService {
         return (t == null || t.isBlank()) ? DEFAULT_TENANT : t;
     }
 
+
+    @Override
+    public List<StockOverviewMonthlyVo> queryMonthly(Date monthFrom, Date monthTo) {
+        return stockOverviewMapper.selectMonthlyOverview(TenantHelper.getTenantId(), monthFrom, monthTo);
+    }
+
+    @Override
+    public List<StockOverviewDetailVo> queryMonthlyDetail(Date monthStart, String productName, Long locationId) {
+        return stockOverviewMapper.selectMonthlyDetail(TenantHelper.getTenantId(), monthStart, productName, locationId);
+    }
 }

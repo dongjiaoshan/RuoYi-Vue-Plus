@@ -33,6 +33,9 @@ public class VegOutBatchVo implements Serializable {
     /** 出库果蔬重量合计（kg）。 */
     private BigDecimal totalWeight;
 
+    /** 出库金额合计（row192）：Σ 出库量 × 出库销售单价快照。单价为空的行按 0 计。 */
+    private BigDecimal totalAmount;
+
     /** 出库操作人 id。 */
     private Long operatorId;
 

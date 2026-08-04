@@ -6,6 +6,7 @@ import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.common.core.exception.ServiceException;
+import org.dromara.djs.common.encoder.BizCodeType;
 import org.dromara.common.core.service.UserService;
 import org.dromara.common.core.utils.StringUtils;
 import org.dromara.common.mybatis.core.page.PageQuery;
@@ -75,6 +76,25 @@ public class VegOutServiceImpl implements IVegOutService {
     /** 毛菜鲜品库库位编码（与 VegetableHandleServiceImpl 同一常量，毛菜处理入库的固定落点）。 */
     private static final String LOCATION_CODE_FRESH_VEG = "L0006";
 
+    /** 干货库库位编码（admin row194 第 4 点起也可从这里出库）。 */
+    private static final String LOCATION_CODE_DRY_GOODS = "L0005";
+
+    /** 蛋类库库位编码（同上）。 */
+    private static final String LOCATION_CODE_EGG = "L0009";
+
+    /**
+     * 可出库的库位白名单。
+     *
+     * <p>⚠️ 按 {@code location_code} 而不是 {@code location_type} —— 线上 location_type 不可靠
+     * （猪肉鲜品库/蛋类库被错归成 veg_fresh、干货库是 warehouse），mp matPack 早就因此改走库名匹配。</p>
+     */
+    private static final java.util.List<String> ALLOWED_LOCATION_CODES =
+        java.util.List.of(LOCATION_CODE_FRESH_VEG, LOCATION_CODE_DRY_GOODS, LOCATION_CODE_EGG);
+
+    /** 可出库的产品业态白名单（干货库里实测还有 other 业态的桶/罐/袋装品）。 */
+    private static final java.util.List<String> ALLOWED_BELONG_TYPES =
+        java.util.List.of("vegetable", "dry_good", "egg", "other");
+
     /** 果蔬业态（只有果蔬产品能走毛菜间出库）。 */
     private static final String BELONG_TYPE_VEGETABLE = "vegetable";
 
@@ -103,17 +123,19 @@ public class VegOutServiceImpl implements IVegOutService {
     private final FeedLogMapper feedLogMapper;
     private final HandleRecordMapper handleRecordMapper;
     private final ILocationStockService locationStockService;
+    private final org.dromara.djs.common.encoder.IBizCodeGenerator bizCodeGenerator;
     private final UserService userService;
 
     @Override
     public List<VegOutCandidateVo> listCandidates(String productName) {
-        return vegOutMapper.selectCandidates(LOCATION_CODE_FRESH_VEG, productName);
+        return vegOutMapper.selectCandidates(ALLOWED_LOCATION_CODES, ALLOWED_BELONG_TYPES, productName);
     }
 
     @Override
     @Transactional(rollbackFor = Exception.class)
     public String submit(VegOutSubmitBo bo, boolean asBatch) {
-        Long freshVegLocationId = requireFreshVegLocationId();
+        // 三个可出库库位的 id（按 location_code 解析；缺哪个就少哪个，不阻断整单）
+        java.util.Set<Long> allowedLocationIds = resolveAllowedLocationIds();
         String batchNo = asBatch ? generateBatchNo() : null;
         Long userId = LoginHelper.getUserId();
 
@@ -123,15 +145,24 @@ public class VegOutServiceImpl implements IVegOutService {
                 throw new ServiceException("库存记录不存在或已删除：" + item.getStockId());
             }
             // 前置校验（防前端绕过 —— 入口按钮只在毛菜鲜品库的果蔬行显示）
-            if (!freshVegLocationId.equals(stock.getLocationId())) {
-                throw new ServiceException("只有毛菜鲜品库（" + LOCATION_CODE_FRESH_VEG + "）的库存可做毛菜间出库");
+            if (!allowedLocationIds.contains(stock.getLocationId())) {
+                throw new ServiceException("只有毛菜鲜品库 / 干货库 / 蛋类库的库存可做毛菜间出库");
             }
             ProductInfo product = productInfoMapper.selectById(stock.getProductId());
             if (product == null) {
                 throw new ServiceException("产品不存在或已删除：" + stock.getProductId());
             }
-            if (!BELONG_TYPE_VEGETABLE.equals(product.getBelongType())) {
-                throw new ServiceException("只有果蔬产品支持毛菜间出库：" + product.getProductName());
+            if (!ALLOWED_BELONG_TYPES.contains(product.getBelongType())) {
+                throw new ServiceException("该产品业态不支持毛菜间出库：" + product.getProductName());
+            }
+            // ⚠️ 非果蔬不能送「果蔬月台」：月台的待入库量只来自 vegetable_handle.send_platform_weight，
+            // 而那张表是果蔬（毛菜处理）专属、干货/蛋类根本没有对应行。放行的话库存扣了、流水写了，
+            // 月台侧却永远收不到这批货 = 凭空蒸发。故在此 fail-fast，不做「跳过累加」的静默放行。
+            // （「猪只饲料」去向不受此限：饲喂台账 t_warehouse_feed_log 三类都能记，见下方分流。）
+            if (DEST_VEG_DOCK.equals(bo.getOutDest())
+                && !BELONG_TYPE_VEGETABLE.equals(product.getBelongType())) {
+                throw new ServiceException("只有果蔬产品可以出库到果蔬月台：" + product.getProductName()
+                    + "（干货 / 蛋类请选其他出库去向）");
             }
 
             // 扣库存 + 写 backstage_out 出库流水，全部复用产品出库既有口径
@@ -155,16 +186,26 @@ public class VegOutServiceImpl implements IVegOutService {
             patch.setPlotId(stock.getPlotId());
             patch.setBatchNo(batchNo);
             patch.setFlowDate(resolveFlowDate(bo.getOutDate()));
+            // row194：销售单价快照。前端默认带出产品 sale_price 但允许改，故必须按本次录入值落在流水行上，
+            // 不能事后回读产品主数据 —— 否则改一次产品价格，历史出库单金额会整体漂移。
+            patch.setOutUnitPrice(item.getOutUnitPrice() != null ? item.getOutUnitPrice() : product.getSalePrice());
             stockFlowMapper.updateById(patch);
 
             // 去向额外下游：果蔬月台 / 饲料饲喂 与毛菜处理间同口径
+            // 去向额外下游（Kevin 2026-08-03 拍板 D3）：
+            //   · 果蔬月台：走到这里必然是果蔬（上面已 fail-fast 拦掉非果蔬），照常累加毛菜处理送月台重量；
+            //   · 猪只饲料：**三类业态都写**有机饲喂台账——干货/蛋类也可能真拿去喂猪，这笔账要记；
+            //     但「毛菜处理的 feed_weight 累加」仍只对果蔬做（那是果蔬专属报表，混入会污染）。
+            boolean isVegetable = BELONG_TYPE_VEGETABLE.equals(product.getBelongType());
             if (DEST_VEG_DOCK.equals(bo.getOutDest())) {
                 Long handleId = accumulateHandleWeight(product, stock, item.getQuantity(), true);
                 insertPlatformHandleRecord(handleId, stock, resolveCropIdByProduct(product.getId()),
                     item.getQuantity(), userId, resolveFlowDate(bo.getOutDate()));
             } else if (DEST_FEED.equals(bo.getOutDest())) {
-                accumulateHandleWeight(product, stock, item.getQuantity(), false);
-                insertFeedLog(product, stock, item.getQuantity(), freshVegLocationId, userId, bo.getOutDate());
+                if (isVegetable) {
+                    accumulateHandleWeight(product, stock, item.getQuantity(), false);
+                }
+                insertFeedLog(product, stock, item.getQuantity(), stock.getLocationId(), userId, bo.getOutDate());
             }
         }
         log.info("[VEG-OUT] dest={} items={} batchNo={}", bo.getOutDest(), bo.getItems().size(), batchNo);
@@ -360,12 +401,26 @@ public class VegOutServiceImpl implements IVegOutService {
     }
 
     /**
-     * 出库单号：{@code VO + yyyyMMddHHmmssSSS + 4 位随机}，同一次提交内共用。
-     * 加随机后缀是为了两人同一毫秒提交时不会撞成同一「单」（batch_no 无唯一约束，撞了会静默合并成一行）。
+     * 三个可出库库位（毛菜鲜品库 / 干货库 / 蛋类库）的 id 集合。
+     *
+     * <p>按 {@code location_code} 解析。某个库位没维护就不进集合（该库的产品自然也不会出现在候选里），
+     * 不 fail-fast 整单 —— 甲方可能只用其中一两个库。</p>
+     */
+    private java.util.Set<Long> resolveAllowedLocationIds() {
+        List<LocationInfo> rows = locationInfoMapper.selectList(new LambdaQueryWrapper<LocationInfo>()
+            .in(LocationInfo::getLocationCode, ALLOWED_LOCATION_CODES));
+        if (rows.isEmpty()) {
+            throw new ServiceException("毛菜鲜品库 / 干货库 / 蛋类库均未维护，请先在库位管理配置");
+        }
+        return rows.stream().map(LocationInfo::getId).collect(java.util.stream.Collectors.toSet());
+    }
+
+    /**
+     * 出库单号（row192）：7 位纯数字、终生递增，走统一编码生成器
+     * （Redisson 锁 + 序号表唯一键保证并发不撞号，故不再需要原来的随机后缀）。
      */
     private String generateBatchNo() {
-        String ts = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMddHHmmssSSS"));
-        return "VO" + ts + String.format("%04d", ThreadLocalRandom.current().nextInt(10000));
+        return bizCodeGenerator.generate(BizCodeType.VEG_OUT_NO, java.util.Map.of());
     }
 
     /** 批量回填操作人姓名（一次查 sys_user，避免 N+1）。 */

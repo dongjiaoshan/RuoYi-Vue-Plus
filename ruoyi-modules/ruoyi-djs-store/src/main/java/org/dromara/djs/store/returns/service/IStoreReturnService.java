@@ -82,6 +82,17 @@ public interface IStoreReturnService {
     List<StoreReturnVegCandidateVo> listVegCandidates(Long storeId);
 
     /**
+     * 「其他产品」退回候选（admin row202：非猪肉 / 非白条 / 非果蔬 / 非礼盒 的产品）。
+     *
+     * <p>业态白名单 {@code {dry_good, egg, other}}，与项目已有的「其他产品打包入口」同口径。
+     * 取数与猪肉 / 果蔬 tab 完全一致：门店当日盘点台账 <b>期初 + 入库 &gt; 0</b>（不减损坏）。</p>
+     *
+     * @param storeId 门店 ID（必填；空返空列表）
+     * @return 其他产品候选（结构复用果蔬候选 VO）
+     */
+    List<StoreReturnVegCandidateVo> listOtherCandidates(Long storeId);
+
+    /**
      * 仓库确认实收（STORE-RETURN-REALIGN-001 原型「退回记录」仓库确认入库）：
      * 校验记录为 {@code pending}，填实收量/实收重量/库位 + 确认人/时间，状态转 {@code received}，
      * 同事务联动外购入库（{@code location_stock} + {@code stock_flow(return_in)}）。

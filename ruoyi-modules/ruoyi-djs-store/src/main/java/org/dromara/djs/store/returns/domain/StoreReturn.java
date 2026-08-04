@@ -72,6 +72,13 @@ public class StoreReturn extends TenantEntity {
     /** 仓库实收重量(kg)（原型「仓库实收重量」，仓库确认时填）。 */
     private BigDecimal receivedWeight;
 
+    /**
+     * 仓库确认处置：{@code 0}=退回入库（默认，写库存） / {@code 1}=产品丢弃（不入库）。
+     *
+     * <p>行级决定（一行 = 一个产品的一条退回），不是整单开关 —— 同一次退回里可以一部分入库、一部分丢弃。</p>
+     */
+    private Integer isDiscard;
+
     /** 仓库确认人 user_id → {@code sys_user.user_id}（确认实收时 LoginHelper 注入）。 */
     private Long confirmUserId;
 

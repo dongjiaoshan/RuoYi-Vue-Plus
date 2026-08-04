@@ -115,7 +115,8 @@ public interface PlantPlanMapper extends BaseMapperPlus<PlantPlan, PlantPlanVo> 
         SELECT
             COUNT(DISTINCT d.plot_id) AS plotCount,
             GREATEST(
-                COALESCE(SUM(d.expected_yield), 0) - COALESCE(SUM(d.actual_yield), 0),
+                -- row267：预计产量逐地块扣灾害损失后再求和（钳零落在地块粒度）
+                COALESCE(SUM(GREATEST(COALESCE(d.expected_yield, 0) - COALESCE(dl.disaster_loss, 0), 0)), 0) - COALESCE(SUM(d.actual_yield), 0),
                 0
             ) AS expectedYieldKg,
             MIN(d.earliest_harvestdate) AS earliestPickDate
@@ -124,6 +125,13 @@ public interface PlantPlanMapper extends BaseMapperPlus<PlantPlan, PlantPlanVo> 
             ON d.plant_id = p.id
            AND d.del_flag = '0'
            AND d.tenant_id = p.tenant_id
+          LEFT JOIN (SELECT fr.plot_id, fr.crop_id, SUM(fr.loss_yield) AS disaster_loss
+                       FROM t_plant_farm_records fr
+                      WHERE fr.del_flag = '0' AND fr.tenant_id = '1001'
+                        AND fr.farm_type = 'disaster'
+                        AND fr.plot_id IS NOT NULL AND fr.crop_id IS NOT NULL
+                      GROUP BY fr.plot_id, fr.crop_id) dl
+            ON dl.plot_id = d.plot_id AND dl.crop_id = d.crop_id
          WHERE p.del_flag = '0'
            AND p.tenant_id = '1001'
            AND d.plant_status = 'completed'
@@ -157,7 +165,8 @@ public interface PlantPlanMapper extends BaseMapperPlus<PlantPlan, PlantPlanVo> 
         <script>
         SELECT
             d.plant_id AS planId,
-            COALESCE(SUM(d.expected_yield), 0) AS expectedYield,
+            -- row267：预计产量逐地块扣灾害损失后再求和
+            COALESCE(SUM(GREATEST(COALESCE(d.expected_yield, 0) - COALESCE(dl.disaster_loss, 0), 0)), 0) AS expectedYield,
             COALESCE(SUM(d.actual_yield), 0) AS actualYield,
             SUM(CASE WHEN d.plant_status = 'completed' THEN 1 ELSE 0 END) AS finishedPlot,
             MIN(DATE(CONCAT(p.plan_year, '-', LPAD(d.plant_month, 2, '0'), '-', d.plant_period))) AS earliestBegindate,
@@ -169,6 +178,13 @@ public interface PlantPlanMapper extends BaseMapperPlus<PlantPlan, PlantPlanVo> 
             ON p.id = d.plant_id
            AND p.del_flag = '0'
            AND p.tenant_id = d.tenant_id
+          LEFT JOIN (SELECT fr.plot_id, fr.crop_id, SUM(fr.loss_yield) AS disaster_loss
+                       FROM t_plant_farm_records fr
+                      WHERE fr.del_flag = '0' AND fr.tenant_id = '1001'
+                        AND fr.farm_type = 'disaster'
+                        AND fr.plot_id IS NOT NULL AND fr.crop_id IS NOT NULL
+                      GROUP BY fr.plot_id, fr.crop_id) dl
+            ON dl.plot_id = d.plot_id AND dl.crop_id = d.crop_id
          WHERE d.del_flag = '0'
            AND d.tenant_id = '1001'
            AND d.plant_id IN

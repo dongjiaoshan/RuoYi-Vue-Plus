@@ -41,4 +41,11 @@ public class StoreReturnConfirmBo {
      * 非空且退货产品为 pork 时，覆盖默认库位；否则忽略（走 locationId / 默认兜底）。
      */
     private String targetLocationType;
+
+    /**
+     * 处置方式：{@code 0}/null=退回入库（默认，写库存） / {@code 1}=产品丢弃（不入库）。
+     *
+     * <p>丢弃时仍写确认人 / 确认时间 / 实收量（丢弃量要进损耗统计），只是不联动入库。</p>
+     */
+    private Integer isDiscard;
 }

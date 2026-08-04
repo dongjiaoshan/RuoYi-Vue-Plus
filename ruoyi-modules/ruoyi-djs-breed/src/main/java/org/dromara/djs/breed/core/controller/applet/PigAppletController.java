@@ -78,6 +78,9 @@ public class PigAppletController {
      *                      配置 {@code slaughter_age_days}，只列到龄肥猪）。{@code null}/≤0 → 不过滤。
      * @param isCastrated   是否阉割过滤（{@code 1}=否 / {@code 2}=是）：阉割选猪传 {@code 1}（仅未阉割猪可选）。
      *                      {@code null} → 不过滤（向后兼容所有现有调用方）。
+     * @param maxAgeDays    最大用药日龄过滤（天）：**只约束育肥猪**，用药选猪传「用药配置」
+     *                      {@code fatten_med_max_age_days}（默认 300），超龄肥猪不进候选。{@code null}/≤0 → 不过滤。
+     *                      与 {@code minAgeDays} 不同，本条在耳号搜索态下**也生效**（业务硬约束，非默认待办窗口）。
      */
     @SaCheckLogin
     @SaCheckPermission("djs:applet:pig:search")
@@ -93,9 +96,10 @@ public class PigAppletController {
         @RequestParam(required = false) Boolean excludeNullBarn,
         @RequestParam(required = false) Integer minAgeDays,
         @RequestParam(required = false) Integer isCastrated,
-        @RequestParam(required = false) Boolean breedReady
+        @RequestParam(required = false) Boolean breedReady,
+        @RequestParam(required = false) Integer maxAgeDays
     ) {
-        return R.ok(pigCoreService.searchByEarKeyword(earNoKeyword, statusFilter, sexFilter, pigTypeFilter, barnCode, limit, dueType, excludeNullBarn, minAgeDays, isCastrated, breedReady));
+        return R.ok(pigCoreService.searchByEarKeyword(earNoKeyword, statusFilter, sexFilter, pigTypeFilter, barnCode, limit, dueType, excludeNullBarn, minAgeDays, isCastrated, breedReady, maxAgeDays));
     }
 
     /**

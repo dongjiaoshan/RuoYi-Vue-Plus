@@ -142,5 +142,14 @@ public enum BizCodeType {
      * 例：{@code C2026061300001}（WMS-STOCK-001 admin 新建盘点单时使用）。
      * 与 BURN_NO / CUT_NO / BAR_NO 范式一致，统一走 BizCodeService Redisson 锁 + 序号表 UNIQUE 双保护。
      */
-    CHECK_NO
+    CHECK_NO,
+
+    /**
+     * 毛菜间出库单号（admin 行192）。
+     *
+     * <p>规则 {@code {seq7}}：7 位纯数字、终生递增不按日重置（甲方原文「7位数字，每一次新增出库单数值加1」）。
+     * 换掉原来 inline 的「VO+时间戳+4位随机」——那个随机后缀是为了防并发撞号（{@code batch_no} 无唯一约束），
+     * 走生成器后并发安全由 Redisson 锁 + 序号表 UNIQUE 双保护，不再需要。</p>
+     */
+    VEG_OUT_NO
 }

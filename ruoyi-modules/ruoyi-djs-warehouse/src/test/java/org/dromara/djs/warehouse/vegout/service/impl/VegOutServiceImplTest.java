@@ -42,6 +42,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -84,6 +85,8 @@ class VegOutServiceImplTest {
     @Mock
     private ILocationStockService locationStockService;
     @Mock
+    private org.dromara.djs.common.encoder.IBizCodeGenerator bizCodeGenerator;
+    @Mock
     private UserService userService;
 
     private VegOutServiceImpl service;
@@ -103,11 +106,14 @@ class VegOutServiceImplTest {
     void setup() {
         service = new VegOutServiceImpl(vegOutMapper, locationStockMapper, locationInfoMapper, productInfoMapper,
             stockFlowMapper, cropInfoMapper, vegetableHandleMapper, feedLogMapper, handleRecordMapper,
-            locationStockService, userService);
+            locationStockService, bizCodeGenerator, userService);
         LocationInfo loc = new LocationInfo();
         loc.setId(FRESH_VEG_LOC);
         loc.setLocationCode("L0006");
-        when(locationInfoMapper.selectOne(any())).thenReturn(loc);
+        // row194 起可出库库位扩到三个（毛菜鲜品库/干货库/蛋类库），service 改用 selectList 批量解析
+        when(locationInfoMapper.selectList(any())).thenReturn(java.util.List.of(loc));
+        // 单号改走统一编码生成器（7 位纯数字）
+        when(bizCodeGenerator.generate(any(), any())).thenReturn("0000001");
         when(locationStockService.productOut(any())).thenReturn(999L);
     }
 
@@ -164,7 +170,8 @@ class VegOutServiceImplTest {
 
         String batchNo = service.submit(mkBo("veg_dock", 1L, "12.000"), true);
 
-        assertThat(batchNo).startsWith("VO");
+        // row192：单号改走统一编码生成器，7 位纯数字（旧格式 VO+时间戳+4位随机 已废弃）
+        assertThat(batchNo).isEqualTo("0000001");
         ArgumentCaptor<VegetableHandle> hc = ArgumentCaptor.forClass(VegetableHandle.class);
         verify(vegetableHandleMapper).updateById(hc.capture());
         assertThat(hc.getValue().getSendPlatformWeight()).isEqualByComparingTo("22.000");
@@ -298,13 +305,33 @@ class VegOutServiceImplTest {
     void rejectNonVegetableProduct() {
         when(locationStockMapper.selectById(1L)).thenReturn(mkStock(1L, 10L, 20L));
         ProductInfo pork = mkVegProduct(10L);
+        // row194 起业态白名单放宽到 {vegetable, dry_good, egg, other}，但猪肉仍在白名单外 → 照样拒
         pork.setBelongType("pork");
         when(productInfoMapper.selectById(10L)).thenReturn(pork);
 
         assertThatThrownBy(() -> service.submit(mkBo("veg_dock", 1L, "1.000"), true))
             .isInstanceOf(ServiceException.class)
-            .hasMessageContaining("只有果蔬产品");
+            .hasMessageContaining("不支持毛菜间出库");
         verify(locationStockService, never()).productOut(any());
+    }
+
+    @Test
+    @DisplayName("row194：干货 / 蛋类 / 其他业态可出库（白名单放宽后不再被业态守卫拦）")
+    void allowDryGoodAndEggProduct() {
+        for (String belongType : new String[] {"dry_good", "egg", "other"}) {
+            reset(locationStockService);
+            when(locationStockMapper.selectById(1L)).thenReturn(mkStock(1L, 10L, 20L));
+            ProductInfo p = mkVegProduct(10L);
+            p.setBelongType(belongType);
+            when(productInfoMapper.selectById(10L)).thenReturn(p);
+            when(locationStockService.productOut(any())).thenReturn(99L);
+
+            service.submit(mkBo("kitchen", 1L, "1.000"), true);
+
+            verify(locationStockService).productOut(any());
+            // D3：非果蔬不累加毛菜处理送月台重量（那是果蔬专属报表，混入会污染）
+            verify(vegetableHandleMapper, never()).updateById(any(VegetableHandle.class));
+        }
     }
 
     @Test

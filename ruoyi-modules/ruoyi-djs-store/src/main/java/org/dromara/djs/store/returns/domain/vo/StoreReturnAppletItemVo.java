@@ -68,6 +68,13 @@ public class StoreReturnAppletItemVo implements Serializable {
     /** 是否已确认：1=是 / 0=否（returnStatus==received 派生）。 */
     private Integer isConfirm;
 
+    /**
+     * 处置方式：{@code 0}=退回入库（默认）/ {@code 1}=产品丢弃（小程序 row269）。
+     *
+     * <p>已确认行回显仓库当时的选择；未确认行为建表默认 0，mp 侧即"默认退回入库"的初始态。</p>
+     */
+    private Integer isDiscard;
+
     /** 退回原因。 */
     private String returnReason;
 

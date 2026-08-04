@@ -10,6 +10,7 @@ import org.dromara.common.log.enums.BusinessType;
 import org.dromara.common.web.core.BaseController;
 import org.dromara.djs.warehouse.stock.domain.vo.StockOverviewDailyVo;
 import org.dromara.djs.warehouse.stock.domain.vo.StockOverviewDetailVo;
+import org.dromara.djs.warehouse.stock.domain.vo.StockOverviewMonthlyVo;
 import org.dromara.djs.warehouse.stock.service.IStockOverviewService;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.validation.annotation.Validated;
@@ -88,4 +89,39 @@ public class StockOverviewController extends BaseController {
         ExcelUtil.exportExcel(list, "库存总览_" + date, StockOverviewDetailVo.class, response);
     }
 
+
+    // ==================== 库存月汇总（row190）====================
+
+    /**
+     * 库存月汇总列表（row190）：每月一行（月份 / 汇总产品数量）。
+     *
+     * <p>与日汇总同为 compute-on-read，不建汇总表；用独立权限串 {@code stockMonthly:*}，
+     * 便于按菜单单独授权。</p>
+     *
+     * @param monthFrom 起始月首日（含，可空，yyyy-MM-dd）
+     * @param monthTo   截止月首日（含，可空，yyyy-MM-dd）
+     */
+    @SaCheckPermission("djs:warehouse:stockMonthly:list")
+    @GetMapping("/monthly")
+    public R<List<StockOverviewMonthlyVo>> monthly(
+        @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd") Date monthFrom,
+        @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd") Date monthTo) {
+        return R.ok(stockOverviewService.queryMonthly(monthFrom, monthTo));
+    }
+
+    /**
+     * 某自然月库存明细（row190 详情弹窗）：列与日汇总一致。
+     *
+     * @param monthStart  统计月首日（必传，yyyy-MM-dd）
+     * @param productName 产品名称模糊（可空）
+     * @param locationId  库位 id（可空）
+     */
+    @SaCheckPermission("djs:warehouse:stockMonthly:query")
+    @GetMapping("/monthly/detail")
+    public R<List<StockOverviewDetailVo>> monthlyDetail(
+        @RequestParam @DateTimeFormat(pattern = "yyyy-MM-dd") Date monthStart,
+        @RequestParam(required = false) String productName,
+        @RequestParam(required = false) Long locationId) {
+        return R.ok(stockOverviewService.queryMonthlyDetail(monthStart, productName, locationId));
+    }
 }

@@ -92,6 +92,13 @@ public class StoreReturnVo implements Serializable {
     @ExcelProperty(value = "仓库实收重量")
     private BigDecimal receivedWeight;
 
+    /**
+     * 仓库确认处置：{@code 0}=退回入库 / {@code 1}=产品丢弃（admin row204 明细「是否丢弃」列）。
+     *
+     * <p>未确认（pending）行取建表默认 0，前端结合 {@code returnStatus} 判断是否已有处置结论。</p>
+     */
+    private Integer isDiscard;
+
     /** 仓库确认时间。 */
     @ExcelProperty(value = "确认时间")
     @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")

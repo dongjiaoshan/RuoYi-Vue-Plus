@@ -8,12 +8,17 @@ import org.dromara.common.log.annotation.Log;
 import org.dromara.common.log.enums.BusinessType;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
+import org.dromara.common.core.domain.R;
 import org.dromara.common.web.core.BaseController;
+import org.dromara.djs.warehouse.veg.domain.bo.FeedDailyConfirmBo;
 import org.dromara.djs.warehouse.veg.domain.bo.FeedRecordQuery;
+import org.dromara.djs.warehouse.veg.domain.vo.FeedDailyVo;
 import org.dromara.djs.warehouse.veg.domain.vo.FeedRecordVo;
 import org.dromara.djs.warehouse.veg.service.IFeedRecordService;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -62,5 +67,35 @@ public class FeedRecordController extends BaseController {
     public void export(FeedRecordQuery query, HttpServletResponse response) {
         List<FeedRecordVo> list = feedRecordService.queryList(query);
         ExcelUtil.exportExcel(list, "有机饲喂记录", FeedRecordVo.class, response);
+    }
+
+    /**
+     * 有机饲喂**按日汇总**分页（admin 行199 主列表 / mp 行268 卡片）：
+     * 日期 / 总重量 / 仓库确认框数 / 仓库确认人。
+     *
+     * <p>只吃日期范围；作物名与提供位置是明细维度，点「查看详情」走 {@link #list} 拉当日明细。</p>
+     *
+     * @param query     查询条件（仅 dateFrom / dateTo 生效）
+     * @param pageQuery 分页参数
+     */
+    @SaCheckPermission("djs:warehouse:feed:record:list")
+    @GetMapping("/daily")
+    public TableDataInfo<FeedDailyVo> daily(FeedRecordQuery query, PageQuery pageQuery) {
+        return feedRecordService.queryDailyPage(query, pageQuery);
+    }
+
+    /**
+     * 录入 / 修改某日的仓库确认框数（mp 行268【框数录入】）。
+     *
+     * <p>按日期 upsert。甲方要求录错可重录，故允许改；改则确认人 / 确认时间刷成最后一次操作者。</p>
+     *
+     * @param bo 日期 / 框数 / 确认人
+     */
+    @SaCheckPermission("djs:warehouse:feed:record:list")
+    @Log(title = "有机饲喂日确认", businessType = BusinessType.UPDATE)
+    @PostMapping("/daily/confirm")
+    public R<Void> saveDailyConfirm(@Validated @RequestBody FeedDailyConfirmBo bo) {
+        feedRecordService.saveDailyConfirm(bo);
+        return R.ok();
     }
 }

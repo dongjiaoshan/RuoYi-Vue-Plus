@@ -29,6 +29,13 @@ public class StoreReturnAppletConfirmBo {
      */
     private String targetLocationType;
 
+    /**
+     * 处置方式：{@code 0}/null=退回入库（默认） / {@code 1}=产品丢弃。
+     *
+     * <p>mp 确认页每个产品卡上的「退回入库 ⇄ 产品丢弃」切换（小程序 行269）。</p>
+     */
+    private Integer isDiscard;
+
     /** 备注（V1 mp 不持久化，留待 V2）。 */
     private String remark;
 }

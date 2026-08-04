@@ -43,4 +43,10 @@ public class VegOutCandidateVo implements Serializable {
 
     /** 地块编号（冗余展示；plotId 为空时为 null）。 */
     private String plotCode;
+
+    /** 产品业态（djs_belong_type）：vegetable / dry_good / egg / other，前端按它分组或判断是否有地块。 */
+    private String belongType;
+
+    /** 产品销售价格（row191，产品主数据 sale_price）：新增页「销售单价」的默认值，用户可改。 */
+    private java.math.BigDecimal salePrice;
 }

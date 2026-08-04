@@ -11,6 +11,7 @@ import org.dromara.djs.plant.dashboard.applet.domain.vo.PlantPlanTimelineVo;
 import org.dromara.djs.plant.dashboard.applet.domain.vo.PlantRecordVo;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.util.List;
 
 /**
@@ -115,8 +116,14 @@ public interface AppletPlantManageDashboardMapper {
      */
     @Select("SELECT COALESCE(SUM(d.plot_area), 0)                  AS planArea, "
         + "       COUNT(DISTINCT d.crop_id)                     AS planCropCount, "
-        + "       COALESCE(SUM(d.expected_yield), 0)            AS expectedYieldKg "
+        + "       COALESCE(SUM(GREATEST(COALESCE(d.expected_yield,0) - COALESCE(dl.disaster_loss,0), 0)), 0) AS expectedYieldKg "
         + "  FROM t_plant_plant_details d "
+        + "  LEFT JOIN (SELECT fr.plot_id, fr.crop_id, SUM(fr.loss_yield) AS disaster_loss"
+        + "               FROM t_plant_farm_records fr"
+        + "              WHERE fr.del_flag='0' AND fr.tenant_id=#{tenantId} AND fr.farm_type='disaster'"
+        + "                AND fr.plot_id IS NOT NULL AND fr.crop_id IS NOT NULL"
+        + "              GROUP BY fr.plot_id, fr.crop_id) dl"
+        + "    ON dl.plot_id = d.plot_id AND dl.crop_id = d.crop_id "
         + "  JOIN t_plant_plant_plan pp ON pp.id = d.plant_id AND pp.del_flag = '0' "
         + " WHERE d.tenant_id = #{tenantId} "
         + "   AND d.del_flag = '0' "
@@ -197,8 +204,14 @@ public interface AppletPlantManageDashboardMapper {
      */
     @Select("SELECT c.crop_name                       AS cropName, "
         + "       MONTH(d.earliest_harvestdate)     AS month, "
-        + "       COALESCE(SUM(d.expected_yield), 0) AS expectedYield "
+        + "       COALESCE(SUM(GREATEST(COALESCE(d.expected_yield,0) - COALESCE(dl.disaster_loss,0), 0)), 0) AS expectedYield "
         + "  FROM t_plant_plant_details d "
+        + "  LEFT JOIN (SELECT fr.plot_id, fr.crop_id, SUM(fr.loss_yield) AS disaster_loss"
+        + "               FROM t_plant_farm_records fr"
+        + "              WHERE fr.del_flag='0' AND fr.tenant_id=#{tenantId} AND fr.farm_type='disaster'"
+        + "                AND fr.plot_id IS NOT NULL AND fr.crop_id IS NOT NULL"
+        + "              GROUP BY fr.plot_id, fr.crop_id) dl"
+        + "    ON dl.plot_id = d.plot_id AND dl.crop_id = d.crop_id "
         + "  LEFT JOIN t_plant_crop_info c ON c.id = d.crop_id AND c.del_flag = '0' "
         + " WHERE d.tenant_id = #{tenantId} "
         + "   AND d.del_flag = '0' "
@@ -318,6 +331,11 @@ public interface AppletPlantManageDashboardMapper {
     /**
      * 采摘计划月度内各作物明细（喂 timeline 每月 crops 数组，按计划采摘月分组）。
      *
+     * <p>另返「预计上架 / 下架日期」：卡片是<b>作物</b>粒度而日期是<b>地块</b>粒度，故上架取组内最小、
+     * 下架取组内最大。单地块口径 = 实际日期优先、缺则回落计划日期
+     * （{@code COALESCE(begin_harvestdate, earliest_harvestdate)} / {@code COALESCE(end_harvestdate, last_harvestdate)}），
+     * 与 {@code CropPlotStatMapper} 的 {@code pick_start} 同范式。计划日期 NOT NULL，故结果不会为空。</p>
+     *
      * @param tenantId 租户
      * @param year     年份（{@code YEAR(earliest_harvestdate)}）
      * @return 每 月×作物 一行，无则空列表
@@ -326,7 +344,9 @@ public interface AppletPlantManageDashboardMapper {
         + "       c.crop_name                    AS cropName, "
         + "       c.image_oss_id                 AS cropImg, "
         + "       COUNT(DISTINCT d.plot_id)      AS plotCount, "
-        + "       COALESCE(SUM(d.plot_area), 0)  AS area "
+        + "       COALESCE(SUM(d.plot_area), 0)  AS area, "
+        + "       MIN(COALESCE(d.begin_harvestdate, d.earliest_harvestdate)) AS onShelfDate, "
+        + "       MAX(COALESCE(d.end_harvestdate, d.last_harvestdate))       AS offShelfDate "
         + "  FROM t_plant_plant_details d "
         + "  LEFT JOIN t_plant_crop_info c ON c.id = d.crop_id AND c.del_flag = '0' "
         + " WHERE d.tenant_id = #{tenantId} "
@@ -474,6 +494,12 @@ public interface AppletPlantManageDashboardMapper {
 
         /** 该作物该月面积合计（亩）。 */
         private BigDecimal area;
+
+        /** 预计上架日期：组内各地块「实际开始采摘日，缺则计划最早采摘日」取最小。 */
+        private LocalDate onShelfDate;
+
+        /** 预计下架日期：组内各地块「实际结束采摘日，缺则计划最晚采摘日」取最大。 */
+        private LocalDate offShelfDate;
 
     }
 

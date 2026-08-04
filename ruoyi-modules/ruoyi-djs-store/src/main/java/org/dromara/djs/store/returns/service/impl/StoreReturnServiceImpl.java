@@ -101,6 +101,12 @@ public class StoreReturnServiceImpl
     /** 退货状态 djs_store_return_status：已入库（仓库确认实收后）。 */
     private static final String STATUS_RECEIVED = "received";
 
+    /** 处置方式（{@code t_store_return.is_discard}）：退回入库（默认，写库存）。 */
+    private static final Integer DISCARD_NO = 0;
+
+    /** 处置方式：产品丢弃（不写库存）。 */
+    private static final Integer DISCARD_YES = 1;
+
     /** mp 词表（djs_return_status）：待确认。store 的 pending 直接对应。 */
     private static final String MP_STATUS_PENDING = "pending";
 
@@ -125,6 +131,9 @@ public class StoreReturnServiceImpl
 
     /** 白条归属类型（字典 djs_belong_type）：门店当日白条到店判定。 */
     private static final String BELONG_TYPE_WHITE_BAR = "white_bar";
+
+    /** 猪肉归属类型（字典 djs_belong_type）。 */
+    private static final String BELONG_TYPE_PORK = "pork";
 
     /**
      * 礼盒归属类型（字典 {@code djs_belong_type}）：门店退回不支持。
@@ -223,11 +232,22 @@ public class StoreReturnServiceImpl
         // 3. row178：拦礼盒。本方法对所有方向都无条件走下面的 inboundReturnBasket 真写仓库库存，
         //    所以闸也不按方向区分（顾客退门店同样会写 location_stock）。
         assertReturnable(product);
+        String direction = StringUtils.isBlank(bo.getReturnDirection())
+            ? DIRECTION_CUSTOMER_TO_STORE : bo.getReturnDirection();
+        // 4. **门店退仓库方向必须过台账闸**，与 batchCreate 同源同口径。
+        //    这条路（mp「退回录入」→ POST /applet/store/return/add）直接 received + 立刻真写
+        //    location_stock，比 batchCreate 的两段式更危险；此前完全无闸，实测能从一家从没收过生菜的
+        //    门店登记 55555kg 生菜并即时进仓库库存。
+        //    顾客退门店（customer_to_store）不套此闸 —— 顾客退的是以前买的货，本就不该受门店当日台账约束。
+        if (DIRECTION_STORE_TO_WAREHOUSE.equals(direction) && bo.getStoreId() != null) {
+            BigDecimal metric = bo.getReturnQuantity() == null ? BigDecimal.ZERO : bo.getReturnQuantity();
+            assertWithinRemainReturnable(product, metric,
+                buildRemainReturnableByProduct(bo.getStoreId()), new LinkedHashMap<>());
+        }
 
         StoreReturn entity = new StoreReturn();
         entity.setReturnNo(generateReturnNo());
-        entity.setReturnDirection(StringUtils.isBlank(bo.getReturnDirection())
-            ? DIRECTION_CUSTOMER_TO_STORE : bo.getReturnDirection());
+        entity.setReturnDirection(direction);
         entity.setStoreId(bo.getStoreId());
         entity.setProductId(bo.getProductId());
         entity.setLocationId(bo.getLocationId());
@@ -304,27 +324,11 @@ public class StoreReturnServiceImpl
         }
         Long operatorId = LoginHelper.getUserId();
         LocalDate today = LocalDate.now(ZONE_SHANGHAI);
-        // 退回上限按 belong_type + admin row9 分流（懒算 + 逐条累加）：
-        //   · 白条产品本身：累计 ≤ 当日到店白条总重（row142，保留）。
-        //   · 案例①（admin row9）：当日到店猪肉成品配置的原材料产品 → ≤ 当日到店对应猪肉成品总重。
-        //   · 案例②（DENGBO-R11）：当日到店白条 + 该产品属字典 djs_white_bar_return_product（白条产品）→ ≤ (当日到店白条总重 − 今日已退白条配置产品累计)。
-        //   · 其余：逐产品 ≤ 当日到店该产品重（现状回退）。
-        Map<Long, BigDecimal> arrivedWeightByMaterial = new LinkedHashMap<>(buildArrivedPorkWeightByMaterial(bo.getStoreId(), today));
-        // row67：果蔬材料外售成品的退回候选被折叠成其原材料产品（foldVegMaterialSold），
-        // 判定须镜像猪肉「按原材料聚合到店成品重」的口径，否则原材料产品在生产表无行、到店恒 0 → 无法退回。
-        buildArrivedVegWeightByMaterial(bo.getStoreId(), today)
-            .forEach((mid, w) -> arrivedWeightByMaterial.merge(mid, w, BigDecimal::add));
-        List<Long> dictReturnProductIds = resolveWhiteBarReturnProductIds();
-        boolean whiteBarArrivedToday = hasWhiteBarArrivedToday(bo.getStoreId());
-        BigDecimal whiteBarDeliveredTotal = null;
-        // 白条累计起点必须是「当日已入库的退回总重」，不能每次请求从 0 起：
-        // 从 0 起的话闸只在单次请求内生效，连提 N 次每次都能退满当日到店白条总重。
-        BigDecimal whiteBarReturnedAccum = null;
-        Map<Long, BigDecimal> returnedBaselineByProduct = new LinkedHashMap<>();
-        Map<Long, BigDecimal> returnedAccumByProduct = new LinkedHashMap<>();
+        // 退回上限统一走**门店当日盘点台账**（admin row202）：期初 + 入库 − 已退。
+        // 原先按 belong_type 分流的「当日到店重量闸」已随候选口径一并删除（见下方循环里的说明）。
         // row119：与前端 :max 同源的「剩余可退」闸——直接取候选接口算好的 到店量 − 今日已退，
-        // 前端封顶只是体验，这里才是把关。候选里没有的产品（mp 退货录入可传任意产品）不进此闸，
-        // 仍由下面按业态分流的重量校验兜底。
+        // 前端封顶只是体验，这里才是把关。**候选里没有的产品一律拒绝**（见 assertWithinRemainReturnable
+        // 的说明：曾经放行，导致任意产品可凭空退成仓库库存）。
         Map<Long, BigDecimal> remainByProduct = buildRemainReturnableByProduct(bo.getStoreId());
         Map<Long, BigDecimal> remainAccumByProduct = new LinkedHashMap<>();
         int created = 0;
@@ -340,46 +344,14 @@ public class StoreReturnServiceImpl
             BigDecimal rw = item.getReturnWeight() == null ? BigDecimal.ZERO : item.getReturnWeight();
             // row119：剩余可退闸（口径 = 候选接口的 到店量 − 今日已退；本批多行同产品继续累加）。
             assertWithinRemainReturnable(product, returnMetric, remainByProduct, remainAccumByProduct);
-            BigDecimal materialLimit = arrivedWeightByMaterial.get(item.getProductId());
-            if (BELONG_TYPE_WHITE_BAR.equals(product.getBelongType())) {
-                // 白条：累计已退 + 本次 ≤ 当日到店白条总重（不按单个白条产品分别封顶）。
-                if (whiteBarDeliveredTotal == null) {
-                    whiteBarDeliveredTotal = sumWhiteBarDeliveredToStore(bo.getStoreId(), today);
-                }
-                if (whiteBarReturnedAccum == null) {
-                    whiteBarReturnedAccum = sumReturnedWhiteBarTodayForStore(bo.getStoreId(), today);
-                }
-                BigDecimal projected = whiteBarReturnedAccum.add(rw);
-                if (projected.compareTo(whiteBarDeliveredTotal) > 0) {
-                    throw new ServiceException("白条产品退回重量累计(" + projected.toPlainString()
-                        + ")不能超过当日到店白条总重(" + whiteBarDeliveredTotal.toPlainString() + ")", 400);
-                }
-                whiteBarReturnedAccum = projected;
-            } else if (whiteBarArrivedToday && dictReturnProductIds.contains(item.getProductId())) {
-                // admin row101 / row119：按产品用 max(当日盘点 期初+入库, 对应材料外售成品到店重) 独立封顶
-                //（与候选接口 arrivedQuantity 同一口径，见 resolveWhiteBarDictArrived）。
-                BigDecimal allowed = resolveWhiteBarDictArrived(bo.getStoreId(), today, item.getProductId(), materialLimit);
-                BigDecimal baseline = returnedBaselineByProduct.computeIfAbsent(item.getProductId(),
-                    productId -> sumReturnedTodayForProduct(bo.getStoreId(), today, productId));
-                BigDecimal accumulated = returnedAccumByProduct.getOrDefault(item.getProductId(), BigDecimal.ZERO);
-                BigDecimal projected = baseline.add(accumulated).add(rw);
-                if (projected.compareTo(allowed) > 0) {
-                    BigDecimal remain = allowed.subtract(baseline).subtract(accumulated).max(BigDecimal.ZERO);
-                    throw new ServiceException("产品「" + product.getProductName() + "」退回重量(" + rw.toPlainString()
-                        + ")不能超过当日到店量扣除今日已退后的剩余(" + remain.toPlainString() + ")", 400);
-                }
-                returnedAccumByProduct.put(item.getProductId(), accumulated.add(rw));
-            } else if (materialLimit != null) {
-                // 案例①：材料外售原材料(不在白条退回字典)→ ≤ 当日到店对应成品总重（猪肉/果蔬同口径）。
-                if (rw.compareTo(materialLimit) > 0) {
-                    throw new ServiceException("产品「" + product.getProductName() + "」退回重量(" + rw.toPlainString()
-                        + ")不能超过当日到店对应成品总重(" + materialLimit.toPlainString() + ")", 400);
-                }
-            } else {
-                // 其余生产产品：退回重量 ≤ 当日送达该店该产品的总重量（逐产品封顶，现状回退）。
-                // row15：非 kg 产品前端派生 rw=0 → 该重量封顶自动放行（口径变更已在报告标注）。
-                validateReturnWithinDelivered(bo.getStoreId(), item.getProductId(), today, rw, product.getProductName());
-            }
+            // ⚠️ 原先这里还有一整条「按业态分流的当日到店重量闸」（白条累计 / 材料外售成品重 /
+            // validateReturnWithinDelivered 逐产品当日送达重）。admin row202 把**候选**换成门店当日盘点台账
+            // 「期初+入库」后，这两套口径直接打架：台账列得出来的隔夜库存（期初>0、当日无到货），
+            // 到了这些闸一律被判 0 → 候选里点得到、一提交必 400。
+            // 按项目铁律「禁止两边兼容」，二选一：**留台账闸（assertWithinRemainReturnable，与候选同源），
+            // 删掉当日到店闸**。放弃的是「当日到货维度的重量封顶」——它的防超退职责已由台账口径覆盖
+            // （期初+入库−已退），且台账才是甲方 row202 明确指定的基数。
+            // 白条同样并入台账口径（其字典产品在台账里按重量盘，单位一致，见 QA B-4 核验）。
 
             StoreReturn entity = new StoreReturn();
             entity.setReturnNo(generateReturnNo());
@@ -406,7 +378,8 @@ public class StoreReturnServiceImpl
 
     /**
      * row119：按产品算「剩余可退量」= 到店量 − 今日已退量，口径直接复用退回操作页的候选接口
-     * （{@link #listPorkCandidates} / {@link #listVegCandidates}），保证前端 {@code :max} 与后端闸门同源。
+     * （{@link #listPorkCandidates} / {@link #listVegCandidates} / {@link #listOtherCandidates}），
+     * 保证前端 {@code :max} 与后端闸门同源 —— <b>三个 tab 一个都不能漏</b>，漏掉的那类退回将完全不封顶。
      *
      * <p>到店量为空（不封顶）的候选不进 map；到店量为 0 的候选进 map 且值为 0 → 只能填 0（不可退）。
      * 猪肉、果蔬两 tab 同产品出现时取较小的剩余额度，避免绕闸。</p>
@@ -421,6 +394,10 @@ public class StoreReturnServiceImpl
             mergeRemain(remain, c.getProductId(), c.getArrivedQuantity(), c.getReturnedQuantity());
         }
         for (StoreReturnVegCandidateVo c : listVegCandidates(storeId)) {
+            mergeRemain(remain, c.getProductId(), c.getArrivedQuantity(), c.getReturnedQuantity());
+        }
+        // row202 新增的「其他产品」tab（干货 / 蛋类 / 其他）同样要进闸 —— 漏了它这三类退回完全不封顶。
+        for (StoreReturnVegCandidateVo c : listOtherCandidates(storeId)) {
             mergeRemain(remain, c.getProductId(), c.getArrivedQuantity(), c.getReturnedQuantity());
         }
         return remain;
@@ -438,18 +415,28 @@ public class StoreReturnServiceImpl
 
     /**
      * row119：单行退回量不得超过「剩余可退量」（本批同产品多行累加）。
-     * 产品不在候选 map（不封顶 / mp 退货录入的任意产品）→ 直接放行，交给按业态分流的重量校验兜底。
+     *
+     * <p><b>产品不在候选 map → 拒绝，不是放行。</b>候选 map 覆盖三个 tab 全部业态、取自门店当日盘点台账
+     * （期初 + 入库）。不在其中 = 这家店今天账面上根本没有这个货，退它就是凭空给仓库造库存。</p>
+     *
+     * <p>⚠️ 这里曾经是「直接放行，交给按业态分流的重量校验兜底」——而那道兜底
+     * （{@code validateReturnWithinDelivered}）在换台账口径时已被删除，于是变成**谁都不管**：
+     * 实测从一家从没收过生菜的门店退 55555 kg 生菜，提交 200、确认后仓库真多出 1000 kg 库存
+     * （mp「退回录入」页用的是通用 ProductPicker，仓库工人在正常界面里就能选到任意产品）。
+     * 不恢复旧的「当日送达重」兜底，是因为它与台账口径是两套数、隔夜库存会被它误判成 0
+     * ——按铁律「禁止两边兼容」，只留台账一套，贯彻到底。</p>
      */
     private void assertWithinRemainReturnable(ProductInfo product, BigDecimal returnMetric,
                                               Map<Long, BigDecimal> remainByProduct,
                                               Map<Long, BigDecimal> remainAccumByProduct) {
-        BigDecimal limit = remainByProduct.get(product.getId());
-        if (limit == null) {
-            return;
-        }
         BigDecimal metric = returnMetric == null ? BigDecimal.ZERO : returnMetric;
         if (metric.signum() <= 0) {
             return;
+        }
+        BigDecimal limit = remainByProduct.get(product.getId());
+        if (limit == null) {
+            throw new ServiceException("产品「" + product.getProductName()
+                + "」不在该门店当日盘点台账中，无法退回。请先在门店盘点里录入这个产品的当日库存。", 400);
         }
         BigDecimal accumulated = remainAccumByProduct.getOrDefault(product.getId(), BigDecimal.ZERO);
         BigDecimal projected = accumulated.add(metric);
@@ -470,51 +457,23 @@ public class StoreReturnServiceImpl
         if (storeId == null) {
             return List.of();
         }
-        LocalDate today = LocalDate.now(ZONE_SHANGHAI);
-        // DENGBO-R11：猪肉 tab 候选拆两子类（保序、跨子类去重）：
-        //   · 猪肉产品(pork)：当日到店的猪肉成品（belong_type=pork 且配了原材料 product_material）——按份退回，
-        //     单位=成品自身单位（份，如「黑毛猪筒子骨700g/份」），退回量+单位+退回产品重量三列与果蔬一致（Kevin 2026-07-12）；
-        //   · 白条产品(white_bar)：字典 djs_white_bar_return_product 配置产品（当日有白条到店才列）——按重量退货，单位=对应产品原材料单位。
+        // admin row202 第 3 点：猪肉候选由「当日到店成品 + 白条字典」改为门店盘点台账
+        // 「期初+入库 > 0」，与果蔬 / 其他产品统一口径（见 listLedgerCandidates）。
+        // 白条按 Kevin 口径继续留在猪肉 tab，只用 subCategory 区分展示（不再单独走字典取候选）。
         List<StoreReturnPorkCandidateVo> result = new ArrayList<>();
-        LinkedHashSet<Long> seen = new LinkedHashSet<>();
-        // row40：材料外售原材料行的到店量 = 对应成品当日到店重（kg），一次聚合避免逐行查（与 batchCreate 案例① 同口径）。
-        Map<Long, BigDecimal> arrivedWeightByMaterial = buildArrivedPorkWeightByMaterial(storeId, today);
-
-        for (ProductInfo finished : resolveArrivedPorkFinishedProducts(storeId, today)) {
-            // DENGBO 原材料外售：成品若配置「是否原材料外售=是」且有原材料，候选改列其原材料产品
-            // （name/单位取原材料，一般 kg → 按重量退货）；多成品共享同一原材料时 seen 去重成一行。
-            Integer sold = finished.getIsMaterialSold();
-            if (sold != null && sold == 1 && finished.getProductMaterial() != null) {
-                ProductInfo material = productInfoMapper.selectById(finished.getProductMaterial());
-                if (material != null && seen.add(material.getId())) {
-                    // 材料外售原材料行到店量 = 对应成品到店重（kg）。
-                    result.add(buildPorkCandidate(material, SUB_CAT_PORK, material.getProductUnit(),
-                        arrivedWeightByMaterial.get(material.getId()), storeId, today));
-                }
-            } else if (seen.add(finished.getId())) {
-                // 猪肉产品(按份)行到店量 = 当日到店该产品需求订购份数 SUM(demand_quantity)。
-                result.add(buildPorkCandidate(finished, SUB_CAT_PORK, finished.getProductUnit(),
-                    productProductionMapper.sumDeliveredQuantityToStore(storeId, finished.getId(), today), storeId, today));
-            }
-        }
-        if (hasWhiteBarArrivedToday(storeId)) {
-            List<ProductInfo> whiteBarProducts = resolveWhiteBarReturnDictProducts();
-            Map<Long, String> materialUnits = resolveMaterialUnits(whiteBarProducts);
-            for (ProductInfo p : whiteBarProducts) {
-                BigDecimal allowed = resolveWhiteBarDictArrived(storeId, today, p.getId(),
-                    arrivedWeightByMaterial.getOrDefault(p.getId(), BigDecimal.ZERO));
-                if (seen.add(p.getId())) {
-                    result.add(buildPorkCandidate(p, SUB_CAT_WHITE_BAR,
-                        materialUnits.getOrDefault(p.getId(), p.getProductUnit()), allowed, storeId, today));
-                } else {
-                    result.stream().filter(candidate -> Objects.equals(candidate.getProductId(), p.getId()))
-                        .findFirst().ifPresent(candidate -> {
-                            candidate.setSubCategory(SUB_CAT_WHITE_BAR);
-                            candidate.setProductUnit(materialUnits.getOrDefault(p.getId(), p.getProductUnit()));
-                            candidate.setArrivedQuantity(allowed);
-                        });
-                }
-            }
+        // 必须 fillReturnedQuantity —— listLedgerCandidates 不填已退量（见其说明），
+        // 三个 tab 的入口各自负责回填，漏掉哪个哪个 tab 的闸门就形同虚设。
+        for (StoreReturnVegCandidateVo c : fillReturnedQuantity(storeId,
+                listLedgerCandidates(storeId, PORK_TAB_BELONG_TYPES))) {
+            StoreReturnPorkCandidateVo vo = new StoreReturnPorkCandidateVo();
+            vo.setProductId(c.getProductId());
+            vo.setProductName(c.getProductName());
+            vo.setProductUnit(c.getProductUnit());
+            vo.setBelongType(c.getBelongType());
+            vo.setSubCategory(BELONG_TYPE_WHITE_BAR.equals(c.getBelongType()) ? SUB_CAT_WHITE_BAR : SUB_CAT_PORK);
+            vo.setArrivedQuantity(c.getArrivedQuantity());
+            vo.setReturnedQuantity(c.getReturnedQuantity());
+            result.add(vo);
         }
         return result;
     }
@@ -672,9 +631,19 @@ public class StoreReturnServiceImpl
     }
 
     /**
-     * row119：门店当日盘点账面可支配量 = {@code t_store_daily_ledger} 当日该产品 {@code opening_qty + inbound_qty} 之和。
-     * 无盘点行 → 0。与盘点明细「期初库存 / 当日入库」两列同源，退回上限据此封顶后损耗公式
-     * {@code 期初+入库−销售−赠送+退货−退回−期末} 不会因退回超量变负。
+     * 门店当日盘点账面可退量 = {@code t_store_daily_ledger} 当日该产品
+     * <b>{@code opening_qty + inbound_qty}</b>。无盘点行 → 0。
+     *
+     * <p>与盘点明细「期初库存 / 当日入库」两列同源，即「今天这家店手上过过多少货」。</p>
+     *
+     * <p><b>不减损坏</b>（Kevin 2026-08-04 拍板）：<b>损坏的货本身就是要退回仓库的</b>——
+     * 门店退仓最主要的场景之一正是「坏了退回去」，减掉 {@code loss_qty} 会把这批货挡在退回之外。
+     * 甲方 admin row202 原文也只写「期初库存 + 入库量」。<b>放弃的是</b>：靠上限拦「货全损了还能退」
+     * 这种账面异常——它交给仓库确认环节（收货时逐行称重 / 标丢弃）兜，不在提交闸上做。</p>
+     *
+     * <p><b>不减销售 / 赠送</b>（Kevin 2026-08-04 确认）：系统监听不到门店实时卖了多少，
+     * 台账 {@code sale_qty} 要等当日盘点提交才有值，用它做实时闸只会误拦。已售商品理论上会落进
+     * 可退量里，接受——这是「退货时的限制」，不是库存真值。</p>
      */
     private BigDecimal sumStoreLedgerAvailable(Long storeId, LocalDate today, Long productId) {
         List<StoreDailyLedger> rows = storeDailyLedgerMapper.selectList(new LambdaQueryWrapper<StoreDailyLedger>()
@@ -690,7 +659,7 @@ public class StoreReturnServiceImpl
                 total = total.add(row.getInboundQty());
             }
         }
-        return total;
+        return total.max(BigDecimal.ZERO);
     }
 
     /**
@@ -824,50 +793,133 @@ public class StoreReturnServiceImpl
         return total;
     }
 
+    /** 「其他产品」tab 的业态白名单（admin row202：非猪肉 / 非白条 / 非果蔬 / 非礼盒 的都归这里）。 */
+    private static final Set<String> OTHER_TAB_BELONG_TYPES = Set.of("dry_good", "egg", "other");
+
+    /** 猪肉 tab 的业态白名单（白条按 Kevin 口径继续留在猪肉 tab，不单开）。 */
+    private static final Set<String> PORK_TAB_BELONG_TYPES = Set.of(BELONG_TYPE_PORK, BELONG_TYPE_WHITE_BAR);
+
+    /**
+     * 门店当日盘点台账驱动的退回候选（admin row202 第 3/4 点，三个 tab 共用一套口径）。
+     *
+     * <p>候选 = 当日盘点台账里 <b>期初 + 入库 &gt; 0</b> 的产品，按业态白名单分到各 tab。
+     * <b>不减损坏</b>——损坏的货本身就是要退回仓库的，减掉会把这批货挡在退回之外
+     * （Kevin 2026-08-04；判定详见 {@link #sumStoreLedgerAvailable}）。
+     * 上限（{@code arrivedQuantity}）就是这个可退量，前端再减去 {@code returnedQuantity} 得剩余。</p>
+     *
+     * <p><b>为什么换成台账驱动</b>：原来猪肉走「当日到店成品 + 白条字典」、果蔬走「近两日已确认到店」，
+     * 两条链路各一套口径、也答不上「其他产品」怎么列。甲方 row202 明确要求三类统一按
+     * 「期初库存 + 入库量」，台账正是这两个数的唯一来源（与门店盘点页同源，见 sumStoreLedgerAvailable）。
+     * 项目铁律禁止「两边兼容」，故直接切换、不保留旧取数分支。</p>
+     *
+     * <p><b>不减销售 / 赠送</b>（Kevin 2026-08-04 确认）：系统监听不到门店实时卖了多少，台账
+     * {@code sale_qty} 要等当日盘点提交才有值，用它做实时闸只会误拦。已售商品理论上会落进可退量里，
+     * 接受 —— 这是「退货时的限制」，不是库存真值。<b>本段是该口径的唯一书面记录，别删。</b></p>
+     *
+     * <p>⚠️ 前提：货到店后门店会先盘点（邓博 2026-08-03 微信确认）。台账行是**人工提交盘点**才落库的，
+     * 若某天门店没盘点，该日候选为空 —— 这是业务流程前提，不是代码兜底能解决的。
+     * 提交闸对不在候选里的产品**直接拒绝**（见 {@link #assertWithinRemainReturnable}）。</p>
+     *
+     * @param storeId     门店
+     * @param belongTypes 业态白名单
+     * @return 候选（productId / name / unit / belongType / arrivedQuantity=可退量）
+     */
+    private List<StoreReturnVegCandidateVo> listLedgerCandidates(Long storeId, Set<String> belongTypes) {
+        LocalDate today = LocalDate.now(ZONE_SHANGHAI);
+        List<StoreDailyLedger> rows = storeDailyLedgerMapper.selectList(new LambdaQueryWrapper<StoreDailyLedger>()
+            .eq(StoreDailyLedger::getStoreId, storeId)
+            .eq(StoreDailyLedger::getLedgerDate, today));
+        if (rows.isEmpty()) {
+            return new ArrayList<>();
+        }
+        // 同一产品当日可能有多行（不同盘点批次）→ 先按产品合并可退量
+        Map<Long, BigDecimal> availableByProduct = new LinkedHashMap<>();
+        for (StoreDailyLedger r : rows) {
+            if (r.getProductId() == null) {
+                continue;
+            }
+            BigDecimal v = BigDecimal.ZERO;
+            if (r.getOpeningQty() != null) {
+                v = v.add(r.getOpeningQty());
+            }
+            if (r.getInboundQty() != null) {
+                v = v.add(r.getInboundQty());
+            }
+            availableByProduct.merge(r.getProductId(), v, BigDecimal::add);
+        }
+        List<ProductInfo> products = productInfoMapper.selectBatchIds(availableByProduct.keySet());
+        Map<Long, ProductInfo> productMap = products.stream()
+            .collect(Collectors.toMap(ProductInfo::getId, p -> p, (a, b) -> a, LinkedHashMap::new));
+
+        List<StoreReturnVegCandidateVo> result = new ArrayList<>();
+        for (Map.Entry<Long, BigDecimal> e : availableByProduct.entrySet()) {
+            ProductInfo p = productMap.get(e.getKey());
+            if (p == null || !belongTypes.contains(p.getBelongType())) {
+                continue;
+            }
+            // 甲方 row202 第 3 点：只显示 期初+入库 > 0 的产品
+            BigDecimal available = e.getValue().max(BigDecimal.ZERO);
+            if (available.signum() <= 0) {
+                continue;
+            }
+            StoreReturnVegCandidateVo vo = new StoreReturnVegCandidateVo();
+            vo.setProductId(p.getId());
+            vo.setProductName(p.getProductName());
+            vo.setProductUnit(p.getProductUnit());
+            vo.setBelongType(p.getBelongType());
+            vo.setArrivedQuantity(available);
+            // ⚠️ 这里**不填 returnedQuantity** —— 它必须在「材料外售折叠」之后、按最终产品 id 回填。
+            // 在这里按台账行的原始 productId 填的话，foldVegMaterialSold 会把 productId 改写成原材料，
+            // 搬过去的那个数属于另一个产品（恒 0），闸门每次都从满额重算 →
+            // 实测上限 10 的产品连提三次共 100 万+ 全部放行。回填统一走 fillReturnedQuantity。
+            result.add(vo);
+        }
+        return result;
+    }
+
+    /**
+     * 按候选的<b>最终</b>产品 id 回填「今日已退量」—— 必须在所有会改写 productId 的加工
+     * （{@link #foldVegMaterialSold} 的材料外售折叠）<b>之后</b>调用。
+     *
+     * <p>已退窗口必须与可退量的窗口**同宽**，否则一边宽一边窄会算错剩余。可退量取的是
+     * 「今天这一张台账」，而台账的 {@code opening_qty} 是上一次盘点的期末结转过来的
+     * ——昨天退掉的货已经体现在今天的期初里了，这里再扣一次昨天的退回量就是重复扣。故已退量只取今天。</p>
+     *
+     * @param storeId    门店
+     * @param candidates 已完成折叠 / 改写的候选（原地回填）
+     * @return 同一个 list，便于链式调用
+     */
+    private List<StoreReturnVegCandidateVo> fillReturnedQuantity(Long storeId, List<StoreReturnVegCandidateVo> candidates) {
+        LocalDate today = LocalDate.now(ZONE_SHANGHAI);
+        for (StoreReturnVegCandidateVo vo : candidates) {
+            if (vo.getProductId() == null) {
+                continue;
+            }
+            vo.setReturnedQuantity(sumReturnedQuantitySinceForProduct(storeId, today, today, vo.getProductId()));
+        }
+        return candidates;
+    }
+
+    @Override
+    public List<StoreReturnVegCandidateVo> listOtherCandidates(Long storeId) {
+        if (storeId == null) {
+            return List.of();
+        }
+        // 其他产品 tab 不做折叠，但同样必须回填已退量（否则这三类业态的闸门形同虚设）
+        return fillReturnedQuantity(storeId, listLedgerCandidates(storeId, OTHER_TAB_BELONG_TYPES));
+    }
+
     @Override
     public List<StoreReturnVegCandidateVo> listVegCandidates(Long storeId) {
         if (storeId == null) {
             return List.of();
         }
-        // docx：近两日（今天 + 昨天）发往该门店的果蔬。复用 selectStoreReceivedVegProducts 按天取，合并去重。
-        LocalDate today = LocalDate.now(ZONE_SHANGHAI);
-        List<Map<String, Object>> rows = new java.util.ArrayList<>();
-        rows.addAll(demandManageMapper.selectStoreReceivedVegProducts(storeId, today));
-        rows.addAll(demandManageMapper.selectStoreReceivedVegProducts(storeId, today.minusDays(1)));
-        Map<Long, StoreReturnVegCandidateVo> dedup = new java.util.LinkedHashMap<>();
-        for (Map<String, Object> r : rows) {
-            Object pid = r.get("productId");
-            if (pid == null) {
-                continue;
-            }
-            Long productId = Long.valueOf(pid.toString());
-            // row41：computeIfAbsent 仅建首条 VO（name/unit 取首条），到店量 arrivedQuantity 需把今天+昨天两天累加。
-            StoreReturnVegCandidateVo vo = dedup.computeIfAbsent(productId, k -> {
-                StoreReturnVegCandidateVo v = new StoreReturnVegCandidateVo();
-                v.setProductId(productId);
-                Object name = r.get("productName");
-                v.setProductName(name == null ? null : name.toString());
-                Object unit = r.get("productUnit");
-                v.setProductUnit(unit == null ? null : unit.toString());
-                v.setArrivedQuantity(BigDecimal.ZERO);
-                return v;
-            });
-            BigDecimal arrived = toBigDecimal(r.get("arrivedQuantity"));
-            if (arrived != null) {
-                vo.setArrivedQuantity(vo.getArrivedQuantity() == null ? arrived : vo.getArrivedQuantity().add(arrived));
-            }
-        }
-        // row52：镜像猪肉候选路径——果蔬成品若「是否原材料外售=是」且配了原材料，候选折叠为其原材料产品
-        //（name/unit 取原材料；多成品共享同一原材料时合并成一行，保序）。
-        List<StoreReturnVegCandidateVo> folded = dropGiftBoxCandidates(
-            foldVegMaterialSold(new java.util.ArrayList<>(dedup.values())));
-        // row119：折叠后按最终产品 id 填已退量，前端剩余可退 = 到店量 − 已退量。
-        // 已退窗口取「昨天 + 今天」，与上面到店量的两天窗口对齐——只扣今天的话，昨天到店的量昨天退过一次、
-        // 今天还能再拿到同样额度退第二次，负损耗照旧复现。
-        for (StoreReturnVegCandidateVo vo : folded) {
-            vo.setReturnedQuantity(sumReturnedQuantitySinceForProduct(storeId, today.minusDays(1), today, vo.getProductId()));
-        }
-        return folded;
+        // admin row202 第 3 点：果蔬候选由「近两日已确认到店」改为门店盘点台账「期初+入库 > 0」，
+        // 与猪肉 / 其他产品统一到同一口径（见 listLedgerCandidates 的口径说明）。
+        // 材料外售折叠（成品→原材料）仍保留：台账里若列的是成品，退回入库要落到它的原材料上。
+        // 顺序关键：先折叠（可能改写 productId）→ 再按最终 id 回填已退量 → 最后剔礼盒。
+        return dropGiftBoxCandidates(fillReturnedQuantity(storeId,
+            foldVegMaterialSold(listLedgerCandidates(storeId, Set.of(BELONG_TYPE_VEGETABLE)))));
     }
 
     /**
@@ -901,7 +953,11 @@ public class StoreReturnServiceImpl
                 log.info("[STORE-RETURN] 果蔬退回候选剔除礼盒 productId={} name={}", c.getProductId(), c.getProductName());
                 continue;
             }
-            c.setBelongType(belongType);
+            // 查不到产品（已删 / belong_type 为空）时保留候选自带的 belongType —— 无条件覆盖会把它抹成
+            // null，前端 tab 分流与后端业态白名单都会因此错判。
+            if (belongType != null) {
+                c.setBelongType(belongType);
+            }
             kept.add(c);
         }
         return kept;
@@ -955,18 +1011,28 @@ public class StoreReturnServiceImpl
             Long key = effectiveId;
             String vName = name;
             String vUnit = unit;
+            String vBelong = c.getBelongType();
             StoreReturnVegCandidateVo vo = folded.computeIfAbsent(key, k -> {
                 StoreReturnVegCandidateVo v = new StoreReturnVegCandidateVo();
                 v.setProductId(key);
                 v.setProductName(vName);
                 v.setProductUnit(vUnit);
+                v.setBelongType(vBelong);
                 v.setArrivedQuantity(BigDecimal.ZERO);
+                v.setReturnedQuantity(BigDecimal.ZERO);
                 return v;
             });
             // row41：多成品共享同一原材料折叠成一行 → 到店量累加。
             BigDecimal arrived = c.getArrivedQuantity();
             if (arrived != null) {
                 vo.setArrivedQuantity(vo.getArrivedQuantity() == null ? arrived : vo.getArrivedQuantity().add(arrived));
+            }
+            // ⚠️ 已退量必须跟着一起累加、不能漏搬：漏了它 returnedQuantity 恒 null，
+            // 提交闸 mergeRemain 会把 used 当 0 → 剩余额度每次都按满额算 → **同一产品可以无限次退**
+            // （实测：上限 10 的上海青连退 10 + 1 全部放行）。到店量与已退量必须成对搬运。
+            BigDecimal returned = c.getReturnedQuantity();
+            if (returned != null) {
+                vo.setReturnedQuantity(vo.getReturnedQuantity() == null ? returned : vo.getReturnedQuantity().add(returned));
             }
         }
         return new ArrayList<>(folded.values());
@@ -1038,21 +1104,28 @@ public class StoreReturnServiceImpl
             }
         }
 
-        // 入库目标产品：配了 product_material 的成品(果蔬/猪肉)→原材料 product_material（缺料阻断），
-        // 本身即原材料(白条字典 kg 产品/外购原料)→按产品ID入库（邓博 2026-07-16：退回入库都是原材料）。
-        Long inboundProductId = resolveInboundProductId(existing.getProductId());
-        // 入库库位：前端显式选优先；mp 确认页只填实收量不选库位 → 按入库产品预设库位 / 库存最多库位兜底；
-        // 仍无 → 阻断（不做「只写流水不增库存」的库存黑洞，提示运营先补库位）。
-        Long locationId = bo.getLocationId() != null ? bo.getLocationId() : resolveDefaultLocation(inboundProductId);
-        // row145.3：猪肉退货指定入库库位（鲜品库/冻品库，整单一次选，仅 pork 生效——白条不分流，Kevin 口径）
-        if (StringUtils.isNotBlank(bo.getTargetLocationType()) && isPorkProduct(existing.getProductId())) {
-            Long porkLoc = resolveReturnLocationByType(bo.getTargetLocationType());
-            if (porkLoc != null) {
-                locationId = porkLoc;
+        // 小程序 row269：处置方式。丢弃的产品不进库存，故整条入库链路（解析原材料 / 定库位 / 写库存）全跳过。
+        boolean discard = DISCARD_YES.equals(bo.getIsDiscard());
+
+        Long inboundProductId = null;
+        Long locationId = null;
+        if (!discard) {
+            // 入库目标产品：配了 product_material 的成品(果蔬/猪肉)→原材料 product_material（缺料阻断），
+            // 本身即原材料(白条字典 kg 产品/外购原料)→按产品ID入库（邓博 2026-07-16：退回入库都是原材料）。
+            inboundProductId = resolveInboundProductId(existing.getProductId());
+            // 入库库位：前端显式选优先；mp 确认页只填实收量不选库位 → 按入库产品预设库位 / 库存最多库位兜底；
+            // 仍无 → 阻断（不做「只写流水不增库存」的库存黑洞，提示运营先补库位）。
+            locationId = bo.getLocationId() != null ? bo.getLocationId() : resolveDefaultLocation(inboundProductId);
+            // row145.3：猪肉退货指定入库库位（鲜品库/冻品库，整单一次选，仅 pork 生效——白条不分流，Kevin 口径）
+            if (StringUtils.isNotBlank(bo.getTargetLocationType()) && isPorkProduct(existing.getProductId())) {
+                Long porkLoc = resolveReturnLocationByType(bo.getTargetLocationType());
+                if (porkLoc != null) {
+                    locationId = porkLoc;
+                }
             }
-        }
-        if (locationId == null) {
-            throw new ServiceException("未指定入库库位且无法自动定位（产品无预设库位/无历史库存），请选择库位后再确认", 400);
+            if (locationId == null) {
+                throw new ServiceException("未指定入库库位且无法自动定位（产品无预设库位/无历史库存），请选择库位后再确认", 400);
+            }
         }
 
         StoreReturn entity = new StoreReturn();
@@ -1064,6 +1137,8 @@ public class StoreReturnServiceImpl
         entity.setConfirmUserId(LoginHelper.getUserId());
         entity.setConfirmTime(LocalDateTime.now());
         entity.setReturnStatus(STATUS_RECEIVED);
+        // 丢弃也要落 is_discard + 实收量：admin 行203「入库数/丢弃数」与损耗统计都要靠这两个数
+        entity.setIsDiscard(discard ? DISCARD_YES : DISCARD_NO);
         // 并发守卫（对齐 markDeliveryChecked 范式）：UPDATE 带状态谓词，仅未确认行可置 received。
         // 慢网双击 / 两人同点同一单时只有一个请求真正命中；affected==0 = 已被并发确认 → 幂等返回，
         // 不再联动入库，杜绝双倍回补库存 + 双份 store_return_in 流水。
@@ -1073,6 +1148,13 @@ public class StoreReturnServiceImpl
         if (rows == 0) {
             log.info("[STORE-RETURN-UNIFY-001] confirm id={} 状态守卫未命中（已被并发确认），幂等跳过入库", bo.getId());
             return 0;
+        }
+
+        if (discard) {
+            // 小程序 row269：产品丢弃 —— 状态照常推到 received（这单已处理完），但**不写任何库存与入库流水**。
+            log.info("[STORE-RETURN-UNIFY-001] confirm id={} no={} receivedQty={} → received 但标记丢弃，不入库",
+                bo.getId(), existing.getReturnNo(), bo.getReceivedQty());
+            return rows;
         }
 
         // 确认实收时才联动外购入库：同事务 UPSERT location_stock + stock_flow(store_return_in)，
@@ -1160,13 +1242,23 @@ public class StoreReturnServiceImpl
             vo.setConfirmWeightTotal(confirmTotal);
             vo.setWeightDiffTotal(returnTotal.subtract(confirmTotal));
             vo.setNonWeightReturnWeightTotal(nonWeightReturnTotal);
-            // row178：确认进度 n/m。确认时间 / 确认人取「最近一条已确认行」，只要 1 条确认过就有值，
-            // 部分确认（3/4）与全部确认在外层看不出差别；显式给出已确认 / 总行数，未全确认前端标警告色。
+            // admin row203：「确认进度」由 已确认/总数 改为 **入库数/丢弃数**（只统计已确认的行，
+            // 按 is_discard 分两侧）。确认时间 / 确认人仍取「最近一条已确认行」。
+            // totalCount / confirmedCount 保留：前端把「共 N 条、待确认 M 条」挪进 tooltip，
+            // 否则改完只剩两个数、看不出还有几条没确认。
             int confirmedCount = (int) group.stream()
                 .filter(r -> STATUS_RECEIVED.equals(r.getReturnStatus())).count();
+            int inboundCount = (int) group.stream()
+                .filter(r -> STATUS_RECEIVED.equals(r.getReturnStatus()) && !DISCARD_YES.equals(r.getIsDiscard()))
+                .count();
+            int discardCount = (int) group.stream()
+                .filter(r -> STATUS_RECEIVED.equals(r.getReturnStatus()) && DISCARD_YES.equals(r.getIsDiscard()))
+                .count();
             vo.setConfirmedCount(confirmedCount);
             vo.setTotalCount(group.size());
-            vo.setConfirmProgress(confirmedCount + "/" + group.size());
+            vo.setInboundCount(inboundCount);
+            vo.setDiscardCount(discardCount);
+            vo.setConfirmProgress(inboundCount + "/" + discardCount);
             group.stream().filter(r -> r.getConfirmTime() != null)
                 .max(Comparator.comparing(StoreReturn::getConfirmTime))
                 .ifPresent(latest -> {
@@ -1312,6 +1404,8 @@ public class StoreReturnServiceImpl
             vo.setReturnWeight(r.getGoodsWeight());
             vo.setConfirmWeight(r.getReceivedWeight());
             vo.setIsConfirm(received ? 1 : 0);
+            // row269：回显处置方式；未确认行库里是默认 0，正好等于 mp 卡片「默认退回入库」的初始态
+            vo.setIsDiscard(r.getIsDiscard() == null ? DISCARD_NO : r.getIsDiscard());
             vo.setReturnReason(r.getReturnReason());
             vo.setReturnDirection(r.getReturnDirection());
             vo.setReturnStatus(received ? MP_STATUS_CONFIRMED : MP_STATUS_PENDING);

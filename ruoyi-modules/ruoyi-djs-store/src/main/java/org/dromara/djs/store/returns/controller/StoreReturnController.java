@@ -120,6 +120,17 @@ public class StoreReturnController extends BaseController {
         return R.ok(service.listVegCandidates(storeId));
     }
 
+    /**
+     * 退回操作「其他产品」tab 候选（admin row202）：干货 / 鸡蛋 / 其他 三个业态。
+     *
+     * <p>取数与猪肉 / 果蔬 tab 同口径 —— 门店当日盘点台账「期初 + 入库 &gt; 0」（不减损坏，损坏的货本身就要退回）。</p>
+     */
+    @SaCheckPermission("djs:store:return:list")
+    @GetMapping("/operation/other-candidates")
+    public R<List<StoreReturnVegCandidateVo>> otherCandidates(Long storeId) {
+        return R.ok(service.listOtherCandidates(storeId));
+    }
+
     /** 仓库确认实收（原型「退回记录」仓库确认入库，pending→received 联动外购入库）。 */
     @SaCheckPermission("djs:store:return:confirm")
     @Log(title = "门店退回确认入库", businessType = BusinessType.UPDATE)

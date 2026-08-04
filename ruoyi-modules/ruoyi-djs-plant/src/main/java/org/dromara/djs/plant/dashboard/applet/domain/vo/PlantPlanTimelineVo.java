@@ -5,6 +5,7 @@ import lombok.Data;
 import java.io.Serial;
 import java.io.Serializable;
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.util.List;
 
 /**
@@ -57,6 +58,20 @@ public class PlantPlanTimelineVo implements Serializable {
 
         /** 该作物当月面积合计（亩）。 */
         private BigDecimal area;
+
+        /**
+         * 预计上架日期（仅采摘计划 tab 有值，种植计划 tab 为 null）。
+         *
+         * <p>该作物当月各地块「实际开始采摘日，缺则计划最早采摘日」取最小。</p>
+         */
+        private LocalDate onShelfDate;
+
+        /**
+         * 预计下架日期（仅采摘计划 tab 有值，种植计划 tab 为 null）。
+         *
+         * <p>该作物当月各地块「实际结束采摘日，缺则计划最晚采摘日」取最大。</p>
+         */
+        private LocalDate offShelfDate;
 
     }
 

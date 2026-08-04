@@ -78,8 +78,21 @@ public class StoreReturnStoreDailyVo implements Serializable {
     @ExcelIgnore
     private int totalCount;
 
-    /** 确认进度（{@code confirmedCount/totalCount}，导出列；列表页由前端按两个计数渲染）。 */
-    @ExcelProperty("确认进度")
+    /** 已确认且**退回入库**的行数（admin row203「确认进度」左侧数）。 */
+    @ExcelIgnore
+    private int inboundCount;
+
+    /** 已确认且**产品丢弃**的行数（admin row203「确认进度」右侧数）。 */
+    @ExcelIgnore
+    private int discardCount;
+
+    /**
+     * 确认进度（导出列）。
+     *
+     * <p>admin row203 起口径为 <b>{@code inboundCount/discardCount}（入库数/丢弃数）</b>，
+     * 不再是「已确认/总数」。仍未确认的行数由 {@code totalCount - confirmedCount} 得到，前端放 tooltip。</p>
+     */
+    @ExcelProperty("入库数/丢弃数")
     private String confirmProgress;
 
     /** 确认时间（该组最近一条已确认行 confirm_time，无已确认行则为空）。 */

@@ -76,10 +76,19 @@ public interface PickActivityMapper {
           LEFT JOIN t_plant_crop_info c ON c.id = t.crop_id AND c.del_flag = '0'
           LEFT JOIN (
             -- 作物级（非按日）：活动地块数 + 预计总产量（取该作物全部地块，逐日行复用）
+            -- row267：预计产量扣灾害损失。**逐地块**先扣再钳零、最后才求和 ——
+            -- 先 SUM 后扣的话，某地块损失超过它自己的理论产量时会吃掉别的地块产量。
             SELECT d.crop_id AS crop_id,
-                   COUNT(DISTINCT d.plot_id)          AS plot_count,
-                   COALESCE(SUM(d.expected_yield), 0) AS expected_yield
+                   COUNT(DISTINCT d.plot_id) AS plot_count,
+                   COALESCE(SUM(GREATEST(COALESCE(d.expected_yield, 0) - COALESCE(dl.disaster_loss, 0), 0)), 0) AS expected_yield
               FROM t_plant_plant_details d
+              LEFT JOIN (SELECT fr.plot_id, fr.crop_id, SUM(fr.loss_yield) AS disaster_loss
+                           FROM t_plant_farm_records fr
+                          WHERE fr.del_flag = '0' AND fr.tenant_id = #{tenantId}
+                            AND fr.farm_type = 'disaster'
+                            AND fr.plot_id IS NOT NULL AND fr.crop_id IS NOT NULL
+                          GROUP BY fr.plot_id, fr.crop_id) dl
+                ON dl.plot_id = d.plot_id AND dl.crop_id = d.crop_id
              WHERE d.del_flag = '0' AND d.tenant_id = #{tenantId}
              GROUP BY d.crop_id
           ) p ON p.crop_id = t.crop_id

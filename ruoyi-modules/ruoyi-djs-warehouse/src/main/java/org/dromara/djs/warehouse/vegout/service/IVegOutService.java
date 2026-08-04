@@ -50,4 +50,5 @@ public interface IVegOutService {
      * @param productName 产品名称（模糊，可空）
      */
     List<VegOutDetailVo> queryBatchDetail(String batchNo, String productName);
+
 }

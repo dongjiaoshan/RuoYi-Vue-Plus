@@ -76,6 +76,8 @@ class AppletPickServiceImplTest {
     @Mock
     private IFarmRecordsService farmRecordsService;
     @Mock
+    private org.dromara.djs.plant.farm.mapper.FarmRecordsMapper farmRecordsMapper;
+    @Mock
     private ApplicationEventPublisher eventPublisher;
     @Mock
     private ImageUrlResolver imageUrlResolver;
@@ -97,7 +99,9 @@ class AppletPickServiceImplTest {
 
     @BeforeEach
     void setUp() {
-        service = new AppletPickServiceImpl(detailsMapper, planMapper, plotMapper, cropMapper, teamMapper, peopleMapper, farmRecordsService, eventPublisher, imageUrlResolver, teamLinkService, activityMapper);
+        // farmRecordsMapper（row267 预计产量扣灾害用）：默认返空 → 无灾害记录，预计产量保持原值
+        service = new AppletPickServiceImpl(detailsMapper, planMapper, plotMapper, cropMapper, teamMapper, peopleMapper,
+            farmRecordsService, farmRecordsMapper, eventPublisher, imageUrlResolver, teamLinkService, activityMapper);
     }
 
     private PlantDetails detailFixture() {
