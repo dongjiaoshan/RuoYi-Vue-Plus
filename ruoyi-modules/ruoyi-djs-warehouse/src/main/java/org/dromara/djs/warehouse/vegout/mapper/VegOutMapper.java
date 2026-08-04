@@ -94,6 +94,9 @@ public interface VegOutMapper {
          WHERE f.del_flag = '0'
            AND f.tenant_id = '1001'
            AND f.batch_no IS NOT NULL
+           <!-- batch_no 是 stock_flow 的通用列，今天只有毛菜间出库在用；不加这道守卫，
+                将来任何写 batch_no 的功能都会漏进这张出库单列表。与 V202608280100 的重编号口径保持一致。 -->
+           AND f.flow_type = 'backstage_out'
         <if test="beginDate != null">
            AND f.flow_date &gt;= #{beginDate}
         </if>
