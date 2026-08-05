@@ -32,7 +32,8 @@ import java.util.Map;
 public interface PlantWorkPerformanceMapper extends BaseMapperPlus<PlantWorkPerformance, PlantWorkPerformanceVo> {
 
     /**
-     * 按 采摘班组(team_id) × 作物(crop_id) 聚合指定月份的采收总量（row39 + row43 多组平摊口径）。
+     * 按 采摘班组(team_id) × 作物(crop_id) × 产品(product_id) 聚合指定月份的采收总量
+     * （row39 + row43 多组平摊口径；V6 row20 起加产品维度）。
      *
      * <p>聚合源：{@code t_warehouse_handle_record.record_weight}（毛菜处理间采摘重量录入时各组对应作物的
      * 称重重量，公斤）。仅纳入 {@code record_type=1}（采收录入，非处理录入）、{@code record_weight > 0}
@@ -53,11 +54,13 @@ public interface PlantWorkPerformanceMapper extends BaseMapperPlus<PlantWorkPerf
         SELECT
             s.teamId AS teamId,
             s.cropId AS cropId,
+            s.productId AS productId,
             ROUND(SUM(s.shareWeight), 3) AS pickWeight
           FROM (
             SELECT
                 COALESCE(rt.team_id, r.team_id) AS teamId,
                 r.crop_id AS cropId,
+                r.product_id AS productId,
                 r.record_weight / COALESCE(tc.cnt, 1) AS shareWeight
               FROM t_warehouse_handle_record r
               LEFT JOIN t_warehouse_handle_record_team rt
@@ -74,7 +77,7 @@ public interface PlantWorkPerformanceMapper extends BaseMapperPlus<PlantWorkPerf
                AND DATE_FORMAT(r.handle_time, '%Y-%m') = #{statMonth}
                AND COALESCE(rt.team_id, r.team_id) IS NOT NULL
           ) s
-         GROUP BY s.teamId, s.cropId
+         GROUP BY s.teamId, s.cropId, s.productId
         """)
     List<PerfAggRow> aggregateByMonth(@Param("statMonth") String statMonth);
 
@@ -244,6 +247,7 @@ public interface PlantWorkPerformanceMapper extends BaseMapperPlus<PlantWorkPerf
             stat_month AS statMonth,
             team_id AS teamId,
             crop_id AS cropId,
+            product_id AS productId,
             pick_weight AS pickWeight,
             unit_price_snapshot AS unitPriceSnapshot,
             performance_amount AS performanceAmount,
@@ -255,7 +259,7 @@ public interface PlantWorkPerformanceMapper extends BaseMapperPlus<PlantWorkPerf
            AND del_flag = '0'
            AND team_id = #{teamId}
            AND stat_month = #{statMonth}
-         ORDER BY crop_id ASC
+         ORDER BY crop_id ASC, product_id ASC
         """)
     List<PlantWorkPerformanceVo> selectCropRowsByTeamMonth(@Param("teamId") Long teamId,
                                                            @Param("statMonth") String statMonth);
@@ -275,6 +279,37 @@ public interface PlantWorkPerformanceMapper extends BaseMapperPlus<PlantWorkPerf
         "<foreach collection='cropIds' item='cid' open='(' separator=',' close=')'>#{cid}</foreach>" +
         "</script>")
     List<Map<String, Object>> selectCropUnitPrices(@Param("cropIds") Collection<Long> cropIds);
+
+    /**
+     * 批量查询作物产品配置的绩效金额（V6 row20 结算取价用）。
+     *
+     * <p>显式 {@code tenant_id='1001' AND del_flag='0'}（V1 单租户，原生 SQL 不自动注入）。</p>
+     *
+     * @param cropIds 作物 id 集合（已 dedupe，非空）
+     * @return key=cropId / productId / perfPrice（perfPrice 可能为 null = 该产品没填绩效金额）
+     */
+    @Select("<script>" +
+        "SELECT crop_id AS cropId, product_id AS productId, perf_price AS perfPrice " +
+        "FROM t_plant_crop_product " +
+        "WHERE tenant_id = '1001' AND del_flag = '0' AND crop_id IN " +
+        "<foreach collection='cropIds' item='cid' open='(' separator=',' close=')'>#{cid}</foreach> " +
+        "ORDER BY crop_id, id" +
+        "</script>")
+    List<Map<String, Object>> selectCropProductPrices(@Param("cropIds") Collection<Long> cropIds);
+
+    /**
+     * 批量查询产品名称（绩效详情「产品」列 enrich，避免 N+1）。
+     *
+     * @param productIds 产品 id 集合（已 dedupe，非空）
+     * @return key=productId / productName
+     */
+    @Select("<script>" +
+        "SELECT id AS productId, product_name AS productName " +
+        "FROM t_warehouse_product_info " +
+        "WHERE tenant_id = '1001' AND del_flag = '0' AND id IN " +
+        "<foreach collection='productIds' item='pid' open='(' separator=',' close=')'>#{pid}</foreach>" +
+        "</script>")
+    List<Map<String, Object>> selectProductNames(@Param("productIds") Collection<Long> productIds);
 
     /**
      * 批量查询 teamId → teamName 映射（列表 enrich）。

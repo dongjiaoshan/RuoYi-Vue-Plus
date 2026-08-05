@@ -17,7 +17,9 @@ import org.dromara.djs.common.image.service.ImageUrlResolver;
 import org.dromara.djs.plant.activity.domain.bo.PickActivityRecordBo;
 import org.dromara.djs.plant.activity.service.IPlantActivityService;
 import org.dromara.djs.plant.crop.domain.CropInfo;
+import org.dromara.djs.plant.crop.domain.vo.CropProductVo;
 import org.dromara.djs.plant.crop.mapper.CropInfoMapper;
+import org.dromara.djs.plant.crop.service.ICropProductService;
 import org.dromara.djs.plant.plan.domain.PlantDetails;
 import org.dromara.djs.plant.plan.mapper.PlantDetailsMapper;
 import org.dromara.djs.warehouse.flow.domain.StockFlow;
@@ -46,7 +48,9 @@ import org.dromara.djs.warehouse.veg.domain.vo.HandleRecordVo;
 import org.dromara.djs.warehouse.veg.domain.vo.PendingPlantingRecordVo;
 import org.dromara.djs.warehouse.veg.domain.vo.PickDetailVo;
 import org.dromara.djs.warehouse.veg.domain.vo.VegCropVo;
+import org.dromara.djs.warehouse.veg.domain.vo.HandleProductNetRow;
 import org.dromara.djs.warehouse.veg.domain.vo.VegPlotDetailVo;
+import org.dromara.djs.warehouse.veg.domain.vo.VegPlotProductVo;
 import org.dromara.djs.warehouse.veg.domain.vo.VegetableHandleVo;
 import org.dromara.djs.warehouse.veg.mapper.FeedLogMapper;
 import org.dromara.djs.warehouse.veg.mapper.HandleRecordMapper;
@@ -172,6 +176,8 @@ public class VegetableHandleServiceImpl
     private final ILossFlowService lossFlowService;
     /** 采摘活动 service（DENGBO-R4 采摘去向编排：先写 plant activity 行 + 产量分摊，再写仓库台账）。 */
     private final IPlantActivityService plantActivityService;
+    /** 作物产品配置 service（V6 row16-18：一个作物多个产品，采摘 / 处理按所选产品记账）。 */
+    private final ICropProductService cropProductService;
 
     /**
      * 作物图 L2 兜底分类键（作物无 belong_type，统一走"蔬菜默认图"）。
@@ -192,7 +198,8 @@ public class VegetableHandleServiceImpl
                                       LocationStockMapper locationStockMapper,
                                       ProductInfoMapper productInfoMapper,
                                       ILossFlowService lossFlowService,
-                                      IPlantActivityService plantActivityService) {
+                                      IPlantActivityService plantActivityService,
+                                      ICropProductService cropProductService) {
         super(baseMapper);
         this.handleRecordMapper = handleRecordMapper;
         this.handleRecordTeamMapper = handleRecordTeamMapper;
@@ -208,6 +215,29 @@ public class VegetableHandleServiceImpl
         this.productInfoMapper = productInfoMapper;
         this.lossFlowService = lossFlowService;
         this.plantActivityService = plantActivityService;
+        this.cropProductService = cropProductService;
+    }
+
+    /**
+     * 解析本次采摘 / 处理流水记到哪个产品头上（V6 row17/row18）。
+     *
+     * <p>用户传了就用用户传的，但必须真属于该作物的产品配置 —— 否则一次改前端 payload 就能把重量记到
+     * 别的作物的产品上，库存跟着串。传空（作物只配了一个产品，mp 只展示不回传）取配置里的第一个；
+     * 作物一个产品都没配时回落旧口径 {@code crop.related_product}，保持改造前行为。</p>
+     */
+    private Long resolveRecordProductId(Long cropId, Long requested) {
+        List<CropProductVo> configured = cropProductService.listByCrop(cropId);
+        if (!configured.isEmpty()) {
+            if (requested != null) {
+                boolean belongs = configured.stream().anyMatch(c -> requested.equals(c.getProductId()));
+                if (!belongs) {
+                    throw new ServiceException("所选产品不在该作物的产品配置中，请刷新后重试");
+                }
+                return requested;
+            }
+            return configured.get(0).getProductId();
+        }
+        return resolveProductIdByCrop(cropId, null);
     }
 
     /**
@@ -369,7 +399,8 @@ public class VegetableHandleServiceImpl
 
         // Step 7：条件 INSERT stock_flow（仅入库）
         if (recordType == RECORD_TYPE_HANDLE && handleTarget == HANDLE_TARGET_STOCK_IN) {
-            insertVegStockInFlow(handle, planting, bo.getLocationId(), weight, userId, now);
+            // 这条 admin 侧通用录入端点没有产品选择项 → 传 null 走原有的 crop.related_product 回落链
+            insertVegStockInFlow(handle, planting, bo.getLocationId(), weight, userId, now, null);
         }
 
         // Step 8：同步 planting_record.handle_status
@@ -386,7 +417,8 @@ public class VegetableHandleServiceImpl
     }
 
     private void insertVegStockInFlow(VegetableHandle handle, PlantingRecord planting,
-                                      Long locationId, BigDecimal weight, Long userId, Date now) {
+                                      Long locationId, BigDecimal weight, Long userId, Date now,
+                                      Long selectedProductId) {
         StockFlow flow = new StockFlow();
         Map<String, Object> ctx = new HashMap<>(2);
         ctx.put("ioCode", INOUT_IN);
@@ -395,8 +427,11 @@ public class VegetableHandleServiceImpl
         // 甲方《果疏产品全流程处理.docx》：product_id 走作物 related_product（作物↔果蔬成品映射）解析；
         // fallback 链 crop.related_product → handle.product_id（建汇总行时已解析存入）→ planting.product_id（旧来源）；
         // 全 null → 显式失败（product_id=0 会在库存总览产生无名幽灵行，且 product 维度聚合全漏）。
-        Long resolvedProductId = resolveProductIdByCrop(
-            planting.getCropId(), firstNonNull(handle.getProductId(), planting.getProductId()));
+        // row18：录入人选定的产品优先 —— 一个作物可产多个产品，入哪个产品的库由这次处理录入说了算，
+        // 不能再回到「作物只有一个关联产品」的老假设上去。
+        Long resolvedProductId = selectedProductId != null ? selectedProductId
+            : resolveProductIdByCrop(planting.getCropId(),
+                firstNonNull(handle.getProductId(), planting.getProductId()));
         if (resolvedProductId == null) {
             throw new ServiceException("作物「" + planting.getCropName() + "」未关联果蔬成品，无法入库："
                 + "请先在 admin 作物录入页填写「关联产品」建立作物↔成品映射后再提交");
@@ -600,7 +635,52 @@ public class VegetableHandleServiceImpl
         if (cropId == null) {
             throw new ServiceException("缺少作物 ID");
         }
-        return plantingRecordMapper.selectPlotDetailByCrop(cropId);
+        List<VegPlotDetailVo> plots = plantingRecordMapper.selectPlotDetailByCrop(cropId);
+        fillPlotProducts(cropId, plots);
+        return plots;
+    }
+
+    /**
+     * 给每个地块行补「该作物配置的产品 + 各自剩余重量」（V6 row17/row18）。
+     *
+     * <p>剩余 = 该产品采收累计 − 该产品处理累计（三去向都算），与地块级 remainWeight 同口径。
+     * 一次 IN 查完所有汇总行的分产品净额，不逐地块查库。</p>
+     */
+    private void fillPlotProducts(Long cropId, List<VegPlotDetailVo> plots) {
+        if (plots == null || plots.isEmpty()) {
+            return;
+        }
+        List<CropProductVo> configured = cropProductService.listByCrop(cropId);
+        if (configured.isEmpty()) {
+            plots.forEach(p -> p.setProducts(List.of()));
+            return;
+        }
+        // 存量流水没选过产品（product_id 为 NULL）→ 折进首个配置产品，否则那部分重量在分产品视图里凭空消失
+        Long fallbackProductId = configured.get(0).getProductId();
+        List<Long> handleIds = plots.stream().map(VegPlotDetailVo::getHandleId)
+            .filter(Objects::nonNull).distinct().toList();
+        // handleId → (productId → 净额)
+        Map<Long, Map<Long, BigDecimal>> netByHandle = new HashMap<>();
+        if (!handleIds.isEmpty()) {
+            for (HandleProductNetRow row : handleRecordMapper.selectProductNetByHandleIds(handleIds)) {
+                Long pid = row.getProductId() != null ? row.getProductId() : fallbackProductId;
+                netByHandle.computeIfAbsent(row.getHandleId(), k -> new HashMap<>())
+                    .merge(pid, nullSafe(row.getNetWeight()), BigDecimal::add);
+            }
+        }
+        for (VegPlotDetailVo plot : plots) {
+            Map<Long, BigDecimal> net = plot.getHandleId() == null ? Map.of()
+                : netByHandle.getOrDefault(plot.getHandleId(), Map.of());
+            List<VegPlotProductVo> rows = new ArrayList<>(configured.size());
+            for (CropProductVo cp : configured) {
+                VegPlotProductVo vo = new VegPlotProductVo();
+                vo.setProductId(cp.getProductId());
+                vo.setProductName(cp.getProductName());
+                vo.setRemainWeight(net.getOrDefault(cp.getProductId(), BigDecimal.ZERO));
+                rows.add(vo);
+            }
+            plot.setProducts(rows);
+        }
     }
 
     @Override
@@ -650,6 +730,8 @@ public class VegetableHandleServiceImpl
         record.setHandleId(handle.getId());
         record.setPlotId(planting.getPlotId());
         record.setCropId(planting.getCropId());
+        // row17：本次过磅算作哪个产品（作物多产品时由录入人选，单产品时服务端补首个）
+        record.setProductId(resolveRecordProductId(planting.getCropId(), bo.getProductId()));
         // row64：旧单列写多选第一个，作为 row39 班组绩效按组采收总重量的统计维度（口径不变）
         record.setTeamId(teamIds.isEmpty() ? null : teamIds.get(0));
         record.setRecordType(RECORD_TYPE_PICK);
@@ -768,6 +850,9 @@ public class VegetableHandleServiceImpl
         // handle_record 是毛菜处理事件日志（非饲料专用表），保留 plot_id 作处理来源上下文。
         record.setPlotId(planting.getPlotId());
         record.setCropId(planting.getCropId());
+        // row18 第 3 点：按所选产品做后续处理 —— 流水与下面的入库流水用的是同一个 productId
+        Long selectedProductId = resolveRecordProductId(planting.getCropId(), bo.getProductId());
+        record.setProductId(selectedProductId);
         record.setRecordType(RECORD_TYPE_HANDLE);
         record.setRecordWeight(weight);
         record.setHandleTarget(handleTarget);
@@ -819,7 +904,7 @@ public class VegetableHandleServiceImpl
         // Step 6：去向①入库 → 生成入库流水（产品维度 + 地块编号 + 库位 L0006，spec 步6）；
         //         去向③饲料 → 写饲料台账（按日 × 作物品类，不记地块，spec 步8）
         if (handleTarget == HANDLE_TARGET_STOCK_IN) {
-            insertVegStockInFlow(handle, planting, stockInLocationId, weight, userId, now);
+            insertVegStockInFlow(handle, planting, stockInLocationId, weight, userId, now, selectedProductId);
         } else if (handleTarget == HANDLE_TARGET_FEED) {
             insertFeedLog(planting, weight, userId, now);
         }

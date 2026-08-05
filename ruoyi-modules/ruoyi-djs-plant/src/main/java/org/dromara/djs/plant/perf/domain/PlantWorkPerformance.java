@@ -59,6 +59,12 @@ public class PlantWorkPerformance extends TenantEntity {
     private Long cropId;
 
     /**
+     * 产品 ID（V6 row20，FK → t_warehouse_product_info.id）。绩效按「作物 × 产品」结算，
+     * 单价取该产品在作物产品配置里的绩效金额。作物没配产品时为 null（回落作物级单价）。
+     */
+    private Long productId;
+
+    /**
      * 采摘总量（公斤，= SUM(actual_yield)）。
      */
     private BigDecimal pickWeight;

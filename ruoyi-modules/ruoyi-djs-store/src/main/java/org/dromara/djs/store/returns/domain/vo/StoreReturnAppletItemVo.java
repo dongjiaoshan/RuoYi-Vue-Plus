@@ -62,6 +62,29 @@ public class StoreReturnAppletItemVo implements Serializable {
      */
     private String materialUnit;
 
+    /**
+     * 计量规则：一件该生产产品折算多少原材料（← {@code material_num}，如 30 枚装鸡蛋礼盒 = 30）。
+     * 未配 / ≤0 时 service 回落 1（产品本身即原材料的常态）。
+     */
+    private BigDecimal materialNum;
+
+    /**
+     * 「仓库称重」可录上限（甲方 row24）—— 仅**件数口径**（{@link #materialUnit} ≠ kg）时有值：
+     * {@code = returnQuantity × materialNum}（门店退了几件 × 每件折算多少原材料）。
+     * mp 用它做输入上限 + 默认值；后端 {@code confirm} 用同一个数复核。
+     *
+     * <p>kg 口径为 {@code null}：重量分支的上限另有规则（门店录入重量 / 当天到店总重）。</p>
+     */
+    private BigDecimal maxConfirmQty;
+
+    /**
+     * 是否允许「退回入库」（甲方 row24 第 2 点）。
+     *
+     * <p>{@code false} = 该行是**生产产品且没配原材料** —— 仓库只存原材料，不知道该往哪个原材料头上记，
+     * 所以只能丢弃。mp 侧据此把处置锁死在「产品丢弃」、称重框改只读展示。</p>
+     */
+    private Boolean canInbound;
+
     /** 产品规格（← product_spec，service 回填；mp 退货确认页品名行右侧显示，row186）。 */
     private String productSpec;
 

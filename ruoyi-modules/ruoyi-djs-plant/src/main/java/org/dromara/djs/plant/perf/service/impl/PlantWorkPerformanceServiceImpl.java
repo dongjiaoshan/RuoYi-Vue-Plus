@@ -141,19 +141,28 @@ public class PlantWorkPerformanceServiceImpl
             return 0;
         }
 
-        // 3. 批量取作物单价快照（一次查询）
+        // 3. 批量取单价快照（一次查询）：V6 row20 起单价来自「作物 × 产品」的绩效金额，
+        //    作物没配产品 / 该产品没填金额时回落作物级 pick_unit_price，历史月口径不变。
         Set<Long> cropIds = aggRows.stream()
             .map(PerfAggRow::getCropId)
             .filter(Objects::nonNull)
             .collect(Collectors.toCollection(HashSet::new));
         Map<Long, BigDecimal> cropPriceMap = loadCropPrices(cropIds);
+        Map<String, BigDecimal> productPriceMap = loadCropProductPrices(cropIds);
+        Map<Long, Long> primaryProductMap = loadPrimaryProducts(cropIds);
 
         // 4. 逐组算金额 + 批量 INSERT
         int inserted = 0;
         List<PlantWorkPerformance> rows = new ArrayList<>(aggRows.size());
         for (PerfAggRow agg : aggRows) {
             BigDecimal pickWeight = agg.getPickWeight() != null ? agg.getPickWeight() : BigDecimal.ZERO;
-            BigDecimal unitPrice = cropPriceMap.getOrDefault(agg.getCropId(), BigDecimal.ZERO);
+            // 存量流水 / 采摘活动没有产品维度 → 归到该作物的首个配置产品，否则详情里这几行的产品列全空
+            Long productId = agg.getProductId() != null ? agg.getProductId()
+                : primaryProductMap.get(agg.getCropId());
+            BigDecimal unitPrice = productPriceMap.get(agg.getCropId() + ":" + productId);
+            if (unitPrice == null) {
+                unitPrice = cropPriceMap.getOrDefault(agg.getCropId(), BigDecimal.ZERO);
+            }
             // 金额 = 采摘量(公斤) × 单价快照(元/公斤)，保留 2 位（元）。单价录入即公斤价，两侧同单位直乘。
             BigDecimal amount = pickWeight.multiply(unitPrice)
                 .setScale(2, RoundingMode.HALF_UP);
@@ -162,6 +171,7 @@ public class PlantWorkPerformanceServiceImpl
             row.setStatMonth(statMonth);
             row.setTeamId(agg.getTeamId());
             row.setCropId(agg.getCropId());
+            row.setProductId(productId);
             row.setPickWeight(pickWeight);
             row.setUnitPriceSnapshot(unitPrice);
             row.setPerformanceAmount(amount);
@@ -188,6 +198,7 @@ public class PlantWorkPerformanceServiceImpl
             .map(r -> {
                 PerfDetailCropExportVo vo = new PerfDetailCropExportVo();
                 vo.setCropName(r.getCropName());
+                vo.setProductName(r.getProductName());
                 vo.setPickWeight(r.getPickWeight());
                 vo.setUnitPriceSnapshot(r.getUnitPriceSnapshot());
                 vo.setPerformanceAmount(r.getPerformanceAmount());
@@ -268,7 +279,7 @@ public class PlantWorkPerformanceServiceImpl
         // 合并容器：既有过磅行按 (teamId:cropId) 建索引
         Map<String, PerfAggRow> merged = new LinkedHashMap<>();
         for (PerfAggRow row : aggRows) {
-            merged.put(row.getTeamId() + ":" + row.getCropId(), row);
+            merged.put(row.getTeamId() + ":" + row.getCropId() + ":" + row.getProductId(), row);
         }
         for (PerfActivityAggRow act : actRows) {
             String plotCropKey = act.getPlotId() + ":" + act.getCropId();
@@ -283,7 +294,9 @@ public class PlantWorkPerformanceServiceImpl
             BigDecimal share = act.getPickWeight()
                 .divide(BigDecimal.valueOf(teams.size()), 3, RoundingMode.HALF_UP);
             for (Long teamId : teams) {
-                PerfAggRow row = merged.computeIfAbsent(teamId + ":" + act.getCropId(), k -> {
+                // 采摘活动没有产品维度 → productId 留 null（generate 里折进作物首选产品），
+                // key 也带上 null 段，与过磅行的 (team, crop, product) key 结构保持一致
+                PerfAggRow row = merged.computeIfAbsent(teamId + ":" + act.getCropId() + ":null", k -> {
                     PerfAggRow nr = new PerfAggRow();
                     nr.setTeamId(teamId);
                     nr.setCropId(act.getCropId());
@@ -316,6 +329,59 @@ public class PlantWorkPerformanceServiceImpl
             }
         }
         return map;
+    }
+
+    /**
+     * 批量取「作物 × 产品」绩效金额快照（V6 row20）。
+     *
+     * @return key = {@code cropId + ":" + productId}；value = 该产品的绩效金额（元/公斤）
+     */
+    private Map<String, BigDecimal> loadCropProductPrices(Set<Long> cropIds) {
+        Map<String, BigDecimal> map = new HashMap<>();
+        if (cropIds.isEmpty()) {
+            return map;
+        }
+        for (Map<String, Object> r : baseMapper.selectCropProductPrices(cropIds)) {
+            Long cropId = toLong(r.get("cropId"));
+            Long productId = toLong(r.get("productId"));
+            BigDecimal price = toDecimal(r.get("perfPrice"));
+            if (cropId != null && productId != null && price != null) {
+                map.put(cropId + ":" + productId, price);
+            }
+        }
+        return map;
+    }
+
+    /**
+     * 每个作物的「首选产品」= 产品配置里的第一行（mapper 已按 {@code crop_id, id} 升序）。
+     *
+     * <p>用于给没有产品维度的聚合行（存量过磅流水 / 采摘活动）归一个产品，
+     * 免得绩效详情里这些行的产品列一片空白。</p>
+     */
+    private Map<Long, Long> loadPrimaryProducts(Set<Long> cropIds) {
+        Map<Long, Long> map = new HashMap<>();
+        if (cropIds.isEmpty()) {
+            return map;
+        }
+        for (Map<String, Object> r : baseMapper.selectCropProductPrices(cropIds)) {
+            Long cropId = toLong(r.get("cropId"));
+            Long productId = toLong(r.get("productId"));
+            if (cropId != null && productId != null) {
+                map.putIfAbsent(cropId, productId);
+            }
+        }
+        return map;
+    }
+
+    private static Long toLong(Object v) {
+        return v instanceof Number n ? n.longValue() : null;
+    }
+
+    private static BigDecimal toDecimal(Object v) {
+        if (v instanceof BigDecimal bd) {
+            return bd;
+        }
+        return v == null ? null : new BigDecimal(v.toString());
     }
 
     /**
@@ -400,9 +466,26 @@ public class PlantWorkPerformanceServiceImpl
                 }
             }
         }
+        // V6 row20：产品名一并批量补（详情「产品」列）
+        Set<Long> productIds = list.stream()
+            .map(PlantWorkPerformanceVo::getProductId)
+            .filter(Objects::nonNull)
+            .collect(Collectors.toCollection(HashSet::new));
+        Map<Long, String> productNameMap = new HashMap<>();
+        if (!productIds.isEmpty()) {
+            for (Map<String, Object> r : baseMapper.selectProductNames(productIds)) {
+                Long pid = toLong(r.get("productId"));
+                if (pid != null) {
+                    productNameMap.put(pid, (String) r.get("productName"));
+                }
+            }
+        }
         for (PlantWorkPerformanceVo vo : list) {
             if (vo.getCropId() != null) {
                 vo.setCropName(cropNameMap.get(vo.getCropId()));
+            }
+            if (vo.getProductId() != null) {
+                vo.setProductName(productNameMap.get(vo.getProductId()));
             }
         }
     }

@@ -31,6 +31,14 @@ public class HarvestSubmitBo {
     private Long plantingRecordId;
 
     /**
+     * 采摘产品 ID（V6 row17，FK → t_warehouse_product_info.id）。
+     *
+     * <p>可空：作物只配了一个产品时 mp 只做展示不回传，服务端按作物首个配置产品补齐；
+     * 作物配了多个时 mp 必须传用户所选那个。</p>
+     */
+    private Long productId;
+
+    /**
      * 采摘重量(kg)，> 0。
      */
     @NotNull(message = "{veg.record_weight.required}")

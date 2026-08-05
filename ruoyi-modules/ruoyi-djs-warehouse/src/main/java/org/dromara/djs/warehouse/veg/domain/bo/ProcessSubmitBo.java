@@ -30,6 +30,13 @@ public class ProcessSubmitBo {
     private Long plantingRecordId;
 
     /**
+     * 处理产品 ID（V6 row18，FK → t_warehouse_product_info.id）。
+     *
+     * <p>口径同 {@link HarvestSubmitBo#getProductId()}：单产品作物可不传，服务端补首个配置产品。</p>
+     */
+    private Long productId;
+
+    /**
      * 处理重量(kg)，> 0。
      */
     @NotNull(message = "{veg.record_weight.required}")
