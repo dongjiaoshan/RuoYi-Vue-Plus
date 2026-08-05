@@ -9,11 +9,11 @@ import java.math.BigDecimal;
 /**
  * 退回操作「果蔬产品」tab 候选行 VO。
  *
- * <p>对齐原型「可退回的果蔬商品 = 当天已确认到店的需求产品」：取
- * {@code t_warehouse_demand_manage} 中该门店、当天、{@code product_type='vegetable'}、
- * 已确认（{@code demand_status='CONFIRMED'}）且已门店收货（{@code received_time IS NOT NULL}）
- * 的需求，按 {@code product_id} 去重。{@code productId} 为产品雪花主键，前端按行录入退回量 +
- * 退回重量后回传供 {@code batchCreate} 校验入库。</p>
+ * <p>候选 = 门店当日盘点台账里「期初 + 入库 − 销售 − 赠送 &gt; 0」的果蔬业态产品
+ * （甲方 row205；不减损坏）。{@code productId} 为产品雪花主键，前端按行录入退回量 +
+ * 退回重量后回传供 {@code batchCreate} 校验入库（提交闸与候选同口径）。</p>
+ *
+ * <p>本 VO 同时被「其他产品」tab（干货 / 蛋类 / 其他）复用，口径完全一致。</p>
  *
  * @author djs
  * @since STORE-RETURN-VEG-CANDIDATE
@@ -48,7 +48,7 @@ public class StoreReturnVegCandidateVo implements Serializable {
     private String belongType;
 
     /**
-     * 到店量（退回量上限，row41）= 当日（今天+昨天两天累加）该产品需求订购份数 {@code SUM(demand_quantity)}。
+     * 可退量（退回量上限，row205）= 门店当日盘点台账 {@code 期初 + 入库 − 销售 − 赠送}（不减损坏）。
      * 材料外售折叠为原材料时多成品共享同一原材料 → 汇总累加。空 → 不封顶。
      */
     private BigDecimal arrivedQuantity;

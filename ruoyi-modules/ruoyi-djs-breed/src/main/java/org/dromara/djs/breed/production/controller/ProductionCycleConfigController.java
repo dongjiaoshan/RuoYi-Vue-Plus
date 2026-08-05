@@ -4,6 +4,7 @@ import cn.dev33.satoken.annotation.SaCheckPermission;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
 import org.dromara.common.core.domain.R;
+import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.excel.utils.ExcelUtil;
 import org.dromara.common.idempotent.annotation.RepeatSubmit;
 import org.dromara.common.log.annotation.Log;
@@ -64,6 +65,29 @@ public class ProductionCycleConfigController extends BaseController {
     private static final String SLAUGHTER_AGE_KEY = "slaughter_age_days";
     private static final int SLAUGHTER_AGE_DEFAULT = 175;
 
+    /**
+     * 用药配置业务键 → 默认值（小程序 row251 / row252：把两个原先写死的阈值改成后台可配）。
+     *
+     * <ul>
+     *   <li>{@code fatten_med_max_age_days}：育肥猪最大用药日龄。超过该日龄的育肥猪不再进疫苗药品板块
+     *       的猪只列表（临近出栏不再用药，避免休药期问题）。原先无此限制，全部育肥猪都列。</li>
+     *   <li>{@code med_pick_usable_days}：药品领用可用天数。用药治疗「使用药品」候选 = 近 N 天内已领用
+     *       的药品；超过 N 天的领用不再出现在候选里。原先写死 3 天，客户要 15 天且可配。</li>
+     * </ul>
+     */
+    private static final Map<String, Integer> MED_DEFAULTS = new LinkedHashMap<>();
+    /** 用药配置业务键 → 说明（首次落库填 description 用）。 */
+    private static final Map<String, String> MED_DESCRIPTIONS = new LinkedHashMap<>();
+
+    /** 育肥猪最大用药日龄 key（mp 疫苗药品猪只列表过滤用，applet 端点单独透出）。 */
+    public static final String FATTEN_MED_MAX_AGE_KEY = "fatten_med_max_age_days";
+    /** 育肥猪最大用药日龄默认值（天）。 */
+    public static final int FATTEN_MED_MAX_AGE_DEFAULT = 300;
+    /** 药品领用可用天数 key（用药治疗「使用药品」候选窗口）。 */
+    public static final String MED_PICK_USABLE_DAYS_KEY = "med_pick_usable_days";
+    /** 药品领用可用天数默认值（天）。 */
+    public static final int MED_PICK_USABLE_DAYS_DEFAULT = 15;
+
     static {
         SOW_DEFAULTS.put("sow_reserve_to_breed_days", 7);
         SOW_DEFAULTS.put("sow_wean_to_breed_days", 6);
@@ -80,6 +104,55 @@ public class ProductionCycleConfigController extends BaseController {
         SOW_DESCRIPTIONS.put("sow_abort_to_breed_days", "流产到配种天数");
         SOW_DESCRIPTIONS.put("sow_breed_to_farrow_days", "配种到分娩天数");
         SOW_DESCRIPTIONS.put("sow_farrow_to_wean_days", "分娩到断奶天数");
+
+        MED_DEFAULTS.put(FATTEN_MED_MAX_AGE_KEY, FATTEN_MED_MAX_AGE_DEFAULT);
+        MED_DEFAULTS.put(MED_PICK_USABLE_DAYS_KEY, MED_PICK_USABLE_DAYS_DEFAULT);
+
+        MED_DESCRIPTIONS.put(FATTEN_MED_MAX_AGE_KEY, "育肥猪最大用药日龄（超过该日龄的育肥猪不进疫苗药品猪只列表）");
+        MED_DESCRIPTIONS.put(MED_PICK_USABLE_DAYS_KEY, "药品领用可用天数（用药治疗「使用药品」只列近 N 天已领用的药品）");
+    }
+
+    /**
+     * 用药配置：取 2 项生效值（custom 优先，无则 default 兜底）。
+     * <p>DB 缺某 key（首次未保存）→ 回落 {@link #MED_DEFAULTS}，保证前端两格都有数。</p>
+     */
+    @SaCheckPermission("djs:breed:production-cycle:list")
+    @GetMapping("/medication/get")
+    public R<Map<String, Integer>> getMedicationConfig() {
+        Map<String, Integer> stored = cycleConfigService.getValuesByKeys(MED_DEFAULTS.keySet());
+        Map<String, Integer> result = new LinkedHashMap<>();
+        MED_DEFAULTS.forEach((k, def) -> result.put(k, stored.getOrDefault(k, def)));
+        return R.ok(result);
+    }
+
+    /**
+     * 用药配置：保存 2 项（按 key UPSERT custom_value）。只认白名单 key，其余忽略。
+     */
+    @SaCheckPermission("djs:breed:production-cycle:edit")
+    @Log(title = "用药配置", businessType = BusinessType.UPDATE)
+    @RepeatSubmit
+    @PostMapping("/medication/save")
+    public R<Void> saveMedicationConfig(@RequestBody Map<String, Integer> values) {
+        Map<String, Integer> filtered = new LinkedHashMap<>();
+        if (values != null) {
+            MED_DEFAULTS.keySet().forEach(k -> {
+                if (values.containsKey(k)) {
+                    filtered.put(k, values.get(k));
+                }
+            });
+        }
+        // 两项都必须 ≥1：0 / 负数没有业务含义（最大用药日龄 0 = 一头育肥猪都不能用药；
+        // 可用天数 0 = 使用药品候选恒空），而消费侧（PigAppletController#fattenMedMaxAge /
+        // MedRecordServiceImpl#resolveMedPickUsableDays）对非正数一律回落默认值 —— 若此处放行 0，
+        // 就会出现「后台明明存了 0、小程序仍按默认值跑」的两端不一致（QA 对抗验收实测复现）。
+        // 前端 el-input-number 已设 :min="1"，这里是 API 直调的兜底闸。
+        filtered.forEach((k, v) -> {
+            if (v == null || v <= 0) {
+                throw new ServiceException("「" + MED_DESCRIPTIONS.get(k) + "」必须大于 0");
+            }
+        });
+        cycleConfigService.batchSaveValues(filtered, MED_DEFAULTS, MED_DESCRIPTIONS);
+        return R.ok();
     }
 
     /**

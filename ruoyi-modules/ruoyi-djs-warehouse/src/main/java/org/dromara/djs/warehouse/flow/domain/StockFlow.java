@@ -48,6 +48,19 @@ public class StockFlow extends TenantEntity {
     private String flowNo;
 
     /**
+     * 批量出库单号（ADMIN-R187 毛菜间批量出库：同一次提交的多条流水共用一个单号，
+     * 出库单列表按它聚合成「一单」）。单条出库（产品出库 / 产品内部处理）为 null。
+     */
+    private String batchNo;
+
+    /**
+     * 出库销售单价快照（毛菜间出库 row194 录入；其余出库路径为空）。
+     *
+     * <p>必须落在流水行上：甲方允许出库时改单价，改产品主数据价格后历史单金额不能跟着漂。</p>
+     */
+    private java.math.BigDecimal outUnitPrice;
+
+    /**
      * 流水时间。
      */
     private Date flowDate;

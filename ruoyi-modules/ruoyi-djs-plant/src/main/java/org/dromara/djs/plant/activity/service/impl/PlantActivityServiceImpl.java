@@ -72,34 +72,6 @@ public class PlantActivityServiceImpl extends DjsBaseServiceImpl<PlantActivityMa
 
     @Override
     @Transactional(rollbackFor = Exception.class)
-    public void recordDailyWeight(Long cropId, LocalDate activityDate, BigDecimal dailyWeight, Long activityBy) {
-        if (cropId == null) {
-            throw new ServiceException("作物 id 不能为空");
-        }
-        if (activityDate == null) {
-            throw new ServiceException("采摘日期不能为空");
-        }
-        if (dailyWeight == null || dailyWeight.signum() <= 0) {
-            throw new ServiceException("采摘重量必须大于 0");
-        }
-
-        // DENGBO-R4 起 per-event：原 UNIQUE(crop,date,班组) 已 DROP，每次 INSERT 一行新流水
-        // （pick_dest 留 NULL = 历史销售口径；旧采摘重量录入端点不带去向，走此路径）。
-        PlantActivity activity = new PlantActivity();
-        activity.setCropId(cropId);
-        activity.setActivityDate(activityDate);
-        activity.setDailyWeight(dailyWeight);
-        activity.setPickWeight(dailyWeight);
-        activity.setActivityBy(activityBy);
-        baseMapper.insert(activity);
-        // row40：采摘活动班组多选中间表同步（单值写入路径，保持中间表与旧单列一致）
-        if (activityBy != null) {
-            teamLinkService.syncActivityTeams(activity.getId(), List.of(activityBy));
-        }
-    }
-
-    @Override
-    @Transactional(rollbackFor = Exception.class)
     public Long recordPickActivity(PickActivityRecordBo bo) {
         if (bo == null) {
             throw new ServiceException("采摘去向录入参数为空");

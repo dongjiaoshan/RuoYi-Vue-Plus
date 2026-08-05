@@ -18,7 +18,7 @@ import java.time.LocalDateTime;
  * <p>service 端校验顺序：</p>
  * <ol>
  *   <li>pig 存在 + 非终态 + earNo 一致；</li>
- *   <li>batch 存在 + 3 天内已领 + 余量 ≥ dosage；</li>
+ *   <li>batch 存在 + N 天内已领 + 余量 ≥ dosage；</li>
  *   <li>扣 quantity（含 stock_qty 上界）；</li>
  *   <li>INSERT 记录，operator_id 来自 LoginHelper。</li>
  * </ol>
@@ -80,7 +80,7 @@ public class MedRecordBo extends BaseEntity {
     private Long batchId;
 
     /**
-     * 领用记录 ID（可选，追溯 3 天领用源头；service 端按 batchId + 3 天窗口反查兜底）。
+     * 领用记录 ID（可选，追溯 3 天领用源头；service 端按 batchId + N 天窗口反查兜底）。
      */
     private Long usageId;
 

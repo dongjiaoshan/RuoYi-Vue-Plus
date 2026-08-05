@@ -33,8 +33,12 @@ public class StoreReturnQuery {
     private String productName;
 
     /**
-     * 产品业态 tab（pork=猪肉类含白条 / vegetable=其他含 belong_type 空）。
-     * 服务端按 belong_type 解析产品 id 集下推过滤，取代前端对当前页切片（分页 total 才正确）。
+     * 产品业态 tab（<b>三值</b>，row10）：
+     * {@code pork}=猪肉类（pork / white_bar） · {@code vegetable}=果蔬（只认 vegetable） ·
+     * {@code other}=<b>其余全部</b>（干货 / 蛋类 / 礼盒 / 其他 / belong_type 为空 / 产品已删）。
+     *
+     * <p>服务端按 belong_type 解析产品 id 集下推过滤，取代前端对当前页切片（分页 total 才正确）。
+     * 「其余全部」而非白名单：保证任何一条退回记录都能在某个 tab 里被看到。</p>
      */
     private String belongCategory;
 

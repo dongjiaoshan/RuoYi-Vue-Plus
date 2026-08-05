@@ -965,6 +965,32 @@ public class PlantPlanServiceImpl extends DjsBaseServiceImpl<PlantPlanMapper, Pl
         return softDelete(ids);
     }
 
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public int removePlanDetail(Long detailId) {
+        if (detailId == null) {
+            throw new ServiceException("地块明细 id 为空");
+        }
+        PlantDetails detail = detailsMapper.selectById(detailId);
+        if (detail == null) {
+            throw new ServiceException("地块明细不存在或已删除：" + detailId);
+        }
+        // 只有「种植未开始」才可移出计划：plant_status=pending 且未落实际开始日期。
+        // 已完成（completed）/ 进行中（ongoing）/ 已开工（begin_actualdate 非空）一律拒绝——
+        // 这些明细下游已挂采摘计划、农事、产量等数据，删掉会留孤儿。
+        if (!"pending".equals(detail.getPlantStatus()) || detail.getBeginActualdate() != null) {
+            throw new ServiceException("该地块种植已开始或已完成，不能从计划中删除");
+        }
+        // 班组中间表按角色清空（传空集合 = 删掉该明细全部 link），避免留孤儿关联
+        teamLinkService.syncDetailTeams(detailId, PlantTeamLinkService.ROLE_PLANT, Collections.emptyList());
+        teamLinkService.syncDetailTeams(detailId, PlantTeamLinkService.ROLE_HARVEST, Collections.emptyList());
+        softDeleteDetails(List.of(detailId));
+        // 主表面积 / 地块数 / 采摘区间与派生状态随明细减少重算
+        baseMapper.recalcAggregates(detail.getPlantId());
+        baseMapper.recalcPlanStatus(detail.getPlantId());
+        return 1;
+    }
+
     /**
      * 明细软删：基类 softDelete 是泛型 T = PlantPlan，明细需要独立实现。
      * 直接 wrapper-only update 模式与基类一致。

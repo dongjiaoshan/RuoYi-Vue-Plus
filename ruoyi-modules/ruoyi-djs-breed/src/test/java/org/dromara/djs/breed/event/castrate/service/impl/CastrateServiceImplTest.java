@@ -13,6 +13,10 @@ import org.dromara.djs.breed.event.castrate.domain.CastrateRecord;
 import org.dromara.djs.breed.event.castrate.domain.bo.CastrateBo;
 import org.dromara.djs.breed.event.castrate.domain.vo.CastrateRecordVo;
 import org.dromara.djs.breed.event.castrate.mapper.CastrateRecordMapper;
+import com.baomidou.mybatisplus.core.MybatisConfiguration;
+import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
+import org.apache.ibatis.builder.MapperBuilderAssistant;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
@@ -24,11 +28,14 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 
+import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -59,12 +66,27 @@ class CastrateServiceImplTest {
     private DictService dictService;
     @Mock
     private UserService userService;
+    @Mock
+    private AutoCastrateExecutor autoCastrateExecutor;
 
     private CastrateServiceImpl service;
 
+    /**
+     * MyBatis-Plus 单测 entity cache 预热：service 内 Lambda{Query,Update}Wrapper 在 mock 路径下
+     * 也会走 TableInfoHelper 解析 lambda 列名，必须先注册 entity（见 skill coder-mp-entity-cache-test）。
+     */
+    @BeforeAll
+    static void initMpEntityCache() {
+        MybatisConfiguration cfg = new MybatisConfiguration();
+        MapperBuilderAssistant assistant = new MapperBuilderAssistant(cfg, "");
+        assistant.setCurrentNamespace("test");
+        TableInfoHelper.initTableInfo(assistant, Pig.class);
+        TableInfoHelper.initTableInfo(assistant, CastrateRecord.class);
+    }
+
     @BeforeEach
     void setup() {
-        service = new CastrateServiceImpl(castrateMapper, pigMapper, pigCoreService, dictService, userService);
+        service = new CastrateServiceImpl(castrateMapper, pigMapper, pigCoreService, dictService, userService, autoCastrateExecutor);
     }
 
     /** 可阉割的公猪 = 育肥/仔猪公（R40：种公猪 boar 不可阉割，见 {@link #validate_boar_rejected}）。 */
@@ -191,5 +213,49 @@ class CastrateServiceImplTest {
         assertThatThrownBy(() -> service.recordCastrate(mkBo(999L)))
             .isInstanceOf(ServiceException.class)
             .hasMessageContaining("pig.not_found");
+    }
+
+    // ========== admin row186：批量扫描 + 逐头委派（单头写入逻辑见 AutoCastrateExecutorTest） ==========
+
+    private Pig mkMalePiglet(Long id) {
+        Pig p = new Pig();
+        p.setId(id);
+        p.setEarNo("260706-M-" + id);
+        p.setPigSex("M");
+        p.setPigType("piglet");
+        p.setCurrentStatus("");
+        p.setIsCastrated(1);
+        return p;
+    }
+
+    @Test
+    @DisplayName("autoCastrate: 逐头委派给 executor，只统计真正处理成功的头数")
+    void autoCastrate_countsOnlyClaimed() {
+        when(pigMapper.selectList(any())).thenReturn(List.of(mkMalePiglet(11L), mkMalePiglet(12L)));
+        // 第一头抢到、第二头被他处抢先
+        when(autoCastrateExecutor.castrateOne(any(Pig.class), any(LocalDate.class), anyInt()))
+            .thenReturn(true).thenReturn(false);
+
+        assertThat(service.autoCastrateOverAgePiglets(LocalDate.of(2026, 8, 1))).isEqualTo(1);
+        verify(autoCastrateExecutor, times(2)).castrateOne(any(Pig.class), any(LocalDate.class), anyInt());
+    }
+
+    @Test
+    @DisplayName("autoCastrate: 无命中猪只 → 返回 0，不触碰 executor")
+    void autoCastrate_noTargets() {
+        when(pigMapper.selectList(any())).thenReturn(List.of());
+
+        assertThat(service.autoCastrateOverAgePiglets(LocalDate.of(2026, 8, 1))).isZero();
+        verify(autoCastrateExecutor, never()).castrateOne(any(Pig.class), any(LocalDate.class), anyInt());
+    }
+
+    @Test
+    @DisplayName("autoCastrate: 单头抛异常不中断整批，其余照常处理")
+    void autoCastrate_oneFails_othersContinue() {
+        when(pigMapper.selectList(any())).thenReturn(List.of(mkMalePiglet(14L), mkMalePiglet(15L)));
+        when(autoCastrateExecutor.castrateOne(any(Pig.class), any(LocalDate.class), anyInt()))
+            .thenThrow(new RuntimeException("boom")).thenReturn(true);
+
+        assertThat(service.autoCastrateOverAgePiglets(LocalDate.of(2026, 8, 1))).isEqualTo(1);
     }
 }

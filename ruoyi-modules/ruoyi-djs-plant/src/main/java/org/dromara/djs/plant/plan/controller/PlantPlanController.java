@@ -120,6 +120,18 @@ public class PlantPlanController extends BaseController {
         return R.ok();
     }
 
+    /**
+     * 从计划中移除单条地块明细（row184）。仅「种植未开始」的明细可删，服务端兜底校验。
+     */
+    @SaCheckPermission("djs:plant:plan:edit")
+    @Log(title = "种植-种植计划地块明细", businessType = BusinessType.DELETE)
+    @RepeatSubmit
+    @DeleteMapping("/detail/{detailId}")
+    public R<Void> removeDetail(@PathVariable Long detailId) {
+        plantPlanService.removePlanDetail(detailId);
+        return R.ok();
+    }
+
     @SaCheckPermission("djs:plant:plan:ganttView")
     @GetMapping("/{id}/gantt")
     public R<PlantPlanGanttVo> gantt(@PathVariable Long id) {

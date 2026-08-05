@@ -53,6 +53,15 @@ public class StoreReturnAppletItemVo implements Serializable {
     /** 产品单位（← product_unit，service 回填；mp 退货确认页「退货单位」列显示，流程性问题 row16）。 */
     private String productUnit;
 
+    /**
+     * 产品<b>原材料单位</b>（← 原材料产品的 product_unit，service 批量回填；无原材料 / 原材料无单位时回落
+     * 产品自身单位）。
+     *
+     * <p>mp 退回确认页据它决定「仓库称重重量」输入框的口径（甲方 row13）：
+     * = kg → 小数录入、后缀 kg；≠ kg → <b>整数</b>录入、后缀 {@code productUnit}（枚 / 份 …）。</p>
+     */
+    private String materialUnit;
+
     /** 产品规格（← product_spec，service 回填；mp 退货确认页品名行右侧显示，row186）。 */
     private String productSpec;
 
@@ -67,6 +76,13 @@ public class StoreReturnAppletItemVo implements Serializable {
 
     /** 是否已确认：1=是 / 0=否（returnStatus==received 派生）。 */
     private Integer isConfirm;
+
+    /**
+     * 处置方式：{@code 0}=退回入库（默认）/ {@code 1}=产品丢弃（小程序 row269）。
+     *
+     * <p>已确认行回显仓库当时的选择；未确认行为建表默认 0，mp 侧即"默认退回入库"的初始态。</p>
+     */
+    private Integer isDiscard;
 
     /** 退回原因。 */
     private String returnReason;

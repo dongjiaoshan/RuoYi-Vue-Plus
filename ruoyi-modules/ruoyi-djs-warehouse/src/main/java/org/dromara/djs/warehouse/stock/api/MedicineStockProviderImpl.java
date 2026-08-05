@@ -112,10 +112,11 @@ public class MedicineStockProviderImpl implements MedicineStockProvider {
     }
 
     @Override
-    public List<Long> listRecentPickedMedicineIds(Long operatorId) {
-        // row131：近 3 天已领药品 id 从仓库领用出库流水取（覆盖疫苗药品页 + 物资领用药品库两个入口，
+    public List<Long> listRecentPickedMedicineIds(Long operatorId, int usableDays) {
+        // row131：近 N 天已领药品 id 从仓库领用出库流水取（覆盖疫苗药品页 + 物资领用药品库两个入口，
         // 两入口领用都落 dept_pick_out 流水，天然一致）。
-        return locationStockMapper.selectRecentPickedMedicineIds(operatorId);
+        // row252：窗口天数由调用方（breed 侧）从「用药配置」读出后传入，本实现不读配置。
+        return locationStockMapper.selectRecentPickedMedicineIds(operatorId, usableDays);
     }
 
     /**

@@ -64,9 +64,16 @@ public class VegPlotDetailVo implements Serializable {
     private BigDecimal remainWeight;
 
     /**
-     * 预计产量(kg)（= 地块面积 plot_area × 作物预计亩产 crop.predicted_per）。
+     * 预计产量(kg)（= 地块面积 plot_area × 作物预计亩产 crop.predicted_per − 该地块灾害损失 disasterLoss，
+     * 不小于 0）。与作物级 {@code VegCropVo.expectedYield} 同口径（都已扣灾害损失）。
      */
     private BigDecimal expectYield;
+
+    /**
+     * 该地块灾害损失(kg)（= 该地块该作物 {@code t_plant_farm_records(farm_type='disaster')} 的
+     * {@code SUM(loss_yield)}；已从 expectYield 中扣除，单列透出供 mp 展示扣减明细）。
+     */
+    private BigDecimal disasterLoss;
 
     /**
      * 该作物是否已配置「关联产品」：1=已配 / 0=未配（= t_plant_crop_info.related_product 是否非空）。

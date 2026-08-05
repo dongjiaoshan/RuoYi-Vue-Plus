@@ -54,6 +54,8 @@ public class CastrateServiceImpl implements ICastrateService {
     private final IPigCoreService pigCoreService;
     private final DictService dictService;
     private final UserService userService;
+    /** 单头自动阉割的事务执行单元：必须是独立 bean，同类内调用不过代理会让 @Transactional 失效 */
+    private final AutoCastrateExecutor autoCastrateExecutor;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -112,6 +114,38 @@ public class CastrateServiceImpl implements ICastrateService {
             pig.getId(), pig.getEarNo(), entity.getId());
 
         return toVo(entity);
+    }
+
+    /** 仔猪自动阉割日龄阈值（天）：严格「超过」7 日龄才处理。 */
+    private static final int AUTO_CASTRATE_AGE_DAYS = 7;
+
+    @Override
+    public int autoCastrateOverAgePiglets(LocalDate targetDate) {
+        LocalDate baseDate = targetDate != null ? targetDate : LocalDate.now();
+        // 日龄口径与出栏选猪一致：COALESCE(birth_date, introduce_date)，两者皆空的猪算不出日龄、自动不命中。
+        List<Pig> targets = pigMapper.selectList(Wrappers.<Pig>lambdaQuery()
+            .eq(Pig::getPigSex, "M")
+            .eq(Pig::getPigType, "piglet")
+            .eq(Pig::getIsCastrated, 1)
+            .ne(Pig::getCurrentStatus, "END")
+            .apply("DATEDIFF({0}, COALESCE(birth_date, introduce_date)) > {1}",
+                baseDate, AUTO_CASTRATE_AGE_DAYS));
+        if (targets.isEmpty()) {
+            return 0;
+        }
+        int done = 0;
+        for (Pig pig : targets) {
+            try {
+                if (autoCastrateExecutor.castrateOne(pig, baseDate, AUTO_CASTRATE_AGE_DAYS)) {
+                    done++;
+                }
+            } catch (Exception e) {
+                // 逐头独立：单头失败（状态机拒绝等）不拖垮整批
+                log.warn("[BRD-AUTO-CASTRATE] 跳过 pigId={} earNo={}：{}", pig.getId(), pig.getEarNo(), e.getMessage());
+            }
+        }
+        log.info("[BRD-AUTO-CASTRATE] baseDate={} 命中 {} 头，成功 {} 头", baseDate, targets.size(), done);
+        return done;
     }
 
     @Override

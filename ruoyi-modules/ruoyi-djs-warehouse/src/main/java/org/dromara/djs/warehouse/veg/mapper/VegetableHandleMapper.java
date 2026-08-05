@@ -63,7 +63,9 @@ public interface VegetableHandleMapper extends BaseMapperPlus<VegetableHandle, V
         + "       COALESCE(SUM(h.send_platform_weight),0) AS sendPlatformWeight,"
         + "       COALESCE(SUM(h.loss_weight),0) AS lossWeight,"
         + "       COALESCE(MAX(dl.disaster_loss),0) AS disasterLoss,"
-        + "       COALESCE(SUM(pl.plot_area * c.predicted_per),0) - COALESCE(MAX(dl.disaster_loss),0) AS expectedYield,"
+        // 与地块级 PlantingRecordMapper#selectPlotDetailByCrop 对称钳零：灾害损失大于理论产量时归 0 不显负数。
+        // 两级若一个钳一个不钳，「作物级 ≠ Σ地块级」在极端数据下会打架（QA 对抗验收指出的不对称）。
+        + "       GREATEST(COALESCE(SUM(pl.plot_area * c.predicted_per),0) - COALESCE(MAX(dl.disaster_loss),0), 0) AS expectedYield,"
         // 待处理地块数：每个 planting_record = 一个待处理地块，处理未完成 = 汇总行 is_finish != 1
         // （汇总行不存在 → 尚未处理 → 计入待处理；与地块明细页 processStatus!='done' 口径一致）。
         + "       SUM(CASE WHEN COALESCE(h.is_finish,0) <> 1 THEN 1 ELSE 0 END) AS pendingPlotCount"

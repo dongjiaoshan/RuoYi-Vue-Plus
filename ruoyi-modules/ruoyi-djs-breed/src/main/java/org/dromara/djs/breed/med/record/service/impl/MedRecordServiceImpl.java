@@ -14,6 +14,8 @@ import org.dromara.common.satoken.utils.LoginHelper;
 import org.dromara.djs.breed.core.domain.Pig;
 import org.dromara.djs.breed.core.enums.PigLifecycle;
 import org.dromara.djs.breed.core.mapper.PigMapper;
+import org.dromara.djs.breed.production.controller.ProductionCycleConfigController;
+import org.dromara.djs.breed.production.service.IProductionCycleConfigService;
 import org.dromara.djs.breed.med.domain.MedBatch;
 import org.dromara.djs.breed.med.mapper.MedBatchMapper;
 import org.dromara.djs.breed.med.record.domain.MedRecord;
@@ -47,12 +49,12 @@ import java.util.stream.Collectors;
  *
  * <p>核心逻辑（药品废弃批次 · 迁药品维度）：</p>
  * <ul>
- *   <li><b>使用药品下拉</b>：{@link MedicineStockProvider#listRecentPickedMedicineIds} 取近 3 天已领用的
+ *   <li><b>使用药品下拉</b>：{@link MedicineStockProvider#listRecentPickedMedicineIds} 取近 N 天已领用的
  *       distinct 药品（数据源 = 仓库领用出库流水 dept_pick_out，覆盖疫苗药品页 + 物资领用药品库两个领用入口，
  *       row131；按 operatorId 限定 mp 当前用户），药品名/单位/规格/库存由仓库
  *       {@link MedicineStockProvider#listMedicineProductsByIds} 解析。不再依赖批次/t_breed_medicine_info。</li>
  *   <li><b>用药 = 纯记录，不扣库存</b>：库存扣减只在药品「领用/退回」（MedUsage）做，用药只能选
- *       3 天内已领药品（领用时已扣过库存），用药再扣会双扣，故用药仅落台账。{@code dosageUnit}
+ *       N 天内已领药品（领用时已扣过库存），用药再扣会双扣，故用药仅落台账。{@code dosageUnit}
  *       为纯记录/展示字段（g/mg/ml/L/kg/片等），不做规格换算、不参与扣减。</li>
  *   <li><b>事务包</b>：INSERT master + N detail 单事务，任一步失败全回滚。
  *       N ≤ 200（DDL 已限定，BO {@code @Size(max=200)}）。</li>
@@ -74,15 +76,19 @@ public class MedRecordServiceImpl extends DjsBaseServiceImpl<MedRecordMapper, Me
     private final MedBatchMapper medBatchMapper;
     private final PigMapper pigMapper;
     private final MedicineStockProvider medicineStockProvider;
+    /** row252：读「用药配置」med_pick_usable_days（药品领用可用天数，默认 15）。 */
+    private final IProductionCycleConfigService cycleConfigService;
 
     public MedRecordServiceImpl(MedRecordMapper baseMapper,
                                 MedBatchMapper medBatchMapper,
                                 PigMapper pigMapper,
-                                MedicineStockProvider medicineStockProvider) {
+                                MedicineStockProvider medicineStockProvider,
+                                IProductionCycleConfigService cycleConfigService) {
         super(baseMapper);
         this.medBatchMapper = medBatchMapper;
         this.pigMapper = pigMapper;
         this.medicineStockProvider = medicineStockProvider;
+        this.cycleConfigService = cycleConfigService;
     }
 
     // ---------------------------------------------------------------
@@ -262,10 +268,11 @@ public class MedRecordServiceImpl extends DjsBaseServiceImpl<MedRecordMapper, Me
 
     @Override
     public List<UsableBatchVo> listUsableBatches(Long operatorId) {
-        // 药品废弃批次：取近 3 天已领用的 distinct 药品 id，再经仓库 provider 解析名/单位/规格/库存。
+        // 药品废弃批次：取近 N 天已领用的 distinct 药品 id，再经仓库 provider 解析名/单位/规格/库存。
         // row131：数据源改为仓库领用出库流水（覆盖疫苗药品页 + 物资领用药品库两个领用入口），
         // 取代原「只查 t_breed_medicine_usage」（只覆盖疫苗药品页入口）。
-        List<Long> ids = medicineStockProvider.listRecentPickedMedicineIds(operatorId);
+        // row252：N 由「用药配置」med_pick_usable_days 决定（原写死 3 天，客户要 15 天且可后台改）。
+        List<Long> ids = medicineStockProvider.listRecentPickedMedicineIds(operatorId, resolveMedPickUsableDays());
         if (ids.isEmpty()) {
             return List.of();
         }
@@ -286,6 +293,19 @@ public class MedRecordServiceImpl extends DjsBaseServiceImpl<MedRecordMapper, Me
             list.add(vo);
         }
         return list;
+    }
+
+    /**
+     * 药品领用可用天数（row252）：取「用药配置」{@code med_pick_usable_days} 生效值，
+     * 未配置 / 非正数 → 回落默认 {@value ProductionCycleConfigController#MED_PICK_USABLE_DAYS_DEFAULT} 天。
+     *
+     * <p>非正数也回落默认：窗口 ≤0 会让「使用药品」候选恒空，属误配，退回默认比让工人无药可选安全。</p>
+     */
+    private int resolveMedPickUsableDays() {
+        Integer days = cycleConfigService == null
+            ? null
+            : cycleConfigService.getValue(ProductionCycleConfigController.MED_PICK_USABLE_DAYS_KEY);
+        return days != null && days > 0 ? days : ProductionCycleConfigController.MED_PICK_USABLE_DAYS_DEFAULT;
     }
 
     @Override

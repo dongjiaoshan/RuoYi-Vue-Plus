@@ -7,6 +7,7 @@ import org.dromara.common.mybatis.core.mapper.BaseMapperPlus;
 import org.dromara.djs.warehouse.veg.domain.FeedLog;
 import org.dromara.djs.warehouse.veg.domain.bo.FeedRecordQuery;
 import org.dromara.djs.warehouse.veg.domain.vo.FeedDailyStatVo;
+import org.dromara.djs.warehouse.veg.domain.vo.FeedDailyVo;
 import org.dromara.djs.warehouse.veg.domain.vo.FeedLogVo;
 import org.dromara.djs.warehouse.veg.domain.vo.FeedRecordVo;
 
@@ -173,5 +174,47 @@ public interface FeedLogMapper extends BaseMapperPlus<FeedLog, FeedLog> {
         """)
     List<FeedRecordVo> selectRecordList(@Param("tenantId") String tenantId,
                                         @Param("query") FeedRecordQuery query);
+
+    /**
+     * 有机饲喂**按日汇总**分页（admin 行199 列表 / mp 行268 卡片共用）。
+     *
+     * <p>一天一行：{@code GROUP BY DATE(feed_date)} 把当日全部来源（毛菜间 + 仓库）的重量求和，
+     * 再 LEFT JOIN 日确认表带出框数 / 确认人 / 确认时间（mp 卡片「处理日期」）。</p>
+     *
+     * <p>⚠️ 日确认表按 {@code feed_date} 关联，两边都是 DATE 粒度；feed_log 的 {@code feed_date} 是
+     * DATETIME，故左联条件用 {@code DATE(fl.feed_date)} 而不是裸列，否则带时分秒的行永远联不上。
+     * 这里把聚合放子查询、再与确认表联，避免 JOIN 后再聚合导致重量被确认表行数放大。</p>
+     *
+     * @param page     分页
+     * @param tenantId 租户（V1 固定 '1001'）
+     * @param query    查询条件（本汇总只用 dateFrom / dateTo，作物名与提供位置属明细维度不参与）
+     * @return 每日一行的汇总（按日期倒序）
+     */
+    @Select("""
+        <script>
+        SELECT d.feedDate       AS feedDate,
+               d.totalWeight    AS totalWeight,
+               d.detailCount    AS detailCount,
+               fc.box_count     AS boxCount,
+               fc.confirm_user_id AS confirmUserId,
+               fc.confirm_time  AS confirmTime
+        FROM (
+            SELECT DATE(fl.feed_date)  AS feedDate,
+                   SUM(fl.feed_weight) AS totalWeight,
+                   COUNT(*)            AS detailCount
+            FROM t_warehouse_feed_log fl
+            WHERE fl.del_flag = '0' AND fl.tenant_id = #{tenantId}
+            <if test="query.dateFrom != null"> AND fl.feed_date &gt;= #{query.dateFrom} </if>
+            <if test="query.dateTo != null"> AND fl.feed_date &lt; DATE_ADD(#{query.dateTo}, INTERVAL 1 DAY) </if>
+            GROUP BY DATE(fl.feed_date)
+        ) d
+        LEFT JOIN t_warehouse_feed_daily_confirm fc
+          ON fc.feed_date = d.feedDate AND fc.del_flag = '0' AND fc.tenant_id = #{tenantId}
+        ORDER BY d.feedDate DESC
+        </script>
+        """)
+    IPage<FeedDailyVo> selectDailyPage(IPage<FeedDailyVo> page,
+                                       @Param("tenantId") String tenantId,
+                                       @Param("query") FeedRecordQuery query);
 
 }

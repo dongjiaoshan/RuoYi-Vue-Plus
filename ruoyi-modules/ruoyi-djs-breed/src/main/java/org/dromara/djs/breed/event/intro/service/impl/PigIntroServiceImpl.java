@@ -580,7 +580,15 @@ public class PigIntroServiceImpl implements IPigIntroService {
     }
 
     /**
-     * 以用户给定首号为起点连号（首号校格式 + UNIQUE；后续 N-1 头序号 +1，逐头探测 UNIQUE 撞则报错）。
+     * 以用户给定首号为起点连号（首号校格式 + 序号查重；后续 N-1 头序号 +1，逐头查重撞则报错）。
+     *
+     * <p><b>唯一的放行条件是「这个号还没被占用」</b>（甲方 V6 生产紧急表 row3）：序号可以比后台预填的下一可用号小
+     * —— 甲方按自己的批次流水号编耳号，与系统「同出生日 max+1」是两套编号，强制不得小于会把合法小号全拦掉。</p>
+     *
+     * <p>查重按<b>同出生日 + 后三位</b>（甲方原话「判断输入的后三位在出生日期的判定里是否存在重复」），
+     * 与 {@link EarNoAllocator} 的取号范围同宽；整串耳号作兜底。口径与取舍详见
+     * {@link PigMapper#existsSeqByDateSegment}。</p>
+     *
      * <p>前缀 = 末段 {@code -} 之前（品系{1,2}-品种2-[性别1]-yyMMdd6，性别段 2026-06-18 起编入），序号 = 末段；
      * 与 {@link EarNoAllocator} 同口径只看末段，不按定长截位（根除旧位长不一致导致解析出 &gt;999 的自相矛盾）。
      * 格式校验须与 allocator buildPrefix 双格式输出一致：性别非空 5 段 {@code 01-01-2-260319-022} / 性别空 4 段
@@ -599,19 +607,16 @@ public class PigIntroServiceImpl implements IPigIntroService {
         } catch (NumberFormatException e) {
             throw new ServiceException(I18nMessages.t("intro.start_ear_no.pattern"));
         }
-        // 甲方：用户填的数量编号不得小于后台当前最小可用号（防 FE 绕过 / 重号）。
-        // R47：按出生日全场 max+1（不分品系品种）。出生日段 = 首号前缀末段 yyMMdd（与候选 earNo 同口径，
-        // 直接取段字符串而非转 LocalDate，避免对用户输入做额外日期合法性约束）。
+        // 出生日段 = 首号前缀末段 yyMMdd（与候选 earNo 同口径，直接取段字符串而非转 LocalDate，
+        // 避免对用户输入做额外日期合法性约束）。查重按该段做，与 allocator 取号范围同宽。
         String dateSeg = prefix.substring(prefix.lastIndexOf('-') + 1);
-        long minSeq = earNoAllocator.nextSeqForDateSegment(dateSeg);
-        if (startSeq < minSeq) {
-            throw new ServiceException(I18nMessages.t("intro.start_ear_no.too_small", minSeq));
-        }
         List<String> earNos = new ArrayList<>(count);
         for (int i = 0; i < count; i++) {
             // 序号补零须与 EarNoAllocator.SEQ_WIDTH(=3) 同口径，否则连号 earNo 与 allocator 自动生成的位宽不一致
-            String earNo = prefix + "-" + String.format("%03d", startSeq + i);
-            if (pigMapper.existsEarNo(earNo) != null) {
+            long seq = startSeq + i;
+            String earNo = prefix + "-" + String.format("%03d", seq);
+            // 与 mp 端「输入即查重」同一个探测（isEarNoTaken），保证「输入时说没重」= 提交一定不因撞号被拒
+            if (isSeqOrEarNoTaken(dateSeg, seq, earNo)) {
                 throw new ServiceException(I18nMessages.t("intro.start_ear_no.duplicate", earNo));
             }
             earNos.add(earNo);
@@ -624,6 +629,30 @@ public class PigIntroServiceImpl implements IPigIntroService {
         // 预生成"下一个可用首耳号"返给前端预填，不落库；并发下提交时再由 allocator 锁 + UNIQUE 兜底重算
         LocalDate birth = Optional.ofNullable(birthDate).orElseGet(LocalDate::now);
         return earNoAllocator.allocateOne(strainCode, breedCode, pigSex, birth);
+    }
+
+    @Override
+    public boolean isEarNoTaken(String earNo) {
+        if (earNo == null || !earNo.matches("^\\d{1,2}-\\d{2}(-\\d)?-\\d{6}-\\d{3}$")) {
+            // 格式不合法不在这里报错：输入过程中必然出现半截号，报错会让 mp 输一位弹一次。
+            // 真正的格式闸在提交时（allocateFromUserStart / PigIntroBatchBo @Pattern）。
+            return false;
+        }
+        int sepIdx = earNo.lastIndexOf('-');
+        String prefix = earNo.substring(0, sepIdx);
+        String dateSeg = prefix.substring(prefix.lastIndexOf('-') + 1);
+        long seq = Long.parseLong(earNo.substring(sepIdx + 1));
+        return isSeqOrEarNoTaken(dateSeg, seq, earNo);
+    }
+
+    /**
+     * 引种查重的单一实现 —— mp「输入即查重」与提交时的连号查重共用，保证两处口径不会分叉。
+     *
+     * <p>主口径 = 同出生日下该序号已被占用（{@link PigMapper#existsSeqByDateSegment}，甲方 2026-08-04 表态：
+     * 「判断输入的后三位在出生日期的判定里是否存在重复」）；整串耳号命中作兜底，接住历史无分隔异形号。</p>
+     */
+    private boolean isSeqOrEarNoTaken(String dateSeg, long seq, String earNo) {
+        return pigMapper.existsSeqByDateSegment(dateSeg, seq) != null || pigMapper.existsEarNo(earNo) != null;
     }
 
     private Barn loadBarn(Long barnId) {

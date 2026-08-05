@@ -86,8 +86,15 @@ public interface PlantDashboardMapper {
      * @param tenantId 租户
      * @return 当前预计产量（kg），无则 0
      */
-    @Select("SELECT COALESCE(SUM(d.expected_yield), 0) "
+    // row267：预计产量逐地块扣灾害损失后再求和
+    @Select("SELECT COALESCE(SUM(GREATEST(COALESCE(d.expected_yield,0) - COALESCE(dl.disaster_loss,0), 0)), 0) "
         + "  FROM t_plant_plant_details d "
+        + "  LEFT JOIN (SELECT fr.plot_id, fr.crop_id, SUM(fr.loss_yield) AS disaster_loss"
+        + "               FROM t_plant_farm_records fr"
+        + "              WHERE fr.del_flag='0' AND fr.tenant_id=#{tenantId} AND fr.farm_type='disaster'"
+        + "                AND fr.plot_id IS NOT NULL AND fr.crop_id IS NOT NULL"
+        + "              GROUP BY fr.plot_id, fr.crop_id) dl"
+        + "    ON dl.plot_id = d.plot_id AND dl.crop_id = d.crop_id "
         + " WHERE d.tenant_id = #{tenantId} "
         + "   AND d.del_flag = '0' "
         + "   AND d.plant_status = 'completed' "
@@ -104,8 +111,15 @@ public interface PlantDashboardMapper {
      * @param tenantId 租户
      * @return 当年预计产量（kg），无则 0
      */
-    @Select("SELECT COALESCE(SUM(d.expected_yield), 0) "
+    // row267：预计产量逐地块扣灾害损失后再求和
+    @Select("SELECT COALESCE(SUM(GREATEST(COALESCE(d.expected_yield,0) - COALESCE(dl.disaster_loss,0), 0)), 0) "
         + "  FROM t_plant_plant_details d "
+        + "  LEFT JOIN (SELECT fr.plot_id, fr.crop_id, SUM(fr.loss_yield) AS disaster_loss"
+        + "               FROM t_plant_farm_records fr"
+        + "              WHERE fr.del_flag='0' AND fr.tenant_id=#{tenantId} AND fr.farm_type='disaster'"
+        + "                AND fr.plot_id IS NOT NULL AND fr.crop_id IS NOT NULL"
+        + "              GROUP BY fr.plot_id, fr.crop_id) dl"
+        + "    ON dl.plot_id = d.plot_id AND dl.crop_id = d.crop_id "
         + "  JOIN t_plant_plant_plan p ON p.id = d.plant_id "
         + "                           AND p.tenant_id = #{tenantId} "
         + "                           AND p.del_flag = '0' "
@@ -272,8 +286,14 @@ public interface PlantDashboardMapper {
      */
     @Select("SELECT c.crop_name                        AS cropName, "
         + "       COALESCE(SUM(d.actual_yield), 0)   AS actualYield, "
-        + "       COALESCE(SUM(d.expected_yield), 0) AS expectedYield "
+        + "       COALESCE(SUM(GREATEST(COALESCE(d.expected_yield,0) - COALESCE(dl.disaster_loss,0), 0)), 0) AS expectedYield "
         + "  FROM t_plant_plant_details d "
+        + "  LEFT JOIN (SELECT fr.plot_id, fr.crop_id, SUM(fr.loss_yield) AS disaster_loss"
+        + "               FROM t_plant_farm_records fr"
+        + "              WHERE fr.del_flag='0' AND fr.tenant_id=#{tenantId} AND fr.farm_type='disaster'"
+        + "                AND fr.plot_id IS NOT NULL AND fr.crop_id IS NOT NULL"
+        + "              GROUP BY fr.plot_id, fr.crop_id) dl"
+        + "    ON dl.plot_id = d.plot_id AND dl.crop_id = d.crop_id "
         + "  LEFT JOIN t_plant_crop_info c ON c.id = d.crop_id AND c.del_flag = '0' "
         + " WHERE d.tenant_id = #{tenantId} "
         + "   AND d.del_flag = '0' "
@@ -298,8 +318,14 @@ public interface PlantDashboardMapper {
      */
     @Select("SELECT c.crop_name                          AS cropName, "
         + "       COUNT(DISTINCT d.plot_id)            AS plotCount, "
-        + "       COALESCE(SUM(d.expected_yield), 0)   AS expectedYield "
+        + "       COALESCE(SUM(GREATEST(COALESCE(d.expected_yield,0) - COALESCE(dl.disaster_loss,0), 0)), 0)   AS expectedYield "
         + "  FROM t_plant_plant_details d "
+        + "  LEFT JOIN (SELECT fr.plot_id, fr.crop_id, SUM(fr.loss_yield) AS disaster_loss"
+        + "               FROM t_plant_farm_records fr"
+        + "              WHERE fr.del_flag='0' AND fr.tenant_id=#{tenantId} AND fr.farm_type='disaster'"
+        + "                AND fr.plot_id IS NOT NULL AND fr.crop_id IS NOT NULL"
+        + "              GROUP BY fr.plot_id, fr.crop_id) dl"
+        + "    ON dl.plot_id = d.plot_id AND dl.crop_id = d.crop_id "
         + "  LEFT JOIN t_plant_crop_info c ON c.id = d.crop_id AND c.del_flag = '0' "
         + " WHERE d.tenant_id = #{tenantId} "
         + "   AND d.del_flag = '0' "

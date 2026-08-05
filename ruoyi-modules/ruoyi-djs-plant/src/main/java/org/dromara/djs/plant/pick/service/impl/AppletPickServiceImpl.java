@@ -37,8 +37,10 @@ import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -65,9 +67,12 @@ public class AppletPickServiceImpl implements IAppletPickService {
     private final PlantWorkTeamMapper teamMapper;
     private final PlantWorkPeopleMapper peopleMapper;
     private final IFarmRecordsService farmRecordsService;
+    private final org.dromara.djs.plant.farm.mapper.FarmRecordsMapper farmRecordsMapper;
     private final ApplicationEventPublisher eventPublisher;
     private final ImageUrlResolver imageUrlResolver;
     private final org.dromara.djs.plant.team.service.PlantTeamLinkService teamLinkService;
+    /** row260：取「已录入未落地块」的采摘量（销售去向未结算部分），与 Σactual_yield 相加成已采产量。 */
+    private final org.dromara.djs.plant.activity.mapper.PlantActivityMapper activityMapper;
 
     /** 作物 L2 默认图统一走果蔬（IMG-LIB-001）。 */
     private static final String CROP_BELONG_TYPE = "vegetable";
@@ -78,6 +83,12 @@ public class AppletPickServiceImpl implements IAppletPickService {
      * 排除 is_pick=1 的游客采摘活动。
      */
     private static final int IS_PICK_NORMAL = 2;
+
+    /**
+     * 游客采摘活动渠道（{@code plant_details.is_pick=1}）。row260：销售去向未结算量只属于本渠道
+     * （{@code settlePickActivity} 只结算进 is_pick=1 地块），普通采收视图不得并入。
+     */
+    private static final int IS_PICK_ACTIVITY = 1;
     /** harvest_activity：采摘计划设为「采摘活动」(is_pick=1) 的采摘行为农事类型（djs_farm_work_type）。 */
     private static final String HARVEST_FARM_TYPE = "harvest_activity";
     /** harvest：普通采收 (is_pick=2) 农事类型，区别于游客采摘活动（FIX-PLT-AD-PICK-FARMTYPE-001）。 */
@@ -111,7 +122,7 @@ public class AppletPickServiceImpl implements IAppletPickService {
         }
         boolean finish = Boolean.TRUE.equals(bo.getFinish());
         // FIX-PLT-MP-PICK-001（#3=a 按原型）：采收 tab 只走"开始/完成采摘"流程（采摘人员 + 日期），
-        // 不录重量。采摘重量改由农事「采摘活动管理」submitHarvestWeight 累加 actual_yield。
+        // 不录重量。采摘重量由采摘去向录入 recordPickActivity 落账（非销售即时累加 actual_yield，销售结算时分摊）。
         String targetStatus = finish ? "completed" : "picking";
 
         // SM-4 并发加固：地块「首次离开 pending（待采摘）」是发 PlantPickedEvent 的唯一闸门。
@@ -332,6 +343,15 @@ public class AppletPickServiceImpl implements IAppletPickService {
             : cropMapper.selectByIds(cropIds).stream()
                 .collect(Collectors.toMap(CropInfo::getId, c -> c, (a, b) -> a));
 
+        // row260：各作物「已录入未落地块」的采摘量（销售去向未结算部分），一次批量取避免 N+1。
+        // ⚠️ 只在采摘活动渠道（is_pick=1）并入：settlePickActivity 只把销售量结算进 is_pick=1 地块，
+        // 算到普通采收（is_pick=2）头上就是凭空多出一笔与该渠道无关的产量（QA 对抗验收实测复现：
+        // 同一作物同时有 is_pick=1/2 两批地块时，isPick=2 的 cropPickedTotal 也返回了那 100kg）。
+        Map<Long, BigDecimal> pendingByCrop = pickFlag == IS_PICK_ACTIVITY
+            ? loadUnsettledPickedByCrops(cropIds)
+            : Map.of();
+
+        Map<String, BigDecimal> cropTaskLossMap = loadDisasterLossByPlotCrop(cropIds);
         List<PickCropTaskVo> result = new ArrayList<>(byCrop.size());
         for (Map.Entry<Long, List<PlantDetails>> e : byCrop.entrySet()) {
             List<PlantDetails> rows = e.getValue();
@@ -351,15 +371,21 @@ public class AppletPickServiceImpl implements IAppletPickService {
                 .filter(Objects::nonNull).min(Comparator.naturalOrder()).orElse(null));
             vo.setLastDate(rows.stream().map(PlantDetails::getLastHarvestdate)
                 .filter(Objects::nonNull).max(Comparator.naturalOrder()).orElse(null));
+            // row267：**逐地块**先扣灾害再求和。先求和后扣的话，某地块损失超过它自己的理论产量时
+            // 会把别的地块的产量一起吃掉（钳零要落在地块粒度上）。
             vo.setExpectedYield(rows.stream()
-                .map(d -> d.getExpectedYield() == null ? BigDecimal.ZERO : d.getExpectedYield())
+                .map(d -> netExpectedYield(d, cropTaskLossMap))
                 .reduce(BigDecimal.ZERO, BigDecimal::add));
-            // 已采重量 = Σ(本卡可见地块 actual_yield)，与详情页头卡 cropPickedTotal / 地块卡合计严格同源。
-            //   未结算的销售流水（pick_dest=sale、plot_id 恒空）不在此预支，等员工勾「称重完成」结算时
-            //   均分写入 actual_yield 后自然并入；结算前可在「采摘活动记录」tab 与 admin 采摘活动表查到。
+            // 已采重量 = Σ(本卡可见地块 actual_yield) + 本作物未结算销售量，与详情页头卡 cropPickedTotal 严格同源。
+            //   row260（Kevin 2026-08-01 定「计入，按作物汇总」）：销售去向按 DENGBO-R4/R24 故意不即时分摊，
+            //   要等整批地块采摘完成才均分进 actual_yield；结算前只看 Σactual_yield 会让「录了 100kg」显示成 0
+            //   （客户原话「已采产量没有显示数据」）。故把未结算量并进来，录了即可见。
+            //   注：未结算量按 **作物** 汇总（流水只带 crop_id 不带地块/批次），同一作物存在多批次时
+            //   这部分会算在当前展示的批次卡上——这是取「即时可见」而接受的已知代价。
             vo.setActualYield(rows.stream()
                 .map(d -> d.getActualYield() == null ? BigDecimal.ZERO : d.getActualYield())
-                .reduce(BigDecimal.ZERO, BigDecimal::add));
+                .reduce(BigDecimal.ZERO, BigDecimal::add)
+                .add(pendingByCrop.getOrDefault(e.getKey(), BigDecimal.ZERO)));
             result.add(vo);
         }
 
@@ -466,9 +492,42 @@ public class AppletPickServiceImpl implements IAppletPickService {
         }
         // Σ(当前展示地块 actual_yield)：复用 listCropPlots 同口径地块集，与 mp 头卡地块卡合计、
         //   以及列表卡 listCropTasks 三者严格同源（row204：列表与详情必须一致，只算详情页展示的地块）。
+        // row260：再并上本作物「已录入未落地块」的未结算销售量，与 listCropTasks 同步（否则列表 100、详情 0 打架）。
+        // 同样只在采摘活动渠道（is_pick=1）并入 —— 结算只落 is_pick=1 地块，普通采收视图不该看到这笔。
+        int pickFlag = isPick == null ? IS_PICK_NORMAL : isPick;
+        BigDecimal pending = pickFlag == IS_PICK_ACTIVITY
+            ? loadUnsettledPickedByCrops(List.of(cropId)).getOrDefault(cropId, BigDecimal.ZERO)
+            : BigDecimal.ZERO;
         return listCropPlots(null, cropId, isPick).stream()
             .map(v -> v.getActualYield() == null ? BigDecimal.ZERO : v.getActualYield())
-            .reduce(BigDecimal.ZERO, BigDecimal::add);
+            .reduce(BigDecimal.ZERO, BigDecimal::add)
+            .add(pending);
+    }
+
+    /**
+     * 批量取各作物「已录入但还没落到地块」的采摘量（row260）。
+     *
+     * <p>= 未结算的销售流水（{@code plot_id IS NULL} 且 {@code settle_round∈{0,NULL}}）。
+     * 谓词两条缺一不可的原因见 {@code PlantActivityMapper#selectUnsettledPickedByCrops} 注释
+     * （非销售去向已即时写进 actual_yield，只按 settle_round 过滤会双算）。</p>
+     *
+     * @param cropIds 作物 id 集合；空集直接返空 map（不打库）
+     * @return {@code cropId → 未结算量}；无未结算流水的作物不在 map 内（调用方用 getOrDefault(.., ZERO)）
+     */
+    private Map<Long, BigDecimal> loadUnsettledPickedByCrops(Collection<Long> cropIds) {
+        if (cropIds == null || cropIds.isEmpty()) {
+            return Map.of();
+        }
+        Map<Long, BigDecimal> map = new HashMap<>();
+        for (Map<String, Object> row : activityMapper.selectUnsettledPickedByCrops(cropIds)) {
+            Object cid = row.get("cropId");
+            Object sum = row.get("pendingSum");
+            if (cid == null || sum == null) {
+                continue;
+            }
+            map.put(((Number) cid).longValue(), new BigDecimal(sum.toString()));
+        }
+        return map;
     }
 
     @Override
@@ -532,6 +591,41 @@ public class AppletPickServiceImpl implements IAppletPickService {
         return parsed.isEmpty() ? Arrays.asList("pending", "picking") : parsed;
     }
 
+
+    /**
+     * 「预计产量」统一扣灾害损失（小程序 row267）。
+     *
+     * <p>甲方口径：预计产量 = 理论产量 − 该地块该作物累计灾害损失，且不显负数。
+     * 毛菜处理域（{@code VegetableHandleMapper} / {@code PlantingRecordMapper}）与 admin 采摘计划
+     * （{@code PickPlanMapper}）早已按此实现，采摘域此前漏扣 → 同一作物在不同页面显示两个数。</p>
+     *
+     * @param cropIds 本批涉及的作物
+     * @return {@code "plotId|cropId" → 灾害损失产量}
+     */
+    private Map<String, BigDecimal> loadDisasterLossByPlotCrop(Set<Long> cropIds) {
+        if (CollUtil.isEmpty(cropIds)) {
+            return Map.of();
+        }
+        Map<String, BigDecimal> map = new HashMap<>();
+        for (Map<String, Object> row : farmRecordsMapper.selectDisasterLossByPlotCrop(cropIds)) {
+            Object plotId = row.get("plotId");
+            Object cropId = row.get("cropId");
+            Object loss = row.get("lossYield");
+            if (plotId == null || cropId == null || loss == null) {
+                continue;
+            }
+            map.put(plotId + "|" + cropId, new BigDecimal(loss.toString()));
+        }
+        return map;
+    }
+
+    /** 单地块预计净产量 = max(0, 理论产量 − 该地块该作物灾害损失)。 */
+    private BigDecimal netExpectedYield(PlantDetails d, Map<String, BigDecimal> lossMap) {
+        BigDecimal gross = d.getExpectedYield() == null ? BigDecimal.ZERO : d.getExpectedYield();
+        BigDecimal loss = lossMap.getOrDefault(d.getPlotId() + "|" + d.getCropId(), BigDecimal.ZERO);
+        return gross.subtract(loss).max(BigDecimal.ZERO);
+    }
+
     private List<PickTaskVo> enrichToVoList(List<PlantDetails> entities) {
         if (CollUtil.isEmpty(entities)) {
             return Collections.emptyList();
@@ -539,6 +633,8 @@ public class AppletPickServiceImpl implements IAppletPickService {
         Set<Long> planIds = entities.stream().map(PlantDetails::getPlantId).filter(Objects::nonNull).collect(Collectors.toSet());
         Set<Long> plotIds = entities.stream().map(PlantDetails::getPlotId).filter(Objects::nonNull).collect(Collectors.toSet());
         Set<Long> cropIds = entities.stream().map(PlantDetails::getCropId).filter(Objects::nonNull).collect(Collectors.toSet());
+        // row267：预计产量按地块扣灾害损失，与毛菜处理 / admin 采摘计划同口径
+        Map<String, BigDecimal> lossMap = loadDisasterLossByPlotCrop(cropIds);
         Set<Long> teamIds = new HashSet<>();
         entities.forEach(d -> {
             if (d.getHarvestBy() != null) { teamIds.add(d.getHarvestBy()); }
@@ -593,7 +689,7 @@ public class AppletPickServiceImpl implements IAppletPickService {
             vo.setBeginHarvestdate(d.getBeginHarvestdate());
             vo.setEndHarvestdate(d.getEndHarvestdate());
             vo.setHarvestStatus(d.getHarvestStatus());
-            vo.setExpectedYield(d.getExpectedYield());
+            vo.setExpectedYield(netExpectedYield(d, lossMap));
             vo.setActualYield(d.getActualYield());
             vo.setIsPick(d.getIsPick());
             // row223：采摘活动「录入完成/称重完成」持久标志——pick_settle_round>0 = 已结算（已录入完成）。

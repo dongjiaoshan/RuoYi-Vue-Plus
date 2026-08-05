@@ -84,6 +84,19 @@ public class MatIssueBasketVo implements Serializable {
     private BigDecimal todayFeed;
 
     /**
+     * 本地块今日剩余可操作量（kg，row253）—— 与后端 {@code MatFlowServiceImpl.ensureTodayCapacity(.., plotId)}
+     * 走的 {@code ProductInhouseMapper.sumTodayRemainingByPlot} <b>同源同口径</b>：
+     * 今日进 {@code t_warehouse_product_inhouse} 的量，打包生产 / 退回 / 损耗 / 饲喂都会实时扣减，
+     * 因此**已天然净掉今日生产消耗**。
+     *
+     * <p>mp「饲料饲喂」的数量上限必须直接用本字段，不要在前端拿 stock_flow 自行推算：
+     * 「今日领−退−损−饲」看不见打包消耗、产品级 {@code remainReturnable} 又是跨地块聚合，
+     * 二者取 min 仍可能大于本地块真实余额，导致前端放行、后端仍抛「今日额度不足」
+     * （同一作物多地块同日都有活动时必现）。非果蔬地块场景可能为 0。</p>
+     */
+    private BigDecimal remainReturnable;
+
+    /**
      * 所属库位 ID（String；领用 BO 回传作 locationId）：猪肉篮 = 该篮 {@code location_id}；自产果蔬地块卡
      * = 该地块 FIFO 首篮库位（service 走地块 FIFO 跨库位扣减，此 locationId 仅 UX 占位、不限扣减范围）。
      */

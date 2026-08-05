@@ -123,6 +123,10 @@ public class ProductInfoVo implements Serializable {
     @ExcelProperty(value = "原料计算量")
     private BigDecimal materialNum;
 
+    /** 销售价格（row191）：原材料对外出库单价，毛菜间出库「销售单价」的默认值来源。 */
+    @ExcelProperty(value = "销售价格")
+    private BigDecimal salePrice;
+
     @ExcelProperty(value = "是否发货", converter = ExcelDictConvert.class)
     @ExcelDictFormat(dictType = "djs_yes_no")
     private Integer isDelivery;

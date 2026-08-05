@@ -123,8 +123,14 @@ class PigIntroServiceImplTest {
             transferService,
             penCapacityChecker,
             penCountUpdater);
-        // 用户填首号路径默认无撞号（existsEarNo 返 null 放行）
+        // 用户填首号路径默认无撞号。
+        // ⚠️ 必须显式 stub：Mockito 对返回 Long 的未打桩方法给的是 0L 而不是 null，
+        // 不 stub 的话「查到 id=0」→ 每次都判成撞号。
+        // ⚠️ 这两个默认桩必须显式给 null：Mockito 对包装类型 Long 的默认返回是 0L 而非 null
+        // （ReturnsEmptyValues 把 wrapper 当 primitive 处理），不桩会让「!= null」的查重恒真、全员撞号。
         when(innerPigMapper.existsEarNo(org.mockito.ArgumentMatchers.anyString())).thenReturn(null);
+        when(innerPigMapper.existsSeqByDateSegment(org.mockito.ArgumentMatchers.anyString(),
+            org.mockito.ArgumentMatchers.anyLong())).thenReturn(null);
         // 通用 stubs
         when(bizCodeGenerator.generate(eq(BizCodeType.INTRO_NO), anyMap()))
             .thenReturn("INT202605260001");
@@ -354,36 +360,69 @@ class PigIntroServiceImplTest {
     }
 
     @Test
-    @DisplayName("FIX-CC-EARNO 用户首号 seq < 后台最小可用号 → 抛 intro.start_ear_no.too_small（不 createPig）")
-    void batch_userStartEarNo_belowMin_throws() {
-        when(earNoAllocator.nextSeqForDateSegment(org.mockito.ArgumentMatchers.anyString())).thenReturn(11L);
+    @DisplayName("row271 用户首号 seq 小于后台下一可用号 → 只要没被占用就放行（不再有下限闸）")
+    void batch_userStartEarNo_belowPreview_ok() {
+        // 后台下一可用号 011，甲方按自己的批次流水号填 010：不占用即放行
+        PigIntroBatchBo bo = new PigIntroBatchBo();
+        copyFromSingle(mkSingleBo("external", "F"), bo);
+        bo.setPigCount(1);
+        bo.setStartEarNo("4-04-251200-010");
+
+        PigIntroResultVo result = service.introduceBatch(bo);
+
+        assertThat(result.getPigs()).hasSize(1);
+        assertThat(result.getPigs().get(0).getEarNo()).isEqualTo("4-04-251200-010");
+        // 不再查下一可用号做下限（查重取代之）
+        verify(earNoAllocator, never()).nextSeqForDateSegment(org.mockito.ArgumentMatchers.anyString());
+    }
+
+    @Test
+    @DisplayName("row3 整串耳号已被占用（历史无分隔异形号兜底）→ 抛 duplicate，不 createPig")
+    void batch_userStartEarNo_earNoTaken_throws() {
+        when(innerPigMapper.existsEarNo("4-04-251200-010")).thenReturn(999L);
 
         PigIntroBatchBo bo = new PigIntroBatchBo();
         copyFromSingle(mkSingleBo("external", "F"), bo);
         bo.setPigCount(1);
-        bo.setStartEarNo("4-04-251200-010");  // seq=10 < 后台 min 11
+        bo.setStartEarNo("4-04-251200-010");
 
         assertThatThrownBy(() -> service.introduceBatch(bo))
             .isInstanceOf(ServiceException.class)
-            .hasMessageContaining("intro.start_ear_no.too_small");
+            .hasMessageContaining("intro.start_ear_no.duplicate");
         verify(pigCoreService, never()).createPig(any());
     }
 
     @Test
-    @DisplayName("FIX-CC-EARNO 用户首号 seq == 后台最小可用号 → 放行，以用户首号连号")
-    void batch_userStartEarNo_atMin_ok() {
-        when(earNoAllocator.nextSeqForDateSegment(org.mockito.ArgumentMatchers.anyString())).thenReturn(10L);
+    @DisplayName("row3 同出生日同序号、前缀不同 → 也算重号拦下（甲方 8/4：后三位在出生日期的判定里重复即提示已存在）")
+    void batch_userStartEarNo_sameSeqDifferentPrefix_throws() {
+        // 整串 4-04-251200-010 没占用，但同日 251200 下序号 010 已被别的前缀占了
+        when(innerPigMapper.existsEarNo("4-04-251200-010")).thenReturn(null);
+        when(innerPigMapper.existsSeqByDateSegment("251200", 10L)).thenReturn(999L);
 
         PigIntroBatchBo bo = new PigIntroBatchBo();
         copyFromSingle(mkSingleBo("external", "F"), bo);
-        bo.setPigCount(2);
-        bo.setStartEarNo("4-04-251200-010");  // seq=10 == min 10 → OK
+        bo.setPigCount(1);
+        bo.setStartEarNo("4-04-251200-010");
 
-        PigIntroResultVo result = service.introduceBatch(bo);
+        assertThatThrownBy(() -> service.introduceBatch(bo))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("intro.start_ear_no.duplicate");
+        verify(pigCoreService, never()).createPig(any());
+    }
 
-        assertThat(result.getPigs()).hasSize(2);
-        assertThat(result.getPigs().get(0).getEarNo()).isEqualTo("4-04-251200-010");
-        assertThat(result.getPigs().get(1).getEarNo()).isEqualTo("4-04-251200-011");
+    @Test
+    @DisplayName("row3 isEarNoTaken：同出生日同后三位 → true（不分前缀）；不同出生日同后三位 → false；半截号 / null → false 不报错")
+    void isEarNoTaken_byDateSegmentSeq() {
+        when(innerPigMapper.existsSeqByDateSegment("251031", 206L)).thenReturn(888L);
+        when(innerPigMapper.existsSeqByDateSegment("251030", 206L)).thenReturn(null);
+
+        assertThat(service.isEarNoTaken("01-01-2-251031-206")).isTrue();
+        // 同一天、同后三位，只是性别段不同 → 按甲方 8/4 口径同样算重号
+        assertThat(service.isEarNoTaken("01-01-1-251031-206")).isTrue();
+        // 换一天则互不相干
+        assertThat(service.isEarNoTaken("01-01-2-251030-206")).isFalse();
+        assertThat(service.isEarNoTaken("01-01-2-251031-2")).isFalse();
+        assertThat(service.isEarNoTaken(null)).isFalse();
     }
 
     @Test

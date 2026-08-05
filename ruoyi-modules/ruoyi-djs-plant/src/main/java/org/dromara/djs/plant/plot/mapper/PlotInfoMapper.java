@@ -126,7 +126,8 @@ public interface PlotInfoMapper extends BaseMapperPlus<PlotInfo, PlotInfoVo> {
                           ON t.id = dt.team_id AND t.del_flag = '0'
                        WHERE dt.detail_id = d.id AND dt.role = 'plant' AND dt.del_flag = '0'),
                      tp.team_name) AS plantByName,
-            d.expected_yield      AS expectedYield,
+            -- row267：预计产量扣该地块该作物的灾害损失（钳零）
+            GREATEST(COALESCE(d.expected_yield, 0) - COALESCE(dl.disaster_loss, 0), 0) AS expectedYield,
             d.actual_yield        AS actualProduction,
             ROUND(d.actual_yield / NULLIF(pl.plot_area, 0), 3) AS actualYield,
             d.begin_harvestdate   AS beginHarvestdate,
@@ -138,6 +139,13 @@ public interface PlotInfoMapper extends BaseMapperPlus<PlotInfo, PlotInfoVo> {
                        WHERE dt.detail_id = d.id AND dt.role = 'harvest' AND dt.del_flag = '0'),
                      th.team_name) AS harvestByName
           FROM t_plant_plant_details d
+          LEFT JOIN (SELECT fr.plot_id, fr.crop_id, SUM(fr.loss_yield) AS disaster_loss
+                       FROM t_plant_farm_records fr
+                      WHERE fr.del_flag = '0' AND fr.tenant_id = '1001'
+                        AND fr.farm_type = 'disaster'
+                        AND fr.plot_id IS NOT NULL AND fr.crop_id IS NOT NULL
+                      GROUP BY fr.plot_id, fr.crop_id) dl
+            ON dl.plot_id = d.plot_id AND dl.crop_id = d.crop_id
           LEFT JOIN t_plant_plant_plan p
             ON p.id = d.plant_id
            AND p.del_flag = '0'

@@ -5,6 +5,7 @@ import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 import org.dromara.djs.warehouse.stock.domain.vo.StockOverviewDailyVo;
 import org.dromara.djs.warehouse.stock.domain.vo.StockOverviewDetailVo;
+import org.dromara.djs.warehouse.stock.domain.vo.StockOverviewMonthlyVo;
 
 import java.util.Date;
 import java.util.List;
@@ -195,5 +196,127 @@ public interface StockOverviewMapper {
         """)
     List<StockOverviewDetailVo> selectDailyFeedByProduct(@Param("tenantId") String tenantId,
                                                          @Param("date") String date);
+
+
+    // ==================== 库存月汇总（admin row190，compute-on-read 同构日汇总）====================
+
+    /**
+     * 月汇总列表（row190）：每月一行，列 = 月份 / 汇总产品数量。
+     *
+     * <p>与日汇总同为 <b>compute-on-read</b> —— 回放 {@code t_warehouse_stock_flow}，不建汇总表、不加跑批。
+     * 「当月结束后数据不再变化」由此天然成立（历史流水不再变）。</p>
+     *
+     * <p><b>productCount 必须与 {@link #selectMonthlyDetail} 同集合</b>：详情列的是「当月期初 / 入库 / 出库
+     * 任一非 0」的产品，只数「当月有流水」会漏掉「月初有存货、当月没动过」的那批
+     * （实测 2026-08：有流水 11 个、有期初 104 个，只数流水会让列表写 11 而详情列出 105 行，
+     * 用户点开就发现对不上）。故这里同样回放到当月末、按 (产品, 库位) 分组后用相同的 HAVING 过滤，
+     * 再数 distinct 产品。内层 JOIN 不受 monthFrom/monthTo 约束 —— 期初必须看全历史流水。</p>
+     *
+     * @param tenantId  租户（V1 固定 '1001'）
+     * @param monthFrom 起始月首日（含，yyyy-MM-01，可空）
+     * @param monthTo   截止月首日（含，yyyy-MM-01，可空）
+     * @return 每月一行，按月份倒序
+     */
+    @Select("""
+        <script>
+        SELECT x.statMonth                       AS statMonth,
+               COUNT(DISTINCT x.product_id)      AS productCount
+        FROM (
+            SELECT mm.statMonth AS statMonth, f.product_id AS product_id
+            FROM (
+                SELECT DISTINCT DATE_FORMAT(f0.flow_date, '%Y-%m') AS statMonth,
+                       CAST(DATE_FORMAT(f0.flow_date, '%Y-%m-01') AS DATE) AS mStart
+                FROM t_warehouse_stock_flow f0
+                WHERE f0.del_flag = '0' AND f0.tenant_id = #{tenantId}
+                  AND f0.product_id IS NOT NULL AND f0.product_id &lt;&gt; 0
+                  AND f0.flow_type &lt;&gt; 'ship_out'
+                <if test="monthFrom != null"> AND f0.flow_date &gt;= #{monthFrom} </if>
+                <if test="monthTo != null"> AND f0.flow_date &lt; DATE_ADD(#{monthTo}, INTERVAL 1 MONTH) </if>
+            ) mm
+            JOIN t_warehouse_stock_flow f
+              ON f.del_flag = '0' AND f.tenant_id = #{tenantId}
+             AND f.product_id IS NOT NULL AND f.product_id &lt;&gt; 0
+             AND f.flow_type &lt;&gt; 'ship_out'
+             AND f.flow_date &lt; DATE_ADD(mm.mStart, INTERVAL 1 MONTH)
+            GROUP BY mm.statMonth, mm.mStart, f.product_id, f.warehouse_id
+            HAVING NOT (
+                COALESCE(SUM(CASE WHEN f.flow_date &lt; mm.mStart AND f.inout_type = 'IN' THEN f.change_quantity
+                                  WHEN f.flow_date &lt; mm.mStart AND f.inout_type = 'OT' THEN -f.change_quantity
+                                  ELSE 0 END), 0) = 0
+                AND COALESCE(SUM(CASE WHEN f.flow_date &gt;= mm.mStart AND f.inout_type = 'IN' THEN f.change_quantity ELSE 0 END), 0) = 0
+                AND COALESCE(SUM(CASE WHEN f.flow_date &gt;= mm.mStart AND f.inout_type = 'OT' THEN f.change_quantity ELSE 0 END), 0) = 0
+            )
+        ) x
+        GROUP BY x.statMonth
+        ORDER BY x.statMonth DESC
+        </script>
+        """)
+    List<StockOverviewMonthlyVo> selectMonthlyOverview(@Param("tenantId") String tenantId,
+                                                       @Param("monthFrom") Date monthFrom,
+                                                       @Param("monthTo") Date monthTo);
+
+    /**
+     * 当月库存明细（row190 详情弹窗）：某自然月按 (产品, 库位) 的库存情况，列与日汇总一致。
+     *
+     * <p>口径（甲方 row190 第 5 点逐条对应）：</p>
+     * <ul>
+     *   <li>beginStock = 当月首日之前的带符号流水累计 —— 对「当月第一天就有的产品」即当月首日期初；
+     *       对「当月新采购的产品」自然为 0，无需特判；</li>
+     *   <li>inboundQty / outboundQty = 当月区间内各自求和；</li>
+     *   <li>endStock = beginStock + inboundQty − outboundQty，即当月最后一天的期末；</li>
+     *   <li>与日汇总同样排除 {@code flow_type='ship_out'} 与 {@code product_id=0}。</li>
+     * </ul>
+     *
+     * @param tenantId    租户
+     * @param monthStart  统计月首日（必传，yyyy-MM-01）
+     * @param productName 产品名称模糊（可空）
+     * @param locationId  库位 id 精确（可空）
+     * @return 当月库存明细（按 产品 × 库位）
+     */
+    @Select("""
+        <script>
+        SELECT CAST(g.product_id AS CHAR) AS productId,
+               COALESCE(pi.product_thumb, pi.image_oss_id) AS imageOssId,
+               pi.product_id AS productCode,
+               pi.product_name AS productName,
+               pi.product_spec AS productSpec,
+               pi.product_unit AS productUnit,
+               CAST(g.warehouse_id AS CHAR) AS locationId,
+               li.location_name AS locationName,
+               g.beginStock AS beginStock,
+               g.inboundQty AS inboundQty,
+               g.outboundQty AS outboundQty,
+               (g.beginStock + g.inboundQty - g.outboundQty) AS endStock
+        FROM (
+            SELECT f.product_id,
+                   f.warehouse_id,
+                   COALESCE(SUM(CASE WHEN f.flow_date &lt; #{monthStart} AND f.inout_type = 'IN' THEN f.change_quantity
+                                     WHEN f.flow_date &lt; #{monthStart} AND f.inout_type = 'OT' THEN -f.change_quantity
+                                     ELSE 0 END), 0) AS beginStock,
+                   COALESCE(SUM(CASE WHEN f.flow_date &gt;= #{monthStart} AND f.inout_type = 'IN' THEN f.change_quantity ELSE 0 END), 0) AS inboundQty,
+                   COALESCE(SUM(CASE WHEN f.flow_date &gt;= #{monthStart} AND f.inout_type = 'OT' THEN f.change_quantity ELSE 0 END), 0) AS outboundQty
+            FROM t_warehouse_stock_flow f
+            WHERE f.del_flag = '0' AND f.tenant_id = #{tenantId}
+              AND f.product_id IS NOT NULL AND f.product_id &lt;&gt; 0
+              AND f.flow_type &lt;&gt; 'ship_out'
+              AND f.flow_date &lt; DATE_ADD(#{monthStart}, INTERVAL 1 MONTH)
+            GROUP BY f.product_id, f.warehouse_id
+        ) g
+        LEFT JOIN t_warehouse_product_info pi ON pi.id = g.product_id AND pi.del_flag = '0'
+        LEFT JOIN t_warehouse_location_info li ON li.id = g.warehouse_id AND li.del_flag = '0'
+        WHERE NOT (g.beginStock = 0 AND g.inboundQty = 0 AND g.outboundQty = 0)
+        <if test="productName != null and productName != ''">
+            AND pi.product_name LIKE CONCAT('%', #{productName}, '%')
+        </if>
+        <if test="locationId != null">
+            AND g.warehouse_id = #{locationId}
+        </if>
+        ORDER BY pi.product_name, g.warehouse_id
+        </script>
+        """)
+    List<StockOverviewDetailVo> selectMonthlyDetail(@Param("tenantId") String tenantId,
+                                                    @Param("monthStart") Date monthStart,
+                                                    @Param("productName") String productName,
+                                                    @Param("locationId") Long locationId);
 
 }

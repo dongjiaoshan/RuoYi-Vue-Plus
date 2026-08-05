@@ -150,6 +150,14 @@ public class ProductInfo extends TenantEntity {
     private BigDecimal materialNum;
 
     /**
+     * 销售价格（row191）：产品属性 = 原材料时可填，表示该原材料**对外出库**时的单价。
+     *
+     * <p>毛菜间出库新增页的「销售单价」默认取它，但用户可改；真正落库的是流水行上的
+     * {@code out_unit_price} 快照，故这里改价不影响历史出库单金额。</p>
+     */
+    private BigDecimal salePrice;
+
+    /**
      * 字典 {@code djs_yes_no}：是否发货产品 1=是 / 0=否。
      */
     private Integer isDelivery;

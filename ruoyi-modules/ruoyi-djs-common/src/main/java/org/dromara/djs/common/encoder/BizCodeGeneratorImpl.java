@@ -259,6 +259,9 @@ public class BizCodeGeneratorImpl implements IBizCodeGenerator {
         if (result.contains("{seq6}")) {
             result = result.replace("{seq6}", pad(seq, 6));
         }
+        if (result.contains("{seq7}")) {
+            result = result.replace("{seq7}", pad(seq, 7));
+        }
 
         // 上下文 2 位占位符（按需查找，避免 pattern 没用到的字段触发 WARN）
         if (result.contains("{farmCode2}")) {

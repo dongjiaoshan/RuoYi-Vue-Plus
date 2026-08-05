@@ -8,12 +8,17 @@ import org.dromara.common.log.annotation.Log;
 import org.dromara.common.log.enums.BusinessType;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
+import org.dromara.common.core.domain.R;
 import org.dromara.common.web.core.BaseController;
+import org.dromara.djs.warehouse.veg.domain.bo.FeedDailyConfirmBo;
 import org.dromara.djs.warehouse.veg.domain.bo.FeedRecordQuery;
+import org.dromara.djs.warehouse.veg.domain.vo.FeedDailyVo;
 import org.dromara.djs.warehouse.veg.domain.vo.FeedRecordVo;
 import org.dromara.djs.warehouse.veg.service.IFeedRecordService;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -62,5 +67,40 @@ public class FeedRecordController extends BaseController {
     public void export(FeedRecordQuery query, HttpServletResponse response) {
         List<FeedRecordVo> list = feedRecordService.queryList(query);
         ExcelUtil.exportExcel(list, "有机饲喂记录", FeedRecordVo.class, response);
+    }
+
+    /**
+     * 有机饲喂**按日汇总**分页（admin 行199 主列表 / mp 行268 卡片）：
+     * 日期 / 总重量 / 仓库确认框数 / 仓库确认人。
+     *
+     * <p>只吃日期范围；作物名与提供位置是明细维度，点「查看详情」走 {@link #list} 拉当日明细。</p>
+     *
+     * @param query     查询条件（仅 dateFrom / dateTo 生效）
+     * @param pageQuery 分页参数
+     */
+    @SaCheckPermission("djs:warehouse:feed:record:list")
+    @GetMapping("/daily")
+    public TableDataInfo<FeedDailyVo> daily(FeedRecordQuery query, PageQuery pageQuery) {
+        return feedRecordService.queryDailyPage(query, pageQuery);
+    }
+
+    /**
+     * 录入某日的仓库确认框数（mp【框数录入】）。
+     *
+     * <p>按日期 upsert：撞已存在的日期就刷框数 / 确认人 / 确认时间成最后一次操作者。</p>
+     *
+     * <p><b>入口只此一个，且 mp 只对「未录入」的日期放出</b>——甲方要求录完即锁死、避免随意修改，
+     * 所以 mp 卡片上已录入的框数是纯展示、无点击入口，admin 该页也是只读列表。
+     * upsert 语义保留是为了并发首次录入兜底，<b>不是</b>给「录错重录」用的通道。
+     * 录错的纠正路径当前只能走后台改库——这是已知缺口，改动前先与甲方确认。</p>
+     *
+     * @param bo 日期 / 框数 / 确认人
+     */
+    @SaCheckPermission("djs:warehouse:feed:record:list")
+    @Log(title = "有机饲喂日确认", businessType = BusinessType.UPDATE)
+    @PostMapping("/daily/confirm")
+    public R<Void> saveDailyConfirm(@Validated @RequestBody FeedDailyConfirmBo bo) {
+        feedRecordService.saveDailyConfirm(bo);
+        return R.ok();
     }
 }

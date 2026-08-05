@@ -2,6 +2,7 @@ package org.dromara.djs.warehouse.stock.service;
 
 import org.dromara.djs.warehouse.stock.domain.vo.StockOverviewDailyVo;
 import org.dromara.djs.warehouse.stock.domain.vo.StockOverviewDetailVo;
+import org.dromara.djs.warehouse.stock.domain.vo.StockOverviewMonthlyVo;
 
 import java.util.Date;
 import java.util.List;
@@ -36,4 +37,23 @@ public interface IStockOverviewService {
      */
     List<StockOverviewDetailVo> queryDetail(String date, String productName, Long locationId);
 
+
+    /**
+     * 库存月汇总列表（row190）：每月一行（月份 / 汇总产品数量）。
+     *
+     * @param monthFrom 起始月首日（含，可空）
+     * @param monthTo   截止月首日（含，可空）
+     * @return 每月一行，按月份倒序
+     */
+    List<StockOverviewMonthlyVo> queryMonthly(Date monthFrom, Date monthTo);
+
+    /**
+     * 库存月汇总明细（row190 详情弹窗）：列与日汇总一致。
+     *
+     * @param monthStart  统计月首日（必传）
+     * @param productName 产品名称模糊（可空）
+     * @param locationId  库位 id（可空）
+     * @return 当月库存明细
+     */
+    List<StockOverviewDetailVo> queryMonthlyDetail(Date monthStart, String productName, Long locationId);
 }

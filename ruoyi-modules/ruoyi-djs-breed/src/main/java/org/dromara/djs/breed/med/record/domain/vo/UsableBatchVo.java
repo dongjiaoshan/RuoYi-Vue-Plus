@@ -7,7 +7,7 @@ import java.io.Serializable;
 import java.math.BigDecimal;
 
 /**
- * mp 端"3 天内已领用药品"下拉返回项（BRD-MED-003 · 药品维度，废弃批次）。
+ * mp 端"N 天内已领用药品"下拉返回项（BRD-MED-003 · 药品维度，废弃批次）。
  *
  * <p>查询条件：{@code t_breed_medicine_usage.usage_type='use'} 且 {@code use_date >= NOW()-3 DAY}，
  * 按 {@code medicine_id} DISTINCT（合并同药品多次领用）。药品详情由仓库 provider 解析。

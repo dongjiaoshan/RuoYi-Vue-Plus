@@ -41,8 +41,8 @@ public interface IPlantWorkPerformanceService {
      *
      * <p>步骤：1. 软删该月已有结算行（del_flag '0' → '2'）避免重复累加；
      * 2. 按 班组 × 作物 聚合 details.actual_yield（公斤）；
-     * 3. 逐组读 crop.pick_unit_price（元/斤）作单价快照，
-     * 金额 = 采摘量(公斤) × 单价(元/斤) × 2（公斤→斤换算）；4. 批量 INSERT。</p>
+     * 3. 逐组读 crop.pick_unit_price（元/公斤）作单价快照，
+     * 金额 = 采摘量(公斤) × 单价(元/公斤)；4. 批量 INSERT。</p>
      *
      * @param statMonth 统计月份（"yyyy-MM"）
      * @return 新生成的结算行数（= 聚合分组数）

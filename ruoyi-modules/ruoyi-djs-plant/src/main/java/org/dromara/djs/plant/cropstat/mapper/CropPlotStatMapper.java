@@ -49,16 +49,28 @@ public interface CropPlotStatMapper {
      * @return 每作物一行（无在田地块的作物不出现），按剩余地块数倒序
      */
     @Select("""
-        WITH cur AS (
+        WITH dl AS (
+            -- row267：灾害损失按 (地块, 作物) 预聚合，避免与 plant_details 多行左联扇出重复计数
+            SELECT fr.plot_id, fr.crop_id, SUM(fr.loss_yield) AS disaster_loss
+              FROM t_plant_farm_records fr
+             WHERE fr.del_flag = '0' AND fr.tenant_id = '1001'
+               AND fr.farm_type = 'disaster'
+               AND fr.plot_id IS NOT NULL AND fr.crop_id IS NOT NULL
+             GROUP BY fr.plot_id, fr.crop_id
+        ),
+        cur AS (
             SELECT d.plot_id,
                    d.crop_id,
-                   d.expected_yield,
+                   -- row267：预计产量扣灾害损失。**逐地块**扣完再钳零，不能先求和后扣——
+                   -- 某地块损失超过它自己的理论产量时，先求和会把别的地块产量一起吃掉。
+                   GREATEST(COALESCE(d.expected_yield, 0) - COALESCE(dl.disaster_loss, 0), 0) AS expected_yield,
                    COALESCE(d.begin_harvestdate, d.earliest_harvestdate) AS pick_start,
                    ROW_NUMBER() OVER (
                        PARTITION BY d.plot_id, d.crop_id
                        ORDER BY COALESCE(d.begin_actualdate, DATE(d.create_time)) DESC, d.id DESC
                    ) AS rn
               FROM t_plant_plant_details d
+              LEFT JOIN dl ON dl.plot_id = d.plot_id AND dl.crop_id = d.crop_id
               JOIN t_plant_plot_info p
                     ON p.id = d.plot_id
                    AND p.del_flag = '0'

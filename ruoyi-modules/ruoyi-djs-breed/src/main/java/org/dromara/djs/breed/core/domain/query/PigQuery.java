@@ -45,4 +45,18 @@ public class PigQuery extends BaseEntity {
 
     /** 是否排除终态（true=不返 END 行）。 */
     private Boolean excludeEnd;
+
+    /**
+     * 最大用药日龄过滤（天）：**只约束育肥猪**，超龄育肥猪临近出栏不再用药 → 不进候选。
+     *
+     * <p>日龄 = {@code NOW − COALESCE(birth_date, introduce_date)}，与 {@code minAgeDays} / calcAgeDays 同口径。
+     * 值取「用药配置」{@code fatten_med_max_age_days}（默认 300）。{@code null}/≤0 → 不过滤。</p>
+     *
+     * <p><b>种母猪 / 种公猪 / 仔猪不受本条件影响</b>（它们日龄天然远超上限）。所以调用方
+     * <b>无需按 pigType 分支下发</b>——猪只类型选择器停在「全部」时也应照常传，否则育肥猪的上限形同虚设。</p>
+     *
+     * <p>注：无生日的猪 DATEDIFF 返 NULL、比较非真会被剔除，与 minAgeDays 相反会误杀——故本条件写成
+     * 「非育肥猪 或 日龄为空 或 日龄 ≤ 上限」，无生日的猪按不超龄放行。</p>
+     */
+    private Integer maxAgeDays;
 }

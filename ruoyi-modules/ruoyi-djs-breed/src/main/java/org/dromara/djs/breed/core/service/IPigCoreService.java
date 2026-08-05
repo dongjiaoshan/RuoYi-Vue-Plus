@@ -157,6 +157,12 @@ public interface IPigCoreService {
      * @param breedReady   配种选猪「待配种列表」过滤（row13）：{@code true} 时按「母猪生产配置」最小在场天数
      *                     （断奶/返情/空怀/流产 → 配种）剔除未达天数的母猪；后备 HB 无阈值全显。
      *                     {@code null}/false → 不过滤（向后兼容所有现有调用方）。
+     * @param maxAgeDays   最大用药日龄过滤（天）：**只约束育肥猪**，超龄育肥猪临近出栏不再用药 → 不进候选。
+     *                     用药场景传「用药配置」{@code fatten_med_max_age_days}（默认 300），其余调用方传
+     *                     {@code null}/≤0 → 不过滤。日龄口径同 {@code minAgeDays}；无生日的猪按不超龄放行。
+     *                     <p>⚠️ 与 {@code minAgeDays} 不同，<b>本条件在耳号搜索态下不放行</b>：minAgeDays 属
+     *                     「默认待办窗口」（搜索时应放开，否则库里有猪却搜不出来），而本条是业务硬约束
+     *                     （超龄猪本来就不能用药），手输耳号也不该把它搜出来。</p>
      * @return 轻量 PigSearchVo 列表（含 ageDays/parity/lastEventDays）
      */
     List<PigSearchVo> searchByEarKeyword(String earNoKeyword,
@@ -169,7 +175,8 @@ public interface IPigCoreService {
                                          Boolean excludeNullBarn,
                                          Integer minAgeDays,
                                          Integer isCastrated,
-                                         Boolean breedReady);
+                                         Boolean breedReady,
+                                         Integer maxAgeDays);
 
     /**
      * 加载 t_farm_breed_info 主表 code→中文名 映射（breedStrain 1=品种 / 2=品系）。

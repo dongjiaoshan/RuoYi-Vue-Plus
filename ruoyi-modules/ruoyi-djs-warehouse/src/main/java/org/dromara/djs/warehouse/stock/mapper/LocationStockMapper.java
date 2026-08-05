@@ -586,10 +586,10 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
     Map<String, Object> selectMedicineTodayFlowStat(@Param("medicineId") Long medicineId);
 
     /**
-     * 列出某操作人「近 3 天已领用」的 distinct 药品商品 id（{@code buy_class='medicine'}），
+     * 列出某操作人「近 N 天已领用」的 distinct 药品商品 id（N = 用药配置 med_pick_usable_days，默认 15）（{@code buy_class='medicine'}），
      * 供用药治疗「使用药品」picker（{@link org.dromara.djs.common.medicine.api.MedicineStockProvider#listRecentPickedMedicineIds}）。
      *
-     * <p>数据源为仓库领用出库流水 {@code t_warehouse_stock_flow}（flow_type=dept_pick_out，近 3 天），
+     * <p>数据源为仓库领用出库流水 {@code t_warehouse_stock_flow}（flow_type=dept_pick_out，近 usableDays 天），
      * JOIN {@code t_warehouse_product_info}（buy_class='medicine'）确保只取药品。<b>覆盖两个药品领用入口</b>
      * （疫苗药品页药品领用 + 物资领用药品库领用）——两入口领用都落 dept_pick_out 流水（row131）。
      * {@code operatorId} 非空时按 {@code f.operator_id} 限定当前 mp 用户；为 null 时不限（admin 端）。
@@ -610,18 +610,19 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
          WHERE f.flow_type = 'dept_pick_out'
            AND f.del_flag = '0'
            AND f.tenant_id = '1001'
-           AND DATE(f.flow_date) >= CURDATE() - INTERVAL 3 DAY
+           AND DATE(f.flow_date) >= CURDATE() - INTERVAL #{usableDays} DAY
          <if test="operatorId != null"> AND f.operator_id = #{operatorId} </if>
          GROUP BY f.product_id
          ORDER BY MAX(f.flow_date) DESC, MAX(f.id) DESC
         </script>
         """)
-    List<Long> selectRecentPickedMedicineIds(@Param("operatorId") Long operatorId);
+    List<Long> selectRecentPickedMedicineIds(@Param("operatorId") Long operatorId,
+                                             @Param("usableDays") int usableDays);
 
     /**
      * 按 id 集合列出药品商品（{@code buy_class='medicine'}）+ 跨库位库存合计。
      *
-     * <p>供「用药治疗 / 批量用药」消费「近 3 天已领用药品」清单（id 来自
+     * <p>供「用药治疗 / 批量用药」消费「近 N 天已领用药品」清单（id 来自
      * {@code t_breed_medicine_usage.medicine_id} 领用台账，已是药品库药品，不再加库位过滤），
      * 以及养殖端<b>药品详情</b>（{@code GET /djs/breed/med/getInfo/{id}}）单 id 查询 ——
      * 详情与列表必须同源读 {@code t_warehouse_product_info}（药品 id 段 {@code 9305…}），
@@ -930,6 +931,9 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
                p.product_id                      AS productCode,
                p.product_name                    AS productName,
                p.product_unit                    AS productUnit,
+               <!-- row263/264：规格随卡下发，mp 在产品名下方显「规格：xxx」。同名不同规格的包材（两条蔬果盒）
+                    不显规格时两张卡完全一样，工人分不清该领哪个。 -->
+               p.product_spec                    AS productSpec,
                COALESCE(p.product_thumb, p.image_oss_id) AS productThumb,
                p.belong_type                     AS belongType,
                COALESCE(SUM(s.product_stock), 0) AS currentStock,
@@ -1014,7 +1018,12 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
                           WHERE s3.product_id = p.id AND s3.location_id = #{locationId}
                             AND s3.del_flag = '0' AND s3.tenant_id = '1001')
            </if>
-         GROUP BY p.id, p.product_id, p.product_name, p.product_unit, p.image_oss_id, p.belong_type
+         GROUP BY p.id, p.product_id, p.product_name, p.product_unit, p.product_spec, p.image_oss_id, p.belong_type
+         <!-- 小程序 row265：库存为 0 的产品只在「今日有领用记录」时才列出，否则不显示。
+              纯 0 库存又没人领过的产品堆在列表里没有任何可操作性（领不了）；但今日领过的必须留着，
+              否则工人领完后卡片直接消失、当天的退回 / 损耗 / 饲料饲喂三个后续操作全都进不去。
+              todayPicked 是 SELECT 里的今日领用出库合计（口径见上），此处按别名复用（MySQL 允许 HAVING 引用别名）。 -->
+         HAVING currentStock > 0 OR todayPicked > 0
          ORDER BY (lastPickTime IS NOT NULL) DESC, lastPickTime DESC, currentStock ASC, p.product_name ASC
         </script>
         """)
@@ -1142,6 +1151,17 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
                             AND DATE(f.flow_date) = CURDATE()
                             AND f.del_flag = '0' AND f.tenant_id = '1001'
                             <if test="locationId != null"> AND f.warehouse_id = #{locationId} </if>), 0) AS todayFeed,
+               <!-- row253：本地块今日「待打包余额」= 后端 ensureTodayCapacity(plotId 重载) 的
+                    sumTodayRemainingByPlot 同源口径 —— 领用即进 product_inhouse，打包/退回/损耗/饲喂
+                    都会实时扣减，故它天然净掉了「今日生产消耗」。
+                    前端饲喂上限必须用它：只用 stock_flow 推的「今日领−退−损−饲」看不见打包消耗，
+                    产品级 remainReturnable 又是跨地块聚合，两者取 min 仍可能 > 本地块真实余额，
+                    造成前端放行、后端 ensureTodayCapacity 仍拒（QA 对抗验收指出的必现缺陷）。 -->
+               COALESCE((SELECT SUM(ih.product_weight) FROM t_warehouse_product_inhouse ih
+                          WHERE ih.product_id = s.product_id AND ih.plot_id = s.plot_id
+                            AND DATE(ih.produce_date) = CURDATE()
+                            AND ih.del_flag = '0' AND ih.tenant_id = '1001'
+                            <if test="locationId != null"> AND ih.location_id = #{locationId} </if>), 0) AS remainReturnable,
                (SELECT s3.location_id FROM t_warehouse_location_stock s3
                  WHERE s3.id = MIN(s.id))     AS locationId
           FROM t_warehouse_location_stock s

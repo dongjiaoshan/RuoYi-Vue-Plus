@@ -3,6 +3,7 @@ package org.dromara.djs.warehouse.product.domain.bo;
 import io.github.linpeilie.annotations.AutoMapper;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Digits;
 import jakarta.validation.constraints.PositiveOrZero;
 import jakarta.validation.constraints.Size;
 import lombok.Data;
@@ -150,6 +151,18 @@ public class ProductInfoBo extends BaseEntity {
      */
     @PositiveOrZero(message = "{product.material_num.positive}")
     private BigDecimal materialNum;
+
+    /**
+     * 销售价格（row191）：产品属性 = 原材料（{@code product_attr=2}）时可填，
+     * 表示该原材料对外出库时的单价；毛菜间出库新增页的「销售单价」默认取它。
+     *
+     * <p>不在这里做「非原材料必须为空」的强校验 —— 前端切换产品属性时会清值，
+     * 后端多一道会把历史数据的编辑一起拦死。落库列是 DECIMAL(10,2)，
+     * 故限 8 位整数 2 位小数，超了在 JDBC 层溢出会裸奔成 500。</p>
+     */
+    @PositiveOrZero(message = "销售价格不能为负数")
+    @Digits(integer = 8, fraction = 2, message = "销售价格最多 8 位整数、2 位小数")
+    private BigDecimal salePrice;
 
     /**
      * 字典 {@code djs_yes_no}：是否发货产品 1/0（不传默认 1）。

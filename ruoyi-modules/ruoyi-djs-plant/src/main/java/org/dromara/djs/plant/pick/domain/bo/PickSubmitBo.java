@@ -15,7 +15,7 @@ import java.util.List;
  * {@code begin_harvestdate} + 流转 {@code harvest_status}；{@code finish=true} 时额外置
  * {@code end_actualdate=NOW} + {@code harvest_status='completed'}，并 INSERT 一行
  * {@code t_plant_farm_records}（{@code farm_type='harvest_activity'}，{@code farm_by} 落所选采收班组，
- * 采收按班组记录、{@code operator_user_id} 留空）。采摘重量由农事「采摘活动管理」{@code submitHarvestWeight} 累加 {@code actual_yield}。</p>
+ * 采收按班组记录、{@code operator_user_id} 留空）。采摘重量由采摘去向录入 {@code recordPickActivity} 落账（非销售去向即时累加 {@code actual_yield}，销售去向结算时分摊）。</p>
  *
  * @author djs
  * @since PLT-PICK-001

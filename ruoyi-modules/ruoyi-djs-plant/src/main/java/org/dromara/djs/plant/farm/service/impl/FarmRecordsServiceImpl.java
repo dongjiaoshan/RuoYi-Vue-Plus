@@ -22,7 +22,6 @@ import org.dromara.djs.plant.farm.domain.bo.DisasterRecordBo;
 import org.dromara.djs.plant.farm.domain.bo.EmptyRecordBo;
 import org.dromara.djs.plant.farm.domain.bo.GrowBatchBo;
 import org.dromara.djs.plant.farm.domain.bo.GrowRecordBo;
-import org.dromara.djs.plant.farm.domain.bo.HarvestWeightBo;
 import org.dromara.djs.plant.farm.domain.bo.PlotPickStatusBo;
 import org.dromara.djs.plant.farm.domain.bo.RotationRecordBo;
 import org.dromara.djs.plant.farm.domain.bo.TransplantFinalizeBo;
@@ -404,24 +403,6 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
             accumulateLossYield(t.getPlantId(), t.getPlotId(), t.getCropId(), lossYield);
         }
         return count;
-    }
-
-    @Override
-    @Transactional(rollbackFor = Exception.class)
-    public Long submitHarvestWeight(HarvestWeightBo bo) {
-        // 1. INSERT 一行 harvest_activity 记录，携带本次 harvest_weight（供记录 tab 展示 作物+重量kg）
-        FarmRecords r = new FarmRecords();
-        buildBase(r, "harvest_activity", bo.getPlotId(), bo.getCropId(), bo.getPlantId(),
-            firstFarmTeam(effFarmTeams(bo.getFarmByIds(), bo.getFarmBy())),
-            bo.getFarmDate(), bo.getProofOssIds(), bo.getRemark());
-        r.setHarvestWeight(bo.getHarvestWeight());
-        baseMapper.insert(r);
-        applyFarmTeamLinks(r.getId(), bo.getFarmByIds(), bo.getFarmBy());
-        // 2. 副作用：累加对应 plant_details.actual_yield（#3=a 采摘重量唯一录入口，采收 tab 已去重量）
-        accumulateActualYield(bo.getPlantId(), bo.getPlotId(), bo.getCropId(), bo.getHarvestWeight());
-        // 3. 副作用：写一行采摘活动流水（t_plant_plant_activity，邓博权威 spec：报表 SUM(daily_weight) GROUP BY crop_id,activity_date）
-        plantActivityService.recordDailyWeight(bo.getCropId(), bo.getFarmDate(), bo.getHarvestWeight(), bo.getFarmBy());
-        return r.getId();
     }
 
     /**
@@ -1120,30 +1101,6 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
         return target.getExpectedYield()
             .multiply(lossRate)
             .divide(new BigDecimal("100"), 2, RoundingMode.HALF_UP);
-    }
-
-    /**
-     * 采摘活动管理副作用：累加 plant_details.actual_yield（FIX-PLT-MP-HARVEST-001 #3=a）。
-     *
-     * <p>定位策略同 {@link #accumulateLossYield}：取 (plantId, plotId, cropId) + end_actualdate IS NULL
-     * 的最新一行 details；无未结束行则取最新一行。</p>
-     */
-    private void accumulateActualYield(Long plantId, Long plotId, Long cropId, BigDecimal weight) {
-        if (weight == null || weight.compareTo(BigDecimal.ZERO) <= 0) {
-            return;
-        }
-        PlantDetails target = locatePlantDetails(plantId, plotId, cropId);
-        if (target == null) {
-            log.warn("submitHarvestWeight: no plant_details for plantId={} plotId={} cropId={}, skip actual_yield accumulate",
-                plantId, plotId, cropId);
-            return;
-        }
-        BigDecimal current = target.getActualYield() == null ? BigDecimal.ZERO : target.getActualYield();
-        plantDetailsMapper.update(null,
-            new LambdaUpdateWrapper<PlantDetails>()
-                .eq(PlantDetails::getId, target.getId())
-                .set(PlantDetails::getActualYield, current.add(weight))
-                .set(PlantDetails::getUpdateBy, currentUserSafe()));
     }
 
     private Long currentUserSafe() {

@@ -210,6 +210,10 @@ public class AppletPlantManageDashboardServiceImpl implements IAppletPlantManage
                 item.setCropImg(c.getCropImg());
                 item.setPlotCount(nz(c.getPlotCount()));
                 item.setArea(nzBd(c.getArea()));
+                // 预计上架/下架日期：只有采摘计划的 SQL 取了这两列，种植计划走同一 buildTimeline
+                // 但 MonthCropRow 里这两个字段为 null → CropItem 也为 null，mp 侧不渲染该行
+                item.setOnShelfDate(c.getOnShelfDate());
+                item.setOffShelfDate(c.getOffShelfDate());
                 parent.getCrops().add(item);
             }
         }

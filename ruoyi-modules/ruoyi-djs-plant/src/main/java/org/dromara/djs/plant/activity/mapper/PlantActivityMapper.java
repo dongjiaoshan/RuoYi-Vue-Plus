@@ -73,4 +73,54 @@ public interface PlantActivityMapper extends BaseMapperPlus<PlantActivity, Plant
         """)
     java.math.BigDecimal selectTotalWeightInRange(@Param("startDate") LocalDate startDate,
                                                   @Param("endDate") LocalDate endDate);
+
+    /**
+     * 批量按作物聚合「已录入但还没落到地块」的采摘量（小程序 row260，Kevin 2026-08-01 定：按作物汇总计入已采产量）。
+     *
+     * <p><b>为什么需要它</b>：销售去向（{@code pick_dest='sale'}）按 DENGBO-R4/R24 设计**故意不即时分摊**——
+     * 只落一行 {@code settle_round=0} 且 {@code plot_id} 为空的流水，等整批地块采摘完成后 {@code settlePickActivity}
+     * 才均分写进 {@code plant_details.actual_yield}。于是「录了 100kg 但整批没完成」时，
+     * 页面 Σ{@code actual_yield} 恒 0，客户看到「录了却不显示」。本方法把这部分未落地的量单独捞出来，
+     * 供展示侧与 Σ{@code actual_yield} 相加。</p>
+     *
+     * <p><b>谓词三条缺一不可</b>（{@code pick_dest='sale' AND plot_id IS NULL AND settle_round∈{0,NULL}}）：</p>
+     * <ul>
+     *   <li>{@code pick_dest='sale'} —— 只有销售去向才是「录了但还没落地块」。⚠️ 早期版本漏了这条，
+     *       会把历史 {@code recordDailyWeight} 路径产生的行（{@code pick_dest} 为 NULL、无地块、
+     *       {@code settle_round} 默认 0）也算进来；而它的唯一调用方
+     *       {@code FarmRecordsServiceImpl.submitHarvestWeight} 在**同一事务里先** {@code accumulateActualYield}
+     *       写了 {@code actual_yield}、**再** INSERT 这行流水 —— 计入即双算，且因 {@code pick_dest} 非
+     *       {@code 'sale'}，{@code settlePickActivity} 的结算 UPDATE 永远标不到它，会**永久**卡在双算态。</li>
+     *   <li>{@code plot_id IS NULL} —— 非销售去向录入时**当场**就 {@code actual_yield += pickWeight} 并记了地块，
+     *       它的 {@code settle_round} 同样是 0；只按 settle_round 过滤会把它再加一遍（双算）。</li>
+     *   <li>{@code settle_round∈{0,NULL}} —— 已结算的销售流水会被标成 {@code settle_round=N(>0)}，
+     *       此时量已经进了 {@code actual_yield}，再算就是双算（结算只改 settle_round，不回填 plot_id，
+     *       故第一条谓词拦不住它）。</li>
+     * </ul>
+     *
+     * <p><b>归属渠道</b>：{@code settlePickActivity} 只把销售量结算进 {@code is_pick=1}（采摘活动）地块，
+     * 故这笔未结算量**只属于采摘活动渠道**，消费方必须只在 {@code isPick=1} 视图里并入，
+     * 不能算到 {@code is_pick=2}（普通采收）头上。</p>
+     *
+     * <p>显式 {@code tenant_id='1001'} + {@code del_flag='0'}（V1 单农场，关租户行注入），与本 mapper 其余查询一致。</p>
+     *
+     * @param cropIds 作物 id 集合（空集时调用方需自行短路，勿传空）
+     * @return 每行 {@code {cropId, pendingSum}}；某作物无未结算流水时不返回该行（调用方按缺省 0 处理）
+     */
+    @InterceptorIgnore(tenantLine = "true")
+    @Select("""
+        <script>
+        SELECT crop_id AS cropId, COALESCE(SUM(pick_weight), 0) AS pendingSum
+          FROM t_plant_plant_activity
+         WHERE del_flag = '0'
+           AND tenant_id = '1001'
+           AND pick_dest = 'sale'
+           AND plot_id IS NULL
+           AND (settle_round = 0 OR settle_round IS NULL)
+           AND crop_id IN
+           <foreach collection="cropIds" item="cid" open="(" separator="," close=")">#{cid}</foreach>
+         GROUP BY crop_id
+        </script>
+        """)
+    List<Map<String, Object>> selectUnsettledPickedByCrops(@Param("cropIds") Collection<Long> cropIds);
 }

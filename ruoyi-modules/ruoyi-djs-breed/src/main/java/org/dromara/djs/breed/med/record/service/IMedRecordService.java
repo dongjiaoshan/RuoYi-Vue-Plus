@@ -19,7 +19,7 @@ import java.util.List;
  *   <li>{@link #addSingle}：单只用药 —— INSERT 1 条 drug_type=1；</li>
  *   <li>{@link #addBatch}：批量用药 —— INSERT 1 master(drug_type=2) + N detail(drug_type=3)；</li>
  *   <li>{@link #queryPage} / {@link #queryById}：admin + mp 查询；</li>
- *   <li>{@link #listUsableBatches}：mp picker 数据源（3 天内已领 + quantity>0）。</li>
+ *   <li>{@link #listUsableBatches}：mp picker 数据源（N 天内已领 + quantity>0）。</li>
  * </ul>
  *
  * <p>事务边界：addSingle / addBatch 单事务包扣减库存 + INSERT 记录；
@@ -70,7 +70,7 @@ public interface IMedRecordService {
     List<MedRecordVo> queryByMasterId(Long masterId);
 
     /**
-     * mp picker 数据源：当前用户 3 天内已领 + quantity>0 的批次列表。
+     * mp picker 数据源：当前用户 N 天内已领 + quantity>0 的批次列表。
      *
      * @param operatorId 操作人（null = 不限）
      */

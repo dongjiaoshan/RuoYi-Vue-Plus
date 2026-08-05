@@ -11,6 +11,7 @@ import org.dromara.djs.breed.core.domain.vo.PigBarnCountVo;
 import org.dromara.djs.breed.core.domain.vo.PigIntroDetailVo;
 import org.dromara.djs.breed.core.domain.vo.PigSearchVo;
 import org.dromara.djs.breed.core.service.IPigCoreService;
+import org.dromara.djs.breed.production.controller.ProductionCycleConfigController;
 import org.dromara.djs.breed.core.service.IPigQueryService;
 import org.dromara.djs.breed.production.service.IProductionCycleConfigService;
 import org.springframework.validation.annotation.Validated;
@@ -77,6 +78,9 @@ public class PigAppletController {
      *                      配置 {@code slaughter_age_days}，只列到龄肥猪）。{@code null}/≤0 → 不过滤。
      * @param isCastrated   是否阉割过滤（{@code 1}=否 / {@code 2}=是）：阉割选猪传 {@code 1}（仅未阉割猪可选）。
      *                      {@code null} → 不过滤（向后兼容所有现有调用方）。
+     * @param maxAgeDays    最大用药日龄过滤（天）：**只约束育肥猪**，用药选猪传「用药配置」
+     *                      {@code fatten_med_max_age_days}（默认 300），超龄肥猪不进候选。{@code null}/≤0 → 不过滤。
+     *                      与 {@code minAgeDays} 不同，本条在耳号搜索态下**也生效**（业务硬约束，非默认待办窗口）。
      */
     @SaCheckLogin
     @SaCheckPermission("djs:applet:pig:search")
@@ -92,9 +96,10 @@ public class PigAppletController {
         @RequestParam(required = false) Boolean excludeNullBarn,
         @RequestParam(required = false) Integer minAgeDays,
         @RequestParam(required = false) Integer isCastrated,
-        @RequestParam(required = false) Boolean breedReady
+        @RequestParam(required = false) Boolean breedReady,
+        @RequestParam(required = false) Integer maxAgeDays
     ) {
-        return R.ok(pigCoreService.searchByEarKeyword(earNoKeyword, statusFilter, sexFilter, pigTypeFilter, barnCode, limit, dueType, excludeNullBarn, minAgeDays, isCastrated, breedReady));
+        return R.ok(pigCoreService.searchByEarKeyword(earNoKeyword, statusFilter, sexFilter, pigTypeFilter, barnCode, limit, dueType, excludeNullBarn, minAgeDays, isCastrated, breedReady, maxAgeDays));
     }
 
     /**
@@ -112,6 +117,24 @@ public class PigAppletController {
     public R<Integer> slaughterAge() {
         Integer days = cycleConfigService.getValue("slaughter_age_days");
         return R.ok(days != null ? days : 175);
+    }
+
+    /**
+     * 育肥猪最大用药日龄配置（mp 疫苗药品猪只列表用，小程序 row251）。
+     *
+     * <p>返回用药配置 {@code fatten_med_max_age_days} 的生效值（custom 优先，无则默认
+     * {@value org.dromara.djs.breed.production.controller.ProductionCycleConfigController#FATTEN_MED_MAX_AGE_DEFAULT}）。
+     * mp 疫苗药品页 onMounted 调本端点拿阈值，选中「育肥猪」chip 时以 {@code maxAgeDays} 传给猪只列表，
+     * 超龄育肥猪（临近出栏不再用药）不进候选。复用 {@code djs:applet:pig:search} 权限（mp 默认含）。</p>
+     *
+     * @return 育肥猪最大用药日龄（天）
+     */
+    @SaCheckLogin
+    @SaCheckPermission("djs:applet:pig:search")
+    @GetMapping("/fatten-med-max-age")
+    public R<Integer> fattenMedMaxAge() {
+        Integer days = cycleConfigService.getValue(ProductionCycleConfigController.FATTEN_MED_MAX_AGE_KEY);
+        return R.ok(days != null && days > 0 ? days : ProductionCycleConfigController.FATTEN_MED_MAX_AGE_DEFAULT);
     }
 
     /**

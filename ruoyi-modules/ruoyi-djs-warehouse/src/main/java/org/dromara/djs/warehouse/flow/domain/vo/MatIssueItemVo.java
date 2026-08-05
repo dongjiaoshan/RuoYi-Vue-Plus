@@ -65,6 +65,15 @@ public class MatIssueItemVo implements Serializable {
     private String productUnit;
 
     /**
+     * 产品规格（{@code t_warehouse_product_info.product_spec}，如「HXG-38」「50*43*44  2116-5」，可空）。
+     *
+     * <p>小程序 row263/264：包材同名不同规格是常态（如两条「蔬果盒」分别是 HGF-500M / HXG-38），
+     * 卡上不显规格时两张卡长得一模一样、工人分不清该领哪个（row265 即由此误报「后台 4 个产品 mp 只显 2 个」）。
+     * mp 列表卡与详情头卡都在产品名下方渲染「规格：{@code productSpec}」，为空则整行不渲染。</p>
+     */
+    private String productSpec;
+
+    /**
      * 缩略图 public URL（IMG-LIB-001 4 层 resolver 回填；卡片左侧图。SQL 先取
      * {@code image_oss_id}，service 层经 resolver 转 url + 兜底默认图后回写本字段）。
      */
@@ -96,17 +105,22 @@ public class MatIssueItemVo implements Serializable {
     private Long defaultLocationId;
 
     /**
-     * 当前登录人今日已领（pick_out SUM；驱动「今日已领」+ 退/损上限）。
+     * 今日已领（pick_out SUM；驱动「今日已领」+ 退/损上限）。
+     *
+     * <p>⚠️ 口径是 <b>全场全部操作人</b>，不是当前登录人 —— SQL 里刻意不按 operator 过滤
+     * （PC/admin 录入的领用也要计入，见 {@code selectMatIssueItems} 内注释「问题来源邓博测试 row3」）。
+     * 本字段同时是 row265「库存为 0 但今日领过就仍要显示」HAVING 条件的依据，按人过滤会导致
+     * A 领用后 B 登录看不到该卡、当天的退回/损耗/饲喂全进不去。</p>
      */
     private BigDecimal todayPicked;
 
     /**
-     * 当前登录人今日已退（return_in SUM）。
+     * 今日已退（return_in SUM）。口径同 {@code todayPicked}：全场全部操作人。
      */
     private BigDecimal todayReturned;
 
     /**
-     * 当前登录人今日损耗（loss SUM）。
+     * 今日损耗（loss SUM）。口径同 {@code todayPicked}：全场全部操作人。
      */
     private BigDecimal todayLoss;
 

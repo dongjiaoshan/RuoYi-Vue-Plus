@@ -174,6 +174,31 @@ public interface FarmRecordsMapper extends BaseMapperPlus<FarmRecords, FarmRecor
         @Param("plantId") Long plantId);
 
     /**
+     * 按 (地块, 作物) 批量取累计灾害损失产量（{@code SUM(loss_yield)}），供「预计产量扣灾害」统一口径用。
+     *
+     * <p>返回 {@code plotId|cropId → 损失产量}，一次查完避免 N+1。与
+     * {@code PlantingRecordMapper.selectPlotDetailByCrop} / {@code PickPlanMapper} 里的
+     * 内联子查询同口径（先按 plot_id + crop_id 预聚合，再由调用方相减并钳零）。</p>
+     *
+     * @param cropIds 作物 id 集合（空集合由调用方短路，不进 SQL）
+     * @return 每 (plot, crop) 一行：plotId / cropId / lossYield
+     */
+    @Select("""
+        <script>
+        SELECT fr.plot_id AS plotId, fr.crop_id AS cropId, SUM(fr.loss_yield) AS lossYield
+          FROM t_plant_farm_records fr
+         WHERE fr.del_flag = '0'
+           AND fr.tenant_id = '1001'
+           AND fr.farm_type = 'disaster'
+           AND fr.plot_id IS NOT NULL
+           AND fr.crop_id IN
+           <foreach collection="cropIds" item="cid" open="(" separator="," close=")">#{cid}</foreach>
+         GROUP BY fr.plot_id, fr.crop_id
+        </script>
+        """)
+    List<java.util.Map<String, Object>> selectDisasterLossByPlotCrop(@Param("cropIds") java.util.Collection<Long> cropIds);
+
+    /**
      * 按地块 + 农事类型聚合「30 天内上次同工种日期」（row14 空地类列表卡用）。
      *
      * <p>只读聚合，显式 {@code tenant_id='1001'} + {@code del_flag='0'}。仅取近 30 天内

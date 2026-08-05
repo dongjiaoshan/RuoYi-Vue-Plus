@@ -65,7 +65,8 @@ public interface PlantingRecordMapper extends BaseMapperPlus<PlantingRecord, Pla
         + "       COALESCE(h.handled_weight,0) AS handledWeight,"
         + "       COALESCE(h.feed_weight,0) AS feedWeight,"
         + "       (COALESCE(h.picked_weight,0) - COALESCE(h.handled_weight,0) - COALESCE(h.feed_weight,0)) AS remainWeight,"
-        + "       COALESCE(pl.plot_area * c.predicted_per,0) AS expectYield,"
+        + "       GREATEST(COALESCE(pl.plot_area * c.predicted_per,0) - COALESCE(dl.disaster_loss,0),0) AS expectYield,"
+        + "       COALESCE(dl.disaster_loss,0) AS disasterLoss,"
         + "       CASE WHEN c.related_product IS NOT NULL THEN 1 ELSE 0 END AS hasRelatedProduct,"
         + "       CASE WHEN h.is_weighed=1 THEN 'done' ELSE 'pending' END AS weighStatus,"
         + "       CASE WHEN h.is_finish=1 THEN 'done' ELSE 'pending' END AS processStatus,"
@@ -74,6 +75,16 @@ public interface PlantingRecordMapper extends BaseMapperPlus<PlantingRecord, Pla
         + "  LEFT JOIN t_warehouse_vegetable_handle h ON h.planting_record_id=p.id AND h.del_flag='0'"
         + "  LEFT JOIN t_plant_plot_info pl ON pl.id=p.plot_id AND pl.del_flag='0'"
         + "  LEFT JOIN t_plant_crop_info c ON c.id=p.crop_id AND c.del_flag='0'"
+        // 小程序 row260：地块级预计产量同样要扣灾害损失（作物级聚合早已扣，见 VegetableHandleMapper，
+        // 地块级漏扣 → 同一作物「头卡预计产量」与「地块卡预计产量」两个口径打架）。
+        // 按 plot_id + crop_id 预聚合再左联（先聚合避免与父表多 planting_record 行扇出重复计数）；
+        // GREATEST(...,0) 兜底：灾害损失大于理论产量时归 0，不显负数。
+        + "  LEFT JOIN (SELECT fr.plot_id AS plot_id, fr.crop_id AS crop_id, SUM(fr.loss_yield) AS disaster_loss"
+        + "               FROM t_plant_farm_records fr"
+        + "              WHERE fr.del_flag='0' AND fr.tenant_id='1001'"
+        + "                AND fr.farm_type='disaster' AND fr.crop_id IS NOT NULL AND fr.plot_id IS NOT NULL"
+        + "              GROUP BY fr.plot_id, fr.crop_id) dl"
+        + "    ON dl.plot_id=p.plot_id AND dl.crop_id=p.crop_id"
         + " WHERE p.tenant_id='1001' AND p.del_flag='0' AND p.crop_id=#{cropId}"
         + " ORDER BY p.data_date DESC, p.id DESC")
     List<VegPlotDetailVo> selectPlotDetailByCrop(@Param("cropId") Long cropId);

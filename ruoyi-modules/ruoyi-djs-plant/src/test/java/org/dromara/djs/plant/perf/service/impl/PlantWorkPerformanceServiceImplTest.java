@@ -36,7 +36,7 @@ import static org.mockito.Mockito.when;
 /**
  * {@link PlantWorkPerformanceServiceImpl} 单测（PLT-PERF-001）。
  *
- * <p>覆盖核心 generate(statMonth)：聚合(公斤) × 单价快照(元/斤) × 2（公斤→斤换算）= 应付金额
+ * <p>覆盖核心 generate(statMonth)：聚合(公斤) × 单价快照(元/公斤) = 应付金额
  * + 幂等软删 + 月份校验。</p>
  *
  * <p>row39 口径：聚合源为毛菜处理间采摘重量录入的各班组对应作物称重重量
@@ -76,7 +76,7 @@ class PlantWorkPerformanceServiceImplTest {
     }
 
     @Test
-    @DisplayName("generate: happy path → 软删旧月 + 2 组 INSERT，金额=量(公斤)×单价(元/斤)×2")
+    @DisplayName("generate: happy path → 软删旧月 + 2 组 INSERT，金额=量(公斤)×单价(元/公斤)")
     void testGenerate_HappyPath() {
         String month = "2026-04";
         // 2 组聚合：班组1×作物10 = 100.500 公斤；班组2×作物20 = 50.000 公斤
@@ -84,7 +84,7 @@ class PlantWorkPerformanceServiceImplTest {
             agg(1L, 10L, "100.500"),
             agg(2L, 20L, "50.000")
         ));
-        // 作物单价快照：作物10 = 1.20 元/斤；作物20 = 2.00 元/斤
+        // 作物单价快照：作物10 = 1.20 元/公斤；作物20 = 2.00 元/公斤
         when(baseMapper.selectCropUnitPrices(anyCollection())).thenReturn(List.of(
             Map.of("cropId", 10L, "pickUnitPrice", new BigDecimal("1.20")),
             Map.of("cropId", 20L, "pickUnitPrice", new BigDecimal("2.00"))
@@ -107,15 +107,55 @@ class PlantWorkPerformanceServiceImplTest {
         assertThat(r1.getCropId()).isEqualTo(10L);
         assertThat(r1.getPickWeight()).isEqualByComparingTo("100.500");
         assertThat(r1.getUnitPriceSnapshot()).isEqualByComparingTo("1.20");
-        // 100.500 公斤 × 1.20 元/斤 × 2 = 241.20
-        assertThat(r1.getPerformanceAmount()).isEqualByComparingTo("241.20");
-        assertThat(r1.getPerformanceRule()).isEqualTo("1.2 元/斤 ×2（公斤→斤）");
+        // 100.500 公斤 × 1.20 元/公斤 = 120.60
+        assertThat(r1.getPerformanceAmount()).isEqualByComparingTo("120.60");
+        assertThat(r1.getPerformanceRule()).isEqualTo("1.2 元/公斤");
 
         PlantWorkPerformance r2 = inserted.stream().filter(p -> p.getTeamId().equals(2L)).findFirst().orElseThrow();
-        // 50.000 公斤 × 2.00 元/斤 × 2 = 200.00
-        assertThat(r2.getPerformanceAmount()).isEqualByComparingTo("200.00");
+        // 50.000 公斤 × 2.00 元/公斤 = 100.00
+        assertThat(r2.getPerformanceAmount()).isEqualByComparingTo("100.00");
         // 绩效行不手工赋 tenant_id（走 MetaObjectHandler）
         assertThat(r2.getTenantId()).isNull();
+    }
+
+    @Test
+    @DisplayName("generate: 当月活动全是销售去向(plot_id 全空) → 不查地块班组、不拼空 IN，按活动直接指定班组平摊")
+    void testGenerate_allActivitiesAreSaleWithNullPlot() {
+        String month = "2026-08";
+        // 过磅聚合为空，只有一条销售去向活动（pick_dest='sale' → plot_id 恒 NULL）
+        when(baseMapper.aggregateByMonth(month)).thenReturn(List.of());
+        PerfActivityAggRow act = new PerfActivityAggRow();
+        act.setCropId(10L);
+        act.setPlotId(null);
+        act.setPickWeight(new BigDecimal("100.000"));
+        when(baseMapper.selectActivityAggByMonth(month)).thenReturn(List.of(act));
+        // 活动自身直接指定 2 个班组（销售去向没有地块，只能走这条）
+        PlotCropTeamRow d1 = new PlotCropTeamRow();
+        d1.setPlotId(null);
+        d1.setCropId(10L);
+        d1.setTeamId(1L);
+        PlotCropTeamRow d2 = new PlotCropTeamRow();
+        d2.setPlotId(null);
+        d2.setCropId(10L);
+        d2.setTeamId(2L);
+        when(baseMapper.selectActivityDirectTeamsByMonth(month)).thenReturn(List.of(d1, d2));
+        when(baseMapper.selectCropUnitPrices(anyCollection())).thenReturn(List.of(
+            Map.of("cropId", 10L, "pickUnitPrice", new BigDecimal("1.00"))
+        ));
+        when(baseMapper.update(eq(null), any())).thenReturn(0);
+        when(baseMapper.insert(any(PlantWorkPerformance.class))).thenReturn(1);
+
+        int rows = service.generate(month);
+
+        // 核心断言：plotIds 为空时绝不能调 selectHarvestTeamsByPlots（它用 foreach 拼 IN，空集合会拼出 `IN ()` 让整个结算 500）
+        verify(baseMapper, never()).selectHarvestTeamsByPlots(anyCollection());
+        assertThat(rows).as("100kg 由 2 个直接班组各摊 50").isEqualTo(2);
+        ArgumentCaptor<PlantWorkPerformance> captor = ArgumentCaptor.forClass(PlantWorkPerformance.class);
+        verify(baseMapper, times(2)).insert(captor.capture());
+        assertThat(captor.getAllValues()).allSatisfy(r -> {
+            assertThat(r.getPickWeight()).isEqualByComparingTo("50.000");
+            assertThat(r.getPerformanceAmount()).isEqualByComparingTo("50.00");
+        });
     }
 
     @Test
@@ -153,14 +193,14 @@ class PlantWorkPerformanceServiceImplTest {
         List<PlantWorkPerformance> inserted = captor.getAllValues();
 
         PlantWorkPerformance r1 = inserted.stream().filter(p -> p.getTeamId().equals(1L)).findFirst().orElseThrow();
-        // 100.000 过磅 + 10/2=5.000 平摊 = 105.000 公斤 × 1.00 × 2 = 210.00
+        // 100.000 过磅 + 10/2=5.000 平摊 = 105.000 公斤 × 1.00 元/公斤 = 105.00
         assertThat(r1.getPickWeight()).isEqualByComparingTo("105.000");
-        assertThat(r1.getPerformanceAmount()).isEqualByComparingTo("210.00");
+        assertThat(r1.getPerformanceAmount()).isEqualByComparingTo("105.00");
 
         PlantWorkPerformance r2 = inserted.stream().filter(p -> p.getTeamId().equals(2L)).findFirst().orElseThrow();
-        // 纯平摊 5.000 公斤 × 1.00 × 2 = 10.00
+        // 纯平摊 5.000 公斤 × 1.00 元/公斤 = 5.00
         assertThat(r2.getPickWeight()).isEqualByComparingTo("5.000");
-        assertThat(r2.getPerformanceAmount()).isEqualByComparingTo("10.00");
+        assertThat(r2.getPerformanceAmount()).isEqualByComparingTo("5.00");
     }
 
     @Test

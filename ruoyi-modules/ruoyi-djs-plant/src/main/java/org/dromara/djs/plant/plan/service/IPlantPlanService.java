@@ -56,6 +56,18 @@ public interface IPlantPlanService {
     int deleteWithValidByIds(Collection<Long> ids);
 
     /**
+     * 从计划里移除单条地块明细（row184 计划详情地块明细「删除」）。
+     *
+     * <p>仅「种植未开始」的明细可删：{@code plant_status='pending'} 且 {@code begin_actualdate IS NULL}。
+     * 已完成 / 已开始的明细拒删（前端也不显示删除按钮，此处是服务端兜底）。
+     * 删后同步清班组中间表并重算主表面积/地块数/采摘区间与派生状态。</p>
+     *
+     * @param detailId 明细 id
+     * @return 受影响明细行数（1）
+     */
+    int removePlanDetail(Long detailId);
+
+    /**
      * 甘特图数据：主表摘要 + 每地块 1 行（4 时间字段）。
      */
     PlantPlanGanttVo getGantt(Long planId);
