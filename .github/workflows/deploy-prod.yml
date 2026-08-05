@@ -12,7 +12,12 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # 冷构建（基础镜像缓存失效需重拉 + Maven 依赖）远超 30 分钟：2026-08-05 实测在
+    # 1777s（29.6min）撞 command_timeout 被切断，`docker compose up -d` 那步从未执行 ——
+    # 旧容器已停、新容器起不来，生产直接宕机，重试还会再撞一次，形成死循环。
+    # 必须 command_timeout < timeout-minutes：让 ssh-action 先超时并回吐错误+部分日志，
+    # 而不是被 GitHub 在 job 级硬杀（那样日志直接丢）。
+    timeout-minutes: 120
 
     steps:
       - name: Trigger deploy on server
@@ -21,7 +26,7 @@ jobs:
           host: ${{ secrets.SSH_HOST_PROD }}
           username: root
           key: ${{ secrets.SSH_PRIVATE_KEY_PROD }}
-          command_timeout: 30m
+          command_timeout: 115m
           script: |
             set -e
             REPO_DIR=/www/wwwroot/api.dongjiaoshan.com

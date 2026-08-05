@@ -12,7 +12,9 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # 与 deploy-prod.yml 同步：冷构建远超 30 分钟，30min 会在拉基础镜像时被切断，
+    # 且切断时旧容器已停、新容器未起 = 环境宕机。command_timeout 须 < timeout-minutes。
+    timeout-minutes: 120
 
     steps:
       - name: Trigger deploy on server
@@ -21,7 +23,7 @@ jobs:
           host: ${{ secrets.SSH_HOST_STAGING }}
           username: root
           key: ${{ secrets.SSH_PRIVATE_KEY_STAGING }}
-          command_timeout: 30m
+          command_timeout: 115m
           script: |
             set -e
             REPO_DIR=/www/wwwroot/api.dongjiaoshan.com
