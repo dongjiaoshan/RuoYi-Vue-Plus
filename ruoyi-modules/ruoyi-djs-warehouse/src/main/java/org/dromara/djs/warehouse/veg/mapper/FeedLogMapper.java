@@ -179,7 +179,7 @@ public interface FeedLogMapper extends BaseMapperPlus<FeedLog, FeedLog> {
      * 有机饲喂**按日汇总**分页（admin 行199 列表 / mp 行268 卡片共用）。
      *
      * <p>一天一行：{@code GROUP BY DATE(feed_date)} 把当日全部来源（毛菜间 + 仓库）的重量求和，
-     * 再 LEFT JOIN 日确认表带出框数 / 确认人。</p>
+     * 再 LEFT JOIN 日确认表带出框数 / 确认人 / 确认时间（mp 卡片「处理日期」）。</p>
      *
      * <p>⚠️ 日确认表按 {@code feed_date} 关联，两边都是 DATE 粒度；feed_log 的 {@code feed_date} 是
      * DATETIME，故左联条件用 {@code DATE(fl.feed_date)} 而不是裸列，否则带时分秒的行永远联不上。
@@ -196,7 +196,8 @@ public interface FeedLogMapper extends BaseMapperPlus<FeedLog, FeedLog> {
                d.totalWeight    AS totalWeight,
                d.detailCount    AS detailCount,
                fc.box_count     AS boxCount,
-               fc.confirm_user_id AS confirmUserId
+               fc.confirm_user_id AS confirmUserId,
+               fc.confirm_time  AS confirmTime
         FROM (
             SELECT DATE(fl.feed_date)  AS feedDate,
                    SUM(fl.feed_weight) AS totalWeight,

@@ -102,7 +102,8 @@ public class StoreReturnController extends BaseController {
     }
 
     /**
-     * 退回操作「猪肉产品」tab 候选：仅当该门店当日有白条产品到店时才返回配置的猪肉退回字典项，否则返空。
+     * 退回操作「猪肉产品」tab 候选（{@code pork} + {@code white_bar} 两子类）：与另两个 tab 同口径，
+     * 取门店当日盘点台账里「期初 + 入库 − 销售 − 赠送 &gt; 0」的产品（row205；不减损坏）。
      */
     @SaCheckPermission("djs:store:return:list")
     @GetMapping("/operation/pork-candidates")
@@ -111,8 +112,8 @@ public class StoreReturnController extends BaseController {
     }
 
     /**
-     * 退回操作「果蔬产品」tab 候选（对齐原型「可退回 = 当天已确认到店的需求产品」）：
-     * 取该门店当天果蔬业态、已确认且已门店收货的需求产品（按 product_id 去重）。
+     * 退回操作「果蔬产品」tab 候选：与另两个 tab 同口径，取门店当日盘点台账里
+     * 「期初 + 入库 − 销售 − 赠送 &gt; 0」的果蔬业态产品（row205；不减损坏）。
      */
     @SaCheckPermission("djs:store:return:list")
     @GetMapping("/operation/veg-candidates")
@@ -123,7 +124,8 @@ public class StoreReturnController extends BaseController {
     /**
      * 退回操作「其他产品」tab 候选（admin row202）：干货 / 鸡蛋 / 其他 三个业态。
      *
-     * <p>取数与猪肉 / 果蔬 tab 同口径 —— 门店当日盘点台账「期初 + 入库 &gt; 0」（不减损坏，损坏的货本身就要退回）。</p>
+     * <p>取数与猪肉 / 果蔬 tab 同口径 —— 门店当日盘点台账「期初 + 入库 − 销售 − 赠送 &gt; 0」
+     * （row205；不减损坏，损坏的货本身就要退回）。</p>
      */
     @SaCheckPermission("djs:store:return:list")
     @GetMapping("/operation/other-candidates")

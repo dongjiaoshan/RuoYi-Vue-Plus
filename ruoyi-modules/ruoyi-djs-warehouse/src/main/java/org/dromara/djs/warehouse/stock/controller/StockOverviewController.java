@@ -4,6 +4,8 @@ import cn.dev33.satoken.annotation.SaCheckPermission;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
 import org.dromara.common.core.domain.R;
+import org.dromara.common.core.enums.FormatsType;
+import org.dromara.common.core.utils.DateUtils;
 import org.dromara.common.excel.utils.ExcelUtil;
 import org.dromara.common.log.annotation.Log;
 import org.dromara.common.log.enums.BusinessType;
@@ -123,5 +125,29 @@ public class StockOverviewController extends BaseController {
         @RequestParam(required = false) String productName,
         @RequestParam(required = false) Long locationId) {
         return R.ok(stockOverviewService.queryMonthlyDetail(monthStart, productName, locationId));
+    }
+
+    /**
+     * 导出某自然月库存明细（row190 详情导出）。
+     *
+     * <p>前端走 {@code proxy.download}（POST + x-www-form-urlencoded + blob），
+     * 故参数用 {@code @RequestParam} 而非 {@code @RequestBody}；筛选条件与 {@code /monthly/detail} 一致，
+     * 导出的是当前搜索条件下的全量明细（服务层本就不分页）。</p>
+     *
+     * @param monthStart  统计月首日（必传，yyyy-MM-dd）
+     * @param productName 产品名称模糊（可空）
+     * @param locationId  库位 id（可空）
+     */
+    @SaCheckPermission("djs:warehouse:stockMonthly:export")
+    @Log(title = "库存月汇总", businessType = BusinessType.EXPORT)
+    @PostMapping("/monthly/export")
+    public void monthlyExport(
+        @RequestParam @DateTimeFormat(pattern = "yyyy-MM-dd") Date monthStart,
+        @RequestParam(required = false) String productName,
+        @RequestParam(required = false) Long locationId,
+        HttpServletResponse response) {
+        List<StockOverviewDetailVo> list = stockOverviewService.queryMonthlyDetail(monthStart, productName, locationId);
+        String month = DateUtils.parseDateToStr(FormatsType.YYYY_MM, monthStart);
+        ExcelUtil.exportExcel(list, "库存月汇总_" + month, StockOverviewDetailVo.class, response);
     }
 }

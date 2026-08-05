@@ -55,29 +55,27 @@ public interface IStoreReturnService {
     int batchCreate(StoreReturnBatchBo bo);
 
     /**
-     * 退回操作「猪肉产品」tab 候选列表（两子类，保序并跨子类去重）。
+     * 退回操作「猪肉产品」tab 候选列表（{@code pork} + {@code white_bar} 两子类，保序并跨子类去重）。
      *
-     * <p>① 猪肉产品：当日到店的猪肉成品（{@code belong_type='pork'}；配置「原材料外售」的成品改列其原材料）——
-     * 按份退回、单位取成品自身单位。② 白条产品：字典 {@code djs_white_bar_return_product} 配置产品，
-     * 仅当该门店<b>当日有白条到店</b>时列出——按重量退货、单位取对应原材料单位。
-     * 「当日有白条到店」= 该店当日确认收货（{@code received_time}=今天）的需求下存在已发货清点
-     * （{@code is_delivery_check=1}）的 white_bar 业态成品，口径与门店猪肉打包可追溯白条一致。每行带真实
-     * 产品雪花 {@code productId} 供 {@link #batchCreate} 提交（提交时仍走产品 FK 校验）。</p>
+     * <p>与果蔬 / 其他产品 tab <b>完全同口径</b>：取门店当日盘点台账里
+     * 「期初 + 入库 − 销售 − 赠送 &gt; 0」的产品（甲方 row205；不减损坏），按业态白名单分到本 tab。
+     * 白条按重量退、猪肉成品按份退，单位取产品自身单位。每行带真实产品雪花 {@code productId} 供
+     * {@link #batchCreate} 提交（提交时仍走产品 FK 校验 + 同一台账闸）。</p>
      *
-     * @param storeId 门店 ID（必填；空 / 当日无白条到店 → 空列表）
-     * @return 猪肉/白条产品候选（productId + productName + productUnit）
+     * @param storeId 门店 ID（必填；空 / 当日未盘点 → 空列表）
+     * @return 猪肉/白条产品候选（productId + productName + productUnit + arrivedQuantity 可退量）
      */
     List<StoreReturnPorkCandidateVo> listPorkCandidates(Long storeId);
 
     /**
-     * 退回操作「果蔬产品」tab 候选列表（对齐原型「可退回 = 当天已确认到店的需求产品」）。
+     * 退回操作「果蔬产品」tab 候选列表。
      *
-     * <p>取该门店<b>当天</b>（Asia/Shanghai）果蔬业态、已确认（{@code CONFIRMED}）且已门店收货
-     * （{@code received_time IS NOT NULL}）的需求，按 {@code product_id} 去重。猪肉为另一固定 tab
-     * （{@link #listPorkCandidates}），果蔬 tab 仅按当天到店需求动态出，不再靠门店关联产品全量。</p>
+     * <p>与猪肉 / 其他产品 tab <b>完全同口径</b>：取该门店<b>当天</b>（Asia/Shanghai）盘点台账里
+     * 「期初 + 入库 − 销售 − 赠送 &gt; 0」的果蔬业态产品（甲方 row205；不减损坏）。
+     * 配置「原材料外售」的成品会折叠回其原材料后再列。</p>
      *
-     * @param storeId 门店 ID（必填；空返空列表）
-     * @return 果蔬候选（productId + productName + productUnit）
+     * @param storeId 门店 ID（必填；空 / 当日未盘点 → 空列表）
+     * @return 果蔬候选（productId + productName + productUnit + arrivedQuantity 可退量）
      */
     List<StoreReturnVegCandidateVo> listVegCandidates(Long storeId);
 
@@ -85,7 +83,8 @@ public interface IStoreReturnService {
      * 「其他产品」退回候选（admin row202：非猪肉 / 非白条 / 非果蔬 / 非礼盒 的产品）。
      *
      * <p>业态白名单 {@code {dry_good, egg, other}}，与项目已有的「其他产品打包入口」同口径。
-     * 取数与猪肉 / 果蔬 tab 完全一致：门店当日盘点台账 <b>期初 + 入库 &gt; 0</b>（不减损坏）。</p>
+     * 取数与猪肉 / 果蔬 tab 完全一致：门店当日盘点台账 <b>期初 + 入库 − 销售 − 赠送 &gt; 0</b>
+     * （row205；不减损坏）。</p>
      *
      * @param storeId 门店 ID（必填；空返空列表）
      * @return 其他产品候选（结构复用果蔬候选 VO）

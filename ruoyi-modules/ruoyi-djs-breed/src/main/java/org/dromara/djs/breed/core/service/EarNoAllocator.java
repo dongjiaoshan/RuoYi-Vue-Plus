@@ -289,8 +289,10 @@ public class EarNoAllocator {
 
     /**
      * 同出生日段（{@code yyMMdd} 字符串）下一可用序号 = {@code MAX(序号)} 同日段 + 1；当天无号则 1。
-     * <p>供"用户首号下限校验"复用：用户首号里直接带 yyMMdd 段，按该段（而非转 LocalDate）取下限，
-     * 与候选耳号同口径。仅读不锁。</p>
+     * <p>按段字符串（而非转 LocalDate）取号，与候选耳号同口径，对用户输入不额外做日期合法性约束。仅读不锁。</p>
+     * <p>结果只是<b>建议值</b>（mp 外部引种预填用）：用户可以填更小的号，只要该号在同出生日下没被占用
+     * （甲方 V6 生产紧急表 row3「并不一定要大于才能录入」，判重见 {@code PigMapper#existsSeqByDateSegment}）。
+     * 取号范围与判重范围<b>同宽</b>（都按同出生日 + 后三位），取号避开的就是查重看的那批号。</p>
      *
      * @param dateSeg 出生日段（{@code yyMMdd}，6 位）
      * @return 下一可用 3 位序号的数值（1-based）

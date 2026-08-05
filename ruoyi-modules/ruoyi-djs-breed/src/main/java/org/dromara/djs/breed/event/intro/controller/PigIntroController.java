@@ -122,4 +122,17 @@ public class PigIntroController extends BaseController {
         // 显式走 R.ok(msg, data) 把耳号放进 data，前端才能拿到预填值。
         return R.ok("操作成功", introService.previewNextEarNo(strainCode, breedCode, pigSex, birthDate));
     }
+
+    /**
+     * 耳号占用查询（外部引种 mp 端输入即查重，甲方 mp row271）。
+     *
+     * <p>返 {@code true} = 这个耳号（整串）已被占用，与提交时查重同口径。
+     * 权限走 mp 通用只读串 {@code djs:applet:pig:search}（复用免新增菜单 seed）。</p>
+     */
+    @SaCheckLogin
+    @SaCheckPermission("djs:applet:pig:search")
+    @GetMapping("/intro/earno-taken")
+    public R<Boolean> earNoTaken(@RequestParam String earNo) {
+        return R.ok(introService.isEarNoTaken(earNo));
+    }
 }

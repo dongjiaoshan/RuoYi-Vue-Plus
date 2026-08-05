@@ -11,6 +11,7 @@ import java.io.Serial;
 import java.io.Serializable;
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.util.Date;
 
 /**
  * 有机饲喂**按日汇总**行 VO（admin 行199 列表 / mp 行268 卡片共用）。
@@ -46,7 +47,10 @@ public class FeedDailyVo implements Serializable {
     private Integer detailCount;
 
     /**
-     * 仓库确认框数（可小数）。未确认为 {@code null} → 前端显示「-」。
+     * 仓库确认框数（整数）。未确认为 {@code null} → 前端显示「-」。
+     *
+     * <p>列类型是 {@code DECIMAL(10,2)}（会序列化成 {@code "5.00"}），整数口径由录入校验
+     * {@code FeedDailyConfirmBo} 与前端展示层共同收口。</p>
      */
     @ExcelProperty(value = "仓库确认框数")
     private BigDecimal boxCount;
@@ -55,6 +59,15 @@ public class FeedDailyVo implements Serializable {
      * 仓库确认人 user_id。
      */
     private Long confirmUserId;
+
+    /**
+     * 仓库确认（处理）日期。未确认为 {@code null}。
+     *
+     * <p>取自 {@code t_warehouse_feed_daily_confirm.confirm_time}，mp 卡片第三行左侧「处理日期」用。
+     * 只对外给日期部分（时分秒对业务无意义，甲方要的是「哪天处理的」）。</p>
+     */
+    @JsonFormat(pattern = "yyyy-MM-dd")
+    private Date confirmTime;
 
     /**
      * 仓库确认人昵称（ruoyi USER_ID_TO_NICKNAME 翻译）。

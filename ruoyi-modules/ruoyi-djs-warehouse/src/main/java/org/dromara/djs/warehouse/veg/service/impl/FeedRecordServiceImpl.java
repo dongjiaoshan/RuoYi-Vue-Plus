@@ -85,7 +85,8 @@ public class FeedRecordServiceImpl implements IFeedRecordService {
                 }
             }
         }
-        // 允许改（甲方要求录错可重录）：框数 / 确认人 / 确认时间一起刷成最后一次操作的结果
+        // 该日已有确认行：框数 / 确认人 / 确认时间一起刷成最后一次操作的结果。
+        // 正常业务走不到这里——mp 只对未录入的日期放出入口；留着是给并发首次录入兜底。
         exist.setBoxCount(bo.getBoxCount());
         exist.setConfirmUserId(bo.getConfirmUserId());
         exist.setConfirmTime(new Date());

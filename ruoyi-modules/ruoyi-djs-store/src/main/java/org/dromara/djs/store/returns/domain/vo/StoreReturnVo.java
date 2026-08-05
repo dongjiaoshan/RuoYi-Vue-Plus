@@ -67,6 +67,15 @@ public class StoreReturnVo implements Serializable {
     /** 产品单位（service 内存聚合填，原型「单位」列）。 */
     private String productUnit;
 
+    /**
+     * 产品<b>原材料单位</b>（service 内存聚合填；无原材料 / 原材料无单位时回落产品自身单位）。
+     *
+     * <p>「仓库实收量」的计量口径由它决定（甲方 row13/row14 统一模型）：
+     * 原材料单位 = kg → {@code received_weight} 是<b>重量</b>，按 kg 3 位小数展示；
+     * 原材料单位 ≠ kg → {@code received_weight} 是<b>件数</b>，按 {@code productUnit} 整数展示。</p>
+     */
+    private String materialUnit;
+
     private Long locationId;
 
     /** 入库库位名称（service 内存聚合填，STR-RETURN-REBUILD-001 K4 联动外购入库目标库位）。 */

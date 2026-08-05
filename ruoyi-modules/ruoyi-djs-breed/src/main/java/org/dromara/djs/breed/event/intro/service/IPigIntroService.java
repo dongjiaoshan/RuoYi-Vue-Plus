@@ -94,4 +94,17 @@ public interface IPigIntroService {
      * @return 预生成的带分隔符首耳号字符串（如 1-01-1-260609-0001）
      */
     String previewNextEarNo(String strainCode, String breedCode, String pigSex, LocalDate birthDate);
+
+    /**
+     * 耳号是否已被占用（外部引种 mp 端「输入即查重」用，甲方 V6 生产紧急表 row3）。
+     *
+     * <p>判重范围 = <b>同出生日 + 耳号后三位</b>（不分品系 / 品种 / 性别），整串耳号作兜底 ——
+     * 甲方原话「判断输入的后三位在出生日期的判定里是否存在重复」。口径与取舍详见
+     * {@code PigMapper#existsSeqByDateSegment}。与提交时 {@code introduceBatch} 的查重同一口径，
+     * 保证「输入时说没重、提交却被拒」不会发生。</p>
+     *
+     * @param earNo 待校验的完整耳号（如 {@code 01-01-2-251031-206}）；格式不合法 → false（交提交时报格式错）
+     * @return true = 已被占用
+     */
+    boolean isEarNoTaken(String earNo);
 }

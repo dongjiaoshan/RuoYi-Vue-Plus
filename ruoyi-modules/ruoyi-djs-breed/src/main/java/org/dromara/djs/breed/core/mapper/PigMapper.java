@@ -42,7 +42,12 @@ public interface PigMapper extends BaseMapperPlus<Pig, PigVo> {
     Long selectMaxSeqByDateSegment(@Param("dateSeg") String dateSeg);
 
     /**
-     * 探测耳号是否已被占用（BRD-FIX-EARNO-001 UNIQUE 兜底，含已软删行 —— 软删行仍占 UNIQUE 中的 ear_no 列）。
+     * 探测<b>整串耳号</b>是否已被占用（UNIQUE 兜底，BRD-FIX-EARNO-001）。
+     *
+     * <p>引种查重的<b>主口径</b>是 {@link #existsSeqByDateSegment}（同出生日 + 后三位），本方法只作兜底：
+     * 补上历史 12 位无分隔异形号等 REGEXP 匹配不到、但整串确实相同的情形。</p>
+     *
+     * <p>含已软删行 —— 软删行仍占 UNIQUE 中的 ear_no 列。</p>
      *
      * <p>不加 {@code del_flag='0'} 过滤：UNIQUE 约束 {@code (tenant_id, ear_no, lifecycle_id, del_unique)}
      * 里软删行 del_unique=id ≠ 0，理论上不撞，但耳号语义上仍应避开历史耳号 → 探测全部行。</p>
@@ -52,6 +57,38 @@ public interface PigMapper extends BaseMapperPlus<Pig, PigVo> {
      */
     @Select("SELECT id FROM t_farm_pig_info WHERE ear_no = #{earNo} LIMIT 1")
     Long existsEarNo(@Param("earNo") String earNo);
+
+    /**
+     * 探测<b>同出生日下这个序号（耳号后三位）</b>是否已被占用 —— 外部引种查重的<b>主口径</b>。
+     *
+     * <p>甲方 2026-08-04 原话（V6 生产紧急表 row3）：「判断输入的后三位<b>在出生日期的判定里</b>是否存在重复，
+     * 如果存在，则提示耳号已存在。如果不存在，就允许录入。<b>并不一定要大于才能录入</b>」。
+     * 即：判重按「出生日 + 后三位」，<b>不分品系 / 品种 / 性别</b>；序号可以比后台预填号小，不重就放行。</p>
+     *
+     * <p>范围与 {@link #selectMaxSeqByDateSegment} 取号范围<b>同宽</b>（同 REGEXP 匹配、同 SUBSTRING_INDEX 取末段），
+     * 只是把 MAX 换成等值命中 —— 取号避开的和查重看的必须是同一批号，否则仍会撞。</p>
+     *
+     * <p><b>放弃了什么（Kevin 2026-08-05 拍板，明确取舍）</b>：甲方历史数据里同日同序号分属不同前缀是存在的
+     * （《猪只核对表》实测 47 组，如 {@code 01-01-1-260224-001} / {@code 01-02-1-260224-001} 并存）。
+     * 采用本口径后，<b>今后</b>再按「不同前缀各自复用同一序号」的方式录入会被判为重号拦下；
+     * 已入库的历史数据不受影响（只拦新录入）。这是按甲方最新表态取舍的结果，不是遗漏。</p>
+     *
+     * <p>{@code del_flag='0'}：与取号口径一致（软删猪的号可被重新使用），否则查重比取号严，
+     * 会出现「后台预填的号自己都过不了查重」。整串耳号维度的兜底见 {@link #existsEarNo}。</p>
+     *
+     * @param dateSeg 出生日段（{@code yyMMdd}，6 位）
+     * @param seq     3 位序号的数值
+     * @return 命中的 id；未占用返回 null
+     */
+    @Select("""
+        SELECT id
+          FROM t_farm_pig_info
+         WHERE del_flag = '0'
+           AND ear_no REGEXP CONCAT('-', #{dateSeg}, '-[0-9]+$')
+           AND CAST(SUBSTRING_INDEX(ear_no, '-', -1) AS UNSIGNED) = #{seq}
+         LIMIT 1
+        """)
+    Long existsSeqByDateSegment(@Param("dateSeg") String dateSeg, @Param("seq") long seq);
 
     /**
      * 按耳号简版查 pigId（mp 端二选一支持 — 工人不输 19 位 snowflake，直接输耳号）。
