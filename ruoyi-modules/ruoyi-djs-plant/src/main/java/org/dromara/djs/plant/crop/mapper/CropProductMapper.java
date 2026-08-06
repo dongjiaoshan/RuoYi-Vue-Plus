@@ -43,4 +43,17 @@ public interface CropProductMapper extends BaseMapperPlus<CropProduct, CropProdu
         </script>
         """)
     List<CropProductVo> selectByCropIds(@Param("cropIds") Collection<Long> cropIds);
+
+    /**
+     * 产品是否存在且未删（配置前置校验）。
+     *
+     * <p>用原生 SQL 而不是注入 {@code ProductInfoMapper}：plant 模块不依赖 warehouse，
+     * 反过来依赖会把两个域的编译顺序绑死。</p>
+     *
+     * @param productId 产品 id
+     * @return 1 = 存在且未删 / 0 = 不存在或已删
+     */
+    @Select("SELECT COUNT(1) FROM t_warehouse_product_info "
+        + "WHERE id = #{productId} AND tenant_id = '1001' AND del_flag = '0'")
+    int countLiveProduct(@Param("productId") Long productId);
 }

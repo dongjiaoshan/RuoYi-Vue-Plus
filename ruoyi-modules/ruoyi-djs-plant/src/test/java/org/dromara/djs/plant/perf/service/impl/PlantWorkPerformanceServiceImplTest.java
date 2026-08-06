@@ -82,6 +82,39 @@ class PlantWorkPerformanceServiceImplTest {
     }
 
     @Test
+    @DisplayName("generate: 采摘活动量与同产品的过磅行必须合成一行，不能拆成两行（clean-QA r20 回归）")
+    void testGenerate_ActivityMergesIntoSameProductRow() {
+        String month = "2026-08";
+        // 过磅行已带 productId=101；采摘活动没有产品维度，两者必须合并成同一行
+        when(baseMapper.aggregateByMonth(month)).thenReturn(List.of(agg(1L, 10L, 101L, "619.000")));
+        PerfActivityAggRow act = new PerfActivityAggRow();
+        act.setCropId(10L);
+        act.setPlotId(70L);
+        act.setPickWeight(new BigDecimal("100.000"));
+        when(baseMapper.selectActivityAggByMonth(month)).thenReturn(List.of(act));
+        PlotCropTeamRow teamRow = new PlotCropTeamRow();
+        teamRow.setPlotId(70L);
+        teamRow.setCropId(10L);
+        teamRow.setTeamId(1L);
+        when(baseMapper.selectActivityDirectTeamsByMonth(month)).thenReturn(List.of(teamRow));
+        when(baseMapper.selectHarvestTeamsByPlots(anyCollection())).thenReturn(List.of());
+        when(baseMapper.selectCropProductPrices(anyCollection())).thenReturn(List.of(
+            Map.of("cropId", 10L, "productId", 101L, "perfPrice", new BigDecimal("1.00"))
+        ));
+        when(baseMapper.selectCropUnitPrices(anyCollection())).thenReturn(List.of());
+        when(baseMapper.update(eq(null), any())).thenReturn(0);
+        when(baseMapper.insert(any(PlantWorkPerformance.class))).thenReturn(1);
+
+        // 合成一行：619 + 100 = 719，而不是 619 / 100 两行
+        assertThat(service.generate(month)).as("同 (班组,作物,产品) 只能一行").isEqualTo(1);
+        ArgumentCaptor<PlantWorkPerformance> captor = ArgumentCaptor.forClass(PlantWorkPerformance.class);
+        verify(baseMapper).insert(captor.capture());
+        assertThat(captor.getValue().getProductId()).isEqualTo(101L);
+        assertThat(captor.getValue().getPickWeight()).isEqualByComparingTo("719.000");
+        assertThat(captor.getValue().getPerformanceAmount()).isEqualByComparingTo("719.00");
+    }
+
+    @Test
     @DisplayName("generate: V6 row20 —— 同作物两产品各自结算，单价取该产品的绩效金额")
     void testGenerate_PerProductPrice() {
         String month = "2026-08";

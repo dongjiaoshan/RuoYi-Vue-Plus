@@ -36,4 +36,13 @@ public class VegPlotProductVo implements Serializable {
      * 免得改造前的重量凭空消失、几个产品剩余量加起来对不上地块总剩余。</p>
      */
     private BigDecimal remainWeight;
+
+    /**
+     * 是否可选来录入：{@code true} = 该产品仍在作物的产品配置里；
+     * {@code false} = 已被移出配置、但地里还有没处理完的存量，只展示不给选。
+     *
+     * <p>没有这一位的话，被移出配置的产品要么在信息框里凭空消失（各产品之和对不上地块剩余），
+     * 要么被当成可选项而实际提交会被服务端拒。</p>
+     */
+    private Boolean selectable;
 }

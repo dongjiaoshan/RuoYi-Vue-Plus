@@ -289,11 +289,14 @@ public interface PlantWorkPerformanceMapper extends BaseMapperPlus<PlantWorkPerf
      * @return key=cropId / productId / perfPrice（perfPrice 可能为 null = 该产品没填绩效金额）
      */
     @Select("<script>" +
-        "SELECT crop_id AS cropId, product_id AS productId, perf_price AS perfPrice " +
-        "FROM t_plant_crop_product " +
-        "WHERE tenant_id = '1001' AND del_flag = '0' AND crop_id IN " +
+        "SELECT cp.crop_id AS cropId, cp.product_id AS productId, cp.perf_price AS perfPrice " +
+        "FROM t_plant_crop_product cp " +
+        // JOIN 必须与 CropProductMapper.selectByCropIds 完全对称：那边藏掉「产品已删」的配置行，
+        // 这边若不藏，就会出现运营在页签里看不见、却仍参与结算取价 / 仍可能被当成首选产品的幽灵行。
+        "JOIN t_warehouse_product_info p ON p.id = cp.product_id AND p.tenant_id = '1001' AND p.del_flag = '0' " +
+        "WHERE cp.tenant_id = '1001' AND cp.del_flag = '0' AND cp.crop_id IN " +
         "<foreach collection='cropIds' item='cid' open='(' separator=',' close=')'>#{cid}</foreach> " +
-        "ORDER BY crop_id, id" +
+        "ORDER BY cp.crop_id, cp.id" +
         "</script>")
     List<Map<String, Object>> selectCropProductPrices(@Param("cropIds") Collection<Long> cropIds);
 

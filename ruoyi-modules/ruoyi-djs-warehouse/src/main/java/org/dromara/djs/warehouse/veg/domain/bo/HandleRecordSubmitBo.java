@@ -40,6 +40,14 @@ public class HandleRecordSubmitBo {
     private Integer recordType;
 
     /**
+     * 产品 ID（V6 row17，FK → t_warehouse_product_info.id）。
+     *
+     * <p>可空：作物只配了一个产品时不必传，服务端补首个配置产品；配了多个时应传录入人所选那个，
+     * 不传会一律记到首个产品头上。</p>
+     */
+    private Long productId;
+
+    /**
      * 本次重量(kg)，> 0。
      */
     @NotNull(message = "{veg.record_weight.required}")

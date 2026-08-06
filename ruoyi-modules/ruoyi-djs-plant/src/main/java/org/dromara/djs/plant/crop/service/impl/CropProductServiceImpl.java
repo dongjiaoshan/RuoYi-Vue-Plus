@@ -58,6 +58,7 @@ public class CropProductServiceImpl extends DjsBaseServiceImpl<CropProductMapper
     @Override
     @Transactional(rollbackFor = Exception.class)
     public int insertByBo(CropProductBo bo) {
+        assertProductExists(bo.getProductId());
         assertNotDuplicated(bo.getCropId(), bo.getProductId(), null);
         CropProduct row = new CropProduct();
         row.setCropId(bo.getCropId());
@@ -77,6 +78,7 @@ public class CropProductServiceImpl extends DjsBaseServiceImpl<CropProductMapper
         if (exist == null) {
             throw new ServiceException("产品配置不存在或已删除：" + bo.getId(), 404);
         }
+        assertProductExists(bo.getProductId());
         assertNotDuplicated(exist.getCropId(), bo.getProductId(), bo.getId());
         CropProduct row = new CropProduct();
         row.setId(bo.getId());
@@ -89,6 +91,19 @@ public class CropProductServiceImpl extends DjsBaseServiceImpl<CropProductMapper
     @Transactional(rollbackFor = Exception.class)
     public int deleteByIds(Collection<Long> ids) {
         return softDelete(ids);
+    }
+
+    /**
+     * 产品必须真实存在且未删。
+     *
+     * <p>不校验的话可以配出一行指向已删产品的记录：列表 SQL 带 product JOIN 会把它藏掉，
+     * 运营既看不见也删不掉，它却仍躺在表里参与结算取价 —— 幽灵配置行。</p>
+     */
+    private void assertProductExists(Long productId) {
+        // 走 mapper 原生 SQL 而不是 ProductInfoMapper —— plant 模块不依赖 warehouse（反向依赖）
+        if (productId == null || baseMapper.countLiveProduct(productId) == 0) {
+            throw new ServiceException("关联产品不存在或已删除：" + productId, 400);
+        }
     }
 
     /**

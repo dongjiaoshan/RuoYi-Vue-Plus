@@ -602,7 +602,10 @@ public class StoreReturnServiceImpl
         if (returnQuantity == null || returnQuantity.signum() <= 0) {
             return null;
         }
-        return returnQuantity.multiply(materialRatio(p)).setScale(0, RoundingMode.HALF_UP);
+        // 至少 1：material_num 配成小数（如 0.25）时 setScale(0) 会把上限抹成 0，
+        // 那一行任何正数实收都会被拒、整单永久卡死。宁可放宽到 1，也不制造死锁。
+        return returnQuantity.multiply(materialRatio(p))
+            .setScale(0, RoundingMode.HALF_UP).max(BigDecimal.ONE);
     }
 
     /**

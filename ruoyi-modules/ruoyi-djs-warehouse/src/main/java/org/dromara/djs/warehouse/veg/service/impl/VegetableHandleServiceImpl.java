@@ -66,10 +66,12 @@ import java.math.RoundingMode;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
@@ -231,7 +233,7 @@ public class VegetableHandleServiceImpl
             if (requested != null) {
                 boolean belongs = configured.stream().anyMatch(c -> requested.equals(c.getProductId()));
                 if (!belongs) {
-                    throw new ServiceException("所选产品不在该作物的产品配置中，请刷新后重试");
+                    throw new ServiceException("所选产品不在该作物的产品配置中，请刷新后重试", 400);
                 }
                 return requested;
             }
@@ -261,8 +263,8 @@ public class VegetableHandleServiceImpl
         }
         CropInfo crop = cropInfoMapper.selectById(cropId);
         if (crop == null || crop.getRelatedProduct() == null) {
-            log.warn("作物 related_product 未配置，product_id 降级为 {} — cropId={}（请在 admin 作物录入页填写"
-                + "「关联产品」建立作物↔果蔬成品映射）", fallback, cropId);
+            log.warn("作物未配置产品，product_id 降级为 {} — cropId={}（请在 admin 作物管理 → 编辑作物 →"
+                + "「产品配置」页签为该作物添加产出产品）", fallback, cropId);
             return fallback;
         }
         return crop.getRelatedProduct();
@@ -330,7 +332,10 @@ public class VegetableHandleServiceImpl
         record.setHandleId(handle.getId());
         record.setPlotId(planting.getPlotId());
         record.setCropId(planting.getCropId());
+        // row17：这条通用入口（mp 毛菜处理旧页仍在用）同样要按产品记账，否则多产品作物下它录的
+        // 重量一律落 NULL、读侧只能折进首个配置产品，甲方「记录下对应产品称重的重量」在这条路径上等于没做。
         record.setRecordType(recordType);
+        record.setProductId(resolveRecordProductId(planting.getCropId(), bo.getProductId()));
         record.setRecordWeight(weight);
         record.setHandleTarget(handleTarget);
         record.setLocationId(bo.getLocationId());
@@ -399,8 +404,8 @@ public class VegetableHandleServiceImpl
 
         // Step 7：条件 INSERT stock_flow（仅入库）
         if (recordType == RECORD_TYPE_HANDLE && handleTarget == HANDLE_TARGET_STOCK_IN) {
-            // 这条 admin 侧通用录入端点没有产品选择项 → 传 null 走原有的 crop.related_product 回落链
-            insertVegStockInFlow(handle, planting, bo.getLocationId(), weight, userId, now, null);
+            insertVegStockInFlow(handle, planting, bo.getLocationId(), weight, userId, now,
+                resolveRecordProductId(planting.getCropId(), bo.getProductId()));
         }
 
         // Step 8：同步 planting_record.handle_status
@@ -434,7 +439,7 @@ public class VegetableHandleServiceImpl
                 firstNonNull(handle.getProductId(), planting.getProductId()));
         if (resolvedProductId == null) {
             throw new ServiceException("作物「" + planting.getCropName() + "」未关联果蔬成品，无法入库："
-                + "请先在 admin 作物录入页填写「关联产品」建立作物↔成品映射后再提交");
+                + "请先在 admin 作物管理 → 编辑作物 →「产品配置」页签为该作物添加产出产品后再提交");
         }
         flow.setProductId(resolvedProductId);
         flow.setWarehouseId(locationId);
@@ -641,46 +646,112 @@ public class VegetableHandleServiceImpl
     }
 
     /**
-     * 给每个地块行补「该作物配置的产品 + 各自剩余重量」（V6 row17/row18）。
+     * 按产品封顶：本次处理量不得超过该产品在本汇总行下的剩余（采收 − 已处理）。
      *
-     * <p>剩余 = 该产品采收累计 − 该产品处理累计（三去向都算），与地块级 remainWeight 同口径。
-     * 一次 IN 查完所有汇总行的分产品净额，不逐地块查库。</p>
+     * <p>只在「该产品确实有过采收流水」时才拦 —— 拿不到净额说明是老数据或作物没配产品，
+     * 此时沿用地块级封顶，不给存量业务添堵。</p>
+     */
+    private void assertWithinProductRemain(Long handleId, Long productId, BigDecimal weight) {
+        if (handleId == null || productId == null) {
+            return;
+        }
+        BigDecimal remain = null;
+        for (HandleProductNetRow row : handleRecordMapper.selectProductNetByHandleIds(List.of(handleId))) {
+            if (productId.equals(row.getProductId())) {
+                remain = nullSafe(row.getNetWeight());
+                break;
+            }
+        }
+        if (remain == null) {
+            return;
+        }
+        if (weight.compareTo(remain) > 0) {
+            throw new ServiceException("该产品剩余仅 " + remain.stripTrailingZeros().toPlainString()
+                + " kg，本次处理 " + weight.stripTrailingZeros().toPlainString() + " kg 已超出", 400);
+        }
+    }
+
+    /**
+     * 给每个地块行补「产品 + 各自剩余重量」（V6 row17/row18）。
+     *
+     * <p>剩余 = 该产品采收累计 − 该产品处理累计（三去向都算），与地块级 remainWeight 同口径，
+     * 各产品之和必须恰好等于地块级 remainWeight。一次 IN 查完所有汇总行的分产品净额，不逐地块查库。</p>
+     *
+     * <p><b>行集合 = 作物当前配置的产品 ∪ 地里还有流水的产品</b>。后者不能省：作物产品配置支持删除，
+     * 一旦某产品被移出配置、而它名下还有没处理完的重量，只按配置渲染会让那部分重量在分产品视图里
+     * 凭空消失（各产品之和 &lt; 地块剩余），剩下的产品还可能被处理成负数。已不在配置里的产品照常列出、
+     * 只是不能再被选来录入，直到它的存量处理干净。</p>
      */
     private void fillPlotProducts(Long cropId, List<VegPlotDetailVo> plots) {
         if (plots == null || plots.isEmpty()) {
             return;
         }
         List<CropProductVo> configured = cropProductService.listByCrop(cropId);
-        if (configured.isEmpty()) {
+        List<Long> handleIds = plots.stream().map(VegPlotDetailVo::getHandleId)
+            .filter(Objects::nonNull).distinct().toList();
+        // 作物一个产品都没配、且历史也没有按产品记过账 → 保持改造前形态（mp 不显示产品行、提交不带 productId）
+        if (configured.isEmpty() && handleIds.isEmpty()) {
             plots.forEach(p -> p.setProducts(List.of()));
             return;
         }
-        // 存量流水没选过产品（product_id 为 NULL）→ 折进首个配置产品，否则那部分重量在分产品视图里凭空消失
-        Long fallbackProductId = configured.get(0).getProductId();
-        List<Long> handleIds = plots.stream().map(VegPlotDetailVo::getHandleId)
-            .filter(Objects::nonNull).distinct().toList();
+        // 存量流水没选过产品（product_id 为 NULL）→ 折进首个配置产品；一个配置都没有时只能丢给 null 桶，
+        // 下面按 productId 反查名字时会被过滤掉（此时地块本来也没有可选产品）
+        Long fallbackProductId = configured.isEmpty() ? null : configured.get(0).getProductId();
         // handleId → (productId → 净额)
         Map<Long, Map<Long, BigDecimal>> netByHandle = new HashMap<>();
+        Set<Long> orphanProductIds = new LinkedHashSet<>();
+        Set<Long> configuredIds = configured.stream().map(CropProductVo::getProductId)
+            .collect(Collectors.toCollection(LinkedHashSet::new));
         if (!handleIds.isEmpty()) {
             for (HandleProductNetRow row : handleRecordMapper.selectProductNetByHandleIds(handleIds)) {
                 Long pid = row.getProductId() != null ? row.getProductId() : fallbackProductId;
+                if (pid == null) {
+                    continue;
+                }
+                if (!configuredIds.contains(pid)) {
+                    orphanProductIds.add(pid);
+                }
                 netByHandle.computeIfAbsent(row.getHandleId(), k -> new HashMap<>())
                     .merge(pid, nullSafe(row.getNetWeight()), BigDecimal::add);
+            }
+        }
+        // 已被移出配置、但地里还有流水的产品：单独反查名字补进展示行
+        Map<Long, String> orphanNames = new LinkedHashMap<>();
+        if (!orphanProductIds.isEmpty()) {
+            for (ProductInfo p : productInfoMapper.selectList(new LambdaQueryWrapper<ProductInfo>()
+                .select(ProductInfo::getId, ProductInfo::getProductName)
+                .in(ProductInfo::getId, orphanProductIds))) {
+                orphanNames.put(p.getId(), p.getProductName());
             }
         }
         for (VegPlotDetailVo plot : plots) {
             Map<Long, BigDecimal> net = plot.getHandleId() == null ? Map.of()
                 : netByHandle.getOrDefault(plot.getHandleId(), Map.of());
-            List<VegPlotProductVo> rows = new ArrayList<>(configured.size());
+            List<VegPlotProductVo> rows = new ArrayList<>(configured.size() + orphanNames.size());
             for (CropProductVo cp : configured) {
-                VegPlotProductVo vo = new VegPlotProductVo();
-                vo.setProductId(cp.getProductId());
-                vo.setProductName(cp.getProductName());
-                vo.setRemainWeight(net.getOrDefault(cp.getProductId(), BigDecimal.ZERO));
-                rows.add(vo);
+                rows.add(productRow(cp.getProductId(), cp.getProductName(),
+                    net.getOrDefault(cp.getProductId(), BigDecimal.ZERO), true));
+            }
+            for (Map.Entry<Long, String> e : orphanNames.entrySet()) {
+                BigDecimal remain = net.get(e.getKey());
+                // 该地块下这个已下架产品没有流水就不占一行（别给每块地都挂一行 0）
+                if (remain == null || remain.signum() == 0) {
+                    continue;
+                }
+                rows.add(productRow(e.getKey(), e.getValue(), remain, false));
             }
             plot.setProducts(rows);
         }
+    }
+
+    private static VegPlotProductVo productRow(Long productId, String productName,
+                                               BigDecimal remain, boolean selectable) {
+        VegPlotProductVo vo = new VegPlotProductVo();
+        vo.setProductId(productId);
+        vo.setProductName(productName);
+        vo.setRemainWeight(remain);
+        vo.setSelectable(selectable);
+        return vo;
     }
 
     @Override
@@ -821,6 +892,11 @@ public class VegetableHandleServiceImpl
             throw new ServiceException("果蔬处理重量不得大于果蔬采摘录入重量");
         }
 
+        // row18：处理按产品记账后，地块级封顶不够 —— 它挡不住「把 A 处理得比 A 自己的采摘量还多」，
+        // 结果是 A 的分产品剩余变负数、直接显给仓库工人。故再加一道该产品自己的剩余封顶。
+        Long selectedProductId = resolveRecordProductId(planting.getCropId(), bo.getProductId());
+        assertWithinProductRemain(handle.getId(), selectedProductId, weight);
+
         // Step 3.0b 序号9-Req2：未「称重完成」(is_weighed=1) 不得标记「处理完成」（客户 2026-06-20）
         if (processDone && (handle.getIsWeighed() == null || handle.getIsWeighed() != 1)) {
             throw new ServiceException("请先完成地块称重，再标记处理完成");
@@ -851,7 +927,6 @@ public class VegetableHandleServiceImpl
         record.setPlotId(planting.getPlotId());
         record.setCropId(planting.getCropId());
         // row18 第 3 点：按所选产品做后续处理 —— 流水与下面的入库流水用的是同一个 productId
-        Long selectedProductId = resolveRecordProductId(planting.getCropId(), bo.getProductId());
         record.setProductId(selectedProductId);
         record.setRecordType(RECORD_TYPE_HANDLE);
         record.setRecordWeight(weight);
@@ -1079,7 +1154,7 @@ public class VegetableHandleServiceImpl
         flow.setFlowDate(now);
         if (productId == null) {
             throw new ServiceException("作物「" + bo.getCropName() + "」未关联果蔬成品，无法入库："
-                + "请先在 admin 作物录入页填写「关联产品」建立作物↔成品映射后再提交");
+                + "请先在 admin 作物管理 → 编辑作物 →「产品配置」页签为该作物添加产出产品后再提交");
         }
         flow.setProductId(productId);
         flow.setWarehouseId(locationId);

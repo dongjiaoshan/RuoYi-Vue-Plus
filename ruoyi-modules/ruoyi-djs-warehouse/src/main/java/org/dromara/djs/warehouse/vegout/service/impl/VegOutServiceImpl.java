@@ -126,6 +126,12 @@ public class VegOutServiceImpl implements IVegOutService {
     private final org.dromara.djs.common.encoder.IBizCodeGenerator bizCodeGenerator;
     private final UserService userService;
 
+    /**
+     * 一张出库单最多几个产品 —— 与 admin 打印模板 {@code printSheet.ts} 的 `ROWS_PER_PAGE` 同一个数。
+     * 改这里必须同步改那边，否则要么单据分页、要么表格印不下。
+     */
+    private static final int MAX_ITEMS_PER_SHEET = 10;
+
     @Override
     public List<VegOutCandidateVo> listCandidates(String productName) {
         return vegOutMapper.selectCandidates(ALLOWED_LOCATION_CODES, ALLOWED_BELONG_TYPES, productName);
@@ -134,6 +140,12 @@ public class VegOutServiceImpl implements IVegOutService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public String submit(VegOutSubmitBo bo, boolean asBatch) {
+        // 一单最多 10 个产品（甲方 V6 row26）：241×140mm 的三联单一页只印得下 10 行，超了就得打两张纸。
+        // 前端抽屉已经把输入框禁掉了，这里是第二道门 —— 直接打接口 / 前端被绕过时不能照单全收。
+        if (bo.getItems() != null && bo.getItems().size() > MAX_ITEMS_PER_SHEET) {
+            throw new ServiceException("一张出库单最多 " + MAX_ITEMS_PER_SHEET + " 个产品，当前 "
+                + bo.getItems().size() + " 个", 400);
+        }
         // 三个可出库库位的 id（按 location_code 解析；缺哪个就少哪个，不阻断整单）
         java.util.Set<Long> allowedLocationIds = resolveAllowedLocationIds();
         String batchNo = asBatch ? generateBatchNo() : null;

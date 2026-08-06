@@ -50,6 +50,7 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 /**
  * 班组绩效结算 Service 实现（PLT-PERF-001）。
@@ -135,30 +136,42 @@ public class PlantWorkPerformanceServiceImpl
             .set("update_time", now);
         baseMapper.update(null, clearWrapper);
 
-        // 2. 聚合该月 班组 × 作物 采摘总量（毛菜处理过磅 + 采摘活动平摊，row12）
-        List<PerfAggRow> aggRows = mergeActivityShares(baseMapper.aggregateByMonth(statMonth), statMonth);
+        // 2. 聚合该月 班组 × 作物 × 产品 采摘总量（毛菜处理过磅 + 采摘活动平摊，row12 / V6 row20）
+        List<PerfAggRow> rawRows = baseMapper.aggregateByMonth(statMonth);
+        if (rawRows.isEmpty() && baseMapper.selectActivityAggByMonth(statMonth).isEmpty()) {
+            return 0;
+        }
+        // ⚠️ 产品归属必须在合并**之前**定下来：存量过磅流水 productId 有值、采摘活动没有产品维度，
+        // 若等合并完再把 null 折算成「首个配置产品」，两者的合并键（…:123 与 …:null）永远撞不到一起，
+        // 最后却双双落成同一个 productId → 同一「班组 × 作物 × 产品」被拆成两行（金额总额对、明细多行）。
+        Set<Long> cropIds = Stream.concat(
+                rawRows.stream().map(PerfAggRow::getCropId),
+                baseMapper.selectActivityAggByMonth(statMonth).stream().map(PerfActivityAggRow::getCropId))
+            .filter(Objects::nonNull)
+            .collect(Collectors.toCollection(HashSet::new));
+        Map<Long, Long> primaryProductMap = loadPrimaryProducts(cropIds);
+        rawRows.forEach(r -> {
+            if (r.getProductId() == null) {
+                r.setProductId(primaryProductMap.get(r.getCropId()));
+            }
+        });
+        List<PerfAggRow> aggRows = mergeActivityShares(rawRows, statMonth, primaryProductMap);
         if (aggRows.isEmpty()) {
             return 0;
         }
 
         // 3. 批量取单价快照（一次查询）：V6 row20 起单价来自「作物 × 产品」的绩效金额，
         //    作物没配产品 / 该产品没填金额时回落作物级 pick_unit_price，历史月口径不变。
-        Set<Long> cropIds = aggRows.stream()
-            .map(PerfAggRow::getCropId)
-            .filter(Objects::nonNull)
-            .collect(Collectors.toCollection(HashSet::new));
         Map<Long, BigDecimal> cropPriceMap = loadCropPrices(cropIds);
         Map<String, BigDecimal> productPriceMap = loadCropProductPrices(cropIds);
-        Map<Long, Long> primaryProductMap = loadPrimaryProducts(cropIds);
 
         // 4. 逐组算金额 + 批量 INSERT
         int inserted = 0;
         List<PlantWorkPerformance> rows = new ArrayList<>(aggRows.size());
         for (PerfAggRow agg : aggRows) {
             BigDecimal pickWeight = agg.getPickWeight() != null ? agg.getPickWeight() : BigDecimal.ZERO;
-            // 存量流水 / 采摘活动没有产品维度 → 归到该作物的首个配置产品，否则详情里这几行的产品列全空
-            Long productId = agg.getProductId() != null ? agg.getProductId()
-                : primaryProductMap.get(agg.getCropId());
+            // 产品归属已在合并前定死（含把 null 折算成首个配置产品），这里直接用
+            Long productId = agg.getProductId();
             BigDecimal unitPrice = productPriceMap.get(agg.getCropId() + ":" + productId);
             if (unitPrice == null) {
                 unitPrice = cropPriceMap.getOrDefault(agg.getCropId(), BigDecimal.ZERO);
@@ -250,7 +263,8 @@ public class PlantWorkPerformanceServiceImpl
      * 该 (plot,crop) 无直接班组时才兜底地块采收班组（{@code role='harvest'}）。修复原逻辑「活动直接指定
      * 班组、但地块无 harvest 明细的整条活动量被跳过丢失」。两处都无班组归属才跳过（无法计入班组绩效）。</p>
      */
-    private List<PerfAggRow> mergeActivityShares(List<PerfAggRow> aggRows, String statMonth) {
+    private List<PerfAggRow> mergeActivityShares(List<PerfAggRow> aggRows, String statMonth,
+                                                 Map<Long, Long> primaryProductMap) {
         List<PerfActivityAggRow> actRows = baseMapper.selectActivityAggByMonth(statMonth);
         if (actRows.isEmpty()) {
             return aggRows;
@@ -293,13 +307,15 @@ public class PlantWorkPerformanceServiceImpl
             }
             BigDecimal share = act.getPickWeight()
                 .divide(BigDecimal.valueOf(teams.size()), 3, RoundingMode.HALF_UP);
+            // 采摘活动没有产品维度 → 归到该作物的首个配置产品，且**用同一个 productId 参与合并**，
+            // 这样它就能和同产品的过磅行合成一行，而不是各自落一行。
+            Long actProductId = primaryProductMap.get(act.getCropId());
             for (Long teamId : teams) {
-                // 采摘活动没有产品维度 → productId 留 null（generate 里折进作物首选产品），
-                // key 也带上 null 段，与过磅行的 (team, crop, product) key 结构保持一致
-                PerfAggRow row = merged.computeIfAbsent(teamId + ":" + act.getCropId() + ":null", k -> {
+                PerfAggRow row = merged.computeIfAbsent(teamId + ":" + act.getCropId() + ":" + actProductId, k -> {
                     PerfAggRow nr = new PerfAggRow();
                     nr.setTeamId(teamId);
                     nr.setCropId(act.getCropId());
+                    nr.setProductId(actProductId);
                     nr.setPickWeight(BigDecimal.ZERO);
                     return nr;
                 });
