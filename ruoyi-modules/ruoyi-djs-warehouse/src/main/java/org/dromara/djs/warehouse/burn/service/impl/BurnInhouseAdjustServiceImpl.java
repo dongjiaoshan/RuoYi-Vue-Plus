@@ -66,6 +66,18 @@ import java.util.List;
  * {@code t_warehouse_indicator_record}，月表 {@code t_warehouse_monthly_record} 再从日表回读。
  * 所以 Step 9 在燎毛日早于今天时调 {@link IWarehouseStatService#aggregate}（UPSERT，幂等）重算那一天。</p>
  *
+ * <p>⚠️ <b>这一步的影响面比「三个白条指标」大得多，动它之前先看清楚</b>：{@code aggregate(date)} 会
+ * ① 重算并 UPSERT 该日 {@code t_warehouse_indicator_record} 整行（不止白条那三列）；
+ * ② 重算该日<b>全部作物</b>行 {@code t_warehouse_cropp_record}；
+ * ③ 重算该日所在<b>整月</b>的 {@code t_warehouse_monthly_record}（它从日表回读）；
+ * ④ 先软删该日全部 {@code production_loss} 行再重插（每调整一次就多留一批软删行，只增不减）。
+ * 也就是说「改一头猪的白条重」会把那天的仓库报表按<b>当前</b>源数据整体重算一遍，
+ * 结果可能与当初跑批那一版不同 —— 口径上说得通（重算即真相），但要知道它不是只动三个数。</p>
+ *
+ * <p>它跑在本事务内、且<b>不 catch</b>：统计算不出来就让整笔调整回滚重来，好过留下「明细对、报表错」
+ * 且没人知道的状态。代价是这笔事务持着 5 张表的行锁多跑几十条聚合，时长从毫秒级拉到秒级，
+ * 并发的 {@code finishBurn}（{@code FOR UPDATE} 锁产出行）会被拖住。调整是低频后台操作，判定这个代价可接受。</p>
+ *
  * <h3>不动的下游（各有确定原因，不是漏了）</h3>
  * <ul>
  *   <li>{@code t_warehouse_loss_flow} 燎毛损耗：由 {@code finishBurn}「处理完成」那一刻按
