@@ -2,11 +2,15 @@ package org.dromara.djs.warehouse.demand.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import org.dromara.common.core.exception.ServiceException;
+import org.dromara.common.mybatis.core.page.PageQuery;
+import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.common.encoder.BizCodeType;
 import org.dromara.djs.common.encoder.IBizCodeGenerator;
 import org.dromara.djs.warehouse.demand.domain.DemandManage;
 import org.dromara.djs.warehouse.demand.domain.bo.AssignPigBo;
 import org.dromara.djs.warehouse.demand.domain.bo.DemandManageBo;
+import org.dromara.djs.warehouse.demand.domain.query.DemandManageQuery;
+import org.dromara.djs.warehouse.demand.domain.vo.DemandGroupVo;
 import org.dromara.djs.warehouse.demand.domain.vo.DemandTodayKpiVo;
 import org.dromara.djs.warehouse.demand.mapper.DemandManageMapper;
 import org.dromara.djs.warehouse.demand.mapper.DemandPigMapper;
@@ -47,6 +51,8 @@ import static org.mockito.Mockito.when;
  *   <li>编辑 IN_PRODUCTION → 禁止（仅 DRAFT/SUBMITTED 可改）</li>
  *   <li>删除 DRAFT → ok / 删除 IN_PRODUCTION → throws</li>
  *   <li>assignPigs 非白条业态 → throws / IN_PRODUCTION → throws</li>
+ *   <li>group-list 分页只切片不重排（排序权威在 mapper ORDER BY）+ 三态/确认率回填（row32）</li>
+ *   <li>selectDemandGroupList 默认 ORDER BY = 确认率升序 + 日期/产品名 tie-breaker（row32 契约钉死）</li>
  * </ul>
  *
  * @author djs
@@ -329,6 +335,60 @@ class DemandManageServiceImplTest {
         assertThat(vo.getTodayVegSpeciesAssigned()).isZero();
         assertThat(vo.getTodayOtherDemand()).isZero();
         assertThat(vo.getTodayOtherAssigned()).isZero();
+    }
+
+    @Test
+    @DisplayName("group-list 分页只切片不重排 → 排序权威在 mapper ORDER BY（确认率升序），跨页有序")
+    void queryGroupListKeepsMapperOrder() {
+        // mapper 已按确认率升序返回全量（0% → 33% → 100%）；service 只能切片，不得再排
+        List<DemandGroupVo> ordered = new java.util.ArrayList<>(List.of(
+            groupRow(LocalDate.of(2026, 8, 5), 3, 0),    // 0%
+            groupRow(LocalDate.of(2026, 8, 6), 3, 1),    // 33%
+            groupRow(LocalDate.of(2026, 8, 7), 2, 2)));  // 100%
+        when(demandMapper.selectDemandGroupList(any(), any(), any(), any(), any(), any(), any())).thenReturn(ordered);
+
+        // ⚠️ PageQuery 构造器形参是 (pageSize, pageNum)，不是常见的 (pageNum, pageSize)
+        PageQuery page1 = new PageQuery(2, 1);
+        TableDataInfo<DemandGroupVo> p1 = service.queryGroupList(new DemandManageQuery(), page1);
+        assertThat(p1.getTotal()).isEqualTo(3);
+        assertThat(p1.getRows()).hasSize(2);
+        assertThat(p1.getRows().get(0).getConfirmRate()).isEqualByComparingTo("0");
+        assertThat(p1.getRows().get(0).getDemandStatus()).isEqualTo("PENDING");
+        assertThat(p1.getRows().get(1).getConfirmRate()).isEqualByComparingTo("0.3333");
+        assertThat(p1.getRows().get(1).getDemandStatus()).isEqualTo("PARTIAL");
+
+        PageQuery page2 = new PageQuery(2, 2);
+        TableDataInfo<DemandGroupVo> p2 = service.queryGroupList(new DemandManageQuery(), page2);
+        assertThat(p2.getRows()).hasSize(1);
+        // 第 2 页拿到的是全量序列的第 3 条（100%），不是被 service 重排后的另一条
+        assertThat(p2.getRows().get(0).getConfirmRate()).isEqualByComparingTo("1");
+        assertThat(p2.getRows().get(0).getDemandStatus()).isEqualTo("ALL_CONFIRMED");
+    }
+
+    @Test
+    @DisplayName("selectDemandGroupList 默认 ORDER BY = 确认率升序 + (日期倒序,产品名升序) tie-breaker")
+    void groupListSqlOrdersByConfirmRateAsc() throws Exception {
+        // 排序是 SQL 层契约（列表先聚合全量再内存分页，前端排不了跨页），改回来会静默退化 → 在此钉死
+        org.apache.ibatis.annotations.Select select = DemandManageMapper.class
+            .getMethod("selectDemandGroupList", String.class, String.class, List.class,
+                Long.class, List.class, LocalDate.class, LocalDate.class)
+            .getAnnotation(org.apache.ibatis.annotations.Select.class);
+        assertThat(select).isNotNull();
+        String sql = String.join(" ", select.value()).replaceAll("\\s+", " ");
+        assertThat(sql).contains(
+            "ORDER BY COALESCE(COUNT(CASE WHEN dm.demand_status "
+                + "IN ('CONFIRMED','IN_PRODUCTION','PARTIAL_SHIPPED','COMPLETED') THEN 1 END) "
+                + "/ NULLIF(COUNT(*), 0), 0) ASC, dm.demand_date DESC, MAX(dm.product_name) ASC");
+    }
+
+    /** 分组行样例：只填排序 / 三态计算用到的字段（需求日期 + 组内单数 + 已确认单数）。 */
+    private DemandGroupVo groupRow(LocalDate date, int demandCount, int confirmedCount) {
+        DemandGroupVo vo = new DemandGroupVo();
+        vo.setDemandDate(date);
+        vo.setProductId(100L + demandCount);
+        vo.setDemandCount(demandCount);
+        vo.setConfirmedDemandCount(confirmedCount);
+        return vo;
     }
 
     private DemandManageBo baseBo(String productType) {

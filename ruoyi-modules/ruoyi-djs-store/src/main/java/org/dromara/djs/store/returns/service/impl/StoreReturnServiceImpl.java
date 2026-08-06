@@ -1197,7 +1197,9 @@ public class StoreReturnServiceImpl
                 BigDecimal cap = maxConfirmQty(existing.getReturnQuantity(), returnProduct);
                 if (cap != null && weighed.compareTo(cap) > 0) {
                     String unit = StringUtils.isBlank(returnProduct.getProductUnit()) ? "" : returnProduct.getProductUnit();
-                    throw new ServiceException("仓库实收数量(" + weighed.stripTrailingZeros().toPlainString()
+                    // row33：件数口径下 mp 那一格的标题已改叫「仓库接收量」，报错文案跟着叫同一个名字——
+                    // 工人在标着「仓库接收量」的框里填数，弹出来却说「仓库实收数量」会以为是另一个字段。
+                    throw new ServiceException("仓库接收量(" + weighed.stripTrailingZeros().toPlainString()
                         + ")不能超过可退上限(" + cap.toPlainString() + ")：门店退回 "
                         + existing.getReturnQuantity().stripTrailingZeros().toPlainString() + unit
                         + " × 计量规则 " + materialRatio(returnProduct).stripTrailingZeros().toPlainString(), 400);

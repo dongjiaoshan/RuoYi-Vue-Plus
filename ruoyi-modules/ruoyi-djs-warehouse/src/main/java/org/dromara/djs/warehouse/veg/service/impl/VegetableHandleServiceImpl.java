@@ -771,6 +771,25 @@ public class VegetableHandleServiceImpl
 
         BigDecimal weight = bo.getHarvestWeight();
         boolean weighDone = bo.getWeighFinish() != null && bo.getWeighFinish() == 1;
+        if (weight == null || weight.signum() < 0) {
+            throw new ServiceException("采摘重量不能为空或负数", 400);
+        }
+
+        // Step 1.0a V6 row28：允许 0 kg 收口 —— 解决「人已经称完、但没人去点完成」导致地块卡在称重中。
+        // 代价是 0 kg 必须真的把「地块是否称重完成」打开：一条既不带重量、又不收口的记录没有任何业务含义。
+        if (weight.signum() == 0 && !weighDone) {
+            throw new ServiceException("采摘重量为 0 时，必须打开「地块是否称重完成」才能提交", 400);
+        }
+
+        // Step 1.0b V6 row28（row64 班组多选的条件化）：去重去空后，>0 的真实称重仍必须选班组
+        // （否则这次重量进不了 row39 班组绩效聚合）；0 kg 收口记录不要求选组 —— 绩效 SQL 本就按
+        // record_weight > 0 过滤，0 摊给谁都是 0，强制选组只会让工人为了收口乱点一个组、污染绩效归属。
+        List<Long> teamIds = bo.getTeamIds() == null ? List.of()
+            : new ArrayList<>(new LinkedHashSet<>(
+                bo.getTeamIds().stream().filter(Objects::nonNull).toList()));
+        if (weight.signum() > 0 && teamIds.isEmpty()) {
+            throw new ServiceException("请选择采摘班组", 400);
+        }
 
         // Step 1.1：勾「地块称重完成」(weighFinish=1) 才能提交的前置门——该地块对应种植采摘必须已完成
         // （种植端 t_plant_plant_details.harvest_status='completed'，dict djs_pick_status「已完成」）。
@@ -791,12 +810,9 @@ public class VegetableHandleServiceImpl
             throw new ServiceException("该地块已称重完成，不能再录入采摘重量");
         }
 
-        // row64：采摘班组多选——去重去空后，旧单列 team_id 写首值作过渡（row39 班组绩效按 team_id
-        // GROUP BY 口径不变），全集写入 t_warehouse_handle_record_team 中间表。
-        List<Long> teamIds = new ArrayList<>(new LinkedHashSet<>(
-            bo.getTeamIds().stream().filter(Objects::nonNull).toList()));
-
         // Step 3：INSERT handle_record（采收）
+        // row64：teamIds 已在 Step 1.0b 去重去空，旧单列 team_id 写首值作过渡（row39 班组绩效按 team_id
+        // GROUP BY 口径不变），全集写入 t_warehouse_handle_record_team 中间表。
         HandleRecord record = new HandleRecord();
         record.setHandleId(handle.getId());
         record.setPlotId(planting.getPlotId());
@@ -876,6 +892,15 @@ public class VegetableHandleServiceImpl
 
         BigDecimal weight = bo.getProcessWeight();
         boolean processDone = bo.getProcessFinish() != null && bo.getProcessFinish() == 1;
+        if (weight == null || weight.signum() < 0) {
+            throw new ServiceException("处理重量不能为空或负数", 400);
+        }
+
+        // Step 2.1 V6 row29：允许 0 kg 收口（口径同 row28 采摘侧）—— 解决「已经处理完、但没人去点完成」。
+        // 同样要求 0 kg 必须真的把「地块是否处理完成」打开，否则这条记录不产生任何业务效果。
+        if (weight.signum() == 0 && !processDone) {
+            throw new ServiceException("处理重量为 0 时，必须打开「地块是否处理完成」才能提交", 400);
+        }
 
         // Step 3：找汇总行（必须先有采摘）
         VegetableHandle handle = baseMapper.selectByPlantingRecordId(planting.getId());
@@ -883,19 +908,23 @@ public class VegetableHandleServiceImpl
             throw new ServiceException("请先录入采摘重量");
         }
 
-        // Step 3.0a 行2：去向（入库 + 月台 + 饲料）累计不得超过采摘累计（客户 2026-06-20，默认 a）。
-        // 三去向均纳入封顶：projected = 已入库 + 已月台 + 已饲料 + 本次 > picked → 拦截（饲料不再豁免）。
-        BigDecimal projectedHandled = nullSafe(handle.getHandledWeight())
-            .add(nullSafe(handle.getFeedWeight()))
-            .add(weight);
-        if (projectedHandled.compareTo(nullSafe(handle.getPickedWeight())) > 0) {
-            throw new ServiceException("果蔬处理重量不得大于果蔬采摘录入重量");
-        }
-
         // row18：处理按产品记账后，地块级封顶不够 —— 它挡不住「把 A 处理得比 A 自己的采摘量还多」，
         // 结果是 A 的分产品剩余变负数、直接显给仓库工人。故再加一道该产品自己的剩余封顶。
         Long selectedProductId = resolveRecordProductId(planting.getCropId(), bo.getProductId());
-        assertWithinProductRemain(handle.getId(), selectedProductId, weight);
+
+        // Step 3.0a 行2：去向（入库 + 月台 + 饲料）累计不得超过采摘累计（客户 2026-06-20，默认 a）。
+        // 三去向均纳入封顶：projected = 已入库 + 已月台 + 已饲料 + 本次 > picked → 拦截（饲料不再豁免）。
+        // row29：0 kg 收口记录跳过两道封顶 —— 它一分不加，封顶对它恒成立；照跑只会让「存量已超采摘量」
+        // 的历史脏行永远收不了口（正是甲方要解决的场景）。
+        if (weight.signum() > 0) {
+            BigDecimal projectedHandled = nullSafe(handle.getHandledWeight())
+                .add(nullSafe(handle.getFeedWeight()))
+                .add(weight);
+            if (projectedHandled.compareTo(nullSafe(handle.getPickedWeight())) > 0) {
+                throw new ServiceException("果蔬处理重量不得大于果蔬采摘录入重量");
+            }
+            assertWithinProductRemain(handle.getId(), selectedProductId, weight);
+        }
 
         // Step 3.0b 序号9-Req2：未「称重完成」(is_weighed=1) 不得标记「处理完成」（客户 2026-06-20）
         if (processDone && (handle.getIsWeighed() == null || handle.getIsWeighed() != 1)) {
@@ -978,10 +1007,15 @@ public class VegetableHandleServiceImpl
 
         // Step 6：去向①入库 → 生成入库流水（产品维度 + 地块编号 + 库位 L0006，spec 步6）；
         //         去向③饲料 → 写饲料台账（按日 × 作物品类，不记地块，spec 步8）
-        if (handleTarget == HANDLE_TARGET_STOCK_IN) {
-            insertVegStockInFlow(handle, planting, stockInLocationId, weight, userId, now, selectedProductId);
-        } else if (handleTarget == HANDLE_TARGET_FEED) {
-            insertFeedLog(planting, weight, userId, now);
+        // row29：0 kg 收口记录不写下游台账 —— 写了会造出 0 kg 的入库流水 + 0 kg 的地块篮子
+        // （location_stock 空篮会进果蔬打包的 FIFO 领用列表）和 0 kg 饲喂行，纯噪声。
+        // handle_record 本身照记（谁在什么时候把这块地收口的，要有痕迹）。
+        if (weight.signum() > 0) {
+            if (handleTarget == HANDLE_TARGET_STOCK_IN) {
+                insertVegStockInFlow(handle, planting, stockInLocationId, weight, userId, now, selectedProductId);
+            } else if (handleTarget == HANDLE_TARGET_FEED) {
+                insertFeedLog(planting, weight, userId, now);
+            }
         }
 
         // Step 6.1：处理完成结算时在 loss_weight 列之上双写统一损耗台账（行59 WMS-LOSS-001）。

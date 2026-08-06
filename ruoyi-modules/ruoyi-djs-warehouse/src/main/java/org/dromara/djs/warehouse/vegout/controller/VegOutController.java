@@ -1,9 +1,11 @@
 package org.dromara.djs.warehouse.vegout.controller;
 
 import cn.dev33.satoken.annotation.SaCheckPermission;
+import jakarta.servlet.http.HttpServletResponse;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.dromara.common.core.domain.R;
+import org.dromara.common.excel.utils.ExcelUtil;
 import org.dromara.common.idempotent.annotation.RepeatSubmit;
 import org.dromara.common.log.annotation.Log;
 import org.dromara.common.log.enums.BusinessType;
@@ -82,6 +84,23 @@ public class VegOutController extends BaseController {
     }
 
     /**
+     * V6 row31 出库单列表导出：按当前筛选条件（出库日期区间 / 出库去向 / 操作人）导出全量，不分页。
+     *
+     * <p>列与页面表格逐列一致（不含「操作」列）：出库单号 / 出库日期 / 出库去向 / 出库果蔬品类数 /
+     * 出库果蔬重量(kg) / 出库金额(元) / 出库操作人。</p>
+     *
+     * @param query    查询条件
+     * @param response HTTP 响应
+     */
+    @SaCheckPermission("djs:warehouse:vegOut:export")
+    @Log(title = "仓库-毛菜间出库管理", businessType = BusinessType.EXPORT)
+    @PostMapping("/export")
+    public void export(VegOutQuery query, HttpServletResponse response) {
+        List<VegOutBatchVo> list = vegOutService.queryBatchList(query);
+        ExcelUtil.exportExcel(list, "毛菜间出库管理", VegOutBatchVo.class, response);
+    }
+
+    /**
      * row187 出库单明细（详情弹框，可按产品名筛）。
      */
     @SaCheckPermission("djs:warehouse:vegOut:query")
@@ -89,6 +108,25 @@ public class VegOutController extends BaseController {
     public R<List<VegOutDetailVo>> detail(@RequestParam String batchNo,
                                           @RequestParam(required = false) String productName) {
         return R.ok(vegOutService.queryBatchDetail(batchNo, productName));
+    }
+
+    /**
+     * V6 row30 出库明细导出：导出这张出库单的产品明细，尊重弹框内的产品名筛选。
+     *
+     * <p>列与详情弹框逐列一致：产品名称 / 规格 / 出库量 / 出库单价(元) / 出库总价(元)。</p>
+     *
+     * @param batchNo     出库单号
+     * @param productName 产品名称（模糊，可空）
+     * @param response    HTTP 响应
+     */
+    @SaCheckPermission("djs:warehouse:vegOut:export")
+    @Log(title = "仓库-毛菜间出库明细", businessType = BusinessType.EXPORT)
+    @PostMapping("/detail/export")
+    public void exportDetail(@RequestParam String batchNo,
+                             @RequestParam(required = false) String productName,
+                             HttpServletResponse response) {
+        List<VegOutDetailVo> list = vegOutService.queryBatchDetailForExport(batchNo, productName);
+        ExcelUtil.exportExcel(list, "出库明细_" + batchNo, VegOutDetailVo.class, response);
     }
 
 }

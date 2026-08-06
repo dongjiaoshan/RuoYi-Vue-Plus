@@ -82,7 +82,16 @@ class DemandDeductGuardTest {
         demand.setId(DEMAND_ID);
         demand.setDemandQuantity(new BigDecimal("10"));
         demand.setShippedCount(new BigDecimal("5"));
-        when(demandManageMapper.selectOldestUncompletedDemand(PRODUCT_ID, STORE_ID)).thenReturn(demand);
+        when(demandManageMapper.selectUncompletedDemands(PRODUCT_ID, STORE_ID))
+            .thenReturn(java.util.List.of(demand));
+    }
+
+    private static DemandManage demandRow(Long id, String qty, String shipped) {
+        DemandManage d = new DemandManage();
+        d.setId(id);
+        d.setDemandQuantity(new BigDecimal(qty));
+        d.setShippedCount(new BigDecimal(shipped));
+        return d;
     }
 
     @Test
@@ -110,11 +119,55 @@ class DemandDeductGuardTest {
     }
 
     @Test
-    @DisplayName("先读校验：本次打包量超剩余份数 → 直接抛，不发 UPDATE")
+    @DisplayName("先读校验：本次打包量超**所有未完成需求行**剩余总量 → 直接抛，一行 UPDATE 都不发")
     void preCheckExceedRemain_throwsWithoutUpdate() {
         assertThatThrownBy(() -> service.deductDemandOnPack(PRODUCT_ID, STORE_ID, new BigDecimal("6")))
             .isInstanceOf(ServiceException.class)
             .hasMessageContaining("剩余");
+
+        verify(demandManageMapper, never()).incrementShipped(anyLong(), anyString(), any());
+    }
+
+    @Test
+    @DisplayName("跨行扣减（V6 row27/row34）：屏幕上的剩余是多行求和，打这个总数必须能扣通，按需求日升序逐行吃")
+    void deductAcrossMultipleDemandRows() {
+        // 今天剩 3（10-7）、明天剩 8（8-0）→ 打包台 chip 显示 11
+        DemandManage today = demandRow(50001L, "10", "7");
+        DemandManage tomorrow = demandRow(50002L, "8", "0");
+        when(demandManageMapper.selectUncompletedDemands(PRODUCT_ID, STORE_ID))
+            .thenReturn(java.util.List.of(today, tomorrow));
+        when(demandManageMapper.incrementShipped(anyLong(), anyString(), any())).thenReturn(1);
+
+        assertThatCode(() -> service.deductDemandOnPack(PRODUCT_ID, STORE_ID, new BigDecimal("11")))
+            .doesNotThrowAnyException();
+
+        // 先把今天那条吃满 3，剩下 8 落到明天那条 —— 顺序与量都要对
+        verify(demandManageMapper).incrementShipped(eq(50001L), eq("1001"), eq(new BigDecimal("3")));
+        verify(demandManageMapper).incrementShipped(eq(50002L), eq("1001"), eq(new BigDecimal("8")));
+    }
+
+    @Test
+    @DisplayName("跨行扣减未吃满：打 5（今天剩 3 + 明天剩 8）→ 今天 3 + 明天 2，明天那条不吃满")
+    void deductPartiallyIntoSecondRow() {
+        when(demandManageMapper.selectUncompletedDemands(PRODUCT_ID, STORE_ID))
+            .thenReturn(java.util.List.of(demandRow(50001L, "10", "7"), demandRow(50002L, "8", "0")));
+        when(demandManageMapper.incrementShipped(anyLong(), anyString(), any())).thenReturn(1);
+
+        service.deductDemandOnPack(PRODUCT_ID, STORE_ID, new BigDecimal("5"));
+
+        verify(demandManageMapper).incrementShipped(eq(50001L), eq("1001"), eq(new BigDecimal("3")));
+        verify(demandManageMapper).incrementShipped(eq(50002L), eq("1001"), eq(new BigDecimal("2")));
+    }
+
+    @Test
+    @DisplayName("超过跨行总量 → 抛且一行都不写（报的是总量，不是第一行的剩余）")
+    void exceedTotalAcrossRows_throwsWithoutAnyUpdate() {
+        when(demandManageMapper.selectUncompletedDemands(PRODUCT_ID, STORE_ID))
+            .thenReturn(java.util.List.of(demandRow(50001L, "10", "7"), demandRow(50002L, "8", "0")));
+
+        assertThatThrownBy(() -> service.deductDemandOnPack(PRODUCT_ID, STORE_ID, new BigDecimal("12")))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("剩余 11");
 
         verify(demandManageMapper, never()).incrementShipped(anyLong(), anyString(), any());
     }

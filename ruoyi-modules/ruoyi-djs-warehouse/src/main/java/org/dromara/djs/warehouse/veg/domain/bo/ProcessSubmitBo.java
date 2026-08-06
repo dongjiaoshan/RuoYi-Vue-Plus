@@ -37,10 +37,14 @@ public class ProcessSubmitBo {
     private Long productId;
 
     /**
-     * 处理重量(kg)，> 0。
+     * 处理重量(kg)，≥ 0。
+     *
+     * <p>V6 row29 允许 0：口径同 {@link HarvestSubmitBo#getHarvestWeight()} —— 0 kg 只有在
+     * {@code processFinish=1}（把地块处理状态收口）时才有意义，服务端 {@code submitProcess} 硬校验；
+     * 负数任何时候都不合法，由本注解拦。</p>
      */
-    @NotNull(message = "{veg.record_weight.required}")
-    @DecimalMin(value = "0.001", message = "{veg.record_weight.positive}")
+    @NotNull(message = "请填写处理重量")
+    @DecimalMin(value = "0", message = "处理重量不能为负数")
     private BigDecimal processWeight;
 
     /**

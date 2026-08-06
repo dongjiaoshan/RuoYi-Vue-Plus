@@ -289,7 +289,9 @@ public class DemandManageServiceImpl extends DjsBaseServiceImpl<DemandManageMapp
     @Override
     public TableDataInfo<DemandGroupVo> queryGroupList(DemandManageQuery query, PageQuery pageQuery) {
         List<DemandGroupVo> all = aggregateGroups(query);
-        // 聚合后内存分页（分组行数小）
+        // 聚合后内存分页（分组行数小）。
+        // ⚠️ 这里只切片、不排序：行序是 mapper ORDER BY 定的「需求确认率升序」（row32），
+        //    在全量列表上排完再切片，第 N 页才不会出现「0% 排在上一页 100% 后面」。别在此处或前端重排。
         int total = all.size();
         int pageNum = pageQuery == null || pageQuery.getPageNum() == null ? 1 : pageQuery.getPageNum();
         int pageSize = pageQuery == null || pageQuery.getPageSize() == null ? 10 : pageQuery.getPageSize();

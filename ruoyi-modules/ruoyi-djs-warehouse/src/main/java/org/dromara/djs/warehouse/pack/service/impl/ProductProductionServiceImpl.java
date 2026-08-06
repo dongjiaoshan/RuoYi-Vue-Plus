@@ -149,6 +149,7 @@ public class ProductProductionServiceImpl
     /** 打包台「当天」时区：与发货月台 {@code SHIP_TODAY_ZONE} 一致，避免非 UTC+8 实例跨日归错天。 */
     private static final ZoneId PACK_TODAY_ZONE = ZoneId.of("Asia/Shanghai");
 
+
     /**
      * 打包实称相对单包规则（{@code product_info.material_num}）的允许超出百分比。
      *
@@ -487,16 +488,18 @@ public class ProductProductionServiceImpl
 
         // 履约门店需求（需求 C）——肉品/干货/其他打包均走此口。发送位置=礼盒 → 礼盒组件，不扣门店直接需求；
         // 其余（发货月台）= 直接履约，须选门店 + 打包即扣需求（发货不再扣）。
-        // 按产品单位分流（Kevin 2026-07-21）：
-        //   · 非 KG（份/盒等）：扣减量恒 1 份（一次打包=1 份，与重量/material_num 无关，不出小数）。
+        // 按产品单位分流：
         //   · KG（散装 kg 等）：称重必须 ≥ 所选门店剩余需求重量，否则拦；满足则把该需求扣满至 COMPLETED
-        //     （客户规则：KG 产品一次称重 ≥ 需求即满足整单，只能重不能少）。
+        //     （客户规则：KG 产品一次称重 ≥ 需求即满足整单，只能重不能少，Kevin 2026-07-21）。
+        //   · 非 KG（枚/份/盒等）：扣减量 = 前端回传的「打包量」packQuantity（甲方 2026-08-06 V6 row34：
+        //     录入 4 枚就扣 4 枚需求）；未回传 packQuantity 的入口（重量模式 / 肉品页 / 老客户端）
+        //     回落原口径「一次打包 = 扣 1 份」，行为不变。
         if (isKgUnit(product.getProductUnit())) {
             fulfillKgDemandOnPack(product.getId(), bo.getStoreId(),
                 bo.getProductWeight(), bo.getDeliverDest());
         } else {
             fulfillDirectDemandOnPack(product.getId(), bo.getStoreId(),
-                resolveDemandDeductQty(product, bo.getProductWeight()), bo.getDeliverDest());
+                resolveDryDemandDeductQty(product, bo.getPackQuantity()), bo.getDeliverDest());
         }
 
         log.info("[WMS-PACK-001] dry pack done id={} produceNo={} weight={} unit={} traceCode={}",
@@ -1586,6 +1589,34 @@ public class ProductProductionServiceImpl
         return BigDecimal.ONE;
     }
 
+    /**
+     * 「其他产品打包」（非 KG 成品）本次应扣的门店需求量 —— 甲方 2026-08-06（V6 row34）改口径。
+     *
+     * <p>原口径是恒扣 1 份（Kevin 2026-07-14），现场表现为「原需求 4 枚，打包量输入 4，需求只减了 1 枚」。
+     * 甲方明确：「如果生产产品单位是非KG时，显示的是打包量，打包量是输入了多少减去对应的量」。</p>
+     *
+     * <p>取值规则：</p>
+     * <ul>
+     *   <li>{@code packQuantity} 有值且 &gt; 0 → 按它扣（前端只在录入框显示「打包量」时才回传，
+     *       即原材料按件计量的其他产品打包；份数模式下它是<b>份数</b>而非原材料消耗量）。</li>
+     *   <li>{@code packQuantity} 为空 / ≤ 0 → 回落 1 份。覆盖三类：重量模式（录入框显示的是产品重量，
+     *       录入 500 是 500 克不是 500 份，按它扣会把需求瞬间清零）、肉品打包页、以及尚未升级的老客户端。</li>
+     * </ul>
+     *
+     * <p>扣减上界仍由 {@link #deductDemandOnPack} 的「不得超过该需求剩余份数」+ {@code incrementShipped}
+     * 的 DB 端原子守卫兜住，本方法只决定量、不负责封顶。</p>
+     *
+     * @param product      目标成品（非 KG 单位）
+     * @param packQuantity 前端回传的打包量（成品单位），可空
+     * @return 应扣需求量（≥ 1 份或前端回传的打包量）
+     */
+    protected BigDecimal resolveDryDemandDeductQty(ProductInfo product, BigDecimal packQuantity) {
+        if (packQuantity != null && packQuantity.signum() > 0) {
+            return packQuantity;
+        }
+        return resolveDemandDeductQty(product, null);
+    }
+
     protected void fulfillDirectDemandOnPack(Long productId, Long storeId, BigDecimal packQty, String deliverDest) {
         if (DELIVER_DEST_GIFT.equals(deliverDest)) {
             // 礼盒组件：不绑门店、不扣直接需求（履约在礼盒打包环节）
@@ -1601,33 +1632,54 @@ public class ProductProductionServiceImpl
         if (storeId == null || productId == null || packQty == null || packQty.signum() <= 0) {
             return;
         }
-        DemandManage demand = demandManageMapper.selectOldestUncompletedDemand(productId, storeId);
-        if (demand == null) {
+        // 打包台屏幕上那个「剩余需求」是**跨行求和**（selectStoreDemandCopies 按门店 SUM，可能同日多行、
+        // 也可能今天 + 明天各一行）。扣减若只吃最早那一行，工人照着屏幕上的 17 份打就会被
+        // 「剩余 9，本次 17」拒掉 —— 屏幕说 17、系统只让打 9，无从解释。
+        // 故一次读齐候选行、先校验总量、再按「需求日升序」逐行扣到打完为止。
+        List<DemandManage> candidates = demandManageMapper.selectUncompletedDemands(productId, storeId);
+        if (candidates.isEmpty()) {
             log.warn("[PACK-DEMAND-DEDUCT] 打包未匹配到未完成需求，跳过扣减 productId={} storeId={} packQty={}",
                 productId, storeId, packQty);
             return;
         }
-        // row53-BE：打包份数硬拦——本次打包量不得超过该需求剩余份数（剩余 = demand_quantity − 已发货）。
-        // 前端「剩余可打包份数」只是软提示；此处先读校验负责给出带剩余数的友好报错，
-        // 并发安全由 incrementShipped 的 DB 端上界守卫（累加 <= demand_quantity 原子判定）兜底。
-        BigDecimal demandQty = demand.getDemandQuantity() == null ? BigDecimal.ZERO : demand.getDemandQuantity();
-        BigDecimal shipped = demand.getShippedCount() == null ? BigDecimal.ZERO : demand.getShippedCount();
-        BigDecimal remain = demandQty.subtract(shipped);
-        if (remain.signum() < 0) {
-            remain = BigDecimal.ZERO;
+        // row53-BE：打包份数硬拦——本次打包量不得超过该门店剩余需求**总量**。
+        // 先读校验负责给出带剩余数的友好报错，且在写任何一行之前就拦下（不依赖调用方事务回滚擦半截写入）；
+        // 并发安全仍由 incrementShipped 的 DB 端上界守卫（累加 <= demand_quantity 原子判定）兜底。
+        BigDecimal totalRemain = BigDecimal.ZERO;
+        for (DemandManage d : candidates) {
+            totalRemain = totalRemain.add(rowRemain(d));
         }
-        if (packQty.compareTo(remain) > 0) {
+        if (packQty.compareTo(totalRemain) > 0) {
             throw new ServiceException("打包份数超过该需求剩余份数：剩余 "
-                + remain.stripTrailingZeros().toPlainString()
+                + totalRemain.stripTrailingZeros().toPlainString()
                 + "，本次 " + packQty.stripTrailingZeros().toPlainString());
         }
-        int rows = demandManageMapper.incrementShipped(demand.getId(), TENANT_V1, packQty);
-        if (rows == 0) {
-            // 上界守卫未命中：并发打包已把剩余份数吃掉（或需求行已删）→ 拒绝本次打包，整事务回滚。
-            throw new ServiceException("打包份数超过该需求剩余份数（存在并发打包），请刷新需求后重试");
+        BigDecimal left = packQty;
+        for (DemandManage demand : candidates) {
+            if (left.signum() <= 0) {
+                break;
+            }
+            BigDecimal take = left.min(rowRemain(demand));
+            if (take.signum() <= 0) {
+                continue;
+            }
+            int rows = demandManageMapper.incrementShipped(demand.getId(), TENANT_V1, take);
+            if (rows == 0) {
+                // 上界守卫未命中：并发打包已把剩余份数吃掉（或需求行已删）→ 拒绝本次打包，整事务回滚。
+                throw new ServiceException("打包份数超过该需求剩余份数（存在并发打包），请刷新需求后重试");
+            }
+            log.info("[PACK-DEMAND-DEDUCT] 打包即扣需求 demandId={} demandDate={} productId={} storeId={} take={} left={}",
+                demand.getId(), demand.getDemandDate(), productId, storeId, take, left.subtract(take));
+            left = left.subtract(take);
         }
-        log.info("[PACK-DEMAND-DEDUCT] 打包即扣需求 demandId={} productId={} storeId={} packQty={} affected={}",
-            demand.getId(), productId, storeId, packQty, rows);
+    }
+
+    /** 单条需求行的剩余量（demand_quantity − shipped_count，负数钳零）。 */
+    private static BigDecimal rowRemain(DemandManage d) {
+        BigDecimal qty = d.getDemandQuantity() == null ? BigDecimal.ZERO : d.getDemandQuantity();
+        BigDecimal shipped = d.getShippedCount() == null ? BigDecimal.ZERO : d.getShippedCount();
+        BigDecimal remain = qty.subtract(shipped);
+        return remain.signum() < 0 ? BigDecimal.ZERO : remain;
     }
 
     /**

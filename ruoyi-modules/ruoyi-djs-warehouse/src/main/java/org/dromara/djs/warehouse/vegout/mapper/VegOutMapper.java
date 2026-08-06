@@ -70,16 +70,17 @@ public interface VegOutMapper {
                                              @Param("productName") String productName);
 
     /**
-     * 出库单列表：按 {@code batch_no} 聚合（品类数 = 去重产品数）。
+     * 出库单聚合 SQL（按 {@code batch_no} 分组），分页列表与导出全量共用一份。
      *
      * <p><b>totalWeight 只累加 kg 行</b>（row194 D7 口径）：候选自 row194 起扩到干货库 / 蛋类库，
      * 单位混杂 kg / 袋 / 桶 / 罐 / 枚，把「3 袋」「100 枚」直接加进 kg 合计会得到一个没有物理意义的数
      * （实测「10kg + 3袋 + 2kg + 100枚」曾被算成 115.000kg，而新增抽屉同一单算的是 12.000kg —— 两处打架）。
      * <b>金额则全部累加</b>，与抽屉汇总行「共 N 个品类 · X kg · ¥Y」同一口径。</p>
      *
-     * @return 分页出库单
+     * <p>抽成常量而不是让导出方法再抄一份：两处口径一旦分叉，导出的合计就会和页面显示的对不上，
+     * 而这正是甲方拿导出去对账的那两列。文本块是编译期常量，可直接用于 {@code @Select}。</p>
      */
-    @Select("""
+    String BATCH_AGG_SQL = """
         <script>
         SELECT f.batch_no                    AS batchNo,
                MIN(f.flow_date)              AS outDate,
@@ -112,12 +113,33 @@ public interface VegOutMapper {
          GROUP BY f.batch_no
          ORDER BY MIN(f.flow_date) DESC, f.batch_no DESC
         </script>
-        """)
+        """;
+
+    /**
+     * 出库单分页列表（row187 页面）。
+     *
+     * @return 分页出库单
+     */
+    @Select(BATCH_AGG_SQL)
     IPage<VegOutBatchVo> selectBatchPage(IPage<VegOutBatchVo> page,
                                          @Param("beginDate") Date beginDate,
                                          @Param("endDate") Date endDate,
                                          @Param("outDest") String outDest,
                                          @Param("operatorId") Long operatorId);
+
+    /**
+     * 出库单全量列表（V6 row31 导出）：同 {@link #selectBatchPage} 的筛选与口径，只是不分页。
+     *
+     * <p>不复用分页方法传一个「够大的 pageSize」—— 那样一旦数据量超过猜的那个数就会静默少导，
+     * 而导出是拿去对账的，少一行看不出来。</p>
+     *
+     * @return 当前筛选条件下的全部出库单
+     */
+    @Select(BATCH_AGG_SQL)
+    List<VegOutBatchVo> selectBatchList(@Param("beginDate") Date beginDate,
+                                        @Param("endDate") Date endDate,
+                                        @Param("outDest") String outDest,
+                                        @Param("operatorId") Long operatorId);
 
     /**
      * 出库单明细：该 {@code batch_no} 下的产品行，可按产品名模糊筛。

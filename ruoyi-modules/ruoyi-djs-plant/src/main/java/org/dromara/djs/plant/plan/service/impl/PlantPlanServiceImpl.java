@@ -15,6 +15,7 @@ import org.dromara.djs.plant.crop.domain.CropInfo;
 import org.dromara.djs.plant.crop.mapper.CropInfoMapper;
 import org.dromara.djs.plant.plan.domain.PlantDetails;
 import org.dromara.djs.plant.plan.domain.PlantPlan;
+import org.dromara.djs.plant.plan.domain.bo.PlantDetailAdjustBo;
 import org.dromara.djs.plant.plan.domain.bo.PlantDetailInputBo;
 import org.dromara.djs.plant.plan.domain.bo.PlantFinishBo;
 import org.dromara.djs.plant.plan.domain.bo.PlantPlanCreateBo;
@@ -83,6 +84,18 @@ import java.util.stream.IntStream;
 public class PlantPlanServiceImpl extends DjsBaseServiceImpl<PlantPlanMapper, PlantPlan>
     implements IPlantPlanService {
 
+    /** 变更类型（字典 {@code djs_plant_change_type}）：小程序操作 —— mp 开工 / 完成写入，也是建表默认值。 */
+    static final String CHANGE_TYPE_MP = "mp";
+    /** 变更类型：后台调整 —— admin 改回待种植 / 改种植日期（V6-R36）。 */
+    static final String CHANGE_TYPE_ADMIN = "admin";
+    /** 变更类型：后台班组调整 —— admin 仅改种植班组（V6-R36）。 */
+    static final String CHANGE_TYPE_ADMIN_TEAM = "admin_team";
+
+    /** {@link PlantDetailAdjustBo#getPlantState()} 取值：保持已种植。 */
+    private static final String PLANT_STATE_PLANTED = "planted";
+    /** {@link PlantDetailAdjustBo#getPlantState()} 取值：回退待种植。 */
+    private static final String PLANT_STATE_PENDING = "pending";
+
     private final PlantDetailsMapper detailsMapper;
     private final CropInfoMapper cropMapper;
     private final PlotInfoMapper plotMapper;
@@ -123,6 +136,25 @@ public class PlantPlanServiceImpl extends DjsBaseServiceImpl<PlantPlanMapper, Pl
     /** 取多选第一个（写旧单列过渡兼容）；空 → null。 */
     private Long firstTeamId(List<Long> effectiveIds) {
         return CollUtil.isEmpty(effectiveIds) ? null : effectiveIds.get(0);
+    }
+
+    /**
+     * 班组 id 必须都真实存在（V6 row36 后台调整入口）。
+     *
+     * <p>空 / null 不校验（= 调用方本轮不改班组，或明确要清空）。存在性按 {@code selectByIds} 反查，
+     * 少一个就整体拒绝并报出缺的那些 id —— 悬空 FK 落库后表现为「班组列空白、绩效统计对不上人」，
+     * 比当场报错难查得多。</p>
+     */
+    private void requireTeamsExist(List<Long> teamIds) {
+        if (CollUtil.isEmpty(teamIds)) {
+            return;
+        }
+        Set<Long> found = teamMapper.selectByIds(teamIds).stream()
+            .map(t -> t.getId()).collect(Collectors.toSet());
+        List<Long> missing = teamIds.stream().filter(id -> !found.contains(id)).toList();
+        if (!missing.isEmpty()) {
+            throw new ServiceException("班组不存在或已删除：" + missing);
+        }
     }
 
     // ============================================================
@@ -544,11 +576,33 @@ public class PlantPlanServiceImpl extends DjsBaseServiceImpl<PlantPlanMapper, Pl
         return plan.getId();
     }
 
+    /**
+     * 计划采摘窗口算法（<b>唯一实现</b>，创建 / mp 开工 / mp 完成 / admin 后台改种植日期 四处共用）：
+     * {@code earliest = 锚点日期 + crop.min_cycle}、{@code last = 锚点日期 + crop.max_cycle}。
+     *
+     * <p>锚点：新建计划用「计划月份 + 旬别」推出的计划开始日；已开工的用实际种植日期 begin_actualdate。</p>
+     *
+     * @return 长度 2 的数组 {earliest, last}；作物 cycle 未配置或锚点为空时返回 null（调用方保留原值）
+     */
+    private LocalDate[] harvestWindow(CropInfo crop, LocalDate anchor) {
+        if (crop == null || anchor == null || crop.getMinCycle() == null || crop.getMaxCycle() == null) {
+            return null;
+        }
+        return new LocalDate[]{anchor.plusDays(crop.getMinCycle()), anchor.plusDays(crop.getMaxCycle())};
+    }
+
     private PlantDetails buildDetail(Long planId, Long cropId, CropInfo crop, PlotInfo plot,
                                      PlantDetailInputBo input, int planYear) {
         LocalDate plantStart = LocalDate.of(planYear, input.getPlantMonth(), periodToDay(input.getPlantPeriod()));
-        LocalDate earliest = plantStart.plusDays(crop.getMinCycle());
-        LocalDate last = plantStart.plusDays(crop.getMaxCycle());
+        LocalDate[] window = harvestWindow(crop, plantStart);
+        // 新建/改明细必须能算出采摘窗口。V6-R36 把这两列放开成 NULL（回退待种植时置空），
+        // 若这里不拦，cycle 未配置的作物会静默插入空采摘窗口 —— 比之前直接报错更难查。
+        if (window == null) {
+            throw new ServiceException("作物 min_cycle / max_cycle 未配置，无法生成计划采摘日期："
+                + (crop == null ? cropId : crop.getCropName()));
+        }
+        LocalDate earliest = window[0];
+        LocalDate last = window[1];
         BigDecimal expected = BigDecimal.ZERO;
         if (plot.getPlotArea() != null && crop.getPredictedPer() != null) {
             expected = plot.getPlotArea().multiply(crop.getPredictedPer());
@@ -991,6 +1045,174 @@ public class PlantPlanServiceImpl extends DjsBaseServiceImpl<PlantPlanMapper, Pl
         return 1;
     }
 
+    // ============================================================
+    // admin 已种植地块后台调整（V6-R36）
+    // ============================================================
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public int adjustPlantedDetail(PlantDetailAdjustBo bo) {
+        if (bo == null || bo.getDetailId() == null) {
+            throw new ServiceException("地块明细 id 为空");
+        }
+        PlantDetails detail = detailsMapper.selectById(bo.getDetailId());
+        if (detail == null) {
+            throw new ServiceException("地块明细不存在或已删除：" + bo.getDetailId());
+        }
+        // 入口门槛：只有「已种植」（有种植记录 = begin_actualdate 非空）的行才允许后台调整。
+        // 未开工的行走计划编辑 / 删除那条路，不从这里改。
+        if (detail.getBeginActualdate() == null) {
+            throw new ServiceException("该地块尚未种植，无法进行后台调整");
+        }
+
+        Long updateBy = currentUserIdSafe();
+        boolean toPending = PLANT_STATE_PENDING.equals(bo.getPlantState());
+
+        if (toPending) {
+            return revertDetailToPending(detail, updateBy);
+        }
+
+        // 保持「已种植」：按实际差异走「改日期」或「仅改班组」，都没变则不写库
+        List<Long> newTeams = bo.getPlantByIds() == null ? null
+            : bo.getPlantByIds().stream().filter(Objects::nonNull).distinct().collect(Collectors.toList());
+        // 班组 id 必须真实存在：接口是公开写口，前端下拉给的是合法 id，但直接打接口能塞任意数字进去，
+        // 那会在 plant_by 和中间表里留下指向不存在班组的悬空 FK（列表显示空白、绩效统计对不上人）。
+        requireTeamsExist(newTeams);
+        boolean dateChanged = bo.getBeginActualdate() != null
+            && !bo.getBeginActualdate().equals(detail.getBeginActualdate());
+        boolean teamChanged = newTeams != null && !sameTeamSet(detail.getId(), newTeams);
+
+        if (dateChanged) {
+            // 分支②：改种植日期（可连带班组）—— 计划采摘窗口按新日期重算（复用 harvestWindow）
+            CropInfo crop = detail.getCropId() == null ? null : cropMapper.selectById(detail.getCropId());
+            LocalDate[] window = harvestWindow(crop, bo.getBeginActualdate());
+            var wrapper = new com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<PlantDetails>()
+                .eq(PlantDetails::getId, detail.getId())
+                .set(PlantDetails::getBeginActualdate, bo.getBeginActualdate())
+                // 单日期口径：种植日期 = 完成日期（同 PlantFinishBo「同时作为 begin_actualdate 与 end_actualdate」）。
+                // 只改 begin 不改 end 会留下「完成日期早于种植日期」的行，甘特图会直接把这对倒置日期画出来。
+                .set(PlantDetails::getEndActualdate, bo.getBeginActualdate())
+                .set(PlantDetails::getChangeType, CHANGE_TYPE_ADMIN)
+                .set(PlantDetails::getUpdateBy, updateBy);
+            if (window != null) {
+                // cycle 未配置的作物：保留原采摘窗口，不擦成空（与 startPlant / finishPlant 同口径）
+                wrapper.set(PlantDetails::getEarliestHarvestdate, window[0])
+                    .set(PlantDetails::getLastHarvestdate, window[1]);
+            }
+            if (newTeams != null) {
+                wrapper.set(PlantDetails::getPlantBy, firstTeamId(newTeams));
+            }
+            detailsMapper.update(null, wrapper);
+            if (newTeams != null) {
+                teamLinkService.syncDetailTeams(detail.getId(), PlantTeamLinkService.ROLE_PLANT, newTeams);
+            }
+            // 明细采摘窗口变了 → 主表 earliest/last_harvestdate 聚合重算（详情头部取主表）
+            baseMapper.recalcAggregates(detail.getPlantId());
+            return 1;
+        }
+
+        if (teamChanged) {
+            // 分支③：仅改班组 —— 除班组外一律不动（不碰日期 / 状态 / 采摘窗口）
+            detailsMapper.update(null,
+                new com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<PlantDetails>()
+                    .eq(PlantDetails::getId, detail.getId())
+                    .set(PlantDetails::getPlantBy, firstTeamId(newTeams))
+                    .set(PlantDetails::getChangeType, CHANGE_TYPE_ADMIN_TEAM)
+                    .set(PlantDetails::getUpdateBy, updateBy));
+            teamLinkService.syncDetailTeams(detail.getId(), PlantTeamLinkService.ROLE_PLANT, newTeams);
+            return 1;
+        }
+
+        // 分支④：状态 / 日期 / 班组都没动 —— 不写库、不留痕（甲方第 5 点）
+        return 0;
+    }
+
+    /**
+     * 分支①：把已种植的明细整体回退成「待种植」。
+     *
+     * <p>回写内容：{@code plant_status='pending'}、清 {@code begin_actualdate / end_actualdate}、
+     * 清计划采摘窗口 {@code earliest_harvestdate / last_harvestdate}（甲方「计划采摘日期调整为空」）、
+     * 清种植班组（旧单列 + 中间表 role=plant）、{@code change_type='admin'}；随后该地块若无其它在种明细
+     * 则释放回空闲，并重算主表聚合与派生状态。</p>
+     *
+     * <p>⚠️ 拒绝条件：采摘已开始 / 已有实际产量。这类行下游已挂采摘记录、毛菜处理、产量台账，
+     * 回退成待种植会留孤儿数据且无法自愈，故直接阻断而不是"尽力回退"。</p>
+     */
+    private int revertDetailToPending(PlantDetails detail, Long updateBy) {
+        boolean picked = detail.getBeginHarvestdate() != null
+            || (detail.getHarvestStatus() != null && !"pending".equals(detail.getHarvestStatus()))
+            || (detail.getActualYield() != null && detail.getActualYield().compareTo(BigDecimal.ZERO) > 0);
+        if (picked) {
+            throw new ServiceException("该地块已开始采摘或已有实际产量，不能改回待种植；"
+                + "如需回退请先处理采摘记录");
+        }
+
+        detailsMapper.update(null,
+            new com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<PlantDetails>()
+                .eq(PlantDetails::getId, detail.getId())
+                .set(PlantDetails::getPlantStatus, "pending")
+                .set(PlantDetails::getBeginActualdate, null)
+                .set(PlantDetails::getEndActualdate, null)
+                .set(PlantDetails::getEarliestHarvestdate, null)
+                .set(PlantDetails::getLastHarvestdate, null)
+                .set(PlantDetails::getPlantBy, null)
+                .set(PlantDetails::getChangeType, CHANGE_TYPE_ADMIN)
+                .set(PlantDetails::getUpdateBy, updateBy));
+        // 种植记录没了 → 种植班组关联一并清空，避免"待种植却挂着种植班组"
+        teamLinkService.syncDetailTeams(detail.getId(), PlantTeamLinkService.ROLE_PLANT, Collections.emptyList());
+
+        releasePlotIfNoActiveDetail(detail.getPlotId(), detail.getId(), updateBy);
+
+        baseMapper.recalcAggregates(detail.getPlantId());
+        baseMapper.recalcPlanStatus(detail.getPlantId());
+        return 1;
+    }
+
+    /**
+     * 该地块除 {@code excludeDetailId} 外若已无「在种」明细（已开工且未采完），把地块放回空闲
+     * {@code plot_status=1}。
+     *
+     * <p>不放回的话 {@link #assertPlotsIdle} 会把这块地永久锁死 —— mp 端再也无法对它「开始种植」，
+     * 后台一撤销就变成死地块。同地块多茬并存时（另有在种明细）保持原状态不动。</p>
+     */
+    private void releasePlotIfNoActiveDetail(Long plotId, Long excludeDetailId, Long updateBy) {
+        if (plotId == null) {
+            return;
+        }
+        Long active = detailsMapper.selectCount(
+            new LambdaQueryWrapper<PlantDetails>()
+                .eq(PlantDetails::getPlotId, plotId)
+                .ne(PlantDetails::getId, excludeDetailId)
+                .isNotNull(PlantDetails::getBeginActualdate)
+                .ne(PlantDetails::getHarvestStatus, "completed"));
+        if (active != null && active > 0) {
+            return;
+        }
+        plotMapper.update(null,
+            new com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<PlotInfo>()
+                .eq(PlotInfo::getId, plotId)
+                .set(PlotInfo::getPlotStatus, 1)
+                .set(PlotInfo::getUpdateBy, updateBy));
+    }
+
+    /**
+     * 判断提交的班组全集与库里现存的是否一致（无序比较）。
+     *
+     * <p>库里以中间表 {@code t_plant_details_team} role=plant 为准；中间表为空时回落旧单列
+     * {@code plant_by}（历史行未回填场景），与 {@link #enrichDetails} 的回显口径一致，
+     * 否则会把"其实没改"误判成改了、白写一条 change_type。</p>
+     */
+    private boolean sameTeamSet(Long detailId, List<Long> incoming) {
+        Map<String, List<Long>> roleIds = teamLinkService.detailTeamIds(List.of(detailId))
+            .getOrDefault(detailId, Map.of());
+        List<Long> current = roleIds.get(PlantTeamLinkService.ROLE_PLANT);
+        if (CollUtil.isEmpty(current)) {
+            PlantDetails d = detailsMapper.selectById(detailId);
+            current = (d == null || d.getPlantBy() == null) ? Collections.emptyList() : List.of(d.getPlantBy());
+        }
+        return new java.util.HashSet<>(current).equals(new java.util.HashSet<>(incoming));
+    }
+
     /**
      * 明细软删：基类 softDelete 是泛型 T = PlantPlan，明细需要独立实现。
      * 直接 wrapper-only update 模式与基类一致。
@@ -1197,6 +1419,8 @@ public class PlantPlanServiceImpl extends DjsBaseServiceImpl<PlantPlanMapper, Pl
                 .set(PlantDetails::getBeginActualdate, bo.getBeginActualdate())
                 .set(PlantDetails::getPlantBy, primaryPlantTeam)
                 .set(PlantDetails::getPlantStatus, "ongoing")
+                // V6-R36：mp 开工即「小程序操作」，把可能存在的后台调整痕迹翻回 mp
+                .set(PlantDetails::getChangeType, CHANGE_TYPE_MP)
                 .set(PlantDetails::getUpdateBy, updateBy));
         // 班组多选中间表 sync（role=plant）：所选各明细同一套种植班组全集
         for (Long detailId : startableDetailIds) {
@@ -1218,12 +1442,13 @@ public class PlantPlanServiceImpl extends DjsBaseServiceImpl<PlantPlanMapper, Pl
                 .collect(Collectors.toMap(CropInfo::getId, c -> c, (a, b) -> a));
         for (PlantDetails d : startables) {
             CropInfo crop = d.getCropId() == null ? null : cropMap.get(d.getCropId());
-            if (crop == null || crop.getMinCycle() == null || crop.getMaxCycle() == null) {
+            LocalDate[] window = harvestWindow(crop, bo.getBeginActualdate());
+            if (window == null) {
                 // cycle 未配置：跳过重算，保留创建时按计划旬别算出的原值
                 continue;
             }
-            LocalDate earliest = bo.getBeginActualdate().plusDays(crop.getMinCycle());
-            LocalDate last = bo.getBeginActualdate().plusDays(crop.getMaxCycle());
+            LocalDate earliest = window[0];
+            LocalDate last = window[1];
             detailsMapper.update(null,
                 new com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<PlantDetails>()
                     .eq(PlantDetails::getId, d.getId())
@@ -1323,6 +1548,8 @@ public class PlantPlanServiceImpl extends DjsBaseServiceImpl<PlantPlanMapper, Pl
                     .in(PlantDetails::getId, backfillIds)
                     .set(PlantDetails::getBeginActualdate, completeDate)
                     .set(PlantDetails::getPlantBy, primaryPlantTeam)
+                    // V6-R36：mp 一步落地即「小程序操作」，把可能存在的后台调整痕迹翻回 mp
+                    .set(PlantDetails::getChangeType, CHANGE_TYPE_MP)
                     .set(PlantDetails::getUpdateBy, updateBy));
             // 班组多选中间表 sync（role=plant）
             for (Long detailId : backfillIds) {
@@ -1338,12 +1565,13 @@ public class PlantPlanServiceImpl extends DjsBaseServiceImpl<PlantPlanMapper, Pl
                     .collect(Collectors.toMap(CropInfo::getId, c -> c, (a, b) -> a));
             for (PlantDetails d : needBackfill) {
                 CropInfo crop = d.getCropId() == null ? null : cropMap.get(d.getCropId());
-                if (crop == null || crop.getMinCycle() == null || crop.getMaxCycle() == null) {
+                LocalDate[] window = harvestWindow(crop, completeDate);
+                if (window == null) {
                     // cycle 未配置：跳过重算，保留创建时按计划旬别算出的原值
                     continue;
                 }
-                LocalDate earliest = completeDate.plusDays(crop.getMinCycle());
-                LocalDate last = completeDate.plusDays(crop.getMaxCycle());
+                LocalDate earliest = window[0];
+                LocalDate last = window[1];
                 detailsMapper.update(null,
                     new com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<PlantDetails>()
                         .eq(PlantDetails::getId, d.getId())

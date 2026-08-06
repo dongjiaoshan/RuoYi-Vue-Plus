@@ -22,6 +22,9 @@ import org.dromara.djs.warehouse.veg.mapper.FeedLogMapper;
 import org.dromara.djs.warehouse.veg.mapper.VegetableHandleMapper;
 import org.dromara.djs.warehouse.vegout.domain.bo.VegOutItemBo;
 import org.dromara.djs.warehouse.vegout.domain.bo.VegOutSubmitBo;
+import org.dromara.djs.warehouse.vegout.domain.query.VegOutQuery;
+import org.dromara.djs.warehouse.vegout.domain.vo.VegOutBatchVo;
+import org.dromara.djs.warehouse.vegout.domain.vo.VegOutDetailVo;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -332,6 +335,65 @@ class VegOutServiceImplTest {
             // D3：非果蔬不累加毛菜处理送月台重量（那是果蔬专属报表，混入会污染）
             verify(vegetableHandleMapper, never()).updateById(any(VegetableHandle.class));
         }
+    }
+
+    @Test
+    @DisplayName("V6 row31 导出：走不分页的 selectBatchList 并回填操作人姓名（口径与列表一致）")
+    void exportList_usesUnpagedQueryAndFillsOperatorName() {
+        VegOutBatchVo row = new VegOutBatchVo();
+        row.setBatchNo("0000006");
+        row.setOperatorId(7L);
+        row.setTotalWeight(new BigDecimal("12.000"));
+        row.setTotalAmount(new BigDecimal("120.00"));
+        Date begin = new Date(0L);
+        Date end = new Date();
+        when(vegOutMapper.selectBatchList(begin, end, "kitchen", 7L)).thenReturn(new java.util.ArrayList<>(List.of(row)));
+        when(userService.selectNicknameById(7L)).thenReturn("张三");
+
+        VegOutQuery q = new VegOutQuery();
+        q.setBeginDate(begin);
+        q.setEndDate(end);
+        q.setOutDest("kitchen");
+        q.setOperatorId(7L);
+        List<VegOutBatchVo> rows = service.queryBatchList(q);
+
+        assertThat(rows).hasSize(1);
+        // 导出必须带出姓名而不是裸 id —— 列表页显示的就是姓名，甲方拿导出对账
+        assertThat(rows.get(0).getOperatorName()).isEqualTo("张三");
+        assertThat(rows.get(0).getBatchNo()).isEqualTo("0000006");
+        // 不得退化成「分页查一个够大的 pageSize」
+        verify(vegOutMapper).selectBatchList(begin, end, "kitchen", 7L);
+        verify(vegOutMapper, never()).selectBatchPage(any(), any(), any(), any(), any());
+    }
+
+    @Test
+    @DisplayName("V6 row30 导出：出库量按单位派生带单位串（kg 三位小数 / 计件去尾零），与详情弹框显示一致")
+    void exportDetail_derivesQtyLabelPerUnit() {
+        when(vegOutMapper.selectBatchDetail("0000006", "青")).thenReturn(new java.util.ArrayList<>(List.of(
+            mkDetail("上海青", "kg", "12"),
+            mkDetail("大米", "袋", "3.000"),
+            mkDetail("土鸡蛋", null, "0.5"))));
+
+        List<VegOutDetailVo> rows = service.queryBatchDetailForExport("0000006", "青");
+
+        assertThat(rows).extracting(VegOutDetailVo::getOutQtyLabel)
+            // 单位缺失按 kg 处理，否则 0.5kg 会印成没有单位的裸 0.5
+            .containsExactly("12.000kg", "3 袋", "0.500kg");
+    }
+
+    @Test
+    @DisplayName("V6 row30 导出：单号为空直接返空，不打 mapper（防前端裸调）")
+    void exportDetail_blankBatchNo_returnsEmpty() {
+        assertThat(service.queryBatchDetailForExport("  ", null)).isEmpty();
+        verify(vegOutMapper, never()).selectBatchDetail(any(), any());
+    }
+
+    private VegOutDetailVo mkDetail(String name, String unit, String qty) {
+        VegOutDetailVo d = new VegOutDetailVo();
+        d.setProductName(name);
+        d.setProductUnit(unit);
+        d.setOutWeight(new BigDecimal(qty));
+        return d;
     }
 
     @Test

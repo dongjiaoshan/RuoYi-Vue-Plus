@@ -234,11 +234,44 @@ public class VegOutServiceImpl implements IVegOutService {
     }
 
     @Override
+    public List<VegOutBatchVo> queryBatchList(VegOutQuery query) {
+        VegOutQuery q = query != null ? query : new VegOutQuery();
+        List<VegOutBatchVo> rows = vegOutMapper.selectBatchList(
+            q.getBeginDate(), q.getEndDate(), q.getOutDest(), q.getOperatorId());
+        fillOperatorNames(rows);
+        return rows;
+    }
+
+    @Override
     public List<VegOutDetailVo> queryBatchDetail(String batchNo, String productName) {
         if (StringUtils.isBlank(batchNo)) {
             return List.of();
         }
         return vegOutMapper.selectBatchDetail(batchNo, productName);
+    }
+
+    @Override
+    public List<VegOutDetailVo> queryBatchDetailForExport(String batchNo, String productName) {
+        List<VegOutDetailVo> rows = queryBatchDetail(batchNo, productName);
+        rows.forEach(r -> r.setOutQtyLabel(formatQtyLabel(r.getOutWeight(), r.getProductUnit())));
+        return rows;
+    }
+
+    /**
+     * 「出库量」带单位展示串 —— 与详情弹框 {@code fmtQty} 逐字对齐（甲方拿导出跟弹框对账）。
+     *
+     * <p>kg 或单位缺失 → 3 位小数 + {@code kg}（如 {@code 12.000kg}）；
+     * 其余计件单位 → 去尾零的数值 + 空格 + 单位（如 {@code 3 袋}）。</p>
+     */
+    private static String formatQtyLabel(BigDecimal qty, String unit) {
+        if (qty == null) {
+            return "";
+        }
+        String u = unit != null ? unit.trim() : "";
+        if (u.isEmpty() || "kg".equalsIgnoreCase(u)) {
+            return qty.setScale(3, java.math.RoundingMode.HALF_UP).toPlainString() + "kg";
+        }
+        return qty.stripTrailingZeros().toPlainString() + " " + u;
     }
 
     /**

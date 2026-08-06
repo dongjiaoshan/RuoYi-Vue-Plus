@@ -670,6 +670,164 @@ class VegetableHandleServiceImplTest {
         assertThat(upd.getHandleStatus()).isEqualTo("done");
     }
 
+    // -------- V6 row28 / row29：0 kg 收口（重量为 0 也能把地块推到完成）--------
+
+    /**
+     * 采摘录入 BO（V6 row28 四种组合共用）。
+     *
+     * @param weight      采摘重量
+     * @param weighFinish 地块是否称重完成 1=是 / 0=否
+     * @param teamIds     采摘班组（传 null 模拟「不选绩效组」）
+     */
+    private org.dromara.djs.warehouse.veg.domain.bo.HarvestSubmitBo harvestBo(
+        String weight, int weighFinish, List<Long> teamIds) {
+        org.dromara.djs.warehouse.veg.domain.bo.HarvestSubmitBo bo =
+            new org.dromara.djs.warehouse.veg.domain.bo.HarvestSubmitBo();
+        bo.setPlantingRecordId(60001L);
+        bo.setHarvestWeight(new BigDecimal(weight));
+        bo.setWeighFinish(weighFinish);
+        bo.setWeighUserId(9001L);
+        bo.setTeamIds(teamIds);
+        return bo;
+    }
+
+    /** 未称重完成的汇总行（isWeighed=2），采摘录入的正常前置状态 */
+    private VegetableHandle harvestHandle(String picked) {
+        VegetableHandle h = new VegetableHandle();
+        h.setId(70001L);
+        h.setPlantingRecordId(60001L);
+        h.setPlotId(11001L);
+        h.setCropId(12001L);
+        h.setPickedWeight(new BigDecimal(picked));
+        h.setHandledWeight(BigDecimal.ZERO);
+        h.setFeedWeight(BigDecimal.ZERO);
+        h.setSendPlatformWeight(BigDecimal.ZERO);
+        h.setStockInWeight(BigDecimal.ZERO);
+        h.setLossWeight(BigDecimal.ZERO);
+        h.setIsWeighed(2);
+        h.setHandleStatus("processing");
+        return h;
+    }
+
+    @Test
+    @DisplayName("row28①：重量 0 + 称重完成=是 → 提交成功，落 0 kg 记录 + is_weighed 推 1，picked 不变")
+    void testHarvest_ZeroWeight_WeighFinish_Ok() {
+        when(plantingRecordMapper.selectById(60001L)).thenReturn(samplePlanting("processing"));
+        when(handleMapper.selectByPlantingRecordId(60001L)).thenReturn(harvestHandle("50.000"));
+        // weighFinish=1 的前置门：种植端该地块采摘已完成
+        when(plantDetailsMapper.selectCount(any())).thenReturn(1L);
+
+        Long handleId = service.submitHarvest(harvestBo("0", 1, List.of(30001L)));
+        assertThat(handleId).isEqualTo(70001L);
+
+        ArgumentCaptor<HandleRecord> recCap = ArgumentCaptor.forClass(HandleRecord.class);
+        verify(recordMapper, times(1)).insert(recCap.capture());
+        assertThat(recCap.getValue().getRecordWeight()).isEqualByComparingTo("0");
+        assertThat(recCap.getValue().getIsWeighed()).isEqualTo(1);
+
+        // 聚合：picked 加 0 仍是 50（不能变 NULL，否则汇总脏），is_weighed 推 1
+        ArgumentCaptor<VegetableHandle> updCap = ArgumentCaptor.forClass(VegetableHandle.class);
+        verify(handleMapper, times(1)).updateById(updCap.capture());
+        assertThat(updCap.getValue().getPickedWeight()).isEqualByComparingTo("50.000");
+        assertThat(updCap.getValue().getIsWeighed()).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("row28②：重量 0 + 称重完成=否 → 抛「必须打开地块是否称重完成」，不落库")
+    void testHarvest_ZeroWeight_NoFinish_Rejected() {
+        when(plantingRecordMapper.selectById(60001L)).thenReturn(samplePlanting("processing"));
+        when(handleMapper.selectByPlantingRecordId(60001L)).thenReturn(harvestHandle("50.000"));
+
+        assertThatThrownBy(() -> service.submitHarvest(harvestBo("0", 0, List.of(30001L))))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("必须打开「地块是否称重完成」");
+
+        verify(recordMapper, never()).insert(any(HandleRecord.class));
+        verify(handleMapper, never()).updateById(any(VegetableHandle.class));
+    }
+
+    @Test
+    @DisplayName("row28③：重量 0 + 称重完成=是 + 不选绩效组 → 提交成功，team_id 留空、中间表不写行")
+    void testHarvest_ZeroWeight_WeighFinish_NoTeam_Ok() {
+        when(plantingRecordMapper.selectById(60001L)).thenReturn(samplePlanting("processing"));
+        when(handleMapper.selectByPlantingRecordId(60001L)).thenReturn(harvestHandle("50.000"));
+        when(plantDetailsMapper.selectCount(any())).thenReturn(1L);
+
+        // teamIds=null 模拟 mp 完全不传班组字段（比空数组更极端，服务端不得 NPE）
+        Long handleId = service.submitHarvest(harvestBo("0", 1, null));
+        assertThat(handleId).isEqualTo(70001L);
+
+        ArgumentCaptor<HandleRecord> recCap = ArgumentCaptor.forClass(HandleRecord.class);
+        verify(recordMapper, times(1)).insert(recCap.capture());
+        assertThat(recCap.getValue().getTeamId()).isNull();
+        // 班组多选中间表一行都不写（0 kg 不进 row39 绩效聚合）
+        verify(recordTeamMapper, never())
+            .insert(any(org.dromara.djs.warehouse.veg.domain.HandleRecordTeam.class));
+    }
+
+    @Test
+    @DisplayName("row28④：重量 > 0 + 不选绩效组 → 仍抛「请选择采摘班组」，不落库（原口径不放宽）")
+    void testHarvest_PositiveWeight_NoTeam_Rejected() {
+        when(plantingRecordMapper.selectById(60001L)).thenReturn(samplePlanting("processing"));
+        when(handleMapper.selectByPlantingRecordId(60001L)).thenReturn(harvestHandle("50.000"));
+        when(plantDetailsMapper.selectCount(any())).thenReturn(1L);
+
+        assertThatThrownBy(() -> service.submitHarvest(harvestBo("12.500", 0, List.of())))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("请选择采摘班组");
+        // 连 null 也一样拦
+        assertThatThrownBy(() -> service.submitHarvest(harvestBo("12.500", 1, null)))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("请选择采摘班组");
+
+        verify(recordMapper, never()).insert(any(HandleRecord.class));
+        verify(handleMapper, never()).updateById(any(VegetableHandle.class));
+    }
+
+    @Test
+    @DisplayName("row29①：处理重量 0 + 处理完成=是 → 收口成功（done），不写 0 kg 的入库流水 / 饲料台账")
+    void testProcess_ZeroWeight_ProcessFinish_Ok() {
+        when(plantingRecordMapper.selectById(60001L)).thenReturn(samplePlanting("processing"));
+        // picked=50 已全部处理完（handled=50），现场只差点「处理完成」→ 0 kg 收口
+        when(handleMapper.selectByPlantingRecordId(60001L)).thenReturn(sampleHandle("50.000", "50.000", 1));
+        when(plantingRecordMapper.advanceHandleStatus(anyLong(), any(), any(), anyLong())).thenReturn(1);
+
+        // 去向③饲料：0 kg 不得写 feed_log
+        service.submitProcess(processBo(3, "0", 1));
+
+        ArgumentCaptor<HandleRecord> recCap = ArgumentCaptor.forClass(HandleRecord.class);
+        verify(recordMapper, times(1)).insert(recCap.capture());
+        assertThat(recCap.getValue().getRecordWeight()).isEqualByComparingTo("0");
+        assertThat(recCap.getValue().getIsFinish()).isEqualTo(1);
+
+        ArgumentCaptor<VegetableHandle> updCap = ArgumentCaptor.forClass(VegetableHandle.class);
+        verify(handleMapper, times(1)).updateById(updCap.capture());
+        VegetableHandle upd = updCap.getValue();
+        // 各重量加 0 后原值不变（不得变 NULL）
+        assertThat(upd.getHandledWeight()).isEqualByComparingTo("50.000");
+        assertThat(upd.getFeedWeight()).isEqualByComparingTo("0");
+        assertThat(upd.getIsFinish()).isEqualTo(1);
+        assertThat(upd.getHandleStatus()).isEqualTo("done");
+
+        verify(feedLogMapper, never()).insert(any(org.dromara.djs.warehouse.veg.domain.FeedLog.class));
+        verify(stockFlowMapper, never()).insert(any(StockFlow.class));
+        verify(plantingRecordMapper).advanceHandleStatus(eq(60001L), eq("processing"), eq("done"), eq(9001L));
+    }
+
+    @Test
+    @DisplayName("row29②：处理重量 0 + 处理完成=否 → 抛「必须打开地块是否处理完成」，不落库")
+    void testProcess_ZeroWeight_NoFinish_Rejected() {
+        when(plantingRecordMapper.selectById(60001L)).thenReturn(samplePlanting("processing"));
+        when(handleMapper.selectByPlantingRecordId(60001L)).thenReturn(sampleHandle("50.000", "10.000", 1));
+
+        assertThatThrownBy(() -> service.submitProcess(processBo(2, "0", 0)))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("必须打开「地块是否处理完成」");
+
+        verify(recordMapper, never()).insert(any(HandleRecord.class));
+        verify(handleMapper, never()).updateById(any(VegetableHandle.class));
+    }
+
     // -------- 采摘明细只读列表（FIX-ADMIN-0721） --------
 
     @Test

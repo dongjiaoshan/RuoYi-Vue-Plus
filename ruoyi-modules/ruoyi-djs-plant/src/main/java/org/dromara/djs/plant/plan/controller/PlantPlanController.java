@@ -11,6 +11,7 @@ import org.dromara.common.log.enums.BusinessType;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.web.core.BaseController;
+import org.dromara.djs.plant.plan.domain.bo.PlantDetailAdjustBo;
 import org.dromara.djs.plant.plan.domain.bo.PlantPlanCreateBo;
 import org.dromara.djs.plant.plan.domain.bo.PlantPlanUpdateBo;
 import org.dromara.djs.plant.plan.domain.query.PlantPlanQuery;
@@ -46,6 +47,7 @@ import java.util.List;
  *   <li>POST /add                 向导 3 步合一提交（{@link PlantPlanCreateBo}）</li>
  *   <li>PUT  /edit                编辑（{@link PlantPlanUpdateBo}）</li>
  *   <li>DELETE /remove/{ids}      批量软删</li>
+ *   <li>PUT  /detail/adjust      已种植地块后台调整（{@link PlantDetailAdjustBo}，V6-R36）</li>
  *   <li>POST /export              导出</li>
  *   <li>GET  /{id}/gantt          甘特图数据（简化双甘特图）</li>
  *   <li>GET  /availablePlots      向导 step3 按片区分组的地块清单</li>
@@ -130,6 +132,20 @@ public class PlantPlanController extends BaseController {
     public R<Void> removeDetail(@PathVariable Long detailId) {
         plantPlanService.removePlanDetail(detailId);
         return R.ok();
+    }
+
+    /**
+     * 已种植地块后台调整（V6-R36）：改回待种植 / 改种植日期 / 仅改班组。
+     *
+     * <p>权限复用 {@code djs:plant:plan:edit}（菜单 8073「计划编辑」），不新建菜单。
+     * 返回 1=已调整；0=三项均无变化、系统未做任何处理（甲方第 5 点）。</p>
+     */
+    @SaCheckPermission("djs:plant:plan:edit")
+    @Log(title = "种植-已种植地块调整", businessType = BusinessType.UPDATE)
+    @RepeatSubmit
+    @PutMapping("/detail/adjust")
+    public R<Integer> adjustPlantedDetail(@Validated @RequestBody PlantDetailAdjustBo bo) {
+        return R.ok(plantPlanService.adjustPlantedDetail(bo));
     }
 
     @SaCheckPermission("djs:plant:plan:ganttView")

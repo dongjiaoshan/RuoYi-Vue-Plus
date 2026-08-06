@@ -43,6 +43,23 @@ public class DryPackBo {
     private Boolean allowOverMeasure;
 
     /**
+     * 本次打包的<b>成品数量</b>（V6 row27/row34，单位 = 成品自身单位，如 4 枚 / 2 份）。
+     *
+     * <p>与 {@link #getProductWeight()} 的区别：{@code productWeight} 落库的是<b>原材料消耗量</b>
+     * （份数模式下 = 打包量 × 每份计量规则，如 2 份 × 30 枚 = 60 枚），而门店需求是按<b>成品数量</b>
+     * 下的单，两者量纲不同，不能混用。</p>
+     *
+     * <p>仅「其他产品打包」页在录入框显示「打包量」时（原材料按件计量，如鸡蛋=枚）回传；
+     * 重量模式（原材料按 kg 计量，录入的是重量而非件数）与其余打包页均<b>不传</b>，
+     * 服务端回落原口径「一次打包 = 扣 1 份」。</p>
+     *
+     * <p>甲方 2026-08-06（V6 row34）：「如果生产产品单位是非KG时，显示的是打包量，打包量是输入了多少
+     * 减去对应的量」——即录入 4 枚就扣 4 枚需求，而非恒扣 1。</p>
+     */
+    @DecimalMin(value = "0", message = "打包量不能为负数")
+    private BigDecimal packQuantity;
+
+    /**
      * 计量单位 {@code kg / 个}。
      */
     @NotBlank(message = "{pack.product_unit.required}")

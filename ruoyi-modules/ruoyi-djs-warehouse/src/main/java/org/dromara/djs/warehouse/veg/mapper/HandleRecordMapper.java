@@ -76,6 +76,10 @@ public interface HandleRecordMapper extends BaseMapperPlus<HandleRecord, HandleR
          WHERE r.record_type = 1
            AND r.del_flag = '0'
            AND r.tenant_id = '1001'
+           <!-- V6 row28 起可提交 0 kg 采摘记录给地块收口（「已称完但没人点完成」）。
+                这类记录不是一次真实采摘，不该出现在采摘明细里，也不该进导出。
+                同一个 UNION ALL 的采摘活动分支本来就带 a.daily_weight &gt; 0，这里补齐口径。 -->
+           AND r.record_weight &gt; 0
            <if test="q.pickDateBegin != null">
              AND DATE(r.handle_time) &gt;= #{q.pickDateBegin}
            </if>
@@ -219,6 +223,9 @@ public interface HandleRecordMapper extends BaseMapperPlus<HandleRecord, HandleR
                  ON u.user_id = COALESCE(r.handle_user, r.create_by) AND u.del_flag = '0'
          WHERE r.del_flag = '0' AND r.tenant_id = #{tenantId}
            AND r.record_type = 2 AND r.handle_target IN (1, 2, 3)
+           <!-- V6 row29 起可提交 0 kg 处理记录给地块收口，它不是一次真实处理，不进处理记录列表。
+                本 UNION 的另外两支已各自带 h.loss_weight &gt; 0 / COALESCE(a.pick_weight,a.daily_weight) &gt; 0，这里补齐。 -->
+           AND r.record_weight &gt; 0
         UNION ALL
         SELECT COALESCE(h.update_time, h.create_time) AS handleDate,
                c.crop_name   AS cropName,

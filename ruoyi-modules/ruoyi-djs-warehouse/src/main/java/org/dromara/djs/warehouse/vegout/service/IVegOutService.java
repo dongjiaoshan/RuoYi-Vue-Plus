@@ -44,11 +44,29 @@ public interface IVegOutService {
     TableDataInfo<VegOutBatchVo> queryBatchPage(VegOutQuery query, PageQuery pageQuery);
 
     /**
+     * 出库单全量列表（V6 row31 导出）：与 {@link #queryBatchPage} 同筛选同口径，不分页。
+     *
+     * @param query 查询条件（出库日期区间 / 出库去向 / 操作人，与页面搜索框一致）
+     */
+    List<VegOutBatchVo> queryBatchList(VegOutQuery query);
+
+    /**
      * 出库单明细（row187 详情弹框）。
      *
      * @param batchNo     出库单号
      * @param productName 产品名称（模糊，可空）
      */
     List<VegOutDetailVo> queryBatchDetail(String batchNo, String productName);
+
+    /**
+     * 出库单明细导出行（V6 row30）：同 {@link #queryBatchDetail}，额外派生带单位的「出库量」展示列。
+     *
+     * <p>单开一个方法而不是在 {@code queryBatchDetail} 里顺手填：明细接口是详情弹框在跑的线上路径，
+     * 不为导出改它的响应内容。</p>
+     *
+     * @param batchNo     出库单号
+     * @param productName 产品名称（模糊，可空；与弹框内搜索框一致）
+     */
+    List<VegOutDetailVo> queryBatchDetailForExport(String batchNo, String productName);
 
 }

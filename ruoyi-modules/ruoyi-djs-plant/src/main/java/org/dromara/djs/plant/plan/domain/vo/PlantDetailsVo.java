@@ -91,6 +91,14 @@ public class PlantDetailsVo implements Serializable {
     @ExcelDictFormat(readConverterExp = "1=是,0=否")
     private Integer transplantAdjusted;
 
+    /**
+     * 变更类型（字典 {@code djs_plant_change_type}，V6-R36）：
+     * mp=小程序操作 / admin=后台调整 / admin_team=后台班组调整。
+     */
+    @ExcelProperty(value = "变更类型", converter = ExcelDictConvert.class)
+    @ExcelDictFormat(dictType = "djs_plant_change_type")
+    private String changeType;
+
     @ExcelIgnore
     private Date createTime;
 

@@ -255,7 +255,7 @@ class ProductProductionServiceImplTest {
         demand.setId(50002L);
         demand.setDemandQuantity(new BigDecimal("3"));
         demand.setShippedCount(BigDecimal.ZERO);
-        when(demandManageMapper.selectOldestUncompletedDemand(eq(60010L), eq(7L))).thenReturn(demand);
+        when(demandManageMapper.selectUncompletedDemands(eq(60010L), eq(7L))).thenReturn(java.util.List.of(demand));
         when(demandManageMapper.incrementShipped(eq(50002L), any(), any())).thenReturn(1);
 
         // 打包 0.55kg（=550g）
@@ -486,7 +486,7 @@ class ProductProductionServiceImplTest {
         // row53-BE 硬拦：剩余份数（demand_quantity − shipped_count）须 ≥ 本次打包 5 盒
         demand.setDemandQuantity(new BigDecimal("10"));
         demand.setShippedCount(BigDecimal.ZERO);
-        when(demandManageMapper.selectOldestUncompletedDemand(eq(60100L), eq(7L))).thenReturn(demand);
+        when(demandManageMapper.selectUncompletedDemands(eq(60100L), eq(7L))).thenReturn(java.util.List.of(demand));
         // incrementShipped 带上界守卫：affected=1 = 守卫命中正常扣减（0 会被 service 判并发超打抛错）
         when(demandManageMapper.incrementShipped(eq(50001L), any(), any())).thenReturn(1);
 
