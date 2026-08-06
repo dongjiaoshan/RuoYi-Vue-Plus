@@ -39,15 +39,30 @@ jobs:
             git fetch origin main
             git reset --hard origin/main
 
-            echo "==> Stopping old container to free memory for Maven build"
-            DEPLOY_ENV=prod $COMPOSE stop ruoyi-admin || true
+            # 构建期间**不停旧容器** —— 停机时长从「整个构建时长」降到「应用启动时间」。
+            # 2026-08-06 staging 实测：停机 25s，构建全程服务可用（178 次探测仅切换那 10 次失败），
+            # 构建期可用内存最低 565MB、未 OOM。
+            # 更重要：`set -e` 下构建失败会直接退出，旧容器原封不动继续服务 ——
+            # 2026-08-05 prod 宕机 1h40m 正是因为先 stop 再构建，构建卡死就把生产一起带走了。
+            #
+            # 原先要先 stop 是怕 4GB 内存不够（原注释 "free memory for Maven build"）。
+            # 实测应用容器仅占 ~900MB，够用但无余量，且本机 swap=0（触顶即 OOM Kill）。
+            # 故用 nice -n 19 压低构建优先级，并在构建前后打印内存水位便于复盘。
+            # ⚠️ 若日后日志出现 OOM，优先加 swap 或降 MAVEN_OPTS 堆，不要退回「先 stop」。
+            # 注：staging 那次是增量构建，全量构建内存压力更大，565MB 不可直接外推。
+            echo "==> Memory before build"
+            free -m | head -2
 
-            echo "==> Building new image (multi-stage Maven build)"
+            echo "==> Building new image (old container keeps serving)"
             export DOCKER_BUILDKIT=1
             export COMPOSE_DOCKER_CLI_BUILD=1
-            DEPLOY_ENV=prod $COMPOSE build ruoyi-admin
+            nice -n 19 env DEPLOY_ENV=prod $COMPOSE build ruoyi-admin
 
-            echo "==> Starting new container"
+            echo "==> Memory after build"
+            free -m | head -2
+
+            # 镜像 ID 变了，up -d 会自动重建容器（stop 旧 + start 新），无需显式 stop
+            echo "==> Switching to new container"
             DEPLOY_ENV=prod $COMPOSE up -d ruoyi-admin
 
             echo "==> Brief wait for app to settle (60s)..."
