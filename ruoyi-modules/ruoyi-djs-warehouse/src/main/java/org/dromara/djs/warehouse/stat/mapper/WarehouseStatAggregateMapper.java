@@ -241,12 +241,18 @@ public interface WarehouseStatAggregateMapper {
     /**
      * 当日有任意处理记录的作物 ID 列表（不区分地块，只按作物，A#9）。
      * 取并集：毛菜处理（handle_record）/ 月台接收（veg_receive 自产）/ 饲喂台账（feed_log，仅有饲喂的作物也落盘）。
+     *
+     * <p>handle_record 支带 {@code record_weight > 0}：0 kg 收口记录（V6 r28/r29/r40/r41 允许提交）
+     * 只表示「这块地称重/处理到此为止」，不代表当天真有产出。不过滤会让该作物在 t_warehouse_cropp_record
+     * 落一整行全 0 的日报。同链路其它取数点（PICK_DETAIL_SQL / VEG_HANDLE_RECORD_SQL / 绩效 / 看板品种数）
+     * 都已按此口径过滤，这里补齐。</p>
      */
     @Select("""
         <script>
         SELECT DISTINCT crop_id FROM (
           SELECT crop_id FROM t_warehouse_handle_record
           WHERE del_flag = '0' AND tenant_id = #{tenantId} AND DATE(handle_time) = #{statDate} AND crop_id IS NOT NULL
+            AND record_weight &gt; 0
           UNION
           SELECT crop_id FROM t_warehouse_veg_receive
           WHERE del_flag = '0' AND tenant_id = #{tenantId} AND DATE(receive_time) = #{statDate}

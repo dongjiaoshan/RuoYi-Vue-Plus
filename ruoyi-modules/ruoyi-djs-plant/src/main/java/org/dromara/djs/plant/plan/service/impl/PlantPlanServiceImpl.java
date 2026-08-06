@@ -1049,6 +1049,18 @@ public class PlantPlanServiceImpl extends DjsBaseServiceImpl<PlantPlanMapper, Pl
     // admin 已种植地块后台调整（V6-R36）
     // ============================================================
 
+    /**
+     * 该地块明细是否已进入采摘环节（下游已挂采摘记录 / 毛菜处理 / 产量台账）。
+     *
+     * <p>三个判据取并集：开始采摘日期非空、采摘状态不是 {@code pending}、实际产量 &gt; 0。
+     * 单看采摘状态不够 —— 采摘明细回填产量与状态推进不在同一条写路径上。</p>
+     */
+    private boolean isPicked(PlantDetails detail) {
+        return detail.getBeginHarvestdate() != null
+            || (detail.getHarvestStatus() != null && !"pending".equals(detail.getHarvestStatus()))
+            || (detail.getActualYield() != null && detail.getActualYield().compareTo(BigDecimal.ZERO) > 0);
+    }
+
     @Override
     @Transactional(rollbackFor = Exception.class)
     public int adjustPlantedDetail(PlantDetailAdjustBo bo) {
@@ -1063,6 +1075,12 @@ public class PlantPlanServiceImpl extends DjsBaseServiceImpl<PlantPlanMapper, Pl
         // 未开工的行走计划编辑 / 删除那条路，不从这里改。
         if (detail.getBeginActualdate() == null) {
             throw new ServiceException("该地块尚未种植，无法进行后台调整");
+        }
+        // 采摘态门槛（V6-R38）：采摘一旦开始 / 完成 / 已有实际产量，整个后台调整入口关闭 —— 不只是「改回待种植」那一支。
+        // 前端已按 harvestStatus='pending' 隐藏「修改」按钮，但那挡不住**弹框开着期间小程序开采**这种时序：
+        // 用户看到的是打开那一刻的快照，此时点保存会把已开采地块的 begin_actualdate 与计划采摘窗口一起改掉。
+        if (isPicked(detail)) {
+            throw new ServiceException("该地块已开始采摘或已有实际产量，不能再做后台调整；如需调整请先处理采摘记录");
         }
 
         Long updateBy = currentUserIdSafe();
@@ -1139,10 +1157,7 @@ public class PlantPlanServiceImpl extends DjsBaseServiceImpl<PlantPlanMapper, Pl
      * 回退成待种植会留孤儿数据且无法自愈，故直接阻断而不是"尽力回退"。</p>
      */
     private int revertDetailToPending(PlantDetails detail, Long updateBy) {
-        boolean picked = detail.getBeginHarvestdate() != null
-            || (detail.getHarvestStatus() != null && !"pending".equals(detail.getHarvestStatus()))
-            || (detail.getActualYield() != null && detail.getActualYield().compareTo(BigDecimal.ZERO) > 0);
-        if (picked) {
+        if (isPicked(detail)) {
             throw new ServiceException("该地块已开始采摘或已有实际产量，不能改回待种植；"
                 + "如需回退请先处理采摘记录");
         }

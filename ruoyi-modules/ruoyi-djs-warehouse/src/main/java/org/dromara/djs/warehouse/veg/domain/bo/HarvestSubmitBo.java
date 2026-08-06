@@ -43,6 +43,9 @@ public class HarvestSubmitBo {
      * <p>V6 row28 允许 0：现场「已经称完、但没人去点完成」时，工人补一条 0 kg 记录把地块称重状态收口。
      * 0 kg 只有在 {@code weighFinish=1} 时才有意义，服务端 {@code submitHarvest} 硬校验这一条；
      * 负数任何时候都不合法，由本注解拦。</p>
+     *
+     * <p><b>「留空 = 0」的归一在 mp 端做</b>（V6 row40）：本字段对 API 仍是必传，传 null 直接 400 ——
+     * 客户端漏传字段是 bug，不该被静默当成 0 收下一条 0 kg 记录。</p>
      */
     @NotNull(message = "请填写采摘重量")
     @DecimalMin(value = "0", message = "采摘重量不能为负数")

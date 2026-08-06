@@ -610,7 +610,7 @@ class VegetableHandleServiceImplTest {
     }
 
     private org.dromara.djs.warehouse.veg.domain.bo.ProcessSubmitBo processBo(
-        int target, String weight, int finish) {
+        Integer target, String weight, int finish) {
         org.dromara.djs.warehouse.veg.domain.bo.ProcessSubmitBo bo =
             new org.dromara.djs.warehouse.veg.domain.bo.ProcessSubmitBo();
         bo.setPlantingRecordId(60001L);
@@ -823,6 +823,108 @@ class VegetableHandleServiceImplTest {
         assertThatThrownBy(() -> service.submitProcess(processBo(2, "0", 0)))
             .isInstanceOf(ServiceException.class)
             .hasMessageContaining("必须打开「地块是否处理完成」");
+
+        verify(recordMapper, never()).insert(any(HandleRecord.class));
+        verify(handleMapper, never()).updateById(any(VegetableHandle.class));
+    }
+
+    // -------- V6 row41：0 kg 收口时去向不必填（有货仍必填）--------
+
+    @Test
+    @DisplayName("row41①：处理重量 0 + 处理完成=是 + 不选去向 → 收口成功，handle_target 落 NULL，三个重量桶都不动")
+    void testProcess_ZeroWeight_NoTarget_Ok() {
+        when(plantingRecordMapper.selectById(60001L)).thenReturn(samplePlanting("processing"));
+        // picked=50 已全部处理完（handled=50 全记入库），只差点「处理完成」→ 0 kg 收口且懒得选去向
+        when(handleMapper.selectByPlantingRecordId(60001L)).thenReturn(sampleHandle("50.000", "50.000", 1));
+        when(plantingRecordMapper.advanceHandleStatus(anyLong(), any(), any(), anyLong())).thenReturn(1);
+
+        service.submitProcess(processBo(null, "0", 1));
+
+        ArgumentCaptor<HandleRecord> recCap = ArgumentCaptor.forClass(HandleRecord.class);
+        verify(recordMapper, times(1)).insert(recCap.capture());
+        assertThat(recCap.getValue().getRecordWeight()).isEqualByComparingTo("0");
+        assertThat(recCap.getValue().getHandleTarget()).isNull();
+        assertThat(recCap.getValue().getIsFinish()).isEqualTo(1);
+
+        ArgumentCaptor<VegetableHandle> updCap = ArgumentCaptor.forClass(VegetableHandle.class);
+        verify(handleMapper, times(1)).updateById(updCap.capture());
+        VegetableHandle upd = updCap.getValue();
+        // 未选去向 → 三个桶一个都不许动（也不得变 NULL）
+        assertThat(upd.getStockInWeight()).isEqualByComparingTo("50.000");
+        assertThat(upd.getSendPlatformWeight()).isEqualByComparingTo("0");
+        assertThat(upd.getFeedWeight()).isEqualByComparingTo("0");
+        assertThat(upd.getHandledWeight()).isEqualByComparingTo("50.000");
+        assertThat(upd.getIsFinish()).isEqualTo(1);
+        assertThat(upd.getHandleStatus()).isEqualTo("done");
+
+        // 0 kg 不写任何下游台账
+        verify(stockFlowMapper, never()).insert(any(StockFlow.class));
+        verify(feedLogMapper, never()).insert(any(org.dromara.djs.warehouse.veg.domain.FeedLog.class));
+        verify(plantingRecordMapper).advanceHandleStatus(eq(60001L), eq("processing"), eq("done"), eq(9001L));
+    }
+
+    @Test
+    @DisplayName("row41②：0 kg + 不选去向 → 损耗照常按 picked−入库−月台−饲料 结算并双写 loss_flow（收口不得短路损耗）")
+    void testProcess_ZeroWeight_NoTarget_StillSettlesLoss() {
+        when(plantingRecordMapper.selectById(60001L)).thenReturn(samplePlanting("processing"));
+        // picked=50，只处理掉 30（全记入库），剩下 20 就是这块地的损耗
+        when(handleMapper.selectByPlantingRecordId(60001L)).thenReturn(sampleHandle("50.000", "30.000", 1));
+        when(plantingRecordMapper.advanceHandleStatus(anyLong(), any(), any(), anyLong())).thenReturn(1);
+
+        service.submitProcess(processBo(null, "0", 1));
+
+        ArgumentCaptor<VegetableHandle> updCap = ArgumentCaptor.forClass(VegetableHandle.class);
+        verify(handleMapper, times(1)).updateById(updCap.capture());
+        assertThat(updCap.getValue().getLossWeight()).isEqualByComparingTo("20.000");
+
+        // 统一损耗台账同样要落一条（loss > 0 时双写，见 Step 6.1）
+        ArgumentCaptor<org.dromara.djs.warehouse.loss.domain.LossFlow> lossCap =
+            ArgumentCaptor.forClass(org.dromara.djs.warehouse.loss.domain.LossFlow.class);
+        verify(lossFlowService, times(1)).record(lossCap.capture());
+        assertThat(lossCap.getValue().getLossType()).isEqualTo("veg_handle_loss");
+        assertThat(lossCap.getValue().getLossWeight()).isEqualByComparingTo("20.000");
+    }
+
+    @Test
+    @DisplayName("row41③：重量 > 0 + 不选去向 → 抛「请选择去向」，不落库（有货必须说清楚去哪）")
+    void testProcess_PositiveWeight_NoTarget_Rejected() {
+        when(plantingRecordMapper.selectById(60001L)).thenReturn(samplePlanting("processing"));
+        when(handleMapper.selectByPlantingRecordId(60001L)).thenReturn(sampleHandle("50.000", "10.000", 1));
+
+        assertThatThrownBy(() -> service.submitProcess(processBo(null, "10.000", 0)))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("请选择去向");
+
+        verify(recordMapper, never()).insert(any(HandleRecord.class));
+        verify(handleMapper, never()).updateById(any(VegetableHandle.class));
+    }
+
+    @Test
+    @DisplayName("row41④：0 kg + 不选去向 + 处理完成=否 → 仍抛「必须打开地块是否处理完成」（row29 口径不放宽）")
+    void testProcess_ZeroWeight_NoTarget_NoFinish_Rejected() {
+        when(plantingRecordMapper.selectById(60001L)).thenReturn(samplePlanting("processing"));
+        when(handleMapper.selectByPlantingRecordId(60001L)).thenReturn(sampleHandle("50.000", "10.000", 1));
+
+        assertThatThrownBy(() -> service.submitProcess(processBo(null, "0", 0)))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("必须打开「地块是否处理完成」");
+
+        verify(recordMapper, never()).insert(any(HandleRecord.class));
+        verify(handleMapper, never()).updateById(any(VegetableHandle.class));
+    }
+
+    @Test
+    @DisplayName("row41⑤：去向传了非法值（0 kg 也一样）→ 抛「处理目标非法」，不落库")
+    void testProcess_IllegalTarget_Rejected() {
+        when(plantingRecordMapper.selectById(60001L)).thenReturn(samplePlanting("processing"));
+        when(handleMapper.selectByPlantingRecordId(60001L)).thenReturn(sampleHandle("50.000", "10.000", 1));
+
+        assertThatThrownBy(() -> service.submitProcess(processBo(9, "0", 1)))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("处理目标非法");
+        assertThatThrownBy(() -> service.submitProcess(processBo(9, "5.000", 0)))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("处理目标非法");
 
         verify(recordMapper, never()).insert(any(HandleRecord.class));
         verify(handleMapper, never()).updateById(any(VegetableHandle.class));

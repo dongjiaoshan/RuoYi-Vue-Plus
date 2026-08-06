@@ -881,15 +881,6 @@ public class VegetableHandleServiceImpl
             throw new ServiceException("该种植记录已处理完成，不能再录入");
         }
 
-        // Step 2：校验去向
-        Integer handleTarget = bo.getHandleTarget();
-        if (handleTarget == null
-            || (handleTarget != HANDLE_TARGET_STOCK_IN
-            && handleTarget != HANDLE_TARGET_PLATFORM
-            && handleTarget != HANDLE_TARGET_FEED)) {
-            throw new ServiceException("处理目标非法（必须 1=入库 / 2=月台 / 3=饲料）：" + handleTarget);
-        }
-
         BigDecimal weight = bo.getProcessWeight();
         boolean processDone = bo.getProcessFinish() != null && bo.getProcessFinish() == 1;
         if (weight == null || weight.signum() < 0) {
@@ -901,6 +892,24 @@ public class VegetableHandleServiceImpl
         if (weight.signum() == 0 && !processDone) {
             throw new ServiceException("处理重量为 0 时，必须打开「地块是否处理完成」才能提交", 400);
         }
+
+        // Step 2.2 校验去向（V6 row41：条件必填）。
+        // 有货（weight > 0）必须说清楚货去哪了；0 kg 收口记录不必填 —— 一分货都没走，三个去向桶加 0
+        // 完全等价，强制选一个只会让工人瞎点、给流水留一个查不出所以然的假去向。传了就仍须 ∈ {1,2,3}。
+        Integer handleTarget = bo.getHandleTarget();
+        if (handleTarget != null
+            && handleTarget != HANDLE_TARGET_STOCK_IN
+            && handleTarget != HANDLE_TARGET_PLATFORM
+            && handleTarget != HANDLE_TARGET_FEED) {
+            throw new ServiceException("处理目标非法（必须 1=入库 / 2=月台 / 3=饲料）：" + handleTarget);
+        }
+        if (handleTarget == null && weight.signum() > 0) {
+            throw new ServiceException("请选择去向（1=入库 / 2=月台 / 3=饲料）", 400);
+        }
+        // 下面全程用这三个 boolean 判去向，不再直接拆箱 handleTarget（null 收口记录会 NPE）
+        boolean toStockIn = handleTarget != null && handleTarget == HANDLE_TARGET_STOCK_IN;
+        boolean toPlatform = handleTarget != null && handleTarget == HANDLE_TARGET_PLATFORM;
+        boolean toFeed = handleTarget != null && handleTarget == HANDLE_TARGET_FEED;
 
         // Step 3：找汇总行（必须先有采摘）
         VegetableHandle handle = baseMapper.selectByPlantingRecordId(planting.getId());
@@ -933,7 +942,7 @@ public class VegetableHandleServiceImpl
 
         // Step 3.1：去向①入库默认落毛菜鲜品库（L0006），按 location_code 查 id（不硬编码 id）
         Long stockInLocationId = null;
-        if (handleTarget == HANDLE_TARGET_STOCK_IN) {
+        if (toStockIn) {
             LocationInfo freshVegLoc = locationInfoMapper.selectOne(
                 new LambdaQueryWrapper<LocationInfo>()
                     .eq(LocationInfo::getLocationCode, LOCATION_CODE_FRESH_VEG)
@@ -973,16 +982,19 @@ public class VegetableHandleServiceImpl
         BigDecimal sendPlatform = nullSafe(handle.getSendPlatformWeight());
         BigDecimal stockIn = nullSafe(handle.getStockInWeight());
 
-        if (handleTarget == HANDLE_TARGET_STOCK_IN) {
+        if (toStockIn) {
             stockIn = stockIn.add(weight);
             handled = handled.add(weight);
-        } else if (handleTarget == HANDLE_TARGET_PLATFORM) {
+        } else if (toPlatform) {
             sendPlatform = sendPlatform.add(weight);
             handled = handled.add(weight);
-        } else {
+        } else if (toFeed) {
             // FEED：只累加 feed，不计入 handled
             feed = feed.add(weight);
         }
+        // row41：0 kg 收口未选去向（handleTarget=null）→ 三个桶一个都不动。
+        // null 只可能出现在 weight=0（Step 2.2 已硬校验），跳过分流不会漏账；
+        // 下面的损耗结算 loss = picked − stockIn − sendPlatform − feed 照常跑，收口该结的账一分不少。
 
         // 序号9-Req1：仅「处理完成」(is_finish=1) 才结算损耗，未完成损耗恒 0（客户 2026-06-20）
         // 行59 新口径：损耗 = 称重总重 − 入库 − 月台 − 饲料
@@ -1011,9 +1023,9 @@ public class VegetableHandleServiceImpl
         // （location_stock 空篮会进果蔬打包的 FIFO 领用列表）和 0 kg 饲喂行，纯噪声。
         // handle_record 本身照记（谁在什么时候把这块地收口的，要有痕迹）。
         if (weight.signum() > 0) {
-            if (handleTarget == HANDLE_TARGET_STOCK_IN) {
+            if (toStockIn) {
                 insertVegStockInFlow(handle, planting, stockInLocationId, weight, userId, now, selectedProductId);
-            } else if (handleTarget == HANDLE_TARGET_FEED) {
+            } else if (toFeed) {
                 insertFeedLog(planting, weight, userId, now);
             }
         }

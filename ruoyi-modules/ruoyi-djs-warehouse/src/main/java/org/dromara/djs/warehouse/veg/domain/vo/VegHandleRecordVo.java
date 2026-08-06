@@ -54,6 +54,16 @@ public class VegHandleRecordVo implements Serializable {
     private String cropName;
 
     /**
+     * 产品名称（V6 row49，{@code t_warehouse_product_info.product_name}）。
+     *
+     * <p>只有「毛菜处理间·处理流水」行取得到 —— 那是录入人当场选定的处理产品。
+     * 「结算损耗」行是地块级一次性结算、跨该地块所有产品，库里没有按产品的拆分；
+     * 「采摘活动」行本身无产品维度。这两类恒为空，页面显 {@code -}。</p>
+     */
+    @ExcelProperty(value = "产品名称")
+    private String productName;
+
+    /**
      * 统计来源：1=毛菜处理间 / 2=采摘活动（与「采摘明细」页 statSource 同码值，前端 i18n 映射中文）。
      *
      * <p>不标 {@link ExcelProperty}：导出列走 {@link #statSourceLabel}，否则 xlsx 里是裸码 1/2。</p>

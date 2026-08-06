@@ -525,6 +525,42 @@ class PlantPlanServiceImplTest {
     }
 
     @Test
+    @DisplayName("adjust 入口拒绝(V6-R38): 采摘中的明细连改日期都不许 —— 挡「弹框开着期间小程序开采」的时序")
+    void adjustDateRejectedWhenPicking() {
+        PlantDetails d = plantedDetail();
+        d.setHarvestStatus("picking");
+        when(detailsMapper.selectById(11L)).thenReturn(d);
+
+        PlantDetailAdjustBo bo = new PlantDetailAdjustBo();
+        bo.setDetailId(11L);
+        bo.setPlantState("planted");
+        bo.setBeginActualdate(LocalDate.of(2026, 5, 10));
+
+        assertThatThrownBy(() -> service.adjustPlantedDetail(bo))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("已开始采摘");
+        verify(detailsMapper, never()).update(isNull(), any(Wrapper.class));
+    }
+
+    @Test
+    @DisplayName("adjust 入口拒绝(V6-R38): 已有实际产量的明细连仅改班组都不许")
+    void adjustTeamRejectedWhenHasYield() {
+        PlantDetails d = plantedDetail();
+        d.setActualYield(new BigDecimal("12.500"));
+        when(detailsMapper.selectById(11L)).thenReturn(d);
+
+        PlantDetailAdjustBo bo = new PlantDetailAdjustBo();
+        bo.setDetailId(11L);
+        bo.setPlantState("planted");
+        bo.setPlantByIds(List.of(9L));
+
+        assertThatThrownBy(() -> service.adjustPlantedDetail(bo))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("已开始采摘");
+        verify(detailsMapper, never()).update(isNull(), any(Wrapper.class));
+    }
+
+    @Test
     @DisplayName("adjust 分支②改种植日期: 回写 begin_actualdate + 按 crop cycle 重算采摘窗口 + change_type=后台调整")
     void adjustChangePlantDate() {
         when(detailsMapper.selectById(11L)).thenReturn(plantedDetail());

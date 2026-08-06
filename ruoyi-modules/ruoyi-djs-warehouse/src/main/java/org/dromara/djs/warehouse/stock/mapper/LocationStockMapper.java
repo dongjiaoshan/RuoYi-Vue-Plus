@@ -132,6 +132,29 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
                      @Param("userId") Long userId);
 
     /**
+     * V6-R43 燎毛间产品入库重量调整：按白条流水号按差额增减白条库存行。
+     *
+     * <p>燎毛入库时每个产出行（半只 / 猪头 / 猪蹄…）建一条独立库存行、{@code white_bar_no} 全局唯一，
+     * 故这里按 {@code white_bar_no} 精确命中一行。<b>按差额（delta）增减而不是覆盖</b>：
+     * {@code product_stock} 是该库存行的当前余量，覆盖会把此前对这一行的任何变动（如盘点纠正）抹掉。
+     * {@code delta} 为负（调小重量）时 {@code product_stock + delta >= 0} 兜住不出现负库存。</p>
+     *
+     * @return affectedRows（1=成功；0=库存行不存在 / 已软删 / 调小后会变负）
+     */
+    @Update("UPDATE t_warehouse_location_stock "
+        + "   SET product_stock = product_stock + #{delta},"
+        + "       update_by = #{userId},"
+        + "       update_time = NOW() "
+        + " WHERE white_bar_no = #{whiteBarNo} "
+        + "   AND product_id = #{productId} "
+        + "   AND product_stock + #{delta} >= 0 "
+        + "   AND del_flag = '0'")
+    int adjustStockByWhiteBarNo(@Param("whiteBarNo") String whiteBarNo,
+                                @Param("productId") Long productId,
+                                @Param("delta") BigDecimal delta,
+                                @Param("userId") Long userId);
+
+    /**
      * 按 {@code plot_id} + {@code location_id} 原子扣减自产果蔬库存（步11 偏差修复 · 决策 a：
      * 自产果蔬「按地块维度」领用）。
      *

@@ -197,13 +197,27 @@ public interface HandleRecordMapper extends BaseMapperPlus<HandleRecord, HandleR
      *
      * <p>自定义 @Select 含 UNION / JOIN，各表 WHERE 显式带 {@code tenant_id}（拦截器对自定义 SQL 不保证注入）。
      * 记录人直接 JOIN {@code sys_user} 取 nick_name 而非注解翻译，使「记录人模糊搜索」能下推到 SQL。</p>
+     *
+     * <p><b>产品名称（V6 row49）三支取数各不相同</b>：</p>
+     * <ul>
+     *   <li>处理流水支：{@code r.product_id} JOIN {@code t_warehouse_product_info}，与「采摘明细」页
+     *       {@link #PICK_DETAIL_SQL} 同一条取数路径 —— 这是录入人当场选定的处理产品，逐行准确。</li>
+     *   <li>结算损耗支：<b>恒 NULL</b>。{@code loss_weight = picked − stockIn − sendPlatform − feed}
+     *       是<b>地块级</b>一次性结算，跨该地块所有产品，库里不存在按产品的拆分；汇总行上的
+     *       {@code h.product_id} 是建行时按遗留字段 {@code crop.related_product} 解析的单产品，
+     *       V6 row16 起产品配置已迁到 {@code t_plant_crop_product}（一作物多产品），拿它填这一列
+     *       对多产品作物就是编一个名字出来。宁可空着。</li>
+     *   <li>采摘活动支：<b>恒 NULL</b>。{@code t_plant_plant_activity} 没有产品维度，
+     *       {@link #PICK_DETAIL_SQL} 的同源分支也是 {@code NULL AS productName}。</li>
+     * </ul>
      */
     String VEG_HANDLE_RECORD_SQL = """
-        SELECT t.handleDate, t.cropName, t.statSource, t.handleMethod,
+        SELECT t.handleDate, t.cropName, t.productName, t.statSource, t.handleMethod,
                t.plotCode, t.handleWeight, t.recorderName
           FROM (
         SELECT r.handle_time AS handleDate,
                c.crop_name   AS cropName,
+               pi.product_name AS productName,
                '1'           AS statSource,
                CASE r.handle_target WHEN 1 THEN 'veg_fresh' WHEN 2 THEN 'platform' WHEN 3 THEN 'feed' END AS handleMethod,
                p.plot_code   AS plotCode,
@@ -219,6 +233,8 @@ public interface HandleRecordMapper extends BaseMapperPlus<HandleRecord, HandleR
                  ON c.id = r.crop_id AND c.del_flag = '0'
           LEFT JOIN t_plant_plot_info p
                  ON p.id = r.plot_id AND p.del_flag = '0'
+          LEFT JOIN t_warehouse_product_info pi
+                 ON pi.id = r.product_id AND pi.del_flag = '0' AND pi.tenant_id = #{tenantId}
           LEFT JOIN sys_user u
                  ON u.user_id = COALESCE(r.handle_user, r.create_by) AND u.del_flag = '0'
          WHERE r.del_flag = '0' AND r.tenant_id = #{tenantId}
@@ -229,6 +245,7 @@ public interface HandleRecordMapper extends BaseMapperPlus<HandleRecord, HandleR
         UNION ALL
         SELECT COALESCE(h.update_time, h.create_time) AS handleDate,
                c.crop_name   AS cropName,
+               NULL          AS productName,
                '1'           AS statSource,
                'loss'        AS handleMethod,
                p.plot_code   AS plotCode,
@@ -249,6 +266,7 @@ public interface HandleRecordMapper extends BaseMapperPlus<HandleRecord, HandleR
         UNION ALL
         SELECT CAST(a.activity_date AS DATETIME) AS handleDate,
                ci.crop_name AS cropName,
+               NULL         AS productName,
                '2'          AS statSource,
                COALESCE(NULLIF(a.pick_dest, ''), 'sale') AS handleMethod,
                p2.plot_code AS plotCode,

@@ -17,6 +17,7 @@ import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.dromara.common.idempotent.annotation.RepeatSubmit;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -51,10 +52,27 @@ public class AppletPackController extends BaseController {
     private final IProductProductionService service;
 
     /**
+     * 打包口的重复提交拦截窗口（毫秒）—— 与 admin 端 {@code WarehousePackEntryController} 同值，改动必须两侧同步。
+     *
+     * <p>mp 侧原本<b>一个打包口都没有</b>服务端防重闸：工人在弱网下双击，两次请求都会真正落库、
+     * 真正扣两次原材料与需求。这正是甲方在 admin 端怀疑、而 admin 端其实并未发生的那个场景。</p>
+     *
+     * <p>取 1 秒而非框架默认 5 秒：判重 key = URL + md5(token + 全部入参)，而打包请求体里没有随时间变化的字段，
+     * 5 秒窗口会把「连打多份」这种常规操作误判成重复提交。1 秒足以挡住双击与网络重发。
+     * （Kevin 2026-08-06 拍板）</p>
+     */
+    private static final int PACK_REPEAT_INTERVAL_MS = 1000;
+
+    /** 与 admin 端同一条打包场景专属文案（讲清「本次没扣、去确认上一次」）。 */
+    private static final String REPEAT_SUBMIT_MESSAGE = "{pack.repeat.submit}";
+
+
+    /**
      * 蔬菜打包提交。
      */
     @SaCheckLogin
     @SaCheckPermission("djs:applet:warehouse:pack:veg")
+    @RepeatSubmit(interval = PACK_REPEAT_INTERVAL_MS, message = REPEAT_SUBMIT_MESSAGE)
     @PostMapping("/veg")
     public R<Long> packVeg(@Valid @RequestBody VegPackBo bo) {
         return R.ok(service.submitVegPack(bo));
@@ -65,6 +83,7 @@ public class AppletPackController extends BaseController {
      */
     @SaCheckLogin
     @SaCheckPermission("djs:applet:warehouse:pack:gift")
+    @RepeatSubmit(interval = PACK_REPEAT_INTERVAL_MS, message = REPEAT_SUBMIT_MESSAGE)
     @PostMapping("/gift")
     public R<Long> packGift(@Valid @RequestBody GiftPackBo bo) {
         return R.ok(service.submitGiftPack(bo));
@@ -75,6 +94,7 @@ public class AppletPackController extends BaseController {
      */
     @SaCheckLogin
     @SaCheckPermission("djs:applet:warehouse:pack:dry")
+    @RepeatSubmit(interval = PACK_REPEAT_INTERVAL_MS, message = REPEAT_SUBMIT_MESSAGE)
     @PostMapping("/dry")
     public R<Long> packDry(@Valid @RequestBody DryPackBo bo) {
         return R.ok(service.submitDryPack(bo));
@@ -85,6 +105,7 @@ public class AppletPackController extends BaseController {
      */
     @SaCheckLogin
     @SaCheckPermission("djs:applet:warehouse:pack:celery")
+    @RepeatSubmit(interval = PACK_REPEAT_INTERVAL_MS, message = REPEAT_SUBMIT_MESSAGE)
     @PostMapping("/celery")
     public R<Long> packCelery(@Valid @RequestBody CeleryPackBo bo) {
         return R.ok(service.submitCeleryPack(bo));
@@ -125,6 +146,7 @@ public class AppletPackController extends BaseController {
      */
     @SaCheckLogin
     @SaCheckPermission("djs:applet:warehouse:pack:whiteBarOut")
+    @RepeatSubmit(interval = PACK_REPEAT_INTERVAL_MS, message = REPEAT_SUBMIT_MESSAGE)
     @PostMapping("/whiteBarOut")
     public R<Long> packWhiteBarOut(@Valid @RequestBody WhiteBarOutBo bo) {
         return R.ok(service.submitWhiteBarOut(bo));

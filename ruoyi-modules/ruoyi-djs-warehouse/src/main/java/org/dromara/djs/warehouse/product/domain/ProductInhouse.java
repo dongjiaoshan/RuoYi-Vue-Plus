@@ -113,6 +113,31 @@ public class ProductInhouse extends TenantEntity {
     private String whiteBarNo;
 
     /**
+     * 所属燎毛记录 FK → {@code t_warehouse_pig_burn_record.id}（V6-R43）。
+     *
+     * <p>仅燎毛间入库产出行有值（{@code submitBurnRecord} 写入）。一条燎毛记录 = 一次提交，
+     * 其 {@code burn_weight} = 本次提交各产出行 {@code product_weight} 之和；调整某行入库重量时
+     * 据此把差额同步回燎毛记录。列表「入库人」也取 {@code burn_record.operator_id}
+     *（由 EmployeePicker 指定，可与登录人 {@code create_by} 不同）。</p>
+     */
+    private Long burnRecordId;
+
+    /**
+     * 入库重量是否被调整过（字典 {@code djs_yes_no}：1=是 / 0=否，V6-R43）。
+     */
+    private Integer isAdjusted;
+
+    /**
+     * 最近一次入库重量调整时间（V6-R43）。
+     */
+    private Date adjustTime;
+
+    /**
+     * 最近一次入库重量调整人 FK → {@code sys_user.user_id}（V6-R43）。
+     */
+    private Long adjustBy;
+
+    /**
      * 燎毛产出行白条领用状态（FIX-WMS-CUTPICKUP-SPLIT-001）：0=未领 / 1=已领。
      *
      * <p>仅 {@code white_bar_id} 非空的燎毛产出行（半只/半扇/整只）用：白条领用页按行出条，

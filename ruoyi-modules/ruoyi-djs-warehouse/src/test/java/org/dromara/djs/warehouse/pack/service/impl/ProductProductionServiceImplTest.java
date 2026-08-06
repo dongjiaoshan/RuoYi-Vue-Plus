@@ -687,16 +687,19 @@ class ProductProductionServiceImplTest {
     }
 
     @Test
-    @DisplayName("submitDryPack: 非肉品（干货）即便配了 material_num 也不套用重量规则 —— 它按份数×规格提交，套上必误判")
-    void testDryPack_NonPorkSkipsMeasureRule() {
+    @DisplayName("submitDryPack: 其他产品「打包量模式」packQuantity=1 时只落 1 条产出记录（本用例只钉这一点；「打包量模式不套重量规则」由 DryPackSplitAndMeasureTest.amountModeExcludedFromMeasureRule 钉，此处 fixture 的重量恰好等于规则、即便套上也会通过，断不住那条口径）")
+    void testDryPack_AmountModeInsertsSingleRow() {
         ProductInhouse src = sampleVegSource();
         src.setPlotId(null);
+        // 打包量模式的前提：原料按件计量（鸡蛋=枚），不是重量制
+        src.setProductUnit("枚");
         when(inhouseMapper.selectById(70001L)).thenReturn(src);
         ProductInfo p = sampleVegProduct();
         p.setBelongType("dry_good");
-        // 干货「30 枚/份」：份数模式提交的 productWeight 是份数，远小于 materialNum，
-        // 若误套重量规则会被下限硬拒 → 该页彻底不能提交
+        // 干货「30 枚/份」：份数模式提交的 productWeight 是份数×规格的件数，量纲不是 kg，
+        // 若误套重量规则（30kg 下限）会被硬拒 → 该页彻底不能提交
         p.setMaterialNum(new BigDecimal("30.000"));
+        p.setProductUnit("份");
         when(productInfoMapper.selectById(60010L)).thenReturn(p);
         when(locationInfoMapper.selectById(90001L)).thenReturn(sampleLocation());
         when(productionMapper.insert(any(ProductProduction.class))).thenAnswer(inv -> {
@@ -709,10 +712,12 @@ class ProductProductionServiceImplTest {
         DryPackBo bo = new DryPackBo();
         bo.setSourceInhouseId(70001L);
         bo.setProductId(60010L);
-        bo.setProductWeight(new BigDecimal("2.000"));
-        bo.setProductUnit("份");
+        // 打包 1 份 = 消耗 30 枚（份数×规格），打包量回传 1
+        bo.setProductWeight(new BigDecimal("30.000"));
+        bo.setPackQuantity(BigDecimal.ONE);
+        bo.setProductUnit("枚");
         bo.setLocationId(90001L);
-        // 其他产品打包同样必选门店（fulfillKgDemandOnPack 前置校验）；无未完成需求时 warn 跳过扣减
+        // 其他产品打包同样必选门店（fulfillDirectDemandOnPack 前置校验）；无未完成需求时 warn 跳过扣减
         bo.setStoreId(7L);
 
         assertThat(service.submitDryPack(bo)).isEqualTo(80211L);
