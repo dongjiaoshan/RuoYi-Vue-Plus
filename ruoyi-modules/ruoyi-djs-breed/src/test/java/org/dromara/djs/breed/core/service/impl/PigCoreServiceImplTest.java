@@ -4,7 +4,9 @@ import org.dromara.common.core.exception.ServiceException;
 import org.dromara.djs.breed.core.domain.Pig;
 import org.dromara.djs.breed.core.domain.PigStatusRecord;
 import org.dromara.djs.breed.core.domain.bo.PigCreateBo;
+import org.dromara.djs.breed.core.domain.bo.PigEarNoUpdateBo;
 import org.dromara.djs.breed.core.domain.bo.PigEventBo;
+import org.dromara.djs.breed.core.domain.vo.PigVo;
 import org.dromara.djs.breed.core.domain.vo.PigStatusRecordVo;
 import org.dromara.djs.breed.core.enums.PigEndReason;
 import org.dromara.djs.breed.core.enums.PigLifecycle;
@@ -739,5 +741,157 @@ class PigCoreServiceImplTest {
 
         verify(statusRecordMapper, never()).insert(any(PigStatusRecord.class));
         verify(pigMapper, never()).updateById(any(Pig.class));
+    }
+
+    // ================================================================
+    // updateEarNo（BRD-LIST-EDIT-001 admin「修改耳号」）
+    // ================================================================
+
+    private PigEarNoUpdateBo mkEarNoBo(String earNo, Integer version) {
+        PigEarNoUpdateBo bo = new PigEarNoUpdateBo();
+        bo.setEarNo(earNo);
+        bo.setVersion(version);
+        return bo;
+    }
+
+    @Test
+    @DisplayName("updateEarNo happy: 格式合法 + 不重复 → 更新 ear_no/ear_tag + version，其余字段不受影响")
+    void updateEarNo_happy_updates_earNo_and_earTag_only() {
+        Pig pig = mkSow(401L, PigLifecycle.HB);
+        pig.setEarNo("01-01-2-251031-031");
+        pig.setEarTag("01-01-2-251031-031");
+        pig.setVersion(3);
+        when(pigMapper.selectById(401L)).thenReturn(pig);
+        // 判重两口径均未命中 → 放行
+        when(pigMapper.existsSeqByDateSegmentExcludeId("251031", 30L, 401L)).thenReturn(null);
+        when(pigMapper.existsEarNoExcludeId("01-01-2-251031-030", 401L)).thenReturn(null);
+        when(pigMapper.updateById(any(Pig.class))).thenReturn(1);
+        PigVo returnedVo = new PigVo();
+        returnedVo.setId(401L);
+        returnedVo.setEarNo("01-01-2-251031-030");
+        when(pigMapper.selectVoById(401L)).thenReturn(returnedVo);
+
+        PigVo result = service.updateEarNo(401L, mkEarNoBo("01-01-2-251031-030", 3));
+
+        assertThat(result.getEarNo()).isEqualTo("01-01-2-251031-030");
+        ArgumentCaptor<Pig> captor = ArgumentCaptor.forClass(Pig.class);
+        verify(pigMapper).updateById(captor.capture());
+        Pig updated = captor.getValue();
+        assertThat(updated.getEarNo()).isEqualTo("01-01-2-251031-030");
+        assertThat(updated.getEarTag()).isEqualTo("01-01-2-251031-030");
+        assertThat(updated.getVersion()).isEqualTo(3);
+        // 未被本方法触碰的字段应保持 selectById 查出的原值（不能被意外清空）
+        assertThat(updated.getPigSex()).isEqualTo("F");
+        assertThat(updated.getPigType()).isEqualTo("sow");
+        assertThat(updated.getCurrentStatus()).isEqualTo("HB");
+    }
+
+    @Test
+    @DisplayName("updateEarNo: 新耳号与原耳号相同 → 抛 update_unchanged，不查重、不落库")
+    void updateEarNo_unchanged_throws_without_touching_db() {
+        Pig pig = mkSow(402L, PigLifecycle.HB);
+        pig.setEarNo("01-01-2-251031-031");
+        when(pigMapper.selectById(402L)).thenReturn(pig);
+
+        assertThatThrownBy(() -> service.updateEarNo(402L, mkEarNoBo("01-01-2-251031-031", 0)))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("pig.ear_no.update_unchanged");
+
+        verify(pigMapper, never()).existsSeqByDateSegmentExcludeId(any(), any(Long.class), any());
+        verify(pigMapper, never()).updateById(any(Pig.class));
+    }
+
+    @Test
+    @DisplayName("updateEarNo: 格式不合法（服务端二次防线）→ 抛 update_pattern")
+    void updateEarNo_invalid_format_throws_pattern() {
+        Pig pig = mkSow(403L, PigLifecycle.HB);
+        pig.setEarNo("01-01-2-251031-031");
+        // 格式校验在查库之前就应该失败，selectById 不该被调用
+        assertThatThrownBy(() -> service.updateEarNo(403L, mkEarNoBo("not-a-valid-ear-no", 0)))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("pig.ear_no.update_pattern");
+        verify(pigMapper, never()).selectById(any(Long.class));
+    }
+
+    @Test
+    @DisplayName("updateEarNo: 同出生日+后三位已被占用（排除自身后仍命中）→ 抛 update_duplicate")
+    void updateEarNo_duplicate_by_dateSegment_throws() {
+        Pig pig = mkSow(404L, PigLifecycle.HB);
+        pig.setEarNo("01-01-2-251031-031");
+        when(pigMapper.selectById(404L)).thenReturn(pig);
+        // 撞号：另一头猪（id=999）已占用同出生日+同后三位
+        when(pigMapper.existsSeqByDateSegmentExcludeId("251031", 30L, 404L)).thenReturn(999L);
+
+        assertThatThrownBy(() -> service.updateEarNo(404L, mkEarNoBo("01-01-2-251031-030", 0)))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("pig.ear_no.update_duplicate");
+
+        verify(pigMapper, never()).updateById(any(Pig.class));
+    }
+
+    @Test
+    @DisplayName("updateEarNo: 整串耳号兜底命中（同出生日后三位判重放行但整串已存在）→ 抛 update_duplicate")
+    void updateEarNo_duplicate_by_fullEarNo_fallback_throws() {
+        Pig pig = mkSow(405L, PigLifecycle.HB);
+        pig.setEarNo("01-01-2-251031-031");
+        when(pigMapper.selectById(405L)).thenReturn(pig);
+        when(pigMapper.existsSeqByDateSegmentExcludeId("251031", 30L, 405L)).thenReturn(null);
+        // 主口径放行，但整串兜底命中（历史无分隔异形号等边缘场景）
+        when(pigMapper.existsEarNoExcludeId("01-01-2-251031-030", 405L)).thenReturn(888L);
+
+        assertThatThrownBy(() -> service.updateEarNo(405L, mkEarNoBo("01-01-2-251031-030", 0)))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("pig.ear_no.update_duplicate");
+
+        verify(pigMapper, never()).updateById(any(Pig.class));
+    }
+
+    @Test
+    @DisplayName("updateEarNo: 乐观锁冲突（updateById 返 0）→ 抛 optimistic_lock_conflict")
+    void updateEarNo_optimistic_lock_throws() {
+        Pig pig = mkSow(406L, PigLifecycle.HB);
+        pig.setEarNo("01-01-2-251031-031");
+        when(pigMapper.selectById(406L)).thenReturn(pig);
+        when(pigMapper.existsSeqByDateSegmentExcludeId("251031", 30L, 406L)).thenReturn(null);
+        when(pigMapper.existsEarNoExcludeId("01-01-2-251031-030", 406L)).thenReturn(null);
+        when(pigMapper.updateById(any(Pig.class))).thenReturn(0);
+
+        assertThatThrownBy(() -> service.updateEarNo(406L, mkEarNoBo("01-01-2-251031-030", 0)))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("pig.update.optimistic_lock_conflict");
+    }
+
+    @Test
+    @DisplayName("updateEarNo: 只改品系段、出生日+序号不变 → 判重必须排除自身，否则会被自己的旧号误判撞号")
+    void updateEarNo_only_strain_segment_changed_excludes_self_from_dup_check() {
+        // 这是「排除自身」最容易漏测的边界：改号后出生日+序号段跟改前完全相同（01-01-2-251031-031 -> 02-01-2-251031-031），
+        // 若判重方法不排除自身 id，会把自己现有的这行记录当成"已被占用"而误报撞号。
+        Pig pig = mkSow(408L, PigLifecycle.HB);
+        pig.setEarNo("01-01-2-251031-031");
+        pig.setVersion(0);
+        when(pigMapper.selectById(408L)).thenReturn(pig);
+        when(pigMapper.existsSeqByDateSegmentExcludeId("251031", 31L, 408L)).thenReturn(null);
+        when(pigMapper.existsEarNoExcludeId("02-01-2-251031-031", 408L)).thenReturn(null);
+        when(pigMapper.updateById(any(Pig.class))).thenReturn(1);
+        PigVo returnedVo = new PigVo();
+        returnedVo.setEarNo("02-01-2-251031-031");
+        when(pigMapper.selectVoById(408L)).thenReturn(returnedVo);
+
+        PigVo result = service.updateEarNo(408L, mkEarNoBo("02-01-2-251031-031", 0));
+
+        assertThat(result.getEarNo()).isEqualTo("02-01-2-251031-031");
+        // 必须调用带 excludeId 的判重方法，且传的是本猪自己的 id
+        verify(pigMapper).existsSeqByDateSegmentExcludeId("251031", 31L, 408L);
+        verify(pigMapper).existsEarNoExcludeId("02-01-2-251031-031", 408L);
+    }
+
+    @Test
+    @DisplayName("updateEarNo: 猪只不存在 → 抛 pig.not_found")
+    void updateEarNo_pig_not_found_throws() {
+        when(pigMapper.selectById(407L)).thenReturn(null);
+
+        assertThatThrownBy(() -> service.updateEarNo(407L, mkEarNoBo("01-01-2-251031-030", 0)))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("pig.not_found");
     }
 }

@@ -9,6 +9,7 @@ import org.dromara.common.log.enums.BusinessType;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.web.core.BaseController;
+import org.dromara.djs.breed.core.domain.bo.PigEarNoUpdateBo;
 import org.dromara.djs.breed.core.domain.bo.PigEventBo;
 import org.dromara.djs.breed.core.domain.query.PigQuery;
 import org.dromara.djs.breed.core.domain.query.PigStatusRecordQuery;
@@ -20,6 +21,7 @@ import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
@@ -29,12 +31,13 @@ import java.util.List;
 /**
  * 猪只主表 + 状态机 Controller（BRD-CORE-001）。
  *
- * <p>4 端点：</p>
+ * <p>5 端点：</p>
  * <ul>
  *   <li>{@code GET /list}          → {@code djs:breed:pig:list}（admin 列表）</li>
  *   <li>{@code GET /{id}}          → {@code djs:breed:pig:query}（详情 + 最近 20 条历史）</li>
  *   <li>{@code GET /{id}/history}  → {@code djs:breed:pig:query}（全量历史，最多 200 条）</li>
  *   <li>{@code POST /event}        → {@code djs:breed:pig:event}（通用事件入口，运维/调试用）</li>
+ *   <li>{@code PUT /{id}/ear-no}   → {@code djs:breed:pig:edit}（BRD-LIST-EDIT-001 修改耳号，纠错专用窄口）</li>
  * </ul>
  *
  * <p><b>注意 {@code POST /event}</b>：业务侧 BRD-EVENT-* 子 ticket 不应直接暴露给前端，
@@ -89,5 +92,17 @@ public class PigController extends BaseController {
     @PostMapping("/event")
     public R<PigStatusRecordVo> fireEvent(@Validated @RequestBody PigEventBo bo) {
         return R.ok(pigCoreService.fireEvent(bo));
+    }
+
+    /**
+     * 修改耳号（BRD-LIST-EDIT-001）——小程序录入手误录错序号时的纠错口子，admin 猪只主表用。
+     * 只改 {@code ear_no}/{@code ear_tag}，不碰状态机/其他字段；不走 {@link #fireEvent}。
+     */
+    @SaCheckPermission("djs:breed:pig:edit")
+    @Log(title = "修改耳号", businessType = BusinessType.UPDATE)
+    @RepeatSubmit
+    @PutMapping("/{id}/ear-no")
+    public R<PigVo> updateEarNo(@PathVariable Long id, @Validated @RequestBody PigEarNoUpdateBo bo) {
+        return R.ok(pigCoreService.updateEarNo(id, bo));
     }
 }

@@ -13,6 +13,7 @@ import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.breed.core.domain.Pig;
 import org.dromara.djs.breed.core.domain.PigStatusRecord;
 import org.dromara.djs.breed.core.domain.bo.PigCreateBo;
+import org.dromara.djs.breed.core.domain.bo.PigEarNoUpdateBo;
 import org.dromara.djs.breed.core.domain.bo.PigEventBo;
 import org.dromara.djs.breed.core.domain.query.PigQuery;
 import org.dromara.djs.breed.core.domain.query.PigStatusRecordQuery;
@@ -382,6 +383,59 @@ public class PigCoreServiceImpl implements IPigCoreService {
 
         log.info("[FIX-INTRO-RECLASS] internalIntroToReserve pigId={} earNo={} type fattening->{} status {}->{}",
             pig.getId(), pig.getEarNo(), newType, oldStatus, newStatus);
+    }
+
+    /** 耳号格式：品系(1-2位)-品种2位-性别1位(可选)-出生日yyMMdd6位-序号3位。与 {@code @Pattern} 同源，服务端二次防线。 */
+    private static final java.util.regex.Pattern EAR_NO_PATTERN =
+        java.util.regex.Pattern.compile("^\\d{1,2}-\\d{2}(-\\d)?-\\d{6}-\\d{3}$");
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public PigVo updateEarNo(Long pigId, PigEarNoUpdateBo bo) {
+        if (pigId == null) {
+            throw new ServiceException(I18nMessages.t("pig.id.required"));
+        }
+        Objects.requireNonNull(bo, "PigEarNoUpdateBo must not be null");
+        String newEarNo = bo.getEarNo() == null ? null : bo.getEarNo().trim();
+        // BO 上的 @Pattern 已经在 controller 入口校过一次；这里是服务端二次防线，
+        // 防止未来有别的调用方绕开 controller 直接调本方法（如运维脚本 / 单测遗漏走 Validated）。
+        if (newEarNo == null || !EAR_NO_PATTERN.matcher(newEarNo).matches()) {
+            throw new ServiceException(I18nMessages.t("pig.ear_no.update_pattern"));
+        }
+
+        Pig pig = pigMapper.selectById(pigId);
+        if (pig == null) {
+            throw new ServiceException(I18nMessages.t("pig.not_found", pigId));
+        }
+        if (newEarNo.equals(pig.getEarNo())) {
+            throw new ServiceException(I18nMessages.t("pig.ear_no.update_unchanged"));
+        }
+
+        // 判重：同出生日 + 后三位（主口径，见 PigMapper#existsSeqByDateSegment 详注）+ 整串兜底，
+        // 均排除自身 id —— 与 PigIntroServiceImpl.isEarNoTaken 同一套口径的排除自身版，
+        // 保证「引种时查重」与「改号时查重」不会分叉出两套判断标准。
+        int sepIdx = newEarNo.lastIndexOf('-');
+        String prefix = newEarNo.substring(0, sepIdx);
+        String dateSeg = prefix.substring(prefix.lastIndexOf('-') + 1);
+        long seq = Long.parseLong(newEarNo.substring(sepIdx + 1));
+        if (pigMapper.existsSeqByDateSegmentExcludeId(dateSeg, seq, pigId) != null
+            || pigMapper.existsEarNoExcludeId(newEarNo, pigId) != null) {
+            throw new ServiceException(I18nMessages.t("pig.ear_no.update_duplicate", newEarNo));
+        }
+
+        String oldEarNo = pig.getEarNo();
+        // ear_no / ear_tag 全库实测恒相等（EarNoAllocator 分配时两列同值写入），改号同步两列，
+        // 不引入"简版/全版不一致"的新状态。
+        pig.setEarNo(newEarNo);
+        pig.setEarTag(newEarNo);
+        pig.setVersion(bo.getVersion());
+        int affected = pigMapper.updateById(pig);
+        if (affected == 0) {
+            throw new ServiceException(I18nMessages.t("pig.update.optimistic_lock_conflict", pigId));
+        }
+
+        log.info("[BRD-LIST-EDIT-001] admin 修改耳号 pigId={} {} -> {}", pigId, oldEarNo, newEarNo);
+        return pigMapper.selectVoById(pigId);
     }
 
     @Override

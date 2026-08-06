@@ -91,6 +91,40 @@ public interface PigMapper extends BaseMapperPlus<Pig, PigVo> {
     Long existsSeqByDateSegment(@Param("dateSeg") String dateSeg, @Param("seq") long seq);
 
     /**
+     * {@link #existsSeqByDateSegment} 的排除自身版（admin「修改耳号」BRD-LIST-EDIT-001 用）。
+     *
+     * <p>改号场景下猪自己现有的耳号也在库里，若不排除自身 id，判重会把"改成跟自己相同的段"
+     * 误判成撞号；也覆盖"只改品系/品种/性别段、出生日+序号不变"的场景（这类改动本就该放行，
+     * 因为改前改后指向同一头猪）。</p>
+     *
+     * @param dateSeg   出生日段（{@code yyMMdd}，6 位）
+     * @param seq       3 位序号的数值
+     * @param excludeId 排除的猪只 id（本次要改号的那头猪自己）
+     * @return 命中的 id（排除 excludeId 后）；未占用返回 null
+     */
+    @Select("""
+        SELECT id
+          FROM t_farm_pig_info
+         WHERE del_flag = '0'
+           AND id != #{excludeId}
+           AND ear_no REGEXP CONCAT('-', #{dateSeg}, '-[0-9]+$')
+           AND CAST(SUBSTRING_INDEX(ear_no, '-', -1) AS UNSIGNED) = #{seq}
+         LIMIT 1
+        """)
+    Long existsSeqByDateSegmentExcludeId(@Param("dateSeg") String dateSeg, @Param("seq") long seq,
+                                        @Param("excludeId") Long excludeId);
+
+    /**
+     * {@link #existsEarNo} 的排除自身版（整串耳号兜底，同上排除自身 id 的理由）。
+     *
+     * @param earNo     候选耳号
+     * @param excludeId 排除的猪只 id
+     * @return 命中的 id（排除 excludeId 后）；未占用返回 null
+     */
+    @Select("SELECT id FROM t_farm_pig_info WHERE ear_no = #{earNo} AND id != #{excludeId} LIMIT 1")
+    Long existsEarNoExcludeId(@Param("earNo") String earNo, @Param("excludeId") Long excludeId);
+
+    /**
      * 按耳号简版查 pigId（mp 端二选一支持 — 工人不输 19 位 snowflake，直接输耳号）。
      * <p>返回 null 表示耳号不存在（被软删或未引种）。</p>
      */
