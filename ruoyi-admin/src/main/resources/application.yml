@@ -139,12 +139,6 @@ security:
     - /*/api-docs
     - /*/api-docs/**
     - /warm-flow-ui/config
-    # 容器存活探针（docker-compose healthcheck 用 wget 打它，带不了 token）。
-    # 🔴 只放行 liveness 这一个精确路径，**绝不要**放成 /actuator/** ——
-    # management.endpoints.web.exposure.include='*'（见本文件 Actuator 段）暴露了
-    # env / heapdump / configprops，heapdump 里可能含内存中的密码与 token，
-    # 目前全靠 Sa-Token 的 401 挡着。liveness 只返回 {"status":"UP"}，不含任何信息。
-    - /actuator/health/liveness
 
 # 多租户配置
 tenant:
@@ -278,10 +272,6 @@ management:
   endpoint:
     health:
       show-details: ALWAYS
-      # liveness/readiness 探针默认只在 Kubernetes 环境自动启用，docker-compose 下必须显式开，
-      # 否则 /actuator/health/liveness 返回 404，healthcheck 依旧判定失败。
-      probes:
-        enabled: true
     logfile:
       external-file: ./logs/sys-console.log
 
