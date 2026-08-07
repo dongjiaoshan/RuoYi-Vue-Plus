@@ -14,10 +14,10 @@ import java.math.BigDecimal;
  *
  * <h3>Service 同事务</h3>
  * <ol>
- *   <li>校验该 (crop, plot) 的月台待入库量 ≥ 本次 weight（来自 {@code vegetable_handle.send_platform_weight}
- *       − 本表已入库 self 量；超量抛异常，不允许"凭空入库"）</li>
- *   <li>INSERT {@code t_warehouse_veg_receive}（receiveType=1）</li>
- *   <li>UPSERT {@code location_stock}（按 plotId 维度行锁增量 / 不存在 INSERT）</li>
+ *   <li>校验该 (crop, product, plot) 的月台待入库量 ≥ 本次 weight（row55 起数据源是
+ *       {@code t_warehouse_handle_record} 的月台明细，减已入库 self 量与已结算损耗；超量抛异常，不允许"凭空入库"）</li>
+ *   <li>INSERT {@code t_warehouse_veg_receive}（receiveType=1，落 product_id）</li>
+ *   <li>UPSERT {@code location_stock}（按 <b>product + plot</b> 双键行锁增量 / 不存在 INSERT）</li>
  *   <li>INSERT {@code stock_flow}（flow_type=veg_receive_in, inout_type=IN, plotId 关联）</li>
  * </ol>
  *

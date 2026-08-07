@@ -242,29 +242,30 @@ class VegReceiveServiceImplTest {
     }
 
     @Test
-    @DisplayName("月台中转入库·related_product 误配成品(attr=1) → 守门返 null，流水 product_id 兜底空（脏值防御）")
-    void testInbound_RelatedProductNotRawMaterial_DegradesToNull() {
+    @DisplayName("row55·收的产品不是果蔬原材料(attr=1 成品) → 直接拒绝，一行都不落库")
+    void testInbound_ProductNotVegMaterial_Rejected() {
         stubCommonInbound();
-        when(vegReceiveMapper.addStockByPlotLocation(eq(90001L), eq(11001L), any(), any(), eq(9001L)))
-            .thenReturn(1);
-        // 作物 related_product=88001 指向一个成品(attr=1) —— 误配 / 脏值，应被守门拦下
-        CropInfo crop = new CropInfo();
-        crop.setId(12001L);
-        crop.setRelatedProduct(88001L);
-        when(cropInfoMapper.selectById(12001L)).thenReturn(crop);
+        // 作物只配了一个产品 88001，但它是成品(attr=1) —— 配置脏了
+        org.dromara.djs.plant.crop.domain.vo.CropProductVo only =
+            new org.dromara.djs.plant.crop.domain.vo.CropProductVo();
+        only.setProductId(88001L);
+        when(cropProductService.listByCrop(12001L)).thenReturn(java.util.List.of(only));
         ProductInfo finished = new ProductInfo();
         finished.setId(88001L);
         finished.setProductAttr(1);
         finished.setBelongType("vegetable");
         when(productInfoMapper.selectById(88001L)).thenReturn(finished);
 
-        service.inbound(sampleBo());
+        // 曾经的做法是「退化成 product_id=NULL 的无名篮」，实测更坏：两个都过不了守门的产品会因
+        // `product_id <=> NULL` 并进同一张篮，而下游领用 eq(product_id, ?) 永远匹配不到 NULL，货领不出去。
+        org.assertj.core.api.Assertions
+            .assertThatThrownBy(() -> service.inbound(sampleBo()))
+            .isInstanceOf(org.dromara.common.core.exception.ServiceException.class)
+            .hasMessageContaining("不是果蔬原材料");
 
-        // 流水照常落库，但 product_id 兜底 null（不把成品 id 漏到 veg_receive_in 流水）
-        ArgumentCaptor<StockFlow> flowCap = ArgumentCaptor.forClass(StockFlow.class);
-        verify(stockFlowMapper, times(1)).insert(flowCap.capture());
-        assertThat(flowCap.getValue().getProductId()).isNull();
-        assertThat(flowCap.getValue().getPlotId()).isEqualTo(11001L);
+        verify(vegReceiveMapper, Mockito.never()).insert(any(VegReceive.class));
+        verify(stockFlowMapper, Mockito.never()).insert(any(StockFlow.class));
+        verify(locationStockMapper, Mockito.never()).insert(any(LocationStock.class));
     }
 
     // ───────────────── row55：按产品收窄（QA 指出这三点删掉也不会有测试变红）─────────────────

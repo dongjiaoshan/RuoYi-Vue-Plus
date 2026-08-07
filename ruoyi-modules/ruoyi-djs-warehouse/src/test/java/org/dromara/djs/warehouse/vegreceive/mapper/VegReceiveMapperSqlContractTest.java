@@ -92,6 +92,19 @@ class VegReceiveMapperSqlContractTest {
             assertThat(sql).contains("= #{productid}");
             assertThat(sql).contains("record_type = 2").contains("handle_target = 2");
         }
+
+        // 地块明细两段（月台量 / 已收）各自都要按产品收窄。
+        // 只做上面那种通用 contains 不够：坏掉其中一段，另一段仍能满足 `= #{productid}`，变异会存活 ——
+        // 实测把月台量段换成 1=1，红薯详情页会从「1 块地 50kg」变成「3 块地 200kg」（红薯杆的地块混进红薯卡），
+        // 正是 row55 要治的病，而三个用例一个都不红。故两段都点名。
+        assertThat(plots)
+            .as("地块明细·月台量段（handle_record）按产品收窄")
+            .contains("coalesce(hr.product_id, cr0.related_product) = #{productid}")
+            .as("地块明细·已收段（veg_receive）按产品收窄")
+            .contains("coalesce(vr.product_id, cr1.related_product) = #{productid}");
+        assertThat(plots.split("<if test=\"productid != null\">", -1))
+            .as("地块明细应恰有 2 段可选收窄")
+            .hasSize(3);
         // 剩余可入量三段（月台量 / 已入 / 已结算损耗）都要能按产品收窄，漏一段封顶就形同虚设。
         // 只数 <if> 外壳不够：把某一段的谓词换成 1=1，外壳计数不变、`= #{productid}` 也仍被别段满足，
         // 变异能存活。故三段各自的表别名 + 收窄谓词都要点名断言。

@@ -28,9 +28,9 @@ import java.util.List;
  * <p>对接 mp {@code miniapp/src/api/warehouse/vegReceive.ts} 5 端点：</p>
  * <ul>
  *   <li>{@code GET  /applet/warehouse/vegReceive/self}            自产果蔬待收货列表（row55 起按<b>产品</b>聚合待入库量）</li>
- *   <li>{@code GET  /applet/warehouse/vegReceive/purchased}       外购果蔬待收货列表（product_type=2，可按名/类型筛选）</li>
+ *   <li>{@code GET  /applet/warehouse/vegReceive/purchased}       外购果蔬待收货列表（自产食材原料 SKU，可按名/类型筛选）</li>
  *   <li>{@code GET  /applet/warehouse/vegReceive/{cropId}/plots}  果蔬间入库（按地块的 待入库 / 实际入库 / 状态，?productId 收窄）</li>
- *   <li>{@code POST /applet/warehouse/vegReceive/inbound}         自产果蔬入库提交（plot 维度库存）</li>
+ *   <li>{@code POST /applet/warehouse/vegReceive/inbound}         自产果蔬入库提交（product + plot 双键库存）</li>
  *   <li>{@code POST /applet/warehouse/vegReceive/purchase}        外购果蔬收货入库提交（product 维度库存 + supplier）</li>
  * </ul>
  *
@@ -53,7 +53,7 @@ public class AppletVegReceiveController extends BaseController {
     /**
      * 自产果蔬待收货列表（dock「自产产品收货」分段）。
      *
-     * <p>row55 起<b>按产品聚合</b>：待入库 = 上游毛菜处理「发往月台」量 − 已入库 self 量，
+     * <p>row55 起<b>按产品聚合</b>：待入库 = 上游毛菜处理「发往月台」量 − 已入库 self 量 − 已结算损耗，
      * 仅返待入库 &gt; 0 的 (作物, 产品) 组合 —— 同一作物的多个产品各自一张卡。</p>
      */
     @SaCheckLogin
@@ -65,7 +65,10 @@ public class AppletVegReceiveController extends BaseController {
     /**
      * 外购果蔬待收货列表（dock「外购产品收货」分段）。
      *
-     * <p>查 {@code product_type=2} 外购产品；{@code pendingWeight} 恒 0（外购无预设待收量，工人现录实收重量）。</p>
+     * <p>返<b>自产食材原料 SKU</b>（{@code product_type=1 且 product_attr=2 且 is_buy_out=1}，口径见
+     * {@link org.dromara.djs.warehouse.vegreceive.mapper.VegReceiveMapper#selectPurchasedPending}；
+     * 不是 {@code product_type=2}——那类是饲料/药品等生产资料，走 admin 采购入库）。
+     * {@code pendingWeight} 恒 0（外购无预设待收量，工人现录实收重量）。</p>
      *
      * @param productName 产品名称模糊关键字（可空）
      * @param productType 产品类型文案占位（V1 不参与过滤，预留）
@@ -91,7 +94,10 @@ public class AppletVegReceiveController extends BaseController {
     }
 
     /**
-     * 自产果蔬入库提交（同事务：校验剩余可入量 → 收货记录 + plot 维度库存 + 入库流水）。
+     * 自产果蔬入库提交（同事务：校验剩余可入量 → 收货记录 + product+plot 双键库存 + 入库流水）。
+     *
+     * <p>row55：本次收的产品要么由 {@code productId} 指定，要么由作物的唯一产品自动补全；
+     * 说不清是哪个产品（多产品作物未传）、产品不属于该作物配置、或产品不是果蔬原材料时返 400，不落库。</p>
      *
      * @return 新建收货记录 ID（snowflake）
      */

@@ -1124,7 +1124,8 @@ public class VegetableHandleServiceImpl
                 insertPickStockIn(bo, weight, userId, now);
             case PICK_DEST_PLATFORM ->
                 // DENGBO-R22：果蔬月台 = 写一行 t_warehouse_vegetable_handle 承载「发往月台重量」，
-                // 使采摘活动直送月台的果蔬出现在「自产产品收货」待入库列表（selectSelfPending 读 send_platform_weight）、可入库。
+                // 使采摘活动直送月台的果蔬出现在「自产产品收货」待入库列表、可入库
+                //（row55 起 selectSelfPending 读的是下面同写的 handle_record 明细，不再读 send_platform_weight）。
                 insertPickPlatform(bo, weight, userId, now);
             case PICK_DEST_LOSS ->
                 // 损耗 = 复用统一损耗台账 loss_flow（loss_type=veg_handle_loss）
@@ -1145,7 +1146,8 @@ public class VegetableHandleServiceImpl
      * <p>Kevin 2026-07-16 定 A：同写一行 {@code t_warehouse_handle_record}(handle_target=2 发往月台，按 handle_time)，
      * 使采摘直送月台的量计入「发往月台果蔬总重」日统计（{@code WarehouseStatAggregateMapper.sumSendPlatformWeight}
      * 读 handle_record）+ 作物维发往口径，与入库后计入的「月台接收」（veg_receive）对称、不再漏计。
-     * handle_record 按 handle_id/handle_user 归属本行，不污染毛菜处理列表；待入库仍只读 vegetable_handle，不双计。</p>
+     * handle_record 按 handle_id/handle_user 归属本行，不污染毛菜处理列表。
+     * <b>row55 起待入库量改读 handle_record 明细</b>（要按产品拆），所以这条明细行必须落 product_id，见下。</p>
      */
     private void insertPickPlatform(PickDestSubmitBo bo, BigDecimal weight, Long userId, Date now) {
         VegetableHandle handle = new VegetableHandle();
@@ -1168,8 +1170,8 @@ public class VegetableHandleServiceImpl
         record.setHandleId(handle.getId());
         record.setPlotId(bo.getPlotId());
         record.setCropId(bo.getCropId());
-        // row55：月台待入库量现在按产品聚合、数据源就是这张明细表。这里不落产品，
-        // 采摘直送月台的量会全部挂到作物默认产品名下（红薯杆的货显在红薯卡里）。
+        // row55：月台待入库量现在按产品聚合、数据源就是这张明细表。**必须落产品** ——
+        // 不落的话采摘直送月台的量会全部挂到作物默认产品名下（红薯杆的货显在红薯卡里）。
         record.setProductId(handle.getProductId());
         record.setRecordType(RECORD_TYPE_HANDLE);
         record.setRecordWeight(weight);
@@ -1299,7 +1301,13 @@ public class VegetableHandleServiceImpl
      * （现有饲喂/月台记录全部来自毛菜处理 {@code submitProcess} 那条链路，产品是对的）。</p>
      */
     private Long pickProductId(PickDestSubmitBo bo) {
-        return bo.getProductId() != null ? bo.getProductId() : resolveProductIdByCrop(bo.getCropId(), null);
+        if (bo.getProductId() == null) {
+            return resolveProductIdByCrop(bo.getCropId(), null);
+        }
+        // 走 resolveRecordProductId 的同一道门：产品必须属于该作物的配置。
+        // 这条链路写出的 handle_record 就是果蔬月台卡的数据源（row55），而收货侧对「不属于该作物配置」
+        // 的产品是硬拒的 —— 上游不把门，就会造出一张点进去收不了的卡，货永久卡在月台，比不分产品还糟。
+        return resolveRecordProductId(bo.getCropId(), bo.getProductId());
     }
 
     /**

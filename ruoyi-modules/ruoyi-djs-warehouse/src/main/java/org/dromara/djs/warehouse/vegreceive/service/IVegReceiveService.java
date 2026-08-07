@@ -37,7 +37,8 @@ public interface IVegReceiveService {
     List<VegReceiveItemVo> listSelf();
 
     /**
-     * 外购果蔬待收货列表（{@code product_type=2} 外购产品，可按产品名 / 类型筛选）。
+     * 外购果蔬待收货列表（<b>自产食材原料 SKU</b>：{@code product_type=1 且 product_attr=2 且 is_buy_out=1}，
+     * 不是 {@code product_type=2}；口径见 {@code VegReceiveMapper.selectPurchasedPending}）。可按产品名 / 类型筛选。
      *
      * @param productName 产品名模糊关键字（可空）
      * @param productType 产品类型文案占位（V1 不参与过滤，预留）
@@ -58,8 +59,11 @@ public interface IVegReceiveService {
     /**
      * 自产果蔬入库提交（同事务：校验剩余可入量 → INSERT 收货记录 → UPSERT plot 维度库存 → INSERT 入库流水）。
      *
-     * <p>超量（本次 weight &gt; 该 (crop, plot) 剩余可入量）抛 {@link org.dromara.common.core.exception.ServiceException}，
-     * 不允许凭空入库。</p>
+     * <p>超量（本次 weight &gt; 该 (crop, product, plot) 剩余可入量）抛
+     * {@link org.dromara.common.core.exception.ServiceException}，不允许凭空入库。</p>
+     *
+     * <p>row55 起还有三种会被拒的情况（都返 400）：所选产品不属于该作物的产品配置；
+     * 未指定产品而该作物配了多个产品（提示更新小程序）；所选产品不是果蔬原材料。</p>
      *
      * @param bo 自产入库入参
      * @return 新建收货记录 ID
