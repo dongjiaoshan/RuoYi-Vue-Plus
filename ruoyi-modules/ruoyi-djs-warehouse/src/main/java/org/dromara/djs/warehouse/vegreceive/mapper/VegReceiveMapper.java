@@ -15,8 +15,11 @@ import java.util.List;
 /**
  * 果蔬月台收货 Mapper（FIX-WMS-VEGRECEIVE-001）。
  *
- * <p>聚合口径：上游毛菜处理"发往月台"量 {@code vegetable_handle.send_platform_weight} 是"已发往月台、
- * 待入果蔬间"的果蔬；本表 {@code receiveType=1} 记录"已从月台入到保鲜室"的量。两者相减得待入库量。</p>
+ * <p>聚合口径（row55 起）：上游"发往月台"的量取自 {@code t_warehouse_handle_record} 的月台明细
+ * （{@code record_type=2} 处理 + {@code handle_target=2} 月台，<b>带产品维度</b>）；本表 {@code receiveType=1}
+ * 记录"已从月台入到保鲜室"的量。待入库 = 月台明细量 − 已收量 − 已结算损耗，按 (作物, 产品) 分组。
+ * 不再用 {@code vegetable_handle.send_platform_weight} —— 它是 (地块, 作物) 一行的汇总列、拆不开产品，
+ * 详见 {@link #selectSelfPending}。</p>
  *
  * <p>租户隔离：业务表未启全局 MP 拦截器，聚合 SQL 显式 {@code tenant_id='1001'}（V1 单租户，与
  * {@link org.dromara.djs.warehouse.stock.mapper.LocationStockMapper} 同范式）。</p>
@@ -144,8 +147,10 @@ public interface VegReceiveMapper extends BaseMapperPlus<VegReceive, VegReceive>
      * （{@code product_type=2}，如饲料/药品/肥料/农药/包材，按 {@code buy_class} 分类）是生产资料、不是要在月台
      * 收的食材，走 admin 采购入库、不在此现场收货。故必须限 {@code product_type=1}：否则 297 条外购生产资料
      * （belong_type 全空、CASE 落 ELSE 显「外购原材料」）会污染列表。不再用 {@code is_buy_out=1} 收口：
-     * 现网自产食材 SKU 普遍 {@code is_buy_out=0}（果蔬全部为 0），加该条件会把列表清空、和原型「外购产品收货
-     * 列出果蔬产品」（小白菜/番茄）矛盾——任何自产食材都可临时外购补货，外购属性不是产品固有标记。</p>
+     * 早期现网自产食材 SKU 普遍 {@code is_buy_out=0}，当时加该条件会把列表清空。
+     * <b>现状（2026-08-07 实测）</b>：果蔬里 {@code is_buy_out=1} 已有 1 个、{@code =0} 还有 20 个，
+     * 即该开关已在被实际使用 —— 所以下面的 SQL <b>保留</b>了 {@code is_buy_out=1}，由 admin 产品配置显式决定
+     * 哪些食材能走外购收货。（本段上文那句"不再用 is_buy_out 收口"是早期结论，已不成立，故此处更正。）</p>
      *
      * <p>外购无"上游月台量"概念（不来自毛菜处理），V1 收货前无预设待收量 → {@code pendingWeight=0}；
      * 工人在 mp 外购入库子页直接录入实收重量。{@code productType} 列按 {@code belong_type} 回填业态文案
@@ -193,7 +198,8 @@ public interface VegReceiveMapper extends BaseMapperPlus<VegReceive, VegReceive>
     /**
      * 某作物下、按地块的果蔬间入库行。
      *
-     * <p>地块月台量 = {@code SUM(send_platform_weight) by plot}；实际入库 = 本表 self 该 (crop, plot) 已入量；
+     * <p>地块月台量 = {@code SUM(handle_record.record_weight) by plot}（row55 起改读带产品维度的月台明细，
+     * 不再读 {@code send_platform_weight}）；实际入库 = 本表 self 该 (crop, product, plot) 已入量；
      * 待入库 = 月台量 − 实际入库 − <b>全历史</b>已结算损耗（取 0 兜底负值）。</p>
      *
      * <p>展示列 {@code lossWeight}（row179）= 该地块<b>当天</b>（{@code DATE(receive_time)=CURDATE()}）入库完成

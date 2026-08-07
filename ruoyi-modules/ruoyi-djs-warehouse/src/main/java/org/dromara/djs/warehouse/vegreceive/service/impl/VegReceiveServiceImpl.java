@@ -503,17 +503,23 @@ public class VegReceiveServiceImpl implements IVegReceiveService {
      * 同时 set {@code product_id} + {@code plot_id}（篮子标签），下游
      * {@code consumeVegBaskets(WHERE product_id=#{id})} 才领得到月台中转入库的库存，两池合一（G3）。</p>
      *
-     * <p><b>row55</b>：{@code productId} 由调用方给出<b>本次实收的那个产品</b>（已过果蔬原料守门），
-     * 不再由 {@code resolveProductIdByCrop} 按作物反解 —— 一块地可以先后收红薯和红薯杆，按作物反解
-     * 会把两笔并进同一张篮。过不了守门的已在 {@link #inbound} 里被拒，不会走到这里建无名篮
-     * （无名篮之间会因 {@code product_id <=> NULL} 互相合并，且下游 {@code eq(product_id, ?)} 永远领不出去）。</p>
+     * <p><b>row55</b>：{@code productId} 由调用方给出<b>本次实收的那个产品</b>，不再由
+     * {@code resolveProductIdByCrop} 按作物反解 —— 一块地可以先后收红薯和红薯杆，按作物反解会把两笔并进同一张篮。</p>
+     *
+     * <p>⚠️ <b>仍有一条路会建出 {@code product_id=NULL} 的无名篮</b>：作物既没有产品配置、又没有
+     * {@code related_product} 时（{@link #resolveReceiveProductId} 返 null），{@link #inbound} 的守门条件
+     * {@code materialProductId == null && receiveProductId != null} 不成立、不会拒。
+     * 无名篮的代价要清楚：多张无名篮之间会因 {@code product_id <=> NULL} 互相合并成一张，
+     * 且下游领用 {@code consumeVegBaskets(eq(product_id, ?))} 永远匹配不到 NULL，那批货领不出去。
+     * 之所以没把这条也拒掉：作物连产品都没配是"还没配置完"，不是"配错了"，拒了会挡住正常建账；
+     * 而配错（配了非果蔬原料）是脏数据，必须当场报。现网 103 个作物两者齐备，此路不可达。</p>
      */
     private void insertPlotStockRow(Long locationId, Long productId, Long plotId, String cropName,
                                     BigDecimal stockQty, Long userId) {
         LocationStock stock = new LocationStock();
         stock.setLocationId(locationId);
-        // G2：双键篮 = product_id + plot_id（篮子标签）。row55 起 product_id 由调用方给出本次实收的产品，
-        // 且已在 inbound 里过完果蔬原料守门 —— 走到这里必非空，不会建无名篮。
+        // G2：双键篮 = product_id + plot_id（篮子标签）。row55 起 product_id 由调用方给出本次实收的产品。
+        // 注意它仍可能为 null（作物既无产品配置又无 related_product，见方法 javadoc），那种情况会建无名篮。
         stock.setProductId(productId);
         stock.setPlotId(plotId);
         stock.setProductName(cropName);

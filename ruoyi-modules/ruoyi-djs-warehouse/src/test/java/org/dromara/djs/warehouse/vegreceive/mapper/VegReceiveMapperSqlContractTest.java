@@ -29,6 +29,15 @@ class VegReceiveMapperSqlContractTest {
      * 取注解里的 SQL 原文并归一：压平空白 + 转小写 + 还原 XML 实体。
      * {@code <script>} 里的比较符写成 {@code &lt;} / {@code &gt;}，不还原断言就得跟着写实体。
      */
+    /** 字面出现次数（不能用 String.split：它吃正则，而 {@code #{xxx}} 的花括号会被当成重复量词）。 */
+    private static int countOf(String haystack, String needle) {
+        int n = 0;
+        for (int i = haystack.indexOf(needle); i >= 0; i = haystack.indexOf(needle, i + needle.length())) {
+            n++;
+        }
+        return n;
+    }
+
     private static String sqlOf(String methodName, Class<?>... paramTypes) throws Exception {
         Method m = VegReceiveMapper.class.getMethod(methodName, paramTypes);
         Select select = m.getAnnotation(Select.class);
@@ -74,9 +83,16 @@ class VegReceiveMapperSqlContractTest {
         // 三处 JOIN 都必须带产品维度的 NULL-safe 等值（recv_sum / visible / plat 与 recv 相联）。
         // 少任何一处，同一作物的多个产品会互相笛卡尔 —— 实测去掉 recv_sum 那处，红薯作物返 4 行
         //（每个产品重复两次），mp 列表直接出现重复卡，而 service 单测把 mapper 整个 mock 了、一条都不会红。
-        assertThat(sql.split("product_id <=> ", -1))
+        assertThat(countOf(sql, "product_id <=> "))
             .as("selectSelfPending 里按产品的 NULL-safe JOIN 键应有 3 处")
-            .hasSize(4);
+            .isEqualTo(3);
+
+        // productId 必须真投影出去。把它换成 NULL 是合法 SQL、跑得通、全部单测也绿，
+        // 但 mp 拿到的每张卡 productId 都是空 → 收货时多产品作物一律被判「说不清是哪个产品」而 400，
+        // 红薯和红薯杆双双收不了，row55 的病原样复发。
+        assertThat(sql)
+            .as("productId 必须取自聚合键 t.product_id，不能是常量/NULL")
+            .contains("t.product_id as productid");
     }
 
     @Test
@@ -102,13 +118,15 @@ class VegReceiveMapperSqlContractTest {
             .contains("coalesce(hr.product_id, cr0.related_product) = #{productid}")
             .as("地块明细·已收段（veg_receive）按产品收窄")
             .contains("coalesce(vr.product_id, cr1.related_product) = #{productid}");
-        assertThat(plots.split("<if test=\"productid != null\">", -1))
+        assertThat(countOf(plots, "<if test=\"productid != null\">"))
             .as("地块明细应恰有 2 段可选收窄")
-            .hasSize(3);
+            .isEqualTo(2);
         // 剩余可入量三段（月台量 / 已入 / 已结算损耗）都要能按产品收窄，漏一段封顶就形同虚设。
         // 只数 <if> 外壳不够：把某一段的谓词换成 1=1，外壳计数不变、`= #{productid}` 也仍被别段满足，
         // 变异能存活。故三段各自的表别名 + 收窄谓词都要点名断言。
-        assertThat(remain.split("<if test=\"productid != null\">", -1)).hasSize(4);
+        assertThat(countOf(remain, "<if test=\"productid != null\">"))
+            .as("剩余可入量应恰有 3 段可选收窄")
+            .isEqualTo(3);
         assertThat(remain)
             .as("月台量段（handle_record）按产品收窄")
             .contains("coalesce(hr.product_id, cr0.related_product) = #{productid}")
@@ -116,5 +134,18 @@ class VegReceiveMapperSqlContractTest {
             .contains("coalesce(vr.product_id, cr1.related_product) = #{productid}")
             .as("已结算损耗段（veg_receive is_finish=1）按产品收窄")
             .contains("coalesce(vrl.product_id, cr2.related_product) = #{productid}");
+
+        // 产品之外的两个轴同样得钉住：删了作物谓词 → 详情页返回所有作物的地块；
+        // 删了地块谓词 → 封顶额度按整作物算、跨地块互吃。两者都是合法 SQL、单测照样全绿。
+        assertThat(countOf(plots, "crop_id = #{cropid}"))
+            .as("地块明细两段都要按作物收窄")
+            .isEqualTo(2);
+        assertThat(countOf(remain, "plot_id = #{plotid}"))
+            .as("剩余可入量三段都要按地块收窄")
+            .isEqualTo(3);
+        // 已结算损耗那段只能算已完成行，否则未完成的损耗也被扣、额度凭空变小
+        assertThat(remain).contains("vrl.is_finish = 1");
+        // 只算自产收货：漏了这条，外购收货会被计进自产已入库量
+        assertThat(remain).contains("vr.receive_type = 1");
     }
 }

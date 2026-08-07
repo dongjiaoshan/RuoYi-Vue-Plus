@@ -15,10 +15,12 @@ import java.util.List;
  *
  * <h3>两类入库的库存维度差异</h3>
  * <ul>
- *   <li>自产（{@code receiveType=1}）：果蔬来自上游毛菜处理"发往月台"量，按 {@code plotId} 维度入
- *       {@code location_stock}（库存三维互斥之一），入库前校验剩余可入量防超量。</li>
- *   <li>外购（{@code receiveType=2}）：外购果蔬产品（{@code product_type=2}），按 {@code productId} 维度入库，
- *       复用 {@code LocationStockMapper.addByProductLocation}（与包材入库同范式）。</li>
+ *   <li>自产（{@code receiveType=1}）：果蔬来自上游毛菜处理"发往月台"量，row55 起按
+ *       <b>{@code productId + plotId} 双键</b>入 {@code location_stock}，入库前按 (作物, 产品, 地块)
+ *       校验剩余可入量防超量。</li>
+ *   <li>外购（{@code receiveType=2}）：自产食材原料 SKU（{@code product_type=1 且 product_attr=2}，
+ *       <b>不是</b> {@code product_type=2}，口径见 {@code VegReceiveMapper.selectPurchasedPending}），
+ *       按 {@code productId} 维度入库，复用 {@code LocationStockMapper.addByProductLocation}。</li>
  * </ul>
  *
  * @author djs
@@ -29,7 +31,7 @@ public interface IVegReceiveService {
     /**
      * 自产果蔬待收货列表（row55 起<b>按产品聚合</b>）。
      *
-     * <p>待入库 = 上游月台量 − 已入库 self 量，仅保留待入库 &gt; 0 的 (作物, 产品) 组合。
+     * <p>待入库 = 上游月台量 − 已入库 self 量 − 已结算损耗，仅保留待入库 &gt; 0 的 (作物, 产品) 组合。
      * 同一作物的多个产品（如红薯 / 红薯杆）各自一张卡、各自一份待入库量。</p>
      *
      * @return 待收货项（{@code cropId} 作物 ID + {@code productId} 产品 ID 共同定位一张卡）

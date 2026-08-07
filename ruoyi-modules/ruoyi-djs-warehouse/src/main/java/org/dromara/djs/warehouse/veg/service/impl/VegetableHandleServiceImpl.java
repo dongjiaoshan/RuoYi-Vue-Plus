@@ -1299,15 +1299,17 @@ public class VegetableHandleServiceImpl
      * 退化成作物名。要真正打通得三处一起改：BO 加字段 + mp 加产品选择 + 去掉 submitPickActivity 里的
      * 反解覆盖 —— 那是新增能力，不在本轮范围，已留痕给甲方决定。现网 0 行受影响
      * （现有饲喂/月台记录全部来自毛菜处理 {@code submitProcess} 那条链路，产品是对的）。</p>
+     *
+     * <p>🔴 <b>真把 productId 打通时，必须同时在这里加「产品属于该作物配置」的守门</b>
+     * （照 {@link #resolveRecordProductId} 那道，它会对不属于的选择抛 400）。理由：这条链路写出的
+     * {@code handle_record} 就是果蔬月台卡的数据源，而收货侧对不属于该作物配置的产品是硬拒的 ——
+     * 上游不把门就会造出一张点进去收不了的卡，货永久卡在月台。
+     * 现在<b>没有</b>加这道门是有意的：{@code bo.getProductId()} 眼下并非客户端输入、而是调用方自己
+     * 预解析出来的作物默认产品，对它做「必须在配置里」的校验防不到任何真实入口，只会在
+     * {@code related_product} 与产品配置不一致时制造误拒（该不变量无 DB 约束、纯靠数据凑巧成立）。</p>
      */
     private Long pickProductId(PickDestSubmitBo bo) {
-        if (bo.getProductId() == null) {
-            return resolveProductIdByCrop(bo.getCropId(), null);
-        }
-        // 走 resolveRecordProductId 的同一道门：产品必须属于该作物的配置。
-        // 这条链路写出的 handle_record 就是果蔬月台卡的数据源（row55），而收货侧对「不属于该作物配置」
-        // 的产品是硬拒的 —— 上游不把门，就会造出一张点进去收不了的卡，货永久卡在月台，比不分产品还糟。
-        return resolveRecordProductId(bo.getCropId(), bo.getProductId());
+        return bo.getProductId() != null ? bo.getProductId() : resolveProductIdByCrop(bo.getCropId(), null);
     }
 
     /**
