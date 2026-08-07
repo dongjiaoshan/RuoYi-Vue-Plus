@@ -55,6 +55,37 @@ public interface BarInfoMapper extends BaseMapperPlus<BarInfo, BarInfo> {
                               @Param("userId") Long userId);
 
     /**
+     * V6-R43 燎毛间产品入库重量调整的「可调整窗口」乐观锁 + 入库重量差额同步。
+     *
+     * <p>两件事一次做完：</p>
+     * <ol>
+     *   <li><b>窗口校验（业务前置条件，必须在后端拦）</b>：{@code WHERE status IN ('pending_singe','singing')}
+     *       —— 只有还没点「处理完成」的猪只才允许调整。affectedRows==0 = 该白条已被并发推进到
+     *       {@code in_stock}（有人点了处理完成）或已不在燎毛间在制态，调用方抛异常回滚整个调整。</li>
+     *   <li><b>并发互斥</b>：这条 UPDATE 会拿住该 bar 行的排他锁，与 {@code finishBurn} 的
+     *       {@link #updateStatusToInStock} 争同一行 —— 两者不可能同时通过。调整事务里把它放在
+     *       最后一步（inhouse / 库存 / 流水 / 燎毛记录都写完之后）作为提交闸：这样若 finishBurn 已先
+     *       拿到锁并推进状态，本次调整整体回滚，不会留下改了一半的数据。</li>
+     * </ol>
+     *
+     * <p>{@code in_weight} 用 CASE 保护：它由 finishBurn 在「处理完成」时才写入（= 各产出行合计），
+     * 调整窗口内正常为 NULL → 保持 NULL 不动；万一非空（重跑 / 历史数据）则按差额同步，
+     * 不覆盖（它是整只口径的合计，不是单行重量）。</p>
+     *
+     * @param id     白条主键
+     * @param delta  入库重量调整差额（新重量 − 旧重量，可负）
+     * @param userId 操作人
+     * @return affectedRows（1=仍在可调整窗口；0=已处理完成 / 状态不符 / 已软删）
+     */
+    @Update("UPDATE t_warehouse_bar_info "
+        + "   SET in_weight = CASE WHEN in_weight IS NULL THEN NULL ELSE in_weight + #{delta} END,"
+        + "       update_by = #{userId}, update_time = NOW() "
+        + " WHERE id = #{id} AND status IN ('pending_singe','singing') AND del_flag = '0'")
+    int adjustInWeightIfBurning(@Param("id") Long id,
+                                @Param("delta") BigDecimal delta,
+                                @Param("userId") Long userId);
+
+    /**
      * pickup 阶段乐观锁：bar_info.status in_stock → pending_cut。
      *
      * <p>WHERE status='in_stock' 保证并发分割师同时领用同一条白条只有一个成功。

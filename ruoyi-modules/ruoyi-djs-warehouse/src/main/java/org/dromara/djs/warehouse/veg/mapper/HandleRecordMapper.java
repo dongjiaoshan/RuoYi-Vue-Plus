@@ -8,9 +8,11 @@ import org.dromara.djs.warehouse.veg.domain.HandleRecord;
 import org.dromara.djs.warehouse.veg.domain.query.PickDetailQuery;
 import org.dromara.djs.warehouse.veg.domain.query.VegHandleRecordQuery;
 import org.dromara.djs.warehouse.veg.domain.vo.HandleRecordVo;
+import org.dromara.djs.warehouse.veg.domain.vo.HandleProductNetRow;
 import org.dromara.djs.warehouse.veg.domain.vo.PickDetailVo;
 import org.dromara.djs.warehouse.veg.domain.vo.VegHandleRecordVo;
 
+import java.util.Collection;
 import java.util.List;
 
 /**
@@ -41,10 +43,11 @@ public interface HandleRecordMapper extends BaseMapperPlus<HandleRecord, HandleR
      * <p>外层派生表按 statSource 精确过滤（row44 统计来源下拉）。</p>
      */
     String PICK_DETAIL_SQL = """
-        SELECT t.pickDate, t.cropName, t.plotCode, t.statSource, t.pickWeight, t.teamId, t.teamName
+        SELECT t.pickDate, t.cropName, t.productName, t.plotCode, t.statSource, t.pickWeight, t.teamId, t.teamName
           FROM (
         SELECT DATE(r.handle_time) AS pickDate,
                pr.crop_name        AS cropName,
+               pi.product_name     AS productName,
                p.plot_code         AS plotCode,
                '1'                 AS statSource,
                r.record_weight     AS pickWeight,
@@ -68,9 +71,15 @@ public interface HandleRecordMapper extends BaseMapperPlus<HandleRecord, HandleR
                  ON pr.id = h.planting_record_id AND pr.del_flag = '0' AND pr.tenant_id = '1001'
           LEFT JOIN t_plant_plot_info p
                  ON p.id = r.plot_id AND p.del_flag = '0' AND p.tenant_id = '1001'
+          LEFT JOIN t_warehouse_product_info pi
+                 ON pi.id = r.product_id AND pi.del_flag = '0' AND pi.tenant_id = '1001'
          WHERE r.record_type = 1
            AND r.del_flag = '0'
            AND r.tenant_id = '1001'
+           <!-- V6 row28 起可提交 0 kg 采摘记录给地块收口（「已称完但没人点完成」）。
+                这类记录不是一次真实采摘，不该出现在采摘明细里，也不该进导出。
+                同一个 UNION ALL 的采摘活动分支本来就带 a.daily_weight &gt; 0，这里补齐口径。 -->
+           AND r.record_weight &gt; 0
            <if test="q.pickDateBegin != null">
              AND DATE(r.handle_time) &gt;= #{q.pickDateBegin}
            </if>
@@ -90,6 +99,7 @@ public interface HandleRecordMapper extends BaseMapperPlus<HandleRecord, HandleR
         UNION ALL
         SELECT a.activity_date    AS pickDate,
                ci.crop_name       AS cropName,
+               NULL               AS productName,
                p2.plot_code       AS plotCode,
                '2'                AS statSource,
                a.daily_weight     AS pickWeight,
@@ -187,13 +197,27 @@ public interface HandleRecordMapper extends BaseMapperPlus<HandleRecord, HandleR
      *
      * <p>自定义 @Select 含 UNION / JOIN，各表 WHERE 显式带 {@code tenant_id}（拦截器对自定义 SQL 不保证注入）。
      * 记录人直接 JOIN {@code sys_user} 取 nick_name 而非注解翻译，使「记录人模糊搜索」能下推到 SQL。</p>
+     *
+     * <p><b>产品名称（V6 row49）三支取数各不相同</b>：</p>
+     * <ul>
+     *   <li>处理流水支：{@code r.product_id} JOIN {@code t_warehouse_product_info}，与「采摘明细」页
+     *       {@link #PICK_DETAIL_SQL} 同一条取数路径 —— 这是录入人当场选定的处理产品，逐行准确。</li>
+     *   <li>结算损耗支：<b>恒 NULL</b>。{@code loss_weight = picked − stockIn − sendPlatform − feed}
+     *       是<b>地块级</b>一次性结算，跨该地块所有产品，库里不存在按产品的拆分；汇总行上的
+     *       {@code h.product_id} 是建行时按遗留字段 {@code crop.related_product} 解析的单产品，
+     *       V6 row16 起产品配置已迁到 {@code t_plant_crop_product}（一作物多产品），拿它填这一列
+     *       对多产品作物就是编一个名字出来。宁可空着。</li>
+     *   <li>采摘活动支：<b>恒 NULL</b>。{@code t_plant_plant_activity} 没有产品维度，
+     *       {@link #PICK_DETAIL_SQL} 的同源分支也是 {@code NULL AS productName}。</li>
+     * </ul>
      */
     String VEG_HANDLE_RECORD_SQL = """
-        SELECT t.handleDate, t.cropName, t.statSource, t.handleMethod,
+        SELECT t.handleDate, t.cropName, t.productName, t.statSource, t.handleMethod,
                t.plotCode, t.handleWeight, t.recorderName
           FROM (
         SELECT r.handle_time AS handleDate,
                c.crop_name   AS cropName,
+               pi.product_name AS productName,
                '1'           AS statSource,
                CASE r.handle_target WHEN 1 THEN 'veg_fresh' WHEN 2 THEN 'platform' WHEN 3 THEN 'feed' END AS handleMethod,
                p.plot_code   AS plotCode,
@@ -209,13 +233,19 @@ public interface HandleRecordMapper extends BaseMapperPlus<HandleRecord, HandleR
                  ON c.id = r.crop_id AND c.del_flag = '0'
           LEFT JOIN t_plant_plot_info p
                  ON p.id = r.plot_id AND p.del_flag = '0'
+          LEFT JOIN t_warehouse_product_info pi
+                 ON pi.id = r.product_id AND pi.del_flag = '0' AND pi.tenant_id = #{tenantId}
           LEFT JOIN sys_user u
                  ON u.user_id = COALESCE(r.handle_user, r.create_by) AND u.del_flag = '0'
          WHERE r.del_flag = '0' AND r.tenant_id = #{tenantId}
            AND r.record_type = 2 AND r.handle_target IN (1, 2, 3)
+           <!-- V6 row29 起可提交 0 kg 处理记录给地块收口，它不是一次真实处理，不进处理记录列表。
+                本 UNION 的另外两支已各自带 h.loss_weight &gt; 0 / COALESCE(a.pick_weight,a.daily_weight) &gt; 0，这里补齐。 -->
+           AND r.record_weight &gt; 0
         UNION ALL
         SELECT COALESCE(h.update_time, h.create_time) AS handleDate,
                c.crop_name   AS cropName,
+               NULL          AS productName,
                '1'           AS statSource,
                'loss'        AS handleMethod,
                p.plot_code   AS plotCode,
@@ -236,6 +266,7 @@ public interface HandleRecordMapper extends BaseMapperPlus<HandleRecord, HandleR
         UNION ALL
         SELECT CAST(a.activity_date AS DATETIME) AS handleDate,
                ci.crop_name AS cropName,
+               NULL         AS productName,
                '2'          AS statSource,
                COALESCE(NULLIF(a.pick_dest, ''), 'sale') AS handleMethod,
                p2.plot_code AS plotCode,
@@ -302,5 +333,32 @@ public interface HandleRecordMapper extends BaseMapperPlus<HandleRecord, HandleR
     @Select("<script>" + VEG_HANDLE_RECORD_SQL + "</script>")
     List<VegHandleRecordVo> selectVegHandleRecordList(@Param("tenantId") String tenantId,
                                                       @Param("q") VegHandleRecordQuery q);
+
+    /**
+     * 按「汇总行 × 产品」聚合采收量与处理量（V6 row18 信息框逐产品剩余重量）。
+     *
+     * <p>净额 {@code netWeight = Σ采收(record_type=1) − Σ处理(record_type=2)}，处理侧含入库 / 月台 / 饲料
+     * 三个去向 —— 与地块级 {@code remainWeight = picked − handled − feed} 同口径，各产品加起来正好是地块总剩余。</p>
+     *
+     * <p>{@code product_id} 为 NULL 的存量流水按 key {@code NULL} 单独归一行，service 层折进该作物的
+     * 首个配置产品，不让改造前录的重量凭空消失。</p>
+     *
+     * @param handleIds 汇总行 id 集合（已 dedupe，非空）
+     * @return 行（handleId / productId / netWeight）；无流水的汇总行不出现
+     */
+    @Select("""
+        <script>
+        SELECT r.handle_id AS handleId,
+               r.product_id AS productId,
+               ROUND(SUM(CASE WHEN r.record_type = 1 THEN r.record_weight ELSE -r.record_weight END), 3) AS netWeight
+          FROM t_warehouse_handle_record r
+         WHERE r.tenant_id = '1001'
+           AND r.del_flag = '0'
+           AND r.handle_id IN
+           <foreach collection='handleIds' item='hid' open='(' separator=',' close=')'>#{hid}</foreach>
+         GROUP BY r.handle_id, r.product_id
+        </script>
+        """)
+    List<HandleProductNetRow> selectProductNetByHandleIds(@Param("handleIds") Collection<Long> handleIds);
 
 }

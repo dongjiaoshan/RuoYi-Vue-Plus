@@ -82,6 +82,14 @@ public class VegPlotDetailVo implements Serializable {
     private Integer hasRelatedProduct;
 
     /**
+     * 该作物配置的产品清单 + 各自剩余重量（V6 row17/row18，service enrich）。
+     *
+     * <p>作物没配任何产品时为空 list —— mp 侧此时不显示产品行、也不带 productId 提交，
+     * 与改造前行为一致（{@link #hasRelatedProduct} 的软提示仍在）。</p>
+     */
+    private java.util.List<VegPlotProductVo> products;
+
+    /**
      * 称重(采摘录入)状态：pending=待办 / done=已完成（由 vegetable_handle.is_weighed 派生）。
      */
     private String weighStatus;

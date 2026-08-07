@@ -13,6 +13,7 @@ import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.breed.core.domain.Pig;
 import org.dromara.djs.breed.core.domain.PigStatusRecord;
 import org.dromara.djs.breed.core.domain.bo.PigCreateBo;
+import org.dromara.djs.breed.core.domain.bo.PigEarNoUpdateBo;
 import org.dromara.djs.breed.core.domain.bo.PigEventBo;
 import org.dromara.djs.breed.core.domain.query.PigQuery;
 import org.dromara.djs.breed.core.domain.query.PigStatusRecordQuery;
@@ -382,6 +383,59 @@ public class PigCoreServiceImpl implements IPigCoreService {
 
         log.info("[FIX-INTRO-RECLASS] internalIntroToReserve pigId={} earNo={} type fattening->{} status {}->{}",
             pig.getId(), pig.getEarNo(), newType, oldStatus, newStatus);
+    }
+
+    /** 耳号格式：品系(1-2位)-品种2位-性别1位(可选)-出生日yyMMdd6位-序号3位。与 {@code @Pattern} 同源，服务端二次防线。 */
+    private static final java.util.regex.Pattern EAR_NO_PATTERN =
+        java.util.regex.Pattern.compile("^\\d{1,2}-\\d{2}(-\\d)?-\\d{6}-\\d{3}$");
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public PigVo updateEarNo(Long pigId, PigEarNoUpdateBo bo) {
+        if (pigId == null) {
+            throw new ServiceException(I18nMessages.t("pig.id.required"));
+        }
+        Objects.requireNonNull(bo, "PigEarNoUpdateBo must not be null");
+        String newEarNo = bo.getEarNo() == null ? null : bo.getEarNo().trim();
+        // BO 上的 @Pattern 已经在 controller 入口校过一次；这里是服务端二次防线，
+        // 防止未来有别的调用方绕开 controller 直接调本方法（如运维脚本 / 单测遗漏走 Validated）。
+        if (newEarNo == null || !EAR_NO_PATTERN.matcher(newEarNo).matches()) {
+            throw new ServiceException(I18nMessages.t("pig.ear_no.update_pattern"));
+        }
+
+        Pig pig = pigMapper.selectById(pigId);
+        if (pig == null) {
+            throw new ServiceException(I18nMessages.t("pig.not_found", pigId));
+        }
+        if (newEarNo.equals(pig.getEarNo())) {
+            throw new ServiceException(I18nMessages.t("pig.ear_no.update_unchanged"));
+        }
+
+        // 判重：同出生日 + 后三位（主口径，见 PigMapper#existsSeqByDateSegment 详注）+ 整串兜底，
+        // 均排除自身 id —— 与 PigIntroServiceImpl.isEarNoTaken 同一套口径的排除自身版，
+        // 保证「引种时查重」与「改号时查重」不会分叉出两套判断标准。
+        int sepIdx = newEarNo.lastIndexOf('-');
+        String prefix = newEarNo.substring(0, sepIdx);
+        String dateSeg = prefix.substring(prefix.lastIndexOf('-') + 1);
+        long seq = Long.parseLong(newEarNo.substring(sepIdx + 1));
+        if (pigMapper.existsSeqByDateSegmentExcludeId(dateSeg, seq, pigId) != null
+            || pigMapper.existsEarNoExcludeId(newEarNo, pigId) != null) {
+            throw new ServiceException(I18nMessages.t("pig.ear_no.update_duplicate", newEarNo));
+        }
+
+        String oldEarNo = pig.getEarNo();
+        // ear_no / ear_tag 全库实测恒相等（EarNoAllocator 分配时两列同值写入），改号同步两列，
+        // 不引入"简版/全版不一致"的新状态。
+        pig.setEarNo(newEarNo);
+        pig.setEarTag(newEarNo);
+        pig.setVersion(bo.getVersion());
+        int affected = pigMapper.updateById(pig);
+        if (affected == 0) {
+            throw new ServiceException(I18nMessages.t("pig.update.optimistic_lock_conflict", pigId));
+        }
+
+        log.info("[BRD-LIST-EDIT-001] admin 修改耳号 pigId={} {} -> {}", pigId, oldEarNo, newEarNo);
+        return pigMapper.selectVoById(pigId);
     }
 
     @Override
@@ -757,6 +811,17 @@ public class PigCoreServiceImpl implements IPigCoreService {
         // FIX-BREEDING-001 #23a：配种选猪场景传 excludeNullBarn=true，排除无栋舍归属猪只，
         // 与 countByBarn（barn-count chip）口径对齐（列表数 = 各栋舍 chip 之和）。默认 false 不变。
         boolean dropNullBarn = !searchingByEarNo && Boolean.TRUE.equals(excludeNullBarn);
+        // 🔴 LIMIT 必须让位给「内存后筛」（生产 2026-08-06：分娩录入不选栋舍时空列表、点栋舍 chip 反而有）。
+        // 本方法只有两个过滤跑在 SQL 之后的内存里：filterBreedReady（配种）与 dueType 到期硬筛（分娩/断奶）。
+        // 一旦它们要跑，SQL 若先 `ORDER BY id DESC LIMIT n` 截断，被截掉的那批就再也没机会参与筛选 ——
+        // 结果是「候选池越大越查不到」：实测生产 100 头 PZ 母猪只有 1 头到产期、它在 id 倒序里排第 82，
+        // panel 传 limit=60 → SQL 只回前 60 → 内存筛完为空 → 「无匹配猪只」；点栋舍 chip 后 SQL 多了
+        // barn_id 条件、候选池缩到 60 以内，那头猪才挤进来 —— 这正是甲方看到的「选栋舍才有数据」。
+        // 修法对齐 countByBarn：它本来就**不下 LIMIT**（无界 selectList 后内存筛），所以 chip 数字一直是对的。
+        // 这里同样把截断推迟到内存筛 + 「临产排前」排序之后（见方法末尾），保证返回的是「最该干的 n 头」
+        // 而不是「id 最新的 n 头里恰好该干的」。无内存后筛的其余 10 个调用方仍走 SQL LIMIT，行为不变。
+        boolean deferLimit = !searchingByEarNo
+            && (Boolean.TRUE.equals(breedReady) || StringUtils.isNotBlank(dueType));
         // statusFilter CSV："HB,PZ" → IN ('HB','PZ')；如果显式含 END（如燎毛工序选已出栏猪），跳过下方 .ne(END) 默认排除
         List<String> statuses = parseStatusFilter(statusFilter);
         boolean callerWantsEnd = statuses.contains(PigLifecycle.END.name());
@@ -804,7 +869,8 @@ public class PigCoreServiceImpl implements IPigCoreService {
                 + " OR COALESCE(birth_date, introduce_date) IS NULL"
                 + " OR DATEDIFF(NOW(), COALESCE(birth_date, introduce_date)) <= {1})", PIG_TYPE_FATTENING, maxAgeDays)
             .orderByDesc(Pig::getId)
-            .last("LIMIT " + effectiveLimit);
+            // deferLimit 时不下 SQL LIMIT —— 截断推迟到内存筛 + 排序之后（见方法末尾 subList）
+            .last(!deferLimit, "LIMIT " + effectiveLimit);
 
         if (!statuses.isEmpty()) {
             w.in(Pig::getCurrentStatus, statuses);
@@ -940,6 +1006,11 @@ public class PigCoreServiceImpl implements IPigCoreService {
             result.sort(Comparator
                 .comparingInt((PigSearchVo v) -> Boolean.TRUE.equals(v.getDue()) ? 0 : 1)
                 .thenComparing(PigSearchVo::getDueDate, Comparator.nullsLast(Comparator.naturalOrder())));
+        }
+        // deferLimit 路径的截断点：内存筛 + 排序都做完了才截，取的是「最该干的 effectiveLimit 头」。
+        // 放在排序之后是有意的 —— 排序键是临产度，先截再排会把最紧急的那几头切掉，那就是换个阈值再犯一次同样的错。
+        if (deferLimit && result.size() > effectiveLimit) {
+            return new ArrayList<>(result.subList(0, effectiveLimit));
         }
         return result;
     }

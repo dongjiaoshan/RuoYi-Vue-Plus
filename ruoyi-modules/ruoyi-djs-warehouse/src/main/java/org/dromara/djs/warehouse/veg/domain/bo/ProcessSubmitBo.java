@@ -30,16 +30,34 @@ public class ProcessSubmitBo {
     private Long plantingRecordId;
 
     /**
-     * 处理重量(kg)，> 0。
+     * 处理产品 ID（V6 row18，FK → t_warehouse_product_info.id）。
+     *
+     * <p>口径同 {@link HarvestSubmitBo#getProductId()}：单产品作物可不传，服务端补首个配置产品。</p>
      */
-    @NotNull(message = "{veg.record_weight.required}")
-    @DecimalMin(value = "0.001", message = "{veg.record_weight.positive}")
+    private Long productId;
+
+    /**
+     * 处理重量(kg)，≥ 0。
+     *
+     * <p>V6 row29 允许 0：口径同 {@link HarvestSubmitBo#getHarvestWeight()} —— 0 kg 只有在
+     * {@code processFinish=1}（把地块处理状态收口）时才有意义，服务端 {@code submitProcess} 硬校验；
+     * 负数任何时候都不合法，由本注解拦。</p>
+     *
+     * <p><b>「留空 = 0」的归一在 mp 端做</b>（V6 row41）：本字段对 API 仍是必传，传 null 直接 400 ——
+     * 客户端漏传字段是 bug，不该被静默当成 0 收下一条 0 kg 记录。</p>
+     */
+    @NotNull(message = "请填写处理重量")
+    @DecimalMin(value = "0", message = "处理重量不能为负数")
     private BigDecimal processWeight;
 
     /**
-     * 去向 djs_handle_target：1=蔬菜保鲜库(入库) / 2=蔬菜月台 / 3=有机饲料（service 校验 ∈ {1,2,3}）。
+     * 去向 djs_handle_target：1=蔬菜保鲜库(入库) / 2=蔬菜月台 / 3=有机饲料。
+     *
+     * <p><b>条件必填，不能用 {@code @NotNull} 声明</b>（V6 row41）：{@code processWeight > 0} 时必填
+     * （有货就必须说清楚货去哪了），{@code processWeight = 0} 的收口记录不必填 —— 一分货都没走，
+     * 三个去向桶加 0 完全等价，强制选一个只会让工人瞎点、给流水留假去向。传了就仍须 ∈ {1,2,3}。
+     * 判定在 {@code submitProcess} 里做。</p>
      */
-    @NotNull(message = "{veg.handle_target.required}")
     private Integer handleTarget;
 
     /**

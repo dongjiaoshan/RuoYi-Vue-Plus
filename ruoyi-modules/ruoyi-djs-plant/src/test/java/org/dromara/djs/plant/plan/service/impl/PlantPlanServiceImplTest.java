@@ -3,6 +3,7 @@ package org.dromara.djs.plant.plan.service.impl;
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
@@ -15,6 +16,8 @@ import org.dromara.djs.plant.crop.domain.CropInfo;
 import org.dromara.djs.plant.crop.mapper.CropInfoMapper;
 import org.dromara.djs.plant.plan.domain.PlantDetails;
 import org.dromara.djs.plant.plan.domain.PlantPlan;
+import org.dromara.djs.plant.plan.domain.bo.PlantDetailAdjustBo;
+import org.dromara.djs.plant.team.domain.PlantWorkTeam;
 import org.dromara.djs.plant.plan.domain.bo.PlantDetailInputBo;
 import org.dromara.djs.plant.plan.domain.bo.PlantPlanCreateBo;
 import org.dromara.djs.plant.plan.domain.bo.PlantFinishBo;
@@ -46,10 +49,12 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyCollection;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.never;
@@ -434,6 +439,243 @@ class PlantPlanServiceImplTest {
 
         assertThat(rows.stream().map(Row::label))
             .containsExactly("8月上旬", "7月下旬", "7月中旬", "7月上旬", "6月中旬");
+    }
+
+    // ============================================================
+    // 已种植地块后台调整 adjustPlantedDetail（V6-R36）—— 四个保存分支各一
+    // ============================================================
+
+    /** 已种植的地块明细（begin_actualdate 非空、采摘未开始），四个分支共用的起点。 */
+    private PlantDetails plantedDetail() {
+        PlantDetails d = new PlantDetails();
+        d.setId(11L);
+        d.setPlantId(1L);
+        d.setPlotId(101L);
+        d.setCropId(30L);
+        d.setPlantStatus("completed");
+        d.setHarvestStatus("pending");
+        d.setBeginActualdate(LocalDate.of(2026, 5, 1));
+        d.setPlantBy(7L);
+        return d;
+    }
+
+    /** teamLinkService.detailTeamIds(11) → role=plant 现存班组全集。 */
+    private void stubCurrentPlantTeams(Long... teamIds) {
+        when(teamLinkService.detailTeamIds(any()))
+            .thenReturn(Map.of(11L, Map.of("plant", List.of(teamIds))));
+    }
+
+    /**
+     * 班组存在性 stub —— adjustPlantedDetail 会先 requireTeamsExist 反查 teamMapper。
+     * 不 stub 的话 Mockito 默认返空列表，任何 plantByIds 都会被判「班组不存在」。
+     */
+    private void stubTeamsExist(Long... teamIds) {
+        List<PlantWorkTeam> teams = java.util.Arrays.stream(teamIds).map(id -> {
+            PlantWorkTeam t = new PlantWorkTeam();
+            t.setId(id);
+            return t;
+        }).toList();
+        when(teamMapper.selectByIds(anyCollection())).thenReturn(teams);
+    }
+
+    @Test
+    @DisplayName("adjust 分支①改回待种植: 明细回 pending + 清种植/采摘日期 + 清班组 + 地块回空闲")
+    void adjustRevertToPending() {
+        when(detailsMapper.selectById(11L)).thenReturn(plantedDetail());
+        when(detailsMapper.update(isNull(), any(Wrapper.class))).thenReturn(1);
+        when(detailsMapper.selectCount(any())).thenReturn(0L);   // 该地块无其它在种明细 → 释放地块
+        when(plotMapper.update(isNull(), any(Wrapper.class))).thenReturn(1);
+
+        PlantDetailAdjustBo bo = new PlantDetailAdjustBo();
+        bo.setDetailId(11L);
+        bo.setPlantState("pending");
+
+        assertThat(service.adjustPlantedDetail(bo)).isEqualTo(1);
+
+        Map<String, Object> set = captureDetailUpdateSet();
+        assertThat(set).containsEntry("plant_status", "pending");
+        assertThat(set).containsEntry("begin_actualdate", null);
+        assertThat(set).containsEntry("end_actualdate", null);
+        assertThat(set).containsEntry("earliest_harvestdate", null);   // 甲方：计划采摘日期调整为空
+        assertThat(set).containsEntry("last_harvestdate", null);
+        assertThat(set).containsEntry("plant_by", null);
+        assertThat(set).containsEntry("change_type", "admin");
+        // 种植班组关联清空 + 地块放回空闲（否则 assertPlotsIdle 会把这块地永久锁死）
+        verify(teamLinkService).syncDetailTeams(eq(11L), eq("plant"), eq(Collections.emptyList()));
+        verify(plotMapper).update(isNull(), any(Wrapper.class));
+        verify(planMapper).recalcAggregates(1L);
+        verify(planMapper).recalcPlanStatus(1L);
+    }
+
+    @Test
+    @DisplayName("adjust 分支①拒绝: 采摘已开始的明细不许改回待种植")
+    void adjustRevertRejectedWhenPicked() {
+        PlantDetails d = plantedDetail();
+        d.setHarvestStatus("picking");
+        when(detailsMapper.selectById(11L)).thenReturn(d);
+
+        PlantDetailAdjustBo bo = new PlantDetailAdjustBo();
+        bo.setDetailId(11L);
+        bo.setPlantState("pending");
+
+        assertThatThrownBy(() -> service.adjustPlantedDetail(bo))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("已开始采摘");
+        verify(detailsMapper, never()).update(isNull(), any(Wrapper.class));
+    }
+
+    @Test
+    @DisplayName("adjust 入口拒绝(V6-R38): 采摘中的明细连改日期都不许 —— 挡「弹框开着期间小程序开采」的时序")
+    void adjustDateRejectedWhenPicking() {
+        PlantDetails d = plantedDetail();
+        d.setHarvestStatus("picking");
+        when(detailsMapper.selectById(11L)).thenReturn(d);
+
+        PlantDetailAdjustBo bo = new PlantDetailAdjustBo();
+        bo.setDetailId(11L);
+        bo.setPlantState("planted");
+        bo.setBeginActualdate(LocalDate.of(2026, 5, 10));
+
+        assertThatThrownBy(() -> service.adjustPlantedDetail(bo))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("已开始采摘");
+        verify(detailsMapper, never()).update(isNull(), any(Wrapper.class));
+    }
+
+    @Test
+    @DisplayName("adjust 入口拒绝(V6-R38): 已有实际产量的明细连仅改班组都不许")
+    void adjustTeamRejectedWhenHasYield() {
+        PlantDetails d = plantedDetail();
+        d.setActualYield(new BigDecimal("12.500"));
+        when(detailsMapper.selectById(11L)).thenReturn(d);
+
+        PlantDetailAdjustBo bo = new PlantDetailAdjustBo();
+        bo.setDetailId(11L);
+        bo.setPlantState("planted");
+        bo.setPlantByIds(List.of(9L));
+
+        assertThatThrownBy(() -> service.adjustPlantedDetail(bo))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("已开始采摘");
+        verify(detailsMapper, never()).update(isNull(), any(Wrapper.class));
+    }
+
+    @Test
+    @DisplayName("adjust 分支②改种植日期: 回写 begin_actualdate + 按 crop cycle 重算采摘窗口 + change_type=后台调整")
+    void adjustChangePlantDate() {
+        when(detailsMapper.selectById(11L)).thenReturn(plantedDetail());
+        when(detailsMapper.update(isNull(), any(Wrapper.class))).thenReturn(1);
+        when(cropMapper.selectById(30L)).thenReturn(mockCrop(30L, 60, 90, new BigDecimal("2000.000")));
+        stubCurrentPlantTeams(7L);
+        stubTeamsExist(7L);
+
+        PlantDetailAdjustBo bo = new PlantDetailAdjustBo();
+        bo.setDetailId(11L);
+        bo.setPlantState("planted");
+        bo.setBeginActualdate(LocalDate.of(2026, 5, 10));   // 5/1 → 5/10
+        bo.setPlantByIds(List.of(7L));                      // 班组没动
+
+        assertThat(service.adjustPlantedDetail(bo)).isEqualTo(1);
+
+        Map<String, Object> set = captureDetailUpdateSet();
+        assertThat(set).containsEntry("begin_actualdate", LocalDate.of(2026, 5, 10));
+        assertThat(set).containsEntry("earliest_harvestdate", LocalDate.of(2026, 7, 9));    // 5/10 + 60d
+        assertThat(set).containsEntry("last_harvestdate", LocalDate.of(2026, 8, 8));        // 5/10 + 90d
+        assertThat(set).containsEntry("change_type", "admin");
+        assertThat(set).containsKey("update_by");
+        // 采摘窗口变了 → 主表聚合重算；状态没变，不重算 plant_status
+        verify(planMapper).recalcAggregates(1L);
+        verify(planMapper, never()).recalcPlanStatus(any());
+    }
+
+    @Test
+    @DisplayName("adjust 分支③仅改班组: 只动 plant_by + 中间表，不碰日期/采摘窗口，change_type=后台班组调整")
+    void adjustChangeTeamOnly() {
+        when(detailsMapper.selectById(11L)).thenReturn(plantedDetail());
+        when(detailsMapper.update(isNull(), any(Wrapper.class))).thenReturn(1);
+        stubCurrentPlantTeams(7L);
+        stubTeamsExist(8L, 9L);
+
+        PlantDetailAdjustBo bo = new PlantDetailAdjustBo();
+        bo.setDetailId(11L);
+        bo.setPlantState("planted");
+        bo.setBeginActualdate(LocalDate.of(2026, 5, 1));   // 与库里一致 = 没改
+        bo.setPlantByIds(List.of(8L, 9L));                 // 班组改了
+
+        assertThat(service.adjustPlantedDetail(bo)).isEqualTo(1);
+
+        Map<String, Object> set = captureDetailUpdateSet();
+        assertThat(set).containsEntry("plant_by", 8L);              // 旧单列 = 多选第一个
+        assertThat(set).containsEntry("change_type", "admin_team");
+        assertThat(set.keySet()).doesNotContain("begin_actualdate", "earliest_harvestdate", "last_harvestdate", "plant_status");
+        verify(teamLinkService).syncDetailTeams(eq(11L), eq("plant"), eq(List.of(8L, 9L)));
+        // 仅改班组不影响任何派生聚合
+        verify(planMapper, never()).recalcAggregates(any());
+        verify(planMapper, never()).recalcPlanStatus(any());
+    }
+
+    @Test
+    @DisplayName("adjust 分支④三项都没变: 直接返 0，不写库、不留任何变更痕迹")
+    void adjustNoChangeIsNoop() {
+        when(detailsMapper.selectById(11L)).thenReturn(plantedDetail());
+        stubCurrentPlantTeams(7L);
+        stubTeamsExist(7L);
+
+        PlantDetailAdjustBo bo = new PlantDetailAdjustBo();
+        bo.setDetailId(11L);
+        bo.setPlantState("planted");
+        bo.setBeginActualdate(LocalDate.of(2026, 5, 1));   // 同库
+        bo.setPlantByIds(List.of(7L));                     // 同库
+
+        assertThat(service.adjustPlantedDetail(bo)).isEqualTo(0);
+
+        verify(detailsMapper, never()).update(isNull(), any(Wrapper.class));
+        verify(teamLinkService, never()).syncDetailTeams(any(), any(), any());
+        verify(plotMapper, never()).update(isNull(), any(Wrapper.class));
+        verify(planMapper, never()).recalcAggregates(any());
+        verify(planMapper, never()).recalcPlanStatus(any());
+    }
+
+    @Test
+    @DisplayName("adjust 入口门槛: 未种植（begin_actualdate 空）的明细拒绝后台调整")
+    void adjustRejectsNotPlantedDetail() {
+        PlantDetails d = plantedDetail();
+        d.setBeginActualdate(null);
+        when(detailsMapper.selectById(11L)).thenReturn(d);
+
+        PlantDetailAdjustBo bo = new PlantDetailAdjustBo();
+        bo.setDetailId(11L);
+        bo.setPlantState("planted");
+
+        assertThatThrownBy(() -> service.adjustPlantedDetail(bo))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("尚未种植");
+    }
+
+    /**
+     * 抓 adjustPlantedDetail 里唯一那次明细 update，把 SET 段还原成「列名 → 实际写入值」。
+     *
+     * <p>MP 的 {@code getSqlSet()} 只给出 {@code col=#{ew.paramNameValuePairs.MPGENVALn}} 占位符，
+     * 真值在 {@code getParamNameValuePairs()} 里；直接断言字符串会把「写 null」和「写某值」混为一谈
+     * （清空日期这条正是要断言值确实是 null），故在这里配对还原。</p>
+     */
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> captureDetailUpdateSet() {
+        ArgumentCaptor<LambdaUpdateWrapper<PlantDetails>> cap = ArgumentCaptor.forClass(LambdaUpdateWrapper.class);
+        verify(detailsMapper).update(isNull(), cap.capture());
+        LambdaUpdateWrapper<PlantDetails> w = cap.getValue();
+        Map<String, Object> pairs = w.getParamNameValuePairs();
+        Map<String, Object> result = new java.util.LinkedHashMap<>();
+        for (String seg : w.getSqlSet().split(",")) {
+            int eq = seg.indexOf('=');
+            String col = seg.substring(0, eq).trim();
+            String expr = seg.substring(eq + 1).trim();
+            String prefix = "#{ew.paramNameValuePairs.";
+            result.put(col, expr.startsWith(prefix)
+                ? pairs.get(expr.substring(prefix.length(), expr.length() - 1))
+                : expr);
+        }
+        return result;
     }
 
     // ============================================================

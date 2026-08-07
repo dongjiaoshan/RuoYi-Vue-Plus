@@ -149,6 +149,7 @@ public class ProductProductionServiceImpl
     /** 打包台「当天」时区：与发货月台 {@code SHIP_TODAY_ZONE} 一致，避免非 UTC+8 实例跨日归错天。 */
     private static final ZoneId PACK_TODAY_ZONE = ZoneId.of("Asia/Shanghai");
 
+
     /**
      * 打包实称相对单包规则（{@code product_info.material_num}）的允许超出百分比。
      *
@@ -179,6 +180,18 @@ public class ProductProductionServiceImpl
      * inhouse 当来源（不再裸捞全表，避免跨业态污染）。pork/white_bar/vegetable 走各自来源接口。</p>
      */
     private static final List<String> BELONG_TYPES_OTHER_PACK = List.of("egg", "dry_good", "other");
+
+    /**
+     * 「其他产品打包」按打包量拆产出记录的单次上限（V6 row47）。
+     *
+     * <p>打包量 N 会落成 N 条 {@code product_production}，每条各生成一个 produce_no（Redisson 锁 + 序号表），
+     * 全在一个事务里。N 的业务上界本已由「不得超过门店剩余需求总量」（{@link #deductDemandOnPack}）与
+     * 「领用剩余量」（{@link #requireInhouseEnough}）夹住，这里只做兜底：防手改请求 / 误录 99999 把事务撑爆。</p>
+     */
+    private static final int MAX_DRY_PACK_SPLIT = 500;
+
+    /** {@code product_production.product_weight / material_consume} 列精度 DECIMAL(12,3)。 */
+    private static final int PRODUCTION_WEIGHT_SCALE = 3;
 
     /** djs_product_attr 字典码值：2=原材料（打包来源只认原料 inhouse，不混成品）。 */
     private static final Integer PRODUCT_ATTR_MATERIAL = 2;
@@ -413,7 +426,19 @@ public class ProductProductionServiceImpl
     }
 
     /**
-     * 干货打包。
+     * 干货打包（肉品打包 / 其他产品打包共用此口）。
+     *
+     * <h4>两种计量模式（V6 row47 起分支互斥，不做「既 1 条又 N 条」的兼容逻辑）</h4>
+     * <ul>
+     *   <li><b>重量模式</b>（成品单位 = KG，或前端未回传 {@code packQuantity} 的入口：肉品页 / mp / 老客户端）：
+     *       录入的是重量，一次提交 = <b>1 条</b> {@code product_production}，{@code product_weight} = 本次称重。</li>
+     *   <li><b>打包量模式</b>（成品单位非 KG 且前端回传 {@code packQuantity}=N）：录入的是<b>份数</b>，
+     *       一次提交 = <b>N 条</b> {@code product_production}，每条原材料消耗固定 = 每份计量规则
+     *       （= 总消耗 ÷ N），各自一个 produce_no。见 {@link #resolveDryProductionSplitCount}。</li>
+     * </ul>
+     *
+     * <p>拆行<b>不改变任何总量</b>：Σ 每条 product_weight / material_consume ≡ 提交的总消耗，
+     * 来源 inhouse 按总量一次性扣减，门店需求按 N 份一次性扣减（不是每条各扣 N）。</p>
      */
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -423,9 +448,11 @@ public class ProductProductionServiceImpl
 
         ProductInhouse src = requireActiveInhouse(bo.getSourceInhouseId());
         ProductInfo product = requireDeliveryProduct(bo.getProductId());
-        // 肉品实称规则与果蔬一致（下限硬拒 / 超 3% 可确认继续）；其他 dry 业态（干货 / 蛋 / other）不套用该重量规则
-        // ——它们按「份数 × 单份规格」提交，productWeight 不是单包实称，套上去必然误判。
-        if (BELONG_TYPE_PORK.equals(product.getBelongType())) {
+        // 实称对打包计量规则的校验（下限硬拒 / 超 3% 可确认继续）：肉品无条件套用；
+        // 其他产品（egg/dry_good/other）按甲方 V6 row45 口径补齐 —— 仅「原材料单位 = KG 的重量模式」才套，
+        // 打包量 / 份数模式录的是件数不是重量，套上必误判（详见 isOtherPackKgMeasureMode）。
+        if (BELONG_TYPE_PORK.equals(product.getBelongType())
+            || isOtherPackKgMeasureMode(product, src, bo)) {
             validatePackMeasureRule(product, bo.getProductWeight(), bo.getAllowOverMeasure());
         }
         // row32：肉品打包(有耳号)库存判定按「同原材料(product_id)+同耳号」今日领用来源池**总重量**，
@@ -442,34 +469,46 @@ public class ProductProductionServiceImpl
         // D-2：目标库位盘点锁定中 → 拒绝入库
         stockCheckService.assertLocationUnlocked(locationId);
 
-        ProductProduction p = new ProductProduction();
-        p.setProduceDate(java.sql.Date.valueOf(LocalDate.now()));
-        p.setProduceNo(generateProduceNo(product.getBelongType()));
-        p.setProductId(product.getId());
-        p.setProductName(resolveProductionName(product));
-        p.setProductType(product.getProductType() != null ? product.getProductType() : 1);
-        p.setProductUnit(StringUtils.isNotBlank(product.getProductUnit()) ? product.getProductUnit() : bo.getProductUnit());
-        p.setProductSpec(StringUtils.isNotBlank(bo.getProductSpec())
-            ? bo.getProductSpec() : product.getProductSpec());
-        p.setEarNo(src.getEarNo());
-        p.setProductSort(1);
-        p.setProductWeight(bo.getProductWeight());
-        p.setProduceQuantity(bo.getProductWeight()); // D10 hotfix: SHIP 流水 changeNum 用
-        p.setStoreId(bo.getStoreId());
-        p.setProduceTime(now);
-        p.setIsDeliveryCheck(YN_NO);
-        p.setIsArrivalConfirm(YN_NO);
-        // row161/162：原材料溯源列后端自动回填（来源 inhouse 产品 id + 本次消耗重量）。
-        fillMaterialTrace(p, src, bo.getProductWeight());
-        p.setProduceLocation(locationId);
-        p.setPackStatus(PACK_STATUS_PACKED);
-        p.setDeliverDest(bo.getDeliverDest());
-        p.setProofOssIds(bo.getProofOssIds());
-        p.setRemark(bo.getRemark());
-        baseMapper.insert(p);
+        // V6 row47：打包量模式下「打包 N 份 = N 条产出记录，每条消耗固定 = 每份计量规则」。
+        // 重量模式恒 1 条（splitCount=1，perRecordConsume 单元素 = 本次称重），行为与拆行前完全一致。
+        int splitCount = resolveDryProductionSplitCount(product, bo);
+        List<BigDecimal> perRecordConsume = splitConsumeEvenly(bo.getProductWeight(), splitCount);
+
+        List<ProductProduction> saved = new java.util.ArrayList<>(splitCount);
+        for (BigDecimal consume : perRecordConsume) {
+            ProductProduction p = new ProductProduction();
+            p.setProduceDate(java.sql.Date.valueOf(LocalDate.now()));
+            // 每条产出记录各自取号：produce_no 有 UNIQUE(tenant_id, produce_no, del_unique)，
+            // 且甲方要的就是「每一份都是单独一条记录」——共用一个号既撞唯一键也失去逐份可查性。
+            p.setProduceNo(generateProduceNo(product.getBelongType()));
+            p.setProductId(product.getId());
+            p.setProductName(resolveProductionName(product));
+            p.setProductType(product.getProductType() != null ? product.getProductType() : 1);
+            p.setProductUnit(StringUtils.isNotBlank(product.getProductUnit()) ? product.getProductUnit() : bo.getProductUnit());
+            p.setProductSpec(StringUtils.isNotBlank(bo.getProductSpec())
+                ? bo.getProductSpec() : product.getProductSpec());
+            p.setEarNo(src.getEarNo());
+            p.setProductSort(1);
+            p.setProductWeight(consume);
+            p.setProduceQuantity(consume); // D10 hotfix: SHIP 流水 changeNum 用
+            p.setStoreId(bo.getStoreId());
+            p.setProduceTime(now);
+            p.setIsDeliveryCheck(YN_NO);
+            p.setIsArrivalConfirm(YN_NO);
+            // row161/162：原材料溯源列后端自动回填（来源 inhouse 产品 id + 本条消耗量）。
+            fillMaterialTrace(p, src, consume);
+            p.setProduceLocation(locationId);
+            p.setPackStatus(PACK_STATUS_PACKED);
+            p.setDeliverDest(bo.getDeliverDest());
+            p.setProofOssIds(bo.getProofOssIds());
+            p.setRemark(bo.getRemark());
+            baseMapper.insert(p);
+            saved.add(p);
+        }
 
         // row42：生产产品不入库（直送发货月台，不进 location_stock / 不写入库流水）。
         // row32：有耳号肉品按来源池 FIFO 跨行扣减总重；无耳号维持单条扣减。
+        // ⚠️ 拆行只拆「产出记录」，来源消耗仍按**本次总量**一次性扣（Σ perRecordConsume ≡ productWeight）。
         if (srcPool != null) {
             consumePoolFifo(srcPool, bo.getProductWeight());
         } else {
@@ -482,26 +521,140 @@ public class ProductProductionServiceImpl
         // 分支隔离：仅 pork + 配料命中，干货/果蔬/其他 dry 打包现状不受影响。
         deductPorkMaterialIfConfigured(product, bo.getProductWeight(), userId, now);
 
-        // 生成追溯码回填 + 写 in_stock 事件（TRC-CORE-001）
-        fillTraceCode(p, src.getEarNo(), src.getPlotId());
+        // 生成追溯码回填 + 写 in_stock 事件（TRC-CORE-001）：逐条生成（一条产出记录一个追溯码）。
+        // 其他产品（egg/dry_good/other）在 fillTraceCode 内部直接 return（Kevin 2026-06-26：非追溯业态不生码），
+        // 故 row47 拆出的 N 条实际不产码；肉品恒 splitCount=1，行为不变。
+        for (ProductProduction p : saved) {
+            fillTraceCode(p, src.getEarNo(), src.getPlotId());
+        }
 
         // 履约门店需求（需求 C）——肉品/干货/其他打包均走此口。发送位置=礼盒 → 礼盒组件，不扣门店直接需求；
         // 其余（发货月台）= 直接履约，须选门店 + 打包即扣需求（发货不再扣）。
-        // 按产品单位分流（Kevin 2026-07-21）：
-        //   · 非 KG（份/盒等）：扣减量恒 1 份（一次打包=1 份，与重量/material_num 无关，不出小数）。
+        // ⚠️ 整批只调一次（不在上面的产出记录循环里），否则 N 条记录各扣 N 份 = 超扣 N² 倍。
+        // 按产品单位分流：
         //   · KG（散装 kg 等）：称重必须 ≥ 所选门店剩余需求重量，否则拦；满足则把该需求扣满至 COMPLETED
-        //     （客户规则：KG 产品一次称重 ≥ 需求即满足整单，只能重不能少）。
+        //     （客户规则：KG 产品一次称重 ≥ 需求即满足整单，只能重不能少，Kevin 2026-07-21）。
+        //   · 非 KG（枚/份/盒等）：扣减量 = 前端回传的「打包量」packQuantity（甲方 2026-08-06 V6 row34：
+        //     录入 4 枚就扣 4 枚需求）；未回传 packQuantity 的入口（重量模式 / 肉品页 / 老客户端）
+        //     回落原口径「一次打包 = 扣 1 份」，行为不变。
         if (isKgUnit(product.getProductUnit())) {
             fulfillKgDemandOnPack(product.getId(), bo.getStoreId(),
                 bo.getProductWeight(), bo.getDeliverDest());
         } else {
             fulfillDirectDemandOnPack(product.getId(), bo.getStoreId(),
-                resolveDemandDeductQty(product, bo.getProductWeight()), bo.getDeliverDest());
+                resolveDryDemandDeductQty(product, bo.getPackQuantity()), bo.getDeliverDest());
         }
 
-        log.info("[WMS-PACK-001] dry pack done id={} produceNo={} weight={} unit={} traceCode={}",
-            p.getId(), p.getProduceNo(), bo.getProductWeight(), bo.getProductUnit(), p.getTraceCode());
-        return p.getId();
+        ProductProduction first = saved.get(0);
+        log.info("[WMS-PACK-001] dry pack done firstId={} produceNo={} records={} totalWeight={} perRecord={} unit={} traceCode={}",
+            first.getId(), first.getProduceNo(), splitCount, bo.getProductWeight(),
+            perRecordConsume.get(0), bo.getProductUnit(), first.getTraceCode());
+        // 返回首条产出记录 id：admin 提交结果（追溯码打印弹框）与 mp 都按单 id 消费，拆行不改契约。
+        return first.getId();
+    }
+
+    /**
+     * 「其他产品打包」是否要套用打包计量规则校验（甲方 V6 row47：
+     * 「当产品的原材料单位是KG时，其生产产品有计量规则时，在打包时判断逻辑和果蔬产品一致，
+     * 低于计量不能打包，高于3%时进行提醒」）。
+     *
+     * <p>两个前提<b>同时</b>成立才校验：</p>
+     * <ol>
+     *   <li>业态 ∈ {@link #BELONG_TYPES_OTHER_PACK}（egg / dry_good / other）；
+     *       pork 走上游无条件分支、white_bar / vegetable 不走本方法。</li>
+     *   <li><b>原材料单位是 KG</b> —— 判据用 {@link #isKgUnit}（kg / 公斤），<b>不</b>用「重量制单位」这种宽口径。
+     *       原因：{@code material_num} 的量纲是 <b>kg</b>，而只有 kg 原料的录入值提交上来才是 kg
+     *       （admin 的 g→kg 换算只在原料单位为 kg 时生效，mp 的单位选择器也只给 kg）；
+     *       若把 {@code g / 克} 原料也算进来，就会拿「克数」去比「kg 规则」，每次打包都被判成
+     *       「低于规则重量」硬拒，直接卡死打包台。</li>
+     * </ol>
+     *
+     * <p>另外显式排除<b>打包量 / 份数模式</b>（前端回传了 {@code packQuantity}）：那种模式下
+     * {@code productWeight} 是「份数 × 每份规格」的件数总量，不是单包实称。正常客户端下
+     * 「原料单位 = KG」必然走重量模式（不会回传 packQuantity），这一条是防手改请求的兜底，
+     * 同时把 row45 / row47 两条分支钉成互斥。</p>
+     *
+     * <p>前提②「配了计量规则」由 {@link #validatePackMeasureRule} 内部兜住
+     * （{@code material_num} 为空 / ≤0 直接 return，不校验）。</p>
+     */
+    private boolean isOtherPackKgMeasureMode(ProductInfo product, ProductInhouse src, DryPackBo bo) {
+        if (!BELONG_TYPES_OTHER_PACK.contains(product.getBelongType())) {
+            return false;
+        }
+        if (bo.getPackQuantity() != null && bo.getPackQuantity().signum() > 0) {
+            return false;
+        }
+        return isKgUnit(resolveMaterialUnit(src, bo));
+    }
+
+    /**
+     * 本次打包的「原材料单位」——口径与 admin 打包页 {@code rawUnitOfSelected} 一致：
+     * 优先取来源 {@code product_inhouse}（= 物资领用进来的那行原料）自身单位，缺失时回落前端回传的录入单位。
+     */
+    private String resolveMaterialUnit(ProductInhouse src, DryPackBo bo) {
+        if (src != null && StringUtils.isNotBlank(src.getProductUnit())) {
+            return src.getProductUnit();
+        }
+        return bo.getProductUnit();
+    }
+
+    /**
+     * 本次干货打包应落几条 {@code product_production}（甲方 V6 row47）。
+     *
+     * <p>甲方原话：「当单位不是KG时，显示的是打包量……输入了2，代表打包了2份，在生产的时候，应该生成两条记录，
+     * 每条记录的原材料消耗是计量规则……应该是每一份都是单独一条记录，原材料消耗数据是固定的。」</p>
+     *
+     * <ul>
+     *   <li>成品单位 = KG（重量模式）→ 恒 <b>1</b> 条。判据与下方需求扣减分流用的是<b>同一个</b>
+     *       {@code isKgUnit(product.getProductUnit())}，两者必须同进同出：拆行与「按打包量扣需求」
+     *       本就是同一件事的两面。</li>
+     *   <li>未回传 {@code packQuantity}（mp / 肉品页 / 老客户端）→ 恒 <b>1</b> 条，行为与拆行前一致。</li>
+     *   <li>其余（打包量模式）→ {@code packQuantity} 条。打包量必须是<b>整数份</b>
+     *       （前端数字键盘已限 0 位小数），非整数直接拒——半份产品不存在，落库会产出「0.5 条记录」这种无解语义。</li>
+     * </ul>
+     */
+    private int resolveDryProductionSplitCount(ProductInfo product, DryPackBo bo) {
+        if (isKgUnit(product.getProductUnit())) {
+            return 1;
+        }
+        BigDecimal qty = bo.getPackQuantity();
+        if (qty == null || qty.signum() <= 0) {
+            return 1;
+        }
+        if (qty.stripTrailingZeros().scale() > 0) {
+            throw new ServiceException("打包量必须是整数份：当前 " + qty.stripTrailingZeros().toPlainString());
+        }
+        if (qty.compareTo(BigDecimal.valueOf(MAX_DRY_PACK_SPLIT)) > 0) {
+            throw new ServiceException("单次打包量过大（" + qty.stripTrailingZeros().toPlainString()
+                + " 份），一次最多 " + MAX_DRY_PACK_SPLIT + " 份，请分批打包");
+        }
+        return qty.intValueExact();
+    }
+
+    /**
+     * 把本次打包的原材料总消耗量拆成 {@code n} 份「每份固定消耗」（V6 row47）。
+     *
+     * <p>打包量模式下前端提交的 {@code total} = 份数 × 每份计量规则，故 {@code total ÷ n} 恰好还原出
+     * 每份计量规则、n 条完全相同（甲方要的「原材料消耗数据是固定的」）。除不尽（老客户端 / 手改请求）时
+     * 把尾差全部落到最后一条，保证 <b>Σ 每条消耗 ≡ total</b> —— 拆行绝不能改变原材料总扣减量。</p>
+     *
+     * @param total 本次打包的原材料总消耗量（{@code DryPackBo.productWeight}）
+     * @param n     产出记录条数（≥1）
+     */
+    private static List<BigDecimal> splitConsumeEvenly(BigDecimal total, int n) {
+        if (n <= 1) {
+            // singletonList 而非 List.of：允许 total 为 null（BO 有 @NotNull 兜住，此处不再多抛一次 NPE）
+            return java.util.Collections.singletonList(total);
+        }
+        BigDecimal per = total.divide(BigDecimal.valueOf(n), PRODUCTION_WEIGHT_SCALE, java.math.RoundingMode.DOWN);
+        List<BigDecimal> parts = new java.util.ArrayList<>(n);
+        BigDecimal allocated = BigDecimal.ZERO;
+        for (int i = 0; i < n - 1; i++) {
+            parts.add(per);
+            allocated = allocated.add(per);
+        }
+        parts.add(total.subtract(allocated));
+        return parts;
     }
 
     /**
@@ -1586,6 +1739,34 @@ public class ProductProductionServiceImpl
         return BigDecimal.ONE;
     }
 
+    /**
+     * 「其他产品打包」（非 KG 成品）本次应扣的门店需求量 —— 甲方 2026-08-06（V6 row34）改口径。
+     *
+     * <p>原口径是恒扣 1 份（Kevin 2026-07-14），现场表现为「原需求 4 枚，打包量输入 4，需求只减了 1 枚」。
+     * 甲方明确：「如果生产产品单位是非KG时，显示的是打包量，打包量是输入了多少减去对应的量」。</p>
+     *
+     * <p>取值规则：</p>
+     * <ul>
+     *   <li>{@code packQuantity} 有值且 &gt; 0 → 按它扣（前端只在录入框显示「打包量」时才回传，
+     *       即原材料按件计量的其他产品打包；份数模式下它是<b>份数</b>而非原材料消耗量）。</li>
+     *   <li>{@code packQuantity} 为空 / ≤ 0 → 回落 1 份。覆盖三类：重量模式（录入框显示的是产品重量，
+     *       录入 500 是 500 克不是 500 份，按它扣会把需求瞬间清零）、肉品打包页、以及尚未升级的老客户端。</li>
+     * </ul>
+     *
+     * <p>扣减上界仍由 {@link #deductDemandOnPack} 的「不得超过该需求剩余份数」+ {@code incrementShipped}
+     * 的 DB 端原子守卫兜住，本方法只决定量、不负责封顶。</p>
+     *
+     * @param product      目标成品（非 KG 单位）
+     * @param packQuantity 前端回传的打包量（成品单位），可空
+     * @return 应扣需求量（≥ 1 份或前端回传的打包量）
+     */
+    protected BigDecimal resolveDryDemandDeductQty(ProductInfo product, BigDecimal packQuantity) {
+        if (packQuantity != null && packQuantity.signum() > 0) {
+            return packQuantity;
+        }
+        return resolveDemandDeductQty(product, null);
+    }
+
     protected void fulfillDirectDemandOnPack(Long productId, Long storeId, BigDecimal packQty, String deliverDest) {
         if (DELIVER_DEST_GIFT.equals(deliverDest)) {
             // 礼盒组件：不绑门店、不扣直接需求（履约在礼盒打包环节）
@@ -1601,33 +1782,54 @@ public class ProductProductionServiceImpl
         if (storeId == null || productId == null || packQty == null || packQty.signum() <= 0) {
             return;
         }
-        DemandManage demand = demandManageMapper.selectOldestUncompletedDemand(productId, storeId);
-        if (demand == null) {
+        // 打包台屏幕上那个「剩余需求」是**跨行求和**（selectStoreDemandCopies 按门店 SUM，可能同日多行、
+        // 也可能今天 + 明天各一行）。扣减若只吃最早那一行，工人照着屏幕上的 17 份打就会被
+        // 「剩余 9，本次 17」拒掉 —— 屏幕说 17、系统只让打 9，无从解释。
+        // 故一次读齐候选行、先校验总量、再按「需求日升序」逐行扣到打完为止。
+        List<DemandManage> candidates = demandManageMapper.selectUncompletedDemands(productId, storeId);
+        if (candidates.isEmpty()) {
             log.warn("[PACK-DEMAND-DEDUCT] 打包未匹配到未完成需求，跳过扣减 productId={} storeId={} packQty={}",
                 productId, storeId, packQty);
             return;
         }
-        // row53-BE：打包份数硬拦——本次打包量不得超过该需求剩余份数（剩余 = demand_quantity − 已发货）。
-        // 前端「剩余可打包份数」只是软提示；此处先读校验负责给出带剩余数的友好报错，
-        // 并发安全由 incrementShipped 的 DB 端上界守卫（累加 <= demand_quantity 原子判定）兜底。
-        BigDecimal demandQty = demand.getDemandQuantity() == null ? BigDecimal.ZERO : demand.getDemandQuantity();
-        BigDecimal shipped = demand.getShippedCount() == null ? BigDecimal.ZERO : demand.getShippedCount();
-        BigDecimal remain = demandQty.subtract(shipped);
-        if (remain.signum() < 0) {
-            remain = BigDecimal.ZERO;
+        // row53-BE：打包份数硬拦——本次打包量不得超过该门店剩余需求**总量**。
+        // 先读校验负责给出带剩余数的友好报错，且在写任何一行之前就拦下（不依赖调用方事务回滚擦半截写入）；
+        // 并发安全仍由 incrementShipped 的 DB 端上界守卫（累加 <= demand_quantity 原子判定）兜底。
+        BigDecimal totalRemain = BigDecimal.ZERO;
+        for (DemandManage d : candidates) {
+            totalRemain = totalRemain.add(rowRemain(d));
         }
-        if (packQty.compareTo(remain) > 0) {
+        if (packQty.compareTo(totalRemain) > 0) {
             throw new ServiceException("打包份数超过该需求剩余份数：剩余 "
-                + remain.stripTrailingZeros().toPlainString()
+                + totalRemain.stripTrailingZeros().toPlainString()
                 + "，本次 " + packQty.stripTrailingZeros().toPlainString());
         }
-        int rows = demandManageMapper.incrementShipped(demand.getId(), TENANT_V1, packQty);
-        if (rows == 0) {
-            // 上界守卫未命中：并发打包已把剩余份数吃掉（或需求行已删）→ 拒绝本次打包，整事务回滚。
-            throw new ServiceException("打包份数超过该需求剩余份数（存在并发打包），请刷新需求后重试");
+        BigDecimal left = packQty;
+        for (DemandManage demand : candidates) {
+            if (left.signum() <= 0) {
+                break;
+            }
+            BigDecimal take = left.min(rowRemain(demand));
+            if (take.signum() <= 0) {
+                continue;
+            }
+            int rows = demandManageMapper.incrementShipped(demand.getId(), TENANT_V1, take);
+            if (rows == 0) {
+                // 上界守卫未命中：并发打包已把剩余份数吃掉（或需求行已删）→ 拒绝本次打包，整事务回滚。
+                throw new ServiceException("打包份数超过该需求剩余份数（存在并发打包），请刷新需求后重试");
+            }
+            log.info("[PACK-DEMAND-DEDUCT] 打包即扣需求 demandId={} demandDate={} productId={} storeId={} take={} left={}",
+                demand.getId(), demand.getDemandDate(), productId, storeId, take, left.subtract(take));
+            left = left.subtract(take);
         }
-        log.info("[PACK-DEMAND-DEDUCT] 打包即扣需求 demandId={} productId={} storeId={} packQty={} affected={}",
-            demand.getId(), productId, storeId, packQty, rows);
+    }
+
+    /** 单条需求行的剩余量（demand_quantity − shipped_count，负数钳零）。 */
+    private static BigDecimal rowRemain(DemandManage d) {
+        BigDecimal qty = d.getDemandQuantity() == null ? BigDecimal.ZERO : d.getDemandQuantity();
+        BigDecimal shipped = d.getShippedCount() == null ? BigDecimal.ZERO : d.getShippedCount();
+        BigDecimal remain = qty.subtract(shipped);
+        return remain.signum() < 0 ? BigDecimal.ZERO : remain;
     }
 
     /**

@@ -133,4 +133,30 @@ class VegHandleRecordServiceImplTest {
         assertThat(list.get(0).getHandleMethod()).isEqualTo("loss");
         verify(handleRecordMapper).selectVegHandleRecordList(eq("1001"), eq(q));
     }
+
+    @Test
+    @DisplayName("V6 row49：产品名称原样透出 —— 处理流水行有值，结算损耗 / 采摘活动行为空（页面显 '-'）")
+    void queryPage_carriesProductName() {
+        VegHandleRecordVo handleRow = row("1", "veg_fresh", "35.000");
+        handleRow.setProductName("红薯杆");
+        // 结算损耗行：地块级跨产品结算，SQL 恒给 NULL
+        VegHandleRecordVo lossRow = row("1", "loss", "12.500");
+        // 采摘活动行：plant_activity 无产品维度，SQL 恒给 NULL
+        VegHandleRecordVo activityRow = row("2", "platform", "100.000");
+
+        Page<VegHandleRecordVo> page = new Page<>(1, 10);
+        page.setRecords(List.of(handleRow, lossRow, activityRow));
+        page.setTotal(3);
+        when(handleRecordMapper.selectVegHandleRecordPage(any(), eq("1001"), any(VegHandleRecordQuery.class)))
+            .thenReturn(page);
+
+        TableDataInfo<VegHandleRecordVo> result = service.queryPage(new VegHandleRecordQuery(), new PageQuery(1, 10));
+
+        assertThat(result.getRows()).hasSize(3);
+        assertThat(result.getRows().get(0).getProductName()).isEqualTo("红薯杆");
+        assertThat(result.getRows().get(1).getProductName()).isNull();
+        assertThat(result.getRows().get(2).getProductName()).isNull();
+        // 统计来源中文派生不得把产品名覆盖掉
+        assertThat(result.getRows().get(0).getStatSourceLabel()).isEqualTo("毛菜处理间");
+    }
 }

@@ -49,6 +49,14 @@ public class HandleRecord extends TenantEntity {
     private Long cropId;
 
     /**
+     * 产品 FK → {@code t_warehouse_product_info.id}（V6 row17/18：本次采摘 / 处理算作哪个产品）。
+     *
+     * <p>由作物的产品配置（{@code t_plant_crop_product}）决定候选：只配了一个则固定取它，
+     * 配了多个由录入人下拉选。存量流水为 NULL，读取侧回落该作物的首个配置产品。</p>
+     */
+    private Long productId;
+
+    /**
      * 采摘班组 FK → {@code t_plant_work_team.id}（record_type=1 采收录入必填；record_type=2 处理录入为 null）。
      */
     private Long teamId;

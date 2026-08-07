@@ -37,11 +37,19 @@ public interface StockOverviewMapper {
      * <p>对日期范围内每一天，统计「截至当天末（含）该产品累计余额 ≠ 0」的 distinct 产品数。
      * 余额回放自 {@code t_warehouse_stock_flow}（inout_type 带方向 × change_quantity 绝对值）。
      * row42「生产产品不入库」口径：{@code flow_type='ship_out'} 不参与余额回放（成品只有出库无入库，
-     * 计入会得恒负余额）；{@code product_id=0} 历史孤儿流水一并排除。只返回 productCount &gt; 0 的日期，
-     * 按日期倒序。</p>
+     * 计入会得恒负余额）；{@code product_id=0} 历史孤儿流水一并排除。按日期倒序。
+     * {@code productCount} 为 0 的日期<b>照样出行</b>（全场库存清零也是一种状态，且与「固定性汇总」一致）。</p>
      *
-     * <p>实现：先取日期范围内「有流水的自然日」集合 d，对每个 d 关联其当天及之前的流水按 product_id
-     * 求和 change_num，余额 ≠ 0 计入 distinct。</p>
+     * <p><b>固定性汇总（甲方 2026-08-06）：没有流水的日子也要出行。</b>驱动集合是
+     * <b>「首条流水日 → 今天」的连续自然日</b>，不是「有流水的自然日」—— 后者会让「有存货但当天没动过」
+     * 的日子整行消失（实测生产：7/31 灌完期初库存后再没出入库，列表就只剩 2026-07-30 一行，
+     * 甲方报「8 月的汇总没生成」）。没流水的日子按结转出行：期初 = 上日期末、入库 = 出库 = 0。</p>
+     *
+     * <p>实现：日期序列用<b>数字表 CROSS JOIN</b>（0-9 四层 = 10000 天 ≈ 27 年）生成，
+     * <b>不用递归 CTE</b> —— MySQL {@code cte_max_recursion_depth} 默认 1000，超过直接报错而不是截断，
+     * 那会让本页在首条流水日 + 1000 天后突然 500。上界取 {@code GREATEST(MAX(flow_date), CURDATE())}，
+     * 兼容未来日期的流水；全表无流水时 {@code d0} 为 NULL，JOIN 条件把整个序列滤空，返回空列表。
+     * 对序列里每一天关联其当天及之前的流水按 product_id 求和，余额 ≠ 0 计入 distinct。</p>
      *
      * @param tenantId 租户（V1 固定 '1001'）
      * @param dateFrom 起始日期（含，可空）
@@ -66,11 +74,30 @@ public interface StockOverviewMapper {
                    ) bal_t
                ) AS productCount
         FROM (
-            SELECT DISTINCT DATE_FORMAT(flow_date, '%Y-%m-%d') AS statDate
-            FROM t_warehouse_stock_flow
-            WHERE del_flag = '0' AND tenant_id = #{tenantId}
-            <if test="dateFrom != null"> AND flow_date &gt;= #{dateFrom} </if>
-            <if test="dateTo != null"> AND flow_date &lt; DATE_ADD(#{dateTo}, INTERVAL 1 DAY) </if>
+            SELECT g.statDate
+            FROM (
+                SELECT DATE_FORMAT(DATE_ADD(r.d0, INTERVAL s.n DAY), '%Y-%m-%d') AS statDate
+                FROM (
+                    SELECT MIN(DATE(flow_date)) AS d0,
+                           GREATEST(COALESCE(MAX(DATE(flow_date)), CURDATE()), CURDATE()) AS dEnd
+                    FROM t_warehouse_stock_flow
+                    WHERE del_flag = '0' AND tenant_id = #{tenantId}
+                ) r
+                JOIN (
+                    SELECT u.N + v.N * 10 + w.N * 100 + x.N * 1000 AS n
+                    FROM (SELECT 0 AS N UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL SELECT 4
+                          UNION ALL SELECT 5 UNION ALL SELECT 6 UNION ALL SELECT 7 UNION ALL SELECT 8 UNION ALL SELECT 9) u
+                    CROSS JOIN (SELECT 0 AS N UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL SELECT 4
+                          UNION ALL SELECT 5 UNION ALL SELECT 6 UNION ALL SELECT 7 UNION ALL SELECT 8 UNION ALL SELECT 9) v
+                    CROSS JOIN (SELECT 0 AS N UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL SELECT 4
+                          UNION ALL SELECT 5 UNION ALL SELECT 6 UNION ALL SELECT 7 UNION ALL SELECT 8 UNION ALL SELECT 9) w
+                    CROSS JOIN (SELECT 0 AS N UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL SELECT 4
+                          UNION ALL SELECT 5 UNION ALL SELECT 6 UNION ALL SELECT 7 UNION ALL SELECT 8 UNION ALL SELECT 9) x
+                ) s ON r.d0 IS NOT NULL AND DATE_ADD(r.d0, INTERVAL s.n DAY) &lt;= r.dEnd
+            ) g
+            WHERE 1 = 1
+            <if test="dateFrom != null"> AND g.statDate &gt;= DATE_FORMAT(#{dateFrom}, '%Y-%m-%d') </if>
+            <if test="dateTo != null"> AND g.statDate &lt;= DATE_FORMAT(#{dateTo}, '%Y-%m-%d') </if>
         ) d
         ORDER BY d.statDate DESC
         </script>
@@ -212,6 +239,12 @@ public interface StockOverviewMapper {
      * 用户点开就发现对不上）。故这里同样回放到当月末、按 (产品, 库位) 分组后用相同的 HAVING 过滤，
      * 再数 distinct 产品。内层 JOIN 不受 monthFrom/monthTo 约束 —— 期初必须看全历史流水。</p>
      *
+     * <p><b>固定性汇总（甲方 2026-08-06）：没有流水的月份也要出行。</b>驱动集合是
+     * <b>「首条流水月 → 当前月」的连续自然月</b>（数字表 CROSS JOIN 生成，0-9 三层 = 1000 月 ≈ 83 年；
+     * 不用递归 CTE，理由同 {@link #selectDailyOverview}）。原先按「有流水的月」驱动，
+     * 生产 7/31 灌完期初库存后再没出入库，列表就只剩 2026-07 一行 —— 甲方报「8 月的汇总没生成」。
+     * 没流水的月份天然按结转出行：HAVING 里期初 ≠ 0 即可入选，入库 / 出库为 0 不影响。</p>
+     *
      * @param tenantId  租户（V1 固定 '1001'）
      * @param monthFrom 起始月首日（含，yyyy-MM-01，可空）
      * @param monthTo   截止月首日（含，yyyy-MM-01，可空）
@@ -224,14 +257,32 @@ public interface StockOverviewMapper {
         FROM (
             SELECT mm.statMonth AS statMonth, f.product_id AS product_id
             FROM (
-                SELECT DISTINCT DATE_FORMAT(f0.flow_date, '%Y-%m') AS statMonth,
-                       CAST(DATE_FORMAT(f0.flow_date, '%Y-%m-01') AS DATE) AS mStart
-                FROM t_warehouse_stock_flow f0
-                WHERE f0.del_flag = '0' AND f0.tenant_id = #{tenantId}
-                  AND f0.product_id IS NOT NULL AND f0.product_id &lt;&gt; 0
-                  AND f0.flow_type &lt;&gt; 'ship_out'
-                <if test="monthFrom != null"> AND f0.flow_date &gt;= #{monthFrom} </if>
-                <if test="monthTo != null"> AND f0.flow_date &lt; DATE_ADD(#{monthTo}, INTERVAL 1 MONTH) </if>
+                SELECT g.statMonth, g.mStart
+                FROM (
+                    SELECT DATE_FORMAT(DATE_ADD(r.m0, INTERVAL s.n MONTH), '%Y-%m') AS statMonth,
+                           DATE_ADD(r.m0, INTERVAL s.n MONTH) AS mStart
+                    FROM (
+                        SELECT CAST(DATE_FORMAT(MIN(f0.flow_date), '%Y-%m-01') AS DATE) AS m0,
+                               GREATEST(CAST(DATE_FORMAT(COALESCE(MAX(f0.flow_date), CURDATE()), '%Y-%m-01') AS DATE),
+                                        CAST(DATE_FORMAT(CURDATE(), '%Y-%m-01') AS DATE)) AS mEnd
+                        FROM t_warehouse_stock_flow f0
+                        WHERE f0.del_flag = '0' AND f0.tenant_id = #{tenantId}
+                          AND f0.product_id IS NOT NULL AND f0.product_id &lt;&gt; 0
+                          AND f0.flow_type &lt;&gt; 'ship_out'
+                    ) r
+                    JOIN (
+                        SELECT u.N + v.N * 10 + w.N * 100 AS n
+                        FROM (SELECT 0 AS N UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL SELECT 4
+                              UNION ALL SELECT 5 UNION ALL SELECT 6 UNION ALL SELECT 7 UNION ALL SELECT 8 UNION ALL SELECT 9) u
+                        CROSS JOIN (SELECT 0 AS N UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL SELECT 4
+                              UNION ALL SELECT 5 UNION ALL SELECT 6 UNION ALL SELECT 7 UNION ALL SELECT 8 UNION ALL SELECT 9) v
+                        CROSS JOIN (SELECT 0 AS N UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL SELECT 4
+                              UNION ALL SELECT 5 UNION ALL SELECT 6 UNION ALL SELECT 7 UNION ALL SELECT 8 UNION ALL SELECT 9) w
+                    ) s ON r.m0 IS NOT NULL AND DATE_ADD(r.m0, INTERVAL s.n MONTH) &lt;= r.mEnd
+                ) g
+                WHERE 1 = 1
+                <if test="monthFrom != null"> AND g.mStart &gt;= CAST(DATE_FORMAT(#{monthFrom}, '%Y-%m-01') AS DATE) </if>
+                <if test="monthTo != null"> AND g.mStart &lt;= CAST(DATE_FORMAT(#{monthTo}, '%Y-%m-01') AS DATE) </if>
             ) mm
             JOIN t_warehouse_stock_flow f
               ON f.del_flag = '0' AND f.tenant_id = #{tenantId}

@@ -2,6 +2,7 @@ package org.dromara.djs.plant.plan.service;
 
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
+import org.dromara.djs.plant.plan.domain.bo.PlantDetailAdjustBo;
 import org.dromara.djs.plant.plan.domain.bo.PlantFinishBo;
 import org.dromara.djs.plant.plan.domain.bo.PlantPlanCreateBo;
 import org.dromara.djs.plant.plan.domain.bo.PlantPlanUpdateBo;
@@ -66,6 +67,29 @@ public interface IPlantPlanService {
      * @return 受影响明细行数（1）
      */
     int removePlanDetail(Long detailId);
+
+    /**
+     * admin 已种植地块后台调整（V6-R36 计划详情地块明细「修改」）。
+     *
+     * <p>仅「已种植」的明细可调（{@code begin_actualdate IS NOT NULL}），单事务、三分支互斥：</p>
+     * <ol>
+     *   <li><b>改回待种植</b>（{@code plantState='pending'}）：明细 {@code plant_status='pending'}、
+     *       清 {@code begin_actualdate/end_actualdate}、清计划采摘窗口
+     *       {@code earliest_harvestdate/last_harvestdate}、清种植班组（中间表 + 旧单列）、
+     *       {@code change_type='admin'}；该地块无其它在种明细时地块回 {@code plot_status=1}（空闲）。
+     *       ⚠️ 采摘已开始 / 已有实际产量的明细拒绝回退（下游采摘、毛菜、产量台账会留孤儿）。</li>
+     *   <li><b>改种植日期</b>（可连带班组）：回写 {@code begin_actualdate}，按作物 min/max_cycle
+     *       重算计划采摘窗口，同步班组，{@code change_type='admin'}。</li>
+     *   <li><b>仅改班组</b>：只同步班组（中间表 + 旧单列），其余字段一律不动，
+     *       {@code change_type='admin_team'}。</li>
+     * </ol>
+     *
+     * <p>三项均无实际变化 → 不写任何库、不留痕，直接返回 0（甲方第 5 点）。</p>
+     *
+     * @param bo 调整入参（detailId + 种植状态 + 种植日期 + 班组全集）
+     * @return 1=已调整 / 0=无变化未处理
+     */
+    int adjustPlantedDetail(PlantDetailAdjustBo bo);
 
     /**
      * 甘特图数据：主表摘要 + 每地块 1 行（4 时间字段）。

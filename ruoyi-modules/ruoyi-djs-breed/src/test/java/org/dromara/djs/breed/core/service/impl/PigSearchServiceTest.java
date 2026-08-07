@@ -599,4 +599,92 @@ class PigSearchServiceTest {
         // 带耳号：放行 → chip 有 1 头，与 search 结果一致
         assertThat(service.countByBarn("PZ", null, "sow", "001", null, "FARROW", null)).hasSize(1);
     }
+
+    // ================================================================
+    // LIMIT 让位给内存后筛（生产 2026-08-06：分娩录入不选栋舍空列表、点栋舍才有）
+    //
+    // 缺陷形状：SQL `ORDER BY id DESC LIMIT n` 先截断，dueType/breedReady 的硬筛再在内存里跑 ——
+    // 被截掉的猪根本没机会参与筛选。实测生产 100 头 PZ 母猪只有 1 头到产期、它在 id 倒序里排第 82，
+    // panel 传 limit=60 → 内存筛完为空。点栋舍 chip 后 SQL 多了 barn_id 条件、候选池缩到 60 内才显出来。
+    //
+    // ⚠️ 这几个用例断言的是 **wrapper 里有没有 LIMIT**，不是「返回条数对不对」——
+    // mock 的 pigMapper 不会真的执行 LIMIT，靠返回条数断言的测试在修复前也会绿，抓不到这个 bug。
+    // ================================================================
+
+    @Test
+    @DisplayName("dueType=FARROW → SQL 不下 LIMIT（截断推迟到内存筛之后），否则到期母猪被 id 倒序截掉")
+    void dueType_defers_limit_out_of_sql() {
+        when(pigMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(Collections.emptyList());
+
+        service.searchByEarKeyword(null, "PZ", "F", "sow", null, 60, "FARROW", null, null, null, null, null);
+
+        ArgumentCaptor<LambdaQueryWrapper<Pig>> w = ArgumentCaptor.forClass(LambdaQueryWrapper.class);
+        org.mockito.Mockito.verify(pigMapper).selectList(w.capture());
+        assertThat(readLastSql(w.getValue())).doesNotContain("LIMIT");
+    }
+
+    @Test
+    @DisplayName("breedReady=true → SQL 不下 LIMIT（配种选猪的在场天数筛同样跑在内存里）")
+    void breedReady_defers_limit_out_of_sql() {
+        when(pigMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(Collections.emptyList());
+
+        service.searchByEarKeyword(null, "HB,DN", "F", "sow", null, 60, null, null, null, null, true, null);
+
+        ArgumentCaptor<LambdaQueryWrapper<Pig>> w = ArgumentCaptor.forClass(LambdaQueryWrapper.class);
+        org.mockito.Mockito.verify(pigMapper).selectList(w.capture());
+        assertThat(readLastSql(w.getValue())).doesNotContain("LIMIT");
+    }
+
+    @Test
+    @DisplayName("搜耳号 + dueType → LIMIT 回到 SQL（搜索态本就跳过内存硬筛，无需推迟）")
+    void searchingByEarNo_keeps_limit_in_sql() {
+        when(pigMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(Collections.emptyList());
+
+        service.searchByEarKeyword("001", "PZ", "F", "sow", null, 60, "FARROW", null, null, null, null, null);
+
+        ArgumentCaptor<LambdaQueryWrapper<Pig>> w = ArgumentCaptor.forClass(LambdaQueryWrapper.class);
+        org.mockito.Mockito.verify(pigMapper).selectList(w.capture());
+        assertThat(readLastSql(w.getValue())).contains("LIMIT 60");
+    }
+
+    @Test
+    @DisplayName("无内存后筛的调用方（出栏/阉割/转栏等 10 个）→ LIMIT 仍在 SQL，行为不变")
+    void noPostFilter_keeps_limit_in_sql() {
+        when(pigMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(Collections.emptyList());
+
+        // 出栏选猪：minAgeDays 是 SQL 侧过滤，不受影响
+        service.searchByEarKeyword(null, null, null, "fattening", null, 60, null, null, 175, null, null, null);
+
+        ArgumentCaptor<LambdaQueryWrapper<Pig>> w = ArgumentCaptor.forClass(LambdaQueryWrapper.class);
+        org.mockito.Mockito.verify(pigMapper).selectList(w.capture());
+        assertThat(readLastSql(w.getValue())).contains("LIMIT 60");
+    }
+
+    @Test
+    @DisplayName("推迟 LIMIT 后仍在 Java 侧截断，且截的是「排序后」的前 n（最临产的优先，不是 id 最新的）")
+    void deferredLimit_truncates_after_due_sort() {
+        when(productionCycleConfigService.getValue("sow_breed_to_farrow_days")).thenReturn(114);
+
+        // 三头都已到产期，超期程度不同；id 顺序刻意与紧急度相反（id 大 = 最不急）
+        Pig mostUrgent = mkPig(1L, "URGENT-001", "PZ", "F", "sow", 11L, null);
+        mostUrgent.setLastMatingDate(LocalDate.now().minusDays(160));   // 超期最多
+        Pig middle = mkPig(2L, "MID-002", "PZ", "F", "sow", 11L, null);
+        middle.setLastMatingDate(LocalDate.now().minusDays(130));
+        Pig leastUrgent = mkPig(3L, "LEAST-003", "PZ", "F", "sow", 11L, null);
+        leastUrgent.setLastMatingDate(LocalDate.now().minusDays(115));  // 刚到期
+        // mapper 按 id DESC 返回（least, mid, urgent）——若先截断再排序，会留下最不急的两头
+        when(pigMapper.selectList(any(LambdaQueryWrapper.class)))
+            .thenReturn(Arrays.asList(leastUrgent, middle, mostUrgent));
+
+        Barn barn = new Barn();
+        barn.setId(11L);
+        barn.setBarnCode("B01");
+        when(barnMapper.selectBatchIds(anyCollection())).thenReturn(List.of(barn));
+
+        List<PigSearchVo> result = service.searchByEarKeyword(null, "PZ", "F", "sow", null, 2, "FARROW", null, null, null, null, null);
+
+        assertThat(result).hasSize(2);
+        assertThat(result).extracting(PigSearchVo::getEarNo)
+            .containsExactly("URGENT-001", "MID-002");
+    }
 }

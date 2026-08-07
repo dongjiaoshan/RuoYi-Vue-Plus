@@ -31,6 +31,12 @@ public class PerfDetailCropExportVo implements Serializable {
     private String cropName;
 
     /**
+     * 产品名称（V6 row20：绩效按「作物 × 产品」结算，作物旁边跟产品）。
+     */
+    @ExcelProperty(value = "产品")
+    private String productName;
+
+    /**
      * 采摘量（公斤）。
      */
     @ExcelProperty(value = "采摘量(公斤)")

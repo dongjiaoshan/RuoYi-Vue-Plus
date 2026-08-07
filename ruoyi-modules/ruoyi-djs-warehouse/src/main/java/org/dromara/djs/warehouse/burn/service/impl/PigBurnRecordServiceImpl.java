@@ -289,6 +289,9 @@ public class PigBurnRecordServiceImpl
             inhouse.setProduceTime(burnTime);
             inhouse.setWhiteBarId(bar.getId());
             inhouse.setWhiteBarNo(whiteBarNo);
+            // V6-R43：产出行回指本次燎毛记录。burn_record.burn_weight 是本次提交各产出行之和，
+            // 「燎毛间产品重量调整」按此把差额同步回燎毛记录；列表「入库人」也取 burn_record.operator_id。
+            inhouse.setBurnRecordId(record.getId());
             inhouse.setLocationId(bo.getLocationId());
             productInhouseMapper.insert(inhouse);
 
@@ -582,9 +585,14 @@ public class PigBurnRecordServiceImpl
         }
 
         // ---------- Step 2：聚合该白条已入库产品 → 校验总重 + 半只须集齐 2 扇（后端兜底前端约束）----------
+        // FOR UPDATE（V6-R43）：产出行的入库重量可被 admin「燎毛间产品重量调整」并发改写。若这里用普通
+        // 快照读，「读到旧合计 → 对方调整提交 → 本事务按旧合计写 bar.in_weight」会让白条入库重量与产出行
+        // 对不上。加锁读把产出行纳入本事务写集：并发调整要么排在本次完成之前（读到新值），要么在本事务
+        // 提交后才拿到锁、随即因白条已 in_stock 被自身的窗口校验拒绝。
         List<ProductInhouse> inhouses = productInhouseMapper.selectList(
             new LambdaQueryWrapper<ProductInhouse>()
-                .eq(ProductInhouse::getWhiteBarId, bar.getId()));
+                .eq(ProductInhouse::getWhiteBarId, bar.getId())
+                .last("FOR UPDATE"));
         if (inhouses.isEmpty()) {
             throw new ServiceException("尚未录入任何产品入库，无法处理完成");
         }

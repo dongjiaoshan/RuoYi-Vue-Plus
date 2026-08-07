@@ -143,58 +143,97 @@ public interface DemandManageMapper extends BaseMapperPlus<DemandManage, DemandM
      * 把需求扣减从「发货确认」前移到「打包」，避免发货再扣造成双扣（{@code ShipmentConfirmedEventListener}
      * 已停用发货扣减）。</p>
      *
-     * <p>口径：指定 {@code product_id + store_id}，<b>当天</b>（{@code demand_date = CURDATE()}）、状态属
-     * 「已确认且未完成」（{@code demand_status IN ('CONFIRMED','IN_PRODUCTION','PARTIAL_SHIPPED')}——
+     * <p>口径：指定 {@code product_id + store_id}，需求日 <b>今天及以后</b>（{@code demand_date >= CURDATE()}）、
+     * 状态属「已确认且未完成」（{@code demand_status IN ('CONFIRMED','IN_PRODUCTION','PARTIAL_SHIPPED')}——
      * COMPLETED 已满足不再扣，DRAFT/SUBMITTED 未确认不计入，CANCELLED/DELETED 排除），且仍有未发货余量
-     * （{@code shipped_count < demand_quantity}）。取当天最早（{@code id ASC}）一条 LIMIT 1。</p>
+     * （{@code shipped_count < demand_quantity}）。按需求日升序取最早一条（同日再按 {@code id ASC}）LIMIT 1，
+     * 即先满足今天的需求、再吃明天的。</p>
      *
-     * <p><b>必须限当天</b>（与打包台展示口径 {@link #selectStoreDemandCopies} 的 {@code demand_date=today}
-     * 一致，Kevin 2026-06-26）：不限当天会跨日期扣到历史旧需求（如今天打包却把上周未满的旧需求 shipped_count
-     * 加满），展示的当天需求纹丝不动 → 「打包后需求量不减少」。无匹配返 null（service 端 log.warn 跳过，不报错）。</p>
+     * <p><b>为什么是「今天及以后」而不是「只限当天」也不是「不限日期」</b>（甲方 2026-08-06 V6 row27
+     * 「只要有需求，就可以进行打包。即今天可以对明天需求进行打包」）：</p>
+     * <ul>
+     *   <li>只限当天 → 明天的需求今天打不了，正是甲方要改的点。</li>
+     *   <li>完全不限日期 → 会扣到<b>已过期</b>的历史未满需求（打包台展示端亦然），既把陈旧数据翻出来给工人看，
+     *       也让今天的打包记到上周的单上。故下界钳在今天。</li>
+     * </ul>
+     * <p>展示端 {@link #selectStoreDemandCopies} / {@link #selectStoreDemandCopiesBatch} 用同一个
+     * {@code >= today} 下界，两端口径必须同时改、不得只改一边（只改展示 → 打包后数字不减；只改扣减 →
+     * 扣到看不见的行）。无匹配返 null（service 端 log.warn 跳过，不报错）。</p>
      *
      * <p>租户隔离：未启全局 MP 拦截器，显式 {@code tenant_id='1001'}（V1 单租户，与本 mapper 既有聚合 SQL
      * 范式一致）；{@code del_flag='0'}（CHAR(1) 未删）。</p>
      *
      * @param productId 产品 FK（{@code t_warehouse_product_info.id}）
      * @param storeId   门店 FK（{@code t_md_store.id}）
-     * @return 当天最早未完成需求实体（无则 null）
+     * @return 今天及以后最早一条未完成需求实体（无则 null）
      */
     @Select("""
         SELECT *
         FROM t_warehouse_demand_manage
         WHERE product_id = #{productId}
           AND store_id = #{storeId}
-          AND demand_date = CURDATE()
+          AND demand_date >= CURDATE()
           AND demand_status IN ('CONFIRMED','IN_PRODUCTION','PARTIAL_SHIPPED')
           AND COALESCE(shipped_count, 0) < demand_quantity
           AND del_flag = '0'
           AND tenant_id = '1001'
-        ORDER BY id ASC
+        ORDER BY demand_date ASC, id ASC
         LIMIT 1
         """)
     DemandManage selectOldestUncompletedDemand(@Param("productId") Long productId,
                                                @Param("storeId") Long storeId);
 
     /**
-     * 白条领用「发货月台」关联需求（row205，邓博 2026-07-05）：当天该门店该产品的需求，优先未完成、其次已完成。
+     * 同 {@link #selectOldestUncompletedDemand}，但返回**全部**未完成需求行（同序，不 LIMIT 1）。
      *
-     * <p>用途：白条领用页发货月台出库时把关联需求记入 {@code cut_record.target_demand_id}。与门店下拉
-     * {@code selectWhiteBarShipStores} 同状态集（含 COMPLETED —— 门店因有需求才出现在下拉，用户选中即应回填该需求），
-     * 但按 {@code product_id} 精确匹配到具体需求单；无匹配需求 → null。仅作引用记录、不做扣减
-     * （扣减仍用 {@link #selectOldestUncompletedDemand}，只认未完成）。</p>
+     * <p>打包台展示的「剩余需求」是跨行求和（{@link #selectStoreDemandCopies} 按门店 SUM，
+     * 可能同日多行、也可能今天 + 明天各一行）。扣减若只吃最早那一行，工人照屏幕上的总数打就会被拒。
+     * 本方法让 {@code deductDemandOnPack} 先把候选行一次读齐、校验总量够不够，够了再逐行扣 ——
+     * 这样「超量」在写任何一行之前就报错，不依赖调用方事务回滚来擦除半截写入。</p>
      *
-     * @return 当天该门店该产品的需求（优先未完成、按 id 升序取最早；无则 null）
+     * @param productId 产品 FK
+     * @param storeId   门店 FK
+     * @return 今天及以后、已确认未完成、仍有余量的需求行（需求日升序、同日 id 升序）；无则空 List
      */
     @Select("""
         SELECT *
         FROM t_warehouse_demand_manage
         WHERE product_id = #{productId}
           AND store_id = #{storeId}
-          AND demand_date = CURDATE()
+          AND demand_date >= CURDATE()
+          AND demand_status IN ('CONFIRMED','IN_PRODUCTION','PARTIAL_SHIPPED')
+          AND COALESCE(shipped_count, 0) < demand_quantity
+          AND del_flag = '0'
+          AND tenant_id = '1001'
+        ORDER BY demand_date ASC, id ASC
+        """)
+    List<DemandManage> selectUncompletedDemands(@Param("productId") Long productId,
+                                                @Param("storeId") Long storeId);
+
+    /**
+     * 白条领用「发货月台」关联需求（row205，邓博 2026-07-05）：该门店该产品今天及以后的需求，优先未完成、其次已完成。
+     *
+     * <p>V6 row27：下界与门店下拉 {@code selectWhiteBarShipStores}、扣减端
+     * {@link #selectOldestUncompletedDemand} 一并从「= 当天」放宽到「&gt;= 当天」——三者必须同步，
+     * 否则会出现「下拉里看不到该门店，扣减却扣到它」或反之。</p>
+     *
+     * <p>用途：白条领用页发货月台出库时把关联需求记入 {@code cut_record.target_demand_id}。与门店下拉
+     * {@code selectWhiteBarShipStores} 同状态集（含 COMPLETED —— 门店因有需求才出现在下拉，用户选中即应回填该需求），
+     * 但按 {@code product_id} 精确匹配到具体需求单；无匹配需求 → null。仅作引用记录、不做扣减
+     * （扣减仍用 {@link #selectOldestUncompletedDemand}，只认未完成）。</p>
+     *
+     * @return 该门店该产品今天及以后的需求（优先未完成、再按需求日/id 升序取最早；无则 null）
+     */
+    @Select("""
+        SELECT *
+        FROM t_warehouse_demand_manage
+        WHERE product_id = #{productId}
+          AND store_id = #{storeId}
+          AND demand_date >= CURDATE()
           AND demand_status IN ('CONFIRMED','IN_PRODUCTION','PARTIAL_SHIPPED','COMPLETED')
           AND del_flag = '0'
           AND tenant_id = '1001'
-        ORDER BY (demand_status = 'COMPLETED') ASC, id ASC
+        ORDER BY (demand_status = 'COMPLETED') ASC, demand_date ASC, id ASC
         LIMIT 1
         """)
     DemandManage selectShipTargetDemand(@Param("productId") Long productId,
@@ -210,10 +249,14 @@ public interface DemandManageMapper extends BaseMapperPlus<DemandManage, DemandM
      * 表现为「需求量 0 份 / 无未发货门店需求」（FIX-WMS-PACKDEMAND-001 行42/43）。逐行钳零后，
      * 超发行只贡献 0，不再吃掉同门店其它需求。</p>
      *
-     * <p>仅统计「<b>当天</b>（{@code demand_date = today}）+ 已确认及之后」需求（{@code demand_status IN
-     * ('CONFIRMED','IN_PRODUCTION','PARTIAL_SHIPPED','COMPLETED')}）——草稿（DRAFT）/ 待确认
-     * （SUBMITTED）/ 已取消（CANCELLED）/ 已删除（DELETED）/ 非当天 均不计入打包需求统计。打包台只处理
-     * 当天确认需求（与发货月台 {@code demand_date=today} 口径一致，Kevin 2026-06-26）。JOIN {@code t_md_store} 取门店名。</p>
+     * <p>仅统计「需求日 <b>今天及以后</b>（{@code demand_date >= today}）+ 已确认及之后」需求
+     * （{@code demand_status IN ('CONFIRMED','IN_PRODUCTION','PARTIAL_SHIPPED','COMPLETED')}）——草稿（DRAFT）/
+     * 待确认（SUBMITTED）/ 已取消（CANCELLED）/ 已删除（DELETED）/ 已过期（{@code demand_date < today}）
+     * 均不计入打包需求统计。</p>
+     *
+     * <p>下界从「= today」放宽到「&gt;= today」是甲方 2026-08-06（V6 row27）的口径：「只要有需求，就可以进行
+     * 打包，即今天可以对明天需求进行打包」。过期需求仍排除——放开下界会把陈旧未满行翻出来给打包工人看。
+     * 扣减端 {@link #selectOldestUncompletedDemand} 用同一下界，两端必须同时改。</p>
      *
      * <p>租户隔离：未启全局 MP 拦截器，显式 {@code tenant_id='1001'}（V1 单租户，与本 mapper
      * 既有聚合 SQL 范式一致）；{@code del_flag='0'}（CHAR(1) 未删）。</p>
@@ -231,7 +274,7 @@ public interface DemandManageMapper extends BaseMapperPlus<DemandManage, DemandM
              AND s.tenant_id = dm.tenant_id
         WHERE dm.product_id = #{productId}
           AND dm.store_id IS NOT NULL
-          AND dm.demand_date = #{today}
+          AND dm.demand_date >= #{today}
           AND dm.demand_status IN ('CONFIRMED','IN_PRODUCTION','PARTIAL_SHIPPED','COMPLETED')
           AND dm.del_flag = '0'
           AND dm.tenant_id = '1001'
@@ -246,7 +289,8 @@ public interface DemandManageMapper extends BaseMapperPlus<DemandManage, DemandM
      * 批量版「各产品各门店未发货需求份数」（打包录入卡片网格「需求量」批量聚合，去前端 N+1）。
      *
      * <p>口径与 {@link #selectStoreDemandCopies} <b>逐字一致</b>：每条需求行
-     * {@code GREATEST(demand_quantity - shipped_count, 0)} 单独钳 ≥ 0 后再 SUM；仅统计「已确认及之后」
+     * {@code GREATEST(demand_quantity - shipped_count, 0)} 单独钳 ≥ 0 后再 SUM；需求日 {@code >= today}
+     * （V6 row27，今天可打明天的需求，过期需求排除）；仅统计「已确认及之后」
      * 需求（{@code demand_status IN ('CONFIRMED','IN_PRODUCTION','PARTIAL_SHIPPED','COMPLETED')}）；
      * JOIN {@code t_md_store} 取门店名；显式 {@code tenant_id='1001'} + {@code del_flag='0'}。
      * 唯一差异：{@code product_id} 由 {@code =} 改 {@code IN(foreach)}，SELECT/GROUP BY 增加
@@ -268,7 +312,7 @@ public interface DemandManageMapper extends BaseMapperPlus<DemandManage, DemandM
         WHERE dm.product_id IN
               <foreach collection="productIds" item="pid" open="(" separator="," close=")">#{pid}</foreach>
           AND dm.store_id IS NOT NULL
-          AND dm.demand_date = #{today}
+          AND dm.demand_date >= #{today}
           AND dm.demand_status IN ('CONFIRMED','IN_PRODUCTION','PARTIAL_SHIPPED','COMPLETED')
           AND dm.del_flag = '0'
           AND dm.tenant_id = '1001'
@@ -416,7 +460,7 @@ public interface DemandManageMapper extends BaseMapperPlus<DemandManage, DemandM
      * @param storeId     需求门店过滤（空则不过滤；下推 WHERE store_id）
      * @param beginDate   需求日期起（空则不过滤）
      * @param endDate     需求日期止（空则不过滤）
-     * @return 分组聚合行（按需求日期倒序 + 产品名升序；三态/确认率待 service 回填）
+     * @return 分组聚合行（按<b>需求确认率升序</b>排，同率再按需求日期倒序 + 产品名升序；三态/确认率待 service 回填）
      */
     @Select("""
         <script>
@@ -481,7 +525,18 @@ public interface DemandManageMapper extends BaseMapperPlus<DemandManage, DemandM
             AND dm.demand_date &lt;= #{endDate}
           </if>
         GROUP BY dm.demand_date, dm.product_id
-        ORDER BY dm.demand_date DESC, MAX(dm.product_name) ASC
+        <!-- 默认排序 = 需求确认率升序（row32 甲方：从小到大，最没被确认的排最前）。
+             确认率口径与 service 层 confirmRate 逐字一致：组内已确认需求单数 / 组内需求单数
+             （row166 按【需求单】而非门店）。必须排在 SQL：列表是「先聚合全量、后内存分页」，
+             前端只能对当前页排序，第 2 页的 0% 会掉在第 1 页的 100% 后面。
+             NULL / 分母 0 的行（GROUP BY 每组至少 1 行，理论不出现；仅防御未来口径变化）
+             由 COALESCE 兜成 0 —— 与「一条都没确认」同档排最前：宁可让「无从判断确认情况」的行
+             先被看到，也不要沉到末页。
+             同确认率保留改造前次序作 tie-breaker：需求日期倒序 + 产品名升序。 -->
+        ORDER BY COALESCE(COUNT(CASE WHEN dm.demand_status IN ('CONFIRMED','IN_PRODUCTION','PARTIAL_SHIPPED','COMPLETED')
+                                     THEN 1 END) / NULLIF(COUNT(*), 0), 0) ASC,
+                 dm.demand_date DESC,
+                 MAX(dm.product_name) ASC
         </script>
         """)
     List<DemandGroupVo> selectDemandGroupList(@Param("productName") String productName,

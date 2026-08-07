@@ -24,6 +24,7 @@ import org.dromara.djs.store.returns.domain.bo.StoreReturnBatchBo;
 import org.dromara.djs.store.returns.domain.bo.StoreReturnBo;
 import org.dromara.djs.store.returns.domain.bo.StoreReturnConfirmBo;
 import org.dromara.djs.store.returns.domain.query.StoreReturnQuery;
+import org.dromara.djs.store.returns.domain.vo.StoreReturnDetailExportVo;
 import org.dromara.djs.store.returns.domain.vo.StoreReturnVo;
 import org.dromara.djs.store.returns.domain.vo.StoreReturnAppletItemVo;
 import org.dromara.djs.store.returns.domain.vo.StoreReturnGroupVo;
@@ -46,9 +47,11 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Comparator;
@@ -578,6 +581,47 @@ public class StoreReturnServiceImpl
     /** 单个产品的计量口径单位（{@link #resolveMetricUnits} 的单条版，confirm 逐行校验用）。 */
     private String resolveMetricUnit(ProductInfo product) {
         return resolveMetricUnits(List.of(product)).get(product.getId());
+    }
+
+    /**
+     * 计量规则（甲方 row24）：一件该生产产品折算多少原材料（{@code material_num}，如 30 枚装礼盒 = 30）。
+     *
+     * <p>未配 / ≤0 一律回落 <b>1</b>：产品本身即原材料时（鸡蛋按枚、白条部位按 kg）本来就是 1:1，
+     * 回落 0 会把上限算成 0、把整单卡死。</p>
+     */
+    private static BigDecimal materialRatio(ProductInfo p) {
+        BigDecimal n = p == null ? null : p.getMaterialNum();
+        return n == null || n.signum() <= 0 ? BigDecimal.ONE : n;
+    }
+
+    /**
+     * 件数口径下的仓库实收上限（甲方 row24）：{@code 退回量 × 计量规则}。
+     * 退回量为空 → {@code null}（不封顶，避免历史脏数据把合法确认拦死）。
+     */
+    private static BigDecimal maxConfirmQty(BigDecimal returnQuantity, ProductInfo p) {
+        if (returnQuantity == null || returnQuantity.signum() <= 0) {
+            return null;
+        }
+        // 至少 1：material_num 配成小数（如 0.25）时 setScale(0) 会把上限抹成 0，
+        // 那一行任何正数实收都会被拒、整单永久卡死。宁可放宽到 1，也不制造死锁。
+        return returnQuantity.multiply(materialRatio(p))
+            .setScale(0, RoundingMode.HALF_UP).max(BigDecimal.ONE);
+    }
+
+    /**
+     * 该产品能否「退回入库」（甲方 row24 第 2 点）。
+     *
+     * <p>不能的唯一情形：**生产产品（{@code product_attr=1}）却没配原材料**。仓库只存原材料，
+     * 成品缺料就无从确定往哪个原材料头上记库存，只能丢弃。
+     * 产品本身即原材料（{@code product_attr=2}，如白条部位 / 鸡蛋 / 外购原料）{@code product_material}
+     * 天然为空，按自身 id 入库，照常放行 —— 别把这一大票正常退回也拦了。</p>
+     */
+    private static boolean canInbound(ProductInfo p) {
+        if (p == null) {
+            return false;
+        }
+        return p.getProductMaterial() != null
+            || !Integer.valueOf(PRODUCT_ATTR_FINISHED).equals(p.getProductAttr());
     }
 
     /**
@@ -1125,8 +1169,9 @@ public class StoreReturnServiceImpl
         //   · 产品单位 ≠ kg 且**原材料单位 = kg**：录的仍是重量（如 80g 干货礼盒录 0.080）
         //     → ≤ 当天到店该产品总重量（sumDeliveredWeightToStore，kg）；
         //   · 产品单位 ≠ kg 且**原材料单位 ≠ kg**：录的是<b>件数</b>（枚 / 份，row13）→ 与 kg 到店重不同量纲，
-        //     比了必然误伤（30 枚礼盒录 30，到店重按 kg 算只有几公斤，一提交就 400）→ 本分支直接放行，
-        //     退回量的封顶由提交侧台账闸（assertWithinRemainReturnable，按产品单位）负责。
+        //     不能拿到店重量比（30 枚礼盒录 30、到店重按 kg 算只有几公斤，一比就误伤）。
+        //     row24 甲方给了本量纲下的算法：上限 = 门店退回量 × 计量规则(material_num)，即
+        //     「退了几件成品 × 每件折算多少原材料」。mp 侧同一个数做输入上限，这里复核，两边同源。
         // 兜底放行：取不到到店重 / 门店录入重（0 或空）时不拦（避免历史数据/跨日确认误伤合法退货）。
         ProductInfo returnProduct = productInfoMapper.selectById(existing.getProductId());
         BigDecimal weighed = bo.getReceivedWeight() != null ? bo.getReceivedWeight()
@@ -1147,7 +1192,25 @@ public class StoreReturnServiceImpl
                     throw new ServiceException("仓库称重重量(" + weighed.toPlainString()
                         + "kg)不能超过该产品当天到店总重量(" + arrivedTotal.toPlainString() + "kg)", 400);
                 }
+            } else {
+                // 件数口径（row24）：上限 = 退回量 × 计量规则
+                BigDecimal cap = maxConfirmQty(existing.getReturnQuantity(), returnProduct);
+                if (cap != null && weighed.compareTo(cap) > 0) {
+                    String unit = StringUtils.isBlank(returnProduct.getProductUnit()) ? "" : returnProduct.getProductUnit();
+                    // row33：件数口径下 mp 那一格的标题已改叫「仓库接收量」，报错文案跟着叫同一个名字——
+                    // 工人在标着「仓库接收量」的框里填数，弹出来却说「仓库实收数量」会以为是另一个字段。
+                    throw new ServiceException("仓库接收量(" + weighed.stripTrailingZeros().toPlainString()
+                        + ")不能超过可退上限(" + cap.toPlainString() + ")：门店退回 "
+                        + existing.getReturnQuantity().stripTrailingZeros().toPlainString() + unit
+                        + " × 计量规则 " + materialRatio(returnProduct).stripTrailingZeros().toPlainString(), 400);
+                }
             }
+        }
+
+        // row24 第 2 点：生产产品没配原材料 → 只能丢弃，不能退回仓库（仓库只存原材料，无从确定入哪个料的库存）
+        if (!DISCARD_YES.equals(bo.getIsDiscard()) && !canInbound(returnProduct)) {
+            throw new ServiceException("产品「" + (returnProduct == null ? existing.getProductId() : returnProduct.getProductName())
+                + "」未配置原材料，无法退回入库，只能标记为产品丢弃", 400);
         }
 
         // 小程序 row269：处置方式。丢弃的产品不进库存，故整条入库链路（解析原材料 / 定库位 / 写库存）全跳过。
@@ -1232,6 +1295,88 @@ public class StoreReturnServiceImpl
     @Override
     public List<StoreReturnStoreDailyVo> queryStoreDailyList(StoreReturnQuery query) {
         return buildStoreDailyList(query);
+    }
+
+    @Override
+    public List<StoreReturnDetailExportVo> queryDetailExportList(StoreReturnQuery query) {
+        List<StoreReturnVo> rows = queryList(query);
+        List<StoreReturnDetailExportVo> out = new ArrayList<>(rows.size());
+        for (StoreReturnVo r : rows) {
+            StoreReturnDetailExportVo vo = new StoreReturnDetailExportVo();
+            vo.setProductName(r.getProductName());
+            vo.setProductUnit(r.getProductUnit());
+            vo.setReturnQuantity(formatQtyByUnit(r.getReturnQuantity(), r.getProductUnit()));
+            vo.setReceivedAmount(formatReceivedAmount(r.getReceivedWeight(), r.getProductUnit(), r.getMaterialUnit()));
+            vo.setQuantityDiff(formatQuantityDiff(r));
+            vo.setIsDiscard(formatDiscardText(r));
+            vo.setReturnStatus(formatReturnStatusText(r));
+            vo.setLocationName(StringUtils.isBlank(r.getLocationName()) ? EXPORT_EMPTY : r.getLocationName());
+            vo.setConfirmTime(r.getConfirmTime() == null ? EXPORT_EMPTY : EXPORT_TIME_FORMAT.format(r.getConfirmTime()));
+            out.add(vo);
+        }
+        return out;
+    }
+
+    /** 导出里的空值占位符（与弹窗里的 em dash 一致）。 */
+    private static final String EXPORT_EMPTY = "—";
+
+    private static final DateTimeFormatter EXPORT_TIME_FORMAT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+
+    /** 数量按单位格式化：kg → 三位小数；计件单位 → 去尾零（对齐前端 {@code formatQtyByUnit}）。 */
+    private static String formatQtyByUnit(BigDecimal v, String unit) {
+        if (v == null) {
+            return EXPORT_EMPTY;
+        }
+        return isKgUnit(unit) ? v.setScale(3, RoundingMode.HALF_UP).toPlainString()
+            : v.stripTrailingZeros().toPlainString();
+    }
+
+    /**
+     * 仓库实收量文本（对齐前端 {@code formatReceivedAmount}）：计量单位由**原材料单位**决定，
+     * 原材料按 kg → {@code X.XXXkg}；原材料按件 → {@code 整数 + 原材料单位}。
+     * 后缀必须跟判据同源，否则 30 枚鸡蛋会被标成「30份」= 仓库收了 30 个礼盒。
+     */
+    private static String formatReceivedAmount(BigDecimal v, String productUnit, String materialUnit) {
+        if (v == null) {
+            return EXPORT_EMPTY;
+        }
+        String metric = StringUtils.isNotBlank(materialUnit) ? materialUnit.trim()
+            : (productUnit == null ? "" : productUnit);
+        return isKgUnit(metric) ? v.setScale(3, RoundingMode.HALF_UP).toPlainString() + "kg"
+            : v.setScale(0, RoundingMode.HALF_UP).toPlainString() + metric;
+    }
+
+    /**
+     * 差异量 = 退回量 − 实收量，**只有两边同量纲才有意义**：退回量按产品单位计、实收量按原材料单位计，
+     * 故仅当产品单位与计量单位都是 kg 时才相减；未确认（实收为空）同样不给数。
+     */
+    private static String formatQuantityDiff(StoreReturnVo r) {
+        String metric = StringUtils.isNotBlank(r.getMaterialUnit()) ? r.getMaterialUnit().trim() : r.getProductUnit();
+        if (!isKgUnit(r.getProductUnit()) || !isKgUnit(metric)
+            || r.getReturnQuantity() == null || r.getReceivedWeight() == null) {
+            return EXPORT_EMPTY;
+        }
+        return r.getReturnQuantity().subtract(r.getReceivedWeight())
+            .setScale(3, RoundingMode.HALF_UP).toPlainString() + "kg";
+    }
+
+    /** 是否丢弃：只有已确认行才有处置结论（pending 行库里是建表默认 0，不能当成「否」）。 */
+    private static String formatDiscardText(StoreReturnVo r) {
+        if (!STATUS_RECEIVED.equals(r.getReturnStatus())) {
+            return EXPORT_EMPTY;
+        }
+        return DISCARD_YES.equals(r.getIsDiscard()) ? "是" : "否";
+    }
+
+    /** 退回状态：丢弃行单独出「已丢弃」，不沿用字典的「已入库」（它压根没进库存）。 */
+    private static String formatReturnStatusText(StoreReturnVo r) {
+        if (STATUS_RECEIVED.equals(r.getReturnStatus())) {
+            return DISCARD_YES.equals(r.getIsDiscard()) ? "已丢弃" : "已入库";
+        }
+        if (STATUS_PENDING.equals(r.getReturnStatus())) {
+            return "待仓库确认";
+        }
+        return StringUtils.isBlank(r.getReturnStatus()) ? EXPORT_EMPTY : r.getReturnStatus();
     }
 
     /**
@@ -1443,10 +1588,12 @@ public class StoreReturnServiceImpl
         List<Long> productIds = rows.stream().map(StoreReturn::getProductId)
             .filter(Objects::nonNull).distinct().toList();
         // row13：必须带 product_material —— mp 确认页靠「原材料单位」决定称重框是重量(kg,小数)还是件数(整数)。
+        // row24：再带 material_num（计量规则，算件数上限）+ product_attr（判「成品缺原材料 → 只能丢弃」）。
         List<ProductInfo> products = productIds.isEmpty() ? List.<ProductInfo>of()
             : productInfoMapper.selectList(new LambdaQueryWrapper<ProductInfo>()
                 .select(ProductInfo::getId, ProductInfo::getProductName, ProductInfo::getBelongType,
-                    ProductInfo::getProductUnit, ProductInfo::getProductSpec, ProductInfo::getProductMaterial)
+                    ProductInfo::getProductUnit, ProductInfo::getProductSpec, ProductInfo::getProductMaterial,
+                    ProductInfo::getMaterialNum, ProductInfo::getProductAttr)
                 .in(ProductInfo::getId, productIds));
         Map<Long, ProductInfo> productMap = products.stream()
             .collect(Collectors.toMap(ProductInfo::getId, p -> p, (a, b) -> a));
@@ -1464,7 +1611,12 @@ public class StoreReturnServiceImpl
             vo.setProductName(p == null ? null : p.getProductName());
             vo.setProductCategory(p == null ? null : p.getBelongType());
             vo.setProductUnit(p == null ? null : p.getProductUnit());
-            vo.setMaterialUnit(p == null ? null : metricUnits.get(p.getId()));
+            String metricUnit = p == null ? null : metricUnits.get(p.getId());
+            vo.setMaterialUnit(metricUnit);
+            // row24：件数口径才给上限（= 退回量 × 计量规则）；kg 口径由重量分支另行封顶，给了反而误导
+            vo.setMaterialNum(materialRatio(p));
+            vo.setMaxConfirmQty(isKgUnit(metricUnit) ? null : maxConfirmQty(r.getReturnQuantity(), p));
+            vo.setCanInbound(canInbound(p));
             vo.setProductSpec(p == null ? null : p.getProductSpec());
             vo.setReturnQuantity(r.getReturnQuantity());
             vo.setReturnWeight(r.getGoodsWeight());

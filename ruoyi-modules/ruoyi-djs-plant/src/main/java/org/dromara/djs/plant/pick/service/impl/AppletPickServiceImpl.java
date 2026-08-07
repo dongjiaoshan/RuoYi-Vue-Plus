@@ -106,6 +106,10 @@ public class AppletPickServiceImpl implements IAppletPickService {
         List<PlantDetails> entities = detailsMapper.selectList(
             new LambdaQueryWrapper<PlantDetails>()
                 .eq(PlantDetails::getIsPick, IS_PICK_NORMAL)   // PLT-PICK-001 决策①：隐藏游客采摘活动
+                // 只列「已经种下去」的地块（V6 row36）：后台把地块改回待种植后，种植日期与采摘窗口都被置空，
+                // 而 MySQL 的 ASC 把 NULL 排在最前 —— 不加这条过滤，一块根本没种的地会顶到采收工任务列表第一条、
+                // 且日期全是空白。row36 之前这两列 NOT NULL，不可能为空，所以以前没暴露。
+                .isNotNull(PlantDetails::getBeginActualdate)
                 .in(PlantDetails::getHarvestStatus, statusList)
                 .orderByAsc(PlantDetails::getEarliestHarvestdate)
                 .orderByAsc(PlantDetails::getId));

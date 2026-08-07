@@ -279,14 +279,19 @@ public interface WarehouseDashboardMapper {
     /**
      * 今日毛菜处理果蔬品种数（毛菜处理流水 record_type=1 已称重记录涉及的不重复作物数）。
      *
+     * <p>{@code record_weight > 0}：V6 row28 起允许提交 0 kg 采摘记录来给「已称完但没点完成」的地块收口，
+     * 这类记录同样带 {@code is_weighed=1}。不排掉它会让看板显示「今日处理 2 个品种 / 50 kg」——
+     * 多出来的那个品种一克都没处理。与同页总重口径成对，两条 SQL 必须一起改。</p>
+     *
      * @param tenantId 租户
-     * @return COUNT(DISTINCT crop_id) WHERE record_type=1 AND is_weighed=1，无记录返 0
+     * @return COUNT(DISTINCT crop_id) WHERE record_type=1 AND is_weighed=1 AND record_weight>0，无记录返 0
      */
     @Select("SELECT COUNT(DISTINCT crop_id) "
         + "  FROM t_warehouse_handle_record "
         + " WHERE tenant_id = #{tenantId} "
         + "   AND record_type = 1 "
         + "   AND is_weighed = 1 "
+        + "   AND record_weight > 0 "
         + "   AND DATE(handle_time) = CURDATE() "
         + "   AND del_flag = '0'")
     Integer countTodayVegHandleKinds(@Param("tenantId") String tenantId);
@@ -294,14 +299,18 @@ public interface WarehouseDashboardMapper {
     /**
      * 今日毛菜处理果蔬总重量（毛菜处理流水 record_type=1 已称重 record_weight 合计 kg）。
      *
+     * <p>{@code record_weight > 0} 与上面的品种数同一行集（0 kg 收口记录对合计本就贡献 0，
+     * 加这条不改变数值，只是让两条 SQL 的口径逐字一致、日后不会一边改一边忘）。</p>
+     *
      * @param tenantId 租户
-     * @return SUM(record_weight) WHERE record_type=1 AND is_weighed=1，无记录返 0
+     * @return SUM(record_weight) WHERE record_type=1 AND is_weighed=1 AND record_weight>0，无记录返 0
      */
     @Select("SELECT COALESCE(SUM(record_weight), 0) "
         + "  FROM t_warehouse_handle_record "
         + " WHERE tenant_id = #{tenantId} "
         + "   AND record_type = 1 "
         + "   AND is_weighed = 1 "
+        + "   AND record_weight > 0 "
         + "   AND DATE(handle_time) = CURDATE() "
         + "   AND del_flag = '0'")
     BigDecimal sumTodayVegHandleWeight(@Param("tenantId") String tenantId);

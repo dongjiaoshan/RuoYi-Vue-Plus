@@ -14,10 +14,10 @@ import java.math.BigDecimal;
  *
  * <h3>Service 同事务</h3>
  * <ol>
- *   <li>校验该 (crop, plot) 的月台待入库量 ≥ 本次 weight（来自 {@code vegetable_handle.send_platform_weight}
- *       − 本表已入库 self 量；超量抛异常，不允许"凭空入库"）</li>
- *   <li>INSERT {@code t_warehouse_veg_receive}（receiveType=1）</li>
- *   <li>UPSERT {@code location_stock}（按 plotId 维度行锁增量 / 不存在 INSERT）</li>
+ *   <li>校验该 (crop, product, plot) 的月台待入库量 ≥ 本次 weight（row55 起数据源是
+ *       {@code t_warehouse_handle_record} 的月台明细，减已入库 self 量与已结算损耗；超量抛异常，不允许"凭空入库"）</li>
+ *   <li>INSERT {@code t_warehouse_veg_receive}（receiveType=1，落 product_id）</li>
+ *   <li>UPSERT {@code location_stock}（按 <b>product + plot</b> 双键行锁增量 / 不存在 INSERT）</li>
  *   <li>INSERT {@code stock_flow}（flow_type=veg_receive_in, inout_type=IN, plotId 关联）</li>
  * </ol>
  *
@@ -42,6 +42,18 @@ public class VegInboundBo {
      */
     @NotNull(message = "{vegReceive.plot_id.required}")
     private Long plotId;
+
+    /**
+     * 产品 ID（row55；FK → {@code t_warehouse_product_info.id}）。
+     *
+     * <p>月台改按产品聚合后，一个 (作物, 地块) 下可以有多个产品各自的待入库量（红薯 / 红薯杆），
+     * 封顶校验与收货记录都必须收窄到具体产品，否则红薯的入库会吃掉红薯杆的额度。</p>
+     *
+     * <p>不做 {@code @NotNull}，但<b>写入侧一律收窄到一个确定产品</b>：传空时——作物只有一个产品就自动补上；
+     * <b>作物是多产品就直接拒绝</b>（提示更新小程序），因为「收的是哪个产品」说不清的话账一定会错。
+     * 传了则校验它确实属于该作物的产品配置。详见 {@code VegReceiveServiceImpl.resolveReceiveProductId}。</p>
+     */
+    private Long productId;
 
     /**
      * 入库重量(kg)（必填，&gt; 0）。

@@ -63,6 +63,17 @@ public class PlantWorkPerformanceVo implements Serializable {
     private String cropName;
 
     /**
+     * 产品 ID。
+     */
+    private Long productId;
+
+    /**
+     * 产品名称（冗余，反查 t_warehouse_product_info.product_name）。
+     */
+    @ExcelProperty(value = "产品")
+    private String productName;
+
+    /**
      * 采摘总量（公斤）。
      */
     @ExcelProperty(value = "采摘量(公斤)")

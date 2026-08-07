@@ -2,6 +2,7 @@ package org.dromara.djs.warehouse.flow.mapper;
 
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
+import org.apache.ibatis.annotations.Update;
 import org.dromara.common.mybatis.core.mapper.BaseMapperPlus;
 import org.dromara.djs.common.supplier.api.SupplierDealVo;
 import org.dromara.djs.warehouse.flow.domain.StockFlow;
@@ -49,6 +50,34 @@ public interface StockFlowMapper extends BaseMapperPlus<StockFlow, StockFlowVo> 
     BigDecimal sumTodayByUserProductType(@Param("userId") Long userId,
                                          @Param("productId") Long productId,
                                          @Param("flowType") String flowType);
+
+    /**
+     * V6-R43 燎毛间产品入库重量调整：改写这条燎毛入库流水的重量。
+     *
+     * <p><b>覆盖而不是按差额加减</b>：这条流水就是「本次燎毛入库」这一个事件本身，
+     * {@code change_num / change_quantity} 只由这一次入库产生，没有别人往上叠加。
+     * 甲方口径是「相当于产品是按修改完成后的重量入的库」= 改写这笔历史，不补冲正流水。
+     * 库存日 / 月汇总是回放 {@code stock_flow} 的 compute-on-read，改了这里汇总自动跟着对。</p>
+     *
+     * <p>{@code flow_type='slaughter_burn' AND inout_type='IN'} 限定只命中燎毛入库那一条 ——
+     * 同一个 {@code white_bar_no} 后续还会有领用出库 / 分割等其它流水，绝不能被一起改。</p>
+     *
+     * @return affectedRows（1=成功；0=流水不存在 / 已软删）
+     */
+    @Update("UPDATE t_warehouse_stock_flow "
+        + "   SET change_num = #{weight},"
+        + "       change_quantity = #{weight},"
+        + "       update_by = #{userId},"
+        + "       update_time = NOW() "
+        + " WHERE white_bar_no = #{whiteBarNo} "
+        + "   AND product_id = #{productId} "
+        + "   AND flow_type = 'slaughter_burn' "
+        + "   AND inout_type = 'IN' "
+        + "   AND del_flag = '0'")
+    int updateBurnInFlowWeight(@Param("whiteBarNo") String whiteBarNo,
+                               @Param("productId") Long productId,
+                               @Param("weight") BigDecimal weight,
+                               @Param("userId") Long userId);
 
     /**
      * 按<b>篮子维度</b>（product + location + ear_no + white_bar_no + plot_id，NULL-safe 匹配）算今日「领用剩余」净额：

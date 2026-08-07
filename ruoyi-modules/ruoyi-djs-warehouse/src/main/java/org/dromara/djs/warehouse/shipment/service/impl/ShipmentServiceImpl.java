@@ -91,6 +91,16 @@ public class ShipmentServiceImpl
     private static final ZoneId SHIP_TODAY_ZONE = ZoneId.of("Asia/Shanghai");
 
     /**
+     * 可发成品的打包日回看窗口（天）—— V6 row27 配套。
+     *
+     * <p>「今天可以对明天的需求打包」意味着成品的 {@code produce_date} 会早于它要履约的那条需求的
+     * {@code demand_date}。可发清单若仍只认「当天打包」，那批提前打的货第二天就凭空消失。
+     * 取 1 天（= 昨天和今天）刚好覆盖「提前一天打包」这个甲方明说的场景；再往前的陈货不放进来，
+     * 免得未绑 demand 的旧成品被今天的需求匹配走、造成「列表有货却发不出车」。</p>
+     */
+    private static final long SHIPPABLE_PRODUCE_LOOKBACK_DAYS = 1L;
+
+    /**
      * stock_flow.flow_type — 发货出库（dict djs_flow_type 已 D9 seed）。
      */
     private static final String FLOW_TYPE_SHIP_OUT = "ship_out";
@@ -454,10 +464,15 @@ public class ShipmentServiceImpl
     /**
      * 「可发成品」匹配条件的单一真相源（单 demand 查询与门店批量聚合共用，杜绝两处口径漂移）。
      *
-     * <p>可发清单只算「当天打包」的成品（produce_date = 今日，Asia/Shanghai）——与 loadShippableDemands
-     * 的 demand_date=today、打包扣减 deductDemandOnPack 的 demand_date=CURDATE() 同口径。否则昨天/前天
-     * 打包、未发货、未绑 demand 的成品会被今天的 demand 匹配进「生产量」，让列表看着有货，
-     * 但 shipped_count（仅当天打包累加）判定「未备齐·无法出车」，造成「列表有货却发不出车」的错位。</p>
+     * <p><b>V6 row27 起改为「今天及最近 N 天打包」</b>（{@link #SHIPPABLE_PRODUCE_LOOKBACK_DAYS}）。
+     * 原来钉死 {@code produce_date = 今日}，与当时「打包只认当天需求」同口径。row27 放开成「今天可以对明天的
+     * 需求打包」之后，那条钉死会造成：8/6 为 8/7 的需求打的包，8/6 发不掉（月台按 demand_date=today 列门店）、
+     * 到了 8/7 又因 {@code produce_date=8/6 ≠ today} 被过滤掉 —— 需求 shipped_count 已经扣满，
+     * 可发清单却是空的，「备齐/满足率」判定直接错乱。</p>
+     *
+     * <p>回看窗口取有限天数而不是完全不限：完全不限会把陈年未发、未绑 demand 的成品翻出来匹配今天的需求，
+     * 正是原注释担心的「列表有货却发不出车」。窗口取 {@code SHIPPABLE_PRODUCE_LOOKBACK_DAYS} 天，
+     * 覆盖「提前一天打包」这个甲方明确要的场景，同时把更早的陈货挡在外面。</p>
      *
      * @param storeIds   门店收窄：取同门店 + 未绑门店(store_id IS NULL)的库存（WMS-SHIP-STOREID-001）。
      *                   打包时 store_id 可选，production.store_id 为 NULL 的库存不应被门店 demand 漏掉
@@ -473,10 +488,12 @@ public class ShipmentServiceImpl
     private LambdaQueryWrapper<ProductProduction> availableProductionWrapper(Collection<Long> storeIds,
                                                                             Collection<Long> productIds) {
         LocalDate today = LocalDate.now(SHIP_TODAY_ZONE);
+        LocalDate produceFrom = today.minusDays(SHIPPABLE_PRODUCE_LOOKBACK_DAYS);
         LambdaQueryWrapper<ProductProduction> wrapper = new LambdaQueryWrapper<ProductProduction>()
             .isNull(ProductProduction::getDemandId)
             .eq(ProductProduction::getIsDeliveryCheck, 0)
-            .apply("DATE(produce_date) = {0}", today.toString())
+            .apply("DATE(produce_date) >= {0}", produceFrom.toString())
+            .apply("DATE(produce_date) <= {0}", today.toString())
             // 发送位置=礼盒的成品是礼盒组件（预留给礼盒打包消耗），不出现在发货月台（礼盒澄清 2026-06-25）。
             // deliver_dest 为 NULL（默认发货月台）或非 'gift' 才可直接发货。
             .and(w -> w.isNull(ProductProduction::getDeliverDest)
@@ -693,18 +710,22 @@ public class ShipmentServiceImpl
     private List<DemandManage> loadShippableDemands(Long storeId) {
         List<String> shippableCodes = SHIPPABLE_DEMAND_STATUSES.stream()
             .map(DemandStatus::name).toList();
-        // mp 发货月台只看「当天有需求」的门店：按业务日期 demand_date = 今天过滤（非 create_time），
+        // 发货月台看「今天及以后有需求」的门店：按业务日期 demand_date >= 今天过滤（非 create_time），
         // 今日按 Asia/Shanghai 算，避免部署到非 UTC+8 实例时跨日凌晨归错天（D-FIX-24 决策 #6a）。
+        // V6 row27：下界与打包端 selectOldestUncompletedDemand / selectStoreDemandCopies 一致 ——
+        // 打包能提前对明天的需求打，月台就必须能把那批货发出去，否则货卡在月台、需求却已扣满。
+        // 过期需求（< today）仍然排除，不把陈年未满单翻回月台。
         LocalDate today = LocalDate.now(SHIP_TODAY_ZONE);
         return demandMapper.selectList(new LambdaQueryWrapper<DemandManage>()
             .in(DemandManage::getDemandStatus, shippableCodes)
-            .eq(DemandManage::getDemandDate, today)
+            .ge(DemandManage::getDemandDate, today)
             .eq(storeId != null, DemandManage::getStoreId, storeId)
             .orderByDesc(DemandManage::getDemandDate));
     }
 
     /**
-     * 门店列表展示用：当天 + {@link #STORE_LIST_DEMAND_STATUSES}（含 COMPLETED 已发货）。仅 listPendingStores 用。
+     * 门店列表展示用：今天及以后（V6 row27，口径同 {@link #loadShippableDemands}）
+     * + {@link #STORE_LIST_DEMAND_STATUSES}（含 COMPLETED 已发货）。仅 listPendingStores 用。
      */
     private List<DemandManage> loadStoreListDemands(Long storeId) {
         List<String> codes = STORE_LIST_DEMAND_STATUSES.stream()
@@ -712,7 +733,7 @@ public class ShipmentServiceImpl
         LocalDate today = LocalDate.now(SHIP_TODAY_ZONE);
         return demandMapper.selectList(new LambdaQueryWrapper<DemandManage>()
             .in(DemandManage::getDemandStatus, codes)
-            .eq(DemandManage::getDemandDate, today)
+            .ge(DemandManage::getDemandDate, today)
             .eq(storeId != null, DemandManage::getStoreId, storeId)
             .orderByDesc(DemandManage::getDemandDate));
     }

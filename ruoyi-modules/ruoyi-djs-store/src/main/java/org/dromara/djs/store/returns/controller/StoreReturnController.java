@@ -17,6 +17,7 @@ import org.dromara.djs.store.returns.domain.bo.StoreReturnBatchBo;
 import org.dromara.djs.store.returns.domain.bo.StoreReturnBo;
 import org.dromara.djs.store.returns.domain.bo.StoreReturnConfirmBo;
 import org.dromara.djs.store.returns.domain.query.StoreReturnQuery;
+import org.dromara.djs.store.returns.domain.vo.StoreReturnDetailExportVo;
 import org.dromara.djs.store.returns.domain.vo.StoreReturnVo;
 import org.dromara.djs.store.returns.domain.vo.StoreReturnPorkCandidateVo;
 import org.dromara.djs.store.returns.domain.vo.StoreReturnStoreDailyVo;
@@ -175,5 +176,20 @@ public class StoreReturnController extends BaseController {
         List<StoreReturnStoreDailyVo> list = service.queryStoreDailyList(query);
         ExcelUtil.exportExcel(list == null ? new ArrayList<>() : list,
             "退回记录", StoreReturnStoreDailyVo.class, response);
+    }
+
+    /**
+     * 仓库「退回明细」弹窗导出（下钻明细层，与弹窗表格同列同口径）。
+     *
+     * <p>同 {@code /store-daily/export}：必须 {@code POST}（前端走 {@code utils/request.ts#download}
+     * 的 form-urlencoded POST），仓库角色经 {@code djs:warehouse:return:export} 命中。</p>
+     */
+    @SaCheckPermission(value = {"djs:store:return:export", "djs:warehouse:return:export"}, mode = SaMode.OR)
+    @Log(title = "门店退回明细", businessType = BusinessType.EXPORT)
+    @PostMapping("/detail/export")
+    public void detailExport(StoreReturnQuery query, HttpServletResponse response) {
+        List<StoreReturnDetailExportVo> list = service.queryDetailExportList(query);
+        ExcelUtil.exportExcel(list == null ? new ArrayList<>() : list,
+            "退回明细", StoreReturnDetailExportVo.class, response);
     }
 }

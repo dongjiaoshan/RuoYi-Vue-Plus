@@ -126,6 +126,12 @@ public class VegOutServiceImpl implements IVegOutService {
     private final org.dromara.djs.common.encoder.IBizCodeGenerator bizCodeGenerator;
     private final UserService userService;
 
+    /**
+     * 一张出库单最多几个产品 —— 与 admin 打印模板 {@code printSheet.ts} 的 `ROWS_PER_PAGE` 同一个数。
+     * 改这里必须同步改那边，否则要么单据分页、要么表格印不下。
+     */
+    private static final int MAX_ITEMS_PER_SHEET = 10;
+
     @Override
     public List<VegOutCandidateVo> listCandidates(String productName) {
         return vegOutMapper.selectCandidates(ALLOWED_LOCATION_CODES, ALLOWED_BELONG_TYPES, productName);
@@ -134,6 +140,12 @@ public class VegOutServiceImpl implements IVegOutService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public String submit(VegOutSubmitBo bo, boolean asBatch) {
+        // 一单最多 10 个产品（甲方 V6 row26）：241×140mm 的三联单一页只印得下 10 行，超了就得打两张纸。
+        // 前端抽屉已经把输入框禁掉了，这里是第二道门 —— 直接打接口 / 前端被绕过时不能照单全收。
+        if (bo.getItems() != null && bo.getItems().size() > MAX_ITEMS_PER_SHEET) {
+            throw new ServiceException("一张出库单最多 " + MAX_ITEMS_PER_SHEET + " 个产品，当前 "
+                + bo.getItems().size() + " 个", 400);
+        }
         // 三个可出库库位的 id（按 location_code 解析；缺哪个就少哪个，不阻断整单）
         java.util.Set<Long> allowedLocationIds = resolveAllowedLocationIds();
         String batchNo = asBatch ? generateBatchNo() : null;
@@ -222,11 +234,44 @@ public class VegOutServiceImpl implements IVegOutService {
     }
 
     @Override
+    public List<VegOutBatchVo> queryBatchList(VegOutQuery query) {
+        VegOutQuery q = query != null ? query : new VegOutQuery();
+        List<VegOutBatchVo> rows = vegOutMapper.selectBatchList(
+            q.getBeginDate(), q.getEndDate(), q.getOutDest(), q.getOperatorId());
+        fillOperatorNames(rows);
+        return rows;
+    }
+
+    @Override
     public List<VegOutDetailVo> queryBatchDetail(String batchNo, String productName) {
         if (StringUtils.isBlank(batchNo)) {
             return List.of();
         }
         return vegOutMapper.selectBatchDetail(batchNo, productName);
+    }
+
+    @Override
+    public List<VegOutDetailVo> queryBatchDetailForExport(String batchNo, String productName) {
+        List<VegOutDetailVo> rows = queryBatchDetail(batchNo, productName);
+        rows.forEach(r -> r.setOutQtyLabel(formatQtyLabel(r.getOutWeight(), r.getProductUnit())));
+        return rows;
+    }
+
+    /**
+     * 「出库量」带单位展示串 —— 与详情弹框 {@code fmtQty} 逐字对齐（甲方拿导出跟弹框对账）。
+     *
+     * <p>kg 或单位缺失 → 3 位小数 + {@code kg}（如 {@code 12.000kg}）；
+     * 其余计件单位 → 去尾零的数值 + 空格 + 单位（如 {@code 3 袋}）。</p>
+     */
+    private static String formatQtyLabel(BigDecimal qty, String unit) {
+        if (qty == null) {
+            return "";
+        }
+        String u = unit != null ? unit.trim() : "";
+        if (u.isEmpty() || "kg".equalsIgnoreCase(u)) {
+            return qty.setScale(3, java.math.RoundingMode.HALF_UP).toPlainString() + "kg";
+        }
+        return qty.stripTrailingZeros().toPlainString() + " " + u;
     }
 
     /**
@@ -302,6 +347,10 @@ public class VegOutServiceImpl implements IVegOutService {
         record.setHandleId(handleId);
         record.setPlotId(stock.getPlotId());
         record.setCropId(cropId);
+        // row55：果蔬月台待入库量改为按产品聚合、数据源就是这张明细表。不落产品的话，
+        // 从毛菜间出库到月台的量会全部挂到作物默认产品名下（红薯杆的货显在红薯卡里）。
+        // 出的是哪个库存篮就是哪个产品，stock 上现成有。
+        record.setProductId(stock.getProductId());
         record.setRecordType(RECORD_TYPE_HANDLE);
         record.setRecordWeight(weight);
         record.setHandleTarget(HANDLE_TARGET_PLATFORM);

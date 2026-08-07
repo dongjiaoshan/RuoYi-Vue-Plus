@@ -143,9 +143,10 @@ public interface ProductProductionMapper extends BaseMapperPlus<ProductProductio
     /**
      * 白条领用「发货月台」门店下拉数据（row153）：当天有<b>已确认白条需求</b>的门店 + 各门店白条需求数。
      *
-     * <p>白条领用页出库位置=发货月台时，门店下拉不再全量列 4 店，只列「当天该门店确有白条需求」的门店，
-     * 并在门店名后带上该店当天白条需求份数。口径与打包台需求门店标签一致：需求业态
-     * {@code dm.product_type='white_bar'}、需求日 {@code demand_date=CURDATE()}、状态已确认及之后
+     * <p>白条领用页出库位置=发货月台时，门店下拉不再全量列 4 店，只列「该门店确有白条需求」的门店，
+     * 并在门店名后带上该店白条需求份数。口径与打包台需求门店标签一致：需求业态
+     * {@code dm.product_type='white_bar'}、需求日 {@code demand_date >= CURDATE()}（V6 row27：今天可以
+     * 对明天的需求出货；过期需求仍排除）、状态已确认及之后
      * （{@code demand_status IN ('CONFIRMED','IN_PRODUCTION','PARTIAL_SHIPPED','COMPLETED')}）；
      * 草稿 / 待确认 / 已取消 / 已删除均不计。JOIN {@code t_md_store} 取门店名。</p>
      *
@@ -168,7 +169,7 @@ public interface ProductProductionMapper extends BaseMapperPlus<ProductProductio
         + "   AND dm.tenant_id = '1001' "
         + "   AND dm.product_type = 'white_bar' "
         + "   AND dm.store_id IS NOT NULL "
-        + "   AND dm.demand_date = CURDATE() "
+        + "   AND dm.demand_date >= CURDATE() "
         + "   AND dm.demand_status IN ('CONFIRMED','IN_PRODUCTION','PARTIAL_SHIPPED') "
         + " GROUP BY dm.store_id, s.store_name "
         + "HAVING demandQty > 0 "

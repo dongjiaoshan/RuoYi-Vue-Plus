@@ -37,6 +37,14 @@ public class PickDetailVo implements Serializable {
     @ExcelProperty(value = "作物名称")
     private String cropName;
 
+    /**
+     * 产品名称（V6 row19）= 该条采收过磅流水选定的产品（{@code handle_record.product_id}）。
+     *
+     * <p>采摘活动来源的行没有产品维度，恒为空 —— 活动只记作物与重量，不落到具体产品上。</p>
+     */
+    @ExcelProperty(value = "产品名称")
+    private String productName;
+
     /** 统计来源：1=毛菜处理间 2=采摘活动（row44）。前端按 code 显示中文；导出走 readConverterExp 映射。 */
     @ExcelDictFormat(readConverterExp = "1=毛菜处理间,2=采摘活动")
     @ExcelProperty(value = "统计来源")

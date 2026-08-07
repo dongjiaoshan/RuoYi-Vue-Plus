@@ -85,6 +85,33 @@ public class WarehousePackEntryController extends BaseController {
     /** 自产产品类型（djs_product_type：1=自产成品）。 */
     private static final Integer PRODUCT_TYPE_SELF = 1;
 
+    /**
+     * 打包口专用的「重复提交被拦下」文案 key（V6 row44）。
+     *
+     * <p>框架默认文案是 {@code repeat.submit.message}=「不允许重复提交，请稍候再试」，前端拼上
+     * 「打包失败：」后，工人读到的是「这次失败了」——而 {@link org.dromara.common.idempotent.aspectj.RepeatSubmitAspect}
+     * 的判定前提恰恰是「5 秒内已有一次<b>完全相同且成功</b>的提交」（成功后不删 redis key，见该切面
+     * {@code doAfterReturning}）。也就是说：看到这条提示时，原材料确实被扣了——是<b>上一次成功的那笔</b>扣的，
+     * 本次被 {@code @Before} 切面挡在 Controller 之外、一行都没写。甲方据此报「报错了却扣了料」。</p>
+     *
+     * <p>故此处换成打包场景专属文案，把「本次没扣、去确认上一次」讲清楚，业务逻辑不动。</p>
+     */
+    private static final String REPEAT_SUBMIT_MESSAGE = "{pack.repeat.submit}";
+
+    /**
+     * 打包口的重复提交拦截窗口（毫秒）。框架默认 5000，打包台不能用默认值。
+     *
+     * <p>判重 key = URL + md5(token + 全部入参)，而打包请求体里
+     * （{@code sourceInhouseId/productId/productWeight/storeId/deliverDest/productSpec}）
+     * <b>没有任何随时间变化的字段</b> —— 同一产品、同一来源、同一规格重量连打第二份，JSON 逐字节相同，
+     * 5 秒窗口下必然被拦。而「连打多份」正是打包台的常规工作方式，不是误操作。</p>
+     *
+     * <p>降到 1 秒：双击 / 网络重发（都在几百毫秒内）仍然挡得住，正常的连续打包不再误伤。
+     * 这是权衡不是纯改进 —— 1 秒外的真重复提交会放行，兜底靠前端 single-flight 锁与
+     * 业务侧的需求余量校验。（Kevin 2026-08-06 拍板）</p>
+     */
+    private static final int PACK_REPEAT_INTERVAL_MS = 1000;
+
     // ==================== 肉品打包 / 其他产品打包（干货/标准 SKU 口）====================
 
     /**
@@ -95,7 +122,7 @@ public class WarehousePackEntryController extends BaseController {
      * 供「确认并打印追溯码」展示。</p>
      */
     @SaCheckPermission("djs:warehouse:packEntry:dry")
-    @RepeatSubmit
+    @RepeatSubmit(interval = PACK_REPEAT_INTERVAL_MS, message = REPEAT_SUBMIT_MESSAGE)
     @PostMapping("/dry")
     public R<PackSubmitResultVo> packDry(@Valid @RequestBody DryPackBo bo) {
         return R.ok(toResult(productionService.submitDryPack(bo)));
@@ -107,6 +134,7 @@ public class WarehousePackEntryController extends BaseController {
      * <p>原型「其他产品打包管理」中的礼盒卡（猪肉礼盒 / 果蔬礼盒）走此口。</p>
      */
     @SaCheckPermission("djs:warehouse:packEntry:gift")
+    @RepeatSubmit(interval = PACK_REPEAT_INTERVAL_MS, message = REPEAT_SUBMIT_MESSAGE)
     @PostMapping("/gift")
     public R<PackSubmitResultVo> packGift(@Valid @RequestBody GiftPackBo bo) {
         return R.ok(toResult(productionService.submitGiftPack(bo)));
@@ -118,7 +146,7 @@ public class WarehousePackEntryController extends BaseController {
      * <p>原型「果蔬打包管理」：选地块 + 目标产品 + 重量 + 入库库位 + 发送位置。</p>
      */
     @SaCheckPermission("djs:warehouse:packEntry:veg")
-    @RepeatSubmit
+    @RepeatSubmit(interval = PACK_REPEAT_INTERVAL_MS, message = REPEAT_SUBMIT_MESSAGE)
     @PostMapping("/veg")
     public R<PackSubmitResultVo> packVeg(@Valid @RequestBody VegPackBo bo) {
         return R.ok(toResult(productionService.submitVegPack(bo)));

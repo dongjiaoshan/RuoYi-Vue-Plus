@@ -75,6 +75,100 @@ class PlantWorkPerformanceServiceImplTest {
         return r;
     }
 
+    private PerfAggRow agg(Long teamId, Long cropId, Long productId, String weight) {
+        PerfAggRow r = agg(teamId, cropId, weight);
+        r.setProductId(productId);
+        return r;
+    }
+
+    @Test
+    @DisplayName("generate: 采摘活动量与同产品的过磅行必须合成一行，不能拆成两行（clean-QA r20 回归）")
+    void testGenerate_ActivityMergesIntoSameProductRow() {
+        String month = "2026-08";
+        // 过磅行已带 productId=101；采摘活动没有产品维度，两者必须合并成同一行
+        when(baseMapper.aggregateByMonth(month)).thenReturn(List.of(agg(1L, 10L, 101L, "619.000")));
+        PerfActivityAggRow act = new PerfActivityAggRow();
+        act.setCropId(10L);
+        act.setPlotId(70L);
+        act.setPickWeight(new BigDecimal("100.000"));
+        when(baseMapper.selectActivityAggByMonth(month)).thenReturn(List.of(act));
+        PlotCropTeamRow teamRow = new PlotCropTeamRow();
+        teamRow.setPlotId(70L);
+        teamRow.setCropId(10L);
+        teamRow.setTeamId(1L);
+        when(baseMapper.selectActivityDirectTeamsByMonth(month)).thenReturn(List.of(teamRow));
+        when(baseMapper.selectHarvestTeamsByPlots(anyCollection())).thenReturn(List.of());
+        when(baseMapper.selectCropProductPrices(anyCollection())).thenReturn(List.of(
+            Map.of("cropId", 10L, "productId", 101L, "perfPrice", new BigDecimal("1.00"))
+        ));
+        when(baseMapper.selectCropUnitPrices(anyCollection())).thenReturn(List.of());
+        when(baseMapper.update(eq(null), any())).thenReturn(0);
+        when(baseMapper.insert(any(PlantWorkPerformance.class))).thenReturn(1);
+
+        // 合成一行：619 + 100 = 719，而不是 619 / 100 两行
+        assertThat(service.generate(month)).as("同 (班组,作物,产品) 只能一行").isEqualTo(1);
+        ArgumentCaptor<PlantWorkPerformance> captor = ArgumentCaptor.forClass(PlantWorkPerformance.class);
+        verify(baseMapper).insert(captor.capture());
+        assertThat(captor.getValue().getProductId()).isEqualTo(101L);
+        assertThat(captor.getValue().getPickWeight()).isEqualByComparingTo("719.000");
+        assertThat(captor.getValue().getPerformanceAmount()).isEqualByComparingTo("719.00");
+    }
+
+    @Test
+    @DisplayName("generate: V6 row20 —— 同作物两产品各自结算，单价取该产品的绩效金额")
+    void testGenerate_PerProductPrice() {
+        String month = "2026-08";
+        // 同一班组、同一作物，产出两个产品：产品 101 = 30 公斤 / 产品 102 = 20 公斤
+        when(baseMapper.aggregateByMonth(month)).thenReturn(List.of(
+            agg(1L, 10L, 101L, "30.000"),
+            agg(1L, 10L, 102L, "20.000")
+        ));
+        when(baseMapper.selectCropProductPrices(anyCollection())).thenReturn(List.of(
+            Map.of("cropId", 10L, "productId", 101L, "perfPrice", new BigDecimal("2.50")),
+            Map.of("cropId", 10L, "productId", 102L, "perfPrice", new BigDecimal("0.60"))
+        ));
+        when(baseMapper.selectCropUnitPrices(anyCollection())).thenReturn(List.of(
+            Map.of("cropId", 10L, "pickUnitPrice", new BigDecimal("99.00"))
+        ));
+        when(baseMapper.update(eq(null), any())).thenReturn(0);
+        when(baseMapper.insert(any(PlantWorkPerformance.class))).thenReturn(1);
+
+        assertThat(service.generate(month)).as("两个产品 → 两行").isEqualTo(2);
+
+        ArgumentCaptor<PlantWorkPerformance> captor = ArgumentCaptor.forClass(PlantWorkPerformance.class);
+        verify(baseMapper, times(2)).insert(captor.capture());
+        PlantWorkPerformance p101 = captor.getAllValues().stream()
+            .filter(r -> Long.valueOf(101L).equals(r.getProductId())).findFirst().orElseThrow();
+        PlantWorkPerformance p102 = captor.getAllValues().stream()
+            .filter(r -> Long.valueOf(102L).equals(r.getProductId())).findFirst().orElseThrow();
+        // 单价必须是「产品配置的绩效金额」，不是作物级 pick_unit_price（99.00 那个是陷阱值）
+        assertThat(p101.getUnitPriceSnapshot()).isEqualByComparingTo("2.50");
+        assertThat(p101.getPerformanceAmount()).isEqualByComparingTo("75.00");
+        assertThat(p102.getUnitPriceSnapshot()).isEqualByComparingTo("0.60");
+        assertThat(p102.getPerformanceAmount()).isEqualByComparingTo("12.00");
+    }
+
+    @Test
+    @DisplayName("generate: 存量流水无 productId → 归到作物首个配置产品，单价用它的绩效金额")
+    void testGenerate_NullProductFallsBackToPrimary() {
+        String month = "2026-08";
+        when(baseMapper.aggregateByMonth(month)).thenReturn(List.of(agg(1L, 10L, null, "10.000")));
+        // mapper 按 (crop_id, id) 升序返回 → 第一条即首选产品
+        when(baseMapper.selectCropProductPrices(anyCollection())).thenReturn(List.of(
+            Map.of("cropId", 10L, "productId", 101L, "perfPrice", new BigDecimal("2.00")),
+            Map.of("cropId", 10L, "productId", 102L, "perfPrice", new BigDecimal("9.00"))
+        ));
+        when(baseMapper.selectCropUnitPrices(anyCollection())).thenReturn(List.of());
+        when(baseMapper.update(eq(null), any())).thenReturn(0);
+        when(baseMapper.insert(any(PlantWorkPerformance.class))).thenReturn(1);
+
+        assertThat(service.generate(month)).isEqualTo(1);
+        ArgumentCaptor<PlantWorkPerformance> captor = ArgumentCaptor.forClass(PlantWorkPerformance.class);
+        verify(baseMapper).insert(captor.capture());
+        assertThat(captor.getValue().getProductId()).isEqualTo(101L);
+        assertThat(captor.getValue().getPerformanceAmount()).isEqualByComparingTo("20.00");
+    }
+
     @Test
     @DisplayName("generate: happy path → 软删旧月 + 2 组 INSERT，金额=量(公斤)×单价(元/公斤)")
     void testGenerate_HappyPath() {

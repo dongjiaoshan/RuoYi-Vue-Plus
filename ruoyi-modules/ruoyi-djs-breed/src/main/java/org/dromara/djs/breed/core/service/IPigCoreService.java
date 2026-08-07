@@ -5,6 +5,7 @@ import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.breed.core.domain.Pig;
 import org.dromara.djs.breed.core.domain.bo.PigCreateBo;
+import org.dromara.djs.breed.core.domain.bo.PigEarNoUpdateBo;
 import org.dromara.djs.breed.core.domain.bo.PigEventBo;
 import org.dromara.djs.breed.core.domain.query.PigQuery;
 import org.dromara.djs.breed.core.domain.query.PigStatusRecordQuery;
@@ -222,4 +223,24 @@ public interface IPigCoreService {
      * @return 栋舍头数聚合列表
      */
     List<PigBarnCountVo> countByBarn(String statusFilter, String sexFilter, String pigTypeFilter, String earNoKeyword, Boolean breedReady, String dueType, Integer minAgeDays);
+
+    /**
+     * admin 端「修改耳号」（BRD-LIST-EDIT-001）——小程序录入手误录错序号的纠错口子，只改
+     * {@code ear_no}/{@code ear_tag}，不碰状态机、不走 {@link #fireEvent}。
+     *
+     * <p>流程：格式校验（{@link PigEarNoUpdateBo} 已由 {@code @Pattern} 校过） → 新旧相同直接
+     * 幂等报错（避免"改了但没变"的困惑操作） → 判重（同出生日+后三位 主口径 + 整串兜底，均排除
+     * 自身 id）→ 乐观锁 update {@code ear_no}/{@code ear_tag} 同步写为新值（库里两列全库实测恒相等，
+     * 见 {@link org.dromara.djs.breed.core.service.EarNoAllocator} 分配时也是同值写入）。</p>
+     *
+     * <p><b>明确不做</b>（v1 范围）：不级联更新 {@code father_ear}/{@code mother_ear}（那是仔猪出生时
+     * 拷贝的耳号字符串快照，非外键）、不回改历史事件表/流水表/追溯表里的耳号冗余快照——这些是"事件
+     * 当时的快照"，语义上不该跟着改。前端需在改号前明确提示这一点。</p>
+     *
+     * @param pigId 猪只 id
+     * @param bo    新耳号 + 乐观锁 version
+     * @return 更新后的猪只 VO
+     * @throws ServiceException 猪只不存在 / 格式不合法 / 新旧相同 / 撞号 / 乐观锁冲突
+     */
+    PigVo updateEarNo(Long pigId, PigEarNoUpdateBo bo);
 }

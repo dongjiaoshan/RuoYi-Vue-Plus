@@ -47,9 +47,15 @@ services:
     volumes:
       - ../../logs:/app/logs
     healthcheck:
-      # 用 liveness probe（只检查进程存活，不连下游服务，比 /actuator/health 健壮）
-      # Spring Boot 3.x 默认开启 liveness/readiness probe
-      test: ["CMD-SHELL", "wget -q --tries=1 --timeout=3 -O /dev/null http://127.0.0.1:8080/actuator/health/liveness || exit 1"]
+      # 打根路径而不是 /actuator/health/liveness —— 后者**永远返回 401**：
+      # ruoyi 自带的 SecurityConfig#getSaServletFilter 对 "/actuator", "/actuator/**"
+      # 挂了 SaHttpBasicUtil 的 Basic 鉴权（凭据来自构建期占位符 @monitor.username@），
+      # wget 带不了凭据 → 401 → exit 6 → 探测从容器启动起就没成功过一次
+      # （实测 FailingStreak 77，staging/prod 两边长期 unhealthy，健康监控形同虚设）。
+      # 那个 Filter 属 ruoyi 自带代码，不改；application.yml 的 security.excludes 是
+      # SaInterceptor 的排除列表、管不到这个 Filter，改它无效（已验证）。
+      # 根路径无需鉴权、返回 200，且符合 liveness 语义：只证明进程活着，不连下游服务。
+      test: ["CMD-SHELL", "wget -q --tries=1 --timeout=3 -O /dev/null http://127.0.0.1:8080/ || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 5

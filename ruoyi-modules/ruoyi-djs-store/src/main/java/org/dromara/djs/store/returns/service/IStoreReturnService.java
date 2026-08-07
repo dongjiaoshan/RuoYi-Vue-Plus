@@ -6,6 +6,7 @@ import org.dromara.djs.store.returns.domain.bo.StoreReturnBatchBo;
 import org.dromara.djs.store.returns.domain.bo.StoreReturnBo;
 import org.dromara.djs.store.returns.domain.bo.StoreReturnConfirmBo;
 import org.dromara.djs.store.returns.domain.query.StoreReturnQuery;
+import org.dromara.djs.store.returns.domain.vo.StoreReturnDetailExportVo;
 import org.dromara.djs.store.returns.domain.vo.StoreReturnVo;
 import org.dromara.djs.store.returns.domain.vo.StoreReturnAppletItemVo;
 import org.dromara.djs.store.returns.domain.vo.StoreReturnGroupVo;
@@ -111,6 +112,14 @@ public interface IStoreReturnService {
      * 仓库「退货记录」外层「门店 + 当日」汇总列表（不分页，导出用，与 {@link #queryStoreDailyPage} 同口径）。
      */
     List<StoreReturnStoreDailyVo> queryStoreDailyList(StoreReturnQuery query);
+
+    /**
+     * 仓库「退回明细」弹窗导出（与弹窗表格同列同口径，逐条明细）。
+     *
+     * <p>与 {@link #queryList} 的差别只在展示层：这里把实收量 / 差异量按原材料单位口径格式化成文本，
+     * 免得 Excel 里 30 枚鸡蛋的实收写成裸数字 30、跟「份」的退回量混为一谈。</p>
+     */
+    List<StoreReturnDetailExportVo> queryDetailExportList(StoreReturnQuery query);
 
     /**
      * mp 退货管理：当天门店→仓库退回按门店分组卡（状态派生 pending/confirmed，mp 词表）。

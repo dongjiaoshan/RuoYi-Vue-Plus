@@ -111,7 +111,13 @@ public class DemandGroupVo implements Serializable {
      */
     private String demandStatus;
 
-    /** 需求确认率（已确认门店 / 总门店，0~1 小数；前端 toFixed 转 %）。 */
+    /**
+     * 需求确认率（{@link #confirmedDemandCount} / {@link #demandCount}，即已确认<b>需求单</b>数 / 组内需求单数，
+     * 0~1 小数；前端 toFixed 转 %）。口径与 {@link #demandStatus} 三态同源（row166 按需求单而非门店）。
+     *
+     * <p>row32：列表默认按本字段<b>升序</b>排——排序在 mapper 的 ORDER BY 里用同一算式做，
+     * 不在 service / 前端重排（列表是聚合全量后内存分页，只排一页会跨页串序）。</p>
+     */
     private BigDecimal confirmRate;
 
     /** 需求最终确认时间（组内 MAX confirmer_time）。 */

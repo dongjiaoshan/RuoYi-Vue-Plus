@@ -33,6 +33,12 @@ public class PerfAggRow implements Serializable {
     private Long cropId;
 
     /**
+     * 产品 ID（V6 row20，= handle_record.product_id）。存量流水没选过产品时为 null，
+     * service 层折进该作物的首个配置产品。
+     */
+    private Long productId;
+
+    /**
      * 采摘总量（公斤，= SUM(actual_yield)）。
      */
     private BigDecimal pickWeight;

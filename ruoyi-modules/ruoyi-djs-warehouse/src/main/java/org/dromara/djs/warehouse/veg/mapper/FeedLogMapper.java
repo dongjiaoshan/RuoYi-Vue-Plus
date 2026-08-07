@@ -89,7 +89,8 @@ public interface FeedLogMapper extends BaseMapperPlus<FeedLog, FeedLog> {
      *
      * <p>over {@code t_warehouse_feed_log} 全量，覆盖两类来源（毛菜处理间 veg_handle + 仓库领用 warehouse）。
      * 「作物名称」三级兜底：{@code feed_log.crop_name} 优先 → {@code crop.crop_name} → {@code product.product_name}
-     * （仓库领用饲喂来源 crop_id 恒空、product_id 有值，取领用原材料名展示，row92）。作物图 ossId 仅作物来源有
+     * （仓库领用饲喂来源 crop_id 恒空、product_id 有值，取领用原材料名展示，row92）。
+     * 「产品名称」（row54）直接取 {@code product.product_name}，不参与上面的兜底链——所以仓库来源行两列同名。作物图 ossId 仅作物来源有
      * （crop_image_url 首图 → image_oss_id 兜底，仓库来源留空占位）。LEFT JOIN {@code t_warehouse_location_info} 取饲喂位置名。
      * 自定义 @Select 含 JOIN，WHERE 显式带 {@code tenant_id}（拦截器对自定义 SQL 不保证注入）。按饲喂时间倒序。</p>
      *
@@ -103,6 +104,7 @@ public interface FeedLogMapper extends BaseMapperPlus<FeedLog, FeedLog> {
         SELECT fl.feed_date AS feedDate,
                fl.crop_id AS cropId,
                COALESCE(NULLIF(fl.crop_name, ''), c.crop_name, p.product_name) AS cropName,
+               p.product_name AS productName,
                COALESCE(NULLIF(SUBSTRING_INDEX(c.crop_image_url, ',', 1), ''), c.image_oss_id) AS cropImageOssId,
                fl.feed_weight AS feedWeight,
                fl.feed_type AS feedType,
@@ -147,6 +149,7 @@ public interface FeedLogMapper extends BaseMapperPlus<FeedLog, FeedLog> {
         SELECT fl.feed_date AS feedDate,
                fl.crop_id AS cropId,
                COALESCE(NULLIF(fl.crop_name, ''), c.crop_name, p.product_name) AS cropName,
+               p.product_name AS productName,
                COALESCE(NULLIF(SUBSTRING_INDEX(c.crop_image_url, ',', 1), ''), c.image_oss_id) AS cropImageOssId,
                fl.feed_weight AS feedWeight,
                fl.feed_type AS feedType,

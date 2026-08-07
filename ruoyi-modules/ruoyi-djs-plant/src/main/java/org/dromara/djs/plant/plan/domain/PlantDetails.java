@@ -112,6 +112,17 @@ public class PlantDetails extends TenantEntity {
      */
     private Integer transplantAdjusted;
 
+    /**
+     * 变更类型（字典 {@code djs_plant_change_type}，V6-R36）：
+     * {@code mp}=小程序操作（默认）/ {@code admin}=后台调整 / {@code admin_team}=后台班组调整。
+     *
+     * <p>本表 {@code begin_actualdate IS NOT NULL} 的行即「种植记录」（mp planRecords /
+     * admin 地块详情·种植信息 / 作物详情·种植记录 三处同源），本列记录该条种植记录最后
+     * 一次由谁改动：mp 端开工/完成写 {@code mp}，admin 端已种植调整写 {@code admin} 或
+     * {@code admin_team}。</p>
+     */
+    private String changeType;
+
     @TableLogic
     private String delFlag;
 
