@@ -56,6 +56,21 @@ public class FeedRecordVo implements Serializable {
     private String cropName;
 
     /**
+     * 产品名称（row54：作物名称右边新增一列）。
+     *
+     * <p>取 {@code feed_log.product_id → product_info.product_name}。两类来源都带 product_id：
+     * 毛菜间是「去向=饲料」那笔录入里工人选的处理产品，仓库领用是领的原材料本身。
+     * 仓库来源行没有作物维度，「作物名称」列本就回落显示产品名（row92），故那类行两列同名，属预期。</p>
+     *
+     * <p>⚠️ 这一列有意义的前提是写入端落的是<b>工人选的产品</b>而不是作物默认产品。
+     * 写入端曾经用 {@code resolveProductIdByCrop} 按作物反解，红薯杆的饲喂被记成红薯，
+     * 这一列会整列退化成作物名；已在 {@code VegetableHandleServiceImpl.insertFeedLog / insertPickFeed} 修正，
+     * 历史行由 {@code V202608300900} 回填。改那两处写入前先想清楚这一列会不会又退化。</p>
+     */
+    @ExcelProperty(value = "产品名称")
+    private String productName;
+
+    /**
      * 作物图 ossId（仓库来源行恒空；前端走 oss listByIds 转 url，空时占位兜底）。
      */
     private String cropImageOssId;

@@ -44,6 +44,18 @@ public class VegInboundBo {
     private Long plotId;
 
     /**
+     * 产品 ID（row55；FK → {@code t_warehouse_product_info.id}）。
+     *
+     * <p>月台改按产品聚合后，一个 (作物, 地块) 下可以有多个产品各自的待入库量（红薯 / 红薯杆），
+     * 封顶校验与收货记录都必须收窄到具体产品，否则红薯的入库会吃掉红薯杆的额度。</p>
+     *
+     * <p>不做 {@code @NotNull}，但<b>写入侧一律收窄到一个确定产品</b>：传空时——作物只有一个产品就自动补上；
+     * <b>作物是多产品就直接拒绝</b>（提示更新小程序），因为「收的是哪个产品」说不清的话账一定会错。
+     * 传了则校验它确实属于该作物的产品配置。详见 {@code VegReceiveServiceImpl.resolveReceiveProductId}。</p>
+     */
+    private Long productId;
+
+    /**
      * 入库重量(kg)（必填，&gt; 0）。
      */
     @NotNull(message = "{vegReceive.weight.required}")

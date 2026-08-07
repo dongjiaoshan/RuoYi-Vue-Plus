@@ -27,11 +27,12 @@ import java.util.List;
 public interface IVegReceiveService {
 
     /**
-     * 自产果蔬待收货列表（按作物聚合）。
+     * 自产果蔬待收货列表（row55 起<b>按产品聚合</b>）。
      *
-     * <p>待入库 = 上游月台量 − 已入库 self 量，仅保留待入库 &gt; 0 的作物。</p>
+     * <p>待入库 = 上游月台量 − 已入库 self 量，仅保留待入库 &gt; 0 的 (作物, 产品) 组合。
+     * 同一作物的多个产品（如红薯 / 红薯杆）各自一张卡、各自一份待入库量。</p>
      *
-     * @return 待收货项（{@code cropId} 为作物 ID，{@code pendingWeight} 为待入库总量）
+     * @return 待收货项（{@code cropId} 作物 ID + {@code productId} 产品 ID 共同定位一张卡）
      */
     List<VegReceiveItemVo> listSelf();
 
@@ -45,12 +46,14 @@ public interface IVegReceiveService {
     List<VegReceiveItemVo> listPurchased(String productName, String productType);
 
     /**
-     * 某作物的果蔬间入库行（按地块：待入库 / 实际入库 / 状态）。
+     * 某作物 + 产品的果蔬间入库行（按地块：待入库 / 实际入库 / 状态）。
      *
-     * @param cropId 作物 ID
+     * @param cropId    作物 ID
+     * @param productId 产品 ID（row55 起月台按产品聚合）。传 null = <b>不按产品过滤</b>，返回该作物全部地块
+     *                  （读路径保持宽松，等价改动前）；写路径不接受这种含糊，见 {@link #inbound}
      * @return 按地块行；无月台量返空 list
      */
-    List<VegInboundPlotVo> listInboundPlots(Long cropId);
+    List<VegInboundPlotVo> listInboundPlots(Long cropId, Long productId);
 
     /**
      * 自产果蔬入库提交（同事务：校验剩余可入量 → INSERT 收货记录 → UPSERT plot 维度库存 → INSERT 入库流水）。

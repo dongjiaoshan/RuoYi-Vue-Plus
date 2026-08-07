@@ -1026,7 +1026,8 @@ public class VegetableHandleServiceImpl
             if (toStockIn) {
                 insertVegStockInFlow(handle, planting, stockInLocationId, weight, userId, now, selectedProductId);
             } else if (toFeed) {
-                insertFeedLog(planting, weight, userId, now);
+                // row54：把工人选的处理产品传下去（与上面入库那一路同源），别在台账里按作物反解回去
+                insertFeedLog(planting, weight, userId, now, selectedProductId);
             }
         }
 
@@ -1150,7 +1151,7 @@ public class VegetableHandleServiceImpl
         VegetableHandle handle = new VegetableHandle();
         handle.setPlotId(bo.getPlotId());
         handle.setCropId(bo.getCropId());
-        handle.setProductId(resolveProductIdByCrop(bo.getCropId(), bo.getProductId()));
+        handle.setProductId(pickProductId(bo));
         handle.setPickStartTime(now);
         handle.setPickedWeight(BigDecimal.ZERO);
         handle.setHandledWeight(BigDecimal.ZERO);
@@ -1167,6 +1168,9 @@ public class VegetableHandleServiceImpl
         record.setHandleId(handle.getId());
         record.setPlotId(bo.getPlotId());
         record.setCropId(bo.getCropId());
+        // row55：月台待入库量现在按产品聚合、数据源就是这张明细表。这里不落产品，
+        // 采摘直送月台的量会全部挂到作物默认产品名下（红薯杆的货显在红薯卡里）。
+        record.setProductId(handle.getProductId());
         record.setRecordType(RECORD_TYPE_HANDLE);
         record.setRecordWeight(weight);
         record.setHandleTarget(HANDLE_TARGET_PLATFORM);
@@ -1264,6 +1268,8 @@ public class VegetableHandleServiceImpl
 
     /**
      * 采摘去向[饲料饲喂]：写饲料台账 feed_log（feed_type=veg_handle，不记地块）。
+     *
+     * <p>row54：产品取工人选的那个（{@link #pickProductId}），不按作物反解——同 {@link #insertFeedLog}。</p>
      */
     private void insertPickFeed(PickDestSubmitBo bo, BigDecimal weight, Long userId, Date now) {
         FeedLog feedLog = new FeedLog();
@@ -1271,10 +1277,29 @@ public class VegetableHandleServiceImpl
         feedLog.setCropId(bo.getCropId());
         feedLog.setCropName(bo.getCropName());
         feedLog.setFeedType("veg_handle");
-        feedLog.setProductId(resolveProductIdByCrop(bo.getCropId(), bo.getProductId()));
+        feedLog.setProductId(pickProductId(bo));
         feedLog.setOperatorId(userId);
         feedLog.setFeedWeight(weight);
         feedLogMapper.insert(feedLog);
+    }
+
+    /**
+     * 采摘活动各去向的产品口径：<b>工人选了哪个就是哪个</b>，没选才按作物的 {@code related_product} 兜底。
+     *
+     * <p>原来写的是 {@code resolveProductIdByCrop(cropId, bo.getProductId())} —— 那个方法把入参当
+     * 「兜底值」，只要作物配了 {@code related_product} 就直接返回它、把工人选的产品丢掉。</p>
+     *
+     * <p>⚠️ <b>这一支目前是「备而未用」</b>：唯一调用链 {@code submitPickActivity} 在构造 BO 时就写死了
+     * {@code destBo.setProductId(resolveProductIdByCrop(cropId, null))}，而 {@code PickActivitySubmitBo}
+     * 根本没有 productId 字段、mp 采摘活动录入页也没有产品选择器 —— 所以 {@code bo.getProductId()}
+     * 恒等于作物默认产品，新旧行为完全一致。也就是说：<b>采摘活动直送饲料 / 直送月台这两条路，
+     * 记的仍然是作物默认产品</b>，多产品作物在有机饲喂记录（row54）和果蔬月台分卡（row55）上依旧会
+     * 退化成作物名。要真正打通得三处一起改：BO 加字段 + mp 加产品选择 + 去掉 submitPickActivity 里的
+     * 反解覆盖 —— 那是新增能力，不在本轮范围，已留痕给甲方决定。现网 0 行受影响
+     * （现有饲喂/月台记录全部来自毛菜处理 {@code submitProcess} 那条链路，产品是对的）。</p>
+     */
+    private Long pickProductId(PickDestSubmitBo bo) {
+        return bo.getProductId() != null ? bo.getProductId() : resolveProductIdByCrop(bo.getCropId(), null);
     }
 
     /**
@@ -1282,16 +1307,23 @@ public class VegetableHandleServiceImpl
      *
      * <p>按自然日 × 作物品类记录重量，{@code 不记录地块编号}（无 plot_id）。tenant_id 走 MP 自动 fill。</p>
      *
-     * <p>行64 来源①「毛菜间」：feed_type=veg_handle；productId 经 crop→related_product 反解（可空）；
-     * operatorId = 当前处理操作人。</p>
+     * <p>行64 来源①「毛菜间」：feed_type=veg_handle；operatorId = 当前处理操作人。</p>
+     *
+     * <p><b>row54</b>：{@code productId} 用调用方传进来的 {@code selectedProductId}
+     * （= 工人在处理录入里选的那个处理产品，已过 {@link #resolveRecordProductId} 的作物-产品配置校验），
+     * <b>不再</b>在这里用 {@code resolveProductIdByCrop} 按作物二次反解 —— 那个方法只要作物配了
+     * {@code related_product} 就一律返回它、无视传入值，于是红薯杆的饲喂会被记成红薯。
+     * 一个作物可以有多个产品（红薯 / 红薯杆），有机饲喂记录新增的「产品名称」列正是要区分它们，
+     * 反解会让整列退化成作物名、等于没加。入库那一路（{@code insertVegStockInFlow}）本来就传的是它。</p>
      */
-    private void insertFeedLog(PlantingRecord planting, BigDecimal weight, Long operatorId, Date now) {
+    private void insertFeedLog(PlantingRecord planting, BigDecimal weight, Long operatorId, Date now,
+                              Long selectedProductId) {
         FeedLog feedLog = new FeedLog();
         feedLog.setFeedDate(now);
         feedLog.setCropId(planting.getCropId());
         feedLog.setCropName(planting.getCropName());
         feedLog.setFeedType("veg_handle");
-        feedLog.setProductId(resolveProductIdByCrop(planting.getCropId(), planting.getProductId()));
+        feedLog.setProductId(selectedProductId);
         feedLog.setOperatorId(operatorId);
         feedLog.setFeedWeight(weight);
         feedLogMapper.insert(feedLog);

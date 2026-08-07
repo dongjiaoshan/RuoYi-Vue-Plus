@@ -87,6 +87,8 @@ class VegReceiveServiceImplTest {
     private CropInfoMapper cropInfoMapper;
     @Mock
     private ILossFlowService lossFlowService;
+    @Mock
+    private org.dromara.djs.plant.crop.service.ICropProductService cropProductService;
 
     private VegReceiveServiceImpl service;
 
@@ -96,7 +98,8 @@ class VegReceiveServiceImplTest {
     void setup() {
         service = new VegReceiveServiceImpl(
             vegReceiveMapper, locationStockMapper, locationInfoMapper, stockFlowMapper,
-            productInfoMapper, supplierMapper, bizCodeGenerator, imageUrlResolver, cropInfoMapper, lossFlowService);
+            productInfoMapper, supplierMapper, bizCodeGenerator, imageUrlResolver, cropInfoMapper, lossFlowService,
+            cropProductService);
         loginHelperMock = Mockito.mockStatic(LoginHelper.class);
         loginHelperMock.when(LoginHelper::getUserId).thenReturn(9001L);
     }
@@ -115,7 +118,8 @@ class VegReceiveServiceImplTest {
         loc.setLocationCode("L0003");
         loc.setLocationName("蔬菜保鲜库");
         when(locationInfoMapper.selectById(90001L)).thenReturn(loc);
-        when(vegReceiveMapper.selectRemainInboundWeight(eq(12001L), eq(11001L)))
+        // row55：额度按 (作物, 地块, 产品) 查；bo 不带 productId 时透传 null = 不按产品过滤
+        when(vegReceiveMapper.selectRemainInboundWeight(eq(12001L), eq(11001L), any()))
             .thenReturn(new BigDecimal("100.000"));
         when(vegReceiveMapper.selectCropName(12001L)).thenReturn("卷心菜");
         when(bizCodeGenerator.generate(eq(BizCodeType.STOCK_FLOW_NO), anyMap()))
@@ -148,7 +152,7 @@ class VegReceiveServiceImplTest {
     void testInbound_NoStockRow_RelatedProductHit_DoubleKeyBasket() {
         stubCommonInbound();
         // 无库存行：plot 维度增量返 0 → 走兜底 INSERT
-        when(vegReceiveMapper.addStockByPlotLocation(eq(90001L), eq(11001L), any(), eq(9001L)))
+        when(vegReceiveMapper.addStockByPlotLocation(eq(90001L), eq(11001L), any(), any(), eq(9001L)))
             .thenReturn(0);
         // 作物配置了 related_product=88001（→ t_warehouse_product_info.id，果蔬原料）
         CropInfo crop = new CropInfo();
@@ -182,7 +186,7 @@ class VegReceiveServiceImplTest {
     @DisplayName("月台中转入库·无库存行：related_product 为空 → 兜底篮退化为 plot 单键（不抛、入库照常）")
     void testInbound_NoStockRow_RelatedProductNull_DegradesToPlotOnly() {
         stubCommonInbound();
-        when(vegReceiveMapper.addStockByPlotLocation(eq(90001L), eq(11001L), any(), eq(9001L)))
+        when(vegReceiveMapper.addStockByPlotLocation(eq(90001L), eq(11001L), any(), any(), eq(9001L)))
             .thenReturn(0);
         // 作物未配 related_product（现网多为 NULL）
         CropInfo crop = new CropInfo();
@@ -209,7 +213,7 @@ class VegReceiveServiceImplTest {
     void testInbound_StockRowExists_NoFallbackInsert() {
         stubCommonInbound();
         // 已有库存行：plot 维度增量返 1 → 不走兜底 INSERT
-        when(vegReceiveMapper.addStockByPlotLocation(eq(90001L), eq(11001L), any(), eq(9001L)))
+        when(vegReceiveMapper.addStockByPlotLocation(eq(90001L), eq(11001L), any(), any(), eq(9001L)))
             .thenReturn(1);
         // 作物配了 related_product → 流水 product_id 解析为果蔬原料（让 admin 入库记录「产品」列有值）
         CropInfo crop = new CropInfo();
@@ -241,7 +245,7 @@ class VegReceiveServiceImplTest {
     @DisplayName("月台中转入库·related_product 误配成品(attr=1) → 守门返 null，流水 product_id 兜底空（脏值防御）")
     void testInbound_RelatedProductNotRawMaterial_DegradesToNull() {
         stubCommonInbound();
-        when(vegReceiveMapper.addStockByPlotLocation(eq(90001L), eq(11001L), any(), eq(9001L)))
+        when(vegReceiveMapper.addStockByPlotLocation(eq(90001L), eq(11001L), any(), any(), eq(9001L)))
             .thenReturn(1);
         // 作物 related_product=88001 指向一个成品(attr=1) —— 误配 / 脏值，应被守门拦下
         CropInfo crop = new CropInfo();
@@ -261,5 +265,139 @@ class VegReceiveServiceImplTest {
         verify(stockFlowMapper, times(1)).insert(flowCap.capture());
         assertThat(flowCap.getValue().getProductId()).isNull();
         assertThat(flowCap.getValue().getPlotId()).isEqualTo(11001L);
+    }
+
+    // ───────────────── row55：按产品收窄（QA 指出这三点删掉也不会有测试变红）─────────────────
+
+    @Test
+    @DisplayName("row55·收货记录必须落 product_id —— 否则下次算已入库量时认不出这笔收的是哪个产品")
+    void testInbound_PersistsSelectedProductIdOnReceive() {
+        stubCommonInbound();
+        when(vegReceiveMapper.addStockByPlotLocation(eq(90001L), eq(11001L), any(), any(), eq(9001L)))
+            .thenReturn(1);
+        stubRawMaterialProduct(77001L);   // 红薯杆这类「非作物默认」的产品
+        VegInboundBo bo = sampleBo();
+        bo.setProductId(77001L);
+
+        service.inbound(bo);
+
+        ArgumentCaptor<VegReceive> cap = ArgumentCaptor.forClass(VegReceive.class);
+        verify(vegReceiveMapper, times(1)).insert(cap.capture());
+        assertThat(cap.getValue().getProductId()).isEqualTo(77001L);
+    }
+
+    @Test
+    @DisplayName("row55·额度按 (作物,地块,产品) 查 —— 同一块地的红薯不能吃掉红薯杆的额度")
+    void testInbound_QuotaScopedToSelectedProduct() {
+        stubCommonInbound();
+        when(vegReceiveMapper.addStockByPlotLocation(eq(90001L), eq(11001L), any(), any(), eq(9001L)))
+            .thenReturn(1);
+        stubRawMaterialProduct(77001L);
+        VegInboundBo bo = sampleBo();
+        bo.setProductId(77001L);
+
+        service.inbound(bo);
+
+        verify(vegReceiveMapper, times(1))
+            .selectRemainInboundWeight(eq(12001L), eq(11001L), eq(77001L));
+    }
+
+    @Test
+    @DisplayName("row55·库存篮增量必须带 product_id —— 否则第二个产品会加到第一个产品的篮子上")
+    void testInbound_StockIncrementScopedToProduct() {
+        stubCommonInbound();
+        when(vegReceiveMapper.addStockByPlotLocation(eq(90001L), eq(11001L), any(), any(), eq(9001L)))
+            .thenReturn(1);
+        stubRawMaterialProduct(77001L);
+        ProductInfo p = new ProductInfo();
+        p.setId(77001L);
+        p.setProductAttr(2);
+        p.setBelongType("vegetable");
+        p.setProductName("红薯杆");
+        when(productInfoMapper.selectById(77001L)).thenReturn(p);
+        VegInboundBo bo = sampleBo();
+        bo.setProductId(77001L);
+
+        service.inbound(bo);
+
+        verify(vegReceiveMapper, times(1))
+            .addStockByPlotLocation(eq(90001L), eq(11001L), eq(77001L), any(), eq(9001L));
+    }
+
+    @Test
+    @DisplayName("row55·新建篮子的名字跟产品走 —— 同地块两个篮子不能都叫作物名")
+    void testInbound_NewBasketNamedAfterProduct() {
+        stubCommonInbound();
+        when(vegReceiveMapper.addStockByPlotLocation(eq(90001L), eq(11001L), any(), any(), eq(9001L)))
+            .thenReturn(0);   // 无篮 → 兜底 INSERT
+        ProductInfo p = new ProductInfo();
+        p.setId(77001L);
+        p.setProductAttr(2);
+        p.setBelongType("vegetable");
+        p.setProductName("红薯杆");
+        when(productInfoMapper.selectById(77001L)).thenReturn(p);
+        VegInboundBo bo = sampleBo();
+        bo.setProductId(77001L);
+
+        service.inbound(bo);
+
+        ArgumentCaptor<LocationStock> cap = ArgumentCaptor.forClass(LocationStock.class);
+        verify(locationStockMapper, times(1)).insert(cap.capture());
+        assertThat(cap.getValue().getProductId()).isEqualTo(77001L);
+        assertThat(cap.getValue().getProductName()).isEqualTo("红薯杆");   // 不是「卷心菜」
+    }
+
+    @Test
+    @DisplayName("row55·mp 没传 productId + 作物只有一个产品 → 自动补全该产品，额度按它收窄")
+    void testInbound_NoProductId_SingleProductCrop_AutoResolves() {
+        stubCommonInbound();
+        when(vegReceiveMapper.addStockByPlotLocation(eq(90001L), eq(11001L), any(), any(), eq(9001L)))
+            .thenReturn(1);
+        org.dromara.djs.plant.crop.domain.vo.CropProductVo only =
+            new org.dromara.djs.plant.crop.domain.vo.CropProductVo();
+        only.setProductId(88001L);
+        when(cropProductService.listByCrop(12001L)).thenReturn(java.util.List.of(only));
+        stubRawMaterialProduct(88001L);
+
+        service.inbound(sampleBo());   // bo.productId 为 null
+
+        verify(vegReceiveMapper, times(1))
+            .selectRemainInboundWeight(eq(12001L), eq(11001L), eq(88001L));
+        ArgumentCaptor<VegReceive> cap = ArgumentCaptor.forClass(VegReceive.class);
+        verify(vegReceiveMapper, times(1)).insert(cap.capture());
+        assertThat(cap.getValue().getProductId()).isEqualTo(88001L);
+    }
+
+    @Test
+    @DisplayName("row55·mp 没传 productId + 作物是多产品 → 拒绝（不许记一笔说不清是什么的货）")
+    void testInbound_NoProductId_MultiProductCrop_Rejected() {
+        stubCommonInbound();
+        org.dromara.djs.plant.crop.domain.vo.CropProductVo a =
+            new org.dromara.djs.plant.crop.domain.vo.CropProductVo();
+        a.setProductId(88001L);
+        org.dromara.djs.plant.crop.domain.vo.CropProductVo b =
+            new org.dromara.djs.plant.crop.domain.vo.CropProductVo();
+        b.setProductId(77001L);
+        when(cropProductService.listByCrop(12001L)).thenReturn(java.util.List.of(a, b));
+
+        org.assertj.core.api.Assertions
+            .assertThatThrownBy(() -> service.inbound(sampleBo()))
+            .isInstanceOf(org.dromara.common.core.exception.ServiceException.class)
+            .hasMessageContaining("更新小程序");
+
+        // 一行都不许落库：额度没查、收货没写、库存没动
+        verify(vegReceiveMapper, Mockito.never()).selectRemainInboundWeight(anyLong(), anyLong(), any());
+        verify(vegReceiveMapper, Mockito.never()).insert(any(VegReceive.class));
+        verify(locationStockMapper, Mockito.never()).insert(any(LocationStock.class));
+    }
+
+    @Test
+    @DisplayName("row55·详情页地块列表：productId 原样透传给 mapper（传了收窄 / 没传不过滤）")
+    void testListInboundPlots_PassesProductIdThrough() {
+        service.listInboundPlots(12001L, 77001L);
+        verify(vegReceiveMapper, times(1)).selectInboundPlots(eq(12001L), eq(77001L));
+
+        service.listInboundPlots(12001L, null);
+        verify(vegReceiveMapper, times(1)).selectInboundPlots(eq(12001L), eq((Long) null));
     }
 }

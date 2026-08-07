@@ -670,6 +670,35 @@ class VegetableHandleServiceImplTest {
         assertThat(upd.getHandleStatus()).isEqualTo("done");
     }
 
+    @Test
+    @DisplayName("row54：去向=饲料时 feed_log 落的是工人选的产品，不是作物默认产品")
+    void testProcess_ToFeed_FeedLogUsesSelectedProduct() {
+        when(plantingRecordMapper.selectById(60001L)).thenReturn(samplePlanting("processing"));
+        when(handleMapper.selectByPlantingRecordId(60001L)).thenReturn(sampleHandle("50.000", "10.000", 1));
+        // 作物默认产品是 88001（related_product），工人这次选的是 77001（如「红薯杆」）
+        CropInfo crop = new CropInfo();
+        crop.setId(12001L);
+        crop.setRelatedProduct(88001L);
+        when(cropInfoMapper.selectById(12001L)).thenReturn(crop);
+        org.dromara.djs.plant.crop.domain.vo.CropProductVo a =
+            new org.dromara.djs.plant.crop.domain.vo.CropProductVo();
+        a.setProductId(88001L);
+        org.dromara.djs.plant.crop.domain.vo.CropProductVo b =
+            new org.dromara.djs.plant.crop.domain.vo.CropProductVo();
+        b.setProductId(77001L);
+        when(cropProductService.listByCrop(12001L)).thenReturn(java.util.List.of(a, b));
+
+        org.dromara.djs.warehouse.veg.domain.bo.ProcessSubmitBo bo = processBo(3, "10.000", 0);
+        bo.setProductId(77001L);
+        service.submitProcess(bo);
+
+        ArgumentCaptor<org.dromara.djs.warehouse.veg.domain.FeedLog> cap =
+            ArgumentCaptor.forClass(org.dromara.djs.warehouse.veg.domain.FeedLog.class);
+        verify(feedLogMapper, times(1)).insert(cap.capture());
+        // 回归防线：改回 resolveProductIdByCrop 就会变成 88001，有机饲喂记录的「产品名称」列随之退化成作物名
+        assertThat(cap.getValue().getProductId()).isEqualTo(77001L);
+    }
+
     // -------- V6 row28 / row29：0 kg 收口（重量为 0 也能把地块推到完成）--------
 
     /**

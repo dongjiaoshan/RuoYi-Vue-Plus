@@ -41,6 +41,20 @@ public class VegReceiveItemVo implements Serializable {
     private String cropName;
 
     /**
+     * 产品 ID（row55；自产列表的<b>聚合键</b>，详情页与入库提交都按它收窄）。
+     *
+     * <p>自产：来自 {@code handle_record.product_id}（空则回落 {@code crop.related_product}）。
+     * 一个作物可关联多个产品（红薯 / 红薯杆），各自一张卡、各自一份待入库量。
+     * 外购：不填（外购的 {@code cropId} 本身就是产品 id）。</p>
+     */
+    private Long productId;
+
+    /**
+     * 产品名称（row55；自产卡片<b>显示用的名字</b>，取代原先显示作物名）。外购不填。
+     */
+    private String productName;
+
+    /**
      * 产品业务编码（mp dock + inbound 页展示「产品编码」列；缺则前端显「-」）。
      *
      * <ul>

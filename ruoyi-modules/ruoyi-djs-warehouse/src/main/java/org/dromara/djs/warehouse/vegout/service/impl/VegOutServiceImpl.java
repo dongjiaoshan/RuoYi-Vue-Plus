@@ -347,6 +347,10 @@ public class VegOutServiceImpl implements IVegOutService {
         record.setHandleId(handleId);
         record.setPlotId(stock.getPlotId());
         record.setCropId(cropId);
+        // row55：果蔬月台待入库量改为按产品聚合、数据源就是这张明细表。不落产品的话，
+        // 从毛菜间出库到月台的量会全部挂到作物默认产品名下（红薯杆的货显在红薯卡里）。
+        // 出的是哪个库存篮就是哪个产品，stock 上现成有。
+        record.setProductId(stock.getProductId());
         record.setRecordType(RECORD_TYPE_HANDLE);
         record.setRecordWeight(weight);
         record.setHandleTarget(HANDLE_TARGET_PLATFORM);

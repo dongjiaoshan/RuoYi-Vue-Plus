@@ -27,9 +27,9 @@ import java.util.List;
  *
  * <p>对接 mp {@code miniapp/src/api/warehouse/vegReceive.ts} 5 端点：</p>
  * <ul>
- *   <li>{@code GET  /applet/warehouse/vegReceive/self}            自产果蔬待收货列表（按作物聚合待入库量）</li>
+ *   <li>{@code GET  /applet/warehouse/vegReceive/self}            自产果蔬待收货列表（row55 起按<b>产品</b>聚合待入库量）</li>
  *   <li>{@code GET  /applet/warehouse/vegReceive/purchased}       外购果蔬待收货列表（product_type=2，可按名/类型筛选）</li>
- *   <li>{@code GET  /applet/warehouse/vegReceive/{cropId}/plots}  果蔬间入库（按地块的 待入库 / 实际入库 / 状态）</li>
+ *   <li>{@code GET  /applet/warehouse/vegReceive/{cropId}/plots}  果蔬间入库（按地块的 待入库 / 实际入库 / 状态，?productId 收窄）</li>
  *   <li>{@code POST /applet/warehouse/vegReceive/inbound}         自产果蔬入库提交（plot 维度库存）</li>
  *   <li>{@code POST /applet/warehouse/vegReceive/purchase}        外购果蔬收货入库提交（product 维度库存 + supplier）</li>
  * </ul>
@@ -53,7 +53,8 @@ public class AppletVegReceiveController extends BaseController {
     /**
      * 自产果蔬待收货列表（dock「自产产品收货」分段）。
      *
-     * <p>按作物聚合：待入库 = 上游毛菜处理「发往月台」量 − 已入库 self 量，仅返待入库 &gt; 0 的作物。</p>
+     * <p>row55 起<b>按产品聚合</b>：待入库 = 上游毛菜处理「发往月台」量 − 已入库 self 量，
+     * 仅返待入库 &gt; 0 的 (作物, 产品) 组合 —— 同一作物的多个产品各自一张卡。</p>
      */
     @SaCheckLogin
     @GetMapping("/self")
@@ -77,14 +78,16 @@ public class AppletVegReceiveController extends BaseController {
     }
 
     /**
-     * 果蔬间入库行（按地块）：某作物下各地块的 待入库 / 实际入库 / 入库状态。
+     * 果蔬间入库行（按地块）：某作物 + 产品下各地块的 待入库 / 实际入库 / 入库状态。
      *
-     * @param cropId 作物 ID（snowflake）
+     * @param cropId    作物 ID（snowflake）
+     * @param productId 产品 ID（row55，snowflake）。不传 = <b>不按产品过滤</b>，返回该作物全部地块
      */
     @SaCheckLogin
     @GetMapping("/{cropId}/plots")
-    public R<List<VegInboundPlotVo>> plots(@NotNull @PathVariable Long cropId) {
-        return R.ok(vegReceiveService.listInboundPlots(cropId));
+    public R<List<VegInboundPlotVo>> plots(@NotNull @PathVariable Long cropId,
+                                           @RequestParam(required = false) Long productId) {
+        return R.ok(vegReceiveService.listInboundPlots(cropId, productId));
     }
 
     /**
