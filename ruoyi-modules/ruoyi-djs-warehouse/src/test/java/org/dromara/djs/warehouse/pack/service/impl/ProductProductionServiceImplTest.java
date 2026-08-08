@@ -795,9 +795,10 @@ class ProductProductionServiceImplTest {
         assertThat(saved.getEarNo()).isEqualTo("010126050101");
         assertThat(saved.getProductWeight()).isEqualByComparingTo("12.000");
         // DENGBO row28：发货月台出库按「整条产出行」消耗软删（产出重 50 全额 → deleteById），
-        // 差额(50−12)=预冷损耗由 lossFlowService 记，不留零头残行
+        // 差额(50−12)=预冷损耗由 lossFlowService 记，不留零头残行。
+        // row60：整行用尽先经带条件的 deductWeightById 扣到 0 拿行锁（防并发两人同时"删成功"各自产出），再软删。
+        verify(inhouseMapper, times(1)).deductWeightById(70001L, new BigDecimal("50.000"));
         verify(inhouseMapper, times(1)).deleteById(70001L);
-        verify(inhouseMapper, never()).deductWeightById(anyLong(), any());
     }
 
     // ============================================================
