@@ -159,6 +159,23 @@ public class DemandManageVo implements Serializable {
      */
     private Integer damagedCount;
 
+    /**
+     * 产品品类（字典 {@code djs_belong_type}，取自 {@code product_info.belong_type}）。
+     *
+     * <p>派生字段（非 demand 表列）：mp 门店需求详情卡要显示品类，由 store 侧
+     * {@code queryDayDetail} 按页内 product_id 批量 JOIN 回填；admin 列表不回填（保持 null）。</p>
+     */
+    private String belongType;
+
+    /**
+     * 产品图可访问 URL（后端已把 ossId 解析成 URL，前端直接 src）。
+     *
+     * <p>派生字段（非 demand 表列）：取图口径与 admin 产品列表一致 ——
+     * 优先商品配置缩略图 {@code product_thumb}，缺失回落 {@code image_oss_id}；
+     * 由 store 侧 {@code queryDayDetail} 批量解析回填（禁 N+1），admin 列表不回填。</p>
+     */
+    private String imageUrl;
+
     @ExcelProperty(value = "创建时间")
     private Date createTime;
 

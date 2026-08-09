@@ -49,6 +49,15 @@ public class StoreUserRelationServiceImpl
     extends DjsBaseServiceImpl<StoreUserRelationMapper, StoreUserRelation>
     implements IStoreUserRelationService {
 
+    /**
+     * 已终止合作（字典 {@code djs_store_status}：0 合作中 / 1 已终止 / 2 装修中）。
+     *
+     * <p>mp 门店选择器排除的就是这一个值，与下单硬闸 {@code StoreServiceImpl.assertStoreActive}
+     * 逐条相同——<b>装修中门店后端允许下单，选择器就必须让它出现</b>，否则那家店的店员打开小程序
+     * 看到「无可用门店」，整个板块对他不可用。</p>
+     */
+    private static final String BUSINESS_STATUS_TERMINATED = "1";
+
     private final UserService userService;
     private final StoreMapper storeMapper;
 
@@ -182,6 +191,12 @@ public class StoreUserRelationServiceImpl
 
     @Override
     public List<StorePickerVo> listMyStores() {
+        // admin 侧既有口径：含已终止 / 装修中门店，不动
+        return listMyStores(false);
+    }
+
+    @Override
+    public List<StorePickerVo> listMyStores(boolean orderableOnly) {
         // 门店墙关闭（V1 默认）→ 全员返全部门店（ADR-0018 全员可跨店）；超管/租管始终 bypass。
         boolean ignoreWall;
         try {
@@ -191,7 +206,9 @@ public class StoreUserRelationServiceImpl
         }
         List<Store> stores;
         if (ignoreWall) {
-            stores = storeMapper.selectList(new LambdaQueryWrapper<Store>().orderByAsc(Store::getId));
+            stores = storeMapper.selectList(new LambdaQueryWrapper<Store>()
+                .ne(orderableOnly, Store::getBusinessStatus, BUSINESS_STATUS_TERMINATED)
+                .orderByAsc(Store::getId));
         } else {
             Long userId = currentUserIdSafe();
             List<Long> storeIds = listStoreIdsByUser(userId);
@@ -201,6 +218,7 @@ public class StoreUserRelationServiceImpl
             stores = storeMapper.selectList(
                 new LambdaQueryWrapper<Store>()
                     .in(Store::getId, storeIds)
+                    .ne(orderableOnly, Store::getBusinessStatus, BUSINESS_STATUS_TERMINATED)
                     .orderByAsc(Store::getId));
         }
         return stores.stream().map(s -> {

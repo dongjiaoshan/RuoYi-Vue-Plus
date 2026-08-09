@@ -9,6 +9,7 @@ import org.dromara.common.core.utils.StringUtils;
 import org.dromara.djs.common.store.domain.Store;
 import org.dromara.djs.common.store.domain.vo.StorePickerVo;
 import org.dromara.djs.common.store.mapper.StoreMapper;
+import org.dromara.djs.common.store.service.IStoreUserRelationService;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -29,6 +30,8 @@ import java.util.stream.Collectors;
  * <ul>
  *   <li>{@code GET /djs/applet/common/store/list?keyword=&storeType=}
  *       返合作中（businessStatus='0'）门店列表；按 keyword LIKE 匹配 storeName/storeCode。</li>
+ *   <li>{@code GET /djs/applet/common/store/my-stores}
+ *       返当前登录人「我的门店」（门店墙感知，见 {@link IStoreUserRelationService#listMyStores(boolean)}）。</li>
  * </ul>
  *
  * <h2>鉴权</h2>
@@ -45,6 +48,8 @@ import java.util.stream.Collectors;
 public class StoreAppletController {
 
     private final StoreMapper storeMapper;
+
+    private final IStoreUserRelationService storeUserRelationService;
 
     /**
      * 门店 picker 列表。
@@ -86,6 +91,26 @@ public class StoreAppletController {
             return vo;
         }).collect(Collectors.toList());
         return R.ok(vos);
+    }
+
+    /**
+     * 我的门店（mp 门店板块「我的」+ 需求下单页顶部门店切换，V6 row65）。
+     *
+     * <p>语义随 {@code djs.store.wall-enabled} 走：当前 false（关墙，ADR-0018 全员可跨店）→ 返<b>全部可下单</b>
+     * 门店；将来置 true → 只返当前登录人绑定的门店。前端一律按「返 1 条 = 只读不可选 / 返 &gt;1 条 = 可选」
+     * 渲染，所以开墙那天前端零改动。</p>
+     *
+     * <p>过滤判据与下单硬闸 {@code IStoreService.assertStoreActive} <b>逐条相同</b>：只排除
+     * {@code business_status='1'}（已终止），{@code '2'}（装修中）照返 —— 装修中门店后端是能下单的，
+     * 挡掉它等于让那家店的店员看到「无可用门店」、整个板块不可用。<b>注意本端点与 {@link #list}
+     * 口径不同</b>（后者按 {@code ='0'} 只留合作中，那是跨板块通用 picker 的口径，不要拿来对齐）。
+     * admin 侧 {@code /djs/common/store/my-stores} 仍走不带过滤的 {@code listMyStores()}，行为不变。</p>
+     */
+    @SaCheckLogin
+    @SaCheckPermission("djs:applet:common:store:list")
+    @GetMapping("/my-stores")
+    public R<List<StorePickerVo>> myStores() {
+        return R.ok(storeUserRelationService.listMyStores(true));
     }
 
 }

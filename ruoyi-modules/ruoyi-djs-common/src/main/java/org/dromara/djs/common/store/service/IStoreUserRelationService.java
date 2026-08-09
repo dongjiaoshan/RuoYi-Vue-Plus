@@ -51,11 +51,30 @@ public interface IStoreUserRelationService {
 
     /**
      * 查当前登录人有权限的门店精简列表（{@link #listStoreIdsByUser} 反查 t_md_store）。
-     * 超管 / 租管返全部门店。
+     * 超管 / 租管返全部门店。<b>含已终止合作门店</b>（等价 {@code listMyStores(false)}）——
+     * admin 侧 {@code /djs/common/store/my-stores} 的既有口径，不要改。
      *
      * @return 门店精简 VO 列表
      */
     List<StorePickerVo> listMyStores();
+
+    /**
+     * 同 {@link #listMyStores()}，但可只要「还能下单」的门店。
+     *
+     * <p>mp 门店板块（{@code /djs/applet/common/store/my-stores}）传 {@code true}。
+     * 判据与下单硬闸 {@code IStoreService.assertStoreActive} <b>逐条相同</b>：只排除
+     * {@code business_status='1'}（已终止），{@code '2'}（装修中）照返。</p>
+     *
+     * <p>⚠️ 不要"顺手"收紧成 {@code ='0'} 只留合作中。字典 {@code djs_store_status} 是
+     * {@code 0 合作中 / 1 已终止 / 2 装修中}，而 {@code assertStoreActive} 只拒 {@code '1'}——
+     * 装修中门店在后端是<b>能下单的</b>。选择器若按 {@code ='0'} 过滤，一家装修中门店的店员打开
+     * 小程序会看到「无可用门店」，整个门店板块对他直接不可用，而系统本来允许他下单。
+     * 选择器隐藏与后端闸口径必须逐条一致：多隐藏 = 静默删能力，少隐藏 = 走到提交才报错，两头都不能有。</p>
+     *
+     * @param orderableOnly true = 排除已终止（{@code business_status='1'}）；false = 全部
+     * @return 门店精简 VO 列表
+     */
+    List<StorePickerVo> listMyStores(boolean orderableOnly);
 
     /**
      * 判断某人是否可操作某门店（门店墙 djs.store.wall-enabled 感知）。

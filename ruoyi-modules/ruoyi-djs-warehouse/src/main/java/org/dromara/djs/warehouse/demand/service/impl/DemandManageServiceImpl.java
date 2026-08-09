@@ -16,6 +16,7 @@ import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.common.base.DjsBaseServiceImpl;
 import org.dromara.djs.common.encoder.BizCodeType;
 import org.dromara.djs.common.encoder.IBizCodeGenerator;
+import org.dromara.djs.warehouse.demand.core.StoreDemandStatusMapping;
 import org.dromara.djs.warehouse.demand.core.enums.DemandStatus;
 import org.dromara.djs.common.util.I18nMessages;
 import org.dromara.djs.warehouse.demand.domain.DemandManage;
@@ -211,22 +212,15 @@ public class DemandManageServiceImpl extends DjsBaseServiceImpl<DemandManageMapp
     /**
      * 仓库 7 态 → 门店视角 5 态码（{@code djs_store_demand_status}）。
      *
+     * <p>口径本体在 {@link StoreDemandStatusMapping}（与「按门店态筛选」的 SQL 片段同处一个类，
+     * 保证读出来的态和筛出来的行永远同一套规则）；本方法只是门店列表回填的调用点。</p>
+     *
      * @param status   仓库 demand_status
      * @param received 是否已门店收货（received_time != null）
      * @return 门店视角状态码（SUBMITTED/CONFIRMED/SHIPPED/ARRIVED/DELETED）；未知态回退原值
      */
     private String toStoreDemandStatus(String status, boolean received) {
-        if (status == null) {
-            return null;
-        }
-        return switch (status) {
-            case "SUBMITTED" -> "SUBMITTED";
-            case "CONFIRMED" -> received ? "ARRIVED" : "CONFIRMED";
-            case "PARTIAL_SHIPPED", "COMPLETED" -> received ? "ARRIVED" : "SHIPPED";
-            case "DELETED", "CANCELLED" -> "DELETED";
-            // DRAFT 等门店端不可见态：回退原值（门店列表不展示这些行）
-            default -> status;
-        };
+        return StoreDemandStatusMapping.derive(status, received);
     }
 
     /**
