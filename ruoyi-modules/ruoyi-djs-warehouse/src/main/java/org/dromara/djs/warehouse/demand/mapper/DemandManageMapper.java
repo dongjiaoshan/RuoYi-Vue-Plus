@@ -673,6 +673,9 @@ public interface DemandManageMapper extends BaseMapperPlus<DemandManage, DemandM
         GROUP BY product_id
         </script>
         """)
+    List<Map<String, Object>> selectLastOrderTimeByStore(@Param("storeId") Long storeId,
+                                                         @Param("productIds") Collection<Long> productIds);
+
     /**
      * 并单时把该行的「下单动作」刷成本次（mp 门店同日同产品合并累加，V6 row69）。
      *
@@ -694,9 +697,6 @@ public interface DemandManageMapper extends BaseMapperPlus<DemandManage, DemandM
         WHERE id = #{id} AND del_flag = '0'
         """)
     int touchOrderMeta(@Param("id") Long id, @Param("userId") Long userId);
-
-    List<Map<String, Object>> selectLastOrderTimeByStore(@Param("storeId") Long storeId,
-                                                         @Param("productIds") Collection<Long> productIds);
 
     /**
      * 在入参 demand id 集合里，筛出「至少指定 1 头未删猪只」的 demand id（0613-11 确认页「是否指定猪只」列）。
