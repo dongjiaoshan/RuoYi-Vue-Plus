@@ -98,13 +98,20 @@ public class DemandManageServiceImpl extends DjsBaseServiceImpl<DemandManageMapp
     private static final int PRODUCT_ATTR_MATERIAL = 2;
 
     /**
-     * 「门店不能下单原材料」守门生效的业态（egg/dry_good/other/vegetable）：这些域里原料(attr=2)
-     * 领用后须打包成成品(attr=1)才可售（蛋/干货/其他 → 其他产品打包；毛菜 → 果蔬打包），
+     * 「门店不能下单原材料」守门生效的业态：这些域里原料(attr=2) 领用后须打包成成品(attr=1) 才可售
+     * （蛋/干货/其他 → 其他产品打包；毛菜 → 果蔬打包；猪肉原料 → 分割/肉品打包），
      * 原料本身不可被门店下单（doc/14 §5）。
      * 白条(white_bar) 整只/半只虽也是 attr=2，但属门店现卖单位（活跃下单流程），故豁免不纳入守门
-     * （Kevin 2026-06-25 拍板）。范围如需调整在此集合增删业态即可。
+     * （Kevin 2026-06-25 拍板）；礼盒(gift_box) 的 product_attr 历史上非必填，按白名单会误伤，同样豁免。
+     *
+     * <p>⚠️ {@code pork} 是 2026-08-09 补进来的：原本漏了它，而 admin 与 mp 的下单候选**两边都不给选**
+     * 猪肉原材料（admin 购物车按 product_attr=1 收口、mp catalog 同谓词）。独立验收实测：
+     * store_clerk 本人就持有 {@code djs:store:demand:*}，直连 admin 的 {@code POST /djs/store/demand/add}
+     * 即可把 attr=2 的五花肉下单成功 —— 「候选里选不到、接口却能下」正是前后端谓词不一致。
+     * 守门放在这里（两端共用的落库路径）而不是只放 mp service，就是为了不留第二扇门。</p>
      */
-    private static final Set<String> RAW_MATERIAL_FORBIDDEN_BELONG_TYPES = Set.of("egg", "dry_good", "other", "vegetable");
+    private static final Set<String> RAW_MATERIAL_FORBIDDEN_BELONG_TYPES =
+        Set.of("egg", "dry_good", "other", "vegetable", "pork");
 
     /** 允许删除的状态（删除 = 置 DELETED 终态 + 软删；待确认 SUBMITTED 亦可删）。 */
     private static final Set<String> DELETABLE_STATUSES = Set.of(

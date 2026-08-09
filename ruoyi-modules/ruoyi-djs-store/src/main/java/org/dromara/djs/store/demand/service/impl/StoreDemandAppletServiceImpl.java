@@ -560,6 +560,10 @@ public class StoreDemandAppletServiceImpl implements IStoreDemandAppletService {
             bo.getProductId());
         bo.setProductType(toDemandProductType(product.getBelongType()));
         assertQuantityScale(bo.getDemandQuantity());
+        // demandType 归一：DemandManageBo 上只有 @Size(16)，不校验枚举也不推导 —— 传 "ILLEGAL_X" 会原样落库、
+        // 不传则落 NULL。而并单的匹配键包含 demand_type（个人邮寄不能并进门店需求），
+        // 非法值 / NULL 会让这一行**永远匹配不上、永远并不了单**，同店同日同产品又变回两张同名卡。
+        bo.setDemandType(DEMAND_TYPE_MAILING.equals(bo.getDemandType()) ? DEMAND_TYPE_MAILING : DEMAND_TYPE_STORE);
         return storeDemandService.createStoreDemand(bo);
     }
 

@@ -360,7 +360,7 @@ class StoreDemandAppletServiceImplTest {
     }
 
     @Test
-    @DisplayName("catalog：果蔬按最早采摘日升序、无日期沉底；同组内再按 id 倒序")
+    @DisplayName("catalog：果蔬按最早采摘日**距今距离**升序、无日期沉底；同组内再按 id 倒序")
     void catalogVegetableSortedByEarliestPickDate() {
         List<ProductInfo> products = List.of(
             product(8001L, "无采摘日菜", "vegetable", 1),
@@ -369,14 +369,14 @@ class StoreDemandAppletServiceImplTest {
             product(8004L, "也无采摘日", "vegetable", 1));
         stubCatalogNoExtras(products);
         when(cropPlotStatService.listPlotStat()).thenReturn(List.of(
-            cropStat(8002L, "2026-09-01"),
-            cropStat(8003L, "2026-08-10")));
+            cropStat(8002L, LocalDate.now().plusDays(23).toString()),
+            cropStat(8003L, LocalDate.now().plusDays(1).toString())));
 
         List<StoreDemandCatalogVo> list = service.queryCatalog(5001L, null);
 
         assertThat(list).extracting(StoreDemandCatalogVo::getProductId)
             .containsExactly(8003L, 8002L, 8004L, 8001L);
-        assertThat(list.get(0).getEarliestPickDate()).isEqualTo("2026-08-10");
+        assertThat(list.get(0).getEarliestPickDate()).isEqualTo(LocalDate.now().plusDays(1).toString());
         assertThat(list.get(2).getEarliestPickDate()).isNull();
     }
 
@@ -710,5 +710,26 @@ class StoreDemandAppletServiceImplTest {
         // 匹配条件里必须带 demand_type，且值是 mailing
         assertThat(w.getValue().getTargetSql()).contains("demand_type");
         assertThat(w.getValue().getParamNameValuePairs().values()).contains("mailing");
+    }
+
+    @Test
+    @DisplayName("catalog：果蔬「最近采摘日」按**距今距离**，过去 60 天不得压过未来 3 天（纯日期升序会红）")
+    void catalog_vegetableSortsByDistanceNotAscendingDate() {
+        // 旧实现是日期升序 → 60 天前的排第一；新实现按 |日期−今天| → 未来 3 天更近，排第一。
+        // staging 实测过这个形状：2026-06-04（距今 66 天）曾霸榜第 1，2026-08-06（距今 3 天）被压到第 7。
+        String past60 = LocalDate.now().minusDays(60).toString();
+        String future3 = LocalDate.now().plusDays(3).toString();
+        List<ProductInfo> products = List.of(
+            product(9001L, "远期已过菜", "vegetable", 1),
+            product(9002L, "即将可采菜", "vegetable", 1));
+        stubCatalogNoExtras(products);
+        when(cropPlotStatService.listPlotStat()).thenReturn(List.of(
+            cropStat(9001L, past60), cropStat(9002L, future3)));
+
+        List<StoreDemandCatalogVo> list = service.queryCatalog(5001L, null);
+
+        assertThat(list).extracting(StoreDemandCatalogVo::getProductId)
+            .containsExactly(9002L, 9001L);
+        assertThat(list.get(0).getEarliestPickDate()).isEqualTo(future3);
     }
 }
