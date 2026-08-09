@@ -403,4 +403,49 @@ class DemandManageServiceImplTest {
         bo.setExpectedArriveDate(LocalDate.of(2026, 6, 5));
         return bo;
     }
+
+    // ---------------- 业态自校正（谎报 productType 会拿到错的单号段）----------------
+
+    private org.dromara.djs.warehouse.product.domain.ProductInfo prod(Long id, String belong, int attr) {
+        org.dromara.djs.warehouse.product.domain.ProductInfo p =
+            new org.dromara.djs.warehouse.product.domain.ProductInfo();
+        p.setId(id);
+        p.setProductName("产品" + id);
+        p.setBelongType(belong);
+        p.setProductType(1);
+        p.setProductAttr(attr);
+        return p;
+    }
+
+    @Test
+    @DisplayName("果蔬成品被声明成 gift_box → 服务端改回 vegetable（否则拿到礼盒段单号、下游按礼盒筛）")
+    void insertByBo_correctsLiedProductType() {
+        when(productInfoMapper.selectById(7001L)).thenReturn(prod(7001L, "vegetable", 1));
+        DemandManageBo bo = new DemandManageBo();
+        bo.setStoreId(9001L);
+        bo.setProductId(7001L);
+        bo.setProductName("有机苕尖350g");
+        bo.setProductType("gift_box");
+        bo.setDemandDate(java.time.LocalDate.now());
+        bo.setDemandQuantity(new java.math.BigDecimal("1"));
+        bo.setProductUnit("份");
+        service.insertByBo(bo);
+        assertThat(bo.getProductType()).isEqualTo("vegetable");
+    }
+
+    @Test
+    @DisplayName("猪肉/干货/鸡蛋等无独立业态的三类不被压平（仓库侧会用更细的 pig/dry/egg 拿各自单号段）")
+    void insertByBo_keepsFinerGrainedTypeForOtherBucket() {
+        when(productInfoMapper.selectById(7002L)).thenReturn(prod(7002L, "pork", 1));
+        DemandManageBo bo = new DemandManageBo();
+        bo.setStoreId(9001L);
+        bo.setProductId(7002L);
+        bo.setProductName("黑毛猪五花肉500g");
+        bo.setProductType("pig");
+        bo.setDemandDate(java.time.LocalDate.now());
+        bo.setDemandQuantity(new java.math.BigDecimal("1"));
+        bo.setProductUnit("份");
+        service.insertByBo(bo);
+        assertThat(bo.getProductType()).isEqualTo("pig");
+    }
 }

@@ -113,6 +113,9 @@ public class DemandManageServiceImpl extends DjsBaseServiceImpl<DemandManageMapp
     private static final Set<String> RAW_MATERIAL_FORBIDDEN_BELONG_TYPES =
         Set.of("egg", "dry_good", "other", "vegetable", "pork");
 
+    /** 有独立落库业态的归属类型：这三类的 product_type 必须与 belong_type 一致，不接受调用方谎报。 */
+    private static final Set<String> DEDICATED_BELONG_TYPES = Set.of("white_bar", "vegetable", "gift_box");
+
     /** 允许删除的状态（删除 = 置 DELETED 终态 + 软删；待确认 SUBMITTED 亦可删）。 */
     private static final Set<String> DELETABLE_STATUSES = Set.of(
         DemandStatus.DRAFT.name(), DemandStatus.SUBMITTED.name(), DemandStatus.CANCELLED.name()
@@ -454,6 +457,10 @@ public class DemandManageServiceImpl extends DjsBaseServiceImpl<DemandManageMapp
         // admin + mp 下单都收口到此 insertByBo，故服务端在此硬守门（客户端过滤只是 UX，可被旧缓存/直连绕过）。
         // 原料是仓库内部流转物（领用 → 打包成成品），由打包成品反查原料履约，不应直接挂门店需求（doc/14 §5）。
         validateNotRawMaterial(bo.getProductId(), bo.getProductName());
+        // 业态自校正：白条/果蔬/礼盒三类必须与产品归属一致（谎报会拿到错的单号段并被下游按错业态筛）
+        bo.setProductType(correctProductType(
+            bo.getProductId() == null ? null : productInfoMapper.selectById(bo.getProductId()),
+            bo.getProductType()));
         DemandManage entity = toEntity(bo);
         if (entity == null) {
             throw new ServiceException(I18nMessages.t("demand.bo.convert_failed"));
@@ -843,6 +850,34 @@ public class DemandManageServiceImpl extends DjsBaseServiceImpl<DemandManageMapp
                 : StrUtil.isNotBlank(productName) ? productName : String.valueOf(productId);
             throw new ServiceException(I18nMessages.t("demand.field.product.raw_material_forbidden", name));
         }
+    }
+
+    /**
+     * 业态自校正：产品归属是 {@code white_bar / vegetable / gift_box} 时，落库业态必须与之一致，
+     * 不一致一律按产品归属改写（不信调用方传值）。
+     *
+     * <p>为什么必须放在这条<b>两端共用的落库路径</b>上：{@code product_type} 决定需求单号的 bizCode 段
+     * 与下游分拣发货的业态筛选。独立验收实测过 —— 直连 {@code POST /djs/store/demand/add}
+     * 把果蔬成品声明成 {@code gift_box}，落库拿到礼盒段单号 {@code D20260809GB0021}，
+     * 发货侧会把它当礼盒处理。闸若只装在 mp service，同一批人换个端点即可绕过。</p>
+     *
+     * <p>只钉这三类、不做全量覆盖：{@code pork/dry_good/egg/other} 在下单侧统一落 {@code other} 桶，
+     * 但仓库侧历史上会用更细的 {@code pig/dry/egg} 拿各自单号段（见 {@code PRODUCT_TYPE_TO_BIZ_CODE}
+     * 的 7 值），全量改写会把这些合法用法一起压平。冒用风险只存在于「有独立业态的三类」，收口到这三类即可。</p>
+     */
+    private String correctProductType(ProductInfo product, String clientType) {
+        if (product == null) {
+            return clientType;
+        }
+        String belong = product.getBelongType();
+        if (!DEDICATED_BELONG_TYPES.contains(belong)) {
+            return clientType;
+        }
+        if (!belong.equals(clientType)) {
+            log.warn("[DEMAND] 业态被自校正：product={} belongType={} 传入={} → 改写为 {}",
+                product.getId(), belong, clientType, belong);
+        }
+        return belong;
     }
 
     /** 插入前缺省值兜底。 */
