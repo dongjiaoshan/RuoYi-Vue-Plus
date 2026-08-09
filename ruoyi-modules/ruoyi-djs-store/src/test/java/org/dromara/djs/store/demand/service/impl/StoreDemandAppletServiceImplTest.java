@@ -639,4 +639,76 @@ class StoreDemandAppletServiceImplTest {
         assertThat(e.getMessage()).contains("产品不存在");
         verify(storeDemandService, never()).batchCreate(any());
     }
+
+    // ---------------- /add 与 /batch 必须同三道闸（独立验收：闸只装 batch 时 /add 一发全穿）----------------
+
+    private DemandManageBo addBo(LocalDate date, Long productId, String clientProductType) {
+        DemandManageBo bo = new DemandManageBo();
+        bo.setStoreId(9315000000000001L);
+        bo.setDemandDate(date);
+        bo.setProductId(productId);
+        bo.setProductName("测试产品");
+        bo.setProductType(clientProductType);
+        bo.setDemandQuantity(new java.math.BigDecimal("1"));
+        return bo;
+    }
+
+    @Test
+    @DisplayName("/add 昨天日期 → 拒（与 /batch 同闸）")
+    void create_rejectsPastDemandDate() {
+        ServiceException e = assertThrows(ServiceException.class,
+            () -> service.create(addBo(LocalDate.now().minusDays(1), 9304000000000001L, "vegetable")));
+        assertThat(e.getMessage()).contains("需求日期不能早于今天");
+        verify(storeDemandService, never()).createStoreDemand(any());
+    }
+
+    @Test
+    @DisplayName("/add 猪肉原材料 → 拒（与 /batch 同闸）")
+    void create_rejectsPorkRawMaterial() {
+        when(productInfoMapper.selectById(9303000000000099L)).thenReturn(product(9303000000000099L, "pork", 2));
+        ServiceException e = assertThrows(ServiceException.class,
+            () -> service.create(addBo(LocalDate.now(), 9303000000000099L, "other")));
+        assertThat(e.getMessage()).contains("是原材料");
+        verify(storeDemandService, never()).createStoreDemand(any());
+    }
+
+    @Test
+    @DisplayName("/add 业态谎报被服务端改回（与 /batch 同闸）")
+    void create_overridesClientProductType() {
+        when(productInfoMapper.selectById(9304000000000001L)).thenReturn(product(9304000000000001L, "vegetable", 1));
+        when(storeDemandService.createStoreDemand(any())).thenReturn(1L);
+        DemandManageBo bo = addBo(LocalDate.now(), 9304000000000001L, "gift_box");
+        service.create(bo);
+        ArgumentCaptor<DemandManageBo> c = ArgumentCaptor.forClass(DemandManageBo.class);
+        verify(storeDemandService).createStoreDemand(c.capture());
+        assertThat(c.getValue().getProductType()).isEqualTo("vegetable");
+    }
+
+    @Test
+    @DisplayName("/add 4 位小数 → 拒（不能让 MySQL 静默四舍五入）")
+    void create_rejectsOverScaleQuantity() {
+        when(productInfoMapper.selectById(9304000000000001L)).thenReturn(product(9304000000000001L, "vegetable", 1));
+        DemandManageBo bo = addBo(LocalDate.now(), 9304000000000001L, "vegetable");
+        bo.setDemandQuantity(new java.math.BigDecimal("1.2345"));
+        ServiceException e = assertThrows(ServiceException.class, () -> service.create(bo));
+        assertThat(e.getMessage()).contains("3 位小数");
+        verify(storeDemandService, never()).createStoreDemand(any());
+    }
+
+    @Test
+    @DisplayName("并单不跨需求类型：个人邮寄不得并进门店需求（否则 mailing 标记静默消失、发货地址会错）")
+    void batchCreate_doesNotMergeAcrossDemandType() {
+        when(productInfoMapper.selectList(any()))
+            .thenReturn(List.of(product(9304000000000001L, "vegetable", 1)));
+        when(storeDemandService.batchCreate(any())).thenReturn(1);
+        StoreDemandBatchBo bo = batchBo(LocalDate.now(), 9304000000000001L, "vegetable");
+        bo.getItems().get(0).setMailing(true);
+        service.batchCreate(bo);
+        ArgumentCaptor<com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper> w =
+            ArgumentCaptor.forClass(com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper.class);
+        verify(demandManageMapper).selectOne(w.capture());
+        // 匹配条件里必须带 demand_type，且值是 mailing
+        assertThat(w.getValue().getTargetSql()).contains("demand_type");
+        assertThat(w.getValue().getParamNameValuePairs().values()).contains("mailing");
+    }
 }

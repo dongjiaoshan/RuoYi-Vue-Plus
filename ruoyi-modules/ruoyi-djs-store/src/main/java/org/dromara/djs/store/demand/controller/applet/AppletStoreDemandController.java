@@ -4,6 +4,7 @@ import cn.dev33.satoken.annotation.SaCheckLogin;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.dromara.common.core.domain.R;
+import org.dromara.common.idempotent.annotation.RepeatSubmit;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.breed.core.domain.vo.PigAvailableVo;
@@ -84,11 +85,18 @@ public class AppletStoreDemandController {
         return R.ok(demandManageService.queryById(id));
     }
 
-    /** 创建需求（创建即 SUBMITTED，跳过 DRAFT）。 */
+    /**
+     * 创建需求（创建即 SUBMITTED，跳过 DRAFT）。
+     *
+     * <p>走 applet service 而非直接 delegate {@code storeDemandService}：它和 {@code /batch}
+     * 必须过<b>同三道闸</b>（需求日期下界 / 业态服务端推导 / 原材料拒）。闸只装 batch 时，
+     * 一条本请求即可同时打穿三道，独立验收已线上实证。</p>
+     */
     @SaCheckLogin
+    @RepeatSubmit(interval = 3000, message = "请勿重复提交需求")
     @PostMapping("/add")
     public R<Long> add(@Validated @RequestBody DemandManageBo bo) {
-        return R.ok(storeDemandService.createStoreDemand(bo));
+        return R.ok(storeDemandAppletService.create(bo));
     }
 
     /** 撤回未确认需求（→ CANCELLED）。 */
@@ -172,6 +180,7 @@ public class AppletStoreDemandController {
      * @return 落库条数
      */
     @SaCheckLogin
+    @RepeatSubmit(interval = 3000, message = "请勿重复提交需求")
     @PostMapping("/batch")
     public R<Integer> batchCreate(@Validated @RequestBody StoreDemandBatchBo bo) {
         // 走 applet service：它在共用落库路径之上加了 mp 侧三道闸

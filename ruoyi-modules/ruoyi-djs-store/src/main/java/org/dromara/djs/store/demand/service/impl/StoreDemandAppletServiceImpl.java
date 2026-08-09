@@ -90,6 +90,11 @@ public class StoreDemandAppletServiceImpl implements IStoreDemandAppletService {
     /** 落库业态兜底值（猪肉 / 干货 / 鸡蛋 / 其他全部映射到它）。 */
     private static final String DEMAND_TYPE_OTHER = "other";
 
+    /** 需求类型（字典 {@code djs_demand_mailing_type}）：门店。 */
+    private static final String DEMAND_TYPE_STORE = "store";
+    /** 需求类型：个人邮寄。 */
+    private static final String DEMAND_TYPE_MAILING = "mailing";
+
     /**
      * 目录展示的品类顺序（与 admin 购物车 7 tab 次序一致：白条 / 猪肉 / 果蔬 / 干货 / 鸡蛋 / 礼盒 / 其他）。
      * 不在表里的 belongType（含空）排最后 = 「其他」桶。
@@ -378,12 +383,28 @@ public class StoreDemandAppletServiceImpl implements IStoreDemandAppletService {
                 return byGroup;
             }
             boolean veg = BELONG_VEGETABLE.equals(a.getBelongType());
-            int byKey = veg
-                // 日期是定长 yyyy-MM-dd，字典序 == 时间序
-                ? nullsLastAsc(a.getEarliestPickDate(), b.getEarliestPickDate())
-                : nullsLastDesc(a.getLastOrderTime(), b.getLastOrderTime());
-            if (byKey != 0) {
-                return byKey;
+            if (veg) {
+                // 果蔬：按「最早采摘开始日期**距今天最近**」优先。
+                // 不能用纯日期升序 —— 实测 staging 上会让 2026-06-04（距今 66 天）排在
+                // 2026-08-06（距今 3 天）前面，与甲方「最近的产品」字面相反。
+                int byPick = nullsLastAsc(pickDistanceKey(a.getEarliestPickDate()),
+                    pickDistanceKey(b.getEarliestPickDate()));
+                if (byPick != 0) {
+                    return byPick;
+                }
+                // 没有采摘日的果蔬（54/65 条都是）此前直接掉进 productId 兜底，
+                // 「本店历史下单」这个信号被完全丢掉 —— 店员天天订的菜排在从没订过的后面。
+                // 回落到与其余品类同一把尺子。
+                int byOrder = nullsLastDesc(a.getLastOrderTime(), b.getLastOrderTime());
+                if (byOrder != 0) {
+                    return byOrder;
+                }
+            }
+            else {
+                int byOrder = nullsLastDesc(a.getLastOrderTime(), b.getLastOrderTime());
+                if (byOrder != 0) {
+                    return byOrder;
+                }
             }
             return Long.compare(nzLong(b.getProductId()), nzLong(a.getProductId()));
         };
@@ -469,13 +490,9 @@ public class StoreDemandAppletServiceImpl implements IStoreDemandAppletService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public int batchCreate(StoreDemandBatchBo bo) {
-        // ① 需求日期不得早于今天（甲方 row69「最早只能是当天」）。
-        //    前端 picker 的 min-date 与提交前钳制都基于**设备本地时间**，手机时钟错了就跟着错；
-        //    直连接口更是零阻力（独立验收实测：传昨天日期照样 200 落库）。
+        // ① 需求日期不得早于今天（闸的说明见 assertDemandDateNotPast）
         LocalDate demandDate = bo.getDemandDate();
-        if (demandDate != null && demandDate.isBefore(LocalDate.now())) {
-            throw new ServiceException("需求日期不能早于今天：" + demandDate, 400);
-        }
+        assertDemandDateNotPast(demandDate);
 
         List<StoreDemandBatchBo.Item> items = bo.getItems();
         if (items == null || items.isEmpty()) {
@@ -492,13 +509,8 @@ public class StoreDemandAppletServiceImpl implements IStoreDemandAppletService {
             .stream().collect(HashMap::new, (m, p) -> m.put(p.getId(), p), HashMap::putAll);
 
         for (StoreDemandBatchBo.Item item : items) {
-            ProductInfo product = productMap.get(item.getProductId());
-            if (product == null) {
-                throw new ServiceException("产品不存在或已删除：" + item.getProductId(), 404);
-            }
-            assertNotRawMaterialForApplet(product);
-            // ② 业态一律由服务端按 belong_type 推导，不信客户端传值 —— 这个字段决定需求单号的
-            //    bizCode 段与下游分拣发货的业态筛选，客户端把果蔬声明成 gift_box 就能拿到礼盒段单号。
+            ProductInfo product = requireOrderableProduct(productMap.get(item.getProductId()), item.getProductId());
+            // ② 业态一律由服务端按 belong_type 推导，不信客户端传值
             item.setProductType(toDemandProductType(product.getBelongType()));
         }
 
@@ -510,7 +522,8 @@ public class StoreDemandAppletServiceImpl implements IStoreDemandAppletService {
         List<StoreDemandBatchBo.Item> toCreate = new ArrayList<>(items.size());
         LocalDate targetDate = demandDate != null ? demandDate : LocalDate.now();
         for (StoreDemandBatchBo.Item item : items) {
-            DemandManage exist = findMergeableRow(bo.getStoreId(), targetDate, item.getProductId());
+            DemandManage exist = findMergeableRow(bo.getStoreId(), targetDate, item.getProductId(),
+                Boolean.TRUE.equals(item.getMailing()) ? DEMAND_TYPE_MAILING : DEMAND_TYPE_STORE);
             if (exist == null) {
                 toCreate.add(item);
                 continue;
@@ -520,6 +533,9 @@ public class StoreDemandAppletServiceImpl implements IStoreDemandAppletService {
             patch.setId(exist.getId());
             patch.setDemandQuantity(sum);
             demandManageService.updateByBo(patch);
+            // 并单也是一次下单动作：刷 create_time/create_by，否则卡片的「最后下单时间」和「下单人」
+            // 会停在第一次下单那一刻（两者都取当天 MAX(create_time) 那行）
+            demandManageMapper.touchOrderMeta(exist.getId(), currentUserIdSafe());
             merged++;
             log.info("[STORE-MP-BOARD-001] 同日同产品并单 id={} no={} {} + {} = {}",
                 exist.getId(), exist.getDemandNo(), exist.getDemandQuantity(), item.getDemandQuantity(), sum);
@@ -529,6 +545,59 @@ public class StoreDemandAppletServiceImpl implements IStoreDemandAppletService {
         }
         bo.setItems(toCreate);
         return storeDemandService.batchCreate(bo) + merged;
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public Long create(DemandManageBo bo) {
+        // `/add` 与 `/batch` 是同一个 controller 上的**两扇门**，闸必须两边都装。
+        // 独立验收实测过：闸只装 batch 时，一条 /add 请求可同时打穿三道
+        // （猪肉原材料 + 谎报 gift_box 拿到礼盒段单号 + 落在昨天），200 直接落库。
+        // 已发布产物里 pages/store/demand/form 这个旧页调的正是 /add，不是纯理论面。
+        assertDemandDateNotPast(bo.getDemandDate());
+        ProductInfo product = requireOrderableProduct(
+            bo.getProductId() == null ? null : productInfoMapper.selectById(bo.getProductId()),
+            bo.getProductId());
+        bo.setProductType(toDemandProductType(product.getBelongType()));
+        assertQuantityScale(bo.getDemandQuantity());
+        return storeDemandService.createStoreDemand(bo);
+    }
+
+    /**
+     * 需求日期不得早于今天（甲方 row69「最早只能是当天」）。
+     *
+     * <p>前端 picker 的 min-date 与提交前钳制都基于<b>设备本地时间</b>，手机时钟错了就跟着错；
+     * 直连接口更是零阻力。</p>
+     */
+    private void assertDemandDateNotPast(LocalDate demandDate) {
+        if (demandDate != null && demandDate.isBefore(LocalDate.now())) {
+            throw new ServiceException("需求日期不能早于今天：" + demandDate, 400);
+        }
+    }
+
+    /** 产品必须存在且可被门店下单（原材料一律拒，白条/礼盒豁免）。 */
+    private ProductInfo requireOrderableProduct(ProductInfo product, Long productId) {
+        if (product == null) {
+            throw new ServiceException("产品不存在或已删除：" + productId, 404);
+        }
+        assertNotRawMaterialForApplet(product);
+        return product;
+    }
+
+    /**
+     * 需求量精度（{@code DECIMAL(12,3)}）。
+     *
+     * <p>`/batch` 与改量端点靠 BO 上的 {@code @Digits} 挡；`/add` 复用的 {@code DemandManageBo}
+     * 是 admin/mp 共用的，不在那上面加约束（会波及 admin），改在 mp 这一侧显式校验。
+     * 不挡的话 4 位小数会被 MySQL 静默四舍五入。</p>
+     */
+    private void assertQuantityScale(BigDecimal qty) {
+        if (qty == null) {
+            return;
+        }
+        if (qty.stripTrailingZeros().scale() > 3 || qty.precision() - qty.scale() > 9) {
+            throw new ServiceException("需求量最多 9 位整数、3 位小数", 400);
+        }
     }
 
     /**
@@ -541,7 +610,7 @@ public class StoreDemandAppletServiceImpl implements IStoreDemandAppletService {
      * <p>理论上同一天同产品最多只该有一条待确认行（并单本身保证了这点）；历史数据里若有多条，
      * 取 id 最小的那条并进去，剩下的留着不动（不替用户做合并决策）。</p>
      */
-    private DemandManage findMergeableRow(Long storeId, LocalDate demandDate, Long productId) {
+    private DemandManage findMergeableRow(Long storeId, LocalDate demandDate, Long productId, String demandType) {
         if (storeId == null || demandDate == null || productId == null) {
             return null;
         }
@@ -550,8 +619,32 @@ public class StoreDemandAppletServiceImpl implements IStoreDemandAppletService {
             .eq(DemandManage::getDemandDate, demandDate)
             .eq(DemandManage::getProductId, productId)
             .eq(DemandManage::getDemandStatus, StoreDemandStatusMapping.SUBMITTED)
+            // 需求类型必须同档：个人邮寄不能并进门店需求 —— 下游分拣发货按 demand_type 分流，
+            // 并错了收货地址就错了。独立验收实测过：不带这个条件时 mailing=true 的一单被并进
+            // demandType=store 的行，标记静默消失。
+            .eq(DemandManage::getDemandType, demandType)
             .orderByAsc(DemandManage::getId)
             .last("LIMIT 1"));
+    }
+
+    /**
+     * 采摘日 → 「距今天的天数」排序键（定长 6 位零填充，字符串序 == 数值序，可直接喂 nullsLastAsc）。
+     *
+     * <p>甲方 row68 原文是「最早采摘开始日期<b>最近</b>的产品」优先。取绝对距离而非日期升序：
+     * 已经可采（日期在过去）与即将可采（日期在未来）都算「近」，越靠近今天越靠前。
+     * 日期非法 / 为空返 null，由 nullsLastAsc 沉底。</p>
+     */
+    static String pickDistanceKey(String pickDate) {
+        if (StringUtils.isBlank(pickDate)) {
+            return null;
+        }
+        try {
+            long days = Math.abs(java.time.temporal.ChronoUnit.DAYS.between(
+                LocalDate.parse(pickDate), LocalDate.now()));
+            return String.format("%06d", Math.min(days, 999999L));
+        } catch (RuntimeException e) {
+            return null;
+        }
     }
 
     /** BigDecimal null → 0（并单累加时旧行数量理论非空，兜底防 NPE）。 */

@@ -3,6 +3,7 @@ package org.dromara.djs.store.demand.service;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.store.demand.domain.bo.StoreDemandBatchBo;
+import org.dromara.djs.warehouse.demand.domain.bo.DemandManageBo;
 import org.dromara.djs.store.demand.domain.bo.StoreDemandQuantityBo;
 import org.dromara.djs.store.demand.domain.vo.StoreDemandCatalogVo;
 import org.dromara.djs.store.demand.domain.vo.StoreDemandDayVo;
@@ -105,4 +106,16 @@ public interface IStoreDemandAppletService {
      * @return 落库条数
      */
     int batchCreate(StoreDemandBatchBo bo);
+
+    /**
+     * 门店小程序单条下单（V6，`/djs/applet/store/demand/add`）—— 与 {@link #batchCreate} <b>同三道闸</b>。
+     *
+     * <p>为什么单独有这一条：`/add` 与 `/batch` 是同一个 controller 上的两扇门。闸只装在 batch 上时，
+     * 一条 `/add` 请求可以同时打穿三道（原材料 + 谎报业态拿到错单号段 + 落在昨天），
+     * 独立验收已线上实证。已发布产物里 `pages/store/demand/form` 这个旧页调的正是 `/add`。</p>
+     *
+     * @param bo 单条需求（门店 + 产品 + 需求日期 + 数量）
+     * @return 新建需求 ID
+     */
+    Long create(DemandManageBo bo);
 }

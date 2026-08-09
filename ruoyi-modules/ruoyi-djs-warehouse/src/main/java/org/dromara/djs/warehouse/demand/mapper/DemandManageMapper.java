@@ -673,6 +673,28 @@ public interface DemandManageMapper extends BaseMapperPlus<DemandManage, DemandM
         GROUP BY product_id
         </script>
         """)
+    /**
+     * 并单时把该行的「下单动作」刷成本次（mp 门店同日同产品合并累加，V6 row69）。
+     *
+     * <p>为什么要改 {@code create_time}：卡片上的「最后下单时间」与「下单人」都取当天
+     * {@code MAX(create_time)} 那一行（见 {@link #selectStoreDemandDayPage}）。并单只 patch
+     * {@code demand_quantity} 的话，店员 16:26 下单、17:00 追加同一产品，卡片仍显示 16:26、
+     * 下单人也停在第一个人 —— 独立验收实测过。</p>
+     *
+     * <p>这一行本就是「某门店某天某产品」的滚动汇总（并单后只有一行），把它的 create 元数据
+     * 定义成「最后一次下单动作」是自洽的；单据成立时间由 {@code demand_no} 里的日期段承载。</p>
+     *
+     * @param id     需求行 ID
+     * @param userId 本次下单人
+     * @return 受影响行数
+     */
+    @Update("""
+        UPDATE t_warehouse_demand_manage
+        SET create_time = NOW(), create_by = #{userId}
+        WHERE id = #{id} AND del_flag = '0'
+        """)
+    int touchOrderMeta(@Param("id") Long id, @Param("userId") Long userId);
+
     List<Map<String, Object>> selectLastOrderTimeByStore(@Param("storeId") Long storeId,
                                                          @Param("productIds") Collection<Long> productIds);
 

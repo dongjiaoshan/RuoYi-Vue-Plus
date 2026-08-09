@@ -1,6 +1,7 @@
 package org.dromara.djs.store.demand.domain.bo;
 
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Digits;
 import jakarta.validation.constraints.NotEmpty;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Positive;
@@ -65,9 +66,16 @@ public class StoreDemandBatchBo {
         @Size(max = 32, message = "产品业态长度不能超过 32")
         private String productType;
 
-        /** 需求量（必须正数）。 */
+        /**
+         * 需求量（必须正数）。
+         *
+         * <p>{@code @Digits} 对齐库表 {@code demand_quantity DECIMAL(12,3)}：不加的话 4 位小数会被
+         * MySQL <b>静默四舍五入</b>（1.2345 落成 1.235，用户不知情），超长整数则漏成通用 500。
+         * 改量端点（{@code StoreDemandQuantityBo}）已有同款约束，两个写入口必须一致。</p>
+         */
         @NotNull(message = "需求量不能为空")
         @Positive(message = "需求量必须大于 0")
+        @Digits(integer = 9, fraction = 3, message = "需求量最多 9 位整数、3 位小数")
         private BigDecimal demandQuantity;
 
         /** 是否个人邮寄（true=个人邮寄 mailing / false=门店 store）。 */
