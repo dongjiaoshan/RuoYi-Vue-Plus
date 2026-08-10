@@ -1,6 +1,7 @@
 package org.dromara.djs.warehouse.pack.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.common.core.exception.ServiceException;
@@ -2147,16 +2148,61 @@ public class ProductProductionServiceImpl
         if (productIds == null || productIds.isEmpty()) {
             return result;
         }
-        // 去重防重复查；逐成品取 product_material 指向的原材料库存合计（口径同打包校验/扣减）
-        for (Long productId : productIds.stream().filter(Objects::nonNull).collect(Collectors.toSet())) {
-            ProductInfo product = productInfoMapper.selectById(productId);
+        Set<Long> ids = productIds.stream().filter(Objects::nonNull).collect(Collectors.toSet());
+        if (ids.isEmpty()) {
+            return result;
+        }
+        // 一次 IN 批查成品（原逐个 selectById + sumProductStock 是 N+1：46 个 SKU = 92 次往返，
+        // 实测 20s+ 把打包页刷新按钮锁死，见 sumMaterialStockBatch 注释）
+        List<ProductInfo> products = productInfoMapper.selectBatchIds(ids);
+        Map<Long, Long> productToMaterial = new HashMap<>();
+        for (ProductInfo product : products) {
             // 未配 product_material 的成品不进 Map（前端展示 '—'，不参与校验）；产品库为空时整体返空 Map
             if (product == null || product.getProductMaterial() == null) {
                 continue;
             }
-            result.put(String.valueOf(productId), sumProductStock(product.getProductMaterial()));
+            productToMaterial.put(product.getId(), product.getProductMaterial());
         }
+        if (productToMaterial.isEmpty()) {
+            return result;
+        }
+        // 一次 GROUP BY 拿全部原材料库存合计（口径同打包校验/扣减 sumProductStock）
+        Map<Long, BigDecimal> materialStock = sumMaterialStockBatch(new java.util.HashSet<>(productToMaterial.values()));
+        productToMaterial.forEach((productId, materialId) ->
+            // 无库存行的原材料按 0 返（与单条 sumProductStock 的 BigDecimal.ZERO 兜底一致）
+            result.put(String.valueOf(productId), materialStock.getOrDefault(materialId, BigDecimal.ZERO)));
         return result;
+    }
+
+    /**
+     * 批量聚合多个产品的当前库存合计（未软删行 {@code SUM(product_stock)} GROUP BY product_id）。
+     *
+     * <p>口径与单条 {@link #sumProductStock} 完全一致，只是把 N 次往返压成 1 次；
+     * 无库存行的产品不在返回 Map 中，由调用方按 {@link BigDecimal#ZERO} 兜底。</p>
+     *
+     * @param materialProductIds 原材料产品 id 集合（非空）
+     * @return materialProductId -&gt; 库存合计
+     */
+    protected Map<Long, BigDecimal> sumMaterialStockBatch(Set<Long> materialProductIds) {
+        Map<Long, BigDecimal> stock = new HashMap<>();
+        if (materialProductIds == null || materialProductIds.isEmpty()) {
+            return stock;
+        }
+        // @TableLogic 自动附加 del_flag='0'，多租户拦截器附加 tenant_id（口径与 sumProductStock 的 selectList 一致）
+        List<Map<String, Object>> rows = locationStockMapper.selectMaps(
+            new QueryWrapper<LocationStock>()
+                .select("product_id AS productId", "SUM(product_stock) AS totalStock")
+                .in("product_id", materialProductIds)
+                .groupBy("product_id"));
+        for (Map<String, Object> row : rows) {
+            Object pid = row.get("productId");
+            Object total = row.get("totalStock");
+            if (pid == null || total == null) {
+                continue;
+            }
+            stock.put(Long.valueOf(pid.toString()), new BigDecimal(total.toString()));
+        }
+        return stock;
     }
 
     @Override
