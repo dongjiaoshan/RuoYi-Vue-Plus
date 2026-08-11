@@ -15,6 +15,7 @@ import org.dromara.djs.common.store.service.IStoreService;
 import org.dromara.djs.common.store.service.IStoreUserRelationService;
 import org.dromara.djs.plant.cropstat.domain.vo.CropPlotStatVo;
 import org.dromara.djs.plant.cropstat.service.ICropPlotStatService;
+import org.dromara.djs.store.demand.core.StoreDemandViewEnricher;
 import org.dromara.djs.store.demand.domain.bo.StoreDemandBatchBo;
 import org.dromara.djs.store.demand.domain.bo.StoreDemandQuantityBo;
 import org.dromara.djs.store.demand.domain.vo.StoreDemandCatalogVo;
@@ -126,6 +127,9 @@ public class StoreDemandAppletServiceImpl implements IStoreDemandAppletService {
 
     /** 整单落库仍复用 admin/mp 共用的那条路径（本类只在它之上加 mp 侧闸，不复写业务逻辑）。 */
     private final IStoreDemandService storeDemandService;
+
+    /** 预计到店量 / 计损量两列的唯一口径（与门店需求分页列表共用）。 */
+    private final StoreDemandViewEnricher viewEnricher;
 
     // ---------------- row66 按天聚合 ----------------
 
@@ -250,6 +254,8 @@ public class StoreDemandAppletServiceImpl implements IStoreDemandAppletService {
                 StoreDemandStatusMapping.derive(vo.getDemandStatus(), vo.getReceivedTime() != null));
         }
         fillProductPresentation(rows);
+        // 预计到店量 + 计损量（V6 row76）：与门店需求分页列表共用同一份口径，绝不在此另写一份
+        viewEnricher.enrich(rows);
         return rows;
     }
 

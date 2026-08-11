@@ -10,6 +10,7 @@ import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.satoken.utils.LoginHelper;
 import org.dromara.djs.store.demand.domain.bo.StoreDemandBatchBo;
 import org.dromara.djs.common.store.service.IStoreService;
+import org.dromara.djs.store.demand.core.StoreDemandViewEnricher;
 import org.dromara.djs.store.demand.service.IStoreDemandService;
 import org.dromara.djs.warehouse.demand.core.enums.DemandStatus;
 import org.dromara.djs.warehouse.demand.domain.DemandManage;
@@ -79,102 +80,14 @@ public class StoreDemandServiceImpl implements IStoreDemandService {
 
     private final IStoreService storeService;
 
-    /** 门店视角派生状态：已发货（{@code djs_store_demand_status} 之一）。 */
-    private static final String STORE_STATUS_SHIPPED = "SHIPPED";
-
-    /** 门店视角派生状态：确认到店（{@code djs_store_demand_status} 之一，SHIPPED 收货后）。 */
-    private static final String STORE_STATUS_ARRIVED = "ARRIVED";
-
-    /** 自产归属类型（djs_belong_type）：果蔬 / 猪肉 / 白条 —— 预计到店重量口径分流。 */
-    private static final String BELONG_VEGETABLE = "vegetable";
-    private static final String BELONG_PORK = "pork";
-    private static final String BELONG_WHITE_BAR = "white_bar";
-    private static final String BELONG_DRY_GOOD = "dry_good";
+    private final StoreDemandViewEnricher viewEnricher;
 
     @Override
     public TableDataInfo<DemandManageVo> queryStoreList(DemandManageQuery query, PageQuery pageQuery) {
         TableDataInfo<DemandManageVo> page = demandManageService.queryPageList(query, pageQuery);
-        fillDamagedCount(page.getRows());
-        fillExpectedWeight(page.getRows());
+        // 预计到店量 + 计损量：与 mp 按天明细（queryDayDetail）共用同一份口径，见 StoreDemandViewEnricher
+        viewEnricher.enrich(page.getRows());
         return page;
-    }
-
-    /**
-     * 回填「预计到店重量」{@code expectedWeight}（admin row5，kg，前端按 productType 换单位展示）。
-     *
-     * <p>按产品自产归属类型（belong_type，经 product_id JOIN 商品主数据取）分流：</p>
-     * <ul>
-     *   <li>果蔬(vegetable) / 猪肉(pork)：{@code 需求量 × 规格净重(kg)}（规格如 500g/包 → 0.5kg）；前端 ×1000 展示 g。</li>
-     *   <li>白条(white_bar)：该需求已发货白条实际重量之和（kg，Kevin 2026-07-07 定 a 方案）；前端 kg 不换算。</li>
-     *   <li>其余（鸡蛋 / 物资 / 礼盒 / 规格非重量）：不回填（{@code null}），前端展示 '—'。</li>
-     * </ul>
-     * compute-on-read：不持久化（白条已发货重随发货变、果蔬量随需求量算），与 {@link #fillDamagedCount} 同批。
-     */
-    private void fillExpectedWeight(List<DemandManageVo> rows) {
-        if (rows == null || rows.isEmpty()) {
-            return;
-        }
-        List<Long> productIds = rows.stream().map(DemandManageVo::getProductId)
-            .filter(java.util.Objects::nonNull).distinct().collect(Collectors.toList());
-        Map<Long, String> belongByProduct = new HashMap<>();
-        if (!productIds.isEmpty()) {
-            List<ProductInfo> products = productInfoMapper.selectList(new LambdaQueryWrapper<ProductInfo>()
-                .in(ProductInfo::getId, productIds)
-                .select(ProductInfo::getId, ProductInfo::getBelongType));
-            for (ProductInfo p : products) {
-                belongByProduct.put(p.getId(), p.getBelongType());
-            }
-        }
-        for (DemandManageVo vo : rows) {
-            if (vo.getExpectedWeight() != null || vo.getProductId() == null) {
-                continue;
-            }
-            String belong = belongByProduct.get(vo.getProductId());
-            if (BELONG_WHITE_BAR.equals(belong)) {
-                BigDecimal w = productProductionMapper.sumShippedWhiteBarWeightByDemand(vo.getId());
-                if (w != null && w.signum() > 0) {
-                    vo.setExpectedWeight(w);
-                }
-            } else if (BELONG_VEGETABLE.equals(belong) || BELONG_PORK.equals(belong)) {
-                // row49/51：果蔬 / 猪肉预计到店重量改按「已发货实际称重之和」（kg），非规格×需求量估算。
-                // 刚下单待确认时无发货清点行 → 0 → 不回填（前端 '—'），发货后按实际称重回填。
-                BigDecimal w = productProductionMapper.sumShippedVegPorkWeightByDemand(vo.getId());
-                if (w != null && w.signum() > 0) {
-                    vo.setExpectedWeight(w);
-                }
-            } else if (BELONG_DRY_GOOD.equals(belong)) {
-                // 干货预计到店重量按「已发货实际重量之和」（kg）。干货是自带真实 product_weight 的独立成品
-                // （如 干羊肚菌 80g/份→0.08~0.10kg），生产时逐份称重 → 已发货后按实际称重回填，与白条/果蔬同口径。
-                BigDecimal w = productProductionMapper.sumShippedDryGoodWeightByDemand(vo.getId());
-                if (w != null && w.signum() > 0) {
-                    vo.setExpectedWeight(w);
-                }
-            }
-            // 其余 belong（礼盒为多产品组合、无单一整体重量，与鸡蛋按枚计一致 / 外购商品 / null）→ 不回填，前端 '—'
-        }
-    }
-
-    /**
-     * 回填「损坏数量」{@code damagedCount}（row48 + admin row6）：对门店派生状态为「已发货」(SHIPPED)
-     * 或「确认到店」(ARRIVED) 的行，调 warehouse {@link IProductProductionService#countDamagedByDemand}
-     * 按 demand_id 统计损坏件数；其余行保持 {@code null}（前端展示 '—'）。
-     *
-     * <p>admin row6：确认到店后行由 SHIPPED 派生成 ARRIVED，损坏数量不因收货而清零（损坏件是产品生产明细
-     * is_damaged=1 的固有属性，与收货无关），故收货后仍按同口径回填，不再漏算成 0。</p>
-     *
-     * <p>当前逐行查询（门店端单店分页数据量小，契约 c 为 COUNT 单点查询）。若后续单店需求行数显著增大，
-     * 可在 warehouse 侧加批量 {@code countDamagedByDemandBatch(demandIds)} 一次聚合替代，去 N+1。</p>
-     */
-    private void fillDamagedCount(List<DemandManageVo> rows) {
-        if (rows == null || rows.isEmpty()) {
-            return;
-        }
-        for (DemandManageVo vo : rows) {
-            String s = vo.getStoreDemandStatus();
-            if (vo.getId() != null && (STORE_STATUS_SHIPPED.equals(s) || STORE_STATUS_ARRIVED.equals(s))) {
-                vo.setDamagedCount((int) productProductionService.countDamagedByDemand(vo.getId()));
-            }
-        }
     }
 
     @Override

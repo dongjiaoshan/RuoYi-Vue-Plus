@@ -113,6 +113,9 @@ class StoreDemandAppletServiceImplTest {
     @Mock
     private org.dromara.djs.store.demand.service.IStoreDemandService storeDemandService;
 
+    @Mock
+    private org.dromara.djs.store.demand.core.StoreDemandViewEnricher viewEnricher;
+
     private StoreDemandAppletServiceImpl service;
 
     private MockedStatic<LoginHelper> loginHelperMock;
@@ -131,7 +134,7 @@ class StoreDemandAppletServiceImplTest {
     void setUp() {
         service = new StoreDemandAppletServiceImpl(demandManageMapper, demandManageService, demandStatusService,
             productInfoMapper, displayNameResolver, imageUrlResolver, cropPlotStatService, storeUserRelationService,
-            storeService, storeDemandService);
+            storeService, storeDemandService, viewEnricher);
         loginHelperMock = Mockito.mockStatic(LoginHelper.class);
         loginHelperMock.when(LoginHelper::getUserId).thenReturn(2001L);
         // 关墙（V1 默认）→ 恒放行；测「无权门店」的用例自己覆盖成 false
