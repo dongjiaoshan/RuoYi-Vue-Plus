@@ -705,5 +705,24 @@ public interface DemandManageMapper extends BaseMapperPlus<DemandManage, DemandM
         </script>
         """)
     List<Long> selectDemandIdsWithPig(@Param("demandIds") Collection<Long> demandIds);
+
+    /**
+     * 该门店是否「不可再下单」（不存在 / 已删除 / 已终止合作），返 &gt;0 表示不可用。
+     *
+     * <p>给编辑路径的门店闸用。warehouse 模块不反向依赖 common.store 的门店服务，
+     * 直接按 {@code t_md_store.business_status} 判：{@code '1'} = 已终止合作
+     * （与 {@code StoreUserRelationServiceImpl.BUSINESS_STATUS_TERMINATED} 同一常量口径）。</p>
+     *
+     * @param storeId 门店主键
+     * @return 不可用计数（0 = 门店正常）
+     */
+    @Select("""
+        SELECT CASE WHEN COUNT(*) = 0 THEN 1 ELSE 0 END
+          FROM t_md_store
+         WHERE id = #{storeId}
+           AND del_flag = '0'
+           AND (business_status IS NULL OR business_status <> '1')
+        """)
+    Integer countTerminatedStore(@Param("storeId") Long storeId);
 }
 

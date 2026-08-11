@@ -524,7 +524,17 @@ public class DemandManageServiceImpl extends DjsBaseServiceImpl<DemandManageMapp
             // 「外购不可下单」新建路径拒、编辑路径原先放行 —— 独立验收实测把一条需求编辑成
             // 外购疫苗返 200。同类的两扇门只关一扇，等于没关。
             validateNotOutsourced(bo.getProductId());
+            // 业态不得跨段偷换：上面第 505 行把 product_type 锁回原值（单号 bizCode 段已按它生成），
+            // 但没拦「换成另一个业态的产品」。独立验收实测：一条 vegetable 需求（单号 D…VG0041）
+            // 被编辑成「半扇」(white_bar) 仍返 200，落库 product_type 还是 vegetable —— 下游按业态分流
+            // 立刻自相矛盾（该行产品是半扇，指定猪只却被拒）。业态要变只能删了重下，不能就地改。
+            assertSameProductType(exists, bo.getProductId());
         }
+        // 门店合作状态闸：新建路径有（assertStoreActive），编辑路径原先没有。
+        // 独立验收实测：把行挂到不存在的门店后，PUT /quantity 与 PUT edit 把需求量从 5.5 改到 123 全程 200 ——
+        // 对已终止合作 / 已删除的门店，这跟直接下单是同一个经济效果。
+        // 闸放在这条两端共用的落库路径上，mp 改量、admin 编辑、/add 并单分支一次覆盖，不再逐个端点补。
+        assertStoreOrderable(exists.getStoreId());
         DemandManage entity = toEntity(bo);
         if (entity == null) {
             throw new ServiceException(I18nMessages.t("demand.bo.convert_failed"));
@@ -865,6 +875,47 @@ public class DemandManageServiceImpl extends DjsBaseServiceImpl<DemandManageMapp
             String name = StrUtil.isNotBlank(product.getProductName()) ? product.getProductName()
                 : StrUtil.isNotBlank(productName) ? productName : String.valueOf(productId);
             throw new ServiceException(I18nMessages.t("demand.field.product.raw_material_forbidden", name), 400);
+        }
+    }
+
+    /**
+     * 编辑不得把需求换成另一个业态的产品。
+     *
+     * <p>{@code product_type} 决定需求单号的 bizCode 段与下游分拣发货的分流键，单号在新建时已定格。
+     * 就地改业态会让「单号说 VG、产品是白条」这种行流到下游；改产品但保留旧业态同样错。
+     * 两难只有一个出口：<b>业态要变就删了重下</b>。</p>
+     *
+     * @param exists       库里现有行
+     * @param newProductId 要改成的产品
+     */
+    private void assertSameProductType(DemandManage exists, Long newProductId) {
+        ProductInfo product = productInfoMapper.selectById(newProductId);
+        if (product == null) {
+            return;
+        }
+        String corrected = correctProductType(product, exists.getProductType());
+        if (!Objects.equals(corrected, exists.getProductType())) {
+            throw new ServiceException(
+                "需求单【" + exists.getDemandNo() + "】是「" + exists.getProductType()
+                    + "」业态，不能改成其它业态的产品；请删除该行后重新下单", 400);
+        }
+    }
+
+    /**
+     * 门店必须仍可下单（合作状态）。
+     *
+     * <p>{@code storeId} 为空 = 非门店发起的需求（仓库自建），不适用。
+     * 门店不存在 / 已终止合作时抛错，与新建路径 {@code IStoreService#assertStoreActive} 同一条口径；
+     * 这里不直接依赖 store 服务（warehouse 模块不反向依赖 common.store 的门店服务），
+     * 按 {@code t_md_store} 的 {@code business_status} 自行判定。</p>
+     */
+    private void assertStoreOrderable(Long storeId) {
+        if (storeId == null) {
+            return;
+        }
+        Integer bad = baseMapper.countTerminatedStore(storeId);
+        if (bad != null && bad > 0) {
+            throw new ServiceException("该门店已终止合作或不存在，不能再调整其需求：" + storeId, 400);
         }
     }
 
