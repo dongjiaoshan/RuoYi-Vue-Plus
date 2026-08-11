@@ -27,7 +27,10 @@ import java.util.Objects;
  * <p>两条链路曾经只有前者回填，结果同一笔需求「列表页有预计到店量、点进详情就没有」。
  * 复制第二份实现必然再漂一次，故收口到本类，调用方只准调 {@link #enrich(List)}。</p>
  *
- * <p>compute-on-read：两个数都不持久化（白条已发货重随发货变、损坏件随生产明细变）。</p>
+ * <p>{@code damaged_count} 无持久化列，恒 compute-on-read。{@code expected_weight}
+ * <b>是</b> {@code t_warehouse_demand_manage} 上的真实列（{@code DECIMAL(12,3) NULL}），
+ * 只是当前没有任何写入路径、全库为 NULL —— 所以本类对已有值 {@code continue}（尊重落库值），
+ * 其余按已发货实际称重现算。哪天真加了写入路径，这里的行为就自动变成「以库里为准」。</p>
  *
  * @author djs
  * @since V6-row76

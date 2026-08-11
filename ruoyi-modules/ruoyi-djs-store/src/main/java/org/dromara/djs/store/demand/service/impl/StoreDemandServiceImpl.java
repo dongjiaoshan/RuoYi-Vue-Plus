@@ -21,7 +21,6 @@ import org.dromara.djs.warehouse.demand.mapper.DemandManageMapper;
 import org.dromara.djs.warehouse.demand.service.IDemandManageService;
 import org.dromara.djs.warehouse.pack.domain.ProductProduction;
 import org.dromara.djs.warehouse.pack.mapper.ProductProductionMapper;
-import org.dromara.djs.warehouse.pack.service.IProductProductionService;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
 import org.dromara.djs.warehouse.trace.domain.TraceContentConst;
@@ -29,13 +28,11 @@ import org.dromara.djs.warehouse.trace.service.ITraceService;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.stream.Collectors;
 
 /**
  * 门店端需求服务实现（STR-DEMAND-001 + STORE-DEMAND-REALIGN-001，薄封装复用 WMS demand）。
@@ -73,8 +70,6 @@ public class StoreDemandServiceImpl implements IStoreDemandService {
     private final DemandManageMapper demandManageMapper;
 
     private final ProductProductionMapper productProductionMapper;
-
-    private final IProductProductionService productProductionService;
 
     private final ITraceService traceService;
 

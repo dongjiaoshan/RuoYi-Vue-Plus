@@ -11,6 +11,7 @@ import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.satoken.utils.LoginHelper;
 import org.dromara.djs.common.image.service.ImageUrlResolver;
+import org.dromara.djs.common.util.LikeEscape;
 import org.dromara.djs.common.store.service.IStoreService;
 import org.dromara.djs.common.store.service.IStoreUserRelationService;
 import org.dromara.djs.plant.cropstat.domain.vo.CropPlotStatVo;
@@ -239,7 +240,7 @@ public class StoreDemandAppletServiceImpl implements IStoreDemandAppletService {
             // 产品名是店员手输的自由文本，必须转义 LIKE 元字符：不转义时输入一个 `_` 或 `%`
             // 就变成通配符，页面表现为「搜什么都返回当天全部行」，店员以为没筛上
             .like(StringUtils.isNotBlank(productName), DemandManage::getProductName,
-                escapeLikeLiteral(productName))
+                LikeEscape.escape(productName))
             // 门店端永不返回门店态 DELETED 的行；DRAFT 是从未提交给仓库的草稿，门店同样不该看见
             //（漏了会造成「不筛看得到、四态全选反而筛不到」）。软删行另由 del_flag 自动排除。
             .notIn(DemandManage::getDemandStatus, (Object[]) StoreDemandStatusMapping.EXCLUDED_STATUSES)
@@ -379,8 +380,8 @@ public class StoreDemandAppletServiceImpl implements IStoreDemandAppletService {
             .and(w -> w.in(ProductInfo::getBelongType, BELONG_WHITE_BAR, BELONG_GIFT_BOX)
                 .or().eq(ProductInfo::getProductAttr, PRODUCT_ATTR_FINISHED))
             .and(StringUtils.isNotBlank(keyword), w -> w
-                .like(ProductInfo::getProductName, escapeLikeLiteral(keyword))
-                .or().like(ProductInfo::getProductAlias, escapeLikeLiteral(keyword)))
+                .like(ProductInfo::getProductName, LikeEscape.escape(keyword))
+                .or().like(ProductInfo::getProductAlias, LikeEscape.escape(keyword)))
             .orderByDesc(ProductInfo::getId)
             .last("LIMIT " + CATALOG_LIMIT);
     }
@@ -640,21 +641,6 @@ public class StoreDemandAppletServiceImpl implements IStoreDemandAppletService {
         if (demandDate != null && demandDate.isBefore(LocalDate.now())) {
             throw new ServiceException("需求日期不能早于今天：" + demandDate, 400);
         }
-    }
-
-    /**
-     * 把用户输入当成 LIKE 的<b>字面量</b>：转义 {@code \ % _} 三个元字符。
-     *
-     * <p>MySQL 的 LIKE 默认转义符就是反斜杠，所以不需要额外的 {@code ESCAPE} 子句。
-     * 不转义的实测后果：店员在详情页搜索框敲一个 {@code _} 或 {@code %}，
-     * 当天全部行原样返回（等于没筛），而搜「黑%骨」会跨字符命中「黑毛猪扇子骨750g/份」——
-     * 都不是普通用户能预期的行为。</p>
-     */
-    private String escapeLikeLiteral(String raw) {
-        if (raw == null) {
-            return null;
-        }
-        return raw.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_");
     }
 
     /**

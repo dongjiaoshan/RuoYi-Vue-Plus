@@ -6,6 +6,7 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import lombok.RequiredArgsConstructor;
 import org.dromara.common.core.domain.R;
 import org.dromara.common.core.utils.StringUtils;
+import org.dromara.djs.common.util.LikeEscape;
 import org.dromara.djs.warehouse.location.domain.vo.LocationPickerVo;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.domain.vo.ProductPickerVo;
@@ -97,9 +98,9 @@ public class ProductAppletController {
                 .or()
                 .isNull(ProductInfo::getProductAttr))
             .and(StringUtils.isNotBlank(keyword), w -> w
-                .like(ProductInfo::getProductName, keyword)
+                .like(ProductInfo::getProductName, LikeEscape.escape(keyword))
                 .or()
-                .like(ProductInfo::getProductId, keyword))
+                .like(ProductInfo::getProductId, LikeEscape.escape(keyword)))
             .orderByDesc(ProductInfo::getId)
             .last("LIMIT 200");
         List<ProductInfo> rows = productInfoMapper.selectList(wrapper);
