@@ -99,12 +99,16 @@ public class AppletStoreDemandController {
         return R.ok(storeDemandAppletService.create(bo));
     }
 
-    /** 撤回未确认需求（→ CANCELLED）。 */
+    /**
+     * 撤回未确认需求（→ CANCELLED）。
+     *
+     * <p>走门店 service 而不是直接打状态机：门店只准动「待确认」的行（甲方 row70 第 4 条），
+     * 而状态机本身允许 {@code CONFIRMED → CANCELLED}。直连状态机等于给改量端点的闸开了扇后门。</p>
+     */
     @SaCheckLogin
     @PostMapping("/{id}/cancel")
     public R<Void> cancel(@PathVariable Long id, @RequestParam(required = false) String remark) {
-        // operator 传 null → warehouse service 内 LoginHelper 兜底（mp mock token 无 user_id 时不阻断）
-        demandStatusService.transition(id, DemandEvent.CANCEL, null, remark);
+        storeDemandAppletService.cancelSubmitted(id, remark);
         return R.ok();
     }
 

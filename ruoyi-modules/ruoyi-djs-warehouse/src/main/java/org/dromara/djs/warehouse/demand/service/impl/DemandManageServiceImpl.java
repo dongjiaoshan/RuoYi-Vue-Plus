@@ -509,6 +509,19 @@ public class DemandManageServiceImpl extends DjsBaseServiceImpl<DemandManageMapp
             throw new ServiceException(
                 I18nMessages.t("demand.update.status_forbidden", exists.getDemandNo(), exists.getDemandStatus()), 400);
         }
+
+        // 「不得挂原材料」这道闸原先只装在 insertByBo，编辑路径是没设防的第二扇门：
+        // 独立验收实测可以把一条已成立的需求行改成原材料。需求单挂原料会让下游按「打包成品
+        // 反查原料履约」的口径读到自相矛盾的数据（doc/14 §5），任何路径都不该允许。
+        // 只在 productId 真被改动时校验：无条件校验会把「修正一条历史单据的备注」这类正常业务一并拦死。
+        // 排在「状态可编辑」闸之后 —— 否则编辑一条不可编辑的行时会报错在错误的方向上。
+        //
+        // ⚠️ 这里**故意不加**「日期不得早于今天」：甲方那句「最早只能是当天」约束的是门店小程序
+        // 下单页（row69 第 4 条），而 admin 侧 insertByBo 新建时本就允许补录过去日期。
+        // 只给编辑加闸会比新建还严，且会拦死仓库补录历史单据。admin 要不要禁止补录，是待甲方/Kevin 拍的口径。
+        if (bo.getProductId() != null && !bo.getProductId().equals(exists.getProductId())) {
+            validateNotRawMaterial(bo.getProductId(), bo.getProductName());
+        }
         DemandManage entity = toEntity(bo);
         if (entity == null) {
             throw new ServiceException(I18nMessages.t("demand.bo.convert_failed"));

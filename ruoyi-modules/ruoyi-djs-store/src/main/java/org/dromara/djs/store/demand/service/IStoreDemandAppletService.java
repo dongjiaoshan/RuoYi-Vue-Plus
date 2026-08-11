@@ -81,6 +81,18 @@ public interface IStoreDemandAppletService {
     void updateQuantity(StoreDemandQuantityBo bo);
 
     /**
+     * 门店撤回一条需求（→ CANCELLED）。
+     *
+     * <p>只允许门店视角「待确认」的行——与 {@link #updateQuantity} 同一道闸。
+     * 仓库域状态机本身允许 {@code CONFIRMED → CANCELLED}（admin 有正当场景），
+     * 所以门店侧必须自己拦，否则改量端点拦住的行换这个端点就能撤掉。</p>
+     *
+     * @param id     需求 ID
+     * @param remark 撤回备注（可空）
+     */
+    void cancelSubmitted(Long id, String remark);
+
+    /**
      * 门店小程序整单下单（V6 row69）—— 在 admin 共用的 {@code batchCreate} 之上加三道 mp 侧闸。
      *
      * <p>为什么不直接调 {@code IStoreDemandService.batchCreate}：那条路径是 admin / mp 共用的，

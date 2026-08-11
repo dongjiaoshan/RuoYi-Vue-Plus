@@ -10,6 +10,7 @@ import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.satoken.utils.LoginHelper;
 import org.dromara.djs.common.image.service.ImageUrlResolver;
+import org.dromara.djs.common.store.service.IStoreService;
 import org.dromara.djs.common.store.service.IStoreUserRelationService;
 import org.dromara.djs.plant.cropstat.domain.vo.CropPlotStatVo;
 import org.dromara.djs.plant.cropstat.service.ICropPlotStatService;
@@ -22,7 +23,9 @@ import org.dromara.djs.warehouse.demand.domain.bo.DemandManageBo;
 import org.dromara.djs.warehouse.demand.domain.vo.DemandManageVo;
 import org.dromara.djs.warehouse.demand.domain.vo.StoreDemandDayAggVo;
 import org.dromara.djs.warehouse.demand.mapper.DemandManageMapper;
+import org.dromara.djs.warehouse.demand.core.enums.DemandEvent;
 import org.dromara.djs.warehouse.demand.service.IDemandManageService;
+import org.dromara.djs.warehouse.demand.service.IDemandStatusService;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
 import org.dromara.djs.warehouse.product.service.IProductDisplayNameResolver;
@@ -55,6 +58,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -86,6 +90,9 @@ class StoreDemandAppletServiceImplTest {
     private IDemandManageService demandManageService;
 
     @Mock
+    private IDemandStatusService demandStatusService;
+
+    @Mock
     private ProductInfoMapper productInfoMapper;
 
     @Mock
@@ -99,6 +106,9 @@ class StoreDemandAppletServiceImplTest {
 
     @Mock
     private IStoreUserRelationService storeUserRelationService;
+
+    @Mock
+    private IStoreService storeService;
 
     @Mock
     private org.dromara.djs.store.demand.service.IStoreDemandService storeDemandService;
@@ -119,8 +129,9 @@ class StoreDemandAppletServiceImplTest {
 
     @BeforeEach
     void setUp() {
-        service = new StoreDemandAppletServiceImpl(demandManageMapper, demandManageService, productInfoMapper,
-            displayNameResolver, imageUrlResolver, cropPlotStatService, storeUserRelationService, storeDemandService);
+        service = new StoreDemandAppletServiceImpl(demandManageMapper, demandManageService, demandStatusService,
+            productInfoMapper, displayNameResolver, imageUrlResolver, cropPlotStatService, storeUserRelationService,
+            storeService, storeDemandService);
         loginHelperMock = Mockito.mockStatic(LoginHelper.class);
         loginHelperMock.when(LoginHelper::getUserId).thenReturn(2001L);
         // 关墙（V1 默认）→ 恒放行；测「无权门店」的用例自己覆盖成 false
@@ -252,7 +263,7 @@ class StoreDemandAppletServiceImplTest {
         String sql = captor.getValue().getTargetSql();
         assertThat(sql)
             .contains("(demand_status = 'SUBMITTED')")
-            .contains("(demand_status = 'CONFIRMED' AND received_time IS NULL)")
+            .contains("(demand_status IN ('CONFIRMED','IN_PRODUCTION') AND received_time IS NULL)")
             .contains("OR")
             .contains("demand_status NOT IN")
             .contains("product_name LIKE");
@@ -570,11 +581,17 @@ class StoreDemandAppletServiceImplTest {
     }
 
     private ProductInfo product(Long id, String belongType, int attr) {
+        // productType=1 自产：门店唯一可下单的类型（不设的话会被「外购不可下单」闸挡掉）
+        return product(id, belongType, attr, 1);
+    }
+
+    private ProductInfo product(Long id, String belongType, int attr, Integer productType) {
         ProductInfo p = new ProductInfo();
         p.setId(id);
         p.setProductName("测试产品" + id);
         p.setBelongType(belongType);
         p.setProductAttr(attr);
+        p.setProductType(productType);
         return p;
     }
 
@@ -731,5 +748,103 @@ class StoreDemandAppletServiceImplTest {
         assertThat(list).extracting(StoreDemandCatalogVo::getProductId)
             .containsExactly(9002L, 9001L);
         assertThat(list.get(0).getEarliestPickDate()).isEqualTo(future3);
+    }
+
+    // ---------------- 独立验收补的闸（2026-08-11 clean-QA）----------------
+
+    @Test
+    @DisplayName("row70 已确认行不得走 /cancel 撤回 —— 改量端点拦住的行，换这个端点也必须拦住")
+    void cancelSubmitted_rejectsConfirmedRow() {
+        // 独立验收实测：同一 token，改量端点对已确认行返 400，紧接着打 /cancel 却 200，
+        // 已确认行照样从详情页消失、日卡品数 -1、确认率归零。
+        when(demandManageMapper.selectById(101L)).thenReturn(demand("CONFIRMED", null));
+        assertThatThrownBy(() -> service.cancelSubmitted(101L, null))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("仅「待确认」的需求可撤回")
+            .hasMessageContaining("已确认");
+        verify(demandStatusService, never()).transition(any(), any(), any(), any());
+    }
+
+    @Test
+    @DisplayName("row70 待确认行可以撤回（闸不能把正常业务一起拦死）")
+    void cancelSubmitted_allowsSubmittedRow() {
+        when(demandManageMapper.selectById(101L)).thenReturn(demand("SUBMITTED", null));
+        service.cancelSubmitted(101L, "不要了");
+        verify(demandStatusService).transition(eq(101L), eq(DemandEvent.CANCEL), isNull(), eq("不要了"));
+    }
+
+    @Test
+    @DisplayName("row70 无权门店的行不得撤回")
+    void cancelSubmitted_rejectsForeignStore() {
+        when(demandManageMapper.selectById(101L)).thenReturn(demand("SUBMITTED", null));
+        when(storeUserRelationService.isStoreAccessible(any(), any())).thenReturn(false);
+        assertThatThrownBy(() -> service.cancelSubmitted(101L, null))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("无权操作该门店的需求");
+        verify(demandStatusService, never()).transition(any(), any(), any(), any());
+    }
+
+    @Test
+    @DisplayName("row70 产品名搜索转义 LIKE 元字符 —— 敲一个 % 不该等于「不筛」")
+    void queryDayDetail_escapesLikeMetacharacters() {
+        // 独立验收实测：store=…004 / 2026-08-06（当天 7 行），productName=`%` 或 `_` 都返 7 条 = 全返。
+        when(demandManageMapper.selectVoList(any())).thenReturn(List.of());
+        service.queryDayDetail(5001L, LocalDate.now(), "100%_纯", null);
+        ArgumentCaptor<com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper> w =
+            ArgumentCaptor.forClass(com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper.class);
+        verify(demandManageMapper).selectVoList(w.capture());
+        // 先触发 SQL 生成，参数才会 materialize 到 paramNameValuePairs
+        assertThat(w.getValue().getTargetSql()).contains("product_name LIKE");
+        assertThat(w.getValue().getParamNameValuePairs().values())
+            .anyMatch(v -> String.valueOf(v).contains("100\\%\\_纯"));
+    }
+
+    @Test
+    @DisplayName("row70 DRAFT 行不进门店详情 —— 否则「不筛看得到、四态全选反而筛不到」")
+    void queryDayDetail_excludesDraftRows() {
+        when(demandManageMapper.selectVoList(any())).thenReturn(List.of());
+        service.queryDayDetail(5001L, LocalDate.now(), null, null);
+        ArgumentCaptor<com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper> w =
+            ArgumentCaptor.forClass(com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper.class);
+        verify(demandManageMapper).selectVoList(w.capture());
+        assertThat(w.getValue().getTargetSql()).contains("demand_status NOT IN");
+        assertThat(w.getValue().getParamNameValuePairs().values()).contains("DRAFT", "DELETED", "CANCELLED");
+    }
+
+    @Test
+    @DisplayName("row69 外购商品不可被门店下单 —— 这道闸原先只在单条落库路径上，整单下单没有")
+    void batchCreate_rejectsOutsourcedProduct() {
+        when(productInfoMapper.selectList(any()))
+            .thenReturn(List.of(product(9304000000000001L, "vegetable", 1, 2)));
+        assertThatThrownBy(() -> service.batchCreate(batchBo(LocalDate.now(), 9304000000000001L, "vegetable")))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("外购商品，不可被门店下单");
+        verify(storeDemandService, never()).batchCreate(any());
+    }
+
+    @Test
+    @DisplayName("/add 同店同日同产品也并单（并单原先只装在 /batch，换个端点就能造出一天两条同名行）")
+    void create_mergesSameDaySameProduct() {
+        when(productInfoMapper.selectById(9304000000000001L))
+            .thenReturn(product(9304000000000001L, "vegetable", 1));
+        DemandManage exist = new DemandManage();
+        exist.setId(777L);
+        exist.setDemandNo("D-EXIST-001");
+        exist.setDemandQuantity(new java.math.BigDecimal("3"));
+        when(demandManageMapper.selectOne(any())).thenReturn(exist);
+
+        DemandManageBo bo = new DemandManageBo();
+        bo.setStoreId(5001L);
+        bo.setDemandDate(LocalDate.now());
+        bo.setProductId(9304000000000001L);
+        bo.setDemandQuantity(new java.math.BigDecimal("2"));
+        Long id = service.create(bo);
+
+        assertThat(id).isEqualTo(777L);
+        // 走并单 → 绝不能再新建一行
+        verify(storeDemandService, never()).createStoreDemand(any());
+        ArgumentCaptor<DemandManageBo> patch = ArgumentCaptor.forClass(DemandManageBo.class);
+        verify(demandManageService).updateByBo(patch.capture());
+        assertThat(patch.getValue().getDemandQuantity()).isEqualByComparingTo("5");
     }
 }

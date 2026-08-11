@@ -53,11 +53,11 @@ class StoreDemandStatusMappingTest {
         assertThat(StoreDemandStatusMapping.sqlPredicate("SUBMITTED"))
             .isEqualTo("(demand_status = 'SUBMITTED')");
         assertThat(StoreDemandStatusMapping.sqlPredicate("CONFIRMED"))
-            .isEqualTo("(demand_status = 'CONFIRMED' AND received_time IS NULL)");
+            .isEqualTo("(demand_status IN ('CONFIRMED','IN_PRODUCTION') AND received_time IS NULL)");
         assertThat(StoreDemandStatusMapping.sqlPredicate("SHIPPED"))
             .isEqualTo("(demand_status IN ('PARTIAL_SHIPPED','COMPLETED') AND received_time IS NULL)");
         assertThat(StoreDemandStatusMapping.sqlPredicate("ARRIVED"))
-            .isEqualTo("(demand_status IN ('CONFIRMED','PARTIAL_SHIPPED','COMPLETED') AND received_time IS NOT NULL)");
+            .isEqualTo("(demand_status IN ('CONFIRMED','IN_PRODUCTION','PARTIAL_SHIPPED','COMPLETED') AND received_time IS NOT NULL)");
     }
 
     @Test
@@ -86,7 +86,7 @@ class StoreDemandStatusMappingTest {
     void sqlPredicateAnyJoinsWithOr() {
         String sql = StoreDemandStatusMapping.sqlPredicateAny(List.of("SUBMITTED", "CONFIRMED"));
         assertThat(sql).isEqualTo(
-            "((demand_status = 'SUBMITTED') OR (demand_status = 'CONFIRMED' AND received_time IS NULL))");
+            "((demand_status = 'SUBMITTED') OR (demand_status IN ('CONFIRMED','IN_PRODUCTION') AND received_time IS NULL))");
     }
 
     @Test

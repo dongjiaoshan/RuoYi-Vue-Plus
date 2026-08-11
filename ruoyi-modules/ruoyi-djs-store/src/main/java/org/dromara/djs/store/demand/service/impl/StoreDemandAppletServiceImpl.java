@@ -11,6 +11,7 @@ import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.satoken.utils.LoginHelper;
 import org.dromara.djs.common.image.service.ImageUrlResolver;
+import org.dromara.djs.common.store.service.IStoreService;
 import org.dromara.djs.common.store.service.IStoreUserRelationService;
 import org.dromara.djs.plant.cropstat.domain.vo.CropPlotStatVo;
 import org.dromara.djs.plant.cropstat.service.ICropPlotStatService;
@@ -21,12 +22,14 @@ import org.dromara.djs.store.demand.domain.vo.StoreDemandDayVo;
 import org.dromara.djs.store.demand.service.IStoreDemandAppletService;
 import org.dromara.djs.store.demand.service.IStoreDemandService;
 import org.dromara.djs.warehouse.demand.core.StoreDemandStatusMapping;
+import org.dromara.djs.warehouse.demand.core.enums.DemandEvent;
 import org.dromara.djs.warehouse.demand.domain.DemandManage;
 import org.dromara.djs.warehouse.demand.domain.bo.DemandManageBo;
 import org.dromara.djs.warehouse.demand.domain.vo.DemandManageVo;
 import org.dromara.djs.warehouse.demand.domain.vo.StoreDemandDayAggVo;
 import org.dromara.djs.warehouse.demand.mapper.DemandManageMapper;
 import org.dromara.djs.warehouse.demand.service.IDemandManageService;
+import org.dromara.djs.warehouse.demand.service.IDemandStatusService;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
 import org.dromara.djs.warehouse.product.service.IProductDisplayNameResolver;
@@ -106,6 +109,8 @@ public class StoreDemandAppletServiceImpl implements IStoreDemandAppletService {
 
     private final IDemandManageService demandManageService;
 
+    private final IDemandStatusService demandStatusService;
+
     private final ProductInfoMapper productInfoMapper;
 
     private final IProductDisplayNameResolver displayNameResolver;
@@ -116,6 +121,9 @@ public class StoreDemandAppletServiceImpl implements IStoreDemandAppletService {
 
     private final IStoreUserRelationService storeUserRelationService;
 
+    /** 门店合作状态闸（整单下单路径原先完全没有这道校验）。 */
+    private final IStoreService storeService;
+
     /** 整单落库仍复用 admin/mp 共用的那条路径（本类只在它之上加 mp 侧闸，不复写业务逻辑）。 */
     private final IStoreDemandService storeDemandService;
 
@@ -124,6 +132,7 @@ public class StoreDemandAppletServiceImpl implements IStoreDemandAppletService {
     @Override
     public TableDataInfo<StoreDemandDayVo> queryDayList(Long storeId, LocalDate beginDate, LocalDate endDate,
                                                         PageQuery pageQuery) {
+        assertStoreReadable(storeId);
         PageQuery pq = pageQuery != null ? pageQuery : new PageQuery(1, 10);
         Page<StoreDemandDayAggVo> page =
             demandManageMapper.selectStoreDemandDayPage(pq.build(), storeId, beginDate, endDate);
@@ -163,10 +172,11 @@ public class StoreDemandAppletServiceImpl implements IStoreDemandAppletService {
      * <p>「其余」桶 = {@code total - arrived - shipped - confirmed}，装的是 SUBMITTED 以及理论上不该出现在
      * 门店端的态（DRAFT 等）——它们一律把当天压回「需求确认中」，即最保守的一档。</p>
      *
-     * <p>甲方原文「需求生产中 = 需求全部完成确认，且有产品已开始生产完成」：系统里
-     * {@code DemandStatus.IN_PRODUCTION} 已废弃、存量回迁 CONFIRMED，没有可读的「生产中」信号，
-     * 「全部确认了但还没生产」在原文里是空档，故按「全部确认即生产中」收口（生产是确认后的必然下一步），
-     * <b>已登记为待甲方复核的假设</b>。</p>
+     * <p><b>「需求生产中」的口径（Kevin 2026-08-11 拍板）：只要需求被仓库确认、且还未发车，就是生产中。</b>
+     * 即不看生产记录，只看「全部确认」且「未全部发货」——正是下面阶梯的 else 分支。
+     * 甲方原文那句「且有产品已开始生产完成」不作为判据：生产记录（{@code t_warehouse_product_production}）
+     * 是发货环节才回写 {@code demand_id} 的，确认到发车之间读不到任何生产信号，
+     * 按原文字面实现会让 82% 的「生产中」日卡（实测 17 张里 14 张）翻成别的态。</p>
      *
      * @param total     当天需求单总数
      * @param arrived   门店态 ARRIVED 的单数
@@ -213,6 +223,7 @@ public class StoreDemandAppletServiceImpl implements IStoreDemandAppletService {
         if (storeId == null) {
             throw new ServiceException("门店不能为空", 400);
         }
+        assertStoreReadable(storeId);
         if (demandDate == null) {
             throw new ServiceException("需求日期不能为空", 400);
         }
@@ -221,9 +232,13 @@ public class StoreDemandAppletServiceImpl implements IStoreDemandAppletService {
         LambdaQueryWrapper<DemandManage> wrapper = new LambdaQueryWrapper<DemandManage>()
             .eq(DemandManage::getStoreId, storeId)
             .eq(DemandManage::getDemandDate, demandDate)
-            .like(StringUtils.isNotBlank(productName), DemandManage::getProductName, productName)
-            // 门店端永不返回门店态 DELETED 的行（软删行另由 del_flag 自动排除）
-            .notIn(DemandManage::getDemandStatus, "DELETED", "CANCELLED")
+            // 产品名是店员手输的自由文本，必须转义 LIKE 元字符：不转义时输入一个 `_` 或 `%`
+            // 就变成通配符，页面表现为「搜什么都返回当天全部行」，店员以为没筛上
+            .like(StringUtils.isNotBlank(productName), DemandManage::getProductName,
+                escapeLikeLiteral(productName))
+            // 门店端永不返回门店态 DELETED 的行；DRAFT 是从未提交给仓库的草稿，门店同样不该看见
+            //（漏了会造成「不筛看得到、四态全选反而筛不到」）。软删行另由 del_flag 自动排除。
+            .notIn(DemandManage::getDemandStatus, (Object[]) StoreDemandStatusMapping.EXCLUDED_STATUSES)
             .orderByAsc(DemandManage::getId);
         if (storeStatusSql != null) {
             // 片段是 mapping 产出的常量字符串，不含任何用户输入，无注入面
@@ -286,6 +301,7 @@ public class StoreDemandAppletServiceImpl implements IStoreDemandAppletService {
         if (storeId == null) {
             throw new ServiceException("门店不能为空", 400);
         }
+        assertStoreReadable(storeId);
         List<ProductInfo> products = productInfoMapper.selectList(buildCatalogWrapper(keyword));
         if (products.isEmpty()) {
             return List.of();
@@ -494,6 +510,11 @@ public class StoreDemandAppletServiceImpl implements IStoreDemandAppletService {
         LocalDate demandDate = bo.getDemandDate();
         assertDemandDateNotPast(demandDate);
 
+        // ①' 门店必须仍在合作中。这道闸只装在单条落库的 createStoreDemand 上，
+        //     StoreDemandServiceImpl.batchCreate 整条路径都没有它；再叠加下面的并单
+        //     （全部命中并单时连 batchCreate 都不会被调用），整单下单等于完全没有门店有效性校验。
+        storeService.assertStoreActive(bo.getStoreId());
+
         List<StoreDemandBatchBo.Item> items = bo.getItems();
         if (items == null || items.isEmpty()) {
             throw new ServiceException("需求产品不能为空", 400);
@@ -532,10 +553,20 @@ public class StoreDemandAppletServiceImpl implements IStoreDemandAppletService {
             DemandManageBo patch = new DemandManageBo();
             patch.setId(exist.getId());
             patch.setDemandQuantity(sum);
+            // 第二单带来的备注 / 期望到店日**以最后一次为准**（不是静默丢弃）：
+            // 店员追加时改了期望到店日却不生效，比覆盖更难排查。
+            if (StringUtils.isNotBlank(bo.getDemandRemark())) {
+                patch.setDemandRemark(bo.getDemandRemark());
+            }
+            if (bo.getExpectedArriveDate() != null) {
+                patch.setExpectedArriveDate(bo.getExpectedArriveDate());
+            }
             demandManageService.updateByBo(patch);
-            // 并单也是一次下单动作：刷 create_time/create_by，否则卡片的「最后下单时间」和「下单人」
-            // 会停在第一次下单那一刻（两者都取当天 MAX(create_time) 那行）
-            demandManageMapper.touchOrderMeta(exist.getId(), currentUserIdSafe());
+            // ⚠️ 这里**不刷** create_time / create_by。
+            // 曾经刷过（为了让卡片的「最后下单时间」跟着动），代价是原始下单人被永久抹掉、
+            // admin 列表的「创建时间」列语义静默变成「最后一次追加」。
+            // 正解在读侧：卡片的最后下单时间取 MAX(GREATEST(create_time, update_time))，
+            // 下单人取当天最早那条（首次下单人，稳定）—— 见 DemandManageMapper.selectStoreDemandDayPage。
             merged++;
             log.info("[STORE-MP-BOARD-001] 同日同产品并单 id={} no={} {} + {} = {}",
                 exist.getId(), exist.getDemandNo(), exist.getDemandQuantity(), item.getDemandQuantity(), sum);
@@ -564,6 +595,28 @@ public class StoreDemandAppletServiceImpl implements IStoreDemandAppletService {
         // 不传则落 NULL。而并单的匹配键包含 demand_type（个人邮寄不能并进门店需求），
         // 非法值 / NULL 会让这一行**永远匹配不上、永远并不了单**，同店同日同产品又变回两张同名卡。
         bo.setDemandType(DEMAND_TYPE_MAILING.equals(bo.getDemandType()) ? DEMAND_TYPE_MAILING : DEMAND_TYPE_STORE);
+
+        // 并单也必须两扇门都装：只装在 /batch 时，同一个凭证换成 /add 就能造出「一天两条同名行」，
+        // 详情页又会出现「产品品数 1、底下两张同名卡」的自相矛盾。
+        LocalDate targetDate = bo.getDemandDate() != null ? bo.getDemandDate() : LocalDate.now();
+        DemandManage exist = findMergeableRow(
+            bo.getStoreId(), targetDate, bo.getProductId(), bo.getDemandType());
+        if (exist != null) {
+            BigDecimal sum = nzq(exist.getDemandQuantity()).add(nzq(bo.getDemandQuantity()));
+            DemandManageBo patch = new DemandManageBo();
+            patch.setId(exist.getId());
+            patch.setDemandQuantity(sum);
+            if (StringUtils.isNotBlank(bo.getDemandRemark())) {
+                patch.setDemandRemark(bo.getDemandRemark());
+            }
+            if (bo.getExpectedArriveDate() != null) {
+                patch.setExpectedArriveDate(bo.getExpectedArriveDate());
+            }
+            demandManageService.updateByBo(patch);
+            log.info("[STORE-MP-BOARD-001] /add 同日同产品并单 id={} no={} {} + {} = {}",
+                exist.getId(), exist.getDemandNo(), exist.getDemandQuantity(), bo.getDemandQuantity(), sum);
+            return exist.getId();
+        }
         return storeDemandService.createStoreDemand(bo);
     }
 
@@ -579,10 +632,36 @@ public class StoreDemandAppletServiceImpl implements IStoreDemandAppletService {
         }
     }
 
-    /** 产品必须存在且可被门店下单（原材料一律拒，白条/礼盒豁免）。 */
+    /**
+     * 把用户输入当成 LIKE 的<b>字面量</b>：转义 {@code \ % _} 三个元字符。
+     *
+     * <p>MySQL 的 LIKE 默认转义符就是反斜杠，所以不需要额外的 {@code ESCAPE} 子句。
+     * 不转义的实测后果：店员在详情页搜索框敲一个 {@code _} 或 {@code %}，
+     * 当天全部行原样返回（等于没筛），而搜「黑%骨」会跨字符命中「黑毛猪扇子骨750g/份」——
+     * 都不是普通用户能预期的行为。</p>
+     */
+    private String escapeLikeLiteral(String raw) {
+        if (raw == null) {
+            return null;
+        }
+        return raw.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_");
+    }
+
+    /**
+     * 产品必须存在且可被门店下单：原材料一律拒（白条/礼盒豁免），外购商品一律拒。
+     *
+     * <p>「外购不可下单」这道闸原先只在单条落库的 {@code createStoreDemand} 里，
+     * {@code StoreDemandServiceImpl.batchCreate} 整单路径没有它 —— 也就是 mp 的主下单入口没设防。
+     * 收口到这里，{@code /batch} 与 {@code /add} 两扇门同时覆盖，也与目录候选谓词
+     * （{@code product_type=1 自产}）逐条相同：目录里选不到的东西，直连也下不了。</p>
+     */
     private ProductInfo requireOrderableProduct(ProductInfo product, Long productId) {
         if (product == null) {
             throw new ServiceException("产品不存在或已删除：" + productId, 404);
+        }
+        if (product.getProductType() == null || product.getProductType() != PRODUCT_TYPE_SELF_PRODUCED) {
+            throw new ServiceException(
+                "「" + product.getProductName() + "」是外购商品，不可被门店下单", 400);
         }
         assertNotRawMaterialForApplet(product);
         return product;
@@ -628,7 +707,9 @@ public class StoreDemandAppletServiceImpl implements IStoreDemandAppletService {
             // demandType=store 的行，标记静默消失。
             .eq(DemandManage::getDemandType, demandType)
             .orderByAsc(DemandManage::getId)
-            .last("LIMIT 1"));
+            // FOR UPDATE：并单是 find-then-act，没有行锁时两个并发请求会各自查到「没有可并的行」
+            // 然后各插一条，同店同日同产品又变回两行。本方法只在 @Transactional 内被调用。
+            .last("LIMIT 1 FOR UPDATE"));
     }
 
     /**
@@ -708,7 +789,50 @@ public class StoreDemandAppletServiceImpl implements IStoreDemandAppletService {
             bo.getId(), demand.getDemandNo(), bo.getDemandQuantity());
     }
 
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void cancelSubmitted(Long id, String remark) {
+        DemandManage demand = demandManageMapper.selectById(id);
+        if (demand == null) {
+            throw new ServiceException("需求不存在或已删除：" + id, 404);
+        }
+        if (!storeUserRelationService.isStoreAccessible(currentUserIdSafe(), demand.getStoreId())) {
+            throw new ServiceException("无权操作该门店的需求", 403);
+        }
+        // 与改量/删行同一道闸（甲方 row70 第 4 条：只有「待确认」的需求门店才能动）。
+        // 仓库域状态机本身允许 CONFIRMED → CANCELLED（admin 有正当场景），所以闸必须加在门店这一侧：
+        // 独立验收实测过，改量端点对已确认行返 400，紧接着同一 token 打本端点却 200，
+        // 已确认行照样从详情页消失、日卡品数 -1、确认率归零。
+        String storeStatus = StoreDemandStatusMapping.derive(
+            demand.getDemandStatus(), demand.getReceivedTime() != null);
+        if (!StoreDemandStatusMapping.SUBMITTED.equals(storeStatus)) {
+            throw new ServiceException("仅「待确认」的需求可撤回，当前状态："
+                + StoreDemandStatusMapping.labelOf(storeStatus), 400);
+        }
+        demandStatusService.transition(id, DemandEvent.CANCEL, null, remark);
+        log.info("[STORE-MP-BOARD-001] 门店撤回需求 id={} no={}", id, demand.getDemandNo());
+    }
+
     // ---------------- 内部辅助 ----------------
+
+    /**
+     * 读端点的门店范围闸。
+     *
+     * <p>写端点（改量 / 撤回）一直有 {@link IStoreUserRelationService#isStoreAccessible}，
+     * 读端点（日卡 / 明细 / 目录）却一个都没有 —— 同一个文件里两套标准。门店墙当前是关的
+     * （ADR-0018 V1 全员可跨店），所以这道闸<b>今天是 no-op</b>；装上是为了开墙那天读接口不至于仍然全裸，
+     * 而不是等开墙时再回来补三处。</p>
+     *
+     * <p>{@code storeId} 为空时不拦：各调用方对「门店必填」有自己的报错文案，这里不抢。</p>
+     */
+    private void assertStoreReadable(Long storeId) {
+        if (storeId == null) {
+            return;
+        }
+        if (!storeUserRelationService.isStoreAccessible(currentUserIdSafe(), storeId)) {
+            throw new ServiceException("无权查看该门店的需求", 403);
+        }
+    }
 
     /**
      * 当前登录人 ID；无登录上下文（mp mock token 等）时返 null。

@@ -62,7 +62,8 @@ public final class StoreDemandStatusMapping {
             case SHIPPED -> "已发货";
             case ARRIVED -> "已到店";
             case DELETED -> "已删除";
-            default -> storeStatus;
+            // 认不出的值仍带出原码便于排查脏数据，但必须裹一层中文——这个串会直接进店员看的 toast
+            default -> "未知状态（" + storeStatus + "）";
         };
     }
 
@@ -70,7 +71,10 @@ public final class StoreDemandStatusMapping {
      * 门店端列表/详情统一排除的仓库态（= 门店态 DELETED）。
      * SQL 用 {@code demand_status NOT IN (...)}；软删行另由 {@code del_flag='0'} 排除。
      */
-    public static final String EXCLUDED_STATUS_SQL = "('DELETED','CANCELLED')";
+    public static final String EXCLUDED_STATUS_SQL = "('DELETED','CANCELLED','DRAFT')";
+
+    /** 同上，给 MyBatis-Plus wrapper 的 {@code notIn} 用（与 {@link #EXCLUDED_STATUS_SQL} 必须同集合）。 */
+    public static final String[] EXCLUDED_STATUSES = {"DELETED", "CANCELLED", "DRAFT"};
 
     private StoreDemandStatusMapping() {
     }
@@ -88,10 +92,14 @@ public final class StoreDemandStatusMapping {
         }
         return switch (demandStatus) {
             case "SUBMITTED" -> SUBMITTED;
-            case "CONFIRMED" -> received ? ARRIVED : CONFIRMED;
+            // IN_PRODUCTION 是已废弃态（新流程不再产生），但存量行仍会走到发货/完成，
+            // 对门店而言它就是「已确认、还没发货」——必须归到 CONFIRMED，不能漏成未知态：
+            // 漏了会同时造成「不筛能看到、四态全选反而看不到」和状态标签直接甩英文枚举给店员。
+            case "CONFIRMED", "IN_PRODUCTION" -> received ? ARRIVED : CONFIRMED;
             case "PARTIAL_SHIPPED", "COMPLETED" -> received ? ARRIVED : SHIPPED;
             case "DELETED", "CANCELLED" -> DELETED;
-            // DRAFT 等门店端不可见态：回退原值（门店列表不展示这些行）
+            // DRAFT（从未提交给仓库的草稿）等门店端不可见态：回退原值。
+            // 这些行由 EXCLUDED_STATUS_SQL 在查询层就挡掉，正常不会走到这里。
             default -> demandStatus;
         };
     }
@@ -113,9 +121,13 @@ public final class StoreDemandStatusMapping {
         }
         return switch (storeStatus.trim().toUpperCase()) {
             case SUBMITTED -> "(demand_status = 'SUBMITTED')";
-            case CONFIRMED -> "(demand_status = 'CONFIRMED' AND received_time IS NULL)";
+            // IN_PRODUCTION 与 derive() 保持同一口径（见该方法注释）：筛选与展示两边永远一致，
+            // 否则会出现「不筛看得到、全选筛不到」的自相矛盾。
+            case CONFIRMED -> "(demand_status IN ('CONFIRMED','IN_PRODUCTION') AND received_time IS NULL)";
             case SHIPPED -> "(demand_status IN ('PARTIAL_SHIPPED','COMPLETED') AND received_time IS NULL)";
-            case ARRIVED -> "(demand_status IN ('CONFIRMED','PARTIAL_SHIPPED','COMPLETED') AND received_time IS NOT NULL)";
+            case ARRIVED ->
+                "(demand_status IN ('CONFIRMED','IN_PRODUCTION','PARTIAL_SHIPPED','COMPLETED') "
+                    + "AND received_time IS NOT NULL)";
             case DELETED -> throw new ServiceException("门店端不提供「已删除」需求查询", 400);
             default -> throw new ServiceException("不支持的门店需求状态：" + storeStatus, 400);
         };

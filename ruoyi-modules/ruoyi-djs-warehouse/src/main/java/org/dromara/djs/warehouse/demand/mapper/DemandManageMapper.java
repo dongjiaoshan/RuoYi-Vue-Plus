@@ -554,7 +554,7 @@ public interface DemandManageMapper extends BaseMapperPlus<DemandManage, DemandM
      * 门店需求「按天聚合」分页（mp 门店需求卡 row66）。
      *
      * <p>一行 = 一个 {@code (demand_date, store_id)}。<b>统计口径统一排除门店态 DELETED 的行</b>
-     * （{@code demand_status NOT IN ('DELETED','CANCELLED')} + {@code del_flag='0'}）——所以某天全部行
+     * （{@code demand_status NOT IN ('DELETED','CANCELLED','DRAFT')} + {@code del_flag='0'}）——所以某天全部行
      * 都被删/取消时该天整条不出现，与契约 §1.2 一致。</p>
      *
      * <p>三个派生列的算法：</p>
@@ -587,30 +587,35 @@ public interface DemandManageMapper extends BaseMapperPlus<DemandManage, DemandM
                dm.store_id                                                AS storeId,
                COUNT(DISTINCT dm.product_id)                              AS categoryCount,
                COUNT(*)                                                   AS totalCount,
-               SUM(CASE WHEN dm.demand_status IN ('CONFIRMED','PARTIAL_SHIPPED','COMPLETED')
+               SUM(CASE WHEN dm.demand_status IN ('CONFIRMED','IN_PRODUCTION','PARTIAL_SHIPPED','COMPLETED')
                          AND dm.received_time IS NOT NULL THEN 1 ELSE 0 END)  AS arrivedCount,
                SUM(CASE WHEN dm.demand_status IN ('PARTIAL_SHIPPED','COMPLETED')
                          AND dm.received_time IS NULL THEN 1 ELSE 0 END)      AS shippedCount,
-               SUM(CASE WHEN dm.demand_status = 'CONFIRMED'
+               SUM(CASE WHEN dm.demand_status IN ('CONFIRMED','IN_PRODUCTION')
                          AND dm.received_time IS NULL THEN 1 ELSE 0 END)      AS confirmedCount,
-               DATE_FORMAT(MAX(dm.create_time), '%Y-%m-%d %H:%i')         AS lastOrderTime,
-               (SELECT u.nick_name
-                  FROM t_warehouse_demand_manage d2
-                  LEFT JOIN sys_user u ON u.user_id = d2.create_by AND u.del_flag = '0'
-                 WHERE d2.store_id = dm.store_id
-                   AND d2.demand_date = dm.demand_date
-                   AND d2.demand_status NOT IN ('DELETED','CANCELLED')
-                   AND d2.del_flag = '0'
-                   AND d2.tenant_id = '1001'
-                 ORDER BY d2.create_time DESC, d2.id DESC
-                 LIMIT 1)                                                 AS ordererName,
+               DATE_FORMAT(MAX(GREATEST(dm.create_time, IFNULL(dm.update_time, dm.create_time))),
+                           '%Y-%m-%d %H:%i')                              AS lastOrderTime,
+               CONCAT(
+                 IFNULL((SELECT u.nick_name
+                           FROM t_warehouse_demand_manage d2
+                           LEFT JOIN sys_user u ON u.user_id = d2.create_by AND u.del_flag = '0'
+                          WHERE d2.store_id = dm.store_id
+                            AND d2.demand_date = dm.demand_date
+                            AND d2.demand_status NOT IN ('DELETED','CANCELLED','DRAFT')
+                            AND d2.del_flag = '0'
+                            AND d2.tenant_id = '1001'
+                          ORDER BY d2.create_time ASC, d2.id ASC
+                          LIMIT 1), ''),
+                 CASE WHEN COUNT(DISTINCT dm.create_by) > 1
+                      THEN CONCAT(' 等 ', COUNT(DISTINCT dm.create_by), ' 人') ELSE '' END
+               )                                                          AS ordererName,
                (SELECT COUNT(*)
                   FROM t_warehouse_product_production pp
                   JOIN t_warehouse_demand_manage d3
                     ON d3.id = pp.demand_id
                    AND d3.store_id = dm.store_id
                    AND d3.demand_date = dm.demand_date
-                   AND d3.demand_status NOT IN ('DELETED','CANCELLED')
+                   AND d3.demand_status NOT IN ('DELETED','CANCELLED','DRAFT')
                    AND d3.del_flag = '0'
                    AND d3.tenant_id = '1001'
                  WHERE pp.is_damaged = 1
@@ -618,7 +623,7 @@ public interface DemandManageMapper extends BaseMapperPlus<DemandManage, DemandM
                    AND pp.tenant_id = '1001')                             AS damagedCount
         FROM t_warehouse_demand_manage dm
         WHERE dm.store_id IS NOT NULL
-          AND dm.demand_status NOT IN ('DELETED','CANCELLED')
+          AND dm.demand_status NOT IN ('DELETED','CANCELLED','DRAFT')
           AND dm.del_flag = '0'
           AND dm.tenant_id = '1001'
           <if test="storeId != null">
@@ -666,7 +671,7 @@ public interface DemandManageMapper extends BaseMapperPlus<DemandManage, DemandM
         WHERE store_id = #{storeId}
           AND product_id IS NOT NULL
           AND del_flag = '0'
-          AND demand_status NOT IN ('DELETED','CANCELLED')
+          AND demand_status NOT IN ('DELETED','CANCELLED','DRAFT')
           AND tenant_id = '1001'
           AND product_id IN
           <foreach collection="productIds" item="pid" open="(" separator="," close=")">#{pid}</foreach>
@@ -676,27 +681,6 @@ public interface DemandManageMapper extends BaseMapperPlus<DemandManage, DemandM
     List<Map<String, Object>> selectLastOrderTimeByStore(@Param("storeId") Long storeId,
                                                          @Param("productIds") Collection<Long> productIds);
 
-    /**
-     * 并单时把该行的「下单动作」刷成本次（mp 门店同日同产品合并累加，V6 row69）。
-     *
-     * <p>为什么要改 {@code create_time}：卡片上的「最后下单时间」与「下单人」都取当天
-     * {@code MAX(create_time)} 那一行（见 {@link #selectStoreDemandDayPage}）。并单只 patch
-     * {@code demand_quantity} 的话，店员 16:26 下单、17:00 追加同一产品，卡片仍显示 16:26、
-     * 下单人也停在第一个人 —— 独立验收实测过。</p>
-     *
-     * <p>这一行本就是「某门店某天某产品」的滚动汇总（并单后只有一行），把它的 create 元数据
-     * 定义成「最后一次下单动作」是自洽的；单据成立时间由 {@code demand_no} 里的日期段承载。</p>
-     *
-     * @param id     需求行 ID
-     * @param userId 本次下单人
-     * @return 受影响行数
-     */
-    @Update("""
-        UPDATE t_warehouse_demand_manage
-        SET create_time = NOW(), create_by = #{userId}
-        WHERE id = #{id} AND del_flag = '0'
-        """)
-    int touchOrderMeta(@Param("id") Long id, @Param("userId") Long userId);
 
     /**
      * 在入参 demand id 集合里，筛出「至少指定 1 头未删猪只」的 demand id（0613-11 确认页「是否指定猪只」列）。
