@@ -373,8 +373,8 @@ public class StoreDemandAppletServiceImpl implements IStoreDemandAppletService {
             .and(w -> w.in(ProductInfo::getBelongType, BELONG_WHITE_BAR, BELONG_GIFT_BOX)
                 .or().eq(ProductInfo::getProductAttr, PRODUCT_ATTR_FINISHED))
             .and(StringUtils.isNotBlank(keyword), w -> w
-                .like(ProductInfo::getProductName, keyword)
-                .or().like(ProductInfo::getProductAlias, keyword))
+                .like(ProductInfo::getProductName, escapeLikeLiteral(keyword))
+                .or().like(ProductInfo::getProductAlias, escapeLikeLiteral(keyword)))
             .orderByDesc(ProductInfo::getId)
             .last("LIMIT " + CATALOG_LIMIT);
     }
@@ -586,6 +586,10 @@ public class StoreDemandAppletServiceImpl implements IStoreDemandAppletService {
         // （猪肉原材料 + 谎报 gift_box 拿到礼盒段单号 + 落在昨天），200 直接落库。
         // 已发布产物里 pages/store/demand/form 这个旧页调的正是 /add，不是纯理论面。
         assertDemandDateNotPast(bo.getDemandDate());
+        // 门店合作状态闸必须在**并单之前**：闸原本只在 createStoreDemand 里，而下面并单命中时
+        // 直接 updateByBo 后 return，根本走不到那句。独立验收实测：把行挂到不存在的门店上后，
+        // /add 仍 200 把数量从 3.5 加到 8.5。/batch 早就是显式在最前面调一次，这里补齐。
+        storeService.assertStoreActive(bo.getStoreId());
         ProductInfo product = requireOrderableProduct(
             bo.getProductId() == null ? null : productInfoMapper.selectById(bo.getProductId()),
             bo.getProductId());

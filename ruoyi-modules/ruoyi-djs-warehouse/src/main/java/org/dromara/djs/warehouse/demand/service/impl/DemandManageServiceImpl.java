@@ -521,6 +521,9 @@ public class DemandManageServiceImpl extends DjsBaseServiceImpl<DemandManageMapp
         // 只给编辑加闸会比新建还严，且会拦死仓库补录历史单据。admin 要不要禁止补录，是待甲方/Kevin 拍的口径。
         if (bo.getProductId() != null && !bo.getProductId().equals(exists.getProductId())) {
             validateNotRawMaterial(bo.getProductId(), bo.getProductName());
+            // 「外购不可下单」新建路径拒、编辑路径原先放行 —— 独立验收实测把一条需求编辑成
+            // 外购疫苗返 200。同类的两扇门只关一扇，等于没关。
+            validateNotOutsourced(bo.getProductId());
         }
         DemandManage entity = toEntity(bo);
         if (entity == null) {
@@ -861,7 +864,29 @@ public class DemandManageServiceImpl extends DjsBaseServiceImpl<DemandManageMapp
         if (isRawMaterial) {
             String name = StrUtil.isNotBlank(product.getProductName()) ? product.getProductName()
                 : StrUtil.isNotBlank(productName) ? productName : String.valueOf(productId);
-            throw new ServiceException(I18nMessages.t("demand.field.product.raw_material_forbidden", name));
+            throw new ServiceException(I18nMessages.t("demand.field.product.raw_material_forbidden", name), 400);
+        }
+    }
+
+    /**
+     * 外购商品不可挂门店需求（与新建路径 {@code assertSellableProduct} 同一条谓词）。
+     *
+     * <p>门店需求的下游是「按需生产 → 打包 → 发货」，外购商品不进生产链路；
+     * 下单目录的候选谓词也是 {@code product_type=1 自产}——目录里选不到的东西，编辑也不该能改进去。</p>
+     *
+     * @param productId 产品主键；为空或产品不存在时交由其它校验报错
+     */
+    private void validateNotOutsourced(Long productId) {
+        if (productId == null) {
+            return;
+        }
+        ProductInfo product = productInfoMapper.selectById(productId);
+        if (product == null || product.getProductType() == null) {
+            return;
+        }
+        if (product.getProductType() != PRODUCT_TYPE_SELF) {
+            throw new ServiceException(
+                "「" + product.getProductName() + "」是外购商品，不可挂门店需求", 400);
         }
     }
 

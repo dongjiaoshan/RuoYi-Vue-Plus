@@ -14,6 +14,7 @@ import org.dromara.common.web.core.BaseController;
 import org.dromara.djs.breed.core.domain.vo.PigAvailableVo;
 import org.dromara.djs.breed.core.service.IPigQueryService;
 import org.dromara.djs.store.demand.domain.bo.StoreDemandBatchBo;
+import org.dromara.djs.store.demand.service.IStoreDemandAppletService;
 import org.dromara.djs.store.demand.service.IStoreDemandService;
 import org.dromara.djs.warehouse.demand.core.enums.DemandEvent;
 import org.dromara.djs.warehouse.demand.domain.bo.AssignPigBo;
@@ -60,6 +61,9 @@ import java.util.List;
 public class StoreDemandController extends BaseController {
 
     private final IStoreDemandService storeDemandService;
+
+    /** 门店撤回复用 mp 侧的「仅待确认」闸（同一条业务规则不写两套）。 */
+    private final IStoreDemandAppletService storeDemandAppletService;
 
     private final IDemandManageService demandManageService;
 
@@ -131,12 +135,22 @@ public class StoreDemandController extends BaseController {
         return toAjax(demandManageService.deleteWithValidByIds(Arrays.asList(ids)));
     }
 
-    /** 取消：门店撤回未确认需求（DRAFT/SUBMITTED/CONFIRMED → CANCELLED）。 */
+    /**
+     * 取消：门店撤回<b>待确认</b>需求（SUBMITTED → CANCELLED）。
+     *
+     * <p>走 {@link IStoreDemandAppletService#cancelSubmitted} 而不是直接打状态机：门店只准动
+     * 「待确认」的行（甲方 row70 第 4 条），而状态机本身允许 {@code CONFIRMED → CANCELLED}。</p>
+     *
+     * <p>这条权限串 {@code djs:store:demand:*} <b>门店店员本人就持有</b>，独立验收实测：
+     * mp 端点对已确认行返 400 之后，同一个 token 打本端点仍 200 把它撤成 CANCELLED，
+     * 日卡品数 -1、确认率归零。闸只装在 mp 那一侧等于没装。
+     * 仓库侧 {@code /djs/warehouse/demand/{id}/cancel} 不受影响（仓库管理员撤单是正当能力）。</p>
+     */
     @SaCheckPermission("djs:store:demand:cancel")
     @Log(title = "取消门店需求", businessType = BusinessType.UPDATE)
     @PostMapping("/{id}/cancel")
     public R<Void> cancel(@PathVariable Long id, @RequestParam(required = false) String remark) {
-        demandStatusService.transition(id, DemandEvent.CANCEL, LoginHelper.getUserId(), remark);
+        storeDemandAppletService.cancelSubmitted(id, remark);
         return R.ok();
     }
 
