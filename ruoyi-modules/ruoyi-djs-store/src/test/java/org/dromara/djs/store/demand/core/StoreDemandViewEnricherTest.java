@@ -6,6 +6,10 @@ import org.dromara.djs.warehouse.pack.mapper.ProductProductionMapper;
 import org.dromara.djs.warehouse.pack.service.IProductProductionService;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
+import com.baomidou.mybatisplus.core.MybatisConfiguration;
+import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
+import org.apache.ibatis.builder.MapperBuilderAssistant;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -67,6 +71,22 @@ class StoreDemandViewEnricherTest {
         p.setId(id);
         p.setBelongType(belongType);
         return p;
+    }
+
+    /**
+     * 预热 MP 的 lambda 列缓存。
+     *
+     * <p>不加这段，本类**单独跑**（`-Dtest=StoreDemandViewEnricherTest` / 按类跑 / 换 runOrder）会 6/7 报
+     * `can not find lambda cache for this entity [ProductInfo]` —— 全量跑之所以绿，是同模块另外 5 个测试类
+     * 先在同一个 JVM 里初始化过这份静态缓存（surefire 默认 forkCount=1 + reuseForks=true）。
+     * 那是顺序依赖不是自足，同 skill `coder-mp-entity-cache-test`。</p>
+     */
+    @BeforeAll
+    static void initMpEntityCache() {
+        MybatisConfiguration cfg = new MybatisConfiguration();
+        MapperBuilderAssistant assistant = new MapperBuilderAssistant(cfg, "");
+        assistant.setCurrentNamespace("test");
+        TableInfoHelper.initTableInfo(assistant, ProductInfo.class);
     }
 
     private void stubProducts(ProductInfo... ps) {
