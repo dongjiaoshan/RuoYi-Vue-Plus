@@ -193,6 +193,7 @@ public class VegOutServiceImpl implements IVegOutService {
             //   flow_date 改记业务日期 —— productOut 默认写 new Date()（实际操作时刻），
             //   但甲方 row187 明确「可以选择当天和历史的日期」，补录历史日期时列表必须显示所选那天。
             //   沿用项目补录约定：选当天则保留真实时分秒，选历史日期则落该日 00:00:00。
+            // ⚠️ third_phase 不在这里补 —— 已由 productOut 从被扣的库存行统一继承（V6 row92 唯一收口点）。
             StockFlow patch = new StockFlow();
             patch.setId(flowId);
             patch.setPlotId(stock.getPlotId());

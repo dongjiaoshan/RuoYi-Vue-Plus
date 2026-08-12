@@ -35,6 +35,7 @@ import org.dromara.djs.warehouse.thirdphase.domain.ThirdPhaseIn;
 import org.dromara.djs.warehouse.thirdphase.domain.bo.ThirdPhaseInBo;
 import org.dromara.djs.warehouse.thirdphase.domain.query.ThirdPhaseInQuery;
 import org.dromara.djs.warehouse.thirdphase.domain.vo.ThirdPhaseInVo;
+import org.dromara.djs.warehouse.thirdphase.domain.vo.ThirdPhaseSummaryVo;
 import org.dromara.djs.warehouse.thirdphase.mapper.ThirdPhaseInMapper;
 import org.dromara.djs.warehouse.thirdphase.service.IThirdPhaseInService;
 import org.springframework.stereotype.Service;
@@ -68,7 +69,8 @@ import java.util.stream.Collectors;
  *   <li>反查作物：产品 → 作物（先 {@code t_plant_crop_product} 配置表，回落 {@code crop.related_product}）；
  *       查不到 → 中文报错说清去哪配</li>
  *   <li>写库存：{@code stock_flow}（{@code flow_type=third_phase_in / inout_type=IN}）+
- *       {@code location_stock} —— 口径照抄 {@code VegetableHandleServiceImpl#insertPickStockIn}</li>
+ *       {@code location_stock} —— 口径照抄 {@code VegetableHandleServiceImpl#insertPickStockIn}；
+ *       两侧都打 {@code third_phase=1}，库存篮按 {@code third_phase} 与普通货分篮（见 {@link #insertStockIn}）</li>
  *   <li>给该作物「当前在种」的地块打 {@code third_phase=1}</li>
  *   <li>落一行 {@code t_warehouse_third_phase_in}（作物 / 产品 / 库位 / 地块 / 入库人快照）</li>
  * </ol>
@@ -104,6 +106,9 @@ public class ThirdPhaseInServiceImpl
     /** {@code stock_flow.inout_type} CHAR(3)：IN=入库。 */
     private static final String INOUT_IN = "IN";
 
+    /** {@code stock_flow.inout_type} CHAR(3)：OT=出库。 */
+    private static final String INOUT_OUT = "OT";
+
     /** {@code djs_product_attr}：2=原材料。 */
     private static final int PRODUCT_ATTR_MATERIAL = 2;
 
@@ -116,7 +121,7 @@ public class ThirdPhaseInServiceImpl
     /** {@code djs_pick_status}：采摘完成（采完即不再算「在种」）。 */
     private static final String HARVEST_STATUS_COMPLETED = "completed";
 
-    /** 地块【三期】标识：1=是。 */
+    /** 【三期】标识：1=是。三处共用 —— 地块 / 入库流水 / 入库库存篮。 */
     private static final int THIRD_PHASE_YES = 1;
 
     /** 入库量小数位上限（甲方：支持三位小数）。 */
@@ -216,6 +221,31 @@ public class ThirdPhaseInServiceImpl
             nameMap.put(id, StringUtils.blankToDefault(userService.selectNicknameById(id), ""));
         }
         rows.forEach(r -> r.setOperatorName(nameMap.get(r.getOperatorId())));
+    }
+
+    // ================================================================ 三期合计
+
+    /**
+     * 【三期】总入库 / 总出库合计。
+     *
+     * <p>判据是<b>流水行上的 {@code third_phase}</b>，不是地块 —— 三期没有真实地块（甲方口径），
+     * 按地块统计会永远是 0。入库由本 service 打标，出库由 {@code VegOutServiceImpl} 从被出的
+     * 库存篮把标识带下来，两头都落在同一张 {@code t_warehouse_stock_flow} 上，一次聚合即可。</p>
+     *
+     * <p>本模块自己的台账 {@code t_warehouse_third_phase_in} 只记入库、且是操作快照，
+     * 不作合计口径 —— 用它算总入库会漏掉「入库后又被调整」的情形，也天然给不出总出库。</p>
+     */
+    @Override
+    public ThirdPhaseSummaryVo querySummary() {
+        ThirdPhaseSummaryVo vo = new ThirdPhaseSummaryVo();
+        vo.setTotalIn(zeroIfNull(stockFlowMapper.sumThirdPhaseByInout(INOUT_IN)));
+        vo.setTotalOut(zeroIfNull(stockFlowMapper.sumThirdPhaseByInout(INOUT_OUT)));
+        return vo;
+    }
+
+    /** SQL 侧已 {@code COALESCE} 兜过 0，这里再兜一次防 mapper 换实现后前端拿到 null 直接崩。 */
+    private static BigDecimal zeroIfNull(BigDecimal value) {
+        return value == null ? BigDecimal.ZERO : value;
     }
 
     // ================================================================ 新增入库
@@ -376,11 +406,19 @@ public class ThirdPhaseInServiceImpl
     // -------------------------------------------------------------- 库存写入
 
     /**
-     * 写入库台账：{@code stock_flow}（{@code third_phase_in} / IN）+ {@code location_stock} 余额。
+     * 写入库台账：{@code stock_flow}（{@code third_phase_in} / IN）+ {@code location_stock} 余额，
+     * 两侧都打 {@code third_phase=1}。
      *
      * <p>整段口径照抄 {@code VegetableHandleServiceImpl#insertPickStockIn}（采摘去向[毛菜保鲜室]入库）：
      * 有地块 → 按 plot 建篮；无地块 → 先按 (库位, 产品) 原子累加，累加不到再建产品级行。
      * 不另发明一套库存写法。</p>
+     *
+     * <p><b>无地块时的累加走三期专用方法</b>（{@link LocationStockMapper#addByProductLocationThirdPhase}）：
+     * 三期货没有真实地块（甲方口径），{@code plot_id / ear_no / white_bar_no} 全 NULL，
+     * 与「退货篮」/ 产品级普通篮是同一个形状。若沿用 {@code addByProductLocation}，
+     * 这一笔会 UPDATE 到那条普通篮上 —— 普通货被染成三期、三期与普通货的量再也拆不开。
+     * 故按 {@code third_phase} 分篮：三期入库只累加三期篮，累加不到就 INSERT 一条
+     * {@code third_phase=1} 的新篮。</p>
      *
      * @return 新流水 id
      */
@@ -399,6 +437,7 @@ public class ThirdPhaseInServiceImpl
         flow.setChangeNum(weight);
         flow.setChangeQuantity(weight);
         flow.setPlotId(plotId);
+        flow.setThirdPhase(THIRD_PHASE_YES);
         flow.setOperatorId(userId);
         flow.setRemark("三期作物入库 crop="
             + crops.stream().map(CropInfo::getCropName).collect(Collectors.joining(",")));
@@ -413,11 +452,13 @@ public class ThirdPhaseInServiceImpl
             basket.setProductUnit(product.getProductUnit());
             basket.setProductStock(weight);
             basket.setIsEnd(0);
+            basket.setThirdPhase(THIRD_PHASE_YES);
             basket.setOperatorId(userId);
             locationStockMapper.insert(basket);
             return flow.getId();
         }
-        int updated = locationStockMapper.addByProductLocation(location.getId(), product.getId(), weight, userId);
+        int updated = locationStockMapper.addByProductLocationThirdPhase(
+            location.getId(), product.getId(), weight, userId);
         if (updated == 0) {
             LocationStock fresh = new LocationStock();
             fresh.setLocationId(location.getId());
@@ -426,6 +467,7 @@ public class ThirdPhaseInServiceImpl
             fresh.setProductUnit(product.getProductUnit());
             fresh.setProductStock(weight);
             fresh.setIsEnd(0);
+            fresh.setThirdPhase(THIRD_PHASE_YES);
             fresh.setOperatorId(userId);
             locationStockMapper.insert(fresh);
         }

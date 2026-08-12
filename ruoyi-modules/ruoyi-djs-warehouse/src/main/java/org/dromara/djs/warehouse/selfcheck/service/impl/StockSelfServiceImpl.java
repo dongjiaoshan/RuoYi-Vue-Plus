@@ -491,7 +491,12 @@ public class StockSelfServiceImpl implements IStockSelfService {
     }
 
     /**
-     * 组内篮子行库存合计（{@code plot_id / ear_no / white_bar_no} 任一非 NULL）；无篮子行返 0。
+     * 组内篮子行库存合计（{@code plot_id / ear_no / white_bar_no} 任一非 NULL，<b>或</b>
+     * {@code third_phase = 1}）；无篮子行返 0。
+     *
+     * <p>三期是与 plot/ear/white_bar 同级的第四个分篮维度（V6 row92），只是它的三源标签恰好全 NULL；
+     * 与 {@code setStockAfterCheck} 的 {@code third_phase = 0} 严格互补 —— 判据以
+     * {@link LocationStockMapper#sumBasketStockByProductLocation} 的 SQL 为准。</p>
      */
     private BigDecimal basketStock(Long locationId, Long productId) {
         BigDecimal sum = locationStockMapper.sumBasketStockByProductLocation(locationId, productId);

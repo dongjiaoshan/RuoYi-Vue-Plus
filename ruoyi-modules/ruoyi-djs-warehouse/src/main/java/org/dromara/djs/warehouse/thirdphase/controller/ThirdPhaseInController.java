@@ -15,6 +15,7 @@ import org.dromara.common.web.core.BaseController;
 import org.dromara.djs.warehouse.thirdphase.domain.bo.ThirdPhaseInBo;
 import org.dromara.djs.warehouse.thirdphase.domain.query.ThirdPhaseInQuery;
 import org.dromara.djs.warehouse.thirdphase.domain.vo.ThirdPhaseInVo;
+import org.dromara.djs.warehouse.thirdphase.domain.vo.ThirdPhaseSummaryVo;
 import org.dromara.djs.warehouse.thirdphase.service.IThirdPhaseInService;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -46,6 +47,17 @@ public class ThirdPhaseInController extends BaseController {
     @GetMapping("/list")
     public TableDataInfo<ThirdPhaseInVo> list(ThirdPhaseInQuery query, PageQuery pageQuery) {
         return thirdPhaseInService.queryPage(query, pageQuery);
+    }
+
+    /**
+     * 【三期】总入库 / 总出库合计（页头两个数）。
+     *
+     * <p>只读聚合，权限串沿用列表权限：能看这张表就能看这两个合计。</p>
+     */
+    @SaCheckPermission("djs:warehouse:thirdPhaseIn:list")
+    @GetMapping("/summary")
+    public R<ThirdPhaseSummaryVo> summary() {
+        return R.ok(thirdPhaseInService.querySummary());
     }
 
     /**

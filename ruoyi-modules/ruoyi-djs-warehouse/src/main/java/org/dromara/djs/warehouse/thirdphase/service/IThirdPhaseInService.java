@@ -5,6 +5,7 @@ import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.warehouse.thirdphase.domain.bo.ThirdPhaseInBo;
 import org.dromara.djs.warehouse.thirdphase.domain.query.ThirdPhaseInQuery;
 import org.dromara.djs.warehouse.thirdphase.domain.vo.ThirdPhaseInVo;
+import org.dromara.djs.warehouse.thirdphase.domain.vo.ThirdPhaseSummaryVo;
 
 import java.util.List;
 
@@ -29,4 +30,11 @@ public interface IThirdPhaseInService {
      * @return 新记录 id
      */
     Long submit(ThirdPhaseInBo bo);
+
+    /**
+     * 【三期】总入库 / 总出库合计（只读，按流水行 {@code third_phase=1} 聚合）。
+     *
+     * @return 两个合计量（无记录时各为 0，不返 null）
+     */
+    ThirdPhaseSummaryVo querySummary();
 }

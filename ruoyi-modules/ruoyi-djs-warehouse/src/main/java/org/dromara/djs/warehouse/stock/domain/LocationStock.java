@@ -73,6 +73,19 @@ public class LocationStock extends TenantEntity {
     private Long medicineId;
 
     /**
+     * 【三期】标识（0=否 / 1=是；V6 row92）。
+     *
+     * <p>甲方口径：「三期」没有真实地块，只做文案显示 —— 所以它<b>不是</b> plotId 的一个取值，
+     * 而是与 plot/ear/white_bar 同级的<b>第四个分篮维度</b>：三期货的 plotId 恒为 NULL，
+     * 形状与产品级非篮子行一样，不按本字段分篮就会与普通货并进同一行、混账。
+     * 因此 {@code addByProductLocation} 系列 product 维度 UPDATE 一律带
+     * {@code third_phase} 条件（见 {@code LocationStockMapper}）。</p>
+     *
+     * <p>展示：本字段为 1 时「地块」列渲染成「三期」，否则渲染真实地块名。</p>
+     */
+    private Integer thirdPhase;
+
+    /**
      * 产品名称（冗余字段，便于列表展示，免 JOIN）。
      */
     private String productName;
@@ -122,5 +135,24 @@ public class LocationStock extends TenantEntity {
      * 软删唯一性辅助列。
      */
     private Long delUnique;
+
+    /**
+     * 读某条库存行的【三期】标识并归一成 {@code 0/1}（V6 row92）。
+     *
+     * <p><b>所有「先拿到 LocationStock 行、再写出库流水」的路径都必须经这里把标识带到流水上</b>
+     * （{@code LocationStockServiceImpl#productOut / #pigTransfer}、{@code MatFlowServiceImpl} 的
+     * 按篮领用 / 退回 / 损耗 / 饲喂各分支）。出的是哪个篮就带哪个标识 —— 甲方 row92「出库的时候也可以
+     * 以三期的标识进行出库」，「三期总出库」就是按流水这一列汇总的（{@code StockFlowMapper#sumThirdPhaseByInout}），
+     * 不带就漏计、出库记录的「地块」列也退回显示 {@code -}。</p>
+     *
+     * <p>归一成 0 而不是原样透传 null：迁移前建的存量库存行该列读出来是 null，
+     * 而 {@code t_warehouse_stock_flow.third_phase} 是 {@code NOT NULL}，直接写会失败。</p>
+     *
+     * @param row 库存行（可空 —— 传 null 视为非三期）
+     * @return 1 = 三期篮；0 = 其余
+     */
+    public static int thirdPhaseOf(LocationStock row) {
+        return row != null && row.getThirdPhase() != null && row.getThirdPhase() == 1 ? 1 : 0;
+    }
 
 }
