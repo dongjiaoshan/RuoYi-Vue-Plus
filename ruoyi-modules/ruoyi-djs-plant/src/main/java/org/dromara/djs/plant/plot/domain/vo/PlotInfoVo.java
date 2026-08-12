@@ -64,6 +64,12 @@ public class PlotInfoVo implements Serializable {
     @ExcelDictFormat(dictType = "djs_plot_status")
     private Integer plotStatus;
 
+    /**
+     * 三期作物标识（V6 row88）：0=否 / 1=是。三期作物入库时按作物命中的在种地块置 1。
+     * 不进导出列（甲方 row88 只要求打标识，没要求进地块导出表头）。
+     */
+    private Integer thirdPhase;
+
     @ExcelProperty(value = "是否租赁", converter = ExcelDictConvert.class)
     @ExcelDictFormat(dictType = "djs_yes_no")
     private Integer isLease;
