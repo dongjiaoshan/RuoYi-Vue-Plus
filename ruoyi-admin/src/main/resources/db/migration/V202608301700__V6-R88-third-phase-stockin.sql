@@ -56,10 +56,29 @@ CREATE TABLE IF NOT EXISTS t_warehouse_third_phase_in (
 --    单向置位：三期作物入库时把命中的在种地块置 1；不提供自动清零（甲方没提清除口径，
 --    需要清时走 admin 地块编辑 / 数据修复，别在这里发明一套"下一茬自动复位"）。
 -- ----------------------------------------------------------------------------
-ALTER TABLE t_plant_plot_info
-    ADD COLUMN third_phase TINYINT(1) NOT NULL DEFAULT 0 COMMENT '三期作物标识 0否 1是（V6 row88 三期作物入库时置 1）' AFTER plot_status;
+--    幂等守卫：MySQL 的 ADD COLUMN / CREATE INDEX 没有 IF NOT EXISTS，裸写在迁移半途失败后
+--    重跑会直接 Duplicate column（实测本地库复跑第 59 行报 1060）。用 information_schema 探测 + 动态 SQL。
+SET @col_exists := (SELECT COUNT(*) FROM information_schema.COLUMNS
+                     WHERE TABLE_SCHEMA = DATABASE()
+                       AND TABLE_NAME = 't_plant_plot_info'
+                       AND COLUMN_NAME = 'third_phase');
+SET @sql := IF(@col_exists = 0,
+    'ALTER TABLE t_plant_plot_info ADD COLUMN third_phase TINYINT(1) NOT NULL DEFAULT 0 COMMENT ''三期作物标识 0否 1是（V6 row88 三期作物入库时置 1）'' AFTER plot_status',
+    'SELECT 1');
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
 
-CREATE INDEX idx_plot_third_phase ON t_plant_plot_info (tenant_id, third_phase);
+SET @idx_exists := (SELECT COUNT(*) FROM information_schema.STATISTICS
+                     WHERE TABLE_SCHEMA = DATABASE()
+                       AND TABLE_NAME = 't_plant_plot_info'
+                       AND INDEX_NAME = 'idx_plot_third_phase');
+SET @sql := IF(@idx_exists = 0,
+    'CREATE INDEX idx_plot_third_phase ON t_plant_plot_info (tenant_id, third_phase)',
+    'SELECT 1');
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
 
 -- ----------------------------------------------------------------------------
 -- 3. 入库方式字典：djs_flow_type 补 third_phase_in
