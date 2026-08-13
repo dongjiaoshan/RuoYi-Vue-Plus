@@ -176,9 +176,10 @@ public class VegOutServiceImpl implements IVegOutService {
             if (!ALLOWED_BELONG_TYPES.contains(product.getBelongType())) {
                 throw new ServiceException("该产品业态不支持毛菜间出库：" + product.getProductName());
             }
-            // ⚠️ 非果蔬不能送「果蔬月台」：月台的待入库量只来自 vegetable_handle.send_platform_weight，
-            // 而那张表是果蔬（毛菜处理）专属、干货/蛋类根本没有对应行。放行的话库存扣了、流水写了，
-            // 月台侧却永远收不到这批货 = 凭空蒸发。故在此 fail-fast，不做「跳过累加」的静默放行。
+            // ⚠️ 非果蔬不能送「果蔬月台」：月台的待入库量来自 handle_record(handle_target=2)，
+            // 而那条明细必须挂在 vegetable_handle 上，那张表是果蔬（毛菜处理）专属、
+            // 干货/蛋类根本定位不到 (作物,地块) 也就建不出归集行。放行的话库存扣了、流水写了，
+            // 月台侧却永远收不到这批货 = 凭空蒸发。故在此 fail-fast，不做「跳过」的静默放行。
             // （「猪只饲料」去向不受此限：饲喂台账 t_warehouse_feed_log 三类都能记，见下方分流。）
             if (DEST_VEG_DOCK.equals(bo.getOutDest())
                 && !BELONG_TYPE_VEGETABLE.equals(product.getBelongType())) {
@@ -366,9 +367,9 @@ public class VegOutServiceImpl implements IVegOutService {
     /**
      * 按需补建一条最小毛菜处理汇总行（用于 mp 采摘直送毛菜保鲜室进来的库存 —— 那条路径只写库存不建 handle 行）。
      *
-     * <p>各重量列记 0：这批货没经过毛菜处理间的称重/处理流程，只是借这行做「作物×地块」的归集锚点，
-     * 后续 send_platform_weight / feed_weight 由调用方累加。{@code handle_status} 记 processing、
-     * {@code is_finish=2}（未完成），避免被当成已结算行参与损耗结算。</p>
+     * <p>各重量列记 0 <b>且此后一直是 0</b>：这批货没经过毛菜处理间的称重/处理流程，
+     * 这行只是借来做「作物×地块」的归集锚点，好让 handle_record 明细有 {@code handle_id} 可挂。
+     * {@code handle_status} 记 processing、{@code is_finish=2}（未完成），避免被当成已结算行参与损耗结算。</p>
      */
     private VegetableHandle createMinimalHandle(Long cropId, Long plotId, Long productId) {
         VegetableHandle h = new VegetableHandle();
