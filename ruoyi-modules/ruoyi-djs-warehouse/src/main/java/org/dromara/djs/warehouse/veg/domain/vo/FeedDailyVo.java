@@ -47,10 +47,11 @@ public class FeedDailyVo implements Serializable {
     private Integer detailCount;
 
     /**
-     * 仓库确认框数（整数）。未确认为 {@code null} → 前端显示「-」。
+     * 仓库确认框数（最多 1 位小数）。未确认为 {@code null} → 前端显示「-」。
      *
-     * <p>列类型是 {@code DECIMAL(10,2)}（会序列化成 {@code "5.00"}），整数口径由录入校验
-     * {@code FeedDailyConfirmBo} 与前端展示层共同收口。</p>
+     * <p>列类型是 {@code DECIMAL(10,2)}（会序列化成 {@code "1.50"}），小数位上限由录入校验
+     * {@code FeedDailyConfirmBo} 的 {@code @Digits(integer = 8, fraction = 1)} 收口，
+     * 两端展示统一去尾零（禁取整，否则 1.5 会显示成 2）。</p>
      */
     @ExcelProperty(value = "仓库确认框数")
     private BigDecimal boxCount;
