@@ -229,6 +229,26 @@ class LocationStockServiceImplTest {
     }
 
     @Test
+    @DisplayName("queryList: 整批都没有真实地块时，plotLabel 仍必须逐行填上（三期篮 plot_id 恒 NULL —— 早退会让导出「地块」列整列空白）")
+    void testQueryList_PlotLabelFilledWhenNoRowHasPlot() {
+        LocationStockVo third = new LocationStockVo();
+        third.setId(90001L);
+        third.setThirdPhase(1);
+        LocationStockVo plain = new LocationStockVo();
+        plain.setId(90002L);
+        plain.setThirdPhase(0);
+
+        when(stockMapper.selectVoList(any(Wrapper.class))).thenReturn(List.of(third, plain));
+        when(locationInfoMapper.selectList(any())).thenReturn(List.of());
+
+        List<LocationStockVo> rows = service.queryList(new LocationStockQuery());
+
+        assertThat(rows.get(0).getPlotLabel()).as("三期行导出应显示「三期」").isEqualTo("三期");
+        assertThat(rows.get(1).getPlotLabel()).as("无地块的普通行导出应显示 -").isEqualTo("-");
+        verify(plotInfoMapper, never()).selectList(any());
+    }
+
+    @Test
     @DisplayName("insertByBo: happy → operatorId 走 LoginHelper.getUserId() 注入（ADR-0007）+ isEnd 默认 0")
     void testInsertByBo_OperatorIdInjected() {
         LocationStockBo bo = sampleBo();
@@ -345,6 +365,133 @@ class LocationStockServiceImplTest {
         assertThatThrownBy(() -> service.productOut(stockOutBo(new BigDecimal("5"))))
             .isInstanceOf(ServiceException.class)
             .hasMessageContaining("库存不足或已被并发占用");
+    }
+
+    // -------- 【三期】标识继承（V6 row92）：出的是哪一篮，流水就带哪个标识 --------
+
+    /**
+     * 出库流水的 {@code third_phase} 必须<b>由本方法从被扣的库存行读出来</b>，
+     * 而不是靠调用方事后 patch —— 靠调用方补已经漏过一次：毛菜间出库补了，
+     * 库存查询页每行的「产品出库」没补，「三期总出库」直接少算这一整条入口的量。
+     */
+    @Test
+    @DisplayName("productOut：被扣行 third_phase=1 → 出库流水继承 1（三期总出库不漏计、出库记录地块列渲染「三期」）")
+    void testProductOut_InheritsThirdPhaseFromDeductedRow() {
+        LocationStock thirdPhaseRow = stockRowA();
+        thirdPhaseRow.setThirdPhase(1);
+        when(stockMapper.selectById(111L)).thenReturn(thirdPhaseRow);
+        stubProductOutCommonExceptStock();
+        when(stockMapper.deductStockById(eq(111L), any(BigDecimal.class), eq(10086L))).thenReturn(1);
+
+        service.productOut(stockOutBo(new BigDecimal("5")));
+
+        ArgumentCaptor<StockFlow> cap = ArgumentCaptor.forClass(StockFlow.class);
+        verify(stockFlowMapper, times(1)).insert(cap.capture());
+        assertThat(cap.getValue().getThirdPhase()).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("productOut：普通行 third_phase=0 → 流水 0（不误标，三期统计不虚增）")
+    void testProductOut_NormalRowKeepsZero() {
+        LocationStock normalRow = stockRowA();
+        normalRow.setThirdPhase(0);
+        when(stockMapper.selectById(111L)).thenReturn(normalRow);
+        stubProductOutCommonExceptStock();
+        when(stockMapper.deductStockById(eq(111L), any(BigDecimal.class), eq(10086L))).thenReturn(1);
+
+        service.productOut(stockOutBo(new BigDecimal("5")));
+
+        ArgumentCaptor<StockFlow> cap = ArgumentCaptor.forClass(StockFlow.class);
+        verify(stockFlowMapper, times(1)).insert(cap.capture());
+        assertThat(cap.getValue().getThirdPhase()).isEqualTo(0);
+    }
+
+    /**
+     * 迁移前建的存量库存行该列读出来是 {@code null}，而 {@code t_warehouse_stock_flow.third_phase}
+     * 是 {@code NOT NULL} —— 必须在这里归一成 0，否则这些行一出库就写库失败。
+     */
+    @Test
+    @DisplayName("productOut：存量行 third_phase=null → 归一成 0 写流水（NOT NULL 列不能收 null）")
+    void testProductOut_NullThirdPhaseNormalizedToZero() {
+        LocationStock legacyRow = stockRowA();
+        legacyRow.setThirdPhase(null);
+        when(stockMapper.selectById(111L)).thenReturn(legacyRow);
+        stubProductOutCommonExceptStock();
+        when(stockMapper.deductStockById(eq(111L), any(BigDecimal.class), eq(10086L))).thenReturn(1);
+
+        service.productOut(stockOutBo(new BigDecimal("5")));
+
+        ArgumentCaptor<StockFlow> cap = ArgumentCaptor.forClass(StockFlow.class);
+        verify(stockFlowMapper, times(1)).insert(cap.capture());
+        assertThat(cap.getValue().getThirdPhase()).isEqualTo(0);
+    }
+
+    /** {@link #stubProductOutCommon()} 去掉 stock 行 stub 的版本（由调用方自己塞不同 third_phase 的行）。 */
+    private void stubProductOutCommonExceptStock() {
+        org.dromara.djs.warehouse.product.domain.ProductInfo product =
+            new org.dromara.djs.warehouse.product.domain.ProductInfo();
+        product.setId(50001L);
+        product.setProductName("猪后腿肉");
+        product.setProductUnit("kg");
+        when(productInfoMapper.selectById(50001L)).thenReturn(product);
+        when(bizCodeGenerator.generate(any(), any())).thenReturn("FAKE_FLOW_NO");
+        when(stockFlowMapper.insert(any(StockFlow.class))).thenAnswer(inv -> {
+            StockFlow f = inv.getArgument(0);
+            f.setId(50003L);
+            return 1;
+        });
+    }
+
+    /**
+     * 转移 = 同一批货换个库位：两侧流水都要带标识，<b>目标篮也必须落在同一侧</b>。
+     * 目标侧若走普通 UPSERT，转来的三期货会被并进冻品库的普通篮，从此两本账再分不开。
+     */
+    @Test
+    @DisplayName("pigTransfer：源行 third_phase=1 → 出/入两条流水都带 1，且目标侧走三期专属 UPSERT")
+    void testPigTransfer_InheritsThirdPhaseOnBothSidesAndRoutesUpsert() {
+        LocationStock src = stockRowA();
+        src.setThirdPhase(1);
+        when(stockMapper.selectById(111L)).thenReturn(src);
+
+        LocationInfo srcLoc = new LocationInfo();
+        srcLoc.setId(90001L);
+        srcLoc.setLocationName("猪肉鲜品库");
+        when(locationInfoMapper.selectById(90001L)).thenReturn(srcLoc);
+        LocationInfo frozen = new LocationInfo();
+        frozen.setId(90002L);
+        frozen.setLocationName("冻品库");
+        when(locationInfoMapper.selectOne(any(Wrapper.class))).thenReturn(frozen);
+
+        org.dromara.djs.warehouse.product.domain.ProductInfo product =
+            new org.dromara.djs.warehouse.product.domain.ProductInfo();
+        product.setId(50001L);
+        product.setProductName("猪后腿肉");
+        product.setProductUnit("kg");
+        product.setBelongType("pork");
+        when(productInfoMapper.selectById(50001L)).thenReturn(product);
+        when(bizCodeGenerator.generate(any(), any())).thenReturn("FAKE_FLOW_NO");
+        when(stockFlowMapper.insert(any(StockFlow.class))).thenAnswer(inv -> {
+            StockFlow f = inv.getArgument(0);
+            f.setId(50004L);
+            return 1;
+        });
+        when(stockMapper.deductStockById(eq(111L), any(BigDecimal.class), eq(10086L))).thenReturn(1);
+        when(stockMapper.addByProductLocationThirdPhase(eq(90002L), eq(50001L), any(BigDecimal.class), eq(10086L)))
+            .thenReturn(1);
+
+        org.dromara.djs.warehouse.stock.domain.bo.StockTransferBo bo =
+            new org.dromara.djs.warehouse.stock.domain.bo.StockTransferBo();
+        bo.setId(111L);
+        bo.setQuantity(new BigDecimal("5"));
+        service.pigTransfer(bo);
+
+        ArgumentCaptor<StockFlow> cap = ArgumentCaptor.forClass(StockFlow.class);
+        verify(stockFlowMapper, times(2)).insert(cap.capture());
+        assertThat(cap.getAllValues()).extracting(StockFlow::getThirdPhase).containsExactly(1, 1);
+        // 目标侧必须走三期专属 UPSERT，绝不能并进冻品库的普通篮
+        verify(stockMapper, times(1))
+            .addByProductLocationThirdPhase(eq(90002L), eq(50001L), eq(new BigDecimal("5")), eq(10086L));
+        verify(stockMapper, never()).addByProductLocation(any(), any(), any(), any());
     }
 
 }

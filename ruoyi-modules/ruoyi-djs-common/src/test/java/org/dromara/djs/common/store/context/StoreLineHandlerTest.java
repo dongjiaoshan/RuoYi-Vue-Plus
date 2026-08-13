@@ -15,8 +15,11 @@ import static org.mockito.Mockito.mockStatic;
 /**
  * {@link StoreLineHandler} 单元测试（STORE-PERM-001）—— 验证 3 条安全铁律。
  *
- * <p>用 mockStatic(StoreContext) 控制上下文（getStoreId / isIgnore），单测拦截器在各状态下的
+ * <p>用 mockStatic(StoreContext) 控制上下文（getStoreId / isProgrammaticIgnore），单测拦截器在各状态下的
  * ignoreTable 决策，确保不会误伤全 app SQL。</p>
+ *
+ * <p>放行判据是 {@link StoreContext#isProgrammaticIgnore()}（编程式 ignore() 段），<b>不是</b>
+ * {@link StoreContext#isIgnore()}（含超管/租管身份）—— 铁律 4 option B：显式选店优先于身份。</p>
  *
  * @author djs
  * @since STORE-PERM-001
@@ -62,13 +65,28 @@ class StoreLineHandlerTest {
     }
 
     @Test
-    @DisplayName("铁律3: 白名单表 + isIgnore=true（超管/租管/ignore段）→ ignore（看全部门店）")
+    @DisplayName("铁律3: 白名单表 + 编程式 ignore() 段 → ignore（聚合/跨门店视图看全部门店）")
     void testIgnore_IgnoreFlag() {
         StoreLineHandler handler = newHandler(List.of("t_store_sale_record"));
         try (MockedStatic<StoreContext> mocked = mockStatic(StoreContext.class)) {
             mocked.when(StoreContext::getStoreId).thenReturn("100");
-            mocked.when(StoreContext::isIgnore).thenReturn(true);
+            mocked.when(StoreContext::isProgrammaticIgnore).thenReturn(true);
             assertThat(handler.ignoreTable("t_store_sale_record")).isTrue();
+        }
+    }
+
+    @Test
+    @DisplayName("铁律4(option B): 超管/租管身份不放行 —— 显式选了门店就按该店过滤")
+    void testFilter_AdminIdentityDoesNotBypass() {
+        StoreLineHandler handler = newHandler(List.of("t_store_sale_record"));
+        try (MockedStatic<StoreContext> mocked = mockStatic(StoreContext.class)) {
+            mocked.when(StoreContext::getStoreId).thenReturn("100");
+            // 身份维度的 isIgnore（超管/租管）为 true，但没进编程式 ignore() 段
+            mocked.when(StoreContext::isIgnore).thenReturn(true);
+            mocked.when(StoreContext::isProgrammaticIgnore).thenReturn(false);
+            assertThat(handler.ignoreTable("t_store_sale_record"))
+                .as("显式选店优先于身份：超管也只看所选门店")
+                .isFalse();
         }
     }
 

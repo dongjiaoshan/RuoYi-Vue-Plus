@@ -63,8 +63,17 @@ import java.util.stream.Collectors;
  *
  * <p><b>去哪</b>（甲方 row185 col8 口径）：出库到果蔬月台 = 从毛菜间运蔬到果蔬月台，
  * 对毛菜鲜品库是一次出库；出库后货显示在 mp「果蔬月台」功能里，工人在月台收货后再进蔬菜保鲜库。
- * 月台待入库量口径 = {@code Σ vegetable_handle.send_platform_weight − 已收货 − 已完成损耗}
- * （见 {@code VegReceiveMapper.selectSelfPending}），故这里只需往对应 handle 行累加 send_platform_weight。</p>
+ * 月台待入库量口径 = {@code Σ handle_record(record_type=2, handle_target=2) − 已收货 − 已完成损耗}
+ * （见 {@code VegReceiveMapper.selectSelfPending}，按产品拆所以只能读明细），
+ * 故月台去向<b>必须写一条 handle_record</b>；不写这条货就在月台永远收不了。</p>
+ *
+ * <p><b>本 service 出的是「已入库」的库存</b>——这决定了它能碰 {@code vegetable_handle} 的哪些列：
+ * {@code picked/handled/stock_in/send_platform/feed} 五个桶是「某批采摘毛菜的去向拆分」，
+ * 满足 {@code picked = stockIn + sendPlatform + feed + loss}，同一 kg 只能进其中一个桶。
+ * 本 service 出的货早已计进 {@code handled/stock_in}，再往别的桶加就是同一 kg 进两个桶，
+ * 会被 {@code 剩余 = picked − handled − feed} 和 {@code recomputeLoss} 二次扣减。
+ * 「今天发了多少 / 喂了多少」这类<b>流量统计</b>另有台账：月台走 {@code handle_record}、
+ * 饲料走 {@code feed_log} —— 那两本才是本 service 该记的账。</p>
  *
  * @author djs
  */
@@ -167,9 +176,10 @@ public class VegOutServiceImpl implements IVegOutService {
             if (!ALLOWED_BELONG_TYPES.contains(product.getBelongType())) {
                 throw new ServiceException("该产品业态不支持毛菜间出库：" + product.getProductName());
             }
-            // ⚠️ 非果蔬不能送「果蔬月台」：月台的待入库量只来自 vegetable_handle.send_platform_weight，
-            // 而那张表是果蔬（毛菜处理）专属、干货/蛋类根本没有对应行。放行的话库存扣了、流水写了，
-            // 月台侧却永远收不到这批货 = 凭空蒸发。故在此 fail-fast，不做「跳过累加」的静默放行。
+            // ⚠️ 非果蔬不能送「果蔬月台」：月台的待入库量来自 handle_record(handle_target=2)，
+            // 而那条明细必须挂在 vegetable_handle 上，那张表是果蔬（毛菜处理）专属、
+            // 干货/蛋类根本定位不到 (作物,地块) 也就建不出归集行。放行的话库存扣了、流水写了，
+            // 月台侧却永远收不到这批货 = 凭空蒸发。故在此 fail-fast，不做「跳过」的静默放行。
             // （「猪只饲料」去向不受此限：饲喂台账 t_warehouse_feed_log 三类都能记，见下方分流。）
             if (DEST_VEG_DOCK.equals(bo.getOutDest())
                 && !BELONG_TYPE_VEGETABLE.equals(product.getBelongType())) {
@@ -193,6 +203,7 @@ public class VegOutServiceImpl implements IVegOutService {
             //   flow_date 改记业务日期 —— productOut 默认写 new Date()（实际操作时刻），
             //   但甲方 row187 明确「可以选择当天和历史的日期」，补录历史日期时列表必须显示所选那天。
             //   沿用项目补录约定：选当天则保留真实时分秒，选历史日期则落该日 00:00:00。
+            // ⚠️ third_phase 不在这里补 —— 已由 productOut 从被扣的库存行统一继承（V6 row92 唯一收口点）。
             StockFlow patch = new StockFlow();
             patch.setId(flowId);
             patch.setPlotId(stock.getPlotId());
@@ -203,20 +214,23 @@ public class VegOutServiceImpl implements IVegOutService {
             patch.setOutUnitPrice(item.getOutUnitPrice() != null ? item.getOutUnitPrice() : product.getSalePrice());
             stockFlowMapper.updateById(patch);
 
-            // 去向额外下游：果蔬月台 / 饲料饲喂 与毛菜处理间同口径
-            // 去向额外下游（Kevin 2026-08-03 拍板 D3）：
-            //   · 果蔬月台：走到这里必然是果蔬（上面已 fail-fast 拦掉非果蔬），照常累加毛菜处理送月台重量；
-            //   · 猪只饲料：**三类业态都写**有机饲喂台账——干货/蛋类也可能真拿去喂猪，这笔账要记；
-            //     但「毛菜处理的 feed_weight 累加」仍只对果蔬做（那是果蔬专属报表，混入会污染）。
-            boolean isVegetable = BELONG_TYPE_VEGETABLE.equals(product.getBelongType());
+            // 去向额外下游（业态范围 Kevin 2026-08-03 拍板 D3：**三类业态都写**有机饲喂台账
+            // ——干货/蛋类也可能真拿去喂猪，这笔账要记）：
+            //   · 果蔬月台 → handle_record(handle_target=2)：月台待入库量与日统计都读它；
+            //   · 猪只饲料 → feed_log：有机饲喂的权威台账。
+            //
+            // ⚠️ 两条去向都**只写流水台账，不碰 vegetable_handle 的重量桶**（见类头注）。
+            // 本功能出的是已入库库存，那份重量早已计进 handled_weight / stock_in_weight；
+            // 再累加 feed_weight / send_platform_weight 就是同一 kg 进两个互斥桶：
+            //   · feed_weight   → 地块卡「剩余 = 采摘 − 处理 − 饲料」直接显负
+            //                     （生产实测 B-连6-2-001：340 − 283 − 70 = −13kg）；
+            //   · send_platform → recomputeLoss「损耗 = 采摘 − 入库 − 月台 − 饲料」被多减后**静默钳零**，
+            //                     不显负所以更难发现，损耗数会悄悄变小。
             if (DEST_VEG_DOCK.equals(bo.getOutDest())) {
-                Long handleId = accumulateHandleWeight(product, stock, item.getQuantity(), true);
+                Long handleId = resolveHandleForPlatform(product, stock);
                 insertPlatformHandleRecord(handleId, stock, resolveCropIdByProduct(product.getId()),
                     item.getQuantity(), userId, resolveFlowDate(bo.getOutDate()));
             } else if (DEST_FEED.equals(bo.getOutDest())) {
-                if (isVegetable) {
-                    accumulateHandleWeight(product, stock, item.getQuantity(), false);
-                }
                 insertFeedLog(product, stock, item.getQuantity(), stock.getLocationId(), userId, bo.getOutDate());
             }
         }
@@ -275,16 +289,20 @@ public class VegOutServiceImpl implements IVegOutService {
     }
 
     /**
-     * 往对应的毛菜处理汇总行累加「发往月台」或「饲料饲喂」重量。
+     * 定位（必要时补建）该批货所属的毛菜处理汇总行，返回其 id 供 {@link #insertPlatformHandleRecord} 挂账。
+     *
+     * <p><b>只定位、不改任何重量列</b> —— 本 service 出的是已入库库存，那份重量已计进
+     * {@code handled/stock_in}（见类头注）。月台的账落在 handle_record 明细上，汇总列一个都不动。</p>
      *
      * <p>定位链：库存行 product_id → 作物（{@code t_plant_crop_info.related_product} 反查，1:1）
      * + 库存行 plot_id → {@code t_warehouse_vegetable_handle}（该组合零重复）。</p>
      *
      * <p><b>为什么定位不到时要按需补建而不是直接跳过或直接拦死</b>：</p>
      * <ul>
-     *   <li>跳过不行 —— {@code send_platform_weight} 是这批货到了月台的<b>唯一记录</b>
-     *       （mp 月台待入库量 = Σ该字段 − 已收货 − 损耗）。累加不上就是库存被扣、流水也写了，
-     *       但货在月台永远不出现、也永远收不了 —— 等于凭空蒸发。</li>
+     *   <li>跳过不行 —— handle 行是这批货到了月台的<b>挂载点</b>：mp 月台待入库量读的是
+     *       {@code t_warehouse_handle_record}（按产品拆），而那条明细必须挂在某个 {@code handle_id} 上。
+     *       定位不到就写不出明细，库存被扣、流水也写了，但货在月台永远不出现、也永远收不了
+     *       —— 等于凭空蒸发。</li>
      *   <li>一律拦死也不行 —— L0006 的库存<b>有两条合法来源</b>：①毛菜处理间「入库」去向
      *       （会建 handle 行）；②mp 采摘录入把采摘去向选成「毛菜保鲜室」，走
      *       {@code VegetableHandleServiceImpl.insertPickStockIn}，该路径<b>只写库存不建 handle 行</b>
@@ -293,12 +311,10 @@ public class VegOutServiceImpl implements IVegOutService {
      *       用户根本没有补录入口。</li>
      * </ul>
      *
-     * <p>故：能确定(作物, 地块)就<b>按需补建一条最小 handle 行</b>再累加（picked/handled/stockIn 记 0，
+     * <p>故：能确定(作物, 地块)就<b>按需补建一条最小 handle 行</b>（各重量列记 0，
      * 表示这批货不是经毛菜处理流程进来的）；只有连归属都定不了（无地块 或 产品反查不到作物）才拦。</p>
-     *
-     * @param toPlatform true=发往月台（缺归属时拦） / false=饲料饲喂（缺归属时降级，feed_log 仍照写）
      */
-    private Long accumulateHandleWeight(ProductInfo product, LocationStock stock, BigDecimal weight, boolean toPlatform) {
+    private Long resolveHandleForPlatform(ProductInfo product, LocationStock stock) {
         Long cropId = resolveCropIdByProduct(product.getId());
         VegetableHandle handle = null;
         if (cropId != null && stock.getPlotId() != null) {
@@ -312,24 +328,11 @@ public class VegOutServiceImpl implements IVegOutService {
             }
         }
         if (handle == null) {
-            // 连(作物, 地块)都定不了：月台侧无处归集，拦；饲料侧 feed_log 是主记录，降级放行
-            if (toPlatform) {
-                throw new ServiceException("「" + product.getProductName() + "」"
-                    + (stock.getPlotId() == null ? "该库存行未关联地块" : "未配置对应作物（作物管理的关联产品）")
-                    + "，无法归集到果蔬月台。请先补齐后再操作。");
-            }
-            log.warn("[VEG-OUT] 定位不到(作物,地块) productId={} plotId={}，饲料饲喂只写有机饲喂记录、跳过汇总累加",
-                product.getId(), stock.getPlotId());
-            return null;
+            // 连(作物, 地块)都定不了 → 月台侧无处归集，拦（放过去就是扣了库存、货却永远到不了月台）
+            throw new ServiceException("「" + product.getProductName() + "」"
+                + (stock.getPlotId() == null ? "该库存行未关联地块" : "未配置对应作物（作物管理的关联产品）")
+                + "，无法归集到果蔬月台。请先补齐后再操作。");
         }
-        VegetableHandle delta = new VegetableHandle();
-        delta.setId(handle.getId());
-        if (toPlatform) {
-            delta.setSendPlatformWeight(nullSafe(handle.getSendPlatformWeight()).add(weight));
-        } else {
-            delta.setFeedWeight(nullSafe(handle.getFeedWeight()).add(weight));
-        }
-        vegetableHandleMapper.updateById(delta);
         return handle.getId();
     }
 
@@ -364,9 +367,9 @@ public class VegOutServiceImpl implements IVegOutService {
     /**
      * 按需补建一条最小毛菜处理汇总行（用于 mp 采摘直送毛菜保鲜室进来的库存 —— 那条路径只写库存不建 handle 行）。
      *
-     * <p>各重量列记 0：这批货没经过毛菜处理间的称重/处理流程，只是借这行做「作物×地块」的归集锚点，
-     * 后续 send_platform_weight / feed_weight 由调用方累加。{@code handle_status} 记 processing、
-     * {@code is_finish=2}（未完成），避免被当成已结算行参与损耗结算。</p>
+     * <p>各重量列记 0 <b>且此后一直是 0</b>：这批货没经过毛菜处理间的称重/处理流程，
+     * 这行只是借来做「作物×地块」的归集锚点，好让 handle_record 明细有 {@code handle_id} 可挂。
+     * {@code handle_status} 记 processing、{@code is_finish=2}（未完成），避免被当成已结算行参与损耗结算。</p>
      */
     private VegetableHandle createMinimalHandle(Long cropId, Long plotId, Long productId) {
         VegetableHandle h = new VegetableHandle();
@@ -484,9 +487,5 @@ public class VegOutServiceImpl implements IVegOutService {
         Map<Long, String> nameMap = ids.stream().collect(Collectors.toMap(
             id -> id, id -> StringUtils.blankToDefault(userService.selectNicknameById(id), ""), (a, b) -> a));
         rows.forEach(r -> r.setOperatorName(nameMap.get(r.getOperatorId())));
-    }
-
-    private static BigDecimal nullSafe(BigDecimal v) {
-        return v != null ? v : BigDecimal.ZERO;
     }
 }

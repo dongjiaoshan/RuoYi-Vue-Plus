@@ -146,6 +146,17 @@ public class StockFlow extends TenantEntity {
     private Long plotId;
 
     /**
+     * 【三期】标识（0=否 / 1=是；V6 row92）。
+     *
+     * <p>三期没有真实地块（甲方：只做文案显示），故它是独立于 {@code plotId} 的一个标记：
+     * 入库由 {@code ThirdPhaseInServiceImpl} 直接置 1；出库由 {@code VegOutServiceImpl}
+     * 从被出的库存行原样带下来 —— 「以三期标识出库」与「按三期统计总入库/总出库」都据此。</p>
+     *
+     * <p>展示：本字段为 1 时入/出库记录的「地块」列渲染成「三期」，否则渲染真实地块名。</p>
+     */
+    private Integer thirdPhase;
+
+    /**
      * 操作人。
      */
     private Long operatorId;

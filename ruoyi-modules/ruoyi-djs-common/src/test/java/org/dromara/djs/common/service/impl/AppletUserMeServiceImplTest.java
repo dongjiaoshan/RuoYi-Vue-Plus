@@ -4,6 +4,7 @@ import org.dromara.djs.common.constant.DjsAuthConstants;
 import org.dromara.djs.common.domain.vo.ContactVo;
 import org.dromara.djs.common.domain.vo.UserMeVo;
 import org.dromara.djs.common.mapper.AppletUserQueryMapper;
+import org.dromara.djs.common.mapper.DjsUserExtMapper;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -54,6 +55,14 @@ class AppletUserMeServiceImplTest {
     @Mock
     private AppletUserQueryMapper appletUserQueryMapper;
 
+    /**
+     * {@code queryMe} 读 {@code sys_user.wx_openid} 填微信绑定状态，故构造器有两个 mapper 依赖。
+     * 少声明这个 mock，{@code @InjectMocks} 会把它注成 null → queryMe 全线 NPE。
+     * 默认桩返 null（未绑定微信），service 侧 {@code StrUtil.isNotBlank} / {@code maskOpenid} 均已 null-safe。
+     */
+    @Mock
+    private DjsUserExtMapper djsUserExtMapper;
+
     @InjectMocks
     private AppletUserMeServiceImpl service;
 
@@ -81,6 +90,25 @@ class AppletUserMeServiceImplTest {
             "currentFarmName 应被 service 注入默认值");
         // roles 不会因 LoginHelper 静态调用失败而 NPE，至少 set 为某个 Set（empty 或 sa-token 返的）
         assertNotNull(me.getRoles());
+        // 未绑定微信（wx_openid 查空）→ wxBound=false + 脱敏串 null，不抛 NPE
+        assertEquals(Boolean.FALSE, me.getWxBound(), "wx_openid 为空时 wxBound 应为 false");
+        assertNull(me.getWxOpenidMask(), "wx_openid 为空时脱敏串应为 null");
+    }
+
+    @Test
+    @DisplayName("queryMe — 已绑定微信 → wxBound=true + openid 脱敏成「首字符…后5位」")
+    void queryMe_wxBoundMasked() {
+        UserMeVo raw = new UserMeVo();
+        raw.setUserId(9004L);
+        raw.setUsername("wxuser");
+        raw.setCurrentFarmId("1001");
+        when(appletUserQueryMapper.selectMeByUserId(eq(9004L))).thenReturn(raw);
+        when(djsUserExtMapper.selectWxOpenid(eq(9004L))).thenReturn("oABCDefghij12345");
+
+        UserMeVo me = service.queryMe(9004L);
+
+        assertEquals(Boolean.TRUE, me.getWxBound());
+        assertEquals("o…12345", me.getWxOpenidMask(), "只保留首字符与后 5 位，中间省略");
     }
 
     @Test

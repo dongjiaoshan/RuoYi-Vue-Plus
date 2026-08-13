@@ -69,6 +69,11 @@ public class LocationStockQuery extends BaseEntity {
     private String blockNo;
 
     /**
+     * 【三期】标识精确匹配（V6 row92）：传 1 = 只看三期库存；不传 = 全部。
+     */
+    private Integer thirdPhase;
+
+    /**
      * 是否完成（1=是 / 0=否）。
      */
     private Integer isEnd;

@@ -426,6 +426,7 @@ public class MatFlowServiceImpl implements IMatFlowService {
         flow.setPlotId(basket.getPlotId());
         flow.setEarNo(basket.getEarNo());
         flow.setWhiteBarNo(basket.getWhiteBarNo());   // 猪肉篮 = 白条号源标签（同耳号多半只按 white_bar_no 区分）
+        flow.setThirdPhase(LocationStock.thirdPhaseOf(basket));   // 三期标识 = 第四个源标签，随篮带上（V6 row92）
         flow.setWarehouseId(locId);
         flow.setInoutType(INOUT_OUT);
         flow.setFlowType(resolvePickFlowType(bo));
@@ -511,12 +512,17 @@ public class MatFlowServiceImpl implements IMatFlowService {
 
         ProductInfo product = productInfoMapper.selectById(productId);
 
+        // 三期标识取自用户选中那一篮（V6 row92）：三期货在「作物恰好 1 块在种地块」时也会建带真实 plot_id 的篮，
+        // 与普通地块篮同形状同库位。选中哪一半就只动哪一半 —— 流水打这个标识、FIFO 也只在这一半里找。
+        int thirdPhase = LocationStock.thirdPhaseOf(firstBasket);
+
         // 1. 写一条 pick_out 流水（带 plot_id + product_id 源标签；warehouse_id=首篮库位、量=总申请量）
         StockFlow flow = new StockFlow();
         flow.setFlowNo(generateFlowNo(INOUT_OUT));
         flow.setFlowDate(new Date());
         flow.setProductId(productId);
         flow.setPlotId(plotId);
+        flow.setThirdPhase(thirdPhase);
         flow.setWarehouseId(firstLocId);
         flow.setInoutType(INOUT_OUT);
         flow.setFlowType(resolvePickFlowType(bo));
@@ -530,7 +536,7 @@ public class MatFlowServiceImpl implements IMatFlowService {
 
         // 2. 同库位同地块 FIFO 扣减 + 每篮产 product_inhouse（带篮 plot_id / 库位标签）
         //    只扣用户选中那行的库位（firstBasket.locationId），不跨库位借（防「选蔬菜保鲜库却扣毛菜库」）。
-        consumeVegPlotBaskets(productId, plotId, firstLocId, bo.getQuantity(), product, firstBasket, userId);
+        consumeVegPlotBaskets(productId, plotId, firstLocId, thirdPhase, bo.getQuantity(), product, firstBasket, userId);
 
         return flow.getId();
     }
@@ -545,17 +551,24 @@ public class MatFlowServiceImpl implements IMatFlowService {
      * 抛 {@link ServiceException}（保留原库存不足语义，不跨库位拼凑）。与 {@link #consumeVegBaskets} 同范式，
      * 区别：本方法 product_id + plot_id + location 三键过滤，{@code consumeVegBaskets} 按 product_id + location。</p>
      *
+     * <p><b>{@code thirdPhase} 是第四个过滤键</b>（V6 row92）：三期入库在「作物恰好 1 块在种地块」时会建
+     * 带真实 plot_id 的三期篮，与普通地块篮 (产品, 地块, 库位) 三键完全相同、还常落同一个库位 L0006。
+     * 不按它分开，选中普通篮的一次领用会顺手把三期篮也 FIFO 扣掉（反之亦然），两本账互相消耗。
+     * 取值由调用方从用户选中的那一篮读出，选哪一半就只在哪一半里 FIFO。</p>
+     *
      * @param locId       用户选中篮所在库位（扣减约束到此库位，不跨库位）
+     * @param thirdPhase  选中篮的三期标识（0/1）：只扣同一侧的篮
      * @param firstBasket 地块 FIFO 首篮（已查得，名称/单位兜底用；product 主数据可空时回退它）
      * @throws ServiceException 该库位该地块篮总量不足申请量（{@code @Transactional} 回滚领用流水 + 已扣篮）
      */
-    private void consumeVegPlotBaskets(Long productId, Long plotId, Long locId, BigDecimal quantity,
+    private void consumeVegPlotBaskets(Long productId, Long plotId, Long locId, int thirdPhase, BigDecimal quantity,
                                        ProductInfo product, LocationStock firstBasket, Long userId) {
         List<LocationStock> baskets = locationStockMapper.selectList(
             new LambdaQueryWrapper<LocationStock>()
                 .eq(LocationStock::getProductId, productId)
                 .eq(LocationStock::getPlotId, plotId)
                 .eq(LocationStock::getLocationId, locId)
+                .eq(LocationStock::getThirdPhase, thirdPhase)
                 .gt(LocationStock::getProductStock, BigDecimal.ZERO)
                 .orderByAsc(LocationStock::getId));
         String productName = product != null ? product.getProductName() : firstBasket.getProductName();
@@ -637,6 +650,7 @@ public class MatFlowServiceImpl implements IMatFlowService {
         flow.setProductId(productId);
         flow.setEarNo(earNo);
         flow.setWhiteBarNo(firstBasket.getWhiteBarNo());
+        flow.setThirdPhase(LocationStock.thirdPhaseOf(firstBasket));   // 随篮带上（V6 row92）
         flow.setWarehouseId(firstLocId);
         flow.setInoutType(INOUT_OUT);
         flow.setFlowType(resolvePickFlowType(bo));
@@ -760,6 +774,7 @@ public class MatFlowServiceImpl implements IMatFlowService {
         flow.setFlowDate(new Date());
         flow.setProductId(productId);
         flow.setWhiteBarNo(firstBasket.getWhiteBarNo());
+        flow.setThirdPhase(LocationStock.thirdPhaseOf(firstBasket));   // 随篮带上（V6 row92）
         flow.setWarehouseId(firstLocId);
         flow.setInoutType(INOUT_OUT);
         flow.setFlowType(resolvePickFlowType(bo));
@@ -1001,6 +1016,17 @@ public class MatFlowServiceImpl implements IMatFlowService {
      * 申请量可跨多地块篮子拼够。历史无 plot 的 product 维度行（plot_id=null）也一并 FIFO 消耗（inhouse plot 为 null
      * → 打包页显「无地块信息」，与旧数据兼容）。统一模型下此 plot 标签语义即正确（G7），无需改动。</p>
      *
+     * <p><b>不扣三期篮</b>（{@code third_phase = 0}；V6 row92）：本方法是 {@link #pickByProduct} 的果蔬分支，
+     * 与它另外两个分支（猪肉走 {@link #consumePorkBaskets} 的 {@code ear_no IS NOT NULL}、其余走
+     * {@link LocationStockMapper#deductByProductLocation} 的 {@code third_phase = 0}）必须同一口径 ——
+     * <b>product 维度的领用一律只动普通货</b>。原来这里不加过滤，三期篮会被 FIFO 顺手扣掉，而流水上
+     * 只有一条按总量记的 {@code pick_out}（三期与普通货混在同一笔里、拆不开），既让「三期总出库」漏计，
+     * 又把三期的账消耗在一次普通领用上。</p>
+     *
+     * <p>三期货怎么出：走<b>按行出库</b>那几条路径 —— 库存查询页每行的「产品出库」
+     * （{@code LocationStockServiceImpl#productOut}）、毛菜间出库、mp 按篮手选
+     * （{@link #pickByBatch}）。那些路径都能精确定位到具体是哪一篮，标识也随篮带到流水上。</p>
+     *
      * @throws ServiceException 篮子总量不足申请量（{@code @Transactional} 回滚领用流水）
      */
     private void consumeVegBaskets(Long productId, BigDecimal quantity, Long locId, ProductInfo product, Long userId) {
@@ -1008,6 +1034,7 @@ public class MatFlowServiceImpl implements IMatFlowService {
             new LambdaQueryWrapper<LocationStock>()
                 .eq(LocationStock::getProductId, productId)
                 .eq(LocationStock::getLocationId, locId)
+                .eq(LocationStock::getThirdPhase, 0)
                 .gt(LocationStock::getProductStock, BigDecimal.ZERO)
                 .orderByAsc(LocationStock::getId));
         BigDecimal remaining = quantity;
@@ -1282,6 +1309,7 @@ public class MatFlowServiceImpl implements IMatFlowService {
         flow.setPlotId(basket.getPlotId());
         flow.setEarNo(basket.getEarNo());
         flow.setWhiteBarNo(basket.getWhiteBarNo());   // 猪肉篮 = 白条号源标签（同耳号多半只按 white_bar_no 区分）
+        flow.setThirdPhase(LocationStock.thirdPhaseOf(basket));   // 退回的是哪个篮就记哪个标识（V6 row92）
         flow.setWarehouseId(locId);
         flow.setInoutType(INOUT_IN);
         flow.setFlowType(resolveReturnFlowType(bo));
@@ -1336,6 +1364,7 @@ public class MatFlowServiceImpl implements IMatFlowService {
         flow.setFlowDate(new Date());
         flow.setProductId(productId);
         flow.setPlotId(plotId);
+        flow.setThirdPhase(LocationStock.thirdPhaseOf(firstBasket));   // 回补的是哪个篮就记哪个标识（V6 row92）
         flow.setWarehouseId(firstLocId);
         flow.setInoutType(INOUT_IN);
         flow.setFlowType(resolveReturnFlowType(bo));
@@ -1428,7 +1457,12 @@ public class MatFlowServiceImpl implements IMatFlowService {
                 Long locId = wip.getLocationId() != null ? wip.getLocationId() : fallbackLocId;
                 LambdaQueryWrapper<LocationStock> bw = new LambdaQueryWrapper<LocationStock>()
                     .eq(LocationStock::getProductId, product.getId())
-                    .eq(LocationStock::getLocationId, locId);
+                    .eq(LocationStock::getLocationId, locId)
+                    // 只回补普通篮（V6 row92）：本方法是 product 维度退回路径，配套流水就是 third_phase=0；
+                    // 三期篮的 plot/ear/white_bar 也全 NULL，下面 isNull(plotId) 那一支 + LIMIT 1 完全可能
+                    // 选中它，把退回的普通货加进三期账（三期总入库虚增，且再也拆不回来）。
+                    // 三期货的退回走按篮手选（returnByBatch，标识随篮带到流水）。
+                    .eq(LocationStock::getThirdPhase, 0);
                 if (isPork) {
                     bw.eq(LocationStock::getEarNo, wip.getEarNo());
                 } else if (wip.getPlotId() != null) {
@@ -1641,6 +1675,7 @@ public class MatFlowServiceImpl implements IMatFlowService {
         flow.setPlotId(basket.getPlotId());
         flow.setEarNo(basket.getEarNo());
         flow.setWhiteBarNo(basket.getWhiteBarNo());
+        flow.setThirdPhase(LocationStock.thirdPhaseOf(basket));   // 随篮带上（V6 row92）
         flow.setWarehouseId(locId);
         flow.setInoutType(INOUT_OUT);
         flow.setFlowType(FLOW_FEED_OUT);
@@ -1718,6 +1753,7 @@ public class MatFlowServiceImpl implements IMatFlowService {
         flow.setFlowDate(new Date());
         flow.setProductId(productId);
         flow.setPlotId(plotId);
+        flow.setThirdPhase(LocationStock.thirdPhaseOf(firstBasket));   // 随篮带上（V6 row92）
         flow.setWarehouseId(firstLocId);
         flow.setInoutType(INOUT_OUT);
         flow.setFlowType(FLOW_FEED_OUT);
@@ -1807,6 +1843,7 @@ public class MatFlowServiceImpl implements IMatFlowService {
         flow.setPlotId(basket.getPlotId());
         flow.setEarNo(basket.getEarNo());
         flow.setWhiteBarNo(basket.getWhiteBarNo());   // 猪肉篮 = 白条号源标签（同耳号多半只按 white_bar_no 区分）
+        flow.setThirdPhase(LocationStock.thirdPhaseOf(basket));   // 随篮带上（V6 row92）
         flow.setWarehouseId(locId);
         flow.setInoutType(INOUT_OUT);
         flow.setFlowType(FLOW_LOSS);
@@ -1879,6 +1916,7 @@ public class MatFlowServiceImpl implements IMatFlowService {
         flow.setFlowDate(new Date());
         flow.setProductId(productId);
         flow.setPlotId(plotId);
+        flow.setThirdPhase(LocationStock.thirdPhaseOf(firstBasket));   // 随篮带上（V6 row92）
         flow.setWarehouseId(firstLocId);
         flow.setInoutType(INOUT_OUT);
         flow.setFlowType(FLOW_LOSS);
@@ -1938,6 +1976,7 @@ public class MatFlowServiceImpl implements IMatFlowService {
         flow.setProductId(productId);
         flow.setEarNo(earNo);
         flow.setWhiteBarNo(firstBasket.getWhiteBarNo());
+        flow.setThirdPhase(LocationStock.thirdPhaseOf(firstBasket));   // 随篮带上（V6 row92）
         flow.setWarehouseId(firstLocId);
         flow.setInoutType(INOUT_OUT);
         flow.setFlowType(FLOW_LOSS);

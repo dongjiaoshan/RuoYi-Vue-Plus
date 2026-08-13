@@ -77,6 +77,15 @@ public class PlotInfo extends TenantEntity {
     private Integer plotStatus;
 
     /**
+     * 三期作物标识（V6 row88）：0=否 / 1=是。
+     *
+     * <p>「三期」= 甲方作物的第三茬/第三期（不是开发三期）。三期作物入库
+     * （{@code org.dromara.djs.warehouse.thirdphase}）时，把该产品对应作物「当前在种」的
+     * 地块置 1。单向置位——没有自动复位口径，需要清除走 admin 地块编辑。</p>
+     */
+    private Integer thirdPhase;
+
+    /**
      * 是否租赁（字典 {@code djs_yes_no}：1=是 / 0=否）。
      */
     private Integer isLease;

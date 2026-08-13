@@ -28,15 +28,15 @@ public class FeedDailyConfirmBo implements Serializable {
     private LocalDate feedDate;
 
     /**
-     * 框数（必填，正整数）。
+     * 框数（必填，正数，最多 1 位小数）。
      *
-     * <p>框是可数实物，甲方要求只收整数（前端输入框同步限整数键盘 + 剥非数字字符）。
-     * 落库列仍是 {@code DECIMAL(10,2)}，整数约束只在校验层收口，故不需要改表。</p>
+     * <p>甲方 row98：框可以装不满，要能录半框，故放开到 1 位小数（原来只收整数）。
+     * 落库列 {@code DECIMAL(10,2)} 本就存得下，小数位约束只在校验层收口，不需要改表。</p>
      */
     @NotNull(message = "框数不能为空")
     @Positive(message = "框数必须大于 0")
     // 落库列是 DECIMAL(10,2)：不卡上限的话超大值会在 JDBC 层溢出、裸奔成 500「未知异常」
-    @Digits(integer = 8, fraction = 0, message = "框数必须是最多 8 位的整数")
+    @Digits(integer = 8, fraction = 1, message = "框数最多 8 位整数 + 1 位小数")
     private BigDecimal boxCount;
 
     /**

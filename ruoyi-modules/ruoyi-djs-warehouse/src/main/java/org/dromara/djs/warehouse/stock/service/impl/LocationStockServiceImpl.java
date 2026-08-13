@@ -40,6 +40,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.stream.Collectors;
+import org.dromara.djs.warehouse.stock.domain.PlotLabel;
 
 /**
  * 库存明细 Service 实现（WMS-MD-001）。
@@ -137,7 +138,7 @@ public class LocationStockServiceImpl extends DjsBaseServiceImpl<LocationStockMa
         LambdaQueryWrapper<LocationStock> wrapper = buildQueryWrapper(query);
         Page<LocationStockVo> page = baseMapper.selectVoPage(pageQuery.build(), wrapper);
         fillLocationNames(page.getRecords());
-        fillBlockNos(page.getRecords());
+        fillPlotFields(page.getRecords());
         fillProductCodes(page.getRecords());
         return TableDataInfo.build(page);
     }
@@ -146,7 +147,7 @@ public class LocationStockServiceImpl extends DjsBaseServiceImpl<LocationStockMa
     public List<LocationStockVo> queryList(LocationStockQuery query) {
         List<LocationStockVo> list = baseMapper.selectVoList(buildQueryWrapper(query));
         fillLocationNames(list);
-        fillBlockNos(list);
+        fillPlotFields(list);
         fillProductCodes(list);
         return list;
     }
@@ -156,7 +157,7 @@ public class LocationStockServiceImpl extends DjsBaseServiceImpl<LocationStockMa
         LocationStockVo vo = baseMapper.selectVoById(id);
         if (vo != null) {
             fillLocationNames(List.of(vo));
-            fillBlockNos(List.of(vo));
+            fillPlotFields(List.of(vo));
             fillProductCodes(List.of(vo));
         }
         return vo;
@@ -224,8 +225,11 @@ public class LocationStockServiceImpl extends DjsBaseServiceImpl<LocationStockMa
         flow.setStockOutDest(bo.getStockOutDest());
         flow.setChangeNum(bo.getQuantity().negate());
         flow.setChangeQuantity(bo.getQuantity());
-        flow.setOperatorId(userId);
-        flow.setRemark(bo.getRemark());
+        // 【三期】标识从被扣的那一行继承（V6 row92）。这里是「按行出库」的唯一收口点：
+        // 库存查询页每行的「产品出库」按钮、毛菜间出库（VegOutServiceImpl 跨 bean 调本方法）
+        // 都从这里出，标识在此一次性带上，调用方不需要各自记得回补 —— 靠调用方 patch 的写法
+        // 已经漏过一次（只有毛菜间出库补了，库存查询页的产品出库没补，三期总出库直接少算）。
+        flow.setThirdPhase(LocationStock.thirdPhaseOf(stock));
         stockFlowMapper.insert(flow);
 
         // 3. 按行 id 原子扣减（product_stock >= quantity 行锁 + 数量校验）——UI 按库存行出库，
@@ -293,6 +297,9 @@ public class LocationStockServiceImpl extends DjsBaseServiceImpl<LocationStockMa
         }
         BigDecimal qty = bo.getQuantity();
         Long userId = LoginHelper.getUserId();
+        // 【三期】标识从源库存行继承（V6 row92）：转移是「同一批货换个库位」，两侧流水与目标篮都得跟着它走，
+        // 否则三期货一转移就掉标识、总出/总入两头对不上，目标库位还会把三期货并进普通篮混账。
+        int srcThirdPhase = LocationStock.thirdPhaseOf(stock);
 
         // 3. 源侧（猪肉鲜品库）：按行 id 原子扣减（精确扣本篮，避免同产品多耳号篮串扣）
         int deducted = locationStockMapper().deductStockById(stock.getId(), qty, userId);
@@ -316,12 +323,17 @@ public class LocationStockServiceImpl extends DjsBaseServiceImpl<LocationStockMa
         outFlow.setChangeQuantity(qty);
         outFlow.setEarNo(stock.getEarNo());
         outFlow.setWhiteBarNo(stock.getWhiteBarNo());
+        outFlow.setThirdPhase(srcThirdPhase);
         outFlow.setOperatorId(userId);
         outFlow.setRemark(buildTransferRemark("转移至 " + frozen.getLocationName(), bo.getRemark()));
         stockFlowMapper.insert(outFlow);
 
         // 4. 目标侧（冻品库）：同产品 UPSERT 加库存（product 维度；冻品库无耳号篮）
-        int added = locationStockMapper().addByProductLocation(frozenLocationId, productId, qty, userId);
+        //    三期货落三期篮、普通货落普通篮 —— 两个 UPSERT 各自只认自己那一半（见
+        //    LocationStockMapper#addByProductLocationThirdPhase），混用会把转来的三期货并进普通篮。
+        int added = srcThirdPhase == 1
+            ? locationStockMapper().addByProductLocationThirdPhase(frozenLocationId, productId, qty, userId)
+            : locationStockMapper().addByProductLocation(frozenLocationId, productId, qty, userId);
         if (added == 0) {
             LocationStock fresh = new LocationStock();
             fresh.setLocationId(frozenLocationId);
@@ -330,6 +342,7 @@ public class LocationStockServiceImpl extends DjsBaseServiceImpl<LocationStockMa
             fresh.setProductUnit(product.getProductUnit());
             fresh.setProductStock(qty);
             fresh.setIsEnd(0);
+            fresh.setThirdPhase(srcThirdPhase);
             fresh.setOperatorId(userId);
             baseMapper.insert(fresh);
         }
@@ -345,6 +358,7 @@ public class LocationStockServiceImpl extends DjsBaseServiceImpl<LocationStockMa
         inFlow.setChangeQuantity(qty);
         inFlow.setEarNo(stock.getEarNo());
         inFlow.setWhiteBarNo(stock.getWhiteBarNo());
+        inFlow.setThirdPhase(srcThirdPhase);
         inFlow.setOperatorId(userId);
         inFlow.setRemark(buildTransferRemark("转移自 " + srcLocation.getLocationName(), bo.getRemark()));
         stockFlowMapper.insert(inFlow);
@@ -444,12 +458,16 @@ public class LocationStockServiceImpl extends DjsBaseServiceImpl<LocationStockMa
     }
 
     /**
-     * 批量回填 {@code blockNo}（地块编号 = {@code t_plant_plot_info.plot_code}）。
+     * 批量回填 {@code blockNo}（地块编号 = {@code t_plant_plot_info.plot_code}）
+     * 与 {@code plotName}（地块名 = {@code plot_name}）。
      *
-     * <p>库存表只存 {@code plotId}，地块编号在地块主数据表。单次 IN 查地块表回填，避免 N+1。
-     * 库存行 {@code plotId} 为空（按产品 / 耳号入库的行）→ blockNo 保持 null。</p>
+     * <p>库存表只存 {@code plotId}，两者都在地块主数据表。单次 IN 查地块表回填，避免 N+1。
+     * 库存行 {@code plotId} 为空（按产品 / 耳号入库的行、以及三期货）→ 两者都保持 null。</p>
+     *
+     * <p>「地块」列由前端按 {@code thirdPhase} → {@code plotName} → {@code -} 的顺序渲染，
+     * 后端只负责把两个原料都给全，不在这里拼展示串。</p>
      */
-    private void fillBlockNos(List<LocationStockVo> records) {
+    private void fillPlotFields(List<LocationStockVo> records) {
         if (records == null || records.isEmpty()) {
             return;
         }
@@ -458,18 +476,24 @@ public class LocationStockServiceImpl extends DjsBaseServiceImpl<LocationStockMa
             .filter(Objects::nonNull)
             .distinct()
             .toList();
-        if (plotIds.isEmpty()) {
-            return;
-        }
-        List<PlotInfo> plots = plotInfoMapper.selectList(
-            new LambdaQueryWrapper<PlotInfo>().in(PlotInfo::getId, plotIds));
-        Map<Long, String> codeMap = plots.stream()
-            .filter(p -> p.getPlotCode() != null)
-            .collect(Collectors.toMap(PlotInfo::getId, PlotInfo::getPlotCode, (a, b) -> a));
+        // ⚠️ 这里**不能**在 plotIds 为空时早退：三期篮 plot_id 恒为 NULL，
+        // 一批全是三期行时早退会让下面的 plotLabel 一个都填不上 → 导出「地块」列整列空白。
+        Map<Long, PlotInfo> plotMap = plotIds.isEmpty()
+            ? Map.of()
+            : plotInfoMapper.selectList(new LambdaQueryWrapper<PlotInfo>().in(PlotInfo::getId, plotIds))
+                .stream()
+                .collect(Collectors.toMap(PlotInfo::getId, p -> p, (a, b) -> a));
         for (LocationStockVo vo : records) {
             if (vo.getPlotId() != null) {
-                vo.setBlockNo(codeMap.get(vo.getPlotId()));
+                PlotInfo plot = plotMap.get(vo.getPlotId());
+                if (plot != null) {
+                    vo.setBlockNo(plot.getPlotCode());
+                    vo.setPlotName(plot.getPlotName());
+                }
             }
+            // 导出件的「地块」列（V6 row92）：与页面 formatPlotLabel 同一套规则。
+            // 必须在 plotName 落完之后算 —— 三期行直接返「三期」，不看 plotName。
+            vo.setPlotLabel(PlotLabel.of(vo.getThirdPhase(), vo.getPlotName()));
         }
     }
 
@@ -587,6 +611,8 @@ public class LocationStockServiceImpl extends DjsBaseServiceImpl<LocationStockMa
             .eq(query.getPlotId() != null, LocationStock::getPlotId, query.getPlotId())
             .eq(query.getMedicineId() != null, LocationStock::getMedicineId, query.getMedicineId())
             .eq(query.getIsEnd() != null, LocationStock::getIsEnd, query.getIsEnd())
+            // 三期过滤（V6 row92）：传 1 = 只看三期库存；不传 = 全部
+            .eq(query.getThirdPhase() != null, LocationStock::getThirdPhase, query.getThirdPhase())
             .orderByDesc(LocationStock::getId);
         // 地块编号过滤：先解析匹配的 plotId 集合再 IN 过滤；无匹配则用不存在的 id 让结果恒空
         if (StringUtils.isNotBlank(query.getBlockNo())) {

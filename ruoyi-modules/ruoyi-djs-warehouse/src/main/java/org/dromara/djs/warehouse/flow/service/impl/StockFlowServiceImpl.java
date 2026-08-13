@@ -29,6 +29,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.stream.Collectors;
+import org.dromara.djs.warehouse.stock.domain.PlotLabel;
 
 /**
  * 出入库流水查询 Service 实现（WMS-MAT-001）。
@@ -310,6 +311,8 @@ public class StockFlowServiceImpl
             .eq(!hasWarehouseIds && query.getWarehouseId() != null,  StockFlow::getWarehouseId, query.getWarehouseId())
             .like(StringUtils.isNotBlank(query.getEarNo()), StockFlow::getEarNo, query.getEarNo())
             .eq(query.getPlotId() != null, StockFlow::getPlotId, query.getPlotId())
+            // 三期过滤（V6 row92）：传 1 = 只看三期；不传 = 全部
+            .eq(query.getThirdPhase() != null, StockFlow::getThirdPhase, query.getThirdPhase())
             .ge(query.getDateFrom() != null, StockFlow::getFlowDate, query.getDateFrom())
             .le(query.getDateTo()   != null, StockFlow::getFlowDate, query.getDateTo())
             .orderByDesc(StockFlow::getFlowDate)
@@ -318,9 +321,10 @@ public class StockFlowServiceImpl
     }
 
     /**
-     * 批量回填 productName / productCode / belongType / productUnit / locationName。
+     * 批量回填 productName / productCode / belongType / productUnit / buyClass / locationName /
+     * blockNo / plotName。
      *
-     * <p>两次 IN 查询（products + locations），避免 N+1。</p>
+     * <p>三次 IN 查询（products + locations + plots），避免 N+1。</p>
      */
     private void fillJoinNames(List<StockFlowVo> rows) {
         if (rows == null || rows.isEmpty()) {
@@ -362,21 +366,29 @@ public class StockFlowServiceImpl
                 vo.setLocationName(lm.get(vo.getWarehouseId()));
             }
         }
-        // 3. plots（地块编号 = t_plant_plot_info.plot_code；plotId 为空的行 blockNo 保持 null）
+        // 3. plots（地块编号 = plot_code / 地块名 = plot_name；plotId 为空的行两者都保持 null）
+        //    三期货没有真实地块（thirdPhase=1 的行 plotId 恒 null），「地块」列由前端按
+        //    thirdPhase → plotName → '-' 的顺序渲染，后端只负责把两个原料都给全。
         List<Long> plotIds = rows.stream()
             .map(StockFlowVo::getPlotId)
             .filter(Objects::nonNull)
             .distinct()
             .toList();
-        Map<Long, String> plm = plotIds.isEmpty() ? Map.of() :
+        Map<Long, PlotInfo> plm = plotIds.isEmpty() ? Map.of() :
             plotInfoMapper.selectList(new LambdaQueryWrapper<PlotInfo>().in(PlotInfo::getId, plotIds))
                 .stream()
-                .filter(p -> p.getPlotCode() != null)
-                .collect(Collectors.toMap(PlotInfo::getId, PlotInfo::getPlotCode, (a, b) -> a));
+                .collect(Collectors.toMap(PlotInfo::getId, p -> p, (a, b) -> a));
         for (StockFlowVo vo : rows) {
             if (vo.getPlotId() != null) {
-                vo.setBlockNo(plm.get(vo.getPlotId()));
+                PlotInfo plot = plm.get(vo.getPlotId());
+                if (plot != null) {
+                    vo.setBlockNo(plot.getPlotCode());
+                    vo.setPlotName(plot.getPlotName());
+                }
             }
+            // 导出件的「地块」列（V6 row92）：与页面 formatPlotLabel 同一套规则。
+            // 必须在 plotName 落完之后算 —— 三期行直接返「三期」，不看 plotName。
+            vo.setPlotLabel(PlotLabel.of(vo.getThirdPhase(), vo.getPlotName()));
         }
     }
 

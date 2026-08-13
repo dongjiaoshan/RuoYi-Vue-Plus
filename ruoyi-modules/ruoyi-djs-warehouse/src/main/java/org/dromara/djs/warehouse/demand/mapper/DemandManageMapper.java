@@ -1,5 +1,7 @@
 package org.dromara.djs.warehouse.demand.mapper;
 
+import com.baomidou.mybatisplus.core.metadata.IPage;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
@@ -8,6 +10,7 @@ import org.dromara.djs.warehouse.demand.domain.DemandManage;
 import org.dromara.djs.warehouse.demand.domain.vo.DemandGroupVo;
 import org.dromara.djs.warehouse.demand.domain.vo.DemandManageVo;
 import org.dromara.djs.warehouse.demand.domain.vo.DemandProductStoreDetailVo;
+import org.dromara.djs.warehouse.demand.domain.vo.StoreDemandDayAggVo;
 import org.dromara.djs.warehouse.pack.domain.vo.StoreDemandCopiesRowVo;
 import org.dromara.djs.warehouse.pack.domain.vo.StoreDemandCopiesVo;
 
@@ -548,6 +551,138 @@ public interface DemandManageMapper extends BaseMapperPlus<DemandManage, DemandM
                                               @Param("endDate") LocalDate endDate);
 
     /**
+     * 门店需求「按天聚合」分页（mp 门店需求卡 row66）。
+     *
+     * <p>一行 = 一个 {@code (demand_date, store_id)}。<b>统计口径统一排除门店态 DELETED 的行</b>
+     * （{@code demand_status NOT IN ('DELETED','CANCELLED','DRAFT')} + {@code del_flag='0'}）——所以某天全部行
+     * 都被删/取消时该天整条不出现，与契约 §1.2 一致。</p>
+     *
+     * <p>三个派生列的算法：</p>
+     * <ul>
+     *   <li>{@code arrivedCount / shippedCount / confirmedCount} 逐行按
+     *       {@link org.dromara.djs.warehouse.demand.core.StoreDemandStatusMapping} 的映射表分桶计数，
+     *       日状态阶梯与确认率由 service 用这三个数 + {@code totalCount} 派生（不在 SQL 里做，便于单测）。</li>
+     *   <li>{@code ordererName} 相关子查询取当天<b>最后一条</b>需求的下单人昵称
+     *       （{@code create_time DESC, id DESC LIMIT 1}）——不用 GROUP_CONCAT+SUBSTRING_INDEX，
+     *       昵称含逗号会被切断，且 {@code group_concat_max_len} 有截断风险。</li>
+     *   <li>{@code damagedCount} 相关子查询按当天需求 id 集合统计
+     *       {@code t_warehouse_product_production.is_damaged=1} 的件数（与 store 单条口径
+     *       {@code countDamagedByDemand} 同条件，只是范围从单条扩到当天）。</li>
+     * </ul>
+     *
+     * <p>分页在 SQL 层（MP {@code PaginationInnerInterceptor} 对 GROUP BY 查询自动包
+     * {@code SELECT COUNT(*) FROM (...) TOTAL} 求总数），不做「聚合全量再内存切片」。</p>
+     *
+     * <p>租户隔离：未启全局 MP 拦截器，显式 {@code tenant_id='1001'}（V1 单租户，与本 mapper 既有聚合 SQL 范式一致）。</p>
+     *
+     * @param page      分页对象
+     * @param storeId   门店过滤（null 不过滤——mp 端恒传当前门店）
+     * @param beginDate 需求日期起（null 不过滤）
+     * @param endDate   需求日期止（null 不过滤）
+     * @return 按天聚合行（需求日期倒序）
+     */
+    @Select("""
+        <script>
+        SELECT DATE_FORMAT(dm.demand_date, '%Y-%m-%d')                    AS demandDate,
+               dm.store_id                                                AS storeId,
+               COUNT(DISTINCT dm.product_id)                              AS categoryCount,
+               COUNT(*)                                                   AS totalCount,
+               SUM(CASE WHEN dm.demand_status IN ('CONFIRMED','IN_PRODUCTION','PARTIAL_SHIPPED','COMPLETED')
+                         AND dm.received_time IS NOT NULL THEN 1 ELSE 0 END)  AS arrivedCount,
+               SUM(CASE WHEN dm.demand_status IN ('PARTIAL_SHIPPED','COMPLETED')
+                         AND dm.received_time IS NULL THEN 1 ELSE 0 END)      AS shippedCount,
+               SUM(CASE WHEN dm.demand_status IN ('CONFIRMED','IN_PRODUCTION')
+                         AND dm.received_time IS NULL THEN 1 ELSE 0 END)      AS confirmedCount,
+               DATE_FORMAT(MAX(GREATEST(dm.create_time, IFNULL(dm.update_time, dm.create_time))),
+                           '%Y-%m-%d %H:%i')                              AS lastOrderTime,
+               CONCAT(
+                 IFNULL((SELECT u.nick_name
+                           FROM t_warehouse_demand_manage d2
+                           LEFT JOIN sys_user u ON u.user_id = d2.create_by AND u.del_flag = '0'
+                          WHERE d2.store_id = dm.store_id
+                            AND d2.demand_date = dm.demand_date
+                            AND d2.demand_status NOT IN ('DELETED','CANCELLED','DRAFT')
+                            AND d2.del_flag = '0'
+                            AND d2.tenant_id = '1001'
+                          ORDER BY d2.create_time ASC, d2.id ASC
+                          LIMIT 1), ''),
+                 CASE WHEN COUNT(DISTINCT dm.create_by) > 1
+                      THEN CONCAT(' 等 ', COUNT(DISTINCT dm.create_by), ' 人') ELSE '' END
+               )                                                          AS ordererName,
+               (SELECT COUNT(*)
+                  FROM t_warehouse_product_production pp
+                  JOIN t_warehouse_demand_manage d3
+                    ON d3.id = pp.demand_id
+                   AND d3.store_id = dm.store_id
+                   AND d3.demand_date = dm.demand_date
+                   AND d3.demand_status NOT IN ('DELETED','CANCELLED','DRAFT')
+                   AND d3.del_flag = '0'
+                   AND d3.tenant_id = '1001'
+                 WHERE pp.is_damaged = 1
+                   AND pp.del_flag = '0'
+                   AND pp.tenant_id = '1001')                             AS damagedCount
+        FROM t_warehouse_demand_manage dm
+        WHERE dm.store_id IS NOT NULL
+          AND dm.demand_status NOT IN ('DELETED','CANCELLED','DRAFT')
+          AND dm.del_flag = '0'
+          AND dm.tenant_id = '1001'
+          <if test="storeId != null">
+            AND dm.store_id = #{storeId}
+          </if>
+          <if test="beginDate != null">
+            AND dm.demand_date &gt;= #{beginDate}
+          </if>
+          <if test="endDate != null">
+            AND dm.demand_date &lt;= #{endDate}
+          </if>
+        GROUP BY dm.demand_date, dm.store_id
+        ORDER BY dm.demand_date DESC, dm.store_id ASC
+        </script>
+        """)
+    Page<StoreDemandDayAggVo> selectStoreDemandDayPage(IPage<StoreDemandDayAggVo> page,
+                                                       @Param("storeId") Long storeId,
+                                                       @Param("beginDate") LocalDate beginDate,
+                                                       @Param("endDate") LocalDate endDate);
+
+    /**
+     * 本店各产品「最近一次下单时间」（mp 下单目录 row68 的非果蔬排序键）。
+     *
+     * <p>口径：指定门店 + 指定产品集合，取 {@code MAX(create_time)} 精确到分，
+     * <b>排除门店态「已删除」的行</b>（{@code demand_status IN ('DELETED','CANCELLED')} + {@code del_flag='1'}），
+     * 与 {@link #selectStoreDemandDayPage} 的统计口径**同一套**。</p>
+     *
+     * <p>为什么不像早先那样「取消的也算下过」：{@code CANCELLED} 与 {@code DELETED} 在门店视角
+     * 是同一个状态（都叫「已删除」，见 {@code StoreDemandStatusMapping}）。只排 {@code del_flag=1}
+     * 会变成「mp 里删掉的不算历史、后台取消的算」——同样一件事一半算一半不算，属 CLAUDE.md §0 禁止的
+     * 「两边兼容」。这里二选一取「站得住的单才算历史」：排序反映的是这家店真正在订的东西。
+     * 放弃的是「取消行也体现过下单意图」这层信息，接受。</p>
+     *
+     * <p>租户隔离：显式 {@code tenant_id='1001'}（V1 单租户）。</p>
+     *
+     * @param storeId    门店 FK
+     * @param productIds 产品 FK 集合（调用方保证非空）
+     * @return 每行 {@code {productId, lastOrderTime}}；从未下过单的产品不出现在结果中
+     */
+    @Select("""
+        <script>
+        SELECT product_id                                        AS productId,
+               DATE_FORMAT(MAX(create_time), '%Y-%m-%d %H:%i')   AS lastOrderTime
+        FROM t_warehouse_demand_manage
+        WHERE store_id = #{storeId}
+          AND product_id IS NOT NULL
+          AND del_flag = '0'
+          AND demand_status NOT IN ('DELETED','CANCELLED','DRAFT')
+          AND tenant_id = '1001'
+          AND product_id IN
+          <foreach collection="productIds" item="pid" open="(" separator="," close=")">#{pid}</foreach>
+        GROUP BY product_id
+        </script>
+        """)
+    List<Map<String, Object>> selectLastOrderTimeByStore(@Param("storeId") Long storeId,
+                                                         @Param("productIds") Collection<Long> productIds);
+
+
+    /**
      * 在入参 demand id 集合里，筛出「至少指定 1 头未删猪只」的 demand id（0613-11 确认页「是否指定猪只」列）。
      *
      * <p>口径：{@code t_warehouse_demand_pig} 按 demand_id 去重存在未删行即视为已指定。仅查当前页 demand id
@@ -570,5 +705,24 @@ public interface DemandManageMapper extends BaseMapperPlus<DemandManage, DemandM
         </script>
         """)
     List<Long> selectDemandIdsWithPig(@Param("demandIds") Collection<Long> demandIds);
+
+    /**
+     * 该门店是否「不可再下单」（不存在 / 已删除 / 已终止合作），返 &gt;0 表示不可用。
+     *
+     * <p>给编辑路径的门店闸用。warehouse 模块不反向依赖 common.store 的门店服务，
+     * 直接按 {@code t_md_store.business_status} 判：{@code '1'} = 已终止合作
+     * （与 {@code StoreUserRelationServiceImpl.BUSINESS_STATUS_TERMINATED} 同一常量口径）。</p>
+     *
+     * @param storeId 门店主键
+     * @return 不可用计数（0 = 门店正常）
+     */
+    @Select("""
+        SELECT CASE WHEN COUNT(*) = 0 THEN 1 ELSE 0 END
+          FROM t_md_store
+         WHERE id = #{storeId}
+           AND del_flag = '0'
+           AND (business_status IS NULL OR business_status <> '1')
+        """)
+    Integer countTerminatedStore(@Param("storeId") Long storeId);
 }
 

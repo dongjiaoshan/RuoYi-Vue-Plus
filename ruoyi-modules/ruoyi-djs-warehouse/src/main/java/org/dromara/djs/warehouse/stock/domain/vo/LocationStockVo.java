@@ -14,6 +14,7 @@ import java.io.Serial;
 import java.io.Serializable;
 import java.math.BigDecimal;
 import java.util.Date;
+import org.dromara.djs.warehouse.stock.domain.PlotLabel;
 
 /**
  * 库存明细视图对象（WMS-MD-001）。
@@ -87,6 +88,31 @@ public class LocationStockVo implements Serializable {
      */
     @ExcelProperty(value = "地块编号")
     private String blockNo;
+
+    /**
+     * 地块名称（service JOIN t_plant_plot_info.plot_name 回填；库存行 {@code plotId} 为空 → null）。
+     *
+     * <p>接口出参用它，导出件不用它 —— 导出的「地块」列走 {@link #getPlotLabel()}。</p>
+     */
+    private String plotName;
+
+    /**
+     * 【三期】标识（0=否 / 1=是；V6 row92）。
+     *
+     * <p>接口出参，前端 {@code formatPlotLabel} 用它决定「地块」列渲染成什么。
+     * 导出件不单列它 —— 裸 0/1 对甲方无意义，语义已经并进 {@link #getPlotLabel()}。</p>
+     */
+    private Integer thirdPhase;
+
+    /**
+     * 导出件的「地块」列（V6 row92 甲方原话「地块记录为三期两个字」）。
+     *
+     * <p>由 service 用 {@link PlotLabel#of} 回填，规则与页面
+     * {@code plus-ui/src/utils/plotTag.ts#formatPlotLabel} 完全相同：
+     * 三期 → 「三期」/ 有真实地块 → 地块名 / 都没有 → {@code -}。</p>
+     */
+    @ExcelProperty(value = "地块")
+    private String plotLabel;
 
     /**
      * 药品 ID（FK → t_breed_medicine_info.id；ADR-0012 药品归仓库库位统一）。

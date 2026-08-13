@@ -6,6 +6,7 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import lombok.RequiredArgsConstructor;
 import org.dromara.common.core.domain.R;
 import org.dromara.common.core.utils.StringUtils;
+import org.dromara.djs.common.util.LikeEscape;
 import org.dromara.djs.warehouse.location.domain.LocationInfo;
 import org.dromara.djs.warehouse.location.domain.vo.LocationPickerVo;
 import org.dromara.djs.warehouse.location.mapper.LocationInfoMapper;
@@ -71,9 +72,9 @@ public class LocationAppletController {
             .eq(LocationInfo::getLocationStatus, 1)
             .eq(StringUtils.isNotBlank(locationType), LocationInfo::getLocationType, locationType)
             .and(StringUtils.isNotBlank(keyword), w -> w
-                .like(LocationInfo::getLocationName, keyword)
+                .like(LocationInfo::getLocationName, LikeEscape.escape(keyword))
                 .or()
-                .like(LocationInfo::getLocationCode, keyword))
+                .like(LocationInfo::getLocationCode, LikeEscape.escape(keyword)))
             .orderByDesc(LocationInfo::getId)
             .last("LIMIT 200");
         List<LocationInfo> rows = locationInfoMapper.selectList(wrapper);

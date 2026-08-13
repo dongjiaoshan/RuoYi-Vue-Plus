@@ -106,6 +106,11 @@ public class StockFlowQuery {
     private String blockNo;
 
     /**
+     * 【三期】标识精确匹配（V6 row92）：传 1 = 只看三期；不传 = 全部（三期与非三期都返）。
+     */
+    private Integer thirdPhase;
+
+    /**
      * 库位 ID（stockFlow.warehouse_id 物理列名，实为 location FK）精确匹配。
      */
     private Long warehouseId;

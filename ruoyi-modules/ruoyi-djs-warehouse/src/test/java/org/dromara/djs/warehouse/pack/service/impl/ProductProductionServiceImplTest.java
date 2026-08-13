@@ -795,9 +795,10 @@ class ProductProductionServiceImplTest {
         assertThat(saved.getEarNo()).isEqualTo("010126050101");
         assertThat(saved.getProductWeight()).isEqualByComparingTo("12.000");
         // DENGBO row28：发货月台出库按「整条产出行」消耗软删（产出重 50 全额 → deleteById），
-        // 差额(50−12)=预冷损耗由 lossFlowService 记，不留零头残行
+        // 差额(50−12)=预冷损耗由 lossFlowService 记，不留零头残行。
+        // row60：整行用尽先经带条件的 deductWeightById 扣到 0 拿行锁（防并发两人同时"删成功"各自产出），再软删。
+        verify(inhouseMapper, times(1)).deductWeightById(70001L, new BigDecimal("50.000"));
         verify(inhouseMapper, times(1)).deleteById(70001L);
-        verify(inhouseMapper, never()).deductWeightById(anyLong(), any());
     }
 
     // ============================================================
@@ -1063,6 +1064,64 @@ class ProductProductionServiceImplTest {
         service.markDamage(bo);
 
         verify(productionMapper).updateDamage(eq(81002L), any(), eq("破损"), any());
+    }
+
+    // ============================================================
+    // listMaterialStock（打包卡片「原材料实时库存」批量口径）
+    // ============================================================
+
+    private ProductInfo materialLinkedProduct(Long id, Long materialProductId) {
+        ProductInfo p = new ProductInfo();
+        p.setId(id);
+        p.setProductMaterial(materialProductId);
+        return p;
+    }
+
+    @Test
+    @DisplayName("listMaterialStock: 一次 IN 查产品 + 一次 GROUP BY 查库存（不再逐个 selectById，N+1 已消除）")
+    void listMaterialStockUsesBatchQueries() {
+        when(productInfoMapper.selectBatchIds(any())).thenReturn(List.of(
+            materialLinkedProduct(60001L, 70001L),
+            materialLinkedProduct(60002L, 70002L),
+            // 未配 product_material 的成品不进 Map（前端展示 '—'）
+            materialLinkedProduct(60003L, null)));
+        // 70002 无库存行 → 不在 GROUP BY 结果里，按 BigDecimal.ZERO 兜底（与单条 sumProductStock 口径一致）
+        when(locationStockMapper.selectMaps(any())).thenReturn(List.<Map<String, Object>>of(
+            Map.<String, Object>of("productId", 70001L, "totalStock", new BigDecimal("12.500"))));
+
+        Map<String, BigDecimal> result = service.listMaterialStock(List.of(60001L, 60002L, 60003L));
+
+        assertThat(result).containsOnlyKeys("60001", "60002");
+        assertThat(result.get("60001")).isEqualByComparingTo("12.500");
+        assertThat(result.get("60002")).isEqualByComparingTo("0");
+        verify(productInfoMapper, times(1)).selectBatchIds(any());
+        verify(productInfoMapper, never()).selectById(anyLong());
+        verify(locationStockMapper, times(1)).selectMaps(any());
+    }
+
+    @Test
+    @DisplayName("listMaterialStock: 成品全部未配 product_material → 空 Map，且不查库存表")
+    void listMaterialStockSkipsProductsWithoutMaterial() {
+        when(productInfoMapper.selectBatchIds(any())).thenReturn(List.of(materialLinkedProduct(60001L, null)));
+
+        assertThat(service.listMaterialStock(List.of(60001L))).isEmpty();
+        verify(locationStockMapper, never()).selectMaps(any());
+    }
+
+    @Test
+    @DisplayName("listMaterialStock: 多个成品共用同一原材料 → 各自都拿到同一库存合计")
+    void listMaterialStockSharesSameMaterial() {
+        when(productInfoMapper.selectBatchIds(any())).thenReturn(List.of(
+            materialLinkedProduct(60001L, 70001L),
+            materialLinkedProduct(60002L, 70001L)));
+        when(locationStockMapper.selectMaps(any())).thenReturn(List.<Map<String, Object>>of(
+            Map.<String, Object>of("productId", 70001L, "totalStock", new BigDecimal("8.000"))));
+
+        Map<String, BigDecimal> result = service.listMaterialStock(List.of(60001L, 60002L));
+
+        assertThat(result.get("60001")).isEqualByComparingTo("8.000");
+        assertThat(result.get("60002")).isEqualByComparingTo("8.000");
+        verify(locationStockMapper, times(1)).selectMaps(any());
     }
 
 }

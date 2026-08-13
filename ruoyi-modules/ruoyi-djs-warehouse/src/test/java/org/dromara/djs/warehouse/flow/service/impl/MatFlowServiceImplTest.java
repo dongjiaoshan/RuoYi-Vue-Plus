@@ -1166,4 +1166,144 @@ class MatFlowServiceImplTest {
         verify(feedLogMapper, times(1)).insert(any(FeedLog.class));
     }
 
+    // -------- 【三期】分篮 / 标识继承（V6 row92） --------
+
+    /**
+     * {@code pickByProduct} 的三个分支必须同一口径：<b>product 维度的领用一律只动普通货</b>。
+     * 猪肉分支靠 {@code ear_no IS NOT NULL} 天然排除三期篮、其余分支靠
+     * {@code deductByProductLocation} 的 {@code third_phase = 0}；果蔬分支的 FIFO 是纯 Java 侧
+     * wrapper，漏了就只有它一条会把三期篮扣掉，而流水上只有一条按总量记的 pick_out ——
+     * 三期与普通货混在同一笔里拆不开，「三期总出库」直接漏计。
+     */
+    @Test
+    @DisplayName("pick 自产果蔬 product 维度 FIFO：wrapper 带 third_phase 过滤 → 不扣三期篮（与另外两个分支同口径）")
+    void testPick_VegFifoExcludesThirdPhaseBaskets() {
+        ProductInfo veg = new ProductInfo();
+        veg.setId(PRODUCT_ID);
+        veg.setProductName("黄秋葵");
+        veg.setProductUnit("kg");
+        veg.setProductType(1);
+        veg.setProductAttr(2);
+        veg.setBelongType("vegetable");
+        when(productInfoMapper.selectOne(any())).thenReturn(veg);
+
+        LocationStock normal = new LocationStock();
+        normal.setId(8001L);
+        normal.setProductId(PRODUCT_ID);
+        normal.setPlotId(7001L);
+        normal.setThirdPhase(0);
+        normal.setProductStock(new BigDecimal("40"));
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<LocationStock>> wrapCap =
+            ArgumentCaptor.forClass(com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper.class);
+        when(locationStockMapper.selectList(any())).thenReturn(List.of(normal));
+        when(locationStockMapper.deductStockById(anyLong(), any(BigDecimal.class), eq(USER_ID))).thenReturn(1);
+
+        service.pick(pickBo(new BigDecimal("40")));
+
+        verify(locationStockMapper).selectList(wrapCap.capture());
+        String sql = wrapCap.getValue().getTargetSql().toLowerCase(java.util.Locale.ROOT);
+        assertThat(sql).contains("third_phase");
+    }
+
+    /**
+     * 「按源手选」领用：用户明确点了哪一篮，标识就必须随那一篮走 —— 这是三期货唯一还能被 mp 领出去的路径
+     * （product 维度 FIFO 已把三期篮排除在外）。
+     */
+    @Test
+    @DisplayName("pickByBatch：选中的是三期篮 → pick_out 流水继承 third_phase=1")
+    void testPickByBatch_InheritsThirdPhaseFromSelectedBasket() {
+        ProductInfo pack = new ProductInfo();
+        pack.setId(PRODUCT_ID);
+        pack.setProductName("塑料袋");
+        pack.setProductUnit("个");
+        pack.setBelongType("package");
+        when(productInfoMapper.selectById(PRODUCT_ID)).thenReturn(pack);
+
+        LocationStock thirdPhaseBasket = new LocationStock();
+        thirdPhaseBasket.setId(8801L);
+        thirdPhaseBasket.setProductId(PRODUCT_ID);
+        thirdPhaseBasket.setLocationId(LOCATION_ID);
+        thirdPhaseBasket.setProductStock(new BigDecimal("30"));
+        thirdPhaseBasket.setThirdPhase(1);
+        thirdPhaseBasket.setDelFlag("0");
+        when(locationStockMapper.selectById(8801L)).thenReturn(thirdPhaseBasket);
+        when(locationStockMapper.deductStockById(eq(8801L), any(BigDecimal.class), eq(USER_ID))).thenReturn(1);
+
+        MatPickBo bo = pickBo(new BigDecimal("10"));
+        bo.setBatchId(8801L);
+        service.pick(bo);
+
+        ArgumentCaptor<StockFlow> cap = ArgumentCaptor.forClass(StockFlow.class);
+        verify(stockFlowMapper, times(1)).insert(cap.capture());
+        assertThat(cap.getValue().getThirdPhase()).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("pickByBatch：选中普通篮（third_phase=null 存量行）→ 流水归一成 0，不误标、不写空 NOT NULL 列")
+    void testPickByBatch_LegacyNullThirdPhaseNormalized() {
+        ProductInfo pack = new ProductInfo();
+        pack.setId(PRODUCT_ID);
+        pack.setProductName("塑料袋");
+        pack.setProductUnit("个");
+        pack.setBelongType("package");
+        when(productInfoMapper.selectById(PRODUCT_ID)).thenReturn(pack);
+
+        LocationStock legacyBasket = new LocationStock();
+        legacyBasket.setId(8802L);
+        legacyBasket.setProductId(PRODUCT_ID);
+        legacyBasket.setLocationId(LOCATION_ID);
+        legacyBasket.setProductStock(new BigDecimal("30"));
+        legacyBasket.setThirdPhase(null);
+        legacyBasket.setDelFlag("0");
+        when(locationStockMapper.selectById(8802L)).thenReturn(legacyBasket);
+        when(locationStockMapper.deductStockById(eq(8802L), any(BigDecimal.class), eq(USER_ID))).thenReturn(1);
+
+        MatPickBo bo = pickBo(new BigDecimal("10"));
+        bo.setBatchId(8802L);
+        service.pick(bo);
+
+        ArgumentCaptor<StockFlow> cap = ArgumentCaptor.forClass(StockFlow.class);
+        verify(stockFlowMapper, times(1)).insert(cap.capture());
+        assertThat(cap.getValue().getThirdPhase()).isEqualTo(0);
+    }
+
+    /**
+     * product 维度退回的回补篮查找带 {@code LIMIT 1} —— 三期篮的 plot/ear/white_bar 也全 NULL，
+     * 不加 third_phase 过滤完全可能选中它，把退回的普通货加进三期账。配套流水是 {@code third_phase=0}，
+     * 篮子却是三期的，两边当场就对不上。
+     */
+    @Test
+    @DisplayName("returnBack（product 维度）：回补篮查找带 third_phase 过滤 → 不会把普通货退进三期篮")
+    void testReturn_BasketLookupExcludesThirdPhase() {
+        ProductInfo veg = new ProductInfo();
+        veg.setId(PRODUCT_ID);
+        veg.setProductName("黄秋葵");
+        veg.setProductUnit("kg");
+        veg.setProductType(1);
+        veg.setProductAttr(2);
+        veg.setBelongType("vegetable");
+        when(productInfoMapper.selectOne(any())).thenReturn(veg);
+        // 可打包食品原料的今日额度走「今日待打包余额」口径（不是 pick/return/loss 流水差额）
+        when(productInhouseMapper.sumTodayRemaining(PRODUCT_ID)).thenReturn(new BigDecimal("100"));
+
+        ProductInhouse wip = new ProductInhouse();
+        wip.setId(401L);
+        wip.setProductId(PRODUCT_ID);
+        wip.setProductWeight(new BigDecimal("30"));
+        wip.setLocationId(LOCATION_ID);
+        wip.setPlotId(null);                       // 历史无地块 inhouse → 走 isNull(plotId) 那一支
+        when(productInhouseMapper.selectList(any())).thenReturn(List.of(wip));
+        when(productInhouseMapper.deductWeightById(eq(401L), any())).thenReturn(1);
+        when(locationStockMapper.selectOne(any())).thenReturn(null);
+
+        service.returnBack(returnBo(new BigDecimal("8")));
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<LocationStock>> bwCap =
+            ArgumentCaptor.forClass(com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper.class);
+        verify(locationStockMapper).selectOne(bwCap.capture());
+        assertThat(bwCap.getValue().getTargetSql().toLowerCase(java.util.Locale.ROOT)).contains("third_phase");
+    }
+
 }

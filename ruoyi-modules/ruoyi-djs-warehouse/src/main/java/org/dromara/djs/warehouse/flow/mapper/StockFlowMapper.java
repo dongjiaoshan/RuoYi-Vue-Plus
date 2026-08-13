@@ -52,6 +52,36 @@ public interface StockFlowMapper extends BaseMapperPlus<StockFlow, StockFlowVo> 
                                          @Param("flowType") String flowType);
 
     /**
+     * 【三期】总入库 / 总出库合计（V6 row92；按 {@code third_phase=1} + 出入方向聚合 {@code change_num}）。
+     *
+     * <p>甲方口径：「通过三期标识可以统计三期的总入库和总出库」——判据就是流水行上的
+     * {@code third_phase}，不依赖地块（三期没有真实地块）。</p>
+     *
+     * <p><b>取 {@code ABS(change_num)}</b>：{@code change_num} 是带符号的（出库流水由
+     * {@code LocationStockServiceImpl#productOut} 写成负值），直接 SUM 会让「总出库」显示成负数。
+     * 合计要的是量而不是方向，方向已经由 {@code inout_type} 参数限定死了。</p>
+     *
+     * <p><b>租户隔离靠 MP 拦截器</b>在 final SQL 阶段注入 {@code tenant_id}，应用层不显式 WHERE ——
+     * 与同族的「按方向 / 按人聚合」兄弟（{@link #sumTodayByUserProductType} /
+     * {@link #sumTodayByInoutBelongType}）同一口径，不是这条漏写。</p>
+     *
+     * <p>本文件确实还有另一半查询显式写死 {@code tenant_id = '1001'}（如
+     * {@link #sumTodayNetPickedByBasket}）—— 两种写法在 V1 单租户下等价，历史上按写的人分成了两派。
+     * <b>不要为了"统一"去改任何一条</b>：显式 {@code '1001'} 改成靠拦截器，会在拦截器未生效的调用路径上
+     * 直接放开跨租户；靠拦截器的改成显式 {@code '1001'}，等于把 V2 多租户的开关焊死在 SQL 里。
+     * 要收敛也是 V2 启用拦截器时整批收敛，不在单条查询上零敲碎打。</p>
+     *
+     * @param inoutType 出入方向（IN 入库 / OT 出库）
+     * @return 该方向的三期合计量（无记录返 0）
+     */
+    @Select("SELECT COALESCE(SUM(ABS(change_num)), 0) "
+        + "  FROM t_warehouse_stock_flow "
+        + " WHERE third_phase = 1 "
+        + "   AND inout_type  = #{inoutType} "
+        + "   AND del_flag    = '0'")
+    BigDecimal sumThirdPhaseByInout(@Param("inoutType") String inoutType);
+
+    /**
      * V6-R43 燎毛间产品入库重量调整：改写这条燎毛入库流水的重量。
      *
      * <p><b>覆盖而不是按差额加减</b>：这条流水就是「本次燎毛入库」这一个事件本身，

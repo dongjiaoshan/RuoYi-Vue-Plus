@@ -54,7 +54,10 @@ import static org.mockito.Mockito.when;
  *
  * <p>重点锁三件事：① 果蔬月台去向在毛菜处理行缺失时<b>必须抛异常阻断</b>
  * （否则扣了库存、货却永远到不了月台 —— clean-QA 实测复现过的 P0 静默丢货）；
- * ② 饲料饲喂去向缺行时降级放行但有机饲喂记录照写；③ 库位/业态前置校验真的拦得住。</p>
+ * ② 两条去向都<b>只写流水台账（handle_record / feed_log），绝不碰 {@code vegetable_handle} 的重量桶</b>
+ * —— 本功能出的是已入库库存，那份重量已计进 handled/stock_in，再记一次就是同一 kg 进两个互斥桶：
+ * feed_weight 让地块卡「剩余 = 采摘 − 处理 − 饲料」显负、send_platform_weight 让 recomputeLoss 被静默钳零；
+ * ③ 库位/业态前置校验真的拦得住。</p>
  *
  * @author djs
  */
@@ -165,8 +168,8 @@ class VegOutServiceImplTest {
     }
 
     @Test
-    @DisplayName("果蔬月台：累加 send_platform_weight，并回写流水的 batch_no / plot_id")
-    void vegDock_accumulatesPlatformWeight() {
+    @DisplayName("果蔬月台：写 handle_record 明细（月台待入库 + 日统计都读它），并回写流水的 batch_no / plot_id")
+    void vegDock_writesHandleRecord() {
         when(locationStockMapper.selectById(1L)).thenReturn(mkStock(1L, 10L, 20L));
         when(productInfoMapper.selectById(10L)).thenReturn(mkVegProduct(10L));
         stubHandleFound(30L, 20L);
@@ -175,10 +178,6 @@ class VegOutServiceImplTest {
 
         // row192：单号改走统一编码生成器，7 位纯数字（旧格式 VO+时间戳+4位随机 已废弃）
         assertThat(batchNo).isEqualTo("0000001");
-        ArgumentCaptor<VegetableHandle> hc = ArgumentCaptor.forClass(VegetableHandle.class);
-        verify(vegetableHandleMapper).updateById(hc.capture());
-        assertThat(hc.getValue().getSendPlatformWeight()).isEqualByComparingTo("22.000");
-        assertThat(hc.getValue().getFeedWeight()).as("月台去向不应动饲料量").isNull();
         // 不写有机饲喂记录
         verify(feedLogMapper, never()).insert(any(FeedLog.class));
 
@@ -187,13 +186,29 @@ class VegOutServiceImplTest {
         assertThat(fc.getValue().getBatchNo()).isEqualTo(batchNo);
         assertThat(fc.getValue().getPlotId()).isEqualTo(20L);
 
-        // 日统计「发往月台果蔬总重」读的是 handle_record 而非 vegetable_handle，必须同步写一条
+        // 月台待入库量（VegReceiveMapper#selectSelfPending，按产品拆）+ 日统计「发往月台果蔬总重」
+        // 读的都是 handle_record 而非 vegetable_handle.send_platform_weight —— 这条明细是唯一的账
         ArgumentCaptor<org.dromara.djs.warehouse.veg.domain.HandleRecord> rc =
             ArgumentCaptor.forClass(org.dromara.djs.warehouse.veg.domain.HandleRecord.class);
         verify(handleRecordMapper).insert(rc.capture());
         assertThat(rc.getValue().getHandleTarget()).as("handle_target=2 月台").isEqualTo(2);
         assertThat(rc.getValue().getRecordWeight()).isEqualByComparingTo("12.000");
         assertThat(rc.getValue().getHandleId()).isEqualTo(77L);
+    }
+
+    @Test
+    @DisplayName("⚠️P0 回归：果蔬月台出的也是**已入库**库存，绝不可累加 send_platform_weight —— 否则 recomputeLoss 多减后静默钳零")
+    void vegDock_mustNotTouchVegetableHandleWeights() {
+        // 与饲料同一个根因，只是它不显负：损耗 = 采摘 − 入库 − 月台 − 饲料，
+        // 月台那一项被重复计入后 loss 转负，recomputeLoss 会 warn + 归零，页面上看不出来。
+        when(locationStockMapper.selectById(1L)).thenReturn(mkStock(1L, 10L, 20L));
+        when(productInfoMapper.selectById(10L)).thenReturn(mkVegProduct(10L));
+        stubHandleFound(30L, 20L);   // 既有行 send_platform_weight=10.000 —— 有得可加，才验得出「就是不加」
+
+        service.submit(mkBo("veg_dock", 1L, "12.000"), true);
+
+        verify(handleRecordMapper).insert(any(org.dromara.djs.warehouse.veg.domain.HandleRecord.class));
+        verify(vegetableHandleMapper, never()).updateById(any(VegetableHandle.class));
     }
 
     @Test
@@ -219,13 +234,17 @@ class VegOutServiceImplTest {
         verify(vegetableHandleMapper).insert(created.capture());
         assertThat(created.getValue().getCropId()).isEqualTo(30L);
         assertThat(created.getValue().getPlotId()).isEqualTo(20L);
-        // 补建行各重量记 0（这批货没走过毛菜处理流程）
+        // 补建行各重量记 0（这批货没走过毛菜处理流程），且补建之后也不再改任何重量列
         assertThat(created.getValue().getPickedWeight()).isEqualByComparingTo("0");
         assertThat(created.getValue().getStockInWeight()).isEqualByComparingTo("0");
+        verify(vegetableHandleMapper, never()).updateById(any(VegetableHandle.class));
 
-        ArgumentCaptor<VegetableHandle> upd = ArgumentCaptor.forClass(VegetableHandle.class);
-        verify(vegetableHandleMapper).updateById(upd.capture());
-        assertThat(upd.getValue().getSendPlatformWeight()).as("0 + 12 = 12").isEqualByComparingTo("12.000");
+        // 补建的意义就是给明细提供挂载点 —— 明细必须真的挂上去
+        ArgumentCaptor<org.dromara.djs.warehouse.veg.domain.HandleRecord> rc =
+            ArgumentCaptor.forClass(org.dromara.djs.warehouse.veg.domain.HandleRecord.class);
+        verify(handleRecordMapper).insert(rc.capture());
+        assertThat(rc.getValue().getHandleId()).as("挂在补建出来的那行上").isEqualTo(88L);
+        assertThat(rc.getValue().getRecordWeight()).isEqualByComparingTo("12.000");
     }
 
     @Test
@@ -255,7 +274,7 @@ class VegOutServiceImplTest {
     }
 
     @Test
-    @DisplayName("饲料饲喂：写有机饲喂记录 feed_type=veg_handle（位置=毛菜间）+ 累加 feed_weight")
+    @DisplayName("饲料饲喂：只写有机饲喂记录 feed_type=veg_handle（位置=毛菜间）")
     void feed_writesFeedLog() {
         when(locationStockMapper.selectById(1L)).thenReturn(mkStock(1L, 10L, 20L));
         when(productInfoMapper.selectById(10L)).thenReturn(mkVegProduct(10L));
@@ -269,20 +288,34 @@ class VegOutServiceImplTest {
         assertThat(fc.getValue().getFeedWeight()).isEqualByComparingTo("8.000");
         assertThat(fc.getValue().getLocationId()).isEqualTo(FRESH_VEG_LOC);
 
-        ArgumentCaptor<VegetableHandle> hc = ArgumentCaptor.forClass(VegetableHandle.class);
-        verify(vegetableHandleMapper).updateById(hc.capture());
-        assertThat(hc.getValue().getFeedWeight()).isEqualByComparingTo("13.000");
         // 饲料去向不进「发往月台」日统计
         verify(handleRecordMapper, never()).insert(any(org.dromara.djs.warehouse.veg.domain.HandleRecord.class));
     }
 
     @Test
-    @DisplayName("饲料饲喂：毛菜处理行缺失时降级放行，有机饲喂记录照写（与月台去向区别对待）")
-    void feed_missingHandleRow_degradesButStillLogs() {
+    @DisplayName("⚠️P0 回归：饲料饲喂出的是**已入库**库存，绝不可累加 feed_weight —— 否则地块剩余被二次扣减成负数")
+    void feed_mustNotTouchVegetableHandleWeights() {
+        // 生产实测 B-连6-2-001：采摘 340 / 处理入库 283，再从库存领 70kg 去饲喂，
+        // 累加 feed_weight 后地块卡「剩余 = 采摘 − 处理 − 饲料」= 340−283−70 = −13kg。
+        when(locationStockMapper.selectById(1L)).thenReturn(mkStock(1L, 10L, 20L));
+        when(productInfoMapper.selectById(10L)).thenReturn(mkVegProduct(10L));
+        stubHandleFound(30L, 20L);   // 毛菜处理行存在且 feed_weight=5.000 —— 有得可加，才验得出「就是不加」
+
+        service.submit(mkBo("feed", 1L, "70.000"), false);
+
+        verify(feedLogMapper).insert(any(FeedLog.class));
+        // 三道：不改、不补建、连查都不查（改动一旦被还原，这三条任一都会红）
+        verify(vegetableHandleMapper, never()).updateById(any(VegetableHandle.class));
+        verify(vegetableHandleMapper, never()).insert(any(VegetableHandle.class));
+        verify(vegetableHandleMapper, never()).selectOne(any());
+    }
+
+    @Test
+    @DisplayName("饲料饲喂：库存行无地块 / 产品未配作物也照常放行（不像月台那样拦）")
+    void feed_missingCropOrPlot_stillLogs() {
         when(locationStockMapper.selectById(1L)).thenReturn(mkStock(1L, 10L, null));
         when(productInfoMapper.selectById(10L)).thenReturn(mkVegProduct(10L));
         when(cropInfoMapper.selectOne(any())).thenReturn(null);
-        when(vegetableHandleMapper.selectOne(any())).thenReturn(null);
 
         service.submit(mkBo("feed", 1L, "8.000"), false);
 

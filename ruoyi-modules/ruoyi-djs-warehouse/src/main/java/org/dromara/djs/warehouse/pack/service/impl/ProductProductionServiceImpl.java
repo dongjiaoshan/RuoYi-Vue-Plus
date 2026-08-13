@@ -1,6 +1,7 @@
 package org.dromara.djs.warehouse.pack.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.common.core.exception.ServiceException;
@@ -129,6 +130,17 @@ public class ProductProductionServiceImpl
      * 排除门店现场分割（source='store'，STR-SPLIT-001），实现跨域库存隔离。</p>
      */
     private static final String SOURCE_WAREHOUSE = "warehouse";
+
+    /**
+     * 果蔬 / 干货 / 肉品 / 芹菜 四个「今日领用来源」picker 的返回行数上限。
+     *
+     * <p>row60：这四个 picker 的返回集<b>就是</b>前端算「领用剩余重量」的数据源（按原材料/地块/耳号跨行求和），
+     * 而扣减侧的来源池（{@code resolve*SourcePool}）不设上限、且按 {@code id 升序} FIFO 消耗 ——
+     * picker 若按 {@code id 降序} 截断，被截掉的恰恰是 FIFO 最先吃的那几行，于是「打包了但领用剩余重量不降」，
+     * row60 那个「屏幕数字与实际扣减对不上」换个形态复发。原值 50 在一天内领用行较多（每领一篮产一行）时够呛，
+     * 提到 500 让展示集在现实量级下恒等于扣减池。</p>
+     */
+    private static final String SOURCE_PICKER_LIMIT = "LIMIT 500";
 
     /** djs_yes_no 字典码值。 */
     private static final Integer YN_NO = 0;
@@ -313,8 +325,12 @@ public class ProductProductionServiceImpl
         // 目标果蔬成品若配了 product_material（关联来源原材料果蔬产品），则按 doc 规则
         // "领用果蔬重量（来源原材料库存）< 打包成品重量 → 拦截禁止"。
         // fail-fast 放在任何写操作之前；未配 product_material → 降级跳过校验 + warn（不阻塞）。
-        // 注意：果蔬不在此扣减原材料库存（来源消耗 = consumeInhouse 按实重部分扣减）。
-        requireInhouseEnough(src, bo.getProductWeight());
+        // 注意：果蔬不在此扣减原材料库存（来源消耗 = consumePoolFifo 按实重跨行部分扣减）。
+        // row60：库存判定按「同原材料 + 同地块」今日领用来源池**总重**（不分库位），而非前端挑中的那一条行余量 ——
+        // 与卡片「领用剩余重量」（前端同样按 原材料+地块 跨行求和）同源，修「显示 2117g 却报当前 0.117」。
+        // 池口径由**来源行的业态**决定（见 resolveSourcePool）：果蔬来源 → 按 原材料+地块 合池。
+        List<ProductInhouse> srcPool = resolveSourcePool(src);
+        requirePoolEnough(srcPool, bo.getProductWeight());
         checkVegMaterialIfConfigured(product, bo.getProductWeight());
         // Step 3：入库库位（前端收银台不采集，可空 → 默认取产品配置库位/首个可用库位兜底）
         Long locationId = resolveLocationId(bo.getLocationId(), product);
@@ -350,8 +366,8 @@ public class ProductProductionServiceImpl
         baseMapper.insert(p);
 
         // row42：生产产品不入库（仓库按门店需求打包 → 直送发货月台 → 门店，不进 location_stock / 不写 pack_in 入库流水）。
-        // 来源原材料仍消耗（软删 inhouse 整 row）。
-        consumeInhouse(src, bo.getProductWeight());
+        // row60：来源原材料按「原材料 + 地块」池 FIFO 跨行扣（单行用尽软删该行，续扣下一行），不再只认单条。
+        consumePoolFifo(srcPool, bo.getProductWeight());
 
         // Step 8：生成追溯码回填 + 写 in_stock 事件（TRC-CORE-001）
         fillTraceCode(p, src.getEarNo(), src.getPlotId());
@@ -457,13 +473,16 @@ public class ProductProductionServiceImpl
         }
         // row32：肉品打包(有耳号)库存判定按「同原材料(product_id)+同耳号」今日领用来源池**总重量**，
         // 而非单条领用行余量——分多次领用=多条 inhouse 行(单条最大3kg但总领8kg),打包3001g按池总重放行、FIFO 跨行扣减。
-        // 无耳号(干货/其他 dry 打包)保持单条口径,零影响。
-        List<ProductInhouse> srcPool = src.getEarNo() != null ? resolveMeatSourcePool(src) : null;
-        if (srcPool != null) {
-            requirePoolEnough(srcPool, bo.getProductWeight());
-        } else {
-            requireInhouseEnough(src, bo.getProductWeight());
-        }
+        // row60：无耳号也按池，但**池键按来源业态分岔**（见 resolveSourcePool），不能一刀切成「同原材料」——
+        // 本方法同时服务肉品打包页与其他产品打包页：
+        //   · 猪肉来源（含前端「无耳号」哨兵：外购/无耳标猪肉）→ 池带 ear_no 匹配（无耳号则 ear_no IS NULL）
+        //     + material_id 非空，与 listSourceForMeat / wipStockMap per-ear 同口径。一刀切成「同原材料」
+        //     会跨耳号吃别的猪的肉、并吃掉未领用的燎毛白条（material_id 空）。
+        //   · egg/dry_good/other 来源 → 池按原材料（该页无地块/耳号选择器，卡片「领用剩余重量」本就按原材料
+        //     跨行求和；旧的单条口径会复现 row60 那个「显示够、提交说不够」，因为 resolveAutoSource
+        //     只挑余量最大的一条）。
+        List<ProductInhouse> srcPool = resolveSourcePool(src);
+        requirePoolEnough(srcPool, bo.getProductWeight());
         // 入库库位（前端收银台不采集，可空 → 默认取产品配置库位/首个可用库位兜底）
         Long locationId = resolveLocationId(bo.getLocationId(), product);
         // D-2：目标库位盘点锁定中 → 拒绝入库
@@ -507,13 +526,9 @@ public class ProductProductionServiceImpl
         }
 
         // row42：生产产品不入库（直送发货月台，不进 location_stock / 不写入库流水）。
-        // row32：有耳号肉品按来源池 FIFO 跨行扣减总重；无耳号维持单条扣减。
+        // row32/row60：一律按来源池 FIFO 跨行扣减总重（有耳号=同原材料+同耳号池，无耳号=同原材料池）。
         // ⚠️ 拆行只拆「产出记录」，来源消耗仍按**本次总量**一次性扣（Σ perRecordConsume ≡ productWeight）。
-        if (srcPool != null) {
-            consumePoolFifo(srcPool, bo.getProductWeight());
-        } else {
-            consumeInhouse(src, bo.getProductWeight());
-        }
+        consumePoolFifo(srcPool, bo.getProductWeight());
 
         // 肉品打包原材料库存校验 + 扣减（猪肉全闭环 Part I P8）：
         // 仅 belong_type=pork 且目标产品配了 product_material（关联原材料）时校验，
@@ -672,7 +687,10 @@ public class ProductProductionServiceImpl
         // 所以配了 material_num 的果蔬 SKU 从这里也能选到 —— 不校验就成了绕开
         // 「实称不得低于规则重量」的口子。真芹菜 SKU 不配 material_num，校验直接跳过、零影响。
         validatePackMeasureRule(product, bo.getProductWeight(), bo.getAllowOverMeasure());
-        requireInhouseEnough(src, bo.getProductWeight());
+        // row60：与果蔬打包同池口径（芹菜来源 listSourceForCelery 就是 listSourceForVeg 的镜像）——
+        // 按「同原材料 + 同地块」今日领用池总重判定，不分库位。
+        List<ProductInhouse> srcPool = resolveSourcePool(src);
+        requirePoolEnough(srcPool, bo.getProductWeight());
         requireLocation(bo.getLocationId());
         // D-2：目标库位盘点锁定中 → 拒绝入库
         stockCheckService.assertLocationUnlocked(bo.getLocationId());
@@ -703,7 +721,8 @@ public class ProductProductionServiceImpl
         baseMapper.insert(p);
 
         // row42：生产产品不入库（直送发货月台，不进 location_stock / 不写入库流水）。
-        consumeInhouse(src, bo.getProductWeight());
+        // row60：按「原材料 + 地块」池 FIFO 跨行扣。
+        consumePoolFifo(srcPool, bo.getProductWeight());
 
         // 生成追溯码回填 + 写 in_stock 事件（TRC-CORE-001）；芹菜无 earNo
         fillTraceCode(p, null, src.getPlotId());
@@ -1266,7 +1285,7 @@ public class ProductProductionServiceImpl
                 .gt(ProductInhouse::getProductWeight, BigDecimal.ZERO)
                 .apply("DATE(produce_date) = CURDATE()")
                 .orderByDesc(ProductInhouse::getId)
-                .last("LIMIT 50"));
+                .last(SOURCE_PICKER_LIMIT));
     }
 
     @Override
@@ -1292,7 +1311,7 @@ public class ProductProductionServiceImpl
                 .gt(ProductInhouse::getProductWeight, BigDecimal.ZERO)
                 .apply("DATE(produce_date) = CURDATE()")
                 .orderByDesc(ProductInhouse::getId)
-                .last("LIMIT 50"));
+                .last(SOURCE_PICKER_LIMIT));
     }
 
     @Override
@@ -1317,7 +1336,7 @@ public class ProductProductionServiceImpl
                 .gt(ProductInhouse::getProductWeight, BigDecimal.ZERO)
                 .apply("DATE(produce_date) = CURDATE()")
                 .orderByDesc(ProductInhouse::getId)
-                .last("LIMIT 50"));
+                .last(SOURCE_PICKER_LIMIT));
     }
 
     @Override
@@ -1340,7 +1359,7 @@ public class ProductProductionServiceImpl
                 .gt(ProductInhouse::getProductWeight, BigDecimal.ZERO)
                 .apply("DATE(produce_date) = CURDATE()")
                 .orderByDesc(ProductInhouse::getId)
-                .last("LIMIT 50"));
+                .last(SOURCE_PICKER_LIMIT));
     }
 
     @Override
@@ -1571,9 +1590,15 @@ public class ProductProductionServiceImpl
      * <ul>
      *   <li>{@code consumeWeight} 缺失/≤0 → 兜底整行软删（旧全量语义）</li>
      *   <li>打包量 &gt; 来源余量 → 抛 {@link ServiceException} 拒绝（防超扣；事务回滚）</li>
-     *   <li>正好用尽 → 整行软删</li>
+     *   <li>正好用尽 → 先 {@link ProductInhouseMapper#deductWeightById} 扣到 0 拿行锁，再整行软删</li>
      *   <li>未用尽 → {@link ProductInhouseMapper#deductWeightById} 行锁原子扣减（affected=0=并发抢占→回滚）</li>
      * </ul>
+     *
+     * <p>row60：「正好用尽」这一支<b>不能</b>直接 {@code deleteById} —— {@code deleteById} 不带
+     * {@code product_weight >= qty} 条件也不看影响行数，两个工人同时打同一来源时双方都会"删成功"，
+     * 各自按自己读到的快照产出成品 = 凭空多产。改为先走带条件的 {@code deductWeightById} 扣到 0
+     * （affected=0 即已被别人抢走 → 抛 → 事务回滚），拿到这道闸再软删。
+     * {@link #consumePoolFifo} 跨行扣时中间每一行<b>必然</b>命中这一支，所以这条路径从「罕见」变成了「常走」。</p>
      */
     protected void consumeInhouse(ProductInhouse src, BigDecimal consumeWeight) {
         BigDecimal current = src.getProductWeight() == null ? BigDecimal.ZERO : src.getProductWeight();
@@ -1581,32 +1606,145 @@ public class ProductProductionServiceImpl
             productInhouseMapper.deleteById(src.getId());
             return;
         }
-        int cmp = current.compareTo(consumeWeight);
-        if (cmp < 0) {
+        if (current.compareTo(consumeWeight) < 0) {
             throw new ServiceException("来源待打包库存不足：当前 " + current.stripTrailingZeros().toPlainString()
                 + "，本次打包 " + consumeWeight.stripTrailingZeros().toPlainString());
         }
-        if (cmp == 0) {
-            productInhouseMapper.deleteById(src.getId());
-            return;
-        }
-        int affected = productInhouseMapper.deductWeightById(src.getId(), consumeWeight);
-        if (affected == 0) {
+        if (!tryConsumeInhouse(src, consumeWeight)) {
             throw new ServiceException("来源待打包库存不足或已被占用，请刷新后重试");
         }
+    }
+
+    /**
+     * 单行原子扣减：带条件的 {@link ProductInhouseMapper#deductWeightById}（{@code product_weight >= qty}）
+     * 拿行锁，用尽则再软删。
+     *
+     * @return {@code false} = 这一行已被别的事务抢走（affected=0），调用方自行决定是抛还是顺延下一行
+     */
+    private boolean tryConsumeInhouse(ProductInhouse src, BigDecimal consumeWeight) {
+        if (productInhouseMapper.deductWeightById(src.getId(), consumeWeight) == 0) {
+            return false;
+        }
+        BigDecimal current = src.getProductWeight() == null ? BigDecimal.ZERO : src.getProductWeight();
+        if (current.compareTo(consumeWeight) == 0) {
+            productInhouseMapper.deleteById(src.getId());
+        }
+        return true;
+    }
+
+    /**
+     * row60：解析来源池 —— <b>按「来源行自己所属原材料的业态」分岔，不是按目标成品的业态</b>。
+     *
+     * <p>池必须与「产出这条 src 的那个 picker」是同一个集合，而 4 个 picker 正是按<b>来源原材料</b>的
+     * {@code belong_type} 分的（{@link #listSourceForMeat} / {@link #listSourceForVeg} /
+     * {@link #listSourceForCelery} / {@link #listSourceForDry}）。若改按目标成品的 belong_type 选池，
+     * 目标与来源可以不同族（打包接口不校验二者关系，手搓请求即可），猪肉/白条来源就会落进
+     * {@link #resolveMaterialSourcePool}（只按 product_id、无 ear_no、无 material_id 非空）——
+     * 跨耳号吃别的猪、并吃掉未领用的燎毛整只白条。</p>
+     *
+     * <p>不认识的来源业态（白条整只 white_bar、包材/饲料/种子等）本就不是这 3 个打包口的合法来源，
+     * <b>不放宽</b>：退回「只认这一条行」的单行语义（与 row60 之前的行为一致），把口子留死。</p>
+     */
+    private List<ProductInhouse> resolveSourcePool(ProductInhouse src) {
+        ProductInfo srcProduct = src.getProductId() == null ? null : productInfoMapper.selectById(src.getProductId());
+        String family = srcProduct == null ? null : srcProduct.getBelongType();
+        if (BELONG_TYPE_PORK.equals(family)) {
+            return resolveMeatSourcePool(src);
+        }
+        if (BELONG_TYPE_VEGETABLE.equals(family)) {
+            return resolvePlotSourcePool(src);
+        }
+        // family 可能为 null（来源产品已删/查不到）—— List.of(...) 是 immutable list，contains(null) 会抛 NPE
+        if (family != null && BELONG_TYPES_OTHER_PACK.contains(family)) {
+            return resolveMaterialSourcePool(src);
+        }
+        return List.of(src);
     }
 
     /**
      * row32：肉品打包来源池 = 同 (product_id, ear_no) 的今日仓库分割产 inhouse（与 {@link #listSourceForMeat}
      * 同过滤：source=warehouse、material_id 非空、product_weight&gt;0、DATE(produce_date)=CURDATE()），FIFO 排序
      * （produce_date、id 升序）。分多次领用同耳号 = 多条行；库存判定/扣减按池总重而非单条。空 → 兜底含 src 自身。
+     *
+     * <p>row60：{@code ear_no} 为空时用 {@code ear_no IS NULL} 而非恒假的 {@code ear_no = NULL} —— 对应前端
+     * 「无耳号」哨兵（{@code NO_EAR_SENTINEL}，外购/无耳标猪肉聚合成单个可选项，见 SkuPackForm 的
+     * earToggleOptions / onEarChange），其 {@code wipStockMap} per-ear 展示也正是按「同原材料 + 无耳号」求和。
+     * <b>{@code material_id 非空} 这一条必须保留</b>：燎毛产整只白条（white_bar_id 非空、material_id 空）
+     * 不是肉品打包的合法领用来源（须先走白条领用/分割），漏掉它打包会静默吃掉未领用的白条。</p>
      */
     private List<ProductInhouse> resolveMeatSourcePool(ProductInhouse src) {
         LambdaQueryWrapper<ProductInhouse> w = new LambdaQueryWrapper<ProductInhouse>()
             .eq(ProductInhouse::getProductId, src.getProductId())
-            .eq(ProductInhouse::getEarNo, src.getEarNo())
             .eq(ProductInhouse::getSource, SOURCE_WAREHOUSE)
             .isNotNull(ProductInhouse::getMaterialId)
+            .gt(ProductInhouse::getProductWeight, BigDecimal.ZERO)
+            .apply("DATE(produce_date) = CURDATE()")
+            .orderByAsc(ProductInhouse::getProduceDate)
+            .orderByAsc(ProductInhouse::getId);
+        if (src.getEarNo() == null) {
+            w.isNull(ProductInhouse::getEarNo);
+        } else {
+            w.eq(ProductInhouse::getEarNo, src.getEarNo());
+        }
+        List<ProductInhouse> pool = productInhouseMapper.selectList(w);
+        return pool.isEmpty() ? List.of(src) : pool;
+    }
+
+    /**
+     * row60：果蔬/芹菜打包来源池 = 同「原材料(product_id) + 地块(plot_id)」的今日领用活动 inhouse，
+     * <b>不含库位维度</b>。
+     *
+     * <p>同一原材料同一地块可产生多行 inhouse：① 从不同库位分多次领用（每次领用只扣一个库位的篮，
+     * 见 {@code MatFlowServiceImpl.consumeVegBaskets}）；② 同库位内该地块有多个篮子。
+     * 甲方口径（V6 row60）：「不同库位的出来的库存可以一起进行生产扣除」——这些行合成一个池整体判定 + FIFO 跨行扣。</p>
+     *
+     * <p>过滤条件与 {@link #listSourceForVeg} / {@link #listSourceForCelery} 逐条相同
+     * （source=warehouse、product_weight&gt;0、DATE(produce_date)=CURDATE()），保证打包卡「领用剩余重量」
+     * （前端按 原材料+地块 跨行求和）与扣减口径同源 —— 修的正是「屏幕显示 2117g、提交只认单行 117g」。</p>
+     *
+     * <p>{@code plot_id} 为空（外购无地块来源）→ 池 = 同原材料的全部无地块行，与前端「无地块信息」哨兵同义
+     * （不能写成 {@code eq(plotId, null)}：MyBatis-Plus 会生成恒假的 {@code plot_id = NULL}）。
+     * FIFO（produce_date、id 升序）。空 → 兜底含 src 自身。</p>
+     */
+    private List<ProductInhouse> resolvePlotSourcePool(ProductInhouse src) {
+        LambdaQueryWrapper<ProductInhouse> w = new LambdaQueryWrapper<ProductInhouse>()
+            .eq(ProductInhouse::getProductId, src.getProductId())
+            .eq(ProductInhouse::getSource, SOURCE_WAREHOUSE)
+            .gt(ProductInhouse::getProductWeight, BigDecimal.ZERO)
+            .apply("DATE(produce_date) = CURDATE()")
+            .orderByAsc(ProductInhouse::getProduceDate)
+            .orderByAsc(ProductInhouse::getId);
+        if (src.getPlotId() == null) {
+            w.isNull(ProductInhouse::getPlotId);
+        } else {
+            w.eq(ProductInhouse::getPlotId, src.getPlotId());
+        }
+        List<ProductInhouse> pool = productInhouseMapper.selectList(w);
+        return pool.isEmpty() ? List.of(src) : pool;
+    }
+
+    /**
+     * row60：其他产品（egg / dry_good / other）打包来源池 = 同原材料(product_id) 的今日领用活动 inhouse 全部行。
+     *
+     * <p>这些业态的领用既不带地块也不带耳号标签，「其他产品打包管理」页也没有地块/耳号选择器
+     * （{@code auto-source}，前端按目标成品的有效原材料自动解析来源）—— 工人无从指定「扣哪个地块」，
+     * 故池就按原材料一档到底，与前端「领用剩余重量」（{@code wipStockMap} 按原材料跨行求和）严格同口径。</p>
+     *
+     * <p><b>明确取舍</b>：这里刻意<b>不</b>加 plot 谓词。若加上，池会窄于卡片显示的数（该原材料若同时存在
+     * 带地块和不带地块的领用行），就把 row60 这个「显示能打、提交说不够」的 bug 换个业态重演一遍。
+     * 放弃的是「其他产品也按地块分池」——代价是该业态的地块标签不参与扣减，可接受：其页面本就没有地块维度。</p>
+     *
+     * <p>⚠️ <b>只给 egg/dry_good/other 用，不能给猪肉用</b>：{@code submitDryPack} 同时服务肉品打包页，
+     * 而肉品页有「无耳号」哨兵可选（外购/无耳标猪肉）。猪肉一律走 {@link #resolveMeatSourcePool}
+     * （它带 {@code ear_no} 匹配 + {@code material_id 非空}），否则无耳号打包会跨耳号吃别的猪、
+     * 还会吃掉未领用的燎毛白条。</p>
+     *
+     * <p>过滤条件与 {@link #listSourceForDry} 逐条相同。FIFO（produce_date、id 升序）。空 → 兜底含 src 自身。</p>
+     */
+    private List<ProductInhouse> resolveMaterialSourcePool(ProductInhouse src) {
+        LambdaQueryWrapper<ProductInhouse> w = new LambdaQueryWrapper<ProductInhouse>()
+            .eq(ProductInhouse::getProductId, src.getProductId())
+            .eq(ProductInhouse::getSource, SOURCE_WAREHOUSE)
             .gt(ProductInhouse::getProductWeight, BigDecimal.ZERO)
             .apply("DATE(produce_date) = CURDATE()")
             .orderByAsc(ProductInhouse::getProduceDate)
@@ -1629,7 +1767,17 @@ public class ProductProductionServiceImpl
         }
     }
 
-    /** row32：按 FIFO 从来源池逐行扣减本次打包实重（复用 {@link #consumeInhouse} 单行部分扣/整行软删 + 行锁）。 */
+    /**
+     * row32：按 FIFO 从来源池逐行扣减本次打包实重（{@link #tryConsumeInhouse} 单行部分扣/整行软删 + 行锁）。
+     *
+     * <p>row60：某一行被别的事务抢走（{@code affected=0}）时<b>顺延到池里下一行</b>，不整笔抛。
+     * 合池之后所有人都从 FIFO 首行开始扣，若抢不到就抛，两个工人各自选了不同的行也会互相打架 ——
+     * 池里明明还有货却报「打包失败」，工人看到的正是 row60 那句话。顺延后只有「整池真的凑不够」
+     * 才由末尾那道闸抛（此时它是可达的、也有用例覆盖）。</p>
+     *
+     * <p>被抢的那行即使还剩一点零头也整行跳过（不重读再算），换取实现简单；代价是极小概率下少用一点余量，
+     * 不会超扣、不会产生 orphan 产出。</p>
+     */
     private void consumePoolFifo(List<ProductInhouse> pool, BigDecimal packWeight) {
         if (packWeight == null || packWeight.signum() <= 0) {
             if (!pool.isEmpty()) {
@@ -1647,7 +1795,9 @@ public class ProductProductionServiceImpl
                 continue;
             }
             BigDecimal take = avail.min(remain);
-            consumeInhouse(row, take);
+            if (!tryConsumeInhouse(row, take)) {
+                continue;
+            }
             remain = remain.subtract(take);
         }
         if (remain.signum() > 0) {
@@ -1998,16 +2148,61 @@ public class ProductProductionServiceImpl
         if (productIds == null || productIds.isEmpty()) {
             return result;
         }
-        // 去重防重复查；逐成品取 product_material 指向的原材料库存合计（口径同打包校验/扣减）
-        for (Long productId : productIds.stream().filter(Objects::nonNull).collect(Collectors.toSet())) {
-            ProductInfo product = productInfoMapper.selectById(productId);
+        Set<Long> ids = productIds.stream().filter(Objects::nonNull).collect(Collectors.toSet());
+        if (ids.isEmpty()) {
+            return result;
+        }
+        // 一次 IN 批查成品（原逐个 selectById + sumProductStock 是 N+1：46 个 SKU = 92 次往返，
+        // 实测 20s+ 把打包页刷新按钮锁死，见 sumMaterialStockBatch 注释）
+        List<ProductInfo> products = productInfoMapper.selectBatchIds(ids);
+        Map<Long, Long> productToMaterial = new HashMap<>();
+        for (ProductInfo product : products) {
             // 未配 product_material 的成品不进 Map（前端展示 '—'，不参与校验）；产品库为空时整体返空 Map
             if (product == null || product.getProductMaterial() == null) {
                 continue;
             }
-            result.put(String.valueOf(productId), sumProductStock(product.getProductMaterial()));
+            productToMaterial.put(product.getId(), product.getProductMaterial());
         }
+        if (productToMaterial.isEmpty()) {
+            return result;
+        }
+        // 一次 GROUP BY 拿全部原材料库存合计（口径同打包校验/扣减 sumProductStock）
+        Map<Long, BigDecimal> materialStock = sumMaterialStockBatch(new java.util.HashSet<>(productToMaterial.values()));
+        productToMaterial.forEach((productId, materialId) ->
+            // 无库存行的原材料按 0 返（与单条 sumProductStock 的 BigDecimal.ZERO 兜底一致）
+            result.put(String.valueOf(productId), materialStock.getOrDefault(materialId, BigDecimal.ZERO)));
         return result;
+    }
+
+    /**
+     * 批量聚合多个产品的当前库存合计（未软删行 {@code SUM(product_stock)} GROUP BY product_id）。
+     *
+     * <p>口径与单条 {@link #sumProductStock} 完全一致，只是把 N 次往返压成 1 次；
+     * 无库存行的产品不在返回 Map 中，由调用方按 {@link BigDecimal#ZERO} 兜底。</p>
+     *
+     * @param materialProductIds 原材料产品 id 集合（非空）
+     * @return materialProductId -&gt; 库存合计
+     */
+    protected Map<Long, BigDecimal> sumMaterialStockBatch(Set<Long> materialProductIds) {
+        Map<Long, BigDecimal> stock = new HashMap<>();
+        if (materialProductIds == null || materialProductIds.isEmpty()) {
+            return stock;
+        }
+        // @TableLogic 自动附加 del_flag='0'，多租户拦截器附加 tenant_id（口径与 sumProductStock 的 selectList 一致）
+        List<Map<String, Object>> rows = locationStockMapper.selectMaps(
+            new QueryWrapper<LocationStock>()
+                .select("product_id AS productId", "SUM(product_stock) AS totalStock")
+                .in("product_id", materialProductIds)
+                .groupBy("product_id"));
+        for (Map<String, Object> row : rows) {
+            Object pid = row.get("productId");
+            Object total = row.get("totalStock");
+            if (pid == null || total == null) {
+                continue;
+            }
+            stock.put(Long.valueOf(pid.toString()), new BigDecimal(total.toString()));
+        }
+        return stock;
     }
 
     @Override

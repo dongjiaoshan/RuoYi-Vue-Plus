@@ -72,10 +72,16 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
     /**
      * 按 {@code product_id} + {@code location_id} 原子扣减库存（WMS-MAT-001 物资领用 / 损耗）。
      *
-     * <p>只命中<b>非篮子行</b>（{@code plot_id / ear_no / white_bar_no} 全 NULL）：同 (库位,产品) 的
-     * 耳号/地块/白条篮子各自成行，product 维度扣减绝不串扣篮子（篮子扣减走 {@link #deductStockById} /
-     * {@link #deductByEarNo} / {@link #deductByPlotLocation}）。同 (库位,产品) 多篮共存时若无行限定，
-     * 一条 UPDATE 会命中全部余量充足的行、每行各扣一次（扣减放大 N 倍）。</p>
+     * <p>只命中<b>非篮子行</b>（{@code plot_id / ear_no / white_bar_no} 全 NULL 且 {@code third_phase=0}）：
+     * 同 (库位,产品) 的耳号/地块/白条/三期篮子各自成行，product 维度扣减绝不串扣篮子（篮子扣减走
+     * {@link #deductStockById} / {@link #deductByEarNo} / {@link #deductByPlotLocation}）。
+     * 同 (库位,产品) 多篮共存时若无行限定，一条 UPDATE 会命中全部余量充足的行、每行各扣一次
+     * （扣减放大 N 倍）。</p>
+     *
+     * <p><b>{@code third_phase = 0} 的作用</b>（V6 row92）：三期货没有真实地块，它的篮子
+     * {@code plot_id / ear_no / white_bar_no} 也全是 NULL，形状与本方法要命中的普通非篮子行一模一样。
+     * 不加这个条件，一次普通领用会把普通篮和三期篮各扣一次 —— 正是上一段说的扣减放大。
+     * 三期篮只按行 id 扣（{@link #deductStockById}，毛菜间出库走这条），不走 product 维度扣减。</p>
      *
      * <p>SQL 在 {@code WHERE} 加 {@code product_stock >= deductQty} —— MySQL 行锁 + 数量校验同步发生，
      * 并发提交（两个工人同时领同一 product+location）只有一次 affectedRows > 0。</p>
@@ -91,6 +97,7 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
         + "   AND plot_id IS NULL "
         + "   AND ear_no IS NULL "
         + "   AND white_bar_no IS NULL "
+        + "   AND third_phase = 0 "
         + "   AND product_stock >= #{deductQty} "
         + "   AND del_flag = '0'")
     int deductByProductLocation(@Param("locationId") Long locationId,
@@ -167,7 +174,18 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
      * {@code tenant_id} 由 MP 多租户拦截器在 final SQL 阶段注入；不走 MetaObjectHandler.updateFill，
      * 手工 set {@code update_by} / {@code update_time}。</p>
      *
-     * @return affectedRows（0 = 库存不足 / plot/location 不匹配 / 已软删）
+     * <p><b>{@code third_phase = 0} 的作用</b>（V6 row92）：三期入库在「该作物恰好只有 1 块在种地块」时
+     * 会建一条<b>带真实 plot_id 的三期篮</b>（{@code ThirdPhaseInServiceImpl#insertStockIn} 的 plotId 分支），
+     * 形状与采摘入库的普通地块篮一模一样、还常落同一个库位（毛菜鲜品库 L0006）。不加这个条件，
+     * 一次普通的自产果蔬按地块领用会把三期篮一起扣掉（同 (库位,地块) 两篮共存时更是一条 UPDATE 双扣），
+     * 三期的账被普通领用消耗、两边库存都对不上。三期篮的扣减只走按行 id 的
+     * {@link #deductStockById}（毛菜间出库 / 库存查询产品出库都是按行出）。</p>
+     *
+     * <p><b>已知遗留</b>：本方法只按 {@code (location, plot)} 两键，<b>没有 product 维度</b>。同一块地
+     * 先后收多个产品（row55 起月台按产品收货）时会跨产品扣 —— 与三期无关的另一个问题，
+     * 改它要连 {@code MatPickBo} 的地块维度入口语义一起定，本次不动。</p>
+     *
+     * @return affectedRows（0 = 库存不足 / plot/location 不匹配 / 是三期篮 / 已软删）
      */
     @Update("UPDATE t_warehouse_location_stock "
         + "   SET product_stock = product_stock - #{deductQty},"
@@ -175,6 +193,7 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
         + "       update_time = NOW() "
         + " WHERE location_id = #{locationId} "
         + "   AND plot_id     = #{plotId} "
+        + "   AND third_phase = 0 "
         + "   AND product_stock >= #{deductQty} "
         + "   AND del_flag = '0'")
     int deductByPlotLocation(@Param("locationId") Long locationId,
@@ -334,9 +353,17 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
     /**
      * 按 {@code product_id} + {@code location_id} 增加库存（WMS-MAT-001 物资退回 / 外购收货 / 各入库 UPSERT）。
      *
-     * <p>只累加<b>非篮子行</b>（{@code plot_id / ear_no / white_bar_no} 全 NULL）：product 维度加库存
-     * 绝不并进已有地块/耳号/白条篮子行（并进会污染追溯归属，且同 (库位,产品) 多篮共存时每篮各加一次、
-     * 库存虚增 N 倍）。组内尚无非篮子行（affectedRows=0）→ 调用方兜底 INSERT 一条三源标签全 NULL 的新行。</p>
+     * <p>只累加<b>非篮子行</b>（{@code plot_id / ear_no / white_bar_no} 全 NULL 且 {@code third_phase=0}）：
+     * product 维度加库存绝不并进已有地块/耳号/白条/三期篮子行（并进会污染追溯归属，且同 (库位,产品)
+     * 多篮共存时每篮各加一次、库存虚增 N 倍）。组内尚无非篮子行（affectedRows=0）→ 调用方兜底
+     * INSERT 一条三源标签全 NULL 的新行。</p>
+     *
+     * <p><b>{@code third_phase = 0} 的作用</b>（V6 row92）：三期货没有真实地块（甲方口径「三期目前无
+     * 相应地块，只做文案显示」），它的篮子 {@code plot_id / ear_no / white_bar_no} 同样全 NULL，
+     * 与本方法要命中的普通非篮子行形状完全相同。不加这个条件，任何一条普通入库路径
+     * （采购收货 / 打包入库 / 物资退回 / 猪肉转移…）都会把货并进三期篮，既把普通货染成三期，
+     * 又让「三期总入库/总出库」统计混进不属于三期的量。三期货入库走
+     * {@link #addByProductLocationThirdPhase}。</p>
      *
      * <p>退回是"加回库存"，无需校验上限。{@code update_time / update_by} 同步刷新。</p>
      *
@@ -351,11 +378,42 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
         + "   AND plot_id IS NULL "
         + "   AND ear_no IS NULL "
         + "   AND white_bar_no IS NULL "
+        + "   AND third_phase = 0 "
         + "   AND del_flag = '0'")
     int addByProductLocation(@Param("locationId") Long locationId,
                              @Param("productId") Long productId,
                              @Param("addQty") BigDecimal addQty,
                              @Param("userId") Long userId);
+
+    /**
+     * 按 {@code (location_id, product_id)} 且 {@code plot_id / ear_no / white_bar_no 全 NULL}
+     * 原子累加到<b>三期专属篮</b>（{@code third_phase = 1}；V6 row92 三期作物入库）。
+     *
+     * <p>与 {@link #addByProductLocation} 逐字同构，唯一差别是 {@code third_phase} 由 0 换成 1 ——
+     * 两个方法各自只认自己那一半，(库位, 产品) 下的「普通货篮」与「三期货篮」互不可见、各记各账。</p>
+     *
+     * <p><b>为什么必须单开一个方法而不是复用兄弟方法</b>：甲方说三期「无相应地块，只做文案显示」，
+     * 所以三期入库的 {@code plot_id} 只能是 NULL，与退货篮 / 产品级行是同一个形状。
+     * 复用 {@link #addByProductLocation} 会直接 UPDATE 到那条已存在的普通篮上 ——
+     * 那条篮既被染成三期（如果同时改标识），又让三期与普通货的量再也分不开。</p>
+     *
+     * @return affectedRows（0 = 该 (库位,产品) 尚无三期篮 → 调用方 INSERT 一条 {@code third_phase=1} 的新篮）
+     */
+    @Update("UPDATE t_warehouse_location_stock "
+        + "   SET product_stock = product_stock + #{addQty},"
+        + "       update_by = #{userId},"
+        + "       update_time = NOW() "
+        + " WHERE location_id = #{locationId} "
+        + "   AND product_id  = #{productId} "
+        + "   AND plot_id IS NULL "
+        + "   AND ear_no IS NULL "
+        + "   AND white_bar_no IS NULL "
+        + "   AND third_phase = 1 "
+        + "   AND del_flag = '0'")
+    int addByProductLocationThirdPhase(@Param("locationId") Long locationId,
+                                       @Param("productId") Long productId,
+                                       @Param("addQty") BigDecimal addQty,
+                                       @Param("userId") Long userId);
 
     /**
      * 按 {@code (location_id, product_id, ear_no)} 且 {@code white_bar_no IS NULL} + {@code is_end=0} 原子累加
@@ -389,9 +447,14 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
      * 门店退货入库到「退货专属篮」（row31：门店退回猪肉/果蔬成品无地块/耳号来源，客户拍板专设一个不带
      * 地块编号/耳号的退货篮承载；再领用/发货不带追溯——客户确认符合）。
      *
-     * <p>WHERE 与 {@link #addByProductLocation} 同构（均只命中 plot/ear/white_bar 全 NULL 的非篮子行），
-     * 独立方法名显式表达「退货篮」入库语义：退货量累加进退货篮、绝不并进自产果蔬地块行或分割猪肉耳号行。
-     * {@code updated==0}（首次退货、退货篮不存在）→ 调用方 INSERT 一条 plot/ear/white_bar 全 NULL 的新退货篮。</p>
+     * <p>WHERE 与 {@link #addByProductLocation} 同构（均只命中 plot/ear/white_bar 全 NULL 且
+     * {@code third_phase=0} 的非篮子行），独立方法名显式表达「退货篮」入库语义：退货量累加进退货篮、
+     * 绝不并进自产果蔬地块行或分割猪肉耳号行。{@code updated==0}（首次退货、退货篮不存在）→
+     * 调用方 INSERT 一条 plot/ear/white_bar 全 NULL 的新退货篮。</p>
+     *
+     * <p><b>{@code third_phase = 0} 的作用</b>（V6 row92）：三期篮的三源标签同样全 NULL，与退货篮
+     * 形状撞得最狠 —— 不加这个条件，一笔门店退货会被累加进三期篮，把退回的普通货记成三期的入库量。
+     * 见 {@link #addByProductLocationThirdPhase}。</p>
      *
      * @return affectedRows（0 = 该 (库位,产品) 尚无退货篮 → 调用方 INSERT 新退货篮）
      */
@@ -404,6 +467,7 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
         + "   AND plot_id IS NULL "
         + "   AND ear_no IS NULL "
         + "   AND white_bar_no IS NULL "
+        + "   AND third_phase = 0 "
         + "   AND del_flag = '0'")
     int addByProductLocationReturn(@Param("locationId") Long locationId,
                                    @Param("productId") Long productId,
@@ -806,11 +870,19 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
      * 盘点完成回写（WMS-STOCK-001 completeCheck）：按 {@code product_id} + {@code location_id}
      * 把非篮子行库存设为目标绝对值，并刷新 {@code latest_check_time} / {@code check_result}。
      *
-     * <p>只校准<b>非篮子行</b>（{@code plot_id / ear_no / white_bar_no} 全 NULL）——篮子行不参与盘点
-     * SET（耳号/地块/白条篮子的账随各自业务链走）。同 (库位,产品) 多篮共存时若无行限定，每篮都会被
-     * SET 成实盘量（组合计 = 实盘 × N）。调用方传入的 {@code checkStock} 必须是<b>非篮目标量 =
-     * 实盘量 − {@link #sumBasketStockByProductLocation} 篮子行合计</b>（直接传实盘组总量会使组合计
-     * 虚增一个篮子合计）；affectedRows=0 且非篮目标量 &gt; 0 才按该量新建产品维度行，差异以盘点流水留痕。</p>
+     * <p>只校准<b>非篮子行</b>（{@code plot_id / ear_no / white_bar_no} 全 NULL 且 {@code third_phase=0}）
+     * ——篮子行不参与盘点 SET（耳号/地块/白条/三期篮子的账随各自业务链走）。同 (库位,产品) 多篮共存时
+     * 若无行限定，每篮都会被 SET 成实盘量（组合计 = 实盘 × N）。调用方传入的 {@code checkStock}
+     * 必须是<b>非篮目标量 = 实盘量 − {@link #sumBasketStockByProductLocation} 篮子行合计</b>
+     * （直接传实盘组总量会使组合计虚增一个篮子合计）；affectedRows=0 且非篮目标量 &gt; 0 才按该量
+     * 新建产品维度行，差异以盘点流水留痕。</p>
+     *
+     * <p><b>{@code third_phase = 0} 的作用</b>（V6 row92）：三期篮的 {@code plot_id / ear_no /
+     * white_bar_no} 同样全 NULL，与本方法要命中的非篮子行形状完全相同。不加这个条件会踩两个坑：
+     * ①对该产品盘一次点，三期篮就被无差别改写成「实盘 − 篮子合计」，三期的账被普通货的盘点结果覆写；
+     * ②等这个 (库位,产品) 上普通产品级篮也出现后，同一条无 LIMIT 的 UPDATE 把两行一起 SET 成同一个数，
+     * 组合计直接翻倍。三期篮与 plot/ear/white_bar 篮一样，账随三期入库 / 按行出库自己那条链走，
+     * 不被盘点 SET —— 它的量已经通过 {@link #sumBasketStockByProductLocation} 从非篮目标量里扣掉了。</p>
      *
      * <p>与领用 / 退回的"增量"语义不同——盘点是"以实盘量校准账面"，直接 SET 绝对值。
      * {@code tenant_id} 由 MP 多租户拦截器在 final SQL 阶段注入；不走 MetaObjectHandler.updateFill，
@@ -834,6 +906,7 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
         + "   AND plot_id IS NULL "
         + "   AND ear_no IS NULL "
         + "   AND white_bar_no IS NULL "
+        + "   AND third_phase = 0 "
         + "   AND del_flag = '0'")
     int setStockAfterCheck(@Param("locationId") Long locationId,
                            @Param("productId") Long productId,
@@ -862,12 +935,17 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
 
     /**
      * 按 {@code product_id} + {@code location_id} 聚合组内<b>篮子行</b>库存合计
-     * （{@code plot_id / ear_no / white_bar_no} 任一非 NULL）。
+     * （{@code plot_id / ear_no / white_bar_no} 任一非 NULL，<b>或</b> {@code third_phase = 1}）。
      *
      * <p>盘点回写换算口径：实盘量是组物理总量（含篮子），而 {@link #setStockAfterCheck} 只校准非篮子行
      * —— 非篮子行目标量 = 实盘量 − 篮子行合计。不减去篮子合计直接 SET 实盘量，组合计会虚增一个篮子
      * 合计（篮子行的账随各自业务链走、不参与盘点 SET）。无篮子行返 0。
      * 租户单租户显式 {@code tenant_id='1001'}（V1）。</p>
+     *
+     * <p><b>{@code third_phase = 1} 也算篮子</b>（V6 row92）：三期是与 plot/ear/white_bar 同级的
+     * 第四个分篮维度，只是它的三源标签恰好全 NULL。本条件必须与 {@link #setStockAfterCheck}
+     * 的 {@code third_phase = 0} 严格互补 —— 两边口径一旦错位，三期库存就会「既不算篮子（不从实盘量里
+     * 扣掉）、又不被 SET（或反过来被 SET）」，盘点差额凭空多出或少掉一个三期篮的量。</p>
      *
      * @param locationId 库位 ID
      * @param productId  产品 ID
@@ -876,7 +954,8 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
     @Select("SELECT COALESCE(SUM(product_stock), 0) FROM t_warehouse_location_stock "
         + " WHERE location_id = #{locationId} "
         + "   AND product_id  = #{productId} "
-        + "   AND (plot_id IS NOT NULL OR ear_no IS NOT NULL OR white_bar_no IS NOT NULL) "
+        + "   AND (plot_id IS NOT NULL OR ear_no IS NOT NULL OR white_bar_no IS NOT NULL "
+        + "        OR third_phase = 1) "
         + "   AND del_flag = '0' "
         + "   AND tenant_id = '1001'")
     BigDecimal sumBasketStockByProductLocation(@Param("locationId") Long locationId,
@@ -1027,6 +1106,9 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
             ON s.product_id = p.id
            AND s.del_flag   = '0'
            AND s.tenant_id  = p.tenant_id
+           <!-- V6 row92：三期篮不并进这张卡的现存量。领用侧（pickByProduct 三分支）一律只动
+                third_phase=0 的货，列表若把三期算进来，卡上显 15kg 实际最多领 10kg，工人会撞「库存不足」。 -->
+           AND s.third_phase = 0
            <if test="locationId != null"> AND s.location_id = #{locationId} </if>
          WHERE p.del_flag      = '0'
            AND p.tenant_id     = '1001'
@@ -1195,6 +1277,9 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
            AND s.tenant_id     = '1001'
            AND s.product_id    = #{productId}
            AND s.plot_id IS NOT NULL
+           <!-- V6 row92：三期篮与普通地块篮 (产品,地块,库位) 三键全同，不隔离会合成一张卡、
+                库存求和，而 batchId=MIN(s.id) 通常落普通篮 → 三期那部分永远领不出来、数量还对不上。 -->
+           AND s.third_phase = 0
            AND (s.product_stock > 0 OR DATE(s.update_time) = CURDATE())
            <if test="locationId != null"> AND s.location_id = #{locationId} </if>
          GROUP BY s.product_id, s.plot_id
@@ -1256,6 +1341,8 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
            AND s.plot_id IS NULL
            AND s.ear_no IS NULL
            AND s.white_bar_no IS NULL
+           <!-- V6 row92：三期篮三源标签也全 NULL，形状与退货篮一致，不隔离会被并进退货卡。 -->
+           AND s.third_phase = 0
            AND s.location_id IS NOT NULL
            AND (s.product_stock > 0 OR DATE(s.update_time) = CURDATE())
            <if test="locationId != null"> AND s.location_id = #{locationId} </if>

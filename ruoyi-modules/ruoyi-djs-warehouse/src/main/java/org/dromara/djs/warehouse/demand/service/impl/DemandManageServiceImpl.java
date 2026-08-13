@@ -16,6 +16,7 @@ import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.common.base.DjsBaseServiceImpl;
 import org.dromara.djs.common.encoder.BizCodeType;
 import org.dromara.djs.common.encoder.IBizCodeGenerator;
+import org.dromara.djs.warehouse.demand.core.StoreDemandStatusMapping;
 import org.dromara.djs.warehouse.demand.core.enums.DemandStatus;
 import org.dromara.djs.common.util.I18nMessages;
 import org.dromara.djs.warehouse.demand.domain.DemandManage;
@@ -97,13 +98,23 @@ public class DemandManageServiceImpl extends DjsBaseServiceImpl<DemandManageMapp
     private static final int PRODUCT_ATTR_MATERIAL = 2;
 
     /**
-     * 「门店不能下单原材料」守门生效的业态（egg/dry_good/other/vegetable）：这些域里原料(attr=2)
-     * 领用后须打包成成品(attr=1)才可售（蛋/干货/其他 → 其他产品打包；毛菜 → 果蔬打包），
+     * 「门店不能下单原材料」守门生效的业态：这些域里原料(attr=2) 领用后须打包成成品(attr=1) 才可售
+     * （蛋/干货/其他 → 其他产品打包；毛菜 → 果蔬打包；猪肉原料 → 分割/肉品打包），
      * 原料本身不可被门店下单（doc/14 §5）。
      * 白条(white_bar) 整只/半只虽也是 attr=2，但属门店现卖单位（活跃下单流程），故豁免不纳入守门
-     * （Kevin 2026-06-25 拍板）。范围如需调整在此集合增删业态即可。
+     * （Kevin 2026-06-25 拍板）；礼盒(gift_box) 的 product_attr 历史上非必填，按白名单会误伤，同样豁免。
+     *
+     * <p>⚠️ {@code pork} 是 2026-08-09 补进来的：原本漏了它，而 admin 与 mp 的下单候选**两边都不给选**
+     * 猪肉原材料（admin 购物车按 product_attr=1 收口、mp catalog 同谓词）。独立验收实测：
+     * store_clerk 本人就持有 {@code djs:store:demand:*}，直连 admin 的 {@code POST /djs/store/demand/add}
+     * 即可把 attr=2 的五花肉下单成功 —— 「候选里选不到、接口却能下」正是前后端谓词不一致。
+     * 守门放在这里（两端共用的落库路径）而不是只放 mp service，就是为了不留第二扇门。</p>
      */
-    private static final Set<String> RAW_MATERIAL_FORBIDDEN_BELONG_TYPES = Set.of("egg", "dry_good", "other", "vegetable");
+    private static final Set<String> RAW_MATERIAL_FORBIDDEN_BELONG_TYPES =
+        Set.of("egg", "dry_good", "other", "vegetable", "pork");
+
+    /** 有独立落库业态的归属类型：这三类的 product_type 必须与 belong_type 一致，不接受调用方谎报。 */
+    private static final Set<String> DEDICATED_BELONG_TYPES = Set.of("white_bar", "vegetable", "gift_box");
 
     /** 允许删除的状态（删除 = 置 DELETED 终态 + 软删；待确认 SUBMITTED 亦可删）。 */
     private static final Set<String> DELETABLE_STATUSES = Set.of(
@@ -211,22 +222,15 @@ public class DemandManageServiceImpl extends DjsBaseServiceImpl<DemandManageMapp
     /**
      * 仓库 7 态 → 门店视角 5 态码（{@code djs_store_demand_status}）。
      *
+     * <p>口径本体在 {@link StoreDemandStatusMapping}（与「按门店态筛选」的 SQL 片段同处一个类，
+     * 保证读出来的态和筛出来的行永远同一套规则）；本方法只是门店列表回填的调用点。</p>
+     *
      * @param status   仓库 demand_status
      * @param received 是否已门店收货（received_time != null）
      * @return 门店视角状态码（SUBMITTED/CONFIRMED/SHIPPED/ARRIVED/DELETED）；未知态回退原值
      */
     private String toStoreDemandStatus(String status, boolean received) {
-        if (status == null) {
-            return null;
-        }
-        return switch (status) {
-            case "SUBMITTED" -> "SUBMITTED";
-            case "CONFIRMED" -> received ? "ARRIVED" : "CONFIRMED";
-            case "PARTIAL_SHIPPED", "COMPLETED" -> received ? "ARRIVED" : "SHIPPED";
-            case "DELETED", "CANCELLED" -> "DELETED";
-            // DRAFT 等门店端不可见态：回退原值（门店列表不展示这些行）
-            default -> status;
-        };
+        return StoreDemandStatusMapping.derive(status, received);
     }
 
     /**
@@ -453,6 +457,10 @@ public class DemandManageServiceImpl extends DjsBaseServiceImpl<DemandManageMapp
         // admin + mp 下单都收口到此 insertByBo，故服务端在此硬守门（客户端过滤只是 UX，可被旧缓存/直连绕过）。
         // 原料是仓库内部流转物（领用 → 打包成成品），由打包成品反查原料履约，不应直接挂门店需求（doc/14 §5）。
         validateNotRawMaterial(bo.getProductId(), bo.getProductName());
+        // 业态自校正：白条/果蔬/礼盒三类必须与产品归属一致（谎报会拿到错的单号段并被下游按错业态筛）
+        bo.setProductType(correctProductType(
+            bo.getProductId() == null ? null : productInfoMapper.selectById(bo.getProductId()),
+            bo.getProductType()));
         DemandManage entity = toEntity(bo);
         if (entity == null) {
             throw new ServiceException(I18nMessages.t("demand.bo.convert_failed"));
@@ -501,6 +509,32 @@ public class DemandManageServiceImpl extends DjsBaseServiceImpl<DemandManageMapp
             throw new ServiceException(
                 I18nMessages.t("demand.update.status_forbidden", exists.getDemandNo(), exists.getDemandStatus()), 400);
         }
+
+        // 「不得挂原材料」这道闸原先只装在 insertByBo，编辑路径是没设防的第二扇门：
+        // 独立验收实测可以把一条已成立的需求行改成原材料。需求单挂原料会让下游按「打包成品
+        // 反查原料履约」的口径读到自相矛盾的数据（doc/14 §5），任何路径都不该允许。
+        // 只在 productId 真被改动时校验：无条件校验会把「修正一条历史单据的备注」这类正常业务一并拦死。
+        // 排在「状态可编辑」闸之后 —— 否则编辑一条不可编辑的行时会报错在错误的方向上。
+        //
+        // ⚠️ 这里**故意不加**「日期不得早于今天」：甲方那句「最早只能是当天」约束的是门店小程序
+        // 下单页（row69 第 4 条），而 admin 侧 insertByBo 新建时本就允许补录过去日期。
+        // 只给编辑加闸会比新建还严，且会拦死仓库补录历史单据。admin 要不要禁止补录，是待甲方/Kevin 拍的口径。
+        if (bo.getProductId() != null && !bo.getProductId().equals(exists.getProductId())) {
+            validateNotRawMaterial(bo.getProductId(), bo.getProductName());
+            // 「外购不可下单」新建路径拒、编辑路径原先放行 —— 独立验收实测把一条需求编辑成
+            // 外购疫苗返 200。同类的两扇门只关一扇，等于没关。
+            validateNotOutsourced(bo.getProductId());
+            // 业态不得跨段偷换：上面第 505 行把 product_type 锁回原值（单号 bizCode 段已按它生成），
+            // 但没拦「换成另一个业态的产品」。独立验收实测：一条 vegetable 需求（单号 D…VG0041）
+            // 被编辑成「半扇」(white_bar) 仍返 200，落库 product_type 还是 vegetable —— 下游按业态分流
+            // 立刻自相矛盾（该行产品是半扇，指定猪只却被拒）。业态要变只能删了重下，不能就地改。
+            assertSameProductType(exists, bo.getProductId());
+        }
+        // 门店合作状态闸：新建路径有（assertStoreActive），编辑路径原先没有。
+        // 独立验收实测：把行挂到不存在的门店后，PUT /quantity 与 PUT edit 把需求量从 5.5 改到 123 全程 200 ——
+        // 对已终止合作 / 已删除的门店，这跟直接下单是同一个经济效果。
+        // 闸放在这条两端共用的落库路径上，mp 改量、admin 编辑、/add 并单分支一次覆盖，不再逐个端点补。
+        assertStoreOrderable(exists.getStoreId());
         DemandManage entity = toEntity(bo);
         if (entity == null) {
             throw new ServiceException(I18nMessages.t("demand.bo.convert_failed"));
@@ -840,8 +874,99 @@ public class DemandManageServiceImpl extends DjsBaseServiceImpl<DemandManageMapp
         if (isRawMaterial) {
             String name = StrUtil.isNotBlank(product.getProductName()) ? product.getProductName()
                 : StrUtil.isNotBlank(productName) ? productName : String.valueOf(productId);
-            throw new ServiceException(I18nMessages.t("demand.field.product.raw_material_forbidden", name));
+            throw new ServiceException(I18nMessages.t("demand.field.product.raw_material_forbidden", name), 400);
         }
+    }
+
+    /**
+     * 编辑不得把需求换成另一个业态的产品。
+     *
+     * <p>{@code product_type} 决定需求单号的 bizCode 段与下游分拣发货的分流键，单号在新建时已定格。
+     * 就地改业态会让「单号说 VG、产品是白条」这种行流到下游；改产品但保留旧业态同样错。
+     * 两难只有一个出口：<b>业态要变就删了重下</b>。</p>
+     *
+     * @param exists       库里现有行
+     * @param newProductId 要改成的产品
+     */
+    private void assertSameProductType(DemandManage exists, Long newProductId) {
+        ProductInfo product = productInfoMapper.selectById(newProductId);
+        if (product == null) {
+            return;
+        }
+        String corrected = correctProductType(product, exists.getProductType());
+        if (!Objects.equals(corrected, exists.getProductType())) {
+            throw new ServiceException(
+                "需求单【" + exists.getDemandNo() + "】是「" + exists.getProductType()
+                    + "」业态，不能改成其它业态的产品；请删除该行后重新下单", 400);
+        }
+    }
+
+    /**
+     * 门店必须仍可下单（合作状态）。
+     *
+     * <p>{@code storeId} 为空 = 非门店发起的需求（仓库自建），不适用。
+     * 门店不存在 / 已终止合作时抛错，与新建路径 {@code IStoreService#assertStoreActive} 同一条口径；
+     * 这里不直接依赖 store 服务（warehouse 模块不反向依赖 common.store 的门店服务），
+     * 按 {@code t_md_store} 的 {@code business_status} 自行判定。</p>
+     */
+    private void assertStoreOrderable(Long storeId) {
+        if (storeId == null) {
+            return;
+        }
+        Integer bad = baseMapper.countTerminatedStore(storeId);
+        if (bad != null && bad > 0) {
+            throw new ServiceException("该门店已终止合作或不存在，不能再调整其需求：" + storeId, 400);
+        }
+    }
+
+    /**
+     * 外购商品不可挂门店需求（与新建路径 {@code assertSellableProduct} 同一条谓词）。
+     *
+     * <p>门店需求的下游是「按需生产 → 打包 → 发货」，外购商品不进生产链路；
+     * 下单目录的候选谓词也是 {@code product_type=1 自产}——目录里选不到的东西，编辑也不该能改进去。</p>
+     *
+     * @param productId 产品主键；为空或产品不存在时交由其它校验报错
+     */
+    private void validateNotOutsourced(Long productId) {
+        if (productId == null) {
+            return;
+        }
+        ProductInfo product = productInfoMapper.selectById(productId);
+        if (product == null || product.getProductType() == null) {
+            return;
+        }
+        if (product.getProductType() != PRODUCT_TYPE_SELF) {
+            throw new ServiceException(
+                "「" + product.getProductName() + "」是外购商品，不可挂门店需求", 400);
+        }
+    }
+
+    /**
+     * 业态自校正：产品归属是 {@code white_bar / vegetable / gift_box} 时，落库业态必须与之一致，
+     * 不一致一律按产品归属改写（不信调用方传值）。
+     *
+     * <p>为什么必须放在这条<b>两端共用的落库路径</b>上：{@code product_type} 决定需求单号的 bizCode 段
+     * 与下游分拣发货的业态筛选。独立验收实测过 —— 直连 {@code POST /djs/store/demand/add}
+     * 把果蔬成品声明成 {@code gift_box}，落库拿到礼盒段单号 {@code D20260809GB0021}，
+     * 发货侧会把它当礼盒处理。闸若只装在 mp service，同一批人换个端点即可绕过。</p>
+     *
+     * <p>只钉这三类、不做全量覆盖：{@code pork/dry_good/egg/other} 在下单侧统一落 {@code other} 桶，
+     * 但仓库侧历史上会用更细的 {@code pig/dry/egg} 拿各自单号段（见 {@code PRODUCT_TYPE_TO_BIZ_CODE}
+     * 的 7 值），全量改写会把这些合法用法一起压平。冒用风险只存在于「有独立业态的三类」，收口到这三类即可。</p>
+     */
+    private String correctProductType(ProductInfo product, String clientType) {
+        if (product == null) {
+            return clientType;
+        }
+        String belong = product.getBelongType();
+        if (!DEDICATED_BELONG_TYPES.contains(belong)) {
+            return clientType;
+        }
+        if (!belong.equals(clientType)) {
+            log.warn("[DEMAND] 业态被自校正：product={} belongType={} 传入={} → 改写为 {}",
+                product.getId(), belong, clientType, belong);
+        }
+        return belong;
     }
 
     /** 插入前缺省值兜底。 */

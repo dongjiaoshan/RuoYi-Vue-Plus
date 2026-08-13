@@ -7,6 +7,7 @@ import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.common.encoder.BizCodeType;
 import org.dromara.djs.common.encoder.IBizCodeGenerator;
 import org.dromara.djs.warehouse.demand.domain.DemandManage;
+import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.demand.domain.bo.AssignPigBo;
 import org.dromara.djs.warehouse.demand.domain.bo.DemandManageBo;
 import org.dromara.djs.warehouse.demand.domain.query.DemandManageQuery;
@@ -402,5 +403,102 @@ class DemandManageServiceImplTest {
         bo.setProductUnit("头");
         bo.setExpectedArriveDate(LocalDate.of(2026, 6, 5));
         return bo;
+    }
+
+    // ---------------- 业态自校正（谎报 productType 会拿到错的单号段）----------------
+
+    private org.dromara.djs.warehouse.product.domain.ProductInfo prod(Long id, String belong, int attr) {
+        org.dromara.djs.warehouse.product.domain.ProductInfo p =
+            new org.dromara.djs.warehouse.product.domain.ProductInfo();
+        p.setId(id);
+        p.setProductName("产品" + id);
+        p.setBelongType(belong);
+        p.setProductType(1);
+        p.setProductAttr(attr);
+        return p;
+    }
+
+    @Test
+    @DisplayName("果蔬成品被声明成 gift_box → 服务端改回 vegetable（否则拿到礼盒段单号、下游按礼盒筛）")
+    void insertByBo_correctsLiedProductType() {
+        when(productInfoMapper.selectById(7001L)).thenReturn(prod(7001L, "vegetable", 1));
+        DemandManageBo bo = new DemandManageBo();
+        bo.setStoreId(9001L);
+        bo.setProductId(7001L);
+        bo.setProductName("有机苕尖350g");
+        bo.setProductType("gift_box");
+        bo.setDemandDate(java.time.LocalDate.now());
+        bo.setDemandQuantity(new java.math.BigDecimal("1"));
+        bo.setProductUnit("份");
+        service.insertByBo(bo);
+        assertThat(bo.getProductType()).isEqualTo("vegetable");
+    }
+
+    @Test
+    @DisplayName("猪肉/干货/鸡蛋等无独立业态的三类不被压平（仓库侧会用更细的 pig/dry/egg 拿各自单号段）")
+    void insertByBo_keepsFinerGrainedTypeForOtherBucket() {
+        when(productInfoMapper.selectById(7002L)).thenReturn(prod(7002L, "pork", 1));
+        DemandManageBo bo = new DemandManageBo();
+        bo.setStoreId(9001L);
+        bo.setProductId(7002L);
+        bo.setProductName("黑毛猪五花肉500g");
+        bo.setProductType("pig");
+        bo.setDemandDate(java.time.LocalDate.now());
+        bo.setDemandQuantity(new java.math.BigDecimal("1"));
+        bo.setProductUnit("份");
+        service.insertByBo(bo);
+        assertThat(bo.getProductType()).isEqualTo("pig");
+    }
+
+    @Test
+    @DisplayName("编辑：已终止合作 / 不存在的门店不得再调整其需求（闸下沉到共用落库路径）")
+    void updateRejectsTerminatedStore() {
+        DemandManage exists = new DemandManage();
+        exists.setId(101L);
+        exists.setDemandNo("D20260811VG0041");
+        exists.setDemandStatus("SUBMITTED");
+        exists.setProductType("vegetable");
+        exists.setStoreId(9315000000009999L);
+        exists.setDemandQuantity(new BigDecimal("5.5"));
+        when(demandMapper.selectById(101L)).thenReturn(exists);
+        when(demandMapper.countTerminatedStore(9315000000009999L)).thenReturn(1);
+
+        DemandManageBo bo = baseBo("vegetable");
+        bo.setId(101L);
+        bo.setStoreId(9315000000009999L);
+        bo.setDemandQuantity(new BigDecimal("123"));
+        // 独立验收实测：修复前 mp /quantity 与 admin /edit 都能把量从 5.5 一路改到 123，全程 200
+        assertThatThrownBy(() -> service.updateByBo(bo))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("已终止合作或不存在");
+    }
+
+    @Test
+    @DisplayName("编辑：不得把需求换成另一个业态的产品（单号 bizCode 段已定格）")
+    void updateRejectsCrossBusinessTypeProduct() {
+        DemandManage exists = new DemandManage();
+        exists.setId(101L);
+        exists.setDemandNo("D20260811VG0041");
+        exists.setDemandStatus("SUBMITTED");
+        exists.setProductType("vegetable");
+        exists.setProductId(9304000000000136L);
+        exists.setDemandQuantity(new BigDecimal("5"));
+        when(demandMapper.selectById(101L)).thenReturn(exists);
+
+        ProductInfo whiteBar = new ProductInfo();
+        whiteBar.setId(9303000000000142L);
+        whiteBar.setProductName("半扇");
+        whiteBar.setProductType(1);
+        whiteBar.setBelongType("white_bar");
+        when(productInfoMapper.selectById(9303000000000142L)).thenReturn(whiteBar);
+
+        DemandManageBo bo = baseBo("vegetable");
+        bo.setId(101L);
+        bo.setProductId(9303000000000142L);
+        // 独立验收实测：修复前返 200，落库 product_id=半扇 但 product_type 仍 vegetable、单号仍 VG 段，
+        // 下游立刻自相矛盾（该行产品是半扇，指定猪只却被拒）
+        assertThatThrownBy(() -> service.updateByBo(bo))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("不能改成其它业态的产品");
     }
 }

@@ -20,6 +20,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
@@ -230,5 +231,40 @@ class StoreUserRelationServiceImplTest {
     void testCountUsersByStore() {
         when(baseMapper.selectCount(any(Wrapper.class))).thenReturn(3L);
         assertThat(service.countUsersByStore(100L)).isEqualTo(3);
+    }
+
+    /**
+     * mp「我的门店」的过滤判据必须与下单硬闸 {@code assertStoreActive} <b>逐条相同</b>：
+     * 只排除已终止（{@code business_status='1'}），装修中（{@code '2'}）要保留。
+     *
+     * <p>为什么不能写成 {@code ='0'}：字典 {@code djs_store_status} 是 0 合作中 / 1 已终止 /
+     * 2 装修中，而 assertStoreActive 只拒 '1' —— 装修中门店后端<b>允许下单</b>。选择器若按 '0'
+     * 过滤，装修中那家店的店员打开小程序会看到「无可用门店」，整个门店板块对他不可用，
+     * 而系统本来允许他下单 = 静默删能力。</p>
+     */
+    @Test
+    @DisplayName("listMyStores(true): 只排除已终止('1')，不能收紧成 ='0'（装修中门店必须保留）")
+    void testListMyStoresOrderableOnly() {
+        ArgumentCaptor<LambdaQueryWrapper<Store>> captor = ArgumentCaptor.forClass(LambdaQueryWrapper.class);
+        when(storeMapper.selectList(captor.capture())).thenReturn(List.of());
+
+        service.listMyStores(true);
+
+        LambdaQueryWrapper<Store> wrapper = captor.getValue();
+        assertThat(wrapper.getTargetSql()).contains("business_status <>");
+        // 绑定值必须是 '1'（已终止）。写成 '0' 就退化成「只留合作中」，把装修中门店误挡掉。
+        assertThat(wrapper.getParamNameValuePairs().values()).contains("1");
+        assertThat(wrapper.getParamNameValuePairs().values()).doesNotContain("0");
+    }
+
+    @Test
+    @DisplayName("listMyStores(): admin 既有口径不变 —— 不带 business_status 过滤")
+    void testListMyStoresKeepsAdminSemantics() {
+        ArgumentCaptor<LambdaQueryWrapper<Store>> captor = ArgumentCaptor.forClass(LambdaQueryWrapper.class);
+        when(storeMapper.selectList(captor.capture())).thenReturn(List.of());
+
+        service.listMyStores();
+
+        assertThat(captor.getValue().getTargetSql()).doesNotContain("business_status");
     }
 }

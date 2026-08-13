@@ -1,6 +1,7 @@
 package org.dromara.djs.warehouse.demand.domain.bo;
 
 import io.github.linpeilie.annotations.AutoMapper;
+import jakarta.validation.constraints.Digits;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Positive;
@@ -56,9 +57,17 @@ public class DemandManageBo extends BaseEntity {
     @Size(max = 64, message = "{demand.field.productSpec.size}")
     private String productSpec;
 
-    /** 需求量（必须正数）。 */
+    /**
+     * 需求量（必须正数，最多 9 位整数 + 3 位小数）。
+     *
+     * <p>{@code @Digits} 与 DDL {@code DECIMAL(12,3)} 对齐：不卡的话 1.2345 会被 MySQL
+     * <b>静默四舍五入</b>成 1.235（用户不知情），超长整数则漏成通用 500。
+     * 门店端两个写入口（{@code StoreDemandBatchBo} 下单 / {@code StoreDemandQuantityBo} 改量）
+     * 早有同款约束，本 BO 是仓库端录入与编辑入口，三处必须一致。</p>
+     */
     @NotNull(message = "{demand.field.demandQuantity.required}")
     @Positive(message = "{demand.field.demandQuantity.positive}")
+    @Digits(integer = 9, fraction = 3, message = "需求量最多 9 位整数、3 位小数")
     private BigDecimal demandQuantity;
 
     /** 单位。 */

@@ -379,7 +379,14 @@ public interface VegReceiveMapper extends BaseMapperPlus<VegReceive, VegReceive>
      * 改动前一块地只可能收一个产品，所以这个缺陷是被「不会发生」掩着的，是 row55 把它激活了。
      * 用 {@code <=>} 而非 {@code =}：作物没配关联产品时篮子的 product_id 是 NULL，得能匹配上。</p>
      *
-     * @return affectedRows（0 = 该 plot+location+product 无库存行，service 兜底 INSERT 新行）
+     * <p><b>row92 必须带 third_phase = 0</b>：三期入库在「该作物恰好只有 1 块在种地块」时会建一条
+     * <b>带真实 plot_id 的三期篮</b>（{@code ThirdPhaseInServiceImpl#insertStockIn} 的 plotId 分支），
+     * 与采摘入库的普通地块篮形状完全相同、同落毛菜鲜品库 L0006。不加这个条件，自产收货的 UPSERT
+     * 会把普通采摘的货并进三期篮（普通货被记成三期），两篮共存时更是一条 UPDATE 双加、库存虚增一倍。
+     * 三期货的入库累加走 {@code LocationStockMapper#addByProductLocationThirdPhase} 或直接 INSERT 新三期篮，
+     * 不经本方法。</p>
+     *
+     * @return affectedRows（0 = 该 plot+location+product 无普通库存行，service 兜底 INSERT 新行）
      */
     @Update("""
         UPDATE t_warehouse_location_stock
@@ -389,6 +396,7 @@ public interface VegReceiveMapper extends BaseMapperPlus<VegReceive, VegReceive>
          WHERE location_id = #{locationId}
            AND plot_id     = #{plotId}
            AND product_id <=> #{productId}
+           AND third_phase = 0
            AND del_flag    = '0'
         """)
     int addStockByPlotLocation(@Param("locationId") Long locationId,

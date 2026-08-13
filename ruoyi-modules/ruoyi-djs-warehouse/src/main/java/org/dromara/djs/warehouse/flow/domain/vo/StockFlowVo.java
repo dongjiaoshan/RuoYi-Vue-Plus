@@ -13,6 +13,7 @@ import java.io.Serial;
 import java.io.Serializable;
 import java.math.BigDecimal;
 import java.util.Date;
+import org.dromara.djs.warehouse.stock.domain.PlotLabel;
 
 /**
  * 出入库流水 VO（WMS-MAT-001）。
@@ -131,6 +132,36 @@ public class StockFlowVo implements Serializable {
      */
     @ExcelProperty(value = "地块编号")
     private String blockNo;
+
+    /**
+     * 地块名称（= {@code t_plant_plot_info.plot_name}，service 层 JOIN 回填；
+     * 流水行 {@code plotId} 为空 → 保持 null）。
+     *
+     * <p>接口出参用它，导出件不用它 —— 导出的「地块」列走 {@link #getPlotLabel()}。</p>
+     */
+    private String plotName;
+
+    /**
+     * 【三期】标识（0=否 / 1=是；V6 row92）。
+     *
+     * <p>接口出参，前端 {@code formatPlotLabel} 用它决定「地块」列渲染成什么。
+     * 导出件不单列它 —— 裸 0/1 对甲方无意义，语义已经并进 {@link #getPlotLabel()}。</p>
+     */
+    private Integer thirdPhase;
+
+    /**
+     * 导出件的「地块」列（V6 row92 甲方原话「地块记录为三期两个字」）。
+     *
+     * <p>由 service 用 {@link PlotLabel#of} 回填，规则与页面
+     * {@code plus-ui/src/utils/plotTag.ts#formatPlotLabel} <b>完全相同</b>：
+     * 三期 → 「三期」/ 有真实地块 → 地块名 / 都没有 → {@code -}。
+     * 导出与页面必须同口径，否则甲方拿导出对账会重报同一条。</p>
+     *
+     * <p>做成回填字段而不是派生 getter：本项目 Excel 走 FastExcel 的<b>字段</b>扫描，
+     * 方法级 {@code @ExcelProperty} 无先例、行为不确定。</p>
+     */
+    @ExcelProperty(value = "地块")
+    private String plotLabel;
 
     private Long operatorId;
 
