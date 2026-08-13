@@ -213,18 +213,20 @@ public class VegOutServiceImpl implements IVegOutService {
             patch.setOutUnitPrice(item.getOutUnitPrice() != null ? item.getOutUnitPrice() : product.getSalePrice());
             stockFlowMapper.updateById(patch);
 
-            // 去向额外下游（Kevin 2026-08-03 拍板 D3）：
-            //   · 果蔬月台：走到这里必然是果蔬（上面已 fail-fast 拦掉非果蔬），累加毛菜处理送月台重量；
-            //   · 猪只饲料：**三类业态都写**有机饲喂台账——干货/蛋类也可能真拿去喂猪，这笔账要记。
+            // 去向额外下游（业态范围 Kevin 2026-08-03 拍板 D3：**三类业态都写**有机饲喂台账
+            // ——干货/蛋类也可能真拿去喂猪，这笔账要记）：
+            //   · 果蔬月台 → handle_record(handle_target=2)：月台待入库量与日统计都读它；
+            //   · 猪只饲料 → feed_log：有机饲喂的权威台账。
             //
-            // ⚠️ 饲料去向**不碰** {@code vegetable_handle.feed_weight}：本功能出的是**已入库**的库存，
-            // 那份重量在毛菜处理里早已计进 handled_weight / stock_in_weight。再累加 feed_weight，
-            // 会被地块卡的「剩余 = 采摘 − 处理 − 饲料」(PlantingRecordMapper#selectPlotDetailByCrop)
-            // 二次扣减 —— 同一批货扣两遍，剩余算成负数（生产实测 B-连6-2-001：340−283−70 = −13kg），
-            // recomputeLoss 也会连带被钳零。feed_weight 的语义只有一个：**毛菜没入库就直接拿去喂猪**。
-            // 「这块地的菜总共喂了多少」的账由 feed_log 承担 —— 那本来就是有机饲喂的权威台账。
+            // ⚠️ 两条去向都**只写流水台账，不碰 vegetable_handle 的重量桶**（见类头注）。
+            // 本功能出的是已入库库存，那份重量早已计进 handled_weight / stock_in_weight；
+            // 再累加 feed_weight / send_platform_weight 就是同一 kg 进两个互斥桶：
+            //   · feed_weight   → 地块卡「剩余 = 采摘 − 处理 − 饲料」直接显负
+            //                     （生产实测 B-连6-2-001：340 − 283 − 70 = −13kg）；
+            //   · send_platform → recomputeLoss「损耗 = 采摘 − 入库 − 月台 − 饲料」被多减后**静默钳零**，
+            //                     不显负所以更难发现，损耗数会悄悄变小。
             if (DEST_VEG_DOCK.equals(bo.getOutDest())) {
-                Long handleId = accumulatePlatformWeight(product, stock, item.getQuantity());
+                Long handleId = resolveHandleForPlatform(product, stock);
                 insertPlatformHandleRecord(handleId, stock, resolveCropIdByProduct(product.getId()),
                     item.getQuantity(), userId, resolveFlowDate(bo.getOutDate()));
             } else if (DEST_FEED.equals(bo.getOutDest())) {
@@ -286,7 +288,10 @@ public class VegOutServiceImpl implements IVegOutService {
     }
 
     /**
-     * 往对应的毛菜处理汇总行累加「发往月台」重量，返回该汇总行 id（供 {@link #insertPlatformHandleRecord} 挂账）。
+     * 定位（必要时补建）该批货所属的毛菜处理汇总行，返回其 id 供 {@link #insertPlatformHandleRecord} 挂账。
+     *
+     * <p><b>只定位、不改任何重量列</b> —— 本 service 出的是已入库库存，那份重量已计进
+     * {@code handled/stock_in}（见类头注）。月台的账落在 handle_record 明细上，汇总列一个都不动。</p>
      *
      * <p>定位链：库存行 product_id → 作物（{@code t_plant_crop_info.related_product} 反查，1:1）
      * + 库存行 plot_id → {@code t_warehouse_vegetable_handle}（该组合零重复）。</p>
@@ -305,10 +310,10 @@ public class VegOutServiceImpl implements IVegOutService {
      *       用户根本没有补录入口。</li>
      * </ul>
      *
-     * <p>故：能确定(作物, 地块)就<b>按需补建一条最小 handle 行</b>再累加（picked/handled/stockIn 记 0，
+     * <p>故：能确定(作物, 地块)就<b>按需补建一条最小 handle 行</b>（各重量列记 0，
      * 表示这批货不是经毛菜处理流程进来的）；只有连归属都定不了（无地块 或 产品反查不到作物）才拦。</p>
      */
-    private Long accumulatePlatformWeight(ProductInfo product, LocationStock stock, BigDecimal weight) {
+    private Long resolveHandleForPlatform(ProductInfo product, LocationStock stock) {
         Long cropId = resolveCropIdByProduct(product.getId());
         VegetableHandle handle = null;
         if (cropId != null && stock.getPlotId() != null) {
@@ -327,10 +332,6 @@ public class VegOutServiceImpl implements IVegOutService {
                 + (stock.getPlotId() == null ? "该库存行未关联地块" : "未配置对应作物（作物管理的关联产品）")
                 + "，无法归集到果蔬月台。请先补齐后再操作。");
         }
-        VegetableHandle delta = new VegetableHandle();
-        delta.setId(handle.getId());
-        delta.setSendPlatformWeight(nullSafe(handle.getSendPlatformWeight()).add(weight));
-        vegetableHandleMapper.updateById(delta);
         return handle.getId();
     }
 
@@ -485,9 +486,5 @@ public class VegOutServiceImpl implements IVegOutService {
         Map<Long, String> nameMap = ids.stream().collect(Collectors.toMap(
             id -> id, id -> StringUtils.blankToDefault(userService.selectNicknameById(id), ""), (a, b) -> a));
         rows.forEach(r -> r.setOperatorName(nameMap.get(r.getOperatorId())));
-    }
-
-    private static BigDecimal nullSafe(BigDecimal v) {
-        return v != null ? v : BigDecimal.ZERO;
     }
 }
