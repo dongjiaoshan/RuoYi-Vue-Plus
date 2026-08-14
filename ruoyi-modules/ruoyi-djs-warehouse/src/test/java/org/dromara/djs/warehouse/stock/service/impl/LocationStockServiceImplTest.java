@@ -354,6 +354,10 @@ class LocationStockServiceImplTest {
         assertThat(f.getChangeQuantity()).isEqualByComparingTo("5");
         assertThat(f.getWarehouseId()).isEqualTo(90001L);
         assertThat(f.getProductId()).isEqualTo(50001L);
+        // 出库操作人 + 用户备注：这两列没人断言过，曾被整行删掉且编译/单测全绿 ——
+        // 结果「毛菜间出库管理」「出库记录」的出库操作人列全空、出库弹框填的备注静默丢失。
+        assertThat(f.getOperatorId()).isEqualTo(10086L);
+        assertThat(f.getRemark()).isEqualTo("ut-productout");
     }
 
     @Test

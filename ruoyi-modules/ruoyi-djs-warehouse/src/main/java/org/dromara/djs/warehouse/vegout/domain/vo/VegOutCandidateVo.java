@@ -44,6 +44,17 @@ public class VegOutCandidateVo implements Serializable {
     /** 地块编号（冗余展示；plotId 为空时为 null）。 */
     private String plotCode;
 
+    /** 地块名称（admin row99「地块」列展示值；plotId 为空时为 null）。 */
+    private String plotName;
+
+    /**
+     * 三期标识（{@code location_stock.third_phase}，1 = 三期）。
+     *
+     * <p>三期货没有真实地块（plot_id 为 NULL），「地块」列靠这个标识显示「三期」——
+     * 与库存查询 / 出入库记录三页共用的 {@code utils/plotTag.formatPlotLabel} 同一口径。</p>
+     */
+    private Integer thirdPhase;
+
     /** 产品业态（djs_belong_type）：vegetable / dry_good / egg / other，前端按它分组或判断是否有地块。 */
     private String belongType;
 

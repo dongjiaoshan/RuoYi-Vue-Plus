@@ -17,6 +17,7 @@ import org.dromara.djs.warehouse.stock.domain.LocationStock;
 import org.dromara.djs.warehouse.stock.mapper.LocationStockMapper;
 import org.dromara.djs.warehouse.stock.service.ILocationStockService;
 import org.dromara.djs.warehouse.veg.domain.FeedLog;
+import org.dromara.djs.warehouse.veg.domain.HandleRecord;
 import org.dromara.djs.warehouse.veg.domain.VegetableHandle;
 import org.dromara.djs.warehouse.veg.mapper.FeedLogMapper;
 import org.dromara.djs.warehouse.veg.mapper.VegetableHandleMapper;
@@ -349,6 +350,45 @@ class VegOutServiceImplTest {
             .isInstanceOf(ServiceException.class)
             .hasMessageContaining("不支持毛菜间出库");
         verify(locationStockService, never()).productOut(any());
+    }
+
+    /**
+     * V6 row101（甲方邓博 2026-08-13 口径，见 doc/16 §0「三期是什么」）：三期货不走果蔬月台。
+     *
+     * <p>用<b>带真实 plotId 的三期库存行</b>做用例：多地块三期货 plot_id 为空、本来就会被下游
+     * {@code resolveHandleForPlatform} 拦下，拦不住的正是「恰好 1 块在种地块」这条 —— 它整条月台链路
+     * 走得通，而月台收货只写普通篮（{@code addStockByPlotLocation} 硬带 {@code third_phase=0}），
+     * 货一进蔬菜保鲜库就洗成普通有机货、可被门店取走，静默违反「三期不发到门店」。
+     * 所以守卫必须按 {@code third_phase} 判，不能按「有没有地块」判。</p>
+     */
+    @Test
+    @DisplayName("row101：三期货出库到果蔬月台 → 拒绝（且必须在扣库存前拦住，不能扣了再回滚）")
+    void rejectThirdPhaseToVegDock() {
+        LocationStock s = mkStock(1L, 10L, 20L);
+        s.setThirdPhase(1);
+        when(locationStockMapper.selectById(1L)).thenReturn(s);
+        when(productInfoMapper.selectById(10L)).thenReturn(mkVegProduct(10L));
+
+        assertThatThrownBy(() -> service.submit(mkBo("veg_dock", 1L, "1.000"), true))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("是三期货，不走果蔬月台");
+        verify(locationStockService, never()).productOut(any());
+        verify(handleRecordMapper, never()).insert(any(HandleRecord.class));
+    }
+
+    @Test
+    @DisplayName("row101：三期货出库到其它去向（饲料饲喂）→ 放行（甲方只禁月台，出库记账照常）")
+    void allowThirdPhaseToNonDockDest() {
+        LocationStock s = mkStock(1L, 10L, 20L);
+        s.setThirdPhase(1);
+        when(locationStockMapper.selectById(1L)).thenReturn(s);
+        when(productInfoMapper.selectById(10L)).thenReturn(mkVegProduct(10L));
+        stubHandleFound(30L, 20L);
+
+        service.submit(mkBo("feed", 1L, "8.000"), false);
+
+        verify(locationStockService).productOut(any());
+        verify(feedLogMapper).insert(any(FeedLog.class));
     }
 
     @Test

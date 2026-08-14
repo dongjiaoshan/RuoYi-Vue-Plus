@@ -107,6 +107,9 @@ public class VegOutServiceImpl implements IVegOutService {
     /** 果蔬业态（只有果蔬产品能走毛菜间出库）。 */
     private static final String BELONG_TYPE_VEGETABLE = "vegetable";
 
+    /** 三期标识值（{@code location_stock.third_phase}）。 */
+    private static final int THIRD_PHASE_YES = 1;
+
     /** 出库去向：果蔬月台（本次迁移新增字典值）。 */
     private static final String DEST_VEG_DOCK = "veg_dock";
 
@@ -185,6 +188,18 @@ public class VegOutServiceImpl implements IVegOutService {
                 && !BELONG_TYPE_VEGETABLE.equals(product.getBelongType())) {
                 throw new ServiceException("只有果蔬产品可以出库到果蔬月台：" + product.getProductName()
                     + "（干货 / 蛋类请选其他出库去向）");
+            }
+            // ⚠️ 三期货一律不走果蔬月台（甲方邓博 2026-08-13 口径，见 doc/16 §0「三期是什么」）：
+            // 三期地块不是有机地块、不纳入地块管理、货也不发到门店，系统只需记「进了多少 / 出了多少」。
+            // 而月台是有机链路的中转站 —— 收货落 L0003 蔬菜保鲜库 / L0004 重口味蔬菜库，
+            // 那正是 果蔬打包 → 发货月台 → 门店 的供货池；且收货侧 UPSERT 与建篮都只写普通篮
+            // （VegReceiveMapper.addStockByPlotLocation 硬带 third_phase=0、insertPlotStockRow 不 set），
+            // 三期货走进去会**当场洗掉三期标识**、变成门店可取的普通有机货。
+            // 这道守卫按 third_phase 判、不按有没有地块判：多地块三期货本就因 plot_id 为空被下游拦下，
+            // 但「恰好 1 块在种地块」的三期货带着真实 plot_id、整条链路走得通，正是那条会漏的暗门。
+            if (DEST_VEG_DOCK.equals(bo.getOutDest()) && LocationStock.thirdPhaseOf(stock) == THIRD_PHASE_YES) {
+                throw new ServiceException("「" + product.getProductName() + "」是三期货，不走果蔬月台"
+                    + "（三期作物不按地块管理、也不发到门店）。出库请用「产品出库」或「毛菜间出库管理」直接记账。");
             }
 
             // 扣库存 + 写 backstage_out 出库流水，全部复用产品出库既有口径

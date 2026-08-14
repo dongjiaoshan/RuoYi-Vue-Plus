@@ -27,9 +27,9 @@ public interface VegOutMapper {
      *
      * <p>只列 {@code product_stock > 0} 的行（库存为 0 没法出库）。按产品名模糊筛。</p>
      *
-     * <p>admin row194 第 4 点起，除毛菜鲜品库（L0006）外还要列干货库（L0005）与蛋类库（L0009）。
-     * 干货 / 蛋类的库存行没有 {@code plot_id}（不是采摘来的），故地块列天然为空 —— 与 row195
-     * 「地块数据不显示」正好一致。</p>
+     * <p>除毛菜鲜品库（L0006）外还列干货库（L0005）与蛋类库（L0009）。干货 / 蛋类的库存行没有
+     * {@code plot_id}（不是采摘来的），「地块」列显示占位符；三期货同样无 plot_id，靠
+     * {@code third_phase} 标识显示「三期」。</p>
      *
      * @param locationCodes 库位编码白名单
      * @param belongTypes   产品业态白名单
@@ -46,6 +46,8 @@ public interface VegOutMapper {
                p.product_unit      AS productUnit,
                s.plot_id           AS plotId,
                pl.plot_code        AS plotCode,
+               pl.plot_name        AS plotName,
+               s.third_phase       AS thirdPhase,
                p.belong_type       AS belongType,
                p.sale_price        AS salePrice
           FROM t_warehouse_location_stock s
