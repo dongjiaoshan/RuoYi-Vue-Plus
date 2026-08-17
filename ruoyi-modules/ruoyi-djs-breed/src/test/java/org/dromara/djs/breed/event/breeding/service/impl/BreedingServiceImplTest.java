@@ -8,6 +8,7 @@ import org.dromara.djs.breed.core.enums.PigStatusEvent;
 import org.dromara.djs.breed.core.mapper.PigMapper;
 import org.dromara.djs.breed.core.service.IPigCoreService;
 import org.dromara.djs.breed.event.breeding.domain.PigBreeding;
+import org.dromara.djs.breed.event.breeding.domain.bo.BreedingBatchBo;
 import org.dromara.djs.breed.event.breeding.domain.bo.BreedingBo;
 import org.dromara.djs.breed.event.breeding.mapper.PigBreedingMapper;
 import org.dromara.djs.breed.breeding.mapper.BreedConfigMapper;
@@ -25,6 +26,7 @@ import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 
 import java.time.LocalDateTime;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -204,6 +206,130 @@ class BreedingServiceImplTest {
         assertThatThrownBy(() -> service.recordBreeding(bo))
             .isInstanceOf(ServiceException.class)
             .hasMessageContaining("pig.state.terminal");
+    }
+
+    // ===== 批量配种（mp「批量配种」）=====
+
+    private Pig mkBoar(Long id, String earNo, String breedCode, String strainCode) {
+        Pig b = new Pig();
+        b.setId(id);
+        b.setEarNo(earNo);
+        b.setPigSex("M");
+        b.setPigType("boar");
+        b.setPigBreedCode(breedCode);
+        b.setPigStrainCode(strainCode);
+        return b;
+    }
+
+    private BreedingBatchBo mkBatchBo(List<Long> pigIds, String boar) {
+        BreedingBatchBo bo = new BreedingBatchBo();
+        bo.setPigIds(pigIds);
+        bo.setBreedingDate(LocalDateTime.of(2026, 8, 17, 10, 0));
+        bo.setBreedingType("1");
+        bo.setBoarEarNo(boar);
+        return bo;
+    }
+
+    @Test
+    @DisplayName("批量 happy: 3 头（含 1 个重复 id）→ 去重后 INSERT 2 行 + fireEvent 2 次，返回 2 条单头记录")
+    void batch_happyPath_recordsEachSowOnce() {
+        Pig sow1 = mkSow(200L, PigLifecycle.DN);
+        sow1.setEarNo("01-01-2-251127-011");
+        sow1.setPigBreedCode("01");
+        sow1.setPigStrainCode("01");
+        Pig sow2 = mkSow(201L, PigLifecycle.KH);
+        sow2.setEarNo("01-01-2-251127-012");
+        sow2.setPigBreedCode("01");
+        sow2.setPigStrainCode("01");
+        when(pigMapper.selectById(200L)).thenReturn(sow1);
+        when(pigMapper.selectById(201L)).thenReturn(sow2);
+        when(pigMapper.selectOne(any())).thenReturn(mkBoar(900L, "B-001", "01", "01"));
+        when(breedConfigMapper.selectCount(any())).thenReturn(1L);
+
+        BreedingBatchBo bo = mkBatchBo(List.of(200L, 201L, 200L), "B-001");
+        bo.setOperatorId(777L);
+        var results = service.recordBreedingBatch(bo);
+
+        assertThat(results).hasSize(2);
+        ArgumentCaptor<PigBreeding> br = ArgumentCaptor.forClass(PigBreeding.class);
+        verify(breedingMapper, times(2)).insert(br.capture());
+        assertThat(br.getAllValues()).extracting(PigBreeding::getPigId).containsExactly(200L, 201L);
+        assertThat(br.getAllValues()).allSatisfy(e -> {
+            assertThat(e.getBoarEarNo()).isEqualTo("B-001");
+            assertThat(e.getOperatorId()).isEqualTo(777L);
+            assertThat(e.getBreedingDate()).isEqualTo(bo.getBreedingDate());
+        });
+
+        ArgumentCaptor<PigEventBo> ev = ArgumentCaptor.forClass(PigEventBo.class);
+        verify(pigCoreService, times(2)).fireEvent(ev.capture());
+        assertThat(ev.getAllValues()).allSatisfy(e ->
+            assertThat(e.getEventType()).isEqualTo(PigStatusEvent.BREED));
+        assertThat(ev.getAllValues()).extracting(PigEventBo::getPigId).containsExactly(200L, 201L);
+    }
+
+    @Test
+    @DisplayName("批量校验(甲方需求3): 有一头不能与所选公猪配种 → 点名耳号抛错，一条都不落库")
+    void batch_oneSowNotMatchingBoar_blocksWholeBatch() {
+        Pig sow1 = mkSow(210L, PigLifecycle.DN);
+        sow1.setEarNo("01-01-2-251127-011");
+        sow1.setPigBreedCode("01");
+        sow1.setPigStrainCode("01");
+        // 第二头缺品种/品系码 → 无法组合成登记项 → 不支持与该公猪配种
+        Pig sow2 = mkSow(211L, PigLifecycle.KH);
+        sow2.setEarNo("01-01-2-251127-099");
+        sow2.setPigBreedCode(null);
+        sow2.setPigStrainCode(null);
+        when(pigMapper.selectById(210L)).thenReturn(sow1);
+        when(pigMapper.selectById(211L)).thenReturn(sow2);
+        when(pigMapper.selectOne(any())).thenReturn(mkBoar(900L, "B-001", "01", "01"));
+        when(breedConfigMapper.selectCount(any())).thenReturn(1L);
+
+        assertThatThrownBy(() -> service.recordBreedingBatch(mkBatchBo(List.of(210L, 211L), "B-001")))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("251127-099")
+            .hasMessageContaining("不支持配种");
+        // 预检在任何 INSERT 之前跑完 → 整批一条都没落库、没触发状态机
+        verify(breedingMapper, never()).insert(any(PigBreeding.class));
+        verify(pigCoreService, never()).fireEvent(any());
+    }
+
+    @Test
+    @DisplayName("批量: 某头状态机拒绝（END）→ 异常带该头耳号抛出，整批事务回滚")
+    void batch_stateMachineRejection_namesTheFailingPig() {
+        Pig sow = mkSow(220L, PigLifecycle.END);
+        sow.setEarNo("01-01-2-251127-013");
+        when(pigMapper.selectById(220L)).thenReturn(sow);
+        when(pigMapper.selectOne(any())).thenReturn(null); // 公猪查不到 → 育种配置校验放行，走到状态机
+        when(pigCoreService.fireEvent(any())).thenThrow(new ServiceException("pig.state.terminal"));
+
+        assertThatThrownBy(() -> service.recordBreedingBatch(mkBatchBo(List.of(220L), "B-001")))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("251127-013")
+            .hasMessageContaining("pig.state.terminal");
+    }
+
+    @Test
+    @DisplayName("批量: pigIds 为空 → ServiceException breeding.batch.empty")
+    void batch_emptyPigIds() {
+        assertThatThrownBy(() -> service.recordBreedingBatch(mkBatchBo(List.of(), "B-001")))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("breeding.batch.empty");
+        verify(breedingMapper, never()).insert(any(PigBreeding.class));
+    }
+
+    @Test
+    @DisplayName("批量: 某头 pigId 查不到 → ServiceException pig.not_found，一条都不落库")
+    void batch_pigNotFound() {
+        Pig sow = mkSow(230L, PigLifecycle.DN);
+        when(pigMapper.selectById(230L)).thenReturn(sow);
+        when(pigMapper.selectById(231L)).thenReturn(null);
+        when(pigMapper.selectOne(any())).thenReturn(null);
+
+        assertThatThrownBy(() -> service.recordBreedingBatch(mkBatchBo(List.of(230L, 231L), "B-001")))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("pig.not_found");
+        verify(breedingMapper, never()).insert(any(PigBreeding.class));
+        verify(pigCoreService, never()).fireEvent(any());
     }
 
     @Test

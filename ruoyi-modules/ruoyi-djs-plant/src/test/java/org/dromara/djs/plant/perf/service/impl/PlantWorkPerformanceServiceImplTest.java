@@ -81,6 +81,106 @@ class PlantWorkPerformanceServiceImplTest {
         return r;
     }
 
+    private PerfAggRow agg(Long teamId, Long cropId, Long productId, Integer perfPercent, String weight) {
+        PerfAggRow r = agg(teamId, cropId, productId, weight);
+        r.setPerfPercent(perfPercent);
+        return r;
+    }
+
+    @Test
+    @DisplayName("generate: V6 row107 —— 金额 = 采摘重量 × 绩效百分比 × 绩效单价")
+    void testGenerate_PerfPercentAppliedToAmount() {
+        String month = "2026-08";
+        // 班组1 × 作物10 × 产品101，绩效百分比 80%，采摘 120.500 公斤，单价 2.50 元/公斤
+        when(baseMapper.aggregateByMonth(month)).thenReturn(List.of(agg(1L, 10L, 101L, 80, "120.500")));
+        when(baseMapper.selectCropProductPrices(anyCollection())).thenReturn(List.of(
+            Map.of("cropId", 10L, "productId", 101L, "perfPrice", new BigDecimal("2.50"))
+        ));
+        when(baseMapper.selectCropUnitPrices(anyCollection())).thenReturn(List.of());
+        when(baseMapper.update(eq(null), any())).thenReturn(0);
+        when(baseMapper.insert(any(PlantWorkPerformance.class))).thenReturn(1);
+
+        assertThat(service.generate(month)).isEqualTo(1);
+
+        ArgumentCaptor<PlantWorkPerformance> captor = ArgumentCaptor.forClass(PlantWorkPerformance.class);
+        verify(baseMapper).insert(captor.capture());
+        PlantWorkPerformance row = captor.getValue();
+        assertThat(row.getPerfPercent()).isEqualTo(80);
+        assertThat(row.getPickWeight()).isEqualByComparingTo("120.500");
+        assertThat(row.getUnitPriceSnapshot()).isEqualByComparingTo("2.50");
+        // 120.500 × 80% × 2.50 = 241.00
+        assertThat(row.getPerformanceAmount()).isEqualByComparingTo("241.00");
+        assertThat(row.getPerformanceRule()).isEqualTo("2.5 元/公斤 × 80%");
+    }
+
+    @Test
+    @DisplayName("generate: V6 row107 —— 同产品的不同绩效百分比拆成多行，各按各自比例算金额")
+    void testGenerate_SameProductDifferentPercentSplitsRows() {
+        String month = "2026-08";
+        // 同班组、同作物、同产品：100% 的 50 公斤 + 60% 的 30 公斤 → 必须两行
+        when(baseMapper.aggregateByMonth(month)).thenReturn(List.of(
+            agg(1L, 10L, 101L, 100, "50.000"),
+            agg(1L, 10L, 101L, 60, "30.000")
+        ));
+        when(baseMapper.selectCropProductPrices(anyCollection())).thenReturn(List.of(
+            Map.of("cropId", 10L, "productId", 101L, "perfPrice", new BigDecimal("1.00"))
+        ));
+        when(baseMapper.selectCropUnitPrices(anyCollection())).thenReturn(List.of());
+        when(baseMapper.update(eq(null), any())).thenReturn(0);
+        when(baseMapper.insert(any(PlantWorkPerformance.class))).thenReturn(1);
+
+        assertThat(service.generate(month)).as("同产品两个百分比 → 两行").isEqualTo(2);
+
+        ArgumentCaptor<PlantWorkPerformance> captor = ArgumentCaptor.forClass(PlantWorkPerformance.class);
+        verify(baseMapper, times(2)).insert(captor.capture());
+        PlantWorkPerformance full = captor.getAllValues().stream()
+            .filter(r -> Integer.valueOf(100).equals(r.getPerfPercent())).findFirst().orElseThrow();
+        PlantWorkPerformance partial = captor.getAllValues().stream()
+            .filter(r -> Integer.valueOf(60).equals(r.getPerfPercent())).findFirst().orElseThrow();
+        // 50 × 100% × 1.00 = 50.00 ；30 × 60% × 1.00 = 18.00
+        assertThat(full.getPerformanceAmount()).isEqualByComparingTo("50.00");
+        assertThat(partial.getPerformanceAmount()).isEqualByComparingTo("18.00");
+    }
+
+    @Test
+    @DisplayName("generate: 采摘活动量按 100% 归组，只与同产品的 100% 过磅行合并（不并进 60% 那行）")
+    void testGenerate_ActivityMergesIntoFullPercentRowOnly() {
+        String month = "2026-08";
+        when(baseMapper.aggregateByMonth(month)).thenReturn(List.of(
+            agg(1L, 10L, 101L, 100, "40.000"),
+            agg(1L, 10L, 101L, 60, "20.000")
+        ));
+        PerfActivityAggRow act = new PerfActivityAggRow();
+        act.setCropId(10L);
+        act.setPlotId(70L);
+        act.setPickWeight(new BigDecimal("10.000"));
+        when(baseMapper.selectActivityAggByMonth(month)).thenReturn(List.of(act));
+        PlotCropTeamRow teamRow = new PlotCropTeamRow();
+        teamRow.setPlotId(70L);
+        teamRow.setCropId(10L);
+        teamRow.setTeamId(1L);
+        when(baseMapper.selectActivityDirectTeamsByMonth(month)).thenReturn(List.of(teamRow));
+        when(baseMapper.selectHarvestTeamsByPlots(anyCollection())).thenReturn(List.of());
+        when(baseMapper.selectCropProductPrices(anyCollection())).thenReturn(List.of(
+            Map.of("cropId", 10L, "productId", 101L, "perfPrice", new BigDecimal("1.00"))
+        ));
+        when(baseMapper.selectCropUnitPrices(anyCollection())).thenReturn(List.of());
+        when(baseMapper.update(eq(null), any())).thenReturn(0);
+        when(baseMapper.insert(any(PlantWorkPerformance.class))).thenReturn(1);
+
+        assertThat(service.generate(month)).isEqualTo(2);
+
+        ArgumentCaptor<PlantWorkPerformance> captor = ArgumentCaptor.forClass(PlantWorkPerformance.class);
+        verify(baseMapper, times(2)).insert(captor.capture());
+        PlantWorkPerformance full = captor.getAllValues().stream()
+            .filter(r -> Integer.valueOf(100).equals(r.getPerfPercent())).findFirst().orElseThrow();
+        PlantWorkPerformance partial = captor.getAllValues().stream()
+            .filter(r -> Integer.valueOf(60).equals(r.getPerfPercent())).findFirst().orElseThrow();
+        // 活动 10 公斤全部并进 100% 行：40 + 10 = 50；60% 行原样 20
+        assertThat(full.getPickWeight()).isEqualByComparingTo("50.000");
+        assertThat(partial.getPickWeight()).isEqualByComparingTo("20.000");
+    }
+
     @Test
     @DisplayName("generate: 采摘活动量与同产品的过磅行必须合成一行，不能拆成两行（clean-QA r20 回归）")
     void testGenerate_ActivityMergesIntoSameProductRow() {

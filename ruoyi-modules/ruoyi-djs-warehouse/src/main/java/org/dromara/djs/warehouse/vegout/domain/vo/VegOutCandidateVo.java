@@ -26,6 +26,14 @@ public class VegOutCandidateVo implements Serializable {
     /** 产品 id。 */
     private Long productId;
 
+    /**
+     * 产品业务编号（{@code t_warehouse_product_info.product_id}，用户手填的产品编码，不是主键）。
+     *
+     * <p>V6 row108：右侧「已选产品」与打印单按它把同一产品的多个地块篮合并成一条
+     * （甲方原文「只按产品编号进行累计」）。提交仍按 {@link #stockId} 逐行走。</p>
+     */
+    private String productCode;
+
     /** 产品名称。 */
     private String productName;
 

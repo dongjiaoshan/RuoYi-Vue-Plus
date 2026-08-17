@@ -57,6 +57,18 @@ public class PickDetailVo implements Serializable {
     @ExcelProperty(value = "采摘量(公斤)")
     private BigDecimal pickWeight;
 
+    /**
+     * 绩效百分比（0-100 整数，%）—— V6 row106，录入时填、与称重记录同表。
+     *
+     * <p>采摘活动来源的行没有这个维度，恒为空（活动量按 100% 计入绩效）。</p>
+     */
+    @ExcelProperty(value = "绩效百分比(%)")
+    private Integer perfPercent;
+
+    /** 录入备注（V6 row106）。采摘活动来源的行恒为空。 */
+    @ExcelProperty(value = "备注")
+    private String remark;
+
     @ExcelIgnore
     private Long teamId;
 

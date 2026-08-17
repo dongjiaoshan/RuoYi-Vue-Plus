@@ -139,10 +139,13 @@ public class VegOutServiceImpl implements IVegOutService {
     private final UserService userService;
 
     /**
-     * 一张出库单最多几个产品 —— 与 admin 打印模板 {@code printSheet.ts} 的 `ROWS_PER_PAGE` 同一个数。
+     * 一张出库单最多几个<b>产品</b> —— 与 admin 打印模板 {@code printSheet.ts} 的 `ROWS_PER_PAGE` 同一个数。
      * 改这里必须同步改那边，否则要么单据分页、要么表格印不下。
+     *
+     * <p>数的是产品不是明细条数（V6 row108）：同一产品的多个地块篮在打印单上合并成一行，
+     * 12 条明细若只对应 8 个产品，单子就是 8 行、一页印得下。</p>
      */
-    private static final int MAX_ITEMS_PER_SHEET = 10;
+    private static final int MAX_PRODUCTS_PER_SHEET = 10;
 
     @Override
     public List<VegOutCandidateVo> listCandidates(String productName) {
@@ -152,22 +155,28 @@ public class VegOutServiceImpl implements IVegOutService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public String submit(VegOutSubmitBo bo, boolean asBatch) {
-        // 一单最多 10 个产品（甲方 V6 row26）：241×140mm 的三联单一页只印得下 10 行，超了就得打两张纸。
-        // 前端抽屉已经把输入框禁掉了，这里是第二道门 —— 直接打接口 / 前端被绕过时不能照单全收。
-        if (bo.getItems() != null && bo.getItems().size() > MAX_ITEMS_PER_SHEET) {
-            throw new ServiceException("一张出库单最多 " + MAX_ITEMS_PER_SHEET + " 个产品，当前 "
-                + bo.getItems().size() + " 个", 400);
-        }
         // 三个可出库库位的 id（按 location_code 解析；缺哪个就少哪个，不阻断整单）
         java.util.Set<Long> allowedLocationIds = resolveAllowedLocationIds();
+        // 先把本单涉及的库存行取齐：产品数要在扣任何库存之前数得出来
+        Map<Long, LocationStock> stocks = loadStocks(bo.getItems());
+        // 一单最多 10 个产品（甲方 V6 row26）：241×140mm 的三联单一页只印得下 10 行，超了就得打两张纸。
+        // 前端抽屉已经把输入框禁掉了，这里是第二道门 —— 直接打接口 / 前端被绕过时不能照单全收。
+        // ⚠️ 数**产品**不数明细条数（V6 row108）：同一产品的不同地块篮各是一条明细，但打印单上合成一行，
+        // 按条数拦会把「8 个产品 12 个篮」这种正常单子误拦在门外。
+        long productCount = stocks.values().stream()
+            .map(LocationStock::getProductId)
+            .filter(Objects::nonNull)
+            .distinct()
+            .count();
+        if (productCount > MAX_PRODUCTS_PER_SHEET) {
+            throw new ServiceException("一张出库单最多 " + MAX_PRODUCTS_PER_SHEET + " 个产品，当前 "
+                + productCount + " 个", 400);
+        }
         String batchNo = asBatch ? generateBatchNo() : null;
         Long userId = LoginHelper.getUserId();
 
         for (VegOutItemBo item : bo.getItems()) {
-            LocationStock stock = locationStockMapper.selectById(item.getStockId());
-            if (stock == null) {
-                throw new ServiceException("库存记录不存在或已删除：" + item.getStockId());
-            }
+            LocationStock stock = stocks.get(item.getStockId());
             // 前置校验（防前端绕过 —— 入口按钮只在毛菜鲜品库的果蔬行显示）
             if (!allowedLocationIds.contains(stock.getLocationId())) {
                 throw new ServiceException("只有毛菜鲜品库 / 干货库 / 蛋类库的库存可做毛菜间出库");
@@ -249,8 +258,31 @@ public class VegOutServiceImpl implements IVegOutService {
                 insertFeedLog(product, stock, item.getQuantity(), stock.getLocationId(), userId, bo.getOutDate());
             }
         }
-        log.info("[VEG-OUT] dest={} items={} batchNo={}", bo.getOutDest(), bo.getItems().size(), batchNo);
+        log.info("[VEG-OUT] dest={} items={} products={} batchNo={}",
+            bo.getOutDest(), bo.getItems().size(), productCount, batchNo);
         return batchNo;
+    }
+
+    /**
+     * 取齐本单涉及的库存行（{@code stockId → 行}，按 items 顺序），缺行直接 fail-fast。
+     *
+     * <p>为什么先取齐再进主循环：一单几个产品只有拿到库存行才数得出来，而这道上限必须在
+     * <b>扣任何库存、生成任何单号之前</b>判 —— 边扣边发现超限只能靠事务回滚，单号却已经消耗掉了
+     * （出库单号终生递增，回滚不还号）。顺带让主循环不必二次查库。</p>
+     */
+    private Map<Long, LocationStock> loadStocks(List<VegOutItemBo> items) {
+        Map<Long, LocationStock> stocks = new java.util.LinkedHashMap<>();
+        for (VegOutItemBo item : items) {
+            if (stocks.containsKey(item.getStockId())) {
+                continue;
+            }
+            LocationStock stock = locationStockMapper.selectById(item.getStockId());
+            if (stock == null) {
+                throw new ServiceException("库存记录不存在或已删除：" + item.getStockId());
+            }
+            stocks.put(item.getStockId(), stock);
+        }
+        return stocks;
     }
 
     @Override

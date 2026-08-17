@@ -56,8 +56,11 @@ import java.util.stream.Stream;
  * 班组绩效结算 Service 实现（PLT-PERF-001）。
  *
  * <p>核心 {@code generate(statMonth)}：幂等软删该月旧行 → 聚合 details.actual_yield（公斤）→
- * 读 crop.pick_unit_price（元/公斤）作单价快照，金额 = 采摘量(公斤) × 单价(元/公斤)
+ * 读 crop.pick_unit_price（元/公斤）作单价快照，金额 = 采摘量(公斤) × 绩效百分比 × 单价(元/公斤)
  * → 批量 INSERT。单价取快照（不实时 JOIN），后续改价不污染历史月。</p>
+ *
+ * <p>V6 row107：绩效百分比来自采摘录入（{@code handle_record.perf_percent}），且是分组维度 ——
+ * 同一「班组 × 作物 × 产品」按不同百分比录入的采摘各落一行，详情里就能看到绩效是怎么组成的。</p>
  *
  * @author djs
  * @since PLT-PERF-001
@@ -77,6 +80,11 @@ public class PlantWorkPerformanceServiceImpl
      * 软删值（区别于普通 del_flag='1'：'2'=被重新生成覆盖）。MP @TableLogic 仍按 '0' 过滤活动行。
      */
     private static final String DEL_FLAG_SUPERSEDED = "2";
+
+    /**
+     * 绩效百分比默认值（%）：采摘活动没有这个维度、存量流水也没填，一律按全额计绩效（V6 row107）。
+     */
+    private static final int DEFAULT_PERF_PERCENT = 100;
 
     /**
      * 农事记录 Service（详情导出 sheet2 数据源，只调用不改其内部实现）。
@@ -154,6 +162,9 @@ public class PlantWorkPerformanceServiceImpl
             if (r.getProductId() == null) {
                 r.setProductId(primaryProductMap.get(r.getCropId()));
             }
+            if (r.getPerfPercent() == null) {
+                r.setPerfPercent(DEFAULT_PERF_PERCENT);
+            }
         });
         List<PerfAggRow> aggRows = mergeActivityShares(rawRows, statMonth, primaryProductMap);
         if (aggRows.isEmpty()) {
@@ -176,19 +187,23 @@ public class PlantWorkPerformanceServiceImpl
             if (unitPrice == null) {
                 unitPrice = cropPriceMap.getOrDefault(agg.getCropId(), BigDecimal.ZERO);
             }
-            // 金额 = 采摘量(公斤) × 单价快照(元/公斤)，保留 2 位（元）。单价录入即公斤价，两侧同单位直乘。
+            // V6 row107：金额 = 采摘量(公斤) × 绩效百分比 × 单价快照(元/公斤)，保留 2 位（元）。
+            // 单价录入即公斤价，两侧同单位直乘；百分比最后一步除 100，只在末尾做一次舍入。
+            int perfPercent = agg.getPerfPercent() != null ? agg.getPerfPercent() : DEFAULT_PERF_PERCENT;
             BigDecimal amount = pickWeight.multiply(unitPrice)
-                .setScale(2, RoundingMode.HALF_UP);
+                .multiply(BigDecimal.valueOf(perfPercent))
+                .divide(BigDecimal.valueOf(100), 2, RoundingMode.HALF_UP);
 
             PlantWorkPerformance row = new PlantWorkPerformance();
             row.setStatMonth(statMonth);
             row.setTeamId(agg.getTeamId());
             row.setCropId(agg.getCropId());
             row.setProductId(productId);
+            row.setPerfPercent(perfPercent);
             row.setPickWeight(pickWeight);
             row.setUnitPriceSnapshot(unitPrice);
             row.setPerformanceAmount(amount);
-            row.setPerformanceRule(unitPrice.stripTrailingZeros().toPlainString() + " 元/公斤");
+            row.setPerformanceRule(perfRule(unitPrice, perfPercent));
             // del_flag / tenant_id / 审计字段走 MP MetaObjectHandler + @TableLogic 默认，不手工赋 tenant_id
             rows.add(row);
         }
@@ -213,6 +228,7 @@ public class PlantWorkPerformanceServiceImpl
                 vo.setCropName(r.getCropName());
                 vo.setProductName(r.getProductName());
                 vo.setPickWeight(r.getPickWeight());
+                vo.setPerfPercent(r.getPerfPercent());
                 vo.setUnitPriceSnapshot(r.getUnitPriceSnapshot());
                 vo.setPerformanceAmount(r.getPerformanceAmount());
                 return vo;
@@ -290,10 +306,10 @@ public class PlantWorkPerformanceServiceImpl
                     .add(r.getTeamId());
             }
         }
-        // 合并容器：既有过磅行按 (teamId:cropId) 建索引
+        // 合并容器：既有过磅行按 (teamId:cropId:productId:perfPercent) 建索引
         Map<String, PerfAggRow> merged = new LinkedHashMap<>();
         for (PerfAggRow row : aggRows) {
-            merged.put(row.getTeamId() + ":" + row.getCropId() + ":" + row.getProductId(), row);
+            merged.put(mergeKey(row.getTeamId(), row.getCropId(), row.getProductId(), row.getPerfPercent()), row);
         }
         for (PerfActivityAggRow act : actRows) {
             String plotCropKey = act.getPlotId() + ":" + act.getCropId();
@@ -311,11 +327,14 @@ public class PlantWorkPerformanceServiceImpl
             // 这样它就能和同产品的过磅行合成一行，而不是各自落一行。
             Long actProductId = primaryProductMap.get(act.getCropId());
             for (Long teamId : teams) {
-                PerfAggRow row = merged.computeIfAbsent(teamId + ":" + act.getCropId() + ":" + actProductId, k -> {
+                // 采摘活动没有绩效百分比维度 → 按 100% 归组，与同产品的 100% 过磅行合并成一行
+                String key = mergeKey(teamId, act.getCropId(), actProductId, DEFAULT_PERF_PERCENT);
+                PerfAggRow row = merged.computeIfAbsent(key, k -> {
                     PerfAggRow nr = new PerfAggRow();
                     nr.setTeamId(teamId);
                     nr.setCropId(act.getCropId());
                     nr.setProductId(actProductId);
+                    nr.setPerfPercent(DEFAULT_PERF_PERCENT);
                     nr.setPickWeight(BigDecimal.ZERO);
                     return nr;
                 });
@@ -324,6 +343,23 @@ public class PlantWorkPerformanceServiceImpl
             }
         }
         return new ArrayList<>(merged.values());
+    }
+
+    /**
+     * 聚合行合并键：班组 × 作物 × 产品 × 绩效百分比（V6 row107 起百分比进键，同产品不同比例各占一行）。
+     */
+    private static String mergeKey(Long teamId, Long cropId, Long productId, Integer perfPercent) {
+        return teamId + ":" + cropId + ":" + productId + ":"
+            + (perfPercent != null ? perfPercent : DEFAULT_PERF_PERCENT);
+    }
+
+    /**
+     * 绩效规则描述：100% 时仍是纯单价（历史口径不变），非 100% 时把比例写进去，
+     * 让结算行自己说明白金额是怎么算出来的。
+     */
+    private static String perfRule(BigDecimal unitPrice, int perfPercent) {
+        String price = unitPrice.stripTrailingZeros().toPlainString() + " 元/公斤";
+        return perfPercent == DEFAULT_PERF_PERCENT ? price : price + " × " + perfPercent + "%";
     }
 
     /**

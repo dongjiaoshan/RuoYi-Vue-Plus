@@ -17,6 +17,7 @@ import org.dromara.djs.breed.core.service.I18nMessages;
 import org.dromara.djs.breed.core.util.PigAgeUtil;
 import org.dromara.djs.breed.core.service.IPigCoreService;
 import org.dromara.djs.breed.event.breeding.domain.PigBreeding;
+import org.dromara.djs.breed.event.breeding.domain.bo.BreedingBatchBo;
 import org.dromara.djs.breed.event.breeding.domain.bo.BreedingBo;
 import org.dromara.djs.breed.event.breeding.domain.query.BreedingQuery;
 import org.dromara.djs.breed.event.breeding.domain.vo.PigBreedingVo;
@@ -33,7 +34,10 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -130,6 +134,64 @@ public class BreedingServiceImpl implements IBreedingService {
     }
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
+    public List<PigBreedingVo> recordBreedingBatch(BreedingBatchBo batchBo) {
+        Objects.requireNonNull(batchBo, "BreedingBatchBo must not be null");
+        // 去重保序：同一头猪被重复勾选只配一次（前端多 tab 累积选中可能重复）
+        LinkedHashSet<Long> pigIds = new LinkedHashSet<>();
+        if (batchBo.getPigIds() != null) {
+            for (Long id : batchBo.getPigIds()) {
+                if (id != null) {
+                    pigIds.add(id);
+                }
+            }
+        }
+        if (pigIds.isEmpty()) {
+            throw new ServiceException(I18nMessages.t("breeding.batch.empty"), 400);
+        }
+
+        // 1. 预检（甲方需求 3）：选了公猪时，只要有一头母猪不能与该公猪配种就整批拒绝，且点名是哪头。
+        //    公猪只查一次，逐头比对母系×父系的品种/品系组合是否已在 t_farm_breed_config 登记。
+        Pig boar = findBoar(batchBo.getBreedingType(), batchBo.getBoarEarNo());
+        List<Pig> sows = new ArrayList<>(pigIds.size());
+        for (Long pigId : pigIds) {
+            Pig sow = pigMapper.selectById(pigId);
+            if (sow == null) {
+                throw new ServiceException(I18nMessages.t("pig.not_found", pigId), 400);
+            }
+            if (!breedConfigMatched(sow, boar)) {
+                throw new ServiceException("耳号 " + shortEarNo(sow.getEarNo()) + " 与所选公猪不支持配种，请检查数据", 400);
+            }
+            sows.add(sow);
+        }
+
+        // 2. 全部预检通过才开始写：逐头复用单只 recordBreeding（状态机 + counters + 事件记录全照跑），
+        //    配种记录里就是 N 条独立单头记录。整批同一事务，任一头失败全回滚（不做部分成功）。
+        List<PigBreedingVo> results = new ArrayList<>(sows.size());
+        for (Pig sow : sows) {
+            BreedingBo single = new BreedingBo();
+            single.setPigId(sow.getId());
+            single.setBreedingDate(batchBo.getBreedingDate());
+            single.setBreedingType(batchBo.getBreedingType());
+            single.setBoarEarNo(batchBo.getBoarEarNo());
+            single.setSemenCode(batchBo.getSemenCode());
+            single.setProofOssIds(batchBo.getProofOssIds());
+            single.setOperatorId(batchBo.getOperatorId());
+            single.setRemark(batchBo.getRemark());
+            try {
+                results.add(recordBreeding(single));
+            } catch (ServiceException e) {
+                // 点名是哪头失败（状态机不允许 / 校验不过），整批回滚；原始异常记 log 不丢
+                log.error("[BRD-EVENT-002] recordBreedingBatch failed pigId={} earNo={}", sow.getId(), sow.getEarNo(), e);
+                throw new ServiceException("耳号 " + shortEarNo(sow.getEarNo()) + "：" + e.getMessage(), 400);
+            }
+        }
+
+        log.info("[BRD-EVENT-002] recordBreedingBatch count={} boar={}", results.size(), batchBo.getBoarEarNo());
+        return results;
+    }
+
+    @Override
     public TableDataInfo<PigBreedingVo> queryPage(BreedingQuery query, PageQuery pageQuery) {
         LocalDateTime beginAt = query.getBeginDate() != null ? query.getBeginDate().atStartOfDay() : null;
         LocalDateTime endBefore = query.getEndDate() != null ? query.getEndDate().plusDays(1).atStartOfDay() : null;
@@ -165,22 +227,50 @@ public class BreedingServiceImpl implements IBreedingService {
      * 精液类配种（breedingType≠1）无父系猪只 → 跳过；公猪耳号查不到 pig_info → 不在此拦（交原流程）。
      */
     private void validateBreedConfig(Pig sow, BreedingBo bo) {
-        if (!"1".equals(bo.getBreedingType()) || StringUtils.isBlank(bo.getBoarEarNo())) {
-            return;
+        if (!breedConfigMatched(sow, findBoar(bo.getBreedingType(), bo.getBoarEarNo()))) {
+            throw new ServiceException("暂不支持这样配种，请检查数据");
         }
-        Pig boar = pigMapper.selectOne(new LambdaQueryWrapper<Pig>()
-            .eq(Pig::getEarNo, bo.getBoarEarNo())
+    }
+
+    /**
+     * 按耳号查本场公猪（仅 breedingType=1 本场公猪时；精液类 / 耳号空 / 查无此猪 → null）。
+     * 返回 null 表示「无父系可比对」，育种配置校验直接放行（交由原流程处理）。
+     */
+    private Pig findBoar(String breedingType, String boarEarNo) {
+        if (!"1".equals(breedingType) || StringUtils.isBlank(boarEarNo)) {
+            return null;
+        }
+        return pigMapper.selectOne(new LambdaQueryWrapper<Pig>()
+            .eq(Pig::getEarNo, boarEarNo)
             .eq(Pig::getDelFlag, "0")
             .orderByDesc(Pig::getId)
             .last("LIMIT 1"));
+    }
+
+    /** 母系×父系的「品种组合」与「品系组合」是否都已在 {@code t_farm_breed_config} 登记；boar 为 null → 放行。 */
+    private boolean breedConfigMatched(Pig sow, Pig boar) {
         if (boar == null) {
-            return;
+            return true;
         }
-        boolean breedOk = existsBreedConfig(1, sow.getPigBreedCode(), boar.getPigBreedCode());
-        boolean strainOk = existsBreedConfig(2, sow.getPigStrainCode(), boar.getPigStrainCode());
-        if (!breedOk || !strainOk) {
-            throw new ServiceException("暂不支持这样配种，请检查数据");
+        return existsBreedConfig(1, sow.getPigBreedCode(), boar.getPigBreedCode())
+            && existsBreedConfig(2, sow.getPigStrainCode(), boar.getPigStrainCode());
+    }
+
+    /** 耳号短显（与 mp 卡片一致）：取末两段、末段留后 4 位，如 {@code 01-01-2-251127-011 → 251127-011}。 */
+    private static String shortEarNo(String fullEarNo) {
+        String s = fullEarNo == null ? "" : fullEarNo.trim();
+        if (s.isEmpty()) {
+            return "-";
         }
+        String[] segs = s.split("-");
+        if (segs.length < 2) {
+            return s;
+        }
+        String seq = segs[segs.length - 1];
+        if (seq.length() > 4) {
+            seq = seq.substring(seq.length() - 4);
+        }
+        return segs[segs.length - 2] + "-" + seq;
     }
 
     /** 育种配置表存在性：{@code breedStrain + 母码 + 父码}（母/父码 2 位零填充对齐配置表）。母或父码为空 → false（视为未配置）。 */

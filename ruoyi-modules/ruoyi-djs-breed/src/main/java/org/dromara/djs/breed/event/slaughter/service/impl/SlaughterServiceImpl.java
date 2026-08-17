@@ -20,9 +20,11 @@ import org.dromara.djs.breed.core.service.I18nMessages;
 import org.dromara.djs.breed.core.service.IPigCoreService;
 import org.dromara.djs.breed.core.util.PigAgeUtil;
 import org.dromara.djs.breed.event.slaughter.domain.PigMarketing;
+import org.dromara.djs.breed.event.slaughter.domain.bo.SlaughterBatchBo;
 import org.dromara.djs.breed.event.slaughter.domain.bo.SlaughterBo;
 import org.dromara.djs.breed.event.slaughter.domain.query.SlaughterQuery;
 import org.dromara.djs.breed.event.slaughter.domain.vo.PigMarketingVo;
+import org.dromara.djs.breed.event.slaughter.domain.vo.SlaughterBatchPigVo;
 import org.dromara.djs.breed.event.slaughter.mapper.PigMarketingMapper;
 import org.dromara.djs.breed.event.slaughter.service.ISlaughterService;
 import org.springframework.context.ApplicationEventPublisher;
@@ -31,9 +33,13 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 
 /**
@@ -45,6 +51,10 @@ import java.util.stream.Collectors;
  * {@code PigMarketingEventListener} 按 {@code @TransactionalEventListener(AFTER_COMMIT)} 在事务提交后
  * 自动 INSERT 白条（{@code t_warehouse_bar_info}，status=pending_singe，回填 ear_no/marketing_time/marketing_weight），
  * 这是猪肉追溯链 marketing 事件时间戳的来源。</p>
+ *
+ * <p>{@link #recordSlaughterBatch} 同样标 {@code @Transactional}，逐头自调用 {@code recordSlaughter}
+ * （非代理调用 → 复用同一事务）：N 头同生共死，提交后按头数发 N 次 {@code PigMarketingEvent}，
+ * 燎毛间相应多出 N 条白条。</p>
  *
  * @author djs
  * @since BRD-EVENT-004
@@ -118,6 +128,68 @@ public class SlaughterServiceImpl implements ISlaughterService {
             pig.getId(), pig.getEarNo(), entity.getId(), bo.getOutWeight(), bo.getOutDest());
 
         return toVo(entity);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public List<PigMarketingVo> recordSlaughterBatch(SlaughterBatchBo batchBo) {
+        Objects.requireNonNull(batchBo, "SlaughterBatchBo must not be null");
+        if (batchBo.getItems() == null || batchBo.getItems().isEmpty()) {
+            throw new ServiceException(I18nMessages.t("slaughter.batch.empty"), 400);
+        }
+        if (StringUtils.isBlank(batchBo.getOssIds())) {
+            throw new ServiceException(I18nMessages.t("slaughter.photo.required"), 400);
+        }
+        // 逐头组装单只 BO 复用 recordSlaughter：每头都走完整 side effect（INSERT marketing +
+        // 状态机 END(MARKET) + publishEvent(PigMarketingEvent) → 燎毛白条）。
+        // 自调用（非代理）→ 与本方法同一事务，任一头失败整批回滚，一条不落。
+        List<PigMarketingVo> results = new ArrayList<>(batchBo.getItems().size());
+        for (SlaughterBatchBo.Item item : batchBo.getItems()) {
+            if (item == null || item.getPigId() == null) {
+                throw new ServiceException(I18nMessages.t("slaughter.batch.pig_required"), 400);
+            }
+            SlaughterBo single = new SlaughterBo();
+            single.setPigId(item.getPigId());
+            single.setOutWeight(item.getOutWeight());
+            // 以下为整批共用项；ossIds 逐头赋同一份值 → 每条 marketing 行各自落一份 oss_ids
+            // （列级复制，不是共享引用），对齐甲方「每头记录都用同一张照片、以复制方式存储」。
+            single.setMarketingDate(batchBo.getMarketingDate());
+            single.setOutDest(batchBo.getOutDest());
+            single.setStoreId(batchBo.getStoreId());
+            single.setOssIds(batchBo.getOssIds());
+            single.setOperator(batchBo.getOperator());
+            single.setRemark(batchBo.getRemark());
+            results.add(recordSlaughter(single));
+        }
+        log.info("[BRD-EVENT-004] recordSlaughterBatch count={} dest={} date={}",
+            results.size(), batchBo.getOutDest(), batchBo.getMarketingDate());
+        return results;
+    }
+
+    @Override
+    public List<SlaughterBatchPigVo> listBatchPigs(List<Long> pigIds) {
+        if (pigIds == null || pigIds.isEmpty()) {
+            return List.of();
+        }
+        // 去重后查库（同一头被选两次无意义），再按入参顺序回填 → mp 端录入顺序 = 工人选择顺序
+        LinkedHashSet<Long> distinctIds = pigIds.stream()
+            .filter(Objects::nonNull)
+            .collect(Collectors.toCollection(LinkedHashSet::new));
+        if (distinctIds.isEmpty()) {
+            return List.of();
+        }
+        Map<Long, Pig> byId = pigMapper.selectByIds(distinctIds).stream()
+            .collect(Collectors.toMap(Pig::getId, Function.identity(), (a, b) -> a));
+        return distinctIds.stream()
+            .map(byId::get)
+            .filter(Objects::nonNull)
+            .map(p -> {
+                SlaughterBatchPigVo vo = new SlaughterBatchPigVo();
+                vo.setPigId(p.getId());
+                vo.setEarNo(p.getEarNo());
+                return vo;
+            })
+            .collect(Collectors.toList());
     }
 
     @Override

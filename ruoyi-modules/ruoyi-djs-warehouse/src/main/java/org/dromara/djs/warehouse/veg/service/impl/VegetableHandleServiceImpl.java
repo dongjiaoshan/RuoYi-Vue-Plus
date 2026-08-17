@@ -823,6 +823,9 @@ public class VegetableHandleServiceImpl
         record.setTeamId(teamIds.isEmpty() ? null : teamIds.get(0));
         record.setRecordType(RECORD_TYPE_PICK);
         record.setRecordWeight(weight);
+        // row105：绩效百分比与称重记录同表存；不传按 100（全额计绩效，与改造前口径一致），范围由 BO 注解拦
+        record.setPerfPercent(bo.getPerfPercent() != null ? bo.getPerfPercent() : 100);
+        record.setRemark(bo.getRemark());
         record.setIsWeighed(weighDone ? 1 : 2);
         record.setIsFinish(2);
         record.setHandleTarget(null);

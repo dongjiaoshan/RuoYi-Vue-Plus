@@ -39,6 +39,12 @@ public class PerfAggRow implements Serializable {
     private Long productId;
 
     /**
+     * 绩效百分比（0-100 整数，%）—— V6 row107，= handle_record.perf_percent，同时是分组维度：
+     * 同一「班组 × 作物 × 产品」下不同百分比拆成不同聚合行。采摘活动没有这个维度，按 100 归组。
+     */
+    private Integer perfPercent;
+
+    /**
      * 采摘总量（公斤，= SUM(actual_yield)）。
      */
     private BigDecimal pickWeight;

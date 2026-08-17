@@ -989,4 +989,36 @@ class VegetableHandleServiceImplTest {
         verify(recordMapper).selectPickDetailPage(any(), eq(q));
     }
 
+    @Test
+    @DisplayName("row105：绩效百分比 + 备注与称重记录同行落库（甲方第 4 条）")
+    void testHarvest_PerfPercentAndRemark_PersistedOnSameRow() {
+        when(plantingRecordMapper.selectById(60001L)).thenReturn(samplePlanting("processing"));
+        when(handleMapper.selectByPlantingRecordId(60001L)).thenReturn(harvestHandle("50.000"));
+
+        org.dromara.djs.warehouse.veg.domain.bo.HarvestSubmitBo bo = harvestBo("100.000", 0, List.of(30001L));
+        bo.setPerfPercent(80);
+        bo.setRemark("雨天减产");
+        service.submitHarvest(bo);
+
+        ArgumentCaptor<HandleRecord> recCap = ArgumentCaptor.forClass(HandleRecord.class);
+        verify(recordMapper, times(1)).insert(recCap.capture());
+        HandleRecord rec = recCap.getValue();
+        assertThat(rec.getPerfPercent()).isEqualTo(80);
+        assertThat(rec.getRemark()).isEqualTo("雨天减产");
+        assertThat(rec.getRecordWeight()).isEqualByComparingTo("100.000");
+    }
+
+    @Test
+    @DisplayName("row105：漏传绩效百分比 → 服务端补 100（不落 null，绩效聚合按全额计）")
+    void testHarvest_PerfPercentMissing_DefaultsTo100() {
+        when(plantingRecordMapper.selectById(60001L)).thenReturn(samplePlanting("processing"));
+        when(handleMapper.selectByPlantingRecordId(60001L)).thenReturn(harvestHandle("50.000"));
+
+        service.submitHarvest(harvestBo("100.000", 0, List.of(30001L)));
+
+        ArgumentCaptor<HandleRecord> recCap = ArgumentCaptor.forClass(HandleRecord.class);
+        verify(recordMapper, times(1)).insert(recCap.capture());
+        assertThat(recCap.getValue().getPerfPercent()).isEqualTo(100);
+    }
+
 }

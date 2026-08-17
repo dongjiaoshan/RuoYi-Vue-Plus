@@ -469,6 +469,61 @@ class VegOutServiceImplTest {
         return d;
     }
 
+    /**
+     * V6 row108：上限数的是<b>产品</b>，不是明细条数。
+     *
+     * <p>同一产品的不同地块篮各是一条明细，但打印单上合并成一行 —— 12 条明细若只对应 2 个产品，
+     * 单子就是 2 行、一页印得下，按条数拦会把正常单子误拦在门外。</p>
+     */
+    @Test
+    @DisplayName("row108：12 条明细但只有 2 个产品（同产品多地块篮）→ 放行，按产品数不按条数拦")
+    void maxProducts_countsDistinctProductNotItems() {
+        VegOutSubmitBo bo = new VegOutSubmitBo();
+        bo.setOutDate(new Date());
+        bo.setOutDest("kitchen");
+        java.util.List<VegOutItemBo> items = new java.util.ArrayList<>();
+        for (long stockId = 1L; stockId <= 12L; stockId++) {
+            // 12 个库存篮轮流挂在 2 个产品上（红薯 10L / 空心菜 11L）
+            Long productId = stockId % 2 == 0 ? 10L : 11L;
+            when(locationStockMapper.selectById(stockId)).thenReturn(mkStock(stockId, productId, 20L));
+            when(productInfoMapper.selectById(productId)).thenReturn(mkVegProduct(productId));
+            VegOutItemBo item = new VegOutItemBo();
+            item.setStockId(stockId);
+            item.setQuantity(new BigDecimal("1.000"));
+            items.add(item);
+        }
+        bo.setItems(items);
+
+        service.submit(bo, true);
+
+        // 12 条明细全部真的出了库（合并只发生在 admin 展示 / 打印层，落库仍是逐篮扣减）
+        verify(locationStockService, org.mockito.Mockito.times(12)).productOut(any());
+    }
+
+    @Test
+    @DisplayName("row26 + row108：11 个不同产品 → 拦，且必须在扣库存 / 取单号之前拦住")
+    void maxProducts_elevenProducts_mustBlock() {
+        VegOutSubmitBo bo = new VegOutSubmitBo();
+        bo.setOutDate(new Date());
+        bo.setOutDest("kitchen");
+        java.util.List<VegOutItemBo> items = new java.util.ArrayList<>();
+        for (long stockId = 1L; stockId <= 11L; stockId++) {
+            when(locationStockMapper.selectById(stockId)).thenReturn(mkStock(stockId, 100L + stockId, 20L));
+            VegOutItemBo item = new VegOutItemBo();
+            item.setStockId(stockId);
+            item.setQuantity(new BigDecimal("1.000"));
+            items.add(item);
+        }
+        bo.setItems(items);
+
+        assertThatThrownBy(() -> service.submit(bo, true))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("最多 10 个产品");
+        verify(locationStockService, never()).productOut(any());
+        // 单号终生递增、回滚不还号，所以超限必须在取号之前就拦下
+        verify(bizCodeGenerator, never()).generate(any(), any());
+    }
+
     @Test
     @DisplayName("单条内部处理（asBatch=false）不生成出库单号，不进 row187 列表")
     void singleInternalHandle_noBatchNo() {

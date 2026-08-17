@@ -80,6 +80,12 @@ public class PlantWorkPerformanceVo implements Serializable {
     private BigDecimal pickWeight;
 
     /**
+     * 绩效百分比（0-100 整数，%）—— V6 row107，同产品不同百分比各占一行。
+     */
+    @ExcelProperty(value = "绩效百分比(%)")
+    private Integer perfPercent;
+
+    /**
      * 单价快照（元/公斤）。
      */
     @ExcelProperty(value = "单价快照(元/公斤)")

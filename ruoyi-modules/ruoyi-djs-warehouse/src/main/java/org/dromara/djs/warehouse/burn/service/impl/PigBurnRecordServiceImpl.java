@@ -131,6 +131,11 @@ public class PigBurnRecordServiceImpl
     private static final String BAR_STATUS_SINGING = "singing";
 
     /**
+     * 入库称重下限系数：入库重量必须 &gt; 出栏重量 × 该系数，否则判定为录错数并拒收。
+     */
+    private static final BigDecimal MIN_ARRIVE_WEIGHT_RATIO = new BigDecimal("0.7");
+
+    /**
      * 库位启用态（{@code t_warehouse_location_info.location_status}）。
      */
     private static final Integer LOCATION_STATUS_ENABLED = 1;
@@ -552,6 +557,11 @@ public class PigBurnRecordServiceImpl
         BigDecimal marketingWeight = bar.getMarketingWeight();
         if (marketingWeight != null && bo.getArriveWeight().compareTo(marketingWeight) > 0) {
             throw new ServiceException("到场重量不能超过出栏重量");
+        }
+        // 入库重量下限：必须 > 出栏重量 × 70%（燎毛去毛去杂的正常损耗上限，低于此判定为录错数）
+        if (marketingWeight != null && marketingWeight.compareTo(BigDecimal.ZERO) > 0
+            && bo.getArriveWeight().compareTo(marketingWeight.multiply(MIN_ARRIVE_WEIGHT_RATIO)) <= 0) {
+            throw new ServiceException("请录入正确的入库重量");
         }
 
         // ---------- Step 2：乐观锁推进 pending_singe/singing → singing（回填 in_time/in_method） ----------
