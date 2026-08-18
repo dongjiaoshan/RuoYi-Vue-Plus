@@ -16,7 +16,14 @@ import java.util.Date;
  *
  * <p>对应表 {@code t_warehouse_location_stock}（V202605290900 建）：</p>
  * <ul>
- *   <li>4 维互斥关联：{@code productId} / {@code earNo} / {@code plotId} / {@code medicineId} 四选一，V1 应用层校验</li>
+ *   <li><b>主维</b>：{@code productId} / {@code earNo} / {@code medicineId} 三选一，标明这行库存记的是什么。</li>
+ *   <li><b>分篮维</b>：{@code plotId} / {@code whiteBarNo} / {@code thirdPhase} 与主维<b>并存</b>，
+ *       把同一主维的货按来源拆成互不混账的「篮子」。典型：毛菜处理入库一次建一篮
+ *       ({@code productId} + {@code plotId} 同时非空，见 {@code VegetableHandleServiceImpl} 的 basket 分支)，
+ *       毛菜间出库因此能按「产品 × 地块」逐篮出、把地块带进追溯链。
+ *       <b>不要按「四选一互斥」理解</b> —— 那是 WMS-MD-001 初版口径，早已不成立。</li>
+ *   <li>只有 {@code plotId} 非空而 {@code productId} 为空的行是另一条链路：果蔬月台自产收货
+ *       ({@code VegReceiveServiceImpl.insertPlotStockRow})，按地块建账、按地块领用，与本表其余行口径不同。</li>
  *   <li>{@code operatorId} 由 service insert 时通过 {@link org.dromara.common.satoken.utils.LoginHelper#getUserId()}
  *       注入（ADR-0007 强制；冗余存最后操作人便于追溯，独立于 {@code createBy}）</li>
  *   <li>库存写入入口：本 ticket admin 不暴露 add/edit；后续 WMS-DEMAND-001 / WMS-STOCK-001 D8-D11
