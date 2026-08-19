@@ -30,8 +30,10 @@ import java.util.Date;
  * （处理录入：FIFO 扣篮 + veg_stock_out 流水 + 收口结转损耗）维护，两者都同步推进
  * planting_record.handle_status。</p>
  *
- * <p>{@code handled_weight}（果蔬处理重量）还有第二个写入方：
- * {@code VegOutServiceImpl}（毛菜间出库管理）—— 它也是「从毛菜间出库」，V6 row102 口径下必须计入。</p>
+ * <p><b>{@code handled_weight}（果蔬处理重量）只有 {@code submitProcess} 一个写入方</b>，语义 = 毛菜处理录入的
+ * 月台 + 饲喂。毛菜间出库管理（{@code VegOutServiceImpl}）<b>不写这一列</b> —— 甲方 2026-08-19 定
+ * {@code loss = 地块入库量 − 果蔬月台 − 有机饲喂 − 出库}，它是公式里与月台、饲喂<b>并列</b>的「出库」项，
+ * 并列项不能同时算进其中一项；它扣实物库存，收口按剩余库存结转损耗时自然已把这批 kg 减掉。</p>
  *
  * @author djs
  * @since WMS-VEG-001

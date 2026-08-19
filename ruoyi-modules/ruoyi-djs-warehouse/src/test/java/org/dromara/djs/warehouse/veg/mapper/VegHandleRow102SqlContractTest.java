@@ -151,19 +151,34 @@ class VegHandleRow102SqlContractTest {
             .contains("del_flag = '0'");
     }
 
+    /**
+     * 甲方 2026-08-19 终审口径：{@code loss = 地块入库量 − 果蔬月台 − 有机饲喂 − 出库}。
+     *
+     * <p>「出库」（毛菜间出库管理 {@code VegOutServiceImpl}）在这条公式里是<b>与月台、饲喂并列</b>的一项，
+     * 并列项不能同时算进其中一项 —— 所以它<b>不计入</b>「果蔬处理重量」{@code handled_weight}
+     * （后者只收毛菜处理录入那两个去向）。它扣的是实物库存，收口 {@code settleRemainAsLoss}
+     * 按剩余库存结转损耗，这批 kg 自动从损耗里减掉，恒等式 {@code 入库 = 月台 + 饲喂 + 出库 + 损耗} 成立，
+     * 且天然覆盖甲方点明的「其他地方从毛菜间出库」，不用逐条去列。</p>
+     *
+     * <p>这条口径已被推翻过一轮（曾经存在 {@code addHandledWeight} 回写），所以在<b>结构上</b>钉死：
+     * 本 mapper 不得再出现任何写 {@code handled_weight} 的注解 SQL。毛菜处理录入侧的
+     * {@code handled_weight} 走 {@code VegetableHandleServiceImpl} 的整行 {@code updateById}
+     * （与 feed / sendPlatform / stockIn / loss 一起算完再写），不需要、也不该有单列原子累加的口子。</p>
+     */
     @Test
-    @DisplayName("毛菜间出库回写「果蔬处理重量」：原子 += 且 COALESCE 兜 NULL，不是读改写")
-    void handledWeightWriteBackIsAtomicAndNullSafe() throws Exception {
-        String sql = updateSql(VegetableHandleMapper.class, "addHandledWeight",
-            Long.class, BigDecimal.class, Long.class);
-
-        // 出库是并发操作：读出来再 updateById 覆盖会丢更新
-        assertThat(sql)
-            .as("必须是 += 累加")
-            .contains("handled_weight = coalesce(handled_weight, 0) + #{delta}")
-            .as("存量行该列可能是 NULL，NULL + x = NULL 会把已有账抹掉")
-            .contains("coalesce(handled_weight, 0)")
-            .contains("del_flag = '0'");
+    @DisplayName("🔴 毛菜间出库不计入「果蔬处理重量」：本 mapper 不得有任何写 handled_weight 的注解 SQL")
+    void noMapperMethodMayWriteHandledWeight() {
+        for (Method m : VegetableHandleMapper.class.getDeclaredMethods()) {
+            Update update = m.getAnnotation(Update.class);
+            if (update == null) {
+                continue;
+            }
+            assertThat(normalize(String.join(" ", update.value())))
+                .as("VegetableHandleMapper#%s 在写 handled_weight —— 甲方损耗公式里「出库」与「月台/饲喂」"
+                    + "并列，回写会让同一批 kg 既进果蔬处理重量又已从库存扣掉（picked = handled + loss 当场不成立）。"
+                    + "要加请先回看甲方 2026-08-19 口径。", m.getName())
+                .doesNotContain("handled_weight");
+        }
     }
 
     @Test

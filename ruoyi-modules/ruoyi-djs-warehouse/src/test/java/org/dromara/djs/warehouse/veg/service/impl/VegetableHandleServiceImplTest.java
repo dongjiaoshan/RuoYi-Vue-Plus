@@ -667,7 +667,7 @@ class VegetableHandleServiceImplTest {
     }
 
     @Test
-    @DisplayName("row102③：去向=有机饲喂 → 同样从毛菜间出库(feed)，且【计入 handled】（口径变更）+ 写饲料台账")
+    @DisplayName("row102③：处理录入去向=有机饲喂 → 扣毛菜间库存(feed)，且【计入 handled】+ 写饲料台账")
     void testProcess_ToFeed_DeductsAndCountsIntoHandled() {
         when(plantingRecordMapper.selectById(60001L)).thenReturn(samplePlanting("processing"));
         when(handleMapper.selectByPlantingRecordId(60001L)).thenReturn(sampleHandle("50.000", "0", 1));
@@ -689,7 +689,10 @@ class VegetableHandleServiceImplTest {
         // 饲料台账照旧写
         verify(feedLogMapper, times(1)).insert(any(org.dromara.djs.warehouse.veg.domain.FeedLog.class));
 
-        // 口径变更回归防线：饲喂现在算「从毛菜间出库」，必须同时进 feed 和 handled
+        // 口径回归防线：处理录入的饲喂去向必须同时进 feed 和 handled。
+        // ⚠️ 别把这条与「毛菜间出库管理」(VegOutServiceImpl) 混为一谈 —— 甲方 2026-08-19
+        // loss = 地块入库量 − 果蔬月台 − 有机饲喂 − 出库，handled 只收本处（处理录入）的月台 + 饲喂，
+        // 那个并列的「出库」项不进这一列。
         ArgumentCaptor<VegetableHandle> updCap = ArgumentCaptor.forClass(VegetableHandle.class);
         verify(handleMapper, times(1)).updateById(updCap.capture());
         assertThat(updCap.getValue().getFeedWeight()).isEqualByComparingTo("10.000");

@@ -2,7 +2,6 @@ package org.dromara.djs.warehouse.veg.mapper;
 
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
-import org.apache.ibatis.annotations.Update;
 import org.dromara.common.mybatis.core.mapper.BaseMapperPlus;
 import org.dromara.djs.warehouse.veg.domain.VegetableHandle;
 import org.dromara.djs.warehouse.veg.domain.vo.VegCropVo;
@@ -23,40 +22,15 @@ public interface VegetableHandleMapper extends BaseMapperPlus<VegetableHandle, V
      *
      * <p>采摘录入（{@code submitHarvest}）：找到 → 用此行聚合；找不到 → 首次采收 INSERT 新行。
      * 毛菜间出库（{@code VegOutServiceImpl}）也用它：库存篮的 {@code source_biz_id} 就是种植记录 id，
-     * 据此精确定位要回写 {@code handled_weight} 的那一行。
+     * 据此精确定位<b>月台明细该挂在哪一行汇总上</b>（只挂 {@code handle_record} 明细，
+     * 一个汇总重量列都不改 —— 毛菜间出库在甲方损耗公式里是与月台/饲喂并列的一项，
+     * 不计入「果蔬处理重量」{@code handled_weight}，详见 {@code VegOutServiceImpl} 类头注）。
      * MP 在事务内调用：底层 MySQL InnoDB 在 {@code REPEATABLE_READ} 下对索引行加 NEXT-KEY LOCK，
      * 已具备防止重复 INSERT 的能力。</p>
      */
     @Select("SELECT * FROM t_warehouse_vegetable_handle "
         + " WHERE planting_record_id = #{plantingRecordId} AND del_flag = '0' LIMIT 1")
     VegetableHandle selectByPlantingRecordId(@Param("plantingRecordId") Long plantingRecordId);
-
-    /**
-     * 原子累加「果蔬处理重量」{@code handled_weight}（V6 row102：毛菜间出库管理回写）。
-     *
-     * <p>甲方口径「果蔬处理重量 = 带地块标识的产品从毛菜间出库的总重量」，而毛菜间出库管理
-     * （{@code VegOutServiceImpl}）出的正是这批货，所以它必须把出库量记进这一列 ——
-     * 不记的话同一批货会被地块收口时的 {@code settleRemainAsLoss} 二次认领成损耗
-     * （实测出库 20kg 后 handled 仍是 0，收口时那 20kg 又变成损耗）。</p>
-     *
-     * <p>用 {@code +=} 而不是读改写：出库是并发操作，读出来再 {@code updateById} 覆盖会丢更新。
-     * {@code COALESCE} 兜住存量行该列为 NULL 的情况（NULL + x 会写成 NULL、把已有账抹掉）。
-     * 不走 MP {@code updateFill}，手工 set {@code update_by / update_time}。</p>
-     *
-     * @param id     汇总行 id
-     * @param delta  本次出库量（kg，必须 &gt; 0）
-     * @param userId 操作人
-     * @return affectedRows（0 = 汇总行不存在 / 已软删）
-     */
-    @Update("UPDATE t_warehouse_vegetable_handle "
-        + "   SET handled_weight = COALESCE(handled_weight, 0) + #{delta},"
-        + "       update_by = #{userId},"
-        + "       update_time = NOW() "
-        + " WHERE id = #{id} "
-        + "   AND del_flag = '0'")
-    int addHandledWeight(@Param("id") Long id,
-                         @Param("delta") java.math.BigDecimal delta,
-                         @Param("userId") Long userId);
 
     /**
      * mp 毛菜处理菜品列表：按 crop_id 聚合 4 个重量（采摘 / 饲喂 / 处理后 / 损耗）。

@@ -45,7 +45,6 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.verify;
@@ -56,10 +55,21 @@ import static org.mockito.Mockito.when;
  *
  * <p>重点锁三件事：① 果蔬月台去向在毛菜处理行缺失时<b>必须抛异常阻断</b>
  * （否则扣了库存、货却永远到不了月台 —— clean-QA 实测复现过的 P0 静默丢货）；
- * ② 两条去向都<b>只写流水台账（handle_record / feed_log），绝不碰 {@code vegetable_handle} 的重量桶</b>
- * —— 本功能出的是已入库库存，那份重量已计进 handled/stock_in，再记一次就是同一 kg 进两个互斥桶：
- * feed_weight 让地块卡「剩余 = 采摘 − 处理 − 饲料」显负、send_platform_weight 让 recomputeLoss 被静默钳零；
+ * ② 两条去向都<b>只写流水台账（handle_record / feed_log），{@code vegetable_handle} 的重量列一个都不碰</b>
+ * （{@code handled_weight} / {@code send_platform_weight} / {@code feed_weight} 全不写）；
  * ③ 库位/业态前置校验真的拦得住。</p>
+ *
+ * <h3>🔴 ② 为什么是「一列都不写」（甲方 2026-08-19 终审，已推翻过一轮相反的实现）</h3>
+ * <p>甲方原话：{@code loss = 地块入库量 − 果蔬月台 − 有机饲喂 − 出库}。本 service 就是公式里
+ * <b>单独列出</b>的那一项「出库」，与「果蔬月台」「有机饲喂」<b>并列</b> —— 并列项不能同时算进其中一项，
+ * 所以它不属于「果蔬处理重量」{@code handled_weight}（那一列只收<b>毛菜处理录入</b>的月台 + 饲喂）。</p>
+ * <p>本 service 扣的是 L0006 实物库存，收口 {@code settleRemainAsLoss} 按<b>剩余库存</b>结转损耗，
+ * 这批 kg 自动从损耗里减掉，恒等式 {@code 入库 = 月台 + 饲喂 + 出库 + 损耗} 成立；甲方点明的
+ * 「还会有其他地方从毛菜间出库」也被同一机制天然覆盖，不用逐条去列。
+ * 反过来若回写 {@code handled_weight}，这批货既进「果蔬处理重量」又已从库存扣掉，
+ * 该记录的 {@code picked = handled + loss} 当场不成立（实测 mp 地块卡出现「采摘 20 / 处理 15 / 剩余 20」）。</p>
+ * <p>另两列同理不写：它们的读取方读的正是本 service 写的 {@code handle_record} / {@code feed_log} 明细
+ * （月台待入库量 / 运输损耗 / 日统计「发往月台果蔬总重」/ 有机饲喂记录），汇总列再加一次就是双重计数。</p>
  *
  * @author djs
  */
@@ -123,9 +133,22 @@ class VegOutServiceImplTest {
         // 单号改走统一编码生成器（7 位纯数字）
         when(bizCodeGenerator.generate(any(), any())).thenReturn("0000001");
         when(locationStockService.productOut(any())).thenReturn(999L);
-        // 「果蔬处理重量」回写默认成功。第三轮起它对<b>任何能定出归属的篮</b>都会触发（不再只认
-        // source_biz_id），不给默认值的话每个 happy path 都会撞 addHandledWeight 返 0 的 409 分支。
-        when(vegetableHandleMapper.addHandledWeight(any(), any(BigDecimal.class), any())).thenReturn(1);
+    }
+
+    /**
+     * 断言本次出库<b>没有改动 {@code vegetable_handle} 的任何重量列</b>（甲方 2026-08-19 口径，见类头注）。
+     *
+     * <p>本 service 对该表只有两种合法交互：读（定位归集行）与 {@code insert}（归集行缺失时补建，各列全 0）。
+     * 任何 UPDATE 都意味着某个重量列被动了 —— {@code handled_weight} 会让「出库」被重复算进
+     * 「果蔬处理重量」，另两列会与 {@code handle_record} / {@code feed_log} 明细双重计数。</p>
+     *
+     * <p>单列原子累加的口子（曾经的 {@code VegetableHandleMapper#addHandledWeight}）已随方法一并删除，
+     * 由 {@code VegHandleRow102SqlContractTest#noMapperMethodMayWriteHandledWeight} 从结构上钉死不得再加，
+     * 所以这里只需堵住整行 UPDATE 这条路。</p>
+     */
+    private void assertNoHandleWeightColumnWritten() {
+        verify(vegetableHandleMapper, never()).updateById(any(VegetableHandle.class));
+        verify(vegetableHandleMapper, never()).update(any(VegetableHandle.class), any());
     }
 
     private LocationStock mkStock(Long id, Long productId, Long plotId) {
@@ -167,8 +190,10 @@ class VegOutServiceImplTest {
         h.setId(77L);
         h.setCropId(cropId);
         h.setPlotId(plotId);
+        // 三个重量列都先有账在，「就是不加」才验得出来（全 0 的话不加也看不出区别）
         h.setSendPlatformWeight(new BigDecimal("10.000"));
         h.setFeedWeight(new BigDecimal("5.000"));
+        h.setHandledWeight(new BigDecimal("15.000"));
         when(vegetableHandleMapper.selectOne(any())).thenReturn(h);
     }
 
@@ -213,7 +238,7 @@ class VegOutServiceImplTest {
         service.submit(mkBo("veg_dock", 1L, "12.000"), true);
 
         verify(handleRecordMapper).insert(any(org.dromara.djs.warehouse.veg.domain.HandleRecord.class));
-        verify(vegetableHandleMapper, never()).updateById(any(VegetableHandle.class));
+        assertNoHandleWeightColumnWritten();
     }
 
     @Test
@@ -242,7 +267,10 @@ class VegOutServiceImplTest {
         // 补建行各重量记 0（这批货没走过毛菜处理流程），且补建之后也不再改任何重量列
         assertThat(created.getValue().getPickedWeight()).isEqualByComparingTo("0");
         assertThat(created.getValue().getStockInWeight()).isEqualByComparingTo("0");
-        verify(vegetableHandleMapper, never()).updateById(any(VegetableHandle.class));
+        // 补建行的「果蔬处理重量」也是 0 并且此后一直是 0 —— 补建只为给明细提供挂载点，
+        // 本次出库的 12kg 属于甲方公式里并列的「出库」项，不进这一列
+        assertThat(created.getValue().getHandledWeight()).isEqualByComparingTo("0");
+        assertNoHandleWeightColumnWritten();
 
         // 补建的意义就是给明细提供挂载点 —— 明细必须真的挂上去
         ArgumentCaptor<org.dromara.djs.warehouse.veg.domain.HandleRecord> rc =
@@ -300,8 +328,8 @@ class VegOutServiceImplTest {
     @Test
     @DisplayName("⚠️P0 回归：饲料饲喂绝不可累加 feed_weight —— 有机饲喂记录读的是这里写的 feed_log")
     void feed_mustNotTouchVegetableHandleWeights() {
-        // feed_weight 与 feed_log 同时记就是双重计数；而「果蔬处理重量」handled_weight 是另一回事，
-        // 它在下面 handledWriteBack_* 那组用例里必须被写（V6 row102 口径反转，见类头注）。
+        // feed_weight 与 feed_log 同时记就是双重计数；handled_weight 同样不写（甲方 2026-08-19：
+        // 本 service 是损耗公式里与月台/饲喂并列的「出库」项，见类头注）。
         when(locationStockMapper.selectById(1L)).thenReturn(mkStock(1L, 10L, 20L));
         when(productInfoMapper.selectById(10L)).thenReturn(mkVegProduct(10L));
         stubHandleFound(30L, 20L);   // 毛菜处理行存在且 feed_weight=5.000 —— 有得可加，才验得出「就是不加」
@@ -309,16 +337,13 @@ class VegOutServiceImplTest {
         service.submit(mkBo("feed", 1L, "70.000"), false);
 
         verify(feedLogMapper).insert(any(FeedLog.class));
-        // 汇总实体整行 UPDATE 一次都不能有：feed_weight / send_platform_weight 只要被写就是双重计数。
-        // （handled_weight 走的是 addHandledWeight 那条只动单列的原子 UPDATE，不经 updateById。）
-        verify(vegetableHandleMapper, never()).updateById(any(VegetableHandle.class));
+        // 三个重量列一列都不能动
+        assertNoHandleWeightColumnWritten();
         // 已有归集行 → 不该补建
         verify(vegetableHandleMapper, never()).insert(any(VegetableHandle.class));
-        // 但 handled_weight 必须记：这批货带地块标识、确实从毛菜间出去了（第三轮 #2 对齐口径）
-        verify(vegetableHandleMapper).addHandledWeight(eq(77L), any(BigDecimal.class), any());
     }
 
-    // -------- F-5：毛菜地块篮出库必须回写「果蔬处理重量」handled_weight --------
+    // -------- 甲方 2026-08-19 终审：毛菜间出库是损耗公式里与月台/饲喂并列的一项，不进 handled_weight --------
 
     /** 毛菜地块篮：带 source_biz_id（= 建篮的那条种植记录 id）。 */
     private LocationStock mkVegHandleBasket(Long id, Long productId, Long plotId, Long sourceBizId) {
@@ -327,22 +352,23 @@ class VegOutServiceImplTest {
         return s;
     }
 
-    /** 该种植记录的毛菜处理汇总行存在。 */
+    /** 该种植记录的毛菜处理汇总行存在（{@code handled_weight} 已有账，才验得出「就是不加」）。 */
     private void stubHandleBySource(Long sourceBizId, Long handleId) {
         VegetableHandle h = new VegetableHandle();
         h.setId(handleId);
         h.setPlantingRecordId(sourceBizId);
         h.setCropId(30L);
         h.setPlotId(20L);
-        h.setHandledWeight(new BigDecimal("0.000"));
+        h.setHandledWeight(new BigDecimal("15.000"));
         when(vegetableHandleMapper.selectByPlantingRecordId(sourceBizId)).thenReturn(h);
-        when(vegetableHandleMapper.addHandledWeight(eq(handleId), any(BigDecimal.class), any()))
-            .thenReturn(1);
     }
 
     @Test
-    @DisplayName("F-5①：出毛菜地块篮（果蔬月台）→ 出库量必须计进 handled_weight，否则收口时这批货又被算成损耗")
-    void handledWriteBack_vegDock_addsHandledWeight() {
+    @DisplayName("🔴口径①：出毛菜地块篮到果蔬月台 → 明细照写、handled_weight 一分不加（它是损耗公式里并列的「出库」项）")
+    void vegDock_vegHandleBasket_writesRecordButNeverHandledWeight() {
+        // 甲方 2026-08-19：loss = 地块入库量 − 果蔬月台 − 有机饲喂 − 出库。
+        // 本 service 就是那个单独列出的「出库」，与月台/饲喂并列 —— 并列项不能同时算进其中一项。
+        // 这批 kg 已从 L0006 库存扣掉，收口 settleRemainAsLoss 按剩余库存结转，损耗里自然已经减掉它。
         when(locationStockMapper.selectById(1L)).thenReturn(mkVegHandleBasket(1L, 10L, 20L, 70001L));
         when(productInfoMapper.selectById(10L)).thenReturn(mkVegProduct(10L));
         CropInfo crop = new CropInfo();
@@ -350,40 +376,42 @@ class VegOutServiceImplTest {
         crop.setCropName("上海青");
         when(cropInfoMapper.selectOne(any())).thenReturn(crop);
         when(cropInfoMapper.selectById(any())).thenReturn(crop);
-        stubHandleBySource(70001L, 77L);
+        stubHandleBySource(70001L, 77L);   // 既有行 handled_weight=15.000 —— 有得可加，才验得出「就是不加」
 
         service.submit(mkBo("veg_dock", 1L, "20.000"), true);
 
-        ArgumentCaptor<BigDecimal> qty = ArgumentCaptor.forClass(BigDecimal.class);
-        verify(vegetableHandleMapper).addHandledWeight(eq(77L), qty.capture(), any());
-        assertThat(qty.getValue()).isEqualByComparingTo("20.000");
-        // 月台明细挂在同一行上（不再靠 (作物, 地块) 反查最新那条）
+        // ① 月台明细必须照写：mp 月台待入库量读的就是它（不写这条，货在月台永远收不了 = 凭空蒸发）
         ArgumentCaptor<org.dromara.djs.warehouse.veg.domain.HandleRecord> rc =
             ArgumentCaptor.forClass(org.dromara.djs.warehouse.veg.domain.HandleRecord.class);
         verify(handleRecordMapper).insert(rc.capture());
+        assertThat(rc.getValue().getRecordWeight()).isEqualByComparingTo("20.000");
+        assertThat(rc.getValue().getHandleTarget()).as("handle_target=2 月台").isEqualTo(2);
+        // ② 明细挂在 source_biz_id 精确定位出来的那行上（不靠 (作物,地块) 反查最新那条）
         assertThat(rc.getValue().getHandleId()).isEqualTo(77L);
-        // 但另外两个汇总桶一动不动（它们的读取方读 handle_record / feed_log）
-        verify(vegetableHandleMapper, never()).updateById(any(VegetableHandle.class));
+        // ③ 汇总行的重量列一列都不动
+        assertNoHandleWeightColumnWritten();
     }
 
     @Test
-    @DisplayName("F-5②：出毛菜地块篮（饲料饲喂）同样计进 handled_weight —— 甲方口径是「从毛菜间出库的总重量」")
-    void handledWriteBack_feed_addsHandledWeight() {
+    @DisplayName("🔴口径②：出毛菜地块篮到饲料饲喂 → feed_log 照写、handled_weight 同样一分不加")
+    void feed_vegHandleBasket_writesFeedLogButNeverHandledWeight() {
         when(locationStockMapper.selectById(1L)).thenReturn(mkVegHandleBasket(1L, 10L, 20L, 70001L));
         when(productInfoMapper.selectById(10L)).thenReturn(mkVegProduct(10L));
         stubHandleBySource(70001L, 77L);
 
         service.submit(mkBo("feed", 1L, "8.000"), false);
 
-        ArgumentCaptor<BigDecimal> qty = ArgumentCaptor.forClass(BigDecimal.class);
-        verify(vegetableHandleMapper).addHandledWeight(eq(77L), qty.capture(), any());
-        assertThat(qty.getValue()).isEqualByComparingTo("8.000");
-        verify(feedLogMapper).insert(any(FeedLog.class));
+        // 有机饲喂台账是这条去向的唯一账（feed_weight 汇总列的读取方读的正是它）
+        ArgumentCaptor<FeedLog> fc = ArgumentCaptor.forClass(FeedLog.class);
+        verify(feedLogMapper).insert(fc.capture());
+        assertThat(fc.getValue().getFeedWeight()).isEqualByComparingTo("8.000");
+        assertThat(fc.getValue().getFeedType()).isEqualTo("veg_handle");
+        assertNoHandleWeightColumnWritten();
     }
 
     @Test
-    @DisplayName("F-5③：干货 / 蛋类篮（无来源标识、产品也反查不到作物）不回写 —— 本表根本没有它的汇总行")
-    void handledWriteBack_nonVegBasket_skipped() {
+    @DisplayName("口径③：干货 / 蛋类篮（无来源标识、产品也反查不到作物）→ 饲喂台账照写，汇总行既不补建也不改")
+    void feed_nonVegBasket_writesFeedLogOnly() {
         when(locationStockMapper.selectById(1L)).thenReturn(mkStock(1L, 10L, 20L));   // sourceBizId = null
         ProductInfo dryGood = mkVegProduct(10L);
         dryGood.setBelongType("dry_good");
@@ -393,16 +421,16 @@ class VegOutServiceImplTest {
         service.submit(mkBo("feed", 1L, "8.000"), false);
 
         verify(feedLogMapper).insert(any(FeedLog.class));   // 饲喂台账照常写（干货也可能真拿去喂猪）
-        verify(vegetableHandleMapper, never()).addHandledWeight(any(), any(BigDecimal.class), any());
+        assertNoHandleWeightColumnWritten();
+        // 干货 / 蛋类在毛菜处理表本就没有汇总行，别为它们凭空补一行出来
         verify(vegetableHandleMapper, never()).insert(any(VegetableHandle.class));
     }
 
     @Test
-    @DisplayName("F-5⑤：采摘活动直送篮（source_biz_id 为空但有 plot_id）出月台 → 明细与 handled_weight 必须挂同一行")
-    void handledWriteBack_pickActivityBasket_writesToSameHandleRow() {
-        // 第二轮的 bug：insertPlatformHandleRecord 走 (作物,地块) 兜底记了 10kg，
-        // addHandledWeightBack 只认 source_biz_id 直接跳过 → 月台明细合计 20kg 而「果蔬处理重量」只有 10kg。
-        // 甲方口径「果蔬处理重量 = 带有对应地块标识的产品从毛菜间出库的总重量」——活动篮有地块，就该计入。
+    @DisplayName("口径④：采摘活动直送篮（source_biz_id 为空但有 plot_id）出月台 → 明细挂到 (作物,地块) 那行，仍不改汇总")
+    void vegDock_pickActivityBasket_writesRecordToResolvedRowOnly() {
+        // resolveHandleId 的兜底路径：篮子没有来源标识，但 (作物 30, 地块 20) 上有现成归集行 77。
+        // 定位的用途只剩一个 —— 让月台明细挂对行；汇总重量列一律不碰。
         when(locationStockMapper.selectById(1L)).thenReturn(mkStock(1L, 10L, 20L));   // sourceBizId = null
         when(productInfoMapper.selectById(10L)).thenReturn(mkVegProduct(10L));
         stubHandleFound(30L, 20L);   // (作物 30, 地块 20) 上已有归集行 77
@@ -412,17 +440,14 @@ class VegOutServiceImplTest {
         ArgumentCaptor<org.dromara.djs.warehouse.veg.domain.HandleRecord> rc =
             ArgumentCaptor.forClass(org.dromara.djs.warehouse.veg.domain.HandleRecord.class);
         verify(handleRecordMapper).insert(rc.capture());
-        ArgumentCaptor<BigDecimal> qty = ArgumentCaptor.forClass(BigDecimal.class);
-        verify(vegetableHandleMapper).addHandledWeight(eq(77L), qty.capture(), any());
-        // 同一行、同一个量 —— 明细合计与「果蔬处理重量」在结构上不可能再对不上
         assertThat(rc.getValue().getHandleId()).isEqualTo(77L);
-        assertThat(qty.getValue()).isEqualByComparingTo(rc.getValue().getRecordWeight());
-        assertThat(qty.getValue()).isEqualByComparingTo("10.000");
+        assertThat(rc.getValue().getRecordWeight()).isEqualByComparingTo("10.000");
+        assertNoHandleWeightColumnWritten();
     }
 
     @Test
-    @DisplayName("F-5⑥：补建归集行的场景（活动直送篮 + 该地块从没有过毛菜处理行）同样两处挂同一行")
-    void handledWriteBack_autoCreatedHandle_writesToSameHandleRow() {
+    @DisplayName("口径⑤：补建归集行的场景（活动直送篮 + 该地块从没有过毛菜处理行）→ 只补建挂载点，补完仍不改重量")
+    void vegDock_autoCreatedHandle_writesRecordToCreatedRowOnly() {
         when(locationStockMapper.selectById(1L)).thenReturn(mkStock(1L, 10L, 20L));   // sourceBizId = null
         when(productInfoMapper.selectById(10L)).thenReturn(mkVegProduct(10L));
         CropInfo crop = new CropInfo();
@@ -438,18 +463,60 @@ class VegOutServiceImplTest {
 
         service.submit(mkBo("veg_dock", 1L, "12.000"), true);
 
-        // 补建只发生一次（两处共用同一次解析；各解析各的会补出两行）
-        verify(vegetableHandleMapper).insert(any(VegetableHandle.class));
+        // 补建只发生一次（resolveHandleId 是唯一解析口；各处各解析一次会补出两行）
+        ArgumentCaptor<VegetableHandle> created = ArgumentCaptor.forClass(VegetableHandle.class);
+        verify(vegetableHandleMapper).insert(created.capture());
+        assertThat(created.getValue().getHandledWeight()).as("补建行各重量记 0 且此后一直是 0")
+            .isEqualByComparingTo("0");
         ArgumentCaptor<org.dromara.djs.warehouse.veg.domain.HandleRecord> rc =
             ArgumentCaptor.forClass(org.dromara.djs.warehouse.veg.domain.HandleRecord.class);
         verify(handleRecordMapper).insert(rc.capture());
         assertThat(rc.getValue().getHandleId()).isEqualTo(88L);
-        verify(vegetableHandleMapper).addHandledWeight(eq(88L), any(BigDecimal.class), any());
+        assertNoHandleWeightColumnWritten();
+    }
+
+    /**
+     * 结构护栏：把「不写汇总」从「逐个 never() 点名」升级成「白名单之外一个都不许调」。
+     *
+     * <p>这条口径已被推翻过一轮（曾有 {@code addHandledWeight} 回写），逐个 {@code never()} 点名的写法
+     * 挡不住「新加一个别的名字的写方法」——那正是它上次溜回来的方式。本用例改为反过来断言：
+     * 整个出库流程对 {@code VegetableHandleMapper} 只允许「读 + 归集行缺失时 insert」，
+     * 出现任何白名单外的方法调用（不论叫什么名字）当场红。</p>
+     *
+     * <p>配套的另一半在 {@code VegHandleRow102SqlContractTest#noMapperMethodMayWriteHandledWeight}：
+     * 那条管住 mapper 侧不许再定义写 {@code handled_weight} 的 SQL，这条管住 service 侧不许再调。</p>
+     */
+    @Test
+    @DisplayName("🔴结构护栏：出库全程对 vegetable_handle 只允许「读 + 补建 insert」，白名单外的写方法一个都不许调")
+    void vegOut_onlyReadsAndInsertsOnVegetableHandleMapper() {
+        when(locationStockMapper.selectById(1L)).thenReturn(mkVegHandleBasket(1L, 10L, 20L, 70001L));
+        when(productInfoMapper.selectById(10L)).thenReturn(mkVegProduct(10L));
+        CropInfo crop = new CropInfo();
+        crop.setId(30L);
+        crop.setCropName("上海青");
+        when(cropInfoMapper.selectOne(any())).thenReturn(crop);
+        when(cropInfoMapper.selectById(any())).thenReturn(crop);
+        stubHandleBySource(70001L, 77L);
+
+        service.submit(mkBo("veg_dock", 1L, "20.000"), true);
+
+        java.util.Set<String> allowed = java.util.Set.of(
+            "selectById", "selectOne", "selectList", "selectByPlantingRecordId", "insert");
+        List<String> forbidden = org.mockito.Mockito.mockingDetails(vegetableHandleMapper).getInvocations()
+            .stream()
+            .map(inv -> inv.getMethod().getName())
+            .filter(name -> !allowed.contains(name))
+            .distinct()
+            .toList();
+        assertThat(forbidden)
+            .as("毛菜间出库是甲方损耗公式里与月台/饲喂并列的「出库」项，只挂明细、不改汇总。"
+                + "这些方法不在白名单里：%s —— 若真要新增，先回看甲方 2026-08-19 口径", forbidden)
+            .isEmpty();
     }
 
     @Test
-    @DisplayName("F-5④：篮子带来源标识却查不到汇总行 → 硬拒（400 非 500）+ 整单回滚，不静默放行")
-    void handledWriteBack_orphanSource_mustBlock() {
+    @DisplayName("口径⑥：篮子带来源标识却查不到汇总行 → 硬拒（400 非 500）+ 整单回滚，不静默放行")
+    void orphanSourceBasket_mustBlock() {
         when(locationStockMapper.selectById(1L)).thenReturn(mkVegHandleBasket(1L, 10L, 20L, 70001L));
         when(productInfoMapper.selectById(10L)).thenReturn(mkVegProduct(10L));
         when(vegetableHandleMapper.selectByPlantingRecordId(70001L)).thenReturn(null);
@@ -460,10 +527,10 @@ class VegOutServiceImplTest {
             // 数据待人工核查 ≠ 服务端故障；500 会把它冲进告警噪声。拦截语义不变（整单回滚）
             .extracting(e -> ((ServiceException) e).getCode()).isEqualTo(400);
 
-        verify(vegetableHandleMapper, never()).addHandledWeight(any(), any(BigDecimal.class), any());
         // 不静默降级：不写台账、不补建归集行
         verify(feedLogMapper, never()).insert(any(FeedLog.class));
         verify(vegetableHandleMapper, never()).insert(any(VegetableHandle.class));
+        assertNoHandleWeightColumnWritten();
     }
 
     @Test
@@ -476,7 +543,7 @@ class VegOutServiceImplTest {
         service.submit(mkBo("feed", 1L, "8.000"), false);
 
         verify(feedLogMapper).insert(any(FeedLog.class));
-        verify(vegetableHandleMapper, never()).updateById(any(VegetableHandle.class));
+        assertNoHandleWeightColumnWritten();
     }
 
     @Test
@@ -560,8 +627,8 @@ class VegOutServiceImplTest {
             service.submit(mkBo("kitchen", 1L, "1.000"), true);
 
             verify(locationStockService).productOut(any());
-            // D3：非果蔬不累加毛菜处理送月台重量（那是果蔬专属报表，混入会污染）
-            verify(vegetableHandleMapper, never()).updateById(any(VegetableHandle.class));
+            // 非果蔬不进毛菜处理表的任何重量列（那是果蔬专属报表，混入会污染）
+            assertNoHandleWeightColumnWritten();
         }
     }
 
