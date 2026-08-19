@@ -198,6 +198,59 @@ class VegHandleRow102SqlContractTest {
             .contains("source_biz_id");
     }
 
+    @Test
+    @DisplayName("收口结转损耗取篮：必须按 source_biz_id 收窄，且与两个读侧 WHERE 同构")
+    void settleBasketsAreScopedBySource() throws Exception {
+        String sql = selectSql(LocationStockMapper.class, "selectBasketsBySource", Long.class, Long.class);
+
+        // 这是「读得到 / 结不掉」的唯一防线：少任何一个条件都会退回一轮那场灾难
+        // （结转吃掉同库位所有记录的篮 → loss > picked、跨记录偷货）。
+        assertThat(sql)
+            .as("必须按来源收窄——不带它就会结掉别条种植记录、采摘活动直送篮的货")
+            .contains("source_biz_id = #{sourcebizid}");
+        assertThat(sql)
+            .as("三期货不参与毛菜收口结转（它有自己的出口）")
+            .contains("third_phase = 0");
+        assertThat(sql)
+            .as("只结产品篮：product_id 为空的是月台自产收货那条链路的行")
+            .contains("product_id is not null");
+        assertThat(sql)
+            .as("单租户显式限定，与两个读侧一致")
+            .contains("tenant_id = '1001'");
+        assertThat(sql)
+            .as("软删行不参与结转")
+            .contains("del_flag = '0'");
+        assertThat(sql)
+            .as("按建篮时间 FIFO，历史迁移篮的 AUTO_INCREMENT id 比雪花小，只按 id 排会把最老的排到最后")
+            .contains("order by create_time asc, id asc");
+    }
+
+    @Test
+    @DisplayName("结转侧与读侧的收窄条件必须逐条同构（分家过一次，靠这条钉死）")
+    void settleAndReadShareTheSameScope() throws Exception {
+        String settle = selectSql(LocationStockMapper.class, "selectBasketsBySource", Long.class, Long.class);
+        String readPerProduct = selectSql(LocationStockMapper.class, "selectPlotProductStocks",
+            Long.class, Collection.class);
+        String readPlotCard = selectSql(PlantingRecordMapper.class, "selectPlotDetailByCrop", Long.class);
+
+        // 二轮事故：读侧改成只按 source_biz_id、结算侧仍按作物产品清单枚举 → 收口漏结、僵尸库存。
+        // 三处必须同时具备这四个条件，任一处缺失都会让两侧范围再次分家。
+        // 三处 SQL 的 `=` 空格风格不统一（del_flag='0' vs del_flag = '0'），这里二次归一后再比条件本身。
+        String s1 = squeezeEquals(settle);
+        String s2 = squeezeEquals(readPerProduct);
+        String s3 = squeezeEquals(readPlotCard);
+        for (String cond : new String[]{"source_biz_id", "third_phase=0", "product_id is not null", "del_flag='0'"}) {
+            assertThat(s1).as("结转侧缺条件 %s", cond).contains(cond);
+            assertThat(s2).as("分产品读侧缺条件 %s", cond).contains(cond);
+            assertThat(s3).as("地块卡读侧缺条件 %s", cond).contains(cond);
+        }
+    }
+
+    /** 去掉 `=` 两侧空格，抹平三处 SQL 的书写风格差异（只用于条件存在性比对）。 */
+    private static String squeezeEquals(String sql) {
+        return sql.replace(" = ", "=").replace("= ", "=").replace(" =", "=");
+    }
+
     /** 读 Flyway 迁移脚本原文（归一化后小写），用于钉死幂等守卫。 */
     private static String migrationSql(String fileName) throws Exception {
         java.nio.file.Path path = java.nio.file.Path.of(
