@@ -30,10 +30,10 @@ public class VegPlotProductVo implements Serializable {
     private String productName;
 
     /**
-     * 该产品在本地块的剩余重量(kg) = 该产品采收累计 − 该产品处理累计（含入库 / 月台 / 饲料三去向）。
+     * 该产品在本地块的剩余重量(kg)（V6 row102 口径 = 该 {@code (地块, 产品)} 在毛菜间 L0006 的实时库存）。
      *
-     * <p>没选过产品的存量流水（{@code handle_record.product_id} 为空）计入该作物的<b>首个</b>配置产品，
-     * 免得改造前的重量凭空消失、几个产品剩余量加起来对不上地块总剩余。</p>
+     * <p>它同时是<b>处理录入的可出库上限</b> —— 服务端按同一份库存校验，两边同源才不会出现
+     * 「页面显示还有 30kg、提交却说库存不足」。</p>
      */
     private BigDecimal remainWeight;
 

@@ -399,6 +399,34 @@ class ShipmentServiceImplTest {
     }
 
     @Test
+    @DisplayName("V6 row115: 可发清单 WHERE 必须排掉 deliver_dest=warehouse_out（后台出库货不进门店发货月台）")
+    void listAvailableProductions_excludesWarehouseOutProductions() {
+        Long demandId = 101L;
+        Long storeId = 9L;
+        DemandManage demand = newDemand(demandId, storeId, DemandStatus.CONFIRMED);
+        demand.setProductType("white_bar");
+        demand.setProductId(601L);
+        when(demandMapper.selectById(demandId)).thenReturn(demand);
+        ProductInfo bar = new ProductInfo();
+        bar.setId(601L);
+        bar.setBelongType("white_bar");
+        bar.setProductName("半扇");
+        when(productInfoMapper.selectList(any())).thenReturn(List.of(bar));
+        when(productProductionMapper.selectList(any())).thenReturn(List.of());
+
+        service.listAvailableProductions(demandId);
+
+        ArgumentCaptor<com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<ProductProduction>> captor =
+            ArgumentCaptor.forClass(com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper.class);
+        verify(productProductionMapper).selectList(captor.capture());
+        String sql = captor.getValue().getTargetSql();
+        // 后台出库（矿山/厨房直接拿走）与礼盒组件一样，都不是门店可发的货
+        assertThat(sql).contains("deliver_dest");
+        assertThat(captor.getValue().getParamNameValuePairs().values())
+            .contains("warehouse_out", "gift");
+    }
+
+    @Test
     @DisplayName("happy: confirmCheck 对 demand_id=NULL 的可用库存放行（不抛 mismatch）+ 回写 demandId")
     void confirmCheck_unassignedStock_bindsDemandId() {
         Long demandId = 100L;

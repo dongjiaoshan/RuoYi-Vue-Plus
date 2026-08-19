@@ -86,6 +86,8 @@ public class StoreTraceServiceImpl implements IStoreTraceService {
     private static final String BELONG_TYPE_PORK = "pork";
     /** 白条业态（现场分割 picker 取白条 production 用）。 */
     private static final String BELONG_TYPE_WHITE_BAR = "white_bar";
+    /** product_info.is_material_sold=1：该成品支持原材料外售，到店后可当门店打包的原材料（V6 row120）。 */
+    private static final Integer MATERIAL_SOLD_YES = 1;
     /** product_production.is_delivery_check=1：已发货清点。 */
     private static final Integer DELIVERY_CHECKED = 1;
     /** TraceCodeListVo.source 值：门店现场生码（与 warehouse TraceCodeAdminServiceImpl 口径一致）。 */
@@ -156,12 +158,16 @@ public class StoreTraceServiceImpl implements IStoreTraceService {
         if (receivedDemandIds.isEmpty()) {
             return emptyPigPage();
         }
-        List<Long> whiteBarProductIds = productInfoMapper.selectList(
+        // 可当原材料的到店产品 = 白条业态 ∪ 配置了「原材料外售=是」的猪肉成品（V6 row120）。
+        // 后者（如「通排」）到店后同样是拿来现场分割/打包的原材料，工人要能选到它对应的那头猪的耳号；
+        // 只认 belong_type='white_bar' 会让这类产品在打包页根本没有可选耳号。
+        List<Long> materialProductIds = productInfoMapper.selectList(
                 new LambdaQueryWrapper<ProductInfo>()
-                    .eq(ProductInfo::getBelongType, BELONG_TYPE_WHITE_BAR)
+                    .and(w -> w.eq(ProductInfo::getBelongType, BELONG_TYPE_WHITE_BAR)
+                        .or().eq(ProductInfo::getIsMaterialSold, MATERIAL_SOLD_YES))
                     .select(ProductInfo::getId))
             .stream().map(ProductInfo::getId).filter(Objects::nonNull).toList();
-        if (whiteBarProductIds.isEmpty()) {
+        if (materialProductIds.isEmpty()) {
             return emptyPigPage();
         }
         // 已发货到门店的白条 production（取耳号/白条号 + 到货重量；按 white_bar_no（半只）或耳号去重保序累加）。
@@ -170,7 +176,7 @@ public class StoreTraceServiceImpl implements IStoreTraceService {
         List<ProductProduction> barProds = productProductionMapper.selectList(
             new LambdaQueryWrapper<ProductProduction>()
                 .in(ProductProduction::getDemandId, receivedDemandIds)
-                .in(ProductProduction::getProductId, whiteBarProductIds)
+                .in(ProductProduction::getProductId, materialProductIds)
                 .eq(ProductProduction::getIsDeliveryCheck, DELIVERY_CHECKED)
                 .orderByDesc(ProductProduction::getId)
                 .select(ProductProduction::getEarNo, ProductProduction::getWhiteBarNo, ProductProduction::getProduceQuantity));

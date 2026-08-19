@@ -458,6 +458,26 @@ class PigBurnRecordServiceImplTest {
         ArgumentCaptor<BarInfo> patch = ArgumentCaptor.forClass(BarInfo.class);
         verify(barInfoMapper).updateById(patch.capture());
         assertThat(patch.getValue().getArriveWeight()).isEqualByComparingTo("110.000");
+        // V6 row113：到场时间必须和到场重量同一次落库（这一列此前建表起从没被写过，卡片恒显「—」）
+        assertThat(patch.getValue().getArriveTime()).isNotNull();
+    }
+
+    @Test
+    @DisplayName("weighBurn: 已有到场时间的白条重复称重 → 只改重量，到场时间锚定第一次不被推后")
+    void testWeigh_doesNotOverwriteExistingArriveTime() {
+        BarInfo bar = sampleBarWithMarketWeight("singing", "150.000");
+        Date firstArrive = new Date(1_755_000_000_000L);
+        bar.setArriveTime(firstArrive);
+        when(barInfoMapper.selectById(BAR_ID)).thenReturn(bar);
+        when(barInfoMapper.updateStatusToSinging(eq(BAR_ID), any(), eq(OPERATOR_ID))).thenReturn(1);
+
+        assertThat(service.weighBurn(weighBo("120.000"))).isTrue();
+
+        ArgumentCaptor<BarInfo> patch = ArgumentCaptor.forClass(BarInfo.class);
+        verify(barInfoMapper).updateById(patch.capture());
+        assertThat(patch.getValue().getArriveWeight()).isEqualByComparingTo("120.000");
+        // 已有值不覆盖：重复称重不该把到场时间推到已录产出行的入库时间之后（clean-QA 复现过这条倒挂）
+        assertThat(patch.getValue().getArriveTime()).isNull();
     }
 
     @Test

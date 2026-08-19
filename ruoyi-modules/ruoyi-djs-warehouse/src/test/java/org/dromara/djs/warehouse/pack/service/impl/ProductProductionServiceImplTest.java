@@ -111,6 +111,8 @@ class ProductProductionServiceImplTest {
         TableInfoHelper.initTableInfo(assistant, LocationStock.class);
         TableInfoHelper.initTableInfo(assistant, ProductInfo.class);
         TableInfoHelper.initTableInfo(assistant, ProductInhouse.class);
+        // V6 row115：产品明细 wrapper 用 ProductProduction 的 lambda 列名，不预热会抛 can not find lambda cache
+        TableInfoHelper.initTableInfo(assistant, org.dromara.djs.warehouse.pack.domain.ProductProduction.class);
     }
 
     @BeforeEach
@@ -1122,6 +1124,26 @@ class ProductProductionServiceImplTest {
         assertThat(result.get("60001")).isEqualByComparingTo("8.000");
         assertThat(result.get("60002")).isEqualByComparingTo("8.000");
         verify(locationStockMapper, times(1)).selectMaps(any());
+    }
+
+    @Test
+    @DisplayName("V6 row115: 产品明细 excludeGiftDeliver 必须同时排掉 gift 与 warehouse_out（两处口径同源）")
+    void queryItemPageList_excludeGiftDeliver_alsoExcludesWarehouseOut() {
+        org.dromara.djs.warehouse.pack.domain.query.ProductProductionQuery q =
+            new org.dromara.djs.warehouse.pack.domain.query.ProductProductionQuery();
+        q.setDemandId(777L);
+        q.setExcludeGiftDeliver(Boolean.TRUE);
+        when(productionMapper.selectVoPage(any(), any())).thenReturn(new com.baomidou.mybatisplus.extension.plugins.pagination.Page<>());
+
+        service.queryItemPageList(q, new org.dromara.common.mybatis.core.page.PageQuery(1, 10));
+
+        ArgumentCaptor<com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<org.dromara.djs.warehouse.pack.domain.ProductProduction>> captor =
+            ArgumentCaptor.forClass(com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper.class);
+        verify(productionMapper).selectVoPage(any(), captor.capture());
+        // getTargetSql() 触发 MP 生成 SQL，参数才会落进 paramNameValuePairs（懒填充）
+        assertThat(captor.getValue().getTargetSql()).contains("deliver_dest");
+        // 后台出库的货和礼盒组件一样，不履约门店直接需求 —— 明细里多出来就会比需求量多行
+        assertThat(captor.getValue().getParamNameValuePairs().values()).contains("gift", "warehouse_out");
     }
 
 }

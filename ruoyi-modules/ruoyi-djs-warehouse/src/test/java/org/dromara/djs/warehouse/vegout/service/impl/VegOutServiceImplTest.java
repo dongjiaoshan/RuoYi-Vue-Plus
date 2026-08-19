@@ -45,6 +45,7 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.verify;
@@ -122,6 +123,9 @@ class VegOutServiceImplTest {
         // 单号改走统一编码生成器（7 位纯数字）
         when(bizCodeGenerator.generate(any(), any())).thenReturn("0000001");
         when(locationStockService.productOut(any())).thenReturn(999L);
+        // 「果蔬处理重量」回写默认成功。第三轮起它对<b>任何能定出归属的篮</b>都会触发（不再只认
+        // source_biz_id），不给默认值的话每个 happy path 都会撞 addHandledWeight 返 0 的 409 分支。
+        when(vegetableHandleMapper.addHandledWeight(any(), any(BigDecimal.class), any())).thenReturn(1);
     }
 
     private LocationStock mkStock(Long id, Long productId, Long plotId) {
@@ -198,10 +202,10 @@ class VegOutServiceImplTest {
     }
 
     @Test
-    @DisplayName("⚠️P0 回归：果蔬月台出的也是**已入库**库存，绝不可累加 send_platform_weight —— 否则 recomputeLoss 多减后静默钳零")
+    @DisplayName("⚠️P0 回归：果蔬月台绝不可累加 send_platform_weight —— 那一列的读取方读的正是这里写的 handle_record")
     void vegDock_mustNotTouchVegetableHandleWeights() {
-        // 与饲料同一个根因，只是它不显负：损耗 = 采摘 − 入库 − 月台 − 饲料，
-        // 月台那一项被重复计入后 loss 转负，recomputeLoss 会 warn + 归零，页面上看不出来。
+        // 月台待入库量 / 运输损耗 / 日统计「发往月台果蔬总重」读的都是 handle_record 明细，
+        // 汇总列再加一次就是那几处的双重计数。
         when(locationStockMapper.selectById(1L)).thenReturn(mkStock(1L, 10L, 20L));
         when(productInfoMapper.selectById(10L)).thenReturn(mkVegProduct(10L));
         stubHandleFound(30L, 20L);   // 既有行 send_platform_weight=10.000 —— 有得可加，才验得出「就是不加」
@@ -294,10 +298,10 @@ class VegOutServiceImplTest {
     }
 
     @Test
-    @DisplayName("⚠️P0 回归：饲料饲喂出的是**已入库**库存，绝不可累加 feed_weight —— 否则地块剩余被二次扣减成负数")
+    @DisplayName("⚠️P0 回归：饲料饲喂绝不可累加 feed_weight —— 有机饲喂记录读的是这里写的 feed_log")
     void feed_mustNotTouchVegetableHandleWeights() {
-        // 生产实测 B-连6-2-001：采摘 340 / 处理入库 283，再从库存领 70kg 去饲喂，
-        // 累加 feed_weight 后地块卡「剩余 = 采摘 − 处理 − 饲料」= 340−283−70 = −13kg。
+        // feed_weight 与 feed_log 同时记就是双重计数；而「果蔬处理重量」handled_weight 是另一回事，
+        // 它在下面 handledWriteBack_* 那组用例里必须被写（V6 row102 口径反转，见类头注）。
         when(locationStockMapper.selectById(1L)).thenReturn(mkStock(1L, 10L, 20L));
         when(productInfoMapper.selectById(10L)).thenReturn(mkVegProduct(10L));
         stubHandleFound(30L, 20L);   // 毛菜处理行存在且 feed_weight=5.000 —— 有得可加，才验得出「就是不加」
@@ -305,10 +309,161 @@ class VegOutServiceImplTest {
         service.submit(mkBo("feed", 1L, "70.000"), false);
 
         verify(feedLogMapper).insert(any(FeedLog.class));
-        // 三道：不改、不补建、连查都不查（改动一旦被还原，这三条任一都会红）
+        // 汇总实体整行 UPDATE 一次都不能有：feed_weight / send_platform_weight 只要被写就是双重计数。
+        // （handled_weight 走的是 addHandledWeight 那条只动单列的原子 UPDATE，不经 updateById。）
         verify(vegetableHandleMapper, never()).updateById(any(VegetableHandle.class));
+        // 已有归集行 → 不该补建
         verify(vegetableHandleMapper, never()).insert(any(VegetableHandle.class));
-        verify(vegetableHandleMapper, never()).selectOne(any());
+        // 但 handled_weight 必须记：这批货带地块标识、确实从毛菜间出去了（第三轮 #2 对齐口径）
+        verify(vegetableHandleMapper).addHandledWeight(eq(77L), any(BigDecimal.class), any());
+    }
+
+    // -------- F-5：毛菜地块篮出库必须回写「果蔬处理重量」handled_weight --------
+
+    /** 毛菜地块篮：带 source_biz_id（= 建篮的那条种植记录 id）。 */
+    private LocationStock mkVegHandleBasket(Long id, Long productId, Long plotId, Long sourceBizId) {
+        LocationStock s = mkStock(id, productId, plotId);
+        s.setSourceBizId(sourceBizId);
+        return s;
+    }
+
+    /** 该种植记录的毛菜处理汇总行存在。 */
+    private void stubHandleBySource(Long sourceBizId, Long handleId) {
+        VegetableHandle h = new VegetableHandle();
+        h.setId(handleId);
+        h.setPlantingRecordId(sourceBizId);
+        h.setCropId(30L);
+        h.setPlotId(20L);
+        h.setHandledWeight(new BigDecimal("0.000"));
+        when(vegetableHandleMapper.selectByPlantingRecordId(sourceBizId)).thenReturn(h);
+        when(vegetableHandleMapper.addHandledWeight(eq(handleId), any(BigDecimal.class), any()))
+            .thenReturn(1);
+    }
+
+    @Test
+    @DisplayName("F-5①：出毛菜地块篮（果蔬月台）→ 出库量必须计进 handled_weight，否则收口时这批货又被算成损耗")
+    void handledWriteBack_vegDock_addsHandledWeight() {
+        when(locationStockMapper.selectById(1L)).thenReturn(mkVegHandleBasket(1L, 10L, 20L, 70001L));
+        when(productInfoMapper.selectById(10L)).thenReturn(mkVegProduct(10L));
+        CropInfo crop = new CropInfo();
+        crop.setId(30L);
+        crop.setCropName("上海青");
+        when(cropInfoMapper.selectOne(any())).thenReturn(crop);
+        when(cropInfoMapper.selectById(any())).thenReturn(crop);
+        stubHandleBySource(70001L, 77L);
+
+        service.submit(mkBo("veg_dock", 1L, "20.000"), true);
+
+        ArgumentCaptor<BigDecimal> qty = ArgumentCaptor.forClass(BigDecimal.class);
+        verify(vegetableHandleMapper).addHandledWeight(eq(77L), qty.capture(), any());
+        assertThat(qty.getValue()).isEqualByComparingTo("20.000");
+        // 月台明细挂在同一行上（不再靠 (作物, 地块) 反查最新那条）
+        ArgumentCaptor<org.dromara.djs.warehouse.veg.domain.HandleRecord> rc =
+            ArgumentCaptor.forClass(org.dromara.djs.warehouse.veg.domain.HandleRecord.class);
+        verify(handleRecordMapper).insert(rc.capture());
+        assertThat(rc.getValue().getHandleId()).isEqualTo(77L);
+        // 但另外两个汇总桶一动不动（它们的读取方读 handle_record / feed_log）
+        verify(vegetableHandleMapper, never()).updateById(any(VegetableHandle.class));
+    }
+
+    @Test
+    @DisplayName("F-5②：出毛菜地块篮（饲料饲喂）同样计进 handled_weight —— 甲方口径是「从毛菜间出库的总重量」")
+    void handledWriteBack_feed_addsHandledWeight() {
+        when(locationStockMapper.selectById(1L)).thenReturn(mkVegHandleBasket(1L, 10L, 20L, 70001L));
+        when(productInfoMapper.selectById(10L)).thenReturn(mkVegProduct(10L));
+        stubHandleBySource(70001L, 77L);
+
+        service.submit(mkBo("feed", 1L, "8.000"), false);
+
+        ArgumentCaptor<BigDecimal> qty = ArgumentCaptor.forClass(BigDecimal.class);
+        verify(vegetableHandleMapper).addHandledWeight(eq(77L), qty.capture(), any());
+        assertThat(qty.getValue()).isEqualByComparingTo("8.000");
+        verify(feedLogMapper).insert(any(FeedLog.class));
+    }
+
+    @Test
+    @DisplayName("F-5③：干货 / 蛋类篮（无来源标识、产品也反查不到作物）不回写 —— 本表根本没有它的汇总行")
+    void handledWriteBack_nonVegBasket_skipped() {
+        when(locationStockMapper.selectById(1L)).thenReturn(mkStock(1L, 10L, 20L));   // sourceBizId = null
+        ProductInfo dryGood = mkVegProduct(10L);
+        dryGood.setBelongType("dry_good");
+        when(productInfoMapper.selectById(10L)).thenReturn(dryGood);
+        when(cropInfoMapper.selectOne(any())).thenReturn(null);   // 产品反查不到作物 → 归属定不了
+
+        service.submit(mkBo("feed", 1L, "8.000"), false);
+
+        verify(feedLogMapper).insert(any(FeedLog.class));   // 饲喂台账照常写（干货也可能真拿去喂猪）
+        verify(vegetableHandleMapper, never()).addHandledWeight(any(), any(BigDecimal.class), any());
+        verify(vegetableHandleMapper, never()).insert(any(VegetableHandle.class));
+    }
+
+    @Test
+    @DisplayName("F-5⑤：采摘活动直送篮（source_biz_id 为空但有 plot_id）出月台 → 明细与 handled_weight 必须挂同一行")
+    void handledWriteBack_pickActivityBasket_writesToSameHandleRow() {
+        // 第二轮的 bug：insertPlatformHandleRecord 走 (作物,地块) 兜底记了 10kg，
+        // addHandledWeightBack 只认 source_biz_id 直接跳过 → 月台明细合计 20kg 而「果蔬处理重量」只有 10kg。
+        // 甲方口径「果蔬处理重量 = 带有对应地块标识的产品从毛菜间出库的总重量」——活动篮有地块，就该计入。
+        when(locationStockMapper.selectById(1L)).thenReturn(mkStock(1L, 10L, 20L));   // sourceBizId = null
+        when(productInfoMapper.selectById(10L)).thenReturn(mkVegProduct(10L));
+        stubHandleFound(30L, 20L);   // (作物 30, 地块 20) 上已有归集行 77
+
+        service.submit(mkBo("veg_dock", 1L, "10.000"), true);
+
+        ArgumentCaptor<org.dromara.djs.warehouse.veg.domain.HandleRecord> rc =
+            ArgumentCaptor.forClass(org.dromara.djs.warehouse.veg.domain.HandleRecord.class);
+        verify(handleRecordMapper).insert(rc.capture());
+        ArgumentCaptor<BigDecimal> qty = ArgumentCaptor.forClass(BigDecimal.class);
+        verify(vegetableHandleMapper).addHandledWeight(eq(77L), qty.capture(), any());
+        // 同一行、同一个量 —— 明细合计与「果蔬处理重量」在结构上不可能再对不上
+        assertThat(rc.getValue().getHandleId()).isEqualTo(77L);
+        assertThat(qty.getValue()).isEqualByComparingTo(rc.getValue().getRecordWeight());
+        assertThat(qty.getValue()).isEqualByComparingTo("10.000");
+    }
+
+    @Test
+    @DisplayName("F-5⑥：补建归集行的场景（活动直送篮 + 该地块从没有过毛菜处理行）同样两处挂同一行")
+    void handledWriteBack_autoCreatedHandle_writesToSameHandleRow() {
+        when(locationStockMapper.selectById(1L)).thenReturn(mkStock(1L, 10L, 20L));   // sourceBizId = null
+        when(productInfoMapper.selectById(10L)).thenReturn(mkVegProduct(10L));
+        CropInfo crop = new CropInfo();
+        crop.setId(30L);
+        crop.setCropName("上海青");
+        when(cropInfoMapper.selectOne(any())).thenReturn(crop);
+        when(cropInfoMapper.selectById(any())).thenReturn(crop);
+        when(vegetableHandleMapper.selectOne(any())).thenReturn(null);   // 没有既有行 → 补建
+        when(vegetableHandleMapper.insert(any(VegetableHandle.class))).thenAnswer(inv -> {
+            inv.getArgument(0, VegetableHandle.class).setId(88L);
+            return 1;
+        });
+
+        service.submit(mkBo("veg_dock", 1L, "12.000"), true);
+
+        // 补建只发生一次（两处共用同一次解析；各解析各的会补出两行）
+        verify(vegetableHandleMapper).insert(any(VegetableHandle.class));
+        ArgumentCaptor<org.dromara.djs.warehouse.veg.domain.HandleRecord> rc =
+            ArgumentCaptor.forClass(org.dromara.djs.warehouse.veg.domain.HandleRecord.class);
+        verify(handleRecordMapper).insert(rc.capture());
+        assertThat(rc.getValue().getHandleId()).isEqualTo(88L);
+        verify(vegetableHandleMapper).addHandledWeight(eq(88L), any(BigDecimal.class), any());
+    }
+
+    @Test
+    @DisplayName("F-5④：篮子带来源标识却查不到汇总行 → 硬拒（400 非 500）+ 整单回滚，不静默放行")
+    void handledWriteBack_orphanSource_mustBlock() {
+        when(locationStockMapper.selectById(1L)).thenReturn(mkVegHandleBasket(1L, 10L, 20L, 70001L));
+        when(productInfoMapper.selectById(10L)).thenReturn(mkVegProduct(10L));
+        when(vegetableHandleMapper.selectByPlantingRecordId(70001L)).thenReturn(null);
+
+        assertThatThrownBy(() -> service.submit(mkBo("feed", 1L, "8.000"), false))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("毛菜处理汇总行不存在")
+            // 数据待人工核查 ≠ 服务端故障；500 会把它冲进告警噪声。拦截语义不变（整单回滚）
+            .extracting(e -> ((ServiceException) e).getCode()).isEqualTo(400);
+
+        verify(vegetableHandleMapper, never()).addHandledWeight(any(), any(BigDecimal.class), any());
+        // 不静默降级：不写台账、不补建归集行
+        verify(feedLogMapper, never()).insert(any(FeedLog.class));
+        verify(vegetableHandleMapper, never()).insert(any(VegetableHandle.class));
     }
 
     @Test
@@ -356,7 +511,7 @@ class VegOutServiceImplTest {
      * V6 row101（甲方邓博 2026-08-13 口径，见 doc/16 §0「三期是什么」）：三期货不走果蔬月台。
      *
      * <p>用<b>带真实 plotId 的三期库存行</b>做用例：多地块三期货 plot_id 为空、本来就会被下游
-     * {@code resolveHandleForPlatform} 拦下，拦不住的正是「恰好 1 块在种地块」这条 —— 它整条月台链路
+     * {@code resolveHandleId} 拦下，拦不住的正是「恰好 1 块在种地块」这条 —— 它整条月台链路
      * 走得通，而月台收货只写普通篮（{@code addStockByPlotLocation} 硬带 {@code third_phase=0}），
      * 货一进蔬菜保鲜库就洗成普通有机货、可被门店取走，静默违反「三期不发到门店」。
      * 所以守卫必须按 {@code third_phase} 判，不能按「有没有地块」判。</p>

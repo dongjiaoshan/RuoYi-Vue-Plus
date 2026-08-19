@@ -145,6 +145,9 @@ public class ShipmentServiceImpl
     /** 礼盒组件（deliver_dest='gift'）：预留给礼盒打包消耗，不出现在发货月台。 */
     private static final String DELIVER_DEST_GIFT = "gift";
 
+    /** 后台出库（deliver_dest='warehouse_out'）：矿山/厨房等直接来仓库拿走，拿走即终态，不出现在发货月台。 */
+    private static final String DELIVER_DEST_WAREHOUSE_OUT = "warehouse_out";
+
     /**
      * 「按重量计量」的产品单位集合（小写）——{@link #producedCopies} 据此决定生产量取
      * {@code produce_quantity} 公斤数还是按件计 1。
@@ -495,9 +498,13 @@ public class ShipmentServiceImpl
             .apply("DATE(produce_date) >= {0}", produceFrom.toString())
             .apply("DATE(produce_date) <= {0}", today.toString())
             // 发送位置=礼盒的成品是礼盒组件（预留给礼盒打包消耗），不出现在发货月台（礼盒澄清 2026-06-25）。
-            // deliver_dest 为 NULL（默认发货月台）或非 'gift' 才可直接发货。
+            // 发送位置=后台出库的成品是矿山/厨房/劲牌等直接从仓库拿走的货，拿走即终态，同样不进发货月台
+            // （V6 row115：它 store_id 为空，被下面那条「同门店 OR 未绑门店」当通用件捞进门店可发清单 →
+            //  门店卡上「生产量」凭空多一件、需求满足率虚高，甚至能被出车发货发给门店）。
+            // deliver_dest 为 NULL（默认发货月台）或非这两个值才可直接发货。
             .and(w -> w.isNull(ProductProduction::getDeliverDest)
-                       .or().ne(ProductProduction::getDeliverDest, DELIVER_DEST_GIFT));
+                       .or().notIn(ProductProduction::getDeliverDest,
+                                   DELIVER_DEST_GIFT, DELIVER_DEST_WAREHOUSE_OUT));
         if (storeIds != null && !storeIds.isEmpty()) {
             wrapper.and(w -> w.in(ProductProduction::getStoreId, storeIds)
                               .or().isNull(ProductProduction::getStoreId));

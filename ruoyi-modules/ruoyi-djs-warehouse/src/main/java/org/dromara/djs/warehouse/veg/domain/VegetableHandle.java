@@ -24,9 +24,14 @@ import java.util.Date;
  * </ul>
  *
  * <h3>跨表事务</h3>
- * <p>由 {@link org.dromara.djs.warehouse.veg.service.impl.VegetableHandleServiceImpl#submitHandleRecord}
- * 维护：handle_record INSERT + 汇总聚合 UPDATE + 条件 stock_flow INSERT
- * + planting_record.handle_status 同步推进。</p>
+ * <p>由 {@link org.dromara.djs.warehouse.veg.service.impl.VegetableHandleServiceImpl#submitHarvest}
+ * （采摘录入：handle_record INSERT + 建毛菜保鲜库地块篮 + veg_stock_in 流水 + 汇总聚合 UPDATE）与
+ * {@link org.dromara.djs.warehouse.veg.service.impl.VegetableHandleServiceImpl#submitProcess}
+ * （处理录入：FIFO 扣篮 + veg_stock_out 流水 + 收口结转损耗）维护，两者都同步推进
+ * planting_record.handle_status。</p>
+ *
+ * <p>{@code handled_weight}（果蔬处理重量）还有第二个写入方：
+ * {@code VegOutServiceImpl}（毛菜间出库管理）—— 它也是「从毛菜间出库」，V6 row102 口径下必须计入。</p>
  *
  * @author djs
  * @since WMS-VEG-001

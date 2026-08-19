@@ -93,6 +93,24 @@ public class LocationStock extends TenantEntity {
     private Integer thirdPhase;
 
     /**
+     * 来源业务 id（毛菜地块篮 = {@code t_warehouse_planting_record.id}；其余链路为空）。
+     *
+     * <p><b>它是分篮维度的第五维，也是唯一一个「谁建的这篮」维度</b>。前四维（plot / ear / white_bar /
+     * third_phase）回答的是「这篮货是什么」，本列回答「这篮货属于哪条业务流」。</p>
+     *
+     * <p>毛菜链路非要不可：同一 {@code (地块, 产品)} 在毛菜保鲜库 L0006 里可能同时躺着
+     * ①同地块同作物两条 planting_record（两季 / 补录）的货 ②采摘活动 {@code pick_dest=veg_fresh}
+     * 直送进来的货 ③两个作物共享同一产品时各自的货。只按 {@code (库位, 产品, 地块)} 定位，
+     * 「处理录入 FIFO 扣减」「地块处理完成结转损耗」「地块卡剩余重量」三处一律串到别人的货上
+     * —— 实测把 B 记录的 25kg 结成了 A 记录的损耗（loss > picked）。</p>
+     *
+     * <p>为空的篮子（采摘活动直送篮 / 白条篮 / 三期篮 / 月台收货篮 / 退货篮）<b>对毛菜处理链路不可见</b>，
+     * 这是刻意的：它们的出口是「毛菜间出库管理」（按行 id 出），本就不该被某条种植记录的
+     * 处理录入或收口损耗吃掉。</p>
+     */
+    private Long sourceBizId;
+
+    /**
      * 产品名称（冗余字段，便于列表展示，免 JOIN）。
      */
     private String productName;

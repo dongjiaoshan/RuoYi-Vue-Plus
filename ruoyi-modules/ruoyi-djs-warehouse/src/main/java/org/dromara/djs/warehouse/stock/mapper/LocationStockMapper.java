@@ -10,6 +10,7 @@ import org.dromara.djs.warehouse.flow.domain.vo.MatIssueLocationVo;
 import org.dromara.djs.warehouse.flow.domain.vo.PackingItemVo;
 import org.dromara.djs.warehouse.stock.domain.LocationStock;
 import org.dromara.djs.warehouse.stock.domain.vo.LocationStockVo;
+import org.dromara.djs.warehouse.stock.domain.vo.PlotProductStockRow;
 
 import java.math.BigDecimal;
 import java.util.Collection;
@@ -200,6 +201,141 @@ public interface LocationStockMapper extends BaseMapperPlus<LocationStock, Locat
                              @Param("plotId") Long plotId,
                              @Param("deductQty") BigDecimal deductQty,
                              @Param("userId") Long userId);
+
+    /**
+     * 取某 {@code (库位, 产品, 地块, 来源业务)} 下仍有余量的「地块篮」，按建篮先后返回
+     * （V6 row102 毛菜间 FIFO 出库）。
+     *
+     * <p>为什么必须按篮逐行出、而不是一条 UPDATE 扣完：毛菜保鲜库的自产果蔬<b>每次采摘录入建一篮</b>
+     * （{@code VegetableHandleServiceImpl} 的 basket 分支），同一 (产品, 地块) 常有多篮共存。
+     * 一条不带行限定的 UPDATE 会命中每一个余量充足的篮子、每篮各扣一次（扣减放大 N 倍），
+     * 而带余量条件的单篮 UPDATE 又会在「单篮不够但总量够」时直接失败。故由 service 取回本列表、
+     * 按 FIFO 逐篮调 {@link #deductStockById}（那条 UPDATE 自带 {@code product_stock >= x} 行锁）。</p>
+     *
+     * <p><b>{@code source_biz_id} 是防串货的关键条件</b>（见 {@link LocationStock#getSourceBizId()}）：
+     * 只有 {@code (库位, 产品, 地块)} 三键时，同地块的另一条种植记录 / 采摘活动直送的货 / 共享同一产品的
+     * 另一个作物的货全在命中范围内 —— 处理录入会扣掉别人的库存、收口会把别人的货结成自己的损耗。
+     * 加上「这篮是谁建的」之后，出库与结转的物理范围就锁死在本条种植记录名下。
+     * 传 {@code null} 时 SQL 为 {@code source_biz_id = NULL} 恒不成立、返空列表 ——
+     * 那是正确行为（没有来源标识就没有属于自己的篮），调用方不必也不应特判。</p>
+     *
+     * <p>排序 {@code create_time ASC, id ASC}：先进先出。{@code create_time} 才是真实建篮时间 ——
+     * 历史迁移补建的篮子走 AUTO_INCREMENT 拿到的 id 比应用侧雪花 id 大，只按 id 排会把最老的货排到最后。</p>
+     *
+     * <p>{@code third_phase = 0}：三期篮不参与毛菜处理链路（三期作物不按地块管理、不发门店），
+     * 它的扣减只走按行 id 的产品出库。租户单租户显式 {@code tenant_id='1001'}（V1）。</p>
+     *
+     * @param locationId  库位 ID（毛菜鲜品库 L0006）
+     * @param productId   产品 ID
+     * @param plotId      地块 ID
+     * @param sourceBizId 来源业务 ID（种植记录 id）
+     * @return 仍有余量的地块篮（FIFO 序）；无则空 list
+     */
+    @Select("SELECT * FROM t_warehouse_location_stock "
+        + " WHERE location_id = #{locationId} "
+        + "   AND product_id  = #{productId} "
+        + "   AND plot_id     = #{plotId} "
+        + "   AND source_biz_id = #{sourceBizId} "
+        + "   AND third_phase = 0 "
+        + "   AND product_stock > 0 "
+        + "   AND del_flag = '0' "
+        + "   AND tenant_id = '1001' "
+        + " ORDER BY create_time ASC, id ASC")
+    List<LocationStock> selectPlotProductBaskets(@Param("locationId") Long locationId,
+                                                 @Param("productId") Long productId,
+                                                 @Param("plotId") Long plotId,
+                                                 @Param("sourceBizId") Long sourceBizId);
+
+    /**
+     * 取某 {@code (库位, 来源业务)} 名下<b>全部</b>仍有余量的地块篮（不限产品），按建篮先后返回
+     * （V6 row102 地块收口结转损耗）。
+     *
+     * <p><b>为什么收口不能按产品清单逐个查</b>（{@link #selectPlotProductBaskets} 那条）：
+     * 产品清单只能从作物配置 / {@code crop.related_product} / 汇总行 {@code product_id} 拼出来，
+     * 而这三个来源都不是「这条种植记录实际采收过哪些产品」的权威 ——
+     * 产品被移出作物配置之后，它名下的篮子就从清单里消失，收口枚举不到、既不结损耗也不扣库存，
+     * 而读侧（{@link #selectPlotProductStocks} / {@code PlantingRecordMapper#selectPlotDetailByCrop}）
+     * 只按 {@code source_biz_id} 查、照样看得见它。读得到却结不掉 = 收口后 {@code picked ≠ handled + loss}、
+     * 库存变僵尸（记录已 done，处理录入进不来）。</p>
+     *
+     * <p>本方法与读侧<b>逐条同一 WHERE</b>（{@code location_id + source_biz_id + product_id IS NOT NULL
+     * + third_phase=0 + del_flag + tenant_id}），两侧范围在物理上不可能再分家。
+     * 每篮自带 {@code product_id}，损耗流水按它归集，无需再反解产品。</p>
+     *
+     * <p>{@code product_stock > 0}：空篮不参与结转（对读侧的合计贡献也是 0，两侧仍等价）。
+     * 排序 {@code create_time ASC, id ASC}，与 FIFO 出库同序。</p>
+     *
+     * @param locationId  库位 ID（毛菜鲜品库 L0006）
+     * @param sourceBizId 来源业务 ID（种植记录 id）
+     * @return 该来源名下仍有余量的全部地块篮；无则空 list
+     */
+    @Select("SELECT * FROM t_warehouse_location_stock "
+        + " WHERE location_id = #{locationId} "
+        + "   AND source_biz_id = #{sourceBizId} "
+        + "   AND product_id IS NOT NULL "
+        + "   AND third_phase = 0 "
+        + "   AND product_stock > 0 "
+        + "   AND del_flag = '0' "
+        + "   AND tenant_id = '1001' "
+        + " ORDER BY create_time ASC, id ASC")
+    List<LocationStock> selectBasketsBySource(@Param("locationId") Long locationId,
+                                              @Param("sourceBizId") Long sourceBizId);
+
+    /**
+     * 某 {@code (库位, 产品, 地块, 来源业务)} 的地块篮余量合计（V6 row102 出库上限校验）。
+     *
+     * <p>与 {@link #selectPlotProductBaskets} 同一 WHERE（含 {@code source_biz_id} 与
+     * {@code third_phase=0}），两者口径必须逐条一致：校验说够、真扣时不够，就会在事务中途抛 409；
+     * 反过来校验范围比扣减宽（少一个 source_biz_id），就成了「拿别人的货抬高自己的出库上限」——
+     * 实测靠这个能把采摘 60kg 的记录出库 68kg。无任何篮子返 0（{@code COALESCE}），调用方不必判 null。</p>
+     *
+     * @return 该 (库位, 产品, 地块, 来源业务) 的库存合计（kg），无篮子返 0
+     */
+    @Select("SELECT COALESCE(SUM(product_stock), 0) FROM t_warehouse_location_stock "
+        + " WHERE location_id = #{locationId} "
+        + "   AND product_id  = #{productId} "
+        + "   AND plot_id     = #{plotId} "
+        + "   AND source_biz_id = #{sourceBizId} "
+        + "   AND third_phase = 0 "
+        + "   AND del_flag = '0' "
+        + "   AND tenant_id = '1001'")
+    BigDecimal sumPlotProductStock(@Param("locationId") Long locationId,
+                                   @Param("productId") Long productId,
+                                   @Param("plotId") Long plotId,
+                                   @Param("sourceBizId") Long sourceBizId);
+
+    /**
+     * 批量取一批种植记录在某库位的「产品 × 来源业务」库存合计（V6 row102 mp 地块明细逐产品剩余重量）。
+     *
+     * <p>改造后「剩余重量 = 这条种植记录采下来、还躺在毛菜间的量」，读侧不再按
+     * {@code 采收累计 − 处理累计} 算 —— 那个口径在「采摘即入库」之后会与真实库存漂移
+     * （作物没配产品时采摘不建篮、毛菜间出库/盘点也会动库存）。一次 IN 查完，不逐条查库。</p>
+     *
+     * <p><b>聚合键是 {@code source_biz_id} 不是 {@code plot_id}</b>：同一地块可能同时挂着两条种植记录，
+     * 按地块聚合会让两条记录各自读到同一份库存、mp 头卡 {@code Σ remainWeight} 直接翻倍。</p>
+     *
+     * @param locationId   库位 ID（毛菜鲜品库 L0006）
+     * @param sourceBizIds 来源业务 id 集合（种植记录 id，非空）
+     * @return 每个 (来源业务, 产品) 的库存合计行；无库存的组合不出现
+     */
+    @Select("""
+        <script>
+        SELECT s.source_biz_id                  AS sourceBizId,
+               s.product_id                     AS productId,
+               COALESCE(SUM(s.product_stock), 0) AS stockWeight
+          FROM t_warehouse_location_stock s
+         WHERE s.location_id = #{locationId}
+           AND s.product_id IS NOT NULL
+           AND s.third_phase = 0
+           AND s.del_flag  = '0'
+           AND s.tenant_id = '1001'
+           AND s.source_biz_id IN
+           <foreach collection='sourceBizIds' item='sid' open='(' separator=',' close=')'>#{sid}</foreach>
+         GROUP BY s.source_biz_id, s.product_id
+        </script>
+        """)
+    List<PlotProductStockRow> selectPlotProductStocks(@Param("locationId") Long locationId,
+                                                      @Param("sourceBizIds") Collection<Long> sourceBizIds);
 
     /**
      * 按地块取默认库位（自产果蔬「按地块维度」领用时 {@code locationId} 为空的兜底）：该地块库存最多的

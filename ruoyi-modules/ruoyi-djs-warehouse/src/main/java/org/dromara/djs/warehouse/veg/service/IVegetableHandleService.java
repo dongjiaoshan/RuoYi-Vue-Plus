@@ -28,10 +28,17 @@ import java.util.List;
 public interface IVegetableHandleService {
 
     /**
-     * mp 提交处理记录（事务一致）。
+     * 遗留通用录入入口 —— <b>V6 row102 起已停用，调用必抛 410</b>。
      *
-     * @return vegetable_handle.id（汇总主键，前端进入"我的"列表时回展）
+     * <p>它按老口径记账（采收不建库存篮、处理不扣库存、还能往已取消的「毛菜鲜品库」去向入库），
+     * 与改造后的「采摘即入库 / 处理即出库」并行跑会让毛菜间的账三种方式对不上。
+     * 采摘走 {@link #submitHarvest}，处理走 {@link #submitProcess}。
+     * 方法本身保留是为了让老客户端拿到一个说得清原因的错误，而不是 404。</p>
+     *
+     * @return 永不返回
+     * @throws org.dromara.common.core.exception.ServiceException 恒抛（410）
      */
+    @Deprecated(since = "V6-R102")
     Long submitHandleRecord(HandleRecordSubmitBo bo);
 
     /**

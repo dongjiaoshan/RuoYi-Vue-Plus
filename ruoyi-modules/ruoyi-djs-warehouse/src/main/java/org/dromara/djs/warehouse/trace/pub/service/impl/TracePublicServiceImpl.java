@@ -3,6 +3,7 @@ package org.dromara.djs.warehouse.trace.pub.service.impl;
 import cn.hutool.core.lang.Dict;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import lombok.extern.slf4j.Slf4j;
+import org.dromara.common.core.service.DictService;
 import org.dromara.common.core.service.OssService;
 import org.dromara.common.core.utils.StringUtils;
 import org.dromara.common.json.utils.JsonUtils;
@@ -115,10 +116,19 @@ public class TracePublicServiceImpl
     private static final Duration CACHE_TTL = Duration.ofMinutes(10);
 
     /**
-     * 猪肉时间轴不展示的事件（DENGBO row61）：白条入库 / 屠宰 / 排酸——不在客户要求的 7 节点集，聚合时剔除。
+     * 猪肉时间轴恒不展示的事件（DENGBO row61）：白条入库 / 屠宰——不在客户要求的节点集，聚合时剔除。
+     *
+     * <p>排酸（{@code acid}）不在此列：V6 row111 起改成<b>按排酸时长条件展示</b>——够时长才显示排酸时间点，
+     * 时长不足（或压根没记时长）仍旧剔除，见 {@link #keepAcidNode}。</p>
      */
     private static final Set<String> PORK_TIMELINE_EXCLUDED = Set.of(
-        TraceContentConst.WHITE_BAR_IN, TraceContentConst.SLAUGHTER, TraceContentConst.ACID);
+        TraceContentConst.WHITE_BAR_IN, TraceContentConst.SLAUGHTER);
+
+    /** 排酸时长控制字典（V6 row111）：单条字典项，dict_value 即分钟数下限。 */
+    private static final String DICT_PORK_ACID_CONTROL = "djs_pork_acid_control";
+
+    /** 排酸时长下限兜底（分钟）：字典缺失 / 值非法时用它，与甲方给的默认值一致。 */
+    private static final int ACID_MIN_MINUTES_FALLBACK = 60;
 
     /**
      * 果蔬农事记录不展示的类型（DENGBO row63）：采摘 / 采摘活动——追溯页只显真实农事工序，采摘另有节点。
@@ -168,6 +178,8 @@ public class TracePublicServiceImpl
     private final VegDisplayNameMapper vegDisplayNameMapper;
     /** 白条领用 / 分割记录：猪肉追溯「白条分割」节点时间源（row61，cut_start_time）。 */
     private final PigCutRecordMapper pigCutRecordMapper;
+    /** 读排酸时长控制字典（row111，djs_pork_acid_control 的 dict_value 即分钟数下限）。 */
+    private final DictService dictService;
 
     public TracePublicServiceImpl(TraceCodeMapper baseMapper,
                                   TraceEventMapper traceEventMapper,
@@ -192,7 +204,8 @@ public class TracePublicServiceImpl
                                   PlantingRecordMapper plantingRecordMapper,
                                   ProductProductionMapper productProductionMapper,
                                   VegDisplayNameMapper vegDisplayNameMapper,
-                                  PigCutRecordMapper pigCutRecordMapper) {
+                                  PigCutRecordMapper pigCutRecordMapper,
+                                  DictService dictService) {
         super(baseMapper);
         this.traceEventMapper = traceEventMapper;
         this.productInfoMapper = productInfoMapper;
@@ -217,6 +230,7 @@ public class TracePublicServiceImpl
         this.productProductionMapper = productProductionMapper;
         this.vegDisplayNameMapper = vegDisplayNameMapper;
         this.pigCutRecordMapper = pigCutRecordMapper;
+        this.dictService = dictService;
     }
 
     @Override
@@ -434,7 +448,8 @@ public class TracePublicServiceImpl
         vo.setQuarantine(null);
 
         // row61：时间轴重构成 7 节点（出栏/屠宰完成/白条领用/白条分割/产品生产/冷链发货/到店）
-        remodelPorkTimeline(timeline, earNo);
+        // row111：排酸时长够（≥ 字典 djs_pork_acid_control 的分钟数）时再多一个排酸节点
+        remodelPorkTimeline(timeline, earNo, code.getAcidRemoveMinutes());
 
         // 门店（pork/veg 共用 fillStore）
         fillStore(vo, code);
@@ -451,15 +466,48 @@ public class TracePublicServiceImpl
      * <p>「白条分割」时刻取 {@code t_warehouse_pig_cut_record.cut_start_time}（out_type='cut' 首次分割开始）；
      * 无（外购白条 / 未分割）→ 不补该节点。按 {@code trace_time} 倒序（最新在上，对齐原型「由下至上：出栏→到店」）。</p>
      */
-    private void remodelPorkTimeline(List<PublicTraceVo.TimelineNode> timeline, String earNo) {
+    private void remodelPorkTimeline(List<PublicTraceVo.TimelineNode> timeline, String earNo,
+                                     Integer acidRemoveMinutes) {
         if (timeline == null) {
             return;
         }
         timeline.removeIf(n -> PORK_TIMELINE_EXCLUDED.contains(n.getTraceContent()));
+        if (!keepAcidNode(acidRemoveMinutes)) {
+            timeline.removeIf(n -> TraceContentConst.ACID.equals(n.getTraceContent()));
+        }
         LocalDateTime cutTime = findWhiteBarCutTime(earNo);
         addProcessNode(timeline, TraceContentConst.WHITE_BAR_CUT, cutTime);
         timeline.sort(Comparator.comparing(PublicTraceVo.TimelineNode::getTraceTime,
             Comparator.nullsLast(Comparator.reverseOrder())));
+    }
+
+    /**
+     * 是否展示排酸节点（V6 row111）。
+     *
+     * <p>规则由甲方给定：排酸时长低于字典 {@code djs_pork_acid_control} 配置的分钟数 → 这头猪实际没排够酸，
+     * 不把排酸时间点摆给消费者看。<b>时长为空同样不展示</b>——拿不到时长就证明不了排够了。
+     * 字典缺失 / 值不是正整数 → 回落 {@link #ACID_MIN_MINUTES_FALLBACK}（60 分钟），不因配置没配好就全放行。</p>
+     */
+    private boolean keepAcidNode(Integer acidRemoveMinutes) {
+        if (acidRemoveMinutes == null) {
+            return false;
+        }
+        return acidRemoveMinutes >= acidMinMinutes();
+    }
+
+    /** 读排酸时长下限（分钟）：字典单条项的 dict_value 即分钟数；读不到 / 非正整数 → 兜底 60。 */
+    private int acidMinMinutes() {
+        try {
+            for (String value : dictService.getAllDictByDictType(DICT_PORK_ACID_CONTROL).keySet()) {
+                int minutes = Integer.parseInt(value.trim());
+                if (minutes > 0) {
+                    return minutes;
+                }
+            }
+        } catch (Exception e) {
+            log.warn("[TRC-PUB] 读排酸时长控制字典失败，按 {} 分钟兜底：{}", ACID_MIN_MINUTES_FALLBACK, e.getMessage());
+        }
+        return ACID_MIN_MINUTES_FALLBACK;
     }
 
     /**

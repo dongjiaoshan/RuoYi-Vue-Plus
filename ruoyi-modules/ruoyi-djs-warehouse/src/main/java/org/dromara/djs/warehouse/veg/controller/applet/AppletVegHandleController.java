@@ -33,7 +33,7 @@ import java.util.List;
  * <p>端点：</p>
  * <ul>
  *   <li>{@code GET  /applet/warehouse/vegHandle/pending}   待处理 planting_record 列表</li>
- *   <li>{@code POST /applet/warehouse/vegHandle/submit}    提交一条 handle_record（采收 / 处理）</li>
+ *   <li>{@code POST /applet/warehouse/vegHandle/submit}    <b>已停用</b>（V6 row102）—— 恒返 410，指向 harvest / process</li>
  *   <li>{@code GET  /applet/warehouse/vegHandle/myRecords} "我的"处理流水（按 handle_user）</li>
  *   <li>{@code GET  /applet/warehouse/vegHandle/{id}/records} 汇总下钻流水（mp 详情用）</li>
  *   <li>{@code GET  /applet/warehouse/vegHandle/crops}     菜品列表（按 crop 聚合 4 重量）</li>
@@ -61,8 +61,15 @@ public class AppletVegHandleController extends BaseController {
         return R.ok(service.listPending());
     }
 
+    /**
+     * 遗留通用录入入口 —— <b>已停用</b>，恒返 410 并指向新入口（{@code /harvest} / {@code /process}）。
+     *
+     * <p>路由保留而不是直接删掉：删了老客户端只会拿到「请求地址不存在」，
+     * 留着能给出「为什么不能用、该用哪个」。</p>
+     */
     @SaCheckLogin
     @PostMapping("/submit")
+    @SuppressWarnings("deprecation")
     public R<Long> submit(@Valid @RequestBody HandleRecordSubmitBo bo) {
         return R.ok(service.submitHandleRecord(bo));
     }

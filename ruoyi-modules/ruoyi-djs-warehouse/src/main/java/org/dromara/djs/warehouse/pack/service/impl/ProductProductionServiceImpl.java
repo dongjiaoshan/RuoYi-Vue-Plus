@@ -151,6 +151,9 @@ public class ProductProductionServiceImpl
     /** 发送位置=礼盒：该打包成品是礼盒组件，预留给礼盒打包消耗，不进发货月台、不扣门店直接需求。 */
     private static final String DELIVER_DEST_GIFT = "gift";
 
+    /** 发送位置=后台出库（V6 row115）：仓库出库产出行专用标记，据此挡在发货月台可发清单之外。 */
+    private static final String DELIVER_DEST_WAREHOUSE_OUT = "warehouse_out";
+
     /** 白条/猪肉业态（WMS-WHITEBAR-SHIP-001 出库发货来源校验）。 */
     private static final String BELONG_TYPE_WHITE_BAR = "white_bar";
     private static final String BELONG_TYPE_PORK = "pork";
@@ -911,6 +914,10 @@ public class ProductProductionServiceImpl
         p.setProduceLocation(src.getLocationId());
         p.setPackStatus(PACK_STATUS_PACKED);
         p.setProofOssIds(bo.getProofOssIds());
+        // 发送位置=后台出库（V6 row115）：这批货是矿山/厨房/劲牌等单位直接来仓库拿走的，不发门店、拿走即终态。
+        // 不打这个标它就只是一条 store_id 为空的产出行，发货月台按「同门店 OR 未绑门店」把它当通用件捞进
+        // 门店可发清单——门店卡「生产量」多一件、满足率虚高，还能被出车发货发给门店。
+        p.setDeliverDest(DELIVER_DEST_WAREHOUSE_OUT);
         // 出库方式=后台出库 + 出库去向记入备注（双语义落库口径待邓博确认，见 report 待确认项①）
         p.setRemark(buildWarehouseOutRemark(bo.getOutDest(), bo.getRemark()));
         baseMapper.insert(p);
@@ -1190,12 +1197,15 @@ public class ProductProductionServiceImpl
         LambdaQueryWrapper<ProductProduction> wrapper = new LambdaQueryWrapper<>();
         wrapper.eq(byBatch, ProductProduction::getProductId, query.getProductId())
             .apply(byBatch, "DATE(produce_date) = DATE({0})", query.getProduceDate())
-            // 门店需求「产品明细」：排除礼盒组件产出（deliver_dest='gift'，预留礼盒打包、不履约门店直接需求），
-            // 否则明细行数比需求量多出礼盒组件行。NULL-safe：白条/猪肉产出 deliver_dest 为 NULL，须保留
-            // （裸 <> 'gift' 会因三值逻辑把 NULL 行也排除，导致白条明细消失）。
+            // 门店需求「产品明细」：排除「不履约门店直接需求」的产出 —— 礼盒组件（deliver_dest='gift'，
+            // 预留礼盒打包）与后台出库（'warehouse_out'，矿山/厨房直接从仓库拿走），否则明细行数会比需求量多。
+            // 两个值必须与 ShipmentServiceImpl.availableProductionWrapper 的排除项保持一致（V6 row115 的
+            // clean-QA 抓到这里漏同步：那边加了 warehouse_out、这里还只排 gift）。
+            // NULL-safe：白条/猪肉产出 deliver_dest 为 NULL，须保留（裸 NOT IN 会因三值逻辑把 NULL 行也排除，
+            // 导致白条明细消失）。
             .and(Boolean.TRUE.equals(query.getExcludeGiftDeliver()),
                 w -> w.isNull(ProductProduction::getDeliverDest)
-                    .or().ne(ProductProduction::getDeliverDest, DELIVER_DEST_GIFT))
+                    .or().notIn(ProductProduction::getDeliverDest, DELIVER_DEST_GIFT, DELIVER_DEST_WAREHOUSE_OUT))
             // 门店损耗页：按需求过滤逐件（契约 a）
             .eq(byDemand, ProductProduction::getDemandId, query.getDemandId())
             // 是否损坏过滤（契约 a；空=全部）

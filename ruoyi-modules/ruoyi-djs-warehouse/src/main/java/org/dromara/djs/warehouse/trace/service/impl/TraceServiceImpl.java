@@ -207,9 +207,71 @@ public class TraceServiceImpl
         // d. 按耳号回填上游 4 事件（marketing/singe/slaughter/acid，真实时间戳），补齐链路
         backfillEarNoEvents(produceCode, earNo);
 
+        // e. 回填「冷链发货」（V6 row116）。门店现场码的原材料是**已冷链发到店的白条**，那趟发货挂在上游
+        //    白条产出行自己的码上，本码出生时不会再触发一次 ShipTraceEventListener → C 端时间线在「屠宰完成」
+        //    之后直接跳到「到店」，中间缺一节。按同耳号已有码上的 ship 事件时刻回填（真实发货时刻，不是当前时间）。
+        backfillOnsiteShipEvent(produceCode, earNo);
+
         log.info("[STORE-TRACE-ONSITE-001] genPorkOnsiteCode produceCode={} productionCode={} earNo={} cut={} weight={}",
             produceCode, productionCode, earNo, cutLabel, weight);
         return produceCode;
+    }
+
+    /**
+     * 门店现场码回填「冷链发货」节点（V6 row116）。
+     *
+     * <p>只用于 {@link #genPorkOnsiteCode}：门店现场分割/打包的前提就是白条已冷链发到店，所以这条 ship
+     * 一定发生过、且一定早于本码出生。时刻取<b>同一头猪已有追溯码上最近一条 {@code ship} 事件</b>
+     * （即那趟把白条送到店的发货），不取当前时间。</p>
+     *
+     * <p>不放进 {@link #backfillEarNoEvents} 的原因：那个方法同时服务仓库打包生码，而同一头猪
+     * 「半扇 A 已发门店、半扇 B 还在仓库分割」是正常情况 —— 在仓库产品的码上回填 A 的发货时刻，
+     * 等于给一件还没出仓的货盖了发货戳。</p>
+     *
+     * <p>查不到（该猪还没有任何码发过货 / 数据缺失）→ 不写，不造假。幂等：本码已有 ship 则跳过。
+     * 整体 try-catch swallow，回填失败不拖垮门店打包主事务。</p>
+     */
+    private void backfillOnsiteShipEvent(String produceCode, String earNo) {
+        try {
+            if (!findExistingContents(produceCode, Set.of(TraceContentConst.SHIP)).isEmpty()) {
+                return;
+            }
+            List<TraceCode> siblings = baseMapper.selectList(
+                new LambdaQueryWrapper<TraceCode>()
+                    .select(TraceCode::getProduceCode)
+                    .eq(TraceCode::getPigEarNo, earNo)
+                    .ne(TraceCode::getProduceCode, produceCode)
+                    .orderByDesc(TraceCode::getId)
+                    .last("LIMIT 200"));
+            List<String> siblingCodes = siblings.stream()
+                .map(TraceCode::getProduceCode)
+                .filter(StringUtils::isNotBlank)
+                .toList();
+            if (siblingCodes.isEmpty()) {
+                return;
+            }
+            TraceEvent ship = traceEventMapper.selectOne(
+                new LambdaQueryWrapper<TraceEvent>()
+                    .select(TraceEvent::getTraceTime)
+                    .in(TraceEvent::getProduceCode, siblingCodes)
+                    .eq(TraceEvent::getTraceContent, TraceContentConst.SHIP)
+                    .orderByDesc(TraceEvent::getTraceTime)
+                    .last("LIMIT 1"));
+            if (ship == null || ship.getTraceTime() == null) {
+                log.info("[STORE-TRACE-ONSITE-001] 无上游 ship 事件可回填 produceCode={} earNo={}", produceCode, earNo);
+                return;
+            }
+            TraceEvent event = new TraceEvent();
+            event.setProduceCode(produceCode);
+            event.setTraceContent(TraceContentConst.SHIP);
+            event.setTraceTime(ship.getTraceTime());
+            insertTraceEvent(event);
+            log.info("[STORE-TRACE-ONSITE-001] 回填冷链发货 produceCode={} earNo={} shipTime={}",
+                produceCode, earNo, ship.getTraceTime());
+        } catch (Exception e) {
+            log.warn("[STORE-TRACE-ONSITE-001] 回填冷链发货失败(跳过) produceCode={} earNo={}: {}",
+                produceCode, earNo, e.getMessage());
+        }
     }
 
     /**
@@ -328,6 +390,10 @@ public class TraceServiceImpl
             written += backfillOne(produceCode, TraceContentConst.WHITE_BAR_PICK, pickupTime, existing);
             written += backfillOne(produceCode, TraceContentConst.SLAUGHTER, bar.getOutTime(), existing);
             written += backfillOne(produceCode, TraceContentConst.ACID, bar.getOutTime(), existing);
+            // V6 row111：出库时间（slaughter/acid 都取 bar.out_time）写入的同时，把排酸时长定格到追溯码上。
+            // 取 cut_record.acid_remove_minutes —— 三种出库方式（分割/发货月台/后台出库）都会写它；
+            // bar.acid_remove_time 只有分割路径写，发货领用的白条上恒空，拿它当来源会整片缺值。
+            fillAcidMinutes(produceCode, bar.getId());
             log.info("[TRC-CORE-001] backfill ear-no events produceCode={} earNo={} written={}",
                 produceCode, earNo, written);
         } catch (Exception e) {
@@ -351,6 +417,34 @@ public class TraceServiceImpl
         event.setTraceTime(toLocalDateTime(eventTime));
         insertTraceEvent(event);
         return 1;
+    }
+
+    /**
+     * 把该白条的排酸时长（分钟）定格到追溯码上（V6 row111）。
+     *
+     * <p>来源 {@code cut_record.acid_remove_minutes}（同一白条多条出库记录取最新一条）。查不到 / 未出库
+     * → 不写，保持 NULL（C 端按「拿不到时长」处理，不显示排酸节点）。已写过的不覆盖：排酸时长是出库那一刻
+     * 的定格值，后续同白条再有别的出库记录不该改写已生成的码。</p>
+     */
+    private void fillAcidMinutes(String produceCode, Long whiteBarId) {
+        if (whiteBarId == null) {
+            return;
+        }
+        PigCutRecord cut = pigCutRecordMapper.selectOne(
+            new LambdaQueryWrapper<PigCutRecord>()
+                .select(PigCutRecord::getAcidRemoveMinutes)
+                .eq(PigCutRecord::getWhiteBarId, whiteBarId)
+                .isNotNull(PigCutRecord::getAcidRemoveMinutes)
+                .orderByDesc(PigCutRecord::getId)
+                .last("LIMIT 1"));
+        if (cut == null || cut.getAcidRemoveMinutes() == null) {
+            return;
+        }
+        TraceCode patch = new TraceCode();
+        patch.setAcidRemoveMinutes(cut.getAcidRemoveMinutes());
+        baseMapper.update(patch, new LambdaQueryWrapper<TraceCode>()
+            .eq(TraceCode::getProduceCode, produceCode)
+            .isNull(TraceCode::getAcidRemoveMinutes));
     }
 
     /**

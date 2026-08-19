@@ -130,6 +130,7 @@ class TracePublicServiceImplTest {
     @Mock private ProductProductionMapper productProductionMapper;
     @Mock private VegDisplayNameMapper vegDisplayNameMapper;
     @Mock private PigCutRecordMapper pigCutRecordMapper;
+    @Mock private org.dromara.common.core.service.DictService dictService;
 
     private TracePublicServiceImpl service;
     private MockedStatic<TenantHelper> tenantHelperMock;
@@ -178,7 +179,7 @@ class TracePublicServiceImplTest {
             pigMapper, pigGrowthMapper, pigMarketingMapper, medRecordMapper, medicineMapper, sowDetailService,
             plotInfoMapper, plotZoneMapper, farmRecordsMapper, cropOrganicMapper, plotOrganicMapper,
             plantDetailsMapper, cropInfoMapper,
-            plantingRecordMapper, productProductionMapper, vegDisplayNameMapper, pigCutRecordMapper));
+            plantingRecordMapper, productProductionMapper, vegDisplayNameMapper, pigCutRecordMapper, dictService));
         doReturn(null).when(service).readCache(anyString());       // 缓存恒未命中 → 每次走聚合
         doNothing().when(service).writeCache(anyString(), any());  // 写缓存 no-op
         // TenantHelper.ignore(Supplier) → 直接执行 supplier
