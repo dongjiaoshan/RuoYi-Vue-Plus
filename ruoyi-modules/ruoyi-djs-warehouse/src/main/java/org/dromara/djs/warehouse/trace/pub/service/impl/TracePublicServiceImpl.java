@@ -3,7 +3,6 @@ package org.dromara.djs.warehouse.trace.pub.service.impl;
 import cn.hutool.core.lang.Dict;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import lombok.extern.slf4j.Slf4j;
-import org.dromara.common.core.service.DictService;
 import org.dromara.common.core.service.OssService;
 import org.dromara.common.core.utils.StringUtils;
 import org.dromara.common.json.utils.JsonUtils;
@@ -23,8 +22,6 @@ import org.dromara.djs.breed.med.record.domain.MedRecord;
 import org.dromara.djs.breed.med.record.mapper.MedRecordMapper;
 import org.dromara.djs.common.store.domain.Store;
 import org.dromara.djs.common.store.mapper.StoreMapper;
-import org.dromara.djs.warehouse.cut.domain.PigCutRecord;
-import org.dromara.djs.warehouse.cut.mapper.PigCutRecordMapper;
 import org.dromara.djs.plant.crop.domain.CropInfo;
 import org.dromara.djs.plant.crop.mapper.CropInfoMapper;
 import org.dromara.djs.plant.farm.domain.FarmRecords;
@@ -116,27 +113,20 @@ public class TracePublicServiceImpl
     private static final Duration CACHE_TTL = Duration.ofMinutes(10);
 
     /**
-     * 猪肉时间轴恒不展示的事件（DENGBO row61）：白条入库 / 屠宰——不在客户要求的节点集，聚合时剔除。
+     * 猪肉时间轴**只展示**这四个节点（V6 row128，甲方 2026-08-21）：
+     * {@code marketing}(出栏) / {@code singe}(屠宰完成) / {@code ship}(冷链运输) / {@code arrival}(到店)。
      *
-     * <p>排酸（{@code acid}）不在此列：V6 row111 起改成<b>按排酸时长条件展示</b>——够时长才显示排酸时间点，
-     * 时长不足（或压根没记时长）仍旧剔除，见 {@link #keepAcidNode}。</p>
+     * <p>白名单而不是黑名单：以前按黑名单剔（row61 剔白条入库/屠宰/排酸），每加一种新事件都得记得来这里
+     * 补一笔，漏了就自己冒到 C 端页面上。改成白名单后，新事件默认不外露，要露必须显式加进来。</p>
      */
-    private static final Set<String> PORK_TIMELINE_EXCLUDED = Set.of(
-        TraceContentConst.WHITE_BAR_IN, TraceContentConst.SLAUGHTER);
-
-    /** 排酸时长控制字典（V6 row111）：单条字典项，dict_value 即分钟数下限。 */
-    private static final String DICT_PORK_ACID_CONTROL = "djs_pork_acid_control";
-
-    /** 排酸时长下限兜底（分钟）：字典缺失 / 值非法时用它，与甲方给的默认值一致。 */
-    private static final int ACID_MIN_MINUTES_FALLBACK = 60;
+    private static final Set<String> PORK_TIMELINE_KEPT = Set.of(
+        TraceContentConst.MARKETING, TraceContentConst.SINGE,
+        TraceContentConst.SHIP, TraceContentConst.ARRIVAL);
 
     /**
      * 果蔬农事记录不展示的类型（DENGBO row63）：采摘 / 采摘活动——追溯页只显真实农事工序，采摘另有节点。
      */
     private static final Set<String> VEG_PLOT_RECORD_EXCLUDED = Set.of("harvest", "harvest_activity");
-
-    /** 白条领用表出库类型：分割车间（{@code djs_pig_cut_out_type}），白条分割节点时刻只取 cut。 */
-    private static final String PIG_CUT_OUT_TYPE_CUT = "cut";
 
     /** 门店现场生码 remark 前缀（{@code TraceServiceImpl.buildOnsiteRemark} 写入）。 */
     private static final String ONSITE_REMARK_PREFIX = "现场生码";
@@ -176,10 +166,6 @@ public class TracePublicServiceImpl
     /** 发货产品生产记录：产品生产（打包）节点时间 + 果蔬成品实际称重（按 trace_code 关联）。 */
     private final ProductProductionMapper productProductionMapper;
     private final VegDisplayNameMapper vegDisplayNameMapper;
-    /** 白条领用 / 分割记录：猪肉追溯「白条分割」节点时间源（row61，cut_start_time）。 */
-    private final PigCutRecordMapper pigCutRecordMapper;
-    /** 读排酸时长控制字典（row111，djs_pork_acid_control 的 dict_value 即分钟数下限）。 */
-    private final DictService dictService;
 
     public TracePublicServiceImpl(TraceCodeMapper baseMapper,
                                   TraceEventMapper traceEventMapper,
@@ -203,9 +189,7 @@ public class TracePublicServiceImpl
                                   CropInfoMapper cropInfoMapper,
                                   PlantingRecordMapper plantingRecordMapper,
                                   ProductProductionMapper productProductionMapper,
-                                  VegDisplayNameMapper vegDisplayNameMapper,
-                                  PigCutRecordMapper pigCutRecordMapper,
-                                  DictService dictService) {
+                                  VegDisplayNameMapper vegDisplayNameMapper) {
         super(baseMapper);
         this.traceEventMapper = traceEventMapper;
         this.productInfoMapper = productInfoMapper;
@@ -229,8 +213,6 @@ public class TracePublicServiceImpl
         this.plantingRecordMapper = plantingRecordMapper;
         this.productProductionMapper = productProductionMapper;
         this.vegDisplayNameMapper = vegDisplayNameMapper;
-        this.pigCutRecordMapper = pigCutRecordMapper;
-        this.dictService = dictService;
     }
 
     @Override
@@ -447,86 +429,29 @@ public class TracePublicServiceImpl
         // 检疫信息：V1 数据源缺口（无检疫表/字段），返 null（见 _open-issues）
         vo.setQuarantine(null);
 
-        // row61：时间轴重构成 7 节点（出栏/屠宰完成/白条领用/白条分割/产品生产/冷链发货/到店）
-        // row111：排酸时长够（≥ 字典 djs_pork_acid_control 的分钟数）时再多一个排酸节点
-        remodelPorkTimeline(timeline, earNo, code.getAcidRemoveMinutes());
+        // row128：时间轴只留四节点（出栏 / 屠宰完成 / 冷链运输 / 到店）
+        remodelPorkTimeline(timeline);
 
         // 门店（pork/veg 共用 fillStore）
         fillStore(vo, code);
     }
 
     /**
-     * 猪肉追溯时间轴重构（DENGBO row61）：只保留客户要求的 7 节点，补「白条分割」合成节点。
+     * 猪肉追溯时间轴重构（V6 row128）：只留 出栏 → 屠宰完成 → 冷链运输 → 到店 四个节点。
      *
-     * <p><b>保留</b>：{@code marketing}(出栏) / {@code singe}(屠宰完成) / {@code white_bar_pick}(白条领用) /
-     * {@code white_bar_cut}(白条分割·合成) / {@code in_stock}(产品生产·打包完成) / {@code ship}(冷链发货) /
-     * {@code arrival}(到店)。<b>去掉</b>：{@code white_bar_in}(白条入库) / {@code slaughter}(屠宰) /
-     * {@code acid}(排酸)——不在客户要求节点集。</p>
+     * <p>甲方 2026-08-21 收窄口径，覆盖此前两次：row61 的 7 节点（含白条领用 / 白条分割 / 产品生产）、
+     * 以及 row111「排酸时长够就显示排酸节点」——这两条都不再生效。排酸时长本身仍按 row111 存在
+     * {@code trace_code.acid_remove_minutes} 上（甲方要的是「新增一个字段」），只是不再进 C 端时间轴。</p>
      *
-     * <p>「白条分割」时刻取 {@code t_warehouse_pig_cut_record.cut_start_time}（out_type='cut' 首次分割开始）；
-     * 无（外购白条 / 未分割）→ 不补该节点。按 {@code trace_time} 倒序（最新在上，对齐原型「由下至上：出栏→到店」）。</p>
+     * <p>按 {@code trace_time} 倒序（最新在上，对齐原型「由下至上：出栏→到店」）。</p>
      */
-    private void remodelPorkTimeline(List<PublicTraceVo.TimelineNode> timeline, String earNo,
-                                     Integer acidRemoveMinutes) {
+    private void remodelPorkTimeline(List<PublicTraceVo.TimelineNode> timeline) {
         if (timeline == null) {
             return;
         }
-        timeline.removeIf(n -> PORK_TIMELINE_EXCLUDED.contains(n.getTraceContent()));
-        if (!keepAcidNode(acidRemoveMinutes)) {
-            timeline.removeIf(n -> TraceContentConst.ACID.equals(n.getTraceContent()));
-        }
-        LocalDateTime cutTime = findWhiteBarCutTime(earNo);
-        addProcessNode(timeline, TraceContentConst.WHITE_BAR_CUT, cutTime);
+        timeline.removeIf(n -> !PORK_TIMELINE_KEPT.contains(n.getTraceContent()));
         timeline.sort(Comparator.comparing(PublicTraceVo.TimelineNode::getTraceTime,
             Comparator.nullsLast(Comparator.reverseOrder())));
-    }
-
-    /**
-     * 是否展示排酸节点（V6 row111）。
-     *
-     * <p>规则由甲方给定：排酸时长低于字典 {@code djs_pork_acid_control} 配置的分钟数 → 这头猪实际没排够酸，
-     * 不把排酸时间点摆给消费者看。<b>时长为空同样不展示</b>——拿不到时长就证明不了排够了。
-     * 字典缺失 / 值不是正整数 → 回落 {@link #ACID_MIN_MINUTES_FALLBACK}（60 分钟），不因配置没配好就全放行。</p>
-     */
-    private boolean keepAcidNode(Integer acidRemoveMinutes) {
-        if (acidRemoveMinutes == null) {
-            return false;
-        }
-        return acidRemoveMinutes >= acidMinMinutes();
-    }
-
-    /** 读排酸时长下限（分钟）：字典单条项的 dict_value 即分钟数；读不到 / 非正整数 → 兜底 60。 */
-    private int acidMinMinutes() {
-        try {
-            for (String value : dictService.getAllDictByDictType(DICT_PORK_ACID_CONTROL).keySet()) {
-                int minutes = Integer.parseInt(value.trim());
-                if (minutes > 0) {
-                    return minutes;
-                }
-            }
-        } catch (Exception e) {
-            log.warn("[TRC-PUB] 读排酸时长控制字典失败，按 {} 分钟兜底：{}", ACID_MIN_MINUTES_FALLBACK, e.getMessage());
-        }
-        return ACID_MIN_MINUTES_FALLBACK;
-    }
-
-    /**
-     * 白条分割时刻：按耳号查 {@code cut_record}（{@code out_type='cut'}）最早一次分割开始时间
-     * {@code cut_start_time}；无（外购 / 未分割 / 时间未落）→ null（不补节点）。
-     */
-    private LocalDateTime findWhiteBarCutTime(String earNo) {
-        if (StringUtils.isBlank(earNo)) {
-            return null;
-        }
-        PigCutRecord cut = pigCutRecordMapper.selectOne(
-            new LambdaQueryWrapper<PigCutRecord>()
-                .select(PigCutRecord::getCutStartTime)
-                .eq(PigCutRecord::getEarNo, earNo)
-                .eq(PigCutRecord::getOutType, PIG_CUT_OUT_TYPE_CUT)
-                .isNotNull(PigCutRecord::getCutStartTime)
-                .orderByAsc(PigCutRecord::getCutStartTime)
-                .last("limit 1"));
-        return cut == null ? null : toLocalDateTime(cut.getCutStartTime());
     }
 
     private List<PublicTraceVo.GrowthRow> toGrowthRows(List<PigGrowth> growths, LocalDate birthDate) {
