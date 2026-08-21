@@ -162,10 +162,14 @@ public class StoreTraceServiceImpl implements IStoreTraceService {
         // 可当原材料的到店产品 = 白条业态 ∪ 配置了「原材料外售=是」的猪肉成品（V6 row120）。
         // 后者（如「通排」）到店后同样是拿来现场分割/打包的原材料，工人要能选到它对应的那头猪的耳号；
         // 只认 belong_type='white_bar' 会让这类产品在打包页根本没有可选耳号。
+        // 「原材料外售」那一支必须同时限 belong_type='pork'：这是门店**猪肉**打包页，
+        // 客户哪天把礼盒/果蔬也配成「原材料外售=是」，只要那条到货行带了 ear_no，就会混进猪肉耳号候选。
+        // 现网恰好只配了通排一个且是猪肉，不是代码保证（V6 row120 clean-QA 指出的潜在泄漏）。
         List<Long> materialProductIds = productInfoMapper.selectList(
                 new LambdaQueryWrapper<ProductInfo>()
                     .and(w -> w.eq(ProductInfo::getBelongType, BELONG_TYPE_WHITE_BAR)
-                        .or().eq(ProductInfo::getIsMaterialSold, MATERIAL_SOLD_YES))
+                        .or(x -> x.eq(ProductInfo::getIsMaterialSold, MATERIAL_SOLD_YES)
+                            .eq(ProductInfo::getBelongType, BELONG_TYPE_PORK)))
                     .select(ProductInfo::getId))
             .stream().map(ProductInfo::getId).filter(Objects::nonNull).toList();
         if (materialProductIds.isEmpty()) {
@@ -404,6 +408,8 @@ public class StoreTraceServiceImpl implements IStoreTraceService {
         Long storeId = currentStoreId();
         LocalDate today = LocalDate.now(TODAY_ZONE);
         Map<Long, BigDecimal> inboundByMaterial = new LinkedHashMap<>();
+        // 当日已有盘点记录的原材料（哪怕录的是 0 也算「门店已表态」）——下面兜底时据此避免重复计入
+        Set<Long> ledgeredMaterials = new LinkedHashSet<>();
         if (!materialIds.isEmpty() && storeId != null) {
             LambdaQueryWrapper<StoreDailyLedger> w = new LambdaQueryWrapper<StoreDailyLedger>()
                 .eq(StoreDailyLedger::getStoreId, storeId)
@@ -412,16 +418,23 @@ public class StoreTraceServiceImpl implements IStoreTraceService {
                 .select(StoreDailyLedger::getProductId, StoreDailyLedger::getInboundQty);
             for (StoreDailyLedger l : storeDailyLedgerMapper.selectList(w)) {
                 if (l.getProductId() != null) {
+                    ledgeredMaterials.add(l.getProductId());
                     inboundByMaterial.merge(l.getProductId(),
                         l.getInboundQty() == null ? BigDecimal.ZERO : l.getInboundQty(), BigDecimal::add);
                 }
             }
         }
-        // 3b. 材料外售成品当日到店重也算这个原材料的入库（V6 row126）。
+        // 3b. 门店当日**还没盘点**该原材料时，用「材料外售成品当日到店重」兜底（V6 row126）。
+        //
         // 通排这类「配置了原材料外售」的成品，到店后就是拿来现场分割/打包的原材料，但门店不会为它
         // 单独录一笔盘点入库 → 只认 daily_ledger 的话原材料剩余恒为 0，工人看着有货却打不了包。
-        // 口径与门店日台账的「入库上限 = 白条发货重 + 材料外售成品当日到店重」完全一致
-        // （StoreDailyLedgerServiceImpl#sumMaterialSoldWhiteBarArriveWeight），不另立一套算法。
+        //
+        // ⚠️ 必须是「兜底」不是「相加」：门店盘点页那一栏的**默认预填值本身就是这个到店重**
+        // （StoreDailyLedgerServiceImpl#resolveMaterialSoldInboundWeight 调的同一条
+        //  sumDeliveredWeightToStore）。员工照单接受默认值提交后 daily_ledger 里已经含了这笔量，
+        // 再加一遍就是稳定翻倍 —— 5kg 显示成 10kg，工人会照着超打、把实际库存打穿。
+        // 所以：当日已有该材料的盘点行 → 以盘点值为准（它是门店的最终表态，可能已按分割实重修正过）；
+        // 没有盘点行 → 才用到店重兜底。
         if (!materialIds.isEmpty() && storeId != null) {
             List<ProductInfo> materialSold = productInfoMapper.selectList(
                 new LambdaQueryWrapper<ProductInfo>()
@@ -432,6 +445,9 @@ public class StoreTraceServiceImpl implements IStoreTraceService {
             for (ProductInfo finished : materialSold) {
                 if (finished.getId() == null || finished.getProductMaterial() == null) {
                     continue;
+                }
+                if (ledgeredMaterials.contains(finished.getProductMaterial())) {
+                    continue;   // 该材料今天已盘点 → 盘点值已含这笔到货，不再叠加
                 }
                 BigDecimal arrived = productProductionMapper.sumDeliveredWeightToStore(
                     storeId, finished.getId(), today);
