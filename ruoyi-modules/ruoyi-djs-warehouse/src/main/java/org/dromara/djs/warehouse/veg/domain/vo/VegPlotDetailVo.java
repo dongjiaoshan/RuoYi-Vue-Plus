@@ -49,17 +49,22 @@ public class VegPlotDetailVo implements Serializable {
     private BigDecimal harvestWeight;
 
     /**
-     * 果蔬处理重量(kg)（= vegetable_handle.handled_weight = 入库 + 月台，多次处理录入之和；饲料去向不计入）。
+     * 果蔬处理重量(kg)（= vegetable_handle.handled_weight，V6 row102 口径 = 带该地块标识的产品
+     * <b>从毛菜间出库的总重量</b> = 果蔬月台 + 有机饲喂）。
+     *
+     * <p>⚠️ 饲喂量已含在本字段里，与 {@link #feedWeight} <b>不是互斥的两个桶</b>：
+     * feedWeight 是其中「去向=有机饲喂」的那一部分，展示时不要把两者相加。</p>
      */
     private BigDecimal handledWeight;
 
     /**
-     * 饲料重量(kg)（= vegetable_handle.feed_weight，去向③有机饲料累计）。
+     * 饲料重量(kg)（= vegetable_handle.feed_weight，去向③有机饲喂累计；已包含在 handledWeight 内）。
      */
     private BigDecimal feedWeight;
 
     /**
-     * 剩余重量(kg)（= 采摘录入 − 果蔬处理 − 饲料 = picked − handled − feed）。
+     * 剩余重量(kg)（V6 row102 口径 = 带该地块标识的产品<b>在毛菜间（L0006）的实时库存</b>，
+     * 只统计本作物名下的产品）。
      */
     private BigDecimal remainWeight;
 

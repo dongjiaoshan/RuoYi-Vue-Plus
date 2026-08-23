@@ -68,6 +68,16 @@ public class PigCutPickupBo {
     private BigDecimal pickupWeight;
 
     /**
+     * 出库人 / 领用人（FK → {@code sys_user.user_id}，可空）。
+     *
+     * <p>mp 白条出库页「出库去向=分割车间」时由 {@code <EmployeePicker>} 选（默认当前登录人）。
+     * 只决定 {@code cut_record.operator_id} 与预冷 {@code loss_flow.operator_id} 这两个业务归属字段；
+     * 审计字段（{@code create_by} / {@code update_by}）与库存扣减、状态机流转仍恒用登录人，不受影响。
+     * 为空（admin 白条领用页 / mp 旧端）→ 回落登录人，行为同旧。</p>
+     */
+    private Long operatorId;
+
+    /**
      * 是否半扇分割 1=是 / 2=否（整只），默认 2。
      */
     private Integer isHalf;

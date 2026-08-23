@@ -65,6 +65,12 @@ public class PlantWorkPerformance extends TenantEntity {
     private Long productId;
 
     /**
+     * 绩效百分比（0-100 整数，%）—— V6 row107，来自采摘录入时填的
+     * {@code t_warehouse_handle_record.perf_percent}，同产品的不同百分比各占一行。
+     */
+    private Integer perfPercent;
+
+    /**
      * 采摘总量（公斤，= SUM(actual_yield)）。
      */
     private BigDecimal pickWeight;
@@ -75,7 +81,7 @@ public class PlantWorkPerformance extends TenantEntity {
     private BigDecimal unitPriceSnapshot;
 
     /**
-     * 应付绩效金额（元，= pickWeight(公斤) × unitPriceSnapshot(元/公斤)）。
+     * 应付绩效金额（元，= pickWeight(公斤) × perfPercent% × unitPriceSnapshot(元/公斤)）。
      */
     private BigDecimal performanceAmount;
 

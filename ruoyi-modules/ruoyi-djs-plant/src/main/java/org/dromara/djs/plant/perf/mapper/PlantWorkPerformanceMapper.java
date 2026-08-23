@@ -45,22 +45,28 @@ public interface PlantWorkPerformanceMapper extends BaseMapperPlus<PlantWorkPerf
      * {@code COALESCE(中间表班组数, 1)} 后按班组归集（LEFT JOIN 中间表：无中间表行的旧记录兜底单列
      * {@code r.team_id}、班组数按 1 计）。每组平摊量 SUM 后 {@code ROUND(...,3)} 保留 3 位小数。</p>
      *
+     * <p><b>V6 row107 绩效百分比</b>：{@code perf_percent} 也是分组维度 —— 同一「班组 × 作物 × 产品」
+     * 下按不同百分比录入的采摘拆成多行（甲方要求详情按百分比分条展示），金额各按各自比例算。
+     * 存量流水该列由 DDL 默认 100 补齐，{@code COALESCE(...,100)} 只是防御。</p>
+     *
      * <p>显式 {@code tenant_id='1001'}（V1 单租户，无全局拦截器），中间表 JOIN 每张表带 tenant / del_flag。</p>
      *
      * @param statMonth 统计月份（"yyyy-MM"）
-     * @return 聚合行（teamId / cropId / pickWeight）；无数据返空 list
+     * @return 聚合行（teamId / cropId / productId / perfPercent / pickWeight）；无数据返空 list
      */
     @Select("""
         SELECT
             s.teamId AS teamId,
             s.cropId AS cropId,
             s.productId AS productId,
+            s.perfPercent AS perfPercent,
             ROUND(SUM(s.shareWeight), 3) AS pickWeight
           FROM (
             SELECT
                 COALESCE(rt.team_id, r.team_id) AS teamId,
                 r.crop_id AS cropId,
                 r.product_id AS productId,
+                COALESCE(r.perf_percent, 100) AS perfPercent,
                 r.record_weight / COALESCE(tc.cnt, 1) AS shareWeight
               FROM t_warehouse_handle_record r
               LEFT JOIN t_warehouse_handle_record_team rt
@@ -77,7 +83,7 @@ public interface PlantWorkPerformanceMapper extends BaseMapperPlus<PlantWorkPerf
                AND DATE_FORMAT(r.handle_time, '%Y-%m') = #{statMonth}
                AND COALESCE(rt.team_id, r.team_id) IS NOT NULL
           ) s
-         GROUP BY s.teamId, s.cropId, s.productId
+         GROUP BY s.teamId, s.cropId, s.productId, s.perfPercent
         """)
     List<PerfAggRow> aggregateByMonth(@Param("statMonth") String statMonth);
 
@@ -248,6 +254,7 @@ public interface PlantWorkPerformanceMapper extends BaseMapperPlus<PlantWorkPerf
             team_id AS teamId,
             crop_id AS cropId,
             product_id AS productId,
+            perf_percent AS perfPercent,
             pick_weight AS pickWeight,
             unit_price_snapshot AS unitPriceSnapshot,
             performance_amount AS performanceAmount,
@@ -259,7 +266,7 @@ public interface PlantWorkPerformanceMapper extends BaseMapperPlus<PlantWorkPerf
            AND del_flag = '0'
            AND team_id = #{teamId}
            AND stat_month = #{statMonth}
-         ORDER BY crop_id ASC, product_id ASC
+         ORDER BY crop_id ASC, product_id ASC, perf_percent DESC
         """)
     List<PlantWorkPerformanceVo> selectCropRowsByTeamMonth(@Param("teamId") Long teamId,
                                                            @Param("statMonth") String statMonth);

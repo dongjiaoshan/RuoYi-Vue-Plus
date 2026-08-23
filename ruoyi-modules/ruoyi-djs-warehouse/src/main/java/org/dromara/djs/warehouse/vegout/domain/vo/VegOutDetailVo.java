@@ -25,6 +25,14 @@ public class VegOutDetailVo implements Serializable {
     @Serial
     private static final long serialVersionUID = 1L;
 
+    /**
+     * 产品业务编号（{@code t_warehouse_product_info.product_id}）。
+     *
+     * <p>只给「重新打印」做合并键用（V6 row108：同一产品的多条流水合成一行打印），
+     * 页面表格与导出都不出这一列，故不标 {@link ExcelProperty}。</p>
+     */
+    private String productCode;
+
     /** 产品名称。 */
     @ExcelProperty(value = "产品名称")
     private String productName;

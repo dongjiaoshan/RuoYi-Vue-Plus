@@ -20,7 +20,11 @@ public interface VegetableHandleMapper extends BaseMapperPlus<VegetableHandle, V
     /**
      * 按上游 planting_record_id 查关联的 vegetable_handle 行（每个 planting_record 最多对应 1 行汇总）。
      *
-     * <p>service 进入 submitHandleRecord 后：找到 → 用此行聚合；找不到 → 首次采收 INSERT 新行。
+     * <p>采摘录入（{@code submitHarvest}）：找到 → 用此行聚合；找不到 → 首次采收 INSERT 新行。
+     * 毛菜间出库（{@code VegOutServiceImpl}）也用它：库存篮的 {@code source_biz_id} 就是种植记录 id，
+     * 据此精确定位<b>月台明细该挂在哪一行汇总上</b>（只挂 {@code handle_record} 明细，
+     * 一个汇总重量列都不改 —— 毛菜间出库在甲方损耗公式里是与月台/饲喂并列的一项，
+     * 不计入「果蔬处理重量」{@code handled_weight}，详见 {@code VegOutServiceImpl} 类头注）。
      * MP 在事务内调用：底层 MySQL InnoDB 在 {@code REPEATABLE_READ} 下对索引行加 NEXT-KEY LOCK，
      * 已具备防止重复 INSERT 的能力。</p>
      */

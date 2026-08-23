@@ -1,7 +1,10 @@
 package org.dromara.djs.warehouse.veg.domain.bo;
 
 import jakarta.validation.constraints.DecimalMin;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Size;
 import lombok.Data;
 
 import java.math.BigDecimal;
@@ -73,5 +76,21 @@ public class HarvestSubmitBo {
      * 都是 0，绩效 SQL 本就 {@code record_weight > 0} 过滤）。判定在 {@code submitHarvest} 里做。</p>
      */
     private List<Long> teamIds;
+
+    /**
+     * 绩效百分比（0-100 整数，单位 %）—— V6 row105。
+     *
+     * <p>mp 端必填、默认 100、可改。对 API 可空：不传按 100 收下（= 全额计绩效，与改造前口径一致），
+     * 让存量客户端 / 其他调用方不至于因为漏传字段整条录入失败。传了就必须是 0~100 的整数。</p>
+     */
+    @Min(value = 0, message = "绩效百分比不能小于 0")
+    @Max(value = 100, message = "绩效百分比不能大于 100")
+    private Integer perfPercent;
+
+    /**
+     * 备注（V6 row105 第 3 点，非必填）。与称重记录同表落 {@code t_warehouse_handle_record.remark}。
+     */
+    @Size(max = 500, message = "备注最多 500 字")
+    private String remark;
 
 }

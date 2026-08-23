@@ -64,6 +64,17 @@ public class BarPickupItemVo implements Serializable {
     private Date inTime;
 
     /**
+     * 燎毛间到场时间（{@code bar_info.arrive_time}）。mp 白条出库卡第 2 行左列。
+     */
+    @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")
+    private Date arriveTime;
+
+    /**
+     * 到场重量 kg（燎毛前过磅，{@code bar_info.arrive_weight}）。mp 白条出库卡第 2 行右列。
+     */
+    private BigDecimal arriveWeight;
+
+    /**
      * 该燎毛产出行的产品名（如「白条·半只」「白条·半扇」「整只」）。整只兜底卡为「白条（整只）」。
      */
     private String productName;

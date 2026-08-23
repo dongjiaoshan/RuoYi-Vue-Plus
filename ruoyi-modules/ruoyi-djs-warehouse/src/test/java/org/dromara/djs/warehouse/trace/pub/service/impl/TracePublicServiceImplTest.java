@@ -130,6 +130,7 @@ class TracePublicServiceImplTest {
     @Mock private ProductProductionMapper productProductionMapper;
     @Mock private VegDisplayNameMapper vegDisplayNameMapper;
     @Mock private PigCutRecordMapper pigCutRecordMapper;
+    @Mock private org.dromara.common.core.service.DictService dictService;
 
     private TracePublicServiceImpl service;
     private MockedStatic<TenantHelper> tenantHelperMock;
@@ -178,7 +179,7 @@ class TracePublicServiceImplTest {
             pigMapper, pigGrowthMapper, pigMarketingMapper, medRecordMapper, medicineMapper, sowDetailService,
             plotInfoMapper, plotZoneMapper, farmRecordsMapper, cropOrganicMapper, plotOrganicMapper,
             plantDetailsMapper, cropInfoMapper,
-            plantingRecordMapper, productProductionMapper, vegDisplayNameMapper, pigCutRecordMapper));
+            plantingRecordMapper, productProductionMapper, vegDisplayNameMapper));
         doReturn(null).when(service).readCache(anyString());       // 缓存恒未命中 → 每次走聚合
         doNothing().when(service).writeCache(anyString(), any());  // 写缓存 no-op
         // TenantHelper.ignore(Supplier) → 直接执行 supplier
@@ -215,9 +216,10 @@ class TracePublicServiceImplTest {
         when(productInfoMapper.selectById(PRODUCT_ID)).thenReturn(product);
         when(ossService.selectUrlByIds("9001")).thenReturn("http://oss/img-9001.jpg");
 
-        // 两条事件，mapper 倒序返回（最新在前）：ship(6/3) 在 in_stock(6/1) 前
+        // 两条事件，mapper 倒序返回（最新在前）：ship(6/3) 在 marketing(6/1) 前。
+        // 两条都取 row128 白名单内的节点——本例验的是倒序与操作人翻译，不该被白名单过滤掉。
         TraceEvent e1 = event("ship", LocalDateTime.of(2026, 6, 3, 10, 0), 9101L);
-        TraceEvent e2 = event("in_stock", LocalDateTime.of(2026, 6, 1, 8, 0), 9102L);
+        TraceEvent e2 = event("marketing", LocalDateTime.of(2026, 6, 1, 8, 0), 9102L);
         when(traceEventMapper.selectList(any(Wrapper.class))).thenReturn(List.of(e1, e2));
         when(traceUserNameMapper.selectUserNames(anyList())).thenReturn(List.of(
             Map.of("userId", 9101L, "nickName", "张三"),
@@ -339,18 +341,13 @@ class TracePublicServiceImplTest {
             event("singe", LocalDateTime.of(2026, 7, 15, 22, 0), null),
             event("marketing", LocalDateTime.of(2026, 7, 15, 8, 0), null))));
 
-        // 白条分割时刻（cut_start_time 介于 白条领用 11:00 与 产品生产 之间）
-        PigCutRecord cut = new PigCutRecord();
-        cut.setCutStartTime(java.sql.Timestamp.valueOf(LocalDateTime.of(2026, 7, 18, 11, 30)));
-        when(pigCutRecordMapper.selectOne(any(Wrapper.class))).thenReturn(cut);
-
         PublicTraceVo vo = service.getByProduceCode(PORK_CODE);
 
         assertThat(vo).isNotNull();
-        // 恰好 7 节点、倒序（最新在上）：补入 white_bar_cut，剔除 white_bar_in/slaughter/acid
+        // V6 row128：只留四节点、倒序（最新在上）。白条领用 / 白条分割 / 产品生产 / 白条入库 /
+        // 屠宰 / 排酸 一律不外露 —— 白名单过滤，新增事件默认也不会自己冒出来。
         assertThat(vo.getTimeline()).extracting(PublicTraceVo.TimelineNode::getTraceContent)
-            .containsExactly("arrival", "ship", "in_stock", "white_bar_cut",
-                "white_bar_pick", "singe", "marketing");
+            .containsExactly("arrival", "ship", "singe", "marketing");
         for (int i = 1; i < vo.getTimeline().size(); i++) {
             assertThat(vo.getTimeline().get(i).getTraceTime())
                 .isBeforeOrEqualTo(vo.getTimeline().get(i - 1).getTraceTime());

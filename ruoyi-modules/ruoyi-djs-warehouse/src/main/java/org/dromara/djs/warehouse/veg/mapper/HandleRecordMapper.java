@@ -41,9 +41,13 @@ public interface HandleRecordMapper extends BaseMapperPlus<HandleRecord, HandleR
      * </ul>
      *
      * <p>外层派生表按 statSource 精确过滤（row44 统计来源下拉）。</p>
+     *
+     * <p>V6 row106「绩效百分比 / 备注」两列只有过磅支有值（{@code r.perf_percent} / {@code r.remark}
+     * 是录入弹窗当场填的）；采摘活动支没有这两个维度，NULL 占位、展示端显 '-'。</p>
      */
     String PICK_DETAIL_SQL = """
-        SELECT t.pickDate, t.cropName, t.productName, t.plotCode, t.statSource, t.pickWeight, t.teamId, t.teamName
+        SELECT t.pickDate, t.cropName, t.productName, t.plotCode, t.statSource, t.pickWeight,
+               t.perfPercent, t.remark, t.teamId, t.teamName
           FROM (
         SELECT DATE(r.handle_time) AS pickDate,
                pr.crop_name        AS cropName,
@@ -51,6 +55,8 @@ public interface HandleRecordMapper extends BaseMapperPlus<HandleRecord, HandleR
                p.plot_code         AS plotCode,
                '1'                 AS statSource,
                r.record_weight     AS pickWeight,
+               r.perf_percent      AS perfPercent,
+               r.remark            AS remark,
                r.team_id           AS teamId,
                COALESCE(
                  (SELECT GROUP_CONCAT(DISTINCT wt.team_name ORDER BY wt.team_name SEPARATOR '、')
@@ -103,6 +109,8 @@ public interface HandleRecordMapper extends BaseMapperPlus<HandleRecord, HandleR
                p2.plot_code       AS plotCode,
                '2'                AS statSource,
                a.daily_weight     AS pickWeight,
+               NULL               AS perfPercent,
+               NULL               AS remark,
                NULL               AS teamId,
                COALESCE(
                  (SELECT GROUP_CONCAT(DISTINCT wt.team_name ORDER BY wt.team_name SEPARATOR '、')

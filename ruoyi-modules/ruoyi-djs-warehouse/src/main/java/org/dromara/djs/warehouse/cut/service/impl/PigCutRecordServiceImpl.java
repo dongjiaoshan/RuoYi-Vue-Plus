@@ -292,8 +292,8 @@ public class PigCutRecordServiceImpl
         // mp 整只兜底路径：无逐产出行拆分，建整猪 cut_record（whiteBarNo=null → 剩余/超量回落 white_bar_id）。
         // 预冷按整只：inWeight = bar.in_weight（整猪入库重）；产品维度走通用白条产品 id（无逐行产品）。
         return insertCutRecord(bar, pickupWeight, bar.getInWeight(), bo.getLocationId(), bo.getTargetStoreId(),
-            bo.getTargetDemandId(), bo.getIsHalf() == null ? 2 : bo.getIsHalf(), bo.getRemark(), userId, null,
-            resolveWhiteBarProductId());
+            bo.getTargetDemandId(), bo.getIsHalf() == null ? 2 : bo.getIsHalf(), bo.getRemark(),
+            resolveOperatorId(bo, userId), null, resolveWhiteBarProductId());
     }
 
     /**
@@ -356,7 +356,18 @@ public class PigCutRecordServiceImpl
         // 结算/超量/剩余/损耗仍按整猪 white_bar_id 汇总（dashboards 读 by white_bar_id 不变，Kevin 定）。
         // 预冷按白条：inWeight = 该燎毛产出行半只入库重（row.product_weight）减本行领用重 rowWeight；产品维度=该产出行产品。
         return insertCutRecord(bar, rowWeight, row.getProductWeight(), bo.getLocationId(), bo.getTargetStoreId(),
-            bo.getTargetDemandId(), isHalf, bo.getRemark(), userId, whiteBarNo, row.getProductId());
+            bo.getTargetDemandId(), isHalf, bo.getRemark(), resolveOperatorId(bo, userId), whiteBarNo,
+            row.getProductId());
+    }
+
+    /**
+     * 领用出库人归属：BO 显式指定（mp 白条出库页 EmployeePicker 选，默认登录人）优先，否则回落登录人。
+     *
+     * <p>只用于 {@code cut_record.operator_id} 与预冷 {@code loss_flow.operator_id}；库存扣减、状态机
+     * 流转、审计 {@code create_by/update_by} 一律仍用登录人（{@code loginUserId}），不受本值影响。</p>
+     */
+    private Long resolveOperatorId(PigCutPickupBo bo, Long loginUserId) {
+        return bo.getOperatorId() != null ? bo.getOperatorId() : loginUserId;
     }
 
     /**
@@ -510,10 +521,12 @@ public class PigCutRecordServiceImpl
     /**
      * 建 cut_record（cut_status=picked）。
      * whiteBarNo 非空 = 按半只（admin 逐产出行领用，邓博 row13/row14）；空 = 整猪（mp 整只兜底路径）。
+     *
+     * <p>{@code operatorId} = 出库人归属（见 {@link #resolveOperatorId}），非审计人。</p>
      */
     private Long insertCutRecord(BarInfo bar, BigDecimal pickupWeight, BigDecimal inWeight, Long locationId,
                                  Long targetStoreId, Long targetDemandId, int isHalf,
-                                 String remark, Long userId, String whiteBarNo, Long productId) {
+                                 String remark, Long operatorId, String whiteBarNo, Long productId) {
         PigCutRecord record = new PigCutRecord();
         record.setCutId(generateCutId());
         record.setWhiteBarId(bar.getId());
@@ -533,7 +546,7 @@ public class PigCutRecordServiceImpl
         if (inWeight != null && pickupWeight != null) {
             record.setDripLoss(inWeight.subtract(pickupWeight).max(BigDecimal.ZERO));
         }
-        record.setOperatorId(userId);
+        record.setOperatorId(operatorId);
         record.setLocationId(locationId);
         record.setTargetStoreId(targetStoreId);
         record.setTargetDemandId(targetDemandId);
@@ -544,7 +557,7 @@ public class PigCutRecordServiceImpl
 
         // r148：预冷损耗按白条即时结算 loss_flow（loss_date=领用当天），与分割损耗 writeHalfCutLossFlow 对称。
         // 整猪收口不再写聚合，避免「混合出库双算 / 跨天错配 / 未收口漏计」。为 0 / 缺入库重时 record() 自动跳过。
-        writePickupPrecoolLoss(record, productId, userId);
+        writePickupPrecoolLoss(record, productId, operatorId);
         return record.getId();
     }
 
@@ -556,14 +569,14 @@ public class PigCutRecordServiceImpl
      * {@code loss_date} = 该白条领用时刻，与 {@link #writeHalfCutLossFlow} 分割损耗完全对称。
      * {@code lossWeight<=0}（无预冷 / 缺入库重）由 {@link ILossFlowService#record} 自动跳过。</p>
      */
-    private void writePickupPrecoolLoss(PigCutRecord record, Long productId, Long userId) {
+    private void writePickupPrecoolLoss(PigCutRecord record, Long productId, Long operatorId) {
         LossFlow precool = new LossFlow();
         precool.setLossType(LOSS_TYPE_PRECOOL);
         precool.setLossWeight(record.getDripLoss());
         precool.setLossDate(record.getPickupTime());
         precool.setProductId(productId);
         precool.setEarNo(record.getEarNo());
-        precool.setOperatorId(userId);
+        precool.setOperatorId(operatorId);
         precool.setSourceBizType(LOSS_SOURCE_BIZ_CUT);
         precool.setSourceBizId(record.getId());
         lossFlowService.record(precool);
@@ -1068,6 +1081,9 @@ public class PigCutRecordServiceImpl
         vo.setMarkId(bar.getSupplierId() != null ? bar.getMarkId() : null);
         vo.setMarketingWeight(bar.getMarketingWeight());
         vo.setInWeight(bar.getInWeight());
+        // 到场时间/到场重量按整头猪取（燎毛前一次过磅，同一 bar 的各半只产出行共享），mp 白条出库卡第 2 行用
+        vo.setArriveTime(bar.getArriveTime());
+        vo.setArriveWeight(bar.getArriveWeight());
         if (row != null) {
             vo.setInhouseId(row.getId());
             vo.setWhiteBarNo(row.getWhiteBarNo());

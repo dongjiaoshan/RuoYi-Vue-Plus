@@ -205,9 +205,10 @@ class PigSearchServiceTest {
         service.searchByEarKeyword(null, null, null, null, null, -5, null, null, null, null, null, null);
         service.searchByEarKeyword(null, null, null, null, null, 999, null, null, null, null, null, null);
         service.searchByEarKeyword(null, null, null, null, null, 30, null, null, null, null, null, null);
+        service.searchByEarKeyword(null, null, null, null, null, 500, null, null, null, null, null, null);
 
         ArgumentCaptor<LambdaQueryWrapper<Pig>> w = ArgumentCaptor.forClass(LambdaQueryWrapper.class);
-        org.mockito.Mockito.verify(pigMapper, org.mockito.Mockito.times(4)).selectList(w.capture());
+        org.mockito.Mockito.verify(pigMapper, org.mockito.Mockito.times(5)).selectList(w.capture());
 
         // 用反射读 wrapper 内部 lastSql（避免 wrapper.getSqlSegment 触发 lambda cache 初始化，单测无 MP 容器）
         List<String> lastSqls = w.getAllValues().stream()
@@ -215,8 +216,10 @@ class PigSearchServiceTest {
             .toList();
         assertThat(lastSqls.get(0)).contains("LIMIT 20");   // null → 20
         assertThat(lastSqls.get(1)).contains("LIMIT 20");   // -5  → 20
-        assertThat(lastSqls.get(2)).contains("LIMIT 100");  // 999 → 100
+        // 上限 500：批量选择页（配种/出栏）要一次拿全量做「全选」，顶在 100 会静默截断到前 100 头
+        assertThat(lastSqls.get(2)).contains("LIMIT 500");  // 999 → 500（封顶）
         assertThat(lastSqls.get(3)).contains("LIMIT 30");   // 30  原样
+        assertThat(lastSqls.get(4)).contains("LIMIT 500");  // 500 原样（批量选择页取值）
     }
 
     /** 反射读 AbstractWrapper.lastSql（SharedString 字段），避免触发 LambdaCache。 */

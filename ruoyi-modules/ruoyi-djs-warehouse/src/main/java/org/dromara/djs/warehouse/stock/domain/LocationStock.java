@@ -16,7 +16,14 @@ import java.util.Date;
  *
  * <p>对应表 {@code t_warehouse_location_stock}（V202605290900 建）：</p>
  * <ul>
- *   <li>4 维互斥关联：{@code productId} / {@code earNo} / {@code plotId} / {@code medicineId} 四选一，V1 应用层校验</li>
+ *   <li><b>主维</b>：{@code productId} / {@code earNo} / {@code medicineId} 三选一，标明这行库存记的是什么。</li>
+ *   <li><b>分篮维</b>：{@code plotId} / {@code whiteBarNo} / {@code thirdPhase} 与主维<b>并存</b>，
+ *       把同一主维的货按来源拆成互不混账的「篮子」。典型：毛菜处理入库一次建一篮
+ *       ({@code productId} + {@code plotId} 同时非空，见 {@code VegetableHandleServiceImpl} 的 basket 分支)，
+ *       毛菜间出库因此能按「产品 × 地块」逐篮出、把地块带进追溯链。
+ *       <b>不要按「四选一互斥」理解</b> —— 那是 WMS-MD-001 初版口径，早已不成立。</li>
+ *   <li>只有 {@code plotId} 非空而 {@code productId} 为空的行是另一条链路：果蔬月台自产收货
+ *       ({@code VegReceiveServiceImpl.insertPlotStockRow})，按地块建账、按地块领用，与本表其余行口径不同。</li>
  *   <li>{@code operatorId} 由 service insert 时通过 {@link org.dromara.common.satoken.utils.LoginHelper#getUserId()}
  *       注入（ADR-0007 强制；冗余存最后操作人便于追溯，独立于 {@code createBy}）</li>
  *   <li>库存写入入口：本 ticket admin 不暴露 add/edit；后续 WMS-DEMAND-001 / WMS-STOCK-001 D8-D11
@@ -84,6 +91,24 @@ public class LocationStock extends TenantEntity {
      * <p>展示：本字段为 1 时「地块」列渲染成「三期」，否则渲染真实地块名。</p>
      */
     private Integer thirdPhase;
+
+    /**
+     * 来源业务 id（毛菜地块篮 = {@code t_warehouse_planting_record.id}；其余链路为空）。
+     *
+     * <p><b>它是分篮维度的第五维，也是唯一一个「谁建的这篮」维度</b>。前四维（plot / ear / white_bar /
+     * third_phase）回答的是「这篮货是什么」，本列回答「这篮货属于哪条业务流」。</p>
+     *
+     * <p>毛菜链路非要不可：同一 {@code (地块, 产品)} 在毛菜保鲜库 L0006 里可能同时躺着
+     * ①同地块同作物两条 planting_record（两季 / 补录）的货 ②采摘活动 {@code pick_dest=veg_fresh}
+     * 直送进来的货 ③两个作物共享同一产品时各自的货。只按 {@code (库位, 产品, 地块)} 定位，
+     * 「处理录入 FIFO 扣减」「地块处理完成结转损耗」「地块卡剩余重量」三处一律串到别人的货上
+     * —— 实测把 B 记录的 25kg 结成了 A 记录的损耗（loss > picked）。</p>
+     *
+     * <p>为空的篮子（采摘活动直送篮 / 白条篮 / 三期篮 / 月台收货篮 / 退货篮）<b>对毛菜处理链路不可见</b>，
+     * 这是刻意的：它们的出口是「毛菜间出库管理」（按行 id 出），本就不该被某条种植记录的
+     * 处理录入或收口损耗吃掉。</p>
+     */
+    private Long sourceBizId;
 
     /**
      * 产品名称（冗余字段，便于列表展示，免 JOIN）。

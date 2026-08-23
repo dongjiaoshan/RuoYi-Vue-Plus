@@ -62,6 +62,14 @@ public class HandleRecord extends TenantEntity {
     private Long teamId;
 
     /**
+     * 绩效百分比（0-100 整数，单位 %）—— V6 row105。
+     *
+     * <p>本次采摘按此比例计入班组绩效（{@code 绩效额 = 采摘重量 × perf_percent% × 绩效单价}，见 row107）。
+     * 仅 {@code record_type=1} 采收行有业务含义；处理行（record_type=2）落库走 DB 默认 100，不参与绩效。</p>
+     */
+    private Integer perfPercent;
+
+    /**
      * 记录类型 djs_record_type：1=采收 / 2=处理。
      */
     private Integer recordType;

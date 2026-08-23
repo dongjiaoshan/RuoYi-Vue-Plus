@@ -230,6 +230,12 @@ public class LocationStockServiceImpl extends DjsBaseServiceImpl<LocationStockMa
         // 都从这里出，标识在此一次性带上，调用方不需要各自记得回补 —— 靠调用方 patch 的写法
         // 已经漏过一次（只有毛菜间出库补了，库存查询页的产品出库没补，三期总出库直接少算）。
         flow.setThirdPhase(LocationStock.thirdPhaseOf(stock));
+        // 出库操作人 + 备注：出库记录 / 毛菜间出库单列表的「出库操作人」列直接读 operator_id
+        // （ADR-0007：不靠 create_by，那是框架审计字段）。remark 目前 admin 两个出库表单都没有输入框、
+        // 恒传 undefined，落库为 null；这行是给直接调接口的调用方留的通路，也是回到本方法被误删前的原样。
+        // ⚠️ 这两行与上面的 thirdPhase 一起被 LocationStockServiceImplTest 钉住，别再一起删掉。
+        flow.setOperatorId(userId);
+        flow.setRemark(bo.getRemark());
         stockFlowMapper.insert(flow);
 
         // 3. 按行 id 原子扣减（product_stock >= quantity 行锁 + 数量校验）——UI 按库存行出库，

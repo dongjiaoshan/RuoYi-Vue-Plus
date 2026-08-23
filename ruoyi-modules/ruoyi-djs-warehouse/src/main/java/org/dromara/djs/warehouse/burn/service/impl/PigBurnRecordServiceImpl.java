@@ -131,6 +131,11 @@ public class PigBurnRecordServiceImpl
     private static final String BAR_STATUS_SINGING = "singing";
 
     /**
+     * 入库称重下限系数：入库重量必须 &gt; 出栏重量 × 该系数，否则判定为录错数并拒收。
+     */
+    private static final BigDecimal MIN_ARRIVE_WEIGHT_RATIO = new BigDecimal("0.7");
+
+    /**
      * 库位启用态（{@code t_warehouse_location_info.location_status}）。
      */
     private static final Integer LOCATION_STATUS_ENABLED = 1;
@@ -553,17 +558,33 @@ public class PigBurnRecordServiceImpl
         if (marketingWeight != null && bo.getArriveWeight().compareTo(marketingWeight) > 0) {
             throw new ServiceException("到场重量不能超过出栏重量");
         }
+        // 入库重量下限：必须 > 出栏重量 × 70%（燎毛去毛去杂的正常损耗上限，低于此判定为录错数）
+        if (marketingWeight != null && marketingWeight.compareTo(BigDecimal.ZERO) > 0
+            && bo.getArriveWeight().compareTo(marketingWeight.multiply(MIN_ARRIVE_WEIGHT_RATIO)) <= 0) {
+            throw new ServiceException("请录入正确的入库重量");
+        }
 
         // ---------- Step 2：乐观锁推进 pending_singe/singing → singing（回填 in_time/in_method） ----------
-        int affected = barInfoMapper.updateStatusToSinging(bar.getId(), new Date(), bo.getWeigherId());
+        Date weighTime = new Date();
+        int affected = barInfoMapper.updateStatusToSinging(bar.getId(), weighTime, bo.getWeigherId());
         if (affected == 0) {
             throw new ServiceException("白条状态不符，无法称重");
         }
 
-        // ---------- Step 3：回填到场重量 arrive_weight（updateStatusToSinging 不触此列）----------
+        // ---------- Step 3：回填到场重量 arrive_weight + 到场时间 arrive_time（updateStatusToSinging 不触这两列）----------
+        // 到场时间 = **首次**燎毛间称重时刻（与 arrive_weight 同一次过磅），口径同外购猪只列表的「到场时间 =
+        // 燎毛间称重完成时刻」。两条都别改：
+        //   · 不能借 bar.in_time —— 它在后续每次产品逐项入库、以及处理完成时都会被覆盖成最后一次时刻，
+        //     用它当到场时间会随入库进度往后漂；
+        //   · 已有值不覆盖 —— 称重接口的状态守卫在「称重→逐项入库→处理完成」整个窗口期都放行，重复称重
+        //     （mp 端有 weighDone 硬锁，裸调接口仍可达）会把到场时间推到已录产出行的入库时间之后，出现
+        //     「到场晚于入库」的倒挂。重量允许改正，时间锚定第一次。
         BarInfo patch = new BarInfo();
         patch.setId(bar.getId());
         patch.setArriveWeight(bo.getArriveWeight());
+        if (bar.getArriveTime() == null) {
+            patch.setArriveTime(weighTime);
+        }
         barInfoMapper.updateById(patch);
 
         return true;

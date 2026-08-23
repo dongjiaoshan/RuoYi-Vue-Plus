@@ -6,6 +6,7 @@ import org.dromara.djs.common.encoder.BizCodeType;
 import org.dromara.djs.common.encoder.IBizCodeGenerator;
 import org.dromara.djs.warehouse.burn.domain.PigBurnRecord;
 import org.dromara.djs.warehouse.burn.domain.bo.PigBurnRecordBo;
+import org.dromara.djs.warehouse.burn.domain.bo.PigBurnWeighBo;
 import org.dromara.djs.warehouse.burn.mapper.PigBurnRecordMapper;
 import org.dromara.djs.warehouse.check.service.IStockCheckService;
 import org.dromara.djs.warehouse.cross.domain.BarInfo;
@@ -436,6 +437,72 @@ class PigBurnRecordServiceImplTest {
             .hasMessageContaining("尚未录入任何产品入库");
 
         verify(barInfoMapper, never()).updateStatusToInStock(any(), any(), any(), any());
+    }
+
+    private PigBurnWeighBo weighBo(String arriveWeight) {
+        PigBurnWeighBo bo = new PigBurnWeighBo();
+        bo.setBarInfoId(BAR_ID);
+        bo.setArriveWeight(new BigDecimal(arriveWeight));
+        bo.setWeigherId(OPERATOR_ID);
+        return bo;
+    }
+
+    @Test
+    @DisplayName("weighBurn: 入库重量 > 出栏重量×70% → 落库（150 出栏，录 110）")
+    void testWeigh_AboveMinRatio() {
+        when(barInfoMapper.selectById(BAR_ID)).thenReturn(sampleBarWithMarketWeight("pending_singe", "150.000"));
+        when(barInfoMapper.updateStatusToSinging(eq(BAR_ID), any(), eq(OPERATOR_ID))).thenReturn(1);
+
+        assertThat(service.weighBurn(weighBo("110.000"))).isTrue();
+
+        ArgumentCaptor<BarInfo> patch = ArgumentCaptor.forClass(BarInfo.class);
+        verify(barInfoMapper).updateById(patch.capture());
+        assertThat(patch.getValue().getArriveWeight()).isEqualByComparingTo("110.000");
+        // V6 row113：到场时间必须和到场重量同一次落库（这一列此前建表起从没被写过，卡片恒显「—」）
+        assertThat(patch.getValue().getArriveTime()).isNotNull();
+    }
+
+    @Test
+    @DisplayName("weighBurn: 已有到场时间的白条重复称重 → 只改重量，到场时间锚定第一次不被推后")
+    void testWeigh_doesNotOverwriteExistingArriveTime() {
+        BarInfo bar = sampleBarWithMarketWeight("singing", "150.000");
+        Date firstArrive = new Date(1_755_000_000_000L);
+        bar.setArriveTime(firstArrive);
+        when(barInfoMapper.selectById(BAR_ID)).thenReturn(bar);
+        when(barInfoMapper.updateStatusToSinging(eq(BAR_ID), any(), eq(OPERATOR_ID))).thenReturn(1);
+
+        assertThat(service.weighBurn(weighBo("120.000"))).isTrue();
+
+        ArgumentCaptor<BarInfo> patch = ArgumentCaptor.forClass(BarInfo.class);
+        verify(barInfoMapper).updateById(patch.capture());
+        assertThat(patch.getValue().getArriveWeight()).isEqualByComparingTo("120.000");
+        // 已有值不覆盖：重复称重不该把到场时间推到已录产出行的入库时间之后（clean-QA 复现过这条倒挂）
+        assertThat(patch.getValue().getArriveTime()).isNull();
+    }
+
+    @Test
+    @DisplayName("weighBurn: 入库重量 < 出栏重量×70% → 抛 请录入正确的入库重量，状态不推进")
+    void testWeigh_BelowMinRatio() {
+        when(barInfoMapper.selectById(BAR_ID)).thenReturn(sampleBarWithMarketWeight("pending_singe", "150.000"));
+
+        assertThatThrownBy(() -> service.weighBurn(weighBo("100.000")))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("请录入正确的入库重量");
+
+        verify(barInfoMapper, never()).updateStatusToSinging(any(), any(), any());
+        verify(barInfoMapper, never()).updateById(any(BarInfo.class));
+    }
+
+    @Test
+    @DisplayName("weighBurn: 入库重量 == 出栏重量×70% 边界 → 拒（甲方口径是「必须大于」）")
+    void testWeigh_EqualMinRatioRejected() {
+        when(barInfoMapper.selectById(BAR_ID)).thenReturn(sampleBarWithMarketWeight("pending_singe", "150.000"));
+
+        assertThatThrownBy(() -> service.weighBurn(weighBo("105.000")))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("请录入正确的入库重量");
+
+        verify(barInfoMapper, never()).updateStatusToSinging(any(), any(), any());
     }
 
 }

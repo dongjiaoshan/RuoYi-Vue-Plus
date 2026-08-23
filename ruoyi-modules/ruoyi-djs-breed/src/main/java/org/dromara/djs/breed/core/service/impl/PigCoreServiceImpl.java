@@ -1342,11 +1342,16 @@ public class PigCoreServiceImpl implements IPigCoreService {
         }).collect(Collectors.toList());
     }
 
+    /**
+     * 上限 500：批量选择页（配种 / 出栏）要一次拿到全量候选才能做「全选」，
+     * 顶在 100 会让第 101 头起永远选不到、且「全选」只覆盖前 100 而界面不提示（静默截断）。
+     * 单头选猪面板传 60，不受影响。
+     */
     private int clampLimit(Integer raw) {
         if (raw == null || raw <= 0) {
             return 20;
         }
-        return Math.min(raw, 100);
+        return Math.min(raw, 500);
     }
 
     private List<String> parseStatusFilter(String csv) {

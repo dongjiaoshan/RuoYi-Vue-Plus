@@ -24,9 +24,16 @@ import java.util.Date;
  * </ul>
  *
  * <h3>跨表事务</h3>
- * <p>由 {@link org.dromara.djs.warehouse.veg.service.impl.VegetableHandleServiceImpl#submitHandleRecord}
- * 维护：handle_record INSERT + 汇总聚合 UPDATE + 条件 stock_flow INSERT
- * + planting_record.handle_status 同步推进。</p>
+ * <p>由 {@link org.dromara.djs.warehouse.veg.service.impl.VegetableHandleServiceImpl#submitHarvest}
+ * （采摘录入：handle_record INSERT + 建毛菜保鲜库地块篮 + veg_stock_in 流水 + 汇总聚合 UPDATE）与
+ * {@link org.dromara.djs.warehouse.veg.service.impl.VegetableHandleServiceImpl#submitProcess}
+ * （处理录入：FIFO 扣篮 + veg_stock_out 流水 + 收口结转损耗）维护，两者都同步推进
+ * planting_record.handle_status。</p>
+ *
+ * <p><b>{@code handled_weight}（果蔬处理重量）只有 {@code submitProcess} 一个写入方</b>，语义 = 毛菜处理录入的
+ * 月台 + 饲喂。毛菜间出库管理（{@code VegOutServiceImpl}）<b>不写这一列</b> —— 甲方 2026-08-19 定
+ * {@code loss = 地块入库量 − 果蔬月台 − 有机饲喂 − 出库}，它是公式里与月台、饲喂<b>并列</b>的「出库」项，
+ * 并列项不能同时算进其中一项；它扣实物库存，收口按剩余库存结转损耗时自然已把这批 kg 减掉。</p>
  *
  * @author djs
  * @since WMS-VEG-001

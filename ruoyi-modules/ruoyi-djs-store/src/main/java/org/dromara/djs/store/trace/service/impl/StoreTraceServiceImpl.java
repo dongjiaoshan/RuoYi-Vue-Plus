@@ -43,6 +43,7 @@ import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -86,6 +87,8 @@ public class StoreTraceServiceImpl implements IStoreTraceService {
     private static final String BELONG_TYPE_PORK = "pork";
     /** 白条业态（现场分割 picker 取白条 production 用）。 */
     private static final String BELONG_TYPE_WHITE_BAR = "white_bar";
+    /** product_info.is_material_sold=1：该成品支持原材料外售，到店后可当门店打包的原材料（V6 row120）。 */
+    private static final Integer MATERIAL_SOLD_YES = 1;
     /** product_production.is_delivery_check=1：已发货清点。 */
     private static final Integer DELIVERY_CHECKED = 1;
     /** TraceCodeListVo.source 值：门店现场生码（与 warehouse TraceCodeAdminServiceImpl 口径一致）。 */
@@ -156,12 +159,20 @@ public class StoreTraceServiceImpl implements IStoreTraceService {
         if (receivedDemandIds.isEmpty()) {
             return emptyPigPage();
         }
-        List<Long> whiteBarProductIds = productInfoMapper.selectList(
+        // 可当原材料的到店产品 = 白条业态 ∪ 配置了「原材料外售=是」的猪肉成品（V6 row120）。
+        // 后者（如「通排」）到店后同样是拿来现场分割/打包的原材料，工人要能选到它对应的那头猪的耳号；
+        // 只认 belong_type='white_bar' 会让这类产品在打包页根本没有可选耳号。
+        // 「原材料外售」那一支必须同时限 belong_type='pork'：这是门店**猪肉**打包页，
+        // 客户哪天把礼盒/果蔬也配成「原材料外售=是」，只要那条到货行带了 ear_no，就会混进猪肉耳号候选。
+        // 现网恰好只配了通排一个且是猪肉，不是代码保证（V6 row120 clean-QA 指出的潜在泄漏）。
+        List<Long> materialProductIds = productInfoMapper.selectList(
                 new LambdaQueryWrapper<ProductInfo>()
-                    .eq(ProductInfo::getBelongType, BELONG_TYPE_WHITE_BAR)
+                    .and(w -> w.eq(ProductInfo::getBelongType, BELONG_TYPE_WHITE_BAR)
+                        .or(x -> x.eq(ProductInfo::getIsMaterialSold, MATERIAL_SOLD_YES)
+                            .eq(ProductInfo::getBelongType, BELONG_TYPE_PORK)))
                     .select(ProductInfo::getId))
             .stream().map(ProductInfo::getId).filter(Objects::nonNull).toList();
-        if (whiteBarProductIds.isEmpty()) {
+        if (materialProductIds.isEmpty()) {
             return emptyPigPage();
         }
         // 已发货到门店的白条 production（取耳号/白条号 + 到货重量；按 white_bar_no（半只）或耳号去重保序累加）。
@@ -170,10 +181,11 @@ public class StoreTraceServiceImpl implements IStoreTraceService {
         List<ProductProduction> barProds = productProductionMapper.selectList(
             new LambdaQueryWrapper<ProductProduction>()
                 .in(ProductProduction::getDemandId, receivedDemandIds)
-                .in(ProductProduction::getProductId, whiteBarProductIds)
+                .in(ProductProduction::getProductId, materialProductIds)
                 .eq(ProductProduction::getIsDeliveryCheck, DELIVERY_CHECKED)
                 .orderByDesc(ProductProduction::getId)
-                .select(ProductProduction::getEarNo, ProductProduction::getWhiteBarNo, ProductProduction::getProduceQuantity));
+                .select(ProductProduction::getEarNo, ProductProduction::getWhiteBarNo,
+                        ProductProduction::getProduceQuantity, ProductProduction::getProductId));
         // 门店到货白条按【半只】一条（邓博 row13：white_bar_no 区分同一耳号的两个半只，门店按半只识别 / 现场分割）。
         // key = white_bar_no；为空（旧发货数据）回落 "EAR:<耳号>" 按整猪聚合，兼容历史。
         List<String> keyOrder = new ArrayList<>();
@@ -181,6 +193,14 @@ public class StoreTraceServiceImpl implements IStoreTraceService {
         Map<String, String> keyToEar = new LinkedHashMap<>();
         Map<String, String> keyToWhiteBarNo = new LinkedHashMap<>();
         Map<String, Integer> barCountByEar = new LinkedHashMap<>();
+        // row127：白条耳号排前、其余（原材料外售成品如通排）排后 —— 打包工绝大多数时候用的是白条，
+        // 让它稳定占第一个 chip，不被当天先到货的成品挤走。
+        Set<Long> whiteBarProductIds = productInfoMapper.selectList(
+                new LambdaQueryWrapper<ProductInfo>()
+                    .eq(ProductInfo::getBelongType, BELONG_TYPE_WHITE_BAR)
+                    .select(ProductInfo::getId))
+            .stream().map(ProductInfo::getId).filter(Objects::nonNull).collect(Collectors.toSet());
+        Set<String> whiteBarKeys = new LinkedHashSet<>();
         for (ProductProduction p : barProds) {
             String ear = p.getEarNo();
             String wbNo = p.getWhiteBarNo();
@@ -190,6 +210,9 @@ public class StoreTraceServiceImpl implements IStoreTraceService {
                 continue;
             }
             String key = StringUtils.isNotBlank(wbNo) ? wbNo : ("EAR:" + ear);
+            if (p.getProductId() != null && whiteBarProductIds.contains(p.getProductId())) {
+                whiteBarKeys.add(key);
+            }
             if (!arrivedByKey.containsKey(key)) {
                 keyOrder.add(key);
                 keyToEar.put(key, ear);
@@ -203,6 +226,8 @@ public class StoreTraceServiceImpl implements IStoreTraceService {
         if (keyOrder.isEmpty()) {
             return emptyPigPage();
         }
+        // row127：稳定排序 —— 白条来源在前，组内保持原来的到货先后
+        keyOrder.sort(Comparator.comparing((String k) -> whiteBarKeys.contains(k) ? 0 : 1));
 
         // 已现场打包重量按耳号合计（门店 pork 追溯码 remark「重量=Ykg」，追溯码按耳号、暂无半只维度）。
         // row41：过滤空耳号（整只白条无耳号行靠 white_bar_no 识别，不参与按耳号的猪只信息 enrich / 已用量合计）。
@@ -383,6 +408,8 @@ public class StoreTraceServiceImpl implements IStoreTraceService {
         Long storeId = currentStoreId();
         LocalDate today = LocalDate.now(TODAY_ZONE);
         Map<Long, BigDecimal> inboundByMaterial = new LinkedHashMap<>();
+        // 当日已有盘点记录的原材料（哪怕录的是 0 也算「门店已表态」）——下面兜底时据此避免重复计入
+        Set<Long> ledgeredMaterials = new LinkedHashSet<>();
         if (!materialIds.isEmpty() && storeId != null) {
             LambdaQueryWrapper<StoreDailyLedger> w = new LambdaQueryWrapper<StoreDailyLedger>()
                 .eq(StoreDailyLedger::getStoreId, storeId)
@@ -391,8 +418,41 @@ public class StoreTraceServiceImpl implements IStoreTraceService {
                 .select(StoreDailyLedger::getProductId, StoreDailyLedger::getInboundQty);
             for (StoreDailyLedger l : storeDailyLedgerMapper.selectList(w)) {
                 if (l.getProductId() != null) {
+                    ledgeredMaterials.add(l.getProductId());
                     inboundByMaterial.merge(l.getProductId(),
                         l.getInboundQty() == null ? BigDecimal.ZERO : l.getInboundQty(), BigDecimal::add);
+                }
+            }
+        }
+        // 3b. 门店当日**还没盘点**该原材料时，用「材料外售成品当日到店重」兜底（V6 row126）。
+        //
+        // 通排这类「配置了原材料外售」的成品，到店后就是拿来现场分割/打包的原材料，但门店不会为它
+        // 单独录一笔盘点入库 → 只认 daily_ledger 的话原材料剩余恒为 0，工人看着有货却打不了包。
+        //
+        // ⚠️ 必须是「兜底」不是「相加」：门店盘点页那一栏的**默认预填值本身就是这个到店重**
+        // （StoreDailyLedgerServiceImpl#resolveMaterialSoldInboundWeight 调的同一条
+        //  sumDeliveredWeightToStore）。员工照单接受默认值提交后 daily_ledger 里已经含了这笔量，
+        // 再加一遍就是稳定翻倍 —— 5kg 显示成 10kg，工人会照着超打、把实际库存打穿。
+        // 所以：当日已有该材料的盘点行 → 以盘点值为准（它是门店的最终表态，可能已按分割实重修正过）；
+        // 没有盘点行 → 才用到店重兜底。
+        if (!materialIds.isEmpty() && storeId != null) {
+            List<ProductInfo> materialSold = productInfoMapper.selectList(
+                new LambdaQueryWrapper<ProductInfo>()
+                    .eq(ProductInfo::getIsMaterialSold, MATERIAL_SOLD_YES)
+                    .isNotNull(ProductInfo::getProductMaterial)
+                    .in(ProductInfo::getProductMaterial, materialIds)
+                    .select(ProductInfo::getId, ProductInfo::getProductMaterial));
+            for (ProductInfo finished : materialSold) {
+                if (finished.getId() == null || finished.getProductMaterial() == null) {
+                    continue;
+                }
+                if (ledgeredMaterials.contains(finished.getProductMaterial())) {
+                    continue;   // 该材料今天已盘点 → 盘点值已含这笔到货，不再叠加
+                }
+                BigDecimal arrived = productProductionMapper.sumDeliveredWeightToStore(
+                    storeId, finished.getId(), today);
+                if (arrived != null && arrived.signum() > 0) {
+                    inboundByMaterial.merge(finished.getProductMaterial(), arrived, BigDecimal::add);
                 }
             }
         }

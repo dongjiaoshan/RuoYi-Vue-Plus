@@ -43,6 +43,12 @@ public class PerfDetailCropExportVo implements Serializable {
     private BigDecimal pickWeight;
 
     /**
+     * 绩效百分比（%，V6 row107：绩效额 = 采摘量 × 百分比 × 单价）。
+     */
+    @ExcelProperty(value = "绩效百分比(%)")
+    private Integer perfPercent;
+
+    /**
      * 单价快照（元/公斤）。
      */
     @ExcelProperty(value = "单价(元/公斤)")

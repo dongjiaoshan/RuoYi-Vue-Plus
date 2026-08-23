@@ -87,6 +87,15 @@ public class TraceCode extends TenantEntity {
     private String pigEarNo;
 
     /**
+     * 猪肉链：排酸时长（分钟，果蔬 / 礼盒为 NULL）。
+     *
+     * <p>白条离库时由 {@code cut_record.acid_remove_minutes} 定格（三种出库方式都写），与出库时间同时写入。
+     * C 端时间线据此判断要不要显示排酸时间点：低于字典 {@code djs_pork_acid_control} 配置的分钟数
+     * （值即分钟）说明这头猪实际没排够酸，不对外展示排酸节点（V6 row111）。</p>
+     */
+    private Integer acidRemoveMinutes;
+
+    /**
      * 果蔬链：来源地块 FK（猪肉 / 礼盒为 NULL）。
      */
     private Long plotId;
