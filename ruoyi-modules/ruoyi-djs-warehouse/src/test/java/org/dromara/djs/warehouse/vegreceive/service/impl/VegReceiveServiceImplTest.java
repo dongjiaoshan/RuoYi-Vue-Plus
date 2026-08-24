@@ -89,6 +89,8 @@ class VegReceiveServiceImplTest {
     private ILossFlowService lossFlowService;
     @Mock
     private org.dromara.djs.plant.crop.service.ICropProductService cropProductService;
+    @Mock
+    private org.dromara.djs.warehouse.cross.mapper.BarInfoMapper barInfoMapper;
 
     private VegReceiveServiceImpl service;
 
@@ -99,7 +101,7 @@ class VegReceiveServiceImplTest {
         service = new VegReceiveServiceImpl(
             vegReceiveMapper, locationStockMapper, locationInfoMapper, stockFlowMapper,
             productInfoMapper, supplierMapper, bizCodeGenerator, imageUrlResolver, cropInfoMapper, lossFlowService,
-            cropProductService);
+            cropProductService, barInfoMapper);
         loginHelperMock = Mockito.mockStatic(LoginHelper.class);
         loginHelperMock.when(LoginHelper::getUserId).thenReturn(9001L);
     }
@@ -400,5 +402,96 @@ class VegReceiveServiceImplTest {
 
         service.listInboundPlots(12001L, null);
         verify(vegReceiveMapper, times(1)).selectInboundPlots(eq(12001L), eq((Long) null));
+    }
+
+    // ==================== V6 row132：外购猪肉产品带耳号 ====================
+
+    /** row132 共用：一个合法的外购产品 + 供应商 + 流水号，让 purchase() 能跑到库存/流水那两步。 */
+    private org.dromara.djs.warehouse.vegreceive.domain.bo.VegPurchaseBo stubPurchase(String earNo) {
+        org.dromara.djs.warehouse.product.domain.ProductInfo p =
+            new org.dromara.djs.warehouse.product.domain.ProductInfo();
+        p.setId(77001L);
+        p.setProductName("猪心");
+        p.setProductUnit("kg");
+        // requirePurchaseProduct 的三条硬闸：自产品类(1) + 原材料(2) + 已开「支持外购」
+        p.setProductType(1);
+        p.setProductAttr(2);
+        p.setIsBuyOut(1);
+        when(productInfoMapper.selectOne(any())).thenReturn(p);
+        when(supplierMapper.selectOne(any())).thenReturn(null);
+        when(bizCodeGenerator.generate(any(), anyMap())).thenReturn("F20260824IN0001");
+
+        org.dromara.djs.warehouse.vegreceive.domain.bo.VegPurchaseBo bo =
+            new org.dromara.djs.warehouse.vegreceive.domain.bo.VegPurchaseBo();
+        bo.setCropId(77001L);
+        bo.setWeight(new BigDecimal("3.500"));
+        bo.setSupplier("G0004");
+        bo.setLocationId(66001L);
+        bo.setPigEarNo(earNo);
+        return bo;
+    }
+
+    @Test
+    @DisplayName("row132·外购填了耳号：进耳号篮（不碰通用篮），流水带耳号")
+    void testPurchase_WithEarNo_GoesToEarBasket() {
+        var bo = stubPurchase("01-01-1-251016-001");
+        when(locationStockMapper.addByProductLocationEarNo(
+            anyLong(), anyLong(), any(), any(), anyLong())).thenReturn(1);
+
+        service.purchase(bo);
+
+        // 只累加耳号篮，通用篮一次都不许碰（碰了就把带追溯归属的货混进无归属篮）
+        verify(locationStockMapper, times(1)).addByProductLocationEarNo(
+            eq(66001L), eq(77001L), eq("01-01-1-251016-001"), eq(new BigDecimal("3.500")), anyLong());
+        verify(locationStockMapper, Mockito.never()).addByProductLocation(any(), any(), any(), any());
+        // 命中已有篮子 → 不建新行
+        verify(locationStockMapper, Mockito.never()).insert(any(LocationStock.class));
+
+        ArgumentCaptor<StockFlow> flow = ArgumentCaptor.forClass(StockFlow.class);
+        verify(stockFlowMapper).insert(flow.capture());
+        assertThat(flow.getValue().getEarNo()).isEqualTo("01-01-1-251016-001");
+    }
+
+    @Test
+    @DisplayName("row132·耳号篮还不存在：兜底 INSERT 的新行 ear_no 要落上")
+    void testPurchase_WithEarNo_InsertsEarBasketWhenMissing() {
+        var bo = stubPurchase("01-01-1-251016-001");
+        when(locationStockMapper.addByProductLocationEarNo(
+            anyLong(), anyLong(), any(), any(), anyLong())).thenReturn(0);
+
+        service.purchase(bo);
+
+        ArgumentCaptor<LocationStock> row = ArgumentCaptor.forClass(LocationStock.class);
+        verify(locationStockMapper).insert(row.capture());
+        assertThat(row.getValue().getEarNo()).isEqualTo("01-01-1-251016-001");
+        assertThat(row.getValue().getProductId()).isEqualTo(77001L);
+    }
+
+    @Test
+    @DisplayName("row132·没填耳号（含空串）：维持原口径进通用篮，流水 ear_no 为空")
+    void testPurchase_WithoutEarNo_KeepsGeneralBasket() {
+        var bo = stubPurchase("   ");   // mp 未选时发空串，trim 后按没填处理
+        when(locationStockMapper.addByProductLocation(anyLong(), anyLong(), any(), anyLong())).thenReturn(1);
+
+        service.purchase(bo);
+
+        verify(locationStockMapper, times(1)).addByProductLocation(
+            eq(66001L), eq(77001L), eq(new BigDecimal("3.500")), anyLong());
+        verify(locationStockMapper, Mockito.never()).addByProductLocationEarNo(
+            any(), any(), any(), any(), any());
+
+        ArgumentCaptor<StockFlow> flow = ArgumentCaptor.forClass(StockFlow.class);
+        verify(stockFlowMapper).insert(flow.capture());
+        assertThat(flow.getValue().getEarNo()).isNull();
+    }
+
+    @Test
+    @DisplayName("row132·耳号候选：原样透传 mapper 的今日白条出库耳号")
+    void testListTodayOutBarEarNos_Delegates() {
+        when(barInfoMapper.selectTodayOutEarNos())
+            .thenReturn(java.util.List.of("01-01-1-251016-001", "01-01-2-251001-005"));
+
+        assertThat(service.listTodayOutBarEarNos())
+            .containsExactly("01-01-1-251016-001", "01-01-2-251001-005");
     }
 }

@@ -12,6 +12,7 @@ import org.dromara.djs.warehouse.cross.domain.vo.TodayBarVo;
 import java.math.BigDecimal;
 import java.util.Collection;
 import java.util.Date;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -190,6 +191,35 @@ public interface BarInfoMapper extends BaseMapperPlus<BarInfo, BarInfo> {
                                    @Param("outTime") Date outTime,
                                    @Param("outWeight") BigDecimal outWeight,
                                    @Param("userId") Long userId);
+
+    /**
+     * 查「今日白条出库」的猪只耳号去重清单（V6 row132 外购猪肉产品录入的耳号候选）。
+     *
+     * <p>口径：{@code out_time} 落在今天的白条 —— 三条出库路径（发货领用 out_method=1 /
+     * 分割间 out_method=2 / 后台出库 out_method=3）都在出库那一刻写 {@code out_time}，
+     * 所以只认这个字段、不按 out_method 过滤。外购白条无耳号（{@code ear_no} 为空）自然被排除。</p>
+     *
+     * <p>用半开区间 {@code [今天, 明天)} 而非 {@code DATE(out_time)=CURDATE()}，让
+     * {@code out_time} 上的范围条件仍可走索引。同一耳号当天多次出库（整猪两半只）只回一条，
+     * 按最近一次出库时间倒序。</p>
+     *
+     * <p>显式 {@code tenant_id='1001' AND del_flag='0'}（V1 单租户，原生 SQL 不自动注入）。</p>
+     *
+     * @return 今日出库耳号（无则空列表，mp 下拉显示「今日暂无白条出库」）
+     */
+    @Select("""
+        SELECT ear_no
+          FROM t_warehouse_bar_info
+         WHERE tenant_id = '1001'
+           AND del_flag = '0'
+           AND ear_no IS NOT NULL
+           AND ear_no <> ''
+           AND out_time >= CURDATE()
+           AND out_time < CURDATE() + INTERVAL 1 DAY
+         GROUP BY ear_no
+         ORDER BY MAX(out_time) DESC
+        """)
+    List<String> selectTodayOutEarNos();
 
     /**
      * 分页查「当天确认收货白条」（FIX-STORE-TRACE-BAR-001 门店猪肉追溯 picker 口径）。

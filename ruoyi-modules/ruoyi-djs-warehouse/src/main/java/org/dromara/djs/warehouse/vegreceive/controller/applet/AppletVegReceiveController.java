@@ -118,4 +118,18 @@ public class AppletVegReceiveController extends BaseController {
         return R.ok(vegReceiveService.purchase(bo));
     }
 
+    /**
+     * 今日白条出库的猪只耳号候选（V6 row132）。
+     *
+     * <p>mp 外购收货录入时，产品是猪肉品类才拉这个列表填「猪只耳号」下拉；今日无白条出库返空数组，
+     * mp 下拉显示空态，不阻塞录入（耳号非必填）。</p>
+     *
+     * @return 去重耳号，按最近一次出库时间倒序
+     */
+    @SaCheckLogin
+    @GetMapping("/todayBarEarNos")
+    public R<List<String>> todayBarEarNos() {
+        return R.ok(vegReceiveService.listTodayOutBarEarNos());
+    }
+
 }
