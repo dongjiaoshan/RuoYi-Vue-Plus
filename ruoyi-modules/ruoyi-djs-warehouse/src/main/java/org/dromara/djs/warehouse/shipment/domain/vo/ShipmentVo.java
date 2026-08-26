@@ -2,6 +2,8 @@ package org.dromara.djs.warehouse.shipment.domain.vo;
 
 import cn.idev.excel.annotation.ExcelIgnoreUnannotated;
 import cn.idev.excel.annotation.ExcelProperty;
+import org.dromara.common.excel.annotation.ExcelDictFormat;
+import org.dromara.djs.common.excel.DictOrRawConvert;
 import cn.idev.excel.annotation.format.DateTimeFormat;
 import com.fasterxml.jackson.annotation.JsonFormat;
 import io.github.linpeilie.annotations.AutoMapper;
@@ -37,7 +39,8 @@ public class ShipmentVo implements Serializable {
 
     private Long demandId;
 
-    @ExcelProperty(value = "业态")
+    @ExcelProperty(value = "业态", converter = DictOrRawConvert.class)
+    @ExcelDictFormat(dictType = "djs_belong_type")
     private String productType;
 
     private Long storeId;
@@ -54,14 +57,16 @@ public class ShipmentVo implements Serializable {
     @ExcelProperty(value = "单位")
     private String shipUnit;
 
-    @ExcelProperty(value = "发货方式")
+    @ExcelProperty(value = "发货方式", converter = DictOrRawConvert.class)
+    @ExcelDictFormat(dictType = "djs_deliver_type")
     private Integer deliverType;
 
     private String receiverName;
     private String receiverPhone;
     private String receiverAddress;
 
-    @ExcelProperty(value = "状态")
+    @ExcelProperty(value = "状态", converter = DictOrRawConvert.class)
+    @ExcelDictFormat(dictType = "djs_shipment_status")
     private String shipmentStatus;
 
     private Long checkerId;

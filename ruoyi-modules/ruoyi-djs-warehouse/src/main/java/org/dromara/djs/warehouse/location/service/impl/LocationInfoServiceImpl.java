@@ -15,6 +15,7 @@ import org.dromara.djs.warehouse.location.domain.LocationInfo;
 import org.dromara.djs.warehouse.location.domain.bo.LocationInfoBo;
 import org.dromara.djs.warehouse.location.domain.query.LocationInfoQuery;
 import org.dromara.djs.warehouse.location.domain.vo.LocationCardSummaryVo;
+import org.dromara.djs.warehouse.location.domain.vo.LocationProductStockVo;
 import org.dromara.djs.warehouse.location.domain.vo.LocationInfoVo;
 import org.dromara.djs.warehouse.location.mapper.LocationInfoMapper;
 import org.dromara.djs.warehouse.location.service.ILocationInfoService;
@@ -169,6 +170,15 @@ public class LocationInfoServiceImpl extends DjsBaseServiceImpl<LocationInfoMapp
             cards.add(vo);
         }
         return cards;
+    }
+
+    @Override
+    public List<LocationProductStockVo> getProductStock(Long locationId, String productName) {
+        if (locationId == null) {
+            return new ArrayList<>();
+        }
+        String keyword = StringUtils.isBlank(productName) ? null : productName.trim();
+        return baseMapper.selectProductStockByLocation(TenantHelper.getTenantId(), locationId, keyword);
     }
 
     /**

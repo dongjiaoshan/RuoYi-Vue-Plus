@@ -137,4 +137,15 @@ public final class DictTypeConstants {
 
     /** 盘点状态（跨域：t_warehouse_check_record / t_store_check_record.check_status，draft/in_progress/completed）。 */
     public static final String CHECK_STATUS = "djs_check_status";
+
+    /**
+     * 猪肉生长记录显示配置（V6 row134）：单值字典，{@code dict_value} 存数字，
+     * 表示「生长记录至少要有几条，C 端猪肉追溯页才显示生长记录入口」，客户可在 admin 改，默认 3。
+     */
+    public static final String TRACE_GROW_SHOW_MIN = "djs_trace_grow_show_min";
+
+    /**
+     * 农事记录显示配置（V6 row135）：同 {@link #TRACE_GROW_SHOW_MIN}，管果蔬追溯页的农事记录入口，默认 3。
+     */
+    public static final String TRACE_FARM_SHOW_MIN = "djs_trace_farm_show_min";
 }

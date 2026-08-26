@@ -2,6 +2,8 @@ package org.dromara.djs.warehouse.cut.domain.vo;
 
 import cn.idev.excel.annotation.ExcelIgnoreUnannotated;
 import cn.idev.excel.annotation.ExcelProperty;
+import org.dromara.common.excel.annotation.ExcelDictFormat;
+import org.dromara.djs.common.excel.DictOrRawConvert;
 import com.fasterxml.jackson.annotation.JsonFormat;
 import io.github.linpeilie.annotations.AutoMapper;
 import lombok.Data;
@@ -162,11 +164,13 @@ public class PigCutRecordVo implements Serializable {
     @ExcelProperty(value = "是否半扇 1=是/2=否")
     private Integer isHalf;
 
-    @ExcelProperty(value = "状态")
+    @ExcelProperty(value = "状态", converter = DictOrRawConvert.class)
+    @ExcelDictFormat(dictType = "djs_pig_cut_status")
     private String cutStatus;
 
     /** 出库类型：cut=分割车间 / ship=发货月台 / warehouse=仓库出库（字典 djs_pig_cut_out_type）。 */
-    @ExcelProperty(value = "出库类型")
+    @ExcelProperty(value = "出库类型", converter = DictOrRawConvert.class)
+    @ExcelDictFormat(dictType = "djs_pig_cut_out_type")
     private String outType;
 
     @ExcelProperty(value = "凭证图IDs")

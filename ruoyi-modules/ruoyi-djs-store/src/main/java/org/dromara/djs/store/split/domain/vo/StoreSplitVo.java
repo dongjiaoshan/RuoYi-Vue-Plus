@@ -2,6 +2,8 @@ package org.dromara.djs.store.split.domain.vo;
 
 import cn.idev.excel.annotation.ExcelIgnoreUnannotated;
 import cn.idev.excel.annotation.ExcelProperty;
+import org.dromara.common.excel.annotation.ExcelDictFormat;
+import org.dromara.djs.common.excel.DictOrRawConvert;
 import com.fasterxml.jackson.annotation.JsonFormat;
 import lombok.Data;
 import org.dromara.common.translation.annotation.Translation;
@@ -38,7 +40,8 @@ public class StoreSplitVo implements Serializable {
     /**
      * 分割部位字典 {@code djs_pig_cut_part}：lean / part / bone / skin / scrap。
      */
-    @ExcelProperty(value = "部位")
+    @ExcelProperty(value = "部位", converter = DictOrRawConvert.class)
+    @ExcelDictFormat(dictType = "djs_pig_cut_part")
     private String cutPart;
 
     /**
@@ -67,7 +70,8 @@ public class StoreSplitVo implements Serializable {
     /**
      * 来源（固定 store=门店再分）。
      */
-    @ExcelProperty(value = "来源")
+    @ExcelProperty(value = "来源", converter = DictOrRawConvert.class)
+    @ExcelDictFormat(readConverterExp = "store=门店再分")
     private String source;
 
     /**

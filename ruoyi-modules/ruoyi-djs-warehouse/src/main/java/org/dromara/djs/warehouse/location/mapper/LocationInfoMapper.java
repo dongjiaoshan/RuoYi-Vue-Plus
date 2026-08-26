@@ -7,6 +7,7 @@ import org.dromara.djs.warehouse.flow.domain.vo.MatIssueLocationVo;
 import org.dromara.djs.warehouse.location.domain.LocationInfo;
 import org.dromara.djs.warehouse.location.domain.vo.LocationCardSummaryVo;
 import org.dromara.djs.warehouse.location.domain.vo.LocationInfoVo;
+import org.dromara.djs.warehouse.location.domain.vo.LocationProductStockVo;
 
 import java.util.List;
 
@@ -94,6 +95,67 @@ public interface LocationInfoMapper extends BaseMapperPlus<LocationInfo, Locatio
           )
         """)
     List<LocationCardSummaryVo> selectLastCheckByLocation(@Param("tenantId") String tenantId);
+
+    /**
+     * 单库位内的逐产品库存明细（V6 row136 卡片下钻抽屉）。
+     *
+     * <p>产品集合取「当前有库存行的产品」∪「今天在该库位有流水的产品」——只取前者的话，
+     * 当天进完又出完（库存归零）的产品会整行消失，「今日入库 / 今日出库」两列就看不到当天最活跃的货；
+     * 只取后者又漏掉了往日囤着没动的存货。</p>
+     *
+     * <p>{@code stock_flow.warehouse_id} 物理列名实为 location FK（doc/11 §2.3 命名遗留）。
+     * 今日出库排除 {@code flow_type='loss'}，与库位卡片 {@link #selectTodayFlowByLocation} 同口径。
+     * 多租户拦截器对含 JOIN 的自定义 {@code @Select} 不保证注入，WHERE 全部显式带 tenant_id（§0.5）。</p>
+     *
+     * @param tenantId    租户（V1 固定 '1001'）
+     * @param locationId  库位 ID
+     * @param productName 产品名称模糊搜索（空 = 不过滤）
+     * @return 逐产品行，按实时库存量倒序、同量按产品名
+     */
+    @Select("""
+        SELECT t.product_id       AS productId,
+               p.product_name     AS productName,
+               p.product_spec     AS productSpec,
+               p.product_unit     AS productUnit,
+               COALESCE(s.stock, 0)   AS productStock,
+               COALESCE(f.in_qty, 0)  AS todayInQty,
+               COALESCE(f.out_qty, 0) AS todayOutQty
+        FROM (
+            SELECT product_id
+              FROM t_warehouse_location_stock
+             WHERE del_flag = '0' AND tenant_id = #{tenantId} AND location_id = #{locationId}
+               AND product_id IS NOT NULL
+             GROUP BY product_id
+            UNION
+            SELECT product_id
+              FROM t_warehouse_stock_flow
+             WHERE del_flag = '0' AND tenant_id = #{tenantId} AND warehouse_id = #{locationId}
+               AND product_id IS NOT NULL AND DATE(flow_date) = CURDATE()
+             GROUP BY product_id
+        ) t
+        JOIN t_warehouse_product_info p
+          ON p.id = t.product_id AND p.del_flag = '0' AND p.tenant_id = #{tenantId}
+        LEFT JOIN (
+            SELECT product_id, SUM(product_stock) AS stock
+              FROM t_warehouse_location_stock
+             WHERE del_flag = '0' AND tenant_id = #{tenantId} AND location_id = #{locationId}
+             GROUP BY product_id
+        ) s ON s.product_id = t.product_id
+        LEFT JOIN (
+            SELECT product_id,
+                   SUM(CASE WHEN inout_type = 'IN' THEN ABS(change_quantity) ELSE 0 END) AS in_qty,
+                   SUM(CASE WHEN inout_type = 'OT' AND flow_type <> 'loss' THEN ABS(change_quantity) ELSE 0 END) AS out_qty
+              FROM t_warehouse_stock_flow
+             WHERE del_flag = '0' AND tenant_id = #{tenantId} AND warehouse_id = #{locationId}
+               AND DATE(flow_date) = CURDATE()
+             GROUP BY product_id
+        ) f ON f.product_id = t.product_id
+        WHERE (#{productName} IS NULL OR p.product_name LIKE CONCAT('%', #{productName}, '%'))
+        ORDER BY COALESCE(s.stock, 0) DESC, p.product_name
+        """)
+    List<LocationProductStockVo> selectProductStockByLocation(@Param("tenantId") String tenantId,
+                                                              @Param("locationId") Long locationId,
+                                                              @Param("productName") String productName);
 
     /**
      * mp 物资领用「按库位类型列库位 chip」列表（WMS-OUTSOURCE-001：crop_loc 种植库 / farm_loc 养殖库）。

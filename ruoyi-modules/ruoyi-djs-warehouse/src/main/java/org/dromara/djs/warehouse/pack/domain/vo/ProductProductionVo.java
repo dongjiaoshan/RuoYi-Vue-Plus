@@ -2,6 +2,8 @@ package org.dromara.djs.warehouse.pack.domain.vo;
 
 import cn.idev.excel.annotation.ExcelIgnoreUnannotated;
 import cn.idev.excel.annotation.ExcelProperty;
+import org.dromara.common.excel.annotation.ExcelDictFormat;
+import org.dromara.djs.common.excel.DictOrRawConvert;
 import com.fasterxml.jackson.annotation.JsonFormat;
 import io.github.linpeilie.annotations.AutoMapper;
 import lombok.Data;
@@ -43,7 +45,8 @@ public class ProductProductionVo implements Serializable {
     @ExcelProperty(value = "产品名称")
     private String productName;
 
-    @ExcelProperty(value = "产品类型 1=自产/2=外购")
+    @ExcelProperty(value = "产品类型 1=自产/2=外购", converter = DictOrRawConvert.class)
+    @ExcelDictFormat(dictType = "djs_product_type")
     private Integer productType;
 
     @ExcelProperty(value = "单位")
@@ -125,13 +128,16 @@ public class ProductProductionVo implements Serializable {
     @ExcelProperty(value = "生产位置 location_info FK")
     private Long produceLocation;
 
-    @ExcelProperty(value = "发货方式 1=发货/2=邮寄/3=销售")
+    @ExcelProperty(value = "发货方式 1=发货/2=邮寄/3=销售", converter = DictOrRawConvert.class)
+    @ExcelDictFormat(dictType = "djs_deliver_type")
     private Integer deliverType;
 
-    @ExcelProperty(value = "去向 platform=发货月台/gift=礼盒")
+    @ExcelProperty(value = "去向 platform=发货月台/gift=礼盒", converter = DictOrRawConvert.class)
+    @ExcelDictFormat(readConverterExp = "platform=发货月台,gift=礼盒,mail=邮寄,warehouse_out=后台出库")
     private String deliverDest;
 
-    @ExcelProperty(value = "打包状态")
+    @ExcelProperty(value = "打包状态", converter = DictOrRawConvert.class)
+    @ExcelDictFormat(dictType = "djs_pack_status")
     private String packStatus;
 
     @ExcelProperty(value = "凭证图IDs")

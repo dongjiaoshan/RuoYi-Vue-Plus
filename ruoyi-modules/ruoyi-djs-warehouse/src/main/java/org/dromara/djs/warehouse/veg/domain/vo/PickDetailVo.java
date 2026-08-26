@@ -3,6 +3,7 @@ package org.dromara.djs.warehouse.veg.domain.vo;
 import cn.idev.excel.annotation.ExcelIgnore;
 import cn.idev.excel.annotation.ExcelIgnoreUnannotated;
 import cn.idev.excel.annotation.ExcelProperty;
+import org.dromara.djs.common.excel.DictOrRawConvert;
 import com.fasterxml.jackson.annotation.JsonFormat;
 import lombok.Data;
 import org.dromara.common.excel.annotation.ExcelDictFormat;
@@ -46,8 +47,8 @@ public class PickDetailVo implements Serializable {
     private String productName;
 
     /** 统计来源：1=毛菜处理间 2=采摘活动（row44）。前端按 code 显示中文；导出走 readConverterExp 映射。 */
+    @ExcelProperty(value = "统计来源", converter = DictOrRawConvert.class)
     @ExcelDictFormat(readConverterExp = "1=毛菜处理间,2=采摘活动")
-    @ExcelProperty(value = "统计来源")
     private String statSource;
 
     @ExcelProperty(value = "地块编号")

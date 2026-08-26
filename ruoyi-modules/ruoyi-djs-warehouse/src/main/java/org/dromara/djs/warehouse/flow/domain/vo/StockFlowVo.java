@@ -2,6 +2,8 @@ package org.dromara.djs.warehouse.flow.domain.vo;
 
 import cn.idev.excel.annotation.ExcelIgnoreUnannotated;
 import cn.idev.excel.annotation.ExcelProperty;
+import org.dromara.common.excel.annotation.ExcelDictFormat;
+import org.dromara.djs.common.excel.DictOrRawConvert;
 import com.fasterxml.jackson.annotation.JsonFormat;
 import io.github.linpeilie.annotations.AutoMapper;
 import lombok.Data;
@@ -51,7 +53,8 @@ public class StockFlowVo implements Serializable {
      * 产品类型 djs_product_type（1 自产 / 2 外购，已废弃 3 礼盒；service JOIN 回填，
      * 与「归属/产品类别」belongType 是两个不同维度，礼盒 = 自产 + belongType=gift_box）。
      */
-    @ExcelProperty(value = "产品类型")
+    @ExcelProperty(value = "产品类型", converter = DictOrRawConvert.class)
+    @ExcelDictFormat(dictType = "djs_product_type")
     private Integer productType;
 
     /**
@@ -69,7 +72,8 @@ public class StockFlowVo implements Serializable {
     /**
      * 产品归属 djs_belong_type（service JOIN 回填，便于 admin 流水页按 matType 过滤）。
      */
-    @ExcelProperty(value = "归属")
+    @ExcelProperty(value = "归属", converter = DictOrRawConvert.class)
+    @ExcelDictFormat(dictType = "djs_belong_type")
     private String belongType;
 
     /**
@@ -81,7 +85,8 @@ public class StockFlowVo implements Serializable {
     /**
      * 商品分类 djs_buy_class（service JOIN 回填，mp 领用记录卡展示「商品分类」+ 商品分类筛选）。
      */
-    @ExcelProperty(value = "商品分类")
+    @ExcelProperty(value = "商品分类", converter = DictOrRawConvert.class)
+    @ExcelDictFormat(dictType = "djs_buy_class")
     private String buyClass;
 
     /**
@@ -100,17 +105,20 @@ public class StockFlowVo implements Serializable {
      */
     private Long demandId;
 
-    @ExcelProperty(value = "出入")
+    @ExcelProperty(value = "出入", converter = DictOrRawConvert.class)
+    @ExcelDictFormat(dictType = "djs_inout_type")
     private String inoutType;
 
-    @ExcelProperty(value = "类型")
+    @ExcelProperty(value = "类型", converter = DictOrRawConvert.class)
+    @ExcelDictFormat(dictType = "djs_flow_type")
     private String flowType;
 
     private String stockInType;
 
     private String stockOutType;
 
-    @ExcelProperty(value = "出库去向")
+    @ExcelProperty(value = "出库去向", converter = DictOrRawConvert.class)
+    @ExcelDictFormat(dictType = "djs_stock_out_dest")
     private String stockOutDest;
 
     @ExcelProperty(value = "变动数量(±)")

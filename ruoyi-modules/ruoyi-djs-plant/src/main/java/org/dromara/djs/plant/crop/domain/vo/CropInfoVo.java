@@ -2,6 +2,8 @@ package org.dromara.djs.plant.crop.domain.vo;
 
 import cn.idev.excel.annotation.ExcelIgnoreUnannotated;
 import cn.idev.excel.annotation.ExcelProperty;
+import org.dromara.common.excel.annotation.ExcelDictFormat;
+import org.dromara.djs.common.excel.DictOrRawConvert;
 import io.github.linpeilie.annotations.AutoMapper;
 import lombok.Data;
 import org.dromara.common.translation.annotation.Translation;
@@ -63,7 +65,8 @@ public class CropInfoVo implements Serializable {
     @ExcelProperty(value = "关联产品")
     private String relatedProductName;
 
-    @ExcelProperty(value = "种植季节")
+    @ExcelProperty(value = "种植季节", converter = DictOrRawConvert.class)
+    @ExcelDictFormat(dictType = "djs_planting_season")
     private String plantingSeason;
 
     @ExcelProperty(value = "播种期")

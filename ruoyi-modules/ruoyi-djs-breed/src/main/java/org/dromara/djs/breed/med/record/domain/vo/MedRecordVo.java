@@ -2,6 +2,8 @@ package org.dromara.djs.breed.med.record.domain.vo;
 
 import cn.idev.excel.annotation.ExcelIgnoreUnannotated;
 import cn.idev.excel.annotation.ExcelProperty;
+import org.dromara.common.excel.annotation.ExcelDictFormat;
+import org.dromara.djs.common.excel.DictOrRawConvert;
 import io.github.linpeilie.annotations.AutoMapper;
 import lombok.Data;
 import org.dromara.djs.breed.med.record.domain.MedRecord;
@@ -42,25 +44,31 @@ public class MedRecordVo implements Serializable {
     private String earNo;
 
     /** 用药时猪只类型快照（djs_pig_type），列表耳号后展示 + 按类型搜索。 */
-    @ExcelProperty(value = "猪只类型")
+    @ExcelProperty(value = "猪只类型", converter = DictOrRawConvert.class)
+    @ExcelDictFormat(dictType = "djs_pig_type")
     private String pigType;
 
     /** 用药时母猪状态快照（djs_pig_lifecycle）。 */
-    @ExcelProperty(value = "猪只状态")
+    @ExcelProperty(value = "猪只状态", converter = DictOrRawConvert.class)
+    @ExcelDictFormat(dictType = "djs_pig_lifecycle")
     private String pigStatus;
 
     private Long masterId;
 
-    @ExcelProperty(value = "记录类型(单/批)")
+    @ExcelProperty(value = "记录类型(单/批)", converter = DictOrRawConvert.class)
+    @ExcelDictFormat(dictType = "djs_drug_type")
     private Integer drugType;
 
-    @ExcelProperty(value = "用药类型")
+    @ExcelProperty(value = "用药类型", converter = DictOrRawConvert.class)
+    @ExcelDictFormat(dictType = "djs_medicine_use_type")
     private String medicineType;
 
-    @ExcelProperty(value = "用药原因")
+    @ExcelProperty(value = "用药原因", converter = DictOrRawConvert.class)
+    @ExcelDictFormat(dictType = "djs_medicine_reason")
     private String medicineReason;
 
-    @ExcelProperty(value = "用药方式")
+    @ExcelProperty(value = "用药方式", converter = DictOrRawConvert.class)
+    @ExcelDictFormat(dictType = "djs_medicine_way")
     private String medicineWay;
 
     @ExcelProperty(value = "药品ID")

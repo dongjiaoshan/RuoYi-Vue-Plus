@@ -15,6 +15,7 @@ import org.dromara.common.web.core.BaseController;
 import org.dromara.djs.warehouse.location.domain.bo.LocationInfoBo;
 import org.dromara.djs.warehouse.location.domain.query.LocationInfoQuery;
 import org.dromara.djs.warehouse.location.domain.vo.LocationCardSummaryVo;
+import org.dromara.djs.warehouse.location.domain.vo.LocationProductStockVo;
 import org.dromara.djs.warehouse.location.domain.vo.LocationInfoVo;
 import org.dromara.djs.warehouse.location.service.ILocationInfoService;
 import org.springframework.validation.annotation.Validated;
@@ -25,6 +26,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.Arrays;
@@ -66,6 +68,34 @@ public class LocationInfoController extends BaseController {
     @GetMapping("/summary")
     public R<List<LocationCardSummaryVo>> getCardSummary() {
         return R.ok(locationInfoService.getCardSummary());
+    }
+
+    /**
+     * 单库位内的逐产品库存明细（V6 row136：库位总览卡片点开的右侧抽屉）。
+     *
+     * <p>复用 {@code location:list} 权限，无新增 menu。</p>
+     *
+     * @param locationId  库位 ID
+     * @param productName 产品名称模糊搜索（可空）
+     */
+    @SaCheckPermission("djs:warehouse:location:list")
+    @GetMapping("/productStock")
+    public R<List<LocationProductStockVo>> getProductStock(@RequestParam Long locationId,
+                                                           @RequestParam(required = false) String productName) {
+        return R.ok(locationInfoService.getProductStock(locationId, productName));
+    }
+
+    /**
+     * 导出单库位的逐产品库存明细（V6 row136，与抽屉列表同源同筛选）。
+     */
+    @SaCheckPermission("djs:warehouse:location:export")
+    @Log(title = "库位库存明细", businessType = BusinessType.EXPORT)
+    @PostMapping("/productStock/export")
+    public void exportProductStock(@RequestParam Long locationId,
+                                   @RequestParam(required = false) String productName,
+                                   HttpServletResponse response) {
+        List<LocationProductStockVo> list = locationInfoService.getProductStock(locationId, productName);
+        ExcelUtil.exportExcel(list, "库位库存明细", LocationProductStockVo.class, response);
     }
 
     /**
