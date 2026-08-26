@@ -1,11 +1,12 @@
 package org.dromara.djs.plant.plan.domain.vo;
 
 import cn.idev.excel.annotation.ExcelIgnore;
+import cn.idev.excel.annotation.ExcelIgnoreUnannotated;
 import cn.idev.excel.annotation.ExcelProperty;
 import io.github.linpeilie.annotations.AutoMapper;
 import lombok.Data;
 import org.dromara.common.excel.annotation.ExcelDictFormat;
-import org.dromara.common.excel.convert.ExcelDictConvert;
+import org.dromara.djs.common.excel.DictOrRawConvert;
 import org.dromara.djs.plant.plan.domain.PlantDetails;
 
 import java.io.Serial;
@@ -24,6 +25,7 @@ import java.util.List;
  * @since PLT-PLAN-001
  */
 @Data
+@ExcelIgnoreUnannotated
 @AutoMapper(target = PlantDetails.class)
 public class PlantDetailsVo implements Serializable {
 
@@ -56,7 +58,7 @@ public class PlantDetailsVo implements Serializable {
     private LocalDate lastHarvestdate;
     @ExcelIgnore
     private String plantStatus;
-    @ExcelProperty(value = "采摘状态", converter = ExcelDictConvert.class)
+    @ExcelProperty(value = "采摘状态", converter = DictOrRawConvert.class)
     @ExcelDictFormat(dictType = "djs_pick_status")
     private String harvestStatus;
     @ExcelProperty(value = "地块面积(亩)")
@@ -82,12 +84,12 @@ public class PlantDetailsVo implements Serializable {
     private Long plantBy;
     @ExcelIgnore
     private Long harvestBy;
-    @ExcelProperty(value = "是否采摘活动", converter = ExcelDictConvert.class)
+    @ExcelProperty(value = "是否采摘活动", converter = DictOrRawConvert.class)
     @ExcelDictFormat(readConverterExp = "1=是,2=否")
     private Integer isPick;
 
     /** 是否移栽调整（PLT-TRANSPLANT-REDO-001）：1=该明细由育苗移栽落地生成（plot_id=目标地块）。 */
-    @ExcelProperty(value = "是否移栽调整", converter = ExcelDictConvert.class)
+    @ExcelProperty(value = "是否移栽调整", converter = DictOrRawConvert.class)
     @ExcelDictFormat(readConverterExp = "1=是,0=否")
     private Integer transplantAdjusted;
 
@@ -95,7 +97,7 @@ public class PlantDetailsVo implements Serializable {
      * 变更类型（字典 {@code djs_plant_change_type}，V6-R36）：
      * mp=小程序操作 / admin=后台调整 / admin_team=后台班组调整。
      */
-    @ExcelProperty(value = "变更类型", converter = ExcelDictConvert.class)
+    @ExcelProperty(value = "变更类型", converter = DictOrRawConvert.class)
     @ExcelDictFormat(dictType = "djs_plant_change_type")
     private String changeType;
 

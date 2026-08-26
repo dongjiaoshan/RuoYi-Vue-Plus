@@ -5,7 +5,7 @@ import cn.idev.excel.annotation.ExcelProperty;
 import io.github.linpeilie.annotations.AutoMapper;
 import lombok.Data;
 import org.dromara.common.excel.annotation.ExcelDictFormat;
-import org.dromara.common.excel.convert.ExcelDictConvert;
+import org.dromara.djs.common.excel.DictOrRawConvert;
 import org.dromara.common.translation.annotation.Translation;
 import org.dromara.common.translation.constant.TransConstant;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
@@ -41,7 +41,7 @@ public class ProductInfoVo implements Serializable {
     @ExcelProperty(value = "产品名称")
     private String productName;
 
-    @ExcelProperty(value = "产品类型", converter = ExcelDictConvert.class)
+    @ExcelProperty(value = "产品类型", converter = DictOrRawConvert.class)
     @ExcelDictFormat(dictType = "djs_product_type")
     private Integer productType;
 
@@ -61,11 +61,11 @@ public class ProductInfoVo implements Serializable {
      */
     private String displayName;
 
-    @ExcelProperty(value = "归属类型", converter = ExcelDictConvert.class)
+    @ExcelProperty(value = "归属类型", converter = DictOrRawConvert.class)
     @ExcelDictFormat(dictType = "djs_belong_type")
     private String belongType;
 
-    @ExcelProperty(value = "外购类", converter = ExcelDictConvert.class)
+    @ExcelProperty(value = "外购类", converter = DictOrRawConvert.class)
     @ExcelDictFormat(dictType = "djs_buy_class")
     private String buyClass;
 
@@ -84,7 +84,7 @@ public class ProductInfoVo implements Serializable {
     /** 主图 public URL（IMG-LIB-001 resolver 4 层兜底回填）。 */
     private String imageUrl;
 
-    @ExcelProperty(value = "产品属性", converter = ExcelDictConvert.class)
+    @ExcelProperty(value = "产品属性", converter = DictOrRawConvert.class)
     @ExcelDictFormat(dictType = "djs_product_attr")
     private Integer productAttr;
 
@@ -92,7 +92,7 @@ public class ProductInfoVo implements Serializable {
      * 生产车间 CSV 多值（如 {@code "3,5"}）。导出时 {@link ExcelDictConvert} 按 {@code separator}
      * 逐值翻译再拼回（「肉品打包间,门店打包间」），无需自定义转换器。
      */
-    @ExcelProperty(value = "生产车间", converter = ExcelDictConvert.class)
+    @ExcelProperty(value = "生产车间", converter = DictOrRawConvert.class)
     @ExcelDictFormat(dictType = "djs_product_workshop")
     private String productWorkshop;
 
@@ -105,7 +105,7 @@ public class ProductInfoVo implements Serializable {
     @ExcelProperty(value = "存储仓库")
     private String storeLocationName;
 
-    @ExcelProperty(value = "状态", converter = ExcelDictConvert.class)
+    @ExcelProperty(value = "状态", converter = DictOrRawConvert.class)
     @ExcelDictFormat(dictType = "sys_normal_disable")
     private Integer productStatus;
 
@@ -127,7 +127,7 @@ public class ProductInfoVo implements Serializable {
     @ExcelProperty(value = "销售价格")
     private BigDecimal salePrice;
 
-    @ExcelProperty(value = "是否发货", converter = ExcelDictConvert.class)
+    @ExcelProperty(value = "是否发货", converter = DictOrRawConvert.class)
     @ExcelDictFormat(dictType = "djs_yes_no")
     private Integer isDelivery;
 
@@ -140,11 +140,11 @@ public class ProductInfoVo implements Serializable {
     @ExcelProperty(value = "供应商")
     private String supplierName;
 
-    @ExcelProperty(value = "是否可外购", converter = ExcelDictConvert.class)
+    @ExcelProperty(value = "是否可外购", converter = DictOrRawConvert.class)
     @ExcelDictFormat(dictType = "djs_yes_no")
     private Integer isBuyOut;
 
-    @ExcelProperty(value = "是否原材料外售", converter = ExcelDictConvert.class)
+    @ExcelProperty(value = "是否原材料外售", converter = DictOrRawConvert.class)
     @ExcelDictFormat(dictType = "djs_yes_no")
     private Integer isMaterialSold;
 

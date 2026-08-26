@@ -1,5 +1,9 @@
 package org.dromara.djs.warehouse.flow.domain.vo;
 
+import cn.idev.excel.annotation.ExcelIgnoreUnannotated;
+import cn.idev.excel.annotation.ExcelProperty;
+import org.dromara.common.excel.annotation.ExcelDictFormat;
+import org.dromara.djs.common.excel.DictOrRawConvert;
 import lombok.Data;
 
 import java.io.Serial;
@@ -24,6 +28,7 @@ import java.util.Date;
  * @since FIX-WMS-MATISSUE-001
  */
 @Data
+@ExcelIgnoreUnannotated
 public class MatIssueItemVo implements Serializable {
 
     @Serial
@@ -52,16 +57,19 @@ public class MatIssueItemVo implements Serializable {
     /**
      * 产品业务码（如 PROD001）。
      */
+    @ExcelProperty(value = "产品编码")
     private String productCode;
 
     /**
      * 产品名称（卡片主标题，如「番茄」「包材名称1」）。
      */
+    @ExcelProperty(value = "产品名称")
     private String productName;
 
     /**
      * 单位（个 / 头 / Kg 等）。
      */
+    @ExcelProperty(value = "单位")
     private String productUnit;
 
     /**
@@ -71,6 +79,7 @@ public class MatIssueItemVo implements Serializable {
      * 卡上不显规格时两张卡长得一模一样、工人分不清该领哪个（row265 即由此误报「后台 4 个产品 mp 只显 2 个」）。
      * mp 列表卡与详情头卡都在产品名下方渲染「规格：{@code productSpec}」，为空则整行不渲染。</p>
      */
+    @ExcelProperty(value = "规格")
     private String productSpec;
 
     /**
@@ -83,6 +92,8 @@ public class MatIssueItemVo implements Serializable {
      * 产品归属类型（{@code djs_belong_type}；resolver L2 兜底键，可空 → 走全局默认图）。
      * 仅供 service 层 resolver 回填用，前端不消费。
      */
+    @ExcelProperty(value = "产品归属", converter = DictOrRawConvert.class)
+    @ExcelDictFormat(dictType = "djs_belong_type")
     private String belongType;
 
     /**
@@ -92,11 +103,14 @@ public class MatIssueItemVo implements Serializable {
      * <p>mp 拿到列表后 {@code [...new Set(items.map(i => i.buyClass).filter(Boolean))]} 去重成商品分类
      * 筛选 chip/下拉；label 走 mp 字典 store（{@code djs_buy_class}）显中文。前端按 string 处理。</p>
      */
+    @ExcelProperty(value = "商品分类", converter = DictOrRawConvert.class)
+    @ExcelDictFormat(dictType = "djs_buy_class")
     private String buyClass;
 
     /**
      * 当前库存（跨库位 SUM；指定 locationId 时为该库位库存；无库存行为 0）。
      */
+    @ExcelProperty(value = "当前库存")
     private BigDecimal currentStock;
 
     /**
@@ -112,16 +126,19 @@ public class MatIssueItemVo implements Serializable {
      * 本字段同时是 row265「库存为 0 但今日领过就仍要显示」HAVING 条件的依据，按人过滤会导致
      * A 领用后 B 登录看不到该卡、当天的退回/损耗/饲喂全进不去。</p>
      */
+    @ExcelProperty(value = "今日出库")
     private BigDecimal todayPicked;
 
     /**
      * 今日已退（return_in SUM）。口径同 {@code todayPicked}：全场全部操作人。
      */
+    @ExcelProperty(value = "今日退回")
     private BigDecimal todayReturned;
 
     /**
      * 今日损耗（loss SUM）。口径同 {@code todayPicked}：全场全部操作人。
      */
+    @ExcelProperty(value = "今日损耗")
     private BigDecimal todayLoss;
 
     /**
@@ -148,6 +165,7 @@ public class MatIssueItemVo implements Serializable {
      *
      * <p>仅 {@code selectSelfVegIssueItems} 回填；常规 product 维度领用列表为 null。</p>
      */
+    @ExcelProperty(value = "地块编号")
     private String plotCode;
 
     /**
@@ -157,6 +175,7 @@ public class MatIssueItemVo implements Serializable {
      * 地块编号 / 今日四量），故需库位名列。{@code selectAdminMatIssueRows} LEFT JOIN
      * {@code t_warehouse_location_info} 取 {@code location_name} 回填。</p>
      */
+    @ExcelProperty(value = "存储库位")
     private String locationName;
 
     /**
@@ -165,6 +184,7 @@ public class MatIssueItemVo implements Serializable {
      * <p>additive 字段：mp 既有端点（{@code selectMatIssueItems} 等按 product 聚合）不回填本字段，
      * 仅 admin 行粒度列表 {@code selectAdminMatIssueRows} 回填。前端按 string 处理（无截断风险，业务码）。</p>
      */
+    @ExcelProperty(value = "耳号")
     private String earNo;
 
     /**
@@ -175,6 +195,7 @@ public class MatIssueItemVo implements Serializable {
      * （同一产品同一库位可有多条不同耳号 / 白条号的篮），列表展示 barID + 领用走 {@link #batchId} 精确扣该篮。
      * 前端按 string 处理（业务码无截断风险）。</p>
      */
+    @ExcelProperty(value = "白条号")
     private String whiteBarNo;
 
     /**
@@ -186,6 +207,7 @@ public class MatIssueItemVo implements Serializable {
      * mp 卡片端点（{@code selectMatIssueItems} / {@code selectMatIssueItemsByType}）也回填本字段，
      * 驱动「今日已饲喂」展示 + 退回上限扣减（行3.3：已饲喂的不许退回）。</p>
      */
+    @ExcelProperty(value = "今日饲喂")
     private BigDecimal todayFeed;
 
     /**

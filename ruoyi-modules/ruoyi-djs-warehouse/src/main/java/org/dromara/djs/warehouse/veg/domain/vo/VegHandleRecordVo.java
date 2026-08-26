@@ -6,7 +6,7 @@ import cn.idev.excel.annotation.format.DateTimeFormat;
 import com.fasterxml.jackson.annotation.JsonFormat;
 import lombok.Data;
 import org.dromara.common.excel.annotation.ExcelDictFormat;
-import org.dromara.common.excel.convert.ExcelDictConvert;
+import org.dromara.djs.common.excel.DictOrRawConvert;
 
 import java.io.Serial;
 import java.io.Serializable;
@@ -82,7 +82,7 @@ public class VegHandleRecordVo implements Serializable {
     /**
      * 处理方式原始值（字典 {@code djs_pick_dest}）。
      */
-    @ExcelProperty(value = "处理方式", converter = ExcelDictConvert.class)
+    @ExcelProperty(value = "处理方式", converter = DictOrRawConvert.class)
     @ExcelDictFormat(dictType = "djs_pick_dest")
     private String handleMethod;
 

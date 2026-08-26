@@ -5,7 +5,7 @@ import cn.idev.excel.annotation.ExcelProperty;
 import io.github.linpeilie.annotations.AutoMapper;
 import lombok.Data;
 import org.dromara.common.excel.annotation.ExcelDictFormat;
-import org.dromara.common.excel.convert.ExcelDictConvert;
+import org.dromara.djs.common.excel.DictOrRawConvert;
 import org.dromara.djs.plant.farm.domain.FarmRecords;
 
 import java.io.Serial;
@@ -55,7 +55,7 @@ public class FarmRecordsVo implements Serializable {
     @ExcelProperty(value = "转移前片区")
     private String plotZoneName;
 
-    @ExcelProperty(value = "地块类型", converter = ExcelDictConvert.class)
+    @ExcelProperty(value = "地块类型", converter = DictOrRawConvert.class)
     @ExcelDictFormat(dictType = "djs_plot_status")
     private Integer plotType;
 
@@ -65,7 +65,7 @@ public class FarmRecordsVo implements Serializable {
     @ExcelProperty(value = "作物名称")
     private String cropName;
 
-    @ExcelProperty(value = "农事类型", converter = ExcelDictConvert.class)
+    @ExcelProperty(value = "农事类型", converter = DictOrRawConvert.class)
     @ExcelDictFormat(dictType = "djs_farm_work_type")
     private String farmType;
 
@@ -111,7 +111,7 @@ public class FarmRecordsVo implements Serializable {
     @ExcelProperty(value = "移栽百分比")
     private Integer transplantPercent;
 
-    @ExcelProperty(value = "灾害类型", converter = ExcelDictConvert.class)
+    @ExcelProperty(value = "灾害类型", converter = DictOrRawConvert.class)
     @ExcelDictFormat(dictType = "djs_disaster_type")
     private String disasterType;
 
@@ -125,7 +125,7 @@ public class FarmRecordsVo implements Serializable {
     @ExcelProperty(value = "采摘重量(kg)")
     private BigDecimal harvestWeight;
 
-    @ExcelProperty(value = "预警", converter = ExcelDictConvert.class)
+    @ExcelProperty(value = "预警", converter = DictOrRawConvert.class)
     @ExcelDictFormat(dictType = "djs_yes_no")
     private Integer isWarning;
 

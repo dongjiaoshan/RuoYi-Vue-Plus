@@ -5,7 +5,7 @@ import cn.idev.excel.annotation.ExcelProperty;
 import io.github.linpeilie.annotations.AutoMapper;
 import lombok.Data;
 import org.dromara.common.excel.annotation.ExcelDictFormat;
-import org.dromara.common.excel.convert.ExcelDictConvert;
+import org.dromara.djs.common.excel.DictOrRawConvert;
 import org.dromara.common.translation.annotation.Translation;
 import org.dromara.common.translation.constant.TransConstant;
 import org.dromara.djs.plant.organic.domain.PlotOrganic;
@@ -49,7 +49,7 @@ public class PlotOrganicVo implements Serializable {
 
     private String organicImageUrl;
 
-    @ExcelProperty(value = "预警状态", converter = ExcelDictConvert.class)
+    @ExcelProperty(value = "预警状态", converter = DictOrRawConvert.class)
     @ExcelDictFormat(dictType = "djs_yes_no")
     private Integer isWarning;
 

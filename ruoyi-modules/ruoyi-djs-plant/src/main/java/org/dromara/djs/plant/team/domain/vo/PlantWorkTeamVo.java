@@ -5,7 +5,7 @@ import cn.idev.excel.annotation.ExcelProperty;
 import io.github.linpeilie.annotations.AutoMapper;
 import lombok.Data;
 import org.dromara.common.excel.annotation.ExcelDictFormat;
-import org.dromara.common.excel.convert.ExcelDictConvert;
+import org.dromara.djs.common.excel.DictOrRawConvert;
 import org.dromara.djs.plant.team.domain.PlantWorkTeam;
 
 import java.io.Serial;
@@ -61,7 +61,7 @@ public class PlantWorkTeamVo implements Serializable {
     /**
      * 班组状态（字典 {@code djs_common_status}）。
      */
-    @ExcelProperty(value = "状态", converter = ExcelDictConvert.class)
+    @ExcelProperty(value = "状态", converter = DictOrRawConvert.class)
     @ExcelDictFormat(dictType = "djs_common_status")
     private Integer teamStatus;
 

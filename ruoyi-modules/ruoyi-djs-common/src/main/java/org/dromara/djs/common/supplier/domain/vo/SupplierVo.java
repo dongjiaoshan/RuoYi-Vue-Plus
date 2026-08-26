@@ -5,7 +5,7 @@ import cn.idev.excel.annotation.ExcelProperty;
 import io.github.linpeilie.annotations.AutoMapper;
 import lombok.Data;
 import org.dromara.common.excel.annotation.ExcelDictFormat;
-import org.dromara.common.excel.convert.ExcelDictConvert;
+import org.dromara.djs.common.excel.DictOrRawConvert;
 import org.dromara.djs.common.supplier.domain.Supplier;
 
 import java.io.Serial;
@@ -72,7 +72,7 @@ public class SupplierVo implements Serializable {
     /**
      * 供应商类型（字典 djs_supplier_type）。
      */
-    @ExcelProperty(value = "类型", converter = ExcelDictConvert.class)
+    @ExcelProperty(value = "类型", converter = DictOrRawConvert.class)
     @ExcelDictFormat(dictType = "djs_supplier_type")
     private String supplierType;
 
@@ -97,14 +97,14 @@ public class SupplierVo implements Serializable {
     /**
      * 合作状态（字典 djs_supplier_status）。
      */
-    @ExcelProperty(value = "合作状态", converter = ExcelDictConvert.class)
+    @ExcelProperty(value = "合作状态", converter = DictOrRawConvert.class)
     @ExcelDictFormat(dictType = "djs_supplier_status")
     private String businessStatus;
 
     /**
      * 结算方式（字典 djs_settle_type）。
      */
-    @ExcelProperty(value = "结算方式", converter = ExcelDictConvert.class)
+    @ExcelProperty(value = "结算方式", converter = DictOrRawConvert.class)
     @ExcelDictFormat(dictType = "djs_settle_type")
     private String settleType;
 

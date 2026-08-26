@@ -258,12 +258,21 @@ public class TracePublicServiceImpl
     }
 
     /**
-     * 读单值配置字典里的门槛数字；字典缺项 / 空 / 非数字 / 负数一律回落
+     * 读单值配置字典里的门槛数字；字典缺项 / 空 / 非数字 / 小于 1 一律回落
      * {@link #RECORD_SHOW_MIN_DEFAULT}（3）——公开端不能因为字典被人改坏就 500。
+     *
+     * <p>下限取 1 而不是 0：门槛填 0 时 {@code size() >= 0} 恒真，一条记录都没有的猪也会渲染出
+     * 「生长记录：0 次」——正是 row134 报上来的那个现象。「有多少条记录后才显示」这句话里，
+     * 0 本身就不是个有意义的取值，所以按填错处理、回落默认值，而不是照单全收。</p>
      */
     private int readShowMin(String dictType) {
+        // 必须 dynamic(DEFAULT_TENANT) 而不是 ignore()：TenantSpringCacheManager 见到「忽略租户线」
+        // 会把 Spring Cache 名解析成**不带前缀**的 `sys_dict`，而 admin 字典管理保存时
+        // @CachePut 写的是带前缀的 `1001:sys_dict` —— 两个 RMap 互不相干，且 `sys_dict` 没配 TTL、
+        // 连 _post-init.sh 的 `*:sys_dict` 通配也扫不到。用 ignore() 的后果是：
+        // 甲方在后台把门槛改成 20，公开追溯页永远还读着旧值，直到有人手工 HDEL。
         List<org.dromara.common.core.domain.dto.DictDataDTO> items =
-            TenantHelper.ignore(() -> dictService.getDictData(dictType));
+            TenantHelper.dynamic(DEFAULT_TENANT, () -> dictService.getDictData(dictType));
         if (items == null || items.isEmpty()) {
             return RECORD_SHOW_MIN_DEFAULT;
         }
@@ -273,7 +282,7 @@ public class TracePublicServiceImpl
         }
         try {
             int v = Integer.parseInt(raw.trim());
-            return v < 0 ? RECORD_SHOW_MIN_DEFAULT : v;
+            return v < 1 ? RECORD_SHOW_MIN_DEFAULT : v;
         } catch (NumberFormatException e) {
             log.warn("[trace] 字典 {} 的值 '{}' 不是数字，按默认 {} 处理", dictType, raw, RECORD_SHOW_MIN_DEFAULT);
             return RECORD_SHOW_MIN_DEFAULT;

@@ -4,7 +4,7 @@ import cn.idev.excel.annotation.ExcelIgnoreUnannotated;
 import cn.idev.excel.annotation.ExcelProperty;
 import lombok.Data;
 import org.dromara.common.excel.annotation.ExcelDictFormat;
-import org.dromara.common.excel.convert.ExcelDictConvert;
+import org.dromara.djs.common.excel.DictOrRawConvert;
 
 import java.io.Serial;
 import java.io.Serializable;
@@ -35,7 +35,7 @@ public class PerfDetailFarmExportVo implements Serializable {
     /**
      * 农事类型（字典 djs_farm_work_type，导出转中文标签）。
      */
-    @ExcelProperty(value = "农事类型", converter = ExcelDictConvert.class)
+    @ExcelProperty(value = "农事类型", converter = DictOrRawConvert.class)
     @ExcelDictFormat(dictType = "djs_farm_work_type")
     private String farmType;
 

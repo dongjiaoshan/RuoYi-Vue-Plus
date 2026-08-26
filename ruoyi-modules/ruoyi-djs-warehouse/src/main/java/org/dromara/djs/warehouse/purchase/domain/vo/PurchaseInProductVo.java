@@ -5,7 +5,7 @@ import cn.idev.excel.annotation.ExcelProperty;
 import com.fasterxml.jackson.annotation.JsonFormat;
 import lombok.Data;
 import org.dromara.common.excel.annotation.ExcelDictFormat;
-import org.dromara.common.excel.convert.ExcelDictConvert;
+import org.dromara.djs.common.excel.DictOrRawConvert;
 import org.dromara.common.translation.annotation.Translation;
 import org.dromara.common.translation.constant.TransConstant;
 
@@ -81,7 +81,7 @@ public class PurchaseInProductVo implements Serializable {
     /**
      * 商品类别（字典 {@code djs_buy_class} 的 value；前端经字典转中文展示）。
      */
-    @ExcelProperty(value = "商品类别", converter = ExcelDictConvert.class)
+    @ExcelProperty(value = "商品类别", converter = DictOrRawConvert.class)
     @ExcelDictFormat(dictType = "djs_buy_class")
     private String buyClass;
 
