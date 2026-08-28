@@ -146,6 +146,11 @@ public class StockFlowQuery {
     private String operatorName;
 
     /**
+     * 供应商名称模糊匹配（admin 入库记录页按供应商过滤；service 内部反查 supplier.id 集合后作为 supplierId IN 下推）。
+     */
+    private String supplierName;
+
+    /**
      * 业务时间起。
      */
     @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")

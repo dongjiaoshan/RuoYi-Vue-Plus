@@ -190,4 +190,22 @@ public class StockFlowVo implements Serializable {
     @ExcelProperty(value = "创建时间")
     private Date createTime;
 
+    /**
+     * 供应商名称（service 层 JOIN 回填 {@code t_md_supplier.supplier_name}）。
+     *
+     * <p>该笔流水没有 supplierId（自产入库 / 燎毛入库 / 分割入库 / 门店退回等）时保持 null，
+     * 页面与导出都留空 —— 甲方 row139 原话「如果没有就为空显示」。</p>
+     *
+     * <p><b>字段声明位置是有意放在最后的</b>：本 VO 被 {@code /in/export} / {@code /out/export} /
+     * {@code /export} 三个导出端点共用，FastExcel 按字段声明序出列。放在中间会把它后面的
+     * 耳号 / 地块 / 操作人 / 备注 等列整体右移，等于改了另外两张甲方一直在用的导出件的列序。
+     * 放最后 = 纯追加，且与页面「列表最后一列」的口径一致。</p>
+     *
+     * <p>另外两个端点靠 {@link org.dromara.djs.common.excel.DjsExcelUtil#exportExcelExcluding}
+     * 把这一列排除掉：supplier_id 只在入库方向写入（4 条写入路径全是 INOUT_IN），
+     * 出库导出这列恒空，是纯垃圾列；出入库流水导出甲方本轮也没要求加。</p>
+     */
+    @ExcelProperty(value = "供应商")
+    private String supplierName;
+
 }

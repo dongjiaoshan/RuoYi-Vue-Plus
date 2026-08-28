@@ -4,6 +4,7 @@ import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.breed.core.domain.vo.PigAvailableVo;
 import org.dromara.djs.warehouse.demand.domain.bo.AssignPigBo;
+import org.dromara.djs.warehouse.demand.domain.bo.DemandAdjustBo;
 import org.dromara.djs.warehouse.demand.domain.bo.DemandManageBo;
 import org.dromara.djs.warehouse.demand.domain.query.DemandManageQuery;
 import org.dromara.djs.warehouse.demand.domain.vo.AuditHistoryEntryVo;
@@ -104,6 +105,22 @@ public interface IDemandManageService {
      * @return 影响行数
      */
     int updateExplain(Long demandId, String explain);
+
+    /**
+     * 调整需求量（V6-R140「需求调整管理」）。
+     *
+     * <p>与 {@link #updateByBo} 分开的一条独立路径：编辑只放行 DRAFT/SUBMITTED，
+     * 而甲方要的调整闸是「发货之前都能调」，含已确认（CONFIRMED）。二者的可调范围不同，
+     * 不能共用一套状态白名单。</p>
+     *
+     * <p>每次调整往 {@code t_warehouse_demand_adjust_record} 追加一行留痕（只增不改），
+     * 再 patch 需求行的 {@code demand_quantity}，不动状态 / 确认人 / audit_history。</p>
+     *
+     * @param demandId 需求单 ID
+     * @param bo       调整后需求量 + 备注
+     * @return 受影响行数
+     */
+    int adjustQuantity(Long demandId, DemandAdjustBo bo);
 
     /** 解析 audit_history JSON 列为 timeline。 */
     List<AuditHistoryEntryVo> getAuditHistory(Long demandId);

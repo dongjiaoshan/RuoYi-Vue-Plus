@@ -53,6 +53,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
@@ -566,6 +567,10 @@ public class ProductInfoServiceImpl extends DjsBaseServiceImpl<ProductInfoMapper
         if (product == null) {
             throw new ServiceException("产品不存在或已删除：" + bo.getProductId());
         }
+        // 入库量小数位闸（V6-R141 第 3 条）：kg 类单位最多三位小数，非 kg 单位只能整数。
+        // 闸放后端而不是只靠前端 el-input-number 的 precision —— 前端限制只是输入体验，
+        // 直连接口照样能提交 0.5 瓶（row140 已经吃过「按钮藏了但接口没关」这个亏）。
+        assertQuantityScale(bo.getQuantity(), product.getProductUnit());
         // 配置库位强制：商品/产品配了 store_location_id（逗号分隔多库位）时，
         // 只能入配置库位之一；前端已锁库位下拉，此处后端兜底防绕过（118.2 / 119.2）。
         enforceConfiguredLocation(product, bo.getLocationId());
@@ -586,9 +591,11 @@ public class ProductInfoServiceImpl extends DjsBaseServiceImpl<ProductInfoMapper
         flow.setOperatorId(userId);
         flow.setRemark(bo.getRemark());
         // row34：外购商品（productType=2）入库落供应商到流水，商品「查看」业务流水按当次入库记录的 supplier 显示。
-        // 供应商取商品主数据快照（product_info.supplier_id 应填）；自产产品无供应商，留空。
+        // V6-R141：供应商改为按本次到货实际选择 —— bo 传了就用 bo 的（校验存在），没传回落商品配置快照。
+        // 同一商品这次从张三进、下次从李四进是常态，锁死在配置上那一个不符合实际；
+        // 这也正是「入库记录」页供应商列（V6-R139）能反映每笔真实来源的前提。
         if (Integer.valueOf(2).equals(product.getProductType())) {
-            flow.setSupplierId(product.getSupplierId());
+            flow.setSupplierId(resolveInboundSupplierId(bo.getSupplierId(), product.getSupplierId()));
         }
         stockFlowMapper.insert(flow);
 
@@ -644,6 +651,69 @@ public class ProductInfoServiceImpl extends DjsBaseServiceImpl<ProductInfoMapper
         if (!matched) {
             throw new ServiceException("该产品已配置专属存储库位，只能入库到配置库位");
         }
+    }
+
+    /**
+     * 计数类单位白名单（V6-R141）——「只能整数」的判据。
+     *
+     * <p>甲方 row141 原话是「如果单位是非KG，则输入为整数」，但字面执行会把 吨（36 个商品）/ 升 / 斤 /
+     * 米 / 平方米 / 亩 这些<b>计量</b>单位一起锁成整数，而 2.5 吨是合法业务值 ——
+     * 本类 {@code formatFlowQtyByUnit} 的注释就明说「取整会把 2.5 吨抹成 3 吨」，
+     * 展示侧刻意不对吨取整，输入侧就不该让它根本录不进来。Kevin 2026-08-28 拍板改成本名单。</p>
+     *
+     * <p>名单取自库里真实在用的 31 个单位（本地与 staging 完全一致）+ 几个显然的同类；
+     * 计量类（可小数）= kg / 公斤 / 吨 / 升 / 斤 / 米 / 平方米 / 亩。</p>
+     *
+     * <p>⚠️ <b>不在名单里的未知单位一律按「可小数」处理</b>，不是按整数：拦错了会让人根本录不进数
+     * （挡住干活），放过了只是多个小数位（数据略怪但不阻塞），且与本次改动之前的行为一致。</p>
+     *
+     * <p>⚠️ 前端 {@code plus-ui/src/utils/weight.ts#isCountingUnit} 是同一份名单，
+     * 改这里必须同步改那边，否则会出现「前端让填、后端报错」。</p>
+     */
+    private static final Set<String> COUNTING_UNITS = Set.of(
+        "份", "瓶", "袋", "盒", "个", "桶", "罐", "卷", "张", "包",
+        "件", "枚", "捆", "株", "只", "根", "支", "台", "盏", "条",
+        "套", "片", "双", "箱", "组", "把", "头", "提");
+
+    /**
+     * 入库量小数位校验（V6-R141）：计数类单位必须整数，计量类单位最多三位小数。
+     */
+    private void assertQuantityScale(BigDecimal quantity, String productUnit) {
+        if (quantity == null) {
+            return;
+        }
+        int scale = quantity.stripTrailingZeros().scale();
+        if (isCountingUnit(productUnit)) {
+            if (scale > 0) {
+                throw new ServiceException(
+                    I18nMessages.t("product.inbound.quantity.scale_int",
+                        StringUtils.blankToDefault(productUnit, "-")), 400);
+            }
+        } else if (scale > 3) {
+            throw new ServiceException(I18nMessages.t("product.inbound.quantity.scale_kg"), 400);
+        }
+    }
+
+    /** 是否计数类单位（只能填整数）。空 / 未知单位返 false = 按可小数处理。 */
+    private static boolean isCountingUnit(String unit) {
+        return StringUtils.isNotBlank(unit) && COUNTING_UNITS.contains(unit.trim());
+    }
+
+    /**
+     * 解析本次入库落到流水上的供应商（V6-R141）。
+     *
+     * <p>选了就用选的（校验供应商真实存在，防直连接口塞个不存在的 id 进流水，
+     * 那样「入库记录」的供应商列会永远空着且查不出原因）；没选回落商品配置快照。</p>
+     */
+    private Long resolveInboundSupplierId(Long picked, Long configured) {
+        if (picked == null) {
+            return configured;
+        }
+        Supplier supplier = supplierMapper.selectById(picked);
+        if (supplier == null) {
+            throw new ServiceException(I18nMessages.t("product.inbound.supplier.not_found", String.valueOf(picked)), 400);
+        }
+        return picked;
     }
 
     @Override

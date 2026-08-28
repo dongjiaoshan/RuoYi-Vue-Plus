@@ -7,6 +7,8 @@ import org.dromara.common.core.utils.StringUtils;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.common.base.DjsBaseServiceImpl;
+import org.dromara.djs.common.supplier.domain.Supplier;
+import org.dromara.djs.common.supplier.mapper.SupplierMapper;
 import org.dromara.djs.warehouse.flow.domain.StockFlow;
 import org.dromara.djs.warehouse.flow.domain.query.StockFlowQuery;
 import org.dromara.djs.warehouse.flow.domain.vo.PackingHomeVo;
@@ -77,17 +79,20 @@ public class StockFlowServiceImpl
     private final ProductInfoMapper productInfoMapper;
     private final LocationStockMapper locationStockMapper;
     private final PlotInfoMapper plotInfoMapper;
+    private final SupplierMapper supplierMapper;
 
     public StockFlowServiceImpl(StockFlowMapper baseMapper,
                                 LocationInfoMapper locationInfoMapper,
                                 ProductInfoMapper productInfoMapper,
                                 LocationStockMapper locationStockMapper,
-                                PlotInfoMapper plotInfoMapper) {
+                                PlotInfoMapper plotInfoMapper,
+                                SupplierMapper supplierMapper) {
         super(baseMapper);
         this.locationInfoMapper = locationInfoMapper;
         this.productInfoMapper = productInfoMapper;
         this.locationStockMapper = locationStockMapper;
         this.plotInfoMapper = plotInfoMapper;
+        this.supplierMapper = supplierMapper;
     }
 
     @Override
@@ -288,6 +293,14 @@ public class StockFlowServiceImpl
             }
             w.in(StockFlow::getPlotId, plotIds);
         }
+        // supplierName → 反查 t_md_supplier.id 集合下推 supplierId IN（甲方 row139 入库记录按供应商模糊搜索）
+        if (StringUtils.isNotBlank(query.getSupplierName())) {
+            List<Long> supplierIds = resolveSupplierIdsByName(query.getSupplierName());
+            if (supplierIds.isEmpty()) {
+                return w.eq(StockFlow::getId, -1L);
+            }
+            w.in(StockFlow::getSupplierId, supplierIds);
+        }
         // operatorName → 反查 sys_user.user_id 集合下推 operatorId IN
         if (StringUtils.isNotBlank(query.getOperatorName())) {
             List<Long> userIds = baseMapper.selectUserIdsByNickName(query.getOperatorName());
@@ -322,9 +335,9 @@ public class StockFlowServiceImpl
 
     /**
      * 批量回填 productName / productCode / belongType / productUnit / buyClass / locationName /
-     * blockNo / plotName。
+     * blockNo / plotName / supplierName。
      *
-     * <p>三次 IN 查询（products + locations + plots），避免 N+1。</p>
+     * <p>四次 IN 查询（products + locations + plots + suppliers），避免 N+1。</p>
      */
     private void fillJoinNames(List<StockFlowVo> rows) {
         if (rows == null || rows.isEmpty()) {
@@ -341,7 +354,10 @@ public class StockFlowServiceImpl
                 .stream()
                 .collect(Collectors.toMap(ProductInfo::getId, p -> p, (a, b) -> a));
         for (StockFlowVo vo : rows) {
-            ProductInfo p = pm.get(vo.getProductId());
+            // productId 判空不是多余：productIds 全空时 pm 是 Map.of()（ImmutableCollections），
+            // 对它 get(null) 抛 NPE 而不是返 null。DDL 上 product_id NOT NULL 所以线上够不到，
+            // 但同函数的 locations / plots / suppliers 三段都判了，这一段漏判是不一致。
+            ProductInfo p = vo.getProductId() == null ? null : pm.get(vo.getProductId());
             if (p != null) {
                 vo.setProductType(p.getProductType());  // 产品类型（自产/外购，与 belongType 不同维度；礼盒 = 自产 + belongType=gift_box）
                 vo.setProductName(p.getProductName());
@@ -390,6 +406,35 @@ public class StockFlowServiceImpl
             // 必须在 plotName 落完之后算 —— 三期行直接返「三期」，不看 plotName。
             vo.setPlotLabel(PlotLabel.of(vo.getThirdPhase(), vo.getPlotName()));
         }
+        // 4. suppliers（甲方 row139 入库记录「供应商」列 + 导出列）
+        //    supplierId 为空的流水（自产入库 / 退回入库等）supplierName 保持 null，页面与导出都留空。
+        List<Long> supplierIds = rows.stream()
+            .map(StockFlowVo::getSupplierId)
+            .filter(Objects::nonNull)
+            .distinct()
+            .toList();
+        Map<Long, String> sm = supplierIds.isEmpty() ? Map.of() :
+            supplierMapper.selectList(new LambdaQueryWrapper<Supplier>().in(Supplier::getId, supplierIds))
+                .stream()
+                .collect(Collectors.toMap(Supplier::getId, Supplier::getSupplierName, (a, b) -> a));
+        for (StockFlowVo vo : rows) {
+            if (vo.getSupplierId() != null) {
+                vo.setSupplierName(sm.get(vo.getSupplierId()));
+            }
+        }
+    }
+
+    /**
+     * 按供应商名称（模糊）解析匹配的 supplierId 集合；无匹配返空 list（调用方据此让查询恒空）。
+     */
+    private List<Long> resolveSupplierIdsByName(String supplierName) {
+        // trim：供应商名多是从甲方的 Excel / 微信里粘过来的，尾随空格概率高，
+        // 不去掉的话「上海xx公司 」一个字都搜不到，用户只会认为「搜索坏了」。
+        List<Supplier> suppliers = supplierMapper.selectList(
+            new LambdaQueryWrapper<Supplier>()
+                .like(Supplier::getSupplierName, supplierName.trim())
+                .select(Supplier::getId));
+        return suppliers.stream().map(Supplier::getId).toList();
     }
 
     /**

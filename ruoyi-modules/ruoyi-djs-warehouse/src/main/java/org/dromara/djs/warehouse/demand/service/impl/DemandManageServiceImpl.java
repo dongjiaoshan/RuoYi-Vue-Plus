@@ -12,6 +12,7 @@ import org.dromara.common.core.utils.MapstructUtils;
 import org.dromara.common.core.utils.StringUtils;
 import org.dromara.common.json.utils.JsonUtils;
 import org.dromara.common.mybatis.core.page.PageQuery;
+import org.dromara.common.satoken.utils.LoginHelper;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.common.base.DjsBaseServiceImpl;
 import org.dromara.djs.common.encoder.BizCodeType;
@@ -21,7 +22,11 @@ import org.dromara.djs.warehouse.demand.core.enums.DemandStatus;
 import org.dromara.djs.common.util.I18nMessages;
 import org.dromara.djs.warehouse.demand.domain.DemandManage;
 import org.dromara.djs.warehouse.demand.domain.DemandPig;
+import org.dromara.djs.common.store.domain.Store;
+import org.dromara.djs.common.store.mapper.StoreMapper;
+import org.dromara.djs.warehouse.demand.domain.DemandAdjustRecord;
 import org.dromara.djs.warehouse.demand.domain.bo.AssignPigBo;
+import org.dromara.djs.warehouse.demand.domain.bo.DemandAdjustBo;
 import org.dromara.djs.warehouse.demand.domain.bo.DemandBatchConfirmBo;
 import org.dromara.djs.warehouse.demand.domain.bo.DemandManageBo;
 import org.dromara.djs.warehouse.demand.domain.query.DemandManageQuery;
@@ -33,6 +38,7 @@ import org.dromara.djs.warehouse.demand.domain.vo.DemandPigVo;
 import org.dromara.djs.warehouse.demand.domain.vo.DemandProductStoreDetailVo;
 import org.dromara.djs.warehouse.demand.domain.vo.DemandSummaryVo;
 import org.dromara.djs.warehouse.demand.domain.vo.DemandTodayKpiVo;
+import org.dromara.djs.warehouse.demand.mapper.DemandAdjustRecordMapper;
 import org.dromara.djs.warehouse.demand.mapper.DemandManageMapper;
 import org.dromara.djs.warehouse.demand.mapper.DemandPigAvailableMapper;
 import org.dromara.djs.warehouse.demand.mapper.DemandPigMapper;
@@ -127,6 +133,17 @@ public class DemandManageServiceImpl extends DjsBaseServiceImpl<DemandManageMapp
     );
 
     /**
+     * 允许「调整需求量」的状态（V6-R140，甲方原话「需求未到发货的状态之前可以调整」）。
+     *
+     * <p>刻意比 {@link #FULLY_EDITABLE_STATUSES} 宽一档，多放 CONFIRMED —— 甲方要的就是
+     * 需求确认之后、真发出去之前那段还能改。排产中 / 部分发货 / 已完成都算「已发货之后」，
+     * 已取消 / 已删除是终态，一律不给调。</p>
+     */
+    private static final Set<String> ADJUSTABLE_STATUSES = Set.of(
+        DemandStatus.DRAFT.name(), DemandStatus.SUBMITTED.name(), DemandStatus.CONFIRMED.name()
+    );
+
+    /**
      * 今日日期算法时区（DJS-FIX-ADMIN-W22-007 KPI 横条）：不依赖 DB CURDATE() 时区，
      * 避免后续部署到非 UTC+8 实例时"今日"偏移埋雷。
      */
@@ -154,6 +171,12 @@ public class DemandManageServiceImpl extends DjsBaseServiceImpl<DemandManageMapp
     /** DENGBO-R16：下单定格展示名（果蔬按原材料作物有机证书取产品名 / 别名）。 */
     private final IProductDisplayNameResolver displayNameResolver;
 
+    /** 需求量调整留痕（V6-R140）。 */
+    private final DemandAdjustRecordMapper demandAdjustRecordMapper;
+
+    /** 门店主数据（V6-R140 留痕表快照门店名用）。 */
+    private final StoreMapper storeMapper;
+
     public DemandManageServiceImpl(DemandManageMapper baseMapper,
                                    DemandPigMapper demandPigMapper,
                                    IBizCodeGenerator bizCodeGenerator,
@@ -162,7 +185,9 @@ public class DemandManageServiceImpl extends DjsBaseServiceImpl<DemandManageMapp
                                    IPlantPlanService plantPlanService,
                                    LocationStockMapper locationStockMapper,
                                    ProductInfoMapper productInfoMapper,
-                                   IProductDisplayNameResolver displayNameResolver) {
+                                   IProductDisplayNameResolver displayNameResolver,
+                                   DemandAdjustRecordMapper demandAdjustRecordMapper,
+                                   StoreMapper storeMapper) {
         super(baseMapper);
         this.demandPigMapper = demandPigMapper;
         this.bizCodeGenerator = bizCodeGenerator;
@@ -172,6 +197,8 @@ public class DemandManageServiceImpl extends DjsBaseServiceImpl<DemandManageMapp
         this.locationStockMapper = locationStockMapper;
         this.productInfoMapper = productInfoMapper;
         this.displayNameResolver = displayNameResolver;
+        this.demandAdjustRecordMapper = demandAdjustRecordMapper;
+        this.storeMapper = storeMapper;
     }
 
     /** 出栏日龄阈值兜底（配置缺失时，与 mp PigAppletController.slaughterAge 一致）。 */
@@ -668,6 +695,118 @@ public class DemandManageServiceImpl extends DjsBaseServiceImpl<DemandManageMapp
         patch.setId(demandId);
         patch.setDemandExplain(explain);
         return baseMapper.updateById(patch);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public int adjustQuantity(Long demandId, DemandAdjustBo bo) {
+        DemandManage exists = baseMapper.selectById(demandId);
+        if (exists == null) {
+            throw new ServiceException(I18nMessages.t("demand.not_found", demandId), 404);
+        }
+        // 甲方 row140 第 5 条：发货之后不给调。前端也据同一套状态隐藏按钮，但闸必须在这一侧 ——
+        // 按钮藏起来不等于端点关掉。
+        if (!ADJUSTABLE_STATUSES.contains(exists.getDemandStatus())) {
+            DemandStatus st = DemandStatus.fromCodeSafe(exists.getDemandStatus());
+            throw new ServiceException(
+                I18nMessages.t("demand.adjust.status_forbidden", exists.getDemandNo(),
+                    st != null ? st.getLabel() : exists.getDemandStatus()), 400);
+        }
+        BigDecimal oldQty = exists.getDemandQuantity();
+        BigDecimal newQty = bo.getDemandQuantity();
+        // compareTo 而不是 equals：DECIMAL(12,3) 取回来是 5.000，前端回填成 5 时 equals 判不等，
+        // 会让一次「什么都没改」的提交也写一行留痕。
+        if (oldQty != null && oldQty.compareTo(newQty) == 0) {
+            throw new ServiceException(I18nMessages.t("demand.adjust.quantity_unchanged"), 400);
+        }
+        // 已发出去的量不能被调没了：新需求量低于已发货量，会让「已发 > 需求」当场自相矛盾，
+        // 下游确认率 / 完成判定都按 shipped_count 对 demand_quantity 算。
+        BigDecimal shipped = exists.getShippedCount();
+        if (shipped != null && shipped.compareTo(BigDecimal.ZERO) > 0 && newQty.compareTo(shipped) < 0) {
+            throw new ServiceException(
+                I18nMessages.t("demand.adjust.below_shipped", shipped.toPlainString()), 400);
+        }
+        // 白条 / 猪业态：需求量的单位就是「头」，已指定的猪只数不能超过新需求量。
+        // 不拦的话「需求 1 头、锁着 3 头猪」会成立，多出来的 2 头对可出栏池仍算被占用、被凭空锁死，
+        // 而调整链路里没有任何地方会去释放它们。要减到这个数，得先去「指定猪只」里退掉多余的。
+        // （below_shipped 想到了已发货量，却漏了白条的已指定猪数 —— 而白条正是甲方的核心业态。）
+        if (BELONG_TYPE_WHITE_BAR.equals(exists.getProductType()) || "pig".equals(exists.getProductType())) {
+            long assigned = demandPigMapper.selectCount(
+                new LambdaQueryWrapper<DemandPig>().eq(DemandPig::getDemandId, demandId));
+            if (assigned > 0 && newQty.compareTo(BigDecimal.valueOf(assigned)) < 0) {
+                throw new ServiceException(
+                    I18nMessages.t("demand.adjust.below_assigned_pigs", String.valueOf(assigned)), 400);
+            }
+        }
+
+        // 先 CAS 改需求量，成功了再写留痕 —— 顺序反过来的话，并发下三个请求会各写一行
+        // old_quantity 相同的留痕，最终值却只有一个，审计链自相矛盾（甲方要的就是这张表）。
+        int rows = baseMapper.compareAndSetQuantity(demandId, oldQty, newQty, resolveAdjusterId());
+        if (rows == 0) {
+            throw new ServiceException(I18nMessages.t("demand.adjust.concurrent_modified"), 409);
+        }
+
+        DemandAdjustRecord rec = new DemandAdjustRecord();
+        rec.setDemandId(exists.getId());
+        rec.setDemandNo(exists.getDemandNo());
+        rec.setDemandDate(exists.getDemandDate());
+        rec.setStoreId(exists.getStoreId());
+        rec.setStoreName(resolveStoreName(exists.getStoreId()));
+        rec.setProductId(exists.getProductId());
+        rec.setProductCode(resolveProductCode(exists.getProductId()));
+        rec.setProductName(exists.getProductName());
+        rec.setOldQuantity(oldQty);
+        rec.setNewQuantity(newQty);
+        rec.setAdjustRemark(bo.getAdjustRemark());
+        rec.setAdjusterId(resolveAdjusterId());
+        rec.setAdjustTime(LocalDateTime.now());
+        demandAdjustRecordMapper.insert(rec);
+
+        // CAS 只动 demand_quantity —— 状态 / 确认人 / audit_history 一律不碰。
+        // 原材料计算量不用跟着改：group-list 是按 SUM(demand_quantity) × material_num 现算的，
+        // 需求行上那列 material_qty 是历史留空列（见 DemandManageMapper 分组 SQL 注释）。
+        log.info("[V6-R140] 调整需求量 id={} no={} {} → {} by={}",
+            demandId, exists.getDemandNo(), oldQty, newQty, rec.getAdjusterId());
+        return rows;
+    }
+
+    /**
+     * 当前登录人 = 调整人；拿不到直接报错，不用 0L / null 兜底。
+     *
+     * <p>「调整人」是甲方点名要留的 8 项之一，留一行不知道是谁改的记录等于没留。
+     * 与 {@code DemandStatusServiceImpl#resolveOperator} 同一处置口径。</p>
+     *
+     * <p>protected 是给单测覆盖用的 —— {@code LoginHelper} 是静态工具，
+     * 纯 Mockito 用例里没有 sa-token 上下文。</p>
+     */
+    protected Long resolveAdjusterId() {
+        try {
+            Long id = LoginHelper.getUserId();
+            if (id != null) {
+                return id;
+            }
+        } catch (Exception ignored) {
+            // 无登录上下文（如系统任务）
+        }
+        throw new ServiceException(I18nMessages.t("demand.operator.required"));
+    }
+
+    /** 门店名快照（门店不存在 / storeId 为空时返 null，留痕行照写）。 */
+    private String resolveStoreName(Long storeId) {
+        if (storeId == null) {
+            return null;
+        }
+        Store store = storeMapper.selectById(storeId);
+        return store == null ? null : store.getStoreName();
+    }
+
+    /** 产品业务码快照（{@code product_info.product_id}，产品不存在时返 null）。 */
+    private String resolveProductCode(Long productId) {
+        if (productId == null) {
+            return null;
+        }
+        ProductInfo product = productInfoMapper.selectById(productId);
+        return product == null ? null : product.getProductId();
     }
 
     @Override

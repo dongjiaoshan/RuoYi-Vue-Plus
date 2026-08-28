@@ -77,12 +77,19 @@ class DemandManageServiceImplTest {
     @Mock
     org.dromara.djs.warehouse.product.mapper.ProductInfoMapper productInfoMapper;
 
+    @Mock
+    org.dromara.djs.warehouse.demand.mapper.DemandAdjustRecordMapper adjustRecordMapper;
+
+    @Mock
+    org.dromara.djs.common.store.mapper.StoreMapper storeMapper;
+
     DemandManageServiceImpl service;
 
     @BeforeEach
     void setup() {
         // DJS-FIX-ADMIN-W22-003：SummaryBar 的 3 个新依赖在本套用例里不直接覆盖，传 null 让构造器存字段即可
-        service = new TestableDemandManageServiceImpl(demandMapper, demandPigMapper, bizCodeGenerator, productInfoMapper);
+        service = new TestableDemandManageServiceImpl(
+            demandMapper, demandPigMapper, bizCodeGenerator, productInfoMapper, adjustRecordMapper, storeMapper);
         when(bizCodeGenerator.generate(eq(BizCodeType.DEMAND_NO), any())).thenReturn("D260601WB0001");
     }
 
@@ -91,11 +98,21 @@ class DemandManageServiceImplTest {
      */
     static class TestableDemandManageServiceImpl extends DemandManageServiceImpl {
         TestableDemandManageServiceImpl(DemandManageMapper m, DemandPigMapper dpm, IBizCodeGenerator g,
-                                        org.dromara.djs.warehouse.product.mapper.ProductInfoMapper pim) {
+                                        org.dromara.djs.warehouse.product.mapper.ProductInfoMapper pim,
+                                        org.dromara.djs.warehouse.demand.mapper.DemandAdjustRecordMapper arm,
+                                        org.dromara.djs.common.store.mapper.StoreMapper sm) {
             // 新增依赖（DemandPigAvailableMapper 出栏日龄过滤 + 周期配置 + 计划 + 库存
-            // + IProductDisplayNameResolver 下单定格展示名 DENGBO-R16）本套用例不直接覆盖，传 null 让构造器存字段即可；
+            // + IProductDisplayNameResolver 下单定格展示名 DENGBO-R16
+            // + DemandAdjustRecordMapper / StoreMapper 需求量调整留痕 V6-R140）本套用例不直接覆盖，
+            // 传 null 让构造器存字段即可；
             // ProductInfoMapper 原料下单守门在 insertByBo 主链路必经，传 mock（未 stub 返回 null → 守门放行）
-            super(m, dpm, g, null, null, null, null, pim, null);
+            super(m, dpm, g, null, null, null, null, pim, null, arm, sm);
+        }
+
+        /** 纯 Mockito 用例没有 sa-token 上下文，覆盖掉静态 LoginHelper 取值。 */
+        @Override
+        protected Long resolveAdjusterId() {
+            return 42L;
         }
 
         @Override
@@ -500,5 +517,186 @@ class DemandManageServiceImplTest {
         assertThatThrownBy(() -> service.updateByBo(bo))
             .isInstanceOf(ServiceException.class)
             .hasMessageContaining("不能改成其它业态的产品");
+    }
+
+    // ---------------- V6-R140 调整需求量 ----------------
+
+    @Test
+    @DisplayName("adjustQuantity: 已确认态 happy → 写一行留痕（8 项齐全）+ 只 patch demand_quantity")
+    void testAdjustQuantity_ConfirmedHappy() {
+        DemandManage exists = new DemandManage();
+        exists.setId(501L);
+        exists.setDemandNo("D260828VG0001");
+        exists.setDemandDate(LocalDate.of(2026, 8, 28));
+        exists.setStoreId(9001L);
+        exists.setProductId(7001L);
+        exists.setProductName("上海青");
+        exists.setDemandQuantity(new BigDecimal("5.000"));
+        exists.setShippedCount(BigDecimal.ZERO);
+        exists.setDemandStatus("CONFIRMED");
+        when(demandMapper.selectById(501L)).thenReturn(exists);
+
+        org.dromara.djs.common.store.domain.Store store = new org.dromara.djs.common.store.domain.Store();
+        store.setStoreName("徐汇旗舰店");
+        when(storeMapper.selectById(9001L)).thenReturn(store);
+        ProductInfo product = new ProductInfo();
+        product.setProductId("PROD-VG-0007");
+        when(productInfoMapper.selectById(7001L)).thenReturn(product);
+        when(demandMapper.compareAndSetQuantity(eq(501L), any(BigDecimal.class), any(BigDecimal.class), any()))
+            .thenReturn(1);
+
+        org.dromara.djs.warehouse.demand.domain.bo.DemandAdjustBo bo =
+            new org.dromara.djs.warehouse.demand.domain.bo.DemandAdjustBo();
+        bo.setDemandQuantity(new BigDecimal("8"));
+        bo.setAdjustRemark("门店临时加量");
+
+        int rows = service.adjustQuantity(501L, bo);
+        assertThat(rows).isEqualTo(1);
+
+        ArgumentCaptor<org.dromara.djs.warehouse.demand.domain.DemandAdjustRecord> recCap =
+            ArgumentCaptor.forClass(org.dromara.djs.warehouse.demand.domain.DemandAdjustRecord.class);
+        verify(adjustRecordMapper, times(1)).insert(recCap.capture());
+        org.dromara.djs.warehouse.demand.domain.DemandAdjustRecord rec = recCap.getValue();
+        // 甲方点名要留的 8 项
+        assertThat(rec.getDemandDate()).isEqualTo(LocalDate.of(2026, 8, 28));
+        assertThat(rec.getStoreName()).isEqualTo("徐汇旗舰店");
+        assertThat(rec.getProductCode()).isEqualTo("PROD-VG-0007");
+        assertThat(rec.getOldQuantity()).isEqualByComparingTo("5.000");
+        assertThat(rec.getNewQuantity()).isEqualByComparingTo("8");
+        assertThat(rec.getAdjustRemark()).isEqualTo("门店临时加量");
+        assertThat(rec.getAdjusterId()).isEqualTo(42L);
+        assertThat(rec.getAdjustTime()).isNotNull();
+
+        // 落库走 CAS：WHERE 里带着调整人读到的旧值，只改 demand_quantity，
+        // 状态 / 确认人 / audit_history 连碰都没碰（updateById 全程没被调用）
+        ArgumentCaptor<BigDecimal> oldCap = ArgumentCaptor.forClass(BigDecimal.class);
+        ArgumentCaptor<BigDecimal> newCap = ArgumentCaptor.forClass(BigDecimal.class);
+        verify(demandMapper).compareAndSetQuantity(eq(501L), oldCap.capture(), newCap.capture(), eq(42L));
+        assertThat(oldCap.getValue()).isEqualByComparingTo("5.000");
+        assertThat(newCap.getValue()).isEqualByComparingTo("8");
+        verify(demandMapper, never()).updateById(any(DemandManage.class));
+    }
+
+    @Test
+    @DisplayName("adjustQuantity: CAS 落空（期间被别人改过）→ 409 且不留痕，不静默覆盖")
+    void testAdjustQuantity_ConcurrentModifiedRejected() {
+        DemandManage exists = new DemandManage();
+        exists.setId(505L);
+        exists.setDemandNo("D260828VG0005");
+        exists.setDemandQuantity(new BigDecimal("10.000"));
+        exists.setShippedCount(BigDecimal.ZERO);
+        exists.setDemandStatus("CONFIRMED");
+        when(demandMapper.selectById(505L)).thenReturn(exists);
+        // 并发：别人先落了盘，CAS 的 WHERE 匹配不上 → 0 行
+        when(demandMapper.compareAndSetQuantity(eq(505L), any(BigDecimal.class), any(BigDecimal.class), any()))
+            .thenReturn(0);
+
+        org.dromara.djs.warehouse.demand.domain.bo.DemandAdjustBo bo =
+            new org.dromara.djs.warehouse.demand.domain.bo.DemandAdjustBo();
+        bo.setDemandQuantity(new BigDecimal("7"));
+
+        assertThatThrownBy(() -> service.adjustQuantity(505L, bo)).isInstanceOf(ServiceException.class);
+        verify(adjustRecordMapper, never()).insert(any(org.dromara.djs.warehouse.demand.domain.DemandAdjustRecord.class));
+    }
+
+    @Test
+    @DisplayName("adjustQuantity: 白条已指定 3 头猪 → 调到 1 头被拒（多出来的猪会被凭空锁死）")
+    void testAdjustQuantity_BelowAssignedPigsRejected() {
+        DemandManage exists = new DemandManage();
+        exists.setId(506L);
+        exists.setDemandNo("D260828WB0006");
+        exists.setProductType("white_bar");
+        exists.setDemandQuantity(new BigDecimal("3.000"));
+        exists.setShippedCount(BigDecimal.ZERO);
+        exists.setDemandStatus("SUBMITTED");
+        when(demandMapper.selectById(506L)).thenReturn(exists);
+        when(demandPigMapper.selectCount(any())).thenReturn(3L);
+
+        org.dromara.djs.warehouse.demand.domain.bo.DemandAdjustBo bo =
+            new org.dromara.djs.warehouse.demand.domain.bo.DemandAdjustBo();
+        bo.setDemandQuantity(new BigDecimal("1"));
+
+        assertThatThrownBy(() -> service.adjustQuantity(506L, bo)).isInstanceOf(ServiceException.class);
+        verify(adjustRecordMapper, never()).insert(any(org.dromara.djs.warehouse.demand.domain.DemandAdjustRecord.class));
+        verify(demandMapper, never()).compareAndSetQuantity(any(), any(), any(), any());
+    }
+
+    @Test
+    @DisplayName("adjustQuantity: 白条已指定 3 头猪 → 调到 5 头放行（加量不会锁死猪）")
+    void testAdjustQuantity_AboveAssignedPigsAllowed() {
+        DemandManage exists = new DemandManage();
+        exists.setId(507L);
+        exists.setDemandNo("D260828WB0007");
+        exists.setProductType("white_bar");
+        exists.setDemandQuantity(new BigDecimal("3.000"));
+        exists.setShippedCount(BigDecimal.ZERO);
+        exists.setDemandStatus("CONFIRMED");
+        when(demandMapper.selectById(507L)).thenReturn(exists);
+        when(demandPigMapper.selectCount(any())).thenReturn(3L);
+        when(demandMapper.compareAndSetQuantity(eq(507L), any(BigDecimal.class), any(BigDecimal.class), any()))
+            .thenReturn(1);
+
+        org.dromara.djs.warehouse.demand.domain.bo.DemandAdjustBo bo =
+            new org.dromara.djs.warehouse.demand.domain.bo.DemandAdjustBo();
+        bo.setDemandQuantity(new BigDecimal("5"));
+
+        assertThat(service.adjustQuantity(507L, bo)).isEqualTo(1);
+        verify(adjustRecordMapper, times(1)).insert(any(org.dromara.djs.warehouse.demand.domain.DemandAdjustRecord.class));
+    }
+
+    @Test
+    @DisplayName("adjustQuantity: 部分发货态 → throws（甲方「发货之后不给调」），且不写留痕")
+    void testAdjustQuantity_AfterShippedRejected() {
+        DemandManage exists = new DemandManage();
+        exists.setId(502L);
+        exists.setDemandNo("D260828VG0002");
+        exists.setDemandQuantity(new BigDecimal("5.000"));
+        exists.setDemandStatus("PARTIAL_SHIPPED");
+        when(demandMapper.selectById(502L)).thenReturn(exists);
+
+        org.dromara.djs.warehouse.demand.domain.bo.DemandAdjustBo bo =
+            new org.dromara.djs.warehouse.demand.domain.bo.DemandAdjustBo();
+        bo.setDemandQuantity(new BigDecimal("8"));
+
+        assertThatThrownBy(() -> service.adjustQuantity(502L, bo)).isInstanceOf(ServiceException.class);
+        verify(adjustRecordMapper, never()).insert(any(org.dromara.djs.warehouse.demand.domain.DemandAdjustRecord.class));
+        verify(demandMapper, never()).compareAndSetQuantity(any(), any(), any(), any());
+    }
+
+    @Test
+    @DisplayName("adjustQuantity: 新量 == 原量（5 vs 5.000）→ throws，不写空留痕")
+    void testAdjustQuantity_UnchangedRejected() {
+        DemandManage exists = new DemandManage();
+        exists.setId(503L);
+        exists.setDemandNo("D260828VG0003");
+        exists.setDemandQuantity(new BigDecimal("5.000"));
+        exists.setDemandStatus("SUBMITTED");
+        when(demandMapper.selectById(503L)).thenReturn(exists);
+
+        org.dromara.djs.warehouse.demand.domain.bo.DemandAdjustBo bo =
+            new org.dromara.djs.warehouse.demand.domain.bo.DemandAdjustBo();
+        bo.setDemandQuantity(new BigDecimal("5"));
+
+        assertThatThrownBy(() -> service.adjustQuantity(503L, bo)).isInstanceOf(ServiceException.class);
+        verify(adjustRecordMapper, never()).insert(any(org.dromara.djs.warehouse.demand.domain.DemandAdjustRecord.class));
+    }
+
+    @Test
+    @DisplayName("adjustQuantity: 新量低于已发货量 → throws（已发 > 需求 会让下游确认率自相矛盾）")
+    void testAdjustQuantity_BelowShippedRejected() {
+        DemandManage exists = new DemandManage();
+        exists.setId(504L);
+        exists.setDemandNo("D260828VG0004");
+        exists.setDemandQuantity(new BigDecimal("10.000"));
+        exists.setShippedCount(new BigDecimal("6.000"));
+        exists.setDemandStatus("CONFIRMED");
+        when(demandMapper.selectById(504L)).thenReturn(exists);
+
+        org.dromara.djs.warehouse.demand.domain.bo.DemandAdjustBo bo =
+            new org.dromara.djs.warehouse.demand.domain.bo.DemandAdjustBo();
+        bo.setDemandQuantity(new BigDecimal("3"));
+
+        assertThatThrownBy(() -> service.adjustQuantity(504L, bo)).isInstanceOf(ServiceException.class);
+        verify(adjustRecordMapper, never()).insert(any(org.dromara.djs.warehouse.demand.domain.DemandAdjustRecord.class));
     }
 }

@@ -520,4 +520,128 @@ class ProductInfoServiceImplTest {
         verify(stockFlowMapper, never()).insert(ArgumentMatchers.<org.dromara.djs.warehouse.flow.domain.StockFlow>any());
     }
 
+
+    // ---------------- V6-R141 采购入库：入库量小数位闸 + 供应商按次选择 ----------------
+
+    /** 造一个可入库的商品（无配置库位、不锁库位），单位由入参决定。 */
+    private ProductInfo r141Product(String unit, Integer productType, Long configuredSupplier) {
+        ProductInfo product = new ProductInfo();
+        product.setId(20101L);
+        product.setProductName("R141 测试商品");
+        product.setProductUnit(unit);
+        product.setProductType(productType);
+        product.setSupplierId(configuredSupplier);
+        when(productInfoMapper.selectById(eq(20101L))).thenReturn(product);
+        when(bizCodeGenerator.generate(any(), any())).thenReturn("F20260828IN0001");
+        when(locationStockMapper.addByProductLocation(any(), any(), any(BigDecimal.class), any())).thenReturn(1);
+        return product;
+    }
+
+    private org.dromara.djs.warehouse.product.domain.bo.ProductStockInBo r141Bo(String qty, Long supplierId) {
+        org.dromara.djs.warehouse.product.domain.bo.ProductStockInBo bo =
+            new org.dromara.djs.warehouse.product.domain.bo.ProductStockInBo();
+        bo.setProductId(20101L);
+        bo.setLocationId(30001L);
+        bo.setQuantity(new BigDecimal(qty));
+        bo.setSupplierId(supplierId);
+        return bo;
+    }
+
+    @Test
+    @DisplayName("R141 小数位闸：计数类单位（瓶）填小数 → 拒；填整数 / 3.000（scale 归一后为 0）→ 放行")
+    void testInboundScale_CountingUnitIntegerOnly() {
+        r141Product("瓶", 2, null);
+        assertThatThrownBy(() -> service.inbound(r141Bo("1.6", null))).isInstanceOf(ServiceException.class);
+        verify(stockFlowMapper, never()).insert(any(org.dromara.djs.warehouse.flow.domain.StockFlow.class));
+        // 3.000 是 JSON 里常见写法，stripTrailingZeros 后 scale=0，不能误拒
+        service.inbound(r141Bo("3.000", null));
+        service.inbound(r141Bo("3", null));
+        verify(stockFlowMapper, times(2)).insert(any(org.dromara.djs.warehouse.flow.domain.StockFlow.class));
+    }
+
+    @Test
+    @DisplayName("R141 小数位闸：计量类单位最多三位小数 —— kg/公斤/KG 1.234 放行、1.2345 拒")
+    void testInboundScale_MeasureUnitThreeDecimals() {
+        r141Product("kg", 2, null);
+        service.inbound(r141Bo("1.234", null));
+        assertThatThrownBy(() -> service.inbound(r141Bo("1.2345", null))).isInstanceOf(ServiceException.class);
+
+        r141Product("公斤", 2, null);
+        service.inbound(r141Bo("2.500", null));
+        r141Product("KG", 2, null);
+        service.inbound(r141Bo("0.125", null));
+        verify(stockFlowMapper, times(3)).insert(any(org.dromara.djs.warehouse.flow.domain.StockFlow.class));
+    }
+
+    @Test
+    @DisplayName("R141 计量类单位不被误锁成整数（Kevin 2026-08-28 定：只有计数类才强制整数）")
+    void testInboundScale_MeasureUnitsAllowDecimals() {
+        // 甲方字面说的是「非 KG 就整数」，但 2.5 吨是合法业务值（本类 formatFlowQtyByUnit 注释亦承认），
+        // 这几个单位库里真实在用：吨 36 / 升 4 / 斤 3 / 米 1 / 平方米 1 / 亩 1
+        for (String unit : new String[]{"吨", "升", "斤", "米", "平方米", "亩"}) {
+            r141Product(unit, 2, null);
+            service.inbound(r141Bo("2.5", null));
+        }
+        verify(stockFlowMapper, times(6)).insert(any(org.dromara.djs.warehouse.flow.domain.StockFlow.class));
+    }
+
+    @Test
+    @DisplayName("R141 未知 / 空单位按「可小数」处理 —— 拦错会挡住干活，放过只是多个小数位")
+    void testInboundScale_UnknownUnitFallsBackToDecimals() {
+        r141Product("盒 / 片", 2, null);   // 库里真实存在的一个畸形单位
+        service.inbound(r141Bo("1.5", null));
+        r141Product(null, 2, null);
+        service.inbound(r141Bo("1.5", null));
+        verify(stockFlowMapper, times(2)).insert(any(org.dromara.djs.warehouse.flow.domain.StockFlow.class));
+    }
+
+    @Test
+    @DisplayName("R141 供应商：本次选了就落本次选的，且不回写商品配置")
+    void testInboundSupplier_PickedWins() {
+        r141Product("瓶", 2, 9001L);
+        org.dromara.djs.common.supplier.domain.Supplier picked = new org.dromara.djs.common.supplier.domain.Supplier();
+        picked.setId(9002L);
+        when(supplierMapper.selectById(eq(9002L))).thenReturn(picked);
+
+        service.inbound(r141Bo("2", 9002L));
+
+        ArgumentCaptor<org.dromara.djs.warehouse.flow.domain.StockFlow> cap =
+            ArgumentCaptor.forClass(org.dromara.djs.warehouse.flow.domain.StockFlow.class);
+        verify(stockFlowMapper).insert(cap.capture());
+        assertThat(cap.getValue().getSupplierId()).isEqualTo(9002L);
+        // 商品主数据没被改写（本次选择只作用于这笔流水）
+        verify(productInfoMapper, never()).updateById(any(ProductInfo.class));
+    }
+
+    @Test
+    @DisplayName("R141 供应商：没选 → 回落商品配置快照（商品配置入口老行为不变）")
+    void testInboundSupplier_FallsBackToConfigured() {
+        r141Product("瓶", 2, 9001L);
+        service.inbound(r141Bo("2", null));
+        ArgumentCaptor<org.dromara.djs.warehouse.flow.domain.StockFlow> cap =
+            ArgumentCaptor.forClass(org.dromara.djs.warehouse.flow.domain.StockFlow.class);
+        verify(stockFlowMapper).insert(cap.capture());
+        assertThat(cap.getValue().getSupplierId()).isEqualTo(9001L);
+        verify(supplierMapper, never()).selectById(any());
+    }
+
+    @Test
+    @DisplayName("R141 供应商：选了个不存在 / 已软删的 → 拒，且不写流水")
+    void testInboundSupplier_NotFoundRejected() {
+        r141Product("瓶", 2, 9001L);
+        when(supplierMapper.selectById(eq(8888L))).thenReturn(null);   // @TableLogic 软删也走这条
+        assertThatThrownBy(() -> service.inbound(r141Bo("2", 8888L))).isInstanceOf(ServiceException.class);
+        verify(stockFlowMapper, never()).insert(any(org.dromara.djs.warehouse.flow.domain.StockFlow.class));
+    }
+
+    @Test
+    @DisplayName("R141 供应商：自产商品（productType=1）不落供应商，传了也忽略")
+    void testInboundSupplier_SelfProducedIgnoresSupplier() {
+        r141Product("瓶", 1, 9001L);
+        service.inbound(r141Bo("2", 9002L));
+        ArgumentCaptor<org.dromara.djs.warehouse.flow.domain.StockFlow> cap =
+            ArgumentCaptor.forClass(org.dromara.djs.warehouse.flow.domain.StockFlow.class);
+        verify(stockFlowMapper).insert(cap.capture());
+        assertThat(cap.getValue().getSupplierId()).isNull();
+    }
 }
