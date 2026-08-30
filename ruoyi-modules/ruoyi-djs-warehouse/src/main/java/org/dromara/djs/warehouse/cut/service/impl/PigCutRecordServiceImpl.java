@@ -5,6 +5,8 @@ import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.common.core.exception.ServiceException;
+import org.dromara.djs.breed.core.domain.vo.PigMarketingAgeVo;
+import org.dromara.djs.breed.core.service.IPigQueryService;
 import org.dromara.common.core.utils.StringUtils;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
@@ -49,7 +51,8 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Duration;
-import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.HashMap;
@@ -184,6 +187,8 @@ public class PigCutRecordServiceImpl
     private final ImageUrlResolver imageUrlResolver;
     private final IStockCheckService stockCheckService;
     private final ILossFlowService lossFlowService;
+    /** 跨域只读薄壳：白条卡取出栏当时冻结日龄（V6 row145）。养殖域契约要求跨模块只走本接口，不反查 PigMapper。 */
+    private final IPigQueryService pigQueryService;
 
     public PigCutRecordServiceImpl(PigCutRecordMapper baseMapper,
                                    BarInfoMapper barInfoMapper,
@@ -197,7 +202,8 @@ public class PigCutRecordServiceImpl
                                    ITraceService traceService,
                                    ImageUrlResolver imageUrlResolver,
                                    IStockCheckService stockCheckService,
-                                   ILossFlowService lossFlowService) {
+                                   ILossFlowService lossFlowService,
+                                   IPigQueryService pigQueryService) {
         super(baseMapper);
         this.barInfoMapper = barInfoMapper;
         this.stockFlowMapper = stockFlowMapper;
@@ -211,6 +217,7 @@ public class PigCutRecordServiceImpl
         this.imageUrlResolver = imageUrlResolver;
         this.stockCheckService = stockCheckService;
         this.lossFlowService = lossFlowService;
+        this.pigQueryService = pigQueryService;
     }
 
     /**
@@ -1051,6 +1058,9 @@ public class PigCutRecordServiceImpl
                 rowsByBar.computeIfAbsent(r.getWhiteBarId(), k -> new ArrayList<>()).add(r);
             }
         }
+        // row145：卡片显示出栏日龄 —— 一次 IN 批量取出栏记录里冻结的 age_days（不 N+1）。
+        // 外购白条无耳号、无出栏记录（外购不走出栏流程）的，Map 里没有该键 → 留 null，前端不渲染那格。
+        Map<String, Integer> ageByMarketing = loadMarketingAgeByEarNo(bars);
         List<BarPickupItemVo> result = new ArrayList<>();
         for (BarInfo bar : bars) {
             List<ProductInhouse> rs = rowsByBar.get(bar.getId());
@@ -1058,21 +1068,62 @@ public class PigCutRecordServiceImpl
                 // 燎毛多产出行 → 每白条产出行一张可单独领用的卡（半只 / 半扇 各一张）；跳过副产（猪头/猪蹄）。
                 for (ProductInhouse r : rs) {
                     if (whiteBarProductIds.contains(r.getProductId())) {
-                        result.add(toPickupItem(bar, r, whiteBarNameById));
+                        result.add(toPickupItem(bar, r, whiteBarNameById, ageByMarketing));
                     }
                 }
                 // 有未领产出行但全是副产 → 不出白条卡、也不落整只兜底（bar 是现代燎毛数据，仅无可领白条行）。
             } else if (BAR_STATUS_IN_STOCK.equals(bar.getStatus())) {
                 // 真·无任何未领产出行的旧数据白条 + in_stock → 整只兜底卡（inhouseId=null，领用走整猪路径），向后兼容。
                 // pending_cut/cutting 且无未领行 = 已全部领完 → 不再出卡（避免全领 bar 冒出空整只卡）。
-                result.add(toPickupItem(bar, null, whiteBarNameById));
+                result.add(toPickupItem(bar, null, whiteBarNameById, ageByMarketing));
             }
         }
         return result;
     }
 
     /** 组装单张白条领用卡（row 非空 = 按产出行；row 空 = 整只兜底）。nameById = 白条产品 id→实时配置名（row146）。 */
-    private BarPickupItemVo toPickupItem(BarInfo bar, ProductInhouse row, Map<Long, String> nameById) {
+    /**
+     * 白条耳号 → 出栏当时冻结日龄（V6 row145），键 = {@code 耳号|出栏时间毫秒}。
+     *
+     * <p>取 {@code t_farm_pig_marketing.age_days}（出栏那刻冻结的快照，ADR-0017），不现算 ——
+     * 现算会在日后订正出生日期时回溯改写历史值，正是该 ADR 明确否掉的做法。</p>
+     *
+     * <p>键带上出栏时间是因为<b>耳标可回收复用</b>：{@code t_farm_pig_info} 的耳号并不唯一
+     * （UNIQUE 含 {@code lifecycle_id}），同一个耳号在库里可能对应先后两头猪、两次出栏。
+     * {@code bar.marketing_time} 是 {@code PigMarketingEventListener} 从出栏记录原样拷过来的，
+     * 两者配对即锁定同一次出栏事件，不会串到上一轮那头猪。</p>
+     */
+    private Map<String, Integer> loadMarketingAgeByEarNo(List<BarInfo> bars) {
+        Set<String> earNos = bars.stream()
+            .map(BarInfo::getEarNo)
+            .filter(StringUtils::isNotBlank)
+            .map(String::trim)
+            .collect(Collectors.toSet());
+        if (earNos.isEmpty()) {
+            return Map.of();
+        }
+        Map<String, Integer> map = new HashMap<>();
+        for (PigMarketingAgeVo vo : pigQueryService.listMarketingAgeByEarNos(earNos)) {
+            if (StringUtils.isNotBlank(vo.getEarNo()) && vo.getMarketingDate() != null && vo.getAgeDays() != null) {
+                map.putIfAbsent(marketingKey(vo.getEarNo(), vo.getMarketingDate()), vo.getAgeDays());
+            }
+        }
+        return map;
+    }
+
+    /** 出栏事件配对键：耳号 + 出栏时间（精确到毫秒，bar 的 marketing_time 与出栏记录同源）。 */
+    private static String marketingKey(String earNo, LocalDateTime marketingDate) {
+        return StringUtils.trimToEmpty(earNo) + '|' + marketingDate;
+    }
+
+    /** 出栏事件配对键（bar 侧）：{@code Date} 先转成与出栏记录同类型的 {@code LocalDateTime}。 */
+    private static String marketingKey(String earNo, Date marketingTime) {
+        return marketingTime == null ? "" : marketingKey(earNo,
+            marketingTime.toInstant().atZone(ZoneId.systemDefault()).toLocalDateTime());
+    }
+
+    private BarPickupItemVo toPickupItem(BarInfo bar, ProductInhouse row, Map<Long, String> nameById,
+                                         Map<String, Integer> ageByMarketing) {
         BarPickupItemVo vo = new BarPickupItemVo();
         vo.setBarInfoId(bar.getId());
         vo.setBarId(bar.getBarId());
@@ -1084,6 +1135,8 @@ public class PigCutRecordServiceImpl
         // 到场时间/到场重量按整头猪取（燎毛前一次过磅，同一 bar 的各半只产出行共享），mp 白条出库卡第 2 行用
         vo.setArriveTime(bar.getArriveTime());
         vo.setArriveWeight(bar.getArriveWeight());
+        // row145：出栏当时日龄，读出栏记录冻结值（不现算，不随日后订正出生日期而变）
+        vo.setAgeDays(ageByMarketing.get(marketingKey(bar.getEarNo(), bar.getMarketingTime())));
         if (row != null) {
             vo.setInhouseId(row.getId());
             vo.setWhiteBarNo(row.getWhiteBarNo());

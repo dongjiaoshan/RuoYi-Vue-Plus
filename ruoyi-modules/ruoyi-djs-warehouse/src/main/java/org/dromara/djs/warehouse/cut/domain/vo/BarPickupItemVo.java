@@ -88,4 +88,15 @@ public class BarPickupItemVo implements Serializable {
      * 计量单位（kg 等）。
      */
     private String productUnit;
+
+    /**
+     * 猪只**出栏当时**日龄（天，V6 row145）。
+     *
+     * <p>口径 = 出栏日期 − 出生日期（缺出生日期回落引种日期），与 {@code PigAgeUtil} / ADR-0017
+     * 「事件当时日龄」一致。<b>不用「距今天数」</b>：白条是已宰杀的猪，按今天算这个数会天天变大，
+     * 挂在冷库里的白条过一周就多七天，没有业务意义。</p>
+     *
+     * <p>外购白条（无耳号）/ 耳号在猪档案里查不到 / 无出生与引种日期 → {@code null}，前端该格不渲染。</p>
+     */
+    private Integer ageDays;
 }

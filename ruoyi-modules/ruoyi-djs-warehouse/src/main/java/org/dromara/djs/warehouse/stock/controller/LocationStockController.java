@@ -95,6 +95,9 @@ public class LocationStockController extends BaseController {
     @RepeatSubmit
     @PostMapping("/out")
     public R<Void> productOut(@Valid @RequestBody StockOutBo bo) {
+        // 计数类单位（瓶 / 袋 / 个…）只能整数 —— 闸装在入口层而不是 service，
+        // 因为 service 还被毛菜间出库跨 bean 复用，那条路径的量是工序算出来的，不该被人工录入闸拦。
+        stockService.assertManualOutQuantity(bo);
         stockService.productOut(bo);
         return R.ok();
     }
@@ -110,6 +113,8 @@ public class LocationStockController extends BaseController {
     @RepeatSubmit
     @PostMapping("/pigTransfer")
     public R<Void> pigTransfer(@Valid @RequestBody StockTransferBo bo) {
+        // 计数类单位只能整数，同产品出库（闸装入口层，理由见 productOut 那处注释）
+        stockService.assertManualTransferQuantity(bo);
         stockService.pigTransfer(bo);
         return R.ok();
     }

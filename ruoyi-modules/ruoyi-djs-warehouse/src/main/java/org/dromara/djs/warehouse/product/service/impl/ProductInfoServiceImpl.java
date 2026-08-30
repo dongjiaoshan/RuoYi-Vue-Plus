@@ -6,6 +6,7 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.common.core.exception.ServiceException;
+import org.dromara.djs.warehouse.common.QuantityUnitRule;
 import org.dromara.common.core.utils.MapstructUtils;
 import org.dromara.common.core.utils.StringUtils;
 
@@ -53,7 +54,6 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
@@ -654,49 +654,23 @@ public class ProductInfoServiceImpl extends DjsBaseServiceImpl<ProductInfoMapper
     }
 
     /**
-     * 计数类单位白名单（V6-R141）——「只能整数」的判据。
-     *
-     * <p>甲方 row141 原话是「如果单位是非KG，则输入为整数」，但字面执行会把 吨（36 个商品）/ 升 / 斤 /
-     * 米 / 平方米 / 亩 这些<b>计量</b>单位一起锁成整数，而 2.5 吨是合法业务值 ——
-     * 本类 {@code formatFlowQtyByUnit} 的注释就明说「取整会把 2.5 吨抹成 3 吨」，
-     * 展示侧刻意不对吨取整，输入侧就不该让它根本录不进来。Kevin 2026-08-28 拍板改成本名单。</p>
-     *
-     * <p>名单取自库里真实在用的 31 个单位（本地与 staging 完全一致）+ 几个显然的同类；
-     * 计量类（可小数）= kg / 公斤 / 吨 / 升 / 斤 / 米 / 平方米 / 亩。</p>
-     *
-     * <p>⚠️ <b>不在名单里的未知单位一律按「可小数」处理</b>，不是按整数：拦错了会让人根本录不进数
-     * （挡住干活），放过了只是多个小数位（数据略怪但不阻塞），且与本次改动之前的行为一致。</p>
-     *
-     * <p>⚠️ 前端 {@code plus-ui/src/utils/weight.ts#isCountingUnit} 是同一份名单，
-     * 改这里必须同步改那边，否则会出现「前端让填、后端报错」。</p>
-     */
-    private static final Set<String> COUNTING_UNITS = Set.of(
-        "份", "瓶", "袋", "盒", "个", "桶", "罐", "卷", "张", "包",
-        "件", "枚", "捆", "株", "只", "根", "支", "台", "盏", "条",
-        "套", "片", "双", "箱", "组", "把", "头", "提");
-
-    /**
      * 入库量小数位校验（V6-R141）：计数类单位必须整数，计量类单位最多三位小数。
+     * 单位口径见 {@link QuantityUnitRule}（后端唯一一份名单，与前端 utils/weight.ts 对齐）。
      */
     private void assertQuantityScale(BigDecimal quantity, String productUnit) {
         if (quantity == null) {
             return;
         }
         int scale = quantity.stripTrailingZeros().scale();
-        if (isCountingUnit(productUnit)) {
+        if (QuantityUnitRule.isCountingUnit(productUnit)) {
             if (scale > 0) {
                 throw new ServiceException(
                     I18nMessages.t("product.inbound.quantity.scale_int",
                         StringUtils.blankToDefault(productUnit, "-")), 400);
             }
-        } else if (scale > 3) {
+        } else if (scale > QuantityUnitRule.MAX_SCALE) {
             throw new ServiceException(I18nMessages.t("product.inbound.quantity.scale_kg"), 400);
         }
-    }
-
-    /** 是否计数类单位（只能填整数）。空 / 未知单位返 false = 按可小数处理。 */
-    private static boolean isCountingUnit(String unit) {
-        return StringUtils.isNotBlank(unit) && COUNTING_UNITS.contains(unit.trim());
     }
 
     /**

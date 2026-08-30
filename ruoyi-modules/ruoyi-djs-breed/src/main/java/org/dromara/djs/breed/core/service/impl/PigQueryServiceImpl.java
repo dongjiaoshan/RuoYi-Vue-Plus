@@ -1,13 +1,19 @@
 package org.dromara.djs.breed.core.service.impl;
 
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import lombok.RequiredArgsConstructor;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.breed.core.domain.vo.PigAvailableVo;
+import org.dromara.djs.breed.core.domain.vo.PigMarketingAgeVo;
 import org.dromara.djs.breed.core.mapper.PigMapper;
 import org.dromara.djs.breed.core.service.IPigQueryService;
+import org.dromara.djs.breed.event.slaughter.domain.PigMarketing;
+import org.dromara.djs.breed.event.slaughter.mapper.PigMarketingMapper;
 import org.springframework.stereotype.Service;
+
+import java.util.List;
 
 /**
  * {@link IPigQueryService} 默认实现。
@@ -22,6 +28,7 @@ import org.springframework.stereotype.Service;
 public class PigQueryServiceImpl implements IPigQueryService {
 
     private final PigMapper pigMapper;
+    private final PigMarketingMapper pigMarketingMapper;
 
     @Override
     public String selectCurrentStatusByEarNo(String earNo) {
@@ -56,5 +63,23 @@ public class PigQueryServiceImpl implements IPigQueryService {
             return java.util.List.of();
         }
         return pigMapper.selectPigInfoByEarNos(earNos);
+    }
+
+    @Override
+    public java.util.List<PigMarketingAgeVo> listMarketingAgeByEarNos(java.util.Collection<String> earNos) {
+        if (earNos == null || earNos.isEmpty()) {
+            return java.util.List.of();
+        }
+        List<PigMarketing> rows = pigMarketingMapper.selectList(
+            new LambdaQueryWrapper<PigMarketing>()
+                .select(PigMarketing::getEarNo, PigMarketing::getMarketingDate, PigMarketing::getAgeDays)
+                .in(PigMarketing::getEarNo, earNos));
+        return rows.stream().map(r -> {
+            PigMarketingAgeVo vo = new PigMarketingAgeVo();
+            vo.setEarNo(r.getEarNo());
+            vo.setMarketingDate(r.getMarketingDate());
+            vo.setAgeDays(r.getAgeDays());
+            return vo;
+        }).toList();
     }
 }

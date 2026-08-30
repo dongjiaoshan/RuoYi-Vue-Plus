@@ -64,6 +64,29 @@ public interface ILocationStockService {
     Long productOut(StockOutBo bo);
 
     /**
+     * 计数类单位出库量必须是整数（V6 row143）。
+     *
+     * <p><b>只给 admin HTTP 入口调用，故意不放进 {@link #productOut}</b>：毛菜间出库
+     * （{@code VegOutServiceImpl}）是跨 bean 直接调 {@code productOut} 的内部路径，
+     * 它的量由上游工序算出来，不该被这道「人工录入」的闸拦。放在入口层 = 只约束人手填的那条路。</p>
+     *
+     * <p>单位口径见 {@link org.dromara.djs.warehouse.common.QuantityUnitRule}
+     * （与前端 {@code utils/weight.ts#isCountingUnit} 同一份名单）。</p>
+     *
+     * @throws org.dromara.common.core.exception.ServiceException 单位是计数类且数量带小数
+     */
+    void assertManualOutQuantity(StockOutBo bo);
+
+    /**
+     * 计数类单位转移量必须是整数（V6 row143）——「猪肉库位转移」入口闸，口径同
+     * {@link #assertManualOutQuantity}。前端 {@code PigTransferDialog.vue} 已按同一规则拦，
+     * 这里补上后端，避免「前端拦、接口不拦」（那正是本条要消灭的形态）。
+     *
+     * @throws org.dromara.common.core.exception.ServiceException 单位是计数类且数量带小数
+     */
+    void assertManualTransferQuantity(StockTransferBo bo);
+
+    /**
      * 库存查询行「猪肉转移」：猪肉鲜品库 → 冻品库（WS13 / row143）。
      *
      * <p>按 {@link StockTransferBo#getId()} 取源库存行的 {@code locationId + productId + 当前库存}，

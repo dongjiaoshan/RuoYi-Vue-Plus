@@ -101,6 +101,9 @@ class PigCutRecordServiceImplTest {
     private org.dromara.djs.warehouse.check.service.IStockCheckService stockCheckService;
     @Mock
     private org.dromara.djs.warehouse.loss.service.ILossFlowService lossFlowService;
+    /** row145：白条卡出栏日龄走养殖域只读薄壳。本套用例不测日龄，给个 mock 占位即可（日龄单测另见 BarPickupAgeDaysTest）。 */
+    @Mock
+    private org.dromara.djs.breed.core.service.IPigQueryService pigQueryService;
 
     private TestablePigCutRecordServiceImpl service;
 
@@ -120,8 +123,9 @@ class PigCutRecordServiceImplTest {
                                         org.dromara.djs.warehouse.trace.service.ITraceService ts,
                                         org.dromara.djs.common.image.service.ImageUrlResolver ir,
                                         org.dromara.djs.warehouse.check.service.IStockCheckService scs,
-                                        org.dromara.djs.warehouse.loss.service.ILossFlowService lf) {
-            super(c, b, f, p, ph, l, ls, s, g, ts, ir, scs, lf);
+                                        org.dromara.djs.warehouse.loss.service.ILossFlowService lf,
+                                        org.dromara.djs.breed.core.service.IPigQueryService pq) {
+            super(c, b, f, p, ph, l, ls, s, g, ts, ir, scs, lf, pq);
         }
 
         @Override
@@ -165,7 +169,7 @@ class PigCutRecordServiceImplTest {
     @BeforeEach
     void setup() {
         service = new TestablePigCutRecordServiceImpl(
-            cutMapper, barInfoMapper, flowMapper, productInfoMapper, productInhouseMapper, locationInfoMapper, locationStockMapper, supplierMapper, bizCodeGenerator, traceService, imageUrlResolver, stockCheckService, lossFlowService);
+            cutMapper, barInfoMapper, flowMapper, productInfoMapper, productInhouseMapper, locationInfoMapper, locationStockMapper, supplierMapper, bizCodeGenerator, traceService, imageUrlResolver, stockCheckService, lossFlowService, pigQueryService);
         loginHelperMock = Mockito.mockStatic(LoginHelper.class);
         loginHelperMock.when(LoginHelper::getUserId).thenReturn(9001L);
     }
