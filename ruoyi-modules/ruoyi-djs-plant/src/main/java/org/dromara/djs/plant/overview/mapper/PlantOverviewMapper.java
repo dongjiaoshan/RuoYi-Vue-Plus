@@ -83,7 +83,11 @@ public interface PlantOverviewMapper {
      * </ul>
      * <p>currentPlantedPlotCount / currentPlantedArea 复用已完成口径（卡片头展示）。</p>
      *
+     * <p>{@code cropName} 为作物名称模糊关键字：空串表示不过滤（service 层已把 null/空白归一成空串，
+     * 裸 {@code @Select} 传 null 无法推断 JdbcType）。</p>
+     *
      * @param tenantId 租户
+     * @param cropName 作物名称模糊关键字（空串 = 不过滤）
      * @return 每作物一行卡片 VO；无数据返空 list（最多 200 作物）
      */
     @Select("SELECT "
@@ -114,10 +118,12 @@ public interface PlantOverviewMapper {
         + "LEFT JOIN t_plant_crop_info c ON c.id = d.crop_id AND c.tenant_id = #{tenantId} AND c.del_flag = '0' "
         + "LEFT JOIN t_plant_plot_info pi ON pi.id = d.plot_id AND pi.tenant_id = #{tenantId} AND pi.del_flag = '0' "
         + "WHERE d.tenant_id = #{tenantId} AND d.del_flag = '0' "
+        + "  AND (#{cropName} = '' OR c.crop_name LIKE CONCAT('%', #{cropName}, '%')) "
         + "GROUP BY d.crop_id, c.crop_name, c.crop_code, c.image_oss_id "
         + "ORDER BY c.crop_name "
         + "LIMIT 200")
-    List<CropOverviewCardVo> selectCropCards(@Param("tenantId") String tenantId);
+    List<CropOverviewCardVo> selectCropCards(@Param("tenantId") String tenantId,
+                                             @Param("cropName") String cropName);
 
     // ============================ cropDetail：逐地块明细分页 ============================
 

@@ -9,6 +9,7 @@ import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.common.base.DjsBaseServiceImpl;
 import org.dromara.djs.common.supplier.domain.Supplier;
 import org.dromara.djs.common.supplier.mapper.SupplierMapper;
+import org.dromara.djs.warehouse.flow.constant.FlowDisplayScope;
 import org.dromara.djs.warehouse.flow.domain.StockFlow;
 import org.dromara.djs.warehouse.flow.domain.query.StockFlowQuery;
 import org.dromara.djs.warehouse.flow.domain.vo.PackingHomeVo;
@@ -59,22 +60,6 @@ public class StockFlowServiceImpl
      */
     private static final String BELONG_TYPE_PACKAGE = "package";
 
-    /**
-     * 打包入库流水类型（djs_flow_type）。
-     * 打包是「出库到发货月台」语义，不应出现在 admin 入库记录页/入库方式下拉里；
-     * 仅在入库记录两页（queryInList / queryInExport）排除展示，pack_in 流水写入保留
-     * （库存余额 / 日损耗 / 盘点依赖）。
-     */
-    private static final String FLOW_TYPE_PACK_IN = "pack_in";
-
-    /**
-     * 出库记录页 / 导出（queryOutList / queryOutExport）展示排除的流水类型（djs_flow_type）：
-     * 出库记录页仅展示库位领用 / 后台 / 盘点类真出库，生产发货（ship_out / pack_consume）与
-     * 领用后损耗（loss）不展示；流水本身仍写入（库存余额 / 损耗总览依赖）。
-     * ⚠️ 勿复用 / 勿改 MatFlowServiceImpl 的权威键集——那是额度统计口径，与本展示口径无关。
-     */
-    private static final List<String> DISPLAY_EXCLUDED_OUT_FLOW_TYPES = List.of("loss", "ship_out", "pack_consume");
-
     private final LocationInfoMapper locationInfoMapper;
     private final ProductInfoMapper productInfoMapper;
     private final LocationStockMapper locationStockMapper;
@@ -123,7 +108,7 @@ public class StockFlowServiceImpl
     public TableDataInfo<StockFlowVo> queryInList(StockFlowQuery query, PageQuery pageQuery) {
         // 入库记录页：排除打包入库（pack_in），其余入库流水照常展示
         LambdaQueryWrapper<StockFlow> wrapper = buildWrapper(lockInout(query, INOUT_IN))
-            .ne(StockFlow::getFlowType, FLOW_TYPE_PACK_IN);
+            .notIn(StockFlow::getFlowType, FlowDisplayScope.IN_EXCLUDED);
         Page<StockFlowVo> page = baseMapper.selectVoPage(pageQuery.build(), wrapper);
         fillJoinNames(page.getRecords());
         return TableDataInfo.build(page);
@@ -133,7 +118,7 @@ public class StockFlowServiceImpl
     public TableDataInfo<StockFlowVo> queryOutList(StockFlowQuery query, PageQuery pageQuery) {
         // 出库记录页：排除生产发货 / 领用后损耗类流水，只保留库位领用 / 后台 / 盘点类真出库口径
         LambdaQueryWrapper<StockFlow> wrapper = buildWrapper(lockInout(query, INOUT_OUT))
-            .notIn(StockFlow::getFlowType, DISPLAY_EXCLUDED_OUT_FLOW_TYPES);
+            .notIn(StockFlow::getFlowType, FlowDisplayScope.OUT_EXCLUDED);
         Page<StockFlowVo> page = baseMapper.selectVoPage(pageQuery.build(), wrapper);
         fillJoinNames(page.getRecords());
         return TableDataInfo.build(page);
@@ -143,7 +128,7 @@ public class StockFlowServiceImpl
     public List<StockFlowVo> queryInExport(StockFlowQuery query) {
         // 入库记录导出：与列表口径一致，排除打包入库（pack_in）
         LambdaQueryWrapper<StockFlow> wrapper = buildWrapper(lockInout(query, INOUT_IN))
-            .ne(StockFlow::getFlowType, FLOW_TYPE_PACK_IN);
+            .notIn(StockFlow::getFlowType, FlowDisplayScope.IN_EXCLUDED);
         List<StockFlowVo> list = baseMapper.selectVoList(wrapper);
         fillJoinNames(list);
         return list;
@@ -153,7 +138,7 @@ public class StockFlowServiceImpl
     public List<StockFlowVo> queryOutExport(StockFlowQuery query) {
         // 出库记录导出：与列表口径一致，排除生产发货 / 领用后损耗类流水
         LambdaQueryWrapper<StockFlow> wrapper = buildWrapper(lockInout(query, INOUT_OUT))
-            .notIn(StockFlow::getFlowType, DISPLAY_EXCLUDED_OUT_FLOW_TYPES);
+            .notIn(StockFlow::getFlowType, FlowDisplayScope.OUT_EXCLUDED);
         List<StockFlowVo> list = baseMapper.selectVoList(wrapper);
         fillJoinNames(list);
         return list;

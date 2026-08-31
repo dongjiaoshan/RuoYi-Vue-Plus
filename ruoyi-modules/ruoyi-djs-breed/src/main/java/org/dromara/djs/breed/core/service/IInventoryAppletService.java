@@ -9,6 +9,10 @@ import java.util.List;
 /**
  * 库存看板聚合 - 小程序端（read-only，纯 query 聚合，BRD-INVENTORY-001）。
  *
+ * <p><b>两端共用</b>：小程序「猪只库存信息」页与 admin「运营管理 → 农场信息 → 育肥猪信息」页
+ * （{@code InventoryAdminController}）调用的是同一份实现，日龄分桶 / 栋舍矩阵口径完全一致
+ * （甲方 V6-R150 要求「和小程序里的展示保持一致」）。改动本接口或其实现前必须确认两端影响。</p>
+ *
  * <p>pigType 入参语义（5 段 type segment）：</p>
  * <ul>
  *   <li>sow        母猪（按 pig_type='sow' 过滤）</li>

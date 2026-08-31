@@ -30,7 +30,16 @@ import java.util.Objects;
 import java.util.TreeMap;
 
 /**
- * 库存看板聚合服务实现 - 小程序端（BRD-INVENTORY-001）。
+ * 库存看板聚合服务实现 - 小程序端 + admin 育肥猪信息页共用（BRD-INVENTORY-001 / V6-R150）。
+ *
+ * <p><b>两端共用</b>：mp「猪只库存信息」页（{@code /applet/inventory/*}）与 admin「运营管理 →
+ * 农场信息 → 育肥猪信息」页（{@code /djs/breed/inventory/*}）走同一份分桶与矩阵逻辑，
+ * 保证甲方要求的「admin 与小程序展示保持一致」。改 {@code bucketingFor} / {@code inStock}
+ * 的口径会同时改变两端展示，动手前确认两端。</p>
+ *
+ * <p><b>在栏口径只有一处</b>：{@link #inStock}，取数只走 {@link #loadInStockPigs}。
+ * tab 头数 / 栋舍矩阵 / 日龄分布柱图 / 胎次分布饼图 同页并排显示且互相比大小，
+ * 任何一处自己拼过滤条件就会出现「柱图合计 ≠ 表格合计」。</p>
  *
  * <p>独立 service（@RequiredArgsConstructor），不改动现有 ServiceImpl 构造器，
  * 避免连带改单测（参考波次2-B SowDetail 范式）。read-only 纯 query 聚合，无 DDL。</p>
@@ -59,70 +68,120 @@ public class InventoryAppletServiceImpl implements IInventoryAppletService {
     private static final String PIGLET = "piglet";
     private static final String FATTENING = "fattening";
 
-    /** 离场状态：库存分布栋舍卡按客户口径排除（不计头数、不计状态） */
+    /** 离场状态：出栏 / 死亡 / 淘汰，不在栏（口径同 {@code AggregateQueryMapper} 的 {@code current_status <> 'END'}） */
     private static final String STATUS_END = "END";
 
     private static final DateTimeFormatter DATE_FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd");
 
     /**
-     * 按 pigType 段拉取活猪。reserve 段走 current_status='HB'；其它段走 pig_type。
+     * 「在栏」口径的<b>唯一定义</b>：本页所有数字（tab 头数 / 栋舍矩阵 / 日龄分布柱图 / 胎次分布）
+     * 都只能通过 {@link #loadInStockPigs} 取数，任何一处绕开就会出现「柱图合计 ≠ 表格合计」。
+     *
+     * <ol>
+     *   <li>未离场：{@code current_status != 'END'}（出栏 / 死亡 / 淘汰）。</li>
+     *   <li>已分配栋舍：{@code barn_id} 非空 —— 栋舍矩阵按栋聚合，无栋舍的猪进不了矩阵，
+     *       故也不计入头数与分布图。</li>
+     *   <li>按日龄/周龄分段的段（育肥 / 仔猪 / 后备）另需能算出日龄：出生日期非空且不在未来，
+     *       否则它落不进任何分段柱，会让「行合计 ≠ 各分段之和」。母猪段按 current_status 分布，
+     *       不看日龄，故不作此要求。</li>
+     * </ol>
+     *
+     * <p><b>放弃项</b>：缺栋舍 / （日龄段）缺出生日期的猪在本页任何数字里都不出现，
+     * 换取「柱状图合计 = 表格合计 = tab 头数」恒等；这类脏数据要在猪只档案里补齐。</p>
+     *
+     * @param p          待判定猪只
+     * @param ageSegment 该段是否按日龄/周龄分段（见 {@link #isAgeSegment}）
+     * @param today      日龄基准日（与调用方同一个，避免跨零点两次 now 取到不同日期）
+     * @return true = 计入本页所有数字
      */
-    private List<Pig> loadPigs(String pigType) {
+    private static boolean inStock(Pig p, boolean ageSegment, LocalDate today) {
+        if (STATUS_END.equals(p.getCurrentStatus()) || p.getBarnId() == null) {
+            return false;
+        }
+        if (!ageSegment) {
+            return true;
+        }
+        LocalDate birthDate = p.getBirthDate();
+        return birthDate != null && !birthDate.isAfter(today);
+    }
+
+    /** 按日龄/周龄分段的段：育肥 / 仔猪 / 后备（母猪走状态分布，公猪走列表）。 */
+    private static boolean isAgeSegment(String pigType) {
+        return FATTENING.equals(pigType) || PIGLET.equals(pigType) || RESERVE.equals(pigType);
+    }
+
+    /**
+     * 日龄（天）。出生日期缺失或在未来 → null；日龄段的这类猪已被 {@link #inStock} 挡在外面，
+     * 此处只兜非日龄段。栋舍矩阵与日龄分布共用本方法，保证「哪头猪落哪一段」只有一份实现。
+     */
+    private static Long ageDays(Pig p, LocalDate today) {
+        LocalDate birthDate = p.getBirthDate();
+        if (birthDate == null) {
+            return null;
+        }
+        long days = ChronoUnit.DAYS.between(birthDate, today);
+        return days < 0 ? null : days;
+    }
+
+    /**
+     * 拉取某段的「在栏」猪 —— 本 service 取数的唯一入口。
+     * SQL 只做「未软删 + 段过滤」（reserve 段走 current_status='HB'，其它段走 pig_type），
+     * 在栏判定统一交给 {@link #inStock}。
+     */
+    private List<Pig> loadInStockPigs(String pigType, LocalDate today) {
         var wrapper = Wrappers.<Pig>lambdaQuery().eq(Pig::getDelFlag, "0");
         if (RESERVE.equals(pigType)) {
             wrapper.eq(Pig::getCurrentStatus, RESERVE_STATUS);
         } else if (pigType != null && !pigType.isEmpty()) {
             wrapper.eq(Pig::getPigType, pigType);
         }
-        return pigMapper.selectList(wrapper);
+        boolean ageSegment = isAgeSegment(pigType);
+        List<Pig> result = new ArrayList<>();
+        for (Pig p : pigMapper.selectList(wrapper)) {
+            if (inStock(p, ageSegment, today)) {
+                result.add(p);
+            }
+        }
+        return result;
     }
 
     @Override
     public List<InventoryBarnMatrixVo> barnMatrix(String pigType) {
-        List<Pig> pigs = loadPigs(pigType);
+        LocalDate today = LocalDate.now();
+        List<Pig> pigs = loadInStockPigs(pigType, today);
         if (pigs.isEmpty()) {
             return Collections.emptyList();
         }
         // 母猪段 byStatus 维度 = current_status；肥猪/仔猪/后备段 byAge 维度 = 日龄/周龄分段；
         boolean withStatus = SOW.equals(pigType);
-        boolean withAge = FATTENING.equals(pigType) || PIGLET.equals(pigType) || RESERVE.equals(pigType);
+        boolean withAge = isAgeSegment(pigType);
 
         // 肥猪/仔猪/后备分段器（一次性算好，全栋复用，保证段顺序与日龄分布图一致）
         Bucketing bucketing = withAge ? bucketingFor(pigType) : null;
         String[] ageLabels = withAge ? bucketing.labels() : null;
-        LocalDate today = LocalDate.now();
 
         Map<Long, Map<String, Integer>> statusMatrix = new LinkedHashMap<>();
         Map<Long, int[]> ageMatrix = new LinkedHashMap<>();
         Map<Long, Integer> totalByBarn = new LinkedHashMap<>();
         for (Pig p : pigs) {
-            if (p.getBarnId() == null) {
-                continue;
-            }
-            String status = p.getCurrentStatus();
-            // 客户口径（206③）：库存分布栋舍卡排除离场 END（不计头数、不计分段）
-            if (STATUS_END.equals(status)) {
-                continue;
-            }
             Long barnId = p.getBarnId();
-            totalByBarn.merge(barnId, 1, Integer::sum);
-            if (withStatus) {
-                if (status != null && !status.isEmpty()) {
-                    statusMatrix.computeIfAbsent(barnId, k -> new LinkedHashMap<>())
-                          .merge(status, 1, Integer::sum);
-                }
-            } else if (withAge) {
-                LocalDate birthDate = p.getBirthDate();
-                if (birthDate == null) {
-                    continue;
-                }
-                long days = ChronoUnit.DAYS.between(birthDate, today);
-                if (days < 0) {
+            if (withAge) {
+                Long days = ageDays(p, today);
+                if (days == null) {
+                    // 与日龄分布图同一条跳过规则：算不出日龄就既不计头数也不入段，
+                    // 保证「行合计 = 各分段之和」（inStock 已保证日龄段走不到这里）
                     continue;
                 }
                 int[] buckets = ageMatrix.computeIfAbsent(barnId, k -> new int[ageLabels.length]);
                 buckets[bucketing.indexOf(days)]++;
+            } else if (withStatus) {
+                String status = p.getCurrentStatus();
+                if (status != null && !status.isEmpty()) {
+                    statusMatrix.computeIfAbsent(barnId, k -> new LinkedHashMap<>())
+                          .merge(status, 1, Integer::sum);
+                }
             }
+            totalByBarn.merge(barnId, 1, Integer::sum);
         }
         if (totalByBarn.isEmpty()) {
             return Collections.emptyList();
@@ -166,7 +225,8 @@ public class InventoryAppletServiceImpl implements IInventoryAppletService {
         if (!SOW.equals(pigType)) {
             return Collections.emptyList();
         }
-        List<Pig> pigs = loadPigs(pigType);
+        // 与同页「种母猪在栏数」/ 栋舍矩阵同一套在栏口径，饼图各扇之和 = 在栏数
+        List<Pig> pigs = loadInStockPigs(pigType, LocalDate.now());
         // TreeMap 保证胎次升序
         Map<Integer, Integer> byParity = new TreeMap<>();
         for (Pig p : pigs) {
@@ -191,19 +251,16 @@ public class InventoryAppletServiceImpl implements IInventoryAppletService {
 
     @Override
     public List<InventoryDistItemVo> ageDist(String pigType) {
-        List<Pig> pigs = loadPigs(pigType);
         LocalDate today = LocalDate.now();
+        // 与栋舍矩阵 / tab 头数同一套在栏口径（loadInStockPigs），各柱之和恒等于表格合计
+        List<Pig> pigs = loadInStockPigs(pigType, today);
         Bucketing bucketing = bucketingFor(pigType);
         String[] bucketLabels = bucketing.labels();
         int[] counts = new int[bucketLabels.length];
         boolean any = false;
         for (Pig p : pigs) {
-            LocalDate birthDate = p.getBirthDate();
-            if (birthDate == null) {
-                continue;
-            }
-            long days = ChronoUnit.DAYS.between(birthDate, today);
-            if (days < 0) {
+            Long days = ageDays(p, today);
+            if (days == null) {
                 continue;
             }
             counts[bucketing.indexOf(days)]++;

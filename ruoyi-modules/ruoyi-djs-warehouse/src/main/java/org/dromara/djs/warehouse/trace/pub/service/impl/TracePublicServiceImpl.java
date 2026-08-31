@@ -47,9 +47,11 @@ import org.dromara.djs.warehouse.trace.domain.TraceCode;
 import org.dromara.djs.warehouse.trace.domain.TraceCodeTypeConst;
 import org.dromara.djs.warehouse.trace.domain.TraceContentConst;
 import org.dromara.djs.warehouse.trace.domain.TraceEvent;
+import org.dromara.djs.warehouse.trace.domain.TracePageConfig;
 import org.dromara.djs.warehouse.trace.mapper.TraceCodeMapper;
 import org.dromara.djs.warehouse.trace.mapper.TraceEventMapper;
 import org.dromara.djs.warehouse.trace.mapper.TraceFarmNameMapper;
+import org.dromara.djs.warehouse.trace.mapper.TracePageConfigMapper;
 import org.dromara.djs.warehouse.trace.pub.domain.vo.PublicTraceVo;
 import org.dromara.djs.warehouse.trace.pub.mapper.TraceUserNameMapper;
 import org.dromara.djs.warehouse.trace.pub.service.ITracePublicService;
@@ -147,6 +149,8 @@ public class TracePublicServiceImpl
     private final StoreMapper storeMapper;
     private final TraceFarmNameMapper traceFarmNameMapper;
     private final TraceUserNameMapper traceUserNameMapper;
+    /** 追溯页配置（V6 row146）：按 codeType 取甲方在 admin 上传的基地介绍图。 */
+    private final TracePageConfigMapper tracePageConfigMapper;
     private final OssService ossService;
     /** 单值配置字典读取（生长记录 / 农事记录显示门槛）。 */
     private final DictService dictService;
@@ -180,6 +184,7 @@ public class TracePublicServiceImpl
                                   StoreMapper storeMapper,
                                   TraceFarmNameMapper traceFarmNameMapper,
                                   TraceUserNameMapper traceUserNameMapper,
+                                  TracePageConfigMapper tracePageConfigMapper,
                                   OssService ossService,
                                   DictService dictService,
                                   PigMapper pigMapper,
@@ -204,6 +209,7 @@ public class TracePublicServiceImpl
         this.storeMapper = storeMapper;
         this.traceFarmNameMapper = traceFarmNameMapper;
         this.traceUserNameMapper = traceUserNameMapper;
+        this.tracePageConfigMapper = tracePageConfigMapper;
         this.ossService = ossService;
         this.dictService = dictService;
         this.pigMapper = pigMapper;
@@ -232,29 +238,52 @@ public class TracePublicServiceImpl
         String key = CACHE_PREFIX + produceCode;
         PublicTraceVo cached = readCache(key);
         if (cached != null) {
-            return fillShowMin(cached);
+            return fillRuntimeConfig(cached);
         }
         // @SaIgnore 无登录 → 无 tenant 上下文，全程 ignore 租户拦截（V1 单租户）
         PublicTraceVo vo = TenantHelper.ignore(() -> aggregate(produceCode));
         if (vo != null) {
             writeCache(key, vo);
         }
-        return fillShowMin(vo);
+        return fillRuntimeConfig(vo);
     }
 
     /**
-     * 回填生长记录 / 农事记录入口的显示门槛（V6 row134/row135）。
+     * 回填「客户在 admin 随手改、改完要立刻生效」的运行期配置：
+     * 生长记录 / 农事记录入口的显示门槛（V6 row134/row135）+ 基地介绍页图片（V6 row146）。
      *
-     * <p>放在缓存**外面**：门槛是客户在 admin 字典里随手改的开关，改完得立刻见效，
-     * 不能被 10 分钟的追溯详情缓存挡住。</p>
+     * <p>放在缓存**外面**：这几项都是甲方在后台点两下就改的开关 / 图片，改完得立刻见效，
+     * 不能被 10 分钟的追溯详情缓存挡住 —— 否则甲方换了图看不到变化，一定会再提一次。</p>
      */
-    private PublicTraceVo fillShowMin(PublicTraceVo vo) {
+    private PublicTraceVo fillRuntimeConfig(PublicTraceVo vo) {
         if (vo == null) {
             return null;
         }
         vo.setGrowthShowMin(readShowMin(DictTypeConstants.TRACE_GROW_SHOW_MIN));
         vo.setPlotRecordShowMin(readShowMin(DictTypeConstants.TRACE_FARM_SHOW_MIN));
+        vo.setBaseIntroImageUrl(resolveBaseIntroImage(vo.getCodeType()));
         return vo;
+    }
+
+    /**
+     * 取该业态的基地介绍页图片 URL（admin「追溯码配置管理」上传，V6 row146）。
+     *
+     * <p>{@code gift} 映射到 veg 那行配置：H5 对非 pork 一律按果蔬渲染，基地介绍页也就是果蔬那张，
+     * 给 gift 单开第三行只会让甲方困惑「这行是干嘛的」。</p>
+     *
+     * @param codeType 追溯码类型（pork / veg / gift）
+     * @return 图片可访问 URL；未配置 / 配置行缺失 → null（H5 回落内置版式）
+     */
+    private String resolveBaseIntroImage(String codeType) {
+        if (StringUtils.isBlank(codeType)) {
+            return null;
+        }
+        String key = TraceCodeTypeConst.PORK.equals(codeType) ? TraceCodeTypeConst.PORK : TraceCodeTypeConst.VEG;
+        TracePageConfig cfg = TenantHelper.ignore(() -> tracePageConfigMapper.selectOne(
+            new LambdaQueryWrapper<TracePageConfig>()
+                .eq(TracePageConfig::getCodeType, key)
+                .last("limit 1")));
+        return cfg == null ? null : resolveOssUrl(cfg.getBaseIntroImageOssId());
     }
 
     /**

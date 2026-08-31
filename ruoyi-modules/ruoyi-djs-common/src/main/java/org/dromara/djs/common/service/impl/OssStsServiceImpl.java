@@ -74,6 +74,7 @@ public class OssStsServiceImpl implements IOssStsService {
         "plant_crop",       // 作物照片（PLT-MD-001）
         "plant_organic",    // 有机认证证书图（PLT-MD-003 土地 + 作物共用）
         "plant_farm_proof", // 农事记录凭证图（PLT-WORK-001 mp 5 类提交共用）
+        "plant_demand",     // 作物需求图片（V6-R152 运营端提需求多图）
         "avatar",           // 用户头像 / 通用
         "doc"               // 通用文档
     );

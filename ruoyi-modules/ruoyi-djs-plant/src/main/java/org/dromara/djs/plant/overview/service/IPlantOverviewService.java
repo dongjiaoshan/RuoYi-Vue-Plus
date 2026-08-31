@@ -3,6 +3,7 @@ package org.dromara.djs.plant.overview.service;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.plant.overview.domain.vo.CropDetailVo;
+import org.dromara.djs.plant.overview.domain.vo.CropOverviewExportVo;
 import org.dromara.djs.plant.overview.domain.vo.PlantOverviewSummaryVo;
 
 import java.util.List;
@@ -21,9 +22,21 @@ public interface IPlantOverviewService {
     /**
      * 种植总览汇总：5 产量 KPI（吨）+ 作物卡片列表（kg）。
      *
+     * <p>{@code cropName} 只过滤作物卡片列表；5 个 KPI 恒为全场口径（地块可同时种多作物，
+     * 按作物切分无定义）。</p>
+     *
+     * @param cropName 作物名称模糊关键字（null/空白 = 不过滤）
      * @return 汇总 VO（无数据时各 KPI 为 0、crops 空列表）
      */
-    PlantOverviewSummaryVo getSummary();
+    PlantOverviewSummaryVo getSummary(String cropName);
+
+    /**
+     * 作物卡片导出行（row147，一作物一行，与卡片列表同源同过滤同排序）。
+     *
+     * @param cropName 作物名称模糊关键字（null/空白 = 不过滤）
+     * @return 导出行；无数据返空列表（导出仅表头）
+     */
+    List<CropOverviewExportVo> getCropCardExportList(String cropName);
 
     /**
      * 按作物分页查询逐地块明细（14 列）。

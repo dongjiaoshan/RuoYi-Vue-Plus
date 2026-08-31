@@ -61,6 +61,14 @@ public class PublicTraceVo implements Serializable {
      */
     private Integer plotRecordShowMin;
 
+    /**
+     * 基地介绍页图片 URL（V6 row146）：admin「追溯码配置管理」按 {@link #codeType} 配置的整页图。
+     *
+     * <p>为 null（未配置 / 图被清空）时 H5 回落内置的写死版式，不开天窗。
+     * {@code gift} 沿用 veg 那行配置（H5 对非 pork 一律按果蔬渲染）。</p>
+     */
+    private String baseIntroImageUrl;
+
     // ============ pork 专属（veg/gift 为 null）============
 
     /** 猪只信息（pork 专属）。 */

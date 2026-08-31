@@ -112,6 +112,7 @@ class TracePublicServiceImplTest {
     @Mock private StoreMapper storeMapper;
     @Mock private TraceFarmNameMapper traceFarmNameMapper;
     @Mock private TraceUserNameMapper traceUserNameMapper;
+    @Mock private org.dromara.djs.warehouse.trace.mapper.TracePageConfigMapper tracePageConfigMapper;
     @Mock private OssService ossService;
     @Mock private PigMapper pigMapper;
     @Mock private PigGrowthMapper pigGrowthMapper;
@@ -175,7 +176,7 @@ class TracePublicServiceImplTest {
         // spy 真实 service，覆盖 readCache/writeCache（RedisUtils 静态字段在无 Spring 环境 clinit 失败，不可 mockStatic）
         service = spy(new TracePublicServiceImpl(
             traceCodeMapper, traceEventMapper, productInfoMapper, storeMapper,
-            traceFarmNameMapper, traceUserNameMapper, ossService, dictService,
+            traceFarmNameMapper, traceUserNameMapper, tracePageConfigMapper, ossService, dictService,
             pigMapper, pigGrowthMapper, pigMarketingMapper, medRecordMapper, medicineMapper, sowDetailService,
             plotInfoMapper, plotZoneMapper, farmRecordsMapper, cropOrganicMapper, plotOrganicMapper,
             plantDetailsMapper, cropInfoMapper,

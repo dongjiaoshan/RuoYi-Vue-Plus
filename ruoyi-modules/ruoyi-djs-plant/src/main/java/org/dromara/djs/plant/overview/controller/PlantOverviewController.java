@@ -12,6 +12,7 @@ import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.web.core.BaseController;
 import org.dromara.djs.plant.overview.domain.vo.CropDetailVo;
+import org.dromara.djs.plant.overview.domain.vo.CropOverviewExportVo;
 import org.dromara.djs.plant.overview.domain.vo.PlantOverviewSummaryVo;
 import org.dromara.djs.plant.overview.service.IPlantOverviewService;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -27,7 +28,8 @@ import java.util.List;
  *
  * <p>种植板块新着陆/总览页（替代已删的旧种植看板 PLT-DASH-001）。纯只读：</p>
  * <ul>
- *   <li>GET  /summary            5 产量 KPI（吨）+ 作物卡片列表（kg）</li>
+ *   <li>GET  /summary            5 产量 KPI（吨）+ 作物卡片列表（kg，可按作物名称过滤）</li>
+ *   <li>POST /cropCard/export    按作物名称过滤条件导出作物卡片（一作物一行）</li>
  *   <li>GET  /cropDetail         按 cropId 分页查逐地块明细（14 列）</li>
  *   <li>POST /cropDetail/export  按 cropId 导出当前作物逐地块明细</li>
  * </ul>
@@ -45,12 +47,27 @@ public class PlantOverviewController extends BaseController {
     /**
      * 种植总览汇总：5 产量 KPI（吨）+ 作物卡片列表（kg）。
      *
+     * @param cropName 作物名称模糊关键字（可空；只过滤卡片列表，KPI 恒全场口径）
      * @return 汇总 VO（无数据时各 KPI 为 0、crops 空列表）
      */
     @SaCheckPermission("djs:plant:overview:view")
     @GetMapping("/summary")
-    public R<PlantOverviewSummaryVo> summary() {
-        return R.ok(overviewService.getSummary());
+    public R<PlantOverviewSummaryVo> summary(@RequestParam(required = false) String cropName) {
+        return R.ok(overviewService.getSummary(cropName));
+    }
+
+    /**
+     * 导出作物卡片（row147，一作物一行横向展示，与页面同过滤同排序）。
+     *
+     * @param cropName 作物名称模糊关键字（可空）
+     * @param response 响应
+     */
+    @SaCheckPermission("djs:plant:overview:export")
+    @Log(title = "种植-种植总览作物", businessType = BusinessType.EXPORT)
+    @PostMapping("/cropCard/export")
+    public void exportCropCards(@RequestParam(required = false) String cropName, HttpServletResponse response) {
+        List<CropOverviewExportVo> list = overviewService.getCropCardExportList(cropName);
+        ExcelUtil.exportExcel(list, "种植总览", CropOverviewExportVo.class, response);
     }
 
     /**

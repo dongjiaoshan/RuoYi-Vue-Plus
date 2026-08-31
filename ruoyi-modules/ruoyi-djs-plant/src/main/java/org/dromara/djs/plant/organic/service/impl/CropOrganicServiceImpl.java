@@ -19,6 +19,7 @@ import org.dromara.djs.plant.organic.domain.OrganicCropno;
 import org.dromara.djs.plant.organic.domain.bo.CropOrganicBo;
 import org.dromara.djs.plant.organic.domain.bo.CropOrganicRelateBo;
 import org.dromara.djs.plant.organic.domain.query.CropOrganicQuery;
+import org.dromara.djs.plant.organic.domain.vo.CropOrganicRelExportVo;
 import org.dromara.djs.plant.organic.domain.vo.CropOrganicVo;
 import org.dromara.djs.plant.organic.domain.vo.CropRefVo;
 import org.dromara.djs.plant.organic.mapper.CropOrganicMapper;
@@ -30,6 +31,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -151,6 +153,42 @@ public class CropOrganicServiceImpl extends DjsBaseServiceImpl<CropOrganicMapper
         setRelatedCrops(bo.getId(), cropIds);
         // 关联成功（含清空全部）固定返 1，避免 cropIds 为空时 toAjax(0) 误判失败
         return 1;
+    }
+
+    @Override
+    public List<CropOrganicRelExportVo> queryRelatedCropsForExport(Long id) {
+        if (id == null) {
+            throw new ServiceException("果蔬有机证书 ID 不能为空");
+        }
+        CropOrganic cert = baseMapper.selectById(id);
+        if (cert == null) {
+            throw new ServiceException("果蔬有机证书不存在或已删除：" + id);
+        }
+        // OrganicCropno.delFlag 带 @TableLogic，MP 自动追加 del_flag='0'，无需手写
+        List<OrganicCropno> rels = cropnoMapper.selectList(
+            new LambdaQueryWrapper<OrganicCropno>().eq(OrganicCropno::getOrganicId, id));
+        if (CollUtil.isEmpty(rels)) {
+            return Collections.emptyList();
+        }
+        Set<Long> cropIds = rels.stream()
+            .map(OrganicCropno::getCropId)
+            .filter(Objects::nonNull)
+            .collect(Collectors.toSet());
+        if (CollUtil.isEmpty(cropIds)) {
+            return Collections.emptyList();
+        }
+        // 作物已被软删的关联行查不到 → 直接不出行，避免 Excel 里出现只有证书号的空白行
+        List<CropInfo> crops = cropInfoMapper.selectByIds(cropIds);
+        if (CollUtil.isEmpty(crops)) {
+            return Collections.emptyList();
+        }
+        List<CropOrganicRelExportVo> rows = new ArrayList<>(crops.size());
+        for (CropInfo c : crops) {
+            rows.add(new CropOrganicRelExportVo(cert.getCropCertNo(), c.getCropName(), c.getCropCode()));
+        }
+        rows.sort(Comparator.comparing(CropOrganicRelExportVo::getCropCode,
+            Comparator.nullsLast(Comparator.naturalOrder())));
+        return rows;
     }
 
     @Override

@@ -5,6 +5,7 @@ import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.plant.organic.domain.bo.CropOrganicBo;
 import org.dromara.djs.plant.organic.domain.bo.CropOrganicRelateBo;
 import org.dromara.djs.plant.organic.domain.query.CropOrganicQuery;
+import org.dromara.djs.plant.organic.domain.vo.CropOrganicRelExportVo;
 import org.dromara.djs.plant.organic.domain.vo.CropOrganicVo;
 
 import java.util.Collection;
@@ -37,4 +38,12 @@ public interface ICropOrganicService {
      * @return 受影响行数（关联表插入行数）
      */
     int relateCrops(CropOrganicRelateBo bo);
+
+    /**
+     * 导出某证书已关联的作物明细（row148，一作物一行：证书编号 / 作物名称 / 作物编号）。
+     *
+     * @param id 证书 id
+     * @return 导出行；证书未关联任何作物时返回空列表（导出仅表头）
+     */
+    List<CropOrganicRelExportVo> queryRelatedCropsForExport(Long id);
 }

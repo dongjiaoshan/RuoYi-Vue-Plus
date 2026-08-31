@@ -8,6 +8,7 @@ import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.tenant.helper.TenantHelper;
 import org.dromara.djs.plant.overview.domain.vo.CropDetailVo;
 import org.dromara.djs.plant.overview.domain.vo.CropOverviewCardVo;
+import org.dromara.djs.plant.overview.domain.vo.CropOverviewExportVo;
 import org.dromara.djs.plant.overview.domain.vo.PlantOverviewSummaryVo;
 import org.dromara.djs.plant.overview.mapper.PlantOverviewMapper;
 import org.dromara.djs.plant.overview.service.IPlantOverviewService;
@@ -15,6 +16,8 @@ import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 
 /**
@@ -39,7 +42,7 @@ public class PlantOverviewServiceImpl implements IPlantOverviewService {
     private final PlantOverviewMapper overviewMapper;
 
     @Override
-    public PlantOverviewSummaryVo getSummary() {
+    public PlantOverviewSummaryVo getSummary(String cropName) {
         String tenantId = currentTenant();
         PlantOverviewSummaryVo vo = new PlantOverviewSummaryVo();
 
@@ -65,11 +68,37 @@ public class PlantOverviewServiceImpl implements IPlantOverviewService {
         vo.setExpectedTotalTon(toTon(expectedKg));
         vo.setRemainingExpectedTon(toTon(remainingKg));
 
-        // 作物卡片（kg，service 不换算）
-        List<CropOverviewCardVo> crops = overviewMapper.selectCropCards(tenantId);
+        // 作物卡片（kg，service 不换算）；cropName 只过滤卡片，不影响上面的 KPI
+        List<CropOverviewCardVo> crops = overviewMapper.selectCropCards(tenantId, normalizeKeyword(cropName));
         vo.setCrops(crops == null ? List.of() : crops);
 
         return vo;
+    }
+
+    @Override
+    public List<CropOverviewExportVo> getCropCardExportList(String cropName) {
+        // 与 getSummary 复用同一条查询，保证屏幕卡片与 Excel 同源同过滤
+        List<CropOverviewCardVo> cards = overviewMapper.selectCropCards(currentTenant(), normalizeKeyword(cropName));
+        if (cards == null || cards.isEmpty()) {
+            return List.of();
+        }
+        List<CropOverviewExportVo> rows = new ArrayList<>(cards.size());
+        for (CropOverviewCardVo c : cards) {
+            CropOverviewExportVo row = new CropOverviewExportVo();
+            row.setCropName(c.getCropName());
+            row.setCropCode(c.getCropCode());
+            row.setCompletionRate(completionRate(c));
+            row.setPlanPlotCount(nz(c.getPlanPlotCount()));
+            row.setPlanArea(nzBd(c.getPlanArea()));
+            row.setPlanExpectedYield(nzBd(c.getPlanExpectedYield()));
+            row.setDonePlotCount(nz(c.getDonePlotCount()));
+            row.setDoneArea(nzBd(c.getDoneArea()));
+            row.setDoneHarvestYield(nzBd(c.getDoneHarvestYield()));
+            rows.add(row);
+        }
+        // 与页面 sortedCrops 一致：计划完成率升序；同率保持 mapper 的 crop_name 升序（List.sort 稳定）
+        rows.sort(Comparator.comparing(CropOverviewExportVo::getCompletionRate));
+        return rows;
     }
 
     @Override
@@ -99,6 +128,38 @@ public class PlantOverviewServiceImpl implements IPlantOverviewService {
         }
         String name = overviewMapper.selectCropName(currentTenant(), cropId);
         return name == null ? "" : name;
+    }
+
+    /**
+     * 计划完成率（% 数值，2 位小数）：计划地块数 &lt;= 0 时兜底 0.00 防除零。
+     *
+     * <p>与前端 {@code overview/index.vue completionRate()} 逐字对齐（done/plan*100，HALF_UP 2 位），
+     * 避免屏幕与 Excel 差 0.01。</p>
+     *
+     * @param c 作物卡片
+     * @return 完成率百分数
+     */
+    private BigDecimal completionRate(CropOverviewCardVo c) {
+        int plan = nz(c.getPlanPlotCount());
+        if (plan <= 0) {
+            return BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP);
+        }
+        return BigDecimal.valueOf(nz(c.getDonePlotCount()))
+            .multiply(BigDecimal.valueOf(100))
+            .divide(BigDecimal.valueOf(plan), 2, RoundingMode.HALF_UP);
+    }
+
+    /**
+     * 作物名称关键字归一：null/空白 → 空串。
+     *
+     * <p>{@code selectCropCards} 是裸 {@code @Select}，{@code #{cropName}} 传 null 会因无法推断
+     * JdbcType 抛 SQLException，故此处统一兜底成空串（SQL 里空串 = 不过滤）。</p>
+     *
+     * @param cropName 原始关键字
+     * @return 去空白后的关键字，或空串
+     */
+    private String normalizeKeyword(String cropName) {
+        return cropName == null || cropName.isBlank() ? "" : cropName.trim();
     }
 
     /**

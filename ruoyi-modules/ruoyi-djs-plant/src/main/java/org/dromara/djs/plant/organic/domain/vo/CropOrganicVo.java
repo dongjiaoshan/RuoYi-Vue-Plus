@@ -45,12 +45,10 @@ public class CropOrganicVo implements Serializable {
     @ExcelProperty(value = "有效期")
     private LocalDate cropCertValid;
 
-    /** 旧单值关联作物 ID（过渡保留，一证多作物以 relatedCrops 为准）。 */
-    @ExcelProperty(value = "作物 ID")
+    /** 旧单值关联作物 ID（过渡保留，一证多作物以 relatedCrops 为准；不参与导出）。 */
     private Long cropId;
 
-    /** 旧单值关联作物名（service 层 enrich，过渡保留）。 */
-    @ExcelProperty(value = "作物名称")
+    /** 旧单值关联作物名（service 层 enrich，过渡保留；不参与导出）。 */
     private String cropName;
 
     /** 关联作物（一证多作物，service 层 enrich）。 */

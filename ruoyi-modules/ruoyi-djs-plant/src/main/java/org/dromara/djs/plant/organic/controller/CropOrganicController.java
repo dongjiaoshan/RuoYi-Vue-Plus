@@ -15,6 +15,7 @@ import org.dromara.common.web.core.BaseController;
 import org.dromara.djs.plant.organic.domain.bo.CropOrganicBo;
 import org.dromara.djs.plant.organic.domain.bo.CropOrganicRelateBo;
 import org.dromara.djs.plant.organic.domain.query.CropOrganicQuery;
+import org.dromara.djs.plant.organic.domain.vo.CropOrganicRelExportVo;
 import org.dromara.djs.plant.organic.domain.vo.CropOrganicVo;
 import org.dromara.djs.plant.organic.service.ICropOrganicService;
 import org.springframework.validation.annotation.Validated;
@@ -25,6 +26,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.Arrays;
@@ -60,6 +62,22 @@ public class CropOrganicController extends BaseController {
     public void export(CropOrganicQuery query, HttpServletResponse response) {
         List<CropOrganicVo> list = cropOrganicService.queryList(query);
         ExcelUtil.exportExcel(list, "果蔬有机证书", CropOrganicVo.class, response);
+    }
+
+    /**
+     * 导出某证书已关联的作物明细（row148，一作物一行：证书编号 / 作物名称 / 作物编号）。
+     *
+     * <p>行操作「导出」入口，复用整表导出权限。</p>
+     *
+     * @param id       证书 id
+     * @param response 响应
+     */
+    @SaCheckPermission("djs:plant:cropOrganic:export")
+    @Log(title = "种植-果蔬有机证书关联作物", businessType = BusinessType.EXPORT)
+    @PostMapping("/relatedCrops/export")
+    public void exportRelatedCrops(@RequestParam Long id, HttpServletResponse response) {
+        List<CropOrganicRelExportVo> list = cropOrganicService.queryRelatedCropsForExport(id);
+        ExcelUtil.exportExcel(list, "证书关联作物", CropOrganicRelExportVo.class, response);
     }
 
     /** 详情。 */
