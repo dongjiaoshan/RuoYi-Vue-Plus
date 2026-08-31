@@ -3,6 +3,7 @@ package org.dromara.djs.breed.core.service;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.breed.core.domain.vo.PigAvailableVo;
+import org.dromara.djs.breed.core.domain.vo.PigMarketingAgeVo;
 
 import java.util.Collection;
 import java.util.List;
@@ -77,5 +78,21 @@ public interface IPigQueryService {
      * @return 命中档案的猪只信息（earNo / pigSex / pigBreedLabel / ageDays）；未命中耳号不返回
      */
     List<PigAvailableVo> listPigInfoByEarNos(Collection<String> earNos);
+
+    /**
+     * 按耳号批量查**出栏当时冻结的日龄**（V6 row145 白条出库卡展示用）。
+     *
+     * <p>读的是 {@code t_farm_pig_marketing.age_days} —— 出栏那一刻由 {@code PigAgeUtil} 冻结写入的快照，
+     * <b>不是现算</b>。ADR-0017 定的就是这个：compute-on-read 会在日后订正 {@code birth_date} 时
+     * 回溯改写历史算出值，客户不接受。</p>
+     *
+     * <p>读冻结值同时绕开了耳号复用的坑：{@code t_farm_pig_info} 的耳号并不唯一
+     * （UNIQUE 含 {@code lifecycle_id}，耳标可回收），按耳号查猪档案会取到哪一次生命周期是不确定的；
+     * 而出栏记录本身就是一次具体的出栏事件，用 {@code (耳号, 出栏时间)} 定位不会串。</p>
+     *
+     * @param earNos 耳号集合（可空 / 空时返空 list）
+     * @return 每条出栏记录一行（earNo / marketingDate / ageDays）；外购白条等无出栏记录的耳号不返回
+     */
+    List<PigMarketingAgeVo> listMarketingAgeByEarNos(Collection<String> earNos);
 
 }

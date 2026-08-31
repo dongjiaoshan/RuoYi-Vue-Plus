@@ -5,6 +5,7 @@ import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.warehouse.location.domain.bo.LocationInfoBo;
 import org.dromara.djs.warehouse.location.domain.query.LocationInfoQuery;
 import org.dromara.djs.warehouse.location.domain.vo.LocationCardSummaryVo;
+import org.dromara.djs.warehouse.location.domain.vo.LocationProductStockVo;
 import org.dromara.djs.warehouse.location.domain.vo.LocationInfoVo;
 
 import java.util.Collection;
@@ -77,5 +78,14 @@ public interface ILocationInfoService {
      * @return 8 行卡片汇总（顺序按字典 dict_sort）
      */
     List<LocationCardSummaryVo> getCardSummary();
+
+    /**
+     * 单库位内的逐产品库存明细（V6 row136：库位卡片点开的右侧抽屉 / 导出同源）。
+     *
+     * @param locationId  库位 ID
+     * @param productName 产品名称模糊搜索（空 = 全部）
+     * @return 逐产品行，按实时库存量倒序
+     */
+    List<LocationProductStockVo> getProductStock(Long locationId, String productName);
 
 }

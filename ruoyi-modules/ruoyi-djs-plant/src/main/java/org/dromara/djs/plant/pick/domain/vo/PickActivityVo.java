@@ -1,5 +1,6 @@
 package org.dromara.djs.plant.pick.domain.vo;
 
+import cn.idev.excel.annotation.ExcelIgnoreUnannotated;
 import cn.idev.excel.annotation.ExcelProperty;
 import lombok.Data;
 
@@ -17,6 +18,7 @@ import java.time.LocalDate;
  * @author djs
  */
 @Data
+@ExcelIgnoreUnannotated
 public class PickActivityVo implements Serializable {
 
     @Serial

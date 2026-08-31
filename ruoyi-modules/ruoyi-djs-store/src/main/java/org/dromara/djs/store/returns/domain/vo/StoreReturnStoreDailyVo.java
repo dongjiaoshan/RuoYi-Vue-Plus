@@ -1,6 +1,7 @@
 package org.dromara.djs.store.returns.domain.vo;
 
 import cn.idev.excel.annotation.ExcelIgnore;
+import cn.idev.excel.annotation.ExcelIgnoreUnannotated;
 import cn.idev.excel.annotation.ExcelProperty;
 import com.fasterxml.jackson.annotation.JsonFormat;
 import lombok.Data;
@@ -26,6 +27,7 @@ import java.time.LocalDateTime;
  * @since STORE-RETURN-UNIFY-001
  */
 @Data
+@ExcelIgnoreUnannotated
 public class StoreReturnStoreDailyVo implements Serializable {
 
     @Serial

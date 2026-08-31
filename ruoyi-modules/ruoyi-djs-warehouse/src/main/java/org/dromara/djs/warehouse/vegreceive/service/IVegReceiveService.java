@@ -80,4 +80,11 @@ public interface IVegReceiveService {
      */
     Long purchase(VegPurchaseBo bo);
 
+    /**
+     * 今日白条出库的猪只耳号候选（V6 row132，外购猪肉产品录入时选耳号用）。
+     *
+     * @return 去重耳号，按最近一次出库时间倒序；今日无出库则空列表
+     */
+    List<String> listTodayOutBarEarNos();
+
 }

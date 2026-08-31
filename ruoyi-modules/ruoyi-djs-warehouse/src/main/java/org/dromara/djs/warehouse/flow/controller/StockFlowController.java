@@ -6,6 +6,7 @@ import jakarta.validation.constraints.NotNull;
 import lombok.RequiredArgsConstructor;
 import org.dromara.common.core.domain.R;
 import org.dromara.common.excel.utils.ExcelUtil;
+import org.dromara.djs.common.excel.DjsExcelUtil;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.web.core.BaseController;
@@ -51,11 +52,20 @@ public class StockFlowController extends BaseController {
         return R.ok(service.queryById(id));
     }
 
+    /**
+     * 「供应商」列只出现在入库记录导出（甲方 V6-R139 只要了那一页）。
+     *
+     * <p>{@link StockFlowVo} 被三个导出端点共用，字段上挂了 {@code @ExcelProperty} 就三张表都会长出这列。
+     * 而 {@code supplier_id} 的 4 条写入路径全是入库方向 —— 出库导出这列恒空，是纯垃圾列；
+     * 出入库流水导出本轮甲方也没要求加。两处按字段名排除掉。</p>
+     */
+    private static final List<String> EXCLUDE_SUPPLIER = List.of("supplierName");
+
     @SaCheckPermission("djs:warehouse:stockFlow:export")
     @PostMapping("/export")
     public void export(StockFlowQuery query, HttpServletResponse response) {
         List<StockFlowVo> list = service.queryList(query);
-        ExcelUtil.exportExcel(list, "出入库流水", StockFlowVo.class, response);
+        DjsExcelUtil.exportExcelExcluding(list, "出入库流水", StockFlowVo.class, EXCLUDE_SUPPLIER, response);
     }
 
     // ============ D11 WMS-FLOW-001：admin 入库 / 出库记录两页（强制 inout_type）============
@@ -95,7 +105,7 @@ public class StockFlowController extends BaseController {
     @PostMapping("/out/export")
     public void outExport(StockFlowQuery query, HttpServletResponse response) {
         List<StockFlowVo> list = service.queryOutExport(query);
-        ExcelUtil.exportExcel(list, "出库记录", StockFlowVo.class, response);
+        DjsExcelUtil.exportExcelExcluding(list, "出库记录", StockFlowVo.class, EXCLUDE_SUPPLIER, response);
     }
 
 }

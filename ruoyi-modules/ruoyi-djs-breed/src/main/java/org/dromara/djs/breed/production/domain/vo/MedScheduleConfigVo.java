@@ -2,6 +2,8 @@ package org.dromara.djs.breed.production.domain.vo;
 
 import cn.idev.excel.annotation.ExcelIgnoreUnannotated;
 import cn.idev.excel.annotation.ExcelProperty;
+import org.dromara.common.excel.annotation.ExcelDictFormat;
+import org.dromara.djs.common.excel.DictOrRawConvert;
 import io.github.linpeilie.annotations.AutoMapper;
 import lombok.Data;
 import org.dromara.djs.breed.production.domain.MedScheduleConfig;
@@ -27,7 +29,8 @@ public class MedScheduleConfigVo implements Serializable {
     @ExcelProperty(value = "ID")
     private Long id;
 
-    @ExcelProperty(value = "药品类型")
+    @ExcelProperty(value = "药品类型", converter = DictOrRawConvert.class)
+    @ExcelDictFormat(dictType = "djs_med_type")
     private String medType;
 
     @ExcelProperty(value = "触发时机")

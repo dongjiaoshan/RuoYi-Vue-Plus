@@ -48,6 +48,17 @@ public class ProductStockInBo {
     private String remark;
 
     /**
+     * 本次到货的供应商（V6-R141）。
+     *
+     * <p>只在采购入库弹框传：甲方原话「供应商调整为可以修改，根据实际进行选择」——
+     * 同一个商品这次可能从张三进、下次从李四进，锁死在商品配置里那一个不符合实际。</p>
+     *
+     * <p>不传 / 传 null → 回落商品配置上的 {@code product_info.supplier_id}（商品配置入口的老行为不变）。
+     * 只对外购商品（{@code product_type=2}）生效，自产品无供应商。</p>
+     */
+    private Long supplierId;
+
+    /**
      * 首次采购入库自配置存储库位开关。
      *
      * <p>采购入库（商品维度）上下文置 {@code true}：若该商品尚未配置 {@code store_location_id}，

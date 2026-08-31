@@ -2,6 +2,8 @@ package org.dromara.djs.warehouse.check.domain.vo;
 
 import cn.idev.excel.annotation.ExcelIgnoreUnannotated;
 import cn.idev.excel.annotation.ExcelProperty;
+import org.dromara.common.excel.annotation.ExcelDictFormat;
+import org.dromara.djs.common.excel.DictOrRawConvert;
 import com.fasterxml.jackson.annotation.JsonFormat;
 import lombok.Data;
 import org.dromara.common.translation.annotation.Translation;
@@ -52,7 +54,8 @@ public class StockCheckHeaderVo implements Serializable {
     @ExcelProperty(value = "盘点日期")
     private Date checkDate;
 
-    @ExcelProperty(value = "状态")
+    @ExcelProperty(value = "状态", converter = DictOrRawConvert.class)
+    @ExcelDictFormat(dictType = "djs_check_status")
     private String checkStatus;
 
     /** 当前库位仍有正库存的产品种类数。 */

@@ -2,6 +2,8 @@ package org.dromara.djs.warehouse.flow.domain.vo;
 
 import cn.idev.excel.annotation.ExcelIgnoreUnannotated;
 import cn.idev.excel.annotation.ExcelProperty;
+import org.dromara.common.excel.annotation.ExcelDictFormat;
+import org.dromara.djs.common.excel.DictOrRawConvert;
 import com.fasterxml.jackson.annotation.JsonFormat;
 import io.github.linpeilie.annotations.AutoMapper;
 import lombok.Data;
@@ -51,7 +53,8 @@ public class StockFlowVo implements Serializable {
      * 产品类型 djs_product_type（1 自产 / 2 外购，已废弃 3 礼盒；service JOIN 回填，
      * 与「归属/产品类别」belongType 是两个不同维度，礼盒 = 自产 + belongType=gift_box）。
      */
-    @ExcelProperty(value = "产品类型")
+    @ExcelProperty(value = "产品类型", converter = DictOrRawConvert.class)
+    @ExcelDictFormat(dictType = "djs_product_type")
     private Integer productType;
 
     /**
@@ -69,7 +72,8 @@ public class StockFlowVo implements Serializable {
     /**
      * 产品归属 djs_belong_type（service JOIN 回填，便于 admin 流水页按 matType 过滤）。
      */
-    @ExcelProperty(value = "归属")
+    @ExcelProperty(value = "归属", converter = DictOrRawConvert.class)
+    @ExcelDictFormat(dictType = "djs_belong_type")
     private String belongType;
 
     /**
@@ -81,7 +85,8 @@ public class StockFlowVo implements Serializable {
     /**
      * 商品分类 djs_buy_class（service JOIN 回填，mp 领用记录卡展示「商品分类」+ 商品分类筛选）。
      */
-    @ExcelProperty(value = "商品分类")
+    @ExcelProperty(value = "商品分类", converter = DictOrRawConvert.class)
+    @ExcelDictFormat(dictType = "djs_buy_class")
     private String buyClass;
 
     /**
@@ -100,17 +105,20 @@ public class StockFlowVo implements Serializable {
      */
     private Long demandId;
 
-    @ExcelProperty(value = "出入")
+    @ExcelProperty(value = "出入", converter = DictOrRawConvert.class)
+    @ExcelDictFormat(dictType = "djs_inout_type")
     private String inoutType;
 
-    @ExcelProperty(value = "类型")
+    @ExcelProperty(value = "类型", converter = DictOrRawConvert.class)
+    @ExcelDictFormat(dictType = "djs_flow_type")
     private String flowType;
 
     private String stockInType;
 
     private String stockOutType;
 
-    @ExcelProperty(value = "出库去向")
+    @ExcelProperty(value = "出库去向", converter = DictOrRawConvert.class)
+    @ExcelDictFormat(dictType = "djs_stock_out_dest")
     private String stockOutDest;
 
     @ExcelProperty(value = "变动数量(±)")
@@ -181,5 +189,23 @@ public class StockFlowVo implements Serializable {
     @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")
     @ExcelProperty(value = "创建时间")
     private Date createTime;
+
+    /**
+     * 供应商名称（service 层 JOIN 回填 {@code t_md_supplier.supplier_name}）。
+     *
+     * <p>该笔流水没有 supplierId（自产入库 / 燎毛入库 / 分割入库 / 门店退回等）时保持 null，
+     * 页面与导出都留空 —— 甲方 row139 原话「如果没有就为空显示」。</p>
+     *
+     * <p><b>字段声明位置是有意放在最后的</b>：本 VO 被 {@code /in/export} / {@code /out/export} /
+     * {@code /export} 三个导出端点共用，FastExcel 按字段声明序出列。放在中间会把它后面的
+     * 耳号 / 地块 / 操作人 / 备注 等列整体右移，等于改了另外两张甲方一直在用的导出件的列序。
+     * 放最后 = 纯追加，且与页面「列表最后一列」的口径一致。</p>
+     *
+     * <p>另外两个端点靠 {@link org.dromara.djs.common.excel.DjsExcelUtil#exportExcelExcluding}
+     * 把这一列排除掉：supplier_id 只在入库方向写入（4 条写入路径全是 INOUT_IN），
+     * 出库导出这列恒空，是纯垃圾列；出入库流水导出甲方本轮也没要求加。</p>
+     */
+    @ExcelProperty(value = "供应商")
+    private String supplierName;
 
 }

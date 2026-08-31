@@ -5,7 +5,7 @@ import cn.idev.excel.annotation.ExcelProperty;
 import io.github.linpeilie.annotations.AutoMapper;
 import lombok.Data;
 import org.dromara.common.excel.annotation.ExcelDictFormat;
-import org.dromara.common.excel.convert.ExcelDictConvert;
+import org.dromara.djs.common.excel.DictOrRawConvert;
 import org.dromara.common.translation.annotation.Translation;
 import org.dromara.common.translation.constant.TransConstant;
 import org.dromara.djs.warehouse.demand.domain.DemandManage;
@@ -65,7 +65,7 @@ public class DemandManageVo implements Serializable {
     @ExcelProperty(value = "产品规格")
     private String productSpec;
 
-    @ExcelProperty(value = "业态", converter = ExcelDictConvert.class)
+    @ExcelProperty(value = "业态", converter = DictOrRawConvert.class)
     @ExcelDictFormat(dictType = "djs_demand_product_type")
     private String productType;
 
@@ -87,7 +87,7 @@ public class DemandManageVo implements Serializable {
     @ExcelProperty(value = "需求说明")
     private String demandExplain;
 
-    @ExcelProperty(value = "状态", converter = ExcelDictConvert.class)
+    @ExcelProperty(value = "状态", converter = DictOrRawConvert.class)
     @ExcelDictFormat(dictType = "djs_demand_status")
     private String demandStatus;
 
@@ -112,7 +112,7 @@ public class DemandManageVo implements Serializable {
     @ExcelProperty(value = "确认时间")
     private LocalDateTime confirmerTime;
 
-    @ExcelProperty(value = "需求类型", converter = ExcelDictConvert.class)
+    @ExcelProperty(value = "需求类型", converter = DictOrRawConvert.class)
     @ExcelDictFormat(dictType = "djs_demand_mailing_type")
     private String demandType;
 

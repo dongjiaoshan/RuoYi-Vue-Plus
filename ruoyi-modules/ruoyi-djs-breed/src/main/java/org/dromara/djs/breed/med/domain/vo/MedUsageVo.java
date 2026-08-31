@@ -2,6 +2,8 @@ package org.dromara.djs.breed.med.domain.vo;
 
 import cn.idev.excel.annotation.ExcelIgnoreUnannotated;
 import cn.idev.excel.annotation.ExcelProperty;
+import org.dromara.common.excel.annotation.ExcelDictFormat;
+import org.dromara.djs.common.excel.DictOrRawConvert;
 import io.github.linpeilie.annotations.AutoMapper;
 import lombok.Data;
 import org.dromara.djs.breed.med.domain.MedUsage;
@@ -43,7 +45,8 @@ public class MedUsageVo implements Serializable {
     @ExcelProperty(value = "药品名称")
     private String medicineName;
 
-    @ExcelProperty(value = "类型")
+    @ExcelProperty(value = "类型", converter = DictOrRawConvert.class)
+    @ExcelDictFormat(dictType = "djs_med_pick_action")
     private String usageType;
 
     @ExcelProperty(value = "数量")

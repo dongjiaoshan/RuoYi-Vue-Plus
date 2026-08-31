@@ -14,6 +14,8 @@ import org.dromara.djs.warehouse.flow.domain.vo.PackingHomeVo;
 import org.dromara.djs.warehouse.flow.domain.vo.PackingItemVo;
 import org.dromara.djs.warehouse.flow.domain.vo.StockFlowVo;
 import org.dromara.djs.warehouse.flow.mapper.StockFlowMapper;
+import org.dromara.djs.common.supplier.domain.Supplier;
+import org.dromara.djs.common.supplier.mapper.SupplierMapper;
 import org.dromara.djs.plant.plot.mapper.PlotInfoMapper;
 import org.dromara.djs.warehouse.location.domain.LocationInfo;
 import org.dromara.djs.warehouse.location.mapper.LocationInfoMapper;
@@ -83,6 +85,9 @@ class StockFlowServiceImplTest {
     @Mock
     private PlotInfoMapper plotInfoMapper;
 
+    @Mock
+    private SupplierMapper supplierMapper;
+
     private StockFlowServiceImpl service;
 
     @BeforeAll
@@ -94,11 +99,15 @@ class StockFlowServiceImplTest {
         TableInfoHelper.initTableInfo(assistant, ProductInfo.class);
         TableInfoHelper.initTableInfo(assistant, LocationInfo.class);
         TableInfoHelper.initTableInfo(assistant, LocationStock.class);
+        // V6-R139：供应商反查 / 回填也走 LambdaQueryWrapper，不预热会抛
+        // 「can not find lambda cache for this entity」（skill coder-mp-entity-cache-test）
+        TableInfoHelper.initTableInfo(assistant, Supplier.class);
     }
 
     @BeforeEach
     void setUp() {
-        service = new StockFlowServiceImpl(stockFlowMapper, locationInfoMapper, productInfoMapper, locationStockMapper, plotInfoMapper);
+        service = new StockFlowServiceImpl(
+            stockFlowMapper, locationInfoMapper, productInfoMapper, locationStockMapper, plotInfoMapper, supplierMapper);
     }
 
     @Test
@@ -255,4 +264,87 @@ class StockFlowServiceImplTest {
         assertThat(vo.getLatestCheckTime()).isEqualTo(checkTime);
     }
 
+
+    // ---------------- V6-R139 入库记录·供应商 ----------------
+
+    @Test
+    @DisplayName("fillJoinNames: 批量回填 supplierName，无 supplierId / 供应商已失效的行留 null（甲方「没有就为空」）")
+    void testFillSupplierName_NullStaysNull() {
+        // productId 照实填（DDL 上 NOT NULL），别拿线上不存在的形态当夹具
+        StockFlowVo withSup = new StockFlowVo();
+        withSup.setId(1L);
+        withSup.setProductId(500L);
+        withSup.setSupplierId(77L);
+        StockFlowVo noSup = new StockFlowVo();
+        noSup.setId(2L);
+        noSup.setProductId(500L);
+        StockFlowVo dangling = new StockFlowVo();   // supplierId 指向已不存在 / 已软删的供应商
+        dangling.setId(3L);
+        dangling.setProductId(500L);
+        dangling.setSupplierId(999L);
+
+        Supplier sup = new Supplier();
+        sup.setId(77L);
+        sup.setSupplierName("北京清源保生物科技有限公司");
+        when(supplierMapper.selectList(any(Wrapper.class))).thenReturn(List.of(sup));
+
+        Page<StockFlowVo> page = new Page<>(1, 10);
+        page.setRecords(new java.util.ArrayList<>(List.of(withSup, noSup, dangling)));
+        page.setTotal(3);
+        when(stockFlowMapper.selectVoPage(any(), any(Wrapper.class))).thenReturn(page);
+
+        TableDataInfo<StockFlowVo> res = service.queryInList(new StockFlowQuery(), new PageQuery(1, 10));
+        assertThat(res.getRows().get(0).getSupplierName()).isEqualTo("北京清源保生物科技有限公司");
+        assertThat(res.getRows().get(1).getSupplierName()).isNull();
+        assertThat(res.getRows().get(2).getSupplierName()).isNull();
+        // 三行只查一次供应商表（批量 IN，不是 N+1）
+        verify(supplierMapper, times(1)).selectList(any(Wrapper.class));
+    }
+
+    @Test
+    @DisplayName("buildWrapper: supplierName 反查 id 集合 → 下推 supplier_id IN；查询串两端空格被 trim")
+    void testSupplierNameFilter_PushesDownIdIn() {
+        Supplier a = new Supplier();
+        a.setId(11L);
+        Supplier b = new Supplier();
+        b.setId(12L);
+        when(supplierMapper.selectList(any(Wrapper.class))).thenReturn(List.of(a, b));
+        Page<StockFlowVo> page = new Page<>(1, 10);
+        page.setRecords(new java.util.ArrayList<>());
+        when(stockFlowMapper.selectVoPage(any(), any(Wrapper.class))).thenReturn(page);
+
+        StockFlowQuery q = new StockFlowQuery();
+        q.setSupplierName("  武汉  ");   // 甲方常从 Excel 粘贴，两端带空格
+        service.queryInList(q, new PageQuery(1, 10));
+
+        ArgumentCaptor<LambdaQueryWrapper> supCap = ArgumentCaptor.forClass(LambdaQueryWrapper.class);
+        verify(supplierMapper).selectList(supCap.capture());
+        // getParamNameValuePairs 要先 getTargetSql() 触发 SQL 片段生成才会有值
+        assertThat(supCap.getValue().getTargetSql()).contains("supplier_name LIKE");
+        // 反查供应商用的是 trim 过的串，不是「%  武汉  %」
+        assertThat(supCap.getValue().getParamNameValuePairs().values().toString()).contains("%武汉%");
+
+        ArgumentCaptor<LambdaQueryWrapper> flowCap = ArgumentCaptor.forClass(LambdaQueryWrapper.class);
+        verify(stockFlowMapper).selectVoPage(any(), flowCap.capture());
+        assertThat(flowCap.getValue().getTargetSql()).contains("supplier_id IN");
+    }
+
+    @Test
+    @DisplayName("buildWrapper: supplierName 一个供应商都没匹配上 → 结果恒空（不退化成全量）")
+    void testSupplierNameFilter_NoMatchYieldsEmpty() {
+        when(supplierMapper.selectList(any(Wrapper.class))).thenReturn(List.of());
+        Page<StockFlowVo> page = new Page<>(1, 10);
+        page.setRecords(new java.util.ArrayList<>());
+        when(stockFlowMapper.selectVoPage(any(), any(Wrapper.class))).thenReturn(page);
+
+        StockFlowQuery q = new StockFlowQuery();
+        q.setSupplierName("查无此供应商");
+        service.queryInList(q, new PageQuery(1, 10));
+
+        ArgumentCaptor<LambdaQueryWrapper> flowCap = ArgumentCaptor.forClass(LambdaQueryWrapper.class);
+        verify(stockFlowMapper).selectVoPage(any(), flowCap.capture());
+        // 兜底成 id = -1，而不是把条件丢掉变成全量（先 getTargetSql 触发片段生成）
+        assertThat(flowCap.getValue().getTargetSql()).contains("id =");
+        assertThat(flowCap.getValue().getParamNameValuePairs().values().toString()).contains("-1");
+    }
 }

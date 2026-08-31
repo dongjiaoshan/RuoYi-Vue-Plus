@@ -2,10 +2,10 @@ package org.dromara.djs.warehouse.stock.domain.vo;
 
 import cn.idev.excel.annotation.ExcelIgnoreUnannotated;
 import cn.idev.excel.annotation.ExcelProperty;
+import org.dromara.djs.common.excel.DictOrRawConvert;
 import io.github.linpeilie.annotations.AutoMapper;
 import lombok.Data;
 import org.dromara.common.excel.annotation.ExcelDictFormat;
-import org.dromara.common.excel.convert.ExcelDictConvert;
 import org.dromara.common.translation.annotation.Translation;
 import org.dromara.common.translation.constant.TransConstant;
 import org.dromara.djs.warehouse.stock.domain.LocationStock;
@@ -124,13 +124,15 @@ public class LocationStockVo implements Serializable {
      * 业态归属（字典 {@code djs_belong_type}；service JOIN product_info 回填）。
      * 库存详情「饲料饲喂记录」tab 仅当 {@code belongType='vegetable' && productAttr==2} 显示。
      */
-    @ExcelProperty(value = "产品类别")
+    @ExcelProperty(value = "产品类别", converter = DictOrRawConvert.class)
+    @ExcelDictFormat(dictType = "djs_belong_type")
     private String belongType;
 
     /**
      * 产品属性（{@code 1 生产产品 / 2 原材料}；service JOIN product_info 回填）。
      */
-    @ExcelProperty(value = "产品属性")
+    @ExcelProperty(value = "产品属性", converter = DictOrRawConvert.class)
+    @ExcelDictFormat(dictType = "djs_product_attr")
     private Integer productAttr;
 
     /**
@@ -160,7 +162,7 @@ public class LocationStockVo implements Serializable {
     /**
      * 是否完成。
      */
-    @ExcelProperty(value = "是否完成", converter = ExcelDictConvert.class)
+    @ExcelProperty(value = "是否完成", converter = DictOrRawConvert.class)
     @ExcelDictFormat(dictType = "djs_yes_no")
     private Integer isEnd;
 
@@ -173,7 +175,7 @@ public class LocationStockVo implements Serializable {
     /**
      * 盘点结果。
      */
-    @ExcelProperty(value = "盘点结果", converter = ExcelDictConvert.class)
+    @ExcelProperty(value = "盘点结果", converter = DictOrRawConvert.class)
     @ExcelDictFormat(dictType = "djs_check_result")
     private Integer checkResult;
 

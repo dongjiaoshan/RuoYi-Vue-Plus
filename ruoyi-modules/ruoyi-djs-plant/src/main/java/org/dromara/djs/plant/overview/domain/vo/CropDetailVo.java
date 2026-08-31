@@ -4,7 +4,7 @@ import cn.idev.excel.annotation.ExcelIgnoreUnannotated;
 import cn.idev.excel.annotation.ExcelProperty;
 import lombok.Data;
 import org.dromara.common.excel.annotation.ExcelDictFormat;
-import org.dromara.common.excel.convert.ExcelDictConvert;
+import org.dromara.djs.common.excel.DictOrRawConvert;
 
 import java.io.Serial;
 import java.io.Serializable;
@@ -49,17 +49,17 @@ public class CropDetailVo implements Serializable {
     private String plotName;
 
     /** 3 种植状态（字典 djs_plant_plan_status：pending/ongoing/completed）。 */
-    @ExcelProperty(value = "种植状态", converter = ExcelDictConvert.class)
+    @ExcelProperty(value = "种植状态", converter = DictOrRawConvert.class)
     @ExcelDictFormat(dictType = "djs_plant_plan_status")
     private String plantStatus;
 
     /** 4 采摘状态（字典 djs_pick_status）。 */
-    @ExcelProperty(value = "采摘状态", converter = ExcelDictConvert.class)
+    @ExcelProperty(value = "采摘状态", converter = DictOrRawConvert.class)
     @ExcelDictFormat(dictType = "djs_pick_status")
     private String harvestStatus;
 
     /** 4 种植季（字典 djs_planting_season，来源计划主表 plan_season）。 */
-    @ExcelProperty(value = "种植季", converter = ExcelDictConvert.class)
+    @ExcelProperty(value = "种植季", converter = DictOrRawConvert.class)
     @ExcelDictFormat(dictType = "djs_planting_season")
     private String planSeason;
 

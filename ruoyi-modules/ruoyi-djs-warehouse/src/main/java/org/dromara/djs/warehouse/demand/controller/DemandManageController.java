@@ -16,6 +16,7 @@ import org.dromara.common.web.core.BaseController;
 import org.dromara.djs.breed.core.domain.vo.PigAvailableVo;
 import org.dromara.djs.warehouse.demand.core.enums.DemandEvent;
 import org.dromara.djs.warehouse.demand.domain.bo.AssignPigBo;
+import org.dromara.djs.warehouse.demand.domain.bo.DemandAdjustBo;
 import org.dromara.djs.warehouse.demand.domain.bo.DemandBatchConfirmBo;
 import org.dromara.djs.warehouse.demand.domain.bo.DemandManageBo;
 import org.dromara.djs.warehouse.demand.domain.query.DemandManageQuery;
@@ -163,6 +164,25 @@ public class DemandManageController extends BaseController {
     @PostMapping("/{id}/confirm")
     public R<Void> confirm(@PathVariable Long id, @RequestParam(required = false) String remark) {
         statusService.transition(id, DemandEvent.CONFIRM, LoginHelper.getUserId(), remark);
+        return R.ok();
+    }
+
+    /**
+     * 调整需求量（V6-R140「需求调整管理」）。
+     *
+     * <p>权限故意用 {@code djs:warehouse:demandAdjust:adjust} 而不是 demand:edit ——
+     * 甲方要的是把「改量」这件事单独挂到系统管理→数据管理下、单独授权，
+     * 仓库管理→需求管理那页不长这个按钮。</p>
+     *
+     * <p>可调范围（发货之前）与状态闸都在 service 层，见
+     * {@code DemandManageServiceImpl#ADJUSTABLE_STATUSES}。</p>
+     */
+    @SaCheckPermission("djs:warehouse:demandAdjust:adjust")
+    @Log(title = "调整需求量", businessType = BusinessType.UPDATE)
+    @RepeatSubmit(interval = 3000)
+    @PostMapping("/{id}/adjust")
+    public R<Void> adjust(@PathVariable Long id, @Validated @RequestBody DemandAdjustBo bo) {
+        demandService.adjustQuantity(id, bo);
         return R.ok();
     }
 

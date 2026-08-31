@@ -2,6 +2,8 @@ package org.dromara.djs.warehouse.burn.domain.vo;
 
 import cn.idev.excel.annotation.ExcelIgnoreUnannotated;
 import cn.idev.excel.annotation.ExcelProperty;
+import org.dromara.common.excel.annotation.ExcelDictFormat;
+import org.dromara.djs.common.excel.DictOrRawConvert;
 import com.fasterxml.jackson.annotation.JsonFormat;
 import io.github.linpeilie.annotations.AutoMapper;
 import lombok.Data;
@@ -52,7 +54,8 @@ public class PigBurnRecordVo implements Serializable {
     @ExcelProperty(value = "损耗(kg)")
     private BigDecimal lossWeight;
 
-    @ExcelProperty(value = "状态")
+    @ExcelProperty(value = "状态", converter = DictOrRawConvert.class)
+    @ExcelDictFormat(dictType = "djs_burn_status")
     private String burnStatus;
 
     private Long operatorId;

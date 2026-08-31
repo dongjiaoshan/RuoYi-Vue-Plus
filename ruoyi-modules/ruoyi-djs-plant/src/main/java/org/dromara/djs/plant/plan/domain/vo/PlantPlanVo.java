@@ -5,7 +5,7 @@ import cn.idev.excel.annotation.ExcelProperty;
 import io.github.linpeilie.annotations.AutoMapper;
 import lombok.Data;
 import org.dromara.common.excel.annotation.ExcelDictFormat;
-import org.dromara.common.excel.convert.ExcelDictConvert;
+import org.dromara.djs.common.excel.DictOrRawConvert;
 import org.dromara.common.translation.annotation.Translation;
 import org.dromara.common.translation.constant.TransConstant;
 import org.dromara.djs.plant.plan.domain.PlantPlan;
@@ -59,7 +59,7 @@ public class PlantPlanVo implements Serializable {
 
     private String plantDate;
 
-    @ExcelProperty(value = "季节", converter = ExcelDictConvert.class)
+    @ExcelProperty(value = "季节", converter = DictOrRawConvert.class)
     @ExcelDictFormat(dictType = "djs_planting_season")
     private String planSeason;
 
@@ -76,7 +76,7 @@ public class PlantPlanVo implements Serializable {
     private Integer plantMonth;
 
     /** 计划种植旬别（最早开始那条明细的 plant_period 05/15/25，service enrich，dict djs_plant_period）。 */
-    @ExcelProperty(value = "计划种植旬别", converter = ExcelDictConvert.class)
+    @ExcelProperty(value = "计划种植旬别", converter = DictOrRawConvert.class)
     @ExcelDictFormat(dictType = "djs_plant_period")
     private String plantPeriod;
 
@@ -108,7 +108,7 @@ public class PlantPlanVo implements Serializable {
     @ExcelProperty(value = "完成率(%)")
     private BigDecimal completionRate;
 
-    @ExcelProperty(value = "状态", converter = ExcelDictConvert.class)
+    @ExcelProperty(value = "状态", converter = DictOrRawConvert.class)
     @ExcelDictFormat(dictType = "djs_plant_plan_status")
     private String plantStatus;
 

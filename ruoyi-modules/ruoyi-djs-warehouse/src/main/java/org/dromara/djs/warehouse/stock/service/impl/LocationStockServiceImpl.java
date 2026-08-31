@@ -6,7 +6,9 @@ import lombok.extern.slf4j.Slf4j;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.core.utils.MapstructUtils;
 import org.dromara.common.core.utils.StringUtils;
+import org.dromara.djs.common.util.I18nMessages;
 import org.dromara.common.mybatis.core.page.PageQuery;
+import org.dromara.djs.warehouse.common.QuantityUnitRule;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.common.satoken.utils.LoginHelper;
 import org.dromara.djs.common.base.DjsBaseServiceImpl;
@@ -181,6 +183,40 @@ public class LocationStockServiceImpl extends DjsBaseServiceImpl<LocationStockMa
     @Override
     public int deleteWithValidByIds(Collection<Long> ids) {
         return softDelete(ids);
+    }
+
+    @Override
+    public void assertManualOutQuantity(StockOutBo bo) {
+        if (bo == null || bo.getQuantity() == null || bo.getId() == null) {
+            return;   // 空值交给 @Valid / productOut 自己报，这里只管单位口径
+        }
+        LocationStock stock = baseMapper.selectById(bo.getId());
+        if (stock == null || stock.getProductId() == null) {
+            return;   // 库存行不存在 → 让 productOut 抛它那句更准确的错，不在这里抢着报
+        }
+        ProductInfo product = productInfoMapper.selectById(stock.getProductId());
+        String unit = product == null ? null : product.getProductUnit();
+        if (QuantityUnitRule.isNonIntegerForCountingUnit(bo.getQuantity(), unit)) {
+            throw new ServiceException(
+                I18nMessages.t("stock.out.quantity.integer_only", StringUtils.blankToDefault(unit, "-")), 400);
+        }
+    }
+
+    @Override
+    public void assertManualTransferQuantity(StockTransferBo bo) {
+        if (bo == null || bo.getQuantity() == null || bo.getId() == null) {
+            return;
+        }
+        LocationStock stock = baseMapper.selectById(bo.getId());
+        if (stock == null || stock.getProductId() == null) {
+            return;   // 库存行不存在 → 让 pigTransfer 抛它那句更准确的错
+        }
+        ProductInfo product = productInfoMapper.selectById(stock.getProductId());
+        String unit = product == null ? null : product.getProductUnit();
+        if (QuantityUnitRule.isNonIntegerForCountingUnit(bo.getQuantity(), unit)) {
+            throw new ServiceException(
+                I18nMessages.t("stock.transfer.quantity.integer_only", StringUtils.blankToDefault(unit, "-")), 400);
+        }
     }
 
     @Override

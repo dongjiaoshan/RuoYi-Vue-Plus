@@ -5,7 +5,7 @@ import cn.idev.excel.annotation.ExcelProperty;
 import io.github.linpeilie.annotations.AutoMapper;
 import lombok.Data;
 import org.dromara.common.excel.annotation.ExcelDictFormat;
-import org.dromara.common.excel.convert.ExcelDictConvert;
+import org.dromara.djs.common.excel.DictOrRawConvert;
 import org.dromara.common.translation.annotation.Translation;
 import org.dromara.common.translation.constant.TransConstant;
 import org.dromara.djs.plant.plot.domain.PlotInfo;
@@ -49,18 +49,18 @@ public class PlotInfoVo implements Serializable {
     private String zoneName;
 
     /** 所属大区（service 层 enrich，取自所属片区 zone.zoneBelong；字典 djs_zone_belong）。 */
-    @ExcelProperty(value = "所属大区", converter = ExcelDictConvert.class)
+    @ExcelProperty(value = "所属大区", converter = DictOrRawConvert.class)
     @ExcelDictFormat(dictType = "djs_zone_belong")
     private String zoneBelong;
 
-    @ExcelProperty(value = "类型", converter = ExcelDictConvert.class)
+    @ExcelProperty(value = "类型", converter = DictOrRawConvert.class)
     @ExcelDictFormat(dictType = "djs_plot_type")
     private String plotType;
 
     @ExcelProperty(value = "地块名称")
     private String plotName;
 
-    @ExcelProperty(value = "状态", converter = ExcelDictConvert.class)
+    @ExcelProperty(value = "状态", converter = DictOrRawConvert.class)
     @ExcelDictFormat(dictType = "djs_plot_status")
     private Integer plotStatus;
 
@@ -70,7 +70,7 @@ public class PlotInfoVo implements Serializable {
      */
     private Integer thirdPhase;
 
-    @ExcelProperty(value = "是否租赁", converter = ExcelDictConvert.class)
+    @ExcelProperty(value = "是否租赁", converter = DictOrRawConvert.class)
     @ExcelDictFormat(dictType = "djs_yes_no")
     private Integer isLease;
 

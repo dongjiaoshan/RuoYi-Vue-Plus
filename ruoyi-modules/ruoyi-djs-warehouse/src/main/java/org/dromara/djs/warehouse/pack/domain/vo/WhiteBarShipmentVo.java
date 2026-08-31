@@ -2,6 +2,8 @@ package org.dromara.djs.warehouse.pack.domain.vo;
 
 import cn.idev.excel.annotation.ExcelIgnoreUnannotated;
 import cn.idev.excel.annotation.ExcelProperty;
+import org.dromara.common.excel.annotation.ExcelDictFormat;
+import org.dromara.djs.common.excel.DictOrRawConvert;
 import com.fasterxml.jackson.annotation.JsonFormat;
 import lombok.Data;
 import org.dromara.common.translation.annotation.Translation;
@@ -58,13 +60,15 @@ public class WhiteBarShipmentVo implements Serializable {
     /**
      * 出库方式（字典 {@code djs_bar_out_method} 派生值：1=发货月台 / 3=仓库出库）。
      */
-    @ExcelProperty(value = "出库方式")
+    @ExcelProperty(value = "出库方式", converter = DictOrRawConvert.class)
+    @ExcelDictFormat(readConverterExp = "1=发货月台,3=仓库出库")
     private String outMethod;
 
     /**
      * 出库去向（字典 {@code djs_stock_out_dest}：ship_dock=发货月台 / mine=矿山 / kitchen=厨房 等）。
      */
-    @ExcelProperty(value = "出库去向")
+    @ExcelProperty(value = "出库去向", converter = DictOrRawConvert.class)
+    @ExcelDictFormat(dictType = "djs_stock_out_dest")
     private String outDest;
 
     /**

@@ -2,6 +2,8 @@ package org.dromara.djs.store.returns.domain.vo;
 
 import cn.idev.excel.annotation.ExcelIgnoreUnannotated;
 import cn.idev.excel.annotation.ExcelProperty;
+import org.dromara.common.excel.annotation.ExcelDictFormat;
+import org.dromara.djs.common.excel.DictOrRawConvert;
 import cn.idev.excel.annotation.format.DateTimeFormat;
 import com.fasterxml.jackson.annotation.JsonFormat;
 import io.github.linpeilie.annotations.AutoMapper;
@@ -90,7 +92,8 @@ public class StoreReturnVo implements Serializable {
     private BigDecimal goodsWeight;
 
     /** 退货状态 djs_store_return_status：pending=待仓库确认 / received=已入库。 */
-    @ExcelProperty(value = "退回状态")
+    @ExcelProperty(value = "退回状态", converter = DictOrRawConvert.class)
+    @ExcelDictFormat(dictType = "djs_store_return_status")
     private String returnStatus;
 
     /** 仓库实收量（原型「仓库实收量」）。 */

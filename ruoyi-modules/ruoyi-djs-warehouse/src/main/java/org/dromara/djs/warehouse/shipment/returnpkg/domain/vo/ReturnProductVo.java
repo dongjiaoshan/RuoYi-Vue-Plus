@@ -2,6 +2,8 @@ package org.dromara.djs.warehouse.shipment.returnpkg.domain.vo;
 
 import cn.idev.excel.annotation.ExcelIgnoreUnannotated;
 import cn.idev.excel.annotation.ExcelProperty;
+import org.dromara.common.excel.annotation.ExcelDictFormat;
+import org.dromara.djs.common.excel.DictOrRawConvert;
 import cn.idev.excel.annotation.format.DateTimeFormat;
 import com.fasterxml.jackson.annotation.JsonFormat;
 import io.github.linpeilie.annotations.AutoMapper;
@@ -48,7 +50,8 @@ public class ReturnProductVo implements Serializable {
     private Long productId;
 
     /** 退货品类（产品 belongType 字典 djs_belong_type，service 批量回填）。 */
-    @ExcelProperty(value = "退回品类")
+    @ExcelProperty(value = "退回品类", converter = DictOrRawConvert.class)
+    @ExcelDictFormat(dictType = "djs_belong_type")
     private String returnCategory;
 
     /** 退货产品编号（产品业务码 product_info.product_id，service 批量回填）。 */

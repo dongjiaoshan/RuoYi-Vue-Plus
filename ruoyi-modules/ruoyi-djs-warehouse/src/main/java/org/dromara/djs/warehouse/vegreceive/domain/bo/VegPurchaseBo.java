@@ -3,6 +3,7 @@ package org.dromara.djs.warehouse.vegreceive.domain.bo;
 import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Size;
 import lombok.Data;
 
 import java.math.BigDecimal;
@@ -56,6 +57,17 @@ public class VegPurchaseBo {
      */
     @NotNull(message = "{vegReceive.location_id.required}")
     private Long locationId;
+
+    /**
+     * 猪只耳号（V6 row132，仅猪肉产品有意义，<b>非必填</b>）。
+     *
+     * <p>mp 侧候选项 = 今日白条出库的耳号（{@code /todayBarEarNos}）。填了则这批外购货进
+     * <b>该耳号的库存篮</b>（{@code location_stock.ear_no}）并写进 {@code stock_flow.ear_no}，
+     * 不并入产品的通用篮 —— 耳号篮是本系统既有的追溯归属口径，混进通用篮会污染追溯。
+     * 不填则维持原行为（进通用篮）。</p>
+     */
+    @Size(max = 32, message = "{vegReceive.pig_ear_no.too_long}")
+    private String pigEarNo;
 
     /**
      * 入库人 userId（FK → sys_user.user_id；可选，mp 入库人下拉，缺省时取当前登录用户）。

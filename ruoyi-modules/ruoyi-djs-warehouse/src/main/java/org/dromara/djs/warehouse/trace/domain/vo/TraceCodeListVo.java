@@ -2,6 +2,8 @@ package org.dromara.djs.warehouse.trace.domain.vo;
 
 import cn.idev.excel.annotation.ExcelIgnoreUnannotated;
 import cn.idev.excel.annotation.ExcelProperty;
+import org.dromara.common.excel.annotation.ExcelDictFormat;
+import org.dromara.djs.common.excel.DictOrRawConvert;
 import com.fasterxml.jackson.annotation.JsonFormat;
 import lombok.Data;
 import org.dromara.common.translation.annotation.Translation;
@@ -46,13 +48,15 @@ public class TraceCodeListVo implements Serializable {
     @ExcelProperty(value = "生产编码")
     private String productionCode;
 
-    @ExcelProperty(value = "类型")
+    @ExcelProperty(value = "类型", converter = DictOrRawConvert.class)
+    @ExcelDictFormat(dictType = "djs_trace_code_type")
     private String codeType;
 
     /**
      * 生成来源：{@code warehouse}=仓库 / {@code store}=门店现场分割打包（service 按 remark「现场生码」前缀计算）。
      */
-    @ExcelProperty(value = "生成来源")
+    @ExcelProperty(value = "生成来源", converter = DictOrRawConvert.class)
+    @ExcelDictFormat(readConverterExp = "warehouse=仓库,store=门店现场")
     private String source;
 
     private Long productId;

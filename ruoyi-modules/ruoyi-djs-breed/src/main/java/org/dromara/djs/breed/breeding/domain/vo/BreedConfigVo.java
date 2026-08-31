@@ -2,6 +2,8 @@ package org.dromara.djs.breed.breeding.domain.vo;
 
 import cn.idev.excel.annotation.ExcelIgnoreUnannotated;
 import cn.idev.excel.annotation.ExcelProperty;
+import org.dromara.common.excel.annotation.ExcelDictFormat;
+import org.dromara.djs.common.excel.DictOrRawConvert;
 import io.github.linpeilie.annotations.AutoMapper;
 import lombok.Data;
 import org.dromara.common.translation.annotation.Translation;
@@ -35,7 +37,8 @@ public class BreedConfigVo implements Serializable {
     /**
      * 类型（1=品种配种 / 2=品系配种）。
      */
-    @ExcelProperty(value = "类型")
+    @ExcelProperty(value = "类型", converter = DictOrRawConvert.class)
+    @ExcelDictFormat(dictType = "djs_breed_strain_type")
     private Integer breedStrain;
 
     /**

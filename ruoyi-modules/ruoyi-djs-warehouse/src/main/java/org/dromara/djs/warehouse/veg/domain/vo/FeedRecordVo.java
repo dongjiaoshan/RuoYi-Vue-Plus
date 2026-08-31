@@ -5,7 +5,7 @@ import cn.idev.excel.annotation.ExcelProperty;
 import com.fasterxml.jackson.annotation.JsonFormat;
 import lombok.Data;
 import org.dromara.common.excel.annotation.ExcelDictFormat;
-import org.dromara.common.excel.convert.ExcelDictConvert;
+import org.dromara.djs.common.excel.DictOrRawConvert;
 import org.dromara.common.translation.annotation.Translation;
 import org.dromara.common.translation.constant.TransConstant;
 
@@ -84,7 +84,7 @@ public class FeedRecordVo implements Serializable {
     /**
      * 饲喂来源原始值（字典 djs_feed_type：veg_handle 毛菜间 / warehouse 仓库）。
      */
-    @ExcelProperty(value = "提供位置", converter = ExcelDictConvert.class)
+    @ExcelProperty(value = "提供位置", converter = DictOrRawConvert.class)
     @ExcelDictFormat(dictType = "djs_feed_type")
     private String feedType;
 

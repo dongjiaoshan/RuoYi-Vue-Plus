@@ -13,6 +13,7 @@ import org.dromara.djs.plant.crop.domain.CropInfo;
 import org.dromara.djs.plant.crop.domain.vo.CropProductVo;
 import org.dromara.djs.plant.crop.mapper.CropInfoMapper;
 import org.dromara.djs.plant.crop.service.ICropProductService;
+import org.dromara.djs.warehouse.cross.mapper.BarInfoMapper;
 import org.dromara.djs.warehouse.flow.domain.StockFlow;
 import org.dromara.djs.warehouse.flow.mapper.StockFlowMapper;
 import org.dromara.djs.warehouse.location.domain.LocationInfo;
@@ -123,6 +124,8 @@ public class VegReceiveServiceImpl implements IVegReceiveService {
     private final ILossFlowService lossFlowService;
     /** 作物-产品配置（row55）：判断该作物是不是多产品，决定老客户端的收货请求放行还是拒绝。 */
     private final ICropProductService cropProductService;
+    /** 白条 mapper（row132）：外购猪肉产品录入的耳号候选 = 今日白条出库耳号。 */
+    private final BarInfoMapper barInfoMapper;
 
     public VegReceiveServiceImpl(VegReceiveMapper vegReceiveMapper,
                                  LocationStockMapper locationStockMapper,
@@ -134,7 +137,8 @@ public class VegReceiveServiceImpl implements IVegReceiveService {
                                  ImageUrlResolver imageUrlResolver,
                                  CropInfoMapper cropInfoMapper,
                                  ILossFlowService lossFlowService,
-                                 ICropProductService cropProductService) {
+                                 ICropProductService cropProductService,
+                                 BarInfoMapper barInfoMapper) {
         this.vegReceiveMapper = vegReceiveMapper;
         this.locationStockMapper = locationStockMapper;
         this.locationInfoMapper = locationInfoMapper;
@@ -146,6 +150,7 @@ public class VegReceiveServiceImpl implements IVegReceiveService {
         this.cropInfoMapper = cropInfoMapper;
         this.lossFlowService = lossFlowService;
         this.cropProductService = cropProductService;
+        this.barInfoMapper = barInfoMapper;
     }
 
     @Override
@@ -404,14 +409,19 @@ public class VegReceiveServiceImpl implements IVegReceiveService {
         receive.setReceiveTime(new Date());
         vegReceiveMapper.insert(receive);
 
-        // 4. UPSERT location_stock（product 维度行锁增量；无行兜底 INSERT 建账）
-        int affected = locationStockMapper.addByProductLocation(
-            bo.getLocationId(), bo.getCropId(), bo.getWeight(), userId);
+        // 4. UPSERT location_stock。row132：录了猪只耳号 → 进该耳号的篮子（追溯归属跟着耳号走）；
+        //    没录 → 维持原口径进产品通用篮。两个篮子互不可见，各记各账（见 LocationStockMapper 注释）。
+        String earNo = trimToNull(bo.getPigEarNo());
+        int affected = earNo != null
+            ? locationStockMapper.addByProductLocationEarNo(
+                bo.getLocationId(), bo.getCropId(), earNo, bo.getWeight(), userId)
+            : locationStockMapper.addByProductLocation(
+                bo.getLocationId(), bo.getCropId(), bo.getWeight(), userId);
         if (affected == 0) {
-            insertProductStockRow(bo.getLocationId(), product, bo.getWeight(), userId);
+            insertProductStockRow(bo.getLocationId(), product, bo.getWeight(), userId, earNo);
         }
 
-        // 5. INSERT stock_flow（veg_purchase_in / IN，product + supplier 关联）
+        // 5. INSERT stock_flow（veg_purchase_in / IN，product + supplier 关联；row132 带上耳号）
         StockFlow flow = new StockFlow();
         flow.setFlowNo(flowNo);
         flow.setFlowDate(new Date());
@@ -422,10 +432,25 @@ public class VegReceiveServiceImpl implements IVegReceiveService {
         flow.setChangeNum(bo.getWeight());
         flow.setChangeQuantity(bo.getWeight());
         flow.setSupplierId(supplier != null ? supplier.getId() : null);
+        flow.setEarNo(earNo);
         flow.setOperatorId(userId);
         stockFlowMapper.insert(flow);
 
         return receive.getId();
+    }
+
+    @Override
+    public List<String> listTodayOutBarEarNos() {
+        return barInfoMapper.selectTodayOutEarNos();
+    }
+
+    /** 空白即无：mp 未选耳号时发的是空串，统一归一成 null，避免落一条 ear_no='' 的假篮子。 */
+    private static String trimToNull(String v) {
+        if (v == null) {
+            return null;
+        }
+        String t = v.trim();
+        return t.isEmpty() ? null : t;
     }
 
     // ============================ 内部辅助 ============================
@@ -649,13 +674,15 @@ public class VegReceiveServiceImpl implements IVegReceiveService {
      * product 维度无库存行时 INSERT 新行（外购果蔬首次入某库位，照 PackingFlowServiceImpl 建账范式）。
      */
     private void insertProductStockRow(Long locationId, ProductInfo product,
-                                       BigDecimal stockQty, Long userId) {
+                                       BigDecimal stockQty, Long userId, String earNo) {
         LocationStock stock = new LocationStock();
         stock.setLocationId(locationId);
         stock.setProductId(product.getId());
         stock.setProductName(product.getProductName());
         stock.setProductStock(stockQty);
         stock.setProductUnit(product.getProductUnit());
+        // row132：耳号非空 = 建耳号篮（新篮子）；为空 = 建通用篮，与旧行为一致
+        stock.setEarNo(earNo);
         stock.setIsEnd(0);
         stock.setOperatorId(userId);
         locationStockMapper.insert(stock);

@@ -175,7 +175,7 @@ class TracePublicServiceImplTest {
         // spy 真实 service，覆盖 readCache/writeCache（RedisUtils 静态字段在无 Spring 环境 clinit 失败，不可 mockStatic）
         service = spy(new TracePublicServiceImpl(
             traceCodeMapper, traceEventMapper, productInfoMapper, storeMapper,
-            traceFarmNameMapper, traceUserNameMapper, ossService,
+            traceFarmNameMapper, traceUserNameMapper, ossService, dictService,
             pigMapper, pigGrowthMapper, pigMarketingMapper, medRecordMapper, medicineMapper, sowDetailService,
             plotInfoMapper, plotZoneMapper, farmRecordsMapper, cropOrganicMapper, plotOrganicMapper,
             plantDetailsMapper, cropInfoMapper,

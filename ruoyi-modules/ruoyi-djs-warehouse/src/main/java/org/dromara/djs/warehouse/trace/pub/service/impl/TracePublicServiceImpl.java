@@ -3,6 +3,7 @@ package org.dromara.djs.warehouse.trace.pub.service.impl;
 import cn.hutool.core.lang.Dict;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import lombok.extern.slf4j.Slf4j;
+import org.dromara.common.core.service.DictService;
 import org.dromara.common.core.service.OssService;
 import org.dromara.common.core.utils.StringUtils;
 import org.dromara.common.json.utils.JsonUtils;
@@ -20,6 +21,7 @@ import org.dromara.djs.breed.med.domain.Medicine;
 import org.dromara.djs.breed.med.mapper.MedicineMapper;
 import org.dromara.djs.breed.med.record.domain.MedRecord;
 import org.dromara.djs.breed.med.record.mapper.MedRecordMapper;
+import org.dromara.djs.common.constant.DictTypeConstants;
 import org.dromara.djs.common.store.domain.Store;
 import org.dromara.djs.common.store.mapper.StoreMapper;
 import org.dromara.djs.plant.crop.domain.CropInfo;
@@ -137,12 +139,17 @@ public class TracePublicServiceImpl
     /** 产品启用态（{@code product_status}，字典 sys_normal_disable：0=正常 / 1=停用）。 */
     private static final Integer PRODUCT_STATUS_NORMAL = 0;
 
+    /** 生长记录 / 农事记录入口的默认显示门槛（V6 row134/row135，字典缺项或值非法时兜底）。 */
+    private static final int RECORD_SHOW_MIN_DEFAULT = 3;
+
     private final TraceEventMapper traceEventMapper;
     private final ProductInfoMapper productInfoMapper;
     private final StoreMapper storeMapper;
     private final TraceFarmNameMapper traceFarmNameMapper;
     private final TraceUserNameMapper traceUserNameMapper;
     private final OssService ossService;
+    /** 单值配置字典读取（生长记录 / 农事记录显示门槛）。 */
+    private final DictService dictService;
     // breed
     private final PigMapper pigMapper;
     private final PigGrowthMapper pigGrowthMapper;
@@ -174,6 +181,7 @@ public class TracePublicServiceImpl
                                   TraceFarmNameMapper traceFarmNameMapper,
                                   TraceUserNameMapper traceUserNameMapper,
                                   OssService ossService,
+                                  DictService dictService,
                                   PigMapper pigMapper,
                                   PigGrowthMapper pigGrowthMapper,
                                   PigMarketingMapper pigMarketingMapper,
@@ -197,6 +205,7 @@ public class TracePublicServiceImpl
         this.traceFarmNameMapper = traceFarmNameMapper;
         this.traceUserNameMapper = traceUserNameMapper;
         this.ossService = ossService;
+        this.dictService = dictService;
         this.pigMapper = pigMapper;
         this.pigGrowthMapper = pigGrowthMapper;
         this.pigMarketingMapper = pigMarketingMapper;
@@ -223,14 +232,61 @@ public class TracePublicServiceImpl
         String key = CACHE_PREFIX + produceCode;
         PublicTraceVo cached = readCache(key);
         if (cached != null) {
-            return cached;
+            return fillShowMin(cached);
         }
         // @SaIgnore 无登录 → 无 tenant 上下文，全程 ignore 租户拦截（V1 单租户）
         PublicTraceVo vo = TenantHelper.ignore(() -> aggregate(produceCode));
         if (vo != null) {
             writeCache(key, vo);
         }
+        return fillShowMin(vo);
+    }
+
+    /**
+     * 回填生长记录 / 农事记录入口的显示门槛（V6 row134/row135）。
+     *
+     * <p>放在缓存**外面**：门槛是客户在 admin 字典里随手改的开关，改完得立刻见效，
+     * 不能被 10 分钟的追溯详情缓存挡住。</p>
+     */
+    private PublicTraceVo fillShowMin(PublicTraceVo vo) {
+        if (vo == null) {
+            return null;
+        }
+        vo.setGrowthShowMin(readShowMin(DictTypeConstants.TRACE_GROW_SHOW_MIN));
+        vo.setPlotRecordShowMin(readShowMin(DictTypeConstants.TRACE_FARM_SHOW_MIN));
         return vo;
+    }
+
+    /**
+     * 读单值配置字典里的门槛数字；字典缺项 / 空 / 非数字 / 小于 1 一律回落
+     * {@link #RECORD_SHOW_MIN_DEFAULT}（3）——公开端不能因为字典被人改坏就 500。
+     *
+     * <p>下限取 1 而不是 0：门槛填 0 时 {@code size() >= 0} 恒真，一条记录都没有的猪也会渲染出
+     * 「生长记录：0 次」——正是 row134 报上来的那个现象。「有多少条记录后才显示」这句话里，
+     * 0 本身就不是个有意义的取值，所以按填错处理、回落默认值，而不是照单全收。</p>
+     */
+    private int readShowMin(String dictType) {
+        // 必须 dynamic(DEFAULT_TENANT) 而不是 ignore()：TenantSpringCacheManager 见到「忽略租户线」
+        // 会把 Spring Cache 名解析成**不带前缀**的 `sys_dict`，而 admin 字典管理保存时
+        // @CachePut 写的是带前缀的 `1001:sys_dict` —— 两个 RMap 互不相干，且 `sys_dict` 没配 TTL、
+        // 连 _post-init.sh 的 `*:sys_dict` 通配也扫不到。用 ignore() 的后果是：
+        // 甲方在后台把门槛改成 20，公开追溯页永远还读着旧值，直到有人手工 HDEL。
+        List<org.dromara.common.core.domain.dto.DictDataDTO> items =
+            TenantHelper.dynamic(DEFAULT_TENANT, () -> dictService.getDictData(dictType));
+        if (items == null || items.isEmpty()) {
+            return RECORD_SHOW_MIN_DEFAULT;
+        }
+        String raw = items.get(0).getDictValue();
+        if (StringUtils.isBlank(raw)) {
+            return RECORD_SHOW_MIN_DEFAULT;
+        }
+        try {
+            int v = Integer.parseInt(raw.trim());
+            return v < 1 ? RECORD_SHOW_MIN_DEFAULT : v;
+        } catch (NumberFormatException e) {
+            log.warn("[trace] 字典 {} 的值 '{}' 不是数字，按默认 {} 处理", dictType, raw, RECORD_SHOW_MIN_DEFAULT);
+            return RECORD_SHOW_MIN_DEFAULT;
+        }
     }
 
     /**

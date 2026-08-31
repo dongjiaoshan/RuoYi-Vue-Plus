@@ -5,7 +5,7 @@ import cn.idev.excel.annotation.ExcelProperty;
 import io.github.linpeilie.annotations.AutoMapper;
 import lombok.Data;
 import org.dromara.common.excel.annotation.ExcelDictFormat;
-import org.dromara.common.excel.convert.ExcelDictConvert;
+import org.dromara.djs.common.excel.DictOrRawConvert;
 import org.dromara.common.translation.annotation.Translation;
 import org.dromara.common.translation.constant.TransConstant;
 import org.dromara.djs.warehouse.location.domain.LocationInfo;
@@ -50,7 +50,7 @@ public class LocationInfoVo implements Serializable {
     /**
      * 库位类型（字典 djs_location_type）。
      */
-    @ExcelProperty(value = "类型", converter = ExcelDictConvert.class)
+    @ExcelProperty(value = "类型", converter = DictOrRawConvert.class)
     @ExcelDictFormat(dictType = "djs_location_type")
     private String locationType;
 
@@ -69,7 +69,7 @@ public class LocationInfoVo implements Serializable {
     /**
      * 状态。
      */
-    @ExcelProperty(value = "状态", converter = ExcelDictConvert.class)
+    @ExcelProperty(value = "状态", converter = DictOrRawConvert.class)
     @ExcelDictFormat(dictType = "djs_common_status")
     private Integer locationStatus;
 

@@ -29,6 +29,33 @@ import java.util.Map;
 public interface DemandManageMapper extends BaseMapperPlus<DemandManage, DemandManageVo> {
 
     /**
+     * 需求量 compare-and-set（V6-R140 需求调整管理）。
+     *
+     * <p>只有当库里的 {@code demand_quantity} 仍等于调整人看到的旧值时才写入，返回受影响行数。
+     * 0 行 = 期间被别人改过，调用方据此拒绝本次调整。</p>
+     *
+     * <p>为什么不用 {@code updateById}：本表虽有 {@code version} 列，但实体上没挂 {@code @Version}，
+     * {@code updateById} 生成的 UPDATE 不带任何版本条件。并发调整时三个请求会全部成功，
+     * 而留痕表里三行的 {@code old_quantity} 都记成同一个初始值 —— 拿这张表回放得不出真实序列，
+     * 甲方要的正是这张审计表。CAS 把「读到的旧值」写进 WHERE，让后到者失败而不是静默覆盖。</p>
+     *
+     * @param id        需求单 ID
+     * @param oldQty    调整人读到的旧需求量
+     * @param newQty    调整后需求量
+     * @param updateBy  更新人（原生 SQL 不走 MyBatis-Plus 自动填充，需显式传）
+     * @return 受影响行数（1 = 成功，0 = 期间被改过）
+     */
+    @Update("""
+        UPDATE t_warehouse_demand_manage
+           SET demand_quantity = #{newQty}, update_by = #{updateBy}, update_time = NOW()
+         WHERE id = #{id} AND demand_quantity = #{oldQty} AND del_flag = '0'
+        """)
+    int compareAndSetQuantity(@Param("id") Long id,
+                              @Param("oldQty") BigDecimal oldQty,
+                              @Param("newQty") BigDecimal newQty,
+                              @Param("updateBy") Long updateBy);
+
+    /**
      * 明日 KPI 横条主表聚合（DJS-FIX-ADMIN-W22-007）：JOIN 产品主数据 belong_type，1 query 出 8 数。
      *
      * <p>「已调配」= 该行所属产品（同 {@code demand_date + product_id} 组）当日<b>已全部确认</b>——组内

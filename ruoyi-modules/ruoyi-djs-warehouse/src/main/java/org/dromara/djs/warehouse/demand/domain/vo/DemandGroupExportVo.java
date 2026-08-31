@@ -4,7 +4,7 @@ import cn.idev.excel.annotation.ExcelIgnoreUnannotated;
 import cn.idev.excel.annotation.ExcelProperty;
 import lombok.Data;
 import org.dromara.common.excel.annotation.ExcelDictFormat;
-import org.dromara.common.excel.convert.ExcelDictConvert;
+import org.dromara.djs.common.excel.DictOrRawConvert;
 
 import java.io.Serial;
 import java.io.Serializable;
@@ -67,7 +67,7 @@ public class DemandGroupExportVo implements Serializable {
     private String productUnit;
 
     /** 需求产品类型（字典 {@code djs_belong_type}）。 */
-    @ExcelProperty(value = "需求产品类型", converter = ExcelDictConvert.class)
+    @ExcelProperty(value = "需求产品类型", converter = DictOrRawConvert.class)
     @ExcelDictFormat(dictType = "djs_belong_type")
     private String belongType;
 

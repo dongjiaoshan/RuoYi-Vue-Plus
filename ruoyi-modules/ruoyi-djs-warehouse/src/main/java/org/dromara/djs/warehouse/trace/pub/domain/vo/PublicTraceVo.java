@@ -46,6 +46,21 @@ public class PublicTraceVo implements Serializable {
     /** 流程时间轴（按 trace_time 倒序，最近的事件在前；节点数 = 实际 event 行数）。 */
     private List<TimelineNode> timeline;
 
+    /**
+     * 生长记录入口的显示门槛（V6 row134）：{@link #growthRecords} 条数 &lt; 该值时，猪肉追溯页整块不展示。
+     * 取自字典 {@code djs_trace_grow_show_min}（单值，客户可在 admin 改），默认 3。
+     *
+     * <p>只下发门槛、不裁 {@link #growthRecords}：生长记录里的照片同时喂着猪只照片轮播，
+     * 后端一裁轮播跟着少图，那不是甲方要的。</p>
+     */
+    private Integer growthShowMin;
+
+    /**
+     * 农事记录入口的显示门槛（V6 row135）：{@link #plotRecords} 条数 &lt; 该值时，果蔬追溯页整块不展示。
+     * 取自字典 {@code djs_trace_farm_show_min}（单值，客户可在 admin 改），默认 3。
+     */
+    private Integer plotRecordShowMin;
+
     // ============ pork 专属（veg/gift 为 null）============
 
     /** 猪只信息（pork 专属）。 */

@@ -5,7 +5,7 @@ import cn.idev.excel.annotation.ExcelProperty;
 import io.github.linpeilie.annotations.AutoMapper;
 import lombok.Data;
 import org.dromara.common.excel.annotation.ExcelDictFormat;
-import org.dromara.common.excel.convert.ExcelDictConvert;
+import org.dromara.djs.common.excel.DictOrRawConvert;
 import org.dromara.djs.breed.med.domain.Medicine;
 
 import java.io.Serial;
@@ -49,7 +49,7 @@ public class MedicineVo implements Serializable {
     /**
      * 药品类型（字典 djs_med_type）。
      */
-    @ExcelProperty(value = "类型", converter = ExcelDictConvert.class)
+    @ExcelProperty(value = "类型", converter = DictOrRawConvert.class)
     @ExcelDictFormat(dictType = "djs_med_type")
     private String medicineType;
 
@@ -136,7 +136,7 @@ public class MedicineVo implements Serializable {
     /**
      * 状态（1 启用 / 0 停用）。
      */
-    @ExcelProperty(value = "状态", converter = ExcelDictConvert.class)
+    @ExcelProperty(value = "状态", converter = DictOrRawConvert.class)
     @ExcelDictFormat(dictType = "sys_normal_disable")
     private Integer medStatus;
 

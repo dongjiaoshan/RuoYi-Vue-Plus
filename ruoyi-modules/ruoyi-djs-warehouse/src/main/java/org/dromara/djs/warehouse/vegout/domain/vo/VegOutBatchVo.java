@@ -5,7 +5,7 @@ import cn.idev.excel.annotation.ExcelProperty;
 import cn.idev.excel.annotation.format.DateTimeFormat;
 import lombok.Data;
 import org.dromara.common.excel.annotation.ExcelDictFormat;
-import org.dromara.common.excel.convert.ExcelDictConvert;
+import org.dromara.djs.common.excel.DictOrRawConvert;
 
 import java.io.Serial;
 import java.io.Serializable;
@@ -44,7 +44,7 @@ public class VegOutBatchVo implements Serializable {
     private Date outDate;
 
     /** 出库去向（字典 djs_stock_out_dest）。 */
-    @ExcelProperty(value = "出库去向", converter = ExcelDictConvert.class)
+    @ExcelProperty(value = "出库去向", converter = DictOrRawConvert.class)
     @ExcelDictFormat(dictType = "djs_stock_out_dest")
     private String outDest;
 
