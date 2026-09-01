@@ -200,6 +200,7 @@ public class ProductInfoServiceImpl extends DjsBaseServiceImpl<ProductInfoMapper
     @Transactional(rollbackFor = Exception.class)
     public int insertByBo(ProductInfoBo bo) {
         validateBoBeforeWrite(bo);
+        checkProductNameUnique(bo, null);
         ProductInfo entity = toEntity(bo);
         if (entity == null) {
             throw new ServiceException("产品入参转换失败");
@@ -234,6 +235,7 @@ public class ProductInfoServiceImpl extends DjsBaseServiceImpl<ProductInfoMapper
         // 编辑路径下 productType + productId 双锁（拉回旧值）
         bo.setProductType(exists.getProductType());
         validateBoBeforeWrite(bo);
+        checkProductNameUnique(bo, bo.getId());
 
         ProductInfo entity = toEntity(bo);
         if (entity == null) {
@@ -306,6 +308,47 @@ public class ProductInfoServiceImpl extends DjsBaseServiceImpl<ProductInfoMapper
      */
     private void normalizeWorkshop(ProductInfo entity) {
         entity.setProductWorkshop(WorkshopMatcher.normalize(entity.getProductWorkshop()));
+    }
+
+    /**
+     * 「产品配置」同产品属性下产品名称唯一（V6-R159）。
+     *
+     * <p>甲方原文：「产品名称相同类型不能同名，如都是原材料时产品名称不能同名，都是生产产品时同样不能同名」。
+     * 这里的「类型」= 产品属性 {@code product_attr}（字典 {@code djs_product_attr}：1 生产产品 / 2 原材料），
+     * 不是 {@code product_type}（自产 / 外购）。所以判重键 = 产品名称 + 产品属性，属性不同则允许同名。</p>
+     *
+     * <h3>为什么只管自产（{@code productType=1}，即「产品配置」页）</h3>
+     * 甲方这条填在「产品配置」下，而该页 {@code query_param} 锁的就是 {@code productType=1}。
+     * 外购（「商品配置」页）现存 41 组同名不同规格的行——同一种蔬菜种子按 40 克 / 50 克 / 450 克分袋各建一条，
+     * 是正常录入方式；一并拦会当场挡住他们加新规格。要不要对外购也开，等甲方明确表态再说。
+     *
+     * <h3>只拦新写入，不动存量</h3>
+     * 不加 DB UNIQUE：staging 现存 80 组重名（含外购），加索引会直接建不上；
+     * 且删存量产品会牵连库存与流水，属于「删数据」高风险动作，不自行决定。
+     * 这里只在新增 / 编辑时挡住<b>新的</b>重名，存量原样保留。
+     *
+     * @param bo        待写入的产品
+     * @param excludeId 编辑时排除自身 id（新增传 {@code null}）
+     */
+    private void checkProductNameUnique(ProductInfoBo bo, Long excludeId) {
+        if (bo.getProductType() == null || bo.getProductType() != PRODUCT_TYPE_SELF) {
+            return;
+        }
+        if (StrUtil.isBlank(bo.getProductName())) {
+            return;
+        }
+        String name = bo.getProductName().trim();
+        Integer attr = bo.getProductAttr();
+        LambdaQueryWrapper<ProductInfo> wrapper = new LambdaQueryWrapper<ProductInfo>()
+            .eq(ProductInfo::getProductType, PRODUCT_TYPE_SELF)
+            .eq(ProductInfo::getProductName, name)
+            // 属性为空的产品自成一档：两条都没填属性且同名，同样算重复
+            .isNull(attr == null, ProductInfo::getProductAttr)
+            .eq(attr != null, ProductInfo::getProductAttr, attr)
+            .ne(excludeId != null, ProductInfo::getId, excludeId);
+        if (baseMapper.exists(wrapper)) {
+            throw new ServiceException(I18nMessages.t("product.name_duplicate", name));
+        }
     }
 
     /**

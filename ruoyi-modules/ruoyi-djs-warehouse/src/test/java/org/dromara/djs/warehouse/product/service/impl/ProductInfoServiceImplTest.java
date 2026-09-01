@@ -1,6 +1,11 @@
 package org.dromara.djs.warehouse.product.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
+import com.baomidou.mybatisplus.core.conditions.AbstractWrapper;
+import com.baomidou.mybatisplus.core.MybatisConfiguration;
+import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
+import org.apache.ibatis.builder.MapperBuilderAssistant;
+import org.junit.jupiter.api.BeforeAll;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.mybatis.core.page.PageQuery;
@@ -132,6 +137,19 @@ class ProductInfoServiceImplTest {
             e.setIsBuyOut(bo.getIsBuyOut());
             return e;
         }
+    }
+
+    /**
+     * MyBatis-Plus 单测 entity cache 预热：断言里读 LambdaQueryWrapper 的 sqlSegment 会触发
+     * TableInfoHelper.getTableInfo() 解析 lambda 列名，无 Spring 上下文时必须先手动注册 entity。
+     * 见 skill coder-mp-entity-cache-test。
+     */
+    @BeforeAll
+    static void initMpEntityCache() {
+        MybatisConfiguration cfg = new MybatisConfiguration();
+        MapperBuilderAssistant assistant = new MapperBuilderAssistant(cfg, "");
+        assistant.setCurrentNamespace("test");
+        TableInfoHelper.initTableInfo(assistant, ProductInfo.class);
     }
 
     @BeforeEach
@@ -643,5 +661,89 @@ class ProductInfoServiceImplTest {
             ArgumentCaptor.forClass(org.dromara.djs.warehouse.flow.domain.StockFlow.class);
         verify(stockFlowMapper).insert(cap.capture());
         assertThat(cap.getValue().getSupplierId()).isNull();
+    }
+
+    // ---------- V6-R159 同产品属性下产品名称查重 ----------
+
+    @Test
+    @DisplayName("新增自产：同属性下已有同名产品 → 抛异常且不落库")
+    void testInsertSelfProduce_DuplicateNameRejected() {
+        ProductInfoBo bo = selfBo();
+        bo.setProductAttr(2);
+        when(productInfoMapper.exists(ArgumentMatchers.<Wrapper<ProductInfo>>any())).thenReturn(true);
+
+        assertThatThrownBy(() -> service.insertByBo(bo))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("五花肉");
+        verify(productInfoMapper, never()).insert(any(ProductInfo.class));
+    }
+
+    @Test
+    @DisplayName("新增自产：查重条件 = 自产 + 产品名称 + 产品属性三者同时命中")
+    void testInsertSelfProduce_DuplicateCheckKeyedOnNameAndAttr() {
+        ProductInfoBo bo = selfBo();
+        bo.setProductAttr(2);
+        when(productInfoMapper.exists(ArgumentMatchers.<Wrapper<ProductInfo>>any())).thenReturn(false);
+        when(productInfoMapper.insert(any(ProductInfo.class))).thenReturn(1);
+
+        service.insertByBo(bo);
+
+        ArgumentCaptor<Wrapper<ProductInfo>> captor = ArgumentCaptor.forClass(Wrapper.class);
+        verify(productInfoMapper).exists(captor.capture());
+        AbstractWrapper<ProductInfo, ?, ?> w = (AbstractWrapper<ProductInfo, ?, ?>) captor.getValue();
+        assertThat(w.getSqlSegment()).contains("product_type").contains("product_name").contains("product_attr");
+        assertThat(w.getParamNameValuePairs().values()).contains("五花肉", 2, 1);
+    }
+
+    @Test
+    @DisplayName("新增自产：属性为空时按 product_attr IS NULL 自成一档")
+    void testInsertSelfProduce_NullAttrChecksIsNull() {
+        ProductInfoBo bo = selfBo();
+        bo.setProductAttr(null);
+        when(productInfoMapper.exists(ArgumentMatchers.<Wrapper<ProductInfo>>any())).thenReturn(false);
+        when(productInfoMapper.insert(any(ProductInfo.class))).thenReturn(1);
+
+        service.insertByBo(bo);
+
+        ArgumentCaptor<Wrapper<ProductInfo>> captor = ArgumentCaptor.forClass(Wrapper.class);
+        verify(productInfoMapper).exists(captor.capture());
+        AbstractWrapper<ProductInfo, ?, ?> w = (AbstractWrapper<ProductInfo, ?, ?>) captor.getValue();
+        assertThat(w.getSqlSegment()).contains("product_attr IS NULL");
+    }
+
+    @Test
+    @DisplayName("新增外购（商品配置）：不做重名校验 —— 同名不同规格的种子是正常录入")
+    void testInsertPurchase_SkipsDuplicateNameCheck() {
+        when(productInfoMapper.insert(any(ProductInfo.class))).thenReturn(1);
+
+        service.insertByBo(purchaseBo());
+
+        verify(productInfoMapper, never()).exists(ArgumentMatchers.<Wrapper<ProductInfo>>any());
+    }
+
+    @Test
+    @DisplayName("编辑自产：查重排除自身 id，改别的字段不会被自己挡住")
+    void testUpdateSelfProduce_ExcludesSelf() {
+        ProductInfo existing = new ProductInfo();
+        existing.setId(30001L);
+        existing.setProductId("P0001");
+        existing.setProductType(1);
+        when(productInfoMapper.selectById(30001L)).thenReturn(existing);
+        when(productInfoMapper.exists(ArgumentMatchers.<Wrapper<ProductInfo>>any())).thenReturn(false);
+        when(productInfoMapper.updateById(any(ProductInfo.class))).thenReturn(1);
+
+        ProductInfoBo bo = selfBo();
+        bo.setId(30001L);
+        bo.setProductAttr(1);
+        // 自产 + 生产产品(attr=1) 命中既有的「必须填规格」校验，与本用例无关，先满足它
+        bo.setProductSpec("500g/包");
+        service.updateByBo(bo);
+
+        ArgumentCaptor<Wrapper<ProductInfo>> captor = ArgumentCaptor.forClass(Wrapper.class);
+        verify(productInfoMapper).exists(captor.capture());
+        AbstractWrapper<ProductInfo, ?, ?> w = (AbstractWrapper<ProductInfo, ?, ?>) captor.getValue();
+        // getSqlSegment() 才会把占位符实参灌进 paramNameValuePairs，先取 SQL 再看参数
+        assertThat(w.getSqlSegment()).contains("id <>");
+        assertThat(w.getParamNameValuePairs().values()).contains(30001L);
     }
 }
