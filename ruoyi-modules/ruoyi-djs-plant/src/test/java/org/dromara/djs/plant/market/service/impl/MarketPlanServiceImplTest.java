@@ -18,6 +18,7 @@ import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -29,7 +30,7 @@ import static org.mockito.ArgumentMatchers.anyCollection;
 import static org.mockito.Mockito.when;
 
 /**
- * {@link MarketPlanServiceImpl} 单测（V6-R151）。
+ * {@link MarketPlanServiceImpl} 单测（V6-R151 建，V6-R157/R158 补日期与状态）。
  *
  * @author djs
  */
@@ -54,8 +55,10 @@ class MarketPlanServiceImplTest {
     }
 
     @Test
-    @DisplayName("happy path：聚合行透传 + 作物图 ossId 批量解析成 URL")
+    @DisplayName("happy path：聚合行透传 + 作物图 ossId 批量解析成 URL + 现算上市状态")
     void queryPageListResolvesCropImageUrl() {
+        // 用相对今天的偏移造数据，断言不会随日历日漂移
+        LocalDate today = LocalDate.now();
         MarketPlanVo row = new MarketPlanVo();
         row.setPlanId(9316000000001010L);
         row.setPlanNo("PLAN-2026-001");
@@ -65,8 +68,8 @@ class MarketPlanServiceImplTest {
         row.setCropImage("9318000000000001");
         row.setExpectedYield(new BigDecimal("1600.000"));
         row.setActualYield(new BigDecimal("320.500"));
-        row.setMarketBeginMonth("2026-10");
-        row.setMarketEndMonth("2026-12");
+        row.setMarketBeginDate(today.minusDays(3).toString());
+        row.setMarketEndDate(today.plusDays(40).toString());
 
         List<MarketPlanVo> records = new ArrayList<>();
         records.add(row);
@@ -84,14 +87,17 @@ class MarketPlanServiceImplTest {
         MarketPlanVo vo = result.getRows().get(0);
         assertThat(vo.getCropName()).isEqualTo("糯玉米");
         assertThat(vo.getCropImageUrl()).isEqualTo("http://oss.example.com/corn.jpg");
-        assertThat(vo.getMarketBeginMonth()).isEqualTo("2026-10");
-        assertThat(vo.getMarketEndMonth()).isEqualTo("2026-12");
+        assertThat(vo.getMarketBeginDate()).isEqualTo(today.minusDays(3).toString());
+        assertThat(vo.getMarketEndDate()).isEqualTo(today.plusDays(40).toString());
+        // 已过上市日期 + 离下架还有 40 天 → 上市中
+        assertThat(vo.getMarketStatus()).isEqualTo("on_sale");
+        assertThat(vo.getMarketStatusName()).isEqualTo("上市中");
         assertThat(vo.getExpectedYield()).isEqualByComparingTo("1600.000");
         assertThat(vo.getActualYield()).isEqualByComparingTo("320.500");
     }
 
     @Test
-    @DisplayName("没有采摘明细的计划：上市/下市月份为空、无图，该行仍保留在结果里")
+    @DisplayName("没有采摘明细的计划：上市/下架日期为空、无图、状态留空，该行仍保留在结果里")
     void queryPageListKeepsRowWithoutHarvestDetails() {
         MarketPlanVo row = new MarketPlanVo();
         row.setPlanId(1L);
@@ -99,8 +105,8 @@ class MarketPlanServiceImplTest {
         row.setCropImage(null);
         row.setExpectedYield(BigDecimal.ZERO);
         row.setActualYield(BigDecimal.ZERO);
-        row.setMarketBeginMonth(null);
-        row.setMarketEndMonth(null);
+        row.setMarketBeginDate(null);
+        row.setMarketEndDate(null);
 
         List<MarketPlanVo> records = new ArrayList<>();
         records.add(row);
@@ -114,8 +120,30 @@ class MarketPlanServiceImplTest {
         assertThat(result.getRows()).hasSize(1);
         MarketPlanVo vo = result.getRows().get(0);
         assertThat(vo.getCropImageUrl()).isNull();
-        assertThat(vo.getMarketBeginMonth()).isNull();
-        assertThat(vo.getMarketEndMonth()).isNull();
+        assertThat(vo.getMarketBeginDate()).isNull();
+        assertThat(vo.getMarketEndDate()).isNull();
+        assertThat(vo.getMarketStatus()).isNull();
+        assertThat(vo.getMarketStatusName()).isNull();
+    }
+
+    @Test
+    @DisplayName("导出行同样带状态：已过下架日期 → 已下架")
+    void queryListFillsStatus() {
+        LocalDate today = LocalDate.now();
+        MarketPlanVo row = new MarketPlanVo();
+        row.setPlanId(3L);
+        row.setCropName("过季作物");
+        row.setMarketBeginDate(today.minusDays(90).toString());
+        row.setMarketEndDate(today.minusDays(1).toString());
+        List<MarketPlanVo> rows = new ArrayList<>();
+        rows.add(row);
+        when(marketPlanMapper.selectMarketPlanList(anyString(), any())).thenReturn(rows);
+
+        List<MarketPlanVo> list = service.queryList(new MarketPlanQuery());
+
+        assertThat(list).hasSize(1);
+        assertThat(list.get(0).getMarketStatus()).isEqualTo("off_shelf");
+        assertThat(list.get(0).getMarketStatusName()).isEqualTo("已下架");
     }
 
     @Test

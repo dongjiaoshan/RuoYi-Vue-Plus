@@ -13,8 +13,10 @@ import org.dromara.djs.plant.market.domain.query.MarketPlanQuery;
 import org.dromara.djs.plant.market.domain.vo.MarketPlanVo;
 import org.dromara.djs.plant.market.mapper.MarketPlanMapper;
 import org.dromara.djs.plant.market.service.IMarketPlanService;
+import org.dromara.djs.plant.market.util.MarketStatusCalculator;
 import org.springframework.stereotype.Service;
 
+import java.time.LocalDate;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -24,7 +26,7 @@ import java.util.Set;
  * 果蔬上市计划实现（V6-R151）。
  *
  * <p>纯只读聚合 service（非 {@code DjsBaseServiceImpl}，无 CRUD / softDelete）：
- * 取聚合行 → 批量解析作物图 URL → 返回。</p>
+ * 取聚合行 → 批量解析作物图 URL → 现算上市状态 → 返回。</p>
  *
  * @author djs
  */
@@ -48,6 +50,7 @@ public class MarketPlanServiceImpl implements IMarketPlanService {
         PageQuery pq = pageQuery != null ? pageQuery : new PageQuery(10, 1);
         IPage<MarketPlanVo> page = marketPlanMapper.selectMarketPlanPage(buildFixedOrderPage(pq), currentTenant(), query);
         fillImageUrl(page.getRecords());
+        fillMarketStatus(page.getRecords());
         return TableDataInfo.build(page);
     }
 
@@ -61,6 +64,7 @@ public class MarketPlanServiceImpl implements IMarketPlanService {
             log.warn("[MarketPlan] 导出行数 {} 超过软上限 {}，未截断，注意 Excel 生成耗时", list.size(), EXPORT_WARN_ROWS);
         }
         fillImageUrl(list);
+        fillMarketStatus(list);
         return list;
     }
 
@@ -104,6 +108,45 @@ public class MarketPlanServiceImpl implements IMarketPlanService {
             if (StrUtil.isNotBlank(vo.getCropImage())) {
                 vo.setCropImageUrl(urlMap.get(vo.getCropImage().trim()));
             }
+        }
+    }
+
+    /**
+     * 现算每行的上市状态（V6-R158）：状态码给前端查 i18n，中文名给导出直接写 Excel。
+     *
+     * <p>整批共用同一个 {@code today}，避免同一次查询里跨零点导致相邻行按不同「当天」判定。
+     * 日期串来自 SQL 的 {@code DATE_FORMAT(..., '%Y-%m-%d')}，为空表示该计划没排采摘明细，状态留空。</p>
+     *
+     * @param rows 待填充行（可空）
+     */
+    private void fillMarketStatus(List<MarketPlanVo> rows) {
+        if (rows == null || rows.isEmpty()) {
+            return;
+        }
+        LocalDate today = LocalDate.now();
+        for (MarketPlanVo vo : rows) {
+            String status = MarketStatusCalculator.resolve(
+                parseDate(vo.getMarketBeginDate()), parseDate(vo.getMarketEndDate()), today);
+            vo.setMarketStatus(status);
+            vo.setMarketStatusName(MarketStatusCalculator.name(status));
+        }
+    }
+
+    /**
+     * {@code yyyy-MM-dd} 串转 {@link LocalDate}；空串 / null / 非法值一律返回 null（状态随之留空，不抛）。
+     *
+     * @param text 日期串
+     * @return 日期，或 null
+     */
+    private LocalDate parseDate(String text) {
+        if (StrUtil.isBlank(text)) {
+            return null;
+        }
+        try {
+            return LocalDate.parse(text.trim());
+        } catch (RuntimeException e) {
+            log.warn("[MarketPlan] 日期串无法解析，状态留空：{}", text);
+            return null;
         }
     }
 

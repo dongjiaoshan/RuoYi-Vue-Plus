@@ -19,6 +19,16 @@ import java.util.List;
  * 一行 = 一条种植计划（甲方：「按照种植计划进行展示」）。明细聚合走不相关派生表 {@code agg}
  * 先按 {@code plant_id} GROUP BY 再 LEFT JOIN，避免直接 JOIN 明细造成扇出重复计数。
  *
+ * <h3>上市 / 下架日期口径（V6-R157）</h3>
+ * 逐条明细先 {@code COALESCE(实际采摘日期, 计划采摘日期)} 求出该地块的有效起止，再对整条计划取 MIN / MAX：
+ * 上市 = {@code MIN(COALESCE(begin_harvestdate, earliest_harvestdate))}、
+ * 下架 = {@code MAX(COALESCE(end_harvestdate, last_harvestdate))}，精确到天。
+ * COALESCE 放在聚合函数<b>里面</b>（逐行替换）而不是外面（整条计划替换）：一条计划下有的地块摘完了、
+ * 有的还没开摘是常态，逐行替换才能让「已摘的按实际、没摘的按计划」同时成立。
+ *
+ * <p>筛选仍按月（{@code DATE_FORMAT(..., '%Y-%m')}）比对——搜索框给的是月份选择器，
+ * 展示精确到天不影响筛选粒度。</p>
+ *
  * <h3>LEFT JOIN 而非 INNER JOIN</h3>
  * 一次采摘明细都没有的计划（{@code agg} 整行 NULL）照样出现在列表，两个月份显 {@code -}、
  * 产量兜 0 —— 运营要看得到「还没排采摘计划」的计划才知道该催谁。排序键
@@ -52,8 +62,8 @@ public interface MarketPlanMapper {
                         NULLIF(TRIM(SUBSTRING_INDEX(c.crop_image_url, ',', 1)), '')) AS cropImage,
                COALESCE(agg.expected_yield, 0)                  AS expectedYield,
                COALESCE(agg.actual_yield, 0)                    AS actualYield,
-               DATE_FORMAT(agg.market_begin, '%Y-%m')           AS marketBeginMonth,
-               DATE_FORMAT(agg.market_end, '%Y-%m')             AS marketEndMonth
+               DATE_FORMAT(agg.market_begin, '%Y-%m-%d')        AS marketBeginDate,
+               DATE_FORMAT(agg.market_end, '%Y-%m-%d')          AS marketEndDate
           FROM t_plant_plant_plan p
           LEFT JOIN t_plant_crop_info c
                  ON c.id = p.crop_id AND c.del_flag = '0' AND c.tenant_id = #{tenantId}
@@ -61,8 +71,8 @@ public interface MarketPlanMapper {
                 SELECT d.plant_id,
                        COALESCE(SUM(GREATEST(COALESCE(d.expected_yield, 0) - COALESCE(dl.disaster_loss, 0), 0)), 0) AS expected_yield,
                        COALESCE(SUM(d.actual_yield), 0) AS actual_yield,
-                       MIN(d.earliest_harvestdate)      AS market_begin,
-                       MAX(d.last_harvestdate)          AS market_end
+                       MIN(COALESCE(d.begin_harvestdate, d.earliest_harvestdate)) AS market_begin,
+                       MAX(COALESCE(d.end_harvestdate, d.last_harvestdate))       AS market_end
                   FROM t_plant_plant_details d
                   LEFT JOIN (SELECT fr.plot_id, fr.crop_id, SUM(fr.loss_yield) AS disaster_loss
                                FROM t_plant_farm_records fr
