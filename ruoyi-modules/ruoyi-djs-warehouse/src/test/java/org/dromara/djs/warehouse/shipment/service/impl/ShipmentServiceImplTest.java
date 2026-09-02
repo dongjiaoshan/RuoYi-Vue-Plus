@@ -1,6 +1,7 @@
 package org.dromara.djs.warehouse.shipment.service.impl;
 
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.dromara.common.core.exception.ServiceException;
@@ -52,6 +53,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyMap;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.atLeast;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -671,6 +673,30 @@ class ShipmentServiceImplTest {
         d.setProductType("white_bar");
         d.setDemandStatus(status.name());
         return d;
+    }
+
+    @Test
+    @DisplayName("闸范围: 发货清单与门店聚合只取「今天」的需求（demand_date = today，不是 >=）")
+    void loadDemands_datePredicateIsExactlyToday() {
+        when(demandMapper.selectList(any())).thenReturn(List.of());
+
+        service.listStorePendingDemands(9L);
+        service.listPendingStores();
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<LambdaQueryWrapper<DemandManage>> cap =
+            ArgumentCaptor.forClass(LambdaQueryWrapper.class);
+        verify(demandMapper, atLeast(2)).selectList(cap.capture());
+
+        // 明天的需求当晚才打包。一旦让它进闸，「全店备齐才发」这道门槛会在次日需求被确认的那一刻
+        // （实测 18:10-20:57）把整店锁死到午夜 —— 生产上二七店就是这么每天出不了车的。
+        // 打包端保持 >= today 不动（甲方 r27「今天可以对明天的需求打包」），发货端必须钳死当天。
+        assertThat(cap.getAllValues()).isNotEmpty();
+        assertThat(cap.getAllValues()).allSatisfy(w -> {
+            String sql = w.getTargetSql();
+            assertThat(sql).contains("demand_date =");
+            assertThat(sql).doesNotContain("demand_date >=");
+        });
     }
 
     private Store newStore(Long id, String name) {

@@ -717,22 +717,32 @@ public class ShipmentServiceImpl
     private List<DemandManage> loadShippableDemands(Long storeId) {
         List<String> shippableCodes = SHIPPABLE_DEMAND_STATUSES.stream()
             .map(DemandStatus::name).toList();
-        // 发货月台看「今天及以后有需求」的门店：按业务日期 demand_date >= 今天过滤（非 create_time），
+        // 一趟车装的就是「今天该发给这门店的货」：按业务日期 demand_date **精确等于**今天（非 create_time），
         // 今日按 Asia/Shanghai 算，避免部署到非 UTC+8 实例时跨日凌晨归错天（D-FIX-24 决策 #6a）。
-        // V6 row27：下界与打包端 selectOldestUncompletedDemand / selectStoreDemandCopies 一致 ——
-        // 打包能提前对明天的需求打，月台就必须能把那批货发出去，否则货卡在月台、需求却已扣满。
-        // 过期需求（< today）仍然排除，不把陈年未满单翻回月台。
+        //
+        // 上界必须钳死：出车是「全店备齐才发」（Kevin 2026-06-25，故意的门槛，配不齐不许漏着发）。
+        // 门店次日需求实测在前一天 18:10-20:57 确认，而那批货当晚才打包 —— 一旦放进闸门，
+        // 次日需求一确认整店就再也出不了车，一直锁到午夜。打包端的 >= today 不动：甲方 r27 要的是
+        // 「今天可以对明天的需求**打包**」（提前备货），不是「今天可以把明天的货**发掉**」，两件事。
+        //
+        // 下界同样钳死：过期未发的单不回月台。车每天都在发（甲方 2026-09-02 确认），积压不是常态；
+        // 偶发配不齐的单由 admin 需求管理人工取消关掉，不靠月台兜。
         LocalDate today = LocalDate.now(SHIP_TODAY_ZONE);
         return demandMapper.selectList(new LambdaQueryWrapper<DemandManage>()
             .in(DemandManage::getDemandStatus, shippableCodes)
-            .ge(DemandManage::getDemandDate, today)
+            .eq(DemandManage::getDemandDate, today)
             .eq(storeId != null, DemandManage::getStoreId, storeId)
             .orderByDesc(DemandManage::getDemandDate));
     }
 
     /**
-     * 门店列表展示用：今天及以后（V6 row27，口径同 {@link #loadShippableDemands}）
-     * + {@link #STORE_LIST_DEMAND_STATUSES}（含 COMPLETED 已发货）。仅 listPendingStores 用。
+     * 门店列表 + 页头聚合用：日期口径同 {@link #loadShippableDemands}（严格当天）
+     * + {@link #STORE_LIST_DEMAND_STATUSES}（含 COMPLETED，让当天已发完的门店也进列表显「已发货」）。
+     * 供 {@code listPendingStores} 与 {@code queryStoreSummary} 用。
+     *
+     * <p><b>日期口径必须与 {@link #loadShippableDemands} 完全一致</b>：门店列表 / 页头满足率 / 发货清单
+     * 是同一屏上的三个视图，页头若算「今天+明天」而清单只列今天，就会出现「满足率和清单对不上」的读数矛盾
+     * ——发货月台已经因为同类不同源问题出过事故（页头 100% 而出车被拦，且页面上看不出是哪条卡住）。</p>
      */
     private List<DemandManage> loadStoreListDemands(Long storeId) {
         List<String> codes = STORE_LIST_DEMAND_STATUSES.stream()
@@ -740,7 +750,7 @@ public class ShipmentServiceImpl
         LocalDate today = LocalDate.now(SHIP_TODAY_ZONE);
         return demandMapper.selectList(new LambdaQueryWrapper<DemandManage>()
             .in(DemandManage::getDemandStatus, codes)
-            .ge(DemandManage::getDemandDate, today)
+            .eq(DemandManage::getDemandDate, today)
             .eq(storeId != null, DemandManage::getStoreId, storeId)
             .orderByDesc(DemandManage::getDemandDate));
     }
