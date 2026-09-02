@@ -676,8 +676,8 @@ class ShipmentServiceImplTest {
     }
 
     @Test
-    @DisplayName("闸范围: 发货清单与门店聚合只取「今天」的需求（demand_date = today，不是 >=）")
-    void loadDemands_datePredicateIsExactlyToday() {
+    @DisplayName("闸范围: 发货清单与门店聚合取「今天及以后」的需求（demand_date >= today，过期单不回月台）")
+    void loadDemands_datePredicateIsTodayOnwards() {
         when(demandMapper.selectList(any())).thenReturn(List.of());
 
         service.listStorePendingDemands(9L);
@@ -688,14 +688,13 @@ class ShipmentServiceImplTest {
             ArgumentCaptor.forClass(LambdaQueryWrapper.class);
         verify(demandMapper, atLeast(2)).selectList(cap.capture());
 
-        // 明天的需求当晚才打包。一旦让它进闸，「全店备齐才发」这道门槛会在次日需求被确认的那一刻
-        // （实测 18:10-20:57）把整店锁死到午夜 —— 生产上二七店就是这么每天出不了车的。
-        // 打包端保持 >= today 不动（甲方 r27「今天可以对明天的需求打包」），发货端必须钳死当天。
+        // 次日需求在前一天傍晚确认、当晚打包，车也在当晚装 —— 闸只认当天的话，晚上装车时整屏是空的
+        // （当天的货中午已发完，次日的货又进不来）。下界仍钳死在今天：过期未发的单不回月台，
+        // 偶发配不齐的由 admin 人工取消关掉。两个 loader 必须同口径，否则页头满足率与清单对不上。
         assertThat(cap.getAllValues()).isNotEmpty();
         assertThat(cap.getAllValues()).allSatisfy(w -> {
             String sql = w.getTargetSql();
-            assertThat(sql).contains("demand_date =");
-            assertThat(sql).doesNotContain("demand_date >=");
+            assertThat(sql).contains("demand_date >=");
         });
     }
 

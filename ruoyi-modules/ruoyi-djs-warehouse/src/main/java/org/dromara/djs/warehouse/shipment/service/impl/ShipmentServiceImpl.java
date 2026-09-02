@@ -717,32 +717,35 @@ public class ShipmentServiceImpl
     private List<DemandManage> loadShippableDemands(Long storeId) {
         List<String> shippableCodes = SHIPPABLE_DEMAND_STATUSES.stream()
             .map(DemandStatus::name).toList();
-        // 一趟车装的就是「今天该发给这门店的货」：按业务日期 demand_date **精确等于**今天（非 create_time），
-        // 今日按 Asia/Shanghai 算，避免部署到非 UTC+8 实例时跨日凌晨归错天（D-FIX-24 决策 #6a）。
+        // 闸范围「今天及以后」：按业务日期 demand_date >= 今天（非 create_time），今日按 Asia/Shanghai 算，
+        // 避免部署到非 UTC+8 实例时跨日凌晨归错天（D-FIX-24 决策 #6a）。
         //
-        // 上界必须钳死：出车是「全店备齐才发」（Kevin 2026-06-25，故意的门槛，配不齐不许漏着发）。
-        // 门店次日需求实测在前一天 18:10-20:57 确认，而那批货当晚才打包 —— 一旦放进闸门，
-        // 次日需求一确认整店就再也出不了车，一直锁到午夜。打包端的 >= today 不动：甲方 r27 要的是
-        // 「今天可以对明天的需求**打包**」（提前备货），不是「今天可以把明天的货**发掉**」，两件事。
+        // 上界必须放开到次日：仓库的实际节奏是**前一晚打包、当晚装车、凌晨送到店**（生产实测出车清点
+        // 发生在 03:52 与 12:04）。次日需求在前一天 18:10-20:57 确认、当晚 21:40 前后打完包，
+        // 若闸只认当天，晚上装车时整屏是空的 —— 今天的货中午已发完，明天的货又进不来，车发不出去。
         //
-        // 下界同样钳死：过期未发的单不回月台。车每天都在发（甲方 2026-09-02 确认），积压不是常态；
+        // 下界钳死：过期未发的单不回月台。车每天都在发（甲方 2026-09-02 确认），积压不是常态；
         // 偶发配不齐的单由 admin 需求管理人工取消关掉，不靠月台兜。
+        //
+        // 满足率跨日混算只在「当天的单还没发完」且「次日的单已确认」同时成立时才出现：本白名单不含
+        // COMPLETED，当天发完后分母里只剩次日那一趟。出车硬闸是单需求行级的（confirmCheck 的
+        // 「全有或全无」按行判 shipped_count >= demand_quantity），任何一行配不齐都不会连累同店其它行。
         LocalDate today = LocalDate.now(SHIP_TODAY_ZONE);
         return demandMapper.selectList(new LambdaQueryWrapper<DemandManage>()
             .in(DemandManage::getDemandStatus, shippableCodes)
-            .eq(DemandManage::getDemandDate, today)
+            .ge(DemandManage::getDemandDate, today)
             .eq(storeId != null, DemandManage::getStoreId, storeId)
             .orderByDesc(DemandManage::getDemandDate));
     }
 
     /**
-     * 门店列表 + 页头聚合用：日期口径同 {@link #loadShippableDemands}（严格当天）
+     * 门店列表 + 页头聚合用：日期口径同 {@link #loadShippableDemands}（今天及以后）
      * + {@link #STORE_LIST_DEMAND_STATUSES}（含 COMPLETED，让当天已发完的门店也进列表显「已发货」）。
      * 供 {@code listPendingStores} 与 {@code queryStoreSummary} 用。
      *
      * <p><b>日期口径必须与 {@link #loadShippableDemands} 完全一致</b>：门店列表 / 页头满足率 / 发货清单
-     * 是同一屏上的三个视图，页头若算「今天+明天」而清单只列今天，就会出现「满足率和清单对不上」的读数矛盾
-     * ——发货月台已经因为同类不同源问题出过事故（页头 100% 而出车被拦，且页面上看不出是哪条卡住）。</p>
+     * 是同一屏上的三个视图，两者若一个算「今天+明天」另一个只算今天，就会出现「满足率和清单对不上」的读数
+     * 矛盾——发货月台已经因为同类不同源问题出过事故（页头 100% 而出车被拦，且页面上看不出是哪条卡住）。</p>
      */
     private List<DemandManage> loadStoreListDemands(Long storeId) {
         List<String> codes = STORE_LIST_DEMAND_STATUSES.stream()
@@ -750,7 +753,7 @@ public class ShipmentServiceImpl
         LocalDate today = LocalDate.now(SHIP_TODAY_ZONE);
         return demandMapper.selectList(new LambdaQueryWrapper<DemandManage>()
             .in(DemandManage::getDemandStatus, codes)
-            .eq(DemandManage::getDemandDate, today)
+            .ge(DemandManage::getDemandDate, today)
             .eq(storeId != null, DemandManage::getStoreId, storeId)
             .orderByDesc(DemandManage::getDemandDate));
     }
