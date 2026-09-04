@@ -348,8 +348,10 @@ public class ProductProductionServiceImpl
         p.setProductName(resolveProductionName(product));
         p.setProductType(product.getProductType() != null ? product.getProductType() : 1);
         p.setProductUnit(product.getProductUnit());
-        p.setProductSpec(StringUtils.isNotBlank(bo.getProductSpec())
-            ? bo.getProductSpec() : product.getProductSpec());
+        // 规格恒取产品主数据：它是产品属性，不是打包时的可填项。曾经放行客户端传值，现场表现为
+        // 打包工在「规格」框里顺手打一个数，整批不同产品全被写成同一个值（生产实测：9/2 晚整批 500g/份、
+        // 9/3 晚整批 250g/份），把甲方维护好的规格无声覆盖，还会漏到 C 端追溯扫码页。
+        p.setProductSpec(product.getProductSpec());
         p.setPlotId(src.getPlotId());
         p.setProductSort(1);
         p.setProductWeight(bo.getProductWeight());
@@ -507,8 +509,8 @@ public class ProductProductionServiceImpl
             p.setProductName(resolveProductionName(product));
             p.setProductType(product.getProductType() != null ? product.getProductType() : 1);
             p.setProductUnit(StringUtils.isNotBlank(product.getProductUnit()) ? product.getProductUnit() : bo.getProductUnit());
-            p.setProductSpec(StringUtils.isNotBlank(bo.getProductSpec())
-                ? bo.getProductSpec() : product.getProductSpec());
+            // 规格恒取产品主数据，理由同 submitVegPack：打包页不该让工人手填产品属性。
+            p.setProductSpec(product.getProductSpec());
             p.setEarNo(src.getEarNo());
             p.setProductSort(1);
             p.setProductWeight(consume);
@@ -1862,8 +1864,10 @@ public class ProductProductionServiceImpl
      * 打包即扣需求（需求 C）：替代原「发货确认扣 shipped_count」，避免双扣。
      *
      * <p>每个打包业态产出 {@code product_production} 后调用：按 {@code productId + storeId} 查该门店
-     * <b>最早一条未完成需求</b>（{@link DemandManageMapper#selectOldestUncompletedDemand}），对其
-     * {@code shipped_count} 原子累加本次打包量 {@code packQty}（{@link DemandManageMapper#incrementShipped}）。
+     * <b>全部未完成需求行</b>（{@link DemandManageMapper#selectUncompletedDemands}，需求日升序），按序
+     * 逐行对 {@code shipped_count} 原子累加（{@link DemandManageMapper#incrementShipped}）直到本次打包量
+     * {@code packQty} 用尽。<b>必须跨行扣</b>——同门店同产品同一天会有多行需求（门店分批下单），而打包台
+     * 屏上的「剩余需求」是跨行求和，只扣最早一行会让工人照屏幕打的量对不上、剩下的行永远备不齐。
      * 「门店需求剩余 = demand_quantity − shipped_count」，读取端已有 {@code GREATEST(...,0)} 防负兜底。</p>
      *
      * <p>{@code storeId} 为空（如礼盒未绑门店）或查不到匹配未完成需求 → log.warn 跳过，<b>不报错</b>
@@ -2032,14 +2036,26 @@ public class ProductProductionServiceImpl
     }
 
     /**
-     * KG 产品扣满门店需求：取该门店最早未完成需求，称重必须 ≥ 剩余需求重量，满足则一次扣满至 COMPLETED。
+     * KG 产品扣满门店需求：把该门店该产品<b>最早那个需求日当天的全部未完成需求行</b>一次扣满。
      *
-     * <p>剩余重量 {@code remain = demand_quantity − COALESCE(shipped_count, 0)}。称重 {@code weighedKg} 严格小于
-     * {@code remain} → 抛「重量未满足需求，请处理后再试」（客户规则：KG 产品只能重不能少，等于放行）。满足则以
-     * {@code remain} 累加 {@code shipped_count}，其 DB 端上界守卫（累加 ≤ demand_quantity）恒成立 → 需求扣满 COMPLETED。</p>
+     * <p><b>为什么是「当天全部行」而不是「最早一行」</b>：同门店同产品同一天会有多行需求（门店分批下单）。
+     * 打包台屏上的「剩余需求」是跨行求和（{@link DemandManageMapper#selectStoreDemandCopies} 按门店
+     * {@code SUM(GREATEST(demand_quantity − shipped_count, 0))}），只扣最早一行的话，工人照着屏幕称 2kg、
+     * 系统只认 1kg，剩下那行永远备不齐 —— 十几个小时后在发货月台被「全有或全无」出车闸拦死整店，而页头
+     * 满足率按<b>生产量</b>算仍显示 100%，现场读数自相矛盾、无从解释。口径与份数路径
+     * {@link #deductDemandOnPack}（读齐候选行逐行扣）一致。</p>
      *
-     * <p>无匹配未完成需求 → log.warn 跳过、<b>不报错</b>（与 {@link #deductDemandOnPack} 一致，保证无 demand 的
-     * 场景/单测不阻塞主链路）。</p>
+     * <p><b>为什么下界只钳当天</b>：候选行下界是 {@code demand_date >= 今天}（甲方 r27「今天可以对明天的
+     * 需求打包」），今天的车还没发时明天的行也在候选里。拿两天总量当下界会逼工人一次把两天的货称完才让
+     * 提交，故只要求覆盖最早那一天。</p>
+     *
+     * <p>称重 {@code weighedKg} 严格小于当天剩余总量 → 抛「重量未满足需求，请处理后再试」（客户规则：
+     * KG 产品只能重不能少，等于放行）。拦截点落在打包台、工人正站在秤边能当场补货；放过去的代价是
+     * 十几个小时后在车边卡死，那时补不了。</p>
+     *
+     * <p>无匹配未完成需求 → log.warn 跳过、<b>不报错</b>（与 {@link #deductDemandOnPack} 一致，保证无 demand
+     * 的场景/单测不阻塞主链路）。超出当天需求的富余量不计入任何需求行（不能超额履约），但留一条 warn，
+     * 不静默吞掉。</p>
      *
      * @param productId 打包目标产品 id
      * @param storeId   门店 id（非空）
@@ -2049,30 +2065,49 @@ public class ProductProductionServiceImpl
         if (productId == null || weighedKg == null) {
             return;
         }
-        DemandManage demand = demandManageMapper.selectOldestUncompletedDemand(productId, storeId);
-        if (demand == null) {
+        List<DemandManage> candidates = demandManageMapper.selectUncompletedDemands(productId, storeId);
+        if (candidates.isEmpty()) {
             log.warn("[PACK-DEMAND-DEDUCT-KG] KG 打包未匹配到未完成需求，跳过扣减 productId={} storeId={} weighedKg={}",
                 productId, storeId, weighedKg);
             return;
         }
-        BigDecimal demandQty = demand.getDemandQuantity() == null ? BigDecimal.ZERO : demand.getDemandQuantity();
-        BigDecimal shipped = demand.getShippedCount() == null ? BigDecimal.ZERO : demand.getShippedCount();
-        BigDecimal remain = demandQty.subtract(shipped);
-        if (remain.signum() <= 0) {
+        // candidates 已按 demand_date ASC, id ASC 排序 → 首行的需求日即最早需求日。
+        // demand_date 理论非空（DDL NOT NULL），防御性取到 null 时退化为「只认首行」。
+        LocalDate targetDate = candidates.get(0).getDemandDate();
+        List<DemandManage> sameDay = targetDate == null
+            ? List.of(candidates.get(0))
+            : candidates.stream().filter(d -> targetDate.equals(d.getDemandDate())).toList();
+        BigDecimal dayRemain = BigDecimal.ZERO;
+        for (DemandManage d : sameDay) {
+            dayRemain = dayRemain.add(rowRemain(d));
+        }
+        if (dayRemain.signum() <= 0) {
             // 已满足（并发已扣满）：无需再扣，直接返回。
             return;
         }
-        if (weighedKg.compareTo(remain) < 0) {
+        if (weighedKg.compareTo(dayRemain) < 0) {
             throw new ServiceException("重量未满足需求，请处理后再试");
         }
-        // 以剩余需求重量扣满：上界守卫（shipped + remain <= demand_quantity）恒成立 → 需求置 COMPLETED。
-        int rows = demandManageMapper.incrementShipped(demand.getId(), TENANT_V1, remain);
-        if (rows == 0) {
-            // 并发履约已把剩余量吃掉（或需求行已删）→ 拒绝本次打包，整事务回滚。
-            throw new ServiceException("需求已被并发履约，请刷新后重试");
+        // 逐行扣满：每行 take = 该行剩余量，DB 端上界守卫（shipped + take <= demand_quantity）恒成立。
+        BigDecimal left = weighedKg;
+        for (DemandManage demand : sameDay) {
+            BigDecimal take = rowRemain(demand);
+            if (take.signum() <= 0) {
+                continue;
+            }
+            int rows = demandManageMapper.incrementShipped(demand.getId(), TENANT_V1, take);
+            if (rows == 0) {
+                // 并发履约已把剩余量吃掉（或需求行已删）→ 拒绝本次打包，整事务回滚。
+                throw new ServiceException("需求已被并发履约，请刷新后重试");
+            }
+            log.info("[PACK-DEMAND-DEDUCT-KG] KG 打包扣满需求 demandId={} demandDate={} productId={} storeId={} weighedKg={} take={} affected={}",
+                demand.getId(), demand.getDemandDate(), productId, storeId, weighedKg, take, rows);
+            left = left.subtract(take);
         }
-        log.info("[PACK-DEMAND-DEDUCT-KG] KG 打包扣满需求 demandId={} productId={} storeId={} weighedKg={} remain={} affected={}",
-            demand.getId(), productId, storeId, weighedKg, remain, rows);
+        if (left.signum() > 0) {
+            log.warn("[PACK-DEMAND-DEDUCT-KG] 称重富余未计入需求（当天需求已扣满）productId={} storeId={} weighedKg={} 富余={}",
+                productId, storeId, weighedKg, left);
+        }
     }
 
     /**

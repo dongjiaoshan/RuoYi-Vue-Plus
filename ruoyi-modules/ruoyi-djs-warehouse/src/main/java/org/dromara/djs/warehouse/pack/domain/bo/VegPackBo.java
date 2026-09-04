@@ -85,12 +85,6 @@ public class VegPackBo {
     private String deliverDest;
 
     /**
-     * 规格（可选）。
-     */
-    @Size(max = 64, message = "{pack.product_spec.size}")
-    private String productSpec;
-
-    /**
      * 凭证图 OSS IDs CSV（可选）。
      */
     @Size(max = 500, message = "{pack.proof_oss_ids.size}")
