@@ -409,7 +409,8 @@ class DryPackSplitAndMeasureTest {
             d.setId(DEMAND_ID);
             d.setDemandQuantity(new BigDecimal("2.000"));
             d.setShippedCount(BigDecimal.ZERO);
-            when(demandManageMapper.selectOldestUncompletedDemand(PRODUCT_ID, STORE_ID)).thenReturn(d);
+            when(demandManageMapper.selectUncompletedDemands(PRODUCT_ID, STORE_ID))
+                .thenReturn(java.util.List.of(d));
             when(demandManageMapper.incrementShipped(anyLong(), anyString(), any())).thenReturn(1);
 
             service.submitDryPack(bo("3.000", "3", "kg"));
