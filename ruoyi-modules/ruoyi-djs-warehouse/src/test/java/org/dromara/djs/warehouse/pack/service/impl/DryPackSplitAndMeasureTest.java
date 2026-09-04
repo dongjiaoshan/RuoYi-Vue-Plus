@@ -401,7 +401,7 @@ class DryPackSplitAndMeasureTest {
         }
 
         @Test
-        @DisplayName("KG 成品（重量模式）即便带了 packQuantity 也恒 1 条 —— 录的是重量不是份数")
+        @DisplayName("KG 成品（重量模式）不看 packQuantity —— 只匹配到 1 行需求就落 1 条，录的是重量不是份数")
         void kgProductNeverSplits() {
             when(inhouseMapper.selectById(INHOUSE_ID)).thenReturn(source("kg", "50.000"));
             when(productInfoMapper.selectById(PRODUCT_ID)).thenReturn(product("dry_good", "kg", null));

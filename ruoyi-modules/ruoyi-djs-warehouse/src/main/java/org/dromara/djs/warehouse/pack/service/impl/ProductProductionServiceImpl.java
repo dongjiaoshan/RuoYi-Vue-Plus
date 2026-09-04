@@ -494,9 +494,20 @@ public class ProductProductionServiceImpl
         stockCheckService.assertLocationUnlocked(locationId);
 
         // V6 row47：打包量模式下「打包 N 份 = N 条产出记录，每条消耗固定 = 每份计量规则」。
-        // 重量模式恒 1 条（splitCount=1，perRecordConsume 单元素 = 本次称重），行为与拆行前完全一致。
-        int splitCount = resolveDryProductionSplitCount(product, bo);
-        List<BigDecimal> perRecordConsume = splitConsumeEvenly(bo.getProductWeight(), splitCount);
+        //
+        // KG（重量模式）按「本次称重能扣满几行需求」拆：门店同一天分批下单会给同一产品落多行需求，
+        // 而一条产出记录在出车清点时被绑死到<b>一行</b>需求（availableProductionWrapper 只认
+        // demand_id IS NULL），所以扣满 N 行却只落 1 条记录时，多出来的需求会过了出车闸却无货可选、
+        // 卡在车边。拆行让「产出记录数 ≡ 扣满的需求行数」，两边守恒。
+        // 无匹配需求 / 礼盒 / 非 KG 未回传打包量 → 恒 1 条，行为与拆行前一致。
+        List<DemandManage> kgDemandRows = planKgDemandRows(product, bo.getStoreId(),
+            bo.getProductWeight(), bo.getDeliverDest());
+        int splitCount = kgDemandRows.isEmpty()
+            ? resolveDryProductionSplitCount(product, bo)
+            : kgDemandRows.size();
+        List<BigDecimal> perRecordConsume = kgDemandRows.isEmpty()
+            ? splitConsumeEvenly(bo.getProductWeight(), splitCount)
+            : splitByDemandRows(bo.getProductWeight(), kgDemandRows);
 
         List<ProductProduction> saved = new java.util.ArrayList<>(splitCount);
         for (BigDecimal consume : perRecordConsume) {
@@ -552,14 +563,14 @@ public class ProductProductionServiceImpl
         // 其余（发货月台）= 直接履约，须选门店 + 打包即扣需求（发货不再扣）。
         // ⚠️ 整批只调一次（不在上面的产出记录循环里），否则 N 条记录各扣 N 份 = 超扣 N² 倍。
         // 按产品单位分流：
-        //   · KG（散装 kg 等）：称重必须 ≥ 所选门店剩余需求重量，否则拦；满足则把该需求扣满至 COMPLETED
-        //     （客户规则：KG 产品一次称重 ≥ 需求即满足整单，只能重不能少，Kevin 2026-07-21）。
+        //   · KG（散装 kg 等）：扣满上面 planKgDemandRows 规划好的那几行（每行按其剩余量扣满至 COMPLETED），
+        //     行数与本次产出记录数一一对应（客户规则：KG 产品一次称重 ≥ 需求即满足整单，只能重不能少，
+        //     Kevin 2026-07-21）。
         //   · 非 KG（枚/份/盒等）：扣减量 = 前端回传的「打包量」packQuantity（甲方 2026-08-06 V6 row34：
         //     录入 4 枚就扣 4 枚需求）；未回传 packQuantity 的入口（重量模式 / 肉品页 / 老客户端）
         //     回落原口径「一次打包 = 扣 1 份」，行为不变。
         if (isKgUnit(product.getProductUnit())) {
-            fulfillKgDemandOnPack(product.getId(), bo.getStoreId(),
-                bo.getProductWeight(), bo.getDeliverDest());
+            deductKgPlannedRows(kgDemandRows, product.getId(), bo.getStoreId(), bo.getProductWeight());
         } else {
             fulfillDirectDemandOnPack(product.getId(), bo.getStoreId(),
                 resolveDryDemandDeductQty(product, bo.getPackQuantity()), bo.getDeliverDest());
@@ -625,9 +636,8 @@ public class ProductProductionServiceImpl
      * 每条记录的原材料消耗是计量规则……应该是每一份都是单独一条记录，原材料消耗数据是固定的。」</p>
      *
      * <ul>
-     *   <li>成品单位 = KG（重量模式）→ 恒 <b>1</b> 条。判据与下方需求扣减分流用的是<b>同一个</b>
-     *       {@code isKgUnit(product.getProductUnit())}，两者必须同进同出：拆行与「按打包量扣需求」
-     *       本就是同一件事的两面。</li>
+     *   <li>成品单位 = KG（重量模式）→ 恒 <b>1</b> 条。<b>注意本方法只在 KG 没规划出需求行时才被调用</b>
+     *       （无匹配需求 / 礼盒）—— 规划出了行就按行数拆，见 {@link #planKgDemandRows}。</li>
      *   <li>未回传 {@code packQuantity}（mp / 肉品页 / 老客户端）→ 恒 <b>1</b> 条，行为与拆行前一致。</li>
      *   <li>其余（打包量模式）→ {@code packQuantity} 条。打包量必须是<b>整数份</b>
      *       （前端数字键盘已限 0 位小数），非整数直接拒——半份产品不存在，落库会产出「0.5 条记录」这种无解语义。</li>
@@ -672,6 +682,28 @@ public class ProductProductionServiceImpl
         for (int i = 0; i < n - 1; i++) {
             parts.add(per);
             allocated = allocated.add(per);
+        }
+        parts.add(total.subtract(allocated));
+        return parts;
+    }
+
+    /**
+     * KG 打包按需求行拆产出记录时，每条记录的重量：第 i 条 = 第 i 行需求的剩余量。
+     *
+     * <p>富余（本次称重减去各行剩余量之和，KG「只能重不能少」必然 ≥ 0）全部落到<b>最后一条</b>，
+     * 保证 <b>Σ 每条重量 ≡ 本次称重</b> —— 拆行绝不能改变来源池的总消耗量，也不能凭空造重量。
+     * 落最后一条而不是均摊：前面几条的重量恰好等于对应需求行的量，出车清点时一条对一行、数字对得上。</p>
+     *
+     * @param total 本次称重（{@code DryPackBo.productWeight}）
+     * @param rows  {@link #planKgDemandRows} 规划出的需求行（非空）
+     */
+    static List<BigDecimal> splitByDemandRows(BigDecimal total, List<DemandManage> rows) {
+        List<BigDecimal> parts = new java.util.ArrayList<>(rows.size());
+        BigDecimal allocated = BigDecimal.ZERO;
+        for (int i = 0; i < rows.size() - 1; i++) {
+            BigDecimal take = rowRemain(rows.get(i));
+            parts.add(take);
+            allocated = allocated.add(take);
         }
         parts.add(total.subtract(allocated));
         return parts;
@@ -2010,87 +2042,113 @@ public class ProductProductionServiceImpl
     }
 
     /**
-     * KG 产品打包的门店需求履约（Kevin 2026-07-21）：镜像 {@link #fulfillDirectDemandOnPack} 的分流前置，
-     * 但扣减口径为「称重满足即把该需求扣满完成」而非恒扣 1 份。
+     * 规划本次 KG 称重要扣满<b>哪几行</b>门店需求（Kevin 2026-07-21 定的 KG 口径：一次称重 ≥ 需求即满足整单，
+     * 只能重不能少）。在写任何产出记录<b>之前</b>调用 —— 产出记录条数要按这里规划出的行数拆。
      *
+     * <p><b>为什么必须按行规划、而不是简单地扣一行或扣满一天</b>：门店同一天分批下单，会给同一产品落多行
+     * 需求；打包台屏上的「剩余需求」（{@link DemandManageMapper#selectStoreDemandCopies}）是跨行求和，
+     * 工人照着它一次称够多行的量是正常操作。但一条产出记录在出车清点时被绑死到<b>一行</b>需求
+     * （{@code availableProductionWrapper} 只认 {@code demand_id IS NULL}），于是：</p>
      * <ul>
-     *   <li>发送位置=礼盒（{@code deliver_dest='gift'}）：礼盒组件不扣直接需求，直接返回。</li>
-     *   <li>{@code storeId} 为空：抛 {@link ServiceException}（须选门店，与 {@link #fulfillDirectDemandOnPack} 一致）。</li>
-     *   <li>其余：调 {@link #deductKgDemandComplete}，称重 {@code weighedKg} &lt; 门店剩余需求重量 → 拦；否则扣满至 COMPLETED。</li>
+     *   <li>只扣一行 → 剩下的行永远备不齐，整店被「全有或全无」出车闸拦死，而页头满足率按<b>生产量</b>
+     *       算仍是 100%，现场读数自相矛盾。</li>
+     *   <li>扣满多行却只落 1 条记录 → 多出来的需求过了闸却无货可选，卡在车边（更糟：整店发一半）。</li>
      * </ul>
+     * <p>所以这里规划出几行，上游就落几条产出记录，两边守恒。</p>
      *
-     * @param productId  打包目标产品 id（KG 单位）
-     * @param storeId    门店 id（可空）
-     * @param weighedKg  本次称重（肉品前端已 g÷1000 得 kg，与 demand_quantity 同量纲）
+     * <p><b>规划规则</b>（贪心、整行填，不做部分履约）：取候选行里<b>最早那个需求日</b>当天的行（候选下界是
+     * {@code demand_date >= 今天}，甲方 r27「今天可以对明天的需求打包」，今天的车没发时明天的行也在候选里，
+     * 不能一起算）；按序累加，本次称重还够填满下一行就把它整行填满，不够就停。</p>
+     *
+     * <p><b>下界与改动前逐字相同</b>：连<b>第一行</b>都填不满才抛「重量未满足需求，请处理后再试」。工人手上
+     * 只有一头猪的量时照样能提交、照样扣满第一行，下次再打下一行 —— 不引入任何新的拒绝。</p>
+     *
+     * <p>非 KG 产品 / 礼盒组件（{@code deliver_dest='gift'}，履约在礼盒打包环节）→ 返回空。
+     * 无匹配未完成需求 → 返回空（上游落 1 条记录、跳过扣减、不报错，保证无 demand 的场景不阻塞主链路）。</p>
+     *
+     * @param product     打包目标产品
+     * @param storeId     门店 id（KG 非礼盒时必填）
+     * @param weighedKg   本次称重（kg，与 demand_quantity 同量纲）
      * @param deliverDest 发送位置
+     * @return 本次要扣满的需求行（需求日升序、同日 id 升序）；空 = 不扣需求
      */
-    protected void fulfillKgDemandOnPack(Long productId, Long storeId, BigDecimal weighedKg, String deliverDest) {
+    protected List<DemandManage> planKgDemandRows(ProductInfo product, Long storeId,
+                                                  BigDecimal weighedKg, String deliverDest) {
+        if (product == null || !isKgUnit(product.getProductUnit()) || weighedKg == null) {
+            return List.of();
+        }
         if (DELIVER_DEST_GIFT.equals(deliverDest)) {
             // 礼盒组件：不绑门店、不扣直接需求（履约在礼盒打包环节）
-            return;
+            return List.of();
         }
         if (storeId == null) {
             throw new ServiceException("请选择门店");
         }
-        deductKgDemandComplete(productId, storeId, weighedKg);
-    }
-
-    /**
-     * KG 产品扣满门店需求：把该门店该产品<b>最早那个需求日当天的全部未完成需求行</b>一次扣满。
-     *
-     * <p><b>为什么是「当天全部行」而不是「最早一行」</b>：同门店同产品同一天会有多行需求（门店分批下单）。
-     * 打包台屏上的「剩余需求」是跨行求和（{@link DemandManageMapper#selectStoreDemandCopies} 按门店
-     * {@code SUM(GREATEST(demand_quantity − shipped_count, 0))}），只扣最早一行的话，工人照着屏幕称 2kg、
-     * 系统只认 1kg，剩下那行永远备不齐 —— 十几个小时后在发货月台被「全有或全无」出车闸拦死整店，而页头
-     * 满足率按<b>生产量</b>算仍显示 100%，现场读数自相矛盾、无从解释。口径与份数路径
-     * {@link #deductDemandOnPack}（读齐候选行逐行扣）一致。</p>
-     *
-     * <p><b>为什么下界只钳当天</b>：候选行下界是 {@code demand_date >= 今天}（甲方 r27「今天可以对明天的
-     * 需求打包」），今天的车还没发时明天的行也在候选里。拿两天总量当下界会逼工人一次把两天的货称完才让
-     * 提交，故只要求覆盖最早那一天。</p>
-     *
-     * <p>称重 {@code weighedKg} 严格小于当天剩余总量 → 抛「重量未满足需求，请处理后再试」（客户规则：
-     * KG 产品只能重不能少，等于放行）。拦截点落在打包台、工人正站在秤边能当场补货；放过去的代价是
-     * 十几个小时后在车边卡死，那时补不了。</p>
-     *
-     * <p>无匹配未完成需求 → log.warn 跳过、<b>不报错</b>（与 {@link #deductDemandOnPack} 一致，保证无 demand
-     * 的场景/单测不阻塞主链路）。超出当天需求的富余量不计入任何需求行（不能超额履约），但留一条 warn，
-     * 不静默吞掉。</p>
-     *
-     * @param productId 打包目标产品 id
-     * @param storeId   门店 id（非空）
-     * @param weighedKg 本次称重（kg）
-     */
-    protected void deductKgDemandComplete(Long productId, Long storeId, BigDecimal weighedKg) {
-        if (productId == null || weighedKg == null) {
-            return;
-        }
-        List<DemandManage> candidates = demandManageMapper.selectUncompletedDemands(productId, storeId);
+        List<DemandManage> candidates = demandManageMapper.selectUncompletedDemands(product.getId(), storeId);
         if (candidates.isEmpty()) {
-            log.warn("[PACK-DEMAND-DEDUCT-KG] KG 打包未匹配到未完成需求，跳过扣减 productId={} storeId={} weighedKg={}",
-                productId, storeId, weighedKg);
-            return;
+            return List.of();
         }
         // candidates 已按 demand_date ASC, id ASC 排序 → 首行的需求日即最早需求日。
         // demand_date 理论非空（DDL NOT NULL），防御性取到 null 时退化为「只认首行」。
         LocalDate targetDate = candidates.get(0).getDemandDate();
-        List<DemandManage> sameDay = targetDate == null
-            ? List.of(candidates.get(0))
-            : candidates.stream().filter(d -> targetDate.equals(d.getDemandDate())).toList();
-        BigDecimal dayRemain = BigDecimal.ZERO;
-        for (DemandManage d : sameDay) {
-            dayRemain = dayRemain.add(rowRemain(d));
+        List<DemandManage> sameDay = new java.util.ArrayList<>();
+        for (DemandManage d : candidates) {
+            if (targetDate != null && !targetDate.equals(d.getDemandDate())) {
+                break;
+            }
+            if (rowRemain(d).signum() > 0) {
+                sameDay.add(d);
+            }
+            if (targetDate == null) {
+                break;
+            }
         }
-        if (dayRemain.signum() <= 0) {
-            // 已满足（并发已扣满）：无需再扣，直接返回。
-            return;
+        if (sameDay.isEmpty()) {
+            // 当天各行都已扣满（并发已履约）：不扣、不报错。
+            return List.of();
         }
-        if (weighedKg.compareTo(dayRemain) < 0) {
+        if (weighedKg.compareTo(rowRemain(sameDay.get(0))) < 0) {
+            // 连第一行都填不满 —— 与改动前同一条下界、同一句报错。
             throw new ServiceException("重量未满足需求，请处理后再试");
         }
-        // 逐行扣满：每行 take = 该行剩余量，DB 端上界守卫（shipped + take <= demand_quantity）恒成立。
+        List<DemandManage> planned = new java.util.ArrayList<>();
         BigDecimal left = weighedKg;
-        for (DemandManage demand : sameDay) {
+        for (DemandManage d : sameDay) {
+            BigDecimal remain = rowRemain(d);
+            if (left.compareTo(remain) < 0) {
+                // 剩下的重量填不满这一行 —— KG 不做部分履约（填一半的行仍会卡住出车闸），到此为止。
+                break;
+            }
+            planned.add(d);
+            left = left.subtract(remain);
+        }
+        if (left.signum() > 0) {
+            log.warn("[PACK-DEMAND-DEDUCT-KG] 称重富余未计入需求（不足以再填满下一行）productId={} storeId={} weighedKg={} 已规划行数={} 富余={}",
+                product.getId(), storeId, weighedKg, planned.size(), left);
+        }
+        return planned;
+    }
+
+    /**
+     * 把 {@link #planKgDemandRows} 规划好的需求行逐行扣满。
+     *
+     * <p>每行扣该行剩余量（{@link #rowRemain}），DB 端上界守卫（{@code shipped_count + take <= demand_quantity}）
+     * 恒成立 → 该行备齐。守卫未命中（affected==0，并发已履约或需求行已删）→ 抛 {@link ServiceException}
+     * 触发整事务回滚（本次产出记录一并撤销），不留半截写入。</p>
+     *
+     * @param plannedRows {@link #planKgDemandRows} 的返回值（空 = 不扣）
+     * @param productId   打包目标产品 id（日志用）
+     * @param storeId     门店 id（日志用）
+     * @param weighedKg   本次称重（日志用）
+     */
+    protected void deductKgPlannedRows(List<DemandManage> plannedRows, Long productId,
+                                       Long storeId, BigDecimal weighedKg) {
+        if (plannedRows == null || plannedRows.isEmpty()) {
+            log.warn("[PACK-DEMAND-DEDUCT-KG] KG 打包未匹配到未完成需求，跳过扣减 productId={} storeId={} weighedKg={}",
+                productId, storeId, weighedKg);
+            return;
+        }
+        for (DemandManage demand : plannedRows) {
             BigDecimal take = rowRemain(demand);
             if (take.signum() <= 0) {
                 continue;
@@ -2102,11 +2160,6 @@ public class ProductProductionServiceImpl
             }
             log.info("[PACK-DEMAND-DEDUCT-KG] KG 打包扣满需求 demandId={} demandDate={} productId={} storeId={} weighedKg={} take={} affected={}",
                 demand.getId(), demand.getDemandDate(), productId, storeId, weighedKg, take, rows);
-            left = left.subtract(take);
-        }
-        if (left.signum() > 0) {
-            log.warn("[PACK-DEMAND-DEDUCT-KG] 称重富余未计入需求（当天需求已扣满）productId={} storeId={} weighedKg={} 富余={}",
-                productId, storeId, weighedKg, left);
         }
     }
 
