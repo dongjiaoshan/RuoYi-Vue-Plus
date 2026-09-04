@@ -400,22 +400,67 @@ class DryPackSplitAndMeasureTest {
             assertThat(rows.get(2).getProductWeight()).isEqualByComparingTo("3.334");
         }
 
+        /** KG 需求行：带 demand_date（不带会走 planKgDemandRows 的 null 防御分支，测不到正常路径）。 */
+        private DemandManage kgDemandRow(Long id, String qty, String shipped) {
+            DemandManage d = new DemandManage();
+            d.setId(id);
+            d.setDemandDate(java.time.LocalDate.now());
+            d.setDemandQuantity(new BigDecimal(qty));
+            d.setShippedCount(new BigDecimal(shipped));
+            return d;
+        }
+
+        private void stubKgProduct(DemandManage... rows) {
+            when(inhouseMapper.selectById(INHOUSE_ID)).thenReturn(source("kg", "50.000"));
+            when(productInfoMapper.selectById(PRODUCT_ID)).thenReturn(product("dry_good", "kg", null));
+            when(demandManageMapper.selectUncompletedDemands(PRODUCT_ID, STORE_ID))
+                .thenReturn(List.of(rows));
+            when(demandManageMapper.incrementShipped(anyLong(), anyString(), any())).thenReturn(1);
+        }
+
         @Test
         @DisplayName("KG 成品（重量模式）不看 packQuantity —— 只匹配到 1 行需求就落 1 条，录的是重量不是份数")
         void kgProductNeverSplits() {
-            when(inhouseMapper.selectById(INHOUSE_ID)).thenReturn(source("kg", "50.000"));
-            when(productInfoMapper.selectById(PRODUCT_ID)).thenReturn(product("dry_good", "kg", null));
-            DemandManage d = new DemandManage();
-            d.setId(DEMAND_ID);
-            d.setDemandQuantity(new BigDecimal("2.000"));
-            d.setShippedCount(BigDecimal.ZERO);
-            when(demandManageMapper.selectUncompletedDemands(PRODUCT_ID, STORE_ID))
-                .thenReturn(java.util.List.of(d));
-            when(demandManageMapper.incrementShipped(anyLong(), anyString(), any())).thenReturn(1);
+            stubKgProduct(kgDemandRow(DEMAND_ID, "2.000", "0"));
 
             service.submitDryPack(bo("3.000", "3", "kg"));
 
             verify(productionMapper, times(1)).insert(any(ProductProduction.class));
+        }
+
+        @Test
+        @DisplayName("★KG 同日两行需求各 1kg、一次称 2kg → 落 2 条产出记录（每条 = 对应行的量），两行各扣 1kg")
+        void kgSplitsPerDemandRow() {
+            // 9/4 二七店「黑毛猪猪肚」真实场景：门店 17:20 / 17:27 分两批下单，同产品两行各 1kg。
+            // 一条产出记录在出车清点时被绑死到一行需求，所以扣满几行就必须落几条记录 —— 只落 1 条时
+            // 第二行会过了出车闸却无货可选，整店发一半卡在车边（9/4 生产上真实发生：36 单发出、剩一行孤单）。
+            stubKgProduct(kgDemandRow(DEMAND_ID, "1.000", "0"),
+                          kgDemandRow(DEMAND_ID + 1, "1.000", "0"));
+
+            service.submitDryPack(bo("2.000", null, "kg"));
+
+            List<ProductProduction> rows = capturedProductions(2);
+            assertThat(rows.get(0).getProductWeight()).isEqualByComparingTo("1.000");
+            assertThat(rows.get(1).getProductWeight()).isEqualByComparingTo("1.000");
+            assertThat(rows.stream().map(ProductProduction::getProductWeight)
+                .reduce(BigDecimal.ZERO, BigDecimal::add)).isEqualByComparingTo("2.000");
+
+            ArgumentCaptor<BigDecimal> deltas = ArgumentCaptor.forClass(BigDecimal.class);
+            verify(demandManageMapper, times(2)).incrementShipped(anyLong(), anyString(), deltas.capture());
+            assertThat(deltas.getAllValues()).allSatisfy(d -> assertThat(d).isEqualByComparingTo("1.000"));
+        }
+
+        @Test
+        @DisplayName("★KG 同日两行、只称到 1.2kg（手上一头猪）→ 仍落 1 条、只扣满第一行，不抛（不得比按行规划前更严）")
+        void kgPartialWeighStillLandsOneRecord() {
+            stubKgProduct(kgDemandRow(DEMAND_ID, "1.000", "0"),
+                          kgDemandRow(DEMAND_ID + 1, "1.000", "0"));
+
+            service.submitDryPack(bo("1.200", null, "kg"));
+
+            List<ProductProduction> rows = capturedProductions(1);
+            assertThat(rows.get(0).getProductWeight()).isEqualByComparingTo("1.200");
+            verify(demandManageMapper, times(1)).incrementShipped(anyLong(), anyString(), any());
         }
 
         @Test

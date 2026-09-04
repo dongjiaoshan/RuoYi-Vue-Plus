@@ -167,62 +167,36 @@ public interface DemandManageMapper extends BaseMapperPlus<DemandManage, DemandM
                          @Param("delta") BigDecimal delta);
 
     /**
-     * 某产品 + 某门店「最早一条未完成需求」（需求 C：打包即扣需求）。
-     *
-     * <p>打包时按此查到的最早未完成需求行，对其 {@code shipped_count} 累加本次打包量（{@link #incrementShipped}），
-     * 把需求扣减从「发货确认」前移到「打包」，避免发货再扣造成双扣（{@code ShipmentConfirmedEventListener}
-     * 已停用发货扣减）。</p>
+     * 某产品 + 某门店<b>全部</b>未完成需求行（需求日升序、同日 id 升序）—— <b>打包扣需求的唯一查询</b>
+     * （份数路径 {@code deductDemandOnPack} 与 KG 路径 {@code planKgDemandRows} 都走它）。
      *
      * <p>口径：指定 {@code product_id + store_id}，需求日 <b>今天及以后</b>（{@code demand_date >= CURDATE()}）、
      * 状态属「已确认且未完成」（{@code demand_status IN ('CONFIRMED','IN_PRODUCTION','PARTIAL_SHIPPED')}——
      * COMPLETED 已满足不再扣，DRAFT/SUBMITTED 未确认不计入，CANCELLED/DELETED 排除），且仍有未发货余量
-     * （{@code shipped_count < demand_quantity}）。按需求日升序取最早一条（同日再按 {@code id ASC}）LIMIT 1，
-     * 即先满足今天的需求、再吃明天的。</p>
+     * （{@code shipped_count < demand_quantity}）。</p>
      *
-     * <p><b>为什么是「今天及以后」而不是「只限当天」也不是「不限日期」</b>（甲方 2026-08-06 V6 row27
+     * <p><b>为什么返回全部行而不是最早一行</b>：门店同一天分批下单会给同一产品落多行需求，打包台展示的
+     * 「剩余需求」又是跨行求和（{@link #selectStoreDemandCopies} 按门店 SUM）。只吃最早那一行的话，工人照
+     * 屏幕上的总数打要么被拒、要么多打的量被静默丢弃，剩下的行永远备不齐，整店被出车闸拦死。调用方据此
+     * 一次读齐候选行、先校验够不够、够了再逐行扣，「超量」在写任何一行之前就报错，不依赖事务回滚擦半截写入。</p>
+     *
+     * <p><b>为什么下界是「今天及以后」而不是「只限当天」也不是「不限日期」</b>（甲方 2026-08-06 V6 row27
      * 「只要有需求，就可以进行打包。即今天可以对明天需求进行打包」）：</p>
      * <ul>
      *   <li>只限当天 → 明天的需求今天打不了，正是甲方要改的点。</li>
      *   <li>完全不限日期 → 会扣到<b>已过期</b>的历史未满需求（打包台展示端亦然），既把陈旧数据翻出来给工人看，
      *       也让今天的打包记到上周的单上。故下界钳在今天。</li>
      * </ul>
-     * <p>展示端 {@link #selectStoreDemandCopies} / {@link #selectStoreDemandCopiesBatch} 用同一个
-     * {@code >= today} 下界，两端口径必须同时改、不得只改一边（只改展示 → 打包后数字不减；只改扣减 →
-     * 扣到看不见的行）。无匹配返 null（service 端 log.warn 跳过，不报错）。</p>
+     *
+     * <p>⚠️ <b>展示端 {@link #selectStoreDemandCopies} / {@link #selectStoreDemandCopiesBatch} 与本方法用同一个
+     * {@code >= today} 下界，三者必须同时改、不得只改一边</b>（只改展示 → 打包后数字不减；只改扣减 →
+     * 扣到看不见的行）。</p>
      *
      * <p>租户隔离：未启全局 MP 拦截器，显式 {@code tenant_id='1001'}（V1 单租户，与本 mapper 既有聚合 SQL
      * 范式一致）；{@code del_flag='0'}（CHAR(1) 未删）。</p>
      *
      * @param productId 产品 FK（{@code t_warehouse_product_info.id}）
      * @param storeId   门店 FK（{@code t_md_store.id}）
-     * @return 今天及以后最早一条未完成需求实体（无则 null）
-     */
-    @Select("""
-        SELECT *
-        FROM t_warehouse_demand_manage
-        WHERE product_id = #{productId}
-          AND store_id = #{storeId}
-          AND demand_date >= CURDATE()
-          AND demand_status IN ('CONFIRMED','IN_PRODUCTION','PARTIAL_SHIPPED')
-          AND COALESCE(shipped_count, 0) < demand_quantity
-          AND del_flag = '0'
-          AND tenant_id = '1001'
-        ORDER BY demand_date ASC, id ASC
-        LIMIT 1
-        """)
-    DemandManage selectOldestUncompletedDemand(@Param("productId") Long productId,
-                                               @Param("storeId") Long storeId);
-
-    /**
-     * 同 {@link #selectOldestUncompletedDemand}，但返回**全部**未完成需求行（同序，不 LIMIT 1）。
-     *
-     * <p>打包台展示的「剩余需求」是跨行求和（{@link #selectStoreDemandCopies} 按门店 SUM，
-     * 可能同日多行、也可能今天 + 明天各一行）。扣减若只吃最早那一行，工人照屏幕上的总数打就会被拒。
-     * 本方法让 {@code deductDemandOnPack} 先把候选行一次读齐、校验总量够不够，够了再逐行扣 ——
-     * 这样「超量」在写任何一行之前就报错，不依赖调用方事务回滚来擦除半截写入。</p>
-     *
-     * @param productId 产品 FK
-     * @param storeId   门店 FK
      * @return 今天及以后、已确认未完成、仍有余量的需求行（需求日升序、同日 id 升序）；无则空 List
      */
     @Select("""
@@ -244,13 +218,13 @@ public interface DemandManageMapper extends BaseMapperPlus<DemandManage, DemandM
      * 白条领用「发货月台」关联需求（row205，邓博 2026-07-05）：该门店该产品今天及以后的需求，优先未完成、其次已完成。
      *
      * <p>V6 row27：下界与门店下拉 {@code selectWhiteBarShipStores}、扣减端
-     * {@link #selectOldestUncompletedDemand} 一并从「= 当天」放宽到「&gt;= 当天」——三者必须同步，
+     * {@link #selectUncompletedDemands} 一并从「= 当天」放宽到「&gt;= 当天」——三者必须同步，
      * 否则会出现「下拉里看不到该门店，扣减却扣到它」或反之。</p>
      *
      * <p>用途：白条领用页发货月台出库时把关联需求记入 {@code cut_record.target_demand_id}。与门店下拉
      * {@code selectWhiteBarShipStores} 同状态集（含 COMPLETED —— 门店因有需求才出现在下拉，用户选中即应回填该需求），
      * 但按 {@code product_id} 精确匹配到具体需求单；无匹配需求 → null。仅作引用记录、不做扣减
-     * （扣减仍用 {@link #selectOldestUncompletedDemand}，只认未完成）。</p>
+     * （扣减仍用 {@link #selectUncompletedDemands}，只认未完成）。</p>
      *
      * @return 该门店该产品今天及以后的需求（优先未完成、再按需求日/id 升序取最早；无则 null）
      */
@@ -286,7 +260,7 @@ public interface DemandManageMapper extends BaseMapperPlus<DemandManage, DemandM
      *
      * <p>下界从「= today」放宽到「&gt;= today」是甲方 2026-08-06（V6 row27）的口径：「只要有需求，就可以进行
      * 打包，即今天可以对明天需求进行打包」。过期需求仍排除——放开下界会把陈旧未满行翻出来给打包工人看。
-     * 扣减端 {@link #selectOldestUncompletedDemand} 用同一下界，两端必须同时改。</p>
+     * 扣减端 {@link #selectUncompletedDemands} 用同一下界，两端必须同时改。</p>
      *
      * <p>租户隔离：未启全局 MP 拦截器，显式 {@code tenant_id='1001'}（V1 单租户，与本 mapper
      * 既有聚合 SQL 范式一致）；{@code del_flag='0'}（CHAR(1) 未删）。</p>
