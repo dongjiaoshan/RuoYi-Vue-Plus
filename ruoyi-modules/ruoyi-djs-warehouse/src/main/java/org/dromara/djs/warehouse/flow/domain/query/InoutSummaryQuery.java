@@ -41,9 +41,9 @@ public class InoutSummaryQuery {
     private List<String> flowTypes;
 
     /**
-     * 供应商名称模糊（仅入库汇总使用）。
+     * 供应商 ID 精确匹配（仅入库汇总使用；前端按 string 传，Long 接收解析）。
      */
-    private String supplierName;
+    private Long supplierId;
 
     /**
      * 出库去向多选（djs_stock_out_dest；仅出库汇总使用）。

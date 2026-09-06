@@ -110,6 +110,15 @@ class InoutMonthlyMapperSqlContractTest {
     }
 
     @Test
+    @DisplayName("入库汇总·供应商筛选：按 f.supplier_id 精确等值，不按名称串 LIKE")
+    void inSummaryFiltersSupplierByExactId() throws Exception {
+        String sql = inSql();
+        assertThat(sql).contains("and f.supplier_id = #{query.supplierid}");
+        // 名称 LIKE 会把「同名 / 名字互为子串」的多家供应商一起捞进来，与下拉选中的语义不符
+        assertThat(sql).doesNotContain("sp.supplier_name like");
+    }
+
+    @Test
     @DisplayName("量一律 SUM(change_quantity)，不得用带符号的 change_num")
     void sumsAbsoluteQuantityColumn() throws Exception {
         for (String sql : List.of(inSql(), outSql())) {

@@ -146,9 +146,9 @@ public class StockFlowQuery {
     private String operatorName;
 
     /**
-     * 供应商名称模糊匹配（admin 入库记录页按供应商过滤；service 内部反查 supplier.id 集合后作为 supplierId IN 下推）。
+     * 供应商 ID 精确匹配（admin 入库记录页供应商下拉；前端按 string 传，Long 接收解析）。
      */
-    private String supplierName;
+    private Long supplierId;
 
     /**
      * 业务时间起。

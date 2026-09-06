@@ -278,14 +278,6 @@ public class StockFlowServiceImpl
             }
             w.in(StockFlow::getPlotId, plotIds);
         }
-        // supplierName → 反查 t_md_supplier.id 集合下推 supplierId IN（甲方 row139 入库记录按供应商模糊搜索）
-        if (StringUtils.isNotBlank(query.getSupplierName())) {
-            List<Long> supplierIds = resolveSupplierIdsByName(query.getSupplierName());
-            if (supplierIds.isEmpty()) {
-                return w.eq(StockFlow::getId, -1L);
-            }
-            w.in(StockFlow::getSupplierId, supplierIds);
-        }
         // operatorName → 反查 sys_user.user_id 集合下推 operatorId IN
         if (StringUtils.isNotBlank(query.getOperatorName())) {
             List<Long> userIds = baseMapper.selectUserIdsByNickName(query.getOperatorName());
@@ -304,6 +296,10 @@ public class StockFlowServiceImpl
             .in(hasStockOutDests, StockFlow::getStockOutDest, query.getStockOutDests())
             .eq(!hasStockOutDests && StringUtils.isNotBlank(query.getStockOutDest()), StockFlow::getStockOutDest, query.getStockOutDest())
             .eq(query.getProductId() != null,    StockFlow::getProductId,   query.getProductId())
+            // 供应商（甲方 row162）：admin 入库记录页搜索区选的是供应商主数据本身，拿到的就是 id，
+            // 故按 supplier_id 精确等值 —— 名称串 LIKE 会把同名 / 名字互为子串的多家一起捞进来，
+            // 与「下拉里选中的就是这一家」的语义不符
+            .eq(query.getSupplierId() != null,   StockFlow::getSupplierId,  query.getSupplierId())
             .eq(query.getOperatorId() != null,   StockFlow::getOperatorId,  query.getOperatorId())
             .in(hasWarehouseIds, StockFlow::getWarehouseId, query.getWarehouseIds())
             .eq(!hasWarehouseIds && query.getWarehouseId() != null,  StockFlow::getWarehouseId, query.getWarehouseId())
@@ -407,19 +403,6 @@ public class StockFlowServiceImpl
                 vo.setSupplierName(sm.get(vo.getSupplierId()));
             }
         }
-    }
-
-    /**
-     * 按供应商名称（模糊）解析匹配的 supplierId 集合；无匹配返空 list（调用方据此让查询恒空）。
-     */
-    private List<Long> resolveSupplierIdsByName(String supplierName) {
-        // trim：供应商名多是从甲方的 Excel / 微信里粘过来的，尾随空格概率高，
-        // 不去掉的话「上海xx公司 」一个字都搜不到，用户只会认为「搜索坏了」。
-        List<Supplier> suppliers = supplierMapper.selectList(
-            new LambdaQueryWrapper<Supplier>()
-                .like(Supplier::getSupplierName, supplierName.trim())
-                .select(Supplier::getId));
-        return suppliers.stream().map(Supplier::getId).toList();
     }
 
     /**

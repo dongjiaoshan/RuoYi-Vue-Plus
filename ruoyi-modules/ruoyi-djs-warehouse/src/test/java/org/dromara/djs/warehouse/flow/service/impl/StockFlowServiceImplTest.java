@@ -42,6 +42,7 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -302,49 +303,37 @@ class StockFlowServiceImplTest {
     }
 
     @Test
-    @DisplayName("buildWrapper: supplierName 反查 id 集合 → 下推 supplier_id IN；查询串两端空格被 trim")
-    void testSupplierNameFilter_PushesDownIdIn() {
-        Supplier a = new Supplier();
-        a.setId(11L);
-        Supplier b = new Supplier();
-        b.setId(12L);
-        when(supplierMapper.selectList(any(Wrapper.class))).thenReturn(List.of(a, b));
+    @DisplayName("buildWrapper: supplierId 按 supplier_id 精确等值下推（不按名称反查、不 IN 一批）")
+    void testSupplierIdFilter_PushesDownExactEq() {
         Page<StockFlowVo> page = new Page<>(1, 10);
         page.setRecords(new java.util.ArrayList<>());
         when(stockFlowMapper.selectVoPage(any(), any(Wrapper.class))).thenReturn(page);
 
         StockFlowQuery q = new StockFlowQuery();
-        q.setSupplierName("  武汉  ");   // 甲方常从 Excel 粘贴，两端带空格
+        q.setSupplierId(2057798343337177091L);   // 雪花 id，前端按 string 传、后端 Long 接
         service.queryInList(q, new PageQuery(1, 10));
-
-        ArgumentCaptor<LambdaQueryWrapper> supCap = ArgumentCaptor.forClass(LambdaQueryWrapper.class);
-        verify(supplierMapper).selectList(supCap.capture());
-        // getParamNameValuePairs 要先 getTargetSql() 触发 SQL 片段生成才会有值
-        assertThat(supCap.getValue().getTargetSql()).contains("supplier_name LIKE");
-        // 反查供应商用的是 trim 过的串，不是「%  武汉  %」
-        assertThat(supCap.getValue().getParamNameValuePairs().values().toString()).contains("%武汉%");
 
         ArgumentCaptor<LambdaQueryWrapper> flowCap = ArgumentCaptor.forClass(LambdaQueryWrapper.class);
         verify(stockFlowMapper).selectVoPage(any(), flowCap.capture());
-        assertThat(flowCap.getValue().getTargetSql()).contains("supplier_id IN");
+        // getParamNameValuePairs 要先 getTargetSql() 触发 SQL 片段生成才会有值
+        assertThat(flowCap.getValue().getTargetSql()).contains("supplier_id =");
+        assertThat(flowCap.getValue().getTargetSql()).doesNotContain("supplier_id IN");
+        assertThat(flowCap.getValue().getParamNameValuePairs().values().toString()).contains("2057798343337177091");
+        // 筛选只用 id，不需要按名称反查供应商表；空结果页 fillJoinNames 也直接 return
+        verify(supplierMapper, never()).selectList(any(Wrapper.class));
     }
 
     @Test
-    @DisplayName("buildWrapper: supplierName 一个供应商都没匹配上 → 结果恒空（不退化成全量）")
-    void testSupplierNameFilter_NoMatchYieldsEmpty() {
-        when(supplierMapper.selectList(any(Wrapper.class))).thenReturn(List.of());
+    @DisplayName("buildWrapper: supplierId 不传 → 不出 supplier_id 条件（不误筛成空）")
+    void testSupplierIdFilter_AbsentMeansNoCondition() {
         Page<StockFlowVo> page = new Page<>(1, 10);
         page.setRecords(new java.util.ArrayList<>());
         when(stockFlowMapper.selectVoPage(any(), any(Wrapper.class))).thenReturn(page);
 
-        StockFlowQuery q = new StockFlowQuery();
-        q.setSupplierName("查无此供应商");
-        service.queryInList(q, new PageQuery(1, 10));
+        service.queryInList(new StockFlowQuery(), new PageQuery(1, 10));
 
         ArgumentCaptor<LambdaQueryWrapper> flowCap = ArgumentCaptor.forClass(LambdaQueryWrapper.class);
         verify(stockFlowMapper).selectVoPage(any(), flowCap.capture());
-        // 兜底成 id = -1，而不是把条件丢掉变成全量（先 getTargetSql 触发片段生成）
-        assertThat(flowCap.getValue().getTargetSql()).contains("id =");
-        assertThat(flowCap.getValue().getParamNameValuePairs().values().toString()).contains("-1");
+        assertThat(flowCap.getValue().getTargetSql()).doesNotContain("supplier_id");
     }
 }

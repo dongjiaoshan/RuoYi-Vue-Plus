@@ -119,8 +119,8 @@ public interface InoutMonthlyMapper {
           AND f.flow_type IN
               <foreach collection="query.flowTypes" item="ft" open="(" separator="," close=")">#{ft}</foreach>
         </if>
-        <if test="query.supplierName != null and query.supplierName != ''">
-          AND sp.supplier_name LIKE CONCAT('%', #{query.supplierName}, '%')
+        <if test="query.supplierId != null">
+          AND f.supplier_id = #{query.supplierId}
         </if>
         GROUP BY pi.product_name, pi.product_type, COALESCE(pi.product_spec, ''),
                  COALESCE(pi.product_unit, ''), f.flow_type, COALESCE(sp.supplier_name, '')
