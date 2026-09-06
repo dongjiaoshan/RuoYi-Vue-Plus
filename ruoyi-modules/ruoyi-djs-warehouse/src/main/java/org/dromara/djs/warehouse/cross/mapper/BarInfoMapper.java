@@ -30,8 +30,12 @@ public interface BarInfoMapper extends BaseMapperPlus<BarInfo, BarInfo> {
      * affectedRows==0 → 调用方抛"白条状态不符（已入库或不在待燎毛态）"。
      * 同步回填 in_weight（各类型入库重量合计）/ in_time / in_method=1（1=燎毛间）。</p>
      */
+    // finish_time 是「处理完成」的专用不可变锚（V6-R172）：只在这一次状态推进里写，
+    // 且 WHERE 的 status 守卫保证只写得进一次。in_time 不能当这个锚——它在称重、
+    // 每次产品逐项入库、处理完成三处被反复覆写，日表按 DATE(in_time) 分桶因此不可复现。
     @Update("UPDATE t_warehouse_bar_info "
         + "   SET status='in_stock', in_weight=#{inWeight}, in_time=#{inTime}, in_method=1,"
+        + "       finish_time=#{inTime},"
         + "       update_by=#{userId}, update_time=NOW() "
         + " WHERE id = #{id} AND status IN ('pending_singe','singing') AND del_flag = '0'")
     int updateStatusToInStock(@Param("id") Long id,

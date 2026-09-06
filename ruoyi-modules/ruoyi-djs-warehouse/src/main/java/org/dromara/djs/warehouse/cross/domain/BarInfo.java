@@ -78,8 +78,19 @@ public class BarInfo extends TenantEntity {
 
     /**
      * 入库时间。
+     *
+     * <p>⚠️ 不是任何一个稳定的时间锚：称重、每次产品逐项入库、处理完成三处都会覆写它，
+     * 终值才是「处理完成」那一刻。要按「处理完成」分桶请用 {@link #finishTime}。</p>
      */
     private Date inTime;
+
+    /**
+     * 处理完成时间（V6-R172）：燎毛处理完成（{@code finishBurn}）那一刻，只写一次、之后不变。
+     *
+     * <p>与 {@link #inTime} 的区别见后者注释。{@code arriveTime}（完成称重）+ 本列（完成处理）
+     * 一起构成仓库日指标可复现分桶所需的两个不可变锚。</p>
+     */
+    private Date finishTime;
 
     /**
      * 入库方式：1=燎毛间 / 2=分割间（字典 {@code djs_bar_in_method}）。
