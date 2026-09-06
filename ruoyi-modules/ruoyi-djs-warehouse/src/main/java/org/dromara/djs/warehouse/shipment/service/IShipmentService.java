@@ -39,6 +39,24 @@ public interface IShipmentService {
     Long confirmCheck(ShipmentCheckBo bo);
 
     /**
+     * 缺量发车后，把该门店当轮仍未发满的需求强制关闭（V6-row160 第 2 点）。
+     *
+     * <p>甲方原话「确定完成后，对应门店的需求调整为失效状态，不需要再进行生产对应的需求」。
+     * 「失效」落地为把需求推到 {@code COMPLETED} 终态：状态机本来就有
+     * {@code CONFIRMED/IN_PRODUCTION/PARTIAL_SHIPPED --COMPLETE--> COMPLETED} 这几条边，
+     * 而打包台捞活需求的 {@code selectUncompletedDemands} 不含 COMPLETED，
+     * 所以关掉之后打包端自然不再为它生产，零枚举改动。</p>
+     *
+     * <p>只关 {@code shipped_count < demand_quantity} 的那几条；已发满的照常走正常完成流程。
+     * 幂等：重复调用对已是终态的需求无副作用。</p>
+     *
+     * @param storeId   门店
+     * @param demandIds 本轮出车涉及的需求 ID（含生产量为 0、压根没进发货清单的那些）
+     * @return 实际被关闭的需求条数
+     */
+    int forceCloseUnmetDemands(Long storeId, java.util.List<Long> demandIds);
+
+    /**
      * admin 列表（分页 + 多维度筛选）。
      */
     TableDataInfo<ShipmentVo> queryPageList(ShipmentQuery query, PageQuery pageQuery);

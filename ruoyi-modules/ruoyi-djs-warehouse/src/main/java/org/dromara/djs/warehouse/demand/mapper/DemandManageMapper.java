@@ -279,7 +279,11 @@ public interface DemandManageMapper extends BaseMapperPlus<DemandManage, DemandM
         WHERE dm.product_id = #{productId}
           AND dm.store_id IS NOT NULL
           AND dm.demand_date >= #{today}
-          AND dm.demand_status IN ('CONFIRMED','IN_PRODUCTION','PARTIAL_SHIPPED','COMPLETED')
+          -- 不含 COMPLETED：V6-R160「缺量发车」会把没发满的需求也推到 COMPLETED 终态，
+          -- 这种行 GREATEST(需求-已发,0) 仍 > 0，留着会让打包台继续喊「还需 N 份」，
+          -- 而扣减端 selectUncompletedDemands 早就不认 COMPLETED —— 展示与扣减对不上。
+          -- 正常发满的 COMPLETED 本来就被 HAVING copies > 0 滤掉，去掉不改变既有行为。
+          AND dm.demand_status IN ('CONFIRMED','IN_PRODUCTION','PARTIAL_SHIPPED')
           AND dm.del_flag = '0'
           AND dm.tenant_id = '1001'
         GROUP BY dm.store_id, s.store_name
@@ -317,7 +321,11 @@ public interface DemandManageMapper extends BaseMapperPlus<DemandManage, DemandM
               <foreach collection="productIds" item="pid" open="(" separator="," close=")">#{pid}</foreach>
           AND dm.store_id IS NOT NULL
           AND dm.demand_date >= #{today}
-          AND dm.demand_status IN ('CONFIRMED','IN_PRODUCTION','PARTIAL_SHIPPED','COMPLETED')
+          -- 不含 COMPLETED：V6-R160「缺量发车」会把没发满的需求也推到 COMPLETED 终态，
+          -- 这种行 GREATEST(需求-已发,0) 仍 > 0，留着会让打包台继续喊「还需 N 份」，
+          -- 而扣减端 selectUncompletedDemands 早就不认 COMPLETED —— 展示与扣减对不上。
+          -- 正常发满的 COMPLETED 本来就被 HAVING copies > 0 滤掉，去掉不改变既有行为。
+          AND dm.demand_status IN ('CONFIRMED','IN_PRODUCTION','PARTIAL_SHIPPED')
           AND dm.del_flag = '0'
           AND dm.tenant_id = '1001'
         GROUP BY dm.product_id, dm.store_id, s.store_name

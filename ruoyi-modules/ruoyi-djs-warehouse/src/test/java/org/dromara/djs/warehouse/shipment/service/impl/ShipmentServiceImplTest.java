@@ -10,6 +10,7 @@ import org.dromara.djs.common.encoder.BizCodeType;
 import org.dromara.djs.common.encoder.IBizCodeGenerator;
 import org.dromara.djs.common.store.domain.Store;
 import org.dromara.djs.common.store.mapper.StoreMapper;
+import org.dromara.djs.warehouse.demand.core.enums.DemandEvent;
 import org.dromara.djs.warehouse.demand.core.enums.DemandStatus;
 import org.dromara.djs.warehouse.demand.domain.DemandManage;
 import org.dromara.djs.warehouse.demand.mapper.DemandManageMapper;
@@ -51,6 +52,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.anyMap;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.atLeast;
@@ -98,6 +100,9 @@ class ShipmentServiceImplTest {
     @Mock
     private ApplicationEventPublisher eventPublisher;
 
+    @Mock
+    private org.dromara.djs.warehouse.demand.service.IDemandStatusService demandStatusService;
+
     private ShipmentServiceImpl service;
 
     private MockedStatic<LoginHelper> loginHelperMock;
@@ -124,7 +129,7 @@ class ShipmentServiceImplTest {
 
         service = new ShipmentServiceImpl(shipmentMapper, productProductionMapper, stockFlowMapper,
             demandMapper, productInfoMapper, locationInfoMapper, storeMapper,
-            bizCodeGenerator, eventPublisher);
+            bizCodeGenerator, eventPublisher, demandStatusService);
 
         // 业务码 stub
         when(bizCodeGenerator.generate(eq(BizCodeType.SHIP_NO), anyMap())).thenReturn("S260610TEST0001");
@@ -308,6 +313,63 @@ class ShipmentServiceImplTest {
         verify(shipmentMapper, never()).insert(any(Shipment.class));
         verify(stockFlowMapper, never()).insert(any(StockFlow.class));
         verify(eventPublisher, never()).publishEvent(any(ShipmentConfirmedEvent.class));
+    }
+
+    @Test
+    @DisplayName("V6-R160: 未满足但 force=true → 放行缺量发车（不再抛 not_fully_satisfied）")
+    void confirmCheck_notFullySatisfiedButForced_proceeds() {
+        Long demandId = 100L;
+        DemandManage demand = newDemand(demandId, 9L, DemandStatus.CONFIRMED);
+        demand.setDemandNo("XQ260625001");
+        demand.setDemandQuantity(new BigDecimal("10"));
+        demand.setShippedCount(new BigDecimal("3"));   // 仅备 3 / 需求 10
+        when(demandMapper.selectById(demandId)).thenReturn(demand);
+
+        ShipmentCheckBo bo = new ShipmentCheckBo();
+        bo.setDemandId(demandId);
+        bo.setProductionIds(List.of(11L));
+        bo.setTotalQuantity(new BigDecimal("3.0"));
+        bo.setShipUnit("份");
+        bo.setDeliverType(1);
+        bo.setForce(true);                             // ← 工人已在 mp 上确认「仍要发车」
+
+        // 未满足这道闸不再拦；后续流程照常（本用例只断言没被 1b 挡下）
+        assertThatThrownBy(() -> service.confirmCheck(bo))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageNotContaining("not_fully_satisfied");
+    }
+
+    @Test
+    @DisplayName("V6-R160: forceClose 只关没发满的活需求，发满的 / 已终态的 / 别家门店的一律不动")
+    void forceCloseUnmetDemands_closesOnlyUnmetLiveOnes() {
+        DemandManage unmet = newDemand(201L, 9L, DemandStatus.PARTIAL_SHIPPED);
+        unmet.setStoreId(7L);
+        unmet.setDemandQuantity(new BigDecimal("10"));
+        unmet.setShippedCount(new BigDecimal("4"));
+        DemandManage full = newDemand(202L, 9L, DemandStatus.PARTIAL_SHIPPED);
+        full.setStoreId(7L);
+        full.setDemandQuantity(new BigDecimal("5"));
+        full.setShippedCount(new BigDecimal("5"));     // 已发满 → 不该被强制关
+        DemandManage done = newDemand(203L, 9L, DemandStatus.COMPLETED);
+        done.setStoreId(7L);
+        done.setDemandQuantity(new BigDecimal("8"));
+        done.setShippedCount(new BigDecimal("2"));     // 已是终态 → 幂等，不重复关
+        DemandManage other = newDemand(204L, 9L, DemandStatus.CONFIRMED);
+        other.setStoreId(99L);                          // 别家门店 → 不该被误伤
+        other.setDemandQuantity(new BigDecimal("6"));
+        other.setShippedCount(BigDecimal.ZERO);
+        when(demandMapper.selectById(201L)).thenReturn(unmet);
+        when(demandMapper.selectById(202L)).thenReturn(full);
+        when(demandMapper.selectById(203L)).thenReturn(done);
+        when(demandMapper.selectById(204L)).thenReturn(other);
+
+        int closed = service.forceCloseUnmetDemands(7L, List.of(201L, 202L, 203L, 204L));
+
+        assertThat(closed).isEqualTo(1);
+        verify(demandStatusService).transition(eq(201L), eq(DemandEvent.COMPLETE), eq(1L), anyString());
+        verify(demandStatusService, never()).transition(eq(202L), any(), any(), anyString());
+        verify(demandStatusService, never()).transition(eq(203L), any(), any(), anyString());
+        verify(demandStatusService, never()).transition(eq(204L), any(), any(), anyString());
     }
 
     @Test

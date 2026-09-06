@@ -31,7 +31,17 @@ public enum DemandStatus {
     /** 部分发货 — 已发部分；可继续累计 shipped_count / 完成。 */
     PARTIAL_SHIPPED("部分发货", false),
 
-    /** 已完成 — 终态，shipped_count 等于 demand_quantity。 */
+    /**
+     * 已完成 — 终态。两种进入方式：
+     * <ul>
+     *   <li>正常发满：{@code shipped_count == demand_quantity}；</li>
+     *   <li>缺量发车关闭（V6-R160）：门店当轮货没备齐、工人确认「仍要发车」后，
+     *       剩下没发满的需求也推到本态，{@code shipped_count} 可以小于 {@code demand_quantity}。
+     *       甲方管这叫「失效」——意思是不必再为它生产，打包台的
+     *       {@code selectUncompletedDemands} 不认本态，自然就不再捞它。</li>
+     * </ul>
+     * 所以「本态 且 shipped_count &lt; demand_quantity」= 缺量关闭，判定式从已有列直接推出，不另立字段。
+     */
     COMPLETED("已完成", true),
 
     /** 已取消 — 终态，DRAFT/SUBMITTED/CONFIRMED 时可取消。 */

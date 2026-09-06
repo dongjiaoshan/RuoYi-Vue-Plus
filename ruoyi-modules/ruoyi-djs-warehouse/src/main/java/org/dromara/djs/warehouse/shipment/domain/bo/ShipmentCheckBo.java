@@ -36,6 +36,16 @@ public class ShipmentCheckBo {
     @NotNull(message = "单位不能为空")
     private String shipUnit;
 
+    /**
+     * 缺量发车放行标志（V6-row160）。
+     *
+     * <p>默认 {@code false} —— 已打包量不足需求量时拒发，保持「杜绝部分发货」的默认姿态
+     * （Kevin 2026-06-25 拍板），任何直调接口都不会悄悄发出半车货。
+     * mp 在弹过「当前生产产品暂未满足门店需求，是否确定发车？」并拿到确认后才传 {@code true}，
+     * 于是「这是一次有意的缺量发车」在请求里是显式信号，日志可追。</p>
+     */
+    private Boolean force;
+
     /** 发货方式字典 djs_deliver_type 1=发货 / 2=邮寄 / 3=销售。 */
     @NotNull(message = "发货方式不能为空")
     private Integer deliverType;

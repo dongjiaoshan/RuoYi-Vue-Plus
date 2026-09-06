@@ -14,7 +14,9 @@ import org.dromara.djs.common.encoder.IBizCodeGenerator;
 import org.dromara.djs.common.store.domain.Store;
 import org.dromara.djs.common.store.mapper.StoreMapper;
 import org.dromara.djs.common.util.I18nMessages;
+import org.dromara.djs.warehouse.demand.core.enums.DemandEvent;
 import org.dromara.djs.warehouse.demand.core.enums.DemandStatus;
+import org.dromara.djs.warehouse.demand.service.IDemandStatusService;
 import org.dromara.djs.warehouse.demand.domain.DemandManage;
 import org.dromara.djs.warehouse.demand.mapper.DemandManageMapper;
 import org.dromara.djs.warehouse.flow.domain.StockFlow;
@@ -172,6 +174,7 @@ public class ShipmentServiceImpl
     private final StoreMapper storeMapper;
     private final IBizCodeGenerator bizCodeGenerator;
     private final ApplicationEventPublisher eventPublisher;
+    private final IDemandStatusService demandStatusService;
 
     public ShipmentServiceImpl(ShipmentMapper baseMapper,
                                ProductProductionMapper productProductionMapper,
@@ -181,7 +184,8 @@ public class ShipmentServiceImpl
                                LocationInfoMapper locationInfoMapper,
                                StoreMapper storeMapper,
                                IBizCodeGenerator bizCodeGenerator,
-                               ApplicationEventPublisher eventPublisher) {
+                               ApplicationEventPublisher eventPublisher,
+                               IDemandStatusService demandStatusService) {
         super(baseMapper);
         this.productProductionMapper = productProductionMapper;
         this.stockFlowMapper = stockFlowMapper;
@@ -191,6 +195,41 @@ public class ShipmentServiceImpl
         this.storeMapper = storeMapper;
         this.bizCodeGenerator = bizCodeGenerator;
         this.eventPublisher = eventPublisher;
+        this.demandStatusService = demandStatusService;
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public int forceCloseUnmetDemands(Long storeId, List<Long> demandIds) {
+        if (storeId == null || demandIds == null || demandIds.isEmpty()) {
+            return 0;
+        }
+        Long userId = LoginHelper.getUserId();
+        int closed = 0;
+        for (Long demandId : demandIds) {
+            DemandManage demand = demandMapper.selectById(demandId);
+            // 重读一遍再判：出车那几条 confirmCheck 刚把 shipped_count 推上去，
+            // 不重读会拿到调用方发来的陈旧快照，把已经发满的也一起关掉。
+            if (demand == null || !storeId.equals(demand.getStoreId())) {
+                continue;
+            }
+            DemandStatus status = DemandStatus.fromCodeSafe(demand.getDemandStatus());
+            if (status == null || status.isTerminal()) {
+                continue;
+            }
+            BigDecimal shipped = demand.getShippedCount() == null ? BigDecimal.ZERO : demand.getShippedCount();
+            BigDecimal need = demand.getDemandQuantity() == null ? BigDecimal.ZERO : demand.getDemandQuantity();
+            if (need.signum() <= 0 || shipped.compareTo(need) >= 0) {
+                continue;
+            }
+            demandStatusService.transition(demandId, DemandEvent.COMPLETE, userId,
+                "V6-R160 缺量发车，需求强制关闭（已发 " + shipped.stripTrailingZeros().toPlainString()
+                    + " / 需求 " + need.stripTrailingZeros().toPlainString() + "）");
+            closed++;
+        }
+        log.info("[WMS-SHIP-001] forceCloseUnmet storeId={} 请求 {} 条，实际关闭 {} 条",
+            storeId, demandIds.size(), closed);
+        return closed;
     }
 
     @Override
@@ -209,11 +248,14 @@ public class ShipmentServiceImpl
                 I18nMessages.t("shipment.demand.status_invalid", demand.getDemandStatus()), 400);
         }
 
-        // 1b. 出车发货「全有或全无」：需求未全部满足（已打包 shipped_count < demand_quantity）禁止出车，
-        //     杜绝部分发货（Kevin 2026-06-25）。需求扣减在打包时完成，shipped_count = 已备货量。
+        // 1b. 出车发货默认「全有或全无」：已打包量不足需求量时拒发（Kevin 2026-06-25「杜绝部分发货」）。
+        //     需求扣减在打包时完成，shipped_count = 已备货量。
+        //     V6-row160 起，调用方显式传 force=true 才放行缺量发车——mp 会先弹二次确认再传。
+        //     默认值保持拒发：不给任何直调接口留「悄悄发半车」的口子。
         BigDecimal shipped = demand.getShippedCount() == null ? BigDecimal.ZERO : demand.getShippedCount();
         BigDecimal need = demand.getDemandQuantity() == null ? BigDecimal.ZERO : demand.getDemandQuantity();
-        if (need.signum() > 0 && shipped.compareTo(need) < 0) {
+        boolean forceShort = Boolean.TRUE.equals(bo.getForce());
+        if (need.signum() > 0 && shipped.compareTo(need) < 0 && !forceShort) {
             throw new ServiceException(I18nMessages.t("shipment.demand.not_fully_satisfied",
                 demand.getDemandNo(),
                 shipped.stripTrailingZeros().toPlainString(),

@@ -50,6 +50,19 @@ public class AppletShipmentController extends BaseController {
         return R.ok(service.confirmCheck(bo));
     }
 
+    /**
+     * 缺量发车后关闭该门店仍未发满的需求（V6-row160 第 2 点）。
+     *
+     * <p>mp 弹过「当前生产产品暂未满足门店需求，是否确定发车？」并拿到确认后，
+     * 先逐条 {@code /check}（带 force=true）把有货的发掉，再调本端点把没发满的关掉——
+     * 包括生产量为 0、压根没进发货清单因而不会有 /check 请求的那些需求。</p>
+     */
+    @SaCheckPermission("djs:applet:warehouse:ship:check")
+    @PostMapping("/force-close")
+    public R<Integer> forceCloseUnmet(@RequestParam Long storeId, @RequestBody List<Long> demandIds) {
+        return R.ok(service.forceCloseUnmetDemands(storeId, demandIds));
+    }
+
     /** 待清点产品列表（mp 工人按需求 ID 拉，按 produce_date 倒序）。 */
     @SaCheckPermission("djs:applet:warehouse:ship:check")
     @GetMapping("/productions")
