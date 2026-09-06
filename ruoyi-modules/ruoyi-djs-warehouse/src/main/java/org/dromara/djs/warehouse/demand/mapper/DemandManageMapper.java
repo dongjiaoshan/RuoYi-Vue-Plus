@@ -452,6 +452,16 @@ public interface DemandManageMapper extends BaseMapperPlus<DemandManage, DemandM
      * 非 kg 且产品未配 material_num（果蔬 / 部分猪肉）时计算量为 NULL（前端显空，不误显 0）；未配 product_material 时原材料名/单位为 NULL。
      * 不再读需求行冗余 {@code dm.raw_material / dm.material_qty}（历史留空列，恒 NULL / 0）。</p>
      *
+     * <p><b>下单时间 / 下单人（row181）</b>：一行是「同日同产品被 N 家门店下的单」的合并，两者在行上不是单值，
+     * 故取组内<b>最早一单</b>——{@code orderTime = MIN(dm.create_time)}；{@code ordererName} =
+     * 最早那一单的 {@code sys_user.nick_name}，组内下单人多于一个时拼成 {@code 张三 等 N 人}
+     * （N = {@code COUNT(DISTINCT dm.create_by)}），与 mp 门店需求日卡
+     * （{@link #selectStoreDemandDayPage} 的 {@code ordererName}）同一种形态。
+     * 昵称用<b>相关子查询取一行</b>而不是 {@code GROUP_CONCAT + SUBSTRING_INDEX}：昵称含逗号会被切断，
+     * 且 {@code group_concat_max_len} 有截断风险。子查询里重复了门店过滤条件 —— 它是唯一会改变
+     * <b>组内成员</b>的筛选（产品名 / 业态按产品整体命中，日期区间与分组键同维），漏了会出现
+     * 「按门店筛之后，下单人还是别家店的人」。</p>
+     *
      * <p>可选过滤：产品名 LIKE / 需求门店 / 需求日期区间。
      * 门店过滤（{@code store_id = #{storeId}}）下推 WHERE：分组前先按门店收敛行集，故汇总行的
      * 需求量 / 门店数随门店变化（仅含该门店对该日该产品的需求）。</p>
@@ -491,7 +501,30 @@ public interface DemandManageMapper extends BaseMapperPlus<DemandManage, DemandM
                COUNT(*)                    AS demandCount,
                COUNT(CASE WHEN dm.demand_status IN ('CONFIRMED','IN_PRODUCTION','PARTIAL_SHIPPED','COMPLETED')
                      THEN 1 END)           AS confirmedDemandCount,
-               MAX(dm.confirmer_time)      AS lastConfirmTime
+               MAX(dm.confirmer_time)      AS lastConfirmTime,
+               MIN(dm.create_time)         AS orderTime,
+               CONCAT(
+                 IFNULL((SELECT u.nick_name
+                           FROM t_warehouse_demand_manage d2
+                           LEFT JOIN sys_user u ON u.user_id = d2.create_by AND u.del_flag = '0'
+                          WHERE d2.demand_date = dm.demand_date
+                            AND d2.product_id = dm.product_id
+                            AND d2.store_id IS NOT NULL
+                            AND d2.demand_status NOT IN ('CANCELLED','DELETED')
+                            AND d2.del_flag = '0'
+                            AND d2.tenant_id = '1001'
+                            <if test="storeIds != null and storeIds.size() > 0">
+                              AND d2.store_id IN
+                              <foreach collection="storeIds" item="sid2" open="(" separator="," close=")">#{sid2}</foreach>
+                            </if>
+                            <if test="(storeIds == null or storeIds.size() == 0) and storeId != null">
+                              AND d2.store_id = #{storeId}
+                            </if>
+                          ORDER BY d2.create_time ASC, d2.id ASC
+                          LIMIT 1), ''),
+                 CASE WHEN COUNT(DISTINCT dm.create_by) > 1
+                      THEN CONCAT(' 等 ', COUNT(DISTINCT dm.create_by), ' 人') ELSE '' END
+               )                           AS ordererName
         FROM t_warehouse_demand_manage dm
         LEFT JOIN t_warehouse_product_info pi
                ON pi.id = dm.product_id AND pi.del_flag = '0' AND pi.tenant_id = '1001'
@@ -563,8 +596,8 @@ public interface DemandManageMapper extends BaseMapperPlus<DemandManage, DemandM
      *   <li>{@code arrivedCount / shippedCount / confirmedCount} 逐行按
      *       {@link org.dromara.djs.warehouse.demand.core.StoreDemandStatusMapping} 的映射表分桶计数，
      *       日状态阶梯与确认率由 service 用这三个数 + {@code totalCount} 派生（不在 SQL 里做，便于单测）。</li>
-     *   <li>{@code ordererName} 相关子查询取当天<b>最后一条</b>需求的下单人昵称
-     *       （{@code create_time DESC, id DESC LIMIT 1}）——不用 GROUP_CONCAT+SUBSTRING_INDEX，
+     *   <li>{@code ordererName} 相关子查询取当天<b>最早一条</b>需求的下单人昵称
+     *       （{@code create_time ASC, id ASC LIMIT 1}）——不用 GROUP_CONCAT+SUBSTRING_INDEX，
      *       昵称含逗号会被切断，且 {@code group_concat_max_len} 有截断风险。</li>
      *   <li>{@code damagedCount} 相关子查询按当天需求 id 集合统计
      *       {@code t_warehouse_product_production.is_damaged=1} 的件数（与 store 单条口径

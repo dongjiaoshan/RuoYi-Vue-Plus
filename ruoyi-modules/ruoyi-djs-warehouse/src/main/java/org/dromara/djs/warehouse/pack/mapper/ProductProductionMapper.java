@@ -12,6 +12,7 @@ import org.dromara.djs.warehouse.pack.domain.vo.WhiteBarShipmentVo;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.Date;
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 
@@ -139,6 +140,51 @@ public interface ProductProductionMapper extends BaseMapperPlus<ProductProductio
     int markDeliveryChecked(@Param("ids") List<Long> ids,
                             @Param("checkTime") Date checkTime,
                             @Param("demandId") Long demandId);
+
+    /**
+     * 按需求单批量统计<b>已发车件数</b>（V6-row161「到店量」的唯一口径）。
+     *
+     * <p>口径 = 该需求下已被发货清点（{@code is_delivery_check = 1}）的成品条数。
+     * {@code demand_id} 与该标记由 {@link #markDeliveryChecked} 在<b>点击发车</b>那一刻同事务写入，
+     * 所以它锚的正是甲方说的「点击发车时的产品数据」。</p>
+     *
+     * <p>为什么数条数、而不是 SUM 某个数量列：门店需求量的单位是份 / 头 / 枚，
+     * 一次打包提交恰好抵 1 份需求（{@code resolveDemandDeductQty} 恒为 1），所以「条数」与需求量同量纲、可直接并排比。
+     * 换成 {@code SUM(produce_quantity)} 或发货流水的 {@code ship_quantity} 都会串味——那两个在白条链路上装的是 kg，
+     * 会出现「需求量 2 头 / 到店量 78.5」这种并排。</p>
+     *
+     * <p>已知边界（<b>待甲方/Kevin 拍板，见台账 row161</b>）：礼盒打包一次提交只落 1 条成品行却抵 N 盒需求
+     * （{@code submitGiftPack} 按 packBoxCount 扣），KG 计量的肉品 / 干货一次称重也只落 1 条却抵满整行 kg 需求
+     * （{@code submitDryPack} 的 KG 分支）。这两类的「到店量」会按条数少算。
+     * 份 / 头 / 枚三类主流场景一次打包恰好抵 1 份，不受影响。
+     * 要根治需要在成品行上落一列「本次抵扣的需求量」，那是打包链路的改动，不在本条范围内。</p>
+     *
+     * <p>租户隔离：未启全局 MP 拦截器，显式 {@code tenant_id='1001'}，与本 mapper 既有聚合 SQL 范式一致。</p>
+     *
+     * @param demandIds 需求单主键集合（调用方保证非空）
+     * @return 每行 {@code {demandId, arrivedQty}}；一件都没发车的需求不出现在结果里
+     */
+    @Select({
+        "<script>",
+        "SELECT pp.demand_id AS demandId,",
+        "       COUNT(*)     AS arrivedQty",
+        "  FROM t_warehouse_product_production pp",
+        // demand_id 是「门店级松散绑定」——发货清点时把成品挂到需求上，并不保证成品就是该需求点的那个产品。
+        // 与本 mapper 三支兄弟聚合（sumShipped*WeightByDemand）同口径：按业态收口，挡掉挂错业态的成品行。
+        "  JOIN t_warehouse_demand_manage dm ON dm.id = pp.demand_id",
+        "       AND dm.del_flag = '0' AND dm.tenant_id = '1001'",
+        "  JOIN t_warehouse_product_info pi ON pi.id = pp.product_id AND pi.del_flag = '0'",
+        "  JOIN t_warehouse_product_info di ON di.id = dm.product_id AND di.del_flag = '0'",
+        "       AND di.belong_type = pi.belong_type",
+        " WHERE pp.is_delivery_check = 1",
+        "   AND pp.del_flag = '0'",
+        "   AND pp.tenant_id = '1001'",
+        "   AND pp.demand_id IN",
+        "   <foreach collection='demandIds' item='id' separator=',' open='(' close=')'>#{id}</foreach>",
+        " GROUP BY pp.demand_id",
+        "</script>"
+    })
+    List<Map<String, Object>> selectArrivedQuantityByDemandIds(@Param("demandIds") Collection<Long> demandIds);
 
     /**
      * 白条领用「发货月台」门店下拉数据（row153）：当天有<b>已确认白条需求</b>的门店 + 各门店白条需求数。

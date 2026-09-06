@@ -22,6 +22,7 @@ import org.mockito.quality.Strictness;
 
 import java.math.BigDecimal;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -194,6 +195,23 @@ class StoreDemandViewEnricherTest {
         verify(productProductionMapper, never()).sumShippedWhiteBarWeightByDemand(anyLong());
     }
 
+    // ─────────────────────────── 到店量（V6-row161）───────────────────────────
+
+    @Test
+    @DisplayName("到店量：按 demand_id 回填已发车件数；没有发车记录的行回填 0 而不是 null")
+    void arrivedQuantity_backfilledFromShipment() {
+        DemandManageVo shipped = row(51L, 1L, "SHIPPED");
+        DemandManageVo notShipped = row(52L, 1L, "CONFIRMED");
+        when(productProductionMapper.selectArrivedQuantityByDemandIds(any()))
+            .thenReturn(List.of(Map.of("demandId", 51L, "arrivedQty", 3L)));
+
+        enricher.enrich(List.of(shipped, notShipped));
+
+        assertThat(shipped.getArrivedQuantity()).isEqualByComparingTo("3");
+        // 「还没发车」在业务上就是到店 0，不能显 '—' —— 与本页损坏数量显 0 同处置
+        assertThat(notShipped.getArrivedQuantity()).isEqualByComparingTo("0");
+    }
+
     // ─────────────────────────── 边界 ───────────────────────────
 
     @Test
@@ -203,5 +221,6 @@ class StoreDemandViewEnricherTest {
         enricher.enrich(List.of());
         verify(productInfoMapper, never()).selectList(any(LambdaQueryWrapper.class));
         verify(productProductionService, never()).countDamagedByDemand(anyLong());
+        verify(productProductionMapper, never()).selectArrivedQuantityByDemandIds(any());
     }
 }

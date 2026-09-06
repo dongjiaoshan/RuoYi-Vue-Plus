@@ -440,6 +440,9 @@ public class DemandManageServiceImpl extends DjsBaseServiceImpl<DemandManageMapp
             e.setMaterialUnit(g.getMaterialUnit());
             e.setStoreCount(g.getStoreCount() == null ? 0 : g.getStoreCount());
             e.setLastConfirmTime(g.getLastConfirmTime());
+            // row181：下单时间 / 下单人 已在聚合 SQL 里算成单值（最早一单 + 「等 N 人」后缀），导出直接透传
+            e.setOrderTime(g.getOrderTime());
+            e.setOrdererName(g.getOrdererName());
             return e;
         }).toList();
     }

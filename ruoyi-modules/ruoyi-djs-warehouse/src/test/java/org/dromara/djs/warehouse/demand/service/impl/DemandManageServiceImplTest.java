@@ -11,6 +11,7 @@ import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.demand.domain.bo.AssignPigBo;
 import org.dromara.djs.warehouse.demand.domain.bo.DemandManageBo;
 import org.dromara.djs.warehouse.demand.domain.query.DemandManageQuery;
+import org.dromara.djs.warehouse.demand.domain.vo.DemandGroupExportVo;
 import org.dromara.djs.warehouse.demand.domain.vo.DemandGroupVo;
 import org.dromara.djs.warehouse.demand.domain.vo.DemandTodayKpiVo;
 import org.dromara.djs.warehouse.demand.mapper.DemandManageMapper;
@@ -28,6 +29,7 @@ import org.mockito.quality.Strictness;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -54,6 +56,7 @@ import static org.mockito.Mockito.when;
  *   <li>assignPigs 非白条业态 → throws / IN_PRODUCTION → throws</li>
  *   <li>group-list 分页只切片不重排（排序权威在 mapper ORDER BY）+ 三态/确认率回填（row32）</li>
  *   <li>selectDemandGroupList 默认 ORDER BY = 确认率升序 + 日期/产品名 tie-breaker（row32 契约钉死）</li>
+ *   <li>group-export 透传 SQL 已收敛好的下单时间 / 下单人单值（row181）</li>
  * </ul>
  *
  * @author djs
@@ -397,6 +400,30 @@ class DemandManageServiceImplTest {
             "ORDER BY COALESCE(COUNT(CASE WHEN dm.demand_status "
                 + "IN ('CONFIRMED','IN_PRODUCTION','PARTIAL_SHIPPED','COMPLETED') THEN 1 END) "
                 + "/ NULLIF(COUNT(*), 0), 0) ASC, dm.demand_date DESC, MAX(dm.product_name) ASC");
+    }
+
+    @Test
+    @DisplayName("导出带下单时间 / 下单人 → 聚合 SQL 算好的单值原样进 Excel VO（row181）")
+    void groupExportCarriesOrderTimeAndOrderer() {
+        // 一行 = 同日同产品的多店合并，「下单时间 / 下单人」在 SQL 里就已收敛成单值
+        // （最早一单 + 多人「等 N 人」后缀）；service 只透传，不许再加工成别的形态。
+        DemandGroupVo row = groupRow(LocalDate.of(2026, 9, 3), 3, 1);
+        row.setProductName("散养猪肉");
+        row.setProductUnit("份");
+        row.setDemandQuantity(new BigDecimal("12"));
+        row.setOrderTime(LocalDateTime.of(2026, 9, 2, 7, 30));
+        row.setOrdererName("张三 等 2 人");
+        when(demandMapper.selectDemandGroupList(any(), any(), any(), any(), any(), any(), any()))
+            .thenReturn(new java.util.ArrayList<>(List.of(row)));
+
+        List<DemandGroupExportVo> exported = service.queryGroupExportList(new DemandManageQuery());
+
+        assertThat(exported).hasSize(1);
+        assertThat(exported.get(0).getOrderTime()).isEqualTo(LocalDateTime.of(2026, 9, 2, 7, 30));
+        assertThat(exported.get(0).getOrdererName()).isEqualTo("张三 等 2 人");
+        // 新列不得挤掉既有列：三态标签仍按 1/3 已确认落「部分确认」
+        assertThat(exported.get(0).getDemandStatusLabel()).isEqualTo("部分确认");
+        assertThat(exported.get(0).getDemandQuantityLabel()).isEqualTo("12");
     }
 
     /** 分组行样例：只填排序 / 三态计算用到的字段（需求日期 + 组内单数 + 已确认单数）。 */

@@ -122,4 +122,18 @@ public class DemandGroupVo implements Serializable {
 
     /** 需求最终确认时间（组内 MAX confirmer_time）。 */
     private LocalDateTime lastConfirmTime;
+
+    /**
+     * 下单时间 = 组内<b>最早</b>一单的 {@code create_time}（row181）。
+     *
+     * <p>一行是同日同产品的 N 家门店合并，下单时间不是单值；取最早那一单，与 {@link #ordererName}
+     * 指向同一条需求单。</p>
+     */
+    private LocalDateTime orderTime;
+
+    /**
+     * 下单人（row181）：组内最早一单的下单人昵称；组内下单人多于一个时形如 {@code 张三 等 3 人}
+     * （N = 组内 distinct {@code create_by}）。文本在 SQL 里拼好，与 mp 门店需求日卡同形态。
+     */
+    private String ordererName;
 }

@@ -136,6 +136,16 @@ public class DemandManageVo implements Serializable {
     @ExcelProperty(value = "已发货")
     private BigDecimal shippedCount;
 
+    /**
+     * 到店量（V6-row161）：该需求已发车发出的数量之和，与需求量同单位。
+     *
+     * <p>无持久化列，compute-on-read —— 由 {@code StoreDemandViewEnricher} 按「该需求下已发货清点
+     * （{@code is_delivery_check = 1}）的成品条数」汇总回填。与 {@link #shippedCount} 的区别：
+     * 后者在打包送到发货月台时就累加，本字段只认发车这个动作。
+     * 不取发货流水的 {@code ship_quantity}：那一列在白条链路上装的是 kg，与按份/头计的需求量并排会串味。</p>
+     */
+    private BigDecimal arrivedQuantity;
+
     @ExcelProperty(value = "已确认")
     private BigDecimal confirmedCount;
 

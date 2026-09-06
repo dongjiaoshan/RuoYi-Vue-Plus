@@ -91,6 +91,14 @@ public class DemandGroupExportVo implements Serializable {
     @ExcelProperty(value = "需求最终确认时间")
     private LocalDateTime lastConfirmTime;
 
+    /** 下单时间（组内最早一单的 create_time）。 */
+    @ExcelProperty(value = "下单时间")
+    private LocalDateTime orderTime;
+
+    /** 下单人（组内最早一单的昵称；组内多人时形如「张三 等 3 人」）。 */
+    @ExcelProperty(value = "下单人")
+    private String ordererName;
+
     /** 原始确认率（0~1，仅内部计算用，不导出）。 */
     private BigDecimal confirmRate;
 }

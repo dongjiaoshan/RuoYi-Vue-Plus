@@ -16,7 +16,8 @@ import java.util.Map;
 import java.util.Objects;
 
 /**
- * 门店视角两列派生指标的<b>唯一口径</b>：预计到店量 {@code expectedWeight} + 计损量 {@code damagedCount}。
+ * 门店视角派生指标的<b>唯一口径</b>：预计到店量 {@code expectedWeight} + 计损量 {@code damagedCount}
+ * + 到店量 {@code arrivedQuantity}。
  *
  * <p>两处门店端读接口都要用同一份口径，所以抽出来而不是各写一份：</p>
  * <ul>
@@ -58,13 +59,50 @@ public class StoreDemandViewEnricher {
     private final IProductProductionService productProductionService;
 
     /**
-     * 一次回填两列（顺序无关，互不依赖）。
+     * 一次回填三列（顺序无关，互不依赖）。
      *
      * @param rows 已派生 {@code storeDemandStatus} 的门店视角行；null / 空直接返回
      */
     public void enrich(List<DemandManageVo> rows) {
         fillDamagedCount(rows);
         fillExpectedWeight(rows);
+        fillArrivedQuantity(rows);
+    }
+
+    /**
+     * 回填「到店量」{@code arrivedQuantity}（V6-row161）：该需求已发车发出的数量之和，与需求量同单位。
+     *
+     * <p>口径 = 该需求下已被发货清点（{@code is_delivery_check = 1}）的成品<b>条数</b>，
+     * 这个标记与 {@code demand_id} 是点击发车那一刻同事务写入的，锚的正是「点击发车时的产品数据」。
+     * 不用需求单上的 {@code shipped_count}（那个在打包送到月台时就累加了，不是发车），
+     * 也不用发货流水的 {@code ship_quantity}（白条链路上它装的是 kg，与按份/头计的需求量并排会串味）。</p>
+     *
+     * <p>一次批量聚合而不是逐行查（本页一页最多百行，逐行查是 N+1）。没有任何发车记录的需求
+     * 回填 {@code 0} 而不是留 null —— 「还没发车」在业务上就是到店 0，与同页「损坏数量」显 0 同处置。</p>
+     */
+    private void fillArrivedQuantity(List<DemandManageVo> rows) {
+        if (rows == null || rows.isEmpty()) {
+            return;
+        }
+        List<Long> demandIds = rows.stream().map(DemandManageVo::getId)
+            .filter(Objects::nonNull).distinct().toList();
+        if (demandIds.isEmpty()) {
+            return;
+        }
+        Map<Long, BigDecimal> shippedByDemand = new HashMap<>();
+        for (Map<String, Object> r : productProductionMapper.selectArrivedQuantityByDemandIds(demandIds)) {
+            Object id = r.get("demandId");
+            Object qty = r.get("arrivedQty");
+            if (id instanceof Number n && qty instanceof Number q) {
+                shippedByDemand.put(n.longValue(), new BigDecimal(q.toString()));
+            }
+        }
+        for (DemandManageVo vo : rows) {
+            if (vo.getId() == null) {
+                continue;
+            }
+            vo.setArrivedQuantity(shippedByDemand.getOrDefault(vo.getId(), BigDecimal.ZERO));
+        }
     }
 
     /**
