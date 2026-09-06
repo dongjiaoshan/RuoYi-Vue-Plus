@@ -105,6 +105,11 @@ public class StoreBo extends BaseEntity {
     private Long imageOssId;
 
     /**
+     * 店长微信二维码图（OSS oss_id）。
+     */
+    private Long managerWechatOssId;
+
+    /**
      * 备注。
      */
     @Size(max = 500, message = "备注长度不能超过 {max} 个字符")

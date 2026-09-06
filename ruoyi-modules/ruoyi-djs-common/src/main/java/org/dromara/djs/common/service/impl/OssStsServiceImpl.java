@@ -59,6 +59,7 @@ public class OssStsServiceImpl implements IOssStsService {
         "harvest",          // 收获 / 加工照片
         "trace",            // 追溯码 / 证书图
         "store_photo",      // 门店门头 / 招牌图
+        "store_manager_wechat", // 店长微信二维码图（V6-R164 门店编辑上传，追溯页展示）
         "supplier_license", // 供应商营业执照
         "warehouse_pig_burn", // 仓库 燎毛工序凭证图（WMS-PIG-001）
         "warehouse_pig_cut",  // 仓库 分割工序凭证图（WMS-PIG-002）

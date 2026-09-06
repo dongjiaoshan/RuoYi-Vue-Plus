@@ -105,6 +105,11 @@ public class Store extends TenantEntity {
     private Long imageOssId;
 
     /**
+     * 店长微信二维码图（引用 sys_oss.oss_id，不直接存 URL；追溯页销售门店块展示，供顾客扫码加店长）。
+     */
+    private Long managerWechatOssId;
+
+    /**
      * 备注。
      */
     private String remark;

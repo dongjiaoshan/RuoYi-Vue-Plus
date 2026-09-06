@@ -967,6 +967,9 @@ public class TracePublicServiceImpl
             // 门店配图（row146）：image_oss_id 解析 URL，无图为 null（前端默认图兜底）
             storeBlock.setImageUrl(s.getImageOssId() == null
                 ? null : resolveOssUrl(String.valueOf(s.getImageOssId())));
+            // 店长微信二维码（row165）：manager_wechat_oss_id 解析 URL，无图为 null（前端整块隐藏）
+            storeBlock.setManagerWechatUrl(s.getManagerWechatOssId() == null
+                ? null : resolveOssUrl(String.valueOf(s.getManagerWechatOssId())));
             vo.setStore(storeBlock);
         }
     }

@@ -260,7 +260,9 @@ class TracePublicServiceImplTest {
         store.setId(STORE_ID);
         store.setStoreName("东角山旗舰店");
         store.setAddress("上海市XX路1号");
+        store.setManagerWechatOssId(9500L);
         when(storeMapper.selectById(STORE_ID)).thenReturn(store);
+        when(ossService.selectUrlByIds("9500")).thenReturn("http://oss/wechat-9500.jpg");
 
         when(traceFarmNameMapper.selectFarmNames(anyList(), any()))
             .thenReturn(List.of(Map.of("id", FARM_ID, "farmName", "东角山农场")));
@@ -305,6 +307,8 @@ class TracePublicServiceImplTest {
         assertThat(vo.getMedications()).hasSize(1);
         assertThat(vo.getMedications().get(0).getName()).isEqualTo("猪瘟疫苗");
         assertThat(vo.getStore().getName()).isEqualTo("东角山旗舰店");
+        // 店长微信二维码图（row165）：manager_wechat_oss_id 解析成可访问 URL
+        assertThat(vo.getStore().getManagerWechatUrl()).isEqualTo("http://oss/wechat-9500.jpg");
         // 谱系块（复用 breed queryPedigree）
         assertThat(vo.getPedigree()).isNotNull();
         assertThat(vo.getPedigree().getSireEarNo()).isEqualTo("S250001");

@@ -115,6 +115,11 @@ public class StoreVo implements Serializable {
     private Long imageOssId;
 
     /**
+     * 店长微信二维码图（OSS oss_id；前端 image-preview 用）。
+     */
+    private Long managerWechatOssId;
+
+    /**
      * 备注。
      */
     @ExcelProperty(value = "备注")

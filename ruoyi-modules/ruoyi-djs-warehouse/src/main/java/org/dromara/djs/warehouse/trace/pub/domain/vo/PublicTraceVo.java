@@ -283,6 +283,8 @@ public class PublicTraceVo implements Serializable {
         private String address;
         /** 门店配图 URL（由 t_md_store.image_oss_id 解析；无图为 null，前端用默认图兜底 · row146）。 */
         private String imageUrl;
+        /** 店长微信二维码图 URL（由 t_md_store.manager_wechat_oss_id 解析；无图为 null，前端整块隐藏 · row165）。 */
+        private String managerWechatUrl;
     }
 
     /** 作物信息块（veg）。 */
