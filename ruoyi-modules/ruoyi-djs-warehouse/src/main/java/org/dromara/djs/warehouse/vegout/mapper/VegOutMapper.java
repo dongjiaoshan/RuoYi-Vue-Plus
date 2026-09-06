@@ -23,16 +23,27 @@ import java.util.List;
 public interface VegOutMapper {
 
     /**
-     * 新增抽屉左侧可选产品：指定库位里的库存行，一行一个「产品 × 地块」篮。
+     * 新增抽屉左侧可选产品：白名单库位里的<b>原材料</b>库存行，一行一个库存篮。
      *
      * <p>只列 {@code product_stock > 0} 的行（库存为 0 没法出库）。按产品名模糊筛。</p>
      *
-     * <p>除毛菜鲜品库（L0006）外还列干货库（L0005）与蛋类库（L0009）。干货 / 蛋类的库存行没有
-     * {@code plot_id}（不是采摘来的），「地块」列显示占位符；三期货同样无 plot_id，靠
-     * {@code third_phase} 标识显示「三期」。</p>
+     * <p><b>两道范围约束缺一不可</b>：</p>
+     * <ul>
+     *   <li>{@code product_attr = 2}（字典 {@code djs_product_attr}，2=原材料）—— 这个窗口卖的是
+     *       原材料，打包成品（生产产品）有各自的发货 / 门店链路，混进来会被当成散货按 kg 卖掉。</li>
+     *   <li>库位白名单 —— 光按原材料筛远远不够：包材库 / 种子库 / 肥料库 / 生物农药库里的行同样是
+     *       {@code product_attr=2}，只有库位能把「可售农产品」与「生产投入品」分开。</li>
+     * </ul>
+     *
+     * <p>行分三个业态：果蔬有 {@code plot_id}（采摘来的地块篮）；猪肉靠 {@code ear_no} 追溯到具体猪只
+     * （分割间建篮时写入，外购白条无耳号）；干货 / 蛋类 / 其他两者都没有。三期货无 plot_id，靠
+     * {@code third_phase} 标识在「地块」列显示「三期」。</p>
+     *
+     * <p>{@code locationName} 是这个篮子<b>实际所在库位</b>的名称（前端「存储仓库」列）—— 工人照它去
+     * 哪个库拿货，不是产品主数据上配置的 {@code store_location_id}（那只是建议落点，篮子可能不在那）。</p>
      *
      * <p>{@code productCode} 取 {@code t_warehouse_product_info.product_id}（业务码，非主键）：
-     * 前端「已选产品」与打印单按它把同一产品的多个地块篮合成一条（V6 row108）。</p>
+     * 前端「已选产品」与打印单按它把同一产品的多个篮子合成一条（V6 row108）。</p>
      *
      * @param locationCodes 库位编码白名单
      * @param belongTypes   产品业态白名单
@@ -51,6 +62,8 @@ public interface VegOutMapper {
                s.plot_id           AS plotId,
                pl.plot_code        AS plotCode,
                pl.plot_name        AS plotName,
+               s.ear_no            AS earNo,
+               l.location_name     AS locationName,
                s.third_phase       AS thirdPhase,
                p.belong_type       AS belongType,
                p.sale_price        AS salePrice
@@ -64,6 +77,8 @@ public interface VegOutMapper {
            <foreach collection="locationCodes" item="lc" open="(" separator="," close=")">#{lc}</foreach>
            AND p.belong_type IN
            <foreach collection="belongTypes" item="bt" open="(" separator="," close=")">#{bt}</foreach>
+           <!-- 字典 djs_product_attr：2=原材料。生产产品走发货 / 门店链路，不从这个窗口散卖。 -->
+           AND p.product_attr = 2
            AND s.product_stock &gt; 0
         <if test="productName != null and productName != ''">
            AND p.product_name LIKE CONCAT('%', #{productName}, '%')

@@ -42,7 +42,8 @@ public class VegOutController extends BaseController {
     private final IVegOutService vegOutService;
 
     /**
-     * 新增抽屉左侧可选产品：毛菜鲜品库里库存 &gt; 0 的果蔬行（含库存重量与地块编号）。
+     * 新增抽屉左侧可选产品：可出库库位白名单里库存 &gt; 0 的原材料库存篮
+     * （含库存重量 / 存储仓库 / 地块或耳号），前端按业态分果蔬 / 猪肉 / 其他三个 tab 展示。
      */
     @SaCheckPermission("djs:warehouse:vegOut:query")
     @GetMapping("/candidates")

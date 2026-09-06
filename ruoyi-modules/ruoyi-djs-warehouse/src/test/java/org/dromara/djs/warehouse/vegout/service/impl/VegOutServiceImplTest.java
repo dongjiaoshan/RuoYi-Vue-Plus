@@ -130,6 +130,8 @@ class VegOutServiceImplTest {
         loc.setLocationCode("L0006");
         // row194 起可出库库位扩到三个（毛菜鲜品库/干货库/蛋类库），service 改用 selectList 批量解析
         when(locationInfoMapper.selectList(any())).thenReturn(java.util.List.of(loc));
+        // 饲喂记录的「位置」按货实际出自哪个库定：L0006 记毛菜间，其余记仓库 → 需要按 id 反查库位
+        when(locationInfoMapper.selectById(FRESH_VEG_LOC)).thenReturn(loc);
         // 单号改走统一编码生成器（7 位纯数字）
         when(bizCodeGenerator.generate(any(), any())).thenReturn("0000001");
         when(locationStockService.productOut(any())).thenReturn(999L);
@@ -560,17 +562,60 @@ class VegOutServiceImplTest {
     }
 
     @Test
-    @DisplayName("前置校验：非果蔬产品拒绝出库")
-    void rejectNonVegetableProduct() {
-        when(locationStockMapper.selectById(1L)).thenReturn(mkStock(1L, 10L, 20L));
+    @DisplayName("饲料饲喂：猪肉鲜品库出的货，位置记「仓库」而不是毛菜间")
+    void feed_porkBasket_writesWarehouseLocation() {
+        LocationStock stock = mkStock(1L, 10L, 20L);
+        stock.setLocationId(70007L);                       // 猪肉鲜品库，不是 L0006
+        when(locationStockMapper.selectById(1L)).thenReturn(stock);
         ProductInfo pork = mkVegProduct(10L);
-        // row194 起业态白名单放宽到 {vegetable, dry_good, egg, other}，但猪肉仍在白名单外 → 照样拒
         pork.setBelongType("pork");
         when(productInfoMapper.selectById(10L)).thenReturn(pork);
+        LocationInfo porkLoc = new LocationInfo();
+        porkLoc.setId(70007L);
+        porkLoc.setLocationCode("L0007");
+        when(locationInfoMapper.selectById(70007L)).thenReturn(porkLoc);
+        LocationInfo fresh = new LocationInfo();
+        fresh.setId(FRESH_VEG_LOC);
+        fresh.setLocationCode("L0006");
+        when(locationInfoMapper.selectList(any())).thenReturn(java.util.List.of(fresh, porkLoc));
+
+        service.submit(mkBo("feed", 1L, "0.500"), false);
+
+        ArgumentCaptor<FeedLog> fc = ArgumentCaptor.forClass(FeedLog.class);
+        verify(feedLogMapper).insert(fc.capture());
+        // 猪肉不在毛菜间，写死 veg_handle 会让饲喂台账的位置栏对不上实物来源
+        assertThat(fc.getValue().getFeedType()).isEqualTo("warehouse");
+        assertThat(fc.getValue().getLocationId()).isEqualTo(70007L);
+    }
+
+    @Test
+    @DisplayName("前置校验：白名单外的业态（包材）拒绝出库")
+    void rejectBelongTypeOutsideWhitelist() {
+        when(locationStockMapper.selectById(1L)).thenReturn(mkStock(1L, 10L, 20L));
+        ProductInfo pack = mkVegProduct(10L);
+        // 业态白名单 = {vegetable, pork, dry_good, egg, other}；包材/种子/肥料这些生产投入品在名单外
+        pack.setBelongType("package");
+        when(productInfoMapper.selectById(10L)).thenReturn(pack);
 
         assertThatThrownBy(() -> service.submit(mkBo("veg_dock", 1L, "1.000"), true))
             .isInstanceOf(ServiceException.class)
             .hasMessageContaining("不支持毛菜间出库");
+        verify(locationStockService, never()).productOut(any());
+    }
+
+    @Test
+    @DisplayName("前置校验：猪肉在业态白名单内，但送果蔬月台仍被拒")
+    void rejectPorkToVegDock() {
+        when(locationStockMapper.selectById(1L)).thenReturn(mkStock(1L, 10L, 20L));
+        ProductInfo pork = mkVegProduct(10L);
+        pork.setBelongType("pork");
+        when(productInfoMapper.selectById(10L)).thenReturn(pork);
+
+        // 猪肉能走毛菜间出库（猪肉鲜品库 / 红白脏库的原材料），但月台是果蔬有机链路的中转站，
+        // 收货侧建不出归集行 → 必须在此 fail-fast，不能静默放行成「库存扣了、月台收不到」。
+        assertThatThrownBy(() -> service.submit(mkBo("veg_dock", 1L, "1.000"), true))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("只有果蔬产品可以出库到果蔬月台");
         verify(locationStockService, never()).productOut(any());
     }
 

@@ -9,8 +9,9 @@ import java.math.BigDecimal;
 /**
  * 毛菜间出库-可选产品行（admin row187 新增抽屉左侧列表）。
  *
- * <p>数据源 = 毛菜鲜品库（L0006）里 belong_type='vegetable' 的库存行，
- * 一行一个「产品 × 地块」篮（location_stock 自带 plot_id）。</p>
+ * <p>数据源 = 可出库库位白名单里 {@code product_attr=2}（原材料）的库存行，一行一个库存篮
+ * （{@code t_warehouse_location_stock} 一行）。果蔬篮带 {@code plot_id}、猪肉篮带 {@code ear_no}，
+ * 干货 / 蛋类 / 其他两者都没有 —— 前端三个 tab 的第三列就按这个差异切换。</p>
  *
  * @author djs
  */
@@ -56,6 +57,22 @@ public class VegOutCandidateVo implements Serializable {
     private String plotName;
 
     /**
+     * 猪只耳号（{@code location_stock.ear_no}）：猪肉 tab 用它替代「地块」列。
+     *
+     * <p>分割间按「部位 × 耳号」建篮时写入（{@code PigCutRecordServiceImpl}）；
+     * 外购白条没有耳号，此处为空、列显示占位符。</p>
+     */
+    private String earNo;
+
+    /**
+     * 存储仓库名称（{@code t_warehouse_location_info.location_name}）。
+     *
+     * <p>是<b>这个篮子实际所在的库位</b>，工人照它去哪个库拿货 —— 不是产品主数据上配置的
+     * {@code store_location_id}（那只是建议落点，同一产品的篮子完全可能不在那个库）。</p>
+     */
+    private String locationName;
+
+    /**
      * 三期标识（{@code location_stock.third_phase}，1 = 三期）。
      *
      * <p>三期货没有真实地块（plot_id 为 NULL），「地块」列靠这个标识显示「三期」——
@@ -63,7 +80,7 @@ public class VegOutCandidateVo implements Serializable {
      */
     private Integer thirdPhase;
 
-    /** 产品业态（djs_belong_type）：vegetable / dry_good / egg / other，前端按它分组或判断是否有地块。 */
+    /** 产品业态（djs_belong_type）：vegetable / pork / dry_good / egg / other，前端按它分 tab。 */
     private String belongType;
 
     /** 产品销售价格（row191，产品主数据 sale_price）：新增页「销售单价」的默认值，用户可改。 */
