@@ -121,10 +121,24 @@ public interface WarehouseStatAggregateMapper {
     Map<String, Object> selectSlaughterRateBase(@Param("tenantId") String tenantId, @Param("statDate") String statDate);
 
     /**
-     * 处理完成 cohort（当日 {@code bar.finish_time} 落当天的那批猪）的三个量，一起取保证同一批猪：
-     * {@code finishedCount} 头数 / {@code barTotalWeight} 白条总重 / {@code finishedArriveWeight} 接收重量之和。
+     * 处理完成 cohort（当日 {@code bar.finish_time} 落当天的那批猪）的四个量，一起取保证同一批猪：
+     * {@code finishedCount} 头数 / {@code barTotalWeight} 白条总重 / {@code finishedArriveWeight} 接收重量之和 /
+     * {@code barYieldNumerWeight} 白条出品率分子。
      *
-     * <p>白条总重取 {@code bar.in_weight}（finishBurn 那一刻按该白条全部产出行合计写入的整只口径值），
+     * <p><b>白条总重 vs 出品率分子的口径差（V6-R172 D1）</b>：</p>
+     * <ul>
+     *   <li>{@code barTotalWeight} = Σ in_weight over <b>整个</b> F —— 独立展示列，甲方要看当天处理完成的
+     *       全部白条重，不能因某头未称重而漏掉。</li>
+     *   <li>{@code finishedArriveWeight} = Σ arrive_weight over F —— SUM 天然跳过 arrive 为 NULL 的行，
+     *       所以它只统计 F 里「有接收重量」的子集，正好当出品率分母。</li>
+     *   <li>{@code barYieldNumerWeight} = Σ in_weight over F ∩ {@code arrive_weight IS NOT NULL} ——
+     *       出品率分子。必须与分母落在<b>同一子集</b>上：一头「未称重就逐项入库→处理完成」的猪
+     *       （arrive NULL，submitBurn/finishBurn 明确允许的向后兼容流）如果分子算它、分母不算它，
+     *       出品率会破 100%（甲方最初抱怨的那类）。故分子分母同时剔除取不到接收重量的猪，
+     *       与屠宰率「取不到基数就两边剔除」一致。</li>
+     * </ul>
+     *
+     * <p>白条重取 {@code bar.in_weight}（finishBurn 那一刻按该白条全部产出行合计写入的整只口径值），
      * <b>不</b>取 {@code Σ burn_record.burn_weight}：burn_record 没有指向 bar 的外键（只有 ear_no，
      * 外购猪为空），挂不到本 cohort 上；两者数值本身逐头相等（staging 22 头全等）。
      * 也不取 {@code Σ product_inhouse.product_weight}——产出行会被下游领用/发货消耗掉，事后 SUM 会缩水。</p>
@@ -132,12 +146,14 @@ public interface WarehouseStatAggregateMapper {
      * <p>{@code finish_time} 只在 finishBurn 的状态推进里写一次、之后不变，所以本聚合可复现；
      * 没进过燎毛间的白条永远 {@code finish_time IS NULL}，天然落不进任何一天。</p>
      *
-     * @return 单行 {@code {finishedCount, barTotalWeight, finishedArriveWeight}}
+     * @return 单行 {@code {finishedCount, barTotalWeight, finishedArriveWeight, barYieldNumerWeight}}
      */
     @Select("""
         SELECT COUNT(*)                          AS finishedCount,
                COALESCE(SUM(in_weight), 0)       AS barTotalWeight,
-               COALESCE(SUM(arrive_weight), 0)   AS finishedArriveWeight
+               COALESCE(SUM(arrive_weight), 0)   AS finishedArriveWeight,
+               COALESCE(SUM(CASE WHEN arrive_weight IS NOT NULL THEN in_weight ELSE 0 END), 0)
+                                                 AS barYieldNumerWeight
         FROM t_warehouse_bar_info
         WHERE del_flag = '0' AND tenant_id = #{tenantId}
           AND DATE(finish_time) = #{statDate}
@@ -453,11 +469,15 @@ public interface WarehouseStatAggregateMapper {
 
     /**
      * 汇总某月已落盘日表（屠宰头数之和 + 各分子/分母 Σ），月率用 Σ 分子÷Σ 分母（非日率平均）。
-     * 返 Map(slaughterCount, sumRateArrive, sumRateBase, sumBarTotal, sumFinishedArrive, sumCutProduct, sumCutBar)。
+     * 返 Map(slaughterCount, sumRateArrive, sumRateBase, sumBarYieldNumer, sumFinishedArrive, sumCutProduct, sumCutBar)。
      *
      * <p>屠宰率 / 白条出品率的分子分母各有自己的 cohort 基数列（日表落盘时一并写下），月率必须拿这些
      * 基数 Σ 后再相除，不能拿 {@code arrive_weight} / {@code slaughter_weight} 凑——那两列是各自 cohort
      * 的全量，跟比率的口径不是同一批猪。</p>
+     *
+     * <p>白条出品率分子取 {@code bar_yield_numer_weight}（F ∩ arrive 非空的 in_weight 之和）<b>而非</b>
+     * {@code bar_total_weight}：后者含未称重的完成猪，与只覆盖有接收重量子集的分母
+     * {@code finished_arrive_weight} 不对称，月率会 &gt;100%（V6-R172 D1）。</p>
      *
      * @param month yyyy-MM
      */
@@ -465,7 +485,7 @@ public interface WarehouseStatAggregateMapper {
         SELECT COALESCE(SUM(slaughter_count), 0)              AS slaughterCount,
                COALESCE(SUM(slaughter_rate_arrive_weight), 0) AS sumRateArrive,
                COALESCE(SUM(slaughter_rate_base_weight), 0)   AS sumRateBase,
-               COALESCE(SUM(bar_total_weight), 0)             AS sumBarTotal,
+               COALESCE(SUM(bar_yield_numer_weight), 0)       AS sumBarYieldNumer,
                COALESCE(SUM(finished_arrive_weight), 0)       AS sumFinishedArrive,
                COALESCE(SUM(cut_product_weight), 0)           AS sumCutProduct,
                COALESCE(SUM(cut_bar_weight), 0)               AS sumCutBar
