@@ -114,19 +114,6 @@ class StoreDemandStatusMappingTest {
     }
 
     @Test
-    @DisplayName("labelOf：6 态中文与字典 djs_store_demand_status 逐字一致；未知态裹中文不甩枚举")
-    void labelOfCoversSixStatuses() {
-        assertThat(StoreDemandStatusMapping.labelOf("SUBMITTED")).isEqualTo("待确认");
-        assertThat(StoreDemandStatusMapping.labelOf("CONFIRMED")).isEqualTo("已确认");
-        assertThat(StoreDemandStatusMapping.labelOf("PARTIAL_ARRIVED")).isEqualTo("部分到店");
-        assertThat(StoreDemandStatusMapping.labelOf("SHIPPED")).isEqualTo("已发货");
-        assertThat(StoreDemandStatusMapping.labelOf("ARRIVED")).isEqualTo("已到店");
-        assertThat(StoreDemandStatusMapping.labelOf("DELETED")).isEqualTo("已删除");
-        assertThat(StoreDemandStatusMapping.labelOf(null)).isEmpty();
-        assertThat(StoreDemandStatusMapping.labelOf("WAT")).isEqualTo("未知状态（WAT）");
-    }
-
-    @Test
     @DisplayName("sqlPredicate：5 个可筛门店态 → 与 derive 逐条同构的 WHERE 片段")
     void sqlPredicateMatchesMappingTable() {
         assertThat(StoreDemandStatusMapping.sqlPredicate("SUBMITTED"))

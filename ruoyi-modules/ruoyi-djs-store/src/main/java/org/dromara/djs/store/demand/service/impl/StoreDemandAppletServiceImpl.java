@@ -187,10 +187,16 @@ public class StoreDemandAppletServiceImpl implements IStoreDemandAppletService {
      * 是发货环节才回写 {@code demand_id} 的，确认到发车之间读不到任何生产信号，
      * 按原文字面实现会让 82% 的「生产中」日卡（实测 17 张里 14 张）翻成别的态。</p>
      *
+     * <p><b>三个桶的口径（V6-R197 起看到店量）</b>——由 {@code selectStoreDemandDayPage} 按<b>行级</b>
+     * {@code StoreDemandStatusMapping.derive} 的结果分桶，与点进去的按天明细逐行状态<b>同源</b>：
+     * {@code arrived} = 行级 ARRIVED；{@code shipped} = 行级 SHIPPED + PARTIAL_ARRIVED（已发货态、未收货、
+     * 到店量 &gt; 0）；{@code confirmed} = 行级 CONFIRMED（含「已发货态但到店量 = 0」的缺量出车行）。
+     * R197 之前 shipped 桶不看到店量，于是「一件没到」的一天日卡显示已发货、点进去每行却是已确认。</p>
+     *
      * @param total     当天需求单总数
-     * @param arrived   门店态 ARRIVED 的单数
-     * @param shipped   门店态 SHIPPED 的单数
-     * @param confirmed 门店态 CONFIRMED 的单数
+     * @param arrived   行级派生态 ARRIVED 的单数
+     * @param shipped   行级派生态 SHIPPED + PARTIAL_ARRIVED 的单数
+     * @param confirmed 行级派生态 CONFIRMED 的单数（含已发货态但到店量为 0 的行）
      * @return ARRIVED / SHIPPED / IN_PRODUCTION / CONFIRMING
      */
     static String dayStatus(int total, int arrived, int shipped, int confirmed) {
@@ -213,7 +219,9 @@ public class StoreDemandAppletServiceImpl implements IStoreDemandAppletService {
      * {@code DemandGroupVo.confirmRate} 同口径（按<b>需求单</b>不是按门店）。
      *
      * @param total     需求单总数（分母）
-     * @param confirmed 已确认需求单数（门店态 ∈ {CONFIRMED, SHIPPED, ARRIVED}）
+     * @param confirmed 已确认需求单数（三桶之和 = 行级门店态 ∈ {CONFIRMED, PARTIAL_ARRIVED, SHIPPED, ARRIVED}）。
+     *                  R197 只是把「已发货态未收货」这批按到店量在 shipped / confirmed 之间重切，
+     *                  三桶之和不变，故本口径与 R197 之前完全一致
      * @return 0~1；分母 ≤ 0 返 0
      */
     static BigDecimal confirmRate(int total, int confirmed) {
@@ -774,12 +782,13 @@ public class StoreDemandAppletServiceImpl implements IStoreDemandAppletService {
         if (!storeUserRelationService.isStoreAccessible(currentUserIdSafe(), demand.getStoreId())) {
             throw new ServiceException("无权操作该门店的需求", 403);
         }
-        // 只判「是不是待确认」，与到店量无关 —— 不为一句报错文案多打一次到店量聚合
+        // 只判「是不是待确认」，与到店量无关 —— 不为一句报错文案多打一次到店量聚合。
+        // 文案不点名当前状态：这里拿不到到店量，报出来的态可能与列表显示的不一致
+        //（COMPLETED + 到店 0 在列表是「已确认」，这里会算成「已发货」）。宁可说得笼统，也不给两个数。
         String storeStatus = StoreDemandStatusMapping.deriveIgnoringArrival(
             demand.getDemandStatus(), demand.getReceivedTime() != null);
         if (!StoreDemandStatusMapping.SUBMITTED.equals(storeStatus)) {
-            throw new ServiceException("仅「待确认」的需求可修改数量或删除，当前状态："
-                + StoreDemandStatusMapping.labelOf(storeStatus), 400);
+            throw new ServiceException("该需求已被仓库受理，进入生产 / 发货流程，不能再修改数量或删除", 400);
         }
         if (bo.getDemandQuantity().signum() == 0) {
             // 删除走仓库域既有路径（置 DELETED 终态 + 软删 + 级联软删指定猪只），不写第二套
@@ -809,12 +818,11 @@ public class StoreDemandAppletServiceImpl implements IStoreDemandAppletService {
         // 仓库域状态机本身允许 CONFIRMED → CANCELLED（admin 有正当场景），所以闸必须加在门店这一侧：
         // 独立验收实测过，改量端点对已确认行返 400，紧接着同一 token 打本端点却 200，
         // 已确认行照样从详情页消失、日卡品数 -1、确认率归零。
-        // 同上：只判「是不是待确认」，与到店量无关
+        // 同上：只判「是不是待确认」，与到店量无关；文案同样不点名状态（见 updateQuantity 注释）
         String storeStatus = StoreDemandStatusMapping.deriveIgnoringArrival(
             demand.getDemandStatus(), demand.getReceivedTime() != null);
         if (!StoreDemandStatusMapping.SUBMITTED.equals(storeStatus)) {
-            throw new ServiceException("仅「待确认」的需求可撤回，当前状态："
-                + StoreDemandStatusMapping.labelOf(storeStatus), 400);
+            throw new ServiceException("该需求已被仓库受理，进入生产 / 发货流程，不能再撤回", 400);
         }
         demandStatusService.transition(id, DemandEvent.CANCEL, null, remark);
         log.info("[STORE-MP-BOARD-001] 门店撤回需求 id={} no={}", id, demand.getDemandNo());

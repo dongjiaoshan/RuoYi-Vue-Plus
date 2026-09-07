@@ -474,9 +474,25 @@ public class DemandManageServiceImpl extends DjsBaseServiceImpl<DemandManageMapp
         return baseMapper.selectVoList(buildQueryWrapper(query));
     }
 
+    /**
+     * 单条详情（admin 仓库详情 + admin 门店详情 + mp 门店详情三个端点共用）。
+     *
+     * <p>V6-R197：详情也回填到店量 + 门店视角态。此前只 {@code selectVoById} 直出，两个 getInfo
+     * 端点的 {@code storeDemandStatus} / {@code arrivedQuantity} 恒为 null —— 同一条需求在列表里显
+     * 「部分到店 / 到店量 2」，点开详情两个字段都空。<b>走的是与列表完全相同的
+     * {@link DemandArrivedQuantityFiller} + {@link StoreDemandStatusMapping#derive}</b>，
+     * 单条也传单元素列表交给批量方法，不写第三种实现。</p>
+     */
     @Override
     public DemandManageVo queryById(Long id) {
-        return baseMapper.selectVoById(id);
+        DemandManageVo vo = baseMapper.selectVoById(id);
+        if (vo == null) {
+            return null;
+        }
+        List<DemandManageVo> one = List.of(vo);
+        arrivedQuantityFiller.fill(one);
+        fillStoreDemandStatus(one);
+        return vo;
     }
 
     @Override

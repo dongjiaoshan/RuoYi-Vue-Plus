@@ -816,6 +816,28 @@ class DemandManageServiceImplTest {
     }
 
     @Test
+    @DisplayName("queryById: 详情也回填到店量 + 门店视角态（V6-R197：两个 getInfo 端点此前恒返 null）")
+    void testQueryById_FillsArrivedQuantityAndStoreStatus() {
+        org.dromara.djs.warehouse.demand.domain.vo.DemandManageVo vo = shippedRow(905L, "5");
+        when(demandMapper.selectVoById(905L)).thenReturn(vo);
+
+        org.dromara.djs.warehouse.demand.domain.vo.DemandManageVo got =
+            serviceWithArrived(Map.of(905L, new BigDecimal("2"))).queryById(905L);
+
+        // 与列表走同一个 filler + 同一个 derive，不是第三种实现
+        assertThat(got.getArrivedQuantity()).isEqualByComparingTo("2");
+        assertThat(got.getStoreDemandStatus()).isEqualTo("PARTIAL_ARRIVED");
+    }
+
+    @Test
+    @DisplayName("queryById: 查不到的 id 直接返 null，不在 null 上回填炸 NPE")
+    void testQueryById_MissingRowReturnsNull() {
+        when(demandMapper.selectVoById(906L)).thenReturn(null);
+
+        assertThat(serviceWithArrived(Map.of()).queryById(906L)).isNull();
+    }
+
+    @Test
     @DisplayName("queryPageList: 按门店视角态筛选 → WHERE 追加 mapping 产出的片段（与 derive 同源）")
     void testQueryPageList_StoreStatusFilterPushedDown() {
         com.baomidou.mybatisplus.extension.plugins.pagination.Page<

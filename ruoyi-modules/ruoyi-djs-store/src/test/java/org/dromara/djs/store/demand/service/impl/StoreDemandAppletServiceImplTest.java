@@ -23,6 +23,7 @@ import org.dromara.djs.warehouse.demand.domain.bo.DemandManageBo;
 import org.dromara.djs.warehouse.demand.domain.vo.DemandManageVo;
 import org.dromara.djs.warehouse.demand.domain.vo.StoreDemandDayAggVo;
 import org.dromara.djs.warehouse.demand.mapper.DemandManageMapper;
+import org.dromara.djs.warehouse.demand.core.StoreDemandStatusMapping;
 import org.dromara.djs.warehouse.demand.core.enums.DemandEvent;
 import org.dromara.djs.warehouse.demand.service.IDemandManageService;
 import org.dromara.djs.warehouse.demand.service.IDemandStatusService;
@@ -183,6 +184,124 @@ class StoreDemandAppletServiceImplTest {
     @DisplayName("dayStatus：零行（理论不出现，SQL 已排除全 DELETED 的天）→ CONFIRMING，不炸")
     void dayStatusZeroRows() {
         assertThat(StoreDemandAppletServiceImpl.dayStatus(0, 0, 0, 0)).isEqualTo("CONFIRMING");
+    }
+
+    // ---------------- V6-R197 日桶 ↔ 行级派生态同源 ----------------
+
+    /**
+     * 把<b>行级</b>门店态映射到日卡三桶 —— 镜像 {@code selectStoreDemandDayPage} 的三个 CASE。
+     *
+     * <p>SQL 那三个 CASE 是注解里的字符串，mock 打不到；「CASE 用的是不是 mapping 的同一份片段」
+     * 由 warehouse 侧 {@code StoreDemandDayBucketSqlContractTest} 钉原文，本方法负责钉<b>语义</b>：
+     * 从真实 {@code derive} 算出的态出发，落到哪个桶、再喂给 {@link StoreDemandAppletServiceImpl#dayStatus}
+     * 得到什么日状态。两边一起改才动得了这条链，单改一边必红。</p>
+     *
+     * @return 0=arrived 1=shipped 2=confirmed 3=其余（不进桶）
+     */
+    private static int dayBucketOf(String storeStatus) {
+        return switch (storeStatus) {
+            case StoreDemandStatusMapping.ARRIVED -> 0;
+            case StoreDemandStatusMapping.SHIPPED, StoreDemandStatusMapping.PARTIAL_ARRIVED -> 1;
+            case StoreDemandStatusMapping.CONFIRMED -> 2;
+            default -> 3;
+        };
+    }
+
+    /** 一行需求（仓库态 / 是否收货 / 到店量 / 需求量）→ 日桶。 */
+    private static int bucketOfRow(String demandStatus, boolean received, String arrivedQty, String demandQty) {
+        return dayBucketOf(StoreDemandStatusMapping.derive(demandStatus, received,
+            new BigDecimal(arrivedQty), new BigDecimal(demandQty)));
+    }
+
+    @Test
+    @DisplayName("日桶：COMPLETED 到店 0 → confirmed 桶（不是 shipped）—— R197 主修，日卡与行级不得再打架")
+    void dayBucket_completedWithZeroArrivedGoesToConfirmed() {
+        assertThat(StoreDemandStatusMapping.derive("COMPLETED", false, BigDecimal.ZERO, new BigDecimal("3")))
+            .isEqualTo("CONFIRMED");
+        assertThat(bucketOfRow("COMPLETED", false, "0", "3")).as("到店 0 → confirmed 桶").isEqualTo(2);
+    }
+
+    @Test
+    @DisplayName("日桶：四种行各进哪个桶 —— 到店 0 / 部分 / 满 / 已收货")
+    void dayBucket_fourRowShapes() {
+        assertThat(bucketOfRow("COMPLETED", false, "0", "3")).as("到店 0 → confirmed").isEqualTo(2);
+        assertThat(bucketOfRow("COMPLETED", false, "1", "3")).as("部分到店 → shipped").isEqualTo(1);
+        assertThat(bucketOfRow("COMPLETED", false, "3", "3")).as("到店满 → shipped").isEqualTo(1);
+        assertThat(bucketOfRow("COMPLETED", true, "1", "3")).as("已收货 → arrived").isEqualTo(0);
+        // PARTIAL_SHIPPED 与 COMPLETED 同处置（都是「已发货态」）
+        assertThat(bucketOfRow("PARTIAL_SHIPPED", false, "0", "3")).isEqualTo(2);
+        assertThat(bucketOfRow("PARTIAL_SHIPPED", false, "2", "3")).isEqualTo(1);
+        // 待确认永远不进三桶，把当天压回最保守一档
+        assertThat(bucketOfRow("SUBMITTED", false, "0", "3")).as("待确认 → 不进桶").isEqualTo(3);
+    }
+
+    @Test
+    @DisplayName("dayStatus：一天全是「COMPLETED 到店 0」→ 需求生产中（IN_PRODUCTION），绝不再是已发货")
+    void dayStatus_allCompletedWithZeroArrivedIsNotShipped() {
+        // 独立 QA 复现的那一天：4 行全部已被仓库确认/闭单，但一件都没到店
+        int arrived = 0;
+        int shipped = 0;
+        int confirmed = 0;
+        for (String status : List.of("COMPLETED", "COMPLETED", "PARTIAL_SHIPPED", "CONFIRMED")) {
+            int b = bucketOfRow(status, false, "0", "3");
+            if (b == 0) {
+                arrived++;
+            } else if (b == 1) {
+                shipped++;
+            } else if (b == 2) {
+                confirmed++;
+            }
+        }
+        assertThat(shipped).as("一件没到店 → shipped 桶必须是 0").isZero();
+        assertThat(confirmed).isEqualTo(4);
+        // 判定顺序不变：全部已确认、无待确认行 → 「需求生产中」（Kevin 2026-08-11 口径：
+        // 被仓库确认且还未发车 = 生产中）。「需求确认中」是留给当天还混着待确认行的情况。
+        assertThat(StoreDemandAppletServiceImpl.dayStatus(4, arrived, shipped, confirmed))
+            .isEqualTo("IN_PRODUCTION");
+    }
+
+    @Test
+    @DisplayName("dayStatus：同一天出现一条到店 1 的部分到店 → 日卡升到 已发货")
+    void dayStatus_onePartialArrivedLiftsDayToShipped() {
+        // 3 行到店 0（confirmed）+ 1 行部分到店（shipped）→ 仍有 confirmed → 生产中
+        assertThat(StoreDemandAppletServiceImpl.dayStatus(4, 0, 1, 3)).isEqualTo("IN_PRODUCTION");
+        // 全部至少到了一部分 → confirmed 清零 → 已发货
+        assertThat(StoreDemandAppletServiceImpl.dayStatus(4, 0, 4, 0)).isEqualTo("SHIPPED");
+    }
+
+    @Test
+    @DisplayName("三桶之和不变：R197 只是把「已发货态未收货」按到店量在 shipped/confirmed 之间重切")
+    void dayBucket_sumUnchangedSoConfirmRateUnchanged() {
+        // 同一批行，分别按「R197 之前口径」和「现口径」分桶，三桶之和必须相等（confirmRate 分子）
+        record Row(String status, boolean received, String arrived, String demand) { }
+        List<Row> rows = List.of(
+            new Row("COMPLETED", false, "0", "3"),
+            new Row("COMPLETED", false, "1", "3"),
+            new Row("COMPLETED", false, "3", "3"),
+            new Row("PARTIAL_SHIPPED", false, "0", "3"),
+            new Row("CONFIRMED", false, "0", "3"),
+            new Row("COMPLETED", true, "1", "3"),
+            new Row("SUBMITTED", false, "0", "3"));
+
+        int nowSum = 0;
+        for (Row r : rows) {
+            if (bucketOfRow(r.status(), r.received(), r.arrived(), r.demand()) != 3) {
+                nowSum++;
+            }
+        }
+        // R197 之前：arrived = 已确认及之后 + 已收货；shipped = 已发货态未收货；confirmed = CONFIRMED/IN_PRODUCTION 未收货
+        int legacySum = 0;
+        for (Row r : rows) {
+            boolean shippedStatus = "PARTIAL_SHIPPED".equals(r.status()) || "COMPLETED".equals(r.status());
+            boolean confirmedStatus = "CONFIRMED".equals(r.status()) || "IN_PRODUCTION".equals(r.status());
+            if ((r.received() && (shippedStatus || confirmedStatus))
+                || (!r.received() && (shippedStatus || confirmedStatus))) {
+                legacySum++;
+            }
+        }
+        assertThat(nowSum).as("三桶之和 = confirmRate 分子，R197 前后必须一致").isEqualTo(legacySum);
+        assertThat(StoreDemandAppletServiceImpl.confirmRate(rows.size(), nowSum))
+            .isEqualByComparingTo(StoreDemandAppletServiceImpl.confirmRate(rows.size(), legacySum));
     }
 
     // ---------------- confirmRate 算式 ----------------
@@ -543,7 +662,12 @@ class StoreDemandAppletServiceImplTest {
     void updateQuantityRejectsNonSubmitted() {
         when(demandManageMapper.selectById(101L)).thenReturn(demand("CONFIRMED", null));
         assertThatThrownBy(() -> service.updateQuantity(qtyBo("3")))
-            .isInstanceOf(ServiceException.class).hasMessageContaining("待确认");
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("已被仓库受理")
+            // V6-R197：拒绝文案不点名当前状态 —— 这条链路拿不到到店量，点名会与列表显示的态对不上
+            //（COMPLETED + 到店 0 列表显「已确认」，这里只能算出「已发货」）。
+            .hasMessageNotContaining("已发货")
+            .hasMessageNotContaining("已确认");
 
         when(demandManageMapper.selectById(101L)).thenReturn(demand("COMPLETED", null));
         assertThatThrownBy(() -> service.updateQuantity(qtyBo("3")))
@@ -766,8 +890,11 @@ class StoreDemandAppletServiceImplTest {
         when(demandManageMapper.selectById(101L)).thenReturn(demand("CONFIRMED", null));
         assertThatThrownBy(() -> service.cancelSubmitted(101L, null))
             .isInstanceOf(ServiceException.class)
-            .hasMessageContaining("仅「待确认」的需求可撤回")
-            .hasMessageContaining("已确认");
+            .hasMessageContaining("已被仓库受理")
+            .hasMessageContaining("不能再撤回")
+            // 同改量端点：不点名状态（V6-R197）
+            .hasMessageNotContaining("已发货")
+            .hasMessageNotContaining("已确认");
         verify(demandStatusService, never()).transition(any(), any(), any(), any());
     }
 

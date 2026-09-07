@@ -6,6 +6,7 @@ import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 import org.dromara.common.mybatis.core.mapper.BaseMapperPlus;
+import org.dromara.djs.warehouse.demand.core.StoreDemandStatusMapping;
 import org.dromara.djs.warehouse.demand.domain.DemandManage;
 import org.dromara.djs.warehouse.demand.domain.vo.DemandGroupVo;
 import org.dromara.djs.warehouse.demand.domain.vo.DemandManageVo;
@@ -641,8 +642,25 @@ public interface DemandManageMapper extends BaseMapperPlus<DemandManage, DemandM
      * <p>三个派生列的算法：</p>
      * <ul>
      *   <li>{@code arrivedCount / shippedCount / confirmedCount} 逐行按
-     *       {@link org.dromara.djs.warehouse.demand.core.StoreDemandStatusMapping} 的映射表分桶计数，
-     *       日状态阶梯与确认率由 service 用这三个数 + {@code totalCount} 派生（不在 SQL 里做，便于单测）。</li>
+     *       {@link org.dromara.djs.warehouse.demand.core.StoreDemandStatusMapping#derive} 的<b>行级</b>
+     *       派生态分桶计数（V6-R197 起<b>看到店量</b>，见下表），日状态阶梯与确认率由 service 用这三个数
+     *       + {@code totalCount} 派生（不在 SQL 里做，便于单测）：
+     *       <table>
+     *         <tr><th>行级派生态</th><th>日桶</th></tr>
+     *         <tr><td>ARRIVED 确认到店（已收货）</td><td>{@code arrivedCount}</td></tr>
+     *         <tr><td>SHIPPED 已发货 + PARTIAL_ARRIVED 部分到店（已发货态 · 未收货 · 到店量 &gt; 0）</td>
+     *             <td>{@code shippedCount}</td></tr>
+     *         <tr><td>CONFIRMED 已确认（含<b>已发货态但到店量 = 0</b>，即缺量出车一件没到）</td>
+     *             <td>{@code confirmedCount}</td></tr>
+     *         <tr><td>SUBMITTED 待确认 / 其它</td><td>三桶都不进（service 侧的「其余」桶）</td></tr>
+     *       </table>
+     *       到店量子查询直接复用 {@code StoreDemandStatusMapping.ARRIVED_QTY_SUBQUERY_DM}（锚主表别名
+     *       {@code dm}），与按门店态筛选的 {@code sqlPredicate} <b>同一份片段</b> —— 手写第二份必漂，
+     *       R197 前的「日卡显已发货、点进去每行显已确认」就是这么来的（契约由
+     *       {@code StoreDemandDayBucketSqlContractTest} 钉死）。
+     *       shipped 桶把 SHIPPED 与 PARTIAL_ARRIVED 合并，故不需要与 {@code demand_quantity} 比较；
+     *       三桶之和与 R197 之前完全一致（只是把「已发货态未收货」这批按到店量重新切给了 shipped / confirmed），
+     *       所以 {@code confirmRate} 口径不变。</li>
      *   <li>{@code ordererName} 相关子查询取当天<b>最早一条</b>需求的下单人昵称
      *       （{@code create_time ASC, id ASC LIMIT 1}）——不用 GROUP_CONCAT+SUBSTRING_INDEX，
      *       昵称含逗号会被切断，且 {@code group_concat_max_len} 有截断风险。</li>
@@ -668,12 +686,26 @@ public interface DemandManageMapper extends BaseMapperPlus<DemandManage, DemandM
                dm.store_id                                                AS storeId,
                COUNT(DISTINCT dm.product_id)                              AS categoryCount,
                COUNT(*)                                                   AS totalCount,
-               SUM(CASE WHEN dm.demand_status IN ('CONFIRMED','IN_PRODUCTION','PARTIAL_SHIPPED','COMPLETED')
+               SUM(CASE WHEN dm.demand_status IN """
+        + StoreDemandStatusMapping.CONFIRMED_OR_LATER_STATUS_SQL + """
                          AND dm.received_time IS NOT NULL THEN 1 ELSE 0 END)  AS arrivedCount,
-               SUM(CASE WHEN dm.demand_status IN ('PARTIAL_SHIPPED','COMPLETED')
-                         AND dm.received_time IS NULL THEN 1 ELSE 0 END)      AS shippedCount,
-               SUM(CASE WHEN dm.demand_status IN ('CONFIRMED','IN_PRODUCTION')
-                         AND dm.received_time IS NULL THEN 1 ELSE 0 END)      AS confirmedCount,
+               SUM(CASE WHEN dm.demand_status IN """
+        + StoreDemandStatusMapping.SHIPPED_STATUS_SQL + """
+                         AND dm.received_time IS NULL
+                         AND """
+        + StoreDemandStatusMapping.ARRIVED_QTY_SUBQUERY_DM + """
+                             &gt; 0
+                        THEN 1 ELSE 0 END)                                    AS shippedCount,
+               SUM(CASE WHEN (dm.demand_status IN """
+        + StoreDemandStatusMapping.CONFIRMED_STATUS_SQL + """
+                              AND dm.received_time IS NULL)
+                          OR (dm.demand_status IN """
+        + StoreDemandStatusMapping.SHIPPED_STATUS_SQL + """
+                              AND dm.received_time IS NULL
+                              AND """
+        + StoreDemandStatusMapping.ARRIVED_QTY_SUBQUERY_DM + """
+                                  &lt;= 0)
+                        THEN 1 ELSE 0 END)                                    AS confirmedCount,
                DATE_FORMAT(MAX(GREATEST(dm.create_time, IFNULL(dm.update_time, dm.create_time))),
                            '%Y-%m-%d %H:%i')                              AS lastOrderTime,
                CONCAT(
