@@ -145,8 +145,7 @@ public interface WarehouseBoardStatMapper {
      * 不能只写 {@code &lt;&gt; 'gift'}——SQL 里 {@code NULL &lt;&gt; 'gift'} 是 UNKNOWN，会把老数据整批筛掉。</p>
      */
     String EXCLUDE_GIFT_PRODUCE =
-        "  AND (pp.deliver_dest IS NULL OR pp.deliver_dest <> '" + DELIVER_DEST_GIFT + "')
-";
+        "  AND (pp.deliver_dest IS NULL OR pp.deliver_dest <> '" + DELIVER_DEST_GIFT + "')\n";
 
     /**
      * 当月「入库量」：按品类 × 单位合计入库流水量，仅原材料产品（product_attr = 2）。
