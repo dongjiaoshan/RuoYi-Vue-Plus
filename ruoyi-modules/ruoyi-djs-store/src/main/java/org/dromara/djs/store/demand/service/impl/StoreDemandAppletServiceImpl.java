@@ -23,6 +23,7 @@ import org.dromara.djs.store.demand.domain.vo.StoreDemandCatalogVo;
 import org.dromara.djs.store.demand.domain.vo.StoreDemandDayVo;
 import org.dromara.djs.store.demand.service.IStoreDemandAppletService;
 import org.dromara.djs.store.demand.service.IStoreDemandService;
+import org.dromara.djs.warehouse.demand.core.DemandArrivedQuantityFiller;
 import org.dromara.djs.warehouse.demand.core.StoreDemandStatusMapping;
 import org.dromara.djs.warehouse.demand.core.enums.DemandEvent;
 import org.dromara.djs.warehouse.demand.domain.DemandManage;
@@ -131,6 +132,9 @@ public class StoreDemandAppletServiceImpl implements IStoreDemandAppletService {
 
     /** 预计到店量 / 计损量两列的唯一口径（与门店需求分页列表共用）。 */
     private final StoreDemandViewEnricher viewEnricher;
+
+    /** 到店量回填（V6-R197：门店态派生依赖它，必须在 derive 之前跑）。 */
+    private final DemandArrivedQuantityFiller arrivedQuantityFiller;
 
     // ---------------- row66 按天聚合 ----------------
 
@@ -250,12 +254,17 @@ public class StoreDemandAppletServiceImpl implements IStoreDemandAppletService {
             wrapper.apply(storeStatusSql);
         }
         List<DemandManageVo> rows = demandManageMapper.selectVoList(wrapper);
+        // V6-R197：先批量回填到店量，再派生门店态 —— 已发货态要拿到店量跟需求量比
+        // （0 → 已确认 / 不足 → 部分到店 / 够 → 已发货）。顺序反了就永远算成「已发货」。
+        arrivedQuantityFiller.fill(rows);
         for (DemandManageVo vo : rows) {
-            vo.setStoreDemandStatus(
-                StoreDemandStatusMapping.derive(vo.getDemandStatus(), vo.getReceivedTime() != null));
+            vo.setStoreDemandStatus(StoreDemandStatusMapping.derive(
+                vo.getDemandStatus(), vo.getReceivedTime() != null,
+                vo.getArrivedQuantity(), vo.getDemandQuantity()));
         }
         fillProductPresentation(rows);
         // 预计到店量 + 计损量（V6 row76）：与门店需求分页列表共用同一份口径，绝不在此另写一份
+        // （到店量已填，enricher 内部会跳过不重复打库）
         viewEnricher.enrich(rows);
         return rows;
     }
@@ -765,7 +774,8 @@ public class StoreDemandAppletServiceImpl implements IStoreDemandAppletService {
         if (!storeUserRelationService.isStoreAccessible(currentUserIdSafe(), demand.getStoreId())) {
             throw new ServiceException("无权操作该门店的需求", 403);
         }
-        String storeStatus = StoreDemandStatusMapping.derive(
+        // 只判「是不是待确认」，与到店量无关 —— 不为一句报错文案多打一次到店量聚合
+        String storeStatus = StoreDemandStatusMapping.deriveIgnoringArrival(
             demand.getDemandStatus(), demand.getReceivedTime() != null);
         if (!StoreDemandStatusMapping.SUBMITTED.equals(storeStatus)) {
             throw new ServiceException("仅「待确认」的需求可修改数量或删除，当前状态："
@@ -799,7 +809,8 @@ public class StoreDemandAppletServiceImpl implements IStoreDemandAppletService {
         // 仓库域状态机本身允许 CONFIRMED → CANCELLED（admin 有正当场景），所以闸必须加在门店这一侧：
         // 独立验收实测过，改量端点对已确认行返 400，紧接着同一 token 打本端点却 200，
         // 已确认行照样从详情页消失、日卡品数 -1、确认率归零。
-        String storeStatus = StoreDemandStatusMapping.derive(
+        // 同上：只判「是不是待确认」，与到店量无关
+        String storeStatus = StoreDemandStatusMapping.deriveIgnoringArrival(
             demand.getDemandStatus(), demand.getReceivedTime() != null);
         if (!StoreDemandStatusMapping.SUBMITTED.equals(storeStatus)) {
             throw new ServiceException("仅「待确认」的需求可撤回，当前状态："

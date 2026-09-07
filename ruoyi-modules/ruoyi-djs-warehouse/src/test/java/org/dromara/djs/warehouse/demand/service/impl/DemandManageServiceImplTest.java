@@ -88,6 +88,34 @@ class DemandManageServiceImplTest {
 
     DemandManageServiceImpl service;
 
+    /**
+     * 到店量回填的 no-op 替身：本套用例不校验到店量，行上 {@code arrivedQuantity} 保持 null，
+     * {@link org.dromara.djs.warehouse.demand.core.StoreDemandStatusMapping#derive} 按 null 契约
+     * 退回「已发货」——正是 R197 之前的行为，故既有 storeDemandStatus 断言不受影响。
+     */
+    static final org.dromara.djs.warehouse.demand.core.DemandArrivedQuantityFiller NOOP_ARRIVED_FILLER =
+        new org.dromara.djs.warehouse.demand.core.DemandArrivedQuantityFiller(null) {
+            @Override
+            public void fill(java.util.List<org.dromara.djs.warehouse.demand.domain.vo.DemandManageVo> rows) {
+                // 不打库
+            }
+        };
+
+    /**
+     * 预热 MP 的 lambda 列缓存：断言 wrapper 的 SQL 片段（{@code getCustomSqlSegment()}）会真正解析
+     * lambda 列名，不预热则报 {@code can not find lambda cache for this entity}。
+     * 同 skill {@code coder-mp-entity-cache-test}。
+     */
+    @org.junit.jupiter.api.BeforeAll
+    static void initMpEntityCache() {
+        com.baomidou.mybatisplus.core.MybatisConfiguration cfg =
+            new com.baomidou.mybatisplus.core.MybatisConfiguration();
+        org.apache.ibatis.builder.MapperBuilderAssistant assistant =
+            new org.apache.ibatis.builder.MapperBuilderAssistant(cfg, "");
+        assistant.setCurrentNamespace("test");
+        com.baomidou.mybatisplus.core.metadata.TableInfoHelper.initTableInfo(assistant, DemandManage.class);
+    }
+
     @BeforeEach
     void setup() {
         // DJS-FIX-ADMIN-W22-003：SummaryBar 的 3 个新依赖在本套用例里不直接覆盖，传 null 让构造器存字段即可
@@ -104,12 +132,22 @@ class DemandManageServiceImplTest {
                                         org.dromara.djs.warehouse.product.mapper.ProductInfoMapper pim,
                                         org.dromara.djs.warehouse.demand.mapper.DemandAdjustRecordMapper arm,
                                         org.dromara.djs.common.store.mapper.StoreMapper sm) {
+            this(m, dpm, g, pim, arm, sm, NOOP_ARRIVED_FILLER);
+        }
+
+        TestableDemandManageServiceImpl(DemandManageMapper m, DemandPigMapper dpm, IBizCodeGenerator g,
+                                        org.dromara.djs.warehouse.product.mapper.ProductInfoMapper pim,
+                                        org.dromara.djs.warehouse.demand.mapper.DemandAdjustRecordMapper arm,
+                                        org.dromara.djs.common.store.mapper.StoreMapper sm,
+                                        org.dromara.djs.warehouse.demand.core.DemandArrivedQuantityFiller af) {
             // 新增依赖（DemandPigAvailableMapper 出栏日龄过滤 + 周期配置 + 计划 + 库存
             // + IProductDisplayNameResolver 下单定格展示名 DENGBO-R16
             // + DemandAdjustRecordMapper / StoreMapper 需求量调整留痕 V6-R140）本套用例不直接覆盖，
             // 传 null 让构造器存字段即可；
             // ProductInfoMapper 原料下单守门在 insertByBo 主链路必经，传 mock（未 stub 返回 null → 守门放行）
-            super(m, dpm, g, null, null, null, null, pim, null, arm, sm);
+            // V6-R197 新增 DemandArrivedQuantityFiller：本套用例不覆盖 queryPageList 的到店量回填，
+            // 传 mock（未 stub → fill() 内部批量查返 null 会 NPE，所以给的是真实实例的 no-op 替身）
+            super(m, dpm, g, null, null, null, null, pim, null, arm, sm, af);
         }
 
         /** 纯 Mockito 用例没有 sa-token 上下文，覆盖掉静态 LoginHelper 取值。 */
@@ -706,6 +744,95 @@ class DemandManageServiceImplTest {
 
         assertThatThrownBy(() -> service.adjustQuantity(503L, bo)).isInstanceOf(ServiceException.class);
         verify(adjustRecordMapper, never()).insert(any(org.dromara.djs.warehouse.demand.domain.DemandAdjustRecord.class));
+    }
+
+    // ---------------- V6-R197 门店视角派生态（到店量三分） ----------------
+
+    /**
+     * queryPageList 的到店量 → 门店态链路（V6-R197）。
+     *
+     * <p>用一个「按 id 查表」的 filler 替身代替真实批量聚合（真实实现由
+     * {@code DemandArrivedQuantityFillerTest} 覆盖），本用例只钉<b>顺序</b>：
+     * 到店量必须先回填、门店态才算得对。顺序写反的话三行会全变「已发货」，
+     * 正是甲方 row197 报的那个 bug。</p>
+     */
+    private DemandManageServiceImpl serviceWithArrived(Map<Long, BigDecimal> arrivedById) {
+        return new TestableDemandManageServiceImpl(
+            demandMapper, demandPigMapper, bizCodeGenerator, productInfoMapper, adjustRecordMapper, storeMapper,
+            new org.dromara.djs.warehouse.demand.core.DemandArrivedQuantityFiller(null) {
+                @Override
+                public void fill(List<org.dromara.djs.warehouse.demand.domain.vo.DemandManageVo> rows) {
+                    for (org.dromara.djs.warehouse.demand.domain.vo.DemandManageVo vo : rows) {
+                        vo.setArrivedQuantity(arrivedById.getOrDefault(vo.getId(), BigDecimal.ZERO));
+                    }
+                }
+            });
+    }
+
+    private static org.dromara.djs.warehouse.demand.domain.vo.DemandManageVo shippedRow(long id, String demandQty) {
+        org.dromara.djs.warehouse.demand.domain.vo.DemandManageVo vo =
+            new org.dromara.djs.warehouse.demand.domain.vo.DemandManageVo();
+        vo.setId(id);
+        vo.setDemandStatus("COMPLETED");
+        vo.setDemandQuantity(new BigDecimal(demandQty));
+        return vo;
+    }
+
+    @Test
+    @DisplayName("queryPageList: 已完成需求按到店量三分 —— 0 → 已确认 / 不足 → 部分到店 / 满 → 已发货")
+    void testQueryPageList_StoreStatusSplitByArrivedQuantity() {
+        org.dromara.djs.warehouse.demand.domain.vo.DemandManageVo none = shippedRow(901L, "5");
+        org.dromara.djs.warehouse.demand.domain.vo.DemandManageVo partial = shippedRow(902L, "5");
+        org.dromara.djs.warehouse.demand.domain.vo.DemandManageVo full = shippedRow(903L, "5");
+        com.baomidou.mybatisplus.extension.plugins.pagination.Page<
+            org.dromara.djs.warehouse.demand.domain.vo.DemandManageVo> page =
+            new com.baomidou.mybatisplus.extension.plugins.pagination.Page<>(1, 10);
+        page.setRecords(List.of(none, partial, full));
+        when(demandMapper.selectVoPage(any(), any(Wrapper.class))).thenReturn(page);
+
+        serviceWithArrived(Map.of(902L, new BigDecimal("2"), 903L, new BigDecimal("5")))
+            .queryPageList(new DemandManageQuery(), new PageQuery(1, 10));
+
+        assertThat(none.getArrivedQuantity()).isEqualByComparingTo("0");
+        assertThat(none.getStoreDemandStatus()).isEqualTo("CONFIRMED");
+        assertThat(partial.getStoreDemandStatus()).isEqualTo("PARTIAL_ARRIVED");
+        assertThat(full.getStoreDemandStatus()).isEqualTo("SHIPPED");
+    }
+
+    @Test
+    @DisplayName("queryPageList: 已收货行不论到店量一律 确认到店（收货优先）")
+    void testQueryPageList_ReceivedWinsOverArrivedQuantity() {
+        org.dromara.djs.warehouse.demand.domain.vo.DemandManageVo received = shippedRow(904L, "5");
+        received.setReceivedTime(LocalDateTime.now());
+        com.baomidou.mybatisplus.extension.plugins.pagination.Page<
+            org.dromara.djs.warehouse.demand.domain.vo.DemandManageVo> page =
+            new com.baomidou.mybatisplus.extension.plugins.pagination.Page<>(1, 10);
+        page.setRecords(List.of(received));
+        when(demandMapper.selectVoPage(any(), any(Wrapper.class))).thenReturn(page);
+
+        serviceWithArrived(Map.of()).queryPageList(new DemandManageQuery(), new PageQuery(1, 10));
+
+        assertThat(received.getStoreDemandStatus()).isEqualTo("ARRIVED");
+    }
+
+    @Test
+    @DisplayName("queryPageList: 按门店视角态筛选 → WHERE 追加 mapping 产出的片段（与 derive 同源）")
+    void testQueryPageList_StoreStatusFilterPushedDown() {
+        com.baomidou.mybatisplus.extension.plugins.pagination.Page<
+            org.dromara.djs.warehouse.demand.domain.vo.DemandManageVo> page =
+            new com.baomidou.mybatisplus.extension.plugins.pagination.Page<>(1, 10);
+        page.setRecords(List.of());
+        when(demandMapper.selectVoPage(any(), any(Wrapper.class))).thenReturn(page);
+
+        DemandManageQuery query = new DemandManageQuery();
+        query.setStoreDemandStatuses(List.of("PARTIAL_ARRIVED"));
+        serviceWithArrived(Map.of()).queryPageList(query, new PageQuery(1, 10));
+
+        ArgumentCaptor<Wrapper<DemandManage>> captor = ArgumentCaptor.forClass(Wrapper.class);
+        verify(demandMapper).selectVoPage(any(), captor.capture());
+        assertThat(captor.getValue().getCustomSqlSegment())
+            .contains(org.dromara.djs.warehouse.demand.core.StoreDemandStatusMapping
+                .sqlPredicate("PARTIAL_ARRIVED"));
     }
 
     @Test

@@ -1,12 +1,14 @@
 package org.dromara.djs.store.manage.service;
 
+import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.djs.common.store.domain.vo.StorePickerVo;
+import org.dromara.djs.store.manage.domain.vo.StoreManageDetailVo;
 import org.dromara.djs.store.manage.domain.vo.StoreManageMonthlyVo;
 
 import java.util.List;
 
 /**
- * 管理板块「门店管理」月度看板 Service（MGMT-MP-STORE-MONTH-001）。
+ * 管理板块「门店管理」月度看板 Service（MGMT-MP-STORE-MONTH-001 / V6-R180）。
  *
  * @author djs
  * @since MGMT-MP-STORE-MONTH-001
@@ -28,5 +30,16 @@ public interface IStoreManageService {
      * @return 月度看板 VO
      */
     StoreManageMonthlyVo getMonthly(Long storeId, String month);
+
+    /**
+     * 业态卡「明细」下钻：该业态当月按<b>产品</b>拆的需求 / 销售 / 退回三个量 + 按单位的全量合计。
+     *
+     * @param storeId    门店 ID；null = 全部门店合计
+     * @param month      月份 yyyy-MM；空 = 当月（格式非法 400）
+     * @param belongType 业态卡 key：pork / vegetable / egg / dry_good（白名单外 400）
+     * @param pageQuery  分页参数
+     * @return 明细分页 + 合计（合计与业态卡同口径同数字）
+     */
+    StoreManageDetailVo getDetail(Long storeId, String month, String belongType, PageQuery pageQuery);
 
 }

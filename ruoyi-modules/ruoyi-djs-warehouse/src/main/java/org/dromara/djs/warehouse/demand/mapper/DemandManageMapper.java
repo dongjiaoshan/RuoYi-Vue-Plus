@@ -215,6 +215,45 @@ public interface DemandManageMapper extends BaseMapperPlus<DemandManage, DemandM
                                                 @Param("storeId") Long storeId);
 
     /**
+     * 某门店某产品「今天及以后的在途需求行」<b>全量</b>（V6-R160 发货月台「已备齐」判定的归并范围）。
+     *
+     * <p>口径与门店货物页 {@code loadShippableDemands} <b>逐字一致</b>：同门店、同 product_id、
+     * 今天及以后（{@code demand_date >= today}）、在途三状态
+     * （{@code CONFIRMED / IN_PRODUCTION / PARTIAL_SHIPPED}）。这样发货 picker（单需求路径）与门店货物页
+     * （门店批量路径）对同一 {@code (门店, 产品)} 归并出的「是否备齐 / 需求缺口」完全一致 ——
+     * 不再出现「picker 说有 1 件、门店页说 0 件」。</p>
+     *
+     * <p><b>与 {@link #selectUncompletedDemands} 的唯一差异</b>：本方法<b>不带</b>
+     * {@code shipped_count < demand_quantity} 过滤 —— 备齐判定要把已发满的行也算进 {@code Σshipped_count}
+     * 与 {@code Σdemand_quantity}，只留未满的行会把「同店同品两条需求都发满」误判成未备齐。</p>
+     *
+     * <p><b>索引</b>：走 {@code idx_store (store_id)} 收窄到单门店（每店在途需求量级很小），再叠加
+     * {@code product_id} / {@code demand_date} 过滤，非全表扫。{@code countAvailableProductionsForDemand}
+     * 被 {@code listForDispatch} 循环调时每条只多一次这样的门店定向窄查询。</p>
+     *
+     * <p>{@code today} 由调用方用 {@code Asia/Shanghai} 算好传入，与门店路径的「今日」同源（不用 DB
+     * {@code CURDATE()} 免跨时区偏移）。租户隔离 V1 单租户显式 {@code tenant_id='1001'}；{@code del_flag='0'}。</p>
+     *
+     * @param productId 产品 FK（{@code t_warehouse_product_info.id}）
+     * @param storeId   门店 FK（{@code t_md_store.id}）
+     * @param today     「今日」（{@code Asia/Shanghai}）
+     * @return 该门店该产品今天及以后的在途需求行（全量，含已发满）；无则空 List
+     */
+    @Select("""
+        SELECT *
+        FROM t_warehouse_demand_manage
+        WHERE product_id = #{productId}
+          AND store_id = #{storeId}
+          AND demand_date >= #{today}
+          AND demand_status IN ('CONFIRMED','IN_PRODUCTION','PARTIAL_SHIPPED')
+          AND del_flag = '0'
+          AND tenant_id = '1001'
+        """)
+    List<DemandManage> selectInFlightStoreProductDemands(@Param("productId") Long productId,
+                                                         @Param("storeId") Long storeId,
+                                                         @Param("today") LocalDate today);
+
+    /**
      * 白条领用「发货月台」关联需求（row205，邓博 2026-07-05）：该门店该产品今天及以后的需求，优先未完成、其次已完成。
      *
      * <p>V6 row27：下界与门店下拉 {@code selectWhiteBarShipStores}、扣减端

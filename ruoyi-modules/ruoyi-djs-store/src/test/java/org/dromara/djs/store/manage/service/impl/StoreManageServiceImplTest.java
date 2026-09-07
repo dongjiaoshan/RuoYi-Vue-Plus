@@ -1,10 +1,16 @@
 package org.dromara.djs.store.manage.service.impl;
 
+import com.baomidou.mybatisplus.core.metadata.IPage;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import org.dromara.common.core.exception.ServiceException;
+import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.tenant.helper.TenantHelper;
 import org.dromara.djs.common.store.domain.vo.StorePickerVo;
 import org.dromara.djs.common.store.service.IStoreUserRelationService;
 import org.dromara.djs.store.manage.domain.vo.StoreManageCategoryVo;
+import org.dromara.djs.store.manage.domain.vo.StoreManageDetailRowVo;
+import org.dromara.djs.store.manage.domain.vo.StoreManageDetailTotalVo;
+import org.dromara.djs.store.manage.domain.vo.StoreManageDetailVo;
 import org.dromara.djs.store.manage.domain.vo.StoreManageMonthlyVo;
 import org.dromara.djs.store.manage.domain.vo.StoreManageProductCountRowVo;
 import org.dromara.djs.store.manage.domain.vo.StoreManageQtyRowVo;
@@ -16,6 +22,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.MockedStatic;
 import org.mockito.Mockito;
@@ -30,7 +37,10 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
@@ -45,6 +55,8 @@ import static org.mockito.Mockito.when;
  *   <li>全 0 单位行不出行（台账 sale/gift 全 0 会制造这种行）</li>
  *   <li>空库兜底：mapper 全返空 → 4 张卡都在、品类数全 0、不抛 NPE</li>
  *   <li>月份非法 → 400，不静默回退当月</li>
+ *   <li>「明细」下钻（V6-R180）：只在退回源出现的产品也出行（另两量 0）、totals 复用业态卡三条聚合、
+ *       猪肉卡把 pork + white_bar 一起传给 SQL、belongType 白名单拒绝、分页参数透传</li>
  * </ol>
  *
  * @author djs
@@ -270,6 +282,131 @@ class StoreManageServiceImplTest {
         assertThatThrownBy(() -> service.getMonthly(null, "2026/09"))
             .isInstanceOf(ServiceException.class)
             .hasMessageContaining("yyyy-MM");
+    }
+
+    // ==================== 业态卡「明细」下钻（V6-R180）====================
+
+    @Test
+    @DisplayName("明细：只在退回源出现的产品也出行（需求/销售 0），totals 复用卡片三条聚合并按单位合并")
+    void getDetail_mergesThreeSourcesAndReusesCardTotals() {
+        // SQL 侧三源 UNION ALL 后的形态：第 2 行是「本月没下单没卖、只退了货」的产品
+        when(storeManageMapper.selectProductDetailPage(
+            any(), eq("1001"), eq(null), eq(CUR_START), eq(CUR_END), any()))
+            .thenReturn(pageOf(List.of(
+                detailRow(2057794757010124801L, "带皮五花", "500g/份", "kg", "240", "200", "3"),
+                detailRow(2057794757010124802L, "猪筒骨", null, null, "0", "0", "8")), 2L));
+        // totals 源 = 卡片那三条聚合：pork + white_bar 同单位应合成一行
+        when(storeManageMapper.sumDemandQty(eq("1001"), eq(null), eq(CUR_START), eq(CUR_END), any()))
+            .thenReturn(List.of(qty("pork", "kg", "240"), qty("white_bar", "Kg", "3")));
+        when(storeManageMapper.sumSaleQty(eq("1001"), eq(null), eq(CUR_START), eq(CUR_END), any()))
+            .thenReturn(List.of(qty("pork", "kg", "200")));
+        when(storeManageMapper.sumReturnQty(eq("1001"), eq(null), eq(CUR_START), eq(CUR_END), any()))
+            .thenReturn(List.of(qty("pork", "份", "8")));
+
+        StoreManageDetailVo vo = service.getDetail(null, MONTH, "pork", new PageQuery(10, 1));
+
+        assertThat(vo.getMonth()).isEqualTo(MONTH);
+        assertThat(vo.getBelongType()).isEqualTo("pork");
+        assertThat(vo.getCategoryName()).isEqualTo("猪肉产品");
+        assertThat(vo.getStoreId()).isNull();
+        assertThat(vo.getTotal()).isEqualTo(2L);
+
+        // 只有退回量的产品照出行，另两个量补 0；规格 / 单位空值兜底
+        StoreManageDetailRowVo onlyReturn = vo.getRows().get(1);
+        assertThat(onlyReturn.getProductName()).isEqualTo("猪筒骨");
+        assertThat(onlyReturn.getProductSpec()).isEqualTo("—");
+        assertThat(onlyReturn.getUnit()).isEqualTo("未设单位");
+        assertThat(onlyReturn.getDemandQty()).isEqualByComparingTo("0");
+        assertThat(onlyReturn.getSaleQty()).isEqualByComparingTo("0");
+        assertThat(onlyReturn.getReturnQty()).isEqualByComparingTo("8");
+
+        // totals：kg / Kg 归一成一行（240 + 3），只有退回量的「份」单位也必须出行
+        assertThat(vo.getTotals()).extracting(StoreManageDetailTotalVo::getUnit).containsExactly("kg", "份");
+        assertThat(vo.getTotals().get(0).getDemandQty()).isEqualByComparingTo("243");
+        assertThat(vo.getTotals().get(0).getSaleQty()).isEqualByComparingTo("200");
+        assertThat(vo.getTotals().get(0).getReturnQty()).isEqualByComparingTo("0");
+        assertThat(vo.getTotals().get(1).getDemandQty()).isEqualByComparingTo("0");
+        assertThat(vo.getTotals().get(1).getReturnQty()).isEqualByComparingTo("8");
+
+        // 猪肉卡把 pork + white_bar 一起传给 SQL（明细与卡片同集合的前提）
+        ArgumentCaptor<List<String>> belongCaptor = ArgumentCaptor.forClass(List.class);
+        ArgumentCaptor<IPage<StoreManageDetailRowVo>> pageCaptor = ArgumentCaptor.forClass(IPage.class);
+        verify(storeManageMapper).selectProductDetailPage(
+            pageCaptor.capture(), eq("1001"), eq(null), eq(CUR_START), eq(CUR_END), belongCaptor.capture());
+        assertThat(belongCaptor.getValue()).containsExactly("pork", "white_bar");
+        assertThat(pageCaptor.getValue().getCurrent()).isEqualTo(1L);
+        assertThat(pageCaptor.getValue().getSize()).isEqualTo(10L);
+    }
+
+    @Test
+    @DisplayName("明细：storeId 透传到分页与三条合计聚合")
+    void getDetail_passesStoreId() {
+        Long storeId = 2057794757010124802L;
+        when(storeManageMapper.selectProductDetailPage(any(), eq("1001"), eq(storeId), any(), any(), any()))
+            .thenReturn(pageOf(List.of(), 0L));
+        when(storeManageMapper.sumDemandQty(eq("1001"), eq(storeId), any(), any(), any())).thenReturn(List.of());
+        when(storeManageMapper.sumSaleQty(eq("1001"), eq(storeId), any(), any(), any())).thenReturn(List.of());
+        when(storeManageMapper.sumReturnQty(eq("1001"), eq(storeId), any(), any(), any())).thenReturn(List.of());
+
+        StoreManageDetailVo vo = service.getDetail(storeId, MONTH, "vegetable", new PageQuery(20, 1));
+
+        assertThat(vo.getStoreId()).isEqualTo(storeId);
+        assertThat(vo.getCategoryName()).isEqualTo("果蔬产品");
+        assertThat(vo.getRows()).isEmpty();
+        assertThat(vo.getTotals()).isEmpty();
+        verify(storeManageMapper).sumReturnQty(eq("1001"), eq(storeId), eq(CUR_START), eq(CUR_END),
+            eq(List.of("vegetable")));
+    }
+
+    @Test
+    @DisplayName("明细：belongType 白名单——非四张卡的值 / 空 / white_bar 一律 400，不静默返空")
+    void getDetail_rejectsUnknownBelongType() {
+        PageQuery pq = new PageQuery(10, 1);
+
+        assertThatThrownBy(() -> service.getDetail(null, MONTH, "gift_box", pq))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("业态不合法");
+        assertThatThrownBy(() -> service.getDetail(null, MONTH, "white_bar", pq))
+            .isInstanceOf(ServiceException.class);
+        assertThatThrownBy(() -> service.getDetail(null, MONTH, null, pq))
+            .isInstanceOf(ServiceException.class);
+    }
+
+    @Test
+    @DisplayName("明细：月份非法 → 400；分页参数缺省 → 第 1 页 20 条（不退化成查全部）")
+    void getDetail_monthAndPagingDefaults() {
+        assertThatThrownBy(() -> service.getDetail(null, "2026/09", "egg", new PageQuery(10, 1)))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("yyyy-MM");
+
+        when(storeManageMapper.selectProductDetailPage(any(), anyString(), any(), any(), any(), anyList()))
+            .thenReturn(pageOf(List.of(), 0L));
+        service.getDetail(null, MONTH, "egg", null);
+
+        ArgumentCaptor<IPage<StoreManageDetailRowVo>> pageCaptor = ArgumentCaptor.forClass(IPage.class);
+        verify(storeManageMapper).selectProductDetailPage(
+            pageCaptor.capture(), anyString(), any(), any(), any(), anyList());
+        assertThat(pageCaptor.getValue().getCurrent()).isEqualTo(1L);
+        assertThat(pageCaptor.getValue().getSize()).isEqualTo(20L);
+    }
+
+    private static <T> IPage<T> pageOf(List<T> records, long total) {
+        Page<T> page = new Page<>(1, 10, total);
+        page.setRecords(records);
+        return page;
+    }
+
+    private static StoreManageDetailRowVo detailRow(Long productId, String name, String spec, String unit,
+                                                    String demand, String sale, String returned) {
+        StoreManageDetailRowVo row = new StoreManageDetailRowVo();
+        row.setProductId(productId);
+        row.setProductName(name);
+        row.setProductSpec(spec);
+        row.setUnit(unit);
+        row.setDemandQty(new BigDecimal(demand));
+        row.setSaleQty(new BigDecimal(sale));
+        row.setReturnQty(new BigDecimal(returned));
+        return row;
     }
 
     @Test

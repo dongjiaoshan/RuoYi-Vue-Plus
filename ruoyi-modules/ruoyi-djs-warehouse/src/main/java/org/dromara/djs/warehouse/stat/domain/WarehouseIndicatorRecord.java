@@ -40,27 +40,39 @@ public class WarehouseIndicatorRecord extends TenantEntity {
     /** 统计日期（T-1）。 */
     private LocalDate statDate;
 
-    // ---- 屠宰 / 送宰段 ----
-    /** 屠宰头数（当日燎毛间接收的猪只头数 = 当日 burn 记录数）。 */
+    // ---- 屠宰 / 送宰段（出栏 cohort：bar.marketing_time / outsource_pig.slaughter_date）----
+    /** 屠宰头数（当日出栏的猪只头数 = 自养出栏 + 外购生猪送宰）。 */
     private Integer slaughterCount;
     /** 送宰总重（当日出栏送宰猪总重 + 当日外购猪总重）。 */
     private BigDecimal slaughterWeight;
     /** 送宰均重（送宰总重/屠宰头数；分母 0 → null）。 */
     @TableField(updateStrategy = FieldStrategy.ALWAYS)
     private BigDecimal avgSlaughterWeight;
-    /** 接收重量（当日燎毛间称重总重 = Σ burn.arrive_weight）。 */
+
+    // ---- 称重 cohort（bar.arrive_time：当日在燎毛间完成称重的那批猪）----
+    /** 接收重量（当日燎毛间完成称重的猪只总重 = Σ bar.arrive_weight）。 */
     private BigDecimal arriveWeight;
-    /** 屠宰率%（接收重量/送宰总重×100；分母 0 → null）。 */
+    /** 屠宰率分子（称重 cohort 里有出栏重量的那部分，Σ 到场重）。 */
+    private BigDecimal slaughterRateArriveWeight;
+    /** 屠宰率分母（同一部分猪的 Σ 出栏重量；自养 marketing_weight / 外购生猪 pig_weight）。 */
+    private BigDecimal slaughterRateBaseWeight;
+    /** 屠宰率%（屠宰率分子/屠宰率分母×100；分母 0 → null）。 */
     @TableField(updateStrategy = FieldStrategy.ALWAYS)
     private BigDecimal slaughterRate;
 
-    // ---- 白条段 ----
-    /** 白条总重（当日白条库入库白条产品总重 = Σ burn.burn_weight）。 */
+    // ---- 白条段（处理完成 cohort：bar.finish_time）----
+    /** 白条总重（当日处理完成的<b>全部</b>猪只，Σ bar.in_weight，含未称重的；独立展示列）。 */
     private BigDecimal barTotalWeight;
-    /** 白条均重（白条总重/屠宰头数；分母 0 → null）。 */
+    /** 处理完成头数（当日 bar.finish_time 落当天的猪只数 = 白条均重的分母）。 */
+    private Integer finishedCount;
+    /** 处理完成猪只的接收重量之和（Σ arrive_weight，天然只含有接收重量的猪 = 白条出品率的分母）。 */
+    private BigDecimal finishedArriveWeight;
+    /** 白条出品率分子（处理完成 ∩ 有接收重量子集的 Σ in_weight；与分母同子集，保证率 ≤100%）。 */
+    private BigDecimal barYieldNumerWeight;
+    /** 白条均重（白条总重/处理完成头数；分母 0 → null）。 */
     @TableField(updateStrategy = FieldStrategy.ALWAYS)
     private BigDecimal avgBarWeight;
-    /** 白条出品率%（白条总重/送宰总重×100；分母 0 → null）。 */
+    /** 白条出品率%（白条出品率分子/处理完成猪只接收重量之和×100；分母 0 → null）。 */
     @TableField(updateStrategy = FieldStrategy.ALWAYS)
     private BigDecimal barYieldRate;
 

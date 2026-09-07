@@ -589,6 +589,47 @@ class VegOutServiceImplTest {
     }
 
     @Test
+    @DisplayName("V6-R163：冻品库 L0002 进候选库位白名单（猪肉原材料的存放库，与鲜品库 L0007 同性质）")
+    void candidateLocationWhitelistContainsFrozenStore() {
+        service.listCandidates(null);
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<java.util.Collection<String>> codes =
+            ArgumentCaptor.forClass(java.util.Collection.class);
+        verify(vegOutMapper).selectCandidates(codes.capture(), any(), any());
+        // 猪肉 tab 的货源 = 鲜品库 + 红白脏库 + 冻品库；冻品库漏了，冻起来的五花/前腿/纯瘦/里脊就卖不出去
+        assertThat(codes.getValue())
+            .contains("L0002", "L0007", "L0018", "L0006", "L0005", "L0009");
+    }
+
+    @Test
+    @DisplayName("V6-R163：冻品库出的猪肉走「猪只饲料」→ 饲喂位置记「仓库」（冻品库不在毛菜间）")
+    void feed_frozenStoreBasket_writesWarehouseLocation() {
+        LocationStock stock = mkStock(1L, 10L, 20L);
+        stock.setLocationId(70002L);                       // 冻品库，不是 L0006
+        when(locationStockMapper.selectById(1L)).thenReturn(stock);
+        ProductInfo pork = mkVegProduct(10L);
+        pork.setBelongType("pork");
+        when(productInfoMapper.selectById(10L)).thenReturn(pork);
+        LocationInfo frozenLoc = new LocationInfo();
+        frozenLoc.setId(70002L);
+        frozenLoc.setLocationCode("L0002");
+        when(locationInfoMapper.selectById(70002L)).thenReturn(frozenLoc);
+        LocationInfo fresh = new LocationInfo();
+        fresh.setId(FRESH_VEG_LOC);
+        fresh.setLocationCode("L0006");
+        when(locationInfoMapper.selectList(any())).thenReturn(java.util.List.of(fresh, frozenLoc));
+
+        service.submit(mkBo("feed", 1L, "0.500"), false);
+
+        // 能走到这一步本身就证明 L0002 落在 resolveAllowedLocationIds 的允许集合里（否则前置校验先抛）
+        ArgumentCaptor<FeedLog> fc = ArgumentCaptor.forClass(FeedLog.class);
+        verify(feedLogMapper).insert(fc.capture());
+        assertThat(fc.getValue().getFeedType()).isEqualTo("warehouse");
+        assertThat(fc.getValue().getLocationId()).isEqualTo(70002L);
+    }
+
+    @Test
     @DisplayName("前置校验：白名单外的业态（包材）拒绝出库")
     void rejectBelongTypeOutsideWhitelist() {
         when(locationStockMapper.selectById(1L)).thenReturn(mkStock(1L, 10L, 20L));
@@ -719,6 +760,40 @@ class VegOutServiceImplTest {
         assertThat(rows).extracting(VegOutDetailVo::getOutQtyLabel)
             // 单位缺失按 kg 处理，否则 0.5kg 会印成没有单位的裸 0.5
             .containsExactly("12.000kg", "3 袋", "0.500kg");
+    }
+
+    @Test
+    @DisplayName("row191 明细：耳号 / 地块两列天然互斥，缺的那一项统一兜 -（弹框与导出同一份）")
+    void batchDetail_fillsEarNoAndPlotFallback() {
+        VegOutDetailVo pork = mkDetail("五花肉", "kg", "7");
+        pork.setEarNo("A0012");
+        VegOutDetailVo veg = mkDetail("上海青", "kg", "12");
+        veg.setPlotCode("D01");
+        VegOutDetailVo dry = mkDetail("大米", "袋", "3");
+
+        when(vegOutMapper.selectBatchDetail("0000006", null))
+            .thenReturn(new java.util.ArrayList<>(List.of(pork, veg, dry)));
+
+        List<VegOutDetailVo> rows = service.queryBatchDetail("0000006", null);
+
+        // 猪肉行有耳号没地块，果蔬行有地块没耳号，干货两样都没有
+        assertThat(rows).extracting(VegOutDetailVo::getEarNo).containsExactly("A0012", "-", "-");
+        assertThat(rows).extracting(VegOutDetailVo::getPlotCode).containsExactly("-", "D01", "-");
+    }
+
+    @Test
+    @DisplayName("row191 导出：耳号 / 地块与弹框读同一份兜底，不会一边 - 一边空白")
+    void exportDetail_carriesEarNoAndPlot() {
+        VegOutDetailVo pork = mkDetail("五花肉", "kg", "7");
+        pork.setEarNo("A0012");
+        when(vegOutMapper.selectBatchDetail("0000006", null))
+            .thenReturn(new java.util.ArrayList<>(List.of(pork)));
+
+        List<VegOutDetailVo> rows = service.queryBatchDetailForExport("0000006", null);
+
+        assertThat(rows).hasSize(1);
+        assertThat(rows.get(0).getEarNo()).isEqualTo("A0012");
+        assertThat(rows.get(0).getPlotCode()).isEqualTo("-");
     }
 
     @Test

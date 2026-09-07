@@ -57,12 +57,12 @@ import java.util.stream.Collectors;
 /**
  * 毛菜间出库 Service 实现（admin row185 + row187）。
  *
- * <p><b>货从哪来</b>：候选 = {@link #ALLOWED_LOCATION_CODES} 五个库位里 {@code product_attr=2}
+ * <p><b>货从哪来</b>：候选 = {@link #ALLOWED_LOCATION_CODES} 六个库位里 {@code product_attr=2}
  * （原材料）的库存篮，一行一个篮、不按产品合并（出库按 {@code stockId} 逐篮扣）。主力仍是毛菜处理间
  * 「入库」去向写进<b>毛菜鲜品库 L0006</b> 的那批毛菜
  * （{@code VegetableHandleServiceImpl.LOCATION_CODE_FRESH_VEG} 硬编码，不由工人选）；
- * 干货 / 蛋类 / 猪肉部位篮同样可从这里卖出去。范围为什么就是这五个库，见
- * {@link #ALLOWED_LOCATION_CODES} 的注释。</p>
+ * 干货 / 蛋类 / 猪肉部位（鲜品 L0007、红白脏 L0018、冻品 L0002）篮同样可从这里卖出去。
+ * 范围为什么就是这六个库，见 {@link #ALLOWED_LOCATION_CODES} 的注释。</p>
  *
  * <p><b>去哪</b>（甲方 row185 col8 口径）：出库到果蔬月台 = 从毛菜间运蔬到果蔬月台，
  * 对毛菜鲜品库是一次出库；出库后货显示在 mp「果蔬月台」功能里，工人在月台收货后再进蔬菜保鲜库。
@@ -117,14 +117,20 @@ public class VegOutServiceImpl implements IVegOutService {
     /** 红白脏库库位编码：猪下水，业态同为 pork，与鲜品库一起构成猪肉 tab。 */
     private static final String LOCATION_CODE_OFFAL = "L0018";
 
+    /** 冻品库库位编码：冻起来的猪肉部位（五花肉 / 前腿肉 / 纯瘦肉 / 里脊肉），业态 pork，同属猪肉 tab 货源。 */
+    private static final String LOCATION_CODE_FROZEN = "L0002";
+
     /**
      * 可出库的库位白名单。
      *
      * <p>⚠️ 按 {@code location_code} 而不是 {@code location_type} —— 线上 location_type 不可靠
-     * （猪肉鲜品库/蛋类库被错归成 veg_fresh、干货库是 warehouse），mp matPack 早就因此改走库名匹配。</p>
+     * （猪肉鲜品库/蛋类库被错归成 veg_fresh、干货库和冻品库是 warehouse），mp matPack 早就因此改走库名匹配。</p>
      *
-     * <p><b>为什么只放这五个</b>：这个窗口是「把农场的可售农产品直接卖出去」，所以库位既要有货、
-     * 又不能是别的链路的中转池。被排除的都有各自的去处：</p>
+     * <p><b>为什么只放这六个</b>：这个窗口是「把农场的可售农产品直接卖出去」，所以库位既要有货、
+     * 又不能是别的链路的中转池。冻品库 L0002 进来的判据也是这一条：它装的是分割后冻起来的猪肉部位
+     * （线上实测五花肉 / 前腿肉 / 纯瘦肉 / 里脊肉四个 {@code product_attr=2} 的原材料篮，业态 pork），
+     * 是猪肉原材料自己的存放库、不是任何下游链路的中转池 —— 与鲜品库 L0007、红白脏库 L0018 同性质，
+     * 只是保存方式不同，卖法一样。被排除的都有各自的去处：</p>
      * <ul>
      *   <li>L0003 蔬菜保鲜库 / L0004 重口味蔬菜库 —— 有机链路月台收货的落点，正是
      *       果蔬打包 → 发货月台 → 门店的<b>供货池</b>；从这里卖掉，门店的货就凭空少了。</li>
@@ -136,7 +142,7 @@ public class VegOutServiceImpl implements IVegOutService {
      */
     private static final java.util.List<String> ALLOWED_LOCATION_CODES = java.util.List.of(
         LOCATION_CODE_FRESH_VEG, LOCATION_CODE_DRY_GOODS, LOCATION_CODE_EGG,
-        LOCATION_CODE_PORK_FRESH, LOCATION_CODE_OFFAL);
+        LOCATION_CODE_PORK_FRESH, LOCATION_CODE_OFFAL, LOCATION_CODE_FROZEN);
 
     /**
      * 可出库的产品业态白名单（干货库实测还有 other 业态的桶/罐/袋装品）。
@@ -163,6 +169,9 @@ public class VegOutServiceImpl implements IVegOutService {
 
     /** 饲喂来源：仓库（字典 djs_feed_type 的另一个值）。非毛菜鲜品库出的货走这个。 */
     private static final String FEED_TYPE_WAREHOUSE = "warehouse";
+
+    /** 明细里耳号 / 地块等「本行天然没有」的列的占位（弹框与导出共用一份，见 row191）。 */
+    private static final String EMPTY_TEXT = "-";
 
     /** 处理明细类型：处理录入（{@code t_warehouse_handle_record.record_type}）。 */
     private static final int RECORD_TYPE_HANDLE = 2;
@@ -224,7 +233,7 @@ public class VegOutServiceImpl implements IVegOutService {
             LocationStock stock = stocks.get(item.getStockId());
             // 前置校验（防前端绕过 —— 候选列表只列白名单库位里的原材料篮）
             if (!allowedLocationIds.contains(stock.getLocationId())) {
-                throw new ServiceException("只有毛菜鲜品库 / 干货库 / 蛋类库 / 猪肉鲜品库 / 红白脏库的库存可做毛菜间出库");
+                throw new ServiceException("只有毛菜鲜品库 / 干货库 / 蛋类库 / 猪肉鲜品库 / 红白脏库 / 冻品库的库存可做毛菜间出库");
             }
             ProductInfo product = productInfoMapper.selectById(stock.getProductId());
             if (product == null) {
@@ -356,7 +365,14 @@ public class VegOutServiceImpl implements IVegOutService {
         if (StringUtils.isBlank(batchNo)) {
             return List.of();
         }
-        return vegOutMapper.selectBatchDetail(batchNo, productName);
+        List<VegOutDetailVo> rows = vegOutMapper.selectBatchDetail(batchNo, productName);
+        // row191 的耳号 / 地块两列天然互斥（猪肉行有耳号、果蔬行有地块），空值在这里兜成 "-"
+        // 而不是各让页面和导出自己兜：兜一次，弹框与 xlsx 必然一致。
+        rows.forEach(r -> {
+            r.setEarNo(StringUtils.blankToDefault(r.getEarNo(), EMPTY_TEXT));
+            r.setPlotCode(StringUtils.blankToDefault(r.getPlotCode(), EMPTY_TEXT));
+        });
+        return rows;
     }
 
     @Override
@@ -536,7 +552,7 @@ public class VegOutServiceImpl implements IVegOutService {
      * 写有机饲喂记录，{@code feed_type} 即有机饲喂记录里的「位置」。
      *
      * <p>位置按<b>货实际是从哪个库出的</b>定，不写死：毛菜鲜品库出的记「毛菜间」，
-     * 猪肉鲜品库 / 红白脏库 / 干货库 / 蛋类库出的记「仓库」——
+     * 猪肉鲜品库 / 红白脏库 / 冻品库 / 干货库 / 蛋类库出的记「仓库」——
      * 这几个库本来就不在毛菜间，写死 veg_handle 会让饲喂台账的位置栏对不上实物来源。</p>
      *
      * <p>{@code cropId} 由调用方传入（与 handle 解析共用同一次反查，不重复查库）；
@@ -617,7 +633,7 @@ public class VegOutServiceImpl implements IVegOutService {
         List<LocationInfo> rows = locationInfoMapper.selectList(new LambdaQueryWrapper<LocationInfo>()
             .in(LocationInfo::getLocationCode, ALLOWED_LOCATION_CODES));
         if (rows.isEmpty()) {
-            throw new ServiceException("毛菜鲜品库 / 干货库 / 蛋类库 / 猪肉鲜品库 / 红白脏库均未维护，请先在库位管理配置");
+            throw new ServiceException("毛菜鲜品库 / 干货库 / 蛋类库 / 猪肉鲜品库 / 红白脏库 / 冻品库均未维护，请先在库位管理配置");
         }
         return rows.stream().map(LocationInfo::getId).collect(java.util.stream.Collectors.toSet());
     }

@@ -47,6 +47,8 @@ import org.springframework.context.ApplicationEventPublisher;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -625,6 +627,368 @@ class ShipmentServiceImplTest {
             .hasMessageContaining("store.id_required");
     }
 
+    // ============== V6-R160：需求已备齐的产品不再受打包日窗口约束 ==============
+
+    @Test
+    @DisplayName("V6-R160: 需求已备齐（shipped >= demand）→ 该产品放开打包日窗口，窗口仍留在 OR 的另一支")
+    void availableProductions_demandFullyPacked_opensProduceDateWindow() {
+        Long demandId = 100L;
+        DemandManage demand = newDemand(demandId, 9L, DemandStatus.CONFIRMED);
+        demand.setProductId(501L);
+        demand.setDemandQuantity(new BigDecimal("5"));
+        demand.setShippedCount(new BigDecimal("5"));
+        when(demandMapper.selectById(demandId)).thenReturn(demand);
+        // 门店+产品归并只这一条 → 5>=5 已备齐（本用例只验 SQL 放开分支，归并范围退化成本 demand）
+        when(demandMapper.selectInFlightStoreProductDemands(eq(501L), eq(9L), any()))
+            .thenReturn(List.of(demand));
+        when(productProductionMapper.selectList(any())).thenReturn(List.of());
+
+        service.listAvailableProductions(demandId);
+
+        String sql = capturedAvailableProductionSql();
+        // 放开分支：备齐的产品不看打包日**下界**，OR 的另一支是原窗口下界（没备齐的产品仍走它）
+        assertThat(sql).contains("product_id IN (?) OR DATE(produce_date) >= ?");
+        // 上界是无条件项，不在 OR 里面 —— 打包日晚于今天的成品任何情况下都进不来
+        assertThat(sql).contains("DATE(produce_date) <= ?");
+    }
+
+    @Test
+    @DisplayName("V6-R160: 需求未备齐（shipped < demand）→ 无放开分支，只剩打包日窗口")
+    void availableProductions_demandNotPacked_keepsWindowOnly() {
+        Long demandId = 101L;
+        DemandManage demand = newDemand(demandId, 9L, DemandStatus.CONFIRMED);
+        demand.setProductId(501L);
+        demand.setDemandQuantity(new BigDecimal("5"));
+        demand.setShippedCount(new BigDecimal("2"));
+        when(demandMapper.selectById(demandId)).thenReturn(demand);
+        // 门店+产品归并只这一条 → 2<5 未备齐
+        when(demandMapper.selectInFlightStoreProductDemands(eq(501L), eq(9L), any()))
+            .thenReturn(List.of(demand));
+        when(productProductionMapper.selectList(any())).thenReturn(List.of());
+
+        service.listAvailableProductions(demandId);
+
+        String sql = capturedAvailableProductionSql();
+        assertThat(sql).doesNotContain("OR DATE(produce_date)");
+        assertThat(sql).contains("DATE(produce_date) >= ?");
+        assertThat(sql).contains("DATE(produce_date) <= ?");
+    }
+
+    @Test
+    @DisplayName("V6-R160: 门店批量按产品求和判备齐 —— 两个产品只有备齐的那个进放开集合")
+    void queryStoreSummary_onlyFullyPackedProductEntersOpenedSet() {
+        Long storeId = 9L;
+        // 501 备齐（5/5）、502 没备齐（1/3）；两条需求都要进 product_id 收窄集，但只有 501 能放开窗口
+        DemandManage packed = newDemand(100L, storeId, DemandStatus.CONFIRMED);
+        packed.setProductId(501L);
+        packed.setDemandQuantity(new BigDecimal("5"));
+        packed.setShippedCount(new BigDecimal("5"));
+        DemandManage shortfall = newDemand(101L, storeId, DemandStatus.CONFIRMED);
+        shortfall.setProductId(502L);
+        shortfall.setDemandQuantity(new BigDecimal("3"));
+        shortfall.setShippedCount(new BigDecimal("1"));
+        when(demandMapper.selectList(any())).thenReturn(List.of(packed, shortfall));
+        when(storeMapper.selectList(any())).thenReturn(List.of(newStore(storeId, "城东店")));
+        when(productProductionMapper.selectList(any())).thenReturn(List.of());
+
+        service.queryStoreSummary(storeId);
+
+        String sql = capturedAvailableProductionSql();
+        // 放开集合只有 1 个占位符（501），收窄集合有 2 个（501/502）——
+        // 若把没备齐的 502 也放进去，它的陈货会被算进生产量、满足率虚高，出车却仍被 shipped_count 拦住
+        assertThat(sql).contains("product_id IN (?) OR DATE(produce_date) >= ?");
+        assertThat(sql).contains("product_id IN (?,?)");
+    }
+
+    @Test
+    @DisplayName("V6-R160: A 店备齐不让 B 店白捡陈货 —— 门店列表满足率逐店复核打包日窗口")
+    void listPendingStores_openedWindowIsScopedPerStore() {
+        // 同一产品 501：城东店(9) 已备齐、城西店(8) 一件没备
+        DemandManage packed = newDemand(100L, 9L, DemandStatus.CONFIRMED);
+        packed.setProductId(501L);
+        packed.setDemandQuantity(new BigDecimal("5"));
+        packed.setShippedCount(new BigDecimal("5"));
+        DemandManage shortfall = newDemand(101L, 8L, DemandStatus.CONFIRMED);
+        shortfall.setProductId(501L);
+        shortfall.setDemandQuantity(new BigDecimal("5"));
+        shortfall.setShippedCount(BigDecimal.ZERO);
+        when(demandMapper.selectList(any())).thenReturn(List.of(packed, shortfall));
+        when(storeMapper.selectList(any())).thenReturn(List.of(newStore(9L, "城东店"), newStore(8L, "城西店")));
+        when(productInfoMapper.selectList(any()))
+            .thenReturn(List.of(newProduct(501L, "vegetable", "份", null)));
+
+        // 两条陈货（5 天前打包，早已滑出窗口），各自绑在两个门店名下
+        ProductProduction oldForPacked = newProduction(11L, null, "260601V0001", new BigDecimal("1"));
+        oldForPacked.setProductId(501L);
+        oldForPacked.setStoreId(9L);
+        oldForPacked.setProduceDate(daysAgo(5));
+        ProductProduction oldForShortfall = newProduction(12L, null, "260601V0002", new BigDecimal("1"));
+        oldForShortfall.setProductId(501L);
+        oldForShortfall.setStoreId(8L);
+        oldForShortfall.setProduceDate(daysAgo(5));
+        when(productProductionMapper.selectList(any()))
+            .thenReturn(List.of(oldForPacked, oldForShortfall));
+
+        Map<Long, ShipStoreVo> byStore = service.listPendingStores().stream()
+            .collect(Collectors.toMap(ShipStoreVo::getStoreId, v -> v));
+
+        // 城东店备齐 → 陈货算进生产量（1 件 / 需求 5 = 20%）
+        assertThat(byStore.get(9L).getSatisfyRate()).isEqualByComparingTo("20.00");
+        // 城西店没备齐 → 窗口照旧生效，陈货一件都不算（否则页头 20% 而出车被 shipped_count=0 拦死）
+        assertThat(byStore.get(8L).getSatisfyRate()).isEqualByComparingTo("0.00");
+    }
+
+    @Test
+    @DisplayName("V6-R160 截断: 需求 1 份 / 窗口内 0 条 / 窗口外 3 条 → 只补最新打包的那 1 条")
+    void availableProductions_outOfWindow_cappedToGapTakesNewestFirst() {
+        DemandManage demand = packedDemand(100L, 9L, 501L, "1");
+        when(demandMapper.selectById(100L)).thenReturn(demand);
+        when(productInfoMapper.selectList(any()))
+            .thenReturn(List.of(newProduct(501L, "vegetable", "份", null)));
+        // 故意乱序返回，证明是按 produce_date 倒序挑而不是靠 SQL 的 order by 兜底
+        when(productProductionMapper.selectList(any())).thenReturn(List.of(
+            oldProduction(11L, "OLD-10D", 501L, 9L, 10),
+            oldProduction(12L, "OLD-3D", 501L, 9L, 3),
+            oldProduction(13L, "OLD-5D", 501L, 9L, 5)));
+
+        List<AvailableProductionVo> result = service.listAvailableProductions(100L);
+
+        // 缺口 1 份 → 陈货只补 1 条；不截断的话 3 条全进，mp 出车会把 3 件都发给只订了 1 份的门店
+        assertThat(result).extracting(AvailableProductionVo::getProduceNo).containsExactly("OLD-3D");
+    }
+
+    @Test
+    @DisplayName("V6-R160 截断: 需求 2 份 / 窗口内 1 条 / 窗口外 3 条 → 窗口内 1 + 陈货 1 = 2 条")
+    void availableProductions_gapCountsInWindowRowsFirst() {
+        DemandManage demand = packedDemand(101L, 9L, 501L, "2");
+        when(demandMapper.selectById(101L)).thenReturn(demand);
+        when(productInfoMapper.selectList(any()))
+            .thenReturn(List.of(newProduct(501L, "vegetable", "份", null)));
+        ProductProduction today = newProduction(10L, null, "TODAY", new BigDecimal("1"));
+        today.setProductId(501L);
+        today.setStoreId(9L);
+        when(productProductionMapper.selectList(any())).thenReturn(List.of(
+            today,
+            oldProduction(11L, "OLD-3D", 501L, 9L, 3),
+            oldProduction(12L, "OLD-5D", 501L, 9L, 5),
+            oldProduction(13L, "OLD-10D", 501L, 9L, 10)));
+
+        List<AvailableProductionVo> result = service.listAvailableProductions(101L);
+
+        // 窗口内那条先抵掉 1 份缺口，剩 1 份由最新的陈货补上
+        assertThat(result).extracting(AvailableProductionVo::getProduceNo)
+            .containsExactly("TODAY", "OLD-3D");
+    }
+
+    @Test
+    @DisplayName("V6-R160 截断: 窗口内的行不受缺口约束 —— 需求 1 份 / 窗口内 5 条 → 5 条全在（既有行为不变）")
+    void availableProductions_inWindowRowsAreNeverCapped() {
+        DemandManage demand = packedDemand(102L, 9L, 501L, "1");
+        when(demandMapper.selectById(102L)).thenReturn(demand);
+        when(productInfoMapper.selectList(any()))
+            .thenReturn(List.of(newProduct(501L, "vegetable", "份", null)));
+        List<ProductProduction> todays = new java.util.ArrayList<>();
+        for (int i = 1; i <= 5; i++) {
+            ProductProduction p = newProduction(10L + i, null, "TODAY-" + i, new BigDecimal("1"));
+            p.setProductId(501L);
+            p.setStoreId(9L);
+            todays.add(p);
+        }
+        when(productProductionMapper.selectList(any())).thenReturn(todays);
+
+        List<AvailableProductionVo> result = service.listAvailableProductions(102L);
+
+        // 截断只管窗口外的陈货。窗口内超打的部分是 R160 之前就有的行为，不在本次口径里
+        assertThat(result).hasSize(5);
+    }
+
+    @Test
+    @DisplayName("V6-R160 截断: 礼盒按件计 —— 需求 2 盒 / 窗口外 3 行 → 进 2 行（每行 1 盒，与 producedCopies 同尺）")
+    void availableProductions_giftBoxRowsCountOnePerRow() {
+        DemandManage demand = packedDemand(103L, 9L, 601L, "2");
+        when(demandMapper.selectById(103L)).thenReturn(demand);
+        // 礼盒 product_unit='盒'：producedCopies 对按件产品恒计 1/行，与满足率、mp 生产量卡同一把尺
+        when(productInfoMapper.selectList(any()))
+            .thenReturn(List.of(newProduct(601L, "gift_box", "盒", null)));
+        when(productProductionMapper.selectList(any())).thenReturn(List.of(
+            oldProduction(21L, "BOX-3D", 601L, 9L, 3),
+            oldProduction(22L, "BOX-5D", 601L, 9L, 5),
+            oldProduction(23L, "BOX-9D", 601L, 9L, 9)));
+
+        List<AvailableProductionVo> result = service.listAvailableProductions(103L);
+
+        assertThat(result).extracting(AvailableProductionVo::getProduceNo)
+            .containsExactly("BOX-3D", "BOX-5D");
+    }
+
+    @Test
+    @DisplayName("V6-R160 截断: 行是原子的 —— kg 产品缺口 2kg，最新陈货 5kg 整行进（超出缺口不拆行），第二行不进")
+    void availableProductions_rowIsAtomicMayOvershootGap() {
+        DemandManage demand = packedDemand(104L, 9L, 701L, "2");
+        when(demandMapper.selectById(104L)).thenReturn(demand);
+        // kg 产品：producedCopies 取 produce_quantity 公斤数，一行就能把 2kg 的缺口冲过头
+        when(productInfoMapper.selectList(any()))
+            .thenReturn(List.of(newProduct(701L, "vegetable", "kg", null)));
+        ProductProduction big = oldProduction(31L, "KG-3D", 701L, 9L, 3);
+        big.setProduceQuantity(new BigDecimal("5.000"));
+        when(productProductionMapper.selectList(any())).thenReturn(List.of(
+            big, oldProduction(32L, "KG-5D", 701L, 9L, 5)));
+
+        List<AvailableProductionVo> result = service.listAvailableProductions(104L);
+
+        // 成品行是一次打包的产物，拆行没有物理对应物 → 宁可多 3kg 也不少发；补过头后第二行就不再进
+        assertThat(result).extracting(AvailableProductionVo::getProduceNo).containsExactly("KG-3D");
+    }
+
+    @Test
+    @DisplayName("V6-R160: 打包日晚于今天的成品在已备齐产品下同样不出现（上界是无条件项，不在放开的 OR 里）")
+    void availableProductions_futureProduceDateNeverListed() {
+        DemandManage demand = packedDemand(105L, 9L, 501L, "3");
+        when(demandMapper.selectById(105L)).thenReturn(demand);
+        when(productInfoMapper.selectList(any()))
+            .thenReturn(List.of(newProduct(501L, "vegetable", "份", null)));
+        ProductProduction today = newProduction(41L, null, "TODAY", new BigDecimal("1"));
+        today.setProductId(501L);
+        today.setStoreId(9L);
+        ProductProduction future = oldProduction(42L, "TOMORROW", 501L, 9L, -1);
+        when(productProductionMapper.selectList(any())).thenReturn(List.of(today, future));
+
+        List<AvailableProductionVo> result = service.listAvailableProductions(105L);
+
+        // ① SQL 侧：上界与放开分支平级，放开只放下界
+        assertThat(capturedAvailableProductionSql())
+            .contains("DATE(produce_date) <= ?")
+            .contains("product_id IN (?) OR DATE(produce_date) >= ?");
+        // ② 内存侧：万一脏日期漏进来，也不许它占掉陈货的缺口名额
+        assertThat(result).extracting(AvailableProductionVo::getProduceNo).containsExactly("TODAY");
+    }
+
+    @Test
+    @DisplayName("V6-R160 截断: 门店聚合与发货清单同一把尺 —— 备齐产品需求 1 份、窗口外 3 条 → 清单 1 条且满足率 100")
+    void storeSummaryAndDemandListAgreeAfterCapping() {
+        DemandManage demand = packedDemand(106L, 9L, 501L, "1");
+        when(demandMapper.selectList(any())).thenReturn(List.of(demand));
+        when(storeMapper.selectList(any())).thenReturn(List.of(newStore(9L, "城东店")));
+        when(productInfoMapper.selectList(any()))
+            .thenReturn(List.of(newProduct(501L, "vegetable", "份", null)));
+        when(productProductionMapper.selectList(any())).thenReturn(List.of(
+            oldProduction(51L, "OLD-3D", 501L, 9L, 3),
+            oldProduction(52L, "OLD-5D", 501L, 9L, 5),
+            oldProduction(53L, "OLD-9D", 501L, 9L, 9)));
+
+        ShipStoreVo summary = service.queryStoreSummary(9L);
+        List<ShipDemandVo> demands = service.listStorePendingDemands(9L);
+
+        // 页头：满足率 100（单项满足率钳在 100%，截不截断这个数都是 100 —— 门店聚合侧截断本身不外显，
+        // 它的意义是两条路径共用同一个截断口，不会在未来各自漂）
+        assertThat(summary.getSatisfyRate()).isEqualByComparingTo("100.00");
+        // 清单：只有补到缺口的那 1 条（出车真正提交的是它，必须与页头读的是同一批货）
+        assertThat(demands).hasSize(1);
+        assertThat(demands.get(0).getAvailableProductions())
+            .extracting(AvailableProductionVo::getProduceNo).containsExactly("OLD-3D");
+    }
+
+    @Test
+    @DisplayName("V6-R160 clean-QA: 单需求 picker 的「已备齐」判定与门店货物页同尺（按门店+产品归并，非按该需求自己判）")
+    void listAvailableProductions_packingJudgedByStoreProduct_alignsWithStoreDemands() {
+        // 同店(9)同产品(501)拆成 D4(need1/shipped1) + D5(need1/shipped0)；库里一条窗口外陈货
+        Long storeId = 9L;
+        Long productId = 501L;
+        DemandManage d4 = newDemand(4L, storeId, DemandStatus.CONFIRMED);
+        d4.setProductId(productId);
+        d4.setDemandQuantity(new BigDecimal("1"));
+        d4.setShippedCount(new BigDecimal("1"));
+        DemandManage d5 = newDemand(5L, storeId, DemandStatus.CONFIRMED);
+        d5.setProductId(productId);
+        d5.setDemandQuantity(new BigDecimal("1"));
+        d5.setShippedCount(BigDecimal.ZERO);
+        when(demandMapper.selectById(4L)).thenReturn(d4);
+        when(productInfoMapper.selectList(any()))
+            .thenReturn(List.of(newProduct(productId, "vegetable", "份", null)));
+        // 模拟 DB 的打包日窗口：未放开（SQL 无放开分支）时这条 3 天前的陈货落在窗口外、取不到；
+        // 放开后（SQL 带 product_id IN ... OR）才命中。mock 不做真过滤，只能据放开分支还原这条差异。
+        ProductProduction oldRow = oldProduction(11L, "OLD-3D", productId, storeId, 3);
+        when(productProductionMapper.selectList(any())).thenAnswer(inv -> {
+            LambdaQueryWrapper<ProductProduction> w = inv.getArgument(0);
+            return w.getTargetSql().contains("OR DATE(produce_date)") ? List.of(oldRow) : List.of();
+        });
+
+        // ① D5 还没发满 → 该 (门店,产品) 整批 need2/shipped1 未备齐 → 不放开 → picker 也是 []
+        //    （旧口径按 D4 自己判 1>=1 会放开、返回陈货 → 与门店货物页 0 件打架，正是 QA 复现的工单）
+        when(demandMapper.selectInFlightStoreProductDemands(eq(productId), eq(storeId), any()))
+            .thenReturn(List.of(d4, d5));
+        assertThat(service.listAvailableProductions(4L)).isEmpty();
+
+        // ② 把 D5 也发满 → 整批 need2/shipped2 备齐 → 放开 → 陈货补进来（缺口分母也用归并后的 2）
+        d5.setShippedCount(new BigDecimal("1"));
+        when(demandMapper.selectInFlightStoreProductDemands(eq(productId), eq(storeId), any()))
+            .thenReturn(List.of(d4, d5));
+        assertThat(service.listAvailableProductions(4L))
+            .extracting(AvailableProductionVo::getProduceNo).containsExactly("OLD-3D");
+    }
+
+    @Test
+    @DisplayName("V6-R160: 邮寄需求（store_id 为空）无门店维度 → 退化按该需求自己判，备齐仍能放开（不回归）")
+    void listAvailableProductions_mailingDemandFallsBackToSelfJudgement() {
+        Long demandId = 300L;
+        DemandManage mailing = newDemand(demandId, null, DemandStatus.CONFIRMED); // store_id 为空
+        mailing.setProductId(501L);
+        mailing.setDemandQuantity(new BigDecimal("1"));
+        mailing.setShippedCount(new BigDecimal("1"));
+        when(demandMapper.selectById(demandId)).thenReturn(mailing);
+        when(productInfoMapper.selectList(any()))
+            .thenReturn(List.of(newProduct(501L, "vegetable", "份", null)));
+        ProductProduction old = newProduction(11L, null, "OLD-3D", new BigDecimal("1"));
+        old.setProductId(501L);
+        old.setProduceDate(daysAgo(3));
+        when(productProductionMapper.selectList(any())).thenReturn(List.of(old));
+
+        List<AvailableProductionVo> result = service.listAvailableProductions(demandId);
+
+        // 退化路径不查门店归并（无门店可归并），按 mailing 自己 1>=1 判备齐 → 放开 → 陈货进
+        verify(demandMapper, never()).selectInFlightStoreProductDemands(any(), any(), any());
+        assertThat(result).extracting(AvailableProductionVo::getProduceNo).containsExactly("OLD-3D");
+    }
+
+    /**
+     * 已备齐（shipped == demand）的需求行：R160 放开打包日下界的前提。
+     *
+     * <p>顺带 stub 单需求路径的门店+产品归并查询，让它只归并这一条 —— 这些用例测的是「窗口 / 截断」逻辑，
+     * 归并范围只需退化成本 demand 自己（备齐范围的跨需求一致性由 {@code ..._alignsWithStoreDemands} 单独测）。</p>
+     */
+    private DemandManage packedDemand(Long id, Long storeId, Long productId, String quantity) {
+        DemandManage d = newDemand(id, storeId, DemandStatus.CONFIRMED);
+        d.setProductId(productId);
+        d.setDemandQuantity(new BigDecimal(quantity));
+        d.setShippedCount(new BigDecimal(quantity));
+        when(demandMapper.selectInFlightStoreProductDemands(eq(productId), eq(storeId), any()))
+            .thenReturn(List.of(d));
+        return d;
+    }
+
+    /** 窗口外（{@code daysAgo} 天前打包）的成品行；{@code daysAgo} 传负数即未来日期。 */
+    private ProductProduction oldProduction(Long id, String produceNo, Long productId, Long storeId, int daysAgo) {
+        ProductProduction p = newProduction(id, null, produceNo, new BigDecimal("1"));
+        p.setProductId(productId);
+        p.setStoreId(storeId);
+        p.setProduceDate(daysAgo(daysAgo));
+        return p;
+    }
+
+    /** 捕获最后一次打到 product_production 的可发成品 wrapper，转成带占位符的 SQL 片段。 */
+    private String capturedAvailableProductionSql() {
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<LambdaQueryWrapper<ProductProduction>> captor =
+            ArgumentCaptor.forClass(LambdaQueryWrapper.class);
+        verify(productProductionMapper, atLeast(1)).selectList(captor.capture());
+        return captor.getValue().getTargetSql();
+    }
+
+    private static java.util.Date daysAgo(int days) {
+        return java.util.Date.from(LocalDate.now(java.time.ZoneId.of("Asia/Shanghai"))
+            .minusDays(days).atStartOfDay(java.time.ZoneId.of("Asia/Shanghai")).toInstant());
+    }
+
     // ============== 生产量口径（Kevin 2026-07-29：按产品单位，kg 取公斤数 / 其余每条计 1）==============
 
     @Test
@@ -774,6 +1138,9 @@ class ShipmentServiceImplTest {
         p.setProduceNo(produceNo);
         p.setProduceQuantity(qty);
         p.setIsDeliveryCheck(0);
+        // produce_date 业务必填，SQL 侧 DATE(NULL) 恒不落窗口 —— mock 留 null 会与线上行为分叉，
+        // 让「陈货被算进满足率」这类回归在单测里看不出来。默认当天，要测陈货的用例自己覆盖。
+        p.setProduceDate(new java.util.Date());
         return p;
     }
 }

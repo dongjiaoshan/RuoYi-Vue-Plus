@@ -25,7 +25,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <ol>
  *   <li><b>只取原材料</b>（{@code product_attr=2}）—— 生产产品有各自的发货 / 门店链路。</li>
  *   <li><b>库位白名单参数化</b>（{@code foreach}）—— 白名单是 service 常量，SQL 里不许出现硬编码库位码，
- *       否则两处会分家。而白名单本身必须只含那五个可售农产品库：门店供货池 L0003/L0004、白条库 L0001、
+ *       否则两处会分家。而白名单本身必须只含那六个可售农产品库：门店供货池 L0003/L0004、白条库 L0001、
  *       包材 / 种子 / 肥料 / 农药库都是 {@code product_attr=2}，光靠原材料过滤挡不住。</li>
  *   <li><b>存储仓库取篮子实际所在库位</b>（{@code location_info.location_name}）—— 不是产品主数据上
  *       配置的建议落点，工人照它去哪个库拿货。</li>
@@ -82,7 +82,7 @@ class VegOutCandidateSqlContractTest {
             .contains("<foreach collection=\"belongtypes\"");
 
         // SQL 里再写一份库位码 = 第二份白名单，改 service 常量时必然漏改一处
-        for (String code : new String[]{"l0003", "l0004", "l0005", "l0006", "l0007", "l0009", "l0018"}) {
+        for (String code : new String[]{"l0002", "l0003", "l0004", "l0005", "l0006", "l0007", "l0009", "l0018"}) {
             assertThat(sql).as("SQL 里不该硬编码库位码 %s（白名单唯一真相在 service 常量）", code)
                 .doesNotContain("'" + code + "'");
         }
@@ -93,11 +93,11 @@ class VegOutCandidateSqlContractTest {
     }
 
     @Test
-    @DisplayName("白名单只含五个可售农产品库：门店供货池 / 白条库 / 生产投入品库一律不在内")
+    @DisplayName("白名单只含六个可售农产品库：门店供货池 / 白条库 / 生产投入品库一律不在内")
     void whitelistCoversSellableFarmStoresOnly() throws Exception {
         assertThat(whitelist("ALLOWED_LOCATION_CODES"))
-            .as("缺 L0007 / L0018 猪肉 tab 会永远是空的")
-            .containsExactlyInAnyOrder("L0006", "L0005", "L0009", "L0007", "L0018");
+            .as("猪肉 tab 的货源是鲜品库 L0007 + 红白脏库 L0018 + 冻品库 L0002，缺一个那部分肉就卖不出去")
+            .containsExactlyInAnyOrder("L0006", "L0005", "L0009", "L0007", "L0018", "L0002");
 
         assertThat(whitelist("ALLOWED_BELONG_TYPES"))
             .as("三个 tab：果蔬 vegetable / 猪肉 pork / 其他 = 剩下的业态")
@@ -138,5 +138,21 @@ class VegOutCandidateSqlContractTest {
             .contains("s.id as stockid")
             .as("按产品合并会破坏逐篮扣减链路")
             .doesNotContain("group by");
+    }
+
+    @Test
+    @DisplayName("row191 出库明细：耳号取流水自己的 ear_no，地块由 plot_id LEFT JOIN 地块档案")
+    void batchDetailCarriesEarNoAndPlotCode() throws Exception {
+        Method method = VegOutMapper.class.getMethod("selectBatchDetail", String.class, String.class);
+        Select select = method.getAnnotation(Select.class);
+        assertThat(select).as("VegOutMapper#selectBatchDetail 应带 @Select").isNotNull();
+        String sql = normalize(String.join(" ", select.value()));
+
+        assertThat(sql).contains("f.ear_no as earno");
+        assertThat(sql).contains("pl.plot_code as plotcode");
+        // LEFT JOIN：地块档案被删的行照出，只是地块列为空（service 兜 "-"），不能因为联不上就丢明细行
+        assertThat(sql).contains("left join t_plant_plot_info pl on pl.id = f.plot_id and pl.del_flag = '0'");
+        // 耳号取这条流水记的那个篮子，不回溯上游批次
+        assertThat(sql).doesNotContain("t_breed_pig");
     }
 }
