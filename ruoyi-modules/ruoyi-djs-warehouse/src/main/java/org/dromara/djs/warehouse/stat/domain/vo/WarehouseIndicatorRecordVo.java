@@ -28,7 +28,7 @@ public class WarehouseIndicatorRecordVo implements Serializable {
     /** 统计日期。 */
     private LocalDate statDate;
 
-    /** 屠宰头数（当日出栏的猪只头数）。 */
+    /** 屠宰头数（当日送宰的猪只头数 = 自养 + 外购生猪）。 */
     private Integer slaughterCount;
     /** 送宰总重。 */
     private BigDecimal slaughterWeight;
@@ -43,14 +43,16 @@ public class WarehouseIndicatorRecordVo implements Serializable {
     /** 屠宰率%。 */
     private BigDecimal slaughterRate;
 
-    /** 白条总重（当日处理完成的全部猪只）。 */
+    /** 白条总重（当日处理完成的全部猪只，一行=一头猪(耳号)）。 */
     private BigDecimal barTotalWeight;
     /** 处理完成头数。 */
     private Integer finishedCount;
-    /** 处理完成猪只的接收重量之和（白条出品率分母）。 */
+    /** 处理完成猪只的接收重量之和（诊断列，不参与出品率）。 */
     private BigDecimal finishedArriveWeight;
-    /** 白条出品率分子（处理完成 ∩ 有接收重量子集的 Σ in_weight）。 */
+    /** 白条出品率分子（处理完成 ∩ 出栏重量非空子集的 Σ in_weight）。 */
     private BigDecimal barYieldNumerWeight;
+    /** 白条出品率分母（同一子集的 Σ 出栏重量）。 */
+    private BigDecimal barYieldBaseWeight;
     /** 白条均重。 */
     private BigDecimal avgBarWeight;
     /** 白条出品率%。 */

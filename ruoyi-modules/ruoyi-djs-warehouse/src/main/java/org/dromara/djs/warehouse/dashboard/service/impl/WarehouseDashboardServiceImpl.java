@@ -164,6 +164,21 @@ public class WarehouseDashboardServiceImpl implements IWarehouseDashboardService
     //  mp 仓库管理看板 tab1：猪只分割效能管理（WMS-DASH-MP-001）
     // ============================================================
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p><b>屠宰率 / 白条出品率三处同源（V6-R172）</b>：年度 KPI（本方法）、月度趋势折线（月表
+     * {@code t_warehouse_monthly_record}）、日矩阵行（日表 {@code t_warehouse_indicator_record}）
+     * 全部是「Σ分子基数 ÷ Σ分母基数 ×100」，只是 Σ 的区间不同（年 / 月 / 单日）：</p>
+     * <ul>
+     *   <li>屠宰率 = Σ{@code slaughter_rate_arrive_weight} ÷ Σ{@code slaughter_rate_base_weight}</li>
+     *   <li>白条出品率 = Σ{@code bar_yield_numer_weight} ÷ Σ{@code bar_yield_base_weight}</li>
+     * </ul>
+     * <p>这四列是日表落盘时按「同一批猪」算好的 cohort 基数。既<b>不</b>是日率的算术平均（各日头数不同，
+     * 平均会失真），也<b>不</b>能拿 {@code arrive_weight} / {@code bar_total_weight} / {@code slaughter_weight}
+     * 这些展示列相除——它们各属不同 cohort 的全量，跨 cohort 相除的猪不是同一批，率会破 100%
+     * （row172 甲方最初抱怨的现象）。年度卡与月度折线因此天然自洽。</p>
+     */
     @Override
     public WarehousePorkEfficiencyVo getPorkEfficiency(Integer year, String month) {
         String tenantId = currentTenant();
@@ -179,16 +194,20 @@ public class WarehouseDashboardServiceImpl implements IWarehouseDashboardService
 
         int slaughterCount = sumInt(yearRows, WarehouseIndicatorRecord::getSlaughterCount);
         BigDecimal slaughterWeight = sumDec(yearRows, WarehouseIndicatorRecord::getSlaughterWeight);
-        BigDecimal arriveWeight = sumDec(yearRows, WarehouseIndicatorRecord::getArriveWeight);
-        BigDecimal barTotalWeight = sumDec(yearRows, WarehouseIndicatorRecord::getBarTotalWeight);
         BigDecimal cutBarCount = sumDec(yearRows, WarehouseIndicatorRecord::getCutBarCount);
         BigDecimal cutBarWeight = sumDec(yearRows, WarehouseIndicatorRecord::getCutBarWeight);
         BigDecimal cutProductWeight = sumDec(yearRows, WarehouseIndicatorRecord::getCutProductWeight);
+        // 屠宰率 / 白条出品率取日表落下的 cohort 基数列（分子分母同一批猪），与日表 / 月表同源，
+        // 见本方法 javadoc。分母 Σ 为 0（当年无数据）→ pct 返 null，前端显「—」，不造 0。
+        BigDecimal rateArriveWeight = sumDec(yearRows, WarehouseIndicatorRecord::getSlaughterRateArriveWeight);
+        BigDecimal rateBaseWeight = sumDec(yearRows, WarehouseIndicatorRecord::getSlaughterRateBaseWeight);
+        BigDecimal barYieldNumerWeight = sumDec(yearRows, WarehouseIndicatorRecord::getBarYieldNumerWeight);
+        BigDecimal barYieldBaseWeight = sumDec(yearRows, WarehouseIndicatorRecord::getBarYieldBaseWeight);
 
         vo.setSlaughterCount(slaughterCount);
         vo.setAvgSlaughterWeight(rate(slaughterWeight, BigDecimal.valueOf(slaughterCount), 2));
-        vo.setSlaughterRate(pct(arriveWeight, slaughterWeight));
-        vo.setBarYieldRate(pct(barTotalWeight, slaughterWeight));
+        vo.setSlaughterRate(pct(rateArriveWeight, rateBaseWeight));
+        vo.setBarYieldRate(pct(barYieldNumerWeight, barYieldBaseWeight));
         vo.setCutBarCount(cutBarCount);
         vo.setCutBarWeightTon(toTon(cutBarWeight));
         vo.setCutProductWeightTon(toTon(cutProductWeight));

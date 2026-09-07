@@ -14,7 +14,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * <p>{@code WarehouseStatServiceImplTest} 把这几个 @Select 全 mock 了，只验了除法；R172 的口径全在
  * 被 mock 掉的 SQL 的 WHERE / CASE 里。本类反射取 @Select 原文、逐条钉关键片段，谁把口径 SQL 改错
- * （少个 cohort 过滤、把 D1 出品率分子的 arrive 非空条件删掉、外购子查询漏了）就当场红。</p>
+ * （少个 cohort 过滤、把出品率分母换回接收重量、外购子查询漏了、外购猪被重复计）就当场红。</p>
  *
  * <p>只做纯字符串断言（不连库、不解析执行计划），因为契约就是「这些 SQL 里必须有这些语义片段」。</p>
  *
@@ -35,14 +35,40 @@ class WarehouseStatAggregateSqlContractTest {
     }
 
     @Test
-    @DisplayName("屠宰头数 = 出栏 cohort：自养按 marketing_time + buy_date IS NULL，外购按 outsource_pig.slaughter_date")
+    @DisplayName("屠宰头数 = 送宰 cohort：自养按 marketing_time + buy_date IS NULL，外购按 outsource_pig.slaughter_date")
     void countSlaughterUsesMarketingCohort() throws Exception {
         String sql = select("countSlaughter", String.class, String.class);
         assertThat(sql).contains("t_warehouse_bar_info");
-        assertThat(sql).as("自养出栏必须排除外购镜像行").contains("buy_date IS NULL");
-        assertThat(sql).as("自养按出栏时刻分桶").contains("DATE(marketing_time) = #{statDate}");
+        assertThat(sql).as("自养送宰必须排除外购镜像行").contains("buy_date IS NULL");
+        assertThat(sql).as("自养以出栏事件写的 marketing_time 作送宰锚点").contains("DATE(marketing_time) = #{statDate}");
         assertThat(sql).as("外购生猪按送宰日计入").contains("t_warehouse_outsource_pig");
         assertThat(sql).contains("DATE(slaughter_date) = #{statDate}");
+    }
+
+    /**
+     * 客户口径「外购的也计算送宰头数」的落地保证：外购猪录入时往 bar_info 镜像一行带 buy_date，
+     * 若自养侧不挡 buy_date、或两侧用 JOIN 而非「分别 COUNT 再相加」，同一头外购猪就会被计两次。
+     */
+    @Test
+    @DisplayName("同一头外购猪只计一次：自养侧 buy_date IS NULL 挡镜像行 + 外购侧独立 COUNT 相加（不 JOIN）")
+    void outsourcePigCountedExactlyOnce() throws Exception {
+        String count = select("countSlaughter", String.class, String.class);
+        assertThat(count).as("自养侧必须在同一个 WHERE 里既挡镜像行又按送宰日分桶")
+            .contains("buy_date IS NULL AND DATE(marketing_time) = #{statDate}");
+        assertThat(count).as("外购头数来自 outsource_pig 的独立子查询、与自养相加")
+            .contains("+ (SELECT COUNT(*) FROM t_warehouse_outsource_pig");
+        assertThat(count).as("不能 JOIN——bar_id 无唯一约束，撞重复台账行会把同一头猪乘出多份")
+            .doesNotContain("JOIN");
+
+        String selfWeight = select("sumMarketingWeight", String.class, String.class);
+        assertThat(selfWeight).as("送宰总重自养侧同样要挡外购镜像行").contains("buy_date IS NULL");
+        assertThat(selfWeight).as("自养侧不得掺 outsource_pig，否则外购重量加两遍")
+            .doesNotContain("t_warehouse_outsource_pig");
+
+        String outWeight = select("sumOutsourceWeight", String.class, String.class);
+        assertThat(outWeight).as("外购重量只从 outsource_pig 出、按送宰日")
+            .contains("t_warehouse_outsource_pig")
+            .contains("DATE(slaughter_date) = #{statDate}");
     }
 
     @Test
@@ -71,35 +97,56 @@ class WarehouseStatAggregateSqlContractTest {
     }
 
     @Test
-    @DisplayName("处理完成 cohort：按 finish_time 分桶；白条总重 = Σ in_weight（全 cohort）")
+    @DisplayName("处理完成 cohort：按 finish_time 分桶；白条总重 = Σ in_weight（整 cohort，一行=一头猪/耳号）")
     void finishedAggUsesFinishTimeCohort() throws Exception {
         String sql = select("selectFinishedAgg", String.class, String.class);
         assertThat(sql).contains("t_warehouse_bar_info");
-        assertThat(sql).as("按处理完成时刻分桶").contains("DATE(finish_time) = #{statDate}");
-        assertThat(sql).as("白条总重是整 cohort 的 in_weight 之和").contains("SUM(in_weight)");
-        assertThat(sql).as("接收重量之和是出品率分母").contains("SUM(arrive_weight)");
+        assertThat(sql).as("按处理完成时刻分桶").contains("DATE(b.finish_time) = #{statDate}");
+        assertThat(sql).as("白条总重是整 cohort 的 in_weight 之和")
+            .contains("COALESCE(SUM(t.inWeight), 0) AS barTotalWeight");
+        assertThat(sql).as("接收重量之和仍落盘（诊断列）")
+            .contains("COALESCE(SUM(t.arriveWeight), 0) AS finishedArriveWeight");
     }
 
+    /**
+     * 出品率分母 = 客户口径「完成接收重量的猪只出栏重量之和」——限定语指的是同一批处理完成的猪，
+     * 不是第二个日期锚。分母若换回接收重量（arrive_weight），率会回到 >100% 的老毛病。
+     */
     @Test
-    @DisplayName("D1：出品率分子 = 处理完成 ∩ arrive 非空的 in_weight（与分母同子集，防 >100%）")
-    void finishedAggYieldNumeratorIsSymmetricWithDenominator() throws Exception {
+    @DisplayName("出品率分母 = 同一批猪的出栏重量（自养 marketing_weight / 外购 pig_weight），不是接收重量")
+    void finishedAggYieldDenominatorIsMarketingWeightOfSameCohort() throws Exception {
         String sql = select("selectFinishedAgg", String.class, String.class);
-        // 出品率分子必须带 arrive 非空条件，否则未称重的完成猪只进分子不进分母 → 率破 100%
-        assertThat(sql.replaceAll("\\s+", " "))
-            .as("D1：出品率分子缺 arrive 非空过滤，会算出 >100% 的出品率")
-            .contains("CASE WHEN arrive_weight IS NOT NULL THEN in_weight");
-        assertThat(sql).contains("AS barYieldNumerWeight");
+        assertThat(sql).as("自养出栏重量走 marketing_weight").contains("b.marketing_weight");
+        assertThat(sql).as("外购生猪出栏重量按 bar_id 相关子查询反查 outsource_pig（LIMIT 1 防重复台账行放大）")
+            .contains("t_warehouse_outsource_pig")
+            .contains("op.bar_id = b.bar_id")
+            .contains("LIMIT 1");
+        assertThat(sql).as("分母 = 同一批猪的 Σ 出栏重量")
+            .contains("COALESCE(SUM(t.baseWeight), 0) AS barYieldBaseWeight");
     }
 
     @Test
-    @DisplayName("月表：出品率分子取 bar_yield_numer_weight（不是 bar_total_weight），分母 finished_arrive_weight")
-    void monthlyUsesYieldNumerColumn() throws Exception {
+    @DisplayName("对称剔除：出品率分子分母都只算「处理完成 ∩ 出栏重量非空」子集")
+    void finishedAggYieldNumeratorAndDenominatorShareSameSubset() throws Exception {
+        String sql = select("selectFinishedAgg", String.class, String.class);
+        assertThat(sql).as("分子只算子集内的 in_weight——拿不到出栏重量的猪两边同时剔除")
+            .contains("COALESCE(SUM(CASE WHEN t.baseWeight IS NOT NULL THEN t.inWeight ELSE 0 END), 0) AS barYieldNumerWeight");
+        assertThat(sql).as("分母是同一子集的 Σ 出栏重量（SUM 天然跳过 NULL，与分子取同一批猪）")
+            .contains("COALESCE(SUM(t.baseWeight), 0) AS barYieldBaseWeight");
+    }
+
+    @Test
+    @DisplayName("月表：出品率 = Σbar_yield_numer_weight / Σbar_yield_base_weight（与日率同口径）")
+    void monthlyUsesYieldCohortBaseColumns() throws Exception {
         String sql = select("sumMonthlyFromDaily", String.class, String.class);
         assertThat(sql).as("屠宰率月分子/分母走 cohort 基数列")
             .contains("SUM(slaughter_rate_arrive_weight)")
             .contains("SUM(slaughter_rate_base_weight)");
-        assertThat(sql).as("D1：出品率月分子必须是 bar_yield_numer_weight，不能是 bar_total_weight")
+        assertThat(sql).as("出品率月分子必须是 bar_yield_numer_weight，不能是 bar_total_weight")
             .contains("SUM(bar_yield_numer_weight)");
-        assertThat(sql).contains("SUM(finished_arrive_weight)");
+        assertThat(sql).as("出品率月分母必须是 bar_yield_base_weight（Σ出栏重量）")
+            .contains("SUM(bar_yield_base_weight)");
+        assertThat(sql).as("finished_arrive_weight 已降为诊断列，不再进月率")
+            .doesNotContain("SUM(finished_arrive_weight)");
     }
 }

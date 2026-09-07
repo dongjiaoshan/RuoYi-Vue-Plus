@@ -39,7 +39,8 @@ import static org.mockito.Mockito.when;
  *
  * <ol>
  *   <li>屠宰率只算称重 cohort 里「有出栏重量」的子集；接收重量仍算整批</li>
- *   <li>白条出品率的分母是处理完成 cohort 的接收重量，不是送宰总重；白条均重的分母是处理完成头数</li>
+ *   <li>白条出品率 = 同一批处理完成猪的 Σ白条重 ÷ Σ出栏重量（不是接收重量、不是送宰总重）；
+ *       白条均重的分母是处理完成头数</li>
  *   <li>各 cohort 为空 / 分母 0 → 比率落 null（不造假）</li>
  *   <li>月表比率从日表落下的 cohort 基数列 Σ 后重算</li>
  * </ol>
@@ -111,11 +112,10 @@ class WarehouseStatServiceImplTest {
     @Test
     @DisplayName("屠宰率只算称重 cohort 里有出栏重量的子集，接收重量仍算整批")
     void testSlaughterRateUsesOnlySubsetWithMarketingWeight() {
-        stubCohorts(
+        stubEmptyFinishedCohort(
             /* slaughterCount */ 2,
             /* arrive */ bd("305"),
-            /* rateArrive */ bd("210"), /* rateBase */ bd("230"),
-            /* finishedCount */ 0, /* barTotal */ BigDecimal.ZERO, /* finishedArrive */ BigDecimal.ZERO);
+            /* rateArrive */ bd("210"), /* rateBase */ bd("230"));
 
         WarehouseIndicatorRecord saved = runAggregateAndCaptureDaily();
 
@@ -128,34 +128,38 @@ class WarehouseStatServiceImplTest {
     }
 
     /**
-     * 处理完成 cohort 2 头：白条总重 190、接收重量之和 210；送宰总重 999（故意跟它拉开）。
-     * 白条出品率必须是 190/210×100 = 90.476（不是 190/999）；白条均重 190/2 = 95（不是 ÷屠宰头数 5）。
+     * 处理完成 cohort 2 头：白条总重 190、这批猪的出栏重量之和 250；接收重量之和 210、送宰总重 999
+     * （两个都故意跟分母拉开）。白条出品率必须是 190/250×100 = 76.000 —— 不是 190/210（接收重量，旧分母）、
+     * 不是 190/999（送宰总重，更旧的分母）。白条均重 190/2 = 95（不是 ÷屠宰头数 5）。
      */
     @Test
-    @DisplayName("白条出品率分母是处理完成 cohort 的接收重量，白条均重分母是处理完成头数")
+    @DisplayName("白条出品率分母是同一批处理完成猪的出栏重量之和，白条均重分母是处理完成头数")
     void testBarYieldRateAndAvgBarWeightUseFinishedCohort() {
         when(aggregateMapper.sumMarketingWeight(TENANT, DATE_STR)).thenReturn(bd("999"));
         stubCohorts(
             /* slaughterCount */ 5,
             /* arrive */ bd("300"),
             /* rateArrive */ bd("300"), /* rateBase */ bd("400"),
-            /* finishedCount */ 2, /* barTotal */ bd("190"), /* finishedArrive */ bd("210"));
+            /* finishedCount */ 2, /* barTotal */ bd("190"), /* finishedArrive */ bd("210"),
+            /* barYieldNumer */ bd("190"), /* barYieldBase */ bd("250"));
 
         WarehouseIndicatorRecord saved = runAggregateAndCaptureDaily();
 
         assertThat(saved.getSlaughterWeight()).isEqualByComparingTo("999.000");
         assertThat(saved.getBarTotalWeight()).isEqualByComparingTo("190.000");
         assertThat(saved.getFinishedCount()).isEqualTo(2);
+        // 接收重量之和仍落盘（诊断列），但不再是分母
         assertThat(saved.getFinishedArriveWeight()).isEqualByComparingTo("210.000");
+        assertThat(saved.getBarYieldBaseWeight()).isEqualByComparingTo("250.000");
         assertThat(saved.getAvgBarWeight()).isEqualByComparingTo("95.000");
-        assertThat(saved.getBarYieldRate()).isEqualByComparingTo("90.476");
+        assertThat(saved.getBarYieldRate()).isEqualByComparingTo("76.000");
     }
 
     /** 三组 cohort 全空：所有比率 / 均值落 null，重量落 0（分母 ≤0 不造假，ALWAYS 策略覆盖旧值）。 */
     @Test
     @DisplayName("cohort 为空 / 分母 0 → 屠宰率、白条出品率、白条均重全落 null")
     void testEmptyCohortsYieldNullRates() {
-        stubCohorts(0, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, 0, BigDecimal.ZERO, BigDecimal.ZERO);
+        stubEmptyFinishedCohort(0, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO);
 
         WarehouseIndicatorRecord saved = runAggregateAndCaptureDaily();
 
@@ -169,12 +173,14 @@ class WarehouseStatServiceImplTest {
     }
 
     /**
-     * 白条总重非 0 但处理完成头数 / 接收重量为 0（脏数据）→ 比率仍落 null，不除零、不造假。
+     * 白条总重非 0 但处理完成头数 / 出栏重量之和为 0（整批都没录出栏重量）→ 比率仍落 null，不除零、不造假。
      */
     @Test
     @DisplayName("白条总重非 0 但处理完成 cohort 分母为 0 → 比率仍 null")
     void testZeroFinishedDenominatorStillNull() {
-        stubCohorts(3, bd("100"), bd("100"), bd("120"), 0, bd("88"), BigDecimal.ZERO);
+        stubCohorts(3, bd("100"), bd("100"), bd("120"),
+            /* finishedCount */ 0, /* barTotal */ bd("88"), /* finishedArrive */ BigDecimal.ZERO,
+            /* barYieldNumer */ BigDecimal.ZERO, /* barYieldBase */ BigDecimal.ZERO);
 
         WarehouseIndicatorRecord saved = runAggregateAndCaptureDaily();
 
@@ -184,53 +190,51 @@ class WarehouseStatServiceImplTest {
     }
 
     /**
-     * D1（V6-R172）：处理完成 cohort 里有一头「未称重就入库→处理完成」的猪（arrive=NULL）。
-     * 白条总重含该头（不能漏），但白条出品率的分子分母只落在「有接收重量」子集上 → 率 ≤100%。
-     * QA 实测的破 100%（3 头 430/410=104.878%）在这里被消掉：分子换成 390（剔掉 arrive=NULL 那头的 40）
-     * → 390/410 = 95.122%。
+     * 对称剔除：处理完成 cohort 里有一头拿不到出栏重量的猪（自养漏录 marketing_weight / 外购查不到台账）。
+     * 白条总重含该头（不能漏），但出品率的分子分母同时把它剔掉 → 率 ≤100%。
+     * 若只剔分母不剔分子（430/450），率会被这头的白条重顶高；若只剔分子不剔分母，率会被压低。
      */
     @Test
-    @DisplayName("D1：完成 cohort 含未称重猪 → 白条总重含它、出品率剔它，率 ≤100%")
-    void testBarYieldRateExcludesArriveNullPigYieldsAtMost100() {
-        // 3 头处理完成：A(arrive210,in200) B(arrive200,in190) C(arrive NULL,in40)
-        // barTotal = 200+190+40 = 430（全含）；finishedArrive = 210+200 = 410（C 跳过）；
-        // 出品率分子 = 200+190 = 390（C 跳过）
+    @DisplayName("完成 cohort 含无出栏重量的猪 → 白条总重含它、出品率两边同时剔它，率 ≤100%")
+    void testBarYieldRateExcludesPigWithoutMarketingWeightOnBothSides() {
+        // 3 头处理完成：A(出栏230,白条200) B(出栏220,白条190) C(出栏 NULL,白条40)
+        // barTotal = 200+190+40 = 430（全含）；出品率分子 = 200+190 = 390、分母 = 230+220 = 450（C 两边都剔）
         stubCohorts(
             /* slaughterCount */ 3,
             /* arrive */ bd("410"),
             /* rateArrive */ bd("410"), /* rateBase */ bd("450"),
-            /* finishedCount */ 3, /* barTotal */ bd("430"),
-            /* finishedArrive */ bd("410"), /* barYieldNumer */ bd("390"));
+            /* finishedCount */ 3, /* barTotal */ bd("430"), /* finishedArrive */ bd("410"),
+            /* barYieldNumer */ bd("390"), /* barYieldBase */ bd("450"));
 
         WarehouseIndicatorRecord saved = runAggregateAndCaptureDaily();
 
-        // 白条总重含未称重那头，一头都不漏
+        // 白条总重含那头，一头都不漏
         assertThat(saved.getBarTotalWeight()).isEqualByComparingTo("430.000");
         assertThat(saved.getFinishedCount()).isEqualTo(3);
         assertThat(saved.getBarYieldNumerWeight()).isEqualByComparingTo("390.000");
-        assertThat(saved.getFinishedArriveWeight()).isEqualByComparingTo("410.000");
-        // 出品率 = 390/410×100 = 95.122，绝不用 430 当分子（那会算出 104.878% 破 100）
-        assertThat(saved.getBarYieldRate()).isEqualByComparingTo("95.122");
+        assertThat(saved.getBarYieldBaseWeight()).isEqualByComparingTo("450.000");
+        // 出品率 = 390/450×100 = 86.667；白条重 < 出栏活重 恒成立 → 天然 ≤100%
+        assertThat(saved.getBarYieldRate()).isEqualByComparingTo("86.667");
         assertThat(saved.getBarYieldRate()).isLessThanOrEqualTo(bd("100"));
         // 白条均重仍按全 cohort：430/3
         assertThat(saved.getAvgBarWeight()).isEqualByComparingTo("143.333");
     }
 
     /**
-     * 月表：屠宰率 = Σ屠宰率分子/Σ屠宰率分母，白条出品率 = Σ出品率分子/Σ处理完成接收重量。
+     * 月表：屠宰率 = Σ屠宰率分子/Σ屠宰率分母，白条出品率 = Σ出品率分子/Σ出品率分母。
      * 用与「Σ接收/Σ送宰」明显不同的数字，保证走的是 cohort 基数列而不是旧的两列；
-     * 且出品率分子取 sumBarYieldNumer（不是 sumBarTotal），验 D1 月表侧也对称。
+     * 出品率分母取 sumBarYieldBase（不是 sumFinishedArrive），验月表侧与日率同口径。
      */
     @Test
-    @DisplayName("月表比率从日表 cohort 基数列 Σ 后重算（出品率分子取 barYieldNumer）")
+    @DisplayName("月表比率从日表 cohort 基数列 Σ 后重算（出品率分母取 barYieldBase）")
     void testMonthlyRatesFromCohortBases() {
-        stubCohorts(0, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, 0, BigDecimal.ZERO, BigDecimal.ZERO);
+        stubEmptyFinishedCohort(0, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO);
         when(aggregateMapper.sumMonthlyFromDaily(TENANT, MONTH)).thenReturn(Map.of(
             "slaughterCount", 7,
             "sumRateArrive", bd("420"),
             "sumRateBase", bd("500"),
             "sumBarYieldNumer", bd("380"),
-            "sumFinishedArrive", bd("400"),
+            "sumBarYieldBase", bd("400"),
             "sumCutProduct", bd("150"),
             "sumCutBar", bd("200")));
 
@@ -251,13 +255,13 @@ class WarehouseStatServiceImplTest {
     @Test
     @DisplayName("月表 cohort 基数全 0 → 比率 null")
     void testMonthlyZeroBasesYieldNull() {
-        stubCohorts(0, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, 0, BigDecimal.ZERO, BigDecimal.ZERO);
+        stubEmptyFinishedCohort(0, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO);
         when(aggregateMapper.sumMonthlyFromDaily(TENANT, MONTH)).thenReturn(Map.of(
             "slaughterCount", 0,
             "sumRateArrive", BigDecimal.ZERO,
             "sumRateBase", BigDecimal.ZERO,
             "sumBarYieldNumer", bd("380"),
-            "sumFinishedArrive", BigDecimal.ZERO,
+            "sumBarYieldBase", BigDecimal.ZERO,
             "sumCutProduct", BigDecimal.ZERO,
             "sumCutBar", BigDecimal.ZERO));
 
@@ -276,25 +280,26 @@ class WarehouseStatServiceImplTest {
     //  helpers
     // ============================================================
 
-    private void stubCohorts(int slaughterCount, BigDecimal arrive,
-                             BigDecimal rateArrive, BigDecimal rateBase,
-                             int finishedCount, BigDecimal barTotal, BigDecimal finishedArrive) {
-        // 默认：整个处理完成 cohort 都有接收重量 → 出品率分子 = 白条总重
+    /** 当日没有猪处理完成（F 为空）时的桩：只关心送宰 / 称重两组 cohort。 */
+    private void stubEmptyFinishedCohort(int slaughterCount, BigDecimal arrive,
+                                         BigDecimal rateArrive, BigDecimal rateBase) {
         stubCohorts(slaughterCount, arrive, rateArrive, rateBase,
-            finishedCount, barTotal, finishedArrive, barTotal);
+            0, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO);
     }
 
+    /** 三组 cohort 全量桩；出品率分子/分母显式给，不由别的量推导（口径就是它俩独立落盘）。 */
     private void stubCohorts(int slaughterCount, BigDecimal arrive,
                              BigDecimal rateArrive, BigDecimal rateBase,
                              int finishedCount, BigDecimal barTotal, BigDecimal finishedArrive,
-                             BigDecimal barYieldNumer) {
+                             BigDecimal barYieldNumer, BigDecimal barYieldBase) {
         when(aggregateMapper.countSlaughter(TENANT, DATE_STR)).thenReturn(slaughterCount);
         when(aggregateMapper.sumArriveWeight(TENANT, DATE_STR)).thenReturn(arrive);
         when(aggregateMapper.selectSlaughterRateBase(TENANT, DATE_STR)).thenReturn(Map.of(
             "rateArrive", rateArrive, "rateBase", rateBase));
         when(aggregateMapper.selectFinishedAgg(TENANT, DATE_STR)).thenReturn(Map.of(
             "finishedCount", finishedCount, "barTotalWeight", barTotal,
-            "finishedArriveWeight", finishedArrive, "barYieldNumerWeight", barYieldNumer));
+            "finishedArriveWeight", finishedArrive,
+            "barYieldNumerWeight", barYieldNumer, "barYieldBaseWeight", barYieldBase));
     }
 
     private WarehouseIndicatorRecord runAggregateAndCaptureDaily() {
