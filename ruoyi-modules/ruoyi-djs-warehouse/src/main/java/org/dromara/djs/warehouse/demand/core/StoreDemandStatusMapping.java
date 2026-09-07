@@ -11,10 +11,14 @@ import java.util.StringJoiner;
 /**
  * 仓库 7 态 → 门店视角 6 态（字典 {@code djs_store_demand_status}）的<b>唯一口径</b>。
  *
- * <p>两个方向必须永远一致，所以放同一个类里：</p>
+ * <p>三条链路必须永远一致，所以放同一个类里：</p>
  * <ul>
  *   <li>{@link #derive(String, boolean, BigDecimal, BigDecimal)} —— 读出来的行反推门店态（列表 / 详情回填）</li>
  *   <li>{@link #sqlPredicate(String)} —— 按门店态<b>筛选</b>时下推到 SQL 的 WHERE 片段</li>
+ *   <li>{@link #ARRIVED_QTY_SUBQUERY_DM} —— mp 门店<b>日卡</b>三桶（
+ *       {@code DemandManageMapper#selectStoreDemandDayPage} 的 arrived/shipped/confirmed CASE）
+ *       复用同一份到店量子查询。V6-R197 漏了这条，于是日卡说「已发货」、点进按天明细每行却是「已确认」，
+ *       独立 QA 在 store C / 2026-09-09 复现；契约由 {@code StoreDemandDayBucketSqlContractTest} 钉死。</li>
  * </ul>
  *
  * <p>映射表（{@code arrived} = 到店量，{@code demand} = 需求量）：</p>
@@ -35,8 +39,16 @@ import java.util.StringJoiner;
  * 以及「0 &lt; 到店量 &lt; 需求量 → 部分到店」。<b>本类只改派生显示态，不动仓库状态机
  * {@code DemandStatus} 与任何落库列</b>。</p>
  *
- * <p>门店端<b>永不返回</b> DELETED 行，故 {@link #sqlPredicate(String)} 对 DELETED 直接拒绝——
- * 允许它会与「排除已删除」的列表口径自相矛盾，宁可报错也不给两套语义。</p>
+ * <p><b>「已删除」在两端的可见性不一样，别再按一句话理解</b>：</p>
+ * <ul>
+ *   <li><b>mp applet 链路</b>（日卡 / 按天明细）用 {@link #EXCLUDED_STATUSES} 在查询层就把
+ *       {@code DELETED / CANCELLED / DRAFT} 挡掉，店员看不到已删除行；</li>
+ *   <li><b>admin 门店管理「需求下单」列表</b>（{@code /djs/store/demand/list}）<b>有意显示全部行</b>，
+ *       含已删除（甲方 row198 截图里就有「已删除」行），状态按字典 {@code djs_store_demand_status} 渲染。</li>
+ * </ul>
+ * <p>{@link #sqlPredicate(String)} 对 DELETED 直接拒绝，只是因为它服务的是 <b>mp 那条筛选链路</b> ——
+ * 在一个「查询层已经排除已删除」的列表上再提供「只看已删除」的筛选项是自相矛盾的。
+ * admin 列表不走这套筛选（它按仓库态 / 门店态多选走 {@code storeDemandStatuses}，不提供已删除选项）。</p>
  *
  * @author djs
  * @since STORE-MP-BOARD-001
@@ -57,31 +69,11 @@ public final class StoreDemandStatusMapping {
     public static final String DELETED = "DELETED";
 
     /**
-     * 门店态 → 中文（字典 {@code djs_store_demand_status} 的 label，与 admin 展示逐字一致）。
-     *
-     * <p>给<b>面向店员的报错文案</b>用。mp 全站中文（CLAUDE.md §6 强约束 9），
-     * 把 {@code SHIPPED} / {@code ARRIVED} 这种枚举码直接甩进 toast 是店员看不懂的。
-     * 认不出的值原样返回（不吞，便于排查脏数据）。</p>
-     */
-    public static String labelOf(String storeStatus) {
-        if (storeStatus == null) {
-            return "";
-        }
-        return switch (storeStatus) {
-            case SUBMITTED -> "待确认";
-            case CONFIRMED -> "已确认";
-            case PARTIAL_ARRIVED -> "部分到店";
-            case SHIPPED -> "已发货";
-            case ARRIVED -> "已到店";
-            case DELETED -> "已删除";
-            // 认不出的值仍带出原码便于排查脏数据，但必须裹一层中文——这个串会直接进店员看的 toast
-            default -> "未知状态（" + storeStatus + "）";
-        };
-    }
-
-    /**
-     * 门店端列表/详情统一排除的仓库态（= 门店态 DELETED）。
+     * <b>mp applet 链路</b>统一排除的仓库态（= 门店态 DELETED，外加从未提交的 DRAFT）。
      * SQL 用 {@code demand_status NOT IN (...)}；软删行另由 {@code del_flag='0'} 排除。
+     *
+     * <p>只在 mp（日卡 / 按天明细 / 门店经营统计）用；<b>admin 门店需求列表不用它</b>，
+     * 那边有意把已删除行也列出来（见类注释）。</p>
      */
     public static final String EXCLUDED_STATUS_SQL = "('DELETED','CANCELLED','DRAFT')";
 
@@ -91,22 +83,42 @@ public final class StoreDemandStatusMapping {
     /**
      * 「已发货态」= 仓库侧已经出过货 / 已闭单的两个态（SQL 字面量）。
      * 到店量细分只在这两个态里发生，与 {@link #derive} 的 {@code case} 分支必须同集合。
+     *
+     * <p>public 是为了让日卡分桶 CASE（{@code DemandManageMapper#selectStoreDemandDayPage}）
+     * 与 {@link #sqlPredicate(String)} 共用同一份状态集合，不各写一份。编译期常量，可进注解。</p>
      */
-    private static final String SHIPPED_STATUS_SQL = "('PARTIAL_SHIPPED','COMPLETED')";
+    public static final String SHIPPED_STATUS_SQL = "('PARTIAL_SHIPPED','COMPLETED')";
+
+    /**
+     * 「已确认及之后」的仓库态集合（SQL 字面量）—— 收货标记一旦置位，这几个态一律算门店态 ARRIVED。
+     * 与 {@link #derive} 里 {@code received == true} 的分支同集合。
+     */
+    public static final String CONFIRMED_OR_LATER_STATUS_SQL =
+        "('CONFIRMED','IN_PRODUCTION','PARTIAL_SHIPPED','COMPLETED')";
+
+    /** 仓库侧「已确认、还没发货」的两个态（含已废弃的 IN_PRODUCTION）。 */
+    public static final String CONFIRMED_STATUS_SQL = "('CONFIRMED','IN_PRODUCTION')";
 
     /**
      * 相关子查询：单行需求的<b>到店量</b>（SQL 侧口径，与
      * {@code ProductProductionMapper#selectArrivedQuantityByDemandIds} 的批量聚合逐条同构）。
      *
      * <p>口径 = 该需求下已被发货清点（{@code is_delivery_check=1}）的成品条数，并按业态收口
-     * （成品 belong_type 必须与需求产品 belong_type 一致，挡掉挂错业态的松散绑定行）。
-     * 外层引用 {@code t_warehouse_demand_manage.id}：门店端所有按门店态筛选的查询都是
-     * <b>单表无别名</b>的 MyBatis-Plus wrapper（{@code SELECT ... FROM t_warehouse_demand_manage WHERE ...}），
-     * 用全表名限定即可，不与子查询里的别名冲突。</p>
+     * （成品 belong_type 必须与需求产品 belong_type 一致，挡掉挂错业态的松散绑定行）。</p>
+     *
+     * <p><b>拆成 PREFIX / SUFFIX 是为了让外层锚点可换而片段本身只有一份</b>：
+     * 用它的两处外层写法不同 —— {@link #sqlPredicate(String)} 服务的是<b>单表无别名</b>的
+     * MyBatis-Plus wrapper（锚 {@code t_warehouse_demand_manage.id}），
+     * {@code DemandManageMapper#selectStoreDemandDayPage} 的日卡聚合 SQL 给主表起了别名 {@code dm}
+     * （锚 {@code dm.id}）。两个常量都是<b>编译期常量</b>，所以 {@code @Select} 注解里可以直接拼
+     * （{@link #ARRIVED_QTY_SUBQUERY_DM}）。手写第二份条件必然漂 —— R197 的日卡/行级矛盾就是这么来的。</p>
+     *
+     * <p>片段本身<b>不含</b> {@code <} / {@code >}，所以放进 MyBatis {@code <script>} 无需转义；
+     * 与它比较的运算符写在各使用点（script 里要写 {@code &lt;} / {@code &gt;}）。</p>
      *
      * <p>租户隔离：未启全局 MP 拦截器，显式 {@code tenant_id='1001'}，与批量聚合 SQL 同范式。</p>
      */
-    private static final String ARRIVED_QTY_SUBQUERY =
+    public static final String ARRIVED_QTY_SUBQUERY_PREFIX =
         "(SELECT COUNT(*) FROM t_warehouse_product_production pp"
             + " JOIN t_warehouse_demand_manage sd ON sd.id = pp.demand_id"
             + " AND sd.del_flag = '0' AND sd.tenant_id = '1001'"
@@ -114,7 +126,24 @@ public final class StoreDemandStatusMapping {
             + " JOIN t_warehouse_product_info sdi ON sdi.id = sd.product_id AND sdi.del_flag = '0'"
             + " AND sdi.belong_type = spi.belong_type"
             + " WHERE pp.is_delivery_check = 1 AND pp.del_flag = '0' AND pp.tenant_id = '1001'"
-            + " AND pp.demand_id = t_warehouse_demand_manage.id)";
+            + " AND pp.demand_id = ";
+
+    /** 见 {@link #ARRIVED_QTY_SUBQUERY_PREFIX}：闭合括号。 */
+    public static final String ARRIVED_QTY_SUBQUERY_SUFFIX = ")";
+
+    /**
+     * 到店量子查询，锚<b>主表别名 {@code dm}</b> —— 给 {@code DemandManageMapper#selectStoreDemandDayPage}
+     * 的日卡分桶 CASE 用（那条 SQL 把 {@code t_warehouse_demand_manage} 起了别名 {@code dm}）。
+     *
+     * <p>编译期常量，可直接出现在 {@code @Select} 注解里。日桶与 {@link #sqlPredicate(String)}
+     * 共用同一片段，由 {@code StoreDemandDayBucketSqlContractTest} 钉死。</p>
+     */
+    public static final String ARRIVED_QTY_SUBQUERY_DM =
+        ARRIVED_QTY_SUBQUERY_PREFIX + "dm.id" + ARRIVED_QTY_SUBQUERY_SUFFIX;
+
+    /** 到店量子查询，锚单表无别名查询的 {@code t_warehouse_demand_manage.id}（{@link #sqlPredicate} 用）。 */
+    private static final String ARRIVED_QTY_SUBQUERY =
+        ARRIVED_QTY_SUBQUERY_PREFIX + "t_warehouse_demand_manage.id" + ARRIVED_QTY_SUBQUERY_SUFFIX;
 
     private StoreDemandStatusMapping() {
     }
@@ -204,7 +233,7 @@ public final class StoreDemandStatusMapping {
             case SUBMITTED -> "(demand_status = 'SUBMITTED')";
             // IN_PRODUCTION 与 derive() 保持同一口径（见该方法注释）：筛选与展示两边永远一致，
             // 否则会出现「不筛看得到、全选筛不到」的自相矛盾。
-            case CONFIRMED -> "((demand_status IN ('CONFIRMED','IN_PRODUCTION') AND received_time IS NULL)"
+            case CONFIRMED -> "((demand_status IN " + CONFIRMED_STATUS_SQL + " AND received_time IS NULL)"
                 + " OR (demand_status IN " + SHIPPED_STATUS_SQL + " AND received_time IS NULL"
                 + " AND " + ARRIVED_QTY_SUBQUERY + " <= 0))";
             case PARTIAL_ARRIVED -> "(demand_status IN " + SHIPPED_STATUS_SQL + " AND received_time IS NULL"
@@ -214,9 +243,8 @@ public final class StoreDemandStatusMapping {
             case SHIPPED -> "(demand_status IN " + SHIPPED_STATUS_SQL + " AND received_time IS NULL"
                 + " AND " + ARRIVED_QTY_SUBQUERY + " > 0"
                 + " AND (demand_quantity IS NULL OR " + ARRIVED_QTY_SUBQUERY + " >= demand_quantity))";
-            case ARRIVED ->
-                "(demand_status IN ('CONFIRMED','IN_PRODUCTION','PARTIAL_SHIPPED','COMPLETED') "
-                    + "AND received_time IS NOT NULL)";
+            case ARRIVED -> "(demand_status IN " + CONFIRMED_OR_LATER_STATUS_SQL
+                + " AND received_time IS NOT NULL)";
             case DELETED -> throw new ServiceException("门店端不提供「已删除」需求查询", 400);
             default -> throw new ServiceException("不支持的门店需求状态：" + storeStatus, 400);
         };

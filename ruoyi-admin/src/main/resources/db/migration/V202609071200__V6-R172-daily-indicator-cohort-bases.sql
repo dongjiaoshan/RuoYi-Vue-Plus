@@ -81,6 +81,16 @@ PREPARE stbf FROM @bf;
 EXECUTE stbf;
 DEALLOCATE PREPARE stbf;
 
+-- 表已有 slaughter_rate_* 四列、但 bar_yield_numer_weight 是本次才加（@c1>0 且 @c7=0）：
+-- 只补出品率分子，口径与上面一致（该状态下出品率分子 = 白条总重）。列都已存在（@c7>0）则跳过。
+SET @bf2 := IF(@c1 > 0 AND @c7 = 0,
+  "UPDATE t_warehouse_indicator_record
+      SET bar_yield_numer_weight = COALESCE(bar_total_weight, 0)",
+  'SELECT 1');
+PREPARE stbf2 FROM @bf2;
+EXECUTE stbf2;
+DEALLOCATE PREPARE stbf2;
+
 -- 出栏 cohort（marketing_time）/ 处理完成 cohort（finish_time）是重算时的日分桶键，
 -- 日重算逐日扫全表，补上索引。
 SET @c5 := (SELECT COUNT(*) FROM information_schema.STATISTICS
