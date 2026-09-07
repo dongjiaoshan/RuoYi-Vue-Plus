@@ -836,45 +836,12 @@ public class PigCoreServiceImpl implements IPigCoreService {
             }
         }
 
-        // 215：pigTypeFilter 支持 CSV（如 'sow,boar' 给生长记录 tab2「其他猪只」=母猪+生产公猪）；
-        // 单值时退化为 .eq，CSV 时走 IN。空 → 不限类型。
-        List<String> pigTypes = StringUtils.isNotBlank(pigTypeFilter)
-            ? Arrays.stream(pigTypeFilter.split(",")).map(String::trim).filter(StringUtils::isNotBlank).distinct().collect(Collectors.toList())
-            : Collections.emptyList();
+        List<String> pigTypes = parsePigTypes(pigTypeFilter);
 
-        LambdaQueryWrapper<Pig> w = new LambdaQueryWrapper<Pig>()
-            // 排除 current_status 为 null 的数据异常猪（旧 import / 非 createPig 路径写入），
-            // 这些猪无 lifecycle，选中后任何事件 parseLifecycle 都会抛 pig.state.invalid → 不进任何 picker 候选
-            .isNotNull(Pig::getCurrentStatus)
-            // 默认排除 END 猪只——给事件录入 picker 用（配种 / 转栏等 END 不能再触发的事件）；
-            // 但 statusFilter 显式声明要 END（如 WMS-PIG-001 燎毛工序）时放行
-            .ne(!callerWantsEnd, Pig::getCurrentStatus, PigLifecycle.END.name())
-            .like(StringUtils.isNotBlank(earNoKeyword), Pig::getEarNo, earNoKeyword)
-            .eq(StringUtils.isNotBlank(sexFilter), Pig::getPigSex, sexFilter)
-            .eq(pigTypes.size() == 1, Pig::getPigType, pigTypes.isEmpty() ? null : pigTypes.get(0))
-            .in(pigTypes.size() > 1, Pig::getPigType, pigTypes)
-            .eq(barnIdFilter != null, Pig::getBarnId, barnIdFilter)
-            // FIX-BRD-CASTRATE-ISCASTRATED-001：阉割选猪传 isCastrated=1（仅未阉割猪可选）；null → 不过滤。
-            .eq(isCastrated != null, Pig::getIsCastrated, isCastrated)
-            // #23a：opt-in 排除无栋舍归属猪只，与 countByBarn 的 .isNotNull(barn_id) 口径一致
-            .isNotNull(dropNullBarn, Pig::getBarnId)
-            // 出栏选猪：日龄 >= minAgeDays（到龄肥猪）。{0} 占位 + apply 防注入；
-            // COALESCE(birth_date, introduce_date) 与 calcAgeDays 同口径；无生日（结果 NULL）则比较非真自动剔除。
-            .apply(applyMinAge, "DATEDIFF(NOW(), COALESCE(birth_date, introduce_date)) >= {0}", minAgeDays)
-            // 用药选猪：育肥猪日龄 <= maxAgeDays（超龄肥猪临近出栏不再用药）。
-            // 注意 applyMaxAge **不带 !searchingByEarNo** —— 这是业务硬约束不是默认待办窗口，
-            // 手输耳号也不能把超龄猪搜出来（甲方 8/3 提的正是「搜 304 日龄育肥猪仍搜得到」）。
-            // 只约束育肥猪：种母猪/种公猪日龄天然超限，卡上限会让调用方在不限类型时不敢下发该参数。
-            .apply(applyMaxAge, "(pig_type <> {0}"
-                + " OR COALESCE(birth_date, introduce_date) IS NULL"
-                + " OR DATEDIFF(NOW(), COALESCE(birth_date, introduce_date)) <= {1})", PIG_TYPE_FATTENING, maxAgeDays)
-            .orderByDesc(Pig::getId)
+        LambdaQueryWrapper<Pig> w = buildSearchWrapper(earNoKeyword, statuses, callerWantsEnd, sexFilter, pigTypes,
+            barnIdFilter, isCastrated, dropNullBarn, applyMinAge ? minAgeDays : null, applyMaxAge ? maxAgeDays : null)
             // deferLimit 时不下 SQL LIMIT —— 截断推迟到内存筛 + 排序之后（见方法末尾 subList）
             .last(!deferLimit, "LIMIT " + effectiveLimit);
-
-        if (!statuses.isEmpty()) {
-            w.in(Pig::getCurrentStatus, statuses);
-        }
 
         List<Pig> pigs = pigMapper.selectList(w);
         if (pigs.isEmpty()) {
@@ -894,7 +861,6 @@ public class PigCoreServiceImpl implements IPigCoreService {
         // dueType 为空 → dueDateMap 为空，所有 VO dueDate/due 为 null（向后兼容所有现有调用方）。
         // dueDateMap（配置驱动）只用于下方板块「硬筛」+ chip 计数；展示用 displayDueMap（固定 114/25，Kevin 2026-07-05）。
         Map<Long, LocalDate> dueDateMap = computeDueDateMap(pigs, dueType);
-        Map<Long, LocalDate> displayDueMap = computeDisplayDueMap(pigs, dueType);
 
         // r52/r53（邓博 2026-06-30）：分娩/断奶板块按「后台生产配置天数」**硬筛**——只显示已满足对应天数的母猪，
         // 反转 D12X-MP-FARROW-WEANING-001 的「软提示列全部」做法（Kevin 2026-07-01：严格按邓博描述执行）。
@@ -917,6 +883,140 @@ public class PigCoreServiceImpl implements IPigCoreService {
             }
         }
 
+        List<PigSearchVo> result = toSearchVos(pigs, dueType);
+        // 临产排前：due=true 优先，再按 dueDate 升序（最临近 / 超期在前），无 dueDate 的排最后。
+        if (StringUtils.isNotBlank(dueType)) {
+            result.sort(Comparator
+                .comparingInt((PigSearchVo v) -> Boolean.TRUE.equals(v.getDue()) ? 0 : 1)
+                .thenComparing(PigSearchVo::getDueDate, Comparator.nullsLast(Comparator.naturalOrder())));
+        }
+        // deferLimit 路径的截断点：内存筛 + 排序都做完了才截，取的是「最该干的 effectiveLimit 头」。
+        // 放在排序之后是有意的 —— 排序键是临产度，先截再排会把最紧急的那几头切掉，那就是换个阈值再犯一次同样的错。
+        if (deferLimit && result.size() > effectiveLimit) {
+            return new ArrayList<>(result.subList(0, effectiveLimit));
+        }
+        return result;
+    }
+
+    /**
+     * 耳号关键字搜索的<b>分页</b>形态（mp 猪只列表页「下拉到底加载更多」，Kevin 2026-09-07）。
+     *
+     * <p>与 {@link #searchByEarKeyword} 同一套过滤 + enrich 口径（共用 {@code buildSearchWrapper} /
+     * {@code toSearchVos}），差别只有两处：返回 {@link TableDataInfo} 带 {@code total}（前端据此判「还有没有下一页」、
+     * 与栋舍 chip 头数对齐），以及只接受<b>纯 SQL 过滤</b>的参数。</p>
+     *
+     * <p>🔴 <b>刻意不接 {@code dueType} / {@code breedReady}</b>：这两个过滤跑在 SQL 之后的内存里
+     * （见 {@code searchByEarKeyword} 里的「LIMIT 必须让位给内存后筛」一段），一旦与 SQL 分页同用，
+     * {@code total} 会是「筛前总数」而每页内容是「筛后残余」——页码越翻越空、计数还对不上。
+     * 需要那两个维度的调用方（分娩 / 断奶 / 配种选猪面板）继续走不分页的 {@link #searchByEarKeyword}。</p>
+     *
+     * @param earNoKeyword  耳号 LIKE 中部匹配；空 → 不过滤
+     * @param statusFilter  状态 CSV（与 search 同语义；显式含 END 时放行终态）
+     * @param sexFilter     {@code "M"} / {@code "F"}；空 → 不过滤
+     * @param pigTypeFilter {@code "sow"/"boar"/"piglet"/"fattening"}，支持 CSV
+     * @param barnCode      栋舍编码精确过滤（栋舍 chip 点击后传）；解析不到该栋舍 → 返空页
+     * @param pageQuery     分页参数（{@code pageNum}/{@code pageSize}）
+     * @return {@code rows} = 本页 PigSearchVo；{@code total} = 该过滤维度下的总头数
+     */
+    @Override
+    public TableDataInfo<PigSearchVo> searchPageByEarKeyword(String earNoKeyword,
+                                                             String statusFilter,
+                                                             String sexFilter,
+                                                             String pigTypeFilter,
+                                                             String barnCode,
+                                                             PageQuery pageQuery) {
+        List<String> statuses = parseStatusFilter(statusFilter);
+        boolean callerWantsEnd = statuses.contains(PigLifecycle.END.name());
+
+        // 与 searchByEarKeyword 同口径：barnCode 是业务码，先 resolve 成 barnId；解析不到（无此栋舍）→ 返空页，避免误返全量
+        Long barnIdFilter = null;
+        if (StringUtils.isNotBlank(barnCode)) {
+            barnIdFilter = resolveBarnIdByCode(barnCode);
+            if (barnIdFilter == null) {
+                return new TableDataInfo<>(Collections.emptyList(), 0L);
+            }
+        }
+
+        LambdaQueryWrapper<Pig> w = buildSearchWrapper(earNoKeyword, statuses, callerWantsEnd, sexFilter,
+            parsePigTypes(pigTypeFilter), barnIdFilter, null, false, null, null);
+        Page<Pig> page = pigMapper.selectPage(pageQuery.build(), w);
+        // dueType 传 null：本端点服务「列表浏览」，不算预产期/到断奶期，也就没有临产排序与 badge
+        return new TableDataInfo<>(toSearchVos(page.getRecords(), null), page.getTotal());
+    }
+
+    /**
+     * pigTypeFilter 解析：支持 CSV（如 {@code 'sow,boar'} 给生长记录 tab2「其他猪只」=母猪+生产公猪）。
+     * 单值时调用方退化为 {@code .eq}，CSV 时走 {@code IN}。空 → 空 list（不限类型）。
+     */
+    private List<String> parsePigTypes(String pigTypeFilter) {
+        return StringUtils.isNotBlank(pigTypeFilter)
+            ? Arrays.stream(pigTypeFilter.split(",")).map(String::trim).filter(StringUtils::isNotBlank).distinct().collect(Collectors.toList())
+            : Collections.emptyList();
+    }
+
+    /**
+     * 猪只搜索的公共查询条件（{@link #searchByEarKeyword} 不分页 / {@link #searchPageByEarKeyword} 分页共用）。
+     *
+     * <p>只含<b>纯 SQL 过滤</b>；LIMIT / 内存后筛（breedReady、dueType 硬筛）由调用方各自追加，
+     * 因为两条路径对截断时机的要求不同。</p>
+     *
+     * @param statuses    已解析的状态白名单（空 → 不按状态过滤）
+     * @param minAgeDays  生效的最小日龄（{@code null} → 不过滤，调用方判完「搜索态放行」后再传）
+     * @param maxAgeDays  生效的最大用药日龄（{@code null} → 不过滤）
+     */
+    private LambdaQueryWrapper<Pig> buildSearchWrapper(String earNoKeyword,
+                                                       List<String> statuses,
+                                                       boolean callerWantsEnd,
+                                                       String sexFilter,
+                                                       List<String> pigTypes,
+                                                       Long barnIdFilter,
+                                                       Integer isCastrated,
+                                                       boolean dropNullBarn,
+                                                       Integer minAgeDays,
+                                                       Integer maxAgeDays) {
+        LambdaQueryWrapper<Pig> w = new LambdaQueryWrapper<Pig>()
+            // 排除 current_status 为 null 的数据异常猪（旧 import / 非 createPig 路径写入），
+            // 这些猪无 lifecycle，选中后任何事件 parseLifecycle 都会抛 pig.state.invalid → 不进任何 picker 候选
+            .isNotNull(Pig::getCurrentStatus)
+            // 默认排除 END 猪只——给事件录入 picker 用（配种 / 转栏等 END 不能再触发的事件）；
+            // 但 statusFilter 显式声明要 END（如 WMS-PIG-001 燎毛工序）时放行
+            .ne(!callerWantsEnd, Pig::getCurrentStatus, PigLifecycle.END.name())
+            .like(StringUtils.isNotBlank(earNoKeyword), Pig::getEarNo, earNoKeyword)
+            .eq(StringUtils.isNotBlank(sexFilter), Pig::getPigSex, sexFilter)
+            .eq(pigTypes.size() == 1, Pig::getPigType, pigTypes.isEmpty() ? null : pigTypes.get(0))
+            .in(pigTypes.size() > 1, Pig::getPigType, pigTypes)
+            .eq(barnIdFilter != null, Pig::getBarnId, barnIdFilter)
+            // FIX-BRD-CASTRATE-ISCASTRATED-001：阉割选猪传 isCastrated=1（仅未阉割猪可选）；null → 不过滤。
+            .eq(isCastrated != null, Pig::getIsCastrated, isCastrated)
+            // #23a：opt-in 排除无栋舍归属猪只，与 countByBarn 的 .isNotNull(barn_id) 口径一致
+            .isNotNull(dropNullBarn, Pig::getBarnId)
+            // 出栏选猪：日龄 >= minAgeDays（到龄肥猪）。{0} 占位 + apply 防注入；
+            // COALESCE(birth_date, introduce_date) 与 calcAgeDays 同口径；无生日（结果 NULL）则比较非真自动剔除。
+            .apply(minAgeDays != null, "DATEDIFF(NOW(), COALESCE(birth_date, introduce_date)) >= {0}", minAgeDays)
+            // 用药选猪：育肥猪日龄 <= maxAgeDays（超龄肥猪临近出栏不再用药）。
+            // 调用方判定时**不带 !searchingByEarNo** —— 这是业务硬约束不是默认待办窗口，
+            // 手输耳号也不能把超龄猪搜出来（甲方 8/3 提的正是「搜 304 日龄育肥猪仍搜得到」）。
+            // 只约束育肥猪：种母猪/种公猪日龄天然超限，卡上限会让调用方在不限类型时不敢下发该参数。
+            .apply(maxAgeDays != null, "(pig_type <> {0}"
+                + " OR COALESCE(birth_date, introduce_date) IS NULL"
+                + " OR DATEDIFF(NOW(), COALESCE(birth_date, introduce_date)) <= {1})", PIG_TYPE_FATTENING, maxAgeDays)
+            .orderByDesc(Pig::getId);
+        if (!statuses.isEmpty()) {
+            w.in(Pig::getCurrentStatus, statuses);
+        }
+        return w;
+    }
+
+    /**
+     * Pig → PigSearchVo 批量转换 + enrich（栋舍/栏位名、日龄、胎次、品种品系名、到期软提示）。
+     * {@link #searchByEarKeyword} 与 {@link #searchPageByEarKeyword} 共用，保证两条路径卡片字段完全一致。
+     *
+     * @param dueType 到期类型（{@code FARROW}/{@code WEANING}）；null/空 → 不算 dueDate/due，也不 enrich 配种日期
+     */
+    private List<PigSearchVo> toSearchVos(List<Pig> pigs, String dueType) {
+        if (pigs == null || pigs.isEmpty()) {
+            return new ArrayList<>();
+        }
         // 批量 enrich barnCode/penCode + barnName/penName（与 queryPage 一致，避免 N+1）
         // FIX-INTRO-001 P1：同批查出 Barn/Pen 全对象，供 mp 选猪卡「位置」格显「栋舍名+栏位名」
         Set<Long> barnIds = pigs.stream().map(Pig::getBarnId).filter(Objects::nonNull).collect(Collectors.toSet());
@@ -928,6 +1028,8 @@ public class PigCoreServiceImpl implements IPigCoreService {
             : penMapper.selectBatchIds(penIds).stream()
                 .collect(Collectors.toMap(Pen::getId, Function.identity(), (a, b) -> a));
 
+        // 展示用到期日（固定 配种日+114 / 分娩日+25）；dueType 为空 → 空 map，所有 VO dueDate/due 留 null
+        Map<Long, LocalDate> displayDueMap = computeDisplayDueMap(pigs, dueType);
         LocalDate today = LocalDate.now();
         LocalDateTime now = LocalDateTime.now();
         // row92 #1：分娩选猪（dueType=FARROW）时 enrich 最近配种日期，给 mp 分娩录入概况卡「配种日期」格用；
@@ -1000,17 +1102,6 @@ public class PigCoreServiceImpl implements IPigCoreService {
                 vo.setDue(!dd.isAfter(today.plusDays(dueWindowDays)));
             }
             result.add(vo);
-        }
-        // 临产排前：due=true 优先，再按 dueDate 升序（最临近 / 超期在前），无 dueDate 的排最后。
-        if (StringUtils.isNotBlank(dueType)) {
-            result.sort(Comparator
-                .comparingInt((PigSearchVo v) -> Boolean.TRUE.equals(v.getDue()) ? 0 : 1)
-                .thenComparing(PigSearchVo::getDueDate, Comparator.nullsLast(Comparator.naturalOrder())));
-        }
-        // deferLimit 路径的截断点：内存筛 + 排序都做完了才截，取的是「最该干的 effectiveLimit 头」。
-        // 放在排序之后是有意的 —— 排序键是临产度，先截再排会把最紧急的那几头切掉，那就是换个阈值再犯一次同样的错。
-        if (deferLimit && result.size() > effectiveLimit) {
-            return new ArrayList<>(result.subList(0, effectiveLimit));
         }
         return result;
     }
