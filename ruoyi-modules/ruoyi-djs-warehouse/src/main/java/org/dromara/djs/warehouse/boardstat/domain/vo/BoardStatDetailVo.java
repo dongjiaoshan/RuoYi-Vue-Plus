@@ -4,19 +4,19 @@ import lombok.Data;
 
 import java.io.Serial;
 import java.io.Serializable;
+import java.util.ArrayList;
 import java.util.List;
 
 /**
- * 卡片下钻明细响应（入库明细 / 生产明细共用，V6-R178）。
+ * 卡片下钻明细响应（入库明细 / 生产明细共用，V6-R193）。
  *
- * <p>不用 {@code TableDataInfo} 直返，是因为页面顶部要显示「按单位的合计」——
- * 合计必须是全量口径而不是当前这一页的和，得和分页数据一起下发。</p>
+ * <p>不分页：一个品类一个自然月的<b>产品数</b>是十几到几十的量级（不是流水条数），
+ * 一次全给，mp 端在弹窗里一屏滚完，省掉上拉加载与「合计对不上当前页」的歧义。</p>
  *
- * @param <T> 行类型（{@link InboundDetailRowVo} / {@link ProductionDetailRowVo}）
  * @author djs
  */
 @Data
-public class BoardStatDetailVo<T> implements Serializable {
+public class BoardStatDetailVo implements Serializable {
 
     @Serial
     private static final long serialVersionUID = 1L;
@@ -24,18 +24,18 @@ public class BoardStatDetailVo<T> implements Serializable {
     /** 统计月份 yyyy-MM。 */
     private String month;
 
+    /** 环比基准月份 yyyy-MM（统计月的上一个自然月）。 */
+    private String prevMonth;
+
     /** 品类键 pork / vegetable / egg / dry_good。 */
     private String belongType;
 
-    /** 品类中文名（后端给文案，mp 直接显示）。 */
+    /** 品类中文名（后端给文案，mp 直接拼弹窗标题）。 */
     private String categoryName;
 
-    /** 满足条件的总行数（分页用）。 */
-    private Long total;
-
-    /** 当前页明细行（日期倒序）。 */
-    private List<T> rows;
+    /** 明细行（按产品聚合，量降序）。 */
+    private List<BoardStatProductRowVo> rows = new ArrayList<>();
 
     /** 全量合计（按单位分组，与品类卡同口径同数字）。 */
-    private List<BoardStatUnitTotalVo> totals;
+    private List<BoardStatUnitTotalVo> totals = new ArrayList<>();
 }

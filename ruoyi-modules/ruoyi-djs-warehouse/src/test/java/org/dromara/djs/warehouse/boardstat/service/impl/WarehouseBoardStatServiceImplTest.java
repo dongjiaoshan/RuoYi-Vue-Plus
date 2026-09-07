@@ -1,18 +1,13 @@
 package org.dromara.djs.warehouse.boardstat.service.impl;
 
-import com.baomidou.mybatisplus.core.metadata.IPage;
-import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import org.dromara.common.core.exception.ServiceException;
-import org.dromara.common.core.service.DictService;
-import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.tenant.helper.TenantHelper;
 import org.dromara.djs.warehouse.boardstat.domain.vo.BoardStatDetailVo;
+import org.dromara.djs.warehouse.boardstat.domain.vo.BoardStatProductRowVo;
 import org.dromara.djs.warehouse.boardstat.domain.vo.BoardStatUnitTotalVo;
 import org.dromara.djs.warehouse.boardstat.domain.vo.CategoryStatVo;
 import org.dromara.djs.warehouse.boardstat.domain.vo.CategoryUnitQtyRow;
 import org.dromara.djs.warehouse.boardstat.domain.vo.CategoryUnitStatVo;
-import org.dromara.djs.warehouse.boardstat.domain.vo.InboundDetailRowVo;
-import org.dromara.djs.warehouse.boardstat.domain.vo.ProductionDetailRowVo;
 import org.dromara.djs.warehouse.boardstat.domain.vo.WarehouseBoardStatVo;
 import org.dromara.djs.warehouse.boardstat.mapper.WarehouseBoardStatMapper;
 import org.junit.jupiter.api.AfterEach;
@@ -31,7 +26,6 @@ import org.mockito.quality.Strictness;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
-import java.time.LocalDateTime;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -44,13 +38,14 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * {@link WarehouseBoardStatServiceImpl} 单测（V6-R178）。
+ * {@link WarehouseBoardStatServiceImpl} 单测（V6-R178 / R193）。
  *
  * <p>覆盖：</p>
  * <ol>
  *   <li>happy：三指标各有数 → 4 张卡固定输出、猪肉卡合并 pork + white_bar、多单位多行且行序稳定；</li>
  *   <li>环比：上月有数算百分比，上月无数据 / 为 0 → ratio 为 null（前端据此显黑色 0.00%）；</li>
- *   <li>全空兜底：mapper 全返空 → 仍出 4 张卡、rows 为空、不抛 NPE。</li>
+ *   <li>全空兜底：mapper 全返空 → 仍出 4 张卡、rows 为空、不抛 NPE；</li>
+ *   <li>明细弹窗（R193）：按产品聚合、逐产品环比、只列本月有量的产品、totals 与卡片同源。</li>
  * </ol>
  *
  * <p>service 不用 LambdaWrapper（纯 Mapper 注解 SQL），无需 entity cache 预热。</p>
@@ -72,16 +67,13 @@ class WarehouseBoardStatServiceImplTest {
     @Mock
     private WarehouseBoardStatMapper boardStatMapper;
 
-    @Mock
-    private DictService dictService;
-
     private WarehouseBoardStatServiceImpl service;
 
     private MockedStatic<TenantHelper> tenantHelperMock;
 
     @BeforeEach
     void setUp() {
-        service = new WarehouseBoardStatServiceImpl(boardStatMapper, dictService);
+        service = new WarehouseBoardStatServiceImpl(boardStatMapper);
         tenantHelperMock = Mockito.mockStatic(TenantHelper.class);
         tenantHelperMock.when(TenantHelper::getTenantId).thenReturn("1001");
         // 缺省全空：各用例只 stub 自己关心的那几次调用
@@ -91,7 +83,10 @@ class WarehouseBoardStatServiceImplTest {
             .thenReturn(List.of());
         when(boardStatMapper.selectMaterialConsumeByCategoryUnit(anyString(), anyList(), any(), any()))
             .thenReturn(List.of());
-        when(dictService.getDictLabel(eq("djs_flow_type"), anyString())).thenReturn("采购入库");
+        when(boardStatMapper.selectInboundDetailByProduct(anyString(), anyList(), anyList(), any(), any()))
+            .thenReturn(List.of());
+        when(boardStatMapper.selectProduceDetailByProduct(anyString(), anyList(), any(), any()))
+            .thenReturn(List.of());
     }
 
     @AfterEach
@@ -185,147 +180,142 @@ class WarehouseBoardStatServiceImplTest {
         assertThat(vo.getMonth()).matches("\\d{4}-\\d{2}");
     }
 
-    // ==================== 下钻明细（入库明细 / 生产明细）====================
+    // ============ 明细弹窗（V6-R193：按产品聚合 + 逐产品环比）============
 
     @Test
-    @DisplayName("入库明细：totals 与卡片同源（按单位合并 pork + white_bar），分页参数原样透传")
-    void getInboundDetail_totalsAndPaging() {
-        // 明细行：一页两条
-        when(boardStatMapper.selectInboundDetailPage(any(), eq("1001"), anyList(), anyList(), eq(CUR_FROM), eq(CUR_TO)))
-            .thenReturn(pageOf(List.of(
-                inboundRow("2026-09-12T08:30:00", "白条", "kg", "120.500", "purchase_in"),
-                inboundRow("2026-09-03T09:00:00", "鲜鸡蛋", null, "60", "supplier_in")), 2L));
-        // 合计源 = 卡片那条聚合 SQL：pork 800 + white_bar 200 应合成 kg 1000
+    @DisplayName("入库明细：按产品出行，逐产品对上月算环比；totals 取卡片聚合（pork + white_bar 按单位合并）")
+    void getInboundDetail_rowsAndRatio() {
+        when(boardStatMapper.selectInboundDetailByProduct(
+            eq("1001"), anyList(), anyList(), eq(CUR_FROM), eq(CUR_TO)))
+            .thenReturn(List.of(
+                productRow("101", "五花肉", "500g/份", "2400", "份"),
+                productRow("102", "里脊肉", "1kg/份", "1100", "份"),
+                productRow("103", "排骨", "", "420", "份")));
+        when(boardStatMapper.selectInboundDetailByProduct(
+            eq("1001"), anyList(), anyList(), eq(PRE_FROM), eq(PRE_TO)))
+            .thenReturn(List.of(
+                productRow("101", "五花肉", "500g/份", "2000", "份"),
+                // 102 上月为 0 → 算不出环比；103 上月压根没这个产品 → 同样 null
+                productRow("102", "里脊肉", "1kg/份", "0", "份")));
         when(boardStatMapper.selectInboundByCategoryUnit(
             eq("1001"), anyList(), anyList(), eq(CUR_FROM), eq(CUR_TO)))
             .thenReturn(List.of(
                 row("pork", "kg", "800.000"),
                 row("white_bar", "kg", "200.000"),
-                row("pork", "份", "12")));
+                row("pork", "份", "3920")));
 
-        BoardStatDetailVo<InboundDetailRowVo> vo =
-            service.getInboundDetail("2026-09", "pork", new PageQuery(10, 2));
+        BoardStatDetailVo vo = service.getInboundDetail("2026-09", "pork");
 
         assertThat(vo.getMonth()).isEqualTo("2026-09");
+        assertThat(vo.getPrevMonth()).isEqualTo("2026-08");
         assertThat(vo.getBelongType()).isEqualTo("pork");
         assertThat(vo.getCategoryName()).isEqualTo("猪肉产品");
-        assertThat(vo.getTotal()).isEqualTo(2L);
-        assertThat(vo.getRows()).hasSize(2);
-        // 单位名升序，且同单位跨 belong_type 合并
+
+        assertThat(vo.getRows()).extracting(BoardStatProductRowVo::getProductName)
+            .containsExactly("五花肉", "里脊肉", "排骨");
+        // (2400 - 2000) / 2000 = +20.00%
+        assertThat(vo.getRows().get(0).getPrevQty()).isEqualByComparingTo("2000");
+        assertThat(vo.getRows().get(0).getRatio()).isEqualByComparingTo("20.00");
+        // 上月为 0 / 上月无此产品 → ratio 为 null（前端显黑色 0.00%），prevQty 恒 0 不为 null
+        assertThat(vo.getRows().get(1).getRatio()).isNull();
+        assertThat(vo.getRows().get(1).getPrevQty()).isEqualByComparingTo("0");
+        assertThat(vo.getRows().get(2).getRatio()).isNull();
+        assertThat(vo.getRows().get(2).getPrevQty()).isEqualByComparingTo("0");
+
+        // 合计与卡片同源：同单位跨 belong_type 合并，单位名升序
         assertThat(vo.getTotals()).extracting(BoardStatUnitTotalVo::getUnit).containsExactly("kg", "份");
         assertThat(vo.getTotals().get(0).getQty()).isEqualByComparingTo("1000.000");
-        assertThat(vo.getTotals().get(1).getQty()).isEqualByComparingTo("12");
+        assertThat(vo.getTotals().get(1).getQty()).isEqualByComparingTo("3920");
 
         // 猪肉卡把 pork + white_bar 一起传给 SQL（明细与卡片同集合的前提）
         ArgumentCaptor<List<String>> belongCaptor = ArgumentCaptor.forClass(List.class);
-        ArgumentCaptor<IPage<InboundDetailRowVo>> pageCaptor = ArgumentCaptor.forClass(IPage.class);
-        verify(boardStatMapper).selectInboundDetailPage(
-            pageCaptor.capture(), eq("1001"), belongCaptor.capture(), anyList(), eq(CUR_FROM), eq(CUR_TO));
+        verify(boardStatMapper).selectInboundDetailByProduct(
+            eq("1001"), belongCaptor.capture(), anyList(), eq(CUR_FROM), eq(CUR_TO));
         assertThat(belongCaptor.getValue()).containsExactly("pork", "white_bar");
-        assertThat(pageCaptor.getValue().getCurrent()).isEqualTo(2L);
-        assertThat(pageCaptor.getValue().getSize()).isEqualTo(10L);
-
-        // 空值兜底：规格 / 供应商 / 库位空 → 占位符；入库方式翻成字典 label
-        InboundDetailRowVo second = vo.getRows().get(1);
-        assertThat(second.getProductSpec()).isEqualTo("—");
-        assertThat(second.getSupplierName()).isEqualTo("—");
-        assertThat(second.getLocationName()).isEqualTo("—");
-        assertThat(second.getInModeName()).isEqualTo("采购入库");
     }
 
     @Test
-    @DisplayName("生产明细：totals 取卡片生产量聚合，单位缺失归一成「未标单位」，原材料名空兜占位")
-    void getProductionDetail_totals() {
-        when(boardStatMapper.selectProduceDetailPage(any(), eq("1001"), anyList(), eq(CUR_FROM), eq(CUR_TO)))
-            .thenReturn(pageOf(List.of(
-                produceRow("2026-09-08", "五花肉", "kg", "3.250", "2.000", "白条"),
-                produceRow("2026-09-01", "礼盒", null, "1", null, null)), 2L));
-        when(boardStatMapper.selectProduceByCategoryUnit(eq("1001"), anyList(), eq(CUR_FROM), eq(CUR_TO)))
-            .thenReturn(List.of(row("vegetable", "kg", "3350.000")));
+    @DisplayName("入库明细：上月有、本月没有的产品不补空行（甲方要的是「统计月的产品」）")
+    void getInboundDetail_onlyCurrentMonthProducts() {
+        when(boardStatMapper.selectInboundDetailByProduct(
+            eq("1001"), anyList(), anyList(), eq(CUR_FROM), eq(CUR_TO)))
+            .thenReturn(List.of(productRow("101", "五花肉", "500g/份", "10", "份")));
+        when(boardStatMapper.selectInboundDetailByProduct(
+            eq("1001"), anyList(), anyList(), eq(PRE_FROM), eq(PRE_TO)))
+            .thenReturn(List.of(
+                productRow("101", "五花肉", "500g/份", "8", "份"),
+                productRow("999", "上月才有的肉", "", "50", "份")));
 
-        BoardStatDetailVo<ProductionDetailRowVo> vo =
-            service.getProductionDetail("2026-09", "vegetable", new PageQuery(20, 1));
+        BoardStatDetailVo vo = service.getInboundDetail("2026-09", "pork");
+
+        assertThat(vo.getRows()).extracting(BoardStatProductRowVo::getProductId).containsExactly("101");
+        assertThat(vo.getRows().get(0).getRatio()).isEqualByComparingTo("25.00");
+    }
+
+    @Test
+    @DisplayName("生产明细：单位缺失归一成「未标单位」并按此对齐上月；规格空保持空串（前端不渲染规格标签）")
+    void getProductionDetail_normalizesUnitAndSpec() {
+        when(boardStatMapper.selectProduceDetailByProduct(eq("1001"), anyList(), eq(CUR_FROM), eq(CUR_TO)))
+            .thenReturn(List.of(
+                productRow("201", "有机厚肉丝瓜", "500g/份", "79", "份"),
+                productRow("202", "礼盒", null, "3", null)));
+        when(boardStatMapper.selectProduceDetailByProduct(eq("1001"), anyList(), eq(PRE_FROM), eq(PRE_TO)))
+            .thenReturn(List.of(productRow("202", "礼盒", null, "2", "")));
+        when(boardStatMapper.selectProduceByCategoryUnit(eq("1001"), anyList(), eq(CUR_FROM), eq(CUR_TO)))
+            .thenReturn(List.of(row("vegetable", "份", "82")));
+
+        BoardStatDetailVo vo = service.getProductionDetail("2026-09", "vegetable");
 
         assertThat(vo.getCategoryName()).isEqualTo("果蔬产品");
-        assertThat(vo.getTotals()).hasSize(1);
-        assertThat(vo.getTotals().get(0).getUnit()).isEqualTo("kg");
-        assertThat(vo.getTotals().get(0).getQty()).isEqualByComparingTo("3350.000");
+        BoardStatProductRowVo boxed = vo.getRows().get(1);
+        assertThat(boxed.getUnit()).isEqualTo("未标单位");
+        assertThat(boxed.getProductSpec()).isEmpty();
+        // 上月同产品单位同样空 → 归一后同键对上，(3 - 2) / 2 = +50.00%
+        assertThat(boxed.getRatio()).isEqualByComparingTo("50.00");
 
-        ProductionDetailRowVo second = vo.getRows().get(1);
-        assertThat(second.getUnit()).isEqualTo("未标单位");
-        assertThat(second.getMaterialName()).isEqualTo("—");
-        assertThat(second.getMaterialConsume()).isEqualByComparingTo("0");
+        assertThat(vo.getTotals()).hasSize(1);
+        assertThat(vo.getTotals().get(0).getUnit()).isEqualTo("份");
+        assertThat(vo.getTotals().get(0).getQty()).isEqualByComparingTo("82");
     }
 
     @Test
     @DisplayName("belongType 白名单：非四张卡的值 / 空 → 400，不静默返空")
     void detail_rejectsUnknownBelongType() {
-        PageQuery pq = new PageQuery(10, 1);
-
-        assertThatThrownBy(() -> service.getInboundDetail("2026-09", "gift_box", pq))
+        assertThatThrownBy(() -> service.getInboundDetail("2026-09", "gift_box"))
             .isInstanceOf(ServiceException.class)
             .hasMessageContaining("品类不合法");
-        assertThatThrownBy(() -> service.getInboundDetail("2026-09", "white_bar", pq))
+        assertThatThrownBy(() -> service.getInboundDetail("2026-09", "white_bar"))
             .isInstanceOf(ServiceException.class);
-        assertThatThrownBy(() -> service.getProductionDetail("2026-09", null, pq))
+        assertThatThrownBy(() -> service.getProductionDetail("2026-09", null))
             .isInstanceOf(ServiceException.class);
     }
 
     @Test
     @DisplayName("明细月份格式非法 → 400（不像看板那样静默回落，否则拿去对卡片会对错月）")
     void detail_rejectsBadMonth() {
-        assertThatThrownBy(() -> service.getInboundDetail("2026/09", "pork", new PageQuery(10, 1)))
+        assertThatThrownBy(() -> service.getInboundDetail("2026/09", "pork"))
             .isInstanceOf(ServiceException.class)
             .hasMessageContaining("月份格式不合法");
     }
 
     @Test
-    @DisplayName("分页参数缺省：pageQuery 为 null → 第 1 页 20 条，不退化成 PageQuery 的「查全部」")
-    void detail_defaultsPaging() {
-        when(boardStatMapper.selectInboundDetailPage(any(), anyString(), anyList(), anyList(), any(), any()))
-            .thenReturn(pageOf(List.of(), 0L));
-
-        BoardStatDetailVo<InboundDetailRowVo> vo = service.getInboundDetail("2026-09", "egg", null);
+    @DisplayName("明细全空：mapper 返空 → rows / totals 皆空，不抛 NPE")
+    void detail_empty() {
+        BoardStatDetailVo vo = service.getInboundDetail("2026-09", "egg");
 
         assertThat(vo.getRows()).isEmpty();
         assertThat(vo.getTotals()).isEmpty();
-        ArgumentCaptor<IPage<InboundDetailRowVo>> pageCaptor = ArgumentCaptor.forClass(IPage.class);
-        verify(boardStatMapper).selectInboundDetailPage(
-            pageCaptor.capture(), anyString(), anyList(), anyList(), any(), any());
-        assertThat(pageCaptor.getValue().getCurrent()).isEqualTo(1L);
-        assertThat(pageCaptor.getValue().getSize()).isEqualTo(20L);
+        assertThat(vo.getCategoryName()).isEqualTo("蛋类产品");
     }
 
-    private static <T> IPage<T> pageOf(List<T> records, long total) {
-        Page<T> page = new Page<>(1, 10, total);
-        page.setRecords(records);
-        return page;
-    }
-
-    private static InboundDetailRowVo inboundRow(String flowDate, String productName, String unit,
-                                                 String qty, String flowType) {
-        InboundDetailRowVo r = new InboundDetailRowVo();
-        r.setFlowDate(LocalDateTime.parse(flowDate));
+    private static BoardStatProductRowVo productRow(String productId, String productName, String spec,
+                                                    String qty, String unit) {
+        BoardStatProductRowVo r = new BoardStatProductRowVo();
+        r.setProductId(productId);
         r.setProductName(productName);
-        r.setProductSpec("");
-        r.setUnit(unit);
+        r.setProductSpec(spec);
         r.setQty(new BigDecimal(qty));
-        r.setFlowType(flowType);
-        r.setSupplierName("");
-        r.setLocationName("");
-        return r;
-    }
-
-    private static ProductionDetailRowVo produceRow(String produceDate, String productName, String unit,
-                                                    String qty, String materialConsume, String materialName) {
-        ProductionDetailRowVo r = new ProductionDetailRowVo();
-        r.setProduceDate(LocalDate.parse(produceDate));
-        r.setProductName(productName);
-        r.setProductSpec("");
         r.setUnit(unit);
-        r.setQty(new BigDecimal(qty));
-        r.setMaterialConsume(materialConsume == null ? null : new BigDecimal(materialConsume));
-        r.setMaterialName(materialName);
         return r;
     }
 

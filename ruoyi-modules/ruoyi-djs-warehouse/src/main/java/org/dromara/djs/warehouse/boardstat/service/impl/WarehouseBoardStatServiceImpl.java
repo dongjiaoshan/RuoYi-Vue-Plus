@@ -1,19 +1,15 @@
 package org.dromara.djs.warehouse.boardstat.service.impl;
 
-import com.baomidou.mybatisplus.core.metadata.IPage;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.common.core.exception.ServiceException;
-import org.dromara.common.core.service.DictService;
-import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.tenant.helper.TenantHelper;
 import org.dromara.djs.warehouse.boardstat.domain.vo.BoardStatDetailVo;
+import org.dromara.djs.warehouse.boardstat.domain.vo.BoardStatProductRowVo;
 import org.dromara.djs.warehouse.boardstat.domain.vo.BoardStatUnitTotalVo;
 import org.dromara.djs.warehouse.boardstat.domain.vo.CategoryStatVo;
 import org.dromara.djs.warehouse.boardstat.domain.vo.CategoryUnitQtyRow;
 import org.dromara.djs.warehouse.boardstat.domain.vo.CategoryUnitStatVo;
-import org.dromara.djs.warehouse.boardstat.domain.vo.InboundDetailRowVo;
-import org.dromara.djs.warehouse.boardstat.domain.vo.ProductionDetailRowVo;
 import org.dromara.djs.warehouse.boardstat.domain.vo.WarehouseBoardStatVo;
 import org.dromara.djs.warehouse.boardstat.mapper.WarehouseBoardStatMapper;
 import org.dromara.djs.warehouse.boardstat.service.IWarehouseBoardStatService;
@@ -26,6 +22,7 @@ import java.time.LocalDate;
 import java.time.YearMonth;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -44,10 +41,11 @@ import java.util.TreeMap;
  * 一行内三个指标同量纲。行序按单位名升序 —— 月月稳定，甲方逐月对读时行不会跳位。</p>
  *
  * <h3>下钻明细为什么和卡片必然对得上</h3>
- * <p>明细页顶部的合计 {@code totals} <b>不另写 SQL</b>，直接调卡片那两个聚合方法
+ * <p>明细弹窗上方的合计 {@code totals} <b>不另写 SQL</b>，直接调卡片那两个聚合方法
  * （{@code selectInboundByCategoryUnit} / {@code selectProduceByCategoryUnit}），
- * 只是把品类白名单收窄到点开的那一张卡；明细行则与聚合共用 mapper 里的
- * {@code *_FROM} / {@code *_WHERE} 片段。两条路径的筛选条件是同一份，改一处两边同时生效。</p>
+ * 只是把品类白名单收窄到点开的那一张卡；明细行（V6-R193 起按<b>产品</b>聚合）与卡片聚合共用
+ * mapper 里的 {@code *_FROM} / {@code *_WHERE} 片段，GROUP BY 只细一档。
+ * 两条路径的筛选条件是同一份，改一处两边同时生效。</p>
  *
  * @author djs
  * @since V6-R178
@@ -66,17 +64,8 @@ public class WarehouseBoardStatServiceImpl implements IWarehouseBoardStatService
 
     private static final BigDecimal HUNDRED = BigDecimal.valueOf(100);
 
-    /** 入库方式字典（明细行的「入库方式」列）。 */
-    private static final String DICT_FLOW_TYPE = "djs_flow_type";
-
-    /** 明细行里可空文本的占位（供应商 / 库位 / 规格 / 原材料名）。 */
-    private static final String EMPTY_TEXT = "—";
-
     /** 单位缺失时的显示值（与卡片一致，否则明细合计的行头对不上卡片行头）。 */
     private static final String UNIT_UNKNOWN = "未标单位";
-
-    /** 明细分页缺省页大小（PageQuery 默认是查全部，整月流水会拖死 mp 页面）。 */
-    private static final int DEFAULT_PAGE_SIZE = 20;
 
     /**
      * 卡片定义：categoryKey → (中文名, 归入该卡的 djs_belong_type 集合)。
@@ -105,8 +94,6 @@ public class WarehouseBoardStatServiceImpl implements IWarehouseBoardStatService
 
     private final WarehouseBoardStatMapper boardStatMapper;
 
-    private final DictService dictService;
-
     @Override
     public WarehouseBoardStatVo getCategoryStat(String month) {
         String tenantId = currentTenant();
@@ -127,78 +114,99 @@ public class WarehouseBoardStatServiceImpl implements IWarehouseBoardStatService
     }
 
     @Override
-    public BoardStatDetailVo<InboundDetailRowVo> getInboundDetail(String month, String belongType, PageQuery pageQuery) {
+    public BoardStatDetailVo getInboundDetail(String month, String belongType) {
         String tenantId = currentTenant();
         YearMonth ym = parseMonthStrict(month);
+        YearMonth prev = ym.minusMonths(1);
         CategoryDef def = requireCategory(belongType);
-        LocalDate from = ym.atDay(1);
-        LocalDate toExclusive = ym.plusMonths(1).atDay(1);
 
-        IPage<InboundDetailRowVo> page = boardStatMapper.selectInboundDetailPage(
-            safePage(pageQuery), tenantId, def.belongTypes(), FlowDisplayScope.IN_EXCLUDED, from, toExclusive);
-        List<InboundDetailRowVo> rows = page.getRecords() == null ? List.of() : page.getRecords();
-        for (InboundDetailRowVo row : rows) {
-            row.setUnit(normalizeUnit(row.getUnit()));
-            row.setProductSpec(textOr(row.getProductSpec(), EMPTY_TEXT));
-            row.setSupplierName(textOr(row.getSupplierName(), EMPTY_TEXT));
-            row.setLocationName(textOr(row.getLocationName(), EMPTY_TEXT));
-            row.setInModeName(dictLabel(DICT_FLOW_TYPE, row.getFlowType()));
-            if (row.getQty() == null) {
-                row.setQty(BigDecimal.ZERO);
-            }
-        }
+        List<BoardStatProductRowVo> cur = boardStatMapper.selectInboundDetailByProduct(
+            tenantId, def.belongTypes(), FlowDisplayScope.IN_EXCLUDED, ym.atDay(1), ym.plusMonths(1).atDay(1));
+        List<BoardStatProductRowVo> pre = boardStatMapper.selectInboundDetailByProduct(
+            tenantId, def.belongTypes(), FlowDisplayScope.IN_EXCLUDED, prev.atDay(1), prev.plusMonths(1).atDay(1));
 
         // 合计走卡片那条聚合 SQL，品类白名单收窄到本卡 —— 数字与卡片同源，不可能对不上
         List<BoardStatUnitTotalVo> totals = toTotals(boardStatMapper.selectInboundByCategoryUnit(
-            tenantId, def.belongTypes(), FlowDisplayScope.IN_EXCLUDED, from, toExclusive));
+            tenantId, def.belongTypes(), FlowDisplayScope.IN_EXCLUDED, ym.atDay(1), ym.plusMonths(1).atDay(1)));
 
-        return buildDetail(ym, belongType, def, page.getTotal(), rows, totals);
+        return buildDetail(ym, prev, belongType, def, withRatio(cur, pre), totals);
     }
 
     @Override
-    public BoardStatDetailVo<ProductionDetailRowVo> getProductionDetail(String month, String belongType,
-                                                                        PageQuery pageQuery) {
+    public BoardStatDetailVo getProductionDetail(String month, String belongType) {
         String tenantId = currentTenant();
         YearMonth ym = parseMonthStrict(month);
+        YearMonth prev = ym.minusMonths(1);
         CategoryDef def = requireCategory(belongType);
-        LocalDate from = ym.atDay(1);
-        LocalDate toExclusive = ym.plusMonths(1).atDay(1);
 
-        IPage<ProductionDetailRowVo> page = boardStatMapper.selectProduceDetailPage(
-            safePage(pageQuery), tenantId, def.belongTypes(), from, toExclusive);
-        List<ProductionDetailRowVo> rows = page.getRecords() == null ? List.of() : page.getRecords();
-        for (ProductionDetailRowVo row : rows) {
+        List<BoardStatProductRowVo> cur = boardStatMapper.selectProduceDetailByProduct(
+            tenantId, def.belongTypes(), ym.atDay(1), ym.plusMonths(1).atDay(1));
+        List<BoardStatProductRowVo> pre = boardStatMapper.selectProduceDetailByProduct(
+            tenantId, def.belongTypes(), prev.atDay(1), prev.plusMonths(1).atDay(1));
+
+        List<BoardStatUnitTotalVo> totals = toTotals(boardStatMapper.selectProduceByCategoryUnit(
+            tenantId, def.belongTypes(), ym.atDay(1), ym.plusMonths(1).atDay(1)));
+
+        return buildDetail(ym, prev, belongType, def, withRatio(cur, pre), totals);
+    }
+
+    /**
+     * 本月产品行 ← 上月同口径行，逐产品算环比。
+     *
+     * <p>只列<b>本月有量</b>的产品（甲方 V6-R193「显示统计月所有入库/生产产品」）——
+     * 上月有、本月没有的产品不补空行：那不是「这个月的产品」，塞进来会让弹窗里的行数
+     * 与「本月一共上了几个产品」对不上。</p>
+     *
+     * <p>对齐键取 productId + 单位，不只取 productId：生产侧的单位可能落在生产记录上
+     * （产品档案没填单位时 {@code PRODUCE_UNIT_EXPR} 退回 {@code pp.product_unit}），
+     * 同一产品跨月换了单位时按 productId 硬配会把两种量纲的数相除。</p>
+     *
+     * @param cur 本月行（SQL 原样，unit / spec 尚未归一）
+     * @param pre 上月行
+     * @return 本月行（已归一 + 带 prevQty / ratio）
+     */
+    private List<BoardStatProductRowVo> withRatio(List<BoardStatProductRowVo> cur,
+                                                  List<BoardStatProductRowVo> pre) {
+        Map<String, BigDecimal> prevQty = new HashMap<>();
+        if (pre != null) {
+            for (BoardStatProductRowVo row : pre) {
+                prevQty.merge(ratioKey(row), row.getQty() == null ? BigDecimal.ZERO : row.getQty(),
+                    BigDecimal::add);
+            }
+        }
+        List<BoardStatProductRowVo> rows = cur == null ? List.of() : cur;
+        for (BoardStatProductRowVo row : rows) {
             row.setUnit(normalizeUnit(row.getUnit()));
-            row.setProductSpec(textOr(row.getProductSpec(), EMPTY_TEXT));
-            row.setMaterialName(textOr(row.getMaterialName(), EMPTY_TEXT));
+            row.setProductSpec(row.getProductSpec() == null ? "" : row.getProductSpec().trim());
             if (row.getQty() == null) {
                 row.setQty(BigDecimal.ZERO);
             }
-            if (row.getMaterialConsume() == null) {
-                row.setMaterialConsume(BigDecimal.ZERO);
-            }
+            BigDecimal previous = prevQty.getOrDefault(ratioKey(row), BigDecimal.ZERO);
+            row.setPrevQty(previous);
+            row.setRatio(ratio(row.getQty(), previous));
         }
-
-        List<BoardStatUnitTotalVo> totals = toTotals(boardStatMapper.selectProduceByCategoryUnit(
-            tenantId, def.belongTypes(), from, toExclusive));
-
-        return buildDetail(ym, belongType, def, page.getTotal(), rows, totals);
+        return rows;
     }
 
-    private <T> BoardStatDetailVo<T> buildDetail(YearMonth ym, String belongType, CategoryDef def,
-                                                 long total, List<T> rows, List<BoardStatUnitTotalVo> totals) {
-        BoardStatDetailVo<T> vo = new BoardStatDetailVo<>();
+    /** 环比对齐键：产品 + 单位（单位在归一前后都参与，故这里统一走 normalizeUnit）。 */
+    private String ratioKey(BoardStatProductRowVo row) {
+        return row.getProductId() + "|" + normalizeUnit(row.getUnit());
+    }
+
+    private BoardStatDetailVo buildDetail(YearMonth ym, YearMonth prev, String belongType, CategoryDef def,
+                                          List<BoardStatProductRowVo> rows, List<BoardStatUnitTotalVo> totals) {
+        BoardStatDetailVo vo = new BoardStatDetailVo();
         vo.setMonth(ym.format(MONTH_FMT));
+        vo.setPrevMonth(prev.format(MONTH_FMT));
         vo.setBelongType(belongType);
         vo.setCategoryName(def.name());
-        vo.setTotal(total);
         vo.setRows(rows);
         vo.setTotals(totals);
         return vo;
     }
 
     /**
-     * 聚合行 → 明细页顶部合计（按单位名升序，与卡片行序一致，甲方逐行对读时不会串行）。
+     * 聚合行 → 明细弹窗顶部合计（按单位名升序，与卡片行序一致，甲方逐行对读时不会串行）。
      *
      * <p>入参恒是单张卡的聚合结果，同一单位可能因 pork / white_bar 两个 belong_type 各出一行，
      * 这里按单位再合并一次（与卡片 {@code index()} 的合并规则相同）。</p>
@@ -241,27 +249,6 @@ public class WarehouseBoardStatServiceImpl implements IWarehouseBoardStatService
         return def;
     }
 
-    /**
-     * 分页参数兜底。
-     *
-     * <p>调用方没传 pageSize 时给 {@value #DEFAULT_PAGE_SIZE} 条：{@code PageQuery} 的默认值是
-     * {@code Integer.MAX_VALUE}（查全部），整月流水一次全拉会把 mp 页面拖死。</p>
-     *
-     * <p>只取 pageNum / pageSize，<b>不透传前端排序</b>：明细的日期倒序是与卡片对数的前提，
-     * 不能让 URL 参数改掉。</p>
-     *
-     * @param pageQuery 前端分页参数（可空）
-     * @param <T>       行类型
-     * @return MyBatis-Plus 分页对象
-     */
-    private <T> IPage<T> safePage(PageQuery pageQuery) {
-        Integer size = pageQuery == null || pageQuery.getPageSize() == null
-            ? DEFAULT_PAGE_SIZE : pageQuery.getPageSize();
-        Integer num = pageQuery == null || pageQuery.getPageNum() == null
-            ? 1 : pageQuery.getPageNum();
-        return new PageQuery(size, num).build();
-    }
-
     /** 拉一个月的三份聚合，落成「categoryKey → 单位 → 量」两级索引。 */
     private MonthMetrics loadMonth(String tenantId, YearMonth ym) {
         LocalDate from = ym.atDay(1);
@@ -302,21 +289,6 @@ public class WarehouseBoardStatServiceImpl implements IWarehouseBoardStatService
     private String normalizeUnit(String unit) {
         String u = unit == null ? "" : unit.trim();
         return u.isEmpty() ? UNIT_UNKNOWN : u;
-    }
-
-    /** 可空文本兜底：空 / 全空白 → 占位符，避免明细行出现整列空白让人以为没加载出来。 */
-    private String textOr(String text, String fallback) {
-        String t = text == null ? "" : text.trim();
-        return t.isEmpty() ? fallback : t;
-    }
-
-    /** 翻字典 label；原始值为空或字典查不到时回落原值 / 占位符。 */
-    private String dictLabel(String dictType, String value) {
-        if (value == null || value.isBlank()) {
-            return EMPTY_TEXT;
-        }
-        String label = dictService.getDictLabel(dictType, value);
-        return label == null || label.isBlank() ? value : label;
     }
 
     /** 单张品类卡：行 = 本月与上月出现过的单位并集，按单位名升序。 */

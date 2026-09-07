@@ -1,12 +1,10 @@
 package org.dromara.djs.warehouse.boardstat.mapper;
 
-import com.baomidou.mybatisplus.core.metadata.IPage;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
+import org.dromara.djs.warehouse.boardstat.domain.vo.BoardStatProductRowVo;
 import org.dromara.djs.warehouse.boardstat.domain.vo.CategoryUnitQtyRow;
-import org.dromara.djs.warehouse.boardstat.domain.vo.InboundDetailRowVo;
-import org.dromara.djs.warehouse.boardstat.domain.vo.ProductionDetailRowVo;
 
 import java.time.LocalDate;
 import java.util.List;
@@ -33,17 +31,17 @@ import java.util.List;
  * 否则甲方拿两边对不上会当 bug 重报。</p>
  *
  * <h3>⚠️ 卡片与明细共用同一份筛选条件，不准复制两套</h3>
- * <p>卡片数字与「入库明细 / 生产明细」下钻页必须逐条对得上（甲方就是拿明细去核卡片的），
+ * <p>明细（V6-R193 起按<b>产品</b>聚合，不是逐条流水）与卡片必须对得上（甲方就是拿明细去核卡片的），
  * 所以两者的 FROM / WHERE 一律取自本接口的 {@code *_FROM} / {@code *_WHERE} 常量：</p>
  * <ul>
  *   <li>入库：{@link #INBOUND_FROM} + {@link #INBOUND_WHERE}
- *       —— {@link #selectInboundByCategoryUnit}（卡片）与 {@link #selectInboundDetailPage}（明细）共用；</li>
+ *       —— {@link #selectInboundByCategoryUnit}（卡片）与 {@link #selectInboundDetailByProduct}（明细）共用；</li>
  *   <li>生产：{@link #PRODUCE_FROM} + {@link #PRODUCE_WHERE} + {@link #PRODUCE_UNIT_EXPR}
- *       —— {@link #selectProduceByCategoryUnit}（卡片）与 {@link #selectProduceDetailPage}（明细）共用。</li>
+ *       —— {@link #selectProduceByCategoryUnit}（卡片）与 {@link #selectProduceDetailByProduct}（明细）共用。</li>
  * </ul>
  * <p><b>改一处即两处同时生效</b>；要加筛选条件只能改常量本身，不准在某一个方法上单独加 WHERE。
- * 明细页的合计 {@code totals} 也不另写 SQL，直接复用卡片那两个聚合方法（见 service），
- * 于是「明细页合计 == 卡片数字」是构造上成立的，不靠人对。</p>
+ * 明细只是把卡片的 GROUP BY 再细一档（品类 × 单位 → 产品 × 单位），所以「按单位 Σ 明细 == 卡片数字」
+ * 是构造上成立的；弹窗上方的 {@code totals} 更是直接复用卡片那两个聚合方法（见 service），不另写 SQL。</p>
  *
  * <p>自定义 {@code @Select} 含聚合，WHERE 显式带 {@code tenant_id} 与 {@code del_flag}
  * ——多租户拦截器对聚合不保证注入。</p>
@@ -114,7 +112,7 @@ public interface WarehouseBoardStatMapper {
      * 当月「入库量」：按品类 × 单位合计入库流水量，仅原材料产品（product_attr = 2）。
      *
      * <p>筛选条件取自 {@link #INBOUND_FROM} + {@link #INBOUND_WHERE}，与
-     * {@link #selectInboundDetailPage} 共用；明细页的合计也直接调本方法，
+     * {@link #selectInboundDetailByProduct} 共用；明细弹窗上方的合计也直接调本方法，
      * 所以「明细合计 == 卡片入库量」恒成立。</p>
      *
      * @param tenantId     租户（V1 固定 '1001'）
@@ -143,61 +141,51 @@ public interface WarehouseBoardStatMapper {
                                                          @Param("toExclusive") LocalDate toExclusive);
 
     /**
-     * 当月「入库明细」分页：逐条列出计入入库量的那批流水（甲方 V6-R178「入库明细」入口）。
+     * 当月「入库明细」：把计入入库量的那批流水<b>按产品</b>聚合（甲方 V6-R193「点入库明细弹出提示框，
+     * 显示统计月所有入库产品的内容」）。
      *
      * <p>行集与 {@link #selectInboundByCategoryUnit} <b>严格同集合</b>（共用 {@link #INBOUND_FROM}
-     * + {@link #INBOUND_WHERE}），逐行 {@code qty} 就是聚合里被 SUM 的那一列 {@code change_quantity}，
-     * 故按单位 Σ qty 必然等于卡片上的入库量。</p>
+     * + {@link #INBOUND_WHERE}），只是把 GROUP BY 从「品类 × 单位」细化成「产品 × 单位」，
+     * 聚合表达式仍是同一个 {@code SUM(change_quantity)} —— 故按单位 Σ qty 必然等于卡片上的入库量。</p>
      *
-     * <p>供应商 / 库位是 LEFT JOIN：档案被删或流水没记这两项时该行照出，只是名字为空
-     * （service 兜成「—」），不能因为联不上就把行漏掉，否则合计对不上。</p>
+     * <p>产品名 / 规格用 {@code MAX()} 取而不进 GROUP BY：它们随产品 id 唯一，
+     * 进 GROUP BY 只会在规格被改过的历史数据上把同一个产品劈成两行。</p>
      *
-     * <p>排序按业务日期倒序；日期同秒的行再按 {@code f.id} 倒序补成全序，
-     * 否则翻页时同一行可能既在第 1 页又在第 2 页。</p>
+     * <p>量降序 —— 弹窗里最占量的产品排最前，甲方一眼看的就是这个；同量再按 productId 补成全序。</p>
      *
-     * @param page        分页参数
      * @param tenantId    租户
      * @param belongTypes 该品类卡涵盖的 belong_type（猪肉卡 = pork + white_bar）
      * @param inExcluded  入库展示排除的 flow_type
      * @param from        统计月首日（含）
      * @param toExclusive 次月首日（不含）
-     * @return 入库明细行（日期倒序）
+     * @return 产品 × 单位 × 入库量（量降序）
      */
     @Select("<script>"
         + """
-        SELECT f.flow_date        AS flowDate,
-               pi.product_name    AS productName,
-               COALESCE(pi.product_spec, '') AS productSpec,
-               COALESCE(f.change_quantity, 0) AS qty,
-               COALESCE(pi.product_unit, '')  AS unit,
-               f.flow_type        AS flowType,
-               COALESCE(sp.supplier_name, '') AS supplierName,
-               COALESCE(loc.location_name, '') AS locationName
+        SELECT CAST(pi.id AS CHAR) AS productId,
+               MAX(pi.product_name) AS productName,
+               MAX(COALESCE(pi.product_spec, '')) AS productSpec,
+               COALESCE(SUM(f.change_quantity), 0) AS qty,
+               COALESCE(pi.product_unit, '') AS unit
         """
         + INBOUND_FROM
-        + """
-        LEFT JOIN t_md_supplier sp
-          ON sp.id = f.supplier_id AND sp.del_flag = '0'
-        LEFT JOIN t_warehouse_location_info loc
-          ON loc.id = f.warehouse_id AND loc.del_flag = '0'
-        """
         + INBOUND_WHERE
         + """
-        ORDER BY f.flow_date DESC, f.id DESC
+        GROUP BY pi.id, COALESCE(pi.product_unit, '')
+        ORDER BY qty DESC, productId
         """
         + "</script>")
-    IPage<InboundDetailRowVo> selectInboundDetailPage(IPage<InboundDetailRowVo> page,
-                                                      @Param("tenantId") String tenantId,
-                                                      @Param("belongTypes") List<String> belongTypes,
-                                                      @Param("inExcluded") List<String> inExcluded,
-                                                      @Param("from") LocalDate from,
-                                                      @Param("toExclusive") LocalDate toExclusive);
+    List<BoardStatProductRowVo> selectInboundDetailByProduct(@Param("tenantId") String tenantId,
+                                                             @Param("belongTypes") List<String> belongTypes,
+                                                             @Param("inExcluded") List<String> inExcluded,
+                                                             @Param("from") LocalDate from,
+                                                             @Param("toExclusive") LocalDate toExclusive);
 
     /**
      * 当月「生产量」：按品类 × 单位合计产品生产量（kg 取重量合计，计数单位取条数）。
      *
      * <p>筛选条件取自 {@link #PRODUCE_FROM} + {@link #PRODUCE_WHERE}，与
-     * {@link #selectProduceDetailPage} 共用；明细页的合计也直接调本方法。</p>
+     * {@link #selectProduceDetailByProduct} 共用；明细弹窗上方的合计也直接调本方法。</p>
      *
      * @param tenantId    租户
      * @param belongTypes 统计的品类（非空）
@@ -221,48 +209,41 @@ public interface WarehouseBoardStatMapper {
                                                          @Param("toExclusive") LocalDate toExclusive);
 
     /**
-     * 当月「生产明细」分页：逐条列出计入生产量的那批生产记录（甲方 V6-R178「生产明细」入口）。
+     * 当月「生产明细」：把计入生产量的那批生产记录<b>按产品</b>聚合（甲方 V6-R193「点生产明细弹出提示框，
+     * 显示统计月所有生产产品的内容」）。
      *
      * <p>行集与 {@link #selectProduceByCategoryUnit} <b>严格同集合</b>（共用 {@link #PRODUCE_FROM}
-     * + {@link #PRODUCE_WHERE}）。逐行 {@code qty} 照抄卡片那条 CASE 的两个分支：计重单位取本行
-     * {@code product_weight}（聚合侧是 SUM 同一列），计数单位取 1（聚合侧是 COUNT(*)）
-     * —— 分组内单位唯一，所以按单位 Σ qty 必然等于卡片上的生产量。</p>
+     * + {@link #PRODUCE_WHERE}），GROUP BY 由「品类 × 单位」细化成「产品 × 单位」，
+     * 量表达式照抄卡片那条 CASE（计重单位 SUM(product_weight) / 计数单位 COUNT(*)）
+     * —— 分组内单位唯一，故按单位 Σ qty 必然等于卡片上的生产量。</p>
      *
-     * <p>{@code materialConsume} / {@code materialName} 是<b>本行</b>耗用的原材料，只作明细参考；
-     * 卡片上的「原材料消耗」按原材料自身品类归组，是另一条口径（见
-     * {@link #selectMaterialConsumeByCategoryUnit}），两者不必相等。</p>
+     * <p>不再联原材料档案：弹窗只列「产品名称 / 规格 / 数量 / 环比」四列，本行耗了什么原料
+     * 与「这个产品这个月生产了多少」不是一个问题，卡片上的原材料消耗另有口径
+     * （见 {@link #selectMaterialConsumeByCategoryUnit}）。</p>
      *
-     * @param page        分页参数
      * @param tenantId    租户
      * @param belongTypes 该品类卡涵盖的 belong_type
      * @param from        统计月首日（含）
      * @param toExclusive 次月首日（不含）
-     * @return 生产明细行（日期倒序）
+     * @return 产品 × 单位 × 生产量（量降序）
      */
     @Select("<script>"
-        + "SELECT pp.produce_date AS produceDate,\n"
-        + "       pi.product_name AS productName,\n"
-        + "       COALESCE(pi.product_spec, pp.product_spec, '') AS productSpec,\n"
-        + "       CASE WHEN LOWER(TRIM(" + PRODUCE_UNIT_EXPR + ")) IN " + PRODUCE_WEIGHT_UNITS + "\n"
-        + "            THEN COALESCE(pp.product_weight, 0)\n"
-        + "            ELSE 1 END AS qty,\n"
-        + "       " + PRODUCE_UNIT_EXPR + " AS unit,\n"
-        + "       COALESCE(pp.material_consume, 0) AS materialConsume,\n"
-        + "       COALESCE(pm.product_name, '') AS materialName,\n"
-        + "       COALESCE(pm.product_unit, '') AS materialUnit\n"
+        + "SELECT CAST(pi.id AS CHAR) AS productId,\n"
+        + "       MAX(pi.product_name) AS productName,\n"
+        + "       MAX(COALESCE(pi.product_spec, pp.product_spec, '')) AS productSpec,\n"
+        + "       CASE WHEN LOWER(TRIM(MAX(" + PRODUCE_UNIT_EXPR + "))) IN " + PRODUCE_WEIGHT_UNITS + "\n"
+        + "            THEN COALESCE(SUM(pp.product_weight), 0)\n"
+        + "            ELSE COUNT(*) END AS qty,\n"
+        + "       " + PRODUCE_UNIT_EXPR + " AS unit\n"
         + PRODUCE_FROM
-        + """
-        LEFT JOIN t_warehouse_product_info pm
-          ON pm.id = pp.material_id AND pm.del_flag = '0' AND pm.tenant_id = pp.tenant_id
-        """
         + PRODUCE_WHERE
-        + "ORDER BY pp.produce_date DESC, pp.id DESC\n"
+        + "GROUP BY pi.id, " + PRODUCE_UNIT_EXPR + "\n"
+        + "ORDER BY qty DESC, productId\n"
         + "</script>")
-    IPage<ProductionDetailRowVo> selectProduceDetailPage(IPage<ProductionDetailRowVo> page,
-                                                         @Param("tenantId") String tenantId,
-                                                         @Param("belongTypes") List<String> belongTypes,
-                                                         @Param("from") LocalDate from,
-                                                         @Param("toExclusive") LocalDate toExclusive);
+    List<BoardStatProductRowVo> selectProduceDetailByProduct(@Param("tenantId") String tenantId,
+                                                             @Param("belongTypes") List<String> belongTypes,
+                                                             @Param("from") LocalDate from,
+                                                             @Param("toExclusive") LocalDate toExclusive);
 
     /**
      * 当月「原材料消耗量」：按<b>原材料</b>品类 × 原材料单位合计生产记录的 {@code material_consume}。
