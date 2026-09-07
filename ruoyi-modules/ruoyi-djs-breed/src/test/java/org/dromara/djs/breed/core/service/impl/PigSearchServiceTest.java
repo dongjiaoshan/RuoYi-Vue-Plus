@@ -3,7 +3,10 @@ package org.dromara.djs.breed.core.service.impl;
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
+import org.dromara.common.mybatis.core.page.PageQuery;
+import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.breed.core.domain.Pig;
 import org.dromara.djs.breed.core.domain.vo.PigSearchVo;
 import org.dromara.djs.breed.core.domain.query.PigQuery;
@@ -690,4 +693,95 @@ class PigSearchServiceTest {
         assertThat(result).extracting(PigSearchVo::getEarNo)
             .containsExactly("URGENT-001", "MID-002");
     }
+
+    // ===== 分页形态 searchPageByEarKeyword（mp 猪只列表「下拉到底加载更多」，Kevin 2026-09-07）=====
+
+    @Test
+    @DisplayName("分页：rows 是本页 VO、total 是全量头数（157 头栋舍第 1 页只回 40 条但 total=157）")
+    void searchPage_returns_rows_and_total() {
+        Barn barn = new Barn();
+        barn.setId(11L);
+        barn.setBarnCode("H015");
+        barn.setBarnName("育肥舍15栋");
+        when(barnMapper.selectOne(any(LambdaQueryWrapper.class))).thenReturn(barn);
+        when(barnMapper.selectBatchIds(anyCollection())).thenReturn(List.of(barn));
+
+        List<Pig> pageRows = new java.util.ArrayList<>();
+        for (int i = 0; i < 40; i++) {
+            pageRows.add(mkPig(100L + i, "260520-" + i, "", "F", "fattening", 11L, null));
+        }
+        when(pigMapper.selectPage(any(), any(LambdaQueryWrapper.class))).thenAnswer(inv -> {
+            Page<Pig> p = inv.getArgument(0);
+            p.setRecords(pageRows);
+            p.setTotal(157L);
+            return p;
+        });
+
+        // PageQuery 唯一构造是 (pageSize, pageNum)——顺序反直觉，别写反
+        PageQuery pq = new PageQuery(40, 1);
+        TableDataInfo<PigSearchVo> res = service.searchPageByEarKeyword(null, null, null, "fattening", "H015", pq);
+
+        assertThat(res.getTotal()).isEqualTo(157L);
+        assertThat(res.getRows()).hasSize(40);
+        // 卡片字段与不分页路径同源（toSearchVos 共用）：栋舍名 enrich 到位
+        assertThat(res.getRows().get(0).getBarnName()).isEqualTo("育肥舍15栋");
+        assertThat(res.getRows().get(0).getBarnCode()).isEqualTo("H015");
+    }
+
+    @Test
+    @DisplayName("分页：分页参数透传给 MP Page（pageNum=3/pageSize=40 → current=3/size=40），且不下 SQL LIMIT")
+    void searchPage_passes_page_params_and_no_sql_limit() {
+        when(pigMapper.selectPage(any(), any(LambdaQueryWrapper.class))).thenAnswer(inv -> {
+            Page<Pig> p = inv.getArgument(0);
+            p.setRecords(Collections.emptyList());
+            p.setTotal(0L);
+            return p;
+        });
+
+        // PageQuery 唯一构造是 (pageSize, pageNum)——顺序反直觉，别写反
+        PageQuery pq = new PageQuery(40, 3);
+        service.searchPageByEarKeyword(null, null, null, "fattening", null, pq);
+
+        ArgumentCaptor<Page<Pig>> pageCap = ArgumentCaptor.forClass(Page.class);
+        ArgumentCaptor<LambdaQueryWrapper<Pig>> wCap = ArgumentCaptor.forClass(LambdaQueryWrapper.class);
+        org.mockito.Mockito.verify(pigMapper).selectPage(pageCap.capture(), wCap.capture());
+        assertThat(pageCap.getValue().getCurrent()).isEqualTo(3L);
+        assertThat(pageCap.getValue().getSize()).isEqualTo(40L);
+        // LIMIT 由 MP 分页插件下，wrapper 自身不得再带 lastSql（否则 count/page 双 LIMIT）
+        assertThat(readLastSql(wCap.getValue())).isEmpty();
+    }
+
+    @Test
+    @DisplayName("分页：barnCode 不存在 → 空页 total=0，且不查 pig（与不分页路径同口径）")
+    void searchPage_unknown_barn_returns_empty_page() {
+        when(barnMapper.selectOne(any(LambdaQueryWrapper.class))).thenReturn(null);
+
+        // PageQuery 唯一构造是 (pageSize, pageNum)——顺序反直觉，别写反
+        PageQuery pq = new PageQuery(40, 1);
+        TableDataInfo<PigSearchVo> res = service.searchPageByEarKeyword(null, null, null, "fattening", "NOPE", pq);
+
+        assertThat(res.getTotal()).isZero();
+        assertThat(res.getRows()).isEmpty();
+        org.mockito.Mockito.verify(pigMapper, org.mockito.Mockito.never()).selectPage(any(), any(LambdaQueryWrapper.class));
+    }
+
+    @Test
+    @DisplayName("分页：空页 → rows 空、total 0，不触发 barn/pen enrich 查询")
+    void searchPage_empty_page_skips_enrich() {
+        when(pigMapper.selectPage(any(), any(LambdaQueryWrapper.class))).thenAnswer(inv -> {
+            Page<Pig> p = inv.getArgument(0);
+            p.setRecords(Collections.emptyList());
+            p.setTotal(0L);
+            return p;
+        });
+
+        // PageQuery 唯一构造是 (pageSize, pageNum)——顺序反直觉，别写反
+        PageQuery pq = new PageQuery(40, 9);
+        TableDataInfo<PigSearchVo> res = service.searchPageByEarKeyword(null, null, null, "sow", null, pq);
+
+        assertThat(res.getRows()).isEmpty();
+        assertThat(res.getTotal()).isZero();
+        org.mockito.Mockito.verify(barnMapper, org.mockito.Mockito.never()).selectBatchIds(anyCollection());
+    }
 }
+

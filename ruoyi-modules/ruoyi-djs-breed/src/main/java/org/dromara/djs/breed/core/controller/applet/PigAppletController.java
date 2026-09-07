@@ -35,6 +35,8 @@ import java.util.List;
  *       PigPicker / PigSelectPanel 组件用（让事件表单从"手输 earNo 兜底"升级到 picker 选猪）。</li>
  *   <li>{@code GET /applet/pig/barn-count} — 栋舍 × 头数聚合，给 PigSelectPanel 顶部「栋舍 chip」
  *       快筛行用（BRD-FIX-MP-PIGSELECT-001）。</li>
+ *   <li>{@code GET /applet/pig/search-page} — 同 {@code /search} 的过滤口径，但返回 {@link TableDataInfo}
+ *       带 {@code total}，给 mp 猪只列表页「下拉到底加载更多」用。</li>
  * </ul>
  *
  * <h2>鉴权</h2>
@@ -100,6 +102,37 @@ public class PigAppletController {
         @RequestParam(required = false) Integer maxAgeDays
     ) {
         return R.ok(pigCoreService.searchByEarKeyword(earNoKeyword, statusFilter, sexFilter, pigTypeFilter, barnCode, limit, dueType, excludeNullBarn, minAgeDays, isCastrated, breedReady, maxAgeDays));
+    }
+
+    /**
+     * 耳号关键字搜索（分页形态，mp 猪只列表页「下拉到底加载更多」用）。
+     *
+     * <p>与 {@code /search} 同一套过滤 + 卡片字段口径，差别是返回 {@link TableDataInfo}（带 {@code total}）：
+     * 前端用 {@code total} 判「还有没有下一页」，并让列表条数与栋舍 chip 头数对得上——原来列表写死
+     * {@code limit=100}，157 头的栋舍只渲染 100 张卡，chip 上却写 157。</p>
+     *
+     * <p>只收<b>纯 SQL 过滤</b>参数；{@code dueType} / {@code breedReady} 这类内存后筛维度不在此端点
+     * （与 SQL 分页同用会让 total 与页内容不同源），那些场景继续走 {@code /search}。</p>
+     *
+     * @param earNoKeyword  耳号 LIKE 中部匹配；空 → 不过滤
+     * @param statusFilter  状态 CSV（与 {@code /search} 同语义；显式含 END 时放行终态）
+     * @param sexFilter     {@code "M"} / {@code "F"}
+     * @param pigTypeFilter {@code "sow"/"boar"/"piglet"/"fattening"}，支持 CSV
+     * @param barnCode      栋舍编码精确过滤（栋舍 chip 点击后传）；解析不到该栋舍 → 返空页
+     * @param pageQuery     分页（{@code pageNum}/{@code pageSize}；mp 列表页取 pageSize=40）
+     */
+    @SaCheckLogin
+    @SaCheckPermission("djs:applet:pig:search")
+    @GetMapping("/search-page")
+    public TableDataInfo<PigSearchVo> searchPage(
+        @RequestParam(required = false) String earNoKeyword,
+        @RequestParam(required = false) String statusFilter,
+        @RequestParam(required = false) String sexFilter,
+        @RequestParam(required = false) String pigTypeFilter,
+        @RequestParam(required = false) String barnCode,
+        PageQuery pageQuery
+    ) {
+        return pigCoreService.searchPageByEarKeyword(earNoKeyword, statusFilter, sexFilter, pigTypeFilter, barnCode, pageQuery);
     }
 
     /**

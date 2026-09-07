@@ -180,6 +180,32 @@ public interface IPigCoreService {
                                          Integer maxAgeDays);
 
     /**
+     * 耳号关键字搜索的<b>分页</b>形态（mp 猪只列表页「下拉到底加载更多」，Kevin 2026-09-07）。
+     *
+     * <p>与 {@link #searchByEarKeyword} 共用同一套过滤 + enrich 口径，差别只有两处：返回
+     * {@link TableDataInfo} 带 {@code total}（前端据此判「还有没有下一页」，并与栋舍 chip 头数对齐），
+     * 且只接受<b>纯 SQL 过滤</b>的参数。</p>
+     *
+     * <p>🔴 <b>刻意不接 {@code dueType} / {@code breedReady}</b>：这两个过滤跑在 SQL 之后的内存里，
+     * 与 SQL 分页同用会让 {@code total} 是「筛前总数」而每页是「筛后残余」（页码越翻越空、计数对不上）。
+     * 需要那两个维度的调用方（分娩 / 断奶 / 配种选猪面板）继续走不分页的 {@link #searchByEarKeyword}。</p>
+     *
+     * @param earNoKeyword  耳号 LIKE 中部匹配；空 → 不过滤
+     * @param statusFilter  状态白名单 CSV（与 search 同语义；显式含 END 时放行终态）
+     * @param sexFilter     性别过滤（{@code "M"} / {@code "F"} / null）
+     * @param pigTypeFilter 类型过滤（{@code "sow"/"boar"/"piglet"/"fattening"}，支持 CSV）
+     * @param barnCode      栋舍编码精确过滤（栋舍 chip 点击后传）；解析不到该栋舍 → 返空页
+     * @param pageQuery     分页参数（{@code pageNum} / {@code pageSize}）
+     * @return {@code rows} = 本页 PigSearchVo（字段与 searchByEarKeyword 完全一致）；{@code total} = 该过滤维度下总头数
+     */
+    TableDataInfo<PigSearchVo> searchPageByEarKeyword(String earNoKeyword,
+                                                      String statusFilter,
+                                                      String sexFilter,
+                                                      String pigTypeFilter,
+                                                      String barnCode,
+                                                      PageQuery pageQuery);
+
+    /**
      * 加载 t_farm_breed_info 主表 code→中文名 映射（breedStrain 1=品种 / 2=品系）。
      * 供需要把品种/品系码翻成「品种品系表」权威中文名的服务（如引种记录）复用，批量预载一次防 N+1。
      * 取不到（表里无该 code）由调用方回落字典 / 原始 code（邓博 2026-06-17 #19/#22）。
