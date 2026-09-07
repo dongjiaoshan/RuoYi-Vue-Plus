@@ -61,16 +61,18 @@ public class WarehouseIndicatorRecord extends TenantEntity {
     private BigDecimal slaughterRate;
 
     // ---- 白条段（处理完成 cohort：bar.finish_time）----
-    /** 白条总重（当日处理完成的猪只，Σ bar.in_weight）。 */
+    /** 白条总重（当日处理完成的<b>全部</b>猪只，Σ bar.in_weight，含未称重的；独立展示列）。 */
     private BigDecimal barTotalWeight;
     /** 处理完成头数（当日 bar.finish_time 落当天的猪只数 = 白条均重的分母）。 */
     private Integer finishedCount;
-    /** 处理完成猪只的接收重量之和（= 白条出品率的分母）。 */
+    /** 处理完成猪只的接收重量之和（Σ arrive_weight，天然只含有接收重量的猪 = 白条出品率的分母）。 */
     private BigDecimal finishedArriveWeight;
+    /** 白条出品率分子（处理完成 ∩ 有接收重量子集的 Σ in_weight；与分母同子集，保证率 ≤100%）。 */
+    private BigDecimal barYieldNumerWeight;
     /** 白条均重（白条总重/处理完成头数；分母 0 → null）。 */
     @TableField(updateStrategy = FieldStrategy.ALWAYS)
     private BigDecimal avgBarWeight;
-    /** 白条出品率%（白条总重/处理完成猪只接收重量之和×100；分母 0 → null）。 */
+    /** 白条出品率%（白条出品率分子/处理完成猪只接收重量之和×100；分母 0 → null）。 */
     @TableField(updateStrategy = FieldStrategy.ALWAYS)
     private BigDecimal barYieldRate;
 

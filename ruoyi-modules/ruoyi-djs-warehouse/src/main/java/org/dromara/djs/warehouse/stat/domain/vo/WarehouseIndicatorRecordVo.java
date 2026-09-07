@@ -43,12 +43,14 @@ public class WarehouseIndicatorRecordVo implements Serializable {
     /** 屠宰率%。 */
     private BigDecimal slaughterRate;
 
-    /** 白条总重（当日处理完成的猪只）。 */
+    /** 白条总重（当日处理完成的全部猪只）。 */
     private BigDecimal barTotalWeight;
     /** 处理完成头数。 */
     private Integer finishedCount;
-    /** 处理完成猪只的接收重量之和。 */
+    /** 处理完成猪只的接收重量之和（白条出品率分母）。 */
     private BigDecimal finishedArriveWeight;
+    /** 白条出品率分子（处理完成 ∩ 有接收重量子集的 Σ in_weight）。 */
+    private BigDecimal barYieldNumerWeight;
     /** 白条均重。 */
     private BigDecimal avgBarWeight;
     /** 白条出品率%。 */

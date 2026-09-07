@@ -2,8 +2,9 @@
 --
 -- 这三个指标的分子分母必须来自同一批猪，而这批猪的口径各不相同：
 --   · 屠宰率  ：当日在燎毛间完成称重的那批（称重 cohort）里「有出栏重量」的子集；
---   · 白条出品率 / 白条均重：当日处理完成的那批（finish_time cohort）。
--- 日表只落最终比率的话，月表无法从日表还原（Σ日分子/Σ日分母 拿不到），故把四个 cohort 基数
+--   · 白条出品率：当日处理完成的那批（finish_time cohort）里「有接收重量」的子集（分子分母对称，防 >100%）；
+--   · 白条均重：当日处理完成的那批（整 cohort）。
+-- 日表只落最终比率的话，月表无法从日表还原（Σ日分子/Σ日分母 拿不到），故把五个 cohort 基数
 -- 一起落盘，月表按 Σ基数 重算比率。
 
 SET @c1 := (SELECT COUNT(*) FROM information_schema.COLUMNS
@@ -50,20 +51,35 @@ PREPARE st4 FROM @s4;
 EXECUTE st4;
 DEALLOCATE PREPARE st4;
 
+SET @c7 := (SELECT COUNT(*) FROM information_schema.COLUMNS
+             WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 't_warehouse_indicator_record'
+               AND COLUMN_NAME = 'bar_yield_numer_weight');
+SET @s7 := IF(@c7 > 0, 'SELECT 1',
+  "ALTER TABLE t_warehouse_indicator_record
+     ADD COLUMN bar_yield_numer_weight DECIMAL(12,3) NOT NULL DEFAULT 0.000
+     COMMENT '白条出品率分子：处理完成 ∩ 有接收重量子集的 in_weight 之和（与 finished_arrive_weight 同子集，保证率≤100%）' AFTER finished_arrive_weight");
+PREPARE st7 FROM @s7;
+EXECUTE st7;
+DEALLOCATE PREPARE st7;
+
 -- 存量日表行按旧口径的等价量回填：旧口径下屠宰率 = arrive_weight/slaughter_weight、
 -- 白条出品率 = bar_total_weight/slaughter_weight、白条均重 = bar_total_weight/slaughter_count。
 -- 填成下面这组基数后，这些行在月表里贡献的比率与它们落盘当时完全一致——重算只从 2026-08-19 起跑，
 -- 之前的行不重算也不会因为新列为 0 把当月比率算歪。
--- 幂等：四列全为默认 0 才回填；已被新口径重算过的行（基数非 0）跳过。
-UPDATE t_warehouse_indicator_record
-   SET slaughter_rate_arrive_weight = COALESCE(arrive_weight, 0),
-       slaughter_rate_base_weight   = COALESCE(slaughter_weight, 0),
-       finished_count               = COALESCE(slaughter_count, 0),
-       finished_arrive_weight       = COALESCE(slaughter_weight, 0)
- WHERE slaughter_rate_arrive_weight = 0
-   AND slaughter_rate_base_weight = 0
-   AND finished_count = 0
-   AND finished_arrive_weight = 0;
+-- 幂等只认「这次是否刚加列」（@c1=0 = 首次执行时列此前不存在）：只有首次才回填。
+-- 不能按「基数全为 0」判存量——一个当日只出栏、无称重无完成的合法新口径行天然五列全 0，
+-- 第二遍会被误当存量行凭空造出处理完成 cohort（D3）。列已存在（重跑）就整段跳过。
+SET @bf := IF(@c1 = 0,
+  "UPDATE t_warehouse_indicator_record
+      SET slaughter_rate_arrive_weight = COALESCE(arrive_weight, 0),
+          slaughter_rate_base_weight   = COALESCE(slaughter_weight, 0),
+          finished_count               = COALESCE(slaughter_count, 0),
+          finished_arrive_weight       = COALESCE(slaughter_weight, 0),
+          bar_yield_numer_weight       = COALESCE(bar_total_weight, 0)",
+  'SELECT 1');
+PREPARE stbf FROM @bf;
+EXECUTE stbf;
+DEALLOCATE PREPARE stbf;
 
 -- 出栏 cohort（marketing_time）/ 处理完成 cohort（finish_time）是重算时的日分桶键，
 -- 日重算逐日扫全表，补上索引。

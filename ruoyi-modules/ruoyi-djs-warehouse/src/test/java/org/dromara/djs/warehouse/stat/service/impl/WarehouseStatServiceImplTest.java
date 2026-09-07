@@ -184,18 +184,52 @@ class WarehouseStatServiceImplTest {
     }
 
     /**
-     * 月表：屠宰率 = Σ屠宰率分子/Σ屠宰率分母，白条出品率 = Σ白条总重/Σ处理完成接收重量。
-     * 用与「Σ接收/Σ送宰」明显不同的数字，保证走的是 cohort 基数列而不是旧的两列。
+     * D1（V6-R172）：处理完成 cohort 里有一头「未称重就入库→处理完成」的猪（arrive=NULL）。
+     * 白条总重含该头（不能漏），但白条出品率的分子分母只落在「有接收重量」子集上 → 率 ≤100%。
+     * QA 实测的破 100%（3 头 430/410=104.878%）在这里被消掉：分子换成 390（剔掉 arrive=NULL 那头的 40）
+     * → 390/410 = 95.122%。
      */
     @Test
-    @DisplayName("月表比率从日表 cohort 基数列 Σ 后重算")
+    @DisplayName("D1：完成 cohort 含未称重猪 → 白条总重含它、出品率剔它，率 ≤100%")
+    void testBarYieldRateExcludesArriveNullPigYieldsAtMost100() {
+        // 3 头处理完成：A(arrive210,in200) B(arrive200,in190) C(arrive NULL,in40)
+        // barTotal = 200+190+40 = 430（全含）；finishedArrive = 210+200 = 410（C 跳过）；
+        // 出品率分子 = 200+190 = 390（C 跳过）
+        stubCohorts(
+            /* slaughterCount */ 3,
+            /* arrive */ bd("410"),
+            /* rateArrive */ bd("410"), /* rateBase */ bd("450"),
+            /* finishedCount */ 3, /* barTotal */ bd("430"),
+            /* finishedArrive */ bd("410"), /* barYieldNumer */ bd("390"));
+
+        WarehouseIndicatorRecord saved = runAggregateAndCaptureDaily();
+
+        // 白条总重含未称重那头，一头都不漏
+        assertThat(saved.getBarTotalWeight()).isEqualByComparingTo("430.000");
+        assertThat(saved.getFinishedCount()).isEqualTo(3);
+        assertThat(saved.getBarYieldNumerWeight()).isEqualByComparingTo("390.000");
+        assertThat(saved.getFinishedArriveWeight()).isEqualByComparingTo("410.000");
+        // 出品率 = 390/410×100 = 95.122，绝不用 430 当分子（那会算出 104.878% 破 100）
+        assertThat(saved.getBarYieldRate()).isEqualByComparingTo("95.122");
+        assertThat(saved.getBarYieldRate()).isLessThanOrEqualTo(bd("100"));
+        // 白条均重仍按全 cohort：430/3
+        assertThat(saved.getAvgBarWeight()).isEqualByComparingTo("143.333");
+    }
+
+    /**
+     * 月表：屠宰率 = Σ屠宰率分子/Σ屠宰率分母，白条出品率 = Σ出品率分子/Σ处理完成接收重量。
+     * 用与「Σ接收/Σ送宰」明显不同的数字，保证走的是 cohort 基数列而不是旧的两列；
+     * 且出品率分子取 sumBarYieldNumer（不是 sumBarTotal），验 D1 月表侧也对称。
+     */
+    @Test
+    @DisplayName("月表比率从日表 cohort 基数列 Σ 后重算（出品率分子取 barYieldNumer）")
     void testMonthlyRatesFromCohortBases() {
         stubCohorts(0, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, 0, BigDecimal.ZERO, BigDecimal.ZERO);
         when(aggregateMapper.sumMonthlyFromDaily(TENANT, MONTH)).thenReturn(Map.of(
             "slaughterCount", 7,
             "sumRateArrive", bd("420"),
             "sumRateBase", bd("500"),
-            "sumBarTotal", bd("380"),
+            "sumBarYieldNumer", bd("380"),
             "sumFinishedArrive", bd("400"),
             "sumCutProduct", bd("150"),
             "sumCutBar", bd("200")));
@@ -222,7 +256,7 @@ class WarehouseStatServiceImplTest {
             "slaughterCount", 0,
             "sumRateArrive", BigDecimal.ZERO,
             "sumRateBase", BigDecimal.ZERO,
-            "sumBarTotal", bd("380"),
+            "sumBarYieldNumer", bd("380"),
             "sumFinishedArrive", BigDecimal.ZERO,
             "sumCutProduct", BigDecimal.ZERO,
             "sumCutBar", BigDecimal.ZERO));
@@ -245,12 +279,22 @@ class WarehouseStatServiceImplTest {
     private void stubCohorts(int slaughterCount, BigDecimal arrive,
                              BigDecimal rateArrive, BigDecimal rateBase,
                              int finishedCount, BigDecimal barTotal, BigDecimal finishedArrive) {
+        // 默认：整个处理完成 cohort 都有接收重量 → 出品率分子 = 白条总重
+        stubCohorts(slaughterCount, arrive, rateArrive, rateBase,
+            finishedCount, barTotal, finishedArrive, barTotal);
+    }
+
+    private void stubCohorts(int slaughterCount, BigDecimal arrive,
+                             BigDecimal rateArrive, BigDecimal rateBase,
+                             int finishedCount, BigDecimal barTotal, BigDecimal finishedArrive,
+                             BigDecimal barYieldNumer) {
         when(aggregateMapper.countSlaughter(TENANT, DATE_STR)).thenReturn(slaughterCount);
         when(aggregateMapper.sumArriveWeight(TENANT, DATE_STR)).thenReturn(arrive);
         when(aggregateMapper.selectSlaughterRateBase(TENANT, DATE_STR)).thenReturn(Map.of(
             "rateArrive", rateArrive, "rateBase", rateBase));
         when(aggregateMapper.selectFinishedAgg(TENANT, DATE_STR)).thenReturn(Map.of(
-            "finishedCount", finishedCount, "barTotalWeight", barTotal, "finishedArriveWeight", finishedArrive));
+            "finishedCount", finishedCount, "barTotalWeight", barTotal,
+            "finishedArriveWeight", finishedArrive, "barYieldNumerWeight", barYieldNumer));
     }
 
     private WarehouseIndicatorRecord runAggregateAndCaptureDaily() {

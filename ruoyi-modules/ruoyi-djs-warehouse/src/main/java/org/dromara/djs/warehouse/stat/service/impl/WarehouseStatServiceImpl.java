@@ -41,10 +41,11 @@ import java.util.Map;
  *           → 屠宰头数 / 送宰总重 / 送宰均重</li>
  *       <li>称重 cohort（bar.arrive_time，燎毛间完成称重）→ 接收重量；
  *           屠宰率 = 接收重量/该批猪出栏重量之和×100，仅取其中<b>有</b>出栏重量的子集（两边同时剔除）</li>
- *       <li>处理完成 cohort（bar.finish_time）→ 白条总重 = Σ bar.in_weight；
- *           白条均重 = 白条总重/处理完成头数；白条出品率 = 白条总重/该批猪接收重量之和×100</li>
+ *       <li>处理完成 cohort（bar.finish_time）→ 白条总重 = Σ bar.in_weight（整 cohort，含未称重的）；
+ *           白条均重 = 白条总重/处理完成头数；
+ *           白条出品率 = (F∩有接收重量子集的 Σ in_weight)/(同子集 Σ arrive_weight)×100，分子分母对称保证 ≤100%</li>
  *     </ul>
- *     日表额外落 4 个 cohort 基数列，月率按 Σ基数 重算</li>
+ *     日表额外落 5 个 cohort 基数列，月率按 Σ基数 重算</li>
  *   <li>路损率 = (发往月台−月台接收)/发往月台×100（A2 日表，分母用发往=损耗占发出量）；作物表按 row17 (发往−接收)/接收×100</li>
  *   <li>所有损耗一律从 loss_flow 按 loss_type 取（防重复计）</li>
  *   <li>月台接收只算自产 receive_type=1</li>
@@ -131,17 +132,21 @@ public class WarehouseStatServiceImpl implements IWarehouseStatService {
         r.setSlaughterRate(pctOrNull(rateArriveWeight, rateBaseWeight));
 
         // 白条段（处理完成 cohort：当日 bar.finish_time 落当天的那批猪）
-        // 白条均重 = 白条总重 ÷ 处理完成头数；白条出品率 = 白条总重 ÷ 完成处理猪只的接收重量之和 × 100
-        //（口径#1，V6-R172：分子分母同一批猪；不再拿出栏 cohort 的头数 / 送宰总重当分母）。
+        // 白条均重 = 白条总重 ÷ 处理完成头数（全 cohort）；
+        // 白条出品率 = 出品率分子 ÷ 完成处理猪只的接收重量之和 × 100（口径#1，V6-R172 D1）。
+        //   分子分母都只落在「处理完成 ∩ 有接收重量」子集上（对称），未称重的完成猪不进比率但仍进白条总重，
+        //   否则一头 arrive=NULL 的完成猪会把 in_weight 计进分子、arrive 不计进分母 → 出品率破 100%。
         Map<String, Object> finished = aggregateMapper.selectFinishedAgg(tenantId, statDate);
         int finishedCount = mapInt(finished, "finishedCount");
         BigDecimal barTotal = scale3(mapBd(finished, "barTotalWeight"));
         BigDecimal finishedArrive = scale3(mapBd(finished, "finishedArriveWeight"));
+        BigDecimal barYieldNumer = scale3(mapBd(finished, "barYieldNumerWeight"));
         r.setBarTotalWeight(barTotal);
         r.setFinishedCount(finishedCount);
         r.setFinishedArriveWeight(finishedArrive);
+        r.setBarYieldNumerWeight(barYieldNumer);
         r.setAvgBarWeight(divideOrNull(barTotal, new BigDecimal(finishedCount)));
-        r.setBarYieldRate(pctOrNull(barTotal, finishedArrive));
+        r.setBarYieldRate(pctOrNull(barYieldNumer, finishedArrive));
 
         // 分割段
         BigDecimal cutProduct = scale3(aggregateMapper.sumCutProductWeight(tenantId, statDate));
@@ -303,8 +308,8 @@ public class WarehouseStatServiceImpl implements IWarehouseStatService {
         r.setSlaughterCount(mapInt(m, "slaughterCount"));
         // 屠宰率 = Σ日屠宰率分子 / Σ日屠宰率分母 ×100
         r.setSlaughterRate(pctOrNull(mapBd(m, "sumRateArrive"), mapBd(m, "sumRateBase")));
-        // 白条出品率 = Σ日白条总重 / Σ日处理完成猪只接收重量 ×100
-        r.setBarYieldRate(pctOrNull(mapBd(m, "sumBarTotal"), mapBd(m, "sumFinishedArrive")));
+        // 白条出品率 = Σ日出品率分子 / Σ日处理完成猪只接收重量 ×100（分子取 bar_yield_numer_weight，不是 bar_total_weight）
+        r.setBarYieldRate(pctOrNull(mapBd(m, "sumBarYieldNumer"), mapBd(m, "sumFinishedArrive")));
         // 分割出品率 = Σ分割产品/Σ分割白条×100
         r.setCutYieldRate(pctOrNull(mapBd(m, "sumCutProduct"), mapBd(m, "sumCutBar")));
 
