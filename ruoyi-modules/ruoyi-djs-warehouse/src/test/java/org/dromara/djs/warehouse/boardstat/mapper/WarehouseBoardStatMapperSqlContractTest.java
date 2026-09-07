@@ -85,20 +85,22 @@ class WarehouseBoardStatMapperSqlContractTest {
         for (String fragment : normalizeLines(WarehouseBoardStatMapper.EXCLUDE_GIFT_PRODUCE)) {
             assertThat(sql).as("原材料消耗 SQL 含礼盒排除片段 [%s]", fragment).contains(fragment);
         }
-        // 判礼盒只认 belong_type：djs_product_type 的 3=礼盒 已废弃（字典项删除 + 存量迁回 1），
-        // 谁改回 product_type = 3 这里当场红
+        // 🔴 判据必须是发送位置 deliver_dest='gift'（为礼盒而生产 = 礼盒组件），
+        // 不能是产出品 belong_type='gift_box'：礼盒本身是独立成品，submitGiftPack 不消耗任何 BOM，
+        // 那条产出记录 material_id 恒 NULL，而本 SQL 已带 material_id IS NOT NULL
+        // —— 按产出品判礼盒是结构性死代码，一行都减不掉（clean-QA 2026-09-07 实测排除 0 行）。
         assertThat(sql)
-            .contains("po.belong_type = 'gift_box'")
-            .doesNotContain("product_type");
+            .as("必须按发送位置排除礼盒组件，不能按产出品品类")
+            .contains("pp.deliver_dest <> 'gift'")
+            .doesNotContain("belong_type = 'gift_box'");
+        // NULL 必须显式放行：SQL 里 NULL <> 'gift' 是 UNKNOWN，只写 <> 会把 deliver_dest 为空的
+        // 老数据整批筛掉，原材料消耗会凭空缩水。
+        assertThat(sql)
+            .as("deliver_dest 可空，必须 IS NULL OR <> 显式放行")
+            .contains("pp.deliver_dest is null or pp.deliver_dest <> 'gift'");
         // 半连接不改行数：排除条件不许写成再 JOIN 一张产品档案
         assertThat(sql).doesNotContain("join t_warehouse_product_info po");
-        // 🔴 刻意不带 po.del_flag：礼盒档案被软删后，它当初消耗掉的猪肉原料仍然不该算进猪肉卡——
-        // 加上 del_flag = '0' 会让这批历史消耗随软删「复活」，统计数字自己往上跳。
-        // 上面循环里的片段断言取自 EXCLUDE_GIFT_PRODUCE 本身（改常量它跟着改，同义反复），
-        // 这一条才是真正把这个决定钉住的断言。
-        assertThat(sql)
-            .as("礼盒排除子查询不许带 po.del_flag —— 软删礼盒档案会让历史消耗复活")
-            .doesNotContain("po.del_flag");
+        assertThat(sql).doesNotContain("po.del_flag");
     }
 
     @Test
@@ -115,7 +117,7 @@ class WarehouseBoardStatMapperSqlContractTest {
                 String.class, List.class, LocalDate.class, LocalDate.class));
 
         for (String sql : untouched) {
-            assertThat(sql).doesNotContain("gift_box").doesNotContain("not exists");
+            assertThat(sql).doesNotContain("deliver_dest").doesNotContain("gift_box");
         }
     }
 
