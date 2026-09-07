@@ -167,7 +167,7 @@ public interface ProductProductionMapper extends BaseMapperPlus<ProductProductio
     @Select({
         "<script>",
         "SELECT pp.demand_id AS demandId,",
-        "       COUNT(*)     AS arrivedQty",
+        "       COALESCE(SUM(pp.demand_deduct_qty), 0) AS arrivedQty",
         "  FROM t_warehouse_product_production pp",
         // demand_id 是「门店级松散绑定」——发货清点时把成品挂到需求上，并不保证成品就是该需求点的那个产品。
         // 与本 mapper 三支兄弟聚合（sumShipped*WeightByDemand）同口径：按业态收口，挡掉挂错业态的成品行。

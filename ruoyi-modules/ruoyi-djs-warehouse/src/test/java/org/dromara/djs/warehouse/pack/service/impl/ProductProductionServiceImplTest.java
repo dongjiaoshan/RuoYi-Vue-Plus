@@ -506,6 +506,8 @@ class ProductProductionServiceImplTest {
         assertThat(saved.getProductType()).isEqualTo(1); // 产出沿用礼盒源产品 type=1（djs_product_type 已废弃 3）
         assertThat(saved.getProductWeight()).isEqualByComparingTo("5"); // packBoxCount=5 盒
         assertThat(saved.getProduceQuantity()).isEqualByComparingTo("5");
+        // R161：礼盒一条记录抵 5 盒需求 —— 到店量按本列求和，写死 1 会把「5 盒全额送到」算成 1/5 部分到店
+        assertThat(saved.getDemandDeductQty()).isEqualByComparingTo("5");
         assertThat(saved.getProductUnit()).isEqualTo("盒");
         assertThat(saved.getPackStatus()).isEqualTo("packed");
         assertThat(saved.getProduceNo()).isNotBlank();

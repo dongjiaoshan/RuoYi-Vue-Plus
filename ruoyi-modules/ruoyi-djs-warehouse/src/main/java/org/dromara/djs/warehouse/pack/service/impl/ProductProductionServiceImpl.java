@@ -368,6 +368,8 @@ public class ProductProductionServiceImpl
         p.setDeliverDest(bo.getDeliverDest());
         p.setProofOssIds(bo.getProofOssIds());
         p.setRemark(bo.getRemark());
+        // R161：果蔬按份下单，1 次打包 = 抵 1 份需求（与 resolveDemandDeductQty 恒 1 同源）
+        p.setDemandDeductQty(demandDeductQtyOf(p.getProductUnit(), bo.getProductWeight()));
         baseMapper.insert(p);
 
         // row42：生产产品不入库（仓库按门店需求打包 → 直送发货月台 → 门店，不进 location_stock / 不写 pack_in 入库流水）。
@@ -431,6 +433,9 @@ public class ProductProductionServiceImpl
         p.setDeliverDest(bo.getDeliverDest());
         p.setProofOssIds(bo.getProofOssIds());
         p.setRemark(bo.getRemark());
+        // R161：礼盒一次打包只落 1 条记录却抵 N 盒 —— 到店量按盒数算，
+        // 数条数会把「已全额送到」误判成「部分到店」。
+        p.setDemandDeductQty(giftWeight);
         baseMapper.insert(p);
 
         // row42：生产产品不入库（礼盒打包成品直送发货月台，不进 location_stock / 不写入库流水）。
@@ -537,6 +542,9 @@ public class ProductProductionServiceImpl
             p.setDeliverDest(bo.getDeliverDest());
             p.setProofOssIds(bo.getProofOssIds());
             p.setRemark(bo.getRemark());
+            // R161：KG 计量一条记录抵 consume kg（拆行后与 deductKgPlannedRows 逐行对应）；
+            // 非 KG 已按 packQuantity 拆成 N 条，每条抵 1 件。
+            p.setDemandDeductQty(demandDeductQtyOf(p.getProductUnit(), consume));
             baseMapper.insert(p);
             saved.add(p);
         }
@@ -755,6 +763,8 @@ public class ProductProductionServiceImpl
         p.setPackStatus(PACK_STATUS_PACKED);
         p.setProofOssIds(bo.getProofOssIds());
         p.setRemark(bo.getRemark());
+        // R161：芹菜按份下单，1 次打包 = 抵 1 份需求
+        p.setDemandDeductQty(demandDeductQtyOf(p.getProductUnit(), bo.getProductWeight()));
         baseMapper.insert(p);
 
         // row42：生产产品不入库（直送发货月台，不进 location_stock / 不写入库流水）。
@@ -829,6 +839,8 @@ public class ProductProductionServiceImpl
         p.setPackStatus(PACK_STATUS_PACKED);
         p.setProofOssIds(bo.getProofOssIds());
         p.setRemark(bo.getRemark());
+        // R161：白条按头下单 = 抵 1 头；按 kg 计价的猪肉 = 抵本次出库重量
+        p.setDemandDeductQty(demandDeductQtyOf(p.getProductUnit(), bo.getProductWeight()));
         baseMapper.insert(p);
 
         // row42：生产产品不入库（直送发货月台，不进 location_stock / 不写入库流水）。
@@ -954,6 +966,8 @@ public class ProductProductionServiceImpl
         p.setDeliverDest(DELIVER_DEST_WAREHOUSE_OUT);
         // 出库方式=后台出库 + 出库去向记入备注（双语义落库口径待邓博确认，见 report 待确认项①）
         p.setRemark(buildWarehouseOutRemark(bo.getOutDest(), bo.getRemark()));
+        // R161：后台出库不发门店、永远不会被绑到需求上（demand_id 恒 NULL），抵扣量记 0
+        p.setDemandDeductQty(BigDecimal.ZERO);
         baseMapper.insert(p);
 
         // 消耗来源 inhouse。DENGBO row28：仓库出库同发货月台——整条产出行离库（称重出 + 差额=预冷损耗），
@@ -2033,6 +2047,24 @@ public class ProductProductionServiceImpl
      *
      * <p>不区分大小写（客户明确要求），归一化后匹配 {@code kg} / {@code 公斤}；空 → false（按份数口径处理）。</p>
      */
+    /**
+     * 本条产出记录抵多少门店需求量（写 {@code demand_deduct_qty}，V6-R161）。
+     *
+     * <p>口径按<b>需求单位</b>而不是记录条数：KG 计量（kg / 公斤）的猪肉、干货一次称重只落 1 条记录，
+     * 却把整行 kg 需求扣满，所以这条记录抵的是它自己的重量；其余都是计件单位（份 / 枚 / 头 / 盒 …），
+     * 打包时已按件数拆成对应条数，一条就抵一件。礼盒不走这里 —— 它一条抵 N 盒，调用方直接传盒数。</p>
+     *
+     * @param productUnit 产出记录的产品单位
+     * @param weightKg    本条记录的重量 kg（仅 KG 计量时用得上）
+     * @return 抵扣量；KG 计量返重量（为空按 0），其余恒 1
+     */
+    private static BigDecimal demandDeductQtyOf(String productUnit, BigDecimal weightKg) {
+        if (!isKgUnit(productUnit)) {
+            return BigDecimal.ONE;
+        }
+        return weightKg != null ? weightKg : BigDecimal.ZERO;
+    }
+
     static boolean isKgUnit(String unit) {
         if (unit == null) {
             return false;

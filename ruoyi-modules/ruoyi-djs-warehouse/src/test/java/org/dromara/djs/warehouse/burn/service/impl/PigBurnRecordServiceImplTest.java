@@ -382,6 +382,44 @@ class PigBurnRecordServiceImplTest {
 
     @SuppressWarnings("unchecked")
     @Test
+    @DisplayName("finishBurn: 未称重(接收重量为空)时，白条重仍不得超出栏重 —— 出品率分子不能大于分母")
+    void testFinish_InWeightCappedByMarketingWhenNotWeighed() {
+        // 外购猪 / 没走称重就直接处理完成的白条，arrive_weight 恰恰是 NULL，
+        // 「累计总重 ≤ 头皮肉重量」那道闸整段跳过；而分母 marketing_weight 非空（建 bar 时就写死），
+        // 于是单头录错就能把当日出品率顶过 100%。这条锁的就是这个洞。
+        BarInfo bar = sampleBarWithMarketWeight("singing", "100.000");
+        bar.setArriveWeight(null);
+        when(barInfoMapper.selectById(BAR_ID)).thenReturn(bar);
+        when(productInhouseMapper.selectList(any(LambdaQueryWrapper.class)))
+            .thenReturn(List.of(inhouse(TYPE_HALF, "60.000"), inhouse(TYPE_HALF, "60.000")));
+        when(productInfoMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(sampleTypes());
+
+        assertThatThrownBy(() -> service.finishBurn(BAR_ID, OPERATOR_ID))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("白条重量不能超过出栏重量");
+
+        verify(barInfoMapper, never()).updateStatusToInStock(any(), any(), any(), any());
+    }
+
+    @SuppressWarnings("unchecked")
+    @Test
+    @DisplayName("finishBurn: 未称重 + 白条重 ≤ 出栏重 → 正常放行（新闸不得比改动前更严）")
+    void testFinish_NotWeighedWithinMarketingStillPasses() {
+        BarInfo bar = sampleBarWithMarketWeight("singing", "200.000");
+        bar.setArriveWeight(null);
+        when(barInfoMapper.selectById(BAR_ID)).thenReturn(bar);
+        when(productInhouseMapper.selectList(any(LambdaQueryWrapper.class)))
+            .thenReturn(List.of(inhouse(TYPE_HALF, "60.000"), inhouse(TYPE_HALF, "60.000")));
+        when(productInfoMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(sampleTypes());
+        when(barInfoMapper.updateStatusToInStock(any(), any(), any(), any())).thenReturn(1);
+
+        service.finishBurn(BAR_ID, OPERATOR_ID);
+
+        verify(barInfoMapper).updateStatusToInStock(eq(BAR_ID), eq(new BigDecimal("120.000")), any(), any());
+    }
+
+    @SuppressWarnings("unchecked")
+    @Test
     @DisplayName("finishBurn: 半扇只录 1 扇 → 抛 半只需录入 2 个")
     void testFinish_HalfNotPaired() {
         when(barInfoMapper.selectById(BAR_ID)).thenReturn(sampleBarWithMarketWeight("singing", "200.000"));
