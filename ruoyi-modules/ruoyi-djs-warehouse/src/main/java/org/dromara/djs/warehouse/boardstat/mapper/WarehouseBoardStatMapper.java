@@ -24,7 +24,8 @@ import java.util.List;
  *       kg / 公斤 → 当月重量合计，份 / 盒 / 枚等计数单位 → 记录条数（一次打包确认 = 一份）。
  *       与 {@code ProductProductionMapper.selectGroupList} 同一口径，两处必须一起改。</li>
  *   <li><b>原材料消耗量</b> ← 同表 {@code material_consume}，按<b>原材料自身</b>的品类与单位归组
- *       —— 消耗量是原材料的量，只有落在原材料的单位上，才能与同一行的入库量直接对比。</li>
+ *       —— 消耗量是原材料的量，只有落在原材料的单位上，才能与同一行的入库量直接对比；
+ *       <b>产出品是礼盒的那批生产记录整条不计</b>（{@link #EXCLUDE_GIFT_PRODUCE}）。</li>
  * </ul>
  *
  * <p>入库量套用 {@code FlowDisplayScope.IN_EXCLUDED} 排除清单，与 admin 入库记录页 / 入库汇总同集合，
@@ -107,6 +108,35 @@ public interface WarehouseBoardStatMapper {
 
     /** 计重单位集合：落在这里的按重量求和，其余单位按记录条数计（一次打包确认 = 一份）。 */
     String PRODUCE_WEIGHT_UNITS = "('kg', '公斤')";
+
+    /**
+     * 礼盒的品类键（{@code djs_belong_type}）。
+     *
+     * <p>礼盒 = {@code product_type = 1 自产} + {@code belong_type = 'gift_box'}：
+     * {@code djs_product_type} 的 3=礼盒 已被废弃（字典项删除、存量数据全量迁回 1），
+     * 判礼盒<b>只能</b>看 {@code belong_type}。</p>
+     */
+    String BELONG_TYPE_GIFT_BOX = "gift_box";
+
+    /**
+     * 排除「产出品是礼盒」的生产记录（甲方 2026-09-07 答复：礼盒生产的原材料消耗不进行统计）。
+     *
+     * <p>礼盒打包会消耗猪肉 / 果蔬等原料，按原材料自身品类归卡就会把这笔消耗算进猪肉卡、果蔬卡，
+     * 甲方明确否掉了这种归属：礼盒这条产线整个不进「原材料消耗」这个指标。</p>
+     *
+     * <p>写成半连接（{@code NOT EXISTS}）而不是再 JOIN 一张产品档案：{@code NOT EXISTS} 不参与
+     * 投影也不产生笛卡尔行，接到任何一条以 {@code pp} 为生产记录别名的 SQL 上都<b>不改变行数</b>，
+     * 只做减法。子查询里<b>刻意不带</b> {@code po.del_flag = '0'} —— 礼盒产品档案哪天被软删，
+     * 这批消耗不该因此重新冒回统计里。</p>
+     *
+     * <p>生产记录别名固定 {@code pp}，与 {@link #PRODUCE_FROM} 一致；将来若明细也要同款排除，
+     * 直接把本常量接到那条 SQL 上，改一处即可。</p>
+     */
+    String EXCLUDE_GIFT_PRODUCE =
+        "  AND NOT EXISTS (SELECT 1 FROM t_warehouse_product_info po\n"
+        + "                   WHERE po.id = pp.product_id\n"
+        + "                     AND po.tenant_id = pp.tenant_id\n"
+        + "                     AND po.belong_type = '" + BELONG_TYPE_GIFT_BOX + "')\n";
 
     /**
      * 当月「入库量」：按品类 × 单位合计入库流水量，仅原材料产品（product_attr = 2）。
@@ -246,19 +276,24 @@ public interface WarehouseBoardStatMapper {
                                                              @Param("toExclusive") LocalDate toExclusive);
 
     /**
-     * 当月「原材料消耗量」：按<b>原材料</b>品类 × 原材料单位合计生产记录的 {@code material_consume}。
+     * 当月「原材料消耗量」：按<b>原材料</b>品类 × 原材料单位合计生产记录的 {@code material_consume}，
+     * <b>不含礼盒生产</b>。
      *
      * <p>未记原材料（{@code material_id} 为空）的生产记录不计入 —— 消耗量无从归属品类，
      * 硬塞进成品品类会让「入库了多少原料 / 耗了多少原料」这组对比失真。</p>
+     *
+     * <p>产出品是礼盒（{@code belong_type = 'gift_box'}）的生产记录整条排除，见
+     * {@link #EXCLUDE_GIFT_PRODUCE}。这条只加在本方法上：入库量 / 生产量 / 两个明细都不带它
+     * ——甲方否掉的是「礼盒耗的原料算进原料品类卡」这一件事，礼盒自己产了多少盒仍按礼盒品类正常计。</p>
      *
      * @param tenantId    租户
      * @param belongTypes 统计的品类（非空，按原材料的 belong_type 匹配）
      * @param from        统计月首日（含）
      * @param toExclusive 次月首日（不含）
-     * @return 品类 × 单位 × 原材料消耗量
+     * @return 品类 × 单位 × 原材料消耗量（不含礼盒产线）
      */
-    @Select("""
-        <script>
+    @Select("<script>"
+        + """
         SELECT pm.belong_type AS belongType,
                COALESCE(pm.product_unit, '') AS productUnit,
                COALESCE(SUM(pp.material_consume), 0) AS qty
@@ -271,9 +306,12 @@ public interface WarehouseBoardStatMapper {
               <foreach collection="belongTypes" item="b" open="(" separator="," close=")">#{b}</foreach>
           AND pp.produce_date &gt;= #{from}
           AND pp.produce_date &lt;  #{toExclusive}
+        """
+        + EXCLUDE_GIFT_PRODUCE
+        + """
         GROUP BY pm.belong_type, COALESCE(pm.product_unit, '')
-        </script>
-        """)
+        """
+        + "</script>")
     List<CategoryUnitQtyRow> selectMaterialConsumeByCategoryUnit(@Param("tenantId") String tenantId,
                                                                  @Param("belongTypes") List<String> belongTypes,
                                                                  @Param("from") LocalDate from,

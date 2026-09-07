@@ -20,6 +20,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  *   <li>「只统计原材料产品」只约束<b>入库量</b>（product_attr = 2），另两个指标不带这个条件；</li>
  *   <li>生产量按产品自身单位取值：kg / 公斤 取重量合计，其余单位取记录条数；</li>
  *   <li>原材料消耗量按 {@code material_id} 关联<b>原材料</b>档案归组，不是按成品档案。</li>
+ *   <li><b>礼盒生产的原材料消耗不统计</b>（甲方 2026-09-07）：排除条件只挂在原材料消耗那一条 SQL 上，
+ *       入库 / 生产 / 两个明细四条都不许带 —— 顺手加错地方就会把礼盒自己的产量也统计没了；</li>
  *   <li><b>卡片与明细共用同一份筛选条件</b>：入库 / 生产两对（品类聚合 SQL、产品聚合明细 SQL）
  *       逐条比对 {@code *_WHERE} 常量的每一行，谁在自己那一侧偷偷加减条件，明细就与卡片对不上数，
  *       这里当场红；明细的聚合表达式也必须与卡片同一个（SUM / CASE 两分支），
@@ -72,6 +74,42 @@ class WarehouseBoardStatMapperSqlContractTest {
             .contains("pm.belong_type in")
             .contains("pp.material_id is not null")
             .doesNotContain("product_attr");
+    }
+
+    @Test
+    @DisplayName("原材料消耗排除礼盒生产（甲方 2026-09-07：礼盒生产的不进行统计）")
+    void materialConsumeExcludesGiftBoxProduce() throws Exception {
+        String sql = selectSql("selectMaterialConsumeByCategoryUnit",
+            String.class, List.class, LocalDate.class, LocalDate.class);
+
+        for (String fragment : normalizeLines(WarehouseBoardStatMapper.EXCLUDE_GIFT_PRODUCE)) {
+            assertThat(sql).as("原材料消耗 SQL 含礼盒排除片段 [%s]", fragment).contains(fragment);
+        }
+        // 判礼盒只认 belong_type：djs_product_type 的 3=礼盒 已废弃（字典项删除 + 存量迁回 1），
+        // 谁改回 product_type = 3 这里当场红
+        assertThat(sql)
+            .contains("po.belong_type = 'gift_box'")
+            .doesNotContain("product_type");
+        // 半连接不改行数：排除条件不许写成再 JOIN 一张产品档案
+        assertThat(sql).doesNotContain("join t_warehouse_product_info po");
+    }
+
+    @Test
+    @DisplayName("礼盒排除只挂原材料消耗一条：入库量 / 生产量 / 两个明细都不许带")
+    void giftBoxExclusionStaysOnMaterialConsumeOnly() throws Exception {
+        List<String> untouched = List.of(
+            selectSql("selectInboundByCategoryUnit",
+                String.class, List.class, List.class, LocalDate.class, LocalDate.class),
+            selectSql("selectInboundDetailByProduct",
+                String.class, List.class, List.class, LocalDate.class, LocalDate.class),
+            selectSql("selectProduceByCategoryUnit",
+                String.class, List.class, LocalDate.class, LocalDate.class),
+            selectSql("selectProduceDetailByProduct",
+                String.class, List.class, LocalDate.class, LocalDate.class));
+
+        for (String sql : untouched) {
+            assertThat(sql).doesNotContain("gift_box").doesNotContain("not exists");
+        }
     }
 
     @Test
