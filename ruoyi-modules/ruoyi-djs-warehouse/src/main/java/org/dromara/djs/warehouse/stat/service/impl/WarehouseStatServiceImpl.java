@@ -135,25 +135,29 @@ public class WarehouseStatServiceImpl implements IWarehouseStatService {
         // 白条段（处理完成 cohort：当日 bar.finish_time 落当天的那批猪，下称 F）
         // 白条总重 = Σ bar.in_weight（整 F，一行=一头猪=一个耳号，按处理完成当天归集）；
         // 白条均重 = 白条总重 ÷ 处理完成头数（整 F）；
-        // 白条出品率 = 出品率分子 ÷ 出品率分母 × 100（客户口径「完成接收重量的猪只出栏重量之和」）。
-        //   分子分母都只落在「F ∩ 出栏重量非空」子集上（对称）：分子 Σ in_weight、分母 Σ 出栏重量。
-        //   「完成接收重量的猪只」是限定语、不是第二个日期锚——分子按完成日、分母按称重日各取一批的话
-        //   两批猪不是同一批，又会破 100%；同批取数下 白条重 < 出栏活重 恒成立。
-        //   取不到出栏重量的猪两边同时剔除，其 in_weight 仍计进白条总重展示列。
-        //   接收重量之和（finishedArrive）仍落盘，但只作诊断列、不再当分母。
+        // 白条出品率 = 白条总重 ÷「完成接收重量的猪只出栏重量之和」× 100。
+        //
+        // ⚠️ 分母与屠宰率**共用同一个** —— 甲方 2026-09-07 把需求原文里这一句从
+        //   「白条总重/完成处理的猪只接收重量之和」改成了
+        //   「白条总重/完成接收重量的猪只出栏重量之和」，与上一行屠宰率的分母逐字相同，
+        //   并在答复里写明「分母错误，**也是**【完成接收重量的猪只出栏重量之和】」。
+        //   所以这里直接复用 rateBaseWeight（称重 cohort ∩ 出栏重量非空），不再另取处理完成 cohort 的分母。
+        //
+        // 由此分子分母**不是同一批猪**（分子按处理完成日、分母按称重日），出品率可能 >100%。
+        // 这一点已在写回里向甲方明确提示过（「只改一半会让分子分母不是同一批猪、出品率仍会超过 100%」），
+        // 甲方看到后仍坚持本口径 —— 按 §0 一问「甲方最近一次表态优先」执行，不再自行改判。
         Map<String, Object> finished = aggregateMapper.selectFinishedAgg(tenantId, statDate);
         int finishedCount = mapInt(finished, "finishedCount");
         BigDecimal barTotal = scale3(mapBd(finished, "barTotalWeight"));
         BigDecimal finishedArrive = scale3(mapBd(finished, "finishedArriveWeight"));
-        BigDecimal barYieldNumer = scale3(mapBd(finished, "barYieldNumerWeight"));
-        BigDecimal barYieldBase = scale3(mapBd(finished, "barYieldBaseWeight"));
         r.setBarTotalWeight(barTotal);
         r.setFinishedCount(finishedCount);
         r.setFinishedArriveWeight(finishedArrive);
-        r.setBarYieldNumerWeight(barYieldNumer);
-        r.setBarYieldBaseWeight(barYieldBase);
+        // 落盘分子分母两列，月表按 Σ分子 ÷ Σ分母 重算（不能拿日比率求平均）。
+        r.setBarYieldNumerWeight(barTotal);
+        r.setBarYieldBaseWeight(rateBaseWeight);
         r.setAvgBarWeight(divideOrNull(barTotal, new BigDecimal(finishedCount)));
-        r.setBarYieldRate(pctOrNull(barYieldNumer, barYieldBase));
+        r.setBarYieldRate(pctOrNull(barTotal, rateBaseWeight));
 
         // 分割段
         BigDecimal cutProduct = scale3(aggregateMapper.sumCutProductWeight(tenantId, statDate));
