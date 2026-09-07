@@ -17,8 +17,11 @@ import java.util.Map;
  *
  * <h3>源表 → 指标映射</h3>
  * <ul>
- *   <li>{@code t_warehouse_pig_burn_record}：屠宰头数 / 接收重量 / 白条总重（burn_time）</li>
- *   <li>{@code t_warehouse_bar_info} + {@code t_warehouse_outsource_pig}：送宰总重（自产 marketing + 外购 pig_weight）</li>
+ *   <li>{@code t_warehouse_bar_info} + {@code t_warehouse_outsource_pig}：猪肉段全部指标，按<b>三组 cohort</b>
+ *       分别分桶（同一指标的分子分母必须来自同一批猪）——
+ *       出栏 cohort（{@code marketing_time} / {@code slaughter_date}）→ 屠宰头数 / 送宰总重 / 送宰均重；
+ *       称重 cohort（{@code arrive_time}）→ 接收重量 / 屠宰率；
+ *       处理完成 cohort（{@code finish_time}）→ 白条总重 / 白条均重 / 白条出品率</li>
  *   <li>{@code t_warehouse_pig_cut_record}：分割白条数 / 分割白条总重（pickup_time + pickup_weight）</li>
  *   <li>{@code t_warehouse_product_inhouse}：分割产品总重（white_bar_id 非空 = 猪肉，produce_date）</li>
  *   <li>{@code t_warehouse_loss_flow}：所有损耗按 loss_type 取（防重复计，loss_date）</li>
@@ -41,46 +44,107 @@ public interface WarehouseStatAggregateMapper {
     // ============================================================
 
     /**
-     * 屠宰头数：当日燎毛间入库称重的猪只头数 = 当日在燎毛间称重的整白条（整猪）数。
+     * 屠宰头数：<b>当日出栏</b>的猪只头数（出栏 cohort）。
      *
-     * <p>源为 {@code t_warehouse_bar_info}（白条主表，一行 = 一头整猪/整白条），按「入库称重」时刻
-     * {@code in_time}（weighBurn 回填）落当天 + {@code in_method=1}（燎毛间）+ {@code arrive_weight}
-     * 非空（已称重）计。一头猪一行、天然去重——<b>不能</b>走 {@code t_warehouse_pig_burn_record}
-     * 按 {@code COALESCE(ear_no, burn_id)} 去重：burn_id 是「产出行」粒度（同一头在燎毛间拆两个半只/
-     * 猪头/猪蹄逐条录入 → 多条 burn 记录、各自 burn_id 不同），外购猪 ear_no 又为 NULL 退到 burn_id，
-     * 一头整猪被拆成 N 条重复计（row198 客户实证「一头计 4」）。</p>
+     * <p>自养走 {@code t_warehouse_bar_info}（一行 = 一头整猪，按 {@code marketing_time} 出栏时刻分桶，
+     * {@code buy_date IS NULL} 排除外购镜像行）；外购生猪走 {@code t_warehouse_outsource_pig}
+     * 按送宰日 {@code slaughter_date} 分桶。两者相加、不会重复计——外购生猪录入时会往 bar_info 镜像一行
+     * 带 {@code buy_date}，恰好被自养侧的 {@code buy_date IS NULL} 挡掉。</p>
+     *
+     * <p>头数<b>不</b>按燎毛间称重时刻算：出栏与称重经常跨天（staging 实测有出栏 08-02、称重 08-04 的猪），
+     * 按称重算会让「当日出栏头数」跟着下游工序漂。同理不走 {@code t_warehouse_pig_burn_record}——
+     * 它是「产出行」粒度（一头拆两个半只/猪头/猪蹄逐条录入 → 多行），一头整猪会被计成 N 头
+     * （row198 客户实证「一头计 4」）。</p>
      */
     @Select("""
-        SELECT COUNT(*) FROM t_warehouse_bar_info
-        WHERE del_flag = '0' AND tenant_id = #{tenantId}
-          AND in_method = 1 AND arrive_weight IS NOT NULL AND DATE(in_time) = #{statDate}
+        SELECT (SELECT COUNT(*) FROM t_warehouse_bar_info
+                 WHERE del_flag = '0' AND tenant_id = #{tenantId}
+                   AND buy_date IS NULL AND DATE(marketing_time) = #{statDate})
+             + (SELECT COUNT(*) FROM t_warehouse_outsource_pig
+                 WHERE del_flag = '0' AND tenant_id = #{tenantId}
+                   AND DATE(slaughter_date) = #{statDate})
         """)
     int countSlaughter(@Param("tenantId") String tenantId, @Param("statDate") String statDate);
 
     /**
-     * 接收重量：当日燎毛间入库称重总重 = Σ 每头整猪到场重 {@code arrive_weight}（row93）。
+     * 接收重量：<b>当日在燎毛间完成称重</b>的猪只总重 = Σ 到场重 {@code arrive_weight}（称重 cohort）。
      *
-     * <p>与 {@link #countSlaughter} 同源同口径：源 {@code t_warehouse_bar_info}（一行 = 一头整猪），
-     * 按「入库称重」{@code in_time} 落当天 + {@code in_method=1} + {@code arrive_weight} 非空求和。
-     * 一头一行、天然不重复。<b>不能</b>走 burn_record {@code GROUP BY COALESCE(ear_no, burn_id)}：
+     * <p>源 {@code t_warehouse_bar_info}（一行 = 一头整猪），过滤 {@code in_method=1}（燎毛间）+
+     * {@code arrive_weight} 非空（已过磅）。分桶键 {@code arrive_time} = weighBurn 里跟 arrive_weight
+     * 同一次过磅写入、且只写第一次的不可变锚，正是「完成称重那一刻」。{@code COALESCE} 退到
+     * {@code in_time} 只兜 arrive_time 补列之前的老数据（staging 有 1 头）。</p>
+     *
+     * <p>一头一行、天然不重复。<b>不能</b>走 burn_record {@code GROUP BY COALESCE(ear_no, burn_id)}：
      * 外购猪 ear_no 空退 burn_id、同一头拆多条产出行 → arrive_weight 被按产出行重复累加偏大
      * （row199 客户实证）。</p>
      */
     @Select("""
         SELECT COALESCE(SUM(arrive_weight), 0) FROM t_warehouse_bar_info
         WHERE del_flag = '0' AND tenant_id = #{tenantId}
-          AND in_method = 1 AND arrive_weight IS NOT NULL AND DATE(in_time) = #{statDate}
+          AND in_method = 1 AND arrive_weight IS NOT NULL
+          AND DATE(COALESCE(arrive_time, in_time)) = #{statDate}
         """)
     BigDecimal sumArriveWeight(@Param("tenantId") String tenantId, @Param("statDate") String statDate);
 
-    /** 白条总重：当日白条库入库白条产品总重 = Σ burn.burn_weight。 */
+    /**
+     * 屠宰率的分子分母（称重 cohort 里<b>有出栏重量</b>的子集，一起取保证同一批猪）。
+     *
+     * <p>分子 {@code rateArrive} = Σ 到场重；分母 {@code rateBase} = Σ 出栏重量
+     * （自养取 {@code bar.marketing_weight}；外购生猪取 {@code outsource_pig.pig_weight}，按
+     * {@code bar_id} 反查——外购录入时把生成的 bar_id 回写到了外购台账）。</p>
+     *
+     * <p>出栏重量取不到的猪（自养漏录出栏重 / 外购镜像行找不到台账）从分子分母<b>同时</b>剔除，
+     * 不让它单边压低比率；它的到场重仍计在 {@link #sumArriveWeight} 的接收重量里，两者刻意不等。</p>
+     *
+     * <p>外购侧用相关子查询而非 JOIN：{@code outsource_pig.bar_id} 无唯一约束，JOIN 撞到重复台账行
+     * 会让同一头猪的 arrive_weight 被乘出多份。</p>
+     *
+     * @return 单行 {@code {rateArrive, rateBase}}
+     */
     @Select("""
-        SELECT COALESCE(SUM(burn_weight), 0) FROM t_warehouse_pig_burn_record
-        WHERE del_flag = '0' AND tenant_id = #{tenantId} AND DATE(burn_time) = #{statDate}
+        SELECT COALESCE(SUM(t.arriveWeight), 0) AS rateArrive,
+               COALESCE(SUM(t.baseWeight), 0)   AS rateBase
+        FROM (
+          SELECT b.arrive_weight AS arriveWeight,
+                 CASE WHEN b.buy_date IS NULL THEN b.marketing_weight
+                      ELSE (SELECT op.pig_weight FROM t_warehouse_outsource_pig op
+                             WHERE op.bar_id = b.bar_id AND op.del_flag = '0'
+                               AND op.tenant_id = #{tenantId} LIMIT 1)
+                 END AS baseWeight
+          FROM t_warehouse_bar_info b
+          WHERE b.del_flag = '0' AND b.tenant_id = #{tenantId}
+            AND b.in_method = 1 AND b.arrive_weight IS NOT NULL
+            AND DATE(COALESCE(b.arrive_time, b.in_time)) = #{statDate}
+        ) t
+        WHERE t.baseWeight IS NOT NULL
         """)
-    BigDecimal sumBarTotalWeight(@Param("tenantId") String tenantId, @Param("statDate") String statDate);
+    Map<String, Object> selectSlaughterRateBase(@Param("tenantId") String tenantId, @Param("statDate") String statDate);
 
-    /** 送宰总重(自产)：当日出栏送宰猪总重 = Σ bar.marketing_weight（外购白条 buy_date 非空，排除）。 */
+    /**
+     * 处理完成 cohort（当日 {@code bar.finish_time} 落当天的那批猪）的三个量，一起取保证同一批猪：
+     * {@code finishedCount} 头数 / {@code barTotalWeight} 白条总重 / {@code finishedArriveWeight} 接收重量之和。
+     *
+     * <p>白条总重取 {@code bar.in_weight}（finishBurn 那一刻按该白条全部产出行合计写入的整只口径值），
+     * <b>不</b>取 {@code Σ burn_record.burn_weight}：burn_record 没有指向 bar 的外键（只有 ear_no，
+     * 外购猪为空），挂不到本 cohort 上；两者数值本身逐头相等（staging 22 头全等）。
+     * 也不取 {@code Σ product_inhouse.product_weight}——产出行会被下游领用/发货消耗掉，事后 SUM 会缩水。</p>
+     *
+     * <p>{@code finish_time} 只在 finishBurn 的状态推进里写一次、之后不变，所以本聚合可复现；
+     * 没进过燎毛间的白条永远 {@code finish_time IS NULL}，天然落不进任何一天。</p>
+     *
+     * @return 单行 {@code {finishedCount, barTotalWeight, finishedArriveWeight}}
+     */
+    @Select("""
+        SELECT COUNT(*)                          AS finishedCount,
+               COALESCE(SUM(in_weight), 0)       AS barTotalWeight,
+               COALESCE(SUM(arrive_weight), 0)   AS finishedArriveWeight
+        FROM t_warehouse_bar_info
+        WHERE del_flag = '0' AND tenant_id = #{tenantId}
+          AND DATE(finish_time) = #{statDate}
+        """)
+    Map<String, Object> selectFinishedAgg(@Param("tenantId") String tenantId, @Param("statDate") String statDate);
+
+    /** 送宰总重(自产)：当日出栏送宰猪总重 = Σ bar.marketing_weight（外购镜像行 buy_date 非空，排除）。 */
     @Select("""
         SELECT COALESCE(SUM(marketing_weight), 0) FROM t_warehouse_bar_info
         WHERE del_flag = '0' AND tenant_id = #{tenantId}
@@ -389,17 +453,22 @@ public interface WarehouseStatAggregateMapper {
 
     /**
      * 汇总某月已落盘日表（屠宰头数之和 + 各分子/分母 Σ），月率用 Σ 分子÷Σ 分母（非日率平均）。
-     * 返 Map(slaughterCount, sumArrive, sumSlaughterWeight, sumBarTotal, sumCutProduct, sumCutBar)。
+     * 返 Map(slaughterCount, sumRateArrive, sumRateBase, sumBarTotal, sumFinishedArrive, sumCutProduct, sumCutBar)。
+     *
+     * <p>屠宰率 / 白条出品率的分子分母各有自己的 cohort 基数列（日表落盘时一并写下），月率必须拿这些
+     * 基数 Σ 后再相除，不能拿 {@code arrive_weight} / {@code slaughter_weight} 凑——那两列是各自 cohort
+     * 的全量，跟比率的口径不是同一批猪。</p>
      *
      * @param month yyyy-MM
      */
     @Select("""
-        SELECT COALESCE(SUM(slaughter_count), 0)    AS slaughterCount,
-               COALESCE(SUM(arrive_weight), 0)      AS sumArrive,
-               COALESCE(SUM(slaughter_weight), 0)   AS sumSlaughterWeight,
-               COALESCE(SUM(bar_total_weight), 0)   AS sumBarTotal,
-               COALESCE(SUM(cut_product_weight), 0) AS sumCutProduct,
-               COALESCE(SUM(cut_bar_weight), 0)     AS sumCutBar
+        SELECT COALESCE(SUM(slaughter_count), 0)              AS slaughterCount,
+               COALESCE(SUM(slaughter_rate_arrive_weight), 0) AS sumRateArrive,
+               COALESCE(SUM(slaughter_rate_base_weight), 0)   AS sumRateBase,
+               COALESCE(SUM(bar_total_weight), 0)             AS sumBarTotal,
+               COALESCE(SUM(finished_arrive_weight), 0)       AS sumFinishedArrive,
+               COALESCE(SUM(cut_product_weight), 0)           AS sumCutProduct,
+               COALESCE(SUM(cut_bar_weight), 0)               AS sumCutBar
         FROM t_warehouse_indicator_record
         WHERE del_flag = '0' AND tenant_id = #{tenantId}
           AND DATE_FORMAT(stat_date, '%Y-%m') = #{month}

@@ -28,19 +28,27 @@ public class WarehouseIndicatorRecordVo implements Serializable {
     /** 统计日期。 */
     private LocalDate statDate;
 
-    /** 屠宰头数。 */
+    /** 屠宰头数（当日出栏的猪只头数）。 */
     private Integer slaughterCount;
     /** 送宰总重。 */
     private BigDecimal slaughterWeight;
     /** 送宰均重。 */
     private BigDecimal avgSlaughterWeight;
-    /** 接收重量。 */
+    /** 接收重量（当日燎毛间完成称重的猪只总重）。 */
     private BigDecimal arriveWeight;
+    /** 屠宰率分子（称重 cohort 里有出栏重量那部分的 Σ 到场重）。 */
+    private BigDecimal slaughterRateArriveWeight;
+    /** 屠宰率分母（同一部分猪的 Σ 出栏重量）。 */
+    private BigDecimal slaughterRateBaseWeight;
     /** 屠宰率%。 */
     private BigDecimal slaughterRate;
 
-    /** 白条总重。 */
+    /** 白条总重（当日处理完成的猪只）。 */
     private BigDecimal barTotalWeight;
+    /** 处理完成头数。 */
+    private Integer finishedCount;
+    /** 处理完成猪只的接收重量之和。 */
+    private BigDecimal finishedArriveWeight;
     /** 白条均重。 */
     private BigDecimal avgBarWeight;
     /** 白条出品率%。 */
