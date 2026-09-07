@@ -167,6 +167,11 @@ public interface VegOutMapper {
      *
      * <p>一条流水一行（同一产品不同地块篮各出一条）。{@code productCode} 供详情页「重新打印」
      * 按产品编号合并成一行打印用（V6 row108，与新增时打的那张单同一口径）。</p>
+     *
+     * <p>{@code earNo} / {@code plotCode} 是这条流水的来源标识（row191 弹框「规格」与「出库量」
+     * 之间那两列）：猪肉行有耳号、果蔬行有地块，各自另一项为空，前端与导出都兜 {@code -}。
+     * 两者取<b>流水自己</b>的 {@code ear_no} / {@code plot_id}，不回溯上游批次 ——
+     * 出库时记的是哪个篮子，明细就显示哪个篮子。</p>
      */
     @Select("""
         <script>
@@ -177,6 +182,7 @@ public interface VegOutMapper {
                f.change_quantity AS outWeight,
                f.out_unit_price AS outUnitPrice,
                f.change_quantity * COALESCE(f.out_unit_price, 0) AS outAmount,
+               f.ear_no         AS earNo,
                pl.plot_code     AS plotCode
           FROM t_warehouse_stock_flow f
           JOIN t_warehouse_product_info p ON p.id = f.product_id AND p.del_flag = '0'

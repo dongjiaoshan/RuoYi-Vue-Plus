@@ -139,4 +139,20 @@ class VegOutCandidateSqlContractTest {
             .as("按产品合并会破坏逐篮扣减链路")
             .doesNotContain("group by");
     }
+
+    @Test
+    @DisplayName("row191 出库明细：耳号取流水自己的 ear_no，地块由 plot_id LEFT JOIN 地块档案")
+    void batchDetailCarriesEarNoAndPlotCode() throws Exception {
+        Method method = VegOutMapper.class.getMethod("selectBatchDetail", String.class, String.class);
+        Select select = method.getAnnotation(Select.class);
+        assertThat(select).as("VegOutMapper#selectBatchDetail 应带 @Select").isNotNull();
+        String sql = normalize(String.join(" ", select.value()));
+
+        assertThat(sql).contains("f.ear_no as earno");
+        assertThat(sql).contains("pl.plot_code as plotcode");
+        // LEFT JOIN：地块档案被删的行照出，只是地块列为空（service 兜 "-"），不能因为联不上就丢明细行
+        assertThat(sql).contains("left join t_plant_plot_info pl on pl.id = f.plot_id and pl.del_flag = '0'");
+        // 耳号取这条流水记的那个篮子，不回溯上游批次
+        assertThat(sql).doesNotContain("t_breed_pig");
+    }
 }
