@@ -144,7 +144,7 @@ class StoreDemandStatusMappingTest {
         String confirmed = StoreDemandStatusMapping.sqlPredicate("CONFIRMED");
         String partial = StoreDemandStatusMapping.sqlPredicate("PARTIAL_ARRIVED");
         String shipped = StoreDemandStatusMapping.sqlPredicate("SHIPPED");
-        String subquery = partial.substring(partial.indexOf("(SELECT COUNT(*)"), partial.indexOf(") > 0") + 1);
+        String subquery = partial.substring(partial.indexOf("(SELECT COALESCE(SUM(pp.demand_deduct_qty), 0)"), partial.indexOf(") > 0") + 1);
         assertThat(confirmed).contains(subquery);
         assertThat(shipped).contains(subquery);
         // 部分到店里出现两次（> 0 与 < demand_quantity），必须是同一份
@@ -210,5 +210,21 @@ class StoreDemandStatusMappingTest {
     void sqlPredicateAnyRejectsBadElement() {
         assertThatThrownBy(() -> StoreDemandStatusMapping.sqlPredicateAny(List.of("SUBMITTED", "DELETED")))
             .isInstanceOf(ServiceException.class);
+    }
+
+    @Test
+    @DisplayName("R161：到店量按「本次抵扣需求量」求和，不是数产出记录条数")
+    void arrivedQtySumsDeductColumnNotRowCount() {
+        String partial = StoreDemandStatusMapping.sqlPredicate("PARTIAL_ARRIVED");
+        // 礼盒一次打包只落 1 条却抵 N 盒、KG 一次称重只落 1 条却抵满整行 kg：
+        // 数条数会把「已全额送到」判成「部分到店」，所以这里必须是 SUM(本次抵扣需求量)。
+        assertThat(partial)
+            .as("到店量必须按量求和")
+            .contains("COALESCE(SUM(pp.demand_deduct_qty), 0)")
+            .doesNotContain("COUNT(*)");
+        // 空集必须落到 0 而不是 NULL：CONFIRMED 分支靠「到店量 <= 0」判「到店量为 0 仍显示已确认」，
+        // SUM 不裹 COALESCE 时空集返 NULL，比较结果 UNKNOWN，这条需求会从三个状态里同时消失。
+        assertThat(StoreDemandStatusMapping.sqlPredicate("CONFIRMED"))
+            .contains("COALESCE(SUM(pp.demand_deduct_qty), 0)");
     }
 }

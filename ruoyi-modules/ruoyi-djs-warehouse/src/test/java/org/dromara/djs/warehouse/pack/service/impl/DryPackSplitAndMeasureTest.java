@@ -285,6 +285,21 @@ class DryPackSplitAndMeasureTest {
         }
 
         @Test
+        @DisplayName("R161：产品单位是 kg → 本条记录抵本次重量（不是抵 1 条），否则整行 kg 需求送满仍显示部分到店")
+        void kgProductDeductsByWeight() {
+            when(inhouseMapper.selectById(INHOUSE_ID)).thenReturn(source("kg", "50.000"));
+            when(productInfoMapper.selectById(PRODUCT_ID)).thenReturn(product("dry_good", "kg", null));
+            stubDemand("8.5", "0");
+
+            service.submitDryPack(bo("8.500", null, "kg"));
+
+            List<ProductProduction> rows = capturedProductions(1);
+            // 甲方场景：需求 8.5kg，一次称重 8.5kg 全额送到。抵扣量必须是 8.5 而不是 1，
+            // 否则 1 < 8.5 会被判成「部分到店」。
+            assertThat(rows.get(0).getDemandDeductQty()).isEqualByComparingTo("8.500");
+        }
+
+        @Test
         @DisplayName("打包量模式（回传 packQuantity）即便原料标成 kg 也不套重量规则 —— row45/row47 两支互斥")
         void amountModeExcludedFromMeasureRule() {
             when(inhouseMapper.selectById(INHOUSE_ID)).thenReturn(source("kg", "50.000"));
@@ -342,6 +357,10 @@ class DryPackSplitAndMeasureTest {
             // 原材料溯源列指向来源 inhouse 的原料 productId
             assertThat(rows).extracting(ProductProduction::getMaterialId)
                 .containsOnly(MATERIAL_PRODUCT_ID);
+            // R161：计件单位（份）已按打包量拆成 3 条，每条各抵 1 份 —— Σ=3 恰是本次抵掉的需求量。
+            // 若这里写成本条重量(5)，到店量会变成 15 份，反过来把没送完的算成已送完。
+            assertThat(rows).extracting(ProductProduction::getDemandDeductQty)
+                .allSatisfy(q -> assertThat(q).isEqualByComparingTo("1"));
         }
 
         @Test

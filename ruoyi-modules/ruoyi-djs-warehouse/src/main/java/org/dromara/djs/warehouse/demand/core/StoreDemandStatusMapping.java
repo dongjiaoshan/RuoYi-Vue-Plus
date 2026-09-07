@@ -119,7 +119,7 @@ public final class StoreDemandStatusMapping {
      * <p>租户隔离：未启全局 MP 拦截器，显式 {@code tenant_id='1001'}，与批量聚合 SQL 同范式。</p>
      */
     public static final String ARRIVED_QTY_SUBQUERY_PREFIX =
-        "(SELECT COUNT(*) FROM t_warehouse_product_production pp"
+        "(SELECT COALESCE(SUM(pp.demand_deduct_qty), 0) FROM t_warehouse_product_production pp"
             + " JOIN t_warehouse_demand_manage sd ON sd.id = pp.demand_id"
             + " AND sd.del_flag = '0' AND sd.tenant_id = '1001'"
             + " JOIN t_warehouse_product_info spi ON spi.id = pp.product_id AND spi.del_flag = '0'"

@@ -185,6 +185,18 @@ public class ProductProduction extends TenantEntity {
     private BigDecimal produceQuantity;
 
     /**
+     * 本条产出记录抵多少门店需求量（按需求单位计，V6-R161）。
+     *
+     * <p>「到店量」= 绑到该需求的产出记录 Σ 本列，<b>不是</b> {@code COUNT(*)}。改用本列的原因：
+     * 礼盒一次打包只落 1 条记录却抵 N 盒、KG 计量的猪肉/干货一次称重也只落 1 条却抵满整行 kg 需求，
+     * 数条数会把「已全额送到」算成「部分到店」。</p>
+     *
+     * <p>取值口径（6 个写入点见 {@code ProductProductionServiceImpl}）：礼盒 = 本次盒数；
+     * KG 计量（kg / 公斤）= 本条重量 kg；其余计件单位（份 / 枚 / 头 …）= 1，即一条记录抵一件。</p>
+     */
+    private BigDecimal demandDeductQty;
+
+    /**
      * 发货方式字典 {@code djs_deliver_type}：1=发货 / 2=邮寄 / 3=销售。
      */
     private Integer deliverType;

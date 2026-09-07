@@ -201,15 +201,31 @@ public class BurnInhouseAdjustServiceImpl implements IBurnInhouseAdjustService {
             return;
         }
 
-        // ---------- Step 3：上限校验（与燎毛入库同口径：全部产出行合计不得超过猪只接收重量）----------
+        // ---------- Step 3：上限校验（两道上界，都是「本行新重 + 其它产出行 ≤ 某个基准」）----------
+        // 基准一 = 猪只接收重量 arrive_weight（与燎毛入库同口径）；
+        // 基准二 = 猪只出栏重量 marketing_weight —— 出品率的分母，白条重不得超过它。
+        // 只守基准一是不够的：arrive_weight 为 NULL（外购猪 / 未称重直接处理）时它整段跳过，
+        // 调整入口就成了绕过出品率上界的后门（本方法 Step 9 还会重算当日统计快照）。
+        // 两个基准都为空（极老数据）才完全跳过，此时连其它产出行都不必查。
         BigDecimal arriveWeight = bar.getArriveWeight();
-        if (arriveWeight != null) {
+        BigDecimal marketingWeight = bar.getMarketingWeight();
+        if (arriveWeight != null || marketingWeight != null) {
             BigDecimal otherRows = sumOtherRowsWeight(row.getWhiteBarId(), row.getId());
-            BigDecimal maxAllowed = arriveWeight.subtract(otherRows).max(BigDecimal.ZERO);
-            if (newWeight.compareTo(maxAllowed) > 0) {
-                throw new ServiceException("调整后入库重量不能超过 " + maxAllowed.stripTrailingZeros().toPlainString()
-                    + "kg（猪只接收重量 " + arriveWeight.stripTrailingZeros().toPlainString()
-                    + "kg − 其它产品已入库 " + otherRows.stripTrailingZeros().toPlainString() + "kg）");
+            if (arriveWeight != null) {
+                BigDecimal maxAllowed = arriveWeight.subtract(otherRows).max(BigDecimal.ZERO);
+                if (newWeight.compareTo(maxAllowed) > 0) {
+                    throw new ServiceException("调整后入库重量不能超过 " + maxAllowed.stripTrailingZeros().toPlainString()
+                        + "kg（猪只接收重量 " + arriveWeight.stripTrailingZeros().toPlainString()
+                        + "kg − 其它产品已入库 " + otherRows.stripTrailingZeros().toPlainString() + "kg）");
+                }
+            }
+            if (marketingWeight != null) {
+                BigDecimal maxByMarketing = marketingWeight.subtract(otherRows).max(BigDecimal.ZERO);
+                if (newWeight.compareTo(maxByMarketing) > 0) {
+                    throw new ServiceException("调整后入库重量不能超过 " + maxByMarketing.stripTrailingZeros().toPlainString()
+                        + "kg（猪只出栏重量 " + marketingWeight.stripTrailingZeros().toPlainString()
+                        + "kg − 其它产品已入库 " + otherRows.stripTrailingZeros().toPlainString() + "kg）");
+                }
             }
         }
 

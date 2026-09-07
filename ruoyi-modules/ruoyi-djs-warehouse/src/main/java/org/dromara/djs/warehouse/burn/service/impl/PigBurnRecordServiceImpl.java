@@ -641,6 +641,19 @@ public class PigBurnRecordServiceImpl
         if (headSkinWeight != null && inWeightTotal.compareTo(headSkinWeight) > 0) {
             throw new ServiceException("已录入产品总重不能超过头皮肉重量");
         }
+        // 白条重（in_weight）≤ 出栏重（marketing_weight）—— 出品率的分子不得超过分母。
+        //
+        // 为什么上面那道 arrive_weight 闸挡不住：它在 arrive_weight 为 NULL 时整段跳过，而外购猪
+        // 与任何没走称重就直接处理完成的白条，arrive_weight 恰恰就是 NULL；此时 in_weight 无上界，
+        // 分母 marketing_weight 却非空（自养取出栏重、外购取毛猪重，建 bar 时就写死），
+        // 于是单头录错就能把当日出品率顶过 100%。这里按分母本身再兜一道。
+        // marketing_weight 为 null（极老数据）时同样跳过，与既有风格一致。
+        BigDecimal marketingWeight = bar.getMarketingWeight();
+        if (marketingWeight != null && inWeightTotal.compareTo(marketingWeight) > 0) {
+            throw new ServiceException("白条重量不能超过出栏重量（出栏重 "
+                + marketingWeight.stripTrailingZeros().toPlainString() + "kg，当前已录 "
+                + inWeightTotal.stripTrailingZeros().toPlainString() + "kg）");
+        }
 
         // ---------- Step 3：UPDATE bar status singing → in_stock（燎毛处理完成=已入库，乐观锁）----------
         // 下游分割 availableBars / 库存自检均认 in_stock，故燎毛终态直接落 in_stock，

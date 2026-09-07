@@ -156,6 +156,13 @@ class BurnInhouseAdjustServiceImplTest {
         return b;
     }
 
+    /** 带出栏重量的白条（出品率分母）——未称重时 arriveWeight 传 null。 */
+    private BarInfo bar(String status, BigDecimal arriveWeight, String marketingWeight) {
+        BarInfo b = bar(status, arriveWeight);
+        b.setMarketingWeight(new BigDecimal(marketingWeight));
+        return b;
+    }
+
     /** 同白条另一条产出行（另半扇 30.000kg），用于上限校验。 */
     @SuppressWarnings("unchecked")
     private void stubOtherRows(String otherWeight) {
@@ -377,6 +384,38 @@ class BurnInhouseAdjustServiceImplTest {
         verify(adjustMapper).applyAdjust(INHOUSE_ID, OLD_WEIGHT, NEW_WEIGHT, USER_ID);
         // 未称重时不需要读其它产出行做上限校验
         verify(productInhouseMapper, never()).selectList(any(LambdaQueryWrapper.class));
+    }
+
+    @Test
+    @DisplayName("adjustWeight: 未称重时出栏重仍封顶 —— 否则调整入口就是绕过出品率上界的后门")
+    void testAdjust_CappedByMarketingWhenNotWeighed() {
+        // arrive_weight 为 NULL 时上面那道「接收重量」闸整段跳过；本方法 Step 9 还会重算当日统计快照，
+        // 不在这里封顶，改一次 in_weight 就能把当日出品率顶过 100%。
+        when(productInhouseMapper.selectById(INHOUSE_ID)).thenReturn(burnRow());
+        when(barInfoMapper.selectById(BAR_ID)).thenReturn(bar("pending_singe", null, "100.000"));
+        stubOtherRows("30.000");
+        stubAllWritesOk();
+
+        // 本行新重 78.500 + 其它产出行 30.000 = 108.5 > 出栏重 100.000
+        assertThatThrownBy(() -> service.adjustWeight(bo(NEW_WEIGHT)))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("猪只出栏重量");
+
+        verify(adjustMapper, never()).applyAdjust(any(), any(), any(), any());
+        verify(barInfoMapper, never()).adjustInWeightIfBurning(any(), any(), any());
+    }
+
+    @Test
+    @DisplayName("adjustWeight: 未称重 + 合计 ≤ 出栏重 → 照常放行（新闸不得比改动前更严）")
+    void testAdjust_NotWeighedWithinMarketingStillPasses() {
+        when(productInhouseMapper.selectById(INHOUSE_ID)).thenReturn(burnRow());
+        when(barInfoMapper.selectById(BAR_ID)).thenReturn(bar("pending_singe", null, "200.000"));
+        stubOtherRows("30.000");
+        stubAllWritesOk();
+
+        service.adjustWeight(bo(NEW_WEIGHT));
+
+        verify(adjustMapper).applyAdjust(INHOUSE_ID, OLD_WEIGHT, NEW_WEIGHT, USER_ID);
     }
 
     @Test
