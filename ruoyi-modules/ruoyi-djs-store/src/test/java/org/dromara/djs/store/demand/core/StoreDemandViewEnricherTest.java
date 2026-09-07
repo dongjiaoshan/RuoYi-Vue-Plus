@@ -1,6 +1,7 @@
 package org.dromara.djs.store.demand.core;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import org.dromara.djs.warehouse.demand.core.DemandArrivedQuantityFiller;
 import org.dromara.djs.warehouse.demand.domain.vo.DemandManageVo;
 import org.dromara.djs.warehouse.pack.mapper.ProductProductionMapper;
 import org.dromara.djs.warehouse.pack.service.IProductProductionService;
@@ -10,11 +11,11 @@ import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
@@ -56,8 +57,21 @@ class StoreDemandViewEnricherTest {
     @Mock
     private IProductProductionService productProductionService;
 
-    @InjectMocks
+    /**
+     * 到店量回填用<b>真实实现</b>而不是 mock：V6-R197 起门店派生态依赖它，
+     * mock 掉就等于把「到店量到底填没填」这条最关键的链路测空了。
+     * 它只依赖 productProductionMapper，正是本类已经 mock 的那一个。
+     */
+    private DemandArrivedQuantityFiller arrivedQuantityFiller;
+
     private StoreDemandViewEnricher enricher;
+
+    @BeforeEach
+    void wire() {
+        arrivedQuantityFiller = new DemandArrivedQuantityFiller(productProductionMapper);
+        enricher = new StoreDemandViewEnricher(productInfoMapper, productProductionMapper,
+            productProductionService, arrivedQuantityFiller);
+    }
 
     private static DemandManageVo row(long id, long productId, String storeStatus) {
         DemandManageVo vo = new DemandManageVo();
@@ -97,7 +111,7 @@ class StoreDemandViewEnricherTest {
     // ─────────────────────────── 计损量 ───────────────────────────
 
     @Test
-    @DisplayName("计损量：只对门店态 已发货 / 已到店 的行回填，其余行保持 null（前端显示 --）")
+    @DisplayName("计损量：只对门店态 已发货 / 部分到店 / 已到店 的行回填，其余行保持 null（前端显示 --）")
     void damagedCount_onlyShippedOrArrived() {
         stubProducts(product(9001L, "vegetable"));
         when(productProductionService.countDamagedByDemand(anyLong())).thenReturn(3L);
@@ -106,12 +120,15 @@ class StoreDemandViewEnricherTest {
         DemandManageVo confirmed = row(2L, 9001L, "CONFIRMED");
         DemandManageVo shipped = row(3L, 9001L, "SHIPPED");
         DemandManageVo arrived = row(4L, 9001L, "ARRIVED");
-        enricher.enrich(List.of(submitted, confirmed, shipped, arrived));
+        // V6-R197：部分到店也是「货到了一部分」，同样可能有损坏，漏掉它页面会退成 0
+        DemandManageVo partial = row(5L, 9001L, "PARTIAL_ARRIVED");
+        enricher.enrich(List.of(submitted, confirmed, shipped, arrived, partial));
 
         assertThat(submitted.getDamagedCount()).isNull();
         assertThat(confirmed.getDamagedCount()).isNull();
         assertThat(shipped.getDamagedCount()).isEqualTo(3);
         assertThat(arrived.getDamagedCount()).isEqualTo(3);
+        assertThat(partial.getDamagedCount()).isEqualTo(3);
     }
 
     @Test
@@ -210,6 +227,33 @@ class StoreDemandViewEnricherTest {
         assertThat(shipped.getArrivedQuantity()).isEqualByComparingTo("3");
         // 「还没发车」在业务上就是到店 0，不能显 '—' —— 与本页损坏数量显 0 同处置
         assertThat(notShipped.getArrivedQuantity()).isEqualByComparingTo("0");
+    }
+
+    @Test
+    @DisplayName("到店量：上游已填过的行不覆盖、也不重复打库（warehouse 分页列表先填 → store enricher 跳过）")
+    void arrivedQuantity_respectsUpstreamValue() {
+        DemandManageVo prefilled = row(61L, 1L, "SHIPPED");
+        prefilled.setArrivedQuantity(new BigDecimal("7"));
+
+        enricher.enrich(List.of(prefilled));
+
+        assertThat(prefilled.getArrivedQuantity()).isEqualByComparingTo("7");
+        verify(productProductionMapper, never()).selectArrivedQuantityByDemandIds(any());
+    }
+
+    @Test
+    @DisplayName("到店量必须先于计损量填 —— enrich 一趟下来两列都在（顺序写反时计损量会读到未派生的态）")
+    void arrivedQuantity_filledBeforeDamagedCount() {
+        stubProducts(product(9001L, "vegetable"));
+        when(productProductionMapper.selectArrivedQuantityByDemandIds(any()))
+            .thenReturn(List.of(Map.of("demandId", 71L, "arrivedQty", 2L)));
+        when(productProductionService.countDamagedByDemand(anyLong())).thenReturn(1L);
+
+        DemandManageVo partial = row(71L, 9001L, "PARTIAL_ARRIVED");
+        enricher.enrich(List.of(partial));
+
+        assertThat(partial.getArrivedQuantity()).isEqualByComparingTo("2");
+        assertThat(partial.getDamagedCount()).isEqualTo(1);
     }
 
     // ─────────────────────────── 边界 ───────────────────────────

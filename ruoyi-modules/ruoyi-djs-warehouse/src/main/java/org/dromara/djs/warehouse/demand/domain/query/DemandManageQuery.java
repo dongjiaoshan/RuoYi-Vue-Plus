@@ -38,6 +38,16 @@ public class DemandManageQuery extends BaseEntity {
     /** 状态多选（R70 需求状态下拉多选）。非空时按 IN 过滤，优先于单值 demandStatus。 */
     private List<String> demandStatuses;
 
+    /**
+     * <b>门店视角</b>派生态多选（字典 {@code djs_store_demand_status}，V6-R197）。
+     *
+     * <p>与 {@link #demandStatus} / {@link #demandStatuses}（仓库落库 7 态）是两个维度，可叠加：
+     * 门店态是「仓库态 + 是否收货 + 到店量」算出来的，没有对应的落库列，故按
+     * {@code StoreDemandStatusMapping.sqlPredicateAny} 下推成 WHERE 片段。
+     * 未知态 / DELETED 由 mapping 直接报错，不静默丢弃。</p>
+     */
+    private List<String> storeDemandStatuses;
+
     /** 门店 ID。 */
     private Long storeId;
 

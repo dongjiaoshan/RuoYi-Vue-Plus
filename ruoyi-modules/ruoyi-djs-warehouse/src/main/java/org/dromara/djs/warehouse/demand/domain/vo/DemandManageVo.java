@@ -97,8 +97,8 @@ public class DemandManageVo implements Serializable {
      * <p>仓库 {@code demand_status}（7 态）映射到门店视角：
      * {@code SUBMITTED→待确认 / CONFIRMED→已确认 / PARTIAL_SHIPPED|COMPLETED→已发货 /
      * 已确认且 received_time!=null→确认到店(ARRIVED) / DELETED→已删除}。
-     * 仓库列表不展示本字段（仍用 {@code demandStatus}），门店列表用本字段显门店语义状态。
-     * service 层 {@code queryPageList} 按行计算回填，非 entity 列。</p>
+     * 仓库列表不展示本字段（仍用 {@code demandStatus}），门店列表与需求确认抽屉用本字段显门店语义状态。
+     * service 层 {@code queryPageList} 按行计算回填（口径见 {@code StoreDemandStatusMapping}），非 entity 列。</p>
      */
     private String storeDemandStatus;
 
@@ -139,8 +139,11 @@ public class DemandManageVo implements Serializable {
     /**
      * 到店量（V6-row161）：该需求已发车发出的数量之和，与需求量同单位。
      *
-     * <p>无持久化列，compute-on-read —— 由 {@code StoreDemandViewEnricher} 按「该需求下已发货清点
-     * （{@code is_delivery_check = 1}）的成品条数」汇总回填。与 {@link #shippedCount} 的区别：
+     * <p>无持久化列，compute-on-read —— 由 {@code DemandArrivedQuantityFiller} 按「该需求下已发货清点
+     * （{@code is_delivery_check = 1}）的成品条数」汇总回填（admin 需求列表 / 门店列表 / mp 按天明细共用同一实现）。
+     * <b>它同时是 {@link #storeDemandStatus} 的输入</b>（V6-R197：到店量 0 → 已确认 / 不足 → 部分到店 /
+     * 够 → 已发货），所以任何输出 storeDemandStatus 的链路都必须先填本字段。
+     * 与 {@link #shippedCount} 的区别：
      * 后者在打包送到发货月台时就累加，本字段只认发车这个动作。
      * 不取发货流水的 {@code ship_quantity}：那一列在白条链路上装的是 kg，与按份/头计的需求量并排会串味。</p>
      */

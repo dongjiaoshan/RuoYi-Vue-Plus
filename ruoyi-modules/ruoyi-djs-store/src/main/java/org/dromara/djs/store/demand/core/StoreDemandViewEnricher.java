@@ -2,6 +2,8 @@ package org.dromara.djs.store.demand.core;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import lombok.RequiredArgsConstructor;
+import org.dromara.djs.warehouse.demand.core.DemandArrivedQuantityFiller;
+import org.dromara.djs.warehouse.demand.core.StoreDemandStatusMapping;
 import org.dromara.djs.warehouse.demand.domain.vo.DemandManageVo;
 import org.dromara.djs.warehouse.pack.mapper.ProductProductionMapper;
 import org.dromara.djs.warehouse.pack.service.IProductProductionService;
@@ -40,12 +42,6 @@ import java.util.Objects;
 @RequiredArgsConstructor
 public class StoreDemandViewEnricher {
 
-    /** 门店视角派生状态：已发货（{@code djs_store_demand_status} 之一）。 */
-    private static final String STORE_STATUS_SHIPPED = "SHIPPED";
-
-    /** 门店视角派生状态：确认到店（{@code djs_store_demand_status} 之一，SHIPPED 收货后）。 */
-    private static final String STORE_STATUS_ARRIVED = "ARRIVED";
-
     /** 自产归属类型（djs_belong_type）：果蔬 / 猪肉 / 白条 / 干货 —— 预计到店重量口径分流。 */
     private static final String BELONG_VEGETABLE = "vegetable";
     private static final String BELONG_PORK = "pork";
@@ -58,51 +54,33 @@ public class StoreDemandViewEnricher {
 
     private final IProductProductionService productProductionService;
 
+    /** 到店量回填的唯一实现（warehouse 侧，与 admin 需求确认抽屉共用）。 */
+    private final DemandArrivedQuantityFiller arrivedQuantityFiller;
+
     /**
-     * 一次回填三列（顺序无关，互不依赖）。
+     * 一次回填三列。
+     *
+     * <p><b>顺序有依赖（V6-R197）</b>：到店量必须最先填 —— 计损量看的是门店派生状态，
+     * 而门店派生状态自 R197 起要拿到店量跟需求量比。调用方须保证进来的行已经派生过
+     * {@code storeDemandStatus}（且那次派生已经拿到到店量），本类不再二次派生。</p>
      *
      * @param rows 已派生 {@code storeDemandStatus} 的门店视角行；null / 空直接返回
      */
     public void enrich(List<DemandManageVo> rows) {
+        fillArrivedQuantity(rows);
         fillDamagedCount(rows);
         fillExpectedWeight(rows);
-        fillArrivedQuantity(rows);
     }
 
     /**
-     * 回填「到店量」{@code arrivedQuantity}（V6-row161）：该需求已发车发出的数量之和，与需求量同单位。
+     * 回填「到店量」{@code arrivedQuantity}（V6-row161）。
      *
-     * <p>口径 = 该需求下已被发货清点（{@code is_delivery_check = 1}）的成品<b>条数</b>，
-     * 这个标记与 {@code demand_id} 是点击发车那一刻同事务写入的，锚的正是「点击发车时的产品数据」。
-     * 不用需求单上的 {@code shipped_count}（那个在打包送到月台时就累加了，不是发车），
-     * 也不用发货流水的 {@code ship_quantity}（白条链路上它装的是 kg，与按份/头计的需求量并排会串味）。</p>
-     *
-     * <p>一次批量聚合而不是逐行查（本页一页最多百行，逐行查是 N+1）。没有任何发车记录的需求
-     * 回填 {@code 0} 而不是留 null —— 「还没发车」在业务上就是到店 0，与同页「损坏数量」显 0 同处置。</p>
+     * <p>实现在 warehouse 侧 {@link DemandArrivedQuantityFiller} —— admin 需求确认抽屉（走
+     * {@code DemandManageServiceImpl.queryPageList}）也要这一列，两边各写一份必漂。
+     * 上游已填过的行那边会自动跳过，不重复打库。</p>
      */
     private void fillArrivedQuantity(List<DemandManageVo> rows) {
-        if (rows == null || rows.isEmpty()) {
-            return;
-        }
-        List<Long> demandIds = rows.stream().map(DemandManageVo::getId)
-            .filter(Objects::nonNull).distinct().toList();
-        if (demandIds.isEmpty()) {
-            return;
-        }
-        Map<Long, BigDecimal> shippedByDemand = new HashMap<>();
-        for (Map<String, Object> r : productProductionMapper.selectArrivedQuantityByDemandIds(demandIds)) {
-            Object id = r.get("demandId");
-            Object qty = r.get("arrivedQty");
-            if (id instanceof Number n && qty instanceof Number q) {
-                shippedByDemand.put(n.longValue(), new BigDecimal(q.toString()));
-            }
-        }
-        for (DemandManageVo vo : rows) {
-            if (vo.getId() == null) {
-                continue;
-            }
-            vo.setArrivedQuantity(shippedByDemand.getOrDefault(vo.getId(), BigDecimal.ZERO));
-        }
+        arrivedQuantityFiller.fill(rows);
     }
 
     /**
@@ -161,11 +139,14 @@ public class StoreDemandViewEnricher {
     }
 
     /**
-     * 回填「损坏数量」{@code damagedCount}（row48 + admin row6）：对门店派生状态为「已发货」(SHIPPED)
-     * 或「确认到店」(ARRIVED) 的行，按 demand_id 统计损坏件数；其余行保持 {@code null}（前端展示 '—'）。
+     * 回填「损坏数量」{@code damagedCount}（row48 + admin row6）：对门店派生状态为「已发货」(SHIPPED)、
+     * 「部分到店」(PARTIAL_ARRIVED) 或「确认到店」(ARRIVED) 的行，按 demand_id 统计损坏件数；
+     * 其余行保持 {@code null}（前端展示 '—'）。
      *
      * <p>admin row6：确认到店后行由 SHIPPED 派生成 ARRIVED，损坏数量不因收货而清零（损坏件是产品生产明细
-     * is_damaged=1 的固有属性，与收货无关），故收货后仍按同口径回填，不再漏算成 0。</p>
+     * is_damaged=1 的固有属性，与收货无关），故收货后仍按同口径回填，不再漏算成 0。
+     * V6-R197 新增的 PARTIAL_ARRIVED 是「已发货但没发满」，货已经到了一部分、同样可能有损坏，
+     * 漏掉它会让部分到店行的损坏数量在页面上退成 0。</p>
      *
      * <p>当前逐行查询（门店端单店分页 / 单店单日数据量小，契约为 COUNT 单点查询）。若后续单店需求行数
      * 显著增大，可在 warehouse 侧加批量 {@code countDamagedByDemandBatch(demandIds)} 一次聚合替代，去 N+1。</p>
@@ -176,7 +157,9 @@ public class StoreDemandViewEnricher {
         }
         for (DemandManageVo vo : rows) {
             String s = vo.getStoreDemandStatus();
-            if (vo.getId() != null && (STORE_STATUS_SHIPPED.equals(s) || STORE_STATUS_ARRIVED.equals(s))) {
+            if (vo.getId() != null && (StoreDemandStatusMapping.SHIPPED.equals(s)
+                || StoreDemandStatusMapping.PARTIAL_ARRIVED.equals(s)
+                || StoreDemandStatusMapping.ARRIVED.equals(s))) {
                 vo.setDamagedCount((int) productProductionService.countDamagedByDemand(vo.getId()));
             }
         }
