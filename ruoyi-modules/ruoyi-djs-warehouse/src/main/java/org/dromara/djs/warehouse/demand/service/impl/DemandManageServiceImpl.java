@@ -17,6 +17,7 @@ import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.common.base.DjsBaseServiceImpl;
 import org.dromara.djs.common.encoder.BizCodeType;
 import org.dromara.djs.common.encoder.IBizCodeGenerator;
+import org.dromara.djs.warehouse.demand.core.DemandArrivedQuantityFiller;
 import org.dromara.djs.warehouse.demand.core.StoreDemandStatusMapping;
 import org.dromara.djs.warehouse.demand.core.enums.DemandStatus;
 import org.dromara.djs.common.util.I18nMessages;
@@ -177,6 +178,9 @@ public class DemandManageServiceImpl extends DjsBaseServiceImpl<DemandManageMapp
     /** 门店主数据（V6-R140 留痕表快照门店名用）。 */
     private final StoreMapper storeMapper;
 
+    /** 到店量回填（V6-R197：门店视角状态派生依赖它，必须在 fillStoreDemandStatus 之前跑）。 */
+    private final DemandArrivedQuantityFiller arrivedQuantityFiller;
+
     public DemandManageServiceImpl(DemandManageMapper baseMapper,
                                    DemandPigMapper demandPigMapper,
                                    IBizCodeGenerator bizCodeGenerator,
@@ -187,7 +191,8 @@ public class DemandManageServiceImpl extends DjsBaseServiceImpl<DemandManageMapp
                                    ProductInfoMapper productInfoMapper,
                                    IProductDisplayNameResolver displayNameResolver,
                                    DemandAdjustRecordMapper demandAdjustRecordMapper,
-                                   StoreMapper storeMapper) {
+                                   StoreMapper storeMapper,
+                                   DemandArrivedQuantityFiller arrivedQuantityFiller) {
         super(baseMapper);
         this.demandPigMapper = demandPigMapper;
         this.bizCodeGenerator = bizCodeGenerator;
@@ -199,6 +204,7 @@ public class DemandManageServiceImpl extends DjsBaseServiceImpl<DemandManageMapp
         this.displayNameResolver = displayNameResolver;
         this.demandAdjustRecordMapper = demandAdjustRecordMapper;
         this.storeMapper = storeMapper;
+        this.arrivedQuantityFiller = arrivedQuantityFiller;
     }
 
     /** 出栏日龄阈值兜底（配置缺失时，与 mp PigAppletController.slaughterAge 一致）。 */
@@ -222,6 +228,9 @@ public class DemandManageServiceImpl extends DjsBaseServiceImpl<DemandManageMapp
         LambdaQueryWrapper<DemandManage> wrapper = buildQueryWrapper(query);
         Page<DemandManageVo> page = baseMapper.selectVoPage(pageQuery.build(), wrapper);
         fillStoreCount(page.getRecords());
+        // V6-R197：到店量必须先于门店视角状态回填 —— 状态派生要拿它跟需求量比（0 → 已确认 /
+        // 不足 → 部分到店 / 够 → 已发货）。顺序倒过来的话状态永远算成「已发货」，正是甲方 row197 报的那个 bug。
+        arrivedQuantityFiller.fill(page.getRecords());
         fillStoreDemandStatus(page.getRecords());
         // 确认页下钻场景（带 productId）才回填「是否指定猪只」，主列表不查省一次子表 IN
         if (query != null && query.getProductId() != null) {
@@ -231,33 +240,24 @@ public class DemandManageServiceImpl extends DjsBaseServiceImpl<DemandManageMapp
     }
 
     /**
-     * 回填门店视角派生状态 {@code storeDemandStatus}（0613-04 门店端 5 态）。
+     * 回填门店视角派生状态 {@code storeDemandStatus}（门店端 6 态，字典 {@code djs_store_demand_status}）。
      *
-     * <p>映射规则：{@code SUBMITTED→待确认 / CONFIRMED 且未收货→已确认 / CONFIRMED 且已收货→确认到店(ARRIVED) /
-     * PARTIAL_SHIPPED|COMPLETED→已发货(SHIPPED) / DELETED→已删除 / CANCELLED→已删除（门店端不区分取消/删除，统一灰显）}。
-     * 仓库列表不读本字段（用 {@code demandStatus}），只为门店列表 dict-tag 提供门店语义状态。</p>
+     * <p>口径本体在 {@link StoreDemandStatusMapping}（与「按门店态筛选」的 SQL 片段同处一个类，
+     * 保证读出来的态和筛出来的行永远同一套规则）；本方法只是回填的调用点。</p>
+     *
+     * <p><b>必须在 {@link DemandArrivedQuantityFiller#fill} 之后调用</b>：已发货态要按到店量三分
+     * （0 → 已确认 / 不足需求量 → 部分到店 / 够 → 已发货）。仓库列表本身不展示本字段（用
+     * {@code demandStatus}），但需求确认抽屉与门店端列表都读它。</p>
      */
     private void fillStoreDemandStatus(List<DemandManageVo> rows) {
         if (CollUtil.isEmpty(rows)) {
             return;
         }
         for (DemandManageVo vo : rows) {
-            vo.setStoreDemandStatus(toStoreDemandStatus(vo.getDemandStatus(), vo.getReceivedTime() != null));
+            vo.setStoreDemandStatus(StoreDemandStatusMapping.derive(
+                vo.getDemandStatus(), vo.getReceivedTime() != null,
+                vo.getArrivedQuantity(), vo.getDemandQuantity()));
         }
-    }
-
-    /**
-     * 仓库 7 态 → 门店视角 5 态码（{@code djs_store_demand_status}）。
-     *
-     * <p>口径本体在 {@link StoreDemandStatusMapping}（与「按门店态筛选」的 SQL 片段同处一个类，
-     * 保证读出来的态和筛出来的行永远同一套规则）；本方法只是门店列表回填的调用点。</p>
-     *
-     * @param status   仓库 demand_status
-     * @param received 是否已门店收货（received_time != null）
-     * @return 门店视角状态码（SUBMITTED/CONFIRMED/SHIPPED/ARRIVED/DELETED）；未知态回退原值
-     */
-    private String toStoreDemandStatus(String status, boolean received) {
-        return StoreDemandStatusMapping.derive(status, received);
     }
 
     /**
@@ -1181,6 +1181,13 @@ public class DemandManageServiceImpl extends DjsBaseServiceImpl<DemandManageMapp
             .le(query.getEndDate() != null, DemandManage::getDemandDate, query.getEndDate())
             .orderByDesc(DemandManage::getDemandDate)
             .orderByDesc(DemandManage::getId);
+        // 门店视角派生态筛选（V6-R197）：门店态没有落库列，只能下推 mapping 产出的 WHERE 片段。
+        // 与 fillStoreDemandStatus 读的是同一个 StoreDemandStatusMapping —— 筛出来的行和算出来的态永远一致。
+        // 片段是常量字符串（不拼用户输入，无注入面），且只引用本表列 / 本表全名限定，配单表 wrapper 使用。
+        String storeStatusSql = StoreDemandStatusMapping.sqlPredicateAny(query.getStoreDemandStatuses());
+        if (storeStatusSql != null) {
+            wrapper.apply(storeStatusSql);
+        }
         return wrapper;
     }
 }
