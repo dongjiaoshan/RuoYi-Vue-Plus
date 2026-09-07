@@ -397,7 +397,8 @@ public class ShipmentServiceImpl
         if (demand == null) {
             throw new ServiceException(I18nMessages.t("shipment.demand.not_found", demandId), 404);
         }
-        return toAvailableProductionVos(findAvailableProductionsForDemand(demand));
+        return toAvailableProductionVos(
+            findAvailableProductionsForDemand(demand, fullyPackedNeedByProduct(List.of(demand))));
     }
 
     @Override
@@ -406,7 +407,8 @@ public class ShipmentServiceImpl
             return 0;
         }
         DemandManage demand = demandMapper.selectById(demandId);
-        return demand == null ? 0 : findAvailableProductionsForDemand(demand).size();
+        return demand == null ? 0
+            : findAvailableProductionsForDemand(demand, fullyPackedNeedByProduct(List.of(demand))).size();
     }
 
     @Override
@@ -425,8 +427,13 @@ public class ShipmentServiceImpl
         }
         // 3. 批量填门店名 + 批量取各店可发成品份数（两处均无 N+1：门店数 × 需求数不再各查一次）。
         Map<Long, String> storeNameMap = loadStoreNameMap(byStore.keySet());
+        // 已备齐产品与其需求量逐店算：同一产品可能 A 店已备齐、B 店还差着，放开窗口只对备齐的那家生效，
+        // 陈货补多少也按各店自己的需求量截断。
+        Map<Long, Map<Long, BigDecimal>> openedNeedByStore = new HashMap<>(byStore.size());
+        byStore.forEach((storeId, storeDemands) ->
+            openedNeedByStore.put(storeId, fullyPackedNeedByProduct(storeDemands)));
         Map<Long, Map<Long, BigDecimal>> producedByStore =
-            loadProducedCopies(byStore.keySet(), collectShippableProductIds(demands));
+            loadProducedCopies(byStore.keySet(), collectShippableProductIds(demands), openedNeedByStore);
         // 4. 每门店算待发需求数 + 待发产品种类数 + 总量 + 需求满足率。
         List<ShipStoreVo> list = new ArrayList<>(byStore.size());
         byStore.forEach((storeId, storeDemands) -> list.add(buildStoreVo(
@@ -458,7 +465,8 @@ public class ShipmentServiceImpl
             return vo;
         }
         Map<Long, Map<Long, BigDecimal>> producedByStore =
-            loadProducedCopies(Set.of(storeId), collectShippableProductIds(storeDemands));
+            loadProducedCopies(Set.of(storeId), collectShippableProductIds(storeDemands),
+                Map.of(storeId, fullyPackedNeedByProduct(storeDemands)));
         return buildStoreVo(storeId, storeName, storeDemands,
             producedByStore.getOrDefault(storeId, Map.of()));
     }
@@ -473,6 +481,9 @@ public class ShipmentServiceImpl
         if (demands.isEmpty()) {
             return List.of();
         }
+        // 放开集合按「该门店整批在途需求」算一次，全部需求行共用：门店货物页是一屏，同一产品的清单
+        // 不能因为挂在不同需求行下就一半开窗一半不开窗。与页头满足率（queryStoreSummary）同口径。
+        Map<Long, BigDecimal> openedNeed = fullyPackedNeedByProduct(demands);
         return demands.stream().map(d -> {
             ShipDemandVo vo = new ShipDemandVo();
             vo.setDemandId(d.getId());
@@ -488,7 +499,8 @@ public class ShipmentServiceImpl
             vo.setProductName(d.getProductName());
             vo.setProductSpec(d.getProductSpec());
             vo.setProductUnit(d.getProductUnit());
-            vo.setAvailableProductions(toAvailableProductionVos(findAvailableProductionsForDemand(d)));
+            vo.setAvailableProductions(
+                toAvailableProductionVos(findAvailableProductionsForDemand(d, openedNeed)));
             return vo;
         }).toList();
     }
@@ -500,10 +512,140 @@ public class ShipmentServiceImpl
      * （{@code demand_id IS NULL AND is_delivery_check=0}）。listAvailableProductions /
      * listStorePendingDemands 共用，条件明细见 {@link #availableProductionWrapper}。
      */
-    private List<ProductProduction> findAvailableProductionsForDemand(DemandManage demand) {
-        return productProductionMapper.selectList(availableProductionWrapper(
+    private List<ProductProduction> findAvailableProductionsForDemand(DemandManage demand,
+                                                                      Map<Long, BigDecimal> openedNeedByProduct) {
+        List<ProductProduction> rows = productProductionMapper.selectList(availableProductionWrapper(
             demand.getStoreId() == null ? List.of() : List.of(demand.getStoreId()),
-            demand.getProductId() == null ? List.of() : List.of(demand.getProductId())));
+            demand.getProductId() == null ? List.of() : List.of(demand.getProductId()),
+            openedNeedByProduct.keySet()));
+        BigDecimal need = demand.getProductId() == null ? null : openedNeedByProduct.get(demand.getProductId());
+        if (need == null || rows.isEmpty()) {
+            // 该产品未备齐：wrapper 已按本 demand 的 product_id 收窄，放开分支（IN 别的产品）不可能命中，
+            // SQL 返回的必然全在窗口内 —— 无需截断，也不必为算份数多查一次产品主数据。
+            return rows;
+        }
+        return capOutOfWindowToGap(rows, need, loadProductInfoMap(rows), LocalDate.now(SHIP_TODAY_ZONE));
+    }
+
+    /**
+     * 「在途需求已备齐」的产品及其需求量（V6-R160 放开打包日窗口的唯一判据 + 截断缺口的分母）。
+     *
+     * <p>按 {@code product_id} 归并入参需求行，{@code Σshipped_count >= Σdemand_quantity} 的产品即已备齐，
+     * 返回 {@code product_id → Σdemand_quantity}（<b>key 存在 = 已备齐</b>，value 是窗口外陈货的补货上限）。
+     * 求和范围只取在途需求（{@link #SHIPPABLE_STATUS_CODES}）——已完成 / 草稿 / 已取消不参与，
+     * 与扣减端 {@code DemandManageMapper.selectUncompletedDemands} 的状态集同源。</p>
+     *
+     * <p><b>先归并再比较</b>，不逐行判：同店同日同产品会有多行需求，逐行判会让「A 行发满、B 行没发满」
+     * 的产品在同一屏上一半开窗一半不开窗，清单条数自相矛盾。需求量 {@code Σ <= 0} 的产品视为未备齐
+     * （不放开窗口）——分母都没有的产品谈不上「满足 100%」，放开只会把陈货翻出来。
+     * {@code null} 的 {@code shipped_count} / {@code demand_quantity} 按 0 计。</p>
+     *
+     * <p>单需求上下文传单行 {@code List.of(demand)}（判据退化成该需求自己的
+     * {@code shipped_count >= demand_quantity}、缺口分母退化成它自己的 {@code demand_quantity}），
+     * 门店上下文传该门店整批需求行 —— 两条路径共用本方法，不各写一遍求和。</p>
+     */
+    private Map<Long, BigDecimal> fullyPackedNeedByProduct(List<DemandManage> demands) {
+        Map<Long, BigDecimal> needByProduct = sumNeedByProduct(demands);
+        if (needByProduct.isEmpty()) {
+            return Map.of();
+        }
+        Map<Long, BigDecimal> shippedByProduct = new LinkedHashMap<>();
+        for (DemandManage d : demands) {
+            if (!SHIPPABLE_STATUS_CODES.contains(d.getDemandStatus()) || d.getProductId() == null) {
+                continue;
+            }
+            shippedByProduct.merge(d.getProductId(),
+                d.getShippedCount() == null ? BigDecimal.ZERO : d.getShippedCount(), BigDecimal::add);
+        }
+        Map<Long, BigDecimal> opened = new LinkedHashMap<>();
+        needByProduct.forEach((productId, need) -> {
+            if (need == null || need.signum() <= 0) {
+                return;
+            }
+            if (shippedByProduct.getOrDefault(productId, BigDecimal.ZERO).compareTo(need) >= 0) {
+                opened.put(productId, need);
+            }
+        });
+        return opened;
+    }
+
+    /**
+     * 窗口外陈货<b>按需求缺口截断</b> —— 单需求与门店批量共用的唯一截断口。
+     *
+     * <p>入参是<b>同一 {@code (门店, 产品)}</b> 的可发成品（窗口内外混排）。规则：</p>
+     * <ol>
+     *   <li><b>窗口内的行原样全留</b>（{@code [today-N, today]}）—— 这是 R160 之前就有的行为，不动。</li>
+     *   <li>该产品未备齐（{@code need == null}）→ 窗口外一条都不要，等价于窗口从没被放开过。
+     *       门店批量那条 SQL 的放开集是各门店的并集，不在分摊时逐店复核，A 店备齐会让同样有该产品需求
+     *       却没备齐的 B 店白捡陈货、卡上满足率虚高，而门店货物页（单店上下文）算出来是低的 ——
+     *       列表与详情当场对不上。</li>
+     *   <li>已备齐 → 缺口 = {@code Σdemand_quantity − 窗口内份数之和}；缺口 &gt; 0 时，窗口外按
+     *       {@code produce_date} <b>倒序</b>（最新打包优先）逐行补，补到缺口清零为止。</li>
+     * </ol>
+     *
+     * <p><b>为什么要截断</b>：放开窗口是为了让「需求已备齐但货是前几天打的」能发车，不是为了把库里
+     * 所有陈货都倒给这一车。线上有大量未绑 demand 的孤儿成品，不截断的话备齐的那条需求会把它们全部
+     * 拉进清单 —— 而 mp 出车对「只属于一条需求的件」是不按件数截断的（独占件直接归属），
+     * 结果就是需求 1 份、发车发出 4 份，门店收到没订的货、发货单重量也对不上。</p>
+     *
+     * <p><b>行是原子的</b>：只要放进去之前缺口还 &gt; 0 就整行放进去，不拆行。所以最后一行可能把缺口
+     * 补过头（如缺口 2kg、最后一条陈货 5kg → 整条进，多 3kg）。成品行本来就是一次打包的产物，
+     * 拆行没有物理对应物；宁可多一行也不能少发。</p>
+     *
+     * <p>份数一律走 {@link #producedCopies}（kg 产品取公斤数、按件产品每行计 1），与满足率、
+     * mp 门店货物卡「生产量」同一把尺 —— 不在这里另发明一套计数。</p>
+     *
+     * @param need 该 {@code (门店, 产品)} 的在途需求量；{@code null} = 该产品未备齐
+     */
+    private List<ProductProduction> capOutOfWindowToGap(List<ProductProduction> rows, BigDecimal need,
+                                                       Map<Long, ProductInfo> productMap, LocalDate today) {
+        LocalDate windowFrom = today.minusDays(SHIPPABLE_PRODUCE_LOOKBACK_DAYS);
+        List<ProductProduction> inWindow = new ArrayList<>(rows.size());
+        List<ProductProduction> outOfWindow = new ArrayList<>();
+        for (ProductProduction p : rows) {
+            LocalDate day = produceDay(p.getProduceDate());
+            if (day == null || day.isAfter(today)) {
+                // 打包日为空 / 晚于今天：SQL 侧 DATE(produce_date) <= today 是无条件项，本就取不到这种行。
+                // 这里同样丢弃，不让脏日期的行占掉陈货的缺口名额（内存分摊与 SQL 必须同一把尺）。
+                continue;
+            }
+            if (day.isBefore(windowFrom)) {
+                outOfWindow.add(p);
+            } else {
+                inWindow.add(p);
+            }
+        }
+        if (need == null || outOfWindow.isEmpty()) {
+            return inWindow;
+        }
+        BigDecimal gap = need;
+        for (ProductProduction p : inWindow) {
+            gap = gap.subtract(producedCopies(p, productMap.get(p.getProductId())));
+        }
+        if (gap.signum() <= 0) {
+            return inWindow;
+        }
+        // 最新打包的陈货优先补：越新的越可能是这批需求的履约物，也越不容易是该报损的老货
+        outOfWindow.sort(Comparator.comparing(ProductProduction::getProduceDate, Comparator.reverseOrder()));
+        List<ProductProduction> kept = new ArrayList<>(inWindow);
+        for (ProductProduction p : outOfWindow) {
+            if (gap.signum() <= 0) {
+                break;
+            }
+            kept.add(p);
+            gap = gap.subtract(producedCopies(p, productMap.get(p.getProductId())));
+        }
+        return kept;
+    }
+
+    /**
+     * {@code produce_date} → 日历日。时区取 {@link #SHIP_TODAY_ZONE}，与 SQL 边界的 today 同源
+     * （JDBC 连接串 {@code serverTimezone=Asia/Shanghai}，取回的 {@code Date} 按同一时区还原
+     * 就是库里 {@code DATE(produce_date)} 那个日历日）。
+     */
+    private static LocalDate produceDay(Date produceDate) {
+        return produceDate == null ? null
+            : produceDate.toInstant().atZone(SHIP_TODAY_ZONE).toLocalDate();
     }
 
     /**
@@ -529,16 +671,35 @@ public class ShipmentServiceImpl
      *                   （扣减走 deductDemandOnPack 精确 product_id），杜绝生产量按族虚高、shipped_count
      *                   按精确扣不到 → 备齐永不满足「无法出车」的错位（row3/row5）。空集合（产品已删/未绑）
      *                   = 兜底放宽，不按产品收窄。
+     * @param openedProductIds 「在途需求已备齐」的产品集（{@link #fullyPackedNeedByProduct} 的 key）：
+     *                   这些产品<b>不受打包日下界约束</b>，更早打包的陈货也进候选，再由
+     *                   {@link #capOutOfWindowToGap} 按需求缺口截断。集合为空 = 退化成纯窗口条件。
      */
     private LambdaQueryWrapper<ProductProduction> availableProductionWrapper(Collection<Long> storeIds,
-                                                                            Collection<Long> productIds) {
+                                                                            Collection<Long> productIds,
+                                                                            Collection<Long> openedProductIds) {
         LocalDate today = LocalDate.now(SHIP_TODAY_ZONE);
         LocalDate produceFrom = today.minusDays(SHIPPABLE_PRODUCE_LOOKBACK_DAYS);
         LambdaQueryWrapper<ProductProduction> wrapper = new LambdaQueryWrapper<ProductProduction>()
             .isNull(ProductProduction::getDemandId)
             .eq(ProductProduction::getIsDeliveryCheck, 0)
-            .apply("DATE(produce_date) >= {0}", produceFrom.toString())
-            .apply("DATE(produce_date) <= {0}", today.toString())
+            // 上界无条件：打包日晚于今天的成品是录入错误，任何情况下都不该出现在可发清单里。
+            // 放开只放下界 —— 「需求已备齐」解释得了「货是前几天打的」，解释不了「货是明天打的」。
+            .apply("DATE(produce_date) <= {0}", today.toString());
+        if (openedProductIds == null || openedProductIds.isEmpty()) {
+            wrapper.apply("DATE(produce_date) >= {0}", produceFrom.toString());
+        } else {
+            // 已备齐的产品放开下界（V6-R160）：需求满足 100% 就该能发车，不再看货是哪天打的。
+            // 打包日窗口是给「还没备齐、要靠新货凑」的产品当护栏用的；一旦 shipped_count 已经把需求扣满，
+            // 那批货就是这些需求的履约物，它是前天打的还是今天打的与能不能发车无关。窗口留着只会让
+            // 「需求已备齐、发货页却显示不满足」——货在库里、shipped_count 满、清单是空的。
+            // 一条 SQL 里 OR 掉，不拆两次查询再合并：可发清单必须只有一个真相源。
+            // 放宽进来的陈货量由 capOutOfWindowToGap 在内存里按需求缺口截断（SQL 不做数量截断：
+            // 缺口要按 (门店,产品) 逐桶算，且未绑门店的通用件对每个门店各记一次缺口，SQL 表达不了）。
+            wrapper.and(w -> w.in(ProductProduction::getProductId, openedProductIds)
+                .or().apply("DATE(produce_date) >= {0}", produceFrom.toString()));
+        }
+        wrapper
             // 发送位置=礼盒的成品是礼盒组件（预留给礼盒打包消耗），不出现在发货月台（礼盒澄清 2026-06-25）。
             // 发送位置=后台出库的成品是矿山/厨房/劲牌等直接从仓库拿走的货，拿走即终态，同样不进发货月台
             // （V6 row115：它 store_id 为空，被下面那条「同门店 OR 未绑门店」当通用件捞进门店可发清单 →
@@ -655,32 +816,63 @@ public class ShipmentServiceImpl
      *
      * <p>未绑门店（store_id IS NULL）的通用成品对每个门店都可发，故各门店都计入
      * ——与 {@link #findAvailableProductionsForDemand} 逐 demand 查的结果一致。</p>
+     *
+     * @param openedNeedByStore 各门店已备齐的产品及其需求量（store_id → product_id → Σdemand_quantity，
+     *                      {@link #fullyPackedNeedByProduct} 逐店求得；<b>key 存在 = 该店该产品已备齐</b>）。
+     *                      SQL 用它们 key 的并集放开打包日下界（一次查完所有门店），分摊时再<b>逐 (门店,产品) 桶</b>
+     *                      走 {@link #capOutOfWindowToGap}：既复核「这家店有没有资格看陈货」，也把陈货截到缺口为止。
      */
-    private Map<Long, Map<Long, BigDecimal>> loadProducedCopies(Set<Long> storeIds, Set<Long> productIds) {
+    private Map<Long, Map<Long, BigDecimal>> loadProducedCopies(Set<Long> storeIds, Set<Long> productIds,
+                                                                Map<Long, Map<Long, BigDecimal>> openedNeedByStore) {
         Map<Long, Map<Long, BigDecimal>> result = new HashMap<>();
         if (storeIds.isEmpty() || productIds.isEmpty()) {
             return result;
         }
+        Set<Long> openedProductIds = openedNeedByStore.values().stream()
+            .flatMap(m -> m.keySet().stream()).collect(Collectors.toSet());
         List<ProductProduction> productions = productProductionMapper.selectList(
-            availableProductionWrapper(storeIds, productIds));
+            availableProductionWrapper(storeIds, productIds, openedProductIds));
         if (productions.isEmpty()) {
             return result;
         }
+        LocalDate today = LocalDate.now(SHIP_TODAY_ZONE);
         Map<Long, ProductInfo> productMap = loadProductInfoMap(productions);
+        // 先按 (门店, 产品) 分桶 —— 缺口必须逐桶算：未绑门店（store_id IS NULL）的通用件对每个门店都是候选，
+        // 各店按各自的需求量独立记缺口（同一件可能同时补进 A、B 两店的账，与 mp 逐 demand 拉清单的结果一致）。
+        Map<Long, Map<Long, List<ProductProduction>>> byStoreProduct = new HashMap<>();
         for (ProductProduction p : productions) {
             if (p.getProductId() == null) {
                 continue;
             }
-            BigDecimal copies = producedCopies(p, productMap.get(p.getProductId()));
             if (p.getStoreId() == null) {
-                storeIds.forEach(sid -> result.computeIfAbsent(sid, k -> new HashMap<>())
-                    .merge(p.getProductId(), copies, BigDecimal::add));
+                storeIds.forEach(sid -> bucketOf(byStoreProduct, sid, p.getProductId()).add(p));
             } else {
-                result.computeIfAbsent(p.getStoreId(), k -> new HashMap<>())
-                    .merge(p.getProductId(), copies, BigDecimal::add);
+                bucketOf(byStoreProduct, p.getStoreId(), p.getProductId()).add(p);
             }
         }
+        byStoreProduct.forEach((storeId, byProduct) -> {
+            Map<Long, BigDecimal> openedNeed = openedNeedByStore.getOrDefault(storeId, Map.of());
+            byProduct.forEach((productId, rows) -> {
+                List<ProductProduction> kept =
+                    capOutOfWindowToGap(rows, openedNeed.get(productId), productMap, today);
+                if (kept.isEmpty()) {
+                    return;
+                }
+                BigDecimal copies = BigDecimal.ZERO;
+                for (ProductProduction p : kept) {
+                    copies = copies.add(producedCopies(p, productMap.get(productId)));
+                }
+                result.computeIfAbsent(storeId, k -> new HashMap<>()).put(productId, copies);
+            });
+        });
         return result;
+    }
+
+    /** {@code (门店, 产品)} 桶，缺则建（{@link #loadProducedCopies} 分桶用）。 */
+    private static List<ProductProduction> bucketOf(Map<Long, Map<Long, List<ProductProduction>>> byStoreProduct,
+                                                    Long storeId, Long productId) {
+        return byStoreProduct.computeIfAbsent(storeId, k -> new HashMap<>())
+            .computeIfAbsent(productId, k -> new ArrayList<>());
     }
 
     /**

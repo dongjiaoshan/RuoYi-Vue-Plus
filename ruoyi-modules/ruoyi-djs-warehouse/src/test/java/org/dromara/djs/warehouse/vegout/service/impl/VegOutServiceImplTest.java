@@ -589,6 +589,47 @@ class VegOutServiceImplTest {
     }
 
     @Test
+    @DisplayName("V6-R163：冻品库 L0002 进候选库位白名单（猪肉原材料的存放库，与鲜品库 L0007 同性质）")
+    void candidateLocationWhitelistContainsFrozenStore() {
+        service.listCandidates(null);
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<java.util.Collection<String>> codes =
+            ArgumentCaptor.forClass(java.util.Collection.class);
+        verify(vegOutMapper).selectCandidates(codes.capture(), any(), any());
+        // 猪肉 tab 的货源 = 鲜品库 + 红白脏库 + 冻品库；冻品库漏了，冻起来的五花/前腿/纯瘦/里脊就卖不出去
+        assertThat(codes.getValue())
+            .contains("L0002", "L0007", "L0018", "L0006", "L0005", "L0009");
+    }
+
+    @Test
+    @DisplayName("V6-R163：冻品库出的猪肉走「猪只饲料」→ 饲喂位置记「仓库」（冻品库不在毛菜间）")
+    void feed_frozenStoreBasket_writesWarehouseLocation() {
+        LocationStock stock = mkStock(1L, 10L, 20L);
+        stock.setLocationId(70002L);                       // 冻品库，不是 L0006
+        when(locationStockMapper.selectById(1L)).thenReturn(stock);
+        ProductInfo pork = mkVegProduct(10L);
+        pork.setBelongType("pork");
+        when(productInfoMapper.selectById(10L)).thenReturn(pork);
+        LocationInfo frozenLoc = new LocationInfo();
+        frozenLoc.setId(70002L);
+        frozenLoc.setLocationCode("L0002");
+        when(locationInfoMapper.selectById(70002L)).thenReturn(frozenLoc);
+        LocationInfo fresh = new LocationInfo();
+        fresh.setId(FRESH_VEG_LOC);
+        fresh.setLocationCode("L0006");
+        when(locationInfoMapper.selectList(any())).thenReturn(java.util.List.of(fresh, frozenLoc));
+
+        service.submit(mkBo("feed", 1L, "0.500"), false);
+
+        // 能走到这一步本身就证明 L0002 落在 resolveAllowedLocationIds 的允许集合里（否则前置校验先抛）
+        ArgumentCaptor<FeedLog> fc = ArgumentCaptor.forClass(FeedLog.class);
+        verify(feedLogMapper).insert(fc.capture());
+        assertThat(fc.getValue().getFeedType()).isEqualTo("warehouse");
+        assertThat(fc.getValue().getLocationId()).isEqualTo(70002L);
+    }
+
+    @Test
     @DisplayName("前置校验：白名单外的业态（包材）拒绝出库")
     void rejectBelongTypeOutsideWhitelist() {
         when(locationStockMapper.selectById(1L)).thenReturn(mkStock(1L, 10L, 20L));
