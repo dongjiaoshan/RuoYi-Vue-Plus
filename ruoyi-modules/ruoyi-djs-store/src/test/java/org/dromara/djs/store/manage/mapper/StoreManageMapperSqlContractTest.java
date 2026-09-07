@@ -1,5 +1,6 @@
 package org.dromara.djs.store.manage.mapper;
 
+import com.baomidou.mybatisplus.core.metadata.IPage;
 import org.apache.ibatis.annotations.Select;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
@@ -26,10 +27,25 @@ import static org.assertj.core.api.Assertions.assertThat;
 class StoreManageMapperSqlContractTest {
 
     private static String normalizedSql(String methodName) throws Exception {
-        Method method = StoreManageMapper.class.getMethod(methodName,
+        return normalizedSql(methodName,
             String.class, Long.class, LocalDate.class, LocalDate.class, List.class);
+    }
+
+    private static String normalizedSql(String methodName, Class<?>... paramTypes) throws Exception {
+        Method method = StoreManageMapper.class.getMethod(methodName, paramTypes);
         Select select = method.getAnnotation(Select.class);
+        assertThat(select).as("@Select on %s", methodName).isNotNull();
         return String.join(" ", select.value()).replaceAll("\\s+", " ").toLowerCase(Locale.ROOT);
+    }
+
+    /**
+     * 把 SQL 片段常量拆成可断言的单行（与 {@link #normalizedSql} 同一套归一）。
+     *
+     * @param fragment 片段常量
+     * @return 归一后的非空片段
+     */
+    private static List<String> normalizeParts(String fragment) {
+        return List.of(fragment.replaceAll("\\s+", " ").trim().toLowerCase(Locale.ROOT));
     }
 
     @Test
@@ -88,6 +104,49 @@ class StoreManageMapperSqlContractTest {
             assertThat(sql).as(m + " 区间左闭").contains("&gt;= #{monthstart}");
             assertThat(sql).as(m + " 区间右开").contains("&lt; #{nextstart}");
         }
+    }
+
+    @Test
+    @DisplayName("明细下钻与业态卡共用同一份 FROM / WHERE 片段（改一处两边同时生效）")
+    void detailSharesConditionsWithCards() throws Exception {
+        String detail = detailSql();
+
+        for (String fragment : List.of(
+            StoreManageMapper.DEMAND_FROM, StoreManageMapper.DEMAND_WHERE,
+            StoreManageMapper.SALE_FROM, StoreManageMapper.SALE_WHERE,
+            StoreManageMapper.RETURN_FROM, StoreManageMapper.RETURN_WHERE)) {
+            for (String part : normalizeParts(fragment)) {
+                assertThat(detail).as("明细 SQL 含片段 [%s]", part).contains(part);
+            }
+        }
+        // 卡片侧同样引用这些常量（这三条已由上面各自的口径用例覆盖，这里只兜住「没被改成别的表」）
+        assertThat(normalizedSql("sumDemandQty")).contains(normalizeParts(StoreManageMapper.DEMAND_WHERE).get(0));
+        assertThat(normalizedSql("sumSaleQty")).contains(normalizeParts(StoreManageMapper.SALE_WHERE).get(0));
+        assertThat(normalizedSql("sumReturnQty")).contains(normalizeParts(StoreManageMapper.RETURN_WHERE).get(0));
+    }
+
+    @Test
+    @DisplayName("明细三源全外合并：UNION ALL 三支 + 按 productId 归并，只在退回里出现的产品也出行")
+    void detailUnionsThreeSourcesAndMergesByProduct() throws Exception {
+        String detail = detailSql();
+
+        // 三支 union all（两个 union all 分隔符 = 三个分支）
+        assertThat(detail.split("union all", -1)).as("UNION ALL 三个分支").hasSize(3);
+        assertThat(detail).contains("group by g.productid");
+        // 三个量各自只在自己那一支里求和，另两支补 0 → 缺席的源不会把整行挤掉
+        assertThat(detail)
+            .contains("coalesce(sum(d.demand_quantity), 0) as demandqty")
+            .contains("coalesce(sum(l.sale_qty + l.gift_qty), 0) as saleqty")
+            .contains("coalesce(sum(r.return_quantity), 0) as returnqty")
+            .contains("0 as demandqty, 0 as saleqty");
+        // 外层不带 GROUP BY，MP 自动 count 才能数出「合并后的产品行数」；排序末位补 productId 凑全序
+        assertThat(detail).contains("order by t.demandqty desc, t.productname, t.productid");
+        assertThat(detail.substring(detail.lastIndexOf(") t"))).doesNotContain("group by");
+    }
+
+    private static String detailSql() throws Exception {
+        return normalizedSql("selectProductDetailPage",
+            IPage.class, String.class, Long.class, LocalDate.class, LocalDate.class, List.class);
     }
 
     @Test

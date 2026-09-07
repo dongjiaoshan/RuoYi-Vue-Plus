@@ -4,7 +4,9 @@ import cn.dev33.satoken.annotation.SaCheckLogin;
 import cn.dev33.satoken.annotation.SaCheckPermission;
 import lombok.RequiredArgsConstructor;
 import org.dromara.common.core.domain.R;
+import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.djs.common.store.domain.vo.StorePickerVo;
+import org.dromara.djs.store.manage.domain.vo.StoreManageDetailVo;
 import org.dromara.djs.store.manage.domain.vo.StoreManageMonthlyVo;
 import org.dromara.djs.store.manage.service.IStoreManageService;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -65,6 +67,27 @@ public class AppletStoreManageController {
     public R<StoreManageMonthlyVo> monthly(@RequestParam(required = false) Long storeId,
                                            @RequestParam(required = false) String month) {
         return R.ok(storeManageService.getMonthly(storeId, month));
+    }
+
+    /**
+     * 业态卡「明细」下钻（V6-R180）：该业态当月按产品拆的需求 / 销售 / 退回，带按单位的全量合计。
+     *
+     * <p>权限与 {@code /monthly} 同一串：看得到卡就看得到卡里的行。</p>
+     *
+     * @param storeId    门店 ID；不传 = 全部门店合计
+     * @param month      月份 yyyy-MM；不传 = 当月（格式非法 400）
+     * @param belongType 业态卡 key：pork / vegetable / egg / dry_good（白名单外 400）
+     * @param pageQuery  分页参数（pageNum / pageSize）
+     * @return 明细分页 + 合计
+     */
+    @SaCheckLogin
+    @SaCheckPermission("djs:applet:manage:store:list")
+    @GetMapping("/detail")
+    public R<StoreManageDetailVo> detail(@RequestParam(required = false) Long storeId,
+                                         @RequestParam(required = false) String month,
+                                         @RequestParam String belongType,
+                                         PageQuery pageQuery) {
+        return R.ok(storeManageService.getDetail(storeId, month, belongType, pageQuery));
     }
 
 }

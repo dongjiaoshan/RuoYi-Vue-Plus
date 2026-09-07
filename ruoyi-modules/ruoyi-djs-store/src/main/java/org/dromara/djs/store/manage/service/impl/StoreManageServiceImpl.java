@@ -1,13 +1,18 @@
 package org.dromara.djs.store.manage.service.impl;
 
+import com.baomidou.mybatisplus.core.metadata.IPage;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.core.utils.StringUtils;
+import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.tenant.helper.TenantHelper;
 import org.dromara.djs.common.store.domain.vo.StorePickerVo;
 import org.dromara.djs.common.store.service.IStoreUserRelationService;
 import org.dromara.djs.store.manage.domain.vo.StoreManageCategoryVo;
+import org.dromara.djs.store.manage.domain.vo.StoreManageDetailRowVo;
+import org.dromara.djs.store.manage.domain.vo.StoreManageDetailTotalVo;
+import org.dromara.djs.store.manage.domain.vo.StoreManageDetailVo;
 import org.dromara.djs.store.manage.domain.vo.StoreManageMetricVo;
 import org.dromara.djs.store.manage.domain.vo.StoreManageMonthlyVo;
 import org.dromara.djs.store.manage.domain.vo.StoreManageProductCountRowVo;
@@ -31,6 +36,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeSet;
 
 /**
  * 管理板块「门店管理」月度看板实现（MGMT-MP-STORE-MONTH-001，纯只读聚合）。
@@ -53,6 +59,12 @@ import java.util.Set;
  * 不归一会在同一张卡里裂成两行），展示值取第一次见到的原始写法。</p>
  *
  * <p>三指标 + 上月同口径 = 6 项全为 0 的单位行直接丢弃（台账里 sale/gift 全 0 的行会制造这种空行）。</p>
+ *
+ * <h3>「明细」下钻为什么和卡片必然对得上（V6-R180）</h3>
+ * <p>明细页顶部的合计 {@code totals} <b>不另写 SQL</b>，直接调业态卡那三个聚合方法
+ * （{@code sumDemandQty} / {@code sumSaleQty} / {@code sumReturnQty}），只是把业态白名单收窄到
+ * 点开的那一张卡；明细行则与聚合共用 mapper 里的 {@code *_FROM} / {@code *_WHERE} 片段。
+ * 两条路径的筛选条件是同一份，改一处两边同时生效。</p>
  *
  * @author djs
  * @since MGMT-MP-STORE-MONTH-001
@@ -77,21 +89,33 @@ public class StoreManageServiceImpl implements IStoreManageService {
     /** belong_type → 业态卡 key（pork / white_bar 并进同一张猪肉卡）。 */
     private static final Map<String, String> BELONG_TO_CATEGORY = new HashMap<>();
 
-    /** SQL IN 白名单：只统计这 5 个 belong_type，礼盒 / 包材 / 饲料 / 种子 / other 不在四类卡里。 */
-    private static final List<String> BELONG_TYPES =
-        List.of("pork", "white_bar", "vegetable", "egg", "dry_good");
+    /**
+     * 业态卡 key → 该卡涵盖的 belong_type（猪肉卡合并 pork + white_bar：白条是猪肉的过程形态）。
+     *
+     * <p>卡片聚合传全集、「明细」下钻传单卡子集，两处都从这里取，不各写一份。</p>
+     */
+    private static final Map<String, List<String>> CATEGORY_BELONG_TYPES = new LinkedHashMap<>();
+
+    /** SQL IN 白名单：只统计四张卡涉及的 belong_type，礼盒 / 包材 / 饲料 / 种子 / other 不在内。 */
+    private static final List<String> BELONG_TYPES;
 
     /** 品类数分子：猪肉 = pork + white_bar。 */
-    private static final List<String> PORK_BELONG_TYPES = List.of("pork", "white_bar");
+    private static final List<String> PORK_BELONG_TYPES;
 
     /** 品类数分子：果蔬。 */
-    private static final List<String> VEG_BELONG_TYPES = List.of("vegetable");
+    private static final List<String> VEG_BELONG_TYPES;
 
     /** 品类数分子：其他 = 蛋类 + 干货（甲方原话「其他品类数包含蛋类产品和干货产品」）。 */
     private static final List<String> OTHER_BELONG_TYPES = List.of("egg", "dry_good");
 
     /** 产品主数据单位为空时的占位（product_unit 理论非空，防御性兜底）。 */
     private static final String UNIT_UNKNOWN = "未设单位";
+
+    /** 明细行里可空文本的占位（规格）。 */
+    private static final String EMPTY_TEXT = "—";
+
+    /** 明细分页缺省页大小（PageQuery 默认是查全部，一次全拉会拖死 mp 页面）。 */
+    private static final int DEFAULT_PAGE_SIZE = 20;
 
     /** 环比百分比换算基数。 */
     private static final BigDecimal HUNDRED = new BigDecimal("100");
@@ -108,11 +132,16 @@ public class StoreManageServiceImpl implements IStoreManageService {
         CATEGORY_NAMES.put(CAT_EGG, "蛋类产品");
         CATEGORY_NAMES.put(CAT_DRY, "干货产品");
 
-        BELONG_TO_CATEGORY.put("pork", CAT_PORK);
-        BELONG_TO_CATEGORY.put("white_bar", CAT_PORK);
-        BELONG_TO_CATEGORY.put("vegetable", CAT_VEG);
-        BELONG_TO_CATEGORY.put("egg", CAT_EGG);
-        BELONG_TO_CATEGORY.put("dry_good", CAT_DRY);
+        CATEGORY_BELONG_TYPES.put(CAT_PORK, List.of("pork", "white_bar"));
+        CATEGORY_BELONG_TYPES.put(CAT_VEG, List.of("vegetable"));
+        CATEGORY_BELONG_TYPES.put(CAT_EGG, List.of("egg"));
+        CATEGORY_BELONG_TYPES.put(CAT_DRY, List.of("dry_good"));
+
+        CATEGORY_BELONG_TYPES.forEach((cat, types) -> types.forEach(t -> BELONG_TO_CATEGORY.put(t, cat)));
+
+        BELONG_TYPES = CATEGORY_BELONG_TYPES.values().stream().flatMap(List::stream).toList();
+        PORK_BELONG_TYPES = CATEGORY_BELONG_TYPES.get(CAT_PORK);
+        VEG_BELONG_TYPES = CATEGORY_BELONG_TYPES.get(CAT_VEG);
     }
 
     private final StoreManageMapper storeManageMapper;
@@ -169,6 +198,143 @@ public class StoreManageServiceImpl implements IStoreManageService {
         }
         vo.setCategories(categories);
         return vo;
+    }
+
+    @Override
+    public StoreManageDetailVo getDetail(Long storeId, String month, String belongType, PageQuery pageQuery) {
+        YearMonth ym = parseMonth(month);
+        String tenantId = currentTenant();
+        List<String> catBelongTypes = requireCategory(belongType);
+        String category = belongType.trim();
+
+        LocalDate curStart = ym.atDay(1);
+        LocalDate curEnd = ym.plusMonths(1).atDay(1);
+
+        IPage<StoreManageDetailRowVo> page = storeManageMapper.selectProductDetailPage(
+            safePage(pageQuery), tenantId, storeId, curStart, curEnd, catBelongTypes);
+        List<StoreManageDetailRowVo> rows = page.getRecords() == null ? List.of() : page.getRecords();
+        for (StoreManageDetailRowVo row : rows) {
+            row.setUnit(StringUtils.isBlank(row.getUnit()) ? UNIT_UNKNOWN : row.getUnit().trim());
+            row.setProductSpec(StringUtils.isBlank(row.getProductSpec()) ? EMPTY_TEXT : row.getProductSpec().trim());
+            row.setDemandQty(scaled(row.getDemandQty()));
+            row.setSaleQty(scaled(row.getSaleQty()));
+            row.setReturnQty(scaled(row.getReturnQty()));
+        }
+
+        StoreManageDetailVo vo = new StoreManageDetailVo();
+        vo.setMonth(ym.toString());
+        vo.setBelongType(category);
+        vo.setCategoryName(CATEGORY_NAMES.get(category));
+        vo.setStoreId(storeId);
+        vo.setTotal(page.getTotal());
+        vo.setRows(rows);
+        vo.setTotals(buildDetailTotals(tenantId, storeId, curStart, curEnd, catBelongTypes));
+        return vo;
+    }
+
+    /**
+     * 明细页顶部合计：直接调业态卡那三条聚合 SQL，只把业态白名单收窄到本卡。
+     *
+     * <p>不自己再 SUM 一遍明细行 —— 明细是分页的，按页求和只会得到「这一页的合计」；
+     * 而复用卡片聚合则连口径漂移的可能都没有。</p>
+     *
+     * @param tenantId        租户
+     * @param storeId         门店 ID（可空）
+     * @param curStart        月首日（含）
+     * @param curEnd          次月首日（不含）
+     * @param catBelongTypes  本卡涵盖的 belong_type
+     * @return 按单位的三项合计（单位名升序，与业态卡行序一致）
+     */
+    private List<StoreManageDetailTotalVo> buildDetailTotals(String tenantId, Long storeId,
+                                                             LocalDate curStart, LocalDate curEnd,
+                                                             List<String> catBelongTypes) {
+        Map<String, String> unitLabels = new HashMap<>();
+        Map<String, BigDecimal> demand = sumByUnit(
+            storeManageMapper.sumDemandQty(tenantId, storeId, curStart, curEnd, catBelongTypes), unitLabels);
+        Map<String, BigDecimal> sale = sumByUnit(
+            storeManageMapper.sumSaleQty(tenantId, storeId, curStart, curEnd, catBelongTypes), unitLabels);
+        Map<String, BigDecimal> returned = sumByUnit(
+            storeManageMapper.sumReturnQty(tenantId, storeId, curStart, curEnd, catBelongTypes), unitLabels);
+
+        // TreeMap 只为拿确定的单位序；三源的单位取并集，否则「只有退回量」的单位整行消失
+        Set<String> unitKeys = new TreeSet<>();
+        unitKeys.addAll(demand.keySet());
+        unitKeys.addAll(sale.keySet());
+        unitKeys.addAll(returned.keySet());
+
+        List<StoreManageDetailTotalVo> totals = new ArrayList<>(unitKeys.size());
+        for (String key : unitKeys) {
+            StoreManageDetailTotalVo t = new StoreManageDetailTotalVo();
+            t.setUnit(unitLabels.getOrDefault(key, key));
+            t.setDemandQty(scaled(demand.get(key)));
+            t.setSaleQty(scaled(sale.get(key)));
+            t.setReturnQty(scaled(returned.get(key)));
+            totals.add(t);
+        }
+        return totals;
+    }
+
+    /**
+     * 聚合行 → {单位归一键 : 合计}（本卡内跨 belong_type 的同单位相加，与 {@link #collect} 同规则）。
+     *
+     * @param rows       mapper 行（可为 null）
+     * @param unitLabels 单位归一键 → 展示原文（就地填充）
+     * @return 单位 : 合计
+     */
+    private static Map<String, BigDecimal> sumByUnit(List<StoreManageQtyRowVo> rows,
+                                                     Map<String, String> unitLabels) {
+        Map<String, BigDecimal> out = new HashMap<>();
+        if (rows == null) {
+            return out;
+        }
+        for (StoreManageQtyRowVo row : rows) {
+            String label = StringUtils.isBlank(row.getUnit()) ? UNIT_UNKNOWN : row.getUnit().trim();
+            String key = label.toLowerCase(Locale.ROOT);
+            unitLabels.putIfAbsent(key, label);
+            out.merge(key, nz(row.getQty()), BigDecimal::add);
+        }
+        return out;
+    }
+
+    /**
+     * 业态白名单校验：只认四张卡的 key。
+     *
+     * <p>非法值直接 400 而不是返空列表 —— 返空会让人以为「这个月这个业态真没数据」，
+     * 实际是链接拼错了，这种错静默下去没人能发现。</p>
+     *
+     * @param belongType 入参业态键
+     * @return 该卡涵盖的 belong_type（猪肉卡 = pork + white_bar）
+     */
+    private static List<String> requireCategory(String belongType) {
+        List<String> types = belongType == null ? null : CATEGORY_BELONG_TYPES.get(belongType.trim());
+        if (types == null) {
+            throw new ServiceException(
+                "业态不合法，只接受 " + CATEGORY_BELONG_TYPES.keySet() + "：" + belongType, 400);
+        }
+        return types;
+    }
+
+    /**
+     * 分页参数兜底。
+     *
+     * <p>没传 pageSize 时给 {@value #DEFAULT_PAGE_SIZE} 条：{@code PageQuery} 的默认值是
+     * {@code Integer.MAX_VALUE}（查全部）。只取 pageNum / pageSize，<b>不透传前端排序</b>——
+     * 需求量降序是与卡片对读的前提，不能被 URL 参数改掉。</p>
+     *
+     * @param pageQuery 前端分页参数（可空）
+     * @return MyBatis-Plus 分页对象
+     */
+    private static IPage<StoreManageDetailRowVo> safePage(PageQuery pageQuery) {
+        Integer size = pageQuery == null || pageQuery.getPageSize() == null
+            ? DEFAULT_PAGE_SIZE : pageQuery.getPageSize();
+        Integer num = pageQuery == null || pageQuery.getPageNum() == null
+            ? 1 : pageQuery.getPageNum();
+        return new PageQuery(size, num).build();
+    }
+
+    /** 指标值统一到 decimal(12,3) 精度，避免同一个量在卡片与明细两边显示位数不一致。 */
+    private static BigDecimal scaled(BigDecimal v) {
+        return nz(v).setScale(QTY_SCALE, RoundingMode.HALF_UP);
     }
 
     /**
