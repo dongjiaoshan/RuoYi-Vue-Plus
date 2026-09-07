@@ -783,5 +783,86 @@ class PigSearchServiceTest {
         assertThat(res.getTotal()).isZero();
         org.mockito.Mockito.verify(barnMapper, org.mockito.Mockito.never()).selectBatchIds(anyCollection());
     }
-}
 
+    // ===== 分页参数收口 clampPage（clean-QA C 揪出的两条：负 pageSize / 不传 pageSize）=====
+
+    @Test
+    @DisplayName("分页：pageSize 为负 → 夹回 40（否则 MP 不下 LIMIT 也不跑 count，total=0 + 全量行，前端两条终止条件同时失效、无限加载）")
+    void searchPage_negativePageSize_clampedToDefault() {
+        stubEmptyPage();
+
+        service.searchPageByEarKeyword(null, null, null, "fattening", null, new PageQuery(-1, 1));
+
+        assertThat(capturePage().getSize()).isEqualTo(40L);
+    }
+
+    @Test
+    @DisplayName("分页：不传 pageSize → 夹到 200（PageQuery 缺省是 Integer.MAX_VALUE，实测一次吐 1145 行 / 510 KB）")
+    void searchPage_absentPageSize_clampedToMax() {
+        stubEmptyPage();
+
+        service.searchPageByEarKeyword(null, null, null, "fattening", null, new PageQuery(null, 1));
+
+        assertThat(capturePage().getSize()).isEqualTo(200L);
+    }
+
+    @Test
+    @DisplayName("分页：pageSize 超上限（5000）→ 夹到 200；正常值 40 原样透传")
+    void searchPage_oversizePageSize_clampedButNormalUntouched() {
+        stubEmptyPage();
+
+        service.searchPageByEarKeyword(null, null, null, "fattening", null, new PageQuery(5000, 1));
+        service.searchPageByEarKeyword(null, null, null, "fattening", null, new PageQuery(40, 1));
+
+        ArgumentCaptor<Page<Pig>> cap = ArgumentCaptor.forClass(Page.class);
+        org.mockito.Mockito.verify(pigMapper, org.mockito.Mockito.times(2))
+            .selectPage(cap.capture(), any(LambdaQueryWrapper.class));
+        assertThat(cap.getAllValues()).extracting(Page::getSize).containsExactly(200L, 40L);
+    }
+
+    /**
+     * 分页 mapper 打桩成空页（三个 clamp 用例只关心传进去的 {@link Page} 参数，不关心返回内容）。
+     */
+    private void stubEmptyPage() {
+        when(pigMapper.selectPage(any(), any(LambdaQueryWrapper.class))).thenAnswer(inv -> {
+            Page<Pig> p = inv.getArgument(0);
+            p.setRecords(Collections.emptyList());
+            p.setTotal(0L);
+            return p;
+        });
+    }
+
+    /**
+     * 抓住唯一一次 {@code selectPage} 调用真正收到的分页对象。
+     *
+     * @return MP 分页参数（断言 size 是否被夹）
+     */
+    private Page<Pig> capturePage() {
+        ArgumentCaptor<Page<Pig>> cap = ArgumentCaptor.forClass(Page.class);
+        org.mockito.Mockito.verify(pigMapper).selectPage(cap.capture(), any(LambdaQueryWrapper.class));
+        return cap.getValue();
+    }
+
+    // ===== row256：搜耳号放行 minAgeDays（重构 searchPageByEarKeyword 时动过这一行，此前无测试兜底）=====
+
+    @Test
+    @DisplayName("row256: 带耳号搜索 → minAgeDays（到出栏日龄）放行，未到龄的猪也搜得到")
+    void search_withEarNo_relaxesMinAgeDays() {
+        when(pigMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(Collections.emptyList());
+
+        // 出栏选猪面板默认只列到龄肥猪；一旦人手输耳号，那就是「我指名要这一头」，日龄门槛让位。
+        service.searchByEarKeyword("001", null, null, "fattening", null, 60, null, null, 175, null, null, null);
+        // 对照组：不带耳号 → 门槛照旧生效
+        service.searchByEarKeyword(null, null, null, "fattening", null, 60, null, null, 175, null, null, null);
+
+        ArgumentCaptor<LambdaQueryWrapper<Pig>> w = ArgumentCaptor.forClass(LambdaQueryWrapper.class);
+        org.mockito.Mockito.verify(pigMapper, org.mockito.Mockito.times(2)).selectList(w.capture());
+        assertThat(w.getAllValues().get(0).getSqlSegment())
+            .as("带耳号搜索时 minAgeDays 必须放行，否则甲方搜某头未到龄的猪会搜不到")
+            .doesNotContain("DATEDIFF");
+        assertThat(w.getAllValues().get(1).getSqlSegment())
+            .as("不带耳号（默认待办窗口）时门槛仍要在，否则出栏面板会列出没到龄的猪")
+            .contains("DATEDIFF(NOW(), COALESCE(birth_date, introduce_date)) >=");
+        assertThat(w.getAllValues().get(1).getParamNameValuePairs()).containsValue(175);
+    }
+}

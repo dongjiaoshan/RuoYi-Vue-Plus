@@ -92,6 +92,13 @@ class WarehouseBoardStatMapperSqlContractTest {
             .doesNotContain("product_type");
         // 半连接不改行数：排除条件不许写成再 JOIN 一张产品档案
         assertThat(sql).doesNotContain("join t_warehouse_product_info po");
+        // 🔴 刻意不带 po.del_flag：礼盒档案被软删后，它当初消耗掉的猪肉原料仍然不该算进猪肉卡——
+        // 加上 del_flag = '0' 会让这批历史消耗随软删「复活」，统计数字自己往上跳。
+        // 上面循环里的片段断言取自 EXCLUDE_GIFT_PRODUCE 本身（改常量它跟着改，同义反复），
+        // 这一条才是真正把这个决定钉住的断言。
+        assertThat(sql)
+            .as("礼盒排除子查询不许带 po.del_flag —— 软删礼盒档案会让历史消耗复活")
+            .doesNotContain("po.del_flag");
     }
 
     @Test
