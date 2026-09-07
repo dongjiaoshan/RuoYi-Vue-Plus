@@ -23,6 +23,17 @@ public class InoutStatOutVo implements Serializable {
     @Serial
     private static final long serialVersionUID = 1L;
 
+    /**
+     * 产品编码（{@code product_info.product_id} 业务码，如 P0001 / Y00099）。
+     *
+     * <p>甲方要它当列表第一列，即这张表的身份列，所以它也是聚合的分组键之一：
+     * 名称 / 类型 / 规格 / 单位全同的重复产品档案各占一行、量各归各，不再合并成一行。</p>
+     *
+     * <p><b>字段声明位置必须在最前</b>：FastExcel 按字段声明序出列，挪到后面 Excel 的列序就与页面不一致。</p>
+     */
+    @ExcelProperty(value = "产品编码")
+    private String productCode;
+
     /** 产品名称。 */
     @ExcelProperty(value = "产品名称")
     private String productName;

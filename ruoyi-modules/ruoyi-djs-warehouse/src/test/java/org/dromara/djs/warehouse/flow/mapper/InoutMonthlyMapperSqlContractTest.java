@@ -17,8 +17,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * <p>锁四条会被"顺手改坏"的口径：</p>
  * <ol>
- *   <li><b>分组键 = 页面展示的那几列</b>，不含 product_id：重复产品档案（名称/类型/规格/单位全同）
- *       必须合并成一行；同时类型 / 规格 / 单位在键里，单位不同的同名产品不得被合并。</li>
+ *   <li><b>分组键 = 页面展示的那几列</b>，含产品编码 {@code pi.product_id}（业务码，
+ *       甲方 row188 要它当第一列即身份列），但绝不含 {@code f.product_id}（流水外键）；
+ *       同时类型 / 规格 / 单位在键里，单位不同的同名产品不得被合并。</li>
  *   <li>甲方「供应商字段为空的，就统计到一起」→ 供应商名归一到 COALESCE(sp.supplier_name, '')；
  *       出库去向同理 COALESCE(stock_out_dest, '')。</li>
  *   <li>量必须用绝对值列 change_quantity 求和，不能用带符号的 change_num（部分写入方符号写反）。</li>
@@ -55,30 +56,35 @@ class InoutMonthlyMapperSqlContractTest {
     }
 
     @Test
-    @DisplayName("入库汇总：按展示列聚合（名称+类型+规格+单位+入库方式+供应商），供应商为空统计到一起")
+    @DisplayName("入库汇总：按展示列聚合（编码+名称+类型+规格+单位+入库方式+供应商），供应商为空统计到一起")
     void inSummaryGroupsByDisplayColumns() throws Exception {
         String sql = inSql();
         assertThat(sql).contains(
-            "group by pi.product_name, pi.product_type, coalesce(pi.product_spec, ''), "
+            "group by pi.product_id, pi.product_name, pi.product_type, coalesce(pi.product_spec, ''), "
                 + "coalesce(pi.product_unit, ''), f.flow_type, coalesce(sp.supplier_name, '')");
         assertThat(sql).contains("f.inout_type = 'in'");
+        // row188：产品编码是页面第一列，必须真的被 SELECT 出来
+        assertThat(sql).contains("pi.product_id as productcode");
     }
 
     @Test
-    @DisplayName("出库汇总：按展示列聚合（名称+类型+规格+单位+出库去向），去向为空归一到同一桶")
+    @DisplayName("出库汇总：按展示列聚合（编码+名称+类型+规格+单位+出库去向），去向为空归一到同一桶")
     void outSummaryGroupsByDisplayColumns() throws Exception {
         String sql = outSql();
         assertThat(sql).contains(
-            "group by pi.product_name, pi.product_type, coalesce(pi.product_spec, ''), "
+            "group by pi.product_id, pi.product_name, pi.product_type, coalesce(pi.product_spec, ''), "
                 + "coalesce(pi.product_unit, ''), coalesce(f.stock_out_dest, '')");
         assertThat(sql).contains("f.inout_type = 'ot'");
+        assertThat(sql).contains("pi.product_id as productcode");
     }
 
     @Test
-    @DisplayName("重复产品档案必须合并：两个汇总都不得把 product_id 当分组键")
-    void summariesNeverGroupByProductId() throws Exception {
+    @DisplayName("分组键用产品档案的业务码 pi.product_id，绝不用流水外键 f.product_id")
+    void summariesGroupByBusinessCodeNotFlowFk() throws Exception {
         for (String sql : List.of(inSql(), outSql())) {
             String groupBy = sql.substring(sql.indexOf("group by"));
+            assertThat(groupBy).contains("pi.product_id");
+            // f.product_id 是指向档案主键的外键，拿它分组等于按主键分组，编码列就取不到唯一值
             assertThat(groupBy).doesNotContain("f.product_id");
             assertThat(groupBy).doesNotContain("coalesce(f.supplier_id");
         }

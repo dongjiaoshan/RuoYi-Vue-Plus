@@ -13,8 +13,11 @@ import java.math.BigDecimal;
  *
  * <p>同时是 V6 row30「明细里增加导出功能」的导出模型：{@link ExcelIgnoreUnannotated} 下只导出
  * 标了 {@link ExcelProperty} 的列，列集合与详情弹框表头逐列一致
- * （产品名称 / 规格 / 出库量 / 出库单价 / 出库总价）—— {@code plotCode} 已按 row193 从页面撤掉，
- * {@code productUnit} 折进「出库量」一列（见 {@link #outQtyLabel}），两者都不单独成列。</p>
+ * （产品名称 / 规格 / 耳号 / 地块 / 出库量 / 出库单价 / 出库总价）——
+ * {@code productUnit} 折进「出库量」一列（见 {@link #outQtyLabel}），不单独成列。</p>
+ *
+ * <p><b>字段声明序 = Excel 列序</b>（FastExcel 按字段扫描）：{@link #earNo} / {@link #plotCode}
+ * 必须声明在「规格」与「出库量」之间，才与 row191 要求的页面列位一致。</p>
  *
  * @author djs
  */
@@ -40,6 +43,22 @@ public class VegOutDetailVo implements Serializable {
     /** 产品规格。 */
     @ExcelProperty(value = "规格")
     private String productSpec;
+
+    /**
+     * 耳号（row191）：这条流水的 {@code t_warehouse_stock_flow.ear_no}。
+     *
+     * <p>猪肉来源的行才有；果蔬 / 干货 / 蛋类行为空，页面与导出都显示 {@code -}。</p>
+     */
+    @ExcelProperty(value = "耳号")
+    private String earNo;
+
+    /**
+     * 地块编号（row191）：这条流水 {@code plot_id} 联出的 {@code t_plant_plot_info.plot_code}。
+     *
+     * <p>果蔬来源的行才有；猪肉 / 干货 / 蛋类行为空，页面与导出都显示 {@code -}。</p>
+     */
+    @ExcelProperty(value = "地块")
+    private String plotCode;
 
     /**
      * 产品计量单位。
@@ -74,6 +93,4 @@ public class VegOutDetailVo implements Serializable {
     @ExcelProperty(value = "出库总价(元)")
     private BigDecimal outAmount;
 
-    /** 地块编号（可空；row193 起页面已不显示，导出同步不出这一列）。 */
-    private String plotCode;
 }

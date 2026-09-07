@@ -763,6 +763,40 @@ class VegOutServiceImplTest {
     }
 
     @Test
+    @DisplayName("row191 明细：耳号 / 地块两列天然互斥，缺的那一项统一兜 -（弹框与导出同一份）")
+    void batchDetail_fillsEarNoAndPlotFallback() {
+        VegOutDetailVo pork = mkDetail("五花肉", "kg", "7");
+        pork.setEarNo("A0012");
+        VegOutDetailVo veg = mkDetail("上海青", "kg", "12");
+        veg.setPlotCode("D01");
+        VegOutDetailVo dry = mkDetail("大米", "袋", "3");
+
+        when(vegOutMapper.selectBatchDetail("0000006", null))
+            .thenReturn(new java.util.ArrayList<>(List.of(pork, veg, dry)));
+
+        List<VegOutDetailVo> rows = service.queryBatchDetail("0000006", null);
+
+        // 猪肉行有耳号没地块，果蔬行有地块没耳号，干货两样都没有
+        assertThat(rows).extracting(VegOutDetailVo::getEarNo).containsExactly("A0012", "-", "-");
+        assertThat(rows).extracting(VegOutDetailVo::getPlotCode).containsExactly("-", "D01", "-");
+    }
+
+    @Test
+    @DisplayName("row191 导出：耳号 / 地块与弹框读同一份兜底，不会一边 - 一边空白")
+    void exportDetail_carriesEarNoAndPlot() {
+        VegOutDetailVo pork = mkDetail("五花肉", "kg", "7");
+        pork.setEarNo("A0012");
+        when(vegOutMapper.selectBatchDetail("0000006", null))
+            .thenReturn(new java.util.ArrayList<>(List.of(pork)));
+
+        List<VegOutDetailVo> rows = service.queryBatchDetailForExport("0000006", null);
+
+        assertThat(rows).hasSize(1);
+        assertThat(rows.get(0).getEarNo()).isEqualTo("A0012");
+        assertThat(rows.get(0).getPlotCode()).isEqualTo("-");
+    }
+
+    @Test
     @DisplayName("V6 row30 导出：单号为空直接返空，不打 mapper（防前端裸调）")
     void exportDetail_blankBatchNo_returnsEmpty() {
         assertThat(service.queryBatchDetailForExport("  ", null)).isEmpty();

@@ -67,13 +67,13 @@ public interface InoutMonthlyMapper {
                                     @Param("outExcluded") List<String> outExcluded);
 
     /**
-     * 当月入库汇总（V6-R155）：按 <b>产品名称 × 产品类型 × 规格 × 单位 × 入库方式 × 供应商</b> 聚合。
+     * 当月入库汇总（V6-R155）：按 <b>产品编码 × 产品名称 × 产品类型 × 规格 × 单位 × 入库方式 × 供应商</b> 聚合。
      *
-     * <p><b>分组键 = 页面展示的那几列本身</b>，不是 {@code f.product_id}。产品档案表里存在
-     * name + type + spec + unit 四项全同的重复档案（本库 702 行 / 594 个不同名字），按 product_id
-     * 分组会让这类档案在页面上变成「七列显示值完全一样、量被拆开」的两行，甲方读成数据错。
-     * 把类型 / 规格 / 单位一起放进分组键，则单位不同（小白菜 kg vs 袋）、规格不同、类型不同的行
-     * 仍然各占一行，不会被错误合并。</p>
+     * <p><b>分组键 = 页面展示的那几列本身</b>，含产品编码（{@code pi.product_id} 业务码，
+     * 不是 {@code f.product_id} 外键）。甲方 row188 要产品编码当第一列，即把编码当身份列，
+     * 一行只能挂一个编码，所以 name + type + spec + unit 全同的重复档案各占一行、量各归各。
+     * 键里同时留着类型 / 规格 / 单位，是为了让 SELECT 与 ORDER BY 能直接取到它们
+     * （MySQL 8 {@code ONLY_FULL_GROUP_BY}），编码唯一 ⇒ 这几列不会额外裂行。</p>
      *
      * <p>可空的规格 / 单位 / 供应商名一律 {@code COALESCE(..., '')} 归一后再分组：NULL 在 GROUP BY 里
      * 虽同组，但 SELECT 与 ORDER BY 拿 NULL 会让 service 的空值兜底与排序都不稳定。</p>
@@ -91,7 +91,8 @@ public interface InoutMonthlyMapper {
      */
     @Select("""
         <script>
-        SELECT pi.product_name  AS productName,
+        SELECT pi.product_id    AS productCode,
+               pi.product_name  AS productName,
                pi.product_type  AS productType,
                COALESCE(pi.product_spec, '') AS productSpec,
                COALESCE(pi.product_unit, '') AS productUnit,
@@ -122,9 +123,9 @@ public interface InoutMonthlyMapper {
         <if test="query.supplierId != null">
           AND f.supplier_id = #{query.supplierId}
         </if>
-        GROUP BY pi.product_name, pi.product_type, COALESCE(pi.product_spec, ''),
+        GROUP BY pi.product_id, pi.product_name, pi.product_type, COALESCE(pi.product_spec, ''),
                  COALESCE(pi.product_unit, ''), f.flow_type, COALESCE(sp.supplier_name, '')
-        ORDER BY productName, flowType, supplierName
+        ORDER BY productName, productCode, flowType, supplierName
         </script>
         """)
     List<InoutSummaryInVo> selectInSummary(@Param("tenantId") String tenantId,
@@ -132,11 +133,10 @@ public interface InoutMonthlyMapper {
                                            @Param("inExcluded") List<String> inExcluded);
 
     /**
-     * 当月出库汇总（V6-R156）：按 <b>产品名称 × 产品类型 × 规格 × 单位 × 出库去向</b> 聚合。
+     * 当月出库汇总（V6-R156）：按 <b>产品编码 × 产品名称 × 产品类型 × 规格 × 单位 × 出库去向</b> 聚合。
      *
-     * <p><b>分组键 = 页面展示的那几列本身</b>，不是 {@code f.product_id} —— 理由与
-     * {@link #selectInSummary} 完全一致：重复产品档案（name/type/spec/unit 全同）会在页面上
-     * 拆成显示值一模一样的两行；把类型 / 规格 / 单位放进分组键则单位不同的行不会被错误合并。</p>
+     * <p><b>分组键 = 页面展示的那几列本身</b>，含产品编码 —— 理由与
+     * {@link #selectInSummary} 完全一致：编码是页面第一列即身份列，一行只能挂一个编码。</p>
      *
      * <p>出库去向为空的流水归到 {@code COALESCE(f.stock_out_dest, '')} 同一桶
      * （service 把该行 outDestName 兜成「未指定」）。</p>
@@ -148,7 +148,8 @@ public interface InoutMonthlyMapper {
      */
     @Select("""
         <script>
-        SELECT pi.product_name AS productName,
+        SELECT pi.product_id   AS productCode,
+               pi.product_name AS productName,
                pi.product_type AS productType,
                COALESCE(pi.product_spec, '') AS productSpec,
                COALESCE(pi.product_unit, '') AS productUnit,
@@ -174,9 +175,9 @@ public interface InoutMonthlyMapper {
           AND f.stock_out_dest IN
               <foreach collection="query.stockOutDests" item="sd" open="(" separator="," close=")">#{sd}</foreach>
         </if>
-        GROUP BY pi.product_name, pi.product_type, COALESCE(pi.product_spec, ''),
+        GROUP BY pi.product_id, pi.product_name, pi.product_type, COALESCE(pi.product_spec, ''),
                  COALESCE(pi.product_unit, ''), COALESCE(f.stock_out_dest, '')
-        ORDER BY productName, stockOutDest
+        ORDER BY productName, productCode, stockOutDest
         </script>
         """)
     List<InoutSummaryOutVo> selectOutSummary(@Param("tenantId") String tenantId,

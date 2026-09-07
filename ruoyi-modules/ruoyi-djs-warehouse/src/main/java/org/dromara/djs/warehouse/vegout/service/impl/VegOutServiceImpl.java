@@ -170,6 +170,9 @@ public class VegOutServiceImpl implements IVegOutService {
     /** 饲喂来源：仓库（字典 djs_feed_type 的另一个值）。非毛菜鲜品库出的货走这个。 */
     private static final String FEED_TYPE_WAREHOUSE = "warehouse";
 
+    /** 明细里耳号 / 地块等「本行天然没有」的列的占位（弹框与导出共用一份，见 row191）。 */
+    private static final String EMPTY_TEXT = "-";
+
     /** 处理明细类型：处理录入（{@code t_warehouse_handle_record.record_type}）。 */
     private static final int RECORD_TYPE_HANDLE = 2;
 
@@ -362,7 +365,14 @@ public class VegOutServiceImpl implements IVegOutService {
         if (StringUtils.isBlank(batchNo)) {
             return List.of();
         }
-        return vegOutMapper.selectBatchDetail(batchNo, productName);
+        List<VegOutDetailVo> rows = vegOutMapper.selectBatchDetail(batchNo, productName);
+        // row191 的耳号 / 地块两列天然互斥（猪肉行有耳号、果蔬行有地块），空值在这里兜成 "-"
+        // 而不是各让页面和导出自己兜：兜一次，弹框与 xlsx 必然一致。
+        rows.forEach(r -> {
+            r.setEarNo(StringUtils.blankToDefault(r.getEarNo(), EMPTY_TEXT));
+            r.setPlotCode(StringUtils.blankToDefault(r.getPlotCode(), EMPTY_TEXT));
+        });
+        return rows;
     }
 
     @Override

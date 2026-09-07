@@ -26,6 +26,17 @@ public class InoutStatInVo implements Serializable {
     @Serial
     private static final long serialVersionUID = 1L;
 
+    /**
+     * 产品编码（{@code product_info.product_id} 业务码，如 P0001 / Y00099）。
+     *
+     * <p>甲方要它当列表第一列，即这张表的身份列，所以它也是聚合的分组键之一：
+     * 名称 / 类型 / 规格 / 单位全同的重复产品档案各占一行、量各归各，不再合并成一行。</p>
+     *
+     * <p><b>字段声明位置必须在最前</b>：FastExcel 按字段声明序出列，挪到后面 Excel 的列序就与页面不一致。</p>
+     */
+    @ExcelProperty(value = "产品编码")
+    private String productCode;
+
     /** 产品名称。 */
     @ExcelProperty(value = "产品名称")
     private String productName;
@@ -59,4 +70,13 @@ public class InoutStatInVo implements Serializable {
 
     /** 入库方式原始值（mapper 出，service 翻译用，不导出）。 */
     private String flowType;
+
+    /**
+     * 供应商分组键原始值（mapper 出，不导出，service <b>不得</b>改写）。
+     *
+     * <p>{@link #supplierName} 被 service 就地兜成「无供应商」后已经不是分组键了
+     * ——真有一家供应商就叫「无供应商」的话两者会撞。行内「查看详情」要把这一行钉回明细，
+     * 传的必须是这个未经加工的桶值（空供应商那一桶就是空串）。</p>
+     */
+    private String supplierKey;
 }
