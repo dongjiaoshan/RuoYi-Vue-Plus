@@ -17,14 +17,18 @@ PREPARE st1 FROM @s1;
 EXECUTE st1;
 DEALLOCATE PREPARE st1;
 
--- 存量行按旧口径的等价量回填：旧口径下出品率分母是送宰总重，填成它后这些行在月表里贡献的比率
--- 与它们落盘当时一致，不会因新列全 0 把当月比率算歪（重算只从 2026-08-19 起跑）。
+-- 存量行按「它落盘当时用的那个分母」回填，保证这些行在月表里贡献的比率与当初一致
+-- （新列全 0 会把当月比率算歪；重算只从 2026-08-19 起跑，更早的行不会被重算覆盖）。
+-- 两代存量行的旧分母不是同一个：
+--   gen2（V202609071200 之后落盘）：分母是 finished_arrive_weight（Σ接收重量）；
+--   gen1（更早）：那时连 finished_arrive_weight 都没有，1200 已把它回填成 slaughter_weight。
+-- 所以取 finished_arrive_weight 优先、为 0/NULL 再退 slaughter_weight —— 对 gen1 两者本就相等。
 -- 幂等守卫按 bar_yield_base_weight 这一列自己判：@c1 = 0 = 本次才加的列 = 首次执行，才回填；
 -- 列已存在（重跑）整段跳过。不能按「基数为 0」判存量——一个当日无处理完成猪的合法新口径行天然为 0，
 -- 第二遍会被误当存量行凭空造出分母。
 SET @bf := IF(@c1 = 0,
   "UPDATE t_warehouse_indicator_record
-      SET bar_yield_base_weight = COALESCE(slaughter_weight, 0)",
+      SET bar_yield_base_weight = COALESCE(NULLIF(finished_arrive_weight, 0), slaughter_weight, 0)",
   'SELECT 1');
 PREPARE stbf FROM @bf;
 EXECUTE stbf;

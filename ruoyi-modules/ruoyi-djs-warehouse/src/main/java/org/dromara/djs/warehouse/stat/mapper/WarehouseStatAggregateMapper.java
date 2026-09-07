@@ -114,7 +114,8 @@ public interface WarehouseStatAggregateMapper {
                  CASE WHEN b.buy_date IS NULL THEN b.marketing_weight
                       ELSE (SELECT op.pig_weight FROM t_warehouse_outsource_pig op
                              WHERE op.bar_id = b.bar_id AND op.del_flag = '0'
-                               AND op.tenant_id = #{tenantId} LIMIT 1)
+                               AND op.tenant_id = #{tenantId}
+                             ORDER BY (op.slaughter_date IS NULL), op.id LIMIT 1)
                  END AS baseWeight
           FROM t_warehouse_bar_info b
           WHERE b.del_flag = '0' AND b.tenant_id = #{tenantId}
@@ -176,7 +177,8 @@ public interface WarehouseStatAggregateMapper {
                  CASE WHEN b.buy_date IS NULL THEN b.marketing_weight
                       ELSE (SELECT op.pig_weight FROM t_warehouse_outsource_pig op
                              WHERE op.bar_id = b.bar_id AND op.del_flag = '0'
-                               AND op.tenant_id = #{tenantId} LIMIT 1)
+                               AND op.tenant_id = #{tenantId}
+                             ORDER BY (op.slaughter_date IS NULL), op.id LIMIT 1)
                  END AS baseWeight
           FROM t_warehouse_bar_info b
           WHERE b.del_flag = '0' AND b.tenant_id = #{tenantId}
