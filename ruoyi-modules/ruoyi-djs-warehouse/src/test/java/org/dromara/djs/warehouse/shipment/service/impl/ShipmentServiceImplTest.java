@@ -638,6 +638,9 @@ class ShipmentServiceImplTest {
         demand.setDemandQuantity(new BigDecimal("5"));
         demand.setShippedCount(new BigDecimal("5"));
         when(demandMapper.selectById(demandId)).thenReturn(demand);
+        // 门店+产品归并只这一条 → 5>=5 已备齐（本用例只验 SQL 放开分支，归并范围退化成本 demand）
+        when(demandMapper.selectInFlightStoreProductDemands(eq(501L), eq(9L), any()))
+            .thenReturn(List.of(demand));
         when(productProductionMapper.selectList(any())).thenReturn(List.of());
 
         service.listAvailableProductions(demandId);
@@ -658,6 +661,9 @@ class ShipmentServiceImplTest {
         demand.setDemandQuantity(new BigDecimal("5"));
         demand.setShippedCount(new BigDecimal("2"));
         when(demandMapper.selectById(demandId)).thenReturn(demand);
+        // 门店+产品归并只这一条 → 2<5 未备齐
+        when(demandMapper.selectInFlightStoreProductDemands(eq(501L), eq(9L), any()))
+            .thenReturn(List.of(demand));
         when(productProductionMapper.selectList(any())).thenReturn(List.of());
 
         service.listAvailableProductions(demandId);
@@ -882,12 +888,81 @@ class ShipmentServiceImplTest {
             .extracting(AvailableProductionVo::getProduceNo).containsExactly("OLD-3D");
     }
 
-    /** 已备齐（shipped == demand）的需求行：R160 放开打包日下界的前提。 */
+    @Test
+    @DisplayName("V6-R160 clean-QA: 单需求 picker 的「已备齐」判定与门店货物页同尺（按门店+产品归并，非按该需求自己判）")
+    void listAvailableProductions_packingJudgedByStoreProduct_alignsWithStoreDemands() {
+        // 同店(9)同产品(501)拆成 D4(need1/shipped1) + D5(need1/shipped0)；库里一条窗口外陈货
+        Long storeId = 9L;
+        Long productId = 501L;
+        DemandManage d4 = newDemand(4L, storeId, DemandStatus.CONFIRMED);
+        d4.setProductId(productId);
+        d4.setDemandQuantity(new BigDecimal("1"));
+        d4.setShippedCount(new BigDecimal("1"));
+        DemandManage d5 = newDemand(5L, storeId, DemandStatus.CONFIRMED);
+        d5.setProductId(productId);
+        d5.setDemandQuantity(new BigDecimal("1"));
+        d5.setShippedCount(BigDecimal.ZERO);
+        when(demandMapper.selectById(4L)).thenReturn(d4);
+        when(productInfoMapper.selectList(any()))
+            .thenReturn(List.of(newProduct(productId, "vegetable", "份", null)));
+        // 模拟 DB 的打包日窗口：未放开（SQL 无放开分支）时这条 3 天前的陈货落在窗口外、取不到；
+        // 放开后（SQL 带 product_id IN ... OR）才命中。mock 不做真过滤，只能据放开分支还原这条差异。
+        ProductProduction oldRow = oldProduction(11L, "OLD-3D", productId, storeId, 3);
+        when(productProductionMapper.selectList(any())).thenAnswer(inv -> {
+            LambdaQueryWrapper<ProductProduction> w = inv.getArgument(0);
+            return w.getTargetSql().contains("OR DATE(produce_date)") ? List.of(oldRow) : List.of();
+        });
+
+        // ① D5 还没发满 → 该 (门店,产品) 整批 need2/shipped1 未备齐 → 不放开 → picker 也是 []
+        //    （旧口径按 D4 自己判 1>=1 会放开、返回陈货 → 与门店货物页 0 件打架，正是 QA 复现的工单）
+        when(demandMapper.selectInFlightStoreProductDemands(eq(productId), eq(storeId), any()))
+            .thenReturn(List.of(d4, d5));
+        assertThat(service.listAvailableProductions(4L)).isEmpty();
+
+        // ② 把 D5 也发满 → 整批 need2/shipped2 备齐 → 放开 → 陈货补进来（缺口分母也用归并后的 2）
+        d5.setShippedCount(new BigDecimal("1"));
+        when(demandMapper.selectInFlightStoreProductDemands(eq(productId), eq(storeId), any()))
+            .thenReturn(List.of(d4, d5));
+        assertThat(service.listAvailableProductions(4L))
+            .extracting(AvailableProductionVo::getProduceNo).containsExactly("OLD-3D");
+    }
+
+    @Test
+    @DisplayName("V6-R160: 邮寄需求（store_id 为空）无门店维度 → 退化按该需求自己判，备齐仍能放开（不回归）")
+    void listAvailableProductions_mailingDemandFallsBackToSelfJudgement() {
+        Long demandId = 300L;
+        DemandManage mailing = newDemand(demandId, null, DemandStatus.CONFIRMED); // store_id 为空
+        mailing.setProductId(501L);
+        mailing.setDemandQuantity(new BigDecimal("1"));
+        mailing.setShippedCount(new BigDecimal("1"));
+        when(demandMapper.selectById(demandId)).thenReturn(mailing);
+        when(productInfoMapper.selectList(any()))
+            .thenReturn(List.of(newProduct(501L, "vegetable", "份", null)));
+        ProductProduction old = newProduction(11L, null, "OLD-3D", new BigDecimal("1"));
+        old.setProductId(501L);
+        old.setProduceDate(daysAgo(3));
+        when(productProductionMapper.selectList(any())).thenReturn(List.of(old));
+
+        List<AvailableProductionVo> result = service.listAvailableProductions(demandId);
+
+        // 退化路径不查门店归并（无门店可归并），按 mailing 自己 1>=1 判备齐 → 放开 → 陈货进
+        verify(demandMapper, never()).selectInFlightStoreProductDemands(any(), any(), any());
+        assertThat(result).extracting(AvailableProductionVo::getProduceNo).containsExactly("OLD-3D");
+    }
+
+    /**
+     * 已备齐（shipped == demand）的需求行：R160 放开打包日下界的前提。
+     *
+     * <p>顺带 stub 单需求路径的门店+产品归并查询，让它只归并这一条 —— 这些用例测的是「窗口 / 截断」逻辑，
+     * 归并范围只需退化成本 demand 自己（备齐范围的跨需求一致性由 {@code ..._alignsWithStoreDemands} 单独测）。</p>
+     */
     private DemandManage packedDemand(Long id, Long storeId, Long productId, String quantity) {
         DemandManage d = newDemand(id, storeId, DemandStatus.CONFIRMED);
         d.setProductId(productId);
         d.setDemandQuantity(new BigDecimal(quantity));
         d.setShippedCount(new BigDecimal(quantity));
+        when(demandMapper.selectInFlightStoreProductDemands(eq(productId), eq(storeId), any()))
+            .thenReturn(List.of(d));
         return d;
     }
 

@@ -398,7 +398,7 @@ public class ShipmentServiceImpl
             throw new ServiceException(I18nMessages.t("shipment.demand.not_found", demandId), 404);
         }
         return toAvailableProductionVos(
-            findAvailableProductionsForDemand(demand, fullyPackedNeedByProduct(List.of(demand))));
+            findAvailableProductionsForDemand(demand, openedNeedForDemand(demand)));
     }
 
     @Override
@@ -408,7 +408,7 @@ public class ShipmentServiceImpl
         }
         DemandManage demand = demandMapper.selectById(demandId);
         return demand == null ? 0
-            : findAvailableProductionsForDemand(demand, fullyPackedNeedByProduct(List.of(demand))).size();
+            : findAvailableProductionsForDemand(demand, openedNeedForDemand(demand)).size();
     }
 
     @Override
@@ -512,6 +512,29 @@ public class ShipmentServiceImpl
      * （{@code demand_id IS NULL AND is_delivery_check=0}）。listAvailableProductions /
      * listStorePendingDemands 共用，条件明细见 {@link #availableProductionWrapper}。
      */
+    /**
+     * 单需求路径（{@code listAvailableProductions} / {@code countAvailableProductionsForDemand}）的
+     * 「已备齐 + 缺口」判定范围 —— <b>按「门店 + 产品」归并，与门店货物页同尺</b>（V6-R160 clean-QA）。
+     *
+     * <p>同一 {@code (门店, 产品)} 可能被拆成多条在途需求（如 D4 need1/shipped1 + D5 need1/shipped0）。
+     * 若 picker 只按被点的那条 demand 自己判（D4 自身 1≥1 = 已备齐 → 放开窗口 → 显示陈货），而门店货物页
+     * 按整批归并判（该产品 need2/shipped1 = 未备齐 → 不放开 → 空），同一条需求在两个界面上一个说「有货」
+     * 一个说「0 件」。这里把该 demand 所属门店该产品的<b>全部在途需求行</b>捞齐再
+     * {@link #fullyPackedNeedByProduct}，picker 与门店页对同一 {@code (门店, 产品)} 的放开判定 + 缺口分母
+     * 就此一致。</p>
+     *
+     * <p>邮寄需求（{@code store_id IS NULL}）没有门店维度、也不进门店货物页，无从按门店归并 →
+     * 退化成「按该 demand 自己判」（保持现状，不回归）。</p>
+     */
+    private Map<Long, BigDecimal> openedNeedForDemand(DemandManage demand) {
+        if (demand.getStoreId() == null || demand.getProductId() == null) {
+            return fullyPackedNeedByProduct(List.of(demand));
+        }
+        List<DemandManage> storeProductDemands = demandMapper.selectInFlightStoreProductDemands(
+            demand.getProductId(), demand.getStoreId(), LocalDate.now(SHIP_TODAY_ZONE));
+        return fullyPackedNeedByProduct(storeProductDemands);
+    }
+
     private List<ProductProduction> findAvailableProductionsForDemand(DemandManage demand,
                                                                       Map<Long, BigDecimal> openedNeedByProduct) {
         List<ProductProduction> rows = productProductionMapper.selectList(availableProductionWrapper(
