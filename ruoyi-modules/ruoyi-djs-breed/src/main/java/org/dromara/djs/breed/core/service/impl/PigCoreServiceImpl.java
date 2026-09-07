@@ -97,6 +97,12 @@ import static org.dromara.djs.breed.core.enums.PigStatusEvent.TRANSFER;
 @Service
 public class PigCoreServiceImpl implements IPigCoreService {
 
+    /** 分页搜索缺省页大小（mp 列表首屏 40，与 PigGridList 的 PAGE_SIZE 对齐）。 */
+    private static final int DEFAULT_PAGE_SIZE = 40;
+
+    /** 分页搜索页大小上限：一页最多 200 头，防「不传 pageSize 一次吐全场」。 */
+    private static final int MAX_PAGE_SIZE = 200;
+
     private static final int RECENT_HISTORY_LIMIT = 20;
     private static final int LIST_HISTORY_LIMIT = 200;
     /**
@@ -939,7 +945,7 @@ public class PigCoreServiceImpl implements IPigCoreService {
 
         LambdaQueryWrapper<Pig> w = buildSearchWrapper(earNoKeyword, statuses, callerWantsEnd, sexFilter,
             parsePigTypes(pigTypeFilter), barnIdFilter, null, false, null, null);
-        Page<Pig> page = pigMapper.selectPage(pageQuery.build(), w);
+        Page<Pig> page = pigMapper.selectPage(clampPage(pageQuery), w);
         // dueType 传 null：本端点服务「列表浏览」，不算预产期/到断奶期，也就没有临产排序与 badge
         return new TableDataInfo<>(toSearchVos(page.getRecords(), null), page.getTotal());
     }
@@ -1431,6 +1437,28 @@ public class PigCoreServiceImpl implements IPigCoreService {
             Integer days = calcDaysSince(p.getStatusStartedAt(), now);
             return days == null || days >= minDays;
         }).collect(Collectors.toList());
+    }
+
+    /**
+     * 分页参数收口：{@code pageSize} 夹到 {@code [1, 200]}，缺省 / 非正数一律回落 {@link #DEFAULT_PAGE_SIZE}。
+     *
+     * <p>两个必须夹的理由，都是实测出来的：</p>
+     * <ul>
+     *   <li>{@code pageSize} 缺省时 {@code PageQuery.DEFAULT_PAGE_SIZE} 是 {@code Integer.MAX_VALUE}，
+     *       本端点会一次吐全场猪（实测 1145 行 / 510 KB）——老端点 {@link #clampLimit} 卡在 500 的那道闸
+     *       在分页端点上丢了，这里补回来。</li>
+     *   <li>{@code pageSize < 0} 时 MyBatis-Plus 既不下 LIMIT 也不跑 count，返回
+     *       {@code total = 0} + 全量行；而前端「本页不满一页 或 已累计到 total」两条终止条件此时同时不成立
+     *       （PAGE_SIZE 为负、total 为 0），会一直往下翻。</li>
+     * </ul>
+     */
+    private Page<Pig> clampPage(PageQuery pageQuery) {
+        Page<Pig> page = pageQuery.build();
+        long size = page.getSize();
+        if (size <= 0 || size > MAX_PAGE_SIZE) {
+            page.setSize(size <= 0 ? DEFAULT_PAGE_SIZE : MAX_PAGE_SIZE);
+        }
+        return page;
     }
 
     /**
