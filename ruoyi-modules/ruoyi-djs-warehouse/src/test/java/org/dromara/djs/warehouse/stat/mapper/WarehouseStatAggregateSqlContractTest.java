@@ -103,26 +103,27 @@ class WarehouseStatAggregateSqlContractTest {
         assertThat(sql).contains("t_warehouse_bar_info");
         assertThat(sql).as("按处理完成时刻分桶").contains("DATE(b.finish_time) = #{statDate}");
         assertThat(sql).as("白条总重是整 cohort 的 in_weight 之和")
-            .contains("COALESCE(SUM(t.inWeight), 0) AS barTotalWeight");
+            .contains("COALESCE(SUM(b.in_weight), 0) AS barTotalWeight");
         assertThat(sql).as("接收重量之和仍落盘（诊断列）")
-            .contains("COALESCE(SUM(t.arriveWeight), 0) AS finishedArriveWeight");
+            .contains("COALESCE(SUM(b.arrive_weight), 0) AS finishedArriveWeight");
     }
 
     /**
-     * 出品率分母 = 客户口径「完成接收重量的猪只出栏重量之和」——限定语指的是同一批处理完成的猪，
-     * 不是第二个日期锚。分母若换回接收重量（arrive_weight），率会回到 >100% 的老毛病。
+     * 出品率分母**不由本查询产出**。甲方 2026-09-07 把需求原文改成
+     * 「白条出品率：白条总重 / 完成接收重量的猪只出栏重量之和」，与上一行屠宰率的分母逐字相同，
+     * 答复里也写明「分母错误，也是【完成接收重量的猪只出栏重量之和】」。
+     * 谁再把分母塞回处理完成 cohort，这里当场红。
      */
     @Test
-    @DisplayName("出品率分母 = 同一批猪的出栏重量（自养 marketing_weight / 外购 pig_weight），不是接收重量")
-    void finishedAggYieldDenominatorIsMarketingWeightOfSameCohort() throws Exception {
+    @DisplayName("出品率分母不在处理完成 cohort 里算 —— 与屠宰率共用称重 cohort 的分母（甲方 2026-09-07 改稿）")
+    void finishedAggDoesNotComputeYieldDenominator() throws Exception {
         String sql = select("selectFinishedAgg", String.class, String.class);
-        assertThat(sql).as("自养出栏重量走 marketing_weight").contains("b.marketing_weight");
-        assertThat(sql).as("外购生猪出栏重量按 bar_id 相关子查询反查 outsource_pig（LIMIT 1 防重复台账行放大）")
-            .contains("t_warehouse_outsource_pig")
-            .contains("op.bar_id = b.bar_id")
-            .contains("LIMIT 1");
-        assertThat(sql).as("分母 = 同一批猪的 Σ 出栏重量")
-            .contains("COALESCE(SUM(t.baseWeight), 0) AS barYieldBaseWeight");
+        assertThat(sql).as("处理完成 cohort 只出头数/白条总重/接收重量三个量")
+            .doesNotContain("barYieldBaseWeight")
+            .doesNotContain("barYieldNumerWeight");
+        assertThat(sql).as("不再按出栏重量取子集，故无需反查外购台账")
+            .doesNotContain("t_warehouse_outsource_pig")
+            .doesNotContain("marketing_weight");
     }
 
     /**
@@ -134,21 +135,11 @@ class WarehouseStatAggregateSqlContractTest {
     @Test
     @DisplayName("外购台账重复行：取值必须定序（有送宰日期优先 + id），不能裸 LIMIT 1")
     void outsourceWeightSubqueryIsDeterministic() throws Exception {
-        for (String m : new String[]{"selectFinishedAgg", "selectSlaughterRateBase"}) {
+        for (String m : new String[]{"selectSlaughterRateBase"}) {
             String sql = select(m, String.class, String.class);
             assertThat(sql).as(m + " 的外购子查询必须带 ORDER BY，裸 LIMIT 1 结果不确定")
                 .contains("ORDER BY (op.slaughter_date IS NULL), op.id LIMIT 1");
         }
-    }
-
-    @Test
-    @DisplayName("对称剔除：出品率分子分母都只算「处理完成 ∩ 出栏重量非空」子集")
-    void finishedAggYieldNumeratorAndDenominatorShareSameSubset() throws Exception {
-        String sql = select("selectFinishedAgg", String.class, String.class);
-        assertThat(sql).as("分子只算子集内的 in_weight——拿不到出栏重量的猪两边同时剔除")
-            .contains("COALESCE(SUM(CASE WHEN t.baseWeight IS NOT NULL THEN t.inWeight ELSE 0 END), 0) AS barYieldNumerWeight");
-        assertThat(sql).as("分母是同一子集的 Σ 出栏重量（SUM 天然跳过 NULL，与分子取同一批猪）")
-            .contains("COALESCE(SUM(t.baseWeight), 0) AS barYieldBaseWeight");
     }
 
     @Test
