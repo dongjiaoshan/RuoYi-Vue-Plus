@@ -125,6 +125,22 @@ class WarehouseStatAggregateSqlContractTest {
             .contains("COALESCE(SUM(t.baseWeight), 0) AS barYieldBaseWeight");
     }
 
+    /**
+     * 同一头外购猪可能挂着多条台账（先错录后补录）。子查询只取一行，必须定序，
+     * 否则取哪一行由物理顺序决定：同一份数据换个存储顺序，出品率分母就变，
+     * 还会出现「送宰总重按 A 行、出品率分母按 B 行」的行内自相矛盾。
+     * 定序口径与送宰侧对齐：有送宰日期的优先（那才是被计进送宰总重的那条），再按 id 取最早。
+     */
+    @Test
+    @DisplayName("外购台账重复行：取值必须定序（有送宰日期优先 + id），不能裸 LIMIT 1")
+    void outsourceWeightSubqueryIsDeterministic() throws Exception {
+        for (String m : new String[]{"selectFinishedAgg", "selectSlaughterRateBase"}) {
+            String sql = select(m, String.class, String.class);
+            assertThat(sql).as(m + " 的外购子查询必须带 ORDER BY，裸 LIMIT 1 结果不确定")
+                .contains("ORDER BY (op.slaughter_date IS NULL), op.id LIMIT 1");
+        }
+    }
+
     @Test
     @DisplayName("对称剔除：出品率分子分母都只算「处理完成 ∩ 出栏重量非空」子集")
     void finishedAggYieldNumeratorAndDenominatorShareSameSubset() throws Exception {
