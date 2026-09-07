@@ -45,7 +45,8 @@ import static org.mockito.Mockito.when;
  *   <li>happy：三指标各有数 → 4 张卡固定输出、猪肉卡合并 pork + white_bar、多单位多行且行序稳定；</li>
  *   <li>环比：上月有数算百分比，上月无数据 / 为 0 → ratio 为 null（前端据此显黑色 0.00%）；</li>
  *   <li>全空兜底：mapper 全返空 → 仍出 4 张卡、rows 为空、不抛 NPE；</li>
- *   <li>明细弹窗（R193）：按产品聚合、逐产品环比、只列本月有量的产品、totals 与卡片同源。</li>
+ *   <li>明细弹窗（R193）：按产品聚合、逐产品环比、只列本月有量的产品、totals 与卡片同源；</li>
+ *   <li>原材料消耗不含礼盒产线（甲方 2026-09-07），且该单位只有原材料消耗归零时行仍在（R194 兜底）。</li>
  * </ol>
  *
  * <p>service 不用 LambdaWrapper（纯 Mapper 注解 SQL），无需 entity cache 预热。</p>
@@ -169,6 +170,76 @@ class WarehouseBoardStatServiceImplTest {
         assertThat(vo.getPrevMonth()).isNotBlank();
         assertThat(vo.getCategories()).hasSize(4);
         assertThat(vo.getCategories()).allSatisfy(c -> assertThat(c.getRows()).isEmpty());
+    }
+
+    @Test
+    @DisplayName("原材料消耗：礼盒生产消耗的猪肉原料不进猪肉卡（甲方 2026-09-07：礼盒生产的不进行统计）")
+    void getCategoryStat_materialConsumeExcludesGiftProduce() {
+        // 本月两条猪肉原料消耗：普通猪肉产品生产耗 8kg + 礼盒生产耗 5kg。
+        // 排除动作发生在 SQL 里（WarehouseBoardStatMapper.EXCLUDE_GIFT_PRODUCE，口径由 SQL 契约测试锁住），
+        // 故 mapper 只吐得出普通那 8kg；service 不得再对这个数做任何加工。
+        when(boardStatMapper.selectMaterialConsumeByCategoryUnit(
+            eq("1001"), anyList(), eq(CUR_FROM), eq(CUR_TO)))
+            .thenReturn(List.of(row("pork", "kg", "8.000")));
+        // 生产量不受这条排除影响：礼盒自己产的 3 盒仍按礼盒品类正常统计（四张卡里没有礼盒卡，故不显示），
+        // 猪肉产品自己的生产量照常出数
+        when(boardStatMapper.selectProduceByCategoryUnit(eq("1001"), anyList(), eq(CUR_FROM), eq(CUR_TO)))
+            .thenReturn(List.of(row("pork", "kg", "6.000"), row("gift_box", "盒", "3")));
+        when(boardStatMapper.selectInboundByCategoryUnit(
+            eq("1001"), anyList(), anyList(), eq(CUR_FROM), eq(CUR_TO)))
+            .thenReturn(List.of(row("pork", "kg", "20.000")));
+
+        WarehouseBoardStatVo vo = service.getCategoryStat("2026-09");
+
+        CategoryStatVo porkCard = vo.getCategories().get(0);
+        assertThat(porkCard.getRows()).hasSize(1);
+        CategoryUnitStatVo kgRow = porkCard.getRows().get(0);
+        assertThat(kgRow.getUnit()).isEqualTo("kg");
+        // 只算普通产线那 8kg —— 礼盒那 5kg 在 SQL 侧就被剔掉了，不是 8 + 5 = 13
+        assertThat(kgRow.getMaterialQty()).isEqualByComparingTo("8.000");
+        assertThat(kgRow.getInboundQty()).isEqualByComparingTo("20.000");
+        assertThat(kgRow.getProduceQty()).isEqualByComparingTo("6.000");
+
+        // 礼盒不是四张卡之一，礼盒自身的量（无论哪个指标）都不会挂到任何一张卡上
+        assertThat(vo.getCategories()).extracting(CategoryStatVo::getCategoryKey)
+            .containsExactly("pork", "vegetable", "egg", "dry_good");
+        assertThat(vo.getCategories()).allSatisfy(card ->
+            assertThat(card.getRows()).extracting(CategoryUnitStatVo::getUnit).doesNotContain("盒"));
+
+        // 三条 SQL 拿到的是同一份品类白名单：白名单里没有 gift_box，
+        // 所以「礼盒当原材料被消耗」也不会另开一张卡
+        ArgumentCaptor<List<String>> belongCaptor = ArgumentCaptor.forClass(List.class);
+        verify(boardStatMapper).selectMaterialConsumeByCategoryUnit(
+            eq("1001"), belongCaptor.capture(), eq(CUR_FROM), eq(CUR_TO));
+        assertThat(belongCaptor.getValue())
+            .containsExactly("pork", "white_bar", "vegetable", "egg", "dry_good")
+            .doesNotContain("gift_box");
+    }
+
+    @Test
+    @DisplayName("某单位只有原材料消耗归零：该行仍在且原材料列显 0，不整行消失（R194 只显示有数单位的兜底）")
+    void getCategoryStat_rowKeptWhenOnlyMaterialIsZero() {
+        // 礼盒排除后，猪肉 kg 行的原材料消耗有可能被清成 0；只要入库 / 生产还有数，这一行就得留着
+        when(boardStatMapper.selectInboundByCategoryUnit(
+            eq("1001"), anyList(), anyList(), eq(CUR_FROM), eq(CUR_TO)))
+            .thenReturn(List.of(row("pork", "kg", "20.000")));
+        when(boardStatMapper.selectProduceByCategoryUnit(eq("1001"), anyList(), eq(CUR_FROM), eq(CUR_TO)))
+            .thenReturn(List.of(row("pork", "kg", "6.000")));
+        when(boardStatMapper.selectMaterialConsumeByCategoryUnit(
+            eq("1001"), anyList(), eq(CUR_FROM), eq(CUR_TO)))
+            .thenReturn(List.of());
+        // 上月这个单位是有原材料消耗的 → 环比按 0 对 5 算得出 -100%
+        when(boardStatMapper.selectMaterialConsumeByCategoryUnit(
+            eq("1001"), anyList(), eq(PRE_FROM), eq(PRE_TO)))
+            .thenReturn(List.of(row("pork", "kg", "5.000")));
+
+        WarehouseBoardStatVo vo = service.getCategoryStat("2026-09");
+
+        CategoryUnitStatVo kgRow = vo.getCategories().get(0).getRows().get(0);
+        assertThat(kgRow.getUnit()).isEqualTo("kg");
+        assertThat(kgRow.getMaterialQty()).isEqualByComparingTo("0");
+        assertThat(kgRow.getMaterialRatio()).isEqualByComparingTo("-100.00");
+        assertThat(kgRow.getInboundQty()).isEqualByComparingTo("20.000");
     }
 
     @Test
