@@ -37,15 +37,16 @@ import java.util.Map;
  * <ol>
  *   <li>猪肉段按<b>三组 cohort</b>取数，同一指标的分子分母必须来自同一批猪（V6-R172）：
  *     <ul>
- *       <li>出栏 cohort（bar.marketing_time 自养 + outsource_pig.slaughter_date 外购生猪）
- *           → 屠宰头数 / 送宰总重 / 送宰均重</li>
+ *       <li>送宰 cohort（bar.marketing_time 自养 + outsource_pig.slaughter_date 外购生猪）
+ *           → 屠宰头数 / 送宰总重 / 送宰均重。统计的是<b>送宰</b>不是出栏（出栏在养殖模块统计）；
+ *           自养无独立送宰时间字段，出栏事件写的 marketing_time 即交宰时刻，故作送宰锚点</li>
  *       <li>称重 cohort（bar.arrive_time，燎毛间完成称重）→ 接收重量；
  *           屠宰率 = 接收重量/该批猪出栏重量之和×100，仅取其中<b>有</b>出栏重量的子集（两边同时剔除）</li>
- *       <li>处理完成 cohort（bar.finish_time）→ 白条总重 = Σ bar.in_weight（整 cohort，含未称重的）；
+ *       <li>处理完成 cohort（bar.finish_time）→ 白条总重 = Σ bar.in_weight（整 cohort，一行=一头猪(耳号)）；
  *           白条均重 = 白条总重/处理完成头数；
- *           白条出品率 = (F∩有接收重量子集的 Σ in_weight)/(同子集 Σ arrive_weight)×100，分子分母对称保证 ≤100%</li>
+ *           白条出品率 = (F∩出栏重量非空子集的 Σ in_weight)/(同子集 Σ 出栏重量)×100，分子分母对称保证 ≤100%</li>
  *     </ul>
- *     日表额外落 5 个 cohort 基数列，月率按 Σ基数 重算</li>
+ *     日表额外落 6 个 cohort 基数列，月率按 Σ基数 重算</li>
  *   <li>路损率 = (发往月台−月台接收)/发往月台×100（A2 日表，分母用发往=损耗占发出量）；作物表按 row17 (发往−接收)/接收×100</li>
  *   <li>所有损耗一律从 loss_flow 按 loss_type 取（防重复计）</li>
  *   <li>月台接收只算自产 receive_type=1</li>
@@ -108,7 +109,7 @@ public class WarehouseStatServiceImpl implements IWarehouseStatService {
         WarehouseIndicatorRecord r = new WarehouseIndicatorRecord();
         r.setStatDate(LocalDate.parse(statDate));
 
-        // 屠宰 / 送宰段（出栏 cohort：当日出栏的那批猪）
+        // 屠宰 / 送宰段（送宰 cohort：当日送宰的那批猪 = 自养出栏交宰 + 外购生猪送宰）
         int slaughterCount = aggregateMapper.countSlaughter(tenantId, statDate);
         BigDecimal slaughterWeight = scale3(
             aggregateMapper.sumMarketingWeight(tenantId, statDate)
@@ -131,22 +132,28 @@ public class WarehouseStatServiceImpl implements IWarehouseStatService {
         r.setSlaughterRateBaseWeight(rateBaseWeight);
         r.setSlaughterRate(pctOrNull(rateArriveWeight, rateBaseWeight));
 
-        // 白条段（处理完成 cohort：当日 bar.finish_time 落当天的那批猪）
-        // 白条均重 = 白条总重 ÷ 处理完成头数（全 cohort）；
-        // 白条出品率 = 出品率分子 ÷ 完成处理猪只的接收重量之和 × 100（口径#1，V6-R172 D1）。
-        //   分子分母都只落在「处理完成 ∩ 有接收重量」子集上（对称），未称重的完成猪不进比率但仍进白条总重，
-        //   否则一头 arrive=NULL 的完成猪会把 in_weight 计进分子、arrive 不计进分母 → 出品率破 100%。
+        // 白条段（处理完成 cohort：当日 bar.finish_time 落当天的那批猪，下称 F）
+        // 白条总重 = Σ bar.in_weight（整 F，一行=一头猪=一个耳号，按处理完成当天归集）；
+        // 白条均重 = 白条总重 ÷ 处理完成头数（整 F）；
+        // 白条出品率 = 出品率分子 ÷ 出品率分母 × 100（客户口径「完成接收重量的猪只出栏重量之和」）。
+        //   分子分母都只落在「F ∩ 出栏重量非空」子集上（对称）：分子 Σ in_weight、分母 Σ 出栏重量。
+        //   「完成接收重量的猪只」是限定语、不是第二个日期锚——分子按完成日、分母按称重日各取一批的话
+        //   两批猪不是同一批，又会破 100%；同批取数下 白条重 < 出栏活重 恒成立。
+        //   取不到出栏重量的猪两边同时剔除，其 in_weight 仍计进白条总重展示列。
+        //   接收重量之和（finishedArrive）仍落盘，但只作诊断列、不再当分母。
         Map<String, Object> finished = aggregateMapper.selectFinishedAgg(tenantId, statDate);
         int finishedCount = mapInt(finished, "finishedCount");
         BigDecimal barTotal = scale3(mapBd(finished, "barTotalWeight"));
         BigDecimal finishedArrive = scale3(mapBd(finished, "finishedArriveWeight"));
         BigDecimal barYieldNumer = scale3(mapBd(finished, "barYieldNumerWeight"));
+        BigDecimal barYieldBase = scale3(mapBd(finished, "barYieldBaseWeight"));
         r.setBarTotalWeight(barTotal);
         r.setFinishedCount(finishedCount);
         r.setFinishedArriveWeight(finishedArrive);
         r.setBarYieldNumerWeight(barYieldNumer);
+        r.setBarYieldBaseWeight(barYieldBase);
         r.setAvgBarWeight(divideOrNull(barTotal, new BigDecimal(finishedCount)));
-        r.setBarYieldRate(pctOrNull(barYieldNumer, finishedArrive));
+        r.setBarYieldRate(pctOrNull(barYieldNumer, barYieldBase));
 
         // 分割段
         BigDecimal cutProduct = scale3(aggregateMapper.sumCutProductWeight(tenantId, statDate));
@@ -308,8 +315,8 @@ public class WarehouseStatServiceImpl implements IWarehouseStatService {
         r.setSlaughterCount(mapInt(m, "slaughterCount"));
         // 屠宰率 = Σ日屠宰率分子 / Σ日屠宰率分母 ×100
         r.setSlaughterRate(pctOrNull(mapBd(m, "sumRateArrive"), mapBd(m, "sumRateBase")));
-        // 白条出品率 = Σ日出品率分子 / Σ日处理完成猪只接收重量 ×100（分子取 bar_yield_numer_weight，不是 bar_total_weight）
-        r.setBarYieldRate(pctOrNull(mapBd(m, "sumBarYieldNumer"), mapBd(m, "sumFinishedArrive")));
+        // 白条出品率 = Σ日出品率分子 / Σ日出品率分母 ×100（两列都是「F ∩ 出栏重量非空」子集的基数，与日率同口径）
+        r.setBarYieldRate(pctOrNull(mapBd(m, "sumBarYieldNumer"), mapBd(m, "sumBarYieldBase")));
         // 分割出品率 = Σ分割产品/Σ分割白条×100
         r.setCutYieldRate(pctOrNull(mapBd(m, "sumCutProduct"), mapBd(m, "sumCutBar")));
 

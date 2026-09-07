@@ -40,10 +40,10 @@ public class WarehouseIndicatorRecord extends TenantEntity {
     /** 统计日期（T-1）。 */
     private LocalDate statDate;
 
-    // ---- 屠宰 / 送宰段（出栏 cohort：bar.marketing_time / outsource_pig.slaughter_date）----
-    /** 屠宰头数（当日出栏的猪只头数 = 自养出栏 + 外购生猪送宰）。 */
+    // ---- 屠宰 / 送宰段（送宰 cohort：bar.marketing_time / outsource_pig.slaughter_date）----
+    /** 屠宰头数（当日送宰的猪只头数 = 自养 + 外购生猪；统计送宰不是出栏，出栏在养殖模块统计）。 */
     private Integer slaughterCount;
-    /** 送宰总重（当日出栏送宰猪总重 + 当日外购猪总重）。 */
+    /** 送宰总重（当日送宰的自养猪总重 + 外购生猪总重）。 */
     private BigDecimal slaughterWeight;
     /** 送宰均重（送宰总重/屠宰头数；分母 0 → null）。 */
     @TableField(updateStrategy = FieldStrategy.ALWAYS)
@@ -61,18 +61,20 @@ public class WarehouseIndicatorRecord extends TenantEntity {
     private BigDecimal slaughterRate;
 
     // ---- 白条段（处理完成 cohort：bar.finish_time）----
-    /** 白条总重（当日处理完成的<b>全部</b>猪只，Σ bar.in_weight，含未称重的；独立展示列）。 */
+    /** 白条总重（当日处理完成的<b>全部</b>猪只，一行=一头猪(耳号)的 Σ bar.in_weight；独立展示列）。 */
     private BigDecimal barTotalWeight;
     /** 处理完成头数（当日 bar.finish_time 落当天的猪只数 = 白条均重的分母）。 */
     private Integer finishedCount;
-    /** 处理完成猪只的接收重量之和（Σ arrive_weight，天然只含有接收重量的猪 = 白条出品率的分母）。 */
+    /** 处理完成猪只的接收重量之和（Σ arrive_weight；诊断列，不参与出品率）。 */
     private BigDecimal finishedArriveWeight;
-    /** 白条出品率分子（处理完成 ∩ 有接收重量子集的 Σ in_weight；与分母同子集，保证率 ≤100%）。 */
+    /** 白条出品率分子（处理完成 ∩ 出栏重量非空子集的 Σ in_weight；与分母同子集，保证率 ≤100%）。 */
     private BigDecimal barYieldNumerWeight;
+    /** 白条出品率分母（同一子集的 Σ 出栏重量；自养 marketing_weight / 外购生猪 pig_weight）。 */
+    private BigDecimal barYieldBaseWeight;
     /** 白条均重（白条总重/处理完成头数；分母 0 → null）。 */
     @TableField(updateStrategy = FieldStrategy.ALWAYS)
     private BigDecimal avgBarWeight;
-    /** 白条出品率%（白条出品率分子/处理完成猪只接收重量之和×100；分母 0 → null）。 */
+    /** 白条出品率%（出品率分子/出品率分母×100；分母 0 → null）。 */
     @TableField(updateStrategy = FieldStrategy.ALWAYS)
     private BigDecimal barYieldRate;
 

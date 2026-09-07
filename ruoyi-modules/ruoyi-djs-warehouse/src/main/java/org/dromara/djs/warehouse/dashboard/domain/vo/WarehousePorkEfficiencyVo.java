@@ -33,9 +33,9 @@ public class WarehousePorkEfficiencyVo implements Serializable {
     private Integer slaughterCount;
     /** 送宰均重 kg（当年送宰总重之和/送宰头数之和；分母 0 → null）。 */
     private BigDecimal avgSlaughterWeight;
-    /** 屠宰出品率%（当年日接收重量之和/送宰总重之和×100；分母 0 → null）。 */
+    /** 屠宰率%（当年 Σ日屠宰率分子/Σ日屠宰率分母×100，同一批猪；分母 0 → null）。 */
     private BigDecimal slaughterRate;
-    /** 白条出品率%（当年日白条总重之和/送宰总重之和×100；分母 0 → null）。 */
+    /** 白条出品率%（当年 Σ日出品率分子/Σ日出品率分母×100，同一批猪；分母 0 → null）。 */
     private BigDecimal barYieldRate;
 
     // ====== 年度分割指标统计 4 KPI（原型「年度分割指标统计」）======
