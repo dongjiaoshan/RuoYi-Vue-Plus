@@ -59,7 +59,9 @@ class WarehouseBoardStatMapperSqlContractTest {
             .contains("in ('kg', '公斤')")
             .contains("sum(pp.product_weight)")
             .contains("else count(*) end")
-            .doesNotContain("product_attr");
+            // 甲方 row193：「生产的数据仅生产产品」→ product_attr = 1，与入库侧的 = 2 严格对仗。
+            // 少了它，半扇（档案里是原材料）会同时进入库量和生产量，两个指标重叠。
+            .contains("pi.product_attr = 1");
     }
 
     @Test

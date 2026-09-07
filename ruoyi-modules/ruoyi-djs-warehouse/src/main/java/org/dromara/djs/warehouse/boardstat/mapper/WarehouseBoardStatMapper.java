@@ -95,8 +95,18 @@ public interface WarehouseBoardStatMapper {
      *
      * <p>参数名固定 {@code tenantId / belongTypes / from / toExclusive}。</p>
      */
+    /**
+     * 生产量 / 生产明细共用的筛选条件。
+     *
+     * <p>{@code product_attr = 1}「生产产品」是甲方口径（row193：「入库的数据仅原材料产品」／
+     * 「生产的数据仅生产产品」两句严格对仗，对应字典 {@code djs_product_attr} 的 2=原材料 / 1=生产产品）。
+     * 少了这个条件，{@code 半扇}（belong_type=white_bar，档案里是 <b>原材料</b>）会同时进「入库量」和
+     * 「生产量」两个指标——实测 2026-08 猪肉生产量 1329.500kg 里有 1313.400kg 是它，占 98.8%，
+     * 而这批重量在入库量里也算了一遍。加上它三个指标才互不重叠。</p>
+     */
     String PRODUCE_WHERE = """
         WHERE pp.del_flag = '0' AND pp.tenant_id = #{tenantId}
+          AND pi.product_attr = 1
           AND pi.belong_type IN
               <foreach collection="belongTypes" item="b" open="(" separator="," close=")">#{b}</foreach>
           AND pp.produce_date &gt;= #{from}
