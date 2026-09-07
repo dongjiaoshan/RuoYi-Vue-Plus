@@ -93,13 +93,14 @@ class WarehouseBoardStatMapperSqlContractTest {
         // —— 按产出品判礼盒是结构性死代码，一行都减不掉（clean-QA 2026-09-07 实测排除 0 行）。
         assertThat(sql)
             .as("必须按发送位置排除礼盒组件，不能按产出品品类")
-            .contains("pp.deliver_dest <> 'gift'")
+            // &lt;&gt; 是 XML 转义：MyBatis 按 <script> 解析注解 SQL，裸 <> 会让应用起不来
+            .contains("pp.deliver_dest &lt;&gt; 'gift'")
             .doesNotContain("belong_type = 'gift_box'");
         // NULL 必须显式放行：SQL 里 NULL <> 'gift' 是 UNKNOWN，只写 <> 会把 deliver_dest 为空的
         // 老数据整批筛掉，原材料消耗会凭空缩水。
         assertThat(sql)
             .as("deliver_dest 可空，必须 IS NULL OR <> 显式放行")
-            .contains("pp.deliver_dest is null or pp.deliver_dest <> 'gift'");
+            .contains("pp.deliver_dest is null or pp.deliver_dest &lt;&gt; 'gift'");
         // 半连接不改行数：排除条件不许写成再 JOIN 一张产品档案
         assertThat(sql).doesNotContain("join t_warehouse_product_info po");
         assertThat(sql).doesNotContain("po.del_flag");
@@ -198,5 +199,45 @@ class WarehouseBoardStatMapperSqlContractTest {
         return String.join(" ", select.value())
             .replaceAll("\\s+", " ")
             .toLowerCase(Locale.ROOT);
+    }
+
+    /**
+     * 每条 {@code @Select} 都必须是<b>合法 XML</b>。
+     *
+     * <p>MyBatis 的 XMLLanguageDriver 会把注解里的 SQL 包进 {@code <script>} 当 XML 解析（正因如此
+     * 日期比较要写 {@code &amp;gt;=} 而不是 {@code >=}）。写了裸 {@code <>} 之类的字符，
+     * <b>编译能过、字符串断言也能过</b>，但应用启动时才炸 SAXParseException，
+     * 整个 warehouseBoardStatMapper bean 建不起来 → 后端起不来。
+     *
+     * <p>本用例就是把启动时那一步搬到单测里：解析失败当场红，而不是等部署上去 502。</p>
+     */
+    @Test
+    @DisplayName("每条 @Select 都是合法 XML（MyBatis 按 <script> 解析；裸 <> 会让应用起不来）")
+    void everySelectIsWellFormedXml() throws Exception {
+        javax.xml.parsers.DocumentBuilderFactory factory =
+            javax.xml.parsers.DocumentBuilderFactory.newInstance();
+        factory.setNamespaceAware(false);
+        factory.setValidating(false);
+
+        int checked = 0;
+        for (Method method : WarehouseBoardStatMapper.class.getMethods()) {
+            Select select = method.getAnnotation(Select.class);
+            if (select == null) {
+                continue;
+            }
+            String sql = String.join(" ", select.value());
+            String wrapped = "<script>" + sql + "</script>";
+            try {
+                factory.newDocumentBuilder().parse(new org.xml.sax.InputSource(new java.io.StringReader(wrapped)));
+            } catch (org.xml.sax.SAXParseException ex) {
+                throw new AssertionError(String.format(
+                    "%s 的 SQL 不是合法 XML（第 %d 行第 %d 列）：%s%n"
+                        + "MyBatis 启动时会用同一个解析器，这条会让后端起不来。"
+                        + "不等式要写成 &lt;&gt; / &lt; / &gt;。%nSQL: %s",
+                    method.getName(), ex.getLineNumber(), ex.getColumnNumber(), ex.getMessage(), sql), ex);
+            }
+            checked++;
+        }
+        assertThat(checked).as("应当至少扫到几条 @Select，扫到 0 条说明反射没拿到方法").isGreaterThan(3);
     }
 }
