@@ -1148,4 +1148,48 @@ class ProductProductionServiceImplTest {
         assertThat(captor.getValue().getParamNameValuePairs().values()).contains("gift", "warehouse_out");
     }
 
+    @Test
+    @DisplayName("row204: 需求「产品明细」按 demandId + is_delivery_check=1 锁定，不掺生产日期条件")
+    void queryItemPageList_byDemandAndDeliveryChecked_ignoresProduceDate() {
+        org.dromara.djs.warehouse.pack.domain.query.ProductProductionQuery q =
+            new org.dromara.djs.warehouse.pack.domain.query.ProductProductionQuery();
+        q.setDemandId(777L);
+        q.setDeliveryChecked(Boolean.TRUE);
+        when(productionMapper.selectVoPage(any(), any())).thenReturn(new com.baomidou.mybatisplus.extension.plugins.pagination.Page<>());
+
+        service.queryItemPageList(q, new org.dromara.common.mybatis.core.page.PageQuery(1, 10));
+
+        ArgumentCaptor<com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<org.dromara.djs.warehouse.pack.domain.ProductProduction>> captor =
+            ArgumentCaptor.forClass(com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper.class);
+        verify(productionMapper).selectVoPage(any(), captor.capture());
+        String sql = captor.getValue().getTargetSql();
+
+        assertThat(sql).contains("demand_id");
+        // 与「到店量」的聚合条件逐字一致，否则「到店量 N」配不上明细里的行
+        assertThat(sql).contains("is_delivery_check");
+        // ⚠️ 生产日期不能进条件：产出记在**生产**当天、需求挂在**到店**那天，
+        // 「今天生产明天到店」时按日期筛会一行都查不到（甲方 row204 复现的正是这个空明细）
+        assertThat(sql).doesNotContain("produce_date");
+        // 🔒 D-0048：到店量聚合（selectArrivedQuantityByDemandIds）没有 deliver_dest 过滤，
+        // 明细这侧也一条都不许加 —— 多一道条件，明细行的抵扣量之和就对不上需求行的到店量
+        // （线上实证：需求 2089615514926686209 到店量 100，带 excludeGiftDeliver 只剩 1 行 50）。
+        assertThat(sql).doesNotContain("deliver_dest");
+    }
+
+    @Test
+    @DisplayName("row204: 门店损耗页仍按 demandId 全量下钻 —— 不置 deliveryChecked 就不加清点条件")
+    void queryItemPageList_byDemandWithoutFlag_keepsAllProduction() {
+        org.dromara.djs.warehouse.pack.domain.query.ProductProductionQuery q =
+            new org.dromara.djs.warehouse.pack.domain.query.ProductProductionQuery();
+        q.setDemandId(777L);
+        when(productionMapper.selectVoPage(any(), any())).thenReturn(new com.baomidou.mybatisplus.extension.plugins.pagination.Page<>());
+
+        service.queryItemPageList(q, new org.dromara.common.mybatis.core.page.PageQuery(1, 10));
+
+        ArgumentCaptor<com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<org.dromara.djs.warehouse.pack.domain.ProductProduction>> captor =
+            ArgumentCaptor.forClass(com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper.class);
+        verify(productionMapper).selectVoPage(any(), captor.capture());
+        assertThat(captor.getValue().getTargetSql()).doesNotContain("is_delivery_check");
+    }
+
 }

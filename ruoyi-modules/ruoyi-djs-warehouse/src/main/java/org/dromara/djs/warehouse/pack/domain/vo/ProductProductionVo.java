@@ -106,6 +106,18 @@ public class ProductProductionVo implements Serializable {
      */
     private Long demandId;
 
+    /**
+     * 本条产出记录抵了多少门店需求量（按需求单位计，V6-R161）。
+     *
+     * <p>需求「产品明细」列出的就是已到店的这几条产出，逐行显示本列，行和 = 需求行上的「到店量」
+     * （到店量 = Σ 本列，见 {@code DemandArrivedQuantityFiller}）。不出这一列，甲方看到
+     * 「到店量 1、明细 1 行」时无从判断这 1 行到底抵了 1 份还是 1kg。</p>
+     *
+     * <p>只做接口出参、<b>不标</b> {@code @ExcelProperty}：本 VO 同时是「发货产品生产记录」导出模型，
+     * 加注解会往甲方在用的那张 xlsx 里凭空插一列。</p>
+     */
+    private BigDecimal demandDeductQty;
+
     private Long materialId;
 
     /**

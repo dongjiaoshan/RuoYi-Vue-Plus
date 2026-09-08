@@ -228,6 +228,120 @@ class WarehouseDashboardServiceImplTest {
         assertThat(vo.getAvgSlaughterWeight()).isNull();
     }
 
+    /**
+     * 甲方 2026-09-08 红框横跨整行白条均重、含最右「累计」格：累计必须是
+     * Σ白条总重 ÷ Σ当日入白条库猪只耳号去重数，<b>不是</b>「日均重再求平均」。
+     *
+     * <p>用两天拉开差距：D1 一头 110kg（均重 110.00），D2 十头 1240.9kg（均重 124.09）。
+     * 正确累计 = (110+1240.9)/(1+10) = 1350.9/11 = 122.81；
+     * 旧的「日均值平均」= (110.00+124.09)/2 = 117.05 —— 只有 11 头里 1 头的那天被当成
+     * 与 10 头那天同等权重，这正是甲方圈出来的偏差。</p>
+     */
+    @Test
+    @DisplayName("日矩阵「累计」：白条均重 = Σ白条总重 ÷ Σ去重耳号数，不是日均重再平均")
+    void getPorkEfficiency_avgBarWeightTotalUsesCohortSums() {
+        WarehouseIndicatorRecord d1 = barRow(LocalDate.of(2026, 8, 20), "110.000", 1, "110.000");
+        WarehouseIndicatorRecord d2 = barRow(LocalDate.of(2026, 8, 21), "1240.900", 10, "124.090");
+        when(productionDashboardMapper.selectIndicatorRecordsInRange(
+            eq("1001"), eq(LocalDate.of(2026, 8, 1)), eq(LocalDate.of(2026, 8, 31))))
+            .thenReturn(List.of(d1, d2));
+
+        WarehousePorkEfficiencyVo vo = service.getPorkEfficiency(2026, "2026-08");
+
+        WarehousePorkEfficiencyVo.MatrixRow row = vo.getMatrixRows().stream()
+            .filter(r -> "白条均重".equals(r.getMetric())).findFirst().orElseThrow();
+        // 1350.900 / 11 = 122.81（日均重再平均会得到 117.05）
+        assertThat(row.getTotal()).isEqualTo("122.81");
+    }
+
+    /** 整月一头白条都没入库（Σ分母 = 0）→ 累计兜 0.00，不除零、不留空。 */
+    @Test
+    @DisplayName("日矩阵「累计」：Σ去重耳号数为 0 → 白条均重累计兜 0.00，不除零")
+    void getPorkEfficiency_avgBarWeightTotalZeroDenominator() {
+        WarehouseIndicatorRecord d1 = barRow(LocalDate.of(2026, 8, 20), "0.000", 0, null);
+        when(productionDashboardMapper.selectIndicatorRecordsInRange(
+            eq("1001"), eq(LocalDate.of(2026, 8, 1)), eq(LocalDate.of(2026, 8, 31))))
+            .thenReturn(List.of(d1));
+
+        WarehousePorkEfficiencyVo vo = service.getPorkEfficiency(2026, "2026-08");
+
+        WarehousePorkEfficiencyVo.MatrixRow row = vo.getMatrixRows().stream()
+            .filter(r -> "白条均重".equals(r.getMetric())).findFirst().orElseThrow();
+        assertThat(row.getTotal()).isEqualTo("0.00");
+    }
+
+    /**
+     * 回归钉子：<b>只有白条均重</b>改走 Σ分子/Σ分母，其余率/均值类指标的「累计」仍是
+     * 「Σ日值 ÷ 有数据天数」。
+     *
+     * <p>{@code PorkMetric} 加了一对可选的 {@code totalNumer/totalDenom}，两个都不给就走原逻辑。
+     * 「不给就等价于原逻辑」这件事光靠读代码支撑不住 —— 下一个人往这对取值器上接第二个指标时
+     * 改坏了没人会发现，所以在这里钉死两个代表指标的现状值。</p>
+     *
+     * <p>用两天把两种算法拉开：D1 屠宰率 90%（90/100）、D2 屠宰率 50%（500/1000）。
+     * 现状「日值平均」= (90+50)/2 = <b>70.00</b>；若误接成 Σ分子/Σ分母 = 590/1100 = 53.64。
+     * 送宰均重同理：现状 (100+200)/2 = <b>150.00</b>；Σ/Σ = 1900/10 = 190.00。
+     * 这两个数<b>不是</b>在断言现状更正确 —— 它只是「本次没动它们」的护栏，
+     * 真要改口径请连这条用例一起改。</p>
+     */
+    @Test
+    @DisplayName("回归：其余率/均值指标的累计仍是 Σ日值 ÷ 有数据天数（本次只动了白条均重）")
+    void getPorkEfficiency_otherRateTotalsUnchanged() {
+        WarehouseIndicatorRecord d1 = new WarehouseIndicatorRecord();
+        d1.setStatDate(LocalDate.of(2026, 8, 20));
+        d1.setSlaughterCount(1);
+        d1.setSlaughterWeight(new BigDecimal("100.000"));
+        d1.setAvgSlaughterWeight(new BigDecimal("100.000"));
+        d1.setSlaughterRate(new BigDecimal("90.000"));
+        d1.setSlaughterRateArriveWeight(new BigDecimal("90.000"));
+        d1.setSlaughterRateBaseWeight(new BigDecimal("100.000"));
+        // 同一份数据里白条段照新口径走，两条路径并存互不干扰
+        d1.setBarTotalWeight(new BigDecimal("110.000"));
+        d1.setBarPigCount(1);
+        d1.setAvgBarWeight(new BigDecimal("110.000"));
+
+        WarehouseIndicatorRecord d2 = new WarehouseIndicatorRecord();
+        d2.setStatDate(LocalDate.of(2026, 8, 21));
+        d2.setSlaughterCount(9);
+        d2.setSlaughterWeight(new BigDecimal("1800.000"));
+        d2.setAvgSlaughterWeight(new BigDecimal("200.000"));
+        d2.setSlaughterRate(new BigDecimal("50.000"));
+        d2.setSlaughterRateArriveWeight(new BigDecimal("500.000"));
+        d2.setSlaughterRateBaseWeight(new BigDecimal("1000.000"));
+        d2.setBarTotalWeight(new BigDecimal("1240.900"));
+        d2.setBarPigCount(10);
+        d2.setAvgBarWeight(new BigDecimal("124.090"));
+
+        when(productionDashboardMapper.selectIndicatorRecordsInRange(
+            eq("1001"), eq(LocalDate.of(2026, 8, 1)), eq(LocalDate.of(2026, 8, 31))))
+            .thenReturn(List.of(d1, d2));
+
+        WarehousePorkEfficiencyVo vo = service.getPorkEfficiency(2026, "2026-08");
+
+        // 未接 cohort 基数的指标：仍是日值平均（接成 Σ/Σ 会分别变成 53.64 / 190.00）
+        assertThat(totalOf(vo, "屠宰率")).isEqualTo("70.00");
+        assertThat(totalOf(vo, "送宰均重")).isEqualTo("150.00");
+        // 已接 cohort 基数的白条均重：Σ分子/Σ分母 = 1350.900/11 = 122.81（日值平均是 117.05）
+        assertThat(totalOf(vo, "白条均重")).isEqualTo("122.81");
+    }
+
+    /** 取矩阵里某个指标行的「累计」格。 */
+    private static String totalOf(WarehousePorkEfficiencyVo vo, String metric) {
+        return vo.getMatrixRows().stream()
+            .filter(r -> metric.equals(r.getMetric())).findFirst().orElseThrow().getTotal();
+    }
+
+    /** 白条段最小行：只填白条总重 / 去重耳号数 / 日均重，其余指标留空。 */
+    private static WarehouseIndicatorRecord barRow(LocalDate statDate, String barTotalWeight,
+                                                   int barPigCount, String avgBarWeight) {
+        WarehouseIndicatorRecord r = new WarehouseIndicatorRecord();
+        r.setStatDate(statDate);
+        r.setBarTotalWeight(new BigDecimal(barTotalWeight));
+        r.setBarPigCount(barPigCount);
+        r.setAvgBarWeight(avgBarWeight == null ? null : new BigDecimal(avgBarWeight));
+        return r;
+    }
+
     private static WarehouseIndicatorRecord indicatorRow(LocalDate statDate, int slaughterCount,
                                                          String slaughterWeight, String arriveWeight,
                                                          String barTotalWeight,

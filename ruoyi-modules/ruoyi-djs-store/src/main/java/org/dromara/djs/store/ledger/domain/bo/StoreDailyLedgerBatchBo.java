@@ -19,7 +19,7 @@ import java.util.List;
  *   <li>{@code closingQty}（期末）改为<b>手动入参</b>（实盘录入）；</li>
  *   <li>{@code lossQty}（损耗）改为 service <b>计算</b>：
  *       {@code loss = opening + inbound − sale − gift + returnSale − returnWh − closing}（量列缺省 0）；</li>
- *   <li>{@code inboundQty}（新到货）：猪肉行手动录入（上限 = 当日白条发货重量）；非猪肉「新到货」行为发货量预填的只读值；</li>
+ *   <li>{@code inboundQty}（新到货）：猪肉行手动录入（上限 = 当日白条发货重量）；非猪肉「新到货」行为到店量预填的只读值；</li>
  *   <li>{@code returnWhQty}（退回）来自现有门店退回聚合，只读，前端回传以备重算校验。</li>
  * </ul>
  *

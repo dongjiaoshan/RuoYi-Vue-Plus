@@ -1235,8 +1235,14 @@ public class ProductProductionServiceImpl
 
     @Override
     public TableDataInfo<ProductProductionVo> queryItemPageList(ProductProductionQuery query, PageQuery pageQuery) {
-        // 锁定范围二选一：① 主列表下钻 = 生产批次（生产日期 + 产品）；② 门店损耗页 = 某需求（demandId，契约 a）。
+        // 锁定范围二选一：① 主列表下钻 = 生产批次（生产日期 + 产品）；
+        // ② 门店损耗页 / 需求下单「产品明细」= 某需求（demandId，契约 a）。
         // 两者全缺 → 返回空（避免误拉全表逐件）。
+        //
+        // ⚠️ row204：需求下单的「产品明细」必须走 ②。走 ① 会漏掉「今天生产、明天到店」的那批货
+        // ——产出的 produce_date 是生产当天、需求的 demand_date 是到店那天，线上 97 条已挂需求的产出里
+        // 有 21 条两者差一天，这些需求点开明细一行都看不到（部分到店的行几乎全是这种）。
+        // demand_id 是发货清点那一刻同事务写的，与「到店量」同一把钥匙。
         boolean byBatch = query != null && query.getProductId() != null && query.getProduceDate() != null;
         boolean byDemand = query != null && query.getDemandId() != null;
         if (!byBatch && !byDemand) {
@@ -1254,8 +1260,12 @@ public class ProductProductionServiceImpl
             .and(Boolean.TRUE.equals(query.getExcludeGiftDeliver()),
                 w -> w.isNull(ProductProduction::getDeliverDest)
                     .or().notIn(ProductProduction::getDeliverDest, DELIVER_DEST_GIFT, DELIVER_DEST_WAREHOUSE_OUT))
-            // 门店损耗页：按需求过滤逐件（契约 a）
+            // 门店损耗页 / 需求下单「产品明细」：按需求过滤逐件（契约 a）
             .eq(byDemand, ProductProduction::getDemandId, query.getDemandId())
+            // row204：只看已发货清点的产出——与「到店量」的聚合条件逐字一致
+            // （DemandArrivedQuantityFiller 也按 is_delivery_check=1 求和），
+            // 两处同条件才保证「到店量 N」与明细行的抵扣量之和永远对得上。
+            .eq(Boolean.TRUE.equals(query.getDeliveryChecked()), ProductProduction::getIsDeliveryCheck, 1)
             // 是否损坏过滤（契约 a；空=全部）
             .eq(query.getIsDamaged() != null, ProductProduction::getIsDamaged, query.getIsDamaged())
             // 产品序号模糊搜索（int 列 CAST 成字符串 LIKE %kw%；row115-n1）

@@ -168,10 +168,14 @@ public interface VegOutMapper {
      * <p>一条流水一行（同一产品不同地块篮各出一条）。{@code productCode} 供详情页「重新打印」
      * 按产品编号合并成一行打印用（V6 row108，与新增时打的那张单同一口径）。</p>
      *
-     * <p>{@code earNo} / {@code plotCode} 是这条流水的来源标识（row191 弹框「规格」与「出库量」
-     * 之间那两列）：猪肉行有耳号、果蔬行有地块，各自另一项为空，前端与导出都兜 {@code -}。
+     * <p>{@code earNo} / 地块是这条流水的来源标识（row191 弹框「规格」与「出库量」之间那两列）：
+     * 猪肉行有耳号、果蔬行有地块，各自另一项为空，前端与导出都兜 {@code -}。
      * 两者取<b>流水自己</b>的 {@code ear_no} / {@code plot_id}，不回溯上游批次 ——
      * 出库时记的是哪个篮子，明细就显示哪个篮子。</p>
+     *
+     * <p>地块取 {@code plot_name} 而非 {@code plot_code}（row199 甲方口径「与出库时显示的保持一致」，
+     * 新增抽屉那列显示的就是地块名）；再带 {@code third_phase}，让三期货
+     * （没有真实 {@code plot_id}）也能在「地块」列显示「三期」，与库存查询 / 入出库记录三页同一口径。</p>
      */
     @Select("""
         <script>
@@ -183,7 +187,8 @@ public interface VegOutMapper {
                f.out_unit_price AS outUnitPrice,
                f.change_quantity * COALESCE(f.out_unit_price, 0) AS outAmount,
                f.ear_no         AS earNo,
-               pl.plot_code     AS plotCode
+               f.third_phase    AS thirdPhase,
+               pl.plot_name     AS plotName
           FROM t_warehouse_stock_flow f
           JOIN t_warehouse_product_info p ON p.id = f.product_id AND p.del_flag = '0'
           LEFT JOIN t_plant_plot_info pl  ON pl.id = f.plot_id   AND pl.del_flag = '0'

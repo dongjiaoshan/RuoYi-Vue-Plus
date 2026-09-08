@@ -55,7 +55,7 @@ public class AppletStoreManageController {
     }
 
     /**
-     * 月度看板：3 个品类数 + 4 张业态卡（猪肉 / 果蔬 / 蛋类 / 干货）。
+     * 月度看板：3 个品类数 + 业态卡（猪肉 / 果蔬 / 蛋类 / 干货 / 其他，当月无数据的卡不下发）。
      *
      * @param storeId 门店 ID；不传 = 全部门店合计
      * @param month   月份 yyyy-MM；不传 = 当月
@@ -76,7 +76,7 @@ public class AppletStoreManageController {
      *
      * @param storeId    门店 ID；不传 = 全部门店合计
      * @param month      月份 yyyy-MM；不传 = 当月（格式非法 400）
-     * @param belongType 业态卡 key：pork / vegetable / egg / dry_good（白名单外 400）
+     * @param belongType 业态卡 key：pork / vegetable / egg / dry_good / other（白名单外 400）
      * @param pageQuery  分页参数（pageNum / pageSize）
      * @return 明细分页 + 合计
      */

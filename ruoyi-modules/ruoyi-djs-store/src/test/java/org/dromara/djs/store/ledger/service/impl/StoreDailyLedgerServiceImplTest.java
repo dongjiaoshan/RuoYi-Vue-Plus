@@ -19,6 +19,7 @@ import org.dromara.djs.store.operation.domain.StoreSaleRecord;
 import org.dromara.djs.store.operation.mapper.StoreSaleRecordMapper;
 import org.dromara.djs.store.returns.domain.StoreReturn;
 import org.dromara.djs.store.returns.mapper.StoreReturnMapper;
+import org.dromara.djs.warehouse.demand.core.DemandArrivedQuantityFiller;
 import org.dromara.djs.warehouse.demand.domain.DemandManage;
 import org.dromara.djs.warehouse.demand.mapper.DemandManageMapper;
 import org.dromara.djs.warehouse.pack.mapper.ProductProductionMapper;
@@ -84,6 +85,7 @@ class StoreDailyLedgerServiceImplTest {
     @Mock private ShipmentMapper shipmentMapper;
     @Mock private DemandManageMapper demandManageMapper;
     @Mock private ProductProductionMapper productProductionMapper;
+    @Mock private DemandArrivedQuantityFiller arrivedQuantityFiller;
     @Mock private StoreInventoryMapper storeInventoryMapper;
     @Mock private DictService dictService;
     @Mock private IStoreService storeService;
@@ -120,7 +122,7 @@ class StoreDailyLedgerServiceImplTest {
     void setup() {
         service = new StoreDailyLedgerServiceImpl(baseMapper, storeMapper, productInfoMapper,
             saleRecordMapper, storeReturnMapper, shipmentMapper, demandManageMapper,
-            productProductionMapper, storeInventoryMapper, dictService, storeService);
+            productProductionMapper, arrivedQuantityFiller, storeInventoryMapper, dictService, storeService);
         loginHelperMock = Mockito.mockStatic(LoginHelper.class);
         loginHelperMock.when(LoginHelper::getUserId).thenReturn(USER_ID);
 
@@ -165,6 +167,51 @@ class StoreDailyLedgerServiceImplTest {
         assertThat(vo.getOpeningQty()).isEqualByComparingTo(BigDecimal.ZERO);
         // 不再探查「当日是否有白条到店」（无发货则需求表根本不参与取数）。
         verify(demandManageMapper, never()).selectList(any());
+    }
+
+    @Test
+    @DisplayName("D-0047：新到货行「当日入库」取到店量，不取需求量（部分到店时不再虚增入库与损耗）")
+    void testListCandidates_InboundTakesArrivedQuantity() {
+        Long vegProductId = 9304000000000042L;
+        Long demandId = 2096798706305671170L;
+
+        ProductInfo veg = new ProductInfo();
+        veg.setId(vegProductId);
+        veg.setProductName("有机紫线茄500g");
+        veg.setProductUnit("份");
+        veg.setBelongType("vegetable");
+        // 字典置空 → 猪肉候选不打库。productInfoMapper.selectList 依次：① 材料外售 swap（无）；② 展示产品明细。
+        when(dictService.getAllDictByDictType(DICT_WHITE_BAR_RETURN_PRODUCT)).thenReturn(new LinkedHashMap<>());
+        when(productInfoMapper.selectList(any())).thenReturn(List.of(), List.of(veg));
+
+        Shipment shipment = new Shipment();
+        shipment.setDemandId(demandId);
+        shipment.setShipmentNo("S202609080001");
+        when(shipmentMapper.selectList(any())).thenReturn(List.of(shipment));
+
+        DemandManage demand = new DemandManage();
+        demand.setId(demandId);
+        demand.setProductId(vegProductId);
+        demand.setDemandQuantity(new BigDecimal("3.000"));    // 订购 3 份
+        when(demandManageMapper.selectList(any())).thenReturn(List.of(demand));
+        // 实际只发/清点了 1 份 → 需求下单页显示「部分到店 · 到店量 1」
+        when(arrivedQuantityFiller.resolve(List.of(demandId)))
+            .thenReturn(Map.of(demandId, new BigDecimal("1.000")));
+
+        when(storeInventoryMapper.selectList(any())).thenReturn(List.of());
+        when(saleRecordMapper.selectList(any())).thenReturn(List.of());
+        when(storeReturnMapper.selectList(any())).thenReturn(List.of());
+
+        List<StoreDailyLedgerCandidateVo> candidates = service.listCandidates(STORE_ID, DATE);
+
+        assertThat(candidates).hasSize(1);
+        StoreDailyLedgerCandidateVo vo = candidates.get(0);
+        assertThat(vo.getCategory()).isEqualTo("inbound");
+        // 甲方原话「当日入库的数据现在需要取到店量的数据，不以需求量进行获取」
+        assertThat(vo.getInboundQty()).isEqualByComparingTo("1.000");
+        assertThat(vo.getInboundQty()).as("取需求量 3 会让期末 0 时的损耗虚增成 3").isNotEqualByComparingTo("3.000");
+        // 新到货行入库只读（工人改不了），值必须由后端一次算对
+        assertThat(vo.getInboundReadonly()).isTrue();
     }
 
     @Test

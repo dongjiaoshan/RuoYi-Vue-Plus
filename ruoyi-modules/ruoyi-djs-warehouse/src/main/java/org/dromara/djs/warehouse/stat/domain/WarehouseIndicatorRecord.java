@@ -60,20 +60,24 @@ public class WarehouseIndicatorRecord extends TenantEntity {
     @TableField(updateStrategy = FieldStrategy.ALWAYS)
     private BigDecimal slaughterRate;
 
-    // ---- 白条段（处理完成 cohort：bar.finish_time）----
-    /** 白条总重（当日处理完成的<b>全部</b>猪只，一行=一头猪(耳号)的 Σ bar.in_weight；独立展示列）。 */
+    // ---- 白条段（白条入库 cohort：当日入白条库的白条产品 = 半扇 + 整只）----
+    /** 白条总重（当日入白条库的白条产品入库量之和；同时是白条均重与出品率的分子）。 */
     private BigDecimal barTotalWeight;
-    /** 处理完成头数（当日 bar.finish_time 落当天的猪只数 = 白条均重的分母）。 */
-    private Integer finishedCount;
-    /** 处理完成猪只的接收重量之和（Σ arrive_weight；诊断列，不参与出品率）。 */
-    private BigDecimal finishedArriveWeight;
-    /** 白条出品率分子（处理完成 ∩ 出栏重量非空子集的 Σ in_weight；与分母同子集，保证率 ≤100%）。 */
+    /** 白条均重分母：当日入白条库的猪只耳号去重数（一头猪出两扇只算 1 头）。矩阵「累计」按 Σ分子/Σ分母 重算用。 */
+    private Integer barPigCount;
+    /** 白条出品率分子（≡ 白条总重，月表按 Σ分子/Σ分母 重算用）。 */
     private BigDecimal barYieldNumerWeight;
-    /** 白条出品率分母（同一子集的 Σ 出栏重量；自养 marketing_weight / 外购生猪 pig_weight）。 */
+    /** 白条出品率分母（称重 cohort ∩ 出栏重量非空子集的 Σ 出栏重量，与屠宰率同一个分母）。 */
     private BigDecimal barYieldBaseWeight;
-    /** 白条均重（白条总重/处理完成头数；分母 0 → null）。 */
+    /** 白条均重（白条总重/当日入白条库的猪只耳号去重数；分母 0 → null）。 */
     @TableField(updateStrategy = FieldStrategy.ALWAYS)
     private BigDecimal avgBarWeight;
+
+    // ---- 处理完成 cohort（bar.finish_time）：诊断列，不参与任何比率或均值 ----
+    /** 处理完成头数（当日 bar.finish_time 落当天的猪只数）。 */
+    private Integer finishedCount;
+    /** 处理完成猪只的接收重量之和（Σ arrive_weight）。 */
+    private BigDecimal finishedArriveWeight;
     /** 白条出品率%（出品率分子/出品率分母×100；分母 0 → null）。 */
     @TableField(updateStrategy = FieldStrategy.ALWAYS)
     private BigDecimal barYieldRate;

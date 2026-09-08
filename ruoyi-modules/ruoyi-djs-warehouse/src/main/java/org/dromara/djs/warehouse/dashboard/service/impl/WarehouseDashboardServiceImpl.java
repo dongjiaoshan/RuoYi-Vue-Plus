@@ -245,10 +245,29 @@ public class WarehouseDashboardServiceImpl implements IWarehouseDashboardService
         return vo;
     }
 
-    /** 日猪肉处理矩阵指标定义（中文文案 + 取值器 + 是否率/均值类[累计留空]）。 */
+    /**
+     * 日猪肉处理矩阵指标定义。
+     *
+     * @param label      中文文案
+     * @param getter     逐日取值器
+     * @param rateOrAvg  是否率/均值类（决定空值兜 0.00 与累计口径）
+     * @param totalNumer 累计分子取值器；与 {@code totalDenom} 成对给出时，「累计」= Σ分子 ÷ Σ分母
+     * @param totalDenom 累计分母取值器；两个都为 null 时「累计」退回 Σ日值 ÷ 有数据天数
+     */
     private record PorkMetric(String label,
                               Function<WarehouseIndicatorRecord, Object> getter,
-                              boolean rateOrAvg) {
+                              boolean rateOrAvg,
+                              Function<WarehouseIndicatorRecord, Object> totalNumer,
+                              Function<WarehouseIndicatorRecord, Object> totalDenom) {
+
+        PorkMetric(String label, Function<WarehouseIndicatorRecord, Object> getter, boolean rateOrAvg) {
+            this(label, getter, rateOrAvg, null, null);
+        }
+
+        /** 累计是否按 Σ分子/Σ分母 算（两个基数列都给了才算）。 */
+        boolean hasCohortTotal() {
+            return totalNumer != null && totalDenom != null;
+        }
     }
 
     /** 日猪肉处理矩阵 12 指标行（对齐原型「日猪肉处理数据统计」）。 */
@@ -257,7 +276,10 @@ public class WarehouseDashboardServiceImpl implements IWarehouseDashboardService
         new PorkMetric("送宰均重", WarehouseIndicatorRecord::getAvgSlaughterWeight, true),
         new PorkMetric("接收均重", WarehouseIndicatorRecord::getArriveWeight, true),
         new PorkMetric("屠宰率", WarehouseIndicatorRecord::getSlaughterRate, true),
-        new PorkMetric("白条均重", WarehouseIndicatorRecord::getAvgBarWeight, true),
+        // 甲方 2026-09-08 圈的整行含最右「累计」格：白条均重 = 白条总重/当日入白条库的猪只耳号去重数，
+        // 累计同一个公式（Σ白条总重 ÷ Σ去重耳号数），不是「日均重再求平均」。
+        new PorkMetric("白条均重", WarehouseIndicatorRecord::getAvgBarWeight, true,
+            WarehouseIndicatorRecord::getBarTotalWeight, WarehouseIndicatorRecord::getBarPigCount),
         new PorkMetric("白条出品率", WarehouseIndicatorRecord::getBarYieldRate, true),
         new PorkMetric("分割白条数", WarehouseIndicatorRecord::getCutBarCount, false),
         new PorkMetric("预冷损耗", WarehouseIndicatorRecord::getPrecoolLoss, false),
@@ -286,6 +308,9 @@ public class WarehouseDashboardServiceImpl implements IWarehouseDashboardService
             boolean hasAny = false;
             // R80：率/均值类累计分母 = 有数据（值 >0）天数，无活动天（0/空）不摊薄均值。
             int dataDays = 0;
+            // 有 cohort 基数列的指标（如白条均重）：累计走 Σ分子/Σ分母，与日值同一个公式。
+            BigDecimal numerSum = BigDecimal.ZERO;
+            BigDecimal denomSum = BigDecimal.ZERO;
             for (LocalDate d : dates) {
                 WarehouseIndicatorRecord r = byDate.get(d);
                 Object raw = r == null ? null : m.getter().apply(r);
@@ -299,9 +324,19 @@ public class WarehouseDashboardServiceImpl implements IWarehouseDashboardService
                         dataDays++;
                     }
                 }
+                if (m.hasCohortTotal() && r != null) {
+                    numerSum = numerSum.add(toBd(m.totalNumer().apply(r)));
+                    denomSum = denomSum.add(toBd(m.totalDenom().apply(r)));
+                }
             }
             row.setDailyValues(daily);
-            if (m.rateOrAvg()) {
+            if (m.hasCohortTotal()) {
+                // 累计 = Σ分子 / Σ分母（不是日值再平均：各天头数不同，平均会失真）。
+                // 分母 0 → 0.00 兜底，与 R81 的空值口径一致。
+                row.setTotal(denomSum.signum() > 0
+                    ? fmtCell(numerSum.divide(denomSum, 2, RoundingMode.HALF_UP))
+                    : "0.00");
+            } else if (m.rateOrAvg()) {
                 // R80：率/均值类累计 = 每日之和 / 有数据天数（原为留空）；无数据 → 0.00 兜底（对齐 R81 空值口径）。
                 row.setTotal(dataDays > 0
                     ? fmtCell(sum.divide(new BigDecimal(dataDays), 2, RoundingMode.HALF_UP))
@@ -583,6 +618,16 @@ public class WarehouseDashboardServiceImpl implements IWarehouseDashboardService
             return bd.setScale(2, RoundingMode.HALF_UP).toPlainString();
         }
         return raw.toString();
+    }
+
+    /**
+     * 矩阵累计的 cohort 基数取值 → BigDecimal（空 / 非数值当 0，缺一天不阻断整列累计）。
+     *
+     * @param raw 基数列原值（Integer 头数 / BigDecimal 重量）
+     * @return 数值，null 或非数值返 0
+     */
+    private static BigDecimal toBd(Object raw) {
+        return raw instanceof Number n ? new BigDecimal(n.toString()) : BigDecimal.ZERO;
     }
 
     /**

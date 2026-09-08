@@ -14,7 +14,8 @@ import java.math.BigDecimal;
  *   <li>{@code pork} 猪肉产品：字典 {@code djs_white_bar_return_product}（白条到店分割部位 = 门店现存猪肉原材料）
  *       resolve 出的产品，恒列出（与当日有无白条到店无关）；按重量盘点、单位取对应原材料单位（{@link #materialUnit}）、
  *       入库量手动可编辑（上限=当日白条发货重量 + 材料外售成品当日到店重）；</li>
- *   <li>{@code inbound} 新到货：当日发货到该门店（shipment⋈demand，排 white_bar）的产品；{@code inboundQty}=发货量、{@link #inboundReadonly}=true；</li>
+ *   <li>{@code inbound} 新到货：当日发货到该门店（shipment⋈demand，排 white_bar）的产品；
+ *       {@code inboundQty}=<b>到店量</b>（Σ demand_deduct_qty，D-0047）、{@link #inboundReadonly}=true；</li>
  *   <li>{@code stock} 昨日库存：{@code t_store_inventory.stock_qty>0} 的产品；{@code openingQty}=结存。</li>
  * </ul>
  * 并集去重；同一产品同时命中 inbound 与 stock 时合并为一行（category=stock，保留 inbound 的 inboundQty）。</p>
@@ -64,7 +65,7 @@ public class StoreDailyLedgerCandidateVo implements Serializable {
     /** 期初库存（库存表当前结存，只读，无则 0）。 */
     private BigDecimal openingQty;
 
-    /** 预填入库量（新到货=发货量；猪肉/库存行无则 0，猪肉可手动编辑）。 */
+    /** 预填入库量（新到货=到店量，D-0047；猪肉/库存行无则 0，猪肉可手动编辑）。 */
     private BigDecimal inboundQty;
 
     /** 入库量是否只读（新到货=true 不可编辑；猪肉=false 可手动且有上限）。 */

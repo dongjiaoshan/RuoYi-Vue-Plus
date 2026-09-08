@@ -83,6 +83,23 @@ public class ProductProductionQuery {
     private Long demandId;
 
     /**
+     * 是否只看「已发货清点」的产出（{@code is_delivery_check = 1}）。
+     *
+     * <p>需求下单「产品明细」置 true：那个弹框要列的是<b>已到店的那部分</b>产出，
+     * 而「到店量」正是按 {@code is_delivery_check = 1} 聚合的
+     * （{@code DemandArrivedQuantityFiller#selectArrivedQuantityByDemandIds}）。</p>
+     *
+     * <p><b>该弹框的过滤条件到此为止</b>（D-0048）：到店量聚合只有 {@code demand_id} +
+     * {@code is_delivery_check = 1} 两个条件、没有 {@code deliver_dest} 过滤，明细多加任何一道，
+     * 行的抵扣量之和就对不上需求行显示的到店量（线上实证：需求 2089615514926686209 到店量 100，
+     * 加 {@link #excludeGiftDeliver} 后只剩 1 行 50）。要改先改到店量那一侧，两处同步。</p>
+     *
+     * <p>门店损耗页同样按 demandId 下钻但<b>不</b>置本参数（默认 null = 不过滤），
+     * 保持它原来的可见范围。</p>
+     */
+    private Boolean deliveryChecked;
+
+    /**
      * 是否损坏字典 {@code djs_yes_no}：1=是 / 0=否（逐件子页「是否损坏」筛选，契约 a；空=全部）。
      */
     private Integer isDamaged;
@@ -110,9 +127,11 @@ public class ProductProductionQuery {
     /**
      * 是否排除「礼盒组件」产出（{@code deliver_dest='gift'}）。
      *
-     * <p>门店需求「产品明细」下钻置 true：礼盒组件（发送位置=礼盒）预留给礼盒打包消耗、不履约门店直接需求
-     * （{@code fulfillDirectDemandOnPack} 对 gift 早返回不扣需求），故不应出现在该需求的产品明细里，
-     * 否则「明细条数」比「需求量」多出礼盒组件行。生产记录概览下钻不置（默认 null）→ 仍展示全量产出。</p>
+     * <p><b>当前没有调用方置 true</b>（D-0048）：礼盒组件（{@code fulfillDirectDemandOnPack} 对 gift
+     * 早返回不扣需求）压根不写 {@code demand_id}，按 demandId 下钻时这道过滤对 gift 是空转、
+     * 实际只挡掉 {@code warehouse_out}（仓库自用出库）—— 而那类产出<b>是</b>计进到店量的，
+     * 挡掉就会让明细少于到店量。保留本参数是因为 D-0048（到店量该不该排除仓库自用）尚未拍板：
+     * 若甲方定为「排除」，到店量聚合与本参数要一起打开。</p>
      */
     private Boolean excludeGiftDeliver;
 

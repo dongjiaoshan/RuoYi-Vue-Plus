@@ -24,7 +24,7 @@ public class StoreManageDetailVo implements Serializable {
     /** 统计月份 yyyy-MM。 */
     private String month;
 
-    /** 业态卡 key：pork / vegetable / egg / dry_good。 */
+    /** 业态卡 key：pork / vegetable / egg / dry_good / other。 */
     private String belongType;
 
     /** 业态中文名（后端给文案，mp 直接显示）。 */

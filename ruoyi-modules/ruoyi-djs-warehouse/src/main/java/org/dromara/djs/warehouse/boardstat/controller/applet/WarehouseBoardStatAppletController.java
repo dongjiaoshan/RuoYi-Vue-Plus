@@ -49,7 +49,7 @@ public class WarehouseBoardStatAppletController {
      * <p>不分页 —— 一个品类一个月的产品数是几十的量级，弹窗内一次滚完即可。</p>
      *
      * @param month      统计月份 yyyy-MM（可空，缺省当月；格式非法 400）
-     * @param belongType 品类键 pork / vegetable / egg / dry_good（白名单外 400）
+     * @param belongType 品类键 pork / vegetable / egg / dry_good / other（白名单外 400）
      * @return 产品明细 + 合计
      */
     @SaCheckLogin
@@ -64,7 +64,7 @@ public class WarehouseBoardStatAppletController {
      * 「生产明细」弹窗：统计月内该品类每个生产产品的合计量与环比，另带按单位的全量合计。
      *
      * @param month      统计月份 yyyy-MM（可空，缺省当月；格式非法 400）
-     * @param belongType 品类键 pork / vegetable / egg / dry_good（白名单外 400）
+     * @param belongType 品类键 pork / vegetable / egg / dry_good / other（白名单外 400）
      * @return 产品明细 + 合计
      */
     @SaCheckLogin

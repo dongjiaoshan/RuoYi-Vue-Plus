@@ -9,7 +9,7 @@ import java.util.List;
 /**
  * 门店管理月度看板顶层 VO（MGMT-MP-STORE-MONTH-001）。
  *
- * <p>管理板块「门店管理」tab 的唯一数据源：顶部 3 个品类数 + 下方 4 张业态卡。</p>
+ * <p>管理板块「门店管理」tab 的唯一数据源：顶部 3 个品类数 + 下方业态卡。</p>
  *
  * @author djs
  * @since MGMT-MP-STORE-MONTH-001
@@ -35,7 +35,12 @@ public class StoreManageMonthlyVo implements Serializable {
     /** 其他品类数：当月到店的 egg + dry_good 产品去重数。 */
     private Integer otherProductCount;
 
-    /** 4 张业态卡（顺序固定：猪肉 / 果蔬 / 蛋类 / 干货）。 */
+    /**
+     * 业态卡（顺序固定：猪肉 / 果蔬 / 蛋类 / 干货 / 其他）。
+     *
+     * <p>甲方口径 D-0045：当月三个指标在所有单位上都无数据的卡<b>不在列表里</b>，
+     * 所以长度 0-5 都可能；空列表 = 本月整页无数据，前端出空态。</p>
+     */
     private List<StoreManageCategoryVo> categories;
 
 }

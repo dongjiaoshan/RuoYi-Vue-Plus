@@ -27,7 +27,7 @@ public class BoardStatDetailVo implements Serializable {
     /** 环比基准月份 yyyy-MM（统计月的上一个自然月）。 */
     private String prevMonth;
 
-    /** 品类键 pork / vegetable / egg / dry_good。 */
+    /** 品类键 pork / vegetable / egg / dry_good / other。 */
     private String belongType;
 
     /** 品类中文名（后端给文案，mp 直接拼弹窗标题）。 */

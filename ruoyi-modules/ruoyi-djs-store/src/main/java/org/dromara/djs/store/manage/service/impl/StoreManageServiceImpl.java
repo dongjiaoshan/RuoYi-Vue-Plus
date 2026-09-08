@@ -16,6 +16,7 @@ import org.dromara.djs.store.manage.domain.vo.StoreManageDetailVo;
 import org.dromara.djs.store.manage.domain.vo.StoreManageMetricVo;
 import org.dromara.djs.store.manage.domain.vo.StoreManageMonthlyVo;
 import org.dromara.djs.store.manage.domain.vo.StoreManageProductCountRowVo;
+import org.dromara.djs.store.manage.domain.vo.StoreManageProductQtyRowVo;
 import org.dromara.djs.store.manage.domain.vo.StoreManageQtyRowVo;
 import org.dromara.djs.store.manage.domain.vo.StoreManageUnitRowVo;
 import org.dromara.djs.store.manage.mapper.StoreManageMapper;
@@ -35,6 +36,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.TreeSet;
 
@@ -48,17 +50,28 @@ import java.util.TreeSet;
  *   <li>猪肉品类数 = 当月到店的 pork + white_bar 产品去重数；果蔬 = vegetable；
  *       其他 = egg + dry_good。「到店」= 门店日台账当月 {@code inbound_qty > 0}。</li>
  *   <li>需求量 = 门店下单量；销售量 = 盘点的 sale_qty + gift_qty；退回量 = 门店退回记录
- *       （方向 store_to_warehouse）的 return_quantity。四类卡：猪肉（pork+white_bar）/ 果蔬 /
- *       蛋类 / 干货。比率 = 环比（对上一自然月），上月无基数 → 0.00% 且 {@code hasBase=false}
- *       （前端据此渲染黑色）。</li>
+ *       （方向 store_to_warehouse）的 return_quantity。五类卡：猪肉（pork+white_bar）/ 果蔬 /
+ *       蛋类 / 干货 / 其他（belong_type=other）。比率 = 环比（对上一自然月），上月无基数 →
+ *       0.00% 且 {@code hasBase=false}（前端据此渲染黑色）。</li>
+ *   <li><b>当月无数据不显示</b>（D-0045，甲方 2026-09-08），两级同规则：<b>卡级</b>——本卡当月三个
+ *       指标在所有单位上都为 0 → 该卡不进 {@code categories}，前端连卡壳都不渲染，五张卡全被剔掉
+ *       时下发空列表、前端出整页空态；<b>行级</b>——某单位当月三指标全 0 → 该行不出，上月有数也不救
+ *       （代价是那一行的 -100% 环比看不到，甲方明确要的）。</li>
  * </ol>
+ *
+ * <h3>「其他产品」卡与顶部「其他品类数」不是一回事（D-0046）</h3>
+ * <p>顶部小卡「其他品类数」= 到店的 <b>egg + dry_good</b> 去重产品数（甲方原话「其他品类数包含蛋类
+ * 产品和干货产品」，见 {@link #OTHER_BELONG_TYPES}）；新增的<b>业态卡</b>「其他产品」= 产品档案
+ * {@code belong_type='other'} 的三项统计。两者名字都带「其他」但口径不同，各按各的甲方口径走，
+ * 不互相对齐。</p>
  *
  * <h3>单位分行</h3>
  * <p>同业态里 kg 与 份 不可相加，故按产品主数据 {@code product_unit} 分行。单位键统一小写归一
  * （库 collation 大小写不敏感、三条 SQL 各自可能返回 {@code kg} / {@code Kg} 两种写法，
  * 不归一会在同一张卡里裂成两行），展示值取第一次见到的原始写法。</p>
  *
- * <p>三指标 + 上月同口径 = 6 项全为 0 的单位行直接丢弃（台账里 sale/gift 全 0 的行会制造这种空行）。</p>
+ * <p>本月三指标全为 0 的单位行直接丢弃（台账里 sale/gift 全 0 的行会制造这种空行），
+ * 与卡级同一把尺子，见 {@link #buildRows}。</p>
  *
  * <h3>「明细」下钻为什么和卡片必然对得上（V6-R180）</h3>
  * <p>明细页顶部的合计 {@code totals} <b>不另写 SQL</b>，直接调业态卡那三个聚合方法
@@ -82,6 +95,7 @@ public class StoreManageServiceImpl implements IStoreManageService {
     private static final String CAT_VEG = "vegetable";
     private static final String CAT_EGG = "egg";
     private static final String CAT_DRY = "dry_good";
+    private static final String CAT_OTHER = "other";
 
     /** 业态卡固定顺序 + 中文名（mp 硬编码中文，文案由后端给）。 */
     private static final Map<String, String> CATEGORY_NAMES = new LinkedHashMap<>();
@@ -96,7 +110,7 @@ public class StoreManageServiceImpl implements IStoreManageService {
      */
     private static final Map<String, List<String>> CATEGORY_BELONG_TYPES = new LinkedHashMap<>();
 
-    /** SQL IN 白名单：只统计四张卡涉及的 belong_type，礼盒 / 包材 / 饲料 / 种子 / other 不在内。 */
+    /** SQL IN 白名单：只统计业态卡涉及的 belong_type，礼盒 / 包材 / 饲料 / 种子 不在内。 */
     private static final List<String> BELONG_TYPES;
 
     /** 品类数分子：猪肉 = pork + white_bar。 */
@@ -105,7 +119,11 @@ public class StoreManageServiceImpl implements IStoreManageService {
     /** 品类数分子：果蔬。 */
     private static final List<String> VEG_BELONG_TYPES;
 
-    /** 品类数分子：其他 = 蛋类 + 干货（甲方原话「其他品类数包含蛋类产品和干货产品」）。 */
+    /**
+     * 顶部小卡「其他品类数」的分子 = 蛋类 + 干货（甲方原话「其他品类数包含蛋类产品和干货产品」）。
+     *
+     * <p>⚠️ 与业态卡 {@link #CAT_OTHER}「其他产品」（belong_type = other）不是一回事，别互相套用。</p>
+     */
     private static final List<String> OTHER_BELONG_TYPES = List.of("egg", "dry_good");
 
     /** 产品主数据单位为空时的占位（product_unit 理论非空，防御性兜底）。 */
@@ -131,11 +149,13 @@ public class StoreManageServiceImpl implements IStoreManageService {
         CATEGORY_NAMES.put(CAT_VEG, "果蔬产品");
         CATEGORY_NAMES.put(CAT_EGG, "蛋类产品");
         CATEGORY_NAMES.put(CAT_DRY, "干货产品");
+        CATEGORY_NAMES.put(CAT_OTHER, "其他产品");
 
         CATEGORY_BELONG_TYPES.put(CAT_PORK, List.of("pork", "white_bar"));
         CATEGORY_BELONG_TYPES.put(CAT_VEG, List.of("vegetable"));
         CATEGORY_BELONG_TYPES.put(CAT_EGG, List.of("egg"));
         CATEGORY_BELONG_TYPES.put(CAT_DRY, List.of("dry_good"));
+        CATEGORY_BELONG_TYPES.put(CAT_OTHER, List.of("other"));
 
         CATEGORY_BELONG_TYPES.forEach((cat, types) -> types.forEach(t -> BELONG_TO_CATEGORY.put(t, cat)));
 
@@ -173,7 +193,8 @@ public class StoreManageServiceImpl implements IStoreManageService {
         vo.setVegProductCount(sumCounts(arrived, VEG_BELONG_TYPES));
         vo.setOtherProductCount(sumCounts(arrived, OTHER_BELONG_TYPES));
 
-        Map<String, String> unitLabels = new HashMap<>();
+        // 单位展示原文：category → (合并键 → 原文)，**按业态隔离**（见 putLabel）
+        Map<String, Map<String, String>> unitLabels = new HashMap<>();
         Map<String, Map<String, BigDecimal>> curDemand = collect(
             storeManageMapper.sumDemandQty(tenantId, storeId, curStart, curEnd, BELONG_TYPES), unitLabels);
         Map<String, Map<String, BigDecimal>> curSale = collect(
@@ -189,15 +210,41 @@ public class StoreManageServiceImpl implements IStoreManageService {
 
         List<StoreManageCategoryVo> categories = new ArrayList<>(CATEGORY_NAMES.size());
         for (Map.Entry<String, String> cat : CATEGORY_NAMES.entrySet()) {
+            // D-0045：本月三个指标在所有单位上都无数据 → 整卡不下发（不是下发空卡让前端出空态）
+            if (!hasCurrentData(cat.getKey(), curDemand, curSale, curReturn)) {
+                continue;
+            }
             StoreManageCategoryVo cvo = new StoreManageCategoryVo();
             cvo.setCategoryKey(cat.getKey());
             cvo.setCategoryName(cat.getValue());
-            cvo.setRows(buildRows(cat.getKey(), unitLabels,
+            cvo.setRows(buildRows(cat.getKey(), unitLabels.getOrDefault(cat.getKey(), Map.of()),
                 curDemand, curSale, curReturn, prevDemand, prevSale, prevReturn));
             categories.add(cvo);
         }
         vo.setCategories(categories);
         return vo;
+    }
+
+    /**
+     * 该业态本月是否有任何数据（三个指标 × 所有单位里存在非 0 值）。
+     *
+     * <p>只看本月，不看上月：上月有、本月归零的卡按甲方口径 D-0045 一样不显示
+     * ——「没有数据时不显示对应的内容」指的是当月，环比 -100% 不构成显示理由。</p>
+     *
+     * @param category 业态卡 key
+     * @param buckets  本月三个指标的桶
+     * @return 有任一非 0 值即 true
+     */
+    @SafeVarargs
+    private static boolean hasCurrentData(String category, Map<String, Map<String, BigDecimal>>... buckets) {
+        for (Map<String, Map<String, BigDecimal>> bucket : buckets) {
+            for (BigDecimal v : bucket.getOrDefault(category, Map.of()).values()) {
+                if (v != null && v.compareTo(BigDecimal.ZERO) != 0) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     @Override
@@ -209,16 +256,20 @@ public class StoreManageServiceImpl implements IStoreManageService {
 
         LocalDate curStart = ym.atDay(1);
         LocalDate curEnd = ym.plusMonths(1).atDay(1);
+        LocalDate prevStart = ym.minusMonths(1).atDay(1);
 
         IPage<StoreManageDetailRowVo> page = storeManageMapper.selectProductDetailPage(
             safePage(pageQuery), tenantId, storeId, curStart, curEnd, catBelongTypes);
         List<StoreManageDetailRowVo> rows = page.getRecords() == null ? List.of() : page.getRecords();
+        Map<Long, StoreManageProductQtyRowVo> prev =
+            prevMonthByProduct(tenantId, storeId, prevStart, curStart, catBelongTypes, rows);
         for (StoreManageDetailRowVo row : rows) {
             row.setUnit(StringUtils.isBlank(row.getUnit()) ? UNIT_UNKNOWN : row.getUnit().trim());
             row.setProductSpec(StringUtils.isBlank(row.getProductSpec()) ? EMPTY_TEXT : row.getProductSpec().trim());
             row.setDemandQty(scaled(row.getDemandQty()));
             row.setSaleQty(scaled(row.getSaleQty()));
             row.setReturnQty(scaled(row.getReturnQty()));
+            applyMom(row, prev.get(row.getProductId()));
         }
 
         StoreManageDetailVo vo = new StoreManageDetailVo();
@@ -230,6 +281,64 @@ public class StoreManageServiceImpl implements IStoreManageService {
         vo.setRows(rows);
         vo.setTotals(buildDetailTotals(tenantId, storeId, curStart, curEnd, catBelongTypes));
         return vo;
+    }
+
+    /**
+     * 取当前页这几个产品的<b>上月</b>三个量（V6-R209 逐产品环比的基数）。
+     *
+     * <p>只查当前页的产品：明细是分页的，把整月产品全拉回来算环比是白花的 IO。
+     * 页里一条都没有时直接短路——空 {@code IN ()} 会拼出非法 SQL。</p>
+     *
+     * @param tenantId       租户
+     * @param storeId        门店 ID（可空）
+     * @param prevStart      上月首日（含）
+     * @param curStart       本月首日（不含）
+     * @param catBelongTypes 本卡涵盖的 belong_type（与本月同一份，环比分子分母才同口径）
+     * @param rows           当前页明细行
+     * @return productId : 上月三个量；上月无记录的产品不在 map 里（调用方按 0 处理）
+     */
+    private Map<Long, StoreManageProductQtyRowVo> prevMonthByProduct(String tenantId, Long storeId,
+                                                                     LocalDate prevStart, LocalDate curStart,
+                                                                     List<String> catBelongTypes,
+                                                                     List<StoreManageDetailRowVo> rows) {
+        List<Long> productIds = rows.stream()
+            .map(StoreManageDetailRowVo::getProductId)
+            .filter(Objects::nonNull)
+            .distinct()
+            .toList();
+        if (productIds.isEmpty()) {
+            return Map.of();
+        }
+        List<StoreManageProductQtyRowVo> prevRows = storeManageMapper.selectProductMonthSums(
+            tenantId, storeId, prevStart, curStart, catBelongTypes, productIds);
+        Map<Long, StoreManageProductQtyRowVo> out = new HashMap<>();
+        if (prevRows == null) {
+            return out;
+        }
+        for (StoreManageProductQtyRowVo r : prevRows) {
+            if (r.getProductId() != null) {
+                out.put(r.getProductId(), r);
+            }
+        }
+        return out;
+    }
+
+    /**
+     * 把上月基数换算成明细行的三组环比（算法与业态卡 {@link #metric} 逐字相同）。
+     *
+     * @param row  明细行（就地写入）
+     * @param prev 上月同产品同口径的三个量；null = 上月该产品无任何记录
+     */
+    private static void applyMom(StoreManageDetailRowVo row, StoreManageProductQtyRowVo prev) {
+        BigDecimal pd = prev == null ? BigDecimal.ZERO : nz(prev.getDemandQty());
+        BigDecimal ps = prev == null ? BigDecimal.ZERO : nz(prev.getSaleQty());
+        BigDecimal pr = prev == null ? BigDecimal.ZERO : nz(prev.getReturnQty());
+        row.setDemandMom(momOf(row.getDemandQty(), pd));
+        row.setDemandHasBase(hasBase(pd));
+        row.setSaleMom(momOf(row.getSaleQty(), ps));
+        row.setSaleHasBase(hasBase(ps));
+        row.setReturnMom(momOf(row.getReturnQty(), pr));
+        row.setReturnHasBase(hasBase(pr));
     }
 
     /**
@@ -290,14 +399,15 @@ public class StoreManageServiceImpl implements IStoreManageService {
         for (StoreManageQtyRowVo row : rows) {
             String label = StringUtils.isBlank(row.getUnit()) ? UNIT_UNKNOWN : row.getUnit().trim();
             String key = label.toLowerCase(Locale.ROOT);
-            unitLabels.putIfAbsent(key, label);
+            // 入参恒是单张卡的聚合结果 → 这份 map 天然按业态隔离；取字面走同一条确定性规则
+            putLabel(unitLabels, key, label);
             out.merge(key, nz(row.getQty()), BigDecimal::add);
         }
         return out;
     }
 
     /**
-     * 业态白名单校验：只认四张卡的 key。
+     * 业态白名单校验：只认业态卡的 key（pork / vegetable / egg / dry_good / other）。
      *
      * <p>非法值直接 400 而不是返空列表 —— 返空会让人以为「这个月这个业态真没数据」，
      * 实际是链接拼错了，这种错静默下去没人能发现。</p>
@@ -340,12 +450,17 @@ public class StoreManageServiceImpl implements IStoreManageService {
     /**
      * 组一张业态卡的单位行。
      *
-     * <p>单位全集 = 本月 ∪ 上月三指标出现过的单位——只取本月会让「上月有、本月归零」的品类
-     * 整行消失，环比 -100% 这条最该被看见的信息反而看不到。</p>
+     * <h3>单位全集只取本月（D-0045，与卡级同一把尺子）</h3>
+     * <p>甲方口径「没有数据时不显示对应的内容」落在两个层级上：卡级（本卡当月三指标全 0 → 整卡不下发）
+     * 与行级（本单位当月三指标全 0 → 该行不出）。两级必须同规则——否则同一张卡里会同时出现
+     * 「整卡因当月无数据而消失」和「某行因上月有数而留下一排 0 与 -100%」，自相矛盾。</p>
+     *
+     * <p><b>放弃的东西写在这里</b>：上月有数、本月归零的单位行连同它的 -100% 环比一起看不到了。
+     * 这是甲方明确要的（row201 +「需求量、销售量、退回量都为空的数据不显示」），不是疏漏。</p>
      *
      * @param category   业态卡 key
      * @param unitLabels 单位归一键 → 展示原文
-     * @return 单位行列表（按本月三指标合计倒序），全 0 的单位不出行
+     * @return 单位行列表（按本月三指标合计倒序），本月三指标全 0 的单位不出行
      */
     private List<StoreManageUnitRowVo> buildRows(String category,
                                                  Map<String, String> unitLabels,
@@ -355,13 +470,12 @@ public class StoreManageServiceImpl implements IStoreManageService {
                                                  Map<String, Map<String, BigDecimal>> prevDemand,
                                                  Map<String, Map<String, BigDecimal>> prevSale,
                                                  Map<String, Map<String, BigDecimal>> prevReturn) {
+        // 只取本月出现过的单位：只在上月出现的单位本月三项必为 0，下面那道过滤也会把它剔掉，
+        // 这里不并进来省一轮空转，同时让「行级只看当月」在代码上一眼可见
         Set<String> unitKeys = new LinkedHashSet<>();
         unitKeys.addAll(unitsOf(curDemand, category));
         unitKeys.addAll(unitsOf(curSale, category));
         unitKeys.addAll(unitsOf(curReturn, category));
-        unitKeys.addAll(unitsOf(prevDemand, category));
-        unitKeys.addAll(unitsOf(prevSale, category));
-        unitKeys.addAll(unitsOf(prevReturn, category));
 
         List<StoreManageUnitRowVo> rows = new ArrayList<>(unitKeys.size());
         for (String unitKey : unitKeys) {
@@ -371,7 +485,8 @@ public class StoreManageServiceImpl implements IStoreManageService {
             BigDecimal pd = valueOf(prevDemand, category, unitKey);
             BigDecimal ps = valueOf(prevSale, category, unitKey);
             BigDecimal pr = valueOf(prevReturn, category, unitKey);
-            if (isAllZero(cd, cs, cr, pd, ps, pr)) {
+            // D-0045 行级：只看当月三项，上月有数不构成显示理由（丢掉的是这一行的 -100% 环比）
+            if (isAllZero(cd, cs, cr)) {
                 continue;
             }
             StoreManageUnitRowVo row = new StoreManageUnitRowVo();
@@ -398,16 +513,38 @@ public class StoreManageServiceImpl implements IStoreManageService {
      * @return 指标 VO
      */
     private static StoreManageMetricVo metric(BigDecimal cur, BigDecimal prev) {
-        BigDecimal c = nz(cur).setScale(QTY_SCALE, RoundingMode.HALF_UP);
-        BigDecimal p = nz(prev);
-        boolean hasBase = p.compareTo(BigDecimal.ZERO) != 0;
         StoreManageMetricVo vo = new StoreManageMetricVo();
-        vo.setValue(c);
-        vo.setHasBase(hasBase);
-        vo.setMom(hasBase
-            ? c.subtract(p).multiply(HUNDRED).divide(p, 2, RoundingMode.HALF_UP)
-            : ZERO_PCT);
+        vo.setValue(scaled(cur));
+        vo.setHasBase(hasBase(prev));
+        vo.setMom(momOf(cur, prev));
         return vo;
+    }
+
+    /**
+     * 环比百分比。上月基数为 0 / 无记录 → 固定 {@link #ZERO_PCT}（配 {@link #hasBase} 的 false 由前端渲染黑色）。
+     *
+     * @param cur  本月值
+     * @param prev 上月值
+     * @return 环比（scale=2）
+     */
+    private static BigDecimal momOf(BigDecimal cur, BigDecimal prev) {
+        BigDecimal p = nz(prev);
+        if (p.compareTo(BigDecimal.ZERO) == 0) {
+            return ZERO_PCT;
+        }
+        return scaled(cur).subtract(p).multiply(HUNDRED).divide(p, 2, RoundingMode.HALF_UP);
+    }
+
+    /**
+     * 上月是否有可比基数。
+     *
+     * <p>「上月无基数的 0.00%」与「上月有基数、持平的 0.00%」必须分得开，前者前端渲染中性黑。</p>
+     *
+     * @param prev 上月值
+     * @return 上月非 0 即 true
+     */
+    private static boolean hasBase(BigDecimal prev) {
+        return nz(prev).compareTo(BigDecimal.ZERO) != 0;
     }
 
     /**
@@ -418,7 +555,7 @@ public class StoreManageServiceImpl implements IStoreManageService {
      * @return 业态桶
      */
     private static Map<String, Map<String, BigDecimal>> collect(List<StoreManageQtyRowVo> rows,
-                                                                Map<String, String> unitLabels) {
+                                                                Map<String, Map<String, String>> unitLabels) {
         Map<String, Map<String, BigDecimal>> out = new HashMap<>();
         if (rows == null) {
             return out;
@@ -430,10 +567,41 @@ public class StoreManageServiceImpl implements IStoreManageService {
             }
             String label = StringUtils.isBlank(row.getUnit()) ? UNIT_UNKNOWN : row.getUnit().trim();
             String key = label.toLowerCase(Locale.ROOT);
-            unitLabels.putIfAbsent(key, label);
+            putLabel(unitLabels.computeIfAbsent(category, k -> new HashMap<>()), key, label);
             out.computeIfAbsent(category, k -> new HashMap<>()).merge(key, nz(row.getQty()), BigDecimal::add);
         }
         return out;
+    }
+
+    /**
+     * 记录某个单位合并键的展示原文。
+     *
+     * <h3>两条要求，缺一个业态卡与明细页就会显示不同的字面</h3>
+     * <ol>
+     *   <li><b>按业态隔离</b>（调用方保证：传进来的 map 是某一张卡专属的）。共享一份会串味 ——
+     *       产品档案里同一个单位大小写混录（实测 {@code Kg} 只有 other 品类的 2 个产品在用、
+     *       其余 165 个都是小写 {@code kg}），共享时 {@code labels["kg"]} 被先到的业态占成小写，
+     *       而明细页的 {@link #sumByUnit} 只吃这张卡自己的行 —— 同一个数两处字面不一样。</li>
+     * </ol>
+     *
+     * <p><b>取值规则（确定性）</b>：同一个键有多种字面时，<b>优先取全小写那个</b>（即字面 == 合并键），
+     * 都不是小写则取自然序最小的。<b>不是「先到先得」</b> —— 先到先得依赖 SQL 返回行序，
+     * 而卡片走全品类那条聚合、明细走收窄品类的同一条聚合，两次行序 MySQL 不保证一致，
+     * 那就又会两处显示不同的字面。</p>
+     *
+     * <p>与仓库侧 {@code WarehouseBoardStatServiceImpl#putLabel} 同规则 —— 同一个坑不留两套写法。</p>
+     *
+     * @param labels 该业态的「合并键 → 展示原文」（就地填充）
+     * @param key    合并键（小写）
+     * @param label  本行的展示原文
+     */
+    private static void putLabel(Map<String, String> labels, String key, String label) {
+        labels.merge(key, label, (a, b) -> {
+            if (a.equals(key) || b.equals(key)) {
+                return a.equals(key) ? a : b;
+            }
+            return a.compareTo(b) <= 0 ? a : b;
+        });
     }
 
     /**

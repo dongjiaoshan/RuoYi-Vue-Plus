@@ -26,6 +26,7 @@ import org.dromara.djs.store.operation.domain.StoreSaleRecord;
 import org.dromara.djs.store.operation.mapper.StoreSaleRecordMapper;
 import org.dromara.djs.store.returns.domain.StoreReturn;
 import org.dromara.djs.store.returns.mapper.StoreReturnMapper;
+import org.dromara.djs.warehouse.demand.core.DemandArrivedQuantityFiller;
 import org.dromara.djs.warehouse.demand.domain.DemandManage;
 import org.dromara.djs.warehouse.demand.mapper.DemandManageMapper;
 import org.dromara.djs.warehouse.pack.mapper.ProductProductionMapper;
@@ -61,7 +62,8 @@ import java.util.stream.Stream;
  *       <b>与当日有无白条到店无关、恒列出</b>（没到货的日子也要能盘）；入库量手动可编辑，
  *       上限 = 当日白条发货重量 + 材料外售成品当日到店重；单位取对应原材料单位（{@link #resolveMaterialUnits}）。</li>
  *   <li><b>新到货</b>：当日发货到该门店的产品（{@code t_warehouse_shipment} ⋈ {@code t_warehouse_demand_manage}
- *       取 productId，排除 white_bar），{@code inboundQty}=发货量、{@code inboundReadonly}=true。</li>
+ *       取 productId，排除 white_bar），{@code inboundQty}=<b>到店量</b>（D-0047，不是需求量）、
+ *       {@code inboundReadonly}=true。</li>
  *   <li><b>昨日库存</b>：{@code t_store_inventory.stock_qty>0} 的产品，{@code openingQty}=结存。</li>
  * </ol>
  * 并集去重；同一产品同时命中「新到货」与「库存」时合并一行（category=stock，保留 inbound 的 inboundQty）。
@@ -125,6 +127,8 @@ public class StoreDailyLedgerServiceImpl implements IStoreDailyLedgerService {
     private final ShipmentMapper shipmentMapper;
     private final DemandManageMapper demandManageMapper;
     private final ProductProductionMapper productProductionMapper;
+    /** 到店量（Σ demand_deduct_qty）的唯一实现，与需求下单 / 需求确认页共用（D-0047）。 */
+    private final DemandArrivedQuantityFiller arrivedQuantityFiller;
     private final StoreInventoryMapper storeInventoryMapper;
     private final DictService dictService;
     private final IStoreService storeService;
@@ -171,7 +175,7 @@ public class StoreDailyLedgerServiceImpl implements IStoreDailyLedgerService {
         // 猪肉 TAB 归属集 = 猪肉候选字典（已 swap 原材料）；belong_type=pork 在 resolveBelongTab 里另判。
         Set<Long> porkTabIdSet = new LinkedHashSet<>(effectivePorkIds);
         // 新到货 / 昨日库存：成品维度记录 foldByEffective 折叠到原材料 key（swap 空则原样）。
-        Map<Long, BigDecimal> inboundMap = foldByEffective(deliveredRaw, porkSwap);    // 新到货：productId → 当日到店份数（需求量 demand_quantity，排 white_bar）
+        Map<Long, BigDecimal> inboundMap = foldByEffective(deliveredRaw, porkSwap);    // 新到货：productId → 当日到店量（Σ demand_deduct_qty，D-0047；排 white_bar）
         Map<Long, BigDecimal> stockMap = foldByEffective(stockRaw, porkSwap);          // 昨日库存：productId → 结存（>0）
         // row29：材料外售成品折进原材料行后，「当日入库」默认取其发货**实际重量**(kg，盘点按原材料按重盘)，
         // 而非份数——用户可在此基础上更正为白条分割成原材料的实际重量。materialId → Σ材料外售成品发货 product_weight。
@@ -486,17 +490,26 @@ public class StoreDailyLedgerServiceImpl implements IStoreDailyLedgerService {
 
     /**
      * 新到货候选：当日发货到该门店的产品（{@code t_warehouse_shipment} ⋈ {@code t_warehouse_demand_manage}
-     * 取 productId，排除 white_bar），按产品聚合<b>到店份数</b>。
+     * 取 productId，排除 white_bar），按产品聚合<b>到店量</b>。
      *
      * <p>DENGBO-R10：盘点按产品单位（份）显示、不用重量。发货 {@code ship_quantity} 存的是重量
-     * （果蔬 3 份=0.905kg，且 {@code ship_unit='份'} 与值自相矛盾），需求 {@code demand_quantity} 才是份数。
-     * 故到店量取<b>需求订购份数</b>（Kevin 2026-07-12 拍板）：按已发货的 distinct demandId 累加其
-     * {@code demand_quantity}，按 productId 归组（一需求一发货、订购=到货，多发货同一需求只计一次避免重复）。</p>
+     * （果蔬 3 份=0.905kg，且 {@code ship_unit='份'} 与值自相矛盾），故不能拿它当份数。</p>
      *
-     * <p>shipment 先按 storeId + shipDate + 非 white_bar 过滤；productId / demand_quantity 经 demandId
-     * join demand 拿。demand 缺失（脏数据）→ 跳过该 demand + warn，不抛。</p>
+     * <p><b>取「到店量」不取「需求量」</b>（甲方 2026-09-08 拍板 D-0047，原话「当日入库的数据现在需要取
+     * 到店量的数据，不以需求量进行获取」）：需求量是<b>订购</b>的份数，实际发车时可能只发到一部分
+     * （需求 3 份 / 只发 1 份 = 门店视角的「部分到店」）。按需求量预填会让当日入库虚高，
+     * 而期末库存是实盘的真数，两者一减就把没到的那 2 份算成了「损耗」——账上凭空多出损耗，货其实压根没来。</p>
      *
-     * @return productId(雪花) → 当日到店份数合计（demand_quantity，产品单位）
+     * <p>到店量口径与需求行上那一列<b>同一个实现</b>（{@link DemandArrivedQuantityFiller}）：
+     * 绑到该需求且已发货清点（{@code is_delivery_check=1}）的产出记录 Σ {@code demand_deduct_qty}。
+     * 不在这里另写一份聚合 —— 两处一旦分叉，「需求下单」页显示到店 1、盘点却预填 3，甲方必然重报。</p>
+     *
+     * <p>shipment 先按 storeId + shipDate + 非 white_bar 过滤；productId 经 demandId join demand 拿。
+     * demand 缺失（脏数据）→ 跳过该 demand + warn，不抛。一件都没清点的需求到店量为 0，
+     * 仍进候选（category=inbound、入库预填 0）—— 门店当天确实收到了这张发货单，只是还没清点，
+     * 让它从盘点候选里消失反而更难查。</p>
+     *
+     * @return productId(雪花) → 当日到店量合计（按需求单位，与需求行「到店量」列同值）
      */
     private Map<Long, BigDecimal> selectStoreShippedProducts(Long storeId, LocalDate date) {
         List<Shipment> shipments = shipmentMapper.selectList(
@@ -514,7 +527,7 @@ public class StoreDailyLedgerServiceImpl implements IStoreDailyLedgerService {
             log.warn("[STORE-LEDGER] 门店 {} {} 有发货但均无 demandId，新到货候选回退为空", storeId, date);
             return Map.of();
         }
-        // 已发货的 distinct 需求：id → (productId, demandQuantity)。
+        // 已发货的 distinct 需求：id → productId。
         Map<Long, DemandManage> demandById = demandManageMapper.selectList(
                 new LambdaQueryWrapper<DemandManage>()
                     .in(DemandManage::getId, demandIds)
@@ -522,14 +535,16 @@ public class StoreDailyLedgerServiceImpl implements IStoreDailyLedgerService {
             .stream()
             .filter(d -> d.getProductId() != null)
             .collect(Collectors.toMap(DemandManage::getId, d -> d, (a, b) -> a));
+        // D-0047：到店量（Σ demand_deduct_qty），与需求下单页「到店量」列同一实现。
+        Map<Long, BigDecimal> arrivedByDemand = arrivedQuantityFiller.resolve(demandIds);
         Map<Long, BigDecimal> result = new LinkedHashMap<>();
-        for (Long did : demandIds) {   // distinct demandId：订购=到货，同一需求多次发货只计一次份数
+        for (Long did : demandIds) {   // distinct demandId：同一需求多次发货，到店量本就是该需求的累计值
             DemandManage d = demandById.get(did);
             if (d == null) {
                 log.warn("[STORE-LEDGER] 已发货需求 {} 缺产品或已删，跳过新到货预填", did);
                 continue;
             }
-            result.merge(d.getProductId(), nz(d.getDemandQuantity()), BigDecimal::add);
+            result.merge(d.getProductId(), arrivedByDemand.getOrDefault(did, BigDecimal.ZERO), BigDecimal::add);
         }
         return result;
     }

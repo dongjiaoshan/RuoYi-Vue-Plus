@@ -10,11 +10,12 @@ import java.lang.reflect.Method;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * {@link WarehouseStatAggregateMapper} 猪肉段三 cohort SQL 口径契约（V6-R172）。
+ * {@link WarehouseStatAggregateMapper} 猪肉段取数口径 SQL 契约。
  *
- * <p>{@code WarehouseStatServiceImplTest} 把这几个 @Select 全 mock 了，只验了除法；R172 的口径全在
+ * <p>{@code WarehouseStatServiceImplTest} 把这几个 @Select 全 mock 了，只验了除法；口径全在
  * 被 mock 掉的 SQL 的 WHERE / CASE 里。本类反射取 @Select 原文、逐条钉关键片段，谁把口径 SQL 改错
- * （少个 cohort 过滤、把出品率分母换回接收重量、外购子查询漏了、外购猪被重复计）就当场红。</p>
+ * （少个 cohort 过滤、把出品率分母换回接收重量、白条总重改读会缩水的在制品表、外购子查询漏了、
+ * 外购猪被重复计）就当场红。</p>
  *
  * <p>只做纯字符串断言（不连库、不解析执行计划），因为契约就是「这些 SQL 里必须有这些语义片段」。</p>
  *
@@ -23,7 +24,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 @Tag("local")
 @Tag("dev")
-@DisplayName("WarehouseStatAggregateMapper 猪肉段三 cohort SQL 口径契约（V6-R172）")
+@DisplayName("WarehouseStatAggregateMapper 猪肉段取数口径 SQL 契约")
 class WarehouseStatAggregateSqlContractTest {
 
     private static String select(String method, Class<?>... paramTypes) throws Exception {
@@ -96,29 +97,77 @@ class WarehouseStatAggregateSqlContractTest {
             .contains("DATE(COALESCE(b.arrive_time, b.in_time)) = #{statDate}");
     }
 
+    /**
+     * 甲方 2026-09-08 口径：「白条总重：当日入白条库的产品总重，只算半扇和整只的重量」
+     * 「白条均重：白条总重/当日入白条库的猪只耳号数量（需要去重）」。
+     *
+     * <p>三条硬约束钉在 SQL 上：① 源是入库<b>流水</b>不是在制品表（可复现）；
+     * ② 「半扇和整只」= 产品类别 white_bar，不是产品名、不是库位；③ 分母是猪只去重数不是行数。</p>
+     */
     @Test
-    @DisplayName("处理完成 cohort：按 finish_time 分桶；白条总重 = Σ in_weight（整 cohort，一行=一头猪/耳号）")
-    void finishedAggUsesFinishTimeCohort() throws Exception {
-        String sql = select("selectFinishedAgg", String.class, String.class);
-        assertThat(sql).contains("t_warehouse_bar_info");
-        assertThat(sql).as("按处理完成时刻分桶").contains("DATE(b.finish_time) = #{statDate}");
-        assertThat(sql).as("白条总重是整 cohort 的 in_weight 之和")
-            .contains("COALESCE(SUM(b.in_weight), 0) AS barTotalWeight");
-        assertThat(sql).as("接收重量之和仍落盘（诊断列）")
-            .contains("COALESCE(SUM(b.arrive_weight), 0) AS finishedArriveWeight");
+    @DisplayName("白条总重 = 当日入白条库的白条产品（belong_type=white_bar）入库量之和，读不可变入库流水")
+    void whiteBarInAggReadsImmutableInboundFlow() throws Exception {
+        String sql = select("selectWhiteBarInAgg", String.class, String.class);
+        assertThat(sql).as("源必须是入库流水（可复现），不是会被下游扣减/软删的在制品池")
+            .contains("t_warehouse_stock_flow")
+            .contains("f.inout_type = 'IN'");
+        assertThat(sql).as("「只算半扇和整只」= 产品类别 white_bar，不绑产品名")
+            .contains("p.belong_type = 'white_bar'")
+            .doesNotContain("半扇")
+            .doesNotContain("整只");
+        assertThat(sql).as("按入库当天分桶").contains("DATE(f.flow_date) = #{statDate}");
+        assertThat(sql).as("白条总重 = Σ 入库量").contains("COALESCE(SUM(t.weight), 0) AS barTotalWeight");
     }
 
     /**
-     * 出品率分母**不由本查询产出**。甲方 2026-09-07 把需求原文改成
-     * 「白条出品率：白条总重 / 完成接收重量的猪只出栏重量之和」，与上一行屠宰率的分母逐字相同，
-     * 答复里也写明「分母错误，也是【完成接收重量的猪只出栏重量之和】」。
-     * 谁再把分母塞回处理完成 cohort，这里当场红。
+     * 白条入库只认<b>燎毛产出</b>这一条通道。缺了这个白名单，门店退回 / 期初 / 采购入库 的半扇
+     * 也会被当成「当日入白条库」计进分子 —— 而那几类流水的 {@code ear_no} 与 {@code white_bar_no}
+     * <b>都是 NULL</b>（staging 实测 100%），{@code COUNT(DISTINCT NULL) = 0} 不给分母贡献任何一头猪：
+     * 分子涨、分母不涨，极端情况某天只有这种行时 {@code barPigCount = 0}，页面会出现
+     * 「白条总重非 0、白条均重 0.00」的自相矛盾。谁把这个条件删掉，这里当场红。
      */
     @Test
-    @DisplayName("出品率分母不在处理完成 cohort 里算 —— 与屠宰率共用称重 cohort 的分母（甲方 2026-09-07 改稿）")
-    void finishedAggDoesNotComputeYieldDenominator() throws Exception {
+    @DisplayName("白条入库只认燎毛产出 slaughter_burn：退回 / 期初 / 采购入库的半扇不进白条总重")
+    void whiteBarInAggOnlyCountsSlaughterBurn() throws Exception {
+        String sql = select("selectWhiteBarInAgg", String.class, String.class);
+        assertThat(sql).as("必须显式限定燎毛产出通道，不能只判 inout_type='IN'")
+            .contains("f.flow_type = 'slaughter_burn'");
+    }
+
+    /**
+     * 白条均重的分母是<b>猪只</b>去重数：一头猪出两扇 = 两行流水只能算 1 头。
+     * 外购猪没有耳号（bar_info.ear_no 恒 NULL），必须退到白条 id，否则它的重量进分子不进分母、
+     * 均重被抬高。相关子查询而非 JOIN —— JOIN 撞重复行会把 change_quantity 乘出多份。
+     */
+    @Test
+    @DisplayName("白条均重分母 = 猪只去重数（耳号优先，外购无耳号退白条 id），且不用 JOIN 放大分子")
+    void whiteBarPigCountDedupesByPig() throws Exception {
+        String sql = select("selectWhiteBarInAgg", String.class, String.class);
+        assertThat(sql).as("分母是去重猪只数，不是流水行数")
+            .contains("COUNT(DISTINCT t.pigKey) AS barPigCount")
+            .doesNotContain("COUNT(*) AS barPigCount");
+        assertThat(sql).as("自养按耳号去重").contains("COALESCE(f.ear_no");
+        assertThat(sql).as("外购无耳号 → 退该产出行所属白条（一头猪）")
+            .contains("SELECT ih.white_bar_id")
+            .contains("ih.white_bar_no = f.white_bar_no");
+        assertThat(sql).as("产出行事后被软删也要查得到，故不带 del_flag 条件")
+            .doesNotContain("ih.del_flag");
+        assertThat(sql).as("白条身份用相关子查询取，JOIN 会把入库量乘出多份")
+            .doesNotContain("JOIN t_warehouse_product_inhouse");
+    }
+
+    @Test
+    @DisplayName("处理完成 cohort 已降为纯诊断：只出头数 + 接收重量之和，不再产出任何白条口径的量")
+    void finishedAggIsDiagnosticOnly() throws Exception {
         String sql = select("selectFinishedAgg", String.class, String.class);
-        assertThat(sql).as("处理完成 cohort 只出头数/白条总重/接收重量三个量")
+        assertThat(sql).contains("t_warehouse_bar_info");
+        assertThat(sql).as("按处理完成时刻分桶").contains("DATE(b.finish_time) = #{statDate}");
+        assertThat(sql).as("接收重量之和仍落盘（诊断列）")
+            .contains("COALESCE(SUM(b.arrive_weight), 0) AS finishedArriveWeight");
+        assertThat(sql).as("白条总重已改由 selectWhiteBarInAgg 一处定义，这里不许再算一份")
+            .doesNotContain("barTotalWeight")
+            .doesNotContain("in_weight");
+        assertThat(sql).as("出品率分子分母都不在这里算")
             .doesNotContain("barYieldBaseWeight")
             .doesNotContain("barYieldNumerWeight");
         assertThat(sql).as("不再按出栏重量取子集，故无需反查外购台账")

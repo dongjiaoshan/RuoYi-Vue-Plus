@@ -21,6 +21,7 @@ import org.dromara.djs.warehouse.location.mapper.LocationInfoMapper;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
 import org.dromara.djs.warehouse.stock.domain.LocationStock;
+import org.dromara.djs.warehouse.stock.domain.PlotLabel;
 import org.dromara.djs.warehouse.stock.domain.bo.StockOutBo;
 import org.dromara.djs.warehouse.stock.mapper.LocationStockMapper;
 import org.dromara.djs.warehouse.stock.service.ILocationStockService;
@@ -275,8 +276,10 @@ public class VegOutServiceImpl implements IVegOutService {
             outBo.setRemark(bo.getRemark());
             Long flowId = locationStockService.productOut(outBo);
 
-            // 回写流水的地块、批次与出库日期：
+            // 回写流水的地块、耳号、批次与出库日期：
             //   plot_id 来自库存行（月台/饲喂台账按地块×作物定位）；
+            //   ear_no 同样来自库存行（row199：明细「耳号」列读的正是 stock_flow.ear_no，
+            //     productOut 不带耳号 → 这一列过去 100% 为空；分割间建篮时篮子上有耳号，出库照抄即可）；
             //   batch_no 让同一次提交的多条聚合成 row187 列表里的「一单」；
             //   flow_date 改记业务日期 —— productOut 默认写 new Date()（实际操作时刻），
             //   但甲方 row187 明确「可以选择当天和历史的日期」，补录历史日期时列表必须显示所选那天。
@@ -285,6 +288,7 @@ public class VegOutServiceImpl implements IVegOutService {
             StockFlow patch = new StockFlow();
             patch.setId(flowId);
             patch.setPlotId(stock.getPlotId());
+            patch.setEarNo(stock.getEarNo());
             patch.setBatchNo(batchNo);
             patch.setFlowDate(resolveFlowDate(bo.getOutDate()));
             // row194：销售单价快照。前端默认带出产品 sale_price 但允许改，故必须按本次录入值落在流水行上，
@@ -368,9 +372,11 @@ public class VegOutServiceImpl implements IVegOutService {
         List<VegOutDetailVo> rows = vegOutMapper.selectBatchDetail(batchNo, productName);
         // row191 的耳号 / 地块两列天然互斥（猪肉行有耳号、果蔬行有地块），空值在这里兜成 "-"
         // 而不是各让页面和导出自己兜：兜一次，弹框与 xlsx 必然一致。
+        // 地块（row199）走 PlotLabel 派生导出列：三期 → 「三期」/ 有地块 → 地块名 / 都没有 → "-"，
+        // 与页面 formatPlotLabel 同一条规则；页面自己按 plotName + thirdPhase 渲染，不读 plotLabel。
         rows.forEach(r -> {
             r.setEarNo(StringUtils.blankToDefault(r.getEarNo(), EMPTY_TEXT));
-            r.setPlotCode(StringUtils.blankToDefault(r.getPlotCode(), EMPTY_TEXT));
+            r.setPlotLabel(PlotLabel.of(r.getThirdPhase(), r.getPlotName()));
         });
         return rows;
     }

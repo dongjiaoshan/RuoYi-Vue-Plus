@@ -41,12 +41,16 @@ import java.util.Map;
  *           → 屠宰头数 / 送宰总重 / 送宰均重。统计的是<b>送宰</b>不是出栏（出栏在养殖模块统计）；
  *           自养无独立送宰时间字段，出栏事件写的 marketing_time 即交宰时刻，故作送宰锚点</li>
  *       <li>称重 cohort（bar.arrive_time，燎毛间完成称重）→ 接收重量；
- *           屠宰率 = 接收重量/该批猪出栏重量之和×100，仅取其中<b>有</b>出栏重量的子集（两边同时剔除）</li>
- *       <li>处理完成 cohort（bar.finish_time）→ 白条总重 = Σ bar.in_weight（整 cohort，一行=一头猪(耳号)）；
- *           白条均重 = 白条总重/处理完成头数；
- *           白条出品率 = (F∩出栏重量非空子集的 Σ in_weight)/(同子集 Σ 出栏重量)×100，分子分母对称保证 ≤100%</li>
+ *           屠宰率 = 接收重量/该批猪出栏重量之和×100，仅取其中<b>有</b>出栏重量的子集（两边同时剔除）；
+ *           该子集的 Σ出栏重量同时是白条出品率的分母</li>
+ *       <li>白条入库 cohort（燎毛入库流水 flow_date × belong_type='white_bar'，即当日入白条库的
+ *           半扇 / 整只）→ 白条总重 = Σ 入库量；白条均重 = 白条总重/当日入白条库的猪只耳号去重数；
+ *           白条出品率 = 白条总重/称重 cohort 的 Σ出栏重量×100。分子分母跨 cohort，率可能 &gt;100%
+ *           （甲方指定口径，已知情）</li>
+ *       <li>处理完成 cohort（bar.finish_time）→ 处理完成头数 / 该批猪接收重量之和，两个诊断列，
+ *           不参与任何比率或均值</li>
  *     </ul>
- *     日表额外落 6 个 cohort 基数列，月率按 Σ基数 重算</li>
+ *     日表额外落 4 个 cohort 基数列，月率按 Σ基数 重算</li>
  *   <li>路损率 = (发往月台−月台接收)/发往月台×100（A2 日表，分母用发往=损耗占发出量）；作物表按 row17 (发往−接收)/接收×100</li>
  *   <li>所有损耗一律从 loss_flow 按 loss_type 取（防重复计）</li>
  *   <li>月台接收只算自产 receive_type=1</li>
@@ -132,32 +136,35 @@ public class WarehouseStatServiceImpl implements IWarehouseStatService {
         r.setSlaughterRateBaseWeight(rateBaseWeight);
         r.setSlaughterRate(pctOrNull(rateArriveWeight, rateBaseWeight));
 
-        // 白条段（处理完成 cohort：当日 bar.finish_time 落当天的那批猪，下称 F）
-        // 白条总重 = Σ bar.in_weight（整 F，一行=一头猪=一个耳号，按处理完成当天归集）；
-        // 白条均重 = 白条总重 ÷ 处理完成头数（整 F）；
+        // 白条段（入库 cohort：当日入白条库的白条产品 = 半扇 + 整只，按燎毛入库流水 flow_date 归集）
+        // 白条总重 = Σ 当日入白条库的白条产品入库量；
+        // 白条均重 = 白条总重 ÷ 当日入白条库的猪只耳号去重数（一头猪两扇只算 1 头）；
         // 白条出品率 = 白条总重 ÷「完成接收重量的猪只出栏重量之和」× 100。
         //
-        // ⚠️ 分母与屠宰率**共用同一个** —— 甲方 2026-09-07 把需求原文里这一句从
-        //   「白条总重/完成处理的猪只接收重量之和」改成了
-        //   「白条总重/完成接收重量的猪只出栏重量之和」，与上一行屠宰率的分母逐字相同，
-        //   并在答复里写明「分母错误，**也是**【完成接收重量的猪只出栏重量之和】」。
-        //   所以这里直接复用 rateBaseWeight（称重 cohort ∩ 出栏重量非空），不再另取处理完成 cohort 的分母。
-        //
-        // 由此分子分母**不是同一批猪**（分子按处理完成日、分母按称重日），出品率可能 >100%。
-        // 这一点已在写回里向甲方明确提示过（「只改一半会让分子分母不是同一批猪、出品率仍会超过 100%」），
-        // 甲方看到后仍坚持本口径 —— 按 §0 一问「甲方最近一次表态优先」执行，不再自行改判。
-        Map<String, Object> finished = aggregateMapper.selectFinishedAgg(tenantId, statDate);
-        int finishedCount = mapInt(finished, "finishedCount");
-        BigDecimal barTotal = scale3(mapBd(finished, "barTotalWeight"));
-        BigDecimal finishedArrive = scale3(mapBd(finished, "finishedArriveWeight"));
+        // ⚠️ 白条总重「一处定义、三处共用」：展示列 / 均重分子 / 出品率分子都是同一个 barTotal，
+        //   不允许为出品率单独保留另一套白条总重。
+        // ⚠️ 出品率的分母与屠宰率共用同一个 rateBaseWeight（称重 cohort ∩ 出栏重量非空）——
+        //   甲方要求的原文两行分母逐字相同。由此分子分母不是同一批猪（分子按入库日、分母按称重日），
+        //   出品率可能 >100%；这个后果已向甲方明确提示过，甲方仍坚持本口径。
+        Map<String, Object> whiteBar = aggregateMapper.selectWhiteBarInAgg(tenantId, statDate);
+        BigDecimal barTotal = scale3(mapBd(whiteBar, "barTotalWeight"));
+        int barPigCount = mapInt(whiteBar, "barPigCount");
         r.setBarTotalWeight(barTotal);
-        r.setFinishedCount(finishedCount);
-        r.setFinishedArriveWeight(finishedArrive);
+        // 分母单独落盘：矩阵「累计」格要按 Σ白条总重 ÷ Σ去重耳号数 重算，拿日均重再平均会失真
+        // （各天头数不同）。
+        r.setBarPigCount(barPigCount);
+        r.setAvgBarWeight(divideOrNull(barTotal, new BigDecimal(barPigCount)));
         // 落盘分子分母两列，月表按 Σ分子 ÷ Σ分母 重算（不能拿日比率求平均）。
         r.setBarYieldNumerWeight(barTotal);
         r.setBarYieldBaseWeight(rateBaseWeight);
-        r.setAvgBarWeight(divideOrNull(barTotal, new BigDecimal(finishedCount)));
         r.setBarYieldRate(pctOrNull(barTotal, rateBaseWeight));
+
+        // 处理完成 cohort（bar.finish_time）：两个诊断列，不参与任何比率/均值。
+        // 记的是「这一天有几头猪走完燎毛间」，与上面「当日入白条库多少白条」是两件事
+        // （同一头猪可以 A 日入库、B 日才点处理完成）。
+        Map<String, Object> finished = aggregateMapper.selectFinishedAgg(tenantId, statDate);
+        r.setFinishedCount(mapInt(finished, "finishedCount"));
+        r.setFinishedArriveWeight(scale3(mapBd(finished, "finishedArriveWeight")));
 
         // 分割段
         BigDecimal cutProduct = scale3(aggregateMapper.sumCutProductWeight(tenantId, statDate));

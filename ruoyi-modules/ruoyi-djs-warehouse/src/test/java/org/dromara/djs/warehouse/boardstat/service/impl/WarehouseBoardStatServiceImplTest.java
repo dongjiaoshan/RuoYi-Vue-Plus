@@ -42,9 +42,11 @@ import static org.mockito.Mockito.when;
  *
  * <p>覆盖：</p>
  * <ol>
- *   <li>happy：三指标各有数 → 4 张卡固定输出、猪肉卡合并 pork + white_bar、多单位多行且行序稳定；</li>
+ *   <li>happy：三指标各有数 → 有数的卡按固定序输出、猪肉卡合并 pork + white_bar、多单位多行且行序稳定；</li>
+ *   <li>本月无数据的卡整张不返回、本月三指标全 0 的单位行也不下发（甲方 2026-09-08，卡级 + 行级同规则）；</li>
+ *   <li>单位合并键小写归一：{@code Kg} 与 {@code kg} 归到同一行；</li>
+ *   <li>「其他产品」卡按 belong_type='other' 出，与其余卡同一套口径（甲方 2026-09-08），排在干货之后；</li>
  *   <li>环比：上月有数算百分比，上月无数据 / 为 0 → ratio 为 null（前端据此显黑色 0.00%）；</li>
- *   <li>全空兜底：mapper 全返空 → 仍出 4 张卡、rows 为空、不抛 NPE；</li>
  *   <li>明细弹窗（R193）：按产品聚合、逐产品环比、只列本月有量的产品、totals 与卡片同源；</li>
  *   <li>原材料消耗不含礼盒产线（甲方 2026-09-07），且该单位只有原材料消耗归零时行仍在（R194 兜底）。</li>
  * </ol>
@@ -98,7 +100,7 @@ class WarehouseBoardStatServiceImplTest {
     }
 
     @Test
-    @DisplayName("happy：4 张卡固定输出，猪肉卡合并 pork + white_bar，多单位分行且行序稳定")
+    @DisplayName("happy：有数的卡按固定序输出，猪肉卡合并 pork + white_bar，多单位分行且行序稳定")
     void getCategoryStat_happy() {
         when(boardStatMapper.selectInboundByCategoryUnit(
             eq("1001"), anyList(), anyList(), eq(CUR_FROM), eq(CUR_TO)))
@@ -115,10 +117,11 @@ class WarehouseBoardStatServiceImplTest {
 
         assertThat(vo.getMonth()).isEqualTo("2026-09");
         assertThat(vo.getPrevMonth()).isEqualTo("2026-08");
+        // 果蔬 / 干货 / 其他本月一点数都没有 → 整张卡不返回（甲方 2026-09-08）
         assertThat(vo.getCategories()).extracting(CategoryStatVo::getCategoryKey)
-            .containsExactly("pork", "vegetable", "egg", "dry_good");
+            .containsExactly("pork", "egg");
         assertThat(vo.getCategories()).extracting(CategoryStatVo::getCategoryName)
-            .containsExactly("猪肉产品", "果蔬产品", "蛋类产品", "干货产品");
+            .containsExactly("猪肉产品", "蛋类产品");
 
         CategoryStatVo porkCard = vo.getCategories().get(0);
         // 单位名升序：'k' < '份'（CJK 码位在 ASCII 之后）
@@ -129,14 +132,169 @@ class WarehouseBoardStatServiceImplTest {
         assertThat(porkCard.getRows().get(1).getInboundQty()).isEqualByComparingTo("0");
         assertThat(porkCard.getRows().get(1).getProduceQty()).isEqualByComparingTo("39");
 
-        CategoryStatVo eggCard = vo.getCategories().get(2);
+        CategoryStatVo eggCard = vo.getCategories().get(1);
         assertThat(eggCard.getRows()).hasSize(1);
         assertThat(eggCard.getRows().get(0).getUnit()).isEqualTo("枚");
         assertThat(eggCard.getRows().get(0).getInboundQty()).isEqualByComparingTo("7560");
+    }
 
-        // 果蔬 / 干货本月无数据 → 空行集，卡片仍在
-        assertThat(vo.getCategories().get(1).getRows()).isEmpty();
-        assertThat(vo.getCategories().get(3).getRows()).isEmpty();
+    /**
+     * 甲方 2026-09-08 row202：「产品没有数据时，不显示对应的内容，即，没有时，就不显示任何内容」。
+     * 判据只看本月 —— 上月 500、本月归零的卡过去会剩一行 0 与 −100.00%，那正是甲方指的「还在显示」。
+     */
+    @Test
+    @DisplayName("本月无数据的卡整张不返回：上月有数也不能让它活下来（row202）")
+    void getCategoryStat_dropsCardsWithoutCurrentMonthData() {
+        when(boardStatMapper.selectInboundByCategoryUnit(
+            eq("1001"), anyList(), anyList(), eq(CUR_FROM), eq(CUR_TO)))
+            .thenReturn(List.of(row("vegetable", "kg", "401.000")));
+        // 蛋类：上月 300 枚、本月 0 → 旧行为会出一张「0 枚 / −100.00%」的卡，新口径整张不出
+        when(boardStatMapper.selectInboundByCategoryUnit(
+            eq("1001"), anyList(), anyList(), eq(PRE_FROM), eq(PRE_TO)))
+            .thenReturn(List.of(row("egg", "枚", "300")));
+        // 干货：本月 SQL 出了行但量是 0 → 同样算「没有数据」
+        when(boardStatMapper.selectProduceByCategoryUnit(eq("1001"), anyList(), eq(CUR_FROM), eq(CUR_TO)))
+            .thenReturn(List.of(row("dry_good", "kg", "0.000")));
+
+        WarehouseBoardStatVo vo = service.getCategoryStat("2026-09");
+
+        assertThat(vo.getCategories()).extracting(CategoryStatVo::getCategoryKey)
+            .containsExactly("vegetable");
+    }
+
+    /**
+     * D-0045 <b>行级</b>：某单位当月三指标全 0 → 该单位行不下发，上月有数也不救它。
+     *
+     * <p>只做卡级不做行级，就会出现甲方 row202 截图里那个形态：卡还在（因为别的单位有数），
+     * 卡里却挂着一行「0 + −100.00%」。QA 实测未修前 2026-09 后端下发 7 条这样的全零行、
+     * 屏幕上渲染出 6 个「0 −100.00%」格。</p>
+     */
+    @Test
+    @DisplayName("行级：本月三指标全 0 的单位行不下发，上月有数也不救（row202 行级）")
+    void getCategoryStat_dropsAllZeroUnitRows() {
+        // 蛋类：本月「枚」有数、「份」没有；上月「份」有数 300 —— 旧行为会给「份」留一行 0 与 −100%
+        when(boardStatMapper.selectInboundByCategoryUnit(
+            eq("1001"), anyList(), anyList(), eq(CUR_FROM), eq(CUR_TO)))
+            .thenReturn(List.of(row("egg", "枚", "300.000")));
+        when(boardStatMapper.selectInboundByCategoryUnit(
+            eq("1001"), anyList(), anyList(), eq(PRE_FROM), eq(PRE_TO)))
+            .thenReturn(List.of(row("egg", "枚", "932.000"), row("egg", "份", "12")));
+
+        WarehouseBoardStatVo vo = service.getCategoryStat("2026-09");
+
+        CategoryStatVo eggCard = vo.getCategories().get(0);
+        assertThat(eggCard.getCategoryKey()).isEqualTo("egg");
+        // 只剩「枚」一行；「份」那一行连同它的 −100.00% 一起不下发
+        assertThat(eggCard.getRows()).extracting(CategoryUnitStatVo::getUnit).containsExactly("枚");
+        assertThat(eggCard.getRows().get(0).getInboundQty()).isEqualByComparingTo("300.000");
+        // 留下的行照常算环比：(300-932)/932 = -67.81%
+        assertThat(eggCard.getRows().get(0).getInboundRatio()).isEqualByComparingTo("-67.81");
+    }
+
+    /**
+     * 单位合并键小写归一：产品档案里同一个单位大小写混录（{@code other} 品类实测有 {@code Kg}），
+     * 不归一会把同一张卡裂成两行、两行的量还各只有一半。与门店侧
+     * {@code StoreManageServiceImpl#sumByUnit} 同一把尺子。
+     */
+    @Test
+    @DisplayName("单位归一：Kg 与 kg 合并成一行且量相加，展示确定性取全小写那个")
+    void getCategoryStat_mergesUnitCaseInsensitively() {
+        // 大写在前、小写在后：取字面不能是「先到先得」（那依赖 SQL 行序、卡片与弹窗会显示不同字面），
+        // 规则是「有全小写就取全小写」，与门店侧 StoreManageServiceImpl#putLabel 同一条
+        when(boardStatMapper.selectInboundByCategoryUnit(
+            eq("1001"), anyList(), anyList(), eq(CUR_FROM), eq(CUR_TO)))
+            .thenReturn(List.of(row("other", "Kg", "10.000"), row("other", "kg", "5.000")));
+
+        WarehouseBoardStatVo vo = service.getCategoryStat("2026-09");
+
+        CategoryStatVo otherCard = vo.getCategories().get(0);
+        assertThat(otherCard.getCategoryKey()).isEqualTo("other");
+        // 一行不是两行，量 10 + 5 = 15（裂成两行的话会是 10 和 5 各一行）
+        assertThat(otherCard.getRows()).hasSize(1);
+        assertThat(otherCard.getRows().get(0).getUnit()).isEqualTo("kg");
+        assertThat(otherCard.getRows().get(0).getInboundQty()).isEqualByComparingTo("15.000");
+    }
+
+    /**
+     * 单位展示原文<b>按品类隔离</b>：`Kg` 只有 other 品类在用、其余品类都是小写 `kg`，
+     * 共享一份 label map 会让 other 卡显示别的品类先占下的 `kg`，而明细弹窗（只吃本卡的行）显示 `Kg`
+     * —— 同一个数两处字面不一样。这条钉住「卡片与弹窗对同一个单位显示同一个字面」。
+     */
+    @Test
+    @DisplayName("单位字面按品类隔离：other 卡与它的入库明细弹窗都显示 Kg，不被别的品类的 kg 串味")
+    void getCategoryStat_unitLabelIsolatedPerCategory() {
+        // pork 用小写 kg 且排在前面；other 自己只有大写 Kg
+        List<CategoryUnitQtyRow> inbound = List.of(
+            row("pork", "kg", "100.000"), row("other", "Kg", "23.800"));
+        when(boardStatMapper.selectInboundByCategoryUnit(
+            eq("1001"), anyList(), anyList(), eq(CUR_FROM), eq(CUR_TO)))
+            .thenReturn(inbound);
+
+        WarehouseBoardStatVo vo = service.getCategoryStat("2026-09");
+
+        CategoryStatVo otherCard = vo.getCategories().stream()
+            .filter(c -> "other".equals(c.getCategoryKey())).findFirst().orElseThrow();
+        assertThat(otherCard.getRows()).hasSize(1);
+        // 卡片：不能被 pork 的小写 kg 串味
+        assertThat(otherCard.getRows().get(0).getUnit()).isEqualTo("Kg");
+
+        // 明细弹窗合计走同一条聚合（品类白名单收窄到本卡）→ 字面必须与卡片一致
+        when(boardStatMapper.selectInboundByCategoryUnit(
+            eq("1001"), eq(List.of("other")), anyList(), eq(CUR_FROM), eq(CUR_TO)))
+            .thenReturn(List.of(row("other", "Kg", "23.800")));
+        BoardStatDetailVo detail = service.getInboundDetail("2026-09", "other");
+        assertThat(detail.getTotals()).hasSize(1);
+        assertThat(detail.getTotals().get(0).getUnit()).isEqualTo("Kg");
+    }
+
+    /**
+     * 甲方 2026-09-08 row207：「增加【其他产品】的信息版块，统计逻辑和展示保持一致」。
+     * 位置在干货之后，三个指标走同一套 SQL（品类白名单里必须带上 other，否则 SQL 一行都查不到）。
+     */
+    @Test
+    @DisplayName("其他产品卡：belong_type='other'，排在干货之后，三指标同一套口径（row207）")
+    void getCategoryStat_otherCard() {
+        when(boardStatMapper.selectInboundByCategoryUnit(
+            eq("1001"), anyList(), anyList(), eq(CUR_FROM), eq(CUR_TO)))
+            .thenReturn(List.of(row("dry_good", "kg", "10.000"), row("other", "罐", "6")));
+        when(boardStatMapper.selectProduceByCategoryUnit(eq("1001"), anyList(), eq(CUR_FROM), eq(CUR_TO)))
+            .thenReturn(List.of(row("other", "罐", "2")));
+        when(boardStatMapper.selectMaterialConsumeByCategoryUnit(
+            eq("1001"), anyList(), eq(CUR_FROM), eq(CUR_TO)))
+            .thenReturn(List.of(row("other", "罐", "2")));
+
+        WarehouseBoardStatVo vo = service.getCategoryStat("2026-09");
+
+        assertThat(vo.getCategories()).extracting(CategoryStatVo::getCategoryKey)
+            .containsExactly("dry_good", "other");
+        CategoryStatVo otherCard = vo.getCategories().get(1);
+        assertThat(otherCard.getCategoryName()).isEqualTo("其他产品");
+        assertThat(otherCard.getRows()).hasSize(1);
+        assertThat(otherCard.getRows().get(0).getUnit()).isEqualTo("罐");
+        assertThat(otherCard.getRows().get(0).getInboundQty()).isEqualByComparingTo("6");
+        assertThat(otherCard.getRows().get(0).getProduceQty()).isEqualByComparingTo("2");
+        assertThat(otherCard.getRows().get(0).getMaterialQty()).isEqualByComparingTo("2");
+
+        // 三条 SQL 的品类白名单必须含 other，否则「其他产品」卡永远查不到数
+        ArgumentCaptor<List<String>> belongCaptor = ArgumentCaptor.forClass(List.class);
+        verify(boardStatMapper).selectProduceByCategoryUnit(
+            eq("1001"), belongCaptor.capture(), eq(CUR_FROM), eq(CUR_TO));
+        assertThat(belongCaptor.getValue())
+            .containsExactly("pork", "white_bar", "vegetable", "egg", "dry_good", "other");
+    }
+
+    @Test
+    @DisplayName("其他产品卡可下钻：belongType='other' 走白名单，明细正常返回")
+    void getInboundDetail_otherCategory() {
+        when(boardStatMapper.selectInboundDetailByProduct(
+            eq("1001"), anyList(), anyList(), eq(CUR_FROM), eq(CUR_TO)))
+            .thenReturn(List.of(productRow("301", "菜籽油（浓香）", "5L/桶", "6", "桶")));
+
+        BoardStatDetailVo vo = service.getInboundDetail("2026-09", "other");
+
+        assertThat(vo.getCategoryName()).isEqualTo("其他产品");
+        assertThat(vo.getRows()).extracting(BoardStatProductRowVo::getProductName)
+            .containsExactly("菜籽油（浓香）");
     }
 
     @Test
@@ -151,25 +309,28 @@ class WarehouseBoardStatServiceImplTest {
 
         WarehouseBoardStatVo vo = service.getCategoryStat("2026-09");
 
-        CategoryUnitStatVo vegRow = vo.getCategories().get(1).getRows().get(0);
+        // 有数的只剩果蔬 + 蛋类两张卡
+        assertThat(vo.getCategories()).extracting(CategoryStatVo::getCategoryKey)
+            .containsExactly("vegetable", "egg");
+
+        CategoryUnitStatVo vegRow = vo.getCategories().get(0).getRows().get(0);
         assertThat(vegRow.getInboundRatio()).isEqualByComparingTo("30.00");
         // 本月生产量 0、上月也 0 → 无从算环比
         assertThat(vegRow.getProduceRatio()).isNull();
 
         // 上月该单位为 0 == 没有上个月数据
-        CategoryUnitStatVo eggRow = vo.getCategories().get(2).getRows().get(0);
+        CategoryUnitStatVo eggRow = vo.getCategories().get(1).getRows().get(0);
         assertThat(eggRow.getInboundRatio()).isNull();
     }
 
     @Test
-    @DisplayName("全空兜底：mapper 全返空 → 仍出 4 张卡、rows 为空、不抛 NPE")
+    @DisplayName("全空兜底：mapper 全返空 → 一张卡都不出（mp 渲染整页空态），不抛 NPE")
     void getCategoryStat_empty() {
         WarehouseBoardStatVo vo = service.getCategoryStat(null);
 
         assertThat(vo.getMonth()).isNotBlank();
         assertThat(vo.getPrevMonth()).isNotBlank();
-        assertThat(vo.getCategories()).hasSize(4);
-        assertThat(vo.getCategories()).allSatisfy(c -> assertThat(c.getRows()).isEmpty());
+        assertThat(vo.getCategories()).isEmpty();
     }
 
     @Test
@@ -200,9 +361,9 @@ class WarehouseBoardStatServiceImplTest {
         assertThat(kgRow.getInboundQty()).isEqualByComparingTo("20.000");
         assertThat(kgRow.getProduceQty()).isEqualByComparingTo("6.000");
 
-        // 礼盒不是四张卡之一，礼盒自身的量（无论哪个指标）都不会挂到任何一张卡上
+        // 礼盒没有自己的卡，礼盒自身的量（无论哪个指标）都不会挂到任何一张卡上
         assertThat(vo.getCategories()).extracting(CategoryStatVo::getCategoryKey)
-            .containsExactly("pork", "vegetable", "egg", "dry_good");
+            .containsExactly("pork");
         assertThat(vo.getCategories()).allSatisfy(card ->
             assertThat(card.getRows()).extracting(CategoryUnitStatVo::getUnit).doesNotContain("盒"));
 
@@ -212,7 +373,7 @@ class WarehouseBoardStatServiceImplTest {
         verify(boardStatMapper).selectMaterialConsumeByCategoryUnit(
             eq("1001"), belongCaptor.capture(), eq(CUR_FROM), eq(CUR_TO));
         assertThat(belongCaptor.getValue())
-            .containsExactly("pork", "white_bar", "vegetable", "egg", "dry_good")
+            .containsExactly("pork", "white_bar", "vegetable", "egg", "dry_good", "other")
             .doesNotContain("gift_box");
     }
 
@@ -235,6 +396,7 @@ class WarehouseBoardStatServiceImplTest {
 
         WarehouseBoardStatVo vo = service.getCategoryStat("2026-09");
 
+        assertThat(vo.getCategories()).extracting(CategoryStatVo::getCategoryKey).containsExactly("pork");
         CategoryUnitStatVo kgRow = vo.getCategories().get(0).getRows().get(0);
         assertThat(kgRow.getUnit()).isEqualTo("kg");
         assertThat(kgRow.getMaterialQty()).isEqualByComparingTo("0");
@@ -247,7 +409,7 @@ class WarehouseBoardStatServiceImplTest {
     void getCategoryStat_badMonth() {
         WarehouseBoardStatVo vo = service.getCategoryStat("2026/13");
 
-        assertThat(vo.getCategories()).hasSize(4);
+        assertThat(vo.getCategories()).isNotNull();
         assertThat(vo.getMonth()).matches("\\d{4}-\\d{2}");
     }
 
@@ -350,7 +512,7 @@ class WarehouseBoardStatServiceImplTest {
     }
 
     @Test
-    @DisplayName("belongType 白名单：非四张卡的值 / 空 → 400，不静默返空")
+    @DisplayName("belongType 白名单：不在卡片定义里的值 / 空 → 400，不静默返空")
     void detail_rejectsUnknownBelongType() {
         assertThatThrownBy(() -> service.getInboundDetail("2026-09", "gift_box"))
             .isInstanceOf(ServiceException.class)

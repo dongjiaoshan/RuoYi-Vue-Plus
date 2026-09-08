@@ -23,7 +23,9 @@ public interface IStoreManageService {
     List<StorePickerVo> listSelectableStores();
 
     /**
-     * 月度看板：3 个品类数 + 4 张业态卡（每卡按单位分行，每行 3 指标 + 环比）。
+     * 月度看板：3 个品类数 + 业态卡（每卡按单位分行，每行 3 指标 + 环比）。
+     *
+     * <p>业态卡最多 5 张（猪肉 / 果蔬 / 蛋类 / 干货 / 其他），<b>当月无数据的卡不下发</b>（D-0045）。</p>
      *
      * @param storeId 门店 ID；null = 全部门店合计
      * @param month   月份 yyyy-MM；空 = 当月
@@ -36,7 +38,7 @@ public interface IStoreManageService {
      *
      * @param storeId    门店 ID；null = 全部门店合计
      * @param month      月份 yyyy-MM；空 = 当月（格式非法 400）
-     * @param belongType 业态卡 key：pork / vegetable / egg / dry_good（白名单外 400）
+     * @param belongType 业态卡 key：pork / vegetable / egg / dry_good / other（白名单外 400）
      * @param pageQuery  分页参数
      * @return 明细分页 + 合计（合计与业态卡同口径同数字）
      */

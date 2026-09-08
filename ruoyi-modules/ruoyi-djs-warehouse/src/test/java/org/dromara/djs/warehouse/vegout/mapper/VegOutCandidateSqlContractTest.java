@@ -141,15 +141,23 @@ class VegOutCandidateSqlContractTest {
     }
 
     @Test
-    @DisplayName("row191 出库明细：耳号取流水自己的 ear_no，地块由 plot_id LEFT JOIN 地块档案")
-    void batchDetailCarriesEarNoAndPlotCode() throws Exception {
+    @DisplayName("row191/row199 出库明细：耳号取流水 ear_no，地块取 plot_name + third_phase（不是 plot_code）")
+    void batchDetailCarriesEarNoAndPlotName() throws Exception {
         Method method = VegOutMapper.class.getMethod("selectBatchDetail", String.class, String.class);
         Select select = method.getAnnotation(Select.class);
         assertThat(select).as("VegOutMapper#selectBatchDetail 应带 @Select").isNotNull();
         String sql = normalize(String.join(" ", select.value()));
 
         assertThat(sql).contains("f.ear_no as earno");
-        assertThat(sql).contains("pl.plot_code as plotcode");
+        // row199 甲方口径：地块显示**名称**（A1东9号），与新增出库抽屉那列一致，不是编码（A-A1东-0-009）
+        assertThat(sql)
+            .as("取 plot_code 会让明细与出库时看到的地块对不上")
+            .contains("pl.plot_name as plotname")
+            .doesNotContain("plot_code");
+        // 三期货没有真实 plot_id，「地块」列靠 third_phase 显示「三期」
+        assertThat(sql)
+            .as("不带三期标识，三期行只能显示 -")
+            .contains("f.third_phase as thirdphase");
         // LEFT JOIN：地块档案被删的行照出，只是地块列为空（service 兜 "-"），不能因为联不上就丢明细行
         assertThat(sql).contains("left join t_plant_plot_info pl on pl.id = f.plot_id and pl.del_flag = '0'");
         // 耳号取这条流水记的那个篮子，不回溯上游批次

@@ -17,13 +17,15 @@ import java.util.Map;
  *
  * <h3>源表 → 指标映射</h3>
  * <ul>
- *   <li>{@code t_warehouse_bar_info} + {@code t_warehouse_outsource_pig}：猪肉段全部指标，按<b>三组 cohort</b>
+ *   <li>{@code t_warehouse_bar_info} + {@code t_warehouse_outsource_pig}：猪只段指标，按<b>三组 cohort</b>
  *       分别分桶（同一指标的分子分母必须来自同一批猪）——
  *       送宰 cohort（{@code marketing_time} / {@code slaughter_date}）→ 屠宰头数 / 送宰总重 / 送宰均重；
- *       称重 cohort（{@code arrive_time}）→ 接收重量 / 屠宰率；
- *       处理完成 cohort（{@code finish_time}）→ 白条总重 / 白条均重 / 白条出品率</li>
+ *       称重 cohort（{@code arrive_time}）→ 接收重量 / 屠宰率 / 白条出品率的分母；
+ *       处理完成 cohort（{@code finish_time}）→ 处理完成头数 / 其接收重量之和（两个诊断列）</li>
+ *   <li>{@code t_warehouse_stock_flow} 入库方向 × {@code belong_type='white_bar'}：白条总重 / 白条均重
+ *       的分母（猪只去重数），按 {@code flow_date} 分桶 —— 「当日入白条库的半扇 + 整只」</li>
  *   <li>{@code t_warehouse_pig_cut_record}：分割白条数 / 分割白条总重（pickup_time + pickup_weight）</li>
- *   <li>{@code t_warehouse_product_inhouse}：分割产品总重（white_bar_id 非空 = 猪肉，produce_date）</li>
+ *   <li>{@code t_warehouse_stock_flow} {@code flow_type='cut_out_in'}：分割产品总重（flow_date）</li>
  *   <li>{@code t_warehouse_loss_flow}：所有损耗按 loss_type 取（防重复计，loss_date）</li>
  *   <li>{@code t_warehouse_vegetable_handle}：毛菜称量 / 发往月台（picked / send_platform，pick_start_time）</li>
  *   <li>{@code t_warehouse_handle_record}：作物维度采摘 / 发往月台（按 crop_id GROUP，handle_time）</li>
@@ -127,38 +129,120 @@ public interface WarehouseStatAggregateMapper {
     Map<String, Object> selectSlaughterRateBase(@Param("tenantId") String tenantId, @Param("statDate") String statDate);
 
     /**
-     * 处理完成 cohort（当日 {@code bar.finish_time} 落当天的那批猪，下称 F）的三个量。
-     *
-     * <p>{@code t_warehouse_bar_info} <b>一行 = 一头猪 = 一个耳号</b>，故 {@code barTotalWeight}
-     * = Σ {@code in_weight} 正是客户口径的「按处理完成当天、统计猪只耳号的白条总重量」。</p>
+     * 白条段：<b>当日入白条库的白条产品</b>（半扇 / 整只）总重 + 这批白条对应的猪只去重数。
      *
      * <ul>
-     *   <li>{@code finishedCount} 处理完成头数 —— 白条均重的分母。</li>
-     *   <li>{@code barTotalWeight} = Σ in_weight over F —— 白条总重展示列，同时是<b>出品率的分子</b>。</li>
-     *   <li>{@code finishedArriveWeight} = Σ arrive_weight over F —— 诊断列，不参与任何比率。</li>
+     *   <li>{@code barTotalWeight} = Σ 入库量 —— 白条总重展示列，同时是<b>白条出品率的分子</b>。</li>
+     *   <li>{@code barPigCount} = 去重猪只数 —— 白条均重的分母。</li>
      * </ul>
      *
-     * <p><b>本查询不再产出出品率的分母。</b>甲方 2026-09-07 把需求原文改成
-     * 「白条出品率：白条总重 / 完成接收重量的猪只出栏重量之和」——与上一行屠宰率的分母逐字相同，
-     * 答复里也写明「分母错误，也是【完成接收重量的猪只出栏重量之和】」。故分母统一由
-     * {@link #selectSlaughterRateBase} 的 {@code rateBase} 提供，两个比率共用同一个分母。</p>
+     * <h3>只算<b>燎毛产出</b>那一条入库通道（{@code flow_type = 'slaughter_burn'}）</h3>
+     * <p>这是一次二选一：本指标取「白条<b>产出</b>」，<b>放弃</b>字面意义上的「任何入白条库」。</p>
      *
-     * <p>后果（甲方已知情并坚持）：分子取处理完成 cohort、分母取称重 cohort，两批猪不是同一批，
-     * 出品率可能 &gt;100%。</p>
+     * <p>🔴 <b>判据是正向枚举，不是「排除掉没有耳号的通道」。</b>唯一的产出通道是燎毛
+     * （{@code slaughter_burn}），其余 IN 通道一律不计 —— <b>哪怕它带着真实耳号</b>。
+     * 理由是语义而非可算性：白条总重同时是白条出品率的分子，衡量的是「这批猪屠宰出了多少白条」，
+     * 只有燎毛那一刻是产出；货又回来了、盘出来了、从别的库挪过来了，都不是新产出，
+     * 计入会让白条总重与出品率一起虚高。</p>
+     *
+     * <p>被排除的通道分两类，<b>两类的坏法不同，所以不能只靠「有没有耳号」去判</b>：</p>
+     * <ul>
+     *   <li><b>无耳号类</b>（{@code store_return_in} 门店退回 / {@code other} 期初 /
+     *       {@code purchase_in} 采购入库 / {@code prod_return_in} 生产退回 /
+     *       {@code third_phase_in} 三期入库 / {@code check_in} 盘盈）：staging 实测这几类 IN 流水
+     *       {@code ear_no} 与 {@code white_bar_no} 100% 皆空。计入后重量进分子，却因
+     *       {@code CONCAT('bar:', NULL) IS NULL} 一路 COALESCE 到底仍是 NULL、
+     *       {@code COUNT(DISTINCT NULL) = 0} 而不给分母贡献任何一头猪 —— 极端情况某天只有这种行时
+     *       {@code barPigCount = 0}，页面会出现「白条总重非 0、白条均重 0.00」的自相矛盾。</li>
+     *   <li><b>有耳号类</b>（{@code transfer_in} 移库）：{@code LocationStockServiceImpl} 移库时
+     *       把源库存行的 {@code ear_no} 与 {@code white_bar_no} <b>原样抄进入库流水</b>。
+     *       半扇从猪肉鲜品库挪进冻品库，重量会再进一次分子，而那个耳号当天已经计过、分母纹丝不动
+     *       —— 那头猪的白条均重直接翻倍，<b>而且没有任何可见异常</b>，比上一类更隐蔽。
+     *       所以「这条通道有耳号 → 可以放回去」的推论是错的。</li>
+     * </ul>
+     *
+     * <p>可达性不是假想：半扇确实会发到门店（{@code ship_out} + {@code stock_out_dest='ship_dock'}），
+     * 而门店退回的品类白名单（{@code StoreReturnServiceImpl.PORK_BELONG_TYPES}）含 {@code white_bar}；
+     * 移库对库位不设品类限制。今天两条都没炸只是因为退回产品字典里配的都是猪肉部位、恰好不含半扇，
+     * 且 {@code transfer_in} 现有 0 行 —— 那是数据配置的偶然，不是代码约束。</p>
+     *
+     * <p>新增产出通道时（真加了，而不是把上面某条挪回来）改这里的白名单并同步契约测试；
+     * 字典 {@code djs_flow_type} 里的 {@code bar_in_stock}「白条入库」当前<b>无任何代码写入</b>，
+     * 是遗留字典项，不是漏掉的产出通道。</p>
+     *
+     * <h3>「半扇和整只」= {@code belong_type = 'white_bar'}（产品类别 = 白条产品）</h3>
+     * <p>白条本体在产品档案里就是这个类别（{@code djs_belong_type} 的「白条产品」），燎毛间同批产出的
+     * 猪头 / 猪脚 / 蹄髈是 {@code belong_type='pork'} 的副产、入的是猪肉鲜品库。判据挂在产品类别上而不是
+     * 产品名，甲方在 admin 里新增一个白条产品（如「整只」）即自动计入，不必改代码；也不挂库位
+     * ——{@code t_warehouse_location_info.location_type} 对所有仓库库位都是 {@code 'warehouse'}，
+     * 「白条库」只有中文名可辨认，而库名可被后台改，不能当机器判据。</p>
+     *
+     * <h3>为什么读 {@code t_warehouse_stock_flow} 而不是 {@code t_warehouse_product_inhouse}</h3>
+     * <p>{@code product_inhouse} 是<b>可变的在制品池</b>：白条被领用 / 打包时按实耗
+     * {@code deductWeightById} 就地扣减、扣尽即软删，事后 SUM 会缩水，同一天重跑聚合会得到不同的数
+     * （与 {@link #sumCutProductWeight} 不读该表是同一个理由）。燎毛入库流水
+     * （{@code inout_type='IN'}）写入后只被「燎毛间产品重量调整」按新重量覆盖一次，下游一律另写出库行，
+     * 是可复现的不可变账，重跑 / 补跑历史日得到的数一致。</p>
+     *
+     * <p>产品档案只按主键 + 租户联，<b>不</b>带 {@code p.del_flag='0'}：产品档案事后被停用 / 删除
+     * 不该把历史入库抹掉。主键联表 1:1，不会放大行数。</p>
+     *
+     * <h3>猪只去重键</h3>
+     * <p>自养猪按 {@code ear_no} 去重（一头猪出两扇 = 两行流水，同一耳号只计 1 头，正是甲方
+     * 「猪只耳号数量（需要去重）」）。外购猪没有耳号（{@code t_warehouse_bar_info.ear_no} 恒 NULL，
+     * 见 {@code OutsourcePigServiceImpl#createOutsourceBar}），故退到该产出行所属白条
+     * {@code product_inhouse.white_bar_id}（= 一头猪）；再退到 {@code white_bar_no}（一扇）兜底。
+     * 不能只写 {@code COUNT(DISTINCT ear_no)}：外购猪的重量会进分子却不进分母，白条均重被抬高。
+     * {@code white_bar_id} 走相关子查询 + 定序 LIMIT 1，不用 JOIN —— JOIN 撞到重复行会让
+     * {@code change_quantity} 被乘出多份，把分子做大。产出行事后被软删也照样能查到（不带
+     * {@code del_flag} 条件），猪只身份不随在制品消耗而丢失。</p>
+     *
+     * @return 单行 {@code {barTotalWeight, barPigCount}}
+     */
+    @Select("""
+        SELECT COALESCE(SUM(t.weight), 0) AS barTotalWeight,
+               COUNT(DISTINCT t.pigKey)   AS barPigCount
+        FROM (
+          SELECT f.change_quantity AS weight,
+                 COALESCE(f.ear_no,
+                          CONCAT('bar:', (SELECT ih.white_bar_id
+                                            FROM t_warehouse_product_inhouse ih
+                                           WHERE ih.white_bar_no = f.white_bar_no
+                                             AND ih.tenant_id = f.tenant_id
+                                           ORDER BY ih.id LIMIT 1)),
+                          CONCAT('half:', f.white_bar_no)) AS pigKey
+          FROM t_warehouse_stock_flow f
+          JOIN t_warehouse_product_info p
+            ON p.id = f.product_id AND p.tenant_id = f.tenant_id
+          WHERE f.del_flag = '0' AND f.tenant_id = #{tenantId}
+            AND f.inout_type = 'IN'
+            AND f.flow_type = 'slaughter_burn'
+            AND p.belong_type = 'white_bar'
+            AND DATE(f.flow_date) = #{statDate}
+        ) t
+        """)
+    Map<String, Object> selectWhiteBarInAgg(@Param("tenantId") String tenantId, @Param("statDate") String statDate);
+
+    /**
+     * 处理完成 cohort（当日 {@code bar.finish_time} 落当天的那批猪，下称 F）的两个诊断量。
+     *
+     * <ul>
+     *   <li>{@code finishedCount} = 当日处理完成头数（{@code t_warehouse_bar_info} 一行 = 一头猪）。</li>
+     *   <li>{@code finishedArriveWeight} = Σ arrive_weight over F。</li>
+     * </ul>
+     *
+     * <p>两个量只落盘、<b>不参与任何比率或均值</b>：白条总重 / 白条均重 / 白条出品率的分子分母全部由
+     * {@link #selectWhiteBarInAgg}（当日入白条库口径）与 {@link #selectSlaughterRateBase}（Σ出栏重量）
+     * 提供。它们记的是「这一天有几头猪走完了燎毛间」，与白条入库量是两件事（同一头猪可以在 A 日入库、
+     * B 日才点处理完成）。</p>
      *
      * <p>{@code finish_time} 只在 finishBurn 的状态推进里写一次、之后不变，所以本聚合可复现；
      * 没进过燎毛间的白条永远 {@code finish_time IS NULL}，天然落不进任何一天。</p>
      *
-     * <p>白条重取 {@code bar.in_weight}（finishBurn 那一刻按该白条全部产出行合计写入的整只口径值），
-     * <b>不</b>取 {@code Σ burn_record.burn_weight}：burn_record 没有指向 bar 的外键（只有 ear_no，
-     * 外购猪为空），挂不到本 cohort 上。也不取 {@code Σ product_inhouse.product_weight}——产出行会被
-     * 下游领用/发货消耗掉，事后 SUM 会缩水。</p>
-     *
-     * @return 单行 {@code {finishedCount, barTotalWeight, finishedArriveWeight}}
+     * @return 单行 {@code {finishedCount, finishedArriveWeight}}
      */
     @Select("""
         SELECT COUNT(*)                         AS finishedCount,
-               COALESCE(SUM(b.in_weight), 0)     AS barTotalWeight,
                COALESCE(SUM(b.arrive_weight), 0) AS finishedArriveWeight
         FROM t_warehouse_bar_info b
         WHERE b.del_flag = '0' AND b.tenant_id = #{tenantId}

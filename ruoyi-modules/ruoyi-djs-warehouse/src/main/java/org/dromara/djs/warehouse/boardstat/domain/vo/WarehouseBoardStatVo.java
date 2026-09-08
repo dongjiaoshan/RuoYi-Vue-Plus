@@ -26,6 +26,6 @@ public class WarehouseBoardStatVo implements Serializable {
     /** 环比基准月份 yyyy-MM（统计月的上一个自然月）。 */
     private String prevMonth;
 
-    /** 品类卡（固定 4 张，顺序：猪肉 / 果蔬 / 蛋类 / 干货）。 */
+    /** 品类卡（顺序：猪肉 / 果蔬 / 蛋类 / 干货 / 其他产品；本月无数据的品类不在列表里）。 */
     private List<CategoryStatVo> categories = new ArrayList<>();
 }

@@ -2,14 +2,22 @@ package org.dromara.djs.store.manage.mapper;
 
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import org.apache.ibatis.annotations.Select;
+import org.apache.ibatis.mapping.BoundSql;
+import org.apache.ibatis.mapping.SqlSource;
+import org.apache.ibatis.scripting.LanguageDriver;
+import org.apache.ibatis.scripting.xmltags.XMLLanguageDriver;
+import org.apache.ibatis.session.Configuration;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Method;
 import java.time.LocalDate;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
+import java.util.regex.Pattern;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -144,9 +152,83 @@ class StoreManageMapperSqlContractTest {
         assertThat(detail.substring(detail.lastIndexOf(") t"))).doesNotContain("group by");
     }
 
+    @Test
+    @DisplayName("明细：当月三个量全 0 的产品不出行，且过滤在外层（分页 total 一起收窄）")
+    void detailFiltersAllZeroProductRows() throws Exception {
+        String detail = detailSql();
+
+        String filter = normalizeParts(StoreManageMapper.DETAIL_NON_EMPTY_WHERE).get(0);
+        assertThat(filter).isEqualTo("where (t.demandqty != 0 or t.saleqty != 0 or t.returnqty != 0)");
+        // 必须落在合并子查询之外：MP 自动 count 是 SELECT COUNT(*) FROM (聚合) t WHERE …，
+        // 挪进子查询里 count 就数不到这个条件，「已到底」判断会跟着错
+        assertThat(detail.substring(detail.lastIndexOf(") t"))).contains(filter);
+    }
+
+    @Test
+    @DisplayName("逐产品环比基数：与明细共用同一份 FROM/WHERE，只多产品白名单，且不带空行过滤")
+    void prevMonthSumsShareConditionsAndScopeToProducts() throws Exception {
+        String prev = prevSumsSql();
+
+        for (String fragment : List.of(
+            StoreManageMapper.DEMAND_FROM, StoreManageMapper.DEMAND_WHERE,
+            StoreManageMapper.SALE_FROM, StoreManageMapper.SALE_WHERE,
+            StoreManageMapper.RETURN_FROM, StoreManageMapper.RETURN_WHERE)) {
+            for (String part : normalizeParts(fragment)) {
+                assertThat(prev).as("上月聚合含片段 [%s]", part).contains(part);
+            }
+        }
+        // 三支各自被产品白名单收窄（三支写法一致 → 出现 3 次）
+        String idFilter = normalizeParts(StoreManageMapper.DETAIL_PRODUCT_ID_FILTER).get(0);
+        assertThat(prev.split(Pattern.quote(idFilter), -1)).as("三支都带产品白名单").hasSize(4);
+        assertThat(prev.split("union all", -1)).as("UNION ALL 三个分支").hasSize(3);
+        assertThat(prev).contains("group by g.productid");
+        // 上月为 0 是合法基数（hasBase=false 渲染黑色 0.00%），不能被空行过滤掉
+        assertThat(prev).doesNotContain(normalizeParts(StoreManageMapper.DETAIL_NON_EMPTY_WHERE).get(0));
+    }
+
+    /**
+     * 每条 {@code @Select} 的 {@code <script>} 都能被 MyBatis 当 XML 解析并渲染出 SQL。
+     *
+     * <p>MyBatis 把注解里的 SQL 当 XML 读：裸 {@code <} / {@code >} / {@code <>} 会让
+     * {@code XMLLanguageDriver} 在启动期抛 SAXParseException，表现为「应用起不来」。
+     * 上面那些 contains 断言只看字符串，看不出这个——所以这里真跑一遍解析 + 绑定。</p>
+     */
+    @Test
+    @DisplayName("全部 @Select 能被 XMLLanguageDriver 解析并绑定（裸 < / > 会在这里先炸，而不是启动时）")
+    void allSelectAnnotationsParseAndBind() {
+        Configuration configuration = new Configuration();
+        LanguageDriver driver = new XMLLanguageDriver();
+
+        Map<String, Object> params = new HashMap<>();
+        params.put("tenantId", "1001");
+        params.put("storeId", null);
+        params.put("monthStart", LocalDate.of(2026, 9, 1));
+        params.put("nextStart", LocalDate.of(2026, 10, 1));
+        params.put("belongTypes", List.of("pork", "white_bar"));
+        params.put("productIds", List.of(1L, 2L));
+
+        for (Method method : StoreManageMapper.class.getDeclaredMethods()) {
+            Select select = method.getAnnotation(Select.class);
+            if (select == null) {
+                continue;
+            }
+            String script = String.join(" ", select.value());
+            SqlSource sqlSource = driver.createSqlSource(configuration, script, Object.class);
+            BoundSql boundSql = sqlSource.getBoundSql(params);
+            assertThat(boundSql.getSql()).as("%s 渲染出的 SQL", method.getName())
+                .isNotBlank()
+                .doesNotContain("foreach");
+        }
+    }
+
     private static String detailSql() throws Exception {
         return normalizedSql("selectProductDetailPage",
             IPage.class, String.class, Long.class, LocalDate.class, LocalDate.class, List.class);
+    }
+
+    private static String prevSumsSql() throws Exception {
+        return normalizedSql("selectProductMonthSums",
+            String.class, Long.class, LocalDate.class, LocalDate.class, List.class, List.class);
     }
 
     @Test

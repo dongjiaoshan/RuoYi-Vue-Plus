@@ -6,6 +6,7 @@ import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 import org.dromara.djs.store.manage.domain.vo.StoreManageDetailRowVo;
 import org.dromara.djs.store.manage.domain.vo.StoreManageProductCountRowVo;
+import org.dromara.djs.store.manage.domain.vo.StoreManageProductQtyRowVo;
 import org.dromara.djs.store.manage.domain.vo.StoreManageQtyRowVo;
 import org.dromara.djs.warehouse.demand.core.StoreDemandStatusMapping;
 
@@ -118,6 +119,19 @@ public interface StoreManageMapper {
     /** 明细子查询的 GROUP BY（与 {@link #DETAIL_PRODUCT_KEYS} 逐列对应，MySQL ONLY_FULL_GROUP_BY 要求）。 */
     String DETAIL_PRODUCT_GROUP_BY =
         " GROUP BY p.id, p.product_name, p.product_spec, p.product_unit ";
+
+    /**
+     * 明细「上月同产品」聚合的产品白名单（只查当前页那几个产品，不整月全表拉）。
+     *
+     * <p>拼在各 {@code *_WHERE} 之后，三支分支写法一致。</p>
+     */
+    String DETAIL_PRODUCT_ID_FILTER =
+        "   AND p.id IN "
+            + "   <foreach collection='productIds' item='pid' open='(' separator=',' close=')'>#{pid}</foreach> ";
+
+    /** 明细行「当月三个量全为 0 不出行」的过滤（甲方口径 D-0045，放外层保证分页 total 也不含空行）。 */
+    String DETAIL_NON_EMPTY_WHERE =
+        " WHERE (t.demandQty != 0 OR t.saleQty != 0 OR t.returnQty != 0) ";
 
     /**
      * 当月到店产品品类数（按 belong_type 分组的去重产品数）。
@@ -252,6 +266,11 @@ public interface StoreManageMapper {
      * <p>产品名 / 规格 / 单位在合并层取 {@code MAX()}：它们由 productId 函数决定，
      * 组内恒为同一个值，取 MAX 即该值本身（同时满足 MySQL 8 的 ONLY_FULL_GROUP_BY）。</p>
      *
+     * <h3>当月三个量全为 0 的产品不出行（甲方口径 D-0045）</h3>
+     * <p>过滤写在<b>外层</b> {@link #DETAIL_NON_EMPTY_WHERE} 而不是前端 filter：MyBatis-Plus 的自动
+     * count 是 {@code SELECT COUNT(*) FROM (聚合) t WHERE …}，同一个 WHERE 会一起进 count，
+     * 分页 total 与「已到底」判断才不会把被过滤掉的空行算进去。</p>
+     *
      * @param page        分页参数
      * @param tenantId    租户
      * @param storeId     门店 ID（可空，null = 全部门店合计）
@@ -296,6 +315,7 @@ public interface StoreManageMapper {
         + "               ) g "
         + "         GROUP BY g.productId "
         + "       ) t "
+        + DETAIL_NON_EMPTY_WHERE
         + " ORDER BY t.demandQty DESC, t.productName, t.productId"
         + "</script>")
     IPage<StoreManageDetailRowVo> selectProductDetailPage(IPage<StoreManageDetailRowVo> page,
@@ -304,5 +324,63 @@ public interface StoreManageMapper {
                                                           @Param("monthStart") LocalDate monthStart,
                                                           @Param("nextStart") LocalDate nextStart,
                                                           @Param("belongTypes") List<String> belongTypes);
+
+    /**
+     * 指定产品在指定月份区间的三个量（明细行逐产品环比的<b>上月基数</b>，V6-R209）。
+     *
+     * <p>与 {@link #selectProductDetailPage} 同一套三源 UNION ALL：表与筛选逐字取自
+     * {@code *_FROM} / {@code *_WHERE} 常量，只多一条 {@link #DETAIL_PRODUCT_ID_FILTER}
+     * 把范围收窄到当前页那几个产品——环比的分母必须和分子同口径，否则两个数不可比。</p>
+     *
+     * <p>不带 {@code DETAIL_NON_EMPTY_WHERE}：上月为 0 是合法基数（service 据此判
+     * {@code hasBase=false} 渲染黑色 0.00%），过滤掉反而分不清「上月是 0」和「查漏了」。</p>
+     *
+     * @param tenantId    租户
+     * @param storeId     门店 ID（可空，null = 全部门店合计）
+     * @param monthStart  区间首日（含）——环比场景传上月 1 日
+     * @param nextStart   区间次日（不含）——环比场景传本月 1 日
+     * @param belongTypes 该业态卡涵盖的 belong_type
+     * @param productIds  只统计这几个产品（非空，空列表会拼出非法 SQL，调用方负责短路）
+     * @return 产品 : 三个量，某产品该区间无任何记录时不出行（service 兜 0）
+     */
+    @Select("<script>"
+        + "SELECT g.productId AS productId, "
+        + "       SUM(g.demandQty) AS demandQty, "
+        + "       SUM(g.saleQty)   AS saleQty, "
+        + "       SUM(g.returnQty) AS returnQty "
+        + "  FROM ( "
+        + "        SELECT " + DETAIL_PRODUCT_KEYS + ", "
+        + "               COALESCE(SUM(d.demand_quantity), 0) AS demandQty, "
+        + "               0 AS saleQty, 0 AS returnQty "
+        + DEMAND_FROM
+        + DEMAND_WHERE
+        + DETAIL_PRODUCT_ID_FILTER
+        + DETAIL_PRODUCT_GROUP_BY
+        + "        UNION ALL "
+        + "        SELECT " + DETAIL_PRODUCT_KEYS + ", "
+        + "               0 AS demandQty, "
+        + "               COALESCE(SUM(l.sale_qty + l.gift_qty), 0) AS saleQty, "
+        + "               0 AS returnQty "
+        + SALE_FROM
+        + SALE_WHERE
+        + DETAIL_PRODUCT_ID_FILTER
+        + DETAIL_PRODUCT_GROUP_BY
+        + "        UNION ALL "
+        + "        SELECT " + DETAIL_PRODUCT_KEYS + ", "
+        + "               0 AS demandQty, 0 AS saleQty, "
+        + "               COALESCE(SUM(r.return_quantity), 0) AS returnQty "
+        + RETURN_FROM
+        + RETURN_WHERE
+        + DETAIL_PRODUCT_ID_FILTER
+        + DETAIL_PRODUCT_GROUP_BY
+        + "       ) g "
+        + " GROUP BY g.productId"
+        + "</script>")
+    List<StoreManageProductQtyRowVo> selectProductMonthSums(@Param("tenantId") String tenantId,
+                                                            @Param("storeId") Long storeId,
+                                                            @Param("monthStart") LocalDate monthStart,
+                                                            @Param("nextStart") LocalDate nextStart,
+                                                            @Param("belongTypes") List<String> belongTypes,
+                                                            @Param("productIds") List<Long> productIds);
 
 }

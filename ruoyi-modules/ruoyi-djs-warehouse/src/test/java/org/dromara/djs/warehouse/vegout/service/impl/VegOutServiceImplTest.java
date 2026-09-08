@@ -589,6 +589,29 @@ class VegOutServiceImplTest {
     }
 
     @Test
+    @DisplayName("row199：猪肉篮的耳号必须回写进出库流水，否则明细「耳号」列永远是空的")
+    void submit_writesEarNoFromStockBasket() {
+        LocationStock stock = mkStock(1L, 10L, null);
+        stock.setLocationId(70007L);                       // 猪肉鲜品库
+        stock.setEarNo("A0012");                           // 分割间建篮时写在篮子上的耳号
+        when(locationStockMapper.selectById(1L)).thenReturn(stock);
+        ProductInfo pork = mkVegProduct(10L);
+        pork.setBelongType("pork");
+        when(productInfoMapper.selectById(10L)).thenReturn(pork);
+        LocationInfo porkLoc = new LocationInfo();
+        porkLoc.setId(70007L);
+        porkLoc.setLocationCode("L0007");
+        when(locationInfoMapper.selectList(any())).thenReturn(java.util.List.of(porkLoc));
+
+        service.submit(mkBo("kitchen", 1L, "3.000"), true);
+
+        ArgumentCaptor<StockFlow> fc = ArgumentCaptor.forClass(StockFlow.class);
+        verify(stockFlowMapper).updateById(fc.capture());
+        // productOut 建的流水行不带耳号，这里不补 → 出库明细「耳号」列 100% 为空（线上实测 78/78 行 NULL）
+        assertThat(fc.getValue().getEarNo()).isEqualTo("A0012");
+    }
+
+    @Test
     @DisplayName("V6-R163：冻品库 L0002 进候选库位白名单（猪肉原材料的存放库，与鲜品库 L0007 同性质）")
     void candidateLocationWhitelistContainsFrozenStore() {
         service.listCandidates(null);
@@ -763,37 +786,45 @@ class VegOutServiceImplTest {
     }
 
     @Test
-    @DisplayName("row191 明细：耳号 / 地块两列天然互斥，缺的那一项统一兜 -（弹框与导出同一份）")
+    @DisplayName("row191/row199 明细：耳号兜 -，地块派生成 地块名 / 三期 / -（弹框与导出同一份）")
     void batchDetail_fillsEarNoAndPlotFallback() {
         VegOutDetailVo pork = mkDetail("五花肉", "kg", "7");
         pork.setEarNo("A0012");
         VegOutDetailVo veg = mkDetail("上海青", "kg", "12");
-        veg.setPlotCode("D01");
+        veg.setPlotName("A1东9号");
+        // 三期货没有真实地块（plotName 为空），只靠 third_phase 标识显示「三期」
+        VegOutDetailVo third = mkDetail("水果黄瓜", "kg", "1");
+        third.setThirdPhase(1);
         VegOutDetailVo dry = mkDetail("大米", "袋", "3");
 
         when(vegOutMapper.selectBatchDetail("0000006", null))
-            .thenReturn(new java.util.ArrayList<>(List.of(pork, veg, dry)));
+            .thenReturn(new java.util.ArrayList<>(List.of(pork, veg, third, dry)));
 
         List<VegOutDetailVo> rows = service.queryBatchDetail("0000006", null);
 
-        // 猪肉行有耳号没地块，果蔬行有地块没耳号，干货两样都没有
-        assertThat(rows).extracting(VegOutDetailVo::getEarNo).containsExactly("A0012", "-", "-");
-        assertThat(rows).extracting(VegOutDetailVo::getPlotCode).containsExactly("-", "D01", "-");
+        // 猪肉行有耳号没地块，果蔬行有地块没耳号，三期行显示「三期」，干货两样都没有
+        assertThat(rows).extracting(VegOutDetailVo::getEarNo).containsExactly("A0012", "-", "-", "-");
+        // 甲方 row199：地块列显示的是**地块名称**（与新增出库抽屉一致），不是 plot_code
+        assertThat(rows).extracting(VegOutDetailVo::getPlotLabel)
+            .containsExactly("-", "A1东9号", "三期", "-");
     }
 
     @Test
-    @DisplayName("row191 导出：耳号 / 地块与弹框读同一份兜底，不会一边 - 一边空白")
+    @DisplayName("row191/row199 导出：耳号 / 地块与弹框读同一份派生，不会一边 - 一边空白")
     void exportDetail_carriesEarNoAndPlot() {
         VegOutDetailVo pork = mkDetail("五花肉", "kg", "7");
         pork.setEarNo("A0012");
+        VegOutDetailVo third = mkDetail("水果黄瓜", "kg", "1");
+        third.setThirdPhase(1);
         when(vegOutMapper.selectBatchDetail("0000006", null))
-            .thenReturn(new java.util.ArrayList<>(List.of(pork)));
+            .thenReturn(new java.util.ArrayList<>(List.of(pork, third)));
 
         List<VegOutDetailVo> rows = service.queryBatchDetailForExport("0000006", null);
 
-        assertThat(rows).hasSize(1);
+        assertThat(rows).hasSize(2);
         assertThat(rows.get(0).getEarNo()).isEqualTo("A0012");
-        assertThat(rows.get(0).getPlotCode()).isEqualTo("-");
+        assertThat(rows.get(0).getPlotLabel()).isEqualTo("-");
+        assertThat(rows.get(1).getPlotLabel()).isEqualTo("三期");
     }
 
     @Test

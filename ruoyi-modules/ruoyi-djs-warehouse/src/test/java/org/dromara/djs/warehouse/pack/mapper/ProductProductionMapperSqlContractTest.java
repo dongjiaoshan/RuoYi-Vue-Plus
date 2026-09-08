@@ -52,6 +52,33 @@ class ProductProductionMapperSqlContractTest {
         assertThat(sql).doesNotContain("/ count(*) * 100");
     }
 
+    @Test
+    @DisplayName("row204/D-0048：到店量聚合只按 demand_id + is_delivery_check 收敛，不得掺 deliver_dest")
+    void arrivedQuantityHasNoDeliverDestFilter() throws Exception {
+        String sql = arrivedQuantitySql();
+
+        // 需求下单「产品明细」按同样两个条件下钻（ProductProductionServiceImpl#queryItemPageList 的
+        // byDemand + deliveryChecked 分支），两边条件相同，明细行的抵扣量之和才恒等于需求行的到店量。
+        assertThat(sql)
+            .contains("sum(pp.demand_deduct_qty)")
+            .contains("pp.is_delivery_check = 1")
+            .contains("group by pp.demand_id");
+        // 🔒 一旦有人给到店量加 deliver_dest 过滤（如"排掉仓库自用出库"），必须同步改明细那侧，
+        // 否则「到店量 100 / 明细只有 50」会重演（线上实证：需求 2089615514926686209）。
+        // D-0048 待甲方拍板前，两边都保持"不过滤"。
+        assertThat(sql).doesNotContain("deliver_dest");
+    }
+
+    private static String arrivedQuantitySql() throws Exception {
+        Method method = ProductProductionMapper.class.getMethod(
+            "selectArrivedQuantityByDemandIds", java.util.Collection.class);
+        Select select = method.getAnnotation(Select.class);
+        assertThat(select).as("ProductProductionMapper#selectArrivedQuantityByDemandIds 应带 @Select").isNotNull();
+        return String.join(" ", select.value())
+            .replaceAll("\\s+", " ")
+            .toLowerCase(Locale.ROOT);
+    }
+
     private static String productionGroupSql() throws Exception {
         Method method = ProductProductionMapper.class.getMethod(
             "selectProductionGroupList",
