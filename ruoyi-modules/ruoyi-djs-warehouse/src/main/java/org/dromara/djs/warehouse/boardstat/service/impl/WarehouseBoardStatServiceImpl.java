@@ -336,6 +336,9 @@ public class WarehouseBoardStatServiceImpl implements IWarehouseBoardStatService
         return result;
     }
 
+    /** 重量单位的统一展示字面（doc/12 §0：一律小写 kg）。 */
+    private static final String UNIT_KG = "kg";
+
     /**
      * 记录某个单位合并键的展示原文。
      *
@@ -357,6 +360,12 @@ public class WarehouseBoardStatServiceImpl implements IWarehouseBoardStatService
      * @param label  本行的展示原文
      */
     private static void putLabel(Map<String, String> labels, String key, String label) {
+        // doc/12 §0：重量单位一律显示小写 kg。某个业态只有 `Kg` 一种字面时，上面的「优先取全小写」
+        // 挑不出小写来，会把大写透传到页面上（实测 other 品类只有 2 个 Kg 产品，卡上就显示 Kg）。
+        if (UNIT_KG.equals(key)) {
+            labels.put(key, UNIT_KG);
+            return;
+        }
         labels.merge(key, label, (a, b) -> {
             if (a.equals(key) || b.equals(key)) {
                 return a.equals(key) ? a : b;
@@ -383,14 +392,19 @@ public class WarehouseBoardStatServiceImpl implements IWarehouseBoardStatService
      * 单位<b>展示原文</b>：trim 后原样（保留大小写）；空 / 全空白统一成「未标单位」。
      *
      * <p>合并按 {@link #unitKey} 的小写键，展示原文由 {@link #putLabel} 按品类隔离地确定性选出
-     * —— 键统一、字面不篡改。</p>
+     * —— 键统一、字面不篡改。唯一的例外是重量单位：doc/12 §0 要求一律显示小写 {@code kg}，
+     * 否则明细<b>行</b>（直接取 {@code product_unit} 原文）会显示 {@code Kg}、
+     * 而合计块走 {@link #putLabel} 显示 {@code kg}，同一页两种大小写。</p>
      *
      * @param unit 原始单位
      * @return 展示文案
      */
     private String unitLabel(String unit) {
         String u = unit == null ? "" : unit.trim();
-        return u.isEmpty() ? UNIT_UNKNOWN : u;
+        if (u.isEmpty()) {
+            return UNIT_UNKNOWN;
+        }
+        return UNIT_KG.equalsIgnoreCase(u) ? UNIT_KG : u;
     }
 
     /**

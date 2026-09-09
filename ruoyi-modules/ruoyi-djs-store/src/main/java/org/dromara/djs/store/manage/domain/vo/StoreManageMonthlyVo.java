@@ -32,7 +32,7 @@ public class StoreManageMonthlyVo implements Serializable {
     /** 果蔬品类数：当月到店的 vegetable 产品去重数。 */
     private Integer vegProductCount;
 
-    /** 其他品类数：当月到店的 egg + dry_good 产品去重数。 */
+    /** 剩余品类数：当月到店的 egg + dry_good + other 产品去重数（猪肉、果蔬之外剩下的全部业态，D-0046）。 */
     private Integer otherProductCount;
 
     /**

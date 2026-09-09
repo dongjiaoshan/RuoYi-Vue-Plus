@@ -59,11 +59,11 @@ import java.util.TreeSet;
  *       （代价是那一行的 -100% 环比看不到，甲方明确要的）。</li>
  * </ol>
  *
- * <h3>「其他产品」卡与顶部「其他品类数」不是一回事（D-0046）</h3>
- * <p>顶部小卡「其他品类数」= 到店的 <b>egg + dry_good</b> 去重产品数（甲方原话「其他品类数包含蛋类
- * 产品和干货产品」，见 {@link #OTHER_BELONG_TYPES}）；新增的<b>业态卡</b>「其他产品」= 产品档案
- * {@code belong_type='other'} 的三项统计。两者名字都带「其他」但口径不同，各按各的甲方口径走，
- * 不互相对齐。</p>
+ * <h3>顶部「剩余品类数」与「其他产品」卡（D-0046）</h3>
+ * <p>顶部第三个小卡「剩余品类数」= 到店的 <b>egg + dry_good + other</b> 去重产品数（甲方原话「红框里的
+ * 其他品类数包含：蛋类、干货和其他产品的数据统计」，见 {@link #REST_BELONG_TYPES}）——即猪肉、果蔬
+ * 两卡之外剩下的全部业态，三个小卡加起来正好覆盖 {@link #BELONG_TYPES}。下方<b>业态卡</b>「其他产品」
+ * 仍只统计 {@code belong_type='other'} 一类，是「剩余品类数」的一个分项。</p>
  *
  * <h3>单位分行</h3>
  * <p>同业态里 kg 与 份 不可相加，故按产品主数据 {@code product_unit} 分行。单位键统一小写归一
@@ -120,11 +120,11 @@ public class StoreManageServiceImpl implements IStoreManageService {
     private static final List<String> VEG_BELONG_TYPES;
 
     /**
-     * 顶部小卡「其他品类数」的分子 = 蛋类 + 干货（甲方原话「其他品类数包含蛋类产品和干货产品」）。
+     * 顶部小卡「剩余品类数」的分子 = 蛋类 + 干货 + 其他（甲方 D-0046：猪肉、果蔬之外剩下的全部业态）。
      *
-     * <p>⚠️ 与业态卡 {@link #CAT_OTHER}「其他产品」（belong_type = other）不是一回事，别互相套用。</p>
+     * <p>与 {@link #PORK_BELONG_TYPES} / {@link #VEG_BELONG_TYPES} 三者互斥且并集 = {@link #BELONG_TYPES}。</p>
      */
-    private static final List<String> OTHER_BELONG_TYPES = List.of("egg", "dry_good");
+    private static final List<String> REST_BELONG_TYPES = List.of("egg", "dry_good", CAT_OTHER);
 
     /** 产品主数据单位为空时的占位（product_unit 理论非空，防御性兜底）。 */
     private static final String UNIT_UNKNOWN = "未设单位";
@@ -191,7 +191,7 @@ public class StoreManageServiceImpl implements IStoreManageService {
             storeManageMapper.countArrivedProducts(tenantId, storeId, curStart, curEnd, BELONG_TYPES));
         vo.setPorkProductCount(sumCounts(arrived, PORK_BELONG_TYPES));
         vo.setVegProductCount(sumCounts(arrived, VEG_BELONG_TYPES));
-        vo.setOtherProductCount(sumCounts(arrived, OTHER_BELONG_TYPES));
+        vo.setOtherProductCount(sumCounts(arrived, REST_BELONG_TYPES));
 
         // 单位展示原文：category → (合并键 → 原文)，**按业态隔离**（见 putLabel）
         Map<String, Map<String, String>> unitLabels = new HashMap<>();
@@ -264,7 +264,7 @@ public class StoreManageServiceImpl implements IStoreManageService {
         Map<Long, StoreManageProductQtyRowVo> prev =
             prevMonthByProduct(tenantId, storeId, prevStart, curStart, catBelongTypes, rows);
         for (StoreManageDetailRowVo row : rows) {
-            row.setUnit(StringUtils.isBlank(row.getUnit()) ? UNIT_UNKNOWN : row.getUnit().trim());
+            row.setUnit(displayUnit(row.getUnit()));
             row.setProductSpec(StringUtils.isBlank(row.getProductSpec()) ? EMPTY_TEXT : row.getProductSpec().trim());
             row.setDemandQty(scaled(row.getDemandQty()));
             row.setSaleQty(scaled(row.getSaleQty()));
@@ -573,6 +573,26 @@ public class StoreManageServiceImpl implements IStoreManageService {
         return out;
     }
 
+    /** 重量单位的统一展示字面（doc/12 §0：一律小写 kg）。 */
+    private static final String UNIT_KG = "kg";
+
+    /**
+     * 单位展示字面：trim + 空值兜底 + 重量单位恒小写（doc/12 §0）。
+     *
+     * <p>明细<b>行</b>的单位直接来自 {@code product_unit} 原文，合计块的走 {@link #putLabel}。
+     * 两条路都得过这条规则，否则同一页会出现行显示 {@code Kg}、合计显示 {@code kg}。</p>
+     *
+     * @param raw 产品档案里的单位原文
+     * @return 展示字面
+     */
+    private static String displayUnit(String raw) {
+        if (StringUtils.isBlank(raw)) {
+            return UNIT_UNKNOWN;
+        }
+        String trimmed = raw.trim();
+        return UNIT_KG.equalsIgnoreCase(trimmed) ? UNIT_KG : trimmed;
+    }
+
     /**
      * 记录某个单位合并键的展示原文。
      *
@@ -596,6 +616,12 @@ public class StoreManageServiceImpl implements IStoreManageService {
      * @param label  本行的展示原文
      */
     private static void putLabel(Map<String, String> labels, String key, String label) {
+        // doc/12 §0：重量单位一律显示小写 kg。某个业态只有 `Kg` 一种字面时，上面的「优先取全小写」
+        // 挑不出小写来，会把大写透传到页面上（实测 other 品类只有 2 个 Kg 产品，卡上就显示 Kg）。
+        if (UNIT_KG.equals(key)) {
+            labels.put(key, UNIT_KG);
+            return;
+        }
         labels.merge(key, label, (a, b) -> {
             if (a.equals(key) || b.equals(key)) {
                 return a.equals(key) ? a : b;

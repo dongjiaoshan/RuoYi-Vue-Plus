@@ -216,13 +216,14 @@ class WarehouseBoardStatServiceImplTest {
     }
 
     /**
-     * 单位展示原文<b>按品类隔离</b>：`Kg` 只有 other 品类在用、其余品类都是小写 `kg`，
-     * 共享一份 label map 会让 other 卡显示别的品类先占下的 `kg`，而明细弹窗（只吃本卡的行）显示 `Kg`
-     * —— 同一个数两处字面不一样。这条钉住「卡片与弹窗对同一个单位显示同一个字面」。
+     * 重量单位恒显示小写 `kg`（doc/12 §0），且卡片与明细弹窗字面一致。
+     *
+     * <p>`Kg` 只有 other 品类的两个产品在用，「优先取全小写」在这张卡里挑不出小写来，
+     * 原样透传就会让同屏的猪肉卡显示 `kg`、其他产品卡显示 `Kg`。</p>
      */
     @Test
-    @DisplayName("单位字面按品类隔离：other 卡与它的入库明细弹窗都显示 Kg，不被别的品类的 kg 串味")
-    void getCategoryStat_unitLabelIsolatedPerCategory() {
+    @DisplayName("重量单位恒小写 kg：other 卡只有大写 Kg 也显示 kg，且入库明细弹窗字面一致")
+    void getCategoryStat_kgLabelAlwaysLowercase() {
         // pork 用小写 kg 且排在前面；other 自己只有大写 Kg
         List<CategoryUnitQtyRow> inbound = List.of(
             row("pork", "kg", "100.000"), row("other", "Kg", "23.800"));
@@ -235,8 +236,7 @@ class WarehouseBoardStatServiceImplTest {
         CategoryStatVo otherCard = vo.getCategories().stream()
             .filter(c -> "other".equals(c.getCategoryKey())).findFirst().orElseThrow();
         assertThat(otherCard.getRows()).hasSize(1);
-        // 卡片：不能被 pork 的小写 kg 串味
-        assertThat(otherCard.getRows().get(0).getUnit()).isEqualTo("Kg");
+        assertThat(otherCard.getRows().get(0).getUnit()).isEqualTo("kg");
 
         // 明细弹窗合计走同一条聚合（品类白名单收窄到本卡）→ 字面必须与卡片一致
         when(boardStatMapper.selectInboundByCategoryUnit(
@@ -244,7 +244,28 @@ class WarehouseBoardStatServiceImplTest {
             .thenReturn(List.of(row("other", "Kg", "23.800")));
         BoardStatDetailVo detail = service.getInboundDetail("2026-09", "other");
         assertThat(detail.getTotals()).hasSize(1);
-        assertThat(detail.getTotals().get(0).getUnit()).isEqualTo("Kg");
+        assertThat(detail.getTotals().get(0).getUnit()).isEqualTo("kg");
+    }
+
+    /**
+     * 非重量单位的展示原文仍<b>按品类隔离</b>：kg 走恒小写那条捷径，其余单位还是靠
+     * 「每张卡一份 label map + 优先取全小写」定字面。共享一份 map 会让后到的品类显示先到者的字面。
+     */
+    @Test
+    @DisplayName("非 kg 单位字面按品类隔离：other 卡显示自己的 Box，不被干货的 box 串味")
+    void getCategoryStat_nonKgUnitLabelIsolatedPerCategory() {
+        when(boardStatMapper.selectInboundByCategoryUnit(
+            eq("1001"), anyList(), anyList(), eq(CUR_FROM), eq(CUR_TO)))
+            .thenReturn(List.of(row("dry_good", "box", "3.000"), row("other", "Box", "7.000")));
+
+        WarehouseBoardStatVo vo = service.getCategoryStat("2026-09");
+
+        CategoryStatVo dryCard = vo.getCategories().stream()
+            .filter(c -> "dry_good".equals(c.getCategoryKey())).findFirst().orElseThrow();
+        CategoryStatVo otherCard = vo.getCategories().stream()
+            .filter(c -> "other".equals(c.getCategoryKey())).findFirst().orElseThrow();
+        assertThat(dryCard.getRows().get(0).getUnit()).isEqualTo("box");
+        assertThat(otherCard.getRows().get(0).getUnit()).isEqualTo("Box");
     }
 
     /**

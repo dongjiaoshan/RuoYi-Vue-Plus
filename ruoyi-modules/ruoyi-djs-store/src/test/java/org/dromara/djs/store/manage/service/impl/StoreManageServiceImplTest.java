@@ -57,7 +57,7 @@ import static org.mockito.Mockito.when;
  *   <li>全 0 单位行不出行（台账 sale/gift 全 0 会制造这种行）</li>
  *   <li>D-0045 卡级：当月三指标全 0 的业态卡整卡不下发；全被剔掉时 categories 为空列表</li>
  *   <li>D-0045 行级：上月有数、当月三项全 0 的单位行不出（与卡级同规则，-100% 环比一起放弃）</li>
- *   <li>D-0046：belong_type=other 的「其他产品」卡，与顶部「其他品类数」(egg+dry_good) 互不影响</li>
+ *   <li>D-0046：belong_type=other 出「其他产品」卡；顶部「剩余品类数」= egg+dry_good+other</li>
  *   <li>空库兜底：mapper 全返空 → categories 空列表、品类数全 0、不抛 NPE</li>
  *   <li>月份非法 → 400，不静默回退当月</li>
  *   <li>「明细」下钻（V6-R180）：只在退回源出现的产品也出行（另两量 0）、totals 复用业态卡三条聚合、
@@ -160,7 +160,7 @@ class StoreManageServiceImplTest {
         // 猪肉品类数 = pork(2) + white_bar(1)
         assertThat(vo.getPorkProductCount()).isEqualTo(3);
         assertThat(vo.getVegProductCount()).isEqualTo(5);
-        // 其他品类数 = egg(1) + dry_good(2)
+        // 剩余品类数 = egg(1) + dry_good(2)，本月无 other 到店
         assertThat(vo.getOtherProductCount()).isEqualTo(3);
 
         // D-0045：本月只有猪肉有数据，其余四张卡整卡不下发
@@ -339,7 +339,7 @@ class StoreManageServiceImplTest {
     }
 
     @Test
-    @DisplayName("D-0046：belong_type=other 出「其他产品」卡（排在干货之后），顶部「其他品类数」仍只数 egg+dry_good")
+    @DisplayName("D-0046：belong_type=other 出「其他产品」卡（排在干货之后），顶部「剩余品类数」数 egg+dry_good+other")
     void getMonthly_otherCategoryCard() {
         when(storeManageMapper.countArrivedProducts(eq("1001"), eq(null), eq(CUR_START), eq(CUR_END), any()))
             .thenReturn(List.of(count("egg", 1), count("dry_good", 2), count("other", 18)));
@@ -355,8 +355,8 @@ class StoreManageServiceImplTest {
 
         StoreManageMonthlyVo vo = service.getMonthly(null, MONTH);
 
-        // 其他品类数 = egg(1) + dry_good(2)：不含 other 的 18 —— 两个「其他」口径互不串
-        assertThat(vo.getOtherProductCount()).isEqualTo(3);
+        // 剩余品类数 = egg(1) + dry_good(2) + other(18)：猪肉、果蔬之外剩下的全部业态（甲方 2026-09-08 拍板）
+        assertThat(vo.getOtherProductCount()).isEqualTo(21);
         assertThat(vo.getCategories()).extracting(StoreManageCategoryVo::getCategoryKey)
             .containsExactly("dry_good", "other");
         StoreManageCategoryVo other = categoryOf(vo, "other");
