@@ -54,3 +54,5 @@ nbdist/
 .env
 .env.staging
 .env.prod
+# 运行期日志不进仓库（历史上误提交过 7 个，里面有明文 JWT）
+ruoyi-admin/logs/
