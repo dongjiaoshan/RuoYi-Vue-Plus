@@ -133,7 +133,7 @@ public class PigBurnRecordServiceImpl
     /**
      * 入库称重下限系数：入库重量必须 &gt; 出栏重量 × 该系数，否则判定为录错数并拒收。
      */
-    private static final BigDecimal MIN_ARRIVE_WEIGHT_RATIO = new BigDecimal("0.7");
+    private static final BigDecimal MIN_ARRIVE_WEIGHT_RATIO = new BigDecimal("0.5");
 
     /**
      * 库位启用态（{@code t_warehouse_location_info.location_status}）。
@@ -558,7 +558,7 @@ public class PigBurnRecordServiceImpl
         if (marketingWeight != null && bo.getArriveWeight().compareTo(marketingWeight) > 0) {
             throw new ServiceException("到场重量不能超过出栏重量");
         }
-        // 入库重量下限：必须 > 出栏重量 × 70%（燎毛去毛去杂的正常损耗上限，低于此判定为录错数）
+        // 入库重量下限：必须 > 出栏重量 × 50%（燎毛去毛去杂 + 去头的正常损耗上限，低于此判定为录错数）
         if (marketingWeight != null && marketingWeight.compareTo(BigDecimal.ZERO) > 0
             && bo.getArriveWeight().compareTo(marketingWeight.multiply(MIN_ARRIVE_WEIGHT_RATIO)) <= 0) {
             throw new ServiceException("请录入正确的入库重量");

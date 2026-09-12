@@ -519,11 +519,11 @@ class PigBurnRecordServiceImplTest {
     }
 
     @Test
-    @DisplayName("weighBurn: 入库重量 < 出栏重量×70% → 抛 请录入正确的入库重量，状态不推进")
+    @DisplayName("weighBurn: 入库重量 < 出栏重量×50% → 抛 请录入正确的入库重量，状态不推进")
     void testWeigh_BelowMinRatio() {
         when(barInfoMapper.selectById(BAR_ID)).thenReturn(sampleBarWithMarketWeight("pending_singe", "150.000"));
 
-        assertThatThrownBy(() -> service.weighBurn(weighBo("100.000")))
+        assertThatThrownBy(() -> service.weighBurn(weighBo("70.000")))
             .isInstanceOf(ServiceException.class)
             .hasMessageContaining("请录入正确的入库重量");
 
@@ -532,11 +532,11 @@ class PigBurnRecordServiceImplTest {
     }
 
     @Test
-    @DisplayName("weighBurn: 入库重量 == 出栏重量×70% 边界 → 拒（甲方口径是「必须大于」）")
+    @DisplayName("weighBurn: 入库重量 == 出栏重量×50% 边界 → 拒（甲方口径是「必须大于」）")
     void testWeigh_EqualMinRatioRejected() {
         when(barInfoMapper.selectById(BAR_ID)).thenReturn(sampleBarWithMarketWeight("pending_singe", "150.000"));
 
-        assertThatThrownBy(() -> service.weighBurn(weighBo("105.000")))
+        assertThatThrownBy(() -> service.weighBurn(weighBo("75.000")))
             .isInstanceOf(ServiceException.class)
             .hasMessageContaining("请录入正确的入库重量");
 
