@@ -39,8 +39,14 @@ public class DashboardAggregateJob {
     /** job 名（注册表 key + 日志名 + admin 重跑下拉项）。 */
     public static final String JOB_NAME = "breed-aggregate";
 
-    /** 每晚滚动重算的窗口天数（默认 45 = 上一个自然月 + 本月，覆盖常见补录跨度）。 */
-    @Value("${djs.schedule.breed-aggregate-rebuild-days:45}")
+    /**
+     * 每晚滚动重算的窗口天数（默认 60）。
+     *
+     * <p>为什么是 60 不是 30/45：① 要盖住「上一个自然月 + 本月」，月初跑时 45 天仍可能够不着上月月初；
+     * ② 日表从 2026-07-31 起有行，60 天窗口让**历史回补不需要任何手工调用** —— 上线后第一次定时跑
+     * 就把全部历史按业务日重算了一遍。代价是每晚多跑十几秒。</p>
+     */
+    @Value("${djs.schedule.breed-aggregate-rebuild-days:60}")
     private int rebuildDays;
 
     /**
@@ -56,8 +62,8 @@ public class DashboardAggregateJob {
      * 每日 0:00 触发，按业务日重算「最近 {@code rebuildDays} 天」滚动窗口（BRD-STAT-004）。
      *
      * <p>不只算 T-1 的原因：单据经常业务日 ≠ 录入日（9/8 出栏 9/9 上午才录、8 月有 8 窝分娩晚录），
-     * 只算 T-1 那些补录永远进不了它该在的那一天。窗口默认 45 天 = 上一个自然月 + 本月，
-     * 月初跑时也盖得住上月月初；日→月→年的顺序由 triggerAggregate 内部保证，逐日各自开事务。</p>
+     * 只算 T-1 那些补录永远进不了它该在的那一天。窗口默认 60 天（见 {@link #rebuildDays}）；
+     * 日→月→年的顺序由 triggerAggregateRange 内部保证，逐日各自开事务。</p>
      *
      * <p>cron 与窗口天数可经 {@code djs.schedule.breed-aggregate-cron} /
      * {@code djs.schedule.breed-aggregate-rebuild-days} 覆盖。</p>
