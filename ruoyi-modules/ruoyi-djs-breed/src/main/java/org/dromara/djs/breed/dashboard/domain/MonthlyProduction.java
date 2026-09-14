@@ -63,8 +63,11 @@ public class MonthlyProduction extends TenantEntity {
     // ---- row13 高级指标（BRD-STAT-001 扩列） ----
     /** 当月累计匹配配种窝数（每日 当天−114 配种母猪数累加）。 */
     private Integer mateLitterCount;
-    /** 分娩率%（当月分娩头数/累计匹配配种窝数×100）。 */
+    /** 分娩率%（本月到期批次的按期分娩头数/到期批次数×100，配种批次口径）。 */
     private BigDecimal farrowRate;
+    /** 分娩率分子：本月到期的配种批次中，在判定节点内分娩的头数。定时重算，ALWAYS 覆盖旧值。 */
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
+    private Integer cohortFarrowCount;
     /** 配种率%（当月配种母猪数/((Σ日生产母猪+Σ日230后备)/当月天数)×100）。 */
     private BigDecimal breedRate;
     /** 断配间隔（当月断到配天数之和/完成断到配母猪头数）。 */

@@ -594,46 +594,101 @@ public interface AggregateQueryMapper {
                                                      @Param("from") java.time.LocalDateTime from,
                                                      @Param("to") java.time.LocalDateTime to);
 
-    /**
-     * 期末存栏快照：按 pig_type + current_status 维度 COUNT（T-1 当日 current_status 当前快照）。
-     * 一次查回全部分组，service 端按口径汇总各期末项。
-     *
-     * @return 形如 [{pigType:'sow', cs:'PZ', cnt:5}, {pigType:'fattening', cs:'', cnt:30}, ...]
-     */
-    @Select("SELECT pig_type AS pigType, current_status AS cs, COUNT(*) AS cnt "
-        + " FROM t_farm_pig_info "
-        + " WHERE tenant_id = #{tenantId} "
-        + "   AND del_flag = '0' "
-        + "   AND current_status <> 'END' "
-        + " GROUP BY pig_type, current_status")
-    List<Map<String, Object>> snapshotByTypeStatus(@Param("tenantId") String tenantId);
-
     // ============================================================
-    //  猪只每日快照（流程性问题 row7）：期末存栏指标历史唯一可信源。
-    //  t_farm_pig_snapshot 是派生 append-only 快照表，无 MP 实体，全部走原生 SQL。
+    //  猪只每日快照（BRD-STAT-003）：期末存栏指标的唯一数据源。
+    //  t_farm_pig_snapshot 是派生表，无 MP 实体，全部走原生 SQL。
+    //  口径 = 「按业务时间重放出的 D 日收盘在群态」，不是「采集那一刻的主表态」——
+    //  所以补录（业务日 ≠ 录入日）不会让那一天的存栏错，重放多少次结果都一样。
     // ============================================================
 
-    /** 某日快照行数（>0 = 该日已固化，采集时跳过重采以保历史不变）。 */
+    /** 某日快照行数（重放后自检用：0 行说明该日没有任何在群猪，通常是数据异常）。 */
     @Select("SELECT COUNT(*) FROM t_farm_pig_snapshot "
         + " WHERE tenant_id = #{tenantId} AND snap_date = #{snapDate}")
     int countSnapshotOnDate(@Param("tenantId") String tenantId,
                             @Param("snapDate") java.time.LocalDate snapDate);
 
+    /** 清掉某日快照（重放前清场，与 {@link #rebuildPigSnapshotForDate} 成对调用）。 */
+    @org.apache.ibatis.annotations.Delete(
+        "DELETE FROM t_farm_pig_snapshot WHERE tenant_id = #{tenantId} AND snap_date = #{snapDate}")
+    int deletePigSnapshotOnDate(@Param("tenantId") String tenantId,
+                                @Param("snapDate") java.time.LocalDate snapDate);
+
     /**
-     * 固化某日收盘时点「在群有效猪只」（current_status&lt;&gt;'END'）到快照表。
-     * 从 t_farm_pig_info 实时态 INSERT..SELECT；tenant_id / snap_date 显式写入。
-     * 由 service 端 count==0 门控只采一次（幂等 + 免历史刷新）。
+     * 按业务时间重放某业务日 {@code snapDate} 收盘时的在群猪群，写入快照表。
+     *
+     * <h3>在群判定</h3>
+     * <ul>
+     *   <li>入群业务日 ≤ snapDate。场内出生（{@code mother_ear} 非空）取 {@code birth_date}，
+     *       其余取 {@code introduce_date}，两者缺失时互为兜底；</li>
+     *   <li>snapDate 收盘前没有终止事件（{@code t_farm_status_record.new_status='END'}，
+     *       覆盖出栏 / 死亡 / 淘汰），按 {@code change_time} 业务时间判。</li>
+     * </ul>
+     *
+     * <h3>繁殖态</h3>
+     * snapDate 收盘前最后一条状态记录的 {@code new_status}；一条都没有（如仔猪、或建档晚于该业务日）→ 空串。
+     *
+     * <h3>猪只类型</h3>
+     * 依次取：① snapDate 之后最早一条类型变更记录的 {@code old_pig_type}（TRANSFER 转育肥舍 /
+     * TO_FATTEN / 内部引种留种，BRD-STAT-002 落的史）；② 场内出生且现为育肥猪、而 snapDate 早于
+     * 该窝断奶业务日 → 当时还是仔猪（覆盖「断奶即翻育肥」这条不走状态机的批量 update 路径，
+     * 也覆盖「断奶当天才补建档案」的晚录仔猪）；③ 主表当前值。
      */
     @org.apache.ibatis.annotations.Insert(
         "INSERT INTO t_farm_pig_snapshot "
         + " (tenant_id, snap_date, pig_id, pig_type, current_status, birth_date) "
-        + "SELECT #{tenantId}, #{snapDate}, id, pig_type, current_status, birth_date "
-        + " FROM t_farm_pig_info "
-        + " WHERE tenant_id = #{tenantId} "
-        + "   AND del_flag = '0' "
-        + "   AND current_status <> 'END'")
-    int insertPigSnapshotFromLive(@Param("tenantId") String tenantId,
+        + "SELECT #{tenantId}, #{snapDate}, p.id, "
+        + "       COALESCE( "
+        + "         (SELECT c.old_pig_type FROM t_farm_status_record c "
+        + "           WHERE c.tenant_id = p.tenant_id AND c.pig_id = p.id "
+        + "             AND c.new_pig_type IS NOT NULL "
+        + "             AND c.change_time >= DATE_ADD(#{snapDate}, INTERVAL 1 DAY) "
+        + "           ORDER BY c.change_time ASC, c.id ASC LIMIT 1), "
+        + "         CASE WHEN p.pig_type = 'fattening' AND p.mother_ear IS NOT NULL "
+        + "                   AND w.wean_date IS NOT NULL AND #{snapDate} < w.wean_date "
+        + "              THEN 'piglet' END, "
+        + "         p.pig_type) AS pig_type, "
+        + "       COALESCE( "
+        + "         (SELECT s.new_status FROM t_farm_status_record s "
+        + "           WHERE s.tenant_id = p.tenant_id AND s.pig_id = p.id "
+        + "             AND s.change_time < DATE_ADD(#{snapDate}, INTERVAL 1 DAY) "
+        + "           ORDER BY s.change_time DESC, s.id DESC LIMIT 1), '') AS current_status, "
+        + "       p.birth_date "
+        + "  FROM t_farm_pig_info p "
+        + "  LEFT JOIN (SELECT pn.pig_id, MIN(DATE(wn.weaning_date)) AS wean_date "
+        + "               FROM t_farm_pig_pigletno pn "
+        + "               JOIN t_farm_pig_weaning wn ON wn.farrow_id = pn.farrow_id "
+        + "                                        AND wn.tenant_id = pn.tenant_id "
+        + "                                        AND wn.del_flag = '0' "
+        + "              WHERE pn.tenant_id = #{tenantId} AND pn.del_flag = '0' "
+        + "                AND pn.pig_id IS NOT NULL "
+        + "              GROUP BY pn.pig_id) w ON w.pig_id = p.id "
+        + " WHERE p.tenant_id = #{tenantId} "
+        + "   AND p.del_flag = '0' "
+        + "   AND CASE WHEN p.mother_ear IS NOT NULL THEN COALESCE(p.birth_date, p.introduce_date) "
+        + "            ELSE COALESCE(p.introduce_date, p.birth_date) END <= #{snapDate} "
+        + "   AND NOT EXISTS (SELECT 1 FROM t_farm_status_record e "
+        + "                    WHERE e.tenant_id = p.tenant_id AND e.pig_id = p.id "
+        + "                      AND e.new_status = 'END' "
+        + "                      AND e.change_time < DATE_ADD(#{snapDate}, INTERVAL 1 DAY))")
+    int rebuildPigSnapshotForDate(@Param("tenantId") String tenantId,
                                   @Param("snapDate") java.time.LocalDate snapDate);
+
+    /**
+     * 补录检测：最近录进来、但业务日落在重算窗口之外的状态事件（按业务日分组）。
+     *
+     * <p>窗口内的补录由每日滚动重算自动修正；窗口外的改不动，必须人工按日期补跑
+     * {@code POST /djs/breed/dashboard/trigger-aggregate?date=...}。这个查询让它可见，
+     * 否则漏计会像 8 月那样静悄悄躺着（分娩少 8 窝 81 头、返空流少 5 条都是这么来的）。</p>
+     */
+    @Select("SELECT DATE(change_time) AS bizDate, COUNT(*) AS cnt "
+        + " FROM t_farm_status_record "
+        + " WHERE tenant_id = #{tenantId} "
+        + "   AND create_time >= #{since} "
+        + "   AND change_time < #{windowStart} "
+        + " GROUP BY DATE(change_time) ORDER BY bizDate")
+    List<Map<String, Object>> findLateEntriesBeforeWindow(@Param("tenantId") String tenantId,
+                                                          @Param("windowStart") java.time.LocalDate windowStart,
+                                                          @Param("since") java.time.LocalDateTime since);
 
     /** 某日快照按 pig_type + current_status 分组 COUNT（fillEndStock 绑此，替代实时主表口径）。 */
     @Select("SELECT pig_type AS pigType, current_status AS cs, COUNT(*) AS cnt "
@@ -651,20 +706,6 @@ public interface AggregateQueryMapper {
         + "   AND DATEDIFF(#{snapDate}, birth_date) >= 230")
     int countReserve230OnSnapshot(@Param("tenantId") String tenantId,
                                   @Param("snapDate") java.time.LocalDate snapDate);
-
-    /**
-     * 期末 230 日龄以上后备母猪头数（pig_type='sow' 且 current_status='HB' 且 日龄≥230）。
-     * 日龄基准 = asOf（T-1）；birth_date 非空。
-     */
-    @Select("SELECT COUNT(*) FROM t_farm_pig_info "
-        + " WHERE tenant_id = #{tenantId} "
-        + "   AND del_flag = '0' "
-        + "   AND pig_type = 'sow' "
-        + "   AND current_status = 'HB' "
-        + "   AND birth_date IS NOT NULL "
-        + "   AND DATEDIFF(#{asOf}, birth_date) >= 230")
-    int countReserve230(@Param("tenantId") String tenantId,
-                        @Param("asOf") java.time.LocalDate asOf);
 
     /**
      * 当年配种批次「分娩头数」（落 statDate 当年）：当日分娩记录中，分娩日−114 天（≈配种日）落在
@@ -688,6 +729,192 @@ public interface AggregateQueryMapper {
                                  @Param("to") java.time.LocalDate to,
                                  @Param("batchYear") int batchYear,
                                  @Param("breedToFarrowDays") int breedToFarrowDays);
+
+    // ============================================================
+    //  配种批次（cohort）口径（BRD-STAT-COHORT-001）
+    //
+    //  甲方口径：配种满 judgeDays（sow_farrow_judge_deadline_days，119）仍未分娩，该头即定性为
+    //  「未分娩」并计入损失；分娩率 = 该批次按期分娩数 ÷ 该批次配种数。
+    //
+    //  批次归属：一条配种记录 = 一个批次单元，判定日 = breeding_date + judgeDays。
+    //  统计区间 [from, to) 收的是「判定日落在区间内」的批次 —— 等价写成
+    //  breeding_date ∈ [from − judgeDays, to − judgeDays)，可走 idx_breeding_date。
+    //  右开界 to 由调用方传 T-1 收口值，故落在区间内的批次天然都已到期，无需再比 NOW()。
+    //
+    //  与旧口径的区别：分子分母是**同一批猪**。旧口径分子取当期分娩窝数、分母取偏移窗配种数，
+    //  两者只是数量上近似；且分子走日表 Σ（日表 7/31 才起且不回补，实测漏 40%），
+    //  cohort 直扫底表，不受日表覆盖度影响。
+    // ============================================================
+
+    /** cohort 去向归集的公共 FROM/JOIN（判定日区间 + 每批次一行结局）。 */
+    String COHORT_FROM =
+          "   FROM t_farm_pig_breeding b "
+        + "   JOIN t_farm_pig_info p ON p.id = b.pig_id "
+        + "   LEFT JOIN (SELECT f0.breeding_id AS bid, "
+        + "                     MIN(DATEDIFF(f0.farrow_date, b0.breeding_date)) AS dd "
+        + "                FROM t_farm_pig_farrow f0 "
+        + "                JOIN t_farm_pig_breeding b0 ON b0.id = f0.breeding_id "
+        + "               WHERE f0.tenant_id = #{tenantId} AND f0.del_flag = '0' "
+        + "               GROUP BY f0.breeding_id) f ON f.bid = b.id "
+        + "   LEFT JOIN (SELECT related_breeding_id AS bid, "
+        + "                     SUBSTRING_INDEX(GROUP_CONCAT(abnormal_type "
+        + "                       ORDER BY abnormal_date, id), ',', 1) AS tp "
+        + "                FROM t_farm_pig_abnormal "
+        + "               WHERE tenant_id = #{tenantId} AND del_flag = '0' "
+        + "                 AND related_breeding_id IS NOT NULL "
+        + "               GROUP BY related_breeding_id) a ON a.bid = b.id "
+        + "  WHERE b.tenant_id = #{tenantId} "
+        + "    AND b.del_flag = '0' ";
+
+    /**
+     * 每个批次归一个结局（互斥，SUM 后各桶之和 = 批次总数）。
+     *
+     * <p>优先级 分娩 &gt; 返空流 &gt; 离群 &gt; 未定性：同一条配种记录正常只有一个结局；
+     * 「返情后复配再分娩」在底表是**另一条**配种记录，不会和本条抢桶。
+     * {@code FARROW_LATE}（超 judgeDays 才分娩）按甲方口径在判定时已算「未分娩」，
+     * 故不进分子，单列一桶便于对账追查。</p>
+     */
+    String COHORT_OUTCOME_CASE =
+          "     CASE WHEN f.dd IS NOT NULL AND f.dd <= #{judgeDays} THEN 'FARROW' "
+        + "          WHEN f.dd IS NOT NULL                          THEN 'FARROW_LATE' "
+        + "          WHEN a.tp = 'R' THEN 'RETURN' "
+        + "          WHEN a.tp = 'N' THEN 'EMPTY' "
+        + "          WHEN a.tp = 'A' THEN 'ABORT' "
+        + "          WHEN p.current_status = 'END' THEN 'GONE' "
+        + "          ELSE 'UNDECIDED' END ";
+
+    /**
+     * 判定日落在 [from, to) 的配种批次去向汇总（月/年分娩率的分子分母来源）。
+     *
+     * @param judgeDays 分娩判定节点天数（sow_farrow_judge_deadline_days，缺省 119）
+     * @return {bred, farrow, farrowLate, returnCount, emptyCount, abortCount, goneCount, undecided}
+     */
+    @Select("SELECT COUNT(*) AS bred, "
+        + "        COALESCE(SUM(outcome = 'FARROW'),0)      AS farrow, "
+        + "        COALESCE(SUM(outcome = 'FARROW_LATE'),0) AS farrowLate, "
+        + "        COALESCE(SUM(outcome = 'RETURN'),0)      AS returnCount, "
+        + "        COALESCE(SUM(outcome = 'EMPTY'),0)       AS emptyCount, "
+        + "        COALESCE(SUM(outcome = 'ABORT'),0)       AS abortCount, "
+        + "        COALESCE(SUM(outcome = 'GONE'),0)        AS goneCount, "
+        + "        COALESCE(SUM(outcome = 'UNDECIDED'),0)   AS undecided "
+        + "   FROM (SELECT " + COHORT_OUTCOME_CASE + " AS outcome "
+        + COHORT_FROM
+        + "    AND b.breeding_date >= DATE_SUB(#{from}, INTERVAL #{judgeDays} DAY) "
+        + "    AND b.breeding_date <  DATE_SUB(#{to},   INTERVAL #{judgeDays} DAY)) t")
+    Map<String, Object> selectCohortOutcome(@Param("tenantId") String tenantId,
+                                            @Param("from") java.time.LocalDate from,
+                                            @Param("to") java.time.LocalDate to,
+                                            @Param("judgeDays") int judgeDays);
+
+    /**
+     * 批次去向台账：按**配种月**分组，供甲方对账「这批配了多少 → 损失在哪 → 分娩多少」。
+     *
+     * <p>按配种月（而非判定月）分组是因为甲方就是这么问的（「8 月份分娩的猪往前推前期一共配种多少头」）。
+     * {@code pending} = 判定日还没到、结局未定，与 {@code undecided}（已到期却查不到任何记录，
+     * 需要现场补录定性）分开 —— 前者是正常在途，后者是待办。</p>
+     *
+     * @param asOf 判定基准日（传 T-1 收口值，与月/年统计口径一致）
+     */
+    @Select("SELECT DATE_FORMAT(bred_date, '%Y-%m') AS breedMonth, "
+        + "        COUNT(*) AS bred, "
+        + "        COALESCE(SUM(matured),0)                            AS matured, "
+        + "        COALESCE(SUM(matured AND outcome = 'FARROW'),0)      AS farrow, "
+        + "        COALESCE(SUM(matured AND outcome = 'FARROW_LATE'),0) AS farrowLate, "
+        + "        COALESCE(SUM(outcome = 'RETURN'),0)                 AS returnCount, "
+        + "        COALESCE(SUM(outcome = 'EMPTY'),0)                  AS emptyCount, "
+        + "        COALESCE(SUM(outcome = 'ABORT'),0)                  AS abortCount, "
+        + "        COALESCE(SUM(outcome = 'GONE'),0)                   AS goneCount, "
+        + "        COALESCE(SUM(matured AND outcome = 'UNDECIDED'),0)  AS undecided, "
+        + "        COALESCE(SUM(NOT matured AND outcome = 'UNDECIDED'),0) AS pending, "
+        + "        MIN(deadline) AS firstDeadline, MAX(deadline) AS lastDeadline "
+        + "   FROM (SELECT b.breeding_date AS bred_date, "
+        + "                DATE(DATE_ADD(b.breeding_date, INTERVAL #{judgeDays} DAY)) AS deadline, "
+        + "                DATE_ADD(b.breeding_date, INTERVAL #{judgeDays} DAY) <= #{asOf} AS matured, "
+        + COHORT_OUTCOME_CASE + " AS outcome "
+        + COHORT_FROM
+        + "    AND b.breeding_date >= #{from} "
+        + "    AND b.breeding_date <  #{to}) t "
+        + "  GROUP BY breedMonth ORDER BY breedMonth")
+    List<Map<String, Object>> selectCohortLedgerByBreedMonth(@Param("tenantId") String tenantId,
+                                                             @Param("from") java.time.LocalDate from,
+                                                             @Param("to") java.time.LocalDate to,
+                                                             @Param("judgeDays") int judgeDays,
+                                                             @Param("asOf") java.time.LocalDate asOf);
+
+    /**
+     * 已到期但查不到任何结局记录的批次明细（「超期未定性」待办清单）。
+     *
+     * <p>甲方原话「超过 119 天必须要系统内给这个猪定性是分娩了还是没分娩」—— 这些就是要现场去定性的。
+     * 不定性它们就一直挂在分娩率分母里无处归。</p>
+     */
+    @Select("SELECT b.id AS breedingId, b.ear_no AS earNo, DATE(b.breeding_date) AS breedingDate, "
+        + "        DATE(DATE_ADD(b.breeding_date, INTERVAL #{judgeDays} DAY)) AS deadline, "
+        + "        DATEDIFF(#{asOf}, DATE_ADD(b.breeding_date, INTERVAL #{judgeDays} DAY)) AS overdueDays, "
+        + "        b.parity, b.barn_name AS barnName, b.pen_name AS penName, p.current_status AS currentStatus "
+        + COHORT_FROM
+        + "    AND DATE_ADD(b.breeding_date, INTERVAL #{judgeDays} DAY) <= #{asOf} "
+        + "    AND f.dd IS NULL AND a.tp IS NULL AND p.current_status <> 'END' "
+        + "  ORDER BY b.breeding_date")
+    List<Map<String, Object>> selectOverdueUndecided(@Param("tenantId") String tenantId,
+                                                     @Param("judgeDays") int judgeDays,
+                                                     @Param("asOf") java.time.LocalDate asOf);
+
+    /**
+     * 断奶记录最早业务日（PSY 年化窗口的起点）。
+     *
+     * <p>PSY 分子是断奶仔猪数。断奶登记 2026-08 才开始用，若分母（母猪头日）取全年而分子只有两个月，
+     * 年化会把这个残缺比值再放大 365/N 倍。故窗口锚到「断奶数据可信起始日」，分子分母同区间。</p>
+     */
+    @Select("SELECT DATE(MIN(weaning_date)) FROM t_farm_pig_weaning "
+        + " WHERE tenant_id = #{tenantId} AND del_flag = '0' "
+        + "   AND weaning_date >= #{from} AND weaning_date < #{to}")
+    java.time.LocalDate selectMinWeaningDate(@Param("tenantId") String tenantId,
+                                             @Param("from") java.time.LocalDate from,
+                                             @Param("to") java.time.LocalDate to);
+
+    /**
+     * 产房损失：按窝配对该窝活仔数与该窝断奶数（{@code weaning.farrow_id} 关联），只统计已断奶的窝。
+     *
+     * <p>旧口径分子取 {@code t_farm_status_record} 里 pig_type='piglet' 的 DIE 事件，要求仔猪有个体档案；
+     * 哺乳期仔猪多数还没打耳标，分子恒 0。改为窝级配对后分子分母同属一批窝，不再跨 cohort 相减
+     * （Σ全期活仔 − Σ全期断奶 会把「已分娩但还没到断奶期」的窝算成损失）。</p>
+     *
+     * @return {liveBorn, weaned}
+     */
+    @Select("SELECT COALESCE(SUM(f.live_born),0) AS liveBorn, "
+        + "        COALESCE(SUM(w.weaned_count),0) AS weaned "
+        + "   FROM t_farm_pig_weaning w "
+        + "   JOIN t_farm_pig_farrow f ON f.id = w.farrow_id AND f.del_flag = '0' "
+        + "  WHERE w.tenant_id = #{tenantId} AND w.del_flag = '0' "
+        + "    AND w.weaning_date >= #{from} AND w.weaning_date < #{to}")
+    Map<String, Object> selectFarrowHouseLoss(@Param("tenantId") String tenantId,
+                                              @Param("from") java.time.LocalDate from,
+                                              @Param("to") java.time.LocalDate to);
+
+    /**
+     * 区间内断奶窝数（PSY 不再用，产房/窝均口径核对用）。
+     */
+    @Select("SELECT COUNT(*) FROM t_farm_pig_weaning "
+        + " WHERE tenant_id = #{tenantId} AND del_flag = '0' "
+        + "   AND weaning_date >= #{from} AND weaning_date < #{to}")
+    int countWeaningLitterInRange(@Param("tenantId") String tenantId,
+                                  @Param("from") java.time.LocalDate from,
+                                  @Param("to") java.time.LocalDate to);
+
+    /**
+     * 区间内 Σ日期末生产母猪头数（= 母猪头日，PSY / NPD 年化的分母）。
+     * 与 {@link #sumIndicatorRange} 的 sumEndProductionSow 同源，此处按任意区间单独取，
+     * 便于 PSY 用「断奶可信窗口」而非整年。
+     *
+     * @return {sowDays, dayRows}
+     */
+    @Select("SELECT COALESCE(SUM(end_production_sow_count),0) AS sowDays, COUNT(*) AS dayRows "
+        + "   FROM t_farm_indicator_record "
+        + "  WHERE tenant_id = #{tenantId} AND del_flag = '0' "
+        + "    AND stat_date >= #{from} AND stat_date < #{to}")
+    Map<String, Object> selectSowDaysInRange(@Param("tenantId") String tenantId,
+                                             @Param("from") java.time.LocalDate from,
+                                             @Param("to") java.time.LocalDate to);
 
     // ============================================================
     //  日表回读聚合 → 月/年（BRD-STAT-001）

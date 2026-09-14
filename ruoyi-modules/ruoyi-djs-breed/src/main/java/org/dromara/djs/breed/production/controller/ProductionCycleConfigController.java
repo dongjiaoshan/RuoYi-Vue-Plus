@@ -38,7 +38,7 @@ import java.util.Map;
  *
  * <p>A1 新增表单语义端点（非 list-CRUD）：</p>
  * <ul>
- *   <li>{@code GET /sow/get} + {@code POST /sow/save} —— 母猪生产配置 6 项（断奶-配种 / 返情-配种 /
+ *   <li>{@code GET /sow/get} + {@code POST /sow/save} —— 母猪生产配置各项（断奶-配种 / 返情-配种 /
  *       空怀-配种 / 流产-配种 / 配种-分娩 / 分娩-断奶），整数天数表单</li>
  *   <li>{@code GET /slaughter/get} + {@code POST /slaughter/save} —— 出栏配置（出栏日龄单值）</li>
  * </ul>
@@ -55,11 +55,11 @@ public class ProductionCycleConfigController extends BaseController {
     private final IProductionCycleConfigService cycleConfigService;
 
     /**
-     * 母猪生产配置 7 项业务键 → 业内默认值（首次落库填 default_value 用）。
+     * 母猪生产配置业务键 → 业内默认值（首次落库填 default_value 用）。
      * <p>注意：与旧 6 周期 key（gestation_days 等）独立，不替换、不删；新增。</p>
      */
     private static final Map<String, Integer> SOW_DEFAULTS = new LinkedHashMap<>();
-    /** 母猪生产配置 7 项业务键 → 说明（首次落库填 description 用）。 */
+    /** 母猪生产配置业务键 → 说明（首次落库填 description 用）。 */
     private static final Map<String, String> SOW_DESCRIPTIONS = new LinkedHashMap<>();
     /** 出栏配置业务键。 */
     private static final String SLAUGHTER_AGE_KEY = "slaughter_age_days";
@@ -94,8 +94,9 @@ public class ProductionCycleConfigController extends BaseController {
         SOW_DEFAULTS.put("sow_return_to_breed_days", 5);
         SOW_DEFAULTS.put("sow_empty_to_breed_days", 5);
         SOW_DEFAULTS.put("sow_abort_to_breed_days", 5);
-        SOW_DEFAULTS.put("sow_breed_to_farrow_days", 141);
+        SOW_DEFAULTS.put("sow_breed_to_farrow_days", 114);
         SOW_DEFAULTS.put("sow_farrow_to_wean_days", 25);
+        SOW_DEFAULTS.put("sow_farrow_judge_deadline_days", 119);
 
         SOW_DESCRIPTIONS.put("sow_reserve_to_breed_days", "后备到配种天数");
         SOW_DESCRIPTIONS.put("sow_wean_to_breed_days", "断奶到配种天数");
@@ -104,6 +105,7 @@ public class ProductionCycleConfigController extends BaseController {
         SOW_DESCRIPTIONS.put("sow_abort_to_breed_days", "流产到配种天数");
         SOW_DESCRIPTIONS.put("sow_breed_to_farrow_days", "配种到分娩天数");
         SOW_DESCRIPTIONS.put("sow_farrow_to_wean_days", "分娩到断奶天数");
+        SOW_DESCRIPTIONS.put("sow_farrow_judge_deadline_days", "分娩判定节点天数");
 
         MED_DEFAULTS.put(FATTEN_MED_MAX_AGE_KEY, FATTEN_MED_MAX_AGE_DEFAULT);
         MED_DEFAULTS.put(MED_PICK_USABLE_DAYS_KEY, MED_PICK_USABLE_DAYS_DEFAULT);
@@ -156,8 +158,8 @@ public class ProductionCycleConfigController extends BaseController {
     }
 
     /**
-     * 母猪生产配置：取 6 项生效值（custom 优先，无则 default 兜底）。
-     * <p>DB 缺某 key（首次未保存）→ 回落本类 {@link #SOW_DEFAULTS} 默认值，保证前端 6 格都有数。</p>
+     * 母猪生产配置：取 {@link #SOW_DEFAULTS} 各项生效值（custom 优先，无则 default 兜底）。
+     * <p>DB 缺某 key（首次未保存）→ 回落本类 {@link #SOW_DEFAULTS} 默认值，保证前端每格都有数。</p>
      */
     @SaCheckPermission("djs:breed:production-cycle:list")
     @GetMapping("/sow/get")
@@ -169,7 +171,7 @@ public class ProductionCycleConfigController extends BaseController {
     }
 
     /**
-     * 母猪生产配置：保存 6 项（按 key UPSERT custom_value）。
+     * 母猪生产配置：保存各项（按 key UPSERT custom_value）。
      * <p>只接受已声明的 6 个 key，未知 key 静默忽略（防越权写入任意 config）。</p>
      */
     @SaCheckPermission("djs:breed:production-cycle:edit")

@@ -23,6 +23,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
@@ -38,7 +39,9 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.atLeastOnce;
@@ -313,7 +316,7 @@ class DashboardServiceImplTest {
         when(aggregateQueryMapper.countAliveSows(anyString())).thenReturn(20);
         // BRD-STAT-001 新增链路 stub（无母猪 → sow_performance 不写；日表 existing null → insert）
         when(aggregateQueryMapper.selectAliveSows(anyString())).thenReturn(new ArrayList<>());
-        when(aggregateQueryMapper.snapshotByTypeStatus(anyString())).thenReturn(new ArrayList<>());
+        when(aggregateQueryMapper.snapshotByTypeStatusOnDate(anyString(), any())).thenReturn(new ArrayList<>());
         when(sowRecordMapper.selectOne(any())).thenReturn(null);
         when(monthlyProductionMapper.selectOne(any())).thenReturn(null);
         when(annualIndicatorMapper.selectOne(any())).thenReturn(null);
@@ -445,7 +448,7 @@ class DashboardServiceImplTest {
     @DisplayName("upsertFarmIndicator: 期末存栏快照按 pig_type+current_status 正确归类（生产/后备/非生产母猪 + 公/肥/仔）")
     void testUpsertFarmIndicatorEndStock() {
         // 期末快照：sow PZ=3(生产) / sow HB=2(后备) / sow KH=1(生产且非生产) / boar=4 / fattening=30 / piglet=20
-        when(aggregateQueryMapper.snapshotByTypeStatus(anyString())).thenReturn(List.of(
+        when(aggregateQueryMapper.snapshotByTypeStatusOnDate(anyString(), any())).thenReturn(List.of(
             snap("sow", "PZ", 3),
             snap("sow", "HB", 2),
             snap("sow", "KH", 1),
@@ -453,7 +456,7 @@ class DashboardServiceImplTest {
             snap("fattening", "", 30),
             snap("piglet", "", 20)
         ));
-        when(aggregateQueryMapper.countReserve230(anyString(), any())).thenReturn(1);
+        when(aggregateQueryMapper.countReserve230OnSnapshot(anyString(), any())).thenReturn(1);
         // 出栏聚合 stub：2 头 / 200kg / 背膘 90mm 共 2 头有背膘
         Map<String, Object> mkt = new LinkedHashMap<>();
         mkt.put("cnt", 2L);
@@ -537,7 +540,7 @@ class DashboardServiceImplTest {
             .thenReturn(new BigDecimal("62"));
         when(sowPerformanceMapper.selectOne(any())).thenReturn(null);
         // 让 trigger 其余路径不炸
-        when(aggregateQueryMapper.snapshotByTypeStatus(anyString())).thenReturn(new ArrayList<>());
+        when(aggregateQueryMapper.snapshotByTypeStatusOnDate(anyString(), any())).thenReturn(new ArrayList<>());
         when(farmIndicatorRecordMapper.selectOne(any())).thenReturn(null);
 
         service.triggerAggregate(LocalDate.of(2026, 6, 25));
@@ -578,6 +581,76 @@ class DashboardServiceImplTest {
     }
 
     // ============================================================
+    //  BRD-STAT-003 / 004 — 存栏按业务时间重放 + 滚动重算
+    // ============================================================
+
+    @Test
+    @DisplayName("triggerAggregate: 当日快照先删后按业务时间重放（不再「已有就跳过」冻结）")
+    void testSnapshotIsRebuiltNotFrozen() {
+        LocalDate d = LocalDate.of(2026, 9, 8);
+        stubMinimalAggregatePaths();
+
+        service.triggerAggregate(d);
+
+        // 先删后建：补录晚于原采集时点也能把那一天重新算对（9/8 出栏 4 头、存栏没减就是被「跳过重采」坑的）
+        verify(aggregateQueryMapper).deletePigSnapshotOnDate(anyString(), eq(d));
+        verify(aggregateQueryMapper).rebuildPigSnapshotForDate(anyString(), eq(d));
+        // 旧实现的 countSnapshotOnDate 门控已废：重放不看该日有没有旧快照
+        verify(aggregateQueryMapper, never()).countSnapshotOnDate(anyString(), any());
+    }
+
+    @Test
+    @DisplayName("fillEndStock: 该日无快照时期末存栏全 0，绝不回落实时主表（回落会把今天的猪群写进历史行）")
+    void testEndStockNeverFallsBackToLiveMaster() {
+        stubMinimalAggregatePaths();
+        when(aggregateQueryMapper.snapshotByTypeStatusOnDate(anyString(), any())).thenReturn(new ArrayList<>());
+
+        service.triggerAggregate(LocalDate.of(2026, 8, 1));
+
+        org.mockito.ArgumentCaptor<FarmIndicatorRecord> cap = org.mockito.ArgumentCaptor.forClass(FarmIndicatorRecord.class);
+        verify(farmIndicatorRecordMapper).insert(cap.capture());
+        FarmIndicatorRecord r = cap.getValue();
+        assertThat(r.getEndFatteningCount()).isZero();
+        assertThat(r.getEndPigletCount()).isZero();
+        assertThat(r.getEndProductionSowCount()).isZero();
+        assertThat(r.getEndReserveCount()).isZero();
+    }
+
+    @Test
+    @DisplayName("triggerAggregateRange: 区间非法 / 跨度超上限直接拒绝，不打 DB")
+    void testTriggerAggregateRangeGuards() {
+        assertThatThrownBy(() -> service.triggerAggregateRange(null, LocalDate.of(2026, 9, 13)))
+            .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> service.triggerAggregateRange(LocalDate.of(2026, 9, 13), LocalDate.of(2026, 9, 1)))
+            .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> service.triggerAggregateRange(LocalDate.of(2024, 1, 1), LocalDate.of(2026, 9, 13)))
+            .isInstanceOf(IllegalArgumentException.class);
+        verify(aggregateQueryMapper, never()).rebuildPigSnapshotForDate(anyString(), any());
+    }
+
+    /** triggerAggregate 全链路跑通所需的最小 stub（本节只关心快照 / 期末存栏，其余给空值不让它炸）。 */
+    private void stubMinimalAggregatePaths() {
+        Map<String, Object> mkt = new LinkedHashMap<>();
+        mkt.put("cnt", 0L);
+        mkt.put("weight", BigDecimal.ZERO);
+        mkt.put("backfatSum", BigDecimal.ZERO);
+        mkt.put("backfatCnt", 0L);
+        when(aggregateQueryMapper.aggregateMarketingForDay(anyString(), any(), any())).thenReturn(mkt);
+        Map<String, Object> wean = new LinkedHashMap<>();
+        wean.put("weanWeightSum", BigDecimal.ZERO);
+        wean.put("marketingWeightWeaned", BigDecimal.ZERO);
+        wean.put("feedDaysSum", 0L);
+        wean.put("growthDaysSum", 0L);
+        when(aggregateQueryMapper.aggregateMarketingWeanForDay(anyString(), any(), any())).thenReturn(wean);
+        when(aggregateQueryMapper.selectAliveSows(anyString())).thenReturn(new ArrayList<>());
+        when(aggregateQueryMapper.snapshotByTypeStatusOnDate(anyString(), any())).thenReturn(new ArrayList<>());
+        when(farmIndicatorRecordMapper.selectOne(any())).thenReturn(null);
+        when(sowRecordMapper.selectOne(any())).thenReturn(null);
+        when(monthlyProductionMapper.selectOne(any())).thenReturn(null);
+        when(annualIndicatorMapper.selectOne(any())).thenReturn(null);
+    }
+
+    // ============================================================
     //  test helpers
     // ============================================================
 
@@ -595,11 +668,240 @@ class DashboardServiceImplTest {
         return m;
     }
 
+    // ============================================================
+    //  BRD-STAT-COHORT-001：分娩率配种批次口径 + PSY 年化 + 产房损失率窝级配对
+    // ============================================================
+
+    @Test
+    @DisplayName("cohort: 判定节点读 sow_farrow_judge_deadline_days，配成 0 时回退 119（0 会让所有批次瞬间到期）")
+    void testFarrowJudgeDeadlineFallsBackOnZero() {
+        stubAggregateSkeleton();
+        when(productionCycleConfigService.getValue("sow_farrow_judge_deadline_days")).thenReturn(0);
+
+        service.triggerAggregate(LocalDate.of(2026, 9, 13));
+
+        verify(aggregateQueryMapper, atLeastOnce())
+            .selectCohortOutcome(anyString(), any(), any(), eq(119));
+        verify(aggregateQueryMapper, never())
+            .selectCohortOutcome(anyString(), any(), any(), eq(0));
+    }
+
+    @Test
+    @DisplayName("cohort: 判定节点取配置值（非 0 时不回退）")
+    void testFarrowJudgeDeadlineUsesConfiguredValue() {
+        stubAggregateSkeleton();
+        when(productionCycleConfigService.getValue("sow_farrow_judge_deadline_days")).thenReturn(117);
+
+        service.triggerAggregate(LocalDate.of(2026, 9, 13));
+
+        verify(aggregateQueryMapper, atLeastOnce())
+            .selectCohortOutcome(anyString(), any(), any(), eq(117));
+    }
+
+    @Test
+    @DisplayName("年度: 分娩率 = cohort 分子/分母（不再用 年分娩头数/全年配种次数）")
+    void testAnnualFarrowRateUsesCohort() {
+        stubAggregateSkeleton();
+        // 判定日落在本年且已到期的批次 35 头，其中按期分娩 34 头 → 97.14%
+        when(aggregateQueryMapper.selectCohortOutcome(anyString(), any(), any(), anyInt()))
+            .thenReturn(mapOfAll("bred", 35, "farrow", 34, "farrowLate", 0,
+                "returnCount", 0, "emptyCount", 0, "abortCount", 0, "goneCount", 1, "undecided", 0));
+        // 全年配种次数 199：旧口径会拿它当分母算出 17%，新口径不该再用它
+        when(aggregateQueryMapper.countBreedingInRange(anyString(), any(), any())).thenReturn(199);
+
+        service.triggerAggregate(LocalDate.of(2026, 9, 13));
+
+        ArgumentCaptor<AnnualIndicator> cap = ArgumentCaptor.forClass(AnnualIndicator.class);
+        verify(annualIndicatorMapper).insert(cap.capture());
+        AnnualIndicator a = cap.getValue();
+        assertThat(a.getCohortMaturedCount()).isEqualTo(35);
+        assertThat(a.getYearBatchFarrowCount()).isEqualTo(34);
+        assertThat(a.getYearFarrowRate()).isEqualByComparingTo("97.14");
+        // breeding_count 语义不变，仍是全年配种次数原始计数，只是不再参与分娩率
+        assertThat(a.getBreedingCount()).isEqualTo(199);
+    }
+
+    @Test
+    @DisplayName("年度: PSY = 区间断奶仔猪 × 365 / 母猪头日，窗口锚断奶记录最早业务日并落盘")
+    void testAnnualPsyAnnualizedOverWeaningWindow() {
+        stubAggregateSkeleton();
+        when(aggregateQueryMapper.selectMinWeaningDate(anyString(), any(), any()))
+            .thenReturn(LocalDate.of(2026, 8, 8));
+        when(aggregateQueryMapper.selectSowDaysInRange(anyString(), any(), any()))
+            .thenReturn(mapOf("sowDays", 5430, "dayRows", 37));
+        when(aggregateQueryMapper.sumWeanedInRange(anyString(), any(), any())).thenReturn(188);
+
+        service.triggerAggregate(LocalDate.of(2026, 9, 13));
+
+        ArgumentCaptor<AnnualIndicator> cap = ArgumentCaptor.forClass(AnnualIndicator.class);
+        verify(annualIndicatorMapper).insert(cap.capture());
+        AnnualIndicator a = cap.getValue();
+        // 188 × 365 / 5430 = 12.637
+        assertThat(a.getPsy()).isEqualByComparingTo("12.637");
+        assertThat(a.getPsyStatFrom()).isEqualTo(LocalDate.of(2026, 8, 8));
+        assertThat(a.getPsyStatDays()).isEqualTo(37);
+    }
+
+    @Test
+    @DisplayName("年度: 无断奶记录时 PSY 窗口回落年初，母猪头日为 0 则 PSY=0 不炸")
+    void testAnnualPsyZeroWhenNoSowDays() {
+        stubAggregateSkeleton();
+        when(aggregateQueryMapper.selectMinWeaningDate(anyString(), any(), any())).thenReturn(null);
+        when(aggregateQueryMapper.selectSowDaysInRange(anyString(), any(), any()))
+            .thenReturn(mapOf("sowDays", 0, "dayRows", 0));
+        when(aggregateQueryMapper.sumWeanedInRange(anyString(), any(), any())).thenReturn(0);
+
+        service.triggerAggregate(LocalDate.of(2026, 9, 13));
+
+        ArgumentCaptor<AnnualIndicator> cap = ArgumentCaptor.forClass(AnnualIndicator.class);
+        verify(annualIndicatorMapper).insert(cap.capture());
+        AnnualIndicator a = cap.getValue();
+        assertThat(a.getPsy()).isEqualByComparingTo("0");
+        assertThat(a.getPsyStatFrom()).isEqualTo(LocalDate.of(2026, 1, 1));
+    }
+
+    @Test
+    @DisplayName("年度: 平均非生产天数年化（区间值 × 365/已历天数）")
+    void testAnnualNpdAnnualized() {
+        stubAggregateSkeleton();
+        // Σ日非生产母猪 101，Σ日生产母猪 6409，已历天数 46 → 年均存栏 139.326
+        // 区间 NPD = 101/139.326 = 0.725 → 年化 ×365/46 = 5.753
+        when(aggregateQueryMapper.sumIndicatorRange(anyString(), any(), any()))
+            .thenReturn(mapOfAll("sumEndProductionSow", 6409, "sumEndNonprodSow", 101));
+        when(aggregateQueryMapper.countIndicatorDays(anyString(), any(), any())).thenReturn(46);
+
+        service.triggerAggregate(LocalDate.of(2026, 9, 13));
+
+        ArgumentCaptor<AnnualIndicator> cap = ArgumentCaptor.forClass(AnnualIndicator.class);
+        verify(annualIndicatorMapper).insert(cap.capture());
+        assertThat(cap.getValue().getAvgNpdDays()).isEqualByComparingTo("5.753");
+    }
+
+    @Test
+    @DisplayName("产房损失率: 按窝配对 (活仔−断奶)/活仔；断奶≥活仔 → 0 不出负值")
+    void testFarrowHouseLossRateByLitter() {
+        stubAggregateSkeleton();
+        when(aggregateQueryMapper.selectFarrowHouseLoss(anyString(), any(), any()))
+            .thenReturn(mapOf("liveBorn", 200, "weaned", 186));
+
+        service.triggerAggregate(LocalDate.of(2026, 9, 13));
+
+        ArgumentCaptor<AnnualIndicator> cap = ArgumentCaptor.forClass(AnnualIndicator.class);
+        verify(annualIndicatorMapper).insert(cap.capture());
+        // (200-186)/200 = 7.00%
+        assertThat(cap.getValue().getFarrowLossRate()).isEqualByComparingTo("7.00");
+    }
+
+    @Test
+    @DisplayName("产房损失率: 断奶数等于活仔数（现场照抄）→ 0.00%，不产生负损失")
+    void testFarrowHouseLossRateNonNegative() {
+        stubAggregateSkeleton();
+        when(aggregateQueryMapper.selectFarrowHouseLoss(anyString(), any(), any()))
+            .thenReturn(mapOf("liveBorn", 188, "weaned", 188));
+
+        service.triggerAggregate(LocalDate.of(2026, 9, 13));
+
+        ArgumentCaptor<AnnualIndicator> cap = ArgumentCaptor.forClass(AnnualIndicator.class);
+        verify(annualIndicatorMapper).insert(cap.capture());
+        assertThat(cap.getValue().getFarrowLossRate()).isEqualByComparingTo("0.00");
+    }
+
+    @Test
+    @DisplayName("月度: 分娩率分子分母来自同一批 cohort，并落 cohort_farrow_count / mate_litter_count")
+    void testMonthlyFarrowRateUsesCohort() {
+        stubAggregateSkeleton();
+        when(aggregateQueryMapper.selectCohortOutcome(anyString(), any(), any(), anyInt()))
+            .thenReturn(mapOfAll("bred", 15, "farrow", 14, "farrowLate", 0,
+                "returnCount", 1, "emptyCount", 0, "abortCount", 0, "goneCount", 0, "undecided", 0));
+
+        service.triggerAggregate(LocalDate.of(2026, 9, 13));
+
+        ArgumentCaptor<MonthlyProduction> cap = ArgumentCaptor.forClass(MonthlyProduction.class);
+        verify(monthlyProductionMapper).insert(cap.capture());
+        MonthlyProduction m = cap.getValue();
+        assertThat(m.getMateLitterCount()).isEqualTo(15);
+        assertThat(m.getCohortFarrowCount()).isEqualTo(14);
+        // 14/15 = 93.33%
+        assertThat(m.getFarrowRate()).isEqualByComparingTo("93.33");
+    }
+
+    @Test
+    @DisplayName("getCohortLedger: 各去向桶映射 + 分娩率按 farrow/matured 算（非 farrow/bred）")
+    void testGetCohortLedgerMapsBucketsAndRate() {
+        when(aggregateQueryMapper.selectCohortLedgerByBreedMonth(anyString(), any(), any(), anyInt(), any()))
+            .thenReturn(List.of(mapOfAll(
+                "breedMonth", "2026-07", "bred", 50, "matured", 11, "farrow", 9, "farrowLate", 1,
+                "returnCount", 9, "emptyCount", 0, "abortCount", 2, "goneCount", 0,
+                "undecided", 1, "pending", 28,
+                "firstDeadline", java.sql.Date.valueOf("2026-10-29"),
+                "lastDeadline", java.sql.Date.valueOf("2026-11-27"))));
+
+        List<org.dromara.djs.breed.dashboard.domain.vo.CohortLedgerVo> rows = service.getCohortLedger(2026);
+
+        assertThat(rows).hasSize(1);
+        var r = rows.get(0);
+        assertThat(r.getBreedMonth()).isEqualTo("2026-07");
+        assertThat(r.getBred()).isEqualTo(50);
+        assertThat(r.getMatured()).isEqualTo(11);
+        assertThat(r.getReturnCount()).isEqualTo(9);
+        assertThat(r.getAbortCount()).isEqualTo(2);
+        assertThat(r.getPending()).isEqualTo(28);
+        assertThat(r.getFirstDeadline()).isEqualTo(LocalDate.of(2026, 10, 29));
+        assertThat(r.getLastDeadline()).isEqualTo(LocalDate.of(2026, 11, 27));
+        // 分母是已到期数 11，不是配种数 50 —— 未到期的批次不该拉低分娩率
+        assertThat(r.getFarrowRate()).isEqualByComparingTo("81.82");
+    }
+
+    @Test
+    @DisplayName("listOverdueUndecided: 超期未定性清单字段映射")
+    void testListOverdueUndecidedMapsRows() {
+        when(aggregateQueryMapper.selectOverdueUndecided(anyString(), anyInt(), any()))
+            .thenReturn(List.of(mapOfAll(
+                "breedingId", 9323000000000067L, "earNo", "02-02-2-241112-002",
+                "breedingDate", java.sql.Date.valueOf("2026-04-07"),
+                "deadline", java.sql.Date.valueOf("2026-08-04"),
+                "overdueDays", 41, "parity", 3,
+                "barnName", "1号舍", "penName", "A3", "currentStatus", "PZ")));
+
+        List<org.dromara.djs.breed.dashboard.domain.vo.OverdueUndecidedVo> rows = service.listOverdueUndecided();
+
+        assertThat(rows).hasSize(1);
+        var r = rows.get(0);
+        assertThat(r.getBreedingId()).isEqualTo(9323000000000067L);
+        assertThat(r.getEarNo()).isEqualTo("02-02-2-241112-002");
+        assertThat(r.getBreedingDate()).isEqualTo(LocalDate.of(2026, 4, 7));
+        assertThat(r.getDeadline()).isEqualTo(LocalDate.of(2026, 8, 4));
+        assertThat(r.getOverdueDays()).isEqualTo(41);
+        assertThat(r.getCurrentStatus()).isEqualTo("PZ");
+    }
+
     private static Map<String, Object> mapOf(String k1, Object v1, String k2, Object v2) {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put(k1, v1);
         m.put(k2, v2);
         return m;
+    }
+
+    /** 交替 key/value 建 Map（cohort 桶多，两两重载不够用）。 */
+    private static Map<String, Object> mapOfAll(Object... kv) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        for (int i = 0; i + 1 < kv.length; i += 2) {
+            m.put(String.valueOf(kv[i]), kv[i + 1]);
+        }
+        return m;
+    }
+
+    /** triggerAggregate 跑通所需的最小 stub 集（各 upsert 的通用依赖）。 */
+    private void stubAggregateSkeleton() {
+        when(aggregateQueryMapper.countByLifecycle(anyString(), any())).thenReturn(new ArrayList<>());
+        when(aggregateQueryMapper.countStatusEventInRange(anyString(), any(), any(), any())).thenReturn(0);
+        when(aggregateQueryMapper.sumLiveBornInRange(anyString(), any(), any())).thenReturn(0);
+        when(aggregateQueryMapper.selectAliveSows(anyString())).thenReturn(new ArrayList<>());
+        when(aggregateQueryMapper.snapshotByTypeStatusOnDate(anyString(), any())).thenReturn(new ArrayList<>());
+        when(sowRecordMapper.selectOne(any())).thenReturn(null);
+        when(monthlyProductionMapper.selectOne(any())).thenReturn(null);
+        when(annualIndicatorMapper.selectOne(any())).thenReturn(null);
+        when(farmIndicatorRecordMapper.selectOne(any())).thenReturn(null);
     }
 
     private MonthlyProduction newMonth(YearMonth ym) {

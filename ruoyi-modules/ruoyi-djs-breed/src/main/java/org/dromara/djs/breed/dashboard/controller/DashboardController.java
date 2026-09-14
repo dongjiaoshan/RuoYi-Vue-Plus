@@ -7,6 +7,7 @@ import org.dromara.djs.breed.dashboard.domain.vo.Activity7dVo;
 import org.dromara.djs.breed.dashboard.domain.vo.AgeBucketVo;
 import org.dromara.djs.breed.dashboard.domain.vo.AnnualIndicatorVo;
 import org.dromara.djs.breed.dashboard.domain.vo.BreedingAnnualVo;
+import org.dromara.djs.breed.dashboard.domain.vo.CohortLedgerVo;
 import org.dromara.djs.breed.dashboard.domain.vo.DailyOverviewVo;
 import org.dromara.djs.breed.dashboard.domain.vo.FarmIndicatorRecordVo;
 import org.dromara.djs.breed.dashboard.domain.vo.FatteningTrendVo;
@@ -14,6 +15,7 @@ import org.dromara.djs.breed.dashboard.domain.vo.InventoryVo;
 import org.dromara.djs.breed.dashboard.domain.vo.MonthActivityVo;
 import org.dromara.djs.breed.dashboard.domain.vo.MonthlyComparisonVo;
 import org.dromara.djs.breed.dashboard.domain.vo.MonthlyProductionStatVo;
+import org.dromara.djs.breed.dashboard.domain.vo.OverdueUndecidedVo;
 import org.dromara.djs.breed.dashboard.service.IDashboardService;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -182,13 +184,41 @@ public class DashboardController {
     }
 
     /**
+     * 配种批次去向台账：按配种月列出「配了多少 → 分娩多少 / 返情空怀流产 / 离群 / 超期未定性 / 在途」。
+     *
+     * @param year 年份；null → 当前年
+     */
+    @SaCheckPermission("djs:breed:dashboard:annual")
+    @GetMapping("/cohort-ledger")
+    public R<List<CohortLedgerVo>> getCohortLedger(
+        @RequestParam(value = "year", required = false) Integer year) {
+        return R.ok(dashboardService.getCohortLedger(year));
+    }
+
+    /**
+     * 超期未定性母猪清单：配种已过判定日、既无分娩也无返空流记录、且仍在群，需现场补录定性。
+     */
+    @SaCheckPermission("djs:breed:dashboard:annual")
+    @GetMapping("/overdue-undecided")
+    public R<List<OverdueUndecidedVo>> listOverdueUndecided() {
+        return R.ok(dashboardService.listOverdueUndecided());
+    }
+
+    /**
      * 手动触发聚合（dev 调试用；prod 由 SnailJob 后台调度 cron(0 30 0 * * *) 调用本端点）。
+     *
+     * <p>不传 {@code from} = 只重算 {@code date} 那一天（默认昨天）；传 {@code from} = 按业务日
+     * 重算 {@code from}~{@code date} 整段（历史回补 / 补录修正走这个，逐日独立事务）。</p>
      */
     @SaCheckPermission("djs:breed:dashboard:aggregate")
     @PostMapping("/trigger-aggregate")
     public R<String> triggerAggregate(
         @RequestParam(value = "date", required = false)
-        @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date) {
-        return R.ok(dashboardService.triggerAggregate(date));
+        @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date,
+        @RequestParam(value = "from", required = false)
+        @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate from) {
+        return R.ok(from == null
+            ? dashboardService.triggerAggregate(date)
+            : dashboardService.triggerAggregateRange(from, date));
     }
 }

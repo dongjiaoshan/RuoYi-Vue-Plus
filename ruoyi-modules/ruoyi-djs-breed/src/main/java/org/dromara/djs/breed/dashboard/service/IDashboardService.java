@@ -4,6 +4,7 @@ import org.dromara.djs.breed.dashboard.domain.vo.Activity7dVo;
 import org.dromara.djs.breed.dashboard.domain.vo.AgeBucketVo;
 import org.dromara.djs.breed.dashboard.domain.vo.AnnualIndicatorVo;
 import org.dromara.djs.breed.dashboard.domain.vo.BreedingAnnualVo;
+import org.dromara.djs.breed.dashboard.domain.vo.CohortLedgerVo;
 import org.dromara.djs.breed.dashboard.domain.vo.DailyOverviewVo;
 import org.dromara.djs.breed.dashboard.domain.vo.FarmIndicatorRecordVo;
 import org.dromara.djs.breed.dashboard.domain.vo.FatteningTrendVo;
@@ -11,6 +12,7 @@ import org.dromara.djs.breed.dashboard.domain.vo.InventoryVo;
 import org.dromara.djs.breed.dashboard.domain.vo.MonthActivityVo;
 import org.dromara.djs.breed.dashboard.domain.vo.MonthlyComparisonVo;
 import org.dromara.djs.breed.dashboard.domain.vo.MonthlyProductionStatVo;
+import org.dromara.djs.breed.dashboard.domain.vo.OverdueUndecidedVo;
 
 import java.time.LocalDate;
 import java.util.List;
@@ -117,10 +119,43 @@ public interface IDashboardService {
     List<FarmIndicatorRecordVo> listIndicatorRecords(LocalDate from, LocalDate to);
 
     /**
+     * 配种批次去向台账（BRD-STAT-COHORT-001，只读，直扫底表不经日表）。
+     *
+     * <p>按配种月列出「配了多少 → 分娩多少 / 返情空怀流产各多少 / 离群多少 / 超期未定性多少 / 在途多少」，
+     * 供甲方逐批对账分娩率。</p>
+     *
+     * @param year 年份；null → 当前年
+     * @return 按配种月升序（该年无配种记录返空列表，不抛）
+     */
+    List<CohortLedgerVo> getCohortLedger(Integer year);
+
+    /**
+     * 超期未定性母猪清单（BRD-STAT-COHORT-001，只读）。
+     *
+     * <p>配种已过判定日、既无分娩也无返空流记录、且仍在群 —— 需现场补录定性。</p>
+     *
+     * @return 按配种日升序（无则返空列表，不抛）
+     */
+    List<OverdueUndecidedVo> listOverdueUndecided();
+
+    /**
      * 手动触发聚合（dev 调试用 / prod 由 SnailJob 调度）。
      *
      * @param targetDate 聚合日期（含），null → 昨天 T-1
      * @return 简单 status 描述（已写入的表清单）
      */
     String triggerAggregate(java.time.LocalDate targetDate);
+
+    /**
+     * 按业务日滚动重算一段日期（BRD-STAT-004）。
+     *
+     * <p>每天一个独立事务（逐日调 {@link #triggerAggregate}），单日失败只跳过那一天、不拖垮整段。
+     * 覆盖「业务日 ≠ 录入日」的补录：窗口内的补录每晚自动被重算吃进去，不用人盯。
+     * 跑完顺带扫一遍「业务日落在窗口之外的新补录」并告警 —— 那些只能人工按日期补跑。</p>
+     *
+     * @param from 起始业务日（含）
+     * @param to   结束业务日（含）；null → 昨天 T-1
+     * @return 简单 status 描述（成功/失败天数 + 窗口外补录提示）
+     */
+    String triggerAggregateRange(java.time.LocalDate from, java.time.LocalDate to);
 }

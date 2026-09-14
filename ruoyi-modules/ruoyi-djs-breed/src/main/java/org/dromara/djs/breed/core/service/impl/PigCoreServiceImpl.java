@@ -193,6 +193,13 @@ public class PigCoreServiceImpl implements IPigCoreService {
         record.setRelatedEventId(bo.getRelatedEventId());
         record.setChangeTime(withOperateClock(eventAt));
         record.setDurationDays(calcDurationDays(pig.getStatusStartedAt(), eventAt));
+        // 类型变更史（BRD-STAT-002）：期末存栏按业务时间重放要靠它反推「某业务日这头猪是什么类型」。
+        // 此刻 applyEventSideEffects 还没跑，pig.pigType 仍是变更前的值，取值时机正确。
+        String nextPigType = resolveNewPigType(bo);
+        if (nextPigType != null && !nextPigType.equals(pig.getPigType())) {
+            record.setOldPigType(pig.getPigType());
+            record.setNewPigType(nextPigType);
+        }
         statusRecordMapper.insert(record);
 
         // 2. 更新 pig（同事务，乐观锁强制）。Objects.equals 容空：空状态 NO_CHANGE 事件 to==from==null 不改。
@@ -368,6 +375,9 @@ public class PigCoreServiceImpl implements IPigCoreService {
         record.setNewStatus(newStatus);
         record.setEventType(PigStatusEvent.INTRO.name());
         record.setChangeTime(withOperateClock(statusStartedAt));
+        // 类型变更史（BRD-STAT-002）：内部引种把场内肥猪重定为种猪，是三条改 pig_type 的路径之一
+        record.setOldPigType(pig.getPigType());
+        record.setNewPigType(newType);
         if (oldStatus != null) {
             record.setDurationDays(calcDurationDays(pig.getStatusStartedAt(), now));
         }
@@ -1512,6 +1522,21 @@ public class PigCoreServiceImpl implements IPigCoreService {
     }
 
     /**
+     * 本次事件要把猪只类型改成什么（只有 TRANSFER / TO_FATTEN 的 {@code payload.newPigType} 带值）。
+     * 不改类型返回 null。{@link #fireEvent} 记类型变更史与 {@link #applyEventSideEffects} 写主表
+     * 取同一个来源，保证「记录里写的」与「主表落的」永远一致。
+     */
+    private static String resolveNewPigType(PigEventBo bo) {
+        PigStatusEvent ev = bo.getEventType();
+        if (ev != TRANSFER && ev != TO_FATTEN) {
+            return null;
+        }
+        Map<String, Object> payload = bo.getPayload();
+        Object v = payload == null ? null : payload.get("newPigType");
+        return v instanceof CharSequence cs && cs.length() > 0 ? cs.toString() : null;
+    }
+
+    /**
      * 事件副作用：胎次 / 配种关联 / 转栏 / 终止原因等。
      * 不在状态机内做以保持状态机为纯函数。
      */
@@ -1531,7 +1556,6 @@ public class PigCoreServiceImpl implements IPigCoreService {
             if (payload != null) {
                 Object newBarn = payload.get("newBarnId");
                 Object newPen = payload.get("newPenId");
-                Object newPigType = payload.get("newPigType");
                 if (newBarn != null) {
                     pig.setBarnId(parseLong(newBarn, "newBarnId"));
                 }
@@ -1540,8 +1564,9 @@ public class PigCoreServiceImpl implements IPigCoreService {
                 }
                 // D5 audit a-2：piglet 转育肥舍时 service 端将 payload.newPigType='fattening' 写入 pig.pig_type，
                 // 否则 BRD-DASH-001 育肥猪存栏统计漏算。
-                if (newPigType instanceof CharSequence cs && cs.length() > 0) {
-                    pig.setPigType(cs.toString());
+                String newPigType = resolveNewPigType(bo);
+                if (newPigType != null) {
+                    pig.setPigType(newPigType);
                 }
             }
         }

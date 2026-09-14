@@ -39,8 +39,19 @@ public class BreedingAnnualVo implements Serializable {
 
     // ---- ②年度繁殖与配种 ----
 
-    /** PSY = 年度断奶头数 / 当年平均母猪存栏 × 窝均断奶（年表 psy，头/母猪·年；R72 取代原「配种率」展示）。 */
+    /** PSY = 区间断奶仔猪总数 × 365 / 母猪头日（年表 psy，头/母猪·年；R72 取代原「配种率」展示）。 */
     private BigDecimal psy;
+
+    /**
+     * PSY / 平均非生产天数的年化统计区间起始日（年表 psy_stat_from，yyyy-MM-dd）。
+     *
+     * <p>断奶登记启用晚于年初时，区间会从首条断奶记录当日起算 —— 这两个指标是把该区间的值
+     * ×365/区间天数折成年度值，不标出区间就没法自证。前端据此渲染「统计区间 X 起 N 天年化」。</p>
+     */
+    private String psyStatFrom;
+
+    /** 年化统计区间天数（年表 psy_stat_days）。 */
+    private Integer psyStatDays;
 
     /** 配种率（年表 year_farrow_rate，百分比数值如 55.56；V1 与分娩率同口径）。 */
     private BigDecimal mateRate;

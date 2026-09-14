@@ -5,6 +5,7 @@ import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.dromara.common.core.utils.SpringUtils;
 import org.dromara.common.tenant.helper.TenantHelper;
 import org.dromara.djs.breed.dashboard.domain.AnnualIndicator;
 import org.dromara.djs.breed.dashboard.domain.FarmIndicatorRecord;
@@ -15,6 +16,7 @@ import org.dromara.djs.breed.dashboard.domain.vo.Activity7dVo;
 import org.dromara.djs.breed.dashboard.domain.vo.AgeBucketVo;
 import org.dromara.djs.breed.dashboard.domain.vo.AnnualIndicatorVo;
 import org.dromara.djs.breed.dashboard.domain.vo.BreedingAnnualVo;
+import org.dromara.djs.breed.dashboard.domain.vo.CohortLedgerVo;
 import org.dromara.djs.breed.dashboard.domain.vo.DailyOverviewVo;
 import org.dromara.djs.breed.dashboard.domain.vo.FarmIndicatorRecordVo;
 import org.dromara.djs.breed.dashboard.domain.vo.FatteningTrendVo;
@@ -22,6 +24,7 @@ import org.dromara.djs.breed.dashboard.domain.vo.InventoryVo;
 import org.dromara.djs.breed.dashboard.domain.vo.MonthActivityVo;
 import org.dromara.djs.breed.dashboard.domain.vo.MonthlyComparisonVo;
 import org.dromara.djs.breed.dashboard.domain.vo.MonthlyProductionStatVo;
+import org.dromara.djs.breed.dashboard.domain.vo.OverdueUndecidedVo;
 import org.dromara.djs.breed.dashboard.mapper.AggregateQueryMapper;
 import org.dromara.djs.breed.dashboard.mapper.AnnualIndicatorMapper;
 import org.dromara.djs.breed.dashboard.mapper.FarmIndicatorRecordMapper;
@@ -40,12 +43,17 @@ import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.YearMonth;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * 养殖 dashboard 聚合查询 + 聚合写入实现（BRD-DASH-001）。
@@ -101,10 +109,32 @@ public class DashboardServiceImpl implements IDashboardService {
     /** 配种→分娩天数缺省值（配置 key 缺失时 fallback）。 */
     private static final int DEFAULT_BREED_TO_FARROW_DAYS = 114;
 
+    /** 分娩判定节点配置键（BRD-STAT-COHORT-001）。 */
+    private static final String CONFIG_KEY_FARROW_JUDGE_DEADLINE = "sow_farrow_judge_deadline_days";
+    private static final int DEFAULT_FARROW_JUDGE_DEADLINE_DAYS = 119;
+    /** 年化乘数分子（PSY / 平均非生产天数按「头/母猪·年」「天/年」口径展示）。 */
+    private static final BigDecimal DAYS_PER_YEAR = new BigDecimal("365");
+
     /** 取配种→分娩天数：读 {@code sow_breed_to_farrow_days}，缺则回退 114。 */
     private int breedToFarrowDays() {
         Integer d = productionCycleConfigService.getValue(CONFIG_KEY_BREED_TO_FARROW);
         return d != null ? d : DEFAULT_BREED_TO_FARROW_DAYS;
+    }
+
+    /**
+     * 取分娩判定节点天数：读 {@code sow_farrow_judge_deadline_days}，缺或非正回退 119。
+     *
+     * <p>与 {@link #breedToFarrowDays()} 是两回事：那个是 mp 分娩板块的可选门（配种满 N 天才进
+     * 录入列表），这个是统计判定节点（配种满 N 天仍未分娩即定性为未分娩、计入损失）。
+     * 甲方口径：正常妊娠 114-116 天，判定节点 119 天。</p>
+     *
+     * <p>非正值一律回退：{@code ProductionCycleConfig#effectiveValue} 把显式 0 当有效自定义值，
+     * 而 admin「母猪生产配置」表单保存时对未填字段会写回 0；判定节点取 0 会让所有批次瞬间到期，
+     * 分娩率直接塌成 0。0 天对判定节点无业务含义 = 未定制。</p>
+     */
+    private int farrowJudgeDeadlineDays() {
+        Integer d = productionCycleConfigService.getValue(CONFIG_KEY_FARROW_JUDGE_DEADLINE);
+        return d != null && d > 0 ? d : DEFAULT_FARROW_JUDGE_DEADLINE_DAYS;
     }
 
     // ============================================================
@@ -510,6 +540,7 @@ public class DashboardServiceImpl implements IDashboardService {
             vo.setAvgLiveBornPerLitter(BigDecimal.ZERO);
             vo.setAvgWeanedPerLitter(BigDecimal.ZERO);
             vo.setFarrowingLossRate(BigDecimal.ZERO);
+            vo.setPsyStatDays(0);
             return vo;
         }
         // ②年度繁殖与配种：以年表 t_farm_year_production 落盘值为权威源（甲方口径，取代旧 live 实时算）。
@@ -517,6 +548,8 @@ public class DashboardServiceImpl implements IDashboardService {
         BigDecimal farrowRate = bdZero(ai.getYearFarrowRate());
         // R72：年度繁殖卡首格由「配种率」改「PSY」，取年表 psy（头/母猪·年）。mateRate 仍保留兼容不再前端展示。
         vo.setPsy(bdZero(ai.getPsy()));
+        vo.setPsyStatFrom(ai.getPsyStatFrom() == null ? null : ai.getPsyStatFrom().toString());
+        vo.setPsyStatDays(zeroIfNull(ai.getPsyStatDays()));
         vo.setMateRate(farrowRate);
         vo.setFarrowRate(farrowRate);
         vo.setWeanMateInterval(bdZero(ai.getWeanBreedInterval()));
@@ -874,6 +907,29 @@ public class DashboardServiceImpl implements IDashboardService {
         return v instanceof Number n ? n.intValue() : 0;
     }
 
+    /**
+     * Map 取日期值（缺省 null）。
+     *
+     * <p>DATE 列在 Map 结果里按驱动/类型处理器不同可能是 {@link LocalDate}、{@link java.sql.Date}
+     * 或 {@link java.sql.Timestamp}，三种都收。</p>
+     */
+    private static LocalDate mapDate(Map<String, Object> m, String key) {
+        if (m == null) {
+            return null;
+        }
+        Object v = m.get(key);
+        if (v instanceof LocalDate d) {
+            return d;
+        }
+        if (v instanceof java.sql.Date d) {
+            return d.toLocalDate();
+        }
+        if (v instanceof java.sql.Timestamp t) {
+            return t.toLocalDateTime().toLocalDate();
+        }
+        return null;
+    }
+
     /** Map 取 BigDecimal 值（缺省 0）。 */
     private static BigDecimal mapBd(Map<String, Object> m, String key) {
         if (m == null) {
@@ -898,6 +954,34 @@ public class DashboardServiceImpl implements IDashboardService {
             return BigDecimal.ZERO;
         }
         return num.divide(new BigDecimal(denom), 6, RoundingMode.HALF_UP);
+    }
+
+    /**
+     * 产房损失率% = (Σ该批窝活仔 − Σ该批窝断奶) / Σ该批窝活仔 × 100。
+     *
+     * <p>断奶数大于活仔数（数据异常）时按 0 处理，不产出负损失率。</p>
+     */
+    private static BigDecimal farrowHouseLossRate(Map<String, Object> loss) {
+        int liveBorn = mapInt(loss, "liveBorn");
+        int weaned = mapInt(loss, "weaned");
+        if (liveBorn <= 0 || weaned >= liveBorn) {
+            return BigDecimal.ZERO;
+        }
+        return pct(ratio(liveBorn - weaned, liveBorn));
+    }
+
+    /**
+     * 年化：把「统计区间内的量」折成「每年」。{@code statDays} 非正时原样返回（不放大噪声）。
+     *
+     * <p>PSY 定义是「每头母猪每年提供的断奶仔猪数」、平均非生产天数是「天/年」，
+     * 而区间内算出来的是「每 statDays 天」的值，挂「年度」标题展示必须乘 365/statDays。</p>
+     */
+    private static BigDecimal annualize(BigDecimal perWindowValue, int statDays) {
+        if (perWindowValue == null || perWindowValue.signum() == 0 || statDays <= 0) {
+            return perWindowValue == null ? BigDecimal.ZERO : perWindowValue;
+        }
+        return scale3(perWindowValue.multiply(DAYS_PER_YEAR)
+            .divide(new BigDecimal(statDays), 6, RoundingMode.HALF_UP));
     }
 
     /** 3 位小数（重量 / 率 / 天数落库统一精度）。 */
@@ -933,6 +1017,60 @@ public class DashboardServiceImpl implements IDashboardService {
         return farmIndicatorRecordMapper.selectVoList(q);
     }
 
+    @Override
+    public List<CohortLedgerVo> getCohortLedger(Integer year) {
+        String tenantId = currentTenant();
+        int y = year == null ? LocalDate.now().getYear() : year;
+        LocalDate from = LocalDate.of(y, 1, 1);
+        LocalDate to = LocalDate.of(y + 1, 1, 1);
+        // 判定基准日 = T-1（与月/年指标同口径，不把今天算进来）
+        LocalDate asOf = LocalDate.now().minusDays(1);
+        List<CohortLedgerVo> rows = new ArrayList<>();
+        for (Map<String, Object> r : aggregateQueryMapper.selectCohortLedgerByBreedMonth(
+                tenantId, from, to, farrowJudgeDeadlineDays(), asOf)) {
+            CohortLedgerVo vo = new CohortLedgerVo();
+            vo.setBreedMonth(Objects.toString(r.get("breedMonth"), ""));
+            vo.setBred(mapInt(r, "bred"));
+            vo.setMatured(mapInt(r, "matured"));
+            vo.setFarrow(mapInt(r, "farrow"));
+            vo.setFarrowLate(mapInt(r, "farrowLate"));
+            vo.setReturnCount(mapInt(r, "returnCount"));
+            vo.setEmptyCount(mapInt(r, "emptyCount"));
+            vo.setAbortCount(mapInt(r, "abortCount"));
+            vo.setGoneCount(mapInt(r, "goneCount"));
+            vo.setUndecided(mapInt(r, "undecided"));
+            vo.setPending(mapInt(r, "pending"));
+            vo.setFirstDeadline(mapDate(r, "firstDeadline"));
+            vo.setLastDeadline(mapDate(r, "lastDeadline"));
+            vo.setFarrowRate(pct(ratio(vo.getFarrow(), vo.getMatured())));
+            rows.add(vo);
+        }
+        return rows;
+    }
+
+    @Override
+    public List<OverdueUndecidedVo> listOverdueUndecided() {
+        String tenantId = currentTenant();
+        LocalDate asOf = LocalDate.now().minusDays(1);
+        List<OverdueUndecidedVo> rows = new ArrayList<>();
+        for (Map<String, Object> r : aggregateQueryMapper.selectOverdueUndecided(
+                tenantId, farrowJudgeDeadlineDays(), asOf)) {
+            OverdueUndecidedVo vo = new OverdueUndecidedVo();
+            Object bid = r.get("breedingId");
+            vo.setBreedingId(bid instanceof Number n ? n.longValue() : null);
+            vo.setEarNo(Objects.toString(r.get("earNo"), null));
+            vo.setBreedingDate(mapDate(r, "breedingDate"));
+            vo.setDeadline(mapDate(r, "deadline"));
+            vo.setOverdueDays(mapInt(r, "overdueDays"));
+            vo.setParity(mapInt(r, "parity"));
+            vo.setBarnName(Objects.toString(r.get("barnName"), null));
+            vo.setPenName(Objects.toString(r.get("penName"), null));
+            vo.setCurrentStatus(Objects.toString(r.get("currentStatus"), null));
+            rows.add(vo);
+        }
+        return rows;
+    }
+
     // ============================================================
     //  Write end — aggregate job
     // ============================================================
@@ -946,21 +1084,109 @@ public class DashboardServiceImpl implements IDashboardService {
         String tenantId = currentTenant();
         log.info("[DashboardAggregate] start tenant={} date={}", tenantId, targetDate);
 
-        // row7：先固化当日猪只快照（期末存栏指标历史唯一可信源），再落日表——
-        // upsertFarmIndicator 的 fillEndStock 绑当日快照，故快照必须先于日表写。
-        captureDailyPigSnapshot(tenantId, targetDate);
-
-        // 顺序：日表（farm_indicator + sow_record）→ 母猪性能 → 月 → 年。
-        // 月/年高级指标从已落盘的 farm_indicator 日表 Σ 回读，故日表必须先写。
-        upsertFarmIndicator(tenantId, targetDate);
-        upsertSowRecord(tenantId, targetDate);
-        upsertSowPerformance(tenantId, targetDate);
-        upsertMonthlyProduction(tenantId, YearMonth.from(targetDate));
-        upsertAnnualIndicator(tenantId, (short) targetDate.getYear());
+        aggregateDay(tenantId, targetDate);
+        aggregateRollups(tenantId, targetDate, List.of(YearMonth.from(targetDate)), List.of((short) targetDate.getYear()));
 
         log.info("[DashboardAggregate] done tenant={} date={}", tenantId, targetDate);
         return String.format("ok | tenant=%s | date=%s | tables=[indicator_record, sow_record, sow_performance, monthly_production, annual_indicator]",
             tenantId, targetDate);
+    }
+
+    /**
+     * 单业务日重算：快照重放 → 日表 → 母猪日记录。
+     *
+     * <p>滚动窗口逐日调用本方法（经 AOP 代理 → 每天一个独立事务），某天炸了不回滚已算好的其它天。
+     * public 是为了让代理能调到；不进 {@link IDashboardService} 接口，外部入口只有
+     * {@link #triggerAggregate} / {@link #triggerAggregateRange} 两个。</p>
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public void aggregateDay(String tenantId, LocalDate date) {
+        // BRD-STAT-003：先按业务时间重放当日猪群快照（期末存栏 + 母猪日分布的唯一数据源），再落日表——
+        // upsertFarmIndicator / upsertSowRecord 都绑当日快照，故快照必须先写。
+        rebuildPigSnapshot(tenantId, date);
+        upsertFarmIndicator(tenantId, date);
+        upsertSowRecord(tenantId, date);
+    }
+
+    /**
+     * 跨日汇总：母猪性能 + 月表 + 年表。
+     *
+     * <p>这三样与「具体是哪一天」无关（母猪性能是当前累计、月/年是 Σ 日表），所以整段窗口只跑一次，
+     * 不跟着 45 天循环重复 45 遍。月/年从已落盘的日表 Σ 回读，故必须在 {@link #aggregateDay} 之后。</p>
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public void aggregateRollups(String tenantId, LocalDate asOf,
+                                 Collection<YearMonth> months, Collection<Short> years) {
+        upsertSowPerformance(tenantId, asOf);
+        for (YearMonth m : months) {
+            upsertMonthlyProduction(tenantId, m);
+        }
+        for (Short y : years) {
+            upsertAnnualIndicator(tenantId, y);
+        }
+    }
+
+    /** 滚动重算跨度上限（天）：防手滑传个 2020-01-01 把库跑穿。历史一次性回补分段跑。 */
+    private static final int MAX_REBUILD_SPAN_DAYS = 400;
+
+    /** 窗口外补录的回看范围（天）：只报「最近这些天才录进来的」，老账不反复刷屏。 */
+    private static final int LATE_ENTRY_LOOKBACK_DAYS = 7;
+
+    @Override
+    public String triggerAggregateRange(LocalDate from, LocalDate to) {
+        LocalDate end = to == null ? LocalDate.now().minusDays(1) : to;
+        if (from == null || from.isAfter(end)) {
+            throw new IllegalArgumentException("重算区间非法：from=" + from + " to=" + end);
+        }
+        long span = ChronoUnit.DAYS.between(from, end) + 1;
+        if (span > MAX_REBUILD_SPAN_DAYS) {
+            throw new IllegalArgumentException("重算区间过长（" + span + " 天 > " + MAX_REBUILD_SPAN_DAYS + "），请分段跑");
+        }
+        String tenantId = currentTenant();
+        // 走代理调自己：逐日各自开事务，某天炸了不回滚已经算好的其它天。
+        DashboardServiceImpl self = SpringUtils.getAopProxy(this);
+        int ok = 0;
+        List<String> failed = new ArrayList<>();
+        Set<YearMonth> months = new LinkedHashSet<>();
+        Set<Short> years = new LinkedHashSet<>();
+        for (LocalDate d = from; !d.isAfter(end); d = d.plusDays(1)) {
+            months.add(YearMonth.from(d));
+            years.add((short) d.getYear());
+            try {
+                self.aggregateDay(tenantId, d);
+                ok++;
+            } catch (Exception e) {
+                failed.add(d.toString());
+                log.error("[DashboardAggregate] 单日重算失败 tenant={} date={}", tenantId, d, e);
+            }
+        }
+        // 月/年/母猪性能整段只跑一次（与具体哪天无关），别跟着 45 天循环白跑 45 遍
+        self.aggregateRollups(tenantId, end, months, years);
+        String lateHint = warnLateEntriesBefore(tenantId, from);
+        log.info("[DashboardAggregate] range done tenant={} {}~{} ok={} failed={}", tenantId, from, end, ok, failed);
+        return String.format("ok | tenant=%s | range=%s~%s | ok=%d | failed=%s%s",
+            tenantId, from, end, ok, failed.isEmpty() ? "[]" : failed, lateHint);
+    }
+
+    /**
+     * 窗口外补录告警：业务日早于重算窗口、却是最近几天才录进来的记录。
+     *
+     * <p>这些记录对应的日/月行改不动（滚动窗口够不着），必须人工按日期补跑
+     * {@code POST /djs/breed/dashboard/trigger-aggregate?date=业务日}。不报出来就会变成
+     * 8 月那种静默漏计（分娩少 8 窝 81 头 / 返空流少 5 条）。</p>
+     */
+    private String warnLateEntriesBefore(String tenantId, LocalDate windowStart) {
+        LocalDateTime since = LocalDate.now().minusDays(LATE_ENTRY_LOOKBACK_DAYS).atStartOfDay();
+        List<Map<String, Object>> rows = aggregateQueryMapper.findLateEntriesBeforeWindow(tenantId, windowStart, since);
+        if (rows == null || rows.isEmpty()) {
+            return "";
+        }
+        String dates = rows.stream()
+            .map(r -> Objects.toString(r.get("bizDate")) + "(" + mapInt(r, "cnt") + ")")
+            .collect(Collectors.joining(", "));
+        log.warn("[DashboardAggregate] ⚠️ 发现窗口外补录：业务日早于 {} 但最近 {} 天才录入 → 这些日期需人工补跑 trigger-aggregate?date=… 明细={}",
+            windowStart, LATE_ENTRY_LOOKBACK_DAYS, dates);
+        return " | ⚠️窗口外补录(需人工补跑): " + dates;
     }
 
     /**
@@ -1068,13 +1294,10 @@ public class DashboardServiceImpl implements IDashboardService {
      */
     private void fillEndStock(FarmIndicatorRecord r, String tenantId, LocalDate asOf) {
         int prodSow = 0, reserveSow = 0, nonprodSow = 0, boar = 0, fattening = 0, piglet = 0;
-        // row7：期末存栏优先读当日快照（历史唯一可信源，主表后续变动不再回刷已固化日期）；
-        // 该日无快照（快照特性上线前的历史日期 / 尚未采集）→ 回落实时主表口径（保持旧行为，不破坏历史记录）。
+        // BRD-STAT-003：期末存栏只认当日快照，而快照是 upsertFarmIndicator 之前刚按业务时间重放出来的。
+        // 这里**不再回落实时主表** —— 回落会把「今天的猪群」写进历史行，滚动重算时直接污染历史
+        // （旧实现的 bug：任何没有快照的历史日期一重算，期末存栏就变成当天的值）。
         List<Map<String, Object>> statusRows = aggregateQueryMapper.snapshotByTypeStatusOnDate(tenantId, asOf);
-        boolean fromSnapshot = statusRows != null && !statusRows.isEmpty();
-        if (!fromSnapshot) {
-            statusRows = aggregateQueryMapper.snapshotByTypeStatus(tenantId);
-        }
         for (Map<String, Object> row : statusRows) {
             String type = Objects.toString(row.get("pigType"), "");
             String cs = Objects.toString(row.get("cs"), "");
@@ -1105,30 +1328,26 @@ public class DashboardServiceImpl implements IDashboardService {
         r.setEndBoarCount(boar);
         r.setEndFatteningCount(fattening);
         r.setEndPigletCount(piglet);
-        // 230 日龄后备同口径：有当日快照读快照（birth_date 冻结、日龄基准=asOf），否则回落实时主表。
-        r.setEndReserve230Count(fromSnapshot
-            ? aggregateQueryMapper.countReserve230OnSnapshot(tenantId, asOf)
-            : aggregateQueryMapper.countReserve230(tenantId, asOf));
+        // 230 日龄后备同口径：读当日快照（birth_date 随快照重放，日龄基准 = asOf）。
+        r.setEndReserve230Count(aggregateQueryMapper.countReserve230OnSnapshot(tenantId, asOf));
     }
 
     /**
-     * 固化某日收盘时点「在群有效猪只」快照（流程性问题 row7）。
+     * 按业务时间重放某业务日收盘的在群猪群快照（BRD-STAT-003）。
      *
-     * <p>幂等 + 免历史刷新：该日已有快照（count&gt;0）则跳过、绝不重采，保证历史期末指标不因主表
-     * 后续业务变动而变。首次采集（通常是 T-1 定时跑，此刻主表态=T-1 收盘态）冻结该日；之后重跑
-     * aggregate 读既有快照，期末指标恒定可复核。</p>
+     * <p>先删后建，每次重放结果只由「业务时间」决定，与什么时候跑、跑几次无关（幂等）。
+     * 这替代了原先「采集那一刻 SELECT 实时主表 + 已有快照就跳过」的做法 —— 那个做法下，
+     * 单据补录晚于采集时点，那一天的存栏就永久错（9/8 出栏 4 头、存栏没减就是这么来的）。</p>
      *
-     * <p>{@link TenantHelper#ignore} 包裹 INSERT：SQL 已显式写 tenant_id，避免多租户拦截器
+     * <p>{@link TenantHelper#ignore} 包裹读写：SQL 已显式写 tenant_id，避免多租户拦截器
      * 在 INSERT 列再注入 tenant_id 造成重复列。</p>
      */
-    private void captureDailyPigSnapshot(String tenantId, LocalDate snapDate) {
+    private void rebuildPigSnapshot(String tenantId, LocalDate snapDate) {
         TenantHelper.ignore(() -> {
-            if (aggregateQueryMapper.countSnapshotOnDate(tenantId, snapDate) == 0) {
-                int n = aggregateQueryMapper.insertPigSnapshotFromLive(tenantId, snapDate);
-                log.info("[DashboardAggregate] pig snapshot captured tenant={} date={} rows={}", tenantId, snapDate, n);
-            } else {
-                log.info("[DashboardAggregate] pig snapshot already frozen tenant={} date={} (skip re-capture)", tenantId, snapDate);
-            }
+            int removed = aggregateQueryMapper.deletePigSnapshotOnDate(tenantId, snapDate);
+            int n = aggregateQueryMapper.rebuildPigSnapshotForDate(tenantId, snapDate);
+            log.info("[DashboardAggregate] pig snapshot rebuilt tenant={} date={} removed={} rows={}",
+                tenantId, snapDate, removed, n);
         });
     }
 
@@ -1228,29 +1447,24 @@ public class DashboardServiceImpl implements IDashboardService {
         LocalDateTime dayStart = statDate.atStartOfDay();
         LocalDateTime dayEnd = statDate.plusDays(1).atStartOfDay();
 
-        // 当日 23:59 时点 sow / piglet 分布
-        int sowTotal = 0, sowPregnant = 0, sowFarrow = 0, sowWeaning = 0, sowIdle = 0;
-        for (Map<String, Object> row : aggregateQueryMapper.countByLifecycle(tenantId, "sow")) {
-            String lc = Objects.toString(row.get("lifecycle"), "");
-            int cnt = ((Number) row.get("cnt")).intValue();
-            sowTotal += cnt;
-            switch (lc) {
-                case "PZ":
-                    sowPregnant += cnt;
-                    break;
-                case "FM":
-                    sowFarrow += cnt;
-                    break;
-                case "DN":
-                    sowWeaning += cnt;
-                    break;
-                default:
-                    sowIdle += cnt; // KH/LC/FQ/HB
+        // statDate 收盘时点的 sow / piglet 分布 —— 读当日快照（与 fillEndStock 同源）。
+        // 原先读实时主表：近 7 天趋势里每一天都是「今天的分布」，且滚动重算会把今天的值刷满整段。
+        int sowTotal = 0, sowPregnant = 0, sowFarrow = 0, sowWeaning = 0, sowIdle = 0, pigletTotal = 0;
+        for (Map<String, Object> row : aggregateQueryMapper.snapshotByTypeStatusOnDate(tenantId, statDate)) {
+            String type = Objects.toString(row.get("pigType"), "");
+            String lc = Objects.toString(row.get("cs"), "");
+            int cnt = mapInt(row, "cnt");
+            if ("piglet".equals(type)) {
+                pigletTotal += cnt;
+            } else if ("sow".equals(type)) {
+                sowTotal += cnt;
+                switch (lc) {
+                    case "PZ" -> sowPregnant += cnt;
+                    case "FM" -> sowFarrow += cnt;
+                    case "DN" -> sowWeaning += cnt;
+                    default -> sowIdle += cnt; // KH/LC/FQ/HB
+                }
             }
-        }
-        int pigletTotal = 0;
-        for (Map<String, Object> row : aggregateQueryMapper.countByLifecycle(tenantId, "piglet")) {
-            pigletTotal += ((Number) row.get("cnt")).intValue();
         }
 
         int dieCount = aggregateQueryMapper.countStatusEventInRange(tenantId, "DIE", dayStart, dayEnd);
@@ -1351,20 +1565,22 @@ public class DashboardServiceImpl implements IDashboardService {
         int sumLiveBorn = mapInt(sum, "sumLiveBorn");
         int sumWeanedPiglet = mapInt(sum, "sumWeanedPiglet");
         int sumAbnormal = mapInt(sum, "sumAbnormal");
-        int sumDeathPiglet = mapInt(sum, "sumDeathPiglet");
         int sumEndProdSow = mapInt(sum, "sumEndProductionSow");
         int sumEndReserve230 = mapInt(sum, "sumEndReserve230");
         int sumEndNonprodSow = mapInt(sum, "sumEndNonprodSow");
 
         int daysInMonth = month.lengthOfMonth();
-        // 累计匹配配种窝数 = [from-N, to-N) 配种记录数（Σ日配种母猪数，不去重）
-        //   N = 配种→分娩天数，读 sow_breed_to_farrow_days，缺省 114
-        int mateLitter = aggregateQueryMapper.countMateLitterShifted(tenantId, dtFrom, dtTo, breedToFarrowDays());
+        // 分娩率（配种批次口径 BRD-STAT-COHORT-001）：收「判定日 = 配种日 + judgeDays 落在本月」的批次，
+        //   分母 = 这些批次数、分子 = 其中在 judgeDays 内分娩的头数 —— 分子分母是同一批猪。
+        //   直扫底表，不经日表（日表 7/31 才起且不回补，分娩窝数实测漏 40%）。
+        int judgeDays = farrowJudgeDeadlineDays();
+        Map<String, Object> cohort = aggregateQueryMapper.selectCohortOutcome(tenantId, from, to, judgeDays);
+        int mateLitter = mapInt(cohort, "bred");
+        int cohortFarrow = mapInt(cohort, "farrow");
         // 当月配种母猪头数（实时，COUNT(DISTINCT pig_id) —— spec「配种母猪头数」按头去重）
         int breedingSowCount = aggregateQueryMapper.countDistinctBreedingSowInRange(tenantId, dtFrom, dtTo);
 
-        // 分娩率% = 当月分娩头数 / 累计匹配配种窝数 × 100
-        BigDecimal farrowRate = pct(ratio(sumFarrowSow, mateLitter));
+        BigDecimal farrowRate = pct(ratio(cohortFarrow, mateLitter));
         // 配种率% = 当月配种母猪头数 / ((Σ日生产母猪 + Σ日230后备)/当月天数) × 100
         //   配种率分母用 230 后备（与 NPD 分母口径不同，各公式不共用变量）
         BigDecimal breedDenom = divide(new BigDecimal(sumEndProdSow + sumEndReserve230), daysInMonth);
@@ -1390,8 +1606,11 @@ public class DashboardServiceImpl implements IDashboardService {
         BigDecimal avgBornPerLitter = scale3(divide(new BigDecimal(sumTotalBorn), sumFarrowSow));
         BigDecimal avgLiveBornPerLitter = scale3(divide(new BigDecimal(sumLiveBorn), sumFarrowSow));
         BigDecimal avgWeanedPerLitter = scale3(divide(new BigDecimal(sumWeanedPiglet), sumWeaningSow));
-        // 分娩舍损失率%（row21）= Σ当月死亡仔猪 / 当月总活仔数 born_count（分母显式指向落盘的 bornCount）
-        BigDecimal farrowLossRate = pct(ratio(sumDeathPiglet, bornCount));
+        // 分娩舍损失率% = 按窝配对（该窝活仔 − 该窝断奶）/ 该窝活仔，只统计当月已断奶的窝。
+        //   旧口径分子取 pig_type='piglet' 的 DIE 事件，要求仔猪有个体档案；哺乳仔猪多数还没打耳标，
+        //   分子恒 0。窝级配对后分子分母同属一批窝，也不会把「已分娩未到断奶期」的窝误算成损失。
+        Map<String, Object> loss = aggregateQueryMapper.selectFarrowHouseLoss(tenantId, from, to);
+        BigDecimal farrowLossRate = farrowHouseLossRate(loss);
 
         MonthlyProduction m = existingOrNew(selectMonth(tenantId, month), MonthlyProduction::new);
         m.setStatMonth(month.toString());
@@ -1404,6 +1623,7 @@ public class DashboardServiceImpl implements IDashboardService {
         m.setMarketingCount(marketingCount);
         m.setMarketingWeight(marketingWeight);
         m.setMateLitterCount(mateLitter);
+        m.setCohortFarrowCount(cohortFarrow);
         m.setFarrowRate(farrowRate);
         m.setBreedRate(breedRate);
         m.setWeanBreedInterval(weanBreedInterval);
@@ -1472,13 +1692,11 @@ public class DashboardServiceImpl implements IDashboardService {
         int sumLiveBorn = mapInt(sum, "sumLiveBorn");
         int sumWeaningSow = mapInt(sum, "sumWeaningSow");
         int sumWeanedPiglet = mapInt(sum, "sumWeanedPiglet");
-        int sumDeathPiglet = mapInt(sum, "sumDeathPiglet");
         int sumDeathFattening = mapInt(sum, "sumDeathFattening"); // T7 肥猪死亡数
         int sumMarketingCount = mapInt(sum, "sumMarketingCount");
         BigDecimal sumMarketingWeight = mapBd(sum, "sumMarketingWeight");
         int sumEndProdSow = mapInt(sum, "sumEndProductionSow");
         int sumEndNonprodSow = mapInt(sum, "sumEndNonprodSow");
-        int sumYearBatchFarrow = mapInt(sum, "sumYearBatchFarrow");
 
         // 已历天数 = 当年日表已落盘行数（年初到 T-1）；为 0 时分母兜底为 1 避免除 0
         int daysElapsed = aggregateQueryMapper.countIndicatorDays(tenantId, from, to);
@@ -1498,24 +1716,49 @@ public class DashboardServiceImpl implements IDashboardService {
         int wbCnt = mapInt(wbYear, "totalCount");
         BigDecimal weanBreedInterval = wbCnt > 0 ? scale3(divide(new BigDecimal(wbDays), wbCnt)) : BigDecimal.ZERO;
 
-        // 全年总NPD天数（row115 口径重构）= Σ日非生产母猪（去掉 230 后备）；年均NPD = 总NPD / 年均生产母猪存栏
+        // ---- PSY / 平均非生产天数：统计区间 + 年化（BRD-STAT-COHORT-001） ----
+        // 区间起点 = 年初与「断奶记录最早业务日」的较晚者。断奶登记 2026-08 才启用，
+        //   分子（断奶仔猪数）只有两个月而分母（母猪头日）取全年的话，年化会把这个残缺比值再放大
+        //   365/N 倍。分子分母锚同一区间，年化才有意义。
+        LocalDate minWeaning = aggregateQueryMapper.selectMinWeaningDate(tenantId, from, to);
+        LocalDate psyFrom = minWeaning != null && minWeaning.isAfter(from) ? minWeaning : from;
+        Map<String, Object> psyBase = aggregateQueryMapper.selectSowDaysInRange(tenantId, psyFrom, to);
+        // 母猪头日 = Σ日期末生产母猪头数；psyStatDays = 该区间已落盘日表行数（年化乘数的分母）
+        int psySowDays = mapInt(psyBase, "sowDays");
+        int psyStatDays = mapInt(psyBase, "dayRows");
+        // PSY = 区间断奶仔猪总数 × 365 / 母猪头日。
+        //   甲方给的两种算法（「现算法年化」与「按头天数算」）展开后是同一个式子，此处用后者的写法。
+        //   分子直扫底表 t_farm_pig_weaning，不走日表 Σ（日表断奶头数实测漏 24%）。
+        //   旧式 (年分娩窝数 / 年均存栏) × 窝均断奶 还有个跨 cohort 混用：分娩窝与断奶窝差一个哺乳期，
+        //   拿 A 批的窝数乘 B 批的窝均，此处一并消掉。
+        int psyWeanedPiglet = aggregateQueryMapper.sumWeanedInRange(tenantId, psyFrom, to);
+        BigDecimal psy = psySowDays <= 0
+            ? BigDecimal.ZERO
+            : scale3(new BigDecimal(psyWeanedPiglet).multiply(DAYS_PER_YEAR)
+                .divide(new BigDecimal(psySowDays), 6, RoundingMode.HALF_UP));
+
+        // 全年总NPD天数 = Σ日非生产母猪（去掉 230 后备）；年均NPD = 总NPD / 年均生产母猪存栏，再年化成「天/年」。
+        // ⚠️ 年化只修量纲。该值当前仍显著低于行业区间，根因是断奶/配种事件录入不全 —— 母猪长期卡在
+        //    FM(哺乳)/PZ(配种) 态被算作生产态，非生产段压根没产生。属数据完整度问题，不在本次口径修复内。
         int totalNpdDays = sumEndNonprodSow;
         BigDecimal avgNpdDays = avgProdSowStock.signum() == 0
             ? BigDecimal.ZERO
-            : scale3(new BigDecimal(totalNpdDays).divide(avgProdSowStock, 6, RoundingMode.HALF_UP));
+            : annualize(scale3(new BigDecimal(totalNpdDays)
+                .divide(avgProdSowStock, 6, RoundingMode.HALF_UP)), daysElapsed);
 
-        // 年分娩率% = 年分娩头数 / 年配种头数 × 100
-        BigDecimal yearFarrowRate = pct(ratio(sumYearBatchFarrow, breedingCount));
+        // 年分娩率（配种批次口径）：判定日落在本年且已到期的批次为分母，其中按期分娩的为分子。
+        //   旧口径分子走日表 Σ 且带 YEAR(分娩日−N)=当年 过滤（把 1-4 月分娩整段排除、配种却照算分母），
+        //   分母直取全年配种次数 —— 分子分母既不同批也不同窗口。
+        Map<String, Object> yearCohort = aggregateQueryMapper.selectCohortOutcome(
+            tenantId, from, to, farrowJudgeDeadlineDays());
+        int cohortMatured = mapInt(yearCohort, "bred");
+        int cohortFarrow = mapInt(yearCohort, "farrow");
+        BigDecimal yearFarrowRate = pct(ratio(cohortFarrow, cohortMatured));
         // 平均出栏重 = Σ日出栏总重 / Σ日出栏头数
         BigDecimal avgMarketingWeight = scale3(divide(sumMarketingWeight, sumMarketingCount));
-        // 分娩舍损失率% = 当年死亡仔猪 / 总活仔
-        BigDecimal farrowLossRate = pct(ratio(sumDeathPiglet, sumLiveBorn));
-        // PSY = (年分娩头数 / 年均生产母猪存栏) × 窝均断奶数（邓博 row14 口径）
-        BigDecimal psy = avgProdSowStock.signum() == 0
-            ? BigDecimal.ZERO
-            : scale3(new BigDecimal(sumYearBatchFarrow)
-                .divide(avgProdSowStock, 6, RoundingMode.HALF_UP)
-                .multiply(avgWeanedPerLitter));
+        // 分娩舍损失率% = 按窝配对（该窝活仔 − 该窝断奶）/ 该窝活仔，只统计已断奶的窝
+        BigDecimal farrowLossRate = farrowHouseLossRate(
+            aggregateQueryMapper.selectFarrowHouseLoss(tenantId, from, to));
 
         AnnualIndicator a = existingOrNew(selectYear(tenantId, year), AnnualIndicator::new);
         a.setStatYear(year);
@@ -1543,8 +1786,11 @@ public class DashboardServiceImpl implements IDashboardService {
         a.setWeanBreedInterval(weanBreedInterval);
         a.setTotalNpdDays(totalNpdDays);
         a.setAvgNpdDays(avgNpdDays);
-        a.setYearBatchFarrowCount(sumYearBatchFarrow);
+        a.setYearBatchFarrowCount(cohortFarrow);
+        a.setCohortMaturedCount(cohortMatured);
         a.setYearFarrowRate(yearFarrowRate);
+        a.setPsyStatFrom(psyFrom);
+        a.setPsyStatDays(psyStatDays);
         a.setAvgMarketingWeight(avgMarketingWeight);
         a.setFarrowLossRate(farrowLossRate);
         a.setTotalFatteningDeath(sumDeathFattening);

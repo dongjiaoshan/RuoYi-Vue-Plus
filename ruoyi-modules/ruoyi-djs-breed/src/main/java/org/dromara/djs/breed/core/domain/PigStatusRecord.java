@@ -62,6 +62,19 @@ public class PigStatusRecord extends TenantEntity {
     private Integer durationDays;
 
     /**
+     * 变更前猪只类型（仅在本次事件改了 {@code pig_type} 时写值，否则 null）。
+     *
+     * <p>期末存栏按业务时间重放时用它反推「某业务日这头猪是什么类型」：
+     * {@code pig_type(D) = D 之后第一条类型变更的 old_pig_type，没有则取主表当前值}。
+     * 命中三条路径：仔猪转育肥舍（piglet→fattening）、后备母猪转育肥（sow→fattening）、
+     * 内部引种肥猪转种猪（fattening→sow/boar）。</p>
+     */
+    private String oldPigType;
+
+    /** 变更后猪只类型（与 {@link #oldPigType} 成对写入，不变更类型的事件为 null）。 */
+    private String newPigType;
+
+    /**
      * 状态变更时间（业务发生时间，不一定等于 create_time）。
      *
      * <p>日期部分恒为业务日期（表单选的引种 / 转移 / 配种 … 日期）；时分秒在业务日期 = 当天时

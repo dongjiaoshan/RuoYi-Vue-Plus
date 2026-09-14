@@ -11,6 +11,7 @@ import org.dromara.common.tenant.core.TenantEntity;
 
 import java.io.Serial;
 import java.math.BigDecimal;
+import java.time.LocalDate;
 
 /**
  * 年生产指标实体（BRD-DASH-001，表 {@code t_farm_year_production}）。
@@ -86,10 +87,19 @@ public class AnnualIndicator extends TenantEntity {
     /** 年均NPD天数（总NPD/年均生产母猪存栏）。定时重算，ALWAYS 覆盖旧值。 */
     @TableField(updateStrategy = FieldStrategy.ALWAYS)
     private BigDecimal avgNpdDays;
-    /** 年分娩头数（Σ日当年配种批次分娩头数）。 */
+    /** 年分娩头数（到期批次中在判定节点内分娩的头数 = 年分娩率分子）。 */
     private Integer yearBatchFarrowCount;
-    /** 年分娩率%（年分娩头数/年配种头数×100）。 */
+    /** 年分娩率%（年分娩头数/到期批次数×100，配种批次口径）。 */
     private BigDecimal yearFarrowRate;
+    /** 年分娩率分母：判定节点落在本年且已到期的配种批次数。定时重算，ALWAYS 覆盖旧值。 */
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
+    private Integer cohortMaturedCount;
+    /** PSY/非生产天数年化的统计区间起始日。定时重算，ALWAYS 覆盖旧值。 */
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
+    private LocalDate psyStatFrom;
+    /** PSY/非生产天数年化的统计区间天数（年化乘数 365/该值）。定时重算，ALWAYS 覆盖旧值。 */
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
+    private Integer psyStatDays;
     /** 平均出栏重（Σ日出栏总重/Σ日出栏头数）。 */
     private BigDecimal avgMarketingWeight;
     /** 分娩舍损失率（当年死亡仔猪数/总活仔数）。 */
