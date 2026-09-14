@@ -381,6 +381,56 @@ class WeaningServiceImplTest {
     }
 
     @Test
+    @DisplayName("校验: 断奶数 + 哺乳期死淘数 > farrow.liveBorn → ServiceException（D-0065 头数守恒）")
+    void validate_countPlusLactationDeathExceedsLiveBorn() {
+        Pig pig = mkSow(303L, PigLifecycle.FM);
+        when(pigMapper.selectById(303L)).thenReturn(pig);
+        PigFarrow farrow = mkFarrow(503L, 303L, 10, null);
+        when(farrowMapper.selectById(503L)).thenReturn(farrow);
+
+        // 断奶 8 + 死淘 3 = 11 > 活仔 10：旧校验只看 weanedCount(8<=10) 会放行
+        WeaningBo bo = mkBo(303L, 503L, 8, null);
+        bo.setLactationDeathCount(3);
+        assertThatThrownBy(() -> service.recordWeaning(bo))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("weaning.count_exceeds_live_born");
+        verify(weaningMapper, never()).insert(any(PigWeaning.class));
+    }
+
+    @Test
+    @DisplayName("落库: 哺乳期死淘数写入 t_farm_pig_weaning；未传时落 0")
+    void recordWeaning_persistsLactationDeathCount() {
+        Pig pig = mkSow(304L, PigLifecycle.FM);
+        when(pigMapper.selectById(304L)).thenReturn(pig);
+        PigFarrow farrow = mkFarrow(504L, 304L, 12, null);
+        when(farrowMapper.selectById(504L)).thenReturn(farrow);
+
+        WeaningBo bo = mkBo(304L, 504L, 9, null);
+        bo.setLactationDeathCount(3);
+        service.recordWeaning(bo);
+
+        ArgumentCaptor<PigWeaning> cap = ArgumentCaptor.forClass(PigWeaning.class);
+        verify(weaningMapper).insert(cap.capture());
+        assertThat(cap.getValue().getLactationDeathCount()).isEqualTo(3);
+    }
+
+    @Test
+    @DisplayName("落库: 哺乳期死淘数缺省 → 落 0（不落 null，产房损失率 SUM 才不漏行）")
+    void recordWeaning_lactationDeathDefaultsToZero() {
+        Pig pig = mkSow(305L, PigLifecycle.FM);
+        when(pigMapper.selectById(305L)).thenReturn(pig);
+        PigFarrow farrow = mkFarrow(505L, 305L, 12, null);
+        when(farrowMapper.selectById(505L)).thenReturn(farrow);
+
+        WeaningBo bo = mkBo(305L, 505L, 12, null);
+        service.recordWeaning(bo);
+
+        ArgumentCaptor<PigWeaning> cap = ArgumentCaptor.forClass(PigWeaning.class);
+        verify(weaningMapper).insert(cap.capture());
+        assertThat(cap.getValue().getLactationDeathCount()).isEqualTo(0);
+    }
+
+    @Test
     @DisplayName("校验: farrow 不存在 → ServiceException")
     void farrowNotFound() {
         Pig pig = mkSow(303L, PigLifecycle.FM);

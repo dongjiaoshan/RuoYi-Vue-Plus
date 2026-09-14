@@ -26,6 +26,7 @@ import org.dromara.djs.store.operation.domain.StoreSaleRecord;
 import org.dromara.djs.store.operation.mapper.StoreSaleRecordMapper;
 import org.dromara.djs.store.returns.domain.StoreReturn;
 import org.dromara.djs.store.returns.mapper.StoreReturnMapper;
+import org.dromara.djs.store.trace.service.IStoreTraceService;
 import org.dromara.djs.warehouse.demand.core.DemandArrivedQuantityFiller;
 import org.dromara.djs.warehouse.demand.domain.DemandManage;
 import org.dromara.djs.warehouse.demand.mapper.DemandManageMapper;
@@ -114,7 +115,11 @@ public class StoreDailyLedgerServiceImpl implements IStoreDailyLedgerService {
     private static final String TAB_OTHER = "other";
     /** {@code t_warehouse_product_info.belong_type} 字典值。 */
     private static final String BELONG_PORK = "pork";
+    private static final String BELONG_WHITE_BAR = "white_bar";
     private static final String BELONG_VEGETABLE = "vegetable";
+
+    /** {@code t_warehouse_product_info.product_attr} 字典 {@code djs_product_attr}：2 = 原材料。 */
+    private static final Integer PRODUCT_ATTR_MATERIAL = 2;
 
     /** 业务日时区（与项目其余「今日」口径一致，避免 DB CURDATE() 时区雷）。 */
     private static final ZoneId ZONE_SHANGHAI = ZoneId.of("Asia/Shanghai");
@@ -132,6 +137,8 @@ public class StoreDailyLedgerServiceImpl implements IStoreDailyLedgerService {
     private final StoreInventoryMapper storeInventoryMapper;
     private final DictService dictService;
     private final IStoreService storeService;
+    /** V6-R215：猪肉原材料行的销售量取现场打包追溯码消耗量，解析规则归追溯域独占。 */
+    private final IStoreTraceService storeTraceService;
 
     @Override
     public TableDataInfo<StoreDailyLedgerHeaderVo> queryHeaderPage(StoreDailyLedgerQuery query, PageQuery pageQuery) {
@@ -213,6 +220,10 @@ public class StoreDailyLedgerServiceImpl implements IStoreDailyLedgerService {
         Map<Long, BigDecimal> saleMap = foldByEffective(sumSaleByProduct(storeId, date, metricIds), porkSwap);
         Map<Long, BigDecimal> returnSaleMap = foldByEffective(sumReturnByProduct(storeId, date, metricIds, DIRECTION_CUSTOMER_TO_STORE), porkSwap);
         Map<Long, BigDecimal> returnWhMap = foldByEffective(sumReturnByProduct(storeId, date, metricIds, DIRECTION_STORE_TO_WAREHOUSE), porkSwap);
+        // V6-R215：猪肉原材料行的销售量改取「现场打包追溯码消耗掉的原材料重量」。
+        // ⚠️ 按**原材料 id** 取，不是按产品名 —— remark 里的「部位」写的是打包**成品名**（黑毛猪通排1000g/份），
+        // 与原材料名（通排）零交集，拿名字查在任何真实数据上都恒取 0。折叠在 trace 服务里做。
+        Map<Long, BigDecimal> onsiteConsumedByMaterial = storeTraceService.sumOnsiteConsumedWeightByMaterial(storeId, date);
 
         List<StoreDailyLedgerCandidateVo> result = new ArrayList<>();
         for (Long pid : productIds) {
@@ -240,12 +251,25 @@ public class StoreDailyLedgerServiceImpl implements IStoreDailyLedgerService {
             vo.setProductSpec(p.getProductSpec());
             vo.setCategory(category);
             vo.setBelongTab(resolveBelongTab(p, porkTabIdSet));
-            vo.setOpeningQty(nz(stockMap.get(pid)));
+            BigDecimal opening = nz(stockMap.get(pid));
+            vo.setOpeningQty(opening);
             vo.setInboundQty(inbound);
             vo.setInboundReadonly(!porkRow);
-            vo.setSaleQty(saleMap.getOrDefault(pid, BigDecimal.ZERO));
             vo.setReturnSaleQty(returnSaleMap.getOrDefault(pid, BigDecimal.ZERO));
-            vo.setReturnWhQty(returnWhMap.getOrDefault(pid, BigDecimal.ZERO));
+
+            // V6-R215（甲方 2026-09-13）：猪肉原材料行换一套口径 —— 销售量取现场打包追溯码的原材料消耗量、
+            // 退回量由公式倒算（期末/损耗此刻都还是默认 0，所以这里的预填值 = 期初+入库−销售）。
+            boolean porkMaterial = isPorkRawMaterial(p);
+            vo.setPorkMaterialRow(porkMaterial);
+            if (porkMaterial) {
+                BigDecimal sale = nz(onsiteConsumedByMaterial.get(pid));
+                vo.setSaleQty(sale);
+                vo.setReturnWhQty(porkMaterialReturnWh(opening, inbound, sale,
+                    BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO));
+            } else {
+                vo.setSaleQty(saleMap.getOrDefault(pid, BigDecimal.ZERO));
+                vo.setReturnWhQty(returnWhMap.getOrDefault(pid, BigDecimal.ZERO));
+            }
             result.add(vo);
         }
         return result;
@@ -288,7 +312,8 @@ public class StoreDailyLedgerServiceImpl implements IStoreDailyLedgerService {
 
         int saved = 0;
         for (StoreDailyLedgerBatchBo.Item item : bo.getItems()) {
-            if (productInfoMapper.selectById(item.getProductId()) == null) {
+            ProductInfo product = productInfoMapper.selectById(item.getProductId());
+            if (product == null) {
                 throw new ServiceException("产品不存在或已删除：" + item.getProductId(), 404);
             }
             BigDecimal opening = nz(item.getOpeningQty());
@@ -309,11 +334,19 @@ public class StoreDailyLedgerServiceImpl implements IStoreDailyLedgerService {
                 }
             }
 
-            // 损耗按 docx 字面反算：loss = 期初 + 入库 − 销售 − 赠送 + 退货 − 退回 − 期末。
-            BigDecimal loss = opening.add(inbound)
-                .subtract(sale).subtract(gift)
-                .add(returnSale).subtract(returnWh)
-                .subtract(closing);
+            // 两套口径二选一，按行分流，**不混算**：
+            //   猪肉原材料行（V6-R215，甲方 2026-09-13）→ 期末 + 损耗都手填（默认 0），**退回量倒算**；
+            //   其余行（含猪肉的生产产品，甲方明说「生产产品逻辑不变」）→ 期末手填，**损耗倒算**（docx 原式）。
+            BigDecimal loss;
+            if (isPorkRawMaterial(product)) {
+                loss = nz(item.getLossQty());
+                returnWh = porkMaterialReturnWh(opening, inbound, sale, gift, closing, loss);
+            } else {
+                loss = opening.add(inbound)
+                    .subtract(sale).subtract(gift)
+                    .add(returnSale).subtract(returnWh)
+                    .subtract(closing);
+            }
 
             StoreDailyLedger existing = existingByProduct.get(item.getProductId());
             StoreDailyLedger entity = new StoreDailyLedger();
@@ -554,6 +587,40 @@ public class StoreDailyLedgerServiceImpl implements IStoreDailyLedgerService {
      * 或 {@code belong_type='pork'} → 猪肉；{@code belong_type='vegetable'} → 果蔬；
      * 其余（含外购 belong_type=NULL / egg / dry_good / other / gift_box）→ 其他。
      */
+    /**
+     * 是不是「猪肉原材料产品」——V6-R215 那套倒算口径的唯一适用判据（甲方 2026-09-13）。
+     *
+     * <p>判据 = {@code belong_type ∈ (pork, white_bar)} 且 {@code product_attr = 2}（原材料）。
+     * 甲方原话是「本逻辑只对猪肉原材料产品生效，<b>生产产品逻辑不变</b>」，拿原材料/生产产品对举，
+     * 对应的就是产品档案里的 {@code product_attr}（1=生产产品 / 2=原材料）。
+     * staging 实查：猪肉链 27 个原材料（pork 26 + white_bar 1）、47 个生产产品，
+     * 白条分割部位字典那 17 个码全部落在原材料侧，与甲方的分法吻合。</p>
+     *
+     * <p>⚠️ <b>不能用 {@code category='pork'} 代替</b>：那个只表示「命中白条分割部位字典」，
+     * 是候选来源标记，与「是不是原材料」不是一回事（字典外的猪肉原材料、以及字典里万一配了成品，都会判错）。</p>
+     */
+    private boolean isPorkRawMaterial(ProductInfo p) {
+        if (p == null || !PRODUCT_ATTR_MATERIAL.equals(p.getProductAttr())) {
+            return false;
+        }
+        return BELONG_PORK.equals(p.getBelongType()) || BELONG_WHITE_BAR.equals(p.getBelongType());
+    }
+
+    /**
+     * 猪肉原材料行的「退回量」= 期初 + 入库 − 销售 − 赠送 − 期末 − 损耗（甲方 V6-R215 第 4 点，逐字）。
+     *
+     * <p>这是一次**角色对调**：改造前「期末手填、损耗倒算」，现在「期末 + 损耗都手填（默认 0）、退回量倒算」。
+     * 退回量不再取退回操作的实际退回值（甲方第 1 点）。</p>
+     *
+     * <p>⚠️ 甲方给的式子里<b>没有「+顾客退货」这一项</b>，而非猪肉原材料行沿用的恒等式是有的
+     * （{@code loss = 期初+入库−销售−赠送+顾客退货−退回−期末}）。这里按甲方字面执行、不自作主张补项；
+     * 后果是猪肉原材料行若当天有顾客退货，这个数不进倒算、退回量会相应少算。已在写回备注里请甲方确认。</p>
+     */
+    private BigDecimal porkMaterialReturnWh(BigDecimal opening, BigDecimal inbound, BigDecimal sale,
+                                            BigDecimal gift, BigDecimal closing, BigDecimal loss) {
+        return opening.add(inbound).subtract(sale).subtract(gift).subtract(closing).subtract(loss);
+    }
+
     private String resolveBelongTab(ProductInfo p, Set<Long> porkTabIds) {
         if (p == null) {
             return TAB_OTHER;

@@ -957,17 +957,17 @@ public class DashboardServiceImpl implements IDashboardService {
     }
 
     /**
-     * 产房损失率% = (Σ该批窝活仔 − Σ该批窝断奶) / Σ该批窝活仔 × 100。
+     * 产房损失率% = Σ该批窝哺乳期死淘数 / Σ该批窝活仔数 × 100（只统计已断奶的窝）。
      *
-     * <p>断奶数大于活仔数（数据异常）时按 0 处理，不产出负损失率。</p>
+     * <p>死淘数超过活仔数（数据异常）时按 100% 封顶，活仔数为 0 时按 0，都不产出越界值。</p>
      */
     private static BigDecimal farrowHouseLossRate(Map<String, Object> loss) {
         int liveBorn = mapInt(loss, "liveBorn");
-        int weaned = mapInt(loss, "weaned");
-        if (liveBorn <= 0 || weaned >= liveBorn) {
+        int death = mapInt(loss, "lactationDeath");
+        if (liveBorn <= 0 || death <= 0) {
             return BigDecimal.ZERO;
         }
-        return pct(ratio(liveBorn - weaned, liveBorn));
+        return pct(ratio(Math.min(death, liveBorn), liveBorn));
     }
 
     /**

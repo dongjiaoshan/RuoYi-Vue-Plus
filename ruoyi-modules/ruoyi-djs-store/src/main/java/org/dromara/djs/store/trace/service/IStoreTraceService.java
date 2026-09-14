@@ -10,7 +10,10 @@ import org.dromara.djs.warehouse.trace.domain.query.TraceCodeQuery;
 import org.dromara.djs.warehouse.trace.domain.vo.TraceCodeDetailVo;
 import org.dromara.djs.warehouse.trace.domain.vo.TraceCodeListVo;
 
+import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 门店现场生码服务（STORE-TRACE-ONSITE-001，门店域薄壳）。
@@ -85,4 +88,23 @@ public interface IStoreTraceService {
      * @return 详情聚合 VO 列表
      */
     List<TraceCodeDetailVo> batchPorkTraceDetail(List<Long> ids);
+
+    /**
+     * 当日该门店现场打包**消耗掉的原材料重量**，<b>按原材料产品 id 合计</b>。
+     *
+     * <p>门店现场码把部位与重量写在 {@code trace_code.remark}（{@code 现场生码 部位=X 重量=Ykg}），
+     * 表里没有专用列，故按 remark 解析 —— 解析规则属追溯域，放这里由本服务独占，调用方不要各写一份。</p>
+     *
+     * <p>⚠️ <b>返回的 key 必须是原材料 id，不能是「部位名」</b>：remark 里的「部位」写的是门店打包页选中的
+     * <b>成品名</b>（如「黑毛猪通排1000g/份」，{@code product_attr=1}），而调用方要归集的是<b>原材料</b>
+     * （如「通排」，{@code product_attr=2}）。两者名字零交集，直接拿部位名当原材料名查，任何真实数据上都恒取 0。
+     * 折叠（成品 → {@code product_material}）在本方法内完成，多个规格（500g/1000g）折到同一个原材料上累加。</p>
+     *
+     * <p>调用方：门店盘点（V6-R215，甲方 2026-09-13）——猪肉原材料行的「销售量」改取本值，不再取销售流水。</p>
+     *
+     * @param storeId 门店（为空 → 空 map，不跨店统计）
+     * @param day     统计日（按 {@code create_time} 落在当天）
+     * @return 原材料产品 id → 当日消耗重量（kg）
+     */
+    Map<Long, BigDecimal> sumOnsiteConsumedWeightByMaterial(Long storeId, LocalDate day);
 }

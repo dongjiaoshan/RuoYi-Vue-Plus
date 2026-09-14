@@ -50,6 +50,14 @@ public class WeaningBo implements Serializable {
     @Min(value = 0, message = "{weaning.count.invalid}")
     private Integer weanedCount;
 
+    /**
+     * 本窝哺乳期死淘数（出生后到断奶期间死亡 / 淘汰的仔猪头数，D-0065）。
+     *
+     * <p>产房损失率的分子。缺省 0 = 本窝哺乳期无损失。与 {@link #weanedCount} 之和不得超过该窝活产仔数。</p>
+     */
+    @Min(value = 0, message = "{weaning.lactation_death.invalid}")
+    private Integer lactationDeathCount;
+
     /** 断奶总重 kg（OQ-11 fallback：母猪汇总，不逐头）。 */
     private BigDecimal weanedWeight;
 

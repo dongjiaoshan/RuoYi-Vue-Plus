@@ -132,10 +132,14 @@ public class WeaningServiceImpl implements IWeaningService {
             }
             bo.setFarrowId(farrow.getId());
         }
+        // 断奶数 + 哺乳期死淘数 不得超过该窝活产仔数（D-0065）。
+        //   旧校验只拦 weanedCount > liveBorn —— 而 mp 的断奶头数是按活仔数铺行的只读汇总，
+        //   永远不可能超，等于这条校验从来没生效过。加上死淘数后它才真正约束住这一窝的头数守恒。
+        int lactationDeath = bo.getLactationDeathCount() == null ? 0 : bo.getLactationDeathCount();
         if (bo.getWeanedCount() != null && farrow.getLiveBorn() != null
-            && bo.getWeanedCount() > farrow.getLiveBorn()) {
+            && bo.getWeanedCount() + lactationDeath > farrow.getLiveBorn()) {
             throw new ServiceException(I18nMessages.t("weaning.count_exceeds_live_born",
-                bo.getWeanedCount(), farrow.getLiveBorn()));
+                bo.getWeanedCount() + lactationDeath, farrow.getLiveBorn()));
         }
 
         // 1. 写 t_farm_pig_weaning
@@ -146,6 +150,7 @@ public class WeaningServiceImpl implements IWeaningService {
         entity.setBreedingId(farrow.getBreedingId());
         entity.setWeaningDate(bo.getWeaningDate());
         entity.setWeanedCount(bo.getWeanedCount());
+        entity.setLactationDeathCount(lactationDeath);
         entity.setWeanedWeight(bo.getWeanedWeight());
         entity.setAvgWeanedWeight(resolveAvg(bo));
         entity.setRemark(bo.getRemark());
@@ -521,6 +526,7 @@ public class WeaningServiceImpl implements IWeaningService {
         v.setBreedingId(e.getBreedingId());
         v.setWeaningDate(e.getWeaningDate());
         v.setWeanedCount(e.getWeanedCount());
+        v.setLactationDeathCount(e.getLactationDeathCount());
         v.setWeanedWeight(e.getWeanedWeight());
         v.setAvgWeanedWeight(e.getAvgWeanedWeight());
         v.setOperatorId(e.getOperatorId());

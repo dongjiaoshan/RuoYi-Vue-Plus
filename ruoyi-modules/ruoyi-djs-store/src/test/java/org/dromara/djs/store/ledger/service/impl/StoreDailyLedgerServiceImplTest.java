@@ -51,6 +51,8 @@ import java.util.Map;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -89,6 +91,7 @@ class StoreDailyLedgerServiceImplTest {
     @Mock private StoreInventoryMapper storeInventoryMapper;
     @Mock private DictService dictService;
     @Mock private IStoreService storeService;
+    @Mock private org.dromara.djs.store.trace.service.IStoreTraceService storeTraceService;
 
     private StoreDailyLedgerServiceImpl service;
     private MockedStatic<LoginHelper> loginHelperMock;
@@ -122,9 +125,12 @@ class StoreDailyLedgerServiceImplTest {
     void setup() {
         service = new StoreDailyLedgerServiceImpl(baseMapper, storeMapper, productInfoMapper,
             saleRecordMapper, storeReturnMapper, shipmentMapper, demandManageMapper,
-            productProductionMapper, arrivedQuantityFiller, storeInventoryMapper, dictService, storeService);
+            productProductionMapper, arrivedQuantityFiller, storeInventoryMapper, dictService, storeService,
+            storeTraceService);
         loginHelperMock = Mockito.mockStatic(LoginHelper.class);
         loginHelperMock.when(LoginHelper::getUserId).thenReturn(USER_ID);
+        // 默认「当日没有现场打包」——要验销售量取追溯码消耗量的用例各自覆盖它
+        lenient().when(storeTraceService.sumOnsiteConsumedWeightByMaterial(any(), any())).thenReturn(Map.of());
 
         Store store = new Store();
         store.setId(STORE_ID);
@@ -233,7 +239,7 @@ class StoreDailyLedgerServiceImplTest {
     }
 
     @Test
-    @DisplayName("batchSave：当日无白条发货时入库量 0 的猪肉行仍可录期末量 → 落台账 + 回写门店库存")
+    @DisplayName("V6-R215：猪肉原材料行期末+损耗手填 → **退回量倒算**，落台账 + 回写门店库存")
     void testBatchSave_PorkClosingOnly_Saved() {
         when(baseMapper.selectList(any())).thenReturn(List.of());
         when(productInfoMapper.selectList(any())).thenReturn(
@@ -251,14 +257,108 @@ class StoreDailyLedgerServiceImplTest {
         verify(baseMapper, times(1)).insert(cap.capture());
         StoreDailyLedger row = cap.getValue();
         assertThat(row.getClosingQty()).isEqualByComparingTo("2.500");
-        // loss = 期初 + 入库 − 销售 − 赠送 + 退货 − 退回 − 期末 = 5 + 0 − 0 − 0 + 0 − 0 − 2.5
-        assertThat(row.getLossQty()).isEqualByComparingTo("2.500");
+        // R215：损耗改手填（BO 没给 → 默认 0），退回量成了倒算项
+        // 退回 = 期初 + 入库 − 销售 − 赠送 − 期末 − 损耗 = 5 + 0 − 0 − 0 − 2.5 − 0 = 2.5
+        assertThat(row.getLossQty()).as("猪肉原材料行的损耗是手填值，未填即 0").isEqualByComparingTo("0");
+        assertThat(row.getWhReturnQty()).as("猪肉原材料行的退回量由公式倒算").isEqualByComparingTo("2.500");
         ArgumentCaptor<StoreInventory> invCap = ArgumentCaptor.forClass(StoreInventory.class);
         verify(storeInventoryMapper, times(1)).insert(invCap.capture());
         assertThat(invCap.getValue().getStockQty()).isEqualByComparingTo("2.500");
     }
 
-    /** 字典业务码对得上的猪肉原材料产品（按重量盘点，未配上级原材料）。 */
+
+    @Test
+    @DisplayName("V6-R215：猪肉原材料行的销售量取**现场打包追溯码消耗量**，不再取销售流水")
+    void testListCandidates_PorkMaterialSaleFromTraceConsumption() {
+        when(dictService.getAllDictByDictType(DICT_WHITE_BAR_RETURN_PRODUCT))
+            .thenReturn(new LinkedHashMap<>(Map.of(PORK_PRODUCT_CODE, "五花肉")));
+        when(productInfoMapper.selectList(any())).thenReturn(
+            List.of(porkProduct()), List.of(), List.of(porkProduct()));
+        when(shipmentMapper.selectList(any())).thenReturn(List.of());
+        when(storeInventoryMapper.selectList(any())).thenReturn(List.of());
+        // 销售流水里有 9 —— 新口径下它**不该**被采用
+        StoreSaleRecord sale = new StoreSaleRecord();
+        sale.setProductId(PORK_PRODUCT_ID);
+        sale.setSaleQty(new BigDecimal("9.000"));
+        when(saleRecordMapper.selectList(any())).thenReturn(List.of(sale));
+        when(storeReturnMapper.selectList(any())).thenReturn(List.of());
+        // ⚠️ key 必须是**原材料 id**，不是产品名。
+        // 血泪（clean-QA 2026-09-14）：上一版这里 stub 成 Map.of("五花肉", …)，正好把实现里的 bug 前提钉死 ——
+        // 真实 remark 里的「部位」是打包**成品名**（黑毛猪五花肉250g/份），与原材料名零交集，
+        // 线上恒取 0，而这条用例照样绿。mock 的假设必须与被测契约一致，否则断言写得再硬也是假绿。
+        when(storeTraceService.sumOnsiteConsumedWeightByMaterial(eq(STORE_ID), any()))
+            .thenReturn(Map.of(PORK_PRODUCT_ID, new BigDecimal("1.500")));
+
+        List<StoreDailyLedgerCandidateVo> rows = service.listCandidates(STORE_ID, DATE);
+
+        assertThat(rows).hasSize(1);
+        assertThat(rows.get(0).getPorkMaterialRow()).isTrue();
+        assertThat(rows.get(0).getSaleQty())
+            .as("销售量必须取追溯码消耗量 1.5，取到销售流水的 9 就是没换源")
+            .isEqualByComparingTo("1.500");
+    }
+
+    @Test
+    @DisplayName("V6-R215：猪肉**生产产品**（product_attr=1）不走新口径 —— 甲方「生产产品逻辑不变」")
+    void testBatchSave_PorkFinishedProductKeepsOldFormula() {
+        when(baseMapper.selectList(any())).thenReturn(List.of());
+        when(productInfoMapper.selectList(any())).thenReturn(
+            List.of(porkFinishedProduct()), List.of(porkFinishedProduct()), List.of());
+        when(shipmentMapper.selectList(any())).thenReturn(List.of());
+        when(productInfoMapper.selectById(PORK_PRODUCT_ID)).thenReturn(porkFinishedProduct());
+        when(baseMapper.insert(any(StoreDailyLedger.class))).thenReturn(1);
+        when(storeInventoryMapper.selectOne(any())).thenReturn(null);
+        when(storeInventoryMapper.insert(any(StoreInventory.class))).thenReturn(1);
+
+        service.batchSave(batchBo(BigDecimal.ZERO, new BigDecimal("2.500")));
+
+        ArgumentCaptor<StoreDailyLedger> cap = ArgumentCaptor.forClass(StoreDailyLedger.class);
+        verify(baseMapper, times(1)).insert(cap.capture());
+        StoreDailyLedger row = cap.getValue();
+        // 老口径：期末手填、损耗倒算 = 5 + 0 − 0 − 0 + 0 − 0 − 2.5
+        assertThat(row.getLossQty()).isEqualByComparingTo("2.500");
+        assertThat(row.getWhReturnQty()).as("生产产品行的退回量仍来自退回模块聚合，不倒算").isEqualByComparingTo("0");
+    }
+
+    @Test
+    @DisplayName("V6-R215：猪肉原材料行填了损耗 → 退回量随之减少（倒算式逐字对齐甲方给的公式）")
+    void testBatchSave_PorkMaterialLossReducesDerivedReturn() {
+        when(baseMapper.selectList(any())).thenReturn(List.of());
+        when(productInfoMapper.selectList(any())).thenReturn(
+            List.of(porkProduct()), List.of(porkProduct()), List.of());
+        when(shipmentMapper.selectList(any())).thenReturn(List.of());
+        when(productInfoMapper.selectById(PORK_PRODUCT_ID)).thenReturn(porkProduct());
+        when(baseMapper.insert(any(StoreDailyLedger.class))).thenReturn(1);
+        when(storeInventoryMapper.selectOne(any())).thenReturn(null);
+        when(storeInventoryMapper.insert(any(StoreInventory.class))).thenReturn(1);
+
+        // 入库留 0：白条发货上限闸是另一条既有规则（testBatchSave_PorkInboundOverLimit_Rejected 在管），
+        // 本用例只验倒算式，不去踩那道闸。
+        StoreDailyLedgerBatchBo bo = batchBo(BigDecimal.ZERO, new BigDecimal("1.000"));
+        StoreDailyLedgerBatchBo.Item item = bo.getItems().get(0);
+        item.setSaleQty(new BigDecimal("2.000"));
+        item.setGiftQty(new BigDecimal("0.500"));
+        item.setLossQty(new BigDecimal("0.250"));
+        // 顾客退货给个非 0 值：甲方给的式子里没有这一项，这里钉住「确实没被算进去」
+        item.setReturnSaleQty(new BigDecimal("7.000"));
+
+        service.batchSave(bo);
+
+        ArgumentCaptor<StoreDailyLedger> cap = ArgumentCaptor.forClass(StoreDailyLedger.class);
+        verify(baseMapper, times(1)).insert(cap.capture());
+        StoreDailyLedger row = cap.getValue();
+        assertThat(row.getLossQty()).isEqualByComparingTo("0.250");
+        // 退回 = 期初 5 + 入库 0 − 销售 2 − 赠送 0.5 − 期末 1 − 损耗 0.25 = 1.25
+        //（顾客退货 7 **不入式**，甲方给的公式里没有这一项 —— 这是本用例要钉的点）
+        assertThat(row.getWhReturnQty()).isEqualByComparingTo("1.250");
+        assertThat(row.getReturnQty()).as("顾客退货仍原样落库，只是不进倒算式").isEqualByComparingTo("7.000");
+    }
+
+    /**
+     * 字典业务码对得上的猪肉**原材料**产品（按重量盘点，未配上级原材料）。
+     * {@code productAttr=2} 与生产数据一致 —— staging 实查：白条分割部位字典那 17 个码全部是原材料，
+     * 所以这个夹具走的是 V6-R215 的新口径分支。
+     */
     private ProductInfo porkProduct() {
         ProductInfo p = new ProductInfo();
         p.setId(PORK_PRODUCT_ID);
@@ -266,7 +366,17 @@ class StoreDailyLedgerServiceImplTest {
         p.setProductName("五花肉");
         p.setProductUnit("kg");
         p.setBelongType("pork");
+        p.setProductAttr(2);
         p.setIsMaterialSold(0);
+        return p;
+    }
+
+    /** 猪肉**生产产品**（product_attr=1）—— 甲方明说「生产产品逻辑不变」，用它钉老口径没被带歪。 */
+    private ProductInfo porkFinishedProduct() {
+        ProductInfo p = porkProduct();
+        p.setProductAttr(1);
+        p.setProductName("黑毛猪五花肉500g");
+        p.setProductUnit("份");
         return p;
     }
 

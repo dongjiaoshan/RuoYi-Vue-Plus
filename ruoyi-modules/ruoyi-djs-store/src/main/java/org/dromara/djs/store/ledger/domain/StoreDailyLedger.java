@@ -17,9 +17,18 @@ import java.time.LocalDate;
  * <p>一行 = 某门店某产品某盘点日的经营七列流水 + 期末库存。客户口径：对仓库发货到门店的产品，
  * 录期初 / 当日入库 / 销售 / 赠送 / 退货 / 退回 / 损耗，相当于门店自己的库存盘点（首次建账即期初）。</p>
  *
- * <p>期末实盘手动录入；损耗 service 反算（docx 口径）：
- * {@code loss_qty = opening_qty + inbound_qty − sale_qty − gift_qty + return_qty − wh_return_qty − closing_qty}
- * （return_qty=顾客退货量，符号为 +）。</p>
+ * <p><b>两套口径按行分流，谁手填、谁倒算不一样</b>（V6-R215，甲方 2026-09-13）：</p>
+ * <ul>
+ *   <li><b>猪肉原材料行</b>（{@code belong_type ∈ (pork, white_bar)} 且 {@code product_attr = 2}）：
+ *       期末 + 损耗都手填（默认 0），<b>{@code wh_return_qty} 是倒算项</b>：
+ *       {@code wh_return_qty = opening_qty + inbound_qty − sale_qty − gift_qty − closing_qty − loss_qty}。
+ *       ⚠️ 甲方给的式子里<b>没有 {@code return_qty}（顾客退货）这一项</b>，按字面执行，该列仍原样落库。
+ *       另：{@code sale_qty} 预填取现场打包追溯码消耗掉的原材料量（不是销售流水）。</li>
+ *   <li><b>其余行</b>（含猪肉的生产产品，甲方明说「生产产品逻辑不变」）：期末手填，
+ *       <b>{@code loss_qty} 是倒算项</b>（docx 原口径）：
+ *       {@code loss_qty = opening_qty + inbound_qty − sale_qty − gift_qty + return_qty − wh_return_qty − closing_qty}
+ *       （{@code return_qty}=顾客退货量，符号为 +）。</li>
+ * </ul>
  *
  * @author djs
  * @since STORE-LEDGER-001

@@ -486,6 +486,40 @@ public class StoreTraceServiceImpl implements IStoreTraceService {
      * @param storeId 当前门店（为空 → 返回空 map，不跨店统计）
      * @param day     统计日（按 {@code create_time} 落在当天）
      */
+    @Override
+    public Map<Long, BigDecimal> sumOnsiteConsumedWeightByMaterial(Long storeId, LocalDate day) {
+        Map<String, BigDecimal> byCut = sumTodayOnsiteWeightByCutLabel(storeId, day);
+        if (byCut.isEmpty()) {
+            return Map.of();
+        }
+        // remark 里的「部位」= 门店打包页选中的**成品名**（PorkTracePanel 用 listPackProducts 的 productName 填的），
+        // 而调用方要的是**原材料**。这里按名字把它解析成原材料 id，多个规格（500g/1000g）折到同一原材料上累加。
+        List<ProductInfo> byName = productInfoMapper.selectList(new LambdaQueryWrapper<ProductInfo>()
+            .in(ProductInfo::getProductName, byCut.keySet())
+            .select(ProductInfo::getId, ProductInfo::getProductName,
+                ProductInfo::getProductAttr, ProductInfo::getProductMaterial));
+        Map<String, Long> materialIdByCut = new LinkedHashMap<>();
+        for (ProductInfo p : byName) {
+            // 一条解析规则覆盖两种形态：部位名指向成品 → 取它的 product_material；指向原材料本身 → 就是它自己。
+            Long materialId = PRODUCT_ATTR_MATERIAL.equals(p.getProductAttr()) ? p.getId() : p.getProductMaterial();
+            if (materialId != null) {
+                materialIdByCut.putIfAbsent(p.getProductName(), materialId);
+            }
+        }
+        Map<Long, BigDecimal> used = new LinkedHashMap<>();
+        for (Map.Entry<String, BigDecimal> e : byCut.entrySet()) {
+            Long materialId = materialIdByCut.get(e.getKey());
+            if (materialId == null) {
+                // 部位名在产品主数据里对不上、或成品没配 product_material —— 静默丢掉等于这天的消耗凭空消失，必须留痕
+                log.warn("[STORE-TRACE] 现场打包部位「{}」解析不到原材料（产品不存在或未配 product_material），"
+                    + "当日消耗 {} 不计入盘点销售量 storeId={} day={}", e.getKey(), e.getValue(), storeId, day);
+                continue;
+            }
+            used.merge(materialId, e.getValue(), BigDecimal::add);
+        }
+        return used;
+    }
+
     private Map<String, BigDecimal> sumTodayOnsiteWeightByCutLabel(Long storeId, LocalDate day) {
         Map<String, BigDecimal> used = new LinkedHashMap<>();
         if (storeId == null) {

@@ -56,7 +56,9 @@ public class StoreDailyLedgerBatchBo {
     /**
      * 盘点明细单行：产品 + 经营流水列（量列缺省按 0）。
      *
-     * <p>损耗 {@code lossQty} 不在 BO（由 service 按公式计算），期末 {@code closingQty} 手动入参。</p>
+     * <p>量列的「谁手填、谁倒算」按行分流（V6-R215）：
+     * <b>猪肉原材料行</b>期末 + 损耗都手填（默认 0），退回量由 service 倒算；
+     * <b>其余行</b>期末手填、损耗由 service 倒算，退回量沿用退回模块聚合。</p>
      *
      * @author djs
      * @since STORE-LEDGER-001
@@ -86,7 +88,14 @@ public class StoreDailyLedgerBatchBo {
         /** 退回量（门店退回仓库，只读来自退回模块聚合；映射 entity whReturnQty 列）。 */
         private BigDecimal returnWhQty;
 
-        /** 期末库存（手动实盘录入；service 据此反算损耗）。 */
+        /** 期末库存（手动实盘录入，默认 0）。 */
         private BigDecimal closingQty;
+
+        /**
+         * 损耗量（V6-R215 起**猪肉原材料行**手动录入，默认 0；其余行忽略本字段、由 service 按恒等式倒算）。
+         *
+         * <p>猪肉原材料行的退回量反过来成了倒算项：退回量 = 期初+入库−销售−赠送−期末−损耗。</p>
+         */
+        private BigDecimal lossQty;
     }
 }

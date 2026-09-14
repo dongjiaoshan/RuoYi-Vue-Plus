@@ -8,8 +8,6 @@ import org.dromara.common.satoken.utils.LoginHelper;
 import org.dromara.djs.common.encoder.IBizCodeGenerator;
 import org.dromara.djs.common.store.domain.Store;
 import org.dromara.djs.common.store.mapper.StoreMapper;
-import org.dromara.djs.store.ledger.domain.StoreDailyLedger;
-import org.dromara.djs.store.ledger.mapper.StoreDailyLedgerMapper;
 import org.dromara.djs.store.returns.domain.StoreReturn;
 import org.dromara.djs.store.returns.domain.query.StoreReturnQuery;
 import org.dromara.djs.store.returns.domain.vo.StoreReturnStoreDailyVo;
@@ -43,16 +41,17 @@ import org.mockito.quality.Strictness;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Set;
 import java.util.Map;
 
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.catchThrowable;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -68,6 +67,8 @@ import static org.mockito.Mockito.when;
  *   <li>insertByBo 产品/门店不存在 → 抛 ServiceException + 不 INSERT + <b>不联动入库</b></li>
  *   <li>updateByBo 元数据 only：不回写 returnNo / operatorId / productId / locationId / returnQuantity + 不联动入库</li>
  *   <li>deleteByIds → softDelete（不冲销库存，V1）</li>
+ *   <li>V6-R214 退回候选与提交闸：候选唯一来源 = 字典 {@code djs_return_product_list}，按产品 belong_type
+ *       分三个 tab（其他 tab 兜底），退回量不封顶，提交闸只剩「在不在清单里」一道成员资格</li>
  * </ol>
  *
  * @author djs
@@ -91,7 +92,6 @@ class StoreReturnServiceImplTest {
     @Mock private org.dromara.djs.warehouse.pack.service.IProductProductionService productProductionService;
     @Mock private org.dromara.djs.warehouse.pack.mapper.ProductProductionMapper productProductionMapper;
     @Mock private org.dromara.djs.common.store.service.IStoreService storeService;
-    @Mock private StoreDailyLedgerMapper storeDailyLedgerMapper;
     @Mock private org.dromara.common.core.service.UserService userService;
 
     private TestableStoreReturnServiceImpl service;
@@ -117,7 +117,6 @@ class StoreReturnServiceImplTest {
         TableInfoHelper.initTableInfo(assistant, StoreReturn.class);
         TableInfoHelper.initTableInfo(assistant, Store.class);
         TableInfoHelper.initTableInfo(assistant, ProductInfo.class);
-        TableInfoHelper.initTableInfo(assistant, StoreDailyLedger.class);
         TableInfoHelper.initTableInfo(assistant, DemandManage.class);
         TableInfoHelper.initTableInfo(assistant, ProductProduction.class);
     }
@@ -133,9 +132,8 @@ class StoreReturnServiceImplTest {
                                        org.dromara.djs.warehouse.pack.service.IProductProductionService pps,
                                        org.dromara.djs.warehouse.pack.mapper.ProductProductionMapper ppm,
                                        org.dromara.djs.common.store.service.IStoreService iss,
-                                       StoreDailyLedgerMapper sdlm,
                                        org.dromara.common.core.service.UserService us) {
-            super(b, sm, pm, lm, g, pis, dm, ds, pps, ppm, iss, sdlm, us);
+            super(b, sm, pm, lm, g, pis, dm, ds, pps, ppm, iss, us);
         }
 
         @Override
@@ -148,7 +146,7 @@ class StoreReturnServiceImplTest {
     void setup() {
         service = new TestableStoreReturnServiceImpl(baseMapper, storeMapper, productInfoMapper,
             locationInfoMapper, bizCodeGenerator, purchaseInService, demandManageMapper, dictService,
-            productProductionService, productProductionMapper, storeService, storeDailyLedgerMapper, userService);
+            productProductionService, productProductionMapper, storeService, userService);
         loginHelperMock = Mockito.mockStatic(LoginHelper.class);
         loginHelperMock.when(LoginHelper::getUserId).thenReturn(USER_ID);
         when(baseMapper.insert(any(StoreReturn.class))).thenAnswer(inv -> {
@@ -398,191 +396,91 @@ class StoreReturnServiceImplTest {
         assertThat(cap.getValue().getReturnDate()).isEqualTo(fixed);
     }
 
-    @Test
-    @DisplayName("row119：字典原材料退回额度=门店当日盘点台账 期初+入库−销售−赠送，超额抛异常")
-    void testBatchCreate_RejectsOverArrivedQuantity() {
-        prepareWhiteBarDictScenario();
+    // ---------- V6-R214：退回候选与提交闸（甲方 2026-09-13 row214 换口径）----------
+    //
+    // 新口径三句话：
+    //   ① 候选唯一来源 = 字典 djs_return_product_list（Map 的 key = 产品业务码 product_id），
+    //      不再由门店当日盘点台账推导 —— 退回操作因此不再依赖门店有没有盘点；
+    //   ② tab 分流只看产品自身 belong_type：pork/white_bar → 猪肉、vegetable → 果蔬、
+    //      **其余一律（含 belong_type=null）→ 其他**（甲方原话「其他的类型统一显示在其他产品里」，是兜底不是白名单）；
+    //   ③ 退回量**不封顶**（候选 arrivedQuantity 恒 null），提交闸只剩「产品在不在清单里」这一道成员资格。
+    //
+    // 旧口径（账面可退量 期初+入库−销售−赠送 封顶 / 不在候选按三种成因分别报错 /
+    // RETURNABLE_BELONG_TYPES 业态白名单）整条作废，对应用例已删，不做两边兼容。
 
-        StoreReturnBatchBo.Item item = new StoreReturnBatchBo.Item();
-        item.setProductId(PRODUCT_ID);
-        item.setReturnQuantity(new BigDecimal("4.000"));
-        item.setReturnWeight(new BigDecimal("4.000"));
-        StoreReturnBatchBo batch = new StoreReturnBatchBo();
-        batch.setStoreId(STORE_ID);
-        batch.setItems(List.of(item));
-
-        // 盘点当日入库 3.000、材料外售成品到店 1.001 → 上限取大 = 3.000（旧口径相加 4.001 会放过 4.000 → 盘点损耗变负）
-        assertThatThrownBy(() -> service.batchCreate(batch))
-            .isInstanceOf(ServiceException.class)
-            .hasMessageContaining("3.000");
-        verify(baseMapper, never()).insert(any(StoreReturn.class));
-    }
-
-    @Test
-    @DisplayName("row119：退回量等于当日到店量上限 → 放行入库")
-    void testBatchCreate_AllowsUpToArrivedQuantity() {
-        prepareWhiteBarDictScenario();
-
-        StoreReturnBatchBo.Item item = new StoreReturnBatchBo.Item();
-        item.setProductId(PRODUCT_ID);
-        item.setReturnQuantity(new BigDecimal("3.000"));
-        item.setReturnWeight(new BigDecimal("3.000"));
-        StoreReturnBatchBo batch = new StoreReturnBatchBo();
-        batch.setStoreId(STORE_ID);
-        batch.setItems(List.of(item));
-
-        assertThat(service.batchCreate(batch)).isEqualTo(1);
-        ArgumentCaptor<StoreReturn> captor = ArgumentCaptor.forClass(StoreReturn.class);
-        verify(baseMapper).insert(captor.capture());
-        assertThat(captor.getValue().getGoodsWeight()).isEqualByComparingTo("3.000");
-    }
-
-    /**
-     * 白条退回字典产品场景：该店当日有白条到店、盘点已录该产品入库 3.000、
-     * 另有一个材料外售成品（原材料=该产品）当日到店 1.001。
-     */
-    @Test
-    @DisplayName("row205：候选可退量**不减损坏** —— 损坏的货本身就是要退回仓库的（销售/赠送为空时按 期初+入库 算）")
-    void testVegCandidates_doesNotSubtractLoss() {
-        StoreDailyLedger ledger = new StoreDailyLedger();
-        ledger.setProductId(PRODUCT_ID);
-        ledger.setOpeningQty(new BigDecimal("2.000"));
-        ledger.setInboundQty(new BigDecimal("10.000"));
-        // 全损：旧口径（期初+入库−损坏）会算出 0 → 这批货再也退不回仓库，正是要防的
-        ledger.setLossQty(new BigDecimal("12.000"));
-        when(storeDailyLedgerMapper.selectList(any())).thenReturn(List.of(ledger));
-        ProductInfo veg = new ProductInfo();
-        veg.setId(PRODUCT_ID);
-        veg.setProductName("上海青");
-        veg.setProductUnit("kg");
-        veg.setBelongType("vegetable");
-        when(productInfoMapper.selectBatchIds(any())).thenReturn(List.of(veg));
-        when(productInfoMapper.selectList(any())).thenReturn(List.of());
-        when(baseMapper.selectList(any())).thenReturn(List.of());
-
-        List<StoreReturnVegCandidateVo> candidates = service.listVegCandidates(STORE_ID);
-
-        assertThat(candidates).hasSize(1);
-        assertThat(candidates.get(0).getArrivedQuantity()).isEqualByComparingTo("12.000");
-    }
-
-    @Test
-    @DisplayName("row205：候选可退量 = 期初+入库−销售−赠送（卖掉/送掉的不再算进可退额度）")
-    void testVegCandidates_subtractsSaleAndGift() {
-        StoreDailyLedger ledger = new StoreDailyLedger();
-        ledger.setProductId(PRODUCT_ID);
-        ledger.setOpeningQty(new BigDecimal("2.000"));
-        ledger.setInboundQty(new BigDecimal("10.000"));
-        ledger.setSaleQty(new BigDecimal("3.000"));
-        ledger.setGiftQty(new BigDecimal("1.000"));
-        when(storeDailyLedgerMapper.selectList(any())).thenReturn(List.of(ledger));
-        ProductInfo veg = new ProductInfo();
-        veg.setId(PRODUCT_ID);
-        veg.setProductName("上海青");
-        veg.setProductUnit("kg");
-        veg.setBelongType("vegetable");
-        when(productInfoMapper.selectBatchIds(any())).thenReturn(List.of(veg));
-        when(productInfoMapper.selectList(any())).thenReturn(List.of());
-        when(baseMapper.selectList(any())).thenReturn(List.of());
-
-        List<StoreReturnVegCandidateVo> candidates = service.listVegCandidates(STORE_ID);
-
-        assertThat(candidates).hasSize(1);
-        assertThat(candidates.get(0).getArrivedQuantity()).isEqualByComparingTo("8.000");
-    }
-
-    @Test
-    @DisplayName("row205：销售+赠送吃光账面 → 该产品不再出现在候选里（可退量 ≤ 0 不列）")
-    void testVegCandidates_soldOutDropsFromCandidates() {
-        StoreDailyLedger ledger = new StoreDailyLedger();
-        ledger.setProductId(PRODUCT_ID);
-        ledger.setOpeningQty(new BigDecimal("2.000"));
-        ledger.setInboundQty(new BigDecimal("10.000"));
-        ledger.setSaleQty(new BigDecimal("12.000"));
-        when(storeDailyLedgerMapper.selectList(any())).thenReturn(List.of(ledger));
-        ProductInfo veg = new ProductInfo();
-        veg.setId(PRODUCT_ID);
-        veg.setProductName("上海青");
-        veg.setProductUnit("kg");
-        veg.setBelongType("vegetable");
-        when(productInfoMapper.selectBatchIds(any())).thenReturn(List.of(veg));
-        when(productInfoMapper.selectList(any())).thenReturn(List.of());
-        when(baseMapper.selectList(any())).thenReturn(List.of());
-
-        assertThat(service.listVegCandidates(STORE_ID)).isEmpty();
-    }
-
-    @Test
-    @DisplayName("row202：折叠成原材料后**已退量必须跟着搬**，否则 used 恒 0 → 同一产品可无限次退")
-    void testVegCandidates_foldKeepsReturnedQuantity() {
-        StoreDailyLedger ledger = new StoreDailyLedger();
-        ledger.setProductId(PRODUCT_ID);
-        ledger.setInboundQty(new BigDecimal("10.000"));
-        when(storeDailyLedgerMapper.selectList(any())).thenReturn(List.of(ledger));
-        ProductInfo veg = new ProductInfo();
-        veg.setId(PRODUCT_ID);
-        veg.setProductName("上海青");
-        veg.setProductUnit("kg");
-        veg.setBelongType("vegetable");
-        when(productInfoMapper.selectBatchIds(any())).thenReturn(List.of(veg));
-        when(productInfoMapper.selectList(any())).thenReturn(List.of());
-        // 今日已退 4.000
-        StoreReturn returned = new StoreReturn();
-        returned.setProductId(PRODUCT_ID);
-        returned.setReturnQuantity(new BigDecimal("4.000"));
-        when(baseMapper.selectList(any())).thenReturn(List.of(returned));
-
-        List<StoreReturnVegCandidateVo> candidates = service.listVegCandidates(STORE_ID);
-
-        assertThat(candidates).hasSize(1);
-        // 折叠链路（foldVegMaterialSold）重建 VO 时若漏搬 returnedQuantity，这里会是 null
-        assertThat(candidates.get(0).getReturnedQuantity()).isEqualByComparingTo("4.000");
-    }
-
-    /**
-     * 构造一个「台账里有该产品」的场景：给定业态 + 期初/入库，其余 mock 走空集。
-     * 用于验证提交闸对**每个 tab** 都真的生效（此前只有猪肉 tab 被测到）。
-     */
-    private void prepareLedgerScenario(String belongType, String opening, String inbound) {
-        prepareLedgerScenario(belongType, opening, inbound, "0", "0");
-    }
-
-    private void prepareLedgerScenario(String belongType, String opening, String inbound, String sale, String gift) {
-        StoreDailyLedger ledger = new StoreDailyLedger();
-        ledger.setProductId(PRODUCT_ID);
-        ledger.setOpeningQty(new BigDecimal(opening));
-        ledger.setInboundQty(new BigDecimal(inbound));
-        ledger.setSaleQty(new BigDecimal(sale));
-        ledger.setGiftQty(new BigDecimal(gift));
-        when(storeDailyLedgerMapper.selectList(any())).thenReturn(List.of(ledger));
-        ProductInfo p = new ProductInfo();
-        p.setId(PRODUCT_ID);
-        p.setProductName("测试产品");
-        p.setProductUnit("kg");
-        p.setBelongType(belongType);
-        when(productInfoMapper.selectBatchIds(any())).thenReturn(List.of(p));
-        when(productInfoMapper.selectById(PRODUCT_ID)).thenReturn(p);
-        when(productInfoMapper.selectList(any())).thenReturn(List.of(p));
-        when(baseMapper.selectList(any())).thenReturn(List.of());
-        when(productProductionMapper.selectDeliveredProductIdsToStore(any(), any())).thenReturn(List.of());
-        when(dictService.getAllDictByDictType(any())).thenReturn(Map.of());
-    }
-
-    /** 台账里没有的另一个产品（验「没盘过」分支）。 */
+    /** 清单外产品（验成员资格闸的拒绝路径）。 */
     private static final Long OTHER_PRODUCT_ID = 8009L;
 
-    private ProductInfo otherProduct() {
+    /** 果蔬「材料外售」成品折叠后的原材料产品。 */
+    private static final Long VEG_MATERIAL_ID = 8102L;
+
+    /** 退回产品清单字典（dict_value = 产品业务码，见 V202609081200__V6-R214-*.sql）。 */
+    private static final String DICT_RETURN_PRODUCT_LIST = "djs_return_product_list";
+
+    /** 清单里的一个产品：{@code id}=雪花主键、{@code code}=产品业务码（字典填的就是它）。 */
+    private ProductInfo listedProduct(Long id, String code, String name, String belongType) {
         ProductInfo p = new ProductInfo();
-        p.setId(OTHER_PRODUCT_ID);
-        p.setProductName("没盘过的菜");
+        p.setId(id);
+        p.setProductId(code);
+        p.setProductName(name);
         p.setProductUnit("kg");
-        p.setBelongType("vegetable");
+        p.setBelongType(belongType);
         return p;
     }
 
+    /**
+     * 把这批产品配成「退回产品清单」。
+     *
+     * <p>取一次候选会打三次 {@code productInfoMapper.selectList}：按业务码 resolve 雪花 id、按 id 取详情、
+     * 果蔬折叠时取原材料。三次一律返这同一批 —— mock 不执行 WHERE，多返的行由 service 自己按 tab /
+     * 折叠门槛筛掉，比按调用次序摆 {@code thenReturn(a, b, c)} 稳得多（次序一变就静默错位）。</p>
+     */
+    /**
+     * 比 {@link #stubReturnProductList} 精细一档的桩：**字典里配了谁**与**按 id 查得到谁**分开给。
+     *
+     * <p>`resolveReturnListProductIds` 是按业务码查（`product_id IN (...)`），其余链路按雪花主键查（`id IN (...)`），
+     * 靠 wrapper 的 sqlSegment 区分 —— 一律返全部的 blanket 桩会让「只配成品」这个前提失效，
+     * 原材料被当成也配进了字典，折叠那条路就测不到了。</p>
+     */
+    private void stubDictListedButQueryable(List<ProductInfo> listed, List<ProductInfo> queryable) {
+        Map<String, String> dict = new LinkedHashMap<>();
+        for (ProductInfo p : listed) {
+            dict.put(p.getProductId(), p.getProductName());
+        }
+        for (ProductInfo p : queryable) {
+            when(productInfoMapper.selectById(p.getId())).thenReturn(p);
+        }
+        when(dictService.getAllDictByDictType(DICT_RETURN_PRODUCT_LIST)).thenReturn(dict);
+        when(productInfoMapper.selectList(any())).thenAnswer(inv -> {
+            Object w = inv.getArgument(0);
+            String seg = w == null ? "" : String.valueOf(
+                ((com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<?>) w).getSqlSegment());
+            // 按业务码查 = 字典 resolve，只有配进字典的那些才算命中
+            return seg.contains("product_id") ? listed : queryable;
+        });
+        when(baseMapper.selectList(any())).thenReturn(List.of());
+    }
+
+    private void stubReturnProductList(ProductInfo... listed) {
+        List<ProductInfo> all = List.of(listed);
+        Map<String, String> dict = new LinkedHashMap<>();
+        for (ProductInfo p : all) {
+            // getAllDictByDictType 返的是 dictValue → dictLabel，所以 key 才是产品业务码
+            dict.put(p.getProductId(), p.getProductName());
+            when(productInfoMapper.selectById(p.getId())).thenReturn(p);
+        }
+        when(dictService.getAllDictByDictType(DICT_RETURN_PRODUCT_LIST)).thenReturn(dict);
+        when(productInfoMapper.selectList(any())).thenReturn(all);
+        when(baseMapper.selectList(any())).thenReturn(List.of());
+    }
+
     private StoreReturnBatchBo batchOf(String qty) {
+        return batchOf(PRODUCT_ID, qty);
+    }
+
+    private StoreReturnBatchBo batchOf(Long productId, String qty) {
         StoreReturnBatchBo.Item item = new StoreReturnBatchBo.Item();
-        item.setProductId(PRODUCT_ID);
+        item.setProductId(productId);
         item.setReturnQuantity(new BigDecimal(qty));
         item.setReturnWeight(new BigDecimal(qty));
         StoreReturnBatchBo batch = new StoreReturnBatchBo();
@@ -592,287 +490,225 @@ class StoreReturnServiceImplTest {
     }
 
     @Test
-    @DisplayName("row202：**果蔬 tab** 的提交闸真的生效（删掉 listVegCandidates 那圈 for 必须变红）")
-    void testBatchCreate_vegTabGateEnforced() {
-        prepareLedgerScenario("vegetable", "2.000", "4.000");
-        assertThatThrownBy(() -> service.batchCreate(batchOf("6.001")))
-            .isInstanceOf(ServiceException.class)
-            .hasMessageContaining("6.000");
+    @DisplayName("row214：清单内产品退回量**不封顶** —— 退 999999 也放行（甲方「对于其退回量不做限制」）")
+    void testBatchCreate_allowsHugeQuantityWhenInReturnList() {
+        stubReturnProductList(listedProduct(PRODUCT_ID, "Y00109", "扇子骨", "pork"));
+
+        assertThat(service.batchCreate(batchOf("999999"))).isEqualTo(1);
+
+        ArgumentCaptor<StoreReturn> cap = ArgumentCaptor.forClass(StoreReturn.class);
+        verify(baseMapper, times(1)).insert(cap.capture());
+        assertThat(cap.getValue().getReturnQuantity()).isEqualByComparingTo("999999");
+        assertThat(cap.getValue().getReturnDirection()).isEqualTo("store_to_warehouse");
+        assertThat(cap.getValue().getReturnStatus()).isEqualTo("pending");
+    }
+
+    @Test
+    @DisplayName("row214：清单外产品提交 → 400，文案指向 admin 字典管理（不再说「请先去盘点」）")
+    void testBatchCreate_rejectsProductNotInReturnList() {
+        stubReturnProductList(listedProduct(PRODUCT_ID, "Y00109", "扇子骨", "pork"));
+        when(productInfoMapper.selectById(OTHER_PRODUCT_ID))
+            .thenReturn(listedProduct(OTHER_PRODUCT_ID, "Y00999", "没配进清单的生菜", "vegetable"));
+
+        Throwable thrown = catchThrowable(() -> service.batchCreate(batchOf(OTHER_PRODUCT_ID, "1.000")));
+
+        assertThat(thrown).isInstanceOf(ServiceException.class);
+        assertThat(((ServiceException) thrown).getCode()).isEqualTo(400);
+        assertThat(thrown.getMessage())
+            .contains("没配进清单的生菜")
+            .contains("不在「退回产品清单」里")
+            .contains("字典管理")
+            // 台账口径已作废：再让人去盘点就是指死路（盘完照样退不了）
+            .doesNotContain("盘点");
         verify(baseMapper, never()).insert(any(StoreReturn.class));
     }
 
     @Test
-    @DisplayName("row205：**insertByBo** 单条路径同样套台账闸（storeId 真被传进去，退超额必拒）")
-    void testInsertByBo_storeToWarehouseGateEnforced() {
-        prepareLedgerScenario("vegetable", "0", "3.000");
-
-        StoreReturnBo b = bo("store_to_warehouse", STORE_ID);
-        b.setReturnQuantity(new BigDecimal("3.001"));
-
-        assertThatThrownBy(() -> service.insertByBo(b))
-            .isInstanceOf(ServiceException.class)
-            .hasMessageContaining("3.000");
-        verify(baseMapper, never()).insert(any(StoreReturn.class));
-    }
-
-    @Test
-    @DisplayName("row205：**insertByBo** 对没盘过的产品报「请先去盘点」，且回查台账时 storeId 真被带上（捕获 wrapper 断言）")
-    void testInsertByBo_notInLedgerSaysGoCount() {
-        prepareLedgerScenario("vegetable", "0", "3.000");
-        when(productInfoMapper.selectById(OTHER_PRODUCT_ID)).thenReturn(otherProduct());
-        when(storeDailyLedgerMapper.exists(any())).thenReturn(false);
-
-        StoreReturnBo b = bo("store_to_warehouse", STORE_ID);
-        b.setProductId(OTHER_PRODUCT_ID);
-
-        assertThatThrownBy(() -> service.insertByBo(b))
-            .isInstanceOf(ServiceException.class)
-            .hasMessageContaining("请先在门店盘点里录入");
-        verify(baseMapper, never()).insert(any(StoreReturn.class));
-        // ⚠️ 光 stub exists(any()) 证明不了 storeId 传对了（传 null 也一样绿）——捕获 wrapper 看真实绑定值。
-        @SuppressWarnings("unchecked")
-        ArgumentCaptor<com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<StoreDailyLedger>> wrapperCap =
-            ArgumentCaptor.forClass(com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper.class);
-        verify(storeDailyLedgerMapper, atLeastOnce()).exists(wrapperCap.capture());
-        assertThat(wrapperCap.getAllValues()).anySatisfy(w -> {
-            // MP 的 paramNameValuePairs 是懒生成的，先取一次 SQL 才会绑值
-            assertThat(w.getTargetSql()).contains("store_id").contains("product_id");
-            assertThat(w.getParamNameValuePairs().values()).contains(STORE_ID, OTHER_PRODUCT_ID);
-        });
-    }
-
-    @Test
-    @DisplayName("row205：品类不可退（包材/饲料等非白名单业态）→ 报「品类不支持退回」，不能说「被销售赠送抵完」")
-    void testBatchCreate_nonReturnableBelongTypeSaysCategory() {
-        prepareLedgerScenario("vegetable", "0", "10.000");
-        ProductInfo pkg = new ProductInfo();
-        pkg.setId(OTHER_PRODUCT_ID);
-        pkg.setProductName("礼品纸箱");
-        pkg.setProductUnit("个");
-        pkg.setBelongType("package");
-        when(productInfoMapper.selectById(OTHER_PRODUCT_ID)).thenReturn(pkg);
-        when(storeDailyLedgerMapper.exists(any())).thenReturn(true);
-
-        StoreReturnBatchBo.Item item = new StoreReturnBatchBo.Item();
-        item.setProductId(OTHER_PRODUCT_ID);
-        item.setReturnQuantity(new BigDecimal("1.000"));
-        item.setReturnWeight(new BigDecimal("1.000"));
-        StoreReturnBatchBo batch = new StoreReturnBatchBo();
-        batch.setStoreId(STORE_ID);
-        batch.setItems(List.of(item));
-
-        assertThatThrownBy(() -> service.batchCreate(batch))
-            .isInstanceOf(ServiceException.class)
-            .hasMessageContaining("品类不支持退回")
-            .hasMessageNotContaining("已被销售");
-        verify(baseMapper, never()).insert(any(StoreReturn.class));
-    }
-
-    /**
-     * 可退业态白名单必须恰好 = 三个 tab 白名单之和。
-     * <p>少一个 → 那个业态的产品卖光时会被告知「品类不支持退回」（说瞎话）；多一个 → 不该出现在任何
-     * 候选里的品类会被放进「账面已无可退量」分支。两种都只在特定数据下才现形，靠功能用例抓不住，
-     * 所以这里做结构断言。</p>
-     */
-    @Test
-    @DisplayName("row205：可退业态白名单 = 猪肉tab ∪ 其他tab ∪ {vegetable}，一个不多一个不少")
-    void testReturnableBelongTypesIsExactUnionOfTabs() throws Exception {
-        assertThat(readStaticSet("RETURNABLE_BELONG_TYPES"))
-            .containsExactlyInAnyOrder("pork", "white_bar", "vegetable", "dry_good", "egg", "other")
-            .isEqualTo(union(readStaticSet("PORK_TAB_BELONG_TYPES"),
-                readStaticSet("OTHER_TAB_BELONG_TYPES"), Set.of("vegetable")));
-    }
-
-    @SuppressWarnings("unchecked")
-    private static Set<String> readStaticSet(String field) throws Exception {
-        java.lang.reflect.Field f = StoreReturnServiceImpl.class.getDeclaredField(field);
-        f.setAccessible(true);
-        return (Set<String>) f.get(null);
-    }
-
-    @SafeVarargs
-    private static Set<String> union(Set<String>... sets) {
-        Set<String> all = new java.util.LinkedHashSet<>();
-        for (Set<String> one : sets) {
-            all.addAll(one);
-        }
-        return all;
-    }
-
-    @Test
-    @DisplayName("row205：**提交闸**对 belong_type=NULL 的产品不得 NPE，要报「品类不支持退回」")
-    void testBatchCreate_nullBelongTypeDoesNotThrowNpe() {
-        prepareLedgerScenario("vegetable", "0", "10.000");
-        ProductInfo nullType = new ProductInfo();
-        nullType.setId(OTHER_PRODUCT_ID);
-        nullType.setProductName("外购未分类品");
-        nullType.setProductUnit("kg");
-        nullType.setBelongType(null);
-        when(productInfoMapper.selectById(OTHER_PRODUCT_ID)).thenReturn(nullType);
-        when(storeDailyLedgerMapper.exists(any())).thenReturn(true);
-
-        StoreReturnBatchBo.Item item = new StoreReturnBatchBo.Item();
-        item.setProductId(OTHER_PRODUCT_ID);
-        item.setReturnQuantity(new BigDecimal("1.000"));
-        item.setReturnWeight(new BigDecimal("1.000"));
-        StoreReturnBatchBo batch = new StoreReturnBatchBo();
-        batch.setStoreId(STORE_ID);
-        batch.setItems(List.of(item));
-
-        assertThatThrownBy(() -> service.batchCreate(batch))
-            .isInstanceOf(ServiceException.class)
-            .hasMessageContaining("品类不支持退回");
-        verify(baseMapper, never()).insert(any(StoreReturn.class));
-    }
-
-    @Test
-    @DisplayName("row205：品类不可退 + 今天没盘过 → 报「品类不支持」而不是「请先去盘点」（别指死路）")
-    void testBatchCreate_nonReturnableAndNotCountedSaysCategory() {
-        prepareLedgerScenario("vegetable", "0", "10.000");
-        ProductInfo seed = new ProductInfo();
-        seed.setId(OTHER_PRODUCT_ID);
-        seed.setProductName("上海青种子");
-        seed.setProductUnit("包");
-        seed.setBelongType("seed");
-        when(productInfoMapper.selectById(OTHER_PRODUCT_ID)).thenReturn(seed);
-        when(storeDailyLedgerMapper.exists(any())).thenReturn(false);
-
-        StoreReturnBatchBo.Item item = new StoreReturnBatchBo.Item();
-        item.setProductId(OTHER_PRODUCT_ID);
-        item.setReturnQuantity(new BigDecimal("1.000"));
-        item.setReturnWeight(new BigDecimal("1.000"));
-        StoreReturnBatchBo batch = new StoreReturnBatchBo();
-        batch.setStoreId(STORE_ID);
-        batch.setItems(List.of(item));
-
-        assertThatThrownBy(() -> service.batchCreate(batch))
-            .isInstanceOf(ServiceException.class)
-            .hasMessageContaining("品类不支持退回")
-            .hasMessageNotContaining("请先在门店盘点里录入");
-    }
-
-    @Test
-    @DisplayName("row205：台账里有 belong_type=NULL 的行 → 候选接口正常返回，不得 NPE 500")
-    void testCandidates_nullBelongTypeDoesNotThrow() {
-        StoreDailyLedger normal = new StoreDailyLedger();
-        normal.setProductId(PRODUCT_ID);
-        normal.setOpeningQty(new BigDecimal("5.000"));
-        normal.setInboundQty(BigDecimal.ZERO);
-        StoreDailyLedger weird = new StoreDailyLedger();
-        weird.setProductId(OTHER_PRODUCT_ID);
-        weird.setOpeningQty(new BigDecimal("9.000"));
-        weird.setInboundQty(BigDecimal.ZERO);
-        when(storeDailyLedgerMapper.selectList(any())).thenReturn(List.of(normal, weird));
-
-        ProductInfo veg = new ProductInfo();
-        veg.setId(PRODUCT_ID);
-        veg.setProductName("上海青");
-        veg.setProductUnit("kg");
-        veg.setBelongType("vegetable");
-        ProductInfo nullType = new ProductInfo();
-        nullType.setId(OTHER_PRODUCT_ID);
-        nullType.setProductName("外购未分类品");
-        nullType.setProductUnit("kg");
-        nullType.setBelongType(null);
-        when(productInfoMapper.selectBatchIds(any())).thenReturn(List.of(veg, nullType));
+    @DisplayName("row214：字典未配（空清单）→ 三个 tab 全空，且任何产品提交一律被拒")
+    void testEmptyDict_allTabsEmptyAndSubmitRejected() {
+        when(dictService.getAllDictByDictType(anyString())).thenReturn(Map.of());
         when(productInfoMapper.selectList(any())).thenReturn(List.of());
         when(baseMapper.selectList(any())).thenReturn(List.of());
+        when(productInfoMapper.selectById(PRODUCT_ID))
+            .thenReturn(listedProduct(PRODUCT_ID, "Y00109", "扇子骨", "pork"));
 
-        List<StoreReturnVegCandidateVo> candidates = service.listVegCandidates(STORE_ID);
-
-        assertThat(candidates).hasSize(1);
-        assertThat(candidates.get(0).getProductName()).isEqualTo("上海青");
-    }
-
-    @Test
-    @DisplayName("row205：盘过但被销售赠送抵完 → 报「账面已无可退量」，不能再喊「请先去盘点」（他刚盘完）")
-    void testBatchCreate_soldOutSaysNoQuotaNotGoCount() {
-        prepareLedgerScenario("vegetable", "2.000", "10.000", "12.000", "0");
-        // 台账里有这个产品（盘过了），只是 2+10−12=0 被候选剔除 → 落到 limit==null 分支
-        when(storeDailyLedgerMapper.exists(any())).thenReturn(true);
+        assertThat(service.listPorkCandidates(STORE_ID)).as("猪肉 tab").isEmpty();
+        assertThat(service.listVegCandidates(STORE_ID)).as("果蔬 tab").isEmpty();
+        assertThat(service.listOtherCandidates(STORE_ID)).as("其他 tab").isEmpty();
 
         assertThatThrownBy(() -> service.batchCreate(batchOf("1.000")))
             .isInstanceOf(ServiceException.class)
-            .hasMessageContaining("账面已无可退量")
-            .hasMessageNotContaining("请先在门店盘点里录入");
+            .hasMessageContaining("不在「退回产品清单」里");
         verify(baseMapper, never()).insert(any(StoreReturn.class));
     }
 
     @Test
-    @DisplayName("row205：今天压根没盘过这个产品 → 仍报「不在当日盘点台账中，请先盘点」")
-    void testBatchCreate_notInLedgerSaysGoCount() {
-        prepareLedgerScenario("vegetable", "2.000", "10.000");
-        when(productInfoMapper.selectById(OTHER_PRODUCT_ID)).thenReturn(otherProduct());
-        when(storeDailyLedgerMapper.exists(any())).thenReturn(false);
+    @DisplayName("row214：belong_type=NULL 的外购产品落「其他」tab（兜底不是白名单）—— 不丢也不 NPE")
+    void testCandidates_nullBelongTypeFallsToOtherTab() {
+        stubReturnProductList(listedProduct(PRODUCT_ID, "Y00901", "外购未分类品", null));
 
+        List<StoreReturnVegCandidateVo> other = service.listOtherCandidates(STORE_ID);
+        assertThat(other).hasSize(1);
+        assertThat(other.get(0).getProductId()).isEqualTo(PRODUCT_ID);
+        assertThat(other.get(0).getProductName()).isEqualTo("外购未分类品");
+        assertThat(other.get(0).getBelongType()).isNull();
+        assertThat(service.listPorkCandidates(STORE_ID)).as("不该窜进猪肉 tab").isEmpty();
+        assertThat(service.listVegCandidates(STORE_ID)).as("不该窜进果蔬 tab").isEmpty();
+    }
+
+    @Test
+    @DisplayName("row214：**提交闸**对 belong_type=NULL 的产品不得 NPE —— 在清单里就照常放行")
+    void testBatchCreate_nullBelongTypeInListPasses() {
+        stubReturnProductList(listedProduct(PRODUCT_ID, "Y00901", "外购未分类品", null));
+
+        assertThat(service.batchCreate(batchOf("1.000"))).isEqualTo(1);
+        verify(baseMapper, times(1)).insert(any(StoreReturn.class));
+    }
+
+    @ParameterizedTest(name = "belong_type={0} → {1} tab")
+    @CsvSource({"pork,pork", "white_bar,pork", "vegetable,veg", "dry_good,other", "egg,other", "package,other"})
+    @DisplayName("row214：tab 分流只看产品自身 belong_type，猪肉 / 果蔬之外一律落「其他」")
+    void testCandidates_tabRoutingByBelongType(String belongType, String tab) {
+        stubReturnProductList(listedProduct(PRODUCT_ID, "Y00109", "测试产品", belongType));
+
+        assertThat(service.listPorkCandidates(STORE_ID)).as("猪肉 tab").hasSize("pork".equals(tab) ? 1 : 0);
+        assertThat(service.listVegCandidates(STORE_ID)).as("果蔬 tab").hasSize("veg".equals(tab) ? 1 : 0);
+        assertThat(service.listOtherCandidates(STORE_ID)).as("其他 tab").hasSize("other".equals(tab) ? 1 : 0);
+    }
+
+    @ParameterizedTest(name = "belong_type={0} → subCategory={1}")
+    @CsvSource({"pork,pork", "white_bar,white_bar"})
+    @DisplayName("row214：白条仍留在猪肉 tab，只用 subCategory 区分展示（Kevin 口径，不单开 tab）")
+    void testPorkCandidates_subCategoryByBelongType(String belongType, String subCategory) {
+        stubReturnProductList(listedProduct(PRODUCT_ID, "Y00109", "测试产品", belongType));
+
+        assertThat(service.listPorkCandidates(STORE_ID)).hasSize(1);
+        assertThat(service.listPorkCandidates(STORE_ID).get(0).getSubCategory()).isEqualTo(subCategory);
+    }
+
+    @Test
+    @DisplayName("row214：猪肉 / 其他 tab 候选的 arrivedQuantity 恒为 null = 不封顶（前端据此把 :max 放开）")
+    void testCandidates_arrivedQuantityIsNullMeaningNoCap() {
+        stubReturnProductList(
+            listedProduct(PRODUCT_ID, "Y00109", "扇子骨", "pork"),
+            listedProduct(OTHER_PRODUCT_ID, "Y00301", "干羊肚菌", "dry_good"));
+
+        assertThat(service.listPorkCandidates(STORE_ID).get(0).getArrivedQuantity())
+            .as("猪肉 tab 一旦下发上限，前端 maxOf 就又开始封顶了").isNull();
+        assertThat(service.listOtherCandidates(STORE_ID).get(0).getArrivedQuantity())
+            .as("其他 tab 一旦下发上限，前端 maxOf 就又开始封顶了").isNull();
+    }
+
+    @Test
+    @DisplayName("row214：**果蔬 tab** 候选的 arrivedQuantity 同样必须是 null —— 给 0 会被前端当「无可退量」把输入框禁掉")
+    void testVegCandidates_arrivedQuantityIsNullNotZero() {
+        stubReturnProductList(listedProduct(PRODUCT_ID, "Y00201", "上海青", "vegetable"));
+
+        List<StoreReturnVegCandidateVo> veg = service.listVegCandidates(STORE_ID);
+        assertThat(veg).hasSize(1);
+        // admin ReturnOperationPanel.maxOf()：null → Infinity（不封顶）；0 → max=0 → 输入框禁用 +「无可退量」
+        assertThat(veg.get(0).getArrivedQuantity())
+            .as("果蔬 tab 下发 0 = 整列输入框被禁，等于退回操作果蔬没法用").isNull();
+    }
+
+    @Test
+    @DisplayName("row214：果蔬「材料外售」成品折叠成原材料（清单里配的是成品，退回入库要落到原材料头上）")
+    void testVegCandidates_foldsMaterialSoldToMaterial() {
+        ProductInfo finished = listedProduct(PRODUCT_ID, "Y00201", "有机苕尖350g", "vegetable");
+        finished.setProductUnit("份");
+        finished.setIsMaterialSold(1);
+        finished.setProductMaterial(VEG_MATERIAL_ID);
+        // 原材料自身 belong_type 留空 → 它自己落「其他」tab，不干扰果蔬 tab 的折叠断言
+        ProductInfo material = listedProduct(VEG_MATERIAL_ID, "Y00202", "苕尖", null);
+        stubReturnProductList(finished, material);
+        StoreReturn returned = new StoreReturn();
+        returned.setProductId(VEG_MATERIAL_ID);
+        returned.setReturnQuantity(new BigDecimal("4.000"));
+        when(baseMapper.selectList(any())).thenReturn(List.of(returned));
+
+        List<StoreReturnVegCandidateVo> veg = service.listVegCandidates(STORE_ID);
+
+        assertThat(veg).hasSize(1);
+        assertThat(veg.get(0).getProductId()).as("折叠后要换成原材料 id").isEqualTo(VEG_MATERIAL_ID);
+        assertThat(veg.get(0).getProductName()).isEqualTo("苕尖");
+        assertThat(veg.get(0).getProductUnit()).isEqualTo("kg");
+        // 已退量按**折叠后的最终 id** 回填 —— 折叠前填会落在成品头上，录入页显示恒 0
+        assertThat(veg.get(0).getReturnedQuantity()).isEqualByComparingTo("4.000");
+    }
+
+    @Test
+    @DisplayName("row214：只把**成品**配进清单，折叠成原材料后仍然能提交 —— 候选点得到就必须提交得了")
+    void testBatchCreate_foldedMaterialPassesGateWhenOnlyFinishedIsListed() {
+        // 客户在字典里配的是他在产品列表里看到的成品；候选会被 foldVegMaterialSold 换成原材料 id，
+        // 闸若只比字典本身 → 候选里点得到、一提交必 400，正是换口径前那段注释警告过的坑。
+        ProductInfo finished = listedProduct(PRODUCT_ID, "Y00201", "有机苕尖350g", "vegetable");
+        finished.setProductUnit("份");
+        finished.setIsMaterialSold(1);
+        finished.setProductMaterial(VEG_MATERIAL_ID);
+        ProductInfo material = listedProduct(VEG_MATERIAL_ID, "Y00202", "苕尖", "vegetable");
+        // 字典里**只配成品**（现实里客户配的就是产品列表里看得见的那个），但按 id 查得到原材料
+        stubDictListedButQueryable(List.of(finished), List.of(finished, material));
+        when(productInfoMapper.selectById(VEG_MATERIAL_ID)).thenReturn(material);
+
+        // 候选给出来的就是原材料 id
+        List<StoreReturnVegCandidateVo> veg = service.listVegCandidates(STORE_ID);
+        assertThat(veg).hasSize(1);
+        assertThat(veg.get(0).getProductId()).isEqualTo(VEG_MATERIAL_ID);
+
+        // 拿候选给的那个 id 提交，必须过闸
+        StoreReturnBatchBo bo = new StoreReturnBatchBo();
+        bo.setStoreId(STORE_ID);
         StoreReturnBatchBo.Item item = new StoreReturnBatchBo.Item();
-        item.setProductId(OTHER_PRODUCT_ID);
+        item.setProductId(VEG_MATERIAL_ID);
+        item.setReturnQuantity(new BigDecimal("2.000"));
+        bo.setItems(List.of(item));
+
+        assertThatCode(() -> service.batchCreate(bo))
+            .as("清单里配的成品折叠成原材料后被闸拒 = 候选点得到却提交不了")
+            .doesNotThrowAnyException();
+    }
+
+    @Test
+    @DisplayName("row214：折叠放行只限清单产品自己的原材料，别的原材料照样拒")
+    void testBatchCreate_unrelatedMaterialStillRejected() {
+        ProductInfo finished = listedProduct(PRODUCT_ID, "Y00201", "有机苕尖350g", "vegetable");
+        finished.setIsMaterialSold(1);
+        finished.setProductMaterial(VEG_MATERIAL_ID);
+        ProductInfo material = listedProduct(VEG_MATERIAL_ID, "Y00202", "苕尖", "vegetable");
+        ProductInfo unrelated = listedProduct(9_999_001L, "Y00999", "毫不相干的原材料", "vegetable");
+        stubDictListedButQueryable(List.of(finished), List.of(finished, material, unrelated));
+        when(productInfoMapper.selectById(9_999_001L)).thenReturn(unrelated);
+
+        StoreReturnBatchBo bo = new StoreReturnBatchBo();
+        bo.setStoreId(STORE_ID);
+        StoreReturnBatchBo.Item item = new StoreReturnBatchBo.Item();
+        item.setProductId(9_999_001L);
         item.setReturnQuantity(new BigDecimal("1.000"));
-        item.setReturnWeight(new BigDecimal("1.000"));
-        StoreReturnBatchBo batch = new StoreReturnBatchBo();
-        batch.setStoreId(STORE_ID);
-        batch.setItems(List.of(item));
+        bo.setItems(List.of(item));
 
-        assertThatThrownBy(() -> service.batchCreate(batch))
+        assertThatThrownBy(() -> service.batchCreate(bo))
             .isInstanceOf(ServiceException.class)
-            .hasMessageContaining("请先在门店盘点里录入");
-        verify(baseMapper, never()).insert(any(StoreReturn.class));
+            .hasMessageContaining("不在「退回产品清单」里");
     }
 
     @Test
-    @DisplayName("row205：提交闸按 期初+入库−销售−赠送 封顶（10+0−4−1=5，退 5.001 必拒）")
-    void testBatchCreate_gateUsesSaleAndGiftDeducted() {
-        prepareLedgerScenario("vegetable", "0", "10.000", "4.000", "1.000");
-        assertThatThrownBy(() -> service.batchCreate(batchOf("5.001")))
-            .isInstanceOf(ServiceException.class)
-            .hasMessageContaining("5.000");
-        verify(baseMapper, never()).insert(any(StoreReturn.class));
+    @DisplayName("row214：礼盒配进清单也不出现在候选里 —— 列出来只会让工人白填一遍再吃 400")
+    void testOtherCandidates_giftBoxNotListedEvenWhenInReturnList() {
+        stubReturnProductList(
+            listedProduct(PRODUCT_ID, "Y00500", "有机蔬菜盲盒3.5斤", "gift_box"),
+            listedProduct(9_999_002L, "Y00501", "大米10斤", "other"));
+
+        List<StoreReturnVegCandidateVo> other = service.listOtherCandidates(STORE_ID);
+
+        assertThat(other).extracting(StoreReturnVegCandidateVo::getProductName)
+            .containsExactly("大米10斤");
     }
 
-    @Test
-    @DisplayName("row202：**其他产品 tab**（干货/蛋类/其他）的提交闸真的生效 —— 本轮唯一功能性新增，此前零覆盖")
-    void testBatchCreate_otherTabGateEnforced() {
-        prepareLedgerScenario("dry_good", "5.000", "20.000");
-        assertThatThrownBy(() -> service.batchCreate(batchOf("25.001")))
-            .isInstanceOf(ServiceException.class)
-            .hasMessageContaining("25.000");
-        verify(baseMapper, never()).insert(any(StoreReturn.class));
-    }
-
-    @Test
-    @DisplayName("row202：不在台账候选里的产品**必须拒绝** —— 曾经放行，可从没收过货的门店凭空退成仓库库存")
-    void testBatchCreate_rejectsProductNotInLedger() {
-        // 台账为空 → 任何产品都不在候选 map 里
-        when(storeDailyLedgerMapper.selectList(any())).thenReturn(List.of());
-        ProductInfo p = new ProductInfo();
-        p.setId(PRODUCT_ID);
-        p.setProductName("从没到过店的菜");
-        p.setProductUnit("kg");
-        p.setBelongType("vegetable");
-        when(productInfoMapper.selectById(PRODUCT_ID)).thenReturn(p);
-        when(productInfoMapper.selectList(any())).thenReturn(List.of());
-        when(productInfoMapper.selectBatchIds(any())).thenReturn(List.of());
-        when(baseMapper.selectList(any())).thenReturn(List.of());
-        when(productProductionMapper.selectDeliveredProductIdsToStore(any(), any())).thenReturn(List.of());
-        when(dictService.getAllDictByDictType(any())).thenReturn(Map.of());
-
-        assertThatThrownBy(() -> service.batchCreate(batchOf("99999")))
-            .isInstanceOf(ServiceException.class)
-            .hasMessageContaining("不在该门店当日盘点台账中");
-        verify(baseMapper, never()).insert(any(StoreReturn.class));
-    }
-
-    /**
-     * 三个 tab 的候选**都必须**带上「今日已退量」。
-     *
-     * <p>回填是在各 tab 入口分别做的（listLedgerCandidates 本身不填 —— 它要留给果蔬折叠改写 productId
-     * 之后再按最终 id 查）。这个分散结构很容易漏掉某个 tab，漏掉的那个 tab 已退量恒 null →
-     * mergeRemain 把 used 当 0 → 该 tab 可无限次退。**曾经真漏过猪肉 tab。**</p>
-     */
-    @ParameterizedTest(name = "{0} tab 候选必须回填已退量")
-    @CsvSource({"pork,pork", "vegetable,vegetable", "dry_good,other"})
+    @ParameterizedTest(name = "belong_type={0}（{1} tab）候选必须回填已退量")
+    @CsvSource({"pork,pork", "white_bar,pork", "vegetable,veg", "dry_good,other"})
+    @DisplayName("row214：三个 tab 都要回填「今日已退量」—— 不再用于封顶，但录入页要显示今天已经退过多少")
     void testCandidates_allTabsFillReturnedQuantity(String belongType, String tab) {
-        prepareLedgerScenario(belongType, "0", "10.000");
+        stubReturnProductList(listedProduct(PRODUCT_ID, "Y00109", "测试产品", belongType));
         StoreReturn returned = new StoreReturn();
         returned.setProductId(PRODUCT_ID);
         returned.setReturnQuantity(new BigDecimal("4.000"));
@@ -880,10 +716,62 @@ class StoreReturnServiceImplTest {
 
         BigDecimal actual = switch (tab) {
             case "pork" -> service.listPorkCandidates(STORE_ID).get(0).getReturnedQuantity();
-            case "vegetable" -> service.listVegCandidates(STORE_ID).get(0).getReturnedQuantity();
+            case "veg" -> service.listVegCandidates(STORE_ID).get(0).getReturnedQuantity();
             default -> service.listOtherCandidates(STORE_ID).get(0).getReturnedQuantity();
         };
-        assertThat(actual).as("%s tab 漏回填已退量 → 该 tab 闸门失效", tab).isEqualByComparingTo("4.000");
+        assertThat(actual).as("%s tab 漏回填已退量 → 录入页看不到今天退过多少", tab).isEqualByComparingTo("4.000");
+    }
+
+    @Test
+    @DisplayName("row178+row214：礼盒即便配进了清单也拒 —— 礼盒闸排在清单闸前面")
+    void testBatchCreate_giftBoxRejectedEvenWhenInReturnList() {
+        stubReturnProductList(listedProduct(PRODUCT_ID, "Y00500", "有机蔬菜盲盒3.5斤", "gift_box"));
+
+        assertThatThrownBy(() -> service.batchCreate(batchOf("1.000")))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("礼盒");
+        verify(baseMapper, never()).insert(any(StoreReturn.class));
+    }
+
+    @Test
+    @DisplayName("row214：**insertByBo** 门店退仓库方向同样只过清单闸 —— 清单外产品必拒且不写库存")
+    void testInsertByBo_storeToWarehouseRejectsNotInReturnList() {
+        stubReturnProductList(listedProduct(PRODUCT_ID, "Y00109", "扇子骨", "pork"));
+        when(productInfoMapper.selectById(OTHER_PRODUCT_ID))
+            .thenReturn(listedProduct(OTHER_PRODUCT_ID, "Y00999", "没配进清单的生菜", "vegetable"));
+
+        StoreReturnBo b = bo("store_to_warehouse", STORE_ID);
+        b.setProductId(OTHER_PRODUCT_ID);
+
+        assertThatThrownBy(() -> service.insertByBo(b))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("不在「退回产品清单」里");
+        verify(baseMapper, never()).insert(any(StoreReturn.class));
+        // 这条路是即时真写 location_stock 的，闸必须挡在 inbound 之前
+        verify(purchaseInService, never()).inboundReturnBasket(any(), any(), any(), anyString(), any());
+    }
+
+    @Test
+    @DisplayName("row214：**insertByBo** 清单内产品退多少都放行（数量放开，产品范围没放开）")
+    void testInsertByBo_storeToWarehouseAllowsHugeQuantityWhenInList() {
+        stubReturnProductList(listedProduct(PRODUCT_ID, "Y00109", "扇子骨", "pork"));
+
+        StoreReturnBo b = bo("store_to_warehouse", STORE_ID);
+        b.setReturnQuantity(new BigDecimal("999999"));
+
+        assertThat(service.insertByBo(b)).isNotNull();
+        verify(baseMapper, times(1)).insert(any(StoreReturn.class));
+        verify(purchaseInService, times(1)).inboundReturnBasket(
+            eq(PRODUCT_ID), eq(LOCATION_ID), eq(new BigDecimal("999999")), eq(FLOW_RETURN_IN), any());
+    }
+
+    @Test
+    @DisplayName("row214：顾客退门店（customer_to_store）**不过**清单闸 —— 清单管的是门店退仓库那条路")
+    void testInsertByBo_customerToStoreNotGatedByReturnList() {
+        when(dictService.getAllDictByDictType(anyString())).thenReturn(Map.of());
+
+        assertThat(service.insertByBo(bo("customer_to_store", STORE_ID))).isNotNull();
+        verify(baseMapper, times(1)).insert(any(StoreReturn.class));
     }
 
     // ---------- row15：「非重量产品退回重量」统计口径 ----------
@@ -1017,56 +905,5 @@ class StoreReturnServiceImplTest {
 
         assertThat(daily).hasSize(1);
         assertThat(daily.get(0).getNonWeightReturnWeightTotal()).isEqualByComparingTo("0");
-    }
-
-    private void prepareWhiteBarDictScenario() {
-        long finishedId = 8100L;
-        ProductInfo finished = new ProductInfo();
-        finished.setId(finishedId);
-        finished.setBelongType("pork");
-        finished.setProductMaterial(PRODUCT_ID);
-        ProductInfo dictProduct = new ProductInfo();
-        dictProduct.setId(PRODUCT_ID);
-        dictProduct.setProductId("MAT-CODE");
-        dictProduct.setProductName("扇子骨");
-        dictProduct.setProductUnit("kg");
-        ProductInfo whiteBar = new ProductInfo();
-        whiteBar.setId(8200L);
-        whiteBar.setBelongType("white_bar");
-        when(productInfoMapper.selectList(any())).thenReturn(
-            List.of(finished),
-            List.of(),
-            List.of(dictProduct),
-            List.of(whiteBar)
-        );
-        when(productInfoMapper.selectById(PRODUCT_ID)).thenReturn(dictProduct);
-        when(productProductionMapper.selectDeliveredProductIdsToStore(any(), any()))
-            .thenReturn(List.of(finishedId));
-        when(productProductionService.sumDeliveredWeightToStore(any(), eq(finishedId), any()))
-            .thenReturn(new BigDecimal("1.001"));
-        when(dictService.getAllDictByDictType("djs_white_bar_return_product"))
-            .thenReturn(Map.of("MAT-CODE", "扇子骨"));
-        org.dromara.djs.warehouse.demand.domain.DemandManage demand =
-            new org.dromara.djs.warehouse.demand.domain.DemandManage();
-        demand.setId(8300L);
-        when(demandManageMapper.selectList(any())).thenReturn(List.of(demand));
-        when(productProductionMapper.selectCount(any())).thenReturn(1L);
-        // 上限来源 = **门店当日盘点台账**（期初 + 入库 − 销售 − 赠送，row205）。
-        // 台账行必须带 productId，listLedgerCandidates 才认得出这个产品；不带的话候选为空 → 无上限
-        // → 超额也放行（正是本用例要防的）。
-        //
-        // ⚠️ 这里**故意把 loss_qty 也填成 3.000**：口径是「期初 + 入库 − 销售 − 赠送」，**不减损坏**
-        //（Kevin 2026-08-04：损坏的货本身就是要退回仓库的，减掉等于把它挡在退回之外）。
-        // 所以上限仍是 3.000 —— 一旦有人把「− loss_qty」改回去，上限会塌成 0，
-        // 本用例与 testBatchCreate_AllowsUpToArrivedQuantity 会立刻双双变红。
-        StoreDailyLedger ledger = new StoreDailyLedger();
-        ledger.setProductId(PRODUCT_ID);
-        ledger.setInboundQty(new BigDecimal("3.000"));
-        ledger.setLossQty(new BigDecimal("3.000"));
-        when(storeDailyLedgerMapper.selectList(any())).thenReturn(List.of(ledger));
-        // 候选按 belong_type 分 tab，扇子骨属猪肉 tab
-        dictProduct.setBelongType("pork");
-        when(productInfoMapper.selectBatchIds(any())).thenReturn(List.of(dictProduct));
-        when(baseMapper.selectList(any())).thenReturn(List.of());
     }
 }

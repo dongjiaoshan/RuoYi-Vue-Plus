@@ -47,6 +47,9 @@ public class PigWeaning extends TenantEntity {
     /** 当前活仔数（断奶时统计）。 */
     private Integer weanedCount;
 
+    /** 本窝哺乳期死淘数（出生后到断奶期间死亡/淘汰的仔猪头数，产房损失率分子）。 */
+    private Integer lactationDeathCount;
+
     /** 断奶仔猪总重 kg。 */
     private BigDecimal weanedWeight;
 

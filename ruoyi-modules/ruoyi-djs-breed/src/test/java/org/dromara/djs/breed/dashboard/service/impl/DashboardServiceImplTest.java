@@ -778,32 +778,46 @@ class DashboardServiceImplTest {
     }
 
     @Test
-    @DisplayName("产房损失率: 按窝配对 (活仔−断奶)/活仔；断奶≥活仔 → 0 不出负值")
-    void testFarrowHouseLossRateByLitter() {
+    @DisplayName("产房损失率: Σ本窝哺乳期死淘数 / Σ本窝活仔数（D-0065）")
+    void testFarrowHouseLossRateByLactationDeath() {
         stubAggregateSkeleton();
         when(aggregateQueryMapper.selectFarrowHouseLoss(anyString(), any(), any()))
-            .thenReturn(mapOf("liveBorn", 200, "weaned", 186));
+            .thenReturn(mapOf("liveBorn", 200, "lactationDeath", 14));
 
         service.triggerAggregate(LocalDate.of(2026, 9, 13));
 
         ArgumentCaptor<AnnualIndicator> cap = ArgumentCaptor.forClass(AnnualIndicator.class);
         verify(annualIndicatorMapper).insert(cap.capture());
-        // (200-186)/200 = 7.00%
+        // 14/200 = 7.00%
         assertThat(cap.getValue().getFarrowLossRate()).isEqualByComparingTo("7.00");
     }
 
     @Test
-    @DisplayName("产房损失率: 断奶数等于活仔数（现场照抄）→ 0.00%，不产生负损失")
-    void testFarrowHouseLossRateNonNegative() {
+    @DisplayName("产房损失率: 没人填死淘数 → 0.00%（现存量数据即此形态）")
+    void testFarrowHouseLossRateZeroWhenNoDeathRecorded() {
         stubAggregateSkeleton();
         when(aggregateQueryMapper.selectFarrowHouseLoss(anyString(), any(), any()))
-            .thenReturn(mapOf("liveBorn", 188, "weaned", 188));
+            .thenReturn(mapOf("liveBorn", 188, "lactationDeath", 0));
 
         service.triggerAggregate(LocalDate.of(2026, 9, 13));
 
         ArgumentCaptor<AnnualIndicator> cap = ArgumentCaptor.forClass(AnnualIndicator.class);
         verify(annualIndicatorMapper).insert(cap.capture());
         assertThat(cap.getValue().getFarrowLossRate()).isEqualByComparingTo("0.00");
+    }
+
+    @Test
+    @DisplayName("产房损失率: 死淘数超过活仔数（脏数据）→ 100% 封顶，不越界")
+    void testFarrowHouseLossRateCapsAtHundred() {
+        stubAggregateSkeleton();
+        when(aggregateQueryMapper.selectFarrowHouseLoss(anyString(), any(), any()))
+            .thenReturn(mapOf("liveBorn", 10, "lactationDeath", 14));
+
+        service.triggerAggregate(LocalDate.of(2026, 9, 13));
+
+        ArgumentCaptor<AnnualIndicator> cap = ArgumentCaptor.forClass(AnnualIndicator.class);
+        verify(annualIndicatorMapper).insert(cap.capture());
+        assertThat(cap.getValue().getFarrowLossRate()).isEqualByComparingTo("100.00");
     }
 
     @Test

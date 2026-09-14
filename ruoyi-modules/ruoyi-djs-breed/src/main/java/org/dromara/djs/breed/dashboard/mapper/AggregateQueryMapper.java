@@ -873,16 +873,19 @@ public interface AggregateQueryMapper {
                                              @Param("to") java.time.LocalDate to);
 
     /**
-     * 产房损失：按窝配对该窝活仔数与该窝断奶数（{@code weaning.farrow_id} 关联），只统计已断奶的窝。
+     * 产房损失：按窝取该窝哺乳期死淘数与该窝活仔数（{@code weaning.farrow_id} 关联），只统计已断奶的窝。
      *
-     * <p>旧口径分子取 {@code t_farm_status_record} 里 pig_type='piglet' 的 DIE 事件，要求仔猪有个体档案；
-     * 哺乳期仔猪多数还没打耳标，分子恒 0。改为窝级配对后分子分母同属一批窝，不再跨 cohort 相减
-     * （Σ全期活仔 − Σ全期断奶 会把「已分娩但还没到断奶期」的窝算成损失）。</p>
+     * <p>分子取 {@code lactation_death_count}（断奶登记时填的本窝哺乳期死淘数，D-0065），不取
+     * {@code live_born − weaned_count}：贴标率不足时断奶清单的铺行数 &lt; 活仔数，差值里会混进
+     * 「没贴标所以没进清单」的头，间接算法会把它误判成死亡。</p>
      *
-     * @return {liveBorn, weaned}
+     * <p>更早的口径分子取 {@code t_farm_status_record} 里 pig_type='piglet' 的 DIE 事件，要求仔猪有个体档案；
+     * 哺乳期仔猪多数还没打耳标，分子恒 0。分母只算已断奶的窝，避免把「已分娩但还没到断奶期」的窝算成损失。</p>
+     *
+     * @return {liveBorn, lactationDeath}
      */
     @Select("SELECT COALESCE(SUM(f.live_born),0) AS liveBorn, "
-        + "        COALESCE(SUM(w.weaned_count),0) AS weaned "
+        + "        COALESCE(SUM(w.lactation_death_count),0) AS lactationDeath "
         + "   FROM t_farm_pig_weaning w "
         + "   JOIN t_farm_pig_farrow f ON f.id = w.farrow_id AND f.del_flag = '0' "
         + "  WHERE w.tenant_id = #{tenantId} AND w.del_flag = '0' "

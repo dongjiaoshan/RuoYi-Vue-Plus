@@ -78,6 +78,14 @@ public class StoreReturnAppletItemVo implements Serializable {
     private BigDecimal maxConfirmQty;
 
     /**
+     * 该产品是否配在字典「退回产品清单」{@code djs_return_product_list} 里（V6-R214）。
+     *
+     * <p>mp 退回确认页用它决定非 kg 行的录入精度（D-0054）：清单内允许两位小数、清单外只能整数。
+     * kg 行不看这个字段，恒按 D-0017 保留三位小数。</p>
+     */
+    private Boolean inReturnList;
+
+    /**
      * 是否允许「退回入库」（甲方 row24 第 2 点）。
      *
      * <p>{@code false} = 该行是**生产产品且没配原材料** —— 仓库只存原材料，不知道该往哪个原材料头上记，

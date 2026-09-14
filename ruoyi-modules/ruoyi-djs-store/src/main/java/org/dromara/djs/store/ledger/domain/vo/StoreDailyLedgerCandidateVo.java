@@ -77,6 +77,24 @@ public class StoreDailyLedgerCandidateVo implements Serializable {
     /** 预填退货量（顾客退货 customer_to_store 当日聚合，无则 0）。 */
     private BigDecimal returnSaleQty;
 
-    /** 预填退回量（门店退回仓库 store_to_warehouse 当日聚合，无则 0；只读）。 */
+    /**
+     * 预填退回量。
+     *
+     * <p>非猪肉原材料行 = 门店退回仓库 {@code store_to_warehouse} 当日聚合（只读）；
+     * <b>猪肉原材料行</b>（{@link #porkMaterialRow}）= 按 V6-R215 公式倒算的值
+     * （期初+入库−销售−赠送−期末−损耗；候选阶段期末/损耗都还是 0），前端随手填联动重算。</p>
+     */
     private BigDecimal returnWhQty;
+
+    /**
+     * 该行是不是「猪肉原材料产品」（V6-R215，甲方 2026-09-13）。
+     *
+     * <p>true 时整行换一套录入口径：销售量**预填**成现场打包追溯码的原材料消耗量（仍可手改，甲方没要求锁死）、
+     * 期末与损耗都手填默认 0、<b>退回量变成倒算项</b>（不再取退回操作的实际退回）。
+     * false 时沿用原口径（期末手填、损耗倒算），即甲方说的「生产产品逻辑不变」。</p>
+     *
+     * <p>判据 = {@code belong_type ∈ (pork, white_bar)} 且 {@code product_attr=2}，后端算好下发，
+     * 前端不要自己再推一遍 —— 两边各推一份必然漂。</p>
+     */
+    private Boolean porkMaterialRow;
 }

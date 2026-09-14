@@ -35,6 +35,8 @@ public class PigWeaningVo implements Serializable {
     private LocalDateTime weaningDate;
 
     private Integer weanedCount;
+    /** 本窝哺乳期死淘数（产房损失率分子）。 */
+    private Integer lactationDeathCount;
     private BigDecimal weanedWeight;
     private BigDecimal avgWeanedWeight;
     private Long operatorId;
