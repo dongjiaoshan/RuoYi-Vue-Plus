@@ -15,6 +15,7 @@ import org.dromara.common.web.core.BaseController;
 import org.dromara.djs.warehouse.location.domain.bo.LocationInfoBo;
 import org.dromara.djs.warehouse.location.domain.query.LocationInfoQuery;
 import org.dromara.djs.warehouse.location.domain.vo.LocationCardSummaryVo;
+import org.dromara.djs.warehouse.location.domain.vo.LocationPickerVo;
 import org.dromara.djs.warehouse.location.domain.vo.LocationProductStockVo;
 import org.dromara.djs.warehouse.location.domain.vo.LocationInfoVo;
 import org.dromara.djs.warehouse.location.service.ILocationInfoService;
@@ -68,6 +69,19 @@ public class LocationInfoController extends BaseController {
     @GetMapping("/summary")
     public R<List<LocationCardSummaryVo>> getCardSummary() {
         return R.ok(locationInfoService.getCardSummary());
+    }
+
+    /**
+     * 可选库位轻量列表（STR-RETURN-OPS-001）：全部启用库位，给 admin 通用 {@code LocationSelect} 下拉做兜底。
+     *
+     * <p>复用 {@code location:list} 权限，无新增 menu；返回结构复用 mp {@code LocationPickerVo}，
+     * 三端一套下拉结构。入库库位这类「按产品预设优先、配空回落全量」的场景用它兜底，
+     * 避免产品没配存储库位时下拉为空、整单卡死。</p>
+     */
+    @SaCheckPermission("djs:warehouse:location:list")
+    @GetMapping("/picker")
+    public R<List<LocationPickerVo>> picker() {
+        return R.ok(locationInfoService.listPicker());
     }
 
     /**

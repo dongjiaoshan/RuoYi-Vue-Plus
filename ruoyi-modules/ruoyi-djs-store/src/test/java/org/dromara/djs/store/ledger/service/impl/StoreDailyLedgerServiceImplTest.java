@@ -334,9 +334,11 @@ class StoreDailyLedgerServiceImplTest {
 
         // 入库留 0：白条发货上限闸是另一条既有规则（testBatchSave_PorkInboundOverLimit_Rejected 在管），
         // 本用例只验倒算式，不去踩那道闸。
+        // 销售量由服务端按当日现场打包追溯码重算（前端提交值不采信），故在这里 stub 追溯侧而不是塞进 BO
+        when(storeTraceService.sumOnsiteConsumedWeightByMaterial(eq(STORE_ID), any()))
+            .thenReturn(Map.of(PORK_PRODUCT_ID, new BigDecimal("2.000")));
         StoreDailyLedgerBatchBo bo = batchBo(BigDecimal.ZERO, new BigDecimal("1.000"));
         StoreDailyLedgerBatchBo.Item item = bo.getItems().get(0);
-        item.setSaleQty(new BigDecimal("2.000"));
         item.setGiftQty(new BigDecimal("0.500"));
         item.setLossQty(new BigDecimal("0.250"));
         // 顾客退货给个非 0 值：甲方给的式子里没有这一项，这里钉住「确实没被算进去」
@@ -352,6 +354,37 @@ class StoreDailyLedgerServiceImplTest {
         //（顾客退货 7 **不入式**，甲方给的公式里没有这一项 —— 这是本用例要钉的点）
         assertThat(row.getWhReturnQty()).isEqualByComparingTo("1.250");
         assertThat(row.getReturnQty()).as("顾客退货仍原样落库，只是不进倒算式").isEqualByComparingTo("7.000");
+    }
+
+    @Test
+    @DisplayName("V6-R215：猪肉原材料行的销售量服务端重算 —— 前端提交的过期值被覆盖，不进倒算式")
+    void testBatchSave_PorkMaterialSaleRecomputedServerSide() {
+        when(baseMapper.selectList(any())).thenReturn(List.of());
+        when(productInfoMapper.selectList(any())).thenReturn(
+            List.of(porkProduct()), List.of(porkProduct()), List.of());
+        when(shipmentMapper.selectList(any())).thenReturn(List.of());
+        when(productInfoMapper.selectById(PORK_PRODUCT_ID)).thenReturn(porkProduct());
+        when(baseMapper.insert(any(StoreDailyLedger.class))).thenReturn(1);
+        when(storeInventoryMapper.selectOne(any())).thenReturn(null);
+        when(storeInventoryMapper.insert(any(StoreInventory.class))).thenReturn(1);
+        // 现场打包当日实际消耗 3kg
+        when(storeTraceService.sumOnsiteConsumedWeightByMaterial(eq(STORE_ID), any()))
+            .thenReturn(Map.of(PORK_PRODUCT_ID, new BigDecimal("3.000")));
+
+        // 前端提交 0 —— 这正是线上的常态：现场打包要求「先盘点录入库量」才放行，
+        // 所以首次盘点保存时销售量必然是 0，之后走「修改」再提交时它仍是那个 0。
+        StoreDailyLedgerBatchBo bo = batchBo(BigDecimal.ZERO, BigDecimal.ZERO);
+        bo.getItems().get(0).setSaleQty(BigDecimal.ZERO);
+
+        service.batchSave(bo);
+
+        ArgumentCaptor<StoreDailyLedger> cap = ArgumentCaptor.forClass(StoreDailyLedger.class);
+        verify(baseMapper, times(1)).insert(cap.capture());
+        StoreDailyLedger row = cap.getValue();
+        assertThat(row.getSaleQty()).as("落库的销售量取追溯码消耗量，不是前端提交的 0").isEqualByComparingTo("3.000");
+        // 退回 = 期初 5 + 入库 0 − 销售 3 − 赠送 0 − 期末 0 − 损耗 0 = 2
+        //（若采信前端的 0，这里会是 5 —— 把已经打包卖掉的 3kg 当成退回仓库）
+        assertThat(row.getWhReturnQty()).isEqualByComparingTo("2.000");
     }
 
     /**

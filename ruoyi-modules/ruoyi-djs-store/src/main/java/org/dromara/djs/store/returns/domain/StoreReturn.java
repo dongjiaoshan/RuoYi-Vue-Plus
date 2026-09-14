@@ -45,6 +45,20 @@ public class StoreReturn extends TenantEntity {
     /** 退回方向字典 {@code djs_return_direction}：customer_to_store / store_to_warehouse / warehouse_to_supplier。 */
     private String returnDirection;
 
+    /**
+     * 退回类型字典 {@code djs_store_return_type}：{@code store}=门店退回 / {@code unit}=单位退回
+     * （STR-RETURN-OPS-001；历史行全部回填 {@code store}）。
+     */
+    private String returnType;
+
+    /**
+     * 退回单位名称（{@code return_type='unit'} 时填，取自字典 {@code djs_return_unit}）；门店退回恒 NULL。
+     *
+     * <p>⚠️ 单位退回**没有门店** —— 绝不复用 {@link #storeId} 塞假门店 id：它在门店盘点候选 /
+     * 退回记录按门店分组 / store-daily 汇总里到处都是门店 FK，塞进去会污染门店维度的所有统计。</p>
+     */
+    private String returnUnit;
+
     /** 退回门店 FK → {@code t_md_store.id}（customer_to_store 方向必填，其余可空）。 */
     private Long storeId;
 

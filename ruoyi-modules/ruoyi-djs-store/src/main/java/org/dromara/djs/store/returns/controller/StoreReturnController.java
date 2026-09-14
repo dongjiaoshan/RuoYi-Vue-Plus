@@ -16,11 +16,14 @@ import org.dromara.common.web.core.BaseController;
 import org.dromara.djs.store.returns.domain.bo.StoreReturnBatchBo;
 import org.dromara.djs.store.returns.domain.bo.StoreReturnBo;
 import org.dromara.djs.store.returns.domain.bo.StoreReturnConfirmBo;
+import org.dromara.djs.store.returns.domain.bo.StoreReturnUnitBo;
 import org.dromara.djs.store.returns.domain.query.StoreReturnQuery;
 import org.dromara.djs.store.returns.domain.vo.StoreReturnDetailExportVo;
+import org.dromara.djs.store.returns.domain.vo.StoreReturnOpsItemVo;
 import org.dromara.djs.store.returns.domain.vo.StoreReturnVo;
 import org.dromara.djs.store.returns.domain.vo.StoreReturnPorkCandidateVo;
 import org.dromara.djs.store.returns.domain.vo.StoreReturnStoreDailyVo;
+import org.dromara.djs.store.returns.domain.vo.StoreReturnUnitCandidateVo;
 import org.dromara.djs.store.returns.domain.vo.StoreReturnVegCandidateVo;
 import org.dromara.djs.store.returns.service.IStoreReturnService;
 import org.springframework.validation.annotation.Validated;
@@ -61,8 +64,12 @@ public class StoreReturnController extends BaseController {
     /**
      * 仓库「退货记录」外层「门店 + 当日」汇总（仅 store_to_warehouse 方向）。
      * 仓库角色经 {@code djs:warehouse:return:list} 命中（与门店 list 权限 OR），无需补授门店权限。
+     *
+     * <p>STR-RETURN-OPS-001：admin「门店退回操作」复用同一聚合（多传 {@code returnType} 过滤即可），
+     * 故这里再 OR 一个新菜单的 {@code storeReturn:list}。</p>
      */
-    @SaCheckPermission(value = {"djs:store:return:list", "djs:warehouse:return:list"}, mode = SaMode.OR)
+    @SaCheckPermission(value = {"djs:store:return:list", "djs:warehouse:return:list",
+        "djs:warehouse:storeReturn:list"}, mode = SaMode.OR)
     @GetMapping("/store-daily")
     public TableDataInfo<StoreReturnStoreDailyVo> storeDaily(StoreReturnQuery query, PageQuery pageQuery) {
         return service.queryStoreDailyPage(query, pageQuery);
@@ -134,13 +141,55 @@ public class StoreReturnController extends BaseController {
         return R.ok(service.listOtherCandidates(storeId));
     }
 
-    /** 仓库确认实收（原型「退回记录」仓库确认入库，pending→received 联动外购入库）。 */
-    @SaCheckPermission("djs:store:return:confirm")
+    /**
+     * 仓库确认实收（原型「退回记录」仓库确认入库，pending→received 联动外购入库）。
+     *
+     * <p>STR-RETURN-OPS-001：admin「门店退回操作」的「退回处理」逐行调用本端点（同一条链路、
+     * 同一套并发守卫与丢弃分支），故 OR 上新菜单的 {@code storeReturn:confirm}。</p>
+     */
+    @SaCheckPermission(value = {"djs:store:return:confirm", "djs:warehouse:storeReturn:confirm"},
+        mode = SaMode.OR)
     @Log(title = "门店退回确认入库", businessType = BusinessType.UPDATE)
     @RepeatSubmit
     @PutMapping("/confirm")
     public R<Void> confirm(@Valid @RequestBody StoreReturnConfirmBo bo) {
         return toAjax(service.confirm(bo));
+    }
+
+    /**
+     * 门店退回操作抽屉明细（STR-RETURN-OPS-001，甲方 row213 第 4 条）：
+     * 一张退回单（退回类型 + 退回日期 + 门店/退回单位）下的逐产品行。
+     *
+     * <p>「退回处理」与「查看详情」共用本端点 —— 同一份数据，由前端按行状态决定可编辑性，
+     * 避免两个端点各写一套口径。</p>
+     */
+    @SaCheckPermission(value = {"djs:warehouse:storeReturn:list", "djs:warehouse:storeReturn:query",
+        "djs:warehouse:storeReturn:detail"}, mode = SaMode.OR)
+    @GetMapping("/operation/items")
+    public R<List<StoreReturnOpsItemVo>> operationItems(StoreReturnQuery query) {
+        return R.ok(service.listOperationItems(query));
+    }
+
+    /**
+     * 「新增单位退回」弹框候选产品（STR-RETURN-OPS-001，甲方 row213 第 5 条）：
+     * 字典「退回产品清单」里按产品编码 resolve 出的产品数据（含入库库位候选）。
+     */
+    @SaCheckPermission("djs:warehouse:storeReturn:add")
+    @GetMapping("/operation/unit-candidates")
+    public R<List<StoreReturnUnitCandidateVo>> unitCandidates() {
+        return R.ok(service.listUnitCandidates());
+    }
+
+    /**
+     * 新增一张「单位退回」单（STR-RETURN-OPS-001，甲方 row213 第 5 条）：
+     * 落 {@code return_type='unit'} + {@code return_status='received'}，未丢弃行同事务写入库。
+     */
+    @SaCheckPermission("djs:warehouse:storeReturn:add")
+    @Log(title = "门店退回操作-单位退回", businessType = BusinessType.INSERT)
+    @RepeatSubmit
+    @PostMapping("/unit")
+    public R<Integer> unitReturn(@Valid @RequestBody StoreReturnUnitBo bo) {
+        return R.ok(service.createUnitReturns(bo));
     }
 
     /** 软删（支持批量）。 */
@@ -169,7 +218,8 @@ public class StoreReturnController extends BaseController {
      * 它以 {@code application/x-www-form-urlencoded} POST 提交（djs 其余 export 端点全是 {@code @PostMapping}）。
      * 挂 {@code @GetMapping} 会让点导出直接报 {@code Request method 'POST' is not supported}。</p>
      */
-    @SaCheckPermission(value = {"djs:store:return:export", "djs:warehouse:return:export"}, mode = SaMode.OR)
+    @SaCheckPermission(value = {"djs:store:return:export", "djs:warehouse:return:export",
+        "djs:warehouse:storeReturn:export"}, mode = SaMode.OR)
     @Log(title = "门店退回汇总", businessType = BusinessType.EXPORT)
     @PostMapping("/store-daily/export")
     public void storeDailyExport(StoreReturnQuery query, HttpServletResponse response) {
@@ -184,7 +234,8 @@ public class StoreReturnController extends BaseController {
      * <p>同 {@code /store-daily/export}：必须 {@code POST}（前端走 {@code utils/request.ts#download}
      * 的 form-urlencoded POST），仓库角色经 {@code djs:warehouse:return:export} 命中。</p>
      */
-    @SaCheckPermission(value = {"djs:store:return:export", "djs:warehouse:return:export"}, mode = SaMode.OR)
+    @SaCheckPermission(value = {"djs:store:return:export", "djs:warehouse:return:export",
+        "djs:warehouse:storeReturn:export"}, mode = SaMode.OR)
     @Log(title = "门店退回明细", businessType = BusinessType.EXPORT)
     @PostMapping("/detail/export")
     public void detailExport(StoreReturnQuery query, HttpServletResponse response) {

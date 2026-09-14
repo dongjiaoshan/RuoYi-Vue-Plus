@@ -14,6 +14,7 @@ import org.dromara.djs.store.returns.domain.vo.StoreReturnStoreDailyVo;
 import org.dromara.djs.store.returns.domain.vo.StoreReturnVegCandidateVo;
 import org.dromara.djs.store.returns.domain.bo.StoreReturnBatchBo;
 import org.dromara.djs.store.returns.domain.bo.StoreReturnBo;
+import org.dromara.djs.store.returns.domain.bo.StoreReturnUnitBo;
 import org.dromara.djs.store.returns.mapper.StoreReturnMapper;
 import org.dromara.djs.warehouse.demand.mapper.DemandManageMapper;
 import org.dromara.djs.warehouse.demand.domain.DemandManage;
@@ -905,5 +906,380 @@ class StoreReturnServiceImplTest {
 
         assertThat(daily).hasSize(1);
         assertThat(daily.get(0).getNonWeightReturnWeightTotal()).isEqualByComparingTo("0");
+    }
+
+    // ==========================================================================
+    // STR-RETURN-OPS-001 · admin「门店退回操作」（退回类型 / 三类品类数 / 单位退回新增）
+    // ==========================================================================
+    //
+    // 三条最容易做反的：
+    //   ① 单位退回**没有门店** —— store_id 必须恒 NULL（塞假门店 id 会污染门店盘点候选 /
+    //      退回记录按门店分组 / store-daily 汇总）；退回单位落新列 return_unit。
+    //   ② 「退回处理」的仓库确认量按**退回单位**录，提交前乘 material_num 换算回**原材料量** ——
+    //      与 mp metric.ts#toConfirmWeight 同一套，否则同一张单两端口径不同。
+    //   ③ 三个品类数必须**后端算**（前端 filter 当前页在分页/导出时必错），分流复用 returnTabOf。
+
+    /** 退回单位配置字典（值取自出库去向）。 */
+    private static final String DICT_RETURN_UNIT = "djs_return_unit";
+
+    /**
+     * 退回单位字典**值**（= 前端提交的 returnUnit）。
+     *
+     * <p>`getAllDictByDictType` 返 dictValue → dictLabel，成员资格判的是 key —— 桩里 key 必须是这个值，
+     * 否则用例会把「拿 label 比 value」的错口径固化下来（E2E 实测就是这么漏过去的）。</p>
+     */
+    private static final String UNIT_VALUE = "mine";
+
+    /** 30 枚礼盒的原材料（按枚计）。 */
+    private static final Long M_EGG_2 = 9201L;
+
+    @Test
+    @DisplayName("OPS-001：toConfirmWeight —— 非 kg 行乘计量规则换算回原材料量（1 份 × 30 = 30 枚）")
+    void testToConfirmWeight_ratioAppliedForNonKg() {
+        ProductInfo gift = product(P_EGG_GIFT, "30枚散养绿壳土鸡蛋礼盒装", "份", M_EGG_2);
+        gift.setMaterialNum(new BigDecimal("30"));
+
+        assertThat(StoreReturnServiceImpl.toConfirmWeight(gift, new BigDecimal("1")))
+            .as("1 份 30 枚礼盒 → 原材料 30 枚（与 mp metric.ts 同源）").isEqualByComparingTo("30");
+        assertThat(StoreReturnServiceImpl.toConfirmWeight(gift, new BigDecimal("2")))
+            .isEqualByComparingTo("60");
+    }
+
+    @Test
+    @DisplayName("OPS-001：toConfirmWeight —— kg 行原样透传（退回单位就是原材料单位，material_num 恒 1）")
+    void testToConfirmWeight_kgPassthrough() {
+        ProductInfo loin = product(P_LOIN, "里脊肉", "kg", null);
+        assertThat(StoreReturnServiceImpl.toConfirmWeight(loin, new BigDecimal("2.350")))
+            .isEqualByComparingTo("2.350");
+    }
+
+    @Test
+    @DisplayName("OPS-001：toConfirmWeight —— 非 kg 行按 material_num 折算 (0.25)，结果裁到 3 位（DECIMAL(12,3)）")
+    void testToConfirmWeight_quarterRatioRoundedTo3() {
+        ProductInfo veg = product(P_VEG_350G, "有机苕尖250g", "份", M_KG);
+        veg.setMaterialNum(new BigDecimal("0.25"));
+        assertThat(StoreReturnServiceImpl.toConfirmWeight(veg, new BigDecimal("3")))
+            .isEqualByComparingTo("0.750");
+    }
+
+    @Test
+    @DisplayName("OPS-001：canConvert —— 单位不同又没配计量规则 → false（瞎猜会把「3 只」记成「3 kg」进库存）")
+    void testCanConvert_missingRatioIsRejected() {
+        ProductInfo eggGift = product(P_EGG_GIFT, "蛋礼盒", "份", M_EGG_2);
+        assertThat(StoreReturnServiceImpl.canConvert(eggGift, "枚")).isFalse();
+
+        eggGift.setMaterialNum(new BigDecimal("30"));
+        assertThat(StoreReturnServiceImpl.canConvert(eggGift, "枚")).isTrue();
+    }
+
+    @Test
+    @DisplayName("OPS-001：canConvert —— kg 行 / 单位相同 恒 true（不需要换算，ratio 缺省无害）")
+    void testCanConvert_sameUnitAlwaysTrue() {
+        assertThat(StoreReturnServiceImpl.canConvert(product(P_LOIN, "里脊肉", "kg", null), "kg")).isTrue();
+        assertThat(StoreReturnServiceImpl.canConvert(product(P_EGG, "鸡蛋", "枚", null), "枚")).isTrue();
+    }
+
+    private StoreReturnUnitBo unitBo(String qty, Integer isDiscard) {
+        StoreReturnUnitBo.Item item = new StoreReturnUnitBo.Item();
+        item.setProductId(PRODUCT_ID);
+        item.setReturnQuantity(new BigDecimal(qty));
+        item.setLocationId(LOCATION_ID);
+        item.setIsDiscard(isDiscard);
+        StoreReturnUnitBo bo = new StoreReturnUnitBo();
+        bo.setReturnDate(java.time.LocalDate.of(2026, 9, 20));
+        bo.setReturnUnit(UNIT_VALUE);
+        bo.setItems(List.of(item));
+        return bo;
+    }
+
+    @Test
+    @DisplayName("OPS-001：单位退回新增 —— store_id 恒 NULL（绝不复用门店列）、return_type=unit、建单即 received、未丢弃行写入库")
+    void testCreateUnitReturns_happy() {
+        stubReturnProductList(listedProduct(PRODUCT_ID, "Y00109", "扇子骨", "pork"));
+        when(dictService.getAllDictByDictType(DICT_RETURN_UNIT)).thenReturn(Map.of(UNIT_VALUE, "矿山"));
+
+        int created = service.createUnitReturns(unitBo("3.500", 0));
+
+        assertThat(created).isEqualTo(1);
+        ArgumentCaptor<StoreReturn> cap = ArgumentCaptor.forClass(StoreReturn.class);
+        verify(baseMapper, times(1)).insert(cap.capture());
+        StoreReturn e = cap.getValue();
+        // 🔴 反作弊核心：单位退回没有门店
+        assertThat(e.getStoreId()).as("单位退回塞了门店 id 会污染门店维度所有统计").isNull();
+        assertThat(e.getReturnType()).isEqualTo("unit");
+        assertThat(e.getReturnUnit()).isEqualTo(UNIT_VALUE);
+        assertThat(e.getReturnDirection()).isEqualTo("store_to_warehouse");
+        // 甲方「退回状态默认为已处理」+ 四个人员时间列 = 当前操作人与当前时刻
+        assertThat(e.getReturnStatus()).isEqualTo("received");
+        assertThat(e.getOperatorId()).isEqualTo(USER_ID);
+        assertThat(e.getConfirmUserId()).isEqualTo(USER_ID);
+        assertThat(e.getConfirmTime()).isNotNull();
+        assertThat(e.getIsDiscard()).isZero();
+        // 退回日期 = 甲方填的日期（只到天）
+        assertThat(e.getReturnDate()).isEqualTo(LocalDateTime.of(2026, 9, 20, 0, 0));
+        // kg 产品：报退货物重量取退回量本身；确认量同为 3.5
+        assertThat(e.getGoodsWeight()).isEqualByComparingTo("3.500");
+        assertThat(e.getReceivedQty()).isEqualByComparingTo("3.500");
+        assertThat(e.getReceivedWeight()).isEqualByComparingTo("3.500");
+        // 未丢弃 → 写入库（入库方式「门店退回」）
+        ArgumentCaptor<String> remark = ArgumentCaptor.forClass(String.class);
+        verify(purchaseInService, times(1)).inboundReturnBasket(
+            eq(PRODUCT_ID), eq(LOCATION_ID), eq(new BigDecimal("3.500")), eq(FLOW_RETURN_IN), remark.capture());
+        assertThat(remark.getValue()).contains("单位退回入库").contains(RETURN_NO);
+    }
+
+    @Test
+    @DisplayName("OPS-001：单位退回新增 —— 非 kg 行入库量按计量规则换算（1 份 × 30 = 30 枚）")
+    void testCreateUnitReturns_convertsToMaterialQty() {
+        ProductInfo gift = listedProduct(PRODUCT_ID, "Y00500", "30枚散养绿壳土鸡蛋礼盒装", "other");
+        gift.setProductUnit("份");
+        gift.setProductMaterial(M_EGG_2);
+        gift.setMaterialNum(new BigDecimal("30"));
+        gift.setProductAttr(2); // 原材料本身存在 → canInbound 走 material != null 分支
+        ProductInfo material = product(M_EGG_2, "鸡蛋", "枚", null);
+        stubDictListedButQueryable(List.of(gift), List.of(gift, material));
+        when(dictService.getAllDictByDictType(DICT_RETURN_UNIT)).thenReturn(Map.of(UNIT_VALUE, "矿山"));
+
+        service.createUnitReturns(unitBo("1", 0));
+
+        ArgumentCaptor<StoreReturn> cap = ArgumentCaptor.forClass(StoreReturn.class);
+        verify(baseMapper, times(1)).insert(cap.capture());
+        // 界面录 1 份，落库必须是原材料 30 枚
+        assertThat(cap.getValue().getReceivedWeight()).isEqualByComparingTo("30");
+        assertThat(cap.getValue().getReceivedQty()).isEqualByComparingTo("30");
+        verify(purchaseInService, times(1)).inboundReturnBasket(
+            any(), any(), eq(new BigDecimal("30.000")), eq(FLOW_RETURN_IN), any());
+    }
+
+    @Test
+    @DisplayName("OPS-001：单位退回新增 —— 丢弃行**不写任何库存流水**（但照常建 received 行）")
+    void testCreateUnitReturns_discardSkipsInbound() {
+        stubReturnProductList(listedProduct(PRODUCT_ID, "Y00109", "扇子骨", "pork"));
+        when(dictService.getAllDictByDictType(DICT_RETURN_UNIT)).thenReturn(Map.of(UNIT_VALUE, "矿山"));
+
+        assertThat(service.createUnitReturns(unitBo("2.000", 1))).isEqualTo(1);
+
+        ArgumentCaptor<StoreReturn> cap = ArgumentCaptor.forClass(StoreReturn.class);
+        verify(baseMapper, times(1)).insert(cap.capture());
+        assertThat(cap.getValue().getIsDiscard()).isEqualTo(1);
+        assertThat(cap.getValue().getReturnStatus()).isEqualTo("received");
+        verify(purchaseInService, never()).inboundReturnBasket(any(), any(), any(), anyString(), any());
+    }
+
+    @Test
+    @DisplayName("OPS-001：单位退回新增 —— 清单外产品一律拒（与门店退回同一道闸，防凭空造仓库库存）")
+    void testCreateUnitReturns_rejectsProductNotInReturnList() {
+        stubReturnProductList(listedProduct(PRODUCT_ID, "Y00109", "扇子骨", "pork"));
+        when(productInfoMapper.selectById(OTHER_PRODUCT_ID))
+            .thenReturn(listedProduct(OTHER_PRODUCT_ID, "Y00999", "没配进清单的生菜", "vegetable"));
+        when(dictService.getAllDictByDictType(DICT_RETURN_UNIT)).thenReturn(Map.of(UNIT_VALUE, "矿山"));
+
+        StoreReturnUnitBo bo = unitBo("1.000", 0);
+        bo.getItems().get(0).setProductId(OTHER_PRODUCT_ID);
+
+        assertThatThrownBy(() -> service.createUnitReturns(bo))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("不在「退回产品清单」里");
+        verify(baseMapper, never()).insert(any(StoreReturn.class));
+        verify(purchaseInService, never()).inboundReturnBasket(any(), any(), any(), anyString(), any());
+    }
+
+    @Test
+    @DisplayName("OPS-001：单位退回新增 —— 成品没配原材料又不能丢弃时拒（仓库只存原材料，无从记账）")
+    void testCreateUnitReturns_rejectsInboundWithoutMaterial() {
+        ProductInfo finishedNoMaterial = listedProduct(PRODUCT_ID, "Y00201", "有机苕尖350g", "vegetable");
+        finishedNoMaterial.setProductUnit("份");
+        finishedNoMaterial.setProductAttr(1); // 成品
+        stubReturnProductList(finishedNoMaterial);
+        when(dictService.getAllDictByDictType(DICT_RETURN_UNIT)).thenReturn(Map.of(UNIT_VALUE, "矿山"));
+
+        assertThatThrownBy(() -> service.createUnitReturns(unitBo("1.000", 0)))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("未配置原材料");
+        verify(purchaseInService, never()).inboundReturnBasket(any(), any(), any(), anyString(), any());
+    }
+
+    @Test
+    @DisplayName("OPS-001：单位退回新增 —— 退回单位不在「退回单位配置」字典里 → 400")
+    void testCreateUnitReturns_rejectsUnknownUnit() {
+        stubReturnProductList(listedProduct(PRODUCT_ID, "Y00109", "扇子骨", "pork"));
+        when(dictService.getAllDictByDictType(DICT_RETURN_UNIT)).thenReturn(Map.of("kitchen", "厨房"));
+
+        assertThatThrownBy(() -> service.createUnitReturns(unitBo("1.000", 0)))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("不在「退回单位配置」字典里");
+        verify(baseMapper, never()).insert(any(StoreReturn.class));
+    }
+
+    @Test
+    @DisplayName("OPS-001：store-daily 按「类型 + 门店/退回单位」分组 —— 单位退回不与门店退回折成一组，且三类品类数后端算")
+    void testStoreDaily_splitsUnitReturnAndCountsKinds() {
+        StoreReturn storeRow = new StoreReturn();
+        storeRow.setId(1L);
+        storeRow.setStoreId(STORE_ID);
+        storeRow.setReturnType("store");
+        storeRow.setProductId(P_LOIN);
+        storeRow.setReturnDate(LocalDateTime.of(2026, 9, 20, 9, 0));
+        storeRow.setReturnStatus("pending");
+        storeRow.setOperatorId(USER_ID);
+
+        StoreReturn unitPork = new StoreReturn();
+        unitPork.setId(2L);
+        unitPork.setReturnUnit(UNIT_VALUE);
+        unitPork.setReturnType("unit");
+        unitPork.setProductId(P_EGG);
+        unitPork.setReturnDate(LocalDateTime.of(2026, 9, 20, 1, 0));
+        unitPork.setReturnStatus("received");
+        unitPork.setOperatorId(USER_ID);
+        unitPork.setConfirmUserId(USER_ID);
+
+        StoreReturn unitVeg = new StoreReturn();
+        unitVeg.setId(3L);
+        unitVeg.setReturnUnit(UNIT_VALUE);
+        unitVeg.setReturnType("unit");
+        unitVeg.setProductId(P_VEG_350G);
+        unitVeg.setReturnDate(LocalDateTime.of(2026, 9, 20, 1, 0));
+        unitVeg.setReturnStatus("received");
+        unitVeg.setOperatorId(USER_ID);
+
+        when(baseMapper.selectList(any())).thenReturn(List.of(storeRow, unitPork, unitVeg));
+        when(productInfoMapper.selectList(any())).thenReturn(List.of(
+            productWithBelong(P_LOIN, "里脊肉", "kg", null, "pork"),
+            productWithBelong(P_EGG, "鸡蛋", "枚", null, "egg"),
+            productWithBelong(P_VEG_350G, "有机苕尖350g", "份", null, "vegetable")));
+        when(dictService.getAllDictByDictType(DICT_RETURN_UNIT)).thenReturn(Map.of(UNIT_VALUE, "矿山"));
+
+        List<StoreReturnStoreDailyVo> daily = service.queryStoreDailyList(new StoreReturnQuery());
+
+        assertThat(daily).as("门店退回 1 组 + 单位退回 1 组").hasSize(2);
+        StoreReturnStoreDailyVo unit = daily.stream()
+            .filter(v -> "unit".equals(v.getReturnType())).findFirst().orElseThrow();
+        assertThat(unit.getStoreId()).isNull();
+        // 甲方 row213 第 5 条：「退回门店为选择的退回单位**名称**」。库里 return_unit 存的是字典 **value**
+        // （出库去向那套值是拼音，如 yejiazhuang_cun），直接下发会让整列显示拼音码。
+        assertThat(unit.getStoreName()).as("「退回门店」列必须换成字典 label").isEqualTo("矿山");
+        assertThat(unit.getReturnUnit()).as("returnUnit 仍是 value —— 抽屉要拿它当查询键定位这张单")
+            .isEqualTo(UNIT_VALUE);
+        assertThat(unit.getReturnStatus()).isEqualTo("received");
+        assertThat(unit.getTotalCount()).isEqualTo(2);
+        assertThat(unit.getPorkKindCount()).isZero();
+        assertThat(unit.getVegKindCount()).isEqualTo(1);
+        assertThat(unit.getOtherKindCount()).as("鸡蛋（belong_type=egg）落「其他产品」").isEqualTo(1);
+        assertThat(unit.getProductKindCount()).isEqualTo(2);
+
+        StoreReturnStoreDailyVo store = daily.stream()
+            .filter(v -> "store".equals(v.getReturnType())).findFirst().orElseThrow();
+        assertThat(store.getStoreId()).isEqualTo(STORE_ID);
+        assertThat(store.getReturnStatus()).as("还有 pending 行 → 整单待处理").isEqualTo("pending");
+        assertThat(store.getPorkKindCount()).isEqualTo(1);
+        assertThat(store.getVegKindCount()).isZero();
+        assertThat(store.getOtherKindCount()).isZero();
+    }
+
+    @Test
+    @DisplayName("OPS-001：「退回状态」是**组级**结论 —— 按已处理筛，组内还有待处理行的那张单不能被判成已处理")
+    void testStoreDaily_statusFilterAppliesAtGroupLevel() {
+        // 同一张单（同门店同日）三行：2 行已确认、1 行还没确认 —— mp 逐行确认，这种混合态是常态
+        StoreReturn done1 = new StoreReturn();
+        done1.setId(1L);
+        done1.setStoreId(STORE_ID);
+        done1.setReturnType("store");
+        done1.setProductId(P_LOIN);
+        done1.setReturnDate(LocalDateTime.of(2026, 9, 20, 9, 0));
+        done1.setReturnStatus("received");
+        done1.setOperatorId(USER_ID);
+        done1.setConfirmUserId(USER_ID);
+
+        StoreReturn done2 = new StoreReturn();
+        done2.setId(2L);
+        done2.setStoreId(STORE_ID);
+        done2.setReturnType("store");
+        done2.setProductId(P_EGG);
+        done2.setReturnDate(LocalDateTime.of(2026, 9, 20, 9, 0));
+        done2.setReturnStatus("received");
+        done2.setOperatorId(USER_ID);
+        done2.setConfirmUserId(USER_ID);
+
+        StoreReturn pending = new StoreReturn();
+        pending.setId(3L);
+        pending.setStoreId(STORE_ID);
+        pending.setReturnType("store");
+        pending.setProductId(P_VEG_350G);
+        pending.setReturnDate(LocalDateTime.of(2026, 9, 20, 9, 0));
+        pending.setReturnStatus("pending");
+        pending.setOperatorId(USER_ID);
+
+        when(baseMapper.selectList(any())).thenReturn(List.of(done1, done2, pending));
+        when(productInfoMapper.selectList(any())).thenReturn(List.of(
+            productWithBelong(P_LOIN, "里脊肉", "kg", null, "pork"),
+            productWithBelong(P_EGG, "鸡蛋", "枚", null, "egg"),
+            productWithBelong(P_VEG_350G, "有机苕尖350g", "份", null, "vegetable")));
+
+        StoreReturnQuery received = new StoreReturnQuery();
+        received.setReturnStatus("received");
+        // 状态若被下推到行级，SQL 只回那 2 行已确认的 → 组内全 received → 整组被判「已处理」，
+        // 操作列变「查看详情」，剩下那行待处理的货再也点不开；品类数也只数到 2 类。
+        assertThat(service.queryStoreDailyList(received))
+            .as("组内还有待处理行 → 不该出现在「已处理」结果里").isEmpty();
+
+        StoreReturnQuery pendingQuery = new StoreReturnQuery();
+        pendingQuery.setReturnStatus("pending");
+        List<StoreReturnStoreDailyVo> daily = service.queryStoreDailyList(pendingQuery);
+        assertThat(daily).hasSize(1);
+        assertThat(daily.get(0).getReturnStatus()).isEqualTo("pending");
+        assertThat(daily.get(0).getTotalCount()).as("品类数/条数按整组算，不是按筛剩的行算").isEqualTo(3);
+        assertThat(daily.get(0).getPorkKindCount()).isEqualTo(1);
+        assertThat(daily.get(0).getVegKindCount()).isEqualTo(1);
+        assertThat(daily.get(0).getOtherKindCount()).isEqualTo(1);
+    }
+
+    private ProductInfo productWithBelong(Long id, String name, String unit, Long material, String belongType) {
+        ProductInfo p = product(id, name, unit, material);
+        p.setBelongType(belongType);
+        return p;
+    }
+
+    @Test
+    @DisplayName("OPS-001：抽屉明细 —— 单位退回缺 returnUnit 直接 400（没有门店，只靠日期会串单）")
+    void testOperationItems_unitTypeRequiresReturnUnit() {
+        StoreReturnQuery q = new StoreReturnQuery();
+        q.setReturnType("unit");
+
+        assertThatThrownBy(() -> service.listOperationItems(q))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("必须指定退回单位");
+    }
+
+    @Test
+    @DisplayName("OPS-001：抽屉明细 —— 随行下发判据（计量规则 / 清单内 / 能否入库 / 能否换算），非 kg 清单内才有两位小数")
+    void testOperationItems_carriesMetricJudgements() {
+        ProductInfo eggGift = listedProduct(PRODUCT_ID, "Y00500", "30枚散养绿壳土鸡蛋礼盒装", "other");
+        eggGift.setProductUnit("份");
+        eggGift.setProductMaterial(M_EGG_2);
+        eggGift.setMaterialNum(new BigDecimal("30"));
+        eggGift.setProductAttr(2);
+        stubDictListedButQueryable(List.of(eggGift), List.of(eggGift, product(M_EGG_2, "鸡蛋", "枚", null)));
+
+        StoreReturn row = new StoreReturn();
+        row.setId(11L);
+        row.setStoreId(STORE_ID);
+        row.setReturnType("store");
+        row.setProductId(PRODUCT_ID);
+        row.setReturnQuantity(new BigDecimal("2"));
+        row.setReturnDate(LocalDateTime.of(2026, 9, 20, 9, 0));
+        row.setReturnStatus("pending");
+        when(baseMapper.selectList(any())).thenReturn(List.of(row));
+
+        List<org.dromara.djs.store.returns.domain.vo.StoreReturnOpsItemVo> items =
+            service.listOperationItems(new StoreReturnQuery());
+
+        assertThat(items).hasSize(1);
+        org.dromara.djs.store.returns.domain.vo.StoreReturnOpsItemVo vo = items.get(0);
+        assertThat(vo.getMaterialNum()).isEqualByComparingTo("30");
+        assertThat(vo.getInReturnList()).isTrue();
+        assertThat(vo.getCanInbound()).isTrue();
+        assertThat(vo.getCanConvert()).isTrue();
+        assertThat(vo.getReturnQuantity()).isEqualByComparingTo("2");
+        assertThat(vo.getReturnStatus()).isEqualTo("pending");
     }
 }

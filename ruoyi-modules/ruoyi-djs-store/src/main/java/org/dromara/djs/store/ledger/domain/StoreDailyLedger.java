@@ -23,7 +23,8 @@ import java.time.LocalDate;
  *       期末 + 损耗都手填（默认 0），<b>{@code wh_return_qty} 是倒算项</b>：
  *       {@code wh_return_qty = opening_qty + inbound_qty − sale_qty − gift_qty − closing_qty − loss_qty}。
  *       ⚠️ 甲方给的式子里<b>没有 {@code return_qty}（顾客退货）这一项</b>，按字面执行，该列仍原样落库。
- *       另：{@code sale_qty} 预填取现场打包追溯码消耗掉的原材料量（不是销售流水）。</li>
+ *       另：{@code sale_qty} <b>由服务端按当日现场打包追溯码消耗掉的原材料量重算</b>（不是销售流水，
+ *       也不采信前端提交值——它在「先盘点才准打包」的作业顺序下必然过期）。</li>
  *   <li><b>其余行</b>（含猪肉的生产产品，甲方明说「生产产品逻辑不变」）：期末手填，
  *       <b>{@code loss_qty} 是倒算项</b>（docx 原口径）：
  *       {@code loss_qty = opening_qty + inbound_qty − sale_qty − gift_qty + return_qty − wh_return_qty − closing_qty}

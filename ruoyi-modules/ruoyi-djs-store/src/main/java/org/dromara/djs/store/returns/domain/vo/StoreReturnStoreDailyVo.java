@@ -5,8 +5,10 @@ import cn.idev.excel.annotation.ExcelIgnoreUnannotated;
 import cn.idev.excel.annotation.ExcelProperty;
 import com.fasterxml.jackson.annotation.JsonFormat;
 import lombok.Data;
+import org.dromara.common.excel.annotation.ExcelDictFormat;
 import org.dromara.common.translation.annotation.Translation;
 import org.dromara.common.translation.constant.TransConstant;
+import org.dromara.djs.common.excel.DictOrRawConvert;
 
 import java.io.Serial;
 import java.io.Serializable;
@@ -38,17 +40,81 @@ public class StoreReturnStoreDailyVo implements Serializable {
     @JsonFormat(pattern = "yyyy-MM-dd")
     private LocalDate returnDate;
 
-    /** 门店 ID（snowflake，Jackson 序列化为 string）。导出只要门店名，裸 ID 不进表头。 */
+    /**
+     * 退回类型（{@code djs_store_return_type}：store=门店退回 / unit=单位退回，STR-RETURN-OPS-001）。
+     * 空值按 {@code store} 处理（历史行 / 迁移前数据），与 DB 默认值同口径。
+     */
+    @ExcelProperty("退回类型")
+    private String returnType;
+
+    /**
+     * 退回单位名称（仅 {@code return_type='unit'} 有值）。
+     *
+     * <p>单位退回没有门店，前端「退回门店」列展示的就是这个值 —— 由 service 回填进
+     * {@link #storeName}，导出 / 列表两处同源，免得前端各写一套判断。</p>
+     */
+    @ExcelIgnore
+    private String returnUnit;
+
+    /** 门店 ID（snowflake，Jackson 序列化为 string）。导出只要门店名，裸 ID 不进表头。单位退回为 null。 */
     @ExcelIgnore
     private Long storeId;
 
-    /** 门店名称（StoreMapper 批量回填，避免 N+1）。 */
+    /**
+     * 「退回门店」列展示值：门店退回 → 门店名；单位退回 → 退回单位名（STR-RETURN-OPS-001）。
+     * StoreMapper / returnUnit 批量回填，避免 N+1。
+     */
     @ExcelProperty("退回门店")
     private String storeName;
+
+    /**
+     * 退回状态（STR-RETURN-OPS-001，展示口径 待处理/已处理）：
+     * 组内**只要还有 pending 行就是 pending**（还有货没处理完），全部 received 才是 received。
+     */
+    @ExcelProperty(value = "退回状态", converter = DictOrRawConvert.class)
+    @ExcelDictFormat(dictType = "djs_store_return_status")
+    private String returnStatus;
 
     /** 退回品种数（该组 distinct product_id 计数）。 */
     @ExcelProperty("退回品种数")
     private int productKindCount;
+
+    /**
+     * 猪肉产品品类数（STR-RETURN-OPS-001）：该组 distinct product_id 里
+     * {@code belong_type ∈ (pork, white_bar)} 的个数。<b>后端算</b>，前端不得 filter 当前页。
+     */
+    @ExcelProperty("猪肉产品品类数")
+    private int porkKindCount;
+
+    /** 果蔬产品品类数（该组 distinct product_id 里 {@code belong_type='vegetable'} 的个数）。 */
+    @ExcelProperty("果蔬产品品类数")
+    private int vegKindCount;
+
+    /** 其他产品品类数（该组 distinct product_id 里**其余全部**，含 belong_type 为空 —— 与 returnTabOf 同一份口径）。 */
+    @ExcelProperty("其他产品品类数")
+    private int otherKindCount;
+
+    /**
+     * 退回操作人 ID（← {@code operator_id}，该组最早一条有操作人的行）。
+     * 单位退回 = 新增时点击「确认」的那个人。
+     */
+    @ExcelIgnore
+    private Long operatorId;
+
+    /** 退回操作人姓名（USER_ID_TO_NICKNAME；service 侧预填，导出走 FastExcel 不跑 Jackson 翻译）。 */
+    @ExcelProperty("退回操作人")
+    @Translation(type = TransConstant.USER_ID_TO_NICKNAME, mapper = "operatorId")
+    private String operatorName;
+
+    /**
+     * 退回时间（← {@code create_time}，缺省回落 {@code return_date}）—— 即提交/新增那一刻。
+     *
+     * <p>不能用 {@code return_date} 顶替：单位退回的 {@code return_date} 是**甲方填写的退回日期**，
+     * 与「退回时间」是两回事（可以补录昨天的单）。门店退回两者同一时刻，取谁都一样。</p>
+     */
+    @ExcelProperty("退回时间")
+    @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")
+    private LocalDateTime returnTime;
 
     /** 退回重量合计（row57：仅按重量计（kg/公斤单位）行的 Σ goods_weight，份数产品不计入）。 */
     @ExcelProperty("退回重量")

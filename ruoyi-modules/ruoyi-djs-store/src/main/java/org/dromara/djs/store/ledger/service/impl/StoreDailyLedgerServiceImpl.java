@@ -310,6 +310,14 @@ public class StoreDailyLedgerServiceImpl implements IStoreDailyLedgerService {
             .add(sumMaterialSoldWhiteBarArriveWeight(bo.getStoreId(), date));
         BigDecimal porkInboundSum = BigDecimal.ZERO;
 
+        // V6-R215 第 2 条：猪肉原材料行的销售量**取**当日现场打包追溯码的原材料消耗量 —— 服务端当场重算，
+        // 不采信前端提交的值。原因不是防篡改，是这个数天然会过期：
+        // 现场打包被 assertWithinMaterialInbound 要求「先在门店盘点录入当日入库量」才放行，
+        // 所以首次盘点保存的那一刻必然还没打包、销售量必然是 0；工人打完包再回来「修改」时，
+        // 若沿用上次保存值，销售量就永远钉在 0，退回量倒算把整批入库都算成退回。
+        Map<Long, BigDecimal> onsiteConsumedByMaterial =
+            storeTraceService.sumOnsiteConsumedWeightByMaterial(bo.getStoreId(), date);
+
         int saved = 0;
         for (StoreDailyLedgerBatchBo.Item item : bo.getItems()) {
             ProductInfo product = productInfoMapper.selectById(item.getProductId());
@@ -339,6 +347,8 @@ public class StoreDailyLedgerServiceImpl implements IStoreDailyLedgerService {
             //   其余行（含猪肉的生产产品，甲方明说「生产产品逻辑不变」）→ 期末手填，**损耗倒算**（docx 原式）。
             BigDecimal loss;
             if (isPorkRawMaterial(product)) {
+                // 销售量服务端重算（见上方 onsiteConsumedByMaterial 注释），覆盖前端提交值。
+                sale = nz(onsiteConsumedByMaterial.get(item.getProductId()));
                 loss = nz(item.getLossQty());
                 returnWh = porkMaterialReturnWh(opening, inbound, sale, gift, closing, loss);
             } else {

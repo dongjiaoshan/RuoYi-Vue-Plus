@@ -45,6 +45,15 @@ public class StoreReturnQuery {
     /** 退回方向精确。 */
     private String returnDirection;
 
+    /**
+     * 退回类型精确（{@code djs_store_return_type}：store=门店退回 / unit=单位退回，STR-RETURN-OPS-001）。
+     * 空 = 不限类型（门店退回操作列表默认两类都列）。
+     */
+    private String returnType;
+
+    /** 退回单位精确（{@code return_type='unit'} 时的退回单位名）。 */
+    private String returnUnit;
+
     /** 退货状态精确（djs_store_return_status：pending/received）。 */
     private String returnStatus;
 

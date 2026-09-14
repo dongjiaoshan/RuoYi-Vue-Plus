@@ -21,19 +21,23 @@ import org.dromara.djs.store.returns.domain.StoreReturn;
 import org.dromara.djs.store.returns.domain.bo.StoreReturnBatchBo;
 import org.dromara.djs.store.returns.domain.bo.StoreReturnBo;
 import org.dromara.djs.store.returns.domain.bo.StoreReturnConfirmBo;
+import org.dromara.djs.store.returns.domain.bo.StoreReturnUnitBo;
 import org.dromara.djs.store.returns.domain.query.StoreReturnQuery;
 import org.dromara.djs.store.returns.domain.vo.StoreReturnDetailExportVo;
+import org.dromara.djs.store.returns.domain.vo.StoreReturnOpsItemVo;
 import org.dromara.djs.store.returns.domain.vo.StoreReturnVo;
 import org.dromara.djs.store.returns.domain.vo.StoreReturnAppletItemVo;
 import org.dromara.djs.store.returns.domain.vo.StoreReturnGroupVo;
 import org.dromara.djs.store.returns.domain.vo.StoreReturnPorkCandidateVo;
 import org.dromara.djs.store.returns.domain.vo.StoreReturnStoreDailyVo;
+import org.dromara.djs.store.returns.domain.vo.StoreReturnUnitCandidateVo;
 import org.dromara.djs.store.returns.domain.vo.StoreReturnVegCandidateVo;
 import org.dromara.djs.store.returns.mapper.StoreReturnMapper;
 import org.dromara.djs.store.returns.service.IStoreReturnService;
 import org.dromara.djs.warehouse.demand.domain.DemandManage;
 import org.dromara.djs.warehouse.demand.mapper.DemandManageMapper;
 import org.dromara.djs.warehouse.location.domain.LocationInfo;
+import org.dromara.djs.warehouse.location.domain.vo.LocationPickerVo;
 import org.dromara.djs.warehouse.location.mapper.LocationInfoMapper;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
@@ -53,6 +57,7 @@ import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Comparator;
+import java.util.Date;
 import java.util.LinkedHashMap;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
@@ -94,6 +99,20 @@ public class StoreReturnServiceImpl
 
     /** 门店退回仓库方向（退回操作 batchCreate 走此态：门店发起 → 仓库确认入库）。 */
     private static final String DIRECTION_STORE_TO_WAREHOUSE = "store_to_warehouse";
+
+    /**
+     * 退回类型（字典 {@code djs_store_return_type}，STR-RETURN-OPS-001）：
+     * {@code store}=门店退回（门店发起，待仓库处理） / {@code unit}=单位退回（admin 直录，建单即已处理）。
+     */
+    private static final String RETURN_TYPE_STORE = "store";
+    private static final String RETURN_TYPE_UNIT = "unit";
+
+    /**
+     * 退回单位配置字典（STR-RETURN-OPS-001，甲方「单位的配置数据源从出库去向里获取具体值，
+     * 配置到退回单位配置里」）：值取自 {@code djs_stock_out_dest}，由客户在 admin 字典管理增删。
+     * 迁移已把出库去向拷一份作初始示例。
+     */
+    private static final String DICT_RETURN_UNIT = "djs_return_unit";
 
     /** 门店退回入库流水类型 djs_flow_type（FIX-WMS-FLOWDICT-001：门店退货走 store_return_in，与领用退回 pick_return_in 区分来源）。 */
     private static final String FLOW_TYPE_RETURN_IN = "store_return_in";
@@ -168,6 +187,18 @@ public class StoreReturnServiceImpl
 
     /** product_production.is_delivery_check=1：已发货清点（到店白条口径与门店猪肉打包一致）。 */
     private static final Integer DELIVERY_CHECKED = 1;
+
+    /** 库位启用态（字典 {@code djs_common_status}：1=启用 / 2=停用）。 */
+    private static final Integer LOCATION_STATUS_ENABLED = 1;
+
+    /**
+     * 猪肉产品入库的两个专用库位名（row145.3 / STR-RETURN-OPS-001）。
+     *
+     * <p>两库 {@code location_type} 在 v3 reseed 后都是 {@code warehouse}，靠类型过滤挑不出来，
+     * 只能按库位名精确匹配（与 {@code PigBurnRecordServiceImpl.queryPorkOptionLocations} 同一套）。</p>
+     */
+    private static final String PORK_FRESH_LOCATION_NAME = "猪肉鲜品库";
+    private static final String FROZEN_LOCATION_NAME = "冻品库";
 
     /** 业务日时区（与项目其余「今日」口径一致，避免 DB CURDATE() 时区雷）。 */
     private static final ZoneId ZONE_SHANGHAI = ZoneId.of("Asia/Shanghai");
@@ -1251,26 +1282,39 @@ public class StoreReturnServiceImpl
             return DISCARD_YES.equals(r.getIsDiscard()) ? "已丢弃" : "已入库";
         }
         if (STATUS_PENDING.equals(r.getReturnStatus())) {
-            return "待仓库确认";
+            // 与字典 djs_store_return_status 的 label 同口径（甲方 row213 第 2/3 条：待处理 / 已处理）。
+            // 已确认行仍分「已入库 / 已丢弃」——明细导出比列表多一层信息，不折回两态。
+            return "待处理";
         }
         return StringUtils.isBlank(r.getReturnStatus()) ? EXPORT_EMPTY : r.getReturnStatus();
     }
 
     /**
-     * 仓库「退货记录」外层主从视图聚合（仅门店→仓库方向，不含 customer_to_store），
-     * 按 退回日期(截到天)+门店 聚合，退货日期倒序、再门店倒序的稳定排序。分页 / 导出共用。
+     * 仓库「退货记录」/ admin「门店退回操作」外层主从视图聚合（仅门店→仓库方向，不含 customer_to_store），
+     * 按 退回日期(截到天) + 退回类型 + 门店/退回单位 聚合，退货日期倒序、再组内倒序的稳定排序。分页 / 导出共用。
+     *
+     * <p>STR-RETURN-OPS-001 起分组键多了「退回类型 + 退回单位」两维：单位退回没有门店
+     * （{@code store_id} 恒 NULL），沿用旧的「日期|门店」键会把所有单位退回折进 {@code ...|null} 一组、
+     * 而且旧代码的 {@code filter(storeId != null)} 会直接把它们静默丢掉。</p>
      */
     private List<StoreReturnStoreDailyVo> buildStoreDailyList(StoreReturnQuery query) {
         StoreReturnQuery q = query == null ? new StoreReturnQuery() : query;
         q.setReturnDirection(DIRECTION_STORE_TO_WAREHOUSE);
+        // 「退回状态」是**组级**结论（组内还有 pending 就是待处理），不能下推到行：
+        // 下推后一张「3 行里 2 行已确认」的单，按「已处理」筛会只回那 2 行 → 组内全 received →
+        // 整组被判成已处理、操作列变成「查看详情」，剩下那 1 行待处理的货再也点不开；
+        // 品类数也只数到被筛剩的行。故这里摘掉它，聚合完再按组过滤。
+        String groupStatus = q.getReturnStatus();
+        q.setReturnStatus(null);
         List<StoreReturn> rows = baseMapper.selectList(buildQueryWrapper(q));
+        q.setReturnStatus(groupStatus);
         if (rows.isEmpty()) {
             return new ArrayList<>();
         }
+        // 分组键 = 日期 | 类型 | 门店（单位退回用退回单位名，永不与门店 id 撞）
         Map<String, List<StoreReturn>> byGroup = rows.stream()
-            .filter(r -> r.getReturnDate() != null && r.getStoreId() != null)
-            .collect(Collectors.groupingBy(
-                r -> r.getReturnDate().toLocalDate() + "|" + r.getStoreId(),
+            .filter(r -> r.getReturnDate() != null)
+            .collect(Collectors.groupingBy(StoreReturnServiceImpl::storeDailyGroupKey,
                 LinkedHashMap::new, Collectors.toList()));
         if (byGroup.isEmpty()) {
             return new ArrayList<>();
@@ -1278,21 +1322,67 @@ public class StoreReturnServiceImpl
         Set<Long> storeIds = byGroup.values().stream()
             .map(g -> g.get(0).getStoreId()).filter(Objects::nonNull).collect(Collectors.toSet());
         Map<Long, String> storeNames = storeNameMap(new ArrayList<>(storeIds));
+        // 单位退回的 return_unit 存的是**字典 value**（如 yejiazhuang_cun），甲方要的「退回门店」列是
+        // **名称**（叶家庄村）。存 value、展示换 label：客户在字典里改名后列表跟着变，历史行不用回刷。
+        // ⚠️ getAllDictByDictType 返的是 value → label，别反着取。
+        Map<String, String> unitLabels = dictService.getAllDictByDictType(DICT_RETURN_UNIT);
         // row57：重量三列只算按重量计（kg）行，份数产品单独归「非重量产品退回重量」。
         // row15：份数产品里**只有原材料单位 = kg 的**才累加（它的 received_weight 才是重量）。
-        // 一次查全部行产品（单位 + 原材料）避免 N+1。
+        // 一次查全部行产品（单位 + 原材料 + 归属类型）避免 N+1；归属类型还要喂三类品类数。
         List<ProductInfo> rowProducts = productsOfReturns(rows);
         Map<Long, String> unitByProduct = productUnitMap(rowProducts);
         Map<Long, String> metricUnitByProduct = resolveMetricUnits(rowProducts);
+        Map<Long, String> belongByProduct = rowProducts.stream().collect(Collectors.toMap(
+            ProductInfo::getId, p -> p.getBelongType() == null ? "" : p.getBelongType(), (a, b) -> a));
         List<StoreReturnStoreDailyVo> all = new ArrayList<>(byGroup.size());
         for (List<StoreReturn> group : byGroup.values()) {
             StoreReturn any = group.get(0);
+            boolean unitType = RETURN_TYPE_UNIT.equals(any.getReturnType());
             StoreReturnStoreDailyVo vo = new StoreReturnStoreDailyVo();
             vo.setReturnDate(any.getReturnDate().toLocalDate());
+            vo.setReturnType(unitType ? RETURN_TYPE_UNIT : RETURN_TYPE_STORE);
+            vo.setReturnUnit(unitType ? any.getReturnUnit() : null);
             vo.setStoreId(any.getStoreId());
-            vo.setStoreName(storeNames.get(any.getStoreId()));
+            // 「退回门店」列：单位退回展示退回单位名（甲方 row213 第 5 条），门店退回展示门店名。
+            // 两处同源回填，旧「仓库退回记录」页也不会因为多出单位退回而显示空门店。
+            vo.setStoreName(unitType ? unitLabel(unitLabels, any.getReturnUnit())
+                : storeNames.get(any.getStoreId()));
+            // 三类品类数（甲方 row213 第 3 条）：**后端算**，前端 filter 当前页在分页/导出时必错。
+            // 分流口径复用 returnTabOf，与 mp 退回操作三个 tab 同一份，不另写一套。
+            Set<Long> porkIds = new LinkedHashSet<>();
+            Set<Long> vegIds = new LinkedHashSet<>();
+            Set<Long> otherIds = new LinkedHashSet<>();
+            for (StoreReturn r : group) {
+                if (r.getProductId() == null) {
+                    continue;
+                }
+                switch (returnTabOf(belongByProduct.get(r.getProductId()))) {
+                    case RETURN_TAB_PORK -> porkIds.add(r.getProductId());
+                    case RETURN_TAB_VEG -> vegIds.add(r.getProductId());
+                    default -> otherIds.add(r.getProductId());
+                }
+            }
             vo.setProductKindCount((int) group.stream()
                 .map(StoreReturn::getProductId).filter(Objects::nonNull).distinct().count());
+            vo.setPorkKindCount(porkIds.size());
+            vo.setVegKindCount(vegIds.size());
+            vo.setOtherKindCount(otherIds.size());
+            // 退回状态：组内还有 pending 行就是「待处理」（还有货没处理完），全部 received 才是「已处理」。
+            boolean allReceived = group.stream().allMatch(r -> STATUS_RECEIVED.equals(r.getReturnStatus()));
+            vo.setReturnStatus(allReceived ? STATUS_RECEIVED : STATUS_PENDING);
+            // 退回操作人/时间：操作人取组内最早一条有操作人的行；时间取 create_time（缺省回落 return_date）。
+            // 不能用 return_date 顶替「退回时间」：单位退回的 return_date 是甲方填的退回日期（可补录昨天），
+            // 与「提交那一刻」是两回事。
+            group.stream().filter(r -> r.getOperatorId() != null)
+                .min(Comparator.comparing(StoreReturn::getId))
+                .ifPresent(first -> {
+                    vo.setOperatorId(first.getOperatorId());
+                    vo.setReturnTime(first.getCreateTime() != null
+                        ? toLocalDateTime(first.getCreateTime()) : first.getReturnDate());
+                });
+            if (vo.getReturnTime() == null) {
+                vo.setReturnTime(any.getReturnDate());
+            }
             // row57：① 确认重量 = Σ kg 行 received_weight；② 退货重量 = Σ kg 行 goods_weight；
             //        ③ 重量差异 = 退货 − 确认（同为 kg 口径）。
             // row15（甲方 2026-08-04 口径）：④ 非重量产品退回重量 = Σ「产品单位 ≠ kg **且原材料单位 = kg**」行的
@@ -1342,13 +1432,50 @@ public class StoreReturnServiceImpl
                 });
             all.add(vo);
         }
+        // 组级「退回状态」过滤（见方法开头：这一维不能下推到行）。
+        if (StringUtils.isNotBlank(groupStatus)) {
+            all.removeIf(v -> !groupStatus.equals(v.getReturnStatus()));
+        }
         // row178：确认人姓名 service 侧预填。@Translation 只跑 Jackson 序列化链，导出走 FastExcel
-        // 直接读字段，光靠注解「确认人」整列是空的。
+        // 直接读字段，光靠注解「确认人」整列是空的。STR-RETURN-OPS-001 的「退回操作人」同理会空。
         fillConfirmUserNames(all);
+        fillOperatorNames(all);
+        // 排序：退回日期倒序 → 门店 id 倒序（单位退回 storeId 为 null，用 MIN_VALUE 排到最后，
+        // 不做 null 处理 Comparator.comparing 会直接 NPE）。
         all.sort(Comparator
             .comparing(StoreReturnStoreDailyVo::getReturnDate, Comparator.reverseOrder())
-            .thenComparing(StoreReturnStoreDailyVo::getStoreId, Comparator.reverseOrder()));
+            .thenComparing(v -> v.getStoreId() == null ? Long.MIN_VALUE : v.getStoreId(),
+                Comparator.reverseOrder()));
         return all;
+    }
+
+    /**
+     * {@code BaseEntity.createTime} 是 {@link java.util.Date}，本 VO 统一用 {@link LocalDateTime}
+     * （与 {@code return_date} / {@code confirm_time} 同型）。按业务时区换算，避免 UTC 偏 8 小时。
+     */
+    private static LocalDateTime toLocalDateTime(Date date) {
+        return date == null ? null : LocalDateTime.ofInstant(date.toInstant(), ZONE_SHANGHAI);
+    }
+
+    /**
+     * 退回单位 value → 展示名（字典 {@code djs_return_unit} 的 label）。
+     * 字典里查不到（客户把那条删了、或历史行存的是旧值）时原样回退 value，不让整列变空。
+     */
+    private static String unitLabel(Map<String, String> unitLabels, String unitValue) {
+        if (StringUtils.isBlank(unitValue)) {
+            return null;
+        }
+        String label = unitLabels == null ? null : unitLabels.get(unitValue);
+        return StringUtils.isNotBlank(label) ? label : unitValue;
+    }
+
+    /** 门店退回操作外层分组键：{@code 日期|类型|门店或退回单位}（单位退回没有门店，用单位名占位）。 */
+    private static String storeDailyGroupKey(StoreReturn r) {
+        String type = RETURN_TYPE_UNIT.equals(r.getReturnType()) ? RETURN_TYPE_UNIT : RETURN_TYPE_STORE;
+        String owner = RETURN_TYPE_UNIT.equals(type)
+            ? "U:" + (r.getReturnUnit() == null ? "" : r.getReturnUnit())
+            : "S:" + r.getStoreId();
+        return r.getReturnDate().toLocalDate() + "|" + type + "|" + owner;
     }
 
     /** row178：按 confirmUser 批量回填确认人姓名（去重后逐个查，组数量级为「门店 × 天」，无 N+1 风险）。 */
@@ -1364,9 +1491,30 @@ public class StoreReturnServiceImpl
     }
 
     /**
-     * row57/row15：一次查出退回行涉及的全部产品（id + 单位 + 原材料），供「产品单位」与「计量口径单位」
-     * 两套分流共用，避免逐行 selectById。<b>必须带 {@code productMaterial}</b>——
-     * {@link #resolveMetricUnits} 靠它解析原材料单位，漏选会让所有行退化成「按产品单位」判定。
+     * STR-RETURN-OPS-001：按 operatorId 批量回填「退回操作人」姓名。
+     *
+     * <p>同 {@link #fillConfirmUserNames} 的理由 —— {@code @Translation} 只在 Jackson 序列化链上生效，
+     * 导出走 FastExcel 直接读字段，光靠注解这一列会整列空。</p>
+     */
+    private void fillOperatorNames(List<StoreReturnStoreDailyVo> rows) {
+        Map<Long, String> cache = new LinkedHashMap<>();
+        for (StoreReturnStoreDailyVo vo : rows) {
+            Long uid = vo.getOperatorId();
+            if (uid == null) {
+                continue;
+            }
+            vo.setOperatorName(cache.computeIfAbsent(uid, userService::selectNicknameById));
+        }
+    }
+
+    /**
+     * row57/row15：一次查出退回行涉及的全部产品，供「产品单位」/「计量口径单位」/ 三类品类数 /
+     * 退回处理抽屉四套用途共用，避免逐行 selectById。
+     *
+     * <p><b>投影必须够宽</b>（STR-RETURN-OPS-001 踩过）：抽屉行要用 {@code productName / productSpec /
+     * materialNum / productAttr / storeLocationId}，缺一个就会被静默降级 —— {@code materialRatio} 回落 1、
+     * {@code canConvert} 判成 false、名字列空白。<b>必须带 {@code productMaterial}</b>：
+     * {@link #resolveMetricUnits} 靠它解析原材料单位。</p>
      */
     private List<ProductInfo> productsOfReturns(List<StoreReturn> rows) {
         List<Long> pids = rows.stream().map(StoreReturn::getProductId)
@@ -1375,7 +1523,9 @@ public class StoreReturnServiceImpl
             return List.of();
         }
         return productInfoMapper.selectList(new LambdaQueryWrapper<ProductInfo>()
-            .select(ProductInfo::getId, ProductInfo::getProductUnit, ProductInfo::getProductMaterial)
+            .select(ProductInfo::getId, ProductInfo::getProductName, ProductInfo::getProductSpec,
+                ProductInfo::getProductUnit, ProductInfo::getProductMaterial, ProductInfo::getBelongType,
+                ProductInfo::getMaterialNum, ProductInfo::getProductAttr, ProductInfo::getStoreLocationId)
             .in(ProductInfo::getId, pids));
     }
 
@@ -1518,7 +1668,395 @@ public class StoreReturnServiceImpl
         return softDelete(ids);
     }
 
+    // ---------- STR-RETURN-OPS-001 admin「门店退回操作」 ----------
+
+    @Override
+    public List<StoreReturnOpsItemVo> listOperationItems(StoreReturnQuery query) {
+        StoreReturnQuery q = query == null ? new StoreReturnQuery() : query;
+        q.setReturnDirection(DIRECTION_STORE_TO_WAREHOUSE);
+        boolean unitType = RETURN_TYPE_UNIT.equals(q.getReturnType());
+        if (unitType && StringUtils.isBlank(q.getReturnUnit())) {
+            // 单位退回按「退回单位」区分是不同的一张单（都没有门店，只靠日期 + 类型会串单）
+            throw new ServiceException("查询单位退回明细时必须指定退回单位", 400);
+        }
+        List<StoreReturn> rows = baseMapper.selectList(buildQueryWrapper(q));
+        if (rows.isEmpty()) {
+            return List.of();
+        }
+        List<ProductInfo> products = productsOfReturns(rows);
+        Map<Long, ProductInfo> productById = products.stream()
+            .collect(Collectors.toMap(ProductInfo::getId, p -> p, (a, b) -> a, LinkedHashMap::new));
+        // 批量补原材料产品（换算单位 / 入库库位默认都按原材料走），避免逐行 selectById
+        Set<Long> materialIds = products.stream().map(ProductInfo::getProductMaterial)
+            .filter(Objects::nonNull).collect(Collectors.toSet());
+        if (!materialIds.isEmpty()) {
+            productInfoMapper.selectList(new LambdaQueryWrapper<ProductInfo>()
+                    .select(ProductInfo::getId, ProductInfo::getProductUnit, ProductInfo::getStoreLocationId,
+                        ProductInfo::getProductName)
+                    .in(ProductInfo::getId, materialIds))
+                .forEach(m -> productById.putIfAbsent(m.getId(), m));
+        }
+        Map<Long, String> metricUnits = resolveMetricUnits(products);
+        Set<Long> returnListIds = new HashSet<>(resolveReturnListProductIds());
+        Map<Long, LocationPickerVo> enabledLocations = allEnabledLocationMap();
+        List<StoreReturnOpsItemVo> result = new ArrayList<>(rows.size());
+        for (StoreReturn r : rows) {
+            ProductInfo p = r.getProductId() == null ? null : productById.get(r.getProductId());
+            StoreReturnOpsItemVo vo = new StoreReturnOpsItemVo();
+            vo.setId(r.getId());
+            vo.setReturnNo(r.getReturnNo());
+            vo.setReturnType(RETURN_TYPE_UNIT.equals(r.getReturnType()) ? RETURN_TYPE_UNIT : RETURN_TYPE_STORE);
+            vo.setReturnUnit(r.getReturnUnit());
+            vo.setStoreId(r.getStoreId());
+            vo.setProductId(r.getProductId());
+            vo.setProductName(p == null ? null : p.getProductName());
+            vo.setProductSpec(p == null ? null : p.getProductSpec());
+            vo.setProductUnit(p == null ? null : p.getProductUnit());
+            String metricUnit = p == null ? null : metricUnits.get(p.getId());
+            vo.setMaterialUnit(metricUnit);
+            vo.setMaterialNum(materialRatio(p));
+            vo.setInReturnList(p != null && returnListIds.contains(p.getId()));
+            vo.setCanInbound(canInbound(p));
+            vo.setCanConvert(canConvert(p, metricUnit));
+            vo.setReturnQuantity(r.getReturnQuantity());
+            vo.setReturnWeight(r.getGoodsWeight());
+            vo.setReceivedQty(r.getReceivedQty());
+            vo.setReceivedWeight(r.getReceivedWeight());
+            vo.setLocationId(r.getLocationId());
+            vo.setIsDiscard(r.getIsDiscard() == null ? DISCARD_NO : r.getIsDiscard());
+            vo.setReturnStatus(r.getReturnStatus());
+            vo.setReturnDate(r.getReturnDate());
+            vo.setOperatorId(r.getOperatorId());
+            vo.setConfirmUserId(r.getConfirmUserId());
+            vo.setConfirmTime(r.getConfirmTime());
+            LocationChoice choice = resolveLocationChoice(p, productById, enabledLocations);
+            vo.setDefaultLocationId(choice.defaultLocationId());
+            vo.setLocationOptions(choice.options());
+            result.add(vo);
+        }
+        // 库位名 + 人员姓名按需回填（去重后逐个查，单张单行数量级小）
+        Map<Long, String> locationNames = locationNameMap(result.stream()
+            .map(StoreReturnOpsItemVo::getLocationId).filter(Objects::nonNull).distinct().toList());
+        Map<Long, String> userNames = new LinkedHashMap<>();
+        for (StoreReturnOpsItemVo vo : result) {
+            if (vo.getLocationId() != null) {
+                vo.setLocationName(locationNames.get(vo.getLocationId()));
+            }
+            if (vo.getOperatorId() != null) {
+                vo.setOperatorName(userNames.computeIfAbsent(vo.getOperatorId(), userService::selectNicknameById));
+            }
+            if (vo.getConfirmUserId() != null) {
+                vo.setConfirmUserName(userNames.computeIfAbsent(vo.getConfirmUserId(), userService::selectNicknameById));
+            }
+        }
+        return result;
+    }
+
+    @Override
+    public List<StoreReturnUnitCandidateVo> listUnitCandidates() {
+        List<Long> ids = resolveReturnListProductIds();
+        if (ids.isEmpty()) {
+            return List.of();
+        }
+        List<ProductInfo> products = productInfoMapper.selectList(new LambdaQueryWrapper<ProductInfo>()
+            .select(ProductInfo::getId, ProductInfo::getProductId, ProductInfo::getProductName,
+                ProductInfo::getProductSpec, ProductInfo::getProductUnit, ProductInfo::getBelongType,
+                ProductInfo::getProductMaterial, ProductInfo::getMaterialNum, ProductInfo::getProductAttr,
+                ProductInfo::getStoreLocationId)
+            .in(ProductInfo::getId, ids).orderByAsc(ProductInfo::getId));
+        if (products.isEmpty()) {
+            return List.of();
+        }
+        Map<Long, ProductInfo> productById = products.stream()
+            .collect(Collectors.toMap(ProductInfo::getId, p -> p, (a, b) -> a, LinkedHashMap::new));
+        Set<Long> materialIds = products.stream().map(ProductInfo::getProductMaterial)
+            .filter(Objects::nonNull).collect(Collectors.toSet());
+        if (!materialIds.isEmpty()) {
+            productInfoMapper.selectList(new LambdaQueryWrapper<ProductInfo>()
+                    .select(ProductInfo::getId, ProductInfo::getProductUnit, ProductInfo::getStoreLocationId,
+                        ProductInfo::getProductName)
+                    .in(ProductInfo::getId, materialIds))
+                .forEach(m -> productById.putIfAbsent(m.getId(), m));
+        }
+        Map<Long, String> metricUnits = resolveMetricUnits(new ArrayList<>(productById.values()));
+        Set<Long> returnListIds = new HashSet<>(ids);
+        Map<Long, LocationPickerVo> enabledLocations = allEnabledLocationMap();
+        List<StoreReturnUnitCandidateVo> result = new ArrayList<>(products.size());
+        for (ProductInfo p : products) {
+            // 礼盒即便被配进清单也退不进仓库（多种原料组合，拆不回单一原材料，提交时硬拒）。
+            // 列出来就是让用户白填一遍再吃 400，候选侧直接剔掉 —— 与提交闸同一条规则的两半。
+            if (BELONG_TYPE_GIFT_BOX.equals(p.getBelongType())) {
+                continue;
+            }
+            String metricUnit = metricUnits.get(p.getId());
+            StoreReturnUnitCandidateVo vo = new StoreReturnUnitCandidateVo();
+            vo.setProductId(p.getId());
+            vo.setProductCode(p.getProductId());
+            vo.setProductName(p.getProductName());
+            vo.setProductSpec(p.getProductSpec());
+            vo.setBelongType(p.getBelongType());
+            vo.setProductUnit(p.getProductUnit());
+            vo.setMaterialUnit(metricUnit);
+            vo.setMaterialNum(materialRatio(p));
+            vo.setInReturnList(p.getId() != null && returnListIds.contains(p.getId()));
+            vo.setCanInbound(canInbound(p));
+            vo.setCanConvert(canConvert(p, metricUnit));
+            LocationChoice choice = resolveLocationChoice(p, productById, enabledLocations);
+            vo.setDefaultLocationId(choice.defaultLocationId());
+            vo.setLocationOptions(choice.options());
+            result.add(vo);
+        }
+        return result;
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public int createUnitReturns(StoreReturnUnitBo bo) {
+        // 退回单位必须来自「退回单位配置」字典（值取自出库去向）。字典为空时不拦 ——
+        // 客户还没配的时候不能让整个功能不可用（迁移已拷了一份初始示例，正常不会为空）。
+        //
+        // ⚠️ `getAllDictByDictType` 返的是 **dictValue → dictLabel**，所以成员资格判 **keySet**。
+        // 判 values() 等于拿中文 label 去比前端传来的 value，永远不命中 —— 字典一配就整条路走不通
+        // （实测：字典里有「矿山E2E示例=mine_e2e」，传 mine_e2e 被拒）。
+        Map<String, String> unitDict = dictService.getAllDictByDictType(DICT_RETURN_UNIT);
+        if (unitDict != null && !unitDict.isEmpty() && !unitDict.containsKey(bo.getReturnUnit())) {
+            throw new ServiceException("退回单位「" + bo.getReturnUnit()
+                + "」不在「退回单位配置」字典里，请先在 admin 字典管理 → 退回单位配置 里配置", 400);
+        }
+        Long operatorId = LoginHelper.getUserId();
+        LocalDateTime operateTime = LocalDateTime.now();
+        // 退回日期只到天（甲方填的是日期），时刻部分归零：同一天多次新增仍是同一张单、同一分组。
+        LocalDateTime returnDate = bo.getReturnDate().atStartOfDay();
+        Set<Long> allowedIds = returnListAllowedIds();
+        int created = 0;
+        for (StoreReturnUnitBo.Item item : bo.getItems()) {
+            ProductInfo product = productInfoMapper.selectById(item.getProductId());
+            if (product == null) {
+                throw new ServiceException("产品不存在或已删除：" + item.getProductId(), 404);
+            }
+            assertReturnable(product);
+            // 与门店退回同一道闸：不在「退回产品清单」里的产品一律拒绝（防凭空造仓库库存）
+            assertInReturnProductList(product, allowedIds);
+            BigDecimal qty = item.getReturnQuantity();
+            if (qty == null || qty.signum() <= 0) {
+                throw new ServiceException("产品「" + product.getProductName() + "」的退回量必须大于 0", 400);
+            }
+            boolean discard = DISCARD_YES.equals(item.getIsDiscard());
+            Long inboundProductId = null;
+            Long locationId = null;
+            if (!discard) {
+                if (!canInbound(product)) {
+                    throw new ServiceException("产品「" + product.getProductName()
+                        + "」未配置原材料，无法退回入库，只能标记为产品丢弃", 400);
+                }
+                String metricUnit = resolveMetricUnit(product);
+                if (!canConvert(product, metricUnit)) {
+                    throw new ServiceException("产品「" + product.getProductName() + "」的退回单位("
+                        + product.getProductUnit() + ")与原材料单位(" + metricUnit
+                        + ")不同但未配「计量规则」，无法换算入库量；请先在产品档案补配，或把该行改为产品丢弃", 400);
+                }
+                inboundProductId = resolveInboundProductId(product.getId());
+                locationId = item.getLocationId() != null ? item.getLocationId() : resolveDefaultLocation(inboundProductId);
+                if (locationId == null) {
+                    throw new ServiceException("产品「" + product.getProductName()
+                        + "」未指定入库库位且无法自动定位（无预设库位 / 无历史库存），请选择库位后再确认", 400);
+                }
+            }
+            // 已处理量：与 mp 确认页 / admin「退回处理」同一套换算（退回单位量 × 计量规则 → 原材料量），
+            // 否则同一批货在三条路径下会写出三个不同的 received_weight。
+            BigDecimal materialQty = toConfirmWeight(product, qty);
+            StoreReturn entity = new StoreReturn();
+            entity.setReturnNo(generateReturnNo());
+            // 方向沿用 store_to_warehouse：退回到仓库是同一件事，仓库侧退货记录 / 汇总据此可见。
+            entity.setReturnDirection(DIRECTION_STORE_TO_WAREHOUSE);
+            entity.setReturnType(RETURN_TYPE_UNIT);
+            entity.setReturnUnit(bo.getReturnUnit());
+            // 🔴 单位退回**没有门店**：store_id 恒 null，绝不复用（会污染门店维度所有统计）。
+            entity.setProductId(product.getId());
+            entity.setLocationId(locationId);
+            entity.setReturnQuantity(qty);
+            // kg 产品的「报退货物重量」取退回量本身（与门店退回 row15 的派生口径一致）；
+            // 非 kg 产品是份数，与 kg 不同量纲，落 0（旧行为同）。
+            entity.setGoodsWeight(isKgUnit(product.getProductUnit()) ? qty : BigDecimal.ZERO);
+            entity.setReturnDate(returnDate);
+            entity.setOperatorId(operatorId);
+            // 甲方「退回状态默认为已处理」：建单即两态终态，四个人员时间列全部填当前操作人与当前时刻。
+            entity.setReturnStatus(STATUS_RECEIVED);
+            entity.setReceivedQty(materialQty);
+            entity.setReceivedWeight(materialQty);
+            entity.setIsDiscard(discard ? DISCARD_YES : DISCARD_NO);
+            entity.setConfirmUserId(operatorId);
+            entity.setConfirmTime(operateTime);
+            entity.setRemark("单位退回：" + bo.getReturnUnit());
+            baseMapper.insert(entity);
+            if (!discard) {
+                // 未丢弃的行写入库，入库方式 store_return_in「门店退回」（甲方第 5 条）。
+                purchaseInService.inboundReturnBasket(inboundProductId, locationId, materialQty,
+                    FLOW_TYPE_RETURN_IN, returnInboundRemark("单位退回入库", entity.getReturnNo(), product));
+            }
+            created++;
+        }
+        log.info("[STR-RETURN-OPS-001] createUnitReturns unit={} date={} 行数={} → 直接 received（未丢弃行已入库）",
+            bo.getReturnUnit(), bo.getReturnDate(), created);
+        return created;
+    }
+
     // ---------- private helpers ----------
+
+    /**
+     * 入库库位候选（默认值 + 下拉选项），STR-RETURN-OPS-001。
+     *
+     * <p>规则（甲方 row213 第 4/5 条）：</p>
+     * <ol>
+     *   <li><b>猪肉产品</b>（{@code belong_type='pork'}，白条不分流——Kevin 口径）：下拉固定
+     *       「猪肉鲜品库 + 冻品库」两个启用库位，默认取产品存储库位（在这两库里时）否则第一个；</li>
+     *   <li>其余产品：下拉 = 入库产品的 {@code store_location_id} 配置启用库位（保序），
+     *       默认取其中第一个 / 命中「产品预设 → 库存最多」兜底的那个；</li>
+     *   <li>配置为空 → 下拉回落全部启用库位（不能让下拉是空的、整行卡死），默认仍走
+     *       {@link #resolveDefaultLocation}（产品预设 → 库存最多库位 → null）。</li>
+     * </ol>
+     */
+    private LocationChoice resolveLocationChoice(ProductInfo product, Map<Long, ProductInfo> productById,
+                                                 Map<Long, LocationPickerVo> enabledLocations) {
+        List<LocationPickerVo> all = new ArrayList<>(enabledLocations.values());
+        if (product == null) {
+            return new LocationChoice(all.isEmpty() ? null : all.get(0).getId(), all);
+        }
+        // 入库落在原材料头上（果蔬成品 / 猪肉成品都折算），库位默认也跟着原材料走，
+        // 与 confirm() 里 resolveDefaultLocation(inboundProductId) 完全同源。
+        ProductInfo inboundProduct = product;
+        if (product.getProductMaterial() != null) {
+            ProductInfo material = productById.get(product.getProductMaterial());
+            if (material != null) {
+                inboundProduct = material;
+            }
+        }
+        Long stockMost = resolveDefaultLocation(inboundProduct.getId());
+        if (isPorkProduct(product)) {
+            List<LocationPickerVo> pork = new ArrayList<>(2);
+            for (String name : List.of(PORK_FRESH_LOCATION_NAME, FROZEN_LOCATION_NAME)) {
+                enabledLocations.values().stream()
+                    .filter(l -> name.equals(l.getLocationName()))
+                    .findFirst().ifPresent(pork::add);
+            }
+            List<LocationPickerVo> options = pork.isEmpty() ? all : pork;
+            Long def = options.stream().map(LocationPickerVo::getId)
+                .filter(id -> id.equals(stockMost)).findFirst().orElse(null);
+            if (def == null && !options.isEmpty()) {
+                def = options.get(0).getId();
+            }
+            if (def == null) {
+                def = stockMost;
+            }
+            return new LocationChoice(def, options);
+        }
+        List<LocationPickerVo> configured = configuredLocations(inboundProduct, enabledLocations);
+        if (!configured.isEmpty()) {
+            Long def = configured.stream().map(LocationPickerVo::getId)
+                .filter(id -> id.equals(stockMost)).findFirst()
+                .orElse(configured.get(0).getId());
+            return new LocationChoice(def, configured);
+        }
+        Long def = stockMost != null ? stockMost : (all.isEmpty() ? null : all.get(0).getId());
+        return new LocationChoice(def, all);
+    }
+
+    /** 产品 {@code store_location_id}（逗号分隔）里仍然启用的库位，保持配置顺序。 */
+    private static List<LocationPickerVo> configuredLocations(ProductInfo product,
+                                                              Map<Long, LocationPickerVo> enabledLocations) {
+        if (product == null || StringUtils.isBlank(product.getStoreLocationId())) {
+            return List.of();
+        }
+        List<LocationPickerVo> result = new ArrayList<>();
+        for (String token : product.getStoreLocationId().split(",")) {
+            String trimmed = token.trim();
+            if (trimmed.isEmpty()) {
+                continue;
+            }
+            Long id;
+            try {
+                id = Long.valueOf(trimmed);
+            } catch (NumberFormatException ex) {
+                continue;
+            }
+            LocationPickerVo vo = enabledLocations.get(id);
+            if (vo != null) {
+                result.add(vo);
+            }
+        }
+        return result;
+    }
+
+    /** 全部启用库位（id → picker VO，按 location_sort 升序 / id 倒序，与库位一览页同口径）。 */
+    private Map<Long, LocationPickerVo> allEnabledLocationMap() {
+        return locationInfoMapper.selectList(new LambdaQueryWrapper<LocationInfo>()
+                .eq(LocationInfo::getLocationStatus, LOCATION_STATUS_ENABLED)
+                .orderByAsc(LocationInfo::getLocationSort)
+                .orderByDesc(LocationInfo::getId))
+            .stream()
+            .map(l -> {
+                LocationPickerVo vo = new LocationPickerVo();
+                vo.setId(l.getId());
+                vo.setLocationCode(l.getLocationCode());
+                vo.setLocationName(l.getLocationName());
+                vo.setLocationType(l.getLocationType());
+                vo.setLocationSort(l.getLocationSort());
+                return vo;
+            })
+            .collect(Collectors.toMap(LocationPickerVo::getId, v -> v, (a, b) -> a, LinkedHashMap::new));
+    }
+
+    /** 库位候选结果：默认值 + 下拉选项（record 只为把两个值一起从 helper 里带出来）。 */
+    private record LocationChoice(Long defaultLocationId, List<LocationPickerVo> options) {
+    }
+
+    /** 是否猪肉产品（{@code belong_type='pork'}）——仅 pork 走鲜/冻库分流（白条不分流，Kevin 口径）。 */
+    private static boolean isPorkProduct(ProductInfo product) {
+        return product != null && BELONG_TYPE_PORK.equals(product.getBelongType());
+    }
+
+    /**
+     * 退回单位量 → 原材料量（admin 侧 {@code metric.ts#toConfirmWeight} 的 Java 等价物）。
+     *
+     * <p>mp 确认页界面按**退回单位**录，提交前乘 {@code material_num} 换算回原材料量再落
+     * {@code received_weight}。admin 抽屉 / 单位退回新增必须用同一套换算，否则同一张单
+     * admin 处理与 mp 处理会写出两个数（验收 §3 第 5 条）。</p>
+     *
+     * <p>kg 行 {@code material_num} 恒为 1（退回单位就是原材料单位），乘完等于原值；结果保留 3 位
+     * （后端列是 DECIMAL(12,3)，不裁会被 MySQL 静默四舍五入）。</p>
+     */
+    static BigDecimal toConfirmWeight(ProductInfo product, BigDecimal input) {
+        if (input == null) {
+            return null;
+        }
+        if (product == null || isKgUnit(product.getProductUnit())) {
+            return input;
+        }
+        return input.multiply(materialRatio(product)).setScale(3, RoundingMode.HALF_UP);
+    }
+
+    /**
+     * 该行能不能做单位换算（admin 侧 {@code metric.ts#canConvert} 的 Java 等价物）。
+     *
+     * <p>需要换算（原材料单位与退回单位不同）却没配 {@code material_num} 时返 false ——
+     * 这时任何取值都是瞎猜：按 1 折算会把「3 只」原样记成「3 kg」进库存。
+     * 调用方据此锁行 / 拒绝提交，而不是静默记一个错数。</p>
+     */
+    static boolean canConvert(ProductInfo product, String materialUnit) {
+        if (product == null) {
+            return false;
+        }
+        if (isKgUnit(product.getProductUnit())) {
+            return true;
+        }
+        String metric = materialUnit == null ? "" : materialUnit.trim();
+        String own = product.getProductUnit() == null ? "" : product.getProductUnit().trim();
+        if (metric.isEmpty() || metric.equalsIgnoreCase(own)) {
+            return true;
+        }
+        BigDecimal ratio = product.getMaterialNum();
+        return ratio != null && ratio.signum() > 0;
+    }
 
     /**
      * 退回入库目标产品 id：果蔬成品退回入库用其原材料 product_material（docx：不以成品入库，用原材料 ID）；
@@ -1766,6 +2304,11 @@ public class StoreReturnServiceImpl
                 StoreReturn::getReturnStatus, q.getReturnStatus())
             .eq(StringUtils.isNotBlank(q.getReturnDirection()),
                 StoreReturn::getReturnDirection, q.getReturnDirection())
+            // STR-RETURN-OPS-001：退回类型 / 退回单位两维下推。
+            // 注意：按门店筛选时单位退回会被**天然排除**（上面 store_id 的 IN / eq 对 NULL 不成立），
+            // 这正是 §4 fallback 3 要的行为 —— 单位退回没有门店，不该混进某门店的结果里。
+            .eq(StringUtils.isNotBlank(q.getReturnType()), StoreReturn::getReturnType, q.getReturnType())
+            .eq(StringUtils.isNotBlank(q.getReturnUnit()), StoreReturn::getReturnUnit, q.getReturnUnit())
             .ge(q.getReturnDateFrom() != null, StoreReturn::getReturnDate,
                 q.getReturnDateFrom() == null ? null : q.getReturnDateFrom().atStartOfDay())
             .le(q.getReturnDateTo() != null, StoreReturn::getReturnDate,

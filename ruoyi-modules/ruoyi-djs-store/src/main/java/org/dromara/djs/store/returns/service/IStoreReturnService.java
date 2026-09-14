@@ -5,13 +5,16 @@ import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.store.returns.domain.bo.StoreReturnBatchBo;
 import org.dromara.djs.store.returns.domain.bo.StoreReturnBo;
 import org.dromara.djs.store.returns.domain.bo.StoreReturnConfirmBo;
+import org.dromara.djs.store.returns.domain.bo.StoreReturnUnitBo;
 import org.dromara.djs.store.returns.domain.query.StoreReturnQuery;
 import org.dromara.djs.store.returns.domain.vo.StoreReturnDetailExportVo;
+import org.dromara.djs.store.returns.domain.vo.StoreReturnOpsItemVo;
 import org.dromara.djs.store.returns.domain.vo.StoreReturnVo;
 import org.dromara.djs.store.returns.domain.vo.StoreReturnAppletItemVo;
 import org.dromara.djs.store.returns.domain.vo.StoreReturnGroupVo;
 import org.dromara.djs.store.returns.domain.vo.StoreReturnPorkCandidateVo;
 import org.dromara.djs.store.returns.domain.vo.StoreReturnStoreDailyVo;
+import org.dromara.djs.store.returns.domain.vo.StoreReturnUnitCandidateVo;
 import org.dromara.djs.store.returns.domain.vo.StoreReturnVegCandidateVo;
 
 import java.util.Collection;
@@ -138,4 +141,43 @@ public interface IStoreReturnService {
 
     /** 软删除（DjsBaseServiceImpl#softDelete 范式）。 */
     int deleteByIds(Collection<Long> ids);
+
+    // ---------- STR-RETURN-OPS-001 admin「门店退回操作」 ----------
+
+    /**
+     * 门店退回操作抽屉明细（甲方 row213 第 4 条）：一张退回单（{@code 退回类型 + 退回日期 + 门店/退回单位}）
+     * 下的逐产品行，含「退回处理」所需的全部判据（退回单位 / 计量规则 / 是否清单内 / 能否入库 /
+     * 默认入库库位与候选列表）。
+     *
+     * <p>已处理行（{@code received}）回显当时的确认量与处置方式，前端在只读模式下直接展示；
+     * 待处理行给默认值让用户可改。<b>抽屉不区分处理 / 详情两个端点</b> —— 同一份数据，
+     * 由前端按行状态决定可编辑性，避免两个端点各写一套口径。</p>
+     *
+     * @param query 必带 {@code returnType}；{@code unit} 时必带 {@code returnUnit}；
+     *              {@code store} 时必带 {@code storeId}
+     * @return 逐产品行（按 id 升序 = 下单顺序）
+     */
+    List<StoreReturnOpsItemVo> listOperationItems(StoreReturnQuery query);
+
+    /**
+     * 「新增单位退回」弹框的候选产品（甲方 row213 第 5 条）：字典「退回产品清单」
+     * {@code djs_return_product_list} 里按产品编码 resolve 出来的产品数据（礼盒剔除）。
+     *
+     * <p>退回量由用户在弹框里手填，故这里不带数量；单位 / 计量规则 / 库位候选与抽屉行同源。</p>
+     *
+     * @return 候选产品行（清单为空 → 空列表，由客户在字典管理配置）
+     */
+    List<StoreReturnUnitCandidateVo> listUnitCandidates();
+
+    /**
+     * 新增一张「单位退回」单（甲方 row213 第 5 条）：落 {@code return_type='unit'}、
+     * {@code return_status='received'}（直接已处理），四个人员时间列全部填当前操作人与当前时刻；
+     * 未丢弃的行同事务写入库（入库方式 {@code store_return_in}「门店退回」）。
+     *
+     * <p>退回对象是外单位而非门店 —— 落 {@code return_unit} 新列，{@code store_id} 恒 NULL。</p>
+     *
+     * @param bo 退回日期 + 退回单位 + 行（productId / returnQuantity / locationId / isDiscard）
+     * @return 成功建条数
+     */
+    int createUnitReturns(StoreReturnUnitBo bo);
 }

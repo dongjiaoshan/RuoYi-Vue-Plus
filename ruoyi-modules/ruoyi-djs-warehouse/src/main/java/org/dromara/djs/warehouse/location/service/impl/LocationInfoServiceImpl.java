@@ -15,6 +15,7 @@ import org.dromara.djs.warehouse.location.domain.LocationInfo;
 import org.dromara.djs.warehouse.location.domain.bo.LocationInfoBo;
 import org.dromara.djs.warehouse.location.domain.query.LocationInfoQuery;
 import org.dromara.djs.warehouse.location.domain.vo.LocationCardSummaryVo;
+import org.dromara.djs.warehouse.location.domain.vo.LocationPickerVo;
 import org.dromara.djs.warehouse.location.domain.vo.LocationProductStockVo;
 import org.dromara.djs.warehouse.location.domain.vo.LocationInfoVo;
 import org.dromara.djs.warehouse.location.mapper.LocationInfoMapper;
@@ -47,6 +48,9 @@ public class LocationInfoServiceImpl extends DjsBaseServiceImpl<LocationInfoMapp
      * 库位类型字典 type（卡片网格 8 类 base）。
      */
     private static final String DICT_LOCATION_TYPE = "djs_location_type";
+
+    /** 库位启用态（字典 {@code djs_common_status}：1=启用 / 2=停用）。 */
+    private static final Integer LOCATION_STATUS_ENABLED = 1;
 
     private final LocationStockMapper stockMapper;
     private final DictService dictService;
@@ -204,6 +208,32 @@ public class LocationInfoServiceImpl extends DjsBaseServiceImpl<LocationInfoMapp
      */
     protected LocationInfo toEntity(LocationInfoBo bo) {
         return MapstructUtils.convert(bo, LocationInfo.class);
+    }
+
+    @Override
+    public List<LocationPickerVo> listPicker() {
+        // 只取启用库位；排序与库位一览页同口径（location_sort 升序，同序 id 倒序）——
+        // 下拉顺序与用户在库位管理里看到的顺序一致，免得「按名称找库位」时对不上。
+        List<LocationInfo> rows = baseMapper.selectList(new LambdaQueryWrapper<LocationInfo>()
+            .eq(LocationInfo::getLocationStatus, LOCATION_STATUS_ENABLED)
+            .orderByAsc(LocationInfo::getLocationSort)
+            .orderByDesc(LocationInfo::getId));
+        List<LocationPickerVo> result = new ArrayList<>(rows.size());
+        for (LocationInfo l : rows) {
+            result.add(toPicker(l));
+        }
+        return result;
+    }
+
+    /** 库位实体 → picker 轻量 VO（字段与 mp {@code LocationPicker} 同构，三端共用一套下拉结构）。 */
+    private static LocationPickerVo toPicker(LocationInfo l) {
+        LocationPickerVo vo = new LocationPickerVo();
+        vo.setId(l.getId());
+        vo.setLocationCode(l.getLocationCode());
+        vo.setLocationName(l.getLocationName());
+        vo.setLocationType(l.getLocationType());
+        vo.setLocationSort(l.getLocationSort());
+        return vo;
     }
 
     private LambdaQueryWrapper<LocationInfo> buildQueryWrapper(LocationInfoQuery query) {

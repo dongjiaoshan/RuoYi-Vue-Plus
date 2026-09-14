@@ -5,6 +5,7 @@ import org.dromara.common.mybatis.core.page.TableDataInfo;
 import org.dromara.djs.warehouse.location.domain.bo.LocationInfoBo;
 import org.dromara.djs.warehouse.location.domain.query.LocationInfoQuery;
 import org.dromara.djs.warehouse.location.domain.vo.LocationCardSummaryVo;
+import org.dromara.djs.warehouse.location.domain.vo.LocationPickerVo;
 import org.dromara.djs.warehouse.location.domain.vo.LocationProductStockVo;
 import org.dromara.djs.warehouse.location.domain.vo.LocationInfoVo;
 
@@ -87,5 +88,16 @@ public interface ILocationInfoService {
      * @return 逐产品行，按实时库存量倒序
      */
     List<LocationProductStockVo> getProductStock(Long locationId, String productName);
+
+    /**
+     * 可选库位轻量列表（STR-RETURN-OPS-001）：全部**启用**库位，按 {@code location_sort} / id 升序。
+     *
+     * <p>给 admin 的通用 {@code LocationSelect} 下拉做兜底数据源 —— 产品没配「存储库位」时，
+     * 入库库位下拉不能是空的。只返 id / 编码 / 名称 / 类型 / 排序（复用
+     * {@link LocationPickerVo}，不带图片 / 容量等无关字段）。</p>
+     *
+     * @return 启用库位列表（无数据返回空列表）
+     */
+    List<LocationPickerVo> listPicker();
 
 }
