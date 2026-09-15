@@ -42,6 +42,25 @@ public class LocationStockVo implements Serializable {
     private Long id;
 
     /**
+     * 这一行背后的库存篮 id 组，<b>先进先出序</b>（建篮时间升序）。
+     *
+     * <p>V6 row223 / D-0068 起一行不再等于一个篮：同 (产品, 库位, 耳号, 地块, 三期, 白条流水号)
+     * 的多个篮合并成一行、库存量取和。行内「产品出库」「产品内部处理」「猪肉转移」整组提交，
+     * 服务端按本列表顺序跨篮先进先出扣。{@link #id} 是组里第一个篮的 id，只当行键用。</p>
+     *
+     * <p>不导出：xlsx 里一列雪花 id 对甲方毫无意义。</p>
+     */
+    private java.util.List<Long> stockIds;
+
+    /**
+     * 这一行合并了几个库存篮（≥1）。
+     *
+     * <p>不展示也不导出，留给排障：「这行怎么比昨天多了」一看就知道是又建了一个篮，
+     * 不必回头翻 {@code t_warehouse_location_stock} 才能确认。</p>
+     */
+    private Integer basketCount;
+
+    /**
      * 产品代码（业务码 {@code ProductInfo.productId}，service 层按 {@code product_id} FK 回填；如 P10002）。
      */
     @ExcelProperty(value = "产品代码")

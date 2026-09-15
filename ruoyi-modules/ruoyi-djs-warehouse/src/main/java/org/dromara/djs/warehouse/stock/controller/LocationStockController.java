@@ -16,11 +16,13 @@ import org.dromara.djs.warehouse.stock.domain.bo.StockOutBo;
 import org.dromara.djs.warehouse.stock.domain.bo.StockTransferBo;
 import org.dromara.djs.warehouse.stock.domain.query.LocationStockQuery;
 import org.dromara.djs.warehouse.stock.domain.vo.LocationStockVo;
+import org.dromara.djs.warehouse.stock.domain.vo.StockBasketVo;
 import org.dromara.djs.warehouse.stock.service.ILocationStockService;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
@@ -72,6 +74,18 @@ public class LocationStockController extends BaseController {
     @GetMapping("/earNos")
     public R<List<String>> earNos(Long locationId) {
         return R.ok(stockService.listStockEarNos(locationId));
+    }
+
+    /**
+     * 合并行背后的各篮明细（V6 row223 / D-0068「各篮明细（入库时间+重量）下沉到详情里看」）。
+     *
+     * <p>列表按 (产品, 库位, 耳号, 地块, 三期, 白条流水号) 合并之后，篮这一层从列表上消失了，
+     * 这个端点是它唯一的去处 —— 没有它，工人对不出一行的合计是怎么来的。</p>
+     */
+    @SaCheckPermission("djs:warehouse:stock:list")
+    @GetMapping("/baskets")
+    public R<List<StockBasketVo>> baskets(@RequestParam List<Long> stockIds) {
+        return R.ok(stockService.listBaskets(stockIds));
     }
 
     /**

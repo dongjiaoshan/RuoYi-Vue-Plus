@@ -23,21 +23,26 @@ import org.dromara.djs.warehouse.location.domain.LocationInfo;
 import org.dromara.djs.warehouse.location.mapper.LocationInfoMapper;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
+import org.dromara.djs.warehouse.stock.domain.FifoAllocator;
 import org.dromara.djs.warehouse.stock.domain.LocationStock;
 import org.dromara.djs.warehouse.stock.domain.bo.LocationStockBo;
 import org.dromara.djs.warehouse.stock.domain.bo.StockOutBo;
 import org.dromara.djs.warehouse.stock.domain.bo.StockTransferBo;
 import org.dromara.djs.warehouse.stock.domain.query.LocationStockQuery;
 import org.dromara.djs.warehouse.stock.domain.vo.LocationStockVo;
+import org.dromara.djs.warehouse.stock.domain.vo.StockBasketVo;
 import org.dromara.djs.warehouse.stock.mapper.LocationStockMapper;
 import org.dromara.djs.warehouse.stock.service.ILocationStockService;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Comparator;
 import java.util.Date;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -137,21 +142,152 @@ public class LocationStockServiceImpl extends DjsBaseServiceImpl<LocationStockMa
 
     @Override
     public TableDataInfo<LocationStockVo> queryPageList(LocationStockQuery query, PageQuery pageQuery) {
-        LambdaQueryWrapper<LocationStock> wrapper = buildQueryWrapper(query);
-        Page<LocationStockVo> page = baseMapper.selectVoPage(pageQuery.build(), wrapper);
-        fillLocationNames(page.getRecords());
-        fillPlotFields(page.getRecords());
-        fillProductCodes(page.getRecords());
-        return TableDataInfo.build(page);
+        List<LocationStockVo> all = buildMergedList(query);
+        int total = all.size();
+        // 分页参数按 PageQuery.build() 的既有语义兜底，逐条对齐：缺省页码 1、缺省每页 Integer.MAX_VALUE
+        // （= 查全部，不是 10 —— 不传 pageSize 的调用方以前拿到全量，悄悄改成 10 是个不出声的契约变更），
+        // 页码 ≤ 0 归一到 1。
+        int pageNum = pageQuery == null || pageQuery.getPageNum() == null
+            ? PageQuery.DEFAULT_PAGE_NUM : pageQuery.getPageNum();
+        if (pageNum <= 0) {
+            pageNum = PageQuery.DEFAULT_PAGE_NUM;
+        }
+        int pageSize = pageQuery == null || pageQuery.getPageSize() == null
+            ? PageQuery.DEFAULT_PAGE_SIZE : pageQuery.getPageSize();
+        if (pageSize <= 0) {
+            pageSize = PageQuery.DEFAULT_PAGE_SIZE;
+        }
+        // 用 long 算再夹回 int：`(pageNum-1)*pageSize` 在 int 里会溢出成负数，
+        // 负下标直接把 subList 打成 500「发生未知异常」（实测 pageNum=3 亿 / pageSize=-5 都能触发）。
+        long fromL = Math.min((long) (pageNum - 1) * pageSize, total);
+        int from = (int) Math.max(fromL, 0);
+        int to = (int) Math.min(Math.min((long) from + pageSize, total), total);
+        TableDataInfo<LocationStockVo> dataInfo = new TableDataInfo<>();
+        dataInfo.setCode(200);
+        dataInfo.setRows(new ArrayList<>(all.subList(from, to)));
+        dataInfo.setTotal(total);
+        return dataInfo;
     }
 
     @Override
     public List<LocationStockVo> queryList(LocationStockQuery query) {
-        List<LocationStockVo> list = baseMapper.selectVoList(buildQueryWrapper(query));
-        fillLocationNames(list);
-        fillPlotFields(list);
-        fillProductCodes(list);
-        return list;
+        return buildMergedList(query);
+    }
+
+    /**
+     * 库存查询列表本体（V6 row223 / D-0068「按汇总显示，不分开」）：
+     * 同 (产品, 库位, 耳号, 地块, 三期, 白条流水号) 的多个库存篮合并成一行、库存量取和。
+     *
+     * <p><b>为什么在内存里分组而不是 SQL {@code GROUP BY}</b>：筛选条件里有一段判「零库存只在当天
+     * 有真实流水时可见」的 {@code EXISTS} 子查询，还有按地块编号 / 归属类型反查 id 集再 IN 的几路，
+     * 全靠 {@code buildQueryWrapper} 这一份实现。改写成聚合 SQL 要把它整段重做一遍，
+     * 而这条是库存查询唯一的读路径，重做的风险远大于内存分组的开销 ——
+     * 这张表是「一个篮一行」的库存表，数量级是千，与门店退回外层汇总
+     * （{@code StoreReturnServiceImpl#queryStoreDailyPage}）走的是同一套先查全量再分页的范式。</p>
+     *
+     * <p>合并键比甲方点名的四维多两项：<b>三期</b>（三期货没有真实 plot_id，不入键会和普通货并成一行、
+     * 「地块」列显示成哪个都不对）与<b>白条流水号</b>（同一头猪的两片白条耳号相同、库位相同、都没有地块，
+     * 只有流水号不同，而它是页面上一列独立展示的可追溯标识，合并了这一列就没法填）。</p>
+     */
+    private List<LocationStockVo> buildMergedList(LocationStockQuery query) {
+        // 防御性拷贝：下面要原地排序，而 mapper 返回的列表不保证可变（测试桩 List.of 会当场抛
+        // UnsupportedOperationException，生产环境的 ArrayList 只是恰好没暴露这个问题）。
+        List<LocationStockVo> rows = new ArrayList<>(baseMapper.selectVoList(buildQueryWrapper(query)));
+        fillLocationNames(rows);
+        fillPlotFields(rows);
+        fillProductCodes(rows);
+        // 先进先出序：建篮时间升序、同刻按 id 升序。分组后 stockIds 保持这个顺序，出库直接照着扣。
+        rows.sort(Comparator
+            .comparing(LocationStockVo::getCreateTime, Comparator.nullsLast(Comparator.naturalOrder()))
+            .thenComparing(LocationStockVo::getId, Comparator.nullsLast(Comparator.naturalOrder())));
+        Map<String, LocationStockVo> merged = new LinkedHashMap<>();
+        for (LocationStockVo r : rows) {
+            LocationStockVo vo = merged.get(stockGroupKey(r));
+            if (vo == null) {
+                r.setStockIds(new ArrayList<>(List.of(r.getId())));
+                r.setBasketCount(1);
+                merged.put(stockGroupKey(r), r);
+                continue;
+            }
+            vo.getStockIds().add(r.getId());
+            vo.setBasketCount(vo.getBasketCount() + 1);
+            vo.setProductStock(nzStock(vo.getProductStock()).add(nzStock(r.getProductStock())));
+            // 备注是**单篮**上的字段（实测有「V6-R102 历史迁移…」这类只属于某一篮的话）。
+            // 合并行继承第一篮的备注会让人以为整行都是那么来的，导出件里尤其误导 —— 直接清空。
+            // 创建时间保留最早那篮（= 这批货最早什么时候进的，是有意义的），不清。
+            vo.setRemark(null);
+            // is_end 是「这个篮子处理完了没」：组里只要还有没完的，整行就不算完。
+            if (r.getIsEnd() != null && (vo.getIsEnd() == null || r.getIsEnd() < vo.getIsEnd())) {
+                vo.setIsEnd(r.getIsEnd());
+            }
+            // 盘点信息取最新一次：合并行上显示「最近一次盘点」才有意义，显示最早那次会让人以为很久没盘。
+            if (r.getLatestCheckTime() != null
+                && (vo.getLatestCheckTime() == null || r.getLatestCheckTime().after(vo.getLatestCheckTime()))) {
+                vo.setLatestCheckTime(r.getLatestCheckTime());
+                vo.setCheckResult(r.getCheckResult());
+            }
+        }
+        List<LocationStockVo> result = new ArrayList<>(merged.values());
+        // 列表默认序沿用原来的「id 倒序」（最近建的篮在前）；组内 stockIds 仍是先进先出序，两者互不影响。
+        result.sort(Comparator.comparing(LocationStockVo::getId,
+            Comparator.nullsLast(Comparator.reverseOrder())));
+        return result;
+    }
+
+    /** 库存行合并键（V6 row223）：产品 / 药品 + 库位 + 耳号 + 地块 + 三期 + 白条流水号。 */
+    private static String stockGroupKey(LocationStockVo r) {
+        return r.getProductId() + "|" + r.getMedicineId() + "|" + r.getLocationId()
+            + "|" + (r.getEarNo() == null ? "" : r.getEarNo())
+            + "|" + r.getPlotId()
+            + "|" + (r.getThirdPhase() == null ? "" : r.getThirdPhase())
+            + "|" + (r.getWhiteBarNo() == null ? "" : r.getWhiteBarNo());
+    }
+
+    private static BigDecimal nzStock(BigDecimal v) {
+        return v == null ? BigDecimal.ZERO : v;
+    }
+
+    @Override
+    public List<StockBasketVo> listBaskets(List<Long> stockIds) {
+        if (stockIds == null || stockIds.isEmpty()) {
+            return List.of();
+        }
+        Map<Long, LocationStock> byId = baseMapper.selectList(
+                new LambdaQueryWrapper<LocationStock>().in(LocationStock::getId, stockIds))
+            .stream().collect(Collectors.toMap(LocationStock::getId, r -> r, (a, b) -> a));
+        List<StockBasketVo> result = new ArrayList<>(stockIds.size());
+        // 按入参顺序返回 = 列表行给的先进先出序；查不到的篮（并发被清掉）直接跳过，不占位也不报错 ——
+        // 这是个只读的"看一眼"入口，为一条已消失的篮把整个弹框打崩不值当。
+        for (Long id : stockIds) {
+            LocationStock stock = byId.get(id);
+            if (stock == null) {
+                continue;
+            }
+            StockBasketVo vo = new StockBasketVo();
+            vo.setId(stock.getId());
+            vo.setCreateTime(stock.getCreateTime());
+            vo.setProductStock(stock.getProductStock());
+            vo.setLatestCheckTime(stock.getLatestCheckTime());
+            vo.setRemark(stock.getRemark());
+            result.add(vo);
+        }
+        return result;
+    }
+
+    @Override
+    public Map<Long, BigDecimal> allocateFifo(List<Long> stockIds, BigDecimal quantity) {
+        if (stockIds == null || stockIds.isEmpty()) {
+            throw new ServiceException("未指定要出库的库存行", 400);
+        }
+        List<LocationStock> baskets = new ArrayList<>(stockIds.size());
+        for (Long stockId : stockIds) {
+            LocationStock stock = baseMapper.selectById(stockId);
+            if (stock == null) {
+                throw new ServiceException("库存记录不存在或已删除：" + stockId);
+            }
+            baskets.add(stock);
+        }
+        return FifoAllocator.allocate(baskets, quantity);
     }
 
     @Override
@@ -187,10 +323,11 @@ public class LocationStockServiceImpl extends DjsBaseServiceImpl<LocationStockMa
 
     @Override
     public void assertManualOutQuantity(StockOutBo bo) {
-        if (bo == null || bo.getQuantity() == null || bo.getId() == null) {
+        if (bo == null || bo.getQuantity() == null || bo.getStockIds() == null || bo.getStockIds().isEmpty()) {
             return;   // 空值交给 @Valid / productOut 自己报，这里只管单位口径
         }
-        LocationStock stock = baseMapper.selectById(bo.getId());
+        // 单位是产品属性，一组篮同产品 —— 取第一篮判即可
+        LocationStock stock = baseMapper.selectById(bo.getStockIds().get(0));
         if (stock == null || stock.getProductId() == null) {
             return;   // 库存行不存在 → 让 productOut 抛它那句更准确的错，不在这里抢着报
         }
@@ -204,10 +341,10 @@ public class LocationStockServiceImpl extends DjsBaseServiceImpl<LocationStockMa
 
     @Override
     public void assertManualTransferQuantity(StockTransferBo bo) {
-        if (bo == null || bo.getQuantity() == null || bo.getId() == null) {
+        if (bo == null || bo.getQuantity() == null || bo.getStockIds() == null || bo.getStockIds().isEmpty()) {
             return;
         }
-        LocationStock stock = baseMapper.selectById(bo.getId());
+        LocationStock stock = baseMapper.selectById(bo.getStockIds().get(0));
         if (stock == null || stock.getProductId() == null) {
             return;   // 库存行不存在 → 让 pigTransfer 抛它那句更准确的错
         }
@@ -221,11 +358,26 @@ public class LocationStockServiceImpl extends DjsBaseServiceImpl<LocationStockMa
 
     @Override
     @Transactional(rollbackFor = Exception.class)
-    public Long productOut(StockOutBo bo) {
+    public List<Long> productOut(StockOutBo bo) {
+        List<Long> flowIds = new ArrayList<>();
+        for (Map.Entry<Long, BigDecimal> e : allocateFifo(bo.getStockIds(), bo.getQuantity()).entrySet()) {
+            flowIds.add(productOutOneBasket(bo, e.getKey(), e.getValue()));
+        }
+        return flowIds;
+    }
+
+    /**
+     * 单篮出库原语（{@link #productOut} 分配完之后逐篮调用）。
+     *
+     * <p>原来的整段实现原样搬进来，只把「篮 id / 出库量」从 {@code bo} 换成入参 ——
+     * 组级分配与单篮扣减必须分层：混在一起写，扣到一半失败时报的错会指向某一个篮的余额，
+     * 与页面上那一行显示的合计对不上。</p>
+     */
+    private Long productOutOneBasket(StockOutBo bo, Long stockId, BigDecimal quantity) {
         // 1. 取库存行，解析 locationId + productId（按行出库，避免前端透传可篡改的 location/product）
-        LocationStock stock = baseMapper.selectById(bo.getId());
+        LocationStock stock = baseMapper.selectById(stockId);
         if (stock == null) {
-            throw new ServiceException("库存记录不存在或已删除：" + bo.getId());
+            throw new ServiceException("库存记录不存在或已删除：" + stockId);
         }
         Long productId = stock.getProductId();
         Long locationId = stock.getLocationId();
@@ -241,11 +393,11 @@ public class LocationStockServiceImpl extends DjsBaseServiceImpl<LocationStockMa
         // row186-BE：出库量不得超过当前库存（前端软拦 + 此处后端 fail-fast 硬拦，写流水前拦截防绕过/并发超扣；
         // 与 step3 的 deductStockById 行锁原子校验互为内外两道闸）。
         BigDecimal currentStock = stock.getProductStock() == null ? BigDecimal.ZERO : stock.getProductStock();
-        if (bo.getQuantity().compareTo(currentStock) > 0) {
+        if (quantity.compareTo(currentStock) > 0) {
             throw new ServiceException(
                 "出库量超过当前库存（product=" + product.getProductName()
                     + " / 当前库存=" + currentStock.stripTrailingZeros().toPlainString() + product.getProductUnit()
-                    + " / 申请=" + bo.getQuantity().stripTrailingZeros().toPlainString() + product.getProductUnit() + "）");
+                    + " / 申请=" + quantity.stripTrailingZeros().toPlainString() + product.getProductUnit() + "）");
         }
         Long userId = LoginHelper.getUserId();
 
@@ -259,8 +411,8 @@ public class LocationStockServiceImpl extends DjsBaseServiceImpl<LocationStockMa
         flow.setInoutType(INOUT_OUT);
         flow.setFlowType(FLOW_BACKSTAGE_OUT);
         flow.setStockOutDest(bo.getStockOutDest());
-        flow.setChangeNum(bo.getQuantity().negate());
-        flow.setChangeQuantity(bo.getQuantity());
+        flow.setChangeNum(quantity.negate());
+        flow.setChangeQuantity(quantity);
         // 【三期】标识从被扣的那一行继承（V6 row92）。这里是「按行出库」的唯一收口点：
         // 库存查询页每行的「产品出库」按钮、毛菜间出库（VegOutServiceImpl 跨 bean 调本方法）
         // 都从这里出，标识在此一次性带上，调用方不需要各自记得回补 —— 靠调用方 patch 的写法
@@ -276,24 +428,38 @@ public class LocationStockServiceImpl extends DjsBaseServiceImpl<LocationStockMa
 
         // 3. 按行 id 原子扣减（product_stock >= quantity 行锁 + 数量校验）——UI 按库存行出库，
         //    精确扣所选行/篮，避免同 (库位,产品) 多耳号/地块/白条篮串扣（与 pigTransfer 同范式）
-        int affected = locationStockMapper().deductStockById(stock.getId(), bo.getQuantity(), userId);
+        int affected = locationStockMapper().deductStockById(stock.getId(), quantity, userId);
         if (affected == 0) {
-            // 抛异常 → @Transactional 回滚 step 2
+            // 抛异常 → @Transactional 回滚整单（本篮之前已扣的篮 + 已写的流水一起回滚，不会半扣）。
+            // 文案必须说明「余量是本单开始时的快照」：按组出库时这一行可能有多篮，分配方案是在
+            // 事务开始时按快照算的，等扣到这一篮时它可能已被别人领走 —— 此时把快照值当「当前库存」
+            // 报给工人，他会看到一个和页面、和数据库都对不上的数字，只能反复重试。
             throw new ServiceException(
-                "库存不足或已被并发占用，无法出库（product=" + product.getProductName()
-                    + " / 当前库存=" + stock.getProductStock() + product.getProductUnit()
-                    + " / 申请=" + bo.getQuantity() + product.getProductUnit() + "）");
+                "「" + product.getProductName() + "」这一篮已被其他人领走，或库存不足，本单已全部撤销，"
+                    + "请刷新页面后重试（本单开始时该篮余量="
+                    + nzStock(stock.getProductStock()).stripTrailingZeros().toPlainString()
+                    + product.getProductUnit() + " / 本篮需扣="
+                    + quantity.stripTrailingZeros().toPlainString() + product.getProductUnit() + "）");
         }
         return flow.getId();
     }
 
     @Override
     @Transactional(rollbackFor = Exception.class)
-    public Long pigTransfer(StockTransferBo bo) {
+    public List<Long> pigTransfer(StockTransferBo bo) {
+        List<Long> flowIds = new ArrayList<>();
+        for (Map.Entry<Long, BigDecimal> e : allocateFifo(bo.getStockIds(), bo.getQuantity()).entrySet()) {
+            flowIds.add(pigTransferOneBasket(bo, e.getKey(), e.getValue()));
+        }
+        return flowIds;
+    }
+
+    /** 单篮转移原语（{@link #pigTransfer} 分配完之后逐篮调用）。 */
+    private Long pigTransferOneBasket(StockTransferBo bo, Long stockId, BigDecimal quantity) {
         // 1. 取源库存行（猪肉鲜品库某产品/耳号篮），解析 locationId + productId + 当前库存
-        LocationStock stock = baseMapper.selectById(bo.getId());
+        LocationStock stock = baseMapper.selectById(stockId);
         if (stock == null) {
-            throw new ServiceException("库存记录不存在或已删除：" + bo.getId());
+            throw new ServiceException("库存记录不存在或已删除：" + stockId);
         }
         Long productId = stock.getProductId();
         Long srcLocationId = stock.getLocationId();
@@ -331,13 +497,13 @@ public class LocationStockServiceImpl extends DjsBaseServiceImpl<LocationStockMa
 
         // 转移量不得超过源库存行当前库存（前端软拦 + 此处后端硬拦；与 step3 按行 id 行锁互为内外两道闸）
         BigDecimal currentStock = stock.getProductStock() == null ? BigDecimal.ZERO : stock.getProductStock();
-        if (bo.getQuantity().compareTo(currentStock) > 0) {
+        if (quantity.compareTo(currentStock) > 0) {
             throw new ServiceException(
                 "转移量超过当前库存（product=" + product.getProductName()
                     + " / 当前库存=" + currentStock.stripTrailingZeros().toPlainString() + product.getProductUnit()
-                    + " / 申请=" + bo.getQuantity().stripTrailingZeros().toPlainString() + product.getProductUnit() + "）");
+                    + " / 申请=" + quantity.stripTrailingZeros().toPlainString() + product.getProductUnit() + "）");
         }
-        BigDecimal qty = bo.getQuantity();
+        BigDecimal qty = quantity;
         Long userId = LoginHelper.getUserId();
         // 【三期】标识从源库存行继承（V6 row92）：转移是「同一批货换个库位」，两侧流水与目标篮都得跟着它走，
         // 否则三期货一转移就掉标识、总出/总入两头对不上，目标库位还会把三期货并进普通篮混账。

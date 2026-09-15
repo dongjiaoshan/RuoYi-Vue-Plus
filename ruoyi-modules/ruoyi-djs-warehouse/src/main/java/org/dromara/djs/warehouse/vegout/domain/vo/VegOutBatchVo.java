@@ -48,18 +48,28 @@ public class VegOutBatchVo implements Serializable {
     @ExcelDictFormat(dictType = "djs_stock_out_dest")
     private String outDest;
 
-    /** 出库果蔬品类数（该单去重产品数）。 */
-    @ExcelProperty(value = "出库果蔬品类数")
+    /** 出库品类数（该单去重产品数）。 */
+    @ExcelProperty(value = "出库品类数")
     private Integer productKinds;
 
     /**
-     * 出库果蔬重量合计（kg）。
+     * 出库重量合计（kg）。
      *
      * <p>表头带 (kg)：该合计<b>只累加 kg 行</b>（见 {@code VegOutMapper} 口径说明），
-     * 干货 / 蛋类的袋 / 桶 / 罐 / 枚不进这个数，不写单位会被误读成「全部产品总量」。</p>
+     * 干货 / 蛋类的袋 / 桶 / 罐 / 枚不进这个数，它们落在 {@link #totalQty}。</p>
      */
-    @ExcelProperty(value = "出库果蔬重量(kg)")
+    @ExcelProperty(value = "出库重量(kg)")
     private BigDecimal totalWeight;
+
+    /**
+     * 出库量合计（V6 row220 新增列）：该单里<b>单位不是 kg</b> 的行的数量之和。
+     *
+     * <p>与 {@link #totalWeight} 是同一判据的两半，互不重叠。<b>故意不带单位</b>——
+     * 一张单里可能同时有袋 / 桶 / 罐 / 枚，这一列是「非 kg 的货一共出了多少件」的粗汇总，
+     * 单位混着加本就没有物理意义，要看逐行单位请进详情弹框（那里每行按自己的单位展示）。</p>
+     */
+    @ExcelProperty(value = "出库量")
+    private BigDecimal totalQty;
 
     /** 出库金额合计（row192）：Σ 出库量 × 出库销售单价快照。单价为空的行按 0 计。 */
     @ExcelProperty(value = "出库金额(元)")

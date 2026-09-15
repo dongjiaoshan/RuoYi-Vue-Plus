@@ -29,6 +29,7 @@ import org.dromara.djs.store.returns.domain.vo.StoreReturnVo;
 import org.dromara.djs.store.returns.domain.vo.StoreReturnAppletItemVo;
 import org.dromara.djs.store.returns.domain.vo.StoreReturnGroupVo;
 import org.dromara.djs.store.returns.domain.vo.StoreReturnPorkCandidateVo;
+import org.dromara.djs.store.returns.domain.vo.StoreReturnOwnerOptionVo;
 import org.dromara.djs.store.returns.domain.vo.StoreReturnStoreDailyVo;
 import org.dromara.djs.store.returns.domain.vo.StoreReturnUnitCandidateVo;
 import org.dromara.djs.store.returns.domain.vo.StoreReturnVegCandidateVo;
@@ -284,13 +285,18 @@ public class StoreReturnServiceImpl
         assertReturnable(product);
         String direction = StringUtils.isBlank(bo.getReturnDirection())
             ? DIRECTION_CUSTOMER_TO_STORE : bo.getReturnDirection();
-        // 4. **门店退仓库方向必须过台账闸**，与 batchCreate 同源同口径。
-        //    这条路（mp「退回录入」→ POST /applet/store/return/add）直接 received + 立刻真写
-        //    location_stock，比 batchCreate 的两段式更危险；此前完全无闸，实测能从一家从没收过生菜的
-        //    门店登记 55555kg 生菜并即时进仓库库存。
-        //    顾客退门店（customer_to_store）不套此闸 —— 顾客退的是以前买的货，本就不该受门店当日台账约束。
+        // 4. **门店退仓库方向必须过两道闸**（成员资格 + 到店量封顶），与 batchCreate 同源同口径。
+        //    这条路（admin 单条新增 POST /djs/store/return）直接 received + 立刻真写 location_stock，
+        //    比 batchCreate 的两段式更危险：没有仓库二次确认这一关。此前完全无闸，实测能从一家从没收过
+        //    生菜的门店登记 55555kg 生菜并即时进仓库库存。
+        //    ⚠️ 两道闸必须成对出现：row221 把成员资格从「只认清单」放宽到「清单 ∪ 当日到店」之后，
+        //    只补第一道会让当日到过店的产品在这条路上**无上限**退（batch 路拒 99999，这条路照收），
+        //    等于把刚堵住的洞在旁边重新开一个。
+        //    顾客退门店（customer_to_store）不套此闸 —— 顾客退的是以前买的货，本就不该受当日到店量约束。
         if (DIRECTION_STORE_TO_WAREHOUSE.equals(direction) && bo.getStoreId() != null) {
-            assertInReturnProductList(product);
+            assertInReturnProductList(product, bo.getStoreId());
+            assertWithinArrivedQuantity(bo.getStoreId(), product, bo.getReturnQuantity(),
+                new HashSet<>(returnListAllowedIds()));
         }
 
         StoreReturn entity = new StoreReturn();
@@ -374,7 +380,10 @@ public class StoreReturnServiceImpl
         // 甲方 2026-09-13 row214：候选改由字典「退回产品清单」配置，退回量**不再封顶**。
         // 唯一保留的闸 = 成员资格：不在清单里的产品一律拒绝（见 assertInReturnProductList）。
         // 允许集整批算一次 —— admin「退回操作」是整表一次提交，放循环里就是 N 次重复的字典 + IN 查询。
-        Set<Long> allowedIds = returnListAllowedIds();
+        Set<Long> allowedIds = returnAllowedIds(bo.getStoreId());
+        // row221：当日到店的生产产品按到店量封顶（清单产品不封顶，见 D-0055）。整批算一次，
+        // 放循环里就是每行一次到店聚合查询。
+        Set<Long> returnListIds = returnListAllowedIds();
         int created = 0;
         for (StoreReturnBatchBo.Item item : bo.getItems()) {
             ProductInfo product = productInfoMapper.selectById(item.getProductId());
@@ -391,6 +400,7 @@ public class StoreReturnServiceImpl
             // 且候选已不再来自台账、没有账面基数可比。成员资格必须留着：它挡的是
             // 「任意产品凭空退成仓库库存」（实测曾从没收过生菜的门店登记 55555kg 生菜并即时进库）。
             assertInReturnProductList(product, allowedIds);
+            assertWithinArrivedQuantity(bo.getStoreId(), product, returnMetric, returnListIds);
 
             StoreReturn entity = new StoreReturn();
             entity.setReturnNo(generateReturnNo());
@@ -427,16 +437,88 @@ public class StoreReturnServiceImpl
      * ProductPicker，仓库工人在正常界面里就能选到任意产品）。清单把可退产品收敛成一份人工配置的白名单，
      * 数量放开但产品范围没放开。</p>
      */
-    private void assertInReturnProductList(ProductInfo product) {
-        assertInReturnProductList(product, returnListAllowedIds());
+    private void assertInReturnProductList(ProductInfo product, Long storeId) {
+        assertInReturnProductList(product, returnAllowedIds(storeId));
     }
 
     /** 批量提交用：允许 id 集由调用方算一次传进来，避免每行重查一次字典 + 一次 IN 查询。 */
     private void assertInReturnProductList(ProductInfo product, Set<Long> allowedIds) {
         if (!allowedIds.contains(product.getId())) {
             throw new ServiceException("产品「" + product.getProductName()
-                + "」不在「退回产品清单」里，无法退回。请先在 admin 字典管理 → 退回产品清单里配置它的产品编码。", 400);
+                + "」既不在「退回产品清单」里、当日也没有到店记录，无法退回。"
+                + "请先在 admin 字典管理 → 退回产品清单里配置它的产品编码，或确认该产品今天确实发到了这家门店。", 400);
         }
+    }
+
+    /**
+     * 当日到店生产产品的退回量封顶（V6 row221 / D-0069 fallback）：{@code 退回量 ≤ 当日到店量 − 今日已退}。
+     *
+     * <p><b>只作用于「不在退回产品清单里」的那一半候选</b>。清单产品甲方 row214 明确
+     * 「对于其退回量不做限制」（D-0055），在这里被直接跳过 —— 两半各按各的规则，
+     * 这不是两边兼容：候选本来就是两个来源的并集，来源决定规则。</p>
+     *
+     * <p>已退量与到店量必须同窗口（都取今天）：到店量按 {@code delivery_check_time} 当天聚合，
+     * 已退量若算进昨天，同一批货今天就能被多退一轮。</p>
+     *
+     * <p>{@code storeId} 为空时不设限 —— 没有门店就没有「到店」可言（单位退回走的是另一条路，
+     * 根本不会走到这里）。</p>
+     */
+    private void assertWithinArrivedQuantity(Long storeId, ProductInfo product,
+                                             BigDecimal returnMetric, Set<Long> returnListIds) {
+        if (storeId == null || returnListIds.contains(product.getId())) {
+            return;
+        }
+        LocalDate today = LocalDate.now(ZONE_SHANGHAI);
+        BigDecimal arrived = arrivedQuantityOf(storeId, product, today);
+        BigDecimal returned = sumReturnedQuantityTodayForProduct(storeId, today, product.getId());
+        BigDecimal limit = arrived.subtract(returned == null ? BigDecimal.ZERO : returned);
+        BigDecimal qty = returnMetric == null ? BigDecimal.ZERO : returnMetric;
+        if (qty.compareTo(limit) > 0) {
+            if (limit.signum() <= 0) {
+                throw new ServiceException("产品「" + product.getProductName()
+                    + "」当日到店量已被今天的退回抵完，不能再退。若要不受到店量限制，请把它配进「退回产品清单」。", 400);
+            }
+            throw new ServiceException("产品「" + product.getProductName() + "」退回量("
+                + qty.toPlainString() + ")不能超过当日到店量减今日已退(" + limit.toPlainString() + ")", 400);
+        }
+    }
+
+    /**
+     * 提交闸允许的产品 id 集（V6 row221）= 清单允许集 ∪ <b>该门店当日到店的生产产品</b>。
+     *
+     * <p>候选列出了什么，闸就必须放行什么 —— 否则当日到店的生产产品在页面上点得到、一提交必 400。
+     * 与候选侧 {@link #listReturnCandidates} 是同一条规则的两半，不是两套口径。</p>
+     *
+     * <p>{@code storeId} 为空（如单位退回，本就没有门店）时退化成纯清单允许集：
+     * 「当日到店」这个概念对没有门店的单据不成立，兜底放行反而会把闸开成一个洞。</p>
+     */
+    private Set<Long> returnAllowedIds(Long storeId) {
+        Set<Long> allowed = new LinkedHashSet<>(returnListAllowedIds());
+        if (storeId == null) {
+            return allowed;
+        }
+        for (String tab : List.of(RETURN_TAB_PORK, RETURN_TAB_VEG, RETURN_TAB_OTHER)) {
+            for (StoreReturnVegCandidateVo c : listArrivedProductionCandidates(storeId, tab)) {
+                if (c.getProductId() != null) {
+                    allowed.add(c.getProductId());
+                }
+            }
+        }
+        // 果蔬候选会走材料外售折叠（成品行整行换成原材料，id 都换了），提交上来的可能是原材料 id，
+        // 所以闸也得认那个原材料。
+        // ⚠️ 门槛必须与 foldVegMaterialSold 逐字对齐 —— 它**只折叠果蔬 tab**。
+        // 不加 belong_type 判据的话，猪肉的「材料外售」产品（实测「通排」attr=1/is_material_sold=1）
+        // 会把它的原材料也放进允许集，而那个原材料从不出现在任何候选里：成了一个页面上看不见、
+        // 却提得动的入口（今天只被到店量封顶兜住，哪天它自己到过店就真开了）。
+        productInfoMapper.selectList(new LambdaQueryWrapper<ProductInfo>()
+                .select(ProductInfo::getId, ProductInfo::getIsMaterialSold,
+                    ProductInfo::getProductMaterial, ProductInfo::getBelongType)
+                .in(ProductInfo::getId, new ArrayList<>(allowed)))
+            .stream()
+            .filter(p -> BELONG_TYPE_VEGETABLE.equals(p.getBelongType()))
+            .filter(p -> Objects.equals(1, p.getIsMaterialSold()) && p.getProductMaterial() != null)
+            .forEach(p -> allowed.add(p.getProductMaterial()));
+        return allowed;
     }
 
     /**
@@ -476,12 +558,13 @@ public class StoreReturnServiceImpl
         List<StoreReturnPorkCandidateVo> result = new ArrayList<>();
         // 仍回填今日已退量：不再用来封顶，但要让录入页显示「今天已经退过多少」。
         for (StoreReturnVegCandidateVo c : fillReturnedQuantity(storeId,
-                listReturnListCandidates(RETURN_TAB_PORK))) {
+                listReturnCandidates(RETURN_TAB_PORK, storeId))) {
             StoreReturnPorkCandidateVo vo = new StoreReturnPorkCandidateVo();
             vo.setProductId(c.getProductId());
             vo.setProductName(c.getProductName());
             vo.setProductUnit(c.getProductUnit());
             vo.setBelongType(c.getBelongType());
+            vo.setInReturnList(c.getInReturnList());
             vo.setSubCategory(BELONG_TYPE_WHITE_BAR.equals(c.getBelongType()) ? SUB_CAT_WHITE_BAR : SUB_CAT_PORK);
             vo.setArrivedQuantity(c.getArrivedQuantity());
             vo.setReturnedQuantity(c.getReturnedQuantity());
@@ -862,12 +945,99 @@ public class StoreReturnServiceImpl
             vo.setProductName(p.getProductName());
             vo.setProductUnit(p.getProductUnit());
             vo.setBelongType(p.getBelongType());
+            vo.setInReturnList(Boolean.TRUE);
             // arrivedQuantity 留 null：前端据此不封顶（甲方 row214「退回量不做限制」）。
             // returnedQuantity 不在这里填 —— 果蔬要先过材料外售折叠（会改写 productId），
             // 统一由 fillReturnedQuantity 按最终 id 回填。
             result.add(vo);
         }
         return result;
+    }
+
+    /**
+     * 退回候选 = 「退回产品清单」字典产品 ∪ <b>当日到店的生产产品</b>（V6 row221）。
+     *
+     * <p>row214 只说了「猪肉退回不再取字典项【白条产品退回项】，而是取【退回产品清单】的数据」，
+     * 点名替换的是白条那一本字典；实现却把整个候选源换成了清单，把当日到店的生产产品一并挤掉。
+     * 甲方 row221 把话说清楚了：「只是不再显示额外的原材料的产品，现在显示的内容是
+     * 退回清单的产品 + 当日到店的生产产品」。</p>
+     *
+     * <p><b>重叠时清单赢</b>：同一个产品既配在清单里又当日到店，按清单那一份保留
+     * （{@code arrivedQuantity} 为 null = 不封顶，D-0055 / row214「对于其退回量不做限制」）。
+     * 反过来让到店那份覆盖，等于把甲方刚放开的限制又装回去。</p>
+     *
+     * @param tab     {@link #RETURN_TAB_PORK} / {@link #RETURN_TAB_VEG} / {@link #RETURN_TAB_OTHER}
+     * @param storeId 门店（到店量按 门店 + 当日 聚合）
+     */
+    private List<StoreReturnVegCandidateVo> listReturnCandidates(String tab, Long storeId) {
+        List<StoreReturnVegCandidateVo> merged = new ArrayList<>(listReturnListCandidates(tab));
+        Set<Long> seen = merged.stream().map(StoreReturnVegCandidateVo::getProductId)
+            .filter(Objects::nonNull).collect(Collectors.toCollection(LinkedHashSet::new));
+        for (StoreReturnVegCandidateVo c : listArrivedProductionCandidates(storeId, tab)) {
+            if (c.getProductId() != null && seen.add(c.getProductId())) {
+                merged.add(c);
+            }
+        }
+        return merged;
+    }
+
+    /**
+     * 当日到店的<b>生产产品</b>候选（V6 row221，口径见 D-0069）。
+     *
+     * <p>「生产产品」判据 = {@code product_attr=1}（D-0042 的 fallback，与入库侧对仗）；
+     * 「当日到店」判据 = {@code is_delivery_check=1} 且 {@code delivery_check_time} 是今天、
+     * 门店经 {@code demand_id → demand.store_id} 关联（与到店量聚合同源，见
+     * {@code ProductProductionMapper#selectDeliveredProductIdsToStore}）。</p>
+     *
+     * <p>{@code arrivedQuantity} 按产品单位分流回填（{@link #arrivedQuantityOf}），前端据此封顶 ——
+     * 这正是甲方说的「生产产品的退回逻辑和历史逻辑保持一致」：到店多少才能退多少，
+     * 不依赖门店当天有没有盘点。清单产品那一半仍然不封顶，两半各按各的规则，不是两边兼容。</p>
+     */
+    private List<StoreReturnVegCandidateVo> listArrivedProductionCandidates(Long storeId, String tab) {
+        LocalDate today = LocalDate.now(ZONE_SHANGHAI);
+        List<Long> deliveredIds = productProductionMapper.selectDeliveredProductIdsToStore(storeId, today);
+        if (deliveredIds == null || deliveredIds.isEmpty()) {
+            return new ArrayList<>();
+        }
+        List<ProductInfo> products = productInfoMapper.selectList(new LambdaQueryWrapper<ProductInfo>()
+            .in(ProductInfo::getId, deliveredIds)
+            .eq(ProductInfo::getProductAttr, PRODUCT_ATTR_FINISHED)
+            .orderByAsc(ProductInfo::getId));
+        List<StoreReturnVegCandidateVo> result = new ArrayList<>();
+        for (ProductInfo p : products) {
+            if (!tab.equals(returnTabOf(p.getBelongType()))) {
+                continue;
+            }
+            // 礼盒退不进仓库（多种原料组合拆不回单一原材料，assertReturnable 硬拒），
+            // 与清单候选同一条剔除规则 —— 列出来只会让工人白填一遍再吃 400。
+            if (BELONG_TYPE_GIFT_BOX.equals(p.getBelongType())) {
+                continue;
+            }
+            StoreReturnVegCandidateVo vo = new StoreReturnVegCandidateVo();
+            vo.setProductId(p.getId());
+            vo.setProductName(p.getProductName());
+            vo.setProductUnit(p.getProductUnit());
+            vo.setBelongType(p.getBelongType());
+            vo.setInReturnList(Boolean.FALSE);
+            vo.setArrivedQuantity(arrivedQuantityOf(storeId, p, today));
+            // returnedQuantity 交给 fillReturnedQuantity 按最终 id 统一回填（果蔬还要先过材料外售折叠）。
+            result.add(vo);
+        }
+        return result;
+    }
+
+    /**
+     * 该产品当日到店量，按<b>产品自身单位</b>分流（与退回量录入的计量口径对齐）。
+     *
+     * <p>kg 类取到店<b>重量</b>（{@code SUM(product_weight)}）；计数类（份 / 盒 / 把…）取到店
+     * <b>需求订购份数</b>（{@code SUM(demand_quantity)}，Kevin 2026-07-12 口径）。
+     * 两者不能互换：份数产品每份一条 production 行、重量常年为 0，拿重量当上限会把整类产品钉死在 0。</p>
+     */
+    private BigDecimal arrivedQuantityOf(Long storeId, ProductInfo p, LocalDate date) {
+        BigDecimal v = isKgUnit(p.getProductUnit())
+            ? productProductionService.sumDeliveredWeightToStore(storeId, p.getId(), date)
+            : productProductionMapper.sumDeliveredQuantityToStore(storeId, p.getId(), date);
+        return v == null ? BigDecimal.ZERO : v;
     }
 
     /**
@@ -940,7 +1110,7 @@ public class StoreReturnServiceImpl
             return List.of();
         }
         // V6-R214 甲方原话「其他的类型统一显示在其他产品里」→ 非猪肉非果蔬的一律落这个 tab（含 belong_type 为空的外购品）。
-        return fillReturnedQuantity(storeId, listReturnListCandidates(RETURN_TAB_OTHER));
+        return fillReturnedQuantity(storeId, listReturnCandidates(RETURN_TAB_OTHER, storeId));
     }
 
     @Override
@@ -952,7 +1122,7 @@ public class StoreReturnServiceImpl
         // 材料外售折叠（成品→原材料）仍保留：清单里若配的是成品，退回入库要落到它的原材料上。
         // 顺序关键：先折叠（可能改写 productId）→ 再按最终 id 回填已退量。
         return fillReturnedQuantity(storeId,
-            foldVegMaterialSold(listReturnListCandidates(RETURN_TAB_VEG)));
+            foldVegMaterialSold(listReturnCandidates(RETURN_TAB_VEG, storeId)));
     }
 
     /**
@@ -1014,8 +1184,15 @@ public class StoreReturnServiceImpl
                 // 种 ZERO 会把「不封顶」折成「上限 0」，前端 maxOf 算出 0 → 输入框直接禁用，果蔬整个 tab 填不了。
                 v.setArrivedQuantity(null);
                 v.setReturnedQuantity(BigDecimal.ZERO);
+                v.setInReturnList(Boolean.FALSE);
                 return v;
             });
+            // 折叠成一行的几个成品里只要有一个是清单产品，这一行就按清单规则走（不封顶 + 两位小数）：
+            // 清单产品的「不封顶」是甲方明确放开的（row214 / D-0055），被同组的到店产品拖回封顶
+            // 等于把它又关上；反过来放宽只影响那一个原材料，两害相权取轻。
+            if (Boolean.TRUE.equals(c.getInReturnList())) {
+                vo.setInReturnList(Boolean.TRUE);
+            }
             // row41：多成品共享同一原材料折叠成一行 → 到店量累加。
             BigDecimal arrived = c.getArrivedQuantity();
             if (arrived != null) {
@@ -1297,6 +1474,53 @@ public class StoreReturnServiceImpl
      * （{@code store_id} 恒 NULL），沿用旧的「日期|门店」键会把所有单位退回折进 {@code ...|null} 一组、
      * 而且旧代码的 {@code filter(storeId != null)} 会直接把它们静默丢掉。</p>
      */
+    @Override
+    public List<StoreReturnOwnerOptionVo> listStoreDailyOwnerOptions() {
+        // 与列表同源：只看门店→仓库方向的退回记录，不带任何其他筛选条件 ——
+        // 下拉项跟着当前搜索条件变会造成「筛完就只剩自己那一项」的死循环，选项池必须是全量的。
+        List<StoreReturn> rows = baseMapper.selectList(new LambdaQueryWrapper<StoreReturn>()
+            .select(StoreReturn::getReturnType, StoreReturn::getStoreId, StoreReturn::getReturnUnit)
+            .eq(StoreReturn::getReturnDirection, DIRECTION_STORE_TO_WAREHOUSE));
+        if (rows.isEmpty()) {
+            return List.of();
+        }
+        Set<Long> storeIds = rows.stream()
+            .filter(r -> !RETURN_TYPE_UNIT.equals(r.getReturnType()))
+            .map(StoreReturn::getStoreId).filter(Objects::nonNull)
+            .collect(Collectors.toCollection(LinkedHashSet::new));
+        Set<String> unitValues = rows.stream()
+            .filter(r -> RETURN_TYPE_UNIT.equals(r.getReturnType()))
+            .map(StoreReturn::getReturnUnit).filter(StringUtils::isNotBlank)
+            .collect(Collectors.toCollection(LinkedHashSet::new));
+
+        Map<Long, String> storeNames = storeNameMap(new ArrayList<>(storeIds));
+        // ⚠️ getAllDictByDictType 返的是 value → label，别反着取（与列表列 unitLabel 同一套取名规则）。
+        Map<String, String> unitLabels = dictService.getAllDictByDictType(DICT_RETURN_UNIT);
+
+        List<StoreReturnOwnerOptionVo> options = new ArrayList<>(storeIds.size() + unitValues.size());
+        for (Long storeId : storeIds) {
+            StoreReturnOwnerOptionVo vo = new StoreReturnOwnerOptionVo();
+            vo.setReturnType(RETURN_TYPE_STORE);
+            vo.setStoreId(storeId);
+            // 门店被删/改名后查不到名字时退回 id 字符串：宁可显示一串数字，也不能让这一项从下拉里消失
+            // ——它背后确实有记录，消失了用户就再也筛不到那些行。
+            vo.setLabel(StringUtils.isNotBlank(storeNames.get(storeId))
+                ? storeNames.get(storeId) : String.valueOf(storeId));
+            options.add(vo);
+        }
+        for (String unit : unitValues) {
+            StoreReturnOwnerOptionVo vo = new StoreReturnOwnerOptionVo();
+            vo.setReturnType(RETURN_TYPE_UNIT);
+            vo.setReturnUnit(unit);
+            vo.setLabel(unitLabel(unitLabels, unit));
+            options.add(vo);
+        }
+        // 门店在前、单位在后，各自按显示名排序（列表默认按日期倒序，下拉再跟着数据顺序走会忽前忽后）
+        options.sort(Comparator.comparing((StoreReturnOwnerOptionVo o) -> RETURN_TYPE_UNIT.equals(o.getReturnType()))
+            .thenComparing(StoreReturnOwnerOptionVo::getLabel, Comparator.nullsLast(String::compareTo)));
+        return options;
+    }
+
     private List<StoreReturnStoreDailyVo> buildStoreDailyList(StoreReturnQuery query) {
         StoreReturnQuery q = query == null ? new StoreReturnQuery() : query;
         q.setReturnDirection(DIRECTION_STORE_TO_WAREHOUSE);
@@ -2259,6 +2483,11 @@ public class StoreReturnServiceImpl
         }
         boolean hasStoreIds = q.getStoreIds() != null && !q.getStoreIds().isEmpty();
         boolean hasProductIds = q.getProductIds() != null && !q.getProductIds().isEmpty();
+        // 按门店筛 ⇒ 只看门店退回。单位退回按定义没有门店，本来指望「store_id 为 NULL 所以天然不匹配」，
+        // 但实测有历史脏数据是反例（RET202609150001：return_type='unit' 却带着 store_id），
+        // 于是按「门店AC」筛会筛出一行「退回门店」列写着退回单位名的记录 —— 正是 row222 要消灭的那类对不上。
+        // 判据显式化，不再依赖数据恰好为 NULL。return_type 为空的历史行按门店退回算（那时还没有单位退回）。
+        boolean hasStoreFilter = hasStoreIds || q.getStoreId() != null;
         // 产品名称模糊：先查产品 id 集下推（跨页正确；命中 0 个 → 恒假条件返回空页而非退化全量）
         if (StringUtils.isNotBlank(q.getProductName())) {
             List<Long> nameIds = productInfoMapper.selectList(new LambdaQueryWrapper<ProductInfo>()
@@ -2305,10 +2534,10 @@ public class StoreReturnServiceImpl
             .eq(StringUtils.isNotBlank(q.getReturnDirection()),
                 StoreReturn::getReturnDirection, q.getReturnDirection())
             // STR-RETURN-OPS-001：退回类型 / 退回单位两维下推。
-            // 注意：按门店筛选时单位退回会被**天然排除**（上面 store_id 的 IN / eq 对 NULL 不成立），
-            // 这正是 §4 fallback 3 要的行为 —— 单位退回没有门店，不该混进某门店的结果里。
             .eq(StringUtils.isNotBlank(q.getReturnType()), StoreReturn::getReturnType, q.getReturnType())
             .eq(StringUtils.isNotBlank(q.getReturnUnit()), StoreReturn::getReturnUnit, q.getReturnUnit())
+            .and(hasStoreFilter, w2 -> w2.isNull(StoreReturn::getReturnType)
+                .or().ne(StoreReturn::getReturnType, RETURN_TYPE_UNIT))
             .ge(q.getReturnDateFrom() != null, StoreReturn::getReturnDate,
                 q.getReturnDateFrom() == null ? null : q.getReturnDateFrom().atStartOfDay())
             .le(q.getReturnDateTo() != null, StoreReturn::getReturnDate,

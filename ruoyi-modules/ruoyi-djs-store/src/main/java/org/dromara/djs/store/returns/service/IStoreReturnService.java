@@ -13,6 +13,7 @@ import org.dromara.djs.store.returns.domain.vo.StoreReturnVo;
 import org.dromara.djs.store.returns.domain.vo.StoreReturnAppletItemVo;
 import org.dromara.djs.store.returns.domain.vo.StoreReturnGroupVo;
 import org.dromara.djs.store.returns.domain.vo.StoreReturnPorkCandidateVo;
+import org.dromara.djs.store.returns.domain.vo.StoreReturnOwnerOptionVo;
 import org.dromara.djs.store.returns.domain.vo.StoreReturnStoreDailyVo;
 import org.dromara.djs.store.returns.domain.vo.StoreReturnUnitCandidateVo;
 import org.dromara.djs.store.returns.domain.vo.StoreReturnVegCandidateVo;
@@ -158,6 +159,15 @@ public interface IStoreReturnService {
      * @return 逐产品行（按 id 升序 = 下单顺序）
      */
     List<StoreReturnOpsItemVo> listOperationItems(StoreReturnQuery query);
+
+    /**
+     * 门店退回操作页「退回门店」筛选项（V6 row222）：现有退回记录里出现过的门店 / 退回单位，去重。
+     *
+     * <p>与列表同源同过滤（仅门店→仓库方向），保证下拉里能选的每一项都至少有一条记录。</p>
+     *
+     * @return 去重后的筛选项（门店在前、单位在后，各自按名称排序）
+     */
+    List<StoreReturnOwnerOptionVo> listStoreDailyOwnerOptions();
 
     /**
      * 「新增单位退回」弹框的候选产品（甲方 row213 第 5 条）：字典「退回产品清单」

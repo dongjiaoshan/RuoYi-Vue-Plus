@@ -7,9 +7,12 @@ import org.dromara.djs.warehouse.stock.domain.bo.StockOutBo;
 import org.dromara.djs.warehouse.stock.domain.bo.StockTransferBo;
 import org.dromara.djs.warehouse.stock.domain.query.LocationStockQuery;
 import org.dromara.djs.warehouse.stock.domain.vo.LocationStockVo;
+import org.dromara.djs.warehouse.stock.domain.vo.StockBasketVo;
 
 import java.util.Collection;
+import java.math.BigDecimal;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 库存明细 Service（WMS-MD-001）。
@@ -55,13 +58,13 @@ public interface ILocationStockService {
     /**
      * 库存查询行「产品出库」（DJS-FIX-WMS-RALN-B）。
      *
-     * <p>按 {@link StockOutBo#getId()} 取库存行的 {@code locationId + productId}，同一 {@code @Transactional}：
+     * <p>按 {@link StockOutBo#getStockIds()} 跨篮先进先出扣减，逐篮取 {@code locationId + productId}，同一 {@code @Transactional}：
      * INSERT 出库流水（{@code inout_type='OT'} / {@code flow_type='backstage_out'}）+ 原子扣减 location_stock；
      * 库存不足 / 库位被盘点锁定 → 抛 ServiceException 回滚。</p>
      *
      * @return 新增流水行主键
      */
-    Long productOut(StockOutBo bo);
+    List<Long> productOut(StockOutBo bo);
 
     /**
      * 计数类单位出库量必须是整数（V6 row143）。
@@ -89,7 +92,7 @@ public interface ILocationStockService {
     /**
      * 库存查询行「猪肉转移」：猪肉鲜品库 → 冻品库（WS13 / row143）。
      *
-     * <p>按 {@link StockTransferBo#getId()} 取源库存行的 {@code locationId + productId + 当前库存}，
+     * <p>按 {@link StockTransferBo#getStockIds()} 跨篮先进先出取源库存行的 {@code locationId + productId + 当前库存}，
      * 校验源库位为「猪肉鲜品库」、产品业态为 pork、转移量 ≤ 当前库存；同一 {@code @Transactional}：</p>
      * <ol>
      *   <li>源侧（猪肉鲜品库）：按行 id 原子扣减 + INSERT 转移出库流水（{@code flow_type=transfer_out}）；</li>
@@ -100,7 +103,30 @@ public interface ILocationStockService {
      *
      * @return 转移出库流水行主键
      */
-    Long pigTransfer(StockTransferBo bo);
+    List<Long> pigTransfer(StockTransferBo bo);
+
+    /**
+     * 把一次出库 / 转移的总量按<b>先进先出</b>摊到一组库存篮上（V6 row223/row224 / D-0068）。
+     *
+     * <p>入参顺序即先进先出顺序（列表接口按建篮时间升序给出）。空篮跳过、总量不足直接
+     * fail-fast，不会返回一份「扣一半」的计划。</p>
+     *
+     * @param stockIds 库存篮 id 组，先进先出序
+     * @param quantity 总量
+     * @return 篮 id → 该篮应扣数量，保序；不含分配到 0 的篮
+     */
+    Map<Long, BigDecimal> allocateFifo(List<Long> stockIds, BigDecimal quantity);
+
+    /**
+     * 合并行背后的各篮明细（V6 row223 / D-0068「各篮明细（入库时间+重量）下沉到详情里看」）。
+     *
+     * <p>按列表那一行给出的 {@code stockIds} 原样取，先进先出序（与出库扣减顺序一致，
+     * 工人看到的第一篮就是下次会先被扣的那篮）。</p>
+     *
+     * @param stockIds 库存篮 id 组
+     * @return 各篮的建篮时间 / 库存量 / 最近盘点 / 备注
+     */
+    List<StockBasketVo> listBaskets(List<Long> stockIds);
 
     /**
      * 查询当前库存中实际存在的猪只耳号（去重，供库存查询页耳号下拉用，row152-2）。

@@ -21,6 +21,7 @@ import org.dromara.djs.store.returns.domain.query.StoreReturnQuery;
 import org.dromara.djs.store.returns.domain.vo.StoreReturnDetailExportVo;
 import org.dromara.djs.store.returns.domain.vo.StoreReturnOpsItemVo;
 import org.dromara.djs.store.returns.domain.vo.StoreReturnVo;
+import org.dromara.djs.store.returns.domain.vo.StoreReturnOwnerOptionVo;
 import org.dromara.djs.store.returns.domain.vo.StoreReturnPorkCandidateVo;
 import org.dromara.djs.store.returns.domain.vo.StoreReturnStoreDailyVo;
 import org.dromara.djs.store.returns.domain.vo.StoreReturnUnitCandidateVo;
@@ -168,6 +169,18 @@ public class StoreReturnController extends BaseController {
     @GetMapping("/operation/items")
     public R<List<StoreReturnOpsItemVo>> operationItems(StoreReturnQuery query) {
         return R.ok(service.listOperationItems(query));
+    }
+
+    /**
+     * 门店退回操作页「退回门店」筛选项（V6 row222）：现有退回记录里出现过的门店 / 退回单位，去重。
+     *
+     * <p>不接受任何筛选参数 —— 选项池必须是全量的，跟着当前搜索条件变会导致筛完只剩自己那一项。</p>
+     */
+    @SaCheckPermission(value = {"djs:warehouse:storeReturn:list", "djs:warehouse:storeReturn:query"},
+        mode = SaMode.OR)
+    @GetMapping("/operation/owner-options")
+    public R<List<StoreReturnOwnerOptionVo>> ownerOptions() {
+        return R.ok(service.listStoreDailyOwnerOptions());
     }
 
     /**

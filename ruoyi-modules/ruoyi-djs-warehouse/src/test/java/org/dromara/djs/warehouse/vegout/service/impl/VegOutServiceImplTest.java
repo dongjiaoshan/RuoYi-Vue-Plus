@@ -25,6 +25,8 @@ import org.dromara.djs.warehouse.vegout.domain.bo.VegOutItemBo;
 import org.dromara.djs.warehouse.vegout.domain.bo.VegOutSubmitBo;
 import org.dromara.djs.warehouse.vegout.domain.query.VegOutQuery;
 import org.dromara.djs.warehouse.vegout.domain.vo.VegOutBatchVo;
+import org.dromara.djs.warehouse.vegout.domain.vo.VegOutCandidateRow;
+import org.dromara.djs.warehouse.vegout.domain.vo.VegOutCandidateVo;
 import org.dromara.djs.warehouse.vegout.domain.vo.VegOutDetailVo;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -134,7 +136,7 @@ class VegOutServiceImplTest {
         when(locationInfoMapper.selectById(FRESH_VEG_LOC)).thenReturn(loc);
         // 单号改走统一编码生成器（7 位纯数字）
         when(bizCodeGenerator.generate(any(), any())).thenReturn("0000001");
-        when(locationStockService.productOut(any())).thenReturn(999L);
+        when(locationStockService.productOut(any())).thenReturn(java.util.List.of(999L));
     }
 
     /**
@@ -173,7 +175,7 @@ class VegOutServiceImplTest {
 
     private VegOutSubmitBo mkBo(String dest, Long stockId, String qty) {
         VegOutItemBo item = new VegOutItemBo();
-        item.setStockId(stockId);
+        item.setStockIds(List.of(stockId));
         item.setQuantity(new BigDecimal(qty));
         VegOutSubmitBo bo = new VegOutSubmitBo();
         bo.setOutDate(new Date());
@@ -731,7 +733,7 @@ class VegOutServiceImplTest {
             ProductInfo p = mkVegProduct(10L);
             p.setBelongType(belongType);
             when(productInfoMapper.selectById(10L)).thenReturn(p);
-            when(locationStockService.productOut(any())).thenReturn(99L);
+            when(locationStockService.productOut(any())).thenReturn(java.util.List.of(99L));
 
             service.submit(mkBo("kitchen", 1L, "1.000"), true);
 
@@ -861,7 +863,7 @@ class VegOutServiceImplTest {
             when(locationStockMapper.selectById(stockId)).thenReturn(mkStock(stockId, productId, 20L));
             when(productInfoMapper.selectById(productId)).thenReturn(mkVegProduct(productId));
             VegOutItemBo item = new VegOutItemBo();
-            item.setStockId(stockId);
+            item.setStockIds(java.util.List.of(stockId));
             item.setQuantity(new BigDecimal("1.000"));
             items.add(item);
         }
@@ -869,7 +871,7 @@ class VegOutServiceImplTest {
 
         service.submit(bo, true);
 
-        // 12 条明细全部真的出了库（合并只发生在 admin 展示 / 打印层，落库仍是逐篮扣减）
+        // 12 条明细全部真的出了库（每行只带一个篮 → 逐篮各扣一次；跨篮 FIFO 见 fifo_* 用例）
         verify(locationStockService, org.mockito.Mockito.times(12)).productOut(any());
     }
 
@@ -883,7 +885,7 @@ class VegOutServiceImplTest {
         for (long stockId = 1L; stockId <= 11L; stockId++) {
             when(locationStockMapper.selectById(stockId)).thenReturn(mkStock(stockId, 100L + stockId, 20L));
             VegOutItemBo item = new VegOutItemBo();
-            item.setStockId(stockId);
+            item.setStockIds(java.util.List.of(stockId));
             item.setQuantity(new BigDecimal("1.000"));
             items.add(item);
         }
@@ -908,5 +910,164 @@ class VegOutServiceImplTest {
         ArgumentCaptor<StockFlow> fc = ArgumentCaptor.forClass(StockFlow.class);
         verify(stockFlowMapper).updateById(fc.capture());
         assertThat(fc.getValue().getBatchNo()).isNull();
+    }
+
+    // ── V6 row224 / D-0068：候选合并 + 跨篮先进先出 ───────────────────────────────
+
+    private VegOutCandidateRow mkCandRow(Long stockId, Long productId, Long plotId, String stock,
+                                         String earNo, Integer thirdPhase) {
+        VegOutCandidateRow r = new VegOutCandidateRow();
+        r.setStockId(stockId);
+        r.setProductId(productId);
+        r.setProductName("红薯");
+        r.setProductUnit("kg");
+        r.setPlotId(plotId);
+        r.setPlotName("A1东3号");
+        r.setLocationName("毛菜鲜品库");
+        r.setEarNo(earNo);
+        r.setThirdPhase(thirdPhase == null ? 0 : thirdPhase);
+        r.setBelongType("vegetable");
+        r.setStockWeight(new BigDecimal(stock));
+        return r;
+    }
+
+    @Test
+    @DisplayName("row224：同产品同库位同地块的两个篮合并成一行、库存量取和，篮 id 按先进先出序带出")
+    void candidates_sameProductPlotLocation_mergedIntoOneRow() {
+        when(vegOutMapper.selectCandidates(any(), any(), any())).thenReturn(List.of(
+            mkCandRow(1L, 10L, 20L, "42.000", null, 0),
+            mkCandRow(2L, 10L, 20L, "32.000", null, 0)));
+
+        List<VegOutCandidateVo> rows = service.listCandidates(null);
+
+        assertThat(rows).hasSize(1);
+        assertThat(rows.get(0).getStockWeight()).isEqualByComparingTo("74.000");
+        assertThat(rows.get(0).getStockIds()).containsExactly(1L, 2L);
+    }
+
+    @Test
+    @DisplayName("row224：地块 / 耳号 / 三期任一不同都不合并（合并键 = 这张表上看得见的那几列）")
+    void candidates_differentVisibleDimension_notMerged() {
+        when(vegOutMapper.selectCandidates(any(), any(), any())).thenReturn(List.of(
+            mkCandRow(1L, 10L, 20L, "42.000", null, 0),
+            mkCandRow(2L, 10L, 21L, "20.000", null, 0),                       // 地块不同
+            mkCandRow(3L, 11L, null, "65.000", "01-01-1-251109-001", 0),
+            mkCandRow(4L, 11L, null, "45.000", "01-01-2-251001-007", 0),      // 耳号不同
+            mkCandRow(5L, 12L, null, "14.500", null, 1),
+            mkCandRow(6L, 12L, null, "10.000", null, 0)));                    // 三期 vs 普通
+
+        List<VegOutCandidateVo> rows = service.listCandidates(null);
+
+        assertThat(rows).hasSize(6);
+        assertThat(rows).allSatisfy(r -> assertThat(r.getStockIds()).hasSize(1));
+    }
+
+    @Test
+    @DisplayName("row224：一个 item 里混进别的产品的篮 → 拦住（改成按组提交后，stockIds 是前端给的，不能照单全收）")
+    void submit_mixedProductBaskets_blocked() {
+        LocationStock potato = mkStock(1L, 10L, 20L);
+        potato.setProductStock(new BigDecimal("42.000"));
+        LocationStock pork = mkStock(2L, 99L, null);
+        pork.setProductStock(new BigDecimal("146.000"));
+        when(locationStockMapper.selectById(1L)).thenReturn(potato);
+        when(locationStockMapper.selectById(2L)).thenReturn(pork);
+
+        VegOutItemBo item = new VegOutItemBo();
+        item.setStockIds(List.of(1L, 2L));
+        item.setQuantity(new BigDecimal("50.000"));
+        VegOutSubmitBo bo = new VegOutSubmitBo();
+        bo.setOutDate(new Date());
+        bo.setOutDest("kitchen");
+        bo.setItems(List.of(item));
+
+        assertThatThrownBy(() -> service.submit(bo, true))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("不属于同一个产品");
+        verify(locationStockService, never()).productOut(any());
+    }
+
+    @Test
+    @DisplayName("row224/D-0068：一行 = 两个篮，出库量跨篮先进先出扣 —— 先扣光第一篮再扣第二篮")
+    void submit_acrossBaskets_fifo() {
+        LocationStock first = mkStock(1L, 10L, 20L);
+        first.setProductStock(new BigDecimal("42.000"));
+        LocationStock second = mkStock(2L, 10L, 20L);
+        second.setProductStock(new BigDecimal("32.000"));
+        when(locationStockMapper.selectById(1L)).thenReturn(first);
+        when(locationStockMapper.selectById(2L)).thenReturn(second);
+        when(productInfoMapper.selectById(10L)).thenReturn(mkVegProduct(10L));
+        stubHandleFound(30L, 20L);
+
+        VegOutItemBo item = new VegOutItemBo();
+        item.setStockIds(List.of(1L, 2L));
+        item.setQuantity(new BigDecimal("50.000"));
+        VegOutSubmitBo bo = new VegOutSubmitBo();
+        bo.setOutDate(new Date());
+        bo.setOutDest("kitchen");
+        bo.setItems(List.of(item));
+
+        service.submit(bo, true);
+
+        ArgumentCaptor<org.dromara.djs.warehouse.stock.domain.bo.StockOutBo> cap =
+            ArgumentCaptor.forClass(org.dromara.djs.warehouse.stock.domain.bo.StockOutBo.class);
+        verify(locationStockService, org.mockito.Mockito.times(2)).productOut(cap.capture());
+        // 42 先扣光，剩下的 8 才落到第二篮 —— 顺序与数额都不能漂
+        assertThat(cap.getAllValues().get(0).getStockIds()).containsExactly(1L);
+        assertThat(cap.getAllValues().get(0).getQuantity()).isEqualByComparingTo("42.000");
+        assertThat(cap.getAllValues().get(1).getStockIds()).containsExactly(2L);
+        assertThat(cap.getAllValues().get(1).getQuantity()).isEqualByComparingTo("8.000");
+    }
+
+    @Test
+    @DisplayName("row224：出库量超过这一行合并后的总库存 → 拦在扣任何一篮之前")
+    void submit_overGroupStock_blockedBeforeAnyDeduction() {
+        LocationStock first = mkStock(1L, 10L, 20L);
+        first.setProductStock(new BigDecimal("42.000"));
+        LocationStock second = mkStock(2L, 10L, 20L);
+        second.setProductStock(new BigDecimal("32.000"));
+        when(locationStockMapper.selectById(1L)).thenReturn(first);
+        when(locationStockMapper.selectById(2L)).thenReturn(second);
+
+        VegOutItemBo item = new VegOutItemBo();
+        item.setStockIds(List.of(1L, 2L));
+        item.setQuantity(new BigDecimal("74.001"));
+        VegOutSubmitBo bo = new VegOutSubmitBo();
+        bo.setOutDate(new Date());
+        bo.setOutDest("kitchen");
+        bo.setItems(List.of(item));
+
+        assertThatThrownBy(() -> service.submit(bo, true))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("超过该行库存(74)");
+        verify(locationStockService, never()).productOut(any());
+    }
+
+    @Test
+    @DisplayName("row224：组里的空篮（库存 0）跳过，不写 0 量的出库流水")
+    void submit_skipsEmptyBasket() {
+        LocationStock empty = mkStock(1L, 10L, 20L);
+        empty.setProductStock(BigDecimal.ZERO);
+        LocationStock real = mkStock(2L, 10L, 20L);
+        real.setProductStock(new BigDecimal("8.070"));
+        when(locationStockMapper.selectById(1L)).thenReturn(empty);
+        when(locationStockMapper.selectById(2L)).thenReturn(real);
+        when(productInfoMapper.selectById(10L)).thenReturn(mkVegProduct(10L));
+        stubHandleFound(30L, 20L);
+
+        VegOutItemBo item = new VegOutItemBo();
+        item.setStockIds(List.of(1L, 2L));
+        item.setQuantity(new BigDecimal("5.000"));
+        VegOutSubmitBo bo = new VegOutSubmitBo();
+        bo.setOutDate(new Date());
+        bo.setOutDest("kitchen");
+        bo.setItems(List.of(item));
+
+        service.submit(bo, true);
+
+        ArgumentCaptor<org.dromara.djs.warehouse.stock.domain.bo.StockOutBo> cap =
+            ArgumentCaptor.forClass(org.dromara.djs.warehouse.stock.domain.bo.StockOutBo.class);
+        verify(locationStockService, org.mockito.Mockito.times(1)).productOut(cap.capture());
+        assertThat(cap.getValue().getStockIds()).containsExactly(2L);
+        assertThat(cap.getValue().getQuantity()).isEqualByComparingTo("5.000");
     }
 }

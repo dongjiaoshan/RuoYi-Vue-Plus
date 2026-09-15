@@ -66,4 +66,21 @@ public class StoreReturnPorkCandidateVo implements Serializable {
      */
     private BigDecimal returnedQuantity;
 
+    /**
+     * 这一行是不是「退回产品清单」字典里的产品（V6 row221）。
+     *
+     * <p>候选自 row221 起是两个来源的并集，两半规则不同，前端必须能分辨：</p>
+     * <ul>
+     *   <li>{@code true} —— 清单产品：退回量不封顶（甲方 row214 / D-0055）；录入精度按 D-0054 的
+     *       fallback —— <b>kg 仍是三位小数</b>（D-0017 不变），只把非 kg 单位由「强制整数」放开到两位。
+     *       甲方 row214 原话是「无论什么单位都支持录入两位小数」，直译会把 kg 从三位压成两位、
+     *       出不干净 65.880 这类库存，故只放开「清单内 + 非 kg」这一格。</li>
+     *   <li>{@code false} —— 当日到店的生产产品：按 {@link #arrivedQuantity} 减今日已退封顶，
+     *       录入精度回到 D-0017（kg 三位小数、计数类整数）。</li>
+     * </ul>
+     *
+     * <p>不要靠「{@code arrivedQuantity} 是不是 null」反推这件事：那是两个概念恰好同步，
+     * 哪天到店量改成也给清单产品下发一份做参考，反推就当场失效。</p>
+     */
+    private Boolean inReturnList;
 }

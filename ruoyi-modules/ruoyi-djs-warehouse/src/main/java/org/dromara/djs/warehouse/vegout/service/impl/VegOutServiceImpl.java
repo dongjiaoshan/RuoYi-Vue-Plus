@@ -20,6 +20,7 @@ import org.dromara.djs.warehouse.location.domain.LocationInfo;
 import org.dromara.djs.warehouse.location.mapper.LocationInfoMapper;
 import org.dromara.djs.warehouse.product.domain.ProductInfo;
 import org.dromara.djs.warehouse.product.mapper.ProductInfoMapper;
+import org.dromara.djs.warehouse.stock.domain.FifoAllocator;
 import org.dromara.djs.warehouse.stock.domain.LocationStock;
 import org.dromara.djs.warehouse.stock.domain.PlotLabel;
 import org.dromara.djs.warehouse.stock.domain.bo.StockOutBo;
@@ -35,6 +36,7 @@ import org.dromara.djs.warehouse.vegout.domain.bo.VegOutItemBo;
 import org.dromara.djs.warehouse.vegout.domain.bo.VegOutSubmitBo;
 import org.dromara.djs.warehouse.vegout.domain.query.VegOutQuery;
 import org.dromara.djs.warehouse.vegout.domain.vo.VegOutBatchVo;
+import org.dromara.djs.warehouse.vegout.domain.vo.VegOutCandidateRow;
 import org.dromara.djs.warehouse.vegout.domain.vo.VegOutCandidateVo;
 import org.dromara.djs.warehouse.vegout.domain.vo.VegOutDetailVo;
 import org.dromara.djs.warehouse.vegout.mapper.VegOutMapper;
@@ -204,7 +206,68 @@ public class VegOutServiceImpl implements IVegOutService {
 
     @Override
     public List<VegOutCandidateVo> listCandidates(String productName) {
-        return vegOutMapper.selectCandidates(ALLOWED_LOCATION_CODES, ALLOWED_BELONG_TYPES, productName);
+        List<VegOutCandidateRow> rows =
+            vegOutMapper.selectCandidates(ALLOWED_LOCATION_CODES, ALLOWED_BELONG_TYPES, productName);
+        // V6 row224 / D-0068：同 (产品, 库位, 耳号, 地块, 三期, 白条流水号) 的多个库存篮合并成一行、
+        // 库存量取和。mapper 已按 create_time,id 升序返回，LinkedHashMap 原样保序 = 先进先出序。
+        Map<String, VegOutCandidateVo> merged = new java.util.LinkedHashMap<>();
+        for (VegOutCandidateRow r : rows) {
+            VegOutCandidateVo vo = merged.computeIfAbsent(candidateGroupKey(r), k -> {
+                VegOutCandidateVo v = new VegOutCandidateVo();
+                v.setStockIds(new java.util.ArrayList<>());
+                v.setProductId(r.getProductId());
+                v.setProductCode(r.getProductCode());
+                v.setProductName(r.getProductName());
+                v.setProductSpec(r.getProductSpec());
+                v.setProductUnit(r.getProductUnit());
+                v.setPlotId(r.getPlotId());
+                v.setPlotCode(r.getPlotCode());
+                v.setPlotName(r.getPlotName());
+                v.setEarNo(r.getEarNo());
+                v.setLocationName(r.getLocationName());
+                v.setThirdPhase(r.getThirdPhase());
+                v.setBelongType(r.getBelongType());
+                v.setSalePrice(r.getSalePrice());
+                v.setStockWeight(BigDecimal.ZERO);
+                return v;
+            });
+            vo.getStockIds().add(r.getStockId());
+            vo.setStockWeight(vo.getStockWeight().add(nz(r.getStockWeight())));
+        }
+        return new java.util.ArrayList<>(merged.values());
+    }
+
+    /**
+     * 候选合并键（V6 row224）：产品 + 库位 + 耳号 + 地块 + 三期。
+     *
+     * <p>前四项是甲方点名的维度；三期跟着地块走 —— 三期货没有真实 plot_id，「地块」列靠它显示「三期」，
+     * 不入键会把三期货和普通货并成一行、那一列显示成哪个都不对。</p>
+     *
+     * <p><b>键 = 这张表上工人看得见的那几列，仅此而已。</b>白条流水号不入键：它不是本抽屉的列，
+     * 塞进键只会让两行长得一模一样却不合并，正是甲方抱怨的那件事。库存查询那边它是独立展示的一列，
+     * 所以那边入键 —— 同一条规则在两张表上的不同落点，不是两套口径。</p>
+     *
+     * <p>⚠️ <b>这不等于「本列表取不到带白条号的篮」</b>（D-0071）：staging 实测有货的白条号篮 23 个，
+     * 其中 14 个业态 {@code white_bar}（确被业态白名单挡掉），另 <b>9 个业态 {@code pork}、在
+     * L0007 猪肉鲜品库</b> —— 库位与业态白名单都命中，候选取得到。今天不出事只是因为还没有
+     * 「同产品 + 同库位 + 同耳号 + 不同白条号」的篮共存；一旦出现，两片白条会并成一行、
+     * 出库按先进先出跨白条扣，白条追溯当场串号。纳入与否要连「抽屉要不要加白条号列」一起定，
+     * 见 {@code doc/decisions.yaml} D-0071，别在这里单方面改键。</p>
+     *
+     * <p>用 {@code 库位名称} 而不是 location_id 当键：候选 SQL 只带出了名称，且名称在本表唯一。</p>
+     */
+    private static String candidateGroupKey(VegOutCandidateRow r) {
+        return r.getProductId() + "|" + nullToEmpty(r.getLocationName()) + "|" + nullToEmpty(r.getEarNo())
+            + "|" + (r.getPlotId() == null ? "" : r.getPlotId())
+            + "|" + (r.getThirdPhase() == null ? "" : r.getThirdPhase());
+    }
+
+    private static String nullToEmpty(String v) {
+        return v == null ? "" : v;
+    }
+
+    private static BigDecimal nz(BigDecimal v) {
+        return v == null ? BigDecimal.ZERO : v;
     }
 
     @Override
@@ -231,93 +294,101 @@ public class VegOutServiceImpl implements IVegOutService {
         Long userId = LoginHelper.getUserId();
 
         for (VegOutItemBo item : bo.getItems()) {
-            LocationStock stock = stocks.get(item.getStockId());
-            // 前置校验（防前端绕过 —— 候选列表只列白名单库位里的原材料篮）
-            if (!allowedLocationIds.contains(stock.getLocationId())) {
-                throw new ServiceException("只有毛菜鲜品库 / 干货库 / 蛋类库 / 猪肉鲜品库 / 红白脏库 / 冻品库的库存可做毛菜间出库");
-            }
-            ProductInfo product = productInfoMapper.selectById(stock.getProductId());
-            if (product == null) {
-                throw new ServiceException("产品不存在或已删除：" + stock.getProductId());
-            }
-            if (!ALLOWED_BELONG_TYPES.contains(product.getBelongType())) {
-                throw new ServiceException("该产品业态不支持毛菜间出库：" + product.getProductName());
-            }
-            // ⚠️ 非果蔬不能送「果蔬月台」：月台的待入库量来自 handle_record(handle_target=2)，
-            // 而那条明细必须挂在 vegetable_handle 上，那张表是果蔬（毛菜处理）专属、
-            // 干货/蛋类根本定位不到 (作物,地块) 也就建不出归集行。放行的话库存扣了、流水写了，
-            // 月台侧却永远收不到这批货 = 凭空蒸发。故在此 fail-fast，不做「跳过」的静默放行。
-            // （「猪只饲料」去向不受此限：饲喂台账 t_warehouse_feed_log 三类都能记，见下方分流。）
-            if (DEST_VEG_DOCK.equals(bo.getOutDest())
-                && !BELONG_TYPE_VEGETABLE.equals(product.getBelongType())) {
-                throw new ServiceException("只有果蔬产品可以出库到果蔬月台：" + product.getProductName()
-                    + "（干货 / 蛋类请选其他出库去向）");
-            }
-            // ⚠️ 三期货一律不走果蔬月台（甲方邓博 2026-08-13 口径，见 doc/16 §0「三期是什么」）：
-            // 三期地块不是有机地块、不纳入地块管理、货也不发到门店，系统只需记「进了多少 / 出了多少」。
-            // 而月台是有机链路的中转站 —— 收货落 L0003 蔬菜保鲜库 / L0004 重口味蔬菜库，
-            // 那正是 果蔬打包 → 发货月台 → 门店 的供货池；且收货侧 UPSERT 与建篮都只写普通篮
-            // （VegReceiveMapper.addStockByPlotLocation 硬带 third_phase=0、insertPlotStockRow 不 set），
-            // 三期货走进去会**当场洗掉三期标识**、变成门店可取的普通有机货。
-            // 这道守卫按 third_phase 判、不按有没有地块判：多地块三期货本就因 plot_id 为空被下游拦下，
-            // 但「恰好 1 块在种地块」的三期货带着真实 plot_id、整条链路走得通，正是那条会漏的暗门。
-            if (DEST_VEG_DOCK.equals(bo.getOutDest()) && LocationStock.thirdPhaseOf(stock) == THIRD_PHASE_YES) {
-                throw new ServiceException("「" + product.getProductName() + "」是三期货，不走果蔬月台"
-                    + "（三期作物不按地块管理、也不发到门店）。出库请用「产品出库」或「毛菜间出库管理」直接记账。");
-            }
+            // V6 row224 / D-0068：候选一行 = 一组库存篮，出库量按建篮时间先进先出摊到各篮。
+            // 分配算法与库存查询页行内出库共用同一份（ILocationStockService#allocateFifo）——
+            // 两处各写一份迟早会分叉，而分叉的表现是「同样的货从不同页面出，扣的篮不一样」。
+            List<LocationStock> baskets = item.getStockIds().stream()
+                .map(stocks::get).filter(Objects::nonNull).toList();
+            for (Map.Entry<Long, BigDecimal> alloc
+                    : FifoAllocator.allocate(baskets, item.getQuantity()).entrySet()) {
+                LocationStock stock = stocks.get(alloc.getKey());
+                BigDecimal take = alloc.getValue();
+                // 前置校验（防前端绕过 —— 候选列表只列白名单库位里的原材料篮）
+                if (!allowedLocationIds.contains(stock.getLocationId())) {
+                    throw new ServiceException("只有毛菜鲜品库 / 干货库 / 蛋类库 / 猪肉鲜品库 / 红白脏库 / 冻品库的库存可做毛菜间出库");
+                }
+                ProductInfo product = productInfoMapper.selectById(stock.getProductId());
+                if (product == null) {
+                    throw new ServiceException("产品不存在或已删除：" + stock.getProductId());
+                }
+                if (!ALLOWED_BELONG_TYPES.contains(product.getBelongType())) {
+                    throw new ServiceException("该产品业态不支持毛菜间出库：" + product.getProductName());
+                }
+                // ⚠️ 非果蔬不能送「果蔬月台」：月台的待入库量来自 handle_record(handle_target=2)，
+                // 而那条明细必须挂在 vegetable_handle 上，那张表是果蔬（毛菜处理）专属、
+                // 干货/蛋类根本定位不到 (作物,地块) 也就建不出归集行。放行的话库存扣了、流水写了，
+                // 月台侧却永远收不到这批货 = 凭空蒸发。故在此 fail-fast，不做「跳过」的静默放行。
+                // （「猪只饲料」去向不受此限：饲喂台账 t_warehouse_feed_log 三类都能记，见下方分流。）
+                if (DEST_VEG_DOCK.equals(bo.getOutDest())
+                    && !BELONG_TYPE_VEGETABLE.equals(product.getBelongType())) {
+                    throw new ServiceException("只有果蔬产品可以出库到果蔬月台：" + product.getProductName()
+                        + "（干货 / 蛋类请选其他出库去向）");
+                }
+                // ⚠️ 三期货一律不走果蔬月台（甲方邓博 2026-08-13 口径，见 doc/16 §0「三期是什么」）：
+                // 三期地块不是有机地块、不纳入地块管理、货也不发到门店，系统只需记「进了多少 / 出了多少」。
+                // 而月台是有机链路的中转站 —— 收货落 L0003 蔬菜保鲜库 / L0004 重口味蔬菜库，
+                // 那正是 果蔬打包 → 发货月台 → 门店 的供货池；且收货侧 UPSERT 与建篮都只写普通篮
+                // （VegReceiveMapper.addStockByPlotLocation 硬带 third_phase=0、insertPlotStockRow 不 set），
+                // 三期货走进去会**当场洗掉三期标识**、变成门店可取的普通有机货。
+                // 这道守卫按 third_phase 判、不按有没有地块判：多地块三期货本就因 plot_id 为空被下游拦下，
+                // 但「恰好 1 块在种地块」的三期货带着真实 plot_id、整条链路走得通，正是那条会漏的暗门。
+                if (DEST_VEG_DOCK.equals(bo.getOutDest()) && LocationStock.thirdPhaseOf(stock) == THIRD_PHASE_YES) {
+                    throw new ServiceException("「" + product.getProductName() + "」是三期货，不走果蔬月台"
+                        + "（三期作物不按地块管理、也不发到门店）。出库请用「产品出库」或「毛菜间出库管理」直接记账。");
+                }
 
-            // 扣库存 + 写 backstage_out 出库流水，全部复用产品出库既有口径
-            // （含库位盘点锁校验、超扣 fail-fast、按行原子扣减）。跨 bean 调用，事务并入本方法。
-            StockOutBo outBo = new StockOutBo();
-            outBo.setId(stock.getId());
-            outBo.setOutDate(bo.getOutDate());
-            outBo.setQuantity(item.getQuantity());
-            outBo.setStockOutDest(bo.getOutDest());
-            outBo.setRemark(bo.getRemark());
-            Long flowId = locationStockService.productOut(outBo);
+                // 扣库存 + 写 backstage_out 出库流水，全部复用产品出库既有口径
+                // （含库位盘点锁校验、超扣 fail-fast、按行原子扣减）。跨 bean 调用，事务并入本方法。
+                StockOutBo outBo = new StockOutBo();
+                outBo.setStockIds(java.util.List.of(stock.getId()));
+                outBo.setOutDate(bo.getOutDate());
+                outBo.setQuantity(take);
+                outBo.setStockOutDest(bo.getOutDest());
+                outBo.setRemark(bo.getRemark());
+                Long flowId = locationStockService.productOut(outBo).get(0);
 
-            // 回写流水的地块、耳号、批次与出库日期：
-            //   plot_id 来自库存行（月台/饲喂台账按地块×作物定位）；
-            //   ear_no 同样来自库存行（row199：明细「耳号」列读的正是 stock_flow.ear_no，
-            //     productOut 不带耳号 → 这一列过去 100% 为空；分割间建篮时篮子上有耳号，出库照抄即可）；
-            //   batch_no 让同一次提交的多条聚合成 row187 列表里的「一单」；
-            //   flow_date 改记业务日期 —— productOut 默认写 new Date()（实际操作时刻），
-            //   但甲方 row187 明确「可以选择当天和历史的日期」，补录历史日期时列表必须显示所选那天。
-            //   沿用项目补录约定：选当天则保留真实时分秒，选历史日期则落该日 00:00:00。
-            // ⚠️ third_phase 不在这里补 —— 已由 productOut 从被扣的库存行统一继承（V6 row92 唯一收口点）。
-            StockFlow patch = new StockFlow();
-            patch.setId(flowId);
-            patch.setPlotId(stock.getPlotId());
-            patch.setEarNo(stock.getEarNo());
-            patch.setBatchNo(batchNo);
-            patch.setFlowDate(resolveFlowDate(bo.getOutDate()));
-            // row194：销售单价快照。前端默认带出产品 sale_price 但允许改，故必须按本次录入值落在流水行上，
-            // 不能事后回读产品主数据 —— 否则改一次产品价格，历史出库单金额会整体漂移。
-            patch.setOutUnitPrice(item.getOutUnitPrice() != null ? item.getOutUnitPrice() : product.getSalePrice());
-            stockFlowMapper.updateById(patch);
+                // 回写流水的地块、耳号、批次与出库日期：
+                //   plot_id 来自库存行（月台/饲喂台账按地块×作物定位）；
+                //   ear_no 同样来自库存行（row199：明细「耳号」列读的正是 stock_flow.ear_no，
+                //     productOut 不带耳号 → 这一列过去 100% 为空；分割间建篮时篮子上有耳号，出库照抄即可）；
+                //   batch_no 让同一次提交的多条聚合成 row187 列表里的「一单」；
+                //   flow_date 改记业务日期 —— productOut 默认写 new Date()（实际操作时刻），
+                //   但甲方 row187 明确「可以选择当天和历史的日期」，补录历史日期时列表必须显示所选那天。
+                //   沿用项目补录约定：选当天则保留真实时分秒，选历史日期则落该日 00:00:00。
+                // ⚠️ third_phase 不在这里补 —— 已由 productOut 从被扣的库存行统一继承（V6 row92 唯一收口点）。
+                StockFlow patch = new StockFlow();
+                patch.setId(flowId);
+                patch.setPlotId(stock.getPlotId());
+                patch.setEarNo(stock.getEarNo());
+                patch.setBatchNo(batchNo);
+                patch.setFlowDate(resolveFlowDate(bo.getOutDate()));
+                // row194：销售单价快照。前端默认带出产品 sale_price 但允许改，故必须按本次录入值落在流水行上，
+                // 不能事后回读产品主数据 —— 否则改一次产品价格，历史出库单金额会整体漂移。
+                patch.setOutUnitPrice(item.getOutUnitPrice() != null ? item.getOutUnitPrice() : product.getSalePrice());
+                stockFlowMapper.updateById(patch);
 
-            // 这批货归属哪条毛菜处理汇总行 —— 唯一用途是让月台明细挂对行（见类头注与 resolveHandleId）。
-            // 解析出来的行只做挂载点，一个重量列都不改。
-            boolean toDock = DEST_VEG_DOCK.equals(bo.getOutDest());
-            Long cropId = resolveCropIdByProduct(product.getId());
-            Long handleId = resolveHandleId(product, stock, cropId, toDock);
+                // 这批货归属哪条毛菜处理汇总行 —— 唯一用途是让月台明细挂对行（见类头注与 resolveHandleId）。
+                // 解析出来的行只做挂载点，一个重量列都不改。
+                boolean toDock = DEST_VEG_DOCK.equals(bo.getOutDest());
+                Long cropId = resolveCropIdByProduct(product.getId());
+                Long handleId = resolveHandleId(product, stock, cropId, toDock);
 
-            // 去向额外下游（业态范围 Kevin 2026-08-03 拍板 D3：**三类业态都写**有机饲喂台账
-            // ——干货/蛋类也可能真拿去喂猪，这笔账要记）：
-            //   · 果蔬月台 → handle_record(handle_target=2)：月台待入库量与日统计都读它；
-            //   · 猪只饲料 → feed_log：有机饲喂的权威台账。
-            //
-            // ⚠️ 两条去向都**只写流水台账，不碰 send_platform_weight / feed_weight 两个汇总列**
-            // （见类头注）——那两列的读取方读的正是这里写的 handle_record / feed_log 明细，
-            // 汇总列再加一次就是双重计数。
-            if (toDock) {
-                insertPlatformHandleRecord(handleId, stock, cropId,
-                    item.getQuantity(), userId, resolveFlowDate(bo.getOutDate()));
-            } else if (DEST_FEED.equals(bo.getOutDest())) {
-                insertFeedLog(product, cropId, item.getQuantity(), stock.getLocationId(),
-                    userId, bo.getOutDate());
+                // 去向额外下游（业态范围 Kevin 2026-08-03 拍板 D3：**三类业态都写**有机饲喂台账
+                // ——干货/蛋类也可能真拿去喂猪，这笔账要记）：
+                //   · 果蔬月台 → handle_record(handle_target=2)：月台待入库量与日统计都读它；
+                //   · 猪只饲料 → feed_log：有机饲喂的权威台账。
+                //
+                // ⚠️ 两条去向都**只写流水台账，不碰 send_platform_weight / feed_weight 两个汇总列**
+                // （见类头注）——那两列的读取方读的正是这里写的 handle_record / feed_log 明细，
+                // 汇总列再加一次就是双重计数。
+                if (toDock) {
+                    insertPlatformHandleRecord(handleId, stock, cropId,
+                        take, userId, resolveFlowDate(bo.getOutDate()));
+                } else if (DEST_FEED.equals(bo.getOutDest())) {
+                    insertFeedLog(product, cropId, take, stock.getLocationId(),
+                        userId, bo.getOutDate());
+                }
             }
-
         }
         log.info("[VEG-OUT] dest={} items={} products={} batchNo={}",
             bo.getOutDest(), bo.getItems().size(), productCount, batchNo);
@@ -334,14 +405,16 @@ public class VegOutServiceImpl implements IVegOutService {
     private Map<Long, LocationStock> loadStocks(List<VegOutItemBo> items) {
         Map<Long, LocationStock> stocks = new java.util.LinkedHashMap<>();
         for (VegOutItemBo item : items) {
-            if (stocks.containsKey(item.getStockId())) {
-                continue;
+            for (Long stockId : item.getStockIds()) {
+                if (stockId == null || stocks.containsKey(stockId)) {
+                    continue;
+                }
+                LocationStock stock = locationStockMapper.selectById(stockId);
+                if (stock == null) {
+                    throw new ServiceException("库存记录不存在或已删除：" + stockId);
+                }
+                stocks.put(stockId, stock);
             }
-            LocationStock stock = locationStockMapper.selectById(item.getStockId());
-            if (stock == null) {
-                throw new ServiceException("库存记录不存在或已删除：" + item.getStockId());
-            }
-            stocks.put(item.getStockId(), stock);
         }
         return stocks;
     }

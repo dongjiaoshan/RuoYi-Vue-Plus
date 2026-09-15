@@ -4,7 +4,7 @@ import com.baomidou.mybatisplus.core.metadata.IPage;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 import org.dromara.djs.warehouse.vegout.domain.vo.VegOutBatchVo;
-import org.dromara.djs.warehouse.vegout.domain.vo.VegOutCandidateVo;
+import org.dromara.djs.warehouse.vegout.domain.vo.VegOutCandidateRow;
 import org.dromara.djs.warehouse.vegout.domain.vo.VegOutDetailVo;
 
 import java.util.Date;
@@ -83,15 +83,28 @@ public interface VegOutMapper {
         <if test="productName != null and productName != ''">
            AND p.product_name LIKE CONCAT('%', #{productName}, '%')
         </if>
-         ORDER BY p.product_name, pl.plot_code
+         <!-- 先进先出：合并成一行后服务端按这个顺序跨篮扣减（D-0068「出库先进先出自动」）。
+              create_time 同刻（同一次批量建篮）时按 id 兜底，保证顺序确定、不随查询计划漂移。 -->
+         ORDER BY p.product_name, pl.plot_code, s.create_time, s.id
         </script>
         """)
-    List<VegOutCandidateVo> selectCandidates(@Param("locationCodes") java.util.Collection<String> locationCodes,
+    List<VegOutCandidateRow> selectCandidates(@Param("locationCodes") java.util.Collection<String> locationCodes,
                                              @Param("belongTypes") java.util.Collection<String> belongTypes,
                                              @Param("productName") String productName);
 
     /**
      * 出库单聚合 SQL（按 {@code batch_no} 分组），分页列表与导出全量共用一份。
+     *
+     * <p><b>kg 的判据必须与全仓对齐</b>：`kg`（大小写 / 前后空格不敏感）、`公斤`、以及单位缺失（按 kg 兜底）。
+     * 产品单位是自由文本输入框、没有字典约束，工人把它敲成「公斤」是会发生的；漏认公斤，
+     * 那个产品的重量就会落进「出库量」计件列 —— 复现的正是甲方 row220 抱怨的同一类现象。
+     * 同判据另见 {@code ProductProductionMapper}（`IN ('kg','公斤')`，甲方明确要求）与前端
+     * {@code utils/weight.ts#isKgUnit}。</p>
+     *
+     * <p><b>totalWeight 与 totalQty 互补二分</b>（V6 row220）：kg 行（含单位缺失，按 kg 兜底）进重量列，
+     * 其余单位（袋 / 桶 / 罐 / 枚 / 份）进出库量列。同一个 {@code LOWER(TRIM(COALESCE(unit,'kg'))) IN ('kg','')}
+     * 判据取反复用，两列不会重叠也不会漏行 —— 拆成两套写法迟早会分叉，那时页面上「重量 + 出库量」
+     * 加起来就对不上这张单实际出了多少行。</p>
      *
      * <p><b>totalWeight 只累加 kg 行</b>（row194 D7 口径）：候选自 row194 起扩到干货库 / 蛋类库，
      * 单位混杂 kg / 袋 / 桶 / 罐 / 枚，把「3 袋」「100 枚」直接加进 kg 合计会得到一个没有物理意义的数
@@ -107,8 +120,10 @@ public interface VegOutMapper {
                MIN(f.flow_date)              AS outDate,
                MIN(f.stock_out_dest)         AS outDest,
                COUNT(DISTINCT f.product_id)  AS productKinds,
-               SUM(CASE WHEN LOWER(TRIM(COALESCE(p.product_unit, 'kg'))) IN ('kg', '')
+               SUM(CASE WHEN LOWER(TRIM(COALESCE(p.product_unit, 'kg'))) IN ('kg', '公斤', '')
                         THEN f.change_quantity ELSE 0 END)             AS totalWeight,
+               SUM(CASE WHEN LOWER(TRIM(COALESCE(p.product_unit, 'kg'))) IN ('kg', '公斤', '')
+                        THEN 0 ELSE f.change_quantity END)             AS totalQty,
                SUM(f.change_quantity * COALESCE(f.out_unit_price, 0))  AS totalAmount,
                MIN(f.operator_id)            AS operatorId
           FROM t_warehouse_stock_flow f
@@ -165,8 +180,19 @@ public interface VegOutMapper {
     /**
      * 出库单明细：该 {@code batch_no} 下的产品行，可按产品名模糊筛。
      *
-     * <p>一条流水一行（同一产品不同地块篮各出一条）。{@code productCode} 供详情页「重新打印」
-     * 按产品编号合并成一行打印用（V6 row108，与新增时打的那张单同一口径）。</p>
+     * <p><b>按 产品 + 库位 + 耳号 + 地块 聚合成一行</b>（V6 row225 / D-0068「不分日期、不认批次」）：
+     * 同一张单里同一产品拆成的多条流水（多个库存篮各一条）合并、出库量相加；
+     * 耳号或地块不同的仍各自成行。{@code productCode} 供详情页「重新打印」再按产品编号合并
+     * （V6 row108，与新增时打的那张单同一口径）—— 两层合并方向一致，不冲突。</p>
+     *
+     * <p>{@code GROUP BY} 里同时列了 {@code p.product_id} 与 {@code f.product_id}：前者是产品业务码
+     * （展示 + 打印合并键），后者是流水指向的产品主键（真正的聚合维度）。只 group 业务码的话，
+     * 万一两条产品主数据共用同一个业务码就会被错误合并。</p>
+     *
+     * <p>{@code warehouse_id} 是甲方点名的「产品库位」维度：同一产品在冻品库与猪肉鲜品库各有库存、
+     * 在同一张单里各自选量<b>各自填单价</b>是真实可达的（新增抽屉逐行提交 {@code outUnitPrice}），
+     * 漏掉它会把两条不同库位、不同单价的流水并成一行。{@code third_phase} 同理 ——
+     * 三期货没有真实 {@code plot_id}，不入键会与普通货并成一行、「地块」列显示成哪个都不对。</p>
      *
      * <p>{@code earNo} / 地块是这条流水的来源标识（row191 弹框「规格」与「出库量」之间那两列）：
      * 猪肉行有耳号、果蔬行有地块，各自另一项为空，前端与导出都兜 {@code -}。
@@ -183,12 +209,16 @@ public interface VegOutMapper {
                p.product_name   AS productName,
                p.product_spec   AS productSpec,
                p.product_unit   AS productUnit,
-               f.change_quantity AS outWeight,
-               f.out_unit_price AS outUnitPrice,
-               f.change_quantity * COALESCE(f.out_unit_price, 0) AS outAmount,
+               SUM(f.change_quantity) AS outWeight,
+               <!-- 合并组内单价不一致（含「一条有价一条没价」）时不给单一单价，前端显示「-」：
+                    随便挑一条会让「单价 × 出库量 ≠ 出库总价」，看单据的人只能怀疑是算错了。
+                    COALESCE 成 -1 参与去重，才能把 NULL 与真实价的混合也判成不一致。 -->
+               CASE WHEN COUNT(DISTINCT COALESCE(f.out_unit_price, -1)) = 1
+                    THEN MIN(f.out_unit_price) END                     AS outUnitPrice,
+               SUM(f.change_quantity * COALESCE(f.out_unit_price, 0))  AS outAmount,
                f.ear_no         AS earNo,
                f.third_phase    AS thirdPhase,
-               pl.plot_name     AS plotName
+               MIN(pl.plot_name)  AS plotName
           FROM t_warehouse_stock_flow f
           JOIN t_warehouse_product_info p ON p.id = f.product_id AND p.del_flag = '0'
           LEFT JOIN t_plant_plot_info pl  ON pl.id = f.plot_id   AND pl.del_flag = '0'
@@ -198,7 +228,9 @@ public interface VegOutMapper {
         <if test="productName != null and productName != ''">
            AND p.product_name LIKE CONCAT('%', #{productName}, '%')
         </if>
-         ORDER BY p.product_name
+         GROUP BY p.product_id, p.product_name, p.product_spec, p.product_unit,
+                  f.product_id, f.warehouse_id, f.ear_no, f.plot_id, f.third_phase
+         ORDER BY p.product_name, f.ear_no, MIN(pl.plot_name)
         </script>
         """)
     List<VegOutDetailVo> selectBatchDetail(@Param("batchNo") String batchNo,

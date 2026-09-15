@@ -2,12 +2,14 @@ package org.dromara.djs.warehouse.stock.domain.bo;
 
 import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.Digits;
+import jakarta.validation.constraints.NotEmpty;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
 import lombok.Data;
 
 import java.math.BigDecimal;
 import java.util.Date;
+import java.util.List;
 
 /**
  * 库存查询行「猪肉转移」入参（WS13 / row143）。
@@ -29,10 +31,14 @@ import java.util.Date;
 public class StockTransferBo {
 
     /**
-     * 源库存行 ID（猪肉鲜品库库存查询行主键，service 按此取 locationId + productId + 当前库存）。
+     * 源库存篮 id 组，<b>先进先出序</b>（{@code t_warehouse_location_stock.id}）。
+     *
+     * <p>与产品出库同一口径（V6 row223 / D-0068）：库存查询一行可能由多个篮合并而来，
+     * 转移量按本列表顺序跨篮扣减。猪肉行通常带耳号与白条流水号、天然只有一个篮，
+     * 但口径统一才不会哪天多出一个组就悄悄只转了第一篮。</p>
      */
-    @NotNull(message = "{stock.id.required}")
-    private Long id;
+    @NotEmpty(message = "{stock.id.required}")
+    private List<Long> stockIds;
 
     /**
      * 转移日期（默认当天；前端可改）。

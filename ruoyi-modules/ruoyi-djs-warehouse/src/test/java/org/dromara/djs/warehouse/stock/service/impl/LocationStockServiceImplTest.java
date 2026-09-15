@@ -153,16 +153,14 @@ class LocationStockServiceImplTest {
     void testQueryPageList_FillLocationName() {
         LocationStockQuery query = new LocationStockQuery();
         query.setLocationId(90001L);
-        PageQuery pageQuery = new PageQuery(1, 10);
+        PageQuery pageQuery = new PageQuery(10, 1);   // PageQuery(pageSize, pageNum)
 
         LocationStockVo vo = new LocationStockVo();
         vo.setId(80001L);
         vo.setLocationId(90001L);
         vo.setProductName("猪后腿肉");
-        Page<LocationStockVo> mockPage = new Page<>(1, 10);
-        mockPage.setRecords(List.of(vo));
-        mockPage.setTotal(1);
-        when(stockMapper.selectVoPage(any(Page.class), any(Wrapper.class))).thenReturn(mockPage);
+        // row223 / D-0068 起列表先查全量再合并分组、在内存里分页，不再走 selectVoPage
+        when(stockMapper.selectVoList(any(Wrapper.class))).thenReturn(List.of(vo));
 
         LocationInfo loc = new LocationInfo();
         loc.setId(90001L);
@@ -180,15 +178,13 @@ class LocationStockServiceImplTest {
     @DisplayName("queryPageList: 零库存仅保留上海当天同一库存篮有流水的记录")
     void testQueryPageList_ZeroStockVisibilityUsesTodayFlowAndAllDimensions() {
         LocationStockQuery query = new LocationStockQuery();
-        PageQuery pageQuery = new PageQuery(1, 10);
-        Page<LocationStockVo> mockPage = new Page<>(1, 10);
-        mockPage.setRecords(List.of());
-        when(stockMapper.selectVoPage(any(Page.class), any(Wrapper.class))).thenReturn(mockPage);
+        PageQuery pageQuery = new PageQuery(10, 1);   // PageQuery(pageSize, pageNum)
+        when(stockMapper.selectVoList(any(Wrapper.class))).thenReturn(List.of());
 
         service.queryPageList(query, pageQuery);
 
         ArgumentCaptor<Wrapper<LocationStock>> captor = ArgumentCaptor.forClass(Wrapper.class);
-        verify(stockMapper).selectVoPage(any(Page.class), captor.capture());
+        verify(stockMapper).selectVoList(captor.capture());
         String sql = captor.getValue().getCustomSqlSegment();
         assertThat(sql)
             .contains("product_stock > 0 OR EXISTS")
@@ -204,17 +200,14 @@ class LocationStockServiceImplTest {
     @DisplayName("queryPageList: happy → JOIN 地块表回填 blockNo（地块编号 = plot_code）")
     void testQueryPageList_FillBlockNo() {
         LocationStockQuery query = new LocationStockQuery();
-        PageQuery pageQuery = new PageQuery(1, 10);
+        PageQuery pageQuery = new PageQuery(10, 1);   // PageQuery(pageSize, pageNum)
 
         LocationStockVo vo = new LocationStockVo();
         vo.setId(80002L);
         vo.setLocationId(90001L);
         vo.setPlotId(70001L);
         vo.setProductName("小白菜");
-        Page<LocationStockVo> mockPage = new Page<>(1, 10);
-        mockPage.setRecords(List.of(vo));
-        mockPage.setTotal(1);
-        when(stockMapper.selectVoPage(any(Page.class), any(Wrapper.class))).thenReturn(mockPage);
+        when(stockMapper.selectVoList(any(Wrapper.class))).thenReturn(List.of(vo));
         when(locationInfoMapper.selectList(any())).thenReturn(List.of());
 
         PlotInfo plot = new PlotInfo();
@@ -243,8 +236,11 @@ class LocationStockServiceImplTest {
 
         List<LocationStockVo> rows = service.queryList(new LocationStockQuery());
 
-        assertThat(rows.get(0).getPlotLabel()).as("三期行导出应显示「三期」").isEqualTo("三期");
-        assertThat(rows.get(1).getPlotLabel()).as("无地块的普通行导出应显示 -").isEqualTo("-");
+        // 按 id 取，不依赖返回顺序（row223 起合并后有自己的排序口径）
+        assertThat(rows).extracting(LocationStockVo::getId, LocationStockVo::getPlotLabel)
+            .containsExactlyInAnyOrder(
+                org.assertj.core.groups.Tuple.tuple(90001L, "三期"),
+                org.assertj.core.groups.Tuple.tuple(90002L, "-"));
         verify(plotInfoMapper, never()).selectList(any());
     }
 
@@ -308,7 +304,7 @@ class LocationStockServiceImplTest {
 
     private StockOutBo stockOutBo(BigDecimal qty) {
         StockOutBo bo = new StockOutBo();
-        bo.setId(111L);
+        bo.setStockIds(java.util.List.of(111L));
         bo.setQuantity(qty);
         bo.setStockOutDest("dept_pick");
         bo.setRemark("ut-productout");
@@ -337,8 +333,8 @@ class LocationStockServiceImplTest {
         stubProductOutCommon();
         when(stockMapper.deductStockById(eq(111L), any(BigDecimal.class), eq(10086L))).thenReturn(1);
 
-        Long flowId = service.productOut(stockOutBo(new BigDecimal("5")));
-        assertThat(flowId).isEqualTo(50003L);
+        java.util.List<Long> flowIds = service.productOut(stockOutBo(new BigDecimal("5")));
+        assertThat(flowIds).containsExactly(50003L);
 
         // F0-1 核心：只扣所选行（id=111，且仅 1 次）；组维度扣减 API 不被调用 → 同 (库位,产品) 其他耳号/地块/白条篮不串扣
         verify(stockMapper, times(1)).deductStockById(eq(111L), eq(new BigDecimal("5")), eq(10086L));
@@ -366,9 +362,15 @@ class LocationStockServiceImplTest {
         stubProductOutCommon();
         when(stockMapper.deductStockById(anyLong(), any(BigDecimal.class), anyLong())).thenReturn(0);
 
+        // 断言「整单撤销 + 让工人刷新重试」这两个语义，不钉死整句文案。
+        // 报错里给的余量必须标明是「本单开始时」的快照 —— 按组出库时分配方案在事务开始时算好，
+        // 扣到某一篮时它可能已被别人领走，把快照值直接叫「当前库存」会给出一个与页面、
+        // 与库里都对不上的数字，工人只能反复重试。
         assertThatThrownBy(() -> service.productOut(stockOutBo(new BigDecimal("5"))))
             .isInstanceOf(ServiceException.class)
-            .hasMessageContaining("库存不足或已被并发占用");
+            .hasMessageContaining("已被其他人领走")
+            .hasMessageContaining("本单已全部撤销")
+            .hasMessageContaining("本单开始时该篮余量");
     }
 
     // -------- 【三期】标识继承（V6 row92）：出的是哪一篮，流水就带哪个标识 --------
@@ -485,7 +487,7 @@ class LocationStockServiceImplTest {
 
         org.dromara.djs.warehouse.stock.domain.bo.StockTransferBo bo =
             new org.dromara.djs.warehouse.stock.domain.bo.StockTransferBo();
-        bo.setId(111L);
+        bo.setStockIds(java.util.List.of(111L));
         bo.setQuantity(new BigDecimal("5"));
         service.pigTransfer(bo);
 
@@ -498,4 +500,77 @@ class LocationStockServiceImplTest {
         verify(stockMapper, never()).addByProductLocation(any(), any(), any(), any());
     }
 
+    // ── V6 row223 / D-0068：列表合并 + 内存分页 ────────────────────────────
+
+    private LocationStockVo vo(Long id, Long productId, Long locationId, Long plotId,
+                              String earNo, String whiteBarNo, String stock, java.util.Date createTime) {
+        LocationStockVo v = new LocationStockVo();
+        v.setId(id);
+        v.setProductId(productId);
+        v.setLocationId(locationId);
+        v.setPlotId(plotId);
+        v.setEarNo(earNo);
+        v.setWhiteBarNo(whiteBarNo);
+        v.setThirdPhase(0);
+        v.setProductStock(new java.math.BigDecimal(stock));
+        v.setCreateTime(createTime);
+        return v;
+    }
+
+    private static java.util.Date at(String iso) {
+        return java.util.Date.from(java.time.LocalDateTime.parse(iso)
+            .atZone(java.time.ZoneId.systemDefault()).toInstant());
+    }
+
+    @Test
+    @DisplayName("row223：同产品同库位同地块的多篮合成一行、库存取和，stockIds 按建篮时间升序（= 出库先扣的顺序）")
+    void testMergedList_sumsAndKeepsFifoOrder() {
+        // 故意把晚建的篮排在前面返回，验证服务端自己会重排成先进先出序
+        when(stockMapper.selectVoList(any(Wrapper.class))).thenReturn(List.of(
+            vo(2L, 10L, 900L, 20L, null, null, "32.000", at("2026-08-06T09:38:00")),
+            vo(1L, 10L, 900L, 20L, null, null, "42.000", at("2026-08-06T09:37:37"))));
+        when(locationInfoMapper.selectList(any())).thenReturn(List.of());
+
+        List<LocationStockVo> rows = service.queryList(new LocationStockQuery());
+
+        assertThat(rows).hasSize(1);
+        assertThat(rows.get(0).getProductStock()).isEqualByComparingTo("74.000");
+        assertThat(rows.get(0).getBasketCount()).isEqualTo(2);
+        assertThat(rows.get(0).getStockIds()).containsExactly(1L, 2L);
+        // 备注是单篮字段，合并行上必须清掉（否则整行看着像那一篮的来历）
+        assertThat(rows.get(0).getRemark()).isNull();
+    }
+
+    @Test
+    @DisplayName("row223：耳号 / 地块 / 白条流水号任一不同都各自成行（甲方：耳号和地块不同时需要分开显示）")
+    void testMergedList_splitsOnVisibleDimensions() {
+        when(stockMapper.selectVoList(any(Wrapper.class))).thenReturn(List.of(
+            vo(1L, 10L, 900L, 20L, null, null, "42.000", at("2026-08-06T09:00:00")),
+            vo(2L, 10L, 900L, 21L, null, null, "20.000", at("2026-08-06T09:01:00")),
+            vo(3L, 11L, 901L, null, "01-01-1-251109-001", "BAR2609070002", "65.000", at("2026-09-07T10:40:21")),
+            vo(4L, 11L, 901L, null, "01-01-1-251109-001", "BAR2609070003", "45.000", at("2026-09-07T10:40:28"))));
+        when(locationInfoMapper.selectList(any())).thenReturn(List.of());
+
+        List<LocationStockVo> rows = service.queryList(new LocationStockQuery());
+
+        assertThat(rows).hasSize(4);
+        assertThat(rows).allSatisfy(r -> assertThat(r.getBasketCount()).isEqualTo(1));
+    }
+
+    @Test
+    @DisplayName("row223：内存分页不能被畸形参数打崩（负 pageSize / 超大 pageNum 曾溢出成负下标 → 500）")
+    void testPaging_clampsHostileParams() {
+        when(stockMapper.selectVoList(any(Wrapper.class))).thenReturn(List.of(
+            vo(1L, 10L, 900L, 20L, null, null, "42.000", at("2026-08-06T09:00:00")),
+            vo(2L, 11L, 900L, 21L, null, null, "20.000", at("2026-08-06T09:01:00"))));
+        when(locationInfoMapper.selectList(any())).thenReturn(List.of());
+
+        // PageQuery(pageSize, pageNum)
+        assertThat(service.queryPageList(new LocationStockQuery(), new PageQuery(-5, 1)).getRows())
+            .as("负 pageSize 回落成查全部，不是崩").hasSize(2);
+        assertThat(service.queryPageList(new LocationStockQuery(), new PageQuery(10, 300000000)).getRows())
+            .as("超大页码只是空页，不是 500").isEmpty();
+        assertThat(service.queryPageList(new LocationStockQuery(), new PageQuery(null, null)).getRows())
+            .as("不传分页参数沿用旧语义：查全部").hasSize(2);
+    }
 }

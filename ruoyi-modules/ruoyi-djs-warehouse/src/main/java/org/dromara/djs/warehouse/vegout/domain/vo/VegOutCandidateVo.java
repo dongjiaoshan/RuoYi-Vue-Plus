@@ -21,8 +21,17 @@ public class VegOutCandidateVo implements Serializable {
     @Serial
     private static final long serialVersionUID = 1L;
 
-    /** 库存行 id（提交时按行出库）。 */
-    private Long stockId;
+    /**
+     * 这一行背后的库存篮 id 列表，<b>先进先出序</b>（建篮时间升序，同刻按 id 升序）。
+     *
+     * <p>V6 row224 / D-0068 起一行不再等于一个篮：同一 (产品, 库位, 耳号, 地块, 三期, 白条流水号)
+     * 的多个篮合并成一行、库存重量取和。提交时整组带上来，服务端按本列表顺序跨篮 FIFO 扣减
+     * （「出库先进先出自动，工人不再手选哪一篮」——D-0068 原话）。</p>
+     *
+     * <p>前端也拿它当行键（逗号拼接）：分组维度全在里面，天然唯一且刷新后稳定。</p>
+     */
+    private java.util.List<Long> stockIds;
+
 
     /** 产品 id。 */
     private Long productId;
@@ -31,7 +40,7 @@ public class VegOutCandidateVo implements Serializable {
      * 产品业务编号（{@code t_warehouse_product_info.product_id}，用户手填的产品编码，不是主键）。
      *
      * <p>V6 row108：右侧「已选产品」与打印单按它把同一产品的多个地块篮合并成一条
-     * （甲方原文「只按产品编号进行累计」）。提交仍按 {@link #stockId} 逐行走。</p>
+     * （甲方原文「只按产品编号进行累计」）。提交仍按 {@link #stockIds} 逐行走。</p>
      */
     private String productCode;
 

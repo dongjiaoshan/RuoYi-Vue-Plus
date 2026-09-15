@@ -1282,4 +1282,193 @@ class StoreReturnServiceImplTest {
         assertThat(vo.getReturnQuantity()).isEqualByComparingTo("2");
         assertThat(vo.getReturnStatus()).isEqualTo("pending");
     }
+
+    // ── V6 row221 / D-0069：候选 = 退回清单 ∪ 当日到店的生产产品 ─────────────────
+
+    /** 当日到店的生产产品（product_attr=1），不在退回清单里。 */
+    private ProductInfo arrivedProduct(Long id, String code, String name, String belongType, String unit) {
+        ProductInfo p = new ProductInfo();
+        p.setId(id);
+        p.setProductId(code);
+        p.setProductName(name);
+        p.setProductUnit(unit);
+        p.setBelongType(belongType);
+        p.setProductAttr(1);
+        return p;
+    }
+
+    /** 把「当日到店」这条链桩起来：到店 id 集 + 按 id 查得到产品 + 到店量。 */
+    private void stubArrivedToday(ProductInfo arrived, String arrivedQty) {
+        when(productProductionMapper.selectDeliveredProductIdsToStore(eq(STORE_ID), any()))
+            .thenReturn(List.of(arrived.getId()));
+        when(productInfoMapper.selectById(arrived.getId())).thenReturn(arrived);
+        when(productProductionService.sumDeliveredWeightToStore(eq(STORE_ID), eq(arrived.getId()), any()))
+            .thenReturn(new BigDecimal(arrivedQty));
+        when(productProductionMapper.sumDeliveredQuantityToStore(eq(STORE_ID), eq(arrived.getId()), any()))
+            .thenReturn(new BigDecimal(arrivedQty));
+    }
+
+    @Test
+    @DisplayName("row221：猪肉 tab 候选 = 清单产品 + 当日到店的生产产品，两半各带各的标识")
+    void testPorkCandidates_unionOfListAndArrivedProduction() {
+        ProductInfo listed = listedProduct(PRODUCT_ID, "Y00200", "2斤装猪肉", "pork");
+        ProductInfo arrived = arrivedProduct(7002L, "Y00109", "扇子骨", "pork", "kg");
+        stubReturnProductList(listed);
+        // stubReturnProductList 的 selectList 桩会把到店那条也一起返回，这里覆盖成按 wrapper 分流
+        when(productInfoMapper.selectList(any())).thenAnswer(inv -> {
+            Object w = inv.getArgument(0);
+            String seg = String.valueOf(
+                ((com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<?>) w).getSqlSegment());
+            return seg.contains("product_attr") ? List.of(arrived) : List.of(listed);
+        });
+        stubArrivedToday(arrived, "12.000");
+
+        var rows = service.listPorkCandidates(STORE_ID);
+
+        assertThat(rows).extracting(v -> v.getProductName()).containsExactly("2斤装猪肉", "扇子骨");
+        // 清单产品：不封顶（arrivedQuantity 恒 null）+ inReturnList=true
+        assertThat(rows.get(0).getInReturnList()).isTrue();
+        assertThat(rows.get(0).getArrivedQuantity()).isNull();
+        // 当日到店生产产品：带到店量封顶 + inReturnList=false
+        assertThat(rows.get(1).getInReturnList()).isFalse();
+        assertThat(rows.get(1).getArrivedQuantity()).isEqualByComparingTo("12.000");
+    }
+
+    @Test
+    @DisplayName("row221：同一产品既配在清单里又当日到店 → 按清单那一份，不封顶（不被到店量拖回去）")
+    void testPorkCandidates_listWinsWhenAlsoArrivedToday() {
+        ProductInfo both = listedProduct(PRODUCT_ID, "Y00109", "扇子骨", "pork");
+        both.setProductAttr(1);
+        stubReturnProductList(both);
+        stubArrivedToday(both, "3.000");
+
+        var rows = service.listPorkCandidates(STORE_ID);
+
+        assertThat(rows).hasSize(1);
+        assertThat(rows.get(0).getInReturnList()).isTrue();
+        assertThat(rows.get(0).getArrivedQuantity()).as("清单产品不封顶").isNull();
+    }
+
+    @Test
+    @DisplayName("row221/D-0069：当日到店的生产产品可以退，但退回量不得超过当日到店量")
+    void testBatchCreate_arrivedProductionCappedByArrivedQuantity() {
+        ProductInfo arrived = arrivedProduct(PRODUCT_ID, "Y00109", "扇子骨", "pork", "kg");
+        // 清单为空 —— 这条产品完全靠「当日到店」进候选与过闸
+        when(dictService.getAllDictByDictType(DICT_RETURN_PRODUCT_LIST)).thenReturn(Map.of());
+        when(productInfoMapper.selectList(any())).thenReturn(List.of(arrived));
+        when(baseMapper.selectList(any())).thenReturn(List.of());
+        stubArrivedToday(arrived, "10.000");
+
+        assertThat(service.batchCreate(batchOf("10"))).as("不超到店量 → 放行").isEqualTo(1);
+
+        assertThatThrownBy(() -> service.batchCreate(batchOf("10.001")))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("不能超过当日到店量减今日已退");
+    }
+
+    @Test
+    @DisplayName("row221：既不在清单里、当日也没到店的产品仍然一律拒绝（防凭空造仓库库存）")
+    void testBatchCreate_rejectsProductNeitherListedNorArrived() {
+        ProductInfo stranger = arrivedProduct(PRODUCT_ID, "Y00001", "上海青", "vegetable", "kg");
+        when(dictService.getAllDictByDictType(DICT_RETURN_PRODUCT_LIST)).thenReturn(Map.of());
+        when(productInfoMapper.selectById(PRODUCT_ID)).thenReturn(stranger);
+        when(productInfoMapper.selectList(any())).thenReturn(List.of());
+        when(productProductionMapper.selectDeliveredProductIdsToStore(eq(STORE_ID), any())).thenReturn(List.of());
+        when(baseMapper.selectList(any())).thenReturn(List.of());
+
+        assertThatThrownBy(() -> service.batchCreate(batchOf("1")))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("当日也没有到店记录");
+    }
+
+    // ── V6 row222：退回门店筛选项取自列表实际取值 ────────────────────────────
+
+    private StoreReturn ownerRow(String type, Long storeId, String unit) {
+        StoreReturn r = new StoreReturn();
+        r.setReturnType(type);
+        r.setStoreId(storeId);
+        r.setReturnUnit(unit);
+        return r;
+    }
+
+    @Test
+    @DisplayName("row222：筛选项 = 记录里出现过的门店 ∪ 退回单位，去重；单位取字典 label，门店在前单位在后")
+    void testOwnerOptions_dedupedFromExistingRecords() {
+        Store s1 = new Store();
+        s1.setId(9001L);
+        s1.setStoreName("门店AC");
+        Store s2 = new Store();
+        s2.setId(9002L);
+        s2.setStoreName("A门店");
+        when(storeMapper.selectList(any())).thenReturn(List.of(s1, s2));
+        when(dictService.getAllDictByDictType("djs_return_unit"))
+            .thenReturn(Map.of("hs_qinglong_dian", "黄石青龙店"));
+        when(baseMapper.selectList(any())).thenReturn(List.of(
+            ownerRow("store", 9001L, null),
+            ownerRow("store", 9001L, null),          // 同门店多条 → 去重
+            ownerRow("store", 9002L, null),
+            ownerRow("unit", null, "hs_qinglong_dian"),
+            ownerRow("unit", null, "hs_qinglong_dian")));  // 同单位多条 → 去重
+
+        var opts = service.listStoreDailyOwnerOptions();
+
+        assertThat(opts).extracting(v -> v.getReturnType() + "|" + v.getLabel())
+            .containsExactly("store|A门店", "store|门店AC", "unit|黄石青龙店");
+        assertThat(opts.get(2).getReturnUnit()).isEqualTo("hs_qinglong_dian");
+    }
+
+    @Test
+    @DisplayName("row222：字典里没配的退回单位退回裸 value —— 不能让这一项从下拉里消失（那些记录会再也筛不到）")
+    void testOwnerOptions_keepsUnconfiguredUnitAsRawValue() {
+        when(storeMapper.selectList(any())).thenReturn(List.of());
+        when(dictService.getAllDictByDictType("djs_return_unit")).thenReturn(Map.of());
+        when(baseMapper.selectList(any())).thenReturn(List.of(ownerRow("unit", null, "mine_only")));
+
+        var opts = service.listStoreDailyOwnerOptions();
+
+        assertThat(opts).hasSize(1);
+        assertThat(opts.get(0).getLabel()).isEqualTo("mine_only");
+    }
+
+    @Test
+    @DisplayName("row221：单条新增路（直接 received + 立刻真写库存）也必须过到店量封顶 —— 两道闸成对出现")
+    void testInsertByBo_arrivedProductionAlsoCapped() {
+        ProductInfo arrived = arrivedProduct(PRODUCT_ID, "Y00109", "扇子骨", "pork", "kg");
+        when(dictService.getAllDictByDictType(DICT_RETURN_PRODUCT_LIST)).thenReturn(Map.of());
+        when(productInfoMapper.selectList(any())).thenReturn(List.of(arrived));
+        when(baseMapper.selectList(any())).thenReturn(List.of());
+        stubArrivedToday(arrived, "2.000");
+
+        StoreReturnBo over = bo("store_to_warehouse", STORE_ID);
+        over.setReturnQuantity(new BigDecimal("99999"));
+
+        assertThatThrownBy(() -> service.insertByBo(over))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("不能超过当日到店量减今日已退");
+        // 闸必须拦在写库之前：既不 INSERT 也不联动入库
+        verify(baseMapper, never()).insert(any(StoreReturn.class));
+        verify(purchaseInService, never()).inboundReturnBasket(any(), any(), any(), any(), any());
+    }
+
+    @Test
+    @DisplayName("row221：猪肉的「材料外售」产品不该把它的原材料放进允许集 —— 折叠只发生在果蔬 tab")
+    void testAllowedIds_doesNotFoldPorkMaterialSold() {
+        // 通排：pork + attr=1 + is_material_sold=1 + 配了原材料（staging 实测就是这么配的）
+        ProductInfo porkSold = arrivedProduct(PRODUCT_ID, "Y0322", "通排", "pork", "kg");
+        porkSold.setIsMaterialSold(1);
+        porkSold.setProductMaterial(7777L);
+        ProductInfo material = arrivedProduct(7777L, "Y00107", "通排(原材料)", "pork", "kg");
+        material.setProductAttr(2);
+
+        when(dictService.getAllDictByDictType(DICT_RETURN_PRODUCT_LIST)).thenReturn(Map.of());
+        when(productInfoMapper.selectList(any())).thenReturn(List.of(porkSold));
+        when(productInfoMapper.selectById(7777L)).thenReturn(material);
+        when(baseMapper.selectList(any())).thenReturn(List.of());
+        stubArrivedToday(porkSold, "2.000");
+
+        // 那个原材料从不出现在任何候选里，提交它必须被成员资格闸拒（而不是只靠封顶兜住）
+        assertThatThrownBy(() -> service.batchCreate(batchOf(7777L, "0.001")))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("既不在「退回产品清单」里");
+    }
 }

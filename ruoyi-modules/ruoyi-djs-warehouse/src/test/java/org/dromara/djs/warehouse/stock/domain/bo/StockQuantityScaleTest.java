@@ -44,7 +44,7 @@ class StockQuantityScaleTest {
 
     private static StockOutBo outBo(String quantity) {
         StockOutBo bo = new StockOutBo();
-        bo.setId(1L);
+        bo.setStockIds(java.util.List.of(1L));
         bo.setOutDate(new Date());
         bo.setStockOutDest("kitchen");
         bo.setQuantity(new BigDecimal(quantity));
@@ -53,7 +53,7 @@ class StockQuantityScaleTest {
 
     private static StockTransferBo transferBo(String quantity) {
         StockTransferBo bo = new StockTransferBo();
-        bo.setId(1L);
+        bo.setStockIds(java.util.List.of(1L));
         bo.setTransferDate(new Date());
         bo.setQuantity(new BigDecimal(quantity));
         return bo;

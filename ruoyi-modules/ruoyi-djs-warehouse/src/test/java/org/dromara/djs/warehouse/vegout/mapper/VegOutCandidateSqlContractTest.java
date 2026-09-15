@@ -125,6 +125,12 @@ class VegOutCandidateSqlContractTest {
         assertThat(sql)
             .as("果蔬 tab 仍按地块展示，plotName 不能丢")
             .contains("pl.plot_name as plotname");
+        // row224 / D-0068：合并成一行后服务端按这个顺序跨篮扣，排序改了 FIFO 就悄悄失效
+        assertThat(sql)
+            .as("候选必须按建篮时间升序返回，组内顺序即先进先出序")
+            .contains("order by p.product_name, pl.plot_code, s.create_time, s.id");
+        // 白条流水号不是本抽屉的列，也取不到带白条号的篮 —— 入键只会让两行看着一样却不合并
+        assertThat(sql).as("候选不查白条流水号").doesNotContain("white_bar_no");
     }
 
     @Test
@@ -152,12 +158,17 @@ class VegOutCandidateSqlContractTest {
         // row199 甲方口径：地块显示**名称**（A1东9号），与新增出库抽屉那列一致，不是编码（A-A1东-0-009）
         assertThat(sql)
             .as("取 plot_code 会让明细与出库时看到的地块对不上")
-            .contains("pl.plot_name as plotname")
+            .contains("min(pl.plot_name) as plotname")
             .doesNotContain("plot_code");
         // 三期货没有真实 plot_id，「地块」列靠 third_phase 显示「三期」
         assertThat(sql)
             .as("不带三期标识，三期行只能显示 -")
             .contains("f.third_phase as thirdphase");
+        // row225：甲方点名的四维里有「产品库位」；三期货没有真实 plot_id，也必须自成一组
+        assertThat(sql)
+            .as("漏掉库位会把同产品跨库位、各自定价的两条流水并成一行")
+            .contains("group by p.product_id, p.product_name, p.product_spec, p.product_unit, "
+                + "f.product_id, f.warehouse_id, f.ear_no, f.plot_id, f.third_phase");
         // LEFT JOIN：地块档案被删的行照出，只是地块列为空（service 兜 "-"），不能因为联不上就丢明细行
         assertThat(sql).contains("left join t_plant_plot_info pl on pl.id = f.plot_id and pl.del_flag = '0'");
         // 耳号取这条流水记的那个篮子，不回溯上游批次
