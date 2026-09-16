@@ -443,11 +443,32 @@ public class StoreReturnServiceImpl
 
     /** 批量提交用：允许 id 集由调用方算一次传进来，避免每行重查一次字典 + 一次 IN 查询。 */
     private void assertInReturnProductList(ProductInfo product, Set<Long> allowedIds) {
-        if (!allowedIds.contains(product.getId())) {
-            throw new ServiceException("产品「" + product.getProductName()
-                + "」既不在「退回产品清单」里、当日也没有到店记录，无法退回。"
-                + "请先在 admin 字典管理 → 退回产品清单里配置它的产品编码，或确认该产品今天确实发到了这家门店。", 400);
+        if (allowedIds.contains(product.getId())) {
+            return;
         }
+        // 被 V6 row226 剔掉的要给专属文案。用通用那句会说成「当日也没有到店记录」——
+        // 而它今天**确实**到店了（mp「退回录入」用的是无过滤的通用 ProductPicker，工人选得到它），
+        // 照那句提示去查发货记录只会查出相反的结论，然后来提二次工单。
+        // 判「这个产品在不在集合里」，不是「集合非空」—— 查一个 id 却按「有没有返回」下结论，
+        // 一旦上游把别的产品也带进结果（测试桩里就发生了），会把无辜产品报成「勾了原材料售卖」。
+        if (porkMaterialSoldIds(List.of(product.getId())).contains(product.getId())) {
+            throw new ServiceException("产品「" + product.getProductName() + "」勾了「原材料售卖」，"
+                + "按原材料计价出售，退回请改登记它的原材料" + materialNameHint(product)
+                + "；这类猪肉产品不在退回操作里显示。", 400);
+        }
+        throw new ServiceException("产品「" + product.getProductName()
+            + "」既不在「退回产品清单」里、当日也没有到店记录，无法退回。"
+            + "请先在 admin 字典管理 → 退回产品清单里配置它的产品编码，或确认该产品今天确实发到了这家门店。", 400);
+    }
+
+    /** 报错里带上原材料名（查得到才带）：只说「改登记原材料」而不说是哪个，工人还得自己猜。 */
+    private String materialNameHint(ProductInfo product) {
+        if (product.getProductMaterial() == null) {
+            return "";
+        }
+        ProductInfo material = productInfoMapper.selectById(product.getProductMaterial());
+        return material == null || StringUtils.isBlank(material.getProductName())
+            ? "" : "「" + material.getProductName() + "」";
     }
 
     /**
@@ -518,6 +539,9 @@ public class StoreReturnServiceImpl
             .filter(p -> BELONG_TYPE_VEGETABLE.equals(p.getBelongType()))
             .filter(p -> Objects.equals(1, p.getIsMaterialSold()) && p.getProductMaterial() != null)
             .forEach(p -> allowed.add(p.getProductMaterial()));
+        // V6 row226：候选侧剔掉的「原材料售卖」猪肉生产产品，闸这边也必须拒 ——
+        // 列不出来却提得动，就是一个页面上看不见的入口（row221 刚栽过一次同样的跟头）。
+        allowed.removeAll(porkMaterialSoldIds(new ArrayList<>(allowed)));
         return allowed;
     }
 
@@ -539,12 +563,21 @@ public class StoreReturnServiceImpl
             return Set.of();
         }
         Set<Long> allowed = new LinkedHashSet<>(configured);
+        // ⚠️ 门槛必须与 foldVegMaterialSold 对齐 —— 它**只折叠果蔬**。不加 belong_type 判据的话，
+        // 猪肉的材料外售产品（「通排」）会把它的原材料 id 也放进允许集，而那个原材料从不出现在任何候选里：
+        // 实测字典里配上「通排」后，直接提它的原材料 9303000000000107 退 99999 会 200 建单成功 ——
+        // 一个页面上看不见、却提得动且不封顶的入口。V6 row226 把通排本体藏起来之后，这条后门就成了唯一通路。
         productInfoMapper.selectList(new LambdaQueryWrapper<ProductInfo>()
-                .select(ProductInfo::getId, ProductInfo::getIsMaterialSold, ProductInfo::getProductMaterial)
+                .select(ProductInfo::getId, ProductInfo::getIsMaterialSold,
+                    ProductInfo::getProductMaterial, ProductInfo::getBelongType)
                 .in(ProductInfo::getId, configured))
             .stream()
+            .filter(p -> BELONG_TYPE_VEGETABLE.equals(p.getBelongType()))
             .filter(p -> Objects.equals(1, p.getIsMaterialSold()) && p.getProductMaterial() != null)
             .forEach(p -> allowed.add(p.getProductMaterial()));
+        // V6 row226：勾了「原材料售卖」的猪肉生产产品即便被配进清单也不许退（候选侧同样剔除）。
+        // 放在这里而不是只放 returnAllowedIds：单位退回走的是本方法，不经过 returnAllowedIds。
+        allowed.removeAll(porkMaterialSoldIds(new ArrayList<>(allowed)));
         return allowed;
     }
 
@@ -978,7 +1011,71 @@ public class StoreReturnServiceImpl
                 merged.add(c);
             }
         }
-        return merged;
+        return dropPorkMaterialSold(merged, tab);
+    }
+
+    /**
+     * 猪肉页签剔除「勾了原材料售卖」的生产产品（V6 row226）。
+     *
+     * <p>甲方原话：「对于猪肉类的生产产品在退回时，如果产品是勾选了原材料售卖的选项，则不显示在退回操作里」。
+     * 这类产品按原材料计价出售，退回该落到它的<b>原材料</b>头上；果蔬侧有
+     * {@link #foldVegMaterialSold} 把成品行整行换成原材料，猪肉侧没有这道折叠，
+     * 列出来就是两行都叫「通排」——工人分不清退的是成品还是原材料（实测全库
+     * {@code is_material_sold=1} 的产品只有它一个：Y0322 pork/attr=1，原材料指向同名的 9303000000000107）。</p>
+     *
+     * <p><b>只作用于猪肉页签</b>，这一点是甲方的原话、也是必须的：果蔬的同类产品会被折叠成原材料后留下，
+     * 在这里一起剔会把折叠后的那一行也带走，果蔬候选凭空少一项。</p>
+     *
+     * <p><b>只剔生产产品（{@code product_attr=1}，D-0042）</b>：产品本身就是原材料时
+     * （{@code attr=2}，如白条部位）{@code is_material_sold} 没有「成品 vs 原材料」的歧义可言，
+     * 它就是那个原材料，照常可退。</p>
+     */
+    private List<StoreReturnVegCandidateVo> dropPorkMaterialSold(List<StoreReturnVegCandidateVo> candidates,
+                                                                 String tab) {
+        if (!RETURN_TAB_PORK.equals(tab) || candidates.isEmpty()) {
+            return candidates;
+        }
+        List<Long> ids = candidates.stream().map(StoreReturnVegCandidateVo::getProductId)
+            .filter(Objects::nonNull).distinct().collect(Collectors.toList());
+        if (ids.isEmpty()) {
+            return candidates;
+        }
+        Set<Long> excluded = porkMaterialSoldIds(ids);
+        if (excluded.isEmpty()) {
+            return candidates;
+        }
+        List<StoreReturnVegCandidateVo> kept = new ArrayList<>(candidates.size());
+        for (StoreReturnVegCandidateVo c : candidates) {
+            if (excluded.contains(c.getProductId())) {
+                log.info("[STORE-RETURN] 退回候选剔除「原材料售卖」的猪肉生产产品 productId={} name={}（V6 row226）",
+                    c.getProductId(), c.getProductName());
+                continue;
+            }
+            kept.add(c);
+        }
+        return kept;
+    }
+
+    /**
+     * 给定产品 id 里，属于「猪肉生产产品 + 勾了原材料售卖」的那些（V6 row226 的唯一判据实现）。
+     *
+     * <p>候选侧剔除与提交闸拒绝共用本方法 —— 候选列不出来、闸却放行，等于留一个页面上看不见
+     * 却提得动的入口；反过来候选列得出、闸拒绝，工人白填一遍再吃 400。两边必须同源。</p>
+     */
+    private Set<Long> porkMaterialSoldIds(List<Long> productIds) {
+        if (productIds == null || productIds.isEmpty()) {
+            return Set.of();
+        }
+        return productInfoMapper.selectList(new LambdaQueryWrapper<ProductInfo>()
+                .select(ProductInfo::getId, ProductInfo::getBelongType,
+                    ProductInfo::getProductAttr, ProductInfo::getIsMaterialSold)
+                .in(ProductInfo::getId, productIds))
+            .stream()
+            .filter(p -> RETURN_TAB_PORK.equals(returnTabOf(p.getBelongType())))
+            .filter(p -> Integer.valueOf(PRODUCT_ATTR_FINISHED).equals(p.getProductAttr()))
+            .filter(StoreReturnServiceImpl::isMaterialSold)
+            .map(ProductInfo::getId)
+            .collect(Collectors.toCollection(LinkedHashSet::new));
     }
 
     /**
@@ -2005,8 +2102,20 @@ public class StoreReturnServiceImpl
         Map<Long, String> metricUnits = resolveMetricUnits(new ArrayList<>(productById.values()));
         Set<Long> returnListIds = new HashSet<>(ids);
         Map<Long, LocationPickerVo> enabledLocations = allEnabledLocationMap();
+        // V6 row226 对「退回管理」菜单下的两个入口一视同仁：门店退回那一页剔掉了，单位退回这边也剔。
+        // 剔的理由（猪肉侧没有成品→原材料的自动折叠，列出来分不清退的是哪一个）与从哪个入口进来无关；
+        // 只在门店那页剔，同一个菜单下就会出现两套口径。
+        // ⚠️ 判据下在**产出行的这个循环**上，不下在上面的 id 列表上：行是另一次查询的结果，
+        // 过滤 id 却放过行，等于没过滤（改的时候被单测当场抓到过一次）。
+        Set<Long> excluded = porkMaterialSoldIds(
+            products.stream().map(ProductInfo::getId).filter(Objects::nonNull).collect(Collectors.toList()));
         List<StoreReturnUnitCandidateVo> result = new ArrayList<>(products.size());
         for (ProductInfo p : products) {
+            if (excluded.contains(p.getId())) {
+                log.info("[STORE-RETURN] 单位退回候选剔除「原材料售卖」的猪肉生产产品 productId={} name={}（V6 row226）",
+                    p.getId(), p.getProductName());
+                continue;
+            }
             // 礼盒即便被配进清单也退不进仓库（多种原料组合，拆不回单一原材料，提交时硬拒）。
             // 列出来就是让用户白填一遍再吃 400，候选侧直接剔掉 —— 与提交闸同一条规则的两半。
             if (BELONG_TYPE_GIFT_BOX.equals(p.getBelongType())) {

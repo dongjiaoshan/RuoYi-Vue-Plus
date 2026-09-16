@@ -1471,4 +1471,145 @@ class StoreReturnServiceImplTest {
             .isInstanceOf(ServiceException.class)
             .hasMessageContaining("既不在「退回产品清单」里");
     }
+
+    // ── V6 row226：勾了「原材料售卖」的猪肉生产产品不进退回操作 ────────────────
+
+    /** 猪肉生产产品 + 勾了原材料售卖（staging 实测只有「通排」Y0322 一个是这样配的）。 */
+    private ProductInfo porkMaterialSold(Long id, String code, String name, Long materialId) {
+        ProductInfo p = arrivedProduct(id, code, name, "pork", "kg");
+        p.setIsMaterialSold(1);
+        p.setProductMaterial(materialId);
+        return p;
+    }
+
+    @Test
+    @DisplayName("row226：当日到店的猪肉生产产品，勾了原材料售卖的不出现在候选里")
+    void testPorkCandidates_dropsMaterialSoldProduction() {
+        ProductInfo tongpai = porkMaterialSold(PRODUCT_ID, "Y0322", "通排", 7777L);
+        ProductInfo plain = arrivedProduct(7001L, "P0123", "黑毛猪肥肉1000g/份", "pork", "份");
+        when(dictService.getAllDictByDictType(DICT_RETURN_PRODUCT_LIST)).thenReturn(Map.of());
+        when(productProductionMapper.selectDeliveredProductIdsToStore(eq(STORE_ID), any()))
+            .thenReturn(List.of(tongpai.getId(), plain.getId()));
+        when(productInfoMapper.selectList(any())).thenReturn(List.of(tongpai, plain));
+        when(baseMapper.selectList(any())).thenReturn(List.of());
+        when(productProductionService.sumDeliveredWeightToStore(any(), any(), any()))
+            .thenReturn(new BigDecimal("2.000"));
+        when(productProductionMapper.sumDeliveredQuantityToStore(any(), any(), any()))
+            .thenReturn(new BigDecimal("1.000"));
+
+        var rows = service.listPorkCandidates(STORE_ID);
+
+        assertThat(rows).extracting(v -> v.getProductName()).containsExactly("黑毛猪肥肉1000g/份");
+    }
+
+    @Test
+    @DisplayName("row226：候选剔掉的同时提交闸也要拒 —— 不能留一个页面上看不见却提得动的入口")
+    void testBatchCreate_rejectsMaterialSoldPorkProduction() {
+        ProductInfo tongpai = porkMaterialSold(PRODUCT_ID, "Y0322", "通排", 7777L);
+        when(dictService.getAllDictByDictType(DICT_RETURN_PRODUCT_LIST)).thenReturn(Map.of());
+        when(productInfoMapper.selectList(any())).thenReturn(List.of(tongpai));
+        when(baseMapper.selectList(any())).thenReturn(List.of());
+        stubArrivedToday(tongpai, "2.000");
+
+        assertThatThrownBy(() -> service.batchCreate(batchOf("1")))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("勾了「原材料售卖」");
+    }
+
+    @Test
+    @DisplayName("row226：只剔猪肉页签 —— 果蔬的材料外售成品仍要被折叠成原材料留在候选里")
+    void testVegCandidates_materialSoldStillFolded() {
+        ProductInfo vegFinished = arrivedProduct(PRODUCT_ID, "P0042", "有机紫线茄500g", "vegetable", "份");
+        vegFinished.setIsMaterialSold(1);
+        vegFinished.setProductMaterial(7777L);
+        ProductInfo material = arrivedProduct(7777L, "Y00041", "紫线茄", "vegetable", "kg");
+        material.setProductAttr(2);
+        when(dictService.getAllDictByDictType(DICT_RETURN_PRODUCT_LIST)).thenReturn(Map.of());
+        when(productProductionMapper.selectDeliveredProductIdsToStore(eq(STORE_ID), any()))
+            .thenReturn(List.of(vegFinished.getId()));
+        when(productInfoMapper.selectList(any())).thenAnswer(inv -> {
+            Object w = inv.getArgument(0);
+            String seg = String.valueOf(
+                ((com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<?>) w).getSqlSegment());
+            // 折叠时按原材料 id 反查
+            return seg.contains("product_attr") ? List.of(vegFinished) : List.of(vegFinished, material);
+        });
+        when(baseMapper.selectList(any())).thenReturn(List.of());
+        when(productProductionMapper.sumDeliveredQuantityToStore(any(), any(), any()))
+            .thenReturn(new BigDecimal("1.000"));
+
+        var rows = service.listVegCandidates(STORE_ID);
+
+        assertThat(rows).as("果蔬这条链不受 row226 影响，折叠后的原材料仍在").hasSize(1);
+        assertThat(rows.get(0).getProductName()).isEqualTo("紫线茄");
+    }
+
+    @Test
+    @DisplayName("row226：产品本身就是原材料（attr=2）不受影响 —— 它就是那个原材料，照常可退")
+    void testPorkCandidates_keepsRawMaterialEvenIfFlagged() {
+        ProductInfo raw = arrivedProduct(PRODUCT_ID, "Y00107", "通排", "pork", "kg");
+        raw.setProductAttr(2);
+        raw.setIsMaterialSold(1);
+        stubReturnProductList(raw);
+
+        var rows = service.listPorkCandidates(STORE_ID);
+
+        assertThat(rows).extracting(v -> v.getProductName()).containsExactly("通排");
+    }
+
+    @Test
+    @DisplayName("row226-QA-A：被剔的产品要给专属报错，不能说成「当日也没有到店记录」（它今天确实到店了）")
+    void testBatchCreate_materialSoldErrorMessageIsHonest() {
+        ProductInfo tongpai = porkMaterialSold(PRODUCT_ID, "Y0322", "通排", 7777L);
+        ProductInfo material = arrivedProduct(7777L, "Y00107", "通排原料", "pork", "kg");
+        material.setProductAttr(2);
+        when(dictService.getAllDictByDictType(DICT_RETURN_PRODUCT_LIST)).thenReturn(Map.of());
+        when(productInfoMapper.selectList(any())).thenReturn(List.of(tongpai));
+        when(productInfoMapper.selectById(7777L)).thenReturn(material);
+        when(baseMapper.selectList(any())).thenReturn(List.of());
+        stubArrivedToday(tongpai, "2.000");
+
+        assertThatThrownBy(() -> service.batchCreate(batchOf("1")))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("勾了「原材料售卖」")
+            .hasMessageContaining("通排原料")
+            .hasMessageNotContaining("当日也没有到店记录");
+    }
+
+    @Test
+    @DisplayName("row226-QA-B：清单里配了猪肉材料外售产品时，它的原材料不许被顺带放进允许集（看不见却提得动的后门）")
+    void testAllowedIds_porkMaterialNotBackdoored() {
+        ProductInfo tongpai = porkMaterialSold(PRODUCT_ID, "Y0322", "通排", 7777L);
+        ProductInfo material = arrivedProduct(7777L, "Y00107", "通排原料", "pork", "kg");
+        material.setProductAttr(2);
+        // 字典里只配了通排本体
+        Map<String, String> dict = new LinkedHashMap<>();
+        dict.put("Y0322", "通排");
+        when(dictService.getAllDictByDictType(DICT_RETURN_PRODUCT_LIST)).thenReturn(dict);
+        when(productInfoMapper.selectById(7777L)).thenReturn(material);
+        when(productInfoMapper.selectList(any())).thenReturn(List.of(tongpai));
+        when(baseMapper.selectList(any())).thenReturn(List.of());
+        when(productProductionMapper.selectDeliveredProductIdsToStore(eq(STORE_ID), any())).thenReturn(List.of());
+
+        assertThatThrownBy(() -> service.batchCreate(batchOf(7777L, "99999")))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("既不在「退回产品清单」里");
+    }
+
+    @Test
+    @DisplayName("row226-QA-C：单位退回候选也剔 —— 同一个「退回管理」菜单下不能两套口径")
+    void testUnitCandidates_dropsPorkMaterialSold() {
+        ProductInfo tongpai = porkMaterialSold(PRODUCT_ID, "Y0322", "通排", 7777L);
+        ProductInfo plain = arrivedProduct(7001L, "P0089", "黑毛猪里脊肉250g/份", "pork", "份");
+        Map<String, String> dict = new LinkedHashMap<>();
+        dict.put("Y0322", "通排");
+        dict.put("P0089", "黑毛猪里脊肉250g/份");
+        when(dictService.getAllDictByDictType(DICT_RETURN_PRODUCT_LIST)).thenReturn(dict);
+        when(productInfoMapper.selectList(any())).thenReturn(List.of(tongpai, plain));
+        when(locationInfoMapper.selectList(any())).thenReturn(List.of());
+
+        var rows = service.listUnitCandidates();
+
+        assertThat(rows).extracting(v -> v.getProductName()).containsExactly("黑毛猪里脊肉250g/份");
+    }
 }
