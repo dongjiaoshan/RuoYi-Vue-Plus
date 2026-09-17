@@ -161,7 +161,10 @@ public interface AggregateQueryMapper {
                                                   @Param("to") LocalDate to);
 
     /**
-     * 当年仍活的母猪平均存栏（用于 PSY = annual_weaned / avg_sow_alive）。
+     * 当年仍活的母猪平均存栏。
+     *
+     * <p>注：PSY 早已不用它 —— 现行口径是（Σ日在怀母猪头数 / 母猪头日）×365/115×窝均断奶数，
+     * 见 {@code DashboardServiceImpl#upsertAnnualIndicator}。本方法保留给存栏类展示用。</p>
      *
      * <p>近似算法：取当年最后一天 23:59 的活母猪头数（current_status NOT IN END 且 pig_type=sow）。
      * V1 简化，不做月度滑动平均。</p>
@@ -290,16 +293,6 @@ public interface AggregateQueryMapper {
     int sumLiveBornInDateTimeRange(@Param("tenantId") String tenantId,
                                    @Param("from") java.time.LocalDateTime from,
                                    @Param("to") java.time.LocalDateTime to);
-
-    /** 区间内断奶窝数 COUNT（t_farm_pig_weaning，一行一窝）。 */
-    @Select("SELECT COUNT(*) FROM t_farm_pig_weaning "
-        + " WHERE tenant_id = #{tenantId} "
-        + "   AND del_flag = '0' "
-        + "   AND weaning_date >= #{from} "
-        + "   AND weaning_date <  #{to}")
-    int countWeaningLitterInRange(@Param("tenantId") String tenantId,
-                                  @Param("from") java.time.LocalDateTime from,
-                                  @Param("to") java.time.LocalDateTime to);
 
     /** 区间内断奶头数 SUM(weaned_count)（t_farm_pig_weaning，DATETIME 版）。 */
     @Select("SELECT COALESCE(SUM(weaned_count),0) FROM t_farm_pig_weaning "
@@ -698,6 +691,23 @@ public interface AggregateQueryMapper {
     List<Map<String, Object>> snapshotByTypeStatusOnDate(@Param("tenantId") String tenantId,
                                                          @Param("snapDate") java.time.LocalDate snapDate);
 
+    /**
+     * 当前「超期仍挂已配种」的母猪头数（数据质量信号，不参与任何指标计算）。
+     *
+     * <p>祝碧 2026-09-16 的财务规则是「配种满 judgeDays 天必须有一个结果」。超期还停在 PZ 的，
+     * 是结论没被录进来。Kevin 2026-09-17 定这些猪**照常计入** PSY 分子（D-0082），
+     * 代价是没人补录时 PSY 会持续虚高 —— 所以至少要让这个数在日志里可见，
+     * 不能让它无声无息地推高一个对外指标。</p>
+     */
+    @Select("SELECT COUNT(*) FROM t_farm_pig_info p "
+        + " WHERE p.tenant_id = #{tenantId} AND p.del_flag = '0' "
+        + "   AND p.pig_type = 'sow' AND p.current_status = 'PZ' "
+        + "   AND DATEDIFF(CURDATE(), ( "
+        + "         SELECT MAX(DATE(b.breeding_date)) FROM t_farm_pig_breeding b "
+        + "          WHERE b.pig_id = p.id AND b.del_flag = '0')) > #{judgeDays}")
+    int countOverduePregnantSows(@Param("tenantId") String tenantId,
+                                 @Param("judgeDays") int judgeDays);
+
     /** 某日快照内 230 日龄以上后备母猪头数（日龄基准 = snap_date；快照 birth_date）。 */
     @Select("SELECT COUNT(*) FROM t_farm_pig_snapshot "
         + " WHERE tenant_id = #{tenantId} AND snap_date = #{snapDate} "
@@ -712,8 +722,11 @@ public interface AggregateQueryMapper {
      * statDate 当年的分娩窝数 COUNT(*)。
      *
      * <p>口径修正（row14 B3）：分娩头数 = 母猪头数（窝数），一行 farrow = 一窝 = 一头母猪分娩，
-     * 故用 COUNT(*) 不是 SUM(live_born)（仔猪数）。这会同时修正 year_farrow_rate（年分娩率）与 PSY
-     * （二者都用 year_batch_farrow_count）。</p>
+     * 故用 COUNT(*) 不是 SUM(live_born)（仔猪数）。</p>
+     *
+     * <p>⚠️ 年分娩率与 PSY <b>现在都不走本列</b>：前者分子分母同取月表 Σ（D-0087），
+     * 后者分子是日表 {@code pregnant_sow_count}（D-0084）。本列只落日表，年表那个同名列
+     * 语义已不同（= Σ月表 cohort_farrow_count），别按名字互推。</p>
      *
      * <p>配种→分娩天数偏移读配置（row183）：{@code breedToFarrowDays} 来自配置键
      * {@code sow_breed_to_farrow_days}（缺省 114），不再写死 114。</p>
@@ -860,19 +873,6 @@ public interface AggregateQueryMapper {
                                                      @Param("asOf") java.time.LocalDate asOf);
 
     /**
-     * 断奶记录最早业务日（PSY 年化窗口的起点）。
-     *
-     * <p>PSY 分子是断奶仔猪数。断奶登记 2026-08 才开始用，若分母（母猪头日）取全年而分子只有两个月，
-     * 年化会把这个残缺比值再放大 365/N 倍。故窗口锚到「断奶数据可信起始日」，分子分母同区间。</p>
-     */
-    @Select("SELECT DATE(MIN(weaning_date)) FROM t_farm_pig_weaning "
-        + " WHERE tenant_id = #{tenantId} AND del_flag = '0' "
-        + "   AND weaning_date >= #{from} AND weaning_date < #{to}")
-    java.time.LocalDate selectMinWeaningDate(@Param("tenantId") String tenantId,
-                                             @Param("from") java.time.LocalDate from,
-                                             @Param("to") java.time.LocalDate to);
-
-    /**
      * 产房损失：按窝取该窝哺乳期死淘数与该窝活仔数（{@code weaning.farrow_id} 关联），只统计已断奶的窝。
      *
      * <p>分子取 {@code lactation_death_count}（断奶登记时填的本窝哺乳期死淘数，D-0065），不取
@@ -895,29 +895,74 @@ public interface AggregateQueryMapper {
                                               @Param("to") java.time.LocalDate to);
 
     /**
-     * 区间内断奶窝数（PSY 不再用，产房/窝均口径核对用）。
-     */
-    @Select("SELECT COUNT(*) FROM t_farm_pig_weaning "
-        + " WHERE tenant_id = #{tenantId} AND del_flag = '0' "
-        + "   AND weaning_date >= #{from} AND weaning_date < #{to}")
-    int countWeaningLitterInRange(@Param("tenantId") String tenantId,
-                                  @Param("from") java.time.LocalDate from,
-                                  @Param("to") java.time.LocalDate to);
-
-    /**
-     * 区间内 Σ日期末生产母猪头数（= 母猪头日，PSY / NPD 年化的分母）。
-     * 与 {@link #sumIndicatorRange} 的 sumEndProductionSow 同源，此处按任意区间单独取，
-     * 便于 PSY 用「断奶可信窗口」而非整年。
+     * PSY 分子分母一次取回（D-0086：口径=甲方 2026-09-16 / 收口=Kevin 2026-09-17）：Σ日妊娠母猪头数（妊娠头日）/ Σ日期末生产母猪头数
+     * （母猪头日），外加该区间实际有几行日表、第一行是哪天（供年表落 psy_stat_from / psy_stat_days 自证口径）。
      *
-     * @return {sowDays, dayRows}
+     * <p>分子取 {@code pregnant_sow_count} 而不是 {@code farrow_gestation_days}：甲方 2026-09-16 澄清
+     * 「妊娠天数是算法2 当天有多少头怀着」。后者在母猪分娩当天把她整个孕期一次性计入，区间短时
+     * 会把区间开始之前攒的天数也整包算进来，与只统计区间内天数的分母对不齐；前者逐日计数，没有这个错配。</p>
+     *
+     * <p>两项都来自同一批日表行，区间天然一致 —— PSY 是「妊娠占母猪时间的份额」，分子分母锚不同区间
+     * 这个份额就没有意义。</p>
+     *
+     * @return {pregDays, sowDays, dayRows, firstDay}
      */
-    @Select("SELECT COALESCE(SUM(end_production_sow_count),0) AS sowDays, COUNT(*) AS dayRows "
+    @Select("SELECT COALESCE(SUM(pregnant_sow_count),0)        AS pregDays, "
+        + "         COALESCE(SUM(end_production_sow_count),0)  AS sowDays, "
+        + "         COUNT(*)                                   AS dayRows, "
+        + "         MIN(stat_date)                             AS firstDay "
         + "   FROM t_farm_indicator_record "
         + "  WHERE tenant_id = #{tenantId} AND del_flag = '0' "
         + "    AND stat_date >= #{from} AND stat_date < #{to}")
     Map<String, Object> selectSowDaysInRange(@Param("tenantId") String tenantId,
                                              @Param("from") java.time.LocalDate from,
                                              @Param("to") java.time.LocalDate to);
+
+    /**
+     * 当日分娩母猪妊娠天数之和（row227）= Σ（分娩日 − 该窝关联配种记录的配种日）。
+     *
+     * <p><b>按母猪去重</b>：同一头母猪当日只取一个值。与同一行的
+     * {@code farrow_sow_count = COUNT(DISTINCT pig_id)} 对齐，重复录入 / 改单留下的多行不会把分子翻倍。</p>
+     *
+     * <p><b>取 MAX 而不是 MIN —— 两害取其轻，不是严格更优</b>：{@link #COHORT_FROM} 那里取 MIN 是为了拿
+     * 「该批次的首次分娩」判是否按期，用途不同，别照抄。这里同猪同日多行意味着重复或挂错，而挂错两个方向都有：
+     * 母猪当天先录新一轮配种、再补录当天分娩 → dd 偏<b>小</b>（实测能到 0）；本轮配种没录进系统 →
+     * {@code resolveBreedingId} 按 {@code breeding_date DESC} 回落到上一轮 → dd 偏<b>大</b>。
+     * 两种失效下：MIN 会被 dd=0 把真实那一窝<b>整条抹成 0</b>；MAX 会被一条 in-range 的偏大脏行<b>盖住真值</b>
+     * （实测候选 {@code {114, 118}} 落 118，偏 3.5%）。选 MAX 是因为「偏一点」比「归零」轻，
+     * 不是因为它没有失效面。</p>
+     *
+     * <p>⚠️ 「本列 ÷ 分娩头数 ≈ 妊娠期」只是<b>粗校验</b>，不是恒等式：{@code farrow_sow_count} 是裸
+     * {@code COUNT(DISTINCT pig_id)} 不关联配种，本列则要 JOIN 且会丢行 —— 配种记录为空 / 被软删 /
+     * 当日全是负妊娠天数的母猪，会进分娩头数而不进本列。staging 实测 0 例，但别把这条当断言用。</p>
+     *
+     * <p><b>负妊娠天数整行剔除（不是夹 0）</b>：分娩登记不校验分娩日与配种日的先后
+     * （{@code FarrowServiceImpl#validate}），且配种回落取该母猪最近一条记录 —— 补录一条早于配种日的
+     * 分娩就会算出负数，直接求和会**从合计里扣掉**别的窝。
+     *
+     * <p>负值放 WHERE 剔行、不套 {@code GREATEST(...,0)}：夹 0 会把脏行变成一个 0 值候选留在组里
+     * （在取 MIN 的实现下它还会直接赢，把真实那一窝抹成 0）。滤掉才是「这行算不出妊娠天数」的正确表达。</p>
+     *
+     * <p>配种记录被软删或查不到的分娩行跳过（JOIN 天然排除）—— 算不出妊娠天数的窝不进分子。
+     * 日期只取日期部分，避免两条记录的时分秒差被算成半天。</p>
+     *
+     * <p><b>上界 = judgeDays（119）</b>：祝碧 2026-09-16 的财务规则「超过 119 天还不分娩就不能录分娩了，
+     * 这个配种的猪必须要有一个结果」。超出的必然是挂错了配种 —— 本轮分娩没录进系统时，
+     * {@code FarrowServiceImpl#resolveBreedingId} 会回落挂到该母猪上一轮配种上，本地造数能算出几百天
+     * （staging 现有 12 条分娩妊娠天数全是 114，尚无越界样本）。与判定节点同一个值，不另造阈值。</p>
+     */
+    @Select("SELECT COALESCE(SUM(g.dd),0) FROM ( "
+        + "        SELECT MAX(DATEDIFF(DATE(f.farrow_date), DATE(b.breeding_date))) AS dd "
+        + "          FROM t_farm_pig_farrow f "
+        + "          JOIN t_farm_pig_breeding b ON b.id = f.breeding_id AND b.del_flag = '0' "
+        + "         WHERE f.tenant_id = #{tenantId} AND f.del_flag = '0' "
+        + "           AND f.farrow_date >= #{from} AND f.farrow_date < #{to} "
+        + "           AND DATEDIFF(DATE(f.farrow_date), DATE(b.breeding_date)) BETWEEN 0 AND #{judgeDays} "
+        + "         GROUP BY f.pig_id) g")
+    int sumFarrowGestationDaysForDay(@Param("tenantId") String tenantId,
+                                     @Param("from") java.time.LocalDate from,
+                                     @Param("to") java.time.LocalDate to,
+                                     @Param("judgeDays") int judgeDays);
 
     // ============================================================
     //  日表回读聚合 → 月/年（BRD-STAT-001）
@@ -970,10 +1015,13 @@ public interface AggregateQueryMapper {
      * 年表按「已有单月统计的月直接取月表汇总」而非重扫业务表——月表各行本身已按日表 Σ
      * 落盘（当月行为 T-1 口径），Σ 月即得 T-1 年度总量，与月表逐行一致。
      * stat_month 闭区间 [fromMonth, toMonth]（'yyyy-MM' 字符串按字典序，等价月份序）。
-     * 缺数据补 0；返回 rowCnt=有效月行数（0 → service 回落业务表兜底）。
+     * 缺数据补 0；rowCnt = 有效月行数。
+     *
+     * <p>⚠️ 没有「回落业务表」的兜底分支：月表整段缺行时各列 Σ 就是 0，年分娩率随之为 0。
+     * 这是有意的 —— 分子分母同取月表才能保证分子 ⊆ 分母；缺行由 upsertAnnualIndicator 的覆盖面告警提示补跑。</p>
      *
      * @return introduceCount / introduceBoarCount / bornCount / weanedCount / deathCount / cullingCount /
-     *         marketingCount / marketingWeight / rowCnt
+     *         marketingCount / marketingWeight / mateLitterCount / cohortFarrowCount / rowCnt
      */
     @Select("SELECT "
         + "  COALESCE(SUM(introduce_count),0)       AS introduceCount, "
@@ -984,6 +1032,8 @@ public interface AggregateQueryMapper {
         + "  COALESCE(SUM(culling_count),0)    AS cullingCount, "
         + "  COALESCE(SUM(marketing_count),0)  AS marketingCount, "
         + "  COALESCE(SUM(marketing_weight),0) AS marketingWeight, "
+        + "  COALESCE(SUM(mate_litter_count),0)   AS mateLitterCount, "
+        + "  COALESCE(SUM(cohort_farrow_count),0) AS cohortFarrowCount, "
         + "  COUNT(*)                          AS rowCnt "
         + " FROM t_farm_monthly_production "
         + " WHERE tenant_id = #{tenantId} "

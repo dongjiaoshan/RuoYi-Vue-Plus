@@ -121,13 +121,40 @@ public class FarmIndicatorRecord extends TenantEntity {
     private Integer endNonprodSowCount;
 
     // ---- 配种批次回溯 ----
-    /** 当年配种批次分娩头数（分娩日−114 天落当年则累加）。 */
+    /**
+     * 当年配种批次分娩头数（分娩日 − sow_breed_to_farrow_days 落当年则累加；该配置缺省 114）。
+     *
+     * <p>⚠️ 与年表 {@code year_batch_farrow_count} <b>同名不同义</b>：年表那列现在是 Σ月表
+     * cohort_farrow_count（D-0087），不是本列的 Σ。两者别按名字互推。</p>
+     */
     private Integer yearBatchFarrowCount;
 
     // ---- NPD（row112） ----
     /** 日NPD天数（当日非生产状态母猪头数 = endNonprodSowCount 同值）。 */
     @TableField(updateStrategy = FieldStrategy.ALWAYS)
     private Integer npdDays;
+
+    // ---- 妊娠相关（row227 / row228） ----
+    /**
+     * 日分娩猪只妊娠天数（Σ当日分娩母猪 分娩日−配种日）—— 甲方 row227 单独要的统计列。定时重算，ALWAYS 覆盖旧值。
+     *
+     * <p>⚠️ <b>不是</b> PSY 的分子。甲方 2026-09-16 澄清 PSY 式里的「日妊娠天数」指的是
+     * {@link #pregnantSowCount}（当天有多少头怀着），与本列是两个量：本列在母猪分娩那天把她整个孕期
+     * 一次性计入，{@code pregnantSowCount} 是她怀孕期间每天计一天。</p>
+     */
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
+    private Integer farrowGestationDays;
+
+    /**
+     * 当日在怀母猪头数（快照 current_status='PZ' 的种母猪，不按判定节点截断）；年表 PSY 分子按本列 Σ 回读。
+     * 定时重算，ALWAYS 覆盖旧值。
+     *
+     * <p>PZ = 配种后未分娩那一段（状态机 BREED → PZ、FARROW: PZ → FM），正是「当天怀着」；
+     * FM（哺乳）已分娩不计。Σ日本列 = 妊娠头日。配种已超判定节点仍挂 PZ 的照常计入（D-0082），
+     * 结论滞后属数据完整度问题，由聚合告警提示补录、不在本列纠偏。</p>
+     */
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
+    private Integer pregnantSowCount;
 
     /** 软删标志（业务表必含）。 */
     @TableLogic

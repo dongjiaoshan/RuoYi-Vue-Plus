@@ -114,6 +114,24 @@ public class DashboardServiceImpl implements IDashboardService {
     private static final int DEFAULT_FARROW_JUDGE_DEADLINE_DAYS = 119;
     /** 年化乘数分子（PSY / 平均非生产天数按「头/母猪·年」「天/年」口径展示）。 */
     private static final BigDecimal DAYS_PER_YEAR = new BigDecimal("365");
+    /** 百分比上界，用于「率 >100% 必是脏数据」的自检告警。 */
+    private static final BigDecimal ONE_HUNDRED = new BigDecimal("100");
+
+    /**
+     * PSY 式里的标准妊娠期 115（甲方 2026-09-16：需求单上写的是 114，祝碧「猪都是 115 天分娩」、
+     * 王尉「我们自己都用的 115 天」，邓博拍板「那就用 115」）：365/115 = 一头母猪若全程都在妊娠
+     * 能产的胎次上限，用来把「妊娠占母猪时间的份额」换算成年产胎次。
+     *
+     * <p>与 {@link #farrowJudgeDeadlineDays()} 的 119 是两回事：115 是正常妊娠期，
+     * 119 是财务判定节点（配种满 119 天必须有结论、超过不能录分娩）。</p>
+     *
+     * <p>刻意<b>不读配置</b>（D-0085 Kevin 2026-09-16 拍板）。库里确有语义对口的 {@code gestation_days}
+     * （default 114 / custom 未设），但 114 在这里是甲方公式里的字面常量、也是个生物学常数，
+     * 不是农场日常可调的参数；跟着「母猪生产配置」表单走的代价是有人误填就让一个对外指标静默翻倍
+     * （实测 custom 改 57 → PSY 7.85 跳到 15.69，无任何提示）。农场真要改妊娠期口径，走口径变更、
+     * 改这里，比让它随表单漂移安全。</p>
+     */
+    private static final BigDecimal STANDARD_GESTATION_DAYS = new BigDecimal("115");
 
     /** 取配种→分娩天数：读 {@code sow_breed_to_farrow_days}，缺则回退 114。 */
     private int breedToFarrowDays() {
@@ -973,8 +991,11 @@ public class DashboardServiceImpl implements IDashboardService {
     /**
      * 年化：把「统计区间内的量」折成「每年」。{@code statDays} 非正时原样返回（不放大噪声）。
      *
-     * <p>PSY 定义是「每头母猪每年提供的断奶仔猪数」、平均非生产天数是「天/年」，
-     * 而区间内算出来的是「每 statDays 天」的值，挂「年度」标题展示必须乘 365/statDays。</p>
+     * <p>平均非生产天数的口径是「天/年」，而区间内算出来的是「每 statDays 天」的值，
+     * 挂「年度」标题展示必须乘 365/statDays。</p>
+     *
+     * <p>⚠️ PSY <b>不走这里</b>：它的式子自带年化（×365/妊娠天数），再乘一次就是双重年化。
+     * 本方法当前唯一调用点是 {@code avgNpdDays}。</p>
      */
     private static BigDecimal annualize(BigDecimal perWindowValue, int statDays) {
         if (perWindowValue == null || perWindowValue.signum() == 0 || statDays <= 0) {
@@ -1265,6 +1286,10 @@ public class DashboardServiceImpl implements IDashboardService {
         // 邓博 row114/115 分子改「纯非生产母猪头数」，去掉 230 后备；月/年从本列 Σ 回读。
         r.setNpdDays(zeroIfNull(r.getEndNonprodSowCount()));
 
+        // ---- 日分娩猪只妊娠天数（row227）= Σ当日分娩母猪（分娩日−配种日）——
+        //      甲方 row227 单独要的统计列，**不是** PSY 分子（PSY 走 pregnant_sow_count，见 upsertAnnualIndicator） ----
+        r.setFarrowGestationDays(aggregateQueryMapper.sumFarrowGestationDaysForDay(tenantId, dayFrom, dayTo, farrowJudgeDeadlineDays()));
+
         // ---- 当年配种批次分娩头数 ----
         // 配种→分娩天数读 sow_breed_to_farrow_days，缺省 114
         r.setYearBatchFarrowCount(aggregateQueryMapper.sumYearBatchFarrowForDay(tenantId, dayFrom, dayTo, batchYear, breedToFarrowDays()));
@@ -1293,7 +1318,7 @@ public class DashboardServiceImpl implements IDashboardService {
      * </ul>
      */
     private void fillEndStock(FarmIndicatorRecord r, String tenantId, LocalDate asOf) {
-        int prodSow = 0, reserveSow = 0, nonprodSow = 0, boar = 0, fattening = 0, piglet = 0;
+        int prodSow = 0, reserveSow = 0, nonprodSow = 0, pregnantSow = 0, boar = 0, fattening = 0, piglet = 0;
         // BRD-STAT-003：期末存栏只认当日快照，而快照是 upsertFarmIndicator 之前刚按业务时间重放出来的。
         // 这里**不再回落实时主表** —— 回落会把「今天的猪群」写进历史行，滚动重算时直接污染历史
         // （旧实现的 bug：任何没有快照的历史日期一重算，期末存栏就变成当天的值）。
@@ -1311,6 +1336,12 @@ public class DashboardServiceImpl implements IDashboardService {
                         prodSow += cnt;
                         if ("KH".equals(cs) || "FQ".equals(cs) || "LC".equals(cs) || "DN".equals(cs)) {
                             nonprodSow += cnt;
+                        } else if ("PZ".equals(cs)) {
+                            // 在怀 = 配种态：状态机 BREED → PZ、FARROW: PZ → FM，PZ 正是「配了还没分娩」那一段，
+                            // FM（哺乳）已分娩不计。PSY 分子按本项累加（D-0084 甲方「算法2 当天有多少头怀着」）。
+                            // 不按判定节点截断：配种超期仍挂 PZ 的照常算在怀（D-0082 Kevin 2026-09-17 拍板）——
+                            // 这一列如实反映系统里记着的状态，结论没录进来属数据完整度问题，另由告警提示、不靠指标纠偏。
+                            pregnantSow += cnt;
                         }
                     }
                 }
@@ -1325,6 +1356,7 @@ public class DashboardServiceImpl implements IDashboardService {
         r.setEndProductionSowCount(prodSow);
         r.setEndReserveCount(reserveSow);
         r.setEndNonprodSowCount(nonprodSow);
+        r.setPregnantSowCount(pregnantSow);
         r.setEndBoarCount(boar);
         r.setEndFatteningCount(fattening);
         r.setEndPigletCount(piglet);
@@ -1606,9 +1638,10 @@ public class DashboardServiceImpl implements IDashboardService {
         BigDecimal avgBornPerLitter = scale3(divide(new BigDecimal(sumTotalBorn), sumFarrowSow));
         BigDecimal avgLiveBornPerLitter = scale3(divide(new BigDecimal(sumLiveBorn), sumFarrowSow));
         BigDecimal avgWeanedPerLitter = scale3(divide(new BigDecimal(sumWeanedPiglet), sumWeaningSow));
-        // 分娩舍损失率% = 按窝配对（该窝活仔 − 该窝断奶）/ 该窝活仔，只统计当月已断奶的窝。
-        //   旧口径分子取 pig_type='piglet' 的 DIE 事件，要求仔猪有个体档案；哺乳仔猪多数还没打耳标，
-        //   分子恒 0。窝级配对后分子分母同属一批窝，也不会把「已分娩未到断奶期」的窝误算成损失。
+        // 产房损失率% = Σ本窝哺乳期死淘数 / Σ本窝活仔数，只统计当月已断奶的窝（D-0065）。
+        //   分子取断奶登记填的 lactation_death_count，不用「活仔 − 断奶数」倒算：贴标率不足时断奶清单
+        //   铺行数 < 活仔数，差值会把「没贴标所以没进清单」的头误判成死亡。
+        //   分母只算已断奶的窝，不会把「已分娩未到断奶期」的窝误算成损失。
         Map<String, Object> loss = aggregateQueryMapper.selectFarrowHouseLoss(tenantId, from, to);
         BigDecimal farrowLossRate = farrowHouseLossRate(loss);
 
@@ -1716,26 +1749,28 @@ public class DashboardServiceImpl implements IDashboardService {
         int wbCnt = mapInt(wbYear, "totalCount");
         BigDecimal weanBreedInterval = wbCnt > 0 ? scale3(divide(new BigDecimal(wbDays), wbCnt)) : BigDecimal.ZERO;
 
-        // ---- PSY / 平均非生产天数：统计区间 + 年化（BRD-STAT-COHORT-001） ----
-        // 区间起点 = 年初与「断奶记录最早业务日」的较晚者。断奶登记 2026-08 才启用，
-        //   分子（断奶仔猪数）只有两个月而分母（母猪头日）取全年的话，年化会把这个残缺比值再放大
-        //   365/N 倍。分子分母锚同一区间，年化才有意义。
-        LocalDate minWeaning = aggregateQueryMapper.selectMinWeaningDate(tenantId, from, to);
-        LocalDate psyFrom = minWeaning != null && minWeaning.isAfter(from) ? minWeaning : from;
-        Map<String, Object> psyBase = aggregateQueryMapper.selectSowDaysInRange(tenantId, psyFrom, to);
-        // 母猪头日 = Σ日期末生产母猪头数；psyStatDays = 该区间已落盘日表行数（年化乘数的分母）
+        // ---- PSY（D-0086：口径=甲方 2026-09-16 / 收口=Kevin 2026-09-17） ----
+        //   PSY =（当年日妊娠天数之和 ÷ 母猪头日）×（365 ÷ 115）× 窝均断奶数
+        // 读法：前一项是「妊娠占母猪时间的份额」，×365/115 把它换算成「每头母猪年产胎次」，
+        //   再乘窝均断奶数得每头母猪年断奶仔猪数。式子自带年化，不再叠加 365/区间天数。
+        // 「日妊娠天数」= 当天有多少头母猪怀着（pregnant_sow_count），甲方 2026-09-16 明确为「算法2」；
+        //   不是 row227 那个 farrow_gestation_days（那列在分娩当天把整个孕期一次性计入，是另一个量）。
+        // 分子分母同取一批日表行（selectSowDaysInRange 一次查回），区间 = 当年日表实际覆盖段：
+        //   日表 2026-07-17 才起，拿全年当分母而分子只有覆盖段的话，份额会被稀释。
+        //   起始日与天数落 psy_stat_from / psy_stat_days，mp 卡片据此标注区间。
+        Map<String, Object> psyBase = aggregateQueryMapper.selectSowDaysInRange(tenantId, from, to);
+        int psyPregDays = mapInt(psyBase, "pregDays");
         int psySowDays = mapInt(psyBase, "sowDays");
         int psyStatDays = mapInt(psyBase, "dayRows");
-        // PSY = 区间断奶仔猪总数 × 365 / 母猪头日。
-        //   甲方给的两种算法（「现算法年化」与「按头天数算」）展开后是同一个式子，此处用后者的写法。
-        //   分子直扫底表 t_farm_pig_weaning，不走日表 Σ（日表断奶头数实测漏 24%）。
-        //   旧式 (年分娩窝数 / 年均存栏) × 窝均断奶 还有个跨 cohort 混用：分娩窝与断奶窝差一个哺乳期，
-        //   拿 A 批的窝数乘 B 批的窝均，此处一并消掉。
-        int psyWeanedPiglet = aggregateQueryMapper.sumWeanedInRange(tenantId, psyFrom, to);
+        LocalDate psyFirstDay = mapDate(psyBase, "firstDay");
+        LocalDate psyFrom = psyFirstDay != null ? psyFirstDay : from;
         BigDecimal psy = psySowDays <= 0
             ? BigDecimal.ZERO
-            : scale3(new BigDecimal(psyWeanedPiglet).multiply(DAYS_PER_YEAR)
-                .divide(new BigDecimal(psySowDays), 6, RoundingMode.HALF_UP));
+            : scale3(new BigDecimal(psyPregDays)
+                .divide(new BigDecimal(psySowDays), 6, RoundingMode.HALF_UP)
+                .multiply(DAYS_PER_YEAR)
+                .divide(STANDARD_GESTATION_DAYS, 6, RoundingMode.HALF_UP)
+                .multiply(avgWeanedPerLitter));
 
         // 全年总NPD天数 = Σ日非生产母猪（去掉 230 后备）；年均NPD = 总NPD / 年均生产母猪存栏，再年化成「天/年」。
         // ⚠️ 年化只修量纲。该值当前仍显著低于行业区间，根因是断奶/配种事件录入不全 —— 母猪长期卡在
@@ -1746,17 +1781,55 @@ public class DashboardServiceImpl implements IDashboardService {
             : annualize(scale3(new BigDecimal(totalNpdDays)
                 .divide(avgProdSowStock, 6, RoundingMode.HALF_UP)), daysElapsed);
 
-        // 年分娩率（配种批次口径）：判定日落在本年且已到期的批次为分母，其中按期分娩的为分子。
-        //   旧口径分子走日表 Σ 且带 YEAR(分娩日−N)=当年 过滤（把 1-4 月分娩整段排除、配种却照算分母），
-        //   分母直取全年配种次数 —— 分子分母既不同批也不同窗口。
+        // 年分娩率（D-0087：口径=甲方 2026-09-16 / 收口=Kevin 2026-09-17）= 年分娩头数 ÷ Σ月表 mate_litter_count × 100。
+        //   **分子分母必须同取月表这一批行**：月表里 mate_litter_count 与 cohort_farrow_count 由
+        //   upsertMonthlyProduction 的同一次 selectCohortOutcome 一并写入（判定日落在该月的批次数 /
+        //   其中按期分娩的头数），所以每一行都满足分子 ⊆ 分母；年 = Σ月，甲方要的逐层对账才真的成立。
+        //   ⚠️ 分子若改回 live 扫全年（selectCohortOutcome(from,to)）就会出事：它覆盖全年，而分母只覆盖
+        //   「已落盘的月」—— 滚动窗只重算最近两三个月，1-6 月长期没有月行，分子照算分母不算，
+        //   实测可以飙到 113%。两个来源覆盖面不等，不是加个上限能糊过去的。
+        //   ⚠️ 但「≤100%」只在写入那一刻逐行成立，**不是代码强制的不变量**：某个月行若被手工订正、
+        //   或停留在旧口径上（该月已滑出重算窗就不会被刷新），Σ 之后照样能 >100%。真出现 >100%
+        //   不要夹逼，那是月表有脏行的信号，去查是哪个月。
+        int mateLitterCount = mapInt(mSum, "mateLitterCount");
+        int cohortFarrow = mapInt(mSum, "cohortFarrowCount");
+        BigDecimal yearFarrowRate = pct(ratio(cohortFarrow, mateLitterCount));
+        // cohort_matured_count 另取 live 全年值，只作对账参考（跟 Σ月 mate_litter_count 一比即可看出
+        // 月表是不是陈旧/缺行），不参与分娩率。
         Map<String, Object> yearCohort = aggregateQueryMapper.selectCohortOutcome(
             tenantId, from, to, farrowJudgeDeadlineDays());
         int cohortMatured = mapInt(yearCohort, "bred");
-        int cohortFarrow = mapInt(yearCohort, "farrow");
-        BigDecimal yearFarrowRate = pct(ratio(cohortFarrow, cohortMatured));
+        // 超期仍挂「已配种」的母猪按 D-0082 照常计入 PSY 分子 —— 但它们是「结论没录进来」，
+        // 不补录的话 PSY 会持续虚高（staging 实测 83 头在怀里 29 头超期、分子虚高 12% 且逐日增长）。
+        // 指标不纠偏，改由这条告警提示该去补录，别让它无声无息地推高一个对外指标。
+        int overduePz = aggregateQueryMapper.countOverduePregnantSows(tenantId, farrowJudgeDeadlineDays());
+        if (overduePz > 0) {
+            log.warn("[DashboardAggregate] ⚠️ tenant={} 有 {} 头母猪配种已超 {} 天仍挂「已配种」——"
+                    + "按口径它们照常计入 PSY 分子（psy={}），但结论没录进系统，不补录 PSY 会持续虚高。"
+                    + "请在分娩/返情/流产登记里给这些猪补一个结果。",
+                tenantId, overduePz, farrowJudgeDeadlineDays(), psy);
+        }
+
+        // 月表缺行 / 陈旧时年分娩率会静默少报（分母少算了没落盘的那些月），页面上看不出来 ——
+        // live 全年到期批次数与 Σ月表一比就露馅，差了就告警，别让这个数悄悄错着。
+        if (cohortMatured != mateLitterCount) {
+            // 缺月会同时掉分子和分母，偏高偏低都可能，别在文案里断言方向。
+            log.warn("[DashboardAggregate] ⚠️ 年分娩率覆盖面存疑 tenant={} year={}：Σ月表 mate_litter_count={}"
+                    + " 与 live 全年到期批次数={} 不一致，差 {} —— 多半是月表缺行或停在旧口径（滚动窗只刷最近几个月）。"
+                    + "缺的月份分子分母一起掉，年分娩率={}% 偏高偏低都可能，补跑 trigger-aggregate 覆盖缺失月份后再看。",
+                tenantId, year, mateLitterCount, cohortMatured, cohortMatured - mateLitterCount, yearFarrowRate);
+        }
+        // 分子分母同取月表、逐行满足分子 ⊆ 分母，所以 >100% 只可能来自某个月行本身是脏的
+        // （手工订正过，或停在旧口径没被滚动窗刷到）。光在注释里说「这是信号」不够 —— 得真把信号送出去。
+        if (yearFarrowRate.compareTo(ONE_HUNDRED) > 0) {
+            log.warn("[DashboardAggregate] 🔴 年分娩率 {}% 超过 100%（tenant={} year={}）：分子 {} > 分母 {}。"
+                    + "分子分母同取月表、逐行分子⊆分母，超 100% 必定是某个月行脏了 —— "
+                    + "逐月比 cohort_farrow_count 与 mate_litter_count 找出是哪个月，补跑该月。",
+                yearFarrowRate, tenantId, year, cohortFarrow, mateLitterCount);
+        }
         // 平均出栏重 = Σ日出栏总重 / Σ日出栏头数
         BigDecimal avgMarketingWeight = scale3(divide(sumMarketingWeight, sumMarketingCount));
-        // 分娩舍损失率% = 按窝配对（该窝活仔 − 该窝断奶）/ 该窝活仔，只统计已断奶的窝
+        // 产房损失率% = Σ本窝哺乳期死淘数 / Σ本窝活仔数，只统计已断奶的窝（D-0065，同月表口径）
         BigDecimal farrowLossRate = farrowHouseLossRate(
             aggregateQueryMapper.selectFarrowHouseLoss(tenantId, from, to));
 

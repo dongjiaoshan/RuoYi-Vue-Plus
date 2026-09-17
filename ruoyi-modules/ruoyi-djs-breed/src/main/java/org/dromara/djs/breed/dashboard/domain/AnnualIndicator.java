@@ -50,7 +50,7 @@ public class AnnualIndicator extends TenantEntity {
     private Integer marketingCount;
     private BigDecimal marketingWeight;
 
-    /** PSY = 年度断奶头数 / 当年平均母猪存栏（4 位小数，前端 % 显示）。 */
+    /** PSY =（Σ日妊娠天数 / 母猪头日）×（365/115）× 窝均断奶数，单位 头/母猪·年（列 decimal(8,2)，不是百分比）。 */
     private BigDecimal psy;
     /** 死亡率（DEATH / (DEATH + ALIVE_END_OF_YEAR)，4 位小数）。 */
     private BigDecimal mortalityRate;
@@ -87,22 +87,42 @@ public class AnnualIndicator extends TenantEntity {
     /** 年均NPD天数（总NPD/年均生产母猪存栏）。定时重算，ALWAYS 覆盖旧值。 */
     @TableField(updateStrategy = FieldStrategy.ALWAYS)
     private BigDecimal avgNpdDays;
-    /** 年分娩头数（到期批次中在判定节点内分娩的头数 = 年分娩率分子）。 */
+    /** 年分娩头数 = Σ月表 cohort_farrow_count（判定节点内分娩的头数），也是年分娩率分子。定时重算，ALWAYS 覆盖旧值。 */
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
     private Integer yearBatchFarrowCount;
-    /** 年分娩率%（年分娩头数/到期批次数×100，配种批次口径）。 */
+    /**
+     * 年分娩率% = 年分娩头数 ÷ Σ月表 mate_litter_count × 100。
+     *
+     * <p>分子分母同取月表那一批行：两列出自同一次 cohort 归集（判定日落在该月的批次数 / 其中按期分娩的头数），
+     * 每一行写入时都满足分子 ⊆ 分母，且年 = Σ月可逐层对账。</p>
+     *
+     * <p>⚠️ 「≤100%」<b>不是</b>代码强制的不变量：某个月行被手工订正、或停在旧口径没被滚动窗刷到，
+     * Σ 之后照样能超 100%（实测可到 128%）。真超了不要夹逼，那是月表有脏行的信号，
+     * upsertAnnualIndicator 会打一条 🔴 告警指出分子分母，去查是哪个月。</p>
+     */
     private BigDecimal yearFarrowRate;
-    /** 年分娩率分母：判定节点落在本年且已到期的配种批次数。定时重算，ALWAYS 覆盖旧值。 */
+    /**
+     * 判定节点落在本年且已到期的配种批次数（live 全年扫底表）。
+     *
+     * <p>仅作对账参考，<b>不是</b>分娩率分母 —— 拿它与 Σ月表 mate_litter_count 一比，就能看出月表是否缺行/陈旧。
+     * 定时重算，ALWAYS 覆盖旧值。</p>
+     */
     @TableField(updateStrategy = FieldStrategy.ALWAYS)
     private Integer cohortMaturedCount;
-    /** PSY/非生产天数年化的统计区间起始日。定时重算，ALWAYS 覆盖旧值。 */
+    /** 统计区间起始日 = 当年日表实际覆盖的第一天（日表没铺满全年时，PSY/非生产天数只能按覆盖段算）。定时重算，ALWAYS 覆盖旧值。 */
     @TableField(updateStrategy = FieldStrategy.ALWAYS)
     private LocalDate psyStatFrom;
-    /** PSY/非生产天数年化的统计区间天数（年化乘数 365/该值）。定时重算，ALWAYS 覆盖旧值。 */
+    /**
+     * 统计区间天数 = 该区间已落盘日表行数。定时重算，ALWAYS 覆盖旧值。
+     *
+     * <p>{@link #avgNpdDays} 的年化乘数是 365/该值；{@link #psy} 不用它 —— PSY 式里的 365/115
+     * 自带年化，区间长短只影响分子分母的采样量，不进乘数。两格共用本字段作「数据取自哪一段」的说明。</p>
+     */
     @TableField(updateStrategy = FieldStrategy.ALWAYS)
     private Integer psyStatDays;
     /** 平均出栏重（Σ日出栏总重/Σ日出栏头数）。 */
     private BigDecimal avgMarketingWeight;
-    /** 分娩舍损失率（当年死亡仔猪数/总活仔数）。 */
+    /** 产房损失率%（Σ本窝哺乳期死淘数 / Σ本窝活仔数 × 100，只统计已断奶的窝）。 */
     private BigDecimal farrowLossRate;
     /** 肥猪死亡数（当年 Σ日 death_fattening_count）。 */
     private Integer totalFatteningDeath;

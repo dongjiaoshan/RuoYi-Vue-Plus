@@ -61,7 +61,11 @@ public class MonthlyProduction extends TenantEntity {
     private BigDecimal marketingWeight;
 
     // ---- row13 高级指标（BRD-STAT-001 扩列） ----
-    /** 当月累计匹配配种窝数（每日 当天−114 配种母猪数累加）。 */
+    /**
+     * 当月累计匹配配种窝数 = 判定节点（配种日 + judgeDays）落在本月的配种批次数，也是分娩率分母。
+     *
+     * <p>与 {@link #cohortFarrowCount} 出自同一次 cohort 归集，故分子 ⊆ 分母；年表的年分娩率直接 Σ 这两列。</p>
+     */
     private Integer mateLitterCount;
     /** 分娩率%（本月到期批次的按期分娩头数/到期批次数×100，配种批次口径）。 */
     private BigDecimal farrowRate;

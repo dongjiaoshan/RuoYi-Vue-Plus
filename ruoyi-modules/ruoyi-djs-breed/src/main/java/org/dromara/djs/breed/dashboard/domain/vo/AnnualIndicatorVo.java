@@ -9,7 +9,8 @@ import java.math.BigDecimal;
 /**
  * 年度指标 VO（BRD-DASH-001）。
  *
- * <p>admin dashboard 顶部"年度指标"区域。psy / mortalityRate 字段 4 位小数；fe 按 % 显示 2 位。</p>
+ * <p>admin dashboard 顶部"年度指标"区域。psy 落库 decimal(8,2)（头/母猪·年，不是百分比）；
+ * mortalityRate 4 位小数、fe 按 % 显示 2 位。</p>
  *
  * @author djs
  * @since BRD-DASH-001
@@ -32,7 +33,7 @@ public class AnnualIndicatorVo implements Serializable {
     private Integer marketingCount;
     private BigDecimal marketingWeight;
 
-    /** PSY 每头母猪年产断奶仔数（4 位小数）。 */
+    /** PSY 每头母猪年产断奶仔数 =（Σ日妊娠天数/母猪头日）×（365/115）× 窝均断奶数，列 decimal(8,2)。 */
     private BigDecimal psy;
     /** 死亡率（DEATH / (DEATH + ALIVE)，4 位小数）。 */
     private BigDecimal mortalityRate;

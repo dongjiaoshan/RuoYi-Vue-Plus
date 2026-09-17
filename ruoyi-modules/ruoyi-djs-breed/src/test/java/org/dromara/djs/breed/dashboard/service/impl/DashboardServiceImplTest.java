@@ -57,7 +57,7 @@ import static org.mockito.Mockito.when;
  *   <li>getCurrentInventory：分组 COUNT 5 类 + sow 4 lifecycle</li>
  *   <li>getMonthlyComparison：当月 vs 上月 trend 判定（better/worse/flat）+ deathCount 反向（升=worse）</li>
  *   <li>getActivity7d：近 7 天 list 升序 + 字段映射</li>
- *   <li>getAnnualIndicator：psy + mortalityRate 4 位小数</li>
+ *   <li>getAnnualIndicator：psy（decimal(8,2)，头/母猪·年）+ mortalityRate（4 位小数）</li>
  *   <li>triggerAggregate：UPSERT sow_record + monthly + annual 三表全调用</li>
  *   <li>error path：MonthlyProduction null 时 KpiCompare current=0 prev=0 trend=flat</li>
  * </ul>
@@ -221,7 +221,7 @@ class DashboardServiceImplTest {
     }
 
     @Test
-    @DisplayName("getAnnualIndicator: psy / mortalityRate 4 位小数 + null → 0")
+    @DisplayName("getAnnualIndicator: psy decimal(8,2) / mortalityRate 4 位小数 + null → 0")
     void testGetAnnualIndicator() {
         AnnualIndicator ai = new AnnualIndicator();
         ai.setStatYear((short) 2026);
@@ -447,9 +447,13 @@ class DashboardServiceImplTest {
     @Test
     @DisplayName("upsertFarmIndicator: 期末存栏快照按 pig_type+current_status 正确归类（生产/后备/非生产母猪 + 公/肥/仔）")
     void testUpsertFarmIndicatorEndStock() {
-        // 期末快照：sow PZ=3(生产) / sow HB=2(后备) / sow KH=1(生产且非生产) / boar=4 / fattening=30 / piglet=20
+        // 期末快照：sow PZ=3(在怀) / sow FM=5(哺乳，生产但不在怀) / sow HB=2(后备) / sow KH=1(生产且非生产)
+        //          / boar=4 / fattening=30 / piglet=20
+        // FM 这一行是给 pregnant_sow_count 当对照的：它是「生产母猪」但不是「在怀」，
+        // 少了它，PZ 桶把 FM 漏收进去也不会被任何断言发现。
         when(aggregateQueryMapper.snapshotByTypeStatusOnDate(anyString(), any())).thenReturn(List.of(
             snap("sow", "PZ", 3),
+            snap("sow", "FM", 5),
             snap("sow", "HB", 2),
             snap("sow", "KH", 1),
             snap("boar", "", 4),
@@ -457,6 +461,7 @@ class DashboardServiceImplTest {
             snap("piglet", "", 20)
         ));
         when(aggregateQueryMapper.countReserve230OnSnapshot(anyString(), any())).thenReturn(1);
+
         // 出栏聚合 stub：2 头 / 200kg / 背膘 90mm 共 2 头有背膘
         Map<String, Object> mkt = new LinkedHashMap<>();
         mkt.put("cnt", 2L);
@@ -480,8 +485,8 @@ class DashboardServiceImplTest {
         org.mockito.ArgumentCaptor<FarmIndicatorRecord> cap = org.mockito.ArgumentCaptor.forClass(FarmIndicatorRecord.class);
         verify(farmIndicatorRecordMapper).insert(cap.capture());
         FarmIndicatorRecord r = cap.getValue();
-        // 生产母猪 = 非后备非终止非空 = PZ(3) + KH(1) = 4
-        assertThat(r.getEndProductionSowCount()).isEqualTo(4);
+        // 生产母猪 = 非后备非终止非空 = PZ(3) + FM(5) + KH(1) = 9
+        assertThat(r.getEndProductionSowCount()).isEqualTo(9);
         // 后备 = HB = 2；非生产 = KH = 1
         assertThat(r.getEndReserveCount()).isEqualTo(2);
         assertThat(r.getEndNonprodSowCount()).isEqualTo(1);
@@ -490,6 +495,10 @@ class DashboardServiceImplTest {
         assertThat(r.getEndFatteningCount()).isEqualTo(30);
         assertThat(r.getEndPigletCount()).isEqualTo(20);
         assertThat(r.getEndReserve230Count()).isEqualTo(1);
+        // 在怀母猪 = 快照里 PZ 的头数（3），不按判定节点截断（D-0082）。
+        // 它必须只收 PZ：FM(5) / HB(2) / KH(1) 任何一桶漏进来，这条都会当场红
+        //（三个对照桶的头数各不相同，也各不等于 3，任一泄漏都算得出不同的值）。
+        assertThat(r.getPregnantSowCount()).isEqualTo(3);
         // 出栏聚合：平均出栏重 = 200/2 = 100.000；平均背膘 = 90/2 = 45.000
         assertThat(r.getMarketingPigCount()).isEqualTo(2);
         assertThat(r.getAvgMarketingWeight()).isEqualByComparingTo(new BigDecimal("100.000"));
@@ -699,14 +708,17 @@ class DashboardServiceImplTest {
     }
 
     @Test
-    @DisplayName("年度: 分娩率 = cohort 分子/分母（不再用 年分娩头数/全年配种次数）")
-    void testAnnualFarrowRateUsesCohort() {
+    @DisplayName("年度: 分娩率分子分母同取月表 Σ（V6 row228），live cohort 只落对账列")
+    void testAnnualFarrowRateBothSidesFromMonthly() {
         stubAggregateSkeleton();
-        // 判定日落在本年且已到期的批次 35 头，其中按期分娩 34 头 → 97.14%
+        // 月表 Σ：按期分娩 34 / 匹配配种窝数 40 → 34/40 = 85.00%
+        when(aggregateQueryMapper.sumMonthlyProductionRange(anyString(), anyString(), anyString()))
+            .thenReturn(mapOfAll("mateLitterCount", 40, "cohortFarrowCount", 34, "rowCnt", 9));
+        // live 全年 cohort 覆盖面更大（到期 81、按期分娩 51）—— 只准落 cohort_matured_count，
+        // 一旦被拿去当分子，51/40 = 127.50% 就会漏出来
         when(aggregateQueryMapper.selectCohortOutcome(anyString(), any(), any(), anyInt()))
-            .thenReturn(mapOfAll("bred", 35, "farrow", 34, "farrowLate", 0,
+            .thenReturn(mapOfAll("bred", 81, "farrow", 51, "farrowLate", 0,
                 "returnCount", 0, "emptyCount", 0, "abortCount", 0, "goneCount", 1, "undecided", 0));
-        // 全年配种次数 199：旧口径会拿它当分母算出 17%，新口径不该再用它
         when(aggregateQueryMapper.countBreedingInRange(anyString(), any(), any())).thenReturn(199);
 
         service.triggerAggregate(LocalDate.of(2026, 9, 13));
@@ -714,42 +726,62 @@ class DashboardServiceImplTest {
         ArgumentCaptor<AnnualIndicator> cap = ArgumentCaptor.forClass(AnnualIndicator.class);
         verify(annualIndicatorMapper).insert(cap.capture());
         AnnualIndicator a = cap.getValue();
-        assertThat(a.getCohortMaturedCount()).isEqualTo(35);
+        assertThat(a.getYearFarrowRate()).isEqualByComparingTo("85.00");
         assertThat(a.getYearBatchFarrowCount()).isEqualTo(34);
-        assertThat(a.getYearFarrowRate()).isEqualByComparingTo("97.14");
-        // breeding_count 语义不变，仍是全年配种次数原始计数，只是不再参与分娩率
+        assertThat(a.getCohortMaturedCount()).isEqualTo(81);
         assertThat(a.getBreedingCount()).isEqualTo(199);
     }
 
     @Test
-    @DisplayName("年度: PSY = 区间断奶仔猪 × 365 / 母猪头日，窗口锚断奶记录最早业务日并落盘")
-    void testAnnualPsyAnnualizedOverWeaningWindow() {
+    @DisplayName("年度: 月表整段缺行时分娩率 0 而不是虚高（分子分母同源的副产品）")
+    void testAnnualFarrowRateNoMonthlyRows() {
         stubAggregateSkeleton();
-        when(aggregateQueryMapper.selectMinWeaningDate(anyString(), any(), any()))
-            .thenReturn(LocalDate.of(2026, 8, 8));
-        when(aggregateQueryMapper.selectSowDaysInRange(anyString(), any(), any()))
-            .thenReturn(mapOf("sowDays", 5430, "dayRows", 37));
-        when(aggregateQueryMapper.sumWeanedInRange(anyString(), any(), any())).thenReturn(188);
+        // 一行月表都没有 → 分子分母同时为 0
+        when(aggregateQueryMapper.sumMonthlyProductionRange(anyString(), anyString(), anyString()))
+            .thenReturn(mapOfAll("mateLitterCount", 0, "cohortFarrowCount", 0, "rowCnt", 0));
+        // 但 live cohort 有 51 头按期分娩：分子若走它，51/0 之外还会把旧值留在表里
+        when(aggregateQueryMapper.selectCohortOutcome(anyString(), any(), any(), anyInt()))
+            .thenReturn(mapOfAll("bred", 81, "farrow", 51, "farrowLate", 0,
+                "returnCount", 0, "emptyCount", 0, "abortCount", 0, "goneCount", 0, "undecided", 0));
 
         service.triggerAggregate(LocalDate.of(2026, 9, 13));
 
         ArgumentCaptor<AnnualIndicator> cap = ArgumentCaptor.forClass(AnnualIndicator.class);
         verify(annualIndicatorMapper).insert(cap.capture());
         AnnualIndicator a = cap.getValue();
-        // 188 × 365 / 5430 = 12.637
-        assertThat(a.getPsy()).isEqualByComparingTo("12.637");
+        assertThat(a.getYearFarrowRate()).isEqualByComparingTo("0");
+        assertThat(a.getYearBatchFarrowCount()).isZero();
+        assertThat(a.getCohortMaturedCount()).isEqualTo(81);
+    }
+
+    @Test
+    @DisplayName("年度: PSY =（Σ日妊娠母猪头数/母猪头日）×365/115×窝均断奶数（V6 row228），区间锚日表首行")
+    void testAnnualPsyFromGestationDays() {
+        stubAggregateSkeleton();
+        // 窝均断奶数 = 总断奶仔猪 188 / 总断奶母猪 16 = 11.750
+        when(aggregateQueryMapper.sumIndicatorRange(anyString(), any(), any()))
+            .thenReturn(mapOfAll("sumWeanedPiglet", 188, "sumWeaningSow", 16));
+        when(aggregateQueryMapper.selectSowDaysInRange(anyString(), any(), any()))
+            .thenReturn(mapOfAll("pregDays", 5016, "sowDays", 5430, "dayRows", 37,
+                "firstDay", LocalDate.of(2026, 8, 8)));
+
+        service.triggerAggregate(LocalDate.of(2026, 9, 13));
+
+        ArgumentCaptor<AnnualIndicator> cap = ArgumentCaptor.forClass(AnnualIndicator.class);
+        verify(annualIndicatorMapper).insert(cap.capture());
+        AnnualIndicator a = cap.getValue();
+        // 5016/5430 = 0.923757 → ×365 ÷115 = 2.931924 → ×11.750 = 34.450
+        assertThat(a.getPsy()).isEqualByComparingTo("34.450");
         assertThat(a.getPsyStatFrom()).isEqualTo(LocalDate.of(2026, 8, 8));
         assertThat(a.getPsyStatDays()).isEqualTo(37);
     }
 
     @Test
-    @DisplayName("年度: 无断奶记录时 PSY 窗口回落年初，母猪头日为 0 则 PSY=0 不炸")
+    @DisplayName("年度: 母猪头日为 0 则 PSY=0 不炸，区间起点回落年初")
     void testAnnualPsyZeroWhenNoSowDays() {
         stubAggregateSkeleton();
-        when(aggregateQueryMapper.selectMinWeaningDate(anyString(), any(), any())).thenReturn(null);
         when(aggregateQueryMapper.selectSowDaysInRange(anyString(), any(), any()))
-            .thenReturn(mapOf("sowDays", 0, "dayRows", 0));
-        when(aggregateQueryMapper.sumWeanedInRange(anyString(), any(), any())).thenReturn(0);
+            .thenReturn(mapOfAll("pregDays", 0, "sowDays", 0, "dayRows", 0, "firstDay", null));
 
         service.triggerAggregate(LocalDate.of(2026, 9, 13));
 
@@ -761,13 +793,47 @@ class DashboardServiceImplTest {
     }
 
     @Test
+    @DisplayName("日表: 日分娩猪只妊娠天数按「当日 [00:00, 次日 00:00)」取并落 farrow_gestation_days（V6 row227）")
+    void testDailyFarrowGestationDaysPersisted() {
+        stubAggregateSkeleton();
+        // judgeDays 必须来自配置（D-0088「上界复用 sow_farrow_judge_deadline_days，不另造阈值」）：
+        // 这里给配置一个非缺省值 117，下面钉死实参 —— 写死 119/114 都会让这条红。
+        when(productionCycleConfigService.getValue("sow_farrow_judge_deadline_days")).thenReturn(117);
+        when(aggregateQueryMapper.sumFarrowGestationDaysForDay(anyString(), any(), any(), anyInt())).thenReturn(342);
+
+        service.triggerAggregate(LocalDate.of(2026, 9, 13));
+
+        ArgumentCaptor<FarmIndicatorRecord> cap = ArgumentCaptor.forClass(FarmIndicatorRecord.class);
+        verify(farmIndicatorRecordMapper, atLeastOnce()).insert(cap.capture());
+        assertThat(cap.getAllValues())
+            .extracting(FarmIndicatorRecord::getFarrowGestationDays)
+            .contains(342);
+        // 区间必须是 [statDate, statDate+1) —— 传错成 [statDate, statDate) 会恒 0、传成整月会串日，
+        // 两种都不会被上面的断言发现，所以这里把实参钉死。
+        ArgumentCaptor<LocalDate> fromCap = ArgumentCaptor.forClass(LocalDate.class);
+        ArgumentCaptor<LocalDate> toCap = ArgumentCaptor.forClass(LocalDate.class);
+        verify(aggregateQueryMapper, atLeastOnce())
+            .sumFarrowGestationDaysForDay(anyString(), fromCap.capture(), toCap.capture(), anyInt());
+        assertThat(fromCap.getAllValues()).contains(LocalDate.of(2026, 9, 13));
+        assertThat(toCap.getAllValues()).contains(LocalDate.of(2026, 9, 14));
+        // 上界实参钉死 = 配置值，不是写死的常量
+        ArgumentCaptor<Integer> judgeCap = ArgumentCaptor.forClass(Integer.class);
+        verify(aggregateQueryMapper, atLeastOnce())
+            .sumFarrowGestationDaysForDay(anyString(), any(), any(), judgeCap.capture());
+        assertThat(judgeCap.getAllValues()).containsOnly(117);
+    }
+
+    @Test
     @DisplayName("年度: 平均非生产天数年化（区间值 × 365/已历天数）")
     void testAnnualNpdAnnualized() {
         stubAggregateSkeleton();
         // Σ日非生产母猪 101，Σ日生产母猪 6409，已历天数 46 → 年均存栏 139.326
         // 区间 NPD = 101/139.326 = 0.725 → 年化 ×365/46 = 5.753
+        // sumEndReserve230 给 37 作对照桶：甲方 row228 ① 要求「不计算 230 后备猪的数据」，
+        // 一旦被加进分子，total_npd_days 会变 138、avg_npd_days 会变 7.859，两条断言同时红。
         when(aggregateQueryMapper.sumIndicatorRange(anyString(), any(), any()))
-            .thenReturn(mapOfAll("sumEndProductionSow", 6409, "sumEndNonprodSow", 101));
+            .thenReturn(mapOfAll("sumEndProductionSow", 6409, "sumEndNonprodSow", 101,
+                "sumEndReserve230", 37));
         when(aggregateQueryMapper.countIndicatorDays(anyString(), any(), any())).thenReturn(46);
 
         service.triggerAggregate(LocalDate.of(2026, 9, 13));
@@ -775,6 +841,8 @@ class DashboardServiceImplTest {
         ArgumentCaptor<AnnualIndicator> cap = ArgumentCaptor.forClass(AnnualIndicator.class);
         verify(annualIndicatorMapper).insert(cap.capture());
         assertThat(cap.getValue().getAvgNpdDays()).isEqualByComparingTo("5.753");
+        // 全年总NPD天数 = Σ日非生产母猪，**不含** 230 后备（甲方 row228 ①）
+        assertThat(cap.getValue().getTotalNpdDays()).isEqualTo(101);
     }
 
     @Test
