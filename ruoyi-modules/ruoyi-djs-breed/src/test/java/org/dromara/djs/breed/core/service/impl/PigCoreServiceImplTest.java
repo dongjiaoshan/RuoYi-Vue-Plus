@@ -162,6 +162,52 @@ class PigCoreServiceImplTest {
         assertThat(captor.getValue().getChangeTime()).isEqualTo(bo.getEventAt());
     }
 
+    /**
+     * 邓博 2026-09-16 反馈的真实数据：02-02-2-241112-008 于 09-01 18:16:44 断奶、09-05 17:56:10 配种。
+     * 两个时刻相差 95 小时 39 分，离满 4 天差 20 分钟 —— 旧实现 {@code Duration.toDays()} 截断成 3，
+     * 与断配间隔的 {@code DATEDIFF(09-05, 09-01)=4} 打架。天数只看业务日期，不该受录入时刻影响。
+     */
+    @Test
+    @DisplayName("fireEvent 断奶→配种: 停留天数按日历日相减，不因配种时刻早于断奶时刻少算一天")
+    void fireEvent_duration_uses_calendar_days_not_24h_truncation() {
+        Pig pig = mkSow(1002L, PigLifecycle.DN);
+        pig.setStatusStartedAt(LocalDateTime.of(2026, 9, 1, 18, 16, 44));
+        when(pigMapper.selectById(1002L)).thenReturn(pig);
+        when(pigMapper.updateById(any(Pig.class))).thenReturn(1);
+
+        PigStatusRecord rec = fireBreedAndCaptureRecord(1002L, LocalDateTime.of(2026, 9, 5, 17, 56, 10));
+
+        assertThat(rec.getDurationDays()).isEqualTo(4);
+    }
+
+    /** 反向：配种时刻晚于断奶时刻（8 月那三头的情形），两种算法本就一致，改动不得让它回归。 */
+    @Test
+    @DisplayName("fireEvent 断奶→配种: 配种时刻晚于断奶时刻时天数不变")
+    void fireEvent_duration_stable_when_event_clock_is_later() {
+        Pig pig = mkSow(1003L, PigLifecycle.DN);
+        pig.setStatusStartedAt(LocalDateTime.of(2026, 8, 18, 0, 0, 0));
+        when(pigMapper.selectById(1003L)).thenReturn(pig);
+        when(pigMapper.updateById(any(Pig.class))).thenReturn(1);
+
+        PigStatusRecord rec = fireBreedAndCaptureRecord(1003L, LocalDateTime.of(2026, 8, 23, 19, 3, 3));
+
+        assertThat(rec.getDurationDays()).isEqualTo(5);
+    }
+
+    /** 同日内的两次事件仍是 0 天，不因跨了几个小时变成 1。 */
+    @Test
+    @DisplayName("fireEvent 同一天内换状态: 停留天数为 0")
+    void fireEvent_duration_same_day_is_zero() {
+        Pig pig = mkSow(1004L, PigLifecycle.DN);
+        pig.setStatusStartedAt(LocalDateTime.of(2026, 9, 5, 1, 0, 0));
+        when(pigMapper.selectById(1004L)).thenReturn(pig);
+        when(pigMapper.updateById(any(Pig.class))).thenReturn(1);
+
+        PigStatusRecord rec = fireBreedAndCaptureRecord(1004L, LocalDateTime.of(2026, 9, 5, 23, 30, 0));
+
+        assertThat(rec.getDurationDays()).isZero();
+    }
+
     // ===== change_time 补时分秒（admin row172，withOperateClock 四个分支）=====
 
     /** 造一头 HB 后备母猪并把 mapper mock 好，供 change_time 各分支复用。 */

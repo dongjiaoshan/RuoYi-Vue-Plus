@@ -58,6 +58,7 @@ import java.time.Duration;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -1377,12 +1378,17 @@ public class PigCoreServiceImpl implements IPigCoreService {
         return (int) Math.max(days, 0L);
     }
 
-    /** 距某时刻天数 = NOW - since；since 为 null → null。 */
+    /**
+     * 距某时刻天数 = NOW − since，按日历日相减；since 为 null → null。
+     *
+     * <p>不用 {@code Duration.toDays()}：{@code statusStartedAt} 带时分秒，满 24 小时截断会让
+     * 「在场天数 / 距上次事件天数」随录入时刻浮动 1 天（同 {@link #calcDurationDays}）。</p>
+     */
     private Integer calcDaysSince(LocalDateTime since, LocalDateTime now) {
         if (since == null) {
             return null;
         }
-        long days = Duration.between(since, now).toDays();
+        long days = ChronoUnit.DAYS.between(since.toLocalDate(), now.toLocalDate());
         return (int) Math.max(days, 0L);
     }
 
@@ -1710,11 +1716,19 @@ public class PigCoreServiceImpl implements IPigCoreService {
         }
     }
 
+    /**
+     * 状态停留天数 = 两个业务日期之差（日历日），不是时间戳满 24 小时的个数。
+     *
+     * <p>按 {@code Duration.toDays()} 算会把不满 24 小时的尾巴截掉，于是同一对业务日期
+     * 因录入时刻不同得出不同天数：9-01 18:16 断奶、9-05 17:56 配种相差 95 小时，离满 4 天差
+     * 20 分钟被截成 3，而断配间隔（{@code DATEDIFF(配种日, 断奶日)}）算出 4，同一件事两个数。
+     * 录入时刻是随手填的、不是业务事实，不该影响天数。改按日历日相减，与断配间隔口径一致。</p>
+     */
     private Integer calcDurationDays(LocalDateTime statusStartedAt, LocalDateTime eventAt) {
         if (statusStartedAt == null || eventAt == null) {
             return null;
         }
-        long days = Duration.between(statusStartedAt, eventAt).toDays();
+        long days = ChronoUnit.DAYS.between(statusStartedAt.toLocalDate(), eventAt.toLocalDate());
         return (int) Math.max(days, 0L);
     }
 
