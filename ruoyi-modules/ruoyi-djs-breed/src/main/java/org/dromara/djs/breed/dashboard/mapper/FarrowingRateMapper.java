@@ -98,7 +98,11 @@ public interface FarrowingRateMapper extends BaseMapperPlus<FarrowingRate, Farro
         + WIN_SRC
         + "ON DUPLICATE KEY UPDATE "
         + "   del_flag = '0', "
-        + "   update_time = IF(del_flag = '0', update_time, NOW())")
+        // 🔴 右侧引用必须带表名限定：ODKU 的作用域里 SELECT 那两张源表也有 del_flag/update_time，
+        //    裸列名会 SQLIntegrityConstraintViolationException: Column 'del_flag' in field list is ambiguous。
+        //    2026-09-19 上 staging 时炸过一次 —— golden 钉住了 SQL 文本，但文本合法不等于 SQL 合法。
+        + "   update_time = IF(t_farm_farrowing_rate.del_flag = '0', "
+        + "                    t_farm_farrowing_rate.update_time, NOW())")
     int refreshStep1Breeding(@Param("tenantId") String tenantId,
                              @Param("from") LocalDate from,
                              @Param("to") LocalDate to,

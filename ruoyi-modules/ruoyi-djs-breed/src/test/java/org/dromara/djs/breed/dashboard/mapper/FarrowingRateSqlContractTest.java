@@ -56,7 +56,8 @@ class FarrowingRateSqlContractTest {
             + "t_farm_pig_info p ON p.id = b.pig_id AND p.del_flag = '0' WHERE b.tenant_id = "
             + "#{tenantId} AND b.del_flag = '0' AND b.breeding_date >= #{from} - INTERVAL "
             + "#{judgeDays} DAY AND b.breeding_date < #{to} ON DUPLICATE KEY UPDATE del_flag = '0', "
-            + "update_time = IF(del_flag = '0', update_time, NOW()) ";
+            + "update_time = IF(t_farm_farrowing_rate.del_flag = '0', "
+            + "t_farm_farrowing_rate.update_time, NOW()) ";
 
     private static final String G_STEP1B_RESYNC =
         "UPDATE t_farm_farrowing_rate r JOIN t_farm_pig_breeding b ON b.id = r.breeding_id AND "
