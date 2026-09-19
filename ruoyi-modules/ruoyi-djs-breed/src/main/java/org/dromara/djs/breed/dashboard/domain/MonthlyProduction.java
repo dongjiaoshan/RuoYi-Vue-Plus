@@ -64,10 +64,13 @@ public class MonthlyProduction extends TenantEntity {
     /**
      * 当月累计匹配配种窝数 = 判定节点（配种日 + judgeDays）落在本月的配种批次数，也是分娩率分母。
      *
-     * <p>与 {@link #cohortFarrowCount} 出自同一次 cohort 归集，故分子 ⊆ 分母；年表的年分娩率直接 Σ 这两列。</p>
+     * <p>与 {@link #cohortFarrowCount} 出自对 {@code t_farm_farrowing_rate} 的同一次查询，故分子 ⊆ 分母。</p>
+     *
+     * <p>⚠️ 年表的年分娩率<b>不再</b> Σ 这两列（D-0087 已被 D-0090/D-0091 取代）：它直接扫台账整年，
+     * 免得月表缺行时年值静默少报。本列与 Σ月表的差异现在只用于对账告警。</p>
      */
     private Integer mateLitterCount;
-    /** 分娩率%（本月到期批次的按期分娩头数/到期批次数×100，配种批次口径）。 */
+    /** 分娩率%（本月到期行的按期分娩数/到期行数×100，取自 {@code t_farm_farrowing_rate}）。 */
     private BigDecimal farrowRate;
     /** 分娩率分子：本月到期的配种批次中，在判定节点内分娩的头数。定时重算，ALWAYS 覆盖旧值。 */
     @TableField(updateStrategy = FieldStrategy.ALWAYS)

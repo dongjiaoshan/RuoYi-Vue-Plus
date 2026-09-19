@@ -124,8 +124,9 @@ public class FarmIndicatorRecord extends TenantEntity {
     /**
      * 当年配种批次分娩头数（分娩日 − sow_breed_to_farrow_days 落当年则累加；该配置缺省 114）。
      *
-     * <p>⚠️ 与年表 {@code year_batch_farrow_count} <b>同名不同义</b>：年表那列现在是 Σ月表
-     * cohort_farrow_count（D-0087），不是本列的 Σ。两者别按名字互推。</p>
+     * <p>⚠️ 与年表 {@code year_batch_farrow_count} <b>同名不同义</b>：年表那列现在是
+     * {@code t_farm_farrowing_rate} 全年「分娩日期非空且 ≤ 预估分娩日」的行数（D-0091/D-0092），
+     * 不是本列的 Σ。两者别按名字互推。</p>
      */
     private Integer yearBatchFarrowCount;
 

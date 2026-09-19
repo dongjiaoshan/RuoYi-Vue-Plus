@@ -10,6 +10,7 @@ import org.dromara.djs.breed.dashboard.domain.vo.AnnualIndicatorVo;
 import org.dromara.djs.breed.dashboard.domain.vo.BreedingAnnualVo;
 import org.dromara.djs.breed.dashboard.domain.vo.DailyOverviewVo;
 import org.dromara.djs.breed.dashboard.domain.vo.InventoryVo;
+import org.dromara.djs.breed.dashboard.domain.vo.MonthlyProductionStatVo;
 import org.dromara.djs.breed.dashboard.domain.vo.FarmIndicatorRecordVo;
 import org.dromara.djs.breed.dashboard.domain.vo.MonthlyComparisonVo;
 import org.dromara.djs.breed.dashboard.mapper.AggregateQueryMapper;
@@ -24,6 +25,7 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
@@ -45,6 +47,7 @@ import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.atLeastOnce;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -85,6 +88,8 @@ class DashboardServiceImplTest {
     @Mock
     private FarmIndicatorRecordMapper farmIndicatorRecordMapper;
     @Mock
+    private org.dromara.djs.breed.dashboard.mapper.FarrowingRateMapper farrowingRateMapper;
+    @Mock
     private SowPerformanceMapper sowPerformanceMapper;
     @Mock
     private org.dromara.djs.breed.production.service.IProductionCycleConfigService productionCycleConfigService;
@@ -97,8 +102,8 @@ class DashboardServiceImplTest {
     void setup() {
         service = new DashboardServiceImpl(
             sowRecordMapper, monthlyProductionMapper, annualIndicatorMapper, aggregateQueryMapper,
-            farmIndicatorRecordMapper, sowPerformanceMapper, productionCycleConfigService,
-            fattenAgeStageService);
+            farmIndicatorRecordMapper, farrowingRateMapper, sowPerformanceMapper,
+            productionCycleConfigService, fattenAgeStageService);
     }
 
     @Test
@@ -257,10 +262,11 @@ class DashboardServiceImplTest {
     }
 
     @Test
-    @DisplayName("getBreedingAnnual: 取年表（率类 ×100 百分比 / 总产仔=total_born_count 非活仔）")
+    @DisplayName("getBreedingAnnual: 分娩率实时取台账（row231），其余仍取年表（率类 ×100 / 总产仔非活仔）")
     void testGetBreedingAnnual() {
         AnnualIndicator ai = new AnnualIndicator();
         ai.setStatYear((short) 2026);
+        // 年表这列故意留成另一个值：分娩率若还在读它，55.560 会取代台账算出的 85.00
         ai.setYearFarrowRate(new BigDecimal("55.560"));
         ai.setWeanBreedInterval(new BigDecimal("35.000"));
         ai.setAvgNpdDays(new BigDecimal("94.500"));
@@ -270,12 +276,16 @@ class DashboardServiceImplTest {
         ai.setAvgWeanedPerLitter(new BigDecimal("10.333"));
         ai.setFarrowLossRate(new BigDecimal("9.520"));
         when(annualIndicatorMapper.selectOne(any())).thenReturn(ai);
+        // 台账全年：到期 40 / 按期分娩 34 → 85.00%
+        when(farrowingRateMapper.selectFarrowRate(anyString(),
+            eq(LocalDate.of(2026, 1, 1)), eq(LocalDate.of(2027, 1, 1)), any()))
+            .thenReturn(mapOfAll("denom", 40, "numer", 34, "farrowLate", 0));
 
         BreedingAnnualVo vo = service.getBreedingAnnual(2026);
 
-        // 配种率 V1 口径同分娩率，均取 year_farrow_rate（已 ×100，前端直接拼 %）
-        assertThat(vo.getMateRate()).isEqualByComparingTo("55.560");
-        assertThat(vo.getFarrowRate()).isEqualByComparingTo("55.560");
+        // 配种率 V1 口径同分娩率，两格都取实时台账值（已 ×100，前端直接拼 %）
+        assertThat(vo.getMateRate()).isEqualByComparingTo("85.00");
+        assertThat(vo.getFarrowRate()).isEqualByComparingTo("85.00");
         assertThat(vo.getWeanMateInterval()).isEqualByComparingTo("35.000");
         assertThat(vo.getAvgNonProductiveDays()).isEqualByComparingTo("94.500");
         assertThat(vo.getTotalBornCount()).isEqualByComparingTo("31");   // 总产仔（含死胎），非活仔 21
@@ -689,10 +699,11 @@ class DashboardServiceImplTest {
 
         service.triggerAggregate(LocalDate.of(2026, 9, 13));
 
-        verify(aggregateQueryMapper, atLeastOnce())
-            .selectCohortOutcome(anyString(), any(), any(), eq(119));
-        verify(aggregateQueryMapper, never())
-            .selectCohortOutcome(anyString(), any(), any(), eq(0));
+        // 判定节点现在流向台账刷新的第一步（预估分娩日 = 配种日 + judgeDays），不再经 selectCohortOutcome
+        verify(farrowingRateMapper, atLeastOnce())
+            .refreshStep1Breeding(anyString(), any(), any(), eq(119));
+        verify(farrowingRateMapper, never())
+            .refreshStep1Breeding(anyString(), any(), any(), eq(0));
     }
 
     @Test
@@ -703,22 +714,21 @@ class DashboardServiceImplTest {
 
         service.triggerAggregate(LocalDate.of(2026, 9, 13));
 
-        verify(aggregateQueryMapper, atLeastOnce())
-            .selectCohortOutcome(anyString(), any(), any(), eq(117));
+        verify(farrowingRateMapper, atLeastOnce())
+            .refreshStep1Breeding(anyString(), any(), any(), eq(117));
     }
 
     @Test
-    @DisplayName("年度: 分娩率分子分母同取月表 Σ（V6 row228），live cohort 只落对账列")
-    void testAnnualFarrowRateBothSidesFromMonthly() {
+    @DisplayName("年度: 分娩率直取 t_farm_farrowing_rate 整年（V6 row231），Σ月表退为对账参考")
+    void testAnnualFarrowRateFromLedger() {
         stubAggregateSkeleton();
-        // 月表 Σ：按期分娩 34 / 匹配配种窝数 40 → 34/40 = 85.00%
+        // 台账全年：到期 40 / 按期分娩 34 → 34/40 = 85.00%
+        when(farrowingRateMapper.selectFarrowRate(anyString(),
+            eq(LocalDate.of(2026, 1, 1)), eq(LocalDate.of(2027, 1, 1)), any()))
+            .thenReturn(mapOfAll("denom", 40, "numer", 34, "farrowLate", 0));
+        // Σ月表故意给一组完全不同的数：它若还被当分子分母，51/81 = 62.96% 会立刻露馅
         when(aggregateQueryMapper.sumMonthlyProductionRange(anyString(), anyString(), anyString()))
-            .thenReturn(mapOfAll("mateLitterCount", 40, "cohortFarrowCount", 34, "rowCnt", 9));
-        // live 全年 cohort 覆盖面更大（到期 81、按期分娩 51）—— 只准落 cohort_matured_count，
-        // 一旦被拿去当分子，51/40 = 127.50% 就会漏出来
-        when(aggregateQueryMapper.selectCohortOutcome(anyString(), any(), any(), anyInt()))
-            .thenReturn(mapOfAll("bred", 81, "farrow", 51, "farrowLate", 0,
-                "returnCount", 0, "emptyCount", 0, "abortCount", 0, "goneCount", 1, "undecided", 0));
+            .thenReturn(mapOfAll("mateLitterCount", 81, "cohortFarrowCount", 51, "rowCnt", 9));
         when(aggregateQueryMapper.countBreedingInRange(anyString(), any(), any())).thenReturn(199);
 
         service.triggerAggregate(LocalDate.of(2026, 9, 13));
@@ -727,31 +737,33 @@ class DashboardServiceImplTest {
         verify(annualIndicatorMapper).insert(cap.capture());
         AnnualIndicator a = cap.getValue();
         assertThat(a.getYearFarrowRate()).isEqualByComparingTo("85.00");
+        // 三列同取台账那一次查询，永远自洽
         assertThat(a.getYearBatchFarrowCount()).isEqualTo(34);
-        assertThat(a.getCohortMaturedCount()).isEqualTo(81);
+        assertThat(a.getCohortMaturedCount()).isEqualTo(40);
         assertThat(a.getBreedingCount()).isEqualTo(199);
     }
 
     @Test
-    @DisplayName("年度: 月表整段缺行时分娩率 0 而不是虚高（分子分母同源的副产品）")
-    void testAnnualFarrowRateNoMonthlyRows() {
+    @DisplayName("年度: 月表整段缺行不再影响年分娩率 —— 直取台账的收益（旧 Σ月表口径此处会算成 0）")
+    void testAnnualFarrowRateImmuneToMissingMonthlyRows() {
         stubAggregateSkeleton();
-        // 一行月表都没有 → 分子分母同时为 0
+        // 一行月表都没有（滚动窗只刷最近几个月，1-6 月长期无行的真实场景）
         when(aggregateQueryMapper.sumMonthlyProductionRange(anyString(), anyString(), anyString()))
             .thenReturn(mapOfAll("mateLitterCount", 0, "cohortFarrowCount", 0, "rowCnt", 0));
-        // 但 live cohort 有 51 头按期分娩：分子若走它，51/0 之外还会把旧值留在表里
-        when(aggregateQueryMapper.selectCohortOutcome(anyString(), any(), any(), anyInt()))
-            .thenReturn(mapOfAll("bred", 81, "farrow", 51, "farrowLate", 0,
-                "returnCount", 0, "emptyCount", 0, "abortCount", 0, "goneCount", 0, "undecided", 0));
+        // 台账照常有数：到期 40 / 按期分娩 34
+        when(farrowingRateMapper.selectFarrowRate(anyString(),
+            eq(LocalDate.of(2026, 1, 1)), eq(LocalDate.of(2027, 1, 1)), any()))
+            .thenReturn(mapOfAll("denom", 40, "numer", 34, "farrowLate", 0));
 
         service.triggerAggregate(LocalDate.of(2026, 9, 13));
 
         ArgumentCaptor<AnnualIndicator> cap = ArgumentCaptor.forClass(AnnualIndicator.class);
         verify(annualIndicatorMapper).insert(cap.capture());
         AnnualIndicator a = cap.getValue();
-        assertThat(a.getYearFarrowRate()).isEqualByComparingTo("0");
-        assertThat(a.getYearBatchFarrowCount()).isZero();
-        assertThat(a.getCohortMaturedCount()).isEqualTo(81);
+        // 旧口径（Σ月表）在这里会得 0 —— 正是 D-0087 时代要靠告警兜的那个静默少报
+        assertThat(a.getYearFarrowRate()).isEqualByComparingTo("85.00");
+        assertThat(a.getYearBatchFarrowCount()).isEqualTo(34);
+        assertThat(a.getCohortMaturedCount()).isEqualTo(40);
     }
 
     @Test
@@ -889,12 +901,12 @@ class DashboardServiceImplTest {
     }
 
     @Test
-    @DisplayName("月度: 分娩率分子分母来自同一批 cohort，并落 cohort_farrow_count / mate_litter_count")
-    void testMonthlyFarrowRateUsesCohort() {
+    @DisplayName("月度: 分娩率取 t_farm_farrowing_rate 当月（V6 row230），并落 cohort_farrow_count / mate_litter_count")
+    void testMonthlyFarrowRateFromLedger() {
         stubAggregateSkeleton();
-        when(aggregateQueryMapper.selectCohortOutcome(anyString(), any(), any(), anyInt()))
-            .thenReturn(mapOfAll("bred", 15, "farrow", 14, "farrowLate", 0,
-                "returnCount", 1, "emptyCount", 0, "abortCount", 0, "goneCount", 0, "undecided", 0));
+        when(farrowingRateMapper.selectFarrowRate(anyString(),
+            eq(LocalDate.of(2026, 9, 1)), eq(LocalDate.of(2026, 10, 1)), any()))
+            .thenReturn(mapOfAll("denom", 15, "numer", 14, "farrowLate", 0));
 
         service.triggerAggregate(LocalDate.of(2026, 9, 13));
 
@@ -1009,4 +1021,267 @@ class DashboardServiceImplTest {
             .thenReturn(retA)
             .thenReturn(retB);
     }
+
+    // ============================================================
+    //  mp 当月生产指标统计 —— 读取端（甲方 row230）
+    //  这一段在 2026-09-18 对抗验收前是**零覆盖**：变异测试把当月/上月参数对调、
+    //  把 T-1 收口钳位去掉，405 个单测全绿。下面两支专门钉这两处。
+    // ============================================================
+
+    /** 造一个只有分娩率有意义的月表行，其余字段不参与本段断言。 */
+    private static MonthlyProduction monthRow(String farrowRate) {
+        MonthlyProduction m = new MonthlyProduction();
+        m.setFarrowRate(new BigDecimal(farrowRate));
+        return m;
+    }
+
+    @Test
+    @DisplayName("月度读取端: 分娩率取台账不取月表落盘值（V6 row230）")
+    void testMonthlyStatsFarrowRateComesFromLedger() {
+        YearMonth thisMonth = YearMonth.now();
+        YearMonth lastMonth = thisMonth.minusMonths(1);
+        // 月表故意塞显眼假值：还在读月表的话 77.77 会顶掉台账算出的数
+        when(monthlyProductionMapper.selectOne(any()))
+            .thenReturn(monthRow("77.770"))
+            .thenReturn(monthRow("88.880"));
+        when(farrowingRateMapper.selectFarrowRate(anyString(),
+            eq(thisMonth.atDay(1)), eq(thisMonth.plusMonths(1).atDay(1)), any()))
+            .thenReturn(mapOfAll("denom", 20, "numer", 13, "farrowLate", 0));
+        when(farrowingRateMapper.selectFarrowRate(anyString(),
+            eq(lastMonth.atDay(1)), eq(lastMonth.plusMonths(1).atDay(1)), any()))
+            .thenReturn(mapOfAll("denom", 8, "numer", 2, "farrowLate", 0));
+
+        MonthlyProductionStatVo vo = service.getMonthlyProductionStats(thisMonth);
+
+        MonthlyProductionStatVo.StatRow row = vo.getRows().stream()
+            .filter(r -> "分娩率".equals(r.getMetric())).findFirst().orElseThrow();
+        // 13/20 = 65.00，2/8 = 25.00 —— 与月表里的 77.77 / 88.88 明显可区分
+        assertThat(row.getCurrent()).isEqualByComparingTo("65.00");
+        assertThat(row.getPrevious()).isEqualByComparingTo("25.00");
+        // 当月/上月不能对调：对调后 current 会变成 25.00
+        assertThat(row.getCurrent()).isNotEqualByComparingTo(row.getPrevious());
+    }
+
+    @Test
+    @DisplayName("月度读取端: 当月窗口收口到 T-1，历史月收口到月末（D-0090 未到期不进分母）")
+    void testMonthlyStatsAsOfClampedToYesterday() {
+        YearMonth thisMonth = YearMonth.now();
+        LocalDate yesterday = LocalDate.now().minusDays(1);
+        when(monthlyProductionMapper.selectOne(any())).thenReturn(monthRow("0.000"));
+        when(farrowingRateMapper.selectFarrowRate(anyString(), any(), any(), any()))
+            .thenReturn(mapOfAll("denom", 0, "numer", 0, "farrowLate", 0));
+
+        service.getMonthlyProductionStats(thisMonth);
+
+        ArgumentCaptor<LocalDate> asOf = ArgumentCaptor.forClass(LocalDate.class);
+        verify(farrowingRateMapper, atLeastOnce())
+            .selectFarrowRate(anyString(), any(), any(), asOf.capture());
+        // 当月那次收口必须是 T-1：去掉钳位会变成月末（未来日期），把还没到期的批次算进分母
+        assertThat(asOf.getAllValues())
+            .as("当月收口日必须钳到昨天，不能是月末")
+            .contains(yesterday);
+        assertThat(asOf.getAllValues())
+            .as("任何一次收口都不该晚于昨天")
+            .allSatisfy(d -> assertThat(d).isBeforeOrEqualTo(yesterday));
+    }
+
+    @Test
+    @DisplayName("年度读取端: 年表无该年行时，分娩率仍从台账取（不再被 ai==null 早退归零）")
+    void testBreedingAnnualFarrowRateSurvivesMissingYearRow() {
+        when(annualIndicatorMapper.selectOne(any())).thenReturn(null);
+        when(farrowingRateMapper.selectFarrowRate(anyString(),
+            eq(LocalDate.of(2025, 1, 1)), eq(LocalDate.of(2026, 1, 1)), any()))
+            .thenReturn(mapOfAll("denom", 2, "numer", 1, "farrowLate", 0));
+
+        BreedingAnnualVo vo = service.getBreedingAnnual(2025);
+
+        // 甲方 row231 原话是「不再读取年表数据」——年表那行在不在都不该影响这一格
+        assertThat(vo.getFarrowRate()).isEqualByComparingTo("50.00");
+        assertThat(vo.getMateRate()).isEqualByComparingTo("50.00");
+        // 其余字段没有来源，仍然归零
+        assertThat(vo.getPsy()).isEqualByComparingTo("0");
+        assertThat(vo.getTotalBornCount()).isEqualByComparingTo("0");
+    }
+
+
+    // ============================================================
+    //  聚合编排接线 —— 2026-09-18 第二轮对抗验收的存活变异逐条补测
+    //  这些行为此前零覆盖：改坏了 415 个测试照样全绿。
+    // ============================================================
+
+    @Test
+    @DisplayName("年度: 覆盖面校验必须拿 live 底表比台账，不能用台账自比（派生值不能校验自己）")
+    void testAnnualCoverageCheckUsesIndependentLiveSource() {
+        stubAggregateSkeleton();
+        // 台账说 40，live 底表说 46 —— 只有独立来源才能发现台账漏了 6 行
+        when(farrowingRateMapper.selectFarrowRate(anyString(),
+            eq(LocalDate.of(2026, 1, 1)), eq(LocalDate.of(2027, 1, 1)), any()))
+            .thenReturn(mapOfAll("denom", 40, "numer", 34, "farrowLate", 0));
+        when(aggregateQueryMapper.selectCohortOutcome(anyString(), any(), any(), anyInt()))
+            .thenReturn(mapOfAll("bred", 46, "farrow", 34, "farrowLate", 0,
+                "returnCount", 0, "emptyCount", 0, "abortCount", 0, "goneCount", 0, "undecided", 0));
+
+        service.triggerAggregate(LocalDate.of(2026, 9, 13));
+
+        // 把 liveMatured 换成 cohortMatured（台账自比）这条变异，两轮 QA 都证明能全绿逃逸 ——
+        // 这里钉住「年度聚合必须真的去问一次 live 底表」。
+        verify(aggregateQueryMapper, atLeastOnce())
+            .selectCohortOutcome(anyString(), any(), any(), anyInt());
+        // 落盘的分母取台账值（40），不是 live 值（46）：live 只用于告警，不参与计算
+        ArgumentCaptor<AnnualIndicator> cap = ArgumentCaptor.forClass(AnnualIndicator.class);
+        verify(annualIndicatorMapper).insert(cap.capture());
+        assertThat(cap.getValue().getCohortMaturedCount()).isEqualTo(40);
+    }
+
+    @Test
+    @DisplayName("刷新台账必须排在月/年 upsert 之前，且五步按甲方原文顺序")
+    void testFarrowingRateRefreshOrdering() {
+        stubAggregateSkeleton();
+
+        service.triggerAggregate(LocalDate.of(2026, 9, 13));
+
+        InOrder o = inOrder(farrowingRateMapper, monthlyProductionMapper, annualIndicatorMapper);
+        // 甲方 row229 原文：配种 → 分娩 → 返空流 → 死淘
+        o.verify(farrowingRateMapper).refreshStep1Breeding(anyString(), any(), any(), anyInt());
+        // 1b 必须紧跟 1：一条配种被软删后又恢复且改了日期时，step1 的 ODKU 先把 del_flag 翻回 '0'，
+        // step1b 的 WHERE r.del_flag='0' 才命中得到它。顺序反过来 → 行复活了但日期仍陈旧一整天。
+        o.verify(farrowingRateMapper).refreshStep1bResync(anyString(), any(), any(), anyInt());
+        o.verify(farrowingRateMapper).refreshStep2Farrow(anyString(), any(), any(), anyInt());
+        o.verify(farrowingRateMapper).refreshStep3Abnormal(anyString(), any(), any(), anyInt());
+        o.verify(farrowingRateMapper).refreshStep4Cull(anyString(), any(), any(), anyInt());
+        // 源配种记录已软删 → 台账跟着软删，漏掉这一步会让撤销的配种永远占着分母
+        o.verify(farrowingRateMapper).softDeleteOrphans(anyString(), any(), any(), anyInt());
+        // 月/年汇总读的就是刚刷完的台账，顺序反了就是拿上一轮的快照出数
+        o.verify(monthlyProductionMapper).insert(any(MonthlyProduction.class));
+        o.verify(annualIndicatorMapper).insert(any(AnnualIndicator.class));
+    }
+
+    @Test
+    @DisplayName("刷新窗口右开界是「最大月的下月1日」，不是最大月1日（少刷一整月）")
+    void testFarrowingRateRefreshWindowRightBound() {
+        stubAggregateSkeleton();
+
+        service.triggerAggregate(LocalDate.of(2026, 9, 13));
+
+        ArgumentCaptor<LocalDate> from = ArgumentCaptor.forClass(LocalDate.class);
+        ArgumentCaptor<LocalDate> to = ArgumentCaptor.forClass(LocalDate.class);
+        verify(farrowingRateMapper).refreshStep1Breeding(anyString(), from.capture(), to.capture(), anyInt());
+        assertThat(from.getValue()).isEqualTo(LocalDate.of(2026, 9, 1));
+        assertThat(to.getValue())
+            .as("右开界必须是下月1日；写成 max.atDay(1) 会让整个 9 月一行都刷不到")
+            .isEqualTo(LocalDate.of(2026, 10, 1));
+    }
+
+    @Test
+    @DisplayName("落盘端收口日也钳到 T-1（月表/年表），否则未到期批次进分母")
+    void testUpsertAsOfClampedToYesterday() {
+        stubAggregateSkeleton();
+        LocalDate yesterday = LocalDate.now().minusDays(1);
+
+        // 🔴 触发日必须相对 now() 取，不能写死字面量：写死的话时钟走过那一年之后，
+        //    被测窗口整个落在过去，asOf 恒等于月末、断言恒真 —— 测试不是变红而是变成永真。
+        service.triggerAggregate(yesterday.minusDays(4));
+
+        ArgumentCaptor<LocalDate> asOf = ArgumentCaptor.forClass(LocalDate.class);
+        verify(farrowingRateMapper, atLeastOnce())
+            .selectFarrowRate(anyString(), any(), any(), asOf.capture());
+        assertThat(asOf.getAllValues())
+            .as("落盘端任何一次取数的收口日都不该晚于昨天（D-0090：未到期的不进分母）")
+            .allSatisfy(d -> assertThat(d).isBeforeOrEqualTo(yesterday));
+    }
+
+    @Test
+    @DisplayName("年度读取端收口日同样钳到 T-1（月度那支已有，年度这支此前零覆盖）")
+    void testBreedingAnnualAsOfClampedToYesterday() {
+        LocalDate yesterday = LocalDate.now().minusDays(1);
+        when(annualIndicatorMapper.selectOne(any())).thenReturn(null);
+        when(farrowingRateMapper.selectFarrowRate(anyString(), any(), any(), any()))
+            .thenReturn(mapOfAll("denom", 0, "numer", 0, "farrowLate", 0));
+
+        service.getBreedingAnnual(LocalDate.now().getYear());
+
+        ArgumentCaptor<LocalDate> asOf = ArgumentCaptor.forClass(LocalDate.class);
+        verify(farrowingRateMapper).selectFarrowRate(anyString(), any(), any(), asOf.capture());
+        assertThat(asOf.getValue())
+            .as("当年查询收口到 T-1；去掉钳位会变成 12-31，把整年未到期批次算进分母")
+            .isEqualTo(yesterday);
+    }
+
+
+    // ============================================================
+    //  2026-09-19 第三轮对抗验收补测：这些行为改坏后 416 个用例全绿
+    // ============================================================
+
+    @Test
+    @DisplayName("刷新五步的窗口实参必须逐个一致 —— 任一被写窄/写塌，对应那一列永远回填不进来")
+    void testAllFiveRefreshCallsShareTheSameWindow() {
+        stubAggregateSkeleton();
+
+        service.triggerAggregate(LocalDate.of(2026, 9, 13));
+
+        // B01：此前只捕了 step1 的 from/to，其余四次用 any()。把 step2 的 to 写成 from
+        // （窗口塌成空）→ 分娩日期永远回填不进台账、分子恒 0、分娩率恒 0%，而测试全绿。
+        ArgumentCaptor<LocalDate> f1 = ArgumentCaptor.forClass(LocalDate.class);
+        ArgumentCaptor<LocalDate> t1 = ArgumentCaptor.forClass(LocalDate.class);
+        verify(farrowingRateMapper).refreshStep1Breeding(anyString(), f1.capture(), t1.capture(), anyInt());
+        LocalDate from = f1.getValue();
+        LocalDate to = t1.getValue();
+        assertThat(from).isBefore(to);
+
+        verify(farrowingRateMapper).refreshStep1bResync(anyString(), eq(from), eq(to), anyInt());
+        verify(farrowingRateMapper).refreshStep2Farrow(anyString(), eq(from), eq(to), anyInt());
+        verify(farrowingRateMapper).refreshStep3Abnormal(anyString(), eq(from), eq(to), anyInt());
+        verify(farrowingRateMapper).refreshStep4Cull(anyString(), eq(from), eq(to), anyInt());
+        verify(farrowingRateMapper).softDeleteOrphans(anyString(), eq(from), eq(to), anyInt());
+    }
+
+    @Test
+    @DisplayName("刷新与漂移探测都必须传当前租户，不得写死")
+    void testRefreshUsesCurrentTenant() {
+        stubAggregateSkeleton();
+
+        service.triggerAggregate(LocalDate.of(2026, 9, 13));
+
+        // B05/B25：所有断言都用 anyString() 时，写死任意租户号都能过。台账是跨租户共表。
+        String tenant = "1001";   // DashboardServiceImpl.DEFAULT_TENANT，单测无租户上下文时的兜底值
+        verify(farrowingRateMapper).refreshStep1Breeding(eq(tenant), any(), any(), anyInt());
+        verify(farrowingRateMapper).refreshStep2Farrow(eq(tenant), any(), any(), anyInt());
+        verify(farrowingRateMapper).countJudgeDaysDrift(eq(tenant), anyInt());
+    }
+
+    @Test
+    @DisplayName("漂移探测传的是当前判定节点配置值，不是 0 或写死值")
+    void testDriftProbeUsesConfiguredJudgeDays() {
+        stubAggregateSkeleton();
+        when(productionCycleConfigService.getValue("sow_farrow_judge_deadline_days")).thenReturn(117);
+
+        service.triggerAggregate(LocalDate.of(2026, 9, 13));
+
+        // B12：传错阈值 → 漂移探测永远报 0 或全表误报，而这是台账仅有的体检之一
+        verify(farrowingRateMapper).countJudgeDaysDrift(anyString(), eq(117));
+    }
+
+    @Test
+    @DisplayName("滚动窗跨多月时，刷新窗口必须覆盖到最后一个月（不能塌成第一个月）")
+    void testRefreshWindowSpansAllMonths() {
+        stubAggregateSkeleton();
+
+        // B27：max 写成 Collections.min(months) → 夜跑的近三个月补刷静默只刷一个月。
+        //      单日触发只走单月路径，结构上照不到这个 bug，必须用跨月区间。
+        // 直接调 aggregateRollups：triggerAggregateRange 会走 SpringUtils.getAopProxy，单测无容器。
+        // 这里要验的是「多月集合 → 刷新窗口」这一段映射，与事务代理无关。
+        service.aggregateRollups("1001", LocalDate.of(2026, 9, 13),
+            List.of(YearMonth.of(2026, 7), YearMonth.of(2026, 8), YearMonth.of(2026, 9)),
+            List.of((short) 2026));
+
+        ArgumentCaptor<LocalDate> from = ArgumentCaptor.forClass(LocalDate.class);
+        ArgumentCaptor<LocalDate> to = ArgumentCaptor.forClass(LocalDate.class);
+        verify(farrowingRateMapper, atLeastOnce())
+            .refreshStep1Breeding(anyString(), from.capture(), to.capture(), anyInt());
+        assertThat(from.getValue()).isEqualTo(LocalDate.of(2026, 7, 1));
+        assertThat(to.getValue())
+            .as("跨 7/8/9 三个月 → 右开界必须是 10-01；塌成 8-01 会让 8、9 月整月刷不到")
+            .isEqualTo(LocalDate.of(2026, 10, 1));
+    }
+
 }

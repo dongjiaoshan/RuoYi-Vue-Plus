@@ -87,25 +87,28 @@ public class AnnualIndicator extends TenantEntity {
     /** 年均NPD天数（总NPD/年均生产母猪存栏）。定时重算，ALWAYS 覆盖旧值。 */
     @TableField(updateStrategy = FieldStrategy.ALWAYS)
     private BigDecimal avgNpdDays;
-    /** 年分娩头数 = Σ月表 cohort_farrow_count（判定节点内分娩的头数），也是年分娩率分子。定时重算，ALWAYS 覆盖旧值。 */
+    /**
+     * 年分娩率分子 = {@code t_farm_farrowing_rate} 全年「分娩日期非空 <b>且 ≤ 预估分娩日</b>」的行数
+     * （D-0091，甲方 2026-09-18；晚产窝不算）。定时重算，ALWAYS 覆盖旧值。
+     */
     @TableField(updateStrategy = FieldStrategy.ALWAYS)
     private Integer yearBatchFarrowCount;
     /**
-     * 年分娩率% = 年分娩头数 ÷ Σ月表 mate_litter_count × 100。
+     * 年分娩率% = {@link #yearBatchFarrowCount} ÷ {@link #cohortMaturedCount} × 100。
      *
-     * <p>分子分母同取月表那一批行：两列出自同一次 cohort 归集（判定日落在该月的批次数 / 其中按期分娩的头数），
-     * 每一行写入时都满足分子 ⊆ 分母，且年 = Σ月可逐层对账。</p>
+     * <p>两列出自对 {@code t_farm_farrowing_rate} 的<b>同一次</b>查询（D-0090 分母 / D-0091 分子），
+     * 分子的行集是分母行集的子集，所以本列恒 ≤ 100（分母为 0 时 {@code ratio} 返回 0）。
+     * 曾经有一个 &gt;100% 的告警分支，在换源之后已不可达，已删。</p>
      *
-     * <p>⚠️ 「≤100%」<b>不是</b>代码强制的不变量：某个月行被手工订正、或停在旧口径没被滚动窗刷到，
-     * Σ 之后照样能超 100%（实测可到 128%）。真超了不要夹逼，那是月表有脏行的信号，
-     * upsertAnnualIndicator 会打一条 🔴 告警指出分子分母，去查是哪个月。</p>
+     * <p>⚠️ 这<b>不等于</b>「覆盖面问题消失了」：台账同样靠滚动窗刷新，窗外补录的配种/分娩进不来，
+     * 分子分母会一起少、年值静默偏移。聚合时另有一条 live 底表 vs 台账 的交叉校验专门报这个。</p>
      */
     private BigDecimal yearFarrowRate;
     /**
-     * 判定节点落在本年且已到期的配种批次数（live 全年扫底表）。
+     * 年分娩率<b>分母</b> = {@code t_farm_farrowing_rate} 全年「预估分娩日落在本年<b>且已到</b>
+     * （≤ 收口日 T-1）」的行数（D-0090，甲方 2026-09-18「只算已到期的」）。
      *
-     * <p>仅作对账参考，<b>不是</b>分娩率分母 —— 拿它与 Σ月表 mate_litter_count 一比，就能看出月表是否缺行/陈旧。
-     * 定时重算，ALWAYS 覆盖旧值。</p>
+     * <p>定时重算，ALWAYS 覆盖旧值。列名沿用 cohort 时代的叫法，但数据源已换成台账表。</p>
      */
     @TableField(updateStrategy = FieldStrategy.ALWAYS)
     private Integer cohortMaturedCount;

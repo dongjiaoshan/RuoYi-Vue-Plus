@@ -9,14 +9,18 @@ import java.math.BigDecimal;
 /**
  * 年度繁殖与配种 + 产房仔猪质量指标 VO（FIX-MGMT-MP-BRD-001，原型"种猪 tab·年度繁殖与配种 / 年度产房与仔猪质量"）。
  *
- * <p>对应原型种猪 tab 的 ②年度繁殖与配种指标 + ③年度产房与仔猪质量两组 KPI。数据取年表
- * {@code t_farm_year_production}（聚合 job 每日 00:30 重算落盘）为权威源，取代旧版 live 实时算
+ * <p>对应原型种猪 tab 的 ②年度繁殖与配种指标 + ③年度产房与仔猪质量两组 KPI。除分娩率/配种率两格外，
+ * 数据取年表 {@code t_farm_year_production}（聚合 job 每日重算落盘）为权威源，取代旧版 live 实时算
  * （旧算法率类有跨月窗口伪影、NPD 摊算过大等偏差，甲方口径以年表为准）。</p>
+ *
+ * <p>⚠️ <b>分娩率 / 配种率两格例外</b>：甲方 row231 明确「不再读取年表数据，改为基于
+ * {@code t_farm_farrowing_rate} 表计算」，这两格实时扫台账（D-0090 + D-0091），
+ * 年表那一年有没有落盘行都不影响它们。</p>
  *
  * <p>字段 ← 年表列映射：</p>
  * <ul>
- *   <li>{@link #mateRate} 配种率 / {@link #farrowRate} 分娩率 ← {@code year_farrow_rate}
- *       （V1 有效分娩 = 分娩记录，配种率与分娩率同口径）</li>
+ *   <li>{@link #mateRate} 配种率 / {@link #farrowRate} 分娩率 ← <b>实时扫 {@code t_farm_farrowing_rate}</b>
+ *       （不是年表列；V1 配种率与分娩率同口径）</li>
  *   <li>{@link #weanMateInterval} 断配间隔 ← {@code wean_breed_interval}（天）</li>
  *   <li>{@link #avgNonProductiveDays} 平均非生产天数 NPD ← {@code avg_npd_days}（天）</li>
  *   <li>{@link #totalBornCount} 总产仔数 ← {@code total_born_count} / {@link #totalLiveBorn} 总活仔 ← {@code total_live_born}</li>
@@ -55,10 +59,10 @@ public class BreedingAnnualVo implements Serializable {
     /** 统计区间天数（年表 psy_stat_days）。 */
     private Integer psyStatDays;
 
-    /** 配种率（年表 year_farrow_rate，百分比数值如 55.56；V1 与分娩率同口径）。 */
+    /** 配种率（实时取 t_farm_farrowing_rate，百分比数值如 55.56；V1 与分娩率同口径）。 */
     private BigDecimal mateRate;
 
-    /** 分娩率（年表 year_farrow_rate，百分比数值如 55.56）。 */
+    /** 分娩率（实时取 t_farm_farrowing_rate，D-0090 分母 / D-0091 分子；百分比数值如 55.56）。 */
     private BigDecimal farrowRate;
 
     /** 断配间隔（天）= AVG(下次配种日 − 上次断奶日)，1 位小数。 */

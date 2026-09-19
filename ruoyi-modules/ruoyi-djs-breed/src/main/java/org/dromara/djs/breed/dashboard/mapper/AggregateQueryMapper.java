@@ -724,9 +724,9 @@ public interface AggregateQueryMapper {
      * <p>口径修正（row14 B3）：分娩头数 = 母猪头数（窝数），一行 farrow = 一窝 = 一头母猪分娩，
      * 故用 COUNT(*) 不是 SUM(live_born)（仔猪数）。</p>
      *
-     * <p>⚠️ 年分娩率与 PSY <b>现在都不走本列</b>：前者分子分母同取月表 Σ（D-0087），
-     * 后者分子是日表 {@code pregnant_sow_count}（D-0084）。本列只落日表，年表那个同名列
-     * 语义已不同（= Σ月表 cohort_farrow_count），别按名字互推。</p>
+     * <p>⚠️ 年分娩率与 PSY <b>现在都不走本列</b>：前者分子分母同取 {@code t_farm_farrowing_rate}
+     * （D-0090 分母 / D-0091 分子 / D-0092 换源），后者分子是日表 {@code pregnant_sow_count}（D-0084）。
+     * 本列只落日表，年表那个同名列语义已不同（= 台账全年按期分娩行数），别按名字互推。</p>
      *
      * <p>配种→分娩天数偏移读配置（row183）：{@code breedToFarrowDays} 来自配置键
      * {@code sow_breed_to_farrow_days}（缺省 114），不再写死 114。</p>
@@ -797,7 +797,11 @@ public interface AggregateQueryMapper {
         + "          ELSE 'UNDECIDED' END ";
 
     /**
-     * 判定日落在 [from, to) 的配种批次去向汇总（月/年分娩率的分子分母来源）。
+     * 判定日落在 [from, to) 的配种批次去向汇总。
+     *
+     * <p>⚠️ 自 D-0090/D-0091 起<b>不再是</b>月/年分娩率的分子分母来源（那已改取 t_farm_farrowing_rate）。
+     * 现在只剩一个用途：年度聚合里拿它的 {@code bred} 与台账到期行数做<b>独立</b>交叉校验 ——
+     * 台账漏行时只有一个不从台账取数的来源能发现，别再把它换成台账自己的值。</p>
      *
      * @param judgeDays 分娩判定节点天数（sow_farrow_judge_deadline_days，缺省 119）
      * @return {bred, farrow, farrowLate, returnCount, emptyCount, abortCount, goneCount, undecided}
@@ -1017,8 +1021,10 @@ public interface AggregateQueryMapper {
      * stat_month 闭区间 [fromMonth, toMonth]（'yyyy-MM' 字符串按字典序，等价月份序）。
      * 缺数据补 0；rowCnt = 有效月行数。
      *
-     * <p>⚠️ 没有「回落业务表」的兜底分支：月表整段缺行时各列 Σ 就是 0，年分娩率随之为 0。
-     * 这是有意的 —— 分子分母同取月表才能保证分子 ⊆ 分母；缺行由 upsertAnnualIndicator 的覆盖面告警提示补跑。</p>
+     * <p>⚠️ 没有「回落业务表」的兜底分支：月表整段缺行时各列 Σ 就是 0。
+     * <b>这已不再影响年分娩率</b>（D-0092 起年值直扫 {@code t_farm_farrowing_rate}，
+     * 见单测 {@code testAnnualFarrowRateImmuneToMissingMonthlyRows}）；受影响的是月度那一格，
+     * 由 upsertAnnualIndicator 的月表覆盖面告警提示补跑。</p>
      *
      * @return introduceCount / introduceBoarCount / bornCount / weanedCount / deathCount / cullingCount /
      *         marketingCount / marketingWeight / mateLitterCount / cohortFarrowCount / rowCnt

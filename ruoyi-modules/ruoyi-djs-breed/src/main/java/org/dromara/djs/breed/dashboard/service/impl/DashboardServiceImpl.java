@@ -28,6 +28,7 @@ import org.dromara.djs.breed.dashboard.domain.vo.OverdueUndecidedVo;
 import org.dromara.djs.breed.dashboard.mapper.AggregateQueryMapper;
 import org.dromara.djs.breed.dashboard.mapper.AnnualIndicatorMapper;
 import org.dromara.djs.breed.dashboard.mapper.FarmIndicatorRecordMapper;
+import org.dromara.djs.breed.dashboard.mapper.FarrowingRateMapper;
 import org.dromara.djs.breed.dashboard.mapper.MonthlyProductionMapper;
 import org.dromara.djs.breed.dashboard.mapper.SowRecordMapper;
 import org.dromara.djs.breed.dashboard.service.IDashboardService;
@@ -46,6 +47,7 @@ import java.time.YearMonth;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -100,6 +102,7 @@ public class DashboardServiceImpl implements IDashboardService {
     private final AnnualIndicatorMapper annualIndicatorMapper;
     private final AggregateQueryMapper aggregateQueryMapper;
     private final FarmIndicatorRecordMapper farmIndicatorRecordMapper;
+    private final FarrowingRateMapper farrowingRateMapper;
     private final SowPerformanceMapper sowPerformanceMapper;
     private final IProductionCycleConfigService productionCycleConfigService;
     private final IFattenAgeStageService fattenAgeStageService;
@@ -114,8 +117,6 @@ public class DashboardServiceImpl implements IDashboardService {
     private static final int DEFAULT_FARROW_JUDGE_DEADLINE_DAYS = 119;
     /** 年化乘数分子（PSY / 平均非生产天数按「头/母猪·年」「天/年」口径展示）。 */
     private static final BigDecimal DAYS_PER_YEAR = new BigDecimal("365");
-    /** 百分比上界，用于「率 >100% 必是脏数据」的自检告警。 */
-    private static final BigDecimal ONE_HUNDRED = new BigDecimal("100");
 
     /**
      * PSY 式里的标准妊娠期 115（甲方 2026-09-16：需求单上写的是 114，祝碧「猪都是 115 天分娩」、
@@ -547,10 +548,22 @@ public class DashboardServiceImpl implements IDashboardService {
 
         BreedingAnnualVo vo = new BreedingAnnualVo();
         vo.setYear(year);
+
+        // 分娩率 —— 甲方 row231 明确「不再读取年表数据，改为基于 t_farm_farrowing_rate 表计算」，
+        //   故这一格实时扫台账（口径 D-0090+D-0091，与年表落盘那列同一个方法算，不会分叉）。
+        //   实时算的好处：结局补录当天就反映出来，不用等夜间跑批。
+        // 🔴 必须算在 ai == null 早退**之前**：台账与年表是两个独立的表，年表那一年还没跑批落盘时
+        //   台账照样有数。放在早退分支之后等于「不读年表的值、但年表那行必须存在，否则这格归零」，
+        //   与甲方原话正相反（实测：台账 1/2=50% 的年份，年表无行时接口返回 0）。
+        BigDecimal farrowRate = farrowRateFromLedger(
+            tenantId, LocalDate.of(year, 1, 1), LocalDate.of(year + 1, 1, 1), farrowRateAsOf(year));
+        // 配种率 V1 口径同分娩率，随之一并取实时值。
+        vo.setMateRate(farrowRate);
+        vo.setFarrowRate(farrowRate);
+
         if (ai == null) {
+            // 年表还没这一年的行：其余字段没有来源，归零；分娩率上面已从台账取到，不覆盖。
             vo.setPsy(BigDecimal.ZERO);
-            vo.setMateRate(BigDecimal.ZERO);
-            vo.setFarrowRate(BigDecimal.ZERO);
             vo.setWeanMateInterval(BigDecimal.ZERO);
             vo.setAvgNonProductiveDays(BigDecimal.ZERO);
             vo.setTotalBornCount(BigDecimal.ZERO);
@@ -561,15 +574,13 @@ public class DashboardServiceImpl implements IDashboardService {
             vo.setPsyStatDays(0);
             return vo;
         }
-        // ②年度繁殖与配种：以年表 t_farm_year_production 落盘值为权威源（甲方口径，取代旧 live 实时算）。
-        //   年表率类字段已 ×100（如 55.56），mp 直接拼 "%"。配种率 V1 口径同分娩率（年表仅存 year_farrow_rate）。
-        BigDecimal farrowRate = bdZero(ai.getYearFarrowRate());
+        // ②年度繁殖与配种：其余字段仍以年表 t_farm_year_production 落盘值为权威源（甲方口径）。
+        //   年表率类字段已 ×100（如 55.56），mp 直接拼 "%"。
         // R72：年度繁殖卡首格由「配种率」改「PSY」，取年表 psy（头/母猪·年）。mateRate 仍保留兼容不再前端展示。
+        //   分娩率 / 配种率两格已在上面从台账取过，此处不再覆盖。
         vo.setPsy(bdZero(ai.getPsy()));
         vo.setPsyStatFrom(ai.getPsyStatFrom() == null ? null : ai.getPsyStatFrom().toString());
         vo.setPsyStatDays(zeroIfNull(ai.getPsyStatDays()));
-        vo.setMateRate(farrowRate);
-        vo.setFarrowRate(farrowRate);
         vo.setWeanMateInterval(bdZero(ai.getWeanBreedInterval()));
         vo.setAvgNonProductiveDays(bdZero(ai.getAvgNpdDays()));
         // ③年度产房与仔猪质量
@@ -842,8 +853,10 @@ public class DashboardServiceImpl implements IDashboardService {
         YearMonth prev = yearMonth.minusMonths(1);
         String tenantId = currentTenant();
 
-        // 各指标以月表 t_farm_monthly_production 预算字段为权威源（甲方口径）：live 重算对「率」类有跨月
-        // 窗口伪影（分娩率/配怀率 >100%）、NPD 用年均公式算成数百天，均以月表 job 落盘值为准。
+        // 除分娩率外，各指标以月表 t_farm_monthly_production 落盘字段为权威源（甲方口径）：live 重算对
+        // 「率」类有跨月窗口伪影（配怀率 >100%）、NPD 用年均公式算成数百天，均以月表 job 落盘值为准。
+        // ⚠️ 分娩率是例外，甲方 row230 要求改取 t_farm_farrowing_rate 实时算 —— 见下方那一行。
+        //   它不受上述跨月伪影影响：分子条件是分母条件的子集，同一次查询出数，结构上 ≤100%。
         MonthlyProduction curr = selectMonth(tenantId, yearMonth);
         MonthlyProduction prev0 = selectMonth(tenantId, prev);
 
@@ -851,7 +864,12 @@ public class DashboardServiceImpl implements IDashboardService {
         vo.setCurrentMonth(yearMonth.toString());
         vo.setPreviousMonth(prev.toString());
         List<MonthlyProductionStatVo.StatRow> rows = vo.getRows();
-        rows.add(new MonthlyProductionStatVo.StatRow("分娩率", mv(curr, MonthlyProduction::getFarrowRate), mv(prev0, MonthlyProduction::getFarrowRate), "%"));
+        // 分娩率例外 —— 甲方 row230 明确「不再读取养殖月表数据，改为基于 t_farm_farrowing_rate 表计算」，
+        //   当月/上月两列都实时扫台账（口径 D-0090+D-0091，与月表落盘那列同一个方法算，不会分叉）。
+        //   其余各行仍读月表落盘值（见上方注释：live 重算对率类有跨月窗口伪影）。
+        rows.add(new MonthlyProductionStatVo.StatRow("分娩率",
+            farrowRateFromLedger(tenantId, yearMonth.atDay(1), yearMonth.plusMonths(1).atDay(1), farrowRateAsOf(yearMonth)),
+            farrowRateFromLedger(tenantId, prev.atDay(1), prev.plusMonths(1).atDay(1), farrowRateAsOf(prev)), "%"));
         // R73：删除「配怀率」行（窗口伪影常 >100%，甲方要求整行去掉）。
         rows.add(new MonthlyProductionStatVo.StatRow("断配间隔", mv(curr, MonthlyProduction::getWeanBreedInterval), mv(prev0, MonthlyProduction::getWeanBreedInterval), "天"));
         rows.add(new MonthlyProductionStatVo.StatRow("返空流头数", mvInt(curr, MonthlyProduction::getAbnormalCount), mvInt(prev0, MonthlyProduction::getAbnormalCount), "头"));
@@ -1138,6 +1156,9 @@ public class DashboardServiceImpl implements IDashboardService {
     @Transactional(rollbackFor = Exception.class)
     public void aggregateRollups(String tenantId, LocalDate asOf,
                                  Collection<YearMonth> months, Collection<Short> years) {
+        // 必须排在月/年 upsert 之前：那两步的分娩率现在直接读 t_farm_farrowing_rate，
+        // 先刷表再汇总，否则本轮算的是上一轮的结局快照。
+        refreshFarrowingRate(tenantId, months);
         upsertSowPerformance(tenantId, asOf);
         for (YearMonth m : months) {
             upsertMonthlyProduction(tenantId, m);
@@ -1145,6 +1166,85 @@ public class DashboardServiceImpl implements IDashboardService {
         for (Short y : years) {
             upsertAnnualIndicator(tenantId, y);
         }
+    }
+
+    /**
+     * 刷新同期配种分娩记录表（BRD-STAT-FARROWRATE-001，甲方 row229）。
+     *
+     * <p>四步与甲方原文同序：配种 → 分娩 → 返空流 → 死淘，外加一步「源配种记录已软删则本表跟着软删」。</p>
+     *
+     * <p><b>窗口取「业务日 ∪ 预估分娩日」两段的并集</b>，两者缺一不可，理由见
+     * {@link FarrowingRateMapper} 顶部注释：只圈业务日会漏掉本轮正在出数的那批
+     * （它们的配种日在 judgeDays 天之前，与刷新窗结构上不相交，staging 实测交集为 0/57）；
+     * 只圈预估分娩日会漏掉新录的配种（要等 judgeDays 天才进表）。并集之后，
+     * 一条记录**新录当晚**进表一次、**成熟出数时**再收敛一次。</p>
+     *
+     * <p>甲方说的「每日更新近一个月」由调用方的月份集合体现：夜间跑批滚动窗覆盖约 3 个月（≥近一个月），
+     * 单日手工触发则只刷那一个月。</p>
+     */
+    private void refreshFarrowingRate(String tenantId, Collection<YearMonth> months) {
+        if (months == null || months.isEmpty()) {
+            return;
+        }
+        YearMonth min = Collections.min(months);
+        YearMonth max = Collections.max(months);
+        LocalDate from = min.atDay(1);
+        LocalDate to = max.plusMonths(1).atDay(1);   // 右开界
+        int judgeDays = farrowJudgeDeadlineDays();
+
+        // 六步都传同一组 (from, to, judgeDays) —— 窗口口径在 mapper 的 WIN_SRC / WIN_LEDGER
+        // 两个常量里，这里只负责把同一个区间原样传下去。任一处传窄/传塌，对应那一列就永远
+        // 回填不进来（实测：step2 的 to 写成 from → 分娩率恒 0%），故有测试逐个钉住实参一致。
+        farrowingRateMapper.refreshStep1Breeding(tenantId, from, to, judgeDays);
+        farrowingRateMapper.refreshStep1bResync(tenantId, from, to, judgeDays);
+        farrowingRateMapper.refreshStep2Farrow(tenantId, from, to, judgeDays);
+        farrowingRateMapper.refreshStep3Abnormal(tenantId, from, to, judgeDays);
+        farrowingRateMapper.refreshStep4Cull(tenantId, from, to, judgeDays);
+        farrowingRateMapper.softDeleteOrphans(tenantId, from, to, judgeDays);
+
+        // expected_farrow_date 是落盘快照，本次只刷了 [from,to) 这段。判定节点配置若改过，
+        // 更早的历史行仍按旧值判「按期分娩」，分娩率会跨期口径不一致 —— 报出来让人去重跑全量初始化，
+        // 不在这里静默改写窗口外的历史行（那等于一次没人知道的全表订正）。
+        int drift = farrowingRateMapper.countJudgeDaysDrift(tenantId, judgeDays);
+        if (drift > 0) {
+            log.warn("[FarrowingRate] ⚠️ tenant={} 有 {} 行的预估分娩日与当前判定节点({}天)对不上 —— "
+                    + "判定节点配置改过、而这些行在每日刷新窗口之外。分娩率会出现跨期口径不一致，"
+                    + "请重跑一次全量初始化（trigger-aggregate 覆盖到这些行所在的月份）。",
+                tenantId, drift, judgeDays);
+        }
+    }
+
+    /**
+     * mp 侧月/年分娩率取数（甲方 2026-09-18 拍板 D-0090 + D-0091）。
+     *
+     * <p>调用方只有两处：{@code getBreedingAnnual}（年度卡）与 {@code getMonthlyProductionStats}
+     * （当月表）。聚合落盘那两处（{@code upsertMonthlyProduction} / {@code upsertAnnualIndicator}）
+     * 直接调 {@link FarrowingRateMapper#selectFarrowRate}，因为它们还要取 denom/numer 原始计数写列，
+     * 不只要比率 —— 四处共用同一条 SQL，口径不会分叉。分母/分子定义见该 mapper 方法。</p>
+     *
+     * @param asOf 收口日（传 T-1）；预估分娩日晚于它的批次结局还不可能产生，不进分母
+     * @return 百分比数值（如 97.73）；分母为 0 时返回 0
+     */
+    private BigDecimal farrowRateFromLedger(String tenantId, LocalDate from, LocalDate to, LocalDate asOf) {
+        Map<String, Object> r = farrowingRateMapper.selectFarrowRate(tenantId, from, to, asOf);
+        return pct(ratio(mapInt(r, FarrowingRateMapper.K_NUMER), mapInt(r, FarrowingRateMapper.K_DENOM)));
+    }
+
+    /**
+     * 年窗口的收口日：当年取 T-1，历史年取该年 12-31，未来年取 T-1（落在窗口前 → 分母 0）。
+     * 与月表/年表 upsert 的右开界 {@code min(次年1月1日, 今天)} 等价。
+     */
+    private static LocalDate farrowRateAsOf(int year) {
+        return minOf(LocalDate.now().minusDays(1), LocalDate.of(year, 12, 31));
+    }
+
+    /** 月窗口的收口日：当月取 T-1，历史月取该月最后一天。与 {@link #farrowRateAsOf(int)} 同构。 */
+    private static LocalDate farrowRateAsOf(YearMonth month) {
+        return minOf(LocalDate.now().minusDays(1), month.atEndOfMonth());
+    }
+
+    private static LocalDate minOf(LocalDate a, LocalDate b) {
+        return a.isBefore(b) ? a : b;
     }
 
     /** 滚动重算跨度上限（天）：防手滑传个 2020-01-01 把库跑穿。历史一次性回补分段跑。 */
@@ -1602,16 +1702,21 @@ public class DashboardServiceImpl implements IDashboardService {
         int sumEndNonprodSow = mapInt(sum, "sumEndNonprodSow");
 
         int daysInMonth = month.lengthOfMonth();
-        // 分娩率（配种批次口径 BRD-STAT-COHORT-001）：收「判定日 = 配种日 + judgeDays 落在本月」的批次，
-        //   分母 = 这些批次数、分子 = 其中在 judgeDays 内分娩的头数 —— 分子分母是同一批猪。
-        //   直扫底表，不经日表（日表 7/31 才起且不回补，分娩窝数实测漏 40%）。
-        int judgeDays = farrowJudgeDeadlineDays();
-        Map<String, Object> cohort = aggregateQueryMapper.selectCohortOutcome(tenantId, from, to, judgeDays);
-        int mateLitter = mapInt(cohort, "bred");
-        int cohortFarrow = mapInt(cohort, "farrow");
+        // 分娩率（甲方 2026-09-18 拍板 D-0090 + D-0091，row230）：改从 t_farm_farrowing_rate 取数，
+        //   分母 = 预估分娩日落在本月**且已到**（≤ 收口日）的记录数；
+        //   分子 = 其中分娩日期非空且 ≤ 预估分娩日的记录数（晚产窝不算）。
+        //   与原 cohort 口径逐字等价（分娩日 ≤ 配种日+judgeDays ⟺ DATEDIFF ≤ judgeDays），换源不改数。
+        //   窗口对齐：cohort 原先用 expected < to（to 已按 min(下月1日, 今天) 收口），
+        //   这里等价写成 [月初, 下月1日) ∩ (expected ≤ to−1天)。
+        Map<String, Object> fr = farrowingRateMapper.selectFarrowRate(
+            tenantId, from, month.plusMonths(1).atDay(1), to.minusDays(1));
+        int mateLitter = mapInt(fr, FarrowingRateMapper.K_DENOM);
+        int cohortFarrow = mapInt(fr, FarrowingRateMapper.K_NUMER);
         // 当月配种母猪头数（实时，COUNT(DISTINCT pig_id) —— spec「配种母猪头数」按头去重）
         int breedingSowCount = aggregateQueryMapper.countDistinctBreedingSowInRange(tenantId, dtFrom, dtTo);
 
+        // mate_litter_count / cohort_farrow_count 两列与本率同取这一次查询，三者永远自洽
+        // （甲方 row228 原文点名过 mate_litter_count，故继续落盘供对账）。
         BigDecimal farrowRate = pct(ratio(cohortFarrow, mateLitter));
         // 配种率% = 当月配种母猪头数 / ((Σ日生产母猪 + Σ日230后备)/当月天数) × 100
         //   配种率分母用 230 后备（与 NPD 分母口径不同，各公式不共用变量）
@@ -1781,24 +1886,25 @@ public class DashboardServiceImpl implements IDashboardService {
             : annualize(scale3(new BigDecimal(totalNpdDays)
                 .divide(avgProdSowStock, 6, RoundingMode.HALF_UP)), daysElapsed);
 
-        // 年分娩率（D-0087：口径=甲方 2026-09-16 / 收口=Kevin 2026-09-17）= 年分娩头数 ÷ Σ月表 mate_litter_count × 100。
-        //   **分子分母必须同取月表这一批行**：月表里 mate_litter_count 与 cohort_farrow_count 由
-        //   upsertMonthlyProduction 的同一次 selectCohortOutcome 一并写入（判定日落在该月的批次数 /
-        //   其中按期分娩的头数），所以每一行都满足分子 ⊆ 分母；年 = Σ月，甲方要的逐层对账才真的成立。
-        //   ⚠️ 分子若改回 live 扫全年（selectCohortOutcome(from,to)）就会出事：它覆盖全年，而分母只覆盖
-        //   「已落盘的月」—— 滚动窗只重算最近两三个月，1-6 月长期没有月行，分子照算分母不算，
-        //   实测可以飙到 113%。两个来源覆盖面不等，不是加个上限能糊过去的。
-        //   ⚠️ 但「≤100%」只在写入那一刻逐行成立，**不是代码强制的不变量**：某个月行若被手工订正、
-        //   或停留在旧口径上（该月已滑出重算窗就不会被刷新），Σ 之后照样能 >100%。真出现 >100%
-        //   不要夹逼，那是月表有脏行的信号，去查是哪个月。
+        // 年分娩率（甲方 2026-09-18 拍板 D-0090 + D-0091，row231）：直接扫 t_farm_farrowing_rate 整年，
+        //   **不再 Σ月表**。分子分母出自同一次查询、逐行分子 ⊆ 分母。
+        //   ⚠️ 这**不等于**「覆盖面问题消失了」——只是把它从「月表缺行」搬到了「台账缺行」：台账同样靠
+        //   滚动窗刷新，窗外补录的配种/分娩进不来，分子分母会一起少，年值静默偏移且页面无信号。
+        //   所以下面那条 live-vs-台账 的交叉校验是**必需**的，不能省。
+        //   窗口对齐月表：[年初, 次年1月1日) ∩ (expected ≤ to−1天)，to 已按 min(次年1月1日, 今天) 收口。
+        Map<String, Object> yearFr = farrowingRateMapper.selectFarrowRate(
+            tenantId, from, LocalDate.of(year + 1, 1, 1), to.minusDays(1));
+        int cohortMatured = mapInt(yearFr, FarrowingRateMapper.K_DENOM);
+        int cohortFarrow = mapInt(yearFr, FarrowingRateMapper.K_NUMER);
+        BigDecimal yearFarrowRate = pct(ratio(cohortFarrow, cohortMatured));
+        // Σ月表 mate_litter_count 不再参与年分娩率，只留作月表覆盖面对账（见下方告警）。
         int mateLitterCount = mapInt(mSum, "mateLitterCount");
-        int cohortFarrow = mapInt(mSum, "cohortFarrowCount");
-        BigDecimal yearFarrowRate = pct(ratio(cohortFarrow, mateLitterCount));
-        // cohort_matured_count 另取 live 全年值，只作对账参考（跟 Σ月 mate_litter_count 一比即可看出
-        // 月表是不是陈旧/缺行），不参与分娩率。
-        Map<String, Object> yearCohort = aggregateQueryMapper.selectCohortOutcome(
-            tenantId, from, to, farrowJudgeDeadlineDays());
-        int cohortMatured = mapInt(yearCohort, "bred");
+        // 🔴 独立交叉校验源：live 直扫 t_farm_pig_breeding 的全年到期批次数。
+        //   **必须不从台账取数** —— 台账漏了一条（窗外补录、刷新窗够不着）时，只有一个独立来源能发现。
+        //   一度把这里也换成台账自己的 denom，那等于拿同一个数跟自己比：两边一起掉、告警永不触发，
+        //   而且真报出来时手指还指向月表。派生值不能用来校验它自己。
+        int liveMatured = mapInt(
+            aggregateQueryMapper.selectCohortOutcome(tenantId, from, to, farrowJudgeDeadlineDays()), "bred");
         // 超期仍挂「已配种」的母猪按 D-0082 照常计入 PSY 分子 —— 但它们是「结论没录进来」，
         // 不补录的话 PSY 会持续虚高（staging 实测 83 头在怀里 29 头超期、分子虚高 12% 且逐日增长）。
         // 指标不纠偏，改由这条告警提示该去补录，别让它无声无息地推高一个对外指标。
@@ -1810,22 +1916,29 @@ public class DashboardServiceImpl implements IDashboardService {
                 tenantId, overduePz, farrowJudgeDeadlineDays(), psy);
         }
 
-        // 月表缺行 / 陈旧时年分娩率会静默少报（分母少算了没落盘的那些月），页面上看不出来 ——
-        // live 全年到期批次数与 Σ月表一比就露馅，差了就告警，别让这个数悄悄错着。
-        if (cohortMatured != mateLitterCount) {
-            // 缺月会同时掉分子和分母，偏高偏低都可能，别在文案里断言方向。
-            log.warn("[DashboardAggregate] ⚠️ 年分娩率覆盖面存疑 tenant={} year={}：Σ月表 mate_litter_count={}"
-                    + " 与 live 全年到期批次数={} 不一致，差 {} —— 多半是月表缺行或停在旧口径（滚动窗只刷最近几个月）。"
-                    + "缺的月份分子分母一起掉，年分娩率={}% 偏高偏低都可能，补跑 trigger-aggregate 覆盖缺失月份后再看。",
-                tenantId, year, mateLitterCount, cohortMatured, cohortMatured - mateLitterCount, yearFarrowRate);
+        // 🔴 台账覆盖面：live 底表 vs 台账。差了就是台账漏行（窗外补录 / 刷新窗够不着 / 初始化后没再刷），
+        //   年分娩率会静默偏移，页面上完全看不出来。这是本表唯一的独立体检。
+        //   已知的良性差异只有一种：孤儿配种记录（pig_id 在 t_farm_pig_info 里查无此猪）——
+        //   live cohort 走内连接会丢掉它、台账走左连接会留着。文案里点名出来，免得每次都去猜。
+        if (liveMatured != cohortMatured) {
+            // 两个方向都可能出现，别在文案里断言是哪一种（差>0=台账少行，差<0=台账多行）——
+            // 旧版这里写死「多半是台账缺行」，实测台账多行时它照样这么说，把人引向错误方向。
+            log.warn("[DashboardAggregate] 🔴 台账覆盖面存疑 tenant={} year={}：live 底表全年到期批次数={}"
+                    + " 与 t_farm_farrowing_rate 到期行数={} 不一致，差 {}（{}）。年分娩率={}% 很可能是错的。"
+                    + "台账少行：多半是窗外补录/刷新窗够不着，补跑 trigger-aggregate 覆盖那些**业务日**所在月份；"
+                    + "台账多行：多半是源配种已撤销而孤儿清理没够着，或存在孤儿配种记录"
+                    + "（猪只主表查无此猪，live 内连接丢、台账左连接留）。",
+                tenantId, year, liveMatured, cohortMatured, liveMatured - cohortMatured,
+                liveMatured > cohortMatured ? "台账少行" : "台账多行", yearFarrowRate);
         }
-        // 分子分母同取月表、逐行满足分子 ⊆ 分母，所以 >100% 只可能来自某个月行本身是脏的
-        // （手工订正过，或停在旧口径没被滚动窗刷到）。光在注释里说「这是信号」不够 —— 得真把信号送出去。
-        if (yearFarrowRate.compareTo(ONE_HUNDRED) > 0) {
-            log.warn("[DashboardAggregate] 🔴 年分娩率 {}% 超过 100%（tenant={} year={}）：分子 {} > 分母 {}。"
-                    + "分子分母同取月表、逐行分子⊆分母，超 100% 必定是某个月行脏了 —— "
-                    + "逐月比 cohort_farrow_count 与 mate_litter_count 找出是哪个月，补跑该月。",
-                yearFarrowRate, tenantId, year, cohortFarrow, mateLitterCount);
+        // 月表自己的分娩率仍会因缺行/陈旧而错，mp 当月表那一行读的就是它。年 vs Σ月一比即可露馅。
+        if (cohortMatured != mateLitterCount) {
+            log.warn("[DashboardAggregate] ⚠️ 月表覆盖面存疑 tenant={} year={}：Σ月表 mate_litter_count={}"
+                    + " 与全年台账到期行数={} 不一致，差 {}（{}）。年分娩率不受影响（直扫台账），"
+                    + "但对应月份的月度分娩率是错的。月表少：滚动窗没刷到那些月，补跑 trigger-aggregate 覆盖它们；"
+                    + "月表多：多半是月行停在旧口径或被手工订正过。",
+                tenantId, year, mateLitterCount, cohortMatured, cohortMatured - mateLitterCount,
+                cohortMatured > mateLitterCount ? "月表少" : "月表多");
         }
         // 平均出栏重 = Σ日出栏总重 / Σ日出栏头数
         BigDecimal avgMarketingWeight = scale3(divide(sumMarketingWeight, sumMarketingCount));
