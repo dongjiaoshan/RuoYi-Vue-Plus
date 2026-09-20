@@ -84,7 +84,10 @@ public class MonthlyProduction extends TenantEntity {
     /** 月均生产母猪存栏数（Σ日期末生产母猪头数/当月已历天数）。定时重算，ALWAYS 覆盖旧值。 */
     @TableField(updateStrategy = FieldStrategy.ALWAYS)
     private BigDecimal avgProdSowStock;
-    /** 月均NPD天数（Σ日非生产母猪 / 月均生产母猪存栏）。定时重算，ALWAYS 覆盖旧值。 */
+    /** 当月NPD天数（Σ当月日非生产母猪头数 + Σ当月妊娠损失天数）= NPD 分子，D-0099。定时重算，ALWAYS 覆盖旧值。 */
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
+    private Integer monthNpdDays;
+    /** 月头均NPD天数（当月NPD天数 / 月均生产母猪存栏）。定时重算，ALWAYS 覆盖旧值。 */
     @TableField(updateStrategy = FieldStrategy.ALWAYS)
     private BigDecimal npdDays;
     /** 总产仔数（当月 SUM total_born）。 */

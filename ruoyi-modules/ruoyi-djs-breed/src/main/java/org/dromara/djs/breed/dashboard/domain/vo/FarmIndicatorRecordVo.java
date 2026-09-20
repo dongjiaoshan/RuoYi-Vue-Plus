@@ -75,8 +75,10 @@ public class FarmIndicatorRecordVo implements Serializable {
     private BigDecimal avgMarketingWeight;
     /** 出栏总重。 */
     private BigDecimal marketingWeight;
-    /** 猪只断奶总重。 */
+    /** 当日断奶仔猪总重 kg（Σ断奶明细 weight）。 */
     private BigDecimal weanTotalWeight;
+    /** 当日出栏猪只在断奶时的总重 kg（净增重被减数）。 */
+    private BigDecimal marketingWeanWeight;
     /** 生长总天数。 */
     private Integer growthTotalDays;
     /** 净增重。 */

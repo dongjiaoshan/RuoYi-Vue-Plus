@@ -8,6 +8,8 @@ import lombok.extern.slf4j.Slf4j;
 import org.dromara.common.core.exception.ServiceException;
 import org.dromara.common.satoken.utils.LoginHelper;
 import org.dromara.djs.common.image.service.ImageUrlResolver;
+import org.dromara.djs.plant.common.domain.vo.DateWindowStatusStatVo;
+import org.dromara.djs.plant.common.util.DateWindowStatusCalculator;
 import org.dromara.djs.plant.crop.domain.CropInfo;
 import org.dromara.djs.plant.crop.mapper.CropInfoMapper;
 import org.dromara.djs.plant.pick.domain.bo.PickAdjustBatchBo;
@@ -18,6 +20,7 @@ import org.dromara.djs.plant.pick.domain.query.PickPlanQuery;
 import org.dromara.djs.plant.pick.domain.vo.PickPlanGroupVo;
 import org.dromara.djs.plant.pick.mapper.PickPlanMapper;
 import org.dromara.djs.plant.pick.service.IPickPlanService;
+import org.dromara.djs.plant.pick.util.PickStatusLabel;
 import org.dromara.djs.plant.plan.domain.PlantDetails;
 import org.dromara.djs.plant.plan.domain.vo.PlantDetailsVo;
 import org.dromara.djs.plant.plan.mapper.PlantDetailsMapper;
@@ -31,7 +34,9 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.util.ArrayList;
 import java.util.Date;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Collections;
 import java.util.List;
@@ -73,10 +78,33 @@ public class PickPlanServiceImpl implements IPickPlanService {
 
     @Override
     public List<PickPlanGroupVo> listByCrop(PickPlanQuery query) {
-        String tenantId = currentTenantSafe();
         PickPlanQuery q = (query == null) ? new PickPlanQuery() : query;
+        List<PickPlanGroupVo> rows = aggregate(q);
+        enrichCropImage(rows);
+        fillPickStatus(rows);
+        return filterByStatus(rows, q.getPickStatus());
+    }
+
+    @Override
+    public DateWindowStatusStatVo statusStat(PickPlanQuery query) {
+        // 统计忽略状态条件本身（选中一档后另外四档全 0 的版块没有意义），其余筛选照常生效；
+        // 作物图不参与计数，跳过 enrichCropImage 省一次批量解析
+        PickPlanQuery q = (query == null) ? new PickPlanQuery() : query;
+        List<PickPlanGroupVo> rows = aggregate(q);
+        fillPickStatus(rows);
+        Map<String, Integer> counts = new HashMap<>();
+        for (PickPlanGroupVo vo : rows) {
+            if (vo.getPickStatus() != null) {
+                counts.merge(vo.getPickStatus(), 1, Integer::sum);
+            }
+        }
+        return DateWindowStatusStatVo.of(counts);
+    }
+
+    /** 列表 / 统计共用的聚合查询（状态是聚合后现算的派生值，不下推 SQL，故两处取的是同一批行）。 */
+    private List<PickPlanGroupVo> aggregate(PickPlanQuery q) {
         List<PickPlanGroupVo> rows = pickPlanMapper.aggregateByCrop(
-            tenantId,
+            currentTenantSafe(),
             LocalDate.now().getYear(),
             q.getCropId(),
             q.getCropName(),
@@ -84,8 +112,48 @@ public class PickPlanServiceImpl implements IPickPlanService {
             q.getBeginEarliest(),
             q.getEndEarliest()
         );
-        enrichCropImage(rows);
-        return rows;
+        return rows == null ? new ArrayList<>() : rows;
+    }
+
+    /**
+     * 现算每行的采摘状态：状态码给前端查 i18n + 配色，中文名给导出直接写 Excel。
+     *
+     * <p>窗口 = 最早采摘日期（{@code MIN(earliest_harvestdate)}）→ 最晚采摘日期
+     * （{@code MAX(last_harvestdate)}），判定与果蔬上市计划共用
+     * {@link DateWindowStatusCalculator}（甲方两处给的是同一套 30/15 天五档规则）。</p>
+     *
+     * <p>整批共用同一个 {@code today}，避免同一次查询里跨零点导致相邻行按不同「当天」判定。</p>
+     *
+     * @param rows 待填充行（可空）
+     */
+    private void fillPickStatus(List<PickPlanGroupVo> rows) {
+        if (CollUtil.isEmpty(rows)) {
+            return;
+        }
+        LocalDate today = LocalDate.now();
+        for (PickPlanGroupVo vo : rows) {
+            String status = DateWindowStatusCalculator.resolve(vo.getPlanEarliest(), vo.getPlanLatest(), today);
+            vo.setPickStatus(status);
+            vo.setPickStatusName(PickStatusLabel.name(status));
+        }
+    }
+
+    /**
+     * 按状态码过滤已填好状态的行；条件为空时原样返回。
+     *
+     * <p>状态是现算的派生值、SQL 里没有这一列，所以过滤只能落在这里。本列表不分页，
+     * 过滤后的行即全量结果，列表与导出共用同一条路径，两边口径天然一致。</p>
+     *
+     * @param rows   已经过 {@link #fillPickStatus} 的行
+     * @param wanted 目标状态码（可空 = 不过滤）
+     * @return 过滤后的行
+     */
+    private List<PickPlanGroupVo> filterByStatus(List<PickPlanGroupVo> rows, String wanted) {
+        if (wanted == null || wanted.isBlank()) {
+            return rows;
+        }
+        String code = wanted.trim();
+        return rows.stream().filter(vo -> code.equals(vo.getPickStatus())).collect(Collectors.toList());
     }
 
     /** 作物主图：L1 image_oss_id → resolver 4 层兜底转 public URL，批量禁 N+1。 */

@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.dromara.common.core.exception.ServiceException;
+import org.dromara.djs.breed.event.weaning.domain.vo.PigWeaningVo;
 import org.dromara.common.core.service.DictService;
 import org.dromara.djs.breed.core.domain.Pig;
 import org.dromara.djs.breed.core.domain.bo.PigEventBo;
@@ -23,6 +24,7 @@ import org.dromara.djs.breed.event.weaning.domain.PigWeaning;
 import org.dromara.djs.breed.event.weaning.domain.PigWeaningDetail;
 import org.dromara.djs.breed.event.weaning.domain.bo.WeaningBo;
 import org.dromara.djs.breed.event.weaning.domain.bo.WeaningDetailBo;
+import org.dromara.djs.breed.event.weaning.domain.vo.WeaningPigletVo;
 import org.dromara.djs.breed.event.weaning.mapper.PigWeaningDetailMapper;
 import org.dromara.djs.breed.event.weaning.mapper.PigWeaningMapper;
 import org.junit.jupiter.api.BeforeAll;
@@ -45,6 +47,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -108,6 +111,10 @@ class WeaningServiceImplTest {
         assistant.setCurrentNamespace("test");
         TableInfoHelper.initTableInfo(assistant, Pig.class);
         TableInfoHelper.initTableInfo(assistant, PigPigletno.class);
+        // BRD-WEAN-SELECT-001：分批断奶要按 farrowId 查本窝既有断奶记录、按 weaningId 查明细耳号，
+        // 两处都用 lambdaQuery（eager 解析列名），mock 路径下同样要先注册 entity。
+        TableInfoHelper.initTableInfo(assistant, PigWeaning.class);
+        TableInfoHelper.initTableInfo(assistant, PigWeaningDetail.class);
     }
 
     @BeforeEach
@@ -157,6 +164,15 @@ class WeaningServiceImplTest {
         d.setEarNo(earNo);
         d.setWeight(new BigDecimal(weight));
         return d;
+    }
+
+    /** 本窝既有断奶记录（分批断奶场景）。 */
+    private PigWeaning mkPriorWeaning(Long id, int weanedCount, int lactationDeath) {
+        PigWeaning w = new PigWeaning();
+        w.setId(id);
+        w.setWeanedCount(weanedCount);
+        w.setLactationDeathCount(lactationDeath);
+        return w;
     }
 
     @Test
@@ -480,6 +496,148 @@ class WeaningServiceImplTest {
     }
 
     @Test
+    @DisplayName("行238 部分断奶: 只选 2/3 头 → 只转这 2 头 + 只翻这 2 头，未选的留在原栏保持哺乳")
+    void partialWean_onlySelectedPigletsAffected() {
+        Pig pig = mkSow(360L, PigLifecycle.FM);
+        when(pigMapper.selectById(360L)).thenReturn(pig);
+        PigFarrow farrow = mkFarrow(560L, 360L, 3, 7777L);
+        when(farrowMapper.selectById(560L)).thenReturn(farrow);
+        // 本窝 3 头已建档仔猪，本次只断前 2 头
+        when(pigletnoMapper.selectList(any())).thenReturn(List.of(
+            mkPiglet(9201L, "P-001"),
+            mkPiglet(9202L, "P-002"),
+            mkPiglet(9203L, "P-003")
+        ));
+
+        WeaningBo bo = mkBo(360L, 560L, 2, new BigDecimal("16.000"));
+        bo.setDetails(List.of(mkDetail(1, "P-001", "8.000"), mkDetail(2, "P-002", "8.000")));
+        bo.setTransferBarnCode("B09");
+        service.recordWeaning(bo);
+
+        // 母猪 1 + 选中仔猪 2 = 3 次转移；P-003 不动
+        ArgumentCaptor<TransferBo> cap = ArgumentCaptor.forClass(TransferBo.class);
+        verify(transferService, times(3)).recordTransfer(cap.capture());
+        assertThat(cap.getAllValues()).extracting(TransferBo::getPigId)
+            .containsExactly(360L, 9201L, 9202L)
+            .doesNotContain(9203L);
+        // 翻育肥也只作用在选中的 2 头上（一次条件 update）
+        verify(pigMapper, times(1)).update(any(), any());
+    }
+
+    @Test
+    @DisplayName("行238 部分断奶: 本次明细一头带耳号都没有（匿名铺行）→ 退化整窝转移，向后兼容")
+    void partialWean_anonymousDetails_fallsBackToWholeLitter() {
+        Pig pig = mkSow(361L, PigLifecycle.FM);
+        when(pigMapper.selectById(361L)).thenReturn(pig);
+        PigFarrow farrow = mkFarrow(561L, 361L, 3, 7777L);
+        when(farrowMapper.selectById(561L)).thenReturn(farrow);
+        when(pigletnoMapper.selectList(any())).thenReturn(List.of(
+            mkPiglet(9301L, "P-001"),
+            mkPiglet(9302L, "P-002")
+        ));
+
+        WeaningBo bo = mkBo(361L, 561L, 2, new BigDecimal("16.000"));
+        bo.setDetails(List.of(mkDetail(1, null, "8.000"), mkDetail(2, null, "8.000")));
+        bo.setTransferBarnCode("B09");
+        service.recordWeaning(bo);
+
+        // 母猪 1 + 整窝 2 = 3 次
+        verify(transferService, times(3)).recordTransfer(any(TransferBo.class));
+    }
+
+    @Test
+    @DisplayName("行238 分批断奶: 本窝已有断奶记录且母猪已 DN → 不再推状态机（(DN,WEAN) 非法流转）")
+    void partialWean_secondBatch_skipsStateMachine() {
+        Pig pig = mkSow(362L, PigLifecycle.DN);
+        when(pigMapper.selectById(362L)).thenReturn(pig);
+        PigFarrow farrow = mkFarrow(562L, 362L, 10, 7777L);
+        when(farrowMapper.selectById(562L)).thenReturn(farrow);
+        when(weaningMapper.selectList(any())).thenReturn(List.of(mkPriorWeaning(8801L, 5, 0)));
+
+        WeaningBo bo = mkBo(362L, 562L, 3, new BigDecimal("24.000"));
+        bo.setDetails(List.of(mkDetail(1, "P-006", "8.000")));
+        service.recordWeaning(bo);
+
+        verify(weaningMapper, times(1)).insert(any(PigWeaning.class));
+        verify(pigCoreService, never()).fireEvent(any());
+    }
+
+    @Test
+    @DisplayName("行238 分批断奶: 首批（本窝无断奶记录）仍推状态机 FM → DN")
+    void partialWean_firstBatch_firesStateMachine() {
+        Pig pig = mkSow(363L, PigLifecycle.FM);
+        when(pigMapper.selectById(363L)).thenReturn(pig);
+        PigFarrow farrow = mkFarrow(563L, 363L, 10, 7777L);
+        when(farrowMapper.selectById(563L)).thenReturn(farrow);
+        when(weaningMapper.selectList(any())).thenReturn(List.of());
+
+        WeaningBo bo = mkBo(363L, 563L, 4, new BigDecimal("32.000"));
+        bo.setDetails(List.of(mkDetail(1, "P-001", "8.000")));
+        service.recordWeaning(bo);
+
+        ArgumentCaptor<PigEventBo> ev = ArgumentCaptor.forClass(PigEventBo.class);
+        verify(pigCoreService, times(1)).fireEvent(ev.capture());
+        assertThat(ev.getValue().getEventType()).isEqualTo(PigStatusEvent.WEAN);
+    }
+
+    @Test
+    @DisplayName("行238 分批断奶: 历史已断 6 + 本次 6 > 活产 10 → 拒绝（累计头数守恒）")
+    void partialWean_cumulativeCountExceedsLiveBorn() {
+        Pig pig = mkSow(364L, PigLifecycle.DN);
+        when(pigMapper.selectById(364L)).thenReturn(pig);
+        PigFarrow farrow = mkFarrow(564L, 364L, 10, 7777L);
+        when(farrowMapper.selectById(564L)).thenReturn(farrow);
+        when(weaningMapper.selectList(any())).thenReturn(List.of(mkPriorWeaning(8802L, 6, 0)));
+
+        WeaningBo bo = mkBo(364L, 564L, 6, new BigDecimal("48.000"));
+        assertThatThrownBy(() -> service.recordWeaning(bo))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("weaning.count_exceeds_live_born");
+        verify(weaningMapper, never()).insert(any(PigWeaning.class));
+    }
+
+    @Test
+    @DisplayName("行239①: 明细行落母猪耳号快照 sow_ear_no")
+    void detailRows_carrySowEarNo() {
+        Pig pig = mkSow(365L, PigLifecycle.FM);
+        when(pigMapper.selectById(365L)).thenReturn(pig);
+        PigFarrow farrow = mkFarrow(565L, 365L, 10, 7777L);
+        when(farrowMapper.selectById(565L)).thenReturn(farrow);
+
+        WeaningBo bo = mkBo(365L, 565L, 2, new BigDecimal("16.000"));
+        bo.setDetails(List.of(mkDetail(1, "P-001", "8.000"), mkDetail(2, "P-002", "8.000")));
+        service.recordWeaning(bo);
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<PigWeaningDetail>> cap = ArgumentCaptor.forClass(List.class);
+        verify(weaningDetailMapper).insertBatch(cap.capture());
+        assertThat(cap.getValue()).extracting(PigWeaningDetail::getSowEarNo)
+            .containsOnly("260520-001");
+    }
+
+    @Test
+    @DisplayName("行238 第4点: 待断奶列表剔除已断奶耳号与已终止仔猪")
+    void listPigletsByFarrow_excludesWeanedAndEnded() {
+        when(pigletnoMapper.selectList(any())).thenReturn(List.of(
+            mkPiglet(9401L, "P-001"),   // 已断奶 → 剔除
+            mkPiglet(9402L, "P-002"),   // 已死亡 → 剔除
+            mkPiglet(9403L, "P-003")    // 仍在哺乳 → 保留
+        ));
+        when(weaningMapper.selectList(any())).thenReturn(List.of(mkPriorWeaning(8803L, 1, 0)));
+        PigWeaningDetail weanedRow = new PigWeaningDetail();
+        weanedRow.setEarNo("P-001");
+        when(weaningDetailMapper.selectList(any())).thenReturn(List.of(weanedRow));
+        Pig dead = mkSow(9402L, PigLifecycle.END);
+        when(pigMapper.selectByIds(any())).thenReturn(List.of(dead));
+
+        var vos = service.listPigletsByFarrow(570L);
+
+        assertThat(vos).extracting(WeaningPigletVo::getEarNo).containsExactly("P-003");
+        // 序号在过滤后重排，从 1 起
+        assertThat(vos.get(0).getPigletSeq()).isEqualTo(1);
+    }
+
+    @Test
     @DisplayName("FIX-BRD-PIGTYPE-001: 该分娩无已建行仔猪 → 不调 pigMapper.update（无可翻仔猪）")
     void flipWeanedPiglets_noPiglets_noUpdate() {
         Pig pig = mkSow(351L, PigLifecycle.FM);
@@ -493,4 +651,58 @@ class WeaningServiceImplTest {
 
         verify(pigMapper, never()).update(any(), any());
     }
+
+    @Test
+    @DisplayName("行238 去重: 本窝已断过的耳号再提交一次 → 拒绝（改造前靠状态机非法流转挡，跳过状态机后必须显式拦）")
+    void partialWean_rejectsAlreadyWeanedPiglet() {
+        Pig pig = mkSow(361L, PigLifecycle.DN);
+        when(pigMapper.selectById(361L)).thenReturn(pig);
+        PigFarrow farrow = mkFarrow(561L, 361L, 3, 7778L);
+        when(farrowMapper.selectById(561L)).thenReturn(farrow);
+        // 本窝 P-001 已经断过
+        when(weaningMapper.selectAlreadyWeanedEarNos(any(), eq(561L), any()))
+            .thenReturn(List.of("P-001"));
+
+        WeaningBo bo = mkBo(361L, 561L, 1, new BigDecimal("9.000"));
+        bo.setDetails(List.of(mkDetail(1, "P-001", "9.000")));
+
+        assertThatThrownBy(() -> service.recordWeaning(bo))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("P-001");
+        // 一行都不许落：重复断会多一行明细、覆盖个体断奶重，还会吃掉头数守恒预算把整窝卡死
+        verify(weaningMapper, never()).insert(any(PigWeaning.class));
+    }
+
+    @Test
+    @DisplayName("行238 去重: 明细全无耳号（匿名铺行）不查去重，退化整窝行为不变")
+    void partialWean_anonymousDetailsSkipDedupProbe() {
+        Pig pig = mkSow(362L, PigLifecycle.FM);
+        when(pigMapper.selectById(362L)).thenReturn(pig);
+        PigFarrow farrow = mkFarrow(562L, 362L, 2, 7779L);
+        when(farrowMapper.selectById(562L)).thenReturn(farrow);
+
+        WeaningBo bo = mkBo(362L, 562L, 2, new BigDecimal("12.000"));
+        bo.setDetails(List.of(mkDetail(1, null, "6.000"), mkDetail(2, null, "6.000")));
+        service.recordWeaning(bo);
+
+        verify(weaningMapper, never()).selectAlreadyWeanedEarNos(any(), any(), any());
+        verify(weaningMapper, times(1)).insert(any(PigWeaning.class));
+    }
+
+    @Test
+    @DisplayName("行239① 明细 VO 必须带母猪耳号 —— 字段声明了却不 set 等于接口对外撒谎")
+    void detailVoCarriesSowEarNo() {
+        Pig pig = mkSow(363L, PigLifecycle.FM);
+        when(pigMapper.selectById(363L)).thenReturn(pig);
+        PigFarrow farrow = mkFarrow(563L, 363L, 1, 7780L);
+        when(farrowMapper.selectById(563L)).thenReturn(farrow);
+
+        WeaningBo bo = mkBo(363L, 563L, 1, new BigDecimal("6.000"));
+        bo.setDetails(List.of(mkDetail(1, "P-010", "6.000")));
+        PigWeaningVo vo = service.recordWeaning(bo);
+
+        assertThat(vo.getDetails()).isNotEmpty();
+        assertThat(vo.getDetails().get(0).getSowEarNo()).isEqualTo(pig.getEarNo());
+    }
+
 }

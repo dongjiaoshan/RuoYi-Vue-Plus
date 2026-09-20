@@ -2,6 +2,7 @@ package org.dromara.djs.plant.market.service;
 
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
+import org.dromara.djs.plant.common.domain.vo.DateWindowStatusStatVo;
 import org.dromara.djs.plant.market.domain.query.MarketPlanQuery;
 import org.dromara.djs.plant.market.domain.vo.MarketPlanVo;
 
@@ -30,4 +31,15 @@ public interface IMarketPlanService {
      * @return 全部匹配行
      */
     List<MarketPlanVo> queryList(MarketPlanQuery query);
+
+    /**
+     * 列表顶部统计版块：五档状态各自的<b>全量</b>行数（不是当前页）。
+     *
+     * <p>除状态外的筛选条件照常生效，状态条件被忽略 —— 见
+     * {@link DateWindowStatusStatVo} 类注释。</p>
+     *
+     * @param query 查询条件（可空）
+     * @return 五档计数
+     */
+    DateWindowStatusStatVo statusStat(MarketPlanQuery query);
 }

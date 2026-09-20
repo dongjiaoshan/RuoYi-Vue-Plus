@@ -31,6 +31,7 @@ import org.dromara.djs.breed.dashboard.mapper.FarmIndicatorRecordMapper;
 import org.dromara.djs.breed.dashboard.mapper.FarrowingRateMapper;
 import org.dromara.djs.breed.dashboard.mapper.MonthlyProductionMapper;
 import org.dromara.djs.breed.dashboard.mapper.SowRecordMapper;
+import org.dromara.djs.breed.dashboard.mapper.WeaningAggregateSyncMapper;
 import org.dromara.djs.breed.dashboard.service.IDashboardService;
 import org.dromara.djs.breed.production.domain.vo.FattenAgeStageVo;
 import org.dromara.djs.breed.production.mapper.SowPerformanceMapper;
@@ -103,6 +104,7 @@ public class DashboardServiceImpl implements IDashboardService {
     private final AggregateQueryMapper aggregateQueryMapper;
     private final FarmIndicatorRecordMapper farmIndicatorRecordMapper;
     private final FarrowingRateMapper farrowingRateMapper;
+    private final WeaningAggregateSyncMapper weaningAggregateSyncMapper;
     private final SowPerformanceMapper sowPerformanceMapper;
     private final IProductionCycleConfigService productionCycleConfigService;
     private final IFattenAgeStageService fattenAgeStageService;
@@ -115,6 +117,15 @@ public class DashboardServiceImpl implements IDashboardService {
     /** 分娩判定节点配置键（BRD-STAT-COHORT-001）。 */
     private static final String CONFIG_KEY_FARROW_JUDGE_DEADLINE = "sow_farrow_judge_deadline_days";
     private static final int DEFAULT_FARROW_JUDGE_DEADLINE_DAYS = 119;
+    /**
+     * 断奶记录汇总列的回算窗口（天，甲方 V6 行239 第 2 点原文「30 天」）。
+     *
+     * <p>原文写的是「t_farm_pig_weaning 里 30 天内分娩的母猪」，但断奶表没有分娩日期 ——
+     * 意图是让每晚的任务只重算最近改动过的那批、不全表重扫，所以取断奶日期近 30 天（D-0102）。
+     * 更早的历史行由迁移 V202609191000 一次性回填。</p>
+     */
+    private static final int WEANING_RESYNC_DAYS = 30;
+
     /** 年化乘数分子（PSY / 平均非生产天数按「头/母猪·年」「天/年」口径展示）。 */
     private static final BigDecimal DAYS_PER_YEAR = new BigDecimal("365");
 
@@ -1159,6 +1170,10 @@ public class DashboardServiceImpl implements IDashboardService {
         // 必须排在月/年 upsert 之前：那两步的分娩率现在直接读 t_farm_farrowing_rate，
         // 先刷表再汇总，否则本轮算的是上一轮的结局快照。
         refreshFarrowingRate(tenantId, months);
+        // 同理，断奶记录的三个汇总列是逐头明细的冗余（甲方 V6 行239 第 2 点），
+        // 明细改过之后不拉齐，月/年断奶类指标就会算在陈旧值上。窗口 30 天见 D-0102。
+        weaningAggregateSyncMapper.resyncFromDetail(
+            tenantId, asOf.minusDays(WEANING_RESYNC_DAYS - 1L), asOf.plusDays(1));
         upsertSowPerformance(tenantId, asOf);
         for (YearMonth m : months) {
             upsertMonthlyProduction(tenantId, m);
@@ -1339,7 +1354,11 @@ public class DashboardServiceImpl implements IDashboardService {
         r.setTotalBornCount(aggregateQueryMapper.sumEventInDayDate("t_farm_pig_farrow", "farrow_date", "total_born", tenantId, dayFrom, dayTo));
         r.setLiveBornCount(aggregateQueryMapper.sumLiveBornInRange(tenantId, dayFrom, dayTo));
         r.setPigletTagCount(aggregateQueryMapper.countDistinctEventInDay("t_farm_pig_pigletno", "tag_date", "id", tenantId, dayFrom, dayTo));
-        r.setWeanedPigletCount(aggregateQueryMapper.sumWeanedInRange(tenantId, dayFrom, dayTo));
+        // 断奶仔猪数 / 断奶总重改以逐头明细为源（甲方 V6 行239 第 3 点）：断奶从「整窝一起断」
+        // 改成「按所选仔猪断」（行238）之后，t_farm_pig_weaning.weaned_count 只是明细的冗余汇总，
+        // 一窝分几次断时只有明细数得准。
+        Map<String, Object> weanDetail = aggregateQueryMapper.aggregateWeanDetailForDay(tenantId, dtFrom, dtTo);
+        r.setWeanedPigletCount(mapInt(weanDetail, "cnt"));
         r.setGrowthRecordCount(aggregateQueryMapper.countDistinctEventInDay("t_farm_pig_growth", "measure_date", "id", tenantId, dayFrom, dayTo));
         r.setCastratePigCount(aggregateQueryMapper.countStatusEventInRange(tenantId, "CASTRATE", dtFrom, dtTo));
         r.setMedicatedPigCount(aggregateQueryMapper.countMedicatedPigInDay(tenantId, dtFrom, dtTo));
@@ -1368,7 +1387,11 @@ public class DashboardServiceImpl implements IDashboardService {
         int growthDays = mapInt(weanAgg, "growthDaysSum");
         BigDecimal marketingWeightWeaned = mapBd(weanAgg, "marketingWeightWeaned");
         BigDecimal netGain = marketingWeightWeaned.subtract(weanTotalWeight);
-        r.setWeanTotalWeight(scale3(weanTotalWeight));
+        // weanTotalWeight 这个局部变量是「当日出栏猪在断奶时的总重」——净增重的被减数，
+        // 与上面刚落的「当日断奶仔猪总重」是两个量。行239 把 wean_total_weight 列征用给了后者，
+        // 所以前者落到 marketing_wean_weight，净增重链条仍可从表里复算（D-0101）。
+        r.setMarketingWeanWeight(scale3(weanTotalWeight));
+        r.setWeanTotalWeight(scale3(mapBd(weanDetail, "weightSum")));
         r.setFeedTotalDays(feedDays);
         r.setGrowthTotalDays(growthDays);
         r.setNetGainWeight(scale3(netGain));
@@ -1385,6 +1408,10 @@ public class DashboardServiceImpl implements IDashboardService {
         // ---- 日NPD天数（row112）= 当日非生产状态母猪头数（= end_nonprod_sow_count 同值） ----
         // 邓博 row114/115 分子改「纯非生产母猪头数」，去掉 230 后备；月/年从本列 Σ 回读。
         r.setNpdDays(zeroIfNull(r.getEndNonprodSowCount()));
+
+        // ---- 妊娠损失天数（甲方 V6 行232，口径 D-0096）= 当天由配种转出为返空流死淘的母猪，
+        //      Σ其在配种状态的停留天数。月/年 NPD 分子加它（D-0099）、PSY 分子减它（D-0100）。 ----
+        r.setPregLossDays(aggregateQueryMapper.sumPregLossDaysForDay(tenantId, dtFrom, dtTo));
 
         // ---- 日分娩猪只妊娠天数（row227）= Σ当日分娩母猪（分娩日−配种日）——
         //      甲方 row227 单独要的统计列，**不是** PSY 分子（PSY 走 pregnant_sow_count，见 upsertAnnualIndicator） ----
@@ -1733,12 +1760,16 @@ public class DashboardServiceImpl implements IDashboardService {
         //   与年表 daysElapsed 同口径；非自然月天数——当月未走完时按已历天数，避免分母虚大拉低月均存栏）
         int daysElapsedInMonth = aggregateQueryMapper.countIndicatorDays(tenantId, from, to);
         BigDecimal avgProdSowStock = scale3(divide(new BigDecimal(sumEndProdSow), daysElapsedInMonth));
-        // 月均NPD天数（row114 口径重构）= Σ日非生产母猪 / 月均生产母猪存栏
-        //   分子去掉 230 后备（纯非生产母猪 = Σ日 npd_days = Σ日 end_nonprod_sow_count）；
-        //   分母改纯生产母猪存栏（avgProdSowStock）；分母 0 → 0。
+        // 当月NPD天数（甲方 V6 行234，口径 D-0099）= Σ日非生产母猪头数 + Σ日妊娠损失天数。
+        //   分子去掉 230 后备（纯非生产母猪 = Σ日 npd_days = Σ日 end_nonprod_sow_count）。
+        int monthNpdDays = sumEndNonprodSow + mapInt(sum, "sumPregLossDays");
+        // 月头均NPD天数 = 当月NPD天数 / 月均生产母猪存栏；分母 0 → 0。
+        //   甲方原文分母写的是「Σ当月每日期末生产母猪头数」，与分子同为「头·日」、相除得到的是比例不是天数
+        //   （现值 0.53 天会变成 0.018）。这里仍按「÷平均存栏」写 —— 等价于甲方式子再乘一个已历天数，
+        //   量纲才成立。待甲方确认，见 D-0097。
         BigDecimal npdDays = avgProdSowStock.signum() == 0
             ? BigDecimal.ZERO
-            : scale3(new BigDecimal(sumEndNonprodSow).divide(avgProdSowStock, 6, RoundingMode.HALF_UP));
+            : scale3(new BigDecimal(monthNpdDays).divide(avgProdSowStock, 6, RoundingMode.HALF_UP));
         // 窝均
         BigDecimal avgBornPerLitter = scale3(divide(new BigDecimal(sumTotalBorn), sumFarrowSow));
         BigDecimal avgLiveBornPerLitter = scale3(divide(new BigDecimal(sumLiveBorn), sumFarrowSow));
@@ -1767,6 +1798,7 @@ public class DashboardServiceImpl implements IDashboardService {
         m.setWeanBreedInterval(weanBreedInterval);
         m.setAbnormalCount(sumAbnormal);
         m.setAvgProdSowStock(avgProdSowStock);
+        m.setMonthNpdDays(monthNpdDays);
         m.setNpdDays(npdDays);
         m.setTotalBornCount(sumTotalBorn);
         m.setAvgBornPerLitter(avgBornPerLitter);
@@ -1863,8 +1895,17 @@ public class DashboardServiceImpl implements IDashboardService {
         // 分子分母同取一批日表行（selectSowDaysInRange 一次查回），区间 = 当年日表实际覆盖段：
         //   日表 2026-07-17 才起，拿全年当分母而分子只有覆盖段的话，份额会被稀释。
         //   起始日与天数落 psy_stat_from / psy_stat_days，mp 卡片据此标注区间。
+        // 分子扣除妊娠损失天数（甲方 V6 行233 第 2 点，D-0100 覆盖 D-0086）：怀了一段最后返情/空怀/
+        //   流产/死淘的，那几天不该算进「有效妊娠」。被减数 Σ日在怀头数与减数按同一批日表行取，
+        //   同一头母猪的那几天在两边一一对应，不会重复扣。
+        // 钳零有两个成因，都不是防御性代码：
+        //   ① 日表在怀头数走猪群快照、妊娠损失走状态流水，两条采集路径不同步时扣减项会反超；
+        //   ② 跨年错配 —— 去年 12 月配的、今年 1 月返情，整段 duration_days 落在今年扣，
+        //      而它的大部分天数计在去年的被减数里。这是甲方式子自带的边界，不是实现问题。
+        //   负分子会让 PSY 变成负数，宁可钳零。
         Map<String, Object> psyBase = aggregateQueryMapper.selectSowDaysInRange(tenantId, from, to);
-        int psyPregDays = mapInt(psyBase, "pregDays");
+        int sumPregLoss = mapInt(sum, "sumPregLossDays");
+        int psyPregDays = Math.max(0, mapInt(psyBase, "pregDays") - sumPregLoss);
         int psySowDays = mapInt(psyBase, "sowDays");
         int psyStatDays = mapInt(psyBase, "dayRows");
         LocalDate psyFirstDay = mapDate(psyBase, "firstDay");
@@ -1877,10 +1918,14 @@ public class DashboardServiceImpl implements IDashboardService {
                 .divide(STANDARD_GESTATION_DAYS, 6, RoundingMode.HALF_UP)
                 .multiply(avgWeanedPerLitter));
 
-        // 全年总NPD天数 = Σ日非生产母猪（去掉 230 后备）；年均NPD = 总NPD / 年均生产母猪存栏，再年化成「天/年」。
+        // 全年总NPD天数（甲方 V6 行233 第 1 点，D-0099）= Σ日非生产母猪（去掉 230 后备）+ Σ日妊娠损失天数；
+        //   年头均NPD = 总NPD / 年均生产母猪存栏，再年化成「天/年」。
+        // 甲方原文分母写的是「Σ当年每日期末生产母猪头数」，与分子同为「头·日」、相除得到的是比例不是天数
+        //   （现值 7.35 天会变成 0.02）。这里仍按「÷平均存栏 + 年化」写，等价于甲方式子再乘一个区间天数，
+        //   量纲才成立。待甲方确认，见 D-0097。
         // ⚠️ 年化只修量纲。该值当前仍显著低于行业区间，根因是断奶/配种事件录入不全 —— 母猪长期卡在
         //    FM(哺乳)/PZ(配种) 态被算作生产态，非生产段压根没产生。属数据完整度问题，不在本次口径修复内。
-        int totalNpdDays = sumEndNonprodSow;
+        int totalNpdDays = sumEndNonprodSow + sumPregLoss;
         BigDecimal avgNpdDays = avgProdSowStock.signum() == 0
             ? BigDecimal.ZERO
             : annualize(scale3(new BigDecimal(totalNpdDays)

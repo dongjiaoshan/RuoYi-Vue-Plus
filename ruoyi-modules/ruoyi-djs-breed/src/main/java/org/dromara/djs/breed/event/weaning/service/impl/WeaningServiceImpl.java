@@ -37,6 +37,8 @@ import org.dromara.djs.breed.event.weaning.domain.bo.WeaningDetailBo;
 import org.dromara.djs.breed.event.weaning.domain.query.WeaningQuery;
 import org.dromara.djs.breed.event.weaning.domain.vo.PigWeaningDetailVo;
 import org.dromara.djs.breed.event.weaning.domain.vo.PigWeaningVo;
+import org.dromara.djs.breed.event.weaning.domain.vo.UnweanedLitterRowVo;
+import org.dromara.djs.breed.event.weaning.domain.vo.UnweanedLitterVo;
 import org.dromara.djs.breed.event.weaning.domain.vo.WeaningPigletVo;
 import org.dromara.djs.breed.event.weaning.mapper.PigWeaningDetailMapper;
 import org.dromara.djs.breed.event.weaning.mapper.PigWeaningMapper;
@@ -50,10 +52,12 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.LinkedHashSet;
 import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
@@ -132,14 +136,42 @@ public class WeaningServiceImpl implements IWeaningService {
             }
             bo.setFarrowId(farrow.getId());
         }
+        // 本窝既有断奶记录（BRD-WEAN-SELECT-001）：断奶从「整窝一起断」改成「按所选仔猪断」后，
+        // 同一窝会分多次断完，于是 ① 头数守恒要按「历史累计 + 本次」判 ② 状态机只在第一次推进。
+        List<PigWeaning> priorWeanings = weaningMapper.selectList(
+            Wrappers.<PigWeaning>lambdaQuery().eq(PigWeaning::getFarrowId, farrow.getId()));
+
         // 断奶数 + 哺乳期死淘数 不得超过该窝活产仔数（D-0065）。
         //   旧校验只拦 weanedCount > liveBorn —— 而 mp 的断奶头数是按活仔数铺行的只读汇总，
         //   永远不可能超，等于这条校验从来没生效过。加上死淘数后它才真正约束住这一窝的头数守恒。
+        //   分批断奶下再叠上本窝历史已断头数，否则每批各自 <= liveBorn、合计却能超发。
         int lactationDeath = bo.getLactationDeathCount() == null ? 0 : bo.getLactationDeathCount();
+        int litterUsed = sumInt(priorWeanings, PigWeaning::getWeanedCount)
+            + sumInt(priorWeanings, PigWeaning::getLactationDeathCount)
+            + (bo.getWeanedCount() == null ? 0 : bo.getWeanedCount())
+            + lactationDeath;
         if (bo.getWeanedCount() != null && farrow.getLiveBorn() != null
-            && bo.getWeanedCount() + lactationDeath > farrow.getLiveBorn()) {
+            && litterUsed > farrow.getLiveBorn()) {
             throw new ServiceException(I18nMessages.t("weaning.count_exceeds_live_born",
-                bo.getWeanedCount() + lactationDeath, farrow.getLiveBorn()));
+                litterUsed, farrow.getLiveBorn()));
+        }
+
+        // 逐头去重（BRD-WEAN-SELECT-001）：同一头仔猪不能断两次。
+        //   改造前 (DN, WEAN) 不在状态机 transition 表里，第二次提交被非法流转挡住，顺带也挡住了重复断头；
+        //   分批补断要求跳过状态机之后这道天然屏障没了。重复断一头会多一行明细、覆盖个体断奶重，
+        //   还会吃掉头数守恒的预算把整窝永久卡死（幽灵头数占满 live_born，真实剩下的再也断不掉）。
+        //   判据与待断奶列表共用 PigWeaningMapper.ALREADY_WEANED，两边不会各自漂移。
+        Set<String> submitEarNos = bo.getDetails() == null ? Set.of() : bo.getDetails().stream()
+            .map(WeaningDetailBo::getEarNo)
+            .filter(StringUtils::isNotBlank)
+            .collect(Collectors.toCollection(LinkedHashSet::new));
+        if (!submitEarNos.isEmpty()) {
+            List<String> dup = weaningMapper.selectAlreadyWeanedEarNos(
+                TenantHelper.getTenantId(), farrow.getId(), submitEarNos);
+            if (dup != null && !dup.isEmpty()) {
+                throw new ServiceException(I18nMessages.t("weaning.piglet_already_weaned",
+                    String.join("、", dup)), 400);
+            }
         }
 
         // 1. 写 t_farm_pig_weaning
@@ -161,26 +193,44 @@ public class WeaningServiceImpl implements IWeaningService {
         weaningMapper.insert(entity);
 
         // 2. 逐头录重明细（BRD-FIX-MP-EVENT-BREED-IA-001）：同事务批量 INSERT；details 空 → 退化仅汇总
-        List<PigWeaningDetail> savedDetails = insertDetails(entity.getId(), bo.getDetails());
+        List<PigWeaningDetail> savedDetails = insertDetails(entity.getId(), pig.getEarNo(), bo.getDetails());
 
-        // 3. 触发状态机 FM → DN
-        PigEventBo eventBo = new PigEventBo();
-        eventBo.setPigId(pig.getId());
-        eventBo.setEventType(PigStatusEvent.WEAN);
-        eventBo.setRelatedEventId(entity.getId());
-        eventBo.setEventAt(bo.getWeaningDate());
-        pigCoreService.fireEvent(eventBo);
+        // 3. 触发状态机 FM → DN。母猪断的是它自己，一窝只推一次：本窝已有断奶记录且母猪已 DN
+        //    （分批补断第 2..N 批）就跳过 —— (DN, WEAN) 不在 transition 表里，再推会直接抛非法流转。
+        //    ⚠️ 判据里的「本窝已有断奶记录」走逻辑删过滤：断奶记录一旦被软删，母猪仍是 DN 而 priorWeanings
+        //    变空，这一窝剩下的仔猪就再也断不掉（走 else 分支撞非法流转）。当前没有任何删除/撤销端点，
+        //    所以够不到；**日后要加撤销断奶，这个判据必须一起改**（改成只看母猪是否已 DN，或撤销时回滚母猪状态）。
+        if (!priorWeanings.isEmpty() && PigLifecycle.DN.name().equals(pig.getCurrentStatus())) {
+            log.info("[BRD-WEAN-SELECT-001] 本窝补断，母猪已 DN 不再推状态机 pigId={} farrowId={} priorWeanings={}",
+                pig.getId(), farrow.getId(), priorWeanings.size());
+        } else {
+            PigEventBo eventBo = new PigEventBo();
+            eventBo.setPigId(pig.getId());
+            eventBo.setEventType(PigStatusEvent.WEAN);
+            eventBo.setRelatedEventId(entity.getId());
+            eventBo.setEventAt(bo.getWeaningDate());
+            pigCoreService.fireEvent(eventBo);
+        }
+
+        // 本次真正断掉的仔猪（BRD-WEAN-SELECT-001 行238 第6点）：明细带耳号 → 只取这几头；
+        // 明细无耳号（未贴标窝按活产仔数铺匿名行 / admin 汇总录入）→ 退化为整窝，与改造前一致。
+        // 没被选中的仔猪保持哺乳、留在原栏，日后可再断一次（D-0098 fallback）。
+        Set<String> weanedEarNos = savedDetails.stream()
+            .map(PigWeaningDetail::getEarNo)
+            .filter(StringUtils::isNotBlank)
+            .collect(Collectors.toSet());
+        List<PigPigletno> weanedPiglets = loadLitterPiglets(farrow.getId(), weanedEarNos);
 
         // 4. 断奶后转移（FIX-WEAN-001 #32a 决策 a：断奶时内联填转移，一步到位）
-        //    同事务复用 ITransferService 把母猪 + 该分娩已贴标仔猪转到目标 barn/pen（写转移历史 + 更新 pig 位置）。
+        //    同事务复用 ITransferService 把母猪 + 本次断奶的仔猪转到目标 barn/pen（写转移历史 + 更新 pig 位置）。
         //    复用转移事件而非加断奶表列：转移历史 + pig 位置更新原子落地，无需 DDL。
         //    row22（客户 0618）：母猪与仔猪转移目标「独立」，可不同栋舍——反转既有决策 G4(a)「母猪仔猪同目标」。
         //    仔猪目标取 bo.pigletTransfer*，缺省回退母猪目标（向后兼容老调用方 / admin 端）。
-        maybeTransferAfterWean(pig.getId(), farrow.getId(), bo);
+        maybeTransferAfterWean(pig.getId(), weanedPiglets, bo);
 
-        // 5. 断奶即把该窝已贴标仔猪翻成育肥猪（FIX-BRD-PIGTYPE-001，原型「仔猪断奶操作→生成育肥猪档案」）。
+        // 5. 断奶即把本次断奶的已贴标仔猪翻成育肥猪（FIX-BRD-PIGTYPE-001，原型「仔猪断奶操作→生成育肥猪档案」）。
         //    断奶为主触发；转栏 newPigType 翻转保留作幂等兜底。仅改类型不动状态（最小改）。
-        flipWeanedPigletsToFattening(farrow.getId());
+        flipWeanedPigletsToFattening(farrow.getId(), weanedPiglets);
 
         // 6. 断奶称重 hook（BRD-STAT-FIX-001）：把逐头明细个体断奶重 + 断奶日回写到对应育肥猪 pig_info
         //    快照（wean_weight/wean_date），供出栏净增重 / 日增重溯源（育肥猪是断奶仔猪翻成的不同实体，
@@ -203,12 +253,14 @@ public class WeaningServiceImpl implements IWeaningService {
      * 与断奶主记录同事务，任一失败整体回滚。母猪转移目标二选一：{@code transferBarnCode}（mp）/
      * {@code transferBarnId}（admin）；仔猪转移目标独立：{@code pigletTransferBarnCode/pigletTransferBarnId}
      * （row22 客户 0618：母猪仔猪可转到不同栋舍，反转决策 G4(a)），仔猪目标缺省时回退母猪目标（向后兼容）。
-     * 各自给了目标栋舍才触发对应转移；仔猪取自 {@code t_farm_pig_pigletno} 中该分娩 farrowId 下已落
-     * pig_id（已建 pig_info 行）的仔猪，逐头复用 {@link ITransferService}。
+     * 各自给了目标栋舍才触发对应转移；仔猪 = 本次断奶选中的那几头（已落 pig_id 的），逐头复用
+     * {@link ITransferService}。没被选中的仔猪留在原栏，不跟着走。
+     *
+     * @param weanedPiglets 本次断奶涉及的已建档仔猪（见 {@link #loadLitterPiglets}）
      */
-    private void maybeTransferAfterWean(Long sowPigId, Long farrowId, WeaningBo bo) {
+    private void maybeTransferAfterWean(Long sowPigId, List<PigPigletno> weanedPiglets, WeaningBo bo) {
         transferSow(sowPigId, bo);
-        transferPiglets(farrowId, bo);
+        transferPiglets(weanedPiglets, bo);
     }
 
     /**
@@ -231,8 +283,9 @@ public class WeaningServiceImpl implements IWeaningService {
      * 仔猪转移（K071 + row22 独立目标）：取该分娩已贴标且已建 pig_info 行的仔猪，逐头转到
      * 仔猪专用目标 {@code pigletTransferBarnCode/pigletTransferPenCode}（或 id 版）；仔猪目标缺省
      * 时回退母猪目标 {@code transferBarnCode/transferPenCode}（向后兼容老调用方）。两者皆空则不转。
+     * 转的是 {@code weanedPiglets}（本次断奶选中的那几头），不是整窝。
      */
-    private void transferPiglets(Long farrowId, WeaningBo bo) {
+    private void transferPiglets(List<PigPigletno> weanedPiglets, WeaningBo bo) {
         // 仔猪目标优先 piglet 专用；缺则回退母猪目标（向后兼容）
         boolean hasPigletTarget = bo.getPigletTransferBarnId() != null
             || (bo.getPigletTransferBarnCode() != null && !bo.getPigletTransferBarnCode().isBlank());
@@ -245,35 +298,28 @@ public class WeaningServiceImpl implements IWeaningService {
         if (!hasTarget) {
             return;
         }
-        List<PigPigletno> piglets = pigletnoMapper.selectList(
-            Wrappers.<PigPigletno>lambdaQuery()
-                .eq(PigPigletno::getFarrowId, farrowId)
-                .isNotNull(PigPigletno::getPigId));
         int transferred = 0;
-        for (PigPigletno piglet : piglets) {
+        for (PigPigletno piglet : weanedPiglets) {
             if (piglet.getPigId() == null) {
                 continue;
             }
             transferOne(piglet.getPigId(), barnId, barnCode, penId, penCode, bo.getWeaningDate());
             transferred++;
         }
-        log.info("[row22] piglet transfer after wean farrowId={} pigletCount={} independentTarget={} → barnCode={} barnId={} penCode={} penId={}",
-            farrowId, transferred, hasPigletTarget, barnCode, barnId, penCode, penId);
+        log.info("[row22] piglet transfer after wean pigletCount={} independentTarget={} → barnCode={} barnId={} penCode={} penId={}",
+            transferred, hasPigletTarget, barnCode, barnId, penCode, penId);
     }
 
     /**
-     * 断奶即把该窝已贴标仔猪翻成育肥猪（FIX-BRD-PIGTYPE-001，原型「仔猪断奶操作→生成育肥猪档案」）。
-     * <p>取 {@code t_farm_pig_pigletno} 中该分娩已落 {@code pig_id} 的仔猪，一次性条件 update：
+     * 断奶即把本次断奶的已贴标仔猪翻成育肥猪（FIX-BRD-PIGTYPE-001，原型「仔猪断奶操作→生成育肥猪档案」）。
+     * <p>取 {@code weanedPiglets}（本次选中、已落 {@code pig_id} 的仔猪），一次性条件 update：
      * 仅 {@code pig_type='piglet'} 且非终止(END) 的翻成 {@code 'fattening'}（只改类型不动状态，最小改）。
      * 条件 update 幂等——重跑翻 0 行；与断奶主事务同生共死。尚未贴标的仔猪（pig_id 为空）不在此集合，
      * 按现有流程贴标后归 piglet，由后续断奶/存量回填覆盖。</p>
      */
-    private void flipWeanedPigletsToFattening(Long farrowId) {
-        List<Long> pigletPigIds = pigletnoMapper.selectList(
-                Wrappers.<PigPigletno>lambdaQuery()
-                    .eq(PigPigletno::getFarrowId, farrowId)
-                    .isNotNull(PigPigletno::getPigId))
-            .stream().map(PigPigletno::getPigId).filter(Objects::nonNull).toList();
+    private void flipWeanedPigletsToFattening(Long farrowId, List<PigPigletno> weanedPiglets) {
+        List<Long> pigletPigIds = weanedPiglets.stream()
+            .map(PigPigletno::getPigId).filter(Objects::nonNull).toList();
         if (pigletPigIds.isEmpty()) {
             return;
         }
@@ -305,7 +351,7 @@ public class WeaningServiceImpl implements IWeaningService {
      * 逐头明细批量 INSERT（与主记录同事务）。details 为空时直接返空列表（向后兼容汇总录入）。
      * piglet_seq 缺省时按下发顺序从 1 补；tenant_id / 公共字段由 MP 自动填充。
      */
-    private List<PigWeaningDetail> insertDetails(Long weaningId, List<WeaningDetailBo> details) {
+    private List<PigWeaningDetail> insertDetails(Long weaningId, String sowEarNo, List<WeaningDetailBo> details) {
         if (details == null || details.isEmpty()) {
             return List.of();
         }
@@ -314,6 +360,7 @@ public class WeaningServiceImpl implements IWeaningService {
         for (WeaningDetailBo d : details) {
             PigWeaningDetail row = new PigWeaningDetail();
             row.setWeaningId(weaningId);
+            row.setSowEarNo(sowEarNo);
             row.setPigletSeq(d.getPigletSeq() != null ? d.getPigletSeq() : seq);
             row.setEarNo(d.getEarNo());
             row.setWeight(d.getWeight());
@@ -493,9 +540,19 @@ public class WeaningServiceImpl implements IWeaningService {
             Wrappers.<PigPigletno>lambdaQuery()
                 .eq(PigPigletno::getFarrowId, farrowId)
                 .orderByAsc(PigPigletno::getPigletEarNo));
+        // 已断奶（本窝任一批次断过的耳号）与已终止（死亡 / 淘汰 / 出栏）的仔猪不再铺行
+        // —— 行238 第4点：待断奶列表里只留还在哺乳的那几头。
+        Set<String> weaned = weanedEarNosByFarrow(farrowId);
+        Set<Long> ended = endedPigIds(rows);
         List<WeaningPigletVo> vos = new ArrayList<>(rows.size());
         int seq = 1;
         for (PigPigletno r : rows) {
+            if (weaned.contains(r.getPigletEarNo())) {
+                continue;
+            }
+            if (r.getPigId() != null && ended.contains(r.getPigId())) {
+                continue;
+            }
             WeaningPigletVo vo = new WeaningPigletVo();
             vo.setPigletSeq(seq++);
             vo.setEarNo(r.getPigletEarNo());
@@ -503,6 +560,105 @@ public class WeaningServiceImpl implements IWeaningService {
             vos.add(vo);
         }
         return vos;
+    }
+
+    @Override
+    public List<UnweanedLitterVo> listUnweanedLitters() {
+        List<UnweanedLitterRowVo> rows = weaningMapper.selectUnweanedLitterRows(TenantHelper.getTenantId());
+        if (rows.isEmpty()) {
+            return List.of();
+        }
+        LocalDate today = LocalDate.now();
+        // SQL 已按 分娩日期倒序 + 仔猪耳号升序 排好，LinkedHashMap 保住这个顺序
+        Map<Long, UnweanedLitterVo> byFarrow = new LinkedHashMap<>();
+        for (UnweanedLitterRowVo r : rows) {
+            UnweanedLitterVo litter = byFarrow.computeIfAbsent(r.getFarrowId(), id -> {
+                UnweanedLitterVo v = new UnweanedLitterVo();
+                v.setFarrowId(id);
+                v.setSowPigId(r.getSowPigId());
+                v.setSowEarNo(r.getSowEarNo());
+                v.setFarrowDate(r.getFarrowDate());
+                v.setParity(r.getParity());
+                v.setSowAgeDays(PigAgeUtil.ageDaysAt(r.getSowBirthDate(), r.getSowIntroduceDate(), today));
+                v.setBarnCode(r.getBarnCode());
+                v.setBarnName(r.getBarnName());
+                v.setPenCode(r.getPenCode());
+                v.setPenName(r.getPenName());
+                v.setMaleCount(0);
+                v.setFemaleCount(0);
+                v.setPiglets(new ArrayList<>());
+                return v;
+            });
+            WeaningPigletVo piglet = new WeaningPigletVo();
+            piglet.setPigletSeq(litter.getPiglets().size() + 1);
+            piglet.setEarNo(r.getPigletEarNo());
+            piglet.setPigletSex(r.getPigletSex());
+            litter.getPiglets().add(piglet);
+            if ("M".equals(r.getPigletSex())) {
+                litter.setMaleCount(litter.getMaleCount() + 1);
+            } else if ("F".equals(r.getPigletSex())) {
+                litter.setFemaleCount(litter.getFemaleCount() + 1);
+            }
+        }
+        List<UnweanedLitterVo> litters = new ArrayList<>(byFarrow.values());
+        litters.forEach(v -> v.setTotalCount(v.getPiglets().size()));
+        return litters;
+    }
+
+    /**
+     * 本窝已断奶的仔猪耳号集合（BRD-WEAN-SELECT-001）。
+     *
+     * <p>分批断奶下同一 farrowId 可有多条断奶主记录，逐头是否断过只能按明细耳号判，
+     * 不能按「本窝有没有断奶记录」整窝判。明细无耳号的行（匿名铺行）不参与判定。</p>
+     */
+    private Set<String> weanedEarNosByFarrow(Long farrowId) {
+        List<Long> weaningIds = weaningMapper.selectList(
+                Wrappers.<PigWeaning>lambdaQuery().eq(PigWeaning::getFarrowId, farrowId))
+            .stream().map(PigWeaning::getId).filter(Objects::nonNull).toList();
+        if (weaningIds.isEmpty()) {
+            return Set.of();
+        }
+        return weaningDetailMapper.selectList(
+                Wrappers.<PigWeaningDetail>lambdaQuery().in(PigWeaningDetail::getWeaningId, weaningIds))
+            .stream().map(PigWeaningDetail::getEarNo)
+            .filter(StringUtils::isNotBlank)
+            .collect(Collectors.toSet());
+    }
+
+    /** 这批打标行里已终止（死亡 / 淘汰 / 出栏）的仔猪 pig_id 集合；未建档案行（pig_id 空）不参与。 */
+    private Set<Long> endedPigIds(List<PigPigletno> pigletnoRows) {
+        Set<Long> pigIds = pigletnoRows.stream()
+            .map(PigPigletno::getPigId).filter(Objects::nonNull).collect(Collectors.toSet());
+        if (pigIds.isEmpty()) {
+            return Set.of();
+        }
+        return pigMapper.selectByIds(pigIds).stream()
+            .filter(p -> PigLifecycle.END.name().equals(p.getCurrentStatus()))
+            .map(Pig::getId).filter(Objects::nonNull)
+            .collect(Collectors.toSet());
+    }
+
+    /**
+     * 本次断奶实际涉及的已建档仔猪（BRD-WEAN-SELECT-001 行238 第6点）。
+     *
+     * @param farrowId       关联分娩
+     * @param weanedEarNos   本次明细里的仔猪耳号；空集 = 明细无耳号（未贴标窝匿名铺行 /
+     *                       admin 汇总录入）→ 退化为整窝，与「整窝一起断」的老行为一致
+     */
+    private List<PigPigletno> loadLitterPiglets(Long farrowId, Set<String> weanedEarNos) {
+        List<PigPigletno> litter = pigletnoMapper.selectList(
+            Wrappers.<PigPigletno>lambdaQuery()
+                .eq(PigPigletno::getFarrowId, farrowId)
+                .isNotNull(PigPigletno::getPigId));
+        if (weanedEarNos.isEmpty()) {
+            return litter;
+        }
+        return litter.stream().filter(p -> weanedEarNos.contains(p.getPigletEarNo())).toList();
+    }
+
+    /** 对一组断奶记录按给定取数器求和（null 计 0）。 */
+    private int sumInt(List<PigWeaning> rows, Function<PigWeaning, Integer> getter) {
+        return rows.stream().map(getter).filter(Objects::nonNull).mapToInt(Integer::intValue).sum();
     }
 
     /** avg 优先取 BO 给的；若 weanedWeight + weanedCount 都有则算（保留 3 位小数）。 */
@@ -545,6 +701,7 @@ public class WeaningServiceImpl implements IWeaningService {
             vo.setId(d.getId());
             vo.setWeaningId(d.getWeaningId());
             vo.setPigletSeq(d.getPigletSeq());
+            vo.setSowEarNo(d.getSowEarNo());
             vo.setEarNo(d.getEarNo());
             vo.setWeight(d.getWeight());
             vo.setRemark(d.getRemark());

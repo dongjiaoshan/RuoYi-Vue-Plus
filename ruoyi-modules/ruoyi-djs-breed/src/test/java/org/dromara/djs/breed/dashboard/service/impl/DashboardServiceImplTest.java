@@ -90,6 +90,8 @@ class DashboardServiceImplTest {
     @Mock
     private org.dromara.djs.breed.dashboard.mapper.FarrowingRateMapper farrowingRateMapper;
     @Mock
+    private org.dromara.djs.breed.dashboard.mapper.WeaningAggregateSyncMapper weaningAggregateSyncMapper;
+    @Mock
     private SowPerformanceMapper sowPerformanceMapper;
     @Mock
     private org.dromara.djs.breed.production.service.IProductionCycleConfigService productionCycleConfigService;
@@ -102,8 +104,8 @@ class DashboardServiceImplTest {
     void setup() {
         service = new DashboardServiceImpl(
             sowRecordMapper, monthlyProductionMapper, annualIndicatorMapper, aggregateQueryMapper,
-            farmIndicatorRecordMapper, farrowingRateMapper, sowPerformanceMapper,
-            productionCycleConfigService, fattenAgeStageService);
+            farmIndicatorRecordMapper, farrowingRateMapper, weaningAggregateSyncMapper,
+            sowPerformanceMapper, productionCycleConfigService, fattenAgeStageService);
     }
 
     @Test
@@ -1282,6 +1284,147 @@ class DashboardServiceImplTest {
         assertThat(to.getValue())
             .as("跨 7/8/9 三个月 → 右开界必须是 10-01；塌成 8-01 会让 8、9 月整月刷不到")
             .isEqualTo(LocalDate.of(2026, 10, 1));
+    }
+
+    // ============================================================
+    //  妊娠损失天数 → NPD / PSY；断奶两项改以明细为源
+    //  甲方 V6 行232 / 233 / 234 / 239（口径 D-0096 / D-0099 / D-0100 / D-0101 / D-0102）
+    // ============================================================
+
+    @Test
+    @DisplayName("日表: 妊娠损失天数按「当日 [00:00, 次日 00:00)」取并落 preg_loss_days")
+    void testDailyPregLossDaysPersisted() {
+        stubAggregateSkeleton();
+        when(aggregateQueryMapper.sumPregLossDaysForDay(anyString(), any(), any())).thenReturn(263);
+
+        service.triggerAggregate(LocalDate.of(2026, 9, 13));
+
+        ArgumentCaptor<FarmIndicatorRecord> cap = ArgumentCaptor.forClass(FarmIndicatorRecord.class);
+        verify(farmIndicatorRecordMapper, atLeastOnce()).insert(cap.capture());
+        assertThat(cap.getAllValues()).extracting(FarmIndicatorRecord::getPregLossDays).contains(263);
+
+        // 区间必须是 [statDate 00:00, 次日 00:00)：塌成同一时刻恒 0、放宽成整月会把别的天算进来
+        ArgumentCaptor<java.time.LocalDateTime> from = ArgumentCaptor.forClass(java.time.LocalDateTime.class);
+        ArgumentCaptor<java.time.LocalDateTime> to = ArgumentCaptor.forClass(java.time.LocalDateTime.class);
+        verify(aggregateQueryMapper, atLeastOnce()).sumPregLossDaysForDay(anyString(), from.capture(), to.capture());
+        assertThat(from.getValue()).isEqualTo(LocalDate.of(2026, 9, 13).atStartOfDay());
+        assertThat(to.getValue()).isEqualTo(LocalDate.of(2026, 9, 14).atStartOfDay());
+    }
+
+    @Test
+    @DisplayName("日表: 断奶仔猪数/断奶总重取自逐头明细，出栏侧断奶重另落 marketing_wean_weight")
+    void testDailyWeanCountsComeFromDetail() {
+        stubAggregateSkeleton();
+        // 明细：7 头、合计 38.5kg
+        when(aggregateQueryMapper.aggregateWeanDetailForDay(anyString(), any(), any()))
+            .thenReturn(mapOfAll("cnt", 7, "weightSum", new BigDecimal("38.5")));
+        // 出栏侧断奶重 912.4kg —— 完全不同的量，必须落到另一列而不是被明细覆盖
+        when(aggregateQueryMapper.aggregateMarketingWeanForDay(anyString(), any(), any()))
+            .thenReturn(mapOfAll("weanWeightSum", new BigDecimal("912.4"), "feedDaysSum", 0,
+                "growthDaysSum", 0, "marketingWeightWeaned", new BigDecimal("1500.0")));
+
+        service.triggerAggregate(LocalDate.of(2026, 9, 13));
+
+        ArgumentCaptor<FarmIndicatorRecord> cap = ArgumentCaptor.forClass(FarmIndicatorRecord.class);
+        verify(farmIndicatorRecordMapper, atLeastOnce()).insert(cap.capture());
+        FarmIndicatorRecord r = cap.getAllValues().get(0);
+        assertThat(r.getWeanedPigletCount()).isEqualTo(7);
+        assertThat(r.getWeanTotalWeight()).isEqualByComparingTo("38.5");
+        assertThat(r.getMarketingWeanWeight())
+            .as("两列互换 = 净增重被减数被断奶明细污染，净增重会算成 1500−38.5")
+            .isEqualByComparingTo("912.4");
+        // 净增重仍用出栏侧：1500 − 912.4
+        assertThat(r.getNetGainWeight()).isEqualByComparingTo("587.6");
+    }
+
+    @Test
+    @DisplayName("年度: 全年总NPD天数 = Σ日非生产母猪 + Σ妊娠损失天数（D-0099）")
+    void testAnnualTotalNpdAddsPregLoss() {
+        stubAggregateSkeleton();
+        when(aggregateQueryMapper.sumIndicatorRange(anyString(), any(), any()))
+            .thenReturn(mapOfAll("sumEndNonprodSow", 900, "sumPregLossDays", 263));
+
+        service.triggerAggregate(LocalDate.of(2026, 9, 13));
+
+        ArgumentCaptor<AnnualIndicator> cap = ArgumentCaptor.forClass(AnnualIndicator.class);
+        verify(annualIndicatorMapper).insert(cap.capture());
+        assertThat(cap.getValue().getTotalNpdDays())
+            .as("漏掉妊娠损失项会退回 D-0064 那版口径")
+            .isEqualTo(1163);
+    }
+
+    @Test
+    @DisplayName("年度: PSY 分子扣除妊娠损失天数（D-0100 覆盖 D-0086）")
+    void testAnnualPsySubtractsPregLoss() {
+        stubAggregateSkeleton();
+        when(aggregateQueryMapper.sumIndicatorRange(anyString(), any(), any()))
+            .thenReturn(mapOfAll("sumWeanedPiglet", 188, "sumWeaningSow", 16, "sumPregLossDays", 516));
+        when(aggregateQueryMapper.selectSowDaysInRange(anyString(), any(), any()))
+            .thenReturn(mapOfAll("pregDays", 5016, "sowDays", 5430, "dayRows", 37,
+                "firstDay", LocalDate.of(2026, 8, 8)));
+
+        service.triggerAggregate(LocalDate.of(2026, 9, 13));
+
+        ArgumentCaptor<AnnualIndicator> cap = ArgumentCaptor.forClass(AnnualIndicator.class);
+        verify(annualIndicatorMapper).insert(cap.capture());
+        // (5016−516)/5430 = 0.828729 → ×365 ÷115 = 2.630314 → ×11.750 = 30.906
+        assertThat(cap.getValue().getPsy())
+            .as("不扣妊娠损失会落回 34.450")
+            .isEqualByComparingTo("30.906");
+    }
+
+    @Test
+    @DisplayName("年度: 妊娠损失天数反超在怀头日时 PSY 分子钳零，不出负数")
+    void testAnnualPsyNumeratorClampedAtZero() {
+        stubAggregateSkeleton();
+        when(aggregateQueryMapper.sumIndicatorRange(anyString(), any(), any()))
+            .thenReturn(mapOfAll("sumWeanedPiglet", 188, "sumWeaningSow", 16, "sumPregLossDays", 9999));
+        when(aggregateQueryMapper.selectSowDaysInRange(anyString(), any(), any()))
+            .thenReturn(mapOfAll("pregDays", 5016, "sowDays", 5430, "dayRows", 37,
+                "firstDay", LocalDate.of(2026, 8, 8)));
+
+        service.triggerAggregate(LocalDate.of(2026, 9, 13));
+
+        ArgumentCaptor<AnnualIndicator> cap = ArgumentCaptor.forClass(AnnualIndicator.class);
+        verify(annualIndicatorMapper).insert(cap.capture());
+        assertThat(cap.getValue().getPsy())
+            .as("日表妊娠头数走快照、妊娠损失走状态流水，两条采集路径不同步时分子会翻负")
+            .isEqualByComparingTo("0");
+    }
+
+    @Test
+    @DisplayName("月度: 当月NPD天数 = Σ日非生产母猪 + Σ妊娠损失天数，月头均NPD 以它为分子")
+    void testMonthlyNpdAddsPregLoss() {
+        stubAggregateSkeleton();
+        when(aggregateQueryMapper.sumIndicatorRange(anyString(), any(), any()))
+            .thenReturn(mapOfAll("sumEndNonprodSow", 300, "sumPregLossDays", 60,
+                "sumEndProductionSow", 3000));
+        when(aggregateQueryMapper.countIndicatorDays(anyString(), any(), any())).thenReturn(30);
+
+        service.triggerAggregate(LocalDate.of(2026, 9, 13));
+
+        ArgumentCaptor<MonthlyProduction> cap = ArgumentCaptor.forClass(MonthlyProduction.class);
+        verify(monthlyProductionMapper).insert(cap.capture());
+        MonthlyProduction m = cap.getValue();
+        assertThat(m.getMonthNpdDays()).isEqualTo(360);
+        // 月均生产母猪存栏 = 3000/30 = 100 → 360/100 = 3.600（漏妊娠损失项则是 3.000）
+        assertThat(m.getNpdDays()).isEqualByComparingTo("3.600");
+    }
+
+    @Test
+    @DisplayName("断奶汇总回算: 每轮聚合按「断奶日期近 30 天」拉齐明细（D-0102）")
+    void testWeaningResyncWindowIs30Days() {
+        stubAggregateSkeleton();
+
+        service.triggerAggregate(LocalDate.of(2026, 9, 13));
+
+        ArgumentCaptor<LocalDate> from = ArgumentCaptor.forClass(LocalDate.class);
+        ArgumentCaptor<LocalDate> to = ArgumentCaptor.forClass(LocalDate.class);
+        verify(weaningAggregateSyncMapper).resyncFromDetail(anyString(), from.capture(), to.capture());
+        assertThat(from.getValue()).isEqualTo(LocalDate.of(2026, 8, 15));
+        assertThat(to.getValue())
+            .as("右开界必须是 asOf 次日，塌成 asOf 当天会漏掉当天断的那批")
+            .isEqualTo(LocalDate.of(2026, 9, 14));
     }
 
 }

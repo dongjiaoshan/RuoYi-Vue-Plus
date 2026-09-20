@@ -8,7 +8,9 @@ import org.dromara.common.log.annotation.Log;
 import org.dromara.common.log.enums.BusinessType;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
+import org.dromara.common.core.domain.R;
 import org.dromara.common.web.core.BaseController;
+import org.dromara.djs.plant.common.domain.vo.DateWindowStatusStatVo;
 import org.dromara.djs.plant.market.domain.query.MarketPlanQuery;
 import org.dromara.djs.plant.market.domain.vo.MarketPlanVo;
 import org.dromara.djs.plant.market.service.IMarketPlanService;
@@ -24,8 +26,9 @@ import java.util.List;
  *
  * <p>纯只读：一行 = 一条种植计划，上市 / 下架日期由该计划的采摘明细「实际优先、计划兜底」后 MIN/MAX 聚合而来。</p>
  * <ul>
- *   <li>GET  /list   分页列表（按上市日期降序，空上市日期排最后）</li>
- *   <li>POST /export 按同一筛选条件导出；列与列表一致，只少一个「作物图片」列（V6-R157 甲方点名去掉）</li>
+ *   <li>GET  /list       分页列表（按上市日期降序，空上市日期排最后）</li>
+ *   <li>GET  /statusStat 顶部统计版块：五档状态的全量计数</li>
+ *   <li>POST /export     按同一筛选条件导出；列与列表一致，只少一个「作物图片」列（V6-R157 甲方点名去掉）</li>
  * </ul>
  *
  * <p>数据归属种植域，故实现放 {@code ruoyi-djs-plant}；URL 与权限串走运营口径
@@ -43,7 +46,7 @@ public class MarketPlanController extends BaseController {
     /**
      * 分页查询果蔬上市计划。
      *
-     * @param query     作物名称模糊 / 上市月份 / 下架月份（均可空）
+     * @param query     作物名称模糊 / 上市月份 / 下架月份 / 状态（均可空）
      * @param pageQuery 分页参数
      * @return 分页结果
      */
@@ -51,6 +54,18 @@ public class MarketPlanController extends BaseController {
     @GetMapping("/list")
     public TableDataInfo<MarketPlanVo> list(MarketPlanQuery query, PageQuery pageQuery) {
         return marketPlanService.queryPageList(query, pageQuery);
+    }
+
+    /**
+     * 顶部统计版块：五档状态各自的全量行数（不受分页影响；状态筛选条件本身不参与统计）。
+     *
+     * @param query 与列表相同的筛选条件
+     * @return 五档计数
+     */
+    @SaCheckPermission("djs:ops:marketPlan:list")
+    @GetMapping("/statusStat")
+    public R<DateWindowStatusStatVo> statusStat(MarketPlanQuery query) {
+        return R.ok(marketPlanService.statusStat(query));
     }
 
     /**

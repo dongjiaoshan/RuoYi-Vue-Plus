@@ -1,5 +1,6 @@
 package org.dromara.djs.plant.pick.service;
 
+import org.dromara.djs.plant.common.domain.vo.DateWindowStatusStatVo;
 import org.dromara.djs.plant.pick.domain.bo.PickAdjustBatchBo;
 import org.dromara.djs.plant.pick.domain.bo.PickSetScheduleBo;
 import org.dromara.djs.plant.pick.domain.bo.PickToggleActivityBo;
@@ -26,6 +27,16 @@ public interface IPickPlanService {
      * <p>doc/10 §F-PLT-05 admin 入口 1：按作物聚合显示。</p>
      */
     List<PickPlanGroupVo> listByCrop(PickPlanQuery query);
+
+    /**
+     * 列表顶部统计版块：五档状态各自的行数。
+     *
+     * <p>除状态外的筛选条件照常生效，状态条件被忽略 —— 见 {@link DateWindowStatusStatVo} 类注释。</p>
+     *
+     * @param query 查询条件（可空）
+     * @return 五档计数
+     */
+    DateWindowStatusStatVo statusStat(PickPlanQuery query);
 
     /**
      * 详情：指定计划下指定作物的所有 plant_details 明细（含 enrich plot/team 名称）。

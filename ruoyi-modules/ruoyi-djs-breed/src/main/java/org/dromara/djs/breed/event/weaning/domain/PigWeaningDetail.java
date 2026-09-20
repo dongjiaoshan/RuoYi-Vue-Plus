@@ -35,6 +35,9 @@ public class PigWeaningDetail extends TenantEntity {
     /** FK → t_farm_pig_weaning.id（关联断奶主记录）。 */
     private Long weaningId;
 
+    /** 母猪耳号快照（取自断奶主记录 ear_no；按所选仔猪断奶后同窝可能多条主记录，明细行直接可读）。 */
+    private String sowEarNo;
+
     /** 仔猪序号（同一断奶记录内从 1 起递增）。 */
     private Integer pigletSeq;
 

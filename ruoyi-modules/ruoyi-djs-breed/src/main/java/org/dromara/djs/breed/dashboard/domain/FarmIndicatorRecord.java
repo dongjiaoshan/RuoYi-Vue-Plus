@@ -89,8 +89,15 @@ public class FarmIndicatorRecord extends TenantEntity {
     private BigDecimal avgMarketingWeight;
     /** 出栏总重（当日出栏猪只总重）。 */
     private BigDecimal marketingWeight;
-    /** 猪只断奶总重（当日出栏猪只断奶时总重）。 */
+    /** 当日断奶仔猪总重 kg（Σ t_farm_pig_weaning_detail.weight，按断奶日期归日；甲方 V6 行239）。 */
     private BigDecimal weanTotalWeight;
+    /**
+     * 当日出栏猪只在断奶时的总重 kg —— 净增重的被减数（净增重 = 同集合出栏总重 − 本列）。
+     *
+     * <p>行239 把 {@code weanTotalWeight} 征用为「当日断奶仔猪总重」之后，这一项另立一列，
+     * 否则净增重/日增重只剩计算结果、日后无法从表里复算（D-0101）。</p>
+     */
+    private BigDecimal marketingWeanWeight;
     /** 生长总天数（Σ 当日出栏猪 出栏日−出生日+1；出生日为空的外购猪跳过累加）。 */
     private Integer growthTotalDays;
     /** 饲养总天数（Σ 当日出栏猪 出栏日−断奶日+1）；日增重分母。 */
@@ -130,10 +137,18 @@ public class FarmIndicatorRecord extends TenantEntity {
      */
     private Integer yearBatchFarrowCount;
 
-    // ---- NPD（row112） ----
+    // ---- NPD（row112 + 甲方 V6 行232） ----
     /** 日NPD天数（当日非生产状态母猪头数 = endNonprodSowCount 同值）。 */
     @TableField(updateStrategy = FieldStrategy.ALWAYS)
     private Integer npdDays;
+
+    /**
+     * 妊娠损失天数（D-0096）= 当天由配种 PZ 转出为 返情/空怀/流产/死亡/淘汰 的母猪，
+     * Σ 其在 PZ 状态的停留天数。月/年 NPD 分子加这一项（D-0099）、PSY 分子减这一项（D-0100）。
+     * 定时重算，ALWAYS 覆盖旧值。
+     */
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
+    private Integer pregLossDays;
 
     // ---- 妊娠相关（row227 / row228） ----
     /**

@@ -13,6 +13,7 @@ import org.dromara.common.web.core.BaseController;
 import org.dromara.djs.breed.event.weaning.domain.bo.WeaningBo;
 import org.dromara.djs.breed.event.weaning.domain.query.WeaningQuery;
 import org.dromara.djs.breed.event.weaning.domain.vo.PigWeaningVo;
+import org.dromara.djs.breed.event.weaning.domain.vo.UnweanedLitterVo;
 import org.dromara.djs.breed.event.weaning.domain.vo.WeaningPigletVo;
 import org.dromara.djs.breed.event.weaning.service.IWeaningService;
 import org.springframework.validation.annotation.Validated;
@@ -69,5 +70,18 @@ public class WeaningController extends BaseController {
     @GetMapping("/piglets")
     public R<List<WeaningPigletVo>> piglets(@RequestParam Long farrowId) {
         return R.ok(weaningService.listPigletsByFarrow(farrowId));
+    }
+
+    /**
+     * 分娩未断奶母猪窝列表（BRD-WEAN-SELECT-001，V6 行238「断奶仔猪选择」页）。
+     *
+     * <p>只读查询；权限复用 mp 选猪同串 {@code djs:applet:pig:search}，与断奶逐头列表同源。
+     * 返回每窝的母猪概况 + 未断奶仔猪逐头（耳号 + 性别），供工人跨窝勾选后回填断奶录入页。</p>
+     */
+    @SaCheckLogin
+    @SaCheckPermission("djs:applet:pig:search")
+    @GetMapping("/unweaned-litters")
+    public R<List<UnweanedLitterVo>> unweanedLitters() {
+        return R.ok(weaningService.listUnweanedLitters());
     }
 }

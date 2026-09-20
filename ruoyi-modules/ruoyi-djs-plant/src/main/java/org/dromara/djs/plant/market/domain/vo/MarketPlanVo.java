@@ -61,7 +61,7 @@ public class MarketPlanVo implements Serializable {
     /**
      * 列表第 2 列 状态码（service 按 {@code marketBeginDate / marketEndDate} 与当天现算，不落库）。
      *
-     * <p>取值见 {@link org.dromara.djs.plant.market.util.MarketStatusCalculator}：
+     * <p>取值见 {@link org.dromara.djs.plant.common.util.DateWindowStatusCalculator}：
      * {@code pending / upcoming / on_sale / ending / off_shelf}；上市日期为空时为 {@code null}。
      * 前端按码查 i18n 显示中文，导出走下面的 {@code marketStatusName}。</p>
      */

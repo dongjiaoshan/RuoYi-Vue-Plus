@@ -27,6 +27,41 @@ import java.util.Map;
 public interface AggregateQueryMapper {
 
     /**
+     * 断奶明细取数源（甲方 V6 行239 第 3 点，口径 D-0098）—— 一处定义，日聚合与区间聚合逐字共用。
+     *
+     * <p>断奶从「整窝一起断」改成「按所选仔猪断」（行238）之后，一头母猪一窝可能分几次断，
+     * {@code t_farm_pig_weaning.weaned_count} 只是明细的冗余汇总，只有逐头明细数得准。
+     * 同一口径分散在两个查询里写两遍，改一边漏一边就会分叉——这里把 FROM/JOIN/WHERE 钉成一份。</p>
+     *
+     * <p><b>为什么要回落，而不是「没明细就算 0」</b>（D-0103）：明细表 V202606111520 才上线，之前的断奶
+     * 记录、以及 admin 汇总录入 / 未贴标窝的路径，都只有汇总没有逐头行。照字面只数明细行，这些窝的
+     * 断奶仔猪数会变 0，而断奶母猪数仍按母猪去重照算 —— 窝均断奶数被直接拉低，PSY 跟着下台阶，
+     * 且迁移会把全部历史日行一次性回刷成这个口径，上线当天甲方看到的就是指标集体跳水。
+     * 回落不是「两边兼容」：口径只有一条「当日断奶了多少头仔猪」，逐头明细是更可信的源，
+     * 整条记录一行明细都没有时才用它自己的汇总值 —— 放弃的是「所有历史记录都按明细重算」的一致性。</p>
+     *
+     * <p>占位符 {@code from}/{@code to} 为断奶日期的半开区间 [from, to)。</p>
+     */
+    String WEAN_DETAIL_SRC = " FROM t_farm_pig_weaning w "
+        + " LEFT JOIN (SELECT d.weaning_id, "
+        + "                   COUNT(*)                        AS cnt, "
+        + "                   COALESCE(SUM(d.weight), 0)      AS wsum "
+        + "              FROM t_farm_pig_weaning_detail d "
+        + "             WHERE d.del_flag = '0' "
+        + "             GROUP BY d.weaning_id) dc ON dc.weaning_id = w.id "
+        + " WHERE w.tenant_id = #{tenantId} "
+        + "   AND w.del_flag = '0' "
+        + "   AND w.weaning_date >= #{from} AND w.weaning_date < #{to} ";
+
+    /** 断奶头数表达式：有逐头明细取明细行数，整条记录一行明细都没有才回落它自己的汇总值。 */
+    String WEAN_COUNT_EXPR = " COALESCE(SUM(CASE WHEN COALESCE(dc.cnt,0) > 0 "
+        + "                                THEN dc.cnt ELSE COALESCE(w.weaned_count,0) END), 0) ";
+
+    /** 断奶总重表达式：与 {@link #WEAN_COUNT_EXPR} 同一套回落规则，两个量不会各走各的源。 */
+    String WEAN_WEIGHT_EXPR = " COALESCE(SUM(CASE WHEN COALESCE(dc.cnt,0) > 0 "
+        + "                                 THEN dc.wsum ELSE COALESCE(w.weaned_weight,0) END), 0) ";
+
+    /**
      * 实时库存：按 pig_type 分组 COUNT（排除 lifecycle='END'），并追加一行
      * {@code pigType='reserve'} = 后备存栏（{@code current_status='HB'} 计数，与
      * {@code InventoryAppletServiceImpl} 后备段口径一致；后备猪 pig_type 仍是 sow，
@@ -133,13 +168,12 @@ public interface AggregateQueryMapper {
                            @Param("to") LocalDate to);
 
     /**
-     * t_farm_pig_weaning 在月份内的断奶头数（SUM weaned_count）。
+     * 区间内断奶仔猪头数 = 断奶明细逐头行数（{@link #WEAN_DETAIL_SRC}）。
+     *
+     * <p>月表日表整段无行时的兜底分支用它。与日表落盘的 {@code weaned_piglet_count}
+     * 同一个取数源，两条路径不会给出不同的头数。</p>
      */
-    @Select("SELECT COALESCE(SUM(weaned_count),0) FROM t_farm_pig_weaning "
-        + " WHERE tenant_id = #{tenantId} "
-        + "   AND del_flag = '0' "
-        + "   AND weaning_date >= #{from} "
-        + "   AND weaning_date <  #{to}")
+    @Select("SELECT " + WEAN_COUNT_EXPR + WEAN_DETAIL_SRC)
     int sumWeanedInRange(@Param("tenantId") String tenantId,
                          @Param("from") LocalDate from,
                          @Param("to") LocalDate to);
@@ -981,7 +1015,7 @@ public interface AggregateQueryMapper {
      * @return 各 SUM 列：sumFarrowSow / sumBreedingSow / sumWeaningSow / sumAbnormal / sumTotalBorn /
      *         sumLiveBorn / sumWeanedPiglet / sumDeathPig / sumCullingPig / sumDeathPiglet / sumDeathFattening /
      *         sumMarketingCount / sumMarketingWeight / sumEndProductionSow / sumEndReserve230 / sumEndReserve /
-     *         sumEndNonprodSow / sumYearBatchFarrow / sumGrowthDays
+     *         sumEndNonprodSow / sumPregLossDays / sumYearBatchFarrow / sumGrowthDays
      */
     @Select("SELECT "
         + "  COALESCE(SUM(farrow_sow_count),0)         AS sumFarrowSow, "
@@ -1003,6 +1037,7 @@ public interface AggregateQueryMapper {
         + "  COALESCE(SUM(end_reserve_230_count),0)    AS sumEndReserve230, "
         + "  COALESCE(SUM(end_reserve_count),0)        AS sumEndReserve, "
         + "  COALESCE(SUM(end_nonprod_sow_count),0)    AS sumEndNonprodSow, "
+        + "  COALESCE(SUM(preg_loss_days),0)           AS sumPregLossDays, "
         + "  COALESCE(SUM(year_batch_farrow_count),0)  AS sumYearBatchFarrow, "
         + "  COALESCE(SUM(growth_total_days),0)        AS sumGrowthDays "
         + " FROM t_farm_indicator_record "
@@ -1222,4 +1257,40 @@ public interface AggregateQueryMapper {
         + "   AND (new_status = 'PZ' OR event_type IN ('DIE','ELIMINATE'))")
     java.math.BigDecimal sumSowNpdDurationDays(@Param("tenantId") String tenantId,
                                                @Param("pigId") Long pigId);
+
+    /**
+     * 当日妊娠损失天数（甲方 V6 行232，口径 D-0096）= 当天由配种 PZ 转出为
+     * 返情 FQ / 空怀 KH / 流产 LC / 死亡 DIE / 淘汰 ELIMINATE 的母猪，Σ 其在 PZ 状态的停留天数。
+     *
+     * <p>与 {@link #sumSowNpdDurationDays} 同一张流水表、同一个 {@code duration_days} 字段，
+     * 只是 old_status 由「非生产四态」换成「配种」——那边数的是「空转了多久」，这边数的是
+     * 「怀了多久最后白怀了」。{@code t_farm_status_record} 无 del_flag（append-only 流水）。</p>
+     *
+     * <p>{@code duration_days > 0} 过滤掉当天配种当天返情这类 0 天记录与业务层算出的负值：
+     * 0 不影响求和但会掩盖脏数据，负值会从合计里扣掉别的母猪。</p>
+     *
+     * <p>按 {@code change_time} 归日，与日表 stat_date 同口径（半开区间 [from, to)）。</p>
+     *
+     * @return Σ duration_days（无匹配返 0）
+     */
+    @Select("SELECT COALESCE(SUM(duration_days),0) "
+        + " FROM t_farm_status_record "
+        + " WHERE tenant_id = #{tenantId} "
+        + "   AND change_time >= #{from} AND change_time < #{to} "
+        + "   AND old_status = 'PZ' "
+        + "   AND (new_status IN ('FQ','KH','LC') OR event_type IN ('DIE','ELIMINATE')) "
+        + "   AND duration_days > 0")
+    int sumPregLossDaysForDay(@Param("tenantId") String tenantId,
+                              @Param("from") java.time.LocalDateTime from,
+                              @Param("to") java.time.LocalDateTime to);
+
+    /**
+     * 当日断奶仔猪明细汇总 = 按断奶日期归日的逐头明细行数与体重合计（源见 {@link #WEAN_DETAIL_SRC}）。
+     *
+     * @return {cnt: Long 明细行数, weightSum: BigDecimal 断奶总重 kg}
+     */
+    @Select("SELECT " + WEAN_COUNT_EXPR + " AS cnt, " + WEAN_WEIGHT_EXPR + " AS weightSum " + WEAN_DETAIL_SRC)
+    Map<String, Object> aggregateWeanDetailForDay(@Param("tenantId") String tenantId,
+                                                  @Param("from") java.time.LocalDateTime from,
+                                                  @Param("to") java.time.LocalDateTime to);
 }

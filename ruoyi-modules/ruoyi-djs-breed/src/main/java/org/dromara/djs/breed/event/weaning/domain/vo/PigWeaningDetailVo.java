@@ -22,6 +22,8 @@ public class PigWeaningDetailVo implements Serializable {
 
     private Long id;
     private Long weaningId;
+    /** 母猪耳号快照（BRD-WEAN-SELECT-001）。 */
+    private String sowEarNo;
     private Integer pigletSeq;
     private String earNo;
     private BigDecimal weight;

@@ -9,6 +9,7 @@ import org.dromara.common.idempotent.annotation.RepeatSubmit;
 import org.dromara.common.log.annotation.Log;
 import org.dromara.common.log.enums.BusinessType;
 import org.dromara.common.web.core.BaseController;
+import org.dromara.djs.plant.common.domain.vo.DateWindowStatusStatVo;
 import org.dromara.djs.plant.pick.domain.bo.PickAdjustBatchBo;
 import org.dromara.djs.plant.pick.domain.bo.PickSetScheduleBo;
 import org.dromara.djs.plant.pick.domain.bo.PickToggleActivityBo;
@@ -34,6 +35,7 @@ import java.util.List;
  * <h2>端点</h2>
  * <ul>
  *   <li>{@code GET /list}：按作物聚合采摘计划列表（doc/10 §F-PLT-05 入口 1）</li>
+ *   <li>{@code GET /statusStat}：列表顶部统计版块，五档采摘状态的计数</li>
  *   <li>{@code GET /{planId}/{cropId}/details}：调整页拉行（按计划 + 作物）</li>
  *   <li>{@code GET /crop/{cropId}/details}：调整页拉行（纯作物聚合，跨多计划；列表已重构为纯作物聚合，UI 侧不再持有单一 planId）</li>
  *   <li>{@code PUT /adjust}：批量调整 plant_details 的 4 时间字段 + is_pick + harvest_by</li>
@@ -56,6 +58,18 @@ public class PickPlanController extends BaseController {
     @GetMapping("/list")
     public R<List<PickPlanGroupVo>> list(PickPlanQuery query) {
         return R.ok(pickPlanService.listByCrop(query));
+    }
+
+    /**
+     * 列表顶部统计版块：五档采摘状态各自的行数（状态筛选条件本身不参与统计）。
+     *
+     * @param query 与列表相同的筛选条件
+     * @return 五档计数
+     */
+    @SaCheckPermission("djs:plant:pick:list")
+    @GetMapping("/statusStat")
+    public R<DateWindowStatusStatVo> statusStat(PickPlanQuery query) {
+        return R.ok(pickPlanService.statusStat(query));
     }
 
     @SaCheckPermission("djs:plant:pick:export")
