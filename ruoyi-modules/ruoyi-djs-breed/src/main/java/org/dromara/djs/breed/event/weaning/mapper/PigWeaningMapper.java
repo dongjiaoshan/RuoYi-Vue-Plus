@@ -20,7 +20,9 @@ public interface PigWeaningMapper extends BaseMapperPlus<PigWeaning, PigWeaningV
      * <ol>
      *   <li>本窝任一条未删断奶明细带这个耳号 —— 逐头断奶（行238）留下的痕迹；</li>
      *   <li>猪只档案已有断奶日 —— 逐头明细回写的个体快照；</li>
-     *   <li>猪只档案已不是仔猪 —— <b>没有逐头明细的历史断奶记录</b>（明细表 V202606111520 上线前的遗留、
+     *   <li>猪只档案已不是仔猪（这里必须写 {@code !=} 不能写 {@code <>}：本常量被 {@code <script>} 包着的
+     *       动态 SQL 复用，{@code <} 会被 MyBatis 当成 XML 标签起始、启动期直接 SAXParseException 崩容器）
+     *       —— <b>没有逐头明细的历史断奶记录</b>（明细表 V202606111520 上线前的遗留、
      *       以及 admin 汇总录入 / 未贴标窝的匿名铺行）只翻了 pig_type，前两个信号都抓不到它。
      *       只靠第 1 条会把这些窝当成「还没断」重新列出来，工人再勾一次就又断一遍。</li>
      * </ol>
@@ -36,7 +38,7 @@ public interface PigWeaningMapper extends BaseMapperPlus<PigWeaning, PigWeaningV
                   AND wd.ear_no = pl.piglet_ear_no
                   AND w.farrow_id = pl.farrow_id)
           OR cub.wean_date IS NOT NULL
-          OR (cub.pig_type IS NOT NULL AND cub.pig_type <> 'piglet'))
+          OR (cub.pig_type IS NOT NULL AND cub.pig_type != 'piglet'))
         """;
 
     /**
