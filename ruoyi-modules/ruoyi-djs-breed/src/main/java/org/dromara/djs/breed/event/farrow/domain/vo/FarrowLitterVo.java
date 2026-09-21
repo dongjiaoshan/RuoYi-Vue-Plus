@@ -8,12 +8,13 @@ import java.io.Serializable;
 import java.time.LocalDateTime;
 
 /**
- * 待打标分娩窝 VO（BRD-FIX-MP-EVENT-MISC-IA-001 — 仔猪耳号"选窝"网格）。
+ * 未断奶分娩窝 VO（仔猪耳号"选窝"网格 / 出生重订正选窝）。
  *
  * <p>专给 mp 端"仔猪耳号"页第 1 步「选窝」用——原型 96/97 的母猪卡网格（公猪 N 头 / 母猪 N 头 /
  * 分娩日期）+ 选中后的「分娩概况」auto-fill 卡（母猪耳号 / 日龄 / 胎次 / 分娩舍栋栏 / 公母数）。</p>
  *
- * <p>口径：仅返 {@code remainEartag > 0}（仍有未贴满标的分娩），与 {@code statByFarrow} / 徽标同口径。</p>
+ * <p>口径（V6 行243）：仅返<b>母猪未断奶</b>的窝，与首页徽标同口径；
+ * {@code taggedEartag / remainEartag} 仍回填供展示本窝已建档头数，不再作过滤条件。</p>
  *
  * <p>跨层契约：{@code id} snowflake Long → 序列化 string（JacksonConfig 全局规则）。</p>
  *

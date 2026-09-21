@@ -55,6 +55,8 @@ import org.dromara.djs.warehouse.trace.mapper.TracePageConfigMapper;
 import org.dromara.djs.warehouse.trace.pub.domain.vo.PublicTraceVo;
 import org.dromara.djs.warehouse.trace.pub.mapper.TraceUserNameMapper;
 import org.dromara.djs.warehouse.trace.pub.service.ITracePublicService;
+import org.dromara.djs.warehouse.flow.domain.StockFlow;
+import org.dromara.djs.warehouse.flow.mapper.StockFlowMapper;
 import org.dromara.djs.warehouse.veg.domain.PlantingRecord;
 import org.dromara.djs.warehouse.veg.mapper.PlantingRecordMapper;
 import org.springframework.stereotype.Service;
@@ -115,6 +117,17 @@ public class TracePublicServiceImpl
 
     /** 缓存 TTL（~10min）。 */
     private static final Duration CACHE_TTL = Duration.ofMinutes(10);
+
+    /** 出入库流水的入库方向标识（{@code stock_flow.inout_type}）。 */
+    private static final String INOUT_IN = "IN";
+
+    /**
+     * 算「采摘」的入库流水类型（D-0108）：毛菜保鲜库入库（采摘即入）+ 果蔬月台收货入库。
+     *
+     * <p>同地块的入库流水里还有生产退回入库等非采摘入库，一并取最近会把退货时间写成采摘时间，
+     * 所以这里用白名单而不是「全部入库减去几种」—— 新增入库类型默认不会冒充采摘。</p>
+     */
+    private static final Set<String> HARVEST_INBOUND_FLOW_TYPES = Set.of("veg_stock_in", "veg_receive_in");
 
     /**
      * 猪肉时间轴**只展示**这四个节点（V6 row128，甲方 2026-08-21）：
@@ -177,6 +190,8 @@ public class TracePublicServiceImpl
     /** 发货产品生产记录：产品生产（打包）节点时间 + 果蔬成品实际称重（按 trace_code 关联）。 */
     private final ProductProductionMapper productProductionMapper;
     private final VegDisplayNameMapper vegDisplayNameMapper;
+    /** 出入库流水：果蔬「采摘」节点取本地块最近一次采摘入库的时间（D-0108）。 */
+    private final StockFlowMapper stockFlowMapper;
 
     public TracePublicServiceImpl(TraceCodeMapper baseMapper,
                                   TraceEventMapper traceEventMapper,
@@ -202,7 +217,8 @@ public class TracePublicServiceImpl
                                   CropInfoMapper cropInfoMapper,
                                   PlantingRecordMapper plantingRecordMapper,
                                   ProductProductionMapper productProductionMapper,
-                                  VegDisplayNameMapper vegDisplayNameMapper) {
+                                  VegDisplayNameMapper vegDisplayNameMapper,
+                                  StockFlowMapper stockFlowMapper) {
         super(baseMapper);
         this.traceEventMapper = traceEventMapper;
         this.productInfoMapper = productInfoMapper;
@@ -228,6 +244,7 @@ public class TracePublicServiceImpl
         this.plantingRecordMapper = plantingRecordMapper;
         this.productProductionMapper = productProductionMapper;
         this.vegDisplayNameMapper = vegDisplayNameMapper;
+        this.stockFlowMapper = stockFlowMapper;
     }
 
     @Override
@@ -799,8 +816,10 @@ public class TracePublicServiceImpl
      * <ul>
      *   <li>种植（sowing）：种植明细 {@code plant_details.create_time}（录入时刻，DATETIME 有时分秒）近似种植完成时间；
      *       无明细则退化种植日 {@code planting_record.plant_date}（DATE）0 点，plant_date 缺则 {@code 采摘日 − 生长天数} 反推。</li>
-     *   <li>采摘（harvest）：仓库种植记录 {@code planting_record.data_date}（DATETIME 有时分秒，「一般同采摘时间」）；
-     *       无则退化采摘日（{@code trace_code.havest_date} / 种植记录 {@code harvest_date}，DATE）0 点。</li>
+     *   <li>采摘（harvest）：该产品原材料作物在本地块上最近一次<b>采摘入库</b>的流水日期
+     *       {@code stock_flow.flow_date}（见 {@link #resolveHarvestInboundTime}）；无入库流水才退化回
+     *       种植记录 {@code planting_record.data_date}，再无则退化采摘日
+     *       （{@code trace_code.havest_date} / 种植记录 {@code harvest_date}，DATE）0 点。</li>
      *   <li>产品生产（pack）：发货生产记录 {@code product_production.produce_time}（无则 {@code produce_date}），
      *       即果蔬在仓库打包的时间。</li>
      *   <li>冷链发货（ship）/ 到店（arrival）：{@code trace_event} 基础节点（发货月台确认发货 / 门店确认到店）。</li>
@@ -824,12 +843,20 @@ public class TracePublicServiceImpl
         // 邓博 row19：种植 / 采摘节点写班组名（非人员名）；取仓库种植记录的 team_name，无则 null。
         String teamName = planting != null ? planting.getTeamName() : null;
 
-        // 采摘（采摘开始时间）：优先取种植记录 data_date（DATETIME「数据生成时间，一般同采摘时间」，
-        // 有真实时分秒），无则退化采摘日 0 点（trace_code.havest_date / planting.harvest_date 均 DATE，无时分秒）。
+        // 采摘：取该产品原材料作物在本地块上最近一次采摘入库的流水日期。
+        // 种植记录 data_date 记的是「该地块那批开始采摘」落库的时刻，一批只写一次，整批共用同一个值 ——
+        // 同一地块后续每一次采摘出来的产品都会顶着首批那天，越往后越不准（staging 实测 A-A4东-0-001 紫线茄：
+        // data_date 2026-08-03，而 9/15 打包那批的真实采摘入库是 2026-09-13）。入库流水一次采摘一条，才跟得上。
         LocalDate harvestDate = code.getHarvestDate() != null
             ? code.getHarvestDate()
             : (planting != null ? toLocalDate(planting.getHarvestDate()) : null);
-        LocalDateTime harvestTime = planting != null ? toLocalDateTime(planting.getDataDate()) : null;
+        Date packTime = pack == null ? null
+            : (pack.getProduceTime() != null ? pack.getProduceTime() : pack.getProduceDate());
+        LocalDateTime harvestTime = resolveHarvestInboundTime(
+            code.getPlotId(), pack != null ? pack.getMaterialId() : null, packTime);
+        if (harvestTime == null) {
+            harvestTime = planting != null ? toLocalDateTime(planting.getDataDate()) : null;
+        }
         if (harvestTime == null) {
             harvestTime = atDayStart(harvestDate);
         }
@@ -849,10 +876,8 @@ public class TracePublicServiceImpl
         addProcessNode(timeline, TraceContentConst.SOWING, sowTime, teamName);
         addProcessNode(timeline, TraceContentConst.HARVEST, harvestTime, teamName);
 
-        // 产品生产（打包）
+        // 产品生产（打包）—— 与采摘节点的上界用同一个 packTime，两处不各算一遍
         if (pack != null) {
-            Date packTime = pack.getProduceTime() != null
-                ? pack.getProduceTime() : pack.getProduceDate();
             addProcessNode(timeline, TraceContentConst.PACK, toLocalDateTime(packTime));
         }
 
@@ -888,6 +913,47 @@ public class TracePublicServiceImpl
                 .orderByDesc(PlantingRecord::getHarvestDate)
                 .orderByDesc(PlantingRecord::getId)
                 .last("limit 1"));
+    }
+
+    /**
+     * 采摘节点时间源：该原材料产品在本地块上<b>最近一次采摘入库</b>的流水时间。
+     *
+     * <p>口径 D-0108（clarify，按 fallback 先做）：只认采摘类入库 —— 毛菜保鲜库入库
+     * （{@code veg_stock_in}，采摘即入）与果蔬月台收货入库（{@code veg_receive_in}）。
+     * 同一地块的入库流水里还混着生产退回入库（{@code prod_return_in}）等非采摘入库，
+     * 把它们一起算进来会让一次退货的时间被写成采摘时间 —— staging 实测 A-A4东-0-001 地块，
+     * 三类全取会取到 {@code prod_return_in} 的 2026-08-07，只取采摘类才是 2026-09-13。
+     * 代价是本节点不再与 admin「入库记录」页逐行对齐（那一页三类全含）。</p>
+     *
+     * <p>原材料产品 id 取自打包生产记录 {@code product_production.material_id}；拿不到时
+     * 退化为只按地块取（地块可能套种多种作物，此时精度下降但仍好过无值）。</p>
+     *
+     * <p><b>必须限定在打包时刻之前</b>：「最近一次」若不分先后，一个 8 月打包的产品会顶上
+     * 9 月才发生的那次采摘 —— 时间线上「采摘」排到「产品生产」上方，成了先生产后采摘。
+     * staging 全量实测：不加这条限制，94 个果蔬码里有 42 个倒挂；加上之后 94 个全部顺序正常、
+     * 且没有一个因此取不到值。装进这个产品的本来就只能是它打包之前入库的那批菜。</p>
+     *
+     * @return 打包时刻之前最近一次采摘入库的时间；没有任何可用流水时返回 {@code null}
+     */
+    private LocalDateTime resolveHarvestInboundTime(Long plotId, Long materialProductId, Date packTime) {
+        if (plotId == null) {
+            return null;
+        }
+        LambdaQueryWrapper<StockFlow> w = new LambdaQueryWrapper<StockFlow>()
+            .eq(StockFlow::getPlotId, plotId)
+            .eq(StockFlow::getInoutType, INOUT_IN)
+            .in(StockFlow::getFlowType, HARVEST_INBOUND_FLOW_TYPES)
+            .orderByDesc(StockFlow::getFlowDate)
+            .orderByDesc(StockFlow::getId)
+            .last("limit 1");
+        if (materialProductId != null) {
+            w.eq(StockFlow::getProductId, materialProductId);
+        }
+        if (packTime != null) {
+            w.le(StockFlow::getFlowDate, packTime);
+        }
+        StockFlow flow = stockFlowMapper.selectOne(w);
+        return flow == null ? null : toLocalDateTime(flow.getFlowDate());
     }
 
     /**

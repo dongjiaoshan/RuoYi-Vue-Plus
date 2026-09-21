@@ -10,8 +10,8 @@ import org.dromara.djs.breed.event.farrow.domain.vo.PigFarrowVo;
  * 母猪分娩 mapper（BRD-EVENT-002）。
  *
  * <p>额外暴露 {@link #selectBoarEarByBreedingId} 给 BRD-EVENT-003 仔猪耳标做"配种 → 父猪耳号"反查；
- * {@link #countPendingFarrows} / {@link #sumPendingPiglets} 给
- * DJS-FIX-MP-W22-003 mp breed home 徽标查"待贴 N 头"用。</p>
+ * {@link #countPendingFarrows} / {@link #sumPendingPiglets} 给 mp breed home 徽标查
+ * "未断奶 N 窝 / N 头"用（V6 行243 口径，与选窝列表同源）。</p>
  *
  * @author djs
  * @since BRD-EVENT-002
@@ -28,42 +28,39 @@ public interface PigFarrowMapper extends BaseMapperPlus<PigFarrow, PigFarrowVo> 
     String selectBoarEarByBreedingId(@Param("breedingId") Long breedingId);
 
     /**
-     * 待贴标 farrow 批数：仍有 live_born &gt; 已贴 pigletno 行数。
+     * 未断奶窝数（mp breed home「仔猪耳号」卡徽标的批数，V6 行243 口径）。
      *
-     * <p>{@code t_farm_pig_farrow} 表无 {@code farrow_status} / {@code tagged_count} 字段，
-     * 已贴数从 {@code t_farm_pig_pigletno} 反查（与 {@code statByFarrow} 同口径）。
-     * 多租户过滤 mp 走 sa-token 默认 1001（V1 单租户，详 ADR-0001）。</p>
+     * <p>口径与 {@code IFarrowService.queryPendingLitters} 一致——<b>母猪未断奶</b>即在列表里，
+     * 一断奶就消失。V6 行242 起整窝在分娩提交时自动建档，旧的「live_born 大于已打标数」口径
+     * 会恒为 0，徽标与列表两边对不上，故一并换掉。</p>
+     *
+     * <p>{@code t_farm_pig_farrow} 无 status 冗余列，全表动态聚合；V1 单租户 tenant_id 写死 '1001'
+     * （详 ADR-0001），子查询显式对齐租户列。</p>
      */
     @Select("""
         SELECT COUNT(*) FROM t_farm_pig_farrow f
         WHERE f.del_flag = '0'
           AND f.tenant_id = '1001'
-          AND COALESCE(f.live_born, 0) > (
-            SELECT COUNT(*) FROM t_farm_pig_pigletno p
-            WHERE p.farrow_id = f.id AND p.del_flag = '0'
+          AND NOT EXISTS (
+            SELECT 1 FROM t_farm_pig_weaning w
+            WHERE w.farrow_id = f.id AND w.del_flag = '0' AND w.tenant_id = f.tenant_id
           )
         """)
     Integer countPendingFarrows();
 
     /**
-     * 待贴标仔猪总头数：SUM(live_born - 已贴 pigletno 数)。
+     * 未断奶窝的仔猪总头数 = SUM(live_born)（mp breed home 徽标数字，V6 行243 口径）。
      *
-     * <p>用 LEFT JOIN + GROUP BY 计算每批分娩剩余头数，再 SUM。返 0 时由 controller
-     * 转 wd-badge value=0 mp 端自动隐藏徽标。</p>
+     * <p>返 0 时 controller 转 wd-badge value=0，mp 端自动隐藏徽标。</p>
      */
     @Select("""
-        SELECT COALESCE(SUM(remain), 0) FROM (
-          SELECT GREATEST(0, COALESCE(f.live_born, 0) - COALESCE(t.tagged, 0)) AS remain
-          FROM t_farm_pig_farrow f
-          LEFT JOIN (
-            SELECT farrow_id, COUNT(*) AS tagged
-            FROM t_farm_pig_pigletno
-            WHERE del_flag = '0'
-            GROUP BY farrow_id
-          ) t ON t.farrow_id = f.id
-          WHERE f.del_flag = '0'
-            AND f.tenant_id = '1001'
-        ) x
+        SELECT COALESCE(SUM(COALESCE(f.live_born, 0)), 0) FROM t_farm_pig_farrow f
+        WHERE f.del_flag = '0'
+          AND f.tenant_id = '1001'
+          AND NOT EXISTS (
+            SELECT 1 FROM t_farm_pig_weaning w
+            WHERE w.farrow_id = f.id AND w.del_flag = '0' AND w.tenant_id = f.tenant_id
+          )
         """)
     Integer sumPendingPiglets();
 }

@@ -7,6 +7,7 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.dromara.common.core.exception.ServiceException;
+import org.dromara.common.core.service.DictService;
 import org.dromara.common.core.utils.StringUtils;
 import org.dromara.common.mybatis.core.page.PageQuery;
 import org.dromara.common.mybatis.core.page.TableDataInfo;
@@ -16,8 +17,11 @@ import org.dromara.djs.breed.core.service.EarNoAllocator;
 import org.dromara.djs.breed.core.service.I18nMessages;
 import org.dromara.djs.breed.breeding.domain.BreedConfig;
 import org.dromara.djs.breed.breeding.mapper.BreedConfigMapper;
+import org.dromara.djs.common.constant.DictTypeConstants;
 import org.dromara.djs.breed.event.eartag.domain.PigPigletno;
 import org.dromara.djs.breed.event.eartag.domain.bo.PigletBatchEarTagBo;
+import org.dromara.djs.breed.event.eartag.domain.bo.PigletBirthWeightBo;
+import org.dromara.djs.breed.event.eartag.domain.bo.PigletBirthWeightItem;
 import org.dromara.djs.breed.event.eartag.domain.bo.PigletEarTagItem;
 import org.dromara.djs.breed.event.eartag.domain.query.PigletEarTagQuery;
 import org.dromara.djs.breed.event.eartag.domain.vo.EarNoPreviewVo;
@@ -78,6 +82,13 @@ public class PigEarTagServiceImpl implements IPigEarTagService {
     private final EarNoAllocator earNoAllocator;
     private final BreedConfigMapper breedConfigMapper;
     private final PenCountUpdater penCountUpdater;
+    private final DictService dictService;
+
+    /** 字典 {@code djs_piglet_default_weight} 下「出生重」那一项的标签（同字典另有「仔猪断奶重」项）。 */
+    private static final String BIRTH_WEIGHT_DICT_LABEL = "仔猪出生重";
+
+    /** 出生重兜底值 kg：字典缺失 / 值非数字时用（D-0107 fallback，与 seed 值一致）。 */
+    private static final BigDecimal DEFAULT_BIRTH_WEIGHT = new BigDecimal("2");
 
     @Override
     public FarrowEarTagStatVo statByFarrow(Long farrowId) {
@@ -86,7 +97,7 @@ public class PigEarTagServiceImpl implements IPigEarTagService {
         }
         PigFarrow farrow = farrowMapper.selectById(farrowId);
         if (farrow == null) {
-            throw new ServiceException(I18nMessages.t("pigletno.farrow.not_found", farrowId));
+            throw new ServiceException(I18nMessages.t("pigletno.farrow.not_found", String.valueOf(farrowId)));
         }
         Pig mother = pigMapper.selectById(farrow.getPigId());
 
@@ -132,20 +143,35 @@ public class PigEarTagServiceImpl implements IPigEarTagService {
         if (bo == null || bo.getFarrowId() == null || bo.getPiglets() == null || bo.getPiglets().isEmpty()) {
             throw new ServiceException(I18nMessages.t("pigletno.bo.required"));
         }
-
-        // 1. 校验 farrow 存在 + 母猪存在 + 已贴 + 本批 ≤ live_born
         PigFarrow farrow = farrowMapper.selectById(bo.getFarrowId());
         if (farrow == null) {
-            throw new ServiceException(I18nMessages.t("pigletno.farrow.not_found", bo.getFarrowId()));
+            throw new ServiceException(I18nMessages.t("pigletno.farrow.not_found", String.valueOf(bo.getFarrowId())));
         }
+        return createPigletsForFarrow(farrow, bo.getPiglets(), bo.getOperatorId());
+    }
+
+    /**
+     * 建档整窝仔猪：分配耳号 → INSERT N 行 {@code t_farm_pig_info} + N 行 {@code t_farm_pig_pigletno}
+     * → 母猪所在栏在场头数 +N → 回写该窝 total_weight / avg_weight。
+     *
+     * <p>两个入口共用：mp 旧「批量贴耳标」({@link #batchTag}) 与 V6 行242 的分娩录入自动建档
+     * ({@link #autoCreatePigletsForFarrow})——同一段落库逻辑只此一份。</p>
+     *
+     * <p>仔猪<b>不参与状态机</b>（无 fireEvent），current_status 留空（ADR-0016）。</p>
+     */
+    private List<PigletEarTagVo> createPigletsForFarrow(PigFarrow farrow, List<PigletEarTagItem> piglets,
+                                                        Long operatorId) {
+        Long farrowId = farrow.getId();
+
+        // 1. 校验母猪存在 + 已建档 + 本批 ≤ live_born
         Pig mother = pigMapper.selectById(farrow.getPigId());
         if (mother == null) {
-            throw new ServiceException(I18nMessages.t("pigletno.mother.not_found", farrow.getPigId()));
+            throw new ServiceException(I18nMessages.t("pigletno.mother.not_found", String.valueOf(farrow.getPigId())));
         }
 
-        Long tagged = pigletnoMapper.selectCount(
-            new LambdaQueryWrapper<PigPigletno>().eq(PigPigletno::getFarrowId, bo.getFarrowId()));
-        int newCount = bo.getPiglets().size();
+        long tagged = Optional.ofNullable(pigletnoMapper.selectCount(
+            new LambdaQueryWrapper<PigPigletno>().eq(PigPigletno::getFarrowId, farrowId))).orElse(0L);
+        int newCount = piglets.size();
         int liveBorn = Optional.ofNullable(farrow.getLiveBorn()).orElse(0);
         long requested = tagged + newCount;
         if (requested > liveBorn) {
@@ -166,12 +192,12 @@ public class PigEarTagServiceImpl implements IPigEarTagService {
         // 3. 生成 N 个耳号（仔代品系/品种码 + 每头性别 + 出生日 = 分娩日；公母混批共享当天全场连号，按原序回填）
         LocalDateTime tagAt = LocalDateTime.now();
         LocalDate birthDate = farrow.getFarrowDate() == null ? tagAt.toLocalDate() : farrow.getFarrowDate().toLocalDate();
-        List<String> earNos = allocatePigletEarNos(cubStrainCode, cubBreedCode, bo.getPiglets(), birthDate);
+        List<String> earNos = allocatePigletEarNos(cubStrainCode, cubBreedCode, piglets, birthDate);
 
         // 4. 同事务循环 INSERT pig + pigletno
         List<PigletEarTagVo> result = new ArrayList<>(newCount);
         for (int i = 0; i < newCount; i++) {
-            PigletEarTagItem item = bo.getPiglets().get(i);
+            PigletEarTagItem item = piglets.get(i);
             String earNo = earNos.get(i);
 
             Pig piglet = new Pig();
@@ -191,7 +217,7 @@ public class PigEarTagServiceImpl implements IPigEarTagService {
             piglet.setMotherEar(mother.getEarNo());
             piglet.setBirthDate(birthDate);
             // 出生重按头录入（PigletEarTagItem.birthWeight），同步落主表供详情展示
-            piglet.setBirthWeight(item.getBirthWeight());
+            piglet.setBirthWeight(normalizeBirthWeight(item.getBirthWeight()));
             piglet.setParity(0);
             piglet.setBarnId(mother.getBarnId());
             piglet.setPenId(mother.getPenId());
@@ -206,14 +232,14 @@ public class PigEarTagServiceImpl implements IPigEarTagService {
             log.setPigletEarNo(earNo);
             log.setMotherEarNo(mother.getEarNo());
             log.setFatherEarNo(fatherEar);
-            log.setFarrowId(bo.getFarrowId());
+            log.setFarrowId(farrowId);
             log.setTagDate(tagAt);
             log.setPigletSex(item.getPigletSex());
-            log.setBirthWeight(item.getBirthWeight());
+            log.setBirthWeight(normalizeBirthWeight(item.getBirthWeight()));
             log.setPigId(piglet.getId());
             log.setRemark(item.getRemark());
-            // 打标人员：优先取前端所选 operatorId，空则回落登录态（兼容旧入参不带人员）
-            log.setOperatorId(bo.getOperatorId() != null ? bo.getOperatorId() : LoginHelper.getUserId());
+            // 记录人员：优先取调用方传入的 operatorId（mp 旧打标页所选 / 分娩录入的录入人员），空则回落登录态
+            log.setOperatorId(operatorId != null ? operatorId : LoginHelper.getUserId());
             log.setDelFlag("0");
             log.setDelUnique(0L);
             pigletnoMapper.insert(log);
@@ -227,15 +253,209 @@ public class PigEarTagServiceImpl implements IPigEarTagService {
 
         // R159：耳标提交后同步分娩表该窝的产仔总重 total_weight + 平均出生重 avg_weight
         // （按本窝全部已标仔猪的出生重累计，含本批 + 历史批；同事务可见刚 INSERT 的行）。
-        syncFarrowWeights(bo.getFarrowId());
+        syncFarrowWeights(farrowId);
 
-        log.info("[BRD-EVENT-003] batchTag farrowId={} motherEar={} count={} earNos=[{}..{}]",
-            bo.getFarrowId(), mother.getEarNo(), newCount,
+        log.info("[BRD-EVENT-003] createPiglets farrowId={} motherEar={} count={} earNos=[{}..{}]",
+            farrowId, mother.getEarNo(), newCount,
             earNos.get(0), earNos.get(newCount - 1));
 
         // VO 列表按耳号 asc 返回，便于前端展示连续序号
         result.sort(Comparator.comparing(PigletEarTagVo::getPigletEarNo));
         return result;
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public List<PigletEarTagVo> autoCreatePigletsForFarrow(PigFarrow farrow, Long operatorId) {
+        if (farrow == null || farrow.getId() == null) {
+            throw new ServiceException(I18nMessages.t("pigletno.farrow_id.required"));
+        }
+        List<PigletEarTagItem> piglets = buildDefaultPiglets(farrow);
+        if (piglets.isEmpty()) {
+            // 无活产仔（死胎/木乃伊全窝）→ 不建档也不报错，分娩记录照常成立
+            log.info("[V6-R242] farrowId={} liveBorn={} 无活产仔，跳过自动建档",
+                farrow.getId(), farrow.getLiveBorn());
+            return List.of();
+        }
+        return createPigletsForFarrow(farrow, piglets, operatorId);
+    }
+
+    /**
+     * 按窝派生「每头的性别 + 出生重」：公 {@code farrow.male_count} 头 + 母 {@code farrow.female_count} 头，
+     * 每头出生重取字典默认值。
+     *
+     * <p>公母数落库时已由分娩录入的「健仔公+弱仔留养公 / 健仔母+弱仔留养母」派生
+     * （{@code FarrowServiceImpl.recordFarrow}）。两者都为 0（老数据 / 调用方没下发细分）时
+     * 整窝按公组铺 {@code live_born} 头 —— 与 mp 耳标页原预铺行的退化规则一致，
+     * 保证有耳号可订正，性别后续可在猪只档案改。</p>
+     */
+    private List<PigletEarTagItem> buildDefaultPiglets(PigFarrow farrow) {
+        int liveBorn = Optional.ofNullable(farrow.getLiveBorn()).orElse(0);
+        if (liveBorn <= 0) {
+            return List.of();
+        }
+        int male = Math.max(0, Optional.ofNullable(farrow.getMaleCount()).orElse(0));
+        int female = Math.max(0, Optional.ofNullable(farrow.getFemaleCount()).orElse(0));
+        if (male == 0 && female == 0) {
+            male = liveBorn;
+        } else if (male + female != liveBorn) {
+            // live_born 才是「该建几头档案」的权威，公母只是性别拆分。拆分之和对不上时按 live_born 收敛，
+            // 而不是让耳标域的 exceeds_live_born 把整条分娩记录一起否掉 —— 甲方要的是分娩录入一步走完，
+            // 一个性别拆分不一致不该导致分娩事件根本记不上。放弃的是「严格拒绝不一致输入」。
+            // 收敛规则与 mp 端 resyncRows 的退化规则一致：按比例缩，余数优先补公组（先公后母）。
+            int total = male + female;
+            int newMale = total == 0 ? liveBorn : (int) Math.round((double) male * liveBorn / total);
+            newMale = Math.min(Math.max(newMale, 0), liveBorn);
+            log.warn("[V6-R242] farrowId={} 公母拆分 {}+{} 与活产数 {} 对不上，按活产数收敛为 {}+{}",
+                farrow.getId(), male, female, liveBorn, newMale, liveBorn - newMale);
+            male = newMale;
+            female = liveBorn - newMale;
+        }
+        BigDecimal birthWeight = defaultBirthWeight();
+        List<PigletEarTagItem> piglets = new ArrayList<>(male + female);
+        for (int i = 0; i < male; i++) {
+            piglets.add(mkDefaultItem("M", birthWeight));
+        }
+        for (int i = 0; i < female; i++) {
+            piglets.add(mkDefaultItem("F", birthWeight));
+        }
+        return piglets;
+    }
+
+    private PigletEarTagItem mkDefaultItem(String sex, BigDecimal birthWeight) {
+        PigletEarTagItem item = new PigletEarTagItem();
+        item.setPigletSex(sex);
+        item.setBirthWeight(birthWeight);
+        return item;
+    }
+
+    /**
+     * 自动建档时每头仔猪的出生重：字典 {@code djs_piglet_default_weight} 的「仔猪出生重」当前值（kg）。
+     *
+     * <p><b>依据 D-0107</b>——分娩录入表单上没有出生重这一栏，但 {@code pig_info.birth_weight} 与
+     * 窝级 {@code total_weight / avg_weight} 都要有初值；写字典默认值与现行耳号标记页的逐头预填值
+     * 完全一致，随后由出生重订正页改准。留空的代价是窝均初生重先显示 0 再跳变，工人会以为数据丢了。</p>
+     *
+     * <p>字典未 seed / 值非数字 → 回落 {@link #DEFAULT_BIRTH_WEIGHT}（2kg）并 warn，不阻断分娩录入。</p>
+     */
+    /**
+     * 出生重按 2 位小数归一 —— 两张表存同一个事实却精度不同：
+     * {@code t_farm_pig_info.birth_weight} 是 DECIMAL(6,2)、{@code t_farm_pig_pigletno.birth_weight} 是 DECIMAL(8,3)。
+     * 不归一就会出现工人输 1.555、猪只详情显示 1.56、而窝级总重按 1.555 汇总的错位
+     * （窝级取的是 pigletno 那张）。统一取窄的那个精度，让「看到的」和「算出来的」永远一致。
+     */
+    private static BigDecimal normalizeBirthWeight(BigDecimal raw) {
+        return raw == null ? null : raw.setScale(2, java.math.RoundingMode.HALF_UP);
+    }
+
+    private BigDecimal defaultBirthWeight() {
+        String raw = dictService.getDictValue(DictTypeConstants.PIGLET_DEFAULT_WEIGHT, BIRTH_WEIGHT_DICT_LABEL);
+        if (StringUtils.isBlank(raw)) {
+            log.warn("[V6-R242] 字典 {} 无「{}」项，出生重回落默认 {}kg",
+                DictTypeConstants.PIGLET_DEFAULT_WEIGHT, BIRTH_WEIGHT_DICT_LABEL, DEFAULT_BIRTH_WEIGHT);
+            return DEFAULT_BIRTH_WEIGHT;
+        }
+        try {
+            return new BigDecimal(raw.trim());
+        } catch (NumberFormatException e) {
+            log.warn("[V6-R242] 字典 {} 的「{}」值 [{}] 不是数字，出生重回落默认 {}kg",
+                DictTypeConstants.PIGLET_DEFAULT_WEIGHT, BIRTH_WEIGHT_DICT_LABEL, raw, DEFAULT_BIRTH_WEIGHT, e);
+            return DEFAULT_BIRTH_WEIGHT;
+        }
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public FarrowEarTagStatVo ensureLitterCreated(Long farrowId) {
+        if (farrowId == null) {
+            throw new ServiceException(I18nMessages.t("pigletno.farrow_id.required"));
+        }
+        PigFarrow farrow = farrowMapper.selectById(farrowId);
+        if (farrow == null) {
+            throw new ServiceException(I18nMessages.t("pigletno.farrow.not_found", String.valueOf(farrowId)));
+        }
+        if (selectLitterPiglets(farrowId).isEmpty()) {
+            // D-0110：老窝进来时就补建，否则订正页是一张没有耳号的空表单，工人无从下手
+            autoCreatePigletsForFarrow(farrow, LoginHelper.getUserId());
+        }
+        return statByFarrow(farrowId);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public List<PigletEarTagVo> adjustBirthWeights(PigletBirthWeightBo bo) {
+        if (bo == null || bo.getFarrowId() == null || bo.getItems() == null || bo.getItems().isEmpty()) {
+            throw new ServiceException(I18nMessages.t("pigletno.items.required"));
+        }
+        Long farrowId = bo.getFarrowId();
+        PigFarrow farrow = farrowMapper.selectById(farrowId);
+        if (farrow == null) {
+            throw new ServiceException(I18nMessages.t("pigletno.farrow.not_found", String.valueOf(farrowId)));
+        }
+
+        List<PigPigletno> litter = selectLitterPiglets(farrowId);
+        if (litter.isEmpty()) {
+            // D-0110：行242 上线前已分娩、从未建档的老窝 —— 按同一套规则补建整窝再订正，
+            // 新老窝走同一条路径不写两套分支。补建后仍为空（live_born=0）则下面逐条匹配会报耳号不属于本窝。
+            autoCreatePigletsForFarrow(farrow, LoginHelper.getUserId());
+            litter = selectLitterPiglets(farrowId);
+        }
+        Map<String, PigPigletno> byEarNo = new HashMap<>(litter.size() * 2);
+        for (PigPigletno row : litter) {
+            byEarNo.put(row.getPigletEarNo(), row);
+        }
+
+        // 同一耳号在一次提交里出现两次：静默取最后一个等于把工人先填的那个值悄悄扔掉，
+        // 他不会知道自己录重了。整单拒绝，让他自己看清楚改哪一头。
+        Set<String> seen = new java.util.HashSet<>();
+        for (PigletBirthWeightItem dup : bo.getItems()) {
+            String e = StringUtils.trim(dup.getPigletEarNo());
+            if (!seen.add(e)) {
+                throw new ServiceException(
+                    I18nMessages.t("pigletno.ear_no.duplicated", e), 400);
+            }
+        }
+
+        for (PigletBirthWeightItem item : bo.getItems()) {
+            String earNo = StringUtils.trim(item.getPigletEarNo());
+            PigPigletno row = byEarNo.get(earNo);
+            if (row == null) {
+                // farrowId 必须转成字符串再进 MessageFormat —— 传 Long 会被按数字格式化成
+                // 「2,101,987,292,334,813,185」这种带千分位的雪花 ID，直接显给工人看。
+                throw new ServiceException(
+                    I18nMessages.t("pigletno.ear_no.not_in_litter", earNo, String.valueOf(farrowId)), 400);
+            }
+            // 两张表存同一个事实（既有重复存储）：pigletno.birth_weight 是窝级总重/均重的汇总源，
+            // pig_info.birth_weight 是猪只详情/追溯的展示源 —— 只改一边两处口径会对不上。
+            PigPigletno logUpdate = new PigPigletno();
+            logUpdate.setId(row.getId());
+            BigDecimal bw = normalizeBirthWeight(item.getBirthWeight());
+            logUpdate.setBirthWeight(bw);
+            pigletnoMapper.updateById(logUpdate);
+            if (row.getPigId() != null) {
+                Pig pigUpdate = new Pig();
+                pigUpdate.setId(row.getPigId());
+                pigUpdate.setBirthWeight(bw);
+                pigMapper.updateById(pigUpdate);
+            }
+        }
+
+        // 窝级总重/均重按本窝全部仔猪重算（绝对赋值，故反复提交幂等）
+        syncFarrowWeights(farrowId);
+        log.info("[V6-R243] adjustBirthWeights farrowId={} 订正 {} 头 / 本窝共 {} 头",
+            farrowId, bo.getItems().size(), litter.size());
+
+        List<PigletEarTagVo> result = statByFarrow(farrowId).getTaggedList();
+        result.sort(Comparator.comparing(PigletEarTagVo::getPigletEarNo));
+        return result;
+    }
+
+    /** 本窝已建档仔猪（耳号 + 性别 + 当前出生重的权威行），按 id asc = 建档顺序。 */
+    private List<PigPigletno> selectLitterPiglets(Long farrowId) {
+        return pigletnoMapper.selectList(Wrappers.<PigPigletno>lambdaQuery()
+            .eq(PigPigletno::getFarrowId, farrowId)
+            .eq(PigPigletno::getDelFlag, "0")
+            .orderByAsc(PigPigletno::getId));
     }
 
     /**
@@ -276,11 +496,11 @@ public class PigEarTagServiceImpl implements IPigEarTagService {
         }
         PigFarrow farrow = farrowMapper.selectById(farrowId);
         if (farrow == null) {
-            throw new ServiceException(I18nMessages.t("pigletno.farrow.not_found", farrowId));
+            throw new ServiceException(I18nMessages.t("pigletno.farrow.not_found", String.valueOf(farrowId)));
         }
         Pig mother = pigMapper.selectById(farrow.getPigId());
         if (mother == null) {
-            throw new ServiceException(I18nMessages.t("pigletno.mother.not_found", farrow.getPigId()));
+            throw new ServiceException(I18nMessages.t("pigletno.mother.not_found", String.valueOf(farrow.getPigId())));
         }
         LocalDate birthDate = farrow.getFarrowDate() == null
             ? LocalDate.now()

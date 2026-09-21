@@ -68,9 +68,9 @@ public class FarrowAppletController {
     }
 
     /**
-     * 待打标分娩窝列表（BRD-FIX-MP-EVENT-MISC-IA-001 — 仔猪耳号"选窝"网格，原型 96）。
+     * 未断奶分娩窝列表（仔猪耳号"选窝"网格，原型 96；V6 行243 口径）。
      *
-     * <p>仅返仍有未贴满标的窝；可选 {@code motherEarNo}（母猪耳号下拉）/ {@code barnName}（分娩栋舍 chip）过滤。
+     * <p>仅返母猪未断奶的窝（断奶即消失）；可选 {@code motherEarNo}（母猪耳号下拉）/ {@code barnName}（分娩栋舍 chip）过滤。
      * 卡片含公母数 / 分娩日期；选中后 mp 端用同条数据渲染「分娩概况」auto-fill 卡。</p>
      *
      * @param motherEarNo 母猪耳号过滤（可空）
@@ -87,9 +87,9 @@ public class FarrowAppletController {
     }
 
     /**
-     * 待打标分娩栋舍 chip（BRD-FIX-MP-EVENT-MISC-IA-001 — 原型 96 顶部"分娩1栋(12)"）。
+     * 未断奶分娩栋舍 chip（原型 96 顶部"分娩1栋(12)"）。
      *
-     * <p>按 farrow.barn_name 聚合待打标窝数；barn_name 为空的窝不进 chip；count 0 不返；barnName 升序。</p>
+     * <p>按 farrow.barn_name 聚合未断奶窝数；barn_name 为空的窝不进 chip；count 0 不返；barnName 升序。</p>
      */
     @SaCheckLogin
     @SaCheckPermission("djs:applet:breed:farrow:list")

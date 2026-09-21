@@ -21,7 +21,9 @@ import org.dromara.djs.breed.core.util.PigAgeUtil;
 import org.dromara.djs.breed.event.breeding.domain.PigBreeding;
 import org.dromara.djs.breed.event.breeding.mapper.PigBreedingMapper;
 import org.dromara.djs.breed.event.eartag.domain.PigPigletno;
+import org.dromara.djs.breed.event.eartag.domain.vo.PigletEarTagVo;
 import org.dromara.djs.breed.event.eartag.mapper.PigPigletnoMapper;
+import org.dromara.djs.breed.event.eartag.service.IPigEarTagService;
 import org.dromara.djs.breed.event.farrow.domain.PigFarrow;
 import org.dromara.djs.breed.event.farrow.domain.bo.FarrowBo;
 import org.dromara.djs.breed.event.farrow.domain.query.FarrowQuery;
@@ -59,6 +61,11 @@ import java.util.stream.Collectors;
  * + publishEvent 同生共死。Spring listener 应通过 {@code @TransactionalEventListener(AFTER_COMMIT)}
  * 异步消费，避免分娩 commit 失败时耳标 listener 已执行。</p>
  *
+ * <h3>仔猪建档（V6 行242）</h3>
+ * <p>分娩录入提交即整窝自动建档（耳号 + {@code t_farm_pig_info} + {@code t_farm_pig_pigletno}），
+ * 工人不再单独走「仔猪耳号填报」那一步。出生重先写字典默认值，由出生重订正页改准（D-0107）。
+ * 建档与分娩台账同事务，建档失败整条回滚。</p>
+ *
  * <h3>状态推进</h3>
  * <p>{@code fireEvent(PigStatusEvent.FARROW)} 推动状态机 PZ → FM；非 PZ 母猪 / 公猪 / 终态由
  * {@code PigStateMachine} 直接抛 ServiceException，无需本 service 重复校验。这些 guard 通过
@@ -81,6 +88,14 @@ public class FarrowServiceImpl implements IFarrowService {
     private final PigPigletnoMapper pigletnoMapper;
     private final IPigCoreService pigCoreService;
     private final DictService dictService;
+    /**
+     * 仔猪建档（V6 行242 分娩提交即建档）。
+     *
+     * <p>注入的是耳标 service 而非反向——{@code PigEarTagServiceImpl} 只依赖 mapper 层
+     * （pigMapper / pigletnoMapper / farrowMapper / 分配器 / 育种配置 / 栏头数），
+     * 不依赖 {@link IFarrowService}，故这条单向边不构成 Spring 循环依赖，无需 {@code @Lazy}。</p>
+     */
+    private final IPigEarTagService eartagService;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -162,12 +177,46 @@ public class FarrowServiceImpl implements IFarrowService {
         eventBo.setRelatedEventId(farrow.getId());
         pigCoreService.fireEvent(eventBo);
 
-        // 仔猪个体由 BRD-EVENT-003 耳标流程创建（用户 mp 端录数量+性别后 batchTag），
-        // 分娩只记窝产仔数；by-design 无 farrow→eartag 事件联动，故不发布 Spring event。
-        log.info("[BRD-EVENT-002] recordFarrow pigId={} earNo={} farrowId={} liveBorn={} parity={}",
-            pig.getId(), pig.getEarNo(), farrow.getId(), farrow.getLiveBorn(), farrow.getParity());
+        // 4. V6 行242：整窝仔猪自动建档（公 male_count 头 + 母 female_count 头，出生重取字典默认值 D-0107）。
+        //    同事务——建档失败连分娩台账一起回滚，不留「母猪已转 FM 却一头仔猪都没有」的半截数据。
+        //    live_born=0（全窝死胎）时 autoCreate 返空 list，不建档也不报错。
+        List<PigletEarTagVo> piglets = eartagService.autoCreatePigletsForFarrow(farrow, farrow.getOperatorId());
 
-        return toVo(farrow, 0, farrow.getLiveBorn());
+        // 5. 公母数以「实际建了几头档案」为准回写。建档侧会在公母之和与活产数对不上时按活产数收敛，
+        //    若不把收敛结果写回来，这一行就会自相矛盾：窝详情显示公5母5、耳标页却只有 2 头。
+        syncSexCountsFromPiglets(farrow, piglets);
+
+        log.info("[BRD-EVENT-002] recordFarrow pigId={} earNo={} farrowId={} liveBorn={} parity={} 自动建档={}头",
+            pig.getId(), pig.getEarNo(), farrow.getId(), farrow.getLiveBorn(), farrow.getParity(), piglets.size());
+
+        return toVo(farrow, piglets.size(), farrow.getLiveBorn());
+    }
+
+    /**
+     * 把「实际建了几公几母」回写到分娩记录，保证同一行内部自洽。
+     *
+     * <p>建档侧（{@code buildDefaultPiglets}）在公母之和与活产数对不上时会按活产数收敛，
+     * 这里不回写的话，同一条记录就会一边写着公5母5、一边只挂着 2 头仔猪档案 ——
+     * 窝详情与耳标页给出两个互相矛盾的数。只在确实不一致时才发 UPDATE。</p>
+     */
+    private void syncSexCountsFromPiglets(PigFarrow farrow, List<PigletEarTagVo> piglets) {
+        // 不能在这里对空 list 早返回：全窝死胎（live_born=0）时一头都不建，
+        // 公母数若原样留着 5/5，库里就是「活产 0、公5母5、档案 0 行」——同一种自相矛盾。
+        int male = piglets == null ? 0
+            : (int) piglets.stream().filter(p -> "M".equals(p.getPigletSex())).count();
+        int female = (piglets == null ? 0 : piglets.size()) - male;
+        if (Objects.equals(farrow.getMaleCount(), male) && Objects.equals(farrow.getFemaleCount(), female)) {
+            return;
+        }
+        log.warn("[V6-R242] farrowId={} 公母数按实际建档回写：{}+{} → {}+{}",
+            farrow.getId(), farrow.getMaleCount(), farrow.getFemaleCount(), male, female);
+        PigFarrow patch = new PigFarrow();
+        patch.setId(farrow.getId());
+        patch.setMaleCount(male);
+        patch.setFemaleCount(female);
+        farrowMapper.updateById(patch);
+        farrow.setMaleCount(male);
+        farrow.setFemaleCount(female);
     }
 
     @Override
@@ -190,8 +239,8 @@ public class FarrowServiceImpl implements IFarrowService {
      * 断奶 FarrowPicker 反查：按母猪 earNo 查最近 N 次分娩（不论是否已贴满标）。
      *
      * <p>断奶发生在仔猪贴标之后，"已贴满标"的分娩恰恰是最该断奶的，故本端点
-     * <b>不</b>按 remain 过滤（区别于仔猪耳标"选窝"用的 {@link #queryPendingLitters}——
-     * 那个只返 {@code remain > 0}）。tagged / remain 仍回填供 picker 展示贴标进度。</p>
+     * <b>不</b>按断奶与否过滤（区别于出生重订正"选窝"用的 {@link #queryPendingLitters}——
+     * 那个只返未断奶窝）。tagged / remain 仍回填供 picker 展示建档进度。</p>
      *
      * <p>实现：earNo eq（PigFarrow 冗余了 earNo，无需 join pig_info）→ farrow_date 倒序取最近 N 条。</p>
      */
@@ -358,18 +407,38 @@ public class FarrowServiceImpl implements IFarrowService {
         return code;
     }
 
+    /**
+     * 「未断奶」过滤（V6 行243）：该窝没有断奶记录 = 仍在哺乳期，可订正仔猪出生重；
+     * 母猪一断奶就从列表消失。
+     *
+     * <p>放 SQL 侧而非内存过滤——LIMIT 200 的候选集若在内存里被滤掉大半，列表口径会漂。
+     * 主表无别名（MP 的 lambdaQuery 不起别名），故关联条件写全表名 {@code t_farm_pig_farrow.id}；
+     * 租户列显式对齐（V1 不开租户拦截器，子查询不会被自动补条件）。</p>
+     *
+     * <p>⚠️ SQL 里写不等于一律用 {@code !=}：{@code &lt;&gt;} 在 MyBatis {@code &lt;script&gt;} 里会被
+     * 当成 XML 标签，建 mapper bean 时崩容器（2026-09-20 踩过）。本串虽走 wrapper 不经 XML 解析，
+     * 仍统一守同一条规矩。</p>
+     */
+    private static final String UNWEANED_ONLY =
+        "NOT EXISTS (SELECT 1 FROM t_farm_pig_weaning w "
+            + "WHERE w.farrow_id = t_farm_pig_farrow.id "
+            + "AND w.del_flag = '0' "
+            + "AND w.tenant_id = t_farm_pig_farrow.tenant_id)";
+
     @Override
     public List<FarrowLitterVo> queryPendingLitters(String motherEarNo, String barnName) {
-        // 拉候选窝（可选母猪 / 栋舍过滤）；多拉一些后内存按 remain > 0 过滤
+        // 拉候选窝（可选母猪 / 栋舍过滤）；「未断奶」在 SQL 侧过滤，不再按已建档头数内存过滤
         LambdaQueryWrapper<PigFarrow> w = Wrappers.<PigFarrow>lambdaQuery()
             .eq(StringUtils.isNotBlank(motherEarNo), PigFarrow::getEarNo, motherEarNo)
             .eq(StringUtils.isNotBlank(barnName), PigFarrow::getBarnName, barnName)
+            .apply(UNWEANED_ONLY)
             .orderByDesc(PigFarrow::getFarrowDate, PigFarrow::getId)
             .last("LIMIT 200");
         List<PigFarrowVo> rows = farrowMapper.selectVoList(w);
         if (rows.isEmpty()) {
             return List.of();
         }
+        // tagged / remaining 仍回填供卡片展示本窝已建档头数，但不再作过滤条件（V6 行243）
         enrichTaggedCounts(rows);
         // 批查母猪（避免 N+1：去重 pigId 一次性查 t_farm_pig_info）；仔猪品系/品种优先取窝内已耳标仔猪真实 code，
         // 未耳标窝回落母猪 code。
@@ -388,9 +457,6 @@ public class FarrowServiceImpl implements IFarrowService {
         List<FarrowLitterVo> result = new ArrayList<>();
         for (PigFarrowVo r : rows) {
             int remain = Optional.ofNullable(r.getRemaining()).orElse(0);
-            if (remain <= 0) {
-                continue;
-            }
             FarrowLitterVo vo = new FarrowLitterVo();
             vo.setId(r.getId());
             vo.setMotherPigId(r.getPigId());
@@ -427,7 +493,7 @@ public class FarrowServiceImpl implements IFarrowService {
 
     @Override
     public List<FarrowBarnCountVo> countPendingLittersByBarn() {
-        // 全量待打标窝（不带栋舍过滤），按 barn_name 内存聚合
+        // 全量未断奶窝（不带栋舍过滤），按 barn_name 内存聚合
         List<FarrowLitterVo> litters = queryPendingLitters(null, null);
         Map<String, Integer> byBarn = new TreeMap<>();
         for (FarrowLitterVo l : litters) {
@@ -454,6 +520,37 @@ public class FarrowServiceImpl implements IFarrowService {
         int live = Optional.ofNullable(bo.getLiveBorn()).orElse(0);
         if (live > total) {
             throw new ServiceException(I18nMessages.t("farrow.live_exceeds_total", live, total));
+        }
+        // 公母细分之和必须等于活产数 —— 否则这一行自己跟自己打架：
+        // 写着健仔 10 头、活产却只有 2。V6 行242 起分娩提交即按活产数建档，
+        // 不在门口拦住，库里就会留下「记录说公5母5、实际只挂 2 头档案」的记录，
+        // 而 healthy_* 那几列又不可能替工人编出一个合理的收敛值。
+        // 放弃的是「不一致的输入照样存下来」——行242 之前是存得进去的。
+        // mp 端活产数本就由这四个字段算出，结构上恒等，这条校验对 mp 永远不触发。
+        int sexSum = Optional.ofNullable(bo.getHealthyMale()).orElse(0)
+            + Optional.ofNullable(bo.getHealthyFemale()).orElse(0)
+            + Optional.ofNullable(bo.getWeakRaisedMale()).orElse(0)
+            + Optional.ofNullable(bo.getWeakRaisedFemale()).orElse(0);
+        if (sexSum > 0 && sexSum != live) {
+            throw new ServiceException(
+                I18nMessages.t("farrow.sex_split_mismatch", sexSum, live), 400);
+        }
+        // 汇总列与细分列同时给出时必须自洽：否则会落下「健仔公 5 头、却记着公 0 头」这种
+        // 降一个维度的同类矛盾行（细分之和对得上活产数，逃得过上面那道门）。
+        // 只在调用方两边都显式传了才比——老调用方只传其中一边时走派生/收敛，不受影响。
+        if (bo.getMaleCount() != null && bo.getHealthyMale() != null) {
+            int maleDetail = bo.getHealthyMale() + Optional.ofNullable(bo.getWeakRaisedMale()).orElse(0);
+            if (maleDetail != bo.getMaleCount()) {
+                throw new ServiceException(
+                    I18nMessages.t("farrow.male_split_mismatch", maleDetail, bo.getMaleCount()), 400);
+            }
+        }
+        if (bo.getFemaleCount() != null && bo.getHealthyFemale() != null) {
+            int femaleDetail = bo.getHealthyFemale() + Optional.ofNullable(bo.getWeakRaisedFemale()).orElse(0);
+            if (femaleDetail != bo.getFemaleCount()) {
+                throw new ServiceException(
+                    I18nMessages.t("farrow.female_split_mismatch", femaleDetail, bo.getFemaleCount()), 400);
+            }
         }
     }
 
