@@ -395,6 +395,11 @@ public interface FarmRecordsMapper extends BaseMapperPlus<FarmRecords, FarmRecor
      * 额外要求 {@code p.plot_status=3}（地块仍处采摘态、未退茬变空地）——已退茬地块 plot_status=1 应排除，
      * 否则空地仍出现在退茬候选并可被重复退茬（231）。</p>
      *
+     * <p><b>PLT-ROTATE-ONCE-001</b>：再加 {@code d.rotated_at IS NULL} ——「这一茬已退过」的明细不再进候选。
+     * 只靠 {@code plot_status=3} 挡不住：上一茬退完后地块被下一茬重新占用并进入采摘，
+     * {@code plot_status} 会回到 3，上一茬（{@code harvest_status} 恒为 completed）便再次满足条件、
+     * 重新出现在退茬列表，工人再点一次就把正在采摘的下一茬连带退掉。</p>
+     *
      * @param farmType 农事类型（rotation）
      * @param zoneId   片区 id（可空）
      * @param plotCode 地块编号（可空）
@@ -413,6 +418,7 @@ public interface FarmRecordsMapper extends BaseMapperPlus<FarmRecords, FarmRecor
          WHERE d.del_flag = '0'
            AND d.tenant_id = '1001'
            AND d.harvest_status = 'completed'
+           AND d.rotated_at IS NULL
            AND p.plot_status = 3
            AND (#{zoneId} IS NULL OR p.zone_id = #{zoneId})
            AND (#{plotCode} IS NULL OR p.plot_code = #{plotCode})
@@ -484,7 +490,8 @@ public interface FarmRecordsMapper extends BaseMapperPlus<FarmRecords, FarmRecor
      * 退茬工种「片区胶囊」聚合（FIX-PLT-MP-CROPSEL-001 P22 退茬·补片区筛选）。
      *
      * <p>同 {@link #selectCropZoneCountsForGrow}，但状态口径用采摘完成（{@code d.harvest_status='completed'}）——
-     * 与 {@link #selectCropTargetCardsForRotation} 同口径。地块额外要求 {@code p.plot_status=3}
+     * 与 {@link #selectCropTargetCardsForRotation} 同口径（含 {@code d.rotated_at IS NULL}，
+     * PLT-ROTATE-ONCE-001）。地块额外要求 {@code p.plot_status=3}
      * （未退茬变空地），与列表卡/多选页退茬口径一致（231）。</p>
      *
      * @return 每行 {@code {zoneId, zoneName, plotCount}}
@@ -499,6 +506,7 @@ public interface FarmRecordsMapper extends BaseMapperPlus<FarmRecords, FarmRecor
           LEFT JOIN t_plant_plant_details d
             ON d.plot_id = p.id AND d.del_flag = '0' AND d.tenant_id = '1001'
            AND d.harvest_status = 'completed'
+           AND d.rotated_at IS NULL
          WHERE z.del_flag = '0' AND z.tenant_id = '1001' AND z.zone_status = 1
          GROUP BY z.id, z.zone_name
          ORDER BY z.zone_name ASC

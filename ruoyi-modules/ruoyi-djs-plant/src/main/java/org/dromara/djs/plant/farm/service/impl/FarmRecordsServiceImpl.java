@@ -51,6 +51,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
@@ -99,6 +100,9 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
 
     /** 作物图 belongType（与 CropInfoServiceImpl 默认图口径一致）。 */
     private static final String CROP_BELONG_TYPE = "vegetable";
+
+    /** 采摘完成态（字典 djs_pick_status）：退茬候选与在产判定共用，避免字面量散落。 */
+    private static final String HARVEST_STATUS_COMPLETED = "completed";
 
     private final PlotInfoMapper plotInfoMapper;
     private final PlotZoneMapper plotZoneMapper;
@@ -327,14 +331,9 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
     @Override
     @Transactional(rollbackFor = Exception.class)
     public Long submitRotation(RotationRecordBo bo) {
-        // 幂等拦截（231）：地块 plot_status 须为 3（采摘态），已退茬变空地（plot_status=1）的地块拒绝重复退茬。
-        PlotInfo plot = plotInfoMapper.selectById(bo.getPlotId());
-        if (plot == null) {
-            throw new ServiceException("地块不存在: " + bo.getPlotId());
-        }
-        if (plot.getPlotStatus() == null || plot.getPlotStatus() != 3) {
-            throw new ServiceException("该地块已退茬，无需重复退茬");
-        }
+        // 前置校验与副作用与批量退茬同源（applyRotationSideEffect），避免两条入口口径漂移。
+        // 先校验再落记录：校验不过时不留下一条"退了但没生效"的农事记录。
+        requireRotatable(bo.getPlotId());
 
         FarmRecords r = new FarmRecords();
         buildBase(r, "rotation", bo.getPlotId(), bo.getCropId(), bo.getPlantId(),
@@ -343,10 +342,7 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
         baseMapper.insert(r);
         applyFarmTeamLinks(r.getId(), bo.getFarmByIds(), bo.getFarmBy());
 
-        // 副作用：plot_info.plot_status 回 1（空闲）。plant_status='completed' + end_actualdate
-        // 归「种植完成」finishPlant 独占，退茬不再重复写。
-        plot.setPlotStatus(1);
-        plotInfoMapper.updateById(plot);
+        applyRotationSideEffect(bo.getPlotId(), bo.getCropId());
         return r.getId();
     }
 
@@ -369,7 +365,7 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
             count++;
             // 退茬副作用：每条 plot_status=1（空闲）。plant_status/end_actualdate 归「种植完成」独占。
             if (isRotation) {
-                applyRotationSideEffect(target.getPlotId());
+                applyRotationSideEffect(target.getPlotId(), target.getCropId());
             }
         }
         return count;
@@ -405,25 +401,95 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
         return count;
     }
 
+    /** 作物名（仅用于拼错误提示；查不到返回空串，不抛）。 */
+    private String resolveCropName(Long cropId) {
+        if (cropId == null) {
+            return "";
+        }
+        CropInfo crop = cropInfoMapper.selectById(cropId);
+        return crop == null || crop.getCropName() == null ? "" : crop.getCropName();
+    }
+
     /**
-     * 退茬副作用（与 {@link #submitRotation} 单条一致，抽出供批量复用）：
-     * plot_info.plot_status=1（空闲）。plant_status='completed' + end_actualdate 归「种植完成」独占，退茬不写。
+     * 退茬前置校验（单条 / 批量共用，落记录前先跑）。
+     *
+     * <ol>
+     *   <li>幂等拦截（231）：已退茬变空地（{@code plot_status=1}）拒绝重复退茬；
+     *       其余非采摘态（如 2=种植）给准确文案，不误报「已退茬」。</li>
+     *   <li><b>在产明细拦截（PLT-ROTATE-ONCE-001）</b>：地块上还有没采完的作物时拒绝退茬 ——
+     *       退茬的副作用是<b>地块级</b>的（{@code plot_status=1}），而候选判定是<b>作物级</b>的，
+     *       两者错位会把「正在采摘的另一茬」连带退掉。文案带上作物名，让工人知道该先去完成谁。</li>
+     * </ol>
      */
-    private void applyRotationSideEffect(Long plotId) {
+    private void requireRotatable(Long plotId) {
         PlotInfo plot = plotInfoMapper.selectById(plotId);
         if (plot == null) {
             throw new ServiceException("地块不存在: " + plotId);
         }
-        // 幂等拦截（231）：已退茬变空地（plot_status=1）的地块拒绝重复退茬；
-        // 其余非采摘态（如 2=种植）给准确文案，不误报「已退茬」。
         if (plot.getPlotStatus() == null || plot.getPlotStatus() != 3) {
             if (plot.getPlotStatus() != null && plot.getPlotStatus() == 1) {
                 throw new ServiceException("该地块已退茬，无需重复退茬");
             }
             throw new ServiceException("地块状态不满足退茬（需处于采摘状态）");
         }
-        plot.setPlotStatus(1);
-        plotInfoMapper.updateById(plot);
+        List<PlantDetails> unfinished = plantDetailsMapper.selectList(
+            new LambdaQueryWrapper<PlantDetails>()
+                .eq(PlantDetails::getPlotId, plotId)
+                .ne(PlantDetails::getHarvestStatus, HARVEST_STATUS_COMPLETED));
+        if (CollUtil.isNotEmpty(unfinished)) {
+            String names = unfinished.stream()
+                .map(d -> resolveCropName(d.getCropId()))
+                .filter(StringUtils::isNotBlank)
+                .distinct()
+                .collect(Collectors.joining("、"));
+            throw new ServiceException(StringUtils.isBlank(names)
+                ? "该地块上仍有作物未采摘完成，不能退茬"
+                : "该地块上「" + names + "」仍在采摘中，不能退茬");
+        }
+    }
+
+    /**
+     * 退茬副作用（单条 / 批量共用）：给被退的那一茬打 {@code rotated_at} 标记 + 地块转空闲。
+     *
+     * <p><b>为什么要打标记</b>：退茬原先只改 {@code plot_status=1}，在「这一茬」上不留痕。
+     * 上一茬退完后 {@code harvest_status} 仍是 {@code completed}，只要地块被下一茬重新占用并
+     * 进入采摘（{@code plot_status} 回 3），退茬候选条件就再次成立 —— 上一茬重新进退茬列表，
+     * 再点一次就把正在采摘的下一茬连带退掉。打上标记后，退过的那一茬不再进候选。</p>
+     *
+     * <p><b>定位被退的那一茬</b>：按 {@code (plotId, cropId)} 取<b>最早一条未退茬的已采摘完成明细</b>，
+     * 刻意<b>不</b>按调用方传来的 {@code plantId} 精确匹配 —— 历史数据证明退茬记录的
+     * {@code plant_id} 会挂错茬（多选页按 {@code plot_id, id} 升序且不按地块去重，
+     * 同一地块多条已采完明细时工人点到的是旧那条）。「先种的先退」与回填规则同源，无歧义。</p>
+     *
+     * <p>{@code plant_status='completed'} + {@code end_actualdate} 归「种植完成」finishPlant 独占，退茬不写。</p>
+     */
+    private void applyRotationSideEffect(Long plotId, Long cropId) {
+        requireRotatable(plotId);
+
+        PlantDetails target = plantDetailsMapper.selectOne(
+            new LambdaQueryWrapper<PlantDetails>()
+                .eq(PlantDetails::getPlotId, plotId)
+                .eq(cropId != null, PlantDetails::getCropId, cropId)
+                .eq(PlantDetails::getHarvestStatus, HARVEST_STATUS_COMPLETED)
+                .isNull(PlantDetails::getRotatedAt)
+                .orderByAsc(PlantDetails::getBeginActualdate)
+                .orderByAsc(PlantDetails::getId)
+                .last("LIMIT 1"));
+        if (target == null) {
+            // 该地块该作物已无「未退茬的已采完明细」——说明这一茬早就退过了，拒绝而不是静默放过，
+            // 否则又会退掉地块上别的茬（正是 PLT-ROTATE-ONCE-001 要根治的那条路径）。
+            throw new ServiceException("该地块的这一茬已经退过茬了，无需重复退茬");
+        }
+        plantDetailsMapper.update(null,
+            new LambdaUpdateWrapper<PlantDetails>()
+                .eq(PlantDetails::getId, target.getId())
+                .isNull(PlantDetails::getRotatedAt)
+                .set(PlantDetails::getRotatedAt, LocalDateTime.now()));
+
+        plotInfoMapper.update(null,
+            new LambdaUpdateWrapper<PlotInfo>()
+                .eq(PlotInfo::getId, plotId)
+                .set(PlotInfo::getPlotStatus, 1));
     }
 
     @Override
@@ -443,6 +509,10 @@ public class FarmRecordsServiceImpl extends DjsBaseServiceImpl<FarmRecordsMapper
             // 已退茬地块 plot_status=1 应排除，否则空地仍出现在退茬多选页并可被重复退茬。
             // 与列表卡/片区胶囊（selectCropTargetCardsForRotation / selectCropZoneCountsForRotation）同口径。
             if ("rotation".equals(farmType)) {
+                // PLT-ROTATE-ONCE-001：「这一茬已退过」的明细不再进多选页。只靠 plot_status=3 挡不住 ——
+                // 上一茬退完后地块被下一茬重新占用并进入采摘，plot_status 回到 3，上一茬便重新冒出来。
+                // 顺带消除「同一地块在多选页重复出现多行」（同地块多条已采完明细时工人容易点到旧那条）。
+                dw.isNull(PlantDetails::getRotatedAt);
                 List<PlotInfo> activePlots = plotInfoMapper.selectList(
                     new LambdaQueryWrapper<PlotInfo>().eq(PlotInfo::getPlotStatus, 3));
                 Set<Long> activePlotIds = activePlots.stream()

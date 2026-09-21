@@ -10,6 +10,7 @@ import org.dromara.common.tenant.core.TenantEntity;
 import java.io.Serial;
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 
 /**
  * 种植计划明细实体（PLT-PLAN-001）。
@@ -122,6 +123,24 @@ public class PlantDetails extends TenantEntity {
      * {@code admin_team}。</p>
      */
     private String changeType;
+
+    /**
+     * 退茬时间（PLT-ROTATE-ONCE-001）：非空 = 这一茬已退茬，该明细不再进退茬候选。
+     *
+     * <p><b>为什么需要这个字段</b>：退茬原先只改 {@code plot_info.plot_status=1}，在「这一茬」上不留痕。
+     * 上一茬退完后 {@code harvest_status} 仍是 {@code completed}，只要地块被下一茬重新占用并进入采摘
+     * （{@code plot_status} 回到 3），退茬候选条件「{@code harvest_status='completed'} AND
+     * {@code plot_status=3}」就再次成立 —— 上一茬重新出现在退茬列表，工人再点一次就会把
+     * 正在采摘的下一茬连带退掉。</p>
+     *
+     * <p><b>为什么不靠 {@code t_plant_farm_records} 反查</b>：退茬记录的 {@code plant_id} 会挂错茬
+     * （多选页按 {@code plot_id, id} 升序且不按地块去重，同一地块多条已采完明细时工人点到的是旧那条），
+     * 反查会把「第二茬的唯一一次退茬」误判成重复。本字段落在明细行上，粒度正是甲方口径
+     * 「同一地块同一作物，一次种植计划只能退一次」，无歧义。</p>
+     *
+     * <p>同一地块连续两次种同一作物时，两条明细各自持有 {@code rotatedAt}，互不影响，各自可退一次。</p>
+     */
+    private LocalDateTime rotatedAt;
 
     @TableLogic
     private String delFlag;
