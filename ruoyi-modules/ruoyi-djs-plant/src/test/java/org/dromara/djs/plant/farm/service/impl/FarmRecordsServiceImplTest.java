@@ -232,8 +232,8 @@ class FarmRecordsServiceImplTest {
     }
 
     @Test
-    @DisplayName("退茬触发 plot_info.plot_status=1（plant_details completed 归种植完成 finishPlant，退茬不重复写）")
-    void submitRotation_resets_plot_and_completes_details() {
+    @DisplayName("退茬触发 plot_info.plot_status=1 + 给被退的那一茬打 rotated_at（PLT-ROTATE-ONCE-001）")
+    void submitRotation_resets_plot_and_stamps_rotated_at() {
         RotationRecordBo bo = new RotationRecordBo();
         bo.setPlantId(7L);
         bo.setPlotId(1L);
@@ -246,20 +246,95 @@ class FarmRecordsServiceImplTest {
         activePlot.setId(1L);
         activePlot.setPlotStatus(3);
         when(plotInfoMapper.selectById(1L)).thenReturn(activePlot);
+        // 在产明细拦截：地块上没有未采完的明细 → 放行
+        when(plantDetailsMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(List.of());
+        // 被退的那一茬（未退茬的已采完明细）
+        PlantDetails target = new PlantDetails();
+        target.setId(900L);
+        when(plantDetailsMapper.selectOne(any(LambdaQueryWrapper.class))).thenReturn(target);
+        when(plantDetailsMapper.update(isNull(), any(Wrapper.class))).thenReturn(1);
+        when(plotInfoMapper.update(isNull(), any(Wrapper.class))).thenReturn(1);
 
         when(baseMapper.insert(any(FarmRecords.class))).thenAnswer(inv -> {
             FarmRecords r = inv.getArgument(0);
             r.setId(202L);
             return 1;
         });
-        when(plotInfoMapper.updateById(any(PlotInfo.class))).thenReturn(1);
 
         Long id = service.submitRotation(bo);
         assertThat(id).isEqualTo(202L);
 
-        ArgumentCaptor<PlotInfo> plotCap = ArgumentCaptor.forClass(PlotInfo.class);
-        verify(plotInfoMapper).updateById(plotCap.capture());
-        assertThat(plotCap.getValue().getPlotStatus()).isEqualTo(1);
+        // 给那一茬打了 rotated_at
+        verify(plantDetailsMapper).update(isNull(), any(Wrapper.class));
+        // 地块转空闲
+        verify(plotInfoMapper).update(isNull(), any(Wrapper.class));
+    }
+
+    @Test
+    @DisplayName("退茬拦截：地块上还有没采完的作物时拒绝，且不落农事记录（PLT-ROTATE-ONCE-001）")
+    void submitRotation_rejected_when_plot_has_unfinished_crop() {
+        RotationRecordBo bo = new RotationRecordBo();
+        bo.setPlantId(7L);
+        bo.setPlotId(1L);
+        bo.setCropId(2L);
+        bo.setFarmBy(10L);
+        bo.setFarmDate(LocalDate.now());
+
+        PlotInfo activePlot = new PlotInfo();
+        activePlot.setId(1L);
+        activePlot.setPlotStatus(3);
+        when(plotInfoMapper.selectById(1L)).thenReturn(activePlot);
+
+        // 地块上还有一条「采摘中」的小白菜 —— 正是会被连带退掉的那一茬
+        PlantDetails picking = new PlantDetails();
+        picking.setId(901L);
+        picking.setCropId(99L);
+        picking.setHarvestStatus("picking");
+        when(plantDetailsMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(List.of(picking));
+        CropInfo cabbage = new CropInfo();
+        cabbage.setId(99L);
+        cabbage.setCropName("小白菜");
+        when(cropInfoMapper.selectById(99L)).thenReturn(cabbage);
+
+        assertThatThrownBy(() -> service.submitRotation(bo))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("小白菜")
+            .hasMessageContaining("不能退茬");
+
+        // 校验不过 → 不留「退了但没生效」的农事记录，也不动地块
+        verify(baseMapper, never()).insert(any(FarmRecords.class));
+        verify(plotInfoMapper, never()).update(isNull(), any(Wrapper.class));
+    }
+
+    @Test
+    @DisplayName("退茬拦截：这一茬已退过（无未退茬的已采完明细）时拒绝，不把地块上别的茬退掉")
+    void submitRotation_rejected_when_round_already_rotated() {
+        RotationRecordBo bo = new RotationRecordBo();
+        bo.setPlantId(7L);
+        bo.setPlotId(1L);
+        bo.setCropId(2L);
+        bo.setFarmBy(10L);
+        bo.setFarmDate(LocalDate.now());
+
+        PlotInfo activePlot = new PlotInfo();
+        activePlot.setId(1L);
+        activePlot.setPlotStatus(3);
+        when(plotInfoMapper.selectById(1L)).thenReturn(activePlot);
+        when(plantDetailsMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(List.of());
+        // 已无「未退茬的已采完明细」= 这一茬早退过了
+        when(plantDetailsMapper.selectOne(any(LambdaQueryWrapper.class))).thenReturn(null);
+        when(baseMapper.insert(any(FarmRecords.class))).thenAnswer(inv -> {
+            FarmRecords r = inv.getArgument(0);
+            r.setId(203L);
+            return 1;
+        });
+
+        assertThatThrownBy(() -> service.submitRotation(bo))
+            .isInstanceOf(ServiceException.class)
+            .hasMessageContaining("已经退过茬");
+
+        // 关键：地块没有被置空闲（否则就会把正在采摘的那一茬连带退掉）
+        verify(plotInfoMapper, never()).update(isNull(), any(Wrapper.class));
     }
 
     @Test
